@@ -129,14 +129,32 @@ Section: Serve Loop
     else if path == "/api/status" then Just (HttpResponse { status = http-200, content-type = "application/json", body = "{\"requests\":" & show count & "}" })
     else None
 
+ The loop threads `r.ws-state` and takes no heap mark. It used to recurse on
+ the ORIGINAL `st` after a `__heap-restore`, which reverted the driver's
+ virtqueue counters to their post-init values every iteration: the device saw
+ the avail index go backwards to 33, `virtio-net-fill-rx` having submitted 32
+ buffers, and `last-used-idx` reverting made the second iteration re-consume
+ the FIRST request's used-ring entry, which is why two loop lines reported one
+ host request with identical `recv` and `resp`.
+
+ The mark cannot be kept while the state is threaded. `deck-record` is what
+ makes a value outlive a `__heap-restore` and it is an x86-64 emitter
+ intrinsic: the arm64 plug does not implement it (`plugs-backlog.md` 1.33), so
+ on this lane the restore has to go rather than be annotated around. The cost
+ is that the loop no longer reclaims per request, which is why the counters
+ are printed -- growth is now visible rather than assumed.
+
+  ws-qdiag : Arm64NetIOState -> Text
+  ws-qdiag (s) =
+   let q = (s.vnet).rx-queue
+   in " avail=" & show (q.avail-idx) & " lastused=" & show (q.last-used-idx) & " free=" & show (q.free-head)
+
   ws-serve-loop : Arm64NetIOState, Integer -> [Console] Integer
   ws-serve-loop (st) (count) = act
-    let hp = __heap-save
-    in let r = ws-serve-one st count
+    let r = ws-serve-one st count
     in act
-      print-line-uni ("loop " & show count & " " & r.ws-diag)
-      let restored = __heap-restore hp
-      in ws-serve-loop st (count + 1)
+      print-line-uni ("loop " & show count & " " & r.ws-diag & ws-qdiag (r.ws-state))
+      ws-serve-loop (r.ws-state) (count + 1)
     end
   end
 

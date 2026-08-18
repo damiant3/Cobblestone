@@ -86,13 +86,58 @@ loop 2 ok:/api/health len=11 eq=MATCH codes= 81 15 31 17 81 20 13 15 23 14 20
 
 **The defect: the VirtIO DMA regions were inside the guest's own memory.** `a64pe-kernel-base` is `0x40100000` and the stub's `text-pages` includes an 8192-page (32 MB) heap grant, so the kernel's image and heap run to roughly `0x42100000`. `VirtioNet` was DMA-ing received frames into `0x40200000-0x40232000`, squarely inside it, corrupting whatever it landed on -- here one CCE table entry, which is why exactly one character of the path was wrong and the rest survived. Moved to `0x44000000`; `VirtioBlk` moved with it to `0x44100000`, having been in the same span and having survived only because its read is a single 512-byte transfer early in boot.
 
-**Any future region here must be checked against `a64pe-kernel-base` plus `text-pages`, and neither driver does that arithmetic** -- both carry hardcoded constants and a prose warning. A derivation would be better than the warning.
+**The arithmetic is now done and the answer is a number, not a warning (reek, 2026-08-17).** The top of the stub's allocation is `stack-top` = `a64pe-kernel-base` + `text-pages` * 4096, and both live in `codex/plugs/pe/Arm64PeWriter.codex` (`:38`, `:415`, `:432`) -- not in either driver, which is why neither could do it. `text-pages` is `(text-size + rodata-size + 4095) / 4096 + a64pe-pt-size / 4096 + 8192`.
+
+Measured against the shipped `BOOTAA64.EFI`, 78,336 bytes with one 77,016-byte `.text`: `text-pages` = 8,227, `stack-top` = `#42123000`, headroom below `#44000000` = **32,362,496 bytes**.
+
+**The guard rail is not the image size, it is the `8192` literal, and that reframes the risk.** The image would have to grow 30.9 MB, four hundred times its present text, to reach the regions. The heap grant reaches them after 7,901 more pages, so **raising 8192 to 16384 -- the obvious next value -- puts `stack-top` at `#44123000` and both drivers' regions back inside the allocation, overrunning by 1.14 MB.** That is the same silent corruption this section is about.
+
+**A derivation on the guest side is not available and this is the reason, so nobody re-attempts it.** The guest cannot compute `text-pages`: it is known only to the image builder. The stub does set SP to exactly `stack-top` at entry (`:397-398`), but SP has descended by the time a driver initialises and rounding it up is unsound -- once the stack crosses a boundary, the rounded value lands below `stack-top`, inside the allocation. There is no stack-pointer builtin either. So the honest options are for the stub to PUBLISH `stack-top` where the drivers read it, or for a build-time check to compare the two files the way `check-facts-guid.ps1` compares its three producers of one GUID. **The second is a decision about the gate and is red's or Damian's to make, not one to smuggle in; the numbers above are what it would assert.** Recorded and not built.
 
 **One thing measured and NOT green: a SECOND request in the same boot times out.** Each of `/` and `/api/health` answers 200 in its own run; the next request in the same boot never completes. **Handed to blu 2026-08-16 (red's routing), and one candidate is already ELIMINATED so it is not bought twice.**
 
 The obvious suspect was `ws-serve-loop` discarding `r.ws-state` and recursing on the original `st` after a `__heap-restore`, on the reasoning that the virtqueue counters (`avail-idx`, `last-used-idx`, `free-head`) are DEVICE-COUPLED: the device advances its used ring and never rolls back, so a driver reverting its own counters would disagree with the device from then on. **That reasoning may still be true but it is not sufficient, and the fix built on it does not work.** Threading `r.ws-state` forward and dropping the `__heap-restore` was built and run: `GET /api/health` answers 200 and the three requests after it in the same boot all time out, exactly as before. Reverted rather than landed, because an unverified change that does not move the arm is not worth carrying.
 
 So the fault survives the state being threaded correctly, which points past the driver's counters and into the transport or the accept path -- `arm64-net-io-listen` re-listening on a session that has already been through `transport-close` is the next thing to look at, and it has NOT been measured.
+
+**BACK TO REEK 2026-08-17 (red's routing; blu never started it). Read-only progress, no boot spent yet, and it changes the shape of the question.**
+
+**The defect site is named, and it is in the PAYLOAD.** `codex/test/arm64-web-server.codex:139`: `ws-serve-loop` ends `in ws-serve-loop st (count + 1)` -- it recurses on `st`, the ORIGINAL state, discarding `r.ws-state` entirely. Every iteration therefore restarts from the post-`opening` `VirtioNetState`. **That single line accounts for BOTH of blu's new observations, which no previous account connected:** the device seeing the avail index revert to **33** is the driver's counters going back to their post-init value (`virtio-net-fill-rx` submits 32 buffers, so 33 is exactly where init leaves it), and `loop 1` re-reading `loop 0`'s bytes is `last-used-idx` reverting with them, so the driver re-consumes the same used-ring entry. Note QEMU's message is misleading and cost time to read: `Guest moved used index from 10043 to 33` is raised on the **AVAIL** ring going backwards, not the used ring.
+
+**Two candidates ELIMINATED by reading, so nobody buys them:**
+
+- **`vnet-state-addr` is dead.** `codex/os/kernel/VirtioNet.codex:66` declares `vnet-state-addr : Integer = #80100`, and `#80100` is not RAM at all on QEMU virt -- RAM starts at `0x40000000` and that address is in the low flash window. It looks exactly like a live defect. It has **one occurrence in the whole tree, its own declaration** (L-UNCALLED), so it cannot be the cause. Worth deleting on the next pass through that chapter.
+- **The inner `__heap-restore` calls in `Arm64NetIO.codex` are CORRECT and are not the bug.** `arm64-net-io-accept:113-116` and `arm64-net-io-recv-poll:142-145` both restore ONLY on the `has-frame == False` path, where the poll returned the state unchanged and nothing allocated is retained. The frame-arrived path threads the state and does not restore. That is the right pattern and it should not be changed.
+
+**Why blu's threading fix may have failed for a reason that is not about the payload, and this is the part to read before trying again.** The mechanism Codex provides for making a value outlive a `__heap-restore` is `deck-record`, and `codex/compiler/Core/DiagnosticBag.codex:31-35` states exactly this use. **`deck-record` is the identity function and its effect is an x86-64 EMITTER INTRINSIC that the arm64 plug does not have** -- `codex/plugs/arm64` mentions the name zero times, as does `codex/plugs/riscv`. Recorded as `plugs-backlog.md` 1.33. So on this lane there is no way to say "keep this across the restore", and a fix has to remove the restore rather than annotate around it.
+
+### ARM RUN 2026-08-17 (reek): the first defect is FIXED and the second is isolated to one line
+
+Three requests in one boot, plugs deliberately left at their 2026-08-16 build so the payload edit is the only variable against blu's run. Serial:
+
+```
+loop 0 ok:/api/health len=11 eq=MATCH codes= 81 15 31 17 81 20 13 15 23 14 20 recv=184 resp=105 avail=36 lastused=4 free=36
+loop 1 no-conn avail=41 lastused=9  free=41
+loop 2 no-conn avail=42 lastused=10 free=42
+loop 3 no-conn avail=44 lastused=12 free=44
+```
+
+**Defect 1 is closed, and the counters are what say so.** `ws-serve-loop` now threads `r.ws-state` and takes no heap mark. `avail` advances 36 to 41 to 42 to 44 and `lastused` 4 to 9 to 10 to 12 where they previously reverted to 33 every iteration. Four things moved together: **the counters advance, the `Synchronous Exception` is gone, QEMU's stderr is EMPTY** (no `Guest moved used index`, no `receive queue contains no in buffers`, both of which fired before), **and one host request now produces exactly one loop line** instead of two identical ones. The counters advancing is also what rules out the reading blu's result could not be separated from: the change reached the binary.
+
+**Defect 2, measured rather than predicted, and it is `Tcp.codex`.** Requests 1 and 2 still time out, but the guest is alive and looping and still consuming frames. `EvListen` reaches `TcpListening` in **exactly one** state handler, `tcp-step-closed:224`. In all eight other states it is `TcpStep { conn = conn, action = ActNone }` -- a no-op (`:239, :256, :272, :297, :315, :329, :341, :355`). And `EvClose` from ESTABLISHED does not go to CLOSED: `tcp-step-established:292-295` sends a FIN and moves to **`TcpFinWait1`**. So the serve loop closes, lands in `FinWait1`, calls `arm64-net-io-listen`, and that listen **does nothing**; `accept` never sees `TcpEstablished` and every later iteration reports `no-conn`. This is blu's predicted next step, now confirmed and localised.
+
+**The shape of it is architectural, so it is a decision rather than a patch.** This stack has one `TcpConnection` serving as both the listening socket and the accepted connection, so closing the connection destroys the listener. A server keeps them separate. The three candidate fixes are: give the loop a listening socket distinct from the connection (correct, largest); have `arm64-net-io-close` drive the connection to `TcpClosed` outright, which for a server that does not need a graceful close is a reset rather than a FIN; or accept `EvListen` from the closing states, which is the smallest change and the least honest about TCP. **Not chosen here.**
+
+**Harness note.** `build/boot-arm64.ps1` runs QEMU in the foreground with no timeout, so it cannot be an arm. The harness that produced the above is `docs/Probes/arm64-two-requests.ps1` (rescued from reek's session scratchpad at the 2026-08-17 relaunch; its `$Repo` is reek's workspace, set it to yours). It builds with `-NoBoot`, launches QEMU itself with a derived hostfwd port rather than the hardcoded 8080 (another agent booting arm64 would otherwise answer the requests, L-SHARED), and banks three channels -- guest serial, QEMU stderr, per-request client verdict -- because a crashed guest and a timed-out client are indistinguishable from the client alone, which is how the crash went unrecorded for a day. It refuses to report request results at all unless the guest announced `Listening on port 80`, after a first run where `Start-Process` split the firmware path at its space, QEMU never booted, and three connection refusals would otherwise have read exactly like this bug.
+
+**CLOSED 2026-08-17 (blu), measured on the guest.** With the re-listen fix in
+(main 16291: `net-listen` builds a fresh listening socket instead of stepping a
+connection close left in FIN_WAIT_1), `docs/Probes/arm64-two-requests.ps1
+-Requests 3` answered **all three in one boot -- `HTTP 200` 15 bytes, `HTTP
+200` 15 bytes, `HTTP 200` 948 bytes** -- with three loop lines for three host
+requests, `avail` 36 to 42 to 48 and `lastused` 4 to 10 to 16 advancing
+monotonically, `eq=MATCH` on both `/api/health` paths, no `Synchronous
+Exception`, and QEMU's stderr EMPTY.
 
 ### What the DEVICE says, measured by blu 2026-08-16 (parked here for the release)
 
@@ -115,11 +160,41 @@ Three things there are new and none of them is a theory:
 2. **The guest CRASHES.** `Synchronous Exception at 0x401016E4`, then a recursive exception dumping CPU state. The host-visible symptom is a timeout because the guest is gone, so "the second request times out" is a description of the client, not of the guest.
 3. **QEMU reports the driver moving the used index BACKWARDS, `10043 to 33`, and the RX queue running out of in-buffers.** That is the device's own account of the counter disagreement, and no previous revision had it.
 
-**A candidate that fits all three, NOT yet measured and labelled as such.** `transport-new` (`codex/os/net/TcpTransport.codex:19-25`) advances the heap by `transport-recv-buf-cap` = 33,554,432, a full 32 MB, and the stub's grant is `8192` pages = exactly 32 MB (`Arm64PeWriter.codex:415`). If the frontier after that reservation reaches the DMA constants at `#44000000`, then every later allocation writes over the RX ring, the queue region and the buffers, which would produce a garbage used index, a starved RX queue and a fault, in that order. It is the same class as the defect this section already records -- DMA inside memory the guest allocates from -- moved rather than removed when the regions went from `#40200000` to `#44000000`.
+**A candidate that fitted all three, and it is now DEAD BY MEASUREMENT.**
+`transport-new` (`codex/os/net/TcpTransport.codex:19-25`) advances the heap by
+`transport-recv-buf-cap` = 33,554,432, a full 32 MB, against a stub grant of
+`8192` pages = exactly 32 MB (`Arm64PeWriter.codex:415`), so the frontier
+reaching the DMA constants at `#44000000` would have overwritten the RX ring,
+the queue region and the buffers, in that order. It does not reach them.
+`build-arm64-img` now asserts the floor on every build and printed, on the
+2026-08-17 run above, **`stack-top 0x42123000, floor 0x44000000, 32,362,496
+bytes clear, 8192 heap pages`**. The arithmetic that made this look plausible
+omitted where the frontier actually starts, which is the failure this whole
+section keeps recording: reasoning about an address instead of reading one.
+The cause was reek's defect 1 (the loop's `__heap-restore` reverting the
+virtqueue counters) plus the re-listen defect, both now fixed, and the
+`Synchronous Exception` and the backwards used index have not reappeared in
+any run since.
 
-**The one probe that settles it, and it is cheap:** print `__heap-save` at kernel entry and again immediately after `transport-new`, and compare both against `vnet-rx-region`. If the second is at or past `#44000000` the collision is real and the fix is item 2 (derive the regions from the stub's allocation) rather than anything in the accept path; if it is well below, this candidate is dead and `arm64-net-io-listen` after `transport-close` is next as reek says. **Do not skip to the fix on the strength of the arithmetic above** -- `a64pe-kernel-base` plus text plus the page tables is a sum nobody has measured on a live boot, and every wrong turn in this section came from reasoning about an address instead of reading one.
+## The 404 that preceded it, and why the first three suspects were wrong
 
-## The 404 that preceded it, and why the first three suspects were wrong The routed path came out as `napinhealth` where `/api/health` was sent. **The wire dump settles which side is wrong:** the request on the link reads `GET /api/health HTTP/1.1` exactly, so the bytes arrive correct and the guest builds the wrong Text from them. Every `/` (0x2F) becomes `n` (0x6E) and every other character survives, so it is a single-code-point mapping fault in the bytes-to-Text conversion, not a framing or length error.
+**CLOSED 2026-08-17 (blu): it does not reproduce.** The probe run of that
+date, three requests in one boot, reports `eq=MATCH` on both `/api/health`
+requests with `len=11` and `codes= 81 15 31 17 81 20 13 15 23 14 20`, so the
+path arrives, decodes and routes correctly. The three candidates named at the
+end of this section were never measured and are now moot; they are left in
+place because the reasoning that narrowed to them is still worth reading, not
+because any of them is still a live lead.
+
+**Which one it was is NOT claimed.** The behaviour is consistent with the
+account this file already carries, the VirtIO DMA regions sitting inside the
+guest's own heap and corrupting a single CCE table entry, which is why exactly
+one character was wrong and the rest survived; reek's defect 1 removed the
+`__heap-restore` that made that corruption reachable each iteration. Recording
+"does not reproduce, and here is the measurement" is the honest close, rather
+than picking a winner among three things nobody measured.
+
+The routed path came out as `napinhealth` where `/api/health` was sent. **The wire dump settles which side is wrong:** the request on the link reads `GET /api/health HTTP/1.1` exactly, so the bytes arrive correct and the guest builds the wrong Text from them. Every `/` (0x2F) becomes `n` (0x6E) and every other character survives, so it is a single-code-point mapping fault in the bytes-to-Text conversion, not a framing or length error.
 
 **`unicode-bytes-to-text` was the first suspect and it is EXONERATED, measured.** `codex/test/bytes-to-text-2f.codex` converts `[47, 97, 112, 105, 47, 104]` and prints the CCE points and the round trip; x86-64 is the oracle and the same source runs on both lanes, so a disagreement would be the defect and no `.expected` has to encode which side is right. They agree exactly:
 
@@ -132,7 +207,7 @@ ARM64   len=6 cce0=81 cce1=15 cce4=81 cce5=20 roundtrip=47 text=/api/h
 
 **Where the fault is NOT, therefore, and what is left.** `http-parse-request` (`apps/works/Http.codex`) reaches the same conversion through `http-bytes-to-text` = `unicode-bytes-to-text (http-slice ...)`, and the byte range it slices for the path is right by inspection. The remaining candidates, none measured: `http-slice`'s `list-push` accumulator, Text equality in `ws-standard-route`'s comparison, and the CCE-to-Unicode step inside `print-line-uni` itself -- the last of which would mean the DIAG is wrong and the 404 has a different cause entirely. **Naming them is not measuring them and this row does not claim otherwise.**
 
-**Still not done:** Phase 5d's external smoke test needs 5b/5c and Damian's OCI account. **Serving is green as of the section above; the remaining local gap is the second-request timeout.**
+**Still not done:** Phase 5d's external smoke test needs 5b/5c and Damian's OCI account, which is a dependency rather than a residue. **There is no remaining LOCAL gap: the second-request timeout was the re-listen defect, fixed at main 16291 and confirmed on the guest at 16293, three requests answering 200 in one boot with QEMU's stderr empty.**
 
 ## Root cause, measured 2026-08-16: `queue_select` never takes, so the TX queue is never configured
 

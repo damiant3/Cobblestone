@@ -14,10 +14,16 @@ shape they share is the shape this project already says it exists to remove.
 - **3.2 is implemented.** `__out_of_memory` now prints `SP=` and `HEAP=`
   after the `OUT OF MEMORY` line, so it names which side of the collision
   ran away.
-- **3.3's INSTRUMENT is built** (2026-08-16, section 7): the kill-rate corpus
-  that question 2 said had to exist before the check. The declaration itself is
-  still untouched and still a proposal. What is open is no longer what the
-  instrument is, but what a check must score on it, which is a ruling.
+- **3.3 is shipped**, declaration and check both. Its INSTRUMENT was built
+  first (2026-08-16, section 7): the kill-rate corpus that question 2 said had
+  to exist before the check. The check then landed against it -- `bounded` with
+  a transitive refusal at main 16020, rule 3 of the `growing` inference at
+  16118, and `none`/`fixed` refused with CDX6103 rather than taken on trust.
+  The `growing` inference scores 10 of 11 on
+  `codex/test/cost/accumulator-corpus`, 5 of 5 on the quadratic half, table in
+  section 8b. What remains open is COMPILER-7: whether the one over-refusal
+  (`n-fixed-appends`, linear but shaped quadratic) is worth lifting, revisited
+  only once real chapters carry `bounded` declarations.
 
 Opened 2026-08-14 (blu) at Damian's direction, adjacent to `CPL.md` in `Done/`.
 

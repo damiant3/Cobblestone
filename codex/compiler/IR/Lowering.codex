@@ -329,6 +329,16 @@ Section: Expression Lowering
     is CharLit -> deck-record (IrCharLit (text-to-integer text) sp)
     is BoolLit -> deck-record (IrBoolLit (text == "True") sp)
 
+  apply-spine-head : AExpr -> AExpr
+  apply-spine-head (e) = when e
+    is AApplyExpr (g) (b) (s) -> apply-spine-head g
+    is otherwise -> e
+
+  apply-spine-args : AExpr -> List AExpr
+  apply-spine-args (e) = when e
+    is AApplyExpr (g) (b) (s) -> list-push (apply-spine-args g) b
+    is otherwise -> []
+
   lower-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-apply (f) (a) (ty) (ctx) (sp) =
    when f
@@ -348,8 +358,50 @@ Section: Expression Lowering
        if (ifn.value) == "compare" then lower-compare-apply inner-a a ty ctx sp
        else if (ifn.value) == "int-rem" then lower-int-rem-apply inner-a a ty ctx sp
        else lower-apply-aa inner-f inner-a a f ty ctx sp
-      is otherwise -> lower-apply-aa inner-f inner-a a f ty ctx sp
+      is otherwise ->
+       let spine = apply-spine-head inner-f
+       in when spine
+        is ALambdaExpr (clps) (clbody) (clsp) -> lower-apply-lambda-chain spine (list-push (apply-spine-args f) a) ty ctx sp
+        is otherwise -> lower-apply-aa inner-f inner-a a f ty ctx sp
+    is ALambdaExpr (lps) (lbody) (lsp) -> lower-apply-lambda-head f a ty ctx sp
     is otherwise -> lower-apply-normal f a ty ctx sp
+
+  lower-apply-lambda-head : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-apply-lambda-head (f) (a) (ty) (ctx) (sp) =
+   let arg-ir = lower-expr a ErrorTy ctx
+   in let arg-ty = ir-expr-type arg-ir
+   in let fn-ty = deck-record (FunTy arg-ty empty-row ty)
+   in let func-ir = lower-expr f fn-ty ctx
+   in let ret-ty = peel-fun-return (ir-expr-type func-ir)
+   in let actual-ret = when ret-ty
+      is ErrorTy -> ty
+      is otherwise -> ret-ty
+   in lower-apply-dispatch func-ir arg-ir actual-ret sp
+
+  lower-apply-lambda-chain : AExpr, List AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-apply-lambda-chain (lam) (args) (ty) (ctx) (sp) =
+   let arg-irs = for a in args -> lower-expr a ErrorTy ctx
+   in let n = list-length arg-irs
+   in let fn-ty = build-curried-fun-ty arg-irs 0 n ty
+   in let func-ir = lower-expr lam fn-ty ctx
+   in apply-chain-fold func-ir arg-irs 0 n (ir-expr-type func-ir) ty sp
+
+  build-curried-fun-ty : List IRExpr, Integer, Integer, CodexType -> CodexType
+  build-curried-fun-ty (irs) (i) (n) (ret) =
+   if i >= n then ret
+   else deck-record (FunTy (ir-expr-type (list-at irs i)) empty-row (build-curried-fun-ty irs (i + 1) n ret))
+
+  chain-ret-or : CodexType, CodexType -> CodexType
+  chain-ret-or (r) (fallback) = when r
+    is ErrorTy -> fallback
+    is otherwise -> r
+
+  apply-chain-fold : IRExpr, List IRExpr, Integer, Integer, CodexType, CodexType, SourceSpan -> IRExpr
+  apply-chain-fold (acc) (irs) (i) (n) (acc-ty) (final-ty) (sp) =
+   if i >= n then acc
+   else let ret = peel-fun-return acc-ty
+   in if i == n - 1 then lower-apply-dispatch acc (list-at irs i) (chain-ret-or ret final-ty) sp
+   else apply-chain-fold (lower-apply-dispatch acc (list-at irs i) ret sp) irs (i + 1) n ret final-ty sp
 
   lower-apply-aa : AExpr, AExpr, AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-apply-aa (inner-f) (inner-a) (a) (f) (ty) (ctx) (sp) =

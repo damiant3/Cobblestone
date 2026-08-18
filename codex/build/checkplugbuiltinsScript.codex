@@ -1,0 +1,132 @@
+Chapter: CheckPlugBuiltinsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ We say:
+
+Section: Parameters
+
+  cpb-params : List ShellParam = [sh-switch "Update"]
+
+Section: Concatenation
+
+  cpb-cat-from : List ShellExpr, Integer -> ShellExpr
+  cpb-cat-from (xs) (i) = if i >= list-length xs then SeLit "" else if i == list-length xs - 1 then list-at xs i else SeConcat (list-at xs i) (cpb-cat-from xs (i + 1))
+
+  cpb-cat : List ShellExpr -> ShellExpr
+  cpb-cat (xs) = cpb-cat-from xs 0
+
+Section: S01 -- Why this exists
+
+  cpb-doctrine : List ShellCmd = [ScComment "a plug must have an arm for every builtin that reaches its wire", ScComment "", ScComment "A plug that does not know a builtin EMITS SOMETHING ANYWAY and reports OK:", ScComment "the name passes through as an ordinary call to a function the target never", ScComment "defines. The target's own toolchain is the first thing to notice, and for", ScComment "most plugs nothing downstream ever runs. Nothing compared a plug's builtin", ScComment "table against what actually arrives until this script.", ScComment "", ScComment "THE SUBJECT IS THE WIRE, NOT THE SOURCE, and that is the whole design.", ScComment "Two source-based versions were measured and thrown away first: asking", ScComment "whether a name is MENTIONED in compiler source answers 109 of 161 and is", ScComment "noise, and asking whether it appears as a CALL still leaves 21, every one", ScComment "of them benign, because literals, erased proof builtins and names the", ScComment "compiler only lists in its own emitter tables all look like calls. What", ScComment "can actually break is a name arriving in the IR a plug RECEIVES, and", ScComment "that set is decided by lowering and dead-code elimination.", ScComment "", ScComment "The compiler as a subject is NOT re-checked here. That case is the DDC", ScComment "witness, which already fails on a missing builtin because Roslyn refuses", ScComment "C# naming a method the emitted prelude does not define. Re-scanning its", ScComment "13.5 MB of IR would buy nothing. Red's split, 2026-08-17.", ScComment "", ScComment "Usage: check-plug-builtins.ps1 [-Update]", ScComment "  Without -Update: prints OK or the new gaps + exits 0 or 1", ScComment "  With -Update: rewrites the baseline (read the delta before taking it)"]
+
+  cpb-missing : ShellExpr = SeConcat (SeLit "check-plug-builtins: missing ") (SeVar "f")
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "BuiltinsFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Types\\Builtins.codex")), ScAssign "Subject" (SePathJoin (SeVar "Repo") (SeLit "codex\\test\\plug-oracle-arith.codex")), ScAssign "Seed" (SePathJoin (SeVar "Repo") (SeLit "seed\\Codex.cdx")), ScAssign "CompileScript" (SePathJoin (SeVar "Repo") (SeLit "build\\compile.ps1")), ScAssign "IrOut" (SePathJoin (SeVar "Repo") (SeLit "build\\output\\plug-builtins.ir")), ScAssign "IrLog" (SePathJoin (SeVar "Repo") (SeLit "build\\output\\plug-builtins.ir.log")), ScAssign "BaseFile" (SePathJoin (SeVar "Repo") (SeLit "build\\plug-builtin-baseline.txt")), ScBlank, ScForEach "f" (SeArrayLiteral [SeVar "BuiltinsFile", SeVar "Subject", SeVar "Seed", SeVar "CompileScript"]) [ScIf (SeNot (SeFileExists (SeVar "f"))) [ScEcho cpb-missing, ScExit (SeInt 1)] []]]
+
+Section: S02 -- What the compiler DECLARES
+
+  cpb-head : ShellExpr = SeProperty (SeIndex (SeProperty (SeVar "m") "Groups") (SeLit "h")) "Value"
+
+  cpb-declared-pat : Text = "bs-name = \"(?<h>[^\"]+)\""
+
+  cpb-declared-line : List ShellCmd = [ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpb-declared-pat]) [ScSetIndex "declared" cpb-head (SeBool True)]]
+
+  s02 : List ShellCmd = [ScAssign "declared" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "BuiltinsFile"]) cpb-declared-line]
+
+Section: S03 -- What actually reaches the wire
+
+  cpb-wire-note : List ShellCmd = [ScComment "-Passes 'text-plug' is REQUIRED and is not a detail. It is the pipeline a", ScComment "source plug receives, and it changes what reaches the wire: with the inline", ScComment "passes on, a polymorphic definition arrives already specialised. IR taken", ScComment "under the default pipeline would be measuring a wire no plug reads.", ScComment "", ScComment "The IR goes to the LOG rather than -Out under -IrUni. Both are passed so", ScComment "the compile behaves exactly as the plug pipeline drives it.", ScComment "", ScComment "A builtin call arrives as (apply (name \"show\" (fn ..)) ..), which is the", ScComment "SAME form a local call takes, (name \"store-two\" ..). Intersecting with the", ScComment "declared set is the only thing separating the two; a check keying on the", ScComment "shape alone would report every local function as a missing builtin arm."]
+
+  cpb-compile : ShellCmd = ScRunArgs (SeLit "pwsh") [SaSwitch "NoProfile", SaNamed "File" (SeVar "CompileScript"), SaNamed "Src" (SeVar "Subject"), SaNamed "Out" (SeVar "IrOut"), SaNamed "Log" (SeVar "IrLog"), SaSwitch "IrUni", SaNamed "Passes" (SeLit "text-plug"), SaNamed "Kernel" (SeVar "Seed")]
+
+  cpb-no-ir : ShellExpr = SeConcat (SeLit "check-plug-builtins: the compile produced no IR log at ") (SeVar "IrLog")
+
+  cpb-wire-pat : Text = "\\(name \"(?<h>[^\"]+)\""
+
+  cpb-wire-line : List ShellCmd = [ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpb-wire-pat]) [ScIf (SeMethodCall (SeVar "declared") "ContainsKey" [cpb-head]) [ScSetIndex "wire" cpb-head (SeBool True)] []]]
+
+  s03 : List ShellCmd = [ScSequence cpb-wire-note, cpb-compile, ScIf (SeNot (SeFileExists (SeVar "IrLog"))) [ScEcho cpb-no-ir, ScExit (SeInt 1)] [], ScAssign "wire" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "IrLog"]) cpb-wire-line]
+
+Section: S04 -- An empty side compares clean against anything
+
+  cpb-broken-note : List ShellCmd = [ScComment "An empty side compares clean against anything. A check that cannot fail is", ScComment "a comment, so refuse rather than report OK."]
+
+  cpb-empty : ShellExpr = SeOr (SeIntEq (SeProperty (SeVar "declared") "Count") (SeInt 0)) (SeIntEq (SeProperty (SeVar "wire") "Count") (SeInt 0))
+
+  cpb-broken-msg : ShellExpr = cpb-cat [SeLit "check-plug-builtins: FAILED to extract (declared=", SeProperty (SeVar "declared") "Count", SeLit " wire=", SeProperty (SeVar "wire") "Count", SeLit ")"]
+
+  s04 : List ShellCmd = [ScSequence cpb-broken-note, ScIf cpb-empty [ScEcho cpb-broken-msg, ScEcho (SeLit "  the extraction broke, not the plugs -- fix this script before trusting a green"), ScExit (SeInt 1)] []]
+
+Section: S05 -- What each plug REGISTERS
+
+  cpb-shape-note : List ShellCmd = [ScComment "TWO registration shapes, and modelling one accuses the other. python, zig", ScComment "and csharp use a record table (name = \"x\"); javascript and wasm use an", ScComment "if/else dispatch chain (n == \"x\"). Measured 2026-08-17: with only the", ScComment "table pattern, javascript and wasm extract ZERO and every builtin on the", ScComment "wire reads as missing -- seven phantom rows per plug, which is the gate", ScComment "nobody reads twice.", ScComment "", ScComment "ONLY THE WIRED PLUGS ARE COVERED, and that is a limit rather than an", ScComment "oversight. pascal and fortran use a third shape neither pattern models:", ScComment "they extract 6 and 4 names against python's 94, so their gaps would be", ScComment "inflated by the extraction rather than real. A plug whose shape this", ScComment "script does not model must be left alone, not accused. The floor below is", ScComment "what enforces that: a thin extraction is nearly as dangerous as an empty", ScComment "one, and it fails LOUDLY here instead of quietly listing phantoms."]
+
+  cpb-plugs : List ShellExpr = [SeLit "python", SeLit "javascript", SeLit "zig", SeLit "wasm", SeLit "csharp"]
+
+  cpb-floor : Integer = 20
+
+  cpb-table-pat : Text = "name = \"(?<h>[^\"]+)\""
+
+  cpb-dispatch-pat : Text = "n == \"(?<h>[^\"]+)\""
+
+  cpb-reg-line : List ShellCmd = [ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpb-table-pat]) [ScSetIndex "reg" cpb-head (SeBool True)], ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpb-dispatch-pat]) [ScSetIndex "reg" cpb-head (SeBool True)]]
+
+  cpb-thin-msg : ShellExpr = cpb-cat [SeLit "check-plug-builtins: FAILED to extract for ", SeVar "p", SeLit " (", SeProperty (SeVar "reg") "Count", SeLit " names, floor ", SeInt cpb-floor, SeLit ")"]
+
+  cpb-thin : List ShellCmd = [ScEcho cpb-thin-msg, ScEcho (SeLit "  this plug registers builtins in a shape neither pattern models."), ScEcho (SeLit "  teach the script that shape; do NOT read the gaps below as real."), ScExit (SeInt 1)]
+
+  cpb-gap : ShellExpr = cpb-cat [SeVar "p", SeLit " ", SeVar "b"]
+
+  cpb-plug-body : List ShellCmd = [ScAssign "reg" SeHashLiteral, ScForEach "f" (SeListFiles (SePathJoin (SePathJoin (SeVar "Repo") (SeLit "codex\\plugs")) (SeVar "p")) "*.codex" False) [ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeProperty (SeVar "f") "FullName"]) cpb-reg-line], ScIf (SeNot (SeIntGt (SeProperty (SeVar "reg") "Count") (SeInt cpb-floor))) cpb-thin [], ScForEach "b" (SeVar "wireNames") [ScIf (SeNot (SeMethodCall (SeVar "reg") "ContainsKey" [SeVar "b"])) [ScAppend "divergent" cpb-gap] []]]
+
+  s05 : List ShellCmd = [ScSequence cpb-shape-note, ScAssign "wireNames" (SeAsArray (SePipe (SeProperty (SeVar "wire") "Keys") [StSort])), ScAssign "divergent" (SeArrayLiteral []), ScForEach "p" (SeArrayLiteral cpb-plugs) cpb-plug-body, ScAssign "divergent" (SeAsArray (SePipe (SeVar "divergent") [StSort]))]
+
+Section: S06 -- Rewriting the baseline
+
+  cpb-header : List ShellExpr = [SeLit "# plug-builtin-baseline.txt -- generated by build/check-plug-builtins.ps1 -Update", SeLit "#", SeLit "# One line per '<plug> <builtin>': a builtin that REACHES the plug's wire", SeLit "# and has no arm in that plug's table. The plug emits a call to a function", SeLit "# its target never defines, and only that target's toolchain would notice.", SeLit "#", SeLit "# This file is the KNOWN residue. The check fails on anything not listed", SeLit "# here. Shrinking it is the work -- give the plug an arm. Growing it needs", SeLit "# a reason in the CL description.", SeLit ""]
+
+  cpb-updated : ShellExpr = cpb-cat [SeLit "baseline updated: ", SeCount (SeVar "divergent"), SeLit " known gap(s)"]
+
+  cpb-update-body : List ShellCmd = [ScAssign "header" (SeArrayLiteral cpb-header), ScSetContent (SeVar "BaseFile") (SeAdd (SeVar "header") (SeVar "divergent")), ScEcho cpb-updated, ScForEach "d" (SeVar "divergent") [ScEcho (SeConcat (SeLit "  ") (SeVar "d"))], ScExit (SeInt 0)]
+
+  s06 : List ShellCmd = [ScIf (SeVar "Update") cpb-update-body []]
+
+Section: S07 -- The baseline is the contract
+
+  cpb-no-base : ShellExpr = SeConcat (SeConcat (SeLit "check-plug-builtins: no baseline at ") (SeVar "BaseFile")) (SeLit " -- run with -Update")
+
+  cpb-real-line : ShellExpr = SeAnd (SeNot (SeMatch SeItem "^\\s*#")) (SeMatch SeItem "\\S")
+
+  cpb-baseline : ShellExpr = SeAsArray (SePipe (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "BaseFile"]) [StWhere cpb-real-line, StMap (SeTrim SeItem)])
+
+  s07 : List ShellCmd = [ScIf (SeNot (SeFileExists (SeVar "BaseFile"))) [ScEcho cpb-no-base, ScExit (SeInt 1)] [], ScBlank, ScAssign "baseline" cpb-baseline, ScBlank, ScAssign "new" (SeAsArray (SePipe (SeVar "divergent") [StWhere (SeNot (SeContains (SeVar "baseline") SeItem))])), ScAssign "fixed" (SeAsArray (SePipe (SeVar "baseline") [StWhere (SeNot (SeContains (SeVar "divergent") SeItem))]))]
+
+Section: S08 -- The verdict
+
+  cpb-new-head : ShellExpr = cpb-cat [SeLit "check-plug-builtins: FAIL -- ", SeCount (SeVar "new"), SeLit " new builtin gap(s)"]
+
+  cpb-new-body : List ShellCmd = [ScEcho cpb-new-head, ScForEach "g" (SeVar "new") [ScEcho (SeConcat (SeLit "  ") (SeVar "g"))], ScEcho (SeLit ""), ScEcho (SeLit "  Each line is '<plug> <builtin>': that builtin reaches the plug's wire"), ScEcho (SeLit "  and the plug has no arm for it, so it emits a call the target never"), ScEcho (SeLit "  defines. Add the arm, or record it: build/check-plug-builtins.ps1 -Update"), ScExit (SeInt 1)]
+
+  cpb-fixed-head : ShellExpr = cpb-cat [SeLit "check-plug-builtins: OK -- and ", SeCount (SeVar "fixed"), SeLit " baselined gap(s) are gone:"]
+
+  cpb-fixed-body : List ShellCmd = [ScEcho cpb-fixed-head, ScForEach "g" (SeVar "fixed") [ScEcho (SeConcat (SeConcat (SeLit "  ") (SeVar "g")) (SeLit " (now handled -- drop it from the baseline)"))], ScExit (SeInt 0)]
+
+  cpb-ok-line : ShellExpr = cpb-cat [SeLit "check-plug-builtins: OK (", SeProperty (SeVar "wire") "Count", SeLit " builtins on the wire, ", SeCount (SeVar "divergent"), SeLit " known gap(s))"]
+
+  s08 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "new")) (SeInt 0)) cpb-new-body [], ScBlank, ScIf (SeIntGt (SeCount (SeVar "fixed")) (SeInt 0)) cpb-fixed-body [], ScBlank, ScEcho cpb-ok-line, ScExit (SeInt 0)]
+
+Section: Assembly
+
+  cpb-full : List ShellCmd = [ScSequence cpb-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08]
+
+  cpb-script : ShellScript = sh-script "check-plug-builtins" "a plug must have an arm for every builtin that reaches its wire" cpb-params cpb-full
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cpb-script)
+  end

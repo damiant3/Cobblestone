@@ -291,23 +291,15 @@ Section: One read request
   vb-set-avail-idx : Integer, Integer -> Integer
   vb-set-avail-idx (a) (idx) = poke-32 a 0 (bit-shl (bit-and idx #FFFF) 16)
 
- An available-ring ENTRY is 16 bits, and the ring of them starts 4 bytes
+ An available-ring ENTRY is 16 bits and the ring of them starts 4 bytes
  into the structure, so every odd entry sits at an address that is 2 mod
- 4. There is no `poke-16` builtin -- only `poke-byte`, `poke-32` and the
- mmio forms -- and a `poke-32` there is an unaligned store.
-
- On these lanes the MMU is off, so an unaligned store is not slow, it is
- an ALIGNMENT FAULT. Measured 2026-08-16 on QEMU virt: entry 0 is at +4
- and stores fine, entry 1 is at +6 and takes
- `ESR=0000000096000061 FAR=0000000040010106` (data abort, DFSC 0x21) --
- so the FIRST read of any program succeeded and the SECOND killed the
- guest. Two byte stores, little end first, and the ring index no longer
- decides whether the machine survives.
+ 4. `poke-16` is a real 16-bit store at any offset, even or odd, on all
+ three lanes, and the MMU is off here, so this must not become a `poke-32`
+ of the surrounding word: that is an unaligned store and an alignment
+ fault rather than a slow one.
 
   vb-put-avail-entry : Integer, Integer -> Integer
-  vb-put-avail-entry (e) (desc) =
-   let lo = poke-byte e 0 (bit-and desc #FF)
-   in poke-byte (e + 1) 0 (bit-and (bit-shru desc 8) #FF)
+  vb-put-avail-entry (e) (desc) = poke-16 e 0 (bit-and desc #FFFF)
 
  The used index is the completion signal. It is polled rather than waited
  on because these lanes run with interrupts masked; the cap is the same

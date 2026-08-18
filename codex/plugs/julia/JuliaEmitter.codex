@@ -334,9 +334,9 @@ Section: Apply Emission
    JlBuiltinEmitter { name = "text-compare", emit = \args arities -> "cmp(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
    JlBuiltinEmitter { name = "text-contains", emit = \args arities -> "occursin(" & emit-jl-expr (list-at args 1) arities & ", " & emit-jl-expr (list-at args 0) arities & ")" },
    JlBuiltinEmitter { name = "text-length", emit = \args arities -> "length(" & emit-jl-expr (list-at args 0) arities & ")" },
-   JlBuiltinEmitter { name = "text-replace", emit = \args arities -> "replace(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & " => " & emit-jl-expr (list-at args 2) arities & ")" },
+   JlBuiltinEmitter { name = "text-replace", emit = \args arities -> "text_replace(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ", " & emit-jl-expr (list-at args 2) arities & ")" },
    JlBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "startswith(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
-   JlBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "parse(Int64, " & emit-jl-expr (list-at args 0) arities & ")" },
+   JlBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "text_to_integer(" & emit-jl-expr (list-at args 0) arities & ")" },
    JlBuiltinEmitter { name = "write-file", emit = \args arities -> "write(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" }
   ]
 
@@ -366,10 +366,11 @@ Section: Chapter Emission
   emit-julia-chapter : IRChapter, List ATypeDef -> Text
   emit-julia-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
+   in let header = "function list_snoc(xs, v)\n    if !isempty(xs)\n        push!(xs, v)\n        return xs\n    end\n    return Any[v]\nend\nlist_push(xs, v) = list_snoc(xs, v)\nfunction text_split(s, sep)\n    if length(sep) == 0\n        return [s]\n    end\n    return split(s, sep; keepempty=true)\nend\nfunction text_replace(s, a, b)\n    if length(a) == 0\n        return s\n    end\n    return replace(s, a => b)\nend\nfunction text_to_integer(s)\n    i = 1\n    neg = false\n    if length(s) > 0 && s[1] == '-'\n        neg = true\n        i = 2\n    end\n    v = 0\n    while i <= length(s) && s[i] >= '0' && s[i] <= '9'\n        v = v * 10 + (Int(s[i]) - 48)\n        i += 1\n    end\n    return neg ? -v : v\nend\n\n"
    in let types-text = emit-jl-type-defs type-defs 0
    in let defs-text = emit-jl-defs (m.defs) 0 arities
    in let entry = jl-emit-entry (m.defs)
-   in types-text & defs-text & entry
+   in header & types-text & defs-text & entry
 
   jl-emit-entry : List IRDef -> Text
   jl-emit-entry (defs) =

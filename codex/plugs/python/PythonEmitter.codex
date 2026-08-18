@@ -493,7 +493,7 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "is-letter", emit = \args ctx -> "(13 <= " & emit-py-expr (list-at args 0) ctx & " <= 64 or 97 <= " & emit-py-expr (list-at args 0) ctx & " <= 127)" },
    PyBuiltinEmitter { name = "is-digit", emit = \args ctx -> "(3 <= " & emit-py-expr (list-at args 0) ctx & " <= 12)" },
    PyBuiltinEmitter { name = "is-whitespace", emit = \args ctx -> "(1 <= " & emit-py-expr (list-at args 0) ctx & " <= 2)" },
-   PyBuiltinEmitter { name = "text-to-integer", emit = \args ctx -> "int(" & emit-py-expr (list-at args 0) ctx & ")" },
+   PyBuiltinEmitter { name = "text-to-integer", emit = \args ctx -> "_cx_text_to_integer(" & emit-py-expr (list-at args 0) ctx & ")" },
    PyBuiltinEmitter { name = "integer-to-text", emit = \args ctx -> "str(" & emit-py-expr (list-at args 0) ctx & ")" },
    PyBuiltinEmitter { name = "char-code", emit = \args ctx -> emit-py-expr (list-at args 0) ctx },
    PyBuiltinEmitter { name = "code-to-char", emit = \args ctx -> emit-py-expr (list-at args 0) ctx },
@@ -508,9 +508,9 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "list-snoc", emit = \args ctx -> "_cx_lpush(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")" },
    PyBuiltinEmitter { name = "list-push", emit = \args ctx -> "_cx_lpush(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")" },
    PyBuiltinEmitter { name = "text-compare", emit = \args ctx -> "(0 if " & emit-py-expr (list-at args 0) ctx & " == " & emit-py-expr (list-at args 1) ctx & " else (-1 if " & emit-py-expr (list-at args 0) ctx & " < " & emit-py-expr (list-at args 1) ctx & " else 1))" },
-   PyBuiltinEmitter { name = "text-replace", emit = \args ctx -> emit-py-expr (list-at args 0) ctx & ".replace(" & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")" },
+   PyBuiltinEmitter { name = "text-replace", emit = \args ctx -> "_cx_text_replace(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")" },
    PyBuiltinEmitter { name = "text-concat-list", emit = \args ctx -> "\"\".join(" & emit-py-expr (list-at args 0) ctx & ")" },
-   PyBuiltinEmitter { name = "text-split", emit = \args ctx -> emit-py-expr (list-at args 0) ctx & ".split(" & emit-py-expr (list-at args 1) ctx & ")" },
+   PyBuiltinEmitter { name = "text-split", emit = \args ctx -> "_cx_text_split(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")" },
    PyBuiltinEmitter { name = "text-contains", emit = \args ctx -> "(" & emit-py-expr (list-at args 1) ctx & " in " & emit-py-expr (list-at args 0) ctx & ")" },
    PyBuiltinEmitter { name = "text-starts-with", emit = \args ctx -> emit-py-expr (list-at args 0) ctx & ".startswith(" & emit-py-expr (list-at args 1) ctx & ")" },
    PyBuiltinEmitter { name = "open-file", emit = \args ctx -> "open(" & emit-py-expr (list-at args 0) ctx & ", 'r')" },
@@ -945,7 +945,7 @@ Section: Chapter Emission
   emit-python-chapter : IRChapter, List ATypeDef -> Text
   emit-python-chapter (m) (type-defs) =
    let ctx = PyCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs }
-   in let header = "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\ndef _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\n"
+   in let header = "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\ndef _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\ndef _cx_text_replace(_s, _a, _b):\n    if len(_a) == 0:\n        return _s\n    return _s.replace(_a, _b)\n\ndef _cx_text_split(_s, _sep):\n    if len(_sep) == 0:\n        return [_s]\n    return _s.split(_sep)\n\ndef _cx_text_to_integer(_s):\n    _t = str(_s)\n    _i = 0\n    _neg = False\n    if _t[:1] == '-':\n        _neg = True\n        _i = 1\n    _v = 0\n    while _i < len(_t) and '0' <= _t[_i] <= '9':\n        _v = _v * 10 + (ord(_t[_i]) - 48)\n        _i += 1\n    return -_v if _neg else _v\n\n"
    in let types-text = emit-py-type-defs type-defs 0
    in let defs-text = emit-py-defs (m.defs) 0 ctx
    in let ret-ty = opening-return-type (m.defs)

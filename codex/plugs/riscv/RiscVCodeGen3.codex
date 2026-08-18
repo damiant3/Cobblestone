@@ -1543,11 +1543,34 @@ Section: Effect Handler Emission
   rv-add-local (st) (name) (reg) =
    __record-set st "locals" (list-push (st.locals) (RvLocal { name = name, reg = __narrow reg }))
 
+  rv-strip-resume : IRExpr, Text -> IRExpr
+  rv-strip-resume (expr) (resume-name) =
+   when expr
+    is IrApply (f) (a) (ty) (s) ->
+     when f
+      is IrName (n) (fty) (sp) -> if n == resume-name then a else expr
+      is otherwise -> expr
+    is IrLet (n) (t) (v) (b) (sp) -> IrLet n t v (rv-strip-resume b resume-name) sp
+    is IrIf (c) (th) (el) (t) (sp) -> IrIf c (rv-strip-resume th resume-name) (rv-strip-resume el resume-name) t sp
+    is otherwise -> expr
+
+  RvFlatLambda = record {
+   flat-params : List IRParam,
+   flat-body : IRExpr
+  }
+
+  rv-flatten-lambda-body : IRExpr, Text, List IRParam -> RvFlatLambda
+  rv-flatten-lambda-body (expr) (resume-name) (acc) =
+   when expr
+    is IrLambda (params) (body) (lty) (s) -> rv-flatten-lambda-body body resume-name (acc & params)
+    is otherwise -> RvFlatLambda { flat-params = acc, flat-body = rv-strip-resume expr resume-name }
+
   rv-unwrap-clause-lambda : IRExpr, Text, RvState, Text -> RvEmitResult
   rv-unwrap-clause-lambda (expr) (resume-name) (st) (op-name) =
    when expr
     is IrLambda (params) (body) (lty) (s) ->
-     let handler-name = "__handler_" & op-name & "_" & integer-to-text (st.insn-count)
+     let flat = rv-flatten-lambda-body expr resume-name []
+     in let handler-name = "__handler_" & op-name & "_" & integer-to-text (st.insn-count)
      in let jmp-over-idx = st.insn-count
      in let st1 = rv-emit st [0, 0, 0, 0]
      in let st2 = rv-record-func st1 handler-name
@@ -1560,8 +1583,8 @@ Section: Effect Handler Emission
      in let st4 = __record-set (__record-set st3 "next-temp" rv-t3) "spill-count" 0
      in let prologue-idx = st4.insn-count
      in let st4a = rv-emit-prologue st4 10
-     in let st5 = (rv-bind-params st4a params 0).sbr-state
-     in let er = rv-emit-expr st5 body
+     in let st5 = (rv-bind-params st4a (flat.flat-params) 0).sbr-state
+     in let er = rv-emit-expr st5 (flat.flat-body)
      in let st7 = if er.reg == rv-a0 then er.state
       else rv-emit (er.state) (rv-mv rv-a0 (er.reg))
      in let frame-size = rv-compute-frame-size (st7.spill-count)
@@ -1574,7 +1597,7 @@ Section: Effect Handler Emission
      in let tr = rv-alloc-temp st10
      in let st11 = rv-emit-load-func-addr (tr.state) (tr.reg) handler-name
      in RvEmitResult { state = st11, reg = tr.reg }
-    is otherwise -> rv-emit-expr st expr
+    is otherwise -> rv-emit-expr st (rv-strip-resume expr resume-name)
 
   rv-bind-handler-params : RvState, List IRParam, Integer -> RvState
   rv-bind-handler-params (st) (params) (i) =

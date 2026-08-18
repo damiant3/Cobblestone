@@ -88,15 +88,26 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
     $tcpStream.ReadTimeout = 600000
     $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
     $readBuf = [byte[]]::new(8192)
+    $recvAborted = $false
+    $recvError = ''
     try {
         while ($true) {
             $n = $tcpStream.Read($readBuf, 0, $readBuf.Length)
             if ($n -le 0) { break }
             for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
         }
-    } catch {}
-    [System.IO.File]::WriteAllBytes($Out, $allBytes.ToArray())
-    Write-Host "[pe-run] OK: $Out ($($allBytes.Count) bytes)"
+    } catch {
+        # A read timeout and a connection reset are NOT a clean end of stream.
+        # This was a bare catch {}, so a transfer that stopped part way through
+        # was indistinguishable from one that finished: the partial buffer was
+        # written out and the run reported OK.
+        $recvAborted = $true
+        $recvError = $_.Exception.Message
+    }    [System.IO.File]::WriteAllBytes($Out, $allBytes.ToArray())
+    if ($recvAborted) {
+        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.")
+        exit 8
+    }    Write-Host "[pe-run] OK: $Out ($($allBytes.Count) bytes)"
 
     $tcpClient.Close()
 

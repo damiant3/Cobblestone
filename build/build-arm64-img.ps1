@@ -45,6 +45,80 @@ Write-Host "[build-arm64-img] PE=$($pe.Length) bytes  Source=$($srcBytes.Length)
 $img = New-Object byte[] $ImageSize
 
 
+# The DMA floor. The ARM64 stub allocates [a64pe-kernel-base, stack-top) for
+# the kernel's image, page tables, stack and heap, and the two VirtIO drivers
+# DMA into fixed addresses above it. Nothing compared the two numbers. On
+# 2026-08-16 the regions sat INSIDE that allocation and the NIC wrote over one
+# CCE table entry, which surfaced as a single wrong character in a URL path
+# after every other suspect had been cleared.
+# 
+# The risk is not the image growing: that needs 30.9 MB against a 78 KB image.
+# It is the heap-grant literal in the text-pages formula, because raising 8192
+# to 16384 moves stack-top above both regions. So this asserts the arithmetic
+# instead of warning about it, and every number is READ from the source that
+# owns it rather than restated here.
+# 
+# An unmatched pattern is a FAILURE, not a skip: a check whose regex has
+# stopped matching has quietly stopped asking, which is the rule
+# check-doc-counts.ps1 states for the same shape.
+$dmaRepo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$dmaPeWriter = Join-Path $dmaRepo 'codex\plugs\pe\Arm64PeWriter.codex'
+$dmaVnet = Join-Path $dmaRepo 'codex\os\kernel\VirtioNet.codex'
+$dmaVblk = Join-Path $dmaRepo 'codex\os\kernel\VirtioBlk.codex'
+foreach ($f in @($dmaPeWriter, $dmaVnet, $dmaVblk)) {
+    if (-not (Test-Path -PathType Leaf $f)) { Write-Host "FAIL: DMA floor check cannot read $f"; exit 8 }
+}
+function Get-CdxHexConst($path, $name) {
+    $m = [regex]::Match([System.IO.File]::ReadAllText($path), "(?m)^\s*$([regex]::Escape($name))\s*:\s*Integer\s*=\s*#([0-9A-Fa-f]+)")
+    if (-not $m.Success) { Write-Host "FAIL: DMA floor check found no '$name' in $path"; exit 8 }
+    return [uint64]('0x' + $m.Groups[1].Value)
+}
+$dmaKernelBase = Get-CdxHexConst $dmaPeWriter 'a64pe-kernel-base'
+$dmaPtSize = Get-CdxHexConst $dmaPeWriter 'a64pe-pt-size'
+$dmaFormula = [regex]::Match([System.IO.File]::ReadAllText($dmaPeWriter), 'text-pages\s*=\s*\(text-size \+ rodata-size \+ 4095\) / 4096 \+ \(a64pe-pt-size / 4096\) \+ (\d+)')
+if (-not $dmaFormula.Success) {
+    Write-Host "FAIL: the text-pages formula in $dmaPeWriter no longer matches this check's pattern."
+    Write-Host '      A check whose regex stopped matching has quietly stopped asking. Fix the pattern.'
+    exit 8
+}
+$dmaHeapPages = [int]$dmaFormula.Groups[1].Value
+$dmaRegions = @{}
+foreach ($n in @('vnet-buf-base', 'vnet-rx-region', 'vnet-tx-region', 'vnet-queue-region')) { $dmaRegions[$n] = Get-CdxHexConst $dmaVnet $n }
+foreach ($n in @('vblk-buf-base', 'vblk-queue-region', 'vblk-req-base')) { $dmaRegions[$n] = Get-CdxHexConst $dmaVblk $n }
+# NOT Measure-Object -Minimum: it returns a double, which loses uint64 precision
+# and makes every :X format specifier below invalid.
+$dmaFloor = [uint64](@($dmaRegions.Values | Sort-Object)[0])
+# The PE's sections carry the stub as well as the kernel, so this OVER-states
+# text-size + rodata-size. That is the safe direction: it over-states stack-top
+# and can only fail early, never late. Measured: 77,824 and 75,016 both give 19
+# pages, so the stub's own size does not move the answer.
+$dmaPeOff = [BitConverter]::ToInt32($pe, 0x3C)
+$dmaNSec = [BitConverter]::ToUInt16($pe, $dmaPeOff + 6)
+$dmaSecTab = $dmaPeOff + 24 + [BitConverter]::ToUInt16($pe, $dmaPeOff + 20)
+$dmaPayload = 0
+for ($i = 0; $i -lt $dmaNSec; $i++) { $dmaPayload += [BitConverter]::ToUInt32($pe, $dmaSecTab + $i * 40 + 16) }
+# Codex integer division TRUNCATES and PowerShell's [int] cast ROUNDS, which
+# gives a different page count and a stack-top 4096 bytes out. Floor explicitly.
+$dmaTextPages = [int][Math]::Floor(($dmaPayload + 4095) / 4096) + [int][Math]::Floor($dmaPtSize / 4096) + $dmaHeapPages
+$dmaStackTop = [uint64]$dmaKernelBase + [uint64]$dmaTextPages * 4096
+if ($dmaStackTop -gt $dmaFloor) {
+    Write-Host ''
+    Write-Host 'FAIL: the ARM64 stub allocation now overruns the VirtIO DMA regions.'
+    Write-Host ("  stack-top  0x{0:X}  = a64pe-kernel-base 0x{1:X} + text-pages {2} * 4096" -f $dmaStackTop, $dmaKernelBase, $dmaTextPages)
+    Write-Host ("  DMA floor  0x{0:X}  the lowest VirtioNet/VirtioBlk region" -f $dmaFloor)
+    Write-Host ("  overrun    {0} bytes" -f ($dmaStackTop - $dmaFloor))
+    Write-Host ''
+    Write-Host ("  text-pages is (payload {0} + 4095)/4096 + {1} page-table pages + {2} heap pages." -f $dmaPayload, [int][Math]::Floor($dmaPtSize / 4096), $dmaHeapPages)
+    Write-Host '  A device would DMA over the guest own image or heap, and that is silent:'
+    Write-Host '  it surfaced once as ONE wrong character in a URL path, a clobbered CCE'
+    Write-Host '  table entry. Raise the region constants in codex/os/kernel/VirtioNet.codex'
+    Write-Host '  and VirtioBlk.codex above stack-top, or lower the heap grant in'
+    Write-Host '  codex/plugs/pe/Arm64PeWriter.codex.'
+    exit 8
+}
+Write-Host ("[build-arm64-img] DMA floor ok: stack-top 0x{0:X}, floor 0x{1:X}, {2} bytes clear, {3} heap pages" -f $dmaStackTop, $dmaFloor, ($dmaFloor - $dmaStackTop), $dmaHeapPages)
+
+
 function W8($off, $v) { $img[$off] = [byte]$v }
 function W16($off, $v) { [BitConverter]::GetBytes([ushort]$v).CopyTo($img, $off) }
 function W32($off, $v) { [BitConverter]::GetBytes([int]$v).CopyTo($img, $off) }
@@ -218,6 +292,3 @@ if ($Qcow2) {
     }
     Write-Host "[build-arm64-img] QCOW2: $Qcow2Out ($([Math]::Round((Get-Item $Qcow2Out).Length / 1KB)) KB on disk)"
 }
-
-
-

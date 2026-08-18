@@ -159,17 +159,51 @@ Do not poll-spam: write the file once and wait. If you need to cancel,
 delete your `build-request` before it is granted, or write
 `build-complete` after it is granted.
 
-**Measured 2026-08-16 (val): deleting `build-request` while queued did NOT
-cancel the queue entry.** The request was deleted at about 02:58 after the
-lane stood down from the item it was queued for, and the grant arrived at
-03:17:33 regardless, 19 minutes later, so this is not a poll race. The
-sentence above describes the intent; what actually happens is that a
-withdrawn request is still granted and the token then sits with an agent who
-has nothing to build. **Until the coordinator is fixed, treat the deletion as
-advisory and write `build-complete` the moment an unwanted grant arrives** --
-that path works, and it is what released the token here. If you get a GO for
-a CL you no longer intend to land, do not gate it to be polite: releasing
-immediately is what the queue behind you needs.
+**This was broken and is fixed as of the stable build deployed 2026-08-16
+06:12 (AgentGrid CL 15661).** val measured it that morning: a `build-request`
+deleted at about 02:58 was granted anyway at 03:17:33, 19 minutes later, so
+it was not a poll race -- the queue held a COPY of the request and never
+looked at the file again. The coordinator now re-checks that the file still
+exists at the moment of the grant, drops the entry if it does not, tells you
+it did, and passes the token on. Deleting the file is a real cancel again.
+
+**Write `build-complete` anyway the moment an unwanted grant arrives.** That
+is still the only way out of a grant that has already landed, and it is worth
+knowing on its own: if you get a GO for a CL you no longer intend to land, do
+not gate it to be polite. Releasing immediately is what the queue behind you
+needs.
+
+## How to wait (Damian, 2026-08-17)
+
+Everything AgentGrid and the fleet send you arrives as a line TYPED INTO
+YOUR TERMINAL. A typed line is only read when your session is at its
+prompt. So the rule for waiting, for a token, for a reply, for Damian, is
+one rule: **waiting means your turn has ended and the terminal is at the
+prompt.** Set `status.json` to what you are waiting on, and stop.
+
+What that forbids, each of which has blocked a GO or a message this week:
+
+- **No foreground wait loops.** No `Start-Sleep` polling in a tool call,
+  no `-Wait N` watcher run in the foreground. A tool call that sleeps
+  holds the prompt shut for its whole duration and every typed line
+  queues behind it.
+- **No long foreground commands while queued or waiting.** A gate, a
+  battery, a bed run or a VM boot goes through `run_in_background`, and
+  then the turn ENDS; the completion notification wakes you. If a
+  command must be foreground it is under two minutes.
+- **No open dialog while waiting.** A permission prompt or a question
+  left open eats the next typed line as its answer. If you need Damian,
+  say so in one line and in `status.json`, and end the turn at the plain
+  prompt.
+- **`state` tells the truth.** `WaitingForBuild` when queued,
+  `Idle` when there is nothing to do, `Building` only while a background
+  gate is actually running. `Working` while the terminal sits at a prompt
+  waiting for someone is a false report (rule stated 2026-08-16, restated
+  here because it is the same failure).
+
+The shape of a correct wait: request or send, write `status.json`, end
+the turn. The next thing that happens to you is a typed line or a
+background completion, and either one starts a new turn cleanly.
 
 ## What Happens Next
 
@@ -251,14 +285,30 @@ the same main, and they share one rollup, one token and one queue. Every
 agent racing you is in this file.
 
 **Two halves, deliberately not merged into one "state".** `state`, `task`
-and `claim` are what an agent SAYS. `terminalRunning`, `contextPercent` and
-`lastActivityUtc` are what AgentGrid OBSERVES, off the terminal and the
-Claude Code transcript. A crashed or wedged session goes on saying `Working`
-forever, so anyone assigning work off the self-report alone hands items to
-agents that are not there. **The honest reading of "idle" is a self-reported
-`Idle` OR a `lastActivityUtc` that has not moved in a long time**; the
-second needs no cooperation from the agent and cannot be stale in the
-direction that matters.
+and `claim` are what an agent SAYS. `atRest`, `terminalRunning`,
+`contextPercent` and `lastActivityUtc` are what AgentGrid OBSERVES, off the
+terminal and the Claude Code transcript. A crashed or wedged session goes on
+saying `Working` forever, so anyone assigning work off the self-report alone
+hands items to agents that are not there.
+
+**`atRest` is the field to assign off** (AgentGrid CL 16260). It is true when
+the agent's last turn ENDED, read from `stop_reason` on the last assistant
+record of its transcript: `tool_use` means Claude Code is still working the
+turn, anything else means it is sitting at its prompt. It needs no
+cooperation from the agent and no threshold, so an agent ten minutes into one
+gate run reads as working rather than tripping an inactivity timer. It is
+routinely the opposite of what the agent says -- when this landed, `fester`
+said `Working` and was at rest, and `reek` said `Idle` and was mid-turn.
+
+**It is also the answer to "will a typed line be read right now".** Under
+**How to wait** above, a typed line is only taken in at the prompt; `atRest`
+is exactly that condition, observed rather than promised. A message sent to
+an agent that is not at rest waits for its current turn to finish.
+
+Prefer it to the older reading of "idle", which was a self-reported `Idle` OR
+a `lastActivityUtc` that had not moved in a long time. That still works and
+is still honest, but it cannot tell a long tool call from an ended turn, and
+that is the distinction that decides whether you may interrupt.
 
 (`terminalRunning` is what the AgentGrid instance holding the coordinator
 lock can see. If the terminals were launched from a DIFFERENT instance, it
@@ -485,6 +535,15 @@ not there, you did not send it, and no wording of the file can make that
 false. Watch it leave `outbox/` within a few seconds; if it is still
 sitting in `outbox/`, AgentGrid is not running and nobody got it.
 
+**A message it could not deliver goes to `outbox/failed/` instead, and it
+types you the reason.** The two folders are the whole answer: `sent/` means
+it reached a mailbox, `failed/` means it did not and why. Until AgentGrid
+CL 16276 the archive happened BEFORE the parse and before delivery, so a
+message with a typo'd recipient landed in `sent/` and the one check this
+section tells you to trust said yes to a message nobody received -- the
+same sender-side false confidence the rule was written for. If you are
+reading an old `sent/` from before that build, it does not prove delivery.
+
 **Use that one, because the failure this rule exists for is a SENDER
 failure.** Both agents on 2026-08-14 believed they had answered. Neither
 was wrong about what they wrote; both were wrong about whether it left.
@@ -506,6 +565,50 @@ mimicking the routed naming convention exactly, millisecond field and
 all, and the other not. The rule was written from the second and would
 have called all four of the first routed. A convention two authors
 follow differently decides nothing.
+
+### The message budget (Damian, 2026-08-17)
+
+The pointer rule above was written 2026-08-16 and by the next morning
+messages had grown back into paragraphs, several addressed "for X and Y"
+and sent to the fleet, and progress narration was flowing to the
+commander after every step. Damian's words: *"every fleetwide message is
+a 6x token spend."* A message is typed into the recipient's context and
+read in full, mid-task; a broadcast is that cost times the fleet. So the
+rule now has numbers, and they are the rule.
+
+**Size.** `text` is at most **300 characters** (two short sentences). If
+it needs more, the excess belongs in a CL description, the owning doc, a
+register row or your `status.json`, and the message points there. Never
+argue a case in a message: state the claim, name where the argument is.
+
+**Addressee.** **One agent per message.** A message that starts "for val
+and red" is two messages, or more often one, to whoever must ACT on it;
+the other party reads the CL. `to: fleet` is reserved for the commander
+and for exactly three events: MAIN PINNED, MAIN OPEN, and a claim
+collision that no two agents can settle between themselves. Nobody else
+broadcasts. Answer a broadcast to its sender only.
+
+**Frequency.** An agent sends at most one message per lane event, and the
+events are: **taken** (one line, item and register), **landed** (one
+line, CL number and where the account is), **blocked** (one line, on
+what, on whom), **question** (one, answerable in one line), and
+**correction** (a claim you made was wrong; say which and where the fix
+is). Progress between those events goes in `status.json`, which is read
+by the watcher and costs nobody a context. Do not send: acknowledgements,
+thanks, agreement, restatements of a ruling, what you are about to do
+next, or a reply to a message that asked for none.
+
+**Reply.** Reply only when the message asks for one, and reply to the
+sender. If you disagree with a ruling, one line: "disagree, reasons in
+CL N" or the doc section; the commander reads it there.
+
+**The check.** Before writing to `outbox/`, count: characters under 300,
+one `to`, one of the five events. If any of the three fails, the message
+is not ready.
+
+The commander is bound by all of it, and when an agent is unsure whether
+a thing is a message, a status line or a doc edit, the commander decides;
+ask once, in one line.
 
 ### Broadcasts
 

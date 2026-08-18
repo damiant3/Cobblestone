@@ -338,10 +338,10 @@ Section: Builtin Emitter
     OcBuiltinEmitter { name = "text-compare", emit = \args arities -> "(String.compare " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
     OcBuiltinEmitter { name = "text-contains", emit = \args arities -> "(try ignore (Str.search_forward (Str.regexp_string " & emit-ml-expr (list-at args 1) arities & ") " & emit-ml-expr (list-at args 0) arities & " 0); true with Not_found -> false)" },
     OcBuiltinEmitter { name = "text-length", emit = \args arities -> "(String.length " & emit-ml-expr (list-at args 0) arities & ")" },
-    OcBuiltinEmitter { name = "text-replace", emit = \args arities -> "(Str.global_replace (Str.regexp_string " & emit-ml-expr (list-at args 1) arities & ") " & emit-ml-expr (list-at args 2) arities & " " & emit-ml-expr (list-at args 0) arities & ")" },
-    OcBuiltinEmitter { name = "text-split", emit = \args arities -> "(Str.split (Str.regexp_string " & emit-ml-expr (list-at args 1) arities & ") " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "text-replace", emit = \args arities -> "(_cx_text_replace " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & " " & emit-ml-expr (list-at args 2) arities & ")" },
+    OcBuiltinEmitter { name = "text-split", emit = \args arities -> "(_cx_text_split " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
     OcBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(let _s = " & emit-ml-expr (list-at args 0) arities & " in let _p = " & emit-ml-expr (list-at args 1) arities & " in String.length _p <= String.length _s && String.sub _s 0 (String.length _p) = _p)" },
-    OcBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(int_of_string " & emit-ml-expr (list-at args 0) arities & ")" },
+    OcBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(_cx_text_to_integer " & emit-ml-expr (list-at args 0) arities & ")" },
     OcBuiltinEmitter { name = "write-file", emit = \args arities -> "(let _oc = open_out " & emit-ml-expr (list-at args 0) arities & " in output_string _oc " & emit-ml-expr (list-at args 1) arities & "; close_out _oc)" }
    ]
 
@@ -404,6 +404,20 @@ Section: Chapter Emission
    let arities = build-arity-map (m.defs) 0 []
    in let types-text = emit-ml-type-defs type-defs 0
    in let defs-text = emit-ml-defs (m.defs) 0 arities
-   in types-text & defs-text & "let () = " & ml-sanitize opening-entry-point & " ()\n"
+   in ml-text-builtins & types-text & defs-text & "let () = " & ml-sanitize opening-entry-point & " ()\n"
+
+ The `Str` module is a separate library that has to be linked, and its
+ semantics are not Codex's either: `Str.global_replace` reads backslash-1 in
+ the REPLACEMENT as a group reference, and `Str.split` DROPS empty fields, so
+ "a," split on "," answered one field where Codex answers two.
+ `int_of_string` raises `Failure`. These three use only the standard library
+ and drop the `Str` dependency for the three names that had it.
+
+  ml-text-builtins : Text
+  ml-text-builtins =
+   "let _cx_is_prefix p s i =\n  let pl = String.length p in\n  i + pl <= String.length s && String.sub s i pl = p\n\n"
+   & "let _cx_text_replace s a b =\n  if String.length a = 0 then s\n  else begin\n    let buf = Buffer.create (String.length s) in\n    let i = ref 0 in\n    while !i < String.length s do\n      if _cx_is_prefix a s !i then begin Buffer.add_string buf b; i := !i + String.length a end\n      else begin Buffer.add_char buf s.[!i]; incr i end\n    done;\n    Buffer.contents buf\n  end\n\n"
+   & "let _cx_text_split s sep =\n  if String.length sep = 0 then [s]\n  else begin\n    let acc = ref [] in\n    let start = ref 0 in\n    let i = ref 0 in\n    let n = String.length s in\n    let sl = String.length sep in\n    while !i + sl <= n do\n      if _cx_is_prefix sep s !i then begin\n        acc := String.sub s !start (!i - !start) :: !acc;\n        i := !i + sl;\n        start := !i\n      end else incr i\n    done;\n    acc := String.sub s !start (n - !start) :: !acc;\n    List.rev !acc\n  end\n\n"
+   & "let _cx_text_to_integer s =\n  let n = String.length s in\n  let neg = n > 0 && s.[0] = '-' in\n  let i = ref (if neg then 1 else 0) in\n  let v = ref 0 in\n  while !i < n && s.[!i] >= '0' && s.[!i] <= '9' do\n    v := !v * 10 + (Char.code s.[!i] - 48);\n    incr i\n  done;\n  if neg then (- !v) else !v\n\n"
 
 Page 1

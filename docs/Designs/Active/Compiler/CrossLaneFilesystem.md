@@ -429,6 +429,48 @@ Install a `read-text` handler on the plug lanes, the equivalent of
 declares its own handler get a file read, which is what the original
 register entry asked for.
 
+**DONE on arm64 2026-08-17.** `codex/test/fs-servicer` passes: it writes
+`OK.TXT` and reads it back with no handler of its own, through the
+default servicer onto real virtio hardware. `fs-layer` still passes, so
+the user-handler path is unchanged.
+
+Three pieces, and only the first is the one the step named.
+
+`a64-emit-fs-servicers` (`Arm64Runtime.codex`) emits `__fs-read-servicer`
+and `__fs-write-servicer`, gated on the FileSystem capability bits and
+calling `fat16-servicer-read` / `-write`;
+`a64-emit-seed-fs-handlers` writes them into the op slots at boot.
+**A slot on this lane holds the handler's CODE address, not a closure
+pointer.** `a64-emit-effect-op-call` dereferences once (`ldr` then
+`blr`) and `a64-unwrap-clause-lambda` stores an `adr` of the handler
+body, so x86-64's slot-to-closure-to-code shape does not port: the first
+draft allocated the 16-byte closure x86-64 allocates and faulted at
+`heap-start + 0x10` on the first `read-text`, branching to the closure
+instead of through it.
+
+`ir-emit-roots` needed `fat16-servicer-read` and `fat16-servicer-write`,
+for the reason the note beside that list already gives. Measured rather
+than assumed: with the plug half in and the roots entry out, the two
+calls are unresolved and the guest faults; that is the second time this
+list has fired one increment after its own warning.
+
+`write-file` was a SILENT STUB on this lane -- `Arm64CodeGen2.codex`
+answered a literal 0 for it and claimed it as a builtin, so it never
+reached the handler table, warned nothing, and reported `write False`
+with no disk touched. It is deleted, which is the same judgement the
+block builtins already record: a stub that returns a defined value makes
+a path that cannot work look like one that does. Routing an op with no
+user handler through its slot is guarded by
+`a64-op-has-default-handler`, because the `blr 0` that the bare-name
+guard exists to prevent is still the outcome for any op we install no
+default for.
+
+**The refusal arms are unexercised.** A program that reaches the
+servicer without `cap-filesystem-read` / `-write` should get the empty
+text and False; that is inspected, not measured, because the fixture
+would be a second 16 MB `.disk` sidecar for a test whose subject is one
+branch.
+
 ### Step 5 -- the harness
 
 The committed Renode boards have no block device, so these tests run

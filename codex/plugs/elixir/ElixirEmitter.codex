@@ -132,6 +132,15 @@ Section: Expression Emission
 
   ex-max-depth : Integer = 256
 
+  ex-let-binder : Text, IRExpr -> Text
+  ex-let-binder (name) (val) =
+   if name == "__seq" then when val
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> when rec
+     is IrName (rn) (rty) (rsp) -> rn
+     is otherwise -> name
+    is otherwise -> name
+   else name
+
   emit-ex-expr : IRExpr, List ArityEntry -> Text
   emit-ex-expr (e) (arities) = emit-ex-expr-at e arities 0
 
@@ -148,7 +157,7 @@ Section: Expression Emission
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-ex-binary op l r arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-ex-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ex-expr-at c arities (depth + 1) & ", do: " & emit-ex-expr-at t arities (depth + 1) & ", else: " & emit-ex-expr-at el arities (depth + 1) & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> "(fn -> " & ex-sanitize name & " = " & emit-ex-expr-at val arities (depth + 1) & "; " & emit-ex-expr-at body arities (depth + 1) & " end).()"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(fn -> " & ex-sanitize (ex-let-binder name val) & " = " & emit-ex-expr-at val arities (depth + 1) & "; " & emit-ex-expr-at body arities (depth + 1) & " end).()"
     is IrApply (f) (a) (ty) (sp) -> emit-ex-apply e arities
     is IrLambda (params) (body) (ty) (sp) -> "fn " & emit-ex-lambda-params params 0 & " -> " & emit-ex-expr body arities & " end"
     is IrList (elems) (ty) (sp) -> "[" & emit-ex-list-elems elems 0 arities & "]"
@@ -302,10 +311,10 @@ Section: Builtin Table
    else if idx == 18 then "(case String.compare(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ") do :lt -> -1; :eq -> 0; :gt -> 1 end)"
    else if idx == 19 then "String.contains?(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
    else if idx == 20 then "String.length(" & emit-ex-expr (list-at args 0) arities & ")"
-   else if idx == 21 then "String.replace(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ", " & emit-ex-expr (list-at args 2) arities & ")"
-   else if idx == 22 then "String.split(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 21 then "_cx_text_replace.(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ", " & emit-ex-expr (list-at args 2) arities & ")"
+   else if idx == 22 then "_cx_text_split.(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
    else if idx == 23 then "String.starts_with?(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
-   else if idx == 24 then "String.to_integer(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 24 then "_cx_text_to_integer.(" & emit-ex-expr (list-at args 0) arities & ")"
    else if idx == 25 then "File.write!(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"    else emit-ex-expr (list-at args 0) arities & " ++ [" & emit-ex-expr (list-at args 1) arities & "]"
 
 Section: Apply Emission
@@ -366,6 +375,20 @@ Section: Chapter Emission
    let arities = build-arity-map (m.defs) 0 []
    in let types-text = emit-ex-type-defs type-defs 0
    in let defs-text = emit-ex-defs (m.defs) 0 arities
-   in types-text & defs-text & ex-sanitize opening-entry-point & ".()\n"
+   in ex-text-builtins & types-text & defs-text & ex-sanitize opening-entry-point & ".()\n"
+
+ `String.replace` with an empty pattern inserts the replacement between every
+ character, `String.split` on an empty pattern yields an empty field either
+ side of every grapheme, and `String.to_integer` RAISES ArgumentError on
+ anything that is not wholly numeric. Codex answers the string unchanged, one
+ field, and a leading-digit prefix or 0. These are anonymous functions rather
+ than defs because this plug emits a script, not a module, so every call site
+ spells them with the dot.
+
+  ex-text-builtins : Text
+  ex-text-builtins =
+   "_cx_text_replace = fn s, a, b ->\n  if String.length(a) == 0 do s else String.replace(s, a, b) end\nend\n\n"
+   & "_cx_text_split = fn s, sep ->\n  if String.length(sep) == 0 do [s] else String.split(s, sep) end\nend\n\n"
+   & "_cx_text_to_integer = fn s ->\n  neg = String.starts_with?(s, \"-\")\n  rest = if neg, do: String.slice(s, 1, String.length(s) - 1), else: s\n  digits = rest |> String.to_charlist() |> Enum.take_while(fn c -> c >= ?0 and c <= ?9 end)\n  v = Enum.reduce(digits, 0, fn c, acc -> acc * 10 + (c - ?0) end)\n  if neg, do: -v, else: v\nend\n\n"
 
 Page 1

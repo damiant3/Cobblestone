@@ -342,9 +342,9 @@ Section: Apply Emission
    else if tag == 15 then "(number->string " & emit-scm-expr (list-at args 0) arities & ")"
    else if tag == 16 then "(substring " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & " (+ " & emit-scm-expr (list-at args 1) arities & " " & emit-scm-expr (list-at args 2) arities & "))"
    else if tag == 17 then "(if (string<? " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") -1 (if (string=? " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") 0 1))"
-   else if tag == 18 then "(if (string-contains " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ") #t #f)"
+   else if tag == 18 then "(text-contains " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
    else if tag == 19 then "(string-length " & emit-scm-expr (list-at args 0) arities & ")"
-   else if tag == 20 then "(string->number " & emit-scm-expr (list-at args 0) arities & ")"
+   else if tag == 20 then "(text-to-integer " & emit-scm-expr (list-at args 0) arities & ")"
    else if tag == 21 then "(call-with-output-file " & emit-scm-expr (list-at args 0) arities & " (lambda (p) (write-string " & emit-scm-expr (list-at args 1) arities & " p)))"
    else ""
 
@@ -365,11 +365,25 @@ Section: Chapter Emission
   emit-scheme-chapter : IRChapter, List ATypeDef -> Text
   emit-scheme-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "(import (scheme base) (scheme write) (scheme read))\n\n"
+   in let header = "(import (scheme base) (scheme write) (scheme read))\n\n(define (list-snoc xs v) (append xs (list v)))\n(define (list-push xs v) (list-snoc xs v))\n\n" & scm-text-builtins
    in let types-text = emit-scm-type-defs type-defs 0
    in let defs-text = emit-scm-defs (m.defs) 0 arities
    in let entry = scm-emit-entry (m.defs)
    in header & types-text & defs-text & entry
+
+ `(scheme base)` has string=?, string-length, substring and string-ref and
+ no search or split at all, so these are written out rather than delegated.
+ `string-contains` is SRFI-13 and was being emitted against an import that
+ does not provide it, and `string->number` answers #f rather than a prefix
+ or 0, which the caller then hands to number->string.
+
+  scm-text-builtins : Text
+  scm-text-builtins =
+   "(define (text-starts-with s p)\n  (and (<= (string-length p) (string-length s))\n       (string=? (substring s 0 (string-length p)) p)))\n\n"
+   & "(define (text-split s sep)\n  (if (= (string-length sep) 0)\n      (list s)\n      (let loop ((start 0) (i 0) (acc (list)))\n        (cond ((> i (- (string-length s) (string-length sep)))\n               (reverse (cons (substring s start (string-length s)) acc)))\n              ((string=? (substring s i (+ i (string-length sep))) sep)\n               (loop (+ i (string-length sep)) (+ i (string-length sep))\n                     (cons (substring s start i) acc)))\n              (else (loop start (+ i 1) acc))))))\n\n"
+   & "(define (text-replace s old new)\n  (if (= (string-length old) 0)\n      s\n      (let loop ((i 0) (acc \"\"))\n        (cond ((>= i (string-length s)) acc)\n              ((and (<= (+ i (string-length old)) (string-length s))\n                    (string=? (substring s i (+ i (string-length old))) old))\n               (loop (+ i (string-length old)) (string-append acc new)))\n              (else (loop (+ i 1) (string-append acc (string (string-ref s i)))))))))\n\n"
+   & "(define (text-contains s sub)\n  (let loop ((i 0))\n    (cond ((> (string-length sub) (- (string-length s) i)) (= (string-length sub) 0))\n          ((string=? (substring s i (+ i (string-length sub))) sub) #t)\n          (else (loop (+ i 1))))))\n\n"
+   & "(define (text-to-integer s)\n  (let* ((n (string-length s))\n         (neg (and (> n 0) (char=? (string-ref s 0) #\\-))))\n    (let loop ((i (if neg 1 0)) (v 0))\n      (if (and (< i n) (char>=? (string-ref s i) #\\0) (char<=? (string-ref s i) #\\9))\n          (loop (+ i 1) (+ (* v 10) (- (char->integer (string-ref s i)) 48)))\n          (if neg (- v) v)))))\n\n"
 
   scm-emit-entry : List IRDef -> Text
   scm-emit-entry (defs) = scm-emit-entry-loop defs 0

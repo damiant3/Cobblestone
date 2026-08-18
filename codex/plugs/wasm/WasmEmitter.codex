@@ -820,7 +820,11 @@ Section: Apply Emission
    else if n == "print-line" then wat-emit-print-line ctx (list-at args 0)
    else if n == "show" then wat-emit-show ctx (list-at args 0)
    else if n == "integer-to-text" then "(call $i64_to_text " & emit-wat-expr ctx (list-at args 0) & ")"
-   else if n == "text-to-integer" then emit-wat-expr ctx (list-at args 0)
+   else if n == "text-to-integer" then "(call $cx_text_to_integer " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "text-starts-with" then "(call $cx_text_starts_with " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "text-contains" then "(call $cx_text_contains " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "text-replace" then "(call $cx_text_replace " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
+   else if n == "text-split" then "(call $cx_text_split " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "text-length" then "(i64.extend_i32_u (i32.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")))"
    else if n == "char-at" then "(call $char_at " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "char-to-text" then "(call $char_to_text " & emit-wat-expr ctx (list-at args 0) & ")"
@@ -1182,8 +1186,143 @@ Section: WASI Runtime Helpers
    "      (br $c)))\n" &
    "    (i64.extend_i32_u (local.get $dst)))\n\n"
 
+ Text here is a pointer to `[i32 length][bytes]` and a list is a pointer to
+ `[i32 count][i32 capacity][i64 elements]`, both from `$bump_alloc`. The
+ digits and the minus sign are ASCII, 48 and 45, which is what `$i64_to_text`
+ writes on the way out.
+
+ `$cx_text_match_at` is the one primitive the other four need: whether `sub`
+ occurs in `s` at a byte offset. An EMPTY sub matches everywhere, which is
+ what makes contains answer True and starts-with answer True for one, as the
+ foreword definitions do.
+
+  wat-rt-text-search : Text =
+   "  (func $cx_text_match_at (param $s i64) (param $sub i64) (param $at i32) (result i32)\n" &
+   "    (local $ps i32) (local $pb i32) (local $ls i32) (local $lb i32) (local $k i32)\n" &
+   "    (local.set $ps (i32.wrap_i64 (local.get $s)))\n" &
+   "    (local.set $pb (i32.wrap_i64 (local.get $sub)))\n" &
+   "    (local.set $ls (i32.load (local.get $ps)))\n" &
+   "    (local.set $lb (i32.load (local.get $pb)))\n" &
+   "    (if (i32.gt_s (i32.add (local.get $at) (local.get $lb)) (local.get $ls)) (then (return (i32.const 0))))\n" &
+   "    (local.set $k (i32.const 0))\n" &
+   "    (block $md (loop $mc\n" &
+   "      (br_if $md (i32.ge_s (local.get $k) (local.get $lb)))\n" &
+   "      (if (i32.ne\n" &
+   "        (i32.load8_u (i32.add (i32.add (local.get $ps) (i32.const 4)) (i32.add (local.get $at) (local.get $k))))\n" &
+   "        (i32.load8_u (i32.add (i32.add (local.get $pb) (i32.const 4)) (local.get $k))))\n" &
+   "        (then (return (i32.const 0))))\n" &
+   "      (local.set $k (i32.add (local.get $k) (i32.const 1)))\n" &
+   "      (br $mc)))\n" &
+   "    (i32.const 1))\n\n" &
+   "  (func $cx_text_starts_with (param $s i64) (param $p i64) (result i64)\n" &
+   "    (i64.extend_i32_u (call $cx_text_match_at (local.get $s) (local.get $p) (i32.const 0))))\n\n" &
+   "  (func $cx_text_contains (param $s i64) (param $sub i64) (result i64)\n" &
+   "    (local $ls i32) (local $lb i32) (local $i i32)\n" &
+   "    (local.set $ls (i32.load (i32.wrap_i64 (local.get $s))))\n" &
+   "    (local.set $lb (i32.load (i32.wrap_i64 (local.get $sub))))\n" &
+   "    (local.set $i (i32.const 0))\n" &
+   "    (block $cd (loop $cc\n" &
+   "      (br_if $cd (i32.gt_s (i32.add (local.get $i) (local.get $lb)) (local.get $ls)))\n" &
+   "      (if (call $cx_text_match_at (local.get $s) (local.get $sub) (local.get $i)) (then (return (i64.const 1))))\n" &
+   "      (local.set $i (i32.add (local.get $i) (i32.const 1)))\n" &
+   "      (br $cc)))\n" &
+   "    (i64.const 0))\n\n" &
+   "  (func $cx_text_to_integer (param $s i64) (result i64)\n" &
+   "    (local $p i32) (local $n i32) (local $i i32) (local $neg i32) (local $c i32) (local $v i64)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $s)))\n" &
+   "    (local.set $n (i32.load (local.get $p)))\n" &
+   "    (local.set $i (i32.const 0))\n" &
+   "    (local.set $neg (i32.const 0))\n" &
+   "    (local.set $v (i64.const 0))\n" &
+   "    (if (i32.gt_s (local.get $n) (i32.const 0))\n" &
+   "      (then (if (i32.eq (i32.load8_u (i32.add (local.get $p) (i32.const 4))) (i32.const 45))\n" &
+   "        (then (local.set $neg (i32.const 1)) (local.set $i (i32.const 1))))))\n" &
+   "    (block $td (loop $tc\n" &
+   "      (br_if $td (i32.ge_s (local.get $i) (local.get $n)))\n" &
+   "      (local.set $c (i32.load8_u (i32.add (i32.add (local.get $p) (i32.const 4)) (local.get $i))))\n" &
+   "      (br_if $td (i32.lt_s (local.get $c) (i32.const 48)))\n" &
+   "      (br_if $td (i32.gt_s (local.get $c) (i32.const 57)))\n" &
+   "      (local.set $v (i64.add (i64.mul (local.get $v) (i64.const 10)) (i64.extend_i32_u (i32.sub (local.get $c) (i32.const 48)))))\n" &
+   "      (local.set $i (i32.add (local.get $i) (i32.const 1)))\n" &
+   "      (br $tc)))\n" &
+   "    (if (result i64) (local.get $neg)\n" &
+   "      (then (i64.sub (i64.const 0) (local.get $v)))\n" &
+   "      (else (local.get $v))))\n\n" &
+   "  (func $cx_text_replace (param $s i64) (param $a i64) (param $b i64) (result i64)\n" &
+   "    (local $ps i32) (local $pb i32) (local $ls i32) (local $la i32) (local $lb i32)\n" &
+   "    (local $i i32) (local $w i32) (local $k i32) (local $total i32) (local $out i32)\n" &
+   "    (local.set $ps (i32.wrap_i64 (local.get $s)))\n" &
+   "    (local.set $pb (i32.wrap_i64 (local.get $b)))\n" &
+   "    (local.set $ls (i32.load (local.get $ps)))\n" &
+   "    (local.set $la (i32.load (i32.wrap_i64 (local.get $a))))\n" &
+   "    (local.set $lb (i32.load (local.get $pb)))\n" &
+   "    (if (i32.eqz (local.get $la)) (then (return (local.get $s))))\n" &
+   "    (local.set $total (i32.const 0))\n" &
+   "    (local.set $i (i32.const 0))\n" &
+   "    (block $r1d (loop $r1c\n" &
+   "      (br_if $r1d (i32.ge_s (local.get $i) (local.get $ls)))\n" &
+   "      (if (call $cx_text_match_at (local.get $s) (local.get $a) (local.get $i))\n" &
+   "        (then (local.set $total (i32.add (local.get $total) (local.get $lb)))\n" &
+   "              (local.set $i (i32.add (local.get $i) (local.get $la))))\n" &
+   "        (else (local.set $total (i32.add (local.get $total) (i32.const 1)))\n" &
+   "              (local.set $i (i32.add (local.get $i) (i32.const 1)))))\n" &
+   "      (br $r1c)))\n" &
+   "    (local.set $out (call $bump_alloc (i32.add (local.get $total) (i32.const 4))))\n" &
+   "    (i32.store (local.get $out) (local.get $total))\n" &
+   "    (local.set $w (i32.const 0))\n" &
+   "    (local.set $i (i32.const 0))\n" &
+   "    (block $r2d (loop $r2c\n" &
+   "      (br_if $r2d (i32.ge_s (local.get $i) (local.get $ls)))\n" &
+   "      (if (call $cx_text_match_at (local.get $s) (local.get $a) (local.get $i))\n" &
+   "        (then\n" &
+   "          (local.set $k (i32.const 0))\n" &
+   "          (block $r3d (loop $r3c\n" &
+   "            (br_if $r3d (i32.ge_s (local.get $k) (local.get $lb)))\n" &
+   "            (i32.store8 (i32.add (i32.add (local.get $out) (i32.const 4)) (local.get $w))\n" &
+   "              (i32.load8_u (i32.add (i32.add (local.get $pb) (i32.const 4)) (local.get $k))))\n" &
+   "            (local.set $w (i32.add (local.get $w) (i32.const 1)))\n" &
+   "            (local.set $k (i32.add (local.get $k) (i32.const 1)))\n" &
+   "            (br $r3c)))\n" &
+   "          (local.set $i (i32.add (local.get $i) (local.get $la))))\n" &
+   "        (else\n" &
+   "          (i32.store8 (i32.add (i32.add (local.get $out) (i32.const 4)) (local.get $w))\n" &
+   "            (i32.load8_u (i32.add (i32.add (local.get $ps) (i32.const 4)) (local.get $i))))\n" &
+   "          (local.set $w (i32.add (local.get $w) (i32.const 1)))\n" &
+   "          (local.set $i (i32.add (local.get $i) (i32.const 1)))))\n" &
+   "      (br $r2c)))\n" &
+   "    (i64.extend_i32_u (local.get $out)))\n\n" &
+   "  (func $cx_list_empty (result i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (call $bump_alloc (i32.const 8)))\n" &
+   "    (i32.store (local.get $p) (i32.const 0))\n" &
+   "    (i32.store (i32.add (local.get $p) (i32.const 4)) (i32.const 0))\n" &
+   "    (i64.extend_i32_u (local.get $p)))\n\n" &
+   "  (func $cx_text_split (param $s i64) (param $sep i64) (result i64)\n" &
+   "    (local $ls i32) (local $lsep i32) (local $i i32) (local $start i32) (local $r i64)\n" &
+   "    (local.set $ls (i32.load (i32.wrap_i64 (local.get $s))))\n" &
+   "    (local.set $lsep (i32.load (i32.wrap_i64 (local.get $sep))))\n" &
+   "    (local.set $r (call $cx_list_empty))\n" &
+   "    (if (i32.eqz (local.get $lsep))\n" &
+   "      (then (return (call $list_push (local.get $r) (local.get $s)))))\n" &
+   "    (local.set $start (i32.const 0))\n" &
+   "    (local.set $i (i32.const 0))\n" &
+   "    (block $sd (loop $sc\n" &
+   "      (br_if $sd (i32.gt_s (i32.add (local.get $i) (local.get $lsep)) (local.get $ls)))\n" &
+   "      (if (call $cx_text_match_at (local.get $s) (local.get $sep) (local.get $i))\n" &
+   "        (then\n" &
+   "          (local.set $r (call $list_push (local.get $r)\n" &
+   "            (call $substring (local.get $s) (i64.extend_i32_u (local.get $start))\n" &
+   "              (i64.extend_i32_u (i32.sub (local.get $i) (local.get $start))))))\n" &
+   "          (local.set $i (i32.add (local.get $i) (local.get $lsep)))\n" &
+   "          (local.set $start (local.get $i)))\n" &
+   "        (else (local.set $i (i32.add (local.get $i) (i32.const 1)))))\n" &
+   "      (br $sc)))\n" &
+   "    (call $list_push (local.get $r)\n" &
+   "      (call $substring (local.get $s) (i64.extend_i32_u (local.get $start))\n" &
+   "        (i64.extend_i32_u (i32.sub (local.get $ls) (local.get $start))))))\n\n"
+
   wat-runtime-funcs : Text =
-   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-list-ops & wat-rt-char-text & wat-rt-list-mutate
+   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-list-ops & wat-rt-char-text & wat-rt-list-mutate & wat-rt-text-search
 
 Section: Chapter Emission
 

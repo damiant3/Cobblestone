@@ -156,7 +156,33 @@ Section: Apply and Helpers
   emit-vue-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
    in let func = emit-vue-expr (chain.root) arities indent
-   in func & "(" & emit-vue-apply-args (chain.args) arities indent 0 & ")"
+   in when (chain.root)
+    is IrName (n) (ty) (sp) -> emit-vue-apply-split func (chain.args) (lookup-arity arities n) arities indent
+    is IrLambda (lps) (lbody) (lty) (lsp) -> emit-vue-apply-split ("(" & func & ")") (chain.args) (list-length lps) arities indent
+    is otherwise -> func & "(" & emit-vue-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-vue-apply-split : Text, List IRExpr, Integer, List ArityEntry, Integer -> Text
+  emit-vue-apply-split (func) (args) (ar) (arities) (indent) =
+   if ar > 0 & list-length args > ar
+   then func & "(" & emit-vue-apply-args (list-take args ar) arities indent 0 & ")" & emit-vue-apply-rest (list-drop args ar) arities indent 0
+   else if ar > 0 & list-length args > 0 & list-length args < ar
+   then emit-vue-partial-wrappers 0 (ar - list-length args) & func & "(" & emit-vue-apply-args args arities indent 0 & ", " & emit-vue-partial-params 0 (ar - list-length args) & ")"
+   else func & "(" & emit-vue-apply-args args arities indent 0 & ")"
+
+  emit-vue-partial-wrappers : Integer, Integer -> Text
+  emit-vue-partial-wrappers (i) (count) =
+   if i == count then ""
+   else "(_p" & show i & "_) => " & emit-vue-partial-wrappers (i + 1) count
+
+  emit-vue-partial-params : Integer, Integer -> Text
+  emit-vue-partial-params (i) (count) =
+   if i == count then ""
+   else (if i > 0 then ", " else "") & "_p" & show i & "_" & emit-vue-partial-params (i + 1) count
+
+  emit-vue-apply-rest : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-vue-apply-rest (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else "(" & emit-vue-expr (list-at args i) arities indent & ")" & emit-vue-apply-rest args arities indent (i + 1)
 
   emit-vue-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-vue-apply-args (args) (arities) (indent) (i) =
@@ -295,7 +321,7 @@ Section: Vue SFC Assembly
   emit-vue-chapter : IRChapter, List ATypeDef -> Text
   emit-vue-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): number { return s.length; }\nfunction text_replace(s: string, a: string, b: string): string { return s.split(a).join(b); }\nfunction text_compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs: any[]): number { return xs.length; }\nfunction list_at(xs: any[], i: number): any { return xs[i]; }\nfunction integer_to_text(n: number): string { return String(n); }\nfunction negate(n: number): number { return -n; }\n\n"
+   in let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): number { return s.length; }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs: any[]): number { return xs.length; }\nfunction list_at(xs: any[], i: number): any { return xs[i]; }\nfunction integer_to_text(n: number): string { return String(n); }\nfunction negate(n: number): number { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): number { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
    in let types-text = emit-vue-type-defs type-defs 0
    in let defs-text = emit-vue-defs (m.defs) 0 arities
    in let script = "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue';\n\nconst output = ref<string[]>([]);\n\n" & builtins & types-text & defs-text & "onMounted(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n"

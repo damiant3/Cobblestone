@@ -147,6 +147,31 @@ That is the form behind `Maybe`, `Result` and `List`. Use it as `Box
 Integer`, exactly as the table's `List Integer` and `Maybe Text` are uses
 of types that are already parametric.
 
+### An uppercase type name must exist, and CDX3008 says so
+
+The lowercase rule above has a consequence at the other case. **An
+UPPERCASE name in a type position is a concrete type, so it has to be
+defined in the compilation unit**: declared in this chapter or reachable
+through a `cites`. If it is not, the compiler refuses it with `CDX3008
+UndefinedTypeName`. Lowercase names are type variables and are never
+checked this way, so the two cases cannot be confused.
+
+Until 2026-08-17 nothing checked this. `CDX3002` covers a misspelled VALUE
+name, but it is raised while walking expressions and an annotation is type
+syntax that never enters that walk, so a misspelled TYPE name compiled
+clean and the program ran and answered correctly around it. What made the
+silence expensive is that the compiler fabricated an opaque type for the
+unknown name, and **field access on an opaque type checks against nothing**,
+so a wrong field name behind a wrong type name was invisible too. The first
+sweep with the check on found three such definitions in shipped apps, and
+one of them had exactly that second defect hiding under the first.
+
+Two traps worth knowing, both of which are legal and are NOT refused. A
+chapter name is not a type name: `cites Diagram chapter DiagramModel` makes
+the chapter's types reachable, and the type is whatever that chapter
+declares, not `DiagramModel`. And a type used by a sibling chapter is not
+automatically yours; the cite is what puts it in your unit.
+
 ### Applying a function that has type variables
 
 At a call, each of the callee's type variables is fixed by matching its
@@ -1768,6 +1793,19 @@ RISC-V), at any offset, even or odd. Before that the only definitions were
 virtio registers and which put an odd-offset store two bytes early
 (`codex/test/poke16-width` is the arm; its `odd-bytes` line is what the
 old definition got wrong).
+
+**Never `__heap-restore` around a send.** The receive-side pairs
+throughout `codex/os/net/NetIO.codex` are safe because a polled frame that
+misses is discarded, but a SEND retains its chunk in the retransmit queue
+until an ACK prunes it. A restore taken once the send call returns hands
+the network stack a pointer into rewound heap, which the next chunk then
+overwrites. The `img` plug did exactly this and died at `!EXC=0e` before
+delivering a byte, in two different places on two different paths
+(`__list_concat_many` under `tcp-with-checksum` on the send path,
+`net-rexmit-prune` under `net-receive-segment` on the ACK path) -- neither
+of them an os/net defect, both of them os/net walking memory the caller had
+freed under it. The retention is invisible at the call site, which is why
+this is written down rather than left to be read off the code.
 
 **`show` vs `integer-to-text`.** Both convert Integer to Text. `show`
 is the standard builtin. Do not write `toString`, `str`, `to-string`.

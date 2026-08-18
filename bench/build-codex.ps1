@@ -2,8 +2,17 @@
 # Then run each in codex-vm to verify correctness.
 #
 # Output: bench/build-output/codex/<name>/<name>.cdx, .map, result.txt
+#         bench/build-output/codex/kernel.txt (the compiler used, and its digest)
+#
+# -Kernel defaults to seed/Codex.cdx, the shipping seed. It is passed to
+# compile.ps1 explicitly because compile.ps1's own default,
+# build-output/bare-metal/Codex.cdx, holds whichever kernel ran LAST
+# (OperatorsManual, "Pass -Kernel when you do") and a benchmark number
+# taken against it is a number against an unknown compiler.
 [CmdletBinding()]
-param()
+param(
+    [string]$Kernel = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -18,14 +27,13 @@ $VmBin     = Join-Path $Repo 'tools' 'codex-vm.exe'
 if (-not (Test-Path $Compile)) { Write-Error "compile.ps1 not found at $Compile"; exit 1 }
 if (-not (Test-Path $VmBin))   { Write-Error "codex-vm.exe not found at $VmBin"; exit 1 }
 
-$Stage0 = Join-Path $Repo 'build-output' 'bare-metal' 'Codex.cdx'
-if (-not (Test-Path $Stage0)) {
-    $seed = Join-Path $Repo 'seed' 'Codex.cdx'
-    if (-not (Test-Path $seed)) { Write-Error "No Codex.cdx found in build-output or seed"; exit 1 }
-    New-Item -ItemType Directory -Force -Path (Split-Path $Stage0) | Out-Null
-    Copy-Item $seed $Stage0
-    Write-Host "  Copied seed/Codex.cdx -> build-output/bare-metal/Codex.cdx"
-}
+if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed' 'Codex.cdx' }
+if (-not (Test-Path $Kernel)) { Write-Error "kernel not found at $Kernel"; exit 1 }
+$Kernel = (Resolve-Path $Kernel).Path
+$kernelHash = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)
+Write-Host "  kernel: $Kernel [$kernelHash]"
+New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
+"$Kernel [$kernelHash]" | Out-File -FilePath (Join-Path $OutRoot 'kernel.txt') -Encoding UTF8
 
 $sources = Get-ChildItem -Path $SrcDir -Filter '*.codex'
 if ($sources.Count -eq 0) { Write-Host 'No .codex files found'; exit 0 }
@@ -40,7 +48,7 @@ foreach ($src in $sources) {
     $log = Join-Path $outDir 'build.log'
 
     Write-Host "  [compile] $name"
-    & pwsh -NoProfile -File $Compile -Src $src.FullName -Out $cdx -Log $log
+    & pwsh -NoProfile -File $Compile -Src $src.FullName -Out $cdx -Log $log -Kernel $Kernel
     if ($LASTEXITCODE -ne 0) {
         Write-Host "    FAIL (exit $LASTEXITCODE)"
         if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Host "    $_" } }

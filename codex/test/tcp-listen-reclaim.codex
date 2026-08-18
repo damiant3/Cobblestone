@@ -33,6 +33,20 @@ Section: Fixture
     in let closed = net-close (claimed.session)
     in (net-listen (closed.session)).session
 
+ The arm above closes from SYN_RECEIVED, where EvClose reached CLOSED and a
+ re-listen out of CLOSED always worked. A SERVER NEVER CLOSES FROM THERE: it
+ completes the handshake, answers, and closes from ESTABLISHED, which lands
+ in FIN_WAIT_1. Everything below drives that path, and the whole file passed
+ without it while the ARM64 web server served exactly one request per boot.
+
+  established-session : NetSession =
+    let claimed = net-receive-segment fresh-listener (syn-from caller-a-port)
+    in (net-receive-segment (claimed.session) (ack-from caller-a-port)).session
+
+  after-established-close : NetSession =
+    let closed = net-close established-session
+    in (net-listen (closed.session)).session
+
 Section: Tests
 
   test-fresh-takes-any : Text =
@@ -59,6 +73,28 @@ Section: Tests
     let taken = net-receive-segment after-one-caller (syn-from caller-b-port)
     in "second-caller-claims=" & show ((taken.session).conn.remote-port)
 
+  test-established-reached : Text =
+    "established-state=" & tcp-state-name (established-session.conn.state)
+
+  test-closing-state : Text =
+    "closing-state=" & tcp-state-name ((net-close established-session).session.conn.state)
+
+  test-relisten-after-established : Text =
+    "relisten-after-established=" & tcp-state-name (after-established-close.conn.state)
+
+  test-relisten-after-established-port : Text =
+    "relisten-after-established-port=" & show (after-established-close.conn.remote-port)
+
+  test-third-caller-admitted : Text =
+    "third-caller-admitted=" & show-bool (net-session-owns-segment after-established-close (syn-from caller-b-port))
+
+  test-third-caller-claims : Text =
+    let taken = net-receive-segment after-established-close (syn-from caller-b-port)
+    in "third-caller-claims=" & show ((taken.session).conn.remote-port)
+
+  test-rexmit-retired : Text =
+    "rexmit-after-relisten=" & show (list-length (after-established-close.rexmit-queue))
+
   opening : [Console] Nothing = act
     print-line-uni test-fresh-takes-any
     print-line-uni test-claimed-port
@@ -67,4 +103,11 @@ Section: Tests
     print-line-uni test-relisten-port
     print-line-uni test-second-caller-admitted
     print-line-uni test-second-caller-claims
+    print-line-uni test-established-reached
+    print-line-uni test-closing-state
+    print-line-uni test-relisten-after-established
+    print-line-uni test-relisten-after-established-port
+    print-line-uni test-third-caller-admitted
+    print-line-uni test-third-caller-claims
+    print-line-uni test-rexmit-retired
   end

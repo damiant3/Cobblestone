@@ -17,6 +17,7 @@ $ErrorActionPreference = 'Stop'
 $BenchDir = $PSScriptRoot
 $SrcDir   = Join-Path $BenchDir 'codex'
 $Repo     = Split-Path $BenchDir
+. (Join-Path $Repo 'build' 'vm-config.ps1')
 
 function Safe-FileName($Name) {
     return ($Name -replace '[<>:"/\\|?*]', '_')
@@ -51,12 +52,12 @@ function Parse-WireProtocol {
     $off = $codeStart + $codeLen + $dataLen
     for ($i = 0; $i -lt $funcCount; $i++) {
         $nameLen = [BitConverter]::ToInt16($Wire, $off)
-        $chars = [char[]]::new($nameLen)
-        for ($ci = 0; $ci -lt $nameLen; $ci++) {
-            $chars[$ci] = [char]$Wire[$off + 2 + $ci]
-        }
+        # The wire's names are CCE, not ASCII (build/cce-grep.ps1 says why a
+        # byte-per-char read of them "works" and is wrong): decode them.
+        $nameBytes = [byte[]]::new($nameLen)
+        [Array]::Copy($Wire, $off + 2, $nameBytes, 0, $nameLen)
         $funcOff = [BitConverter]::ToInt32($Wire, $off + 2 + $nameLen)
-        [void]$entries.Add(@{ Name = [string]::new($chars); Offset = $funcOff })
+        [void]$entries.Add(@{ Name = (ConvertFrom-CceBytes $nameBytes); Offset = $funcOff })
         $off += 2 + $nameLen + 4
     }
 
@@ -104,6 +105,18 @@ $archs = @(
 
 $sources = Get-ChildItem -Path $SrcDir -Filter '*.codex'
 if ($sources.Count -eq 0) { Write-Host 'No .codex files found'; exit 0 }
+
+# The plug compile scripts take compile.ps1's default kernel,
+# build-output/bare-metal/Codex.cdx, which holds whichever kernel ran LAST
+# (OperatorsManual, "Pass -Kernel when you do"). Record what it was so the
+# report can say which compiler produced its numbers.
+$Stage0 = Join-Path $Repo 'build-output' 'bare-metal' 'Codex.cdx'
+if (Test-Path $Stage0) {
+    $kernelHash = (Get-FileHash -Algorithm SHA256 $Stage0).Hash.Substring(0, 16)
+    Write-Host "  kernel: $Stage0 [$kernelHash]"
+    New-Item -ItemType Directory -Force -Path (Join-Path $BenchDir 'build-output') | Out-Null
+    "$Stage0 [$kernelHash]" | Out-File -FilePath (Join-Path $BenchDir 'build-output' 'codex-cross-kernel.txt') -Encoding UTF8
+}
 
 $failed = 0
 foreach ($arch in $archs) {

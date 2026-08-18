@@ -139,10 +139,10 @@ Section: Builtin Dispatch
    KtBuiltinEmitter { name = "text-compare", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).compareTo(" & emit-kt-expr (list-at args 1) arities & " as String)" },
    KtBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).contains(" & emit-kt-expr (list-at args 1) arities & " as String)" },
    KtBuiltinEmitter { name = "text-length", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).length" },
-   KtBuiltinEmitter { name = "text-replace", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).replace(" & emit-kt-expr (list-at args 1) arities & " as String, " & emit-kt-expr (list-at args 2) arities & " as String)" },
-   KtBuiltinEmitter { name = "text-split", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).split(" & emit-kt-expr (list-at args 1) arities & " as String)" },
+   KtBuiltinEmitter { name = "text-replace", emit = \args arities -> "_cx_text_replace(" & emit-kt-expr (list-at args 0) arities & " as String, " & emit-kt-expr (list-at args 1) arities & " as String, " & emit-kt-expr (list-at args 2) arities & " as String)" },
+   KtBuiltinEmitter { name = "text-split", emit = \args arities -> "_cx_text_split(" & emit-kt-expr (list-at args 0) arities & " as String, " & emit-kt-expr (list-at args 1) arities & " as String)" },
    KtBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).startsWith(" & emit-kt-expr (list-at args 1) arities & " as String)" },
-   KtBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).toInt()" },
+   KtBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "_cx_text_to_integer(" & emit-kt-expr (list-at args 0) arities & " as String)" },
    KtBuiltinEmitter { name = "write-file", emit = \args arities -> "java.io.File(" & emit-kt-expr (list-at args 0) arities & " as String).writeText(" & emit-kt-expr (list-at args 1) arities & " as String)" }
   ]
 
@@ -412,7 +412,18 @@ Section: Chapter Emission
    let arities = build-arity-map (m.defs) 0 []
    in let types-text = emit-kt-type-defs type-defs 0
    in let defs-text = emit-kt-defs (m.defs) 0 arities
-   in types-text & defs-text & "fun main() {\n  " & kt-sanitize opening-entry-point & "()\n}\n"
+   in kt-text-builtins & types-text & defs-text & "fun main() {\n  " & kt-sanitize opening-entry-point & "()\n}\n"
+
+ Kotlin's `replace` inserts between every character when the needle is empty
+ and `toInt` throws on anything that is not wholly numeric, so neither is the
+ identity Codex specifies. `split(String)` is a literal separator and keeps
+ trailing empties, so only the empty case needs the guard.
+
+  kt-text-builtins : Text
+  kt-text-builtins =
+   "fun _cx_text_replace(s: String, a: String, b: String): String = if (a.isEmpty()) s else s.replace(a, b)\n"
+   & "fun _cx_text_split(s: String, sep: String): List<String> = if (sep.isEmpty()) listOf(s) else s.split(sep)\n"
+   & "fun _cx_text_to_integer(s: String): Int { var i = 0; var neg = false; if (s.isNotEmpty() && s[0] == '-') { neg = true; i = 1 }; var v = 0; while (i < s.length && s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++ }; return if (neg) -v else v }\n\n"
 
   emit-kt-tup-binds : List IRPat, Integer -> Text
   emit-kt-tup-binds (subs) (i) =

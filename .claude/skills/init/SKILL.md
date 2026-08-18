@@ -142,6 +142,17 @@ stale `build-grant` means you may still hold the token (write
 `build-request` you no longer intend. If `.agentgrid` does not exist,
 AgentGrid is not managing this workspace -- skip.
 
+**Fleet messages are budgeted (Damian, 2026-08-17), and this binds from
+your first message of the session:** at most 300 characters, ONE
+addressee, one message per event (taken, landed, blocked, question,
+correction), reply only when asked, pointers not contents. `to: fleet` is
+the commander's alone (MAIN PINNED, MAIN OPEN, claim collision); every
+fleet-wide message costs six agents' context. And never wait in the CLI
+with a foreground loop: end your turn at the prompt so coordinator and
+agent messages can arrive. The full rules are
+`docs/Agents/CoordinationProtocol.md`, "The message budget" and "How to
+wait".
+
 ## Step 9 -- Report
 
 - **Agent name** and working directory

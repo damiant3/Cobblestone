@@ -61,8 +61,9 @@ $listener.Start()
 
 # -- Boot plug CDX ---------------------------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
+$consoleFile = [System.IO.Path]::GetTempFileName()
 try {
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless', '-output', $consoleFile) `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {
@@ -97,21 +98,70 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
     $tcpStream.ReadTimeout = 600000
     $allBytes = [System.Collections.Generic.List[byte]]::new(1048576)
     $readBuf = [byte[]]::new(65536)
+    $recvAborted = $false
+    $recvError = ''
     try {
         while ($true) {
             $n = $tcpStream.Read($readBuf, 0, $readBuf.Length)
             if ($n -le 0) { break }
             for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
         }
-    } catch {}
+    } catch {
+        # A read timeout and a connection reset are NOT a clean end of stream.
+        # This was a bare catch {}, so a 16 MB image that stopped arriving
+        # half way through was indistinguishable from one that all arrived:
+        # the partial buffer was written out and the run reported OK.
+        $recvAborted = $true
+        $recvError = $_.Exception.Message
+    }
     [System.IO.File]::WriteAllBytes($Out, $allBytes.ToArray())
-    Write-Host "[img-run] OK: $Out ($($allBytes.Count) bytes)"
-
     $tcpClient.Close()
+
+    # The guest says TRUNCATED sent= on a refused send and then closes cleanly,
+    # so the read loop above ends normally and the image is short with nothing
+    # to show for it. codex-vm dumps its output ring to -output ON EXIT, so the
+    # wait is load-bearing: without it this greps a file the console has not
+    # reached yet.
+    if ($proc -and -not $proc.HasExited) { $proc.WaitForExit(20000) }
+    $truncHit = @()
+    if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }
+    if ($truncHit.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug could not send the whole image -- $($truncHit[0].Line.Trim())")
+        exit 7
+    }
+    if ($recvAborted) {
+        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.")
+        exit 8
+    }
+
+    # The guest STATES the length it meant to send, and this harness already
+    # captures the console for the grep above, so the one number that can
+    # refuse a silent truncation was being printed and thrown away. Measured
+    # 2026-08-17: two runs in four came back short with a clean EOF, the
+    # guest reporting OK, and nothing here able to notice.
+    $guestImg = -1
+    $guestSent = -1
+    if (Test-Path $consoleFile) {
+        $okHit = @(Select-String -Path $consoleFile -Pattern 'OK img=(\d+) sent=(\d+)')
+        if ($okHit.Count -gt 0) {
+            $m = [regex]::Match($okHit[0].Line, 'OK img=(\d+) sent=(\d+)')
+            $guestImg = [int64]$m.Groups[1].Value
+            $guestSent = [int64]$m.Groups[2].Value
+        }
+    }
+    if ($guestImg -ge 0) {
+        Write-Host "[img-run] guest built $guestImg, guest sent $guestSent, host received $($allBytes.Count)"
+        if ($guestSent -ne $guestImg -or $allBytes.Count -ne $guestImg) {
+            [Console]::Error.WriteLine("FAIL: byte counts disagree -- guest built $guestImg, guest sent $guestSent, host received $($allBytes.Count).")
+            exit 9
+        }
+    }
+    Write-Host "[img-run] OK: $Out ($($allBytes.Count) bytes)"
 
 } finally {
     if ($proc -and -not $proc.HasExited) {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue
 }

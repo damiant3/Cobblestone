@@ -64,9 +64,10 @@ if (-not (Test-Path $IrFile)) {
 
 # -- Phase 2: IR text -> report via plug ------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
+$consoleFile = [System.IO.Path]::GetTempFileName()
 try {
     $proc = Start-Process -FilePath $script:CodexVmBin `
-        -ArgumentList @('-kernel', $PlugCdx, '-mem', "$Mem", '-headless') `
+        -ArgumentList @('-kernel', $PlugCdx, '-mem', "$Mem", '-headless', '-output', $consoleFile) `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9134)
     $listener.Start()
@@ -112,6 +113,18 @@ try {
         [Console]::Error.WriteLine("FAIL: response truncated after $($resp.Length) bytes -- the plug was still sending")
         exit 9
     }
+    # The check above sees an ABRUPT disconnect only. A send the plug refuses
+    # cleanly closes the socket normally, so the guest says TRUNCATED sent= on
+    # its console and nothing here would hear it without -output. codex-vm
+    # dumps that ring ON EXIT, so the wait is load-bearing, not politeness:
+    # measured 2026-08-17 the file holds 1 byte before it and the line after.
+    if ($proc -and -not $proc.HasExited) { $proc.WaitForExit(20000) }
+    $truncHit = @()
+    if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }
+    if ($truncHit.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug could not send its whole report -- $($truncHit[0].Line.Trim())")
+        exit 9
+    }
     $text = [System.Text.Encoding]::ASCII.GetString($resp.ToArray())
     Write-Host "[recheck] $Src  (passes=$(if ($Passes) { $Passes } else { 'default' }))"
     Write-Host $text
@@ -121,4 +134,5 @@ try {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue
 }

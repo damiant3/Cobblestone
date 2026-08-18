@@ -318,7 +318,7 @@ Section: Builtin Table
    else if idx == 19 then "@([" & emit-oc-expr (list-at args 0) arities & " containsString:" & emit-oc-expr (list-at args 1) arities & "])"
    else if idx == 20 then "@([" & emit-oc-expr (list-at args 0) arities & " length])"
    else if idx == 21 then "[" & emit-oc-expr (list-at args 0) arities & " stringByReplacingOccurrencesOfString:" & emit-oc-expr (list-at args 1) arities & " withString:" & emit-oc-expr (list-at args 2) arities & "]"
-   else if idx == 22 then "[" & emit-oc-expr (list-at args 0) arities & " componentsSeparatedByString:" & emit-oc-expr (list-at args 1) arities & "]"
+   else if idx == 22 then "_cxTextSplit(" & emit-oc-expr (list-at args 0) arities & ", " & emit-oc-expr (list-at args 1) arities & ")"
    else if idx == 23 then "@([" & emit-oc-expr (list-at args 0) arities & " hasPrefix:" & emit-oc-expr (list-at args 1) arities & "])"
    else if idx == 24 then "@([" & emit-oc-expr (list-at args 0) arities & " integerValue])"
    else if idx == 25 then "[" & emit-oc-expr (list-at args 1) arities & " writeToFile:" & emit-oc-expr (list-at args 0) arities & " atomically:YES encoding:NSUTF8StringEncoding error:nil]"    else "[" & emit-oc-expr (list-at args 0) arities & " arrayByAddingObject:" & emit-oc-expr (list-at args 1) arities & "]"
@@ -379,9 +379,20 @@ Section: Chapter Emission
   emit-objc-chapter : IRChapter, List ATypeDef -> Text
   emit-objc-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "#import <Foundation/Foundation.h>\n\n"
+   in let header = "#import <Foundation/Foundation.h>\n\n" & oc-text-builtins
    in let types-text = emit-oc-type-defs type-defs 0
    in let defs-text = emit-oc-defs (m.defs) 0 arities
    in header & types-text & defs-text & "int main(int argc, const char *argv[]) {\n  @autoreleasepool {\n    " & oc-sanitize opening-entry-point & "();\n  }\n  return 0;\n}\n"
+
+ `componentsSeparatedByString:` RAISES NSInvalidArgumentException on an empty
+ separator, where Codex answers the whole string as one field. The other four
+ arms already match: `stringByReplacingOccurrencesOfString:` answers the
+ string unchanged for an empty needle, `containsString:` and `hasPrefix:`
+ answer YES for an empty argument, and `integerValue` stops at the first
+ non-digit exactly as `parse-decimal` does.
+
+  oc-text-builtins : Text
+  oc-text-builtins =
+   "static NSArray *_cxTextSplit(NSString *s, NSString *sep) {\n  if ([sep length] == 0) { return @[s]; }\n  return [s componentsSeparatedByString:sep];\n}\n\n"
 
 Page 1

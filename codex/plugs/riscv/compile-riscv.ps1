@@ -232,7 +232,47 @@ for ($mi = 0; $mi -lt $funcEntries.Count; $mi++) {
 [System.IO.File]::WriteAllLines($mapFile, $mapLines)
 
 
+# The remap window. rv-remap-addr-insns adds 0x80000000 to any address whose
+# high bits are clear, so a test written against the x86-64 low map reads its
+# cells out of RAM. That window lands at [0x80000000, 0x80000000 + threshold),
+# which is exactly where this image is loaded, so an image that grows past the
+# threshold overlaps the addresses the remap hands out and a low peek starts
+# reading the guest's own code.
+#
+# The threshold is READ from rv-remap-addr-insns rather than restated: it is
+# the shift the remap tests, so 24 means 16 MB. An unmatched pattern is a
+# FAILURE, not a skip -- a check whose regex stopped matching has quietly
+# stopped asking (build/build-arm64-img.ps1 states the same rule for the DMA
+# floor, and check-doc-counts.ps1 before it).
+$rvRuntime = Join-Path $PSScriptRoot 'RiscVRuntime.codex'
+if (-not (Test-Path -PathType Leaf $rvRuntime)) {
+    Write-Host "FAIL: remap window check cannot read $rvRuntime"
+    exit 8
+}
+$rvShiftM = [regex]::Match([System.IO.File]::ReadAllText($rvRuntime), 'rv-srli rv-t0 addr-reg (\d+)')
+if (-not $rvShiftM.Success) {
+    Write-Host "FAIL: the remap shift in $rvRuntime no longer matches this check's pattern."
+    Write-Host '      A check whose regex stopped matching has quietly stopped asking. Fix the pattern.'
+    exit 8
+}
+$rvRemapWindow = [uint64]1 -shl [int]$rvShiftM.Groups[1].Value
+if ([uint64]$flatData.Length -ge $rvRemapWindow) {
+    Write-Host ''
+    Write-Host 'FAIL: the RISC-V image has grown into the address-remap window.'
+    Write-Host ("  image      {0} bytes, loaded at 0x{1:X}" -f $flatData.Length, $loadAddr)
+    Write-Host ("  remap window 0x{0:X} bytes (rv-remap-addr-insns shifts by {1})" -f $rvRemapWindow, $rvShiftM.Groups[1].Value)
+    Write-Host ("  overrun    {0} bytes" -f ([uint64]$flatData.Length - $rvRemapWindow))
+    Write-Host ''
+    Write-Host '  Every address below the window is remapped to 0x80000000 + addr, which is'
+    Write-Host '  now inside this image: a low peek reads the guest own code instead of the'
+    Write-Host '  cell it asked for, silently. Raise the shift in rv-remap-addr-insns and the'
+    Write-Host '  matching rule in docs/Designs/Done/Compiler/RiscVProcessKernel.md, or shrink'
+    Write-Host '  the image.'
+    exit 8
+}
+
 $sz = (Get-Item $Out).Length
+Write-Host ("[riscv-compile] Remap window ok: image {0} bytes, window 0x{1:X}, {2} bytes clear" -f $flatData.Length, $rvRemapWindow, ($rvRemapWindow - [uint64]$flatData.Length))
 Write-Host "[riscv-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')))"
 Write-Host "[riscv-compile] Flat: $flatOut ($($flatData.Length) bytes)"
 Write-Host "[riscv-compile] Map: $mapFile ($($funcEntries.Count) functions)"

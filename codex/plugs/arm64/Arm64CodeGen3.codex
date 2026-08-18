@@ -1586,10 +1586,11 @@ Section: Module Emission
   a64-emit-module : A64State, IRChapter, List ATypeDef, List Text, Boolean -> A64State
   a64-emit-module (st) (chapter) (tdefs) (eff-ops) (smp) =
    let addrs = a64-assign-effect-op-addrs eff-ops 0 (list-length eff-ops) []
-   in let htb = if list-length eff-ops > 0 then #40100000 else 0
+   in let htb = if list-length eff-ops > 0 then a64-effect-op-table-base else 0
    in let new-extra = A64Extra { effect-op-addrs = addrs, handler-table-base = htb, type-defs = tdefs, learned-fields = [], wcet-reports = [], state-local = 0 - 1, smp-boot = smp, runtime-funcs = 0, boot-cap-mask = pm-opening-cap-mask (chapter.defs), boot-fs-scope = pm-opening-fs-scope (chapter.defs), boot-net-scope = pm-opening-net-scope (chapter.defs) }
    in let st1 = __record-set st "extra" new-extra
-   in let st2 = a64-emit-runtime st1
+   in let st1r = if list-length eff-ops > a64-effect-op-slots then a64-add-shadow-warning st1 (a64-effect-op-overrun (list-length eff-ops)) else st1
+   in let st2 = a64-emit-runtime st1r
    in let ex2 = __record-set (st2.extra) "runtime-funcs" (list-length (st2.func-names))
    in let st2b = __record-set st2 "extra" ex2
    in let st3 = a64-emit-all-defs st2b (chapter.defs) 0
@@ -1599,10 +1600,33 @@ Section: Module Emission
    in let st6 = a64-patch-rodata st5
    in if a64-disasm-enabled then a64-disasm-append st6 else st6
 
+ The ELF's load base is not a home for this table. The image loads at
+ #40100080, not #40100000: measured 2026-08-17 from the program header of
+ test-output-cross/arm64/fs-servicer.elf, one PT_LOAD with vaddr #40100080
+ and entry #40100880, the #80 being the header the loader maps with the
+ image. A table based at #40100000 therefore has only that 128-byte hole,
+ which holds exactly 16 eight-byte slots, and slot 16 is the first
+ instruction of the loaded program.
+
+ #40020000 is clear of the whole fixed map on this lane, measured
+ 2026-08-16 and re-read 2026-08-17: the try-fail flag at #40000010, the
+ process table and its neighbours in [#40005000, #40006010), the virtio
+ rings in one 16 KB span from #40010000, then nothing until the ELF at
+ #40100000. That leaves #E0000 bytes of clearance above the table, of
+ which the ceiling below spends 8 KB. It sits below a64-heap-start
+ (#40202000) and below the image, so neither of those moves.
+
+  a64-effect-op-table-base : Integer = #40020000
+  a64-effect-op-slots : Integer = 1024
+
+  a64-effect-op-overrun : Integer -> Text
+  a64-effect-op-overrun (n) =
+   "[UNSUPPORTED] effect-op table: " & show n & " effect operations exceed the " & show a64-effect-op-slots & " slots reserved for it (refused rather than overrunning the table)"
+
   a64-assign-effect-op-addrs : List Text, Integer, Integer, List A64EffectOpAddr -> List A64EffectOpAddr
   a64-assign-effect-op-addrs (names) (i) (len) (acc) =
    if i >= len then acc
-   else a64-assign-effect-op-addrs names (i + 1) len (list-push acc (A64EffectOpAddr { eoa-name = list-at names i, eoa-addr = #40100000 + i * 8 }))
+   else a64-assign-effect-op-addrs names (i + 1) len (list-push acc (A64EffectOpAddr { eoa-name = list-at names i, eoa-addr = a64-effect-op-table-base + i * 8 }))
 
 Section: Effect Handler Emission
 

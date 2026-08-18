@@ -325,11 +325,34 @@ Section: Reliability Timers
     if list-length q == 0 then set-rexmit s q 0 0
     else set-rexmit s q (net-rto-base s) 0
 
+ A LISTENER IS CONSTRUCTED, NOT TRANSITIONED, and until 2026-08-17 this
+ stepped the existing connection instead. A server closing from ESTABLISHED
+ is in FIN_WAIT_1, RFC 793 has no arc from there to LISTEN, so the step was
+ a no-op and the socket that had served one caller could never take another:
+ accept never saw ESTABLISHED again and every later request reported
+ no-conn.
+
+ What is given up is the tail of the close, and only that. The response and
+ the FIN are already on the wire when this runs -- net-close puts the FIN in
+ the outbox and the caller flushes it before looping -- so the peer has
+ everything it was owed. The wait for its FIN-ACK is ABANDONED rather than
+ completed, which is a deliberate deviation from RFC 793 section 3.5: this
+ stack serves one connection at a time, and holding the socket in FIN_WAIT_2
+ to be polite costs it every subsequent caller.
+
+ Retiring the rexmit queue is part of that abandonment and not tidying.
+ net-close arms retransmission for the FIN and `set-conn` alone would leave
+ it queued against a connection that no longer exists, where two things
+ follow: `net-rexmit-full` can refuse the next response's send, and the
+ give-up ladder ends in TcpClosed, which would kill the listener this
+ function just built.
+
   net-listen : NetSession -> NetResult
   net-listen (sess) =
-    let step = tcp-step (sess.conn) EvListen
-    in let s1 = set-conn sess (step.conn)
-    in NetResult { session = s1, output = "listening", data = [] }
+    let s1 = set-conn sess (tcp-fresh-listener (sess.conn))
+    in let s2 = set-rexmit s1 [] 0 0
+    in let s3 = set-close-timer s2 0
+    in NetResult { session = s3, output = "listening", data = [] }
 
   net-connect : NetSession -> NetResult
   net-connect (sess) =

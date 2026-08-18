@@ -1664,12 +1664,6 @@ Section: Self-Type-Table Emission
    else let f = list-at fields i
    in record-field-sort-keys fields (i + 1) (list-push acc (field-sort-key f))
 
-  field-local-names : List FieldLocal, Integer, List Text -> List Text
-  field-local-names (fls) (i) (acc) =
-   if i == list-length fls then acc
-   else let fl = list-at fls i
-   in field-local-names fls (i + 1) (list-push acc (fl.name))
-
   LayoutResult = record {
    offsets : List Integer,
    byte-size : Integer between 0 and 65535
@@ -1738,43 +1732,25 @@ Section: Self-Type-Table Emission
    in emit-store-record-fields-by-type st1 type-fields field-locals sorted offsets ptr-loc (i + 1)
      else emit-store-record-fields-by-type st type-fields field-locals sorted offsets ptr-loc (i + 1)
 
-  emit-store-record-fields-by-list : CodegenState, List FieldLocal, SkipListText, Integer, Integer -> CodegenState
-  emit-store-record-fields-by-list (st) (field-locals) (sorted) (ptr-loc) (i) =
-   if i == list-length field-locals then st
-   else let fl = list-at field-locals i
-   in let val = load-local st (fl.slot)
-   in let ptr = load-local (val.state) ptr-loc
-   in let offset = skip-list-text-rank-of sorted (fl.name) * 8
-   in let st1 = st-append-code (ptr.state) (mov-store (ptr.reg) (val.reg) offset)
-   in emit-store-record-fields-by-list st1 field-locals sorted ptr-loc (i + 1)
-
   emit-record : CodegenState, List IRFieldVal, CodexType -> EmitResult
   emit-record (st) (fields) (ty) =
    let evaled = emit-eval-record-fields (st-set-tail-pos st False) fields 0 []
    in let resolved-ty = resolve-constructed-ty st ty
-   in let layout-pair = when resolved-ty
+   in when resolved-ty
     is RecordTy (rname) (rargs) (type-fields) ->
      let sorted = skip-list-text-from-list (record-field-sort-keys type-fields 0 [])
      in let layout = build-cce-byte-offsets type-fields sorted (list-length type-fields)
-     in RecordLayoutPair { sorted = sorted, layout = layout, by-list = False }
+     in let alloc = emit-bivy-alloc (evaled.state) (round-up-to-8 (layout.byte-size))
+     in let st4 = emit-store-record-fields-by-type (alloc.state) type-fields (evaled.field-locals) sorted (layout.offsets) (alloc.ptr-loc) 0
+     in load-local st4 (alloc.ptr-loc)
     is otherwise ->
-     let sorted = skip-list-text-from-list (field-local-names (evaled.field-locals) 0 [])
-     in let n = list-length (evaled.field-locals)
-     in RecordLayoutPair { sorted = sorted, layout = LayoutResult { offsets = [], byte-size = __narrow (n * 8) }, by-list = True }
-   in let total-size = round-up-to-8 (layout-pair.layout.byte-size)
-   in let alloc = emit-bivy-alloc (evaled.state) total-size
-   in let st4 = when resolved-ty
-    is RecordTy (rname) (rargs) (type-fields) ->
-     emit-store-record-fields-by-type (alloc.state) type-fields (evaled.field-locals) (layout-pair.sorted) (layout-pair.layout.offsets) (alloc.ptr-loc) 0
-    is otherwise ->
-     emit-store-record-fields-by-list (alloc.state) (evaled.field-locals) (layout-pair.sorted) (alloc.ptr-loc) 0
-   in load-local st4 (alloc.ptr-loc)
-
-  RecordLayoutPair = record {
-   sorted : SkipListText,
-   layout : LayoutResult,
-   by-list : Boolean
-  }
+     let sp = if list-length fields > 0 then (list-at fields 0).span else synthetic-span
+     in let st-err = st-add-error (evaled.state) cdx-ir-error ("emit-record: unresolved type for record literal, " & show (list-length fields) & " fields, tag=" & show (peek-qword (address-of resolved-ty) 0)) sp
+     in let rd = alloc-temp st-err
+     in EmitResult {
+      state = st-append-code (rd.state) [15, 11],
+      reg = rd.reg
+     }
 
   emit-deck-record-wrapper : CodegenState, List IRExpr -> EmitResult
   emit-deck-record-wrapper (st) (args) =

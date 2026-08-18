@@ -313,10 +313,10 @@ Section: Builtin Table
    else if idx == 18 then "cmp(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
    else if idx == 19 then "contains(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
    else if idx == 20 then "len(" & emit-nim-expr (list-at args 0) arities & ")"
-   else if idx == 21 then "replace(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ", " & emit-nim-expr (list-at args 2) arities & ")"
-   else if idx == 22 then "split(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 21 then "cxTextReplace(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ", " & emit-nim-expr (list-at args 2) arities & ")"
+   else if idx == 22 then "cxTextSplit(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
    else if idx == 23 then "startsWith(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"
-   else if idx == 24 then "parseInt(" & emit-nim-expr (list-at args 0) arities & ")"
+   else if idx == 24 then "cxTextToInteger(" & emit-nim-expr (list-at args 0) arities & ")"
    else if idx == 25 then "writeFile(" & emit-nim-expr (list-at args 0) arities & ", " & emit-nim-expr (list-at args 1) arities & ")"    else emit-nim-expr (list-at args 0) arities & " & @[" & emit-nim-expr (list-at args 1) arities & "]"
 
 Section: Apply Emission
@@ -378,6 +378,19 @@ Section: Chapter Emission
    in let header = "import tables, math\n\n"
    in let types-text = emit-nim-type-defs type-defs 0
    in let defs-text = emit-nim-defs (m.defs) 0 arities
-   in header & types-text & defs-text & nim-sanitize opening-entry-point & "()\n"
+   in header & nim-text-builtins & types-text & defs-text & nim-sanitize opening-entry-point & "()\n"
+
+ strutils' `replace` inserts between every character when the needle is
+ empty, `split` on an empty separator yields the characters, and `parseInt`
+ RAISES on anything not wholly numeric, where Codex answers the string
+ unchanged, one field, and a leading-digit prefix or 0. The names are
+ camelCase because Nim is style-insensitive and `replace` would otherwise
+ collide with the strutils one.
+
+  nim-text-builtins : Text
+  nim-text-builtins =
+   "proc cxTextReplace(s: string, a: string, b: string): string =\n  if a.len == 0: return s\n  var r = \"\"\n  var i = 0\n  while i < s.len:\n    if i + a.len <= s.len and s[i ..< i + a.len] == a:\n      r.add(b)\n      i += a.len\n    else:\n      r.add(s[i])\n      i += 1\n  return r\n\n"
+   & "proc cxTextSplit(s: string, sep: string): seq[string] =\n  if sep.len == 0: return @[s]\n  var r: seq[string] = @[]\n  var start = 0\n  var i = 0\n  while i + sep.len <= s.len:\n    if s[i ..< i + sep.len] == sep:\n      r.add(s[start ..< i])\n      i += sep.len\n      start = i\n    else:\n      i += 1\n  r.add(s[start ..< s.len])\n  return r\n\n"
+   & "proc cxTextToInteger(s: string): int =\n  var i = 0\n  var neg = false\n  if s.len > 0 and s[0] == '-':\n    neg = true\n    i = 1\n  var v = 0\n  while i < s.len and s[i] >= '0' and s[i] <= '9':\n    v = v * 10 + (ord(s[i]) - 48)\n    i += 1\n  if neg: return -v\n  return v\n\n"
 
 Page 1

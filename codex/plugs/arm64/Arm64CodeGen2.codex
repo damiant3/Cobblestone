@@ -923,6 +923,16 @@ Section: Targeted Expression Emission
 
 Section: Apply
 
+ The ops `a64-emit-seed-fs-handlers` installs a default handler for at
+ boot. Their slots are written before `opening` runs, so routing them
+ through the handler table is not the `blr 0` that the guard on the bare
+ name path exists to prevent, and a program that declares no handler of
+ its own still gets a serviced read.
+
+  a64-op-has-default-handler : Text -> Boolean
+  a64-op-has-default-handler (name) =
+   if name == "read-text" then True else name == "write-file"
+
   a64-emit-apply : A64State, IRExpr, CodexType -> A64EmitResult
   a64-emit-apply (st) (expr) (ty) =
    let chain = collect-apply-chain expr []
@@ -974,7 +984,7 @@ Section: Apply
         let eoa = a64-find-effect-op-addr ((st-nt.extra).effect-op-addrs) name 0
         in let handler-name = "__handler_" & name
         in let has-handler = a64-find-func-offset (st-nt.func-names) (st-nt.func-offsets) handler-name 0
-        in if eoa >= 0 & has-handler >= 0 then a64-emit-effect-op-call st-nt eoa args
+        in if eoa >= 0 & (has-handler >= 0 | a64-op-has-default-handler name) then a64-emit-effect-op-call st-nt eoa args
         else if has-handler >= 0 then a64-emit-direct-call st-nt handler-name args
         else a64-emit-direct-call st-nt name args
     is otherwise ->
@@ -1255,7 +1265,6 @@ Section: Apply
    else if name == "vec-head" then 1
    else if name == "vec-cons" then 1
    else if name == "vec-singleton" then 1
-   else if name == "write-file" then 1
    else if name == "write-binary" then 1
    else if name == "read-line" then 1
    else if name == "read-line-cce" then 1
@@ -1295,7 +1304,6 @@ Section: Apply
    else if name == "mask-count" then 1
    else if name == "text-to-unicode-bytes" then 1
    else if name == "unicode-bytes-to-text" then 1
-   else if name == "list-tail" then 1
    else if name == "vec4-splat" then 1
    else if name == "vec4-extract" then 1
    else 0
@@ -1497,7 +1505,6 @@ Section: Apply
    else if name == "vec-head" & list-length args == 1 then a64-emit-single-arg-call st "list-at" (list-at args 0)
    else if name == "vec-cons" & list-length args == 2 then a64-emit-three-arg-call st "list-push" args
    else if name == "vec-singleton" & list-length args == 1 then a64-emit-single-arg-call st "list-cons" (list-at args 0)
-   else if name == "write-file" & list-length args == 2 then a64-emit-int-lit st 0
    else if name == "write-binary" & list-length args == 1 then a64-emit-int-lit st 0
    else if name == "read-line" then a64-emit-maybe-none st
    else if name == "read-line-cce" then a64-emit-maybe-none st
@@ -1555,7 +1562,6 @@ Section: Apply
    else if name == "mask-count" & list-length args == 1 then a64-emit-mask-count st (list-at args 0)
    else if name == "text-to-unicode-bytes" & list-length args == 1 then a64-emit-single-arg-call st "text-to-unicode-bytes" (list-at args 0)
    else if name == "unicode-bytes-to-text" & list-length args == 1 then a64-emit-single-arg-call st "unicode-bytes-to-text" (list-at args 0)
-   else if name == "list-tail" & list-length args == 1 then a64-emit-single-arg-call st "list-tail" (list-at args 0)
    else if name == "vec4-splat" & list-length args == 1 then a64-emit-vec-splat st (list-at args 0) (VectorTy 4 real-f32)
    else if name == "vec4-extract" & list-length args == 2 then a64-emit-vec-extract st (list-at args 0) (list-at args 1)
    else if list-length args == 1 then a64-emit-single-arg-call st name (list-at args 0)
