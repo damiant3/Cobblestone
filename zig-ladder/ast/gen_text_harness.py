@@ -18,6 +18,8 @@ answers that without a second experiment."""
 import pathlib
 import re
 
+from emit_harness import DECK_PROLOGUE, RESOLVED_TABLES
+
 REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 HERE = pathlib.Path(__file__).parent
 
@@ -80,6 +82,23 @@ else:
     raw = ''.join(lines if SUBJECT_LINES == 0 else lines[:SUBJECT_LINES])
 SUBJECT = codex_literal(raw)
 
+# This harness predates emit_harness.py and writes its own pipeline, because
+# its bundle carries only the front end and being cheap is what earns this rung
+# its place low on the ladder. It takes the two pieces of the driver's shape
+# that cost no extra chapter -- see emit_harness.py for why each one is there:
+#
+#   DECK_PROLOGUE    names init-phase-allocator, which is what turns
+#                    deck-record-intrinsic on. Without it deck-record compiles
+#                    to `mov rax,rdi ; ret` and the deck discipline is off for
+#                    the whole unit, which is the condition that faulted clamp.
+#   RESOLVED_TABLES  cst and bound, the tables opening.codex hands lowering.
+#                    `sort-bindings (cr.types)` alone omits every type the
+#                    subject DECLARES, since register-type-defs puts those in
+#                    the env rather than in .types.
+#
+# What it deliberately does not take is the RESOLVE step: rewrite-ir-defs lives
+# in ResolveTypes.codex, which this bundle does not carry, so the IR dumped here
+# keeps unresolved ConstructedTy annotations. fibx and whole prove that path.
 out = f'''Chapter: TextHarness
 
 Section: Subject
@@ -230,16 +249,15 @@ Section: Show Lists
 
 Section: Driver
   opening : [Console] Nothing = act
-    let toks = tokenize subject-text 1
+    {DECK_PROLOGUE}let toks = tokenize subject-text 1
     in let doc = parse-document (make-parse-state (toks.tokens) subject-text) 0
     in let dr = desugar-document subject-text doc (doc.chapter-title) 0
     in let ch0 = dr.dr-chapter
     in let ch = scope-achapter ch0 skip-list-text-empty [] 0
     in let rr = resolve-chapter ch skip-list-text-empty [] 0
     in let cr = check-chapter ch [] skip-list-text-empty [] 0
-    in let cst = cr.state
-    in let sorted = sort-bindings (cr.types)
-    in let ir = lower-chapter ch sorted cst (rr.ctor-names) [] skip-list-text-empty [] 0
+    {RESOLVED_TABLES}
+    in let ir = lower-chapter ch bound cst (rr.ctor-names) [] skip-list-text-empty [] 0
     in let tm = IRTextMeta {{
      chapter-title = ch.chapter-title,
      prose = ch.prose,

@@ -25,6 +25,104 @@ def codex_literal(s):
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
 
 
+# The three pieces below are shared with the front-end rungs, whose harnesses
+# predate this file and write their own pipelines. Those rungs bundle only the
+# front end on purpose -- being cheap is what earns them their place low on the
+# ladder -- so they cannot take frontend_source whole. They can take these,
+# because every chapter the three need is already in all four bundles.
+
+# opening.codex:442 opens with `let mountain-base = init-phase-allocator`, and
+# this is not only about setting the deck cell. X86_64Chapter.codex:1147 decides
+# whether deck-record is the intrinsic or an ordinary function:
+#
+#   pa-slug = def-chapter-slug defs-lifted "init-phase-allocator" ...
+#   dr-slug = def-chapter-slug defs-lifted "deck-record" ...
+#   deck-record-intrinsic = (pa-slug /= "" & pa-slug == dr-slug)
+#
+# A harness that never calls init-phase-allocator leaves it unreachable, IR
+# emission prunes it, pa-slug comes back "", and the flag is False. Then
+# deck-record is emitted as what it looks like -- `mov rax,rdi ; ret`, four
+# bytes -- and every value the compiler wraps in it to survive emit-all-defs's
+# per-function __heap-restore is freed at that boundary instead. bag-add wraps
+# both its cons cell and its record, so the second diagnostic a compile records
+# walks a dangling spine: that is clamp's RDI=0 into __list_snoc.
+#
+# Naming it is the whole job -- the marker has to be in the unit. It is
+# __heap-save + __deck-set, so the zig arm emits it without trouble.
+#
+# The reservation has to follow immediately, and cover the whole run rather than
+# sit in front of emission. init-phase-allocator points the deck cell at the
+# current heap top and bivy carries on from the same address, so with the
+# intrinsic live the first deck-record extent would allocate on top of the parse
+# and check data still in use. opening.codex never leaves that window open:
+# `build lex-deck-height` is line 444, two lines after the init at 442. Ours is
+# one region for every phase instead of the driver's thirteen, which is the part
+# of its shape a harness can skip.
+#
+# build's body is inlined rather than cited because build also reaches
+# deck-reservation-guard -> poke-byte, and poke-byte has no ZigEmitter entry:
+# citing it would make the builtin reachable and break the zig arm. The guard
+# pokes the boot stack's guard page, which a reservation this size does not come
+# near.
+#
+# demand-lift-floor is 104 MB against the 1 GB the harness runs in. It is a
+# first number, not a measured one: the deck scales the rungs run at were all
+# chosen while the intrinsic was off and nothing allocated on the deck at all,
+# so there is nothing to size against. Too small shows up as CDX9002 or a fault,
+# which is the honest direction to be wrong in.
+DECK_PROLOGUE = """let mountain-base = init-phase-allocator
+    in let deck-base = __heap-save
+    in let deck-set = __deck-set deck-base
+    in let deck-adv = __heap-advance demand-lift-floor
+    in """
+
+# The checker records a type for every expression, not only for bindings, and
+# the driver resolves that table too: opening.codex:635 runs
+# resolve-all-expr-types and line 692 rebuilds the UnificationState around the
+# result, so what reaches lowering is `expr-types = sorted-et`.
+#
+# resolve-all-expr-types lives in opening.codex and cannot be cited from here,
+# so its body -- a map applying deep-resolve to each entry -- is written as the
+# comprehension it is, the same way resolved-env is.
+EXPR_TYPES = """in let resolved-et = for e in (sort-expr-types ((cr.state).expr-types)) -> ExprTypeEntry { key = e.key, ty = deep-resolve (cr.state) (e.ty) }
+    in let cst = __record-set (cr.state) "expr-types" resolved-et"""
+
+# What lowering gets as its type table, and the second half of clamp.
+#
+# opening.codex:761 passes `checked.all-bindings`, which compile-type-check
+# builds as resolve-all-bindings over `check-result.types & resolved-env`. Both
+# halves matter and they hold different things: check-chapter puts the INFERRED
+# types of the chapter's defs in `.types`, while register-type-defs puts the
+# chapter's declared types -- every record and sum it announces -- in the env.
+# Handing lowering `cr.types` alone therefore hands it a table with no entry for
+# any type the subject declares.
+#
+# arith's gauge is `(Gauge { g = n }).g`. Lowering an AFieldAccess lowers its
+# receiver with the hint ErrorTy (Lowering.codex:55), so a record literal in
+# receiver position has nothing to fall back on: lower-record asks
+# lookup-type-split for "Gauge", the env-side entry is missing, and ctor-raw
+# comes back ErrorTy, so the IrRecord is annotated ErrorTy and carries it to
+# emission. emit-field-access resolved that to no record type and refused with a
+# ud2, exactly as it should. Nothing was unresolved; the name was never in the
+# table to resolve.
+#
+# A subject only notices when it reads a field straight off a literal. A field
+# read off a NAME goes through the binding, which arrives typed -- which is why
+# the compiler chapters the big rungs compile never tripped this, and eighteen
+# lines of arith did.
+#
+# resolve-all-bindings lives in opening.codex and cannot be cited from here, so
+# its body -- a map applying deep-resolve to each binding -- is written as the
+# comprehension it is.
+BINDINGS = """in let resolved-env = for b in ((cr.env).bindings) -> TypeBinding { name = b.name, bound-type = deep-resolve cst (b.bound-type) }
+    in let bound = for b in (sort-bindings (cr.types & resolved-env)) -> TypeBinding { name = b.name, bound-type = deep-resolve cst (b.bound-type) }"""
+
+# cst and bound together, which is how a caller always wants them: bound is
+# built with cst, so a harness that took one without the other would resolve
+# its bindings against an unresolved expression table.
+RESOLVED_TABLES = EXPR_TYPES + "\n    " + BINDINGS
+
+
 def frontend_source(src, passes, scan=True):
     """The compiler's own sequence from source text to a lowered IRChapter,
     bound as `ir`. Every program built here runs exactly this -- the oracle
@@ -49,47 +147,10 @@ def frontend_source(src, passes, scan=True):
     # emit-field-access refuses with a ud2; and without rewrite-ir-defs the IR
     # still carries unresolved ConstructedTy annotations into emission.
     #
-    # The checker records a type for every expression, not only for bindings,
-    # and the driver resolves that table too: opening.codex:635 runs
-    # resolve-all-expr-types and line 692 rebuilds the UnificationState around
-    # the result, so what reaches lowering is `expr-types = sorted-et`.
-    #
-    # resolve-all-expr-types lives in opening.codex and cannot be cited from
-    # here, so its body -- a map applying deep-resolve to each entry -- is
-    # written as the comprehension it is, the same way resolved-env is.
-    EXPR_TYPES = """in let resolved-et = for e in (sort-expr-types ((cr.state).expr-types)) -> ExprTypeEntry { key = e.key, ty = deep-resolve (cr.state) (e.ty) }
-    in let cst = __record-set (cr.state) "expr-types" resolved-et"""
-
-    # What lowering gets as its type table, and the second half of clamp.
-    #
-    # opening.codex:761 passes `checked.all-bindings`, which compile-type-check
-    # builds as resolve-all-bindings over `check-result.types & resolved-env`.
-    # Both halves matter and they hold different things: check-chapter puts the
-    # INFERRED types of the chapter's defs in `.types`, while register-type-defs
-    # puts the chapter's declared types -- every record and sum it announces --
-    # in the env. Handing lowering `cr.types` alone therefore hands it a table
-    # with no entry for any type the subject declares.
-    #
-    # arith's gauge is `(Gauge { g = n }).g`. Lowering an AFieldAccess lowers
-    # its receiver with the hint ErrorTy (Lowering.codex:55), so a record
-    # literal in receiver position has nothing to fall back on: lower-record
-    # asks lookup-type-split for "Gauge", the env-side entry is missing, and
-    # ctor-raw comes back ErrorTy, so the IrRecord is annotated ErrorTy and
-    # carries it to emission. emit-field-access resolved that to no record
-    # type and refused with a ud2, exactly as it should. Nothing was
-    # unresolved; the name was never in the table to resolve.
-    #
-    # A subject only notices when it reads a field straight off a literal. A
-    # field read off a NAME goes through the binding, which arrives typed --
-    # which is why the compiler chapters the big rungs compile never tripped
-    # this, and eighteen lines of arith did.
-    #
-    # resolve-all-bindings lives in opening.codex and cannot be cited from
-    # here, so its body -- a map applying deep-resolve to each binding -- is
-    # written as the comprehension it is.
-    BINDINGS = """in let resolved-env = for b in ((cr.env).bindings) -> TypeBinding { name = b.name, bound-type = deep-resolve cst (b.bound-type) }
-    in let bound = for b in (sort-bindings (cr.types & resolved-env)) -> TypeBinding { name = b.name, bound-type = deep-resolve cst (b.bound-type) }"""
-
+    # This is the one piece the front-end rungs do NOT share: rewrite-ir-defs
+    # lives in ResolveTypes.codex and none of their bundles carry it. Adding a
+    # chapter to buy a resolved IR dump would grow four rungs whose whole value
+    # is being small, and fibx and whole already prove the resolved path.
     RESOLVE = """in let type-map = build-type-def-map (ch.type-defs) 0 (list-length (ch.type-defs)) []
     in let sorted = sort-bindings (type-map & bound)
     in let ir = __record-set ir0 "defs" (rewrite-ir-defs sorted (ir0.defs) 0)"""
@@ -109,51 +170,7 @@ def frontend_source(src, passes, scan=True):
     in let passed = run-ir-pipeline default-ir-pipeline ir-raw False
     in let ir0 = passed.chapter""" if passes else
         "in let ir0 = lower-chapter ch bound cst (rr.ctor-names) renames colliding assignments 0")
-    # opening.codex:442 opens with `let mountain-base = init-phase-allocator`,
-    # and this is not only about setting the deck cell. X86_64Chapter.codex:1147
-    # decides whether deck-record is the intrinsic or an ordinary function:
-    #
-    #   pa-slug = def-chapter-slug defs-lifted "init-phase-allocator" ...
-    #   dr-slug = def-chapter-slug defs-lifted "deck-record" ...
-    #   deck-record-intrinsic = (pa-slug /= "" & pa-slug == dr-slug)
-    #
-    # A harness that never calls init-phase-allocator leaves it unreachable, IR
-    # emission prunes it, pa-slug comes back "", and the flag is False. Then
-    # deck-record is emitted as what it looks like -- `mov rax,rdi ; ret`, four
-    # bytes -- and every value the compiler wraps in it to survive
-    # emit-all-defs's per-function __heap-restore is freed at that boundary
-    # instead. bag-add wraps both its cons cell and its record, so the second
-    # diagnostic a compile records walks a dangling spine: that is clamp's
-    # RDI=0 into __list_snoc.
-    #
-    # Naming it is the whole job -- the marker has to be in the unit. It is
-    # __heap-save + __deck-set, so the zig arm emits it without trouble.
-    #
-    # The reservation has to follow immediately, and cover the whole run rather
-    # than sit in front of emission. init-phase-allocator points the deck cell
-    # at the current heap top and bivy carries on from the same address, so
-    # with the intrinsic live the first deck-record extent would allocate on
-    # top of the parse and check data still in use. opening.codex never leaves
-    # that window open: `build lex-deck-height` is line 444, two lines after
-    # the init at 442. Ours is one region for every phase instead of the
-    # driver's thirteen, which is the part of its shape a harness can skip.
-    #
-    # build's body is inlined rather than cited because build also reaches
-    # deck-reservation-guard -> poke-byte, and poke-byte has no ZigEmitter
-    # entry: citing it would make the builtin reachable and break the zig arm.
-    # The guard pokes the boot stack's guard page, which a reservation this
-    # size does not come near.
-    #
-    # demand-lift-floor is 104 MB against the 1 GB the harness runs in. It is a
-    # first number, not a measured one: until now the intrinsic was off and no
-    # rung allocated on the deck at all, so there is nothing to size against.
-    # Too small shows up as CDX9002 or a fault, which is the honest direction
-    # to be wrong in.
-    return ("let mountain-base = init-phase-allocator\n"
-            "    in let deck-base = __heap-save\n"
-            "    in let deck-set = __deck-set deck-base\n"
-            "    in let deck-adv = __heap-advance demand-lift-floor\n"
-            "    in ") + head + f"""
+    return DECK_PROLOGUE + head + f"""
     in let doc = parse-document (make-parse-state (toks.tokens) {src}) 0
     in let dr = desugar-document {src} doc (doc.chapter-title) 0
     in let ch0 = dr.dr-chapter
