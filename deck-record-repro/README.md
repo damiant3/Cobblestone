@@ -1,11 +1,14 @@
-# Findings: five closed upstream, five standing, one fixed here, one withdrawn
+# Findings: six closed upstream, five standing, one fixed here
 
 This directory holds the findings and the probes that make them runnable.
 It is discussion material rather than a proposed addition to the tree --
 drop it whenever, or take it; the zig-plug changes in this PR are separate
 and stand on their own.
 
-**Status re-checked against Update 45 / seed 270227BE, 2026-08-17.**
+**Status re-checked against Update 45 / seed 270227BE, 2026-08-17.** Update 46
+(`adfae029`, seed 12B07296) landed the same day and closed what was left of
+finding 11; that is marked at its heading and not re-verified here, since the
+ladder has not been re-banked against 46 yet.
 
 Findings 1 through 5 were fixed by Update 43 and each is marked at its
 heading. Finding 1's fix is verified present in this seed: `emit-net-recv-raw-helper`
@@ -22,9 +25,10 @@ Two re-checked today and still standing:
   `mutable` keyword still promises value semantics nothing delivers.
 
 **Findings 6, 8 and 9 are not re-checked against this seed.** They were
-measured on 2,798,031 and are recorded here as they were found. Finding 11
-below is a candidate rather than a finding: its reproduction is written down
-and its cause is not.
+measured on 2,798,031 and are recorded here as they were found.
+
+**Finding 12 is new and fixed in this PR.** Finding 11 was withdrawn as filed --
+the cause was ours -- and the one thing that survived it is closed in Update 46.
 
 ## 1. `net-recv-raw` truncates odd-length frames
 
@@ -475,6 +479,17 @@ into emission. Everything downstream followed from that. Nothing here was a
 defect in the depot.
 
 ### What survives: two record layouts that disagree
+
+**CLOSED in Update 46** (`adfae029`, seed 12B07296). The unresolved-type
+fallback -- the by-list layout below -- is deleted, and the branch now raises
+the same refusal `emit-field-access` raises, which is the asymmetry this
+section asked about. The release gate and the BVT never took the branch, so it
+was latent exactly as described. Credited to PR 67 in the change and in
+`docs/PM/Active/GitHubUpdates/GitHubUpdate46.md`.
+
+The account below is kept as filed. Nothing on our side worked around it: our
+half was a harness that skipped RESOLVE, and running RESOLVE is the driver's
+shape whether or not the fallback exists.
 
 `emit-record` (X86_64Compound.codex:1751) chooses a layout by whether the
 record's type resolved:
