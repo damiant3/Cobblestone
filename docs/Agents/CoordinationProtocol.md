@@ -205,6 +205,16 @@ The shape of a correct wait: request or send, write `status.json`, end
 the turn. The next thing that happens to you is a typed line or a
 background completion, and either one starts a new turn cleanly.
 
+**A landed report does not end the lane (Damian, 2026-08-18).** Waiting is
+for a token, a reply you asked for, or a ruling only Damian can give. Landing
+an item is none of those: send the one-line landed message, take the next
+item named in your CurrentPlan row or your register in its order, and keep
+working. Do not end the turn to wait for the commander to say "go"; four
+lanes sat at the prompt for fifteen minutes on 2026-08-18 with their next
+item already written in the plan, and every one needed a nudge that cost
+a message. If the row is empty, that is a **question** event (one line to
+the commander: "lane empty, draw?"), and the wait after THAT is a real one.
+
 ## What Happens Next
 
 AgentGrid polls every second and answers **two ways at once**: it

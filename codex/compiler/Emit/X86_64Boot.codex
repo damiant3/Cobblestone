@@ -384,6 +384,19 @@ Section: I/O Port Constants
   ata-status-drdy : Integer = 64
   ata-status-drq : Integer = 8
   ata-status-err : Integer = 1
+
+ An empty ATA channel answers 0xFF or 0x00 depending on what drives the bus,
+ and neither can come from a present drive. 0xFF is the ISA bus floating with
+ nothing on it: it asserts BSY, DRQ and ERR at once, so a wait that spins until
+ BSY clears never finishes. 0x00 has DRDY clear, so a wait that spins until
+ DRDY sets never finishes. codex-vm answers 0x00 on the two status ports when
+ no disk is attached (`codex-vm.c`, `ide_handle_in`, the `!d->present` arm) and
+ 0xFF on the rest, so a check for only one of the two passes on hardware and
+ hangs on the bed, or the reverse.
+
+  ata-status-floating : Integer = 255
+
+  ata-status-empty : Integer = 0
   ne2k-base-port : Integer = 768
   ne2k-cr-port : Integer = 768
   ne2k-pstart-port : Integer = 769
@@ -3160,10 +3173,25 @@ Section: MSR and Syscall
    let loop-top = st.code-len
    in let st1 = emit-ata-port st ata-off-status
    in let st2 = st-append-code st1 in-al-dx
-   in let st3 = st-append-code st2 [168, ata-status-bsy]
-   in let st4 = patch-jcc-at (st-append-code st3 (jcc cc-ne 0)) (st3.code-len) loop-top
-   in let st5 = st-append-code st4 [168, 64]
-   in patch-jcc-at (st-append-code st5 (jcc cc-e 0)) (st5.code-len) loop-top
+   in let stg1 = st-append-code st2 [60, ata-status-floating]
+   in let float-pos = stg1.code-len
+   in let stg2 = st-append-code stg1 (jcc cc-e 0)
+   in let stg3 = st-append-code stg2 [60, ata-status-empty]
+   in let empty-pos = stg3.code-len
+   in let stg4 = st-append-code stg3 (jcc cc-e 0)
+   in let st3 = st-append-code stg4 [168, ata-status-bsy]
+   in let bsy-jcc = st3.code-len
+   in let st4 = patch-jcc-at (st-append-code st3 (jcc cc-ne 0)) bsy-jcc loop-top
+   in let ste1 = st-append-code st4 [168, ata-status-err]
+   in let err-pos = ste1.code-len
+   in let ste2 = st-append-code ste1 (jcc cc-ne 0)
+   in let st5 = st-append-code ste2 [168, ata-status-drdy]
+   in let rdy-jcc = st5.code-len
+   in let st6 = patch-jcc-at (st-append-code st5 (jcc cc-e 0)) rdy-jcc loop-top
+   in let endp = st6.code-len
+   in let st7 = patch-jcc-at st6 float-pos endp
+   in let st8 = patch-jcc-at st7 empty-pos endp
+   in patch-jcc-at st8 err-pos endp
 
   emit-ata-wait-drq : CodegenState -> CodegenState
   emit-ata-wait-drq (st) =
@@ -3171,10 +3199,25 @@ Section: MSR and Syscall
    in let loop-top = st1.code-len
    in let st2 = emit-ata-port st1 ata-off-status
    in let st3 = st-append-code st2 in-al-dx
-   in let st4 = st-append-code st3 [168, ata-status-bsy]
-   in let st5 = patch-jcc-at (st-append-code st4 (jcc cc-ne 0)) (st4.code-len) loop-top
-   in let st6 = st-append-code st5 [168, ata-status-drq]
-   in patch-jcc-at (st-append-code st6 (jcc cc-e 0)) (st6.code-len) loop-top
+   in let stg1 = st-append-code st3 [60, ata-status-floating]
+   in let float-pos = stg1.code-len
+   in let stg2 = st-append-code stg1 (jcc cc-e 0)
+   in let stg3 = st-append-code stg2 [60, ata-status-empty]
+   in let empty-pos = stg3.code-len
+   in let stg4 = st-append-code stg3 (jcc cc-e 0)
+   in let st4 = st-append-code stg4 [168, ata-status-bsy]
+   in let bsy-jcc = st4.code-len
+   in let st5 = patch-jcc-at (st-append-code st4 (jcc cc-ne 0)) bsy-jcc loop-top
+   in let ste1 = st-append-code st5 [168, ata-status-err]
+   in let err-pos = ste1.code-len
+   in let ste2 = st-append-code ste1 (jcc cc-ne 0)
+   in let st6 = st-append-code ste2 [168, ata-status-drq]
+   in let drq-jcc = st6.code-len
+   in let st7 = patch-jcc-at (st-append-code st6 (jcc cc-e 0)) drq-jcc loop-top
+   in let endp = st7.code-len
+   in let st8 = patch-jcc-at st7 float-pos endp
+   in let st9 = patch-jcc-at st8 empty-pos endp
+   in patch-jcc-at st9 err-pos endp
 
   emit-ata-spin-delay : CodegenState, Integer -> CodegenState
   emit-ata-spin-delay (st) (count) =
@@ -3183,26 +3226,47 @@ Section: MSR and Syscall
    in let st2 = emit-ata-ctrl-port st1
    in let st3 = st-append-code st2 in-al-dx
    in let st4 = st-append-code st3 (sub-ri reg-rcx 1)
-   in patch-jcc-at (st-append-code st4 (jcc cc-ne 0)) (st4.code-len) loop-top
+   in let loop-jcc = st4.code-len
+   in patch-jcc-at (st-append-code st4 (jcc cc-ne 0)) loop-jcc loop-top
 
   emit-ata-wait-bsy-clear-bounded : CodegenState -> CodegenState
   emit-ata-wait-bsy-clear-bounded (st) =
    let st0 = st-append-code st (li reg-rcx 1000000)
-   in let loop-top = st0.code-len
-   in let st1 = emit-ata-ctrl-port st0
+   in let stf1 = emit-ata-ctrl-port st0
+   in let stf2 = st-append-code stf1 in-al-dx
+   in let stf3 = st-append-code stf2 [60, ata-status-floating]
+   in let float-pos = stf3.code-len
+   in let stf4 = st-append-code stf3 (jcc cc-e 0)
+   in let stf5 = st-append-code stf4 [60, ata-status-empty]
+   in let empty-pos = stf5.code-len
+   in let stf6 = st-append-code stf5 (jcc cc-e 0)
+   in let loop-top = stf6.code-len
+   in let st1 = emit-ata-ctrl-port stf6
    in let st2 = st-append-code st1 in-al-dx
    in let st3 = st-append-code st2 [168, ata-status-bsy]
    in let done-pos = st3.code-len
    in let st4 = st-append-code st3 (jcc cc-e 0)
    in let st5 = st-append-code st4 (sub-ri reg-rcx 1)
-   in let st6 = patch-jcc-at (st-append-code st5 (jcc cc-ne 0)) (st5.code-len) loop-top
-   in patch-jcc-at st6 done-pos (st6.code-len)
+   in let loop-jcc = st5.code-len
+   in let st6 = patch-jcc-at (st-append-code st5 (jcc cc-ne 0)) loop-jcc loop-top
+   in let endp = st6.code-len
+   in let st7 = patch-jcc-at st6 done-pos endp
+   in let st8 = patch-jcc-at st7 float-pos endp
+   in patch-jcc-at st8 empty-pos endp
 
   emit-ata-wait-ready-bounded : CodegenState -> CodegenState
   emit-ata-wait-ready-bounded (st) =
    let st0 = st-append-code st (li reg-rcx 1000000)
-   in let loop-top = st0.code-len
-   in let st1 = emit-ata-ctrl-port st0
+   in let stf1 = emit-ata-ctrl-port st0
+   in let stf2 = st-append-code stf1 in-al-dx
+   in let stf3 = st-append-code stf2 [60, ata-status-floating]
+   in let float-pos = stf3.code-len
+   in let stf4 = st-append-code stf3 (jcc cc-e 0)
+   in let stf5 = st-append-code stf4 [60, ata-status-empty]
+   in let empty-pos = stf5.code-len
+   in let stf6 = st-append-code stf5 (jcc cc-e 0)
+   in let loop-top = stf6.code-len
+   in let st1 = emit-ata-ctrl-port stf6
    in let st2 = st-append-code st1 in-al-dx
    in let st3 = st-append-code st2 [168, ata-status-bsy]
    in let bsy-set-pos = st3.code-len
@@ -3212,10 +3276,14 @@ Section: MSR and Syscall
    in let st6 = st-append-code st5 (jcc cc-ne 0)
    in let dec-pos = st6.code-len
    in let st7 = st-append-code st6 (sub-ri reg-rcx 1)
+   in let loop-jcc = st7.code-len
    in let st8 = st-append-code st7 (jcc cc-ne 0)
-   in let st9 = patch-jcc-at st8 (st7.code-len) loop-top
+   in let st9 = patch-jcc-at st8 loop-jcc loop-top
    in let st10 = patch-jcc-at st9 bsy-set-pos dec-pos
-   in patch-jcc-at st10 drdy-set-pos (st10.code-len)
+   in let endp = st10.code-len
+   in let st11 = patch-jcc-at st10 drdy-set-pos endp
+   in let st12 = patch-jcc-at st11 float-pos endp
+   in patch-jcc-at st12 empty-pos endp
 
   emit-ata-init : CodegenState -> CodegenState
   emit-ata-init (st) =
@@ -3323,7 +3391,8 @@ Section: MSR and Syscall
    in let rst-found = st9.code-len
    in let st10 = st-append-code st9 (jcc cc-ne 0)
    in let st11 = st-append-code st10 (sub-ri reg-rcx 1)
-   in let st12 = patch-jcc-at (st-append-code st11 (jcc cc-ne 0)) (st11.code-len) wait-top
+   in let wait-jcc = st11.code-len
+   in let st12 = patch-jcc-at (st-append-code st11 (jcc cc-ne 0)) wait-jcc wait-top
    in let no-nic = st12.code-len
    in let st13 = st-append-code st12 (jmp 0)
    in let st14 = patch-jcc-at st13 rst-found (st13.code-len)
@@ -3421,7 +3490,8 @@ Section: MSR and Syscall
    in let st2 = st-append-code st1 (li reg-rdi tick-count-addr)
    in let st3 = st-append-code st2 (mov-load reg-rax reg-rdi 0)
    in let st4 = st-append-code st3 (cmp-ri reg-rax 0)
-   in patch-jcc-at (st-append-code st4 (jcc cc-e 0)) (st4.code-len) loop-top
+   in let tick-jcc = st4.code-len
+   in patch-jcc-at (st-append-code st4 (jcc cc-e 0)) tick-jcc loop-top
 
 Section: Heap High-Water Mark
   emit-update-heap-hwm : CodegenState -> CodegenState

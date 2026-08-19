@@ -447,16 +447,36 @@ Section: Per-Pixel Shading
     in let max-y = r3d-min (st.r3t-h - 1) (r3d-max3 (a.pv-sy) (b.pv-sy) (c.pv-sy))
     in let min-x = r3d-max 0 (r3d-min3 (a.pv-sx) (b.pv-sx) (c.pv-sx))
     in let max-x = r3d-min (st.r3t-w - 1) (r3d-max3 (a.pv-sx) (b.pv-sx) (c.pv-sx))
-    in r3d-scan-rows-sh st a b c ctx min-y max-y min-x max-x
+    in r3d-scan-rows-sh st a b c ctx (r3d-slope-bias a b c ctx) min-y max-y min-x max-x
 
-  r3d-scan-rows-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx, Integer, Integer, Integer, Integer -> Integer
-  r3d-scan-rows-sh (st) (a) (b) (c) (ctx) (y) (max-y) (min-x) (max-x) =
+ The slope-scaled depth bias is a property of the TRIANGLE, not of the pixel:
+ every term below reads only `a`, `b` and `c`. It was computed inside
+ `r3d-shadow-lit`, which runs once per covered pixel, so a triangle covering
+ ten thousand pixels paid for twelve minimums and maximums and a division ten
+ thousand times to arrive at the same number. It is computed once here and
+ carried down instead. The value is identical, so the picture is identical;
+ this is a hoist and not a change of algorithm.
+
+  r3d-slope-bias : ProjVert, ProjVert, ProjVert, R3dShadeCtx -> Integer
+  r3d-slope-bias (a) (b) (c) (ctx) =
+    let dlo = r3d-min (r3d-min (a.pv-ld) (b.pv-ld)) (c.pv-ld)
+    in let dhi = r3d-max (r3d-max (a.pv-ld) (b.pv-ld)) (c.pv-ld)
+    in let xlo = r3d-min (r3d-min (a.pv-lx) (b.pv-lx)) (c.pv-lx)
+    in let xhi = r3d-max (r3d-max (a.pv-lx) (b.pv-lx)) (c.pv-lx)
+    in let ylo = r3d-min (r3d-min (a.pv-ly) (b.pv-ly)) (c.pv-ly)
+    in let yhi = r3d-max (r3d-max (a.pv-ly) (b.pv-ly)) (c.pv-ly)
+    in let span = r3d-max ((xhi - xlo) / 1000) ((yhi - ylo) / 1000)
+    in let slope = (dhi - dlo) / (r3d-max span 1)
+    in ctx.sc-sh-bias + slope * r3d-shadow-slope
+
+  r3d-scan-rows-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx, Integer, Integer, Integer, Integer, Integer -> Integer
+  r3d-scan-rows-sh (st) (a) (b) (c) (ctx) (bias) (y) (max-y) (min-x) (max-x) =
     if y > max-y then 0
-    else let n = r3d-scan-cols-sh st a b c ctx y min-x max-x
-    in r3d-scan-rows-sh st a b c ctx (y + 1) max-y min-x max-x
+    else let n = r3d-scan-cols-sh st a b c ctx bias y min-x max-x
+    in r3d-scan-rows-sh st a b c ctx bias (y + 1) max-y min-x max-x
 
-  r3d-scan-cols-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx, Integer, Integer, Integer -> Integer
-  r3d-scan-cols-sh (st) (a) (b) (c) (ctx) (y) (x) (max-x) =
+  r3d-scan-cols-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx, Integer, Integer, Integer, Integer -> Integer
+  r3d-scan-cols-sh (st) (a) (b) (c) (ctx) (bias) (y) (x) (max-x) =
     if x > max-x then 0
     else let v0x = c.pv-sx - a.pv-sx
     in let v0y = c.pv-sy - a.pv-sy
@@ -473,16 +493,16 @@ Section: Per-Pixel Shading
     in let u = if denom == 0 then 0 - 1 else (d11 * d02 - d01 * d12) * 1000 / denom
     in let v = if denom == 0 then 0 - 1 else (d00 * d12 - d01 * d02) * 1000 / denom
     in let w = if denom == 0 then 0 - 1 else 1000 - u - v
-    in let hit = r3d-cover-sh st a b c w v u x y ctx
-    in r3d-scan-cols-sh st a b c ctx y (x + 1) max-x
+    in let hit = r3d-cover-sh st a b c w v u x y ctx bias
+    in r3d-scan-cols-sh st a b c ctx bias y (x + 1) max-x
 
-  r3d-cover-sh : R3dTriState, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer, Integer, Integer, R3dShadeCtx -> Integer
-  r3d-cover-sh (st) (a) (b) (c) (w0) (w1) (w2) (x) (y) (ctx) =
+  r3d-cover-sh : R3dTriState, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer, Integer, Integer, R3dShadeCtx, Integer -> Integer
+  r3d-cover-sh (st) (a) (b) (c) (w0) (w1) (w2) (x) (y) (ctx) (bias) =
     if w0 < 0 then 0
     else if w1 < 0 then 0
     else if w2 < 0 then 0
     else let depth = r3d-interp-depth a b c w0 w1 w2 1000
-    in let lit = if ctx.sc-sh-base == 0 then 9 else r3d-shadow-lit ctx a b c w0 w1 w2
+    in let lit = if ctx.sc-sh-base == 0 then 9 else r3d-shadow-lit ctx a b c w0 w1 w2 bias
     in let color = if lit == 0 then ctx.sc-amb
       else if lit >= 9 then r3d-shade-px ctx a b c w0 w1 w2
       else r3d-blend-sh (r3d-shade-px ctx a b c w0 w1 w2) (ctx.sc-amb) lit
@@ -542,8 +562,8 @@ Section: Per-Pixel Shading
     else let h = r3d-sh-tap ctx ld (tx + ox) (ty + oy) bias
     in r3d-sh-taps ctx ld tx ty bias oy (ox + 1) (acc + h)
 
-  r3d-shadow-lit : R3dShadeCtx, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer -> Integer
-  r3d-shadow-lit (ctx) (a) (b) (c) (w0) (w1) (w2) =
+  r3d-shadow-lit : R3dShadeCtx, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer, Integer -> Integer
+  r3d-shadow-lit (ctx) (a) (b) (c) (w0) (w1) (w2) (bias) =
     let tx = (a.pv-lx * w0 + b.pv-lx * w1 + c.pv-lx * w2) / 1000000
     in let ty = (a.pv-ly * w0 + b.pv-ly * w1 + c.pv-ly * w2) / 1000000
     in if tx < 0 then 9
@@ -551,15 +571,6 @@ Section: Per-Pixel Shading
     else if tx >= ctx.sc-sh-size then 9
     else if ty >= ctx.sc-sh-size then 9
     else let ld = (a.pv-ld * w0 + b.pv-ld * w1 + c.pv-ld * w2) / 1000
-    in let dlo = r3d-min (r3d-min (a.pv-ld) (b.pv-ld)) (c.pv-ld)
-    in let dhi = r3d-max (r3d-max (a.pv-ld) (b.pv-ld)) (c.pv-ld)
-    in let xlo = r3d-min (r3d-min (a.pv-lx) (b.pv-lx)) (c.pv-lx)
-    in let xhi = r3d-max (r3d-max (a.pv-lx) (b.pv-lx)) (c.pv-lx)
-    in let ylo = r3d-min (r3d-min (a.pv-ly) (b.pv-ly)) (c.pv-ly)
-    in let yhi = r3d-max (r3d-max (a.pv-ly) (b.pv-ly)) (c.pv-ly)
-    in let span = r3d-max ((xhi - xlo) / 1000) ((yhi - ylo) / 1000)
-    in let slope = (dhi - dlo) / (r3d-max span 1)
-    in let bias = ctx.sc-sh-bias + slope * r3d-shadow-slope
     in r3d-sh-taps ctx ld tx ty bias (0 - 1) (0 - 1) 0
 
   r3d-blend-sh : Integer, Integer, Integer -> Integer

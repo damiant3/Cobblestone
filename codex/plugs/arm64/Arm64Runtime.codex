@@ -2223,9 +2223,21 @@ Section: Block device helpers
  Added to that map since: the effect-op slot table at
  `#40020000`..`#40022000` (`a64-effect-op-table-base`,
  `a64-effect-op-slots` in `Arm64CodeGen3.codex`), moved off the ELF load
- base where it had room for only 16 slots. The next free span is
- therefore `#40022000`..`#40100000`, and whoever places the deck region
- (plugs-backlog 1.33) takes it from there rather than from `#40020000`.
+ base where it had room for only 16 slots, and the three deck cells
+ below. The next free span is `#40022018`..`#40100000`.
+
+ The deck needs no region, which is the thing the plugs-backlog 1.33 row
+ got wrong and the reason it was sized as an allocator. A deck is a
+ WATERMARK inside the same bump heap, not a second arena: `build` saves
+ the heap position, records it with `__deck-set`, and advances past the
+ reservation, and `phase-compact` is `__heap-restore (__deck-pos)`, so
+ everything below the mark survives a compaction and everything above it
+ is reclaimed. All the state that takes is three cells, and x28 is this
+ lane's allocation pointer the way R10 is x86-64's.
+
+  a64-deck-pos-addr : Integer = #40022000
+  a64-deck-bound-counter-addr : Integer = #40022008
+  a64-bivy-save-addr : Integer = #40022010
 
   a64-vblk-ring-base : Integer = #40010000
 
@@ -2250,9 +2262,23 @@ Section: Block device helpers
    in let st2 = a64-emit st1 (arm64-svc n)
    in a64-emit st2 arm64-ret
 
+ The helpers are emitted only when the DRIVER is in the program, and that
+ is what lets an unresolved call be a hard failure rather than a warning.
+ They call `vb-capacity-auto`, `vb-read-auto` and `vb-write-auto`, which a
+ program that never declares `Device.Block` correctly eliminates, so
+ emitting them unconditionally put three unresolved calls in EVERY compile
+ on this lane. A check that fires on every subject cannot be turned into a
+ refusal, and allow-listing the `vb-` names would have excused exactly the
+ calls that matter in a program that does declare the capability.
+
+ The three `__block_*_body` CALLS in `a64-emit-sync-handler` are gated on the
+ same answer, because they would otherwise be three more unresolved calls of
+ their own. The dispatch around them is not gated; the reason is beside it.
+
   a64-emit-block-helpers : A64State -> A64State
   a64-emit-block-helpers (st) =
-   let sta = a64-emit-svc-stub st "block-sector-count" a64-svc-block-count
+   if ((st.extra).has-block-driver) == False then st
+   else let sta = a64-emit-svc-stub st "block-sector-count" a64-svc-block-count
    in let stb = a64-emit-svc-stub sta "block-read-sector" a64-svc-block-read
    in let stc = a64-emit-svc-stub stb "block-write-sector" a64-svc-block-write
    in let st1 = a64-record-func stc "__block_count_body"
@@ -2493,6 +2519,21 @@ Section: SVC dispatch (the synchronous vector slot)
 
   a64-svc-ec : Integer = 21
 
+ Only the three body CALLS are gated on the driver, not the dispatch around
+ them (red, 2026-08-18). Short-circuiting the whole handler was tried first
+ and it is the worse shape: `arm64-svc` is emitted in exactly one place today
+ (`a64-emit-svc-stub`, the block stubs), so it was safe, but it made a working
+ SVC conditional on the program happening to carry a block driver, and the
+ next author to add an SVC on this lane would have had it swallowed by the
+ fault handler with nothing to read. Gated here, the dispatch keeps working
+ and a block request with no driver answers -1, which is what the capability
+ refusal a few instructions above already answers.
+
+  a64-emit-body-call : A64State, Text -> A64State
+  a64-emit-body-call (st) (name) =
+   if ((st.extra).has-block-driver) == False then a64-emit-li st 0 (0 - 1)
+   else a64-emit-call-to st name
+
   a64-emit-sync-handler : A64State, Integer -> A64State
   a64-emit-sync-handler (st) (fault-idx) =
    let st1 = a64-emit st (arm64-stp-pre 29 30 31 (0 - 48))
@@ -2534,15 +2575,15 @@ Section: SVC dispatch (the synchronous vector slot)
    in let st26 = a64-emit st25 arm64-nop
    in let st27 = a64-emit st26 (arm64-b ((deny - st26.insn-count) * 4))
    in let do-read = st27.insn-count
-   in let st28 = a64-emit-call-to st27 "__block_read_body"
+   in let st28 = a64-emit-body-call st27 "__block_read_body"
    in let read-done-idx = st28.insn-count
    in let st29 = a64-emit st28 arm64-nop
    in let do-write = st29.insn-count
-   in let st30 = a64-emit-call-to st29 "__block_write_body"
+   in let st30 = a64-emit-body-call st29 "__block_write_body"
    in let write-done-idx = st30.insn-count
    in let st31 = a64-emit st30 arm64-nop
    in let do-count = st31.insn-count
-   in let st32 = a64-emit-call-to st31 "__block_count_body"
+   in let st32 = a64-emit-body-call st31 "__block_count_body"
    in let done = st32.insn-count
    in let st33 = a64-emit st32 (arm64-ldp 21 22 31 32)
    in let st34 = a64-emit st33 (arm64-ldp 19 20 31 16)

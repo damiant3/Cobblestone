@@ -1,6 +1,10 @@
 # A File Read on ARM64 and RISC-V
 
-**Status**: proposal, not started. Measured 2026-07-21 (val).
+**Status**: steps 1 to 5 DONE on both cross lanes, and step 0 DONE for the
+block builtins (an unresolved `block-` call is a refusal, 2026-08-18). What
+is left of step 0 is the rest of the unresolved-call class, which is blocked
+on `plugs-backlog.md` 1.42, rulings queue 13. Measured 2026-07-21 (val),
+carried through 2026-08-18.
 
 **Ruling 2026-08-05 (Damian): RESURFACED into the IoT/cross-arch chain.** Steps 2-5 (VirtioBlk on the plug lanes, block-read-sector, FileSystem grounding) are live again alongside ProtocolStack's remainder; step 1 landed independently (see the corrected table below).
 
@@ -75,6 +79,126 @@ own row rather than here.
 **Note 2026-08-05:** what landed is a `[WARN]` shadow warning at the
 unresolved-call path (`Arm64CodeGen3.codex` ~1815), not the hard
 `[UNSUPPORTED]` failure this step prescribes.
+
+**Measured 2026-08-18 (fester), and it is what blocks the hard failure
+today: EVERY ordinary compile on both lanes already carries three
+unresolved calls.** The block helpers are emitted unconditionally, so
+`vb-capacity-auto`, `vb-read-auto` and `vb-write-auto` are unresolved in
+any program that does not declare `Device.Block` -- the driver is
+correctly eliminated and the helper is dead code. Turning the path hard
+as written fails every test on both lanes.
+
+The allow-list this step offers as the escape is the wrong shape for it:
+allow-listing `vb-*` would excuse exactly the calls that matter when a
+program DOES declare `Device.Block`. The right condition is the one red
+already ruled for reachability -- **emit the block helpers only when the
+driver is in the program**.
+
+**DONE, fester 2026-08-18.** Both plugs read `vb-capacity-auto` out of
+`chapter.defs` in `emit-module`, carry the answer as `has-block-driver`,
+and skip the helpers without it. On ARM64 the SVC dispatch inside
+`a64-emit-sync-handler` is gated on the same answer, because it is the
+caller of the three `__block_*_body` routines and would otherwise be three
+more unresolved calls of its own; without a driver that vector slot is
+one branch to the fault handler. Measured: no `vb-` warning survives in
+any compile on either lane, all four disk tests still pass on both, the
+riscv battery is unchanged at 52 failures and the arm64 battery unchanged
+at 30 with an IDENTICAL failure set, measured before and after in the same
+session rather than against a two-day-old file.
+
+**1.42 IS CLOSED, fester 2026-08-18** (Damian's ruling 13 = a, the compiler
+stops emitting the application). The riscv lane now carries 3 distinct
+unresolved names across 2 tests, `real-approx-modes` and
+`uefi-read-key-nofirmware`, and those two are the whole of what step 0 has
+left to answer for. What it was: With the flood gone the real tail is visible: 26 distinct
+unresolved names across 11 tests on riscv64, 27 on arm64, and almost all
+of them are unit constructors -- `Second`, `Metre`, `Celsius`, `Hertz`.
+`Second = unit Integer` makes `Second 42` an application of a name no plug
+emits and no program defines. **Those tests pass anyway**, because the
+constructor is the identity on its representation and the argument is
+already in `a0`/`x0` when the placeholder is reached. Ten green tests are
+green by accident, and the hard failure cannot land while they are.
+
+`real-approx-modes` FAILS on both lanes and carries an unresolved
+`to-real-approx-saturating`, and **this document said the one explained the
+other. It does not, and the claim is withdrawn (fester, 2026-08-18).**
+`emit-to-real-saturating-builtin` (`X86_64Builtins.codex:1565`) emits its
+argument and returns that register: the conversion is the IDENTITY, so its
+unresolved call is the same harmless accident as the unit constructors, not
+the cause of a wrong number.
+
+The cause is width, and the test's own prose was written to catch it: the
+saturating emitter reads an exponent with the DOUBLE constants (`shl 1`,
+`shr 53`, against 2047) where a single needs `shl 33`, `shr 56`, against
+255. Both plugs dispatch on the operation alone and never on the width, so
+`IrMulRealSaturating` goes to `fmul-d` on both lanes while
+`IrMulRealApprox` correctly uses `fmul-s`. Run f32 operands through the f64
+constants and the guard never fires, which is why one source gives two
+different wrong numbers rather than one. Filed as `plugs-backlog.md` 1.44.
+
+#### What the conditional costs, routed to red 2026-08-18 (fester). RULED THE SAME DAY.
+
+**Red's calls, and what was built for them:**
+
+- **1 and 2: build the guard now.** An unresolved call to a `block-` name
+  is now `[UNSUPPORTED]` rather than `[WARN]` in both plugs
+  (`rv-unresolved-report`, `a64-unresolved-report`), which makes `run.ps1`
+  exit 6 and fails the build. It closes item 1's stale-register window for
+  the block case without touching the eleven 1.42 tests, so **step 0 is
+  DONE for block builtins** and item 1's remainder waits on ruling 13.
+- **3: keep the SVC dispatch, gate only the three `__block_*_body` calls.**
+  `a64-emit-body-call` answers `-1` in place of each call when the program
+  carries no driver, which is what the capability refusal a few
+  instructions above already answers. The short-circuit of the whole
+  handler is reverted.
+- **4: no timing campaign.** Recorded under R-COST in the 1.3 row.
+
+**The guard was verified against the case it exists for, both ways.**
+Before it, on the riscv lane through `test-cross-disk.ps1`:
+`sector-read-list-growth` **PASSED** with `block-read-sector` unresolved,
+its disk call doing nothing at all, and `block-sector-count` answered `0`
+where its fixture is 128 sectors. A false green and a wrong number from
+one defect. Both now refuse at compile, naming the call and the fix.
+
+The control is the other half and it is the point: the guard must refuse
+ONLY those. `fs-layer`, `fs-servicer`, `fs-deny-runtime` and
+`block-gate-restrict` still compile and pass on BOTH lanes, the riscv
+battery is unchanged at 52 failures and the arm64 battery at 30 with an
+identical failure set, and no test in either battery is refused by the new
+path.
+
+The three items as they were routed, kept because the reasoning is the
+part worth having:
+
+**1. One case FAILS WORSE than it did, until step 0 lands.** Before, the
+block builtins were always emitted, so a program without
+`cap-block-device` ran the gate and got a defined `-1`. Now, a program
+that does not carry the driver has no builtin at all, the call site stays
+an unpatched nop, and the caller reads a stale register. Both programs are
+broken; `-1` is a refusal and a stale register is not. The window is a
+program calling a block builtin without `VirtioBlk` in scope, and step 0's
+hard refusal is what closes it. **Step 0 is blocked on 1.42, which is
+Damian's ruling 13, so the window stays open for as long as that takes.**
+The alternative is to land the hard refusal now and accept that eleven
+tests which pass by accident start failing the build.
+
+**2. The predicate is a bare string in two plugs, and nothing checks it.**
+`has-block-driver` is `vb-capacity-auto` appearing in `chapter.defs`.
+Rename that entry point and every block program silently loses its
+builtins. It is the same shape as `ir-emit-roots` above, which this
+document records firing TWICE, each time one increment after the warning
+beside it was written. This is a third instance of that trap and it has no
+guard. A guard is cheap: refuse when a `block-*` builtin is called and the
+driver name is absent.
+
+**3. ARM64 slot 4 is now a bare branch to the fault handler** for any
+program without a block driver. Measured 2026-08-18: `arm64-svc` is
+emitted in exactly ONE place, `a64-emit-svc-stub`, used only by the block
+helpers, so nothing is broken today. What it installs is a precondition
+nobody will expect: the next SVC added on this lane is swallowed by the
+fault handler unless the program happens to carry a block driver. Prose
+beside the code is weak protection against that, and the alternative is to
+keep the dispatch and gate only the three `__block_*_body` calls.
 
 ### Step 1 -- raw load and store
 
@@ -465,11 +589,28 @@ user handler through its slot is guarded by
 guard exists to prevent is still the outcome for any op we install no
 default for.
 
-**The refusal arms are unexercised.** A program that reaches the
-servicer without `cap-filesystem-read` / `-write` should get the empty
-text and False; that is inspected, not measured, because the fixture
-would be a second 16 MB `.disk` sidecar for a test whose subject is one
-branch.
+**DONE on riscv 2026-08-17** (main 16474), servicers and block helpers
+both. `fs-servicer` and `fs-layer` pass on the riscv lane through
+`build/test-cross-disk.ps1`, and this document said the twin was open for
+a day after it landed.
+
+**The refusal arms are MEASURED now, fester 2026-08-18, on all three
+lanes.** `codex/test/fs-deny-runtime` already covered the write arm and
+carried a `.no-cross` sidecar; the sidecar was stale (`.disk` is routed
+to `test-cross-disk.ps1` before `.no-cross` is even read, so it had
+stopped doing anything), and the read arm was missing everywhere,
+x86-64 included. The test now drops `cap-filesystem-read` and reads
+`OK.TXT` -- **the same file it read successfully earlier in the same
+run**, because an empty answer has two causes and reading an absent file
+discriminates neither. It passes on x86-64 under codex-vm and on both
+cross lanes.
+
+Ablated rather than asserted: with `rv-emit-fs-read-servicer`'s deny
+branch left unpatched, the arm answers `denied read [hello]`, which is
+the failure it exists to catch.
+
+The fixture cost this paragraph feared was imaginary -- the test already
+had its `.disk`, and the refusal arms need no second one.
 
 ### Step 5 -- the harness
 

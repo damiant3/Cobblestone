@@ -93,6 +93,48 @@ Section: GPIO Driver
     else pi4-gpio-set pin
    end
 
+Section: GPIO Linear Handle
+
+ The foreword Pin threaded onto the BCM2711 GPIO: open sets the pin's
+ function, close returns it to input. The handle carries the GPIO base so
+ close reaches the right FSEL register without the caller re-supplying
+ it.
+
+  pi4-gpio-config : Integer, PinMode -> [Device.Mmio] Integer
+  pi4-gpio-config (pin) (mode) =
+   when mode
+    is PinOutput -> pi4-gpio-set-output pin
+    is PinInput -> pi4-gpio-set-input pin
+    is PinAlternate (af) -> pi4-gpio-set-alternate pin af
+    is PinAnalog -> pi4-gpio-set-input pin
+
+  pi4-gpio-open : Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
+  pi4-gpio-open (pin) (mode) = act
+   m <- pi4-gpio-config pin mode
+   Pin pi4-gpio-base pin
+  end
+
+  pi4-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
+  pi4-pin-write (p) (high) =
+   when p
+    is Pin (base) (pin) -> act
+      w <- (if high then pi4-gpio-set pin else pi4-gpio-clear pin)
+      Pin base pin
+    end
+
+  pi4-pin-read : linear Pin -> [Gpio, Device.Mmio] (linear Pin, Boolean)
+  pi4-pin-read (p) =
+   when p
+    is Pin (base) (pin) -> act
+      v <- (pi4-gpio-read pin)
+      (Pin base pin, v)
+    end
+
+  pi4-pin-close : linear Pin -> [Gpio, Device.Mmio] Integer
+  pi4-pin-close (p) =
+   when p
+    is Pin (base) (pin) -> pi4-gpio-set-input pin
+
 Section: UART Registers (PL011 UART0)
 
   pi4-uart0-base : Integer = #FE201000
@@ -207,6 +249,48 @@ Section: UART Driver
    pi4-uart-send-byte 10
   end
 
+Section: UART Linear Handle
+
+ The foreword UartPort threaded onto PL011 UART0: open initialises the
+ port, write sends one byte through the board's own TX-FIFO poll, close
+ disables the UART. The board addresses UART0 directly, so the handle
+ carries the base for the type's sake; close writes the fixed CR.
+
+  pi4-uart-open : Frequency -> [Uart, Device.Mmio] linear UartPort
+  pi4-uart-open (baud) = act
+   i <- pi4-uart-init baud
+   UartPort pi4-uart0-base
+  end
+
+  pi4-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
+  pi4-uart-write (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- pi4-uart-send-byte byte
+      UartPort b
+    end
+
+  pi4-uart-recv-bytes : Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  pi4-uart-recv-bytes (b) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- (pi4-uart-recv-byte)
+    pi4-uart-recv-bytes b n (i + 1) (list-push acc v)
+   end
+
+  pi4-uart-recv : linear UartPort, Integer -> [Uart, Device.Mmio] (linear UartPort, List Integer)
+  pi4-uart-recv (port) (n) =
+   when port
+    is UartPort (b) -> act
+      bytes <- (pi4-uart-recv-bytes b n 0 [])
+      (UartPort b, bytes)
+    end
+
+  pi4-uart-close : linear UartPort -> [Uart, Device.Mmio] Integer
+  pi4-uart-close (port) =
+   when port
+    is UartPort (b) -> mmio-write-32 pi4-uart-cr 0
+
 Section: SPI Registers (SPI0)
 
   pi4-spi0-base : Integer = #FE204000
@@ -282,6 +366,80 @@ Section: SPI Driver
    cs <- (mmio-read-32 pi4-spi-cs)
    bit-and cs pi4-spi-cs-ta > 0
   end
+
+Section: Linear I2C Bus
+
+  pi4-i2c-open : [I2c, Device.Mmio] linear I2cBus
+  pi4-i2c-open = act
+   i <- pi4-i2c-init
+   I2cBus pi4-bsc1-base
+  end
+
+  pi4-i2c-bus-write-reg : linear I2cBus, Integer, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  pi4-i2c-bus-write-reg (bus) (addr) (reg) (val) =
+   when bus
+    is I2cBus (b) -> act
+      r <- (pi4-i2c-write-reg addr reg val)
+      (I2cBus b, r)
+    end
+
+  pi4-i2c-bus-read-reg : linear I2cBus, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  pi4-i2c-bus-read-reg (bus) (addr) (reg) =
+   when bus
+    is I2cBus (b) -> act
+      v <- (pi4-i2c-read-reg addr reg)
+      (I2cBus b, v)
+    end
+
+  pi4-i2c-close : linear I2cBus -> [I2c, Device.Mmio] Integer
+  pi4-i2c-close (bus) =
+   when bus
+    is I2cBus (b) -> mmio-write-32 pi4-bsc-c 0
+
+Section: Linear SPI Transaction
+
+  pi4-spi-open : [Spi, Device.Mmio] linear SpiBus
+  pi4-spi-open = act
+   i <- pi4-spi-init
+   SpiBus pi4-spi0-base
+  end
+
+  pi4-spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
+  pi4-spi-select (bus) (cs) =
+   when bus
+    is SpiBus (b) -> act
+      w <- (pi4-gpio-clear cs)
+      SpiTxn b cs
+    end
+
+  pi4-spi-transfer-bytes : Integer, List Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  pi4-spi-transfer-bytes (b) (out) (i) (len) (acc) =
+   if i >= len then acc
+   else act
+    v <- (pi4-spi-transfer (list-at out i))
+    pi4-spi-transfer-bytes b out (i + 1) len (list-push acc v)
+   end
+
+  pi4-spi-txn-transfer : linear SpiTxn, List Integer -> [Spi, Device.Mmio] (linear SpiTxn, List Integer)
+  pi4-spi-txn-transfer (txn) (out) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      got <- (pi4-spi-transfer-bytes b out 0 (list-length out) [])
+      (SpiTxn b cs, got)
+    end
+
+  pi4-spi-deselect : linear SpiTxn -> [Spi, Device.Mmio] linear SpiBus
+  pi4-spi-deselect (txn) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      w <- (pi4-gpio-set cs)
+      SpiBus b
+    end
+
+  pi4-spi-close : linear SpiBus -> [Spi, Device.Mmio] Integer
+  pi4-spi-close (bus) =
+   when bus
+    is SpiBus (b) -> mmio-write-32 pi4-spi-cs 0
 
 Section: I2C Registers (BSC1)
 

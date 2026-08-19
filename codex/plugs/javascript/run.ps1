@@ -43,7 +43,8 @@ Write-Host "[js-run] Listening on port $plugPort"
 
 # -- Phase 3: Boot plug CDX ------------------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
+$consoleFile = [System.IO.Path]::GetTempFileName()
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless', '-output', $consoleFile) `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 # Accept TCP connection from plug
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -99,6 +100,15 @@ $stderrFile = [System.IO.Path]::GetTempFileName()
     if ($recvAborted) {
         [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.")
         exit 8
+    }
+    # codex-vm dumps its output ring to -output ON EXIT, so grepping before the
+    # VM has gone reads a file the guest console has not reached yet.
+    if ($proc -and -not $proc.HasExited) { $proc.WaitForExit(20000) }
+    $truncHit = @()
+    if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }
+    if ($truncHit.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug could not send its whole output -- $($truncHit[0].Line.Trim())")
+        exit 7
     }    Write-Host "[js-run] OK: $Out ($($outText.Length) chars)"
 
     $tcpClient.Close()
@@ -108,3 +118,4 @@ $stderrFile = [System.IO.Path]::GetTempFileName()
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue

@@ -222,13 +222,12 @@ Bare metal answers deep recursion with a multi-gigabyte arena, so a host
 stack small enough to refuse it is grading the HOST. The oracle arm passes
 the flag and says why.
 
-**`zig`'s arm is RED on main and it is not this item.** The oracle subject
-gained `snoc-len` when 1.7 landed and the zig plug has no emitter for
-`list-snoc`, so the emitted program does not compile
-(`@compileError("zig plug: no emitter for list-snoc")`, plus an unused
-parameter). Measured against the DEPOT subject, which fails identically,
-so it predates the recursion rows. It is `codex/plugs/zig/**` and Steve
-Howell's; the same gap wasm had and is fixed in.
+**`zig`'s arm is GREEN and this item never owned it.** The arm was red for a
+missing `list-snoc` emitter after 1.7 landed `snoc-len` in the oracle subject.
+`ZigEmitter.codex:787` maps `list-snoc` to `cx_ll_push` and the arm passes all
+40 values (reek, 2026-08-18). Rebuild the plug before re-measuring: a binary
+older than its source is what produced the red reading, and the harness now
+refuses one.
 
 0. ~~The entry-point inventory~~ done, above.
 1. ~~`python`~~ **DONE 2026-08-16.** `py-emit-entry`
@@ -240,7 +239,94 @@ Howell's; the same gap wasm had and is fixed in.
    28 of 28.
 2. ~~The class-1 plugs whose runtimes are on this box~~ done: `javascript`
    fixed, `wasm` answered, `csharp` and `zig` already carried it.
-3. **What is left is the 42 plugs whose runtime is NOT on this box.** Six
+3. **What is left is the 42 plugs whose runtime is NOT on this box**, and it
+   is root's from 2026-08-17 (red's reassignment; val is fortran-deep), one
+   CL per family, each read and not run:
+   - JVM family (`java`, `kotlin`, `scala`, `groovy`, `clojure`, `compose`):
+     DONE 2026-08-17, `Thread(null, runnable, "codex-main", 512L * 1024 *
+     1024)` then start and join, the `csharp` constant; the emitted entry of
+     `plug-oracle-arith` through all six was read. `compose` runs it from
+     `onCreate` and joins on the UI thread, which is what its synchronous
+     `opening()` call already did.
+   - native family (`rust`, `d`, `swift`, `swiftui`, `objc`, `ada`, `pascal`):
+     DONE 2026-08-17, each in the language's own thread-with-stack-size:
+     rust `std::thread::Builder::new().stack_size(512 * 1024 * 1024)`, d
+     `new core.thread.Thread(&opening, 512 * 1024 * 1024)`, swift/swiftui a
+     `Thread` with `stackSize` and a `DispatchSemaphore` to wait, objc an
+     `NSThread` with `stackSize` and `dispatch_semaphore`, ada a `task
+     Codex_Main` with `pragma Storage_Size (512 * 1024 * 1024)` whose body is
+     the entry (the main procedure waits for it as its master), pascal a
+     `TThread` descendant created with `StackSize` 512 MB and `WaitFor` (uses
+     `Classes`). `qt` is class 3: its program is JavaScript run by QML's own
+     engine inside `ApplicationWindow`, and nothing emitted source can say
+     sets that engine's stack; recorded, not worked.
+   - node targets: `typescript` DONE 2026-08-17, the `javascript`
+     `worker_threads` shape with `declare const require/__filename/process`
+     so it typechecks without `@types/node`; and this one RAN, because node
+     24 executes `.ts` directly: the oracle subject answers its first twelve
+     values and dies at `int_mod`, a prelude gap that is now plugs-backlog
+     1.39 (typescript as an oracle arm). `electron` is class 3, not class 1
+     as the row first listed it: its program runs in Chromium's renderer,
+     whose stack no emitted source can set.
+   - `.NET` UI shells (`maui`, `wpf`, `winforms`): class 1 by mechanism (the
+     `csharp` thread) but NOT applied: each calls `opening()` from a UI
+     constructor and collects into `_output`, which the shell binds to the
+     UI thread, so a worker writing it needs a dispatcher hop that nothing on
+     this box can measure. Recorded; whoever runs one applies it with the hop.
+   - `gtk` is Python GTK4: the `python` counter, `sys.setrecursionlimit
+     (1000000)` in its imports, DONE 2026-08-17.
+   - `fortran` (val, 2026-08-18). **Two separate questions were tangled in
+     this row and only one of them is about depth.** The first is
+     CONFORMANCE and is now fixed: every emitted function carried no
+     `RECURSIVE` prefix and returned through its own name, so a recursive
+     call was not standard-conforming at all under `-std=f95/f2003/f2008`,
+     and depth was moot while any recursion was illegal. Both emission
+     paths now emit `recursive function f(..) result(f_r)`; the account and
+     its measurement are in plugs-backlog 1.7 stage 9.
+
+     The second is DEPTH, and **fortran reads as class 3, recorded as a
+     READING and NOT ablated.** A Fortran program has no standard way to
+     ask for a bigger stack: there is no portable threading in the
+     language, so the class-1 shape every other native target uses has
+     nothing to bind to. The depth available is a property of the process
+     (`ulimit -s`, or the linker's stack reserve on Windows) or of
+     OpenMP's `OMP_STACKSIZE`, and all three are set OUTSIDE the emitted
+     source, which is exactly `javascript`'s `--stack-size` situation and
+     the same close.
+
+     **Do not promote this to a finding without the ablation.** The design
+     says establish the class by mechanism-plus-ablation and python is the
+     standing reason: it read as class 1 from the outside and was a
+     counter. There is no gfortran on this box, so nothing here has been
+     run. When one appears the arm is already written: the oracle's rows 31
+     and 33 recurse 100,000 deep (`ping 100000`, `sum-to 100000`), and
+     `ping`/`pong` is the mutual pair no self-TCO pass can flatten. The
+     order is: compile at default stack and confirm it dies; raise
+     `ulimit -s` alone and see whether that ALONE fixes it; only then
+     conclude the source has no lever.
+   - class 2, nothing to emit, each a READING of the runtime's mechanism and
+     not a measurement (2026-08-17): `go` (goroutine stacks grow, the main
+     goroutine included, to a 1 GB default maximum on 64-bit); `elixir` (a
+     BEAM process stack lives on the heap and grows); `haskell` (GHC's stack
+     is heap-allocated and bounded by `-K`, default 80 percent of memory);
+     `perl` (the interpreter stack is heap, deep recursion is a warning);
+     `php` (call frames are heap, no depth limit without xdebug); `scheme`
+     (the emitted program is implementation-neutral and every common
+     implementation keeps continuations on the heap). Confirm with the probe
+     when a runtime is present; a wrong reading here costs one row.
+   - class 3, recorded divergences: `ruby` (VM stack size is the environment
+     variable `RUBY_THREAD_VM_STACK_SIZE` read at startup, not settable from
+     the program), `julia` (task stacks are fixed at spawn and not sized by
+     the program), `lua` (Lua-to-Lua depth is bounded by `LUAI_MAXSTACK`
+     slots, a build constant), `ocaml` (the main fiber runs on the system
+     stack, `ulimit -s`), `nim` (no runtime stack size for the main thread),
+     `cobol` (no thread), `flutter` (Dart isolates have fixed stacks),
+     `electron`, `qt` and the browser targets `angular`, `react`, `vue`,
+     `svelte`, `html` (the engine's stack is the host's). A caller of any of
+     these may rely on self recursion (every plug loops it) and not on
+     mutual or non-tail depth past the host's stack.
+   - `fortran` stays val's.
+   Six 
    toolchains exist here and no more, so every one of those can be taken
    only as far as the emitted source. The entry-point inventory above says
    where each one calls `opening`; the work per plug is one wrapper, and
@@ -255,8 +341,7 @@ Howell's; the same gap wasm had and is fixed in.
    the obvious candidate and turned out to be class 1.
 
 **The probe was not wired until the plugs it grades were fixed**, on
-1.13's ruling. It is wired now: `python`, `javascript`, `wasm` and
-`csharp` each pass all 33 values, and `zig` is red for a reason that
-predates the rows and belongs to another owner.
-
-`codex/plugs/zig/**` is Steve Howell's and is not in scope.
+1.13's ruling. It is wired now, and all six arms pass every value of the
+oracle subject: `python`, `javascript`, `typescript`, `zig`, `wasm` and
+`csharp`. `codex/plugs/zig/**` is ordinary fleet code (Damian, 2026-08-18)
+and is in scope like any other plug.

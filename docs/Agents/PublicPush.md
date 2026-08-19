@@ -139,7 +139,10 @@ its state as a thing to reconcile against.
 - Do not publish the 8 MB boot image or PNG snapshots; `git reset` them out
   of the stage. **`build/boot/kbd-diag-v16.img` stays up** -- public since
   2026-08-03 and Damian ruled it kept 2026-08-17, on the grounds that it does
-  not hurt and might help someone.
+  not hurt and might help someone. **uild/boot/diag.img and
+  uild/boot/diag.rehearsed SHIP on the same grounds and by design
+  (DiagnosticStick.md step 4): the stranger's instrument, 16 MB, no seed,
+  no identity, its SHA-256 in the release notes.
 
 ## Divergence (Damian's rule: pull but take nothing, keep all local)
 

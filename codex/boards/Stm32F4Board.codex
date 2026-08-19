@@ -128,6 +128,48 @@ Section: GPIO Driver
     else gpio-set (gpio-base + stm32-gpio-bsrr-off) pin
   end
 
+Section: GPIO Linear Handle
+
+ The foreword Pin threaded onto an STM32 GPIO port: open sets the pin's
+ mode, close returns it to input. The handle carries the port base so
+ close reaches the same MODER without the caller re-supplying it. The
+ caller still enables the port clock (stm32-gpio-enable-port) first.
+
+  stm32-gpio-config : Integer, Integer, PinMode -> [Device.Mmio] Integer
+  stm32-gpio-config (gpio-base) (pin) (mode) =
+   when mode
+    is PinOutput -> stm32-gpio-set-output gpio-base pin
+    is PinInput -> stm32-gpio-set-input gpio-base pin
+    is PinAlternate (af) -> stm32-gpio-set-alternate gpio-base pin af
+    is PinAnalog -> stm32-gpio-set-mode gpio-base pin 3
+
+  stm32-gpio-open : Integer, Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
+  stm32-gpio-open (gpio-base) (pin) (mode) = act
+   m <- stm32-gpio-config gpio-base pin mode
+   Pin gpio-base pin
+  end
+
+  stm32-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
+  stm32-pin-write (p) (high) =
+   when p
+    is Pin (base) (pin) -> act
+      w <- stm32-gpio-write base pin high
+      Pin base pin
+    end
+
+  stm32-pin-read : linear Pin -> [Gpio, Device.Mmio] (linear Pin, Boolean)
+  stm32-pin-read (p) =
+   when p
+    is Pin (base) (pin) -> act
+      v <- (stm32-gpio-read base pin)
+      (Pin base pin, v)
+    end
+
+  stm32-pin-close : linear Pin -> [Gpio, Device.Mmio] Integer
+  stm32-pin-close (p) =
+   when p
+    is Pin (base) (pin) -> stm32-gpio-set-mode base pin 0
+
 Section: USART Registers
 
   stm32-usart1-base : Integer = #40011000
@@ -230,6 +272,48 @@ Section: UART Driver
    stm32-uart-send-byte usart-base 10
   end
 
+Section: UART Linear Handle
+
+ The foreword UartPort threaded onto USART2: open initialises the port,
+ write sends one byte through the board's own TXE poll, close disables
+ the USART. The handle carries the USART base so a caller cannot send
+ down a different USART by passing the wrong address.
+
+  stm32-uart-open : Frequency -> [Uart, Device.Mmio] linear UartPort
+  stm32-uart-open (baud) = act
+   i <- stm32-uart2-init baud
+   UartPort stm32-usart2-base
+  end
+
+  stm32-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
+  stm32-uart-write (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- stm32-uart-send-byte b byte
+      UartPort b
+    end
+
+  stm32-uart-recv-bytes : Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  stm32-uart-recv-bytes (b) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- (stm32-uart-recv-byte b)
+    stm32-uart-recv-bytes b n (i + 1) (list-push acc v)
+   end
+
+  stm32-uart-recv : linear UartPort, Integer -> [Uart, Device.Mmio] (linear UartPort, List Integer)
+  stm32-uart-recv (port) (n) =
+   when port
+    is UartPort (b) -> act
+      bytes <- (stm32-uart-recv-bytes b n 0 [])
+      (UartPort b, bytes)
+    end
+
+  stm32-uart-close : linear UartPort -> [Uart, Device.Mmio] Integer
+  stm32-uart-close (port) =
+   when port
+    is UartPort (b) -> mmio-write-32 (b + stm32-usart-cr1-off) 0
+
 Section: SPI Registers
 
   stm32-spi1-base : Integer = #40013000
@@ -290,6 +374,80 @@ Section: SPI Driver
    sr <- (mmio-read-32 (spi-base + stm32-spi-sr-off))
    bit-and sr stm32-spi-sr-bsy > 0
   end
+
+Section: Linear I2C Bus
+
+  stm32-i2c-open : [I2c, Device.Mmio] linear I2cBus
+  stm32-i2c-open = act
+   i <- stm32-i2c1-init
+   I2cBus stm32-i2c1-base
+  end
+
+  stm32-i2c-bus-write-reg : linear I2cBus, Integer, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  stm32-i2c-bus-write-reg (bus) (addr) (reg) (val) =
+   when bus
+    is I2cBus (b) -> act
+      r <- (stm32-i2c-write-reg b addr reg val)
+      (I2cBus b, r)
+    end
+
+  stm32-i2c-bus-read-reg : linear I2cBus, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  stm32-i2c-bus-read-reg (bus) (addr) (reg) =
+   when bus
+    is I2cBus (b) -> act
+      v <- (stm32-i2c-read-reg b addr reg)
+      (I2cBus b, v)
+    end
+
+  stm32-i2c-close : linear I2cBus -> [I2c, Device.Mmio] Integer
+  stm32-i2c-close (bus) =
+   when bus
+    is I2cBus (b) -> mmio-write-32 (b + stm32-i2c-cr1-off) 0
+
+Section: Linear SPI Transaction
+
+  stm32-spi-open : [Spi, Device.Mmio] linear SpiBus
+  stm32-spi-open = act
+   i <- stm32-spi1-init
+   SpiBus stm32-spi1-base
+  end
+
+  stm32-spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
+  stm32-spi-select (bus) (cs) =
+   when bus
+    is SpiBus (b) -> act
+      w <- (stm32-gpio-write stm32-gpioa-base cs False)
+      SpiTxn b cs
+    end
+
+  stm32-spi-transfer-bytes : Integer, List Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  stm32-spi-transfer-bytes (b) (out) (i) (len) (acc) =
+   if i >= len then acc
+   else act
+    v <- (stm32-spi-transfer b (list-at out i))
+    stm32-spi-transfer-bytes b out (i + 1) len (list-push acc v)
+   end
+
+  stm32-spi-txn-transfer : linear SpiTxn, List Integer -> [Spi, Device.Mmio] (linear SpiTxn, List Integer)
+  stm32-spi-txn-transfer (txn) (out) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      got <- (stm32-spi-transfer-bytes b out 0 (list-length out) [])
+      (SpiTxn b cs, got)
+    end
+
+  stm32-spi-deselect : linear SpiTxn -> [Spi, Device.Mmio] linear SpiBus
+  stm32-spi-deselect (txn) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      w <- (stm32-gpio-write stm32-gpioa-base cs True)
+      SpiBus b
+    end
+
+  stm32-spi-close : linear SpiBus -> [Spi, Device.Mmio] Integer
+  stm32-spi-close (bus) =
+   when bus
+    is SpiBus (b) -> mmio-write-32 (b + stm32-spi-cr1-off) 0
 
 Section: I2C Registers
 

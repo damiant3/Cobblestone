@@ -19,40 +19,25 @@ Section: Constants
 
 Section: Buffer Region
 
- These were #40200000, #40210000 and #40220000, which is INSIDE the memory
- the ARM64 stub allocates for the kernel: `a64pe-kernel-base` is #40100000
- and the allocation runs to roughly #42100000, image plus heap. The NIC was
- therefore writing received frames over the guest's own memory, and it
- showed up as one CCE table entry: `/` decoded to code 18 on one request
- and 44 on the next where it should be 81, while every other character in
- the same path stayed correct. A value that changes between requests is
- clobbered memory, not a conversion fault, and that is what separated this
- from the `unicode-bytes-to-text` suspicion that `bytes-to-text-2f`
- cleared.
+ The DMA regions must sit above the top of everything the ARM64 stub
+ allocates for the kernel (image, page tables, heap grant). That top,
+ `stack-top`, is known only to the image builder, so the stub writes it,
+ rounded up to a 2 MB boundary, to `vnet-dma-floor-cell` before jumping to
+ the kernel (`codex/plugs/pe/Arm64PeWriter.codex`, `a64pe-stub-publish-dma-floor`),
+ and the regions are derived from that cell rather than fixed. #40004000 is
+ the cross-file contract between the stub and both drivers, the same kind of
+ by-value agreement as the process-table offsets; `VirtioBlk` reads the same
+ cell. This is what makes the layout self-adjust when the kernel or its heap
+ grant grows, closing the failure recorded when these were fixed at
+ #44000000: a heap grant raised past its headroom put the regions back inside
+ the allocation and the NIC wrote frames over guest memory.
 
- Anything here must stay clear of the stub's allocation, whose top is
- `stack-top` = `a64pe-kernel-base` + `text-pages` * 4096, both computed in
- `codex/plugs/pe/Arm64PeWriter.codex` (`:38`, `:415`, `:432`). `text-pages`
- is `(text-size + rodata-size + 4095) / 4096 + a64pe-pt-size / 4096 + 8192`,
- so it MOVES with the size of the kernel being built.
-
- Measured 2026-08-17 against the shipped `BOOTAA64.EFI` (78,336 bytes, one
- 77,016-byte .text): `text-pages` is 8,227, so `stack-top` is #42123000 and
- the headroom below #44000000 is 32,362,496 bytes.
-
- **The guard rail is not the image size, it is the 8192 literal.** The image
- would have to grow by 30.9 MB, four hundred times its present text, to reach
- this region. The heap grant reaches it after 7,901 more pages -- so raising
- 8192 to 16384, the obvious next value, puts `stack-top` at #44123000 and
- both this region and `VirtioBlk`'s INSIDE the allocation again, overrunning
- by 1.14 MB. The failure is the silent one this section already describes: a
- device writing over guest memory, surfacing as one wrong byte somewhere
- unrelated. Change that literal and these constants together.
-
-  vnet-buf-base : Integer = #44000000
-  vnet-rx-region : Integer = #44000000
-  vnet-tx-region : Integer = #44010000
-  vnet-queue-region : Integer = #44020000
+  vnet-dma-floor-cell : Integer = #40004000
+  vnet-dma-floor : Integer = peek-32 vnet-dma-floor-cell 0
+  vnet-buf-base : Integer = vnet-dma-floor
+  vnet-rx-region : Integer = vnet-dma-floor
+  vnet-tx-region : Integer = vnet-dma-floor + #10000
+  vnet-queue-region : Integer = vnet-dma-floor + #20000
 
 Section: Device State
 

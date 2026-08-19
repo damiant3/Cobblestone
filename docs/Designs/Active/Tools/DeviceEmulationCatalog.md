@@ -300,7 +300,27 @@ here by construction:
 | A controller with **more than eight root ports** | **`-xhci-ports N`, reek, this CL** | `xhci-diag-ports` wrote cell `20 + port` up to port 16 while the snapshot band is 20-27, laying PORTSC over the handback flag that gates `kbd-pump` and over the BAR verdict. **Neither bed could show it and for the same reason twice**: this model reported four ports, QEMU reports eight, and eight is exactly the last cell the band owns. Both sat on or under the boundary. Empty ports above the modelled four report PP set, because a zero there would reproduce the overrun and hide its consequence. Fixed at main 12803 |
 | A storage target that is **not ready on its first command** | **UNIT ATTENTION by default, reek, this CL** | `msc-wait-ready`'s entire retry loop -- TEST UNIT READY, REQUEST SENSE, retry -- had **never executed**, because a recognised command always succeeded here. That is the rung-4-to-5 path of the MSC ladder, the next rung the board reaches after the one it is stuck on. Calibrated by sabotaging `msc-wait-ready` to skip the handshake: it fails with the condition armed and passes under `-usb-no-unit-attention`, which is what shows the handshake is load-bearing rather than decorative. **The first version of this arm did not fail when it should have**, because `xhci_reset_ctl` memsets the BOT state and the guest issues HCRST during bring-up, so arming at init was wiped before the first command. Arming belongs in the reset path, which is also what ASC 0x29 describes. Closing the entry reek opened 2026-07-29 |
 | A connected device **above root port 7** | **`-usb-disk-port N`, reek, this CL** | Anything that reads a wide bus through a narrow window. The probe prints eight PORTSC rows and index 18 is a COUNT, so a 26-port controller answering `connected=4` named none of them -- and the ASUS boot stick was on port 9 the whole time, which is how a sitting concluded "all four devices are Full or Low speed" from a display that could not show the SuperSpeed one. **No bed could hold such a device:** this model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims, so the 16-port splice reports 16 and still cannot seat a device high. `-xhci-ports 26 -usb-disk-port 10` reproduces the board exactly (`port=9 speed=4`), and it is what the connected-port BITMASK at index 46 was verified against -- the mask lights bit 9, which nothing before could make it do |
-| A **PCI bridge**, so a bus walk can descend | queued, found by blu | `pci_add_device` hardcodes `header_type = 0` for every function, so no bridge exists on the emulated bus and **the descent branch of `pci-scan-all` cannot execute here at all.** The ASUS presents 21 devices over four buses; this bed presents one and cannot tell a complete walk from a bus-0 walk. Found by READING rather than by a failing test, which is the only way a gap of this shape is found |
+| A **PCI bridge**, so a bus walk can descend | **`-pci-bridge`, root 2026-08-18** | `pci_add_device` hardcoded `header_type = 0` for every function, so no bridge existed on the emulated bus and **the descent branch of `pci-scan-all` could not execute here at all.** The ASUS presents 21 devices over four buses; this bed presented one and could not tell a complete walk from a bus-0 walk. Found by READING rather than by a failing test, which is the only way a gap of this shape is found |
+
+**The PCI bridge, landed 2026-08-18 (root).** `-pci-bridge` puts a PCI-to-PCI
+bridge (`1b36:000c`, class 06 subclass 04, header type 1, the `pcie-root-port`
+fester saw on the board) on bus 0, forwarding to bus 1 where a `1af4:1041`
+endpoint sits. The config space is bus-aware now (`pci_find(bus, slot)`; the
+`0xCF8` decode passes the bus byte it had always discarded), and the bridge
+answers offset `0x18` with its primary/secondary/subordinate bus numbers, which
+is the register `pci-scan-all` reads to know where to descend. **OFF by default
+(L-FALLBACK):** the bridge is a new bus-0 device, so a default-on flag would
+move every existing `pci-scan-bus-0` count; measured, `e1000-bringup` is
+byte-identical with the flag absent. **Calibrated by the flag itself, not an
+argument:** `codex/test/pci-bridge-scan` calls `pci-scan-all` and counts
+devices on bus 1. With `-pci-bridge` it reports `scan count=5 bus1=1` (the
+descent ran and found the endpoint); the SAME binary without the flag reports
+`count=3 bus1=0`, because with no bridge the descent branch cannot execute at
+all. The flag moves the row, so the branch is load-bearing rather than
+decorative. What it does not buy: this is a single bridge one level deep with an
+inert endpoint, so multi-level descent, the subordinate-bus range, and a driven
+device behind the bridge are all still unmodelled; the first honest verdict on a
+real four-bus topology is still the board.
 
 ### Running the USB storage arms by hand
 

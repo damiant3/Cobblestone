@@ -123,6 +123,48 @@ Section: GPIO (same register layout as STM32F4, different bases)
     else mmio-write-32 bsrr (bit-shl 1 pin)
    end
 
+Section: GPIO Linear Handle
+
+ The foreword Pin threaded onto an STM32L4 GPIO port: open sets the pin's
+ mode, close returns it to input. The handle carries the port base so
+ close reaches the same MODER without the caller re-supplying it. The
+ caller still enables the port clock (l4-rcc-enable-port) first.
+
+  l4-gpio-config : Integer, Integer, PinMode -> [Device.Mmio] Integer
+  l4-gpio-config (gpio-base) (pin) (mode) =
+   when mode
+    is PinOutput -> l4-gpio-set-output gpio-base pin
+    is PinInput -> l4-gpio-set-input gpio-base pin
+    is PinAlternate (af) -> l4-gpio-set-alternate gpio-base pin af
+    is PinAnalog -> l4-gpio-set-mode gpio-base pin 3
+
+  l4-gpio-open : Integer, Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
+  l4-gpio-open (gpio-base) (pin) (mode) = act
+   m <- l4-gpio-config gpio-base pin mode
+   Pin gpio-base pin
+  end
+
+  l4-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
+  l4-pin-write (p) (high) =
+   when p
+    is Pin (base) (pin) -> act
+      w <- l4-gpio-write base pin high
+      Pin base pin
+    end
+
+  l4-pin-read : linear Pin -> [Gpio, Device.Mmio] (linear Pin, Boolean)
+  l4-pin-read (p) =
+   when p
+    is Pin (base) (pin) -> act
+      v <- (l4-gpio-read base pin)
+      (Pin base pin, v)
+    end
+
+  l4-pin-close : linear Pin -> [Gpio, Device.Mmio] Integer
+  l4-pin-close (p) =
+   when p
+    is Pin (base) (pin) -> l4-gpio-set-mode base pin 0
+
 Section: USART2 (0x40004400)
 
   l4-usart2-base : Integer = #40004400
@@ -182,6 +224,59 @@ Section: USART2 (0x40004400)
    l4-uart-send-byte 10
   end
 
+Section: UART Linear Handle
+
+ The foreword UartPort threaded onto USART2: open initialises the port,
+ write sends one byte through the board's own TXE poll, close disables
+ the USART. The board's send targets USART2 directly, so the handle
+ carries the base for the type's sake and for close's CR1 write.
+
+  l4-uart-open : Frequency -> [Uart, Device.Mmio] linear UartPort
+  l4-uart-open (baud) = act
+   i <- l4-uart-init baud
+   UartPort l4-usart2-base
+  end
+
+  l4-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
+  l4-uart-write (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- l4-uart-send-byte byte
+      UartPort b
+    end
+
+  l4-usart-rdr-off : Integer = #24
+  l4-usart-isr-rxne : Integer = #20
+
+  l4-uart-recv-byte : Integer, Integer -> [Device.Mmio] Integer
+  l4-uart-recv-byte (usart-base) (fuel) =
+   if fuel <= 0 then 0 - 1
+   else act
+    isr <- (mmio-read-32 (usart-base + l4-usart-isr-off))
+    if bit-and isr l4-usart-isr-rxne > 0 then bit-and (mmio-read-32 (usart-base + l4-usart-rdr-off)) #FF
+    else l4-uart-recv-byte usart-base (fuel - 1)
+   end
+
+  l4-uart-recv-bytes : Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  l4-uart-recv-bytes (b) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- (l4-uart-recv-byte b 100000)
+    l4-uart-recv-bytes b n (i + 1) (list-push acc v)
+   end
+
+  l4-uart-recv : linear UartPort, Integer -> [Uart, Device.Mmio] (linear UartPort, List Integer)
+  l4-uart-recv (port) (n) =
+   when port
+    is UartPort (b) -> act
+      bytes <- (l4-uart-recv-bytes b n 0 [])
+      (UartPort b, bytes)
+    end
+  l4-uart-close : linear UartPort -> [Uart, Device.Mmio] Integer
+  l4-uart-close (port) =
+   when port
+    is UartPort (b) -> mmio-write-32 (b + l4-usart-cr1-off) 0
+
 Section: SPI1 (0x40013000)
 
   l4-spi1-base : Integer = #40013000
@@ -233,6 +328,80 @@ Section: SPI1 (0x40013000)
     if bit-and sr l4-spi-sr-rxne > 0 then 1
     else l4-spi-wait-rxne (fuel - 1)
    end
+
+Section: Linear I2C Bus
+
+  l4-i2c-open : [I2c, Device.Mmio] linear I2cBus
+  l4-i2c-open = act
+   i <- l4-i2c-init
+   I2cBus l4-i2c1-base
+  end
+
+  l4-i2c-bus-write-reg : linear I2cBus, Integer, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  l4-i2c-bus-write-reg (bus) (addr) (reg) (val) =
+   when bus
+    is I2cBus (b) -> act
+      r <- (l4-i2c-write-reg addr reg val)
+      (I2cBus b, r)
+    end
+
+  l4-i2c-bus-read-reg : linear I2cBus, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  l4-i2c-bus-read-reg (bus) (addr) (reg) =
+   when bus
+    is I2cBus (b) -> act
+      v <- (l4-i2c-read-reg addr reg)
+      (I2cBus b, v)
+    end
+
+  l4-i2c-close : linear I2cBus -> [I2c, Device.Mmio] Integer
+  l4-i2c-close (bus) =
+   when bus
+    is I2cBus (b) -> mmio-write-32 (b + l4-i2c-cr1-off) 0
+
+Section: Linear SPI Transaction
+
+  l4-spi-open : [Spi, Device.Mmio] linear SpiBus
+  l4-spi-open = act
+   i <- l4-spi-init
+   SpiBus l4-spi1-base
+  end
+
+  l4-spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
+  l4-spi-select (bus) (cs) =
+   when bus
+    is SpiBus (b) -> act
+      w <- (l4-gpio-write l4-gpioa-base cs False)
+      SpiTxn b cs
+    end
+
+  l4-spi-transfer-bytes : Integer, List Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  l4-spi-transfer-bytes (b) (out) (i) (len) (acc) =
+   if i >= len then acc
+   else act
+    v <- (l4-spi-transfer (list-at out i))
+    l4-spi-transfer-bytes b out (i + 1) len (list-push acc v)
+   end
+
+  l4-spi-txn-transfer : linear SpiTxn, List Integer -> [Spi, Device.Mmio] (linear SpiTxn, List Integer)
+  l4-spi-txn-transfer (txn) (out) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      got <- (l4-spi-transfer-bytes b out 0 (list-length out) [])
+      (SpiTxn b cs, got)
+    end
+
+  l4-spi-deselect : linear SpiTxn -> [Spi, Device.Mmio] linear SpiBus
+  l4-spi-deselect (txn) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      w <- (l4-gpio-write l4-gpioa-base cs True)
+      SpiBus b
+    end
+
+  l4-spi-close : linear SpiBus -> [Spi, Device.Mmio] Integer
+  l4-spi-close (bus) =
+   when bus
+    is SpiBus (b) -> mmio-write-32 (b + l4-spi-cr1-off) 0
 
 Section: I2C1 (0x40005400)
 

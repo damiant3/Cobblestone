@@ -86,7 +86,7 @@ if (((@($effects).Count -eq 0) -or (@($vocabBase).Count -eq 0))) {
 
 # intended asymmetry
 $effectsWithoutCap = @('State', 'Time', 'Random')
-$capsWithoutEffect = @('Concurrent', 'Capability', 'Flash', 'Process')
+$capsWithoutEffect = @('Concurrent', 'Capability', 'Flash', 'Process', 'Gpio', 'Uart', 'Spi', 'I2c', 'Adc', 'Power')
 $errs = @()
 
 

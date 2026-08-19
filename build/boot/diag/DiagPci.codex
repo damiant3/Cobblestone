@@ -1,0 +1,277 @@
+Chapter: DiagPci
+  cites Foreword chapter MemoryMap
+  cites Kernel chapter Pci
+  cites Diag chapter DiagStage
+
+ A chipset-integrated part (the PCH's own Ethernet, SATA and xHCI) sits on
+ bus 0. A discrete one sits behind a PCI-to-PCI bridge, on a bus whose
+ number only that bridge knows, so bus 0 alone answers the question on
+ some boards and silently answers nothing on others.
+
+ We say:
+
+Section: Hex
+
+  pp-nib : Integer -> Text
+  pp-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  pp-hx : Integer, Integer -> Text
+  pp-hx (v) (sh) = pp-nib (bit-and (bit-shru v sh) 15)
+
+  pp-hex2 : Integer -> Text
+  pp-hex2 (v) = pp-hx v 4 & pp-hx v 0
+
+  pp-hex4 : Integer -> Text
+  pp-hex4 (v) = pp-hx v 12 & pp-hx v 8 & pp-hx v 4 & pp-hx v 0
+
+  pp-hex8 : Integer -> Text
+  pp-hex8 (v) = pp-hex4 (bit-shru v 16) & pp-hex4 v
+
+Section: Config Reads
+
+  pp-cfg : PciDevice, Integer -> Integer
+  pp-cfg (d) (off) = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) off
+
+ Register 8 carries the revision in its low byte and the programming
+ interface in the next one up; the class and subclass above them are
+ already on the record. Prog-if is what separates an AHCI controller from
+ the same silicon in IDE mode, and xHCI (48) from EHCI (32).
+
+  pp-progif : PciDevice -> Integer
+  pp-progif (d) = bit-and (bit-shru (pp-cfg d 8) 8) 255
+
+  pp-rev : PciDevice -> Integer
+  pp-rev (d) = bit-and (pp-cfg d 8) 255
+
+ Register 24 on a bridge holds the primary bus in its low byte and the
+ SECONDARY bus in the next one: the number of the bus on the far side,
+ which is the one to walk.
+
+  pp-sec-bus : PciDevice -> Integer
+  pp-sec-bus (d) = bit-and (bit-shru (pp-cfg d 24) 8) 255
+
+Section: The Bus Walk
+
+  pp-collect : Integer, Integer, List PciDevice -> List PciDevice
+  pp-collect (bus) (depth) (acc) =
+    if depth > 3 then acc
+    else let s = pci-scan-bus bus
+    in pp-bridges (s.devices) (s.count) 0 bus depth (acc & s.devices)
+
+  pp-bridges : List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
+  pp-bridges (devs) (n) (i) (bus) (depth) (acc) =
+    if i >= n then acc
+    else if (list-at devs i).pci-header-type == 1 then pp-bridge-one (list-at devs i) devs n i bus depth acc
+    else pp-bridges devs n (i + 1) bus depth acc
+
+ A secondary bus at or below the bus being walked is either an unconfigured
+ bridge or a malformed one, and following it would not terminate. The depth
+ cap above is the second guard on the same hazard.
+
+  pp-bridge-one : PciDevice, List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
+  pp-bridge-one (d) (devs) (n) (i) (bus) (depth) (acc) =
+    let sec = pp-sec-bus d
+    in if sec > bus then pp-bridges devs n (i + 1) bus depth (pp-collect sec (depth + 1) acc)
+    else pp-bridges devs n (i + 1) bus depth acc
+
+Section: Classification
+
+  pp-is-net : PciDevice -> Boolean
+  pp-is-net (d) = d.pci-class == 2
+
+  pp-is-storage : PciDevice -> Boolean
+  pp-is-storage (d) = d.pci-class == 1
+
+  pp-is-usb : PciDevice -> Boolean
+  pp-is-usb (d) = if d.pci-class == 12 then d.pci-subclass == 3 else False
+
+  pp-kind-of : PciDevice -> Integer
+  pp-kind-of (d) =
+    if pp-is-net d then 2
+    else if pp-is-storage d then 1
+    else if pp-is-usb d then 12
+    else 0
+
+  pp-colour : PciDevice -> Integer
+  pp-colour (d) =
+    if pp-is-net d then 16776960
+    else if pp-is-storage d then 65535
+    else if pp-is-usb d then 65280
+    else 9474192
+
+  pp-find : List PciDevice, Integer, Integer, Integer -> Integer
+  pp-find (devs) (n) (i) (kind) =
+    if i >= n then -1
+    else if pp-kind-of (list-at devs i) == kind then i
+    else pp-find devs n (i + 1) kind
+
+Section: Formatting
+
+  pp-bdf : PciDevice -> Text
+  pp-bdf (d) = pp-hex2 (d.pci-bus) & ":" & pp-hex2 (d.pci-dev) & "." & show (d.pci-func)
+
+  pp-ids : PciDevice -> Text
+  pp-ids (d) = pp-hex4 (d.pci-vendor) & ":" & pp-hex4 (d.pci-device-id)
+
+  pp-cls : PciDevice -> Text
+  pp-cls (d) = pp-hex2 (d.pci-class) & "." & pp-hex2 (d.pci-subclass) & "." & pp-hex2 (pp-progif d)
+
+  pp-line : PciDevice -> Text
+  pp-line (d) = pp-bdf d & " " & pp-ids d & " " & pp-cls d
+
+ The subsystem pair is what names the board variant of a part whose
+ vendor:device is shared across a whole family, and the BARs are raw
+ rather than parsed: a one-shot reading should carry what the register
+ held, not this chapter's reading of it.
+
+  pp-tail-a : PciDevice -> Text
+  pp-tail-a (d) =
+    let sub = pp-cfg d 44
+    in " r" & pp-hex2 (pp-rev d) & " s" & pp-hex4 (bit-and sub 65535) & ":" & pp-hex4 (bit-shru sub 16)
+
+ BAR0 is where a NIC and an xHCI put their register window, and BAR5 is
+ where an AHCI controller puts its: on an ICH9 in AHCI mode BAR0 through
+ BAR4 are the vestigial IDE bars and read back zero, so a reading that
+ took BAR0 alone would report a storage controller at address nothing.
+ BAR1 is carried because it holds the high half of a 64-bit BAR0.
+
+  pp-tail-b : PciDevice -> Text
+  pp-tail-b (d) =
+    " i" & pp-hex2 (bit-and (pp-cfg d 60) 255) & " B0=" & pp-hex8 (pp-cfg d 16) & " B1=" & pp-hex8 (pp-cfg d 20) & " B5=" & pp-hex8 (pp-cfg d 36)
+
+ Whether the register window is REACHABLE, which is a different question
+ from where it is. The runtime page tables map exactly one gigabyte above
+ RAM for devices, 3 GB to 4 GB. A BAR the firmware placed in that range
+ can be read as soon as the device is enabled; a 64-bit BAR placed above
+ 4 GB is not mapped at all, and a driver would need another page
+ directory before it could read a single register. Both are ordinary
+ outcomes of firmware assignment, so the probe answers it rather than
+ leaving the arithmetic to be done at the machine.
+
+ A BAR whose bit 0 is set is an I/O-space BAR (PCI 3.0 section 6.2.5.1):
+ its upper bits are a port number, not an address, so it says nothing
+ about memory reachability. The RTL8168 on the ASUS puts I/O in BAR0 and
+ its MMIO in the 64-bit BAR2, and judging BAR0 there read a port as an
+ address below 3 GB (HardwareSitting.md, diag.img flight 2026-08-18). A
+ memory BAR with bits 2..1 equal to 2 is 64-bit and its high dword is
+ the next BAR; an AHCI controller in AHCI mode reads zero for BAR0
+ through BAR4 and carries its window in BAR5.
+
+  pp-bar-words : PciDevice, Integer, List Integer -> List Integer
+  pp-bar-words (d) (off) (acc) =
+    if off > 36 then acc
+    else pp-bar-words d (off + 4) (list-push acc (pp-cfg d off))
+
+  pp-bar-mem-base : List Integer, Integer -> Integer
+  pp-bar-mem-base (bars) (i) =
+    if i >= list-length bars then 0
+    else let lo = list-at bars i
+    in if lo == 0 then pp-bar-mem-base bars (i + 1)
+    else if bit-and lo 1 == 1 then pp-bar-mem-base bars (i + 1)
+    else if bit-and (bit-shru lo 1) 3 == 2 then bit-or (bit-and lo 4294967280) (bit-shl (bit-and (if i + 1 < list-length bars then list-at bars (i + 1) else 0) 4294967295) 32)
+    else bit-and lo 4294967280
+
+  pp-map-none : Integer = 0
+  pp-map-ok : Integer = 1
+  pp-map-above4g : Integer = 2
+  pp-map-below3g : Integer = 3
+
+  pp-map-judge : List Integer -> Integer
+  pp-map-judge (bars) =
+    let b = pp-bar-mem-base bars 0
+    in if b == 0 then pp-map-none
+    else if b < bare-metal-device-window-lo then pp-map-below3g
+    else if b < bare-metal-device-window-hi then pp-map-ok
+    else pp-map-above4g
+
+  pp-map-of : PciDevice -> Integer
+  pp-map-of (d) = pp-map-judge (pp-bar-words d 16 [])
+
+  pp-map-word : Integer -> Text
+  pp-map-word (m) =
+    if m == pp-map-ok then "ok"
+    else if m == pp-map-below3g then "BELOW3G"
+    else if m == pp-map-above4g then "ABOVE4G"
+    else "none"
+
+  pp-map-note : PciDevice -> Text
+  pp-map-note (d) = " MAP=" & pp-map-word (pp-map-of d)
+
+  pp-tail : PciDevice -> Text
+  pp-tail (d) = pp-tail-a d & pp-tail-b d & pp-map-note d
+
+Section: The Body
+
+  pp-body : List PciDevice, Integer -> Text
+  pp-body (devs) (n) = "PCIPROBE1 n=" & show n & ";" & pp-body-loop devs n 0 ""
+
+  pp-body-loop : List PciDevice, Integer, Integer, Text -> Text
+  pp-body-loop (devs) (n) (i) (acc) =
+    if i >= n then acc
+    else let d = list-at devs i
+    in let one = pp-line d & (if pp-kind-of d == 0 then "" else pp-tail d) & ";"
+    in pp-body-loop devs n (i + 1) (acc & one)
+
+Section: The Stage
+
+  dpci-states : List Text = ["ok", "unassigned", "ABOVE4G", "BELOW3G", "empty"]
+
+ The stage state is the worst BAR verdict among the parts a driver would
+ bind, in the order the README ranks them: BELOW3G is mapped as RAM inside
+ the arena and fails somewhere else entirely, ABOVE4G faults loudly on the
+ first register read, and only then does an unassigned BAR count.
+
+  pp-worst-map : List PciDevice, Integer, Integer, Integer -> Integer
+  pp-worst-map (devs) (n) (i) (acc) =
+    if i >= n then acc
+    else let d = list-at devs i
+    in if pp-kind-of d == 0 then pp-worst-map devs n (i + 1) acc
+    else let m = pp-map-of d
+    in let acc2 = if m == pp-map-below3g then 3 else if m == pp-map-above4g then (if acc == 3 then 3 else 2) else if m == pp-map-none then (if acc >= 2 then acc else 1) else acc
+    in pp-worst-map devs n (i + 1) acc2
+
+  pp-stage-state : List PciDevice, Integer -> Text
+  pp-stage-state (devs) (n) =
+    if n == 0 then "empty"
+    else let w = pp-worst-map devs n 0 0
+    in if w == 3 then "BELOW3G"
+    else if w == 2 then "ABOVE4G"
+    else if w == 1 then "unassigned"
+    else "ok"
+
+  pp-stage-colour : Text -> Integer
+  pp-stage-colour (s) =
+    if s == "ok" then diag-col-good
+    else if s == "BELOW3G" then diag-col-bad
+    else if s == "empty" then diag-col-bad
+    else diag-col-warn
+
+  pp-callout : List PciDevice, Integer, Integer, Text -> Text
+  pp-callout (devs) (n) (kind) (label) =
+    let i = pp-find devs n 0 kind
+    in if i < 0 then label & "=none"
+    else let d = list-at devs i
+    in label & "=" & pp-bdf d & " " & pp-ids d & " MAP=" & pp-map-word (pp-map-of d)
+
+  pp-bank-lines : List PciDevice, Integer, Integer, List Text -> List Text
+  pp-bank-lines (devs) (n) (i) (acc) =
+    if i >= n then acc
+    else let d = list-at devs i
+    in pp-bank-lines devs n (i + 1) (list-push acc ("pci " & pp-line d & (if pp-kind-of d == 0 then "" else pp-tail d)))
+
+  dpci-run : DiagCtx -> DiagResult
+  dpci-run (c) =
+    let scan = c.dc-pci
+    in let devs = scan.devices
+    in let n = scan.count
+    in let state = pp-stage-state devs n
+    in let g1 = "devices=" & show n & " " & pp-callout devs n 2 "nic"
+    in let g2 = pp-callout devs n 1 "storage" & " " & pp-callout devs n 12 "usb"
+    in let bank = pp-bank-lines devs n 0 [g1, g2]
+    in diag-result state (pp-stage-colour state) [g1, g2] bank

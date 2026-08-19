@@ -257,16 +257,23 @@ Section: Expression Emission
   emit-py-let (name) (val) (body) (ctx) =
    "(lambda " & py-sanitize name & ": " & emit-py-expr body ctx & ")(" & emit-py-expr val ctx & ")"
 
+ A multi-parameter lambda is emitted CURRIED, one `lambda` per parameter,
+ because that is how the wire APPLIES it: `\x y -> x + y` arrives as an N-ary
+ `IrLambda` and its use arrives as nested one-argument applications. Emitting
+ `lambda x, y:` and letting the call site spell `(a)(b)` raises
+ `TypeError: missing 1 required positional argument`, which is what
+ `lam-two` did. Currying also makes partial application work, where matching
+ the N-ary form against the chain would need the arity to agree at every site.
+
   emit-py-lambda : List IRParam, IRExpr, PyCtx -> Text
   emit-py-lambda (params) (body) (ctx) =
    if list-length params == 0 then "(lambda: " & emit-py-expr body ctx & ")"
-   else "(lambda " & emit-py-lambda-params params 0 & ": " & emit-py-expr body ctx & ")"
+   else "(" & emit-py-lambda-heads params 0 & emit-py-expr body ctx & ")"
 
-  emit-py-lambda-params : List IRParam, Integer -> Text
-  emit-py-lambda-params (params) (i) =
-   if i == list-length params then ""
-   else if i == list-length params - 1 then py-sanitize ((list-at params i).name)
-   else py-sanitize ((list-at params i).name) & ", " & emit-py-lambda-params params (i + 1)
+  emit-py-lambda-heads : List IRParam, Integer -> Text
+  emit-py-lambda-heads (params) (i) =
+   if i >= list-length params then ""
+   else "lambda " & py-sanitize ((list-at params i).name) & ": " & emit-py-lambda-heads params (i + 1)
 
   emit-py-list : List IRExpr, PyCtx -> Text
   emit-py-list (elems) (ctx) =

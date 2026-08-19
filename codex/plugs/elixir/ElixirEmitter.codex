@@ -135,11 +135,30 @@ Section: Expression Emission
   ex-let-binder : Text, IRExpr -> Text
   ex-let-binder (name) (val) =
    if name == "__seq" then when val
-    is IrFieldStore (rec) (field) (v) (ty) (sp) -> when rec
-     is IrName (rn) (rty) (rsp) -> rn
-     is otherwise -> name
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> if ex-store-root rec == "" then name else ex-store-root rec
     is otherwise -> name
    else name
+
+  ex-store-root : IRExpr -> Text
+  ex-store-root (rec) =
+   when rec
+    is IrName (rn) (rty) (rsp) -> rn
+    is IrFieldAccess (r) (f) (t) (s) -> ex-store-root r
+    is otherwise -> ""
+
+  ex-store-path : IRExpr, Text -> Text
+  ex-store-path (rec) (acc) =
+   when rec
+    is IrFieldAccess (r) (f) (t) (s) -> ex-store-path r (":" & ex-field f & (if acc == "" then "" else ", " & acc))
+    is otherwise -> acc
+
+  ex-store-value : IRExpr, List ArityEntry, Integer -> Text
+  ex-store-value (val) (arities) (depth) =
+   when val
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> when rec
+     is IrName (rn) (rty) (rsp) -> emit-ex-expr-at val arities depth
+     is otherwise -> "put_in(" & ex-sanitize (ex-store-root rec) & ", [" & ex-store-path rec (":" & ex-field field) & "], " & emit-ex-expr-at v arities (depth + 1) & ")"
+    is otherwise -> emit-ex-expr-at val arities depth
 
   emit-ex-expr : IRExpr, List ArityEntry -> Text
   emit-ex-expr (e) (arities) = emit-ex-expr-at e arities 0
@@ -157,7 +176,7 @@ Section: Expression Emission
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-ex-binary op l r arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-ex-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ex-expr-at c arities (depth + 1) & ", do: " & emit-ex-expr-at t arities (depth + 1) & ", else: " & emit-ex-expr-at el arities (depth + 1) & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> "(fn -> " & ex-sanitize (ex-let-binder name val) & " = " & emit-ex-expr-at val arities (depth + 1) & "; " & emit-ex-expr-at body arities (depth + 1) & " end).()"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(fn -> " & ex-sanitize (ex-let-binder name val) & " = " & ex-store-value val arities (depth + 1) & "; " & emit-ex-expr-at body arities (depth + 1) & " end).()"
     is IrApply (f) (a) (ty) (sp) -> emit-ex-apply e arities
     is IrLambda (params) (body) (ty) (sp) -> "fn " & emit-ex-lambda-params params 0 & " -> " & emit-ex-expr body arities & " end"
     is IrList (elems) (ty) (sp) -> "[" & emit-ex-list-elems elems 0 arities & "]"
@@ -260,6 +279,12 @@ Section: Expression Emission
     is IrWildPat (sp) -> "_ -> " & emit-ex-expr body arities & "; "
     is IrVecPat (pats) (ty) (sp) -> "_ -> " & emit-ex-expr body arities & "; "
 
+  emit-ex-exec : IRExpr, List ArityEntry -> Text
+  emit-ex-exec (e) (arities) =
+   when e
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> if ex-store-root rec == "" then emit-ex-expr e arities else ex-sanitize (ex-store-root rec) & " = " & ex-store-value e arities 0
+    is otherwise -> emit-ex-expr e arities
+
   emit-ex-act : List IRActStmt, List ArityEntry -> Text
   emit-ex-act (stmts) (arities) =
    "(fn -> " & emit-ex-act-stmts stmts 0 arities & " end).()"
@@ -270,7 +295,7 @@ Section: Expression Emission
    else let s = list-at stmts i
    in (when s
     is IrDoBind (name) (ty) (val) (sp) -> ex-sanitize name & " = " & emit-ex-expr val arities & "; "
-    is IrDoExec (e) (sp) -> emit-ex-expr e arities & "; ") & emit-ex-act-stmts stmts (i + 1) arities
+    is IrDoExec (e) (sp) -> emit-ex-exec e arities & "; ") & emit-ex-act-stmts stmts (i + 1) arities
 
 Section: Builtin Table
 
@@ -315,7 +340,9 @@ Section: Builtin Table
    else if idx == 22 then "_cx_text_split.(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
    else if idx == 23 then "String.starts_with?(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
    else if idx == 24 then "_cx_text_to_integer.(" & emit-ex-expr (list-at args 0) arities & ")"
-   else if idx == 25 then "File.write!(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"    else emit-ex-expr (list-at args 0) arities & " ++ [" & emit-ex-expr (list-at args 1) arities & "]"
+   else if idx == 25 then "File.write!(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 26 then emit-ex-expr (list-at args 0) arities & " ++ [" & emit-ex-expr (list-at args 1) arities & "]"
+   else "cx_UNSUPPORTED_builtin(\"" & n & "\")"
 
 Section: Apply Emission
 

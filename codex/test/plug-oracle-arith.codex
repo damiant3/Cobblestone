@@ -138,6 +138,48 @@ Section: Deep recursion
 
   sum-to : Integer -> Integer
   sum-to (n) = if n <= 0 then 0 else n + sum-to (n - 1)
+
+Section: Lambdas
+
+ The wire does NOT lift lambdas, so a plug meets capture itself: a lambda
+ that reads an enclosing local arrives with that local as a bare name and
+ no marker. Six plugs carry their own lifting and the rest lean on the
+ target language's closures, which is correct wherever the target has
+ them. Fortran and C89 have none, so those emit a refusal rather than a
+ body, and that is the declared behaviour rather than a gap.
+
+ A lambda of more than one parameter arrives as nested application, one
+ argument at a time. A target that spells this as a single call with all
+ the arguments and a target that spells it as a chain of one-argument
+ calls both run, and they disagree only when the chain is applied to more
+ arguments than the innermost lambda declares.
+
+ The second parameter carries a DIFFERENT type from the first on purpose.
+ Every parameter here typed Integer would let a wrong or missing type on
+ any parameter but the first run correctly anyway, which is exactly how
+ this class stayed invisible: a lambda whose later parameters reached the
+ wire untyped answered correctly on x86-64, which needs no annotation to
+ build the call, and would be refused by a statically typed target and
+ guessed at by C or Java.
+
+  lam-one : Integer -> Integer
+  lam-one (n) = (\x -> x + 100) n
+
+  lam-two : Integer, Integer -> Integer
+  lam-two (a) (b) = ((\x y -> x + y) a) b
+
+  lam-three : Integer, Integer, Integer -> Integer
+  lam-three (a) (b) (c) = (((\x y z -> x + y * z) a) b) c
+
+  lam-mixed : Integer, Boolean -> Integer
+  lam-mixed (n) (f) = ((\x b -> if b then x else 0 - x) n) f
+
+  lam-capture : Integer -> Integer
+  lam-capture (n) = let k = 10 in (\x -> x + k) n
+
+  lam-capture-two : Integer, Integer -> Integer
+  lam-capture-two (a) (b) = let k = 100 in ((\x y -> (x + y) * k) a) b
+
 Section: Report
 
   opening : [Console] Nothing
@@ -175,4 +217,11 @@ Section: Report
    print-line-uni (show (ping 100000))
    print-line-uni (show (sum-to 1000))
    print-line-uni (show (sum-to 100000))
+   print-line-uni (show (lam-one 5))
+   print-line-uni (show (lam-two 1 2))
+   print-line-uni (show (lam-three 2 3 4))
+   print-line-uni (show (lam-mixed 7 True))
+   print-line-uni (show (lam-mixed 7 False))
+   print-line-uni (show (lam-capture 5))
+   print-line-uni (show (lam-capture-two 1 2))
   end

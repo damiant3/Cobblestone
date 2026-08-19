@@ -522,6 +522,77 @@ Section: Expression Lowering
       is otherwise -> arg-ir
     is otherwise -> arg-ir
 
+ A unit constructor is the IDENTITY on its representation, so it is not
+ emitted as a call. `Second = unit Integer` gives a constructor `Second`
+ whose only content is the type it announces, and every backend that
+ received `Second 42` as an application had to find a function nobody
+ defines: x86-64 has an arm for it, and both plug lanes left the branch
+ unpatched and reported an unresolved call. That was invisible because the
+ argument is already in the answer register, so doing nothing gave the
+ right answer (`plugs-backlog.md` 1.42, Damian's ruling 13 on 2026-08-18:
+ the compiler stops emitting the application, rather than each plug
+ learning to ignore it).
+
+ The test is the RETURN type, not the name spelling: a function is the
+ constructor for a unit type when its return is `UnitTy nm` and it is
+ itself named `nm`. `Minute-to-Second` returns a `UnitTy` and is not named
+ for it, so a real conversion is still a real call.
+
+  is-unit-ctor : IRExpr, CodexType -> Boolean
+  is-unit-ctor (func-ir) (ret-ty) =
+   when func-ir
+    is IrName (n) (fty) (ns) ->
+     when ret-ty
+      is UnitTy (nm) (inner) -> nm.value == n
+      is otherwise -> False
+    is otherwise -> False
+
+ The elided value has to KEEP the unit type, and half the IR cannot hold
+ one: `set-ir-expr-type` has no arm for a literal because `IrIntLit` has no
+ type slot at all, and `ir-expr-type` answers `int-ty-default` for it.
+ Dropping `Second 42` to a bare literal therefore types `t1` as Integer, and
+ `try-unit-convert` above keys on exactly that type to insert an implicit
+ conversion. Measured 2026-08-18: `codex/test/implicit-convert` answered
+ `cold` for `describe-temp (Celsius 100)` because the `Celsius-to-Kelvin`
+ conversion stopped firing, on x86-64, the lane that was already correct.
+
+ So a value the type cannot be written onto is bound instead: `let __unit-N
+ = 42 in __unit-N` carries the unit type on the binding and on the name,
+ costs no call, and every backend already emits both. The name is unique per
+ construction site so two of them in one function cannot share a slot.
+
+ **A let is not retypeable and `set-ir-expr-type` will not tell you so.** It
+ has an arm for `IrLet` that rewrites the let's own type field, but
+ `ir-expr-type` of a let reads its BODY, so the rewrite changes nothing
+ anyone reads. `Span = unit Metre` is the shape that catches it: the value
+ of `Span (Metre 1.0)` went on reporting `Metre`, and `try-unit-convert` at
+ the next position out then synthesised a call to `Metre-to-Span`, a
+ conversion no annotation declares and no program defines. Measured
+ 2026-08-18 on `codex/test/ops/unit-real-arith`: 4 of them, where the depot
+ seed emitted 4 unresolved `Span` constructor calls instead. A let is
+ retyped through its body here, which is the only place the type is read.
+
+  ir-node-carries-type : IRExpr -> Boolean
+  ir-node-carries-type (e) =
+   when e
+    is IrName (n) (t) (s) -> True
+    is IrApply (f) (a) (t) (s) -> True
+    is IrIf (c) (th) (el) (t) (s) -> True
+    is IrMatch (sc) (bs) (t) (s) -> True
+    is IrAct (ss) (t) (s) -> True
+    is IrRecord (n) (fs) (t) (s) -> True
+    is IrFieldAccess (r) (f) (t) (s) -> True
+    is otherwise -> False
+
+  lower-unit-ctor-value : IRExpr, CodexType, SourceSpan -> IRExpr
+  lower-unit-ctor-value (arg-ir) (unit-ty) (sp) =
+   when arg-ir
+    is IrLet (n) (t) (v) (b) (s) -> deck-record (IrLet n t v (lower-unit-ctor-value b unit-ty sp) s)
+    is otherwise ->
+     if ir-node-carries-type arg-ir then set-ir-expr-type arg-ir unit-ty
+     else let nm = "__unit-" & integer-to-text ((sp.start).offset)
+     in deck-record (IrLet nm unit-ty arg-ir (deck-record (IrName nm unit-ty sp)) sp)
+
   lower-apply-normal : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-apply-normal (f) (a) (ty) (ctx) (sp) =
    let func-ir = lower-expr f ErrorTy ctx
@@ -535,7 +606,8 @@ Section: Expression Lowering
       is ErrorTy -> ty
       is otherwise -> resolved-ret
    in let preferred-ret = prefer-applied-ty ty actual-ret (ctx.local-type-vars)
-   in lower-apply-dispatch func-ir arg-ir preferred-ret sp
+   in if is-unit-ctor func-ir ret-ty then lower-unit-ctor-value arg-ir ret-ty sp
+   else lower-apply-dispatch func-ir arg-ir preferred-ret sp
 
   lower-show-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-show-apply (f) (a) (ty) (ctx) (sp) =

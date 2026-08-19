@@ -19,6 +19,13 @@ The ceremony lives in `apps/works/GopWizard.codex` (payload
 
 ## The fitting
 
+*Order changed 2026-08-18: the upstream and timezone screens now come
+BEFORE the passphrase and entropy screens, because everything the ceremony
+allocates from the passphrase onward is scrubbed from memory once the
+identity is saved and loaded (`docs/ExaminersAssay.md`, "The Identity Wrap
+Known Answer"). The screens themselves are unchanged; the screenshots below
+are in the old order.*
+
 ### Welcome
 
 ![Welcome to Codex](images/firstboot/01-welcome.png)

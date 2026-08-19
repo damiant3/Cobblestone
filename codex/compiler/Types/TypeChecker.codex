@@ -3005,11 +3005,31 @@ Section: Linearity Checking
     is AEffectType (effs) (scopes) (tl) (ret) (s) -> ret
     is otherwise -> t
 
+  atype-app-arg-list : ATypeExpr -> List ATypeExpr
+  atype-app-arg-list (t) =
+   when t
+    is AAppType (head) (args) (s) -> atype-app-arg-list head & args
+    is otherwise -> []
+
+  atypes-any-linear : List ATypeExpr, Integer, Integer -> Boolean
+  atypes-any-linear (ts) (i) (len) =
+   if i >= len then False
+   else if is-linear-atype (list-at ts i) then True
+   else atypes-any-linear ts (i + 1) len
+
+  atype-tuple-has-linear : ATypeExpr -> Boolean
+  atype-tuple-has-linear (t) =
+   let args = atype-app-arg-list t
+   in if list-length args == 0 then False
+   else if atype-core-name t == ("Tup" & integer-to-text (list-length args)) then atypes-any-linear args 0 (list-length args)
+   else False
+
   linear-return-sanctioned : ADef -> Boolean
   linear-return-sanctioned (def) =
    if list-length (def.declared-type) == 0 then False
    else if is-freeze-door def then True
-   else is-linear-atype (atype-strip-effect (afun-return-after (list-at (def.declared-type) 0) (list-length (def.params))))
+   else let rt = atype-strip-effect (afun-return-after (list-at (def.declared-type) 0) (list-length (def.params)))
+   in if is-linear-atype rt then True else atype-tuple-has-linear rt
 
   check-one-linear-param : ADef, TypeEnv, AParam, UnificationState -> UnificationState
   check-one-linear-param (def) (env) (p) (st) =
@@ -3053,6 +3073,83 @@ Section: Minted Linear Owners
      in if env-has env resolved then return-is-linear-after (env-lookup env resolved) (apply-arg-count e)
      else False
     is otherwise -> False
+
+Section: Linear Tuple Components
+
+  return-type-after : CodexType, Integer -> CodexType
+  return-type-after (ty) (k) =
+   when ty
+    is ForAllTy (id) (body) -> return-type-after body k
+    is ForAllEff (id) (body) -> return-type-after body k
+    is FunTy (p) (row) (r) -> if k <= 0 then ErrorTy else return-type-after r (k - 1)
+    is EffectfulTy (effs) (sc) (ret) -> if k == 0 then return-type-after ret 0 else ErrorTy
+    is otherwise -> if k == 0 then ty else ErrorTy
+
+  linear-arg-positions : List CodexType, Integer, Integer, List Integer -> List Integer
+  linear-arg-positions (args) (i) (len) (acc) =
+   if i >= len then acc
+   else linear-arg-positions args (i + 1) len (if param-is-linear (list-at args i) then list-push acc i else acc)
+
+  tuple-args-linear-positions : Text, List CodexType -> List Integer
+  tuple-args-linear-positions (n) (args) =
+   if n == ("Tup" & integer-to-text (list-length args)) then linear-arg-positions args 0 (list-length args) []
+   else []
+
+  tuple-linear-positions : CodexType -> List Integer
+  tuple-linear-positions (ty) =
+   when ty
+    is ConstructedTy (n) (args) -> tuple-args-linear-positions (n.value) args
+    is SumTy (n) (args) (ctors) -> tuple-args-linear-positions (n.value) args
+    is otherwise -> []
+
+  is-tuple-mint-type : CodexType -> Boolean
+  is-tuple-mint-type (ty) = list-length (tuple-linear-positions ty) > 0
+
+  tuple-mint-only : CodexType -> CodexType
+  tuple-mint-only (ty) = if is-tuple-mint-type ty then ty else ErrorTy
+
+  tuple-mint-key : Text -> Text
+  tuple-mint-key (v) = "__tupmint-" & v
+
+  expr-tuple-mint-type : TypeEnv, AExpr -> CodexType
+  expr-tuple-mint-type (env) (e) =
+   when e
+    is AApplyExpr (f) (a) (s) ->
+     let head = apply-head-name e
+     in if head == "" then ErrorTy
+     else let resolved = rename-lookup (env.chapter-renames) head
+     in if env-has env resolved then tuple-mint-only (return-type-after (env-lookup env resolved) (apply-arg-count e))
+     else ErrorTy
+    is ANameExpr (n) (s) -> if env-has env (tuple-mint-key (n.value)) then env-lookup env (tuple-mint-key (n.value)) else ErrorTy
+    is otherwise -> ErrorTy
+
+  env-after-tuple-bind : TypeEnv, Text, CodexType -> TypeEnv
+  env-after-tuple-bind (env) (v) (tt) =
+   if is-tuple-mint-type tt then env-bind-local env (tuple-mint-key v) tt
+   else if env-has env (tuple-mint-key v) then env-bind-local env (tuple-mint-key v) ErrorTy
+   else env
+
+  check-tuple-components : ADef, TypeEnv, Boolean, List Integer, List APat, AExpr, Integer, UnificationState -> UnificationState
+  check-tuple-components (def) (env) (tail) (positions) (subs) (body) (j) (st) =
+   if j >= list-length positions then st
+   else let pos = list-at positions j
+   in let st2 = if pos >= list-length subs then st else check-tuple-component def env tail (list-at subs pos) pos body st
+   in check-tuple-components def env tail positions subs body (j + 1) st2
+
+  check-tuple-component : ADef, TypeEnv, Boolean, APat, Integer, AExpr, UnificationState -> UnificationState
+  check-tuple-component (def) (env) (tail) (sub) (pos) (body) (st) =
+   when sub
+    is AVarPat (n) (s) -> report-minted-owner def (n.value) s (lin-of env (n.value) tail body) st
+    is AWildPat (s) -> add-unify-error st cdx-linear-unused ("Linear component " & integer-to-text pos & " of a tuple is discarded by a wildcard pattern; bind it and use it exactly once") s
+    is otherwise -> st
+
+  check-tuple-arm : ADef, TypeEnv, Boolean, CodexType, AMatchArm, UnificationState -> UnificationState
+  check-tuple-arm (def) (env) (tail) (tt) (arm) (st) =
+   when (arm.pattern)
+    is ACtorPat (n) (subs) (s) -> check-mints def env tail (arm.body) (check-tuple-components def env tail (tuple-linear-positions tt) subs (arm.body) 0 st)
+    is AVarPat (n) (s) -> check-mints def (env-bind-local env (tuple-mint-key (n.value)) tt) tail (arm.body) (report-minted-owner def (n.value) s (lin-of env (n.value) tail (arm.body)) st)
+    is AWildPat (s) -> check-mints def env tail (arm.body) (add-unify-error st cdx-linear-unused "A tuple carrying a linear component is discarded by a wildcard pattern; bind each linear component and use it exactly once" s)
+    is otherwise -> check-mints def env tail (arm.body) st
 
   mutable-name-of : TypeEnv, Name -> Text
   mutable-name-of (env) (n) =
@@ -3124,7 +3221,7 @@ Section: Minted Linear Owners
     is ALambdaExpr (params) (body) (s) -> check-mints def env False body st
     is AHandleExpr (eff) (body) (clauses) (s) -> check-mints-clauses def env clauses 0 (list-length clauses) (check-mints def env False body st)
     is AWithTimeoutExpr (t) (effs) (scopes) (body) (s) -> check-mints def env tail body st
-    is AMatchExpr (scrut) (arms) (s) -> check-mints-arms def env tail arms 0 (list-length arms) (check-mints def env False scrut st)
+    is AMatchExpr (scrut) (arms) (s) -> check-mints-arms def env tail (expr-tuple-mint-type env scrut) arms 0 (list-length arms) (check-mints def env False scrut st)
     is AListExpr (elems) (s) -> check-mints-list def env elems 0 (list-length elems) st
     is ARecordExpr (n) (fields) (s) -> check-mints-fields def env fields 0 (list-length fields) st
     is AFieldAccess (obj) (f) (s) -> check-mints def env False obj st
@@ -3139,13 +3236,16 @@ Section: Minted Linear Owners
    if i >= len then check-mints def env tail body st
    else let b = list-at binds i
    in let st1 = check-mints def env False (b.value) st
+   in let tt = expr-tuple-mint-type env (b.value)
    in let st2 = if expr-is-mint env (b.value)
+       then report-minted-owner def (b.name.value) (b.span) (lin-let env (b.name.value) tail binds body (i + 1) len) st1
+       else if is-tuple-mint-type tt
        then report-minted-owner def (b.name.value) (b.span) (lin-let env (b.name.value) tail binds body (i + 1) len) st1
        else let mtn = expr-mut-mint-name env (b.value)
        in if mtn /= ""
           then report-minted-mutable def (b.name.value) (b.span) (consume-let env mtn (b.name.value) binds body (i + 1) len) st1
           else st1
-   in check-mints-binds def env tail binds body (i + 1) len st2
+   in check-mints-binds def (env-after-tuple-bind env (b.name.value) tt) tail binds body (i + 1) len st2
 
   check-mints-stmts : ADef, TypeEnv, List AActStmt, Integer, Integer, UnificationState -> UnificationState
   check-mints-stmts (def) (env) (stmts) (i) (len) (st) =
@@ -3154,19 +3254,24 @@ Section: Minted Linear Owners
     is AActExprStmt (e) (s) -> check-mints-stmts def env stmts (i + 1) len (check-mints def env False e st)
     is AActBindStmt (n) (e) (s) ->
      let st1 = check-mints def env False e st
+     in let tt = expr-tuple-mint-type env e
      in let st2 = if expr-is-mint env e
+         then report-minted-owner def (n.value) s (lin-stmts env (n.value) stmts (i + 1) len) st1
+         else if is-tuple-mint-type tt
          then report-minted-owner def (n.value) s (lin-stmts env (n.value) stmts (i + 1) len) st1
          else let mtn = expr-mut-mint-name env e
          in if mtn /= ""
             then report-minted-mutable def (n.value) s (consume-stmts env mtn (n.value) stmts (i + 1) len) st1
             else st1
-     in check-mints-stmts def env stmts (i + 1) len st2
+     in check-mints-stmts def (env-after-tuple-bind env (n.value) tt) stmts (i + 1) len st2
 
-  check-mints-arms : ADef, TypeEnv, Boolean, List AMatchArm, Integer, Integer, UnificationState -> UnificationState
-  check-mints-arms (def) (env) (tail) (arms) (i) (len) (st) =
+  check-mints-arms : ADef, TypeEnv, Boolean, CodexType, List AMatchArm, Integer, Integer, UnificationState -> UnificationState
+  check-mints-arms (def) (env) (tail) (tt) (arms) (i) (len) (st) =
    if i >= len then st
    else let arm = list-at arms i
-   in check-mints-arms def env tail arms (i + 1) len (check-mints def env tail (arm.body) (check-mints def env False (arm.guard) st))
+   in let st1 = check-mints def env False (arm.guard) st
+   in let st2 = if is-tuple-mint-type tt then check-tuple-arm def env tail tt arm st1 else check-mints def env tail (arm.body) st1
+   in check-mints-arms def env tail tt arms (i + 1) len st2
 
   check-mints-clauses : ADef, TypeEnv, List AHandleClause, Integer, Integer, UnificationState -> UnificationState
   check-mints-clauses (def) (env) (clauses) (i) (len) (st) =

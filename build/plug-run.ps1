@@ -92,7 +92,10 @@ try {
 
 
     $stream.ReadTimeout = $TimeoutSec * 1000
-    $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
+    # A per-byte accumulate here cost 116.77 s for a 16 MB image against
+    # 0.02 s for the bulk write, measured 2026-08-18 over the shipped shape.
+    # The cost is the 16,777,216 interpreter iterations, not the transport.
+    $allBytes = [System.IO.MemoryStream]::new(65536)
     $readBuf = [byte[]]::new(8192)
     $recvAborted = $false
     $recvError = ''
@@ -102,7 +105,7 @@ try {
             if ($n -le 0) {
                 break
             }
-            for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
+            $allBytes.Write($readBuf, 0, $n)
         }
     } catch {
         # A read timeout and a connection reset are NOT a clean end of stream,
@@ -115,7 +118,7 @@ try {
     $client.Close()
 
 
-    if ($allBytes.Count -eq 0) {
+    if ($allBytes.Length -eq 0) {
         if ((-not $proc.HasExited)) {
             $proc.WaitForExit(5000)
         }
@@ -131,6 +134,24 @@ try {
     if ((-not $proc.HasExited)) {
         $proc.WaitForExit(20000)
     }
+    # codex-vm reports a dropped serial byte on STDERR, not on the guest
+    # console it is dropping from. It runs first because a short console
+    # makes every check below it read clean for the wrong reason.
+    $dropHit = @()
+    if (Test-Path $stderrFile) { $dropHit = @(Select-String -Path $stderrFile -Pattern 'output buffer growth failed') }
+    if ($dropHit.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: codex-vm dropped guest serial bytes, so the captured console is SHORT and no verdict read from it can be trusted -- $($dropHit[0].Line.Trim())")
+        exit 10
+    }
+    # A guest that dies mid-emission is never REFUSED, so it prints no
+    # TRUNCATED line and closes cleanly enough that recvAborted stays false.
+    # Its own death line is the only witness.
+    $deathHit = @()
+    if (Test-Path $consoleFile) { $deathHit = @(Select-String -Path $consoleFile -Pattern 'OUT OF MEMORY|!EXC=') }
+    if ($deathHit.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug guest died mid-run, so the output is a prefix and not an answer -- $($deathHit[0].Line.Trim()). Wrote $($allBytes.Length) bytes to $Out.")
+        exit 9
+    }
     $truncHit = @()
     if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }
     if ($truncHit.Count -gt 0) {
@@ -138,10 +159,10 @@ try {
         exit 7
     }
     if ($recvAborted) {
-        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.")
+        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Length) bytes and cannot tell whether that is all of them.")
         exit 8
     }
-    Write-Host "[plug-run] OK: $Out ($($allBytes.Count) bytes)"
+    Write-Host "[plug-run] OK: $Out ($($allBytes.Length) bytes)"
 
 } finally {
     if (($proc -and (-not $proc.HasExited))) {

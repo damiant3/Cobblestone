@@ -1,0 +1,152 @@
+Chapter: OtaFetch
+  cites Net chapter NetDriver
+  cites Net chapter Lwm2mFirmware
+  cites Net chapter UdpIO
+  cites Encode chapter Coap
+  cites Foreword chapter OtaUpdate
+  cites Foreword chapter Console
+
+ `codex/test/apps/ota-lwm2m-loopback` drives the OTA download by calling
+ `fw-feed-response` with responses it builds itself through `serve-block`.
+ That proves the block walk and the staging writes against our own `Coap`
+ codec, and it is the BrotliBeatsOpus shape: the server half and the client
+ half share every assumption. This binary is the socket the flow did not
+ have, so the responses come from something that is not us.
+
+ RFC 7959 Block2 is what the exchange rides. `fw-next-request` asks for one
+ block at `fw-szx` 6, which is 1024 bytes, the largest that RFC defines;
+ the server answers 2.05 Content with a Block2 option whose More bit says
+ whether another follows. A response carrying no Block2 option at all is a
+ whole-resource answer and ends the download.
+
+ THE SERVER MUST BE REACHABLE, and on this box that means either a real
+ CoAP server at the gateway address or `codex-vm -portfwd udp:HOST:5683`.
+ The guest's outbound UDP is NAT'd to any port, which the run of
+ `tools/lwm2m-client.codex` on 2026-08-18 measured directly
+ (`NAT UDP: flow guest:5902 -> 10.0.2.2:5683`).
+
+Section: Configuration
+
+  of-local-mac : List Integer = net-driver-mac
+  of-local-ip : List Integer = [10, 0, 2, 15]
+  of-gateway-ip : List Integer = [10, 0, 2, 2]
+
+  of-local-port : Integer = 5903
+  of-server-port : Integer = 5683
+
+  of-poll-fuel : Integer = 400000
+
+ One round is one block, so the cap is the largest image this will fetch:
+ 400 blocks at 1024 bytes is 400 KB.
+
+  of-rounds : Integer = 400
+
+  of-bank-base : Integer = 536875008
+  of-stage-addr : Integer = 536879104
+
+ The manifest arrives over LwM2M as a Write to /5/0/1 in a deployment. This
+ binary carries one so the fetch can be pointed at a resource by hand; the
+ size and hash are the server's claims about what it will serve, and Gate A
+ re-hashes what actually landed rather than trusting either.
+
+  of-uri : Text = "/fw/image.cdx"
+
+ The manifest's version must be NEWER than the context's current version or
+ `ota-check-preconditions` refuses it as "not newer than current version",
+ the manifest is never stored, and every request this builds carries no
+ Uri-Path at all. That is a 7-byte datagram a server answers 4.04 to, and
+ the reading it produces (`written=0 result=4`) is indistinguishable from a
+ server that is simply not there.
+
+  of-size : Integer = 4096
+
+ The digest is the SERVER'S claim about what it will serve and is computed
+ outside Codex entirely -- `build/ota-fetch-test.ps1` generates the payload
+ on the host and hashes it there, so Gate A re-hashing what landed is a
+ comparison between two things that never met. An empty hash here is not a
+ neutral placeholder: Gate A refuses it and reports `result=6`
+ (`fw-result-bad-package`) after a download that in fact succeeded.
+
+  of-hash : List Integer = [15, 104, 58, 133, 235, 184, 18, 109, 127, 28, 174, 119, 74, 221, 135, 44, 34, 225, 12, 126, 34, 221, 165, 244, 76, 213, 149, 181, 215, 95, 125, 114]
+
+  of-manifest : OtaManifest
+  of-manifest = OtaManifest {
+   firmware-uri = of-uri,
+   firmware-size = of-size,
+   firmware-hash = of-hash,
+   version = ota-version-new 7 1000,
+   min-battery = 0,
+   requires-reboot = True
+  }
+
+  of-boot : BootConfig
+  of-boot = boot-config-new (ota-version-new 1 500)
+
+Section: The Download
+
+  of-send-all : UdpSocket, List (List Integer), Integer -> [Network.Write] Integer
+  of-send-all (sk) (outs) (i) =
+   if i >= list-length outs then 0
+   else act
+    sent <- udp-io-send sk (list-at outs i)
+    rest <- of-send-all sk outs (i + 1)
+    sent + rest
+   end
+
+ A result other than the initial one is a verdict the flow has already
+ reached, so the loop stops on it rather than asking for another block: a
+ client that keeps requesting after `fw-fail` would bury the reason under
+ whatever came next.
+
+  of-finished : Lwm2mFw -> Boolean
+  of-finished (c) =
+   if fw-result-resource c /= fw-result-initial then True
+   else fw-state-resource c == lwm2m-fw-state-value FwDownloaded
+
+  of-run : UdpSocket, Lwm2mFw, Integer, Integer -> [Network.Read, Network.Write, Flash, Device.Mmio] Lwm2mFw
+  of-run (sk) (c) (msg-id) (rounds) =
+   if rounds <= 0 then c
+   else if of-finished c then c
+   else act
+    sent <- of-send-all sk [fw-next-request c msg-id []] 0
+    r <- udp-io-recv sk of-poll-fuel
+    if r.ur-got == False then c
+    else act
+     c2 <- fw-feed-response c (r.ur-data)
+     of-run sk c2 (bit-and (msg-id + 1) 65535) (rounds - 1)
+    end
+   end
+
+ A silent server ends the run rather than spending the whole round budget
+ on a socket nobody is answering: the reading wanted is how many blocks
+ landed before it went quiet, and that is already in `written`.
+
+Section: Reporting
+
+ `written` is the discriminating cell. It counts bytes that reached the
+ staging address through `flash-write-page`, so it cannot be non-zero
+ unless a response parsed as 2.05 Content, carried a block in the expected
+ order, and was staged. `result` names the refusal when there was one.
+
+  of-report : Lwm2mFw -> [Console.Write] Nothing
+  of-report (c) = act
+   print-line-uni ("ota-fetch"
+     & " written=" & show (c.fw-written)
+     & " next-block=" & show (c.fw-next-block)
+     & " state=" & show (fw-state-resource c)
+     & " result=" & show (fw-result-resource c)
+     & " faults=" & show (c.fw-faults))
+  end
+
+Section: Entry
+
+  opening : [Network.Read, Network.Write, Flash, Device.Mmio, Console.Write] Nothing = act
+   let sk = udp-io-open of-local-mac of-local-ip of-local-port of-gateway-ip of-server-port
+   in let c0 = fw-write-package-uri (fw-new of-boot (ota-version-new 1 500) of-bank-base of-stage-addr) of-manifest
+   in act
+    done <- of-run sk c0 1 of-rounds
+    of-report done
+   end
+  end
+
+Page 1

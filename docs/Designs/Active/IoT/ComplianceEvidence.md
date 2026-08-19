@@ -1,15 +1,16 @@
 # Compliance Evidence Architecture: Conformity as a Build Artifact
 
 **Created**: 2026-06-12 (reek)
-**Status**: Catalogs and report generator shipped; **the evidence plug
-does not exist.** Built:
+**Status**: Catalogs, report generator and **the evidence plug (2026-08-18,
+root; the "Built 2026-08-18" section below) shipped.** Built:
 `codex/foreword/core/ComplianceEvidence.codex` (requirement catalogs),
 `codex/foreword/core/ComplianceBuild.codex`,
 `codex/build/compliancereportScript.codex` (report generator), and the
-`compliance-evidence` / `compliance-report` tests. Not built: the
-`EvidencePlug` that Constraint 2 below makes the architectural centre
-of this design -- nothing emits a signed evidence package alongside a
-firmware build today. That plug is the remaining work.
+`compliance-evidence` / `compliance-report` tests, and `codex/plugs/evidence/`
+(`EvidencePackage.codex`, `EvidencePlug.codex`, `build.ps1`, `run.ps1`,
+`test-evidence.ps1`). Not built: FactStore ingestion of the package, the
+per-board residual checklist and the threat-model cross-references (the
+section below lists them).
 **Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 4,
 `docs/Reference/IoT/Compliance/` (EU CRA, ETSI EN 303 645, NISTIR 8259,
 IEC 62443), prospectus Phase 3
@@ -108,7 +109,7 @@ All already exist or are produced by in-flight designs:
 build.ps1 / device build
   -> CDX binary (signed)
   -> compile log (diagnostics, phase metrics)
-  -> evidence plug (codex/plugs/EvidencePlug)
+  -> evidence plug (codex/plugs/evidence, built 2026-08-18)
        inputs:  CDX bytes + log + source manifest + requirement
                 catalogs (data files, one per regulation)
        outputs: Evidence.cdxe   (canonical, machine-readable)
@@ -245,6 +246,90 @@ seed yields this exact binary. That is a claim no mainstream
 toolchain can sign. It anchors the whole package: every other
 artifact hash hangs off a binary the reviewer can re-derive.
 
+## Built 2026-08-18 (root): the evidence plug
+
+`codex/plugs/evidence/` is the plug the Design section describes, in the
+file-I/O plug shape (`html`): a bare-metal CDX (`build.ps1` bundles
+`EvidencePackage` + `EvidencePlug` with the foreword catalogs through
+`build/bundle-app.ps1`; the plug chapter cites the package chapter as
+`Evidence chapter EvidencePackage`, satisfied from the unit) run by `run.ps1`
+in codex-vm off the serial ring, one `key value` line per input, three
+documents back between markers.
+
+**Inputs, and what is host-computed.** The plug is fed TEXT: the CDX's first
+224 bytes as hex (the header the claims read: content hash at 8, author key
+at 40, signature at 72, capability section size at 144, proof section size
+at 160, flags at 6), the CDX file's SHA-256, the compile log's SHA-256 and
+its diagnostic lines (`<sev> CDX<n>:` and the CODEGEN/errors lines), the
+source manifest (one line per `Chapter:` of the bundled source with that
+chapter's SHA-256, plus the bundle's), and product/board. Every hash but
+one is computed by `run.ps1` on the host; the package says which in two rows
+(`hashes.host=` names them, `hashes.plug=` names the header hash the plug
+computed itself and the content hash it read from the header), and
+`Evidence.inputs.txt` beside the package is exactly the text the plug was
+fed, so any hash that appears there was passed in.
+
+**Claims.** One line per catalog entry (61 today), CLAIMED only against an
+artifact of this build by the entry's `artifact` selector: `compile-log`
+(log present; the note carries errors/warnings and the CDX4010/4020/2050/
+2051/2061/2063/2031 counts), `effect-types` (log present AND errors=0; a red
+log flips it to not-claimed naming the count), `cdx-binary` (a CDX header
+with the magic; the note names size, flags and whether the bare-metal flag
+is set), `cdx-header` (content hash non-zero; the note says whether the
+signature is present, and an unsigned CDX says ABSENT), `capability-manifest`
+(capability section size > 0), `punctual-report` (a report file given).
+`crypto-suite`, `trust-lattice`, `ota-design`, `fact-store` are design or
+library references and are NOT claimed by this plug ("the product's own test
+evidence discharges it"); `none` is the manufacturer's. On the plug's own
+build: 20 of 61 claimed. The reviewer page and the SBOM (CycloneDX 1.5
+shape, one component per chapter keyed by hash, the binary as the metadata
+component) are rendered from the same claims.
+
+**Constraint 1 measured**: the same inputs give a byte-identical
+`Evidence.cdxe` (the `stable` arm); no timestamp is inside the package,
+`Evidence.sha256` names it, and `-SigningKey <seed>` produces `Evidence.sig`
+(pub + Ed25519 signature over the package hash) through the same inline
+signer shape `build.ps1` uses for the compiler; without a key the package is
+unsigned and says nothing else. **Constraint 3 measured**: `no-log` and
+`not-cdx` arms show every claim whose artifact is absent is not-claimed with
+the reason, and `dirty-log` shows a red build cannot read as a clean one.
+
+**FactStore ingestion, added 2026-08-18.** `run.ps1 -FactImage <disk>` records
+the package as a fact in the disk's Codex fact-store partition (the one
+`build/build-img.ps1` puts at the top of every image), through a second
+bare-metal program `FactIngest.codex` (kind 50, the AppPersist register):
+content one line naming the firmware header hash, the package hash, the
+claim counts and whether the package was signed; timestamp the caller's (the
+package body stays timestamp-free). It is idempotent by content: a second
+run for an unchanged build finds the fact and does not append (`already
+present`), and `Evidence.fact.txt` records what landed. `FactIngest` declares
+`Device.Block` on `opening`, which a plug does not, because the runtime grant
+mask is derived from `opening`'s effect row and a block read with no grant
+answers zeros silently (DevelopersGuide pitfall, added the same day). It is a
+`CapabilityFact`-shaped record in the log rather than a new FactKind: kind 50
+is an AppPersist integer register, so no seed change was needed. The
+`fact-ingest` and `no-store` arms of `test-evidence.ps1` measure both the
+landing and the refusal on a partitioned disk with no fact partition.
+
+**Per-board residual, added 2026-08-18.** The package now carries a per-board
+appendix keyed by the `-Board` string (`ev-board-posture`): four public SoC
+attributes (flash encryption, hardware crypto, secure boot, hardware RNG),
+each with the requirement sections it moves from the manufacturer's checklist
+to the SoC when the board provides it and leaves the manufacturer's when it
+does not, and the vendor reference it comes from. ESP32-C6 anchors all four;
+STM32F4 none; a board not in the table is `known=n` and answered "the
+manufacturer states this SoC's posture", never assumed either way. The
+CLAIMS do not change with the board (the `board` arm proves the claim block
+is identical across ESP32-C6 and STM32F4); only the `board.*` facts and the
+HTML appendix move. Boards named: ESP32-C6, nRF9160, nRF52840, STM32L4,
+STM32F4, RP2040, FE310, Pi4 (`codex/boards/` has a chapter for each).
+
+**Not built, in the order they matter.** (1) The catalog merge with
+`CRA-Compliance-Matrix.md` recommended above is still pending. (2) The
+ThreatModel cross-references (the R1-R10 residual-risk appendix) are not yet
+attached per claim. (3) A wiring into `build.ps1` or a device build so the
+package is emitted alongside every firmware CDX; today `run.ps1` is called by
+hand or by a lane's own script.
 ## Memory and Time-Complexity Risk
 
 The plug processes inputs linear in binary + log size, well under
@@ -271,4 +356,7 @@ must stream the log rather than `buf-read-bytes` it into lists.
 5. **Durable forensic persistence** (gap noted twice above) -- the
    audit-trail claims for CRA (2)(k) and 8259A state-awareness are
    capped at MECHANISM(partial) until the forensic chain persists
-   across power loss.
+   across power loss. **The evidence package's own persistence is now
+   the fact store** (`-FactImage`), which is that durable log; what stays
+   open is the forensic chain of runtime DECISIONS, not the build-time
+   evidence record.

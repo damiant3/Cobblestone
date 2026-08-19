@@ -102,6 +102,9 @@ $QuireDirs = @{
     'CircuitsFp' = 'apps\circuits\FootprintEditor'
     'CircuitsBv' = 'apps\circuits\BoardViewer'
     'CircuitsMfg' = 'apps\circuits\Manufacturing'
+    # The diagnostic ladder and its stage chapters (DiagnosticStick.md):
+    # a stage is a chapter under build\boot\diag cited as Diag chapter X.
+    'Diag' = 'build\boot\diag'
 }
 
 

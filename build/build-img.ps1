@@ -42,6 +42,12 @@ param(
     # can edit; this puts the chapters on as themselves. Both, not either:
     # the concat is the build input and these are the editable copies.
     [string]$SourceDir = '',
+    # Extra files for the ESP root, each 'NAME.EXT=path' with an 8.3 name;
+    # several may share one argument separated by ';' (pwsh -File hands a
+    # comma list to a [string[]] as ONE element). The diagnostic image carries
+    # DIAG.ID and DIAG.CFG this way. Written after the named optional files
+    # above, before SRC/ and the label.
+    [string[]]$Extra = @(),
     [int]$TotalSectors = 16384,
     # Format the ESP as FAT32 instead of FAT16 -- the layout every vendor
     # stick and every volume past 2 GB actually carries. A REAL FAT32 volume
@@ -112,6 +118,18 @@ if ($Identity) {
     $identBytes = [System.IO.File]::ReadAllBytes($Identity)
     if ($identBytes.Length -eq 0) { throw "-Identity file is empty: $Identity" }
 } else { $identBytes = [byte[]]::new(0) }
+$extraFiles = @()
+foreach ($e in ($Extra -join ';').Split(';', [StringSplitOptions]::RemoveEmptyEntries)) {
+    $eq = $e.IndexOf('=')
+    if ($eq -lt 1) { throw "-Extra entry must be NAME.EXT=path: $e" }
+    $ename = $e.Substring(0, $eq).ToUpper()
+    $epath = $e.Substring($eq + 1)
+    if ($ename -notmatch '^[A-Z0-9_]{1,8}(\.[A-Z0-9_]{1,3})?$') { throw "-Extra name is not 8.3: $ename" }
+    if (-not (Test-Path -PathType Leaf $epath)) { throw "-Extra file not found: $epath" }
+    $eparts = $ename.Split('.')
+    $eshort = $eparts[0].PadRight(8) + $(if ($eparts.Count -gt 1) { $eparts[1].PadRight(3) } else { '   ' })
+    $extraFiles += ,@($eshort, [System.IO.File]::ReadAllBytes($epath))
+}
 
 Write-Host "[build-img] PE=$($pe.Length) bytes  Source=$($srcBytes.Length) bytes  Seed=$($seedBytes.Length) bytes  Agent=$($agentBytes.Length) bytes  Image=$($ImageSize / 1MB) MB"
 if ($identBytes.Length -gt 0) {
@@ -499,6 +517,11 @@ if ($identBytes.Length -gt 0) {
     $identCluster = Alloc-File $identBytes
 
     Add-DirEntry $rootOff $rootIdx "IDENTITYDAT" 0x20 $identCluster $identBytes.Length
+    $rootIdx++
+}
+foreach ($ef in $extraFiles) {
+    $efCluster = if ($ef[1].Length -gt 0) { Alloc-File $ef[1] } else { 0 }
+    Add-DirEntry $rootOff $rootIdx $ef[0] 0x20 $efCluster $ef[1].Length
     $rootIdx++
 }
 

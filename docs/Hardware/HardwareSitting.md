@@ -12,6 +12,20 @@ expresses it.** The recipe and the account are the 2026-08-14 A5 entry
 below; the lessons are L-REHEARSE and L-FREEDOM in
 `docs/PM/Active/Stories/LESSONS.md`.
 
+Damian's ruling, 2026-08-18. **A metal question is a STAGE, not a flight.
+Sittings are grouped: one diagnostic boot per sitting carries every
+question that is ready, composed by red.** A lane with a question writes
+a stage (its readings, its failure states, its bed arm, its expected
+values) and routes one line to red; nobody builds a one-question image or
+proposes a flight. The design, the ladder order and the lane procedure are
+`docs/Designs/Active/OS/DiagnosticStick.md`; the probes it collects are
+`build/boot/diag/README.md`. **The camera rig is a standing instrument, not
+scaffolding** (same day): the bank has regressed once after it was proven,
+and the rig came down and went back up for it. Every diagnostic reports on
+every channel that is alive (colour, rows, QR, bank, serial) and the
+design's `diag-arm.ps1` carries the read-only-medium negative control so a
+bank regression fails in the bed before a flight.
+
 Damian, 2026-08-05. **Say what the elevated command does BEFORE you fire
 it**, in the message, in the two categories that tell him what he is
 approving: **MOUNT-AND-COPY ONLY** (reads the stick, writes nothing) or
@@ -123,11 +137,72 @@ same boot as the others says so and says why.
 | ~~NIC-3~~ | **ANSWERED 2026-08-15: `e1000-init` does NOT hang. It completes in 93 s, of which 92.9 are `e1000-await-aneg` burning its 1,000,000 fuel at 92.89 us per MDIO read. Aneg never reports done; the link is up anyway. `RDH` moved 0 to 15.** | blu | B2c | done |
 | NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3. **Flew 2026-08-16 and hung in `e1000-await-link`; fixed in 15588, ring question unanswered.** Needs a rebuild against a seed carrying the fix before it flies again |
 | NIC-5 | What wedged the box on 2026-08-11? | blu | nothing; it is the one open unknown | terminal by construction |
+| A8 | Does the ASUS grant the 512 MB heap the desk needs? | fester | A8, the desk build loop | none to the box, but it HALTS on refusal, so it is its own boot and nothing rides after it |
 
 **Fly them in that order on one boot.** The order is not a preference: NIC-1
 must precede NIC-3 because a write destroys its control, NIC-2 must precede
 NIC-3 because a wedge in NIC-3 loses NIC-2's reading, and NIC-5 goes last
 because it is the arm most likely to end the boot.
+
+### A8. Does the ASUS firmware grant the desk's 512 MB heap?
+
+**Why it matters.** The desk runs its guest under EPT out of the arena the
+stub allocates, and at the shipping `-AllocPages 32768` a 256 MB guest refuses
+every time. The measured value is 131072 pages. OVMF satisfies a 512 MB
+`AllocateMaxAddress` below the framebuffer aperture; whether AMI does is
+exactly the spec freedom L-FREEDOM is about, and no bed can answer it.
+
+**This is its own boot.** On refusal the stub halts, so no arm can be read
+after it. It does not touch the NIC and carries no risk to the box.
+
+**What flies.**
+
+```powershell
+pwsh build/boot/build-option-a.ps1 -Src apps/works/GopBoot.codex `
+  -Out build-output/desk.img -AllocPages 131072 -Kernel seed/Codex.cdx -Ebs -Uefi
+```
+
+**What each state looks like, written down before it flies.** The board has no
+serial port, so the glass is the channel and the colour is the reading. The
+whole screen is one flat colour in every failing case.
+
+| Screen | Means | Next |
+|---|---|---|
+| the desk: ground `26,26,46` with grey, orange, green and cyan on it | granted, guest alive | A8 proceeds; wire `compile <path>` |
+| flat DARK RED, `R 0x60 G 0x20 B 0x10` | **the firmware REFUSED the 512 MB heap** | this is the answer we came for; re-ask with a smaller `-AllocPages` |
+| flat DARK GREEN, `R 0x10 G 0x40 B 0x20` | stub finished and handed off, guest said nothing | not an allocation answer; a payload question |
+| flat DARK BLUE, `R 0x20 G 0x20 B 0x60` | died inside the stub for some OTHER reason | read the serial if any port is attached |
+| firmware's own screen, unchanged | never loaded, or `LocateProtocol(GOP)` failed | not our code yet |
+
+If a port happens to be attached, lowercase marks are progress and uppercase
+is a halt: `svchgxo` is the whole successful sequence, and `svcH` is the
+refusal.
+
+**What would falsify it.** A refusal that painted DARK BLUE, which is what
+this arm existed to stop: before main 16707 the heap refusal shared the
+anonymous in-stub colour with every other death, so a photograph could not
+tell "AMI said no" from "the stub died somewhere". DARK RED is reached only
+from the failing branch of the heap `AllocatePages`.
+
+**Bed-verified both ways, 2026-08-18, on the flight bytes.**
+
+```powershell
+pwsh build/boot/test-ovmf.ps1 -Img build-output/desk.img -Out build-output/ovmf-grant.png  -Seconds 30 -MemMB 2048
+pwsh build/boot/test-ovmf.ps1 -Img build-output/desk.img -Out build-output/ovmf-refuse.png -Seconds 30 -MemMB 256
+```
+
+Colour census over 262,144 samples of each screenshot, counting exact values
+rather than thresholding a distance (L-THRESHOLD):
+
+| Arm | Serial | Census |
+|---|---|---|
+| `-MemMB 2048` | `svchgxo` | `1A1A2E` 260,070, `909090` 1,658, `FFAA00` 220, `00FF00` 105, `00FFFF` 91 -- the desk |
+| `-MemMB 256` | `svcH` | `602010` 262,144, every sample -- DARK RED |
+
+The `-EntryStart`-without-`-Ebs` path is untouched and stays byte-identical to
+what has flown: same seed through both the depot and the changed script gives
+SHA256 `F1D4E45168037B4B...` either way, verified by hash rather than by
+reading.
 
 ### NIC-1. Does the real part arrive with its receiver already running?
 
@@ -257,6 +332,82 @@ are building an OS for is worth a line, not because it is scheduled.
   `-e1000-preconfigured` reproduce this board on every row that has been
   compared, and B2c was found and fixed entirely in the bed. A question that
   a flag can ask does not earn a sitting.
+
+## FLOWN 2026-08-18: `diag.img` (DiagnosticStick steps 1 and 3). THE LADDER NAMED THE BOX AND BANKED; ITS ONE RED ROW WAS ITS OWN DEFECT.
+
+Image `build/boot/diag.img` at main #3 (SHA-256 prefix `C487773C`, kernel
+`12B07296419847B2`, id `3f97d4862836e7c8`), flashed with `flash-usb.ps1
+-SpecFit -Force` to disk 2, all 16,777,216 bytes verified. Booted UEFI on the
+ASUS. Damian sat once. Glass photographed; `DIAG.TXT` read back raw with
+`build/read-stick.ps1 -DiskNumber 2 -Name DIAG.TXT`. Both are in
+`D:\Projects\stick-archive\diag-20260818\` (`glass.jpg`, `DIAG.TXT`).
+
+**The bank, verbatim where it decides something:**
+
+    box=System manufacturer System Product Name fb=1920x1080 stride=2048 ram=32768MB
+    stage=smbios state=ok  entry=3.0 table=#87ed6000 len=6288 structures=99
+      bios=American Megatrends Inc 0901 08/31/2015 board=ASUSTeK COMPUTER INC SABERTOOTH Z170 MARK 1
+      cpu=Intel(R) Core(TM) i7-6700K CPU @ 4.00GHz cores=4 ram=32768MB/4 (4 x Corsair CMK16GX4M2A2400C14)
+    stage=edid state=ok    display=SAM 05cd SyncMaster native=1920x1080 edid=1.3 digital pclk=148500kHz sum=0
+    stage=cpu state=ok     family=6 model=94 stepping=3 logical=16 vmx=on hypervisor=n
+      flags=sse..avx2,rdrand,rdseed,fsgsbase,smep,smap,pae,x2apic,htt,nx,1gpage,rdtscp,lm
+    stage=pci state=BELOW3G devices=21 nic=00:1f.6 8086:15b8 MAP=ok storage=00:17.0 8086:a102 MAP=ok usb=00:14.0 8086:a12f MAP=ok
+      pci 06:00.0 10ec:8168 02.00.00 r15 s1043:8677 iff B0=0000c001 B1=00000000 B5=00000000 MAP=BELOW3G
+    stage=scene state=rendered fb=1920x1080 stride=2048 render=624x88 frame plain=12ms x20 shadow=24ms x11
+    bank=ok medium=usb cfg-file=0   summary run=5 skip=0
+
+**What it settles.**
+
+1. **The stick works as a stranger's instrument.** Boot, page, box named from
+   SMBIOS (the type 1 strings are ASUS defaults, so the type 2 board row IS the
+   identity, as designed), five stages run, five QR codes, and the bank wrote
+   4350 bytes to a writable medium and read back exactly. First grouped boot,
+   zero skips.
+2. **The one red row is a ladder defect, not a box fact.** `pci` answered
+   `BELOW3G` for `06:00.0 10ec:8168` (the board's second NIC, a Realtek
+   RTL8168) because `pp-map-of` (`build/boot/diag/DiagPci.codex:169`) reads
+   BAR0 and `pp-bar-base` hands an I/O-SPACE BAR (bit 0 set, here port
+   `0xC000`) back as if it were a memory address, which is then "below the
+   3 GB device window, inside our RAM arena". An I/O BAR is not a window into
+   memory at all; the RTL8168's MMIO is its 64-bit BAR2, which the stage does
+   not read. `04:00.0` (ASMedia SATA) escaped only because storage is judged
+   on BAR5. So the ladder's todo line ("the box needs a mapping fix from us
+   before any driver runs") is FALSE for this box, and the fix is in the
+   stage: skip I/O BARs and judge the first MEMORY BAR (walk 0..5), with a
+   forced arm whose BAR0 is I/O and whose BAR2 is a fine window. Root's
+   (`build/boot/diag/**`). **FIXED 2026-08-18 (root):** `pp-map-judge`
+   walks the six BAR dwords, skips zero and I/O BARs, judges the first
+   memory BAR; forced arm `codex/test/diag-pci-map-judge` (RTL8168 shape
+   `ok`, I/O-only `none`, memory BAR at `0x81060000` still `BELOW3G`);
+   `diag.img` rebuilt, all ten `diag-arm.ps1` arms green. The rung-2 row
+   below that recorded this NIC as `MAP=BELOW3G` on 2026-07-29 was the
+   same defect. Every earlier flight's driver rows on this box
+   (I219 at `df400000`, xHCI at `df430004`, AHCI at `df448000`) are in the
+   3-4 GB window and MAP=ok, consistent with all of them having worked.
+3. **First metal frame numbers for the 3D surface** (val, ModernDesk item 4):
+   software render of the 624x88 scene region, plain 12 ms over 20 frames,
+   shadow 24 ms over 11, on the i7-6700K. The bed's software path measured
+   86 and 135 ms at full desk resolution; the two are different regions and
+   are not to be compared as a ratio without a same-region arm.
+4. **Two cosmetic wrongs in passive rows**, root's: `edid size=16x9cm` is the
+   EDID 1.4 aspect-ratio encoding (one byte 0) printed as centimetres; `cpu
+   logical=16` is CPUID.1 EBX[23:16] (maximum addressable IDs), not the 8
+   threads this part has, and the row should say which it reads.
+   **FIXED 2026-08-18 (root), with one correction:** the flown block's bytes
+   21-22 are `10 09` (raw0 above), BOTH non-zero in an EDID **1.3** block, so
+   by the spec it IS "16 cm x 9 cm": the SyncMaster reports its aspect ratio
+   in the cm fields, and no byte was zero. The stage now reads the pair per
+   E-EDID 1.4 3.6.2 (`ded-size`: both non-zero cm; from 1.4 one zero is an
+   `aspect=` row; both zero `undefined`), and the cpu row says
+   `max-apic-ids=16` (CPUID.1 EBX[23:16]) with the SMBIOS `cores=` row the
+   count that is real. `diag.img` rebuilt, eight codex-vm arms green.
+5. **hypervisor=n on metal**, so the identity stage 3 gate (`wz-in-bed`) is
+   closed here and a returning stick asks for its passphrase.
+
+**What it does NOT settle**, because step 2's lifts are not in the ladder
+yet: the A8 allocation, the largest GOP mode and `SetMode`, the sink's 2.7 MB
+write, the e1000 ring, B3, ASDE, xHCI truth, keyboard, MSC align. Those are
+still the sitting queue above, and the next grouped boot carries them.
 
 ## FLOWN 2026-08-14, GREEN: A5 COMPLETE. The compiler compiled itself on the ASUS and wrote the result back byte-identical.
 
@@ -806,8 +957,10 @@ Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
   '-DiskNumber','2','-SpecFit','-Force','-Log','D:\Projects\NewRepository-blu\build-output\flash.log'
 ```
 
-**Flash, verify, PULL, and do not reinsert.** One eject-and-reinsert on Windows
-rewrites LBA 1 and is the standing suspect for the mount failures on this arm.
+**Flash, verify, pull.** Reinsertion is NOT a hazard and is not a suspect for
+the mount failures on this arm (Damian, 2026-08-18; the 07-29 measurement in
+section 3 stands: a conforming stick survives remove-and-reinsert unchanged,
+and after a locked write Explorer offers no Eject at all).
 
 **Plug the Ethernet into a live switch or router before booting.** NIC-3 asks
 whether a frame arrives, and with no link partner it cannot. The port is the
@@ -1294,7 +1447,8 @@ itself was checked clean (ESP at entry 0, LBA 2048, type GUID byte-exact,
 `PartitionEntryLBA=2`), and plugging the stick in to look would be the
 very act that rewrites it. The probe now prints WHICH of the seven mount
 stages failed, off diag cell 80, which GopFat16 has always recorded.
-**Operationally: flash, verify, PULL, and do not reinsert.**
+**Operationally: flash, verify, pull.** Reinsertion is not the cause of the
+mount failure and is not a hazard (Damian, 2026-08-18; section 3).
 
 **Provenance.** Rebuilt 2026-08-13 off blu, seed `D9A6A7A2BF162346`:
 
@@ -1337,8 +1491,8 @@ Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
 ```
 
 Confirm the hash matches the digest above before flashing. **Flash, verify,
-PULL, and do not reinsert** -- one eject-and-reinsert on Windows rewrites
-LBA 1 and is the standing suspect for the mount failures on this arm.
+pull.** Reinsertion is not a hazard and not the suspect for the mount
+failures on this arm (Damian, 2026-08-18; section 3 has the measurement).
 
 ### Before you boot: the cable
 
@@ -2179,22 +2333,122 @@ backwards mid-fill.
 `GopFat16`**, which is a different file and a different lane's. The bracket
 around the write is what exists.
 
-**WHICH BYTES ARE QUEUED, and why a rebuild is not the same card.** The image
-in the depot is `EC071C2C89B6E985...`, main 15426, and it is the one whose
-EXACT bytes ran the full pass arm to `verified` and WHITE. Its stub was built
-after red's heap backoff (15393) and BEFORE red 15469 and fester 15503, so it
-is not the stub the tree emits today.
+**WHICH BYTES ARE QUEUED: REBUILT AND RE-REHEARSED 2026-08-18 (reek). The
+flight card is the block below; everything above it is the account.**
 
-That cuts one way and it is worth being plain about it. **Flying this file as
-it stands is rehearsed.** Rebuilding it is not: as of those two changes every
-UEFI stub path emits bytes that have never flown, `-EntryStart` included, and
-three PE shapes gained a 512-byte section. A rebuild therefore needs its own
-full-mission bed run and the stub marked NEW on the flight card (L-REHEARSE),
-and the bar figures move as well, because the panel is 1024 wide now.
+`EC071C2C89B6E985...` (main 15426) is RETIRED and must not be flown. It was
+queued on the correct grounds that its exact bytes had been rehearsed, and it
+went stale underneath that: `build/sink-arm.ps1` refused to run, naming seven
+files in the payload's cite closure newer than the image. **The one that
+matters is `Fat16.codex`, which IS the chapter under test.** It took a release
+blocker on 2026-08-17 (main 16558: `fat16-read-bytes` was the only FAT16 entry
+with no `fat16-vol-is-usable` check, so a read with no disk divided by zero and
+took x86-64 out with `!EXC=00`), and that changelist carried a new seed. Flying
+the retired bytes would have spent a sitting slot measuring a superseded
+`Fat16` compiled by a superseded seed, and the glass could not have said so.
 
-Check before flashing: `p4 print -q -o <tmp> //Codex/main/build/boot/sinkladder.img`
-and hash it. If it is not `EC071C2C89B6E985...`, somebody rebuilt it and this
-paragraph is describing a file you do not have.
+The rebuild is a materially different image rather than a refresh: same 16 MB,
+**7,887 of 32,768 sectors differ**, because both the payload PE and the
+embedded seed moved.
+
+### The card
+
+| field | value |
+|---|---|
+| image | `build/boot/sinkladder.img` |
+| SHA-256 | `FA83B857 1CE4795F 9F9C570C 873472E3 3AA20176 1334DFC8 6B40527A 7D712B08` |
+| seed | `12B07296419847B2` |
+| cite closure | 12 chapters (it was 11; a chapter joined) |
+| rehearsed | 2026-08-18, all five arms plus a full mission |
+
+**Check before flashing:** `p4 print -q -o <tmp> //Codex/main/build/boot/sinkladder.img`
+and hash it. If it is not `FA83B857...`, somebody has rebuilt it since and this
+card is describing a file you do not have. Do not fly it on that hash alone --
+a rebuild needs its own full-mission bed run (L-REHEARSE).
+
+**Flash it with this, and do not infer it from a neighbouring card.** A naive
+read of this card on 2026-08-18 got every other answer right and had to guess
+the flash command from the nicsitting and asdeflight blocks, which is exactly
+the step not to leave to inference. `flash-usb.ps1` needs elevation, and
+`-DiskNumber` is the number from `Get-Disk`, confirmed to be the USB stick
+before firing:
+
+```powershell
+Get-Disk | Where-Object BusType -eq 'USB'      # N is this disk's Number
+Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-File',
+  'D:\Projects\NewRepository-reek\build\flash-usb.ps1','-Image',
+  'D:\Projects\NewRepository-reek\build\boot\sinkladder.img',
+  '-DiskNumber','N','-SpecFit','-Force','-Log',
+  'D:\Projects\NewRepository-reek\build-output\flash-sinkladder.log'
+```
+
+`-SpecFit` is required and is what rewrites LBA 0 and 1; the returned stick is
+read against that expectation below.
+
+**Arm table on these bytes**, `build/sink-arm.ps1`, every arm painting the
+stage it should: pass `verified`, shift `wrote`, nodisk `systab`, badbpb
+`read`, small `bpb`. The `shift` arm is what makes WHITE a measurement rather
+than an oracle that cannot fail.
+
+**Full mission on these bytes**, `-kernel` and `-disk` both the image, GOP at
+1024 wide: rungs `entered`, `systab`, `read`, `bpb` all `ok=1`, then 42 fill
+ticks from `bar=24` to `bar=1024` monotone, then `write entering bar=0`,
+`write returned ok=1 bar=1024`, `wrote ok=1`, `verified ok=1`. **It reached
+WHITE in 380 seconds.**
+
+**Read the bar as a FRACTION, not as pixels.** 42 ticks: the first at one 42nd
+of the panel width, the last at the full width. The ASUS panel is its own
+width, and the stub picks the largest enumerated mode. The arithmetic is tested
+away from the glass (`codex/test/apps/ladder-bar-width`), which also pins that
+the bar CLAMPS at the panel width rather than wrapping -- a bar jumping
+backwards mid-fill would be a wrapped 32-bit multiply and not a stalled write.
+
+**What the operator watches**, and this is the distinction the 2026-08-11
+flight could not make:
+
+| glass | means |
+|---|---|
+| orange field, blue bar advancing | the 2.7 MB fill is running |
+| orange field, blue bar full | the fill finished, the write has not returned |
+| orange field, blue bar EMPTY after having been full | inside `fat16-write-segments`, where the returned stick put the fault |
+| blue field | the write returned and the `wrote` rung passed |
+| white field | everything worked |
+
+**How long before calling it dead: the bed took 380 seconds and USB is slower,
+so give it twenty minutes.** The whole reason the bar exists is that the last
+flight could not separate slow from dead, so a run killed early throws the
+sitting away and reports nothing.
+
+**What NOT to conclude.** A held colour names the stage that PASSED, not the
+stage that failed: orange means the BPB parsed. Do not read a bar that stops
+as a driver fault, a fuel exhaustion or a device timeout -- the bar says WHERE
+it stopped and nothing about WHY, and pre-assigning the cause on a run sheet is
+what sent a human to swap good hardware once already (L-MISROUTE).
+
+**Bring the stick back.** `BIG.CDX` should be 2,745,998 bytes with byte `i`
+equal to `(i * 7 + i / 513) mod 251`; the host-side check is in "Off the
+returned stick" above, and it repeats on the host what the guest claims to have
+verified. Against the master, `flash-usb.ps1 -SpecFit` rewrites LBA 0 and 1 and
+nothing else should differ outside the payload. **Preserve the raw image before
+any gate runs** -- the 2026-08-11 return was deleted by a later gate's `clean`
+phase and only the written-down readings survived.
+
+**This image carries no `SOURCE.SRC`** and that is expected here rather than a
+fault: the 2.7 MB payload is generated by `sl-pat`/`sl-fill` and never read off
+the volume, so the root should hold `EFI`, `CODEX.CDX` and, after a good run,
+`BIG.CDX`.
+
+**What to bring back, so the sitting is not re-flown to get it.** The last
+colour and whether the bar was advancing, full, or emptied; the wall-clock time
+from power-on to that state; a photograph of the glass; the preserved raw image
+of the returned stick and its SHA-256; and the root listing. **Add the readings
+to this file as a new dated section rather than editing this one** -- the
+2026-08-11 flight survives only because its readings were written down and the
+image itself was destroyed.
+
+**One sentence of observation wanted, unrelated to the rungs:** two
+`print-line-uni` lines were read off the 2026-08-11 flight, and nobody has
+confirmed whether they came from that box's glass or from elsewhere.
 
 **`print-line-uni` rendered on this box.** The chapter's own prose calls it
 "the channel that has never rendered a character on this box and cost two A5
@@ -3272,7 +3526,7 @@ pane from a keystroke that had no route but the second keyboard's pipe.
 
 ### The boot
 
-**PULL THE STICK OUT, DO NOT EJECT** (standing). Pre-flash, hash the file
+**Flash, verify, pull** (the eject hazard is closed, section 3). Pre-flash, hash the file
 and confirm the digest above, then:
 
 ```powershell
@@ -4318,7 +4572,7 @@ and the HID half of 4, plus blu's N1/N2/N3 and reek's P2, in one boot.**
 | **Q2, the NIC** | `00:1f.6` **`8086:15b8`**, an Intel **I219-V**, rev 31, subsystem `1043:8672`, `B0=df440000` | **e1000e family, so red's driver is the right one and Track B is unblocked.** This is the field blu's whole lane was blocked on |
 | **Its `MAP=`** | **`ok`** | The register window lands inside the 3 GB to 4 GB device range, so `e1000-bar-verdict` accepts it and **B3 needs no page-table change.** The dangerous `BELOW3G` verdict did not fire on the part we drive |
 | **Station address** | **`78:24:af:d9:c8:23`, `AV=1`** | Read live off RAL/RAH through the vendor-and-reachability gate this sheet required. blu's N3 |
-| **A second NIC** | Realtek **`10ec:8168`** at `06:00.0`, behind a bridge, **`MAP=BELOW3G`** | Not the part to drive. Recorded because this sheet asked to hear about a non-Intel NIC at once, and because it is the one device on the board whose window WOULD alias the arena |
+| **A second NIC** | Realtek **`10ec:8168`** at `06:00.0`, behind a bridge, **`MAP=BELOW3G`** (RETRACTED 2026-08-18: the stage judged its I/O BAR0 `0xC001` as an address; the part's MMIO is BAR2, unjudged then. See the diag.img flight above) | Not the part to drive. Recorded because this sheet asked to hear about a non-Intel NIC at once |
 | **Q3, PS/2** | **THERE IS NO PS/2 ON THIS BOARD.** Zero arrivals before the handback and zero after | The keyboard is USB behind firmware i8042 emulation and that emulation does not survive ExitBootServices. val's "if no" branch, so **USB HID post-EBS is the only input path this machine has** |
 | **Q4, HID** | `uk-ok=y slot=1 dci=3`, `intel-route=y` | Our stack addresses and configures a keyboard on real Intel xHCI silicon |
 | **Q4, storage** | `disk=n`, and **this is NOT an answer** | See rung 3 |
@@ -4739,15 +4993,18 @@ Stop the sitting, do not improvise, and bring what you have home:
   rather than spending a second rung
 - Any rung needs a decision that is not on this sheet
 
-**Flash, verify, PULL.** Do not eject; see section 3 for the mechanism and
-for the three claims this paragraph used to make that were falsified on
-2026-07-29. The short form: the GUID theory is dead, `-SpecFit` was never
-what stopped the rewrite, and a conforming stick now survives reinsertion
-unchanged. What is left of the rule is the useful half, and it is the half
-attempt 1 broke three times: **the eject is the operation that corrupts the
-table**, so end at the flasher's last line and walk to the board. If the
-flasher reports a verify failure, the stick is the problem -- take the
-second one.
+**Flash, verify, pull.** Section 3 has the mechanism and the three claims
+this paragraph used to make that were falsified on 2026-07-29: the GUID
+theory is dead, `-SpecFit` was never what stopped the rewrite, and a
+conforming stick survives reinsertion unchanged. **Reinsertion and eject are
+not hazards any more** (Damian, 2026-08-18): after a locked write the stick
+does not automount and Explorer offers no Eject, and a reinserted stick
+mounts inaccessible and is left alone. The warning survives in old flight
+cards below as history, not instruction. If the flasher reports a verify
+failure, read its log for the sector that disagreed before blaming the
+stick: the flasher, the image and the port are all candidates, and this
+line used to pre-assign the cause and sent a human to swap good hardware
+(L-MISROUTE, `TheSecondStick`).
 
 ---
 

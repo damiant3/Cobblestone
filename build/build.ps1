@@ -128,6 +128,21 @@ function Invoke-BuildCdx {
             Move-Item -Force $tmpMap ([System.IO.Path]::ChangeExtension($Output, '.map'))
         }
     }
+    # RETAINED, by Damian's ruling 14 (2026-08-18): warnings do not gate
+    # the build, they are AUDITED AT THE RELEASE GATE, and an audit needs
+    # something to read. This log was written and then deleted on success,
+    # so the only copy of a correct CDX2064 naming a live miscompilation
+    # was discarded on every green build (issue 70, X86_64Boot 3216).
+    if (Test-Path $logFile) {
+        # info is not warning or error. The audit surface (ruling 14) is
+        # warnings and errors, and 980 of this log's 1008 lines were
+        # 'info CDX4010: bounds proven', which is the compiler reporting a
+        # SUCCESS. Splitting them is what makes the diag log readable; the
+        # two files are lossless between them.
+        $all = @(Get-Content $logFile)
+        [System.IO.File]::WriteAllLines([System.IO.Path]::ChangeExtension($Output, '.info.log'), @($all | Where-Object { $_ -match '(^| )(info|hint|deprecated) CDX' }))
+        [System.IO.File]::WriteAllLines([System.IO.Path]::ChangeExtension($Output, '.diag.log'), @($all | Where-Object { $_ -notmatch '(^| )(info|hint|deprecated) CDX' }))
+    }
     Remove-Item -Force $logFile, $tmpOut, ([System.IO.Path]::ChangeExtension($tmpOut, '.map')) -ErrorAction SilentlyContinue
     return $ok
 }

@@ -95,6 +95,48 @@ Section: GPIO (P0: 0x50842500 secure, 0x40842500 non-secure)
     else mmio-write-32 (nrf91-gpio-base + nrf91-gpio-outset-off) (bit-shl 1 pin)
   end
 
+Section: GPIO Linear Handle
+
+ The foreword Pin threaded onto the nRF9160 GPIO port: open sets the
+ pin's direction, close returns it to input. The handle carries the
+ fixed GPIO base so close reaches the right register without the caller
+ re-supplying it.
+
+  nrf91-gpio-config : Integer, PinMode -> [Device.Mmio] Integer
+  nrf91-gpio-config (pin) (mode) =
+   when mode
+    is PinOutput -> nrf91-gpio-set-output pin
+    is PinInput -> nrf91-gpio-set-input pin
+    is PinAlternate (f) -> nrf91-gpio-set-output pin
+    is PinAnalog -> nrf91-gpio-set-input pin
+
+  nrf91-gpio-open : Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
+  nrf91-gpio-open (pin) (mode) = act
+   m <- nrf91-gpio-config pin mode
+   Pin nrf91-gpio-base pin
+  end
+
+  nrf91-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
+  nrf91-pin-write (p) (high) =
+   when p
+    is Pin (base) (pin) -> act
+      w <- nrf91-gpio-write pin high
+      Pin base pin
+    end
+
+  nrf91-pin-read : linear Pin -> [Gpio, Device.Mmio] (linear Pin, Boolean)
+  nrf91-pin-read (p) =
+   when p
+    is Pin (base) (pin) -> act
+      v <- (nrf91-gpio-read pin)
+      (Pin base pin, v)
+    end
+
+  nrf91-pin-close : linear Pin -> [Gpio, Device.Mmio] Integer
+  nrf91-pin-close (p) =
+   when p
+    is Pin (base) (pin) -> nrf91-gpio-set-input pin
+
 Section: UARTE0 (0x40008000)
 
   nrf91-uarte0-base : Integer = #40008000
@@ -153,6 +195,78 @@ Section: UARTE0 (0x40008000)
    cr <- (nrf91-uarte-send-byte 13)
    nrf91-uarte-send-byte 10
   end
+
+Section: UARTE Linear Handle
+
+ The foreword UartPort threaded onto UARTE0: open initialises the port,
+ write sends one byte through the board's own EasyDMA path, close
+ disables the peripheral. The board's send targets UARTE0 directly, so
+ the handle carries the base for the type's sake and for close's ENABLE
+ write.
+
+  nrf91-uarte-open : Frequency -> [Uart, Device.Mmio] linear UartPort
+  nrf91-uarte-open (baud-code) = act
+   i <- nrf91-uarte-init baud-code
+   UartPort nrf91-uarte0-base
+  end
+
+  nrf91-uarte-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
+  nrf91-uarte-write (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- nrf91-uarte-send-byte byte
+      UartPort b
+    end
+
+ The receive is EasyDMA like the send (nRF9160 PS 6.32): RXD.PTR at +0x534,
+ RXD.MAXCNT at +0x538, the STARTRX task at +0x000, the ENDRX event at +0x110.
+ The buffer sits 128 bytes below the top of SRAM, beside the send buffer.
+
+  nrf91-uarte-startrx-off : Integer = #000
+  nrf91-uarte-endrx-off : Integer = #110
+  nrf91-uarte-rxd-ptr-off : Integer = #534
+  nrf91-uarte-rxd-maxcnt-off : Integer = #538
+
+  nrf91-uarte-recv-byte : Integer -> [Device.Mmio] Integer
+  nrf91-uarte-recv-byte (fuel) =
+   let buf-addr = nrf91-sram-base + nrf91-sram-size - 128
+   in act
+    w-ptr <- mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-rxd-ptr-off) buf-addr
+    w-cnt <- mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-rxd-maxcnt-off) 1
+    clr <- mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-endrx-off) 0
+    start <- mmio-write-32 (nrf91-uarte0-base + nrf91-uarte-startrx-off) 1
+    done <- (nrf91-uarte-wait-endrx fuel)
+    if done == 0 then 0 - 1 else bit-and (mmio-read-32 buf-addr) #FF
+   end
+
+  nrf91-uarte-wait-endrx : Integer -> [Device.Mmio] Integer
+  nrf91-uarte-wait-endrx (fuel) =
+   if fuel <= 0 then 0
+   else act
+    ev <- mmio-read-32 (nrf91-uarte0-base + nrf91-uarte-endrx-off)
+    if ev > 0 then 1
+    else nrf91-uarte-wait-endrx (fuel - 1)
+   end
+
+  nrf91-uarte-recv-bytes : Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  nrf91-uarte-recv-bytes (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- (nrf91-uarte-recv-byte 10000)
+    nrf91-uarte-recv-bytes n (i + 1) (list-push acc v)
+   end
+
+  nrf91-uarte-recv : linear UartPort, Integer -> [Uart, Device.Mmio] (linear UartPort, List Integer)
+  nrf91-uarte-recv (port) (n) =
+   when port
+    is UartPort (b) -> act
+      bytes <- (nrf91-uarte-recv-bytes n 0 [])
+      (UartPort b, bytes)
+    end
+  nrf91-uarte-close : linear UartPort -> [Uart, Device.Mmio] Integer
+  nrf91-uarte-close (port) =
+   when port
+    is UartPort (b) -> mmio-write-32 (b + nrf91-uarte-enable-off) 0
 
 Section: SPIM0 (0x40008000 instance 2)
 

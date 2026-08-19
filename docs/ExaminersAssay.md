@@ -427,14 +427,26 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **179** expected-failure tests (measured
-2026-08-17).
+`codex/test/errors/` holds **193** expected-failure tests (measured
+2026-08-18).
 
 ## What the standing gate does not cover
 
-`build/build.ps1` is the gate, and three whole classes of change can pass it
-while broken. None is a defect in the gate; all three are things it was never
+`build/build.ps1` is the gate, and four whole classes of change can pass it
+while broken. None is a defect in the gate; all four are things it was never
 pointed at.
+
+**The ai foreword chapters and the tests behind them: no gate phase compiles
+`codex/foreword/ai/`, and `codex/test/forewords/ai-*` run only in the battery.**
+Measured at the Release 46 battery (2026-08-17): `FluxPipeline.codex` had
+never cited `DiffusionPipeline` for `PipelineOutput`, CDX3008 (main 16241)
+refused it, `ai-flux-pipeline` and `ai-exp-approximations` went red, and four
+green gates including the release gate had run over that source. Fixed at
+main 16550 (one cite line). The class is any foreword no compiler chapter
+reaches: the gate proves the compiler unit and whatever the BVT and the
+sweeps name, and a foreword outside those is proven by the battery alone.
+After touching a foreword the compiler does not cite, compile and run its
+tests yourself; the gate will not.
 
 **Transpiler plugs: the `plug-smoke` phase is four plugs, one input, and a
 binary it may not have rebuilt.** It runs typescript, python, rust and ptx
@@ -524,7 +536,7 @@ probably a sidecar declaring the expected end state, so the runner can treat
 "halted after emitting this line" as a pass and a bare timeout as a failure,
 the way `.expected` already declares the output. Until that exists, a guard of
 this class is verified by hand, in two arms, and the account goes in the CL:
-see `docs/Designs/Active/Compiler/ProportionalDecks.md` for one worked
+see `docs/Designs/Done/Compiler/ProportionalDecks.md` for one worked
 example, including the probe and the reason its result was negative.
 
 ## Standing bed facts (each cost a session; do not relearn)
@@ -550,9 +562,10 @@ Consolidated 2026-08-08 out of the retired per-agent workplans.
   input-driven bed incapable, price the work the keystroke starts: a
   1280x800 screenshot is 3,072,054 bytes, and a negative control shorter
   than the write can only ever return what it returned.
-- **`print-line` emits CCE; `print-line-uni` converts at the I/O
-  boundary.** A hand-written probe using `print-line` renders as garbage
-  and looks exactly like a miscompile. The control that settles it is any
+- **`print-line-raw` emits CCE; `print-line` (and `print-line-uni`) convert
+  at the I/O boundary** (main 14809, 2026-08-13; before it `print-line` was
+  the raw alias, and this bullet said so). A hand-written probe using
+  `print-line-raw` renders as garbage and looks exactly like a miscompile. The control that settles it is any
   existing `codex/test` unit through the same path.
 - **A hand-rolled compile-and-run harness must DELETE its artifacts
   first.** `Test-Path $cdx` finds the PREVIOUS run's binary, so a failed
@@ -810,6 +823,72 @@ not corrected.** The paragraph above had the right answer and the right general
 lesson written down, and neither reached the scripts that had already
 copied the wrong number out of it.
 
+### A harness that can throw is a harness that can take itself down, and the fix was already in the file
+
+`test-cross-batch.ps1` read its `uart.log` with a bare
+`[System.IO.File]::ReadAllText`, no share mode, no retry, behind nothing but
+a 50 ms sleep. QEMU owns that file through `-serial file:` and `Kill()`
+returns before Windows releases the handle, so the read can land on a locked
+file. With `$ErrorActionPreference = 'Stop'` at the top of the script, that
+throw does not fail one test.
+
+Measured twice on 2026-08-18, on both cross lanes. The riscv64 run died on
+its **first** test with a `MethodInvocationException` on `range-let-carry`'s
+`uart.log`: 457 tests lost, exit 1, no results file. The arm64 run died the
+same way at `unit-show`, 453 tests lost.
+
+Then the second half of the cost, which is the one to remember. **QEMU does
+not exit when its guest finishes**, and the ceiling that kills it lives in
+the harness that just died. Both outages stranded their whole slot width.
+The riscv64 one left six guests, two at 5,300 CPU-seconds when they were
+found. The arm64 one was worse only because nobody looked for six hours: its
+five guests were still running at **23,100 CPU-seconds each, 115,597 in
+total**, and they had been saturating five cores of a shared build box for
+the whole afternoon. Every agent's build on this machine was paying for it.
+
+Which is the part that generalises past this bug: **an orphaned guest is
+silent**. Nothing reports it, no gate observes it, and the harness whose job
+was to kill it is the thing that died. If a cross run ends badly, look at
+the process list before doing anything else.
+
+**The fix was already in the file, one scope over.** `$compileBlock` has a
+`Read-LogShared` helper -- share-tolerant open, five retries, empty on
+failure -- with a comment explaining that `WaitForExit` returns before the
+redirected handle is released. `$runBlock` was written later, hit the
+identical hazard, and got the naive read. A helper in a sibling scope is not
+reachable and, more to the point, was not looked for.
+
+Fixed by giving `$runBlock` the same helper, waiting on the process after
+`Kill()` so the handle is normally closed before the read, and routing an
+unreadable log to `FAIL_RUNTIME 'no uart output'`, which the serial retry
+pass already re-runs. It fails toward a re-run rather than toward a content
+verdict.
+
+Verified as an A/B against a deliberately locked file rather than by hoping
+the race recurred, since the instrument has to be able to show the opposite:
+
+| holder's share mode | old read | new read |
+|---|---|---|
+| `Read` (what a `-serial file:` writer allows) | **threw** | returned the content |
+| `None` | **threw** | empty, so the retry pass takes it |
+
+The general shape, and it is not about file handles: **any uncaught throw
+inside a `ForEach-Object -Parallel` block is a battery-wide outage, not a
+test failure**, and the blast radius is bigger than the run because the
+harness is also the thing enforcing every guest's ceiling. Every I/O call in
+a run block belongs inside a `try`, and a hazard fixed in one of two sites
+is not fixed.
+
+**The class is live in two sibling harnesses and is NOT fixed here.** Seven
+scripts under `build/` drive a `ForEach-Object -Parallel` block. `bvt.ps1`
+and `check-errors.ps1` read their redirected logs with `-ErrorAction
+SilentlyContinue` and are already safe by that. Unguarded, reading a log a
+child process was writing: `sweep-app-classes.ps1:107` and `:114`
+(`[System.IO.File]::ReadAllText` on a redirected stdout and stderr), and
+`test.ps1:738`, `:765`, `:766`. `test.ps1` is the battery and is Damian's to
+run, so this is recorded rather than swept, but it is the one where the
+outage costs the most and it is the same two lines of fix.
+
 ### An elapsed reading is not a measurement unless its run count is stated
 
 The section above is about contention producing a wrong PASS/FAIL. It
@@ -930,14 +1009,40 @@ worth what no guard is worth:
 - **Run retry recovers**: proven with a one-shot injected `no uart output`
   (fail first attempt, pass on retry) -- 1 of 1 recovered, the row noted
   `passed on serial retry`. Made persistent, the same injection gives 0 of 1
-  and the row reads `still silent alone`. The injection was removed; it is
-  recorded here because no test in the tree currently produces this class, so
-  there was nothing real to fire it with.
+  and the row reads `still silent alone`. The injection was removed.
 - **A wrong answer is untouched**: a valid program with a deliberately wrong
   `.expected` stays `FAIL_OUTPUT` with `run 0/0 retried`.
 
 `-CompileTimeoutSec` exists to make the first of those provocable on demand;
 it is also why the budget is no longer a literal buried in the parallel block.
+
+**`still silent alone` does NOT mean broken. The retry re-runs at the SAME
+ceiling, so a test that merely needs longer than the ceiling cannot pass it
+however many times it is retried.** The row is therefore two different
+findings wearing one sentence, and the doc used to say no test in the tree
+produced the class at all. Four do. Measured 2026-08-18 (blu), arm64:
+
+| test | at `-RenoTimeout 10` | at `-RenoTimeout 120` |
+|---|---|---|
+| `ecdsa-p384` | FAIL_RUNTIME, `no uart output, still silent alone` | PASS, 103.4s |
+| `ttt-perfect` | FAIL_RUNTIME, `no uart output, still silent alone` | PASS, 15.5s |
+| `ecdsa-cert` | FAIL_STARVED, incomplete at 90s | not re-measured |
+| `tls-cv-schemes` | FAIL_STARVED, incomplete at 90s | not re-measured |
+
+The same `ecdsa-p384` ran in **12.9s** on 2026-08-17 and **103.4s** the next
+day on the same source: identical kernel digest `12B07296419847B2`, foreword
+and test source unchanged, and all three arm64 plug CLs in the window ruled
+out by configurations that still failed. The variable is concurrent fleet
+load, not the tree.
+
+**So raise the ceiling before you bisect.** These four read exactly like a
+regression against a previous run's per-test diff, and a bisect over them
+costs a plug rebuild per candidate and finds nothing, because nothing in the
+depot turned them. One `-RenoTimeout 120` run separates the classes in the
+time a single bisect step would take. `FAIL_STARVED` already says "incomplete
+at ceiling" and is honest; `FAIL_RUNTIME` with `no uart output` is the one
+that lies, because a run cut off before its first line looks the same as one
+that never had a first line.
 
 ### The GATE leg learned the same lesson, two months later
 
@@ -1353,6 +1458,74 @@ position entirely. That is what the act-block span defect looked like.
 tests exist because of a *code*, not a position -- but any test whose subject is
 a span should be written in the form that can fail on one.
 
+### The self-compile warning register
+
+**Ruling 14 (Damian, 2026-08-18): warnings are warnings. They do NOT gate the
+build; they are AUDITED AT THE RELEASE GATE.** This section is that audit's
+subject: one entry per warning code the compiler's own self-compile emits, with
+its ruling recorded as each is made. **No ruling is owed on any of them today.**
+
+**The log is retained as of this change and was not before.** `Invoke-BuildCdx`
+wrote the self-compile diagnostics to a temp file, kept them ONLY on failure,
+and deleted them on success, so on every green build the single copy was
+destroyed. It now persists at `build/output/<artifact>.diag.log`, one per
+artifact (`Sut`, `stage1`, and `stage2` when a second pass runs), so the two
+can be diffed. Both the generator `codex/build/BuildScript.codex` and the
+shipped `build/build.ps1` carry the change: the shipped script is the
+maintained side (`check-generated-scripts.ps1` has no `-Write` flag and that
+omission is load-bearing), so a change to one without the other is drift.
+
+**What it cost to have no log.** `CDX2064` fired correctly on
+`X86_64Boot.codex:3216` on every build for as long as that defect existed, and
+reached nobody: the warning was right, the analysis was right, and the only
+copy was deleted seconds later. That is GitHub issue 70, and it took real
+hardware and an outside contributor to find what our own compiler had been
+saying all along.
+
+**Measured 2026-08-18 from `build/output/Sut.diag.log`, seed `CAE56FBC`.
+Re-measure rather than quoting this table (L-COUNT): it moved twice in one day
+as fixes landed.**
+
+| code | severity | count | what it says | ruling |
+|---|---|---|---|---|
+| `CDX6020` | warning | 13 | `mutation in constructor`: a constructor field contains a `__record-set`, so other fields of the same constructor reading that record see the mutated value | none owed |
+| `CDX3005` | warning | 7 | `shadows builtin`: a definition has the same name as a builtin, and which one a call site gets depends on resolution order | none owed |
+| `CDX4010` | info | 980 | `bounds proven`: a runtime check was elided | none owed |
+| `CDX2053` | info | 6 | narrowing proven | none owed |
+| `CDX4030` | info | 1 | the pass pipeline in force | none owed |
+| `CDX2064` | warning | **0** | stale read after in-place update. **It was 1** until the issue-70 fix; its absence here is the evidence the log reports what it should | none owed |
+
+**The register is not a to-do list and the counts are not defects.** Several of
+the `CDX6020` sites are benign because the field read is an argument evaluated
+BEFORE the mutation applies. At least one is worth a look and has not had one:
+`state = __record-set st1 "load-local-toggle" (st.load-local-toggle + 1)` reads
+`st` while mutating `st1`. **None of the 13 has been judged**, and judging them
+is per-site work, not a sweep.
+
+**INFO IS NOT WARNING OR ERROR, and the log is split on that line** (Damian,
+2026-08-18). Retention alone would not have been enough: 987 of the 1009 lines
+are infos, so a reader hunting the one warning that mattered was hunting it in
+97 per cent noise, which is the second half of why `CDX2064` reached nobody.
+
+| file | holds | lines here |
+|---|---|---|
+| `<artifact>.diag.log` | warnings, errors, and any non-diagnostic context | **20 warnings** (22 lines, 2 blank) |
+| `<artifact>.info.log` | `info`, `hint`, `deprecated` | 987 |
+
+The two are LOSSLESS between them: the split routes lines, it does not suppress
+them, and `CDX4010` is the compiler reporting a SUCCESS (a bounds check it
+proved unnecessary and elided) rather than anything to act on. The audit surface
+is now twenty lines that can be read at a glance, and an EMPTY `diag.log` is a
+meaningful green.
+
+**Two traps in the filter, both met and both worth not re-paying.** The pattern
+must not require a leading space: `info CDX4030: PIPELINE ...` starts at column
+0 and leaked into the diag log on the first attempt, found by reading the
+emitted file rather than by trusting the split. And the pattern must avoid the
+backslash-s class entirely, because a Codex string literal escapes a backslash
+as two, so a generator written that way emits a bare `s` and the generated
+script silently disagrees with the shipped one. It is `(^| )` for that reason.
+
 ### `.diag` is healthy too, and its one gap is severity
 
 26 sidecars naming 10 distinct codes, every one a real constant, and the class
@@ -1419,6 +1592,19 @@ negatives are paired by name**: `normalize-eq` against `normalize-false`,
 `induction-unsound`, `induction-list-false`, `list-induction-false` and
 `reverse-reverse-unsound`, plus `proof-qed-vacuous` and six `proof-launder-*`
 pinning CDX4023. All are in `codex/test/errors/` and all run every battery.
+
+### The cross runners cut the actual output down to the `.expected` line count
+
+`build/test-cross.ps1` and `build/test-cross-disk.ps1` both truncate the
+captured UART to as many lines as the `.expected` holds before comparing
+(`test-cross-disk.ps1:157`). A run that prints everything the sidecar asks for
+and then hangs therefore compares EQUAL: the lines that would have shown it
+still running are discarded, so a hang and a completed run read identically.
+
+**When you are probing for a hang, write the `.expected` LONGER than the output
+you expect.** The surplus lines make the truncation inert, so a run that stops
+early is a mismatch instead of a pass. Measured during plugs 1.38, where a
+spawned child faulted forever and the arm read green.
 
 ### `.fatal` proved only that the test compiled, and twice not even that
 
@@ -1954,6 +2140,31 @@ length silently comes back as `n -band 0xFF`. That read a real 457-byte frame as
 and a real 348-character payload as 92 -- which looks *exactly* like a server
 truncating its reply, and sent this test hunting a bug in `cdx-serve` that was never
 there. Cast to `[int]` before shifting. The server was right; the ruler was short.
+
+**The same conversation over the Intel model, by name (root, 2026-08-17,
+CurrentPlan B4 step 2).** `-Card e1000` boots the same server with `-e1000-nat`
+(the NAT wire moved to the e1000 model, `OperatorsManual.md` "The NAT is one
+wire"); `-Card ne2k` is the default and every historical run. Measured on
+seed `D354208C631FDDA7`: all eight checks pass on both cards, ne2k in 24 s
+and e1000 in 19 s of wall clock, so the repository protocol is served over
+both branches of the bed by one script rather than by an ad-hoc `-VmArgs`
+remembered from 2026-07-30 (`DeviceEmulationCatalog.md`, "wired to the
+NAT"). `registry-locate-test.ps1` takes the same switch for its three guests,
+and passes 9/9 on both (ne2k 162 s, e1000 145 s) since the same day. It did
+not at first, and the account is worth one paragraph: `cdx-registry` and
+`cdx-announce` never called `net-driver-bring-up`, so under `-e1000-nat` they
+stayed on the silenced NE2000; and once they did bring the driver up, the
+registry on ne2k accepted every connection and read no message, because its
+`recv-give-up` was the POLL COUNT 40,000,000 handed to `net-io-recv-loop` as a
+starting point, tuned to NetIO's uncalibrated cap of 50,000,000 polls. The
+calibrated interval on the NE2000 is 6,000 polls per tick (the guest prints
+it now), the cap `interval * 500` is 3,000,000, and 40,000,000 was past it
+before the first poll. It is the poll-count-as-duration class `LESSONS.md`
+names for `e1000-aneg-fuel`, from the other side of the same interval, and
+the e1000 never showed it because there the interval is 2,281,000. The
+give-up is 100 ticks now, the same ten seconds either way. Read the green as `DeviceEmulationCatalog.md` says to: evidence about the
+stack over a descriptor ring, not about the card; the card's own answer is
+B3's flight and Damian's sitting.
 
 ## The Scalar Operators Against the Host (`build/oracle-scalar.ps1`)
 
@@ -3142,6 +3353,82 @@ rather than a hope: `recv-len` can never exceed `recv-cap`, so a message needing
 `4 + msg-len > recv-cap` bytes could never have completed under the old code
 either. The guard converts a permanent stall into a drop.
 
+## The Identity Wrap Known Answer (`codex/test/apps/first-boot-ceremony`)
+
+Identity reconciliation stage 1 (red, 2026-08-18). The shipped first-boot
+wizard wrapped the Ed25519 seed under a MALFORMED key: `hkdf` already answers
+bytes, and `GopWizard` re-expanded those 32 bytes with `wz-words-to-bytes` into
+128 elements of `[0,0,0,b]` and handed AES-256 that list as its key
+(`GopWizard.codex:348`, `:493` before the fix). The AES-256 schedule then read
+words 8..31 out of the padded list instead of expanding them. It round-tripped,
+so this test could not see it: **a round trip through your own wrap and unwrap
+agrees with itself under any key schedule** (L-FALSIF, the same shape as the
+`ddc` self-agreement). `IdentityManager.codex:385-393` had found and fixed the
+identical defect on a copy nothing calls, and nobody ported it.
+
+The arm that cannot be dodged is a known answer computed OUTSIDE Codex: .NET
+`HMACSHA256` for HKDF-SHA256 (salt 16 x 7, ikm `test`, info `codex-identity-v2`,
+L 32) and `System.Security.Cryptography.Aes` for AES-256-CBC/PKCS7 (iv 16 x 9,
+plaintext bytes 0..31), pasted into the test as `fbc-kat-dk` and
+`fbc-kat-wrapped`. The row `kat dk-len=32 dk-eq=Y wrapped-eq=Y expanded=240`
+says the wizard's key IS HKDF's 32 bytes, the wrap IS AES-256-CBC, and the
+expanded schedule is 240 bytes (a 128-element key expands to 336; that number is
+the fingerprint of the old defect). Under the pre-fix wizard the same row reads
+`dk-len=128 dk-eq=N wrapped-eq=N expanded=336`, which is the ablation.
+
+`IDENTITY.DAT` is version 2 now and **version 1 is refused** (`version1=rejected`):
+a v1 reader and an unlock-time rewrap were built and then removed the same day
+at Damian's direction, because no v1 record exists outside this environment
+and a reader for the malformed wrap is only a hole going forward. The stage
+did not change the entropy path, the storage, or what happens to the seed
+after unlock; those are stages 2-4 in `CurrentPlan.md`.
+
+**Stage 2 (red, 2026-08-18): the seed is kept and everything else is scrubbed.**
+`pinned load=0 status=1 seed-zeroed=Y after-zero=0` is the pinned-region arm:
+`wz-load-seed` copies the seed through `key-load` into the kernel's pinned
+32 bytes (`X86_64Boot.codex` `identity-key-addr`), zeroes its own copy, and
+`key-status` reads 1 until `key-zero` (three failed attempts, restart, power
+off) reads 0. `wz-bytes-eq` folds every byte into one difference word and
+decides at the end (constant time in the position of the first difference).
+
+The zeroing itself is NOT per value, and the reason is the arm
+`codex/test/heap-scrub`. `Text` is `[len][bytes]` on the bump heap, so a
+`text-zero` would be a three-instruction builtin -- and it would be the wrong
+instrument: the passphrase field builds its text one character at a time
+(`GopText.codex:67`, `buf & char-to-text ...`), so every PREFIX of the
+passphrase is its own allocation, and zeroing the final `Text` leaves
+"hunter2", "hunter", "hunte" ... readable one byte short. The arm types
+`hunter2!` the way the field does and counts the first character across the
+heap region: `prefixes-before=9` (eight prefixes plus the one-character
+text), then `heap-scrub-to mark` (`codex/foreword/core/HeapScrub.codex`)
+zero-fills `[mark, top)` and restores the heap: `prefixes-after=0
+nonzero-after=0 heap-back=Y`. The control is the same typing under a plain
+`__heap-restore`: `prefixes-still-there=9`. Locals are registers and stack
+spills (`X86_64State.codex` `alloc-local`), never heap, so the scrub cannot
+reach the frame that is running it. The wizard brackets the whole secret half
+of the ceremony (passphrase, entropy, keygen, save, `key-load`) and the whole
+unlock prompt under one mark and scrubs on every exit; the completion screen
+re-reads the identity from the stick because the record was above the mark.
+That is why the ceremony order changed to upstream, timezone, then identity:
+everything after the mark is discarded, so the non-secret answers the last
+screen still shows come first. Not scrubbed: the USB HID report buffer the
+keystrokes arrived through, which is the keyboard driver's and outside the
+mark.
+
+**Stage 3 (red, 2026-08-18, Damian's ruling): the bench auto-unlock is bed-only.**
+`wz-auto-pass` (`abc123`) is still in the source and still worthless as a
+secret; what changed is that `wz-auto-try` is given `wz-in-bed`, CPUID leaf 1
+ecx bit 31, the bit every hypervisor sets and no bare board does, and answers
+`None` without deriving a key when it is clear. So a returning stick on metal
+always asks, and the bench (codex-vm, QEMU, any VM) still boots to the desk
+without typing. The row `bed=Y auto-on-bed=Y auto-off-bed=N` wraps a fresh
+identity under the bench passphrase and asks `wz-auto-try` both ways; the
+first field is the test host's own bit, so an `.expected` of `bed=Y` also
+pins the test to running under a hypervisor, which every battery run does.
+The image itself is the same bytes on metal and in the bed; there is no build
+flag, and a flag would have been the weaker instrument since the desk image the
+bed boots IS the stick image.
+
 ## The Handshake Prove Guards (`codex/test/apps/handshake-prove-guard`)
 
 Track D item 2, and it turned out not to be a parsing bound at all. **The
@@ -3587,6 +3874,31 @@ Track D item 16. `codex/foreword/ai/Gguf.codex` reads every field with a bare
 file decides where a read LANDS and a wrong one halts the machine instead of
 answering badly. Not seed-affecting: only `apps/works/AgentBundle.codex` cites
 the chapter, and no compiler chapter does.
+
+**`gguf-fits` was itself the additive class, found by item 20 and fixed
+2026-08-18 (reek).** The guard every other guard in this chapter is built on
+was `(off + n) <= list-length data`, with `off < 0` and `n < 0` refused in
+front of it. Both operands come off the file as u64s, so neither is negative
+and the SUM is: measured on the seed by asking the predicate directly, `off`
+9223372036854775800 with `n` 8, against a ten-byte list, answered **True**, and
+so did `off` 16 with `n` 9223372036854775800. The read that follows lands at
+9.2e18 and traps. It is now `n <= list-length data - off`, which cannot wrap
+because both sides are bounded by a length that exists.
+
+The probe is six rows and its discriminator is `far-off`: `off` 1,000,000 with
+`n` 8 answers False both before and after, so the two True answers were the
+arithmetic wrapping and not a guard that refuses nothing. After the change only
+those two rows move; `sane-in`, `sane-out`, `neg-off` and `far-off` are
+unchanged. `gguf-hostile` and `gguf-test` are byte-identical, and
+`build/gguf-foreign-test.ps1` still parses four real llama.cpp models up to
+3,184 MB with the answers re-derived on the host.
+
+**The guard has no standing arm and that is deliberate**, not an oversight:
+the standing instruction is not to add tests to the gate or the battery, and
+`gguf-hostile` is in the battery. The six rows above reproduce it in a
+scratch chapter citing `AI chapter Gguf` and calling `gguf-fits` directly,
+which is the same shape as the `repo-has` arm. Whoever is next told to grow
+this arm should add them.
 
 **The path is reached and the shape of the caller makes it worse.**
 `ab-window-step` (`AgentBundle.codex:297`) calls `gguf-tensor-info-offset` on a
@@ -4170,7 +4482,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-179 tests in `codex/test/errors/` verify that the compiler rejects
+193 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -4779,6 +5091,40 @@ They were compiled and run by hand in both directions when written, and the
 README's `bounded linear unpack-text` example was compiled too rather than
 written from memory -- it refuses with the exact CDX6101 text the README
 quotes.
+
+## Two Guest Truncation Report Shapes, And One Pattern Cannot Match Both
+
+val 2026-08-18, lifted out of `plugs-backlog` 1.30 when that row closed; the
+row is gone and this is now the only record. A harness that greps a plug
+guest's console for a truncation is matching one of two incompatible shapes,
+and the pattern everybody copies matches only the first:
+
+- `TRUNCATED sent=N of M ...` -- `javascript`, `wpf`, `rust`, `recheck`.
+- `OK ... sent=N TRUNCATED ...` -- `pe`, `elf` and `img`, which append the
+  token CONDITIONALLY inside the OK line. Here `TRUNCATED` comes AFTER
+  `sent=`, so the pattern `TRUNCATED sent=` cannot match it, **and the line
+  begins with `OK`.** A harness reading these three sees success on a
+  refused send however carefully it was written.
+
+So the work is never "add the grep to N harnesses". Normalise the guest
+report to one shape first, then add the check only where the guest can
+actually report a refusal at all: a plug that streams to the codex-vm output
+ring rather than over a checked TCP send has no refusal to report, and a
+check there is decoration.
+
+**Three failure channels are distinct and a harness needs all three.** The
+guest can REFUSE a send and say so; the guest can DIE mid-emission, which is
+never a refusal, so it prints no truncation line and closes cleanly enough
+that an abort flag stays false; and codex-vm can DROP the serial bytes the
+console is made of, which it reports on stderr rather than on the console it
+is dropping from. `build/plug-run.ps1` carries one arm for each, and the
+serial-drop arm runs FIRST because a short console makes every check below
+it read clean for the wrong reason.
+
+**Sabotage the PATTERN, not the plug.** A check that now passes is
+indistinguishable from one that never ran. Point the grep at a line the
+guest or the VM demonstrably DOES print and confirm the harness fails; keep
+the broken arm (L-FALSIF, L-ORACLE).
 
 ## A Send That Cannot Finish Says So (`net-send-capped`)
 

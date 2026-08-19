@@ -117,7 +117,9 @@ Section: Codegen State
    runtime-funcs : Integer,
    boot-cap-mask : Integer,
    boot-fs-scope : Text,
-   boot-net-scope : Text
+   boot-net-scope : Text,
+   deck-record-intrinsic : Boolean,
+   has-block-driver : Boolean
   }
 
   A64State = record {
@@ -224,7 +226,9 @@ Section: State Constructors
      runtime-funcs = 0,
      boot-cap-mask = 0,
      boot-fs-scope = "",
-     boot-net-scope = ""
+     boot-net-scope = "",
+     deck-record-intrinsic = False,
+     has-block-driver = False
     },
     current-func = "",
     tco = default-a64-tco,
@@ -954,6 +958,9 @@ Section: Name Emission
   a64-emit-name (st) (name) (ty) =
    let local-reg = a64-lookup-local (st.locals) name 0
    in if local-reg >= 0 then a64-load-local st local-reg
+   else if name == "__deck-pos" then a64-emit-deck-pos st
+   else if name == "__deck-enter" then a64-emit-deck-enter st
+   else if name == "__deck-exit" then a64-emit-deck-exit st
    else let eoa = a64-find-effect-op-addr ((st.extra).effect-op-addrs) name 0
    in let is-rl = if name == "read-line" then True else name == "read-line-cce"
    in let has-handler = if is-rl then a64-find-func-offset (st.func-names) (st.func-offsets) ("__handler_" & name) 0 else 0 - 1
@@ -1313,14 +1320,22 @@ Section: Binary Emission
     is IrSubRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fsub-s
     is IrMulRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fmul-s
     is IrDivRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-s
-    is IrAddRealTrapping -> a64-emit-real-arith st2 left-reg right-reg arm64-fadd-d
-    is IrSubRealTrapping -> a64-emit-real-arith st2 left-reg right-reg arm64-fsub-d
-    is IrMulRealTrapping -> a64-emit-real-arith st2 left-reg right-reg arm64-fmul-d
-    is IrDivRealTrapping -> a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-d
-    is IrAddRealSaturating -> a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fadd-d
-    is IrSubRealSaturating -> a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fsub-d
-    is IrMulRealSaturating -> a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fmul-d
-    is IrDivRealSaturating -> a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fdiv-d
+    is IrAddRealTrapping -> if is-real-f32 ty then a64-emit-real-arith st2 left-reg right-reg arm64-fadd-s
+     else a64-emit-real-arith st2 left-reg right-reg arm64-fadd-d
+    is IrSubRealTrapping -> if is-real-f32 ty then a64-emit-real-arith st2 left-reg right-reg arm64-fsub-s
+     else a64-emit-real-arith st2 left-reg right-reg arm64-fsub-d
+    is IrMulRealTrapping -> if is-real-f32 ty then a64-emit-real-arith st2 left-reg right-reg arm64-fmul-s
+     else a64-emit-real-arith st2 left-reg right-reg arm64-fmul-d
+    is IrDivRealTrapping -> if is-real-f32 ty then a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-s
+     else a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-d
+    is IrAddRealSaturating -> if is-real-f32 ty then a64-emit-real-saturating-arith-f32 st2 left-reg right-reg arm64-fadd-s
+     else a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fadd-d
+    is IrSubRealSaturating -> if is-real-f32 ty then a64-emit-real-saturating-arith-f32 st2 left-reg right-reg arm64-fsub-s
+     else a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fsub-d
+    is IrMulRealSaturating -> if is-real-f32 ty then a64-emit-real-saturating-arith-f32 st2 left-reg right-reg arm64-fmul-s
+     else a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fmul-d
+    is IrDivRealSaturating -> if is-real-f32 ty then a64-emit-real-saturating-arith-f32 st2 left-reg right-reg arm64-fdiv-s
+     else a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fdiv-d
     is IrApproxEq -> a64-emit-real-comparison st2 left-reg right-reg 1
     is IrApproxEqExact -> a64-emit-real-comparison st2 left-reg right-reg 1
     is IrAnd -> A64EmitResult { state = a64-emit st2 (arm64-and rd left-reg right-reg), reg = rd }
@@ -1392,6 +1407,23 @@ Section: Real Arithmetic
    in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
    in let st3 = a64-emit st2 (fp-op 0 0 1)
    in A64EmitResult { state = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-real-saturating-arith-f32 : A64State, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> A64EmitResult
+  a64-emit-real-saturating-arith-f32 (st) (l-reg) (r-reg) (fp-op) =
+   let rd = a64-alloc-temp st
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
+   in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
+   in let st3 = a64-emit st2 (fp-op 0 0 1)
+   in let st4 = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0)
+   in let st5 = a64-emit st4 (arm64-lsl-imm 9 (rd.reg) 33)
+   in let st6 = a64-emit st5 (arm64-lsr-imm 9 9 56)
+   in let st7 = a64-emit st6 (arm64-cmp-imm 9 255)
+   in let st8 = a64-emit st7 (arm64-b-cond 1 24)
+   in let st9 = a64-emit st8 (arm64-lsl-imm 9 (rd.reg) 41)
+   in let st10 = a64-emit st9 (arm64-cbz 9 12)
+   in let st11 = a64-emit st10 (arm64-movz (rd.reg) 0 0)
+   in let st12 = a64-emit st11 (arm64-b 8)
+   in A64EmitResult { state = a64-emit st12 (arm64-sub-imm (rd.reg) (rd.reg) 1), reg = rd.reg }
 
   a64-emit-real-saturating-arith : A64State, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> A64EmitResult
   a64-emit-real-saturating-arith (st) (l-reg) (r-reg) (fp-op) =

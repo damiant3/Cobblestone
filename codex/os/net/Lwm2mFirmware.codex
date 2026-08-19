@@ -16,14 +16,16 @@ Chapter: Lwm2mFirmware
  responses, and each one lands in the staging bank through the Flash
  effect. Nothing here invents a byte.
 
- What this chapter is NOT: a socket. CoAP runs over UDP and codex-vm
- serves exactly one UDP port (53, DNS) and drops the rest, so no guest
- can complete a live CoAP exchange today. That is a missing VM
- capability, not a gap in this flow. So the transport is
- injected: fw-feed-response takes the bytes of a CoAP response from
- wherever the caller got them. Every byte of protocol handling above the
- socket is real and is exercised; the socket is the one unproven inch,
- exactly as it is for cleartext fetch and TLS.
+ What this chapter is NOT: a socket. fw-feed-response takes the bytes of a
+ CoAP response from wherever the caller got them, which keeps the protocol
+ handling testable without a peer.
+
+ The transport is no longer unproven. This said codex-vm served exactly one
+ UDP port (53) and dropped the rest, so no guest could complete a live CoAP
+ exchange; that was false by 2026-07-23, when general UDP forwarding
+ shipped (-portfwd udp:, tools/codex-vm.c), and outbound UDP is NAT'd to
+ any port. tools/ota-fetch.codex drives this chapter over a real socket and
+ build/ota-fetch-test.ps1 runs it against aiocoap.
 
  We say:
 
@@ -127,7 +129,7 @@ Section: The Download
   fw-next-request (c) (msg-id) (token) =
    let path = fw-package-uri c
    in let blk = coap-block-option coap-opt-block2 (c.fw-next-block) 0 fw-szx
-   in let opts = [coap-uri-path-option path, blk]
+   in let opts = coap-uri-path-options path & [blk]
    in coap-build-request CoapConfirmable CoapGet msg-id token opts []
 
   fw-feed-response : Lwm2mFw, List Integer -> [Flash, Device.Mmio] Lwm2mFw

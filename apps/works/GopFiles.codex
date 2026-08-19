@@ -10,12 +10,9 @@ Chapter: GopFiles
   cites Foreword chapter CCE
   cites Foreword chapter Maybe
 
- The loop keeps the desk's law: idle is the keyboard mailbox take and
- the allocation-free mouse pump; everything that allocates -- a
- directory listing, a repaint, a sector read for the preview -- runs
- only when an event asks for it. The preview reads exactly one
- sector: the first 128 bytes name a file better than a two-megabyte
- read that would sit on a heap with no collector.
+ The preview reads exactly one sector: the first 128 bytes name a file
+ better than a two-megabyte read that would sit on a heap with no
+ collector.
 
  We say:
 
@@ -291,153 +288,32 @@ Section: Navigation State
 
 Section: Preview
 
-  gfl-preview : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, Fat16DirEntry -> [Device.Port] Integer
-  gfl-preview (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (e) = act
+ The preview was a modal loop until 2026-08-18 and is a paint now. It never
+ repaints: nothing scrolls it, and the only band the desk redraws every second
+ is the taskbar, which no Files screen reaches. So the caller paints once, sets
+ its mode, and answers ordinary events after that -- there is nothing to keep,
+ which is why this pane needed no state for it beyond one integer.
+
+  gfl-preview-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Fat16Volume, Fat16DirEntry -> [Device.Port] Integer
+  gfl-preview-paint (base) (w) (h) (stride) (s) (font) (cs) (vol) (e) = act
+    hd <- cursor-hide cs base stride
     if e.de-size == 0 | e.de-cluster < 2 then act
-      hd <- cursor-hide cs base stride
       f <- gfl-draw-frame base w h stride s font ("File  " & e.de-name)
       t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "empty file" gfl-col-dim s 0
-      t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
-      cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-      gfl-wait-back base w h stride s font kbd mouse cs
+      gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
     end
     else act
       b <- disk-read-sector (fat16-cluster-sector vol (e.de-cluster))
-      let hd = cursor-hide cs base stride
-      in let got = if b.dr-ok then (if e.de-size < 512 then e.de-size else 512) else 0
-      in let d = gfl-draw-preview base w h stride s font e (b.dr-buf) got
-      in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-      in gfl-wait-back base w h stride s font kbd mouse cs
+      let got = if b.dr-ok then (if e.de-size < 512 then e.de-size else 512) else 0
+      in gfl-draw-preview base w h stride s font e (b.dr-buf) got
     end
   end
-
- The shot verdict paints into the taskbar band, which no Files screen
- repaints. The height is GopDesk's, hand-synced like every other chrome
- size in a pane.
-
-  gfl-taskbar-h : Integer = 28
-
-  gfl-shot : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port] Integer
-  gfl-shot (base) (w) (h) (stride) (font) = act
-    let mark = __heap-save
-    in act
-      t <- shot-take base w h stride
-      let s = ui-scale w
-      in let bg = gop-fill-rect base stride (200 * s) (h - gfl-taskbar-h * s + 4 * s) (300 * s) (16 * s) #000E1C
-      in let tx = gop-draw-text base stride font (204 * s) (h - gfl-taskbar-h * s + 6 * s) t #69BE28 s 0
-      in let d = __heap-restore mark
-      in 0
-    end
-  end
-
-  gfl-wait-back : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
-  gfl-wait-back (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) = act
-    sc <- kbd-take kbd
-    let mv = mouse-pump mouse w h
-    in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-    in let back = mv == 1 & mouse-clicked mouse & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)
-    in if sc == 1 then 0
-    else if sc == 28 then 0
-    else if sc == 88 then act
-      st <- gfl-shot base w h stride font
-      gfl-wait-back base w h stride s font kbd mouse cs
-    end
-    else if back then 0
-    else gfl-wait-back base w h stride s font kbd mouse cs
-  end
-
 Section: Loop
 
-  gfl-activate : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, List Fat16DirEntry, Integer, List Integer, List Text -> [Device.Port] Integer
-  gfl-activate (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (entries) (sel) (clusters) (names) = act
-    let e = list-at entries sel
-    in if gfl-is-dir e then act
-      let c2 = list-push clusters (e.de-cluster)
-      in let n2 = list-push names (e.de-name)
-      in act
-        ents <- gfl-list-cur vol c2
-        d <- gfl-redraw base w h stride s font mouse cs ents 0 0 n2
-        gfl-loop base w h stride s font kbd mouse cs vol ents 0 0 c2 n2
-      end
-    end
-    else act
-      p <- gfl-preview base w h stride s font kbd mouse cs vol e
-      d <- gfl-redraw base w h stride s font mouse cs entries sel (gfl-clamp-top sel 0 (gfl-rows-vis h s)) names
-      gfl-loop base w h stride s font kbd mouse cs vol entries sel (gfl-clamp-top sel 0 (gfl-rows-vis h s)) clusters names
-    end
-  end
-
-  gfl-back : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, List Integer, List Text -> [Device.Port] Integer
-  gfl-back (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (clusters) (names) = act
-    if list-length clusters <= 1 then 0
-    else act
-      let c2 = gfl-pop-int clusters
-      in let n2 = gfl-pop-text names
-      in act
-        ents <- gfl-list-cur vol c2
-        d <- gfl-redraw base w h stride s font mouse cs ents 0 0 n2
-        gfl-loop base w h stride s font kbd mouse cs vol ents 0 0 c2 n2
-      end
-    end
-  end
-
-  gfl-redraw : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
-  gfl-redraw (base) (w) (h) (stride) (s) (font) (mouse) (cs) (entries) (sel) (top) (names) =
-    let hd = cursor-hide cs base stride
-    in let d = gfl-draw-list base w h stride s font entries sel top names
-    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-
-  gfl-move : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer, List Integer, List Text -> [Device.Port] Integer
-  gfl-move (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (entries) (sel) (top) (clusters) (names) = act
-    let t2 = gfl-clamp-top sel top (gfl-rows-vis h s)
-    in let d = gfl-redraw base w h stride s font mouse cs entries sel t2 names
-    in gfl-loop base w h stride s font kbd mouse cs vol entries sel t2 clusters names
-  end
-
-  gfl-loop : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer, List Integer, List Text -> [Device.Port] Integer
-  gfl-loop (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (entries) (sel) (top) (clusters) (names) = act
-    sc <- kbd-take kbd
-    let n = list-length entries
-    in let mv = mouse-pump mouse w h
-    in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-    in let hover = if mv == 1 then gfl-row-at w h s top n (mouse-x mouse) (mouse-y mouse) else -1
-    in let clicked = mv == 1 & mouse-clicked mouse
-    in if sc == 1 then gfl-back base w h stride s font kbd mouse cs vol clusters names
-    else if sc == 88 then act
-      st <- gfl-shot base w h stride font
-      gfl-loop base w h stride s font kbd mouse cs vol entries sel top clusters names
-    end
-    else if clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse) then gfl-back base w h stride s font kbd mouse cs vol clusters names
-    else if clicked & hover >= 0 then gfl-activate base w h stride s font kbd mouse cs vol entries hover clusters names
-    else if sc == 72 & sel > 0 then gfl-move base w h stride s font kbd mouse cs vol entries (sel - 1) top clusters names
-    else if sc == 80 & sel < n - 1 then gfl-move base w h stride s font kbd mouse cs vol entries (sel + 1) top clusters names
-    else if sc == 28 & n > 0 then gfl-activate base w h stride s font kbd mouse cs vol entries sel clusters names
-    else if hover >= 0 & hover /= sel then gfl-move base w h stride s font kbd mouse cs vol entries hover top clusters names
-    else gfl-loop base w h stride s font kbd mouse cs vol entries sel top clusters names
-  end
-
-Section: Entry
-
-  gfl-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
-  gfl-run (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) = act
-    m <- gfat-mount-esp
-    let s = ui-scale w
-    in if m.gm-ok == False then act
-      hd <- cursor-hide cs base stride
-      f <- gfl-draw-frame base w h stride s font "Files"
-      t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (shot-diag-text "no FAT ESP on the boot medium") gfl-col-dim s 0
-      t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
-      cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-      gfl-wait-back base w h stride s font kbd mouse cs
-    end
-    else act
-      let root-flag = if gfat-is32 (m.gm-vol) then (m.gm-vol).vol-root-start else -1
-      in let clusters = [root-flag]
-      in let names = []
-      in act
-        ents <- gfl-list-cur (m.gm-vol) clusters
-        d <- gfl-redraw base w h stride s font mouse cs ents 0 0 names
-        gfl-loop base w h stride s font kbd mouse cs (m.gm-vol) ents 0 0 clusters names
-      end
-    end
-  end
+ The loop moved to `GopDesk` on 2026-08-18. Files is a step pane now: the
+ desk owns the poll and calls `desk-files-step` with one event, so the
+ taskbar clock keeps running while this pane is up. What stayed here is
+ every measure, every pixel and the modal preview; what left is
+ `gfl-run`, `gfl-loop`, `gfl-activate`, `gfl-back`, `gfl-move` and
+ `gfl-redraw`, whose state is now `FilesState` in `GopDesk`. The contract
+ is `apps/works/works-desk-contract.md` section 0.

@@ -84,12 +84,81 @@ Section: Definitions
     ok-names + ok-stop2 + ok-standby + ok-shutdown
    end
 
+  test-uart-linear : [Uart, Device.Mmio] Integer
+  test-uart-linear = act
+   p0 <- l4-uart-open 115200
+   p1 <- l4-uart-write p0 72
+   p2 <- (l4-uart-write p1 73)
+   c <- (l4-uart-close p2)
+   1
+  end
+
+  test-gpio-linear : [Gpio, Device.Mmio] Integer
+  test-gpio-linear = act
+   en <- l4-rcc-enable-port l4-rcc-gpioa-en
+   q0 <- l4-gpio-open l4-gpioa-base 5 PinOutput
+   q1 <- l4-pin-write q0 True
+   q2 <- (l4-pin-write q1 False)
+   c <- (l4-pin-close q2)
+   1
+  end
+
   test-delay : Integer
   test-delay =
    let a = l4-delay-ms 1
    in 1
 
-  opening : [Device.Mmio] Integer =
+  test-pin-read : [Gpio, Device.Mmio] Integer
+  test-pin-read = act
+   q0 <- l4-gpio-open l4-gpioa-base 5 PinInput
+   r <- l4-pin-read q0
+   when r
+    is (q1, lv) -> act
+      c <- (l4-pin-close q1)
+      1
+    end
+  end
+
+  test-spi-txn : [Spi, Device.Mmio] Integer
+  test-spi-txn = act
+   s0 <- l4-spi-open
+   t0 <- l4-spi-select s0 4
+   r <- l4-spi-txn-transfer t0 [#AA, #55]
+   when r
+    is (t1, got) -> act
+      s1 <- l4-spi-deselect t1
+      c <- (l4-spi-close s1)
+      if list-length got == 2 then 1 else 0
+    end
+  end
+
+  test-uart-recv : [Uart, Device.Mmio] Integer
+  test-uart-recv = act
+   p0 <- l4-uart-open 115200
+   r <- l4-uart-recv p0 1
+   when r
+    is (p1, bytes) -> act
+      c <- (l4-uart-close p1)
+      if list-length bytes == 1 then 1 else 0
+    end
+  end
+
+  test-i2c-bus : [I2c, Device.Mmio] Integer
+  test-i2c-bus = act
+   b0 <- l4-i2c-open
+   w <- l4-i2c-bus-write-reg b0 #68 #6B 0
+   when w
+    is (b1, wr) -> act
+      r <- l4-i2c-bus-read-reg b1 #68 #75
+      when r
+       is (b2, rv) -> act
+         c <- (l4-i2c-close b2)
+         1
+       end
+    end
+  end
+
+  opening : [Gpio, Uart, Spi, I2c, Device.Mmio] Integer =
    let d = test-delay
    in act
     r <- test-rcc
@@ -101,7 +170,13 @@ Section: Definitions
     p <- test-pwr
     t <- test-lptim
     sl <- test-sleep
-    r + g + l + u + s + i + p + t + sl + d
+    ul <- test-uart-linear
+    gl <- test-gpio-linear
+    pr <- test-pin-read
+    ib <- test-i2c-bus
+    ur <- test-uart-recv
+    st <- test-spi-txn
+    r + g + l + u + s + i + p + t + sl + ul + gl + pr + ib + ur + st + d
    end
 
 Page 1

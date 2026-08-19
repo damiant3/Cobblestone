@@ -22,11 +22,60 @@ tests are `engine-near-clip`, `engine-shading`, `engine-culling`,
 `codex/foreword/engine/`.** The 9+4 chapter inventory this section used
 to carry was two baselines stale; re-measure before quoting (L-COUNT).
 
-**Remaining Phase 2 items:** SIMD math and skeletal animation (skinning
-is in). Also open from the A6 arc: `Texture.codex` exists but is not
-wired into `r3d-render-mesh`; mesh generators
-(sphere/cylinder/cone/torus) are missing; GopScene does not yet call
-the shadowed entry (a separate, visible desk change).
+**Remaining Phase 2 items, corrected 2026-08-18 (val): SIMD math and
+skeletal animation, and nothing else from the A6 arc.** This paragraph
+listed three more and **all three were already done**, checked against
+the source rather than against the list:
+
+- `Texture.codex` **is** wired into the render path. `r3d-ctx-with-tex`
+  puts `mat.emat-texture` in the shade context and `r3d-tex-px` samples
+  it per pixel through `etx-get` (`Renderer3D.codex`), and the desk's 3D
+  pane renders a textured ground in every capture.
+- The mesh generators **exist**: `mesh-sphere`, `mesh-cylinder`,
+  `mesh-cone` and `mesh-torus` are all in `Mesh.codex`, beside cube,
+  plane and pyramid. `gsc-scene` builds its ball from `mesh-sphere 700
+  12 8` and its ring from `mesh-torus 650 220 12 8`.
+- GopScene **does** call the shadowed entry, on both paths:
+  `r3d-render-shadowed` for software and `gs-render-shadowed` for the
+  host rasterizer, chosen by the `S` toggle (`GopScene.codex`).
+
+The lesson is L-COUNT's, one level along: a stale ITEM list rots the
+same way a stale count does, and this one was three for three.
+
+### First shadow-cost numbers, 2026-08-18 (val)
+
+**Metal, from the diagnostic stick** (`HardwareSitting.md`, i7-6700K,
+software render of a 624x88 region): plain **12 ms** over 20 frames,
+shadowed **24 ms** over 11. Shadows double the frame.
+
+**Bed, 1600x900 with a 1440x800 render region**, each arm sampled over a
+full 60-second orbit period so the camera angle averages out: plain
+**96 ms**, shadowed **265 ms**, shadowed with the map at 64 instead of
+256 **239 ms**.
+
+**What that settles, and it redirects the campaign.** Cutting the shadow
+map sixteen-fold in area bought 26 ms of a 169 ms shadow cost, so the
+depth-pass BUILD is roughly 28 ms and about 141 ms is the per-pixel work
+in the main pass. Caching the map for a static scene -- the obvious first
+move, and the one this campaign was expected to open with -- is worth at
+most 15 per cent and only when the geometry does not move, which rules
+out the Aquarium.
+
+**And the per-pixel work is not arithmetic-bound.** Hoisting the
+slope-scaled bias out of `r3d-shadow-lit`, which removed twelve minimums
+and maximums and a division from every covered pixel, produced **no
+measurable change**: interleaved arms on one seed read 148/149/138 ms
+before and 164/141/128 ms after. What is left in that loop is the 3x3 PCF
+kernel, nine `peek-32` taps into the shadow map per pixel, and the Phong
+evaluation for lit pixels. **The next stage should attack the tap count,
+not the arithmetic.**
+
+**The bed cannot resolve better than about 10 per cent, and any stage
+that claims less must say so.** Identical builds measured 262 to 686
+frames in the same 60 seconds when the host was busy; the numbers above
+are from a quiet host with the arms interleaved. Rebuilding between runs
+is what makes it worst. The metal stick is a dedicated box and its
+numbers are the trustworthy ones.
 
 ---
 

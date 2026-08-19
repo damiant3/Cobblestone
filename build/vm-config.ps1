@@ -816,12 +816,17 @@ function Invoke-VmCompileFallback {
         $needed = [long](-1)
         $sawTerminalReport = $false
         while ([DateTime]::UtcNow -lt $deadline) {
-            $stream.ReadTimeout = if ($needed -ge 0 -and $out.Length -ge $needed) { 2000 } else { 5000 }
+            # Once SIZE's declared payload is fully in hand the loop is only
+            # draining a trailer that in practice is never there, and the
+            # read below blocks for the whole timeout before breaking. At
+            # 2000ms that was a flat two seconds on every QEMU compile,
+            # measured as roughly half the fixed floor.
+            $stream.ReadTimeout = if ($needed -ge 0 -and $out.Length -ge $needed) { 250 } else { 5000 }
             $n = 0
             try { $n = $stream.Read($buf, 0, $buf.Length) } catch { $n = -1 }
             if ($n -eq 0) { break }
             if ($n -lt 0) {
-                # Idle. Done if the payload is complete (the 2s pass above
+                # Idle. Done if the payload is complete (the short pass above
                 # was the trailer drain), or if the guest sent a terminal
                 # report that has no SIZE line and never will.
                 if ($needed -ge 0 -and $out.Length -ge $needed) { break }

@@ -155,11 +155,28 @@ Section: Expression Emission
   hs-let-binder : Text, IRExpr -> Text
   hs-let-binder (name) (val) =
    if name == "__seq" then when val
-    is IrFieldStore (rec) (field) (v) (ty) (sp) -> when rec
-     is IrName (rn) (rty) (rsp) -> rn
-     is otherwise -> name
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> if hs-store-root rec == "" then name else hs-store-root rec
     is otherwise -> name
    else name
+
+  hs-store-root : IRExpr -> Text
+  hs-store-root (rec) =
+   when rec
+    is IrName (rn) (rty) (rsp) -> rn
+    is IrFieldAccess (r) (f) (t) (s) -> hs-store-root r
+    is otherwise -> ""
+
+  hs-store-value : IRExpr, List ArityEntry, Integer -> Text
+  hs-store-value (val) (arities) (depth) =
+   when val
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> hs-upd rec field (emit-hs-expr-at v arities (depth + 1)) arities depth
+    is otherwise -> emit-hs-expr-at val arities depth
+
+  hs-upd : IRExpr, Text, Text, List ArityEntry, Integer -> Text
+  hs-upd (rec) (field) (vt) (arities) (depth) =
+   when rec
+    is IrFieldAccess (r) (f) (t) (s) -> hs-upd r f ("(" & emit-hs-expr-at rec arities (depth + 1) & " { " & hs-field field & " = " & vt & " })") arities depth
+    is otherwise -> "(" & emit-hs-expr-at rec arities (depth + 1) & " { " & hs-field field & " = " & vt & " })"
 
   emit-hs-expr : IRExpr, List ArityEntry -> Text
   emit-hs-expr (e) (arities) = emit-hs-expr-at e arities 0
@@ -177,7 +194,7 @@ Section: Expression Emission
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-hs-binary op l r arities
     is IrNegate (operand) (nty) (sp) -> "(negate " & emit-hs-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-hs-expr-at c arities (depth + 1) & " then " & emit-hs-expr-at t arities (depth + 1) & " else " & emit-hs-expr-at el arities (depth + 1) & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> if hs-let-binder name val == name then "(let " & hs-sanitize name & " = " & emit-hs-expr-at val arities (depth + 1) & " in " & emit-hs-expr-at body arities (depth + 1) & ")" else "((\\" & hs-sanitize (hs-let-binder name val) & " -> " & emit-hs-expr-at body arities (depth + 1) & ") " & emit-hs-expr-at val arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> if hs-let-binder name val == name then "(let " & hs-sanitize name & " = " & emit-hs-expr-at val arities (depth + 1) & " in " & emit-hs-expr-at body arities (depth + 1) & ")" else "((\\" & hs-sanitize (hs-let-binder name val) & " -> " & emit-hs-expr-at body arities (depth + 1) & ") " & hs-store-value val arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-hs-apply e arities
     is IrLambda (params) (body) (ty) (sp) -> "(\\" & emit-hs-lambda-params params 0 & " -> " & emit-hs-expr body arities & ")"
     is IrList (elems) (ty) (sp) -> "[" & emit-hs-list-elems elems 0 arities & "]"
@@ -288,6 +305,12 @@ Section: Expression Emission
    if i == list-length subs then ""
    else " " & emit-hs-pat (list-at subs i) & emit-hs-sub-pats subs (i + 1)
 
+  emit-hs-exec : IRExpr, List ArityEntry -> Text
+  emit-hs-exec (e) (arities) =
+   when e
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> if hs-store-root rec == "" then emit-hs-expr e arities else hs-sanitize (hs-store-root rec) & " <- return " & hs-store-value e arities 0
+    is otherwise -> emit-hs-expr e arities
+
   emit-hs-act : List IRActStmt, List ArityEntry -> Text
   emit-hs-act (stmts) (arities) =
    "(do { " & emit-hs-act-stmts stmts 0 arities & " })"
@@ -299,7 +322,7 @@ Section: Expression Emission
    in let sep = if i > 0 then "; " else ""
    in sep & (when s
     is IrDoBind (name) (ty) (val) (sp) -> hs-sanitize name & " <- " & emit-hs-expr val arities
-    is IrDoExec (e) (sp) -> emit-hs-expr e arities) & emit-hs-act-stmts stmts (i + 1) arities
+    is IrDoExec (e) (sp) -> emit-hs-exec e arities) & emit-hs-act-stmts stmts (i + 1) arities
 
 Section: Builtin Emitter
 

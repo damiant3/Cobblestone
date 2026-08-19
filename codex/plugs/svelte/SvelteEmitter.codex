@@ -70,11 +70,54 @@ Section: Arity Map
   lookup-arity (entries) (name) =
    let len = list-length entries
    in let pos = bsearch-arity-pos entries name 0 len
-   in if pos >= len then 0
+   in if pos >= len then 0 - 1
       else let e = list-at entries pos
-      in if e.name == name then e.arity else 0
+      in if e.name == name then e.arity else 0 - 1
 
 Section: Expression Emission
+
+  emit-sv-name : Text, List ArityEntry -> Text
+  emit-sv-name (n) (arities) =
+   if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then sv-sanitize n
+   else let ar = lookup-arity arities n
+   in if ar == 0 then sv-sanitize n & "()"
+      else if ar >= 2 then emit-sv-partial-wrappers 0 ar & sv-sanitize n & "(" & emit-sv-partial-params 0 ar & ")"
+      else sv-sanitize n
+
+  emit-sv-lambda-params : List IRParam, Integer -> Text
+  emit-sv-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else "(" & sv-sanitize (list-at params i).name & ") => " & emit-sv-lambda-params params (i + 1)
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+  prelude-arities : Text -> List ArityEntry
+  prelude-arities (src) = prelude-scan (text-split src "function ") 1 []
+
+  prelude-scan : List Text, Integer, List ArityEntry -> List ArityEntry
+  prelude-scan (parts) (i) (acc) =
+   if i >= list-length parts then acc
+   else prelude-scan parts (i + 1) (sorted-insert-arity acc (prelude-entry (list-at parts i)))
+
+  prelude-entry : Text -> ArityEntry
+  prelude-entry (part) =
+   let open = prelude-pos part "(" 0
+   in let close = prelude-pos part ")" open
+   in let params = substring part (open + 1) (close - open - 1)
+   in ArityEntry { name = prelude-name (substring part 0 open), arity = __narrow (if text-length params == 0 then 0 else list-length (text-split params ",")), generic-count = 0 }
+
+  prelude-pos : Text, Text, Integer -> Integer
+  prelude-pos (s) (ch) (i) =
+   if i >= text-length s then i
+   else if char-to-text (char-at s i) == ch then i
+   else prelude-pos s ch (i + 1)
+
+  prelude-name : Text -> Text
+  prelude-name (n) =
+   if text-starts-with n "__" then n else text-replace n "_" "-"
 
   emit-sv-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-sv-expr (e) (arities) (indent) =
@@ -84,13 +127,13 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & sv-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
-    is IrName (n) (ty) (sp) -> sv-sanitize n
+    is IrName (n) (ty) (sp) -> emit-sv-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-sv-binary op l r arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-sv-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-sv-expr c arities indent & " ? " & emit-sv-expr t arities indent & " : " & emit-sv-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & sv-sanitize name & " = " & emit-sv-expr val arities indent & "; return " & emit-sv-expr body arities indent & "; })()"
     is IrApply (f) (a) (ty) (sp) -> emit-sv-apply e arities indent
-    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-sv-params params 0 & ") => " & emit-sv-expr body arities indent
+    is IrLambda (params) (body) (ty) (sp) -> if list-length params == 0 then "(() => " & emit-sv-expr body arities indent & ")" else "(" & emit-sv-lambda-params params 0 & emit-sv-expr body arities indent & ")"
     is IrList (elems) (ty) (sp) -> "[" & emit-sv-list-elems elems arities indent 0 & "]"
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-sv-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-sv-act stmts arities indent
@@ -157,9 +200,13 @@ Section: Apply and Helpers
    let chain = collect-apply-chain e []
    in let func = emit-sv-expr (chain.root) arities indent
    in when (chain.root)
-    is IrName (n) (ty) (sp) -> emit-sv-apply-split func (chain.args) (lookup-arity arities n) arities indent
-    is IrLambda (lps) (lbody) (lty) (lsp) -> emit-sv-apply-split ("(" & func & ")") (chain.args) (list-length lps) arities indent
-    is otherwise -> func & "(" & emit-sv-apply-args (chain.args) arities indent 0 & ")"
+    is IrName (n) (ty) (sp) ->
+     if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then sv-sanitize n & "(" & emit-sv-apply-args (chain.args) arities indent 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 0 then sv-sanitize n & emit-sv-apply-rest (chain.args) arities indent 0
+        else if ar == 0 then sv-sanitize n & "()" & emit-sv-apply-rest (chain.args) arities indent 0
+        else emit-sv-apply-split (sv-sanitize n) (chain.args) ar arities indent
+    is otherwise -> "(" & func & ")" & emit-sv-apply-rest (chain.args) arities indent 0
 
   emit-sv-apply-split : Text, List IRExpr, Integer, List ArityEntry, Integer -> Text
   emit-sv-apply-split (func) (args) (ar) (arities) (indent) =
@@ -303,7 +350,7 @@ Section: Definition Emission
    if text-length (d.name) == 0 then ""
    else let sname = sv-sanitize (d.name)
    in if list-length (d.params) == 0
-      then "const " & sname & " = " & emit-sv-expr (d.body) arities 0 & ";\n\n"
+      then "function " & sname & "() {\n  return " & emit-sv-expr (d.body) arities 1 & ";\n}\n\n"
       else "function " & sname & "(" & emit-sv-params (d.params) 0 & ") {\n  return " & emit-sv-expr (d.body) arities 1 & ";\n}\n\n"
 
   emit-sv-defs : List IRDef, Integer, List ArityEntry -> Text
@@ -320,8 +367,8 @@ Section: Svelte Component Assembly
 
   emit-svelte-chapter : IRChapter, List ATypeDef -> Text
   emit-svelte-chapter (m) (type-defs) =
-   let arities = build-arity-map (m.defs) 0 []
-   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return typeof c === 'string' ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
    in let types-text = emit-sv-type-defs type-defs 0
    in let defs-text = emit-sv-defs (m.defs) 0 arities
    in let script = "<script>\nimport { onMount } from 'svelte';\n\nlet output = $state([]);\n\n" & builtins & types-text & defs-text & "onMount(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n"

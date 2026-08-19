@@ -1,0 +1,127 @@
+Chapter: DiagNicInit
+  cites Foreword chapter Console
+  cites Kernel chapter Pci
+  cites Kernel chapter Hpet
+  cites Kernel chapter E1000e
+  cites Dev chapter NicAsde
+  cites Foreword chapter Maybe
+  cites Diag chapter DiagStage
+
+ build/boot/diag/NicInitProbe.codex as a stage: e1000-init's own sequence out
+ of its own primitives, in its own order, a serial line BEFORE every step
+ that can loop and its duration after, so a step that never returns is named
+ by the last `nicinit entering` line on the wire (L-STATES) and a step that
+ takes four minutes is told apart from one that hangs. The stage's own row
+ stays `running` while a step spins, which is the same fact on the glass.
+
+ We say:
+
+Section: States
+
+  nii-states : List Text = ["ok", "no-part", "rejected", "bar-bad", "no-link", "no-mac", "no-hpet"]
+
+Section: Steps
+
+  nii-us : Integer, Integer, Integer -> Integer
+  nii-us (t0) (t1) (rate) = if rate <= 0 then 0 - 1 else (t1 - t0) * 1000000 / rate
+
+  nii-say : Text -> [Console] Integer
+  nii-say (s) = act
+   w <- (print-line-uni ("nicinit " & s))
+   0
+  end
+
+  nii-step : Text, Integer, Integer, Integer -> Text
+  nii-step (what) (ret) (t0) (t1) = what & " ret=" & show ret & " us=" & show (nii-us t0 t1 hpet-ticks-per-second)
+
+  nii-run-part : PciDevice -> [Device.Port, Device.Mmio, Console] DiagResult
+  nii-run-part (d) =
+   let mmio = na-mmio-of d
+   in let started = hpet-start
+   in let hz = hpet-ticks-per-second
+   in let e1 = pci-enable-device d
+   in act
+    s1 <- nii-say "entering s1 imc+ctrl+RST"
+    let a1 = e1000-write mmio e1000-reg-imc #FFFFFFFF
+    in let ctrl0 = e1000-read mmio e1000-reg-ctrl
+    in let a2 = e1000-write mmio e1000-reg-ctrl (bit-or ctrl0 e1000-ctrl-rst)
+    in act
+     s2 <- nii-say "entering s2 await-reset"
+     let r0 = hpet-ticks
+     in let settled = e1000-await-reset mmio 0
+     in let r1 = hpet-ticks
+     in act
+      s3 <- nii-say "entering s3 settle-mdio"
+      let m0 = hpet-ticks
+      in let waited = e1000-settle-mdio mmio
+      in let m1 = hpet-ticks
+      in let a3 = e1000-write mmio e1000-reg-imc #FFFFFFFF
+      in let a4 = e1000-read mmio e1000-reg-icr
+      in act
+       s4 <- nii-say "entering s4 quiesce"
+       let q0 = hpet-ticks
+       in let quiet = e1000-quiesce mmio
+       in let q1 = hpet-ticks
+       in act
+        s5 <- nii-say "entering s5 ring alloc + zero"
+        let rx-ring = e1000-alloc-aligned (e1000-rx-count * e1000-desc-size) 16
+        in let tx-ring = e1000-alloc-aligned (e1000-tx-count * e1000-desc-size) 16
+        in let rx-bufs = e1000-alloc-aligned (e1000-rx-count * e1000-buf-size) 16
+        in let tx-bufs = e1000-alloc-aligned (e1000-tx-count * e1000-buf-size) 16
+        in let ctrl-blk = e1000-alloc-aligned e1000-cb-size 8
+        in let cb-clear = e1000-zero-words ctrl-blk (e1000-cb-size / 4) 0
+        in act
+        s6 <- nii-say "entering s6 clear-mta"
+        let c0 = hpet-ticks
+        in let mta = e1000-clear-mta mmio 0
+        in let c1 = hpet-ticks
+        in let mac-ok = e1000-mac-present mmio
+        in let mac = if mac-ok then e1000-read-mac mmio else []
+        in let dev = E1000Device { e-mmio = mmio, e-rx-ring = rx-ring, e-tx-ring = tx-ring, e-rx-bufs = rx-bufs, e-tx-bufs = tx-bufs, e-ctrl-blk = ctrl-blk, e-present = True, e-mac = mac, e-mac-valid = mac-ok }
+        in act
+         s7 <- nii-say "entering s7 setup-rx"
+         let x0 = hpet-ticks
+         in let rx = e1000-setup-rx dev
+         in let x1 = hpet-ticks
+         in act
+          s8 <- nii-say "entering s8 setup-tx"
+          let z0 = hpet-ticks
+          in let tx = e1000-setup-tx dev
+          in let z1 = hpet-ticks
+          in act
+           s9 <- nii-say "entering s9 phy-bring-up"
+           let p0 = hpet-ticks
+           in let phy = e1000-phy-bring-up mmio
+           in let p1 = hpet-ticks
+           in let ctrl1 = e1000-read mmio e1000-reg-ctrl
+           in let slu = e1000-write mmio e1000-reg-ctrl (bit-and (bit-or ctrl1 e1000-ctrl-slu) e1000-clear-asde)
+           in act
+            s10 <- nii-say "entering s10 await-link (2 s HPET budget)"
+            let l0 = hpet-ticks
+            in let link = na-link-wait mmio
+            in let l1 = hpet-ticks
+            in let head = "part " & show (d.pci-bus) & ":" & show (d.pci-dev) & "." & show (d.pci-func) & " ctrl0=" & show ctrl0 & " pcien=" & show e1 & " mac=" & na-yn (if mac-ok then 1 else 0) & " link=" & show link & " rdh=" & show (e1000-read mmio e1000-reg-rdh) & " rdt=" & show (e1000-read mmio e1000-reg-rdt)
+            in let steps = "s2 " & nii-step "await-reset" settled r0 r1 & "; s3 " & nii-step "settle-mdio" waited m0 m1 & "; s4 " & nii-step "quiesce" quiet q0 q1 & "; s6 " & nii-step "clear-mta" mta c0 c1
+            in let steps2 = "s7 " & nii-step "setup-rx" rx x0 x1 & "; s8 " & nii-step "setup-tx" tx z0 z1 & "; s9 " & nii-step "phy-bring-up" phy p0 p1 & "; s10 " & nii-step "await-link" link l0 l1
+            in let state = if hz <= 0 then "no-hpet" else if mac-ok == False then "no-mac" else if link /= 1 then "no-link" else "ok"
+            in let colour = if state == "ok" then diag-col-good else if state == "no-link" then diag-col-warn else diag-col-bad
+            in diag-result state colour [head, steps2] [head, steps, steps2]
+           end
+          end
+         end
+        end
+        end
+       end
+      end
+     end
+    end
+   end
+
+  nii-run : DiagCtx -> [Device.Port, Device.Mmio, Console] DiagResult
+  nii-run (c) = act
+   when e1000-find (c.dc-pci)
+    is None -> diag-result "no-part" diag-col-dim ["no eligible Intel part on the bus"] ["no eligible Intel part on the bus"]
+    is Just (d) -> if na-eligible d == False then diag-result "rejected" diag-col-warn [na-reject-line d] [na-reject-line d]
+     else if e1000-bar-verdict (na-bar-of d) /= e1000-bar-ok then diag-result "bar-bad" diag-col-bad ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d)) & ", the part was not touched"] ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d)) & ", the part was not touched"]
+     else nii-run-part d
+  end

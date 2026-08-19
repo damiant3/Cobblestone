@@ -52,7 +52,7 @@ $ErrorActionPreference = 'Stop'
 
 Set-Location (Join-Path $PSScriptRoot '..')
 [Environment]::CurrentDirectory = (Get-Location).Path
-$env:USE_QEMU = '1'
+$env:CODEX_VM_HOST = 'qemu'
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
 if ((-not $Kernel)) {

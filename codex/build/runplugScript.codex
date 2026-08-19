@@ -47,7 +47,7 @@ Section: S05 -- Send input as ONE FRAMED MESSAGE
 
 Section: S06 -- Receive output
 
-  s06 : List ShellCmd = [ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScRaw "$allBytes = [System.Collections.Generic.List[byte]]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScTryCatch [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }"]] "System.IO.IOException" [ScComment "Read timeout or connection reset -- normal end"] [], ScRaw "$client.Close()"]
+  s06 : List ShellCmd = [ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScComment "A per-byte accumulate here costs 58.33 s per 8 MB against 0.015 s for", ScComment "the bulk write. It is overlapped with the guest, so it buys a core and", ScComment "not a second: at -Jobs 8 that is contention, not a faster single run.", ScRaw "$allBytes = [System.IO.MemoryStream]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScTryCatch [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "$allBytes.Write($readBuf, 0, $n)"]] "System.IO.IOException" [ScComment "Read timeout or connection reset -- normal end"] [], ScRaw "$client.Close()"]
 
 Section: S07 -- Check output, unframe the reply, write
 
@@ -61,7 +61,7 @@ Section: S07 -- Check output, unframe the reply, write
 
   s07 : List ShellCmd =
     let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScRaw "[Console]::Error.WriteLine(\"FAIL: plug produced no output. stderr: $stderr\")", ScExit (SeInt 6)]
-    in [ScIf (SeRaw "$allBytes.Count -eq 0") no-output [], ScBlank, ScSequence s07-unframe, ScBlank, ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Output", SeVar "payload"], ScEcho (SeRaw "\"[plug] OK: $Output ($($payload.Length) bytes)\"")]
+    in [ScIf (SeRaw "$allBytes.Length -eq 0") no-output [], ScBlank, ScSequence s07-unframe, ScBlank, ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Output", SeVar "payload"], ScEcho (SeRaw "\"[plug] OK: $Output ($($payload.Length) bytes)\"")]
 
 Section: S08 -- Cleanup
 

@@ -6,7 +6,8 @@ advance if the keyboard does not work. Each paints its findings to the
 framebuffer and sits (it never returns), so it can be photographed off
 the glass.
 
-`PciProbe` reads the PCI bus and answers what the parts ARE.
+`Diag` is the ladder that runs the probes as stages (below); it is what a
+new metal question rides. `PciProbe` reads the PCI bus and answers what the parts ARE.
 `XhciTruthProbe` and `KbdDiagProbe` answer what the USB stack DID with
 them; both read the same diagnostic cell block (0x1D000) that the real
 xHCI bring-up fills (`apps/works/GopXhci.codex`), so their numbers are
@@ -14,6 +15,16 @@ exactly what the boot path saw. `SceneProbe` answers whether the
 DISPLAY path is right: the mode the firmware handed us, the row stride,
 the channel order, and whether a rendered rectangle stays inside its
 own bounds.
+
+**Since 2026-08-18 a new metal question is a STAGE in the diagnostic ladder,
+not a new one-question image, and it flies on a grouped sitting composed by
+red**: `docs/Designs/Active/OS/DiagnosticStick.md` has the ladder order, the
+stage shape and the lane procedure. The probes below are the stages' source
+and this file stays the account of what each one reads. Before ANY flash,
+`docs/Hardware/HardwareSitting.md` QUICKREF binds: dump the stick first,
+rehearse the exact bytes in the bed, and name MOUNT-AND-COPY or FLASH before
+the elevated command; the build-and-run section at the end of this file does
+not repeat those rulings and is not a substitute for them.
 
 Use the USB two when a machine boots the Codex payload but finds no USB
 keyboard, no boot stick, or nothing on the USB bus at all.
@@ -29,6 +40,73 @@ died in allocation, `GetMemoryMap` or `ExitBootServices`; green alone
 means the payload died. Without them every one of those is a black
 screen, because every failure path in the stub ends at `fatal`, which is
 `jmp fatal`. `docs/Hardware/HardwareSitting.md` boot 1 has the table.
+
+## DIAG.RCP, the rehearsal record, and -Rehearsed (step 4)
+
+The ESP carries `DIAG.RCP` beside `DIAG.ID`: the recipe that produced the
+payload (id, kernel digest, payload/EFI hashes, alloc pages, sectors, ring
+text, cfg, newest `build/boot/diag/...` CL), written by `build-diag.ps1`; the
+payload banks it as `rcp key=value` rows right after the bank row. No image
+hash and no timestamp inside, so the same source and seed rebuild to the same
+image hash. `diag-arm.ps1` appends the image's SHA-256 to
+`build/boot/diag.rehearsed` only after a FULL run (every arm, both beds);
+`build/flash-usb.ps1 -Rehearsed` refuses any image not on that list, and
+`-ExpectHash` pins the flight card's hash. Partial runs (`-Only`, `-SkipOvmf`)
+leave the record alone and say so.
+
+## Diag.codex -- the ladder (DiagnosticStick.md step 1, 2026-08-18)
+
+One payload, one image, `build/boot/diag.img`. It runs the stages in the
+design's order and never returns: `smbios`, `edid` and `cpu` (DiagSmbios,
+DiagEdid, DiagCpu: the passive firmware-table and CPUID rows, step 3), `pci`
+(DiagPci.codex, the walk and BAR verdict lifted out of PciProbe) and `scene`
+(DiagScene.codex, the software-3D scene lifted out of SceneProbe, rendered
+into the stage's own row slot), then it brings the USB stack up, finds the medium whose ESP
+carries a `DIAG.ID` matching the id baked into the image, and writes
+`DIAG.TXT`. Every channel is wired: the fixed page (font and stride proof,
+eight colour bars, identity row, box row, three rows per stage, the summary
+band, the QR block), the bank, and serial (the same lines the bank holds).
+
+```powershell
+build/boot/build-diag.ps1                     # compile by the depot seed -> build/boot/diag.img
+build/boot/build-diag.ps1 -StdinCfg "scene off"   # a DIAG.CFG baked into the stub ring
+build/boot/build-diag.ps1 -Cfg my.cfg         # a DIAG.CFG on the ESP (post-bank stages only)
+build/boot/diag-arm.ps1                       # rehearse: 13 codex-vm arms + 2 OVMF arms; a full green run appends the image hash to diag.rehearsed
+build/boot/diag-arm.ps1 -SkipOvmf             # the codex-vm thirteen (does not touch the record)
+build/check-diag-verdicts.ps1                 # every state word has a verdict row (both scripts run it first)
+build/boot/test-ovmf.ps1 -Img build/boot/diag.img -Out diag.png -UsbDisk -Seconds 100
+```
+
+Reading it, top to bottom:
+
+| row | what it says |
+|---|---|
+| `12345678 ABCDEFGH abcdefgh` | the font renders and the stride is right; sheared or doubled glyphs mean the stride the firmware reported is not the panel's |
+| eight bars | white red green blue cyan magenta yellow black, in that order; a channel swap shows blue where red should be |
+| `diag <id> kernel <digest> world=EBS cfg=N src=stdin` | the image's id (must equal the stick's `DIAG.ID`), the compiler that built it, whether firmware is still alive (`UEFI`) or ExitBootServices ran (`EBS`), how many config lines and where from. `cfg=N` counts every non-empty line the ring carried, the `id` and `kernel` lines included, so a default image says `cfg=2` |
+| `box: <manufacturer> <product> fb=WxH stride=S ram=<MB>` | from SMBIOS type 1 and the sum of type 17; `unnamed` and `unread` when the firmware published no table |
+| `smbios <state> ...` | `ok`, `no-table` (nothing in the ConfigurationTable), `bad-anchor`, `unmapped` (the table sits outside our identity map, so it is not read), `no-system` (no type 1). Rows: name/version/serial/family, BIOS/board/CPU/RAM/structure count; every type 0/1/2/3/4/16/17/19 structure banked as `type/handle/len/strings` |
+| `edid <state> ...` | `ok`, `absent` (firmware offered none: dim, not a fault), `short`, `bad-header`, `bad-checksum`. Manufacturer, product code, monitor name, native timing, size, version, serial; the 128 bytes banked as hex |
+| `cpu <state> ...` | `ok`, `hypervisor` (leaf 1 ecx bit 31: a VM), `vmx-locked-off` (Intel with VT-x switched off in firmware setup, the one CPU state a stranger can fix), `no-brand`. Vendor, brand, family/model/stepping, logical count, VMX and SVM, a flag list; the raw leaves banked |
+| `pci <state> devices=N nic=.. / storage=.. usb=..` (row 4 of the stages) | the worst per-device `MAP=` verdict (the table under PciProbe below) among the parts a driver would bind, as a stage word: `ok`, `unassigned` (a `MAP=none`), `ABOVE4G`, `BELOW3G` (the dangerous one, red), `empty` (config space answered nothing: a probe fault). The full device list is `+more in bank` |
+| `scene <state> ...` and the picture at the right | `rendered` (the render wrote inside its frame and the frame stood), `blank`, `spilled`, `no-fb`, `no-room`, read back off the framebuffer: `centre=` is the pixel at the middle of the render (not the band colour when something was drawn), `frame=a/b` two pixels of the surrounding band (both must still be the band, 8405024). Cube blue, pyramid red; swapped means the firmware is RGB and nothing reads `PixelFormat` |
+| `block <state> via=USB bps=512 lba=30000 write=1 readback=1` (row 6, the first write-side stage, runs AFTER the bank on the medium the bank opened; DiagBlock.codex, the block ladder lifted from `apps/works/BlockLadderProbe.codex`) | reads the ESP boot sector back through our driver (`read-fail`: no 0x55AA), checks bytes-per-sector (`bpb-bad`), writes one marked sector at the scratch LBA inside the facts region (`write-refused`), reads it back (`readback-fail`, `mark-lost`), `ok`. `no-medium` when there is no bank. `DIAG.CFG` `block lba=N` moves the LBA; `block-oob` in `diag-arm.ps1` aims it past the medium and reads `write-refused`, every other stage unchanged: the stage's forced-failure arm |
+| `sink <state> size=2745998 read=2745998 bad=0 shift=0 wstage=20` (row 7, DiagSink.codex, the sink ladder lifted from `apps/works/SinkLadderProbe.codex`) | the 2.7 MB streamed write (WORKS-9's question) through the bank's own FAT16 writer onto the bank's medium as `SINK.CDX`, then read back whole and compared byte for byte: `write-refused` (with `wstage=` the writer's stage cell), `size-bad`, `read-fail`, `bad-bytes`, `ok`; `mount-fail` when the volume will not mount a second time, `no-medium` with no bank. `DIAG.CFG` `sink shift=1` compares against a pattern shifted by one so every byte reads bad: `sink-shift` in `diag-arm.ps1` is that arm, the oracle proving it can say no (L-FALSIF) |
+| `nicsit <state> part 0:3.0 verdict=ok mmio=...` and `poll 1000000 empty=12903us tick100k=1290us hpet-hz=...` (row 8, DiagNicSit.codex, NIC-1/NIC-2 of NicSittingProbe) | pure reads: the eligible Intel part, its BAR verdict, STATUS/CTRL/RCTL/TCTL and the RX ring registers as firmware left them (banked), and one million empty polls of a ring we own, the number NetIO spends its retransmit bounds in (bed 13034 us). `no-part` (dim; codex-vm has no Intel card unless `-e1000`), `rejected`, `bar-bad`, `no-hpet`, `ok` |
+| `nicinit <state> part ... mac=y link=1 rdh=0 rdt=15` and per-step `s2 await-reset ret=1 us=22; ...` (row 9, DiagNicInit.codex, NicInitProbe) | e1000-init's own sequence step by step, a serial line `nicinit entering sN ...` BEFORE each step (serial-only by design: the last one on the wire names the step that hung, L-STATES; `diag-arm.ps1` skips them when comparing serial to file), each step's return and HPET duration banked; the link wait is `na-link-wait`'s 2 s budget so a no-link box still banks. `no-link`, `no-mac`, `no-hpet`, `no-part`, `rejected`, `ok`. Arms: `nic-nolink` (`-e1000-no-link` -> no-link, s10 = 2000068 us), `nic-nomac` (`-e1000-no-mac` -> no-mac) |
+| `nicring <state> init=...us present=y mac=y received=1 ddset=0 sent=1 txdd=1 rdh-writable=y rdh=1` and the `after-listen` / `after-send` DD maps (row 10, DiagNicRing.codex, NicRingProbe) | NIC-4's question: a full `e1000-init` (timed), 1.2 s listening, the DD bit of every RX descriptor, one ARP for the gateway and 1.2 s more, the reader's own control (the TX descriptor the send completed on must show DD, else `reader-broken` and every RX bit is void), then the one write: RDH set to 7 and read back. `frames`, `quiet`, `reader-broken`, `send-refused`, `no-part`, `rejected`. `nic-pass` (`-e1000 -e1000-nat`) reads frames because the NAT answers the ARP; without NAT the bed is `quiet` || `SUMMARY run=N skip=N bank=ok medium=usb bytes=N` or `bank=none <why>` (on the glass; in the file the same is two lines, `bank=... cfg-file=N` after the stages and `summary run=N skip=N` after that, without a byte count since the file cannot know its own size) | the bank verdict names the medium it wrote through, or why it did not: `no bank, mount stage N`, `no DIAG.ID on any ESP, refused`, `DIAG.ID mismatch, refused`, `write refused, write stage N`, `no id in the image` |
+| `todo: ...` | the first verdict row that applies; the bank has all of them |
+| the QR block | the summary body, chunked at 100 bytes, scale 6/5/4/3 chosen to fit and never 2; `CUT` in the label means the body was truncated to what the panel could hold and the bank is the record |
+| the green square at the band's right edge | the heartbeat: it toggles while the machine is alive |
+
+`DIAG.TXT` and the serial transcript carry identical lines from `DIAG1 ...`
+to `END`; `diag-arm.ps1` requires that row for row. A `DIAG.CFG` line is
+`<stage> on|off|<param>`; the ring holds 120 bytes so the id and kernel
+lines leave ~78 for stage lines, and the ESP file (up to 4 KB) is read
+after the bank opens. A stage chapter is `Diag*.codex` under this directory
+(the stale check in `diag-arm.ps1` watches that glob), exports one
+`<tag>-run : DiagCtx -> DiagResult`, and is registered by number in
+`Diag.codex`'s stage tables; the design's "Step 1, landed" section has the shape.
 
 ## PciProbe.codex
 
@@ -74,9 +152,18 @@ held.
 `MAP=` answers whether that window is REACHABLE, which is a different
 question from where it is. The runtime page tables map 0 to 3 GB
 identity as RAM (the heap and stack arena), one directory for 3 GB to
-4 GB as devices, and nothing above 4 GB. The BAR examined is BAR5 for a
-storage controller and BAR0 for everything else, matching where each
-puts its registers.
+4 GB as devices, and nothing above 4 GB. The BAR judged is the FIRST
+MEMORY BAR of the six (`pp-map-judge`, a pure function over the six raw
+dwords): a zero BAR is unimplemented and an I/O-space BAR (bit 0 set) is
+a port number, so both are skipped; a 64-bit memory BAR takes its high
+half from the next dword. That reaches BAR5 on an AHCI controller (BAR0
+through BAR4 read zero, or are the vestigial IDE I/O BARs) and BAR2 on
+a Realtek RTL8168, whose BAR0 is I/O. **Until 2026-08-18 the stage
+judged BAR0 outright** and read the RTL8168's port `0xC001` as an address
+below 3 GB (`MAP=BELOW3G`, red on the ASUS flight; HardwareSitting.md).
+`codex/test/diag-pci-map-judge` is the forced arm: the RTL8168 shape
+answers `ok`, an I/O-only device `none`, and a genuine memory BAR at
+`0x81060000` still answers `BELOW3G`.
 
 | verdict | what it means |
 |---|---|
@@ -95,16 +182,18 @@ register, and `codex/test/e1000-match` pins both measured addresses and
 both window boundaries.
 
 Measured under OVMF: the NIC and the AHCI controller come back
-`BELOW3G` and QEMU's xHCI comes back `ABOVE4G`. **`MAP=ok` has not been
-observed here**, and OVMF cannot be made to produce it -- it pins its
+`BELOW3G` and QEMU's xHCI comes back `ABOVE4G`. **`MAP=ok` is what codex-vm
+answers** (its xHCI BAR0 at 0xFE800000 is inside the window; the ladder's
+pci stage reads it there on every rehearsal since 2026-08-18, so the
+paragraph that once said the verdict had never been observed is history).
+OVMF cannot be made to produce it -- it pins its
 32-bit PCI window at 0x81000000 at 2048 MB, at 3584 MB, and with
 `-machine q35,max-ram-below-4g=3G` (accepted by QEMU without complaint,
 and it moved nothing). The bed that does place BARs in the window is
 **codex-vm**, whose three emulated devices carry BAR0 at 0xFD000000,
-0xFE800000 and 0xFE000000. That is a reading of the emulator's source,
-not of this probe running there: codex-vm cannot display a probe that
-halts (see Build and run below), so an ordinary bare-metal CDX is how
-that bed gets read.
+0xFE800000 and 0xFE000000, and the ladder reads them there over serial
+and the bank (`diag-arm.ps1`); this one-question image still cannot be
+screenshotted in codex-vm because it halts (see Build and run below).
 
 The QR codes are the record and the screen is the convenience, so the
 codes are sized BEFORE the screen is divided and the list takes what is

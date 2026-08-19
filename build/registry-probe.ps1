@@ -19,9 +19,9 @@
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Set-Location 'D:\Projects\NewRepository-val'
-. .\build\vm-config.ps1
-. .\build\work-wire.ps1
+Set-Location (Join-Path $PSScriptRoot '..')
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
+. (Join-Path $PSScriptRoot 'work-wire.ps1')
 
 $out    = 'test-output/registry-locate'
 $regCdx = "$out/cdx-registry.cdx"

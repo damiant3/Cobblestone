@@ -386,6 +386,23 @@ Section: MMU Configuration
    & arm64-dsb-sy
    & arm64-isb
 
+Section: Publish DMA Floor
+
+ The kernel's VirtIO drivers place their DMA regions above everything the
+ stub allocated, and only the builder knows where that ends. `stack-top` is
+ that top; rounded up to a 2 MB boundary and written to #40004000, it is the
+ floor VirtioNet and VirtioBlk read (their Buffer Region sections). #40004000
+ is low RAM below the kernel image and the process table, mapped RW by the
+ stub's own page tables, so this runs after exit-boot-services.
+
+  a64pe-dma-floor-cell : Integer = #40004000
+
+  a64pe-stub-publish-dma-floor : Integer -> List Integer
+  a64pe-stub-publish-dma-floor (stack-top) =
+   arm64-li 9 (align-up stack-top #200000)
+   & arm64-li 10 a64pe-dma-floor-cell
+   & arm64-str 9 10 0
+
 Section: Jump to Kernel
 
   a64pe-stub-jump-to-kernel : Integer, Integer, Integer -> List Integer
@@ -441,6 +458,7 @@ Section: Full Stub Assembly
    & a64pe-stub-print-char 51
    & a64pe-stub-exit-boot-services-at pt-base
    & a64pe-stub-flush-copied-code text-size rodata-size
+   & a64pe-stub-publish-dma-floor stack-top
    & a64pe-stub-jump-to-kernel start-offset heap-base stack-top
 
 Section: Build ARM64 PE from Wire Output

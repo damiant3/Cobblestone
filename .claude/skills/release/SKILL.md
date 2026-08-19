@@ -140,6 +140,17 @@ the DDC on the release is what surfaces it if it was missed.
   separate distribution artifact that drifts and is NOT part of a seed
   rebuild. A release ships a current img.
 
+- **Diag:** the release ships `build/boot/diag.img` and its hash
+  (`DiagnosticStick.md` step 4; the stranger's procedure is in
+  `UsersHandbook.md`). Rebuild it against the release seed
+  (`build/boot/build-diag.ps1`, default `-Kernel seed/Codex.cdx`), then run
+  `build/boot/diag-arm.ps1` with EVERY arm and both beds; only that full run
+  appends the image hash to `build/boot/diag.rehearsed`, and only a hash on
+  that list is flashable with `flash-usb.ps1 -Rehearsed`. Ship the image, the
+  `.rehearsed` record, and put the SHA-256 in the GitHubUpdate report and the
+  README beside the seed digest. The image is reproducible from its source
+  and seed (`DIAG.RCP` inside it names them; the hash carries no timestamp),
+  so a stale one is a drift the hash check catches.
 ## Step 6 -- README and the GitHubUpdate report
 - Update `README.md`: the seed digest and any capability claims that moved.
 - **Re-measure the doc counts, which are off by default and only matter

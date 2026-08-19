@@ -32,6 +32,25 @@ the Update 44 entry was found and worked during the release run at head 15686.*
 
 ## Done
 
+### Update 47 -- nothing was open, and two things bit at publication anyway
+
+1. **A csharp-plug change is a DDC change.** reek's 16981 fixed four
+   oracle-red lambda arms by casting every lambda to its delegate type; the
+   oracle harness went 6/6 and nothing else looked, but the compiler source has
+   106 `map_list` lambdas whose parameter type is a free type variable, and
+   the cast spelled them `Func<T72, ..>`. Roslyn refused the C# arm and the
+   DDC was INCONCLUSIVE at 21:22 with the operator waiting. Re-measure with
+   `codex/plugs/csharp/emit-compiler.ps1 -Kernel seed/Codex.cdx` followed by
+   `dotnet build build-output/ddc-arm/CodexCs.csproj -c Release` on any cycle
+   that touched `codex/plugs/csharp/`; the oracle harness does not compile the
+   compiler and cannot see this.
+2. **A "preview" battery on a shelved change proves nothing the release can
+   use unless it runs on the exact bytes that land.** The battery on blu's
+   ATA fix from red's workspace was green and was on a pre-convergence stage
+   (compile(FAD4F1E2) = A, compile(A) = B, the seed is B). Re-measure: hash
+   `build/output/Sut.cdx` against the depot seed BEFORE launching a battery.
+
+
 ### Update 45 -- the release skill's own step 1 and step 4 were wrong
 
 Nothing was open when this release started, and the release found two defects

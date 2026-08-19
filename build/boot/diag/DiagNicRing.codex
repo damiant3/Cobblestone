@@ -1,0 +1,132 @@
+Chapter: DiagNicRing
+  cites Foreword chapter Console
+  cites Kernel chapter Pci
+  cites Kernel chapter Hpet
+  cites Kernel chapter E1000e
+  cites Dev chapter NicAsde
+  cites Foreword chapter Maybe
+  cites Diag chapter DiagStage
+
+ build/boot/diag/NicRingProbe.codex as a stage: NIC-4's question. After a
+ full e1000-init (timed), listen 1.2 s, read the DD bit of every RX
+ descriptor (a pure read of a ring we own), send one ARP request for the
+ gateway and listen again, then the reader's own control: the TX descriptor
+ e1000-send-frame answered on must show DD, or the reader is broken and every
+ RX bit above it means nothing. Last, the one write: RDH set to 7 and read
+ back, so "RDH tracks reception" and "RDH is not writable here" are told
+ apart. The ARP is a real request for 10.0.2.2 from 10.0.2.15, so a NAT bed
+ answers it and a live switch ignores it harmlessly.
+
+ We say:
+
+Section: States
+
+  nir-states : List Text = ["frames", "quiet", "reader-broken", "no-part", "rejected", "bar-bad", "send-refused"]
+
+  nir-src-ip : List Integer = [10, 0, 2, 15]
+  nir-gw-ip : List Integer = [10, 0, 2, 2]
+  nir-bcast : List Integer = [255, 255, 255, 255, 255, 255]
+  nir-chunk : Integer = 512
+  nir-rounds : Integer = 4000
+
+Section: Ring Reads
+
+  nir-dd-of : Integer, Integer -> Integer
+  nir-dd-of (ring) (i) = bit-and (peek-byte (ring + i * e1000-desc-size) 12) e1000-rx-status-dd
+
+  nir-len-of : Integer, Integer -> Integer
+  nir-len-of (ring) (i) =
+   let d = ring + i * e1000-desc-size
+   in bit-or (peek-byte d 8) (bit-shl (peek-byte d 9) 8)
+
+  nir-dd-map : Integer, Integer, Text -> Text
+  nir-dd-map (ring) (i) (acc) =
+   if i >= e1000-rx-count then acc
+   else nir-dd-map ring (i + 1) (acc & (if nir-dd-of ring i /= 0 then "1" else "0"))
+
+  nir-dd-count : Integer, Integer, Integer -> Integer
+  nir-dd-count (ring) (i) (acc) =
+   if i >= e1000-rx-count then acc
+   else nir-dd-count ring (i + 1) (acc + (if nir-dd-of ring i /= 0 then 1 else 0))
+
+  nir-max-len : Integer, Integer, Integer -> Integer
+  nir-max-len (ring) (i) (acc) =
+   if i >= e1000-rx-count then acc
+   else let l = nir-len-of ring i
+   in nir-max-len ring (i + 1) (if l > acc then l else acc)
+
+  nir-ring-line : Text, Integer -> Text
+  nir-ring-line (tag) (ring) = tag & " dd=" & nir-dd-map ring 0 "" & " set=" & show (nir-dd-count ring 0 0) & " maxlen=" & show (nir-max-len ring 0 0)
+
+  nir-tx-dd : E1000Device -> Integer
+  nir-tx-dd (d) =
+   let nxt = bit-and (peek-32 ((d.e-ctrl-blk) + e1000-cb-tx-next) 0) #FFFFFFFF
+   in let idx = int-mod (nxt + e1000-tx-count - 1) e1000-tx-count
+   in let st = peek-byte ((d.e-tx-ring) + idx * e1000-desc-size) 12
+   in if bit-and st e1000-rx-status-dd /= 0 then 1 else 0
+
+  nir-arp : List Integer -> List Integer
+  nir-arp (mac) = nir-bcast & mac & [8, 6, 0, 1, 8, 0, 6, 4, 0, 1] & mac & nir-src-ip & [0, 0, 0, 0, 0, 0] & nir-gw-ip
+
+  nir-poll-n : E1000Device, Integer -> E1000RecvResult
+  nir-poll-n (d) (n) =
+   if n <= 0 then e1000-no-frame
+   else let hp = __heap-save
+   in let r = e1000-poll-raw (d.e-mmio) (d.e-rx-ring) (d.e-rx-bufs) (d.e-ctrl-blk)
+   in if r.r-has-frame then r
+   else let rs = __heap-restore hp
+   in nir-poll-n d (n - 1)
+
+  nir-wait : E1000Device, Integer, Integer, Integer -> E1000RecvResult
+  nir-wait (d) (start) (want) (rounds) =
+   if rounds <= 0 then e1000-no-frame
+   else let r = nir-poll-n d nir-chunk
+   in if r.r-has-frame then r
+   else if (hpet-ticks - start) >= want then e1000-no-frame
+   else nir-wait d start want (rounds - 1)
+
+Section: The Stage
+
+  nir-run-part : PciDevice -> [Device.Port, Device.Mmio, Console] DiagResult
+  nir-run-part (dv) =
+   let mmio = na-mmio-of dv
+   in let started = hpet-start
+   in let hz = hpet-ticks-per-second
+   in let arrival = "arrival rctl=" & show (e1000-read mmio e1000-reg-rctl) & " rdh=" & show (e1000-read mmio e1000-reg-rdh) & " rdt=" & show (e1000-read mmio e1000-reg-rdt) & " hpet=" & show hz
+   in act
+    say0 <- print-line-uni "nicring entering e1000-init"
+    let i0 = hpet-ticks
+    in let d = e1000-init dv
+    in let i1 = hpet-ticks
+    in let initus = if hz <= 0 then 0 - 1 else (i1 - i0) * 1000000 / hz
+    in act
+     say1 <- print-line-uni "nicring entering listen"
+     let s0 = hpet-ticks
+     in let listened = nir-wait d s0 ((hz * 1200) / 1000) nir-rounds
+     in let after-listen = nir-ring-line "after-listen" (d.e-rx-ring)
+     in let sent = e1000-send-frame d (nir-arp (e1000-read-mac mmio))
+     in let s1 = hpet-ticks
+     in let after = nir-wait d s1 ((hz * 1200) / 1000) nir-rounds
+     in let after-send = nir-ring-line "after-send" (d.e-rx-ring)
+     in let txdd = nir-tx-dd d
+     in let rdh0 = e1000-read mmio e1000-reg-rdh
+     in let wr = e1000-write mmio e1000-reg-rdh 7
+     in let rdh1 = e1000-read mmio e1000-reg-rdh
+     in let restore = e1000-write mmio e1000-reg-rdh rdh0
+     in let got = if listened.r-has-frame then 1 else if after.r-has-frame then 1 else 0
+     in let ddset = nir-dd-count (d.e-rx-ring) 0 0
+     in let head = "init=" & show initus & "us present=" & na-yn (if d.e-present then 1 else 0) & " mac=" & na-yn (if d.e-mac-valid then 1 else 0) & " received=" & show got & " ddset=" & show ddset & " sent=" & show sent & " txdd=" & show txdd & " rdh-writable=" & (if rdh1 == 7 then "y" else "n") & " rdh=" & show rdh0
+     in let state = if sent /= 1 then "send-refused" else if txdd == 0 then "reader-broken" else if got == 1 then "frames" else if ddset > 0 then "frames" else "quiet"
+     in let colour = if state == "frames" then diag-col-good else if state == "quiet" then diag-col-warn else diag-col-bad
+     in diag-result state colour [head] [arrival, head, after-listen, after-send]
+    end
+   end
+
+  nir-run : DiagCtx -> [Device.Port, Device.Mmio, Console] DiagResult
+  nir-run (c) = act
+   when e1000-find (c.dc-pci)
+    is None -> diag-result "no-part" diag-col-dim ["no eligible Intel part on the bus"] ["no eligible Intel part on the bus"]
+    is Just (d) -> if na-eligible d == False then diag-result "rejected" diag-col-warn [na-reject-line d] [na-reject-line d]
+     else if e1000-bar-verdict (na-bar-of d) /= e1000-bar-ok then diag-result "bar-bad" diag-col-bad ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d)) & ", the part was not touched"] ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d)) & ", the part was not touched"]
+     else nir-run-part d
+  end

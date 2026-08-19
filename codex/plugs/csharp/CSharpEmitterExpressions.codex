@@ -875,7 +875,7 @@ Section: Expression Emission
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr-at c ctx (depth + 1) & " ? " & emit-expr-at t ctx (depth + 1) & " : " & emit-expr-at el ctx (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-let name ty val body ctx
     is IrApply (f) (a) (ty) (sp) -> emit-apply e ctx
-    is IrLambda (params) (body) (ty) (sp) -> emit-lambda params body ctx
+    is IrLambda (params) (body) (ty) (sp) -> emit-lambda params body ty ctx
     is IrList (elems) (ty) (sp) -> emit-list elems ty ctx
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-match scrut branches ty ctx
     is IrAct (stmts) (ty) (sp) -> emit-act stmts ty ctx
@@ -1076,10 +1076,18 @@ Section: Expression Emission
    in let bindings-text = text-concat-list (emit-let-bindings-acc (chain.bindings) ctx 0 (list-length (chain.bindings)) [])
    in "((Func<" & ret-type & ">)(() => { " & bindings-text & "return " & emit-expr (chain.body) ctx & "; }))()"
 
-  emit-lambda : List IRParam, IRExpr, CsCtx -> Text
-  emit-lambda (params) (body) (ctx) =
-   if list-length params == 0 then "(() => " & emit-expr body ctx & ")"
-   else "(" & emit-lambda-params params 0 (list-length params) & emit-expr body ctx & ")"
+ C# cannot INVOKE a lambda expression: `((x) => x + 1)(n)` is CS0149, method
+ name expected, because a lambda has no type until it is converted to a
+ delegate. The wire applies a lambda directly at its definition site, so the
+ cast is not optional here. One cast on the outside is enough for a curried
+ chain, since each inner lambda is then in a context that already expects a
+ `Func<>` and converts by inference; `cs-type` spells `FunTy` curried already.
+
+  emit-lambda : List IRParam, IRExpr, CodexType, CsCtx -> Text
+  emit-lambda (params) (body) (ty) (ctx) =
+   let raw = if list-length params == 0 then "(() => " & emit-expr body ctx & ")"
+             else "(" & emit-lambda-params params 0 (list-length params) & emit-expr body ctx & ")"
+   in if has-typevar ty then raw else "((" & cs-type ty & ")" & raw & ")"
 
   emit-lambda-params : List IRParam, Integer, Integer -> Text
   emit-lambda-params (params) (i) (len) =

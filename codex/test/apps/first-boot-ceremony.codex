@@ -26,33 +26,51 @@ Section: Fixtures
   fbc-iv : List Integer
   fbc-iv = fbc-fill 0 16 9 []
 
+ The two known answers below were computed outside Codex, by .NET's
+ HMACSHA256 (HKDF-SHA256, salt 16 x 7, ikm "test", info
+ "codex-identity-v2", L 32) and System.Security.Cryptography.Aes
+ (AES-256-CBC, PKCS7, iv 16 x 9, plaintext bytes 0..31), on 2026-08-18.
+ They are the arm the wizard cannot dodge: a round trip through its own
+ wrap and unwrap agrees with itself under any key schedule.
+
+  fbc-kat-dk : List Integer
+  fbc-kat-dk = [76,23,142,62,149,58,22,1,209,43,99,14,89,73,77,244,121,171,64,241,62,123,214,135,183,90,7,125,9,91,62,59]
+
+  fbc-kat-wrapped : List Integer
+  fbc-kat-wrapped = [46,180,31,116,155,172,235,111,177,41,23,67,155,195,255,25,246,141,224,88,240,204,119,92,200,255,52,18,159,102,186,169,64,255,129,211,87,2,172,83,93,136,163,116,40,210,144,84]
+
   fbc-identity : WzIdentity
   fbc-identity =
     let seed = fbc-iota 0 32 []
     in let pub = ed25519-public-key seed
-    in let dk = wz-words-to-bytes (hkdf fbc-salt (wz-text-bytes fbc-pass 0 []) wz-hkdf-info 32) 0 []
+    in let dk = wz-derive-key fbc-salt fbc-pass
     in let wrapped = aes256-cbc-encrypt (aes256-pkcs7-pad (fbc-iota 0 32 [])) dk fbc-iv
     in WzIdentity {
       wid-fingerprint = sha256-to-hex (sha256 pub),
       wid-public = pub,
       wid-wrapped = wrapped,
       wid-salt = fbc-salt,
-      wid-iv = fbc-iv
+      wid-iv = fbc-iv,
+      wid-version = 2
     }
 
+
 Section: Verdicts
+
+  fbc-yn : Boolean -> Text
+  fbc-yn (b) = if b then "Y" else "N"
 
   fbc-parse-verdict : Maybe WzIdentity, WzIdentity -> Text
   fbc-parse-verdict (parsed) (wid) = when parsed
     is None -> "parse=FAILED"
-    is Just (w) -> "parse=ok pub-eq=" & (if wz-bytes-eq (w.wid-public) (wid.wid-public) 0 then "Y" else "N")
+    is Just (w) -> "parse=ok pub-eq=" & fbc-yn (wz-bytes-eq (w.wid-public) (wid.wid-public) 0) & " version=" & show (w.wid-version)
 
   fbc-right-verdict : Maybe WzIdentity -> Text
   fbc-right-verdict (parsed) = when parsed
     is None -> "no-parse"
     is Just (w) -> when (wz-unlock-try w fbc-pass)
       is None -> "unlock-right=FAILED"
-      is Just (s) -> "unlock-right=ok seed-eq=" & (if wz-bytes-eq s (fbc-iota 0 32 []) 0 then "Y" else "N")
+      is Just (s) -> "unlock-right=ok seed-eq=" & fbc-yn (wz-bytes-eq s (fbc-iota 0 32 []) 0)
 
   fbc-wrong-verdict : Maybe WzIdentity -> Text
   fbc-wrong-verdict (parsed) = when parsed
@@ -68,9 +86,48 @@ Section: Verdicts
       is None -> "corrupt=rejected"
       is Just (_) -> "corrupt=ACCEPTED"
 
+  fbc-badversion-verdict : Integer, Integer -> Text
+  fbc-badversion-verdict (buf) (len) =
+    let cm = poke-byte buf 4 1
+    in when (wz-parse-identity buf len)
+      is None -> "version1=rejected"
+      is Just (_) -> "version1=ACCEPTED"
+
+  fbc-kat-verdict : Text
+  fbc-kat-verdict =
+    let dk = wz-derive-key fbc-salt fbc-pass
+    in "kat dk-len=" & show (list-length dk) & " dk-eq=" & fbc-yn (wz-bytes-eq dk fbc-kat-dk 0) & " wrapped-eq=" & fbc-yn (wz-bytes-eq (fbc-identity.wid-wrapped) fbc-kat-wrapped 0) & " expanded=" & show (list-length (aes256-expand-key dk))
+
+
+  fbc-pinned-verdict : Maybe WzIdentity -> [Identity] Text
+  fbc-pinned-verdict (parsed) = when parsed
+    is None -> "no-parse"
+    is Just (w) -> when (wz-unlock-try w fbc-pass)
+      is None -> "pinned unlock=FAILED"
+      is Just (s) -> act
+        loaded <- wz-load-seed s
+        st1 <- key-status
+        z <- key-zero
+        st2 <- key-status
+        "pinned load=" & show loaded & " status=" & show st1 & " seed-zeroed=" & fbc-yn (wz-bytes-eq s (fbc-fill 0 32 0 []) 0) & " after-zero=" & show st2
+      end
+
+  fbc-keygen-verdict : Text
+  fbc-keygen-verdict =
+    let seed = fbc-iota 0 32 []
+    in let w = wz-keygen seed fbc-pass
+    in "keygen version=" & show (w.wid-version) & " pub-eq=" & fbc-yn (wz-bytes-eq (w.wid-public) (fbc-identity.wid-public) 0) & " wrapped-len=" & show (list-length (w.wid-wrapped))
+
+  fbc-bed-verdict : Text
+  fbc-bed-verdict =
+    let w = wz-keygen (fbc-iota 0 32 []) wz-auto-pass
+    in let on = when wz-auto-try True w is Just (_) -> "Y" is None -> "N"
+    in let off = when wz-auto-try False w is Just (_) -> "Y" is None -> "N"
+    in "bed=" & fbc-yn wz-in-bed & " auto-on-bed=" & on & " auto-off-bed=" & off
+
 Section: Entry
 
-  opening : [Console] Nothing = act
+  opening : [Console, Identity] Nothing = act
     let wid = fbc-identity
     in let buf = __heap-save
     in let adv = __heap-advance 512
@@ -82,7 +139,13 @@ Section: Entry
       print-line-uni (fbc-parse-verdict parsed wid)
       print-line-uni (fbc-right-verdict parsed)
       print-line-uni (fbc-wrong-verdict parsed)
+      print-line-uni fbc-kat-verdict
+      pv <- fbc-pinned-verdict parsed
+      print-line-uni pv
+      print-line-uni fbc-keygen-verdict
+      print-line-uni (fbc-badversion-verdict buf len)
       print-line-uni (fbc-corrupt-verdict buf len)
+      print-line-uni fbc-bed-verdict
     end
   end
 

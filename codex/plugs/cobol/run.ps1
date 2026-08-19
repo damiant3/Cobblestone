@@ -26,4 +26,22 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
     -IrInput $IrFile -Out $Out `
     -PlugCdx (Join-Path $OutDir 'cobol-plug.cdx') `
     -MemMB 3072 -Port 9105
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# A refusal is a hard failure, the rule babbage's runner already applies. Every
+# construct this plug cannot express still emits a DISPLAY and MOVE 0, because
+# the paragraph has to leave a value in its RET field, so the program COMPILES,
+# RUNS and answers zero where the source meant something else. Measured
+# 2026-08-18 on plug-oracle-arith: `lit-len [10,20,30,40]` moved four literals
+# nowhere and answered 0 for 4. A caller reading only the exit code would take
+# that for a working translation.
+if (Test-Path $Out) {
+    $refusals = @(Select-String -Path $Out -Pattern 'COBOL: .* not supported' | ForEach-Object { $_.Line.Trim() })
+    if ($refusals.Count -gt 0) {
+        [Console]::Error.WriteLine("REFUSED: the plug cannot express $($refusals.Count) construct(s) in this program:")
+        $refusals | Select-Object -Unique | ForEach-Object { [Console]::Error.WriteLine("  $_") }
+        [Console]::Error.WriteLine("  program with the refusals is at $Out")
+        exit 6
+    }
+}
+exit 0

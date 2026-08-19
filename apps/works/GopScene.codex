@@ -17,8 +17,10 @@ Chapter: GopScene
 
  The chrome sizes here are GopDesk's, and the two files have to agree by
  hand because GopDesk cites this one and the dependency cannot run the
- other way. `dk-bar-h` and `dk-task-h` are scaled by `ui-scale`; the
- sidebar's 160 is a widget minimum and is not.
+ other way. `dk-bar-h` and `dk-task-h` are scaled by `ui-scale`; the sidebar
+ is a widget minimum and so takes `ui-wscale`, which steps at a different
+ width. Using the wrong one put this pane's left edge at 160 while the desk's
+ column was 320 wide, and the buttons under it lost their last characters.
 
  We say:
 
@@ -38,11 +40,22 @@ Section: Geometry
 
 Section: Scene
 
-  gsc-camera : Integer -> Camera3D
-  gsc-camera (angle) =
+  gsc-camera : Integer, Real -> Camera3D
+  gsc-camera (angle) (aspect) =
     let ca = real-from-int (cordic-cos angle)
     in let sa = real-from-int (cordic-sin angle)
-    in camera3d-new (vec3-new (ca * gsc-radius) gsc-eye-height (sa * gsc-radius)) (vec3-new 0.0 300.0 0.0) 0.785
+    in let c = camera3d-new (vec3-new (ca * gsc-radius) gsc-eye-height (sa * gsc-radius)) (vec3-new 0.0 300.0 0.0) 0.785
+    in __record-set c "c3-aspect" aspect
+
+ `camera3d-new` takes no aspect and its constructor answers the literal 1.333
+ (`Scene3D.codex:64`), which `mat4-perspective` divides X by. Every caller in
+ the tree accepted that, so the scene was correct only where the viewport
+ happened to be 4:3 and stretched everywhere else in proportion. The aspect
+ belongs to the VIEWPORT, so it is supplied here rather than defaulted there;
+ setting the field leaves the other eighteen callers and their goldens alone.
+
+  gsc-aspect : Integer, Integer -> Real
+  gsc-aspect (w) (h) = if h <= 0 then 1.333 else real-from-int w / real-from-int h
 
  The ground texture is named rather than inlined because two places have to
  agree on it exactly: the scene the software path samples, and the single
@@ -62,7 +75,7 @@ Section: Scene
 
   gsc-scene : Integer -> Scene3DState
   gsc-scene (dummy) =
-    let scene = scene3d-new (gsc-camera 0)
+    let scene = scene3d-new (gsc-camera 0 1.333)
     in let checker = gsc-ground-tex
     in let ground = sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-set-texture (emat-flat (rgb 240 240 240)) checker)
     in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 900.0 0.0
@@ -112,17 +125,17 @@ Section: Loop
 
   gsc-frame : R3dTriState, Scene3DState, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, GpuView -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   gsc-frame (tgt) (scene) (angle) (sky) (base) (stride) (font) (ch) (sh) (gpu) (gv) = act
-    let posed = scene3d-set-camera scene (gsc-camera angle)
+    let posed = scene3d-set-camera scene (gsc-camera angle (if gpu == 1 then gsc-aspect (gv.gv-w) (gv.gv-h) else gsc-aspect (tgt.r3t-w) (tgt.r3t-h)))
     in if gpu == 1 then act
       g <- if sh == 1 then gs-render-shadowed posed gv sky gsc-shadow-map-gpu else gs-render-in posed gv sky
-      let bg = gop-fill-rect base stride gsc-sidebar-w (ch - gsc-label-band) (tgt.r3t-w) gsc-label-band sky
-      in gop-draw-text base stride font (gsc-sidebar-w + 8) (ch - 16) gsc-label-gpu 65280 1 0
+      let bg = gop-fill-rect base stride (gv.gv-x) (ch - gsc-label-band) (tgt.r3t-w) gsc-label-band sky
+      in gop-draw-text base stride font (gv.gv-x + 8) (ch - 16) gsc-label-gpu 65280 1 0
     end
     else
       let c = r3d-target-clear tgt sky
       in let d = if sh == 1 then r3d-render-shadowed tgt posed gsc-shadow-map else r3d-render-into tgt posed
-      in let b = gsc-blit-rows (base + gsc-sidebar-w * 4) stride (tgt.r3t-base) (tgt.r3t-w) (tgt.r3t-h) 0
-      in gop-draw-text base stride font (gsc-sidebar-w + 8) (ch - 16) gsc-label-sw 65280 1 0
+      in let b = gsc-blit-rows (base + gv.gv-x * 4) stride (tgt.r3t-base) (tgt.r3t-w) (tgt.r3t-h) 0
+      in gop-draw-text base stride font (gv.gv-x + 8) (ch - 16) gsc-label-sw 65280 1 0
   end
 
  The frame is bracketed because there is no collector and this loop has
@@ -192,32 +205,141 @@ Section: Loop
   gsc-angle : Integer, Integer -> Integer
   gsc-angle (now) (mins) = int-mod (((if now < 0 then 0 else now) + (gsc-bcd mins) * 60) * 105) gsc-turn
 
-  gsc-loop : R3dTriState, (Integer -> Scene3DState), Integer, Integer, Integer, CbfFont, Integer, UsbKbd, Integer, Integer, Integer, Integer, Integer, GpuView -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  gsc-loop (tgt) (build) (sky) (base) (stride) (font) (ch) (kbd) (scr-base) (w) (h) (sh) (gpu) (gv) = act
-    let mark = __heap-save
+ `n` counts frames RENDERED, not iterations: the shot arm recurses without
+ touching it, so a run spent pressing keys does not inflate the rate. It also
+ advances when the picture does not, which is the whole reason it is a
+ separate reading from anything the frame draws -- under a pinned clock the
+ orbit angle is constant and every frame is identical, and the counter is then
+ the only thing on the glass that moves.
+
+ The S and G arms RESET it, because each changes what a frame costs. Left
+ running, a measurement taken after a toggle is an average over both settings
+ weighted by how long the run sat in each, which is a number about the
+ operator rather than about the renderer.
+
+Section: Step
+
+ The loop moved to `GopDesk` on 2026-08-18. Both 3D panes shared it, so one
+ step serves both: the scene BUILDER stays a parameter, as it was on the loop,
+ and the desk passes `gsc-scene` or `gf-scene` according to which pane has
+ focus. It cannot become a field on the record instead, because `GopFish` cites
+ this chapter and a discriminator resolved here would have to call back into it.
+
+ `ScenePane` is everything the loop carried that is not derivable: the render
+ target, the viewport, the two toggles and the frame counter's pair. The
+ toggles and the counter are integers stored in place, so the desk's
+ per-iteration restore is harmless to them and this pane never has to keep a
+ frame. The target is built once in `gsc-new`, below that mark, exactly as it
+ was built below the loop's.
+
+  ScenePane = record {
+    sp-tgt : R3dTriState,
+    sp-gv : GpuView,
+    sp-sky : Integer,
+    sp-ch : Integer,
+    sp-fb : Integer,
+    sp-sh : Integer,
+    sp-gpu : Integer,
+    sp-n : Integer,
+    sp-t0 : Integer
+  }
+
+  gsc-new : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] ScenePane
+  gsc-new (base) (w) (h) (stride) (cs) (gpu) (sky) = act
+    hd <- cursor-hide cs base stride
+    let s = ui-scale w
+    in let top = gsc-topbar-h * s
+    in let sw = gsc-sidebar-w * ui-wscale w
+    in let cw = w - sw
+    in let ch = h - gsc-taskbar-h * s - top
+    in let tgt = r3d-target-new cw ch sky
     in act
-      sc <- gsc-poll kbd gsc-poll-steps
-      if sc == 1 then let d = __heap-restore mark in 0
-      else if sc == 88 then act
-        s <- gsc-shot scr-base w h stride font
-        let d = __heap-restore mark
-        in gsc-loop tgt build sky base stride font ch kbd scr-base w h sh gpu gv
-      end
-      else if sc == 31 then
-        let d = __heap-restore mark
-        in gsc-loop tgt build sky base stride font ch kbd scr-base w h (1 - sh) gpu gv
-      else if sc == 34 then
-        let d = __heap-restore mark
-        in gsc-loop tgt build sky base stride font ch kbd scr-base w h sh (1 - gpu) gv
-      else act
-        now <- rtc-seconds 0
-        mins <- rtc-read 2
-        f <- gsc-frame tgt (build now) (gsc-orbit now mins) sky base stride font ch sh gpu gv
-        let dropped = __heap-restore mark
-        in gsc-loop tgt build sky base stride font ch kbd scr-base w h sh gpu gv
+      tx <- if gpu == 1 then gs-tex-upload gsc-ground-tex else 0
+      let started = hpet-start
+      in ScenePane {
+        sp-tgt = tgt,
+        sp-gv = gv-new sw top cw (ch - gsc-label-band),
+        sp-sky = sky,
+        sp-ch = ch,
+        sp-fb = base + top * stride * 4,
+        sp-sh = 1,
+        sp-gpu = gpu,
+        sp-n = 0,
+        sp-t0 = hpet-ticks
+      }
+    end
+  end
+
+ The step drains the keyboard itself and that is not redundant with the desk's
+ own take. `kbd-pump-one` advances a THREE-phase state machine by one step per
+ call, so one take per frame is one PHASE per frame, and a frame here costs
+ about a second on metal. Measured on the ASUS 2026-08-08, before `gsc-poll`
+ existed: keys were swallowed unless held down and Esc would not close the
+ pane. `desk-loop` takes once per iteration and an iteration is a frame, so
+ without this the defect comes straight back. The desk's scancode is used when
+ it found one and the poll runs only when it did not.
+
+  gsc-take : UsbKbd, Integer -> [Device.Port] Integer
+  gsc-take (kbd) (sc0) = act
+    if sc0 /= 0 then sc0
+    else gsc-poll kbd (gsc-poll-steps - 1)
+  end
+
+ The cursor is hidden before each frame rather than once on entry. `desk-loop`
+ draws it at the pointer before any step runs, and a frame that blitted over it
+ would leave the save buffer describing pixels that no longer exist, so the
+ next pointer move would stamp them back into the scene. Hide and blit in that
+ order is the same rule section 5 of the desk contract states; the effect is
+ that this pane shows no cursor, which is what it did before.
+
+  gsc-step : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer, (Integer -> Scene3DState), ScenePane, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gsc-step (base) (w) (h) (stride) (font) (kbd) (cs) (build) (sp) (sc0) = act
+    sc <- gsc-take kbd sc0
+    if sc == 1 then act
+      v <- (gs-viewport-release)
+      0
+    end
+    else if sc == 88 then act
+      s <- (gsc-shot base w h stride font)
+      1
+    end
+    else if sc == 31 then
+      let a = __record-set sp "sp-sh" (1 - sp.sp-sh)
+      in let b = __record-set sp "sp-n" 0
+      in let c = __record-set sp "sp-t0" hpet-ticks
+      in 1
+    else if sc == 34 then
+      let a = __record-set sp "sp-gpu" (1 - sp.sp-gpu)
+      in let b = __record-set sp "sp-n" 0
+      in let c = __record-set sp "sp-t0" hpet-ticks
+      in 1
+    else act
+      now <- rtc-seconds 0
+      mins <- rtc-read 2
+      let hd = cursor-hide cs base stride
+      in act
+        f <- gsc-frame (sp.sp-tgt) (build now) (gsc-orbit now mins) (sp.sp-sky) (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-sh) (sp.sp-gpu) (sp.sp-gv)
+        let k = __record-set sp "sp-n" (sp.sp-n + 1)
+        in let hud = gsc-hud (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-gv) (sp.sp-n) (sp.sp-t0)
+        in 1
       end
     end
   end
+
+ Milliseconds per frame rather than frames per second, because it is an
+ integer at every rate this renderer reaches and needs no formatting: a
+ second a frame reads 1000, sixty a second reads 16. `hpet-ticks` is a
+ counter, never waited on, so a board with no HPET and a bed with a pinned
+ clock both answer a zero span; that arm prints the count alone rather than
+ dividing by it.
+
+  gsc-hud : Integer, Integer, CbfFont, Integer, GpuView, Integer, Integer -> Integer
+  gsc-hud (base) (stride) (font) (ch) (gv) (n) (t0) =
+    let tps = hpet-ticks-per-second
+    in let d = hpet-ticks - t0
+    in let ms = if tps <= 0 then 0 else d * 1000 / tps
+    in let t = if ms <= 0 then "f" & show n else "f" & show n & " " & show (ms / n) & "ms"
+    in gop-draw-text base stride font (gv.gv-x + gv.gv-w - text-length t * 8 - 8) (ch - 16) t 65280 1 0
 
   gsc-bcd : Integer -> Integer
   gsc-bcd (n) = (n / 16) * 10 + int-mod n 16
@@ -269,20 +391,6 @@ Section: Loop
  301 times in a nine-second capture, which is invisible headless and turns the
  interactive pane into about a frame a second with a visible flicker.
 
-  gsc-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  gsc-run (base) (w) (h) (stride) (font) (kbd) (cs) (gpu) = act
-    hd <- cursor-hide cs base stride
-    let s = ui-scale w
-    in let sky = rgb-to-packed (rgb 20 20 30)
-    in let top = gsc-topbar-h * s
-    in let cw = w - gsc-sidebar-w
-    in let ch = h - gsc-taskbar-h * s - top
-    in let tgt = r3d-target-new cw ch sky
-    in act
-      tx <- if gpu == 1 then gs-tex-upload gsc-ground-tex else 0
-      r <- gsc-loop tgt gsc-scene sky (base + top * stride * 4) stride font ch kbd base w h 1 gpu (gv-new gsc-sidebar-w top cw (ch - gsc-label-band))
-      gs-viewport-release
-    end
-  end
+  gsc-sky : Integer = rgb-to-packed (rgb 20 20 30)
 
 Page 1

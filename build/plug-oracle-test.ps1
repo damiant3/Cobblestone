@@ -76,6 +76,14 @@ $Plugs = @(
        Ext  = 'js'
        Exe  = 'node'
        Args = { param($f) @($f) } }
+    # node 24 executes a .ts file directly (type stripping is on by default),
+    # so the emitted TypeScript is run as-is; the file's own worker wrapper
+    # (plugs 1.14) re-runs it on a 512 MB worker. Wired 2026-08-17 (plugs 1.39).
+    @{ Name = 'typescript'
+       Cdx  = 'codex\plugs\typescript\build-output\typescript-plug.cdx'
+       Ext  = 'ts'
+       Exe  = 'node'
+       Args = { param($f) @($f) } }
     @{ Name = 'zig'
        Cdx  = 'codex\plugs\zig\build-output\zig-plug.cdx'
        Ext  = 'zig'
@@ -202,6 +210,23 @@ foreach ($p in $Plugs) {
     if (-not (Test-Path $cdx)) {
         Write-Host "  $($p.Name): SKIPPED -- no plug binary at $($p.Cdx) (build it with codex/plugs/$($p.Name)/build.ps1)"
         $skip++; continue
+    }
+    # A STALE PLUG BINARY IS A BLIND INSTRUMENT, AND IT DOES NOT FAIL QUIETLY.
+    # This harness scores the emitted source, and the emitter that produced it
+    # is the .cdx, not the .codex beside it. Measured 2026-08-18: a typescript
+    # plug binary one merge-down behind its source emitted a prelude truncated
+    # to its first function and failed 36 of 33 lines with
+    # 'int_mod is not defined' -- indistinguishable from a real defect, and
+    # plugs-backlog 1.40 recorded the arm as passing 33 of 33 because it did
+    # when it was built. An img plug a day behind FAULTED the same day. Both
+    # cost a diagnosis. Refuse rather than score it.
+    $newestSrc = @(Get-ChildItem (Join-Path $Repo "codex\plugs\$($p.Name)") -Filter '*.codex' -File -ErrorAction SilentlyContinue |
+                   Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+    if ($newestSrc.Count -gt 0 -and $newestSrc[0].LastWriteTime -gt (Get-Item $cdx).LastWriteTime) {
+        Write-Host "  $($p.Name): STALE -- $($newestSrc[0].Name) is newer than the plug binary"
+        Write-Host "      source $($newestSrc[0].LastWriteTime), binary $((Get-Item $cdx).LastWriteTime)"
+        Write-Host "      rebuild it: codex/plugs/$($p.Name)/build.ps1 -- scoring this would test the OLD emitter"
+        $fail++; continue
     }
     $exe = Get-Command $p.Exe -ErrorAction SilentlyContinue
     if (-not $exe) {

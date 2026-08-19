@@ -78,11 +78,54 @@ Section: Arity Map
   lookup-arity (entries) (name) =
    let len = list-length entries
    in let pos = bsearch-arity-pos entries name 0 len
-   in if pos >= len then 0
+   in if pos >= len then 0 - 1
       else let e = list-at entries pos
-      in if e.name == name then e.arity else 0
+      in if e.name == name then e.arity else 0 - 1
 
 Section: Expression Emission
+
+  emit-jsx-name : Text, List ArityEntry -> Text
+  emit-jsx-name (n) (arities) =
+   if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then react-sanitize n
+   else let ar = lookup-arity arities n
+   in if ar == 0 then react-sanitize n & "()"
+      else if ar >= 2 then emit-jsx-partial-wrappers 0 ar & react-sanitize n & "(" & emit-jsx-partial-params 0 ar & ")"
+      else react-sanitize n
+
+  emit-jsx-lambda-params : List IRParam, Integer -> Text
+  emit-jsx-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else "(" & react-sanitize (list-at params i).name & ") => " & emit-jsx-lambda-params params (i + 1)
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+  prelude-arities : Text -> List ArityEntry
+  prelude-arities (src) = prelude-scan (text-split src "function ") 1 []
+
+  prelude-scan : List Text, Integer, List ArityEntry -> List ArityEntry
+  prelude-scan (parts) (i) (acc) =
+   if i >= list-length parts then acc
+   else prelude-scan parts (i + 1) (sorted-insert-arity acc (prelude-entry (list-at parts i)))
+
+  prelude-entry : Text -> ArityEntry
+  prelude-entry (part) =
+   let open = prelude-pos part "(" 0
+   in let close = prelude-pos part ")" open
+   in let params = substring part (open + 1) (close - open - 1)
+   in ArityEntry { name = prelude-name (substring part 0 open), arity = __narrow (if text-length params == 0 then 0 else list-length (text-split params ",")), generic-count = 0 }
+
+  prelude-pos : Text, Text, Integer -> Integer
+  prelude-pos (s) (ch) (i) =
+   if i >= text-length s then i
+   else if char-to-text (char-at s i) == ch then i
+   else prelude-pos s ch (i + 1)
+
+  prelude-name : Text -> Text
+  prelude-name (n) =
+   if text-starts-with n "__" then n else text-replace n "_" "-"
 
   emit-jsx-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-jsx-expr (e) (arities) (indent) =
@@ -92,13 +135,13 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & js-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
-    is IrName (n) (ty) (sp) -> react-sanitize n
+    is IrName (n) (ty) (sp) -> emit-jsx-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-jsx-binary op l r arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-jsx-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-jsx-expr c arities indent & " ? " & emit-jsx-expr t arities indent & " : " & emit-jsx-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-jsx-let name val body arities indent
     is IrApply (f) (a) (ty) (sp) -> emit-jsx-apply e arities indent
-    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-jsx-param-names params 0 & ") => " & emit-jsx-expr body arities indent
+    is IrLambda (params) (body) (ty) (sp) -> if list-length params == 0 then "(() => " & emit-jsx-expr body arities indent & ")" else "(" & emit-jsx-lambda-params params 0 & emit-jsx-expr body arities indent & ")"
     is IrList (elems) (ty) (sp) -> "[" & emit-jsx-list-elems elems arities indent 0 & "]"
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-jsx-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-jsx-act stmts arities indent
@@ -165,9 +208,13 @@ Section: Let, Apply, Match, Act
    let chain = collect-apply-chain e []
    in let func = emit-jsx-expr (chain.root) arities indent
    in when (chain.root)
-    is IrName (n) (ty) (sp) -> emit-jsx-apply-split func (chain.args) (lookup-arity arities n) arities indent
-    is IrLambda (lps) (lbody) (lty) (lsp) -> emit-jsx-apply-split ("(" & func & ")") (chain.args) (list-length lps) arities indent
-    is otherwise -> func & "(" & emit-jsx-apply-args (chain.args) arities indent 0 & ")"
+    is IrName (n) (ty) (sp) ->
+     if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then react-sanitize n & "(" & emit-jsx-apply-args (chain.args) arities indent 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 0 then react-sanitize n & emit-jsx-apply-rest (chain.args) arities indent 0
+        else if ar == 0 then react-sanitize n & "()" & emit-jsx-apply-rest (chain.args) arities indent 0
+        else emit-jsx-apply-split (react-sanitize n) (chain.args) ar arities indent
+    is otherwise -> "(" & func & ")" & emit-jsx-apply-rest (chain.args) arities indent 0
 
   emit-jsx-apply-split : Text, List IRExpr, Integer, List ArityEntry, Integer -> Text
   emit-jsx-apply-split (func) (args) (ar) (arities) (indent) =
@@ -308,7 +355,7 @@ Section: Definition Emission
    if text-length (d.name) == 0 then ""
    else let sname = react-sanitize (d.name)
    in if list-length (d.params) == 0
-      then "const " & sname & " = " & emit-jsx-expr (d.body) arities 0 & ";\n\n"
+      then "function " & sname & "() {\n  return " & emit-jsx-expr (d.body) arities 1 & ";\n}\n\n"
       else "function " & sname & "(" & emit-jsx-param-names (d.params) 0 & ") {\n  return " & emit-jsx-expr (d.body) arities 1 & ";\n}\n\n"
 
   emit-jsx-defs : List IRDef, Integer, List ArityEntry -> Text
@@ -325,10 +372,10 @@ Section: React Component Assembly
 
   emit-react-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
   emit-react-chapter (m) (meta) (type-defs) =
-   let arities = build-arity-map (m.defs) 0 []
-   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   let title = if meta.chapter-title == "" then "App" else meta.chapter-title
    in let imports = "import React, { useState, useEffect, useRef } from 'react';\n\n"
    in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
    in let types-text = emit-jsx-type-defs type-defs 0
    in let defs-text = emit-jsx-defs (m.defs) 0 arities
    in let component = "export default function " & react-sanitize title & "() {\n  const [output, setOutput] = useState([]);\n  useEffect(() => {\n    const _print = print_line_uni;\n    print_line_uni = (s) => setOutput(prev => [...prev, s]);\n    try { opening(); } catch(e) { console.error(e); }\n    print_line_uni = _print;\n  }, []);\n  return (\n    <div className=\"app\">\n      {output.map((line, i) => <div key={i}>{line}</div>)}\n    </div>\n  );\n}\n"

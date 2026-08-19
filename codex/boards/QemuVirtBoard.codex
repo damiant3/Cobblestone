@@ -57,4 +57,30 @@ Section: UART Helpers
     qemu-rv-uart-puts-loop s (i + 1) len
    end
 
+Section: UART Linear Handles
+
+ The foreword UartPort threaded onto the QEMU virt UARTs. This model
+ covers only the data path (PL011 DR at 0x09000000, 8250 THR at
+ 0x10000000), so open takes the data register the handle carries, write
+ pushes a byte to it, and close consumes the handle: the value proven
+ here is the open-once/close-once lifecycle and the [Device.Mmio] gate,
+ matched to what the QEMU virt boot stub actually drives. Both arches
+ share these because the data path is a single byte write either way.
+
+  qemu-uart-open : Integer -> [Uart, Device.Mmio] linear UartPort
+  qemu-uart-open (dr-base) = UartPort dr-base
+
+  qemu-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
+  qemu-uart-write (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- mmio-write-8 b byte
+      UartPort b
+    end
+
+  qemu-uart-close : linear UartPort -> [Uart, Device.Mmio] Integer
+  qemu-uart-close (port) =
+   when port
+    is UartPort (b) -> 0
+
 Page 1

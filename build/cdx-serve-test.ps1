@@ -24,16 +24,25 @@
 # Usage:
 #   pwsh build/cdx-serve-test.ps1
 #   pwsh build/cdx-serve-test.ps1 -Kernel seed/Codex.cdx   # compile with a chosen seed
+#   pwsh build/cdx-serve-test.ps1 -Card e1000              # the same conversation over the Intel model
 
 [CmdletBinding()]
 param(
     [string]$Kernel = 'seed/Codex.cdx',
     [int]$HostPort = 0,
     [switch]$KeepArtifacts,
-    # Extra codex-vm flags, for running this same conversation over a
-    # different card. Empty is the NE2000 and every historical run.
+    # Which card carries the conversation. ne2k is the NE2000 and every
+    # historical run; e1000 is the Intel model with the NAT wire moved to it
+    # (-e1000-nat, OperatorsManual "The NAT is one wire"), the branch the
+    # 2026-07-30 run in DeviceEmulationCatalog.md proved and nothing re-ran
+    # by name until this switch (CurrentPlan B4 step 2). A green run on the
+    # e1000 is evidence about the stack over a descriptor ring, not the card.
+    [ValidateSet('ne2k', 'e1000')]
+    [string]$Card = 'ne2k',
+    # Extra codex-vm flags beyond the card, for one-off arms.
     [string[]]$VmArgs = @()
 )
+if ($Card -eq 'e1000') { $VmArgs = @('-e1000-nat') + $VmArgs }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -81,7 +90,7 @@ if ($storeOut -match 'stored\s+([0-9a-fA-F]{64})') { $hash = $matches[1] }
 if (-not $hash) { Write-Host "  FAIL  cdx-store did not report a hash; nothing to ask for"; exit 1 }
 
 # --- 3. Boot the server on that disk -----------------------------------------
-Write-Host "cdx-serve-test: booting server (host :$HostPort -> guest :9300)"
+Write-Host "cdx-serve-test: booting server (host :$HostPort -> guest :9300, card $Card)"
 $srvOut = "$out/cs-serve.out"
 $proc = Start-Process -FilePath $script:CodexVmBin -PassThru -WindowStyle Hidden `
     -ArgumentList (@('-kernel', "$out/cs-serve.cdx", '-disk', $disk, '-output', $srvOut,
@@ -199,5 +208,5 @@ try {
 
 Write-Host ""
 if ($fail -gt 0) { Write-Host "cdx-serve-test: $fail FAILED"; exit 1 }
-Write-Host "cdx-serve-test: all checks passed"
+Write-Host "cdx-serve-test: all checks passed (card $Card)"
 exit 0

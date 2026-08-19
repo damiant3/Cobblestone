@@ -123,11 +123,30 @@ Section: Expression Emission
   clj-let-binder : Text, IRExpr -> Text
   clj-let-binder (name) (val) =
    if name == "__seq" then when val
-    is IrFieldStore (rec) (field) (v) (ty) (sp) -> when rec
-     is IrName (rn) (rty) (rsp) -> rn
-     is otherwise -> name
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> if clj-store-root rec == "" then name else clj-store-root rec
     is otherwise -> name
    else name
+
+  clj-store-root : IRExpr -> Text
+  clj-store-root (rec) =
+   when rec
+    is IrName (rn) (rty) (rsp) -> rn
+    is IrFieldAccess (r) (f) (t) (s) -> clj-store-root r
+    is otherwise -> ""
+
+  clj-store-path : IRExpr, Text -> Text
+  clj-store-path (rec) (acc) =
+   when rec
+    is IrFieldAccess (r) (f) (t) (s) -> clj-store-path r (":" & clj-field f & (if acc == "" then "" else " " & acc))
+    is otherwise -> acc
+
+  clj-store-value : IRExpr, List ArityEntry, Integer -> Text
+  clj-store-value (val) (arities) (depth) =
+   when val
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> when rec
+     is IrName (rn) (rty) (rsp) -> emit-clj-expr-at val arities depth
+     is otherwise -> "(assoc-in " & clj-sanitize (clj-store-root rec) & " [" & clj-store-path rec (":" & clj-field field) & "] " & emit-clj-expr-at v arities (depth + 1) & ")"
+    is otherwise -> emit-clj-expr-at val arities depth
 
   emit-clj-expr : IRExpr, List ArityEntry -> Text
   emit-clj-expr (e) (arities) = emit-clj-expr-at e arities 0
@@ -145,7 +164,7 @@ Section: Expression Emission
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-clj-binary op l r arities
     is IrNegate (operand) (nty) (sp) -> "(- " & emit-clj-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-clj-expr-at c arities (depth + 1) & " " & emit-clj-expr-at t arities (depth + 1) & " " & emit-clj-expr-at el arities (depth + 1) & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> "(let [" & clj-sanitize (clj-let-binder name val) & " " & emit-clj-expr-at val arities (depth + 1) & "] " & emit-clj-expr-at body arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(let [" & clj-sanitize (clj-let-binder name val) & " " & clj-store-value val arities (depth + 1) & "] " & emit-clj-expr-at body arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-clj-apply e arities
     is IrLambda (params) (body) (ty) (sp) -> "(fn [" & emit-clj-lambda-params params 0 & "] " & emit-clj-expr body arities & ")"
     is IrList (elems) (ty) (sp) -> "[" & emit-clj-list-elems elems 0 arities & "]"
@@ -260,6 +279,19 @@ Section: Expression Emission
     is IrVarPat (name) (ty) (sp) -> clj-sanitize name & " (:field" & integer-to-text i & " _s) "
     is otherwise -> "") & emit-clj-ctor-bindings subs (i + 1)
 
+  clj-store-target : IRActStmt -> Text
+  clj-store-target (s) =
+   when s
+    is IrDoExec (e) (sp) -> when e
+     is IrFieldStore (rec) (field) (v) (ty) (fsp) -> clj-store-root rec
+     is otherwise -> ""
+    is otherwise -> ""
+
+  emit-clj-exec-value : IRActStmt, List ArityEntry -> Text
+  emit-clj-exec-value (s) (arities) =
+   when s
+    is IrDoExec (e) (sp) -> clj-store-value e arities 0
+    is otherwise -> "nil"
   emit-clj-act : List IRActStmt, List ArityEntry -> Text
   emit-clj-act (stmts) (arities) =
    "(do " & emit-clj-act-stmts stmts 0 arities & ")"
@@ -268,7 +300,9 @@ Section: Expression Emission
   emit-clj-act-stmts (stmts) (i) (arities) =
    if i == list-length stmts then "nil"
    else let s = list-at stmts i
-   in (when s
+   in let target = clj-store-target s
+   in if target /= "" then "(let [" & clj-sanitize target & " " & emit-clj-exec-value s arities & "] " & (if i < list-length stmts - 1 then emit-clj-act-stmts stmts (i + 1) arities else clj-sanitize target) & ")"
+   else (when s
     is IrDoBind (name) (ty) (val) (sp) -> "(def " & clj-sanitize name & " " & emit-clj-expr val arities & ") "
     is IrDoExec (e) (sp) -> emit-clj-expr e arities & " ") & (if i < list-length stmts - 1 then emit-clj-act-stmts stmts (i + 1) arities else "")
 
@@ -391,7 +425,7 @@ Section: Chapter Emission
    if i >= list-length defs then ""
    else let d = list-at defs i
    in if d.name == opening-entry-point then
-    if list-length (d.params) == 0 then "(" & clj-sanitize opening-entry-point & ")\n" else ""
+    if list-length (d.params) == 0 then "(let [t (Thread. nil (fn [] (" & clj-sanitize opening-entry-point & ")) \"codex-main\" (* 512 1024 1024))] (.start t) (.join t))\n" else ""
    else clj-emit-entry-loop defs (i + 1)
 
 Page 1

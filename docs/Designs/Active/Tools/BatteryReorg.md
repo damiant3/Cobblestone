@@ -595,21 +595,23 @@ the day they landed. That is what this reorg buys.
         long time before its FIRST byte (`ttt-perfect`) is
         indistinguishable from dead at the ceiling -- if its verdict
         matters, raise the ceiling for one run and watch.
-      - **The residue is defects, and it is routed.** Ten rows fail
+      - **The residue is defects, and it is routed.** Seven rows fail
         standalone on BOTH cross lanes with complete, deterministic,
         identical-or-equivalent wrong answers, and pass on x86 --
         the shared-lowering fingerprint (L-SUSPECT), distinct from
         the ~90 riscv-only plug rows: `unit-show` and
         `unit-pattern-lit` (unit Text answers a pointer / never
-        matches), `real-saturating` (`ovf-add` answers the +inf bit
-        pattern 0x7FF0... where x86 saturates to max-finite
-        0x7FEF...), `real-compare-negative` (starved on riscv,
-        wrong on arm64), `unit-real-compare`, `int-pow` (answers a
+        matches), `int-pow` (answers a
         pointer-looking value), `int-min-literal`,
         `hal-peripheral-linear` (SAME wrong value 536872972 on both
         arches), `scope-try-region` (the fallback's global Text
         prints empty), `network-effect` (diverges past line 3).
-        Routed to reek via red-workplan outbox 2026-07-28.
+        Routed to reek via red-workplan outbox 2026-07-28. Three rows
+        were deleted from this list 2026-08-18 (reek) after measuring
+        them green: `real-saturating` and `unit-real-compare` pass on
+        BOTH lanes, and `real-compare-negative` passes on arm64, so
+        none of the three fits this list. The other seven were NOT
+        re-measured; do not read their presence as current.
         `ui-orchestrator-test`'s compile exit=3 was separate and is
         CLOSED same day, four defects deep: the IR-emit monolith
         (fixed by print-text + streaming, main 11498/11500), the

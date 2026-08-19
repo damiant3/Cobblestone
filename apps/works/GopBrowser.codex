@@ -91,45 +91,77 @@ Section: Pane
  The idle branches restore `mark` instead, which is ABOVE the tree, so the
  memo survives a poll that found nothing. Steady state is exactly one tree.
 
-  gbr-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, BrowserState, Integer -> [Device.Port] Integer
-  gbr-loop (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (s) (st) (mods) = act
-    let mark = __heap-save
-    in act
-      sc <- kbd-take kbd
-      let mv = mouse-pump mouse w h
-      in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
-      in let hit = mv == 1 & mouse-clicked mouse
-      in if sc == 1 then
-        let d = __heap-restore mark
-        in 0
-      else if hit then
-        let mx = comp-hit-x (mouse-x mouse) s
-        in let my = comp-hit-y (mouse-y mouse) s
-        in let code = browser-click-code st mx my
-        in let d = __heap-restore (st.bs-laid-mark)
-        in let next = browser-apply-click st mx my code
-        in let shown = gbr-repaint base w h stride font mouse cs s next
-        in gbr-loop base w h stride font kbd mouse cs s shown mods
-      else if sc == 0 then
-        let d = __heap-restore mark
-        in gbr-loop base w h stride font kbd mouse cs s st mods
-      else if gbr-is-mod sc then
-        let d = __heap-restore mark
-        in gbr-loop base w h stride font kbd mouse cs s st (gbr-mods mods sc)
-      else if sc >= 128 then
-        let d = __heap-restore mark
-        in gbr-loop base w h stride font kbd mouse cs s st mods
-      else
-        let key = poll-key-decode sc mods
-        in let d = __heap-restore (st.bs-laid-mark)
-        in let next = browser-dispatch-event st (event-key-down key mods 0)
-        in let shown = gbr-repaint base w h stride font mouse cs s next
-        in gbr-loop base w h stride font kbd mouse cs s shown mods
-    end
-  end
+Section: Step
 
-  gbr-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port] Integer
-  gbr-run (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (s) =
+ The loop moved to `GopDesk` on 2026-08-18 and this is what replaced it. The
+ desk owns the poll and calls `gbr-step` with one event, so the taskbar clock
+ keeps time while a page is up. The branch structure is the old loop's,
+ unchanged, because its heap discipline is the delicate part: release the
+ memoized tree BEFORE dispatching, never after, since the state a dispatch
+ builds is allocated above the frontier and a release that came second would
+ have to free memory underneath state that must survive.
+
+ `BrowserPane` exists so the pane's two carried values have somewhere to live
+ that the desk's per-iteration restore cannot reach.
+
+ **Opening is two calls and that is the whole reason.** `gbr-repaint` takes
+ `bs-laid-mark`, and every later event restores to it, so ANYTHING allocated
+ after the first paint dies on the pane's first keystroke -- including the
+ desk's own `DeskApps` record, which is built by the caller and holds the only
+ pointer to this pane. Written as one call it crashed the guest on the third
+ scancode, measured, because the desk went on reading a record the browser had
+ handed back. So `gbr-new` builds the state and the record, the caller wraps
+ them in whatever it keeps them in, and only then does `gbr-first-paint` take
+ the mark.
+
+  BrowserPane = record {
+    bp-st : BrowserState,
+    bp-mods : Integer
+  }
+
+  gbr-new : Integer, Integer -> [Device.Port] BrowserPane
+  gbr-new (w) (h) =
     let st = browser-init w h browser-theme-default display-init-text-fallback
-    in let shown = gbr-repaint base w h stride font mouse cs s st
-    in gbr-loop base w h stride font kbd mouse cs s shown 0
+    in BrowserPane { bp-st = st, bp-mods = 0 }
+
+  gbr-first-paint : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, BrowserPane -> Integer
+  gbr-first-paint (base) (w) (h) (stride) (font) (mouse) (cs) (s) (bp) =
+    let shown = gbr-repaint base w h stride font mouse cs s (bp.bp-st)
+    in let k = __record-set bp "bp-st" shown
+    in 0
+
+ An event answers a negative number, which tells `desk-loop` to keep the frame.
+ It has to: the restore above went BELOW the desk's own frame mark, so the desk
+ restoring to that mark afterwards would push the frontier back up over memory
+ this pane is now using. The idle and modifier branches allocate nothing below
+ it and answer 1 as usual.
+
+ The frontier still does not run away, because the release-then-rebuild is the
+ old loop's and steady state is one state and one tree. What it creeps by is
+ one `BrowserState` per event, which the loop did too.
+
+  gbr-step : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, BrowserPane, Integer, Boolean -> [Device.Port] Integer
+  gbr-step (base) (w) (h) (stride) (font) (mouse) (cs) (s) (bp) (sc) (clicked) =
+    let st = bp.bp-st
+    in let mods = bp.bp-mods
+    in if clicked then
+      let mx = comp-hit-x (mouse-x mouse) s
+      in let my = comp-hit-y (mouse-y mouse) s
+      in let code = browser-click-code st mx my
+      in let d = __heap-restore (st.bs-laid-mark)
+      in let next = browser-apply-click st mx my code
+      in let shown = gbr-repaint base w h stride font mouse cs s next
+      in let k = __record-set bp "bp-st" shown
+      in 0 - 1
+    else if sc == 0 then 1
+    else if gbr-is-mod sc then
+      let k = __record-set bp "bp-mods" (gbr-mods mods sc)
+      in 1
+    else if sc >= 128 then 1
+    else
+      let key = poll-key-decode sc mods
+      in let d = __heap-restore (st.bs-laid-mark)
+      in let next = browser-dispatch-event st (event-key-down key mods 0)
+      in let shown = gbr-repaint base w h stride font mouse cs s next
+      in let k = __record-set bp "bp-st" shown
+      in 0 - 1

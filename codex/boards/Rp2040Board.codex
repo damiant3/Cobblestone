@@ -111,6 +111,48 @@ Section: GPIO (SIO: 0xD0000000, IO Bank0: 0x40014000)
   rp-gpio-write (pin) (high) =
    if high then rp-gpio-set pin else rp-gpio-clear pin
 
+Section: GPIO Linear Handle
+
+ The foreword Pin threaded onto the RP2040 SIO GPIO: open routes the pin
+ to SIO and sets its direction, close returns it to input. The handle
+ carries the SIO base so close reaches the right register without the
+ caller re-supplying it.
+
+  rp-gpio-config : Integer, PinMode -> [Device.Mmio] Integer
+  rp-gpio-config (pin) (mode) =
+   when mode
+    is PinOutput -> rp-gpio-set-output pin
+    is PinInput -> rp-gpio-set-input pin
+    is PinAlternate (f) -> rp-gpio-set-output pin
+    is PinAnalog -> rp-gpio-set-input pin
+
+  rp-gpio-open : Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
+  rp-gpio-open (pin) (mode) = act
+   m <- rp-gpio-config pin mode
+   Pin rp-sio-base pin
+  end
+
+  rp-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
+  rp-pin-write (p) (high) =
+   when p
+    is Pin (base) (pin) -> act
+      w <- rp-gpio-write pin high
+      Pin base pin
+    end
+
+  rp-pin-read : linear Pin -> [Gpio, Device.Mmio] (linear Pin, Boolean)
+  rp-pin-read (p) =
+   when p
+    is Pin (base) (pin) -> act
+      v <- (rp-gpio-read pin)
+      (Pin base pin, v)
+    end
+
+  rp-pin-close : linear Pin -> [Gpio, Device.Mmio] Integer
+  rp-pin-close (p) =
+   when p
+    is Pin (base) (pin) -> rp-gpio-set-input pin
+
 Section: UART0 (PL011, 0x40034000)
 
   rp-uart0-base : Integer = #40034000
@@ -185,6 +227,56 @@ Section: UART0 (PL011, 0x40034000)
    rp-uart-send-byte uart-base 10
   end
 
+Section: UART Linear Handle
+
+ The foreword UartPort threaded onto a PL011 UART: open initialises the
+ port, write sends one byte through the board's own TX-FIFO poll, close
+ disables the UART. The handle carries the UART base so a caller that
+ opened UART0 cannot send down UART1 by passing the wrong address.
+
+  rp-uart-open : Integer, Frequency -> [Uart, Device.Mmio] linear UartPort
+  rp-uart-open (uart-base) (baud) = act
+   i <- rp-uart-init uart-base baud
+   UartPort uart-base
+  end
+
+  rp-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
+  rp-uart-write (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- rp-uart-send-byte b byte
+      UartPort b
+    end
+
+  rp-uart-recv-byte : Integer, Integer -> [Device.Mmio] Integer
+  rp-uart-recv-byte (uart-base) (fuel) =
+   if fuel <= 0 then 0 - 1
+   else act
+    fr <- (mmio-read-32 (uart-base + rp-uart-fr-off))
+    if bit-and fr rp-uart-fr-rxfe == 0 then bit-and (mmio-read-32 (uart-base + rp-uart-dr-off)) #FF
+    else rp-uart-recv-byte uart-base (fuel - 1)
+   end
+
+  rp-uart-recv-bytes : Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  rp-uart-recv-bytes (b) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- (rp-uart-recv-byte b 100000)
+    rp-uart-recv-bytes b n (i + 1) (list-push acc v)
+   end
+
+  rp-uart-recv : linear UartPort, Integer -> [Uart, Device.Mmio] (linear UartPort, List Integer)
+  rp-uart-recv (port) (n) =
+   when port
+    is UartPort (b) -> act
+      bytes <- (rp-uart-recv-bytes b n 0 [])
+      (UartPort b, bytes)
+    end
+  rp-uart-close : linear UartPort -> [Uart, Device.Mmio] Integer
+  rp-uart-close (port) =
+   when port
+    is UartPort (b) -> mmio-write-32 (b + rp-uart-cr-off) 0
+
 Section: SPI0 (PL022, 0x4003C000)
 
   rp-spi0-base : Integer = #4003C000
@@ -238,6 +330,101 @@ Section: SPI0 (PL022, 0x4003C000)
     if bit-and sr rp-spi-sr-rne > 0 then 1
     else rp-spi-wait-rne spi-base (fuel - 1)
    end
+
+Section: Linear I2C Bus
+
+  rp-i2c-open : Integer -> [I2c, Device.Mmio] linear I2cBus
+  rp-i2c-open (base) = act
+   i <- rp-i2c-init base
+   I2cBus base
+  end
+
+  rp-i2c-bus-write-reg : linear I2cBus, Integer, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  rp-i2c-bus-write-reg (bus) (addr) (reg) (val) =
+   when bus
+    is I2cBus (b) -> act
+      r <- (rp-i2c-write-reg b addr reg val)
+      (I2cBus b, r)
+    end
+
+  rp-i2c-bus-read-reg : linear I2cBus, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  rp-i2c-bus-read-reg (bus) (addr) (reg) =
+   when bus
+    is I2cBus (b) -> act
+      v <- (rp-i2c-read-reg b addr reg)
+      (I2cBus b, v)
+    end
+
+  rp-i2c-close : linear I2cBus -> [I2c, Device.Mmio] Integer
+  rp-i2c-close (bus) =
+   when bus
+    is I2cBus (b) -> mmio-write-32 (b + rp-i2c-enable-off) 0
+
+Section: Linear ADC Unit
+
+  rp-adc-open : [Adc, Device.Mmio] linear AdcUnit
+  rp-adc-open = act
+   i <- rp-adc-init
+   AdcUnit rp-adc-base
+  end
+
+  rp-adc-unit-sample : linear AdcUnit, Integer -> [Adc, Device.Mmio] (linear AdcUnit, Integer)
+  rp-adc-unit-sample (adc) (channel) =
+   when adc
+    is AdcUnit (b) -> act
+      v <- (rp-adc-read channel)
+      (AdcUnit b, v)
+    end
+
+  rp-adc-close : linear AdcUnit -> [Adc, Device.Mmio] Integer
+  rp-adc-close (adc) =
+   when adc
+    is AdcUnit (b) -> mmio-write-32 (b + rp-adc-cs-off) 0
+
+Section: Linear SPI Transaction
+
+  rp-spi-open : Integer -> [Spi, Device.Mmio] linear SpiBus
+  rp-spi-open (base) = act
+   i <- rp-spi-init base
+   SpiBus base
+  end
+
+  rp-spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
+  rp-spi-select (bus) (cs) =
+   when bus
+    is SpiBus (b) -> act
+      w <- (rp-gpio-write cs False)
+      SpiTxn b cs
+    end
+
+  rp-spi-transfer-bytes : Integer, List Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  rp-spi-transfer-bytes (b) (out) (i) (len) (acc) =
+   if i >= len then acc
+   else act
+    v <- (rp-spi-transfer b (list-at out i))
+    rp-spi-transfer-bytes b out (i + 1) len (list-push acc v)
+   end
+
+  rp-spi-txn-transfer : linear SpiTxn, List Integer -> [Spi, Device.Mmio] (linear SpiTxn, List Integer)
+  rp-spi-txn-transfer (txn) (out) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      got <- (rp-spi-transfer-bytes b out 0 (list-length out) [])
+      (SpiTxn b cs, got)
+    end
+
+  rp-spi-deselect : linear SpiTxn -> [Spi, Device.Mmio] linear SpiBus
+  rp-spi-deselect (txn) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      w <- (rp-gpio-write cs True)
+      SpiBus b
+    end
+
+  rp-spi-close : linear SpiBus -> [Spi, Device.Mmio] Integer
+  rp-spi-close (bus) =
+   when bus
+    is SpiBus (b) -> mmio-write-32 (b + rp-spi-cr1-off) 0
 
 Section: I2C0 (DW_apb_i2c, 0x40044000)
 

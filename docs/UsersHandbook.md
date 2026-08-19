@@ -226,6 +226,48 @@ insertion**, so the stick is modified behind you between flash and boot.
 Every patched sector is verified by readback. Prefer it over the older
 `-FixupDir`, which needs Python.
 
+### The diagnostic stick: what to do when a box will not run Codex
+
+`diag.img` is a 16 MB image that boots, names the machine, runs a ladder of
+hardware readers, and writes what it found back onto the stick. It carries
+no seed and no identity and takes no input. If your machine does something
+we cannot reproduce, this is the thing to send us.
+
+1. Download `diag.img` and its SHA-256 from the release
+   (`docs/PM/Active/GitHubUpdates/`; the release notes carry the hash). Verify
+   the hash before flashing: `Get-FileHash diag.img -Algorithm SHA256`.
+2. Write it to a USB stick (elevated pwsh; find `N` with
+   `Get-Disk | Where-Object BusType -eq 'USB'`):
+
+   ```powershell
+   build/flash-usb.ps1 -Image diag.img -DiskNumber N -SpecFit -ExpectHash <the release hash>
+   ```
+
+   On anything that is not Windows: `dd if=diag.img of=/dev/sdX bs=4M
+   conv=fsync` (double-check `sdX`; it erases the device).
+3. Boot the box from the stick. Under two minutes later a summary band
+   appears at the bottom of the screen; the ladder is done when the last
+   line reads `SUMMARY run=N ...` and the QR codes below it stop changing.
+4. Read that last line. If it says `bank=ok`, put the stick back in a
+   computer and send us `DIAG.TXT` from it (`build/read-stick.ps1
+   -DiskNumber N -Name DIAG.TXT`, or copy it off the FAT volume). If it says
+   `bank=none`, photograph the screen including the QR codes and send those.
+   The codes ARE the record; the text is the convenience.
+5. The verdict block above the band says whether anything can be done at
+   your end (a cable, the boot order, a different stick). Everything else
+   is ours.
+
+What the stick will not do: it does not write to your disks, does not
+touch the network, and refuses to write its own record onto a medium that
+is not the stick it was built as (`DIAG.ID`). The record's first lines
+(`rcp ...`) name the exact bytes that produced it, so a `DIAG.TXT` from
+last month still tells us which build it came from.
+
+For a fleet lane flashing its OWN build: `flash-usb.ps1 -Rehearsed` refuses
+any image whose hash `build/boot/diag-arm.ps1` has not run through every arm
+in both beds (`build/boot/diag.rehearsed`); a `-Only` or `-SkipOvmf` run
+does not count. That is L-REHEARSE as a runner: the bytes that fly are the
+bytes that completed the mission in the bed.
 ### Known flashing issues
 
 **Flashing is not reliably reproducible.** The same image, same
@@ -258,9 +300,12 @@ does not. Known contributing factors:
    the first 4 KB of the written image. A full 8 MB verify is
    recommended to confirm the write landed.
 
-**Workaround:** If a flash does not boot, pull the stick,
-reinsert, and flash again with `flash-usb.ps1`. Two consecutive
-flashes usually succeeds where one fails.
+**If a flash does not boot,** read the flasher's log before doing anything
+else: it reads the image back byte for byte and names the sector that
+disagreed, and a verify failure is as likely the image or the port as the
+stick (L-MISROUTE). Reinsertion is not a hazard: since 2026-07-29 a stick
+survives a full remove-and-reinsert byte-identical (the earlier corruption
+was our own image geometry; `docs/Hardware/HardwareSitting.md` section 3).
 
 ### UEFI firmware compatibility
 
