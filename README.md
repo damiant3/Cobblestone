@@ -227,14 +227,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,844,615 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,849,516 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `769D0BA41DC1DC75` |
-| SHA-256 | `800A7683D5D0B9237323A172B9B401EB26F93F43E5E8FC617DC562B71F8AEEB4` |
-| MD5 | `C6F8246B2FD76B22DA651BB6F2F496AD` |
+| Content hash prefix | `5504267863C9A2CD` |
+| SHA-256 | `E45B56F1643281ED971B4F986D549CDA456D6FC621DB2EC0387E29A99E1A1497` |
+| MD5 | `67278BDF4D5E755C9DE64FA3B8C46F4B` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -586,7 +586,7 @@ codex/
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
   plugs/         56 plugs, 151 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,570 files)
+  test/          Compiler samples + OS integration tests (1,573 files)
 apps/            68 applications, 1,019 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)

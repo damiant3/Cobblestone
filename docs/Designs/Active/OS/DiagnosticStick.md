@@ -202,6 +202,14 @@ battery row if it fits the battery's budget and a release-proof row
 otherwise; either way it runs before every flight (`flash-usb.ps1
 -Rehearsed` refuses an image the arm has not passed).
 
+**`p4 edit` the three depot artifacts before rebuilding or rehearsing.**
+`build/boot/diag.img`, `build/boot/diag.rehearsed` and `tools/codex-vm.exe`
+are read-only until opened, and two of the three fail SILENTLY: `build-img`
+cannot write the image and `build-diag.ps1` reports only "build-img failed"
+with no cause, and `diag-arm.ps1` runs the whole ladder green and then
+cannot record it, so the image stays unflashable after a ten-minute run.
+Measured 2026-08-19, all three in one sitting's worth of work.
+
 The account of every channel failure so far (the F12 bank, the stride,
 the ConOut re-mode, the medium lock, the seed-less stick) is
 `docs/Hardware/HardwareSitting.md`, and this section is the design

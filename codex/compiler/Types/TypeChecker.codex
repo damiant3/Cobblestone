@@ -1704,13 +1704,14 @@ Section: Cost Model 3.3 -- the bounded declaration
  `punctual` records "hard-realtime", so nothing new is threaded through the
  chapter record.
 
- Only two rungs are decidable here today. The inference answers whether a
- definition is `growing`; it does not distinguish `none` from `fixed` from
- `linear`, because that needs an allocation count this pass does not compute.
- So `bounded linear` and `bounded growing` are checked, and `bounded none` and
- `bounded fixed` are REFUSED as unsupported rather than accepted unchecked.
- That is the abstain-toward-refusal direction the ruling asks for: an
- unchecked promise reads as a checked one and is worse than no promise.
+ Three rungs are decidable here today. The inference answers whether a
+ definition is `growing`, and whether it allocates at all; it does not
+ separate `fixed` from `linear`, because that needs a per-builtin allocation
+ class this tree has not measured. So `bounded none`, `bounded linear` and
+ `bounded growing` are checked, and `bounded fixed` is REFUSED as unsupported
+ rather than accepted unchecked. That is the abstain-toward-refusal direction
+ the ruling asks for: an unchecked promise reads as a checked one and is
+ worse than no promise.
 
   cost-class-rank : Text -> Integer
   cost-class-rank (c) =
@@ -1759,21 +1760,23 @@ Section: Cost Model 3.3 -- the bounded declaration
   check-bounded-decls (st) (defs) (anns) =
    if list-length anns == 0 then st
    else let growing = cost-growing-set st defs
-   in check-bounded-loop st defs growing anns 0 (list-length anns)
+   in let allocating = if cost-any-none anns 0 (list-length anns) then cost-alloc-set st defs else []
+   in check-bounded-loop st defs growing allocating anns 0 (list-length anns)
 
-  check-bounded-loop : UnificationState, List ADef, List Text, List AnnotationNode, Integer, Integer -> UnificationState
-  check-bounded-loop (st) (defs) (growing) (anns) (i) (len) =
+  check-bounded-loop : UnificationState, List ADef, List Text, List Text, List AnnotationNode, Integer, Integer -> UnificationState
+  check-bounded-loop (st) (defs) (growing) (allocating) (anns) (i) (len) =
    if i >= len then st
    else let a = list-at anns i
-   in if a.kind == "bounded" then check-bounded-loop (check-bounded-one st defs growing a) defs growing anns (i + 1) len
-   else check-bounded-loop st defs growing anns (i + 1) len
+   in if a.kind == "bounded" then check-bounded-loop (check-bounded-one st defs growing allocating a) defs growing allocating anns (i + 1) len
+   else check-bounded-loop st defs growing allocating anns (i + 1) len
 
-  check-bounded-one : UnificationState, List ADef, List Text, AnnotationNode -> UnificationState
-  check-bounded-one (st) (defs) (growing) (a) =
+  check-bounded-one : UnificationState, List ADef, List Text, List Text, AnnotationNode -> UnificationState
+  check-bounded-one (st) (defs) (growing) (allocating) (a) =
    let rank = cost-class-rank (a.body)
    in let span = cost-def-span defs (a.target) 0 (list-length defs)
    in if rank < 0 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-unknown-class ("'bounded " & a.body & "' on '" & a.target & "' names no class; the lattice is none < fixed < linear < growing") span))
-   else if rank < 2 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-class-unsupported ("'bounded " & a.body & "' on '" & a.target & "' cannot be checked yet: only linear and growing are inferred. Use 'bounded linear', or 'punctual' for the no-heap promise") span))
+   else if rank == 0 then (if is-rt-name allocating (a.target) 0 (list-length allocating) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded none but allocates, here or in something it calls") span)) else st)
+   else if rank == 1 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-class-unsupported ("'bounded fixed' on '" & a.target & "' cannot be checked yet: fixed needs a per-builtin allocation class that is not measured. Use 'bounded none' for the no-heap promise or 'bounded linear'") span))
    else if rank >= 3 then st
    else if is-rt-name growing (a.target) 0 (list-length growing)
      then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded " & a.body & " but is inferred growing: an accumulator is copied by & inside a self call, here or in something it calls") span))
@@ -1785,6 +1788,108 @@ Section: Cost Model 3.3 -- the bounded declaration
    else let d = list-at defs i
    in if d.name.value == name then d.span
    else cost-def-span defs name (i + 1) len
+
+Section: Cost Model -- the none rung
+
+ A name in call position that is neither a definition in this unit nor a
+ builtin measured at zero bytes is read as allocating. That is question 1's
+ abstain-toward-refusal: a false refusal is paid in a declaration the author
+ can decline to write, and a false acceptance is an unchecked promise, which
+ is the thing CDX6103 exists to prevent.
+
+ The zero-byte builtins are the ones section 3.1 measured against the depot
+ seed (DevelopersGuide, "operation / allocation / cost"), plus the accessors
+ `punctual` already treats as safe. Everything else, including every builtin
+ that has never been measured, sits on the refusing side.
+
+  cost-builtin-nonalloc : Text -> Boolean
+  cost-builtin-nonalloc (n) =
+   is-rt-safe-builtin n | n == "char-code-at" | n == "char-at" | n == "char-code"
+
+  cost-def-known : List ADef, Text, Integer, Integer -> Boolean
+  cost-def-known (defs) (n) (i) (len) =
+   if i >= len then False
+   else if (list-at defs i).name.value == n then True
+   else cost-def-known defs n (i + 1) len
+
+  cost-head-allocates : List ADef, List Text, Text -> Boolean
+  cost-head-allocates (defs) (allocating) (h) =
+   if h == "" then True
+   else if is-rt-name allocating h 0 (list-length allocating) then True
+   else if cost-def-known defs h 0 (list-length defs) then False
+   else cost-builtin-nonalloc h == False
+
+ `&` is one token doing two jobs and only the recorded type separates them,
+ exactly as RULE 1 of the growth check found: the boolean route allocates
+ nothing and the concatenation route allocates a new value.
+
+  cost-binop-allocates : UnificationState, BinaryOp, SourceSpan -> Boolean
+  cost-binop-allocates (st) (op) (s) = when op
+    is OpAnd -> when (expr-type-scan st s) is BooleanTy -> False is otherwise -> True
+    is OpAppend -> True
+    is otherwise -> False
+
+  cost-expr-allocates : UnificationState, AExpr, List ADef, List Text -> Boolean
+  cost-expr-allocates (st) (e) (defs) (allocating) = when e
+    is ALitExpr (t) (k) (s) -> False
+    is ANameExpr (n) (s) -> is-rt-unsafe-name (n.value) | is-rt-name allocating (n.value) 0 (list-length allocating)
+    is AApplyExpr (f) (a) (s) -> cost-head-allocates defs allocating (cost-apply-head e) | cost-expr-allocates st f defs allocating | cost-expr-allocates st a defs allocating
+    is ABinaryExpr (l) (op) (r) (s) -> cost-binop-allocates st op s | cost-expr-allocates st l defs allocating | cost-expr-allocates st r defs allocating
+    is AUnaryExpr (x) (s) -> cost-expr-allocates st x defs allocating
+    is AIfExpr (c) (t) (el) (s) -> cost-expr-allocates st c defs allocating | cost-expr-allocates st t defs allocating | cost-expr-allocates st el defs allocating
+    is ALetExpr (bs) (b) (s) -> cost-binds-allocate st bs defs allocating 0 (list-length bs) | cost-expr-allocates st b defs allocating
+    is AMatchExpr (sc) (arms) (s) -> cost-expr-allocates st sc defs allocating | cost-arms-allocate st arms defs allocating 0 (list-length arms)
+    is AFieldAccess (obj) (f) (s) -> cost-expr-allocates st obj defs allocating
+    is otherwise -> True
+
+  cost-binds-allocate : UnificationState, List ALetBind, List ADef, List Text, Integer, Integer -> Boolean
+  cost-binds-allocate (st) (bs) (defs) (allocating) (i) (len) =
+   if i >= len then False
+   else if cost-expr-allocates st ((list-at bs i).value) defs allocating then True
+   else cost-binds-allocate st bs defs allocating (i + 1) len
+
+  cost-arms-allocate : UnificationState, List AMatchArm, List ADef, List Text, Integer, Integer -> Boolean
+  cost-arms-allocate (st) (arms) (defs) (allocating) (i) (len) =
+   if i >= len then False
+   else let arm = list-at arms i
+   in if cost-expr-allocates st (arm.guard) defs allocating | cost-expr-allocates st (arm.body) defs allocating then True
+   else cost-arms-allocate st arms defs allocating (i + 1) len
+
+  cost-alloc-seed : UnificationState, List ADef, Integer, Integer, List Text -> List Text
+  cost-alloc-seed (st) (defs) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if cost-expr-allocates st (d.body) defs [] then cost-alloc-seed st defs (i + 1) len (list-push acc (d.name.value))
+   else cost-alloc-seed st defs (i + 1) len acc
+
+  cost-alloc-step : List ADef, List Text, Integer, Integer, List Text -> List Text
+  cost-alloc-step (defs) (known) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if is-rt-name acc (d.name.value) 0 (list-length acc) then cost-alloc-step defs known (i + 1) len acc
+   else if list-length (collect-rt-mentions (d.body) (d.name.value) known []) > 0
+     then cost-alloc-step defs known (i + 1) len (list-push acc (d.name.value))
+   else cost-alloc-step defs known (i + 1) len acc
+
+  cost-alloc-close : List ADef, List Text, Integer, Integer -> List Text
+  cost-alloc-close (defs) (acc) (round) (rounds) =
+   if round >= rounds then acc
+   else let grown = cost-alloc-step defs acc 0 (list-length defs) acc
+   in if list-length grown == list-length acc then acc
+   else cost-alloc-close defs grown (round + 1) rounds
+
+  cost-alloc-set : UnificationState, List ADef -> List Text
+  cost-alloc-set (st) (defs) =
+   let seed = cost-alloc-seed st defs 0 (list-length defs) []
+   in if list-length seed == 0 then seed
+   else cost-alloc-close defs seed 0 (list-length defs)
+
+  cost-any-none : List AnnotationNode, Integer, Integer -> Boolean
+  cost-any-none (anns) (i) (len) =
+   if i >= len then False
+   else let a = list-at anns i
+   in if a.kind == "bounded" & a.body == "none" then True
+   else cost-any-none anns (i + 1) len
 
 Section: Punctual Mutual Recursion
 

@@ -84,7 +84,7 @@ Section: Arity Map
     name = d.name,
     arity = __narrow (list-length (d.params)),
     generic-count = 0,
-    is-proc = fort-is-effectful (d.type-val)
+    is-proc = if fort-is-effectful (d.type-val) then fort-result-is-nothing (d.type-val) (list-length (d.params)) else False
    }))
 
   lookup-arity : List ArityEntry, Text -> Integer
@@ -934,7 +934,7 @@ Section: Expression Emission
    else if idx == 9 then fort-emit-expr (list-at args 0) arities
    else if idx == 10 then "fort_char_code_at(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 11 then "achar(int(" & fort-emit-expr (list-at args 0) arities & "))"
-   else if idx == 12 then "close(" & fort-emit-expr (list-at args 0) arities & ")"
+   else if idx == 12 then "fort_close_file(" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 13 then fort-emit-expr (list-at args 0) arities
    else if idx == 14 then "fort_file_exists(" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 15 then fort-emit-expr (list-at args 0) arities
@@ -952,9 +952,9 @@ Section: Expression Emission
    else if idx == 27 then "min(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 28 then "(-" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 29 then "fort_open_file(" & fort-emit-expr (list-at args 0) arities & ")"
-   else if idx == 30 then "write(0, '(A)') trim(" & fort-emit-expr (list-at args 0) arities & ")"
-   else if idx == 31 then "print *, trim(" & fort-emit-expr (list-at args 0) arities & ")"
-   else if idx == 32 then "stop"
+   else if idx == 30 then "fort_print_error(" & fort-emit-expr (list-at args 0) arities & ")"
+   else if idx == 31 then "fort_print_line(" & fort-emit-expr (list-at args 0) arities & ")"
+   else if idx == 32 then "fort_process_exit(" & fort-emit-exit-code args arities & ")"
    else if idx == 33 then "fort_read_file(" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 34 then fort-emit-bi-show args arities
    else if idx == 35 then fort-emit-bi-substring args arities
@@ -969,6 +969,10 @@ Section: Expression Emission
    else if idx == 44 then "fort_write_file(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 45 then "fort_list_snoc(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else "cx_UNSUPPORTED_builtin('" & n & "')"
+
+  fort-emit-exit-code : List IRExpr, List ArityEntry -> Text
+  fort-emit-exit-code (args) (arities) =
+   if list-length args == 0 then "0_8" else fort-emit-expr (list-at args 0) arities
 
   fort-emit-bi-show : List IRExpr, List ArityEntry -> Text
   fort-emit-bi-show (args) (arities) =
@@ -1125,9 +1129,24 @@ Section: Definition Emission
   fort-emit-regular-def : IRDef, List ArityEntry -> Text
   fort-emit-regular-def (d) (arities) =
    let name = fort-sanitize (d.name)
-   in let is-proc = fort-is-effectful (d.type-val)
+   in let is-proc = if fort-is-effectful (d.type-val) then fort-result-is-nothing (d.type-val) (list-length (d.params)) else False
    in if is-proc then fort-emit-subroutine d name arities
       else fort-emit-function d name arities
+
+  fort-effect-result : CodexType -> CodexType
+  fort-effect-result (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (ret) -> fort-effect-result ret
+    is ForAllTy (id) (body) -> fort-effect-result body
+    is ForAllEff (id) (body) -> fort-effect-result body
+    is LinearTy (body) -> fort-effect-result body
+    is otherwise -> ty
+
+  fort-result-is-nothing : CodexType, Integer -> Boolean
+  fort-result-is-nothing (ty) (n) =
+   when fort-effect-result (fort-return-type ty n)
+    is NothingTy -> True
+    is otherwise -> False
 
   fort-is-effectful : CodexType -> Boolean
   fort-is-effectful (ty) =
@@ -1142,7 +1161,7 @@ Section: Definition Emission
 
   fort-emit-subroutine : IRDef, Text, List ArityEntry -> Text
   fort-emit-subroutine (d) (name) (arities) =
-   "  subroutine " & name & "(" & fort-emit-param-names (d.params) 0 & ")\n" & fort-emit-param-decls (d.params) 0 & fort-emit-statement (d.body) arities 2 & "  end subroutine " & name & "\n"
+   "  subroutine " & name & "(" & fort-emit-param-names (d.params) 0 & ")\n" & fort-emit-param-decls (d.params) 0 & fort-emit-let-decls (d.body) (d.params) "" & fort-emit-statement (d.body) arities 2 & "  end subroutine " & name & "\n"
 
   fort-emit-function : IRDef, Text, List ArityEntry -> Text
   fort-emit-function (d) (name) (arities) =
@@ -1183,7 +1202,16 @@ Section: Definition Emission
      in fort-collect-lets body (fort-collect-lets val acc1)
     is IrIf (c) (t) (el) (ty) (sp) -> fort-collect-lets el (fort-collect-lets t acc)
     is IrMatch (scrut) (branches) (ty) (sp) -> fort-collect-lets-branches branches acc 0
+    is IrAct (stmts) (ty) (sp) -> fort-collect-lets-act stmts acc 0
     is otherwise -> acc
+
+  fort-collect-lets-act : List IRActStmt, List LetDecl, Integer -> List LetDecl
+  fort-collect-lets-act (stmts) (acc) (i) =
+   if i == list-length stmts then acc
+   else when list-at stmts i
+    is IrDoExec (e) (sp) -> fort-collect-lets-act stmts (fort-collect-lets e acc) (i + 1)
+    is IrDoBind (name) (ty) (val) (sp) ->
+     fort-collect-lets-act stmts (fort-add-let (fort-collect-lets val acc) (fort-sanitize name) (fort-decl-var ty (fort-sanitize name))) (i + 1)
 
   fort-collect-lets-branches : List IRBranch, List LetDecl, Integer -> List LetDecl
   fort-collect-lets-branches (branches) (acc) (i) =
@@ -1234,7 +1262,20 @@ Section: Definition Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> fort-emit-assign-match scrut branches target arities indent 0
     is IrLet (name) (ty) (val) (body) (sp) ->
      fort-emit-let-stmt name val arities indent & fort-emit-assign body target arities indent
+    is IrAct (stmts) (ty) (sp) -> fort-emit-assign-act stmts target arities indent 0
     is otherwise -> fort-indent indent & target & " = " & fort-emit-expr e arities & "\n"
+
+  fort-emit-assign-act : List IRActStmt, Text, List ArityEntry, Integer, Integer -> Text
+  fort-emit-assign-act (stmts) (target) (arities) (indent) (i) =
+   if list-length stmts == 0 then ""
+   else if i >= list-length stmts - 1
+   then when list-at stmts i
+     is IrDoExec (e) (sp) -> fort-emit-assign e target arities indent
+     is IrDoBind (name) (ty) (val) (sp) ->
+      fort-emit-act-stmt (list-at stmts i) arities indent
+       & fort-indent indent & target & " = " & fort-sanitize name & "\n"
+   else fort-emit-act-stmt (list-at stmts i) arities indent
+    & fort-emit-assign-act stmts target arities indent (i + 1)
 
  A `let` whose value is a field store is the compiler's sequencing form: the
  source wrote a store where a value was expected, and the binding it invents
@@ -1290,6 +1331,8 @@ Section: Definition Emission
       & fort-emit-statement el arities (indent + 1)
       & fort-indent indent & "end if\n"
     is IrMatch (scrut) (branches) (ty) (sp) -> fort-emit-stmt-match scrut branches arities indent 0
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     fort-emit-let-stmt name val arities indent & fort-emit-statement body arities indent
     is otherwise -> fort-indent indent & fort-emit-call-or-expr e arities & "\n"
 
   fort-emit-stmt-match : IRExpr, List IRBranch, List ArityEntry, Integer, Integer -> Text
@@ -1320,8 +1363,29 @@ Section: Definition Emission
 
   fort-emit-call-or-expr : IRExpr, List ArityEntry -> Text
   fort-emit-call-or-expr (e) (arities) =
-   if fort-stmt-is-proc-call e arities then "call " & fort-emit-expr e arities
+   let sb = fort-stmt-builtin-text e arities
+   in if text-length sb > 0 then sb
+   else if fort-stmt-is-proc-call e arities then "call " & fort-emit-expr e arities
    else fort-emit-expr e arities
+
+  fort-stmt-builtin-text : IRExpr, List ArityEntry -> Text
+  fort-stmt-builtin-text (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let chain = collect-apply-chain e []
+     in when chain.root
+      is IrName (n) (nty) (nsp) -> fort-stmt-builtin-by-name n (chain.args) arities
+      is otherwise -> ""
+    is otherwise -> ""
+
+  fort-stmt-builtin-by-name : Text, List IRExpr, List ArityEntry -> Text
+  fort-stmt-builtin-by-name (n) (args) (arities) =
+   if n == "process-exit" then "stop"
+   else if list-length args == 0 then ""
+   else if n == "print-line-uni" then "print *, trim(" & fort-emit-expr (list-at args 0) arities & ")"
+   else if n == "print-error-uni" then "write(0, '(A)') trim(" & fort-emit-expr (list-at args 0) arities & ")"
+   else if n == "close-file" then "close(" & fort-emit-expr (list-at args 0) arities & ")"
+   else ""
 
   fort-stmt-is-proc-call : IRExpr, List ArityEntry -> Boolean
   fort-stmt-is-proc-call (e) (arities) =
@@ -1361,6 +1425,10 @@ Section: Runtime Prelude
    & "  function fort_open_file(path) result(r)\n    character(len=*), intent(in) :: path\n    integer(8) :: r\n    integer :: u, ios\n    open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)\n    if (ios /= 0) then\n      r = -1_8\n    else\n      r = int(u, 8)\n    end if\n  end function fort_open_file\n"
    & "  function fort_read_file(path) result(r)\n    character(len=*), intent(in) :: path\n    character(len=FORT_TEXT_LEN) :: r\n    character(len=FORT_TEXT_LEN) :: line\n    integer :: u, ios, p, l\n    r = ''\n    p = 0\n    open(newunit=u, file=trim(path), status='old', action='read', iostat=ios)\n    if (ios /= 0) return\n    do\n      read(u, '(A)', iostat=ios) line\n      if (ios /= 0) exit\n      l = len_trim(line)\n      if (p + l + 1 > FORT_TEXT_LEN) exit\n      if (l > 0) r(p+1:p+l) = line(1:l)\n      p = p + l\n      r(p+1:p+1) = achar(10)\n      p = p + 1\n    end do\n    close(u)\n  end function fort_read_file\n"
    & "  function fort_write_file(path, content) result(r)\n    character(len=*), intent(in) :: path, content\n    integer(8) :: r\n    integer :: u, ios\n    r = 0_8\n    open(newunit=u, file=trim(path), status='replace', action='write', iostat=ios)\n    if (ios /= 0) then\n      r = -1_8\n      return\n    end if\n    write(u, '(A)') trim(content)\n    close(u)\n  end function fort_write_file\n"
+   & "  function fort_print_line(s) result(r)\n    character(len=*), intent(in) :: s\n    integer(8) :: r\n    print *, trim(s)\n    r = 0_8\n  end function fort_print_line\n"
+   & "  function fort_print_error(s) result(r)\n    character(len=*), intent(in) :: s\n    integer(8) :: r\n    write(0, '(A)') trim(s)\n    r = 0_8\n  end function fort_print_error\n"
+   & "  function fort_close_file(u) result(r)\n    integer(8), intent(in) :: u\n    integer(8) :: r\n    close(int(u))\n    r = 0_8\n  end function fort_close_file\n"
+   & "  function fort_process_exit(code) result(r)\n    integer(8), intent(in) :: code\n    integer(8) :: r\n    r = code\n    stop\n  end function fort_process_exit\n"
    & "end module codex_fort_prelude\n"
 
 Section: Chapter Emission
@@ -1386,7 +1454,7 @@ Section: Chapter Emission
   fort-emit-opening-body : IRDef, List ArityEntry -> Text
   fort-emit-opening-body (d) (arities) =
    let is-eff = fort-is-effectful (d.type-val)
-   in if is-eff then fort-emit-statement (d.body) arities 1
+   in if is-eff then fort-emit-let-decls (d.body) (d.params) "" & fort-emit-statement (d.body) arities 1
       else "  print *, " & fort-emit-expr (d.body) arities & "\n"
 
   emit-fortran-chapter : IRChapter, List ATypeDef -> Text

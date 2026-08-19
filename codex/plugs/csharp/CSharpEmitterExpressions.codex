@@ -1154,12 +1154,19 @@ Section: Expression Emission
       is otherwise -> emit-expr scrut ctx
    in scrut-text & " switch { " & arms & (if needs-wild then "_ => throw new InvalidOperationException(\"Non-exhaustive match\"), " else "") & "}"
 
+  cs-guard-trivial : IRExpr -> Boolean
+  cs-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
   emit-match-arms : List IRBranch, Integer, CsCtx, Text -> Text
   emit-match-arms (branches) (i) (ctx) (result-cast) =
    if i == list-length branches then ""
    else let arm = list-at branches i
-   in let this-arm = emit-pattern (arm.pattern) & " => " & result-cast & "(" & emit-expr (arm.body) ctx & "), "
-   in if is-catch-all (arm.pattern) then this-arm
+   in let guard-clause = if cs-guard-trivial (arm.guard) then "" else " when " & emit-expr (arm.guard) ctx
+   in let this-arm = emit-pattern (arm.pattern) & guard-clause & " => " & result-cast & "(" & emit-expr (arm.body) ctx & "), "
+   in if is-catch-all (arm.pattern) & cs-guard-trivial (arm.guard) then this-arm
         else this-arm & emit-match-arms branches (i + 1) ctx result-cast
 
   is-catch-all : IRPat -> Boolean
@@ -1179,7 +1186,7 @@ Section: Expression Emission
   has-any-catch-all (branches) (i) =
    if i == list-length branches then False
    else let b = list-at branches i
-   in if is-catch-all (b.pattern) | is-tup-pattern (b.pattern) then True
+   in if (is-catch-all (b.pattern) | is-tup-pattern (b.pattern)) & cs-guard-trivial (b.guard) then True
       else has-any-catch-all branches (i + 1)
 
   emit-pattern : IRPat -> Text

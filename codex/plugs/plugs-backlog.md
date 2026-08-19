@@ -39,6 +39,21 @@ measurement through it, and a merge-down invalidates every plug binary it
 touches.** `build/plug-oracle-test.ps1` refuses a stale binary now; nothing
 else does.
 
+**STALE HAS TWO HALVES AND THE HARNESS ONLY KNEW ONE UNTIL 2026-08-19.** It
+compared the binary against the `.codex` beside it, which catches an edited
+emitter and misses the other case entirely: **a plug binary newer than every
+source it was built from, produced by a PREVIOUS compiler.** The seed moves
+under a workspace on any merge-down and nothing rebuilds a plug when it does.
+Measured on the day the second check was added: all six wired binaries
+predated the seed FILE, the source check passed every one of them, and the
+6/6 that run reported was scored on emitters the current compiler had never
+built. Rebuilding all six and re-running gave 6/6 again, so the answer did
+not change here, which is exactly why it is worth a check rather than a
+habit: **a blind instrument that happens to be pointing the right way still
+reads as agreement.** The harness now refuses a binary older than
+`seed/Codex.cdx` as well, with both arms measured: backdate one and it
+fails, restore it and it passes.
+
 **Zig ownership, SETTLED by Damian 2026-08-18:** `codex/plugs/zig/` is ORDINARY FLEET CODE and is edited like any other plug. Steve Howell had it for his early updates, those updates are absorbed, and the loan is over (Damian, 2026-08-18). Credit him in a CL that changes what he wrote and flag it in the next GitHubUpdate, which is courtesy rather than a gate. This supersedes both earlier readings: the 08-16 "not a fleet edit" rule AND the "ours to gate loosely, no rigour beyond a smoke" relaxation that replaced it. The plug is held to the same standard as its neighbours. The dispute paragraph that stood here from 16984 (two live docs disagreeing; fleet edits 16366, 16409, 16627, 16981 already landed under the "ours" reading) is gone with the dispute.
 
 ## 1.42 -- CLOSED: a unit constructor was emitted as a CALL on both plug lanes, and it resolved to nothing
@@ -315,7 +330,7 @@ consequence of the unresolved `to-real-approx-saturating` call in this
 register and in `CrossLaneFilesystem.md`; both are corrected. That conversion
 is the identity on x86 (`emit-to-real-saturating-builtin` returns its
 argument's register), so its unresolved call changes no answer.
-## 1.46 -- match guards are dropped by every source-emitting plug, and the oracle subject now asks
+## 1.46 -- CLOSED for the wired plugs: match guards were dropped by every source-emitting plug, on TWO paths
 
 Found 2026-08-19 by Steve Howell (GitHub issue 72) on the zig plug and fixed
 there the same day (a guarded match emits as a labeled block of if-statements;
@@ -348,6 +363,46 @@ bindings before the guard, and `unreachable` after a non-catch-all tail).
 The typescript `never` is separate from guards and would have failed on any
 variant type; it is recorded here because the subject found it and nothing else
 has a row with a variant in it.
+
+### Closed 2026-08-19 (reek). All six wired plugs PASS 49 of 49, seed 800A7683
+
+The table above was measured on ONE path. Every plug has a second match
+emitter for a SELF-RECURSIVE function, and the subject cannot reach it: its
+subjects are not recursive. Both paths are fixed; the landings are 17262
+(python), 17267 (wasm), 17275 (csharp), 17277 (typescript), 17279
+(javascript), 17285 (python + javascript tail-call), 17304 (wasm + csharp
+tail-call).
+
+Four defects the table does not name, each measured:
+
+- **javascript is a FIFTH plug on the guard rows**, failing 41/43/45/49 the
+  same way, and the table omits it.
+- **A javascript integer literal pattern had never matched.** Integers emit as
+  BigInt and the pattern emitted a bare decimal, so `_s === 0` is false for
+  `0n` and `band 0` answered through the catch-all. Both sites carry the
+  suffix now.
+- **The csharp tail-call path compared literals with
+  `object.Equals(_tco_s, 0)`**, which boxes a long against an int and is
+  therefore always false. A self-recursive function with an integer literal
+  base case NEVER TERMINATED: the probe hung until the `L` suffix was
+  emitted. Nothing in the tree had run one, which is why a hang this total
+  was invisible.
+- **A match whose only catch-all is GUARDED had no exit.** Falling out of the
+  if-chain re-enters `while (true)` with the parameters unchanged, so the
+  three tail-call paths now raise rather than spin.
+
+The tail-call arm is `docs/Probes/plug-tco-guard.codex`: `walk` carries a
+guarded arm that fires on every call if the guard is dropped, so the truth is
+10/999/7 and a dropped guard answers 999 first. Measured before the fix:
+python emitted a second `else:`, a SyntaxError; javascript answered 999.
+It is NOT wired to any harness -- run it by hand through `run-plug.ps1`.
+
+**The DDC arm was re-proven** after the csharp change (the emitted compiler
+grew 4,674 bytes from the new non-exhaustive raise): the arm builds clean and
+`ddc-witness.ps1` HOLDS, 0 bytes differing outside the signature region.
+
+**Still open: the ~40 text plugs not wired to the oracle.** They are presumed
+to drop guards on both paths, and nothing measures them.
 
 ## 1.45 -- riscv answers False for `approx neg lt neg`, and it is the f32 COMPARISON path, not the arithmetic one
 
@@ -770,8 +825,8 @@ What remains open:
      its BODY, discarding the parameter binding, and the apply then wraps
      the result as if it were a function. `FunTy` is `integer(8)` for the
      same reason. That wants its own stage and has not been started.
-  5. **Statements in expression position. THE EFFECTFUL-DEF HALF IS DONE
-     (val, 2026-08-17); the builtin half is still open.**
+  5. **Statements in expression position. DONE (val 2026-08-17, reek
+     2026-08-19). One hazard is left and it is named at the end.**
 
      Done: `fort-is-effectful` now sees an effectful def with parameters.
      **The first attempt was wrong and is worth the next reader's minute.**
@@ -796,13 +851,99 @@ What remains open:
      are BYTE-IDENTICAL to stage 4**, which also says plainly that nothing
      in `codex/plugs/test-input/` exercises this stage at all.
 
-     Still open. The BUILTINS are unchanged: `print-line-uni` emits
-     `print *, ...`, `process-exit` emits `stop`, `close-file` emits
-     `close(...)`, and `fort_open_file`/`fort_write_file` are called for
-     effect, all through `fort-emit-expr`, so any use in a value position
-     is still a syntax error. And an effectful def used in a VALUE position
-     (`x <- shout msg`) now emits `x = shout(msg)`, calling a subroutine as
-     a function; that shape was already wrong and this did not fix it.
+     **THE BUILTIN HALF IS DONE (reek, 2026-08-19), and the statement path
+     had a second defect that only a control caught.** Four builtins were
+     statement-shaped: `print-line-uni` emitted `print *, ...`,
+     `print-error-uni` `write(0, '(A)') ...`, `close-file` `close(...)`,
+     `process-exit` `stop`. Fortran has no expression statement, so each was
+     legal exactly where the emitter happened to be emitting a statement and
+     a syntax error everywhere else. They now go through prelude FUNCTIONS
+     (`fort_print_line`, `fort_print_error`, `fort_close_file`,
+     `fort_process_exit`), which is this campaign's standing method, and
+     `fort-emit-call-or-expr` keeps the statement form in statement position
+     so nothing that worked changed.
+
+     **`fort_open_file` and `fort_write_file` were named here and were never
+     part of the defect.** Both are prelude functions with a result and are
+     legal in value position; the row generalised over the list.
+
+     Subject: `docs/Probes/plug-effect-value-subject.codex`, three shapes
+     that put an effect where Fortran wants a value, verified against
+     x86-64 (`one two three 6`). Statement-shaped builtins in value
+     position: **3 to 0**.
+
+     **The control found that `let ... in` in an act block DROPPED EVERY
+     STATEMENT AFTER IT, silently.** `fort-emit-statement` had no `IrLet`
+     arm, so the whole tail of the block fell to `fort-emit-expr`, which
+     descends an `IrLet` to its innermost body and discards the rest. Three
+     of the eight stock inputs were losing statements: `record` emitted 1
+     print of 3, `partial` 1 of 3, `lambda` 3 of 4. It was invisible while
+     the surviving print was accidentally still legal, and the builtin
+     change is what exposed it, which is the argument for running the stock
+     inputs as a containment control rather than only the probe. The arm
+     mirrors `fort-emit-assign`'s, which had it all along. Containment:
+     five of eight outputs BYTE-IDENTICAL, and the other three only GAIN
+     lines, 9 added and 0 removed or rewritten.
+
+     **THE REMAINING THREE ARE DONE (reek, 2026-08-19), and they were one
+     defect wearing three faces.** An effectful def was emitted as a
+     SUBROUTINE and then called as a function (`a = bind_print('one')`
+     against `subroutine bind_print`); its body's final value sat as a bare
+     expression statement (`1_8` on a line of its own), because a subroutine
+     has no result to assign to; and nothing declared an act bind, so `r <-
+     e` emitted `r = ...` against a name Fortran had never been given.
+
+     `fort-is-effectful` decided on the effect ROW alone and never asked
+     what the def RETURNS. It now asks: `fort-result-is-nothing` walks past
+     the parameters and through any `EffectfulTy` wrapper, and only a def
+     that is effectful AND answers `NothingTy` stays a subroutine.
+     Everything else takes the function path, which already assigned the
+     result and already collected declarations. `fort-collect-lets` gained
+     an `IrAct` arm so an act BIND is declared like a `let`, and the
+     subroutine and program bodies call `fort-emit-let-decls`, which ran on
+     the function path only.
+
+     **The discriminating arm is a written probe, and the stock inputs
+     could not have supplied it.** Nothing in `codex/plugs/test-input/`
+     defines a unit-returning effectful def: module subroutines across the
+     eight outputs are **0 before and 0 after**, so the stock set cannot
+     tell an emitter that asks what a def returns from one that answers the
+     same for every effectful def. `shout : Text -> [Console] Nothing` stays
+     `subroutine shout` and is called `call shout('unit')`, beside
+     `counted : Text -> [Console] Integer` which becomes a function.
+
+     Containment: five of the eight outputs identical, and the other three
+     gain ONLY the declarations they were missing (`integer(8) :: g`,
+     `type(cx_Point) :: p`, `integer(8), allocatable :: mapped(:)`), 4 added
+     and 0 removed. The probe now emits legal Fortran end to end.
+
+     **A REGRESSION I SHIPPED IN 17389 AND FOUND MYSELF, plus the gap it
+     uncovers.** `is-proc` is decided in TWO places and I changed one:
+     `fort-emit-regular-def` asked the new question and `build-arity-map`
+     still asked the old one, so `counted "x"` in statement position emitted
+     `call counted(...)` against a def that was now a FUNCTION. Both sites
+     ask the same question now (main 17404), and the eight stock outputs are
+     byte-identical across that fix, which is what says the arity map's
+     answer was reaching nothing else.
+
+     Fixing it exposes a real hole rather than closing one. **Fortran has no
+     legal form for a statement that calls a function and discards the
+     result**, and the emitter now emits a bare `counted('discard')`, which
+     is not a statement. `call` was only ever right because the def was a
+     subroutine by construction and could not return anything. The shapes
+     are genuinely exclusive: pre-17389 statement position was legal and
+     value position was not, now it is the other way round, and no single
+     emission serves both. It wants a generated subroutine wrapper
+     (`counted_s`) called with `call`, or a typed discard variable declared
+     per scope. `counted "discard"` is in the probe so the gap has a
+     subject.
+
+     **One hazard the builtin change creates, and it is worth stating
+     plainly.** An
+     `if` in value position emits `merge(a, b, c)`, and `merge` evaluates
+     BOTH arguments, so two effectful arms both run. That shape used to be
+     a syntax error, which is loud; it is now compilable and wrong, which is
+     quiet. It wants the same treatment stage 8 gave statement position.
   6. **Array constructor type specifications. DONE (val, 2026-08-17), and
      it was found by AUDITING THE EMITTED OUTPUT rather than by guessing
      the next stage.** Two illegal forms, both closed by one change.

@@ -36,8 +36,9 @@ that gate in its own step.
 
 A step is `<pane>-step : ..., sc, clicked -> Integer`: it handles ONE event,
 paints if it needs to, and answers **0 to close, 1 to stay open, a NEGATIVE
-number to stay open without the frame restore, and anything else as a SCANCODE
-to dispatch after closing**. The scancode answer is the launcher's, which does
+number to stay open without the frame restore, `desk-step-hide` to leave the
+pane ALIVE and return to the desk, and anything else as a SCANCODE to dispatch
+after closing**. `desk-step-hide` is 1,000,000, which no scancode can reach. The scancode answer is the launcher's, which does
 not merely close but names the app to open; it is unambiguous rather than a
 convention, because every scancode `desk-dispatch` tests is 2 or more, 1 is Esc
 and already means close, and 0 is no key. The negative answer is Files', and
@@ -149,6 +150,88 @@ it is measured:
   and is gone within the second. Under a loop pane it survived, because the
   desk was not running to overwrite it.
 
+## 0.5 An app may now stay ALIVE while you use another one, since 2026-08-19
+
+**Files, and since 2026-08-19 the two 3D panes.** Tab in the Files listing answers
+`desk-step-hide`, which returns to the desk WITHOUT closing: the focus cell
+goes to none, the record is carried through untouched, and nothing is
+restored. Pressing `f` again re-enters through `desk-files-focus`, which
+repaints from the existing `FilesState` rather than calling `desk-files-open`.
+Measured: Files left at `ESP:/EFI/`, the Calculator opened and closed, `f`
+again, and the pane comes back at `ESP:/EFI/`. The prediction that would have
+falsified it was written first, and it is that the capture reads `ESP:/` with
+four entries and the selection at 0.
+
+**The mark stack is what makes it correct, and the LIFO is not negotiable.**
+`desk-mark-cell` is one mark and one mark can only free everything. Keeping an
+app alive means the frontier at each open is remembered: cell 20 holds a
+stack of `(focus id, mark)` pairs pushed by a heavy pane's `-open`. On close
+the pane's entry is marked DEAD rather than popped, then every dead entry on
+TOP is popped and the lowest mark among them restored. An app that quits under
+a live one therefore keeps its bytes until the app above it quits, which is
+the cascade paying them all back at once. When the stack empties the close
+restores to `desk-mark-cell` exactly as it always did, so a single-app session
+is byte-for-byte the behaviour that shipped before.
+
+**The cost, measured, because it is real.** Each hide-and-return costs a desk
+root: heap frontier `0x672848` after one switch against `0x6a3a18` after ten,
+so **22,352 bytes per switch** while the app stays alive. It is all reclaimed
+when the app finally closes: frontier `0x645ce8` and desk mark `0x63fda8` are
+bit-identical after one switch-then-close and after ten. So this is bounded by
+switches-while-open at a human's rate, not by time, and it is the same
+per-visit root cost section 1 already describes.
+
+**The two 3D panes joined on 2026-08-19 and are a different shape from Files.**
+Scene and Fish share `da-scene` and share `gsc-step`, so one change wired both.
+Three things are worth knowing before wiring another pane against this
+precedent:
+
+- **Re-entry needs no repaint of the pane itself.** `gsc-step` renders a whole
+  frame every step, so `desk-scene-reenter` only redraws the desk CHROME and
+  hands focus back. The chrome redraw is not optional: the intervening app
+  paints outside the 3D viewport, and the scene never touches those pixels.
+- **Tab must release the GPU viewport clip.** `gsc-step` answers
+  `gsc-step-hide` from an arm that first calls `gs-viewport-release`, exactly
+  as its Esc arm does. Leaving the clip armed would confine whatever draws
+  next to the hidden pane's rectangle. `gsc-step-hide` is 2 and not
+  `desk-step-hide`, because `GopScene` cannot cite `GopDesk`; `desk-scene-step`
+  maps the one to the other.
+- **Two panes over one field means the loser's entry must be killed.** Opening
+  Fish while Scene is alive overwrites `da-scene`, so the Scene's state becomes
+  unreachable while its stack entry is still LIVE, and a live entry nothing can
+  kill is the exact condition that stops every later close from reclaiming.
+  `desk-scene-open` kills the sibling's entry first. Measured: Scene opened,
+  hidden, Fish opened, Fish closed leaves the frontier at `0x645ce8`, which is
+  the same figure a single open-and-close leaves. Without the sibling kill that
+  arm strands 8.2 MB for the rest of the session.
+
+**A hidden 3D pane costs 8,215,112 bytes**, measured as the frontier with one
+Scene alive and hidden (`0x0e1b6e8`) against a desk that never opened one
+(`0x645ca0`). That is its render target, colour and depth at the viewport size,
+and it is not reducible while the pane is alive: freeing it IS closing the
+pane. A switch-away-and-back round trip costs a further 166,720 bytes. All of
+it comes back on close, and it does not accumulate: one open-and-close, two
+open-and-close, and two switch cycles then close all leave the frontier at
+`0x645ce8`.
+
+**Edit joined on 2026-08-19 too**, and it is the pane where wiring the stack
+turned up a defect that had nothing to do with the stack: see "The one pane
+this does not fit" in section 3 for the dangling 9 MB buffer and its fix. Tab
+answers `ged-step-hide` only in the list and edit modes; `big` and `nofat` are
+dead ends the user leaves with Esc and there is nothing in them to keep.
+Re-entry repaints from `EditState` through `ged-reenter`, which picks the list
+paint or the editor repaint by `ed-mode`.
+
+**The Browser does NOT participate yet**, and its `-open` clears the stack
+rather than pretending to. Opening it is still the full reset it always was:
+every live app is dropped and the next close restores to the base mark. That
+guard is not decoration. Without it a heavy open leaves a live entry on the
+stack that nothing will ever kill, the top never becomes dead, and **no close
+reclaims anything for the rest of the session**. Wiring it means giving it a
+`-focus` that repaints from its own state, and the Browser is the delicate one:
+`gbr-new` and `gbr-first-paint` are already split for the reason section 0
+records.
+
 ## 1. The desk never unwinds
 
 A pane does not return to the desk. It tail-calls `desk-loop` again, and
@@ -193,7 +276,7 @@ parameter.
 | 8 | `desk-second-cell` | last RTC second the taskbar clock painted |
 | 12 | `desk-focus-cell` | which app the desk is stepping (0 none, 1 Monitor, 2 Calendar, 3 Appearance, 4 Calculator, 5 Clock, 6 Programs, 7 Diffusion, 8 Issues, 9 Console) |
 | 16 | (bare literal) | the Monitor pane's repaint second |
-| 20 | -- | free |
+| 20 | `desk-marks-cell` | pointer: the app mark stack (val, 2026-08-19) |
 | 24 | (bare literal) | pointer: the calculator's state block |
 | 28 | `desk-edit-cell` | pointer: the editor's state block |
 | 32 | (bare literal) | the tracker's filter |
@@ -205,9 +288,10 @@ parameter.
 | 56 | `dk-adorn-cell` | adornment bits |
 | 60 | `desk-clock-cell` | pointer: the clock pane's state block |
 
-**Two cells are free (0 and 20). Announce before you take one**, the way the
-file claims table in `docs/PM/CurrentPlan.md` asks. Cell 12 was taken by val on
-2026-08-18 for the focus id; the count above said three until then. Two agents took cell 48 independently on
+**One cell is free (0). Announce before you take it**, the way the file claims
+table in `docs/PM/CurrentPlan.md` asks. Cell 12 was taken by val on 2026-08-18
+for the focus id and cell 20 by val on 2026-08-19 for the mark stack; the count
+above said three, then two. Two agents took cell 48 independently on
 2026-08-11; each change was green alone and the collision only surfaced in the
 merge, because nothing in the tree cross-checks this block.
 
@@ -260,18 +344,33 @@ number of visits.
 
 ### The one pane this does not fit, and why
 
-`desk-edit` has NO restore, deliberately. `ged-init` allocates 8 MB plus 1 MB on
-first use and parks both pointers in cell 28, which is persistent, so restoring
-would free the memory and leave the cell pointing at it. The fix belongs in
-`GopEdit` -- allocate on entry and release on exit -- or the block moves into
-`desk-run`, which costs 9 MB at boot for a pane that may never be opened.
-`GopConsole` had the same shape at about 1 KB and took the cheap way out.
+`ged-init` allocates 8 MB plus 1 MB on first use and parks both pointers in cell
+28, which is persistent, so a restore over them frees the memory and leaves the
+cell pointing at it. This section said the Edit pane had no restore and was
+therefore safe. **It was not: the restore was always happening.**
 
-The 9 MB itself is one-time: `ged-ensure` is idempotent. What that pane pays on
-EVERY visit is the root plus whatever `ged-run` allocates outside its own inner
-brackets, `gfat-mount-esp` and the directory listing among them, and **that
-figure has never been measured.** Until it is, "Edit is the unfixed one" is a
-statement about the mechanism and not about the size.
+`ged-init` runs from `desk-edit-open`, which is ABOVE the base mark, so both
+close paths restore over the buffer, and `ged-ensure` (`GopEdit.codex:49`) only
+allocates when the pointer is zero. The next Edit session would therefore write
+through an address the bump allocator had already handed to something else.
+Measured 2026-08-19: an Edit pane alive and hidden holds **9,598,200 bytes**,
+and after it closes the frontier is 72 bytes over a desk that never opened one,
+so the 9,437,184 that `ged-init` allocates is demonstrably reclaimed.
+
+**Both close paths now zero the pointer when the restore target is at or below
+it**, so the next open re-runs `ged-init`. The arm: open Edit, close it, open it
+again and hide it, and the frontier reads `0x0f6d1e0`, which is the same figure
+a FIRST session gives (`0x0f6d198`) plus the standing 72-byte offset. Had the
+pointer survived, the second session would have skipped `ged-init` and the
+reading would have been about 9.4 MB lower, so the two outcomes could not be
+confused. The cost is one re-allocation per Edit session, of memory the close
+reclaims anyway.
+
+**The 9 MB is therefore no longer one-time**, and the sentence saying it was
+rested on `ged-ensure` being idempotent, which is true of the function and was
+never true of the lifetime. Multitasking is what made this urgent rather than
+lucky: before an app could stay alive, the reused region was merely stale, and
+now it can belong to a LIVE pane.
 
 **So the test before adding a restore to a pane: does anything it calls park an
 allocation in a cell?** Grep the pane's chapter for `poke-32 <state> <n>` with
@@ -328,8 +427,9 @@ model of the split.
   that omits it silently loses the screenshot key, which is also how flights
   are photographed.
 - **Scancodes are a shared namespace.** Taken today: 4, 16, 18, 20, 23, 25, 30,
-  32, 33, 37, 38, 46, 48, 50, plus 1 for Esc and 88 for F12. Check
-  `desk-dispatch` and `dk-style-key` before choosing.
+  32, 33, 37, 38, 46, 48, 50, plus 1 for Esc, 15 for Tab (leave the pane alive,
+  section 0.5) and 88 for F12. Check `desk-dispatch` and `dk-style-key` before
+  choosing.
 - **A launcher row is not free.** `gpr-split` in `GopPrograms` is an ENTRY
   INDEX that must land on a group boundary, so inserting before it moves the
   cut and the second column loses its heading. Appending at the end is free.
