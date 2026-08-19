@@ -63,7 +63,7 @@ Section: Keywords and Sanitization
  are the same identifier -- so these RENAME instead. X86_64Boot binds a
  chain st, sta, stb, stc, std, ste; the sixth one is `std`.
 
-  zig-prelude-decls : List Text = ["std", "main", "cx_heap", "cx_hp", "cx_arena_state", "cx_gpa"]
+  zig-prelude-decls : List Text = ["std", "main", "cx_heap", "cx_hp", "cx_arena_state", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest"]
 
   is-zig-prelude-decl : Text -> Boolean
   is-zig-prelude-decl (s) =
@@ -806,15 +806,15 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "list-push", emit = \args ctx d ty -> "cx_ll_push(" & zig-list-arg-text args 0 1 ctx d & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-snoc", emit = \args ctx d ty -> "cx_ll_push(" & zig-list-arg-text args 0 1 ctx d & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-insert-at", emit = \args ctx d ty -> "cx_ll_insert_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
-    ZigBuiltinEmitter { name = "__deck-enter", emit = \args ctx d ty -> "{}" },
-    ZigBuiltinEmitter { name = "__deck-exit", emit = \args ctx d ty -> "{}" },
+    ZigBuiltinEmitter { name = "__deck-enter", emit = \args ctx d ty -> "cx_deck_enter()" },
+    ZigBuiltinEmitter { name = "__deck-exit", emit = \args ctx d ty -> "cx_deck_exit()" },
     ZigBuiltinEmitter { name = "__list-with-capacity", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "text-compare", emit = \args ctx d ty -> "cx_text_compare(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "char-to-text", emit = \args ctx d ty -> "cx_char_to_text(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
-    ZigBuiltinEmitter { name = "__deck-pos", emit = \args ctx d ty -> "0" },
+    ZigBuiltinEmitter { name = "__deck-pos", emit = \args ctx d ty -> "cx_deck_pos()" },
     ZigBuiltinEmitter { name = "__deck-set", emit = \args ctx d ty -> "cx_deck_set(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "subj-deck-record", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "char-at", emit = \args ctx d ty -> "cx_cce_to_cp(cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & "))" },
@@ -896,29 +896,29 @@ Section: Name Mapping
    zig-name : Text
   }
 
- The deck names answer 0 because this target has no deck: allocation is
- page_allocator and the stack is whatever zig-main asks for, so the
- frontier is nowhere and nothing is ever short of it. __heap-save reads
- the arena bump pointer (cx_hp), which the buffer builtins share -- a
- buffer address minted by __heap-save must be one cx_buf_write_byte can
- dereference. The pointer starts at 0 where bare metal's is a large
- address, so the two arms agree on every offset and differ on the
- absolute value; Lowering's saturation guard reads that absolute value,
- and with a near-0 frontier answers "keep going", which is true here.
+ __heap-save reads the arena bump pointer (cx_hp), which the buffer
+ builtins share -- a buffer address minted by __heap-save must be one
+ cx_buf_write_byte can dereference. The pointer boots at bare metal's own
+ heap base (boot does mov r10, 6291456), because the absolute value is
+ observable: the depot's arith-narrow-proven asserts __heap-save > 0 as a
+ structural fact. The deck names call the prelude's real deck for the
+ same reason -- deck position is observable, and the deck-*-contract
+ subjects print it.
 
- This is a semantic choice rather than a translation, so it is worth being
- clear that it stays honest: bare metal decides saturation from real
- memory, and a subject that saturates there and not here diverges in the
- dump the oracle diffs. The choice is checked, not assumed.
+ One divergence remains and stays honest: cx_hp moves only under
+ __heap-advance and __heap-restore, while bare metal's frontier moves on
+ every allocation, so a subject that saturates there does not saturate
+ here and diverges in the dump the oracle diffs. The choice is checked,
+ not assumed.
 
   zig-name-map : List ZigNameEntry =
    [ZigNameEntry { codex-name = "True", zig-name = "true" },
     ZigNameEntry { codex-name = "False", zig-name = "false" },
     ZigNameEntry { codex-name = "Nothing", zig-name = "null" },
-    ZigNameEntry { codex-name = "__deck-pos", zig-name = "0" },
+    ZigNameEntry { codex-name = "__deck-pos", zig-name = "cx_deck_pos()" },
     ZigNameEntry { codex-name = "__heap-save", zig-name = "cx_heap_save()" },
-    ZigNameEntry { codex-name = "__deck-enter", zig-name = "0" },
-    ZigNameEntry { codex-name = "__deck-exit", zig-name = "0" }]
+    ZigNameEntry { codex-name = "__deck-enter", zig-name = "cx_deck_enter()" },
+    ZigNameEntry { codex-name = "__deck-exit", zig-name = "cx_deck_exit()" }]
 
   zig-lookup-name : List ZigNameEntry, Text, Integer -> Text
   zig-lookup-name (entries) (name) (i) =
@@ -1980,6 +1980,12 @@ Section: Act Emission
 
 Section: Apply Emission
 
+ `deck-record` is intercepted by name, the same way x86-64 and C# do it:
+ the source definition is the identity function, and codegen gives the
+ call its meaning by bracketing the ARGUMENT's evaluation in deck enter
+ and exit. The binding forces the argument to evaluate before the exit;
+ its name carries the depth so nested intercepts do not shadow.
+
   emit-zig-apply : IRExpr, ZigCtx, Integer -> Text
   emit-zig-apply (e) (ctx) (d) =
    let chain = collect-apply-chain e []
@@ -1987,7 +1993,9 @@ Section: Apply Emission
    in let args = chain.args
    in when root
     is IrName (n) (ty) (sp) ->
-     let builtin = lookup-zig-builtin n args ctx d (zig-expr-type e)
+     if n == "deck-record" & list-length args == 1
+     then zig-label d & ": { _ = cx_deck_enter(); const _dr" & integer-to-text d & " = " & emit-zig-expr (list-at args 0) ctx (d + 1) & "; _ = cx_deck_exit(); break :" & zig-label d & " _dr" & integer-to-text d & "; }"
+     else let builtin = lookup-zig-builtin n args ctx d (zig-expr-type e)
      in if text-length builtin > 0 then builtin
      else let ci = zig-find-ctor (ctx.ctors) n 0
      in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-ctor-type-args (zig-expr-type e))
@@ -2718,16 +2726,23 @@ Section: Chapter Emission
    & "fn cx_substring(s: []const u8, start: i64, len: i64) []const u8 {\n    const a: usize = @min(@as(usize, @intCast(@max(start, 0))), s.len);\n    const b: usize = @min(a + @as(usize, @intCast(@max(len, 0))), s.len);\n    return s[a..b];\n}\n"
    & "fn cx_shl(a: i64, b: i64) i64 {\n    return a << @as(u6, @intCast(b));\n}\n"
    & "fn cx_shr(a: i64, b: i64) i64 {\n    return a >> @as(u6, @intCast(b));\n}\n"
-   & "// The buffer model is the C# plug's: one flat zero-filled arena, a bump\n// pointer, and buffers as offsets into it. Reads and writes grow it on\n// demand, which matches an arena the guest zero-fills at boot.\n"
+   & "// The buffer model is the C# plug's: one flat zero-filled arena, a bump\n// pointer, and buffers as offsets into it. Reads and writes grow it on\n// demand, which matches an arena the guest zero-fills at boot. The bump\n// pointer boots at bare metal's own heap base (boot does mov r10, 6291456):\n// the absolute value is observable -- the depot's arith-narrow-proven\n// asserts __heap-save > 0 as a structural fact -- so the hosted arm answers\n// with bare metal's number, not an offset from a private zero.\n"
    & "var cx_heap: std.ArrayListUnmanaged(u8) = .empty;\n"
-   & "var cx_hp: i64 = 0;\n"
+   & "var cx_hp: i64 = 6291456;\n"
    & "fn cx_buf_want(n: i64) void {\n    const need: usize = @intCast(n);\n    if (cx_heap.items.len < need) cx_heap.appendNTimes(cx_gpa, 0, need - cx_heap.items.len) catch @panic(\"oom\");\n}\n"
    & "fn cx_heap_save() i64 {\n    return cx_hp;\n}\n"
    & "fn cx_heap_advance(n: i64) i64 {\n    cx_hp += n;\n    cx_buf_want(cx_hp);\n    return 0;\n}\n"
    & "fn cx_heap_restore(h: i64) i64 {\n    cx_hp = h;\n    return 0;\n}\n"
    & "fn cx_peek_qword(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + cx_heap.items[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"
    & "// address-of answers 0 here by X86_64Compound's own account of\n// targets without it; the argument is still evaluated so its binding\n// stays used.\nfn cx_address_of(v: anytype) i64 {\n    _ = v;\n    return 0;\n}\n"
-   & "// There is no deck here, so pointing the deck cell somewhere is a\n// no-op -- but answering a bare 0 and dropping the argument is not, since\n// the argument is a binding at the call site and zig refuses a binding\n// whose only consumer disappeared. Same shape as cx_address_of above.\nfn cx_deck_set(p: i64) i64 {\n    _ = p;\n    return 0;\n}\n"
+   & "// The deck is the C# plug's rule (_Buf.deck_enter/deck_exit): the\n// outermost enter parks the bump pointer in the bivy and swaps the deck\n// pointer in; the outermost exit swaps back. Deck position is observable\n// (the depot's deck-*-contract subjects print it), so a no-op deck is a\n// wrong answer, not a simplification.\n"
+   & "var cx_dptr: i64 = 0;\n"
+   & "var cx_bivy: i64 = 0;\n"
+   & "var cx_nest: i64 = 0;\n"
+   & "fn cx_deck_enter() i64 {\n    if (cx_nest == 0) {\n        cx_bivy = cx_hp;\n        cx_hp = cx_dptr;\n    }\n    cx_nest += 1;\n    return 0;\n}\n"
+   & "fn cx_deck_exit() i64 {\n    cx_nest -= 1;\n    if (cx_nest == 0) {\n        cx_dptr = cx_hp;\n        cx_hp = cx_bivy;\n    }\n    return 0;\n}\n"
+   & "fn cx_deck_pos() i64 {\n    return cx_dptr;\n}\n"
+   & "fn cx_deck_set(p: i64) i64 {\n    cx_dptr = p;\n    cx_buf_want(cx_dptr);\n    return 0;\n}\n"
    & "// The I/O boundary. Codex text is CCE everywhere inside -- on bare metal\n// and here alike -- so these convert at the edge and nowhere else: bytes\n// arriving become CCE, bytes leaving are already what they are. std.fs in\n// 0.16 wants an Io the generated main has no reason to carry, so this uses\n// the raw syscalls.\nfn cx_utf8_to_cce(bytes: []const u8) []const u8 {\n    var out: std.ArrayListUnmanaged(u8) = .empty;\n    var i: usize = 0;\n    while (i < bytes.len) {\n        const n = std.unicode.utf8ByteSequenceLength(bytes[i]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        const cp = std.unicode.utf8Decode(bytes[i..][0..n]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        cx_cce_frame(cx_cp_to_cce(cp), &out);\n        i += n;\n    }\n    return out.items;\n}\n"
    & "fn cx_read_file_uni(path_cce: []const u8) []const u8 {\n    const al = cx_gpa;\n    const path = cx_cce_to_utf8(path_cce);\n    const z = al.allocSentinel(u8, path.len, 0) catch @panic(\"oom\");\n    @memcpy(z, path);\n    const rc = std.os.linux.openat(-100, z.ptr, .{ .ACCMODE = .RDONLY }, 0);\n    if (@as(isize, @bitCast(rc)) < 0) @panic(\"cx_read_file_uni: cannot open\");\n    const fd: i32 = @intCast(rc);\n    defer _ = std.os.linux.close(fd);\n    var raw: std.ArrayListUnmanaged(u8) = .empty;\n    var chunk: [65536]u8 = undefined;\n    while (true) {\n        const n = std.os.linux.read(fd, &chunk, chunk.len);\n        if (@as(isize, @bitCast(n)) < 0) @panic(\"cx_read_file_uni: read failed\");\n        if (n == 0) break;\n        raw.appendSlice(al, chunk[0..n]) catch @panic(\"oom\");\n    }\n    return cx_utf8_to_cce(raw.items);\n}\n"
    & "fn cx_write_all(bytes: []const u8) void {\n    var off: usize = 0;\n    while (off < bytes.len) {\n        const n = std.os.linux.write(1, bytes.ptr + off, bytes.len - off);\n        if (@as(isize, @bitCast(n)) <= 0) @panic(\"cx_write_all: write failed\");\n        off += n;\n    }\n}\n"
