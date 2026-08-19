@@ -282,7 +282,15 @@ Section: Match
    in let cond = emit-ts-pat-cond (b.pattern) "_s"
    in let binds = emit-ts-pat-binds (b.pattern) "_s"
    in let body = emit-ts-expr (b.body) arities indent
-   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-ts-branches branches arities indent (i + 1)
+   in let taken = if ts-guard-trivial (b.guard) then "return " & body & "; "
+      else "if (" & emit-ts-expr (b.guard) arities indent & ") { return " & body & "; } "
+   in "if (" & cond & ") { " & binds & taken & "} " & emit-ts-branches branches arities indent (i + 1)
+
+  ts-guard-trivial : IRExpr -> Boolean
+  ts-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
 
   emit-ts-pat-cond : IRPat, Text -> Text
   emit-ts-pat-cond (p) (scrut) =
@@ -354,7 +362,7 @@ Section: Type Definitions
 
   emit-ts-union-members : List AVariantCtorDef, Integer -> Text
   emit-ts-union-members (ctors) (i) =
-   if i == list-length ctors then "never"
+   if i == list-length ctors then (if i == 0 then "never" else "")
    else let c = list-at ctors i
    in let sep = if i > 0 then " | " else ""
    in sep & "{ _tag: \"" & c.name.value & "\" }" & emit-ts-union-members ctors (i + 1)

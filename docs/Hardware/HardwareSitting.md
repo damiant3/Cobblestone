@@ -51,6 +51,8 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 
 | in the archive | SHA-256 | what it is |
 |---|---|---|
+| `diag2-returned-20260819.img` | `498D4A64 196F42C1 BC59E3EC 99229B51 E421FF46 1B9E7579 C4EDB60C 055CEF00` | THE SECOND GROUPED DIAG SITTING as it came back 2026-08-19, `diag.img` 601103D9 pulled with `nicring` still running. `DIAG.TXT` 4,577 bytes ends after `block` (the sink refusal took the bank with it); extracted beside it in `diag2-20260819\`. |
+| `before-diag2-20260819.img` | `1359BEE7 4C8CD913 1DAB6104 6C8F7F65 B6023BC1 FB856B49 43863F41 6E202220` | disk 2 read off by red 2026-08-19 before the second grouped diag sitting (`diag.img` 601103D9) went over it: **the 2026-08-18 `diag.img` flight as it came back**, carrying the guest-written `DIAG.TXT` (`stage=smbios ... table=#87ed6000`, the bank already transcribed in that flight's entry). |
 | `stick-before-20260811.img` | `629821CF E8A9F876 EC2A9FD9 C4C61B47 3D93B821 681DB014 5B0E6DFD D2683A03` | the ceremony boot that flew green 2026-08-05, read off disk 2 by reek on 08-11 before `a5bigflight.img` went over it. **The only copy**: `ceremonyboot.img` was never in the depot in any stream at any revision. Carries the 124-byte `IDENTITY.DAT` the guest wrote to the ESP on real ASMedia hardware. |
 | `before-asdeflight-20260813.img` | `AAEC57B9 A51E0FFD 1FD72EC2 396938B9 25538610 103DA90A 53C9FE07 932F8C56` | read off disk 2 by blu on 08-13 before `asdeflight.img` went over it. **Not a duplicate of anything already here** -- it differs from `vmxprobe-returned-20260813.img` and from every other row. Root directory holds `BOOTX64.EFI` and `SOURCE.SRC` and **no `CODEX.CDX`**, so it is a source-carrying image rather than the vmxprobe already on file. Owner unidentified; whoever recognises it should say so in this row. |
 | `vmxprobe-returned-20260813.img` | `2FCF8F98 994DFE45 7ABE6E6F BEC323F8 D6DFE479 477FA2C0 B761A90C 154AD0CE` | the VT-x flight as it came back 2026-08-13. Carries a 124-byte `IDENTITY.DAT` whose key was generated on the ASUS during the first-boot wizard: **the only copy**. Six sectors differ from what was flashed and all six are named in that flight's entry. |
@@ -137,7 +139,7 @@ same boot as the others says so and says why.
 | ~~NIC-3~~ | **ANSWERED 2026-08-15: `e1000-init` does NOT hang. It completes in 93 s, of which 92.9 are `e1000-await-aneg` burning its 1,000,000 fuel at 92.89 us per MDIO read. Aneg never reports done; the link is up anyway. `RDH` moved 0 to 15.** | blu | B2c | done |
 | NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3. **Flew 2026-08-16 and hung in `e1000-await-link`; fixed in 15588, ring question unanswered.** Needs a rebuild against a seed carrying the fix before it flies again |
 | NIC-5 | What wedged the box on 2026-08-11? | blu | nothing; it is the one open unknown | terminal by construction |
-| A8 | Does the ASUS grant the 512 MB heap the desk needs? | fester | A8, the desk build loop | none to the box, but it HALTS on refusal, so it is its own boot and nothing rides after it |
+| ~~A8~~ | **ANSWERED 2026-08-19: GRANTED.** `desk.img` at 131072 pages reached the first-boot wizard on the ASUS; the refusal colour never appeared. | fester | A8, the desk build loop | done |
 
 **Fly them in that order on one boot.** The order is not a preference: NIC-1
 must precede NIC-3 because a write destroys its control, NIC-2 must precede
@@ -333,6 +335,231 @@ are building an OS for is worth a line, not because it is scheduled.
   compared, and B2c was found and fixed entirely in the bed. A question that
   a flag can ask does not earn a sitting.
 
+## FLOWN 2026-08-19: A8, `desk.img` at `-AllocPages 131072`. GRANTED. The wizard came up; the keyboard did not.
+
+`build-output/desk.img` built `build/boot/build-option-a.ps1 -Src
+apps/works/GopBoot.codex -AllocPages 131072 -Kernel seed/Codex.cdx -Ebs
+-Uefi` on seed `E45B56F1643281ED`, SHA-256 `157852B7 46CA3D29 0A10A4C9
+6A0BF4C3 1618A221 7D1C9736 EAAC2C2E 8A3E0A7E`, copy kept as
+`D:\Projects\stick-archive\a8desk-flashed-20260819.img`. Bed arms on these
+bytes before the flash: OVMF `-MemMB 2048` painted the desk (`1A1A2E`
+65,075 of 65,536 samples, `909090`/`FFAA00`/`00FF00`/`00FFFF` the widgets),
+`-MemMB 256` painted `602010` in every sample. Flashed to disk 2 over the
+diag2 returned stick (already archived, untouched since), all bytes verified.
+
+**The reading:** the first-boot ceremony (the identity wizard) came up on the
+ASUS. That is the payload alive past the stub's heap `AllocatePages`; the
+refusal arm's DARK RED is reached only from that call's failing branch, so
+**AMI grants the 512 MB `AllocateMaxAddress` below the aperture. A8 is
+answered.** The wizard rather than the desk is expected on metal:
+`hypervisor=n` (cpu row, both diag sittings) closes the bed-only gate and an
+ESP with no `IDENTITY.DAT` runs the ceremony.
+
+**The second reading, new:** the keyboard delivered nothing in the wizard.
+The 2026-08-05 desk boot typed through the same xHCI/HID stack and the
+kbd-diag v15/v16 flights proved the pipe. Not diagnosed here; it is the
+keyboard lift in the diagnostic ladder (red), and the question for the next
+boot is whether it is the port, the 131072-page arena moving the xHCI rings,
+or the wizard's own input path. Returned stick not dumped: nothing was
+written to it (no identity was entered).
+
+**Bed arm, same bytes, same day (red):** `test-ovmf.ps1 -Img desk.img -UsbKbd
+-NoPs2 -Keys "28,28,30,48,46" -MemMB 2048` (a USB boot keyboard only, post-EBS
+HID transport, two Enters then a b c): the wizard advanced from Welcome to the
+Timezone screen. Without keys it sits on Welcome with `No key -- firmware
+keyboard in 2s. Press a key.` and `sc=0`. So the wizard's input path and the
+identity stages take keys in the bed, and the silence is the ASUS's xHCI/HID
+path with this image, where the 08-05 desk typed on the same keyboard, port and
+box (Damian). What changed on that path since 08-05 is the arena (131072
+pages) and the USB stack revisions; the keyboard lift carries it, and this
+image is its reproducer. (The `-Keys` map wants Set-1 make codes; `ret,a`
+is dropped silently and reads as a deaf guest: it was, for one run.)
+## FLOWN 2026-08-19: `diag.img` 601103D9, the second grouped sitting. PCI OK ON METAL; WORKS-9 REPRODUCED WITH A BANK (`wstage=14`, the data run); THE BANK DIED WITH IT; NICRING NEVER RETURNED.
+
+Image as the card above (SHA-256 `601103D9...`, id `a6987c1a27634c1f`, kernel
+`800A7683`). Flashed to disk 2 after `before-diag2-20260819.img` was taken;
+Damian sat once; the stick was pulled with `nicring` still gray after more
+than ten minutes and read back raw: `diag2-returned-20260819.img` (SHA-256
+`498D4A64 196F42C1 BC59E3EC 99229B51 E421FF46 1B9E7579 C4EDB60C 055CEF00`),
+`DIAG.TXT` extracted with `read-stick.ps1 -ImageFile` to
+`D:\Projects\stick-archive\diag2-20260819\DIAG.TXT` (4,577 bytes, 9
+clusters, complete, ends `END`).
+
+**The bank, where it decides something** (rows 1-5 agree with 08-18 except
+where said):
+
+    DIAG1 id=a6987c1a27634c1f kernel=800A7683D5D0B923 world=EBS cfg=2 src=stdin
+    stage=pci state=ok  devices=21 nic=00:1f.6 8086:15b8 MAP=ok   <- was BELOW3G on 08-18; 06:00.0 10ec:8168 now MAP=ok
+    stage=scene state=rendered fb=1920x1080 stride=2048 render=624x40 frame plain=5ms x42 shadow=12ms x21
+    bank=ok medium=usb cfg-file=0 ; rcp rows as built
+    stage=block state=ok risk=writes  via=USB bps=512 lba=30000 write=1 readback=1
+    END
+
+**The glass, transcribed from the photograph
+(`D:\Projects\stick-archive\diag2-20260819\20260819_042116.jpg`, 4000x3000;
+rows 0-3 and the five passive stages agree with the bank and are not
+repeated; digits read off a photograph, the bank is authoritative where both
+exist):**
+
+    block ok  via=USB bps=512 lba=30000 write=1 readback=1
+    sink write-refused  size=2745998 read=0 bad=0 shift=0 wstage=14          (red)
+    nicsit ok  part 0:31.6 verdict=ok mmio=3745513472
+      poll 1000000 empty=32525us tick100k=3252us hpet-hz=23999999 (bed 13034us / 1303us) +more in bank
+    nicinit ok  part 0:31.6 ctrl0=1573440 pcie=0 mac=y link=1 rdh=0 rdt=15
+      s7 setup-rx ret=0 us=14; s8 setup-tx ret=0 us=14; s9 phy-bring-up ret=0 us=3880441; s10 await-link ret=1 us=35 +more in bank
+    nicring running                                                          (grey, for more than ten minutes; pulled)
+
+Two numbers on that glass matter beyond the rows. `nicsit` poll
+`32,525 us` per million empty polls against 32,606 on 2026-08-14: the
+calibration transfers to the third decimal across sittings. And `nicinit`
+completed in about **3.9 s** on this boot (`s9 phy-bring-up 3,880,441 us`,
+`s10 await-link 35 us`, link already up), NOT the 93 s of 2026-08-15: the
+budgeted stage does not burn the aneg fuel, so the 93 s is the RAW
+`e1000-init`'s, which is exactly what `nicring` then called a second time.
+`ctrl0=1573440` is `0x180240`, the same CTRL the 08-13 ASDE rows read.
+
+**What it settles.**
+
+1. **`pci ok` on metal.** The I/O-BAR fix (08-18, root) holds on the box
+   whose RTL8168 produced the false `BELOW3G`; every memory BAR is in the
+   3-4 GB window. The "mapping fix before any driver" verdict is gone for
+   this box.
+2. **WORKS-9, first time with a number on it.** The one-sector block write at
+   LBA 30000 succeeds and reads back; the bank's own small writes succeed
+   twice (after the passive stages and after `block`); the 2.7 MB streamed
+   write is refused at `wstage=14` = `gfat-w-data` (`GopFat16.codex`,
+   `gfat-big-commit`: `gfat-write-runs` returned fewer sectors than the
+   5,364 asked). So the medium accepts single-sector and small multi-sector
+   writes and refuses somewhere inside a long run. The row does not carry
+   HOW FAR the run got or the MSC completion code of the refusing transfer;
+   that is the next instrument (below).
+3. **The bank died with the sink.** `DIAG.TXT` ends after `block`: the
+   rewrite after `sink` and every later one did not land, so the sink,
+   nicsit, nicinit rows exist only on the glass. Two readings fit and the
+   bank cannot tell them apart: the rewrite was attempted and refused (the
+   MSC device left in a state where every later bulk-out fails, which is
+   the 08-13 "second write" shape), or the rewrite was never reached. Either
+   way the design's assumption that a refused stage leaves the previous bank
+   intact held (it did), and its assumption that later stages still bank did
+   not. The photograph is the record for rows 7-9, exactly as the channel
+   table says it must be.
+4. **`nicring` is not bounded on this box.** `DiagNicRing.codex:99` calls
+   the raw `e1000-init` a second time (after `nicinit` already brought the
+   part up with HPET budgets); on the I219-V that is the 93 s aneg fuel burn
+   again and, with the link dropped by the reset, the four-million-read
+   `await-link` spin at ~93 us per read. Damian waited more than ten minutes
+   and pulled; whether it would have returned at ~8 min or never is not
+   measured. The stage must reuse the device `nicinit` initialised or use
+   `na-link-wait`; a stage with no clock is the NIC-4 lesson again.
+
+   **CORRECTED 2026-08-19 (blu, main 17357), and the correction changes what
+   the next flight has to look at.** The mechanism above is real but it is
+   reachable only where `hpet-ticks-per-second` answers zero or less. Both
+   loops it names are the COUNT FALLBACKS: `e1000-await-aneg` takes the
+   1,000,000-iteration branch and `e1000-link-wait` the 4,000,000-read
+   `e1000-await-link` only when `rate <= 0`. With a usable rate the same path
+   is budgeted end to end and the whole stage is about ten seconds -- aneg
+   3 s (`e1000-aneg-ms`), `e1000-link-wait` 5 s (`e1000-link-window-ms`), two
+   listens at 1.2 s. **So a ten-minute grey row and a good clock do not fit
+   together, and the bank could not say which held**, because everything the
+   stage knew was banked only on return and it never returned.
+
+   The stage no longer calls `e1000-init` (rings from the same primitives,
+   no reset, link through `na-link-wait`, which tests its deadline every
+   iteration where `e1000-link-wait` tests it once per 4096 reads), the RDH
+   write and read-back run FIRST and are in the arrival row, and the rate is
+   banked with them. A stage that finds no clock now says `no-hpet` and
+   returns. **Next flight: read `hpet=` in the nicring arrival row before
+   anything else.** If it is a sane rate, the ten minutes had a cause nobody
+   has named yet and the count fallbacks are not it.
+
+**What comes next, each a stage change, none a flight:**
+
+- ~~`sink` banks `wr=<sectors written>` and the MSC completion code of the
+  refusing transfer, and the ladder tries ONE small bank write after a
+  refused big one and banks whether it landed (that separates reading 3's
+  two explanations next time). Owner: reek (WORKS-9), in the stage and in
+  `GopMsc`'s recovery path; bed arm: a `-usb-bot-drop` at a sector index
+  inside a long run.~~ **DONE 2026-08-19 (reek).** The sink row carries a
+  second line, `wr= cc= lba= rty= ph= after=`. Nothing new had to be banked
+  except `wr`: the MSC layer already held the completion code, the failing
+  LBA, the retry verdict and the phase in cells 81/86/87/82, and no row ever
+  read them out. `gfat-cell-written` (88) is the one new cell. Bed arm
+  `sink-drop` in `diag-arm.ps1`, and `after` is calibrated in both
+  directions (it answers 1 when the write lands).
+
+  **The bed does not reproduce the bank death, and that is the finding.**
+  With four consecutive transfer events swallowed inside the data run the
+  sink refuses exactly as it did on metal -- `wr=0 cc=256 lba=3574 rty=2
+  ph=1`, so the run wrote NOTHING and the medium answered no completion at
+  all -- and `after=0`, the immediate small write refused with it. Then the
+  bank rewrite AFTER that stage lands anyway and `DIAG.TXT` comes back whole,
+  60 rows against the serial's 60. So the wedge here is transient and the
+  ASUS's was not: reading 3's "the medium is wedged" is too weak to explain
+  the metal bank, and whatever killed it outlasted a stage boundary. The next
+  metal reading has `after` to settle it from the glass.
+
+  **One drop is always recovered** (`rty=3`, the run completes), which is why
+  no bed had ever produced a refused write; `-usb-bot-drops K` exists now for
+  that reason and the index picks the state (300 recovers, 500 refuses, 1000
+  writes and fails the readback).
+- `nicring` reuses `nicinit`'s device or budgets every wait; banks
+  `rdh-writable` BEFORE the listen so the NIC-4 question is answered even
+  if the listen hangs. Owner: blu.
+- The step-2 lifts still not aboard: A8, GOP largest mode + SetMode, xHCI
+  truth, keyboard, MSC align, B3, ASDE. Red.
+## FLEW (see the entry above); the pre-flight card for `diag.img` 601103D9, the second grouped sitting. Ten stages, one boot, the default ladder.
+
+**The image.** `build/boot/diag.img`, SHA-256
+`601103D99A9F90A4F87D80490719C373CCAB10E8C58CA2CF466E047E126EEB60`, payload
+id `a6987c1a27634c1f`, kernel `800A7683D5D0B923` (the depot seed at main
+17244), `diag-src-cl=17237`, `-AllocPages 32768`, no `DIAG.CFG`: the default
+ladder IS the sitting. Rehearsed with `build/boot/diag-arm.ps1`, every arm in
+both beds, before it flies; the `.rehearsed` line is the proof and
+`flash-usb.ps1 -Rehearsed -ExpectHash 601103D9...` refuses anything else.
+
+**Flash (FLASH, elevated, writes disk N; dump disk N to
+`D:\Projects\stick-archive\before-diag2-20260819.img` first):**
+
+```powershell
+pwsh build/flash-usb.ps1 -Image build/boot/diag.img -DiskNumber N -SpecFit -Rehearsed -ExpectHash 601103D99A9F90A4F87D80490719C373CCAB10E8C58CA2CF466E047E126EEB60
+```
+
+Boot UEFI from the stick, Secure Boot off. Wait for the SUMMARY band and the
+heartbeat square at its right edge; the default ladder is under two minutes
+on the bed and the only long step on this box is `nicinit`'s aneg wait (93 s
+on 2026-08-15, budgeted). Photograph the page (rows 0-3 plus ten stage rows
+plus the band and the QR block). Bring the stick back; red reads `DIAG.TXT`
+with `build/read-stick.ps1 -DiskNumber N -Name DIAG.TXT` and dumps the
+returned stick to the archive before anything else touches it.
+
+**What each row should read on the ASUS, written before the boot. The
+2026-08-18 flight's bank is the control for rows 1-5; rows 6-10 have never
+flown as stages.**
+
+| # | stage | expected on this box | a different reading means |
+|---|---|---|---|
+| 1 | smbios | `ok`, board `ASUSTeK COMPUTER INC SABERTOOTH Z170 MARK 1`, cpu i7-6700K, `ram=32768MB` | anything else: the v2 handoff block regressed; compare the raw rows |
+| 2 | edid | `ok`, `SAM 05cd SyncMaster native=1920x1080 edid=1.3` | `absent` with the same monitor: the EDID protocol path regressed in the stub |
+| 3 | cpu | `ok`, family 6 model 94, `vmx=on hypervisor=n` | `hypervisor=y` is impossible here and would be a stage defect |
+| 4 | pci | **`ok`** (was `BELOW3G` on 08-18 through the I/O-BAR defect, fixed the same day), 21 devices, nic `00:1f.6 8086:15b8 MAP=ok` | `BELOW3G` again: either the fix regressed or a device other than the RTL8168 is genuinely inside 3 GB; the bank row names which |
+| 5 | scene | `rendered fb=1920x1080 stride=2048`, plain ~12 ms, shadow ~24 ms | a different stride on the same monitor is a GOP mode change to chase |
+| 6 | block | `ok via=USB bps=512 lba=30000 write=1 readback=1` | `write-refused`: the 08-13 CBW-phase shape on the ASMedia path; `readback-fail`/`mark-lost`: the write was accepted and did not land |
+| 7 | sink | **the WORKS-9 question.** `ok size=2745998 read=2745998 bad=0` closes it | `write-refused wstage=N` names the writer cell the second write dies in (sinkladder flew RED 08-11 with no bank); `bad-bytes bad=N` is a real data fault, not a refusal |
+| 8 | nicsit | `ok`, `RCTL=0` at handoff, poll ~32,600 us per million (2.5x the bed) | a changed poll figure by more than 2x is a timing-source question |
+| 9 | nicinit | `ok` with step durations; s-aneg ~93 s (08-15: aneg never reports done, link is up anyway); s10 link inside its 2 s budget | `no-link`: cable; `bar-bad`: the stage refused to touch MMIO, read the pci row first |
+| 10 | nicring | **the NIC-4 ring question.** The row banks `RDH writable` y/n and `rdh=` after, `received=`: `frames` with `received>0` on a LAN with any broadcast traffic; `quiet` with `rdh=0` and RDH writable says no frame moved | `rdh` moved with `received=0` is the 08-15 shape and now separable: writable says whether the counter or the frames moved |
+| band | `bank=ok NNNN bytes run=10 skip=0` | `no bank`: photograph the QR block; the readings are still on the glass |
+
+**Not aboard, said plainly (step 2 lifts not written):** A8 allocation (its
+own boot, `desk.img` at `-AllocPages 131072`, bed-verified both ways; a
+second stick if the back allows), largest GOP mode + `SetMode`, xHCI truth,
+keyboard, MSC align, B3 conversation, ASDE. NIC-5 off by construction.
+
+**What would falsify the instrument.** A row that reads `ok` on a stage
+whose forced arm was never run today; the `.rehearsed` line names the arm
+count and the bed ran every one on these bytes. A bank that does not end in
+`END` is truncated and says so.
 ## FLOWN 2026-08-18: `diag.img` (DiagnosticStick steps 1 and 3). THE LADDER NAMED THE BOX AND BANKED; ITS ONE RED ROW WAS ITS OWN DEFECT.
 
 Image `build/boot/diag.img` at main #3 (SHA-256 prefix `C487773C`, kernel

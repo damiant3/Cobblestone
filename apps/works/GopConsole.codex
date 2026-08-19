@@ -4,6 +4,7 @@ Chapter: GopConsole
   cites UI chapter Theme
   cites Works chapter GopFat16
   cites Works chapter DevHypervisor
+  cites Works chapter VmCompile
 
 Section: Shape
 
@@ -143,7 +144,7 @@ Section: Commands
     let h = text-length (gcon-head t)
     in if h >= text-length t then "" else substring t (h + 1) (text-length t - h - 1)
 
-  gcon-help : Text = "help  echo <text>  ls [dir]  vmx  seed  clear"
+  gcon-help : Text = "help  echo <text>  ls [dir]  vmx  seed  compile <path>  clear"
 
   gcon-vmx : Integer -> Integer
   gcon-vmx (ns) =
@@ -214,6 +215,37 @@ Section: Commands
     end
   end
 
+ The seed and the source are both held as `List Integer` at once, so the
+ command's peak is a little over nine times `CODEX.CDX` on top of whatever
+ the pane already holds. `seed` pays the larger half of that already and
+ prints what it cost.
+
+  gcon-compile : Integer, Text -> [Device.Port] Integer
+  gcon-compile (ns) (arg) = act
+    if text-length arg == 0 then gcon-push ns "compile <path>"
+    else if vmx-available == False then gcon-push ns vmx-unavailable-reason
+    else act
+      m <- gfat-mount-esp
+      if m.gm-ok == False then gcon-push ns "no FAT volume on the boot medium"
+      else act
+        s <- gfat-read-file (m.gm-vol) arg
+        if s.gf-ok == False then gcon-push ns (arg & ": cannot read")
+        else act
+          k <- gfat-read-file (m.gm-vol) "CODEX.CDX"
+          if k.gf-ok == False then gcon-push ns "CODEX.CDX: cannot read"
+          else act
+            let src = unicode-bytes-to-text (gcon-buf-list (s.gf-buf) 0 (s.gf-len) [])
+            in let p = gcon-push ns (arg & " " & show (s.gf-len) & " bytes, CODEX.CDX " & show (k.gf-len) & " bytes")
+            in let r = vm-compile-cdx (gcon-buf-list (k.gf-buf) 0 (k.gf-len) []) src vmx-read-revision-id
+            in if r.vcr-success
+              then gcon-push ns (arg & ": " & show (r.vcr-size) & " bytes")
+              else gcon-push ns (arg & ": " & r.vcr-log)
+          end
+        end
+      end
+    end
+  end
+
   gcon-exec : Integer, Text -> [Device.Port] Integer
   gcon-exec (ns) (line) =
     let cmd = gcon-head line
@@ -223,6 +255,7 @@ Section: Commands
     else if cmd == "ls" then gcon-ls ns (gcon-rest line)
     else if cmd == "vmx" then act gcon-vmx ns end
     else if cmd == "seed" then gcon-seed ns
+    else if cmd == "compile" then gcon-compile ns (gcon-rest line)
     else if cmd == "clear" then act poke-32 ns 12 0 end
     else act gcon-push ns (cmd & ": no such command") end
 

@@ -20,8 +20,8 @@ of this.
 | `vmx` probe reading `IA32_FEATURE_CONTROL` from the desk | DONE, main 14829 |
 | EPT, allocated regions, sizing refusal | DONE, main 15147 |
 | Device-path launch sets host state | DONE, main 15161 |
-| An arena big enough to hold a guest | OPEN, the only thing in the way |
-| Compile from the console | not started, a dozen lines after the arena |
+| An arena big enough to hold a guest | DONE, answered on metal 2026-08-19 (131072 pages, `HardwareSitting.md`) |
+| Compile from the console | WIRED 2026-08-19, and only half of it is PROVEN. See below |
 | Compare the result against `CODEX.CDX` on the same volume | not started |
 
 `seed/Codex.img` already carries all three of the things the demo needs, side
@@ -222,10 +222,26 @@ compiles itself.
    the bed's yes as the board's yes (L-ARENA cuts the other way here: the bed
    is now the GENEROUS one about firmware, not about size).
 
-2. **Then wire `compile <path>`.** The console already has every other piece:
-   `gfat-read-file` for both the source and `CODEX.CDX`, `gcon-buf-list` for
-   the seed conversion, `unicode-bytes-to-text` for the source, and
-   `vmx-read-revision-id`. It is a dozen lines once 1 holds.
+2. **`compile <path>` is wired (2026-08-19, `GopConsole.codex`
+   `gcon-compile`).** It mounts the ESP, reads the source and `CODEX.CDX`
+   through `gfat-read-file`, converts the source with `unicode-bytes-to-text`
+   and the seed with `gcon-buf-list`, and hands both to `vm-compile-cdx` with
+   `vmx-read-revision-id`, printing the returned size or the log.
+
+   **What is proven and what is not, because the bed cannot tell you the
+   rest.** Two arms ran under `build\desk.ps1` against `seed\Codex.img`: with
+   no argument the pane answers `compile <path>`, and with an argument it
+   answers `VT-x is locked off in firmware (IA32_FEATURE_CONTROL=1)`. So the
+   verb dispatches and the refusal fires BEFORE any file is touched, which is
+   the order the code is written in. **Everything past that refusal is
+   unexercised.** codex-vm is itself a WHP hypervisor and the guest sees no
+   VT-x, so the bed cannot reach the read, the conversion, or the launch --
+   not one of those lines has ever run. The first machine to execute them is
+   the metal, and a failure there is expected rather than surprising.
+
+   The peak cost is a little over nine times `CODEX.CDX` held as a
+   `List Integer`, plus the source, on top of whatever the pane holds. The
+   `seed` command already pays the larger half and prints what it cost.
 
 ### Road B -- call the compiler in-process. Closed as a cheap option.
 

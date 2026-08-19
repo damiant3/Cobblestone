@@ -1,0 +1,63 @@
+Chapter: PlugEffectValueSubject
+
+ An effect where Fortran wants a value: the four statement-shaped builtins in
+ VALUE position, and a def that is both effectful and value-returning. Kept
+ out of `codex/test` on purpose: that tree is a battery tier and this is a
+ probe. Truth on x86-64: `one two three unit value discard 13`.
+
+ The last shape before the print, `counted "discard"`, is the one Fortran
+ has no legal form for at all: a statement that calls a function and throws
+ the result away. It is here so the gap has a subject.
+
+ Fortran has no expression statement, so a plug that lowers an effectful
+ builtin to a Fortran STATEMENT is correct only where the emitter happens to
+ be emitting a statement. Every shape below puts one somewhere else.
+
+Section: Shapes
+
+  bind-print : Text -> [Console] Integer
+  bind-print (msg) = act
+   r <- (print-line-uni msg)
+   1
+  end
+
+  bind-error : Text -> [Console] Integer
+  bind-error (msg) = act
+   r <- (print-error-uni msg)
+   2
+  end
+
+  branch-print : Boolean, Text -> [Console] Integer
+  branch-print (c) (msg) = act
+   r <- (if c then print-line-uni msg else print-error-uni msg)
+   3
+  end
+
+ `shout` and `counted` are the discriminating pair: both are effectful, and
+ only the second returns a value. Nothing in `codex/plugs/test-input/`
+ defines a unit-returning effectful def, so the stock inputs cannot tell an
+ emitter that asks what a def RETURNS from one that answers the same way
+ for every effectful def.
+
+  shout : Text -> [Console] Nothing
+  shout (msg) = act
+   print-line-uni msg
+  end
+
+  counted : Text -> [Console] Integer
+  counted (msg) = act
+   r <- (print-line-uni msg)
+   7
+  end
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   a <- bind-print "one"
+   b <- bind-error "two"
+   c <- branch-print True "three"
+   shout "unit"
+   n <- counted "value"
+   counted "discard"
+   print-line-uni (show (a + b + c + n))
+  end

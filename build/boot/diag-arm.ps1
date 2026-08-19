@@ -24,6 +24,17 @@
 #              entry; smbios=no-table and the box row says unnamed.
 #   no-edid    codex-vm -no-edid: LocateProtocol finds no EDID; edid=absent.
 #   edid-bad   codex-vm -edid-bad: the EDID checksum is wrong; edid=bad-checksum.
+#   sink-drop  codex-vm -usb-bot-drop 500 -usb-bot-drops 4: four consecutive
+#              transfer events swallowed inside the 2.7 MB data run, which is
+#              past what the single retry recovers. sink=write-refused, and the
+#              row carries wr=0 cc=256 lba=3574 rty=2 ph=1 after=0 -- the
+#              medium refuses a SMALL write once the big one is refused. The
+#              bank rewrite AFTER the stage still lands and DIAG.TXT comes back
+#              whole, so this bed does NOT reproduce the metal bank death: the
+#              wedge here is transient and the ASUS's was not.
+#              ONE drop is not this arm: it recovers (rty=3) and the run
+#              completes, and the index decides the state (300 recovers, 500
+#              refuses, 1000 writes and fails the readback).
 #   fat-full   codex-vm with every free cluster marked bad on the disk copy:
 #              the mount and the DIAG.ID lock succeed and the WRITE is refused.
 #              bank=none naming the write stage; no DIAG.TXT. (A read-only host
@@ -302,6 +313,7 @@ $expected = [ordered]@{
     'esp-cfg'  = 'cfg-file=1, bank=ok'
     'block-oob' = 'block=write-refused (LBA past the medium), bank=ok'
     'sink-shift' = 'sink=bad-bytes (oracle shifted by one), bank=ok'
+    'sink-drop' = 'sink=write-refused, after=0 (a small write is refused straight after), and yet bank=ok with the file whole: the bed does NOT reproduce the metal bank death'
     'nic-pass'  = 'nicsit=ok nicinit=ok nicring=frames with -e1000 -e1000-nat (no card by default), bank=ok'
     'nic-nolink' = 'nicinit=no-link with -e1000-no-link; nicsit ok, nicring quiet, bank=ok'
     'nic-nomac' = 'nicinit=no-mac with -e1000-no-mac; nicsit ok, bank=ok'
@@ -369,6 +381,28 @@ foreach ($name in $names) {
             $k = New-Copy 'k-nomedium.img'
             $lines = Invoke-Vm 'no-medium' $k '' @()
             $actual['no-medium'] = Judge-Vm 'no-medium' $lines $k $false 'mount stage' $noBankStates
+        }
+        'sink-drop' {
+            $k = New-Copy 'k-sinkdrop.img'
+            $lines = Invoke-Vm 'sink-drop' $k $k @('-usb-bot-drop', '500', '-usb-bot-drops', '4')
+            $block = Get-DiagBlock $lines
+            $sink = Field $block 'stage=sink '
+            $wr = ($block | Where-Object { $_ -match 'wr=' } | Select-Object -First 1)
+            $file = Read-Bank $k 'sink-drop'
+            Write-Host "  sink-drop: $wr"
+            # The bank OPENED here (bank=ok) and then died, which is the metal
+            # shape: what fails is the rewrite AFTER the refused stage, so the
+            # file on the disk is shorter than the serial. Judge-Vm cannot
+            # express that -- its bank arm requires the two to agree.
+            $actual['sink-drop'] =
+                if ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
+                elseif ($block[-1] -ne 'END') { "(serial did not reach END; last: $($block[-1]))" }
+                elseif (-not $sink) { '(no sink stage row)' }
+                elseif (-not $sink.Contains('state=write-refused')) { "sink row is [$sink]" }
+                elseif ($wr -notmatch 'after=0') { "the refusal did not wedge the medium: [$wr]" }
+                elseif ($null -eq $file) { 'no DIAG.TXT at all; the bank never opened' }
+                elseif ($file.Count -ne $block.Count) { "DIAG.TXT has $($file.Count) rows against the serial's $($block.Count); in this bed the rewrite after a refused sink LANDS, so a short file is a change worth reading" }
+                else { $expected['sink-drop'] }
         }
         'fat-full' {
             $k = New-Copy 'k-fatfull.img'

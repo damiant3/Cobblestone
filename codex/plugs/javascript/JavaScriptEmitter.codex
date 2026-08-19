@@ -387,25 +387,49 @@ Section: Expression Emission
    else let b = list-at branches i
    in js-emit-match-branch b branches ctx i opens
 
+ An integer is a BigInt in the emitted source, and `0n === 0` is false in
+ JavaScript, so a literal pattern must carry the suffix its scrutinee has.
+
+  js-lit-pat-text : Text , CodexType -> Text
+  js-lit-pat-text (text) (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> text & "n"
+    is otherwise -> text
+
+  js-guard-trivial : IRExpr -> Boolean
+  js-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
   js-emit-match-branch : IRBranch , List IRBranch , JsCtx , Integer , Integer -> Text
   js-emit-match-branch (b) (branches) (ctx) (i) (opens) =
    when b.pattern
     is IrLitPat (text) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & "(_s === " & text & " ? " & js-emit-expr (b.body) ctx & js-emit-match-branches branches ctx (i + 1) (opens + 1)
+     in let g = if js-guard-trivial (b.guard) then "" else " && (" & js-emit-expr (b.guard) ctx & ")"
+     in sep & "(_s === " & js-lit-pat-text text ty & g & " ? " & js-emit-expr (b.body) ctx & js-emit-match-branches branches ctx (i + 1) (opens + 1)
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in if is-mktup-name name then sep & "((() => { const [" & js-emit-tuple-pat-names subs 0 & "] = _s; return " & js-emit-expr (b.body) ctx & "; })())" & js-emit-match-branches branches ctx (i + 1) opens
-     else sep & "(_s.tag === \"" & name & "\" ? " & js-emit-ctor-pattern-body subs (b.body) ctx 0 & js-emit-match-branches branches ctx (i + 1) (opens + 1)
+     in if is-mktup-name name then
+      let tup-body = "(() => { const [" & js-emit-tuple-pat-names subs 0 & "] = _s; return " & js-emit-expr (b.body) ctx & "; })()"
+      in if js-guard-trivial (b.guard) then sep & "(" & tup-body & ")" & js-emit-match-branches branches ctx (i + 1) opens
+         else sep & "((() => { const [" & js-emit-tuple-pat-names subs 0 & "] = _s; return " & js-emit-expr (b.guard) ctx & "; })() ? " & tup-body & js-emit-match-branches branches ctx (i + 1) (opens + 1)
+     else let g = if js-guard-trivial (b.guard) then "" else " && " & js-emit-ctor-pattern-body subs (b.guard) ctx 0
+     in sep & "(_s.tag === \"" & name & "\"" & g & " ? " & js-emit-ctor-pattern-body subs (b.body) ctx 0 & js-emit-match-branches branches ctx (i + 1) (opens + 1)
     is IrVarPat (name) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & "((" & js-sanitize name & ") => " & js-emit-expr (b.body) ctx & ")(_s)" & js-close-parens opens
+     in let bound = "((" & js-sanitize name & ") => " & js-emit-expr (b.body) ctx & ")(_s)"
+     in if js-guard-trivial (b.guard) then sep & bound & js-close-parens opens
+        else sep & "(((" & js-sanitize name & ") => " & js-emit-expr (b.guard) ctx & ")(_s) ? " & bound & js-emit-match-branches branches ctx (i + 1) (opens + 1)
     is IrWildPat (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & js-emit-expr (b.body) ctx & js-close-parens opens
+     in if js-guard-trivial (b.guard) then sep & js-emit-expr (b.body) ctx & js-close-parens opens
+        else sep & "((" & js-emit-expr (b.guard) ctx & ") ? " & js-emit-expr (b.body) ctx & js-emit-match-branches branches ctx (i + 1) (opens + 1)
     is IrVecPat (pats) (ty) (sp) ->
      let sep = if i > 0 then " : " else ""
-     in sep & js-emit-expr (b.body) ctx & js-close-parens opens
+     in if js-guard-trivial (b.guard) then sep & js-emit-expr (b.body) ctx & js-close-parens opens
+        else sep & "((" & js-emit-expr (b.guard) ctx & ") ? " & js-emit-expr (b.body) ctx & js-emit-match-branches branches ctx (i + 1) (opens + 1)
 
   js-emit-ctor-pattern-body : List IRPat , IRExpr , JsCtx , Integer -> Text
   js-emit-ctor-pattern-body (subs) (body) (ctx) (i) =
@@ -739,24 +763,50 @@ Section: Definition Emission
 
   js-emit-tco-match-branches : List IRBranch , Text , List IRParam , JsCtx , Integer , Boolean , Integer -> Text
   js-emit-tco-match-branches (branches) (func-name) (params) (ctx) (i) (is-first) (depth) =
-   if i == list-length branches then ""
+   if i == list-length branches then
+    (if js-tco-has-open-catch-all branches 0 then ""
+     else "        else { throw new Error(\"Non-exhaustive match\"); }\n")
    else let b = list-at branches i
    in js-emit-tco-match-branch b func-name params ctx i is-first depth & js-emit-tco-match-branches branches func-name params ctx (i + 1) False depth
+
+  js-tco-has-open-catch-all : List IRBranch , Integer -> Boolean
+  js-tco-has-open-catch-all (branches) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+   in if js-guard-trivial (b.guard) & js-tco-pat-catch-all (b.pattern) then True
+      else js-tco-has-open-catch-all branches (i + 1)
+
+  js-tco-pat-catch-all : IRPat -> Boolean
+  js-tco-pat-catch-all (p) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> True
+    is IrWildPat (sp) -> True
+    is IrVecPat (pats) (ty) (sp) -> True
+    is otherwise -> False
 
   js-emit-tco-match-branch : IRBranch , Text , List IRParam , JsCtx , Integer , Boolean , Integer -> Text
   js-emit-tco-match-branch (b) (func-name) (params) (ctx) (idx) (is-first) (depth) =
    let s-var = js-tco-scrut-var depth
    in when b.pattern
-    is IrWildPat (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
-    is IrVecPat (pats) (ty) (sp) -> "        {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
-    is IrVarPat (name) (ty) (sp) -> "        {\n            const " & js-sanitize name & " = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+    is IrWildPat (sp) ->
+     if js-guard-trivial (b.guard) then "        {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+     else "        " & (if is-first then "if" else "else if") & " (" & js-emit-expr (b.guard) ctx & ") {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+    is IrVecPat (pats) (ty) (sp) ->
+     if js-guard-trivial (b.guard) then "        {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+     else "        " & (if is-first then "if" else "else if") & " (" & js-emit-expr (b.guard) ctx & ") {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+    is IrVarPat (name) (ty) (sp) ->
+     if js-guard-trivial (b.guard) then "        {\n            const " & js-sanitize name & " = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+     else "        " & (if is-first then "if" else "else if") & " (((" & js-sanitize name & ") => " & js-emit-expr (b.guard) ctx & ")(" & s-var & ")) {\n            const " & js-sanitize name & " = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name then "        {\n            const [" & js-emit-tuple-pat-names subs 0 & "] = " & s-var & ";\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
      else let keyword = if is-first then "if" else "else if"
-     in "        " & keyword & " (" & s-var & ".tag === \"" & name & "\") {\n" & js-emit-tco-ctor-bindings subs s-var 0 & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+     in let g = if js-guard-trivial (b.guard) then ""
+        else " && (() => {\n" & js-emit-tco-ctor-bindings subs s-var 0 & "            return " & js-emit-expr (b.guard) ctx & ";\n        })()"
+     in "        " & keyword & " (" & s-var & ".tag === \"" & name & "\"" & g & ") {\n" & js-emit-tco-ctor-bindings subs s-var 0 & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
     is IrLitPat (text) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
-     in "        " & keyword & " (" & s-var & " === " & text & ") {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+     in let g = if js-guard-trivial (b.guard) then "" else " && (" & js-emit-expr (b.guard) ctx & ")"
+     in "        " & keyword & " (" & s-var & " === " & js-lit-pat-text text ty & g & ") {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
 
   js-emit-tco-ctor-bindings : List IRPat , Text , Integer -> Text
   js-emit-tco-ctor-bindings (subs) (match-var) (i) =

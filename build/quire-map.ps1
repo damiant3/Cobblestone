@@ -82,6 +82,7 @@ $QuireDirs = @{
     'Site' = 'apps\site'
     'Lens' = 'apps\lens'
     'Boards' = 'codex\boards'
+    'Product' = 'codex\product'
     'Water' = 'shaders\water'
     'Clouds' = 'shaders\clouds'
     'Terrain' = 'shaders\terrain'

@@ -282,6 +282,32 @@ and enforced property rather than a document. What is still open:
    **The four-class lattice above remains the target**; what shipped is a
    subset that refuses honestly where it cannot yet decide, and `punctual`
    already enforces the no-heap case that `none` describes.
+
+   **THIRD RUNG SHIPPED (blu, 2026-08-19, main 17299): `none` is inferred.**
+   A definition's body is walked for allocation and the answer is closed
+   under calls the way `growing` already was, so `bounded none` is refused
+   with CDX6101 when the target allocates directly or through a callee. The
+   arms are `codex/test/errors/bounded-none-exceeded` (transitive: the
+   declared function's whole body is one call) and
+   `codex/test/apps/bounded-none-accepted` (the control, which a refuse-
+   everything check would fail).
+
+   **A name in call position that is neither a definition in this unit nor a
+   builtin measured at zero bytes is read as allocating.** That is this
+   ruling's abstain-toward-refusal at the only place it can be applied here,
+   and it is why the promise is narrow: the zero-byte set is what 3.1
+   measured (the text accessors) plus the accessors `punctual` already treats
+   as safe, so a body calling any unmeasured builtin cannot declare `none`
+   today. Widening the set is a measurement, not a rule change.
+
+   **`fixed` is the one rung left and it is BLOCKED on a measurement.**
+   Separating "fixed bytes per call" from "one walk over an input" needs a
+   per-builtin allocation class, and 3.1 published the text family and
+   nothing else. CDX6103 now names only `fixed` and says so. Do not infer it
+   from the code's shape alone: a single `&` allocates in proportion to its
+   operands, so a straight-line body with no loop in it is already not
+   `fixed`, and a shape-only rule would accept exactly the case the class
+   exists to exclude.
 2. ~~**What is the instrument that keeps it honest?**~~ **THE CORPUS IS BUILT
    (blu, 2026-08-16), which answers the "before the check, not after" half.
    What it grades is still open.** `codex/test/cost/accumulator-corpus` is ten

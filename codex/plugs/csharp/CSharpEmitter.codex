@@ -390,26 +390,63 @@ Section: Tail Call Optimization
 
   emit-tco-match-branches : List IRBranch, Text, List IRParam, CsCtx, Integer, Boolean, Integer -> Text
   emit-tco-match-branches (branches) (func-name) (params) (ctx) (i) (is-first) (depth) =
-   if i == list-length branches then ""
+   if i == list-length branches then
+    (if cs-tco-has-open-catch-all branches 0 then ""
+     else "            else { throw new InvalidOperationException(\"Non-exhaustive match\"); }\n")
    else let b = list-at branches i
    in emit-tco-match-branch b func-name params ctx i is-first depth & emit-tco-match-branches branches func-name params ctx (i + 1) False depth
+
+ object.Equals boxes both sides, and a boxed long never equals a boxed int,
+ so an integer literal needs the suffix its scrutinee carries.
+
+  cs-tco-lit-text : Text, CodexType -> Text
+  cs-tco-lit-text (text) (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> text & "L"
+    is otherwise -> text
+
+  cs-tco-has-open-catch-all : List IRBranch, Integer -> Boolean
+  cs-tco-has-open-catch-all (branches) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+   in if cs-guard-trivial (b.guard) & cs-tco-pat-catch-all (b.pattern) then True
+      else cs-tco-has-open-catch-all branches (i + 1)
+
+  cs-tco-pat-catch-all : IRPat -> Boolean
+  cs-tco-pat-catch-all (p) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> True
+    is IrWildPat (sp) -> True
+    is IrVecPat (pats) (ty) (sp) -> True
+    is IrCtorPat (name) (subs) (ty) (sp) -> is-mktup-name name
+    is otherwise -> False
 
   emit-tco-match-branch : IRBranch, Text, List IRParam, CsCtx, Integer, Boolean, Integer -> Text
   emit-tco-match-branch (b) (func-name) (params) (ctx) (idx) (is-first) (depth) =
    let s-var = tco-scrut-var depth
+   in let keyword = if is-first then "if" else "else if"
+   in let guarded = cs-guard-trivial (b.guard) == False
    in when b.pattern
-    is IrWildPat (sp) -> "            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-    is IrVecPat (pats) (ty) (sp) -> "            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-    is IrVarPat (name) (ty) (sp) -> "            {\n                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & ";\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+    is IrWildPat (sp) ->
+     if guarded == False then "            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+     else "            " & keyword & " (" & emit-expr (b.guard) ctx & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+    is IrVecPat (pats) (ty) (sp) ->
+     if guarded == False then "            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+     else "            " & keyword & " (" & emit-expr (b.guard) ctx & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+    is IrVarPat (name) (ty) (sp) ->
+     let bind = "                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & ";\n"
+     in if guarded == False then "            {\n" & bind & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+        else "            " & keyword & " (((Func<bool>)(() => { " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & "; return " & emit-expr (b.guard) ctx & "; }))())\n            {\n" & bind & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name
      then "            {\n" & emit-tco-tup-let-bindings subs s-var 0 & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-     else let keyword = if is-first then "if" else "else if"
-          in let match-var = tco-match-var depth idx
-          in "            " & keyword & " (" & s-var & " is " & sanitize name & extract-ctor-type-args ty & " " & match-var & ")\n            {\n" & emit-tco-ctor-bindings subs match-var 0 & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+     else let match-var = tco-match-var depth idx
+          in let g = if guarded == False then ""
+             else " && ((Func<bool>)(() => {\n" & emit-tco-ctor-bindings subs match-var 0 & "                return " & emit-expr (b.guard) ctx & ";\n            }))()"
+          in "            " & keyword & " (" & s-var & " is " & sanitize name & extract-ctor-type-args ty & " " & match-var & g & ")\n            {\n" & emit-tco-ctor-bindings subs match-var 0 & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
     is IrLitPat (text) (ty) (sp) ->
-     let keyword = if is-first then "if" else "else if"
-     in "            " & keyword & " (object.Equals(" & s-var & ", " & text & "))\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+     let g = if guarded == False then "" else " && (" & emit-expr (b.guard) ctx & ")"
+     in "            " & keyword & " (object.Equals(" & s-var & ", " & cs-tco-lit-text text ty & ")" & g & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
 
   tco-scrut-var : Integer -> Text
   tco-scrut-var (depth) =

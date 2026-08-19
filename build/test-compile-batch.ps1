@@ -95,9 +95,14 @@ if (-not (Test-Path -PathType Leaf $Stage0)) { Write-Error "MISSING: $Stage0"; e
 
 $resolveSw.Stop()
 $batchSw = [System.Diagnostics.Stopwatch]::StartNew()
-$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @(
-    '-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '3072', '-headless'
-) -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+$startArgs = @{
+    FilePath = $script:CodexVmBin
+    ArgumentList = @('-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '3072', '-headless')
+    PassThru = $true; RedirectStandardError = $stderrFile
+}
+# -WindowStyle throws on non-Windows editions of pwsh.
+if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }
+$proc = Start-Process @startArgs
 $proc.WaitForExit(1800000)
 if (-not $proc.HasExited) { Stop-VmGraceful -ProcessId $proc.Id }
 $batchSw.Stop()

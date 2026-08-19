@@ -334,26 +334,40 @@ Section: Expression Emission
   emit-py-match-body (branches) (i) (ctx) (opens) =
    if i == list-length branches then " else (_ for _ in ()).throw(Exception(\"Non-exhaustive match\"))" & emit-py-close-parens opens
    else let b = list-at branches i
-   in emit-py-match-arm (b.pattern) (b.body) branches i ctx opens
+   in emit-py-match-arm (b.pattern) (b.guard) (b.body) branches i ctx opens
 
-  emit-py-match-arm : IRPat, IRExpr, List IRBranch, Integer, PyCtx, Integer -> Text
-  emit-py-match-arm (pat) (body) (branches) (i) (ctx) (opens) =
+  py-guard-trivial : IRExpr -> Boolean
+  py-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  emit-py-match-arm : IRPat, IRExpr, IRExpr, List IRBranch, Integer, PyCtx, Integer -> Text
+  emit-py-match-arm (pat) (guard) (body) (branches) (i) (ctx) (opens) =
    when pat
     is IrLitPat (text) (ty) (sp) ->
      let prefix = if i > 0 then " else " else ""
-     in prefix & "(" & emit-py-expr body ctx & " if _s == " & text & emit-py-match-body branches (i + 1) ctx (opens + 1)
+     in let g = if py-guard-trivial guard then "" else " and (" & emit-py-expr guard ctx & ")"
+     in prefix & "(" & emit-py-expr body ctx & " if _s == " & text & g & emit-py-match-body branches (i + 1) ctx (opens + 1)
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let prefix = if i > 0 then " else " else ""
-     in prefix & "(" & emit-py-ctor-pat-body subs "_s" body ctx & " if isinstance(_s, " & py-sanitize name & ")" & emit-py-match-body branches (i + 1) ctx (opens + 1)
+     in let g = if py-guard-trivial guard then "" else " and " & emit-py-ctor-pat-body subs "_s" guard ctx
+     in prefix & "(" & emit-py-ctor-pat-body subs "_s" body ctx & " if isinstance(_s, " & py-sanitize name & ")" & g & emit-py-match-body branches (i + 1) ctx (opens + 1)
     is IrVarPat (name) (ty) (sp) ->
      let prefix = if i > 0 then " else " else ""
-     in prefix & "(lambda " & py-sanitize name & ": " & emit-py-expr body ctx & ")(_s)" & emit-py-close-parens opens
+     in if py-guard-trivial guard
+        then prefix & "(lambda " & py-sanitize name & ": " & emit-py-expr body ctx & ")(_s)" & emit-py-close-parens opens
+        else prefix & "((lambda " & py-sanitize name & ": " & emit-py-expr body ctx & ")(_s) if (lambda " & py-sanitize name & ": " & emit-py-expr guard ctx & ")(_s)" & emit-py-match-body branches (i + 1) ctx (opens + 1)
     is IrWildPat (sp) ->
      let prefix = if i > 0 then " else " else ""
-     in prefix & emit-py-expr body ctx & emit-py-close-parens opens
+     in if py-guard-trivial guard
+        then prefix & emit-py-expr body ctx & emit-py-close-parens opens
+        else prefix & "(" & emit-py-expr body ctx & " if (" & emit-py-expr guard ctx & ")" & emit-py-match-body branches (i + 1) ctx (opens + 1)
     is IrVecPat (pats) (ty) (sp) ->
      let prefix = if i > 0 then " else " else ""
-     in prefix & emit-py-expr body ctx & emit-py-close-parens opens
+     in if py-guard-trivial guard
+        then prefix & emit-py-expr body ctx & emit-py-close-parens opens
+        else prefix & "(" & emit-py-expr body ctx & " if (" & emit-py-expr guard ctx & ")" & emit-py-match-body branches (i + 1) ctx (opens + 1)
 
   emit-py-close-parens : Integer -> Text
   emit-py-close-parens (n) =
@@ -728,26 +742,50 @@ Section: Tail Call Optimization
 
   emit-py-tco-match-branches : List IRBranch, Text, List IRParam, PyCtx, Integer, Integer, Boolean -> Text
   emit-py-tco-match-branches (branches) (func-name) (params) (ctx) (indent) (i) (is-first) =
-   if i == list-length branches then ""
+   if i == list-length branches then
+    (if py-tco-has-open-catch-all branches 0 then ""
+     else py-indent indent & "else:\n" & py-indent (indent + 1) & "raise Exception(\"Non-exhaustive match\")\n")
    else let b = list-at branches i
-   in emit-py-tco-match-branch (b.pattern) (b.body) func-name params ctx indent is-first & emit-py-tco-match-branches branches func-name params ctx indent (i + 1) False
+   in emit-py-tco-match-branch (b.pattern) (b.guard) (b.body) func-name params ctx indent is-first & emit-py-tco-match-branches branches func-name params ctx indent (i + 1) False
 
-  emit-py-tco-match-branch : IRPat, IRExpr, Text, List IRParam, PyCtx, Integer, Boolean -> Text
-  emit-py-tco-match-branch (pat) (body) (func-name) (params) (ctx) (indent) (is-first) =
+  py-tco-has-open-catch-all : List IRBranch, Integer -> Boolean
+  py-tco-has-open-catch-all (branches) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+   in if py-guard-trivial (b.guard) & py-tco-pat-catch-all (b.pattern) then True
+      else py-tco-has-open-catch-all branches (i + 1)
+
+  py-tco-pat-catch-all : IRPat -> Boolean
+  py-tco-pat-catch-all (p) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> True
+    is IrWildPat (sp) -> True
+    is IrVecPat (pats) (ty) (sp) -> True
+    is otherwise -> False
+
+  emit-py-tco-match-branch : IRPat, IRExpr, IRExpr, Text, List IRParam, PyCtx, Integer, Boolean -> Text
+  emit-py-tco-match-branch (pat) (guard) (body) (func-name) (params) (ctx) (indent) (is-first) =
    let pad = py-indent indent
+   in let keyword = if is-first then "if" else "elif"
    in when pat
     is IrCtorPat (name) (subs) (ty) (sp) ->
-     let keyword = if is-first then "if" else "elif"
-     in pad & keyword & " isinstance(_tco_s, " & py-sanitize name & "):\n" & emit-py-tco-ctor-bindings subs indent 0 & emit-py-tco-body body func-name params ctx (indent + 1)
+     let g = if py-guard-trivial guard then "" else " and " & emit-py-ctor-pat-body subs "_tco_s" guard ctx
+     in pad & keyword & " isinstance(_tco_s, " & py-sanitize name & ")" & g & ":\n" & emit-py-tco-ctor-bindings subs indent 0 & emit-py-tco-body body func-name params ctx (indent + 1)
     is IrLitPat (text) (ty) (sp) ->
-     let keyword = if is-first then "if" else "elif"
-     in pad & keyword & " _tco_s == " & text & ":\n" & emit-py-tco-body body func-name params ctx (indent + 1)
+     let g = if py-guard-trivial guard then "" else " and (" & emit-py-expr guard ctx & ")"
+     in pad & keyword & " _tco_s == " & text & g & ":\n" & emit-py-tco-body body func-name params ctx (indent + 1)
     is IrVarPat (name) (ty) (sp) ->
-     pad & "else:\n" & py-indent (indent + 1) & py-sanitize name & " = _tco_s\n" & emit-py-tco-body body func-name params ctx (indent + 1)
+     if py-guard-trivial guard
+     then pad & "else:\n" & py-indent (indent + 1) & py-sanitize name & " = _tco_s\n" & emit-py-tco-body body func-name params ctx (indent + 1)
+     else pad & keyword & " (lambda " & py-sanitize name & ": " & emit-py-expr guard ctx & ")(_tco_s):\n" & py-indent (indent + 1) & py-sanitize name & " = _tco_s\n" & emit-py-tco-body body func-name params ctx (indent + 1)
     is IrWildPat (sp) ->
-     pad & "else:\n" & emit-py-tco-body body func-name params ctx (indent + 1)
+     if py-guard-trivial guard
+     then pad & "else:\n" & emit-py-tco-body body func-name params ctx (indent + 1)
+     else pad & keyword & " (" & emit-py-expr guard ctx & "):\n" & emit-py-tco-body body func-name params ctx (indent + 1)
     is IrVecPat (pats) (ty) (sp) ->
-     pad & "else:\n" & emit-py-tco-body body func-name params ctx (indent + 1)
+     if py-guard-trivial guard
+     then pad & "else:\n" & emit-py-tco-body body func-name params ctx (indent + 1)
+     else pad & keyword & " (" & emit-py-expr guard ctx & "):\n" & emit-py-tco-body body func-name params ctx (indent + 1)
 
   emit-py-tco-ctor-bindings : List IRPat, Integer, Integer -> Text
   emit-py-tco-ctor-bindings (subs) (indent) (i) =

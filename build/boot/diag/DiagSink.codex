@@ -2,6 +2,7 @@ Chapter: DiagSink
   cites Foreword chapter TextSearch
   cites Works chapter GopFat16
   cites Works chapter GopDisk
+  cites Works chapter GopUsbMsc
   cites Diag chapter DiagStage
 
  The sink ladder from apps/works/SinkLadderProbe.codex as a stage: the
@@ -66,13 +67,38 @@ Section: The Stage
     let v = diag-cfg-value c "sink"
     in if text-starts-with v "shift=" then text-to-integer (substring v 6 (text-length v - 6)) else 0
 
-  dsk-lines : Integer, Integer, Integer, Integer, Integer -> List Text
-  dsk-lines (size) (got) (bad) (shift) (wstage) =
-    ["size=" & show size & " read=" & show got & " bad=" & show bad & " shift=" & show shift & " wstage=" & show wstage]
+ The medium's own answer to the refusing transfer is already banked by the
+ MSC layer and by the writer; nothing read it out, so the 2026-08-19 metal
+ row said only WHERE the write stopped. `after` is -1 when no small write
+ was attempted.
+
+ The snapshot is taken BEFORE the small write, because that write is itself
+ a transfer and overwrites every cell here.
+
+  DskSnap = record {
+    ds-wr : Integer,
+    ds-cc : Integer,
+    ds-lba : Integer,
+    ds-rty : Integer,
+    ds-ph : Integer
+  }
+
+  dsk-snap : Integer -> DskSnap
+  dsk-snap (dummy) =
+    DskSnap { ds-wr = xdiag-get gfat-cell-written, ds-cc = xdiag-get msc-cell-lastcc, ds-lba = xdiag-get msc-cell-fail-lba, ds-rty = xdiag-get msc-cell-retry, ds-ph = xdiag-get msc-cell-phase }
+
+  dsk-lines : Integer, Integer, Integer, Integer, Integer, DskSnap, Integer -> List Text
+  dsk-lines (size) (got) (bad) (shift) (wstage) (s) (after) =
+    ["size=" & show size & " read=" & show got & " bad=" & show bad & " shift=" & show shift & " wstage=" & show wstage,
+     "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after]
 
   dsk-finish : Text, Integer, Integer, Integer, Integer, Integer, Integer -> DiagResult
   dsk-finish (state) (colour) (size) (got) (bad) (shift) (wstage) =
-    diag-result state colour (dsk-lines size got bad shift wstage) (dsk-lines size got bad shift wstage)
+    dsk-finish-in state colour size got bad shift wstage (dsk-snap 0) (-1)
+
+  dsk-finish-in : Text, Integer, Integer, Integer, Integer, Integer, Integer, DskSnap, Integer -> DiagResult
+  dsk-finish-in (state) (colour) (size) (got) (bad) (shift) (wstage) (s) (after) =
+    diag-result state colour (dsk-lines size got bad shift wstage s after) (dsk-lines size got bad shift wstage s after)
 
   dsk-verify : Fat16Volume, Integer -> [Device.Port] DiagResult
   dsk-verify (vol) (shift) = act
@@ -87,6 +113,40 @@ Section: The Stage
     end
   end
 
+ One small write after a refused big one, and whether it landed. The
+ 2026-08-19 bank ended at the stage before this one, and two readings fit
+ it that the bank cannot separate: the rewrite was refused because the
+ medium is wedged, or the rewrite was never reached. This answers that
+ next time from the glass, which survives when the bank does not.
+
+  dsk-after-name : Integer -> Integer
+  dsk-after-name (dummy) =
+    let nb = alloc-zeroed 16 16
+    in let a = poke-byte nb 0 83
+    in let b = poke-byte nb 1 73
+    in let c = poke-byte nb 2 78
+    in let d = poke-byte nb 3 75
+    in let e = poke-byte nb 4 65
+    in let f = poke-byte nb 5 32
+    in let g = poke-byte nb 6 32
+    in let h = poke-byte nb 7 32
+    in let i = poke-byte nb 8 67
+    in let j = poke-byte nb 9 68
+    in let k = poke-byte nb 10 88
+    in nb
+
+  dsk-after : Fat16Volume -> [Device.Port] Integer
+  dsk-after (vol) =
+    let buf = alloc-zeroed 512 512
+    in let z = poke-byte buf 0 65
+    in let nb = dsk-after-name 0
+    in let mark = __heap-save
+    in act
+      ok <- gfat-write-file vol nb buf 64
+      let r = __heap-restore mark
+      in if ok then 1 else 0
+    end
+
   dsk-write : Fat16Volume, Integer -> [Device.Port] DiagResult
   dsk-write (vol) (shift) =
     let buf = alloc-zeroed (dsk-size + 512) 512
@@ -96,7 +156,14 @@ Section: The Stage
     in act
       ok <- gfat-write-file vol nb buf dsk-size
       let r = __heap-restore mark
-      in if ok == False then dsk-finish "write-refused" diag-col-bad dsk-size 0 0 shift (xdiag-get gfat-cell-write)
+      in if ok == False then act
+        let snap = dsk-snap 0
+        in let wstage = xdiag-get gfat-cell-write
+        in act
+          a <- dsk-after vol
+          dsk-finish-in "write-refused" diag-col-bad dsk-size 0 0 shift wstage snap a
+        end
+      end
       else dsk-verify vol shift
     end
 

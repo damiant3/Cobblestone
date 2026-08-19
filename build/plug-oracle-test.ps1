@@ -228,6 +228,20 @@ foreach ($p in $Plugs) {
         Write-Host "      rebuild it: codex/plugs/$($p.Name)/build.ps1 -- scoring this would test the OLD emitter"
         $fail++; continue
     }
+    # The other half of stale, and it was missing until 2026-08-19: a plug
+    # binary can be newer than every .codex beside it and still have been
+    # produced by a PREVIOUS compiler. The seed moves under a workspace on
+    # any merge-down, and nothing rebuilds a plug when it does. Measured the
+    # day this was added: all six wired binaries predated the seed file, the
+    # check above passed every one of them, and the 6/6 that run reported was
+    # scored on emitters the current compiler had never built.
+    $seedCdx = Join-Path $Repo 'seed\Codex.cdx'
+    if ((Test-Path $seedCdx) -and (Get-Item $seedCdx).LastWriteTime -gt (Get-Item $cdx).LastWriteTime) {
+        Write-Host "  $($p.Name): STALE -- the seed is newer than the plug binary"
+        Write-Host "      seed $((Get-Item $seedCdx).LastWriteTime), binary $((Get-Item $cdx).LastWriteTime)"
+        Write-Host "      rebuild it: codex/plugs/$($p.Name)/build.ps1 -- this binary was built by the OLD compiler"
+        $fail++; continue
+    }
     $exe = Get-Command $p.Exe -ErrorAction SilentlyContinue
     if (-not $exe) {
         Write-Host "  $($p.Name): SKIPPED -- '$($p.Exe)' is not on PATH, so its output cannot be run"

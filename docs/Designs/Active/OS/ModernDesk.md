@@ -1,8 +1,28 @@
 # The Modern Desk -- multitasking, a bottom taskbar, a system menu, and the 3D surface
 
 *Opened 2026-08-18 by red as a brief at Damian's direction. Design written by
-val 2026-08-18. Status: IN PROGRESS. Stages 2, 3 and 4 landed and stage 0 is
-part done; stage 1 and the multitasking stages are open on the rulings below.
+val 2026-08-18. Status: IN PROGRESS. **Stages 2, 3, 5, 6, 7, 7.5, 8 and 9 are
+DONE; stage 1 is CLOSED with no code change; stages 0 and 4 are part done.**
+All fourteen panes are steps and no pane owns a loop (stage 9, 2026-08-18).
+**Stage 10 landed 2026-08-19: a second app STAYS ALIVE.** The mark stack is
+in and Files is the pane that proves it.
+**Stage 11 landed the same day: the two 3D panes joined the stack**, so a
+hidden Scene keeps its render target and its toggles across a visit to
+another app.
+**Stage 12 landed the same day: Edit joined too**, and wiring it turned up a
+defect that had nothing to do with the stack (its 9 MB buffer was never out of
+reach of the base mark, and the second session reused a freed pointer). The
+Browser is the last unwired pane and keeps the full reset behind a guard
+(WORKS-42).
+**What is open: the Browser (WORKS-42), the taskbar's live-app
+row (stage 4's residual, which now has something real to show), the system
+menu (stage n), 3D mouse-look (stage n+1), and stage 0's stack-depth
+reading.**
+This header said "stage 1 and the multitasking stages are open" until
+2026-08-19, and it misrouted an assignment the next morning: stage 1 had been
+closed by ruling and stage 9 had completed, both recorded in the stage table
+below the sentence saying otherwise. Sixteen stage rows landed in one day and
+the header was not touched once. Re-read the table before quoting this line.
 Register rows live in `apps/works/works-backlog.md` (WORKS-30 the camera's
 1.333 aspect, WORKS-31 the sidebar clipping, WORKS-32 the instruments,
 WORKS-33 the taskbar and menu, WORKS-34 the band too short for a button,
@@ -214,6 +234,31 @@ design. So "the frontier-to-mark gap must be flat" is satisfied by the code as
 it stands and cannot tell a converted pane from an unconverted one. It was an
 instrument that could not fail.
 
+### What a LIVE app costs, and the flatness above is now conditional
+
+**The paragraph above was unconditional until 2026-08-19 and is not any more.**
+Stages 10 and 11 let an app stay alive across another app's visit, and a live
+app's bytes sit ABOVE the base mark by design, so the frontier is flat only
+while nothing is alive. Measured the same way, Monitor `memory` row, `-Force`
+bed at 1600x900:
+
+| state | heap frontier | held over a desk that never opened one |
+|---|---|---|
+| nothing alive | `0x645ca0` | -- |
+| one 3D pane alive and hidden | `0x0e1b6e8` | **8,215,112 B** |
+| one further switch round trip | `0x0e44228` | 166,720 B more |
+| after the pane closes | `0x645ce8` | 72 B |
+
+**The 8.2 MB is the pane's render target, colour and depth at the viewport
+size, and it is not reducible while the pane is alive: freeing it IS closing
+the pane.** It does not accumulate. One open-and-close, two open-and-close, and
+two switch cycles then close all leave the frontier at `0x645ce8`, so the 72 B
+is a one-time offset and not a per-close leak. Files, the other wired pane,
+costs 22,352 B per switch and holds far less. The 3D panes are the expensive
+case, and they are the reason the taskbar's live-app row is worth building:
+8.2 MB held by something invisible is the kind of thing a user should be able
+to see and close.
+
 **The error underneath it was conflating the two halves of the arena.** The
 heap is fixed; the STACK is what the per-visit frame accumulates in, and the
 stack is what this design's model changes. The old arm pointed at the fixed
@@ -348,6 +393,65 @@ shape**: the app table should be one allocation in `desk-run`, below the base
 mark, with its address in one cell, and everything else indexed inside it.
 That spends one cell, not two.
 
+### Stage 9 did not deliver more than one app ALIVE, and this is where it stops
+
+**Measured 2026-08-19 (val) by reading `GopDesk.codex`, against the depot at
+main 17265.** All fourteen panes are steps, the desk keeps painting and keeps
+time while a pane is up, and that is real. It is not two apps alive. Every
+`desk-*-open` builds a `DeskApps` with its own field `Just` and the other
+three `None` (`desk-edit-open`, `desk-files-open`, and the rest), and both
+close paths do the same:
+
+```
+in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
+in let fresh = DeskApps { da-files = None, da-browser = None, ... }
+```
+
+**The prose above `desk-app-close-to` states the reason and it is correct:**
+the restore frees everything above the desk's base mark, which is exactly
+where a pane's `-open` put its state, so carrying the record forward would
+carry pointers into memory just handed back. So this is not a field that was
+left unset. **It is a heap-lifetime property, and no change to `DeskApps` as a
+threaded parameter can alter it**, because a threaded record lives above the
+base mark by construction.
+
+**Section 6 solved a different problem than the one the brief asked for.**
+Option 3 carried typed state across ITERATIONS of one pane's own life. Staying
+alive across ANOTHER pane's close is a second question, it was never asked
+there, and closing all fourteen conversions did not answer it. That is
+L-CAPABILITY read off our own campaign: fourteen closed features, capability
+absent.
+
+**Correction, same day, and it is against the paragraph above.** This section
+first said the shape that works was already written one section up, in the
+`ds` paragraph: *"the app table should be one allocation in `desk-run`, below
+the base mark, with its address in one cell"*, and that **"below the base mark
+is the whole of it"**. That last sentence is wrong and it was published to
+main at 17291 before `GopDesk.codex:633` was read.
+
+Below the base mark is the whole of it for the RECORD. It is not for what the
+record POINTS AT. A pane's state is allocated in its `-open`, above the base
+mark by construction, and putting the four-field table underneath does not
+move the `FilesState` or the 4.6 MB `R3dTriState` it names. Building those at
+boot instead is what the contract already refuses for Edit's 9 MB.
+
+**`GopDesk.codex:633` had the real answer written down before this design
+existed, and it is sharper than anything above:**
+
+> Several apps alive at once, rather than one focused app with its state,
+> would need the base mark to RISE when an app opens and FALL when it quits.
+> The heap is a bump allocator with save and restore and nothing else, so that
+> is a mark STACK, and a mark stack is only correct if apps quit in the order
+> they opened. That is a separate step and this record does not pretend to it.
+
+So the stage is a mark stack, not a relocated record, and it carries a
+constraint neither the `ds` paragraph nor this section had: **LIFO**. An app
+that quits while another opened after it is still alive cannot have its memory
+reclaimed, because the frontier above it is live. It can be marked dead and
+its bytes held until the apps above it quit. That is correct, it is bounded by
+the number of heavy panes rather than by time, and it is the honest cost of a
+bump allocator with no compaction.
+
 ## 3. The taskbar and the system menu
 
 Both are widget-tree work in `desk-chrome-with`, and the slot for one of them
@@ -434,6 +538,9 @@ panes are verified by capture with a no-keystroke control.
 | 9 | **Browser converted, 2026-08-18. Eleven panes are steps.** `BrowserPane` holds the `BrowserState` and the modifier bits; `gbr-step` and `gbr-open`/`gbr-first-paint` replace `gbr-loop` and `gbr-run`, keeping the old loop's branch structure because its heap discipline is the delicate part. The pane now opens at `h - dk-task-h * ui-wscale w`, so the taskbar strip belongs to the desk instead of being stamped over a page once a second. | **Met, and it is an exact reading**: with the Browser open the taskbar clock says 14:59:15 and the host says 14:59:15, having been opened 38 s earlier. Function preserved and proved through the whole key path: Ctrl+T opens a second tab and it stays open, which exercises modifier tracking, key decode, dispatch, state rebuild and repaint in one arm; `t` is the desk's Console key and the Console did not open, so the focused step owns it. Esc returns to the full desk. **Heap: frontier and desk mark after ten browser events are bit-identical to after none** (`0x645be0` / `0x63fcc8`). Ten of the eleven panes are byte-identical to before the CL; the Monitor differs by 64 pixels, which is the heap-frontier digits moving because `DeskApps` gained a field. Three desk tests pass. |
 | 9 | **3D View and Aquarium converted, 2026-08-18. Thirteen panes are steps and the Editor is the only loop left.** One step serves both, because they always shared `gsc-loop`: the scene BUILDER stays a parameter and the desk passes `gsc-scene` or `gf-scene` by focus id. It cannot be a field on `ScenePane` instead, since `GopFish` cites `GopScene` and a discriminator resolved there would have to call back. **This pane needed no negative answer at all** -- the toggles and the frame counter are integers stored in place, and everything a frame builds is freed by `desk-loop`'s bracket, which is exactly the job `gsc-loop`'s own mark did. | **Met, and it is the strongest arm in the campaign**: with a scene rendering continuously the taskbar clock reads 15:24:47 against a host 15:24:47, and the HUD says `f2245 16ms`, so the desk kept exact time while the pane held a real 60 Hz pace. Both scenes render (3D View's cube/ball/pyramid/ring, the Aquarium's fish, kelp, stones and coral). Both toggles work and both reset the counter: `g` drops to the software pipeline with its coarse 256-map shadows, `s` turns shadows off. F12 fires (verdict `shot write FAILED`, which is WORKS-38 and pre-existing). Esc returns to the full desk. **Heap, and this is the pane where it matters: ten open/close cycles are bit-identical to one** (`0x645c00` / `0x63fcd8`), so the 4,617,256-byte render target is fully reclaimed on every exit. Eleven of the thirteen panes are byte-identical to before the CL; the Monitor differs by 64 pixels, the frontier digits moving because `DeskApps` gained a field. Three desk tests pass. **One thing the conversion had to carry over deliberately**: `gsc-step` drains the keyboard itself, because `kbd-take` advances a three-phase machine one step per call and `desk-loop` takes once per iteration, which on a pane whose iteration is a frame is the exact defect measured on the ASUS on 2026-08-08. |
 | 9 | **Editor converted, 2026-08-18. STAGE 9 COMPLETE: all fourteen panes are steps and no pane owns a loop.** It was TWO loops, a file list with the editor nested inside `ged-activate` and returning to it on Esc, and a step cannot nest; they are one step over a mode in `EditState`, and leaving the editor is a mode change rather than a stack unwind. **The 9 MB buffer did not move and must not**: it stays parked in `desk-edit-cell` with no restore, precisely so the base mark cannot reach it, and is handed to the step as `es` exactly as it was handed to the loops. Only the volume, the open file's path and the directory position ride in the record. | **Met.** Taskbar clock 15:41:50 against host 15:41:50 with SOURCE.SRC open, 61,908 lines and 2,881,715 bytes read and indexed while the desk kept time. Function preserved: the list browses, Enter opens a file with syntax highlighting and line numbers, typing inserts (three keys took the counter 2,881,715 to 2,881,718 and raised the dirty flag), Esc returns to the list with the selection intact, and **Esc at the root closes to a desk that is 0 differing pixels from the plain one**. Twelve of the fourteen panes are byte-identical to before the CL; the Monitor moves 80 pixels (frontier digits, `DeskApps` gained a field) and the two 3D panes 6 each (their own frame-counter digits). Three desk tests pass. **Not exercised, and said plainly rather than implied: F2 save and F3 revert.** Their branches are the loop's unchanged and they touch the `es` block rather than the heap, but no arm ran them, and WORKS-18 says a save on this file takes minutes. |
+| 10 | **A second app stays ALIVE, 2026-08-19. The mark stack, and Files as the pane that proves it.** Cell 20 holds a stack of `(focus id, mark)` pairs; a heavy `-open` pushes, a close marks its entry dead and pops every dead entry on top, restoring the lowest mark among them. When the stack empties it restores to `desk-mark-cell` exactly as before. Tab answers the new `desk-step-hide` and returns to the desk without closing; `f` re-enters through `desk-files-focus`, repainting from the surviving `FilesState`. The other four heavy panes clear the stack in their `-open` and keep the full reset (WORKS-42). | **Met, and the falsifying prediction was written before the run.** Files left at `ESP:/EFI/`, Calculator opened and closed in between, `f` again: the pane returns at **`ESP:/EFI/`** showing `BOOT`. Had the record not survived it would read `ESP:/` with four entries at selection 0, which is what the same timeline produced when the Enter landed on a file instead of a directory. Mid-sequence capture confirms the Calculator really held the screen. **Heap, both halves:** 22,352 B per switch while alive (`0x672848` at one switch against `0x6a3a18` at ten), and **all of it reclaimed on close** -- frontier `0x645ce8` and desk mark `0x63fda8` bit-identical after one switch-then-close and after ten. **The guard has its own arm**: Files alive, then the Browser opened and closed, returns the frontier to `0x645ce8`, the same value a clean close gives, so the stack-clear really does prevent the stranded entry that would otherwise disable reclaim for the session. Three no-keystroke captures byte-identical across both builds; five desk tests pass. |
+| 11 | **The two 3D panes join the stack, 2026-08-19.** They share `da-scene` and share `gsc-step`, so one change wires both. Three things made this different from Files. **Re-entry needs no repaint of the pane**: `gsc-step` draws a whole frame every iteration, so `desk-scene-reenter` redraws the desk CHROME (which the intervening app painted over, outside the 3D viewport) and hands focus back. **Tab releases the GPU viewport clip** in an arm that mirrors the Esc arm; leaving it armed would confine whatever draws next to the hidden pane's rectangle. `gsc-step` answers `gsc-step-hide` = 2 rather than `desk-step-hide`, because `GopScene` cannot cite `GopDesk` for the reason stage 9 records, and `desk-scene-step` maps the one to the other. **Two panes over one field means the loser's entry must be killed**: opening Fish over a live Scene makes the Scene's state unreachable while its entry is still LIVE, and a live entry nothing can kill is exactly the condition that stops every later close from reclaiming, so `desk-scene-open` kills the sibling first. | **Met, and the discriminator was chosen so the two answers could not look alike.** The pane's own shadow toggle is the fingerprint: `S` turns shadows off, and a fresh open would bring them back on. Over a 1250x750 crop of the render (the HUD's frame counter excluded, since it moves), the control with shadows off hashes `482d4e0d2b9a` at 693,723 dark pixels, and shadows ON hashes `093a1ae91425` at 775,799 -- 82,076 pixels apart, so the arms separate. **The test arm hashes `482d4e0d2b9a`, byte-identical to the control**: Scene opened, shadows off, Tab, Calculator opened and closed, Scene again, and it returns with its toggle intact. A mid-sequence capture at 20 s shows the Calculator holding the whole screen with no trace of the scene, so the pass is not the keys being dropped. **Heap.** One live hidden 3D pane holds **8,215,112 B** (`0x0e1b6e8` against `0x645ca0` for a desk that never opened one) -- its render target, colour and depth, and not reducible while the pane is alive, because freeing it IS closing the pane. A switch-away-and-back round trip costs a further 166,720 B. **None of it accumulates**: one open-and-close, two open-and-close, and two switch cycles then close all leave the frontier at `0x645ce8`. **The sibling kill has its own arm**: Scene opened, hidden, Fish opened, Fish closed returns `0x645ce8`, the same figure a single open-and-close gives; without the kill that arm would strand 8.2 MB for the session. Five desk tests pass. |
+| 12 | **Edit joins the stack, 2026-08-19, and the wiring turned up a defect that has nothing to do with the stack.** `ged-step` answers `ged-step-hide` on Tab in the list and edit modes only; `big` and `nofat` are dead ends the user leaves with Esc and hold nothing worth keeping. `ged-reenter` picks the list paint or the editor repaint by `ed-mode`, and `desk-edit-reenter` redraws the desk chrome around it. **The defect: three places said the 9 MB buffer was out of reach of the base mark, and it never was.** `ged-init` runs from `desk-edit-open`, which is ABOVE the base mark, so both close paths restore over it, and `ged-ensure` (`GopEdit.codex:49`) only allocates when the pointer is zero. A second Edit session would have written through an address the bump allocator had already handed out again. Both close paths now zero the pointer when the restore target is at or below it. | **Met.** Edit opened, descended into `EFI/`, Tab, Calculator opened and closed, `e` again: the pane returns showing `Edit  EFI/` with `BOOT`, and the capture is byte-identical over the WHOLE frame to a control that never left (`01A3BCC3F8A9`). A fresh open reads `Edit  choose a file` with four entries (`AABBAD9DED9D`), so the arms separate. **The defect's arm was predicted before it ran and the two outcomes are 9.4 MB apart.** An Edit pane alive and hidden holds **9,598,200 B**, of which `ged-init` is 9,437,184; after it closes the frontier is 72 B over a desk that never opened one, so the buffer is demonstrably reclaimed. Open, close, open again and hide reads `0x0f6d1e0` against a first session's `0x0f6d198`, so the second session DID re-allocate; had the pointer survived it would have skipped `ged-init` and read about 9.4 MB lower. **No regression from changing the shared close path**: the 3D capability crop is unchanged at `482d4e0d2b9a`, the orphan-guard arm still returns `0x645ce8`, and the no-keystroke desk frame is byte-identical across the two builds (`F6920D45B51A`). Five desk tests pass. |
 | n | **System menu** presenting the launcher's model. | Open by button and by key, both reaching the same pane, which is the "same road" the contract requires. |
 | n+1 | **3D mouse-look** (WORKS-13: `desk-scene` does not pass `mouse` to `gsc-run` at all, so the signature grows first). | Two captures with scripted mouse samples; the camera must differ, with a no-mouse control. |
 

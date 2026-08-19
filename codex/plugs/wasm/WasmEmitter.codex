@@ -702,25 +702,52 @@ Section: Expression Emission
   emit-wat-match-body (ctx) (branches) (i) (depth) =
    if i == list-length branches then "(unreachable)"
    else let b = list-at branches i
-   in emit-wat-match-arm ctx (b.pattern) (b.body) branches i depth
+   in emit-wat-match-arm ctx (b.pattern) (b.guard) (b.body) branches i depth
 
-  emit-wat-match-arm : WasmCtx, IRPat, IRExpr, List IRBranch, Integer, Integer -> Text
-  emit-wat-match-arm (ctx) (pat) (body) (branches) (i) (depth) =
+  wat-guard-trivial : IRExpr -> Boolean
+  wat-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  emit-wat-guard-test : WasmCtx, IRExpr -> Text
+  emit-wat-guard-test (ctx) (guard) = "(i32.wrap_i64 " & emit-wat-expr ctx guard & ")"
+
+  emit-wat-match-arm : WasmCtx, IRPat, IRExpr, IRExpr, List IRBranch, Integer, Integer -> Text
+  emit-wat-match-arm (ctx) (pat) (guard) (body) (branches) (i) (depth) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "(if (result i64) (i64.eq (local.get $_s) (i64.const " & text & ")) (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
-    is IrCtorPat (name) (subs) (ty) (sp) -> emit-wat-ctor-pat ctx name subs body branches i depth
-    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (local.get $_s)) " & emit-wat-expr ctx body
-    is IrWildPat (sp) -> emit-wat-expr ctx body
-    is IrVecPat (pats) (ty) (sp) -> emit-wat-expr ctx body
+    is IrLitPat (text) (ty) (sp) ->
+     let lit-test = "(i64.eq (local.get $_s) (i64.const " & text & "))"
+     in let cond = if wat-guard-trivial guard then lit-test
+        else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx guard & ")"
+     in "(if (result i64) " & cond & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-wat-ctor-pat ctx name subs guard body branches i depth
+    is IrVarPat (name) (ty) (sp) ->
+     let bind = "(local.set $" & wat-sanitize name & " (local.get $_s)) "
+     in if wat-guard-trivial guard then bind & emit-wat-expr ctx body
+        else bind & "(if (result i64) " & emit-wat-guard-test ctx guard & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+    is IrWildPat (sp) ->
+     if wat-guard-trivial guard then emit-wat-expr ctx body
+     else "(if (result i64) " & emit-wat-guard-test ctx guard & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+    is IrVecPat (pats) (ty) (sp) ->
+     if wat-guard-trivial guard then emit-wat-expr ctx body
+     else "(if (result i64) " & emit-wat-guard-test ctx guard & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
 
-  emit-wat-ctor-pat : WasmCtx, Text, List IRPat, IRExpr, List IRBranch, Integer, Integer -> Text
-  emit-wat-ctor-pat (ctx) (name) (subs) (body) (branches) (i) (depth) =
+ A payload load on an object of the wrong tag can address past the object,
+ which traps. The tag test gates the guard inside the condition rather than
+ the two being anded flat.
+
+  emit-wat-ctor-pat : WasmCtx, Text, List IRPat, IRExpr, IRExpr, List IRBranch, Integer, Integer -> Text
+  emit-wat-ctor-pat (ctx) (name) (subs) (guard) (body) (branches) (i) (depth) =
    let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
    in let bind-subs = emit-wat-bind-ctor-subs ctx subs 0
-   in if i == list-length branches - 1 then
+   in if (i == list-length branches - 1) & wat-guard-trivial guard then
     bind-subs & emit-wat-expr ctx body
    else
-    "(if (result i64) (i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) (i64.const " & integer-to-text tag & ")) (then " & bind-subs & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+    let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) (i64.const " & integer-to-text tag & "))"
+    in let cond = if wat-guard-trivial guard then tag-test
+       else "(if (result i32) " & tag-test & " (then " & bind-subs & emit-wat-guard-test ctx guard & ") (else (i32.const 0)))"
+    in "(if (result i64) " & cond & " (then " & bind-subs & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
 
   emit-wat-bind-ctor-subs : WasmCtx, List IRPat, Integer -> Text
   emit-wat-bind-ctor-subs (ctx) (subs) (i) =
@@ -955,19 +982,34 @@ Section: Tail Call Optimization
    if i >= list-length bs then "(unreachable)"
    else let b = list-at bs i
    in let body = emit-wat-expr-tco ctx fname params (b.body) (depth + 1)
-   in let is-last = i == list-length bs - 1
+   in let guarded = wat-guard-trivial (b.guard) == False
+   in let is-last = (i == list-length bs - 1) & (guarded == False)
+   in let rest = emit-wat-branches-tco ctx fname params bs (i + 1) depth
    in when b.pattern
-    is IrWildPat (sp) -> body
-    is IrVecPat (pats) (ty) (sp) -> body
-    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (local.get $_s)) " & body
+    is IrWildPat (sp) ->
+     if guarded == False then body
+     else "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
+    is IrVecPat (pats) (ty) (sp) ->
+     if guarded == False then body
+     else "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
+    is IrVarPat (name) (ty) (sp) ->
+     let bind = "(local.set $" & wat-sanitize name & " (local.get $_s)) "
+     in if guarded == False then bind & body
+        else bind & "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
     is IrLitPat (text) (ty) (sp) ->
      if is-last then body
-     else "(if (result i64) (i64.eq (local.get $_s) (i64.const " & text & ")) (then " & body & ") (else " & emit-wat-branches-tco ctx fname params bs (i + 1) depth & "))"
+     else let lit-test = "(i64.eq (local.get $_s) (i64.const " & text & "))"
+     in let cond = if guarded == False then lit-test
+        else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx (b.guard) & ")"
+     in "(if (result i64) " & cond & " (then " & body & ") (else " & rest & "))"
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
      in let bind = emit-wat-bind-ctor-subs ctx subs 0
      in if is-last then bind & body
-     else "(if (result i64) (i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) (i64.const " & integer-to-text tag & ")) (then " & bind & body & ") (else " & emit-wat-branches-tco ctx fname params bs (i + 1) depth & "))"
+     else let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) (i64.const " & integer-to-text tag & "))"
+     in let cond = if guarded == False then tag-test
+        else "(if (result i32) " & tag-test & " (then " & bind & emit-wat-guard-test ctx (b.guard) & ") (else (i32.const 0)))"
+     in "(if (result i64) " & cond & " (then " & bind & body & ") (else " & rest & "))"
 
 Section: Definition Emission
 

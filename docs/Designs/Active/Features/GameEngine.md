@@ -46,7 +46,42 @@ same way a stale count does, and this one was three for three.
 
 **Metal, from the diagnostic stick** (`HardwareSitting.md`, i7-6700K,
 software render of a 624x88 region): plain **12 ms** over 20 frames,
-shadowed **24 ms** over 11. Shadows double the frame.
+shadowed **24 ms** over 11.
+
+**"Shadows double the frame" was my sentence and a second geometry has
+already qualified it.** A 2026-08-19 sitting (red; banked at
+`stick-archive\diag2-20260819\DIAG.TXT`, kernel `800A7683`, same board, fb
+1920x1080) rendered **624x40** and read plain **5 ms** over 42 frames,
+shadowed **12 ms** over 21. That is 2.4x, not 2.0x, and the direction is the
+informative part:
+
+| region | pixels | plain | shadowed | ratio | shadow increment |
+|---|---:|---:|---:|---:|---:|
+| 624x88 | 54,912 | 12 ms | 24 ms | 2.00 | 12 ms |
+| 624x40 | 24,960 | 5 ms | 12 ms | 2.40 | 7 ms |
+
+Area falls to 0.45 of the first. Plain falls to 0.42, near enough to say the
+unshadowed frame is fill-bound. **The shadow INCREMENT falls only to 0.58**,
+well short of the area ratio, so part of the shadow cost is not paid per
+rendered pixel. The candidate is the depth pass, which is over the shadow MAP
+(256x256, fixed) and not over the render region, and it is the same component
+the bed's map-size arm already isolated: 16x less map area bought 26 ms of a
+169 ms shadow cost, making the build about 28 ms and the main pass about 141.
+
+**Do not read the split below as measured.** Solving `increment = F + P *
+area` on these two points gives F about 2.8 ms fixed and P about 1.7e-4 ms per
+pixel, and **two points fitting a two-parameter model is exact by
+construction** -- that arithmetic cannot fail and is therefore not evidence
+for the model, only a statement of what the model would have to be. A THIRD
+geometry on the same board is what would test it, and the prediction to write
+down first is that a 624x140 region reads plain about 19 ms and shadowed about
+36 ms if the fixed component is real, against 38 ms if the whole increment
+scales with area. The two answers differ by enough to call.
+
+The practical consequence if it holds: caching the shadow map is worth MORE at
+small regions, not less, because the fixed depth-pass build is a larger share
+of a cheaper frame. Stage 1 found the per-pixel half is tap-bound rather than
+arithmetic-bound; this is the other half of the same question.
 
 **Bed, 1600x900 with a 1440x800 render region**, each arm sampled over a
 full 60-second orbit period so the camera angle averages out: plain

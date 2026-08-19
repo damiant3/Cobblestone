@@ -1283,15 +1283,23 @@ static void build_hid_mouse_report(unsigned char *report) {
    32 KB data phase answering msc-ce-no-event with no stall and a volume left
    clean. Without it no bed can reach a guest's fuel-exhaustion path or the
    Reset Recovery retry behind it, and an unexecuted recovery path is worth
-   what no recovery path is worth. N counts from 1. */
+   what no recovery path is worth. N counts from 1.
+   -usb-bot-drops K: swallow K CONSECUTIVE events starting at N, default 1.
+   One drop is always recovered -- the driver re-issues the transfer and the
+   write completes -- so with K=1 no bed can produce a REFUSED write, which is
+   the shape the 2026-08-19 metal sitting showed. K=2 is NOT enough (measured:
+   both events swallowed, the driver still recovers); K=4 at index 500 is what
+   refuses on diag.img, because the retry's own transfers have to fall inside
+   the window too. */
 static int usb_bot_drop = 0;
+static int usb_bot_drops = 1;
 static int usb_bot_xfer_seen = 0;
 
 static void xhci_post_event_ep_resid(int trb_type, int slot, int ep_id, int completion, unsigned long long trb_ptr, int resid) {
     if (xcur->er_addr == 0 || xcur->er_size == 0) return;
     if (usb_bot_drop > 0 && trb_type == 32 && ep_id >= 2) {
         usb_bot_xfer_seen++;
-        if (usb_bot_xfer_seen == usb_bot_drop) {
+        if (usb_bot_xfer_seen >= usb_bot_drop && usb_bot_xfer_seen < usb_bot_drop + usb_bot_drops) {
             fprintf(stderr, "xHCI: -usb-bot-drop: swallowing transfer event %d (slot=%d ep=%d cc=%d)\n",
                     usb_bot_xfer_seen, slot, ep_id, completion);
             return;
@@ -13813,6 +13821,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-usb-setcfg-fault-once") && i+1 < argc) usb_setcfg_fault_once = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-no-unit-attention")) usb_unit_attention = 0;
         else if (!strcmp(argv[i], "-usb-bot-drop") && i+1 < argc) usb_bot_drop = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-bot-drops") && i+1 < argc) usb_bot_drops = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-disk-port") && i+1 < argc) {
             usb_disk_port = atoi(argv[++i]);
             if (usb_disk_port < 1) usb_disk_port = 1;

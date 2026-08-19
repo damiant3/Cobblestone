@@ -7,21 +7,46 @@ Chapter: DiagNicRing
   cites Foreword chapter Maybe
   cites Diag chapter DiagStage
 
- build/boot/diag/NicRingProbe.codex as a stage: NIC-4's question. After a
- full e1000-init (timed), listen 1.2 s, read the DD bit of every RX
- descriptor (a pure read of a ring we own), send one ARP request for the
- gateway and listen again, then the reader's own control: the TX descriptor
- e1000-send-frame answered on must show DD, or the reader is broken and every
- RX bit above it means nothing. Last, the one write: RDH set to 7 and read
- back, so "RDH tracks reception" and "RDH is not writable here" are told
- apart. The ARP is a real request for 10.0.2.2 from 10.0.2.15, so a NAT bed
- answers it and a live switch ignores it harmlessly.
+ build/boot/diag/NicRingProbe.codex as a stage: NIC-4's question. Read the DD
+ bit of every RX descriptor (a pure read of a ring we own), send one ARP
+ request for the gateway and listen, then the reader's own control: the TX
+ descriptor e1000-send-frame answered on must show DD, or the reader is
+ broken and every RX bit above it means nothing. The ARP is a real request
+ for 10.0.2.2 from 10.0.2.15, so a NAT bed answers it and a live switch
+ ignores it harmlessly.
+
+ THE ONE WRITE COMES FIRST NOW, and it is what 2026-08-19 cost. RDH set to 7
+ and read back tells "RDH tracks reception" and "RDH is not writable here"
+ apart, which IS NIC-4, and it used to run after two listens. The stage went
+ grey for more than ten minutes on the I219-V and was pulled, so the whole
+ flight bought nothing: the answer the sitting was for is three MMIO cycles
+ and it was standing behind every wait in the stage. It is banked before
+ anything that can spin (L-BANK). The write now lands on the ring nicinit
+ left running rather than on one this stage had just built, which is the
+ more honest place to ask whether the part accepts it.
+
+ IT NO LONGER CALLS e1000-init. That is a second CTRL.RST, a second PHY
+ reset, a second aneg wait and a second link wait on a part nicinit brought
+ up two stages earlier. The rings are set up from the same primitives with
+ no reset and the link is read through na-link-wait, which checks the clock
+ every iteration rather than once per 4096 reads.
+
+ WHAT THE 08-19 GLASS COULD NOT SAY, and why hpet is banked early. With a
+ usable HPET every wait on that path is budgeted and the whole stage is
+ about ten seconds: aneg 3 s, e1000-link-wait 5 s, two listens 1.2 s each.
+ The count fallbacks are what take minutes -- aneg 1,000,000 reads measured
+ at 92.89 us is 93 s, and e1000-await-link's 4,000,000 is about six minutes
+ more -- and they are reached only where hpet-ticks-per-second answers zero
+ or less. So the ten-minute grey row and a good clock do not fit together,
+ and nothing was banked to tell us which held. The rate is in the arrival
+ row now, and a stage that finds no clock says so and returns instead of
+ spending seven minutes finding out.
 
  We say:
 
 Section: States
 
-  nir-states : List Text = ["frames", "quiet", "reader-broken", "no-part", "rejected", "bar-bad", "send-refused"]
+  nir-states : List Text = ["frames", "quiet", "reader-broken", "no-part", "rejected", "bar-bad", "send-refused", "no-hpet"]
 
   nir-src-ip : List Integer = [10, 0, 2, 15]
   nir-gw-ip : List Integer = [10, 0, 2, 2]
@@ -87,18 +112,39 @@ Section: Ring Reads
 
 Section: The Stage
 
+  nir-attach : Integer -> E1000Device
+  nir-attach (mmio) =
+   let quiet = e1000-quiesce mmio
+   in let rx-ring = e1000-alloc-aligned (e1000-rx-count * e1000-desc-size) 16
+   in let tx-ring = e1000-alloc-aligned (e1000-tx-count * e1000-desc-size) 16
+   in let rx-bufs = e1000-alloc-aligned (e1000-rx-count * e1000-buf-size) 16
+   in let tx-bufs = e1000-alloc-aligned (e1000-tx-count * e1000-buf-size) 16
+   in let ctrl-blk = e1000-alloc-aligned e1000-cb-size 8
+   in let cb-clear = e1000-zero-words ctrl-blk (e1000-cb-size / 4) 0
+   in let mta = e1000-clear-mta mmio 0
+   in let mac-ok = e1000-mac-present mmio
+   in let mac = if mac-ok then e1000-read-mac mmio else []
+   in let dev = E1000Device { e-mmio = mmio, e-rx-ring = rx-ring, e-tx-ring = tx-ring, e-rx-bufs = rx-bufs, e-tx-bufs = tx-bufs, e-ctrl-blk = ctrl-blk, e-present = True, e-mac = mac, e-mac-valid = mac-ok }
+   in let rx = e1000-setup-rx dev
+   in let tx = e1000-setup-tx dev
+   in dev
+
   nir-run-part : PciDevice -> [Device.Port, Device.Mmio, Console] DiagResult
   nir-run-part (dv) =
    let mmio = na-mmio-of dv
    in let started = hpet-start
    in let hz = hpet-ticks-per-second
-   in let arrival = "arrival rctl=" & show (e1000-read mmio e1000-reg-rctl) & " rdh=" & show (e1000-read mmio e1000-reg-rdh) & " rdt=" & show (e1000-read mmio e1000-reg-rdt) & " hpet=" & show hz
-   in act
-    say0 <- print-line-uni "nicring entering e1000-init"
-    let i0 = hpet-ticks
-    in let d = e1000-init dv
-    in let i1 = hpet-ticks
-    in let initus = if hz <= 0 then 0 - 1 else (i1 - i0) * 1000000 / hz
+   in let rdh0 = e1000-read mmio e1000-reg-rdh
+   in let wr = e1000-write mmio e1000-reg-rdh 7
+   in let rdh1 = e1000-read mmio e1000-reg-rdh
+   in let restore = e1000-write mmio e1000-reg-rdh rdh0
+   in let writable = if rdh1 == 7 then "y" else "n"
+   in let arrival = "arrival rctl=" & show (e1000-read mmio e1000-reg-rctl) & " rdh=" & show rdh0 & " rdt=" & show (e1000-read mmio e1000-reg-rdt) & " hpet=" & show hz & " rdh-writable=" & writable & " rdh-after=" & show rdh1
+   in if hz <= 0 then diag-result "no-hpet" diag-col-bad [arrival] [arrival]
+   else act
+    say0 <- print-line-uni "nicring entering attach (no reset)"
+    let d = nir-attach mmio
+    in let link = na-link-wait mmio
     in act
      say1 <- print-line-uni "nicring entering listen"
      let s0 = hpet-ticks
@@ -109,13 +155,9 @@ Section: The Stage
      in let after = nir-wait d s1 ((hz * 1200) / 1000) nir-rounds
      in let after-send = nir-ring-line "after-send" (d.e-rx-ring)
      in let txdd = nir-tx-dd d
-     in let rdh0 = e1000-read mmio e1000-reg-rdh
-     in let wr = e1000-write mmio e1000-reg-rdh 7
-     in let rdh1 = e1000-read mmio e1000-reg-rdh
-     in let restore = e1000-write mmio e1000-reg-rdh rdh0
      in let got = if listened.r-has-frame then 1 else if after.r-has-frame then 1 else 0
      in let ddset = nir-dd-count (d.e-rx-ring) 0 0
-     in let head = "init=" & show initus & "us present=" & na-yn (if d.e-present then 1 else 0) & " mac=" & na-yn (if d.e-mac-valid then 1 else 0) & " received=" & show got & " ddset=" & show ddset & " sent=" & show sent & " txdd=" & show txdd & " rdh-writable=" & (if rdh1 == 7 then "y" else "n") & " rdh=" & show rdh0
+     in let head = "link=" & show link & " present=" & na-yn (if d.e-present then 1 else 0) & " mac=" & na-yn (if d.e-mac-valid then 1 else 0) & " received=" & show got & " ddset=" & show ddset & " sent=" & show sent & " txdd=" & show txdd & " rdh-writable=" & writable & " rdh=" & show rdh0
      in let state = if sent /= 1 then "send-refused" else if txdd == 0 then "reader-broken" else if got == 1 then "frames" else if ddset > 0 then "frames" else "quiet"
      in let colour = if state == "frames" then diag-col-good else if state == "quiet" then diag-col-warn else diag-col-bad
      in diag-result state colour [head] [arrival, head, after-listen, after-send]

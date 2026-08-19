@@ -665,6 +665,63 @@ Section: Monitor
   desk-apps-empty : DeskApps
   desk-apps-empty = DeskApps { da-files = None, da-browser = None, da-scene = None, da-edit = None }
 
+ Cell 20, free until val took it 2026-08-19; announced in the contract. The
+ block is 128 bytes allocated in `desk-run` before the base mark: offset 0 is
+ the depth, entry `i` is a focus id at `8 * i + 8` and its mark at
+ `8 * i + 12`. A dead entry keeps its mark and takes id 0, which is
+ `desk-focus-none` and can never name a live app.
+
+  desk-marks-cell : Integer = 20
+  desk-marks-max : Integer = 8
+
+  desk-marks-depth : Integer -> Integer
+  desk-marks-depth (ms) = peek-32 ms 0
+
+  desk-marks-id : Integer, Integer -> Integer
+  desk-marks-id (ms) (i) = peek-32 ms (8 * i + 8)
+
+  desk-marks-mark : Integer, Integer -> Integer
+  desk-marks-mark (ms) (i) = peek-32 ms (8 * i + 12)
+
+  desk-marks-push : Integer, Integer, Integer -> Integer
+  desk-marks-push (ms) (fid) (mark) =
+    let d = desk-marks-depth ms
+    in if d >= desk-marks-max then d
+    else
+      let a = poke-32 ms (8 * d + 8) fid
+      in let b = poke-32 ms (8 * d + 12) mark
+      in poke-32 ms 0 (d + 1)
+
+  desk-marks-clear : Integer -> Integer
+  desk-marks-clear (ms) = poke-32 ms 0 0
+
+  desk-marks-find : Integer, Integer, Integer -> Integer
+  desk-marks-find (ms) (fid) (i) =
+    if i < 0 then 0 - 1
+    else if desk-marks-id ms i == fid then i
+    else desk-marks-find ms fid (i - 1)
+
+  desk-marks-kill : Integer, Integer -> Integer
+  desk-marks-kill (ms) (fid) =
+    let i = desk-marks-find ms fid (desk-marks-depth ms - 1)
+    in if i < 0 then 0 else poke-32 ms (8 * i + 8) desk-focus-none
+
+  desk-marks-reclaim : Integer, Integer -> Integer
+  desk-marks-reclaim (ms) (acc) =
+    let d = desk-marks-depth ms
+    in if d <= 0 then acc
+    else if desk-marks-id ms (d - 1) /= desk-focus-none then acc
+    else
+      let m = desk-marks-mark ms (d - 1)
+      in let p = poke-32 ms 0 (d - 1)
+      in desk-marks-reclaim ms m
+
+  desk-marks-any-live : Integer, Integer -> Boolean
+  desk-marks-any-live (ms) (i) =
+    if i < 0 then False
+    else if desk-marks-id ms i /= desk-focus-none then True
+    else desk-marks-any-live ms (i - 1)
+
   desk-focus-cell : Integer = 12
   desk-focus-none : Integer = 0
   desk-focus-mon : Integer = 1
@@ -765,21 +822,63 @@ Section: Monitor
  the new `root` and dies with it.
 
   desk-app-close-to (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (sc) =
-    let cf = poke-32 ds desk-focus-cell desk-focus-none
+    let fid = peek-32 ds desk-focus-cell
+    in let ms = peek-32 ds desk-marks-cell
+    in let sb = apps.da-browser
+    in let ss = apps.da-scene
+    in let se = apps.da-edit
+    in let sfi = apps.da-files
+    in let kl = desk-marks-kill ms fid
+    in let rec = desk-marks-reclaim ms (0 - 1)
+    in let dep = desk-marks-depth ms
+    in let cf = poke-32 ds desk-focus-cell desk-focus-none
     in let hd2 = cursor-hide cs base stride
-    in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
+    in let tgt = if dep <= 0 then peek-32 ds desk-mark-cell else if rec < 0 then __heap-save else rec
+    in let eb = peek-32 ds desk-edit-cell
+    in let ev = if peek-32 eb 0 /= 0 & tgt <= peek-32 eb 0 then poke-32 eb 0 0 else 0
+    in let dropped = __heap-restore tgt
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
-    in let fresh = DeskApps { da-files = None, da-browser = None, da-scene = None, da-edit = None }
+    in let nf = if fid == desk-focus-files then None else sfi
+    in let nb = if fid == desk-focus-bro then None else sb
+    in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
+    in let ne = if fid == desk-focus-edit then None else se
+    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne }
     in let c0 = dk-cursor base w h stride cs mouse
     in desk-dispatch base w h stride font tf kbd mouse ds cs fresh root sc False
 
-  desk-app-close : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  desk-app-close (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) =
+  desk-step-hide : Integer = 1000000
+
+  desk-app-hide : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-app-hide (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) =
     let cf = poke-32 ds desk-focus-cell desk-focus-none
     in let hd2 = cursor-hide cs base stride
-    in let dropped = __heap-restore (peek-32 ds desk-mark-cell)
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
-    in let fresh = DeskApps { da-files = None, da-browser = None, da-scene = None, da-edit = None }
+    in let c0 = dk-cursor base w h stride cs mouse
+    in desk-loop base w h stride font tf kbd mouse ds cs apps root
+
+  desk-app-close : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-app-close (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) =
+    let fid = peek-32 ds desk-focus-cell
+    in let ms = peek-32 ds desk-marks-cell
+    in let sb = apps.da-browser
+    in let ss = apps.da-scene
+    in let se = apps.da-edit
+    in let sfi = apps.da-files
+    in let kl = desk-marks-kill ms fid
+    in let rec = desk-marks-reclaim ms (0 - 1)
+    in let dep = desk-marks-depth ms
+    in let cf = poke-32 ds desk-focus-cell desk-focus-none
+    in let hd2 = cursor-hide cs base stride
+    in let tgt = if dep <= 0 then peek-32 ds desk-mark-cell else if rec < 0 then __heap-save else rec
+    in let eb = peek-32 ds desk-edit-cell
+    in let ev = if peek-32 eb 0 /= 0 & tgt <= peek-32 eb 0 then poke-32 eb 0 0 else 0
+    in let dropped = __heap-restore tgt
+    in let root = desk-draw base w h stride font (ui-scale w) tf ds
+    in let nf = if fid == desk-focus-files then None else sfi
+    in let nb = if fid == desk-focus-bro then None else sb
+    in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
+    in let ne = if fid == desk-focus-edit then None else se
+    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne }
     in let c0 = dk-cursor base w h stride cs mouse
     in desk-loop base w h stride font tf kbd mouse ds cs fresh root
     end
@@ -1399,11 +1498,20 @@ Section: Loop
 
 Section: The Editor
 
- The last loop, and the one the contract has been pointing at since the base
- mark was written down. Its 9 MB buffer stays exactly where it was: allocated
- lazily and parked in `desk-edit-cell` with no restore, so the base mark cannot
- reach it, and handed to the step as `es` the way it was handed to the loops.
- Only its typed values ride in `EditState`.
+ Its 9 MB buffer is allocated lazily by `ged-ensure` and parked in
+ `desk-edit-cell`, and handed to the step as `es`. Only its typed values ride
+ in `EditState`.
+
+ **This block said the base mark cannot reach that buffer. It can, and this is
+ the correction.** `ged-init` runs from `desk-edit-open`, which is ABOVE the
+ base mark, so a close restores over it. `ged-ensure` (`GopEdit.codex:49`) only
+ allocates when the pointer is zero, so the next open would reuse an address
+ the allocator has already handed out again. Measured 2026-08-19: an Edit pane
+ alive and hidden holds 9,598,200 bytes, and after it closes the frontier is
+ 72 bytes over a desk that never opened one, so the 9,437,184 that `ged-init`
+ allocates is demonstrably reclaimed. Both close paths therefore zero the
+ pointer whenever the restore target is at or below it, which costs one
+ re-allocation per Edit session and removes the dangling reuse.
 
  It was two loops, a file list with the editor nested inside it, and a step
  cannot nest. They are one step over a mode now, and leaving the editor is a
@@ -1413,12 +1521,35 @@ Section: The Editor
   desk-edit-step (base) (w) (h) (stride) (font) (mouse) (ds) (cs) (apps) (sc) (clicked) =
     when apps.da-edit
       is None -> 0
-      is Just (st) -> ged-step base w h stride font mouse cs (peek-32 ds desk-edit-cell) st sc clicked
+      is Just (st) -> act
+        r <- ged-step base w h stride font mouse cs (peek-32 ds desk-edit-cell) st sc clicked
+        if r == ged-step-hide then desk-step-hide else r
+      end
+
+  desk-edit-focus : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-edit-focus (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) =
+    when apps.da-edit
+      is Just (st) -> desk-edit-reenter base w h stride font tf kbd mouse ds cs apps root st
+      is None -> desk-edit-open base w h stride font tf kbd mouse ds cs apps root
+
+  desk-edit-reenter : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, EditState -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-edit-reenter (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (st) =
+    let hd = cursor-hide cs base stride
+    in let root2 = desk-draw base w h stride font (ui-scale w) tf ds
+    in let mk = __heap-save
+    in let p = ged-reenter base w h stride font mouse cs (peek-32 ds desk-edit-cell) st
+    in let dr = __heap-restore mk
+    in let sf = poke-32 ds desk-focus-cell desk-focus-edit
+    in let inval = poke-32 ds desk-second-cell (0 - 1)
+    in let c1 = dk-cursor base w h stride cs mouse
+    in desk-loop base w h stride font tf kbd mouse ds cs apps root2
 
   desk-edit-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  desk-edit-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
+  desk-edit-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) =
+    let mp = desk-marks-push (peek-32 ds desk-marks-cell) desk-focus-edit __heap-save
+    in act
     st <- ged-new base w h stride (ui-scale w) font mouse cs (peek-32 ds desk-edit-cell)
-    let apps2 = DeskApps { da-files = None, da-browser = None, da-scene = None, da-edit = Just st }
+    let apps2 = DeskApps { da-files = apps.da-files, da-browser = apps.da-browser, da-scene = apps.da-scene, da-edit = Just st }
     in let sf = poke-32 ds desk-focus-cell desk-focus-edit
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in let c1 = dk-cursor base w h stride cs mouse
@@ -1441,8 +1572,29 @@ Section: Files
  the record's other fields were allocated. Changing directory stores new
  LISTS, which is not, and that is what the negative answer is for.
 
+  desk-files-focus : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-files-focus (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) =
+    when apps.da-files
+      is Just (st) -> desk-files-reenter base w h stride font tf kbd mouse ds cs apps root st
+      is None -> desk-files-open base w h stride font tf kbd mouse ds cs apps root
+
+  desk-files-reenter : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, FilesState -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-files-reenter (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (st) =
+    let s = ui-scale w
+    in let mk = __heap-save
+    in act
+      hd <- cursor-hide cs base stride
+      let d = gfl-draw-list base w h stride s font (st.fs-entries) (st.fs-sel) (st.fs-top) (st.fs-names)
+      in let dr = __heap-restore mk
+      in let sf = poke-32 ds desk-focus-cell desk-focus-files
+      in let c1 = dk-cursor base w h stride cs mouse
+      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    end
+
   desk-files-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  desk-files-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
+  desk-files-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) =
+    let mp = desk-marks-push (peek-32 ds desk-marks-cell) desk-focus-files __heap-save
+    in act
     m <- gfat-mount-esp
     hd <- cursor-hide cs base stride
     let s = ui-scale w
@@ -1453,7 +1605,7 @@ Section: Files
       let st = FilesState { fs-vol = m.gm-vol, fs-entries = [], fs-clusters = [0 - 1], fs-names = [], fs-sel = 0, fs-top = 0, fs-ptr = 0, fs-mode = 0 }
       in let sf = poke-32 ds desk-focus-cell desk-focus-files
       in let c1 = dk-cursor base w h stride cs mouse
-      in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = None, da-scene = None, da-edit = None }) root
+      in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = apps.da-browser, da-scene = apps.da-scene, da-edit = apps.da-edit }) root
     end
     else act
       let flag = if gfat-is32 (m.gm-vol) then (m.gm-vol).vol-root-start else 0 - 1
@@ -1464,7 +1616,7 @@ Section: Files
         in let d = gfl-draw-list base w h stride s font ents 0 0 (st.fs-names)
         in let sf = poke-32 ds desk-focus-cell desk-focus-files
         in let c1 = dk-cursor base w h stride cs mouse
-        in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = None, da-scene = None, da-edit = None }) root
+        in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = apps.da-browser, da-scene = apps.da-scene, da-edit = apps.da-edit }) root
       end
     end
   end
@@ -1532,6 +1684,7 @@ Section: Files
         in 1
       end
     end
+    else if sc == 15 then desk-step-hide
     else if sc == 1 | (clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)) then
       if list-length (st.fs-clusters) <= 1 then 0
       else desk-files-up base w h stride font mouse cs st
@@ -1638,12 +1791,37 @@ Section: The 3D panes
   desk-scene-step (base) (w) (h) (stride) (font) (kbd) (cs) (apps) (build) (sc) =
     when apps.da-scene
       is None -> 0
-      is Just (sp) -> gsc-step base w h stride font kbd cs build sp sc
+      is Just (sp) -> act
+        r <- gsc-step base w h stride font kbd cs build sp sc
+        if r == gsc-step-hide then desk-step-hide else r
+      end
+
+  desk-scene-sibling : Integer -> Integer
+  desk-scene-sibling (foc) = if foc == desk-focus-scene then desk-focus-fish else desk-focus-scene
+
+  desk-scene-focus : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-scene-focus (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sky) (foc) =
+    let ms = peek-32 ds desk-marks-cell
+    in let live = desk-marks-find ms foc (desk-marks-depth ms - 1) >= 0
+    in if live then desk-scene-reenter base w h stride font tf kbd mouse ds cs apps root foc
+    else desk-scene-open base w h stride font tf kbd mouse ds cs apps root sky foc
+
+  desk-scene-reenter : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-scene-reenter (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (foc) =
+    let hd = cursor-hide cs base stride
+    in let root2 = desk-draw base w h stride font (ui-scale w) tf ds
+    in let sf = poke-32 ds desk-focus-cell foc
+    in let inval = poke-32 ds desk-second-cell (0 - 1)
+    in desk-loop base w h stride font tf kbd mouse ds cs apps root2
 
   desk-scene-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  desk-scene-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sky) (foc) = act
+  desk-scene-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sky) (foc) =
+    let ms = peek-32 ds desk-marks-cell
+    in let ko = desk-marks-kill ms (desk-scene-sibling foc)
+    in let mp = desk-marks-push ms foc __heap-save
+    in act
     sp <- gsc-new base w h stride cs (dk-gpu ds) sky
-    let apps2 = DeskApps { da-files = None, da-browser = None, da-scene = Just sp, da-edit = None }
+    let apps2 = DeskApps { da-files = apps.da-files, da-browser = apps.da-browser, da-scene = Just sp, da-edit = apps.da-edit }
     in let sf = poke-32 ds desk-focus-cell foc
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in desk-loop base w h stride font tf kbd mouse ds cs apps2 root
@@ -1706,7 +1884,8 @@ Section: Browser
   desk-browser-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
     hd <- cursor-hide cs base stride
     bp <- gbr-new w (desk-bro-h w h)
-    let apps2 = DeskApps { da-files = None, da-browser = Just bp, da-scene = None, da-edit = None }
+    let mc = desk-marks-clear (peek-32 ds desk-marks-cell)
+    in let apps2 = DeskApps { da-files = None, da-browser = Just bp, da-scene = None, da-edit = None }
     in act
       p <- gbr-first-paint base w (desk-bro-h w h) stride font mouse cs (ui-scale w) bp
       let sf = poke-32 ds desk-focus-cell desk-focus-bro
@@ -1774,6 +1953,7 @@ Section: Browser
       in if peek-32 ds desk-focus-cell /= desk-focus-none then act
         alive <- desk-step-of base w h stride font tf kbd mouse ds cs apps (peek-32 ds desk-focus-cell) sc clicked
         if alive == 0 then desk-app-close base w h stride font tf kbd mouse ds cs apps
+        else if alive == desk-step-hide then desk-app-hide base w h stride font tf kbd mouse ds cs apps
         else if alive == 1 then
           let d = __heap-restore fmark
           in desk-loop base w h stride font tf kbd mouse ds cs apps root
@@ -1809,9 +1989,9 @@ Section: Browser
     in if sc == 88 then desk-snap base w h stride font tf kbd mouse ds cs apps root
     else if prg then desk-programs-open base w h stride font tf kbd mouse ds cs (peek-32 ds desk-prog-cell) apps root
     else if clk then desk-clock-open base w h stride font tf kbd mouse ds cs (peek-32 ds desk-clock-cell) apps root
-    else if files then desk-files-open base w h stride font tf kbd mouse ds cs apps root
-    else if scene then desk-scene-open base w h stride font tf kbd mouse ds cs apps root gsc-sky desk-focus-scene
-    else if fish then desk-scene-open base w h stride font tf kbd mouse ds cs apps root gf-sky desk-focus-fish
+    else if files then desk-files-focus base w h stride font tf kbd mouse ds cs apps root
+    else if scene then desk-scene-focus base w h stride font tf kbd mouse ds cs apps root gsc-sky desk-focus-scene
+    else if fish then desk-scene-focus base w h stride font tf kbd mouse ds cs apps root gf-sky desk-focus-fish
     else if mon then
       let sf = poke-32 ds desk-focus-cell desk-focus-mon
       in let due = poke-32 ds 16 255
@@ -1822,7 +2002,7 @@ Section: Browser
     else if trk then desk-trk-open base w h stride font tf kbd mouse ds cs apps root
     else if dif then desk-dif-open base w h stride font tf kbd mouse ds cs apps root
     else if bro then desk-browser-open base w h stride font tf kbd mouse ds cs apps root
-    else if edt then desk-edit-open base w h stride font tf kbd mouse ds cs apps root
+    else if edt then desk-edit-focus base w h stride font tf kbd mouse ds cs apps root
     else if sty then desk-style-open base w h stride font tf kbd mouse ds cs apps root
     else if bye then desk-shutdown base w h stride font tf kbd mouse ds cs apps root
     else desk-loop base w h stride font tf kbd mouse ds cs apps root
@@ -1857,6 +2037,7 @@ Section: Browser
     in let ci = gcon-init ns
     in let pp = poke-32 ds desk-prog-cell (alloc-zeroed 64 64)
     in let kp2 = poke-32 ds desk-clock-cell (alloc-zeroed 64 64)
+    in let msp = poke-32 ds desk-marks-cell (alloc-zeroed 128 64)
     in let gpk = poke-32 ds desk-gpu-cell gp
     in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
     in let wp = mouse-warp mouse (w / 2) (h / 2)
