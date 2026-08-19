@@ -1,0 +1,135 @@
+Chapter: DiagCpu
+  cites Diag chapter DiagStage
+
+ CPUID (Intel SDM vol. 2A, AMD APM vol. 3). Leaf 0: highest basic leaf in
+ eax, vendor as ebx:edx:ecx. Leaf 1: eax version (stepping 3:0, model 7:4,
+ family 11:8, extended model 19:16, extended family 27:20), ebx 23:16 maximum
+ addressable APIC ids in the package (NOT the thread count: the i7-6700K says
+ 16 for 8 threads; leaf 0Bh would give the count), ecx bits 0 sse3, 5 vmx, 9 ssse3, 19 sse4.1, 20 sse4.2, 21
+ x2apic, 23 popcnt, 25 aes, 26 xsave, 28 avx, 30 rdrand, 31 hypervisor
+ present; edx bits 6 pae, 9 apic, 25 sse, 26 sse2, 28 htt. Leaf 7 sub 0 ebx:
+ 0 fsgsbase, 5 avx2, 7 smep, 18 rdseed, 20 smap. Extended 8000_0000h: highest
+ extended leaf; 8000_0001h edx 20 nx, 26 1 GB pages, 27 rdtscp, 29 long mode,
+ ecx 2 svm (AMD); 8000_0002h..04h: the 48-byte brand string.
+ IA32_FEATURE_CONTROL (MSR 3Ah): bit 0 lock, bit 2 VMX outside SMX. It exists
+ on Intel parts that report VMX and reading it elsewhere faults, so it is read
+ only behind both tests.
+
+ We say:
+
+Section: States
+
+  dcpu-states : List Text = ["ok", "hypervisor", "vmx-locked-off", "no-brand"]
+
+Section: Registers To Text
+
+  dcpu-reg-text : Integer -> Text
+  dcpu-reg-text (r) = dcpu-reg-chars r 0 ""
+
+  dcpu-reg-chars : Integer, Integer, Text -> Text
+  dcpu-reg-chars (r) (i) (acc) =
+    if i >= 4 then acc
+    else let b = bit-and (bit-shru r (8 * i)) 255
+    in if b == 0 then dcpu-reg-chars r (i + 1) acc
+    else if b < 32 then dcpu-reg-chars r (i + 1) (acc & ".")
+    else if b > 126 then dcpu-reg-chars r (i + 1) (acc & ".")
+    else dcpu-reg-chars r (i + 1) (acc & char-to-text (code-to-char (from-unicode b)))
+
+  dcpu-vendor : Integer -> Text
+  dcpu-vendor (dummy) = dcpu-reg-text (cpu-cpuid-ebx 0) & dcpu-reg-text (cpu-cpuid-edx 0) & dcpu-reg-text (cpu-cpuid-ecx 0)
+
+  dcpu-brand-leaf : Integer -> Text
+  dcpu-brand-leaf (leaf) = dcpu-reg-text (cpu-cpuid-eax leaf) & dcpu-reg-text (cpu-cpuid-ebx leaf) & dcpu-reg-text (cpu-cpuid-ecx leaf) & dcpu-reg-text (cpu-cpuid-edx leaf)
+
+  dcpu-max-ext : Integer -> Integer
+  dcpu-max-ext (dummy) = bit-and (cpu-cpuid-eax 2147483648) 4294967295
+
+  dcpu-brand : Integer -> Text
+  dcpu-brand (dummy) =
+    if dcpu-max-ext 0 < 2147483652 then ""
+    else let s = dcpu-brand-leaf 2147483650 & dcpu-brand-leaf 2147483651 & dcpu-brand-leaf 2147483652
+    in diag-trim-right s (text-length s)
+
+Section: Bits
+
+  dcpu-bit : Integer, Integer -> Boolean
+  dcpu-bit (v) (b) = bit-and (bit-shru v b) 1 == 1
+
+  dcpu-flag : Integer, Integer, Text -> Text
+  dcpu-flag (v) (b) (name) = if dcpu-bit v b then name & "," else ""
+
+  dcpu-family : Integer -> Integer
+  dcpu-family (eax) =
+    let f = bit-and (bit-shru eax 8) 15
+    in if f == 15 then f + bit-and (bit-shru eax 20) 255 else f
+
+  dcpu-model : Integer -> Integer
+  dcpu-model (eax) =
+    let f = bit-and (bit-shru eax 8) 15
+    in let m = bit-and (bit-shru eax 4) 15
+    in if f == 6 | f == 15 then bit-shl (bit-and (bit-shru eax 16) 15) 4 + m else m
+
+  dcpu-flags : Integer, Integer, Integer, Integer -> Text
+  dcpu-flags (ecx1) (edx1) (ebx7) (edx81) =
+    dcpu-flag edx1 25 "sse" & dcpu-flag edx1 26 "sse2" & dcpu-flag ecx1 0 "sse3" & dcpu-flag ecx1 9 "ssse3" & dcpu-flag ecx1 19 "sse4.1" & dcpu-flag ecx1 20 "sse4.2" & dcpu-flag ecx1 23 "popcnt" & dcpu-flag ecx1 25 "aes" & dcpu-flag ecx1 26 "xsave" & dcpu-flag ecx1 28 "avx" & dcpu-flag ebx7 5 "avx2" & dcpu-flag ecx1 30 "rdrand" & dcpu-flag ebx7 18 "rdseed" & dcpu-flag ebx7 0 "fsgsbase" & dcpu-flag ebx7 7 "smep" & dcpu-flag ebx7 20 "smap" & dcpu-flag edx1 6 "pae" & dcpu-flag edx1 9 "apic" & dcpu-flag ecx1 21 "x2apic" & dcpu-flag edx1 28 "htt" & dcpu-flag edx81 20 "nx" & dcpu-flag edx81 26 "1gpage" & dcpu-flag edx81 27 "rdtscp" & dcpu-flag edx81 29 "lm"
+
+Section: VMX
+
+ 0 = the part reports no VMX, 1 = VMX and the feature-control MSR is unlocked
+ (firmware left it open), 2 = locked with VMX enabled outside SMX, 3 = locked
+ with VMX disabled: the firmware setup has virtualisation off, which is the
+ one state a stranger can fix at their end.
+
+  dcpu-vmx : Text, Integer -> Integer
+  dcpu-vmx (vendor) (ecx1) =
+    if vendor /= "GenuineIntel" then 0
+    else if dcpu-bit ecx1 5 == False then 0
+    else let msr = rdmsr 58
+    in if dcpu-bit msr 0 == False then 1
+    else if dcpu-bit msr 2 then 2
+    else 3
+
+  dcpu-vmx-word : Integer -> Text
+  dcpu-vmx-word (v) =
+    if v == 0 then "none"
+    else if v == 1 then "unlocked"
+    else if v == 2 then "on"
+    else "locked-off"
+
+Section: The Stage
+
+  dcpu-state : Boolean, Integer, Text -> Text
+  dcpu-state (hv) (vmx) (brand) =
+    if hv then "hypervisor"
+    else if vmx == 3 then "vmx-locked-off"
+    else if text-length brand == 0 then "no-brand"
+    else "ok"
+
+  dcpu-colour : Text -> Integer
+  dcpu-colour (s) =
+    if s == "ok" then diag-col-good
+    else if s == "hypervisor" then diag-col-warn
+    else if s == "vmx-locked-off" then diag-col-warn
+    else diag-col-dim
+
+  dcpu-run : DiagCtx -> DiagResult
+  dcpu-run (c) =
+    let vendor = dcpu-vendor 0
+    in let maxb = bit-and (cpu-cpuid-eax 0) 4294967295
+    in let eax1 = cpu-cpuid-eax 1
+    in let ebx1 = cpu-cpuid-ebx 1
+    in let ecx1 = cpu-cpuid-ecx 1
+    in let edx1 = cpu-cpuid-edx 1
+    in let ebx7 = if maxb >= 7 then cpu-cpuid-ebx 7 else 0
+    in let edx81 = if dcpu-max-ext 0 >= 2147483649 then cpu-cpuid-edx 2147483649 else 0
+    in let ecx81 = if dcpu-max-ext 0 >= 2147483649 then cpu-cpuid-ecx 2147483649 else 0
+    in let brand = dcpu-brand 0
+    in let hv = dcpu-bit ecx1 31
+    in let vmx = dcpu-vmx vendor ecx1
+    in let state = dcpu-state hv vmx brand
+    in let g1 = "cpu=" & vendor & " " & (if text-length brand == 0 then "(no brand string)" else brand)
+    in let g2 = "family=" & show (dcpu-family eax1) & " model=" & show (dcpu-model eax1) & " stepping=" & show (bit-and eax1 15) & " max-apic-ids=" & show (bit-and (bit-shru ebx1 16) 255) & " vmx=" & dcpu-vmx-word vmx & (if dcpu-bit ecx81 2 then " svm=y" else "") & " hypervisor=" & (if hv then "y" else "n")
+    in let fl = dcpu-flags ecx1 edx1 ebx7 edx81
+    in let g3 = "flags=" & (if text-length fl > 0 then substring fl 0 (text-length fl - 1) else "none")
+    in let raw = "cpuid 0=" & diag-hex8 (cpu-cpuid-eax 0) & " 1=" & diag-hex8 (bit-and eax1 4294967295) & "," & diag-hex8 (bit-and ebx1 4294967295) & "," & diag-hex8 (bit-and ecx1 4294967295) & "," & diag-hex8 (bit-and edx1 4294967295) & " 7.ebx=" & diag-hex8 (bit-and ebx7 4294967295) & " 80000001.edx=" & diag-hex8 (bit-and edx81 4294967295) & " ecx=" & diag-hex8 (bit-and ecx81 4294967295)
+    in diag-result state (dcpu-colour state) [g1, g2, g3] [g1, g2, g3, raw]

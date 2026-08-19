@@ -527,6 +527,21 @@ peak, not the 25x an earlier revision claimed from the discredited sum.
 whole 2.99 MB and the scale comes out at 100, so its 1245 MB frontend peak is
 unchanged. It also does not unblock C1, which is not a deck problem at all.
 
+**C1 CLOSED by measurement 2026-08-18 (root): the compiler's own `-IrCce`
+self-compile no longer dies.** The 2026-08-03 symptom was a death at 3034 MB in
+`__str_concat` after the frontend, ~1.8 GB unaccounted. Re-run today against
+`seed/Codex.cdx` on the concatenated self-source (2,881,715 bytes,
+`build/concat-codex-self.ps1`): exit 0, **16.0 MB of IR produced**, and the
+frontier marks are `h4-parse` 1310 MB (the parse keep-copy peak this doc's
+"Where the peak actually comes from" already explains and calls by-design),
+released to `h-pre-emit` 374 MB and `h-post-emit` 380 MB. There is no
+post-frontend blow-up: pre-emit to post-emit moves 6 MB, consistent with the
+streaming emitter this doc exonerated. The 1.8 GB was retired by the work
+already shipped here (proportional scaling, and the scratch-deck release that
+made the peak the MAX of the floors rather than their sum), not by a new fix.
+The parse keep-copy peak (~1310 MB, up from 1245 as the compiler grew) is the
+inherent floor and is a separate question from C1's blow-up.
+
 ## There is no companion fix, and C1 is blocked on something else
 
 **An earlier revision of this doc proposed "release scratch decks between
@@ -850,13 +865,20 @@ of the work.
 ## Order
 
 1. ~~The guard page.~~ **Done 2026-08-04**, runner `build/guard-page-test.ps1`.
-2. Measure the IR PIPELINE, not the emitter. The emitter is exonerated above.
-   Instrument the frontier per IR pass; the compiler's missing 1.8 GB is in
-   lowering, resolve, lift or the passes, all of which `-Measure` skips. This
-   is the C1 blocker.
-2a. Fix the mislabelled heap marks first, or the instrument in step 2 will be
-   read through the same off-by-three that has been mislabelling CHECK and
-   LOWER all along.
+2. ~~Measure the IR PIPELINE, not the emitter.~~ **Done.** The per-pass
+   frontier instrument (`pass-frontier-mark`, `Passes.codex`) shipped 2026-08-04
+   (CL 12968); it measured the whole pipeline at **12.2 MB** and exonerated the
+   passes, the third refuted C1 hypothesis after the deck floors and the IR text
+   emitter. And 2026-08-18 the full self `-IrCce` completes (see "C1 CLOSED by
+   measurement" above), so the 1.8 GB it was chasing is gone. C1 is closed, not
+   blocked. (Reachability note for anyone re-measuring: the per-pass `PASS`
+   marks require `-DebugMode` mode "debug", not `-Trace`; `compile.ps1 -Trace`
+   sets mode "trace" and does NOT enable `phase-trace`. `-DebugMode -IrCce`
+   currently exits 4 with `PH:` lines, a separate plumbing question not chased
+   here.)
+2a. ~~Fix the mislabelled heap marks first.~~ **Done** (see "the last two heap
+   marks are mislabelled"); verified 2026-08-18 that `h-pre-emit`/`h-post-emit`
+   now print in their own slots on a live self `-IrCce`.
 3. ~~Proportional workspace scaling.~~ **Done 2026-08-04.** Formula shipped
    2026-08-03, derivation shipped 2026-08-04, validated by the 1674-unit sweep
    and `deck-floor-test`. Damian's request is delivered.

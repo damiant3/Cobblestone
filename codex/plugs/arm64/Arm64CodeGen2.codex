@@ -943,7 +943,9 @@ Section: Apply
      if st.tco.active & st.tco.in-tail-pos & name == st.tco.current-func
      then a64-emit-tail-call st args
      else let st-nt = a64-set-tail-pos st False
-     in if name == "vec-splat" & list-length args == 1
+     in if ((st.extra).deck-record-intrinsic) & name == "deck-record" & list-length args == 1
+      then a64-emit-deck-record-wrapper st-nt (list-at args 0)
+     else if name == "vec-splat" & list-length args == 1
       then a64-emit-vec-splat st-nt (list-at args 0) ty
      else if name == "show" & list-length args == 1
       then when a64-strip-unit-ty (ir-expr-type (list-at args 0))
@@ -1180,8 +1182,125 @@ Section: Apply
    else let st1 = a64-emit-expr-to st (list-at args i) (a64-x0 + i)
    in a64-emit-trivial-args st1 args locals (i + 1)
 
-  a64-is-known-builtin : Text -> Integer
-  a64-is-known-builtin (name) =
+  a64-add-shadow-warning : A64State, Text -> A64State
+  a64-add-shadow-warning (st) (msg) =
+   __record-set st "extra" (__record-set (st.extra) "wcet-reports" (list-push ((st.extra).wcet-reports) msg))
+
+  a64-emit-unsupported-read : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-read (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": arm64 has no filesystem, and a read cannot be served"
+   in a64-emit-empty-text (a64-add-shadow-warning st msg)
+
+ Port I/O is the same refusal for a different reason. The port builtins
+ are the x86 IN and OUT instructions, and gpu-in / gpu-out /
+ gpu-mem-read / gpu-mem-write are the codex-vm GPU behind them; a
+ Renode board has neither the instruction nor the device, and neither
+ is wanted here (decided 2026-07-23). Before this arm
+ existed these calls fell through to the unresolved-call hole: a port
+ write silently did nothing and a port read answered whatever was in
+ the result register, which is how cap-block-denied printed a heap
+ address where a refusal sentinel belongs. The arms match on the name
+ alone, no arity gate, so a partial application refuses too.
+ codex/test/cross-port-refused pins that the refusal fires.
+
+  a64-emit-unsupported-port : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-port (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": x86 port I/O and the codex-vm gpu do not exist on this target (refused by design)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+
+ The x86 CPU-state builtins, refused for the same reason and named
+ separately because the reason is a different one to state. A control
+ register and CPUID are x86 architecture, not devices: AArch64 has system
+ registers reached through MRS and an ID register space that answers
+ different questions entirely, so there is no honest translation and no
+ value worth inventing. A refusal here is what stops a call to a symbol
+ this runtime has never heard of, which is how the list intrinsics failed
+ silently on this lane until main 11280.
+
+  a64-emit-unsupported-cpu : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-cpu (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": x86 control registers and CPUID do not exist on this target (refused by design)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+
+ Before this arm they fell through the dispatch tail to a plain call to
+ an undefined symbol. Measured on codex/test/list-pattern: the compile
+ reported OK and every line of the program then faulted
+ (!A64FAULT ESR=0x02000000, an illegal instruction). That is worse than
+ the port hole it resembles, because a length that answers garbage
+ selects the wrong arm and the whole match is decided by it.
+
+  a64-emit-unsupported-list : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-list (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": builtin-List pattern matching is not implemented on arm64 (refused rather than miscompiled)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+
+ The subjects are the names emitted AFTER the runtime, and the set they are
+ checked against is the names the runtime itself recorded. Both come from
+ `func-names`, split at `runtime-funcs`, which `a64-emit-module` already
+ stores as the length of that list the moment `a64-emit-runtime` returns.
+ Nothing is written down twice, so a helper added to `Arm64Runtime` is
+ covered the day it is added.
+
+ It used to ask `a64-is-known-builtin`, a hand-written chain of 126 string
+ equalities. Measured 2026-08-16: the runtime registers 104 names and 85 of
+ them were absent from that chain, including `peek-16`, `poke-16` and every
+ MMIO, process and system-register accessor, so the overlap was 19 of 104.
+ `VirtioPci` defining `poke-16` in Codex left the correct `strh` helper
+ unreachable and drew no warning at all, while the same build printed twelve
+ warnings -- and every one of those twelve was the check reading the
+ RUNTIME's own registrations back out of `func-names` and reporting them as
+ user code. Starting at `runtime-funcs` is what makes a hit mean something.
+
+ A record FIELD sharing a helper's name cannot reach here, so nothing
+ excludes it: `func-names` holds emitted functions, and a field is never
+ one. That trap belongs to a source-text census, not to this check.
+
+  a64-name-in-prefix : List Text, Integer, Integer, Text -> Integer
+  a64-name-in-prefix (names) (i) (limit) (want) =
+   if i >= limit then 0
+   else if list-at names i == want then 1
+   else a64-name-in-prefix names (i + 1) limit want
+
+  a64-check-builtin-collisions : A64State, List Text, Integer -> A64State
+  a64-check-builtin-collisions (st) (names) (i) =
+   let rt = (st.extra).runtime-funcs
+   in a64-check-collisions-loop st names (if i < rt then rt else i) rt
+
+  a64-check-collisions-loop : A64State, List Text, Integer, Integer -> A64State
+  a64-check-collisions-loop (st) (names) (i) (rt) =
+   if i >= list-length names then st
+   else let name = list-at names i
+   in if a64-name-in-prefix names 0 rt name == 1
+    then let warn = "[WARN] user function '" & name & "' shadows the ARM64 runtime helper of the same name; the helper is unreachable"
+    in a64-check-collisions-loop (a64-add-shadow-warning st warn) names (i + 1) rt
+    else a64-check-collisions-loop st names (i + 1) rt
+
+  a64-emit-user-fn-call : A64State, Text, List IRExpr -> A64EmitResult
+  a64-emit-user-fn-call (st) (name) (args) =
+   if list-length args == 1 then a64-emit-single-arg-call st name (list-at args 0)
+   else let saved-nl = st.next-local
+   in let saved = a64-save-args st args 0 []
+   in let num-stack-args = if list-length args > 8 then list-length args - 8 else 0
+   in let stack-size = if num-stack-args > 0 then a64-align-16 (num-stack-args * 8) else 0
+   in let st1 = a64-move-args-to-regs (saved.state) (saved.locals) 0
+   in let st2 = a64-emit-trivial-args st1 args (saved.locals) 0
+   in let st2a = a64-push-stack-args-pre st2 (saved.locals) 8 (list-length args) stack-size
+   in let st3 = a64-emit-call-to st2a name
+   in let st3a = if stack-size > 0 then a64-emit st3 (arm64-add-imm a64-sp a64-sp stack-size) else st3
+   in let st4 = __record-set st3a "next-local" saved-nl
+   in A64EmitResult { state = st4, reg = a64-x0 }
+
+ This is the helper-versus-arm precedence table and nothing else: a name here
+ that the runtime registers is called by NAME (its runtime helper), a registered
+ name absent from it takes the emitter's arm. It is hand-written and it is
+ load-bearing, measured 2026-08-17: deriving it as "every registered name" put
+ eight arm64 bed answers wrong (goose-encode faulted, heap-frame-reclaim 43 to
+ 15), because arms that had never run went live. It is NOT the shadow list any
+ more: whether a USER def wins is decided by `func-names` past `runtime-funcs`,
+ below, and by `a64-check-builtin-collisions`.
+
+  a64-helper-by-name : Text -> Integer
+  a64-helper-by-name (name) =
    if name == "__narrow" then 1
    else if name == "address-of" then 1
    else if name == "__record-set" then 1
@@ -1308,114 +1427,90 @@ Section: Apply
    else if name == "vec4-extract" then 1
    else 0
 
-  a64-add-shadow-warning : A64State, Text -> A64State
-  a64-add-shadow-warning (st) (msg) =
-   __record-set st "extra" (__record-set (st.extra) "wcet-reports" (list-push ((st.extra).wcet-reports) msg))
+  a64-emit-deck-pos : A64State -> A64EmitResult
+  a64-emit-deck-pos (st) =
+   let ar = a64-alloc-temp st
+   in let st1 = a64-emit-li (ar.state) (ar.reg) a64-deck-pos-addr
+   in let vr = a64-alloc-temp st1
+   in A64EmitResult {
+    state = a64-emit (vr.state) (arm64-ldr (vr.reg) (ar.reg) 0),
+    reg = vr.reg
+   }
 
-  a64-emit-unsupported-read : A64State, Text -> A64EmitResult
-  a64-emit-unsupported-read (st) (name) =
-   let msg = "[UNSUPPORTED] " & name & ": arm64 has no filesystem, and a read cannot be served"
-   in a64-emit-empty-text (a64-add-shadow-warning st msg)
+  a64-emit-deck-set : A64State, IRExpr -> A64EmitResult
+  a64-emit-deck-set (st) (arg) =
+   let r = a64-emit-expr st arg
+   in let ar = a64-alloc-temp (r.state)
+   in let st1 = a64-emit-li (ar.state) (ar.reg) a64-deck-pos-addr
+   in a64-emit-int-lit (a64-emit st1 (arm64-str (r.reg) (ar.reg) 0)) 0
 
- Port I/O is the same refusal for a different reason. The port builtins
- are the x86 IN and OUT instructions, and gpu-in / gpu-out /
- gpu-mem-read / gpu-mem-write are the codex-vm GPU behind them; a
- Renode board has neither the instruction nor the device, and neither
- is wanted here (decided 2026-07-23). Before this arm
- existed these calls fell through to the unresolved-call hole: a port
- write silently did nothing and a port read answered whatever was in
- the result register, which is how cap-block-denied printed a heap
- address where a refusal sentinel belongs. The arms match on the name
- alone, no arity gate, so a partial application refuses too.
- codex/test/cross-port-refused pins that the refusal fires.
+  a64-emit-deck-alloc : A64State, IRExpr -> A64EmitResult
+  a64-emit-deck-alloc (st) (arg) =
+   let r = a64-emit-expr st arg
+   in let ar = a64-alloc-temp (r.state)
+   in let st1 = a64-emit-li (ar.state) (ar.reg) a64-deck-pos-addr
+   in let pr = a64-alloc-temp st1
+   in let st2 = a64-emit (pr.state) (arm64-ldr (pr.reg) (ar.reg) 0)
+   in let nr = a64-alloc-temp st2
+   in let st3 = a64-emit (nr.state) (arm64-add (nr.reg) (pr.reg) (r.reg))
+   in A64EmitResult {
+    state = a64-emit st3 (arm64-str (nr.reg) (ar.reg) 0),
+    reg = pr.reg
+   }
 
-  a64-emit-unsupported-port : A64State, Text -> A64EmitResult
-  a64-emit-unsupported-port (st) (name) =
-   let msg = "[UNSUPPORTED] " & name & ": x86 port I/O and the codex-vm gpu do not exist on this target (refused by design)"
-   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+  a64-emit-deck-enter : A64State -> A64EmitResult
+  a64-emit-deck-enter (st) =
+   let cr = a64-alloc-temp st
+   in let st1 = a64-emit-li (cr.state) (cr.reg) a64-deck-bound-counter-addr
+   in let ov = a64-alloc-temp st1
+   in let st2 = a64-emit (ov.state) (arm64-ldr (ov.reg) (cr.reg) 0)
+   in let nv = a64-alloc-temp st2
+   in let st3 = a64-emit (nv.state) (arm64-add-imm (nv.reg) (ov.reg) 1)
+   in let st4 = a64-emit st3 (arm64-str (nv.reg) (cr.reg) 0)
+   in let skip-index = st4.insn-count
+   in let st5 = a64-emit st4 arm64-nop
+   in let br = a64-alloc-temp st5
+   in let st6 = a64-emit-li (br.state) (br.reg) a64-bivy-save-addr
+   in let st7 = a64-emit st6 (arm64-str a64-heap-reg (br.reg) 0)
+   in let dr = a64-alloc-temp st7
+   in let st8 = a64-emit-li (dr.state) (dr.reg) a64-deck-pos-addr
+   in let st9 = a64-emit st8 (arm64-ldr a64-heap-reg (dr.reg) 0)
+   in let skip-label = st9.insn-count
+   in a64-emit-int-lit (a64-patch-insn st9 skip-index (arm64-cbnz (ov.reg) ((skip-label - skip-index) * 4))) 0
 
- The x86 CPU-state builtins, refused for the same reason and named
- separately because the reason is a different one to state. A control
- register and CPUID are x86 architecture, not devices: AArch64 has system
- registers reached through MRS and an ID register space that answers
- different questions entirely, so there is no honest translation and no
- value worth inventing. A refusal here is what stops a call to a symbol
- this runtime has never heard of, which is how the list intrinsics failed
- silently on this lane until main 11280.
+  a64-emit-deck-exit : A64State -> A64EmitResult
+  a64-emit-deck-exit (st) =
+   let cr = a64-alloc-temp st
+   in let st1 = a64-emit-li (cr.state) (cr.reg) a64-deck-bound-counter-addr
+   in let cv = a64-alloc-temp st1
+   in let st2 = a64-emit (cv.state) (arm64-ldr (cv.reg) (cr.reg) 0)
+   in let st3 = a64-emit st2 (arm64-sub-imm (cv.reg) (cv.reg) 1)
+   in let st4 = a64-emit st3 (arm64-str (cv.reg) (cr.reg) 0)
+   in let skip-index = st4.insn-count
+   in let st5 = a64-emit st4 arm64-nop
+   in let dr = a64-alloc-temp st5
+   in let st6 = a64-emit-li (dr.state) (dr.reg) a64-deck-pos-addr
+   in let st7 = a64-emit st6 (arm64-str a64-heap-reg (dr.reg) 0)
+   in let br = a64-alloc-temp st7
+   in let st8 = a64-emit-li (br.state) (br.reg) a64-bivy-save-addr
+   in let st9 = a64-emit st8 (arm64-ldr a64-heap-reg (br.reg) 0)
+   in let skip-label = st9.insn-count
+   in a64-emit-int-lit (a64-patch-insn st9 skip-index (arm64-cbnz (cv.reg) ((skip-label - skip-index) * 4))) 0
 
-  a64-emit-unsupported-cpu : A64State, Text -> A64EmitResult
-  a64-emit-unsupported-cpu (st) (name) =
-   let msg = "[UNSUPPORTED] " & name & ": x86 control registers and CPUID do not exist on this target (refused by design)"
-   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
-
- Before this arm they fell through the dispatch tail to a plain call to
- an undefined symbol. Measured on codex/test/list-pattern: the compile
- reported OK and every line of the program then faulted
- (!A64FAULT ESR=0x02000000, an illegal instruction). That is worse than
- the port hole it resembles, because a length that answers garbage
- selects the wrong arm and the whole match is decided by it.
-
-  a64-emit-unsupported-list : A64State, Text -> A64EmitResult
-  a64-emit-unsupported-list (st) (name) =
-   let msg = "[UNSUPPORTED] " & name & ": builtin-List pattern matching is not implemented on arm64 (refused rather than miscompiled)"
-   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
-
- The subjects are the names emitted AFTER the runtime, and the set they are
- checked against is the names the runtime itself recorded. Both come from
- `func-names`, split at `runtime-funcs`, which `a64-emit-module` already
- stores as the length of that list the moment `a64-emit-runtime` returns.
- Nothing is written down twice, so a helper added to `Arm64Runtime` is
- covered the day it is added.
-
- It used to ask `a64-is-known-builtin`, a hand-written chain of 126 string
- equalities. Measured 2026-08-16: the runtime registers 104 names and 85 of
- them were absent from that chain, including `peek-16`, `poke-16` and every
- MMIO, process and system-register accessor, so the overlap was 19 of 104.
- `VirtioPci` defining `poke-16` in Codex left the correct `strh` helper
- unreachable and drew no warning at all, while the same build printed twelve
- warnings -- and every one of those twelve was the check reading the
- RUNTIME's own registrations back out of `func-names` and reporting them as
- user code. Starting at `runtime-funcs` is what makes a hit mean something.
-
- A record FIELD sharing a helper's name cannot reach here, so nothing
- excludes it: `func-names` holds emitted functions, and a field is never
- one. That trap belongs to a source-text census, not to this check.
-
-  a64-name-in-prefix : List Text, Integer, Integer, Text -> Integer
-  a64-name-in-prefix (names) (i) (limit) (want) =
-   if i >= limit then 0
-   else if list-at names i == want then 1
-   else a64-name-in-prefix names (i + 1) limit want
-
-  a64-check-builtin-collisions : A64State, List Text, Integer -> A64State
-  a64-check-builtin-collisions (st) (names) (i) =
-   let rt = (st.extra).runtime-funcs
-   in a64-check-collisions-loop st names (if i < rt then rt else i) rt
-
-  a64-check-collisions-loop : A64State, List Text, Integer, Integer -> A64State
-  a64-check-collisions-loop (st) (names) (i) (rt) =
-   if i >= list-length names then st
-   else let name = list-at names i
-   in if a64-name-in-prefix names 0 rt name == 1
-    then let warn = "[WARN] user function '" & name & "' shadows the ARM64 runtime helper of the same name; the helper is unreachable"
-    in a64-check-collisions-loop (a64-add-shadow-warning st warn) names (i + 1) rt
-    else a64-check-collisions-loop st names (i + 1) rt
-
-  a64-emit-user-fn-call : A64State, Text, List IRExpr -> A64EmitResult
-  a64-emit-user-fn-call (st) (name) (args) =
-   if list-length args == 1 then a64-emit-single-arg-call st name (list-at args 0)
-   else let saved-nl = st.next-local
-   in let saved = a64-save-args st args 0 []
-   in let st1 = a64-move-args-to-regs (saved.state) (saved.locals) 0
-   in let st2 = a64-emit-trivial-args st1 args (saved.locals) 0
-   in let st3 = a64-emit-call-to st2 name
-   in let st4 = __record-set st3 "next-local" saved-nl
-   in A64EmitResult { state = st4, reg = a64-x0 }
+  a64-emit-deck-record-wrapper : A64State, IRExpr -> A64EmitResult
+  a64-emit-deck-record-wrapper (st) (arg) =
+   let enter = a64-emit-deck-enter st
+   in let r = a64-emit-expr (a64-set-tail-pos (enter.state) False) arg
+   in let sl = a64-alloc-local (r.state)
+   in let st1 = a64-store-local (sl.state) (sl.reg) (r.reg)
+   in let ex = a64-emit-deck-exit st1
+   in a64-load-local (ex.state) (sl.reg)
 
   a64-emit-direct-call : A64State, Text, List IRExpr -> A64EmitResult
   a64-emit-direct-call (st) (name) (args) =
-   let has-user-fn = a64-find-func-offset (st.func-names) (st.func-offsets) name 0
-   in if has-user-fn >= 0 & a64-is-known-builtin name == 1 & a64-is-inline-here name (list-length args) == False then a64-emit-user-fn-call st name args
+   let user-def = a64-find-name-index (st.func-names) name ((st.extra).runtime-funcs)
+   in let helper = if user-def >= 0 then 0 - 1 else if a64-helper-by-name name == 1 then a64-find-func-offset (st.func-names) (st.func-offsets) name 0 else 0 - 1
+   in if (user-def >= 0 | helper >= 0) & a64-is-inline-here name (list-length args) == False then a64-emit-user-fn-call st name args
    else if name == "__narrow" & list-length args == 1 then a64-emit-expr st (list-at args 0)
    else if name == "address-of" & list-length args == 1 then a64-emit-address-of st (list-at args 0)
    else if name == "__record-set" & list-length args == 3 then a64-emit-record-set-builtin st args
@@ -1494,11 +1589,11 @@ Section: Apply
    else if name == "file-exists" & list-length args == 1 then a64-emit-int-lit st 1
    else if name == "__memset" & list-length args == 3 then a64-emit-three-arg-call st "memset" args
    else if name == "text-concat-list" & list-length args == 1 then a64-emit-single-arg-call st "text-concat-list" (list-at args 0)
-   else if name == "__deck-pos" then a64-emit-int-lit st 0
-   else if name == "__deck-set" & list-length args == 1 then a64-emit-int-lit st 0
-   else if name == "__deck-alloc" & list-length args == 1 then a64-emit-expr st (list-at args 0)
-   else if name == "__deck-enter" then a64-emit-int-lit st 0
-   else if name == "__deck-exit" then a64-emit-int-lit st 0
+   else if name == "__deck-pos" then a64-emit-deck-pos st
+   else if name == "__deck-set" & list-length args == 1 then a64-emit-deck-set st (list-at args 0)
+   else if name == "__deck-alloc" & list-length args == 1 then a64-emit-deck-alloc st (list-at args 0)
+   else if name == "__deck-enter" then a64-emit-deck-enter st
+   else if name == "__deck-exit" then a64-emit-deck-exit st
    else if name == "__list-with-capacity" & list-length args == 1 then a64-emit-empty-list st
    else if name == "vec-empty" then a64-emit-int-lit st 0
    else if name == "vec-length" & list-length args == 1 then a64-emit-single-arg-call st "list-length" (list-at args 0)
@@ -1564,18 +1659,8 @@ Section: Apply
    else if name == "unicode-bytes-to-text" & list-length args == 1 then a64-emit-single-arg-call st "unicode-bytes-to-text" (list-at args 0)
    else if name == "vec4-splat" & list-length args == 1 then a64-emit-vec-splat st (list-at args 0) (VectorTy 4 real-f32)
    else if name == "vec4-extract" & list-length args == 2 then a64-emit-vec-extract st (list-at args 0) (list-at args 1)
-   else if list-length args == 1 then a64-emit-single-arg-call st name (list-at args 0)
-   else let saved-nl = st.next-local
-   in let saved = a64-save-args st args 0 []
-   in let num-stack-args = if list-length args > 8 then list-length args - 8 else 0
-   in let stack-size = if num-stack-args > 0 then a64-align-16 (num-stack-args * 8) else 0
-   in let st1 = a64-move-args-to-regs (saved.state) (saved.locals) 0
-   in let st2 = a64-emit-trivial-args st1 args (saved.locals) 0
-   in let st2a = a64-push-stack-args-pre st2 (saved.locals) 8 (list-length args) stack-size
-   in let st3 = a64-emit-call-to st2a name
-   in let st3a = if stack-size > 0 then a64-emit st3 (arm64-add-imm a64-sp a64-sp stack-size) else st3
-   in let st4 = __record-set st3a "next-local" saved-nl
-   in A64EmitResult { state = st4, reg = a64-x0 }
+   else a64-emit-user-fn-call st name args
+
 
   a64-align-16 : Integer -> Integer
   a64-align-16 (n) = if int-mod n 16 == 0 then n else n + 16 - int-mod n 16

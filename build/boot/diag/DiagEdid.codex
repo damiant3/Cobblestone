@@ -1,0 +1,114 @@
+Chapter: DiagEdid
+  cites Works chapter GopHandoff
+  cites Diag chapter DiagStage
+
+ VESA E-EDID 1.4, the 128-byte base block the stub copied from
+ EFI_EDID_ACTIVE_PROTOCOL: header 00 FF FF FF FF FF FF 00; manufacturer id
+ at 8-9 as three 5-bit letters, big-endian, 1 = A; product code at 10-11
+ little-endian; serial at 12-15; week at 16; year at 17 (+1990); version at
+ 18, revision at 19; input at 20 (bit 7 = digital); horizontal and vertical
+ size in cm at 21-22; the first detailed timing at 54 (pixel clock at 54-55
+ in 10 kHz, horizontal active = byte 56 + high nibble of 58 << 8, vertical
+ active = byte 59 + high nibble of 61 << 8); descriptors at 72, 90, 108 with
+ tag FC at +3 for the monitor name (13 chars from +5, ended by LF); the sum of
+ all 128 bytes is 0 mod 256.
+
+ We say:
+
+Section: States
+
+  ded-states : List Text = ["ok", "absent", "short", "bad-header", "bad-checksum"]
+
+Section: Fields
+
+  ded-letter : Integer -> Text
+  ded-letter (n) = if n < 1 then "?" else if n > 26 then "?" else char-to-text (code-to-char (from-unicode (64 + n)))
+
+  ded-mfr : Integer -> Text
+  ded-mfr (b) =
+    let w = peek-byte b 8 * 256 + peek-byte b 9
+    in ded-letter (bit-and (bit-shru w 10) 31) & ded-letter (bit-and (bit-shru w 5) 31) & ded-letter (bit-and w 31)
+
+  ded-header-ok : Integer -> Boolean
+  ded-header-ok (b) = peek-byte b 0 == 0 & peek-byte b 1 == 255 & peek-byte b 2 == 255 & peek-byte b 3 == 255 & peek-byte b 4 == 255 & peek-byte b 5 == 255 & peek-byte b 6 == 255 & peek-byte b 7 == 0
+
+  ded-sum : Integer, Integer, Integer -> Integer
+  ded-sum (b) (i) (acc) = if i >= 128 then bit-and acc 255 else ded-sum b (i + 1) (acc + peek-byte b i)
+
+  ded-hactive : Integer -> Integer
+  ded-hactive (b) = peek-byte b 56 + bit-shl (bit-shru (peek-byte b 58) 4) 8
+
+  ded-vactive : Integer -> Integer
+  ded-vactive (b) = peek-byte b 59 + bit-shl (bit-shru (peek-byte b 61) 4) 8
+
+  ded-name-at : Integer, Integer -> Text
+  ded-name-at (b) (d) =
+    if peek-16 b d /= 0 then ""
+    else if peek-byte b (d + 3) /= 252 then ""
+    else ded-name-chars b (d + 5) 0 ""
+
+  ded-name-chars : Integer, Integer, Integer, Text -> Text
+  ded-name-chars (b) (i) (n) (acc) =
+    if n >= 13 then acc
+    else let ch = peek-byte b i
+    in if ch == 10 then acc
+    else if ch < 32 then ded-name-chars b (i + 1) (n + 1) acc
+    else if ch > 126 then ded-name-chars b (i + 1) (n + 1) acc
+    else ded-name-chars b (i + 1) (n + 1) (acc & char-to-text (code-to-char (from-unicode ch)))
+
+  ded-name : Integer -> Text
+  ded-name (b) =
+    let n1 = ded-name-at b 72
+    in if text-length n1 > 0 then diag-trim-right n1 (text-length n1)
+    else let n2 = ded-name-at b 90
+    in if text-length n2 > 0 then diag-trim-right n2 (text-length n2)
+    else let n3 = ded-name-at b 108
+    in diag-trim-right n3 (text-length n3)
+
+ Bytes 21-22 (E-EDID 1.4 section 3.6.2): both non-zero is the image size in
+ cm; from 1.4 on, one zero and the other non-zero encodes an aspect ratio
+ instead (byte 21 non-zero: landscape, (value + 99) / 100 to 1; byte 22
+ non-zero: portrait, 100 / (value + 99)); both zero is undefined. A 1.3
+ block has only the cm reading, and what a monitor puts there is its own
+ claim: the ASUS's SyncMaster (1.3) says 16 x 9, its aspect ratio wearing
+ the cm fields.
+
+  ded-size : Integer -> Text
+  ded-size (b) =
+    let h = peek-byte b 21
+    in let v = peek-byte b 22
+    in let v14 = if peek-byte b 18 > 1 then True else peek-byte b 19 >= 4
+    in if h == 0 & v == 0 then "size=undefined"
+    else if h /= 0 & v /= 0 then "size=" & show h & "x" & show v & "cm"
+    else if v14 == False then "size=" & show h & "x" & show v & "cm(one zero, pre-1.4)"
+    else if v == 0 then "aspect=" & show (h + 99) & ":100(landscape)"
+    else "aspect=100:" & show (v + 99) & "(portrait)"
+
+  ded-hex-row : Integer, Integer, Integer, Text -> Text
+  ded-hex-row (b) (i) (n) (acc) = if i >= n then acc else ded-hex-row b (i + 1) n (acc & diag-hex2 (peek-byte b i))
+
+Section: The Stage
+
+  ded-state : Integer, Integer -> Text
+  ded-state (b) (n) =
+    if n == 0 then "absent"
+    else if n < 128 then "short"
+    else if ded-header-ok b == False then "bad-header"
+    else if ded-sum b 0 0 /= 0 then "bad-checksum"
+    else "ok"
+
+  ded-colour : Text -> Integer
+  ded-colour (s) =
+    if s == "ok" then diag-col-good
+    else if s == "absent" then diag-col-dim
+    else diag-col-bad
+
+  ded-run : DiagCtx -> DiagResult
+  ded-run (c) =
+    let b = handoff-edid-base
+    in let n = handoff-edid-size 0
+    in let state = ded-state b n
+    in if n < 128 then diag-result state (ded-colour state) ["edid bytes=" & show n & " (firmware offered " & (if n == 0 then "none" else "a short block") & ")"] ["edid bytes=" & show n]
+    else let g1 = "display=" & ded-mfr b & " " & diag-hex4 (peek-16 b 10) & " " & ded-name b & " native=" & show (ded-hactive b) & "x" & show (ded-vactive b) & " " & ded-size b
+    in let g2 = "edid=" & show (peek-byte b 18) & "." & show (peek-byte b 19) & " " & (if bit-and (peek-byte b 20) 128 /= 0 then "digital" else "analog") & " serial=" & diag-hex8 (peek-32 b 12) & " week=" & show (peek-byte b 16) & " year=" & show (1990 + peek-byte b 17) & " pclk=" & show (peek-16 b 54 * 10) & "kHz sum=" & show (ded-sum b 0 0)
+    in diag-result state (ded-colour state) [g1, g2] [g1, g2, "edid raw0=" & ded-hex-row b 0 32 "", "edid raw1=" & ded-hex-row b 32 64 "", "edid raw2=" & ded-hex-row b 64 96 "", "edid raw3=" & ded-hex-row b 96 128 ""]

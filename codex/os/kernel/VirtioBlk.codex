@@ -14,30 +14,16 @@ Section: Constants
   vblk-sector-size : Integer = 512
   vblk-req-read : Integer = 0
   vblk-req-write : Integer = 1
- These were #300000, #310000 and #320000, which is FLASH on QEMU virt
- (flash0 spans 0-0x03FFFFFF), not RAM: RAM starts at 0x40000000. They then
- sat at #40240000, which is inside the memory the ARM64 stub allocates for
- the kernel -- `a64pe-kernel-base` #40100000 plus an allocation running to
- roughly #42100000 -- so the disk was reading into the guest's own image
- and heap. It happened to survive because the read is one 512-byte transfer
- early in boot; VirtioNet, DMA-ing continuously into the same span, did not,
- and the account is in that chapter.
+ These regions are derived from the DMA floor the stub publishes at
+ `vnet-dma-floor-cell` (#40004000), the same cell `VirtioNet` reads; see the
+ Buffer Region account in that chapter for why the floor is published rather
+ than fixed. They sit #100000 above the floor, clear of the VirtioNet regions
+ (floor..floor+#30000), and move with it when the kernel grows.
 
- Anything here must stay clear of the VirtioNet regions above #44000000 and
- of the stub's allocation, whose top is `stack-top` = `a64pe-kernel-base` +
- `text-pages` * 4096 in `codex/plugs/pe/Arm64PeWriter.codex` (`:38`, `:415`,
- `:432`). `text-pages` moves with the size of the kernel being built, so this
- is arithmetic and not a fixed number.
-
- Measured 2026-08-17: `stack-top` is #42123000 for the shipped image, 30.9 MB
- clear of these constants. The arithmetic and the one change that breaks it --
- raising the stub's 8192-page heap grant to 16384, which lands `stack-top` at
- #44123000, above BOTH these regions -- are recorded once in `VirtioNet`
- rather than twice here.
-
-  vblk-buf-base : Integer = #44100000
-  vblk-queue-region : Integer = #44110000
-  vblk-req-base : Integer = #44120000
+  vblk-dma-floor : Integer = peek-32 #40004000 0
+  vblk-buf-base : Integer = vblk-dma-floor + #100000
+  vblk-queue-region : Integer = vblk-dma-floor + #110000
+  vblk-req-base : Integer = vblk-dma-floor + #120000
 
 Section: Device State
 

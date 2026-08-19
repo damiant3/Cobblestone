@@ -96,7 +96,12 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
 
     # -- Receive IMG output ------------------------------------------
     $tcpStream.ReadTimeout = 600000
-    $allBytes = [System.Collections.Generic.List[byte]]::new(1048576)
+    # A per-byte accumulate here cost 116.77 s for a 16 MB artifact against
+    # 0.02 s for the bulk write, measured 2026-08-18 over the shipped shape.
+    # The cost is one interpreter iteration per byte, not the transport, so it
+    # scales with the ARTIFACT, and this plug's artifact is the whole disk
+    # image: 8,388,608 bytes at the default sector count.
+    $allBytes = [System.IO.MemoryStream]::new(1048576)
     $readBuf = [byte[]]::new(65536)
     $recvAborted = $false
     $recvError = ''
@@ -104,7 +109,7 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
         while ($true) {
             $n = $tcpStream.Read($readBuf, 0, $readBuf.Length)
             if ($n -le 0) { break }
-            for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
+            $allBytes.Write($readBuf, 0, $n)
         }
     } catch {
         # A read timeout and a connection reset are NOT a clean end of stream.
@@ -130,7 +135,7 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
         exit 7
     }
     if ($recvAborted) {
-        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.")
+        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Length) bytes and cannot tell whether that is all of them.")
         exit 8
     }
 
@@ -149,14 +154,29 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
             $guestSent = [int64]$m.Groups[2].Value
         }
     }
-    if ($guestImg -ge 0) {
-        Write-Host "[img-run] guest built $guestImg, guest sent $guestSent, host received $($allBytes.Count)"
-        if ($guestSent -ne $guestImg -or $allBytes.Count -ne $guestImg) {
-            [Console]::Error.WriteLine("FAIL: byte counts disagree -- guest built $guestImg, guest sent $guestSent, host received $($allBytes.Count).")
-            exit 9
+    # NO WITNESS IS A FAILURE, NOT A REASON TO SKIP THE CHECK. Both greps above
+    # test for something the guest SAYS -- 'OK img=' or 'TRUNCATED sent=' -- and
+    # the comparison was guarded on a -1 sentinel, so a guest that says neither
+    # meant no comparison rather than no confidence. Measured 2026-08-18: a
+    # 5.5 MB payload into 16384 sectors FAULTED the plug, which printed a
+    # register dump and no line either grep matches, and this harness wrote the
+    # 2800 bytes of handshake it had and reported '[img-run] OK'. The plug also
+    # has a bare 'FAIL' branch for a message that never assembles, which no
+    # grep here matches either; this arm covers both without guessing which.
+    if ($guestImg -lt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug never reported a length, so there is nothing to check $($allBytes.Length) received bytes against.")
+        if (Test-Path $consoleFile) {
+            $tail = @(Get-Content $consoleFile -Tail 5)
+            foreach ($l in $tail) { [Console]::Error.WriteLine("  guest: $($l.Trim())") }
         }
+        exit 10
     }
-    Write-Host "[img-run] OK: $Out ($($allBytes.Count) bytes)"
+    Write-Host "[img-run] guest built $guestImg, guest sent $guestSent, host received $($allBytes.Length)"
+    if ($guestSent -ne $guestImg -or $allBytes.Length -ne $guestImg) {
+        [Console]::Error.WriteLine("FAIL: byte counts disagree -- guest built $guestImg, guest sent $guestSent, host received $($allBytes.Length).")
+        exit 9
+    }
+    Write-Host "[img-run] OK: $Out ($($allBytes.Length) bytes)"
 
 } finally {
     if ($proc -and -not $proc.HasExited) {

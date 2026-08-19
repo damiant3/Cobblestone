@@ -370,13 +370,28 @@ $runBlock = {
 
     $testOutDir = Join-Path $outRoot $name
     $uartLogWin = Join-Path $testOutDir 'uart.log'
-    if (Test-Path $uartLogWin) { Remove-Item $uartLogWin -Force }
 
     $rs = Get-Date
     $status = 'UNKNOWN'
     $reason = ''
+    # Declared here so the catch at the end of this block can read them
+    # whatever point the fault came from. Set-StrictMode is Latest at line 43.
+    $rt = 0
+    $proc = $null
     $ceilingSec = [int]$t.CeilSec
     $expLinesN = [int]$t.ExpLines
+
+    # An orphaned guest from an earlier run can still hold last run's log, and
+    # an unguarded delete would take the battery down before the try below is
+    # even entered. It is NOT waved through, though: whether QEMU's
+    # `-serial file:` truncates or appends decides whether a stale log reads as
+    # this run's output, and that is a false PASS if it appends. Unverified, so
+    # the test fails to the retry class instead of running against a log that
+    # might not be its own.
+    if (Test-Path $uartLogWin) {
+        try { Remove-Item $uartLogWin -Force }
+        catch { $status = 'FAIL_RUNTIME'; $reason = "stale uart.log locked: $($_.Exception.Message)" }
+    }
 
     # Completeness is the exit signal, measured with the compare's own
     # normalization (CR stripped, HEAP:/WD:/STACK: dropped, trailing blanks
@@ -398,7 +413,47 @@ $runBlock = {
         @{ Lines = $c; Closed = $tx.EndsWith("`n"); Bytes = $rawText.Length }
     }
 
-    if ($useQ) {
+    # The same share-tolerant read the compile block has, for the same reason
+    # and a far worse consequence. QEMU owns uart.log through `-serial file:`,
+    # and Kill() returns before Windows releases the handle, so the read below
+    # can find the log locked. It was an unguarded ReadAllText, and with
+    # $ErrorActionPreference = 'Stop' at line 46 that throw does not fail ONE
+    # test -- it ends the battery. Measured twice on 2026-08-18, once per cross
+    # lane: riscv64 died on its first test on range-let-carry's uart.log (457
+    # lost), arm64 the same way on unit-show (453 lost). QEMU does not exit
+    # when its guest finishes, so every live guest was then orphaned with
+    # nothing left to enforce the ceiling. The arm64 outage went unnoticed for
+    # six hours: five guests at 23,100 CPU-seconds each, 115,597 in total, on a
+    # shared build box.
+    #
+    # An unreadable log reads as empty, which is the dead-silent retry class,
+    # so it fails toward a re-run rather than toward a content verdict.
+    function Read-LogShared([string]$path) {
+        for ($ri = 0; $ri -lt 5; $ri++) {
+            try {
+                $fs = [System.IO.FileStream]::new($path, [System.IO.FileMode]::Open,
+                    [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try {
+                    $sr = [System.IO.StreamReader]::new($fs)
+                    return $sr.ReadToEnd()
+                } finally { $fs.Dispose() }
+            } catch { Start-Sleep -Milliseconds 100 }
+        }
+        return ''
+    }
+
+    # Everything from here to the result object is inside one try. With
+    # $ErrorActionPreference = 'Stop' any uncaught throw in a parallel block
+    # ends the BATTERY, not the test -- and it strands every live guest,
+    # because the ceiling that kills them lives in the harness that just died.
+    # A test that faults here is a FAIL_RUNTIME carrying the exception text,
+    # which is the retry class and is visible in the report.
+    #
+    # The body is deliberately NOT re-indented under the try: re-indenting 240
+    # lines to add two would bury the change in whitespace.
+    try {
+    if ($status -ne 'UNKNOWN') { }   # already decided above; do not launch a guest
+    elseif ($useQ) {
         $qemuExe = $using:qemuExe
         $loadAddr = $using:loadAddr
         $arch = $using:Arch
@@ -457,7 +512,11 @@ $runBlock = {
                 if ($proc.HasExited) { break }
                 if ((Get-Date) -ge $deadline) { $starved = ($prog.Bytes -gt 0); break }
             }
+            # Kill() only REQUESTS the exit. Waiting for it is what gets the
+            # `-serial file:` handle closed, and it is the difference between
+            # Read-LogShared succeeding first try and burning its retries.
             if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
+            try { $null = $proc.WaitForExit(2000) } catch {}
             if ($starved) {
                 $status = 'FAIL_STARVED'
                 $reason = "incomplete at ceiling (${ceilingSec}s: $($prog.Lines) of $expLinesN lines, $($prog.Bytes) bytes)"
@@ -575,11 +634,11 @@ $runBlock = {
     # as a missing one -- the guest never said anything -- so both are the
     # dead-silent retry class instead of FAIL_OUTPUT act=[].
     if ($status -eq 'UNKNOWN') {
-        Start-Sleep -Milliseconds 50
-        if (-not (Test-Path $uartLogWin) -or (Get-Item $uartLogWin).Length -eq 0) {
+        $rawLog = if (Test-Path $uartLogWin) { Read-LogShared $uartLogWin } else { '' }
+        if ($rawLog -eq '') {
             $status = 'FAIL_RUNTIME'; $reason = 'no uart output'
         } else {
-            $raw = [System.IO.File]::ReadAllText($uartLogWin) -replace "`r",''
+            $raw = $rawLog -replace "`r",''
             $allLines = $raw -split "`n"
             $lines = [System.Collections.Generic.List[string]]::new()
             foreach ($l in $allLines) {
@@ -629,6 +688,12 @@ $runBlock = {
                 }
             }
         }
+    }
+    } catch {
+        if (-not $rt) { $rt = [math]::Round(((Get-Date) - $rs).TotalSeconds, 1) }
+        $status = 'FAIL_RUNTIME'
+        $reason = "harness fault: $($_.Exception.Message)"
+        try { if ($proc -and -not $proc.HasExited) { $proc.Kill() } } catch {}
     }
     @{ Name = $name; Status = $status; RunTime = $rt; Reason = $reason }
 }

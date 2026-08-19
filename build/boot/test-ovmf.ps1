@@ -26,6 +26,10 @@ param(
     # xHCI is a spec-strict implementation: this is the verdict bed for
     # the post-EBS USB drivers (GopXhci/GopUsbMsc).
     [switch]$UsbDisk,
+    # -ReadOnlyDisk marks the -UsbDisk drive readonly=on: QEMU's usb-storage then
+    # reports a write-protected medium and refuses WRITE(10), which is the bed
+    # arm for a payload's no-bank path (diag-arm.ps1 ovmf-ro).
+    [switch]$ReadOnlyDisk,
     # -UsbKbd attaches a USB HID keyboard to the same qemu-xhci controller --
     # the verdict bed for the post-EBS HID transport (GopUsbKbd). -Keys
     # sendkey lines then arrive as interrupt IN boot reports, not PS/2.
@@ -132,7 +136,7 @@ if ($UsbHub) {
 if ($UsbDisk) {
     $stickPort = if ($UsbHub) { 'port=2,' } else { '' }
     $qargs += @(
-        '-drive', "if=none,id=stick,format=raw,file=$imgCopy",
+        '-drive', "if=none,id=stick,format=raw,file=$imgCopy$(if ($ReadOnlyDisk) { ',readonly=on' } else { '' })",
         '-device',"usb-storage,bus=xhci.0,${stickPort}drive=stick"
     )
 } elseif ($NvmeDisk) {

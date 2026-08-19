@@ -18,7 +18,7 @@ cluster against the belief this sentence encouraged. When
 you relocate a foreword definition, budget a `cites` line for each
 caller of the old chapter.
 
-### codex.foreword (129 modules, measured 2026-08-16) -- Core
+### codex.foreword (130 modules, measured 2026-08-18) -- Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -226,7 +226,7 @@ internally inconsistent.
 | codex.os.trust | 16 | Trust lattice |
 | codex.os.verify | 7 | Verification |
 
-### codex.plugs (55 plugs, all building clean) -- Transpiler Plugs
+### codex.plugs (56 plugs, all building clean) -- Transpiler Plugs
 
 48 language and UI transpilers (Ada to Zig, 14 UI frameworks, GPU PTX +
 SPIR-V + WGSL), 6 native backends (ARM64, RISC-V, T3ISA, ELF, PE, IMG),
@@ -255,8 +255,13 @@ NOT lambda-lifted. RESOLVE and LIFT are phases of the CDX path only
   `pascal` and `python` already do; read one before writing a seventh.
 - Application is curried on the wire: `(make-adder 10) 32` arrives as
   `(apply (apply (name "make-adder") 10) 32)`, and a plug must emit
-  `f(a)(b)`, never `f(a, b)` (plugs-backlog 1.35 is the plug that gets this
-  wrong today).
+  `f(a)(b)`, never `f(a, b)`, unless it KNOWS the callee's arity: a def it
+  emitted n-ary is called flat at that arity, under-applied with one arrow
+  per missing parameter, over-applied by applying the rest one at a time.
+  The six TS/JS-family plugs and `javascript` carry that model (plugs-backlog
+  1.35, closed 2026-08-17): curried lambdas, curried unknown-callee applies,
+  a def used as a value eta-wrapped by its arity, and the prelude's own
+  functions' arities scanned from the prelude string so they cannot drift.
 - Types on the wire are the checker's, and one measured shape arrives as
   `error` (a directly-applied inline lambda's parameter, COMPILER-13); a
   typed target should refuse or default visibly rather than emit `error` as
@@ -264,6 +269,50 @@ NOT lambda-lifted. RESOLVE and LIFT are phases of the CDX path only
 - The standing hazard at the top of `codex/plugs/plugs-backlog.md` applies
   to all of the above: a plug that does not handle a construct usually
   emits SOMETHING and reports OK.
+
+**The repository wire, for anyone writing a second peer (written down
+2026-08-17, CurrentPlan B4 step 4, red's ruling that it lives here and not in
+a design; the code is the truth and this is a reading of it).** Until then the
+wire existed only in `codex/os/net/MessageFraming.codex`,
+`codex/os/trust/TrustTransport.codex` and `apps/works/RepoProtocol.codex`
+"Wire Codec", plus the host client `build/work-wire.ps1`.
+
+- **Transport.** TCP. `tools/cdx-serve.codex` serves works on guest port
+  **9300**, `tools/cdx-registry.codex` answers locate and announce on
+  **9301**; a host reaches a guest through `codex-vm -portfwd host:guest`
+  (`OperatorsManual.md`). One request per connection; the server closes.
+- **Frame** (`MessageFraming.codex` `frame-encode:17`): `le32(1 + len body)
+  ++ [tag] ++ body`. The length counts the tag byte. Tags:
+  `tag-work-request 17`, `tag-work-reply 18`, `tag-locate-request 19`,
+  `tag-locate-reply 20`, `tag-announce-request 21`, `tag-announce-reply
+  22` (`:177-187`; the trust handshake, annotate/verdict/reject and sync-offer/reply
+  tags 7-16 sit beside them, all in one numbering).
+- **Fields.** `bytes(b) = le32(len) ++ b`; `text(s) = le32(count) ++ one
+  `char-code` per character` (`frame-encode-text:92`). **Text is CCE, not
+  ASCII, and it does not tell you** (`work-wire.ps1:27-42`): a hash's hex
+  digits go out as CCE code points, and an ASCII sender is answered "not
+  here", which reads exactly like a working server with an empty store.
+  Encode through `ConvertTo-CceBytes` on the host.
+- **Bodies** (`TrustTransport.codex:200-222`):
+  work-request = `bytes(pubkey) ++ text(hash)`;
+  work-reply = `bytes(pubkey) ++ text(hash) ++ text(payload)`, an empty
+  payload is a MISS and not an error;
+  locate-request has the work-request body byte for byte, locate-reply the
+  work-reply body with `text(peers)` (addresses, unchecked) where the work
+  reply carries content checked against the hash (`accept-reply`,
+  `apps/works/WorkServer.codex:37`);
+  announce-request = `bytes(pubkey) ++ text(address) ++ text(hashes)`;
+  announce-reply = `bytes(pubkey) ++ le32(accepted)`.
+  The public key is empty on today's asks: a reply is answerable by its
+  own content, so the server has no use for who is asking.
+- **A body that declares more than it carries is refused in silence**
+  (`decode-agent-msg-checked` re-encodes and compares;
+  `cdx-serve-test.ps1` "a truncated request draws no reply"), and the
+  server must survive it.
+- **The arms:** `build/cdx-serve-test.ps1` (`-Card ne2k|e1000`),
+  `quote-from-peer-test.ps1`, `registry-locate-test.ps1`,
+  `nat-conn-churn-test.ps1`; the in-guest codec is pinned by
+  `codex/test/apps/fact-sync-wire-test` and `work-serve`.
 
 ## Library Rules
 

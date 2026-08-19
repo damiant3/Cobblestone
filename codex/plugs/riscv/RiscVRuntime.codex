@@ -456,10 +456,31 @@ Section: __text_to_double (a0=text -> f64 bits in a0)
 
 Section: __list_cons
 
+   **The arguments are (element, list), and this helper had them the other way
+ round.** x86-64 is the contract of record and its `__list_cons` reads the
+ length out of `rsi`, the SECOND argument (`X86_64ListHelpers.codex`,
+ `emit-list-cons-alloc`); ARM64's reads it out of `x1`; and both emitters,
+ this lane's included, pass the element first. This helper read the list from
+ `a0` and stored `a1` as the element, so `n :: acc` handed it the integer as
+ a list pointer and the first `ld` faulted on it: `cause 5`, `tval` equal to
+ the integer being consed.
+
+ Nothing caught it because nothing on this lane conses. `list-view-probe` is
+ the only test that uses `::` and it is PASS_REFUSED here for `__list-len`,
+ so it never runs; the riscv battery has never executed this helper.
+ `codex/test/list-cons-tail` is the guard, and it checks CONTENT rather than
+ only length, because a length-only check passes against a cons that stores
+ the wrong operand.
+
+ The element is parked in `t6` across the allocation because `a0` is
+ overwritten with the new list before the element is stored, and `t6` is not
+ touched until the copy loop below.
+
   rv-rt-list-cons : List Integer
   rv-rt-list-cons =
    let i = []
-   in let i = rv-rt-emit i (rv-mv rv-t0 rv-a0)
+   in let i = rv-rt-emit i (rv-mv rv-t6 rv-a0)
+   in let i = rv-rt-emit i (rv-mv rv-t0 rv-a1)
    in let i = rv-rt-emit i (rv-ld rv-t1 rv-t0 0)
    in let i = rv-rt-emit i (rv-addi rv-t2 rv-t1 1)
    in let i = rv-rt-emit i (rv-sd rv-s1 rv-zero 0)
@@ -469,7 +490,7 @@ Section: __list_cons
    in let i = rv-rt-emit i (rv-slli rv-t3 rv-t3 3)
    in let i = rv-rt-emit i (rv-add rv-s1 rv-s1 rv-t3)
    in let i = rv-rt-emit i (rv-sd rv-a0 rv-t2 0)
-   in let i = rv-rt-emit i (rv-sd rv-a0 rv-a1 8)
+   in let i = rv-rt-emit i (rv-sd rv-a0 rv-t6 8)
    in let i = rv-rt-emit i (rv-mv rv-t3 rv-zero)
    in let loop = list-length i / 4
    in let exit = list-length i / 4
@@ -2148,6 +2169,18 @@ Section: Block device helpers
   rv-cap-block-device : Integer = 10
   rv-fs-elevated-addr : Integer = #80094100
 
+ The deck's three cells. A deck is a WATERMARK inside the same bump heap,
+ not a second arena, so this is all the state it takes: `build` saves the
+ heap position, records it with `__deck-set` and advances past the
+ reservation, and `phase-compact` is `__heap-restore (__deck-pos)`. `s1` is
+ this lane's allocation pointer as `x28` is ARM64's. They sit above the
+ block driver's span, which ends at `#80094108`, and below the effect-op
+ slots at `#80100000` and the heap from `#80100200`.
+
+  rv-deck-pos-addr : Integer = #80095000
+  rv-deck-bound-counter-addr : Integer = #80095008
+  rv-bivy-save-addr : Integer = #80095010
+
  The gate ARM64 puts behind its SVC, inline here because these are emitted
  helpers rather than a syscall (x86-64 gates its network family the same
  way). Admitted by `cap-block-device`, or by the `fs-elevated` cell, which
@@ -2175,9 +2208,20 @@ Section: Block device helpers
    in let st8 = rv-patch-insn st7 has-cap-idx (rv-bne rv-t0 rv-zero ((proceed - has-cap-idx) * 4))
    in rv-patch-insn st8 elev-idx (rv-bne rv-t1 rv-zero ((proceed - elev-idx) * 4))
 
+ The helpers are emitted only when the DRIVER is in the program, and that
+ is what lets an unresolved call be a hard failure rather than a warning.
+ They call `vb-capacity-auto`, `vb-read-auto` and `vb-write-auto`, which a
+ program that never declares `Device.Block` correctly eliminates, so
+ emitting them unconditionally put three unresolved calls in EVERY compile
+ on this lane: measured 2026-08-18, 506 of 506 programs in the riscv cross
+ battery. A check that fires on every subject cannot be turned into a
+ refusal, and allow-listing the `vb-` names would have excused exactly the
+ calls that matter in a program that does declare the capability.
+
   rv-emit-block-helpers : RvState -> RvState
   rv-emit-block-helpers (st) =
-   let st1 = rv-record-func st "block-sector-count"
+   if st.has-block-driver == False then st
+   else let st1 = rv-record-func st "block-sector-count"
    in let stg = rv-emit-block-gate st1
    in let st2 = rv-emit stg (rv-addi rv-sp rv-sp (0 - 16))
    in let st3 = rv-emit st2 (rv-sd rv-sp rv-ra 0)
@@ -2604,8 +2648,9 @@ Section: Process Lifecycle
    in let st22 = rv-emit-copy-cell st21 rv-t4 rv-t5 rv-proc-cap-offset
    in let st23 = rv-emit-copy-cell st22 rv-t4 rv-t5 rv-proc-scope-offset
    in let st24 = rv-emit-copy-cell st23 rv-t4 rv-t5 rv-proc-net-scope-offset
-   in let st25 = rv-emit-zero-cells st24 rv-t5 [32, 88, 96, 104, 112, 120, 128, 176, 184, 192, 200, 208, 216, 248] 0
-   in let st26 = rv-emit st25 (rv-addi rv-t6 rv-zero rv-proc-state-ready)
+   in let st25 = rv-emit-zero-cells st24 rv-t5 [32, 88, 96, 104, 112, 120, 128, 176, 184, 192, 200, 208, 248] 0
+   in let st25a = rv-emit st25 (rv-sd rv-t5 rv-s0 rv-proc-saved-s0-offset)
+   in let st26 = rv-emit st25a (rv-addi rv-t6 rv-zero rv-proc-state-ready)
    in let st27 = rv-emit st26 (rv-sd rv-t5 rv-t6 0)
    in let st28 = rv-emit st27 (rv-mv rv-a0 rv-t3)
    in let st29 = rv-emit st28 rv-ret

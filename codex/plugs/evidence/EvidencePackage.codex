@@ -1,0 +1,383 @@
+Chapter: EvidencePackage
+  cites Foreword chapter ComplianceEvidence
+  cites Foreword chapter Sha256
+  cites Foreword chapter TextSearch
+
+ CDX header (Emit chapter CDX Binary Format Writer, 224 bytes): magic "CDX1"
+ at 0, format version u16 at 4, flags u16 at 6 (1 bare-metal, 2 needs-heap,
+ 4 stack-guard, 8 has-proofs, 16 debug-info), content hash 32 bytes at 8,
+ author key 32 bytes at 40, signature 64 bytes at 72, capability section
+ offset u64 at 136 and size u64 at 144, proof section offset at 152 and size
+ at 160, text at 168/176, rodata at 184/192, entry at 200, stack size u32 at
+ 208, heap size u32 at 212, debug offset u32 at 220. The content hash covers
+ the body and excludes the signature; the signature is present only when the
+ build signed the binary, and an unsigned CDX carries zeros there.
+
+ We say:
+
+Section: Inputs
+
+  EvidenceInputs = record {
+    ei-product : Text,
+    ei-board : Text,
+    ei-cdx-size : Integer,
+    ei-cdx-file-sha : Text,
+    ei-header : List Integer,
+    ei-log-sha : Text,
+    ei-log-lines : Integer,
+    ei-diag : List Text,
+    ei-manifest-sha : Text,
+    ei-chapters : List Text,
+    ei-punctual-sha : Text
+  }
+
+  ev-empty-inputs : EvidenceInputs
+  ev-empty-inputs = EvidenceInputs { ei-product = "", ei-board = "", ei-cdx-size = 0, ei-cdx-file-sha = "", ei-header = [], ei-log-sha = "", ei-log-lines = 0, ei-diag = [], ei-manifest-sha = "", ei-chapters = [], ei-punctual-sha = "" }
+
+Section: Hex
+
+  ev-nib : Integer -> Integer
+  ev-nib (c) =
+    if c == char-code-at "0" 0 then 0 else if c == char-code-at "1" 0 then 1
+    else if c == char-code-at "2" 0 then 2 else if c == char-code-at "3" 0 then 3
+    else if c == char-code-at "4" 0 then 4 else if c == char-code-at "5" 0 then 5
+    else if c == char-code-at "6" 0 then 6 else if c == char-code-at "7" 0 then 7
+    else if c == char-code-at "8" 0 then 8 else if c == char-code-at "9" 0 then 9
+    else if c == char-code-at "a" 0 then 10 else if c == char-code-at "b" 0 then 11
+    else if c == char-code-at "c" 0 then 12 else if c == char-code-at "d" 0 then 13
+    else if c == char-code-at "e" 0 then 14 else if c == char-code-at "f" 0 then 15
+    else if c == char-code-at "A" 0 then 10 else if c == char-code-at "B" 0 then 11
+    else if c == char-code-at "C" 0 then 12 else if c == char-code-at "D" 0 then 13
+    else if c == char-code-at "E" 0 then 14 else if c == char-code-at "F" 0 then 15
+    else -1
+
+  ev-hex-bytes : Text, Integer, List Integer -> List Integer
+  ev-hex-bytes (s) (i) (acc) =
+    if i + 1 >= text-length s then acc
+    else let hi = ev-nib (char-code-at s i)
+    in let lo = ev-nib (char-code-at s (i + 1))
+    in if hi < 0 | lo < 0 then acc
+    else ev-hex-bytes s (i + 2) (list-push acc (hi * 16 + lo))
+
+  ev-hex-of : List Integer, Integer, Integer, Text -> Text
+  ev-hex-of (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= list-length bs then acc
+    else ev-hex-of bs (i + 1) n (acc & byte-to-hex (list-at bs i))
+
+Section: Header Reads
+
+  ev-u16 : List Integer, Integer -> Integer
+  ev-u16 (h) (off) = if off + 1 >= list-length h then 0 else list-at h off + 256 * list-at h (off + 1)
+
+  ev-u64 : List Integer, Integer -> Integer
+  ev-u64 (h) (off) = ev-u64-loop h off 0 0 1
+
+  ev-u64-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  ev-u64-loop (h) (off) (i) (acc) (mul) =
+    if i >= 8 then acc
+    else if off + i >= list-length h then acc
+    else ev-u64-loop h off (i + 1) (acc + list-at h (off + i) * mul) (mul * 256)
+
+  ev-nonzero : List Integer, Integer, Integer -> Boolean
+  ev-nonzero (h) (i) (n) =
+    if i >= n then False
+    else if i >= list-length h then False
+    else if list-at h i /= 0 then True
+    else ev-nonzero h (i + 1) n
+
+  ev-magic-ok : List Integer -> Boolean
+  ev-magic-ok (h) = list-length h >= 224 & list-at h 0 == 67 & list-at h 1 == 68 & list-at h 2 == 88 & list-at h 3 == 49
+
+  ev-header-hash : List Integer -> Text
+  ev-header-hash (h) = ev-hex-of h 8 40 ""
+
+  ev-signed : List Integer -> Boolean
+  ev-signed (h) = ev-nonzero h 72 136
+
+  ev-flags : List Integer -> Integer
+  ev-flags (h) = ev-u16 h 6
+
+  ev-cap-size : List Integer -> Integer
+  ev-cap-size (h) = ev-u64 h 144
+
+  ev-proof-size : List Integer -> Integer
+  ev-proof-size (h) = ev-u64 h 160
+
+Section: Diagnostics
+
+ A compile.ps1 log line carries `<sev> CDX<n>:` for every diagnostic; the
+ count per code and per severity is what a claim cites.
+
+  ev-count-with : List Text, Text, Integer, Integer -> Integer
+  ev-count-with (xs) (needle) (i) (acc) =
+    if i >= list-length xs then acc
+    else ev-count-with xs needle (i + 1) (if text-contains (list-at xs i) needle then acc + 1 else acc)
+
+  ev-code-count : EvidenceInputs, Text -> Integer
+  ev-code-count (e) (code) = ev-count-with (e.ei-diag) (" " & code & ":") 0 0
+
+  ev-errors : EvidenceInputs -> Integer
+  ev-errors (e) = ev-count-with (e.ei-diag) " error CDX" 0 0
+
+  ev-warnings : EvidenceInputs -> Integer
+  ev-warnings (e) = ev-count-with (e.ei-diag) " warning CDX" 0 0
+
+  ev-has-log : EvidenceInputs -> Boolean
+  ev-has-log (e) = text-length (e.ei-log-sha) > 0
+
+  ev-has-cdx : EvidenceInputs -> Boolean
+  ev-has-cdx (e) = ev-magic-ok (e.ei-header)
+
+Section: Claims
+
+ A claim is emitted only against an artifact this build produced; the honesty
+ principle in ComplianceEvidence.md. The selector in the catalog names the
+ artifact class, and each class has one rule here for whether this build
+ carries it, what hash names it, and what remains.
+
+  Claim = record {
+    cl-req : Requirement,
+    cl-claimed : Boolean,
+    cl-artifact : Text,
+    cl-note : Text
+  }
+
+  ev-claim-for : EvidenceInputs, Requirement -> Claim
+  ev-claim-for (e) (r) =
+    let sel = r.artifact
+    in if sel == "compile-log" then (if ev-has-log e then Claim { cl-req = r, cl-claimed = True, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "errors=" & show (ev-errors e) & " warnings=" & show (ev-warnings e) & " CDX4010=" & show (ev-code-count e "CDX4010") & " CDX4020=" & show (ev-code-count e "CDX4020") & " CDX2050=" & show (ev-code-count e "CDX2050") & " CDX2051=" & show (ev-code-count e "CDX2051") & " CDX2061=" & show (ev-code-count e "CDX2061") & " CDX2063=" & show (ev-code-count e "CDX2063") & " CDX2031=" & show (ev-code-count e "CDX2031") } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no compile log given to the plug" })
+    else if sel == "effect-types" then (if ev-has-log e & ev-errors e == 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "the effect checker passed this build: errors=0, CDX2031=" & show (ev-code-count e "CDX2031") } else if ev-has-log e then Claim { cl-req = r, cl-claimed = False, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "the compile log carries errors=" & show (ev-errors e) & "; a build that did not pass its checks discharges nothing" } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no compile log given to the plug" })
+    else if sel == "cdx-binary" then (if ev-has-cdx e then Claim { cl-req = r, cl-claimed = True, cl-artifact = "cdx:" & (e.ei-cdx-file-sha), cl-note = "size=" & show (e.ei-cdx-size) & " flags=" & show (ev-flags (e.ei-header)) & (if bit-and (ev-flags (e.ei-header)) 1 == 1 then " bare-metal" else " NOT bare-metal: this binary expects a host") } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no CDX header given to the plug, or not a CDX" })
+    else if sel == "cdx-header" then (if ev-has-cdx e & ev-nonzero (e.ei-header) 8 40 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "hash:" & ev-header-hash (e.ei-header), cl-note = "content hash present; signature " & (if ev-signed (e.ei-header) then "present" else "ABSENT (an unsigned CDX; the verifier checks the hash only)") } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no CDX header, or its content hash is zero" })
+    else if sel == "capability-manifest" then (if ev-has-cdx e & ev-cap-size (e.ei-header) > 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "hash:" & ev-header-hash (e.ei-header), cl-note = "capability section size=" & show (ev-cap-size (e.ei-header)) } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "this CDX carries no capability section (size 0); the manifest the claim needs is not in this build" })
+    else if sel == "punctual-report" then (if text-length (e.ei-punctual-sha) > 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "punctual:" & (e.ei-punctual-sha), cl-note = "punctual report given" } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no punctual (WCET) report given to the plug" })
+    else if sel == "none" then Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "manufacturer's process; outside the toolchain" }
+    else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "artifact class " & sel & " is a design or library reference, not an output of this build; the product's own test evidence discharges it" }
+
+  ev-claims : EvidenceInputs, List Requirement, Integer, List Claim -> List Claim
+  ev-claims (e) (reqs) (i) (acc) =
+    if i >= list-length reqs then acc
+    else ev-claims e reqs (i + 1) (list-push acc (ev-claim-for e (list-at reqs i)))
+
+  ev-count-claimed : List Claim, Integer, Integer -> Integer
+  ev-count-claimed (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else ev-count-claimed cs (i + 1) (if (list-at cs i).cl-claimed then acc + 1 else acc)
+
+Section: The Canonical Text
+
+ One line per fact, one per claim, no timestamps, so the same inputs give the
+ same bytes (ComplianceEvidence.md constraint 1). The build time is the
+ caller's to record beside the package, not inside it.
+
+  ev-quote : Text -> Text
+  ev-quote (s) = "\"" & s & "\""
+
+  ev-claim-line : Claim -> Text
+  ev-claim-line (c) =
+    let r = c.cl-req
+    in "claim reg=" & (r.regulation) & " sec=" & (r.section) & " class=" & evidence-class-name (r.class) & " status=" & (if c.cl-claimed then "claimed" else "not-claimed") & " artifact=" & (c.cl-artifact) & " title=" & ev-quote (r.title) & " note=" & ev-quote (c.cl-note)
+
+  ev-claim-lines : List Claim, Integer, Text -> Text
+  ev-claim-lines (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else ev-claim-lines cs (i + 1) (acc & ev-claim-line (list-at cs i) & "\n")
+
+  ev-summary-line : Text, List Claim -> Text
+  ev-summary-line (reg) (cs) = "summary reg=" & reg & " claimed=" & show (ev-count-claimed cs 0 0) & " of=" & show (list-length cs) & "\n"
+
+  ev-chapter-lines : List Text, Integer, Text -> Text
+  ev-chapter-lines (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else ev-chapter-lines xs (i + 1) (acc & "chapter " & list-at xs i & "\n")
+
+  ev-facts : EvidenceInputs -> Text
+  ev-facts (e) =
+    "EVIDENCE1\n" &
+    "product=" & (e.ei-product) & "\n" &
+    "board=" & (e.ei-board) & "\n" &
+    "binary.present=" & (if ev-has-cdx e then "y" else "n") & "\n" &
+    "binary.size=" & show (e.ei-cdx-size) & "\n" &
+    "binary.file-sha256=" & (e.ei-cdx-file-sha) & "\n" &
+    "binary.header-hash=" & ev-header-hash (e.ei-header) & "\n" &
+    "binary.header-sha256=" & (if ev-has-cdx e then sha256-to-hex (sha256 (e.ei-header)) else "") & "\n" &
+    "binary.flags=" & show (ev-flags (e.ei-header)) & "\n" &
+    "binary.signed=" & (if ev-signed (e.ei-header) then "y" else "n") & "\n" &
+    "binary.capability-size=" & show (ev-cap-size (e.ei-header)) & "\n" &
+    "binary.proof-size=" & show (ev-proof-size (e.ei-header)) & "\n" &
+    "log.present=" & (if ev-has-log e then "y" else "n") & "\n" &
+    "log.sha256=" & (e.ei-log-sha) & "\n" &
+    "log.lines=" & show (e.ei-log-lines) & "\n" &
+    "log.errors=" & show (ev-errors e) & "\n" &
+    "log.warnings=" & show (ev-warnings e) & "\n" &
+    "log.CDX4010=" & show (ev-code-count e "CDX4010") & "\n" &
+    "log.CDX4020=" & show (ev-code-count e "CDX4020") & "\n" &
+    "log.CDX2031=" & show (ev-code-count e "CDX2031") & "\n" &
+    "log.CDX2050=" & show (ev-code-count e "CDX2050") & "\n" &
+    "log.CDX2051=" & show (ev-code-count e "CDX2051") & "\n" &
+    "log.CDX2061=" & show (ev-code-count e "CDX2061") & "\n" &
+    "log.CDX2063=" & show (ev-code-count e "CDX2063") & "\n" &
+    "manifest.sha256=" & (e.ei-manifest-sha) & "\n" &
+    "manifest.chapters=" & show (list-length (e.ei-chapters)) & "\n" &
+    "punctual.sha256=" & (e.ei-punctual-sha) & "\n" &
+    "hashes.host=binary.file-sha256,log.sha256,manifest.sha256,punctual.sha256,chapter\n" &
+    "hashes.plug=binary.header-sha256,binary.header-hash(read from the header)\n" &
+    ev-board-lines (ev-board-posture (e.ei-board))
+
+  ev-cdxe : EvidenceInputs, List Claim, List Claim, List Claim, List Claim -> Text
+  ev-cdxe (e) (cra) (etsi) (nist) (iec) =
+    ev-facts e &
+    ev-chapter-lines (e.ei-chapters) 0 "" &
+    ev-claim-lines cra 0 "" & ev-claim-lines etsi 0 "" & ev-claim-lines nist 0 "" & ev-claim-lines iec 0 "" &
+    ev-summary-line "CRA" cra & ev-summary-line "ETSI" etsi & ev-summary-line "NIST" nist & ev-summary-line "IEC62443" iec &
+    "END\n"
+
+Section: The Reviewer Page
+
+  ev-html-esc : Text -> Text
+  ev-html-esc (s) = text-replace (text-replace (text-replace s "&" "&amp;") "<" "&lt;") ">" "&gt;"
+
+  ev-html-row : Claim -> Text
+  ev-html-row (c) =
+    let r = c.cl-req
+    in "<tr class=\"" & (if c.cl-claimed then "claimed" else "open") & "\"><td>" & ev-html-esc (r.regulation) & "</td><td>" & ev-html-esc (r.section) & "</td><td>" & ev-html-esc (r.title) & "</td><td>" & evidence-class-name (r.class) & "</td><td>" & (if c.cl-claimed then "claimed" else "not claimed") & "</td><td><code>" & ev-html-esc (c.cl-artifact) & "</code></td><td>" & ev-html-esc (c.cl-note) & "</td></tr>\n"
+
+  ev-html-rows : List Claim, Integer, Text -> Text
+  ev-html-rows (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else ev-html-rows cs (i + 1) (acc & ev-html-row (list-at cs i))
+
+  ev-html-table : Text, List Claim -> Text
+  ev-html-table (reg) (cs) =
+    "<h2>" & reg & ": " & show (ev-count-claimed cs 0 0) & " of " & show (list-length cs) & " claimed against an artifact of this build</h2>\n<table><tr><th>reg</th><th>section</th><th>title</th><th>class</th><th>status</th><th>artifact</th><th>note</th></tr>\n" & ev-html-rows cs 0 "" & "</table>\n"
+
+  ev-html : EvidenceInputs, List Claim, List Claim, List Claim, List Claim -> Text
+  ev-html (e) (cra) (etsi) (nist) (iec) =
+    "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Codex compliance evidence: " & ev-html-esc (e.ei-product) & "</title>\n<style>body{font-family:sans-serif;margin:2em}table{border-collapse:collapse}td,th{border:1px solid #999;padding:4px 8px;vertical-align:top}tr.claimed td:nth-child(5){color:#060;font-weight:bold}tr.open td:nth-child(5){color:#960}code{font-size:90%}pre{background:#f4f4f4;padding:1em}</style></head><body>\n" &
+    "<h1>Codex compliance evidence: " & ev-html-esc (e.ei-product) & "</h1>\n" &
+    "<p>This package never says compliant. Each requirement is classified (by construction, mechanism, deployment, organizational) and is CLAIMED only against an artifact this build produced, named by its hash; everything else is listed as not claimed with the reason, and that list is the manufacturer's workplan.</p>\n" &
+    "<pre>" & ev-html-esc (ev-facts e) & "</pre>\n" &
+    ev-html-table "EU CRA Annex I" cra & ev-html-table "ETSI EN 303 645" etsi & ev-html-table "NISTIR 8259A" nist & ev-html-table "IEC 62443-4-2" iec &
+    ev-board-html (ev-board-posture (e.ei-board)) &
+    "</body></html>\n"
+
+Section: The Per-Board Residual
+
+ The DEPLOYMENT claims that a hardware root of trust can close differ by
+ target SoC, so the residual checklist is adjusted by board (the design's
+ "parameterizes by target board"). This is public SoC data, not anything the
+ build produces, so it is a table here rather than a claim: four attributes,
+ and for each the requirement sections it hardware-anchors. A board this
+ table does not name is answered "unknown, state the board's posture", never
+ assumed either way. The claims themselves are unchanged; this is the
+ appendix a reviewer reads the DEPLOYMENT rows against.
+
+  BoardPosture = record {
+    bp-known : Boolean,
+    bp-name : Text,
+    bp-flash-encryption : Boolean,
+    bp-hw-crypto : Boolean,
+    bp-secure-boot : Boolean,
+    bp-hw-rng : Boolean,
+    bp-source : Text
+  }
+
+  to-lower-text : Text, Integer, Integer, Text -> Text
+  to-lower-text (s) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = char-code-at s i
+    in let lc = if c >= char-code-at "A" 0 & c <= char-code-at "Z" 0 then c + 32 else c
+    in to-lower-text s (i + 1) n (acc & char-to-text (code-to-char lc))
+
+  ev-board-key : Text -> Text
+  ev-board-key (b) = to-lower-text b 0 (text-length b) ""
+
+ Matched by substring so "esp32-c6", "ESP32C6 devkit" and "esp32c6" all hit.
+ Sources are the vendors' own security references, cited so the reviewer can
+ check the SoC claim without trusting this table (external facts, not ours).
+
+  ev-board-posture : Text -> BoardPosture
+  ev-board-posture (b) =
+    let k = ev-board-key b
+    in if text-contains k "esp32-c6" | text-contains k "esp32c6" then BoardPosture { bp-known = True, bp-name = "ESP32-C6", bp-flash-encryption = True, bp-hw-crypto = True, bp-secure-boot = True, bp-hw-rng = True, bp-source = "Espressif ESP32-C6 TRM: Flash Encryption, Secure Boot v2, hardware AES/SHA/ECC/RSA, TRNG" }
+    else if text-contains k "nrf9160" then BoardPosture { bp-known = True, bp-name = "nRF9160", bp-flash-encryption = False, bp-hw-crypto = True, bp-secure-boot = True, bp-hw-rng = True, bp-source = "Nordic nRF9160: CryptoCell-310, Arm TrustZone secure boot (TF-M), CRACEN TRNG; no transparent flash encryption" }
+    else if text-contains k "nrf52840" | text-contains k "nrf52" then BoardPosture { bp-known = True, bp-name = "nRF52840", bp-flash-encryption = False, bp-hw-crypto = True, bp-secure-boot = False, bp-hw-rng = True, bp-source = "Nordic nRF52840: CryptoCell-310 + TRNG; APPROTECT readback protection, no flash encryption, no hardware secure-boot fuses" }
+    else if text-contains k "stm32l4" then BoardPosture { bp-known = True, bp-name = "STM32L4", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = True, bp-source = "ST STM32L4: on-chip TRNG and RDP flash readout protection; no flash encryption, no secure-boot fuses (base line)" }
+    else if text-contains k "stm32f4" then BoardPosture { bp-known = True, bp-name = "STM32F4", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = False, bp-source = "ST STM32F4: RDP readout protection only; no flash encryption, no hardware crypto or TRNG on the base line" }
+    else if text-contains k "rp2040" then BoardPosture { bp-known = True, bp-name = "RP2040", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = False, bp-source = "Raspberry Pi RP2040: no flash encryption, no hardware crypto, no secure boot, ring-oscillator entropy only" }
+    else if text-contains k "fe310" then BoardPosture { bp-known = True, bp-name = "FE310", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = False, bp-source = "SiFive FE310: no flash encryption, no hardware crypto, no secure boot, no TRNG" }
+    else if text-contains k "pi4" | text-contains k "bcm2711" then BoardPosture { bp-known = True, bp-name = "Pi4", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = True, bp-hw-rng = True, bp-source = "Raspberry Pi 4 (BCM2711): Armv8-A crypto extensions, hardware RNG, signed-bootloader secure boot; no transparent flash encryption" }
+    else BoardPosture { bp-known = False, bp-name = if text-length b == 0 then "(unset)" else b, bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = False, bp-source = "not in the board table; the manufacturer states this SoC's flash encryption, hardware crypto, secure boot and TRNG" }
+
+  ev-yn : Boolean -> Text
+  ev-yn (b) = if b then "yes" else "no"
+
+ One residual line per hardware-anchored attribute, naming the requirement
+ sections it moves from the manufacturer's checklist to the SoC when the
+ board provides it, and leaving them the manufacturer's when it does not.
+
+  ev-board-lines : BoardPosture -> Text
+  ev-board-lines (p) =
+    "board.name=" & (p.bp-name) & "\n" &
+    "board.known=" & (if p.bp-known then "y" else "n") & "\n" &
+    "board.flash-encryption=" & ev-yn (p.bp-flash-encryption) & " (ETSI 5.4, 5.3-7 at-rest, CRA 2(e) stored-data: " & (if p.bp-flash-encryption then "SoC-anchored" else "manufacturer's, no transparent flash encryption") & ")\n" &
+    "board.hardware-crypto=" & ev-yn (p.bp-hw-crypto) & " (ETSI 5.5, 5.3-*, CRA 2(e): " & (if p.bp-hw-crypto then "hardware AEAD/hash available; the software floor still applies" else "software crypto only, which the toolchain supplies") & ")\n" &
+    "board.secure-boot=" & ev-yn (p.bp-secure-boot) & " (ETSI 5.7, CRA 2(f) integrity: " & (if p.bp-secure-boot then "a hardware root of trust can chain to the CDX signature" else "the CDX hash+signature is the root; no hardware boot fuses") & ")\n" &
+    "board.hardware-rng=" & ev-yn (p.bp-hw-rng) & " (ETSI 5.3-3 key uniqueness, CRA 2(a): " & (if p.bp-hw-rng then "a TRNG seeds key generation" else "entropy is the manufacturer's to supply; no on-chip TRNG") & ")\n" &
+    "board.source=" & (p.bp-source) & "\n"
+
+  ev-board-html : BoardPosture -> Text
+  ev-board-html (p) =
+    "<h2>Per-board residual: " & ev-html-esc (p.bp-name) & (if p.bp-known then "" else " (not in the board table)") & "</h2>\n<p>Public SoC facts, cited, that adjust which DEPLOYMENT rows a hardware root of trust can close. The claims above do not change; this is what the reviewer reads the deployment residuals against.</p>\n<table><tr><th>attribute</th><th>present</th><th>what it moves</th></tr>\n" &
+    "<tr><td>flash encryption</td><td>" & ev-yn (p.bp-flash-encryption) & "</td><td>ETSI 5.4 / 5.3-7 at-rest, CRA 2(e)</td></tr>\n" &
+    "<tr><td>hardware crypto</td><td>" & ev-yn (p.bp-hw-crypto) & "</td><td>ETSI 5.5 / 5.3-*, CRA 2(e)</td></tr>\n" &
+    "<tr><td>secure boot</td><td>" & ev-yn (p.bp-secure-boot) & "</td><td>ETSI 5.7, CRA 2(f)</td></tr>\n" &
+    "<tr><td>hardware RNG</td><td>" & ev-yn (p.bp-hw-rng) & "</td><td>ETSI 5.3-3, CRA 2(a)</td></tr>\n</table>\n<p><code>" & ev-html-esc (p.bp-source) & "</code></p>\n"
+
+Section: The SBOM
+
+ CycloneDX-shaped: one component per source chapter keyed by its content
+ hash, and the binary itself. The canonical SBOM is the manifest and the
+ header hash; this is the export for ecosystem tooling.
+
+  ev-sbom-comp : Text -> Text
+  ev-sbom-comp (line) =
+    let parts = text-split line " "
+    in let name = if list-length parts > 0 then list-at parts 0 else line
+    in let sha = if list-length parts > 1 then list-at parts 1 else ""
+    in "    {\"type\": \"file\", \"name\": " & ev-json-str name & ", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": " & ev-json-str sha & "}]}"
+
+ The strings that reach here are chapter names, hashes, a product and a
+ board name; a double quote in one is dropped rather than escaped, since the
+ Codex literal has no backslash escape to spell the JSON one with.
+
+  ev-json-str : Text -> Text
+  ev-json-str (s) = "\"" & text-replace s "\"" "" & "\""
+
+  ev-sbom-comps : List Text, Integer, Text -> Text
+  ev-sbom-comps (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else ev-sbom-comps xs (i + 1) (acc & (if i == 0 then "" else ",\n") & ev-sbom-comp (list-at xs i))
+
+  ev-sbom : EvidenceInputs -> Text
+  ev-sbom (e) =
+    "{\n  \"bomFormat\": \"CycloneDX\",\n  \"specVersion\": \"1.5\",\n  \"version\": 1,\n  \"metadata\": {\"component\": {\"type\": \"firmware\", \"name\": " & ev-json-str (e.ei-product) & ", \"hashes\": [{\"alg\": \"SHA-256\", \"content\": " & ev-json-str (e.ei-cdx-file-sha) & "}], \"properties\": [{\"name\": \"codex:header-hash\", \"value\": " & ev-json-str (ev-header-hash (e.ei-header)) & "}, {\"name\": \"codex:board\", \"value\": " & ev-json-str (e.ei-board) & "}]}},\n  \"components\": [\n" &
+    ev-sbom-comps (e.ei-chapters) 0 "" &
+    "\n  ]\n}\n"
+
+Section: The Package
+
+  EvidenceOut = record {
+    eo-cdxe : Text,
+    eo-html : Text,
+    eo-sbom : Text
+  }
+
+  ev-package : EvidenceInputs -> EvidenceOut
+  ev-package (e) =
+    let cra = ev-claims e cra-requirements 0 []
+    in let etsi = ev-claims e etsi-requirements 0 []
+    in let nist = ev-claims e nist-requirements 0 []
+    in let iec = ev-claims e iec-requirements 0 []
+    in EvidenceOut { eo-cdxe = ev-cdxe e cra etsi nist iec, eo-html = ev-html e cra etsi nist iec, eo-sbom = ev-sbom e }

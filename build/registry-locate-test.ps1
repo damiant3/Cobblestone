@@ -39,8 +39,19 @@
 param(
     [string]$Kernel = 'seed/Codex.cdx',
     [int]$HostPort = 0,
-    [switch]$KeepArtifacts
+    [switch]$KeepArtifacts,
+    # Which card carries the guests' conversations: ne2k (every historical
+    # run) or e1000 (-e1000-nat, the Intel model with the NAT wire on it;
+    # CurrentPlan B4 step 2). All three guests here (serve, registry,
+    # announce) take the same card. Both pass 9/9 (2026-08-17): the registry
+    # and announce tools bring the driver up like cdx-serve, and the registry's
+    # receive give-up is counted in ticks, not polls (CurrentPlan B4 step 2b
+    # has the account: a poll-count constant tuned to the uncalibrated interval
+    # gave up before the first poll once the driver was calibrated).
+    [ValidateSet('ne2k', 'e1000')]
+    [string]$Card = 'ne2k'
 )
+$script:CardArgs = if ($Card -eq 'e1000') { @('-e1000-nat') } else { @() }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -99,8 +110,8 @@ function Compile-Server([string]$Src, [string]$OutCdx, [string]$LogName) {
 
 function Start-Serve([string]$Image, [int]$Port, [string]$Tag) {
     $p = Start-Process -FilePath $script:CodexVmBin -PassThru -WindowStyle Hidden `
-        -ArgumentList @('-kernel', $serveCdx, '-disk', $Image, '-output', "$out/$Tag.out",
-                        '-portfwd', "${Port}:9300", '-mem', '3072', '-headless') `
+        -ArgumentList (@('-kernel', $serveCdx, '-disk', $Image, '-output', "$out/$Tag.out",
+                        '-portfwd', "${Port}:9300", '-mem', '3072', '-headless') + $script:CardArgs) `
         -RedirectStandardError "$out/$Tag.err"
     $script:procs += $p
     return $p
@@ -114,8 +125,8 @@ function Start-Serve([string]$Image, [int]$Port, [string]$Tag) {
 # return, is what recorded two defects that did not exist.
 function Start-Registry([int]$Port, [string]$Tag) {
     $p = Start-Process -FilePath $script:CodexVmBin -PassThru -WindowStyle Hidden `
-        -ArgumentList @('-kernel', $regCdx, '-output', "$out/$Tag.out",
-                        '-portfwd', "${Port}:9301", '-mem', '3072', '-headless') `
+        -ArgumentList (@('-kernel', $regCdx, '-output', "$out/$Tag.out",
+                        '-portfwd', "${Port}:9301", '-mem', '3072', '-headless') + $script:CardArgs) `
         -RedirectStandardError "$out/$Tag.err"
     $script:procs += $p
     return $p
@@ -128,8 +139,8 @@ function Invoke-Announce([string]$Image, [int]$RegPort, [int]$AdvertisePort, [st
     [System.IO.File]::WriteAllText((Join-Path (Get-Location) $inFile),
         "127.0.0.1:$RegPort 127.0.0.1:$AdvertisePort`n")
     $p = Start-Process -FilePath $script:CodexVmBin -PassThru -WindowStyle Hidden `
-        -ArgumentList @('-kernel', $annCdx, '-disk', $Image, '-input', $inFile,
-                        '-output', "$out/$Tag.out", '-mem', '3072', '-headless') `
+        -ArgumentList (@('-kernel', $annCdx, '-disk', $Image, '-input', $inFile,
+                        '-output', "$out/$Tag.out", '-mem', '3072', '-headless') + $script:CardArgs) `
         -RedirectStandardError "$out/$Tag.err"
     $p.WaitForExit(180000) | Out-Null
     if (-not $p.HasExited) { try { $p.Kill() } catch {} ; Write-Host '  FAIL  cdx-announce did not exit'; exit 1 }

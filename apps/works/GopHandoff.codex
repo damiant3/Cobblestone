@@ -49,6 +49,32 @@ Section: Block
   handoff-stride : Integer -> Integer
   handoff-stride (dummy) = bit-and (peek-qword handoff-base 32) 4294967295
 
+ Version 2 of the block (cdx-to-pe.ps1 HandoffInit, 2026-08-18) adds the
+ SMBIOS entry points the stub found in the ConfigurationTable (+0x30 the
+ 3.0 `_SM3_` entry, +0x38 the 2.x `_SM_` one), the EDID byte count at +0x40
+ and up to 128 bytes of EDID at +0x48, copied from EFI_EDID_ACTIVE_PROTOCOL
+ (or DISCOVERED when active published nothing) before ExitBootServices. A
+ version-1 block is 48 bytes and holds none of it, so every reader below
+ answers zero unless the version says the fields exist: a payload booted by
+ an older stub reads "none offered", not the bytes past the block.
+
+  handoff-version : Integer -> Integer
+  handoff-version (dummy) = if handoff-present 0 then bit-and (peek-qword handoff-base 8) 4294967295 else 0
+
+  handoff-has-v2 : Integer -> Boolean
+  handoff-has-v2 (dummy) = handoff-version 0 >= 2
+
+  handoff-smbios3 : Integer -> Integer
+  handoff-smbios3 (dummy) = if handoff-has-v2 0 then peek-qword handoff-base 48 else 0
+
+  handoff-smbios2 : Integer -> Integer
+  handoff-smbios2 (dummy) = if handoff-has-v2 0 then peek-qword handoff-base 56 else 0
+
+  handoff-edid-size : Integer -> Integer
+  handoff-edid-size (dummy) = if handoff-has-v2 0 then bit-and (peek-qword handoff-base 64) 4294967295 else 0
+
+  handoff-edid-base : Integer = handoff-base + 72
+
 Section: Boot Framebuffer
 
   boot-fb-base : Integer -> Integer

@@ -110,7 +110,6 @@ Section: The Socket
 
   registry-port : Integer = 9301
 
-  local-mac : List Integer = net-driver-mac
   local-ip : List Integer = [10, 0, 2, 15]
   gateway-ip : List Integer = [10, 0, 2, 2]
 
@@ -118,7 +117,7 @@ Section: The Socket
 
   listen-transport : Integer -> TcpTransportState
   listen-transport (x) =
-    let sess = net-session-new local-mac local-ip gateway-ip registry-port 0 gateway-ip 1000
+    let sess = net-session-new net-driver-mac local-ip gateway-ip registry-port 0 gateway-ip 1000
     in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
     in transport-new sess2
 
@@ -181,7 +180,20 @@ Section: Answering
  generous: the lower edge above is real, and a server that gives up early
  returns to accept before the request it was owed arrives.
 
-  recv-give-up : Integer = 40000000
+ The constant used to be the poll count 40000000, a starting point that left
+ 10,000,000 of NetIO's uncalibrated 50,000,000-poll cap. Measured 2026-08-17
+ (root, CurrentPlan B4 2b): once this program brought the driver up, NetIO's
+ cap became `net-io-tick-interval * 500` at the CALIBRATED interval, about a
+ third of that, and 40,000,000 was already past it, so every receive gave up
+ before its first poll and the registry logged `no-message` for a request it
+ never read. It is the poll-count-as-duration defect `LESSONS.md` names for
+ `e1000-aneg-fuel`, on the other side of the same interval. In ticks it is
+ the same budget on both settings: 100 ticks, 10 seconds calibrated.
+
+  recv-give-up-ticks : Integer = 100
+
+  recv-give-up : Integer
+  recv-give-up = net-io-max-polls - recv-give-up-ticks * net-io-tick-interval
 
   handle-conn : List Announcement, TcpTransportState -> [Network.Read, Network.Write, Console.Write] ServeResult
   handle-conn (anns) (ts) = act
@@ -210,7 +222,8 @@ Section: Answering
 Section: Entry
 
   opening : [Network.Read, Network.Write, Console.Write] Nothing = act
-    print-line-uni ("cdx-registry: listening on guest port " & show registry-port)
+    card <- net-driver-bring-up
+    print-line-uni ("cdx-registry: NIC " & net-driver-card-name card & ", poll interval " & show net-io-tick-interval & ", listening on guest port " & show registry-port)
     served <- serve-loop [] 0
     print-line-uni ("cdx-registry closed after " & show served)
   end

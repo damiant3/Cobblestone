@@ -1,0 +1,111 @@
+Chapter: DiagSink
+  cites Foreword chapter TextSearch
+  cites Works chapter GopFat16
+  cites Works chapter GopDisk
+  cites Diag chapter DiagStage
+
+ The sink ladder from apps/works/SinkLadderProbe.codex as a stage: the
+ 2.7 MB streamed write (WORKS-9's question) through the same FAT16 writer
+ the bank uses, on the medium the bank opened, then read back and compared
+ byte for byte. `sink shift=1` in DIAG.CFG is the oracle calibration: every
+ byte is then reported bad and the row must say so (L-FALSIF).
+
+ We say:
+
+Section: States
+
+  dsk-states : List Text = ["ok", "no-medium", "mount-fail", "write-refused", "size-bad", "read-fail", "bad-bytes"]
+
+  dsk-size : Integer = 2745998
+  dsk-chunk : Integer = 65536
+
+Section: Payload
+
+  dsk-pat : Integer -> Integer
+  dsk-pat (i) = int-mod (i * 7 + i / 513) 251
+
+  dsk-fill : Integer, Integer, Integer -> Integer
+  dsk-fill (buf) (i) (stop) =
+    if i >= stop then 0
+    else let w = poke-byte buf i (dsk-pat i)
+    in dsk-fill buf (i + 1) stop
+
+  dsk-fill-all : Integer, Integer, Integer -> Integer
+  dsk-fill-all (buf) (i) (n) =
+    if i >= n then 0
+    else let stop = if i + dsk-chunk > n then n else i + dsk-chunk
+    in let f = dsk-fill buf i stop
+    in dsk-fill-all buf stop n
+
+  dsk-bad : Integer, Integer, Integer, Integer, Integer -> Integer
+  dsk-bad (buf) (i) (n) (shift) (bad) =
+    if i >= n then bad
+    else if peek-byte buf i /= dsk-pat (i + shift) then dsk-bad buf (i + 1) n shift (bad + 1)
+    else dsk-bad buf (i + 1) n shift bad
+
+  dsk-name-buf : Integer -> Integer
+  dsk-name-buf (dummy) =
+    let nb = alloc-zeroed 16 16
+    in let a = poke-byte nb 0 83
+    in let b = poke-byte nb 1 73
+    in let c = poke-byte nb 2 78
+    in let d = poke-byte nb 3 75
+    in let e = poke-byte nb 4 32
+    in let f = poke-byte nb 5 32
+    in let g = poke-byte nb 6 32
+    in let h = poke-byte nb 7 32
+    in let i = poke-byte nb 8 67
+    in let j = poke-byte nb 9 68
+    in let k = poke-byte nb 10 88
+    in nb
+
+Section: The Stage
+
+  dsk-shift : DiagCtx -> Integer
+  dsk-shift (c) =
+    let v = diag-cfg-value c "sink"
+    in if text-starts-with v "shift=" then text-to-integer (substring v 6 (text-length v - 6)) else 0
+
+  dsk-lines : Integer, Integer, Integer, Integer, Integer -> List Text
+  dsk-lines (size) (got) (bad) (shift) (wstage) =
+    ["size=" & show size & " read=" & show got & " bad=" & show bad & " shift=" & show shift & " wstage=" & show wstage]
+
+  dsk-finish : Text, Integer, Integer, Integer, Integer, Integer, Integer -> DiagResult
+  dsk-finish (state) (colour) (size) (got) (bad) (shift) (wstage) =
+    diag-result state colour (dsk-lines size got bad shift wstage) (dsk-lines size got bad shift wstage)
+
+  dsk-verify : Fat16Volume, Integer -> [Device.Port] DiagResult
+  dsk-verify (vol) (shift) = act
+    sz <- gfat-file-size vol "SINK.CDX"
+    if sz /= dsk-size then dsk-finish "size-bad" diag-col-bad sz 0 0 shift (xdiag-get gfat-cell-write)
+    else act
+      f <- gfat-read-file vol "SINK.CDX"
+      if f.gf-ok == False then dsk-finish "read-fail" diag-col-bad sz (f.gf-len) 0 shift (xdiag-get gfat-cell-write)
+      else let bad = dsk-bad (f.gf-buf) 0 (f.gf-len) shift 0
+      in if bad /= 0 then dsk-finish "bad-bytes" diag-col-bad sz (f.gf-len) bad shift (xdiag-get gfat-cell-write)
+      else dsk-finish "ok" diag-col-good sz (f.gf-len) 0 shift (xdiag-get gfat-cell-write)
+    end
+  end
+
+  dsk-write : Fat16Volume, Integer -> [Device.Port] DiagResult
+  dsk-write (vol) (shift) =
+    let buf = alloc-zeroed (dsk-size + 512) 512
+    in let f = dsk-fill-all buf 0 dsk-size
+    in let nb = dsk-name-buf 0
+    in let mark = __heap-save
+    in act
+      ok <- gfat-write-file vol nb buf dsk-size
+      let r = __heap-restore mark
+      in if ok == False then dsk-finish "write-refused" diag-col-bad dsk-size 0 0 shift (xdiag-get gfat-cell-write)
+      else dsk-verify vol shift
+    end
+
+  dsk-run : DiagCtx -> [Device.Port] DiagResult
+  dsk-run (c) = act
+    if c.dc-bank == False then dsk-finish "no-medium" diag-col-dim dsk-size 0 0 (dsk-shift c) 0
+    else act
+      m <- gfat-mount-esp
+      if m.gm-ok == False then dsk-finish "mount-fail" diag-col-bad dsk-size 0 0 (dsk-shift c) (xdiag-get gfat-cell-stage)
+      else dsk-write (m.gm-vol) (dsk-shift c)
+    end
+  end

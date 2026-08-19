@@ -84,6 +84,48 @@ Section: GPIO Driver
     mmio-write-32 io-mux (bit-or (bit-and val (bit-xor #180 (0 - 1))) pull-bits)
    end
 
+Section: GPIO Linear Handle
+
+ The foreword Pin threaded onto the ESP32-C6 GPIO matrix: open selects
+ the pin's direction, close returns it to input (clearing its output
+ enable). The handle carries the fixed GPIO base so close reaches the
+ right register without the caller re-supplying it.
+
+  esp32c6-gpio-config : Integer, PinMode -> [Device.Mmio] Integer
+  esp32c6-gpio-config (pin) (mode) =
+   when mode
+    is PinOutput -> esp32c6-gpio-set-output pin
+    is PinInput -> esp32c6-gpio-set-input pin
+    is PinAlternate (f) -> esp32c6-gpio-set-output pin
+    is PinAnalog -> esp32c6-gpio-set-input pin
+
+  esp32c6-gpio-open : Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
+  esp32c6-gpio-open (pin) (mode) = act
+   m <- esp32c6-gpio-config pin mode
+   Pin esp32c6-gpio-base pin
+  end
+
+  esp32c6-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
+  esp32c6-pin-write (p) (high) =
+   when p
+    is Pin (base) (pin) -> act
+      w <- (if high then esp32c6-gpio-set pin else esp32c6-gpio-clear pin)
+      Pin base pin
+    end
+
+  esp32c6-pin-read : linear Pin -> [Gpio, Device.Mmio] (linear Pin, Boolean)
+  esp32c6-pin-read (p) =
+   when p
+    is Pin (base) (pin) -> act
+      v <- (esp32c6-gpio-read pin)
+      (Pin base pin, v /= 0)
+    end
+
+  esp32c6-pin-close : linear Pin -> [Gpio, Device.Mmio] Integer
+  esp32c6-pin-close (p) =
+   when p
+    is Pin (base) (pin) -> esp32c6-gpio-set-input pin
+
 Section: UART Registers
 
   esp32c6-uart0-base : Integer = #60000000
@@ -186,6 +228,48 @@ Section: UART Driver
    esp32c6-uart-send-byte uart-base 10
   end
 
+Section: UART Linear Handle
+
+ The foreword UartPort threaded onto UART0: open initialises the port,
+ write pushes one byte through the board's own tx-FIFO poll, close
+ disables the transmitter. The handle carries the UART base so a caller
+ that opened UART0 cannot send down UART1 by passing the wrong address.
+
+  esp32c6-uart-open : Frequency -> [Uart, Device.Mmio] linear UartPort
+  esp32c6-uart-open (baud) = act
+   i <- esp32c6-uart-init baud
+   UartPort esp32c6-uart0-base
+  end
+
+  esp32c6-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
+  esp32c6-uart-write (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- esp32c6-uart-send-byte b byte
+      UartPort b
+    end
+
+  esp32c6-uart-recv-bytes : Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  esp32c6-uart-recv-bytes (b) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- (esp32c6-uart-recv-byte b)
+    esp32c6-uart-recv-bytes b n (i + 1) (list-push acc v)
+   end
+
+  esp32c6-uart-recv : linear UartPort, Integer -> [Uart, Device.Mmio] (linear UartPort, List Integer)
+  esp32c6-uart-recv (port) (n) =
+   when port
+    is UartPort (b) -> act
+      bytes <- (esp32c6-uart-recv-bytes b n 0 [])
+      (UartPort b, bytes)
+    end
+
+  esp32c6-uart-close : linear UartPort -> [Uart, Device.Mmio] Integer
+  esp32c6-uart-close (port) =
+   when port
+    is UartPort (b) -> mmio-write-32 (b + esp32c6-uart-conf0-off) 0
+
 Section: SPI Registers
 
   esp32c6-spi2-base : Integer = #60081000
@@ -241,6 +325,80 @@ Section: SPI Driver
    cmd <- (mmio-read-32 (spi-base + esp32c6-spi-cmd-off))
    bit-and cmd esp32c6-spi-cmd-usr > 0
   end
+
+Section: Linear I2C Bus
+
+  esp32c6-i2c-open : [I2c, Device.Mmio] linear I2cBus
+  esp32c6-i2c-open = act
+   i <- esp32c6-i2c-init
+   I2cBus esp32c6-i2c0-base
+  end
+
+  esp32c6-i2c-bus-write-reg : linear I2cBus, Integer, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  esp32c6-i2c-bus-write-reg (bus) (addr) (reg) (val) =
+   when bus
+    is I2cBus (b) -> act
+      r <- (esp32c6-i2c-write-reg addr reg val)
+      (I2cBus b, r)
+    end
+
+  esp32c6-i2c-bus-read-reg : linear I2cBus, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  esp32c6-i2c-bus-read-reg (bus) (addr) (reg) =
+   when bus
+    is I2cBus (b) -> act
+      v <- (esp32c6-i2c-read-reg addr reg)
+      (I2cBus b, v)
+    end
+
+  esp32c6-i2c-close : linear I2cBus -> [I2c, Device.Mmio] Integer
+  esp32c6-i2c-close (bus) =
+   when bus
+    is I2cBus (b) -> mmio-write-32 (b + esp32c6-i2c-ctr-off) 0
+
+Section: Linear SPI Transaction
+
+  esp32c6-spi-open : [Spi, Device.Mmio] linear SpiBus
+  esp32c6-spi-open = act
+   i <- esp32c6-spi-init
+   SpiBus esp32c6-spi2-base
+  end
+
+  esp32c6-spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
+  esp32c6-spi-select (bus) (cs) =
+   when bus
+    is SpiBus (b) -> act
+      w <- (esp32c6-gpio-clear cs)
+      SpiTxn b cs
+    end
+
+  esp32c6-spi-transfer-bytes : Integer, List Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  esp32c6-spi-transfer-bytes (b) (out) (i) (len) (acc) =
+   if i >= len then acc
+   else act
+    v <- (esp32c6-spi-transfer b (list-at out i))
+    esp32c6-spi-transfer-bytes b out (i + 1) len (list-push acc v)
+   end
+
+  esp32c6-spi-txn-transfer : linear SpiTxn, List Integer -> [Spi, Device.Mmio] (linear SpiTxn, List Integer)
+  esp32c6-spi-txn-transfer (txn) (out) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      got <- (esp32c6-spi-transfer-bytes b out 0 (list-length out) [])
+      (SpiTxn b cs, got)
+    end
+
+  esp32c6-spi-deselect : linear SpiTxn -> [Spi, Device.Mmio] linear SpiBus
+  esp32c6-spi-deselect (txn) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      w <- (esp32c6-gpio-set cs)
+      SpiBus b
+    end
+
+  esp32c6-spi-close : linear SpiBus -> [Spi, Device.Mmio] Integer
+  esp32c6-spi-close (bus) =
+   when bus
+    is SpiBus (b) -> mmio-write-32 (b + esp32c6-spi-user-off) 0
 
 Section: I2C Registers
 

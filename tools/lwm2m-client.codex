@@ -1,0 +1,135 @@
+Chapter: Lwm2mClientBinary
+  cites Net chapter NetDriver
+  cites Net chapter Lwm2mClient
+  cites Net chapter UdpIO
+  cites Encode chapter Lwm2m
+  cites Foreword chapter Console
+
+ `Lwm2mClient` was a pure state machine with no caller outside
+ `codex/test/apps/lwm2m-client`, which drives it against hand-built CoAP
+ requests rather than a peer. That test proves our half answers itself, and
+ `docs/PM/Active/Stories/BrotliBeatsOpus.md` is the account of why two halves
+ sharing an assumption agree forever. This binary is the socket the client
+ did not have: registration, the management session that follows, and
+ deregistration, over UDP.
+
+ WHAT THIS DOES NOT PROVE. There is no LwM2M server on this box, so nothing
+ here has yet been answered by an implementation that reads
+ OMA-TS-LightweightM2M-V1_1 instead of our `Lwm2m` chapter. Pointed at
+ Leshan or any other server it becomes an interop arm; run against nothing it
+ reports that the datagrams left and none came back, which is a true
+ statement about the socket and no statement at all about the protocol.
+ `build/coap-interop-test.ps1` is the shape the LwM2M equivalent would take.
+
+ THE CLOCK IS THE PIT TICK, as in `coap-client`: `get-ticks` counts the
+ periodic timer at roughly 18.2 Hz. The LwM2M lifetime is in seconds and
+ `lwm2m-client-tick` counts calls rather than time, so this binary converts
+ once, here, and passes the client whole ticks of its own.
+
+Section: Configuration
+
+  lw-local-mac : List Integer = net-driver-mac
+  lw-local-ip : List Integer = [10, 0, 2, 15]
+  lw-gateway-ip : List Integer = [10, 0, 2, 2]
+
+  lw-local-port : Integer = 5902
+  lw-server-port : Integer = 5683
+
+  lw-poll-fuel : Integer = 400000
+  lw-rounds : Integer = 400
+
+ A lifetime of 8 with the client's own halving rule sends an Update once the
+ counter falls to 4, which is inside a run of `lw-rounds` rather than a
+ number nobody waits for.
+
+  lw-lifetime : Integer = 8
+
+  lw-registration : Lwm2mRegistration = Lwm2mRegistration {
+    endpoint = "codex-probe", lifetime = lw-lifetime, binding = "U",
+    objects = [lwm2m-obj-device, lwm2m-obj-server]
+  }
+
+  lw-resources : List Lwm2mRes = [
+    lwm2m-res lwm2m-obj-device 0 lwm2m-res-manufacturer [67, 111, 100, 101, 120],
+    lwm2m-res lwm2m-obj-device 0 lwm2m-res-model [80, 114, 111, 98, 101],
+    lwm2m-res-exec lwm2m-obj-device 0 lwm2m-res-reboot,
+    lwm2m-res-rw lwm2m-obj-server 0 1 [51, 48, 48]
+  ]
+
+Section: The Exchange
+
+  lw-send-all : UdpSocket, List (List Integer), Integer -> [Network.Write] Integer
+  lw-send-all (sk) (outs) (i) =
+    if i >= list-length outs then 0
+    else act
+      sent <- udp-io-send sk (list-at outs i)
+      rest <- lw-send-all sk outs (i + 1)
+      sent + rest
+    end
+
+ One socket and one client carried through every round, for the reason
+ `coap-client` records: the message id lives in the client, and building a
+ fresh one restarts it, which RFC 7252 section 4.5 lets a server treat as a
+ duplicate and answer from its cache.
+
+ A round that received nothing still ticks, because the lifetime is what
+ drives the Update and a silent server must not stop the clock.
+
+  lw-run : UdpSocket, Lwm2mClient, Integer -> [Network.Read, Network.Write] Lwm2mClient
+  lw-run (sk) (c) (rounds) =
+    if rounds <= 0 then c
+    else act
+      r <- udp-io-recv sk lw-poll-fuel
+      let step = if r.ur-got then lwm2m-client-recv c (r.ur-data)
+                 else lwm2m-client-tick c
+      in act
+        sent <- lw-send-all sk (step.ls-out) 0
+        lw-run sk (step.ls-client) (rounds - 1)
+      end
+    end
+
+  lw-register : UdpSocket, Lwm2mClient -> [Network.Read, Network.Write] Lwm2mClient
+  lw-register (sk) (c) =
+    let step = lwm2m-client-register c
+    in act
+      sent <- lw-send-all sk (step.ls-out) 0
+      lw-run sk (step.ls-client) lw-rounds
+    end
+
+  lw-deregister : UdpSocket, Lwm2mClient -> [Network.Read, Network.Write] Lwm2mClient
+  lw-deregister (sk) (c) =
+    let step = lwm2m-client-deregister c
+    in act
+      sent <- lw-send-all sk (step.ls-out) 0
+      step.ls-client
+    end
+
+Section: Reporting
+
+ `registered` is the discriminating cell and it is the one to read first: it
+ is False until a 2.01 Created carrying Location-Path arrives, so it cannot
+ be True unless a server answered. `executions` counts Execute requests the
+ server sent us, which separates a server that merely accepted the
+ registration from one that went on to drive the object tree.
+
+  lw-report : Text, Lwm2mClient -> [Console.Write] Nothing
+  lw-report (label) (c) = act
+    print-line-uni ("lwm2m " & label
+      & " registered=" & show (lwm2m-client-registered c)
+      & " executions=" & show (lwm2m-client-executions c))
+  end
+
+Section: Entry
+
+  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
+    let sk = udp-io-open lw-local-mac lw-local-ip lw-local-port lw-gateway-ip lw-server-port
+    in let c0 = lwm2m-client-new lw-registration lw-resources
+    in act
+      live <- lw-register sk c0
+      lw-report "session" live
+      gone <- lw-deregister sk live
+      lw-report "deregistered" gone
+    end
+  end
+
+Page 1

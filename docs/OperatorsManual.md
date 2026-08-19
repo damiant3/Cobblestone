@@ -323,13 +323,17 @@ All scripts use `build/vm-config.ps1` for shared VM setup.
 `tools/codex-vm.exe` -- a ~12,800-line C program (measured 2026-08-05) using Windows Hypervisor
 Platform (WHP). Build with `tools/build-vm.ps1`.
 
-**A guest cannot detect codex-vm through the HYPERVISOR bit.** CPUID leaf 1
-ECX reads ZERO here, and bit 31 of that register is the conventional "am I
-virtualised" answer, so it says no. Measured on a booted kernel: the vendor
-string is `GenuineIntel`, the maximum leaf is 1, and leaf 1 EDX carries a
-real feature set (FPU TSC MSR PAE APIC CMOV MMX FXSR SSE SSE2) while leaf 1
-ECX is entirely empty. The corollary for anything decoding CPUID: an empty
-feature line on this host is the host, not a broken decode.
+**A guest CAN detect codex-vm through the HYPERVISOR bit since 2026-08-18.**
+CPUID leaf 1 ECX carries bit 31 (the conventional "am I virtualised" answer)
+and nothing else; leaves 8000_0002h..04h answer the brand string
+`codex-vm virtual CPU (WHP)`. Until 2026-08-18 leaf 1 ECX read ZERO and the
+brand leaves were absent, so a guest was told it was on bare silicon with no
+name. Otherwise unchanged: the vendor string is `GenuineIntel`, the maximum
+basic leaf is 1, and leaf 1 EDX carries a real feature set (FPU TSC MSR PAE
+APIC CMOV MMX FXSR SSE SSE2). The corollary for anything decoding CPUID: a
+feature line with nothing but the hypervisor bit on this host is the host,
+not a broken decode. The diagnostic ladder's cpu stage reads `hypervisor`
+here by design.
 
 **Never kill codex-vm by process name.** Several agents run this box at once,
 each booting VMs out of its own `D:\Projects\NewRepository-<agent>\`, so
@@ -383,6 +387,9 @@ codex-vm -kernel file.cdx [options]
 | `-xhci-intel-lock` | off | As `-xhci-intel`, and additionally make XUSB2PR read-only, modelling a part whose ports firmware pinned to the companion. A correct driver then finds nothing, which is what proves the routing gate rather than something else is deciding. |
 | `-xhci-csz` | off | Advertise CSZ=1 (HCCPARAMS1 bit 2) and hold every context to the 64-byte stride, the way Intel PCH silicon does. Every bed before this flag reported CSZ=0, so the driver's 64-byte context path shipped in every image and executed nowhere but on real Intel parts. A driver that hardcodes 32 writes its slot context inside the input control context and its ring pointers where the controller will not look. |
 | `-xhci-scratch <N>` | 0 | Declare N scratchpad buffers in HCSPARAMS2 and REFUSE the first ENABLE_SLOT (completion code 9, stderr verdict) unless DCBAA[0] points at a 64-byte-aligned array of N page-aligned, in-RAM page pointers. QEMU and this model declared zero forever; Intel parts demand real pages, and a missing array is silent corruption on metal. |
+| `-no-smbios` | off (SMBIOS is published) | With `-uefi`: leave the SMBIOS entries out of the ConfigurationTable, so a guest that goes looking is told "none offered". The arm for a reader's no-table state; the diagnostic ladder's smbios stage answers `no-table` and its box row `unnamed` under it. |
+| `-no-edid` | off (an EDID is offered) | With `-uefi`: LocateProtocol answers NOT_FOUND for the EDID protocols. The ladder's edid stage answers `absent`. |
+| `-edid-bad` | off | With `-uefi`: the offered EDID has a wrong checksum byte. The ladder's edid stage answers `bad-checksum`, which is what shows the checksum is read rather than assumed. |
 | `-uefi-conout-remode` | off | With `-uefi`: the first ConOut ClearScreen switches the GOP to 1024x768 stride 1024 and updates Mode->Info, modelling AMI Aptio V's GraphicsConsole activation. A stub that reads the GOP geometry BEFORE its first ConOut use hands its payload the splash mode's numbers for a scanout that has since changed, which is the ASUS display corruption of 2026-08-02 exactly. |
 | `-xhci-evt-flood <N>` | 0 | Post N extra Port Status Change events at the Run transition, on top of the per-port connect and reset-completion PSC events the model now always posts. The event ring is 64 TRBs: N at or above it marches the producer through the ring WRAP and into the FULL condition (drop + one stderr report, per real silicon), the two paths a 4-port bed can never reach and a 26-port Intel reaches before enumeration begins. Both paths measured PASS on the shipping driver at N=30/50/100. |
 | `-hid-nak` | off | The HID keyboard NAKs every interrupt IN forever: no DMA, no transfer event, the pending TD stays in progress and Stop Endpoint answers FSE code 26 (Stopped) with the residual. Reproduces the ASUS 2026-08-03 flight signature (EPINT=0, dq parked, est=1, f1=1a) on the desk; the arm every silent-keyboard hypothesis is tested against. |
@@ -650,7 +657,15 @@ intermittent flicker into a deterministic reading.
 pre-loaded from `-input` file. Output captured from guest UART writes
 to `-output` file. Ports 0x3F8-0x3FD (COM1). Protocol: guest reads
 input from ring buffer; writes output bytes; harness captures until
-EOT or VM exit.
+EOT or VM exit. The capture buffer starts at 16 MB and doubles; if a
+doubling fails, every byte that does not fit is COUNTED, the first prints
+`SERIAL: output buffer growth failed at N bytes ...` on stderr and the exit
+dump adds `SERIAL: K guest serial byte(s) DROPPED ... <file> is SHORT`
+(2026-08-18; before that the drop was silent and `-output` was simply
+short with both ends reporting success). Exit status is unchanged by a
+drop, so a harness that wants to refuse a short capture greps stderr for
+`SERIAL:`. The BLIT path (bulk output) reports its own growth failure as
+`BLIT: output buffer growth failed`.
 
 **NE2K NIC.** NE2000-compatible ISA NIC at I/O base 0x300. User-mode
 NAT stack with IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3. Handles
@@ -725,6 +740,32 @@ duration. The RAM-polling ones, which are the class above, are:
 
 `ahci-fuel`, `ide-poll-fuel`, `rtc-uip-fuel` and the other `e1000-*-fuel`
 constants poll registers and sit in the first row, so they are not urgent.
+
+**The guest-to-host byte census, and how to read it.** Any run in which the
+guest sent TCP payload prints one line to stderr at exit:
+
+```
+NAT TX BYTES: seg=N queued=N sent=N drop-noconn=0 drop-badstate=0 drop-oom=0 drop-freed=0 (reap=0 exit=0)
+```
+
+`seg` is what the guest's data segments carried and the four `drop-*`
+counters plus `sent` must add up to it. It exists because a short arrival
+was invisible from both ends: the guest's own accounting says complete, and
+`net-send-raw` answers the frame length unconditionally after kicking TXP
+without ever reading the NE2000's transmit status, so **the guest cannot
+report a transmit failure even in principle.** A nonzero `drop-` counter
+names the site; `drop-freed` splits into `reap` (the half-closed reaper
+collected a connection mid-drain) and `exit` (VM exit stopped waiting for a
+reader, bounded by `NAT_EXIT_DRAIN_MS`).
+
+**A slow reader does not provoke the loss this census was built for; a
+STALLED one does.** The guest sends at roughly 120 KB/s, so a uniformly
+throttled host reader is never the bottleneck and the socket never fills.
+What fills it is a reader that stops near the end of a bulk transfer, so
+the send buffer is full at the moment the guest's FIN arrives. Measured
+2026-08-18: a one-shot 15 s stall at 16.0 MB of a 16 MB send lost half a
+megabyte every time, where the unaided failure rate was about one run in
+five.
 
 **A retransmitted SYN is handled, and before 2026-08-14 it was not.** A SYN
 for a connection the NAT already had fell through the new-connection branch,
@@ -1040,8 +1081,19 @@ populates it, so it always reads as 'no packet'.
 **ACPI.** RSDP at 0xE0000, RSDT, FADT (SCI on port 0x2000, PM timer
 at 0x2004), MADT (LAPIC entries per core + IOAPIC), DSDT stub.
 
-**SMBIOS.** Entry point at 0xF0000. Type 0 (BIOS), Type 1 (System),
-Type 127 (end-of-table). Vendor/product: "Codex"/"codex-vm".
+**SMBIOS.** The 2.1 entry point (`_SM_`) at 0xE0780 and the structure table
+at 0xE0800: Type 0 (BIOS "Codex 1.0 05/23/2026"), Type 1 (System "Codex
+Project" / "Codex VM" / "1.0"), Type 2 (baseboard "Codex Virtual Board"),
+Type 17 (one memory device sized from `-mem`, added 2026-08-18) and Type 127.
+Under `-uefi` a 3.0 entry point (`_SM3_`) at 0xF0B00 names the same table and
+the ConfigurationTable publishes both under their GUIDs (entries 2 and 3;
+`-no-smbios` leaves them out). Also under `-uefi`: EFI_EDID_ACTIVE and
+EFI_EDID_DISCOVERED answer from LocateProtocol with a 128-byte EDID 1.4 block
+at 0xF0B80 (manufacturer CDX, product 1, one 1920x1080 detailed timing,
+monitor name "codex-vm dsp"); `-no-edid` removes them and `-edid-bad` breaks
+the checksum. Measured 2026-08-18: the type 0 and type 1 string sets carried a
+stray third NUL, which a spec walker reads as a zero-length structure and
+stops on; fixed the same day, and the ladder's smbios stage is the arm.
 
 **UEFI Firmware Emulation** (when `-uefi` or booting a GPT image).
 Trap-page dispatch at GPA 0xF1000 (HLT opcodes -- guest calls trap,
@@ -1077,15 +1129,49 @@ section for commands and workflows.
 
 ### QEMU (fallback)
 
-Set `$env:USE_QEMU=1` to force QEMU. Required for GDB watchpoints
-and TCG tracing.
+Set `$env:CODEX_VM_HOST='qemu'` to force QEMU. It is the only switch that
+does anything: `vm-config.ps1` decides the host with
+`$script:UseCodexVm = (codex-vm.exe exists) -and ($env:CODEX_VM_HOST -ne
+'qemu')`, and it reads that variable and no other.
+
+**`USE_QEMU` is not a switch and never was.** This section told the reader
+to set it until 2026-08-18, and `gdb-watchpoint.ps1` set it too, which is
+how the GDB watchpoint workflow came to be silently dead on every box that
+has `codex-vm.exe`: the host stayed codex-vm and `-gdb tcp::1234 -S` went
+to a VM with no GDB stub. Measured by dot-sourcing `vm-config.ps1` both
+ways, `USE_QEMU=1` leaves `UseCodexVm` **True**.
 
 ```powershell
-$env:USE_QEMU = 1
+$env:CODEX_VM_HOST = 'qemu'
 build/test.ps1 -Jobs 8
 ```
 
+`CODEX_ACCEL` overrides the accelerator (`whpx` on Windows, `tcg` on Linux).
 `kernel-irqchip=off` required for bare-metal operation under QEMU.
+
+**Where a QEMU compile's time goes, and it is mostly not the guest.**
+Measured 2026-08-18 on `plug-oracle-arith` (103,645 bytes of output) under
+WHPX, through `vm-config`'s own boot path: QEMU process start 565 ms, guest
+boot to READY 404 ms, input send 260 ms, compile-and-output 1,419 ms,
+teardown 17 ms. Two traps sit in that profile:
+
+- **Do not time a QEMU compile with a bespoke `qemu-system-x86_64`
+  invocation.** A hand-rolled one that does not honour the boot contract
+  (the `0xfe8` RAM-size loader cell, the two chardevs) produces a few
+  hundred bytes instead of the full binary because the guest never ran,
+  and the run still looks like it finished. Drive it through `compile.ps1`
+  with `CODEX_VM_HOST=qemu`.
+- **`Invoke-VmCompileFallback` used to pay a flat 2 s per compile.** Once
+  SIZE's declared payload was complete it set `ReadTimeout = 2000` and did
+  one more blocking read to drain a trailer that in practice is never
+  there. Now 250 ms. If a QEMU timing looks like it has a constant floor
+  in it, this is the shape of thing to look for.
+
+The output path itself is no longer per-byte: `__write_binary_buf` polls
+LSR once and `rep outsb` a burst of up to 16 through the 16550 transmit
+FIFO, so a burst is one VM exit rather than sixteen. codex-vm handles the
+string I/O in one exit as well (`codex-vm.c`, the `StringOp` arm on 0x3F8);
+without that arm a burst would write one byte out of RAX and skip the rest.
 
 ### ARM64 UEFI boot under QEMU (`build/boot-arm64.ps1`)
 
@@ -2294,6 +2380,31 @@ prints `HOST CRASH:` to **stderr**, and exits 0xC0DE. The distinction
 matters because a harness that only captures `-output` sees an empty
 serial log and a nonzero exit and reads it as a guest that produced
 nothing. **Redirect stderr or the diagnosis is invisible.**
+
+**FIXED 2026-08-18 (root). A failed demand-commit was reported as a guest
+fault, and the crash reporter then read the page it was describing.**
+`guest_mem` is committed in 2 MB chunks on the guest's first touch; when
+`VirtualAlloc(MEM_COMMIT)` or `WHvMapGpaRange` refused (the box's commit
+charge: several agents' VMs, each committing whatever its guest touches of a 3 GB reservation), the run loop fell through
+to the `Unmapped MMIO GPA=...` crash report as though the guest had walked
+off the map, and `dbg_dump_mem` read the uncommitted GPA to print "Memory at
+fault address" and killed the process: `HOST CRASH ... at 0x...7C35`. That
+is the intermittent brotli-interop crash of 2026-08-16 (`Address: 0x70a00000
+Access: WRITE` then `HOST CRASH`), reproduced by refusing the commit past
+`0x70000000` in an ablation build: same two lines, same low address bits.
+Now the failure prints `HOST: cannot back guest RAM at GPA 0x...:
+VirtualAlloc(MEM_COMMIT) failed, err=1455 (ERROR_COMMITMENT_LIMIT) -- the
+host is out of commit charge, this is not a guest fault` (or the
+`WHvMapGpaRange` hr), the report's reason line says `Guest RAM commit
+failed`, and every host read the reporter makes (`dbg_dump_mem`,
+`dbg_backtrace`, `dbg_dump_stack`, `dbg_disasm_at`) asks `VirtualQuery`
+first and prints `host page not committed` instead of dying; the backtrace
+had a second instance one frame past `__start` (RBP chain ending at
+`0xbe000000`). Same CL: `Code at RIP` had printed EMPTY in every report on a
+3 GB guest because `(int)(guest_mem_size - addr)` went negative for any RIP
+under 1 GB; the clamp now happens before the narrowing. If you see the
+`HOST:` line, the fix is on the box (free memory or fewer concurrent VMs),
+not in the guest.
 
 **FIXED 2026-08-10 (blu). Setting a VBE mode activated the framebuffer at
 runtime without committing the guest region the emulator reads back.** The

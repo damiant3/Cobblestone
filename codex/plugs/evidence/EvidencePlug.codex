@@ -1,0 +1,86 @@
+Chapter: EvidencePlug
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch
+  cites Evidence chapter EvidencePackage
+
+ The input on the serial ring, one line each, `key value` (run.ps1 writes
+ it): a first line `EVIDENCE`, then `product`, `board`, `cdx-size`,
+ `cdx-file-sha256`, `cdx-header` (the first 224 bytes as hex), `log-sha256`,
+ `log-lines`, `punctual-sha256`, `manifest-sha256`, any number of `log <line>`
+ (the diagnostic lines of the compile log) and `chapter <name> <sha256>`, and
+ `END`. The output is three documents between markers: `==CDXE==`,
+ `==HTML==`, `==SBOM==`, closed by `==END==`.
+
+ We say:
+
+Section: Lines
+
+  ep-key : Text -> Text
+  ep-key (line) =
+    let parts = text-split line " "
+    in if list-length parts == 0 then "" else list-at parts 0
+
+  ep-value : Text -> Text
+  ep-value (line) =
+    let k = ep-key line
+    in if text-length line <= text-length k + 1 then "" else substring line (text-length k + 1) (text-length line - text-length k - 1)
+
+  ep-take : EvidenceInputs, Text -> EvidenceInputs
+  ep-take (e) (line) =
+    let k = ep-key line
+    in let v = ep-value line
+    in if k == "product" then EvidenceInputs { ei-product = v, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "board" then EvidenceInputs { ei-product = e.ei-product, ei-board = v, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "cdx-size" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = text-to-integer v, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "cdx-file-sha256" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = v, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "cdx-header" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = ev-hex-bytes v 0 [], ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "log-sha256" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = v, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "log-lines" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = text-to-integer v, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "log" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = list-push (e.ei-diag) v, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "manifest-sha256" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = v, ei-chapters = e.ei-chapters, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "chapter" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = list-push (e.ei-chapters) v, ei-punctual-sha = e.ei-punctual-sha }
+    else if k == "punctual-sha256" then EvidenceInputs { ei-product = e.ei-product, ei-board = e.ei-board, ei-cdx-size = e.ei-cdx-size, ei-cdx-file-sha = e.ei-cdx-file-sha, ei-header = e.ei-header, ei-log-sha = e.ei-log-sha, ei-log-lines = e.ei-log-lines, ei-diag = e.ei-diag, ei-manifest-sha = e.ei-manifest-sha, ei-chapters = e.ei-chapters, ei-punctual-sha = v }
+    else e
+
+Section: Body
+
+  ep-read : EvidenceInputs, Integer -> [Console] EvidenceInputs
+  ep-read (e) (fuel) = act
+    if fuel <= 0 then e
+    else act
+      r <- read-line-cce
+      when r
+        is None -> e
+        is Just (line) -> (if line == "END" then e else ep-read (ep-take e line) (fuel - 1))
+      end
+    end
+  end
+
+  ep-emit : EvidenceOut -> [Console] Nothing
+  ep-emit (o) = act
+    print-line-uni "==CDXE=="
+    print-line-uni (o.eo-cdxe)
+    print-line-uni "==HTML=="
+    print-line-uni (o.eo-html)
+    print-line-uni "==SBOM=="
+    print-line-uni (o.eo-sbom)
+    print-line-uni "==END=="
+  end
+
+  ep-dispatch : Text -> [Console] Nothing
+  ep-dispatch (m) = act
+    if m == "EVIDENCE" then act
+      e <- ep-read ev-empty-inputs 200000
+      ep-emit (ev-package e)
+    end
+    else print-line-uni ("evidence plug: unknown mode " & m)
+  end
+
+  opening : [Console] Nothing = act
+    mode <- read-line-cce
+    when mode
+      is Just (m) -> ep-dispatch m
+      is None -> print-line-uni "evidence plug: no input"
+    end
+  end

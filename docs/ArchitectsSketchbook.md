@@ -720,20 +720,31 @@ builds read it as the retired 0x700000 output-ring write position.
 
 ### Collision Detection
 
-Every function prologue (`emit-prologue` in `codex/compiler/Emit/X86_64.codex`)
-performs two checks:
+`emit-prologue` (`codex/compiler/Emit/X86_64.codex`) can emit two checks, and
+**NEITHER is unconditional.** This section used to open "every function
+prologue performs two checks", which is wrong in a way that matters: it makes
+`stack-min-rsp-addr` look like a reading any build can take, and it cannot be.
+Corrected 2026-08-18 against the emitter.
 
-1. **Stack tracking**: Compare RSP against the stored minimum
-   (`stack-min-rsp-addr`). If RSP is lower, update the minimum. This
-   tracks the stack high-water mark.
+1. **Stack tracking**, guarded by `if st1.trace-alloc`: compare RSP against
+   the stored minimum (`stack-min-rsp-addr`), and if RSP is lower, update it.
+   This tracks the stack high-water mark. **In an ordinary build the store is
+   not emitted at all**, so the address holds whatever the boot stub left
+   there and never moves. `apps/works/works-desk-contract.md` states this
+   correctly and is the doc that was right.
 
-2. **Collision check**: `cmp rsp, r10`. If RSP < R10, the stack has
-   grown into the heap. The prologue jumps to `__out_of_memory`, which
-   resets RSP to `bare-metal-stack-top` and prints a diagnostic over
-   serial before halting.
+2. **Collision check**, guarded by `if st-hwm.stack-guard`: `cmp rsp, r10`.
+   If RSP < R10 the stack has grown into the heap, and the prologue jumps to
+   `__out_of_memory`, which resets RSP to `bare-metal-stack-top` and prints a
+   diagnostic over serial before halting.
 
-The check is a software compare on every function entry, and it watches
-one direction only: RSP falling below R10.
+Where emitted, each is a software compare on every function entry, and the
+collision check watches one direction only: RSP falling below R10.
+
+**Consequence worth stating, because it has already cost a design an arm.**
+There is no stack instrument in a normal build. Anything that needs to know
+what the stack is doing needs a `trace-alloc` build, which also turns on
+allocation tracing and a serial dump, or it needs a new instrument.
 
 ### The Guard Page (2026-08-04)
 

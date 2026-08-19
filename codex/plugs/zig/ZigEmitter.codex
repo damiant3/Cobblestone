@@ -227,6 +227,25 @@ Section: Type Mapping
     is FunTy (p) (fnrow) (r) -> zig-fn-result r
     is otherwise -> zig-fn-spine ty
 
+ A `let` bound to a bare integer literal is a `comptime_int` in Zig, and a
+ closure that CAPTURES it takes `@TypeOf(k)` for the environment field, which
+ is then a comptime-only type in a runtime struct: `cannot load comptime-only
+ type 'comptime_int'`, six times on `lam-capture-two`. The annotation forces
+ the runtime type at the binding, where the IR already knows it.
+
+ Only the scalar types are annotated. A list, a closure or a record binds to an
+ expression whose Zig type is spelled by construction, and annotating those
+ would put this emitter's idea of the type in front of the value's own.
+
+  zig-let-annot : CodexType -> Text
+  zig-let-annot (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> ": i64"
+    is RealTy (w) (m) -> ": f64"
+    is BooleanTy -> ": bool"
+    is CharTy -> ": i64"
+    is otherwise -> ""
+
   emit-zig-type : CodexType -> Text
   emit-zig-type (ty) =
    when ty
@@ -795,7 +814,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__linked-list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "__deck-pos", emit = \args ctx d ty -> "0" },
-    ZigBuiltinEmitter { name = "__deck-set", emit = \args ctx d ty -> "0" },
+    ZigBuiltinEmitter { name = "__deck-set", emit = \args ctx d ty -> "cx_deck_set(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "subj-deck-record", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "char-at", emit = \args ctx d ty -> "cx_cce_to_cp(cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & "))" },
     ZigBuiltinEmitter { name = "negate", emit = \args ctx d ty -> "(-" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
@@ -1278,7 +1297,7 @@ Section: Expression Emission
     is IrIf (c) (t) (el) (ty) (sp) -> zig-pin-lit t el ("(if (" & emit-zig-expr c ctx (d + 1) & ") " & emit-zig-if-branch t ty el (zig-expect ctx ty) d & " else " & emit-zig-if-branch el ty t (zig-expect ctx ty) d & ")")
     is IrLet (name) (ty) (val) (body) (sp) ->
      if zig-is-seq-name name then zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
-     else if zig-occurs body name then zig-label d & ": { const " & zig-bind-name ctx name d & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body (zig-bind-push ctx name d) (d + 1) & "; }"
+     else if zig-occurs body name then zig-label d & ": { const " & zig-bind-name ctx name d & zig-let-annot ty & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body (zig-bind-push ctx name d) (d + 1) & "; }"
      else zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
     is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e ctx d
     is IrLambda (params) (body) (ty) (sp) -> zig-lambda-closure params body ty ctx d
@@ -2599,6 +2618,7 @@ Section: Chapter Emission
    & "fn cx_heap_restore(h: i64) i64 {\n    cx_hp = h;\n    return 0;\n}\n"
    & "fn cx_peek_qword(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + cx_heap.items[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"
    & "// address-of answers 0 here by X86_64Compound's own account of\n// targets without it; the argument is still evaluated so its binding\n// stays used.\nfn cx_address_of(v: anytype) i64 {\n    _ = v;\n    return 0;\n}\n"
+   & "// There is no deck here, so pointing the deck cell somewhere is a\n// no-op -- but answering a bare 0 and dropping the argument is not, since\n// the argument is a binding at the call site and zig refuses a binding\n// whose only consumer disappeared. Same shape as cx_address_of above.\nfn cx_deck_set(p: i64) i64 {\n    _ = p;\n    return 0;\n}\n"
    & "// The I/O boundary. Codex text is CCE everywhere inside -- on bare metal\n// and here alike -- so these convert at the edge and nowhere else: bytes\n// arriving become CCE, bytes leaving are already what they are. std.fs in\n// 0.16 wants an Io the generated main has no reason to carry, so this uses\n// the raw syscalls.\nfn cx_utf8_to_cce(bytes: []const u8) []const u8 {\n    var out: std.ArrayListUnmanaged(u8) = .empty;\n    const al = std.heap.page_allocator;\n    var i: usize = 0;\n    while (i < bytes.len) {\n        const n = std.unicode.utf8ByteSequenceLength(bytes[i]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        const cp = std.unicode.utf8Decode(bytes[i..][0..n]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        out.append(al, @intCast(cx_cp_to_cce(cp))) catch @panic(\"oom\");\n        i += n;\n    }\n    return out.items;\n}\n"
    & "fn cx_read_file_uni(path_cce: []const u8) []const u8 {\n    const al = std.heap.page_allocator;\n    const path = cx_cce_to_utf8(path_cce);\n    const z = al.allocSentinel(u8, path.len, 0) catch @panic(\"oom\");\n    @memcpy(z, path);\n    const rc = std.os.linux.openat(-100, z.ptr, .{ .ACCMODE = .RDONLY }, 0);\n    if (@as(isize, @bitCast(rc)) < 0) @panic(\"cx_read_file_uni: cannot open\");\n    const fd: i32 = @intCast(rc);\n    defer _ = std.os.linux.close(fd);\n    var raw: std.ArrayListUnmanaged(u8) = .empty;\n    var chunk: [65536]u8 = undefined;\n    while (true) {\n        const n = std.os.linux.read(fd, &chunk, chunk.len);\n        if (@as(isize, @bitCast(n)) < 0) @panic(\"cx_read_file_uni: read failed\");\n        if (n == 0) break;\n        raw.appendSlice(al, chunk[0..n]) catch @panic(\"oom\");\n    }\n    return cx_utf8_to_cce(raw.items);\n}\n"
    & "fn cx_write_all(bytes: []const u8) void {\n    var off: usize = 0;\n    while (off < bytes.len) {\n        const n = std.os.linux.write(1, bytes.ptr + off, bytes.len - off);\n        if (@as(isize, @bitCast(n)) <= 0) @panic(\"cx_write_all: write failed\");\n        off += n;\n    }\n}\n"

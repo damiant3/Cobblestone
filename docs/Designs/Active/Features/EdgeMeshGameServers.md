@@ -4,6 +4,20 @@
 
 **Ruling 2026-08-05 (Damian): RESURFACED, chained to blu's network track.** Phase 2 begins when B2-B4 (link bring-up, TCP/IP, the repository protocol) give the mesh a real socket surface; until then this design waits on that lane rather than on an owner of its own.
 
+**The socket surface B4 owed this design exists in the bed, 2026-08-17 (root,
+CurrentPlan B4 step 5).** Phase 2 need not wait on B4 any longer, only on its
+own owner. What it can start against today, all in `codex/os/net` and
+`codex/os/trust` and all driven by host harnesses under codex-vm: a listening
+TCP transport (`net-io-listen`, `net-io-accept`, `net-io-send`,
+`net-io-recv-loop` in `NetIO.codex`; `TcpTransport.codex`), tagged frames
+(`MessageFraming.codex`), the trust-side message codec
+(`TrustTransport.codex`, `AgentProtocol.codex`), and two serving programs to
+copy the shape of, `tools/cdx-serve.codex` (9300) and `tools/cdx-registry.codex`
+(9301), reachable through `codex-vm -portfwd`. The wire itself is written down
+in `DevelopersRulebook.md` "The repository wire". The same conversation over
+the Intel model is `build/cdx-serve-test.ps1 -Card e1000`; on the part it is
+B3's flight. GroupMembership, EdgeRouter and TrustNode remain this design's
+own wiring, as the phasing below says.
 **Phase 1 is shipped -- as a self-contained simulation.**
 `codex/foreword/engine/EdgeMesh.codex` implements the queue, Elo
 pairing, aggregate-latency region selection, fleet lifecycle, and reward

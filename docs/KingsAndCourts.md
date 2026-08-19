@@ -365,9 +365,9 @@ manuals.
 
 ## 6. The Compliance Evidence Module
 
-`codex/foreword/core/ComplianceEvidence.codex` maps 60 regulatory
-requirements across CRA Annex I (8), ETSI EN 303 645 (40), NISTIR
-8259A (5), and IEC 62443 (7) to the Codex features that satisfy each
+`codex/foreword/core/ComplianceEvidence.codex` maps 61 regulatory
+requirements (re-measured 2026-08-18) across CRA Annex I (8), ETSI EN 303
+645 (40), NISTIR 8259A (6), and IEC 62443 (7) to the Codex features that satisfy each
 one. The
 `generate-evidence-report` function produces a text compliance summary
 as a build artifact -- not a separate document that can drift, but a

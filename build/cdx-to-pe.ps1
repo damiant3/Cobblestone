@@ -314,6 +314,30 @@ function AssertAllocOk([char]$c) {
     $bw.Write([byte[]]@(0x74, 0x10))                  # jz +16 (over the panic block)
     AllocPanic $c
 }
+# The same refusal, painted, for the board with no serial port.
+#
+# The machine the desk flies on reports through a phone camera, so a panic that
+# writes only to the two UARTs leaves DARK BLUE on the glass and DARK BLUE
+# already means "died somewhere inside this stub". A refused heap allocation is
+# the one in-stub death whose answer is a number we are trying to measure, so it
+# gets a colour of its own and stops being one of the anonymous ones.
+#
+# The displacement is patched rather than written, because it spans a GopFill
+# whose length is a function of the fill body and the next person to touch that
+# body must not have to find this number.
+function AssertAllocOkPainted([char]$c, [int]$colour) {
+    $bw.Write([byte[]]@(0x48, 0x85, 0xC0))            # test rax, rax
+    $jz = $ms.Position
+    $bw.Write([byte[]]@(0x74, 0x00))                  # jz over paint+panic, patched below
+    GopFill $colour
+    AllocPanic $c
+    $end = $ms.Position
+    $disp = $end - $jz - 2
+    if ($disp -gt 127) { throw "[cdx-to-pe] AssertAllocOkPainted body outgrew a rel8 branch ($disp)" }
+    $ms.Position = $jz + 1
+    $bw.Write([byte]$disp)
+    $ms.Position = $end
+}
 
 # PROGRESS marks, the counterpart to the panic bytes above.
 #
@@ -545,6 +569,8 @@ function GopFill([int]$colour) {
 }
 $GopDarkBlue = 0x00202060
 $GopDarkGreen = 0x00104020
+# Blue low, green low, red high, in the same BGRx order as the two above.
+$GopDarkRed = 0x00602010
 
 # The block header, written unconditionally so the magic is present whenever
 # this stub ran at all. Every payload field is zeroed first: a reader that
@@ -558,11 +584,18 @@ function HandoffInit() {
     $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x18))              # mov [rdi+0x18], rax  w, h
     $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x20))              # mov [rdi+0x20], rax  stride, format
     $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x28))              # mov [rdi+0x28], rax  acpi rsdp
+    # Version 2 fields: smbios3 entry (+0x30), smbios 2.x entry (+0x38), edid
+    # size (+0x40) and 128 bytes of EDID (+0x48..+0xC7). Zeroed as one run so a
+    # reader of a v2 block reads "the stub looked and found none" everywhere.
+    $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]($HandoffAddr + 0x30)))
+    $bw.Write([byte[]]@(0xB9, 0x13, 0x00, 0x00, 0x00))        # mov ecx, 19  (152 bytes / 8)
+    $bw.Write([byte[]]@(0xFC, 0xF3, 0x48, 0xAB))              # cld; rep stosq (rax is still 0)
+    $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))
     $bw.Write([byte[]]@(0x48, 0xB8)); $bw.Write([Text.Encoding]::ASCII.GetBytes('CDXHANDF'))
     $bw.Write([byte[]]@(0x48, 0x89, 0x07))                    # mov [rdi+0x00], rax  magic
-    $bw.Write([byte[]]@(0xB8, 0x01, 0x00, 0x00, 0x00))        # mov eax, 1
+    $bw.Write([byte[]]@(0xB8, 0x02, 0x00, 0x00, 0x00))        # mov eax, 2  (v2: smbios + edid fields)
     $bw.Write([byte[]]@(0x89, 0x47, 0x08))                    # mov [rdi+0x08], eax  version
-    $bw.Write([byte[]]@(0xB8, 0x30, 0x00, 0x00, 0x00))        # mov eax, 48
+    $bw.Write([byte[]]@(0xB8, 0xC8, 0x00, 0x00, 0x00))        # mov eax, 200
     $bw.Write([byte[]]@(0x89, 0x47, 0x0C))                    # mov [rdi+0x0C], eax  size
 }
 
@@ -605,6 +638,112 @@ function AcpiPublish() {
     $loop.AddRange([byte[]]@(0xEB, 0xD8))                     # 38 jmp loop  (-40)
     if ($loop.Count -ne 40) { throw "[cdx-to-pe] ACPI scan is $($loop.Count) bytes, displacements assume 40" }
     $bw.Write($loop.ToArray())
+}
+
+# SMBIOS_TABLE_GUID f2fd1544-9794-4a2c-992e-e5bbcf20e394 (the 3.0 entry point)
+# and SMBIOS_TABLE_GUID eb9d2d31-2d88-11d3-9a16-0090273fc14d (the 2.x one),
+# EFI_GUID byte order as above. A board publishes one or both; the payload
+# prefers the 3.0 entry and falls back to the 2.x one, so both are carried.
+$Smbios3Guid = [byte[]]@(
+    0x44, 0x15, 0xFD, 0xF2, 0x94, 0x97, 0x2C, 0x4A,
+    0x99, 0x2E, 0xE5, 0xBB, 0xCF, 0x20, 0xE3, 0x94
+)
+$SmbiosGuid = [byte[]]@(
+    0x31, 0x2D, 0x9D, 0xEB, 0x88, 0x2D, 0xD3, 0x11,
+    0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D
+)
+
+# The same ConfigurationTable walk as AcpiPublish, parameterised by the GUID
+# and the handoff field it lands in (a disp8, so the loop stays 40 bytes and
+# the displacements above hold).
+function ConfigTablePublish([byte[]]$guid, [int]$field) {
+    $bw.Write([byte[]]@(0x49, 0x8B, 0x4F, 0x68))              # mov rcx, [r15+0x68]  count
+    $bw.Write([byte[]]@(0x49, 0x8B, 0x57, 0x70))              # mov rdx, [r15+0x70]  table
+    $bw.Write([byte[]]@(0x49, 0xB8)); $bw.Write($guid, 0, 8)  # mov r8, guid[0..7]
+    $bw.Write([byte[]]@(0x49, 0xB9)); $bw.Write($guid, 8, 8)  # mov r9, guid[8..15]
+    $loop = [System.Collections.Generic.List[byte]]::new()
+    $loop.AddRange([byte[]]@(0x48, 0x85, 0xC9))               # 0  test rcx, rcx
+    $loop.AddRange([byte[]]@(0x74, 0x23))                     # 3  jz done   (+35)
+    $loop.AddRange([byte[]]@(0x4C, 0x39, 0x02))               # 5  cmp [rdx], r8
+    $loop.AddRange([byte[]]@(0x75, 0x15))                     # 8  jne next  (+21)
+    $loop.AddRange([byte[]]@(0x4C, 0x39, 0x4A, 0x08))         # 10 cmp [rdx+8], r9
+    $loop.AddRange([byte[]]@(0x75, 0x0F))                     # 14 jne next  (+15)
+    $loop.AddRange([byte[]]@(0x48, 0x8B, 0x42, 0x10))         # 16 mov rax, [rdx+0x10]
+    $loop.AddRange([byte[]]@(0xBF))                           # 20 mov edi, HandoffAddr
+    $loop.AddRange([BitConverter]::GetBytes([int]$HandoffAddr))
+    $loop.AddRange([byte[]]@(0x48, 0x89, 0x47, [byte]$field)) # 25 mov [rdi+field], rax
+    $loop.AddRange([byte[]]@(0xEB, 0x09))                     # 29 jmp done  (+9)
+    $loop.AddRange([byte[]]@(0x48, 0x83, 0xC2, 0x18))         # 31 next: add rdx, 24
+    $loop.AddRange([byte[]]@(0x48, 0xFF, 0xC9))               # 35 dec rcx
+    $loop.AddRange([byte[]]@(0xEB, 0xD8))                     # 38 jmp loop  (-40)
+    if ($loop.Count -ne 40) { throw "[cdx-to-pe] config-table scan is $($loop.Count) bytes, displacements assume 40" }
+    $bw.Write($loop.ToArray())
+}
+
+function SmbiosPublish() {
+    ConfigTablePublish $Smbios3Guid 0x30
+    ConfigTablePublish $SmbiosGuid 0x38
+}
+
+# EFI_EDID_ACTIVE_PROTOCOL_GUID bd8c1056-9f36-44ec-92a8-a6337f817986 and
+# EFI_EDID_DISCOVERED_PROTOCOL_GUID 1c0c34f6-d380-41fa-a049-8ad06c1a66aa
+# (UEFI 2.x 12.9): { UINT32 SizeOfEdid; UINT8 *Edid; }. Active is what the
+# firmware chose to drive the panel with; discovered is what the panel
+# answered raw. Active first, discovered only if active published nothing.
+$EdidActiveGuid = [byte[]]@(
+    0x56, 0x10, 0x8C, 0xBD, 0x36, 0x9F, 0xEC, 0x44,
+    0x92, 0xA8, 0xA6, 0x33, 0x7F, 0x81, 0x79, 0x86
+)
+$EdidDiscoveredGuid = [byte[]]@(
+    0xF6, 0x34, 0x0C, 0x1C, 0x80, 0xD3, 0xFA, 0x41,
+    0xA0, 0x49, 0x8A, 0xD0, 0x6C, 0x1A, 0x66, 0xAA
+)
+
+# LocateProtocol(guid) exactly as GopAcquire calls it (same frame: two pushes,
+# sub 0x30, add 0x40), then copy min(SizeOfEdid, 128) bytes into the handoff
+# block at +0x48 and the count into +0x40. Skipped outright when +0x40 is
+# already non-zero, so the second GUID only fills a hole. Every failure
+# (protocol absent, null interface, null buffer) leaves the zeros from
+# HandoffInit, which the payload reads as "no EDID offered". rsi and rdi are
+# callee-saved and dead here; rcx is dead; r15 is the SystemTable.
+function EdidPublish([byte[]]$guid) {
+    $s = [System.Collections.Generic.List[byte]]::new()
+    $s.AddRange([byte[]]@(0x48, 0xB8)); $s.AddRange([byte[]]$guid[8..15])   #  0 mov rax, guid[8..15]
+    $s.Add(0x50)                                                             # 10 push rax
+    $s.AddRange([byte[]]@(0x48, 0xB8)); $s.AddRange([byte[]]$guid[0..7])    # 11 mov rax, guid[0..7]
+    $s.Add(0x50)                                                             # 21 push rax
+    $s.AddRange([byte[]]@(0x48, 0x89, 0xE1))                                 # 22 mov rcx, rsp  (&guid)
+    $s.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x30))                           # 25 sub rsp, 0x30
+    $s.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))                     # 29 lea r8, [rsp+0x28]
+    $s.AddRange([byte[]]@(0x48, 0x31, 0xD2))                                 # 34 xor rdx, rdx
+    $s.AddRange([byte[]]@(0x49, 0x8B, 0x47, 0x60))                           # 37 mov rax, [r15+0x60]
+    $s.AddRange([byte[]]@(0xFF, 0x90, 0x40, 0x01, 0x00, 0x00))               # 41 call [rax+0x140]
+    $s.AddRange([byte[]]@(0x48, 0x85, 0xC0))                                 # 47 test rax, rax
+    $j1 = $s.Count; $s.AddRange([byte[]]@(0x75, 0x00))                       # 50 jnz skip (patched)
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))                     # 52 mov rax, [rsp+0x28]  iface
+    $s.AddRange([byte[]]@(0x48, 0x85, 0xC0))                                 # 57 test rax, rax
+    $j2 = $s.Count; $s.AddRange([byte[]]@(0x74, 0x00))                       # 60 jz skip (patched)
+    $s.AddRange([byte[]]@(0x8B, 0x08))                                       # 62 mov ecx, [rax]        SizeOfEdid
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x70, 0x08))                           # 64 mov rsi, [rax+8]     Edid
+    $s.AddRange([byte[]]@(0x48, 0x85, 0xF6))                                 # 68 test rsi, rsi
+    $j3 = $s.Count; $s.AddRange([byte[]]@(0x74, 0x00))                       # 71 jz skip (patched)
+    $s.AddRange([byte[]]@(0x81, 0xF9, 0x80, 0x00, 0x00, 0x00))               # 73 cmp ecx, 128
+    $s.AddRange([byte[]]@(0x76, 0x05))                                       # 79 jbe +5
+    $s.AddRange([byte[]]@(0xB9, 0x80, 0x00, 0x00, 0x00))                     # 81 mov ecx, 128
+    $s.AddRange([byte[]]@(0xBF)); $s.AddRange([BitConverter]::GetBytes([int]$HandoffAddr))  # 86 mov edi, HandoffAddr
+    $s.AddRange([byte[]]@(0x89, 0x4F, 0x40))                                 # 91 mov [rdi+0x40], ecx
+    $s.AddRange([byte[]]@(0x48, 0x8D, 0x7F, 0x48))                           # 94 lea rdi, [rdi+0x48]
+    $s.AddRange([byte[]]@(0xFC, 0xF3, 0xA4))                                 # 98 cld; rep movsb
+    $skip = $s.Count                                                         # 101 skip:
+    $s.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x40))                           # 101 add rsp, 0x40
+    $s[$j1 + 1] = [byte]($skip - ($j1 + 2))
+    $s[$j2 + 1] = [byte]($skip - ($j2 + 2))
+    $s[$j3 + 1] = [byte]($skip - ($j3 + 2))
+    if ($s.Count -ne 105) { throw "[cdx-to-pe] EdidPublish is $($s.Count) bytes, displacements assume 105" }
+    $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))   # mov edi, HandoffAddr
+    $bw.Write([byte[]]@(0x83, 0x7F, 0x40, 0x00))                             # cmp dword [rdi+0x40], 0
+    $bw.Write([byte[]]@(0x75, [byte]$s.Count))                               # jnz over the body
+    $bw.Write($s.ToArray())
 }
 
 # Prolog: save all callee-saved regs
@@ -662,6 +801,9 @@ HandoffInit
 GopAcquire
 GopFill $GopDarkBlue
 AcpiPublish
+SmbiosPublish
+EdidPublish $EdidActiveGuid
+EdidPublish $EdidDiscoveredGuid
 
 # Get current IP (for relative addressing of text/rodata after stub)
 # call $+5; pop rbx; sub rbx, 5  -> rbx = address of this call instruction
@@ -785,7 +927,13 @@ $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
 $bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38))              # lea r9, [rsp+0x38]
 $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))                    # mov rax, [r15+0x60]
 $bw.Write([byte[]]@(0xFF, 0x50, 0x28))                          # call [rax+0x28]
-AssertAllocOk 'H'                                               # H = heap allocation status
+# DARK RED only on the paths that already differ from the flown A5 stub, so the
+# -EntryStart-without-Ebs bytes stay byte-identical to what has flown.
+if ($ExitBootServices -or -not $EntryStart) {
+    AssertAllocOkPainted 'H' $GopDarkRed                        # H = heap allocation status
+} else {
+    AssertAllocOk 'H'                                           # H = heap allocation status
+}
 # 'B' = firmware said success but never wrote the returned base: the sentinel
 # is still zero, and using it as a heap would put the guest at address 0.
 $bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))              # mov rax, [rsp+0x38]

@@ -1,0 +1,60 @@
+Chapter: HeapScrubTest
+  cites Foreword chapter HeapScrub
+  cites Foreword chapter Console
+
+ A passphrase field builds its text one character at a time, so every prefix
+ of what was typed is its own allocation. Zeroing the final Text would leave
+ "hunter", "hunte", "hunt" ... readable one byte short. The scrub arm builds
+ the text the same way, then reads the whole region back.
+
+Section: Fixtures
+
+  hs-secret : Text = "hunter2!"
+
+  hs-type : Text, Integer, Text -> Text
+  hs-type (src) (i) (acc) =
+    if i >= text-length src then acc
+    else hs-type src (i + 1) (acc & char-to-text (char-at src i))
+
+  hs-count-char : Integer, Integer, Integer, Integer, Integer -> Integer
+  hs-count-char (base) (n) (i) (code) (acc) =
+    if i >= n then acc
+    else hs-count-char base n (i + 1) code (if peek-byte base i == code then acc + 1 else acc)
+
+Section: Arms
+
+  hs-scrub-arm : Text
+  hs-scrub-arm =
+    let mark = __heap-save
+    in let typed = hs-type hs-secret 0 ""
+    in let top = __heap-save
+    in let before = hs-count-char mark (top - mark) 0 (char-code (char-at hs-secret 0)) 0
+    in let n = heap-scrub-to mark
+    in let back = __heap-save == mark
+    in let after = hs-count-char mark n 0 (char-code (char-at hs-secret 0)) 0
+    in let left = heap-region-nonzero mark n 0 0
+    in "scrub bytes=" & show n & " prefixes-before=" & show before & " prefixes-after=" & show after & " nonzero-after=" & show left & " heap-back=" & (if back then "Y" else "N")
+
+  hs-control-arm : Text
+  hs-control-arm =
+    let mark = __heap-save
+    in let typed = hs-type hs-secret 0 ""
+    in let top = __heap-save
+    in let r = __heap-restore mark
+    in let still = hs-count-char mark (top - mark) 0 (char-code (char-at hs-secret 0)) 0
+    in "restore-only prefixes-still-there=" & show still
+
+  hs-empty-arm : Text
+  hs-empty-arm =
+    let mark = __heap-save
+    in "empty bytes=" & show (heap-scrub-to mark) & " above-mark=" & show (heap-scrub-to (mark + 4096))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni hs-scrub-arm
+    print-line-uni hs-control-arm
+    print-line-uni hs-empty-arm
+  end
+
+Page 1

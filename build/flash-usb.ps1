@@ -12,6 +12,7 @@
 #
 # Usage (from an elevated pwsh):
 #   build/flash-usb.ps1 -Image build/boot/optiona.img -DiskNumber N
+#   build/flash-usb.ps1 -Image build/boot/diag.img -DiskNumber N -SpecFit -Rehearsed   # only a fully rehearsed hash flies
 # Or launch elevated in one shot:
 #   Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-File',
 #     'D:\Projects\NewRepository-fester\build\flash-usb.ps1','-Image',
@@ -34,6 +35,16 @@ param(
     # readback, so a stick that silently drops tail writes fails loudly here
     # instead of mysteriously at boot. Supersedes -FixupDir (no Python).
     [switch]$SpecFit,
+    # L-REHEARSE: refuse to flash an image whose SHA-256 is not in the
+    # rehearsal record. build/boot/diag-arm.ps1 appends a line for the exact
+    # bytes it ran through EVERY arm in both beds; a partial run writes nothing.
+    # So with -Rehearsed the only image that reaches a stick is one that
+    # completed its full mission in the bed as those bytes. -RehearsalRecord
+    # names the list (default: the diag ladder's); -ExpectHash pins the one
+    # hash the flight card names, on top of the record check.
+    [switch]$Rehearsed,
+    [string]$RehearsalRecord = '',
+    [string]$ExpectHash = '',
     [switch]$Force,
     # Transcript of the whole run. This is how a non-elevated caller (an agent
     # session) reads the result back out of the elevated window: pass -Log,
@@ -54,8 +65,21 @@ if ($disk.BusType -ne 'USB') {
     throw "Disk $DiskNumber is '$($disk.BusType)', not USB (FriendlyName='$($disk.FriendlyName)'). Refusing to write."
 }
 $imgBytes = [System.IO.File]::ReadAllBytes($imgPath)
+$imgHash = (Get-FileHash $imgPath -Algorithm SHA256).Hash
 Write-Host "Image : $imgPath"
-Write-Host "Size  : $($imgBytes.Length) bytes ($([math]::Round($imgBytes.Length/1MB,2)) MB)"
+Write-Host "SHA256: $imgHash"
+if ($ExpectHash -and ($ExpectHash.ToUpper() -ne $imgHash)) {
+    throw "Image hash $imgHash is not the expected $($ExpectHash.ToUpper()). Refusing to flash: these are not the bytes the flight card names."
+}
+if ($Rehearsed) {
+    $rec = if ($RehearsalRecord) { $RehearsalRecord } else { Join-Path $PSScriptRoot 'boot\diag.rehearsed' }
+    if (-not (Test-Path -PathType Leaf $rec)) { throw "-Rehearsed: no rehearsal record at $rec. Run build/boot/diag-arm.ps1 (every arm, both beds) on this image first." }
+    $hit = @(Get-Content $rec | Where-Object { $_ -like "$imgHash *" })
+    if ($hit.Count -eq 0) {
+        throw "-Rehearsed: image hash $imgHash is NOT in $rec. This image has not completed its full mission in the bed as these bytes (L-REHEARSE). Run build/boot/diag-arm.ps1 with every arm and both beds; a -Only or -SkipOvmf run does not count."
+    }
+    Write-Host "Rehearsed: $($hit[0])"
+}Write-Host "Size  : $($imgBytes.Length) bytes ($([math]::Round($imgBytes.Length/1MB,2)) MB)"
 Write-Host "Target: Disk $DiskNumber  $($disk.FriendlyName)  $([math]::Round($disk.Size/1GB,1)) GB"
 if ($imgBytes.Length -gt $disk.Size) { throw "Image ($($imgBytes.Length)) exceeds disk ($($disk.Size))" }
 

@@ -126,7 +126,15 @@ try {
         [System.IO.File]::WriteAllText($fpath, $content, [System.Text.UTF8Encoding]::new($false))
         Write-Host "[wpf-run] Wrote: $fname ($($content.Length) chars)"
     }
-    Write-Host "[wpf-run] OK: $Out"
+    # codex-vm dumps its output ring to -output ON EXIT, so grepping before the
+    # VM has gone reads a file the guest console has not reached yet.
+    if ($proc -and -not $proc.HasExited) { $proc.WaitForExit(20000) }
+    $truncHit = @()
+    if (Test-Path $wpfOutFile) { $truncHit = @(Select-String -Path $wpfOutFile -Pattern 'TRUNCATED sent=') }
+    if ($truncHit.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug could not send its whole output -- $($truncHit[0].Line.Trim())")
+        exit 7
+    }    Write-Host "[wpf-run] OK: $Out"
 
 } finally {
     if ($proc -and -not $proc.HasExited) {

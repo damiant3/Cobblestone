@@ -9,7 +9,7 @@ RFC 8410): two real endpoints complete an *authenticated* handshake in
 the battery, and an active man-in-the-middle who flips a `key_share` byte
 is defeated. **It is still not a secure channel**, and the reasons are
 now narrow and specific: no application traffic keys (the endpoint
-derives handshake secrets only), no fragmentation reassembly, and the
+derives handshake secrets only) and the
 handshake flights travel as DTLSPlaintext. **So `coaps://` still does not
 exist and ETSI 5.5 / CRA 1(c) remain transport-gated**.
 Also still missing across the wider stack: the CoAP/MQTT/LwM2M binding
@@ -241,11 +241,36 @@ absent" list below is now historical rather than descriptive.
    they now have a bounded, multi-segment, oldest-first retransmit over a
    correct sequence space, driven by a tick count nobody has calibrated
    against a real path.
-3. **No binding layer.** `codex/os/net` has 32 modules and not one of
-   them is a `CoapEndpoint`, `MqttConnection`, or `LwM2mClient`. The
-   codecs are pure functions nobody calls over a socket. Until the
-   Action-list interpreters described under "Layering" below are
-   written, the protocol work has no runtime existence.
+3. **The binding gap is now LwM2M ALONE, measured 2026-08-18 (reek).**
+   This said `codex/os/net` had 32 modules and not one of them was a
+   `CoapEndpoint`, `MqttConnection` or `LwM2mClient`, and that the codecs
+   were pure functions nobody called over a socket. It has 39 modules,
+   `Lwm2mClient.codex` and `Lwm2mFirmware.codex` are two of them, and the
+   endpoints live in `codex/foreword/encode/` rather than here
+   (`CoapEndpoint.codex`, `MqttEndpoint.codex`).
+
+   What survives, and it is narrower and checkable: **CoAP and MQTT are
+   bound and LwM2M is not.** `tools/coap-client.codex` cites
+   `Net chapter NetDriver`, `Encode chapter CoapEndpoint` and
+   `Net chapter UdpIO`, which is the whole shape of a binding;
+   `tools/coap-server.codex`, `tools/mqtt-client.codex` and
+   `tools/mqtts-client.codex` are the same. **`Lwm2mClient` cites only
+   `Coap`, `Lwm2m` and `Maybe` -- no `UdpIO`, no `NetIO` -- and its only
+   citer in the whole tree is `codex/test/apps/lwm2m-client.codex`.** So
+   the LwM2M client really is a pure state machine nobody calls over a
+   socket, and the missing piece is a wire half in `tools/` shaped like
+   `coap-client.codex`.
+
+   **CLOSED 2026-08-18 (reek): `tools/lwm2m-client.codex`.** Registration,
+   the management session, and deregistration over `UdpIO`, one socket and
+   one client carried through every round for the message-id reason
+   `coap-client` records. Measured in the bed with `-nic`: the guest opens
+   `guest:5902 -> 10.0.2.2:5683` and pushes the registration datagram, so
+   the binding is REACHED and emits rather than merely compiling. **Nothing
+   answered, and that is the honest limit**: there is no LwM2M server on
+   this box, so `registered=False` is a true statement about the socket and
+   no statement at all about the protocol. Pointed at Leshan it becomes an
+   interop arm; `build/coap-interop-test.ps1` is the shape that would take.
 
 ## The Network Stack Underneath (codex/os/net, 32 modules)
 
@@ -976,7 +1001,7 @@ foreword (pure, battery-tested)              -- BUILT
   LwM2mModel     object/instance/resource tree as records; TLV +
                  SenML-CBOR codecs (Cbor chapter exists)
   LwM2mMachine   bootstrap/register/update lifecycles, Object 5 states
-codex.os.net (I/O binding)                   -- NONE OF THIS EXISTS
+codex.os.net (I/O binding)                   -- COAP AND MQTT BUILT, LWM2M NOT (2026-08-18)
   CoapEndpoint   CoapMachine x UDP (later x DTLS record layer)
   MqttConnection MqttMachine x TCP/TLS; linear connection handle
   LwM2mClient    LwM2mMachine x CoapEndpoint

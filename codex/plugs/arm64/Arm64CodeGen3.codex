@@ -1227,8 +1227,7 @@ Section: Tail Call Optimization
   a64-shadowed-inline-name (st) (name) =
    if a64-is-known-inline name == False then False
    else if a64-is-inline-2arg name | a64-is-inline-1arg name then False
-   else if a64-is-known-builtin name /= 1 then False
-   else a64-find-func-offset (st.func-names) (st.func-offsets) name 0 >= 0
+   else a64-find-name-index (st.func-names) name ((st.extra).runtime-funcs) >= 0
 
   a64-apply-head-shadowed : A64State, IRExpr -> Boolean
   a64-apply-head-shadowed (st) (f) =
@@ -1587,7 +1586,9 @@ Section: Module Emission
   a64-emit-module (st) (chapter) (tdefs) (eff-ops) (smp) =
    let addrs = a64-assign-effect-op-addrs eff-ops 0 (list-length eff-ops) []
    in let htb = if list-length eff-ops > 0 then a64-effect-op-table-base else 0
-   in let new-extra = A64Extra { effect-op-addrs = addrs, handler-table-base = htb, type-defs = tdefs, learned-fields = [], wcet-reports = [], state-local = 0 - 1, smp-boot = smp, runtime-funcs = 0, boot-cap-mask = pm-opening-cap-mask (chapter.defs), boot-fs-scope = pm-opening-fs-scope (chapter.defs), boot-net-scope = pm-opening-net-scope (chapter.defs) }
+   in let pa-slug = a64-def-chapter-slug (chapter.defs) "init-phase-allocator" 0 (list-length (chapter.defs))
+   in let dr-slug = a64-def-chapter-slug (chapter.defs) "deck-record" 0 (list-length (chapter.defs))
+   in let new-extra = A64Extra { effect-op-addrs = addrs, handler-table-base = htb, type-defs = tdefs, learned-fields = [], wcet-reports = [], state-local = 0 - 1, smp-boot = smp, runtime-funcs = 0, boot-cap-mask = pm-opening-cap-mask (chapter.defs), boot-fs-scope = pm-opening-fs-scope (chapter.defs), boot-net-scope = pm-opening-net-scope (chapter.defs), deck-record-intrinsic = pa-slug /= "" & pa-slug == dr-slug, has-block-driver = a64-defs-have (chapter.defs) "vb-capacity-auto" 0 (list-length (chapter.defs)) }
    in let st1 = __record-set st "extra" new-extra
    in let st1r = if list-length eff-ops > a64-effect-op-slots then a64-add-shadow-warning st1 (a64-effect-op-overrun (list-length eff-ops)) else st1
    in let st2 = a64-emit-runtime st1r
@@ -1627,6 +1628,18 @@ Section: Module Emission
   a64-assign-effect-op-addrs (names) (i) (len) (acc) =
    if i >= len then acc
    else a64-assign-effect-op-addrs names (i + 1) len (list-push acc (A64EffectOpAddr { eoa-name = list-at names i, eoa-addr = a64-effect-op-table-base + i * 8 }))
+
+  a64-defs-have : List IRDef, Text, Integer, Integer -> Boolean
+  a64-defs-have (ds) (name) (i) (n) =
+   if i >= n then False
+   else if ((list-at ds i).name) == name then True
+   else a64-defs-have ds name (i + 1) n
+
+  a64-def-chapter-slug : List IRDef, Text, Integer, Integer -> Text
+  a64-def-chapter-slug (ds) (name) (i) (n) =
+   if i >= n then ""
+   else if ((list-at ds i).name) == name then (list-at ds i).chapter-slug
+   else a64-def-chapter-slug ds name (i + 1) n
 
 Section: Effect Handler Emission
 
@@ -1831,7 +1844,19 @@ Section: Effect Handler Emission
     then let rel = (target-offset - patch.insn-index) * 4
     in let st1 = a64-patch-insn st (patch.insn-index) (arm64-bl rel)
     in a64-patch-calls-loop st1 patches (i + 1)
-    else a64-patch-calls-loop (a64-add-shadow-warning st ("[WARN] unresolved call to '" & (patch.target) & "': the arm64 plug emits no such function, and the branch was left unpatched -- reaching it reads a stale x0")) patches (i + 1)
+    else a64-patch-calls-loop (a64-add-shadow-warning st (a64-unresolved-report (patch.target))) patches (i + 1)
+
+ A block builtin with no driver behind it is REFUSED, not warned about, and
+ the two answers differ in whether the build survives: `[UNSUPPORTED]` makes
+ `run.ps1` exit 6. The plug emits `block-read-sector` and its siblings only
+ when the program carries the driver, so an unresolved `block-` name means
+ the program asked for a disk it has no way to reach.
+
+  a64-unresolved-report : Text -> Text
+  a64-unresolved-report (target) =
+   if text-starts-with target "block-" then
+    "[UNSUPPORTED] " & target & ": the program calls a block builtin and carries no block driver, so nothing can serve the call. Reach VirtioBlk (Foreword chapter VirtioBlk, or FileSystem) from the program."
+   else "[WARN] unresolved call to '" & target & "': the arm64 plug emits no such function, and the branch was left unpatched -- reaching it reads a stale x0"
 
   a64-patch-func-addrs : A64State -> A64State
   a64-patch-func-addrs (st) =

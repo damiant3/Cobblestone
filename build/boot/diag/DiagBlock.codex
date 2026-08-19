@@ -1,0 +1,71 @@
+Chapter: DiagBlock
+  cites Foreword chapter TextSearch
+  cites Works chapter GopDisk
+  cites Diag chapter DiagStage
+
+ The block ladder from apps/works/BlockLadderProbe.codex as a stage: the
+ write side of the medium the bank already opened, one sector at a time.
+ The scratch LBA sits inside the image's facts region (LBA 28639..32734 on
+ a 32768-sector image), so the write lands on nothing the volume's own
+ checks read; DIAG.CFG `block lba=N` moves it, and an LBA past the medium is
+ the forced-failure arm.
+
+ We say:
+
+Section: States
+
+  dbl-states : List Text = ["ok", "no-medium", "read-fail", "bpb-bad", "write-refused", "readback-fail", "mark-lost"]
+
+  dbl-part-lba : Integer = 2048
+  dbl-scratch-lba : Integer = 30000
+  dbl-mark : Integer = 165
+
+Section: Rungs
+
+  dbl-lba : DiagCtx -> Integer
+  dbl-lba (c) =
+    let v = diag-cfg-value c "block"
+    in if text-starts-with v "lba=" then text-to-integer (substring v 4 (text-length v - 4))
+    else dbl-scratch-lba
+
+  dbl-sig-ok : Integer -> Boolean
+  dbl-sig-ok (buf) =
+    if buf == 0 then False
+    else if peek-byte buf 510 /= 85 then False
+    else peek-byte buf 511 == 170
+
+  dbl-bps : Integer -> Integer
+  dbl-bps (buf) = peek-byte buf 11 + bit-shl (peek-byte buf 12) 8
+
+  dbl-lines : Text, Text, Integer, Integer, Integer, Integer -> List Text
+  dbl-lines (state) (via) (bps) (lba) (wrote) (back) =
+    ["via=" & via & " bps=" & show bps & " lba=" & show lba & " write=" & show wrote & " readback=" & show back]
+
+  dbl-finish : Text, Integer, Text, Integer, Integer, Integer, Integer -> DiagResult
+  dbl-finish (state) (colour) (via) (bps) (lba) (wrote) (back) =
+    diag-result state colour (dbl-lines state via bps lba wrote back) (dbl-lines state via bps lba wrote back)
+
+  dbl-run : DiagCtx -> [Device.Port] DiagResult
+  dbl-run (c) = act
+    if c.dc-bank == False then dbl-finish "no-medium" diag-col-dim "none" 0 (dbl-lba c) 0 0
+    else act
+      sb <- disk-read-sector dbl-part-lba
+      if sb.dr-ok == False then dbl-finish "read-fail" diag-col-bad (sb.dr-via) 0 (dbl-lba c) 0 0
+      else if dbl-sig-ok (sb.dr-buf) == False then dbl-finish "read-fail" diag-col-bad (sb.dr-via) 0 (dbl-lba c) 0 0
+      else if dbl-bps (sb.dr-buf) /= 512 then dbl-finish "bpb-bad" diag-col-bad (sb.dr-via) (dbl-bps (sb.dr-buf)) (dbl-lba c) 0 0
+      else act
+        let lba = dbl-lba c
+        in let m0 = poke-byte (sb.dr-buf) 0 dbl-mark
+        in act
+          wr <- disk-write-into lba 1 (sb.dr-buf)
+          if wr == False then dbl-finish "write-refused" diag-col-bad (sb.dr-via) 512 lba 0 0
+          else act
+            rb <- disk-read-sector lba
+            if rb.dr-ok == False then dbl-finish "readback-fail" diag-col-bad (sb.dr-via) 512 lba 1 0
+            else if peek-byte (rb.dr-buf) 0 /= dbl-mark then dbl-finish "mark-lost" diag-col-bad (sb.dr-via) 512 lba 1 1
+            else dbl-finish "ok" diag-col-good (sb.dr-via) 512 lba 1 1
+          end
+        end
+      end
+    end
+  end

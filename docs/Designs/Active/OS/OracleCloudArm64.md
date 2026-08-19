@@ -1,5 +1,11 @@
 # Codex ARM64 Bare-Metal on Oracle Cloud
 
+> **DEFERRED 2026-08-18 (Damian): "basically a dead project, you can defer
+> that."** Local halves are closed (main 16697); the ~5-connection ceiling
+> and the OCI-account items (upload, VCN, external smoke test) are shelved
+> with the design, not being worked. Left in `Active/` per the lifecycle
+> rule (not shipped, not superseded); revive only on Damian's word.
+
 ## Goal
 
 Boot Codex as the OS on Oracle Cloud Infrastructure (OCI) free-tier
@@ -92,7 +98,9 @@ Measured against the shipped `BOOTAA64.EFI`, 78,336 bytes with one 77,016-byte `
 
 **The guard rail is not the image size, it is the `8192` literal, and that reframes the risk.** The image would have to grow 30.9 MB, four hundred times its present text, to reach the regions. The heap grant reaches them after 7,901 more pages, so **raising 8192 to 16384 -- the obvious next value -- puts `stack-top` at `#44123000` and both drivers' regions back inside the allocation, overrunning by 1.14 MB.** That is the same silent corruption this section is about.
 
-**A derivation on the guest side is not available and this is the reason, so nobody re-attempts it.** The guest cannot compute `text-pages`: it is known only to the image builder. The stub does set SP to exactly `stack-top` at entry (`:397-398`), but SP has descended by the time a driver initialises and rounding it up is unsound -- once the stack crosses a boundary, the rounded value lands below `stack-top`, inside the allocation. There is no stack-pointer builtin either. So the honest options are for the stub to PUBLISH `stack-top` where the drivers read it, or for a build-time check to compare the two files the way `check-facts-guid.ps1` compares its three producers of one GUID. **The second is a decision about the gate and is red's or Damian's to make, not one to smuggle in; the numbers above are what it would assert.** Recorded and not built.
+**A derivation on the guest side is not available and this is the reason, so nobody re-attempts it.** The guest cannot compute `text-pages`: it is known only to the image builder. The stub does set SP to exactly `stack-top` at entry (`:397-398`), but SP has descended by the time a driver initialises and rounding it up is unsound -- once the stack crosses a boundary, the rounded value lands below `stack-top`, inside the allocation. There is no stack-pointer builtin either. So the honest options are for the stub to PUBLISH `stack-top` where the drivers read it, or for a build-time check to compare the two files the way `check-facts-guid.ps1` compares its three producers of one GUID.
+
+**BUILT 2026-08-18 (root), the publish option.** The stub now writes `align-up(stack-top, 2 MB)` to `a64pe-dma-floor-cell` (#40004000, low RAM below the kernel image, mapped RW by the stub's own page tables) right before the kernel jump: `a64pe-stub-publish-dma-floor` in `Arm64PeWriter.codex`. `VirtioNet` and `VirtioBlk` derive every region from `peek-32 #40004000 0` (their Buffer Region sections) instead of the fixed `#44000000`. The floor now MOVES with `stack-top`, so raising the 8192 heap grant no longer puts the regions inside the allocation: they follow it up. The old build-time arithmetic check in `build-arm64-img.ps1` is replaced by a WIRING check (the stub publishes, both drivers read, the three cell addresses agree; an unmatched arm is exit 8), since the collision it guarded is now impossible by construction. Falsified: making the cells disagree fails the build with `the DMA floor cell disagrees: PE #40004000 VirtioNet #40004000 VirtioBlk #40005000`. Verified end to end: `docs/Probes/arm64-two-requests.ps1 -Requests 3` serves `HTTP 200` 15/15/948 bytes, the `/` path decoding to code 81 (a wrong floor would corrupt guest memory and mis-decode it, the 2026-08-16 symptom).
 
 **One thing measured and NOT green: a SECOND request in the same boot times out.** Each of `/` and `/api/health` answers 200 in its own run; the next request in the same boot never completes. **Handed to blu 2026-08-16 (red's routing), and one candidate is already ELIMINATED so it is not bought twice.**
 
@@ -138,6 +146,49 @@ connection close left in FIN_WAIT_1), `docs/Probes/arm64-two-requests.ps1
 requests, `avail` 36 to 42 to 48 and `lastused` 4 to 10 to 16 advancing
 monotonically, `eq=MATCH` on both `/api/health` paths, no `Synchronous
 Exception`, and QEMU's stderr EMPTY.
+
+**RE-VERIFIED 2026-08-18 (root), and a separate pre-existing ceiling named.**
+On today's main `arm64-two-requests.ps1 -Requests 3` again serves all three
+(`HTTP 200` 15/15/948), counters advancing, QEMU stderr empty, so residue 1 is
+closed and stays closed after the DMA-floor derivation above. `-Requests 10`
+serves the first FIVE (0-4, `HTTP 200`) and then reports `no-conn` for 5-9
+while `avail`/`lastused` keep advancing (the guest is alive and still
+consuming RX frames). This ceiling is present on plain main BEFORE the DMA
+change too, so it is not a regression and it is not residue 1 (which was "the
+SECOND request"); it is a new, separate limit around five connections in one
+boot.
+
+**DIAGNOSED 2026-08-18 (root), and it is in the TCP layer, not virtio or heap.**
+Printing the connection state on the `no-conn` path: loop 5 is `SYN_RECEIVED`,
+loops 6+ are `LISTENING`. So the sixth connection's SYN is received and the
+SYN-ACK sent (state advances to `SYN_RECEIVED`), but `arm64-net-io-accept`
+exhausts `arm64-net-io-max-polls` before the client's final ACK completes the
+handshake. `ws-serve-one` then calls `arm64-net-io-listen` unconditionally at
+the top of the next iteration and `tcp-fresh-listener` throws the half-open
+back to `LISTENING`; the client's completing ACK (no SYN flag) then falls to
+`tcp-step-listening`'s `else ActNone` (`Tcp.codex:262`) and is ignored forever,
+so the connection is stranded and every later `no-conn` is that dead socket.
+
+**Two hypotheses FALSIFIED so nobody re-chases them.** (1) Heap growth: the
+serve loop takes no heap mark (residue-1's dropped `__heap-restore`), so the
+frontier climbs ~73 KB/request and crosses `stack-top` around request 3-4,
+which looked like the cause. It is not: raising the stub heap grant 8192 to 12288
+(which moves `stack-top` and, via the derivation above, the DMA floor, both up)
+left the heap frontier byte-identical and the ceiling at exactly five. A lever
+that does not move the metric is the wrong lever. (2) The virtio RX path: frames
+keep arriving and being consumed through the `no-conn` loops (`avail`/`lastused`/`free`
+advance monotonically), so the NIC is not the limit.
+
+**The fix is architectural and in `codex/os/net` (blu's ground), so it is handed
+there rather than patched here.** The server holds ONE `TcpConnection` as both
+listener and connection, and accept abandons a half-open handshake on a poll
+budget; either accept must not give up while the connection is mid-handshake
+(preserving `SYN_RECEIVED` across the serve loop was tried and the ACK still did
+not complete the transition, which points further into `tcp-step-syn-received`
+or the frame demux), or the server needs a listening socket distinct from the
+accepted connection. Routed to blu 2026-08-18. The unbounded heap growth is a
+separate, still-open cost of residue-1's fix (it reaches the DMA floor around
+request 31); its real remedy is arm64 `deck-record` (`plugs-backlog.md` 1.33).
 
 ### What the DEVICE says, measured by blu 2026-08-16 (parked here for the release)
 

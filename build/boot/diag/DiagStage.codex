@@ -1,0 +1,135 @@
+Chapter: DiagStage
+  cites Foreword chapter CCE
+  cites Kernel chapter BitmapFont
+  cites Kernel chapter Pci
+
+ We say:
+
+Section: Risk
+
+  diag-risk-passive : Integer = 0
+  diag-risk-touches : Integer = 1
+  diag-risk-writes : Integer = 2
+  diag-risk-may-wedge : Integer = 3
+
+  diag-risk-name : Integer -> Text
+  diag-risk-name (r) =
+    if r == 0 then "passive"
+    else if r == 1 then "touches"
+    else if r == 2 then "writes"
+    else "may-wedge"
+
+Section: World
+
+  diag-world-ebs : Integer = 0
+  diag-world-uefi : Integer = 1
+
+  diag-world-name : Integer -> Text
+  diag-world-name (w) = if w == diag-world-uefi then "UEFI" else "EBS"
+
+Section: Colours
+
+  diag-col-bg : Integer = 1710638
+  diag-col-text : Integer = 16777215
+  diag-col-dim : Integer = 9474192
+  diag-col-good : Integer = 65280
+  diag-col-warn : Integer = 16744448
+  diag-col-bad : Integer = 16711680
+  diag-col-head : Integer = 65535
+  diag-col-note : Integer = 16776960
+
+Section: Context
+
+  DiagCtx = record {
+    dc-base : Integer,
+    dc-w : Integer,
+    dc-h : Integer,
+    dc-stride : Integer,
+    dc-scale : Integer,
+    dc-font : CbfFont,
+    dc-world : Integer,
+    dc-id : Text,
+    dc-kernel : Text,
+    dc-cfg : List Text,
+    dc-cfg-src : Text,
+    dc-pci : PciScanResult,
+    dc-box : Text,
+    dc-ram : Text,
+    dc-bank : Boolean,
+    dc-slot-x : Integer,
+    dc-slot-y : Integer,
+    dc-slot-w : Integer,
+    dc-slot-h : Integer
+  }
+
+  diag-ctx-with-slot : DiagCtx, Integer, Integer, Integer, Integer -> DiagCtx
+  diag-ctx-with-slot (c) (x) (y) (w) (h) =
+    DiagCtx { dc-base = c.dc-base, dc-w = c.dc-w, dc-h = c.dc-h, dc-stride = c.dc-stride, dc-scale = c.dc-scale, dc-font = c.dc-font, dc-world = c.dc-world, dc-id = c.dc-id, dc-kernel = c.dc-kernel, dc-cfg = c.dc-cfg, dc-cfg-src = c.dc-cfg-src, dc-pci = c.dc-pci, dc-box = c.dc-box, dc-ram = c.dc-ram, dc-bank = c.dc-bank, dc-slot-x = x, dc-slot-y = y, dc-slot-w = w, dc-slot-h = h }
+
+Section: Result
+
+  DiagResult = record {
+    dr-state : Text,
+    dr-colour : Integer,
+    dr-glass : List Text,
+    dr-bank : List Text
+  }
+
+  diag-result : Text, Integer, List Text, List Text -> DiagResult
+  diag-result (state) (colour) (glass) (bank) =
+    DiagResult { dr-state = state, dr-colour = colour, dr-glass = glass, dr-bank = bank }
+
+Section: Hex
+
+  diag-nib : Integer -> Text
+  diag-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  diag-hex2 : Integer -> Text
+  diag-hex2 (v) = diag-nib (bit-and (bit-shru v 4) 15) & diag-nib (bit-and v 15)
+
+  diag-hex4 : Integer -> Text
+  diag-hex4 (v) = diag-hex2 (bit-and (bit-shru v 8) 255) & diag-hex2 (bit-and v 255)
+
+  diag-hex8 : Integer -> Text
+  diag-hex8 (v) = diag-hex4 (bit-and (bit-shru v 16) 65535) & diag-hex4 (bit-and v 65535)
+
+Section: Bytes To Text
+
+ ASCII from a table or a descriptor: printable bytes become text, anything
+ else becomes a dot so a length stays a length, and the read stops at NUL or
+ the cap. from-unicode is the boundary conversion (R-CCE).
+
+  diag-ascii : Integer, Integer, Integer, Text -> Text
+  diag-ascii (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = peek-byte buf i
+    in if b == 0 then acc
+    else if b < 32 then diag-ascii buf (i + 1) n (acc & ".")
+    else if b > 126 then diag-ascii buf (i + 1) n (acc & ".")
+    else diag-ascii buf (i + 1) n (acc & char-to-text (code-to-char (from-unicode b)))
+
+  diag-trim-right : Text, Integer -> Text
+  diag-trim-right (s) (n) =
+    if n <= 0 then ""
+    else if char-code-at s (n - 1) == char-code-at " " 0 then diag-trim-right s (n - 1)
+    else if char-code-at s (n - 1) == char-code-at "." 0 then diag-trim-right s (n - 1)
+    else substring s 0 n
+
+Section: Config
+
+  diag-cfg-find : List Text, Integer, Text -> Text
+  diag-cfg-find (cfg) (i) (name) =
+    if i >= list-length cfg then ""
+    else let line = list-at cfg i
+    in if text-starts-with line (name & " ") then substring line (text-length name + 1) (text-length line - text-length name - 1)
+    else if line == name then "on"
+    else diag-cfg-find cfg (i + 1) name
+
+  diag-cfg-value : DiagCtx, Text -> Text
+  diag-cfg-value (c) (name) = diag-cfg-find (c.dc-cfg) 0 name

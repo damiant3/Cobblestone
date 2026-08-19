@@ -52,8 +52,9 @@ Write-Host "[pe-run] Listening on port $plugPort"
 
 # -- Boot plug CDX ---------------------------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
+$consoleFile = [System.IO.Path]::GetTempFileName()
 try {
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless', '-output', $consoleFile) `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {
@@ -86,7 +87,12 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
 
     # -- Receive PE output -------------------------------------------
     $tcpStream.ReadTimeout = 600000
-    $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
+    # A per-byte accumulate here cost 116.77 s for a 16 MB artifact against
+    # 0.02 s for the bulk write, measured 2026-08-18 over the shipped shape.
+    # The cost is one interpreter iteration per byte, not the transport, so it
+    # scales with the ARTIFACT and is invisible on a plug whose output is a few
+    # KB. This plug's output is the whole kernel.
+    $allBytes = [System.IO.MemoryStream]::new(65536)
     $readBuf = [byte[]]::new(8192)
     $recvAborted = $false
     $recvError = ''
@@ -94,7 +100,7 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
         while ($true) {
             $n = $tcpStream.Read($readBuf, 0, $readBuf.Length)
             if ($n -le 0) { break }
-            for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
+            $allBytes.Write($readBuf, 0, $n)
         }
     } catch {
         # A read timeout and a connection reset are NOT a clean end of stream.
@@ -103,11 +109,51 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
         # written out and the run reported OK.
         $recvAborted = $true
         $recvError = $_.Exception.Message
-    }    [System.IO.File]::WriteAllBytes($Out, $allBytes.ToArray())
+    }
+    [System.IO.File]::WriteAllBytes($Out, $allBytes.ToArray())
     if ($recvAborted) {
-        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Count) bytes and cannot tell whether that is all of them.")
+        [Console]::Error.WriteLine("FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Length) bytes and cannot tell whether that is all of them.")
         exit 8
-    }    Write-Host "[pe-run] OK: $Out ($($allBytes.Count) bytes)"
+    }
+    # codex-vm dumps its output ring to -output ON EXIT, so grepping before the
+    # VM has gone reads a file the guest console has not reached yet.
+    if ($proc -and -not $proc.HasExited) { $proc.WaitForExit(20000) }
+    $truncHit = @()
+    if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }
+    if ($truncHit.Count -gt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug could not send its whole output -- $($truncHit[0].Line.Trim())")
+        exit 7
+    }    # The guest STATES the length it meant to send. Comparing it against what
+    # arrived is the only check that can see a short transfer BOTH ENDS call
+    # successful, which is how the img transit loss was found.
+    $gBuilt = -1; $gSent = -1
+    if (Test-Path $consoleFile) {
+        $okHit = @(Select-String -Path $consoleFile -Pattern '\bpe=(\d+).* sent=(\d+)')
+        if ($okHit.Count -gt 0) {
+            $m = [regex]::Match($okHit[0].Line, '\bpe=(\d+).* sent=(\d+)')
+            $gBuilt = [int64]$m.Groups[1].Value
+            $gSent = [int64]$m.Groups[2].Value
+        }
+    }
+    # NO WITNESS IS A FAILURE, NOT A REASON TO SKIP THE CHECK. Guarded on a -1
+    # sentinel, an absent length meant no comparison rather than no confidence.
+    # Both greps here test for something the guest SAYS, so a guest that faults
+    # says neither. Measured on the img twin 2026-08-18: a faulted plug printed
+    # a register dump and that harness reported OK on 2800 bytes.
+    if ($gBuilt -lt 0) {
+        [Console]::Error.WriteLine("FAIL: the plug never reported a length, so there is nothing to check $($allBytes.Length) received bytes against.")
+        if (Test-Path $consoleFile) {
+            $tail = @(Get-Content $consoleFile -Tail 5)
+            foreach ($l in $tail) { [Console]::Error.WriteLine("  guest: $($l.Trim())") }
+        }
+        exit 10
+    }
+    Write-Host "[pe-run] guest built $gBuilt, guest sent $gSent, host received $($allBytes.Length)"
+    if ($gSent -ne $gBuilt -or $allBytes.Length -ne $gBuilt) {
+        [Console]::Error.WriteLine("FAIL: byte counts disagree -- guest built $gBuilt, guest sent $gSent, host received $($allBytes.Length).")
+        exit 9
+    }
+    Write-Host "[pe-run] OK: $Out ($($allBytes.Length) bytes)"
 
     $tcpClient.Close()
 
@@ -116,4 +162,5 @@ $deadline = [DateTime]::UtcNow.AddSeconds(30)
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue
 }

@@ -157,7 +157,7 @@ Measured 2026-08-03, except where an item gives its own date.
               an accumulator is copied by & inside a self call, here or in
               something it calls
    ```
-6. **593 library modules across 22 quires** (433 foreword + 160 OS): data
+6. **594 library modules across 22 quires** (434 foreword + 160 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -170,7 +170,7 @@ Measured 2026-08-03, except where an item gives its own date.
    screenshot-to-stick, all through the tree's own drivers. SMP is
    complete for x86-64: atomics, AP bootstrap via SIPI, work-stealing
    scheduler, per-core heap isolation, IPI and lock-free channels.
-8. **55 plugs, all building clean.** Emitters are standalone CDX programs
+8. **56 plugs, all building clean.** Emitters are standalone CDX programs
    that consume the compiler's IR text: 31 languages, 14 UI frameworks,
    three GPU targets (PTX, SPIR-V, WGSL) and four binary formats (CDX,
    ELF, PE, IMG). A new target is a plug, not a compiler change.
@@ -214,7 +214,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**67 applications, 1,019 modules**, all written in Codex and compiled by
+**68 applications, 1,019 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -227,14 +227,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,831,202 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,844,269 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `DA461AE78A775F8D` |
-| SHA-256 | `12B07296419847B283198AB69E81CB3A6197C70B1709732D98D1894007F2D9A4` |
-| MD5 | `C4F3048E1EBE1EFC7D6EFB1B5C6C23A3` |
+| Content hash prefix | `6E56196CC1EABA08` |
+| SHA-256 | `90646EEB22CEB9ABFE7EFE883E9F2935460486D9B224EE95B0CFEBFEAB5F0DAC` |
+| MD5 | `EDC090501EED32E6B77883909C4D3D79` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -245,7 +245,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `C955F23BDEF2C0BC5D85304E347DD866106C4372C76A81F2795A7F09FE80DA80` |
+| SHA-256 | `3C47B2A796B1064218C259DD741FBAA1E876C636C488FB2715193A457D594BC4` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -279,9 +279,11 @@ different working tree answers a different hash by design. The seed inside
 it is the number that has to match, and it is whatever `seed/Codex.cdx`
 holds in the tree you build from.
 
-Flash to USB from an elevated PowerShell. **Pull the stick out when it is
-done -- do not eject it.** Windows rewrites the partition table when the
-device re-enumerates, which destroys the GPT the flasher just verified.
+Flash to USB from an elevated PowerShell. The flasher takes the disk
+offline, holds every volume locked while it writes, and reads the image
+back byte for byte before its last line; when it finishes, pull the stick
+and boot. (Older notes said never to eject: that hazard was our own image
+geometry, fixed 2026-07-29, and a stick now survives reinsertion unchanged.)
 
 ```powershell
 # Find your USB disk number:  Get-Disk | Where-Object BusType -eq USB
@@ -548,14 +550,14 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **593 modules** (433 foreword, 160 OS). Quires cite
+namespaces) holding **594 modules** (434 foreword, 160 OS). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
 
 | Quire | Directory | Count |
 |---|---|---:|
-| Foreword | `codex/foreword/core/` | 129 |
+| Foreword | `codex/foreword/core/` | 130 |
 | Encode | `codex/foreword/encode/` | 75 |
 | UI | `codex/foreword/ui/` | 50 |
 | AI | `codex/foreword/ai/` | 43 |
@@ -580,12 +582,12 @@ segment of the directory name, capitalized. Full catalog:
 ```
 codex/
   compiler/      Self-hosted compiler (64 files, 55,645 lines)
-  foreword/      433 library modules across 13 quires
+  foreword/      434 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
-  plugs/         55 plugs, 148 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,541 files)
-apps/            67 applications, 1,019 modules
+  plugs/         56 plugs, 151 source modules -- IR-text-driven emitters
+  test/          Compiler samples + OS integration tests (1,569 files)
+apps/            68 applications, 1,019 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions

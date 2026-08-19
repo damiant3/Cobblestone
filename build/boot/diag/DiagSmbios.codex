@@ -1,0 +1,220 @@
+Chapter: DiagSmbios
+  cites Foreword chapter MemoryMap
+  cites Works chapter GopHandoff
+  cites Diag chapter DiagStage
+
+ SMBIOS 3.2 (DMTF DSP0134). The 3.0 entry point is 24 bytes anchored
+ `_SM3_`: major at 7, minor at 8, structure table maximum size (u32) at 12,
+ structure table address (u64) at 16. The 2.1 entry point is anchored `_SM_`:
+ major at 6, minor at 7, structure table length (u16) at 22, address (u32) at
+ 24. A structure is a header (type at 0, length at 1, handle at 2-3), the
+ formatted area of that length, then a string set: NUL-terminated ASCII
+ strings ended by an empty string, so the set ends at the first double NUL
+ (an empty set is two NULs). String fields hold a 1-based index into the set,
+ 0 meaning none. Type 127 ends the table.
+
+ We say:
+
+Section: States
+
+  dsm-states : List Text = ["ok", "no-table", "bad-anchor", "unmapped", "no-system"]
+
+Section: Entry Point
+
+  SmbiosTable = record {
+    st-kind : Integer,
+    st-major : Integer,
+    st-minor : Integer,
+    st-addr : Integer,
+    st-len : Integer,
+    st-entry : Integer
+  }
+
+  dsm-no-table : Integer -> SmbiosTable
+  dsm-no-table (kind) = SmbiosTable { st-kind = kind, st-major = 0, st-minor = 0, st-addr = 0, st-len = 0, st-entry = 0 }
+
+  dsm-anchor3 : Integer -> Boolean
+  dsm-anchor3 (a) = peek-byte a 0 == 95 & peek-byte a 1 == 83 & peek-byte a 2 == 77 & peek-byte a 3 == 51 & peek-byte a 4 == 95
+
+  dsm-anchor2 : Integer -> Boolean
+  dsm-anchor2 (a) = peek-byte a 0 == 95 & peek-byte a 1 == 83 & peek-byte a 2 == 77 & peek-byte a 3 == 95
+
+ The entry addresses come from the handoff block, so they are readable
+ (firmware handed them over and low RAM is identity mapped); the TABLE they
+ point at is only readable inside the identity map, so its address is
+ checked before a byte of it is touched.
+
+  dsm-table : Integer -> SmbiosTable
+  dsm-table (dummy) =
+    let a3 = handoff-smbios3 0
+    in let a2 = handoff-smbios2 0
+    in if a3 /= 0 then (if dsm-anchor3 a3 then SmbiosTable { st-kind = 3, st-major = peek-byte a3 7, st-minor = peek-byte a3 8, st-addr = peek-qword a3 16, st-len = peek-32 a3 12, st-entry = a3 } else dsm-no-table (-1))
+    else if a2 /= 0 then (if dsm-anchor2 a2 then SmbiosTable { st-kind = 2, st-major = peek-byte a2 6, st-minor = peek-byte a2 7, st-addr = peek-32 a2 24, st-len = peek-16 a2 22, st-entry = a2 } else dsm-no-table (-1))
+    else dsm-no-table 0
+
+  dsm-mapped : SmbiosTable -> Boolean
+  dsm-mapped (t) = t.st-addr > 0 & t.st-len > 0 & t.st-len <= 65536 & (t.st-addr + t.st-len) < bare-metal-ram-size
+
+Section: Strings
+
+  dsm-str-end : Integer, Integer, Integer -> Integer
+  dsm-str-end (a) (i) (limit) =
+    if i + 1 >= limit then limit
+    else if peek-byte a i == 0 & peek-byte a (i + 1) == 0 then i + 2
+    else dsm-str-end a (i + 1) limit
+
+  dsm-skip : Integer, Integer, Integer -> Integer
+  dsm-skip (a) (i) (limit) =
+    if i >= limit then limit
+    else if peek-byte a i == 0 then i + 1
+    else dsm-skip a (i + 1) limit
+
+  dsm-string-at : Integer, Integer, Integer, Integer -> Text
+  dsm-string-at (a) (i) (n) (limit) =
+    if n <= 0 then ""
+    else if i >= limit then ""
+    else if peek-byte a i == 0 then ""
+    else if n == 1 then dsm-one a i limit
+    else dsm-string-at a (dsm-skip a i limit) (n - 1) limit
+
+  dsm-one : Integer, Integer, Integer -> Text
+  dsm-one (a) (i) (limit) =
+    let s = diag-ascii (a + i) 0 (if limit - i > 64 then 64 else limit - i) ""
+    in diag-trim-right s (text-length s)
+
+  dsm-field-str : Integer, Integer, Integer, Integer, Integer -> Text
+  dsm-field-str (a) (off) (len) (field) (limit) =
+    if field >= len then ""
+    else dsm-string-at a (off + len) (peek-byte a (off + field)) limit
+
+  dsm-strings : Integer, Integer, Integer, Integer, Text -> Text
+  dsm-strings (a) (i) (limit) (n) (acc) =
+    if n > 12 then acc
+    else if i >= limit then acc
+    else if peek-byte a i == 0 then acc
+    else let s = dsm-string-at a i 1 limit
+    in dsm-strings a (dsm-skip a i limit) limit (n + 1) (if n == 0 then acc & s else acc & " | " & s)
+
+Section: The Walk
+
+  SmbiosInfo = record {
+    si-count : Integer,
+    si-bios : Text,
+    si-manufacturer : Text,
+    si-product : Text,
+    si-version : Text,
+    si-serial : Text,
+    si-family : Text,
+    si-board : Text,
+    si-cpu : Text,
+    si-cpu-cores : Integer,
+    si-mem-mb : Integer,
+    si-mem-devices : Integer,
+    si-bank : List Text
+  }
+
+  dsm-empty : SmbiosInfo
+  dsm-empty = SmbiosInfo { si-count = 0, si-bios = "", si-manufacturer = "", si-product = "", si-version = "", si-serial = "", si-family = "", si-board = "", si-cpu = "", si-cpu-cores = 0, si-mem-mb = 0, si-mem-devices = 0, si-bank = [] }
+
+  dsm-with : SmbiosInfo, Text, Text, Text, Text, Text, Text, Text, Text, Integer, Integer, Integer, List Text -> SmbiosInfo
+  dsm-with (i) (bios) (mfr) (prod) (ver) (ser) (fam) (board) (cpu) (cores) (mem) (memdev) (bank) =
+    SmbiosInfo { si-count = (i.si-count) + 1, si-bios = bios, si-manufacturer = mfr, si-product = prod, si-version = ver, si-serial = ser, si-family = fam, si-board = board, si-cpu = cpu, si-cpu-cores = cores, si-mem-mb = mem, si-mem-devices = memdev, si-bank = bank }
+
+ Type 17's size word: 0 no device, FFFF unknown, 7FFF the extended u32 at 28
+ in MB, otherwise MB unless bit 15 says KB.
+
+  dsm-mem-mb : Integer, Integer, Integer -> Integer
+  dsm-mem-mb (a) (off) (len) =
+    let sz = peek-16 a (off + 12)
+    in if sz == 0 then 0
+    else if sz == 65535 then 0
+    else if sz == 32767 then (if len >= 32 then peek-32 a (off + 28) else 0)
+    else if bit-and sz 32768 /= 0 then (bit-and sz 32767) / 1024
+    else sz
+
+  dsm-cores : Integer, Integer, Integer -> Integer
+  dsm-cores (a) (off) (len) =
+    if len < 36 then 0
+    else let c = peek-byte a (off + 35)
+    in if c == 255 then (if len >= 44 then peek-16 a (off + 42) else 0) else c
+
+  dsm-bank-line : Integer, Integer, Integer, Integer, Integer -> Text
+  dsm-bank-line (a) (off) (ty) (len) (limit) =
+    "smbios type=" & show ty & " handle=" & diag-hex4 (peek-16 a (off + 2)) & " len=" & show len & " strings=[" & dsm-strings a (off + len) limit 0 "" & "]"
+
+  dsm-keep : Integer -> Boolean
+  dsm-keep (ty) = ty == 0 | ty == 1 | ty == 2 | ty == 3 | ty == 4 | ty == 16 | ty == 17 | ty == 19
+
+  dsm-note : SmbiosInfo, Integer, Integer, Integer, Integer, Integer -> SmbiosInfo
+  dsm-note (i) (a) (off) (ty) (len) (limit) =
+    let bank = if dsm-keep ty then list-push (i.si-bank) (dsm-bank-line a off ty len limit) else i.si-bank
+    in if ty == 0 then dsm-with i (dsm-field-str a off len 4 limit & " " & dsm-field-str a off len 5 limit & " " & dsm-field-str a off len 8 limit) (i.si-manufacturer) (i.si-product) (i.si-version) (i.si-serial) (i.si-family) (i.si-board) (i.si-cpu) (i.si-cpu-cores) (i.si-mem-mb) (i.si-mem-devices) bank
+    else if ty == 1 then dsm-with i (i.si-bios) (dsm-field-str a off len 4 limit) (dsm-field-str a off len 5 limit) (dsm-field-str a off len 6 limit) (dsm-field-str a off len 7 limit) (dsm-field-str a off len 26 limit) (i.si-board) (i.si-cpu) (i.si-cpu-cores) (i.si-mem-mb) (i.si-mem-devices) bank
+    else if ty == 2 then dsm-with i (i.si-bios) (i.si-manufacturer) (i.si-product) (i.si-version) (i.si-serial) (i.si-family) (dsm-field-str a off len 4 limit & " " & dsm-field-str a off len 5 limit) (i.si-cpu) (i.si-cpu-cores) (i.si-mem-mb) (i.si-mem-devices) bank
+    else if ty == 4 then dsm-with i (i.si-bios) (i.si-manufacturer) (i.si-product) (i.si-version) (i.si-serial) (i.si-family) (i.si-board) (dsm-field-str a off len 16 limit) ((i.si-cpu-cores) + dsm-cores a off len) (i.si-mem-mb) (i.si-mem-devices) bank
+    else if ty == 17 then let mb = dsm-mem-mb a off len in dsm-with i (i.si-bios) (i.si-manufacturer) (i.si-product) (i.si-version) (i.si-serial) (i.si-family) (i.si-board) (i.si-cpu) (i.si-cpu-cores) ((i.si-mem-mb) + mb) ((i.si-mem-devices) + (if mb > 0 then 1 else 0)) bank
+    else dsm-with i (i.si-bios) (i.si-manufacturer) (i.si-product) (i.si-version) (i.si-serial) (i.si-family) (i.si-board) (i.si-cpu) (i.si-cpu-cores) (i.si-mem-mb) (i.si-mem-devices) bank
+
+  dsm-walk : Integer, Integer, Integer, Integer, SmbiosInfo -> SmbiosInfo
+  dsm-walk (a) (off) (limit) (fuel) (i) =
+    if fuel <= 0 then i
+    else if off + 4 > limit then i
+    else let ty = peek-byte a off
+    in let len = peek-byte a (off + 1)
+    in if len < 4 then i
+    else let i2 = dsm-note i a off ty len limit
+    in if ty == 127 then i2
+    else dsm-walk a (dsm-str-end a (off + len) limit) limit (fuel - 1) i2
+
+  dsm-read : Integer -> SmbiosInfo
+  dsm-read (dummy) =
+    let t = dsm-table 0
+    in if t.st-kind <= 0 then dsm-empty
+    else if dsm-mapped t == False then dsm-empty
+    else dsm-walk (t.st-addr) 0 (t.st-len) 256 dsm-empty
+
+Section: The Box Row
+
+  dsm-name : SmbiosInfo -> Text
+  dsm-name (i) =
+    if text-length (i.si-manufacturer) == 0 & text-length (i.si-product) == 0 then "unnamed"
+    else if text-length (i.si-manufacturer) == 0 then i.si-product
+    else if text-length (i.si-product) == 0 then i.si-manufacturer
+    else (i.si-manufacturer) & " " & (i.si-product)
+
+  dsm-box : Integer -> Text
+  dsm-box (dummy) = dsm-name (dsm-read 0)
+
+  dsm-ram-mb : Integer -> Integer
+  dsm-ram-mb (dummy) = (dsm-read 0).si-mem-mb
+
+Section: The Stage
+
+  dsm-state : SmbiosTable, SmbiosInfo -> Text
+  dsm-state (t) (i) =
+    if t.st-kind == 0 then "no-table"
+    else if t.st-kind < 0 then "bad-anchor"
+    else if dsm-mapped t == False then "unmapped"
+    else if text-length (i.si-product) == 0 & text-length (i.si-manufacturer) == 0 then "no-system"
+    else "ok"
+
+  dsm-colour : Text -> Integer
+  dsm-colour (s) =
+    if s == "ok" then diag-col-good
+    else if s == "no-table" then diag-col-warn
+    else if s == "no-system" then diag-col-warn
+    else diag-col-bad
+
+  dsm-entry-line : SmbiosTable -> Text
+  dsm-entry-line (t) =
+    if t.st-kind <= 0 then "entry=none"
+    else "entry=" & show (t.st-kind) & ".0 version=" & show (t.st-major) & "." & show (t.st-minor) & " table=#" & diag-hex8 (t.st-addr) & " len=" & show (t.st-len)
+
+  dsm-run : DiagCtx -> DiagResult
+  dsm-run (c) =
+    let t = dsm-table 0
+    in let i = dsm-read 0
+    in let state = dsm-state t i
+    in let g1 = dsm-name i & " ver=" & (i.si-version) & " serial=" & (i.si-serial) & " family=" & (i.si-family)
+    in let g2 = "bios=" & (i.si-bios) & " board=" & (i.si-board) & " cpu=" & (i.si-cpu) & " cores=" & show (i.si-cpu-cores) & " ram=" & show (i.si-mem-mb) & "MB/" & show (i.si-mem-devices) & " structures=" & show (i.si-count)
+    in diag-result state (dsm-colour state) [g1, g2] ([dsm-entry-line t, g1, g2] & (i.si-bank))

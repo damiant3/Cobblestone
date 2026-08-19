@@ -54,12 +54,36 @@ re-check catches is the bank changing after Gate B blessed it.
 
 **Pending, in the order it bites:**
 
-1. **Driving the flow over the socket.** The socket itself exists:
-   general UDP forwarding shipped 2026-07-23 (`tools/codex-vm.c`,
-   `-portfwd udp:`), and `tools/coap-server.codex` completes a live CoAP
-   exchange against aiocoap. What remains is that nothing drives the OTA
-   flow over it -- `fw-feed-response` is called only by the loopback
-   test.
+1. ~~**Driving the flow over the socket.**~~ **DONE 2026-08-18 (reek).**
+   `tools/ota-fetch.codex` drives the download over UDP and
+   `build/ota-fetch-test.ps1` runs it against aiocoap, which performs the
+   RFC 7959 Block2 segmentation itself. Measured: **4096 bytes in four
+   blocks, `state=2` (Downloaded), `result=0`**, with the expected digest
+   computed on the host so Gate A re-derives it against a number Codex
+   never produced. The negative control (`-NoMagic`, byte-identical
+   firmware but for the three CDX magic bytes) stages the same 4096 bytes
+   and Gate A refuses with `result=6`, which is what makes the green mean
+   Gate A examined the image rather than waved it through.
+
+   **It found a live defect on the first real exchange, and the loopback
+   could never have seen it.** `fw-next-request` built its path with
+   `coap-uri-path-option`, the SINGULAR, so `/fw/image.cdx` travelled as
+   one Uri-Path option containing the whole string. RFC 7252 section 5.10.1
+   makes each segment its own option, and `Coap.codex` says so in its own
+   prose beside the plural helper -- that prose was written when the same
+   defect was fixed elsewhere, and this call site still had it. aiocoap
+   answered 4.04 Not Found and the client reported `written=0 result=4`.
+   Fixed to `coap-uri-path-options`, and **proven by ablation**: restoring
+   the singular returns the run to `written=0 result=4` while everything
+   else is held. `serve-block` in the loopback never reads the request at
+   all, which is why nothing caught it.
+
+   **`written=0 result=4` is an ambiguous reading and worth knowing before
+   trusting one.** It is what a wrong path produces, what a silent server
+   produces, and what a manifest that never landed produces -- and the
+   third is easy to cause, because `ota-check-preconditions` refuses a
+   manifest whose version is not newer than the context's current version,
+   after which every request carries no Uri-Path at all.
 2. **Gate B costs a List.** `evaluate-load` takes `List Integer`, so the
    caller reads the staged image back out of the bank -- the constraint 5
    memory limit this design names, unfixed. A buffer-taking verifier is

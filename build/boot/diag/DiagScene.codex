@@ -1,0 +1,160 @@
+Chapter: DiagScene
+  cites Works chapter GopDraw
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Math chapter Cordic
+  cites Kernel chapter Hpet
+  cites Game chapter Color
+  cites Diag chapter DiagStage
+
+ We say:
+
+Section: Panel
+
+  dsc-band : Integer = 8405024
+
+  dsc-sky : Integer
+  dsc-sky = rgb-to-packed (rgb 20 20 30)
+
+Section: Scene
+
+  dsc-camera : Integer -> Camera3D
+  dsc-camera (angle) =
+    let ca = real-from-int (cordic-cos angle)
+    in let sa = real-from-int (cordic-sin angle)
+    in camera3d-new (vec3-new (ca * 5.2) 2200.0 (sa * 5.2)) (vec3-new 0.0 300.0 0.0) 0.785
+
+  dsc-scene : Integer -> Scene3DState
+  dsc-scene (dummy) =
+    let scene = scene3d-new (dsc-camera 900)
+    in let ground = sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-flat (rgb 90 80 62))
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 450.0 0.0
+    in let pyr = sn3-set-pos (sn3-with-mesh "pyr" (mesh-pyramid 600 1100) emat-red) 1100.0 0.0 (-300.0)
+    in let s2 = scene3d-add (scene3d-add (scene3d-add scene ground) cube) pyr
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light s2 key) 260
+
+Section: Timing
+
+ A frame time for METAL. The bed's numbers are in `apps/works/works-backlog.md`
+ WORKS-32 and they are the bed's: the host rasterizer they were half measured
+ on is a codex-vm device on I/O ports 0x400-0x40F and does not exist on a real
+ box, so the two modes that mean anything here are plain against shadowed.
+
+ **This number is NOT the desk's frame rate and must not be read as one.** The
+ render is into this stage's own slot, which is a band a few rows tall: 326x40
+ measured in the bed against the desk's 864x648. It is a ratio between the two
+ modes and a smoke reading that the pipeline runs on this box at all. Comparing
+ it against WORKS-32's full-viewport figures compares two different pictures.
+
+ The row is PASSIVE. It adds no state word, changes no colour, and cannot turn
+ a slow box into a failing one; it only says what a frame cost.
+
+ Three things bound it, because a diagnostic stick meets machines nobody has
+ booted. The span is a deadline rather than a frame count, so a slow box
+ spends the same wall clock as a fast one instead of an unbounded multiple of
+ it. A frame cap stops the loop if the deadline can never arrive. And a board
+ whose counter does not advance is detected after the FIRST frame and stops
+ there, which is the halted-counter case the tree has already met once: the
+ ASUS answered a constant, and a loop waiting on a constant does not finish.
+
+  dsc-span-ms : Integer = 250
+  dsc-frame-cap : Integer = 60
+  dsc-shadow-map : Integer = 256
+
+  dsc-one : R3dTriState, Integer -> Integer
+  dsc-one (tgt) (sh) =
+    let mark = __heap-save
+    in let c = r3d-target-clear tgt dsc-sky
+    in let d = if sh == 1 then r3d-render-shadowed tgt (dsc-scene 0) dsc-shadow-map else r3d-render-into tgt (dsc-scene 0)
+    in let dropped = __heap-restore mark
+    in 0
+
+ The deadline is tested BEFORE a frame, not after it. Tested after, a box slow
+ enough that one frame already overruns the span still pays for a second one,
+ which is the machine least able to afford it and exactly the machine this
+ stick gets posted to.
+
+  dsc-spin : R3dTriState, Integer, Integer, Integer -> Integer
+  dsc-spin (tgt) (sh) (deadline) (n) =
+    if n >= dsc-frame-cap then n
+    else if hpet-ticks >= deadline then n
+    else let f = dsc-one tgt sh
+    in dsc-spin tgt sh deadline (n + 1)
+
+ A record and not two numbers packed into one. The obvious packing is frames
+ times a million plus microseconds-per-frame, and it collides at exactly the
+ machine this row exists for: `GopScene`'s own note puts metal at about a
+ second a frame, which is where the microsecond field reaches a million and
+ starts overwriting the count.
+
+  DscTiming = record {
+    dt-frames : Integer,
+    dt-us : Integer
+  }
+
+  dsc-time : R3dTriState, Integer -> DscTiming
+  dsc-time (tgt) (sh) =
+    let tps = hpet-ticks-per-second
+    in if tps <= 0 then DscTiming { dt-frames = 0, dt-us = 0 }
+    else let t0 = hpet-ticks
+    in let one = dsc-one tgt sh
+    in let t1 = hpet-ticks
+    in if t1 <= t0 then DscTiming { dt-frames = 0, dt-us = 0 }
+    else let n = 1 + dsc-spin tgt sh (t0 + dsc-span-ms * tps / 1000) 0
+    in DscTiming { dt-frames = n, dt-us = (hpet-ticks - t0) * 1000000 / tps / n }
+
+ Microseconds below a millisecond and milliseconds above it. Fixed at ms, the
+ unshadowed pass in the bed reads `0ms`, which is not a small number, it is no
+ number at all; fixed at us, metal reads seven digits.
+
+  dsc-mode-txt : Text, DscTiming -> Text
+  dsc-mode-txt (name) (t) =
+    if t.dt-frames <= 0 then name & "=no-clock"
+    else if t.dt-us < 1000 then name & "=" & show (t.dt-us) & "us x" & show (t.dt-frames)
+    else name & "=" & show (t.dt-us / 1000) & "ms x" & show (t.dt-frames)
+
+Section: The Stage
+
+  dsc-states : List Text = ["rendered", "blank", "spilled", "no-fb", "no-room"]
+
+ The scene is rendered into a rectangle inset from a band-coloured frame
+ inside the stage's own row slot. The frame left standing is the containment
+ proof, the pixel at the centre proves the render wrote where it was aimed,
+ and both are read back off the framebuffer rather than assumed from the
+ render's return value.
+
+  dsc-pixel : Integer, Integer, Integer, Integer -> Integer
+  dsc-pixel (base) (stride) (x) (y) = bit-and (peek-32 (base + (y * stride + x) * 4) 0) 16777215
+
+  dsc-run : DiagCtx -> DiagResult
+  dsc-run (c) =
+    let base = c.dc-base
+    in let stride = c.dc-stride
+    in let fx = c.dc-slot-x
+    in let fy = c.dc-slot-y
+    in let fw = c.dc-slot-w
+    in let fh = c.dc-slot-h
+    in if base == 0 then diag-result "no-fb" diag-col-bad ["no framebuffer in the handoff block"] ["no framebuffer in the handoff block"]
+    else if fw < 40 then diag-result "no-room" diag-col-warn ["slot too narrow for a render"] ["slot too narrow for a render"]
+    else let frame = gop-fill-rect base stride fx fy fw fh dsc-band
+    in let cw = fw - 8
+    in let ch = fh - 8
+    in let tgt = r3d-target-at (base + ((fy + 4) * stride + fx + 4) * 4) stride cw ch dsc-sky
+    in let started = hpet-start
+    in let t-plain = dsc-time tgt 0
+    in let t-shadow = dsc-time tgt 1
+    in let reset = r3d-target-clear tgt dsc-sky
+    in let d = r3d-render-into tgt (dsc-scene 0)
+    in let centre = dsc-pixel base stride (fx + 4 + cw / 2) (fy + 4 + ch / 2)
+    in let corner = dsc-pixel base stride (fx + 1) (fy + 1)
+    in let edge = dsc-pixel base stride (fx + fw - 2) (fy + fh - 2)
+    in let state = if corner /= dsc-band then "spilled" else if edge /= dsc-band then "spilled" else if centre == dsc-band then "blank" else "rendered"
+    in let colour = if state == "rendered" then diag-col-good else diag-col-bad
+    in let g1 = "fb=" & show (c.dc-w) & "x" & show (c.dc-h) & " stride=" & show stride & " render=" & show cw & "x" & show ch
+    in let g2 = "centre=" & show centre & " frame=" & show corner & "/" & show edge & " expect cube blue, pyramid red"
+    in let g3 = "frame " & dsc-mode-txt "plain" t-plain & " " & dsc-mode-txt "shadow" t-shadow
+    in diag-result state colour [g1, g2, g3] [g1, g2, g3]

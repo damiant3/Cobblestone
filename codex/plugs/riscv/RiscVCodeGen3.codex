@@ -243,6 +243,79 @@ Section: Match
    in let st1 = rv-emit (r.state) (rv-add rv-heap-reg rv-heap-reg (r.reg))
    in rv-emit-int-lit st1 0
 
+  rv-emit-deck-pos : RvState -> RvEmitResult
+  rv-emit-deck-pos (st) =
+   let ar = rv-alloc-temp st
+   in let st1 = rv-emit-li (ar.state) (ar.reg) rv-deck-pos-addr
+   in let vr = rv-alloc-temp st1
+   in RvEmitResult { state = rv-emit (vr.state) (rv-ld (vr.reg) (ar.reg) 0), reg = vr.reg }
+
+  rv-emit-deck-set : RvState, IRExpr -> RvEmitResult
+  rv-emit-deck-set (st) (arg) =
+   let r = rv-emit-expr st arg
+   in let ar = rv-alloc-temp (r.state)
+   in let st1 = rv-emit-li (ar.state) (ar.reg) rv-deck-pos-addr
+   in rv-emit-int-lit (rv-emit st1 (rv-sd (ar.reg) (r.reg) 0)) 0
+
+  rv-emit-deck-alloc : RvState, IRExpr -> RvEmitResult
+  rv-emit-deck-alloc (st) (arg) =
+   let r = rv-emit-expr st arg
+   in let ar = rv-alloc-temp (r.state)
+   in let st1 = rv-emit-li (ar.state) (ar.reg) rv-deck-pos-addr
+   in let pr = rv-alloc-temp st1
+   in let st2 = rv-emit (pr.state) (rv-ld (pr.reg) (ar.reg) 0)
+   in let nr = rv-alloc-temp st2
+   in let st3 = rv-emit (nr.state) (rv-add (nr.reg) (pr.reg) (r.reg))
+   in RvEmitResult { state = rv-emit st3 (rv-sd (ar.reg) (nr.reg) 0), reg = pr.reg }
+
+  rv-emit-deck-enter : RvState -> RvEmitResult
+  rv-emit-deck-enter (st) =
+   let cr = rv-alloc-temp st
+   in let st1 = rv-emit-li (cr.state) (cr.reg) rv-deck-bound-counter-addr
+   in let ov = rv-alloc-temp st1
+   in let st2 = rv-emit (ov.state) (rv-ld (ov.reg) (cr.reg) 0)
+   in let nv = rv-alloc-temp st2
+   in let st3 = rv-emit (nv.state) (rv-addi (nv.reg) (ov.reg) 1)
+   in let st4 = rv-emit st3 (rv-sd (cr.reg) (nv.reg) 0)
+   in let skip-index = st4.insn-count
+   in let st5 = rv-emit st4 rv-nop
+   in let br = rv-alloc-temp st5
+   in let st6 = rv-emit-li (br.state) (br.reg) rv-bivy-save-addr
+   in let st7 = rv-emit st6 (rv-sd (br.reg) rv-heap-reg 0)
+   in let dr = rv-alloc-temp st7
+   in let st8 = rv-emit-li (dr.state) (dr.reg) rv-deck-pos-addr
+   in let st9 = rv-emit st8 (rv-ld rv-heap-reg (dr.reg) 0)
+   in let skip-label = st9.insn-count
+   in rv-emit-int-lit (rv-patch-insn st9 skip-index (rv-bne (ov.reg) rv-zero ((skip-label - skip-index) * 4))) 0
+
+  rv-emit-deck-exit : RvState -> RvEmitResult
+  rv-emit-deck-exit (st) =
+   let cr = rv-alloc-temp st
+   in let st1 = rv-emit-li (cr.state) (cr.reg) rv-deck-bound-counter-addr
+   in let cv = rv-alloc-temp st1
+   in let st2 = rv-emit (cv.state) (rv-ld (cv.reg) (cr.reg) 0)
+   in let st3 = rv-emit st2 (rv-addi (cv.reg) (cv.reg) (0 - 1))
+   in let st4 = rv-emit st3 (rv-sd (cr.reg) (cv.reg) 0)
+   in let skip-index = st4.insn-count
+   in let st5 = rv-emit st4 rv-nop
+   in let dr = rv-alloc-temp st5
+   in let st6 = rv-emit-li (dr.state) (dr.reg) rv-deck-pos-addr
+   in let st7 = rv-emit st6 (rv-sd (dr.reg) rv-heap-reg 0)
+   in let br = rv-alloc-temp st7
+   in let st8 = rv-emit-li (br.state) (br.reg) rv-bivy-save-addr
+   in let st9 = rv-emit st8 (rv-ld rv-heap-reg (br.reg) 0)
+   in let skip-label = st9.insn-count
+   in rv-emit-int-lit (rv-patch-insn st9 skip-index (rv-bne (cv.reg) rv-zero ((skip-label - skip-index) * 4))) 0
+
+  rv-emit-deck-record-wrapper : RvState, IRExpr -> RvEmitResult
+  rv-emit-deck-record-wrapper (st) (arg) =
+   let enter = rv-emit-deck-enter st
+   in let r = rv-emit-expr (rv-set-tail-pos (enter.state) False) arg
+   in let sl = rv-alloc-local (r.state)
+   in let st1 = rv-store-local (sl.state) (sl.reg) (r.reg)
+   in let ex = rv-emit-deck-exit st1
+   in rv-load-local (ex.state) (sl.reg)
+
   rv-emit-empty-list : RvState -> RvEmitResult
   rv-emit-empty-list (st) =
    let r = rv-alloc-temp st
@@ -851,19 +924,17 @@ Section: Tail Call Optimization
     in let offset = (tco.loop-top - st2b.insn-count) * 4
     in RvEmitResult { state = rv-emit st2b (rv-j offset), reg = rv-a0 }
 
-  rv-save-args-skip-last : RvState, List IRExpr, Integer, List Integer -> RvSavedArgs
-  rv-save-args-skip-last (st) (args) (i) (acc) =
+  rv-save-tail-args : RvState, List IRExpr, Integer, List Integer -> RvSavedArgs
+  rv-save-tail-args (st) (args) (i) (acc) =
    if i >= list-length args then RvSavedArgs { state = st, locals = acc }
    else let er = rv-emit-expr st (list-at args i)
-   in if i == list-length args - 1 then
-    RvSavedArgs { state = er.state, locals = list-push acc (er.reg) }
-   else let loc = rv-alloc-local (er.state)
+   in let loc = rv-alloc-local (er.state)
    in let st1 = rv-store-local (loc.state) (loc.reg) (er.reg)
-   in rv-save-args-skip-last st1 args (i + 1) (list-push acc (loc.reg))
+   in rv-save-tail-args st1 args (i + 1) (list-push acc (loc.reg))
 
   rv-emit-tail-call-general : RvState, RvTcoState, List IRExpr -> RvEmitResult
   rv-emit-tail-call-general (st) (tco) (args) =
-   let saved = rv-save-args-skip-last st args 0 []
+   let saved = rv-save-tail-args st args 0 []
    in let st1 = rv-copy-to-params (saved.state) (saved.locals) (tco.param-locals) 0
    in let offset = (tco.loop-top - st1.insn-count) * 4
    in RvEmitResult { state = rv-emit st1 (rv-j offset), reg = rv-a0 }
@@ -1014,7 +1085,17 @@ Section: Module Emission
     is IrNumLit (v) (s) -> False
     is IrName (n) (t) (s) -> False
     is IrNegate (x) (nty) (s) -> rv-has-any-call x fname
-    is IrBinary (op) (l) (r) (t) (s) -> rv-has-any-call l fname | rv-has-any-call r fname
+    is IrBinary (op) (l) (r) (t) (s) ->
+     when op
+      is IrAppendText -> True
+      is IrConsList -> True
+      is IrAppendList -> True
+      is IrPowInt -> True
+      is IrEq -> rv-is-text-type (ir-expr-type l) | rv-is-sum-type (ir-expr-type l)
+       | rv-has-any-call l fname | rv-has-any-call r fname
+      is IrNotEq -> rv-is-text-type (ir-expr-type l) | rv-is-sum-type (ir-expr-type l)
+       | rv-has-any-call l fname | rv-has-any-call r fname
+      is otherwise -> rv-has-any-call l fname | rv-has-any-call r fname
     is IrApply (f) (a) (t) (s) ->
      when f
       is IrName (n) (ft) (fs) ->
@@ -1135,7 +1216,7 @@ Section: Module Emission
   rv-emit-function (st) (def) =
    let lt = rv-lir-emit-try st def
    in if lt.handled then lt.state
-   else if rv-is-frameless-tco def then rv-emit-function-frameless st def
+   else if rv-is-frameless-tco def & rv-body-is-frameless (def.body) (def.name) then rv-emit-function-frameless st def
    else if rv-is-pure-leaf def then rv-emit-function-leaf st def
    else rv-emit-function-framed st def
 
@@ -1429,7 +1510,11 @@ Section: Module Emission
    in let st1c = __record-set st1b "boot-cap-mask" (pm-opening-cap-mask (chapter.defs))
    in let st1d = __record-set st1c "boot-fs-scope" (pm-opening-fs-scope (chapter.defs))
    in let st1e = __record-set st1d "boot-net-scope" (pm-opening-net-scope (chapter.defs))
-   in let st2 = rv-emit-runtime st1e
+   in let pa-slug = rv-def-chapter-slug (chapter.defs) "init-phase-allocator" 0 (list-length (chapter.defs))
+   in let dr-slug = rv-def-chapter-slug (chapter.defs) "deck-record" 0 (list-length (chapter.defs))
+   in let st1f = __record-set st1e "deck-record-intrinsic" (pa-slug /= "" & pa-slug == dr-slug)
+   in let st1g = __record-set st1f "has-block-driver" (rv-defs-have (chapter.defs) "vb-capacity-auto" 0 (list-length (chapter.defs)))
+   in let st2 = rv-emit-runtime st1g
    in let st2b = __record-set st2 "runtime-funcs" (list-length (st2.func-names))
    in let st3 = rv-emit-all-defs st2b (chapter.defs) 0
    in let st3w = rv-check-builtin-collisions st3 (st3.func-names) 0
@@ -1444,6 +1529,18 @@ Section: Module Emission
   rv-assign-effect-op-addrs (names) (i) (len) (acc) =
    if i >= len then acc
    else rv-assign-effect-op-addrs names (i + 1) len (list-push acc (RvEffectOpAddr { eoa-name = list-at names i, eoa-addr = #80100000 + i * 8 }))
+
+  rv-defs-have : List IRDef, Text, Integer, Integer -> Boolean
+  rv-defs-have (ds) (name) (i) (n) =
+   if i >= n then False
+   else if ((list-at ds i).name) == name then True
+   else rv-defs-have ds name (i + 1) n
+
+  rv-def-chapter-slug : List IRDef, Text, Integer, Integer -> Text
+  rv-def-chapter-slug (ds) (name) (i) (n) =
+   if i >= n then ""
+   else if ((list-at ds i).name) == name then (list-at ds i).chapter-slug
+   else rv-def-chapter-slug ds name (i + 1) n
 
 Section: Effect Handler Emission
 
@@ -1621,7 +1718,24 @@ Section: Effect Handler Emission
     then let rel = (target-offset - patch.insn-index) * 4
     in let st1 = rv-patch-insn st (patch.insn-index) (rv-jal rv-ra rel)
     in rv-patch-calls-loop st1 patches (i + 1)
-    else rv-patch-calls-loop (__record-set st "wcet-reports" (list-push (st.wcet-reports) ("[WARN] unresolved call to '" & (patch.target) & "': the riscv plug emits no such function, and the branch was left unpatched -- reaching it reads a stale a0"))) patches (i + 1)
+    else rv-patch-calls-loop (__record-set st "wcet-reports" (list-push (st.wcet-reports) (rv-unresolved-report (patch.target)))) patches (i + 1)
+
+ A block builtin with no driver behind it is REFUSED, not warned about, and
+ the two answers differ in whether the build survives: `[UNSUPPORTED]` makes
+ `run.ps1` exit 6. The plug emits `block-read-sector` and its siblings only
+ when the program carries the driver, so an unresolved `block-` name means
+ the program asked for a disk it has no way to reach.
+
+ Measured 2026-08-18, which is why this is a refusal: `sector-read-list-growth`
+ PASSED on the riscv lane with `block-read-sector` unresolved, its disk call
+ doing nothing at all, and `block-sector-count` answered 0 where the fixture
+ is 128 sectors. A false green and a wrong number, from the same defect.
+
+  rv-unresolved-report : Text -> Text
+  rv-unresolved-report (target) =
+   if text-starts-with target "block-" then
+    "[UNSUPPORTED] " & target & ": the program calls a block builtin and carries no block driver, so nothing can serve the call. Reach VirtioBlk (Foreword chapter VirtioBlk, or FileSystem) from the program."
+   else "[WARN] unresolved call to '" & target & "': the riscv plug emits no such function, and the branch was left unpatched -- reaching it reads a stale a0"
 
   rv-patch-func-addrs : RvState -> RvState
   rv-patch-func-addrs (st) =

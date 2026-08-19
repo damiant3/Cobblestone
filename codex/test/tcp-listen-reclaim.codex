@@ -47,6 +47,18 @@ Section: Fixture
     let closed = net-close established-session
     in (net-listen (closed.session)).session
 
+ The serve loop's accept gives up on a poll budget and can return with the
+ handshake half open, and the loop then re-listens. `net-listen` calls
+ `tcp-fresh-listener` whatever the current state, so that re-listen destroys
+ the half-open. The two arms below deliver the SAME client ACK to the two
+ sessions that differ only in whether the re-listen happened.
+
+  half-open : NetSession =
+    (net-receive-segment fresh-listener (syn-from caller-a-port)).session
+
+  half-open-relistened : NetSession =
+    (net-listen half-open).session
+
 Section: Tests
 
   test-fresh-takes-any : Text =
@@ -95,6 +107,50 @@ Section: Tests
   test-rexmit-retired : Text =
     "rexmit-after-relisten=" & show (list-length (after-established-close.rexmit-queue))
 
+  test-half-open-state : Text =
+    "half-open-state=" & tcp-state-name (half-open.conn.state)
+
+  test-half-open-ack-completes : Text =
+    let done = net-receive-segment half-open (ack-from caller-a-port)
+    in "half-open-ack-state=" & tcp-state-name ((done.session).conn.state)
+
+  test-relistened-half-open-state : Text =
+    "relistened-half-open-state=" & tcp-state-name (half-open-relistened.conn.state)
+
+  test-relistened-forgets-peer : Text =
+    "relistened-remote-port=" & show (half-open-relistened.conn.remote-port)
+
+  test-relistened-ack-lost : Text =
+    let done = net-receive-segment half-open-relistened (ack-from caller-a-port)
+    in "relistened-ack-state=" & tcp-state-name ((done.session).conn.state)
+
+  test-relistened-ack-output : Text =
+    let done = net-receive-segment half-open-relistened (ack-from caller-a-port)
+    in "relistened-ack-output=" & (done.output)
+
+  test-half-open-ack-clears-budget : Text =
+    let done = net-receive-segment half-open-relistened (ack-from caller-a-port)
+    in "established-close-timer=" & show ((done.session).close-timer)
+
+  relisten-times : NetSession, Integer -> NetSession
+  relisten-times (sess) (n) =
+    if n <= 0 then sess
+    else relisten-times ((net-listen sess).session) (n - 1)
+
+  abandoned-caller : NetSession = relisten-times half-open 9
+
+  test-abandoned-caller-retired : Text =
+    "abandoned-caller-state=" & tcp-state-name (abandoned-caller.conn.state)
+
+  test-abandoned-caller-forgets-peer : Text =
+    "abandoned-caller-port=" & show (abandoned-caller.conn.remote-port)
+
+  test-abandoned-admits-next : Text =
+    "abandoned-admits-next=" & show-bool (net-session-owns-segment abandoned-caller (syn-from caller-b-port))
+
+  test-budget-survives-eight : Text =
+    "eight-relistens-state=" & tcp-state-name ((relisten-times half-open 8).conn.state)
+
   opening : [Console] Nothing = act
     print-line-uni test-fresh-takes-any
     print-line-uni test-claimed-port
@@ -110,4 +166,15 @@ Section: Tests
     print-line-uni test-third-caller-admitted
     print-line-uni test-third-caller-claims
     print-line-uni test-rexmit-retired
+    print-line-uni test-half-open-state
+    print-line-uni test-half-open-ack-completes
+    print-line-uni test-relistened-half-open-state
+    print-line-uni test-relistened-forgets-peer
+    print-line-uni test-relistened-ack-lost
+    print-line-uni test-relistened-ack-output
+    print-line-uni test-half-open-ack-clears-budget
+    print-line-uni test-budget-survives-eight
+    print-line-uni test-abandoned-caller-retired
+    print-line-uni test-abandoned-caller-forgets-peer
+    print-line-uni test-abandoned-admits-next
   end

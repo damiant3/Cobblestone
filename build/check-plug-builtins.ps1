@@ -109,18 +109,45 @@ if ((($declared.Count -eq 0) -or ($wire.Count -eq 0))) {
 # wire reads as missing -- seven phantom rows per plug, which is the gate
 # nobody reads twice.
 # 
+# A THIRD shape, added 2026-08-18: an ordered names list dispatched by
+# INDEX. pascal, ada, babbage, cobol, elixir, fortran, nim, objc and riscv
+# all write one. Keying on the quoted names alone would take every emitted
+# fragment in the file with them, so the extraction opens on a line matching
+# 'builtin-names = [', takes quoted names while it is open, and closes on
+# the first ']'. pascal extracts 23 that way against 6 before: the 20-name
+# list, plus True, False and Nothing, which are declared builtins this plug
+# really does answer at 'n == "True"'.
+# 
 # ONLY THE WIRED PLUGS ARE COVERED, and that is a limit rather than an
-# oversight. pascal and fortran use a third shape neither pattern models:
-# they extract 6 and 4 names against python's 94, so their gaps would be
-# inflated by the extraction rather than real. A plug whose shape this
-# script does not model must be left alone, not accused. The floor below is
-# what enforces that: a thin extraction is nearly as dangerous as an empty
-# one, and it fails LOUDLY here instead of quietly listing phantoms.
+# oversight. Modelling a shape does not wire a plug: the list above is what
+# is checked, and a plug is added to it only once its extraction has been
+# read name by name against its table. A plug whose shape this script does
+# not model must be left alone, not accused. The floor below is what
+# enforces that: a thin extraction is nearly as dangerous as an empty one,
+# and it fails LOUDLY here instead of quietly listing phantoms.
+# 
+# ada, elixir, nim, objc and cobol were read name by name and wired
+# 2026-08-18. ada extracts 60 against a 46-name list, the other four 31
+# against 27; the surplus in every case is True, False, Nothing and
+# __narrow, answered at 'n == "x"'. ada's 'n ==' also catches Integer,
+# Text, Boolean and six real-* TYPE names, and cobol's table pattern
+# catches the emitted fragments "0", "1" and "WS-". None of those nine is
+# a DECLARED builtin, so none can reach the wire and none can mask a gap.
+# 
+# THREE PLUGS THAT WRITE THIS SHAPE ARE STILL OUT, each for its own
+# reason. fortran extracts 50 and belongs to plugs-backlog 1.7, which
+# measures it against a wider subject. riscv is fester's lane (1.3).
+# babbage extracts 12 and FAILS the floor, which is the floor being right:
+# the Analytical Engine has no text and no list, so list-at, list-length,
+# list-push and list-snoc are absent on purpose and babbage answers them
+# with the !UNSUPPORTED: refusal instead of an arm. Wiring it would mean
+# lowering the floor for everyone to accuse a plug that is behaving.
 
 $wireNames = @(($wire.Keys | Sort-Object))
 $divergent = @()
-foreach ($p in @('python', 'javascript', 'zig', 'wasm', 'csharp')) {
+foreach ($p in @('python', 'javascript', 'zig', 'wasm', 'csharp', 'pascal', 'ada', 'elixir', 'nim', 'objc', 'cobol')) {
     $reg = @{}
+    $inList = $false
     foreach ($f in Get-ChildItem (Join-Path (Join-Path $Repo 'codex\plugs') $p) -Filter '*.codex' -File) {
         foreach ($line in ([System.IO.File]::ReadAllLines($f.FullName))) {
             foreach ($m in ([regex]::Matches($line, 'name = "(?<h>[^"]+)"'))) {
@@ -128,6 +155,17 @@ foreach ($p in @('python', 'javascript', 'zig', 'wasm', 'csharp')) {
             }
             foreach ($m in ([regex]::Matches($line, 'n == "(?<h>[^"]+)"'))) {
                 $reg[$m.Groups['h'].Value] = $true
+            }
+            if (($line -match 'builtin-names\s*=\s*\[')) {
+                $inList = $true
+            }
+            if ($inList) {
+                foreach ($m in ([regex]::Matches($line, '"(?<h>[^"]+)"'))) {
+                    $reg[$m.Groups['h'].Value] = $true
+                }
+                if (($line -match ']')) {
+                    $inList = $false
+                }
             }
         }
     }

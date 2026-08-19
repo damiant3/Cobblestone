@@ -32,24 +32,41 @@ No dynamic allocation. No interrupts (polling only). No OS
 dependencies. Each board file is standalone -- cite it, call its
 functions, done.
 
+5. **Linear handles (2026-08-18)** -- over the register-level functions,
+   each board wraps the foreword's linear handles so the lifecycle is a
+   type: `<b>-uart-open/write/recv/close` (`UartPort`), `<b>-gpio-open` +
+   `<b>-pin-write/read/close` (`Pin`), `<b>-spi-open/select/txn-transfer/
+   deselect/close` (`SpiBus` -> `SpiTxn` -> `SpiBus`, so a chip select left
+   asserted is CDX2063), `<b>-i2c-open/bus-write-reg/bus-read-reg/close`
+   (`I2cBus`), and on RP2040 `rp-adc-open/unit-sample/close` (`AdcUnit`).
+   Read ops return `(linear Handle, value)`; the checker tracks the handle
+   inside the tuple (`DevelopersGuide.md` "Linear tuple components"). The
+   rows are `[Gpio|Uart|Spi|I2c|Adc, Device.Mmio]`: the capability is the
+   authority and `Device.Mmio` the mechanism, so a driver holding only
+   `Device.Mmio` cannot reach a handle (CDX2031). Which board has which:
+   UART recv on all eight UART boards (nRF via EasyDMA), SPI on Esp32C6,
+   Fe310, Pi4, Rp2040, Stm32F4, Stm32L4; I2C on Esp32C6, Pi4, Rp2040,
+   Stm32F4, Stm32L4; ADC on Rp2040. QemuVirt is UART-only.
+
 ---
 
 ## Board Matrix
 
 | Board | MCU | Arch | Clock | SRAM | Sub-tests |
 |-------|-----|------|------:|-----:|----------:|
-| **STM32F4 Discovery** | Cortex-M4F | ARM | 168 MHz | 192 KB | 6 |
-| **ESP32-C6 DevKit** | RV32IMC | RISC-V | 160 MHz | 512 KB | 6 |
-| **Raspberry Pi 4** | Cortex-A72 | ARM | 1.5 GHz | 1-8 GB | 6 |
-| **QEMU virt** | AArch64 + RV | Both | -- | -- | 6 |
-| **nRF52840 DK** | Cortex-M4F | ARM | 64 MHz | 256 KB | 23 |
-| **RP2040 (Pico)** | Dual M0+ | ARM | 133 MHz | 264 KB | 24 |
-| **nRF9160 DK** | Cortex-M33 | ARM | 64 MHz | 256 KB | 17 |
-| **STM32L4 Nucleo** | Cortex-M4F | ARM | 80 MHz | 128 KB | 13 |
-| **FE310 (HiFive1)** | RV32IMAC | RISC-V | 320 MHz | 16 KB | 7 |
+| **STM32F4 Discovery** | Cortex-M4F | ARM | 168 MHz | 192 KB | 12 |
+| **ESP32-C6 DevKit** | RV32IMC | RISC-V | 160 MHz | 512 KB | 12 |
+| **Raspberry Pi 4** | Cortex-A72 | ARM | 1.5 GHz | 1-8 GB | 12 |
+| **QEMU virt** | AArch64 + RV | Both | -- | -- | 8 |
+| **nRF52840 DK** | Cortex-M4F | ARM | 64 MHz | 256 KB | 27 |
+| **RP2040 (Pico)** | Dual M0+ | ARM | 133 MHz | 264 KB | 31 |
+| **nRF9160 DK** | Cortex-M33 | ARM | 64 MHz | 256 KB | 21 |
+| **STM32L4 Nucleo** | Cortex-M4F | ARM | 80 MHz | 128 KB | 19 |
+| **FE310 (HiFive1)** | RV32IMAC | RISC-V | 320 MHz | 16 KB | 12 |
 
-**108 sub-tests, measured 2026-07-13** by `build/boards-test.ps1`, which is
-where the board battery lives. All nine boards pass, zero fail.
+**154 sub-tests, measured 2026-08-18** by `build/boards-test.ps1`, which is
+where the board battery lives (108 on 2026-07-13, before the linear-handle
+sub-tests). All nine boards pass, zero fail.
 
 They no longer "pass on MMIO stubs": since 2026-07-13 the accesses are real
 loads and stores against backed memory (see below), and every driver
@@ -59,7 +76,7 @@ QEMU virt's test is `codex/test/qemu-virt-board.codex`, not
 `qemuvirt-drivers.codex`. The first cut of `boards-test.ps1` assumed the
 naming convention, failed to find it, reported the board as untested, and
 that false gap got as far as a recorded entry before anyone checked. It has
-a test, it is in the default battery, and it returns 6.
+a test, it is in the default battery, and it returns 8.
 
 ---
 

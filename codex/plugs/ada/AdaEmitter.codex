@@ -133,7 +133,7 @@ Section: Type Emission
     is PropEqTy (pl) (pr) -> "Boolean"
     is ErrorTy -> "Long_Long_Integer"
     is FunTy (p) (fnrow) (r) -> "Long_Long_Integer"
-    is ListTy (elem) -> "Long_Long_Integer"
+    is ListTy (elem) -> ada-list-type-name elem
     is TypeVar (id) -> "Long_Long_Integer"
     is ForAllTy (id) (body) -> ada-type body
     is ForAllEff (id) (body) -> ada-type body
@@ -146,9 +146,29 @@ Section: Type Emission
     is VectorTy (vn) (vt) -> "Long_Long_Integer"
     is VectorMaskTy (vn) -> "Long_Long_Integer"
     is EffectfulTy (effects) (sc) (ret) -> ada-type ret
-    is LinkedListTy (elem) -> "Long_Long_Integer"
+    is LinkedListTy (elem) -> ada-list-type-name elem
     is RealTy (w) (m) -> "Long_Float"
     is UnitTy (n) (inner) -> "Boolean"
+
+ A list is an Ada unconstrained array, and the element kind picks which of the
+ two the prelude declares. `Cx_Text_List` was already there for `Cx_Text_Split`;
+ nothing named the integer one, so `ListTy` answered `Long_Long_Integer` and a
+ list value was DECLARED a scalar while literals were emitted as aggregates.
+
+  ada-list-type-name : CodexType -> Text
+  ada-list-type-name (elem) =
+   if ada-type elem == "Unbounded_String" then "Cx_Text_List" else "Cx_Int_List"
+
+  ada-list-elem-of : CodexType -> CodexType
+  ada-list-elem-of (ty) =
+   when ada-strip-forall ty
+    is ListTy (elem) -> elem
+    is LinkedListTy (elem) -> elem
+    is EffectfulTy (effs) (sc) (ret) -> ada-list-elem-of ret
+    is otherwise -> ty
+
+  ada-list-type-of : IRExpr -> Text
+  ada-list-type-of (e) = ada-list-type-name (ada-list-elem-of (ir-expr-type e))
 
 Section: Type Definition Emission
 
@@ -250,7 +270,11 @@ Section: Expression Emission
     is IrLet (name) (ty) (val) (body) (sp) -> "(declare " & ada-cap-sanitize name & " : constant " & ada-type ty & " := " & emit-ada-expr-at val arities (depth + 1) & " begin " & emit-ada-expr-at body arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-ada-apply e arities
     is IrLambda (params) (body) (ty) (sp) -> "null"
-    is IrList (elems) (ty) (sp) -> if list-length elems == 0 then "(1 .. 0 => <>)" else "(" & emit-ada-list-elems elems arities 0 & ")"
+    is IrList (elems) (ty) (sp) ->
+     let tn = ada-list-type-name (ada-list-elem-of ty)
+     in if list-length elems == 0 then tn & "'(1 .. 0 => <>)"
+        else if list-length elems == 1 then tn & "'(0 => " & emit-ada-list-elems elems arities 0 & ")"
+        else tn & "'(" & emit-ada-list-elems elems arities 0 & ")"
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-ada-match scrut branches arities
     is IrAct (stmts) (ty) (sp) -> emit-ada-act-expr stmts arities
     is IrRecord (name) (fields) (ty) (sp) -> emit-ada-record fields arities
@@ -368,11 +392,11 @@ Section: Expression Emission
    else if idx == 18 then "(" & emit-ada-expr (list-at args 0) arities & " in 3 .. 12)"
    else if idx == 19 then "(" & emit-ada-expr (list-at args 0) arities & " in 13 .. 64 | 97 .. 127)"
    else if idx == 20 then "(" & emit-ada-expr (list-at args 0) arities & " in 1 .. 2)"
-   else if idx == 21 then emit-ada-expr (list-at args 0) arities & "(Integer(" & emit-ada-expr (list-at args 1) arities & "))"
-   else if idx == 22 then emit-ada-expr (list-at args 0) arities
-   else if idx == 23 then "Long_Long_Integer(" & emit-ada-expr (list-at args 0) arities & "'Length)"
-   else if idx == 24 then emit-ada-expr (list-at args 0) arities
-   else if idx == 25 then emit-ada-expr (list-at args 0) arities & " & (" & emit-ada-expr (list-at args 1) arities & ")"
+   else if idx == 21 then (if ada-list-type-of (list-at args 0) == "Cx_Text_List" then "Cx_Text_At(" else "Cx_Int_At(") & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
+   else if idx == 22 then "cx_UNSUPPORTED_builtin(\"list-insert-at\")"
+   else if idx == 23 then (if ada-list-type-of (list-at args 0) == "Cx_Text_List" then "Cx_Text_Len(" else "Cx_Int_Len(") & emit-ada-expr (list-at args 0) arities & ")"
+   else if idx == 24 then "cx_UNSUPPORTED_builtin(\"list-set-at\")"
+   else if idx == 25 then (if ada-list-type-of (list-at args 0) == "Cx_Text_List" then "Cx_Text_Snoc(" else "Cx_Int_Snoc(") & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
    else if idx == 26 then "Long_Long_Integer'Max(" & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
    else if idx == 27 then "Long_Long_Integer'Min(" & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
    else if idx == 28 then "(-" & emit-ada-expr (list-at args 0) arities & ")"
@@ -391,7 +415,9 @@ Section: Expression Emission
    else if idx == 41 then "Cx_Text_Split(" & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
    else if idx == 42 then "Cx_Text_Starts_With(" & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
    else if idx == 43 then "Cx_Text_To_Integer(" & emit-ada-expr (list-at args 0) arities & ")"
-   else if idx == 44 then emit-ada-builtin-write-file args arities    else emit-ada-expr (list-at args 0) arities & " & (" & emit-ada-expr (list-at args 1) arities & ")"
+   else if idx == 44 then emit-ada-builtin-write-file args arities
+   else if idx == 45 then (if ada-list-type-of (list-at args 0) == "Cx_Text_List" then "Cx_Text_Snoc(" else "Cx_Int_Snoc(") & emit-ada-expr (list-at args 0) arities & ", " & emit-ada-expr (list-at args 1) arities & ")"
+   else "cx_UNSUPPORTED_builtin (\"" & n & "\")"
 
   emit-ada-ctor-apply : Text, List IRExpr, List ArityEntry -> Text
   emit-ada-ctor-apply (n) (args) (arities) =
@@ -769,9 +795,9 @@ Section: Chapter Emission
       ada-text-builtins &
       emit-ada-type-defs type-defs 0 &
       emit-ada-defs (m.defs) arities 0 entry-idx &
-      "begin\n" &
+      "   task Codex_Main is\n      pragma Storage_Size (512 * 1024 * 1024);\n   end Codex_Main;\n\n   task body Codex_Main is\n   begin\n" &
       emit-ada-entry-body (m.defs) entry-idx arities &
-      "end " & pkg & ";\n"
+      "   end Codex_Main;\n\nbegin\n   null;\nend " & pkg & ";\n"
 
  `Index` answers 0 for an EMPTY pattern, so the starts-with and contains arms
  answered False where Codex answers True; `Replace_Slice` was given that 0 as
@@ -782,7 +808,14 @@ Section: Chapter Emission
 
   ada-text-builtins : Text
   ada-text-builtins =
-   "   type Cx_Text_List is array (Natural range <>) of Unbounded_String;\n\n"
+   "   type Cx_Text_List is array (Natural range <>) of Unbounded_String;\n"
+   & "   type Cx_Int_List is array (Natural range <>) of Long_Long_Integer;\n\n"
+   & "   function Cx_Int_Len (L : Cx_Int_List) return Long_Long_Integer is\n   begin\n      return Long_Long_Integer (L'Length);\n   end Cx_Int_Len;\n\n"
+   & "   function Cx_Text_Len (L : Cx_Text_List) return Long_Long_Integer is\n   begin\n      return Long_Long_Integer (L'Length);\n   end Cx_Text_Len;\n\n"
+   & "   function Cx_Int_At (L : Cx_Int_List; I : Long_Long_Integer) return Long_Long_Integer is\n      K : constant Integer := Integer (I) + L'First;\n   begin\n      if K < L'First or K > L'Last then\n         return 0;\n      end if;\n      return L (K);\n   end Cx_Int_At;\n\n"
+   & "   function Cx_Text_At (L : Cx_Text_List; I : Long_Long_Integer) return Unbounded_String is\n      K : constant Integer := Integer (I) + L'First;\n   begin\n      if K < L'First or K > L'Last then\n         return To_Unbounded_String (\"\");\n      end if;\n      return L (K);\n   end Cx_Text_At;\n\n"
+   & "   function Cx_Int_Snoc (L : Cx_Int_List; V : Long_Long_Integer) return Cx_Int_List is\n   begin\n      return L & Cx_Int_List'(0 => V);\n   end Cx_Int_Snoc;\n\n"
+   & "   function Cx_Text_Snoc (L : Cx_Text_List; V : Unbounded_String) return Cx_Text_List is\n   begin\n      return L & Cx_Text_List'(0 => V);\n   end Cx_Text_Snoc;\n\n"
    & "   function Cx_Text_Split (S : Unbounded_String; Sep : Unbounded_String) return Cx_Text_List is\n      Src : constant String := To_String (S);\n      Sp  : constant String := To_String (Sep);\n      Count : Natural := 1;\n      I : Integer;\n   begin\n      if Sp'Length = 0 then\n         return (0 => S);\n      end if;\n      I := Src'First;\n      while I + Sp'Length - 1 <= Src'Last loop\n         if Src (I .. I + Sp'Length - 1) = Sp then\n            Count := Count + 1;\n            I := I + Sp'Length;\n         else\n            I := I + 1;\n         end if;\n      end loop;\n      declare\n         Res : Cx_Text_List (0 .. Count - 1);\n         Idx : Natural := 0;\n         Start : Integer := Src'First;\n      begin\n         I := Src'First;\n         while I + Sp'Length - 1 <= Src'Last loop\n            if Src (I .. I + Sp'Length - 1) = Sp then\n               Res (Idx) := To_Unbounded_String (Src (Start .. I - 1));\n               Idx := Idx + 1;\n               I := I + Sp'Length;\n               Start := I;\n            else\n               I := I + 1;\n            end if;\n         end loop;\n         Res (Idx) := To_Unbounded_String (Src (Start .. Src'Last));\n         return Res;\n      end;\n   end Cx_Text_Split;\n\n"
    & "   function Cx_Text_Starts_With (S : Unbounded_String; P : Unbounded_String) return Boolean is\n      Src : constant String := To_String (S);\n      Pre : constant String := To_String (P);\n   begin\n      if Pre'Length = 0 then\n         return True;\n      end if;\n      if Pre'Length > Src'Length then\n         return False;\n      end if;\n      return Src (Src'First .. Src'First + Pre'Length - 1) = Pre;\n   end Cx_Text_Starts_With;\n\n"
    & "   function Cx_Text_Contains (S : Unbounded_String; Sub : Unbounded_String) return Boolean is\n   begin\n      if Length (Sub) = 0 then\n         return True;\n      end if;\n      return Index (S, To_String (Sub)) > 0;\n   end Cx_Text_Contains;\n\n"

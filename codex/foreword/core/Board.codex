@@ -189,13 +189,13 @@ Section: Linear Peripheral Handles
   SpiBus =
     | SpiBus (Integer)
 
-  uart-open : Integer, UartConfig -> [Device.Mmio] linear UartPort
+  uart-open : Integer, UartConfig -> [Uart, Device.Mmio] linear UartPort
   uart-open (base) (cfg) = act
    w <- mmio-write-32 (base + 8) (cfg.baud)
    UartPort base
   end
 
-  uart-send : linear UartPort, Integer -> [Device.Mmio] linear UartPort
+  uart-send : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
   uart-send (port) (byte) =
    when port
     is UartPort (b) -> act
@@ -203,21 +203,186 @@ Section: Linear Peripheral Handles
       UartPort b
     end
 
-  uart-close : linear UartPort -> [Device.Mmio] Integer
+  uart-close : linear UartPort -> [Uart, Device.Mmio] Integer
   uart-close (port) =
    when port
     is UartPort (b) -> mmio-write-32 (b + 12) 0
 
-  spi-open : Integer, SpiConfig -> [Device.Mmio] linear SpiBus
+  spi-open : Integer, SpiConfig -> [Spi, Device.Mmio] linear SpiBus
   spi-open (base) (cfg) = act
    w <- mmio-write-32 base (cfg.clock-hz)
    SpiBus base
   end
 
-  spi-close : linear SpiBus -> [Device.Mmio] Integer
+  spi-close : linear SpiBus -> [Spi, Device.Mmio] Integer
   spi-close (bus) =
    when bus
     is SpiBus (b) -> mmio-write-32 b 0
+
+Section: The Read Side
+
+ The register model stays the STM32 shape: USART DR at the port's data
+ register (RM0090 30.6.1), GPIO IDR at +0x10 (RM0090 8.4.4), SPI CR2 at
+ +0x04 and DR at +0x0C (RM0090 28.5). Chip select is a word at CR2 here
+ because the generic model has no pin registry; a board whose CS is a GPIO
+ wraps these with its own pin.
+
+  uart-poll-recv-bytes : Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  uart-poll-recv-bytes (uart-data-reg) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- mmio-read-8 uart-data-reg
+    uart-poll-recv-bytes uart-data-reg n (i + 1) (list-push acc v)
+   end
+
+  uart-recv : linear UartPort, Integer -> [Uart, Device.Mmio] (linear UartPort, List Integer)
+  uart-recv (port) (n) =
+   when port
+    is UartPort (b) -> act
+      bytes <- (uart-poll-recv-bytes b n 0 [])
+      (UartPort b, bytes)
+    end
+
+  gpio-idr-offset : Integer = 16
+
+  gpio-read : linear Pin -> [Gpio, Device.Mmio] (linear Pin, Boolean)
+  gpio-read (p) =
+   when p
+    is Pin (base) (pin) -> act
+      cur <- (mmio-read-32 (base + gpio-idr-offset))
+      (Pin base pin, bit-and cur (bit-shl 1 pin) /= 0)
+    end
+
+  SpiTxn =
+    | SpiTxn (Integer) (Integer)
+
+  spi-cs-offset : Integer = 4
+  spi-dr-offset : Integer = 12
+
+  spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
+  spi-select (bus) (cs) =
+   when bus
+    is SpiBus (b) -> act
+      w <- mmio-write-32 (b + spi-cs-offset) (bit-shl 1 cs)
+      SpiTxn b cs
+    end
+
+  spi-poll-transfer : Integer, List Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  spi-poll-transfer (dr) (out) (i) (len) (acc) =
+   if i >= len then acc
+   else act
+    w <- mmio-write-8 dr (list-at out i)
+    v <- mmio-read-8 dr
+    spi-poll-transfer dr out (i + 1) len (list-push acc v)
+   end
+
+  spi-transfer : linear SpiTxn, List Integer -> [Spi, Device.Mmio] (linear SpiTxn, List Integer)
+  spi-transfer (txn) (out) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      got <- (spi-poll-transfer (b + spi-dr-offset) out 0 (list-length out) [])
+      (SpiTxn b cs, got)
+    end
+
+  spi-deselect : linear SpiTxn -> [Spi, Device.Mmio] linear SpiBus
+  spi-deselect (txn) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      w <- mmio-write-32 (b + spi-cs-offset) 0
+      SpiBus b
+    end
+
+Section: Linear I2C Bus and ADC Unit
+
+ STM32 shape again (RM0090 27.6 and 13.13): I2C CR1 at +0x00 (PE bit 0),
+ CR2 at +0x04 (peripheral clock MHz), DR at +0x10, SR1 at +0x14; ADC SR at
+ +0x00, CR2 at +0x08 (ADON bit 0, SWSTART bit 30), SQR3 at +0x34 (first
+ channel in bits 4:0), DR at +0x4C. A transfer here writes the address then
+ the bytes through DR and reads replies back off DR; on silicon the START
+ and ACK phases are the board chapter's job, as the polled sends above are.
+
+  I2cBus =
+    | I2cBus (Integer)
+
+  AdcUnit =
+    | AdcUnit (Integer)
+
+  i2c-cr1-offset : Integer = 0
+  i2c-cr2-offset : Integer = 4
+  i2c-dr-offset : Integer = 16
+
+  i2c-open : Integer, I2cConfig -> [I2c, Device.Mmio] linear I2cBus
+  i2c-open (base) (cfg) = act
+   w-clk <- mmio-write-32 (base + i2c-cr2-offset) (cfg.clock-hz / 1000000)
+   w-en <- (mmio-write-32 (base + i2c-cr1-offset) 1)
+   I2cBus base
+  end
+
+  i2c-poll-write-bytes : Integer, List Integer, Integer, Integer -> [Device.Mmio] Integer
+  i2c-poll-write-bytes (dr) (bytes) (i) (len) =
+   if i >= len then i
+   else act
+    w <- mmio-write-8 dr (list-at bytes i)
+    i2c-poll-write-bytes dr bytes (i + 1) len
+   end
+
+  i2c-poll-read-bytes : Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  i2c-poll-read-bytes (dr) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- mmio-read-8 dr
+    i2c-poll-read-bytes dr n (i + 1) (list-push acc v)
+   end
+
+  i2c-write : linear I2cBus, Integer, List Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
+  i2c-write (bus) (addr) (bytes) =
+   when bus
+    is I2cBus (b) -> act
+      a <- mmio-write-8 (b + i2c-dr-offset) (addr * 2)
+      n <- (i2c-poll-write-bytes (b + i2c-dr-offset) bytes 0 (list-length bytes))
+      (I2cBus b, n)
+    end
+
+  i2c-read : linear I2cBus, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, List Integer)
+  i2c-read (bus) (addr) (n) =
+   when bus
+    is I2cBus (b) -> act
+      a <- mmio-write-8 (b + i2c-dr-offset) (addr * 2 + 1)
+      got <- (i2c-poll-read-bytes (b + i2c-dr-offset) n 0 [])
+      (I2cBus b, got)
+    end
+
+  i2c-close : linear I2cBus -> [I2c, Device.Mmio] Integer
+  i2c-close (bus) =
+   when bus
+    is I2cBus (b) -> mmio-write-32 (b + i2c-cr1-offset) 0
+
+  adc-cr2-offset : Integer = 8
+  adc-sqr3-offset : Integer = 52
+  adc-dr-offset : Integer = 76
+  adc-cr2-adon : Integer = 1
+  adc-cr2-swstart : Integer = #40000000
+
+  adc-open : Integer, AdcConfig -> [Adc, Device.Mmio] linear AdcUnit
+  adc-open (base) (cfg) = act
+   w <- mmio-write-32 (base + adc-cr2-offset) adc-cr2-adon
+   AdcUnit base
+  end
+
+  adc-sample : linear AdcUnit, Integer -> [Adc, Device.Mmio] (linear AdcUnit, Integer)
+  adc-sample (adc) (channel) =
+   when adc
+    is AdcUnit (b) -> act
+      w-ch <- mmio-write-32 (b + adc-sqr3-offset) (bit-and channel 31)
+      w-go <- mmio-write-32 (b + adc-cr2-offset) (bit-or adc-cr2-adon adc-cr2-swstart)
+      v <- (mmio-read-32 (b + adc-dr-offset))
+      (AdcUnit b, bit-and v #FFFF)
+    end
+
+  adc-close : linear AdcUnit -> [Adc, Device.Mmio] Integer
+  adc-close (adc) =
+   when adc
+    is AdcUnit (b) -> mmio-write-32 (b + adc-cr2-offset) 0
 
 Section: Flash
 
@@ -353,5 +518,60 @@ Section: GPIO Helpers
     then gpio-set gpio-bsrr-reg pin
     else gpio-clear gpio-bsrr-reg pin
   end
+
+Section: Linear GPIO Pins
+
+ A pin is a resource with the same lifecycle the UART and SPI handles
+ above carry: open it, drive it, close it, each exactly once. A dropped
+ Pin leaves a port half in output mode with nobody owning it (CDX2063);
+ a Pin driven after close is a second write to a mode it no longer holds
+ (CDX2061). The register model is the STM32 GPIO port shape (RM0090
+ section 8.4): MODER at +0x00 (two bits per pin) and BSRR at +0x18.
+ gpio-open programs only this pin's MODER field and gpio-close restores
+ it to input, so neither disturbs the other pins on the port. The row is
+ [Gpio, Device.Mmio] the way Flash's is [Flash, Device.Mmio]: Gpio is the
+ authority (its own capability, cap id 18) and Device.Mmio is the
+ mechanism, so a driver holding Device.Mmio alone cannot reach a pin. As
+ with the handles above no silicon has been in the loop: what is proven is
+ the lifecycle and the capability gate, not the electrical behaviour, and
+ a port with a different map needs its own implementation in its board
+ chapter.
+
+  gpio-moder-offset : Integer = 0
+  gpio-bsrr-offset : Integer = 24
+
+  Pin =
+    | Pin (Integer) (Integer)
+
+  pin-mode-code : PinMode -> Integer
+  pin-mode-code (m) =
+   when m
+    is PinInput -> 0
+    is PinOutput -> 1
+    is PinAlternate (n) -> 2
+    is PinAnalog -> 3
+
+  gpio-open : Integer, Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
+  gpio-open (base) (pin) (mode) = act
+   cur <- mmio-read-32 (base + gpio-moder-offset)
+   w <- mmio-write-32 (base + gpio-moder-offset) (bit-or (bit-and cur (bit-xor (bit-shl 3 (pin * 2)) (0 - 1))) (bit-shl (pin-mode-code mode) (pin * 2)))
+   Pin base pin
+  end
+
+  gpio-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
+  gpio-write (p) (on) =
+   when p
+    is Pin (base) (pin) -> act
+      w <- mmio-write-32 (base + gpio-bsrr-offset) (if on then bit-shl 1 pin else bit-shl 1 (pin + 16))
+      Pin base pin
+    end
+
+  gpio-close : linear Pin -> [Gpio, Device.Mmio] Integer
+  gpio-close (p) =
+   when p
+    is Pin (base) (pin) -> act
+      cur <- mmio-read-32 (base + gpio-moder-offset)
+      mmio-write-32 (base + gpio-moder-offset) (bit-and cur (bit-xor (bit-shl 3 (pin * 2)) (0 - 1)))
+    end
 
 Page 1

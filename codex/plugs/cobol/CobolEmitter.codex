@@ -46,7 +46,8 @@ Section: Arity Map
   ArityEntry = record {
    name : Text,
    arity : Integer between 0 and 255,
-   generic-count : Integer between 0 and 255
+   generic-count : Integer between 0 and 255,
+   param-names : List Text
   }
 
   bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
@@ -70,8 +71,22 @@ Section: Arity Map
    in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
     name = d.name,
     arity = __narrow (list-length (d.params)),
-    generic-count = 0
+    generic-count = 0,
+    param-names = cobol-param-names (d.params) 0 []
    }))
+
+  cobol-param-names : List IRParam, Integer, List Text -> List Text
+  cobol-param-names (ps) (i) (acc) =
+   if i >= list-length ps then acc
+   else cobol-param-names ps (i + 1) (list-snoc acc (cobol-name ((list-at ps i).name)))
+
+  lookup-param-names : List ArityEntry, Text -> List Text
+  lookup-param-names (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then []
+      else let e = list-at entries pos
+      in if e.name == name then e.param-names else []
 
   lookup-arity : List ArityEntry, Text -> Integer
   lookup-arity (entries) (name) =
@@ -110,12 +125,103 @@ Section: PIC Clause and Type Helpers
     is EffectfulTy (effs) (sc) (ret) -> cobol-pic ret
     is otherwise -> "PIC S9(18)"
 
+ A text is a group item, a length and a data item under one name. A group
+ MOVE between two of them is an alphanumeric copy of identical layouts, so
+ assignment stays one statement, and the live characters are `-D(1:-L)`.
+
+ COBOL forbids a reference modification of length zero, so every read of the
+ slice is guarded by its length rather than emitted bare, and a concatenation
+ uses STRING WITH POINTER so an empty operand contributes nothing instead of
+ raising.
+
+  cobol-is-text-ty : CodexType -> Boolean
+  cobol-is-text-ty (ty) =
+   when cobol-strip-forall ty
+    is TextTy -> True
+    is EffectfulTy (effs) (sc) (ret) -> cobol-is-text-ty ret
+    is otherwise -> False
+
+  cobol-is-text-expr : IRExpr -> Boolean
+  cobol-is-text-expr (e) = cobol-is-text-ty (ir-expr-type e)
+
+  cobol-decl-text : Text -> Text
+  cobol-decl-text (name) =
+   "       01 " & name & ".\n" &
+   "         05 " & name & "-L      PIC S9(18).\n" &
+   "         05 " & name & "-D      PIC X(256)."
+
+ A list is the same length-carrying group as text, with a TABLE in place of the
+ character field. `OCCURS` is COBOL's only array and it is fixed at compile
+ time, so the capacity is a constant and every write is bounded against it: a
+ subscript past the OCCURS is undefined behaviour in COBOL, not a trap.
+
+  cobol-list-cap : Integer = 256
+
+  cobol-decl-list : Text -> Text
+  cobol-decl-list (name) =
+   "       01 " & name & ".\n" &
+   "         05 " & name & "-L      PIC S9(18).\n" &
+   "         05 " & name & "-D      PIC S9(18) OCCURS " & integer-to-text cobol-list-cap & " TIMES."
+
+ A list of TEXT needs its own shape, because the element is itself a
+ length-carrying pair rather than one numeric field. The table is nested: each
+ occurrence has its own `-EL` and `-ED`, so an element is
+ `<v>-ED(i)(1:<v>-EL(i))`. The capacity is smaller than the numeric list's
+ because each slot costs 256 characters plus its length.
+
+  cobol-text-list-cap : Integer = 64
+
+  cobol-decl-list-text : Text -> Text
+  cobol-decl-list-text (name) =
+   "       01 " & name & ".\n" &
+   "         05 " & name & "-L      PIC S9(18).\n" &
+   "         05 " & name & "-E      OCCURS " & integer-to-text cobol-text-list-cap & " TIMES.\n" &
+   "           10 " & name & "-EL      PIC S9(18).\n" &
+   "           10 " & name & "-ED      PIC X(256)."
+
+  cobol-list-elem-is-text : CodexType -> Boolean
+  cobol-list-elem-is-text (ty) =
+   when cobol-strip-forall ty
+    is ListTy (elem) -> cobol-is-text-ty elem
+    is LinkedListTy (elem) -> cobol-is-text-ty elem
+    is EffectfulTy (effs) (sc) (ret) -> cobol-list-elem-is-text ret
+    is otherwise -> False
+
+  cobol-is-list-ty : CodexType -> Boolean
+  cobol-is-list-ty (ty) =
+   when cobol-strip-forall ty
+    is ListTy (elem) -> True
+    is LinkedListTy (elem) -> True
+    is EffectfulTy (effs) (sc) (ret) -> cobol-is-list-ty ret
+    is otherwise -> False
+
+  cobol-is-list-expr : IRExpr -> Boolean
+  cobol-is-list-expr (e) = cobol-is-list-ty (ir-expr-type e)
+
+  cobol-decl-pic : Text, Text -> Text
+  cobol-decl-pic (name) (pic) = "       01 " & name & "       " & pic & "."
+
+  cobol-decl : Text, CodexType -> Text
+  cobol-decl (name) (ty) =
+   if cobol-is-text-ty ty then cobol-decl-text name
+   else if cobol-is-list-ty ty then (if cobol-list-elem-is-text ty then cobol-decl-list-text name else cobol-decl-list name)
+   else cobol-decl-pic name (cobol-pic ty)
+
+  cobol-slice : Text -> Text
+  cobol-slice (v) = v & "-D(1:" & v & "-L)"
+
 Section: Emission State
+
+  CobolBind = record {
+   cb-src : Text,
+   cb-dst : Text
+  }
 
   CobolState = record {
    var-counter : Integer,
    working-storage : List Text,
-   current-func : Text
+   current-func : Text,
+   env : List CobolBind
   }
 
   cobol-alloc-var : CobolState, Text -> CobolAllocResult
@@ -128,7 +234,8 @@ Section: Emission State
     state = CobolState {
      var-counter = next,
      working-storage = st.working-storage,
-     current-func = st.current-func
+     current-func = st.current-func,
+     env = st.env
     }
    }
 
@@ -142,7 +249,8 @@ Section: Emission State
    CobolState {
     var-counter = st.var-counter,
     working-storage = list-snoc (st.working-storage) line,
-    current-func = st.current-func
+    current-func = st.current-func,
+    env = st.env
    }
 
   cobol-set-func : CobolState, Text -> CobolState
@@ -150,15 +258,63 @@ Section: Emission State
    CobolState {
     var-counter = st.var-counter,
     working-storage = st.working-storage,
-    current-func = f
+    current-func = f,
+    env = st.env
    }
 
   cobol-initial-state : CobolState
   cobol-initial-state = CobolState {
    var-counter = 0,
    working-storage = [],
-   current-func = ""
+   current-func = "",
+   env = []
   }
+
+Section: The Name Environment
+
+ A binding is looked up from the END so a later one shadows an earlier one,
+ and a let restores the depth it found rather than the list it found: an
+ in-place extension of the backing array makes the saved LIST unreliable
+ where the saved LENGTH is not.
+
+  cobol-set-env : CobolState, List CobolBind -> CobolState
+  cobol-set-env (st) (e) =
+   CobolState {
+    var-counter = st.var-counter,
+    working-storage = st.working-storage,
+    current-func = st.current-func,
+    env = e
+   }
+
+  cobol-env-bind : CobolState, Text, Text -> CobolState
+  cobol-env-bind (st) (src) (dst) =
+   cobol-set-env st (list-snoc (st.env) (CobolBind { cb-src = src, cb-dst = dst }))
+
+  cobol-env-lookup : List CobolBind, Text, Integer -> Text
+  cobol-env-lookup (env) (n) (i) =
+   if i < 0 then ""
+   else if (list-at env i).cb-src == n then (list-at env i).cb-dst
+   else cobol-env-lookup env n (i - 1)
+
+  cobol-env-find : CobolState, Text -> Text
+  cobol-env-find (st) (n) =
+   let depth = list-length (st.env)
+   in cobol-env-lookup (st.env) n (depth - 1)
+
+  cobol-env-take : List CobolBind, Integer, Integer, List CobolBind -> List CobolBind
+  cobol-env-take (env) (n) (i) (acc) =
+   if i >= n then acc
+   else cobol-env-take env n (i + 1) (list-snoc acc (list-at env i))
+
+  cobol-env-restore : CobolState, Integer -> CobolState
+  cobol-env-restore (st) (depth) =
+   cobol-set-env st (cobol-env-take (st.env) depth 0 [])
+
+  cobol-bind-params : List IRParam, Text, CobolState, Integer -> CobolState
+  cobol-bind-params (ps) (fname) (st) (i) =
+   if i >= list-length ps then st
+   else let p = list-at ps i
+   in cobol-bind-params ps fname (cobol-env-bind st (p.name) ("WS-" & fname & "-" & cobol-name (p.name))) (i + 1)
 
 Section: Type Definition Emission
 
@@ -182,8 +338,14 @@ Section: Type Definition Emission
    if i >= list-length fields then ""
    else let f = list-at fields i
    in let fn = cobol-name (f.name.value)
+   in let full = "WS-" & parent & "-" & fn
    in let pic = emit-cobol-atype-pic (f.type-expr)
-   in "         05 WS-" & parent & "-" & fn & " " & pic & ".\n" & emit-cobol-rec-fields parent fields (i + 1)
+   in let decl = if pic == "PIC X(256)"
+                 then "         05 " & full & ".\n" &
+                      "           10 " & full & "-L      PIC S9(18).\n" &
+                      "           10 " & full & "-D      PIC X(256).\n"
+                 else "         05 " & full & " " & pic & ".\n"
+   in decl & emit-cobol-rec-fields parent fields (i + 1)
 
   emit-cobol-atype-pic : ATypeExpr -> Text
   emit-cobol-atype-pic (te) =
@@ -248,7 +410,7 @@ Section: Expression Emission
    when e
     is IrIntLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
     is IrBoolLit (b) (sp) -> CobolExprResult { var-name = if b then "1" else "0", code = "", state = st }
-    is IrTextLit (s) (sp) -> CobolExprResult { var-name = "\"" & cobol-escape-text s & "\"", code = "", state = st }
+    is IrTextLit (s) (sp) -> emit-cobol-text-lit s st
     is IrNumLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
     is IrCharLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
     is IrName (n) (ty) (sp) -> emit-cobol-name-var n st
@@ -279,12 +441,27 @@ Section: Expression Emission
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> CobolExprResult { var-name = "0", code = "           CONTINUE\n", state = st }
     is IrError (msg) (ty) (sp) -> CobolExprResult { var-name = "0", code = "", state = st }
 
+  emit-cobol-text-lit : Text, CobolState -> CobolExprResult
+  emit-cobol-text-lit (s) (st) =
+   let alloc = cobol-alloc-var st "LIT"
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-text (alloc.name))
+   in let n = text-length s
+   in let data = if n == 0 then "           MOVE SPACES TO " & alloc.name & "-D\n"
+                 else "           MOVE \"" & cobol-escape-text s & "\" TO " & alloc.name & "-D\n"
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = "           MOVE " & integer-to-text n & " TO " & alloc.name & "-L\n" & data,
+    state = st2
+   }
+
   emit-cobol-name-var : Text, CobolState -> CobolExprResult
   emit-cobol-name-var (n) (st) =
    if n == "True" then CobolExprResult { var-name = "1", code = "", state = st }
    else if n == "False" then CobolExprResult { var-name = "0", code = "", state = st }
    else if n == "Nothing" then CobolExprResult { var-name = "0", code = "", state = st }
-   else CobolExprResult { var-name = "WS-" & cobol-name n, code = "", state = st }
+   else let bound = cobol-env-find st n
+   in if text-length bound > 0 then CobolExprResult { var-name = bound, code = "", state = st }
+      else CobolExprResult { var-name = "WS-" & cobol-name n, code = "", state = st }
 
   emit-cobol-negate-var : IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-negate-var (operand) (arities) (st) =
@@ -302,14 +479,28 @@ Section: Expression Emission
    let left = emit-cobol-expr-to-var l arities st
    in let right = emit-cobol-expr-to-var r arities (left.state)
    in let alloc = cobol-alloc-var (right.state) (cobol-bin-hint op)
-   in let pic = cobol-bin-pic op
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       " & pic & ".")
-   in let stmt = emit-cobol-bin-stmt op (left.var-name) (right.var-name) (alloc.name)
+   in let decl = if cobol-bin-is-text op then cobol-decl-text (alloc.name)
+                 else if cobol-bin-is-list op then cobol-decl-list (alloc.name)
+                 else cobol-decl-pic (alloc.name) (cobol-bin-pic op)
+   in let st2 = cobol-add-ws (alloc.state) decl
+   in let stmt = emit-cobol-bin-stmt op (left.var-name) (right.var-name) (alloc.name) (cobol-is-text-expr l)
    in CobolExprResult {
     var-name = alloc.name,
     code = left.code & right.code & stmt,
     state = st2
    }
+
+  cobol-bin-is-text : IRBinaryOp -> Boolean
+  cobol-bin-is-text (op) =
+   when op
+    is IrAppendText -> True
+    is otherwise -> False
+
+  cobol-bin-is-list : IRBinaryOp -> Boolean
+  cobol-bin-is-list (op) =
+   when op
+    is IrAppendList | IrConsList -> True
+    is otherwise -> False
 
   cobol-bin-pic : IRBinaryOp -> Text
   cobol-bin-pic (op) =
@@ -345,8 +536,8 @@ Section: Expression Emission
     is IrAppendList -> "LCAT"
     is IrConsList -> "LCONS"
 
-  emit-cobol-bin-stmt : IRBinaryOp, Text, Text, Text -> Text
-  emit-cobol-bin-stmt (op) (lv) (rv) (result) =
+  emit-cobol-bin-stmt : IRBinaryOp, Text, Text, Text, Boolean -> Text
+  emit-cobol-bin-stmt (op) (lv) (rv) (result) (ltext) =
    when op
     is IrAddInt | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "           ADD " & lv & " " & rv & " GIVING " & result & "\n"
     is IrSubInt | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "           SUBTRACT " & rv & " FROM " & lv & " GIVING " & result & "\n"
@@ -358,12 +549,14 @@ Section: Expression Emission
     is IrSubNum -> "           SUBTRACT " & rv & " FROM " & lv & " GIVING " & result & "\n"
     is IrMulNum -> "           MULTIPLY " & lv & " BY " & rv & " GIVING " & result & "\n"
     is IrDivNum -> "           DIVIDE " & lv & " BY " & rv & " GIVING " & result & "\n"
-    is IrEq -> emit-cobol-cmp-stmt lv "=" rv result
-    is IrNotEq -> emit-cobol-cmp-stmt lv "NOT =" rv result
-    is IrLt | IrLtVec -> emit-cobol-cmp-stmt lv "<" rv result
-    is IrGt | IrGtVec -> emit-cobol-cmp-stmt lv ">" rv result
-    is IrLtEq | IrLtEqVec -> emit-cobol-cmp-stmt lv "<=" rv result
-    is IrGtEq | IrGtEqVec -> emit-cobol-cmp-stmt lv ">=" rv result
+    is IrEq -> if ltext then emit-cobol-text-eq-stmt lv rv result "1" "0"
+               else emit-cobol-cmp-stmt lv "=" rv result
+    is IrNotEq -> if ltext then emit-cobol-text-eq-stmt lv rv result "0" "1"
+                  else emit-cobol-cmp-stmt lv "NOT =" rv result
+    is IrLt | IrLtVec -> emit-cobol-cmp-stmt (cobol-cmp-operand lv ltext) "<" (cobol-cmp-operand rv ltext) result
+    is IrGt | IrGtVec -> emit-cobol-cmp-stmt (cobol-cmp-operand lv ltext) ">" (cobol-cmp-operand rv ltext) result
+    is IrLtEq | IrLtEqVec -> emit-cobol-cmp-stmt (cobol-cmp-operand lv ltext) "<=" (cobol-cmp-operand rv ltext) result
+    is IrGtEq | IrGtEqVec -> emit-cobol-cmp-stmt (cobol-cmp-operand lv ltext) ">=" (cobol-cmp-operand rv ltext) result
     is IrApproxEq -> emit-cobol-cmp-stmt lv "=" rv result
     is IrApproxEqExact -> emit-cobol-cmp-stmt lv "=" rv result
     is IrAnd ->
@@ -386,9 +579,64 @@ Section: Expression Emission
      "               MOVE 0 TO " & result & "\n" &
      "             END-IF\n" &
      "           END-IF\n"
-    is IrAppendText -> "           STRING " & lv & " DELIMITED BY SIZE\n                  " & rv & " DELIMITED BY SIZE\n                  INTO " & result & "\n"
-    is IrAppendList -> "           DISPLAY \"COBOL: list-append not supported\"\n           MOVE 0 TO " & result & "\n"
-    is IrConsList -> "           DISPLAY \"COBOL: cons-list not supported\"\n           MOVE 0 TO " & result & "\n"
+    is IrAppendText ->
+     "           MOVE SPACES TO " & result & "-D\n" &
+     "           MOVE 1 TO WS-STRPTR\n" &
+     "           IF " & lv & "-L > 0\n" &
+     "             STRING " & cobol-slice lv & " DELIMITED BY SIZE\n" &
+     "                  INTO " & result & "-D WITH POINTER WS-STRPTR\n" &
+     "           END-IF\n" &
+     "           IF " & rv & "-L > 0\n" &
+     "             STRING " & cobol-slice rv & " DELIMITED BY SIZE\n" &
+     "                  INTO " & result & "-D WITH POINTER WS-STRPTR\n" &
+     "           END-IF\n" &
+     "           COMPUTE " & result & "-L = " & lv & "-L + " & rv & "-L\n"
+    is IrAppendList ->
+     "           MOVE 0 TO " & result & "-L\n" &
+     "           PERFORM VARYING WS-LIDX FROM 1 BY 1 UNTIL WS-LIDX > " & lv & "-L\n" &
+     "             IF " & result & "-L < " & integer-to-text cobol-list-cap & "\n" &
+     "               ADD 1 TO " & result & "-L\n" &
+     "               MOVE " & lv & "-D(WS-LIDX) TO " & result & "-D(" & result & "-L)\n" &
+     "             END-IF\n" &
+     "           END-PERFORM\n" &
+     "           PERFORM VARYING WS-LIDX FROM 1 BY 1 UNTIL WS-LIDX > " & rv & "-L\n" &
+     "             IF " & result & "-L < " & integer-to-text cobol-list-cap & "\n" &
+     "               ADD 1 TO " & result & "-L\n" &
+     "               MOVE " & rv & "-D(WS-LIDX) TO " & result & "-D(" & result & "-L)\n" &
+     "             END-IF\n" &
+     "           END-PERFORM\n"
+    is IrConsList ->
+     "           MOVE 1 TO " & result & "-L\n" &
+     "           MOVE " & lv & " TO " & result & "-D(1)\n" &
+     "           PERFORM VARYING WS-LIDX FROM 1 BY 1 UNTIL WS-LIDX > " & rv & "-L\n" &
+     "             IF " & result & "-L < " & integer-to-text cobol-list-cap & "\n" &
+     "               ADD 1 TO " & result & "-L\n" &
+     "               MOVE " & rv & "-D(WS-LIDX) TO " & result & "-D(" & result & "-L)\n" &
+     "             END-IF\n" &
+     "           END-PERFORM\n"
+
+  cobol-cmp-operand : Text, Boolean -> Text
+  cobol-cmp-operand (v) (is-text) = if is-text then v & "-D" else v
+
+ Two alphanumeric operands of unequal size compare as if the shorter were
+ padded with spaces, so a text ending in a space would equal one that does
+ not. The lengths are compared first and the characters only after.
+
+  emit-cobol-text-eq-stmt : Text, Text, Text, Text, Text -> Text
+  emit-cobol-text-eq-stmt (lv) (rv) (result) (on-eq) (on-ne) =
+   "           IF " & lv & "-L NOT = " & rv & "-L\n" &
+   "             MOVE " & on-ne & " TO " & result & "\n" &
+   "           ELSE\n" &
+   "             IF " & lv & "-L = 0\n" &
+   "               MOVE " & on-eq & " TO " & result & "\n" &
+   "             ELSE\n" &
+   "               IF " & cobol-slice lv & " = " & cobol-slice rv & "\n" &
+   "                 MOVE " & on-eq & " TO " & result & "\n" &
+   "               ELSE\n" &
+   "                 MOVE " & on-ne & " TO " & result & "\n" &
+   "               END-IF\n" &
+   "             END-IF\n" &
+   "           END-IF\n"
 
   emit-cobol-cmp-stmt : Text, Text, Text, Text -> Text
   emit-cobol-cmp-stmt (lv) (cmp-op) (rv) (result) =
@@ -402,7 +650,9 @@ Section: Expression Emission
   emit-cobol-if-var (c) (t) (el) (arities) (st) =
    let cond = emit-cobol-expr-to-var c arities st
    in let alloc = cobol-alloc-var (cond.state) "BRANCH"
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC S9(18).")
+   in let decl = if cobol-is-text-expr t then cobol-decl-text (alloc.name)
+                 else cobol-decl-pic (alloc.name) "PIC S9(18)"
+   in let st2 = cobol-add-ws (alloc.state) decl
    in let then-r = emit-cobol-expr-to-var t arities st2
    in let else-r = emit-cobol-expr-to-var el arities (then-r.state)
    in CobolExprResult {
@@ -419,13 +669,13 @@ Section: Expression Emission
   emit-cobol-let-var (name) (ty) (val) (body) (arities) (st) =
    let val-r = emit-cobol-expr-to-var val arities st
    in let alloc = cobol-alloc-var (val-r.state) (cobol-name name)
-   in let pic = cobol-pic ty
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       " & pic & ".")
-   in let body-r = emit-cobol-expr-to-var body arities st2
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (alloc.name) ty)
+   in let depth = list-length (st2.env)
+   in let body-r = emit-cobol-expr-to-var body arities (cobol-env-bind st2 name (alloc.name))
    in CobolExprResult {
     var-name = body-r.var-name,
     code = val-r.code & "           MOVE " & val-r.var-name & " TO " & alloc.name & "\n" & body-r.code,
-    state = body-r.state
+    state = cobol-env-restore (body-r.state) depth
    }
 
   emit-cobol-apply-var : IRExpr, List ArityEntry, CobolState -> CobolExprResult
@@ -441,7 +691,8 @@ Section: Expression Emission
    "int-mod", "integer-to-text", "is-digit", "is-letter", "max", "min",
    "negate", "print-line-uni", "process-exit", "read-text", "show",
    "substring", "text-length", "text-to-integer", "write-file",
-   "text-starts-with", "text-contains"]
+   "text-starts-with", "text-contains", "text-replace", "text-split",
+   "list-at", "list-length", "list-push", "list-snoc"]
 
   cobol-find-builtin : List Text, Text, Integer -> Integer
   cobol-find-builtin (names) (target) (i) =
@@ -478,40 +729,216 @@ Section: Expression Emission
    else if idx == 18 then emit-cobol-builtin-text-to-integer args arities st
    else if idx == 19 then emit-cobol-builtin-write-file args arities st
    else if idx == 20 then emit-cobol-builtin-text-starts-with args arities st
-   else emit-cobol-builtin-text-contains args arities st
+   else if idx == 21 then emit-cobol-builtin-text-contains args arities st
+   else if idx == 22 then emit-cobol-builtin-text-replace args arities st
+   else if idx == 23 then emit-cobol-builtin-text-split args arities st
+   else if idx == 24 then emit-cobol-builtin-list-at args arities st
+   else if idx == 25 then emit-cobol-builtin-list-length args arities st
+   else if idx == 26 then emit-cobol-builtin-list-append args arities st
+   else if idx == 27 then emit-cobol-builtin-list-append args arities st
+   else emit-cobol-builtin-bit-stub n args arities st
+
+ `list-at` is one-based in COBOL and zero-based in Codex, which is the defect
+ the pascal plug shipped for every list read it ever emitted, so the `+ 1` is
+ here rather than left to a caller.
+
+ An empty separator answers a one-element list holding the whole string, and a
+ TRAILING separator leaves a final empty field, both of which Codex specifies
+ and both of which are where a library `split` usually differs. The scan is
+ explicit for that reason and because COBOL's `UNSTRING` cannot express either.
+
+  emit-cobol-builtin-text-split : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-text-split (args) (arities) (st) =
+   let s = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let sep = emit-cobol-expr-to-var (list-at args 1) arities (s.state)
+   in let alloc = cobol-alloc-var (sep.state) "SPL"
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-list-text (alloc.name))
+   in let i = cobol-alloc-var st2 "SPI"
+   in let st3 = cobol-add-ws (i.state) (cobol-decl-pic (i.name) "PIC S9(18)")
+   in let start = cobol-alloc-var st3 "SPS"
+   in let st4 = cobol-add-ws (start.state) (cobol-decl-pic (start.name) "PIC S9(18)")
+   in let n = alloc.name
+   in let sv = s.var-name
+   in let pv = sep.var-name
+   in CobolExprResult {
+    var-name = n,
+    code = s.code & sep.code &
+     "           MOVE 0 TO " & n & "-L\n" &
+     "           IF " & pv & "-L = 0\n" &
+     "             MOVE 1 TO " & n & "-L\n" &
+     "             MOVE " & sv & "-L TO " & n & "-EL(1)\n" &
+     "             MOVE " & sv & "-D TO " & n & "-ED(1)\n" &
+     "           ELSE\n" &
+     "             MOVE 1 TO " & start.name & "\n" &
+     "             MOVE 1 TO " & i.name & "\n" &
+     "             PERFORM UNTIL " & i.name & " > " & sv & "-L - " & pv & "-L + 1\n" &
+     "               IF " & sv & "-D(" & i.name & ":" & pv & "-L) = " & cobol-slice pv & "\n" &
+     "                 ADD 1 TO " & n & "-L\n" &
+     "                 IF " & n & "-L <= " & integer-to-text cobol-text-list-cap & "\n" &
+     "                   MOVE " & i.name & " - " & start.name & " TO " & n & "-EL(" & n & "-L)\n" &
+     "                   MOVE SPACES TO " & n & "-ED(" & n & "-L)\n" &
+     "                   IF " & i.name & " > " & start.name & "\n" &
+     "                     MOVE " & sv & "-D(" & start.name & ":" & i.name & " - " & start.name & ") TO " & n & "-ED(" & n & "-L)\n" &
+     "                   END-IF\n" &
+     "                 END-IF\n" &
+     "                 COMPUTE " & i.name & " = " & i.name & " + " & pv & "-L\n" &
+     "                 MOVE " & i.name & " TO " & start.name & "\n" &
+     "               ELSE\n" &
+     "                 ADD 1 TO " & i.name & "\n" &
+     "               END-IF\n" &
+     "             END-PERFORM\n" &
+     "             ADD 1 TO " & n & "-L\n" &
+     "             IF " & n & "-L <= " & integer-to-text cobol-text-list-cap & "\n" &
+     "               MOVE " & sv & "-L - " & start.name & " + 1 TO " & n & "-EL(" & n & "-L)\n" &
+     "               MOVE SPACES TO " & n & "-ED(" & n & "-L)\n" &
+     "               IF " & sv & "-L >= " & start.name & "\n" &
+     "                 MOVE " & sv & "-D(" & start.name & ":" & sv & "-L - " & start.name & " + 1) TO " & n & "-ED(" & n & "-L)\n" &
+     "               END-IF\n" &
+     "             END-IF\n" &
+     "           END-IF\n",
+    state = st4
+   }
+
+  emit-cobol-builtin-list-at : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-list-at (args) (arities) (st) =
+   if cobol-list-elem-is-text (ir-expr-type (list-at args 0))
+   then emit-cobol-builtin-list-at-text args arities st
+   else emit-cobol-builtin-list-at-int args arities st
+
+ Reading a TEXT element copies its length and characters into a text group of
+ its own, so everything downstream sees the ordinary `-L` and `-D` pair rather
+ than a subscripted one.
+
+  emit-cobol-builtin-list-at-text : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-list-at-text (args) (arities) (st) =
+   let xs = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let ix = emit-cobol-expr-to-var (list-at args 1) arities (xs.state)
+   in let alloc = cobol-alloc-var (ix.state) "LATT"
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-text (alloc.name))
+   in let sub = cobol-alloc-var st2 "LIXT"
+   in let st3 = cobol-add-ws (sub.state) (cobol-decl-pic (sub.name) "PIC S9(18)")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = xs.code & ix.code &
+     "           COMPUTE " & sub.name & " = " & ix.var-name & " + 1\n" &
+     "           MOVE 0 TO " & alloc.name & "-L\n" &
+     "           MOVE SPACES TO " & alloc.name & "-D\n" &
+     "           IF " & sub.name & " >= 1 AND " & sub.name & " <= " & xs.var-name & "-L\n" &
+     "             MOVE " & xs.var-name & "-EL(" & sub.name & ") TO " & alloc.name & "-L\n" &
+     "             MOVE " & xs.var-name & "-ED(" & sub.name & ") TO " & alloc.name & "-D\n" &
+     "           END-IF\n",
+    state = st3
+   }
+
+  emit-cobol-builtin-list-at-int : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-list-at-int (args) (arities) (st) =
+   let xs = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let ix = emit-cobol-expr-to-var (list-at args 1) arities (xs.state)
+   in let alloc = cobol-alloc-var (ix.state) "LAT"
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-pic (alloc.name) "PIC S9(18)")
+   in let sub = cobol-alloc-var st2 "LIX"
+   in let st3 = cobol-add-ws (sub.state) (cobol-decl-pic (sub.name) "PIC S9(18)")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = xs.code & ix.code &
+     "           COMPUTE " & sub.name & " = " & ix.var-name & " + 1\n" &
+     "           IF " & sub.name & " < 1 OR " & sub.name & " > " & xs.var-name & "-L\n" &
+     "             MOVE 0 TO " & alloc.name & "\n" &
+     "           ELSE\n" &
+     "             MOVE " & xs.var-name & "-D(" & sub.name & ") TO " & alloc.name & "\n" &
+     "           END-IF\n",
+    state = st3
+   }
+
+  emit-cobol-builtin-list-length : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-list-length (args) (arities) (st) =
+   let xs = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let alloc = cobol-alloc-var (xs.state) "LLEN"
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-pic (alloc.name) "PIC S9(18)")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = xs.code & "           MOVE " & xs.var-name & "-L TO " & alloc.name & "\n",
+    state = st2
+   }
+
+ `list-push` and `list-snoc` both COPY. `__list_snoc` on bare metal stores in
+ place only when the backing array has spare capacity and otherwise copies, and
+ an unconditional in-place append is the defect plugs-backlog 1.7 names: a copy
+ is always correct, and a fixed OCCURS table has no capacity notion to exploit.
+
+  emit-cobol-builtin-list-append : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-list-append (args) (arities) (st) =
+   if cobol-list-elem-is-text (ir-expr-type (list-at args 0))
+   then emit-cobol-builtin-bit-stub "append to a list of text" args arities st
+   else emit-cobol-builtin-list-append-int args arities st
+
+  emit-cobol-builtin-list-append-int : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-list-append-int (args) (arities) (st) =
+   let xs = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let v = emit-cobol-expr-to-var (list-at args 1) arities (xs.state)
+   in let alloc = cobol-alloc-var (v.state) "LAPP"
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-list (alloc.name))
+   in let ctr = cobol-alloc-var st2 "LCTR"
+   in let st3 = cobol-add-ws (ctr.state) (cobol-decl-pic (ctr.name) "PIC S9(18)")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = xs.code & v.code &
+     "           MOVE " & xs.var-name & "-L TO " & alloc.name & "-L\n" &
+     "           PERFORM VARYING " & ctr.name & " FROM 1 BY 1 UNTIL " & ctr.name & " > " & xs.var-name & "-L\n" &
+     "             MOVE " & xs.var-name & "-D(" & ctr.name & ") TO " & alloc.name & "-D(" & ctr.name & ")\n" &
+     "           END-PERFORM\n" &
+     "           IF " & alloc.name & "-L < " & integer-to-text cobol-list-cap & "\n" &
+     "             ADD 1 TO " & alloc.name & "-L\n" &
+     "             MOVE " & v.var-name & " TO " & alloc.name & "-D(" & alloc.name & "-L)\n" &
+     "           END-IF\n",
+    state = st3
+   }
 
   emit-cobol-display : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-display (args) (arities) (st) =
    let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let stmt = if cobol-is-text-expr (list-at args 0)
+                 then "           IF " & arg-r.var-name & "-L > 0\n" &
+                      "             DISPLAY " & cobol-slice (arg-r.var-name) & "\n" &
+                      "           ELSE\n" &
+                      "             DISPLAY SPACE\n" &
+                      "           END-IF\n"
+                 else "           DISPLAY " & arg-r.var-name & "\n"
    in CobolExprResult {
     var-name = "0",
-    code = arg-r.code & "           DISPLAY " & arg-r.var-name & "\n",
+    code = arg-r.code & stmt,
     state = arg-r.state
    }
 
   emit-cobol-builtin-show : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-builtin-show (args) (arities) (st) =
    let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
-   in let alloc = cobol-alloc-var (arg-r.state) "SHOW"
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC X(256).")
+   in if cobol-is-text-expr (list-at args 0) then arg-r
+   else let alloc = cobol-alloc-var (arg-r.state) "SHOW"
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-text (alloc.name))
+   in let ed = cobol-alloc-var st2 "SHOWE"
+   in let st3 = cobol-add-ws (ed.state) (cobol-decl-pic (ed.name) "PIC -(18)9")
    in CobolExprResult {
     var-name = alloc.name,
-    code = arg-r.code & "           MOVE " & arg-r.var-name & " TO " & alloc.name & "\n",
-    state = st2
+    code = arg-r.code &
+     "           MOVE " & arg-r.var-name & " TO " & ed.name & "\n" &
+     "           MOVE FUNCTION TRIM(" & ed.name & ") TO " & alloc.name & "-D\n" &
+     "           COMPUTE " & alloc.name & "-L = FUNCTION LENGTH(FUNCTION TRIM(" & ed.name & "))\n",
+    state = st3
    }
-
- COBOL text is a fixed `PIC X(256)` padded with spaces and carries no length,
- so `FUNCTION LENGTH` of it is 256 whatever it holds. The logical length is
- the trimmed one, and `FUNCTION TRIM` of an all-space item is one space
- rather than none, which is why the empty case is tested separately.
-
- THE LIMIT OF THIS REPRESENTATION, and it is not fixable here: a Codex text
- that genuinely ENDS IN A SPACE is indistinguishable from the padding, so its
- length comes back short. Closing that needs a text representation carrying
- its own length, which is this plug's real open item.
 
   cobol-len-into : Text, Text -> Text
   cobol-len-into (src) (dst) =
+   "           MOVE " & src & "-L TO " & dst & "\n"
+
+ Text arriving from OUTSIDE the representation carries no length, and
+ `FUNCTION TRIM` of an all-space item is one space rather than none, which is
+ why the empty case is tested separately. A read of a record ending in a
+ space still comes back short; the file arms are stubs and this is their
+ limit, not the representation's.
+
+  cobol-len-trimmed : Text, Text -> Text
+  cobol-len-trimmed (src) (dst) =
    "           IF " & src & " = SPACES\n" &
    "             MOVE 0 TO " & dst & "\n" &
    "           ELSE\n" &
@@ -521,12 +948,10 @@ Section: Expression Emission
   emit-cobol-builtin-text-length : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-builtin-text-length (args) (arities) (st) =
    let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
-   in let alloc = cobol-alloc-var (arg-r.state) "LEN"
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC S9(18).")
    in CobolExprResult {
-    var-name = alloc.name,
-    code = arg-r.code & cobol-len-into (arg-r.var-name) (alloc.name),
-    state = st2
+    var-name = arg-r.var-name & "-L",
+    code = arg-r.code,
+    state = arg-r.state
    }
 
   emit-cobol-builtin-text-starts-with : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
@@ -542,15 +967,15 @@ Section: Expression Emission
    in CobolExprResult {
     var-name = a-res.name,
     code = s-r.code & p-r.code &
-     "           IF " & p-r.var-name & " = SPACES\n" &
-     "             MOVE 1 TO " & a-res.name & "\n" &
-     "           ELSE\n" &
      cobol-len-into (p-r.var-name) (a-pl.name) &
      cobol-len-into (s-r.var-name) (a-sl.name) &
+     "           IF " & a-pl.name & " = 0\n" &
+     "             MOVE 1 TO " & a-res.name & "\n" &
+     "           ELSE\n" &
      "             IF " & a-pl.name & " > " & a-sl.name & "\n" &
      "               MOVE 0 TO " & a-res.name & "\n" &
      "             ELSE\n" &
-     "               IF " & s-r.var-name & "(1:" & a-pl.name & ") = " & p-r.var-name & "(1:" & a-pl.name & ")\n" &
+     "               IF " & s-r.var-name & "-D(1:" & a-pl.name & ") = " & p-r.var-name & "-D(1:" & a-pl.name & ")\n" &
      "                 MOVE 1 TO " & a-res.name & "\n" &
      "               ELSE\n" &
      "                 MOVE 0 TO " & a-res.name & "\n" &
@@ -573,12 +998,12 @@ Section: Expression Emission
    in CobolExprResult {
     var-name = a-res.name,
     code = s-r.code & sub-r.code &
-     "           IF " & sub-r.var-name & " = SPACES\n" &
+     cobol-len-into (sub-r.var-name) (a-bl.name) &
+     "           IF " & a-bl.name & " = 0\n" &
      "             MOVE 1 TO " & a-res.name & "\n" &
      "           ELSE\n" &
-     cobol-len-into (sub-r.var-name) (a-bl.name) &
      "             MOVE 0 TO " & a-ct.name & "\n" &
-     "             INSPECT " & s-r.var-name & " TALLYING " & a-ct.name & " FOR ALL " & sub-r.var-name & "(1:" & a-bl.name & ")\n" &
+     "             INSPECT " & s-r.var-name & "-D TALLYING " & a-ct.name & " FOR ALL " & sub-r.var-name & "-D(1:" & a-bl.name & ")\n" &
      "             IF " & a-ct.name & " > 0\n" &
      "               MOVE 1 TO " & a-res.name & "\n" &
      "             ELSE\n" &
@@ -587,6 +1012,71 @@ Section: Expression Emission
      "           END-IF\n",
     state = st3
    }
+
+ Measured through the seed compiler 2026-08-18 rather than read off
+ `__str_replace`: an empty needle answers the subject unchanged, needle and
+ replacement are both literal, and every NON-OVERLAPPING occurrence is
+ replaced left to right, advancing by the needle length ("aaaa" with "aa"
+ for "b" is "bb", not "b").
+
+ `INSPECT ... REPLACING` cannot serve: it requires the two operands to be
+ the same length. The scan is written out instead. Both appends are bounded
+ against the 256-byte data item because a reference modification past the
+ item's size is not diagnosed by every COBOL.
+
+  emit-cobol-builtin-text-replace : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-builtin-text-replace (args) (arities) (st) =
+   let s-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let o-r = emit-cobol-expr-to-var (list-at args 1) arities (s-r.state)
+   in let n-r = emit-cobol-expr-to-var (list-at args 2) arities (o-r.state)
+   in let a-res = cobol-alloc-var (n-r.state) "RPRES"
+   in let st1 = cobol-add-ws (a-res.state) (cobol-decl-text (a-res.name))
+   in let a-i = cobol-alloc-var st1 "RPI"
+   in let st2 = cobol-add-ws (a-i.state) (cobol-decl-pic (a-i.name) "PIC S9(18)")
+   in let a-o = cobol-alloc-var st2 "RPOUT"
+   in let st3 = cobol-add-ws (a-o.state) (cobol-decl-pic (a-o.name) "PIC S9(18)")
+   in let s = s-r.var-name
+   in let o = o-r.var-name
+   in let n = n-r.var-name
+   in CobolExprResult {
+    var-name = a-res.name,
+    code = s-r.code & o-r.code & n-r.code &
+     "           IF " & o & "-L = 0\n" &
+     "             MOVE " & s & " TO " & a-res.name & "\n" &
+     "           ELSE\n" &
+     "             MOVE SPACES TO " & a-res.name & "-D\n" &
+     "             MOVE 0 TO " & a-res.name & "-L\n" &
+     "             MOVE 1 TO " & a-i.name & "\n" &
+     "             PERFORM UNTIL " & a-i.name & " > " & s & "-L\n" &
+     "               COMPUTE " & a-o.name & " = " & a-res.name & "-L + 1\n" &
+     "               IF " & a-i.name & " + " & o & "-L - 1 > " & s & "-L\n" &
+     cobol-replace-copy-one s a-i.name a-res.name a-o.name &
+     "               ELSE\n" &
+     "                 IF " & s & "-D(" & a-i.name & ":" & o & "-L) = " & cobol-slice o & "\n" &
+     "                   IF " & n & "-L > 0 AND " & a-o.name & " + " & n & "-L - 1 <= 256\n" &
+     "                     MOVE " & cobol-slice n & " TO " & a-res.name & "-D(" & a-o.name & ":" & n & "-L)\n" &
+     "                   END-IF\n" &
+     "                   COMPUTE " & a-res.name & "-L = " & a-res.name & "-L + " & n & "-L\n" &
+     "                   COMPUTE " & a-i.name & " = " & a-i.name & " + " & o & "-L\n" &
+     "                 ELSE\n" &
+     cobol-replace-copy-one s a-i.name a-res.name a-o.name &
+     "                 END-IF\n" &
+     "               END-IF\n" &
+     "             END-PERFORM\n" &
+     "             IF " & a-res.name & "-L > 256\n" &
+     "               MOVE 256 TO " & a-res.name & "-L\n" &
+     "             END-IF\n" &
+     "           END-IF\n",
+    state = st3
+   }
+
+  cobol-replace-copy-one : Text, Text, Text, Text -> Text
+  cobol-replace-copy-one (s) (i) (res) (out) =
+   "                 IF " & out & " <= 256\n" &
+   "                   MOVE " & s & "-D(" & i & ":1) TO " & res & "-D(" & out & ":1)\n" &
+   "                 END-IF\n" &
+   "                 COMPUTE " & res & "-L = " & res & "-L + 1\n" &
+   "                 ADD 1 TO " & i & "\n"
 
   emit-cobol-builtin-char-at : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-builtin-char-at (args) (arities) (st) =
@@ -599,7 +1089,7 @@ Section: Expression Emission
    in CobolExprResult {
     var-name = alloc.name,
     code = str-r.code & idx-r.code & "           ADD 1 TO " & idx-r.var-name & " GIVING " & alloc2.name & "\n" &
-     "           MOVE " & str-r.var-name & "(" & alloc2.name & ":1) TO " & alloc.name & "\n",
+     "           MOVE " & str-r.var-name & "-D(" & alloc2.name & ":1) TO " & alloc.name & "\n",
     state = st3
    }
 
@@ -609,14 +1099,28 @@ Section: Expression Emission
    in let start-r = emit-cobol-expr-to-var (list-at args 1) arities (str-r.state)
    in let len-r = emit-cobol-expr-to-var (list-at args 2) arities (start-r.state)
    in let alloc = cobol-alloc-var (len-r.state) "SUB"
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC X(256).")
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-text (alloc.name))
    in let alloc2 = cobol-alloc-var st2 "SPOS"
-   in let st3 = cobol-add-ws (alloc2.state) ("       01 " & alloc2.name & "       PIC S9(18).")
+   in let st3 = cobol-add-ws (alloc2.state) (cobol-decl-pic (alloc2.name) "PIC S9(18)")
+   in let alloc3 = cobol-alloc-var st3 "SLEN"
+   in let st4 = cobol-add-ws (alloc3.state) (cobol-decl-pic (alloc3.name) "PIC S9(18)")
    in CobolExprResult {
     var-name = alloc.name,
-    code = str-r.code & start-r.code & len-r.code & "           ADD 1 TO " & start-r.var-name & " GIVING " & alloc2.name & "\n" &
-     "           MOVE " & str-r.var-name & "(" & alloc2.name & ":" & len-r.var-name & ") TO " & alloc.name & "\n",
-    state = st3
+    code = str-r.code & start-r.code & len-r.code &
+     "           ADD 1 TO " & start-r.var-name & " GIVING " & alloc2.name & "\n" &
+     "           MOVE " & len-r.var-name & " TO " & alloc3.name & "\n" &
+     "           IF " & alloc2.name & " + " & alloc3.name & " - 1 > " & str-r.var-name & "-L\n" &
+     "             COMPUTE " & alloc3.name & " = " & str-r.var-name & "-L - " & alloc2.name & " + 1\n" &
+     "           END-IF\n" &
+     "           IF " & alloc3.name & " < 0\n" &
+     "             MOVE 0 TO " & alloc3.name & "\n" &
+     "           END-IF\n" &
+     "           MOVE SPACES TO " & alloc.name & "-D\n" &
+     "           IF " & alloc3.name & " > 0\n" &
+     "             MOVE " & str-r.var-name & "-D(" & alloc2.name & ":" & alloc3.name & ") TO " & alloc.name & "-D\n" &
+     "           END-IF\n" &
+     "           MOVE " & alloc3.name & " TO " & alloc.name & "-L\n",
+    state = st4
    }
 
  `FUNCTION NUMVAL` is implementation-defined on anything that is not wholly
@@ -644,13 +1148,13 @@ Section: Expression Emission
      "           MOVE 0 TO " & alloc.name & "\n" &
      "           MOVE 0 TO " & a-n.name & "\n" &
      "           MOVE 1 TO " & a-i.name & "\n" &
-     "           IF " & a-l.name & " > 0 AND " & arg-r.var-name & "(1:1) = \"-\"\n" &
+     "           IF " & a-l.name & " > 0 AND " & arg-r.var-name & "-D(1:1) = \"-\"\n" &
      "             MOVE 1 TO " & a-n.name & "\n" &
      "             MOVE 2 TO " & a-i.name & "\n" &
      "           END-IF\n" &
      "           PERFORM UNTIL " & a-i.name & " > " & a-l.name & "\n" &
-     "             IF " & arg-r.var-name & "(" & a-i.name & ":1) >= \"0\" AND " & arg-r.var-name & "(" & a-i.name & ":1) <= \"9\"\n" &
-     "               COMPUTE " & alloc.name & " = " & alloc.name & " * 10 + (FUNCTION ORD(" & arg-r.var-name & "(" & a-i.name & ":1)) - 49)\n" &
+     "             IF " & arg-r.var-name & "-D(" & a-i.name & ":1) >= \"0\" AND " & arg-r.var-name & "-D(" & a-i.name & ":1) <= \"9\"\n" &
+     "               COMPUTE " & alloc.name & " = " & alloc.name & " * 10 + (FUNCTION ORD(" & arg-r.var-name & "-D(" & a-i.name & ":1)) - 49)\n" &
      "               ADD 1 TO " & a-i.name & "\n" &
      "             ELSE\n" &
      "               EXIT PERFORM\n" &
@@ -757,12 +1261,13 @@ Section: Expression Emission
   emit-cobol-builtin-read-file (args) (arities) (st) =
    let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
    in let alloc = cobol-alloc-var (arg-r.state) "RFILE"
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC X(256).")
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-text (alloc.name))
    in CobolExprResult {
     var-name = alloc.name,
     code = arg-r.code & "           OPEN INPUT " & arg-r.var-name & "\n" &
-     "           READ " & arg-r.var-name & " INTO " & alloc.name & "\n" &
-     "           CLOSE " & arg-r.var-name & "\n",
+     "           READ " & arg-r.var-name & " INTO " & alloc.name & "-D\n" &
+     "           CLOSE " & arg-r.var-name & "\n" &
+     cobol-len-trimmed (alloc.name & "-D") (alloc.name & "-L"),
     state = st2
    }
 
@@ -773,7 +1278,7 @@ Section: Expression Emission
    in CobolExprResult {
     var-name = "0",
     code = path-r.code & data-r.code & "           OPEN OUTPUT " & path-r.var-name & "\n" &
-     "           WRITE " & data-r.var-name & "\n" &
+     "           WRITE " & data-r.var-name & "-D\n" &
      "           CLOSE " & path-r.var-name & "\n",
     state = data-r.state
    }
@@ -804,7 +1309,7 @@ Section: Expression Emission
    in if ar < 0 then let fallback = emit-cobol-expr-to-var (list-at args 0) arities st
       in CobolExprResult { var-name = fallback.var-name, code = fallback.code, state = fallback.state }
    else let name = cobol-name n
-   in let result = emit-cobol-move-args args name arities st 0
+   in let result = emit-cobol-move-args args name (lookup-param-names arities n) arities st 0
    in CobolExprResult {
     var-name = "WS-" & name & "-RET",
     code = result.code & "           PERFORM " & name & "-PARA\n",
@@ -816,13 +1321,15 @@ Section: Expression Emission
    state : CobolState
   }
 
-  emit-cobol-move-args : List IRExpr, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
-  emit-cobol-move-args (args) (func-name) (arities) (st) (i) =
+  emit-cobol-move-args : List IRExpr, Text, List Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
+  emit-cobol-move-args (args) (func-name) (pnames) (arities) (st) (i) =
    if i >= list-length args then CobolMoveResult { code = "", state = st }
    else let arg-r = emit-cobol-expr-to-var (list-at args i) arities st
-   in let rest = emit-cobol-move-args args func-name arities (arg-r.state) (i + 1)
+   in let slot = if i < list-length pnames then "WS-" & func-name & "-" & list-at pnames i
+                 else "WS-" & func-name & "-ARG" & integer-to-text i
+   in let rest = emit-cobol-move-args args func-name pnames arities (arg-r.state) (i + 1)
    in CobolMoveResult {
-    code = arg-r.code & "           MOVE " & arg-r.var-name & " TO WS-" & func-name & "-ARG" & integer-to-text i & "\n" & rest.code,
+    code = arg-r.code & "           MOVE " & arg-r.var-name & " TO " & slot & "\n" & rest.code,
     state = rest.state
    }
 
@@ -830,8 +1337,7 @@ Section: Expression Emission
   emit-cobol-match-var (scrut) (branches) (ty) (arities) (st) =
    let scrut-r = emit-cobol-expr-to-var scrut arities st
    in let alloc = cobol-alloc-var (scrut-r.state) "MATCH"
-   in let pic = cobol-pic ty
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       " & pic & ".")
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (alloc.name) ty)
    in let arms = emit-cobol-match-arms branches (alloc.name) arities st2
    in CobolExprResult {
     var-name = alloc.name,
@@ -904,20 +1410,32 @@ Section: Expression Emission
     state = rec-r.state
    }
 
+ A literal fills the table and sets the length. It used to move each element
+ into a scalar of its own and answer the LAST one, or `0` for an empty list, so
+ `lit-len [10,20,30,40]` returned 0 where Codex answers 4 and the four MOVEs
+ went nowhere.
+
   emit-cobol-list-var : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-list-var (elems) (arities) (st) =
-   emit-cobol-list-moves elems arities st 0
-
-  emit-cobol-list-moves : List IRExpr, List ArityEntry, CobolState, Integer -> CobolExprResult
-  emit-cobol-list-moves (elems) (arities) (st) (i) =
-   if i >= list-length elems then CobolExprResult { var-name = "0", code = "", state = st }
-   else let elem-r = emit-cobol-expr-to-var (list-at elems i) arities st
-   in let alloc = cobol-alloc-var (elem-r.state) "LIST"
-   in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC S9(18).")
-   in let rest = emit-cobol-list-moves elems arities st2 (i + 1)
+   let n = list-length elems
+   in let alloc = cobol-alloc-var st "LIST"
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-list (alloc.name))
+   in let moves = emit-cobol-list-moves elems arities st2 0 (alloc.name)
    in CobolExprResult {
-    var-name = rest.var-name,
-    code = elem-r.code & "           MOVE " & elem-r.var-name & " TO " & alloc.name & "\n" & rest.code,
+    var-name = alloc.name,
+    code = moves.code & "           MOVE " & integer-to-text (if n > cobol-list-cap then cobol-list-cap else n) & " TO " & alloc.name & "-L\n",
+    state = moves.state
+   }
+
+  emit-cobol-list-moves : List IRExpr, List ArityEntry, CobolState, Integer, Text -> CobolExprResult
+  emit-cobol-list-moves (elems) (arities) (st) (i) (dst) =
+   if i >= list-length elems then CobolExprResult { var-name = dst, code = "", state = st }
+   else if i >= cobol-list-cap then CobolExprResult { var-name = dst, code = "", state = st }
+   else let elem-r = emit-cobol-expr-to-var (list-at elems i) arities st
+   in let rest = emit-cobol-list-moves elems arities (elem-r.state) (i + 1) dst
+   in CobolExprResult {
+    var-name = dst,
+    code = elem-r.code & "           MOVE " & elem-r.var-name & " TO " & dst & "-D(" & integer-to-text (i + 1) & ")\n" & rest.code,
     state = rest.state
    }
 
@@ -949,7 +1467,7 @@ Section: Expression Emission
      in CobolExprResult {
       var-name = alloc.name,
       code = val-r.code & "           MOVE " & val-r.var-name & " TO " & alloc.name & "\n",
-      state = st2
+      state = cobol-env-bind st2 name (alloc.name)
      }
 
 Section: Tail Call Optimization
@@ -1001,10 +1519,11 @@ Section: Tail Call Optimization
      in let alloc = cobol-alloc-var (val-r.state) (cobol-name lname)
      in let pic = cobol-pic ty
      in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       " & pic & ".")
-     in let body-r = emit-cobol-tco-body body func-name params arities st2
+     in let depth = list-length (st2.env)
+     in let body-r = emit-cobol-tco-body body func-name params arities (cobol-env-bind st2 lname (alloc.name))
      in CobolMoveResult {
       code = val-r.code & "           MOVE " & val-r.var-name & " TO " & alloc.name & "\n" & body-r.code,
-      state = body-r.state
+      state = cobol-env-restore (body-r.state) depth
      }
     is IrMatch (scrut) (branches) (ty) (sp) ->
      let scrut-r = emit-cobol-expr-to-var scrut arities st
@@ -1159,19 +1678,37 @@ Section: Tail Call Optimization
   emit-cobol-tco-jump (e) (func-name) (params) (arities) (st) =
    let chain = collect-apply-chain e []
    in let name = cobol-name func-name
-   in emit-cobol-tco-move-args (chain.args) params name arities st 0
+   in let ev = emit-cobol-tco-eval-args (chain.args) params name arities st 0
+   in CobolMoveResult {
+    code = ev.ta-code & ev.ta-commit & "           GO TO " & name & "-LOOP\n",
+    state = ev.ta-state
+   }
 
-  emit-cobol-tco-move-args : List IRExpr, List IRParam, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
-  emit-cobol-tco-move-args (args) (params) (name) (arities) (st) (i) =
-   if i >= list-length args then CobolMoveResult { code = "           GO TO " & name & "-LOOP\n", state = st }
-   else if i >= list-length params then CobolMoveResult { code = "           GO TO " & name & "-LOOP\n", state = st }
+  CobolTcoArgs = record {
+   ta-code : Text,
+   ta-commit : Text,
+   ta-state : CobolState
+  }
+
+ A tail call assigns the parameters of the loop it jumps back to, so an
+ argument written early is visible to an argument emitted after it. Every
+ argument lands in its own temporary first and the slots are committed
+ together.
+
+  emit-cobol-tco-eval-args : List IRExpr, List IRParam, Text, List ArityEntry, CobolState, Integer -> CobolTcoArgs
+  emit-cobol-tco-eval-args (args) (params) (name) (arities) (st) (i) =
+   if i >= list-length args then CobolTcoArgs { ta-code = "", ta-commit = "", ta-state = st }
+   else if i >= list-length params then CobolTcoArgs { ta-code = "", ta-commit = "", ta-state = st }
    else let p = list-at params i
    in let pname = cobol-name (p.name)
    in let arg-r = emit-cobol-expr-to-var (list-at args i) arities st
-   in let rest = emit-cobol-tco-move-args args params name arities (arg-r.state) (i + 1)
-   in CobolMoveResult {
-    code = arg-r.code & "           MOVE " & arg-r.var-name & " TO WS-" & name & "-" & pname & "\n" & rest.code,
-    state = rest.state
+   in let alloc = cobol-alloc-var (arg-r.state) ("TCOARG" & integer-to-text i)
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (alloc.name) (p.type-val))
+   in let rest = emit-cobol-tco-eval-args args params name arities st2 (i + 1)
+   in CobolTcoArgs {
+    ta-code = arg-r.code & "           MOVE " & arg-r.var-name & " TO " & alloc.name & "\n" & rest.ta-code,
+    ta-commit = "           MOVE " & alloc.name & " TO WS-" & name & "-" & pname & "\n" & rest.ta-commit,
+    ta-state = rest.ta-state
    }
 
 Section: Definition Emission
@@ -1179,7 +1716,7 @@ Section: Definition Emission
   emit-cobol-def-storage : IRDef -> Text
   emit-cobol-def-storage (d) =
    let name = cobol-name (d.name)
-   in emit-cobol-param-storage (d.params) name 0 & "       01 WS-" & name & "-RET     " & cobol-pic (cobol-def-ret-type d) & ".\n"
+   in emit-cobol-param-storage (d.params) name 0 & cobol-decl ("WS-" & name & "-RET") (cobol-def-ret-type d) & "\n"
 
   cobol-def-ret-type : IRDef -> CodexType
   cobol-def-ret-type (d) =
@@ -1206,16 +1743,15 @@ Section: Definition Emission
    if i >= list-length params then ""
    else let p = list-at params i
    in let pname = cobol-name (p.name)
-   in let pic = cobol-pic (p.type-val)
-   in "       01 WS-" & func-name & "-" & pname & "  " & pic & ".\n" & emit-cobol-param-storage params func-name (i + 1)
+   in cobol-decl ("WS-" & func-name & "-" & pname) (p.type-val) & "\n" & emit-cobol-param-storage params func-name (i + 1)
 
   emit-cobol-def-paragraph : IRDef, List ArityEntry, CobolState -> CobolDefResult
   emit-cobol-def-paragraph (d) (arities) (st) =
    let name = cobol-name (d.name)
-   in let st2 = cobol-set-func st ("WS-" & name)
+   in let st2 = cobol-bind-params (d.params) name (cobol-set-func st ("WS-" & name)) 0
    in if cobol-should-tco d then emit-cobol-tco-paragraph d arities st2
       else let res = emit-cobol-expr-to-var (d.body) arities st2
-      in let st3 = cobol-set-func (res.state) ""
+      in let st3 = cobol-set-env (cobol-set-func (res.state) "") []
       in CobolDefResult {
        code = "       " & name & "-PARA.\n" &
         res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n\n",
@@ -1231,7 +1767,7 @@ Section: Definition Emission
   emit-cobol-tco-paragraph (d) (arities) (st) =
    let name = cobol-name (d.name)
    in let body-r = emit-cobol-tco-body (d.body) (d.name) (d.params) arities st
-   in let st2 = cobol-set-func (body-r.state) ""
+   in let st2 = cobol-set-env (cobol-set-func (body-r.state) "") []
    in CobolDefResult {
     code = "       " & name & "-PARA.\n" &
      "       " & name & "-LOOP.\n" &
@@ -1318,11 +1854,10 @@ Section: Chapter Emission
     is IrDoBind (name) (ty) (val) (sp) ->
      let res = emit-cobol-expr-to-var val arities st
      in let alloc = cobol-alloc-var (res.state) (cobol-name name)
-     in let pic = cobol-pic ty
-     in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       " & pic & ".")
+     in let st2 = cobol-add-ws (alloc.state) (cobol-decl (alloc.name) ty)
      in CobolDefResult {
       code = res.code & "           MOVE " & res.var-name & " TO " & alloc.name & "\n",
-      state = st2
+      state = cobol-env-bind st2 name (alloc.name)
      }
 
   emit-cobol-ws-lines : List Text, Integer -> Text
@@ -1345,7 +1880,11 @@ Section: Chapter Emission
       emit-cobol-type-defs type-defs 0 &
       emit-cobol-def-storage-all (m.defs) 0 entry-idx & "       01 WS-RESULT         PIC S9(18).\n" &
       "       01 WS-TEMP           PIC S9(18).\n" &
-      "       01 WS-TEXT-RESULT     PIC X(256).\n" &
+      "       01 WS-STRPTR         PIC S9(18).\n" &
+   "       01 WS-LIDX           PIC S9(18).\n" &
+      "       01 WS-TEXT-RESULT.\n" &
+      "         05 WS-TEXT-RESULT-L      PIC S9(18).\n" &
+      "         05 WS-TEXT-RESULT-D      PIC X(256).\n" &
       emit-cobol-ws-lines (entry-r.state).working-storage 0 & "\n       PROCEDURE DIVISION.\n" &
       defs-r.code & "       MAIN-LOGIC.\n" &
       entry-r.code & "           STOP RUN.\n\n"

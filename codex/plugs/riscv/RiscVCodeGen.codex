@@ -98,7 +98,9 @@ Section: Codegen State
    runtime-funcs : Integer,
    boot-cap-mask : Integer,
    boot-fs-scope : Text,
-   boot-net-scope : Text
+   boot-net-scope : Text,
+   deck-record-intrinsic : Boolean,
+   has-block-driver : Boolean
   }
 
   RvLearnedField = record {
@@ -188,7 +190,9 @@ Section: State Constructors
    runtime-funcs = 0,
    boot-cap-mask = 0,
    boot-fs-scope = "",
-   boot-net-scope = ""
+   boot-net-scope = "",
+   deck-record-intrinsic = False,
+   has-block-driver = False
   }
 
 Section: Emit Helpers
@@ -890,6 +894,9 @@ Section: Name Emission
   rv-emit-name (st) (name) (ty) =
    let local-reg = rv-lookup-local (st.locals) name 0
    in if local-reg >= 0 then rv-load-local st local-reg
+   else if name == "__deck-pos" then rv-emit-deck-pos st
+   else if name == "__deck-enter" then rv-emit-deck-enter st
+   else if name == "__deck-exit" then rv-emit-deck-exit st
    else let eoa = rv-find-effect-op-addr (st.effect-op-addrs) name 0
    in let is-rl = if name == "read-line" then True else name == "read-line-cce"
    in let runtime-known = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
@@ -1232,14 +1239,22 @@ Section: Binary Emission
     is IrSubRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fsub-s
     is IrMulRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fmul-s
     is IrDivRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fdiv-s
-    is IrAddRealTrapping -> rv-emit-real-arith st2 left-reg right-reg rv-fadd-d
-    is IrSubRealTrapping -> rv-emit-real-arith st2 left-reg right-reg rv-fsub-d
-    is IrMulRealTrapping -> rv-emit-real-arith st2 left-reg right-reg rv-fmul-d
-    is IrDivRealTrapping -> rv-emit-real-arith st2 left-reg right-reg rv-fdiv-d
-    is IrAddRealSaturating -> rv-emit-real-saturating-arith st2 left-reg right-reg rv-fadd-d
-    is IrSubRealSaturating -> rv-emit-real-saturating-arith st2 left-reg right-reg rv-fsub-d
-    is IrMulRealSaturating -> rv-emit-real-saturating-arith st2 left-reg right-reg rv-fmul-d
-    is IrDivRealSaturating -> rv-emit-real-saturating-arith st2 left-reg right-reg rv-fdiv-d
+    is IrAddRealTrapping -> if is-real-f32 ty then rv-emit-real-approx-arith st2 left-reg right-reg rv-fadd-s
+     else rv-emit-real-arith st2 left-reg right-reg rv-fadd-d
+    is IrSubRealTrapping -> if is-real-f32 ty then rv-emit-real-approx-arith st2 left-reg right-reg rv-fsub-s
+     else rv-emit-real-arith st2 left-reg right-reg rv-fsub-d
+    is IrMulRealTrapping -> if is-real-f32 ty then rv-emit-real-approx-arith st2 left-reg right-reg rv-fmul-s
+     else rv-emit-real-arith st2 left-reg right-reg rv-fmul-d
+    is IrDivRealTrapping -> if is-real-f32 ty then rv-emit-real-approx-arith st2 left-reg right-reg rv-fdiv-s
+     else rv-emit-real-arith st2 left-reg right-reg rv-fdiv-d
+    is IrAddRealSaturating -> if is-real-f32 ty then rv-emit-real-saturating-arith-f32 st2 left-reg right-reg rv-fadd-s
+     else rv-emit-real-saturating-arith st2 left-reg right-reg rv-fadd-d
+    is IrSubRealSaturating -> if is-real-f32 ty then rv-emit-real-saturating-arith-f32 st2 left-reg right-reg rv-fsub-s
+     else rv-emit-real-saturating-arith st2 left-reg right-reg rv-fsub-d
+    is IrMulRealSaturating -> if is-real-f32 ty then rv-emit-real-saturating-arith-f32 st2 left-reg right-reg rv-fmul-s
+     else rv-emit-real-saturating-arith st2 left-reg right-reg rv-fmul-d
+    is IrDivRealSaturating -> if is-real-f32 ty then rv-emit-real-saturating-arith-f32 st2 left-reg right-reg rv-fdiv-s
+     else rv-emit-real-saturating-arith st2 left-reg right-reg rv-fdiv-d
     is IrApproxEq -> rv-emit-real-comparison st2 left-reg right-reg rv-feq-d
     is IrApproxEqExact -> rv-emit-real-comparison st2 left-reg right-reg rv-feq-d
     is IrPowInt ->
@@ -1324,6 +1339,23 @@ Section: Real Arithmetic
    in let st7 = rv-emit st6 (rv-addi rv-t0 rv-t0 (0 - 2047))
    in let st8 = rv-emit st7 (rv-bne rv-t0 rv-zero 24)
    in let st9 = rv-emit st8 (rv-slli rv-t0 (rd.reg) 12)
+   in let st10 = rv-emit st9 (rv-beq rv-t0 rv-zero 12)
+   in let st11 = rv-emit st10 (rv-mv (rd.reg) rv-zero)
+   in let st12 = rv-emit st11 (rv-j 8)
+   in RvEmitResult { state = rv-emit st12 (rv-addi (rd.reg) (rd.reg) (0 - 1)), reg = rd.reg }
+
+  rv-emit-real-saturating-arith-f32 : RvState, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-real-saturating-arith-f32 (st) (l-reg) (r-reg) (fp-op) =
+   let rd = rv-alloc-temp st
+   in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 l-reg)
+   in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft1 r-reg)
+   in let st3 = rv-emit st2 (fp-op rv-ft0 rv-ft0 rv-ft1)
+   in let st4 = rv-emit st3 (rv-fmv-x-w (rd.reg) rv-ft0)
+   in let st5 = rv-emit st4 (rv-slli rv-t0 (rd.reg) 33)
+   in let st6 = rv-emit st5 (rv-srli rv-t0 rv-t0 56)
+   in let st7 = rv-emit st6 (rv-addi rv-t0 rv-t0 (0 - 255))
+   in let st8 = rv-emit st7 (rv-bne rv-t0 rv-zero 24)
+   in let st9 = rv-emit st8 (rv-slli rv-t0 (rd.reg) 41)
    in let st10 = rv-emit st9 (rv-beq rv-t0 rv-zero 12)
    in let st11 = rv-emit st10 (rv-mv (rd.reg) rv-zero)
    in let st12 = rv-emit st11 (rv-j 8)
@@ -1816,9 +1848,9 @@ Section: Real Arithmetic
   rv-emit-int-mod (st) (left) (right) =
    let p2 = rv-pow2-lit right
    in if p2 > 1 then rv-emit-rem-pow2 st left p2
-   else let lr = rv-emit-expr st left
+   else let lr = rv-emit-expr (rv-set-result-dest st (0 - 1)) left
    in let saved = rv-save-if-needed (lr.state) (lr.reg)
-   in let rr = rv-emit-expr (saved.state) right
+   in let rr = rv-emit-expr (rv-set-result-dest (saved.state) (0 - 1)) right
    in let ll = rv-reload-if-needed (rr.state) (saved.reg)
    in let rd = rv-alloc-temp (ll.state)
    in let st1 = rv-emit (rd.state) (rv-rem (rd.reg) (ll.reg) (rr.reg))
@@ -1888,9 +1920,9 @@ Section: Real Arithmetic
 
   rv-emit-two-arg-binop : RvState, IRExpr, IRExpr, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
   rv-emit-two-arg-binop (st) (left) (right) (op) =
-   let lr = rv-emit-expr st left
+   let lr = rv-emit-expr (rv-set-result-dest st (0 - 1)) left
    in let saved = rv-save-if-needed (lr.state) (lr.reg)
-   in let rr = rv-emit-expr (saved.state) right
+   in let rr = rv-emit-expr (rv-set-result-dest (saved.state) (0 - 1)) right
    in let ll = rv-reload-if-needed (rr.state) (saved.reg)
    in let rd = rv-alloc-temp (ll.state)
    in RvEmitResult { state = rv-emit (rd.state) (op (rd.reg) (ll.reg) (rr.reg)), reg = rd.reg }

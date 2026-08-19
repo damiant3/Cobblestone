@@ -347,12 +347,49 @@ Section: Reliability Timers
  give-up ladder ends in TcpClosed, which would kill the listener this
  function just built.
 
-  net-listen : NetSession -> NetResult
-  net-listen (sess) =
+ RE-LISTENING OVER A HALF-OPEN HANDSHAKE THROWS THE CALLER AWAY. Accept polls
+ on a budget and returns whatever it has, so a serve loop that calls this
+ between requests can call it while a SYN has been answered and the client's
+ ACK is still in flight. Resetting there forgets the peer, and the ACK that
+ arrives a moment later is not a SYN: `tcp-step-listening` drops it and
+ answers `ActNone`, so the client believes it is established, the server is
+ listening, and neither side says anything until the client gives up. That is
+ the per-boot connection ceiling in `OracleCloudArm64.md`, one lost caller at
+ a time.
+
+ SYN_RECEIVED is therefore the one state this does not reset, and it is
+ BOUNDED rather than held. A held half-open would be the worse defect: one
+ caller that sends a SYN and vanishes would pin the single socket and refuse
+ everyone after it, where the old behaviour merely lost that one caller.
+
+ The bound is counted in re-listens rather than in ticks, because it has to
+ fire in the loop that actually causes this. `net-tick` would be the natural
+ home and `arm64-net-io-accept` never calls it, so a tick-budget here would
+ be a guard that cannot fire in the one caller it is for. Re-listens are the
+ serve loop's own cadence, so the budget is spent exactly when the loop is
+ spinning without the handshake completing. `close-timer` carries the count:
+ it is unused in SYN_RECEIVED, and if something DOES tick, `net-tick` retires
+ the half-open to CLOSED, which is the same ending by the other road.
+
+  net-halfopen-relisten-budget : Integer = 8
+
+  net-fresh-listen : NetSession -> NetResult
+  net-fresh-listen (sess) =
     let s1 = set-conn sess (tcp-fresh-listener (sess.conn))
     in let s2 = set-rexmit s1 [] 0 0
     in let s3 = set-close-timer s2 0
     in NetResult { session = s3, output = "listening", data = [] }
+
+  net-listen : NetSession -> NetResult
+  net-listen (sess) =
+    when ((sess.conn).state)
+      is TcpSynReceived ->
+        if sess.close-timer == 0
+          then NetResult { session = set-close-timer sess net-halfopen-relisten-budget, output = "listening", data = [] }
+        else if sess.close-timer > 1
+          then NetResult { session = set-close-timer sess ((sess.close-timer) - 1), output = "listening", data = [] }
+        else net-fresh-listen sess
+      is otherwise -> net-fresh-listen sess
 
   net-connect : NetSession -> NetResult
   net-connect (sess) =
@@ -437,6 +474,7 @@ Section: Reliability Timers
     in let s3 = when ((step.conn).state)
       is TcpTimeWait -> set-close-timer s2 net-timewait-ticks
       is TcpLastAck -> set-close-timer s2 net-timewait-ticks
+      is TcpEstablished -> set-close-timer s2 0
       is otherwise -> s2
     in NetResult { session = s3, output = out-text, data = recv }
 

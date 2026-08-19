@@ -291,7 +291,7 @@ static unsigned int xhci_usb3pssen = 0;
 #define XHCI_USB3PRM  0x1u
 
 /* ══ PCI Configuration Space ══ */
-#define PCI_MAX_DEVICES 8
+#define PCI_MAX_DEVICES 10
 static unsigned int pci_config_addr = 0;
 /* bar_size is the window the device actually decodes; bar_probe records that
    the guest wrote all-ones to size the BAR and has not yet written a base
@@ -307,8 +307,22 @@ static struct {
     unsigned char bar_probe[6];
     unsigned char irq_line;
     unsigned short command;
+    /* Which (bus, slot) this device answers at. Every historical device is
+       bus 0 and its slot equals its array index, which is why bus went
+       unmodelled until the PCI-to-PCI bridge below needed a second bus. */
+    unsigned char bus, slot;
+    unsigned char sec_bus, sub_bus;   /* header_type 1 only: the buses it forwards to */
 } pci_devices[PCI_MAX_DEVICES];
 static int pci_device_count = 0;
+
+/* Locate the array index of the device answering config cycles for
+   (bus, slot). Returns -1 if nothing is there, which config reads render as
+   the all-ones vendor a bus walk uses to skip an empty slot. */
+static int pci_find(int bus, int slot) {
+    for (int i = 0; i < pci_device_count; i++)
+        if (pci_devices[i].bus == bus && pci_devices[i].slot == slot) return i;
+    return -1;
+}
 
 /* The xHCI register window follows the BAR the guest most recently wrote,
    not a compile-time constant. Until 2026-07-31 this dispatch used a fixed
@@ -338,11 +352,33 @@ static int pci_add_device(unsigned short vendor, unsigned short device,
     pci_devices[i].bar_size[0] = bar0 ? 0x10000 : 0;
     pci_devices[i].irq_line = irq;
     pci_devices[i].command = 0x0003; /* IO + MMIO enabled */
+    pci_devices[i].bus = 0;
+    pci_devices[i].slot = (unsigned char)i;
     return i;
 }
 
-static unsigned int pci_read_config(int dev, int func, int offset) {
-    if (func != 0 || dev < 0 || dev >= pci_device_count) return 0xFFFFFFFF;
+static unsigned int pci_read_config(int bus, int slot, int func, int offset) {
+    if (func != 0) return 0xFFFFFFFF;
+    int dev = pci_find(bus, slot);
+    if (dev < 0) return 0xFFFFFFFF;
+    /* A PCI-to-PCI bridge (header type 1) lays out config differently from an
+       endpoint: offset 0x18 is primary/secondary/subordinate bus numbers, not
+       a BAR, and that register is the whole reason the bridge exists here --
+       pci-scan-all reads its secondary bus to know which bus to descend to. */
+    if (pci_devices[dev].header_type == 1) {
+        switch (offset & 0xFC) {
+        case 0x00: return pci_devices[dev].vendor | ((unsigned int)pci_devices[dev].device << 16);
+        case 0x04: return pci_devices[dev].command;
+        case 0x08: return ((unsigned int)pci_devices[dev].class_code << 24) |
+                          ((unsigned int)pci_devices[dev].subclass << 16) |
+                          ((unsigned int)pci_devices[dev].progif << 8);
+        case 0x0C: return (unsigned int)pci_devices[dev].header_type << 16;
+        case 0x18: return (unsigned int)pci_devices[dev].bus |
+                          ((unsigned int)pci_devices[dev].sec_bus << 8) |
+                          ((unsigned int)pci_devices[dev].sub_bus << 16);
+        default: return 0;
+        }
+    }
     if (xhci_intel && dev == xhci_pci_slot) {
         switch (offset & 0xFC) {
         case 0xD0: return xhci_xusb2pr;
@@ -373,8 +409,17 @@ static unsigned int pci_read_config(int dev, int func, int offset) {
     }
 }
 
-static void pci_write_config(int dev, int func, int offset, unsigned int val) {
-    if (func != 0 || dev < 0 || dev >= pci_device_count) return;
+static void pci_write_config(int bus, int slot, int func, int offset, unsigned int val) {
+    if (func != 0) return;
+    int dev = pci_find(bus, slot);
+    if (dev < 0) return;
+    if (pci_devices[dev].header_type == 1) {
+        if ((offset & 0xFC) == 0x04) pci_devices[dev].command = (unsigned short)(val & 0xFFFF);
+        /* The bus-number register is fixed by the model; a guest that
+           re-numbers buses is not something this bed reproduces, and silently
+           accepting the write would let a driver believe it had. Ignore it. */
+        return;
+    }
     if (xhci_intel && dev == xhci_pci_slot) {
         /* Unroutable bits are hardwired, so a mask read back from XUSB2PRM is
            the only value that moves everything movable. */
@@ -734,6 +779,17 @@ static int xhci_scratch_bufs = 0;
    1024x768/1024, modelling AMI Aptio V's GraphicsConsole activation. See the
    ClearScreen trap for the full account. */
 static int uefi_conout_remode = 0;
+/* Firmware tables a diagnostic reads passively. Present by default because
+   every real board carries them; the -no-* switches are the arms that show a
+   reader can say "none offered", and -edid-bad breaks the EDID checksum so
+   the reader can be seen to refuse a corrupt block. */
+static int uefi_mode;              /* defined with the UEFI state below; smbios_setup_tables reads it */
+static int uefi_no_smbios = 0;
+static int uefi_no_edid = 0;
+static int uefi_edid_bad = 0;
+static const unsigned char GUID_SMBIOS3[16] = {0x44,0x15,0xFD,0xF2, 0x94,0x97, 0x2C,0x4A, 0x99,0x2E,0xE5,0xBB,0xCF,0x20,0xE3,0x94};
+static const unsigned char GUID_EDID_ACTIVE[16] = {0x56,0x10,0x8C,0xBD, 0x36,0x9F, 0xEC,0x44, 0x92,0xA8,0xA6,0x33,0x7F,0x81,0x79,0x86};
+static const unsigned char GUID_EDID_DISCOVERED[16] = {0xF6,0x34,0x0C,0x1C, 0x80,0xD3, 0xFA,0x41, 0xA0,0x49,0x8A,0xD0,0x6C,0x1A,0x66,0xAA};
 
 /* -xhci-evt-flood <N>: post N extra Port Status Change events at the Run
    transition. 64-TRB event ring: N >= 64 forces the producer through the
@@ -3768,7 +3824,10 @@ static void smbios_setup_tables(void *mem) {
     t[off+9] = 0; /* BIOS ROM size (64K*(n+1)) */
     off += 24;
     /* strings: vendor, version, date, then double-null */
-    memcpy(t+off, "Codex\0" "1.0\0" "05/23/2026\0", 22); off += 22;
+    /* 21, not 22: the literal's own terminator is not part of the set, and a
+       stray NUL after the set's double NUL reads as a zero-length structure
+       to a spec walker, which stopped the diagnostic ladder at type 0 (2026-08-18). */
+    memcpy(t+off, "Codex\0" "1.0\0" "05/23/2026\0", 21); off += 21;
     t[off++] = 0; /* end of strings */
 
     /* Type 1: System Information */
@@ -3780,7 +3839,7 @@ static void smbios_setup_tables(void *mem) {
     t[off+6] = 3; /* version string */
     t[off+7] = 0; /* serial number */
     off += 27;
-    memcpy(t+off, "Codex Project\0" "Codex VM\0" "1.0\0", 28); off += 28;
+    memcpy(t+off, "Codex Project\0" "Codex VM\0" "1.0\0", 27); off += 27;
     t[off++] = 0;
 
     /* Type 2: Baseboard */
@@ -3792,6 +3851,24 @@ static void smbios_setup_tables(void *mem) {
     off += 15;
     memcpy(t+off, "Codex\0" "Virtual Board\0", 20); off += 20;
     t[off++] = 0;
+
+    /* Type 17: Memory Device, one DIMM sized from -mem (size in MB at +12,
+       0x7FFF meaning the extended u32 at +28 holds it; DDR4 at +18; the
+       manufacturer string at +23). Added 2026-08-18 so a diagnostic's RAM
+       row has something to sum. */
+    {
+        unsigned long long mb = guest_mem_size / (1024ULL * 1024ULL);
+        t[off+0] = 17; t[off+1] = 40;
+        *(unsigned short*)(t+off+2) = 3;
+        t[off+4] = 0xFF; t[off+5] = 0xFF; t[off+6] = 0xFF; t[off+7] = 0xFF;
+        *(unsigned short*)(t+off+8) = 64; *(unsigned short*)(t+off+10) = 64;
+        if (mb < 0x7FFF) *(unsigned short*)(t+off+12) = (unsigned short)mb;
+        else { *(unsigned short*)(t+off+12) = 0x7FFF; *(unsigned int*)(t+off+28) = (unsigned int)mb; }
+        t[off+14] = 9; t[off+16] = 1; t[off+17] = 2; t[off+18] = 0x1A; t[off+23] = 3;
+        off += 40;
+        memcpy(t+off, "DIMM0\0" "BANK0\0" "Codex\0", 18); off += 18;
+        t[off++] = 0;
+    }
 
     /* Type 127: End of Table */
     t[off+0] = 127; t[off+1] = 4;
@@ -3808,7 +3885,7 @@ static void smbios_setup_tables(void *mem) {
     memcpy(ep+16, "_DMI_", 5);
     *(unsigned short*)(ep+22) = (unsigned short)off; /* structure table length */
     *(unsigned int*)(ep+24) = table_addr; /* structure table address */
-    *(unsigned short*)(ep+28) = 4; /* number of structures */
+    *(unsigned short*)(ep+28) = 5; /* number of structures */
     /* checksums */
     unsigned char sum = 0;
     for (int i = 16; i < 31; i++) sum += ep[i];
@@ -3818,6 +3895,23 @@ static void smbios_setup_tables(void *mem) {
     ep[4] = (unsigned char)(0 - sum);
 
     fprintf(stderr, "SMBIOS: entry=0x%x tables=0x%x (%d bytes)\n", entry_addr, table_addr, off);
+
+    /* The 3.0 entry point (SMBIOS spec 5.2.2: `_SM3_`, checksum at 5, length
+       0x18, major/minor/docrev at 7-9, revision 1 at 10, structure table
+       maximum size u32 at 12, address u64 at 16) at 0xF0B00 in the UEFI table
+       page, published there by uefi_setup_tables. Only in UEFI mode: the page
+       is the fake SystemTable's. */
+    if (uefi_mode) {
+        unsigned char *e3 = base + UEFI_TABLE_PAGE + 0xB00;
+        memset(e3, 0, 0x18);
+        memcpy(e3, "_SM3_", 5);
+        e3[6] = 0x18; e3[7] = 3; e3[8] = 2; e3[9] = 0; e3[10] = 1;
+        *(unsigned int*)(e3+12) = (unsigned int)off;
+        *(unsigned long long*)(e3+16) = table_addr;
+        unsigned char s3 = 0;
+        for (int i = 0; i < 0x18; i++) s3 = (unsigned char)(s3 + e3[i]);
+        e3[5] = (unsigned char)(0x100 - s3);
+    }
 }
 
 /* Length of the instruction that took an MMIO exit, so RIP can be stepped past
@@ -4025,6 +4119,13 @@ static int e1000_fault_no_tx_dd = 0;
 static int e1000_inject_want    = 0;
 static int e1000_nat            = 0;
 static int e1000_strict_filter  = 0;
+/* -pci-bridge: place a PCI-to-PCI bridge on bus 0 forwarding to bus 1, with a
+   device behind it, so pci-scan-all's descent branch (header type 1, read the
+   secondary bus, recurse) actually executes. OFF by default (L-FALLBACK): the
+   bridge is a new device on bus 0, so turning it on unconditionally would move
+   every existing pci-scan-bus-0 count. Found by blu: pci_add_device hardcoded
+   header type 0, so no bridge existed and the descent could not run here. */
+static int pci_bridge           = 0;
 /* -e1000-no-phy: MDIC never reports ready, which is a PHY that is not
    answering. -e1000-phy-err: it reports the error bit instead. The two are
    different failures and a driver can confuse them, which is the reason
@@ -4748,7 +4849,7 @@ board_mmio_map[BOARD_MMIO_REGIONS] = {
     { 0xFE000000ULL, 0x900000, "BCM2711 peripherals" },
 };
 
-static int uefi_mode = 0;          /* 1 when running a UEFI app */
+static int uefi_mode = 0;          /* 1 when running a UEFI app (declared above for smbios_setup_tables) */
 static int uefi_strict = 0;        /* 1 = model real firmware: honor the memory map,
                                       fault on writes to firmware-owned low memory the
                                       app never allocated. Turns the hardware-only
@@ -4937,6 +5038,56 @@ static void uefi_setup_tables(void *mem) {
     W64(104, 2);                            /* NumberOfTableEntries */
     W64(112, UEFI_TABLE_PAGE + 0xA00);      /* ConfigurationTable */
 
+    /* SMBIOS in the ConfigurationTable: entry 2 is SMBIOS3_TABLE_GUID pointing
+       at the 3.0 entry point smbios_setup_tables builds at 0xF0B00, entry 3 the
+       2.x SMBIOS_TABLE_GUID pointing at the 2.1 entry at 0xE0780; both name the
+       one structure table at 0xE0800. Passive: nothing in the guest reads it
+       unless it goes looking, and the diagnostic ladder does. -no-smbios leaves
+       both entries out, which is the arm that shows the reader can say
+       "none offered". */
+    if (!uefi_no_smbios) {
+        static const unsigned char GUID_SMBIOS2[16] = {0x31,0x2D,0x9D,0xEB, 0x88,0x2D, 0xD3,0x11, 0x9A,0x16,0x00,0x90,0x27,0x3F,0xC1,0x4D};
+        memcpy(base + 0xA30, GUID_SMBIOS3, 16);
+        W64(0xA30 + 16, UEFI_TABLE_PAGE + 0xB00);
+        memcpy(base + 0xA48, GUID_SMBIOS2, 16);
+        W64(0xA48 + 16, 0xE0780);
+        W64(104, 4);                        /* NumberOfTableEntries */
+    }
+    /* EDID: EFI_EDID_ACTIVE_PROTOCOL { UINT32 SizeOfEdid; UINT8 *Edid; } at
+       0xF0B40 with a 128-byte EDID 1.4 block at 0xF0B80 (VESA E-EDID 1.4):
+       manufacturer CDX, product 1, one detailed timing of 1920x1080@148.5 MHz,
+       a monitor-name descriptor "codex-vm dsp". Reached through LocateProtocol
+       for both the ACTIVE and DISCOVERED GUIDs. -edid-bad breaks the checksum. */
+    if (!uefi_no_edid) {
+        unsigned char *ed = base + 0xB80;
+        memset(ed, 0, 128);
+        ed[0] = 0x00; for (int k = 1; k < 7; k++) ed[k] = 0xFF; ed[7] = 0x00;
+        ed[8] = 0x0C; ed[9] = 0x98;                 /* CDX: (3<<10)|(4<<5)|24 */
+        ed[10] = 0x01; ed[11] = 0x00;               /* product code 1 */
+        ed[12] = 0x01;                              /* serial 1 */
+        ed[16] = 0; ed[17] = 36;                    /* week 0, year 2026 */
+        ed[18] = 1; ed[19] = 4;                     /* EDID 1.4 */
+        ed[20] = 0x80; ed[21] = 60; ed[22] = 34; ed[23] = 120; ed[24] = 0x0A;
+        for (int k = 38; k < 54; k++) ed[k] = 0x01; /* no standard timings */
+        ed[54] = 0x02; ed[55] = 0x3A;               /* 14850 * 10 kHz */
+        ed[56] = 0x80; ed[57] = 0x18; ed[58] = 0x71; /* h 1920, hblank 280 */
+        ed[59] = 0x38; ed[60] = 0x2D; ed[61] = 0x40; /* v 1080, vblank 45 */
+        ed[66] = 0x50; ed[67] = 0x1D; ed[68] = 0x00; /* image size 600x340 mm */
+        ed[72] = 0; ed[73] = 0; ed[74] = 0; ed[75] = 0xFC; ed[76] = 0;
+        memcpy(ed + 77, "codex-vm dsp\n", 13);
+        ed[90] = 0; ed[91] = 0; ed[92] = 0; ed[93] = 0x10; ed[94] = 0;
+        ed[108] = 0; ed[109] = 0; ed[110] = 0; ed[111] = 0x10; ed[112] = 0;
+        ed[126] = 0;
+        {
+            unsigned char sum = 0;
+            for (int k = 0; k < 127; k++) sum = (unsigned char)(sum + ed[k]);
+            ed[127] = (unsigned char)(0x100 - sum);
+            if (uefi_edid_bad) ed[127] = (unsigned char)(ed[127] + 1);
+        }
+        *(unsigned int *)(base + 0xB40) = 128;
+        W64(0xB48, UEFI_TABLE_PAGE + 0xB80);
+    }
+
     /* GOP (Graphics Output Protocol) at 0xF0700, reached via LocateProtocol */
     W64(0x700 + 0,   TRAP(UEFI_TRAP_GOP_QUERYMODE));
     W64(0x700 + 8,   TRAP(UEFI_TRAP_GOP_SETMODE));
@@ -5051,6 +5202,48 @@ static void guest_commit_range(unsigned long long base, unsigned long long size)
                 WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
         }
     }
+}
+
+/* The run loop's demand-commit: back the 2 MB chunk holding gpa and map it.
+   Returns 1 on success. On failure the caller MUST report it as a host
+   condition and not as a guest fault: a VirtualAlloc(MEM_COMMIT) refusal is
+   the box's commit charge (several agents' VMs each reserve 3 GB and commit
+   what they touch), a WHvMapGpaRange refusal is the hypervisor's, and either
+   used to fall through to the "Unmapped MMIO" crash report as if the guest
+   had wandered off the map. err is GetLastError() from VirtualAlloc when it
+   refused, hr the WHvMapGpaRange result when the commit succeeded and the
+   map did not. Answers -1 when the chunk was ALREADY committed before this
+   call and the map refused: that is not a host failure, the fault the caller
+   is handling is the guest's own, and it must fall through to the report it
+   would have made anyway. */
+static int demand_commit_chunk(unsigned long long gpa, DWORD *err, HRESULT *hr) {
+    size_t chunk = 2ULL * 1024 * 1024;
+    size_t base = (size_t)((gpa / chunk) * chunk);
+    size_t len = chunk;
+    int was_committed = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    *err = 0; *hr = S_OK;
+    if (gpa >= guest_mem_size) return 0;
+    if (base + len > guest_mem_size) len = guest_mem_size - base;
+    if (VirtualQuery((unsigned char *)guest_mem + gpa, &mbi, sizeof(mbi)) == sizeof(mbi))
+        was_committed = (mbi.State == MEM_COMMIT);
+    if (!VirtualAlloc((unsigned char *)guest_mem + base, len, MEM_COMMIT, PAGE_READWRITE)) {
+        *err = GetLastError();
+        return 0;
+    }
+    *hr = WHvMapGpaRange(partition, (unsigned char *)guest_mem + base, base, len,
+        WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+    if (SUCCEEDED(*hr)) return 1;
+    return was_committed ? -1 : 0;
+}
+
+static void report_commit_failure(unsigned long long gpa, DWORD err, HRESULT hr) {
+    if (err)
+        fprintf(stderr, "HOST: cannot back guest RAM at GPA 0x%llx: VirtualAlloc(MEM_COMMIT) failed, err=%lu%s -- the host is out of commit charge, this is not a guest fault\n",
+                gpa, (unsigned long)err, err == ERROR_COMMITMENT_LIMIT ? " (ERROR_COMMITMENT_LIMIT)" : "");
+    else
+        fprintf(stderr, "HOST: cannot back guest RAM at GPA 0x%llx: WHvMapGpaRange failed, hr=0x%08lX -- a hypervisor refusal, this is not a guest fault\n",
+                gpa, (unsigned long)hr);
 }
 
 /* Handle a UEFI trap -- guest called a protocol function that faulted
@@ -5513,6 +5706,8 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             iface = UEFI_TABLE_PAGE + 0x880;
         } else if (memcmp(guid, GUID_INPUT_EX, 16) == 0) {
             iface = UEFI_TABLE_PAGE + 0x300;   /* ConInEx, built above */
+        } else if (memcmp(guid, GUID_EDID_ACTIVE, 16) == 0 || memcmp(guid, GUID_EDID_DISCOVERED, 16) == 0) {
+            if (!uefi_no_edid) iface = UEFI_TABLE_PAGE + 0xB40;   /* { SizeOfEdid, Edid* }, built in uefi_setup_tables */
         } else {
             fprintf(stderr, "UEFI: LocateProtocol(unknown %02x%02x%02x%02x) → NOT_FOUND\n",
                 guid[3],guid[2],guid[1],guid[0]);
@@ -6456,11 +6651,25 @@ typedef struct {
        server with nothing more to say has no reason to send. A real
        stack does not wait forever either; it times the state out. */
     double closed_at_ms;
+    /* The guest has sent FIN but bytes it handed us are still queued here,
+       so the host send side must NOT go down yet. shutdown(SD_SEND) closes
+       the socket's send direction and the kernel has never seen these
+       bytes: they sit in txbuf, which is ours. */
+    int shutdown_pending;
+    int free_pending;
 } NatConn;
 
 /* Idle time, not total time: activity on a half-closed connection pushes
    the deadline out (see the ACK path), so this only reaps silence. */
 #define NAT_HALF_CLOSED_TIMEOUT_MS 5000.0
+
+/* How long VM exit will wait for a slow reader to take what the guest
+   already handed us. It is generous because the alternative is to discard
+   the guest's output: a 16 MB send whose reader stalls near the end left
+   half a megabyte in this buffer, and 2 s of draining was not enough for
+   it. A residual after this bound is reported by the byte census rather
+   than dropped in silence. */
+#define NAT_EXIT_DRAIN_MS 30000.0
 
 /* Retransmit interval and cap for host->guest SYN/data. The guest polls
    its NIC fast, so a short interval delivers within its wait; the cap
@@ -6483,6 +6692,22 @@ static NatConn *nat_find(unsigned short guest_port, unsigned short dst_port, uns
 
 static void nat_conn_free(NatConn *c);
 
+/* Guest-to-host byte census. Every site on this path that can discard a
+   byte increments one of these, and they are printed at exit. A send that
+   arrives short is otherwise invisible from either end: the guest's own
+   accounting says complete, and net-send-raw returns the frame length
+   unconditionally after kicking TXP, so the guest cannot report a transmit
+   failure even in principle. */
+static unsigned long long nat_seg_bytes = 0;      /* payload in guest data segments */
+static unsigned long long nat_seg_noconn = 0;     /* dropped: no NatConn matched */
+static unsigned long long nat_seg_badstate = 0;   /* dropped: connection not writable */
+static unsigned long long nat_queued = 0;         /* appended to the pending buffer */
+static unsigned long long nat_queue_oom = 0;      /* dropped: realloc failed */
+static unsigned long long nat_sock_sent = 0;      /* taken by send() */
+static unsigned long long nat_freed_unsent = 0;   /* dropped: buffer freed still holding bytes */
+static unsigned long long nat_freed_reap = 0;     /* ...of which: the half-closed reaper */
+static unsigned long long nat_freed_exit = 0;     /* ...of which: VM exit gave up draining */
+
 static NatConn *nat_alloc(void) {
     int oldest = -1;
     for (int i = 0; i < NAT_MAX_CONN; i++)
@@ -6490,6 +6715,7 @@ static NatConn *nat_alloc(void) {
             /* The slot may still own a buffer from its previous tenant --
                memset alone would leak it and hand the next connection a
                dangling pointer. */
+            if (nat_conns[i].txlen > 0) nat_freed_unsent += (unsigned long long)nat_conns[i].txlen;
             if (nat_conns[i].txbuf) free(nat_conns[i].txbuf);
             if (nat_conns[i].rtxbuf) free(nat_conns[i].rtxbuf);
             memset(&nat_conns[i], 0, sizeof(NatConn));
@@ -6521,6 +6747,7 @@ static NatConn *nat_alloc(void) {
 static void nat_conn_free(NatConn *c) {
     if (c->sock != INVALID_SOCKET && c->sock != 0) closesocket(c->sock);
     c->sock = INVALID_SOCKET;
+    if (c->txlen > 0) nat_freed_unsent += (unsigned long long)c->txlen;
     if (c->txbuf) { free(c->txbuf); c->txbuf = NULL; }
     c->txlen = 0;
     c->txcap = 0;
@@ -6529,6 +6756,8 @@ static void nat_conn_free(NatConn *c) {
     c->rtxcap = 0;
     c->active = 0;
     c->state = 0;
+    c->shutdown_pending = 0;
+    c->free_pending = 0;
 }
 
 /* Append host->guest bytes to the retransmit buffer, tagged with the
@@ -6571,12 +6800,13 @@ static void nat_tx_queue(NatConn *c, const unsigned char *p, int n) {
         unsigned char *nb;
         while (cap < c->txlen + n) cap *= 2;
         nb = (unsigned char *)realloc(c->txbuf, (size_t)cap);
-        if (!nb) return;            /* out of memory: drop, but do not corrupt */
+        if (!nb) { nat_queue_oom += (unsigned long long)n; return; }  /* drop, do not corrupt */
         c->txbuf = nb;
         c->txcap = cap;
     }
     memcpy(c->txbuf + c->txlen, p, (size_t)n);
     c->txlen += n;
+    nat_queued += (unsigned long long)n;
 }
 
 /* Push as much of the pending buffer as the socket will take. A partial
@@ -6587,6 +6817,7 @@ static void nat_tx_flush(NatConn *c) {
     if (c->txlen <= 0) return;
     sent = send(c->sock, (const char *)c->txbuf, c->txlen, 0);
     if (sent <= 0) return;          /* WOULDBLOCK or error: keep it all */
+    nat_sock_sent += (unsigned long long)sent;
     if (sent < c->txlen) memmove(c->txbuf, c->txbuf + sent, (size_t)(c->txlen - sent));
     c->txlen -= sent;
 }
@@ -7273,16 +7504,32 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                                     0x11, /* FIN+ACK */
                                     NULL, 0);
                 /* Anything still queued belongs to the peer before the
-                   send side goes down. */
+                   send side goes down. One non-blocking send() is not
+                   "anything": a socket whose send buffer is full at this
+                   moment -- which is exactly when a bulk transfer ends --
+                   takes part of it and WOULDBLOCKs on the rest, and the
+                   shutdown below then closed the send side over bytes the
+                   kernel had never seen. State 3 was flushed nowhere else,
+                   so they were freed unsent while both ends reported a
+                   clean close. Defer the shutdown, and the free with it,
+                   until the buffer is actually empty. */
                 nat_tx_flush(c);
-                shutdown(c->sock, SD_SEND);
-                if (c->state == 4) nat_conn_free(c);
-                else { c->state = 3; c->closed_at_ms = now_ms_for_timer(); }
+                if (c->txlen > 0) {
+                    c->shutdown_pending = 1;
+                    if (c->state == 4) { c->free_pending = 1; c->closed_at_ms = now_ms_for_timer(); }
+                    else { c->state = 3; c->closed_at_ms = now_ms_for_timer(); }
+                } else {
+                    shutdown(c->sock, SD_SEND);
+                    if (c->state == 4) nat_conn_free(c);
+                    else { c->state = 3; c->closed_at_ms = now_ms_for_timer(); }
+                }
             }
         }
         else if (flags & 0x10) {
             /* ACK (possibly with data) */
             NatConn *c = nat_find(sport, dport, dst_ip);
+            if (payload_len > 0) nat_seg_bytes += (unsigned long long)payload_len;
+            if (!c && payload_len > 0) nat_seg_noconn += (unsigned long long)payload_len;
             if (c) {
                 /* The guest acknowledging our host->guest data: release
                    what it has taken from the retransmit buffer so we stop
@@ -7290,6 +7537,9 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                    here -- the guest ACKing a request we injected -- which
                    is why this sits outside the payload branch. */
                 if (c->forwarded) nat_rtx_ack(c, ack);
+                if (payload_len > 0 &&
+                    !(c->state == 1 || c->state == 2 || c->state == 4))
+                    nat_seg_badstate += (unsigned long long)payload_len;
                 if (payload_len > 0 &&
                     (c->state == 1 || c->state == 2 || c->state == 4)) {
                     /* Queue, then push what the socket will take. The return
@@ -7394,11 +7644,29 @@ static void nat_poll_rx(void) {
            case for a client that disconnects after one request. */
         if ((c->state == 3 || c->state == 4) &&
             now_ms_for_timer() - c->closed_at_ms > NAT_HALF_CLOSED_TIMEOUT_MS) {
+            if (c->txlen > 0) nat_freed_reap += (unsigned long long)c->txlen;
             nat_conn_free(c);
             continue;
         }
-        /* Retry anything the socket would not take last time. */
-        if (c->state == 2 || c->state == 4) nat_tx_flush(c);
+        /* Retry anything the socket would not take last time. State 3 is
+           in this list because the guest's FIN does not entitle us to
+           discard what it sent before it: the send side stays open until
+           the buffer is empty, and only then does the shutdown the FIN
+           handler deferred actually happen. */
+        if (c->state == 2 || c->state == 3 || c->state == 4) {
+            int before = c->txlen;
+            nat_tx_flush(c);
+            /* Bytes moving is not silence, and the reaper above only means
+               to collect silence. Without this a half-closed connection
+               feeding a slow reader is reaped mid-drain and the rest of
+               the guest's output is freed. */
+            if (c->txlen < before) c->closed_at_ms = now_ms_for_timer();
+        }
+        if (c->shutdown_pending && c->txlen <= 0) {
+            shutdown(c->sock, SD_SEND);
+            c->shutdown_pending = 0;
+            if (c->free_pending) { nat_conn_free(c); continue; }
+        }
         /* State 3 is the guest having sent FIN. It can still RECEIVE, and
            it is also the state that used to be skipped here -- which is
            why such a connection was never read again, never closed, and
@@ -8006,11 +8274,32 @@ static void dbg_dump_regs(void) {
         vals[13].Reg64, vals[14].Reg64, vals[15].Reg64, vals[16].Reg64);
 }
 
+/* guest_mem is MEM_RESERVE with lazy commit (see guest_commit_range), and a
+   crash report is exactly where the addresses of interest are ones the guest
+   never successfully touched: a demand-commit that failed reports through
+   here with the uncommitted GPA as its fault address, and an RBP chain or a
+   wild RSP ends in a page nobody has been to. A host read of a reserved page
+   is an access violation that takes the report and the process with it.
+   Measured 2026-08-18: the brotli-interop HOST CRASH of 2026-08-16 was
+   dbg_dump_mem reading the page it was about to describe, and with that
+   guarded the same run died again in dbg_backtrace one frame past __start.
+   Every host read the reporter makes asks this first. */
+static int guest_page_committed(unsigned long long gpa) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (gpa >= guest_mem_size) return 0;
+    if (VirtualQuery((unsigned char *)guest_mem + gpa, &mbi, sizeof(mbi)) != sizeof(mbi)) return 0;
+    return mbi.State == MEM_COMMIT;
+}
+
 static void dbg_dump_mem(unsigned long long addr, int len) {
     if (addr + (unsigned long long)len > guest_mem_size) {
         fprintf(stderr, "  address out of range\n"); return;
     }
     unsigned char *p = (unsigned char *)guest_mem + addr;
+    if (!guest_page_committed(addr) || !guest_page_committed(addr + (unsigned long long)len - 1)) {
+        fprintf(stderr, "  (host page not committed: the guest never touched this range)\n");
+        return;
+    }
     for (int i = 0; i < len; i += 16) {
         fprintf(stderr, "  %012llx: ", addr + i);
         for (int j = 0; j < 16 && i+j < len; j++)
@@ -8039,6 +8328,10 @@ static void dbg_dump_stack(int count) {
        that crashes on the inputs it exists for is worse than no reporter. */
     if (rsp >= guest_mem_size) { fprintf(stderr, "  (RSP outside guest memory)\n"); return; }
     for (int i = 0; i < count && (guest_mem_size - rsp) >= (unsigned long long)i*8 + 8; i++) {
+        if (!guest_page_committed(rsp + i*8 + 7)) {
+            fprintf(stderr, "  [RSP+%02x] (host page not committed: the guest never touched this range)\n", i*8);
+            break;
+        }
         unsigned long long val = *(unsigned long long *)((unsigned char *)guest_mem + rsp + i*8);
         fprintf(stderr, "  [RSP+%02x] = ", i*8);
         dbg_print_addr(val);
@@ -8056,6 +8349,10 @@ static void dbg_backtrace(void) {
     /* Same wrap as dbg_dump_stack: bound by subtraction. */
     for (int depth = 1; depth < 32 && rbp > 0 && rbp < guest_mem_size &&
                         (guest_mem_size - rbp) >= 16; depth++) {
+        if (!guest_page_committed(rbp) || !guest_page_committed(rbp + 15)) {
+            fprintf(stderr, "    #%d (frame at 0x%llx: host page not committed, chain ends)\n", depth, rbp);
+            break;
+        }
         unsigned long long ret = *(unsigned long long *)((unsigned char *)guest_mem + rbp + 8);
         unsigned long long prev = *(unsigned long long *)((unsigned char *)guest_mem + rbp);
         if (ret == 0) break;
@@ -8303,8 +8600,16 @@ static void dbg_disasm_at(unsigned long long addr, int count) {
         return;
     }
     unsigned char *base = (unsigned char *)guest_mem + addr;
-    int max_bytes = (int)(guest_mem_size - addr);
-    if (max_bytes > 256) max_bytes = 256;
+    /* Clamp BEFORE narrowing. `(int)(guest_mem_size - addr)` is negative for
+       any addr below 1 GB on a 3 GB guest, so the loop below never ran and
+       every crash report on this box printed an empty "Code at RIP" under the
+       caret (measured 2026-08-18: 0xC0000000 - 0x100105 = 0xBFEFFEFB). */
+    unsigned long long avail = guest_mem_size - addr;
+    int max_bytes = avail > 256 ? 256 : (int)avail;
+    if (!guest_page_committed(addr) || !guest_page_committed(addr + max_bytes - 1)) {
+        fprintf(stderr, "  (0x%llx: host page not committed, the guest never executed here: cannot disassemble)\n", addr);
+        return;
+    }
     int offset = 0;
     for (int i = 0; i < count && offset < max_bytes; i++) {
         char buf[128];
@@ -8946,6 +9251,12 @@ static void input_drip_feed(void) {
 static unsigned char *output_buf = NULL;
 static size_t output_len = 0;
 static size_t output_cap = 0;
+/* Serial bytes dropped because the buffer could not grow. Reported once when
+   the first is dropped and again with the total at dump_output_file, the same
+   discipline as the xHCI event ring's er_dropped: a short -output must be
+   attributable, because the guest's OUT completed and it believes the byte
+   was delivered. */
+static size_t output_dropped = 0;
 
 /* Application processors write serial too -- an AP's exception dump is the only
  * way a fault on one is ever seen -- and they run on their own host threads, so
@@ -8981,6 +9292,12 @@ static void output_buf_write(unsigned char b) {
         if (grown) { output_buf = grown; output_cap = new_cap; }
     }
     if (output_len < output_cap) output_buf[output_len++] = b;
+    else {
+        if (!output_dropped)
+            fprintf(stderr, "SERIAL: output buffer growth failed at %zu bytes: dropping guest serial bytes -- -output will be SHORT\n",
+                    output_cap);
+        output_dropped++;
+    }
     if (output_lock_ready) LeaveCriticalSection(&output_lock);
 
     /* Detect "!EXC=03" pattern for debugger */
@@ -9032,6 +9349,9 @@ static void dump_output_file(const char *path) {
     fwrite(output_buf, 1, output_len, f);
     fclose(f);
     fprintf(stderr, "Output: %zu bytes -> %s\n", output_len, path);
+    if (output_dropped)
+        fprintf(stderr, "SERIAL: %zu guest serial byte(s) DROPPED (buffer growth failed at %zu bytes); %s is SHORT\n",
+                output_dropped, output_cap, path);
 }
 
 /* Bulk blit: append guest RAM [addr, addr+len) to the output buffer in
@@ -11341,6 +11661,34 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             }
             return;
         }
+        /* REP OUTSB to COM1's THR: the guest bursts a FIFO-full at a time.
+           The generic COM1 path below takes its byte from RAX, where string
+           data does not live, so without this arm a burst would emit one
+           garbage byte and skip the rest. Consume the whole count here. */
+        if (ctx->IoPortAccess.AccessInfo.StringOp && port == 0x3F8) {
+            unsigned long long gpa = ctx->IoPortAccess.Rsi;
+            unsigned long long cnt = ctx->IoPortAccess.Rcx;
+            unsigned long long done = 0;
+            unsigned char *gmem = (unsigned char *)guest_mem;
+            if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
+            for (; done < cnt; done++) {
+                unsigned long long p = gpa + done * (unsigned long long)size;
+                if (p + (unsigned long long)size > guest_mem_size) break;
+                output_buf_write(gmem[p]);
+            }
+            WHV_REGISTER_NAME sn[] = { WHvX64RegisterRsi, WHvX64RegisterRcx };
+            WHV_REGISTER_VALUE sv[2];
+            sv[0].Reg64 = ctx->IoPortAccess.Rsi + done * (unsigned long long)size;
+            sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
+            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            if (ctx->IoPortAccess.Rcx - done == 0) {
+                WHV_REGISTER_NAME rn = WHvX64RegisterRip;
+                WHV_REGISTER_VALUE rv;
+                rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
+                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            }
+            return;
+        }
         /* ACPI PM1a control block (0x604, the address this VM's FADT
            publishes and the one QEMU's PIIX4/ICH9 use). Bit 13 is SLP_EN and
            bits 10-12 are SLP_TYP. A guest that read _S5_ out of the DSDT and
@@ -11771,10 +12119,11 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         else if (port >= 0xCFC && port <= 0xCFF) {
             if (pci_config_addr & 0x80000000) {
+                int bus = (pci_config_addr >> 16) & 0xFF;
                 int dev = (pci_config_addr >> 11) & 0x1F;
                 int func = (pci_config_addr >> 8) & 0x7;
                 int off = pci_config_addr & 0xFC;
-                pci_write_config(dev, func, off, (unsigned int)val);
+                pci_write_config(bus, dev, func, off, (unsigned int)val);
             }
         }
         /* PC Speaker */
@@ -11997,10 +12346,11 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         /* PCI Configuration Space */
         else if (port >= 0xCFC && port <= 0xCFF) {
             if (pci_config_addr & 0x80000000) {
+                int bus = (pci_config_addr >> 16) & 0xFF;
                 int dev = (pci_config_addr >> 11) & 0x1F;
                 int func = (pci_config_addr >> 8) & 0x7;
                 int off = pci_config_addr & 0xFC;
-                unsigned int val32 = pci_read_config(dev, func, off);
+                unsigned int val32 = pci_read_config(bus, dev, func, off);
                 int byte_off = port - 0xCFC;
                 result = (int)((val32 >> (byte_off * 8)) & (size == 1 ? 0xFF : size == 2 ? 0xFFFF : 0xFFFFFFFF));
             }
@@ -12095,9 +12445,19 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     WHV_REGISTER_VALUE vals[5];
     memset(vals, 0, sizeof(vals));
     if (leaf == 0) { vals[0].Reg64 = 1; vals[1].Reg64 = 0x756E6547; vals[2].Reg64 = 0x6C65746E; vals[3].Reg64 = 0x49656E69; }
-    else if (leaf == 1) { vals[0].Reg64 = 0x000306C3; vals[2].Reg64 = 0; vals[3].Reg64 = 0x078BFBFF; }
-    else if (leaf == 0x80000000) { vals[0].Reg64 = 0x80000001; }
+    /* Leaf 1 ecx bit 31 is the hypervisor-present bit (Intel SDM 3.1.2.1,
+       reserved for that use); a guest asking is told the truth. Leaves
+       8000_0002h..04h carry a brand string so a diagnostic names the part it
+       is running on rather than reporting one absent (2026-08-18). */
+    else if (leaf == 1) { vals[0].Reg64 = 0x000306C3; vals[2].Reg64 = 0x80000000ULL; vals[3].Reg64 = 0x078BFBFF; }
+    else if (leaf == 0x80000000) { vals[0].Reg64 = 0x80000004; }
     else if (leaf == 0x80000001) { vals[3].Reg64 = (1 << 29) | (1 << 20); } /* LM + NX */
+    else if (leaf >= 0x80000002 && leaf <= 0x80000004) {
+        static const char brand[48] = "codex-vm virtual CPU (WHP)";
+        const char *b = brand + (leaf - 0x80000002) * 16;
+        memcpy(&vals[0].Reg64, b, 4); memcpy(&vals[1].Reg64, b + 4, 4);
+        memcpy(&vals[2].Reg64, b + 8, 4); memcpy(&vals[3].Reg64, b + 12, 4);
+    }
     vals[4].Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
     WHvSetVirtualProcessorRegisters(partition, 0, names, 5, vals);
 }
@@ -13419,6 +13779,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-dhcp-lease") && i+1 < argc) { nat_dhcp_lease = (unsigned int)atoi(argv[++i]); }
         else if (!strcmp(argv[i], "-e1000-nat"))      { e1000_present = 1; e1000_nat = 1; }
         else if (!strcmp(argv[i], "-e1000-strict-filter")) { e1000_present = 1; e1000_strict_filter = 1; }
+        else if (!strcmp(argv[i], "-pci-bridge")) pci_bridge = 1;
         else if (!strcmp(argv[i], "-e1000-no-phy"))   { e1000_present = 1; e1000_fault_no_phy = 1; }
         else if (!strcmp(argv[i], "-e1000-phy-err"))  { e1000_present = 1; e1000_fault_phy_err = 1; }
         else if (!strcmp(argv[i], "-e1000-phy-link")) { e1000_present = 1; e1000_phy_link = 1; }
@@ -13480,6 +13841,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-xhci-csz")) xhci_csz64 = 1;
         else if (!strcmp(argv[i], "-xhci-scratch") && i+1 < argc) xhci_scratch_bufs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-uefi-conout-remode")) uefi_conout_remode = 1;
+        else if (!strcmp(argv[i], "-no-smbios")) uefi_no_smbios = 1;
+        else if (!strcmp(argv[i], "-no-edid")) uefi_no_edid = 1;
+        else if (!strcmp(argv[i], "-edid-bad")) uefi_edid_bad = 1;
         else if (!strcmp(argv[i], "-xhci-evt-flood") && i+1 < argc) xhci_evt_flood = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-xhci-hub-tiers") && i + 1 < argc) {
             xhci_hub_tiers = atoi(argv[++i]);
@@ -13575,6 +13939,31 @@ int main(int argc, char **argv) {
            with nothing on it reads, so a driver could not tell a working
            model from an absent PHY. */
         e1000_phy_reset_regs();
+    }
+
+    if (pci_bridge) {
+        /* A PCI-to-PCI bridge on bus 0 forwarding to bus 1, with one endpoint
+           behind it, so pci-scan-all descends. The bridge is class 06 subclass
+           04, header type 1; 1b36:000c is QEMU's pcie-root-port, the exact part
+           fester saw on the board (build/boot/diag/README.md). The endpoint is
+           a virtio-net, which this x86 model does not otherwise emulate, so it
+           is inert config space -- the walk finds it, nothing tries to drive
+           it. Both go on new slots after the bus-0 devices already added. */
+        int br = pci_add_device(0x1B36, 0x000C, 0x06, 0x04, 0x00, 0, 0);
+        if (br >= 0) {
+            pci_devices[br].header_type = 1;
+            pci_devices[br].bus = 0;
+            pci_devices[br].slot = (unsigned char)br;
+            pci_devices[br].sec_bus = 1;
+            pci_devices[br].sub_bus = 1;
+        }
+        int ep = pci_add_device(0x1AF4, 0x1041, 0x02, 0x00, 0x00, 0, 0);
+        if (ep >= 0) {
+            pci_devices[ep].bus = 1;
+            pci_devices[ep].slot = 0;   /* first slot on the secondary bus */
+        }
+        fprintf(stderr, "PCI: bridge 1b36:000c on 00:%02x.0 -> bus 1, endpoint 1af4:1041 at 01:00.0\n",
+                br >= 0 ? pci_devices[br].slot : 0);
     }
 
     /* Resolve -gop-stride before create_vm, which commits the guest GPU/GOP
@@ -14255,16 +14644,21 @@ int main(int argc, char **argv) {
             {
                 unsigned long long gpa = ctx.MemoryAccess.Gpa;
                 if (gpa < guest_mem_size) {
-                    size_t chunk = 2ULL * 1024 * 1024;
-                    size_t base = (gpa / chunk) * chunk;
-                    size_t len = chunk;
-                    if (base + len > guest_mem_size) len = guest_mem_size - base;
-                    if (VirtualAlloc((unsigned char *)guest_mem + base, len, MEM_COMMIT, PAGE_READWRITE)) {
-                        HRESULT hr2 = WHvMapGpaRange(partition, (unsigned char *)guest_mem + base,
-                            base, len,
-                            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
-                        if (SUCCEEDED(hr2)) break;
+                    DWORD cerr; HRESULT chr;
+                    int dc = demand_commit_chunk(gpa, &cerr, &chr);
+                    if (dc == 1) break;
+                    if (dc == 0) {
+                        char reason[160];
+                        report_commit_failure(gpa, cerr, chr);
+                        snprintf(reason, sizeof(reason), "Guest RAM commit failed at GPA=0x%llx (%s), host err=%lu hr=0x%08lX, after %llu exits",
+                            gpa,
+                            ctx.MemoryAccess.AccessInfo.AccessType == 0 ? "READ" :
+                            ctx.MemoryAccess.AccessInfo.AccessType == 1 ? "WRITE" : "EXEC",
+                            (unsigned long)cerr, (unsigned long)chr, exits);
+                        dbg_crash_report(reason, gpa, ctx.MemoryAccess.AccessInfo.AccessType, g_kernel_path);
+                        goto done;
                     }
+                    /* -1: already backed, so this is the guest's own fault; report it as before. */
                 }
             }
             { char reason[128];
@@ -14397,16 +14791,10 @@ int main(int argc, char **argv) {
                 unsigned long long cr2 = cr2v.Reg64;
                 if (cr2 != tf_last_cr2) { tf_last_cr2 = cr2; tf_retries = 0; }
                 if (tf_retries < 2 && cr2 < guest_mem_size) {
-                    size_t chunk = 2ULL * 1024 * 1024;
-                    size_t base = (cr2 / chunk) * chunk;
-                    size_t len = chunk;
-                    if (base + len > guest_mem_size) len = guest_mem_size - base;
-                    if (VirtualAlloc((unsigned char *)guest_mem + base, len, MEM_COMMIT, PAGE_READWRITE)) {
-                        HRESULT hr2 = WHvMapGpaRange(partition, (unsigned char *)guest_mem + base,
-                            base, len,
-                            WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
-                        if (SUCCEEDED(hr2)) { tf_retries++; break; }
-                    }
+                    DWORD cerr; HRESULT chr;
+                    int dc = demand_commit_chunk(cr2, &cerr, &chr);
+                    if (dc == 1) { tf_retries++; break; }
+                    if (dc == 0) report_commit_failure(cr2, cerr, chr);
                 }
                 char reason[160];
                 snprintf(reason, sizeof(reason),
@@ -14671,12 +15059,51 @@ done:
        drains normally. Active connections get a graceful half-close. */
     for (int i = 0; i < NAT_MAX_CONN; i++) {
         if (nat_conns[i].sock != INVALID_SOCKET && (nat_conns[i].active || nat_conns[i].state == 3)) {
-            if (nat_conns[i].state != 3) {
+            /* State 3 used to be skipped here on the reasoning that its
+               FIN handler had already called shutdown, so the data would
+               drain by itself. What drains by itself is what the KERNEL
+               holds; txbuf is ours, and a state-3 connection was flushed
+               nowhere else, so whatever the one send() in the FIN handler
+               could not take died here. Drain every connection, bounded,
+               and only then take the send side down. */
+            double drain_until = now_ms_for_timer() + NAT_EXIT_DRAIN_MS;
+            nat_tx_flush(&nat_conns[i]);
+            while (nat_conns[i].txlen > 0 && now_ms_for_timer() < drain_until) {
+                /* Wait for writability rather than spinning on a
+                   non-blocking socket: the peer here is a reader that is
+                   slow, not one that is gone, and a spin would burn a core
+                   for the whole drain. */
+                fd_set wr;
+                struct timeval tv;
+                int before;
+                FD_ZERO(&wr);
+                FD_SET(nat_conns[i].sock, &wr);
+                tv.tv_sec = 1; tv.tv_usec = 0;
+                if (select(0, NULL, &wr, NULL, &tv) <= 0) continue;
+                before = nat_conns[i].txlen;
                 nat_tx_flush(&nat_conns[i]);
-                shutdown(nat_conns[i].sock, SD_SEND);
+                /* Writable and yet it took nothing: the peer is gone, not
+                   slow. Without this the loop spins on a socket that will
+                   never drain, for the whole bound. */
+                if (nat_conns[i].txlen >= before) break;
             }
+            if (nat_conns[i].txlen > 0) nat_freed_exit += (unsigned long long)nat_conns[i].txlen;
+            shutdown(nat_conns[i].sock, SD_SEND);
             nat_conn_free(&nat_conns[i]);
         }
+    }
+    /* Printed unconditionally and after the drain above, so a run that
+       loses bytes names the site that lost them instead of leaving the
+       two ends to disagree about a number neither can account for. seg is
+       what the guest's data segments carried; the four drop counters and
+       sent should add up to it. */
+    if (nat_seg_bytes) {
+        fprintf(stderr, "NAT TX BYTES: seg=%llu queued=%llu sent=%llu "
+                "drop-noconn=%llu drop-badstate=%llu drop-oom=%llu drop-freed=%llu "
+                "(reap=%llu exit=%llu)\n",
+                nat_seg_bytes, nat_queued, nat_sock_sent,
+                nat_seg_noconn, nat_seg_badstate, nat_queue_oom, nat_freed_unsent,
+                nat_freed_reap, nat_freed_exit);
     }
     if (dumpmem_addr && guest_mem && dumpmem_addr + dumpmem_len <= guest_mem_size) {
         fprintf(stderr, "DUMPMEM 0x%llx len %llu:\n", dumpmem_addr, dumpmem_len);

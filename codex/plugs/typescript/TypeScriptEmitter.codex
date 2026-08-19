@@ -70,11 +70,54 @@ Section: Arity Map
   lookup-arity (entries) (name) =
    let len = list-length entries
    in let pos = bsearch-arity-pos entries name 0 len
-   in if pos >= len then 0
+   in if pos >= len then 0 - 1
       else let e = list-at entries pos
-      in if e.name == name then e.arity else 0
+      in if e.name == name then e.arity else 0 - 1
 
 Section: Expression Emission
+
+  emit-ts-name : Text, List ArityEntry -> Text
+  emit-ts-name (n) (arities) =
+   if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then ts-sanitize n
+   else let ar = lookup-arity arities n
+   in if ar == 0 then ts-sanitize n & "()"
+      else if ar >= 2 then emit-ts-partial-wrappers 0 ar & ts-sanitize n & "(" & emit-ts-partial-params 0 ar & ")"
+      else ts-sanitize n
+
+  emit-ts-lambda-params : List IRParam, Integer -> Text
+  emit-ts-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else "(" & ts-sanitize (list-at params i).name & ": any) => " & emit-ts-lambda-params params (i + 1)
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+  prelude-arities : Text -> List ArityEntry
+  prelude-arities (src) = prelude-scan (text-split src "function ") 1 []
+
+  prelude-scan : List Text, Integer, List ArityEntry -> List ArityEntry
+  prelude-scan (parts) (i) (acc) =
+   if i >= list-length parts then acc
+   else prelude-scan parts (i + 1) (sorted-insert-arity acc (prelude-entry (list-at parts i)))
+
+  prelude-entry : Text -> ArityEntry
+  prelude-entry (part) =
+   let open = prelude-pos part "(" 0
+   in let close = prelude-pos part ")" open
+   in let params = substring part (open + 1) (close - open - 1)
+   in ArityEntry { name = prelude-name (substring part 0 open), arity = __narrow (if text-length params == 0 then 0 else list-length (text-split params ",")), generic-count = 0 }
+
+  prelude-pos : Text, Text, Integer -> Integer
+  prelude-pos (s) (ch) (i) =
+   if i >= text-length s then i
+   else if char-to-text (char-at s i) == ch then i
+   else prelude-pos s ch (i + 1)
+
+  prelude-name : Text -> Text
+  prelude-name (n) =
+   if text-starts-with n "__" then n else text-replace n "_" "-"
 
   emit-ts-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-ts-expr (e) (arities) (indent) =
@@ -84,17 +127,17 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & ts-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
-    is IrName (n) (ty) (sp) -> ts-sanitize n
+    is IrName (n) (ty) (sp) -> emit-ts-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-ts-binary op l r arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-ts-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-ts-expr c arities indent & " ? " & emit-ts-expr t arities indent & " : " & emit-ts-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & ts-sanitize name & " = " & emit-ts-expr val arities indent & "; return " & emit-ts-expr body arities indent & "; })()"
     is IrApply (f) (a) (ty) (sp) -> emit-ts-apply e arities indent
-    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-ts-params params 0 & "): any => " & emit-ts-expr body arities indent
+    is IrLambda (params) (body) (ty) (sp) -> if list-length params == 0 then "(() => " & emit-ts-expr body arities indent & ")" else "(" & emit-ts-lambda-params params 0 & emit-ts-expr body arities indent & ")"
     is IrList (elems) (ty) (sp) -> "[" & emit-ts-list-elems elems arities indent 0 & "]"
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-ts-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-ts-act stmts arities indent
-    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-ts-record-fields fields arities indent 0 & " }"
+    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-ts-record-fields fields name arities indent 0 & " }"
     is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ts-expr rec arities indent & "." & ts-field field
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-ts-expr rec arities indent & "." & ts-field field & " = " & emit-ts-expr val arities indent & ")"
     is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-ts-expr body arities indent & ")"
@@ -155,9 +198,12 @@ Section: Apply and Helpers
    in when (chain.root)
     is IrName (n) (ty) (sp) ->
      if is-mktup-name n then "[" & emit-ts-apply-args (chain.args) arities indent 0 & "]"
-     else emit-ts-apply-split func (chain.args) (lookup-arity arities n) arities indent
-    is IrLambda (lps) (lbody) (lty) (lsp) -> emit-ts-apply-split ("(" & func & ")") (chain.args) (list-length lps) arities indent
-    is otherwise -> func & "(" & emit-ts-apply-args (chain.args) arities indent 0 & ")"
+     else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then ts-sanitize n & "(" & emit-ts-apply-args (chain.args) arities indent 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 0 then ts-sanitize n & emit-ts-apply-rest (chain.args) arities indent 0
+        else if ar == 0 then ts-sanitize n & "()" & emit-ts-apply-rest (chain.args) arities indent 0
+        else emit-ts-apply-split (ts-sanitize n) (chain.args) ar arities indent
+    is otherwise -> "(" & func & ")" & emit-ts-apply-rest (chain.args) arities indent 0
 
   emit-ts-apply-split : Text, List IRExpr, Integer, List ArityEntry, Integer -> Text
   emit-ts-apply-split (func) (args) (ar) (arities) (indent) =
@@ -200,11 +246,28 @@ Section: Apply and Helpers
    else let sep = if i > 0 then ", " else ""
    in sep & emit-ts-expr (list-at elems i) arities indent & emit-ts-list-elems elems arities indent (i + 1)
 
-  emit-ts-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
-  emit-ts-record-fields (fields) (arities) (indent) (i) =
+  emit-ts-record-fields : List IRFieldVal, Text, List ArityEntry, Integer, Integer -> Text
+  emit-ts-record-fields (fields) (rname) (arities) (indent) (i) =
    if i == list-length fields then ""
    else let f = list-at fields i
-   in ", " & ts-sanitize (f.name) & ": " & emit-ts-expr (f.value) arities indent & emit-ts-record-fields fields arities indent (i + 1)
+   in ", " & ts-sanitize (f.name) & ": __cf(\"" & rname & "\", \"" & f.name & "\", " & emit-ts-expr (f.value) arities indent & ")" & emit-ts-record-fields fields rname arities indent (i + 1)
+
+  ts-clamp-table : List ATypeDef, Integer -> Text
+  ts-clamp-table (tds) (i) =
+   if i >= list-length tds then ""
+   else (when list-at tds i
+    is ARecordTypeDef (dn) (tparams) (afields) (recmut) (sp) -> ts-clamp-rows (dn.value) (record-fields-by-name tds (dn.value) 0) 0
+    is otherwise -> "") & ts-clamp-table tds (i + 1)
+
+  ts-clamp-rows : Text, List RecordField, Integer -> Text
+  ts-clamp-rows (rname) (rfields) (i) =
+   if i >= list-length rfields then ""
+   else let rf = list-at rfields i
+   in (when rf.type-val
+    is IntegerTy (lo) (hi) (mode) -> when mode
+     is OvClamping -> "  \"" & rname & "." & rf.name.value & "\": [" & integer-to-text lo & ", " & integer-to-text hi & "],\n"
+     is otherwise -> ""
+    is otherwise -> "") & ts-clamp-rows rname rfields (i + 1)
 
 Section: Match
 
@@ -323,7 +386,7 @@ Section: Definition Emission
    if text-length (d.name) == 0 then ""
    else let sname = ts-sanitize (d.name)
    in if list-length (d.params) == 0
-      then "const " & sname & ": any = " & emit-ts-expr (d.body) arities 0 & ";\n\n"
+      then "function " & sname & "(): any {\n  return " & emit-ts-expr (d.body) arities 1 & ";\n}\n\n"
       else "function " & sname & "(" & emit-ts-params (d.params) 0 & "): any {\n  return " & emit-ts-expr (d.body) arities 1 & ";\n}\n\n"
 
   emit-ts-defs : List IRDef, Integer, List ArityEntry -> Text
@@ -340,11 +403,12 @@ Section: TypeScript Module Assembly
 
   emit-typescript-chapter : IRChapter, List ATypeDef -> Text
   emit-typescript-chapter (m) (type-defs) =
-   let arities = build-arity-map (m.defs) 0 []
-   in let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { console.log(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): number { return s.length; }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs: any[]): number { return xs.length; }\nfunction list_at(xs: any[], i: number): any { return xs[i]; }\nfunction integer_to_text(n: number): string { return String(n); }\nfunction char_code(c: any): number { return typeof c === 'string' ? c.charCodeAt(0) : c; }\nfunction char_at(s: string, i: number): string { return s[i]; }\nfunction negate(n: number): number { return -n; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): number { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
-   in let types-text = emit-ts-type-defs type-defs 0
+   let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { console.log(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): number { return s.length; }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs: any[]): number { return xs.length; }\nfunction list_at(xs: any[], i: number): any { return xs[i]; }\nfunction integer_to_text(n: number): string { return String(n); }\nfunction char_code(c: any): number { return typeof c === 'string' ? c.charCodeAt(0) : c; }\nfunction char_at(s: string, i: number): string { return s[i]; }\nfunction negate(n: number): number { return -n; }\nfunction __cf(t: string, f: string, v: any): any { const b = (__clamps as any)[t + \".\" + f]; return b === undefined ? v : (v < b[0] ? b[0] : (v > b[1] ? b[1] : v)); }\nfunction int_mod(a: number, b: number): number { const abs = b < 0 ? -b : b; const r = a % abs; return r < 0 ? r + abs : r; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): number { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let clamps = "const __clamps: any = {\n" & ts-clamp-table type-defs 0 & "};\n\n"
+   in let types-text = clamps & emit-ts-type-defs type-defs 0
    in let defs-text = emit-ts-defs (m.defs) 0 arities
-   in let entry = "// Entry\ntry { (opening as any)(); } catch(e) { console.error(e); }\n"
+   in let entry = "// Entry: the program re-runs itself on a worker whose stack is 512 MB (plugs 1.14)\ndeclare const require: any; declare const __filename: string; declare const process: any;\nconst { Worker: _CxWorker, isMainThread: _cxIsMain } = require(\"worker_threads\");\nif (_cxIsMain) {\n  const _cxW = new _CxWorker(__filename, { resourceLimits: { stackSizeMb: 512 } });\n  _cxW.on(\"error\", (e: any) => { process.exitCode = 1; throw e; });\n  _cxW.on(\"exit\", (c: number) => { if (c !== 0) process.exitCode = c; });\n} else {\n  try { (opening as any)(); } catch(e) { console.error(e); }\n}\n"
    in builtins & types-text & defs-text & entry
 
   emit-ts-tup-binds : List IRPat, Text, Integer -> Text

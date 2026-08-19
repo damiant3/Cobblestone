@@ -1,0 +1,76 @@
+Chapter: DiagNicSit
+  cites Kernel chapter Pci
+  cites Kernel chapter Hpet
+  cites Kernel chapter E1000e
+  cites Dev chapter NicAsde
+  cites Foreword chapter Maybe
+  cites Diag chapter DiagStage
+
+ NIC-1 and NIC-2 of build/boot/diag/NicSittingProbe.codex as a stage: what
+ the Intel part is, whether its window is reachable, what firmware left in
+ STATUS/CTRL/RCTL/TCTL and the RX ring registers, and how long one million
+ empty polls of a ring we own take on this box (the number NetIO spends its
+ retransmit bounds in). Nothing here writes to the part; the touch reads
+ STATUS and CTRL, and the poll walks descriptors we allocated and zeroed, so
+ DD is clear and e1000-poll-raw returns before it can touch the device.
+
+ We say:
+
+Section: States
+
+  nsi-states : List Text = ["ok", "no-part", "rejected", "bar-bad", "no-hpet"]
+
+Section: Rows
+
+  nsi-polls : Integer = 1000000
+
+  nsi-poll-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  nsi-poll-loop (mmio) (ring) (bufs) (cb) (n) =
+   if n <= 0 then 0
+   else let hp = __heap-save
+   in let r = e1000-poll-raw mmio ring bufs cb
+   in let rs = __heap-restore hp
+   in nsi-poll-loop mmio ring bufs cb (n - 1)
+
+  nsi-poll-micros : Integer -> Integer
+  nsi-poll-micros (mmio) =
+   let ring = alloc-zeroed (e1000-rx-count * e1000-desc-size) 16
+   in let bufs = alloc-zeroed (e1000-rx-count * e1000-buf-size) 16
+   in let cb = alloc-zeroed e1000-cb-size 16
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then 0 - 1
+   else let t0 = hpet-ticks
+   in let z = nsi-poll-loop mmio ring bufs cb nsi-polls
+   in let t1 = hpet-ticks
+   in (t1 - t0) * 1000000 / rate
+
+  nsi-bdf : PciDevice -> Text
+  nsi-bdf (d) = show (d.pci-bus) & ":" & show (d.pci-dev) & "." & show (d.pci-func)
+
+  nsi-regs : Integer -> Text
+  nsi-regs (mmio) =
+   let t = na-touch mmio
+   in let r = e1000-read mmio e1000-reg-rctl
+   in let tc = e1000-read mmio e1000-reg-tctl
+   in "status=" & show (t.nt-status) & " ctrl=" & show (t.nt-ctrl) & " rctl=" & show r & " rctl-en=" & na-yn (bit-and r e1000-rctl-en) & " tctl-en=" & na-yn (bit-and tc e1000-tctl-en) & " rdbal=" & show (e1000-read mmio e1000-reg-rdbal) & " rdlen=" & show (e1000-read mmio e1000-reg-rdlen) & " rdh=" & show (e1000-read mmio e1000-reg-rdh) & " rdt=" & show (e1000-read mmio e1000-reg-rdt)
+
+  nsi-part : PciDevice -> DiagResult
+  nsi-part (d) =
+   if na-eligible d == False then diag-result "rejected" diag-col-warn ["part " & nsi-bdf d & " " & na-reject-line d] ["part " & nsi-bdf d & " " & na-reject-line d]
+   else let v = e1000-bar-verdict (na-bar-of d)
+   in if v /= e1000-bar-ok then diag-result "bar-bad" diag-col-bad ["part " & nsi-bdf d & " verdict=" & na-verdict-text v] ["part " & nsi-bdf d & " verdict=" & na-verdict-text v]
+   else let mmio = na-mmio-of d
+   in let regs = nsi-regs mmio
+   in let started = hpet-start
+   in let hz = hpet-ticks-per-second
+   in let us = nsi-poll-micros mmio
+   in let head = "part " & nsi-bdf d & " verdict=ok mmio=" & show mmio
+   in let poll = "poll " & show nsi-polls & " empty=" & show us & "us tick100k=" & show (if us < 0 then 0 - 1 else us / 10) & "us hpet-hz=" & show hz & " (bed 13034us / 1303us)"
+   in if us < 0 then diag-result "no-hpet" diag-col-warn [head, poll] [head, regs, poll]
+   else diag-result "ok" diag-col-good [head, poll] [head, regs, poll]
+
+  nsi-run : DiagCtx -> [Device.Port, Device.Mmio] DiagResult
+  nsi-run (c) =
+   when e1000-find (c.dc-pci)
+    is None -> diag-result "no-part" diag-col-dim ["no eligible Intel part on the bus"] ["no eligible Intel part on the bus"]
+    is Just (d) -> nsi-part d

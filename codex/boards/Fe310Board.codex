@@ -74,6 +74,51 @@ Section: GPIO (0x10012000)
    mmio-write-32 (fe310-gpio-base + fe310-gpio-iof-en-off) (bit-or en (bit-shl 1 pin))
   end
 
+Section: GPIO Linear Handle
+
+ The foreword Pin threaded onto the FE310 GPIO block: open sets the pin's
+ direction, close clears its output-enable, each exactly once. The handle
+ carries fe310-gpio-base so close reaches the right register without the
+ caller re-supplying it.
+
+  fe310-gpio-config : Integer, PinMode -> [Device.Mmio] Integer
+  fe310-gpio-config (pin) (mode) =
+   when mode
+    is PinOutput -> fe310-gpio-set-output pin
+    is PinInput -> fe310-gpio-set-input pin
+    is PinAlternate (iof) -> fe310-gpio-set-iof pin iof
+    is PinAnalog -> fe310-gpio-set-input pin
+
+  fe310-gpio-open : Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
+  fe310-gpio-open (pin) (mode) = act
+   m <- fe310-gpio-config pin mode
+   Pin fe310-gpio-base pin
+  end
+
+  fe310-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
+  fe310-pin-write (p) (high) =
+   when p
+    is Pin (base) (pin) -> act
+      w <- fe310-gpio-write pin high
+      Pin base pin
+    end
+
+  fe310-pin-read : linear Pin -> [Gpio, Device.Mmio] (linear Pin, Boolean)
+  fe310-pin-read (p) =
+   when p
+    is Pin (base) (pin) -> act
+      v <- (fe310-gpio-read pin)
+      (Pin base pin, v)
+    end
+
+  fe310-pin-close : linear Pin -> [Gpio, Device.Mmio] Integer
+  fe310-pin-close (p) =
+   when p
+    is Pin (base) (pin) -> act
+      oe <- mmio-read-32 (base + fe310-gpio-output-en-off)
+      mmio-write-32 (base + fe310-gpio-output-en-off) (bit-and oe (bit-xor (bit-shl 1 pin) (0 - 1)))
+    end
+
 Section: UART0 (0x10013000)
 
   fe310-uart0-base : Integer = #10013000
@@ -129,6 +174,58 @@ Section: UART0 (0x10013000)
    cr <- (fe310-uart-send-byte uart-base 13)
    fe310-uart-send-byte uart-base 10
   end
+
+Section: UART Linear Handle
+
+ The foreword UartPort threaded onto the FE310 UART: open initialises the
+ port, write pushes one byte through the board's own tx-full poll, close
+ disables the transmitter. The handle carries the UART base so a caller
+ that opened UART0 cannot send down UART1 by passing the wrong address.
+
+  fe310-uart-open : Integer, Frequency -> [Uart, Device.Mmio] linear UartPort
+  fe310-uart-open (uart-base) (baud) = act
+   i <- fe310-uart-init uart-base baud
+   UartPort uart-base
+  end
+
+  fe310-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
+  fe310-uart-write (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- fe310-uart-send-byte b byte
+      UartPort b
+    end
+
+  fe310-uart-rxdata-empty : Integer = #80000000
+
+  fe310-uart-recv-byte : Integer, Integer -> [Device.Mmio] Integer
+  fe310-uart-recv-byte (uart-base) (fuel) =
+   if fuel <= 0 then 0 - 1
+   else act
+    rx <- (mmio-read-32 (uart-base + fe310-uart-rxdata-off))
+    if bit-and rx fe310-uart-rxdata-empty == 0 then bit-and rx #FF
+    else fe310-uart-recv-byte uart-base (fuel - 1)
+   end
+
+  fe310-uart-recv-bytes : Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  fe310-uart-recv-bytes (b) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- (fe310-uart-recv-byte b 100000)
+    fe310-uart-recv-bytes b n (i + 1) (list-push acc v)
+   end
+
+  fe310-uart-recv : linear UartPort, Integer -> [Uart, Device.Mmio] (linear UartPort, List Integer)
+  fe310-uart-recv (port) (n) =
+   when port
+    is UartPort (b) -> act
+      bytes <- (fe310-uart-recv-bytes b n 0 [])
+      (UartPort b, bytes)
+    end
+  fe310-uart-close : linear UartPort -> [Uart, Device.Mmio] Integer
+  fe310-uart-close (port) =
+   when port
+    is UartPort (b) -> mmio-write-32 (b + fe310-uart-txctrl-off) 0
 
 Section: SPI0 (QSPI, 0x10014000) -- SPI1 at 0x10024000
 
@@ -279,3 +376,48 @@ Section: Delay
   fe310-delay-ms (ms) = fe310-delay-loops (ms * 8000) 0
 
 Page 1
+
+Section: Linear SPI Transaction
+
+  fe310-spi-open : Integer -> [Spi, Device.Mmio] linear SpiBus
+  fe310-spi-open (base) = act
+   i <- fe310-spi-init base
+   SpiBus base
+  end
+
+  fe310-spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
+  fe310-spi-select (bus) (cs) =
+   when bus
+    is SpiBus (b) -> act
+      w <- (fe310-gpio-write cs False)
+      SpiTxn b cs
+    end
+
+  fe310-spi-transfer-bytes : Integer, List Integer, Integer, Integer, List Integer -> [Device.Mmio] List Integer
+  fe310-spi-transfer-bytes (b) (out) (i) (len) (acc) =
+   if i >= len then acc
+   else act
+    v <- (fe310-spi-transfer b (list-at out i))
+    fe310-spi-transfer-bytes b out (i + 1) len (list-push acc v)
+   end
+
+  fe310-spi-txn-transfer : linear SpiTxn, List Integer -> [Spi, Device.Mmio] (linear SpiTxn, List Integer)
+  fe310-spi-txn-transfer (txn) (out) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      got <- (fe310-spi-transfer-bytes b out 0 (list-length out) [])
+      (SpiTxn b cs, got)
+    end
+
+  fe310-spi-deselect : linear SpiTxn -> [Spi, Device.Mmio] linear SpiBus
+  fe310-spi-deselect (txn) =
+   when txn
+    is SpiTxn (b) (cs) -> act
+      w <- (fe310-gpio-write cs True)
+      SpiBus b
+    end
+
+  fe310-spi-close : linear SpiBus -> [Spi, Device.Mmio] Integer
+  fe310-spi-close (bus) =
+   when bus
+    is SpiBus (b) -> mmio-write-32 (b + fe310-spi-csmode-off) 0

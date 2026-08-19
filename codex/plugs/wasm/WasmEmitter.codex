@@ -362,6 +362,11 @@ Section: Local Collection
    if locals-contains xs name then xs
    else list-push xs name
 
+  collect-locals-params : List IRParam, Integer, List Text -> List Text
+  collect-locals-params (ps) (i) (acc) =
+   if i >= list-length ps then acc
+   else collect-locals-params ps (i + 1) (locals-add acc (wat-sanitize ((list-at ps i).name)))
+
   collect-locals-expr : IRExpr, List Text -> List Text
   collect-locals-expr (e) (acc) =
    when e
@@ -376,7 +381,7 @@ Section: Local Collection
     is IrIf (c) (t) (el) (ty) (sp) -> collect-locals-expr el (collect-locals-expr t (collect-locals-expr c acc))
     is IrLet (name) (ty) (val) (body) (sp) -> collect-locals-expr body (collect-locals-expr val (locals-add acc (wat-sanitize name)))
     is IrApply (f) (a) (ty) (sp) -> collect-locals-expr a (collect-locals-expr f (locals-add (locals-add acc "_rp") "_tv"))
-    is IrLambda (params) (body) (ty) (sp) -> collect-locals-expr body acc
+    is IrLambda (params) (body) (ty) (sp) -> collect-locals-expr body (collect-locals-params params 0 acc)
     is IrList (elems) (ty) (sp) -> collect-locals-list elems (locals-add (locals-add (locals-add acc "_rp") "_lp") "_tv")
     is IrMatch (scrut) (branches) (ty) (sp) -> collect-locals-branches branches (collect-locals-expr scrut (locals-add acc "_s"))
     is IrAct (stmts) (ty) (sp) -> collect-locals-stmts stmts acc
@@ -755,7 +760,37 @@ Section: Apply Emission
      else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n args
      else if lookup-arity (ctx.arities) n < 0 then emit-wat-apply-args ctx args 0
      else "(call $" & wat-sanitize n & " " & emit-wat-apply-args ctx args 0 & ")"
+    is IrLambda (ps) (lbody) (lty) (lsp) -> emit-wat-lambda-apply ctx ps lbody args
     is otherwise -> "(call_indirect " & emit-wat-apply-args ctx args 0 & " " & emit-wat-expr ctx root & ")"
+
+ WebAssembly has no closures and no way to invoke a lambda where it stands, and
+ the wire applies one at its definition site. The old arm emitted
+ `call_indirect` over the arguments and then spliced the BODY beside them as
+ another operand, so `lam_two` read `local.get $x` for a local nothing declares
+ and the module would not assemble.
+
+ Every parameter is bound into a local of its own name and the body follows.
+ That is legal because this emitter already resolves an `IrName` to
+ `local.get $name`, so the body needs no rewriting; the locals are declared by
+ `collect-locals-expr`, which now walks a lambda's parameters as well as its
+ body. Binding rather than substituting is what stops an argument that is a
+ CALL from being evaluated once per use.
+
+ A lambda applied to FEWER arguments than it declares is a partial application
+ and has no wasm form; it refuses rather than emitting a body whose remaining
+ parameters are unset.
+
+  emit-wat-lambda-apply : WasmCtx, List IRParam, IRExpr, List IRExpr -> Text
+  emit-wat-lambda-apply (ctx) (ps) (lbody) (args) =
+   if list-length args < list-length ps
+   then "(unreachable (; wasm plug: partial application of a lambda has no form ;))"
+   else emit-wat-lambda-binds ctx ps args 0 & " " & emit-wat-expr ctx lbody
+
+  emit-wat-lambda-binds : WasmCtx, List IRParam, List IRExpr, Integer -> Text
+  emit-wat-lambda-binds (ctx) (ps) (args) (i) =
+   if i >= list-length ps then ""
+   else "(local.set $" & wat-sanitize ((list-at ps i).name) & " " & emit-wat-expr ctx (list-at args i) & ") "
+        & emit-wat-lambda-binds ctx ps args (i + 1)
 
   emit-wat-ctor : WasmCtx, Text, List IRExpr -> Text
   emit-wat-ctor (ctx) (name) (args) =

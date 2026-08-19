@@ -2,15 +2,35 @@
 
 **Created**: 2026-06-12 (reek)
 **Status**: Structure shipped; the safety surface is real for the HAL
-itself and for `Flash`, and still absent from the nine board drivers.
-`codex/foreword/core/Board.codex` plus nine board chapters in
+itself, for `Flash`, and (2026-08-18) for UART and GPIO on all nine board
+drivers. `codex/foreword/core/Board.codex` plus nine board chapters in
 `codex/boards/` are in the tree with passing smoke tests. Since
 2026-07-13 every board function that touches a register declares
-`[Device.Mmio]`, and `Board.codex` carries linear handles for UART, SPI
-and (2026-07-16) `Flash` -- the last being the only peripheral with a
-capability of its own. What the board chapters still do not do is thread
-those handles or declare per-peripheral effects. See "What
-Is Actually Built" below.
+`[Device.Mmio]`, and `Board.codex` carries linear handles for UART, SPI,
+`Flash` (2026-07-16) and now a linear GPIO `Pin` (2026-08-18). **As of
+2026-08-18 all nine board chapters thread the shipped linear `UartPort`
+and `Pin` handles**: each board has `<b>-uart-open/write/close` and
+`<b>-gpio-open` + `<b>-pin-write/close` wrapping its own register-correct
+functions, so the board's UART and GPIO carry the open-once/close-once
+lifecycle (a dropped handle is CDX2063, a reused one CDX2061). QemuVirt is
+UART-only. **The per-peripheral capabilities now exist (2026-08-18, main
+17063, seed 7590CCA1):** `[Gpio]` (cap id 18), `[Uart]` (19) and `[Spi]`
+(20) are rows in `Capability.codex` mirroring `Flash`, and the foreword
+`gpio`/`uart`/`spi` handle ops carry `[Gpio, Device.Mmio]` /
+`[Uart, Device.Mmio]` / `[Spi, Device.Mmio]`, so a driver holding only
+`Device.Mmio` is refused (CDX2031, `errors/hal-launder-mmio-{gpio,uart,
+spi}`). **The nine board wrappers carry them too (main 17084):** each
+board's `<b>-uart-open/write/close` is `[Uart, Device.Mmio]` and its
+`<b>-gpio-open` + `<b>-pin-write/close` `[Gpio, Device.Mmio]`, so
+board-level access is gated the way the foreword handles are. **The read
+side exists (2026-08-18, root):** `gpio-read : linear Pin -> (linear Pin,
+Boolean)`, `uart-recv : linear UartPort, Integer -> (linear UartPort, List
+Integer)`, and the `SpiTxn` trio `spi-select`/`spi-transfer`/`spi-deselect`,
+after the type checker learned to mint owners for the linear components of
+a returned tuple (see "The read side" below), **and threaded into the
+boards (main 17146/17148/17156: pin-read on 8, uart-recv on 3, the SPI
+transaction on 6; 143 sub-tests).** Still open: Power (rulings 15) and ADC on
+the boards that gain an ADC driver. See "What Is Actually Built" below.
 **Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 2 (target boards)
 
 ## What Is Actually Built
@@ -37,18 +57,84 @@ that has not been true since the HAL grew real handles: a forgotten
 (2026-07-16) adds the third leg -- a library without `[Flash]` in its row
 cannot reach the bank, pinned by `errors/flash-launder-mmio`.
 
-What is still missing is that **the nine board chapters do not
-participate**. Not one declares a `[Gpio]`, `[Uart]`, `[Spi]`, `[I2c]`,
-`[Adc]`, or `[Power]` effect (they declare `[Device.Mmio]`, since
-2026-07-13, and nothing finer), and not one threads a linear handle. A
-board chapter is still an ordinary set of functions over ordinary
-records: the C HAL this document was written to replace, with better
-syntax and an honest effect row.
+**Update 2026-08-18: the nine board chapters now thread the shipped
+linear handles for UART and GPIO.** Each board grew `<b>-uart-open/write/
+close` returning the foreword `UartPort` and `<b>-gpio-open` +
+`<b>-pin-write/close` returning the foreword `Pin`, each wrapping the
+board's own register-correct functions. So a program driving a board's
+UART or GPIO now gets the open-once/close-once lifecycle the type system
+enforces (CDX2063 on a dropped handle, CDX2061 on a reused one), verified
+by each board's `*-drivers` smoke test under `build/boards-test.ps1` (all
+nine green, 126 sub-tests). The linear GPIO `Pin` handle itself was added
+to `Board.codex` the same day, mirroring the shipped UART trio.
 
-The remaining work is therefore not "build a HAL". It is: take the
-effect and handle-type surface specified below -- now demonstrated end to
-end by `Flash` -- and put it on the boards that already exist
-.
+**The per-peripheral capabilities now exist (2026-08-18, main 17063):**
+`[Gpio]`, `[Uart]` and `[Spi]` are rows in `Capability.codex` (cap ids
+18/19/20, kernel bits 27/28/29) mirroring `Flash`, and the foreword
+`gpio`/`uart`/`spi` handle ops carry them, so a driver holding only
+`Device.Mmio` is refused (CDX2031, three `hal-launder-mmio-*` tests). That
+is the mechanism the load-bearing "a dependency without `[Spi]` cannot
+reach the bus" claim in `ComplianceEvidence.md` needs. What the board
+chapters still do **not** do: their own `<b>-uart/gpio/spi` wrappers still
+carry `[Device.Mmio]` and need promoting to the new capabilities (a
+program calling a board wrapper is not yet gated). SPI/I2C/ADC/Power handle
+threading is also open: SPI and the read side need the tuple-returning ops
+(`SpiTxn`, `uart-recv`, `gpio-read`) the shipped foreword deferred.
+
+The remaining work is therefore: (1) promote the nine board wrappers to
+the `[Gpio]`/`[Uart]`/`[Spi]` capabilities the foreword now carries
+(**DONE, main 17084**), and (2) the tuple-returning and
+remaining-peripheral handles, building on the UART/GPIO threading now
+demonstrated end to end on every board.
+
+**The read side, built 2026-08-18 (root).** The tuple ops were deferred
+because the checker did not track them: a call returning `(linear Pin,
+Boolean)` is not a `LinearTy` at the top, so `let (p2, v) = gpio-read p`
+minted nothing and a dropped `p2` was silent, and the parser read
+`linear` inside a tuple type as a type variable. Both closed in the same
+CL: `TypeChecker.codex` "Linear Tuple Components" mints an owner per
+linear component of a returned tuple (let-pattern, `when` on the call,
+and act-bind then `when` on the name; a `_` at a linear position is
+CDX2063; a bare return of the tuple owner from a def declared to return
+that tuple type is sanctioned), and `parse-tuple-type-elem` gained the
+`linear` arm. `Board.codex` "The Read Side" then carries `gpio-read`
+(IDR +0x10), `uart-recv` (n polled bytes off the data register) and
+`SpiTxn` with `spi-select`/`spi-transfer`/`spi-deselect` (CS word at
+CR2 +0x04, DR +0x0C), all `[Gpio|Uart|Spi, Device.Mmio]`. Guards:
+`codex/test/hal-tuple-linear` (all three, both binding forms, run under
+codex-vm's RAM-backed windows) and `errors/hal-tuple-{leak,dup,wild,
+owner-leak}` plus `errors/hal-spi-cs-leak` ("leaving CS asserted is
+unrepresentable", now literally CDX2063). Design detail settled by the
+checker: a wrapper hands a component back by destructure-and-rebuild
+(`(Pin base pin, level)`), never by stashing the owner in a new tuple
+(CDX2065). **Threaded into the boards the same evening (main 17146/17148/17156):**
+`<b>-pin-read` on the eight GPIO boards; `<b>-uart-recv` on the three with a
+receive primitive (Esp32C6, Pi4, Stm32F4 first; Fe310, Rp2040, Stm32L4 gained a
+polled receive in main 17164 and both nRF an EasyDMA receive in 17194, so all eight UART boards); the linear SPI transaction
+`<b>-spi-open/select/txn-transfer/deselect/close` on the six SPI boards
+(Esp32C6, Fe310, Pi4, Rp2040, Stm32F4, Stm32L4; CS is a manual GPIO on each,
+GPIOA on the STM32s). `build/boards-test.ps1` 9 green, 143 sub-tests. Open:
+polled receive on the two nRF boards (UARTE is EasyDMA: RXD.PTR/MAXCNT +
+STARTRX/ENDRX, a buffer-based read, not a FIFO poll; Fe310/Rp2040/Stm32L4
+landed main 17164); I2C/ADC/Power handles. **Blocker for I2C/ADC/Power, found
+2026-08-18:** they need capability bits 30, 31, 32, and the boot grant is
+emitted as a sign-extended imm32 (`compiler-backlog` COMPILER-17): bit 31 would
+grant every bit from 31 up and bit 32 would never be granted. **Sidestepped
+2026-08-18 (root): the table's own unassigned bits 1, 2 and 13 carry `I2c`
+(cs-id 21), `Adc` (22) and `Power` (23), so no emitter changed and COMPILER-17
+stays latent for whatever capability comes next.** `Board.codex` "Linear I2C
+Bus and ADC Unit" carries `I2cBus` with `i2c-open/write/read/close` (write and
+read return `(linear I2cBus, ...)`) and `AdcUnit` with `adc-open/sample/close`
+(`(linear AdcUnit, Integer)`), STM32 register shape (I2C CR1/CR2/DR, ADC
+CR2/SQR3/DR), rows `[I2c, Device.Mmio]` / `[Adc, Device.Mmio]`. Guards:
+`hal-i2c-adc-linear` (x86, RAM read-back), `errors/hal-launder-mmio-{i2c,adc}`
+(CDX2031), `errors/hal-{i2c,adc}-leak` (CDX2063). `Power` has its row and no
+ops yet: `sleep-deep` consumes a linear `Board` (see "The sleep rule") and
+that handle does not exist; it is the next design step. **Board threading of
+I2C/ADC landed main 17183:** `<b>-i2c-open/close` and `<b>-i2c-bus-write-reg/
+read-reg` on Esp32C6, Pi4, Rp2040, Stm32F4, Stm32L4 (register-level ops through
+the handle, the shape the boards already had), `rp-adc-open/unit-sample/close`
+on RP2040 (the only board with an ADC driver); boards-test 152 sub-tests.
 
 **`Flash` shipped 2026-07-16 (blu)** -- it was the highest-value single
 piece of this design, and it is the first peripheral to get the full

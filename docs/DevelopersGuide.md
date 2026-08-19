@@ -508,19 +508,22 @@ Effect declarations:
     read-line      : [Console.Read] Text
 ```
 
-**Print through `print-line-uni`. `print-line` is the RAW one, and the
-name is the trap.** The three blocks above said `print-line` until
-2026-08-11, and the effect block declared a `print-line` that
-`codex/foreword/core/Console.codex` does not have -- it declares
+**`print-line` CONVERTS; `print-line-raw` is the byte-exact one.**
+`print-line` and `print-line-uni` both lower to `emit-print-line-builtin`
+(`Types/Builtins.codex`), which converts CCE to bytes at the I/O boundary,
+where rule 5 puts the conversion and nowhere else. `print-line-raw`
+(`emit-print-line-raw-builtin`) writes the internal CCE bytes straight at
+the serial port and is what a wire emitter says when it means it;
+`print-text` is the same raw byte loop without the terminator. **Until main
+14809 (2026-08-13) `print-line` was an exact alias for `print-line-raw`**,
+and the effect block above declared a `print-line` that
+`codex/foreword/core/Console.codex` does not have (it declares
 `print-line-uni` and `read-line`, with the split `Console.Write` /
-`Console.Read` rows shown above. Anything copied from here therefore got
-the BUILTIN of that name (`Types/Builtins.codex`), which lowers to
-`emit-print-line-raw-builtin` and writes the internal CCE bytes straight
-at the serial port with no conversion at the I/O boundary. Rule 5 puts
-that conversion at the boundary and nowhere else, and `print-line-uni`
-(`emit-print-line-builtin`) is where it lives.
+`Console.Read` rows shown above), so anything copied from here got the raw
+builtin of that name. That is what put the garbage below on the screen, and
+this paragraph said the opposite of the source from 08-13 until 08-18.
 
-It does not fail loudly. It prints, and the bytes are wrong in a way that
+Raw output does not fail loudly. It prints, and the bytes are wrong in a way that
 reads as a font or terminal problem. `Codex Browser v0.1` came out as
 ```
 2
@@ -529,12 +532,10 @@ $:
 because CCE orders letters by English frequency: `C` is 50, which is
 ASCII `'2'`; `e` is 13, which is a carriage return, hence the stray line
 break; `x` is 36, `'$'`; `B` is 58, `':'`. The browser shipped that banner
-for weeks and it was read as a display fault. Measured 2026-08-11: 192
-bare `print-line` call sites remain across `apps/` and `codex/`.
-
-`print-line-raw` and `print-text` are the honest names for the raw
-behaviour and are what a wire emitter should say when it means it --
-`print-text` is the same raw byte loop without the terminator.
+for weeks and it was read as a display fault. The 192 bare `print-line`
+sites measured on 2026-08-11 convert correctly since 14809; the two that
+MEANT raw bytes (the fishtank page emitters) are pinned to `print-line-raw`
+and their serial stream is proven byte-identical.
 
 ## Operators
 
@@ -1235,6 +1236,26 @@ mutable half is fixed, pinned by
 `codex/test/errors/stringbuilder-alias-local`). Known un-tracked
 edge: container literals in argument or tail position.
 
+**Linear tuple components (2026-08-18).** A call whose return type is
+a tuple with a `linear` component, `gpio-read : linear Pin -> [Gpio,
+Device.Mmio] (linear Pin, Boolean)`, mints owners for the components:
+`let (p2, level) = gpio-read p in ...` and `when gpio-read p is (p2,
+level) -> ...` track `p2` exactly-once (drop CDX2063, reuse CDX2061,
+a `_` at a linear position CDX2063), and `r <- gpio-read p` in an act
+block tracks `r` as the owner and its components again at `when r is
+(p2, level) -> ...`. Returning such a tuple owner bare from a function
+declared to return the same tuple type is sanctioned like a bare
+linear return. Not tracked: a linear PARAMETER of tuple type, and the
+components of a tuple owner rebound through a second name. To hand a
+component back inside a new tuple, destructure and rebuild the handle
+(`(Pin base pin, level)`); `(p2, level)` with the owner itself is
+CDX2065, the container-stash rule above. Guards:
+`codex/test/hal-tuple-linear` and `errors/hal-tuple-{leak,dup,wild,
+owner-leak}`. **Inside a tuple type `linear` needs `parse-tuple-type-
+elem`'s own arm** (also 2026-08-18): before it, `(linear Pin, Boolean)`
+parsed `linear` as a type variable applied to `Pin`, and the mismatch
+surfaced as `App[T Sum:Pin] vs Sum:Pin` at the return.
+
 ## Vector Types (SIMD)
 
 `Vector N T` is a fixed-width SIMD vector with `N` lanes of element
@@ -1475,6 +1496,18 @@ cost was always enforcing.
 When a scan must allocate regardless, bracket it with `__heap-save` /
 `__heap-restore` and emit into a pre-allocated buffer. `apps/wademo`'s
 loader took a CSV row from 3,938 to 96 bytes per row that way.
+
+**A secret in a `Text` cannot be zeroed by zeroing the `Text`, and there is
+deliberately no `text-zero`.** `Text` is `[len][bytes]` on the bump heap, but a
+value built by appending (an input field: `buf & char-to-text ch` per key)
+leaves every prefix on the heap as its own allocation, so zeroing the final
+value leaves the secret readable one byte short. Take a mark before the secret
+enters, keep nothing allocated after it, and finish with
+`heap-scrub-to mark` (`Foreword chapter HeapScrub`), which zero-fills
+`[mark, top)` and restores the heap; it is `__heap-restore` plus the zeroing,
+with the same contract (nothing above the mark may be used afterwards).
+Measured by `codex/test/heap-scrub`: 9 prefixes readable after a plain
+restore, 0 after the scrub. `GopWizard` is the worked example.
 
 ## Booleans
 
@@ -1996,6 +2029,19 @@ boundary: `to-unicode (char-code (char-at s i))` (cite `Foreword chapter
 CCE`). This bug is invisible in a round-trip test -- both sides agree --
 and it has already shipped a TLS SNI hostname and every key-schedule
 label in CCE.
+
+**A declared effect is the binary's capability grant, so a program that
+reads a disk must DECLARE `Device.Block` on `opening` even if a cited
+chapter grounds it.** The runtime-init grant mask is derived from
+`opening`'s effect row (`emit-runtime-init-fn` from `manifest-effs`), and a
+block read with no grant answers ZEROS while a write goes nowhere, both
+silently. Measured 2026-08-18: a fact-store writer whose `opening` said
+`[Console] Nothing` wrote a fact whose superblock read back as zeros
+("written but not readable back"); `[Console, Device.Block] Nothing` fixed it
+with no other change. The same holds for `Device.Port`, `Device.Mmio` and
+`Network`: the grounding chapter's internal exemption lets IT perform the
+effect, but the program that calls into it publishes the effect only by
+declaring it, and only a declared effect is granted at boot.
 
 **`end` is a reserved keyword.** Cannot be used as a parameter name
 or identifier.

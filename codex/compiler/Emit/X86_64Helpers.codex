@@ -3092,8 +3092,12 @@ Section: Binary Output
  answer 183 (0xB7) the guest stores address and length into the fixed
  cells 36160 and 36168 and rings doorbell 1296 (0x510) with command 3,
  so the whole buffer leaves in one VM exit. Anywhere else (older VM,
- real hardware) the port floats 255 and the per-byte UART loop below
- runs instead, identical to __write_binary minus the list boxing.
+ QEMU, real hardware) the port floats 255 and the UART loop below runs
+ instead. emit-com1-init writes FCR = 0xC7, so the 16550 transmit FIFO
+ is on and LSR bit 5 means the whole 16-byte FIFO is empty rather than
+ one holding register: poll it once, then rep outsb a burst of up to
+ 16. A rep string I/O access is a single trap under WHP and KVM, so a
+ burst costs two exits where sixteen single bytes cost thirty-two.
 
   emit-write-binary-buf-helper : CodegenState -> CodegenState
 
@@ -3145,33 +3149,39 @@ Section: Binary Output
 
    in let st21 = patch-jcc-at st20 legacy-pos (st20.code-len)
 
-   in let st22 = st-append-code st21 (li reg-r11 0)
+   in let st22 = st-append-code st21 (mov-rr reg-rsi reg-rbx)
 
-   in let loop-top = st22.code-len
+   in let st22a = st-append-code st22 (mov-rr reg-r11 reg-rcx)
 
-   in let st23 = st-append-code st22 (li reg-rax 0)
+   in let loop-top = st22a.code-len
+
+   in let st23 = st-append-code st22a (li reg-rax 0)
 
    in let st24 = st-append-code st23 (li reg-rdi wd-stale-tick-addr)
 
    in let st25 = st-append-code st24 (mov-store reg-rdi reg-rax 0)
 
-   in let st26 = st-append-code st25 (cmp-rr reg-r11 reg-rcx)
+   in let st26 = st-append-code st25 (cmp-ri reg-r11 0)
 
    in let done-pos = st26.code-len
 
-   in let st27 = st-append-code st26 (jcc cc-ge 0)
+   in let st27 = st-append-code st26 (jcc cc-le 0)
 
-   in let st28 = st-append-code st27 (mov-rr reg-rax reg-rbx)
+   in let st28 = st-append-code st27 (mov-rr reg-rcx reg-r11)
 
-   in let st29 = st-append-code st28 (add-rr reg-rax reg-r11)
+   in let st29 = st-append-code st28 (cmp-ri reg-rcx 16)
 
-   in let st30 = st-append-code st29 (movzx-byte reg-rax reg-rax 0)
+   in let burst-pos = st29.code-len
 
-   in let st31 = st-append-code st30 (push-r reg-rax)
+   in let st30 = st-append-code st29 (jcc cc-le 0)
 
-   in let wait-top = st31.code-len
+   in let st31 = st-append-code st30 (li reg-rcx 16)
 
-   in let st32 = st-append-code st31 (li reg-rdx 1021)
+   in let st31a = patch-jcc-at st31 burst-pos (st31.code-len)
+
+   in let wait-top = st31a.code-len
+
+   in let st32 = st-append-code st31a (li reg-rdx 1021)
 
    in let st33 = st-append-code st32 [236]
 
@@ -3185,15 +3195,13 @@ Section: Binary Output
 
    in let st37 = patch-jcc-at st36 thr-ready (st36.code-len)
 
-   in let st38 = st-append-code st37 (pop-r reg-rax)
+   in let st38 = st-append-code st37 (li reg-rdx 1016)
 
-   in let st39 = st-append-code st38 (li reg-rdx 1016)
+   in let st39 = st-append-code st38 (sub-rr reg-r11 reg-rcx)
 
-   in let st40 = st-append-code st39 out-dx-al
+   in let st40 = st-append-code st39 (cld & rep-outsb)
 
-   in let st41 = st-append-code st40 (add-ri reg-r11 1)
-
-   in let st42 = st-append-code st41 (jmp (loop-top - (st41.code-len + 5)))
+   in let st42 = st-append-code st40 (jmp (loop-top - (st40.code-len + 5)))
 
    in let st43 = patch-jcc-at st42 done-pos (st42.code-len)
 
