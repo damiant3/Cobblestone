@@ -87,11 +87,13 @@ function Resolve-PlugForewords {
         if ($visited[$key]) { return }
         if ($visiting[$key]) { return }
         $visiting[$key] = $true
+        # Presence is asked FIRST: asked only after the registry fails, a chapter
+        # both present and resolvable is bundled twice (CDX3006 per definition).
+        if ($present[(Get-CiteKey $name)]) { [void]$visiting.Remove($key); $visited[$key] = $true; return }
         $dir = $script:QuireDirs[$quire]
         $fwPath = if ($dir) { Join-Path $script:PlugBuildRepo (Join-Path $dir "$name.codex") } else { $null }
         if ((-not $fwPath) -or (-not (Test-Path -PathType Leaf $fwPath))) {
             [void]$visiting.Remove($key)
-            if ($present[(Get-CiteKey $name)]) { $visited[$key] = $true; return }
             $why = if ($dir) { "expected $fwPath" } else { "quire '$quire' is not registered in build/quire-map.ps1, and no chapter '$name' is present in the unit" }
             [Console]::Error.WriteLine("MISSING: cited $quire chapter '$name' ($why)")
             exit 3

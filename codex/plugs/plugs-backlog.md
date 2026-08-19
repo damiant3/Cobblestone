@@ -315,6 +315,40 @@ consequence of the unresolved `to-real-approx-saturating` call in this
 register and in `CrossLaneFilesystem.md`; both are corrected. That conversion
 is the identity on x86 (`emit-to-real-saturating-builtin` returns its
 argument's register), so its unresolved call changes no answer.
+## 1.46 -- match guards are dropped by every source-emitting plug, and the oracle subject now asks
+
+Found 2026-08-19 by Steve Howell (GitHub issue 72) on the zig plug and fixed
+there the same day (a guarded match emits as a labeled block of if-statements;
+guardless matches are byte-identical to before). `IRBranch` carries
+`guard : IRExpr`, `IrBoolLit True` when the arm has none; the machine-code
+plugs read it (arm64, riscv, t3isa) and NO text plug does: grep
+`codex/plugs/*/*.codex` for `.guard` and the three native lanes are the only
+hits. A guarded arm becomes a bare switch prong or if-branch and fires whenever
+its pattern matches.
+
+`codex/test/plug-oracle-arith.codex` carries a "Match guards" section now
+(`classify`, `band`: two guarded arms on one constructor, a guard on a
+catch-all, a guarded tuple payload; rows 41-49 of the truth). Measured through
+`build/plug-oracle-test.ps1` on seed `800A7683`, plug binaries rebuilt first:
+
+| arm | before the rows | with the rows |
+|---|---|---|
+| zig | PASS 40 | PASS 49 (fixed) |
+| python | PASS 40 | FAIL, rows 41/43/45/49 answer 1/1/4/1 for 3/2/7/2: guards dropped, WRONG VALUE, no refusal |
+| wasm | STALE | FAIL, the same four rows the same way |
+| csharp | PASS 40 | FAIL, the emitted program does not build: CS8510 "pattern is unreachable" three times on the switch expression |
+| typescript | PASS 40 | FAIL, the emitted program does not compile, and it is TWO defects: the guards are dropped (`else if (true)` for a guarded catch-all), AND `type Val = { _tag: "Num" } \| { _tag: "Pair" } \| { _tag: "Nil" }never;` -- the first VARIANT type this subject has ever carried, and the emitter writes `never` with no separator after the last alternative |
+
+Python and wasm are the shape the issue names, a wrong answer with no refusal;
+csharp and typescript happen to refuse only because two arms share a
+constructor. The remaining ~40 text plugs are not wired to the oracle and are
+presumed to share the drop; the zig fix is the worked shape (an if-chain with
+bindings before the guard, and `unreachable` after a non-catch-all tail).
+
+The typescript `never` is separate from guards and would have failed on any
+variant type; it is recorded here because the subject found it and nothing else
+has a row with a variant in it.
+
 ## 1.45 -- riscv answers False for `approx neg lt neg`, and it is the f32 COMPARISON path, not the arithmetic one
 
 Found 2026-08-18 (reek) while baselining 1.44, and separated from it on
