@@ -3450,6 +3450,23 @@ Section: Stale Read After In-Place Update
    in let news = rhs-consumes summary rhs
    in cv-add-skip removed news bindname 0 (list-length news)
 
+ Arguments to one call evaluate LEFT TO RIGHT, measured 2026-08-18 rather than
+ assumed: `two (addn s 10) (s.n)` answers 1111 under left-to-right and 1101
+ under right-to-left, and it answers 1111. So an argument that mutates has
+ already run by the time an argument to its right is read, and a mutation does
+ not have to be bound by a `let` to be visible. This walks the spine of the
+ already-evaluated part of an application and collects what its arguments
+ mutated.
+
+  arg-mutations : List MutatorEntry, AExpr -> List ConsumedVar
+  arg-mutations (summary) (e) =
+   when e
+    is AApplyExpr (f) (a) (s) ->
+     let deeper = arg-mutations summary f
+     in let here = rhs-consumes summary a
+     in cv-add-skip deeper here "" 0 (list-length here)
+    is otherwise -> []
+
   add-stale-warn : UnificationState, Text, Text, SourceSpan -> UnificationState
   add-stale-warn (st) (vname) (fld) (sp) =
    __record-set st "bag" (bag-add (st.bag) (make-warning cdx-stale-read-after-update ("Field '" & fld & "' is read from '" & vname & "' after '" & vname & "' was updated in place by an earlier call bound to a different name; '" & vname & "' now holds the updated value, not the original. Read the updated binding, or capture '" & vname & "." & fld & "' into a let before that call.") sp))
@@ -3464,7 +3481,10 @@ Section: Stale Read After In-Place Update
            then add-stale-warn st (vn.value) (fld.value) s
            else st
       is otherwise -> scan-stale summary consumed obj st
-    is AApplyExpr (f) (a) (s) -> scan-stale summary consumed a (scan-stale summary consumed f st)
+    is AApplyExpr (f) (a) (s) ->
+     let st1 = scan-stale summary consumed f st
+     in let news = arg-mutations summary f
+     in scan-stale summary (cv-add-skip consumed news "" 0 (list-length news)) a st1
     is ABinaryExpr (l) (op) (r) (s) -> scan-stale summary consumed r (scan-stale summary consumed l st)
     is AUnaryExpr (x) (s) -> scan-stale summary consumed x st
     is AIfExpr (c) (t) (el) (s) -> scan-stale summary consumed el (scan-stale summary consumed t (scan-stale summary consumed c st))
