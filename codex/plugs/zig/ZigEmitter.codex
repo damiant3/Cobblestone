@@ -774,12 +774,15 @@ Section: Builtin Emitter
  index. A target's own encoding appears at I/O and nowhere else, which for
  this plug means cx_cce_to_utf8 on the way to the terminal.
 
- A Char, though, is a CODEPOINT here, which is why char-code and
- code-to-char convert rather than vanish the way they do in the C# plug.
- That makes char-at the odd one out: it read the CCE byte and handed it
- back untranslated, so `char-code (char-at s i)` fed a CCE code to a table
- that wanted a codepoint and panicked. char-code-at is the one that answers
- in CCE, and it stays a bare read.
+ A Char is a CCE CODE here, the identity model bare metal and the C# plug
+ share: char-code and code-to-char vanish, char-at and char-code-at are the
+ same bare read, and a char literal's raw IR payload -- already a CCE code
+ -- compares equal to what char-at reads. Classification is banded in CCE
+ (cx_is_letter, cx_is_digit). The codepoint alternative was tried and is
+ structurally lossy: CCE has aliases (a tier-1 code and a tier-0 code can
+ name the same codepoint, and the canonical encoder picks tier 0), so any
+ code -> codepoint -> code detour canonicalises and corrupts byte-wise
+ text rebuilds. Codepoints exist at the I/O boundary only.
 
   zig-builtin-emitters : List ZigBuiltinEmitter =
    sort-zig-builtins [
@@ -805,8 +808,8 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "text-length", emit = \args ctx d ty -> "cx_text_len(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "char-code-at", emit = \args ctx d ty -> "cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "substring", emit = \args ctx d ty -> "cx_substring(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
-    ZigBuiltinEmitter { name = "code-to-char", emit = \args ctx d ty -> "cx_cce_to_cp(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
-    ZigBuiltinEmitter { name = "char-code", emit = \args ctx d ty -> "cx_cp_to_cce(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "code-to-char", emit = \args ctx d ty -> "(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "char-code", emit = \args ctx d ty -> "(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "is-letter", emit = \args ctx d ty -> "cx_is_letter(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "is-digit", emit = \args ctx d ty -> "cx_is_digit(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "bit-and", emit = \args ctx d ty -> "(" & emit-zig-expr (list-at args 0) ctx (d + 1) & " & " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
@@ -830,7 +833,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__deck-pos", emit = \args ctx d ty -> "cx_deck_pos()" },
     ZigBuiltinEmitter { name = "__deck-set", emit = \args ctx d ty -> "cx_deck_set(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "subj-deck-record", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
-    ZigBuiltinEmitter { name = "char-at", emit = \args ctx d ty -> "cx_cce_to_cp(cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & "))" },
+    ZigBuiltinEmitter { name = "char-at", emit = \args ctx d ty -> "cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "negate", emit = \args ctx d ty -> "(-" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__narrow", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "abs", emit = \args ctx d ty -> "@as(i64, @intCast(@abs(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")))" },
@@ -2746,8 +2749,8 @@ Section: Chapter Emission
    & "fn cx_text_to_double_bits(s: []const u8) i64 {\n    if (s.len == 0) return 0;\n    var i: usize = 0;\n    var neg = false;\n    if (s[0] == 73) {\n        neg = true;\n        i = 1;\n    }\n    var acc: i64 = 0;\n    var frac: i64 = 0;\n    var dot: i64 = 0;\n    while (i < s.len) : (i += 1) {\n        const b = s[i];\n        if (b == 65) {\n            dot = 1;\n            continue;\n        }\n        acc = acc *% 10 +% (@as(i64, b) -% 3);\n        frac += dot;\n    }\n    if (neg) acc = -%acc;\n    var v: f64 = @floatFromInt(acc);\n    if (frac != 0) {\n        var p: f64 = 1.0;\n        var k = frac;\n        while (k != 0) : (k -= 1) p *= 10.0;\n        v /= p;\n    }\n    return @bitCast(v);\n}\n"
    & "// real-f32 on bare metal is f32 bits in a general register (a movd\n// round-trip, emit-bits-to-real-approx-builtin); Real is f64 here, and\n// widening the named f32 value is exact.\n"
    & "fn cx_bits_to_real_approx(bits: i64) f64 {\n    return @floatCast(@as(f32, @bitCast(@as(u32, @truncate(@as(u64, @bitCast(bits)))))));\n}\n"
-   & "// A char is a CODEPOINT here and text is CCE, so making text from a\n// char must encode -- but encode to ONE byte, the way bare metal does:\n// emit-char-to-text-builtin stores the code with mov-store-byte, length 1,\n// no framing, truncating silently past 255. Byte-wise text rebuilds\n// (ir-quote walks char-code-at / code-to-char / char-to-text over every\n// byte) rely on that identity to pass CCE frame bytes through untouched;\n// framing here double-encodes the wire. The residue is the alias problem:\n// a 3-byte frame opener whose value collides with a tier-0 codepoint\n// (224, 225, 226, 228, 231-235, 237) canonicalises to the tier-0 code and\n// corrupts -- a limit of the codepoint-Char model itself, recorded in\n// PRIORITIES, not fixable in this function.\n"
-   & "fn cx_char_to_text(c: i64) []const u8 {\n    const b = cx_gpa.alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(cx_cp_to_cce(c))));\n    return b;\n}\n"
+   & "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\n"
+   & "fn cx_char_to_text(c: i64) []const u8 {\n    const b = cx_gpa.alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"
    & "fn cx_list_len(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"
    & "fn cx_list_at(l: anytype, i: i64) @TypeOf(l.items.items[0]) {\n    return l.items.items[@intCast(i)];\n}\n"
    & "fn cx_text_len(s: []const u8) i64 {\n    return @intCast(s.len);\n}\n"
@@ -2787,8 +2790,9 @@ Section: Chapter Emission
    & "// int-mod is Euclidean, so the result lands in [0, |b|) regardless of\n// either sign, where @rem takes the dividend's sign.\n"
    & "fn cx_mod(a: i64, b: i64) i64 {\n    const m = if (b < 0) -b else b;\n    const r = @rem(a, m);\n    return if (r < 0) r + m else r;\n}\n"
    & "fn cx_text_eq(a: []const u8, b: []const u8) bool {\n    return std.mem.eql(u8, a, b);\n}\n"
-   & "fn cx_is_letter(c: i64) bool {\n    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');\n}\n"
-   & "fn cx_is_digit(c: i64) bool {\n    return c >= '0' and c <= '9';\n}\n"
+   & "// Classification is banded in CCE: 13..64 are the ASCII letters, 65..96\n// the punctuation between, 97..127 the accented Latin and Cyrillic\n// letters, 3..12 the digits -- the same two-band test bare metal's\n// emit-is-letter-builtin encodes.\n"
+   & "fn cx_is_letter(c: i64) bool {\n    return (c >= 13 and c <= 64) or (c >= 97 and c <= 127);\n}\n"
+   & "fn cx_is_digit(c: i64) bool {\n    return c >= 3 and c <= 12;\n}\n"
    & "fn cx_new(v: anytype) *@TypeOf(v) {\n    const p = cx_gpa.create(@TypeOf(v)) catch @panic(\"oom\");\n    p.* = v;\n    return p;\n}\n"
    & "fn cx_concat(a: []const u8, b: []const u8) []const u8 {\n    return std.mem.concat(cx_gpa, u8, &.{ a, b }) catch @panic(\"oom\");\n}\n"
    & "fn cx_text_starts_with(s: []const u8, p: []const u8) bool {\n    return std.mem.startsWith(u8, s, p);\n}\n"
