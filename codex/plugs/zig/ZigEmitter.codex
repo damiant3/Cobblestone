@@ -63,7 +63,7 @@ Section: Keywords and Sanitization
  are the same identifier -- so these RENAME instead. X86_64Boot binds a
  chain st, sta, stb, stc, std, ste; the sixth one is `std`.
 
-  zig-prelude-decls : List Text = ["std", "main", "cx_heap", "cx_hp", "cx_arena_state", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest"]
+  zig-prelude-decls : List Text = ["std", "main", "cx_heap_mem", "cx_heap_reserve", "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest"]
 
   is-zig-prelude-decl : Text -> Boolean
   is-zig-prelude-decl (s) =
@@ -920,20 +920,23 @@ Section: Name Mapping
    zig-name : Text
   }
 
- __heap-save reads the arena bump pointer (cx_hp), which the buffer
- builtins share -- a buffer address minted by __heap-save must be one
- cx_buf_write_byte can dereference. The pointer boots at bare metal's own
+ __heap-save reads the bump frontier (cx_hp), which the buffer
+ builtins and the object allocator share -- a buffer address minted by
+ __heap-save must be one cx_buf_write_byte can dereference. The pointer boots at bare metal's own
  heap base (boot does mov r10, 6291456), because the absolute value is
  observable: the depot's arith-narrow-proven asserts __heap-save > 0 as a
  structural fact. The deck names call the prelude's real deck for the
  same reason -- deck position is observable, and the deck-*-contract
  subjects print it.
 
- One divergence remains and stays honest: cx_hp moves only under
- __heap-advance and __heap-restore, while bare metal's frontier moves on
- every allocation, so a subject that saturates there does not saturate
- here and diverges in the dump the oracle diffs. The choice is checked,
- not assumed.
+ The frontier moves on every allocation, as bare metal's does, and
+ __heap-restore reclaims everything since the matching save -- one heap,
+ one number. The divergence that remains and stays honest is the SIZES:
+ a zig record is not a bare-metal record, so a subject that prints a
+ frontier position taken after allocations prints a different number
+ here and diverges in the dump the oracle diffs. Positions bracketed
+ only by __heap-advance/__heap-restore deltas agree exactly, which is
+ what the rungs exercise. The choice is checked, not assumed.
 
   zig-name-map : List ZigNameEntry =
    [ZigNameEntry { codex-name = "True", zig-name = "true" },
@@ -2727,11 +2730,8 @@ Section: Chapter Emission
 
   zig-prelude : Text =
    "const std = @import(\"std\");\n\n"
-   & "// page_allocator rounds every allocation up to a 4096-byte page and this\n"
-   & "// compiler's average record is about 40 bytes: one arena, bump-allocated at\n"
-   & "// byte granularity, is bare metal's own model and 12.5x less resident.\n"
-   & "var cx_arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);\n"
-   & "const cx_gpa = cx_arena_state.allocator();\n\n"
+   & "// cx_gpa and the heap it allocates from live beside the buffer\n"
+   & "// builtins below: one region, one bump frontier, bare metal's model.\n\n"
    & "fn CxFn1(comptime A: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A) R };\n}\n"
    & "fn CxFn2(comptime A: type, comptime B: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B) R };\n}\n"
    & "fn CxFn3(comptime A: type, comptime B: type, comptime C: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C) R };\n}\n"
@@ -2759,26 +2759,23 @@ Section: Chapter Emission
    & "fn cx_ipow(a: i64, b: i64) i64 {\n    if (b < 0) return 0;\n    var acc: i64 = 1;\n    var base = a;\n    var e = b;\n    while (e > 0) {\n        if ((e & 1) == 1) acc = acc *% base;\n        base = base *% base;\n        e = e >> 1;\n    }\n    return acc;\n}\n"
    & "fn cx_shl(a: i64, b: i64) i64 {\n    return a << @as(u6, @intCast(b & 63));\n}\n"
    & "fn cx_shr(a: i64, b: i64) i64 {\n    return a >> @as(u6, @intCast(b & 63));\n}\n"
-   & "// The buffer model is the C# plug's: one flat zero-filled arena, a bump\n// pointer, and buffers as offsets into it. Reads and writes grow it on\n// demand, which matches an arena the guest zero-fills at boot. The bump\n// pointer boots at bare metal's own heap base (boot does mov r10, 6291456):\n// the absolute value is observable -- the depot's arith-narrow-proven\n// asserts __heap-save > 0 as a structural fact -- so the hosted arm answers\n// with bare metal's number, not an offset from a private zero.\n"
- A RESERVATION IS NOT AN ALLOCATION. `cx_heap_advance` and `cx_deck_set` move
- a bump pointer and nothing else: on bare metal that is a register add into an
- arena the guest already zero-filled, and materialising it here would charge
- real resident memory for memory the program has not touched. Measured before
- this was removed: `__heap-advance 3100000000` plus one write reached 2,810 MB
- resident in 671 ms, and `codex/test/act-tco-loop.codex` makes exactly that
- advance. Every read and write below calls `cx_buf_want` for the exact range
- it touches and the growth zero-fills, so a read inside a reserved-but-untouched
- region answers 0 either way; the only reader of the buffer's length is
- `cx_buf_want` itself.
-   & "// The buffer arena is the ONE thing here that does not use cx_gpa. It is\n// the only allocation that grows without bound, and an ArenaAllocator frees\n// nothing until teardown, so every geometric regrowth would leave the buffer\n// it replaced resident: measured 298 to 342 MB peak against 200 MB of live\n// data. page_allocator releases what a realloc replaces. Nothing else moves\n// off cx_gpa, where never-freeing is the point.\n"
-   & "const cx_heap_alloc = std.heap.page_allocator;\n"
-   & "var cx_heap: std.ArrayListUnmanaged(u8) = .empty;\n"
+   & "// ONE heap, bare metal's own model: records, lists, text, closures,\n// buffers and the emit workspace all come from a single bump frontier\n// (cx_hp), so __heap-restore reclaims everything allocated since the\n// matching __heap-save. On bare metal __alloc bumps the same pointer\n// the save/restore pair moves, and emit-all-defs brackets EVERY\n// definition in one -- emission costs the max over definitions there\n// and must not cost the sum here. The region is reserved once and\n// never moved: a reallocating region would dangle every pointer\n// handed out before the growth. page_allocator memory is lazily\n// faulted zero pages, so resident stays proportional to what is\n// touched, the zero-fill the guest does at boot comes free, and the\n// byte at index i IS address i. The reservation is finite on purpose:\n// the depot peeks absolute addresses (smp-* boards poll ~2.1 GB), and\n// an address outside the region must refuse with the address in the\n// message, not zero-fill its way up to it. The bump pointer boots at\n// bare metal's own heap base (boot does mov r10, 6291456): the\n// absolute value is observable -- the depot's arith-narrow-proven\n// asserts __heap-save > 0 as a structural fact. Addresses below the\n// base belong to the deck, which swaps cx_hp in and out below.\n"
+   & "const cx_heap_reserve: usize = 1536 * 1024 * 1024;\n"
+   & "var cx_heap_mem: []u8 = &.{};\n"
    & "var cx_hp: i64 = 6291456;\n"
-   & "fn cx_buf_want(n: i64) void {\n    const need: usize = @intCast(n);\n    if (cx_heap.items.len < need) cx_heap.appendNTimes(cx_heap_alloc, 0, need - cx_heap.items.len) catch @panic(\"oom\");\n}\n"
+   & "fn cx_heap_base() [*]u8 {\n    if (cx_heap_mem.len == 0) cx_heap_mem = std.heap.page_allocator.alloc(u8, cx_heap_reserve) catch @panic(\"cx heap: cannot reserve the region\");\n    return cx_heap_mem.ptr;\n}\n"
+   & "fn cx_buf_want(n: i64) void {\n    if (n < 0 or @as(usize, @intCast(n)) > cx_heap_reserve) std.debug.panic(\"cx heap: address {d} outside the {d}-byte region\", .{ n, cx_heap_reserve });\n    _ = cx_heap_base();\n}\n"
+   & "fn cx_bump_alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {\n    const base = alignment.forward(@intCast(cx_hp));\n    if (base + len > cx_heap_reserve) std.debug.panic(\"cx heap: exhausted at {d} + {d} of {d}\", .{ base, len, cx_heap_reserve });\n    cx_hp = @intCast(base + len);\n    return cx_heap_base() + base;\n}\n"
+   & "// In-place growth when the block is the topmost allocation is bare\n// metal's __list_snoc path 2 -- extend the frontier block, reallocate\n// only otherwise. The mirror, not an optimisation: a plug whose list\n// growth reallocates where bare metal extends allocates a different\n// amount for the same program. free rewinds only the topmost block,\n// the same rule from the other side.\n"
+   & "fn cx_bump_resize(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {\n    const off = @intFromPtr(memory.ptr) - @intFromPtr(cx_heap_base());\n    if (off + memory.len == @as(usize, @intCast(cx_hp))) {\n        if (off + new_len > cx_heap_reserve) return false;\n        cx_hp = @intCast(off + new_len);\n        return true;\n    }\n    return new_len <= memory.len;\n}\n"
+   & "fn cx_bump_remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {\n    return if (cx_bump_resize(ctx, memory, alignment, new_len, ra)) memory.ptr else null;\n}\n"
+   & "fn cx_bump_free(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {\n    const off = @intFromPtr(memory.ptr) - @intFromPtr(cx_heap_base());\n    if (off + memory.len == @as(usize, @intCast(cx_hp))) cx_hp = @intCast(off);\n}\n"
+   & "const cx_heap_vtable = std.mem.Allocator.VTable{ .alloc = cx_bump_alloc, .resize = cx_bump_resize, .remap = cx_bump_remap, .free = cx_bump_free };\n"
+   & "const cx_gpa = std.mem.Allocator{ .ptr = undefined, .vtable = &cx_heap_vtable };\n"
    & "fn cx_heap_save() i64 {\n    return cx_hp;\n}\n"
    & "fn cx_heap_advance(n: i64) i64 {\n    cx_hp += n;\n    return 0;\n}\n"
    & "fn cx_heap_restore(h: i64) i64 {\n    cx_hp = h;\n    return 0;\n}\n"
-   & "fn cx_peek_qword(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + cx_heap.items[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"
+   & "fn cx_peek_qword(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + cx_heap_mem[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"
    & "// address-of answers 0 here by X86_64Compound's own account of\n// targets without it; the argument is still evaluated so its binding\n// stays used.\nfn cx_address_of(v: anytype) i64 {\n    _ = v;\n    return 0;\n}\n"
    & "// The deck is the C# plug's rule (_Buf.deck_enter/deck_exit): the\n// outermost enter parks the bump pointer in the bivy and swaps the deck\n// pointer in; the outermost exit swaps back. Deck position is observable\n// (the depot's deck-*-contract subjects print it), so a no-op deck is a\n// wrong answer, not a simplification.\n"
    & "var cx_dptr: i64 = 0;\n"
@@ -2792,12 +2789,12 @@ Section: Chapter Emission
    & "fn cx_read_file_uni(path_cce: []const u8) []const u8 {\n    const al = cx_gpa;\n    const path = cx_cce_to_utf8(path_cce);\n    const z = al.allocSentinel(u8, path.len, 0) catch @panic(\"oom\");\n    @memcpy(z, path);\n    const rc = std.os.linux.openat(-100, z.ptr, .{ .ACCMODE = .RDONLY }, 0);\n    if (@as(isize, @bitCast(rc)) < 0) @panic(\"cx_read_file_uni: cannot open\");\n    const fd: i32 = @intCast(rc);\n    defer _ = std.os.linux.close(fd);\n    var raw: std.ArrayListUnmanaged(u8) = .empty;\n    var chunk: [65536]u8 = undefined;\n    while (true) {\n        const n = std.os.linux.read(fd, &chunk, chunk.len);\n        if (@as(isize, @bitCast(n)) < 0) @panic(\"cx_read_file_uni: read failed\");\n        if (n == 0) break;\n        raw.appendSlice(al, chunk[0..n]) catch @panic(\"oom\");\n    }\n    return cx_utf8_to_cce(raw.items);\n}\n"
    & "fn cx_write_all(bytes: []const u8) void {\n    var off: usize = 0;\n    while (off < bytes.len) {\n        const n = std.os.linux.write(1, bytes.ptr + off, bytes.len - off);\n        if (@as(isize, @bitCast(n)) <= 0) @panic(\"cx_write_all: write failed\");\n        off += n;\n    }\n}\n"
    & "fn cx_write_binary(vs: anytype) void {\n    const al = cx_gpa;\n    var out: std.ArrayListUnmanaged(u8) = .empty;\n    for (vs.items.items) |v| out.append(al, @intCast(@mod(v, 256))) catch @panic(\"oom\");\n    cx_write_all(out.items);\n}\n"
-   & "fn cx_write_binary_buf(b: i64, off: i64, len: i64) void {\n    cx_buf_want(b + off + len);\n    const s: usize = @intCast(b + off);\n    cx_write_all(cx_heap.items[s .. s + @as(usize, @intCast(len))]);\n}\n"
+   & "fn cx_write_binary_buf(b: i64, off: i64, len: i64) void {\n    cx_buf_want(b + off + len);\n    const s: usize = @intCast(b + off);\n    cx_write_all(cx_heap_mem[s .. s + @as(usize, @intCast(len))]);\n}\n"
    & "// variant-tag is the constructor's 0-based declaration index: bare\n// metal loads word 0 of the variant block (emit-variant-tag-builtin) and\n// writes find-ctor-tag there, and a union(enum)'s tag is numbered the same\n// way by declaration order. Self-recursive variants are pointers here, so\n// the pointer case dereferences first.\nfn cx_vtag(v: anytype) i64 {\n    return switch (@typeInfo(@TypeOf(v))) {\n        .pointer => @intCast(@intFromEnum(v.*)),\n        else => @intCast(@intFromEnum(v)),\n    };\n}\n"
-   & "fn cx_buf_write_byte(b: i64, off: i64, v: i64) i64 {\n    cx_buf_want(b + off + 1);\n    cx_heap.items[@intCast(b + off)] = @intCast(@mod(v, 256));\n    return off + 1;\n}\n"
-   & "fn cx_buf_write_bytes(b: i64, off: i64, vs: anytype) i64 {\n    const n: i64 = @intCast(vs.items.items.len);\n    cx_buf_want(b + off + n);\n    for (vs.items.items, 0..) |v, i| cx_heap.items[@as(usize, @intCast(b + off)) + i] = @intCast(@mod(v, 256));\n    return off + n;\n}\n"
-   & "fn cx_peek_byte(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 1);\n    return cx_heap.items[@intCast(b + off)];\n}\n"
-   & "fn cx_buf_read_bytes(b: i64, off: i64, n: i64) *CxList(i64) {\n    cx_buf_want(b + off + n);\n    const l = cx_ll_empty(i64);\n    l.items.ensureTotalCapacity(cx_gpa, @intCast(n)) catch @panic(\"oom\");\n    var cx_j: i64 = 0;\n    while (cx_j < n) : (cx_j += 1) l.items.appendAssumeCapacity(cx_heap.items[@as(usize, @intCast(b + off + cx_j))]);\n    return l;\n}\n"
+   & "fn cx_buf_write_byte(b: i64, off: i64, v: i64) i64 {\n    cx_buf_want(b + off + 1);\n    cx_heap_mem[@intCast(b + off)] = @intCast(@mod(v, 256));\n    return off + 1;\n}\n"
+   & "fn cx_buf_write_bytes(b: i64, off: i64, vs: anytype) i64 {\n    const n: i64 = @intCast(vs.items.items.len);\n    cx_buf_want(b + off + n);\n    for (vs.items.items, 0..) |v, i| cx_heap_mem[@as(usize, @intCast(b + off)) + i] = @intCast(@mod(v, 256));\n    return off + n;\n}\n"
+   & "fn cx_peek_byte(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 1);\n    return cx_heap_mem[@intCast(b + off)];\n}\n"
+   & "fn cx_buf_read_bytes(b: i64, off: i64, n: i64) *CxList(i64) {\n    cx_buf_want(b + off + n);\n    const l = cx_ll_empty(i64);\n    l.items.ensureTotalCapacity(cx_gpa, @intCast(n)) catch @panic(\"oom\");\n    var cx_j: i64 = 0;\n    while (cx_j < n) : (cx_j += 1) l.items.appendAssumeCapacity(cx_heap_mem[@as(usize, @intCast(b + off + cx_j))]);\n    return l;\n}\n"
    & "fn cx_shru(a: i64, b: i64) i64 {\n    return @bitCast(@as(u64, @bitCast(a)) >> @as(u6, @intCast(b & 63)));\n}\n"
    & "// int-mod is Euclidean, so the result lands in [0, |b|) regardless of\n// either sign, where @rem takes the dividend's sign.\n"
    & "fn cx_mod(a: i64, b: i64) i64 {\n    const m = if (b < 0) -b else b;\n    const r = @rem(a, m);\n    return if (r < 0) r + m else r;\n}\n"
@@ -2826,7 +2823,8 @@ Section: Chapter Emission
    & "fn cx_cp_to_cce(cp: i64) i64 {\n    for (cce_table, 0..) |u, i| {\n        if (u == cp) return @intCast(i);\n    }\n    const u: u32 = @intCast(cp);\n    for (cce_t1_code, cce_t1_size, cce_t1_uni) |start, size, uni| {\n        if (u >= uni and u < uni + size) return @intCast(start + (u - uni));\n    }\n    var base: u32 = 2176;\n    for (cce_t2_uni, cce_t2_size) |uni, size| {\n        if (u >= uni and u < uni + size) return @intCast(base + (u - uni));\n        base += size;\n    }\n    @panic(\"codepoint outside the CCE tiers\");\n}\n"
    & "fn cx_cce_frame(code: i64, out: *std.ArrayListUnmanaged(u8)) void {\n    const al = cx_gpa;\n    const c: u32 = @intCast(code);\n    if (c < 128) {\n        out.append(al, @intCast(c)) catch @panic(\"oom\");\n    } else if (c < 2176) {\n        const v = c - 128;\n        out.append(al, @intCast(192 + (v >> 6))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    } else if (c < 67712) {\n        const v = c - 2176;\n        out.append(al, @intCast(224 + (v >> 12))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 6) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    } else {\n        const v = c - 67712;\n        out.append(al, @intCast(240 + (v >> 18))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 12) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 6) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    }\n}\n"
    & "fn cx_cce_to_utf8(s: []const u8) []const u8 {\n    var out: std.ArrayListUnmanaged(u8) = .empty;\n    const al = cx_gpa;\n    var i: usize = 0;\n    while (i < s.len) {\n        const b0: i64 = s[i];\n        var code: i64 = b0;\n        if (b0 & 128 == 0) {\n            i += 1;\n        } else if (b0 & 224 == 192) {\n            code = 128 + ((b0 & 31) << 6) + (s[i + 1] & 63);\n            i += 2;\n        } else if (b0 & 240 == 224) {\n            code = 2176 + ((b0 & 15) << 12) + (@as(i64, s[i + 1] & 63) << 6) + (s[i + 2] & 63);\n            i += 3;\n        } else {\n            code = 67712 + ((b0 & 7) << 18) + (@as(i64, s[i + 1] & 63) << 12) + (@as(i64, s[i + 2] & 63) << 6) + (s[i + 3] & 63);\n            i += 4;\n        }\n        const cp: u32 = @intCast(cx_cce_to_cp(code));\n        if (cp < 128) {\n            out.append(al, @intCast(cp)) catch @panic(\"oom\");\n        } else if (cp < 2048) {\n            out.append(al, @intCast(192 + (cp >> 6))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        } else if (cp < 65536) {\n            out.append(al, @intCast(224 + (cp >> 12))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 6) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        } else {\n            out.append(al, @intCast(240 + (cp >> 18))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 12) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 6) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        }\n    }\n    return out.items;\n}\n"
-   & "fn cx_show_int(n: i64) []const u8 {\n    const ascii = std.fmt.allocPrint(cx_gpa, \"{d}\", .{n}) catch @panic(\"oom\");\n    const buf = cx_gpa.alloc(u8, ascii.len) catch @panic(\"oom\");\n    for (ascii, 0..) |cx_ch, cx_i| {\n        buf[cx_i] = if (cx_ch == '-') 73 else 3 + (cx_ch - '0');\n    }\n    return buf;\n}\n"
+   & "// One allocation, not two: the digits land in a stack scratch first\n// (i64 needs at most 20 bytes), then the CCE translation is the only\n// heap object. The double allocation left the ASCII copy stranded on\n// the frontier where it blocked in-place extension of whatever grew\n// next.\n"
+   & "fn cx_show_int(n: i64) []const u8 {\n    var cx_tmp: [24]u8 = undefined;\n    const ascii = std.fmt.bufPrint(&cx_tmp, \"{d}\", .{n}) catch unreachable;\n    const buf = cx_gpa.alloc(u8, ascii.len) catch @panic(\"oom\");\n    for (ascii, 0..) |cx_ch, cx_i| {\n        buf[cx_i] = if (cx_ch == '-') 73 else 3 + (cx_ch - '0');\n    }\n    return buf;\n}\n"
    & "fn cx_print_line(s: []const u8) void {\n    std.debug.print(\"{s}\\n\", .{cx_cce_to_utf8(s)});\n}\n"
    & "fn cx_print(s: []const u8) void {\n    std.debug.print(\"{s}\", .{cx_cce_to_utf8(s)});\n}\n\n"
 
