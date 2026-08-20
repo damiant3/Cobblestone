@@ -855,11 +855,19 @@ Section: Builtin Emitter
 
   lookup-zig-builtin : Text, List IRExpr, ZigCtx, Integer, CodexType -> Text
   lookup-zig-builtin (name) (args) (ctx) (d) (ty) =
-   let len = list-length zig-builtin-emitters
+   if lookup-arity (ctx.arities) name >= 0 & (zig-skip-def name == False) then ""
+   else let len = list-length zig-builtin-emitters
    in let pos = bsearch-zig-builtin-pos zig-builtin-emitters name 0 len
    in if pos >= len then ""
       else let e = list-at zig-builtin-emitters pos
       in if e.name == name then e.emit args ctx d ty else ""
+
+ A name the module itself defines is the module's: the user definition
+ wins over any builtin of the same name, so interception yields before
+ the table is consulted. The arity map is built from the unit's IRDefs,
+ which makes it the module-defined test. The one exemption is paired
+ with zig-skip-def: a definition deliberately not emitted has only its
+ intercept to answer for it, so the intercept must not yield.
 
 Section: Name Mapping
 
@@ -2424,7 +2432,10 @@ Section: Definition Emission
 
  subj-deck-record is the bundler's rename of the compiler's deck-record
  region hint; calls pass through as the argument and the identity def
- itself is skipped rather than emitted as an unusable generic.
+ itself is skipped rather than emitted as an unusable generic. Skipping
+ the def obliges the intercept: lookup-zig-builtin's yield-to-module-
+ definitions rule exempts exactly the names listed here, or every call
+ site would name a definition that was never emitted.
 
   zig-skip-def : Text -> Boolean
   zig-skip-def (n) = n == "subj-deck-record"
