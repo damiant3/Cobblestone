@@ -460,6 +460,19 @@ Section: Type Mapping
     is EffectfulTy (effs) (scopes) (inner) -> zig-is-text-type inner
     is otherwise -> False
 
+ Integer arithmetic wraps: Integer is the 64-bit machine word, bare metal
+ emits plain add/sub/mul/neg, and C#'s unchecked context does the same.
+ Zig's +/-/* are overflow-checked, so the integer rows carry the wrapping
+ forms and negation asks this predicate which family it is in.
+
+  zig-is-real-type : CodexType -> Boolean
+  zig-is-real-type (ty) =
+   when ty
+    is RealTy (w) (m) -> True
+    is VectorTy (vn) (vt) -> zig-is-real-type vt
+    is EffectfulTy (effs) (scopes) (inner) -> zig-is-real-type inner
+    is otherwise -> False
+
 Section: Arity Map
 
   ArityEntry = record {
@@ -1001,9 +1014,12 @@ Section: Binary Operator Mapping
   zig-bin-op-symbol : IRBinaryOp -> Text
   zig-bin-op-symbol (op) =
    when op
-    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
-    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
-    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrAddInt -> "+%"
+    is IrSubInt -> "-%"
+    is IrMulInt -> "*%"
+    is IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
     is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
     is IrRemInt -> "%"
     is IrPowInt -> "**"
@@ -1031,7 +1047,7 @@ Section: Binary Operator Mapping
     is IrConsList -> "cx_ll_cons(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
     is IrDivInt -> "@divTrunc(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
     is IrRemInt -> "@rem(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
-    is IrPowInt -> "std.math.pow(i64, " & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
+    is IrPowInt -> "cx_ipow(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
     is IrAnd -> "(" & emit-zig-expr l ctx (d + 1) & " and " & emit-zig-expr r ctx (d + 1) & ")"
     is IrOr -> "(" & emit-zig-expr l ctx (d + 1) & " or " & emit-zig-expr r ctx (d + 1) & ")"
     is IrEq ->
@@ -1294,7 +1310,9 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-zig-name n ty ctx d
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-zig-binary op l r ctx d
-    is IrNegate (operand) (nty) (sp) -> "(-" & emit-zig-expr operand ctx (d + 1) & ")"
+    is IrNegate (operand) (nty) (sp) ->
+     if zig-is-real-type nty then "(-" & emit-zig-expr operand ctx (d + 1) & ")"
+     else "(-%" & emit-zig-expr operand ctx (d + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> zig-pin-lit t el ("(if (" & emit-zig-expr c ctx (d + 1) & ") " & emit-zig-if-branch t ty el (zig-expect ctx ty) d & " else " & emit-zig-if-branch el ty t (zig-expect ctx ty) d & ")")
     is IrLet (name) (ty) (val) (body) (sp) ->
      if zig-is-seq-name name then zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
@@ -2724,8 +2742,9 @@ Section: Chapter Emission
    & "fn cx_text_len(s: []const u8) i64 {\n    return @intCast(s.len);\n}\n"
    & "fn cx_char_at(s: []const u8, i: i64) i64 {\n    return @intCast(s[@intCast(i)]);\n}\n"
    & "fn cx_substring(s: []const u8, start: i64, len: i64) []const u8 {\n    const a: usize = @min(@as(usize, @intCast(@max(start, 0))), s.len);\n    const b: usize = @min(a + @as(usize, @intCast(@max(len, 0))), s.len);\n    return s[a..b];\n}\n"
-   & "fn cx_shl(a: i64, b: i64) i64 {\n    return a << @as(u6, @intCast(b));\n}\n"
-   & "fn cx_shr(a: i64, b: i64) i64 {\n    return a >> @as(u6, @intCast(b));\n}\n"
+   & "fn cx_ipow(a: i64, b: i64) i64 {\n    if (b < 0) return 0;\n    var acc: i64 = 1;\n    var base = a;\n    var e = b;\n    while (e > 0) {\n        if ((e & 1) == 1) acc = acc *% base;\n        base = base *% base;\n        e = e >> 1;\n    }\n    return acc;\n}\n"
+   & "fn cx_shl(a: i64, b: i64) i64 {\n    return a << @as(u6, @intCast(b & 63));\n}\n"
+   & "fn cx_shr(a: i64, b: i64) i64 {\n    return a >> @as(u6, @intCast(b & 63));\n}\n"
    & "// The buffer model is the C# plug's: one flat zero-filled arena, a bump\n// pointer, and buffers as offsets into it. Reads and writes grow it on\n// demand, which matches an arena the guest zero-fills at boot. The bump\n// pointer boots at bare metal's own heap base (boot does mov r10, 6291456):\n// the absolute value is observable -- the depot's arith-narrow-proven\n// asserts __heap-save > 0 as a structural fact -- so the hosted arm answers\n// with bare metal's number, not an offset from a private zero.\n"
    & "var cx_heap: std.ArrayListUnmanaged(u8) = .empty;\n"
    & "var cx_hp: i64 = 6291456;\n"
@@ -2753,7 +2772,7 @@ Section: Chapter Emission
    & "fn cx_buf_write_bytes(b: i64, off: i64, vs: anytype) i64 {\n    const n: i64 = @intCast(vs.items.items.len);\n    cx_buf_want(b + off + n);\n    for (vs.items.items, 0..) |v, i| cx_heap.items[@as(usize, @intCast(b + off)) + i] = @intCast(@mod(v, 256));\n    return off + n;\n}\n"
    & "fn cx_peek_byte(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 1);\n    return cx_heap.items[@intCast(b + off)];\n}\n"
    & "fn cx_buf_read_bytes(b: i64, off: i64, n: i64) *CxList(i64) {\n    cx_buf_want(b + off + n);\n    const l = cx_ll_empty(i64);\n    l.items.ensureTotalCapacity(cx_gpa, @intCast(n)) catch @panic(\"oom\");\n    var cx_j: i64 = 0;\n    while (cx_j < n) : (cx_j += 1) l.items.appendAssumeCapacity(cx_heap.items[@as(usize, @intCast(b + off + cx_j))]);\n    return l;\n}\n"
-   & "fn cx_shru(a: i64, b: i64) i64 {\n    return @bitCast(@as(u64, @bitCast(a)) >> @as(u6, @intCast(b)));\n}\n"
+   & "fn cx_shru(a: i64, b: i64) i64 {\n    return @bitCast(@as(u64, @bitCast(a)) >> @as(u6, @intCast(b & 63)));\n}\n"
    & "// int-mod is Euclidean, so the result lands in [0, |b|) regardless of\n// either sign, where @rem takes the dividend's sign.\n"
    & "fn cx_mod(a: i64, b: i64) i64 {\n    const m = if (b < 0) -b else b;\n    const r = @rem(a, m);\n    return if (r < 0) r + m else r;\n}\n"
    & "fn cx_text_eq(a: []const u8, b: []const u8) bool {\n    return std.mem.eql(u8, a, b);\n}\n"
@@ -2766,7 +2785,7 @@ Section: Chapter Emission
    & "fn cx_text_concat_list(l: anytype) []const u8 {\n    var out = std.ArrayListUnmanaged(u8).empty;\n    for (l.items.items) |p| out.appendSlice(cx_gpa, p) catch @panic(\"oom\");\n    return out.items;\n}\n"
    & "fn cx_list_set_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.items[@intCast(i)] = v;\n    return l;\n}\n"
    & "// Text is CCE here, so a decimal digit is byte 3 + d and minus is 73;\n// parsing this as ASCII would silently read zero.\n"
-   & "fn cx_text_to_integer(s: []const u8) i64 {\n    var acc: i64 = 0;\n    var neg = false;\n    for (s, 0..) |b, i| {\n        if (i == 0 and b == 73) { neg = true; continue; }\n        if (b < 3 or b > 12) break;\n        acc = acc * 10 + @as(i64, b - 3);\n    }\n    return if (neg) -acc else acc;\n}\n"
+   & "fn cx_text_to_integer(s: []const u8) i64 {\n    var acc: i64 = 0;\n    var neg = false;\n    for (s, 0..) |b, i| {\n        if (i == 0 and b == 73) { neg = true; continue; }\n        if (b < 3 or b > 12) break;\n        acc = acc *% 10 +% @as(i64, b - 3);\n    }\n    return if (neg) -%acc else acc;\n}\n"
    & "fn cx_text_replace(s: []const u8, a: []const u8, b: []const u8) []const u8 {\n    if (a.len == 0) return s;\n    var out = std.ArrayListUnmanaged(u8).empty;\n    var i: usize = 0;\n    while (i < s.len) {\n        if (i + a.len <= s.len and std.mem.eql(u8, s[i .. i + a.len], a)) {\n            out.appendSlice(cx_gpa, b) catch @panic(\"oom\");\n            i += a.len;\n        } else {\n            out.append(cx_gpa, s[i]) catch @panic(\"oom\");\n            i += 1;\n        }\n    }\n    return out.items;\n}\n"
    & "fn cx_text_split(s: []const u8, sep: []const u8) *CxList([]const u8) {\n    const out = cx_ll_empty([]const u8);\n    if (sep.len == 0) {\n        _ = cx_ll_push(out, s);\n        return out;\n    }\n    var start: usize = 0;\n    while (std.mem.indexOfPos(u8, s, start, sep)) |p| {\n        _ = cx_ll_push(out, s[start..p]);\n        start = p + sep.len;\n    }\n    _ = cx_ll_push(out, s[start..]);\n    return out;\n}\n"
    & "const cce_table = [128]u32{ 0, 10, 32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 101, 116, 97, 111, 105, 110, 115, 104, 114, 100, 108, 99, 117, 109, 119, 102, 103, 121, 112, 98, 118, 107, 106, 120, 113, 122, 69, 84, 65, 79, 73, 78, 83, 72, 82, 68, 76, 67, 85, 77, 87, 70, 71, 89, 80, 66, 86, 75, 74, 88, 81, 90, 46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41, 43, 61, 42, 60, 62, 47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96, 94, 36, 37, 233, 232, 234, 235, 225, 224, 226, 228, 243, 244, 246, 250, 252, 241, 231, 237, 1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088, 1074, 1083, 1082, 1084, 1076, 1087, 1091 };\n"
