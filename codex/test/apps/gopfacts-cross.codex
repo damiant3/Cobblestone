@@ -1,0 +1,62 @@
+Chapter: GopFactsCross
+  cites Works chapter GopFacts
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+ The byte-compatibility cross. The kernel path (DiskFacts over the
+ block syscalls) and the desk path (GopFacts over GopDisk) must agree
+ about one store: what one writes the other reads, both directions,
+ same content, same counts. On codex-vm both roads reach the same
+ attached image, which is what makes the cross measurable in one boot.
+
+Section: Body
+
+  first-of : List Text -> Text
+  first-of (xs) = if list-length xs == 0 then "(none)" else list-at xs 0
+
+  kernel-writes : Integer -> [Device.Block, Console.Write] Integer
+  kernel-writes (x) = act
+    let s0 = disk-init
+    in let s1 = app-write-and-checkpoint s0 91 "kernel wrote this" 1000
+    in act
+      print-line-uni "kernel wrote"
+      let z = 0 in z
+    end
+  end
+
+  desk-reads : Integer -> [Device.Port, Console.Write] Integer
+  desk-reads (x) = act
+    st <- gfs-mount
+    texts <- gfs-scan-all st 91
+    print-line-uni ("desk reads " & show (list-length texts) & ": " & first-of texts)
+    print-line-uni ("desk head " & show (st.gfs-head) & " count " & show (st.gfs-count))
+    let z = 0 in z
+  end
+
+  desk-writes : Integer -> [Device.Port, Console.Write] Integer
+  desk-writes (x) = act
+    st <- gfs-mount
+    w <- gfs-write-and-checkpoint st 92 "desk wrote this" 2000
+    print-line-uni (if w.gfs-count == st.gfs-count + 1 then "desk wrote" else "FAIL: desk write refused")
+    let z = 0 in z
+  end
+
+  kernel-reads : Integer -> [Device.Block, Console.Write] Integer
+  kernel-reads (x) = act
+    let s = disk-load
+    in act
+      print-line-uni ("kernel reads " & show (list-length (app-scan-all s 92)) & ": " & first-of (app-scan-all s 92))
+      print-line-uni ("kernel still sees " & show (list-length (app-scan-all s 91)) & " of kind 91")
+      let z = 0 in z
+    end
+  end
+
+  opening : [Device.Block, Device.Port, Console.Write] Nothing = act
+    a <- kernel-writes 0
+    b <- desk-reads 0
+    c <- desk-writes 0
+    d <- kernel-reads 0
+    print-line-uni "done"
+  end

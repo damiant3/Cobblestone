@@ -58,7 +58,7 @@ Section: Expression Emission
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-wf-expr c arities indent & " ? " & emit-wf-expr t arities indent & " : " & emit-wf-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "((Func<dynamic>)(() => { dynamic " & wf-sanitize name & " = " & emit-wf-expr val arities indent & "; return " & emit-wf-expr body arities indent & "; }))()"
     is IrApply (f) (a) (ty) (sp) -> emit-wf-apply e arities indent
-    is IrLambda (params) (body) (ty) (sp) -> "((" & emit-wf-params params 0 & ") => " & emit-wf-expr body arities indent & ")"
+    is IrLambda (params) (body) (ty) (sp) -> "((Func<" & wf-lam-func-type (list-length params) 0 & ">)((" & emit-wf-params params 0 & ") => " & emit-wf-expr body arities indent & "))"
     is IrList (elems) (ty) (sp) -> "new List<dynamic> { " & emit-wf-elems elems arities indent 0 & " }"
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-wf-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-wf-act stmts arities indent
@@ -109,6 +109,10 @@ Section: Expression Emission
   emit-wf-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
    in emit-wf-expr (chain.root) arities indent & "(" & emit-wf-elems (chain.args) arities indent 0 & ")"
+
+  wf-lam-func-type : Integer, Integer -> Text
+  wf-lam-func-type (n) (i) =
+   if i > n then "" else (if i > 0 then ", " else "") & "dynamic" & wf-lam-func-type n (i + 1)
 
   emit-wf-params : List IRParam, Integer -> Text
   emit-wf-params (params) (i) =
@@ -397,7 +401,7 @@ Section: Builtin Definitions
   wf-bi-list =
    let l1 = wf-indent 2 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n"
    in let l2 = wf-indent 2 & "static dynamic list_at(dynamic xs, dynamic i) { return ((List<dynamic>)xs)[(int)(long)i]; }\n"
-   in let l3 = wf-indent 2 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n"
+   in let l3 = wf-indent 2 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & wf-indent 2 & "static List<dynamic> list_snoc(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n"
    in let l4 = wf-indent 2 & "static List<dynamic> list_insert_at(dynamic xs, dynamic i, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)(long)i, x); return r; }\n"
    in let l5 = wf-indent 2 & "static List<dynamic> list_remove_at(dynamic xs, dynamic i) { var r = new List<dynamic>((List<dynamic>)xs); r.RemoveAt((int)(long)i); return r; }\n"
    in let l6 = wf-indent 2 & "static List<dynamic> list_reverse(dynamic xs) { var r = new List<dynamic>((List<dynamic>)xs); r.Reverse(); return r; }\n"

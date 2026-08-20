@@ -246,6 +246,7 @@ the same command; reach for a different command (L-FALSIF).
 | P-DAMIAN | `p4 opened -a` shows a file held by `Damian@BigWhite_Codex_main`, often many revisions behind head. | That is his editor checking a file out on open. It is not a pending change, it will not clobber yours, it needs no coordination, and it is not a hazard to report (Damian, 2026-07-21). Any OTHER client holding a file is a real agent and a real merge concern. |
 | P-EXPECTED | A test passes every way you check it by hand and arrives RED in the battery. The `.expected` is one byte short: `Set-Content -NoNewline` leaves the file on `...yes` where the guest emits `...yes\n`. The harness strips CR from expected and compares exactly, so a missing trailing newline is a guaranteed fail. | **Every `.expected` in the tree ends with a trailing NEWLINE: 1237 of 1237, censused independently three times on 2026-08-15.** Write the newline. Do NOT copy the CR: every dev client is `LineEnd: local`, so the CRLF you observe is produced by YOUR sync and is a client property, not a depot fact, and the runner strips CR from the expected side anyway. The trailing newline is the half the harness actually tests. Verify with the RUNNER's own rule (section 4.6), never a `.Trim()` on both sides -- that normalises away exactly the difference the harness looks for (L-SIDECAR). A `text`-typed sidecar can also gain CR bytes on sync; `p4 retype -t binary <file>` if it keeps happening. |
 | P-SEEDSTALE (L) | A green gate does NOT mean the seed matches the source. `build.ps1` compares SUT against stage1 -- the compiler built from current source being a fixed point of itself. It never compares the seed against the SUT and cannot usefully, so `hard fixed point in one pass` is exactly what a stale seed looks like. | Ask not "does this change what the compiler emits" but **"does this change the compiler BINARY"**. Renames, added or removed definitions and chapter moves all qualify: a pure rename once shortened the mangled names baked into the compiler and moved the seed 672 bytes. Verify against the DEPOT every session (section 4.3). |
+| P-SEEDSWAP | The same check fires when main's seed moves AHEAD of yours: a lane lands a new seed while your gate runs, and the green gate you are holding certified a compiler that no longer exists. The gate cannot see it, because the source and compiler it was handed were consistent with each other, and the build token does not prevent it and is not meant to. | Compare THREE digests, not two: your workspace seed, your `Sut.cdx`, and the depot's. Sut equal to yours but not the depot's means the depot moved under you, so merge down, unshelve and RE-GATE, never rebuild a seed. Run it after every gate including apps-only CLs that took no token (section 4.3). |
 | P-SIGNED (L) | A seed installed from `build/output/NewSeed.cdx` carries zeros where its signature belongs and fails `test-self-verify.ps1` with `SIGNATURE INVALID`. `NewSeed.cdx` is a copy of the unsigned `stage1.cdx`; the sign phase patches key and signature into `Sut.cdx` in place. | Install the SIGNED `build/output/Sut.cdx` **as the final step. One exception, and it is a step you will need: section 4.4 installs the UNSIGNED `NewSeed.cdx` deliberately, as an intermediate bootstrap to converge a seed built by an older one.** That is correct and this row is not an argument against it; read 4.4 before refusing it. The content hash (bytes 8-39) deliberately excludes the signature region so the fixed-point test works on signed and unsigned alike, which is exactly why a hash match will NOT catch this: measured on a wiped-and-resynced workspace 2026-08-15, `NewSeed.cdx` and `Sut.cdx` agree on bytes 8-39 exactly while their signature regions are 64 zero bytes and a real signature. Compare WHOLE FILES (section 4.3) and run the self-verify (section 4.4). |
 | P-EDITOR | A command that wants a form hangs forever with no output. `p4 change` with no arguments, `p4 client`, and interactive `p4 resolve` all open `$P4EDITOR`, which is `Notepad.exe` on this box. Measured 2026-08-15: bare `p4 change` was still blocked at 15 s. Tool stdin is the null device and no agent can close the window. **The CL lifecycle block used to open with bare `p4 change`**, so the first line of the most-copied recipe in this file was one an agent could not run. | Never invoke the bare form. Use the `-o` / `-i` spec pipe for anything that would open a form: section 4.7 creates a numbered CL with its description in one shot. `p4 resolve` has the same problem and P-INTEGRATE already names it. |
 | P-WIPED | You suspect the workspace itself: strays you cannot account for, a file that will not come back, a tree of unknown provenance. Reverting and syncing per-file chases it forever. | **Delete every top-level entry except the untracked dot files (`.claude`, `.git`, `.p4config`, `.agentgrid`) and `p4 sync -f`.** It is safe and it is fast, and it is the shortest path to a workspace you can reason about. Confirm with `p4 diff -sd //Codex/<stream>/...` (unopened files missing from the client), which must be EMPTY. Done on eight clients across four agents on 2026-08-15, with the per-client restore counts reported between 9,985 and 19,398 files; `-sd` empty every time, and a restored tree then passed a full `build/build.ps1` with the hard fixed point in one pass, which is the stronger proof: complete AND buildable. Shelve anything you care about first -- this deletes unshelved work by design. |
@@ -322,6 +323,37 @@ is someone else's. Confirm it (`p4 changes //Codex/main/codex/compiler/...`
 against `p4 changes //Codex/main/seed/Codex.cdx`, looking for a compiler CL newer
 than the newest seed CL), then **rebuild and submit the seed rather than
 reporting it.** It is a mechanical fix and the source is the authority.
+
+**The check fires for two OPPOSITE reasons and they need opposite actions, so
+find out which before doing either.** The paragraph above is the case where
+main's seed is BEHIND main's compiler source. The other case is that main's
+seed is AHEAD of yours: somebody landed a new one while your gate ran, and
+your green gate certified a compiler that no longer exists. Rebuilding a seed
+there would be exactly wrong.
+
+Tell them apart by which side moved. Your `Sut.cdx` digest is printed by the
+gate; compare it against your workspace seed as well as the depot's:
+
+```powershell
+(Get-FileHash -Algorithm SHA256 seed/Codex.cdx).Hash              # what you gated WITH
+(Get-FileHash -Algorithm SHA256 build/output/Sut.cdx).Hash        # what you gated TO
+p4 print -q -o build-output/depot-seed.cdx //Codex/main/seed/Codex.cdx
+(Get-FileHash -Algorithm SHA256 build-output/depot-seed.cdx).Hash # what main has now
+p4 changes -m 3 //Codex/main/seed/Codex.cdx                       # and who moved it
+```
+
+Sut equal to your seed but not to the depot's means the depot moved under you:
+merge it down, unshelve onto it, and **re-gate**. Sut different from your own
+seed means your source produced a new compiler and the seed land in 4.3b is
+yours to do.
+
+**Run this after EVERY gate, not only when you expect a seed.** Measured
+2026-08-19: an apps-only CL that took no build token gated green while a new
+seed landed on main mid-run, and nothing in the gate's own output says so. It
+cannot: the gate certifies the source it was handed against the compiler it
+was handed, and both were internally consistent. The token does not protect
+against this either, and is not meant to -- it holds SEED-AFFECTING traffic
+still, and the lane that landed the seed was holding it legitimately.
 
 ### 4.3b An internal seed land is fast now (Damian, 2026-08-16)
 

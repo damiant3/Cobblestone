@@ -1,0 +1,63 @@
+Chapter: IdentitySign
+  cites Foreword chapter Identity
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+Section: A Known Seed
+
+  test-seed : List Integer = [7, 1, 8, 2, 8, 1, 8, 2, 8, 4, 5, 9, 0, 4, 5, 2, 3, 5, 3, 6, 0, 2, 8, 7, 4, 7, 1, 3, 5, 2, 6, 6]
+  test-msg : List Integer = [99, 111, 100, 101, 120]
+  other-msg : List Integer = [99, 111, 100, 101, 121]
+
+  put-list : Integer, List Integer, Integer -> Integer
+  put-list (buf) (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = poke-byte buf i (list-at xs i)
+    in put-list buf xs (i + 1)
+
+Section: Body
+
+  same-bytes : List Integer, List Integer, Integer -> Boolean
+  same-bytes (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same-bytes a b (i + 1)
+
+  locked-arm : Integer -> [Identity] Text
+  locked-arm (x) =
+    when key-sign-bytes test-msg
+      is None -> "PASS-locked"
+      is Just (s) -> "FAIL: signed while locked"
+
+  loaded-arm : Integer -> [Identity] Text
+  loaded-arm (rc) =
+    if rc /= 0 then "FAIL: key-load"
+    else when key-sign-bytes test-msg
+      is None -> "FAIL: None while loaded"
+      is Just (sig) ->
+        if list-length sig /= 64 then "FAIL: sig length " & show (list-length sig)
+        else if ed25519-verify (ed25519-public-key test-seed) test-msg sig == False then "FAIL: does not verify"
+        else if ed25519-verify (ed25519-public-key test-seed) other-msg sig then "FAIL: verifies the wrong message"
+        else when key-public
+          is None -> "FAIL: key-public None"
+          is Just (pub) -> if same-bytes pub (ed25519-public-key test-seed) 0 then "PASS-loaded" else "FAIL: key-public differs"
+
+  relocked-arm : Integer -> [Identity] Text
+  relocked-arm (z) =
+    when key-sign-bytes test-msg
+      is None -> "PASS-relocked"
+      is Just (s) -> "FAIL: signed after key-zero"
+
+  opening : [Console, Identity] Nothing = act
+    print-line-uni (locked-arm 0)
+    let buf = alloc-bytes 32
+    in let w = put-list buf test-seed 0
+    in act
+      rc <- key-load buf
+      print-line-uni (loaded-arm rc)
+      z <- key-zero
+      print-line-uni (relocked-arm z)
+    end
+  end

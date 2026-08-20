@@ -51,7 +51,8 @@ Section: Fixtures
       wid-wrapped = wrapped,
       wid-salt = fbc-salt,
       wid-iv = fbc-iv,
-      wid-version = 2
+      wid-version = 3,
+      wid-vouch = ed25519-sign (fbc-iota 0 32 []) pub (wz-vouch-msg pub)
     }
 
 
@@ -93,6 +94,28 @@ Section: Verdicts
       is None -> "version1=rejected"
       is Just (_) -> "version1=ACCEPTED"
 
+  fbc-version2-verdict : Integer, Integer -> Text
+  fbc-version2-verdict (buf) (len) =
+    let cm = poke-byte buf 4 2
+    in when (wz-parse-identity buf len)
+      is None -> "version2=rejected"
+      is Just (_) -> "version2=ACCEPTED"
+
+ The flip is restored afterwards so the arms that follow mutate the
+ fields they name against an otherwise intact record.
+
+  fbc-vouchflip-name : Maybe WzIdentity -> Text
+  fbc-vouchflip-name (p) = when p is None -> "vouchflip=rejected" is Just (_) -> "vouchflip=ACCEPTED"
+
+  fbc-vouchflip-verdict : Integer, Integer -> Text
+  fbc-vouchflip-verdict (buf) (len) =
+    let off = 76 + wz-get-u32 buf 72
+    in let orig = peek-byte buf off
+    in let cm = poke-byte buf off (bit-xor orig 255)
+    in let verdict = fbc-vouchflip-name (wz-parse-identity buf len)
+    in let back = poke-byte buf off orig
+    in verdict
+
   fbc-kat-verdict : Text
   fbc-kat-verdict =
     let dk = wz-derive-key fbc-salt fbc-pass
@@ -117,6 +140,25 @@ Section: Verdicts
     let seed = fbc-iota 0 32 []
     in let w = wz-keygen seed fbc-pass
     in "keygen version=" & show (w.wid-version) & " pub-eq=" & fbc-yn (wz-bytes-eq (w.wid-public) (fbc-identity.wid-public) 0) & " wrapped-len=" & show (list-length (w.wid-wrapped))
+
+  fbc-unlock-seed-ok : Maybe (List Integer) -> Text
+  fbc-unlock-seed-ok (m) = when m
+    is None -> "FAILED"
+    is Just (s) -> fbc-yn (wz-bytes-eq s (fbc-iota 0 32 []) 0)
+
+  fbc-unlock-rejected : Maybe (List Integer) -> Text
+  fbc-unlock-rejected (m) = when m
+    is None -> "Y"
+    is Just (_) -> "N"
+
+  fbc-rewrap-verdict : Text
+  fbc-rewrap-verdict =
+    let w2 = wz-keygen-with (fbc-iota 0 32 []) "newpass" (fbc-fill 0 16 11 []) (fbc-fill 0 16 13 [])
+    in "rewrap new=" & fbc-unlock-seed-ok (wz-unlock-try w2 "newpass") & " old-rejected=" & fbc-unlock-rejected (wz-unlock-try w2 fbc-pass) & " pub-eq=" & fbc-yn (wz-bytes-eq (w2.wid-public) (fbc-identity.wid-public) 0) & " vouch-eq=" & fbc-yn (wz-bytes-eq (w2.wid-vouch) (fbc-identity.wid-vouch) 0)
+
+  fbc-machine-wrap-verdict : Text
+  fbc-machine-wrap-verdict =
+    "machine-wrap=" & fbc-unlock-seed-ok (wz-unlock-try (wz-keygen (fbc-iota 0 32 []) "mchn") "mchn")
 
   fbc-bed-verdict : Text
   fbc-bed-verdict =
@@ -143,6 +185,10 @@ Section: Entry
       pv <- fbc-pinned-verdict parsed
       print-line-uni pv
       print-line-uni fbc-keygen-verdict
+      print-line-uni fbc-rewrap-verdict
+      print-line-uni fbc-machine-wrap-verdict
+      print-line-uni (fbc-vouchflip-verdict buf len)
+      print-line-uni (fbc-version2-verdict buf len)
       print-line-uni (fbc-badversion-verdict buf len)
       print-line-uni (fbc-corrupt-verdict buf len)
       print-line-uni fbc-bed-verdict

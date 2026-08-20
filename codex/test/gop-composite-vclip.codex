@@ -1,0 +1,91 @@
+Chapter: GopCompositeVclip
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Kernel chapter BitmapFont
+
+ The horizontal twin of this is `gop-composite-clip`, which pins that a label
+ stops at its box because `comp-fit` truncates it to the columns that fit. The
+ y axis had no such bound at all: `gop-put` is one `poke-32` at
+ `(y * stride + x) * 4`, so a node laid out below the last scanline wrote past
+ the end of the framebuffer.
+
+ The subject is a child taller than the box that holds it, which is not a
+ contrived shape: `flex-col-place` gives a flex child `box-max mh share`, so a
+ content minimum larger than its share wins and the child overflows its parent.
+
+ Three of the four arms exist to stop this passing for the wrong reason. The
+ first checks the child really is taller than the box, without which "nothing
+ escapes" is a statement about a tree that never overflowed. The second checks
+ the render painted at all, without which an empty buffer would pass. The
+ fourth fills below the box directly, without which a counter that can never
+ report an escape would pass.
+
+Section: Geometry
+
+  vc-w : Integer = 400
+
+  vc-h : Integer = 60
+
+  vc-rows : Integer = 256
+
+  vc-cells : Integer = 102400
+
+  vc-bytes : Integer = 409600
+
+  vc-sentinel : Integer = #111111
+
+  vc-other : Integer = #222222
+
+Section: Counting
+
+  fill-all : Integer, Integer, Integer, Integer -> Integer
+  fill-all (b) (i) (n) (c) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) c in fill-all b (i + 1) n c
+
+  count-touched : Integer, Integer, Integer, Integer -> Integer
+  count-touched (b) (i) (n) (acc) =
+    if i >= n then acc
+    else count-touched b (i + 1) n (acc + (if peek-32 b (i * 4) == vc-sentinel then 0 else 1))
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+Section: Subject
+
+  vc-tree : WidgetNode
+  vc-tree =
+    widget-panel "root" DirColumn 0 [
+      widget-set-flex (widget-set-min (widget-panel "tall" DirColumn 0 []) 200 200) 1
+    ]
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let buf = __heap-save
+    in let adv = __heap-advance (vc-bytes + 256)
+    in act
+      let z0 = fill-all buf 0 vc-cells vc-sentinel
+      in let laid = comp-render buf vc-w font vc-tree th vc-w vc-h 1
+      in let child = (list-at (laid.wn-children) 0).wn-bounds
+      in let inside = count-touched buf 0 (vc-h * vc-w) 0
+      in let below = count-touched buf (vc-h * vc-w) vc-cells 0
+
+      in let z1 = fill-all buf 0 vc-cells vc-sentinel
+      in let esc = gop-fill-rect buf vc-w 0 vc-h vc-w 40 vc-other
+      in let unclipped = count-touched buf (vc-h * vc-w) vc-cells 0
+
+      in act
+        print-line-uni ("child taller than its box : " & yn (child.lr-h > vc-h))
+        print-line-uni ("render painted inside     : " & yn (inside > 0))
+        print-line-uni ("nothing escapes below     : " & yn (below == 0))
+        print-line-uni ("control, unclipped fill   : " & yn (unclipped > 0))
+      end
+    end
+  end

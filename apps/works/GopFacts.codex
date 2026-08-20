@@ -1,0 +1,191 @@
+Chapter: GopFacts
+  cites Works chapter GopDisk
+  cites Works chapter GopFat16
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter FactLog
+  cites Foreword chapter Gpt
+  cites Foreword chapter Maybe
+
+ The fact store, read through the medium the desk selected. DiskFacts
+ reads through block-read-sector, the kernel syscall whose handler is
+ the ATA ports, so on the UEFI boot and on a USB stick every DiskFacts
+ consumer sees an empty store (WORKS-46). This chapter is the same
+ on-disk format -- DiskFacts' own superblock pack and FactLog's own
+ entry helpers, cited, not copied -- over GopDisk's disk-read-into and
+ disk-write-into, which reach whatever medium answered the probe.
+ Byte-compatibility is not asserted but crossed in the test: a store
+ the kernel wrote is read here, and a store written here is read by
+ disk-load (codex/test/apps/gopfacts-cross).
+
+ We say:
+
+Section: The Store
+
+  GopFactStore = record {
+    gfs-ok : Boolean,
+    gfs-base : Integer,
+    gfs-limit : Integer,
+    gfs-head : Integer,
+    gfs-count : Integer,
+    gfs-gen : Integer
+  }
+
+  gfs-none : GopFactStore = GopFactStore { gfs-ok = False, gfs-base = 0, gfs-limit = 0, gfs-head = 0, gfs-count = 0, gfs-gen = 0 }
+
+Section: Finding The Partition
+
+ The walk is gpt-esp-start's (GopFat16), asking for the facts GUID
+ instead of the ESP's. An unpartitioned medium is the whole-disk store
+ at base 0, as DiskFacts reads it; a partitioned medium without the
+ facts partition is refused.
+
+  gfs-is-facts-at : Integer, Integer -> Boolean
+  gfs-is-facts-at (buf) (off) =
+    let want = gpt-codex-facts-guid
+    in gfat-guid-eq-buf buf off want 0
+
+  gfs-scan-entries : Integer, Integer -> Integer
+  gfs-scan-entries (buf) (i) =
+    if i >= 4 then 0
+    else let off = i * 128
+    in if gfs-is-facts-at buf off then fat16-read-u32 buf (off + 32)
+    else gfs-scan-entries buf (i + 1)
+
+  gfs-part-end : Integer, Integer -> Integer
+  gfs-part-end (buf) (i) =
+    if i >= 4 then 0
+    else let off = i * 128
+    in if gfs-is-facts-at buf off then fat16-read-u32 buf (off + 40)
+    else gfs-part-end buf (i + 1)
+
+  gfs-region : [Device.Port] GopFactStore
+  gfs-region = act
+    hdr <- disk-read-sector 1
+    if hdr.dr-ok == False then gfs-none
+    else if gpt-sig-ok (hdr.dr-buf) == False then act
+      mbr <- disk-read-sector 0
+      if mbr.dr-ok == False then gfs-none
+      else if peek-byte (mbr.dr-buf) 510 == 85 & peek-byte (mbr.dr-buf) 511 == 170 then gfs-none
+      else GopFactStore { gfs-ok = True, gfs-base = 0, gfs-limit = 0, gfs-head = 0, gfs-count = 0, gfs-gen = 0 }
+    end
+    else act
+      ents <- disk-read-sector (fat16-read-u32 (hdr.dr-buf) 72)
+      if ents.dr-ok == False then gfs-none
+      else let start = gfs-scan-entries (ents.dr-buf) 0
+      in if start < 2 then gfs-none
+      else let last = gfs-part-end (ents.dr-buf) 0
+      in GopFactStore { gfs-ok = True, gfs-base = start, gfs-limit = last - start + 1, gfs-head = 0, gfs-count = 0, gfs-gen = 0 }
+    end
+  end
+
+Section: Mount
+
+ Two superblock copies at relative 0 and 1, newest generation wins,
+ exactly as read-superblock reads them; an unreadable pair is a store
+ that was never initialised, mounted empty so a first write can
+ initialise it the way disk-init does.
+
+  gfs-sb-at : Integer, Integer -> [Device.Port] Maybe Superblock
+  gfs-sb-at (base) (rel) = act
+    r <- disk-read-sector (base + rel)
+    if r.dr-ok == False then None
+    else unpack-superblock (r.dr-buf)
+  end
+
+  gfs-mount : [Device.Port] GopFactStore
+  gfs-mount = act
+    st <- gfs-region
+    if st.gfs-ok == False then st
+    else act
+      a <- gfs-sb-at (st.gfs-base) 0
+      b <- gfs-sb-at (st.gfs-base) 1
+      let sb = pick-superblock a b
+      in when sb
+        is None -> GopFactStore { gfs-ok = True, gfs-base = st.gfs-base, gfs-limit = st.gfs-limit, gfs-head = fl-fact-log-start, gfs-count = 0, gfs-gen = 1 }
+        is Just (s) -> GopFactStore { gfs-ok = True, gfs-base = st.gfs-base, gfs-limit = st.gfs-limit, gfs-head = s.log-head, gfs-count = s.fact-count, gfs-gen = s.index-gen }
+    end
+  end
+
+Section: Scan
+
+  gfs-content : Integer, Integer, Integer -> [Device.Port] Text
+  gfs-content (base) (sector) (clen) = act
+    let nsec = fl-sectors-for clen
+    in let buf = alloc-bytes (nsec * fl-sector-size)
+    in act
+      ok <- disk-read-into (base + sector) nsec buf
+      if ok then unpack-text buf fl-header-size clen else ""
+    end
+  end
+
+  gfs-scan-loop : Integer, Integer, Integer, Integer, List Text -> [Device.Port] List Text
+  gfs-scan-loop (base) (kind) (sector) (end-sec) (acc) = act
+    if sector >= end-sec then acc
+    else act
+      r <- disk-read-sector (base + sector)
+      if r.dr-ok == False then acc
+      else let k = fl-entry-kind (r.dr-buf)
+      in let clen = fl-entry-content-len (r.dr-buf)
+      in if clen == 0 then gfs-scan-loop base kind (sector + 1) end-sec acc
+      else let nsec = fl-sectors-for clen
+      in if k == kind then act
+        txt <- gfs-content base sector clen
+        gfs-scan-loop base kind (sector + nsec) end-sec (list-push acc txt)
+      end
+      else gfs-scan-loop base kind (sector + nsec) end-sec acc
+    end
+  end
+
+  gfs-scan-all : GopFactStore, Integer -> [Device.Port] List Text
+  gfs-scan-all (st) (kind) = act
+    if st.gfs-ok == False then []
+    else gfs-scan-loop (st.gfs-base) kind fl-fact-log-start (st.gfs-head) []
+  end
+
+Section: Write
+
+ The entry bytes are app-pack-fact's; the sectors go out through
+ disk-write-into; the superblock is packed by pack-superblock and
+ written to both copies, which is one write more than the kernel's
+ checkpoint makes and is why generation picking works on a store this
+ chapter has touched.
+
+  gfs-admits : GopFactStore, Integer -> Boolean
+  gfs-admits (st) (end-rel) = if st.gfs-limit == 0 then True else end-rel <= st.gfs-limit
+
+  gfs-write : GopFactStore, Integer, Text, Integer -> [Device.Port] GopFactStore
+  gfs-write (st) (kind) (content) (timestamp) = act
+    if st.gfs-ok == False then st
+    else let clen = text-length content
+    in let nsec = fl-sectors-for clen
+    in if gfs-admits st (st.gfs-head + nsec) == False then st
+    else let buf = alloc-bytes (nsec * fl-sector-size)
+    in let z = zero-bytes buf 0 (nsec * fl-sector-size)
+    in let packed = app-pack-fact buf kind content timestamp
+    in act
+      ok <- disk-write-into ((st.gfs-base) + (st.gfs-head)) nsec buf
+      if ok == False then st
+      else GopFactStore { gfs-ok = True, gfs-base = st.gfs-base, gfs-limit = st.gfs-limit, gfs-head = st.gfs-head + nsec, gfs-count = st.gfs-count + 1, gfs-gen = st.gfs-gen }
+    end
+  end
+
+  gfs-checkpoint : GopFactStore -> [Device.Port] GopFactStore
+  gfs-checkpoint (st) = act
+    if st.gfs-ok == False then st
+    else let sb = Superblock { log-head = st.gfs-head, fact-count = st.gfs-count, index-gen = st.gfs-gen + 1 }
+    in let buf = alloc-bytes fl-sector-size
+    in let p = pack-superblock buf sb
+    in act
+      a <- disk-write-into (st.gfs-base) 1 buf
+      b <- disk-write-into ((st.gfs-base) + 1) 1 buf
+      GopFactStore { gfs-ok = st.gfs-ok, gfs-base = st.gfs-base, gfs-limit = st.gfs-limit, gfs-head = st.gfs-head, gfs-count = st.gfs-count, gfs-gen = st.gfs-gen + 1 }
+    end
+  end
+
+  gfs-write-and-checkpoint : GopFactStore, Integer, Text, Integer -> [Device.Port] GopFactStore
+  gfs-write-and-checkpoint (st) (kind) (content) (timestamp) = act
+    w <- gfs-write st kind content timestamp
+    if w.gfs-head == st.gfs-head then st
+    else gfs-checkpoint w
+  end

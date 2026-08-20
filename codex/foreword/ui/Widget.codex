@@ -184,6 +184,21 @@ Section: Modification
       wn-bounds = w.wn-bounds
     }
 
+ A size a caller means as FIXED takes both calls, and this is the one that
+ says so. `widget-set-min` sets a minimum and preserves flex, and
+ `widget-panel` defaults flex to 1 where a label, a button and a separator
+ all default it to 0, so a panel given only a minimum stays flexible and
+ shares out the container instead. The minimum never binds and nothing
+ reports it: the browser's chrome asked for a 32-pixel tab bar and got three
+ rows of 247, and a `FilterableList` row asking for 22 measured 135 in a
+ 600-tall box (`browser-backlog.md` BROWSER-2, `codex/test/ui/fixed-row`).
+
+ It is still a MINIMUM and not a ceiling, so a fixed row is at least as tall
+ as what it holds, as WORKS-45 requires of every panel.
+
+  widget-fixed : WidgetNode, Integer, Integer -> WidgetNode
+  widget-fixed (w) (minw) (minh) = widget-set-flex (widget-set-min w minw minh) 0
+
   widget-set-tone : WidgetNode, Integer -> WidgetNode
   widget-set-tone (w) (tone) =
     WidgetNode {
@@ -245,16 +260,91 @@ Section: Queries
       is Just (found) -> Just found
       is None -> widget-find-children children target (i + 1) n
 
+Section: Intrinsic Size
+
+ `flex-col-place` gives a child a rect of `li-min-h` plus its margin, and
+ `box-content-from-style` then subtracts margin, border and padding again
+ from inside that rect. So a panel needing `inner` for its children must ask
+ for `inner + style-overhead-h`, margin counted twice, which is the engine's
+ own arithmetic rather than the box model's.
+
+  widget-measure : WidgetNode, Theme -> WidgetNode
+  widget-measure (w) (th) =
+    if w.wn-child-count == 0 then w
+    else let kids = widget-measure-children (w.wn-children) th 0 (w.wn-child-count) []
+    in let style = widget-resolve-style w th
+    in let n = w.wn-child-count
+    in let total-gap = if n > 1 then w.wn-gap * (n - 1) else 0
+    in let inner-w = when w.wn-layout-dir
+      is DirRow -> widget-sum-min-w kids th 0 n 0 + total-gap
+      is DirColumn -> widget-max-min-w kids th 0 n 0
+    in let inner-h = when w.wn-layout-dir
+      is DirRow -> widget-max-min-h kids th 0 n 0
+      is DirColumn -> widget-sum-min-h kids th 0 n 0 + total-gap
+    in WidgetNode {
+      wn-kind = w.wn-kind, wn-state = w.wn-state, wn-id = w.wn-id,
+      wn-children = kids, wn-child-count = n,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex,
+      wn-min-w = __narrow (box-min 32767 (box-max (w.wn-min-w) (inner-w + style-overhead-w style))),
+      wn-min-h = __narrow (box-min 32767 (box-max (w.wn-min-h) (inner-h + style-overhead-h style))),
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
+
+  widget-measure-children : List WidgetNode, Theme, Integer, Integer, List WidgetNode -> List WidgetNode
+  widget-measure-children (children) (th) (i) (n) (acc) =
+    if i >= n then acc
+    else widget-measure-children children th (i + 1) n (list-push acc (widget-measure (list-at children i) th))
+
+  widget-item-w : WidgetNode, Theme -> Integer
+  widget-item-w (c) (th) =
+    let style = widget-resolve-style c th
+    in box-max (c.wn-min-w) (style.ws-min-width) + edges-h (style.ws-margin)
+
+  widget-item-h : WidgetNode, Theme -> Integer
+  widget-item-h (c) (th) =
+    let style = widget-resolve-style c th
+    in box-max (c.wn-min-h) (style.ws-min-height) + edges-v (style.ws-margin)
+
+  widget-sum-min-w : List WidgetNode, Theme, Integer, Integer, Integer -> Integer
+  widget-sum-min-w (kids) (th) (i) (n) (acc) =
+    if i >= n then acc
+    else widget-sum-min-w kids th (i + 1) n (acc + widget-item-w (list-at kids i) th)
+
+  widget-sum-min-h : List WidgetNode, Theme, Integer, Integer, Integer -> Integer
+  widget-sum-min-h (kids) (th) (i) (n) (acc) =
+    if i >= n then acc
+    else widget-sum-min-h kids th (i + 1) n (acc + widget-item-h (list-at kids i) th)
+
+  widget-max-min-w : List WidgetNode, Theme, Integer, Integer, Integer -> Integer
+  widget-max-min-w (kids) (th) (i) (n) (acc) =
+    if i >= n then acc
+    else widget-max-min-w kids th (i + 1) n (box-max acc (widget-item-w (list-at kids i) th))
+
+  widget-max-min-h : List WidgetNode, Theme, Integer, Integer, Integer -> Integer
+  widget-max-min-h (kids) (th) (i) (n) (acc) =
+    if i >= n then acc
+    else widget-max-min-h kids th (i + 1) n (box-max acc (widget-item-h (list-at kids i) th))
+
 Section: Tree Layout
+
+ The measure runs once at the root and the arrange walks the tree the
+ measured node hands back. Measuring inside the recursion instead would walk
+ every subtree once per level it sits under.
+
   widget-layout : WidgetNode, Theme, LayoutRect -> WidgetNode
-  widget-layout (w) (th) (container) =
+  widget-layout (w) (th) (container) = widget-arrange (widget-measure w th) th container
+
+  widget-arrange : WidgetNode, Theme, LayoutRect -> WidgetNode
+  widget-arrange (w) (th) (container) =
     let style = widget-resolve-style w th
     in let content = box-content-from-style container style
     in let placed = widget-set-bounds w container
     in if placed.wn-child-count == 0 then placed
     else let items = widget-children-to-items (placed.wn-children) th 0 (placed.wn-child-count) []
     in let result = flex-layout content (placed.wn-layout-dir) (placed.wn-gap) items (placed.wn-child-count)
-    in let laid-out = widget-layout-children (placed.wn-children) th (result.lrs) 0 (placed.wn-child-count) []
+    in let laid-out = widget-arrange-children (placed.wn-children) th (result.lrs) 0 (placed.wn-child-count) []
     in WidgetNode {
       wn-kind = placed.wn-kind, wn-state = placed.wn-state, wn-id = placed.wn-id,
       wn-children = laid-out, wn-child-count = placed.wn-child-count,
@@ -272,13 +362,13 @@ Section: Tree Layout
     in let item = layout-item-m (box-max (child.wn-min-w) (style.ws-min-width)) (box-max (child.wn-min-h) (style.ws-min-height)) (child.wn-flex) (style.ws-margin)
     in widget-children-to-items children th (i + 1) n (list-push acc item)
 
-  widget-layout-children : List WidgetNode, Theme, List LayoutRect, Integer, Integer, List WidgetNode -> List WidgetNode
-  widget-layout-children (children) (th) (rects) (i) (n) (acc) =
+  widget-arrange-children : List WidgetNode, Theme, List LayoutRect, Integer, Integer, List WidgetNode -> List WidgetNode
+  widget-arrange-children (children) (th) (rects) (i) (n) (acc) =
     if i >= n then acc
     else let child = list-at children i
     in let r = list-at rects i
-    in let laid-out = widget-layout child th r
-    in widget-layout-children children th rects (i + 1) n (list-push acc laid-out)
+    in let laid-out = widget-arrange child th r
+    in widget-arrange-children children th rects (i + 1) n (list-push acc laid-out)
 
 Section: Style Resolution
   widget-resolve-style : WidgetNode, Theme -> WidgetStyle

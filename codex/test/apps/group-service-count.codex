@@ -1,0 +1,60 @@
+Chapter: GroupServiceCount
+  cites Net chapter GroupMembership
+  cites Foreword chapter Maybe
+
+ The service registry's count must equal the list it counts. That invariant
+ broke on 2026-08-19 and nothing here could see it: `gs-register-service` read
+ `list-length deduped + 1` AFTER pushing onto `deduped`, and `list-push` had
+ already extended it in place, so one registered service reported two. The
+ next `gs-find-service` walked to index 1 of a one-element list and took the
+ bounds trap, EXC=06.
+
+ THIS ARM EXISTS BECAUSE THE ONE THAT FOUND IT IS NOT RUN BY ANYTHING.
+ `apps/nettool/tests/TestGroupMembership.codex` covers it and lives under
+ `apps/`, where `build.ps1`'s app-sweep phase COMPILES every entry chapter and
+ runs none of them, so a runtime trap there is invisible to every gate. This
+ file is in `codex/test/apps`, which `test.ps1` sweeps wholesale and actually
+ executes.
+
+ The count is printed beside the length rather than compared here, so the
+ `.expected` carries both numbers and a future drift names itself instead of
+ reporting a bare False.
+
+ We say:
+
+Section: Fixtures
+
+  web-1 : ServiceLocation = svc-location-new "web" "1.0" "node-1" "10.0.2.15" 80 SrPrimary
+  db-2 : ServiceLocation = svc-location-new "db" "1.0" "node-2" "10.0.2.16" 5432 SrPrimary
+
+Section: The Invariant
+
+ One service: the count and the list must both say one. A second, different
+ service: both say two. Re-registering the SAME service from the same member
+ must dedup, so both still say two rather than three -- that arm is what makes
+ this a test of the count rather than of the push.
+
+  base : GroupState = group-new "g" "node-1"
+  one : GroupState = gs-register-service base web-1
+  two : GroupState = gs-register-service one db-2
+  again : GroupState = gs-register-service two web-1
+
+  row : Text, GroupState -> Text
+  row (label) (st) =
+    label & " count=" & show (st.gs-service-count) & " len=" & show (list-length (st.gs-services))
+
+Section: Entry
+
+ `gs-find-service` is called last because it is the reader that trapped: it
+ walks `0` to `gs-service-count`, so a count larger than the list faults here
+ rather than quietly returning a wrong answer.
+
+  found : GroupState, Text -> Integer
+  found (st) (name) = list-length (gs-find-service st name)
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "one  " one)
+    print-line-uni (row "two  " two)
+    print-line-uni (row "again" again)
+    print-line-uni ("find web=" & show (found again "web") & " db=" & show (found again "db"))
+  end

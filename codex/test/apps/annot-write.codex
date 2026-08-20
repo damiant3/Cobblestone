@@ -1,0 +1,118 @@
+Chapter: AnnotWriteTest
+
+  cites Works chapter GopEdit
+  cites Works chapter Annotation
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Identity
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+ Proves the Edit pane's annotation WRITE path, which the desk cannot: no
+ identity is loaded in the bed, so every capture there reads "identity
+ locked" and the save is never exercised. That refusal is the first arm here
+ and the write is the second.
+
+ The buffer is written by hand rather than read off a medium, so the test
+ needs no ESP and no source file: what `ged-note-save` wants is a buffer, a
+ line index and a chapter table, and it cannot tell where the bytes came
+ from. The lines end CRLF because the files on the medium do, which is the
+ case the chapter comparison had to be taught.
+
+ It crosses the two roads on purpose. The pane WRITES through `GopFacts`
+ over the desk's medium; the field assertions below read back through the
+ kernel's `DiskFacts`, and the mark assertion reads through `GopFacts`
+ again. So a divergence between the two formats fails here rather than on a
+ stick.
+
+Section: Fixtures
+
+  note-seed : List Integer = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4, 6, 2, 6, 4, 3, 3, 8, 3, 2, 7, 9, 5]
+
+  put-list : Integer, List Integer, Integer -> Integer
+  put-list (buf) (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = poke-byte buf i (list-at xs i)
+    in put-list buf xs (i + 1)
+
+ `Chapter: Name`, a blank line, then `  make-name : Text -> Name`, which puts
+ the definition on line index 2.
+
+  source-bytes : List Integer = [67, 104, 97, 112, 116, 101, 114, 58, 32, 78, 97, 109, 101, 13, 10, 13, 10, 32, 32, 109, 97, 107, 101, 45, 110, 97, 109, 101, 32, 58, 32, 84, 101, 120, 116, 32, 45, 62, 32, 78, 97, 109, 101, 13, 10]
+
+  def-line : Integer = 2
+
+Section: Body
+
+  push-body : Integer, List Integer, Integer -> Integer
+  push-body (es) (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = ged-draft-push es (list-at xs i)
+    in push-body es xs (i + 1)
+
+  fill : Integer -> Integer
+  fill (es) =
+    let b = ged-buf es
+    in let w = put-list b source-bytes 0
+    in let p = poke-32 es 8 (list-length source-bytes)
+    in let c = ged-reindex es
+    in ged-chap-scan es
+
+  found : Integer -> Integer
+  found (d) = list-length (repo-persist-load-all-annotations disk-load)
+
+ "ok" as three bytes, so the body is checkable without building a Text on
+ the way in.
+
+  body-bytes : List Integer = [111, 107]
+
+  check : Integer -> [Identity, Device.Port] Text
+  check (es) =
+    let n0 = found 0
+    in if n0 /= 0 then "FAIL: store not empty, " & show n0
+    else act
+      v0 <- ged-note-save es def-line 100
+      let n1 = found 0
+      in if n1 /= 0 then "FAIL: wrote while locked, " & show n1
+      else "PASS-locked"
+    end
+
+  check-loaded : Integer -> [Identity, Device.Port] Text
+  check-loaded (es) = act
+    v <- ged-note-save es def-line 1500
+    let anns = repo-persist-load-all-annotations disk-load
+    in if list-length anns /= 1 then "FAIL: annotations " & show (list-length anns)
+    else let a = list-at anns 0
+    in if (a.target).chapter /= "Name" then "FAIL: chapter [" & (a.target).chapter & "]"
+    else if (a.target).path /= "make-name" then "FAIL: path [" & (a.target).path & "]"
+    else if a.body /= "ok" then "FAIL: body [" & a.body & "]"
+    else when key-public
+      is None -> "FAIL: key-public"
+      is Just (pub) ->
+        if a.author /= key-fingerprint pub then "FAIL: author [" & a.author & "]"
+        else if ged-mark-get es def-line /= 1 then "FAIL: mark not set after write"
+        else "PASS-write"
+  end
+
+Section: Entry
+
+  opening : [Device.Block, Console.Write, Identity, Device.Port] Nothing = act
+    let s0 = disk-init
+    in let es = alloc-zeroed 128 64
+    in let i0 = ged-init es
+    in let f = fill es
+    in let d = ged-draft-clear es
+    in let pb = push-body es body-bytes 0
+    in act
+      locked <- check es
+      print-line-uni locked
+      let buf = alloc-bytes 32
+      in let w = put-list buf note-seed 0
+      in act
+        rc <- key-load buf
+        loaded <- check-loaded es
+        print-line-uni loaded
+      end
+    end
+  end

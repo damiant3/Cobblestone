@@ -202,6 +202,25 @@ Section: Mount
   gfat-note-written : Integer -> Integer
   gfat-note-written (n) = xdiag-put gfat-cell-written n
 
+ 89 and 90 are the bank's truth, and they exist because a write's RETURN was
+ believed over the file. The third grouped sitting (2026-08-19, `diag.img`
+ C46DE4DD) came back with `DIAG.TXT` truncated at 4,577 bytes and the SUMMARY
+ painting `bank=ok`: every append after the sink refusal was refused, the
+ caller discarded the answer, and nothing downstream asked the medium what
+ was actually there. 89 holds the size read back from the directory entry
+ after the last write, and 90 holds the stage index plus one of the FIRST
+ append that did not land, or zero while every one has.
+
+  gfat-cell-lastsize : Integer = 89
+
+  gfat-note-lastsize : Integer -> Integer
+  gfat-note-lastsize (n) = xdiag-put gfat-cell-lastsize n
+
+  gfat-cell-banklost : Integer = 90
+
+  gfat-note-banklost : Integer -> Integer
+  gfat-note-banklost (n) = xdiag-put gfat-cell-banklost n
+
   GfatMount = record {
     gm-ok : Boolean,
     gm-vol : Fat16Volume
@@ -932,14 +951,34 @@ Section: Multi-Cluster Writing
     in let m = gfat-fat-put vol fat free (gfat-eoc vol)
     in gfat-chain-alloc vol fat (need - 1) (free + 1) (if first == 0 then free else first) free
 
+ A long write reports how far it has got, because the caller is blocked
+ inside it and cannot paint for itself. The report is a plain top-level
+ function plus a context word rather than a closure: this language has no
+ lambda literal, so `lambda (x) -> ...` does not parse, and a named function
+ passed as a value does.
+
+ Measured 2026-08-19 on a 2,896,050-byte file, 5,657 sectors: the whole
+ write is 57 s of a 59 s save, and the chunk size is not what decides it --
+ one call, 64-sector chunks and 8-sector chunks came out 56, 59 and 58 s.
+ At about 306 VM exits a sector the transfer is one exit per 16-bit PIO
+ word, so reporting per chunk costs nothing next to it.
+
+  gfat-no-report : Integer, Integer -> Integer
+  gfat-no-report (ctx) (done) = 0
+
   gfat-write-sectors : Integer, Integer, Integer -> [Device.Port] Boolean
-  gfat-write-sectors (lba) (count) (src) = act
+  gfat-write-sectors (lba) (count) (src) =
+    gfat-write-sectors-watched lba count src 0 0 gfat-no-report
+
+  gfat-write-sectors-watched : Integer, Integer, Integer, Integer, Integer, (Integer, Integer -> Integer) -> [Device.Port] Boolean
+  gfat-write-sectors-watched (lba) (count) (src) (done) (ctx) (report) = act
     if count <= 0 then True
     else let n = if count > gfat-write-cap then gfat-write-cap else count
     in act
       ok <- disk-write-into lba n src
       if ok == False then False
-      else gfat-write-sectors (lba + n) (count - n) (src + n * 512)
+      else let r = report ctx (done + n)
+      in gfat-write-sectors-watched (lba + n) (count - n) (src + n * 512) (done + n) ctx report
     end
   end
 
@@ -1071,7 +1110,11 @@ Section: Multi-Cluster Writing
   end
 
   gfat-write-runs : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Port] Integer
-  gfat-write-runs (vol) (fat) (cluster) (sectors-left) (src) (written) = act
+  gfat-write-runs (vol) (fat) (cluster) (sectors-left) (src) (written) =
+    gfat-write-runs-watched vol fat cluster sectors-left src written 0 gfat-no-report
+
+  gfat-write-runs-watched : Fat16Volume, Integer, Integer, Integer, Integer, Integer, Integer, (Integer, Integer -> Integer) -> [Device.Port] Integer
+  gfat-write-runs-watched (vol) (fat) (cluster) (sectors-left) (src) (written) (ctx) (report) = act
     if sectors-left <= 0 then written
     else if gfat-is-end vol cluster then written
     else if gfat-cluster-ok vol cluster == False then written
@@ -1081,11 +1124,11 @@ Section: Multi-Cluster Writing
       in let run = gfat-run-length vol fat cluster clusters-left 0
       in let run-sectors = if run * spc > sectors-left then sectors-left else run * spc
       in act
-        ok <- gfat-write-sectors (fat16-cluster-sector vol cluster) run-sectors (src + written * 512)
+        ok <- gfat-write-sectors-watched (fat16-cluster-sector vol cluster) run-sectors (src + written * 512) written ctx report
         if ok == False then written
         else act
           nxt <- gfat-fat-next vol fat (cluster + run - 1)
-          gfat-write-runs vol fat nxt (sectors-left - run-sectors) src (written + run-sectors)
+          gfat-write-runs-watched vol fat nxt (sectors-left - run-sectors) src (written + run-sectors) ctx report
         end
       end
     end
@@ -1101,7 +1144,11 @@ Section: Multi-Cluster Writing
   gfat-write-file (vol) (name-buf) (src) (size) = gfat-write-file-in vol name-buf src size (-1)
 
   gfat-write-file-in : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
-  gfat-write-file-in (vol) (name-buf) (src) (size) (dir) = act
+  gfat-write-file-in (vol) (name-buf) (src) (size) (dir) =
+    gfat-write-file-in-watched vol name-buf src size dir 0 gfat-no-report
+
+  gfat-write-file-in-watched : Fat16Volume, Integer, Integer, Integer, Integer, Integer, (Integer, Integer -> Integer) -> [Device.Port] Boolean
+  gfat-write-file-in-watched (vol) (name-buf) (src) (size) (dir) (ctx) (report) = act
     let cbytes = (vol.vol-bytes-per-sector) * (vol.vol-sectors-per-cluster)
     in if size <= cbytes then gfat-write-small-file-in vol name-buf src size dir
     else act
@@ -1113,16 +1160,20 @@ Section: Multi-Cluster Writing
       else act
         clear <- gfat-chain-is-clear vol (f.gft-buf) first need
         if clear == False then let s = gfat-note-write gfat-w-collide in False
-        else gfat-big-commit vol (f.gft-buf) name-buf src size first need dir
+        else gfat-big-commit-watched vol (f.gft-buf) name-buf src size first need dir ctx report
       end
     end
   end
 
   gfat-big-commit : Fat16Volume, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
-  gfat-big-commit (vol) (fat) (name-buf) (src) (size) (first) (need) (dir) = act
+  gfat-big-commit (vol) (fat) (name-buf) (src) (size) (first) (need) (dir) =
+    gfat-big-commit-watched vol fat name-buf src size first need dir 0 gfat-no-report
+
+  gfat-big-commit-watched : Fat16Volume, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, (Integer, Integer -> Integer) -> [Device.Port] Boolean
+  gfat-big-commit-watched (vol) (fat) (name-buf) (src) (size) (first) (need) (dir) (ctx) (report) = act
     let sectors = (size + 511) / 512
     in act
-      wr <- gfat-write-runs vol fat first sectors src 0
+      wr <- gfat-write-runs-watched vol fat first sectors src 0 ctx report
       let w = gfat-note-written wr
       in if wr < sectors then let s = gfat-note-write gfat-w-data in False
       else act

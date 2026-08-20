@@ -1,0 +1,109 @@
+Chapter: WidgetPanelMinTest
+
+  cites Foreword chapter Console
+  cites UI chapter DataTable
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+
+ WORKS-45. A panel is sized by what it contains.
+
+ The arms are paired against the two ways the answer can be wrong. Where the
+ box is too short, a header panel that ignores its buttons is given a flex
+ share smaller than the buttons it holds and they paint past its bottom edge
+ onto the first row, so the minimum arm reads a child's bottom against its
+ parent's. Where the box has room to spare the flex share is the larger
+ number and every rect must be exactly what it was, which is the arm that
+ says the change binds only where space is short: it is the one that goes red
+ if a minimum is invented rather than derived.
+
+ The minimum arm is also where `data-table-row-h` and `data-table-chrome-h`
+ are read from. The empty-panel arm is the control for a tree that declares
+ nothing anywhere, and its rects must not move either.
+
+Section: Fixtures
+
+  cols : List TableColumn = [table-column "k" "ID" 68, table-column "s" "Status" 100]
+
+  rows-n : Integer, Integer, List TableRow -> List TableRow
+  rows-n (i) (n) (acc) =
+    if i >= n then acc
+    else rows-n (i + 1) n (acc & [table-row (show (i + 1)) ["CDX-" & show (i + 1), "Todo"]])
+
+  unpaged : DataTableState = data-table-new "issues" cols (rows-n 0 14 [])
+
+  tracker : DataTableState = data-table-fit (data-table-new "issues" cols (rows-n 0 14 [])) 292
+
+  roomy : DataTableState = data-table-fit (data-table-new "issues" cols (rows-n 0 14 [])) 800
+
+  empties : WidgetNode = widget-panel "e" DirColumn 0 [
+    widget-panel "e-a" DirRow 0 [],
+    widget-panel "e-b" DirRow 0 [],
+    widget-panel "e-c" DirRow 0 []
+  ]
+
+Section: Reading A Laid-Out Tree
+
+  r-of : WidgetNode, Text -> Text
+  r-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> format-rect (w.wn-bounds)
+      is None -> "absent"
+
+  y-of : WidgetNode, Text -> Integer
+  y-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> (w.wn-bounds).lr-y
+      is None -> 0 - 1
+
+  bottom-of : WidgetNode, Text -> Integer
+  bottom-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> (w.wn-bounds).lr-y + (w.wn-bounds).lr-h
+      is None -> 0 - 1
+
+  overflow-of : WidgetNode, Text, Text -> Integer
+  overflow-of (root) (parent) (child) =
+    let over = bottom-of root child - bottom-of root parent
+    in if over < 0 then 0 else over
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let least = widget-layout (data-table-widget unpaged) theme-terminal (layout-rect 0 0 400 292)
+    in act
+      print-line-uni ("minimum header:      " & r-of least "issues-hdr")
+      print-line-uni ("minimum row 0:       " & r-of least "issues-row-0")
+      print-line-uni ("header outer:        " & show (y-of least "issues-row-0" - y-of least "issues-hdr"))
+      print-line-uni ("row pitch:           " & show (y-of least "issues-row-1" - y-of least "issues-row-0"))
+      print-line-uni ("header buttons past the header by: " & show (overflow-of least "issues-hdr" "issues-col-0"))
+      print-line-uni ("row cells past the row by:         " & show (overflow-of least "issues-row-0" "issues-cell-1-0"))
+    end
+
+    let tight = widget-layout (data-table-widget tracker) theme-terminal (layout-rect 0 0 400 292)
+    in act
+      print-line-uni ("paged to 292, page size: " & show (tracker.dt-page-size))
+      print-line-uni ("paged header:        " & r-of tight "issues-hdr")
+      print-line-uni ("paged row 0:         " & r-of tight "issues-row-0")
+      print-line-uni ("paged footer:        " & r-of tight "issues-footer")
+      print-line-uni ("the table past its own 292 box by: " & show (overflow-of tight "issues" "issues-footer"))
+    end
+
+    let wide = widget-layout (data-table-widget roomy) theme-terminal (layout-rect 0 0 400 800)
+    in act
+      print-line-uni ("roomy header:        " & r-of wide "issues-hdr")
+      print-line-uni ("roomy header button: " & r-of wide "issues-col-0")
+      print-line-uni ("roomy row 0:         " & r-of wide "issues-row-0")
+      print-line-uni ("roomy footer:        " & r-of wide "issues-footer")
+      print-line-uni ("header buttons past the header by: " & show (overflow-of wide "issues-hdr" "issues-col-0"))
+    end
+
+    let nothing-declared = widget-layout empties theme-terminal (layout-rect 0 0 200 90)
+    in act
+      print-line-uni ("empty a: " & r-of nothing-declared "e-a")
+      print-line-uni ("empty b: " & r-of nothing-declared "e-b")
+      print-line-uni ("empty c: " & r-of nothing-declared "e-c")
+    end
+  end

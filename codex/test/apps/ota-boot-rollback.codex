@@ -36,69 +36,129 @@ Section: Fixtures
 
 Section: Staging
 
-  stage-image : Integer, List Integer -> [Flash, Device.Mmio] Integer
-  stage-image (addr) (img) = act
-   b0 <- flash-open-bank bank-base
-   b1 <- flash-write-page b0 addr img
-   flash-seal-bank b1
+  stage-image : linear Board, Integer, List Integer -> [Flash, Device.Mmio] (linear Board, Integer)
+  stage-image (brd) (addr) (img) = act
+   ob <- flash-open-bank brd bank-base
+   when ob
+    is (brd1, b0) -> act
+      b1 <- flash-write-page b0 addr img
+      s <- flash-seal-bank b1
+      board-pair brd1 s
+    end
   end
 
-  wipe-record : Integer -> [Flash, Device.Mmio] Integer
-  wipe-record (x) = act
-   b0 <- flash-open-bank bank-base
-   b1 <- flash-write-word b0 rec-addr 0
-   flash-seal-bank b1
+  wipe-record : linear Board, Integer -> [Flash, Device.Mmio] (linear Board, Integer)
+  wipe-record (brd) (x) = act
+   ob <- flash-open-bank brd bank-base
+   when ob
+    is (brd1, b0) -> act
+      b1 <- flash-write-word b0 rec-addr 0
+      s <- flash-seal-bank b1
+      board-pair brd1 s
+    end
   end
+
+  setup-marked : linear Board -> [Flash, Device.Mmio] linear Board
+  setup-marked (brd) = act
+   rw <- wipe-record brd 0
+   when rw
+    is (b1, w) -> act
+      rs1 <- stage-image b1 slot-a-addr image-a
+      when rs1
+       is (b2, s1) -> act
+         rs2 <- stage-image b2 slot-b-addr image-b
+         when rs2
+          is (b3, s2) -> act
+            rm <- boot-mark b3 bank-base rec-addr boot-factory-record SlotB (digest-of image-b) (list-length image-b)
+            when rm
+             is (b4, m) -> b4
+            end
+          end
+       end
+    end
+  end
+
+  run-five : linear Board, Integer, Text -> [Flash, Device.Mmio] (linear Board, Text)
+  run-five (brd) (n) (acc) =
+   if n <= 0 then board-pair brd acc
+   else act
+    r <- boot-run brd bank-base rec-addr slot-a-addr slot-b-addr
+    when r
+     is (b1, s) -> run-five b1 (n - 1) (acc & show-slot s)
+    end
+   end
 
 Section: The Runs
 
   run-commit : Integer -> [Flash, Device.Mmio] Text
   run-commit (x) = act
-   w <- wipe-record 0
-   s1 <- stage-image slot-a-addr image-a
-   s2 <- stage-image slot-b-addr image-b
-   m <- boot-mark bank-base rec-addr boot-factory-record SlotB (digest-of image-b) (list-length image-b)
-   first <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   c <- boot-commit bank-base rec-addr
-   second <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   let r = boot-load rec-addr
-   in "boot1=" & show-slot first & " commit -> boot2=" & show-slot second & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+   brd0 <- board-open 0 0
+   b4 <- setup-marked brd0
+   rf <- boot-run b4 bank-base rec-addr slot-a-addr slot-b-addr
+   when rf
+    is (b5, first) -> act
+      rc <- boot-commit b5 bank-base rec-addr
+      when rc
+       is (b6, cc) -> act
+         rs <- boot-run b6 bank-base rec-addr slot-a-addr slot-b-addr
+         when rs
+          is (b7, second) -> act
+            bc <- board-close b7
+            let r = boot-load rec-addr
+            in "boot1=" & show-slot first & " commit -> boot2=" & show-slot second & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+          end
+       end
+    end
   end
 
   run-no-commit : Integer -> [Flash, Device.Mmio] Text
   run-no-commit (x) = act
-   w <- wipe-record 0
-   s1 <- stage-image slot-a-addr image-a
-   s2 <- stage-image slot-b-addr image-b
-   m <- boot-mark bank-base rec-addr boot-factory-record SlotB (digest-of image-b) (list-length image-b)
-   b1 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   b2 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   b3 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   b4 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   b5 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   let r = boot-load rec-addr
-   in show-slot b1 & show-slot b2 & show-slot b3 & show-slot b4 & show-slot b5 & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+   brd0 <- board-open 0 0
+   b4 <- setup-marked brd0
+   rr <- run-five b4 5 ""
+   when rr
+    is (b5, slots) -> act
+      bc <- board-close b5
+      let r = boot-load rec-addr
+      in slots & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+    end
   end
 
   run-corrupt : Integer -> [Flash, Device.Mmio] Text
   run-corrupt (x) = act
-   w <- wipe-record 0
-   s1 <- stage-image slot-a-addr image-a
-   s2 <- stage-image slot-b-addr image-b
-   m <- boot-mark bank-base rec-addr boot-factory-record SlotB (digest-of image-b) (list-length image-b)
-   bad <- stage-image slot-b-addr [67, 68, 88, 49, 2, 2, 2, 9]
-   first <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   let r = boot-load rec-addr
-   in "boot=" & show-slot first & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+   brd0 <- board-open 0 0
+   b4 <- setup-marked brd0
+   rb <- stage-image b4 slot-b-addr [67, 68, 88, 49, 2, 2, 2, 9]
+   when rb
+    is (b5, bad) -> act
+      rf <- boot-run b5 bank-base rec-addr slot-a-addr slot-b-addr
+      when rf
+       is (b6, first) -> act
+         bc <- board-close b6
+         let r = boot-load rec-addr
+         in "boot=" & show-slot first & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+       end
+    end
   end
 
   run-no-flag : Integer -> [Flash, Device.Mmio] Text
   run-no-flag (x) = act
-   w <- wipe-record 0
-   s1 <- stage-image slot-a-addr image-a
-   first <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
-   let r = boot-load rec-addr
-   in "boot=" & show-slot first & " cand=" & show-cand (r.br-candidate)
+   brd0 <- board-open 0 0
+   rw <- wipe-record brd0 0
+   when rw
+    is (b1, w) -> act
+      rs1 <- stage-image b1 slot-a-addr image-a
+      when rs1
+       is (b2, s1) -> act
+         rf <- boot-run b2 bank-base rec-addr slot-a-addr slot-b-addr
+         when rf
+          is (b3, first) -> act
+            bc <- board-close b3
+            let r = boot-load rec-addr
+            in "boot=" & show-slot first & " cand=" & show-cand (r.br-candidate)
+          end
+       end
+    end
   end
 
 Section: Body

@@ -134,9 +134,14 @@ if ((($declared.Count -eq 0) -or ($wire.Count -eq 0))) {
 # catches the emitted fragments "0", "1" and "WS-". None of those nine is
 # a DECLARED builtin, so none can reach the wire and none can mask a gap.
 # 
-# THREE PLUGS THAT WRITE THIS SHAPE ARE STILL OUT, each for its own
-# reason. fortran extracts 50 and belongs to plugs-backlog 1.7, which
-# measures it against a wider subject. riscv is fester's lane (1.3).
+# fortran was read name by name and wired 2026-08-19: 55 extracted
+# against a 46-name table, and the nine surplus are __narrow, True, False
+# and Nothing, which it really does answer, plus the five TYPE names
+# Boolean, Character, Integer, Real and Text, which are not declared
+# builtins and can never reach the wire.
+# 
+# TWO PLUGS THAT WRITE THIS SHAPE ARE STILL OUT, each for its own
+# reason. riscv is fester's lane (1.3).
 # babbage extracts 12 and FAILS the floor, which is the floor being right:
 # the Analytical Engine has no text and no list, so list-at, list-length,
 # list-push and list-snoc are absent on purpose and babbage answers them
@@ -145,7 +150,7 @@ if ((($declared.Count -eq 0) -or ($wire.Count -eq 0))) {
 
 $wireNames = @(($wire.Keys | Sort-Object))
 $divergent = @()
-foreach ($p in @('python', 'javascript', 'zig', 'wasm', 'csharp', 'pascal', 'ada', 'elixir', 'nim', 'objc', 'cobol')) {
+foreach ($p in @('python', 'javascript', 'zig', 'wasm', 'csharp', 'pascal', 'ada', 'elixir', 'nim', 'objc', 'cobol', 'fortran', 'wpf', 'winforms', 'maui')) {
     $reg = @{}
     $inList = $false
     foreach ($f in Get-ChildItem (Join-Path (Join-Path $Repo 'codex\plugs') $p) -Filter '*.codex' -File) {
@@ -156,7 +161,12 @@ foreach ($p in @('python', 'javascript', 'zig', 'wasm', 'csharp', 'pascal', 'ada
             foreach ($m in ([regex]::Matches($line, 'n == "(?<h>[^"]+)"'))) {
                 $reg[$m.Groups['h'].Value] = $true
             }
-            if (($line -match 'builtin-names\s*=\s*\[')) {
+            if (($p -match '^(wpf|winforms|maui)$')) {
+                foreach ($m in ([regex]::Matches($line, 'static [A-Za-z0-9_<>,.\[\]? ]+? (?<h>[A-Za-z_][A-Za-z0-9_]*)\('))) {
+                    $reg[$m.Groups['h'].Value.Replace('_', '-')] = $true
+                }
+            }
+            if (($line -match 'builtin-names\s*=')) {
                 $inList = $true
             }
             if ($inList) {

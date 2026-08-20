@@ -15,18 +15,18 @@ Section: Control Flow
 
   a64-emit-negate : A64State, IRExpr -> A64EmitResult
   a64-emit-negate (st) (operand) =
-   let or = a64-emit-expr st operand
+   let opr = a64-emit-expr st operand
    in if a64-negate-is-real operand then
-    let tr = a64-alloc-temp (or.state)
+    let tr = a64-alloc-temp (opr.state)
     in let zero-r = a64-alloc-temp (tr.state)
     in let st1 = a64-emit-li (zero-r.state) (zero-r.reg) 0
     in let st2 = a64-emit st1 (arm64-fmov-to-fp 0 (zero-r.reg))
-    in let st3 = a64-emit st2 (arm64-fmov-to-fp 1 (or.reg))
+    in let st3 = a64-emit st2 (arm64-fmov-to-fp 1 (opr.reg))
     in let st4 = a64-emit st3 (arm64-fsub-d 0 0 1)
     in A64EmitResult { state = a64-emit st4 (arm64-fmov-from-fp (tr.reg) 0), reg = tr.reg }
-   else let tr = a64-alloc-temp (or.state)
+   else let tr = a64-alloc-temp (opr.state)
    in A64EmitResult {
-    state = a64-emit (tr.state) (arm64-neg (tr.reg) (or.reg)),
+    state = a64-emit (tr.state) (arm64-neg (tr.reg) (opr.reg)),
     reg = tr.reg
    }
 
@@ -536,8 +536,8 @@ Section: Targeted Expression Emission
       let nr = a64-emit-negate st operand
       in if nr.reg == target then nr.state
       else a64-emit (nr.state) (arm64-mov target (nr.reg))
-     else let or = a64-emit-expr st operand
-     in a64-emit (or.state) (arm64-sub target a64-xzr (or.reg))
+     else let opr = a64-emit-expr st operand
+     in a64-emit (opr.state) (arm64-sub target a64-xzr (opr.reg))
     is IrIf (cond) (th) (el) (ty) (s) ->
      a64-emit-if-targeted st cond th el target
     is otherwise ->
@@ -584,8 +584,8 @@ Section: Targeted Expression Emission
     in a64-emit (rr.state) (arm64-lsl-imm target (rr.reg) mul-shift-l)
    else if when op is IrMulInt -> a64-is-mul-by-3 left right is otherwise -> False then
     let operand = a64-mul-by-3-operand left right
-    in let or = a64-emit-expr st operand
-    in a64-emit (or.state) (arm64-add-shifted target (or.reg) (or.reg) 1)
+    in let opr = a64-emit-expr st operand
+    in a64-emit (opr.state) (arm64-add-shifted target (opr.reg) (opr.reg) 1)
    else let imm-val = a64-small-imm right
    in if imm-val > 0 then
     if a64-is-imm-eligible op then a64-emit-binary-imm-targeted st op left (imm-val - 1) target
@@ -1234,6 +1234,17 @@ Section: Apply
    let msg = "[UNSUPPORTED] " & name & ": builtin-List pattern matching is not implemented on arm64 (refused rather than miscompiled)"
    in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
 
+ UEFI boot services are x86 firmware reached through the system table, and
+ uefi-read-key reads the PS/2 key cell that the IRQ1 handler fills from
+ port 0x60. Neither the table nor the port exists on this target, so there
+ is no value to invent: an idle 0 would be indistinguishable from a real
+ read and would make a keyboard test pass by construction.
+
+  a64-emit-unsupported-firmware : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-firmware (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": x86 UEFI firmware and the PS/2 key cell do not exist on this target (refused by design)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+
  The subjects are the names emitted AFTER the runtime, and the set they are
  checked against is the names the runtime itself recorded. Both come from
  `func-names`, split at `runtime-funcs`, which `a64-emit-module` already
@@ -1561,6 +1572,10 @@ Section: Apply
    else if name == "from-real-trapping" & list-length args == 1 then a64-emit-expr st (list-at args 0)
    else if name == "to-real-saturating" & list-length args == 1 then a64-emit-expr st (list-at args 0)
    else if name == "from-real-saturating" & list-length args == 1 then a64-emit-expr st (list-at args 0)
+   else if name == "to-real-approx-trapping" & list-length args == 1 then a64-emit-expr st (list-at args 0)
+   else if name == "from-real-approx-trapping" & list-length args == 1 then a64-emit-expr st (list-at args 0)
+   else if name == "to-real-approx-saturating" & list-length args == 1 then a64-emit-expr st (list-at args 0)
+   else if name == "from-real-approx-saturating" & list-length args == 1 then a64-emit-expr st (list-at args 0)
    else if name == "text-to-double-bits" & list-length args == 1 then a64-emit-single-arg-call st "__text_to_double" (list-at args 0)
    else if name == "suggested-vector-width" & list-length args == 1 then a64-emit-suggested-vector-width st (list-at args 0)
    else if name == "vec-add" & list-length args == 2 then a64-emit-vec-arith st args 0
@@ -1611,6 +1626,7 @@ Section: Apply
    else if name == "prof-dump" then a64-emit-int-lit st 0
    else if name == "__self-type-defs" then a64-emit-int-lit st 0
    else if name == "uefi-read-file" & list-length args == 1 then a64-emit-unsupported-read st "uefi-read-file"
+   else if name == "uefi-read-key" then a64-emit-unsupported-firmware st "uefi-read-key"
    else if name == "port-in-byte" then a64-emit-unsupported-port st "port-in-byte"
    else if name == "port-out-byte" then a64-emit-unsupported-port st "port-out-byte"
    else if name == "port-in-16" then a64-emit-unsupported-port st "port-in-16"

@@ -37,6 +37,97 @@ not a running edge mesh.
 (SWIM), EdgeRouter, and TrustNode all exist and are the three
 connections that turn the simulation into a system.
 
+**Phase 2 connection 1 is landed (fester, 2026-08-19): discovery.**
+`apps/edgemesh/EdgeMeshLive.codex`, proved by `codex/test/edge-mesh-live`.
+A region advertises a service (`edge-<name>`), a region is healthy when the
+group holds a HEALTHY location for it and not otherwise, a spawned server
+registers as a load-balanced location, and placement picks the lowest-load
+healthy node in the chosen region or REFUSES. Phase 1 could not refuse; it
+spawned into a model.
+
+**Phase 2 connection 3 is landed (fester, 2026-08-19): authenticated
+sessions.** `apps/edgemesh/EdgeMeshAdmit.codex`, proved by
+`codex/test/edge-mesh-admit`. A player reaches a placed match only through
+an authenticated peer session on the `TrustNode`.
+
+**Identity is checked BEFORE placement and the order is the design
+decision.** An unauthenticated caller gets the same refusal whether the
+region is busy, empty, or not a region at all, so the refusal text is not a
+free map of the mesh. An unknown peer and a known-but-unauthenticated one
+also give the same answer, because telling them apart tells an attacker
+which names exist. The test's last arm is an unauthenticated caller asking
+for a region that does not exist: it must be told about the authentication
+and not about the region, and reordering the two checks moves that line and
+nothing else.
+
+**Phase 2 connection 2 is landed (fester, 2026-08-19): routing.**
+`apps/edgemesh/EdgeMeshRoute.codex`, proved by
+`codex/test/edge-mesh-route`. A player is routed to a node in the placed
+region, and a returning player goes back to the node they were on -- but
+only while that node is still healthy in the registry.
+
+**Those two rules pull opposite ways and that is the whole of it.** Picking
+the least-loaded healthy node is right for a new session and loses a match
+for a returning one, so affinity wins; and affinity that outlives the node's
+health is worse than none, because every reconnect of that session then goes
+to a box that is already failing. The arms hold both directions at once: a
+returning player stays on node-a when node-b arrives eight times lighter,
+while a player with NO session takes node-b in the same group, which is what
+shows the pick is load-based rather than "always the first one". A route also
+answers WHY, sticky or fresh, because a caller that cannot tell a resumed
+session from a new one cannot tell a working affinity table from one that
+re-picks every time, and those two look identical in a load graph.
+
+**With this, phase 2's three connections are all landed.** Remembering is a
+separate call from routing on purpose: a caller that routes without
+remembering gets no affinity, which is visible, rather than an affinity table
+written by a function whose name says it only reads.
+
+**Connection 2 was SHELVED for a day** as CL 17571.
+`EdgeRouter.codex:245` declares `er-rate-limiter : RateLimiterState`, a type
+that does not exist -- the record is `PerKeyRateLimiter`, which line 258
+constructs -- so that chapter has never compiled and neither can
+`ServiceProxy` or `DiagramRenderer`, which cite it. No harness compiles any
+of the three: the app sweep runs ENTRY units, and a library chapter with no
+entry unit is compiled by nothing. `build/check-subset-cites.ps1 -Root` is
+the check for that class (red, 2026-08-19). Routed to blu, who owns
+`codex/os/net/**`, and fixed at main 17589 -- **blu then swept a citer over
+all 39 net chapters and found FIVE that had never compiled**, not one:
+`LoadBalancer` and `MessageQueue` passed `Text` to a function taking
+`Integer`, `DistributedConfig` had two defects of its own, and `ServiceProxy`
+was blocked behind `LoadBalancer` rather than behind `EdgeRouter` as this
+lane had assumed. One blocked chapter was the visible end of five.
+
+**Four things connection 1 had to find out, none of them in the design.**
+
+1. **"Wire EdgeMesh to GroupMembership" cannot be done where it says.** A
+   foreword module may not depend on `codex.os` and the quire order is
+   foreword, codex, codex.os, apps (`DevelopersRulebook.md`, Library Rules 1
+   and 2). `EdgeMesh` is `codex.foreword.engine`, `GroupMembership` is
+   `codex.os.net`, so the chapter that knows both sits right of both. It is
+   an app quire (`Mesh` = `apps/edgemesh`), which also keeps it out of
+   `codex/os/net/**`, claimed by another lane. Read every "wire A to B" in
+   the phases below as "a chapter above A and B", not as an edit to A.
+2. **The two halves would not compile into one unit.** `HelmBridge`, reached
+   through `EdgeMesh`, and `GroupMembership` both defined `RoleLeader` and
+   `RoleMember`. `PlayerRole`'s constructors are now `Pr*`; that was four
+   lines in one file with no other caller in the tree, and it is the
+   smallest change that lets any chapter cite both.
+3. **The service registry was broken and its own test had never run.**
+   `gs-register-service` read `list-length` after `list-push` had mutated the
+   list in place, so one registration reported two and the second walked off
+   the end (invalid opcode). `apps/nettool/tests/TestGroupMembership` dies
+   there after fifteen passing arms and no battery runs it. Fixed by blu at
+   main 17557.
+4. **A `GroupState` cannot be held across a registration.** Its operations
+   are `__record-set` on the argument, which stores in place and returns the
+   same record, so an earlier name is not an earlier state: measured, a group
+   read after a later registration reported the LATER health. Anything
+   built on this chapter must read only the newest state, and a test that
+   registers into one variable and reads another will lie. The same trap in
+   record form: two fixtures built from identical constructor arguments
+   shared one record.
+
 The design below describes the intended end state (GroupMembership,
 MeshRoles, EdgeRouter, RaftConsensus, GossipProtocol, TrustNode,
 TrustLattice, PolicyEngine, ChainCore, MintAuthority, HelmBridge,

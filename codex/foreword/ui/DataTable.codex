@@ -1,6 +1,8 @@
 Chapter: DataTable
   cites Foreword chapter Sort
   cites Foreword chapter Collate
+  cites Foreword chapter StringUtils
+  cites Foreword chapter Parse
   cites UI chapter Widget
   cites UI chapter Layout
   cites UI chapter KeyInput
@@ -220,6 +222,46 @@ Section: Pagination
  0", and the page a caller is on is outside the range its own count
  declares.
 
+ A page size of twenty is a guess about a window nobody measured, and a
+ table whose page is larger than its box does not clip: it lays every row
+ out and the surplus lands on the header and on whatever sits below. Nine
+ rows in the tracker's pane already covered "ID" and cut "Priori"; fourteen
+ were unreadable, and the footer said "Page 1 of 1" the whole time, which is
+ true and useless (`works-backlog.md` WORKS-23).
+
+ These two numbers are the terminal theme's, measured through `widget-layout`
+ rather than derived, and they move with the widget builder below and with
+ the theme's edges. A row panel holding cells that declare 16 comes out 38
+ tall including its margin; the header and footer panels holding buttons that
+ declare 24 come out 46 each, and with the table panel's own 14 of margin,
+ border and padding that is 106. `codex/test/ui/widget-panel-min` prints all
+ three from a laid-out tree.
+
+  data-table-row-h : Integer = 38
+
+  data-table-chrome-h : Integer = 106
+
+ The caller passes the height the TABLE was given, not the pane's, and gets
+ back a state whose page fits it. Measure that height from a laid-out tree
+ rather than deriving it: the layout engine already answered, and a second
+ derivation is a second answer to keep in step.
+
+  data-table-rows-that-fit : Integer -> Integer
+  data-table-rows-that-fit (table-h) =
+    let body = table-h - data-table-chrome-h
+    in if body < data-table-row-h then 1 else body / data-table-row-h
+
+ A page size is never zero: at zero `data-table-page-count` answers one and
+ `data-table-visible-rows` answers none, so the table would report a page it
+ cannot show. One row is the smallest honest answer.
+
+  data-table-fit : DataTableState, Integer -> DataTableState
+  data-table-fit (dt) (table-h) =
+    let size = data-table-rows-that-fit table-h
+    in let sized = __record-set dt "dt-page-size" size
+    in let last = data-table-page-count sized - 1
+    in if sized.dt-page > last then __record-set sized "dt-page" last else sized
+
   data-table-page-count : DataTableState -> Integer
   data-table-page-count (dt) =
     if dt.dt-page-size <= 0 then 1
@@ -251,6 +293,127 @@ Section: Pagination
     if i >= end-idx then acc
     else dt-slice-rows rows (i + 1) end-idx (list-push acc (list-at rows i))
 
+Section: Column Width
+
+ A column is as wide as the wider of what its caller asked for and what its
+ own header needs, because `tc-width` is a number a pane picked and the
+ header text is a fact. The tracker asked for 68 for "Priority", whose button
+ needs 80, and drew "Priori" (WORKS-47).
+
+ The sort indicator is reserved whether or not this column is the sorted one,
+ and it has to be: `dt-header-cols` appends " ^" to the label of the sorted
+ column, so a width computed from the label alone is 16 short of the button
+ it is applied to and cuts the indicator off the one column the reader is
+ asking about. Reserving it also keeps the columns still when they sort.
+
+  data-table-sort-indicator-w : Integer = 16
+
+  dt-col-width : TableColumn -> Integer
+  dt-col-width (col) =
+    box-max (col.tc-width) ((widget-button "" (col.tc-label)).wn-min-w + data-table-sort-indicator-w)
+
+  dt-cols-width : List TableColumn, Integer, Integer, Integer -> Integer
+  dt-cols-width (cols) (i) (n) (acc) =
+    if i >= n then acc
+    else dt-cols-width cols (i + 1) n (acc + dt-col-width (list-at cols i))
+
+ Every column keeps its floor, which is the header's own text: below that the
+ column names nothing and a reader cannot tell which one they are looking at.
+
+ Above the floors the space is taken from the WIDEST column first, by finding
+ the largest cap that fits and giving every column the lesser of its width
+ and that cap. Sharing the shortfall out in proportion instead takes a little
+ from every column, and a little is what an identifier cannot spare: at a
+ 550-wide budget the proportional rule cut "ID" from 68 to 51 and "CDX-142"
+ drew as "CDX...", while the cap comes out at 76 and takes the whole
+ shortfall out of "Title", which is the column with something to give.
+
+ Scaling every column by one ratio does not even fit: a column already at its
+ floor cannot give the ratio back, so the rest do not shrink enough and the
+ total lands over the budget. Measured at a 372-wide budget, the even ratio
+ came out at 507.
+
+ A table whose columns already fit is returned unchanged, so a caller that
+ never asks is a caller nothing moves for. A budget too small even for the
+ floors puts every column at its floor and the table still overruns, which is
+ the honest answer: six columns that each name themselves do not fit, and
+ only the caller can decide whether to drop one.
+
+ The width passed is the TABLE's own laid-out width, so the caller reads it
+ from the same measured node it already reads the height from and pays for no
+ second layout. `flex-col-place` gives the header panel the table's width
+ whatever its columns come to, which is what makes one number enough.
+
+ The three subtractions are what stands between that width and the columns,
+ all measured under the terminal theme and moving with `data-table-row-h`:
+ 28 for the table panel's own margin, border and padding and then the header
+ panel's again inside it, the margin every column carries and
+ `flex-row-place` adds, and the gaps between them. Leaving the column margins
+ out overran a 550 box by 9.
+
+  data-table-chrome-w : Integer = 28
+
+  data-table-col-gutter : Integer = 4
+
+  data-table-fit-cols : DataTableState, Integer -> DataTableState
+  data-table-fit-cols (dt) (table-w) =
+    let n = dt.dt-col-count
+    in if n <= 0 then dt
+    else let gaps = if n > 1 then n - 1 else 0
+    in let avail = table-w - data-table-chrome-w - n * data-table-col-gutter - gaps
+    in let want = dt-cols-width (dt.dt-columns) 0 n 0
+    in if want <= avail then dt
+    else let cap = dt-cap-for (dt.dt-columns) n avail 0 want
+    in let scaled = dt-scale-cols (dt.dt-columns) cap 0 n []
+    in __record-set dt "dt-columns" scaled
+
+ The cap is found by halving rather than by walking the pixels: the sum at a
+ given cap rises with the cap, so the largest one that fits is a binary
+ search, and the interval strictly shrinks every step.
+
+  dt-cap-for : List TableColumn, Integer, Integer, Integer, Integer -> Integer
+  dt-cap-for (cols) (n) (avail) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi + 1) / 2
+    in if dt-cols-at-cap cols 0 n mid 0 <= avail then dt-cap-for cols n avail mid hi
+    else dt-cap-for cols n avail lo (mid - 1)
+
+  dt-col-at-cap : TableColumn, Integer -> Integer
+  dt-col-at-cap (col) (cap) = box-min (dt-col-width col) (box-max (dt-col-floor col) cap)
+
+  dt-cols-at-cap : List TableColumn, Integer, Integer, Integer, Integer -> Integer
+  dt-cols-at-cap (cols) (i) (n) (cap) (acc) =
+    if i >= n then acc
+    else dt-cols-at-cap cols (i + 1) n cap (acc + dt-col-at-cap (list-at cols i) cap)
+
+  dt-col-floor : TableColumn -> Integer
+  dt-col-floor (col) = (widget-button "" (col.tc-label)).wn-min-w + data-table-sort-indicator-w
+
+  dt-cols-floor : List TableColumn, Integer, Integer, Integer -> Integer
+  dt-cols-floor (cols) (i) (n) (acc) =
+    if i >= n then acc
+    else dt-cols-floor cols (i + 1) n (acc + dt-col-floor (list-at cols i))
+
+ A scaled column is a NEW record. `__record-set` stores in place and hands
+ back the same one, so writing the width through it would narrow the caller's
+ own columns, and a caller holding a shared column list would find every
+ table built from it narrowed too. `data-table-sort` copies its rows for the
+ same reason.
+
+  dt-scale-cols : List TableColumn, Integer, Integer, Integer, List TableColumn -> List TableColumn
+  dt-scale-cols (cols) (cap) (i) (n) (acc) =
+    if i >= n then acc
+    else let col = list-at cols i
+    in let shrunk = dt-col-at-cap col cap
+    in let narrowed = TableColumn {
+      tc-id = col.tc-id,
+      tc-label = col.tc-label,
+      tc-width = shrunk,
+      tc-sortable = col.tc-sortable,
+      tc-align = col.tc-align
+    }
+    in dt-scale-cols cols cap (i + 1) n (list-push acc narrowed)
+
 Section: Widget Building
 
   data-table-widget : DataTableState -> WidgetNode
@@ -272,7 +435,7 @@ Section: Widget Building
     else let col = list-at (dt.dt-columns) i
     in let indicator = if dt.dt-sort-col == i then if dt.dt-sort-asc then " ^" else " v" else ""
     in let btn = widget-button (dt.dt-id & "-col-" & show i) (col.tc-label & indicator)
-    in let sized = widget-set-min btn (col.tc-width) 24
+    in let sized = widget-set-min btn (dt-col-width col) 24
     in dt-header-cols dt (i + 1) n (list-push acc sized)
 
   dt-body-widgets : DataTableState, List TableRow, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
@@ -302,10 +465,37 @@ Section: Widget Building
   dt-cell-widgets (dt) (row) (i) (n) (acc) =
     if i >= n then acc
     else let col = list-at (dt.dt-columns) i
-    in let txt = dt-cell-at row i
+    in let txt = dt-elide (dt-cell-at row i) (dt-col-width col)
     in let lbl = widget-label (dt.dt-id & "-cell-" & row.tr-id & "-" & show i) txt
-    in let sized = widget-set-min lbl (col.tc-width) 16
+    in let sized = widget-set-min lbl (dt-col-width col) 16
     in dt-cell-widgets dt row (i + 1) n (list-push acc sized)
+
+ A cell wider than its column is CUT by whatever draws it, and a cut that
+ says nothing is worse than a short value: at a column fitted to 51, "CDX-142"
+ draws as "CDX-14", which is not a truncation a reader can see, it is a
+ different issue number. So the text is elided here, where the width is
+ known, and the reader is told.
+
+ The glyph width is asked of the widget library rather than written down,
+ since it is `widget-label`'s own arithmetic and a table that disagreed with
+ it would elide at the wrong place.
+
+  dt-glyph-w : Integer
+  dt-glyph-w = (widget-label "" "M").wn-min-w
+
+ What a cell can DRAW is its width less its own margin, which
+ `box-content-from-style` takes off again inside the rect `flex-row-place`
+ already stripped it from. Eliding against the full width put the last glyph
+ half outside the box, so a cut cell ended in ".." and the marker read as
+ something shorter than it was.
+
+  dt-elide : Text, Integer -> Text
+  dt-elide (txt) (width) =
+    let drawable = width - data-table-col-gutter
+    in let fits = if dt-glyph-w <= 0 then text-length txt else drawable / dt-glyph-w
+    in if text-length txt <= fits then txt
+    else if fits <= 3 then text-take txt (box-max 0 fits)
+    else text-take txt (fits - 3) & "..."
 
   dt-footer-widget : DataTableState -> WidgetNode
   dt-footer-widget (dt) =
@@ -314,6 +504,60 @@ Section: Widget Building
     in let prev-btn = widget-button (dt.dt-id & "-prev") "< Prev"
     in let next-btn = widget-button (dt.dt-id & "-next") "Next >"
     in widget-panel (dt.dt-id & "-footer") DirRow 8 [prev-btn, info, next-btn]
+
+Section: Answering A Click
+
+ WORKS-13 asked for per-row widget ids so that a click could name a row.
+ They were already here: `dt-row-widget` names each row `<id>-row-<n>` with
+ the ABSOLUTE row index, and `dt-cell-widgets` names each cell
+ `<id>-cell-<row key>-<column>`. What was missing is the other end, a way to
+ read one back, and every pane that wanted it was left doing string surgery
+ or re-deriving the layout's own arithmetic.
+
+ `ev-hit-widget` answers with the DEEPEST node under the point, so an
+ ordinary click on a row lands on a cell and only a click in the row's own
+ padding lands on the row panel. Both shapes are read here for that reason;
+ a caller that handled only one would work in testing and miss most clicks.
+
+  dt-row-prefix : DataTableState -> Text
+  dt-row-prefix (dt) = dt.dt-id & "-row-"
+
+  dt-cell-prefix : DataTableState -> Text
+  dt-cell-prefix (dt) = dt.dt-id & "-cell-"
+
+ The cell id carries the row's KEY, which is the caller's own identifier and
+ not an index, so it is looked up rather than parsed as a number. The key
+ runs from the prefix to the last hyphen, because a key may itself contain
+ one.
+
+  dt-key-end : Text, Integer, Integer, Integer -> Integer
+  dt-key-end (s) (i) (n) (best) =
+    if i >= n then best
+    else if text-substring s i 1 == "-" then dt-key-end s (i + 1) n i
+    else dt-key-end s (i + 1) n best
+
+  dt-index-of-key : List TableRow, Text, Integer, Integer -> Integer
+  dt-index-of-key (rows) (key) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at rows i).tr-id == key then i
+    else dt-index-of-key rows key (i + 1) n
+
+ A row that is not on the visible page still answers, because the id carries
+ the absolute index and the key is looked up across every row. A caller that
+ wants "only what is on screen" has the page to check against; a helper that
+ silently answered -1 for an off-page row would be indistinguishable from a
+ miss.
+
+  data-table-row-of-hit : DataTableState, Text -> Integer
+  data-table-row-of-hit (dt) (hit-id) =
+    if text-starts-with hit-id (dt-row-prefix dt)
+      then text-to-int (text-drop hit-id (text-length (dt-row-prefix dt)))
+    else if text-starts-with hit-id (dt-cell-prefix dt) then
+      let start = text-length (dt-cell-prefix dt)
+      in let dash = dt-key-end hit-id start (text-length hit-id) (0 - 1)
+      in if dash < 0 then 0 - 1
+      else dt-index-of-key (dt.dt-rows) (text-substring hit-id start (dash - start)) 0 (dt.dt-row-count)
+    else 0 - 1
 
 Section: Keyboard Handling
 

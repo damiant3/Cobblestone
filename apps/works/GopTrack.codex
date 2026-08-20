@@ -46,12 +46,17 @@ Section: Filter
 
 Section: Table
 
- Column widths are in pixels and the compositor cuts a cell's text to its
- own column, so a width is a character budget: 8 pixels a character, less
- 4 for the cell's left inset. These are sized to the widest value each
- column actually holds -- `CDX-142` is 7, `In Progress` is 11, `security`
- is 8 -- rather than to the header, which is what the inherited widths
- were sized to. At 54 pixels the ID column showed `CDX-14`.
+ Column widths are in pixels and a width is a character budget: 8 pixels a
+ character, less 4 for the cell's left inset. These are sized to the widest
+ value each column actually holds -- `CDX-142` is 7, `In Progress` is 11,
+ `security` is 8. At 54 pixels the ID column showed `CDX-14`.
+
+ They are a REQUEST, not the last word. Since WORKS-47 `dt-col-width` gives
+ a column the wider of this number and what its own header needs, so asking
+ for less than the label costs nothing here and is corrected there, and a
+ table too wide for its pane is water-filled back into it. A value that
+ still does not fit is elided by `dt-elide` with an ellipsis rather than cut
+ by whatever draws it.
 
   gtk-columns : List TableColumn
   gtk-columns = [
@@ -80,17 +85,58 @@ Section: Table
       ]
     in gtk-rows-from-db rows filter (i + 1) n (list-push acc tr)
 
-  gtk-data-table : DbServer, Integer, Integer -> DataTableState
-  gtk-data-table (srv) (filter) (sel) =
+ `table-h` is three states, not a number with a special case. A POSITIVE
+ height fits the page to it. ZERO is the unfitted table, which is what the
+ pane used to build and what a caller with no height to give still gets.
+ NEGATIVE is the MEASURING shape: one row, so the table asks the layout
+ engine for almost nothing and is handed the space that is actually free.
+ Measuring the ordinary table cannot work -- a flex child gets at least its
+ minimum size (`Layout.codex`, `flex-row-place`), so a table whose content
+ wants fourteen rows reports the height it grew to and not the height it
+ had, which is the same wrong number the bug is made of.
+
+ The width goes the same way as the height and from the same measured node
+ (WORKS-47). Six columns that each name themselves come to more than this
+ pane's table is given at 1600 wide, and without this the last one is drawn
+ past the table's right edge.
+
+ The measuring shape drops the COLUMNS as well as the rows, and it has to
+ since WORKS-45. A panel is now at least as wide as what it holds, so a table
+ measured with its real columns reports the width its columns demand rather
+ than the width the pane had to give, which is the same circularity the one
+ row above avoids for height. Measured at 1600 wide with the columns left in:
+ the demand propagated all the way up and pushed the sidebar off the left of
+ the screen.
+
+  gtk-data-table : DbServer, Integer, Integer, Integer, Integer -> DataTableState
+  gtk-data-table (srv) (filter) (sel) (table-h) (table-w) =
     let result = tk-db-all-issues srv
     in let rows = gtk-rows-from-db (result.qr-rows) filter 0 (result.qr-count) []
-    in data-table-select-row (data-table-new "issues" gtk-columns rows) sel
+    in let measuring = table-h < 0
+    in let base = data-table-new "issues" (if measuring then [] else gtk-columns) rows
+    in let selected = data-table-select-row base sel
+    in let dt = if table-w > 0 then data-table-fit-cols selected table-w else selected
+    in if measuring then __record-set dt "dt-page-size" 1
+    else if table-h == 0 then dt
+    else data-table-fit dt table-h
+
+Section: Hit
+
+ WORKS-13. The pane asks the table which row an id names, rather than
+ deriving a row from the pointer's y and the row height -- that arithmetic
+ belongs to the layout engine and a second copy of it drifts from the first.
+ The table is rebuilt at the same height the paint used, so the answer is
+ about the rows the reader can actually see.
+
+  gtk-row-at : DbServer, Integer, Integer, Integer, Integer, Text -> Integer
+  gtk-row-at (srv) (filter) (sel) (table-h) (table-w) (hit-id) =
+    data-table-row-of-hit (gtk-data-table srv filter sel table-h table-w) hit-id
 
 Section: Tree
 
-  gtk-tree : DbServer, Integer, Integer -> WidgetNode
-  gtk-tree (srv) (filter) (sel) =
-    let dt = gtk-data-table srv filter sel
+  gtk-tree : DbServer, Integer, Integer, Integer, Integer -> WidgetNode
+  gtk-tree (srv) (filter) (sel) (table-h) (table-w) =
+    let dt = gtk-data-table srv filter sel table-h table-w
     in let open-n = tk-db-count-open srv
     in let all-n = tk-db-issue-count srv
     in widget-panel "gtk-root" DirColumn 6 [

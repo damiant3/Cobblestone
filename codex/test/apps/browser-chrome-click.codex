@@ -1,0 +1,182 @@
+Chapter: BrowserChromeClickTest
+  cites Browser chapter Browser
+  cites Browser chapter BrowserTheme
+  cites Browser chapter Display
+  cites Browser chapter Tab
+  cites UI chapter Widget
+  cites UI chapter BoxModel
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ BROWSER-6. A click reaches the bar it landed on.
+
+ The router used to split the window by the chrome's HEIGHTS, which assumes
+ the tab bar starts at y 0. It starts at y 9, because `widget-layout` insets
+ the root panel by its own margin, border and padding before placing
+ anything, so both boundaries sat 9 rows above the bars they named and a
+ click in the difference reached the wrong handler.
+
+ The scan is the arm that shows it, because it reads the whole column rather
+ than one hand-picked y: for every y down the chrome it prints the band the
+ router chose beside the band the LAYOUT puts that point in. Those two
+ columns disagreeing IS the defect, and a fix that moved the constants
+ instead of reading the tree would still disagree at some width.
+
+ The tab arm is the behavioural half, and BROWSER-7 changed what it proves.
+ A click at y 45 is inside the real tab bar and past the old 42, so under the
+ old Y routing it reached the address bar. It is on no BUTTON, though, and
+ the old X routing answered "the next tab" for it anyway by dividing x by
+ 120: it invented an action out of empty space. Both fixed, so the honest
+ arm is that nothing happens there, and the `+` arm below aims at the
+ button's own rect instead.
+
+ The count before the click is taken BEFORE it. `__record-set` stores in
+ place and hands back the same record, so reading the count off the original
+ state afterwards reads the state the click already changed: the arm printed
+ "2 -> 2" and was measuring nothing.
+
+Section: Fixtures
+
+  memoized : Integer, Integer -> BrowserState
+  memoized (w) (h) =
+    let st = browser-init w h browser-theme-default display-init-text-fallback
+    in let mark = __heap-save
+    in let laid = widget-layout (browser-render st) (st.bs-theme) (layout-rect 0 0 w h)
+    in browser-memo-laid st laid mark
+
+Section: What The Layout Says
+
+ The layout's own answer, asked of the two panels by id rather than derived
+ from any number this test carries.
+
+  band-of-layout : BrowserState, Integer, Integer -> Text
+  band-of-layout (st) (mx) (my) =
+    when st.bs-laid
+      is None -> "none"
+      is Just (tree) ->
+        if in-panel tree "tab-bar" mx my then "tab"
+        else if in-panel tree "address-bar" mx my then "addr"
+        else "page"
+
+  in-panel : WidgetNode, Text, Integer, Integer -> Boolean
+  in-panel (tree) (id) (mx) (my) =
+    when widget-find tree id
+      is None -> False
+      is Just (w) -> rect-contains (w.wn-bounds) mx my
+
+  band-name : Integer -> Text
+  band-name (b) =
+    if b == browser-band-tab-bar then "tab"
+    else if b == browser-band-address-bar then "addr"
+    else "page"
+
+Section: The Scan
+
+  scan : BrowserState, Integer, Integer, Integer -> [Console] Nothing
+  scan (st) (y) (limit) (step) =
+    if y >= limit then print-line-uni ""
+    else act
+      let chose = band-name (browser-click-band st 200 y)
+      in let truth = band-of-layout st 200 y
+      in print-line-uni ("  y=" & integer-to-text y & " router=" & chose & " layout=" & truth & (if chose == truth then "" else "   DISAGREE"))
+      scan st (y + 4) limit step
+    end
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let st = memoized 1024 768
+    in act
+      print-line-uni "down the chrome at x=200:"
+      scan st 0 108 4
+    end
+
+    let before = memoized 1024 768
+    in let n0 = list-length (before.bs-tabs)
+    in let after = browser-handle-mouse-click before 150 45
+    in act
+      print-line-uni ("a click at y=45, inside the tab bar but on no button: tabs " & integer-to-text n0 & " -> " & integer-to-text (list-length (after.bs-tabs)))
+    end
+
+    let deep = memoized 1024 768
+    in let still = browser-handle-mouse-click deep 150 200
+    in act
+      print-line-uni ("a click at y=200 is the page and opens no tab: tabs " & integer-to-text (list-length (still.bs-tabs)))
+    end
+
+    print-line-uni "across the tab bar at y=30, what the layout has there:"
+    scan-x 0 260 8
+
+    print-line-uni "across the address bar at y=75:"
+    scan-addr 0 140 8
+
+    let one = memoized 1024 768
+    in let after-new = browser-handle-mouse-click one (new-tab-x one) 30
+    in act
+      print-line-uni ("a click on the + column by its own rect opens a tab: " & integer-to-text (list-length (after-new.bs-tabs)))
+    end
+  end
+
+Section: The X Axis
+
+ BROWSER-7. The same question one axis over: the tab bar was split into
+ 120-wide slots from x 0 and the address bar into three 28-wide ones, where
+ the buttons start at x 9 and each is sized to its own text. A `<` button is
+ `text-length * 8 + 16`, which is 24 and not 28.
+
+ The scans print what the LAYOUT has under each x. A reader comparing them
+ against the old constants can see the boundaries were never where the
+ arithmetic put them: the first tab does not start at 0 and the nav buttons
+ are not three equal 28s.
+
+ The `+` arm is the behavioural one and it takes its x from the widget's own
+ rect rather than from a number written here, so it keeps asking the right
+ question if a title gets longer.
+
+  tab-of-layout : BrowserState, Integer, Integer -> Text
+  tab-of-layout (st) (mx) (my) =
+    when st.bs-laid
+      is None -> "none"
+      is Just (tree) ->
+        if in-panel tree "new-tab" mx my then "new"
+        else if in-panel tree "close-tab" mx my then "close"
+        else if in-panel tree ("tab-" & integer-to-text ((list-at (st.bs-tabs) 0).tab-id)) mx my then "tab0"
+        else "gap"
+
+  scan-x : Integer, Integer, Integer -> [Console] Nothing
+  scan-x (x) (limit) (step) =
+    if x >= limit then print-line-uni ""
+    else act
+      let st = memoized 1024 768
+      in print-line-uni ("  x=" & integer-to-text x & " " & tab-of-layout st x 30)
+      scan-x (x + step) limit step
+    end
+
+  addr-of-layout : BrowserState, Integer, Integer -> Text
+  addr-of-layout (st) (mx) (my) =
+    when st.bs-laid
+      is None -> "none"
+      is Just (tree) ->
+        if in-panel tree "nav-back" mx my then "back"
+        else if in-panel tree "nav-forward" mx my then "fwd"
+        else if in-panel tree "nav-reload" mx my then "reload"
+        else "input-or-gap"
+
+  scan-addr : Integer, Integer, Integer -> [Console] Nothing
+  scan-addr (x) (limit) (step) =
+    if x >= limit then print-line-uni ""
+    else act
+      let st = memoized 1024 768
+      in print-line-uni ("  x=" & integer-to-text x & " " & addr-of-layout st x 75)
+      scan-addr (x + step) limit step
+    end
+
+  new-tab-x : BrowserState -> Integer
+  new-tab-x (st) =
+    when st.bs-laid
+      is None -> 0
+      is Just (tree) ->
+        when widget-find tree "new-tab"
+          is None -> 0
+          is Just (w) -> (w.wn-bounds).lr-x + (w.wn-bounds).lr-w / 2

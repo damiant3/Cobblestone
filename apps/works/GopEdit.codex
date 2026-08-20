@@ -1,4 +1,10 @@
 Chapter: GopEdit
+  cites Works chapter Annotation
+  cites Works chapter GopRtc
+  cites Works chapter KeyManager
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter GopFacts
+  cites Trust chapter TrustLattice
   cites Works chapter GopDraw
   cites Works chapter GopFat16
   cites Works chapter GopFiles
@@ -40,9 +46,16 @@ Section: The State Block
   ged-init (es) =
     let buf = alloc-zeroed ged-cap 64
     in let idx = alloc-zeroed (ged-max-lines * 4) 64
+    in let ring = alloc-zeroed (ged-undo-cap * ged-undo-rec) 64
+    in let marks = alloc-zeroed ged-marks-bytes 64
+    in let chaps = alloc-zeroed ((ged-chap-max + 1) * 4) 64
     in let a = poke-32 es 0 buf
     in let b = poke-32 es 4 idx
     in let c = poke-32 es 8 0
+    in let r = poke-32 es 28 ring
+    in let mk = poke-32 es 56 marks
+    in let ch = poke-32 es 60 chaps
+    in let u = ged-undo-reset es
     in poke-32 es 12 0
 
   ged-ensure : Integer -> Integer
@@ -214,6 +227,624 @@ Section: Editing The Block
   ged-at : Integer, Integer, Integer -> Integer
   ged-at (es) (cur) (col) = ged-line-start es cur + col
 
+Section: The Undo Ring
+
+ The capacity is a power of two so the wrap is a mask rather than a divide,
+ and 4096 records at 12 bytes is 49,152 bytes against the 9 MB the buffer and
+ the index already cost. It is allocated by `ged-init` and therefore shares
+ the buffer's lifetime exactly: the close path reclaims both, so undo history
+ does not outlive the session that typed it.
+
+  ged-undo-cap : Integer = 4096
+  ged-undo-mask : Integer = 4095
+  ged-undo-rec : Integer = 12
+
+  ged-undo-ring : Integer -> Integer
+  ged-undo-ring (es) = peek-32 es 28
+
+  ged-undo-head : Integer -> Integer
+  ged-undo-head (es) = peek-32 es 32
+
+  ged-undo-count : Integer -> Integer
+  ged-undo-count (es) = peek-32 es 36
+
+  ged-undo-reset : Integer -> Integer
+  ged-undo-reset (es) =
+    let h = poke-32 es 32 0
+    in poke-32 es 36 0
+
+  ged-undo-push : Integer, Integer, Integer, Integer -> Integer
+  ged-undo-push (es) (at) (b) (ins) =
+    let r = ged-undo-ring es
+    in if r == 0 then 0
+    else let h = ged-undo-head es
+    in let o = h * ged-undo-rec
+    in let w0 = poke-32 r o at
+    in let w1 = poke-32 r (o + 4) b
+    in let w2 = poke-32 r (o + 8) ins
+    in let sh = poke-32 es 32 (bit-and (h + 1) ged-undo-mask)
+    in let n = ged-undo-count es
+    in poke-32 es 36 (if n < ged-undo-cap then n + 1 else n)
+
+ A refused edit must not leave a record behind, or undo replays an edit the
+ buffer never took. `ged-insert` and `ged-delete` answer the line count on
+ success, which `ged-reindex` never reports as zero, so the refusal is
+ readable and these two are the only callers that record.
+
+  ged-insert-u : Integer, Integer, Integer -> Integer
+  ged-insert-u (es) (at) (b) =
+    let r = ged-insert es at b
+    in if r == 0 then 0
+    else let p = ged-undo-push es at b 1
+    in r
+
+  ged-delete-u : Integer, Integer -> Integer
+  ged-delete-u (es) (at) =
+    if at < 0 then 0
+    else if at >= ged-size es then 0
+    else let b = peek-byte (ged-buf es) at
+    in let r = ged-delete es at
+    in if r == 0 then 0
+    else let p = ged-undo-push es at b 0
+    in r
+
+  ged-undo : Integer -> Integer
+  ged-undo (es) =
+    if ged-undo-count es == 0 then 0 - 1
+    else let r = ged-undo-ring es
+    in let h = bit-and (ged-undo-head es + ged-undo-mask) ged-undo-mask
+    in let o = h * ged-undo-rec
+    in let at = peek-32 r o
+    in let b = peek-32 r (o + 4)
+    in let ins = peek-32 r (o + 8)
+    in let sh = poke-32 es 32 h
+    in let sc = poke-32 es 36 (ged-undo-count es - 1)
+    in let e = if ins == 1 then ged-delete es at else ged-insert es at b
+    in at
+
+ A byte offset is turned back into a row by bisecting the line index rather
+ than walking it. The concatenated tree is 59,461 lines, and a walk is that
+ many stacked frames on a machine whose heap and stack share one arena.
+
+  ged-line-search : Integer, Integer, Integer, Integer -> Integer
+  ged-line-search (es) (at) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi + 1) / 2
+    in if ged-line-start es mid <= at then ged-line-search es at mid hi
+    else ged-line-search es at lo (mid - 1)
+
+  ged-line-of : Integer, Integer -> Integer
+  ged-line-of (es) (at) = ged-line-search es at 0 (ged-count es - 1)
+
+Section: Annotation Marks
+
+ WORKS-15 asked for a gutter mark on any line whose definition carries an
+ annotation, and said the join needs `CodeBrowser`'s `SourceIndex`. It does
+ not, and it must not: `index-source-file` takes the whole file as one Text,
+ `SourceIndex` then holds every line as Text a second time, `index-add-def`
+ appends with `list-snoc` once per definition, and `index-lines` recurses once
+ per line. This pane exists to open a 2,896,050-byte file with 62,184 lines,
+ and its own Bytes To Text section records why it never builds a whole-file
+ Text: `acc & ch` costs the square of the length. Every one of those four is
+ disqualifying on its own for that file.
+
+ So the join reads BYTES. Each annotation's target is converted to a byte
+ pattern once, and the buffer is scanned for the definition line that matches
+ it; what a row paints is then one bit out of a bitmap, so `ged-draw-row`
+ needs no annotation argument and no new parameter reaches four signatures.
+
+ The bytes on the medium are ASCII and the comparisons here are against ASCII
+ literals, NOT `char-code`, which answers a CCE code point and would match
+ nothing.
+
+  ged-chap-max : Integer = 8192
+  ged-marks-bytes : Integer = 32768
+  ged-name-scratch : Integer = 64
+
+  ged-marks : Integer -> Integer
+  ged-marks (es) = peek-32 es 56
+
+  ged-chaps : Integer -> Integer
+  ged-chaps (es) = peek-32 es 60
+
+  ged-mark-get : Integer, Integer -> Integer
+  ged-mark-get (es) (line) =
+    let m = ged-marks es
+    in if m == 0 then 0
+    else if line < 0 then 0
+    else if line >= ged-max-lines then 0
+    else bit-and (bit-shru (peek-byte m (line / 8)) (bit-and line 7)) 1
+
+  ged-mark-set : Integer, Integer -> Integer
+  ged-mark-set (es) (line) =
+    let m = ged-marks es
+    in if m == 0 then 0
+    else if line < 0 then 0
+    else if line >= ged-max-lines then 0
+    else let o = line / 8
+    in poke-byte m o (bit-or (peek-byte m o) (bit-shl 1 (bit-and line 7)))
+
+  ged-zero-bytes : Integer, Integer, Integer -> Integer
+  ged-zero-bytes (b) (i) (stop) =
+    if i >= stop then 0
+    else let w = poke-byte b i 0
+    in ged-zero-bytes b (i + 1) stop
+
+  ged-marks-clear : Integer, Integer -> Integer
+  ged-marks-clear (es) (i) =
+    if i >= ged-marks-bytes then 0
+    else let stop = if i + ged-chunk > ged-marks-bytes then ged-marks-bytes else i + ged-chunk
+    in let z = ged-zero-bytes (ged-marks es) i stop
+    in ged-marks-clear es stop
+
+Section: The Chapter Table
+
+ A definition's target is a chapter and a name, so a mark needs to know which
+ chapter a line falls in. The table is the line number of every `Chapter:`
+ line, built in one pass at open, and the lookup bisects it the way
+ `ged-line-of` bisects the line index rather than walking it.
+
+  ged-chap-count : Integer -> Integer
+  ged-chap-count (es) = if ged-chaps es == 0 then 0 else peek-32 (ged-chaps es) 0
+
+  ged-chap-line : Integer, Integer -> Integer
+  ged-chap-line (es) (i) = peek-32 (ged-chaps es) ((i + 1) * 4)
+
+  ged-line-is-chapter : Integer, Integer -> Boolean
+  ged-line-is-chapter (es) (i) =
+    let b = ged-buf es
+    in let st = ged-line-start es i
+    in if st + 9 > ged-size es then False
+    else peek-byte b st == 67
+    & peek-byte b (st + 1) == 104
+    & peek-byte b (st + 2) == 97
+    & peek-byte b (st + 3) == 112
+    & peek-byte b (st + 4) == 116
+    & peek-byte b (st + 5) == 101
+    & peek-byte b (st + 6) == 114
+    & peek-byte b (st + 7) == 58
+    & peek-byte b (st + 8) == 32
+
+  ged-chap-bytes : Integer, Integer, Integer, Integer -> Integer
+  ged-chap-bytes (es) (i) (stop) (found) =
+    if i >= stop then found
+    else if found >= ged-chap-max then found
+    else if ged-line-is-chapter es i then
+      let w = poke-32 (ged-chaps es) ((found + 1) * 4) i
+      in ged-chap-bytes es (i + 1) stop (found + 1)
+    else ged-chap-bytes es (i + 1) stop found
+
+  ged-chap-walk : Integer, Integer, Integer, Integer -> Integer
+  ged-chap-walk (es) (i) (n) (found) =
+    if i >= n then found
+    else let stop = if i + ged-chunk > n then n else i + ged-chunk
+    in let f = ged-chap-bytes es i stop found
+    in ged-chap-walk es stop n f
+
+  ged-chap-scan : Integer -> Integer
+  ged-chap-scan (es) =
+    if ged-chaps es == 0 then 0
+    else let n = ged-chap-walk es 0 (ged-count es) 0
+    in poke-32 (ged-chaps es) 0 n
+
+  ged-chap-search : Integer, Integer, Integer, Integer -> Integer
+  ged-chap-search (es) (line) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi + 1) / 2
+    in if ged-chap-line es mid <= line then ged-chap-search es line mid hi
+    else ged-chap-search es line lo (mid - 1)
+
+  ged-chap-of : Integer, Integer -> Integer
+  ged-chap-of (es) (line) =
+    let n = ged-chap-count es
+    in if n <= 0 then 0 - 1
+    else if line < ged-chap-line es 0 then 0 - 1
+    else ged-chap-search es line 0 (n - 1)
+
+Section: Matching A Target To A Line
+
+ A Text is turned into ASCII bytes ONCE per annotation, and every line
+ comparison after that is byte against byte. Doing it the other way, building
+ a Text per candidate line, allocates once per definition in the file and
+ there are tens of thousands of them.
+
+  ged-text-bytes : Text, Integer, Integer, Integer -> Integer
+  ged-text-bytes (t) (dst) (i) (n) =
+    if i >= n then n
+    else let w = poke-byte dst i (to-unicode (char-code-at t i))
+    in ged-text-bytes t dst (i + 1) n
+
+  ged-bytes-eq : Integer, Integer, Integer, Integer, Integer -> Boolean
+  ged-bytes-eq (a) (ao) (b) (bo) (n) =
+    if n <= 0 then True
+    else if peek-byte a (ao) /= peek-byte b (bo) then False
+    else ged-bytes-eq a (ao + 1) b (bo + 1) (n - 1)
+
+ A definition line is two spaces, a name, then a space. The name ends at the
+ first space, which is what `extract-def-name` does one layer up in
+ `CodeBrowser` on a Text.
+
+  ged-def-name-len : Integer, Integer, Integer, Integer -> Integer
+  ged-def-name-len (b) (st) (i) (size) =
+    if st + i >= size then i
+    else let c = peek-byte b (st + i)
+    in if c == 32 then i
+    else if c == 10 then i
+    else ged-def-name-len b st (i + 1) size
+
+  ged-line-def-matches : Integer, Integer, Integer, Integer -> Boolean
+  ged-line-def-matches (es) (i) (pat) (patlen) =
+    let b = ged-buf es
+    in let st = ged-line-start es i
+    in if st + 2 + patlen > ged-size es then False
+    else if peek-byte b st /= 32 then False
+    else if peek-byte b (st + 1) /= 32 then False
+    else if peek-byte b (st + 2) == 32 then False
+    else if ged-def-name-len b (st + 2) 0 (ged-size es) /= patlen then False
+    else if st + 2 + patlen + 3 > ged-size es then False
+    else if peek-byte b (st + 2 + patlen) /= 32 then False
+    else if peek-byte b (st + 2 + patlen + 1) /= 58 then False
+    else if peek-byte b (st + 2 + patlen + 2) /= 32 then False
+    else ged-bytes-eq b (st + 2) pat 0 patlen
+
+Section: Loading The Annotations
+
+ The store is the medium's fact partition, read through `GopFacts` over the
+ disk the desk selected. It used to read through `disk-load`, whose kernel
+ syscall is ATA on the active drive, so a UEFI boot or a USB stick answered
+ zero facts and no mark could appear. That was WORKS-46 and it is fixed;
+ this reads the same road `GopReview` does.
+
+  ged-annot-mark-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ged-annot-mark-one (es) (i) (stop) (pat) (patlen) (cpat) (cplen) (hits) =
+    if i >= stop then hits
+    else if ged-line-def-matches es i pat patlen == False then ged-annot-mark-one es (i + 1) stop pat patlen cpat cplen hits
+    else let ci = ged-chap-of es i
+    in if ci < 0 then ged-annot-mark-one es (i + 1) stop pat patlen cpat cplen hits
+    else if ged-chap-name-eq es ci cpat cplen == False then ged-annot-mark-one es (i + 1) stop pat patlen cpat cplen hits
+    else let m = ged-mark-set es i
+    in ged-annot-mark-one es (i + 1) stop pat patlen cpat cplen (hits + 1)
+
+  ged-annot-walk : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ged-annot-walk (es) (i) (n) (pat) (patlen) (cpat) (cplen) (hits) =
+    if i >= n then hits
+    else let stop = if i + ged-chunk > n then n else i + ged-chunk
+    in let h = ged-annot-mark-one es i stop pat patlen cpat cplen hits
+    in ged-annot-walk es stop n pat patlen cpat cplen h
+
+ The chapter name is compared as BYTES, like the path, and not as Text. The
+ files on the medium end their lines CRLF, `ged-line-end` keeps the CR, and
+ `ged-chars` renders every byte under 32 as a space -- so the Text for
+ `Chapter: Name` reads `Name ` with a trailing space and never equals the
+ target's `Name`. That cost a blank gutter and a staged probe to find.
+
+  ged-chap-name-eq : Integer, Integer, Integer, Integer -> Boolean
+  ged-chap-name-eq (es) (ci) (cpat) (cplen) =
+    let b = ged-buf es
+    in let st = ged-chap-line-start es ci
+    in if st + 9 + cplen > ged-size es then False
+    else if ged-bytes-eq b (st + 9) cpat 0 cplen == False then False
+    else let after = st + 9 + cplen
+    in if after >= ged-size es then True
+    else peek-byte b after < 33
+
+  ged-chap-line-start : Integer, Integer -> Integer
+  ged-chap-line-start (es) (ci) = ged-line-start es (ged-chap-line es ci)
+
+  ged-annot-apply : Integer, List Annotation, Integer, Integer, Integer, Integer -> Integer
+  ged-annot-apply (es) (anns) (i) (n) (scratch) (hits) =
+    if i >= n then hits
+    else let a = list-at anns i
+    in let tgt = a.target
+    in let plen = text-length (tgt.path)
+    in if plen <= 0 then ged-annot-apply es anns (i + 1) n scratch hits
+    else if plen >= ged-name-scratch then ged-annot-apply es anns (i + 1) n scratch hits
+    else let clen = text-length (tgt.chapter)
+    in if clen <= 0 then ged-annot-apply es anns (i + 1) n scratch hits
+    else if clen >= ged-name-scratch then ged-annot-apply es anns (i + 1) n scratch hits
+    else let w = ged-text-bytes (tgt.path) scratch 0 plen
+    in let cw = ged-text-bytes (tgt.chapter) (scratch + ged-name-scratch) 0 clen
+    in let h = ged-annot-walk es 0 (ged-count es) scratch plen (scratch + ged-name-scratch) clen hits
+    in ged-annot-apply es anns (i + 1) n scratch (h)
+
+  ged-parse-annots : List Text, Integer, Integer, List Annotation -> List Annotation
+  ged-parse-annots (texts) (i) (n) (acc) =
+    if i >= n then acc
+    else when annotation-from-persist-text (list-at texts i)
+      is None -> ged-parse-annots texts (i + 1) n acc
+      is Just (a) -> ged-parse-annots texts (i + 1) n (list-push acc a)
+
+  ged-annots-of : GopFactStore -> [Identity, Device.Port] List Annotation
+  ged-annots-of (st) = act
+    texts <- gfs-scan-all st persist-kind-annotation
+    lat <- ged-lattice-of st
+    let all = ged-parse-annots texts 0 (list-length texts) []
+    in ged-keep-trusted lat all 0 (list-length all) []
+  end
+
+ The trust filter, and it needed no ruling. This read as a design question --
+ where does a desk's trust come from -- and it is not one: the medium already
+ persists vouches (kind 32), `RepoVouch`'s voucher, subject and level are
+ exactly `lattice-add-vouch`'s three arguments, and the threshold is already a
+ named constant. Nothing here chooses between two defensible answers.
+
+ The loaded identity is added DIRECT at full trust, because an author who
+ cannot vouch for themselves would have to be vouched for by someone else
+ before their own note appeared on their own machine. **With no identity the
+ lattice is empty and nothing is above threshold, so no annotation shows** --
+ the specified behaviour, and why the default `desk.ps1` bed, which loads
+ none, shows an empty gutter.
+
+  ged-parse-vouches : List Text, TrustLattice, Integer, Integer -> TrustLattice
+  ged-parse-vouches (texts) (lat) (i) (n) =
+    if i >= n then lat
+    else when repo-vouch-from-text (list-at texts i)
+      is None -> ged-parse-vouches texts lat (i + 1) n
+      is Just (v) -> ged-parse-vouches texts (lattice-add-vouch lat (v.rv-voucher) (v.rv-subject) (v.rv-trust-level)) (i + 1) n
+
+  ged-lattice-of : GopFactStore -> [Identity, Device.Port] TrustLattice
+  ged-lattice-of (st) = act
+    texts <- gfs-scan-all st persist-kind-vouch
+    fp <- loaded-fingerprint
+    let base = when fp
+      is None -> lattice-empty
+      is Just (me) -> lattice-add-direct lattice-empty me trust-max
+    in ged-parse-vouches texts base 0 (list-length texts)
+  end
+
+  ged-trusted : TrustLattice, Annotation -> Boolean
+  ged-trusted (lat) (a) = lattice-meets-threshold lat (a.author) trust-default-threshold
+
+  ged-keep-trusted : TrustLattice, List Annotation, Integer, Integer, List Annotation -> List Annotation
+  ged-keep-trusted (lat) (anns) (i) (n) (acc) =
+    if i >= n then acc
+    else let a = list-at anns i
+    in ged-keep-trusted lat anns (i + 1) n (if ged-trusted lat a then list-push acc a else acc)
+
+  ged-annots-load : Integer -> [Identity, Device.Port] Integer
+  ged-annots-load (es) = act
+    let c = ged-marks-clear es 0
+    in let s = ged-chap-scan es
+    in act
+      st <- gfs-mount
+      if st.gfs-ok == False then 0
+      else act
+        anns <- ged-annots-of st
+        let scratch = alloc-zeroed (ged-name-scratch * 2) 16
+        in ged-annot-apply es anns 0 (list-length anns) scratch 0
+      end
+    end
+  end
+
+Section: Writing An Annotation
+
+ The state block is 128 bytes (`desk-run`), and the first 64 are full. The
+ draft an author is typing lives in the second half: a length and sixty
+ characters, so a keystroke stores integers and the step answers 1, the same
+ reason the new-file name does.
+
+ The author is not asked for and cannot be chosen. It is the loaded
+ identity's fingerprint, and a locked identity writes NOTHING rather than
+ writing an annotation nobody can attribute. That is the shape `GopReview`
+ casts a verdict with.
+
+  ged-draft-max : Integer = 60
+  ged-draft-off : Integer = 68
+
+  ged-draft-len : Integer -> Integer
+  ged-draft-len (es) = peek-32 es 64
+
+  ged-draft-clear : Integer -> Integer
+  ged-draft-clear (es) = poke-32 es 64 0
+
+  ged-draft-push : Integer, Integer -> Integer
+  ged-draft-push (es) (ch) =
+    let n = ged-draft-len es
+    in if n >= ged-draft-max then 0
+    else let w = poke-byte es (ged-draft-off + n) ch
+    in poke-32 es 64 (n + 1)
+
+  ged-draft-pop : Integer -> Integer
+  ged-draft-pop (es) =
+    let n = ged-draft-len es
+    in if n <= 0 then 0 else poke-32 es 64 (n - 1)
+
+  ged-draft-text : Integer, Integer, Integer, Text -> Text
+  ged-draft-text (es) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = peek-byte es (ged-draft-off + i)
+    in ged-draft-text es (i + 1) n (acc & char-to-text (code-to-char (from-unicode b)))
+
+  ged-draft-of : Integer -> Text
+  ged-draft-of (es) = ged-draft-text es 0 (ged-draft-len es) ""
+
+ A trailing space is dropped because the line on the medium ends CRLF and
+ `ged-chars` renders the CR as one. A chapter name compared with it still
+ attached is the defect the gutter mark already paid for once.
+
+  ged-trim-end : Text, Integer -> Text
+  ged-trim-end (t) (n) =
+    if n <= 0 then ""
+    else if char-code-at t (n - 1) == char-code-at " " 0 then ged-trim-end t (n - 1)
+    else substring t 0 n
+
+  ged-upto-space : Text, Integer, Integer -> Integer
+  ged-upto-space (t) (i) (n) =
+    if i >= n then n
+    else if char-code-at t i == char-code-at " " 0 then i
+    else ged-upto-space t (i + 1) n
+
+  ged-def-name-of : Integer, Integer -> Text
+  ged-def-name-of (es) (line) =
+    let t = ged-line-text es line 200
+    in if text-length t < 3 then ""
+    else let e = ged-upto-space t 2 (text-length t)
+    in substring t 2 (e - 2)
+
+  ged-chap-name-of : Integer, Integer -> Text
+  ged-chap-name-of (es) (line) =
+    let ci = ged-chap-of es line
+    in if ci < 0 then ""
+    else let t = ged-line-text es (ged-chap-line es ci) 200
+    in if text-length t <= 9 then ""
+    else ged-trim-end (substring t 9 (text-length t - 9)) (text-length t - 9)
+
+ A line is annotatable only if the marks' own predicate would recognise it as
+ a definition, so what can be written to is exactly what can be marked.
+
+  ged-line-is-def : Integer, Integer -> Boolean
+  ged-line-is-def (es) (line) =
+    let n = ged-def-name-of es line
+    in if text-length n <= 0 then False
+    else let b = ged-buf es
+    in let st = ged-line-start es line
+    in let plen = text-length n
+    in if st + 2 + plen + 3 > ged-size es then False
+    else peek-byte b st == 32
+    & peek-byte b (st + 1) == 32
+    & peek-byte b (st + 2 + plen) == 32
+    & peek-byte b (st + 2 + plen + 1) == 58
+    & peek-byte b (st + 2 + plen + 2) == 32
+
+  ged-note-save : Integer, Integer, Integer -> [Identity, Device.Port] Integer
+  ged-note-save (es) (line) (ts) = act
+    fp <- loaded-fingerprint
+    when fp
+      is None -> ged-set-verdict es ged-v-locked
+      is Just (who) ->
+        let chap = ged-chap-name-of es line
+        in let name = ged-def-name-of es line
+        in if text-length chap <= 0 then ged-set-verdict es ged-v-notdef
+        else if text-length name <= 0 then ged-set-verdict es ged-v-notdef
+        else let a = create-annotation (AnnotationTarget { chapter = chap, path = name }) Rationale who (ged-draft-of es) ts
+        in act
+          st <- gfs-mount
+          if st.gfs-ok == False then ged-set-verdict es ged-v-nowrite
+          else act
+            w <- gfs-write-and-checkpoint st persist-kind-annotation (annotation-to-persist-text a) ts
+            re <- ged-annots-load es
+            ged-set-verdict es ged-v-noted
+          end
+        end
+    end
+  end
+
+Section: The Annotation Bubble
+
+ The mark says an annotation is there; this is what reads it. The store is
+ re-read on the keystroke rather than held, which is what `GopReview` does for
+ the same reason: at a human's rate a fact-partition read is affordable, and
+ holding the list would put a List in the record and force every step that
+ touches it to answer negative.
+
+ The predicate is the SAME one that set the marks, called on one line instead
+ of the whole file, so a bubble cannot disagree with the mark beside it.
+
+  ged-line-has-annot : Integer, Integer, Annotation, Integer -> Boolean
+  ged-line-has-annot (es) (line) (a) (scratch) =
+    let tgt = a.target
+    in let plen = text-length (tgt.path)
+    in let clen = text-length (tgt.chapter)
+    in if plen <= 0 then False
+    else if plen >= ged-name-scratch then False
+    else if clen <= 0 then False
+    else if clen >= ged-name-scratch then False
+    else let w = ged-text-bytes (tgt.path) scratch 0 plen
+    in let cw = ged-text-bytes (tgt.chapter) (scratch + ged-name-scratch) 0 clen
+    in if ged-line-def-matches es line scratch plen == False then False
+    else let ci = ged-chap-of es line
+    in if ci < 0 then False
+    else ged-chap-name-eq es ci (scratch + ged-name-scratch) clen
+
+  ged-annots-here : Integer, Integer, List Annotation, Integer, Integer, Integer, List Annotation -> List Annotation
+  ged-annots-here (es) (line) (anns) (i) (n) (scratch) (acc) =
+    if i >= n then acc
+    else let a = list-at anns i
+    in ged-annots-here es line anns (i + 1) n scratch (if ged-line-has-annot es line a scratch then list-push acc a else acc)
+
+  ged-annots-for-line : Integer, Integer -> [Identity, Device.Port] List Annotation
+  ged-annots-for-line (es) (line) = act
+    st <- gfs-mount
+    if st.gfs-ok == False then []
+    else act
+      anns <- ged-annots-of st
+      let scratch = alloc-zeroed (ged-name-scratch * 2) 16
+      in ged-annots-here es line anns 0 (list-length anns) scratch []
+    end
+  end
+
+  ged-bub-clip : Text, Integer -> Text
+  ged-bub-clip (t) (cols) =
+    if text-length t <= cols then t else substring t 0 cols
+
+  ged-bub-rows : Integer, Integer, CbfFont, Integer, Palette, Integer, Integer, List Annotation, Integer, Integer, Integer -> Integer
+  ged-bub-rows (base) (stride) (font) (s) (pal) (x) (y) (anns) (i) (n) (cols) =
+    if i >= n then 0
+    else let a = list-at anns i
+    in let head = "[" & annotation-kind-name (a.kind) & "] " & a.author
+    in let h1 = gop-draw-text base stride font x (y + i * 2 * gfl-row-h s) (ged-bub-clip head cols) (ged-annot pal) s 0
+    in let h2 = gop-draw-text base stride font x (y + (i * 2 + 1) * gfl-row-h s) (ged-bub-clip (a.body) cols) (gfl-bright pal) s 0
+    in ged-bub-rows base stride font s pal x y anns (i + 1) n cols
+
+  ged-bubble-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Integer -> [Identity, Device.Port] Integer
+  ged-bubble-paint (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (line) = act
+    anns <- ged-annots-for-line es line
+    let hd = cursor-hide cs base stride
+    in let n = list-length anns
+    in let px = gfl-px w s + 20 * s
+    in let py = gfl-py h s + 60 * s
+    in let pw = gfl-pw w s - 40 * s
+    in let ph = (n * 2 + 3) * gfl-row-h s
+    in let bg = gop-fill-rect base stride px py pw ph (ged-row-band pal)
+    in let ttl = gop-draw-text base stride font (px + 8 * s) (py + 4 * s) ("annotations on line " & show (line + 1) & "  (" & show n & ")") (ged-gutter-col pal) s 0
+    in let rows = ged-bub-rows base stride font s pal (px + 8 * s) (py + 4 * s + gfl-row-h s) anns 0 n ((pw - 16 * s) / ged-col-w s)
+    in let foot = gop-draw-text base stride font (px + 8 * s) (py + ph - gfl-row-h s) "Esc back" (gfl-hint pal) s 0
+    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+  end
+
+Section: Naming A New File
+
+ The name being typed lives in the state block as bytes rather than in the
+ record as Text, so a keystroke stores integers and the step answers 1. Built
+ as Text it would allocate a new accumulator per character and the step would
+ have to answer negative to keep it, which is the cost `works-desk-contract`
+ reserves for human-decision events rather than for typing.
+
+ Twelve is 8.3 plus the dot, which is the longest name `ged-name-83` can carry.
+
+  ged-name-max : Integer = 12
+
+  ged-name-len : Integer -> Integer
+  ged-name-len (es) = peek-32 es 40
+
+  ged-name-clear : Integer -> Integer
+  ged-name-clear (es) = poke-32 es 40 0
+
+  ged-name-push : Integer, Integer -> Integer
+  ged-name-push (es) (ch) =
+    let n = ged-name-len es
+    in if n >= ged-name-max then 0
+    else let u = if ch >= 97 then (if ch <= 122 then ch - 32 else ch) else ch
+    in let w = poke-byte es (44 + n) u
+    in poke-32 es 40 (n + 1)
+
+  ged-name-pop : Integer -> Integer
+  ged-name-pop (es) =
+    let n = ged-name-len es
+    in if n <= 0 then 0 else poke-32 es 40 (n - 1)
+
+ The same `from-unicode` boundary `ged-chars` crosses, and for the same
+ reason: a keycode is not a CCE code point.
+
+  ged-name-text : Integer, Integer, Integer, Text -> Text
+  ged-name-text (es) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = peek-byte es (44 + i)
+    in ged-name-text es (i + 1) n (acc & char-to-text (code-to-char (from-unicode b)))
+
+  ged-name-of : Integer -> Text
+  ged-name-of (es) = ged-name-text es 0 (ged-name-len es) ""
+
 Section: Names On The Medium
 
  A FAT short name is eleven bytes, eight of base and three of extension,
@@ -330,6 +961,11 @@ Section: Save, And The One Hot Backup
   ged-v-reverted : Integer = 7
   ged-v-nobakfile : Integer = 8
   ged-v-bakbig : Integer = 9
+  ged-v-noundo : Integer = 10
+  ged-v-created : Integer = 11
+  ged-v-locked : Integer = 12
+  ged-v-noted : Integer = 13
+  ged-v-notdef : Integer = 14
 
   ged-verdict-text : Integer -> Text
   ged-verdict-text (v) =
@@ -342,6 +978,11 @@ Section: Save, And The One Hot Backup
     else if v == ged-v-reverted then ".BAK loaded; F2 keeps it"
     else if v == ged-v-nobakfile then "no .BAK: nothing saved yet"
     else if v == ged-v-bakbig then ".BAK is past the buffer"
+    else if v == ged-v-noundo then "nothing to undo"
+    else if v == ged-v-created then "created"
+    else if v == ged-v-locked then "identity locked: nothing written"
+    else if v == ged-v-noted then "annotation saved"
+    else if v == ged-v-notdef then "not a definition line"
     else ""
 
   ged-release-prev : Fat16Volume, Integer, Maybe Fat16DirEntry -> [Device.Port] Boolean
@@ -355,8 +996,8 @@ Section: Save, And The One Hot Backup
     end
   end
 
-  ged-commit : Integer, Fat16Volume, Text, Fat16DirEntry, Integer -> [Device.Port] Integer
-  ged-commit (es) (vol) (name) (entry) (fat) = act
+  ged-commit : Integer, Fat16Volume, Text, Fat16DirEntry, Integer, Integer -> [Device.Port] Integer
+  ged-commit (es) (vol) (name) (entry) (fat) (ctx) = act
     let leaf = ged-leaf-of name
     in let dir = ged-dir es
     in let bakbuf = ged-name-83 (ged-base-of leaf) "BAK"
@@ -367,7 +1008,7 @@ Section: Save, And The One Hot Backup
         de <- gfat-write-dir-entry bakbuf slot (entry.de-cluster) (entry.de-size) (vol.vol-bytes-per-sector)
         if de == False then ged-v-nobak
         else act
-          ok <- gfat-write-file-in vol (ged-name-83 (ged-base-of leaf) (ged-ext-of leaf)) (ged-buf es) (ged-size es) dir
+          ok <- gfat-write-file-in-watched vol (ged-name-83 (ged-base-of leaf) (ged-ext-of leaf)) (ged-buf es) (ged-size es) dir ctx ged-bar-report
           if ok == False then ged-v-nowrite
           else let c = poke-32 es 16 0
           in ged-v-ok
@@ -396,6 +1037,7 @@ Section: Save, And The One Hot Backup
             got <- gfat-read-file-bulk vol bak (ged-buf es)
             let p = poke-32 es 8 got
             in let c = ged-reindex es
+            in let u = ged-undo-reset es
             in let d = ged-mark-dirty es
             in ged-v-reverted
           end
@@ -403,18 +1045,83 @@ Section: Save, And The One Hot Backup
     end
   end
 
-  ged-save : Integer, Fat16Volume, Text -> [Device.Port] Integer
-  ged-save (es) (vol) (name) = act
+ The save reports its progress from INSIDE the write, because the pane is
+ blocked in there and cannot paint for itself. The callback is a top-level
+ function and a context block of integers rather than a closure: this
+ language has no lambda literal, and the paint therefore has to be one that
+ needs no font, no Text and no allocation. A filled rectangle is exactly
+ that, so the report is a bar and not a sector count.
+
+ Measured 2026-08-19: of a 59 s save of 2,896,050 bytes, the write is 57 s
+ and every other phase is under a second, so a bar driven from the write is
+ driven from essentially the whole wait.
+
+  ged-bar-base : Integer = 0
+  ged-bar-stride : Integer = 4
+  ged-bar-x : Integer = 8
+  ged-bar-y : Integer = 12
+  ged-bar-w : Integer = 16
+  ged-bar-h : Integer = 20
+  ged-bar-total : Integer = 24
+
+  ged-bar-col : Integer = 28
+
+ The bar's colour rides in the context block with its geometry, because the
+ callback's shape is fixed at `(ctx) (done)` by the write that calls it and
+ cannot grow a parameter. The block is where everything else this paint needs
+ already lives.
+
+  ged-bar-report : Integer, Integer -> Integer
+  ged-bar-report (ctx) (done) =
+    let total = peek-32 ctx ged-bar-total
+    in if total <= 0 then 0
+    else let full = peek-32 ctx ged-bar-w
+    in let n = if done > total then total else done
+    in let fill = full * n / total
+    in if fill <= 0 then 0
+    else gop-fill-rect (peek-32 ctx ged-bar-base) (peek-32 ctx ged-bar-stride) (peek-32 ctx ged-bar-x) (peek-32 ctx ged-bar-y) fill (peek-32 ctx ged-bar-h) (peek-32 ctx ged-bar-col)
+
+  ged-bar-ctx : Integer, Integer, Integer, Integer, Integer, Integer, Palette -> Integer
+  ged-bar-ctx (base) (stride) (w) (h) (s) (total) (pal) =
+    let c = alloc-zeroed 32 16
+    in let a = poke-32 c ged-bar-base base
+    in let b = poke-32 c ged-bar-stride stride
+    in let d = poke-32 c ged-bar-x (gfl-px w s + 10 * s)
+    in let e = poke-32 c ged-bar-y (gfl-py h s + 40 * s)
+    in let f = poke-32 c ged-bar-w (gfl-pw w s - 20 * s)
+    in let g = poke-32 c ged-bar-h (6 * s)
+    in let i = poke-32 c ged-bar-total total
+    in let j = poke-32 c ged-bar-col (ged-bar pal)
+    in c
+
+ A file with no directory entry is CREATED rather than refused. There is no
+ backup to rotate and no previous chain to release, which is the whole
+ difference from `ged-commit`: the writer already takes a free slot when the
+ name does not match an existing one, so creation needs no new FAT code.
+
+  ged-create : Integer, Fat16Volume, Text, Integer -> [Device.Port] Integer
+  ged-create (es) (vol) (name) (ctx) = act
+    let leaf = ged-leaf-of name
+    in act
+      ok <- gfat-write-file-in-watched vol (ged-name-83 (ged-base-of leaf) (ged-ext-of leaf)) (ged-buf es) (ged-size es) (ged-dir es) ctx ged-bar-report
+      if ok == False then ged-v-nowrite
+      else let c = poke-32 es 16 0
+      in ged-v-created
+    end
+  end
+
+  ged-save : Integer, Fat16Volume, Text, Integer -> [Device.Port] Integer
+  ged-save (es) (vol) (name) (ctx) = act
     e <- gfat-resolve vol name
     when e
-      is None -> ged-v-nofile
+      is None -> ged-create es vol name ctx
       is Just (entry) -> act
         prev <- gfat-resolve vol (ged-bak-text name)
         f <- gfat-load-fat vol
         if f.gft-ok == False then ged-v-nofat
         else act
           rel <- ged-release-prev vol (f.gft-buf) prev
-          ged-commit es vol name entry (f.gft-buf)
+          ged-commit es vol name entry (f.gft-buf) ctx
         end
       end
     end
@@ -439,10 +1146,35 @@ Section: Geometry
     let c = (gfl-pw w s - 20 * s - ged-gutter s) / ged-col-w s
     in if c < 8 then 8 else c
 
-  ged-col-cursor : Integer = #FFD060
-  ged-col-gutter : Integer = #4A5468
-  ged-col-row : Integer = #24304C
-  ged-col-more : Integer = #FFB040
+ WORKS-17. The editor's own pens, as roles rather than numbers, on the same
+ argument `GopFiles` states: the palette arrives as a parameter because
+ `GopDesk` cites this chapter.
+
+ `syn-colour` is deliberately NOT among them. A code editor's syntax scheme
+ is arguably its own rather than the desktop's, and the two possible answers
+ (grow `Theme` a syntax block, or leave `SyntaxHighlight` its own and let
+ only the frame follow the desk) are a real question rather than a detail:
+ a `minimal` desk on a white ground needs a light syntax set that does not
+ exist yet. This chapter takes the second answer for now and changes no
+ syntax colour (`works-backlog.md` WORKS-17).
+
+  ged-cursor : Palette -> Integer
+  ged-cursor (p) = p.pal-warning
+
+  ged-gutter-col : Palette -> Integer
+  ged-gutter-col (p) = p.pal-primary
+
+  ged-row-band : Palette -> Integer
+  ged-row-band (p) = p.pal-border
+
+  ged-more : Palette -> Integer
+  ged-more (p) = p.pal-warning
+
+  ged-annot : Palette -> Integer
+  ged-annot (p) = p.pal-success
+
+  ged-bar : Palette -> Integer
+  ged-bar (p) = p.pal-success
 
   ged-num : Integer, Integer -> Text
   ged-num (n) (width) =
@@ -469,35 +1201,36 @@ Section: Drawing One Line
     in let d = gop-draw-text base stride font (x0 + st * ged-col-w s) y t (syn-colour (r.sr-class)) s 0
     in ged-draw-runs base stride font s x0 y line runs (i + 1) cols
 
-  ged-draw-row : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> Integer
-  ged-draw-row (base) (w) (h) (stride) (s) (font) (es) (idx) (row) (cur) =
+  ged-draw-row : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Integer, Integer, Integer -> Integer
+  ged-draw-row (base) (w) (h) (stride) (s) (font) (pal) (es) (idx) (row) (cur) =
     let y = gfl-rows-y0 h s + row * gfl-row-h s
-    in let hl = if idx == cur then gop-fill-rect base stride (gfl-px w s) y (gfl-pw w s) (gfl-row-h s) ged-col-row else 0
-    in let gt = gop-draw-text base stride font (gfl-px w s + 10 * s) (y + s) (ged-num (idx + 1) 5) ged-col-gutter s 0
+    in let hl = if idx == cur then gop-fill-rect base stride (gfl-px w s) y (gfl-pw w s) (gfl-row-h s) (ged-row-band pal) else 0
+    in let gt = gop-draw-text base stride font (gfl-px w s + 10 * s) (y + s) (ged-num (idx + 1) 5) (ged-gutter-col pal) s 0
+    in let an = if ged-mark-get es idx == 1 then gop-draw-text base stride font (gfl-px w s + 10 * s + 5 * ged-col-w s) (y + s) "*" (ged-annot pal) s 0 else 0
     in let cols = ged-cols w s
     in let line = ged-line-text es idx cols
     in let runs = ged-draw-runs base stride font s (ged-text-x w s) (y + s) line (syn-line line) 0 cols
     in if ged-line-len es idx > cols
-      then gop-draw-text base stride font (ged-text-x w s + cols * ged-col-w s) (y + s) ">" ged-col-more s 0
+      then gop-draw-text base stride font (ged-text-x w s + cols * ged-col-w s) (y + s) ">" (ged-more pal) s 0
       else 0
 
-  ged-draw-rows : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> Integer
-  ged-draw-rows (base) (w) (h) (stride) (s) (font) (es) (top) (cur) (row) =
+  ged-draw-rows : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Integer, Integer, Integer -> Integer
+  ged-draw-rows (base) (w) (h) (stride) (s) (font) (pal) (es) (top) (cur) (row) =
     if row >= gfl-rows-vis h s then 0
     else if top + row >= ged-count es then 0
-    else let d = ged-draw-row base w h stride s font es (top + row) row cur
-    in ged-draw-rows base w h stride s font es top cur (row + 1)
+    else let d = ged-draw-row base w h stride s font pal es (top + row) row cur
+    in ged-draw-rows base w h stride s font pal es top cur (row + 1)
 
 Section: Drawing The Pane
 
-  ged-caret : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  ged-caret (base) (w) (h) (stride) (s) (top) (cur) (col) =
+  ged-caret : Integer, Integer, Integer, Integer, Integer, Palette, Integer, Integer, Integer -> Integer
+  ged-caret (base) (w) (h) (stride) (s) (pal) (top) (cur) (col) =
     let row = cur - top
     in let cols = ged-cols w s
     in if row < 0 then 0
     else if row >= gfl-rows-vis h s then 0
     else if col > cols then 0
-    else gop-fill-rect base stride (ged-text-x w s + col * ged-col-w s) (gfl-rows-y0 h s + row * gfl-row-h s) s (gfl-row-h s) ged-col-cursor
+    else gop-fill-rect base stride (ged-text-x w s + col * ged-col-w s) (gfl-rows-y0 h s + row * gfl-row-h s) s (gfl-row-h s) (ged-cursor pal)
 
   ged-status : Integer, Integer, Integer -> Text
   ged-status (es) (cur) (col) =
@@ -506,20 +1239,20 @@ Section: Drawing The Pane
     in let tail = if said == "" then "" else "   " & said
     in "L" & show (cur + 1) & ":" & show (col + 1) & flag & "  " & show (ged-count es) & " lines  " & show (ged-size es) & " bytes" & tail
 
-  ged-draw : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Text, Integer, Integer, Integer -> Integer
-  ged-draw (base) (w) (h) (stride) (s) (font) (es) (name) (top) (cur) (col) =
-    let f = gfl-draw-frame base w h stride s font ("Edit  " & name)
+  ged-draw : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Text, Integer, Integer, Integer -> Integer
+  ged-draw (base) (w) (h) (stride) (s) (font) (pal) (es) (name) (top) (cur) (col) =
+    let f = gfl-draw-frame base w h stride s font pal ("Edit  " & name)
     in let px = gfl-px w s
     in let py = gfl-py h s
-    in let hdr = gop-draw-text base stride font (px + 10 * s) (py + 26 * s) (ged-status es cur col) gfl-col-bright s 0
-    in let rows = ged-draw-rows base w h stride s font es top cur 0
-    in let car = ged-caret base w h stride s top cur col
-    in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Type to edit   Bksp/Del remove   F2 save   F3 load .BAK   Esc back" gfl-col-green s 0
+    in let hdr = gop-draw-text base stride font (px + 10 * s) (py + 26 * s) (ged-status es cur col) (gfl-bright pal) s 0
+    in let rows = ged-draw-rows base w h stride s font pal es top cur 0
+    in let car = ged-caret base w h stride s pal top cur col
+    in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Type to edit  Bksp/Del  F2 save  F3 .BAK  F4 undo  F6 notes  Esc back" (gfl-hint pal) s 0
 
-  ged-repaint : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, Text, Integer, Integer, Integer -> Integer
-  ged-repaint (base) (w) (h) (stride) (s) (font) (mouse) (cs) (es) (name) (top) (cur) (col) =
+  ged-repaint : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  ged-repaint (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (name) (top) (cur) (col) =
     let hd = cursor-hide cs base stride
-    in let d = ged-draw base w h stride s font es name top cur col
+    in let d = ged-draw base w h stride s font pal es name top cur col
     in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
 
 Section: Moving
@@ -573,38 +1306,43 @@ Section: The Shot
 
 Section: Opening A File
 
-  ged-open : Integer, Fat16Volume, Text, Integer, Integer -> [Device.Port] Integer
+  ged-open : Integer, Fat16Volume, Text, Integer, Integer -> [Identity, Device.Port] Integer
   ged-open (es) (vol) (name) (size) (dir) = act
     got <- gfat-read-file-bulk vol name (ged-buf es)
     let p = poke-32 es 8 got
     in let sd = ged-set-dir es dir
     in let c = ged-reindex es
-    in got
+    in let u = ged-undo-reset es
+    in let cd = poke-32 es 16 0
+    in act
+      marked <- ged-annots-load es
+      got
+    end
   end
 
 Section: The File List
 
-  ged-list-draw : Integer, Integer, Integer, Integer, Integer, CbfFont, List Fat16DirEntry, Integer, Integer, Integer -> Integer
-  ged-list-draw (base) (w) (h) (stride) (s) (font) (entries) (sel) (top) (i) =
+  ged-list-draw : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, List Fat16DirEntry, Integer, Integer, Integer -> Integer
+  ged-list-draw (base) (w) (h) (stride) (s) (font) (pal) (entries) (sel) (top) (i) =
     let n = list-length entries
     in if top + i >= n then 0
     else if i >= gfl-rows-vis h s then 0
     else let idx = top + i
     in let y = gfl-rows-y0 h s + i * gfl-row-h s
-    in let hl = if idx == sel then gop-fill-rect base stride (gfl-px w s) y (gfl-pw w s) (gfl-row-h s) gfl-col-sel else 0
+    in let hl = if idx == sel then gop-fill-rect base stride (gfl-px w s) y (gfl-pw w s) (gfl-row-h s) (gfl-sel pal) else 0
     in let e = list-at entries idx
-    in let fg = if idx == sel then gfl-col-bright else gfl-col-text
+    in let fg = if idx == sel then gfl-on-sel pal else gfl-text pal
     in let t = gop-draw-text base stride font (gfl-px w s + 10 * s) (y + s) (gfl-row-text e) fg s 0
-    in ged-list-draw base w h stride s font entries sel top (i + 1)
+    in ged-list-draw base w h stride s font pal entries sel top (i + 1)
 
-  ged-list-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
-  ged-list-paint (base) (w) (h) (stride) (s) (font) (mouse) (cs) (entries) (sel) (top) (names) =
+  ged-list-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
+  ged-list-paint (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (entries) (sel) (top) (names) =
     let hd = cursor-hide cs base stride
     in let crumb = ged-prefix names 0 ""
-    in let f = gfl-draw-frame base w h stride s font (if text-length crumb == 0 then "Edit  choose a file" else "Edit  " & crumb)
-    in let hdr = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (gfl-pad "name" 16 & "size") gfl-col-dim s 0
-    in let rows = ged-list-draw base w h stride s font entries sel top 0
-    in let hint = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Up/Down move   Enter open   Esc back" gfl-col-green s 0
+    in let f = gfl-draw-frame base w h stride s font pal (if text-length crumb == 0 then "Edit  choose a file" else "Edit  " & crumb)
+    in let hdr = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (gfl-pad "name" 16 & "size") (gfl-dim pal) s 0
+    in let rows = ged-list-draw base w h stride s font pal entries sel top 0
+    in let hint = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Up/Down move   Enter open   F5 new file   Esc back" (gfl-hint pal) s 0
     in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
 
  Descending is GopFiles' two moves: push the cluster and the name, re-list,
@@ -640,10 +1378,19 @@ Section: Step
  desk's to avoid rather than this chapter's, and `desk-loop` states it.
 
  **The 9 MB buffer does not move into `EditState` and must not.** It is
- allocated lazily and parked in a `ds` cell with no restore, precisely so the
- desk's base mark cannot reach it, and it is handed to the step as `es` exactly
- as it was handed to the loops. Only the editor's TYPED values live here: the
- volume, the path of the open file, and the directory the list is standing in.
+ allocated lazily, its POINTER is parked in a `ds` cell, and it is handed to
+ the step as `es` exactly as it was handed to the loops. Only the editor's
+ TYPED values live here: the volume, the path of the open file, and the
+ directory the list is standing in.
+
+ **This block said the desk's base mark cannot reach that buffer, and it can.**
+ `ged-init` runs from `desk-edit-open`, above the base mark, so a close
+ restores over it while the cell keeps the address; `ged-ensure` above only
+ allocates when the pointer is zero, so the next session would have written
+ through it. Measured 2026-08-19: an Edit pane alive and hidden holds 9,598,200
+ bytes and closes back to 72 bytes over a desk that never opened one. The
+ desk's close paths now zero the pointer when the restore reaches it, which is
+ why `ged-ensure` is no longer once per boot.
 
   EditState = record {
     ed-vol : Fat16Volume,
@@ -665,6 +1412,9 @@ Section: Step
   ged-mode-edit : Integer = 1
   ged-mode-big : Integer = 2
   ged-mode-nofat : Integer = 3
+  ged-mode-name : Integer = 4
+  ged-mode-bubble : Integer = 5
+  ged-mode-note : Integer = 6
 
   ged-shift-of : Integer, Integer -> Integer
   ged-shift-of (mods) (sc) =
@@ -683,15 +1433,15 @@ Section: Step
   ged-moved : EditState, UsbMouse -> Boolean
   ged-moved (st) (mouse) = st.ed-ptr /= (mouse-x mouse) * 4096 + (mouse-y mouse)
 
-  ged-new : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer -> [Device.Port] EditState
-  ged-new (base) (w) (h) (stride) (s) (font) (mouse) (cs) (es) = act
+  ged-new : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer -> [Device.Port] EditState
+  ged-new (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) = act
     m <- gfat-mount-esp
     hd <- cursor-hide cs base stride
     let a = ged-ensure es
     in if m.gm-ok == False then act
-      f <- gfl-draw-frame base w h stride s font "Edit"
-      t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "no FAT ESP on the boot medium" gfl-col-dim s 0
-      t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
+      f <- gfl-draw-frame base w h stride s font pal "Edit"
+      t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "no FAT ESP on the boot medium" (gfl-dim pal) s 0
+      t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" (gfl-hint pal) s 0
       cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
       EditState { ed-vol = m.gm-vol, ed-entries = [], ed-clusters = [0 - 1], ed-names = [], ed-path = "", ed-sel = 0, ed-top = 0, ed-mode = ged-mode-nofat, ed-etop = 0, ed-cur = 0, ed-col = 0, ed-mods = 0, ed-ptr = 0 }
     end
@@ -701,7 +1451,7 @@ Section: Step
       in let clusters = [flag]
       in act
         ents <- gfl-list-cur vol clusters
-        let p = ged-list-paint base w h stride s font mouse cs ents 0 0 []
+        let p = ged-list-paint base w h stride s font pal mouse cs ents 0 0 []
         in EditState { ed-vol = vol, ed-entries = ents, ed-clusters = clusters, ed-names = [], ed-path = "", ed-sel = 0, ed-top = 0, ed-mode = ged-mode-list, ed-etop = 0, ed-cur = 0, ed-col = 0, ed-mods = 0, ed-ptr = 0 }
       end
     end
@@ -709,14 +1459,14 @@ Section: Step
 
   ged-step-hide : Integer = 2
 
-  ged-reenter : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, EditState -> Integer
-  ged-reenter (base) (w) (h) (stride) (font) (mouse) (cs) (es) (st) =
+  ged-reenter : Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState -> Integer
+  ged-reenter (base) (w) (h) (stride) (font) (pal) (mouse) (cs) (es) (st) =
     let s = ui-scale w
-    in if st.ed-mode == ged-mode-edit then ged-repaint base w h stride s font mouse cs es (st.ed-path) (st.ed-etop) (st.ed-cur) (st.ed-col)
-    else ged-list-paint base w h stride s font mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
+    in if st.ed-mode == ged-mode-edit then ged-repaint base w h stride s font pal mouse cs es (st.ed-path) (st.ed-etop) (st.ed-cur) (st.ed-col)
+    else ged-list-paint base w h stride s font pal mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
 
-  ged-step : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Device.Port] Integer
-  ged-step (base) (w) (h) (stride) (font) (mouse) (cs) (es) (st) (sc) (clicked) =
+  ged-step : Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
+  ged-step (base) (w) (h) (stride) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
     let s = ui-scale w
     in if sc == 88 then act
       x <- (ged-shot base w h stride font)
@@ -726,19 +1476,40 @@ Section: Step
     else if st.ed-mode == ged-mode-nofat then (if sc == 1 then 0 else 1)
     else if st.ed-mode == ged-mode-big then
       (if sc == 1 | (clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse))
-        then ged-to-list base w h stride s font mouse cs st
+        then ged-to-list base w h stride s font pal mouse cs st
         else 1)
-    else if st.ed-mode == ged-mode-edit then ged-edit-step base w h stride s font mouse cs es st sc clicked
-    else ged-list-step base w h stride s font mouse cs es st sc clicked
+    else if st.ed-mode == ged-mode-edit then ged-edit-step base w h stride s font pal mouse cs es st sc clicked
+    else if st.ed-mode == ged-mode-name then ged-name-step base w h stride s font pal mouse cs es st sc clicked
+    else if st.ed-mode == ged-mode-note then ged-note-step base w h stride s font pal mouse cs es st sc clicked
+    else if st.ed-mode == ged-mode-bubble then
+      (if sc == 1 | (clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse))
+        then let a = __record-set st "ed-mode" ged-mode-edit
+        in let p = ged-repaint base w h stride s font pal mouse cs es (st.ed-path) (st.ed-etop) (st.ed-cur) (st.ed-col)
+        in 1
+      else 1)
+    else ged-list-step base w h stride s font pal mouse cs es st sc clicked
 
-  ged-to-list : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, EditState -> Integer
-  ged-to-list (base) (w) (h) (stride) (s) (font) (mouse) (cs) (st) =
-    let a = __record-set st "ed-mode" ged-mode-list
-    in let p = ged-list-paint base w h stride s font mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
-    in 1
+ Leaving the editor RE-READS the directory. The cached listing is what the
+ pane was opened with, so a file just created is absent from it and a file
+ just saved still shows its old size. That makes this the one place a new
+ list is stored into the record, so it answers NEGATIVE.
 
-  ged-list-step : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Device.Port] Integer
-  ged-list-step (base) (w) (h) (stride) (s) (font) (mouse) (cs) (es) (st) (sc) (clicked) =
+  ged-to-list : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
+  ged-to-list (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) = act
+    ents <- gfl-list-cur (st.ed-vol) (st.ed-clusters)
+    let n = list-length ents
+    in let sel = if st.ed-sel >= n then (if n <= 0 then 0 else n - 1) else st.ed-sel
+    in let top = gfl-clamp-top sel (st.ed-top) (gfl-rows-vis h s)
+    in let a = __record-set st "ed-mode" ged-mode-list
+    in let b = __record-set st "ed-entries" ents
+    in let c = __record-set st "ed-sel" sel
+    in let d = __record-set st "ed-top" top
+    in let p = ged-list-paint base w h stride s font pal mouse cs ents sel top (st.ed-names)
+    in 0 - 1
+  end
+
+  ged-list-step : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
+  ged-list-step (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
     let n = list-length (st.ed-entries)
     in let mv = ged-moved st mouse
     in let hover = if mv | clicked then gfl-row-at w h s (st.ed-top) n (mouse-x mouse) (mouse-y mouse) else 0 - 1
@@ -748,13 +1519,19 @@ Section: Step
     in let moved = sel2 /= st.ed-sel | top2 /= st.ed-top
     in if sc == 1 | (clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)) then
       (if list-length (st.ed-clusters) <= 1 then 0
-       else ged-up base w h stride s font mouse cs st)
+       else ged-up base w h stride s font pal mouse cs st)
+    else if sc == 63 then
+      let a = __record-set st "ed-mode" ged-mode-name
+      in let b = ged-name-clear es
+      in let c = ged-ensure es
+      in let p = ged-name-paint base w h stride s font pal mouse cs es
+      in 1
     else if (clicked & hover >= 0) | (sc == 28 & n > 0) then
-      ged-pick base w h stride s font mouse cs es st sel2 top2
+      ged-pick base w h stride s font pal mouse cs es st sel2 top2
     else if moved then
       let a = __record-set st "ed-sel" sel2
       in let b = __record-set st "ed-top" top2
-      in let p = ged-list-paint base w h stride s font mouse cs (st.ed-entries) sel2 top2 (st.ed-names)
+      in let p = ged-list-paint base w h stride s font pal mouse cs (st.ed-entries) sel2 top2 (st.ed-names)
       in 1
     else 1
 
@@ -765,42 +1542,42 @@ Section: Step
  Everything else here stores integers, so it answers 1 and the bracket closes
  as usual.
 
-  ged-up : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, EditState -> [Device.Port] Integer
-  ged-up (base) (w) (h) (stride) (s) (font) (mouse) (cs) (st) = act
+  ged-up : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
+  ged-up (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) = act
     let c2 = gfl-pop-int (st.ed-clusters)
     in let n2 = gfl-pop-text (st.ed-names)
     in act
       ents <- gfl-list-cur (st.ed-vol) c2
-      ged-land base w h stride s font mouse cs st ents c2 n2
+      ged-land base w h stride s font pal mouse cs st ents c2 n2
     end
   end
 
-  ged-land : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, EditState, List Fat16DirEntry, List Integer, List Text -> Integer
-  ged-land (base) (w) (h) (stride) (s) (font) (mouse) (cs) (st) (ents) (c2) (n2) =
+  ged-land : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, EditState, List Fat16DirEntry, List Integer, List Text -> Integer
+  ged-land (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) (ents) (c2) (n2) =
     let a = __record-set st "ed-clusters" c2
     in let b = __record-set st "ed-names" n2
     in let c = __record-set st "ed-entries" ents
     in let d = __record-set st "ed-sel" 0
     in let f = __record-set st "ed-top" 0
-    in let p = ged-list-paint base w h stride s font mouse cs ents 0 0 n2
+    in let p = ged-list-paint base w h stride s font pal mouse cs ents 0 0 n2
     in 0 - 1
 
-  ged-pick : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, EditState, Integer, Integer -> [Device.Port] Integer
-  ged-pick (base) (w) (h) (stride) (s) (font) (mouse) (cs) (es) (st) (sel) (top) = act
+  ged-pick : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Integer -> [Identity, Device.Port] Integer
+  ged-pick (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sel) (top) = act
     let e = list-at (st.ed-entries) sel
     in if gfl-is-dir e then act
       let c2 = list-push (st.ed-clusters) (e.de-cluster)
       in let n2 = list-push (st.ed-names) (e.de-name)
       in act
         ents <- gfl-list-cur (st.ed-vol) c2
-        ged-land base w h stride s font mouse cs st ents c2 n2
+        ged-land base w h stride s font pal mouse cs st ents c2 n2
       end
     end
     else if e.de-size > ged-cap then act
       hd <- cursor-hide cs base stride
-      let f = gfl-draw-frame base w h stride s font ("Edit  " & e.de-name)
-      in let m = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (show (e.de-size) & " bytes is past the " & show ged-cap & " byte buffer") ged-col-more s 0
-      in let t = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
+      let f = gfl-draw-frame base w h stride s font pal ("Edit  " & e.de-name)
+      in let m = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) (show (e.de-size) & " bytes is past the " & show ged-cap & " byte buffer") (ged-more pal) s 0
+      in let t = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" (gfl-hint pal) s 0
       in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
       in let a = __record-set st "ed-sel" sel
       in let b = __record-set st "ed-top" top
@@ -819,11 +1596,114 @@ Section: Step
         in let g = __record-set st "ed-cur" 0
         in let i = __record-set st "ed-col" 0
         in let j = __record-set st "ed-mods" 0
-        in let p = ged-repaint base w h stride s font mouse cs es path 0 0 0
+        in let p = ged-repaint base w h stride s font pal mouse cs es path 0 0 0
         in 0 - 1
       end
     end
   end
+
+  ged-note-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Integer -> Integer
+  ged-note-paint (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (line) =
+    let hd = cursor-hide cs base stride
+    in let px = gfl-px w s + 20 * s
+    in let py = gfl-py h s + 60 * s
+    in let pw = gfl-pw w s - 40 * s
+    in let ph = 5 * gfl-row-h s
+    in let bg = gop-fill-rect base stride px py pw ph (ged-row-band pal)
+    in let ttl = gop-draw-text base stride font (px + 8 * s) (py + 4 * s) ("annotate " & ged-chap-name-of es line & "::" & ged-def-name-of es line) (ged-gutter-col pal) s 0
+    in let bd = gop-draw-text base stride font (px + 8 * s) (py + 4 * s + gfl-row-h s) (ged-draft-of es & "_") (gfl-bright pal) s 0
+    in let foot = gop-draw-text base stride font (px + 8 * s) (py + ph - gfl-row-h s) "Type a note  Enter save  Bksp erase  Esc back" (gfl-hint pal) s 0
+    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+
+  ged-note-step : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
+  ged-note-step (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) = act
+    let md = ged-shift-of (st.ed-mods) sc
+    in let mk = __record-set st "ed-mods" md
+    in let ch = apply-mods (scancode-to-keycode sc) md
+    in let cur = st.ed-cur
+    in if sc == 1 | (clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)) then
+      let a = __record-set st "ed-mode" ged-mode-edit
+      in let p = ged-repaint base w h stride s font pal mouse cs es (st.ed-path) (st.ed-etop) cur (st.ed-col)
+      in 1
+    else if sc == 14 then
+      let e = ged-draft-pop es
+      in let p = ged-note-paint base w h stride s font pal mouse cs es cur
+      in 1
+    else if sc == 28 & ged-draft-len es > 0 then act
+      v <- ged-note-save es cur (ged-note-stamp 0)
+      let a = __record-set st "ed-mode" ged-mode-edit
+      in let p = ged-repaint base w h stride s font pal mouse cs es (st.ed-path) (st.ed-etop) cur (st.ed-col)
+      in 1
+    end
+    else if ged-printable ch then
+      let e = ged-draft-push es ch
+      in let p = ged-note-paint base w h stride s font pal mouse cs es cur
+      in 1
+    else 1
+  end
+
+ The stamp is seconds since midnight off the CMOS RTC, not a wall date. It
+ orders the annotations written in one session, which is what a reader of the
+ bubble needs, and it does not pretend to a precision this pane can reach.
+ Read under the update-in-progress guard, because the three registers are
+ three separate port reads and the clock can tick between them.
+
+  ged-note-stamp : Integer -> [Device.Port] Integer
+  ged-note-stamp (d) = act
+    idle <- rtc-wait-idle rtc-uip-fuel
+    b <- rtc-read rtc-reg-status-b
+    ss <- rtc-read 0
+    mm <- rtc-read 2
+    hh <- rtc-read 4
+    let bin = bit-and b rtc-binary-bit
+    in rtc-decode hh bin * 3600 + rtc-decode mm bin * 60 + rtc-decode ss bin
+  end
+
+  ged-name-paint : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer -> Integer
+  ged-name-paint (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) =
+    let hd = cursor-hide cs base stride
+    in let f = gfl-draw-frame base w h stride s font pal "Edit  new file"
+    in let p = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "Name:" (gfl-dim pal) s 0
+    in let t = gop-draw-text base stride font (gfl-px w s + 70 * s) (gfl-py h s + 26 * s) (ged-name-of es & "_") (gfl-bright pal) s 0
+    in let k = gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Type a name  Enter create  Bksp erase  Esc back" (gfl-hint pal) s 0
+    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+
+ Enter builds the only Text this mode allocates, and it goes into the record,
+ so this arm answers NEGATIVE and every other arm answers 1.
+
+  ged-name-step : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Device.Port] Integer
+  ged-name-step (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
+    let md = ged-shift-of (st.ed-mods) sc
+    in let mk = __record-set st "ed-mods" md
+    in let ch = apply-mods (scancode-to-keycode sc) md
+    in if sc == 1 | (clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)) then
+      let a = __record-set st "ed-mode" ged-mode-list
+      in let p = ged-list-paint base w h stride s font pal mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
+      in 1
+    else if sc == 14 then
+      let e = ged-name-pop es
+      in let p = ged-name-paint base w h stride s font pal mouse cs es
+      in 1
+    else if sc == 28 & ged-name-len es > 0 then
+      let path = ged-prefix (st.ed-names) 0 "" & ged-name-of es
+      in let z = poke-32 es 8 0
+      in let sd = ged-set-dir es (gfl-cur-dir (st.ed-clusters))
+      in let c = ged-reindex es
+      in let u = ged-undo-reset es
+      in let cd = poke-32 es 16 0
+      in let sv = ged-set-verdict es 0
+      in let a = __record-set st "ed-path" path
+      in let b = __record-set st "ed-mode" ged-mode-edit
+      in let f = __record-set st "ed-etop" 0
+      in let g = __record-set st "ed-cur" 0
+      in let i = __record-set st "ed-col" 0
+      in let p = ged-repaint base w h stride s font pal mouse cs es path 0 0 0
+      in 0 - 1
+    else if ged-printable ch then
+      let e = ged-name-push es ch
+      in let p = ged-name-paint base w h stride s font pal mouse cs es
+      in 1
+    else 1
 
   ged-put : EditState, Integer, Integer, Integer -> Integer
   ged-put (st) (top) (cur) (col) =
@@ -832,8 +1712,8 @@ Section: Step
     in let c = __record-set st "ed-col" col
     in 1
 
-  ged-edit-step : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Device.Port] Integer
-  ged-edit-step (base) (w) (h) (stride) (s) (font) (mouse) (cs) (es) (st) (sc) (clicked) =
+  ged-edit-step : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
+  ged-edit-step (base) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
     let n = ged-count es
     in let vis = gfl-rows-vis h s
     in let closed = clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)
@@ -849,48 +1729,76 @@ Section: Step
     in let col2 = ged-clamp-col es cur2 (ged-col-of es sc col cur2)
     in let top2 = ged-clamp-top cur2 top vis
     in let moved = cur2 /= cur | col2 /= col | top2 /= top
-    in if sc == 1 | closed then ged-to-list base w h stride s font mouse cs st
+    in if sc == 1 | closed then ged-to-list base w h stride s font pal mouse cs st
     else if sc == 60 then act
       let sv0 = ged-set-verdict es ged-v-saving
-      in let p0 = ged-repaint base w h stride s font mouse cs es name top cur col
+      in let p0 = ged-repaint base w h stride s font pal mouse cs es name top cur col
+      in let bctx = ged-bar-ctx base stride w h s ((ged-size es + 511) / 512) pal
       in act
-        v <- ged-save es (st.ed-vol) name
+        v <- ged-save es (st.ed-vol) name bctx
         let sv = ged-set-verdict es v
-        in let p = ged-repaint base w h stride s font mouse cs es name top cur col
+        in let p = ged-repaint base w h stride s font pal mouse cs es name top cur col
         in 1
       end
     end
     else if sc == 61 then act
       v <- ged-revert es (st.ed-vol) name
       let sv = ged-set-verdict es v
-      in let p = ged-repaint base w h stride s font mouse cs es name 0 0 0
+      in let p = ged-repaint base w h stride s font pal mouse cs es name 0 0 0
       in ged-put st 0 0 0
     end
+    else if sc == 64 then act
+      let a = __record-set st "ed-mode" ged-mode-bubble
+      in act
+        p <- (ged-bubble-paint base w h stride s font pal mouse cs es cur)
+        1
+      end
+    end
+    else if sc == 65 then
+      (if ged-line-is-def es cur == False then
+        let sv = ged-set-verdict es ged-v-notdef
+        in let p = ged-repaint base w h stride s font pal mouse cs es name top cur col
+        in 1
+      else let a = __record-set st "ed-mode" ged-mode-note
+      in let d = ged-draft-clear es
+      in let p = ged-note-paint base w h stride s font pal mouse cs es cur
+      in 1)
+    else if sc == 62 then
+      let u = ged-undo es
+      in if u < 0 then
+        let sv = ged-set-verdict es ged-v-noundo
+        in let p = ged-repaint base w h stride s font pal mouse cs es name top cur col
+        in 1
+      else let cur3 = ged-line-of es u
+      in let col3 = u - ged-line-start es cur3
+      in let t3 = ged-clamp-top cur3 top vis
+      in let p = ged-repaint base w h stride s font pal mouse cs es name t3 cur3 col3
+      in ged-put st t3 cur3 col3
     else if sc == 28 then
-      let e = ged-insert es at ged-lf
+      let e = ged-insert-u es at ged-lf
       in let t3 = ged-clamp-top (cur + 1) top vis
-      in let p = ged-repaint base w h stride s font mouse cs es name t3 (cur + 1) 0
+      in let p = ged-repaint base w h stride s font pal mouse cs es name t3 (cur + 1) 0
       in ged-put st t3 (cur + 1) 0
     else if sc == 14 & col > 0 then
-      let e = ged-delete es (at - 1)
-      in let p = ged-repaint base w h stride s font mouse cs es name top cur (col - 1)
+      let e = ged-delete-u es (at - 1)
+      in let p = ged-repaint base w h stride s font pal mouse cs es name top cur (col - 1)
       in ged-put st top cur (col - 1)
     else if sc == 14 & cur > 0 then
       let back = ged-line-len es (cur - 1)
-      in let e = ged-delete es (ged-line-start es cur - 1)
+      in let e = ged-delete-u es (ged-line-start es cur - 1)
       in let t3 = ged-clamp-top (cur - 1) top vis
-      in let p = ged-repaint base w h stride s font mouse cs es name t3 (cur - 1) back
+      in let p = ged-repaint base w h stride s font pal mouse cs es name t3 (cur - 1) back
       in ged-put st t3 (cur - 1) back
     else if sc == 83 then
-      let e = ged-delete es at
-      in let p = ged-repaint base w h stride s font mouse cs es name top cur col
+      let e = ged-delete-u es at
+      in let p = ged-repaint base w h stride s font pal mouse cs es name top cur col
       in 1
     else if ged-printable ch then
-      let e = ged-insert es at ch
-      in let p = ged-repaint base w h stride s font mouse cs es name top cur (col + 1)
+      let e = ged-insert-u es at ch
+      in let p = ged-repaint base w h stride s font pal mouse cs es name top cur (col + 1)
       in ged-put st top cur (col + 1)
     else
-      let p = if moved then ged-repaint base w h stride s font mouse cs es name top2 cur2 col2 else 0
+      let p = if moved then ged-repaint base w h stride s font pal mouse cs es name top2 cur2 col2 else 0
       in ged-put st top2 cur2 col2
 
 Page 1

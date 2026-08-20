@@ -58,11 +58,27 @@
 #              says ok; nicinit ok; the NAT answers the ring stage's ARP so it
 #              reads frames. The card's own fault switches are the arms for the
 #              init and ring stages.
+#   nic-noread a variant carrying `nicring listen=0`, run with -e1000 -e1000-nat:
+#              the ring stage sends its ARP and then idles without polling, so
+#              nothing recycles the descriptor the NAT's reply landed in and the
+#              writeback survives to be read. wb above zero with buf=y. It is the
+#              only arm that shows the descriptor hexdump can read a writeback at
+#              all; nic-pass cannot, because a successful listen recycles the
+#              descriptor and leaves wb=0 behind.
 #   nic-nolink codex-vm -e1000-no-link: STATUS.LU never sets; nicinit=no-link (the
 #              step durations still bank), nicring=quiet, nicsit ok.
 #   nic-nomac  codex-vm -e1000-no-mac: RAL/RAH empty; nicinit=no-mac, nicsit ok.
 #              nicring's own read of the same card is not asserted here (init
 #              without a MAC still brings the receiver up on the model).
+#   nic-nohpet codex-vm -e1000 -e1000-nat -no-hpet: the HPET window is dead, so
+#              the declared tick period is zero and every reader of the rate has
+#              to say so. Four of them do, and until 2026-08-19 nothing could
+#              reach any of them: nicsit=no-hpet, nicinit=no-hpet,
+#              nicring=no-hpet, and the scene stage -- which keeps its state
+#              word -- says it in the glass instead (plain=no-clock), which this
+#              arm asserts as well. The card is present and the NAT is
+#              answering, so the three nic states are the clock talking and not
+#              a missing part.
 #   ovmf       QEMU + OVMF, the image on qemu-xhci usb-storage. Serial == bank,
 #              bank=ok, and the summary QR decodes off the screendump
 #              (tools/qr-read.ps1) to a body starting DIAG1;.
@@ -101,6 +117,17 @@ foreach ($s in @(Get-ChildItem (Join-Path $Repo 'build\boot\diag') -Filter 'Diag
         Write-Host "STALE: $($s.Name) is newer than $(Split-Path $ImgAbs -Leaf). Rebuild first: build/boot/build-diag.ps1"
         exit 1
     }
+}
+
+# THE OTHER HALF OF STALE, and it caught this ladder the day it was added: the
+# image can be newer than every Diag*.codex and still have been compiled by a
+# PREVIOUS seed. The seed moves on any merge-down and nothing rebuilds the
+# image when it does, so a rehearsal record would certify an image the current
+# compiler never built. Same defect the plug oracle had (main 17394).
+$seedCdx = Join-Path $Repo 'seed\Codex.cdx'
+if ((Test-Path $seedCdx) -and (Get-Item $seedCdx).LastWriteTimeUtc -gt $imgTime) {
+    Write-Host "STALE: the seed is newer than $(Split-Path $ImgAbs -Leaf); it was compiled by the OLD compiler. Rebuild first: build/boot/build-diag.ps1"
+    exit 1
 }
 
 & pwsh -NoProfile -File (Join-Path $Repo 'build\check-diag-verdicts.ps1') | Out-Null
@@ -312,11 +339,15 @@ $expected = [ordered]@{
     'cfg-off'  = 'scene skipped, bank=ok'
     'esp-cfg'  = 'cfg-file=1, bank=ok'
     'block-oob' = 'block=write-refused (LBA past the medium), bank=ok'
+    'sink-chunk' = 'sink=ok at a NON-DEFAULT MSC chunk: sink chunk=8 in DIAG.CFG reaches cell 91 and the row reports chunk=8, so a flight can vary the transfer size'
     'sink-shift' = 'sink=bad-bytes (oracle shifted by one), bank=ok'
+    'bank-lost' = 'the wedge persists past the sink stage: bank=lost naming the stage, and the SUMMARY no longer claims ok over a truncated file'
     'sink-drop' = 'sink=write-refused, after=0 (a small write is refused straight after), and yet bank=ok with the file whole: the bed does NOT reproduce the metal bank death'
     'nic-pass'  = 'nicsit=ok nicinit=ok nicring=frames with -e1000 -e1000-nat (no card by default), bank=ok'
+    'nic-noread' = 'nicring listen=0 in DIAG.CFG sends the ARP and idles without polling, so nothing recycles the descriptor: wb comes back ABOVE ZERO with buf=y, which is the one arm that shows the hexdump can read a writeback at all'
     'nic-nolink' = 'nicinit=no-link with -e1000-no-link; nicsit ok, nicring quiet, bank=ok'
     'nic-nomac' = 'nicinit=no-mac with -e1000-no-mac; nicsit ok, bank=ok'
+    'nic-nohpet' = 'three nic stages no-hpet with -no-hpet, scene no-clock, bank=ok'
     'ovmf'     = 'bank=ok serial==file QR decodes'
     'ovmf-ro'  = 'bank=none QR decodes'
 }
@@ -382,6 +413,25 @@ foreach ($name in $names) {
             $lines = Invoke-Vm 'no-medium' $k '' @()
             $actual['no-medium'] = Judge-Vm 'no-medium' $lines $k $false 'mount stage' $noBankStates
         }
+        'bank-lost' {
+            $k = New-Copy 'k-banklost.img'
+            $lines = Invoke-Vm 'bank-lost' $k $k @('-usb-bot-drop', '500', '-usb-bot-drops', '100000')
+            $block = Get-DiagBlock $lines
+            $sink = Field $block 'stage=sink '
+            $wr = ($block | Where-Object { $_ -match 'wr=' } | Select-Object -First 1)
+            $sum = ($block | Where-Object { $_ -match 'bank=' } | Select-Object -Last 1)
+            $file = Read-Bank $k 'bank-lost'
+            Write-Host "  bank-lost: $wr"
+            Write-Host "  bank-lost: $sum"
+            Write-Host "  bank-lost: file rows $(if ($null -eq $file) { 'none' } else { $file.Count }) against serial $($block.Count)"
+            $actual['bank-lost'] =
+                if ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
+                elseif ($block[-1] -ne 'END') { "(serial did not reach END; last: $($block[-1]))" }
+                elseif (-not $sum) { '(no bank row)' }
+                elseif ($sum -match 'bank=ok') { "the bank still claims ok while the file is short: [$sum]" }
+                elseif ($sum -notmatch 'bank=lost') { "bank row is [$sum]" }
+                else { $expected['bank-lost'] }
+        }
         'sink-drop' {
             $k = New-Copy 'k-sinkdrop.img'
             $lines = Invoke-Vm 'sink-drop' $k $k @('-usb-bot-drop', '500', '-usb-bot-drops', '4')
@@ -439,6 +489,25 @@ foreach ($name in $names) {
                 $actual['block-oob'] = Judge-Vm 'block-oob' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; block = 'write-refused'; sink = 'ok'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part' }
             }
         }
+        'sink-chunk' {
+            $cfg = Join-Path $Work 'DIAG-chunk.CFG'
+            [IO.File]::WriteAllText($cfg, "sink chunk=8`n", [Text.ASCIIEncoding]::new())
+            $k = New-Variant 'k-sinkchunk' '' $cfg
+            if (-not $k) { $actual['sink-chunk'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
+            else {
+                $lines = Invoke-Vm 'sink-chunk' $k $k @()
+                $block = Get-DiagBlock $lines
+                $sink = Field $block 'stage=sink '
+                $wr = ($block | Where-Object { $_ -match 'chunk=' } | Select-Object -First 1)
+                Write-Host "  sink-chunk: $wr"
+                $actual['sink-chunk'] =
+                    if ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
+                    elseif (-not $sink) { '(no sink stage row)' }
+                    elseif (-not $sink.Contains('state=ok')) { "sink row is [$sink]" }
+                    elseif ($wr -notmatch 'chunk=8\b') { "the cfg key did not reach the MSC layer: [$wr]" }
+                    else { $expected['sink-chunk'] }
+            }
+        }
         'sink-shift' {
             $cfg = Join-Path $Work 'DIAG-shift.CFG'
             [IO.File]::WriteAllText($cfg, "sink shift=1`n", [Text.ASCIIEncoding]::new())
@@ -452,17 +521,92 @@ foreach ($name in $names) {
         'nic-pass' {
             $k = New-Copy 'k-nicpass.img'
             $lines = Invoke-Vm 'nic-pass' $k $k @('-e1000', '-e1000-nat')
-            $actual['nic-pass'] = Judge-Vm 'nic-pass' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; block = 'ok'; sink = 'ok'; nicsit = 'ok'; nicinit = 'ok'; nicring = 'frames' }
+            $v = Judge-Vm 'nic-pass' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; block = 'ok'; sink = 'ok'; nicsit = 'ok'; nicinit = 'ok'; nicring = 'frames' }
+            # GPRC counts at the MAC, before any descriptor. With the NAT
+            # answering, it MUST have moved; a stats row reading gprc=0 beside
+            # nicring=frames would mean the counter is a stub and the whole
+            # discriminator is worthless. Paired with nic-nolink, which requires
+            # gprc=0 on the same row, so neither arm can pass a dead counter.
+            if ($v -eq $expected['nic-pass']) {
+                $st = Field (Get-DiagBlock $lines) '  stats '
+                if ($st -notmatch 'gprc=[1-9]') { $v = "stats row is [$st], wanted gprc above zero" }
+            }
+            # This arm CANNOT assert wb above zero, and finding that out is why
+            # the row is shaped the way it is. e1000-poll-raw recycles the
+            # descriptor it took a frame from, so when the listen succeeds our
+            # own driver has zeroed the writeback half before the row is built:
+            # the first run here read frames with rdh=1, buf=y and wb=0. What
+            # this arm can hold is that the part advanced our head and our own
+            # buffer address survived. The positive reading for wb is nic-noread,
+            # which sends without polling so nothing recycles.
+            if ($v -eq $expected['nic-pass']) {
+                $an = Field (Get-DiagBlock $lines) '  m='
+                if ($an -notmatch 'buf=y') { $v = "answer row is [$an], wanted buf=y" }
+                elseif ($an -notmatch 'rdh=[1-9]') { $v = "answer row is [$an], wanted rdh above zero" }
+            }
+            $actual['nic-pass'] = $v
+        }
+        'nic-noread' {
+            $cfg = Join-Path $Work 'DIAG-noread.CFG'
+            [IO.File]::WriteAllText($cfg, "nicring listen=0`n", [Text.ASCIIEncoding]::new())
+            $k = New-Variant 'k-nicnoread' '' $cfg
+            if (-not $k) { $actual['nic-noread'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
+            else {
+                $lines = Invoke-Vm 'nic-noread' $k $k @('-e1000', '-e1000-nat')
+                $an = Field (Get-DiagBlock $lines) '  m='
+                Write-Host "  nic-noread: $an"
+                # The whole point of the arm. Nothing polled, so nothing was
+                # recycled, and the NAT's ARP reply must still be sitting in
+                # descriptor 0 with its status and length written back.
+                if (-not $an) { $actual['nic-noread'] = '(no nicring answer row)' }
+                elseif ($an -notmatch 'ln=0') { $actual['nic-noread'] = "answer row is [$an], wanted ln=0 (the knob did not reach the stage)" }
+                elseif ($an -notmatch 'wb=[1-9]') { $actual['nic-noread'] = "answer row is [$an], wanted wb above zero" }
+                elseif ($an -notmatch 'buf=y') { $actual['nic-noread'] = "answer row is [$an], wanted buf=y" }
+                else { $actual['nic-noread'] = $expected['nic-noread'] }
+            }
         }
         'nic-nolink' {
             $k = New-Copy 'k-nicnolink.img'
             $lines = Invoke-Vm 'nic-nolink' $k $k @('-e1000-no-link')
-            $actual['nic-nolink'] = Judge-Vm 'nic-nolink' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; block = 'ok'; sink = 'ok'; nicsit = 'ok'; nicinit = 'no-link'; nicring = 'quiet' }
+            $v = Judge-Vm 'nic-nolink' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; block = 'ok'; sink = 'ok'; nicsit = 'ok'; nicinit = 'no-link'; nicring = 'quiet' }
+            # The other half of the pair. This arm is the bed's version of the
+            # ASUS signature from sitting 3 -- nicring quiet, nothing received --
+            # and here it is quiet BECAUSE nothing arrived, which is what
+            # gprc=0 says. A metal row reading quiet with gprc above zero is
+            # therefore a different fault from anything this bed produces.
+            if ($v -eq $expected['nic-nolink']) {
+                $st = Field (Get-DiagBlock $lines) '  stats '
+                if ($st -notmatch 'gprc=0\b') { $v = "stats row is [$st], wanted gprc=0" }
+            }
+            # And the negative direction for the hexdump: nothing arrived, so
+            # nothing was written back and wb MUST be zero. An arm that reads wb
+            # above zero here is counting our own buffer address, which is the
+            # exact defect the 8..15 window exists to avoid.
+            if ($v -eq $expected['nic-nolink']) {
+                $an = Field (Get-DiagBlock $lines) '  m='
+                if ($an -notmatch 'wb=0\b') { $v = "answer row is [$an], wanted wb=0" }
+                elseif ($an -notmatch 'buf=y') { $v = "answer row is [$an], wanted buf=y" }
+            }
+            $actual['nic-nolink'] = $v
         }
         'nic-nomac' {
             $k = New-Copy 'k-nicnomac.img'
             $lines = Invoke-Vm 'nic-nomac' $k $k @('-e1000-no-mac')
             $actual['nic-nomac'] = Judge-Vm 'nic-nomac' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; block = 'ok'; sink = 'ok'; nicsit = 'ok'; nicinit = 'no-mac' }
+        }
+        'nic-nohpet' {
+            $k = New-Copy 'k-nicnohpet.img'
+            $lines = Invoke-Vm 'nic-nohpet' $k $k @('-e1000', '-e1000-nat', '-no-hpet')
+            $v = Judge-Vm 'nic-nohpet' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; block = 'ok'; sink = 'ok'; nicsit = 'no-hpet'; nicinit = 'no-hpet'; nicring = 'no-hpet' }
+            # The scene stage reads the same rate and keeps its state word, so
+            # the state table above cannot see it. Its frame row is where it
+            # says no, and a rendered scene that still claims a frame time
+            # would mean the clockless path was never taken.
+            if ($v -eq $expected['nic-nohpet']) {
+                $frame = Field (Get-DiagBlock $lines) '  frame '
+                if ($frame -notlike '*plain=no-clock*') { $v = "frame row is [$frame]" }
+            }
+            $actual['nic-nohpet'] = $v
         }
         'ovmf' { $actual['ovmf'] = Invoke-Ovmf 'ovmf' $false }
         'ovmf-ro' { $actual['ovmf-ro'] = Invoke-Ovmf 'ovmf-ro' $true }
@@ -495,7 +639,11 @@ if ($Only -or $SkipOvmf) {
     $imgHash = (Get-FileHash $ImgAbs -Algorithm SHA256).Hash
     $line = "$imgHash  $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))  arms=$($names.Count)  $(Split-Path $ImgAbs -Leaf)"
     $have = @(); if (Test-Path $record) { $have = @(Get-Content $record) }
-    if ($have | Where-Object { $_ -like "$imgHash *" }) { Write-Host "  rehearsal record already carries $imgHash" }
+    # Keyed on the arm count as well as the hash. The record's claim is that
+    # this image answered every arm, and the arm count is part of that claim,
+    # so an image rehearsed against a WIDER bed than last time earns a new
+    # line rather than being told it is already there.
+    if ($have | Where-Object { $_ -like "$imgHash *arms=$($names.Count) *" }) { Write-Host "  rehearsal record already carries $imgHash at arms=$($names.Count)" }
     else {
         [IO.File]::AppendAllText($record, $line + "`n", [Text.ASCIIEncoding]::new())
         Write-Host "  rehearsal record: $record += $imgHash (flash-usb.ps1 -Rehearsed accepts this image now)"

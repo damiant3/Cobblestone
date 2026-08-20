@@ -427,7 +427,7 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **193** expected-failure tests (measured
+`codex/test/errors/` holds **199** expected-failure tests (measured
 2026-08-18).
 
 ## What the standing gate does not cover
@@ -3429,6 +3429,31 @@ The image itself is the same bytes on metal and in the bed; there is no build
 flag, and a flag would have been the weaker instrument since the desk image the
 bed boots IS the stick image.
 
+**Stage 4 (red, 2026-08-20): the trust root is in the file, and the passphrase
+changes.** `IDENTITY.DAT` is version 3: a 64-byte Ed25519 self-vouch over
+`"codex-trust-root-v1" ++ public key` follows the wrapped seed, signed at
+keygen while the seed is in hand and verified at parse, so a record that does
+not certify itself is refused before any unlock is offered. The vouch binds
+only the public key, which is why a passphrase change (fresh salt, iv and
+wrap) leaves it byte-identical: `rewrap new=Y old-rejected=Y pub-eq=Y
+vouch-eq=Y` is the row, `machine-wrap=Y` is the same claim through the
+machine-derived salt path `wz-change-pass` actually calls, and
+`vouchflip=rejected` is the sabotage arm that keeps the verify from being an
+instrument that cannot fail (L-FALSIF): one flipped signature byte refuses the
+parse, and the arm restores the byte so the version and magic arms that follow
+mutate an otherwise intact record. `version2=rejected` beside
+`version1=rejected`, by the same ruling: no v2 record exists outside the
+bench, and a reader for a superseded format is only a hole going forward.
+
+**`bed-identity` as first landed (main 17691) was not deterministic, and the
+green that landed it certified one boot.** `wz-keygen` derives salt and iv
+from the device seed cell and the tick count, so the test pinned one run's
+random bytes and every re-run went red; the `.expected` and `BEDIDENT.DAT`
+agreed only because both came from the same boot. `wz-keygen-with` takes salt
+and iv explicitly, the bed identity passes fixed ones (it wraps a public seed
+with a public passphrase and protects nothing), and the pin now holds across
+consecutive runs. `BEDIDENT.DAT` is 188 bytes and carries the vouch.
+
 ## The Handshake Prove Guards (`codex/test/apps/handshake-prove-guard`)
 
 Track D item 2, and it turned out not to be a parsing bound at all. **The
@@ -4482,7 +4507,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-193 tests in `codex/test/errors/` verify that the compiler rejects
+199 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -5235,6 +5260,49 @@ predates all of this, nor `crf-truncated` or `fact-sync-truncated`. A
 refusal arm added here is run by `build/test.ps1 -Tier apps` and by nothing
 else, so it is compiled and run by hand when it is written and the
 `.expected` is recorded from that run.
+
+**A LIBRARY CHAPTER THAT NOTHING CITES IS COMPILED BY NOTHING, and it
+accumulates errors at the rate somebody edits it.** Measured 2026-08-19 across
+`codex/os/net`: **5 of its 39 chapters did not compile at all**, and four of
+the five were found only because a citer was written for each one by hand.
+`EdgeRouter` named a type (`RateLimiterState`) that has never existed in the
+tree, contradicted by its own constructor twenty lines below; `LoadBalancer`
+and `MessageQueue` each passed a `Text` key to
+`chr-hash-key : Integer -> Integer`; `DistributedConfig` was missing a cite
+for `text-take` AND carried rename drift in three places
+(`cs-entries`/`cs-count` on a record that has `cs-meta`/`cs-meta-count`);
+`ServiceProxy` was collateral, blocked only by `LoadBalancer`. All fixed the
+same day.
+
+**The defects were not hidden by subtlety, they were hidden by never being
+compiled**, and they came out one sweep at a time because a compiler stops at
+the first error: five failures became two, then one more behind that, then two
+more behind that. **The count is only trustworthy when a full sweep returns
+clean**, never when you run out of errors you happened to trip over.
+
+The instrument is cheap and worth rerunning against any quire nobody builds:
+for each chapter, write a citer that cites it and does nothing else, compile
+it, and read the LOG rather than the exit chatter. `sweep-app-classes.ps1`
+does the equivalent for `apps/` entry chapters, and no such sweep exists for
+library quires; the `codex/test/**` suites only reach a chapter something in
+them already cites. `codex/os/net` is green as of 2026-08-19 and there is
+still nothing standing that would catch the sixth.
+
+**A test living under `apps/` is COMPILED by every gate and RUN by none, and
+that is not the same as untested-looking.** `sweep-app-classes.ps1` selects
+every chapter with an `opening` and hands each to `compile.ps1`; nothing in
+that phase executes the result. So a suite under `apps/<app>/tests/` goes
+green in `app-sweep` while trapping at its first runtime fault, and the trap
+is invisible to `build.ps1`, to the BVT and to the battery alike. Measured
+2026-08-19: `apps/nettool/tests/TestGroupMembership.codex` passed fifteen arms
+and took a bounds trap (EXC=06) on the sixteenth, from a service count that
+disagreed with the list it counted; the suite had been swept clean by
+app-sweep the whole time, and the defect was found only because fester ran the
+file by hand. **The lesson is where a test lives, not whether one exists**:
+`codex/test/**` is executed by `test.ps1`, `apps/**` is compiled by
+`build.ps1`, and a suite in the second place is an assertion with no runner in
+the sense `LESSONS.md` means. The regression arm for that defect was put at
+`codex/test/apps/group-service-count` for exactly this reason.
 
 **The over-cap case on a LIVE connection is deliberately absent, and the
 reason is a finding.** A 12,600-byte send (nine chunks, so the queue fills on

@@ -38,7 +38,7 @@ functions, done.
    `<b>-pin-write/read/close` (`Pin`), `<b>-spi-open/select/txn-transfer/
    deselect/close` (`SpiBus` -> `SpiTxn` -> `SpiBus`, so a chip select left
    asserted is CDX2063), `<b>-i2c-open/bus-write-reg/bus-read-reg/close`
-   (`I2cBus`), and on RP2040 `rp-adc-open/unit-sample/close` (`AdcUnit`).
+   (`I2cBus`), and `<b>-adc-open/unit-sample/close` (`AdcUnit`).
    Read ops return `(linear Handle, value)`; the checker tracks the handle
    inside the tuple (`DevelopersGuide.md` "Linear tuple components"). The
    rows are `[Gpio|Uart|Spi|I2c|Adc, Device.Mmio]`: the capability is the
@@ -46,7 +46,21 @@ functions, done.
    `Device.Mmio` cannot reach a handle (CDX2031). Which board has which:
    UART recv on all eight UART boards (nRF via EasyDMA), SPI on Esp32C6,
    Fe310, Pi4, Rp2040, Stm32F4, Stm32L4; I2C on Esp32C6, Pi4, Rp2040,
-   Stm32F4, Stm32L4; ADC on Rp2040. QemuVirt is UART-only.
+   Stm32F4, Stm32L4; ADC on Nrf52840, Nrf9160, Rp2040, Stm32F4, Stm32L4
+   (2026-08-20: ADC1 drivers on the STM32s, SAADC-backed wrappers on both
+   nRF boards, the nRF9160 gaining its SAADC section at 0x4000E000).
+   QemuVirt is UART-only.
+
+6. **The linear Board and the sleep rule (2026-08-20, main 17831)** --
+   every `<b>-*-open` takes a linear `Board` (from `board-open`, carrying
+   the PWR and SCB bases) and returns `(linear Board, linear Handle)`;
+   `sleep-deep` consumes the Board, so a device that deep-sleeps while
+   any handle is open is a compile error (CDX2063,
+   `errors/hal-sleep-open-handle`), with `board-close` as the disposal
+   for programs that never sleep. `sleep-light`/`wake-source` ride
+   beside it (RM0351 5.3 shape, stopping one instruction short of WFI).
+   Flash rides it too (main 17839): `flash-open-bank` takes the Board,
+   and a deep sleep with an unsealed `FlashBank` is CDX2063.
 
 ---
 
@@ -54,17 +68,17 @@ functions, done.
 
 | Board | MCU | Arch | Clock | SRAM | Sub-tests |
 |-------|-----|------|------:|-----:|----------:|
-| **STM32F4 Discovery** | Cortex-M4F | ARM | 168 MHz | 192 KB | 12 |
+| **STM32F4 Discovery** | Cortex-M4F | ARM | 168 MHz | 192 KB | 14 |
 | **ESP32-C6 DevKit** | RV32IMC | RISC-V | 160 MHz | 512 KB | 12 |
 | **Raspberry Pi 4** | Cortex-A72 | ARM | 1.5 GHz | 1-8 GB | 12 |
 | **QEMU virt** | AArch64 + RV | Both | -- | -- | 8 |
-| **nRF52840 DK** | Cortex-M4F | ARM | 64 MHz | 256 KB | 27 |
+| **nRF52840 DK** | Cortex-M4F | ARM | 64 MHz | 256 KB | 28 |
 | **RP2040 (Pico)** | Dual M0+ | ARM | 133 MHz | 264 KB | 31 |
-| **nRF9160 DK** | Cortex-M33 | ARM | 64 MHz | 256 KB | 21 |
-| **STM32L4 Nucleo** | Cortex-M4F | ARM | 80 MHz | 128 KB | 19 |
+| **nRF9160 DK** | Cortex-M33 | ARM | 64 MHz | 256 KB | 23 |
+| **STM32L4 Nucleo** | Cortex-M4F | ARM | 80 MHz | 128 KB | 21 |
 | **FE310 (HiFive1)** | RV32IMAC | RISC-V | 320 MHz | 16 KB | 12 |
 
-**154 sub-tests, measured 2026-08-18** by `build/boards-test.ps1`, which is
+**161 sub-tests, measured 2026-08-20** by `build/boards-test.ps1`, which is
 where the board battery lives (108 on 2026-07-13, before the linear-handle
 sub-tests). All nine boards pass, zero fail.
 
@@ -130,13 +144,13 @@ libraries.
 
 | Board | Document | Key sections |
 |-------|----------|-------------|
-| STM32F4 | RM0090 (STM32F405/407) | GPIO §8, USART §30, SPI §28, I2C §27 |
+| STM32F4 | RM0090 (STM32F405/407) | GPIO §8, USART §30, SPI §28, I2C §27, ADC §13 |
 | ESP32-C6 | ESP32-C6 TRM v1.0 | GPIO §5, UART §26, SPI §25, I2C §27 |
 | Raspberry Pi 4 | BCM2711 ARM Peripherals | GPIO §5, PL011 §11, SPI §10, BSC §3 |
 | nRF52840 | nRF52840 PS v1.7 | GPIO §6.8, UARTE §6.34, SPIM §6.30, TWIM §6.31, SAADC §6.23, RADIO §6.20 |
 | RP2040 | RP2040 Datasheet | SIO §2.3, IO Bank0 §2.19, PL011 §4.2, PL022 §4.4, DW_apb_i2c §4.3, ADC §4.9, PIO §3 |
-| nRF9160 | nRF9160 PS v2.1 | GPIO §6.5, UARTE §6.10, SPIM §6.11, TWIM §6.12, IPC §6.4 |
-| STM32L4 | RM0351 (STM32L4x6) | GPIO §8, USART §40, SPI §38, I2C §37, PWR §5, LPTIM §31, RCC §6 |
+| nRF9160 | nRF9160 PS v2.1 | GPIO §6.5, UARTE §6.10, SPIM §6.11, TWIM §6.12, IPC §6.4, SAADC (same register map as nRF52840 SAADC §6.23) |
+| STM32L4 | RM0351 (STM32L4x6) | GPIO §8, USART §40, SPI §38, I2C §37, PWR §5, LPTIM §31, RCC §6, ADC §16 |
 | FE310 | FE310-G002 Manual v1p1 | GPIO §17, UART §18, QSPI §19, PWM §20, PLIC §8 |
 
 ---

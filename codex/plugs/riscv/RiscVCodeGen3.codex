@@ -370,6 +370,17 @@ Section: Match
    let msg = "[UNSUPPORTED] " & name & ": x86 port I/O and the codex-vm gpu do not exist on this target (refused by design)"
    in rv-emit-int-lit (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg)) 0
 
+ UEFI boot services are x86 firmware reached through the system table, and
+ uefi-read-key reads the PS/2 key cell that the IRQ1 handler fills from
+ port 0x60. Neither the table nor the port exists on this target, so there
+ is no value to invent: an idle 0 would be indistinguishable from a real
+ read and would make a keyboard test pass by construction.
+
+  rv-emit-unsupported-firmware : RvState, Text -> RvEmitResult
+  rv-emit-unsupported-firmware (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": x86 UEFI firmware and the PS/2 key cell do not exist on this target (refused by design)"
+   in rv-emit-int-lit (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg)) 0
+
  The x86 CPU-state builtins, refused for a related but distinct reason. A
  control register and CPUID are x86 architecture rather than devices;
  RISC-V has CSRs reached with csrr and a completely different identity
@@ -1731,11 +1742,18 @@ Section: Effect Handler Emission
  doing nothing at all, and `block-sector-count` answered 0 where the fixture
  is 128 sectors. A false green and a wrong number, from the same defect.
 
+ Every OTHER unresolved name is refused too, and for the same reason: the
+ branch is left as emitted, so reaching it reads a stale a0 and the program
+ answers whatever the register held. Measured over a full cross battery on
+ both lanes before this became a refusal, 486 tests each: four names on
+ arm64 and three on riscv64, none of them unresolved by design, so there is
+ no allow-list.
+
   rv-unresolved-report : Text -> Text
   rv-unresolved-report (target) =
    if text-starts-with target "block-" then
     "[UNSUPPORTED] " & target & ": the program calls a block builtin and carries no block driver, so nothing can serve the call. Reach VirtioBlk (Foreword chapter VirtioBlk, or FileSystem) from the program."
-   else "[WARN] unresolved call to '" & target & "': the riscv plug emits no such function, and the branch was left unpatched -- reaching it reads a stale a0"
+   else "[UNSUPPORTED] " & target & ": the riscv plug emits no such function, and the branch would be left unpatched -- reaching it reads a stale a0"
 
   rv-patch-func-addrs : RvState -> RvState
   rv-patch-func-addrs (st) =

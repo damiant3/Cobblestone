@@ -33,6 +33,20 @@ Section: Protocol Constants
 
   msc-chunk : Integer = 64
 
+ Cell 91 overrides the chunk for a flight. Sitting 4 (2026-08-19) banked
+ wr=0 twice, so the FIRST chunk of the data run is what refuses and the LBA
+ moves only because the file's allocation moves; a one-sector write at the
+ block stage succeeds on the same medium in the same boot. Size is therefore
+ a candidate and it is not testable in the bed, which completes the transfer
+ at any chunk. `sink chunk=N` in DIAG.CFG sets it; zero keeps the default.
+
+  msc-cell-chunk : Integer = 91
+
+  msc-chunk-now : Integer -> Integer
+  msc-chunk-now (dummy) =
+    let c = xdiag-get msc-cell-chunk
+    in if c <= 0 then msc-chunk else c
+
 Section: Bring-Up Ladder
 
  The bring-up has six ways to stop and one cell recorded whether a disk
@@ -169,8 +183,17 @@ Section: Configuration Descriptor Walk
 
 Section: Connect
 
+  msc-walked : Integer -> Boolean
+  msc-walked (dummy) = (xdiag-get 0 == xhci-diag-magic) & (xdiag-get 41 > 0)
+
   msc-connect : [Device.Port] MscDisk
   msc-connect = act
+    if msc-walked 0 then msc-no-disk
+    else msc-connect-fresh
+  end
+
+  msc-connect-fresh : [Device.Port] MscDisk
+  msc-connect-fresh = act
     xh <- xhci-connect
     let z = xdiag-zero msc-cell-stage msc-cell-end
     in let z1 = xdiag-put msc-cell-fuel-lo xhci-fuel
@@ -538,7 +561,8 @@ Section: Sector Read and Write
   msc-read-into : MscDisk, Integer, Integer, Integer -> Integer
   msc-read-into (d) (lba) (count) (dest) =
     if count <= 0 then 1
-    else let n = if count > msc-chunk then msc-chunk else count
+    else let cap = msc-chunk-now 0
+    in let n = if count > cap then cap else count
     in let ok = msc-read10 d lba n dest
     in if ok then msc-read-into d (lba + n) (count - n) (dest + n * 512)
     else if msc-retry-chunk d lba == False then
@@ -551,7 +575,8 @@ Section: Sector Read and Write
   msc-write-into : MscDisk, Integer, Integer, Integer -> Integer
   msc-write-into (d) (lba) (count) (src) =
     if count <= 0 then 1
-    else let n = if count > msc-chunk then msc-chunk else count
+    else let cap = msc-chunk-now 0
+    in let n = if count > cap then cap else count
     in let ok = msc-write10 d lba n src
     in if ok then msc-write-into d (lba + n) (count - n) (src + n * 512)
     else if msc-retry-chunk d lba == False then

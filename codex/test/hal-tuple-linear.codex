@@ -5,36 +5,50 @@ Section: Body
   read-pin : Integer -> [Gpio, Device.Mmio] Boolean
   read-pin (base) = act
     w <- mmio-write-32 (base + gpio-idr-offset) 32
-    p0 <- gpio-open base 5 PinInput
-    let (p1, level) = gpio-read p0
-    in act
-      c <- gpio-close p1
-      level
-    end
+    b0 <- board-open 0 0
+    r <- gpio-open b0 base 5 PinInput
+    when r
+     is (b1, p0) ->
+       let (p1, level) = gpio-read p0
+       in act
+         c <- gpio-close p1
+         bc <- (board-close b1)
+         level
+       end
   end
 
   echo-uart : Integer -> [Uart, Device.Mmio] List Integer
   echo-uart (base) = act
-    u0 <- uart-open base default-uart-config
-    u1 <- uart-send u0 65
-    r <- uart-recv u1 1
-    when r
-     is (u2, bytes) -> act
-       c <- uart-close u2
-       bytes
+    b0 <- board-open 0 0
+    u <- uart-open b0 base default-uart-config
+    when u
+     is (b1, u0) -> act
+       u1 <- uart-send u0 65
+       r <- uart-recv u1 1
+       when r
+        is (u2, bytes) -> act
+          c <- uart-close u2
+          bc <- (board-close b1)
+          bytes
+        end
      end
   end
 
   spi-round : Integer -> [Spi, Device.Mmio] List Integer
   spi-round (base) = act
-    s0 <- spi-open base default-spi-config
-    t0 <- spi-select s0 2
-    let (t1, got) = spi-transfer t0 [7, 9]
-    in act
-      s1 <- spi-deselect t1
-      c <- spi-close s1
-      got
-    end
+    b0 <- board-open 0 0
+    s <- spi-open b0 base default-spi-config
+    when s
+     is (b1, s0) -> act
+       t0 <- spi-select s0 2
+       let (t1, got) = spi-transfer t0 [7, 9]
+       in act
+         s1 <- spi-deselect t1
+         c <- spi-close s1
+         bc <- (board-close b1)
+         got
+       end
+     end
   end
 
   opening : [Console, Gpio, Uart, Spi, Device.Mmio] Nothing = act

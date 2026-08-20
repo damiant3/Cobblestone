@@ -118,11 +118,13 @@ Section: GPIO Linear Handle
     is PinAlternate (f) -> nrf-gpio-set-output port-base pin
     is PinAnalog -> nrf-gpio-set-input port-base pin
 
-  nrf-gpio-open : Integer, Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
-  nrf-gpio-open (port-base) (pin) (mode) = act
-   m <- nrf-gpio-config port-base pin mode
-   Pin port-base pin
-  end
+  nrf-gpio-open : linear Board, Integer, Integer, PinMode -> [Gpio, Device.Mmio] (linear Board, linear Pin)
+  nrf-gpio-open (brd) (port-base) (pin) (mode) =
+   when brd
+    is Board (pw) (sc) -> act
+      m <- (nrf-gpio-config port-base pin mode)
+      (Board pw sc, Pin port-base pin)
+    end
 
   nrf-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
   nrf-pin-write (p) (high) =
@@ -218,11 +220,13 @@ Section: UARTE Linear Handle
  board's own EasyDMA path, close disables the peripheral. The handle
  carries the UARTE base for write and for close's ENABLE write.
 
-  nrf-uarte-open : Integer, Integer, Frequency -> [Uart, Device.Mmio] linear UartPort
-  nrf-uarte-open (uarte-base) (tx-pin) (baud-code) = act
-   i <- nrf-uarte-init uarte-base tx-pin baud-code
-   UartPort uarte-base
-  end
+  nrf-uarte-open : linear Board, Integer, Integer, Frequency -> [Uart, Device.Mmio] (linear Board, linear UartPort)
+  nrf-uarte-open (brd) (uarte-base) (tx-pin) (baud-code) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (nrf-uarte-init uarte-base tx-pin baud-code)
+      (Board pw sc, UartPort uarte-base)
+    end
 
   nrf-uarte-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
   nrf-uarte-write (port) (byte) =
@@ -445,6 +449,34 @@ Section: SAADC (0x40007000)
     if ev > 0 then 1
     else nrf-saadc-wait-end (fuel - 1)
    end
+
+Section: Linear ADC Unit
+
+ -320 keeps the EasyDMA result word below the SPIM rx buffer at -256.
+
+  nrf-saadc-scratch : Integer = nrf-sram-base + nrf-sram-size - 320
+
+  nrf-adc-open : linear Board -> [Adc, Device.Mmio] (linear Board, linear AdcUnit)
+  nrf-adc-open (brd) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (nrf-saadc-init 0)
+      (Board pw sc, AdcUnit nrf-saadc-base)
+    end
+
+  nrf-adc-unit-sample : linear AdcUnit, Integer -> [Adc, Device.Mmio] (linear AdcUnit, Integer)
+  nrf-adc-unit-sample (adc) (channel) =
+   when adc
+    is AdcUnit (b) -> act
+      cfg <- nrf-saadc-init channel
+      v <- (nrf-saadc-read nrf-saadc-scratch)
+      (AdcUnit b, v)
+    end
+
+  nrf-adc-close : linear AdcUnit -> [Adc, Device.Mmio] Integer
+  nrf-adc-close (adc) =
+   when adc
+    is AdcUnit (b) -> mmio-write-32 (b + nrf-saadc-enable-off) 0
 
 Section: RADIO (2.4 GHz, 0x40001000)
 

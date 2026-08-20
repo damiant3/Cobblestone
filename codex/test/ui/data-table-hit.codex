@@ -1,0 +1,79 @@
+Chapter: DataTableHitTest
+
+  cites Foreword chapter Console
+  cites UI chapter DataTable
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter Event
+  cites UI chapter BoxModel
+
+ WORKS-13. A click can name a row.
+
+ The arms are paired against the two ways a hit arrives and the ways it can
+ miss. `ev-hit-widget` answers with the deepest node under the point, so an
+ ordinary click lands on a CELL and only a click in the row's own padding
+ lands on the row panel: a helper that read one shape and not the other
+ would pass a test written against the shape its author had in mind and miss
+ most real clicks.
+
+ The misses matter as much: another table's id, this table's header, its
+ footer, and a key that no row carries must all answer -1 rather than 0,
+ because 0 is a row.
+
+Section: Fixtures
+
+  cols : List TableColumn = [table-column "k" "ID" 68, table-column "s" "Status" 100]
+
+  rows : List TableRow = [
+    table-row "a" ["CDX-1", "Todo"],
+    table-row "b" ["CDX-2", "Done"],
+    table-row "with-dash" ["CDX-3", "Todo"]
+  ]
+
+  dt : DataTableState = data-table-new "issues" cols rows
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("row panel, first:  " & show (data-table-row-of-hit dt "issues-row-0"))
+    print-line-uni ("row panel, third:  " & show (data-table-row-of-hit dt "issues-row-2"))
+    print-line-uni ("cell in first row: " & show (data-table-row-of-hit dt "issues-cell-a-0"))
+    print-line-uni ("cell in second:    " & show (data-table-row-of-hit dt "issues-cell-b-1"))
+    print-line-uni ("a key with a dash: " & show (data-table-row-of-hit dt "issues-cell-with-dash-1"))
+    print-line-uni ("a key no row has:  " & show (data-table-row-of-hit dt "issues-cell-zz-0"))
+    print-line-uni ("the header:        " & show (data-table-row-of-hit dt "issues-hdr"))
+    print-line-uni ("a header button:   " & show (data-table-row-of-hit dt "issues-col-1"))
+    print-line-uni ("the footer:        " & show (data-table-row-of-hit dt "issues-footer"))
+    print-line-uni ("another table:     " & show (data-table-row-of-hit dt "other-row-1"))
+    print-line-uni ("nothing at all:    " & show (data-table-row-of-hit dt ""))
+
+    let laid = widget-layout (data-table-widget dt) theme-terminal (layout-rect 0 0 400 200)
+    in act
+      print-line-uni ("through a real layout, a point in row 2: " & show (row-under laid 40 (y-of laid "issues-row-2" 6)))
+      print-line-uni ("through a real layout, a point in row 0: " & show (row-under laid 40 (y-of laid "issues-row-0" 6)))
+      print-line-uni ("through a real layout, the header:       " & show (row-under laid 40 (y-of laid "issues-hdr" 6)))
+    end
+  end
+
+Section: Through The Layout
+
+ The arms above feed the helper an id by hand, which tests string surgery
+ and nothing else. These three go the whole way a click goes: lay the table
+ out, ask `ev-hit-widget` what is under a POINT, and hand what it answers to
+ the helper. That is every step of the real path except the mouse itself,
+ which no bed here can press -- `desk.ps1` scripts scancodes and codex-vm
+ takes `-keys` and no pointer.
+
+  y-of : WidgetNode, Text, Integer -> Integer
+  y-of (root) (id) (into) =
+    when widget-find root id
+      is Just (w) -> (w.wn-bounds).lr-y + into
+      is None -> 0 - 1
+
+  row-under : WidgetNode, Integer, Integer -> Integer
+  row-under (laid) (x) (y) =
+    when ev-hit-widget laid x y
+      is Just (w) -> data-table-row-of-hit dt (w.wn-id)
+      is None -> 0 - 1

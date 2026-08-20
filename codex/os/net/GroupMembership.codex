@@ -337,10 +337,22 @@ Section: Leader Yield (returning leader reclaims)
 
 Section: Service Registry
 
+ THE COUNT IS TAKEN FROM THE LIST THAT IS STORED, and it has to be, because
+ `list-push` may return the SAME pointer it was given. `__list_snoc` stores in
+ place when the backing array has spare capacity and extends in place when the
+ list is the topmost allocation (`DevelopersGuide.md`, "list-push is NOT
+ unconditionally destructive"), so `deduped` can be one longer after the push
+ than it was before. Reading `list-length deduped + 1` after pushing then
+ counts the new element twice: measured 0 before and 1 after, so a registry
+ holding one service reported two, and `gs-find-service` walked to index 1 of a
+ one-element list and took the bounds trap. Taking the length of `pushed`
+ cannot disagree with what is in the record whichever path the push took.
+
   gs-register-service : GroupState, ServiceLocation -> GroupState
   gs-register-service (st) (loc) =
     let deduped = gs-dedup-service (st.gs-services) (loc.sl-service) (loc.sl-member-id) 0 (st.gs-service-count) []
-    in __record-set (__record-set st "gs-services" (list-push deduped loc)) "gs-service-count" (list-length deduped + 1)
+    in let pushed = list-push deduped loc
+    in __record-set (__record-set st "gs-services" pushed) "gs-service-count" (list-length pushed)
 
   gs-dedup-service : List ServiceLocation, Text, Text, Integer, Integer, List ServiceLocation -> List ServiceLocation
   gs-dedup-service (svcs) (svc-name) (member) (i) (n) (acc) =

@@ -138,11 +138,13 @@ Section: GPIO Linear Handle
     is PinAlternate (af) -> l4-gpio-set-alternate gpio-base pin af
     is PinAnalog -> l4-gpio-set-mode gpio-base pin 3
 
-  l4-gpio-open : Integer, Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
-  l4-gpio-open (gpio-base) (pin) (mode) = act
-   m <- l4-gpio-config gpio-base pin mode
-   Pin gpio-base pin
-  end
+  l4-gpio-open : linear Board, Integer, Integer, PinMode -> [Gpio, Device.Mmio] (linear Board, linear Pin)
+  l4-gpio-open (brd) (gpio-base) (pin) (mode) =
+   when brd
+    is Board (pw) (sc) -> act
+      m <- (l4-gpio-config gpio-base pin mode)
+      (Board pw sc, Pin gpio-base pin)
+    end
 
   l4-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
   l4-pin-write (p) (high) =
@@ -231,11 +233,13 @@ Section: UART Linear Handle
  the USART. The board's send targets USART2 directly, so the handle
  carries the base for the type's sake and for close's CR1 write.
 
-  l4-uart-open : Frequency -> [Uart, Device.Mmio] linear UartPort
-  l4-uart-open (baud) = act
-   i <- l4-uart-init baud
-   UartPort l4-usart2-base
-  end
+  l4-uart-open : linear Board, Frequency -> [Uart, Device.Mmio] (linear Board, linear UartPort)
+  l4-uart-open (brd) (baud) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (l4-uart-init baud)
+      (Board pw sc, UartPort l4-usart2-base)
+    end
 
   l4-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
   l4-uart-write (port) (byte) =
@@ -331,11 +335,13 @@ Section: SPI1 (0x40013000)
 
 Section: Linear I2C Bus
 
-  l4-i2c-open : [I2c, Device.Mmio] linear I2cBus
-  l4-i2c-open = act
-   i <- l4-i2c-init
-   I2cBus l4-i2c1-base
-  end
+  l4-i2c-open : linear Board -> [I2c, Device.Mmio] (linear Board, linear I2cBus)
+  l4-i2c-open (brd) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (l4-i2c-init)
+      (Board pw sc, I2cBus l4-i2c1-base)
+    end
 
   l4-i2c-bus-write-reg : linear I2cBus, Integer, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
   l4-i2c-bus-write-reg (bus) (addr) (reg) (val) =
@@ -360,11 +366,13 @@ Section: Linear I2C Bus
 
 Section: Linear SPI Transaction
 
-  l4-spi-open : [Spi, Device.Mmio] linear SpiBus
-  l4-spi-open = act
-   i <- l4-spi-init
-   SpiBus l4-spi1-base
-  end
+  l4-spi-open : linear Board -> [Spi, Device.Mmio] (linear Board, linear SpiBus)
+  l4-spi-open (brd) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (l4-spi-init)
+      (Board pw sc, SpiBus l4-spi1-base)
+    end
 
   l4-spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
   l4-spi-select (bus) (cs) =
@@ -468,6 +476,87 @@ Section: I2C1 (0x40005400)
     if bit-and isr flag > 0 then 1
     else l4-i2c-wait-flag flag (fuel - 1)
    end
+
+Section: ADC1 (0x50040000)
+
+ RM0351 16.6: ISR at +0x00 (ADRDY bit 0, EOC bit 2), CR at +0x08
+ (ADEN bit 0, ADDIS bit 1, ADSTART bit 2, ADVREGEN bit 28, DEEPPWD
+ bit 29), SQR1 at +0x30 (first channel in bits 10:6), DR at +0x40.
+ The common CCR sits at 0x50040308; CKMODE bits 17:16 = 01 clocks
+ the ADC synchronously from HCLK. Clock enable is AHB2ENR bit 13.
+ Wake order matters on silicon: DEEPPWD must clear before ADVREGEN
+ is set, and ADEN only after the regulator is up.
+
+  l4-adc1-base : Integer = #50040000
+  l4-adc-ccr : Integer = #50040308
+  l4-adc-isr-off : Integer = #00
+  l4-adc-cr-off : Integer = #08
+  l4-adc-sqr1-off : Integer = #30
+  l4-adc-dr-off : Integer = #40
+
+  l4-adc-isr-adrdy : Integer = 1
+  l4-adc-isr-eoc : Integer = 4
+  l4-adc-cr-aden : Integer = 1
+  l4-adc-cr-addis : Integer = 2
+  l4-adc-cr-adstart : Integer = 4
+  l4-adc-cr-advregen : Integer = #10000000
+  l4-adc-cr-deeppwd : Integer = #20000000
+  l4-adc-ccr-ckmode-hclk : Integer = #10000
+  l4-rcc-adc-en : Integer = #2000
+
+  l4-adc-wait-flag : Integer, Integer -> [Device.Mmio] Integer
+  l4-adc-wait-flag (flag) (fuel) =
+   if fuel <= 0 then 0
+   else act
+    isr <- mmio-read-32 (l4-adc1-base + l4-adc-isr-off)
+    if bit-and isr flag > 0 then 1
+    else l4-adc-wait-flag flag (fuel - 1)
+   end
+
+  l4-adc1-init : [Device.Mmio] Integer
+  l4-adc1-init = act
+   ahb2 <- mmio-read-32 (l4-rcc-base + l4-rcc-ahb2enr-off)
+   en <- mmio-write-32 (l4-rcc-base + l4-rcc-ahb2enr-off) (bit-or ahb2 l4-rcc-adc-en)
+   ck <- mmio-write-32 l4-adc-ccr l4-adc-ccr-ckmode-hclk
+   cr0 <- mmio-read-32 (l4-adc1-base + l4-adc-cr-off)
+   wake <- mmio-write-32 (l4-adc1-base + l4-adc-cr-off) (bit-and cr0 (bit-xor l4-adc-cr-deeppwd (0 - 1)))
+   vreg <- mmio-write-32 (l4-adc1-base + l4-adc-cr-off) l4-adc-cr-advregen
+   den <- (mmio-write-32 (l4-adc1-base + l4-adc-cr-off) (bit-or l4-adc-cr-advregen l4-adc-cr-aden))
+   l4-adc-wait-flag l4-adc-isr-adrdy 10000
+  end
+
+  l4-adc-read : Integer -> [Device.Mmio] Integer
+  l4-adc-read (channel) = act
+   sq <- mmio-write-32 (l4-adc1-base + l4-adc-sqr1-off) (bit-shl (bit-and channel 31) 6)
+   cr <- mmio-read-32 (l4-adc1-base + l4-adc-cr-off)
+   go <- mmio-write-32 (l4-adc1-base + l4-adc-cr-off) (bit-or cr l4-adc-cr-adstart)
+   w <- l4-adc-wait-flag l4-adc-isr-eoc 10000
+   dr <- (mmio-read-32 (l4-adc1-base + l4-adc-dr-off))
+   bit-and dr #FFFF
+  end
+
+Section: Linear ADC Unit
+
+  l4-adc-open : linear Board -> [Adc, Device.Mmio] (linear Board, linear AdcUnit)
+  l4-adc-open (brd) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (l4-adc1-init)
+      (Board pw sc, AdcUnit l4-adc1-base)
+    end
+
+  l4-adc-unit-sample : linear AdcUnit, Integer -> [Adc, Device.Mmio] (linear AdcUnit, Integer)
+  l4-adc-unit-sample (adc) (channel) =
+   when adc
+    is AdcUnit (b) -> act
+      v <- (l4-adc-read channel)
+      (AdcUnit b, v)
+    end
+
+  l4-adc-close : linear AdcUnit -> [Adc, Device.Mmio] Integer
+  l4-adc-close (adc) =
+   when adc
+    is AdcUnit (b) -> mmio-write-32 (b + l4-adc-cr-off) l4-adc-cr-addis
 
 Section: PWR (Power Control, 0x40007000)
 

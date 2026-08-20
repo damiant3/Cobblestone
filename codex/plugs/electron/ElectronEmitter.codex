@@ -264,7 +264,19 @@ Section: Match
    in let cond = emit-el-pat-cond (b.pattern) "_s"
    in let binds = emit-el-pat-binds (b.pattern) "_s"
    in let body = emit-el-expr (b.body) arities indent
-   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-el-branches branches arities indent (i + 1)
+   in let ret = if el-guard-trivial (b.guard) then "return " & body & "; "
+                else "if (" & emit-el-expr (b.guard) arities indent & ") { return " & body & "; } "
+   in "if (" & cond & ") { " & binds & ret & "} " & emit-el-branches branches arities indent (i + 1)
+
+ A guarded arm must not chain with else: the guard needs the pattern
+ bindings, which sit inside the block, so a failed guard has to fall OUT
+ of the block and reach the next test.
+
+  el-guard-trivial : IRExpr -> Boolean
+  el-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
 
   emit-el-pat-cond : IRPat, Text -> Text
   emit-el-pat-cond (p) (scrut) =

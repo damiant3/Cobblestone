@@ -143,11 +143,13 @@ Section: GPIO Linear Handle
     is PinAlternate (af) -> stm32-gpio-set-alternate gpio-base pin af
     is PinAnalog -> stm32-gpio-set-mode gpio-base pin 3
 
-  stm32-gpio-open : Integer, Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
-  stm32-gpio-open (gpio-base) (pin) (mode) = act
-   m <- stm32-gpio-config gpio-base pin mode
-   Pin gpio-base pin
-  end
+  stm32-gpio-open : linear Board, Integer, Integer, PinMode -> [Gpio, Device.Mmio] (linear Board, linear Pin)
+  stm32-gpio-open (brd) (gpio-base) (pin) (mode) =
+   when brd
+    is Board (pw) (sc) -> act
+      m <- (stm32-gpio-config gpio-base pin mode)
+      (Board pw sc, Pin gpio-base pin)
+    end
 
   stm32-pin-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
   stm32-pin-write (p) (high) =
@@ -279,11 +281,13 @@ Section: UART Linear Handle
  the USART. The handle carries the USART base so a caller cannot send
  down a different USART by passing the wrong address.
 
-  stm32-uart-open : Frequency -> [Uart, Device.Mmio] linear UartPort
-  stm32-uart-open (baud) = act
-   i <- stm32-uart2-init baud
-   UartPort stm32-usart2-base
-  end
+  stm32-uart-open : linear Board, Frequency -> [Uart, Device.Mmio] (linear Board, linear UartPort)
+  stm32-uart-open (brd) (baud) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (stm32-uart2-init baud)
+      (Board pw sc, UartPort stm32-usart2-base)
+    end
 
   stm32-uart-write : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
   stm32-uart-write (port) (byte) =
@@ -377,11 +381,13 @@ Section: SPI Driver
 
 Section: Linear I2C Bus
 
-  stm32-i2c-open : [I2c, Device.Mmio] linear I2cBus
-  stm32-i2c-open = act
-   i <- stm32-i2c1-init
-   I2cBus stm32-i2c1-base
-  end
+  stm32-i2c-open : linear Board -> [I2c, Device.Mmio] (linear Board, linear I2cBus)
+  stm32-i2c-open (brd) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (stm32-i2c1-init)
+      (Board pw sc, I2cBus stm32-i2c1-base)
+    end
 
   stm32-i2c-bus-write-reg : linear I2cBus, Integer, Integer, Integer -> [I2c, Device.Mmio] (linear I2cBus, Integer)
   stm32-i2c-bus-write-reg (bus) (addr) (reg) (val) =
@@ -406,11 +412,13 @@ Section: Linear I2C Bus
 
 Section: Linear SPI Transaction
 
-  stm32-spi-open : [Spi, Device.Mmio] linear SpiBus
-  stm32-spi-open = act
-   i <- stm32-spi1-init
-   SpiBus stm32-spi1-base
-  end
+  stm32-spi-open : linear Board -> [Spi, Device.Mmio] (linear Board, linear SpiBus)
+  stm32-spi-open (brd) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (stm32-spi1-init)
+      (Board pw sc, SpiBus stm32-spi1-base)
+    end
 
   stm32-spi-select : linear SpiBus, Integer -> [Spi, Device.Mmio] linear SpiTxn
   stm32-spi-select (bus) (cs) =
@@ -557,6 +565,71 @@ Section: I2C Driver
    stop <- (stm32-i2c-stop i2c-base)
    val
   end
+
+Section: ADC1 (0x40012000)
+
+ RM0090 13.13: SR at +0x00 (EOC bit 1), CR2 at +0x08 (ADON bit 0,
+ SWSTART bit 30), SQR3 at +0x34 (first channel in bits 4:0), DR at
+ +0x4C. ADC1's clock enable is APB2ENR bit 8.
+
+  stm32-adc1-base : Integer = #40012000
+  stm32-adc-sr-off : Integer = #00
+  stm32-adc-cr2-off : Integer = #08
+  stm32-adc-sqr3-off : Integer = #34
+  stm32-adc-dr-off : Integer = #4C
+
+  stm32-adc-sr-eoc : Integer = 2
+  stm32-adc-cr2-adon : Integer = 1
+  stm32-adc-cr2-swstart : Integer = #40000000
+  stm32-rcc-adc1-en : Integer = #100
+
+  stm32-adc1-init : [Device.Mmio] Integer
+  stm32-adc1-init = act
+   apb2 <- mmio-read-32 stm32-rcc-apb2enr
+   en <- (mmio-write-32 stm32-rcc-apb2enr (bit-or apb2 stm32-rcc-adc1-en))
+   mmio-write-32 (stm32-adc1-base + stm32-adc-cr2-off) stm32-adc-cr2-adon
+  end
+
+  stm32-adc-wait-eoc : Integer -> [Device.Mmio] Integer
+  stm32-adc-wait-eoc (fuel) =
+   if fuel <= 0 then 0
+   else act
+    sr <- mmio-read-32 (stm32-adc1-base + stm32-adc-sr-off)
+    if bit-and sr stm32-adc-sr-eoc > 0 then 1
+    else stm32-adc-wait-eoc (fuel - 1)
+   end
+
+  stm32-adc-read : Integer -> [Device.Mmio] Integer
+  stm32-adc-read (channel) = act
+   ch <- mmio-write-32 (stm32-adc1-base + stm32-adc-sqr3-off) (bit-and channel 31)
+   go <- mmio-write-32 (stm32-adc1-base + stm32-adc-cr2-off) (bit-or stm32-adc-cr2-adon stm32-adc-cr2-swstart)
+   w <- stm32-adc-wait-eoc 10000
+   dr <- (mmio-read-32 (stm32-adc1-base + stm32-adc-dr-off))
+   bit-and dr #FFFF
+  end
+
+Section: Linear ADC Unit
+
+  stm32-adc-open : linear Board -> [Adc, Device.Mmio] (linear Board, linear AdcUnit)
+  stm32-adc-open (brd) =
+   when brd
+    is Board (pw) (sc) -> act
+      i <- (stm32-adc1-init)
+      (Board pw sc, AdcUnit stm32-adc1-base)
+    end
+
+  stm32-adc-unit-sample : linear AdcUnit, Integer -> [Adc, Device.Mmio] (linear AdcUnit, Integer)
+  stm32-adc-unit-sample (adc) (channel) =
+   when adc
+    is AdcUnit (b) -> act
+      v <- (stm32-adc-read channel)
+      (AdcUnit b, v)
+    end
+
+  stm32-adc-close : linear AdcUnit -> [Adc, Device.Mmio] Integer
+  stm32-adc-close (adc) =
+   when adc
+    is AdcUnit (b) -> mmio-write-32 (b + stm32-adc-cr2-off) 0
 
 Section: LED (Discovery Board: PD12-PD15)
 

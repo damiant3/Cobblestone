@@ -48,8 +48,9 @@ param(
     # rings no endpoint at all; with one it resets once and rings both (slot 5
     # ep 3, slot 2 ep 5) and the pointer moves. The keyboard survives either way
     # only because codex-vm keeps feeding the legacy mailbox, which is what hid
-    # this for so long. The defect is WORKS-23; this default is the bed carrying
-    # a disk the way the real machine does, not a fix for it.
+    # this for so long. That was WORKS-25, FIXED 2026-08-19 (msc-connect refuses
+    # a second bring-up once usb-attach has walked); the default stays because
+    # the Files pane wants an ESP to browse.
     [string]$Disk = 'seed/Codex.img',
     [switch]$Wait
 )

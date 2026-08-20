@@ -1,0 +1,281 @@
+Chapter: BuiltinAlloc
+  cites Foreword chapter Console
+
+ What does one call to a list builtin retain, and does that answer change
+ when the input gets bigger? That is the measurement CostModel.md 5.1 names
+ as the block on the `fixed` rung: separating "fixed bytes per call" from
+ "one walk over an input" cannot be done from the code's shape, because a
+ body with no loop in it can still call something that copies its argument.
+ 3.1 published the text family and nothing else. This is the list family.
+
+ THE DISCRIMINATOR IS INPUT SIZE, NOT ITERATION COUNT, which is what makes
+ this instrument different from `accumulator-corpus` and `literal-alloc`.
+ Those run a loop n times and read the growth. Here every arm makes ONE
+ call, and the two readings differ only in how large the argument is. A
+ builtin that retains the same bytes on a list of 64 and a list of 256 is
+ `fixed`; one that retains four times as much is walking its input.
+
+ `list-push` GETS TWO ARMS AND THAT IS THE POINT. `__list_snoc` has three
+ paths (`DevelopersGuide.md`, "list-push is NOT unconditionally
+ destructive"): store in spare capacity, extend in place when the list is
+ the topmost allocation, or COPY to a fresh allocation. Which one runs is
+ positional, decided by the call site's allocation order and enforced by
+ nothing. A cost class has to be the worst case over structure, so the
+ buried arm -- one small allocation made after the list, which is all it
+ takes -- is the arm that decides the class. Reading only the topmost arm
+ would publish `fixed` for a builtin that copies.
+
+ The control arm makes no call at all, so the harness's own retention is
+ visible and every row is read against it rather than against zero.
+
+ We say:
+
+Section: The Instrument
+
+  keep : List Integer -> Integer
+  keep (xs) = list-length xs
+
+  mk-list : Integer, Integer, List Integer -> List Integer
+  mk-list (n) (i) (acc) =
+    if i >= n then acc
+    else mk-list n (i + 1) (list-push acc i)
+
+  ratio-tenths : Integer, Integer -> Integer
+  ratio-tenths (at-n) (at-4n) =
+    if at-n <= 0 then 0
+    else (at-4n * 10) / at-n
+
+  show-tenths : Integer -> Text
+  show-tenths (t) = show (t / 10) & "." & show (t - (t / 10) * 10)
+
+ The class this instrument can report, and it deliberately cannot report
+ `growing`: one call cannot be nested in a walk, so the top of the lattice
+ is not a question a single call answers.
+
+  klass : Integer, Integer -> Text
+  klass (at-n) (at-4n) =
+    if at-n == 0 & at-4n == 0 then "none"
+    else if at-n == at-4n then "fixed"
+    else "input"
+
+  row : Text, Integer, Integer -> Text
+  row (name) (at-n) (at-4n) =
+    name & " n=" & show at-n & " 4n=" & show at-4n
+      & " x" & show-tenths (ratio-tenths at-n at-4n)
+      & " " & klass at-n at-4n
+
+Section: Arms
+
+  m-control : Integer -> Integer
+  m-control (n) =
+    let xs = mk-list n 0 []
+    in let b = __heap-save
+    in let r = keep xs
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-length : Integer -> Integer
+  m-length (n) =
+    let xs = mk-list n 0 []
+    in let b = __heap-save
+    in let r = list-length xs
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-at : Integer -> Integer
+  m-at (n) =
+    let xs = mk-list n 0 []
+    in let b = __heap-save
+    in let r = list-at xs (n / 2)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-push-topmost : Integer -> Integer
+  m-push-topmost (n) =
+    let xs = mk-list n 0 []
+    in let b = __heap-save
+    in let r = keep (list-push xs 7)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+ One three-element list built after the input is enough to move it off the
+ top, which is the whole of the aliasing rule in the guide.
+
+  m-push-buried : Integer -> Integer
+  m-push-buried (n) =
+    let xs = mk-list n 0 []
+    in let after = mk-list 3 0 []
+    in let b = __heap-save
+    in let r = keep (list-push xs 7) + keep after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+ THE ARM THAT SHOWS THIS INSTRUMENT CAN SAY "CHEAP". `base` is 64 and 256,
+ both powers of two, and `mk-list` leaves capacity equal to length there, so
+ the very next push always lands on the doubling boundary and pays the whole
+ capacity. That is the worst case and it is the right number for a CEILING,
+ but an instrument that can only ever report it is not measuring, it is
+ asserting. One extra element puts the list at length n+1 in a backing array
+ of 2n, and the same call then takes the spare-capacity path.
+
+  m-push-spare : Integer -> Integer
+  m-push-spare (n) =
+    let xs = mk-list (n + 1) 0 []
+    in let b = __heap-save
+    in let r = keep (list-push xs 7)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-set-at : Integer -> Integer
+  m-set-at (n) =
+    let xs = mk-list n 0 []
+    in let after = mk-list 3 0 []
+    in let b = __heap-save
+    in let r = keep (list-set-at xs (n / 2) 7) + keep after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-insert-at : Integer -> Integer
+  m-insert-at (n) =
+    let xs = mk-list n 0 []
+    in let after = mk-list 3 0 []
+    in let b = __heap-save
+    in let r = keep (list-insert-at xs (n / 2) 7) + keep after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-tail : Integer -> Integer
+  m-tail (n) =
+    let xs = mk-list n 0 []
+    in let after = mk-list 3 0 []
+    in let b = __heap-save
+    in let r = keep (__list-tail xs) + keep after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+Section: The Text Family
+
+ The published Text table (`DevelopersGuide.md`, 2026-08-15) measured each of
+ these at ONE input size, which is enough to say "it allocates" and not enough
+ to say which class it is. `substring` reading "16 bytes per call at n = 4" is
+ the case in point: 16 bytes is a fact about that call, and whether it is a
+ CEILING depends on which of the two lengths it tracks.
+
+ SO SUBSTRING GETS TWO ARMS, VARYING DIFFERENT THINGS, and the pair is the
+ finding rather than either number. One holds the OUTPUT at four characters and
+ grows the input; the other takes half the input and grows both. If the cost
+ follows the output, a caller taking a fixed-size field out of a line of any
+ length is `fixed` and can say so, which is most of the parsing in this tree.
+ If it follows the input, none of them can.
+
+  mk-text : Integer, Integer, Text -> Text
+  mk-text (n) (i) (acc) =
+    if i >= n then acc
+    else mk-text n (i + 1) (acc & "x")
+
+  m-text-length : Integer -> Integer
+  m-text-length (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in let r = text-length s
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-sub-fixed-out : Integer -> Integer
+  m-sub-fixed-out (n) =
+    let s = mk-text n 0 ""
+    in let after = mk-text 3 0 ""
+    in let b = __heap-save
+    in let r = text-length (substring s 0 4) + text-length after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-sub-half-out : Integer -> Integer
+  m-sub-half-out (n) =
+    let s = mk-text n 0 ""
+    in let after = mk-text 3 0 ""
+    in let b = __heap-save
+    in let r = text-length (substring s 0 (n / 2)) + text-length after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-contains : Integer -> Integer
+  m-contains (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in let r = if text-contains s "xx" then 1 else 0
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-starts : Integer -> Integer
+  m-starts (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in let r = if text-starts-with s "xx" then 1 else 0
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-compare : Integer -> Integer
+  m-compare (n) =
+    let s = mk-text n 0 ""
+    in let t = mk-text n 0 ""
+    in let b = __heap-save
+    in let r = text-compare s t
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-itoa : Integer -> Integer
+  m-itoa (n) =
+    let after = mk-text 3 0 ""
+    in let b = __heap-save
+    in let r = text-length (integer-to-text n) + text-length after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+ `integer-to-text`'s input size is DIGITS, and the arm above varies its
+ argument from 64 to 256, which is two digits to three. That is not a 4x
+ spread in the thing that could matter, so on its own it would be a `fixed`
+ claim resting on almost no range. This one runs the fourth power: 8 digits
+ against 10, and read together with the arm above it covers 2, 3, 8 and 10.
+
+  m-itoa-big : Integer -> Integer
+  m-itoa-big (n) =
+    let after = mk-text 3 0 ""
+    in let b = __heap-save
+    in let r = text-length (integer-to-text (n * n * n * n)) + text-length after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-char-to-text : Integer -> Integer
+  m-char-to-text (n) =
+    let s = mk-text n 0 ""
+    in let after = mk-text 3 0 ""
+    in let b = __heap-save
+    in let r = text-length (char-to-text (char-at s 0)) + text-length after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+Section: Entry
+
+  base : Integer = 64
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "control       " (m-control base) (m-control (base * 4)))
+    print-line-uni (row "list-length   " (m-length base) (m-length (base * 4)))
+    print-line-uni (row "list-at       " (m-at base) (m-at (base * 4)))
+    print-line-uni (row "push-topmost  " (m-push-topmost base) (m-push-topmost (base * 4)))
+    print-line-uni (row "push-buried   " (m-push-buried base) (m-push-buried (base * 4)))
+    print-line-uni (row "push-spare    " (m-push-spare base) (m-push-spare (base * 4)))
+    print-line-uni (row "list-set-at   " (m-set-at base) (m-set-at (base * 4)))
+    print-line-uni (row "list-insert-at" (m-insert-at base) (m-insert-at (base * 4)))
+    print-line-uni (row "__list-tail   " (m-tail base) (m-tail (base * 4)))
+    print-line-uni (row "text-length   " (m-text-length base) (m-text-length (base * 4)))
+    print-line-uni (row "sub-fixed-out " (m-sub-fixed-out base) (m-sub-fixed-out (base * 4)))
+    print-line-uni (row "sub-half-out  " (m-sub-half-out base) (m-sub-half-out (base * 4)))
+    print-line-uni (row "text-contains " (m-contains base) (m-contains (base * 4)))
+    print-line-uni (row "text-starts   " (m-starts base) (m-starts (base * 4)))
+    print-line-uni (row "text-compare  " (m-compare base) (m-compare (base * 4)))
+    print-line-uni (row "integer-to-tex" (m-itoa base) (m-itoa (base * 4)))
+    print-line-uni (row "itoa-big      " (m-itoa-big base) (m-itoa-big (base * 4)))
+    print-line-uni (row "char-to-text  " (m-char-to-text base) (m-char-to-text (base * 4)))
+  end

@@ -174,6 +174,86 @@ Section: UART Polled I/O (Platform-Independent)
     uart-poll-send-text uart-data-reg text (i + 1) len
    end
 
+Section: The Linear Board
+
+ Deep sleep on these MCUs powers down peripheral domains, so a handle
+ open across sleep entry is invalidated by the hardware with no
+ software event. The board handle carries the PWR block base and the
+ Cortex-M SCB base, because those are the two register blocks sleep
+ entry programs.
+
+  Board =
+    | Board (Integer) (Integer)
+
+  board-open : Integer, Integer -> linear Board
+  board-open (pwr-base) (scb-base) = Board pwr-base scb-base
+
+  board-close : linear Board -> Integer
+  board-close (brd) =
+   when brd
+    is Board (pw) (sc) -> 0
+
+  board-pair : linear Board, a -> (linear Board, a)
+  board-pair (brd) (x) =
+   when brd
+    is Board (pw) (sc) -> (Board pw sc, x)
+
+Section: Deep Sleep
+
+ RM0351 5.3: PWR CR1 at +0x00 carries LPMS in bits 2:0 (000 Stop 0,
+ 001 Stop 1, 010 Stop 2, 011 Standby, 100 Shutdown); PWR SR1 at +0x10
+ carries the wakeup flags WUF1-5 in bits 4:0 and the internal wakeup
+ flag WUFI in bit 15. The Cortex-M SCB SCR at +0x10 carries SLEEPDEEP
+ in bit 2. On silicon the final step is WFI, which halts the core until
+ a wake event; everything before WFI is register setup, so these stop
+ one instruction short, as the L4 board chapter's own sleep entry does.
+
+  SleepConfig = record {
+   mode : Integer between 0 and 4,
+   wake-after-ms : Integer between 0 and 86400000
+  }
+
+  default-sleep-config : SleepConfig
+  default-sleep-config = SleepConfig {
+   mode = 2,
+   wake-after-ms = 0
+  }
+
+  WakeReason =
+    | WakeReset
+    | WakePin
+    | WakeTimer
+
+  pwr-cr1-offset : Integer = 0
+  pwr-sr1-offset : Integer = 16
+  pwr-lpms-mask : Integer = 7
+  scb-scr-offset : Integer = 16
+  scb-scr-sleepdeep : Integer = 4
+
+  sleep-light : Integer -> [Power, Device.Mmio] Integer
+  sleep-light (scb-base) = act
+   scr <- (mmio-read-32 (scb-base + scb-scr-offset))
+   mmio-write-32 (scb-base + scb-scr-offset) (bit-and scr (bit-xor scb-scr-sleepdeep (0 - 1)))
+  end
+
+  sleep-deep : linear Board, SleepConfig -> [Power, Device.Mmio] Integer
+  sleep-deep (brd) (cfg) =
+   when brd
+    is Board (pw) (sc) -> act
+      cr1 <- mmio-read-32 (pw + pwr-cr1-offset)
+      lpms <- mmio-write-32 (pw + pwr-cr1-offset) (bit-or (bit-and cr1 (bit-xor pwr-lpms-mask (0 - 1))) (cfg.mode))
+      scr <- (mmio-read-32 (sc + scb-scr-offset))
+      mmio-write-32 (sc + scb-scr-offset) (bit-or scr scb-scr-sleepdeep)
+    end
+
+  wake-source : Integer -> [Power, Device.Mmio] WakeReason
+  wake-source (pwr-base) = act
+   sr1 <- (mmio-read-32 (pwr-base + pwr-sr1-offset))
+   if bit-and sr1 31 > 0 then WakePin
+   else if bit-and sr1 32768 > 0 then WakeTimer
+   else WakeReset
+  end
+
 Section: Linear Peripheral Handles
 
  A peripheral is a resource, not a value. You open it, you use it, you
@@ -181,7 +261,10 @@ Section: Linear Peripheral Handles
  dropped leaves a bus configured and clocked with nobody owning it; a
  handle that is released twice tears down a peripheral a second time,
  which on real silicon can re-trigger a clock gate or strand a DMA
- transfer mid-flight.
+ transfer mid-flight. Every open here takes the linear Board and hands
+ it back beside the new handle, and sleep-deep consumes the Board, so
+ the only path to deep sleep is one on which every handle opened
+ through the Board has been closed.
 
   UartPort =
     | UartPort (Integer)
@@ -189,11 +272,13 @@ Section: Linear Peripheral Handles
   SpiBus =
     | SpiBus (Integer)
 
-  uart-open : Integer, UartConfig -> [Uart, Device.Mmio] linear UartPort
-  uart-open (base) (cfg) = act
-   w <- mmio-write-32 (base + 8) (cfg.baud)
-   UartPort base
-  end
+  uart-open : linear Board, Integer, UartConfig -> [Uart, Device.Mmio] (linear Board, linear UartPort)
+  uart-open (brd) (base) (cfg) =
+   when brd
+    is Board (pw) (sc) -> act
+      w <- (mmio-write-32 (base + 8) (cfg.baud))
+      (Board pw sc, UartPort base)
+    end
 
   uart-send : linear UartPort, Integer -> [Uart, Device.Mmio] linear UartPort
   uart-send (port) (byte) =
@@ -208,11 +293,13 @@ Section: Linear Peripheral Handles
    when port
     is UartPort (b) -> mmio-write-32 (b + 12) 0
 
-  spi-open : Integer, SpiConfig -> [Spi, Device.Mmio] linear SpiBus
-  spi-open (base) (cfg) = act
-   w <- mmio-write-32 base (cfg.clock-hz)
-   SpiBus base
-  end
+  spi-open : linear Board, Integer, SpiConfig -> [Spi, Device.Mmio] (linear Board, linear SpiBus)
+  spi-open (brd) (base) (cfg) =
+   when brd
+    is Board (pw) (sc) -> act
+      w <- (mmio-write-32 base (cfg.clock-hz))
+      (Board pw sc, SpiBus base)
+    end
 
   spi-close : linear SpiBus -> [Spi, Device.Mmio] Integer
   spi-close (bus) =
@@ -311,12 +398,14 @@ Section: Linear I2C Bus and ADC Unit
   i2c-cr2-offset : Integer = 4
   i2c-dr-offset : Integer = 16
 
-  i2c-open : Integer, I2cConfig -> [I2c, Device.Mmio] linear I2cBus
-  i2c-open (base) (cfg) = act
-   w-clk <- mmio-write-32 (base + i2c-cr2-offset) (cfg.clock-hz / 1000000)
-   w-en <- (mmio-write-32 (base + i2c-cr1-offset) 1)
-   I2cBus base
-  end
+  i2c-open : linear Board, Integer, I2cConfig -> [I2c, Device.Mmio] (linear Board, linear I2cBus)
+  i2c-open (brd) (base) (cfg) =
+   when brd
+    is Board (pw) (sc) -> act
+      w-clk <- mmio-write-32 (base + i2c-cr2-offset) (cfg.clock-hz / 1000000)
+      w-en <- (mmio-write-32 (base + i2c-cr1-offset) 1)
+      (Board pw sc, I2cBus base)
+    end
 
   i2c-poll-write-bytes : Integer, List Integer, Integer, Integer -> [Device.Mmio] Integer
   i2c-poll-write-bytes (dr) (bytes) (i) (len) =
@@ -363,11 +452,13 @@ Section: Linear I2C Bus and ADC Unit
   adc-cr2-adon : Integer = 1
   adc-cr2-swstart : Integer = #40000000
 
-  adc-open : Integer, AdcConfig -> [Adc, Device.Mmio] linear AdcUnit
-  adc-open (base) (cfg) = act
-   w <- mmio-write-32 (base + adc-cr2-offset) adc-cr2-adon
-   AdcUnit base
-  end
+  adc-open : linear Board, Integer, AdcConfig -> [Adc, Device.Mmio] (linear Board, linear AdcUnit)
+  adc-open (brd) (base) (cfg) =
+   when brd
+    is Board (pw) (sc) -> act
+      w <- (mmio-write-32 (base + adc-cr2-offset) adc-cr2-adon)
+      (Board pw sc, AdcUnit base)
+    end
 
   adc-sample : linear AdcUnit, Integer -> [Adc, Device.Mmio] (linear AdcUnit, Integer)
   adc-sample (adc) (channel) =
@@ -454,12 +545,14 @@ Section: Flash
     flash-program-bytes addr bytes (i + 1) len
    end
 
-  flash-open-bank : Integer -> [Flash, Device.Mmio] linear FlashBank
-  flash-open-bank (base) = act
-   k1 <- mmio-write-32 (base + flash-keyr-offset) flash-unlock-key-1
-   k2 <- mmio-write-32 (base + flash-keyr-offset) flash-unlock-key-2
-   FlashBank base 0
-  end
+  flash-open-bank : linear Board, Integer -> [Flash, Device.Mmio] (linear Board, linear FlashBank)
+  flash-open-bank (brd) (base) =
+   when brd
+    is Board (pw) (sc) -> act
+      k1 <- mmio-write-32 (base + flash-keyr-offset) flash-unlock-key-1
+      k2 <- (mmio-write-32 (base + flash-keyr-offset) flash-unlock-key-2)
+      (Board pw sc, FlashBank base 0)
+    end
 
   flash-write-page : linear FlashBank, Integer, List Integer -> [Flash, Device.Mmio] linear FlashBank
   flash-write-page (bank) (addr) (bytes) =
@@ -551,12 +644,14 @@ Section: Linear GPIO Pins
     is PinAlternate (n) -> 2
     is PinAnalog -> 3
 
-  gpio-open : Integer, Integer, PinMode -> [Gpio, Device.Mmio] linear Pin
-  gpio-open (base) (pin) (mode) = act
-   cur <- mmio-read-32 (base + gpio-moder-offset)
-   w <- mmio-write-32 (base + gpio-moder-offset) (bit-or (bit-and cur (bit-xor (bit-shl 3 (pin * 2)) (0 - 1))) (bit-shl (pin-mode-code mode) (pin * 2)))
-   Pin base pin
-  end
+  gpio-open : linear Board, Integer, Integer, PinMode -> [Gpio, Device.Mmio] (linear Board, linear Pin)
+  gpio-open (brd) (base) (pin) (mode) =
+   when brd
+    is Board (pw) (sc) -> act
+      cur <- mmio-read-32 (base + gpio-moder-offset)
+      w <- (mmio-write-32 (base + gpio-moder-offset) (bit-or (bit-and cur (bit-xor (bit-shl 3 (pin * 2)) (0 - 1))) (bit-shl (pin-mode-code mode) (pin * 2))))
+      (Board pw sc, Pin base pin)
+    end
 
   gpio-write : linear Pin, Boolean -> [Gpio, Device.Mmio] linear Pin
   gpio-write (p) (on) =

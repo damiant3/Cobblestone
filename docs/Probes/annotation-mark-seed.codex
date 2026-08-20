@@ -1,0 +1,59 @@
+Chapter: AnnotSeed
+
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter Annotation
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Console
+
+ How to run it, and it WRITES, so give it a copy:
+
+   build/compile.ps1 -Src docs/Probes/annotation-mark-seed.codex
+     -Out seed.cdx -Kernel seed/Codex.cdx -Log seed.log
+   Copy-Item seed/Codex.img annot.img
+   tools/codex-vm.exe -kernel seed.cdx -output seed.txt -mem 3072
+     -headless -disk annot.img
+
+ Then `build/desk.ps1 -Force -Disk annot.img` and open SRC/NAME.COD: line 9
+ carries the gutter mark. The same desk on an unseeded `seed/Codex.img` is
+ the control and shows none.
+
+ Writes one annotation onto the attached medium's fact partition so the Edit
+ pane has something to mark. The target is a definition that really exists in
+ SRC/NAME.COD on seed/Codex.img: chapter `Name`, path `make-name`.
+
+ The second annotation targets a name that is NOT in that file, which is the
+ control the arm needs: if a mark appears for it, the match is not doing what
+ it says.
+
+Section: Entry
+
+  seed-target : Text, Text -> AnnotationTarget
+  seed-target (ch) (path) = AnnotationTarget { chapter = ch, path = path }
+
+ `create-annotation` takes the AUTHOR before the body. Written the other way
+ round the store is still valid and the pane still marks the right line, so
+ nothing fails; the bubble is what shows it, printing the body where the name
+ belongs. Any test that only counts annotations passes either way.
+
+  ann-hit : Annotation = create-annotation (seed-target "Name" "make-name") Invariant "val" "make-name is the only constructor" 2000
+
+  ann-miss : Annotation = create-annotation (seed-target "Name" "no-such-def") Invariant "val" "targets nothing in this file" 2100
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let s1 = repo-persist-save-annotation s0 ann-hit 2000
+    in let s2 = repo-persist-save-annotation s1 ann-miss 2100
+    in let back = disk-load
+    in let all = repo-persist-load-all-annotations back
+    in act
+      print-line-uni ("annotations written and read back: " & show (list-length all))
+      print-line-uni ("first target: " & show-target all 0)
+      print-line-uni ("second target: " & show-target all 1)
+    end
+  end
+
+  show-target : List Annotation, Integer -> Text
+  show-target (anns) (i) =
+    if i >= list-length anns then "<none>"
+    else let a = list-at anns i
+    in (a.target).chapter & "::" & (a.target).path

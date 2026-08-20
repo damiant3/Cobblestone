@@ -1,6 +1,7 @@
 Chapter: GopScene
   cites Works chapter GopDraw
   cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
   cites Works chapter GopShot
   cites Works chapter GopRtc
   cites Kernel chapter BitmapFont
@@ -232,6 +233,20 @@ Section: Step
  frame. The target is built once in `gsc-new`, below that mark, exactly as it
  was built below the loop's.
 
+ **Mouse-look, since 2026-08-19, and the reason it is a TAKEOVER rather than an
+ addition.** The camera angle came from `gsc-orbit`, which is driven by the HPET
+ and never stops. Adding a mouse offset to a moving angle gives a view that
+ drifts out from under the hand, so the first pointer movement latches
+ `sp-look` and the orbit stops being consulted from then on: the scene turns
+ itself until you touch it, and after that you turn it. There is no way back to
+ the orbit short of closing the pane, which is the honest cost of one bit.
+
+ `sp-ptr` is the last pointer position this pane acted on, packed as
+ `x * 4096 + y`, and ZERO means never sampled: without that the first frame
+ reads a delta against an origin the pointer was never at and the view snaps.
+ The three fields are integers stored in place, so the desk's per-iteration
+ restore is harmless to them, which is the same reason the toggles are.
+
   ScenePane = record {
     sp-tgt : R3dTriState,
     sp-gv : GpuView,
@@ -241,8 +256,22 @@ Section: Step
     sp-sh : Integer,
     sp-gpu : Integer,
     sp-n : Integer,
-    sp-t0 : Integer
+    sp-t0 : Integer,
+    sp-yaw : Integer,
+    sp-look : Integer,
+    sp-ptr : Integer
   }
+
+ The gain is milliradians of yaw per device pixel, and `gsc-turn` is 6283, so a
+ full turn is 785 pixels of travel at 8. The delta is clamped before it is used
+ rather than after: an unclamped jump plus one `gsc-turn` can still land
+ negative, and `int-mod` of a negative is not the wrap this wants.
+
+  gsc-look-gain : Integer = 8
+  gsc-look-max : Integer = 64
+
+  gsc-look-clamp : Integer -> Integer
+  gsc-look-clamp (d) = if d > gsc-look-max then gsc-look-max else if d < 0 - gsc-look-max then 0 - gsc-look-max else d
 
   gsc-new : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] ScenePane
   gsc-new (base) (w) (h) (stride) (cs) (gpu) (sky) = act
@@ -265,7 +294,10 @@ Section: Step
         sp-sh = 1,
         sp-gpu = gpu,
         sp-n = 0,
-        sp-t0 = hpet-ticks
+        sp-t0 = hpet-ticks,
+        sp-yaw = 0,
+        sp-look = 0,
+        sp-ptr = 0
       }
     end
   end
@@ -294,8 +326,18 @@ Section: Step
 
   gsc-step-hide : Integer = 2
 
-  gsc-step : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, Integer, (Integer -> Scene3DState), ScenePane, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  gsc-step (base) (w) (h) (stride) (font) (kbd) (cs) (build) (sp) (sc0) = act
+  gsc-look : ScenePane, UsbMouse -> Integer
+  gsc-look (sp) (mouse) =
+    let px = (mouse-x mouse) * 4096 + (mouse-y mouse)
+    in let moved = mouse.um-ok & sp.sp-ptr /= 0 & px /= sp.sp-ptr
+    in let d = if moved then gsc-look-clamp ((mouse-x mouse) - (sp.sp-ptr / 4096)) else 0
+    in let a = __record-set sp "sp-yaw" (int-mod (sp.sp-yaw + d * gsc-look-gain + gsc-turn) gsc-turn)
+    in let b = __record-set sp "sp-ptr" (if mouse.um-ok then px else sp.sp-ptr)
+    in let c = __record-set sp "sp-look" (if moved then 1 else sp.sp-look)
+    in 0
+
+  gsc-step : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, (Integer -> Scene3DState), ScenePane, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gsc-step (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (build) (sp) (sc0) = act
     sc <- gsc-take kbd sc0
     if sc == 1 then act
       v <- (gs-viewport-release)
@@ -322,9 +364,11 @@ Section: Step
     else act
       now <- rtc-seconds 0
       mins <- rtc-read 2
-      let hd = cursor-hide cs base stride
+      let lk = gsc-look sp mouse
+      in let ang = if sp.sp-look == 1 then sp.sp-yaw else gsc-orbit now mins
+      in let hd = cursor-hide cs base stride
       in act
-        f <- gsc-frame (sp.sp-tgt) (build now) (gsc-orbit now mins) (sp.sp-sky) (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-sh) (sp.sp-gpu) (sp.sp-gv)
+        f <- gsc-frame (sp.sp-tgt) (build now) ang (sp.sp-sky) (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-sh) (sp.sp-gpu) (sp.sp-gv)
         let k = __record-set sp "sp-n" (sp.sp-n + 1)
         in let hud = gsc-hud (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-gv) (sp.sp-n) (sp.sp-t0)
         in 1

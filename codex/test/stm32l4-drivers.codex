@@ -86,21 +86,31 @@ Section: Definitions
 
   test-uart-linear : [Uart, Device.Mmio] Integer
   test-uart-linear = act
-   p0 <- l4-uart-open 115200
-   p1 <- l4-uart-write p0 72
-   p2 <- (l4-uart-write p1 73)
-   c <- (l4-uart-close p2)
-   1
+   brd0 <- board-open l4-pwr-base l4-scb-base
+   o <- l4-uart-open brd0 115200
+   when o
+    is (brd1, p0) -> act
+      p1 <- l4-uart-write p0 72
+      p2 <- (l4-uart-write p1 73)
+      c <- (l4-uart-close p2)
+      bc <- (board-close brd1)
+      1
+    end
   end
 
   test-gpio-linear : [Gpio, Device.Mmio] Integer
   test-gpio-linear = act
    en <- l4-rcc-enable-port l4-rcc-gpioa-en
-   q0 <- l4-gpio-open l4-gpioa-base 5 PinOutput
-   q1 <- l4-pin-write q0 True
-   q2 <- (l4-pin-write q1 False)
-   c <- (l4-pin-close q2)
-   1
+   brd0 <- board-open l4-pwr-base l4-scb-base
+   o <- l4-gpio-open brd0 l4-gpioa-base 5 PinOutput
+   when o
+    is (brd1, q0) -> act
+      q1 <- l4-pin-write q0 True
+      q2 <- (l4-pin-write q1 False)
+      c <- (l4-pin-close q2)
+      bc <- (board-close brd1)
+      1
+    end
   end
 
   test-delay : Integer
@@ -110,55 +120,98 @@ Section: Definitions
 
   test-pin-read : [Gpio, Device.Mmio] Integer
   test-pin-read = act
-   q0 <- l4-gpio-open l4-gpioa-base 5 PinInput
-   r <- l4-pin-read q0
-   when r
-    is (q1, lv) -> act
-      c <- (l4-pin-close q1)
-      1
-    end
-  end
-
-  test-spi-txn : [Spi, Device.Mmio] Integer
-  test-spi-txn = act
-   s0 <- l4-spi-open
-   t0 <- l4-spi-select s0 4
-   r <- l4-spi-txn-transfer t0 [#AA, #55]
-   when r
-    is (t1, got) -> act
-      s1 <- l4-spi-deselect t1
-      c <- (l4-spi-close s1)
-      if list-length got == 2 then 1 else 0
-    end
-  end
-
-  test-uart-recv : [Uart, Device.Mmio] Integer
-  test-uart-recv = act
-   p0 <- l4-uart-open 115200
-   r <- l4-uart-recv p0 1
-   when r
-    is (p1, bytes) -> act
-      c <- (l4-uart-close p1)
-      if list-length bytes == 1 then 1 else 0
-    end
-  end
-
-  test-i2c-bus : [I2c, Device.Mmio] Integer
-  test-i2c-bus = act
-   b0 <- l4-i2c-open
-   w <- l4-i2c-bus-write-reg b0 #68 #6B 0
-   when w
-    is (b1, wr) -> act
-      r <- l4-i2c-bus-read-reg b1 #68 #75
+   brd0 <- board-open l4-pwr-base l4-scb-base
+   o <- l4-gpio-open brd0 l4-gpioa-base 5 PinInput
+   when o
+    is (brd1, q0) -> act
+      r <- l4-pin-read q0
       when r
-       is (b2, rv) -> act
-         c <- (l4-i2c-close b2)
+       is (q1, lv) -> act
+         c <- (l4-pin-close q1)
+         bc <- (board-close brd1)
          1
        end
     end
   end
 
-  opening : [Gpio, Uart, Spi, I2c, Device.Mmio] Integer =
+  test-spi-txn : [Spi, Device.Mmio] Integer
+  test-spi-txn = act
+   brd0 <- board-open l4-pwr-base l4-scb-base
+   o <- l4-spi-open brd0
+   when o
+    is (brd1, s0) -> act
+      t0 <- l4-spi-select s0 4
+      r <- l4-spi-txn-transfer t0 [#AA, #55]
+      when r
+       is (t1, got) -> act
+         s1 <- l4-spi-deselect t1
+         c <- (l4-spi-close s1)
+         bc <- (board-close brd1)
+         if list-length got == 2 then 1 else 0
+       end
+    end
+  end
+
+  test-uart-recv : [Uart, Device.Mmio] Integer
+  test-uart-recv = act
+   brd0 <- board-open l4-pwr-base l4-scb-base
+   o <- l4-uart-open brd0 115200
+   when o
+    is (brd1, p0) -> act
+      r <- l4-uart-recv p0 1
+      when r
+       is (p1, bytes) -> act
+         c <- (l4-uart-close p1)
+         bc <- (board-close brd1)
+         if list-length bytes == 1 then 1 else 0
+       end
+    end
+  end
+
+  test-i2c-bus : [I2c, Device.Mmio] Integer
+  test-i2c-bus = act
+   brd0 <- board-open l4-pwr-base l4-scb-base
+   o <- l4-i2c-open brd0
+   when o
+    is (brd1, b0) -> act
+      w <- l4-i2c-bus-write-reg b0 #68 #6B 0
+      when w
+       is (b1, wr) -> act
+         r <- l4-i2c-bus-read-reg b1 #68 #75
+         when r
+          is (b2, rv) -> act
+            c <- (l4-i2c-close b2)
+            bc <- (board-close brd1)
+            1
+          end
+       end
+    end
+  end
+
+  test-adc : [Device.Mmio] Integer
+  test-adc = act
+   a <- l4-adc1-init
+   b <- (l4-adc-read 0)
+   1
+  end
+
+  test-adc-unit : [Adc, Device.Mmio] Integer
+  test-adc-unit = act
+   brd0 <- board-open l4-pwr-base l4-scb-base
+   o <- l4-adc-open brd0
+   when o
+    is (brd1, a0) -> act
+      r <- l4-adc-unit-sample a0 0
+      when r
+       is (a1, v) -> act
+         c <- (l4-adc-close a1)
+         bc <- (board-close brd1)
+         1
+       end
+    end
+  end
+
+  opening : [Gpio, Uart, Spi, I2c, Adc, Device.Mmio] Integer =
    let d = test-delay
    in act
     r <- test-rcc
@@ -176,7 +229,9 @@ Section: Definitions
     ib <- test-i2c-bus
     ur <- test-uart-recv
     st <- test-spi-txn
-    r + g + l + u + s + i + p + t + sl + ul + gl + pr + ib + ur + st + d
+    ad <- test-adc
+    au <- test-adc-unit
+    r + g + l + u + s + i + p + t + sl + ul + gl + pr + ib + ur + st + ad + au + d
    end
 
 Page 1

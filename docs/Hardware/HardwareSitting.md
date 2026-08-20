@@ -51,7 +51,10 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 
 | in the archive | SHA-256 | what it is |
 |---|---|---|
-| `diag2-returned-20260819.img` | `498D4A64 196F42C1 BC59E3EC 99229B51 E421FF46 1B9E7579 C4EDB60C 055CEF00` | THE SECOND GROUPED DIAG SITTING as it came back 2026-08-19, `diag.img` 601103D9 pulled with `nicring` still running. `DIAG.TXT` 4,577 bytes ends after `block` (the sink refusal took the bank with it); extracted beside it in `diag2-20260819\`. |
+| `diag4-returned-20260819.img` | `A97FFE0C ECB78775 C4C40FC4 78156352 A442DA85 001AAA50 73ECAC2A 7F008FB0` | THE FOURTH GROUPED DIAG SITTING as it came back 2026-08-19, `diag.img` ED90B46A. `DIAG.TXT` 4,577 bytes, ends after `block` as sittings 2 and 3 did; extracted beside it in `diag4-20260819\`. |
+| `diag3-returned-20260819.img` | `330D618B C13A6E20 17B7C1B5 D977B9DB 4A54F8E7 93FFC58D 35E9B5F0 4170D4BB` | THE THIRD GROUPED DIAG SITTING as it came back 2026-08-19, `diag.img` C46DE4DD, the ladder run to SUMMARY. `DIAG.TXT` 4,577 bytes, ends after `block` exactly as sitting 2's did: the bank after the sink refusal is lost on metal while the SUMMARY says `bank=ok`; extracted beside it in `diag3-20260819\`. |
+| `a8v2-returned-20260819.img` | `8D95749A C42A3B3F 29C7B80F A6AFA222 FFAEDFE1 BDC3BD54 C35AF122 CADDE202` | the A8 second flight (`optiona.img` 1D557517) as it came back: the ceremony completed on metal, so it carries the guest-written `IDENTITY.DAT` (124 bytes) and `TIMEZONE.DAT` (8 bytes); identity extracted beside it in `a8v2-20260819\`. |
+| `before-a8v2-20260819.img` | `F020FF1E 427AD103 99055E04 28FFEB79 238FBC6F 8FC51A8F 4A36A8A0 A17C6620` | disk 2 read off by red before the A8 second flight went over it: the A8 first flight (157852B7) as it came back, byte-identical to the flashed image beyond the GPT refit (the silent-keyboard wizard wrote nothing). || `diag2-returned-20260819.img` | `498D4A64 196F42C1 BC59E3EC 99229B51 E421FF46 1B9E7579 C4EDB60C 055CEF00` | THE SECOND GROUPED DIAG SITTING as it came back 2026-08-19, `diag.img` 601103D9 pulled with `nicring` still running. `DIAG.TXT` 4,577 bytes ends after `block` (the sink refusal took the bank with it); extracted beside it in `diag2-20260819\`. |
 | `before-diag2-20260819.img` | `1359BEE7 4C8CD913 1DAB6104 6C8F7F65 B6023BC1 FB856B49 43863F41 6E202220` | disk 2 read off by red 2026-08-19 before the second grouped diag sitting (`diag.img` 601103D9) went over it: **the 2026-08-18 `diag.img` flight as it came back**, carrying the guest-written `DIAG.TXT` (`stage=smbios ... table=#87ed6000`, the bank already transcribed in that flight's entry). |
 | `stick-before-20260811.img` | `629821CF E8A9F876 EC2A9FD9 C4C61B47 3D93B821 681DB014 5B0E6DFD D2683A03` | the ceremony boot that flew green 2026-08-05, read off disk 2 by reek on 08-11 before `a5bigflight.img` went over it. **The only copy**: `ceremonyboot.img` was never in the depot in any stream at any revision. Carries the 124-byte `IDENTITY.DAT` the guest wrote to the ESP on real ASMedia hardware. |
 | `before-asdeflight-20260813.img` | `AAEC57B9 A51E0FFD 1FD72EC2 396938B9 25538610 103DA90A 53C9FE07 932F8C56` | read off disk 2 by blu on 08-13 before `asdeflight.img` went over it. **Not a duplicate of anything already here** -- it differs from `vmxprobe-returned-20260813.img` and from every other row. Root directory holds `BOOTX64.EFI` and `SOURCE.SRC` and **no `CODEX.CDX`**, so it is a source-carrying image rather than the vmxprobe already on file. Owner unidentified; whoever recognises it should say so in this row. |
@@ -374,6 +377,181 @@ box (Damian). What changed on that path since 08-05 is the arena (131072
 pages) and the USB stack revisions; the keyboard lift carries it, and this
 image is its reproducer. (The `-Keys` map wants Set-1 make codes; `ret,a`
 is dropped silently and reads as a deaf guest: it was, for one run.)
+
+**Second flight, same day, same box, port and keyboard (Damian): the keyboard
+WORKED, and so did the mouse.** Image uild/boot/optiona.img SHA-256
+`1D557517`, same recipe and seed, the only source change being GopWizard's
+vitals row carrying `ok= ev= cc=` (main 17365); copy kept as
+`D:\Projects\stick-archive\a8v2desk-flashed-20260819.img`. The first-boot
+ceremony ran end to end on typed input, the desk came up, the mouse moved
+it, apps launched. So the 08-19 silence is NOT deterministic for this image
+on this box: one boot silent, the next boot live, nothing between them but
+a reflash. The keyboard lift's question is therefore intermittent
+enumeration or an intermittent interrupt pipe, not the arena or the
+wizard's input path, and the vitals row is what will classify a silent boot
+when the next one happens (`ok=n` enumeration, `ok=Y ev=0` pipe never
+completes, `ok=Y ev>0 sc=0` reports decode to nothing). The row was not
+read on this flight because there was nothing to read: keys were taken.
+The stick now carries an `IDENTITY.DAT` written by the ceremony; it is
+dumped before it is flashed over.
+## FLOWN 2026-08-19: `diag.img` ED90B46A, the fourth grouped sitting. THE BANK VERDICT IS HONEST ON METAL (`bank=lost at=sink size=4577`); NICRING'S QUESTION IS ANSWERED: THE FRAME ARRIVES AND IS INVISIBLE (`gprc=1`, `received=0`).
+
+Image `build/boot/diag.img` SHA-256 `ED90B46A EEAB93FE 3DB7B4BA 1321C40C
+98DB95F1 53848717 AAB7E665 EAEEFF56` (main 17492, rehearsed 18/18), id
+`d547e16992597a69`, kernel `EB864BEB`. Damian sat once; stick back the
+same hour: `diag4-returned-20260819.img`, `DIAG.TXT` in
+`stick-archive\diag4-20260819\`, glass photo `Downloads\20260819_143336.jpg`.
+
+**The glass, the deltas from sitting 3 only** (passives, scene, block,
+nicsit, nicinit identical; `s9 phy-bring-up us=3800354`, third sitting
+within 100 us of 3.80 s):
+
+```
+sink write-refused  size=2745998 read=0 bad=0 shift=0 wstage=14
+            wr=0 cc=256 lba=5957 rty=1 ph=2 after=0
+nicring quiet  link=1 present=y mac=y received=0 ddset=0 sent=1 txdd=1 rdh-writable=y rdh=1
+stats gprc=1 rnbo=0 mpc=0 crcerrs=0 +more in bank
+SUMMARY run=10 skip=0 bank=lost at=sink size=4577 medium=usb
+```
+
+**What it settles:**
+
+1. **The bank verdict is honest now** (reek, 17472): the SUMMARY says
+   `bank=lost at=sink size=4577`, naming the stage that wedged the stick
+   and the read-back file size, and the file IS 4,577 bytes ending after
+   `block`. The `bank=ok` at file line 63 is the pre-sink checkpoint,
+   written before the wedge; the glass verdict is the truth. Sitting 3's
+   contradiction is closed.
+2. **The sink wedge repeats and MOVES**: refusal at `lba=5957 ph=2` this
+   flight against `lba=6081 ph=3` last, both `wr=0 cc=256` (no transfer
+   event) `after=0`. Not a fixed bad sector: the wedge lands mid-run at a
+   varying LBA and phase. reek's item.
+
+   **CORRECTED (reek, 2026-08-19): it does not land mid-run. It lands on
+   the FIRST CHUNK, both flights.** `wr` is cumulative over the whole
+   transfer, which the bed now shows directly: a completed sink banks
+   `wr=5364`, the entire 2.7 MB. Metal banked `wr=0` twice, so ZERO sectors
+   reached the medium and the failure is the first 64-sector chunk of the
+   data run. The LBA moves because the file's ALLOCATION moves between
+   flights, not because the failure does; 6081 and 5957 are 124 sectors
+   apart, which is a slightly different first free cluster and nothing more.
+
+   That reframes the question from "what is wrong at this sector" to
+   **"why does the first big write get no completion event when a
+   one-sector write at the `block` stage succeeds on the same medium in the
+   same boot"**. Transfer size is now a candidate, and the driver chunks at
+   64 sectors (`msc-chunk`). `after=0` does not refute it: the endpoint is
+   left unrecovered (`rty=1`), so everything after fails whatever its size.
+
+   **The bed cannot answer it** because the bed completes the transfer at
+   any chunk. So the instrument rides the next flight instead:
+   `sink chunk=N` in DIAG.CFG sets cell 91 and the sink row reports
+   `chunk=`. One flight at `chunk=8` separates "the transfer is too big"
+   from "the endpoint halts whatever we send". Bed arm `sink-chunk` proves
+   the key reaches the MSC layer (`wr=5364 cc=1 chunk=8` against `chunk=64`
+   on every other arm), which is all a bed can prove here.
+3. **nicring: arrived-but-invisible** (blu's discriminator, 17492):
+   `gprc=1` -- the MAC counted ONE good received frame -- while
+   `received=0 ddset=0 rdh=1`. So the network is not quiet and the MAC is
+   not deaf; the frame is not reaching our descriptor ring. `rnbo=0
+   mpc=0 crcerrs=0`: no buffer-overrun, no missed-packet, no CRC noise.
+   The RDBA read-back (the aim row) is behind `+more in bank` and the bank
+   died at the sink, so the aim reading exists only in the QR (853 bytes,
+   photo). blu's item: the ring the MAC delivers to is not the ring we
+   poll, and the aim row decides which side is misaimed.
+
+**What comes next.** reek: the moving wedge (item 2). blu: decode the QR's
+stats bank or re-fly after the sink no longer takes the bank with it; the
+aim row is the discriminator between RDBA misprogrammed and ring memory
+misread. The QR is 9 codes, 853 bytes, scale 6, in the photo.
+
+## FLOWN 2026-08-19: `diag.img` C46DE4DD, the third grouped sitting. THE LADDER RAN TO SUMMARY; NICRING RETURNED; THE SINK REFUSAL INSTRUMENTED; THE BANK AFTER THE SINK IS STILL LOST WHILE `bank=ok` IS PAINTED.
+
+Image `build/boot/diag.img` SHA-256 `C46DE4DD D49398BA 81F38C98 145E6A9F
+9B7BF8F1 AEA263F3 4D660A61 6235D6A4` (main 17419, rehearsed 17/17), id
+`40af41b09fd6f2f0`, kernel `E45B56F1`; its `diag-src-cl` stamp reads 17355
+where the sink source is 17362 (blu's stamp bug, fixed at 17426; the bytes
+are otherwise identical to 625235BF, which is what the next flight takes).
+Flashed to disk 2 after `a8v2-returned-20260819.img` was taken. Damian sat
+once, the ladder ran to its SUMMARY line and the stick came back:
+`diag3-returned-20260819.img`, `DIAG.TXT` in `stick-archive\diag3-20260819\`,
+glass photo `Downloads\20260819_105941.jpg`.
+
+**The glass (transcribed):**
+
+```
+diag 40af41b09fd6f2f0 kernel E45B56F1643281ED world=EBS cfg=2 src=stdin
+smbios ok   bios=American Megatrends Inc 0901 08/31/2015 board=ASUSTeK COMPUTER INC SABERTOOTH Z170 MARK 1 cpu=i7-6700K cores=4 ram=32768MB/4 structures=99
+edid ok     display=SAM 05cd SyncMaster native=1920x1080  edid=1.3 digital serial=4c523234 week=2 year=2010 pclk=148500kHz sum=0
+cpu ok      family=6 model=94 stepping=3 max-apic-ids=16 vmx=on hypervisor=n
+pci ok      devices=21 nic=00:1f.6 8086:15b8 MAP=ok storage=00:17.0 8086:a102 MAP=ok usb=00:14.0 8086:a12f MAP=ok
+scene rendered  fb=1920x1080 stride=2048 render=624x40 centre=1515830 frame=8405024/8405024  frame plain=5ms x42 shadow=12ms x21
+block ok    via=USB bps=512 lba=30000 write=1 readback=1
+sink write-refused  size=2745998 read=0 bad=0 shift=0 wstage=14
+            wr=0 cc=256 lba=6081 rty=1 ph=3 after=0
+nicsit ok   part 0:31.6 verdict=ok mmio=3745513472
+            poll 1000000 empty=32736us tick100k=3273us hpet-hz=23999999 (bed 13034us / 1303us)
+nicinit ok  part 0:31.6 ctrl0=1573440 pcien=0 mac=y link=1 rdh=5 rdt=15
+            s7 setup-rx ret=0 us=14; s8 setup-tx ret=0 us=14; s9 phy-bring-up ret=0 us=3800369; s10 await-link ret=1 us=36
+nicring quiet  link=1 present=y mac=y received=0 ddset=0 sent=1 txdd=1 rdh-writable=y rdh=5
+SUMMARY run=10 skip=0 bank=ok medium=usb
+todo: the 2.7 MB streamed write was refused at the write stage the row names; a compiler output of seed size cannot be written to this stick. Try another stick, then send DIAG.TXT
+QR: 9 of 9 codes, 825 bytes, scale 6
+```
+
+**What it settles, and for whom:**
+
+1. **nicring returned** (blu, 17357 banks the RDH before the listen, no
+   re-init): `quiet`, `link=1 present=y mac=y rdh-writable=y rdh=5`, one
+   frame sent and its descriptor done (`sent=1 txdd=1`), nothing received in
+   the window (`received=0 ddset=0`). `hpet-hz=23999999` again, so the
+   `-no-hpet` branch is not what this box takes; the 08-19 stall was the
+   second raw init, and it is gone. The I219-V's `s9 phy-bring-up` costs
+   3.80 s for the second sitting running (3.88 s at sitting 2), the one slow
+   stage in an otherwise sub-millisecond init.
+2. **The sink refusal is now instrumented** (reek, 17371): `wr=0 cc=256
+   lba=6081 rty=1 ph=3 after=0`. Zero bytes of the 2.7 MB run reached the
+   medium, the MSC completion code is 256, the refusal came at LBA 6081
+   after one retry, and **the one small write after the refusal also failed
+   (`after=0`)**. The bed (`-usb-bot-drops`) recovers after one drop; the
+   metal does not. The stick is wedged from the refusal onward.
+3. **`bank=ok` is painted and the bank is not ok.** `DIAG.TXT` is 4,577
+   bytes and ends at `stage=block ... END`, byte-for-byte the shape of
+   sitting 2's file (only the id, kernel, hashes and `diag-src-cl` differ).
+   Every row from `sink` to `nicring`, and every `+more in bank` behind them,
+   exists only on the glass and in the QR. So the SUMMARY's `bank=ok` is
+   reporting something other than whether the later appends landed, and
+   reek's bed note "after=0 yet bank ok, DIAG.TXT whole" is exactly the
+   case the metal contradicts: here after=0 AND the file is truncated. The
+   sink stage's `ph=3` and the bank's append path after it are the next
+   thing to instrument, and the bank's truth test is the file's byte count
+   against what was appended, not the write call's return.
+
+   **ANSWERED (reek, 2026-08-19), and the bed reproduces it now.** The
+   truth test is the file's byte count: every bank write reads the size
+   back from the directory entry and a disagreement is a refusal like any
+   other. `dg-run-rest` was discarding the write's answer entirely, so the
+   only thing `bank=ok` ever meant was that a medium had been selected and
+   the FIRST write landed. Cells 89 and 90 carry the readback size and the
+   stage of the first lost append, the SUMMARY row says
+   `bank=lost at=<stage> size=<n>` on the glass and now on the SERIAL as
+   well, which it never did, and the colour follows. The bed arm is
+   `bank-lost`: `-usb-bot-drop 500 -usb-bot-drops 100000` wedges the
+   medium from the refusal onward rather than transiently, which is the
+   metal shape `sink-drop` could not produce. It reports
+   `bank=lost at=sink size=2326` against a file of 45 rows and a serial of
+   60. Every other arm still says `bank=ok`, which is the control: the new
+   verdict does not fire where nothing was lost.
+4. Everything passive repeats sittings 1 and 2 exactly: smbios, edid, cpu
+   (`hypervisor=n`), pci (21 devices, three MAP=ok), scene at 5 ms/12 ms,
+   block ok at LBA 30000 with readback.
+
+**What comes next.** reek: the wedge after the refusal and the bank's lost
+appends (item 2, item 3); blu: nicring is home, `received=0` in the window
+is the next question for the listen. The stick in `diag3-returned` holds
+the truncated file for anyone who wants the FAT evidence; the QR's 825
+bytes are in the photo if anyone wants to decode them.
+
 ## FLOWN 2026-08-19: `diag.img` 601103D9, the second grouped sitting. PCI OK ON METAL; WORKS-9 REPRODUCED WITH A BANK (`wstage=14`, the data run); THE BANK DIED WITH IT; NICRING NEVER RETURNED.
 
 Image as the card above (SHA-256 `601103D9...`, id `a6987c1a27634c1f`, kernel
@@ -472,6 +650,16 @@ budgeted stage does not burn the aneg fuel, so the 93 s is the RAW
    returns. **Next flight: read `hpet=` in the nicring arrival row before
    anything else.** If it is a sane rate, the ten minutes had a cause nobody
    has named yet and the count fallbacks are not it.
+
+   **ARMED 2026-08-19 (blu), and it was unarmed for every reader, not just
+   this one.** `codex-vm -no-hpet` kills the HPET window, so the declared tick
+   period is zero and the rate is zero, which is the only way into the branch.
+   `diag-arm.ps1`'s `nic-nohpet` arm flies it: `nicsit`, `nicinit` and
+   `nicring` all state `no-hpet` and the scene stage's frame row reads
+   `plain=no-clock`. Four readers of the same rate, none of which any bed
+   could reach before. It costs 4.5 s against the clocked arm's 4.1 s, so the
+   count fallbacks are cheap on this bed and expensive only on metal, which is
+   the asymmetry that let them ship unmeasured.
 
 **What comes next, each a stage change, none a flight:**
 
