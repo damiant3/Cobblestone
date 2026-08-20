@@ -98,20 +98,30 @@ Section: Definitions
 
   test-uart-linear : [Uart, Device.Mmio] Integer
   test-uart-linear = act
-   p0 <- nrf-uarte-open nrf-uarte0-base 6 nrf-baud-115200
-   p1 <- nrf-uarte-write p0 72
-   p2 <- (nrf-uarte-write p1 73)
-   c <- (nrf-uarte-close p2)
-   1
+   brd0 <- board-open 0 0
+   o <- nrf-uarte-open brd0 nrf-uarte0-base 6 nrf-baud-115200
+   when o
+    is (brd1, p0) -> act
+      p1 <- nrf-uarte-write p0 72
+      p2 <- (nrf-uarte-write p1 73)
+      c <- (nrf-uarte-close p2)
+      bc <- (board-close brd1)
+      1
+    end
   end
 
   test-gpio-linear : [Gpio, Device.Mmio] Integer
   test-gpio-linear = act
-   q0 <- nrf-gpio-open nrf-p0-base 13 PinOutput
-   q1 <- nrf-pin-write q0 True
-   q2 <- (nrf-pin-write q1 False)
-   c <- (nrf-pin-close q2)
-   1
+   brd0 <- board-open 0 0
+   o <- nrf-gpio-open brd0 nrf-p0-base 13 PinOutput
+   when o
+    is (brd1, q0) -> act
+      q1 <- nrf-pin-write q0 True
+      q2 <- (nrf-pin-write q1 False)
+      c <- (nrf-pin-close q2)
+      bc <- (board-close brd1)
+      1
+    end
   end
 
   test-delay : Integer
@@ -121,27 +131,53 @@ Section: Definitions
 
   test-pin-read : [Gpio, Device.Mmio] Integer
   test-pin-read = act
-   q0 <- nrf-gpio-open nrf-p0-base 13 PinInput
-   r <- nrf-pin-read q0
-   when r
-    is (q1, lv) -> act
-      c <- (nrf-pin-close q1)
-      1
+   brd0 <- board-open 0 0
+   o <- nrf-gpio-open brd0 nrf-p0-base 13 PinInput
+   when o
+    is (brd1, q0) -> act
+      r <- nrf-pin-read q0
+      when r
+       is (q1, lv) -> act
+         c <- (nrf-pin-close q1)
+         bc <- (board-close brd1)
+         1
+       end
     end
   end
 
   test-uart-recv : [Uart, Device.Mmio] Integer
   test-uart-recv = act
-   p0 <- nrf-uarte-open nrf-uarte0-base 6 nrf-baud-115200
-   r <- nrf-uarte-recv p0 1
-   when r
-    is (p1, bytes) -> act
-      c <- (nrf-uarte-close p1)
-      if list-length bytes == 1 then 1 else 0
+   brd0 <- board-open 0 0
+   o <- nrf-uarte-open brd0 nrf-uarte0-base 6 nrf-baud-115200
+   when o
+    is (brd1, p0) -> act
+      r <- nrf-uarte-recv p0 1
+      when r
+       is (p1, bytes) -> act
+         c <- (nrf-uarte-close p1)
+         bc <- (board-close brd1)
+         if list-length bytes == 1 then 1 else 0
+       end
     end
   end
 
-  opening : [Gpio, Uart, Device.Mmio] Integer = act
+  test-adc-unit : [Adc, Device.Mmio] Integer
+  test-adc-unit = act
+   brd0 <- board-open 0 0
+   o <- nrf-adc-open brd0
+   when o
+    is (brd1, a0) -> act
+      r <- nrf-adc-unit-sample a0 0
+      when r
+       is (a1, v) -> act
+         c <- (nrf-adc-close a1)
+         bc <- (board-close brd1)
+         1
+       end
+    end
+  end
+
+  opening : [Gpio, Uart, Adc, Device.Mmio] Integer = act
    cl <- test-clock
    g <- test-gpio
    l <- test-led
@@ -154,7 +190,8 @@ Section: Definitions
    gl <- test-gpio-linear
    pr <- test-pin-read
    ur <- test-uart-recv
-   cl + g + l + u + s + i + a + r + ul + gl + pr + ur + test-ble-beacon + test-gatt + test-delay
+   au <- test-adc-unit
+   cl + g + l + u + s + i + a + r + ul + gl + pr + ur + au + test-ble-beacon + test-gatt + test-delay
   end
 
 Page 1

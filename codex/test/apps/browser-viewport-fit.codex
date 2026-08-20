@@ -1,0 +1,81 @@
+Chapter: BrowserViewportFitTest
+  cites Browser chapter Browser
+  cites Browser chapter BrowserTheme
+  cites Browser chapter Display
+  cites Browser chapter Tab
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter Event
+  cites Browser chapter BrowserEvent
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ BROWSER-5. The page is laid out for a viewport the layout does not give it.
+
+ `load-new-tab-content` builds the page tree at `vp-h = vh - chrome-height`,
+ which is arithmetic on two constants. `widget-layout` then hands the
+ viewport panel whatever is left after the root panel's inset, the two bars
+ and the gaps between them, which is a different number. Nothing clips a
+ widget panel to its box, so the surplus is painted over whatever sits below
+ the pane, which on the desk is the taskbar.
+
+ The two numbers are printed side by side because the DIFFERENCE is the
+ defect and either one alone looks reasonable. A fix that changed
+ `chrome-height` would move both and could still leave them apart, which is
+ what makes this the arm to keep rather than a recorded constant.
+
+ The second half asks the same question after an event has been dispatched,
+ because the row this came from (val, 2026-08-19) measured the bottom edge
+ jumping on the first keystroke. If the two paints agree here, the jump is
+ not in this arithmetic and the next place to look is the page tree itself.
+
+Section: Fixtures
+
+  laid-of : BrowserState, Integer, Integer -> WidgetNode
+  laid-of (st) (w) (h) = widget-layout (browser-render st) (st.bs-theme) (layout-rect 0 0 w h)
+
+  rect-of : WidgetNode, Text -> Text
+  rect-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> format-rect (w.wn-bounds)
+      is None -> "absent"
+
+  height-of : WidgetNode, Text -> Integer
+  height-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> (w.wn-bounds).lr-h
+      is None -> 0 - 1
+
+  bottom-of : WidgetNode, Text -> Integer
+  bottom-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> (w.wn-bounds).lr-y + (w.wn-bounds).lr-h
+      is None -> 0 - 1
+
+Section: Entry
+
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    st <- browser-init 1024 768 browser-theme-default display-init-text-fallback
+    let laid = laid-of st 1024 768
+    in let built-for = browser-viewport-h st
+    in let given = height-of laid "newtab"
+    in act
+      print-line-uni ("the page was built for a viewport of " & integer-to-text built-for)
+      print-line-uni ("the layout gives the viewport      " & integer-to-text given)
+      print-line-uni ("the page is laid too tall by       " & integer-to-text (built-for - given))
+      print-line-uni ("viewport rect: " & rect-of laid "newtab")
+      print-line-uni ("its bottom " & integer-to-text (bottom-of laid "newtab") & " against a window of 768")
+    end
+
+    st2 <- browser-init 1024 768 browser-theme-default display-init-text-fallback
+    let after = browser-dispatch-event st2 (event-key-down 65 0 0)
+    in let laid2 = laid-of after 1024 768
+    in act
+      print-line-uni "after one dispatched key:"
+      print-line-uni ("  tab bar:      " & rect-of laid2 "tab-bar")
+      print-line-uni ("  address bar:  " & rect-of laid2 "address-bar")
+      print-line-uni ("  viewport:     " & rect-of laid2 "newtab")
+      print-line-uni ("  its bottom " & integer-to-text (bottom-of laid2 "newtab") & " against a window of 768")
+    end
+  end

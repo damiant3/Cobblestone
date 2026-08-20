@@ -59,7 +59,8 @@ Section: Arity Map
    name : Text,
    arity : Integer between 0 and 255,
    generic-count : Integer between 0 and 255,
-   is-proc : Boolean
+   is-proc : Boolean,
+   is-effect-fn : Boolean
   }
 
   bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
@@ -84,7 +85,8 @@ Section: Arity Map
     name = d.name,
     arity = __narrow (list-length (d.params)),
     generic-count = 0,
-    is-proc = if fort-is-effectful (d.type-val) then fort-result-is-nothing (d.type-val) (list-length (d.params)) else False
+    is-proc = if fort-is-effectful (d.type-val) then fort-result-is-nothing (d.type-val) (list-length (d.params)) else False,
+    is-effect-fn = if fort-is-effectful (d.type-val) then fort-result-is-nothing (d.type-val) (list-length (d.params)) == False else False
    }))
 
   lookup-arity : List ArityEntry, Text -> Integer
@@ -102,6 +104,14 @@ Section: Arity Map
    in if pos >= len then False
       else let e = list-at entries pos
       in if e.name == name then e.is-proc else False
+
+  lookup-is-effect-fn : List ArityEntry, Text -> Boolean
+  lookup-is-effect-fn (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then False
+      else let e = list-at entries pos
+      in if e.name == name then e.is-effect-fn else False
 
 Section: Apply Chain
 
@@ -308,7 +318,8 @@ Section: Type Definition Emission
     name = c.name.value,
     arity = __narrow (list-length (c.fields)),
     generic-count = 0,
-    is-proc = False
+    is-proc = False,
+    is-effect-fn = False
    }))
 
   emit-fort-variant-ctors : List ATypeDef, Integer -> Text
@@ -1132,6 +1143,16 @@ Section: Definition Emission
    in let is-proc = if fort-is-effectful (d.type-val) then fort-result-is-nothing (d.type-val) (list-length (d.params)) else False
    in if is-proc then fort-emit-subroutine d name arities
       else fort-emit-function d name arities
+        & (if fort-is-effectful (d.type-val) then fort-emit-discard-wrapper d name else "")
+
+  fort-emit-discard-wrapper : IRDef, Text -> Text
+  fort-emit-discard-wrapper (d) (name) =
+   let ret = fort-return-type (d.type-val) (list-length (d.params))
+   in "  subroutine " & name & "_s(" & fort-emit-param-names (d.params) 0 & ")\n"
+      & fort-emit-param-decls (d.params) 0
+      & fort-decl-var ret (name & "_sv")
+      & "    " & name & "_sv = " & name & "(" & fort-emit-param-names (d.params) 0 & ")\n"
+      & "  end subroutine " & name & "_s\n"
 
   fort-effect-result : CodexType -> CodexType
   fort-effect-result (ty) =
@@ -1359,14 +1380,31 @@ Section: Definition Emission
   fort-emit-act-stmt (s) (arities) (indent) =
    when s
     is IrDoExec (e) (sp) -> fort-emit-statement e arities indent
-    is IrDoBind (name) (ty) (val) (sp) -> fort-indent indent & fort-sanitize name & " = " & fort-emit-expr val arities & "\n"
+    is IrDoBind (name) (ty) (val) (sp) -> fort-emit-assign val (fort-sanitize name) arities indent
 
   fort-emit-call-or-expr : IRExpr, List ArityEntry -> Text
   fort-emit-call-or-expr (e) (arities) =
    let sb = fort-stmt-builtin-text e arities
    in if text-length sb > 0 then sb
    else if fort-stmt-is-proc-call e arities then "call " & fort-emit-expr e arities
+   else let dn = fort-stmt-discard-name e arities
+   in if text-length dn > 0 then "call " & dn & "(" & fort-emit-apply-args (collect-apply-chain e []).args arities 0 & ")"
    else fort-emit-expr e arities
+
+ Fortran has no expression statement, so a call whose result is thrown away
+ has no form of its own: `call` wants a subroutine and a bare call is not a
+ statement. Every effectful def that RETURNS something is emitted twice, as
+ the function and as a `_s` subroutine that calls it and drops the answer,
+ and a statement that discards calls the second.
+
+  fort-stmt-discard-name : IRExpr, List ArityEntry -> Text
+  fort-stmt-discard-name (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     when (collect-apply-chain e []).root
+      is IrName (n) (nty) (nsp) -> if lookup-is-effect-fn arities n then fort-sanitize n & "_s" else ""
+      is otherwise -> ""
+    is otherwise -> ""
 
   fort-stmt-builtin-text : IRExpr, List ArityEntry -> Text
   fort-stmt-builtin-text (e) (arities) =

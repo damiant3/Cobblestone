@@ -87,12 +87,14 @@ Section: The Server Side
 
 Section: The Download Loop
 
-  run-download : Lwm2mFw, List Integer, Integer -> [Flash, Device.Mmio] Lwm2mFw
-  run-download (c) (image) (num) =
-   if num >= block-count then c
+  run-download : linear Board, Lwm2mFw, List Integer, Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  run-download (brd) (c) (image) (num) =
+   if num >= block-count then board-pair brd c
    else act
-    c2 <- fw-feed-response c (serve-block image num)
-    run-download c2 image (num + 1)
+    r <- fw-feed-response brd c (serve-block image num)
+    when r
+     is (brd1, c2) -> run-download brd1 c2 image (num + 1)
+    end
    end
 
 Section: Gate B -- the real verifier
@@ -125,9 +127,14 @@ Section: The Runs
 
   clean-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
   clean-run (x) = act
-   c1 <- run-download (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr) manifest) firmware-image 0
-   let c2 = fw-execute-update c1 (gate-b-verdict c1)
-   in fw-activate c2
+   brd0 <- board-open 0 0
+   r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr) manifest) firmware-image 0
+   when r
+    is (brd1, c1) -> act
+      bc <- board-close brd1
+      let c2 = fw-execute-update c1 (gate-b-verdict c1)
+      in fw-activate c2
+    end
   end
 
   tampered-image : List Integer
@@ -136,8 +143,15 @@ Section: The Runs
    in list-set-at (slice-of firmware-image 0 (list-length firmware-image)) i (bit-xor (list-at firmware-image i) 255)
 
   tampered-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
-  tampered-run (x) =
-   run-download (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr) manifest) tampered-image 0
+  tampered-run (x) = act
+   brd0 <- board-open 0 0
+   r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr) manifest) tampered-image 0
+   when r
+    is (brd1, bad) -> act
+      bc <- (board-close brd1)
+      bad
+    end
+  end
 
 Section: Body
 

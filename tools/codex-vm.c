@@ -169,6 +169,8 @@ typedef struct IdeState_ {
     int identing;           /* 1 during an IDENTIFY DEVICE (0xEC) transfer */
     const char *path;       /* disk image path, for write-back */
     int present;            /* 0 = no medium behind this position on the bus */
+    FILE *wfp;              /* write-back handle, held open across sectors */
+    int wfp_failed;         /* the open was tried and refused; do not retry per sector */
 } IdeState;
 static IdeState ide;
 /* The primary channel's slave, from -disk2. Two positions is what the guest's
@@ -2954,6 +2956,24 @@ static struct {
    the counter is restarted, so a stop costs the guest no elapsed ticks. */
 static LARGE_INTEGER hpet_epoch;
 
+/* -no-hpet: the window is dead. Every register reads zero and every write is
+   dropped, which is the box that offers no timer rather than one that offers a
+   broken one.
+
+   It is the capability period at offset 04 that decides: a guest derives its
+   tick rate from it, and a period of zero is the machine saying nothing. The
+   readers here (Hpet.codex, and E1000e and NicAsde above it) turn that into a
+   rate of zero and fall back to counting reads, and those count fallbacks had
+   no bed arm at all -- three diagnostic stages carry a `no-hpet` state that
+   nothing could reach, so nothing could show they were right. The counter
+   reads zero too, so a caller that ignores the rate and times off the counter
+   gets a clock that never advances rather than one that races.
+
+   The xHCI MFINDEX above still runs off hpet_raw. That is the model's own use
+   of host time, not a register the guest was offered, and suppressing it would
+   stop the frame counter for a reason that has nothing to do with the HPET. */
+static int hpet_absent = 0;
+
 /* The main counter must advance at the rate the capability register
    advertises. It used to return the raw QueryPerformanceCounter value
    while GCAP claimed a 69841279 fs period, so every elapsed-time
@@ -3013,6 +3033,7 @@ static unsigned long long hpet_now(void) {
 }
 
 static unsigned int hpet_read(unsigned long long offset) {
+    if (hpet_absent) return 0;
     switch ((int)offset) {
     case 0x00: return 0x8086A201;  /* GCAP_ID: rev=1, num_timers=1, 64-bit, vendor=Intel */
     case 0x04: return 0x0429B17F;  /* period = 69841279 femtoseconds (~14.318 MHz) */
@@ -3029,6 +3050,7 @@ static unsigned int hpet_read(unsigned long long offset) {
 }
 
 static void hpet_write(unsigned long long offset, unsigned int val) {
+    if (hpet_absent) return;
     switch ((int)offset) {
     case 0x10: {
         int was = hpet.config & 1, now = val & 1;
@@ -4051,6 +4073,27 @@ static int mmio_insn_len(const unsigned char *b, int n) {
 #define E1000_REG_RAL      0x5400
 #define E1000_REG_RAH      0x5404
 
+/* Statistics, and only the receive side this bed can honestly move. These are
+   the counters that answer "did a frame ever reach the MAC" INDEPENDENTLY of
+   the descriptor ring, which is the one question a driver cannot ask of its
+   own ring: a ring that shows nothing looks the same whether the wire was
+   quiet or the writeback went somewhere else.
+
+   GPRC and RNBC are modelled: incremented at the two places a received frame
+   can go, delivered or dropped for want of a descriptor. CRCERRS and MPC are
+   defined here for the guest to read on METAL and are never incremented by
+   this model -- nothing here corrupts a frame or overruns a FIFO -- so a bed
+   reading 0 from them means "not modelled" and not "measured zero". Any arm
+   that asserts on those two is asserting a stub.
+
+   CLEAR ON READ, as the silicon does (8254x 13.4): a reader gets the count
+   since the last read, so reading twice reports the second interval and not
+   the total. */
+#define E1000_REG_CRCERRS  0x4000
+#define E1000_REG_MPC      0x4010
+#define E1000_REG_GPRC     0x4074
+#define E1000_REG_RNBC     0x40A0
+
 #define E1000_CTRL_RST     0x04000000u
 #define E1000_CTRL_SLU     0x00000040u
 #define E1000_CTRL_ASDE    0x00000020u
@@ -4388,7 +4431,10 @@ static void e1000_deliver_rx(void) {
     if (!count) return;
     while (e1000_injected < e1000_inject_want) {
         unsigned int idx = (unsigned int)e1000_rx_cursor % count;
-        if (idx == e1000_regs[E1000_REG_RDT / 4]) return;   /* ring full */
+        if (idx == e1000_regs[E1000_REG_RDT / 4]) {          /* ring full */
+            e1000_regs[E1000_REG_RNBC / 4]++;
+            return;
+        }
         unsigned long long desc = ring + (unsigned long long)idx * 16;
         if (desc + 16 > guest_mem_size) return;
         unsigned char *d = (unsigned char *)guest_mem + desc;
@@ -4399,6 +4445,7 @@ static void e1000_deliver_rx(void) {
         d[12] = E1000_RXD_STAT_DD | E1000_RXD_STAT_EOP;
         e1000_rx_cursor = (int)((idx + 1) % count);
         e1000_regs[E1000_REG_RDH / 4] = (idx + 1) % count;
+        e1000_regs[E1000_REG_GPRC / 4]++;
         e1000_injected++;
     }
 }
@@ -4517,6 +4564,14 @@ static unsigned int e1000_mdic_exec(unsigned int val) {
 static unsigned int e1000_read(unsigned long long off) {
     if (off + 4 > E1000_BAR_SIZE) return 0;
     switch ((unsigned int)off) {
+    case E1000_REG_GPRC:
+    case E1000_REG_RNBC:
+    case E1000_REG_MPC:
+    case E1000_REG_CRCERRS: {
+        unsigned int v = e1000_regs[off / 4];
+        e1000_regs[off / 4] = 0;        /* clear on read */
+        return v;
+    }
     case E1000_REG_STATUS: {
         unsigned int v = e1000_regs[E1000_REG_STATUS / 4];
         unsigned int ctrl = e1000_regs[E1000_REG_CTRL / 4];
@@ -8066,7 +8121,10 @@ static void e1000_nat_rx(void) {
             }
         }
         unsigned int idx = (unsigned int)e1000_rx_cursor % count;
-        if (idx == e1000_regs[E1000_REG_RDT / 4]) return;   /* ring full: leave it queued */
+        if (idx == e1000_regs[E1000_REG_RDT / 4]) {   /* ring full: leave it queued */
+            e1000_regs[E1000_REG_RNBC / 4]++;
+            return;
+        }
         unsigned long long desc = ring + (unsigned long long)idx * 16;
         if (desc + 16 > guest_mem_size) return;
         unsigned char *d = (unsigned char *)guest_mem + desc;
@@ -8077,6 +8135,7 @@ static void e1000_nat_rx(void) {
         d[12] = E1000_RXD_STAT_DD | E1000_RXD_STAT_EOP;
         e1000_rx_cursor = (int)((idx + 1) % count);
         e1000_regs[E1000_REG_RDH / 4] = (idx + 1) % count;
+        e1000_regs[E1000_REG_GPRC / 4]++;
         rx_queue_head = (rx_queue_head + 1) % RX_QUEUE_SIZE;
         rx_queue_count--;
     }
@@ -9399,6 +9458,27 @@ static void blit_guest_output(void) {
 
 /* ── IDE ───────────────────────────────────────────────────────────── */
 
+/* IDE write census. A 2.9 MB save takes 57 s in this bed and the FAT logic
+   is not the cost; two sites on the transfer path can account for it and no
+   total can separate them. One is the VM exit per 16-bit PIO word, counted
+   as pio-exits against the words those exits carried. The other is this
+   model's own host file I/O: ide_flush reopens the image per completed
+   sector, which is not a VM exit and would survive a repair aimed only at
+   the first. Counted as sites, printed at exit, and the flush arm is timed
+   because its cost is wall clock rather than a count. */
+static unsigned long long ide_pio_exits = 0;    /* exits taken on the data port */
+static unsigned long long ide_pio_str_exits = 0;/* ...of which carried a string op */
+static unsigned long long ide_pio_words = 0;    /* words those exits carried */
+static unsigned long long ide_reg_exits = 0;    /* exits on the other task-file registers */
+static unsigned long long ide_flush_calls = 0;  /* ide_flush entries that reached the file */
+static unsigned long long ide_flush_bytes = 0;
+static double ide_flush_ms = 0.0;
+static unsigned long long ide_flush_entries = 0;  /* ...before the guard */
+static unsigned long long ide_flush_nopath = 0;   /* refused: no image file behind this drive */
+static unsigned long long ide_flush_nodata = 0;   /* refused: no in-memory image */
+static unsigned long long ide_flush_oob = 0;      /* refused: region past the end of the image */
+static unsigned long long ide_flush_openfail = 0; /* refused: the reopen failed */
+
 static void ide_init(IdeState *d, const char *path) {
     memset(d, 0, sizeof(*d));
     d->status = 0x50; /* DRDY */
@@ -9416,14 +9496,47 @@ static void ide_init(IdeState *d, const char *path) {
     fprintf(stderr, "IDE: %s (%zu bytes, %zu sectors)\n", path, d->size, d->size/512);
 }
 
-/* Persist a written region back to the disk image file (durability). */
+/* Persist a written region back to the disk image file (durability).
+
+   The handle is opened once and HELD. Reopening it per completed sector is
+   what a 2.9 MB save actually spent its time on: measured 2026-08-20 against
+   docs/Probes/fat-write-phases.codex, 5,865 sectors cost 62.5 s of a 68 s
+   write, against 6 s for the same run with the write-back refused. The VM
+   exit per PIO word is real (pio-exits and words come out equal in the
+   census) and is the other 6 s.
+
+   fflush per sector keeps what the old fclose promised: the bytes are with
+   the OS when the sector completes, so a codex-vm killed mid-run leaves the
+   same image behind as before. What is dropped is the open and the close.
+
+   A refused open is reported ONCE and latched. It used to print per sector
+   and be counted nowhere, which is how a read-only image -- the state a
+   plain Copy-Item of a Perforce file leaves behind, and exactly what the
+   probe's own run instructions produce -- lost all 5,865 sectors while the
+   guest reported the save complete and the run finished ten times faster. */
 static void ide_flush(IdeState *d, size_t off, size_t len) {
-    if (!d->path || !d->data || off + len > d->size) return;
-    FILE *f = fopen(d->path, "r+b");
-    if (!f) { fprintf(stderr, "WARN: cannot reopen disk %s for write\n", d->path); return; }
-    fseek(f, (long)off, SEEK_SET);
-    fwrite(d->data + off, 1, len, f);
-    fclose(f);
+    ide_flush_entries++;
+    if (!d->path) { ide_flush_nopath++; return; }
+    if (!d->data) { ide_flush_nodata++; return; }
+    if (off + len > d->size) { ide_flush_oob++; return; }
+    if (d->wfp_failed) { ide_flush_openfail++; return; }
+    double t0 = now_ms_for_timer();
+    if (!d->wfp) {
+        d->wfp = fopen(d->path, "r+b");
+        if (!d->wfp) {
+            d->wfp_failed = 1;
+            ide_flush_openfail++;
+            fprintf(stderr, "WARN: disk %s cannot be opened for write -- every write "
+                    "the guest makes is now LOST, and the guest cannot tell\n", d->path);
+            return;
+        }
+    }
+    fseek(d->wfp, (long)off, SEEK_SET);
+    fwrite(d->data + off, 1, len, d->wfp);
+    fflush(d->wfp);
+    ide_flush_calls++;
+    ide_flush_bytes += (unsigned long long)len;
+    ide_flush_ms += now_ms_for_timer() - t0;
 }
 
 static unsigned int ide_get_lba(IdeState *d) {
@@ -9468,6 +9581,7 @@ static void ide_start_write(IdeState *d) {
    into the in-memory disk and flushes each completed sector to the image. */
 static void ide_write_data(IdeState *d, int val) {
     if (!d->writing || d->buf_remaining <= 0) return;
+    ide_pio_words++;
     if (d->buf_off + 1 < d->size) {
         d->data[d->buf_off]     = (unsigned char)(val & 0xFF);
         d->data[d->buf_off + 1] = (unsigned char)((val >> 8) & 0xFF);
@@ -9515,6 +9629,7 @@ static void ide_start_identify(IdeState *d) {
 
 static int ide_read_data(IdeState *d) {
     if (d->buf_remaining <= 0) return 0;
+    ide_pio_words++;
     if (d->identing) {
         int pos = 512 - d->buf_remaining;
         int lo = ide_ident[pos];
@@ -11610,6 +11725,17 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     if (is_out) val = (int)ctx->IoPortAccess.Rax;
     if (smp_cores > 1 && is_out && port >= 0x510) fprintf(stderr, "IO-HI[0x%x]=0x%x\n", port, val);
 
+    /* Census, before any arm returns. The data port and the task-file
+       registers are counted apart because they answer different questions:
+       the first is the transfer, the second is the driver's polling around
+       it, and the standing figure of ~306 exits per sector is 256 of one
+       plus a tail of the other. */
+    if (port == 0x1F0) {
+        ide_pio_exits++;
+        if (ctx->IoPortAccess.AccessInfo.StringOp) ide_pio_str_exits++;
+    }
+    else if ((port >= 0x1F1 && port <= 0x1F7) || port == 0x3F6) ide_reg_exits++;
+
     if (is_out) {
         /* REP OUTSB/OUTSW to the NE2K data port: batch the whole remaining
            count in one exit. The generic OUT path would read data from RAX
@@ -11644,24 +11770,39 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             }
             return;
         }
-        /* REP OUTSW to the IDE data port: a WRITE SECTORS data phase. Read each
-           word from guest [RSI], feed the disk, manage RSI/RCX/RIP per iteration. */
+        /* REP OUTSW to the IDE data port: a WRITE SECTORS data phase. Consume
+           the whole remaining count in one exit, the way the NE2K and COM1
+           arms above already do.
+
+           This arm used to take one word per exit, so a 512-byte sector cost
+           256 exits and the census read words/pio-exits = 1.0 exactly. The
+           model's own bookkeeping is what makes the batch safe: ide_write_data
+           refuses once buf_remaining reaches zero and the drive is no longer
+           writing, so a count that runs past the sector the guest set up stops
+           being consumed at the boundary rather than spilling into the next
+           one. The guest polls the status register between sectors either way,
+           and those exits are counted apart as reg-exits. */
         if (ctx->IoPortAccess.AccessInfo.StringOp && port == 0x1F0) {
             unsigned long long gpa = ctx->IoPortAccess.Rsi;
+            unsigned long long cnt = ctx->IoPortAccess.Rcx;
+            unsigned long long done = 0;
             unsigned char *gmem = (unsigned char *)guest_mem;
-            int wval = 0;
-            if (gpa + (unsigned long long)size <= guest_mem_size) {
-                if (size == 1) wval = gmem[gpa];
-                else if (size == 2) wval = gmem[gpa] | (gmem[gpa + 1] << 8);
-                else wval = (int)(*(unsigned int *)(gmem + gpa));
+            if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
+            for (; done < cnt; done++) {
+                unsigned long long p = gpa + done * (unsigned long long)size;
+                int wval = 0;
+                if (p + (unsigned long long)size > guest_mem_size) break;
+                if (size == 1) wval = gmem[p];
+                else if (size == 2) wval = gmem[p] | (gmem[p + 1] << 8);
+                else wval = (int)(*(unsigned int *)(gmem + p));
+                ide_write_data(ide_active(), wval);
             }
-            ide_write_data(ide_active(), wval);
             WHV_REGISTER_NAME sn[] = { WHvX64RegisterRsi, WHvX64RegisterRcx };
             WHV_REGISTER_VALUE sv[2];
-            sv[0].Reg64 = ctx->IoPortAccess.Rsi + size;
-            sv[1].Reg64 = ctx->IoPortAccess.Rcx - 1;
+            sv[0].Reg64 = ctx->IoPortAccess.Rsi + done * (unsigned long long)size;
+            sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
             WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
-            if (ctx->IoPortAccess.Rcx <= 1) {
+            if (ctx->IoPortAccess.Rcx - done == 0) {
                 WHV_REGISTER_NAME rn = WHvX64RegisterRip;
                 WHV_REGISTER_VALUE rv;
                 rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
@@ -13850,6 +13991,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-xhci-csz")) xhci_csz64 = 1;
         else if (!strcmp(argv[i], "-xhci-scratch") && i+1 < argc) xhci_scratch_bufs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-uefi-conout-remode")) uefi_conout_remode = 1;
+        else if (!strcmp(argv[i], "-no-hpet")) hpet_absent = 1;
         else if (!strcmp(argv[i], "-no-smbios")) uefi_no_smbios = 1;
         else if (!strcmp(argv[i], "-no-edid")) uefi_no_edid = 1;
         else if (!strcmp(argv[i], "-edid-bad")) uefi_edid_bad = 1;
@@ -15113,6 +15255,20 @@ done:
                 nat_seg_bytes, nat_queued, nat_sock_sent,
                 nat_seg_noconn, nat_seg_badstate, nat_queue_oom, nat_freed_unsent,
                 nat_freed_reap, nat_freed_exit);
+    }
+    /* words/pio-exits is 1.0 while the data port takes one exit per word and
+       rises as a batched path carries more; flush-ms is the other site's cost
+       in wall clock, which is the only unit that compares against the 57 s the
+       write takes. A run that transfers nothing prints nothing. */
+    if (ide.wfp) { fclose(ide.wfp); ide.wfp = NULL; }
+    if (ide_slave.wfp) { fclose(ide_slave.wfp); ide_slave.wfp = NULL; }
+    if (ide_pio_words || ide_flush_calls) {
+        fprintf(stderr, "IDE CENSUS: pio-exits=%llu str-exits=%llu words=%llu reg-exits=%llu "
+                "flush-entries=%llu flush-calls=%llu flush-bytes=%llu flush-ms=%.1f "
+                "refused(nopath=%llu nodata=%llu oob=%llu openfail=%llu)\n",
+                ide_pio_exits, ide_pio_str_exits, ide_pio_words, ide_reg_exits,
+                ide_flush_entries, ide_flush_calls, ide_flush_bytes, ide_flush_ms,
+                ide_flush_nopath, ide_flush_nodata, ide_flush_oob, ide_flush_openfail);
     }
     if (dumpmem_addr && guest_mem && dumpmem_addr + dumpmem_len <= guest_mem_size) {
         fprintf(stderr, "DUMPMEM 0x%llx len %llu:\n", dumpmem_addr, dumpmem_len);

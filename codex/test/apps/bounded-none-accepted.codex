@@ -23,6 +23,51 @@ Section: The Declaration That Holds
   bounded none adds : Integer -> Integer
   adds (n) = sum-to n 0 + min n 4
 
+Section: A Rung Widened By Measurement, Not By Rule
+
+ `list-set-at` was on the refusing side until 2026-08-19 for one reason: it
+ had never been measured. `codex/test/cost/builtin-alloc` measured it at 0
+ bytes on a list of 64 and of 256, and `emit-list-set-at` turns out to have no
+ allocation path in it at all -- a bounds check, an address, a store, and a
+ return of the same pointer. Its `bs-alloc` row says `none` and this
+ declaration holds because of that row.
+
+ THIS ARM IS THE ONE THAT FAILS IF THE REGISTRY IS NOT CONSULTED. Every other
+ accepted name here is also in `is-rt-safe-builtin`, so the whole chapter
+ would still compile with the lookup removed; `list-set-at` is in the registry
+ and not in that set, which is what makes it the discriminator.
+
+  set-one : List Integer -> Integer
+  set-one (xs) = list-length (list-set-at xs 0 9)
+
+  bounded none seated : List Integer -> Integer
+  seated (xs) = set-one xs
+
+Section: Boolean `&` Allocates Nothing, And Is Now Recorded As Such
+
+ `&` is one token doing two jobs, and the type recorded for the expression is
+ the only thing that separates them afterwards. Until 2026-08-19 `infer-and`
+ recorded on its TEXT arm and not its boolean one, so a boolean `&` looked
+ exactly like an expression nothing knew the type of, and every reader of that
+ table treats the unknown as the worst case. `bounded none` refused any body
+ that joined two conditions, and `punctual` refused the same shape through
+ `check-rt-no-alloc`; both were charging a boolean AND for a heap allocation
+ it never makes.
+
+ All three shapes are here because the defect was found by all three failing
+ together, which is what ruled out the two theories that came first: it was
+ not unresolved type variables and not parameter resolution, because
+ `True & False` is as literal as an expression gets and it was refused too.
+
+  bounded none joins-literals : Boolean
+  joins-literals = True & False
+
+  bounded none joins-params : Boolean, Boolean -> Boolean
+  joins-params (a) (b) = a & b
+
+  bounded none joins-comparisons : Integer -> Boolean
+  joins-comparisons (n) = n > 1 & n < 9
+
 Section: A Ceiling Nothing Can Breach
 
  `growing` is the top of the lattice and accepts anything, including a body
@@ -37,4 +82,6 @@ Section: Entry
   opening : [Console] Nothing = act
     print-line-uni ("adds 8 = " & show (adds 8))
     print-line-uni ("listed 3 = " & show (listed 3))
+    print-line-uni ("seated = " & show (seated [1, 2, 3]))
+    print-line-uni ("joins = " & (if joins-literals then "t" else "f") & (if joins-params True True then "t" else "f") & (if joins-comparisons 5 then "t" else "f"))
   end

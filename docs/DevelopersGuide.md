@@ -932,12 +932,36 @@ legitimately allocates, in proportion to its input, with no way to say so.
 allocation CLASS, which the declaration asserts as a CEILING:
 
 ```
-  none    <  fixed          <  linear         <  growing
-  no heap    fixed bytes       one walk over     accumulator copied
-             per call,         an input, no      inside a loop, or an
-             whatever the      copies of the     ALLOCATING walk nested
-             input             accumulator       in a walk
+  none  <  fixed      <  budgeted      <  linear       <  growing
+  no      fixed bytes    bounded by a     one walk        accumulator
+  heap    per call,      constant or by   over an         copied inside
+          whatever       an argument      input, no       a loop, or an
+          the input      the caller       copies of the   ALLOCATING walk
+                         names            accumulator     nested in a walk
 ```
+
+**`budgeted` is the rung most parsing actually sits on** (ruled 2026-08-19).
+It is not `fixed`, because the bytes are not the same every call, and calling
+it `linear` would promise something about the input that is not true.
+`substring line 0 4` takes a four-character field out of a line of any length
+and allocates 16 bytes whichever length that is; `integer-to-text` cannot
+exceed the twenty digits an `Integer` has. The bound is real and somebody can
+state it -- either a constant nobody has to write down, or an argument the
+caller passes.
+
+```
+  bounded budgeted field : Text -> Text
+  field (line) = substring line 0 4
+```
+
+The registry says which: `substring`'s row is `budgeted:3`, meaning its third
+argument supplies the bound, and `integer-to-text`'s is a bare `budgeted`.
+**A `budgeted:N` call is accepted when argument N is a LITERAL and refused
+otherwise**, so `substring line 0 (text-length line / 2)` does not hold -- its
+slice grows with its input, measured at 40 bytes then 136 where the literal
+form stays at 16. That rule is blunt on purpose: it also refuses a computed
+length that happens to be small, which is the abstain-toward-refusal this
+whole feature is built on.
 
 ```
   bounded linear render-row : List Cell -> Text
@@ -1427,6 +1451,46 @@ twice the capacity, floor 4), amortized O(1) with no measured slowdown.
 Which of the other 43 plugs have the same defect is unswept and is
 `codex/plugs/plugs-backlog.md` 1.7.
 
+### What List operations cost
+
+Measured 2026-08-19 by `codex/test/cost/builtin-alloc`, the same
+`__heap-save` instrument as the Text table below, but with a different
+discriminator: every arm makes ONE call, and the two readings differ only
+in how large the argument is. A builtin that retains the same bytes on a
+list of 64 and a list of 256 is charging its caller a constant; one that
+retains four times as much is walking its input. The unit is bytes
+RETAINED, and the class is the WORST CASE over call-site structure,
+because nothing enforces which path a caller gets.
+
+| operation | class | bytes at n = 64 | at n = 256 |
+|---|---|---|---|
+| `list-length xs` | none | 0 | 0 |
+| `list-at xs i` | none | 0 | 0 |
+| `list-set-at xs i v` | none | 0 | 0 |
+| `__list-tail xs` | **fixed** | 24 | 24 |
+| `list-push xs v` | **input** | 512 topmost, 1,040 buried | 2,048 / 4,112 |
+| `list-insert-at xs i v` | **input** | 1,040 | 4,112 |
+
+**`list-set-at` allocates nothing at any list size or call-site position**,
+and that is structural rather than a reading at two points:
+`emit-list-set-at` (`X86_64ListHelpers.codex`) is a bounds check, an
+address computation, a store, and a return of the SAME pointer. There is
+no allocation path in it to find.
+
+**`list-push` is input-proportional in the worst case even on the
+extend-in-place path**, which is the reading that matters and the one the
+aliasing rule above does not give you. Path 2 DOUBLES the capacity, so the
+frontier advances by the whole current capacity: a push onto a full list
+of 64 retains 64 x 8 = 512 bytes. Path 3, the copy, allocates a fresh
+doubled array plus a 16-byte header: 2 x 64 x 8 + 16 = 1,040. Amortised
+over many pushes it is O(1) per push and the guide's usual advice stands;
+for a CEILING on a single call it is a walk over the input.
+
+The same measurement carries its own control. At length n + 1 the backing
+array holds 2n, so the identical call takes the spare-capacity path and
+retains **0** at both sizes. All three classes appear in one run, which is
+what shows the instrument can say cheap as well as dear.
+
 ## Text
 
 ```
@@ -1454,7 +1518,7 @@ producing function returns.
 | `char-code-at s i` | none | **0** |
 | `char-at s i` then `char-code` | none | **0** |
 | `text-length s` | none | **0** |
-| `substring s i n` | one text | 16 bytes per call at n = 4 |
+| `substring s i n` | one text | 16 bytes per call at n = 4, and see below |
 | `integer-to-text i` | one text | 16 bytes per call |
 | `a & b` | **a new text of length(a) + length(b)** | see below |
 | `text-concat-list xs` | one text | one allocation for the whole list |
@@ -1484,6 +1548,38 @@ straight-line appends of ten characters retained **203,200 bytes** against
 **2,008 bytes** for `text-concat-list` over the same pieces (measured
 2026-08-15, unchanged by the in-place path). Where the shape is not the
 accumulator one, push the pieces onto a list and concatenate once.
+
+**Which length each of these tracks, measured 2026-08-19 by
+`codex/test/cost/builtin-alloc`.** The table above was measured at one input
+size, which says a call allocates but not what its cost follows. Running the
+same call at two input sizes separates them:
+
+| operation | class | bytes at 64 | at 256 |
+|---|---|---|---|
+| `text-contains`, `text-starts-with`, `text-compare` | none | 0 | 0 |
+| `char-to-text c` | fixed | 16 | 16 |
+| `substring s 0 4` (output held at 4) | **fixed** | 16 | 16 |
+| `substring s 0 (n/2)` (output grows) | **input** | 40 | 136 |
+| `integer-to-text` at 2 and 3 digits | flat | 16 | 16 |
+| `integer-to-text` at 8 and 10 digits | **grows** | 16 | 24 |
+
+**`substring` follows its OUTPUT length, not the length of the text it reads
+from.** Taking a fixed-width field out of a line costs the same whether the
+line is 64 characters or 256, which is most of the parsing in this tree; the
+cost only grows when the slice you ask for grows. The two rows are one
+measurement and neither means anything alone.
+
+**The three text predicates allocate nothing at all.** `text-contains`,
+`text-starts-with` and `text-compare` read both operands and return without
+touching the heap, at any length.
+
+**`integer-to-text` is NOT flat, and the narrow reading says it is.** At 64 and
+256 it answers 16 bytes twice, which looks like a constant and is two digits
+against three. At the fourth power of those -- 8 digits against 10 -- it answers
+16 and 24. The allocation follows the digit count in 8-byte steps. It is still
+bounded in practice, because an `Integer` cannot have more than twenty digits,
+but "bounded by a constant" and "the same every call" are different claims and
+only the second one is what a flat reading appears to support.
 
 **`to-unicode` is the expensive character operation, and the accessors are
 not.** Reading characters costs nothing; converting each one back to

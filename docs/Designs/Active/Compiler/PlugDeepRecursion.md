@@ -155,7 +155,9 @@ recorded (`zig-main` at `ZigEmitter.codex:2343`, `emit-go-chapter` at
 `GoEmitter.codex:412`) and both matched.
 
 **And the scheduling fact that bounds this whole item: six target
-toolchains exist on this box.** `node`, `python`, `dotnet`, `zig`,
+toolchains exist on this box.** Re-measured 2026-08-19 (val) over 49
+candidates and unchanged from reek's 37-candidate census of 2026-08-18:
+`node`, `python`, `dotnet`, `zig`,
 `wat2wasm` and `wasmtime`, and nothing else -- no `go`, `java`, `rustc`,
 `ruby`, `perl`, `php`, `lua`, `julia`, `ghc`, `ocaml`, `swiftc`, `fpc`,
 `gnatmake`, `gfortran`, `cobc` or BEAM. So of the 42 plugs in the third
@@ -335,13 +337,47 @@ refuses one.
    (segmented goroutine stacks), `elixir` (BEAM grows a process stack on
    the heap) and `haskell` (heap-allocated stack) are the candidates to
    need nothing; none can be executed here to prove it.
-5. The class-3 divergences, recorded in the register as divergences with
-   what a caller may and may not rely on, not as work. **The bar for
-   calling a plug class 3 is higher than it looks** -- `javascript` was
-   the obvious candidate and turned out to be class 1.
+5. ~~The class-3 divergences, recorded in the register~~ **DONE 2026-08-19
+   (val), and it took the class-2 rows with it.** `plugs-backlog.md` 1.14 now
+   carries "What a caller may rely on, per plug": one table, every plug in a
+   class, and for each what a caller may and may not depend on. It lives in
+   the REGISTER rather than only here because this design is Active and goes
+   to `Done/` when the campaign closes, and a caller asking whether the ruby
+   plug can recurse deeply should not have to find an archived design. The
+   table states in its own text that every class-2 and class-3 row is a
+   READING of the mechanism and not a measurement, with `javascript` and
+   `python` named as the two the campaign paid for. **The bar for calling a
+   plug class 3 is higher than it looks** -- `javascript` was the obvious
+   candidate and turned out to be class 1.
+
+**Re-measured 2026-08-19 (val) before proposing to archive this: plug-oracle
+is 6 of 6, 49 values each.** All six plug binaries were STALE first and the
+harness refused to score them, so nothing had re-scored these arms since the
+emitters last moved; rebuild before reading the green.
+
+**A red published from this campaign the same day was WRONG and is
+retracted.** It said the typescript arm failed and offered a three-row table
+claiming the seed and the VM had been ablated away. The failure reproduced,
+but **all three rows built the plug with the same kernel**, so it was one
+configuration run three times.
+`codex/plugs/common/plug-build-lib.ps1` calls `compile.ps1` with no `-Kernel`,
+which falls back to `build-output/bare-metal/Codex.cdx` -- neither the SUT nor
+the seed, holding whichever kernel ran last, three days stale here. That is the
+trap `CLAUDE.md` names under R-GATE, and knowing it was there did not stop me
+walking into it: the seed I kept syncing was never the kernel doing the
+building. Pointed at the depot seed, the same plug source passes. The durable
+half is in `plugs-backlog.md` 1.14: every plug in the tree is built against
+whatever kernel is lying in `build-output/bare-metal/`, which is a
+reproducibility gap in the plug build.
+
+**With that corrected, nothing in this campaign is red.** What remains is
+runtime-gated: fortran's depth ablation wants gfortran, the class-2
+confirmations want their runtimes, and the .NET UI shells want a dispatcher hop
+nobody here can measure. Steps 0, 1, 2 and 5 are done and step 3 is done as far
+as emission goes.
 
 **The probe was not wired until the plugs it grades were fixed**, on
-1.13's ruling. It is wired now, and all six arms pass every value of the
-oracle subject: `python`, `javascript`, `typescript`, `zig`, `wasm` and
+1.13's ruling. It is wired now, and five of the six arms pass every value of
+the oracle subject: `python`, `javascript`, `zig`, `wasm` and
 `csharp`. `codex/plugs/zig/**` is ordinary fleet code (Damian, 2026-08-18)
 and is in scope like any other plug.

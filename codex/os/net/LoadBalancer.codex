@@ -200,9 +200,26 @@ Section: Selection Algorithms
     in if cum > target then be.be-id
     else pool-wrr-walk bes (i + 1) n target cum
 
+ THE KEY IS TEXT AND `chr-hash-key` TAKES AN INTEGER, which is why this
+ chapter had never compiled. The fold below turns the key into an integer
+ first; `chr-hash-key` then mixes it, which is the function this chapter
+ already cites and whose constant was chosen so a key cannot land exactly on
+ a node's first vnode (`ConsistentHash.codex`, "Hash Functions").
+
+ djb2: 5381 and a multiply by 33, the same fold `cms-hash-key` uses. It is
+ duplicated here rather than borrowed, because borrowing it would mean citing
+ a Count-Min sketch from a load balancer to get four lines of arithmetic. The
+ better home is `chr-hash-text` beside `chr-hash-key` itself, which is a
+ foreword change and therefore a seed land; it is recorded in the net backlog.
+
+  pool-key-fold : Text, Integer, Integer, Integer -> Integer
+  pool-key-fold (key) (i) (len) (acc) =
+    if i >= len then acc
+    else pool-key-fold key (i + 1) len (acc * 33 + char-code (char-at key i))
+
   pool-hash-pick : List Backend, Integer, Text -> Text
   pool-hash-pick (available) (count) (key) =
-    let hash = chr-hash-key key
+    let hash = chr-hash-key (pool-key-fold key 0 (text-length key) 5381)
     in let abs-hash = if hash < 0 then negate hash else hash
     in let idx = abs-hash - (abs-hash / count) * count
     in (list-at available idx).be-id

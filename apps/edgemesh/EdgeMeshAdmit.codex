@@ -1,0 +1,54 @@
+Chapter: EdgeMeshAdmit
+
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Trust chapter TrustNode
+  cites Trust chapter TrustTransport
+  cites Mesh chapter EdgeMeshLive
+  cites Foreword chapter Maybe
+
+ `EdgeMeshGameServers.md` phase 2, connection 3: authenticated sessions.
+ Connection 1 answers where a match can be placed; this answers who is
+ allowed to be told.
+
+ IDENTITY IS CHECKED BEFORE PLACEMENT AND THE ORDER IS THE POINT. An
+ unauthenticated caller gets the same refusal whether the region is busy,
+ empty, or not a region at all, so nothing about capacity or topology leaks
+ to someone who has not proved who they are. Reversing these two lines would
+ leave the refusal text as a free map of the mesh.
+
+ A peer that exists is not a peer that is authenticated. `node-find-peer`
+ answers the first question and `trust-is-authenticated` the second, and only
+ the second one decides.
+
+Section: Admission
+
+  MeshAdmission =
+    | Admitted (Text)
+    | AdmissionRefused (Text)
+
+  mesh-peer-authenticated : TrustNode, Text -> Boolean
+  mesh-peer-authenticated (node) (peer) =
+    when node-find-peer node peer
+      is None -> False
+      is Just (i) -> trust-is-authenticated ((node-get-peer node i).session)
+
+ One refusal text for both identity failures. An unknown peer and a known
+ but unauthenticated one are the same answer on purpose: telling them apart
+ tells an attacker which names exist.
+
+  mesh-admit : TrustNode, GroupState, RegionList, Integer, Text -> MeshAdmission
+  mesh-admit (node) (g) (rl) (region-idx) (peer) =
+    if mesh-peer-authenticated node peer == False
+      then AdmissionRefused "no authenticated session"
+    else when mesh-place g rl region-idx
+      is PlacementRefused (why) -> AdmissionRefused why
+      is PlacedAt (loc) -> Admitted (loc.sl-member-id)
+
+Section: Reporting
+
+  mesh-admission-label : MeshAdmission -> Text
+  mesh-admission-label (a) =
+    when a
+      is Admitted (m) -> "admitted to " & m
+      is AdmissionRefused (why) -> "refused: " & why

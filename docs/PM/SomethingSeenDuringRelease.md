@@ -32,6 +32,28 @@ the Update 44 entry was found and worked during the release run at head 15686.*
 
 ## Done
 
+### Update 48 -- the README states the compiler's size twice and only one copy is checked
+
+Found at publication 2026-08-20. `README.md` carried **63 chapters, 53,881
+lines** in the headline "Verified" section and **64 / 55,645** further down.
+`check-doc-counts.ps1` matched only the second, so the first had gone stale
+unobserved since 2026-08-10 -- in the paragraph a first-time reader reaches
+first. Fixed by making the headline agree with the checked claim.
+
+**The general shape, and it is the NOMATCH hazard one step earlier:** a claim
+the checker does not match is not merely unchecked, it is invisible, and a
+document can hold two contradictory numbers while the runner reports 61 of 61
+green. Before trusting a green count run, ask what the checker does NOT match.
+
+```powershell
+# every compiler-size claim in the public doc, checked and unchecked alike
+Select-String README.md -Pattern '\d+ chapters|\d{2},\d{3} lines'
+```
+
+Also this run, and the reason the DDC paragraph is not on that list: it names
+its own measurement date and seed, so it ages honestly rather than silently.
+It was refreshed to the shipped seed anyway (`930FF7F1`, 2,872,563 bytes).
+
 ### Update 47 -- nothing was open, and two things bit at publication anyway
 
 1. **A csharp-plug change is a DDC change.** reek's 16981 fixed four

@@ -115,9 +115,18 @@ in writing -- *"a correction I owe"* -- and the entry was reopened before a
 third change fixed it properly. The claim was too strong, the review caught
 it, and the retraction is the part of the process that worked.
 
-Still true and much less urgent: a quotation resolves from the **local fact
-store only**. Peer and registry resolution do not exist. Facts
-can be exchanged by file copy, so that one is a reach, not a refusal gap.
+**This paragraph said peer and registry resolution did not exist, and that
+stopped being true on 2026-07-17 (val, main 8773) and 2026-08-18 (root, main
+16636).** A quotation resolves from a PEER (`compile.ps1 -Peer host:port`,
+`build/quote-from-peer-test.ps1`) and from a peer the compile was never told
+about (`-Registry`, `tools/cdx-registry` locate + `cdx-announce`,
+`build/registry-locate-test.ps1`), with the sensitivity and rumour controls
+those harnesses describe. The fetch is the HOST's (`build/work-wire.ps1`)
+by the 2026-07-16 decision that the compiler never cites the net stack
+(Library Rule 2); the compiler still runs the same four guards and the
+source-pinned manifest over what arrives, which is why the transport need
+not be trusted. Corrected 2026-08-19 (red) after a survey read the old
+sentence as current.
 
 ### Why The Gate Lives In The Foreword
 
@@ -340,7 +349,8 @@ the foreword, and in the `reverse-reverse` proof. Inside a declaration
 that `quotes` has already opened, it needs no protection.
 | -- | Proposal workflow | -- | Built (`RepoProtocol.codex`) |
 | -- | Wire codec / fact exchange | -- | Built (`RepoProtocol.codex`) |
-| -- | Peer / registry resolution, batch sync, gossip | Large | Open, not blocking |
+| -- | Peer / registry resolution | -- | Built host-side (2026-07-17 peer, 2026-08-18 registry; see above) |
+| -- | Batch sync, gossip | Large | `FactSync.codex` does store-to-store offer/reply; gossip open, not blocking |
 
 Items 1 and 2 landed together: a trust gate with nothing to gate is
 untestable end-to-end, and an import path that verifies a hash and a

@@ -132,44 +132,53 @@ Section: The Download
    in let opts = coap-uri-path-options path & [blk]
    in coap-build-request CoapConfirmable CoapGet msg-id token opts []
 
-  fw-feed-response : Lwm2mFw, List Integer -> [Flash, Device.Mmio] Lwm2mFw
-  fw-feed-response (c) (bytes) =
+  fw-feed-response : linear Board, Lwm2mFw, List Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  fw-feed-response (brd) (c) (bytes) =
    when coap-parse bytes
-    is None -> fw-fail c fw-result-conn-lost "malformed CoAP response"
+    is None -> board-pair brd (fw-fail c fw-result-conn-lost "malformed CoAP response")
     is Just (m) ->
-      if m.cm-code /= coap-205-content then fw-fail c fw-result-conn-lost "response was not 2.05 Content"
+      if m.cm-code /= coap-205-content then board-pair brd (fw-fail c fw-result-conn-lost "response was not 2.05 Content")
       else when coap-find-option (m.cm-options) coap-opt-block2
-       is None -> fw-stage-last c (m.cm-payload)
-       is Just (v) -> fw-stage-block c (m.cm-payload) (coap-uint-value v)
+       is None -> fw-stage-last brd c (m.cm-payload)
+       is Just (v) -> fw-stage-block brd c (m.cm-payload) (coap-uint-value v)
 
-  fw-stage-block : Lwm2mFw, List Integer, Integer -> [Flash, Device.Mmio] Lwm2mFw
-  fw-stage-block (c) (payload) (bv) =
+  fw-stage-block : linear Board, Lwm2mFw, List Integer, Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  fw-stage-block (brd) (c) (payload) (bv) =
    let num = coap-block-num bv
    in let more = coap-block-more bv
-   in if num /= c.fw-next-block then fw-fail c fw-result-conn-lost "block out of order"
+   in if num /= c.fw-next-block then board-pair brd (fw-fail c fw-result-conn-lost "block out of order")
    else act
-    c2 <- fw-write c payload
-    if more == 1 then c2 revised { fw-next-block = num + 1 }
-    else fw-download-complete (c2 revised { fw-next-block = num + 1 })
+    w <- fw-write brd c payload
+    when w
+     is (brd1, c2) ->
+       if more == 1 then board-pair brd1 (c2 revised { fw-next-block = num + 1 })
+       else board-pair brd1 (fw-download-complete (c2 revised { fw-next-block = num + 1 }))
+    end
    end
 
-  fw-stage-last : Lwm2mFw, List Integer -> [Flash, Device.Mmio] Lwm2mFw
-  fw-stage-last (c) (payload) = act
-   c2 <- fw-write c payload
-   fw-download-complete c2
+  fw-stage-last : linear Board, Lwm2mFw, List Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  fw-stage-last (brd) (c) (payload) = act
+   w <- fw-write brd c payload
+   when w
+    is (brd1, c2) -> board-pair brd1 (fw-download-complete c2)
+   end
   end
 
-  fw-write : Lwm2mFw, List Integer -> [Flash, Device.Mmio] Lwm2mFw
-  fw-write (c) (payload) = act
-   b0 <- flash-open-bank (c.fw-bank)
-   b1 <- flash-write-page b0 (c.fw-stage + (c.fw-written)) payload
-   f <- flash-seal-bank b1
-   let ctx2 = ota-step (c.fw-ctx) (EvBlockReceived payload (c.fw-written))
-   in c revised {
-    fw-ctx = ctx2,
-    fw-written = (c.fw-written) + list-length payload,
-    fw-faults = (c.fw-faults) + (if f < 0 then 0 - f else 0)
-   }
+  fw-write : linear Board, Lwm2mFw, List Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  fw-write (brd) (c) (payload) = act
+   ob <- flash-open-bank brd (c.fw-bank)
+   when ob
+    is (brd1, b0) -> act
+      b1 <- flash-write-page b0 (c.fw-stage + (c.fw-written)) payload
+      f <- flash-seal-bank b1
+      let ctx2 = ota-step (c.fw-ctx) (EvBlockReceived payload (c.fw-written))
+      in let c2 = c revised {
+       fw-ctx = ctx2,
+       fw-written = (c.fw-written) + list-length payload,
+       fw-faults = (c.fw-faults) + (if f < 0 then 0 - f else 0)
+      }
+      in board-pair brd1 c2
+    end
   end
 
 Section: Gate A -- on what landed

@@ -329,7 +329,12 @@ built to make testable: **archive, rebuild, and the tree is byte-identical.**
 
 ## Open Questions
 
-1. **Who signs a base?** Same blocker as 6.1(d): the box identity cannot sign
+1. **Who signs a base?** Was: the box identity cannot sign. **Closed 2026-08-19
+   (red):** `key-sign-bytes` / `key-public` in `Foreword chapter Identity`
+   sign with the seed in the kernel slot and scrub the intermediates
+   (`codex/test/apps/identity-sign`); a base can sign with the box identity
+   the day `FactArchive` is pointed at it. The original question follows.
+   Was: Same blocker as 6.1(d): the box identity cannot sign
    (there is no `key-sign` intrinsic -- only `key-load`, `key-zero`,
    `key-status`), so this signs with a tool key as `cdx-store` does, and
    **inherits that gap rather than closing it**. Worth stating plainly: a base

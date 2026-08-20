@@ -301,7 +301,8 @@ Section: Key Generation
     wid-wrapped : List Integer,
     wid-salt : List Integer,
     wid-iv : List Integer,
-    wid-version : Integer
+    wid-version : Integer,
+    wid-vouch : List Integer
   }
 
   wz-device-seed-addr : Integer = 30576
@@ -335,7 +336,13 @@ Section: Key Generation
   wz-hkdf-info : List Integer
   wz-hkdf-info = wz-text-bytes "codex-identity-v2" 0 []
 
-  wz-id-version : Integer = 2
+  wz-id-version : Integer = 3
+
+ The self-vouch binds only the public key, so a passphrase change --
+ which replaces salt, iv and wrapped seed -- leaves it valid.
+
+  wz-vouch-msg : List Integer -> List Integer
+  wz-vouch-msg (pub) = wz-text-bytes "codex-trust-root-v1" 0 [] & pub
 
   wz-derive-key : List Integer, Text -> List Integer
   wz-derive-key (salt) (passphrase) = hkdf salt (wz-text-bytes passphrase 0 []) wz-hkdf-info 32
@@ -355,31 +362,29 @@ Section: Key Generation
   wz-keygen : List Integer, Text -> WzIdentity
   wz-keygen (seed) (passphrase) =
     let dev = wz-peek-bytes wz-device-seed-addr 32 0 []
-    in let pub = ed25519-public-key seed
-    in let fp = sha256-to-hex (sha256 pub)
     in let salt = wz-take (wz-words-to-bytes (sha256 (dev & wz-tick-bytes & [1])) 0 []) 16 0 []
     in let iv = wz-take (wz-words-to-bytes (sha256 (dev & wz-tick-bytes & [2])) 0 []) 16 0 []
+    in wz-keygen-with seed passphrase salt iv
+
+  wz-keygen-with : List Integer, Text, List Integer, List Integer -> WzIdentity
+  wz-keygen-with (seed) (passphrase) (salt) (iv) =
+    let pub = ed25519-public-key seed
+    in let fp = sha256-to-hex (sha256 pub)
     in let dk = wz-derive-key salt passphrase
     in let wrapped = aes256-cbc-encrypt (aes256-pkcs7-pad seed) dk iv
     in let z = wz-zero-list dk 0
+    in let sv = ed25519-sign seed pub (wz-vouch-msg pub)
     in WzIdentity {
       wid-fingerprint = fp,
       wid-public = pub,
       wid-wrapped = wrapped,
       wid-salt = salt,
       wid-iv = iv,
-      wid-version = wz-id-version
+      wid-version = wz-id-version,
+      wid-vouch = sv
     }
 
 Section: Persistence
-
- Serialize the identity into a 512-byte cluster buffer and write it to
- the stick as IDENTITY.DAT, so a later boot can unlock instead of running
- the wizard again. The layout is fixed and self-describing: a magic, a
- version, then the salt, iv, public key, and the passphrase-wrapped
- private seed with its length. Only the wrapped key is secret, and it
- never leaves memory unencrypted -- what lands on disk is exactly what
- the wizard already computed.
 
   wz-id-magic0 : Integer = 67
   wz-id-magic1 : Integer = 73
@@ -411,7 +416,8 @@ Section: Persistence
     in let pub = wz-put-list buf 40 (wid.wid-public) 0 32
     in let wl = wz-put-u32 buf 72 (list-length (wid.wid-wrapped))
     in let wr = wz-put-list buf 76 (wid.wid-wrapped) 0 (list-length (wid.wid-wrapped))
-    in 76 + list-length (wid.wid-wrapped)
+    in let vo = wz-put-list buf (76 + list-length (wid.wid-wrapped)) (wid.wid-vouch) 0 64
+    in 76 + list-length (wid.wid-wrapped) + 64
 
   wz-id-name : Integer
   wz-id-name =
@@ -472,19 +478,22 @@ Section: Unlock
 
   wz-parse-identity : Integer, Integer -> Maybe WzIdentity
   wz-parse-identity (buf) (len) =
-    if len < 92 then None
+    if len < 156 then None
     else if peek-byte buf 0 /= wz-id-magic0 | peek-byte buf 1 /= wz-id-magic1 | peek-byte buf 2 /= wz-id-magic2 | peek-byte buf 3 /= wz-id-magic3 then None
     else if wz-get-u32 buf 4 /= wz-id-version then None
     else let wl = wz-get-u32 buf 72
-    in if wl < 16 | int-mod wl 16 /= 0 | 76 + wl > len then None
+    in if wl < 16 | int-mod wl 16 /= 0 | 76 + wl + 64 > len then None
     else let pub = wz-get-list buf 40 0 32 []
-    in Just (WzIdentity {
+    in let vouch = wz-get-list buf (76 + wl) 0 64 []
+    in if ed25519-verify pub (wz-vouch-msg pub) vouch == False then None
+    else Just (WzIdentity {
       wid-fingerprint = sha256-to-hex (sha256 pub),
       wid-public = pub,
       wid-wrapped = wz-get-list buf 76 0 wl [],
       wid-salt = wz-get-list buf 8 0 16 [],
       wid-iv = wz-get-list buf 24 0 16 [],
-      wid-version = wz-get-u32 buf 4
+      wid-version = wz-get-u32 buf 4,
+      wid-vouch = vouch
     })
 
   wz-load-identity : [Device.Port] Maybe WzIdentity
@@ -632,21 +641,66 @@ Section: Flow
     end
   end
 
-  wz-unlocked : WzCtx, WzIdentity, List Integer, Integer -> [Device.Port, Identity] Integer
+  wz-unlocked : WzCtx, WzIdentity, List Integer, Integer -> [Device.Port, Device.Mmio, Identity] Integer
   wz-unlocked (c) (wid) (seed) (mark) = act
-    loaded <- wz-load-seed seed
-    let n = heap-scrub-to mark
-    in wz-unlocked-screen c wid
+    d <- wz-unlocked-draw c wid
+    sc <- wz-unlocked-keys c
+    if sc == 25 then wz-change-pass c wid seed mark
+    else wz-unlocked-done seed mark
   end
 
-  wz-unlocked-screen : WzCtx, WzIdentity -> [Device.Port] Integer
-  wz-unlocked-screen (c) (wid) =
+  wz-unlocked-done : List Integer, Integer -> [Identity] Integer
+  wz-unlocked-done (seed) (mark) = act
+    loaded <- wz-load-seed seed
+    heap-scrub-to mark
+  end
+
+  wz-unlocked-draw : WzCtx, WzIdentity -> Integer
+  wz-unlocked-draw (c) (wid) =
     let d0 = wz-clear c
     in let t0 = wz-text c 0 "Identity Unlocked" wz-col-title
     in let t1 = wz-text c 2 ("Fingerprint: " & text-take (wid.wid-fingerprint) 32) wz-col-green
     in let t2 = wz-text c 3 ("             " & text-drop (wid.wid-fingerprint) 32) wz-col-green
     in let t3 = wz-text c 5 "The public key matches the stored identity." wz-col-text
     in let t4 = wz-text c 7 "Press Enter to choose your interface." wz-col-green
+    in wz-text c 8 "P changes your passphrase." wz-col-text
+
+  wz-unlocked-keys : WzCtx -> [Device.Port] Integer
+  wz-unlocked-keys (c) = act
+    sc <- kbd-take (c.wz-kbd)
+    if sc == 28 then 28
+    else if sc == 25 then 25
+    else wz-unlocked-keys c
+  end
+
+ The rewrap is wz-keygen over the seed in hand: fresh salt and iv, the
+ same public key, and a self-vouch that comes out byte-identical because
+ Ed25519 signing is deterministic. The confirmation paints from the
+ below-mark record, because everything the change allocated -- the new
+ passphrase, both wraps, the rewrapped record -- sits above the unlock
+ mark and is zeroed before the screen goes up. A failed save leaves the
+ old file standing, so the old passphrase still unlocks.
+
+  wz-change-pass : WzCtx, WzIdentity, List Integer, Integer -> [Device.Port, Device.Mmio, Identity] Integer
+  wz-change-pass (c) (wid) (seed) (mark) = act
+    pp <- wz-passphrase c "Setting a new passphrase."
+    let wid2 = wz-keygen seed (pp.gl-text)
+    in act
+      saved <- wz-save-identity wid2
+      loaded <- wz-load-seed seed
+      let n = heap-scrub-to mark
+      in wz-changed-screen c wid saved
+    end
+  end
+
+  wz-changed-screen : WzCtx, WzIdentity, Boolean -> [Device.Port] Integer
+  wz-changed-screen (c) (wid) (saved) =
+    let d0 = wz-clear c
+    in let t0 = wz-text c 0 "Passphrase Changed" wz-col-title
+    in let t1 = wz-text c 2 ("Fingerprint: " & text-take (wid.wid-fingerprint) 32) wz-col-green
+    in let t2 = if saved then wz-text c 4 "Rewrapped and saved to the stick as IDENTITY.DAT." wz-col-green
+                else wz-text c 4 "Could not save - the old passphrase stands." wz-col-warn
+    in let t3 = wz-text c 6 "Press Enter to choose your interface." wz-col-green
     in wz-wait-enter c
 
   wz-back-locked : WzCtx -> [Device.Port, Identity] Integer

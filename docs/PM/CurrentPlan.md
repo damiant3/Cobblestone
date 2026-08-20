@@ -125,9 +125,18 @@ the largest GOP mode and `SetMode` (native GOP), the sink's 2.7 MB write
   appending leaves every prefix on the heap; the ceremony order is now
   upstream, timezone, identity; account in `ExaminersAssay.md`); ~~(3) the bench auto-unlock removed or bed-only~~ DONE
   2026-08-18 (red; `wz-auto-try` runs only when CPUID.1:ECX[31], the hypervisor bit, is set, so metal always asks;
-  `first-boot-ceremony` arms both sides); (4) trust-root
-  write and passphrase change, on `IDENTITY.DAT` on the ESP. **RULED 2026-08-18 (queue 11, 12): the identity file
-  stays on the ESP; auto-unlock is bed-only.**
+  `first-boot-ceremony` arms both sides); ~~(4) trust-root
+  write and passphrase change, on `IDENTITY.DAT` on the ESP~~ DONE 2026-08-20 (red, 17792;
+  `IDENTITY.DAT` v3 carries a 64-byte self-vouch over the public key, signed at
+  keygen and verified at parse, v2 refused like v1; P on the unlocked screen
+  rewraps under a new passphrase with fresh salt/iv; account in
+  `ExaminersAssay.md` "The Identity Wrap Known Answer". The bed cannot type
+  printables, so the P-key screen itself rides the same widgets first boot
+  proved on metal; the wrap, vouch and refusal semantics are the serial arms').
+  **RULED 2026-08-18 (queue 11, 12): the identity file
+  stays on the ESP; auto-unlock is bed-only.** All four stages done; the item
+  closes. Rotation (RotationFact) was never in the stages and stays with the
+  design.
 - **A 16 MB stick image is in the archive and not in the depot**:
   `D:\Projects\stick-archive\stick-before-20260811.img`, the only copy of the
   hardware-written `IDENTITY.DAT`. Rulings queue 4.
@@ -210,12 +219,12 @@ suggestion. Each lane, in order:
 
 | agent | now | then | standing |
 |---|---|---|---|
-| **blu** | the TCP byte loss below, fixed and measured (plugs 1.33 closed at main 16760) | **CostModel.md** 3.4 onward (approved 2026-08-18) | Track B: every metal question is routed to red's sitting |
-| **val** | **The Modern Desk** (Damian, 2026-08-18): multitasking, a bottom taskbar, a system menu, the 3D surface working better; design `docs/Designs/Active/OS/ModernDesk.md`, rows in `works-backlog.md`. RULED 2026-08-18: cooperative panes with saved state; flex defaults to 1 (rulings 9). **Stages 2, 3, 5, 6, 7, 7.5, 8, 9, 10, 11 and 12 DONE; stage 1 CLOSED with no code change; stages 0 and 4 part done. All fourteen panes are steps and no pane owns a loop (stage 9, 2026-08-18). MORE THAN ONE APP IS ALIVE AT ONCE (stage 10, Files, 2026-08-19; stage 11, the two 3D panes, and stage 12, Edit, the same day).** Wiring Edit turned up a defect that had nothing to do with the stack: three places said its 9 MB buffer was out of reach of the base mark and it never was, so a second Edit session reused a freed pointer; both close paths now zero it. The blocker was a heap-lifetime property and not an unset field, and the fix is a mark stack in `ds` cell 20: a heavy `-open` pushes its frontier, a close marks its entry dead and pops every dead entry on top. GameEngine phase 2 shadow campaign stage 1 also landed (17190): the per-pixel bias hoist, whose measured effect is NOTHING, which is the finding that the shadow cost is tap-bound rather than arithmetic-bound; the second geometry (17335) puts the shadow ratio at 2.4x, not the 2.0x published, and isolates a render-region-independent component | **the Browser still cannot stay alive** (WORKS-42), the last unwired pane: its `-open` clears the stack behind a deliberate guard, since a heavy open that pushed no mark would strand a live entry nothing can kill and disable reclaim for the session. It is the delicate one because `gbr-new` and `gbr-first-paint` are already split. Then the taskbar's live-app row (stage 4's residual, which now has something real to show), the system menu (stage n), 3D mouse-look (stage n+1), stage 0's stack depth | plugs lane HANDED to reek for the close-out (2026-08-18); rulings queue 3 still owed to val's lane |
-| **fester** | **ProductBuilder, stages 0-4** (Damian, 2026-08-19: build out `apps/productbuilder/ProductBuilderPlan.md`; the plan IS the brief, one CL per stage, none seed-affecting, register `codex/product/product-backlog.md` once the quire exists; the directory stays gitignored); then **CrossLaneFilesystem.md step 0**, the rest of the unresolved-call class: the block half refuses already (16947) and plugs 1.42 is closed, so what is left is `real-approx-modes` and `uefi-read-key-nofirmware`, the only two tests still carrying one | plugs 1.3 is CLOSED (17200): the cons fault fixed, and the `rv-cond-is-frameless-safe` widening MEASURED AND DECLINED at 53 to 53 with an identical failure set for 32 bytes on a 225 KB image | A8: wire `compile <path>` once the ASUS allocation is answered at red's sitting |
+| **blu** | **NIC-4 awaits sitting 5, and the instrument is built.** Sitting 4 flew ED90B46A and answered ARRIVED-BUT-INVISIBLE (gprc=1 rnbc=0, rdh=1, ddset=0). Stage 2 landed 17742 on image **27326F86**, rehearsed 20 of 20 across both beds and carrying reek's sink chunk knob, so one image flies both halves of the sitting. **The discriminator we had agreed on was wrong and would have read backwards on metal**: it was a raw all-sixteen-zero test on receive descriptor 0, but `e1000-build-rx-descs` (`E1000e.codex:537`) writes the buffer address into bytes 0..7 itself and zeroes 8..15, so all-zero cannot happen while our ring build works and the test answers "the part wrote our ring" on every flight. The row now counts nonzero bytes in the WRITEBACK half (8..15) only, keeps the full dump for the eye, and carries `buf=` as the other half's control. It rides the QR because the summary is built from each stage's FIRST glass line, which is also why the ladder was NOT reordered. GPRC is read twice, so a count can no longer belong to nicinit's ring two stages earlier. `nicring listen=0` and the `nic-noread` arm are the positive control: our own `e1000-poll-raw` recycles the descriptor it took a frame from, so a successful listen leaves wb=0 and the bed could not otherwise express a writeback at all. Caveat to state before flying: `match=y` compares RDBA against our ring POINTER and is valid only while the guest is identity-mapped, so it is not by itself proof of correct aim | **17603 LANDED (main 17751), new seed 0A37A56F.** `infer-and` records its boolean arm, so `bounded none` and `punctual` no longer refuse a body joining two conditions with `&`. Proven by the control, not the green: the same three shapes are refused with CDX6101 at exit 4 against the depot seed and clean at exit 0 against the SUT | CostModel: `fixed` still unshipped; `bs-alloc` is measured on 17 of 262 builtins. `&` keeps its overload and still carries the two-consumers-read-absence-oppositely hazard: `cost-binop-allocates` reads absent as "assume allocating", `check-rt-no-alloc` reads RECORDED as "refuse", so filling the gap for one can invert the other |
+| **val** | **The Review pane's open list** (red, 2026-08-19, with their claim on `GopReview.codex` released): paging past one page DONE 2026-08-19, wrapping long text DONE 2026-08-20, leaving reason text on a cast verdict and the supersession view through `Historian`. `GopFacts.codex` stays red's. **THE EDITOR IS DONE**: WORKS-14, WORKS-15, WORKS-18 and WORKS-19 are all closed and their rows deleted (2026-08-19), and what outlives them is `works-desk-contract.md` section 0.6 -- why the annotation join must not use `CodeBrowser`'s `SourceIndex`, the CRLF-as-space trap, the author-before-body trap, `GopFacts` rather than `disk-load`, and the UEFI recipe. **One warning from that work reaches the Review pane too:** with no identity loaded the trust lattice is empty and NOTHING clears the threshold, so a trust-filtered surface shows nothing at all, and the default `desk.ps1` bed loads no identity. **THE MODERN DESK IS DONE, every stage** (2026-08-19); its account is `docs/Designs/Active/OS/ModernDesk.md` and its closed rows are in `works-backlog.md`. Two things it left that are NOT the Editor's and are still open: the Browser may only ever be the topmost heavy pane, because it rebuilds its state at the current frontier on every event (`BROWSER-5` in `apps/browser/browser-backlog.md`), and **the stack-depth instrument cannot be switched on at all.** The Monitor's `stack` row reads `stack-min-rsp-addr` against `ram-size-addr` and the boot prologue seeds that cell with `ram-size` unconditionally; only the per-function prologue narrows it, under `trace-alloc`, and **nothing sets `trace-alloc`.** Re-measured 2026-08-19: `compile.ps1 -Trace` does put `trace` in the mode string, `has-mode-flag` never asks for it, and `compile-to-cdx-with-exit-mode` has no parameter that could carry it, so it passes a literal `False` to the emitter (`opening.codex:1319`, `:1325`). The switch is dead end to end, not merely unthreaded. Threading it is a COMPILER change, seed-affecting, **unowned and not started**; the desk row and WORKS-32 both start answering the day it lands, with no further change in the desk. | **The old desk body is deleted, not archived here.** Stage-by-stage: DELETED, see the design | **GameEngine.md phase 2** (shadow campaign, stage 1 landed 17190; the 2.4x ratio at 17335); rulings queue 3 still owed to val's lane; plugs lane HANDED to reek for the close-out (2026-08-18) |
+| **fester** | **BROWSER-5's paint half** (red, 2026-08-19): the first-paint 12-row jump, isolated to paint at the `desk-bro-h` boundary with layout exonerated by identical rects across a dispatch. Start at the paint; the arithmetic half is landed at 17746 and the numbers that found it predate 45/47, so re-measure before debugging | **ProductBuilder stage 5 (17782, main 17784)**: campaigns derived from the ledger rather than submitted, with three arms for the ways a campaign passes by measuring nothing -- no severe fault seeded, no release or notary mutation written, and only the four novel genera it went on to kill. Four readings recorded in `codex/product/product-backlog.md` 5.2 and 5.3 rather than papered over. Stages 0-5 are landed; stage 6 is rulings queue 16. BROWSER-2 (17764), BROWSER-1 (17758), BROWSER-5 arithmetic (17746), BROWSER-7 (17735), WORKS-17 (17716, 17702), BROWSER-6 (17682), WORKS-47 (17658), WORKS-45 (17640), WORKS-23 (17591), WORKS-13 (17615) and `PerforceProcess` P-SEEDSWAP (17762) landed this session. EdgeMeshGameServers phase 2 COMPLETE; CrossLaneFilesystem step 0 (17535); arm64 saturating ops (17483); A8 `compile <path>` wired (17385), half proven | The browser register holds only BROWSER-5's paint half and BROWSER-4 (network-gated). WORKS-24 rides a sitting, WORKS-16's live thread is blu's, and WORKS-17's syntax half is a `Theme` decision. **The rulings queue carries work items that no register row shows**, which is how stage 5 read as an empty pool for an afternoon: queue 16 said in writing that it could go first, and nothing in a lane row said so |
 | **reek** | **plugs close-out lane** (from val, 2026-08-18): the register in order, one entry at a time, text builtins first (1.31/1.36/1.37); fester keeps the riscv entries (1.3 family), blu the deck/arm64 tail; say so in status.json | (OTA socket wiring DONE 16793; ProtocolStack CLOSED 16780; item 20 CLOSED for the named files 16769) | WORKS-9 is metal-gated, routed to red's sitting; `ShellDslReadability.md` stays reek's |
-| **red** | commander; sittings; identity stage 4 (trust-root write, passphrase change, on `IDENTITY.DAT` on the ESP; stages 1-3 landed 2026-08-18); the diag step-2 lifts red owes (xHCI truth, keyboard, MSC align, largest GOP mode + `SetMode`) so the first grouped sitting carries every standing question | `BatteryReorg.md` step 6 | `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; Update 47 PUBLIC 2026-08-18 (github 69cd9ce8, seed 90646EEB); **interim mirror push 2026-08-19 (github a061c173, seed 800A7683) carrying Steve Howell's PR 69, PR 71 and issue 72, all closed with the commit**; the Update 47 "preview gate on a pre-convergence stage" question is settled by blu's measurement (compile(A)=B, compile(B)=B, ONE fixed point; the preview ran on stage1 of an older seed, which is what the gate said) |
-| **root** | **HardwareAbstractionLayer.md** (pool, per red; OracleCloudArm64 DEFERRED by Damian). **Board-threading phase DONE 2026-08-18** (main 16944-17016): the foreword got a linear GPIO `Pin` handle, and all nine board chapters now thread the shipped linear `UartPort` + `Pin` for UART and GPIO (`<b>-uart-open/write/close`, `<b>-gpio-open` + `<b>-pin-write/close`), verified by `build/boards-test.ps1` (9 green, 126 sub-tests). Board chapters are non-seed, no token. **Capability phase (foreword) DONE 2026-08-18** (main 17063, SEED 55E53A81 -> 7590CCA1): `[Gpio]`/`[Uart]`/`[Spi]` are rows in `Capability.codex` (cs-id 18/19/20, bits 27/28/29) mirroring `Flash`; the foreword gpio/uart/spi handle ops carry them; a `Device.Mmio`-only driver is refused CDX2031 (three `hal-launder-mmio-*` tests). check-effect-vocab regen 0 drift, gate green, seed self-verifies, 184 refusals ok. **Board wrappers promoted to the caps (main 17084)** and **the read side DONE (main 17139, SEED 318B2BF6)**: the checker mints owners for the linear components of a returned tuple (let-pattern, `when` on the call, act-bind then `when` on the name; `_` at a linear position CDX2063), the tuple-type parser accepts `linear`, and `Board.codex` carries `gpio-read`, `uart-recv`, `SpiTxn` + `spi-select/transfer/deselect` (`hal-tuple-linear`, `errors/hal-tuple-{leak,dup,wild,owner-leak}`, `errors/hal-spi-cs-leak`). Also 2026-08-18: `capability-doors.expected` re-recorded for the 17063 rows (main 17135, was red since 17063). **Board threading of the read side DONE (main 17146/17148/17156):** `<b>-pin-read` on 8 boards, `<b>-uart-recv` on the 3 with a receive primitive, the linear SPI transaction on the 6 SPI boards; boards-test 9 green, 143 sub-tests. Polled receive + `<b>-uart-recv` on Fe310/Rp2040/Stm32L4 landed main 17164 (146 sub-tests). **`[I2c]`/`[Adc]`/`[Power]` rows + `I2cBus`/`AdcUnit` handles landed main 17174 (SEED 5B2DE4E6; the table's unassigned bits 1/2/13, so COMPILER-17, the imm32 grant hazard above bit 30, stays LATENT and recorded). I2C bus threaded on the five I2C boards and the ADC unit on RP2040 (main 17183; 152 sub-tests). nRF EasyDMA receive landed main 17194 (154 sub-tests; every UART board receives through the handle); `TinkersToolbox.md` HAL section and counts refreshed. **Open next:** Power = rulings 15 (waiting on Damian); ADC on the boards that gain an ADC driver. `build/boot/diag/**` stays root's | then: HAL follow-ons above, next pool item, or red's call | plugs 1.34 is rulings queue 10 |
+| **red** | commander; sittings; **the Review pane** (Damian, 2026-08-19: the repository protocol's user-facing half on the desk; stages 1 and 2 DONE 2026-08-19: lists proposals and verdicts from the medium's fact partition and casts a verdict signed by the box identity through the new `key-sign-bytes` primitive in `Foreword chapter Identity`, Damian's ruling that the primitive beats the user-space workaround; `works-backlog.md` WORKS-44 has the account, WORKS-46 the gap that keeps it empty on a USB stick: DiskFacts reads through the kernel's ATA syscalls); identity stage 4 (trust-root write, passphrase change, on `IDENTITY.DAT` on the ESP; stages 1-3 landed 2026-08-18); the diag step-2 lifts red owes (xHCI truth, keyboard, MSC align, largest GOP mode + `SetMode`) so the first grouped sitting carries every standing question | `BatteryReorg.md` step 6 | `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; Update 47 PUBLIC 2026-08-18 (github 69cd9ce8, seed 90646EEB); **interim mirror push 2026-08-19 (github a061c173, seed 800A7683) carrying Steve Howell's PR 69, PR 71 and issue 72, all closed with the commit**; the Update 47 "preview gate on a pre-convergence stage" question is settled by blu's measurement (compile(A)=B, compile(B)=B, ONE fixed point; the preview ran on stage1 of an older seed, which is what the gate said) |
+| **root** | **HardwareAbstractionLayer.md** (pool, per red; OracleCloudArm64 DEFERRED by Damian). **Board-threading phase DONE 2026-08-18** (main 16944-17016): the foreword got a linear GPIO `Pin` handle, and all nine board chapters now thread the shipped linear `UartPort` + `Pin` for UART and GPIO (`<b>-uart-open/write/close`, `<b>-gpio-open` + `<b>-pin-write/close`), verified by `build/boards-test.ps1` (9 green, 126 sub-tests). Board chapters are non-seed, no token. **Capability phase (foreword) DONE 2026-08-18** (main 17063, SEED 55E53A81 -> 7590CCA1): `[Gpio]`/`[Uart]`/`[Spi]` are rows in `Capability.codex` (cs-id 18/19/20, bits 27/28/29) mirroring `Flash`; the foreword gpio/uart/spi handle ops carry them; a `Device.Mmio`-only driver is refused CDX2031 (three `hal-launder-mmio-*` tests). check-effect-vocab regen 0 drift, gate green, seed self-verifies, 184 refusals ok. **Board wrappers promoted to the caps (main 17084)** and **the read side DONE (main 17139, SEED 318B2BF6)**: the checker mints owners for the linear components of a returned tuple (let-pattern, `when` on the call, act-bind then `when` on the name; `_` at a linear position CDX2063), the tuple-type parser accepts `linear`, and `Board.codex` carries `gpio-read`, `uart-recv`, `SpiTxn` + `spi-select/transfer/deselect` (`hal-tuple-linear`, `errors/hal-tuple-{leak,dup,wild,owner-leak}`, `errors/hal-spi-cs-leak`). Also 2026-08-18: `capability-doors.expected` re-recorded for the 17063 rows (main 17135, was red since 17063). **Board threading of the read side DONE (main 17146/17148/17156):** `<b>-pin-read` on 8 boards, `<b>-uart-recv` on the 3 with a receive primitive, the linear SPI transaction on the 6 SPI boards; boards-test 9 green, 143 sub-tests. Polled receive + `<b>-uart-recv` on Fe310/Rp2040/Stm32L4 landed main 17164 (146 sub-tests). **`[I2c]`/`[Adc]`/`[Power]` rows + `I2cBus`/`AdcUnit` handles landed main 17174 (SEED 5B2DE4E6; the table's unassigned bits 1/2/13, so COMPILER-17, the imm32 grant hazard above bit 30, stays LATENT and recorded). I2C bus threaded on the five I2C boards and the ADC unit on RP2040 (main 17183; 152 sub-tests). nRF EasyDMA receive landed main 17194 (154 sub-tests; every UART board receives through the handle); `TinkersToolbox.md` HAL section and counts refreshed. **ADC threading landed main 17777 (2026-08-20):** ADC1 drivers on Stm32F4/Stm32L4, SAADC wrappers on both nRF boards (nRF9160 gains SAADC at 0x4000E000); five boards carry `AdcUnit`; boards-test 9 green, 161 sub-tests. Esp32C6 left alone (SAR ADC map unverifiable in-tree); Fe310/Pi4/QemuVirt have no on-chip ADC. **Rulings 15 ruled (a) and BUILT (main 17831, 2026-08-20):** the linear Board threads every open on all nine boards, sleep-deep consumes it, sleep-with-open-handle is CDX2063; boards-test 9 green, 161 sub-tests; seed unmoved (DCE). **Flash follow-on CLOSED (main 17839, Damian-directed):** flash-open-bank threads the Board; sleep with an unsealed bank is CDX2063. **The HAL carries its full designed surface; nothing open in the lane.** `build/boot/diag/**` stays root's | then: HAL follow-ons above, next pool item, or red's call | plugs 1.34 is rulings queue 10 |
 
 **Plugs are reek's lane for the close-out** (from val, Damian's direction-08-18: 19 entries open, two or three fleet-days to a green register): when entry closes, reek takes the next open unclaimed one in
 `codex/plugs/plugs-backlog.md` in the register's order and says so in status.json. Entries other lanes hold
@@ -237,13 +246,37 @@ and says so in the table above. Assigned in the table: ProtocolStack + OTA
 ProportionalDecks (root), PlugDeepRecursion (val), the diagnostic stick and
 BatteryReorg step 6 (red).
 
-**The pool, unowned:** `HardwareAbstractionLayer.md` (nine board chapters);
-`GameEngine.md` phase 2 items; `EdgeMeshGameServers.md` phase 2 (its bed
-surface exists, B4); `ComplianceEvidence.md` (the evidence plug SHIPPED 2026-08-18, root: `codex/plugs/evidence/`; open there: FactStore ingestion, per-board residuals, the catalog merge);
-`ThreatModel.md` (design, not started); `DeviceEmulationCatalog.md` queue;
-`ShellDslReadability.md` (reek's, cheapest win first); **a bulk-output path
-for the QEMU host** (Damian, 2026-08-18: "add the structural fix"). Seed-affecting
-campaigns take the token per CL as usual.
+**The pool. Corrected 2026-08-19 (fester): most of this list was already
+drawn and nobody struck it, so a lane reading it drew a second owner onto
+another lane's work.** The table above is the assignment and it says so
+itself; where the two disagree the table wins. Taken, and NOT available:
+`HardwareAbstractionLayer.md` is root's ("pool, per red", with Power on
+rulings 15); `GameEngine.md` phase 2 is val's (shadow campaign stage 1 landed
+at main 17190); `ShellDslReadability.md` is reek's by Damian's direction and
+carries a file claim; `ComplianceEvidence.md` is root's, whose evidence plug
+shipped 2026-08-18 with the open items in it; the QEMU bulk-output path
+LANDED at main 17198 (blu) and its account is immediately below.
+
+**Actually unowned, in order:** `EdgeMeshGameServers.md` phase 2 -- DRAWN BY
+FESTER 2026-08-19, see the table. **After it the pool has nothing a lane can
+draw, read 2026-08-19 (fester) rather than assumed:**
+
+- `ThreatModel.md` is not a code campaign and says so itself ("This document
+  is analysis, not code"). Its four Open Questions are decisions with
+  recommendations attached -- ruling 19 below -- and its ten residual-risk
+  rows point into other lanes' designs (HAL, OTA, the trust layer, the board
+  chapters) or are DEPLOYMENT and hardware. A lane drawing it today would be
+  writing another lane's code or answering Damian's questions for him. It
+  becomes drawable when 17 is ruled.
+- The `DeviceEmulationCatalog.md` queue is demand-driven, not standing: its
+  item 1 landed and item 2 is "whatever the hardware sitting names", which
+  makes it red's sittings that produce the next entry rather than a lane that
+  picks it up. `tools/codex-vm.c` also carries a file claim, so announce.
+
+Seed-affecting campaigns take the token per CL as usual.
+
+**Strike an item from this list when you draw it.** That is the whole of why
+it was wrong: four entries here were live work on four different lanes.
 
 **The QEMU bulk-output path, blu, LANDED 2026-08-18 (CL 17198).** Two causes,
 and the second was the larger. The emit side: `emit-com1-init` already writes
@@ -296,6 +329,65 @@ measured, not predicted).
 
 Named here because a register nobody owns is a register nobody reads.
 
+- **A disk write moved about 50 KB/s in the bed. FIXED 2026-08-20 (blu), and
+  the site was not the one this entry named.** Found by val 2026-08-19 closing
+  WORKS-18: writing 2,896,050 bytes (5,657 sectors) took 57 s of a 59 s save,
+  with the FAT logic and the chunk size both exonerated (`gfat-load-fat`,
+  `gfat-chain-alloc` and `gfat-chain-is-clear` each under a second; the same
+  sectors written as one call, as 64-sector chunks and as 8-sector chunks came
+  out 56, 59 and 58 s). This entry then concluded "what is left is the
+  transfer", about 306 VM exits per sector, and asked for a host-side bulk
+  path for the IDE data port.
+
+  **The transfer is about a tenth of it.** A census counting SITES rather than
+  a total (L-PARTIAL) put `ide_flush` reopening the image file -- `fopen`,
+  `fseek`, `fwrite`, `fclose` -- around every completed 512-byte sector, so
+  the save was 5,865 open/close pairs at about 10.7 ms each. That is host file
+  I/O and not a VM exit, and it would have survived the repair this entry
+  asked for. Measured on a 3 GB headless bed: `write-runs` 66 s and
+  `flush-ms` 62,506 before, `write-runs` 5 s and `flush-ms` 27 after holding
+  the handle open, with `fflush` per sector keeping what the old `fclose`
+  promised. The image the repaired path writes is byte-identical to the one
+  the per-sector reopen path writes.
+
+  **What remains is genuinely the exits, and it is about 6 s**: `pio-exits`
+  and `words` come out equal at 1,540,608, so the data port really does cost
+  one exit per word. The `REP OUTSW` arm is now batched like the NE2K and COM1
+  arms, but `str-exits` is 512 of 1,540,608: this guest's ATA driver issues a
+  plain `OUT` per word, so the batch is nearly unexercised and the host side
+  cannot close the gap alone. **Open, unowned, and guest-side: make the ATA
+  driver use `REP OUTSW`/`REP INSW`** for the data phase. The `IN` string path
+  in `handle_io` is still one word per exit and wants the same batch when it
+  does.
+
+  The instrument is `docs/Probes/fat-write-phases.codex` plus the `IDE CENSUS`
+  line codex-vm now prints at exit. **Read that line before quoting a time
+  from the probe**: a `Copy-Item` of a Perforce file leaves the copy READ-ONLY,
+  every write-back is then refused, the guest still reports the save complete,
+  and the run comes back about ten times faster. That silent loss is fixed --
+  the refusal is latched, counted and reported -- and it is why the probe's
+  run instructions now clear the read-only bit.
+
+- **`trace-alloc` cannot be switched on for any CDX build, so the stack has no
+  instrument at all** (found by val 2026-08-19 finishing ModernDesk stage 0;
+  compiler lane, unowned). `emit-prologue` maintains a minimum-RSP high-water
+  mark at `stack-min-rsp-addr`, guarded by `if st1.trace-alloc`
+  (`codex/compiler/Emit/X86_64.codex:12`), and the boot prologue seeds that
+  cell with `ram-size` unconditionally
+  (`codex/compiler/Emit/X86_64Chapter.codex:385`), so the machinery is all
+  there and reads as "never narrowed". **What switches it off is one argument:
+  `compile-to-cdx-with-exit-mode` passes the emitter's `trace` as a literal
+  `False` (`codex/compiler/opening.codex:1325`) and takes no parameter that
+  could carry the mode word**, so `build/compile.ps1 -Trace` reaches the
+  compiler, sets the `trace` MODE WORD, and never touches codegen. Tested
+  rather than assumed: a `-Trace` desk is byte-for-byte the SAME SIZE as an
+  ordinary one, which a per-function prologue check could not be. **The fix is
+  to thread `trace` through that call**; the consumer already exists and needs
+  no further change, because the desk's Monitor `stack` row (main 17486) reads
+  the cell and starts answering the day it lands. This is what WORKS-32 has
+  been calling "the stack half has no owner and no instrument" and what
+  `ModernDesk.md` withdrew a stage-5 claim over: the instrument is built, it is
+  merely disconnected, and nobody has owned reconnecting it.
 - **`GitHubUpdate44.md`, open from 43:** nothing exercises the guard page
   under a genuine allocation walk since the LEAP arm was retired.
 - **`docs/Designs/Active/Compiler/CrossLaneFilesystem.md`** (fester): steps
@@ -362,7 +454,7 @@ its number and loses its text.
    both; the account, and the two IR traps that caused them, are
    `codex/plugs/plugs-backlog.md` 1.42.
 14. Ruled 2026-08-18: **warnings are warnings.** They do not gate the build; they are AUDITED AT THE RELEASE GATE. Create the self-compile diagnostic log now (retained, one entry per warning code with the ruling on it as each is made; no ruling is owed on any of them today). blu, COMPILER-16.
-15. **HAL Power: how does `sleep-deep` prove no handle is open?** (root, 2026-08-18.) `[Power]` has its capability row (main 17174) and no ops. The design (`HardwareAbstractionLayer.md` "The sleep rule") makes the BOARD linear: `board-open : linear Board`, every `*-open` threads the board and hands it back, `sleep-deep : linear Board -> Nothing` consumes it, so a live handle on the path to sleep is CDX2063 with no new checker work. The cost is that every `*-open` in the foreword and the nine board chapters changes signature (`gpio-open : linear Board, ... -> (linear Board, linear Pin)`, tuple returns the checker now tracks) and every caller re-threads. The cheap alternative is a `sleep-deep : linear Board` where `board-open` is only required for sleep, which proves nothing about handles opened without it. (a) is the design and the honest one; (b) is a row with a hole. Root will build (a) unless told otherwise; asking because it re-signs every board wrapper landed this week.
+15. Ruled (a), Damian 2026-08-20: the linear Board. BUILT AND LANDED the same day (root, main 17831): `board-open`/`board-close` + the Deep Sleep ops in `Board.codex`, the five foreword opens and all 33 board wrapper opens re-signed, sleep-with-an-open-handle is CDX2063 (`errors/hal-sleep-open-handle`). Record: `HardwareAbstractionLayer.md` "The sleep rule" BUILT block. The flash follow-on CLOSED same day (main 17839, Damian-directed): flash-open-bank threads the Board through OtaBoot and Lwm2mFirmware; every peripheral in the design now rides the sleep rule.
 
 16. **ProductBuilder stage 6 needs a protected-side host.** (fester,
    2026-08-19.) Stages 0 to 4 are done and every one of them runs entirely in
@@ -372,6 +464,56 @@ its number and loses its text.
    get wrong and everything from it is, so it should not be started on a
    guess about which. Stage 5 (held-out evaluation, mutation and seeded-fault
    campaigns) does not need the answer and can go first either way.
+
+17. **Ruled 2026-08-19 (Damian): do not wait for a program to be bitten; describe the shape seen now.** Between `fixed` and `input` there is a class the two words miss: an allocation that is not the same every call and not proportional to the input either, but BOUNDED, by a constant or by a budget the caller names in an argument. His words: something like *limited* or *budgeted*, covering the case that is not fixed and is not linear. blu designs the class (name, registry word, what the inference does with it, which builtins take it: `substring` by its length argument, `integer-to-text` by the digit ceiling) and ships it; per-argument classes in the registry are the shape he pointed at, not an over-refusal written down. The original question follows for the record.
+
+   Was: **Cost model, `fixed` rung: is a builtin's allocation class allowed to
+   depend on its ARGUMENT?** (blu, 2026-08-19, measured by
+   `codex/test/cost/builtin-alloc`; account in `CostModel.md` 5.1.)
+   `substring` follows its OUTPUT length, not the length of the text it reads
+   from: a four-character slice costs **16 bytes whether the source is 64 or
+   256 characters**, while a slice that grows with the source costs **40 then
+   136**. So the same builtin is `fixed` in the shape that dominates parsing
+   here -- a fixed-width field out of a line of any length -- and `input` when
+   the slice grows. `bs-alloc` on `BuiltinSpec` is ONE WORD per builtin
+   (shipped main 17450), so a scalar class must take the worst case and call
+   `substring` `input`, which refuses exactly the case the `fixed` rung was
+   introduced to permit. (a) make the class per-ARGUMENT, which is a real
+   extension to the registry and to the inference that reads it; (b) accept
+   the over-refusal and write it down as the price, consistent with
+   abstain-toward-refusal everywhere else in this feature. **Until ruled,
+   `substring`'s row stays `unknown`, which reads as allocating**, so nothing
+   is accepted on a guess -- but the `fixed` rung cannot ship usefully under
+   (b) without saying so out loud.
+
+18. **Ruled 2026-08-19 (Damian), with 17: a bound that is independent of input size is not `input`; it is the bounded/budgeted class 17 introduces.** `integer-to-text` is that class (bounded by the digit ceiling), not `fixed` and not `input`. The original question follows for the record.
+
+   Was: **Cost model: does `fixed` mean "the same bytes every call", or "bounded
+   by a constant independent of input size"?** (blu, 2026-08-19, same
+   measurement.) `integer-to-text` retains **16 bytes at 2 and 3 digits, and
+   16 then 24 at 8 and 10** -- it follows the digit count in 8-byte steps. An
+   `Integer` cannot exceed twenty digits, so the call can never allocate more
+   than about 32 bytes and cannot contribute to blow-up, which is what the
+   rung exists to promise. Read strictly it is `input`; read by the rung's
+   purpose it is `fixed`. The two readings disagree for every conversion of a
+   fixed-width value, so this is not one builtin. **Its row stays `unknown`
+   until ruled.** Worth knowing when deciding: at 64 and 256 alone this reads
+   flat and would have been published `fixed`; the wider arm is what caught
+   it, and it is the same single-point error the 2026-08-15 Text table made.
+
+19. **`ThreatModel.md`'s four Open Questions, as one decision.** (fester,
+   2026-08-19, on drawing from the pool and finding the item is not
+   drawable.) The doc is analysis and its questions are the gate on any code:
+   (1) NX bits on x86 data and stack pages now, or per-target in the IoT boot
+   chapters -- the doc recommends now; (2) hardware crypto dispatch in the
+   foreword API with board chapters providing effect handlers, which is its
+   recommendation, or board chapters owning the whole surface; (3)
+   fault-injection redundancy for the boot selector only, its recommendation,
+   or the general verifier too; (4) secure-element support in Identity, which
+   it defers to design-partner requirements. Answer them as a block or say
+   "recommendations stand" and the item becomes a lane's to draw. Nothing
+   waits on it today, so it does not block -- it is here because the pool
+   points at the doc and the doc points here.
 
 ## A TCP send loses bytes with both ends reporting success (FIXED 2026-08-18, blu; found by val 2026-08-17)
 
@@ -480,13 +622,15 @@ ticks through a bulk send that never fills the queue.
 | `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**` | red |
 | `build/boot/diag/**` (`Diag.codex`, `diag-arm.ps1`, `diag.img`, and the probes as they are lifted into stages) | root, 2026-08-18, DiagnosticStick.md step 1 (landed root 16819). Step-2 lifts by the lane that flew the probe, coordinated with root |
 | `apps/works/GopDesk.codex` | FREE -- announce before you start, and check which `ds` cells are already spoken for in the Appearance section (the cell 48 collision, 2026-08-11) |
+| `apps/works/GopEdit.codex` | **val, 2026-08-19, Damian's assignment via red.** WORKS-14, WORKS-15, WORKS-18 and WORKS-19 all closed; the Editor's standing rules are `works-desk-contract.md` 0.6 |
+| `apps/works/GopReview.codex` | **val, 2026-08-19, released to me by red.** WORKS-44's open list: paging and wrapping DONE, leaving reason text on a cast verdict and the supersession view. `GopFacts.codex` stays red's |
 | `apps/works/GopXhci.codex`, `GopUsb*.codex` | reek |
 | `apps/works/GopFat16.codex`, `Gpt*.codex` | FREE -- announce |
 | `codex/os/kernel/E1000e.codex`, `codex/os/net/**` | blu |
 | `codex/test/cost/**` and `docs/Designs/Active/Features/CostModel.md` | blu. 3.3 shipped at main 16020, rule 3 at 16118; what is left of it is COMPILER-7 |
 | the integer-literal lexer and text emitter; `codex/plugs/csharp/**` and the `build/` DDC harness; `codex/plugs/recheck/**` | val, lane ownerships rather than open work |
-| `codex/plugs/**` and `codex/plugs/plugs-backlog.md` | **val, 2026-08-16, red's assignment.** The register is the lane. Includes `codex/plugs/zig/**` (ordinary fleet code, Damian 2026-08-18); excludes the entries other lanes hold (named in the lanes table) |
-| `codex/plugs/spirv/**` (plugs-backlog 1.24) and every `run.ps1` under `codex/plugs/` (1.15) | val, with the plugs lane |
+| `codex/plugs/**` and `codex/plugs/plugs-backlog.md` | **reek, 2026-08-18, the close-out lane** (handed on from val, whose 2026-08-16 claim this row carried until 2026-08-19). The register is the lane. Includes `codex/plugs/zig/**` (ordinary fleet code, Damian 2026-08-18); excludes the entries other lanes hold (named in the lanes table) |
+| `codex/plugs/spirv/**` (plugs-backlog 1.24) and every `run.ps1` under `codex/plugs/` (1.15) | reek, with the plugs lane (val released it 2026-08-19 with the rest of the register) |
 | `build/plug-oracle-test.ps1`, `codex/test/plug-oracle-arith.*` | **blu, 2026-08-18.** val released both: the zig wiring they were held for landed at 15687 and 1.13 is done. val's claim is per-ENTRY, not tree-wide |
 | `deck-headroom` | fester |
 | `codex/foreword/shell/**` and `codex/build/*Script.codex` generators (the ScRaw removal and the readability campaign) | **reek, 2026-08-16, by Damian's direction** ("you can own this bit, as no other agents are actively workin on this code"). Catalog and order: `docs/Designs/Active/Build/ShellDslReadability.md` |

@@ -264,7 +264,19 @@ Section: Match
    in let cond = emit-ng-pat-cond (b.pattern) "_s"
    in let binds = emit-ng-pat-binds (b.pattern) "_s"
    in let body = emit-ng-expr (b.body) arities indent
-   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-ng-branches branches arities indent (i + 1)
+   in let ret = if ng-guard-trivial (b.guard) then "return " & body & "; "
+                else "if (" & emit-ng-expr (b.guard) arities indent & ") { return " & body & "; } "
+   in "if (" & cond & ") { " & binds & ret & "} " & emit-ng-branches branches arities indent (i + 1)
+
+ A guarded arm must not chain with else: the guard needs the pattern
+ bindings, which sit inside the block, so a failed guard has to fall OUT
+ of the block and reach the next test.
+
+  ng-guard-trivial : IRExpr -> Boolean
+  ng-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
 
   emit-ng-pat-cond : IRPat, Text -> Text
   emit-ng-pat-cond (p) (scrut) =

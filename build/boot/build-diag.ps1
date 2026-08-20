@@ -91,6 +91,14 @@ $outAbs = if ([IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $repo $Ou
 # the bytes except the image hash, which cannot be inside the bytes it hashes;
 # diag-recipe.txt beside the image adds that line. The payload banks these
 # lines as `rcp ...` right after the bank row, so a DIAG.TXT names what built it.
+# THE STAMP IS THE LAST SUBMITTED CL, AND THE IMAGE IS BUILT FROM DISK. Those
+# are two different questions and the stamp used to answer the first while
+# claiming the second. Measured 2026-08-19: an image rebuilt mid-merge stamped
+# `diag-src-cl=17355` while its bytes carried DiagSink from 17362, and the two
+# images differed in exactly those two digits and nowhere else -- which is also
+# the answer to whether this script is reproducible. It is; the stamp is not.
+# A stamp that silently UNDERSTATES is worse than no stamp, so an open or
+# unsubmitted diag source makes it say so rather than name a CL it is not.
 $srcCl = 'unknown'
 try {
     $streamLine = (& p4 -Ztag info 2>$null | Select-String '^\.\.\. clientStream (.*)$' | Select-Object -First 1)
@@ -98,6 +106,8 @@ try {
         $stream = $streamLine.Matches[0].Groups[1].Value
         $chg = (& p4 changes -m 1 "$stream/build/boot/diag/..." 2>$null | Select-Object -First 1)
         if ($chg -match '^Change (\d+)') { $srcCl = $Matches[1] }
+        $open = @(& p4 opened "$stream/build/boot/diag/..." 2>$null | Where-Object { $_ -notmatch 'not opened' })
+        if ($open.Count -gt 0) { $srcCl = "$srcCl+$($open.Count)open" }
     }
 } catch { }
 $rcpFile = Join-Path $bo 'DIAG.RCP'

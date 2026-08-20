@@ -32,41 +32,42 @@ Chapter: BrowserClickHeapTest
 
 Section: Test
 
-  cycle : BrowserState -> BrowserState
-  cycle (st) =
-    let code = browser-click-code st 200 200
+  cycle-at : BrowserState, Integer, Integer -> BrowserState
+  cycle-at (st) (mx) (my) =
+    let code = browser-click-code st mx my
     in let released = __heap-restore (st.bs-laid-mark)
-    in let next = browser-apply-click st 200 200 code
+    in let next = browser-apply-click st mx my code
     in let mark = __heap-save
     in let laid = widget-layout (browser-render next) (next.bs-theme) (layout-rect 0 0 1024 768)
     in browser-memo-laid next laid mark
 
-  spin : BrowserState, Integer, Integer -> Integer
-  spin (st) (i) (n) =
+  spin : BrowserState, Integer, Integer, Integer, Integer -> Integer
+  spin (st) (i) (n) (mx) (my) =
     if i >= n then __heap-save
-    else spin (cycle st) (i + 1) n
+    else spin (cycle-at st mx my) (i + 1) n mx my
 
-  from-fresh : Integer -> Integer
-  from-fresh (n) =
+  from-fresh : Integer, Integer, Integer -> Integer
+  from-fresh (n) (mx) (my) =
     let st = browser-init 1024 768 browser-theme-default display-init-text-fallback
     in let mark = __heap-save
     in let laid = widget-layout (browser-render st) (st.bs-theme) (layout-rect 0 0 1024 768)
-    in spin (browser-memo-laid st laid mark) 0 n
+    in spin (browser-memo-laid st laid mark) 0 n mx my
 
  Each measurement releases to its own base, so the second starts from the
  same frontier as the first and the subtraction is not measuring the first
  run's residue.
 
-  measure : Integer -> Integer
-  measure (n) =
+  measure : Integer, Integer, Integer -> Integer
+  measure (n) (mx) (my) =
     let base = __heap-save
-    in let top = from-fresh n
+    in let top = from-fresh n mx my
     in let released = __heap-restore base
     in top - base
 
-  opening : [Console] Nothing =
-    let one = measure 1
-    in let many = measure 51
-    in act
-      print-line-uni ("per-cycle=" & integer-to-text ((many - one) / 50))
-    end
+  per-cycle : Integer, Integer -> Integer
+  per-cycle (mx) (my) = (measure 51 mx my - measure 1 mx my) / 50
+
+  opening : [Console] Nothing = act
+    print-line-uni ("per-cycle=" & integer-to-text (per-cycle 200 200))
+    print-line-uni ("per-tab-click=" & integer-to-text (per-cycle 40 30))
+  end

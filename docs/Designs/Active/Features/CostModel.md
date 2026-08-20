@@ -300,10 +300,111 @@ and enforced property rather than a document. What is still open:
    as safe, so a body calling any unmeasured builtin cannot declare `none`
    today. Widening the set is a measurement, not a rule change.
 
-   **`fixed` is the one rung left and it is BLOCKED on a measurement.**
-   Separating "fixed bytes per call" from "one walk over an input" needs a
-   per-builtin allocation class, and 3.1 published the text family and
-   nothing else. CDX6103 now names only `fixed` and says so. Do not infer it
+   **A MEASURED OVER-REFUSAL IN THE SHIPPED `none` RUNG (blu, 2026-08-19),
+   found while building the arms for `budgeted` and NOT introduced by it.**
+   `cost-binop-allocates` is written to tell `&`'s two jobs apart by the
+   recorded type -- boolean AND allocates nothing, concatenation allocates a
+   new value -- and the chapter prose beside it says so. It does not: measured
+   against `Sut` 278AF7C4, `bounded none andy (a) (b) = a & b` over two
+   `Boolean` parameters is refused CDX6101. So `bounded none` currently
+   refuses any body that joins two conditions, which is a large and ordinary
+   class, and the `budgeted` arm had to be written without `&` to avoid
+   testing this instead of itself.
+
+   **FOUND AND FIXED the same day, and the cause was neither the type scan
+   nor the cost check.** `infer-and` recorded the expression type on its TEXT
+   arm and not on its boolean one, so a boolean `&` had no entry at all and
+   `expr-type-scan` answered `ErrorTy`; every reader of that table treats the
+   unknown as the worst case, which is correct of them. One line: the boolean
+   arm records too.
+
+   Two theories came first and both were wrong -- unresolved type variables,
+   then parameter resolution. What killed them was widening the probe:
+   `True & False`, two literal Booleans, is refused exactly as `a & b` is, and
+   three shapes failing together pointed at the recording site rather than at
+   any resolution. **The regression guard is all three shapes**, in
+   `codex/test/apps/bounded-none-accepted`.
+
+   **It was never only this rung.** `punctual` reads the same table through
+   `check-rt-no-alloc` and refused the same shape, so both checks were
+   charging a boolean AND for a heap allocation it never makes.
+
+   **THE LIST FAMILY IS MEASURED (blu, 2026-08-19).**
+   `codex/test/cost/builtin-alloc` classifies it, and the discriminator is
+   INPUT SIZE rather than iteration count: every arm makes one call, and the
+   two readings differ only in how large the argument is. That is the
+   question `fixed` actually asks and no existing instrument asked it.
+   Published in `DevelopersGuide.md`, "What List operations cost".
+
+   | | class | |
+   |---|---|---|
+   | `list-length`, `list-at`, `list-set-at` | none | 0 bytes at both sizes |
+   | `__list-tail` | **fixed** | 24 bytes, flat |
+   | `list-push`, `list-insert-at` | **input** | 4x with the input |
+
+   Three results change what can be built on top. **`list-set-at` allocates
+   nothing**, structurally rather than at two points -- `emit-list-set-at` is
+   a bounds check, an address, a store and a return of the same pointer --
+   so it can join the zero-byte set and widen what `bounded none` accepts.
+   **`__list-tail` is the first builtin measured `fixed`**, which is what
+   makes the rung a non-empty class rather than a slot in a diagram.
+   **`list-push` is input-proportional even on the extend-in-place path**,
+   because path 2 doubles the capacity and the frontier advances by the
+   whole of it; the aliasing rule in the guide tells you which path you get
+   and not what it costs, and only the copy path was ever assumed expensive.
+
+   The instrument reports all three classes in one run, and the arm that
+   makes that true was added after the first reading rather than designed in:
+   at length n + 1 the identical push takes the spare-capacity path and
+   retains 0. Before it, every arm sat on the doubling boundary because
+   `base` is a power of two, so the harness could only ever report the
+   expensive path -- which is asserting, not measuring.
+
+   **THE TEXT FAMILY RE-MEASURED WITH THE SIZE DISCRIMINATOR (blu,
+   2026-08-19), and it raises TWO QUESTIONS THAT NEED A RULING before more
+   rows can be filled in honestly.** Results in `DevelopersGuide.md`. Three
+   predicates (`text-contains`, `text-starts-with`, `text-compare`) allocate
+   nothing at any length and are safe `none`. `char-to-text` is a clean
+   `fixed`. The other two are the problem.
+
+   **1. `substring`'s class depends on its ARGUMENT, and `bs-alloc` is one
+   word per builtin.** Holding the output at four characters it is flat at 16
+   bytes whether the input is 64 or 256; letting the output grow with the
+   input it is 40 then 136. So it is `fixed` in the shape that dominates
+   parsing here -- a fixed-width field out of a line of any length -- and
+   `input` when the slice grows. A single scalar class has to take the worst
+   case and call it `input`, which refuses exactly the case `fixed` was
+   introduced to permit. Either the class becomes per-ARGUMENT, or the
+   over-refusal is accepted and written down as the price. **This is a design
+   question, not a measurement, and it is the first thing that needs deciding
+   before `fixed` can ship. It is CurrentPlan rulings queue 17.**
+
+   **2. `integer-to-text` is bounded but not constant, and the lattice has no
+   rung for that.** 16 bytes at 2 and 3 digits, 16 and 24 at 8 and 10: the
+   allocation follows the digit count in 8-byte steps. An `Integer` cannot
+   exceed twenty digits, so the call can never allocate more than about 32
+   bytes and cannot cause blow-up, which is what `fixed` exists to promise.
+   But "the same bytes every call" is false. Reading it strictly makes it
+   `input` and abstain-toward-refusal says take the stricter rung; reading it
+   by the rung's PURPOSE makes it `fixed`. **Its row stays `unknown` -- which
+   is read as allocating, the safe side -- until that is ruled on. It is CurrentPlan rulings queue 18.**
+
+   The narrow arm is worth keeping in view: at 64 and 256 alone,
+   `integer-to-text` reads flat and would have been published `fixed`. That is
+   the same single-point error the 08-15 table made, caught here only because
+   the harness was rerun at a wider spread.
+
+   **`fixed` is the one rung left and it is STILL blocked, on less than it
+   was.** Separating "fixed bytes per call" from "one walk over an input"
+   needs a per-builtin allocation class; 3.1 published the text family and
+   the list family is now measured too, but the remaining 262-entry builtin
+   registry is not, and the check cannot read a class that lives only in a
+   document. **The next unit is `bs-alloc` on `BuiltinSpec`**
+   (`codex/compiler/Types/Builtins.codex`), which is where the class belongs:
+   it puts the answer beside the name and the type, and it replaces the
+   hand-kept name list in `cost-builtin-nonalloc` with a field the registry
+   carries. Until then the zero-byte set stays a literal in the TypeChecker
+   and every widening of it is a hand edit. CDX6103 now names only `fixed` and says so. Do not infer it
    from the code's shape alone: a single `&` allocates in proportion to its
    operands, so a straight-line body with no loop in it is already not
    `fixed`, and a shape-only rule would accept exactly the case the class

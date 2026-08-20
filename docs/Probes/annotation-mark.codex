@@ -1,0 +1,77 @@
+Chapter: AnnotProbe
+
+  cites Works chapter GopEdit
+  cites Works chapter GopFat16
+  cites Works chapter GopAhci
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter Annotation
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Fat16
+
+ Splits the gutter-mark chain: are the annotations reaching the pane at all,
+ does the chapter table build, does the matcher fire. Each stage prints, so
+ the failure names itself rather than being inferred from a blank gutter.
+
+ It earned its keep on the first run. The gutter was blank and any of five
+ stages could have been the reason; STAGE 4 printed the chapter as `[Name ]`
+ with a trailing space against a target of `Name`, which is the CRLF on the
+ medium surviving as a space through `ged-chars`, and named the defect in one
+ run instead of a bisection.
+
+ Run it against an image seeded by `annotation-mark-seed.codex`:
+
+   build/compile.ps1 -Src docs/Probes/annotation-mark.codex
+     -Out probe.cdx -Kernel seed/Codex.cdx -Log probe.log
+   tools/codex-vm.exe -kernel probe.cdx -output probe.txt -mem 3072
+     -headless -disk annot.img
+
+ A correct run reads 2 annotations on the medium, 1 mark set, and the bit
+ string `000000001000000` -- the second annotation targets a name that is not
+ in the file and is the control for the matcher.
+
+Section: Entry
+
+  bits : Integer, Integer, Integer, Text -> Text
+  bits (es) (i) (n) (acc) =
+    if i > n then acc
+    else bits es (i + 1) n (acc & show (ged-mark-get es (i - 1)))
+
+  opening : [Console, Device.Port, Device.Block] Nothing = act
+    let store = disk-load
+    in let anns = repo-persist-load-all-annotations store
+    in act
+      print-line-uni ("STAGE 1 annotations on medium: " & show (list-length anns))
+      m <- gfat-mount-esp
+      if m.gm-ok == False then print-line-uni "MOUNT failed"
+      else act
+        let vol = m.gm-vol
+        in let es = alloc-zeroed 64 64
+        in let i0 = ged-init es
+        in act
+          got <- gfat-read-file-bulk vol "SRC/NAME.COD" (ged-buf es)
+          let p = poke-32 es 8 got
+          in let c = ged-reindex es
+          in act
+            print-line-uni ("STAGE 2 file bytes=" & show (ged-size es) & " lines=" & show (ged-count es))
+            let s = ged-chap-scan es
+            in act
+              print-line-uni ("STAGE 3 chapters found=" & show (ged-chap-count es) & " first at line=" & show (if ged-chap-count es > 0 then ged-chap-line es 0 else 0 - 1))
+              print-line-uni ("STAGE 4 chapter name at that line: [" & (if ged-chap-count es > 0 then chap-name-of es 0 else "<none>") & "]")
+              print-line-uni ("STAGE 5 line 9 text: [" & ged-line-text es 8 60 & "]")
+              hits <- (ged-annots-load es)
+              act
+                print-line-uni ("STAGE 6 marks set=" & show hits)
+                print-line-uni ("STAGE 7 bits lines 1..15: " & bits es 1 15 "")
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  chap-name-of : Integer, Integer -> Text
+  chap-name-of (es) (ci) =
+    let line = ged-chap-line es ci
+    in let full = ged-line-text es line 200
+    in if text-length full > 9 then substring full 9 (text-length full - 9) else full

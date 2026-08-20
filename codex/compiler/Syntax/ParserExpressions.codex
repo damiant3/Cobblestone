@@ -19,7 +19,7 @@ Section: Expression Parsing
   parse-binary (st) (min-prec) (min-col) =
    if parse-fuel-exhausted st then ExprOk (ErrExpr (current st)) (emit-parse-fuel-error st "parse-binary")
    else let st0 = consume-parse-fuel st
-   in let left-result = parse-unary st0
+   in let left-result = parse-unary st0 min-col
    in unwrap-expr-ok left-result (start-binary-loop min-prec min-col)
 
   start-binary-loop : Integer, Integer, Expr, ParseState -> ParseExprResult
@@ -45,12 +45,25 @@ Section: Expression Parsing
   continue-binary (left) (op) (min-prec) (min-col) (right) (st) =
    parse-binary-loop (deck-record (BinExpr left op right)) st min-prec min-col
 
-  parse-unary : ParseState -> ParseExprResult
-  parse-unary (st) =
+ `not` TAKES A WHOLE COMPARISON AND MINUS DOES NOT, and the difference is
+ deliberate. `-x + y` is `(-x) + y`, because negation belongs to the value it
+ sits on. `not a == b` is `not (a == b)`, because the other reading --
+ `(not a) == b` -- is a sentence nobody means and it type-checks perfectly,
+ which makes it the worst kind of surprise. So `not` parses its operand at
+ comparison precedence: it swallows `==`, `<`, and everything tighter, and
+ stops before `and`, `xor` and `or`, giving `not a and b` as `(not a) and b`.
+
+  prec-comparison : Integer = 5
+
+  parse-unary : ParseState, Integer -> ParseExprResult
+  parse-unary (st) (min-col) =
    if parse-fuel-exhausted st then ExprOk (ErrExpr (current st)) (emit-parse-fuel-error st "parse-unary")
    else let st0 = consume-parse-fuel st
    in if is-minus (current-kind st0) then let op = current st0
-     in let result = parse-unary (advance st0)
+     in let result = parse-unary (advance st0) min-col
+     in unwrap-expr-ok result (finish-unary op)
+    else if current-kind st0 == NotKeyword then let op = current st0
+     in let result = parse-binary (advance st0) prec-comparison min-col
      in unwrap-expr-ok result (finish-unary op)
     else parse-application st0
 

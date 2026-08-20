@@ -273,6 +273,7 @@ Section: Infer Binary
     is OpApproxEq | OpApproxEqExact -> infer-comparison st lt rt span
     is OpAnd -> infer-and st lt rt span
     is OpOr -> infer-logical st lt rt span
+    is OpBoolAnd -> infer-logical st lt rt span
     is OpAppend -> infer-append st lt rt span
     is OpCons -> infer-cons st lt rt span
     is OpDefEq -> infer-comparison st lt rt span
@@ -351,11 +352,24 @@ Section: Infer Binary
     state = u-st2
    }
 
+ BOTH ARMS RECORD, and the boolean one did not until 2026-08-19. `&` is one
+ token doing two jobs and the recorded type is the only thing that separates
+ them afterwards, so an unrecorded boolean `&` is indistinguishable from an
+ expression nothing knows the type of. Every reader of the table treats the
+ absence as the worst case, which is correct of them and wrong here: measured,
+ `bounded none andy (a) (b) = a & b` over two Booleans was refused CDX6101,
+ and `punctual` refuses the same shape through `check-rt-no-alloc`. Both
+ checks were charging a boolean AND for a heap allocation it never makes.
+
+ The key is file, start offset AND length (`expr-type-key`), so a binary's
+ entry cannot collide with its own left operand's; the name lookups in
+ `Lowering.codex` ask about name spans and never see these.
+
   infer-and : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-and (st) (lt) (rt) (span) =
    let resolved = resolve-silent st lt
    in when resolved
-    is BooleanTy -> infer-logical st lt rt span
+    is BooleanTy -> infer-logical (record-expr-type st span resolved) lt rt span
     is TextTy | otherwise -> infer-append (record-expr-type st span resolved) lt rt span
 
   infer-append : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult

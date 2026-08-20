@@ -1,0 +1,109 @@
+Chapter: BrowserPaneFitTest
+  cites Works chapter GopDesk
+  cites Works chapter GopComposite
+  cites Browser chapter Browser
+  cites Browser chapter BrowserTheme
+  cites Browser chapter Display
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The desk grants the Browser pane a height and the pane lays a tree into it.
+ Three numbers decide whether those agree, and none of them is the page height
+ `browser-viewport-fit` already pins.
+
+ Where the taskbar begins. `desk-bro-h` computes it from `dk-task-h` and the
+ widget scale, which assumes the band is flush with the bottom of the screen.
+ `desk-taskbar-hit` records that it is not: the root panel's own padding leaves
+ rows below it, so the band starts higher than that arithmetic says.
+
+ How far the laid-out tree reaches. A tree whose deepest child ends past the
+ rect it was given has been laid out into space the desk did not grant, and
+ `comp-walk` paints every node it is handed without asking whether it fits.
+
+ Whether the dimensions handed to `browser-init` are what drive that. They are
+ not, and the second half is here to say so: initialising the same pane in
+ logical pixels instead of device pixels produces the same tree. Without that
+ arm the overflow reads as a units mismatch between a pane measured in device
+ pixels and a tree laid out in logical ones, which is the first explanation
+ anyone reaches for and it is wrong.
+
+  bpf-bottom : WidgetNode -> Integer
+  bpf-bottom (n) =
+    let b = n.wn-bounds
+    in b.lr-y + b.lr-h
+
+  bpf-max-bottom : WidgetNode -> Integer
+  bpf-max-bottom (n) = bpf-max-kids (n.wn-children) 0 (bpf-bottom n)
+
+  bpf-max-kids : List WidgetNode, Integer, Integer -> Integer
+  bpf-max-kids (ks) (i) (acc) =
+    if i >= list-length ks then acc
+    else let d = bpf-max-bottom (list-at ks i)
+    in if d > acc then bpf-max-kids ks (i + 1) d
+    else bpf-max-kids ks (i + 1) acc
+
+  bpf-deepest : WidgetNode -> WidgetNode
+  bpf-deepest (n) = bpf-deepest-kids (n.wn-children) 0 n
+
+  bpf-deepest-kids : List WidgetNode, Integer, WidgetNode -> WidgetNode
+  bpf-deepest-kids (ks) (i) (best) =
+    if i >= list-length ks then best
+    else let cand = bpf-deepest (list-at ks i)
+    in if bpf-bottom cand > bpf-bottom best then bpf-deepest-kids ks (i + 1) cand
+    else bpf-deepest-kids ks (i + 1) best
+
+  bpf-show-rect : WidgetNode -> Text
+  bpf-show-rect (n) =
+    let b = n.wn-bounds
+    in n.wn-id & " y=" & integer-to-text (b.lr-y) & " h=" & integer-to-text (b.lr-h) & " bottom=" & integer-to-text (b.lr-y + b.lr-h)
+
+  bpf-kids-text : List WidgetNode, Integer, Text -> Text
+  bpf-kids-text (ks) (i) (acc) =
+    if i >= list-length ks then acc
+    else let sep = if i == 0 then "" else " | "
+    in bpf-kids-text ks (i + 1) (acc & sep & bpf-show-rect (list-at ks i))
+
+  bpf-rect : WidgetNode, Text -> LayoutRect
+  bpf-rect (laid) (id) =
+    when widget-find laid id
+      is Just (w) -> w.wn-bounds
+      is None -> layout-rect 0 0 0 0
+
+  bpf-chrome : Integer, Integer -> WidgetNode
+  bpf-chrome (w) (ds) = desk-chrome-with (widget-panel "content" DirColumn 0 []) w ds
+
+ 1600x900 is the desk's own default and the geometry every capture of this
+ defect was taken at.
+
+  bpf-w : Integer = 1600
+
+  bpf-h : Integer = 900
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed 64 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let gp = poke-32 ds desk-gpu-cell 1
+    in let ws = ui-wscale bpf-w
+    in let s = ui-scale bpf-w
+    in let chrome = widget-layout (bpf-chrome bpf-w ds) (dk-theme-ds ds) (layout-rect 0 0 (bpf-w / ws) (bpf-h / ws))
+    in let band = comp-mul-rect (bpf-rect chrome "taskbar") ws
+    in let given = desk-bro-h bpf-w bpf-h
+    in let st = browser-init bpf-w given browser-theme-default display-init-text-fallback
+    in let tree = widget-layout (browser-render st) (st.bs-theme) (layout-rect 0 0 (bpf-w / s) (given / s))
+    in let stL = browser-init (bpf-w / s) (given / s) browser-theme-default display-init-text-fallback
+    in let treeL = widget-layout (browser-render stL) (stL.bs-theme) (layout-rect 0 0 (bpf-w / s) (given / s))
+    in act
+      print-line-uni ("taskbar band, device pixels : " & integer-to-text (band.lr-y) & ".." & integer-to-text (band.lr-y + band.lr-h - 1))
+      print-line-uni ("rows below the band         : " & integer-to-text (bpf-h - (band.lr-y + band.lr-h)))
+      print-line-uni ("desk-bro-h gives the pane   : " & integer-to-text given)
+      print-line-uni ("pane bottom past band top   : " & integer-to-text (given - band.lr-y))
+      print-line-uni ("logical rect given the tree : " & integer-to-text (bpf-w / s) & "x" & integer-to-text (given / s))
+      print-line-uni ("root, logical               : " & bpf-show-rect tree)
+      print-line-uni ("deepest node, logical       : " & bpf-show-rect (bpf-deepest tree))
+      print-line-uni ("tree past the granted pane  : " & integer-to-text (bpf-max-bottom tree * s - given))
+      print-line-uni ("top-level children, logical : " & bpf-kids-text (tree.wn-children) 0 "")
+      print-line-uni ("control, pane in logical px : " & bpf-show-rect (bpf-deepest treeL))
+      print-line-uni ("control reaches the same    : " & (if bpf-max-bottom treeL == bpf-max-bottom tree then "yes" else "no"))
+    end

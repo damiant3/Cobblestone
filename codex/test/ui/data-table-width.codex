@@ -1,0 +1,141 @@
+Chapter: DataTableWidthTest
+
+  cites Foreword chapter Console
+  cites UI chapter DataTable
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+
+ WORKS-47. A column is as wide as the wider of what its caller asked for and
+ what its own header needs, and a cell that will not fit says so.
+
+ The columns are the tracker's own, because the two that fail are the two
+ whose labels are longer than the width the pane declared: "Priority" wants
+ 80 and was given 68, "Assignee" wants 80 and was given 76. Every other
+ column has room to spare, so a fix that widened all six would pass a test
+ written against a single column and would still be wrong.
+
+ The arms are paired against both directions. The header arm reads each
+ button's laid-out width against the width its own text needs, which is the
+ half a cell test cannot see. The overrun arm reads the last column's right
+ edge against the table's, which is the half a per-column test cannot see:
+ six columns can each be correct and still not fit together.
+
+ The narrow arm is the one that would catch a fix that only ever grows
+ things. A box too narrow for the columns cannot be satisfied by widening
+ them, so what it pins is that the table reports the overrun rather than
+ painting over its neighbour.
+
+Section: Fixtures
+
+  cols : List TableColumn = [
+    table-column "key" "ID" 68,
+    table-column "status" "Status" 100,
+    table-column "title" "Title" 200,
+    table-column "priority" "Priority" 68,
+    table-column "label" "Label" 76,
+    table-column "assignee" "Assignee" 76
+  ]
+
+  rows : List TableRow = [
+    table-row "1" ["CDX-142", "In Progress", "Fix emit-prologue crash", "Urgent", "bug", "Damian"],
+    table-row "2" ["CDX-141", "In Progress", "A title far longer than the two hundred pixels this column was given, which is the case a column cannot grow for", "High", "feature", "Val"]
+  ]
+
+ Each arm builds its own state. `__record-set` stores in place and hands back
+ the same record, so a shared subject would carry the fitted widths of one
+ arm into the next and the arms would measure each other.
+
+  table-of : Integer -> DataTableState
+  table-of (unused) = data-table-new "issues" cols rows
+
+Section: Reading A Laid-Out Tree
+
+  r-of : WidgetNode, Text -> Text
+  r-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> format-rect (w.wn-bounds)
+      is None -> "absent"
+
+  w-of : WidgetNode, Text -> Integer
+  w-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> (w.wn-bounds).lr-w
+      is None -> 0 - 1
+
+  right-of : WidgetNode, Text -> Integer
+  right-of (root) (id) =
+    when widget-find root id
+      is Just (w) -> (w.wn-bounds).lr-x + (w.wn-bounds).lr-w
+      is None -> 0 - 1
+
+ What a button of this text needs is the widget library's own answer, asked
+ of a button built from the same text, so the arm moves if that changes.
+
+  needs : Text -> Integer
+  needs (txt) = (widget-button "probe" txt).wn-min-w
+
+  col-report : WidgetNode, Integer, Integer -> [Console] Nothing
+  col-report (laid) (i) (n) =
+    if i >= n then print-line-uni ""
+    else act
+      let col = list-at cols i
+      in let want = needs (col.tc-label)
+      in let got = w-of laid ("issues-col-" & show i)
+      in print-line-uni ("  " & col.tc-label & ": declared " & show (col.tc-width) & ", header needs " & show want & ", laid out " & show got & (if got < want then "  CUT" else ""))
+      col-report laid (i + 1) n
+    end
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let wide = widget-layout (data-table-widget (table-of 0)) theme-terminal (layout-rect 0 0 700 200)
+    in act
+      print-line-uni "in a 700 box:"
+      col-report wide 0 6
+      print-line-uni ("  header:          " & r-of wide "issues-hdr")
+      print-line-uni ("  last column ends at " & show (right-of wide "issues-col-5") & ", the table ends at " & show (right-of wide "issues"))
+      print-line-uni ("  the columns run past the table by: " & show (right-of wide "issues-col-5" - right-of wide "issues"))
+      print-line-uni ("  a cell that will not fit: " & r-of wide "issues-cell-2-2")
+    end
+
+    let narrow = widget-layout (data-table-widget (table-of 0)) theme-terminal (layout-rect 0 0 400 200)
+    in act
+      print-line-uni "in a 400 box, too narrow for the columns:"
+      print-line-uni ("  last column ends at " & show (right-of narrow "issues-col-5") & ", the table ends at " & show (right-of narrow "issues"))
+      print-line-uni ("  the columns run past the table by: " & show (right-of narrow "issues-col-5" - right-of narrow "issues"))
+    end
+
+    let fitted = data-table-fit-cols (table-of 0) 550
+    in let laid = widget-layout (data-table-widget fitted) theme-terminal (layout-rect 0 0 550 200)
+    in act
+      print-line-uni "a 550 box with the columns fitted to it:"
+      col-report laid 0 6
+      print-line-uni ("  last column ends at " & show (right-of laid "issues-col-5") & ", the table ends at " & show (right-of laid "issues"))
+      print-line-uni ("  the columns run past the table by: " & show (right-of laid "issues-col-5" - right-of laid "issues"))
+    end
+
+    let squeezed = data-table-fit-cols (table-of 0) 400
+    in let laid2 = widget-layout (data-table-widget squeezed) theme-terminal (layout-rect 0 0 400 200)
+    in act
+      print-line-uni "a 400 box, too narrow even for six headers that name themselves:"
+      col-report laid2 0 6
+      print-line-uni ("  every column is at its floor and the table still overruns by: " & show (right-of laid2 "issues-col-5" - right-of laid2 "issues"))
+    end
+
+    let elided = data-table-fit-cols (table-of 0) 550
+    in act
+      print-line-uni "a cut cell says it was cut:"
+      print-line-uni ("  " & dt-elide "CDX-142" ((list-at (elided.dt-columns) 0).tc-width))
+      print-line-uni ("  " & dt-elide "In Progress" ((list-at (elided.dt-columns) 1).tc-width))
+      print-line-uni ("  " & dt-elide "Fix emit-prologue crash" ((list-at (elided.dt-columns) 2).tc-width))
+      print-line-uni ("  a value that fits is untouched: " & dt-elide "bug" ((list-at (elided.dt-columns) 4).tc-width))
+    end
+
+    let already = data-table-fit-cols (table-of 0) 900
+    in act
+      print-line-uni ("a table that already fits is returned unchanged: " & show ((list-at (already.dt-columns) 3).tc-width) & " and " & show ((list-at ((table-of 0).dt-columns) 3).tc-width))
+    end
+  end

@@ -128,13 +128,25 @@ read return `(linear I2cBus, ...)`) and `AdcUnit` with `adc-open/sample/close`
 (`(linear AdcUnit, Integer)`), STM32 register shape (I2C CR1/CR2/DR, ADC
 CR2/SQR3/DR), rows `[I2c, Device.Mmio]` / `[Adc, Device.Mmio]`. Guards:
 `hal-i2c-adc-linear` (x86, RAM read-back), `errors/hal-launder-mmio-{i2c,adc}`
-(CDX2031), `errors/hal-{i2c,adc}-leak` (CDX2063). `Power` has its row and no
-ops yet: `sleep-deep` consumes a linear `Board` (see "The sleep rule") and
-that handle does not exist; it is the next design step. **Board threading of
+(CDX2031), `errors/hal-{i2c,adc}-leak` (CDX2063). `Power` gained its ops
+2026-08-20 (main 17831): `sleep-deep` consumes the linear `Board`, which
+now exists and is threaded through every open (see "The sleep rule",
+BUILT). **Board threading of
 I2C/ADC landed main 17183:** `<b>-i2c-open/close` and `<b>-i2c-bus-write-reg/
 read-reg` on Esp32C6, Pi4, Rp2040, Stm32F4, Stm32L4 (register-level ops through
 the handle, the shape the boards already had), `rp-adc-open/unit-sample/close`
 on RP2040 (the only board with an ADC driver); boards-test 152 sub-tests.
+**Board threading of ADC landed main 17777 (2026-08-20):** ADC1 drivers
+plus `<b>-adc-open/unit-sample/close` on Stm32F4 (0x40012000, the RM0090
+shape the generic HAL already carries) and Stm32L4 (0x50040000, RM0351
+shape: DEEPPWD/ADVREGEN wake, ADSTART, close by ADDIS), and SAADC-backed
+wrappers on both nRF boards (nRF9160 gains its SAADC section at
+0x4000E000, non-secure id 14; the EasyDMA result word lives at sram-top
+minus 320, below the SPIM rx buffer at minus 256). Five of nine boards
+now carry `AdcUnit`. Esp32C6 is the one remaining candidate: its SAR ADC
+register map is not verifiable from anything in-tree, so it was left
+alone rather than guessed; Fe310, Pi4 and QemuVirt have no on-chip ADC.
+boards-test 9 green, 161 sub-tests.
 
 **`Flash` shipped 2026-07-16 (blu)** -- it was the highest-value single
 piece of this design, and it is the first peripheral to get the full
@@ -275,6 +287,39 @@ SPI handle is a compile error" is then literally true, using only
 the checker that exists today. Wake from deep sleep re-enters
 `opening` (MCU reset semantics), which matches the linear story:
 nothing survives, so nothing can dangle.
+
+**BUILT 2026-08-20 (root, main 17831; rulings queue 15 ruled (a) by
+Damian).** `Board.codex` carries `Board (pwr-base) (scb-base)` (the two
+register blocks sleep entry programs), `board-open`/`board-close` (pure;
+close is the mundane disposal a program that never sleeps needs), and a
+Deep Sleep section: `sleep-light`, `sleep-deep` (consumes the Board, sets
+LPMS from `SleepConfig.mode` and SCB SLEEPDEEP, RM0351 5.3 shape on the
+Board's own bases, stopping one instruction short of WFI as the L4
+chapter does), `wake-source` (PWR SR1: WUF1-5 -> WakePin, WUFI ->
+WakeTimer, else WakeReset). The five foreword opens and all 33 board
+wrapper opens re-signed to `linear Board, ... -> (linear Board, linear
+H)`. Guards: `errors/hal-sleep-open-handle` (open board, open pin, sleep
+without closing: CDX2063 -- the arm this ruling exists for),
+`errors/hal-board-dup` (CDX2061), `errors/hal-board-leak` (CDX2063),
+`hal-board-sleep` (positive: lpms/SLEEPDEEP readback, wake
+discrimination, sleep-light clears). The 5 hal tests and 16 existing
+refusal arms re-threaded with outputs and codes unchanged; boards-test 9
+green, 161 sub-tests. Gate green, hard fixed point in one pass; the Sut
+came out byte-identical to the depot seed (whole-program DCE never
+reaches the HAL), so no seed moved. **The flash hole is CLOSED (main 17839, 2026-08-20, Damian-directed):
+`flash-open-bank` threads the Board too.** OtaBoot's whole selector
+family (`boot-store`/`boot-mark`/`boot-give-up-store`/
+`boot-run-candidate`/`boot-run`/`boot-commit`) and Lwm2mFirmware's
+download chain (`fw-write`/`fw-stage-block`/`fw-stage-last`/
+`fw-feed-response`) re-signed to take and return it; outputs of
+`ota-boot-rollback` and `ota-lwm2m-loopback` byte-identical.
+`errors/hal-sleep-open-bank` pins the guarantee: deep sleep with an
+unsealed bank is CDX2063. One reusable piece fell out: `board-pair :
+linear Board, a -> (linear Board, a)` in `Board.codex`, the canonical
+destructure-and-rebuild -- a Board returned by a call cannot be placed
+directly into a result tuple (CDX2065), and every threading site that
+returns `(board, value)` goes through it. Every peripheral this design
+names, flash included, now rides the sleep rule.
 
 ### Board chapters -- BUILT (as plain functions, not effect ops)
 

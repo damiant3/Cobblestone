@@ -1,11 +1,14 @@
 Chapter: Identity
+  cites Foreword chapter Ed25519
+  cites Foreword chapter HeapScrub
+  cites Foreword chapter Maybe
 
  To authenticate gives a Text credential token: the active identity,
  but only while the private key is unlocked (key-status), and the empty
  string otherwise. A non-empty answer is therefore proof that the key
- is loaded -- the machine's authentication gate. A cryptographically
- signed token is a richer form and waits on a pinned-key sign
- primitive; it is wanted, not walked back.
+ is loaded -- the machine's authentication gate. Signing with the loaded
+ key is key-sign-bytes below (2026-08-19); a signed credential token
+ over it is not built.
 
  We say:
 
@@ -24,3 +27,51 @@ Section: Operations
   authenticate =
     if key-status == 1 then current-user
     else ""
+
+Section: Signing With The Loaded Key
+
+ 30608 is `identity-key-addr` in the emitter's X86_64Boot: the 32 bytes
+ key-load (syscall 15) copies the seed into and key-zero (syscall 16)
+ clears; 30640 beside it is the loaded flag key-status reads. The address
+ is the kernel's and is repeated here as a number because the foreword
+ cannot cite the compiler.
+
+  identity-key-slot : Integer = 30608
+  identity-key-slot-len : Integer = 32
+  identity-sig-len : Integer = 64
+
+  key-slot-bytes : Integer, List Integer -> List Integer
+  key-slot-bytes (i) (acc) =
+    if i >= identity-key-slot-len then acc
+    else key-slot-bytes (i + 1) (list-push acc (peek-byte identity-key-slot i))
+
+  key-zero-fill : Integer, List Integer -> List Integer
+  key-zero-fill (n) (acc) =
+    if n <= 0 then acc else key-zero-fill (n - 1) (list-push acc 0)
+
+  key-copy-into : List Integer, List Integer, Integer -> Integer
+  key-copy-into (dst) (src) (i) =
+    if i >= list-length src then 0
+    else let w = list-set-at dst i (list-at src i)
+    in key-copy-into dst src (i + 1)
+
+  key-public : [Identity] Maybe (List Integer)
+  key-public =
+    if key-status /= 1 then None
+    else let out = key-zero-fill identity-key-slot-len []
+    in let mark = __heap-save
+    in let pub = ed25519-public-key (key-slot-bytes 0 [])
+    in let c = key-copy-into out pub 0
+    in let s = heap-scrub-to mark
+    in Just out
+
+  key-sign-bytes : List Integer -> [Identity] Maybe (List Integer)
+  key-sign-bytes (msg) =
+    if key-status /= 1 then None
+    else let out = key-zero-fill identity-sig-len []
+    in let mark = __heap-save
+    in let seed = key-slot-bytes 0 []
+    in let sig = ed25519-sign seed (ed25519-public-key seed) msg
+    in let c = key-copy-into out sig 0
+    in let s = heap-scrub-to mark
+    in Just out

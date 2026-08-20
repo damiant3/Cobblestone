@@ -1,0 +1,149 @@
+Chapter: EditKeystrokeCost
+
+  cites Works chapter GopEdit
+  cites Works chapter GopFat16
+  cites Works chapter GopRtc
+  cites Works chapter GopAhci
+  cites Foreword chapter Fat16
+
+ WORKS-19 says a keystroke at the top of a 2.77 MB file shifts the whole tail
+ and then reindexes every line, and it names no cost for either. The two
+ answers want different repairs: a gap buffer for the shift, an incremental
+ index for the reindex, and they are not the same size of change.
+
+ Each operation is timed over MANY repetitions against a one-second clock,
+ because a single one may well be under a second and a null there would be
+ read as "not the cost" when it is only "under my resolution".
+
+ Every loop THREADS its result into an accumulator that is printed. Without
+ that, the first version of this probe reported 2 ms for shifting 2.77 MB a
+ byte at a time, which is 1.4 GB/s and cannot be true: the results were
+ unused and the work was being elided. A number too GOOD to believe is the
+ same finding as one too bad.
+
+ How to run it:
+
+   build/compile.ps1 -Src docs/Probes/edit-keystroke-cost.codex
+     -Out out.cdx -Kernel seed/Codex.cdx -Log out.log
+   Copy-Item seed/Codex.img scratch.img
+   tools/codex-vm.exe -kernel out.cdx -output out.txt -mem 3072
+     -headless -disk scratch.img
+
+Section: The Clock
+
+  clock-try : Integer -> [Device.Port] Integer
+  clock-try (d) = act
+    idle <- rtc-wait-idle rtc-uip-fuel
+    b <- rtc-read rtc-reg-status-b
+    ss <- rtc-read 0
+    mm <- rtc-read 2
+    hh <- rtc-read 4
+    let bin = bit-and b rtc-binary-bit
+    in let s = rtc-decode ss bin
+    in let m = rtc-decode mm bin
+    in let h = rtc-decode hh bin
+    in if idle == 0 then 0 - 1
+    else if s < 0 then 0 - 1
+    else if s > 59 then 0 - 1
+    else if m < 0 then 0 - 1
+    else if m > 59 then 0 - 1
+    else if h < 0 then 0 - 1
+    else if h > 23 then 0 - 1
+    else h * 3600 + m * 60 + s
+  end
+
+  clock-secs : Integer -> [Device.Port] Integer
+  clock-secs (fuel) = act
+    v <- clock-try 0
+    if v >= 0 then v
+    else if fuel <= 0 then 0 - 1
+    else clock-secs (fuel - 1)
+  end
+
+  wait-edge : Integer -> [Device.Port] Integer
+  wait-edge (s) = act
+    n <- clock-secs 200
+    if n /= s then n else wait-edge s
+  end
+
+  self-test : Integer -> [Device.Port] Integer
+  self-test (d) = act
+    a <- clock-secs 200
+    b <- wait-edge a
+    c <- wait-edge b
+    e <- wait-edge c
+    e - a
+  end
+
+Section: The Arms
+
+  many-reindex : Integer, Integer, Integer -> Integer
+  many-reindex (es) (n) (acc) =
+    if n <= 0 then acc
+    else let c = ged-reindex es
+    in many-reindex es (n - 1) (acc + c)
+
+  many-shift : Integer, Integer, Integer, Integer, Integer -> Integer
+  many-shift (buf) (top) (at) (n) (acc) =
+    if n <= 0 then acc
+    else let m = ged-shift-up buf at top
+    in many-shift buf top at (n - 1) (acc + m + peek-byte buf 1)
+
+  rows-of : Integer, Integer, Integer, Integer -> Integer
+  rows-of (es) (rows) (i) (acc) =
+    if i >= rows then acc
+    else let t = ged-line-text es i 120
+    in rows-of es rows (i + 1) (acc + text-length t)
+
+  many-linetext : Integer, Integer, Integer, Integer -> Integer
+  many-linetext (es) (rows) (n) (acc) =
+    if n <= 0 then acc
+    else let t = rows-of es rows 0 0
+    in many-linetext es rows (n - 1) (acc + t)
+
+  per-op-ms : Integer, Integer -> Integer
+  per-op-ms (secs) (n) = if n <= 0 then 0 - 1 else secs * 1000 / n
+
+Section: Entry
+
+  opening : [Console, Device.Port, Device.Block] Nothing
+  opening = act
+    warm <- clock-secs 200
+    st <- self-test 0
+    print-line-uni ("clock self-test: 3 edges read " & show st & " s (3 is correct)")
+    m <- gfat-mount-esp
+    if m.gm-ok == False then print-line-uni "MOUNT failed"
+    else act
+      let vol = m.gm-vol
+      in let es = alloc-zeroed 64 64
+      in let i0 = ged-init es
+      in act
+        got <- gfat-read-file-bulk vol "SOURCE.SRC" (ged-buf es)
+        let p = poke-32 es 8 got
+        in let c0 = ged-reindex es
+        in act
+          print-line-uni ("loaded bytes=" & show (ged-size es) & " lines=" & show (ged-count es))
+          let reps = 400
+          in act
+            t0 <- clock-secs 200
+            let r1 = many-reindex es reps 0
+            in act
+              t1 <- clock-secs 200
+              let r2 = many-shift (ged-buf es) (ged-size es - 1) 0 reps 0
+              in act
+                t2 <- clock-secs 200
+                let r3 = many-linetext es 30 reps 0
+                in act
+                  t3 <- clock-secs 200
+                  print-line-uni ("reindex   " & show (t1 - t0) & " s over " & show reps & " = " & show (per-op-ms (t1 - t0) reps) & " ms each")
+                  print-line-uni ("shift-up  " & show (t2 - t1) & " s over " & show reps & " = " & show (per-op-ms (t2 - t1) reps) & " ms each")
+                  print-line-uni ("30 rows   " & show (t3 - t2) & " s over " & show reps & " = " & show (per-op-ms (t3 - t2) reps) & " ms each")
+                  print-line-uni ("accumulators, proof the work was not elided: " & show r1 & " " & show r2 & " " & show r3)
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end

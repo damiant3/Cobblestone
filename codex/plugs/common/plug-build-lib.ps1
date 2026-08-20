@@ -146,7 +146,7 @@ function Build-PlugCdx {
         [string]$Survey = ''
     )
     $compileScript = Join-Path $script:PlugBuildRepo 'build' 'compile.ps1'
-    $compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile)
+    $compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile, '-Kernel', (Join-Path $script:PlugBuildRepo 'seed' 'Codex.cdx'))
     # Phase decks are fixed generous floors under demand paging; the old
     # type-density check-mul pin is gone with the survey system.
     & pwsh @compileArgs 2>&1 | Out-Null

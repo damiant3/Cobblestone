@@ -39,6 +39,26 @@ measurement through it, and a merge-down invalidates every plug binary it
 touches.** `build/plug-oracle-test.ps1` refuses a stale binary now; nothing
 else does.
 
+**AND UNTIL 2026-08-19 NO PLUG WAS BUILT BY THE SEED AT ALL, which is why
+two agents got opposite answers from the same source on the same day.**
+`Build-PlugCdx` called `compile.ps1` with no `-Kernel`, and that default is
+`build-output/bare-metal/Codex.cdx`, whatever the last `build.ps1` left
+there. So the compiler behind every plug binary was a workspace property,
+not a depot fact: val's was three days old (`D230B11D`), reek's was one day
+old (`318B2BF6`), the depot seed was `EB864BEB`, and none of them agreed.
+val's typescript arm faulted `!EXC=06` where reek's passed 49 of 49, on
+identical source, and both readings were void. It also made every "rebuilt
+against the current seed" in this register's history untrue, reek's included
+and twice on 2026-08-19.
+
+The plug build passes `-Kernel seed\Codex.cdx` explicitly now
+(`plugbuildlibScript.codex`, regenerated). Measured across the change: every
+one of the six binaries is 360 bytes LARGER seed-built than
+build-output-built, so the two compilers really do emit different code, and
+all six still pass 49 of 49. It also makes the seed staleness refusal above
+exactly right rather than approximate: the artifact it compares against is
+now the artifact the build actually uses.
+
 **STALE HAS TWO HALVES AND THE HARNESS ONLY KNEW ONE UNTIL 2026-08-19.** It
 compared the binary against the `.codex` beside it, which catches an edited
 emitter and misses the other case entirely: **a plug binary newer than every
@@ -55,6 +75,212 @@ reads as agreement.** The harness now refuses a binary older than
 fails, restore it and it passes.
 
 **Zig ownership, SETTLED by Damian 2026-08-18:** `codex/plugs/zig/` is ORDINARY FLEET CODE and is edited like any other plug. Steve Howell had it for his early updates, those updates are absorbed, and the loan is over (Damian, 2026-08-18). Credit him in a CL that changes what he wrote and flag it in the next GitHubUpdate, which is courtesy rather than a gate. This supersedes both earlier readings: the 08-16 "not a fleet edit" rule AND the "ours to gate loosely, no rigour beyond a smoke" relaxation that replaced it. The plug is held to the same standard as its neighbours. The dispute paragraph that stood here from 16984 (two live docs disagreeing; fleet edits 16366, 16409, 16627, 16981 already landed under the "ours" reading) is gone with the dispute.
+
+## 1.47 -- CLOSED: every finite saturating real op on arm64 returned its LEFT OPERAND
+
+Fixed 2026-08-19, fester. Same family as 1.44 and one layer down: 1.44 was
+the clamp never firing, this is the clamp firing and the ANSWER never
+reaching the caller.
+
+Both saturating emitters skipped the clamp with a forward branch, so the
+write to the result register sat on a path a finite result never takes. The
+mov-elimination peephole then folded the caller's `mov x0, rd` into that
+skipped instruction and deleted the mov, and the `b.ne` jumped straight over
+the only thing that wrote `x0`. Measured on the shipped plug, no local change
+involved: `sat64 2 3` answered **2** and `sat64 5 0` answered **5**, while
+riscv64 and x86 answered 6 and 0. It was correct only when the result
+overflowed to an infinity.
+
+**Read off the instruction stream, not inferred.** `sat64` disassembled to
+`fmul d0,d0,d1` / `fmov x13,d0` / exponent extract / `cmp x9,#2047` /
+`b.ne +24` / ... / `sub x0,x13,#1` / epilogue. The `sub` writing `x0` rather
+than `x13` is the fold, visible in the encoding, and `b.ne +24` lands past it.
+
+**Why no test saw it.** A saturating op is written for the overflow, so the
+tests written for it overflow. `real-approx-modes` has three overflowing
+lines and one finite line, and the finite line was masked by the accidental
+identity of an unpatched call. `codex/test/ops/real-saturating-finite` is now
+nine finite cases, every answer a whole number equal to neither operand, with
+add, subtract and multiply in both argument orders so returning-left and
+returning-right are distinguished rather than merely detected.
+
+The fix is a branchless `csel` clamp: the result is written on every path, so
+there is nothing for a fold to land behind. Measured neutral on the lane --
+the arm64 cross battery's failure set is IDENTICAL with the stock plug and
+with the fix, 30 either way, on the same box and seed.
+
+## 1.50 -- four x86 port-I/O tests fail on both lanes where a refusal is the honest answer
+
+`dhcp-acquire` and `port-in-32-width` (`port-out-32`), `heap-bracket-shape`
+(`port-out-byte`) and `vbe-mode-set` (`port-out-16`) are FAIL_COMPILE with an
+`[UNSUPPORTED]` naming the builtin, on arm64 AND riscv64. They were failing
+before that flip too, silently and with a wrong answer instead of a cause, so
+this is not a regression; it is the same failure finally saying why.
+
+x86 port I/O cannot exist on either board, so the honest state is
+PASS_REFUSED, which means a `.cross-refusal` sidecar each. It was left out of
+the step-0 CL deliberately: whether a test is MEANT to be portable is a
+judgement per test, and four of those judgements do not belong inside a change
+about the refusal mechanism. Four sidecars, four decisions, one small CL.
+
+## 1.52 -- the csharp plug's heap pointer boots at 0, the defect PR 75 fixed for zig
+
+Reported by Steve Howell in PR 75 (source-read only) and verified here
+2026-08-20 (red): `CSharpEmitter.codex:660` emits `static long _ptr = 0;`
+and `heap_save() => _ptr` (line 674), so `__heap-save` answers 0 on the
+first call where bare metal boots its bump pointer at 6291456 (`mov r10,
+6291456`) and never mints address 0. `arith-narrow-proven` asserts
+`__heap-save > 0` as a structural heap-address fact and would answer
+`mark-zero` through this plug; the zig plug answered exactly that until
+PR 75 booted `cx_hp` at the bare-metal base (landed 2026-08-20). The DDC
+witness runs through this plug and passed byte-identical, so the compiler
+itself never observes the absolute value; the exposure is any subject
+that does. The fix is the zig plug's, one line. His words: "Its witness
+path stops at 'compiles', so it can never catch this itself."
+
+## 1.51 -- the three .NET UI plugs emit C# that does not compile, and this is the first time any of them was compiled
+
+Found 2026-08-19 (reek) while reading 1.14's "class 1 by mechanism, NOT
+applied" row for `maui`, `wpf` and `winforms`. That row parks the three
+because "the UI-bound output needs a dispatcher hop nobody here can
+measure". The dispatcher question is real but it is not the blocker, and it
+is not what a compiler says first: **all three emit C# with hard syntax and
+name errors, and .NET 9 plus the `maui-windows` workload are both on this
+box, so all three CAN be compiled here.**
+
+Measured by `dotnet build`, one scaffold per plug, the oracle subject
+(`codex/test/plug-oracle-arith.codex`) as input:
+
+| plug | result | errors |
+|---|---|---|
+| `wpf` | Build FAILED | 7: `list_snoc` undefined, 6 x CS0149 |
+| `winforms` | Build FAILED | 7: `list_snoc` undefined, 6 x CS0149 |
+| `maui` | Build FAILED | 8: `list_snoc` and `int_mod` undefined, 6 x CS0149 |
+
+**CS0149 "Method name expected" is an immediately-invoked lambda with no
+delegate cast.** C# cannot invoke a lambda expression directly, and the
+emitters write `((dynamic x) => (x + 100L))(n)`. The shape is not uniformly
+wrong, which is the useful part: the ZERO-argument form IS cast
+(`((Func<dynamic>)(() => { ... }))()` compiles), so each emitter knows the
+rule for one arity and not for the others. Six sites per plug, all of them
+lambdas with parameters.
+
+**CS0103 is a missing builtin arm** and it is the half `check-plug-builtins`
+exists to catch. **None of these three plugs is wired into that check**
+(1.32 covers eleven, now twelve with `fortran`), which is exactly why a
+builtin that reaches the wire with no arm survived here.
+
+**BOTH DEFECTS ARE FIXED (reek, 2026-08-19) and all three now COMPILE.**
+The lambda takes a `Func<>` cast sized to its parameter count, and the
+missing arms are defined: `list_snoc` in all three and `int_mod` in `maui`,
+each a copy-then-append like the `list_push` beside it, which is the
+capacity-aware standard 1.7 sets (an unconditional in-place append is the
+defect; a copy is always sound). Measured by `dotnet build` on the same
+scaffolds: **wpf 7 errors to 0, winforms 7 to 0, maui 8 to 0.**
+
+**WIRING THEM INTO `check-plug-builtins` IS NOT MECHANICAL, and the sentence
+that said so was mine and was wrong.** Run the check's own extraction over
+these three and it does not work:
+
+| plug | extracts | what it got |
+|---|---|---|
+| `wpf` | **0** | no table exists to find |
+| `winforms` | **0** | no table exists to find |
+| `maui` | **53** | C# KEYWORDS, from a reserved-word list |
+
+`wpf` and `winforms` would trip the floor of 20 and refuse loudly, which is
+the floor being right. **`maui` is the dangerous one**: 53 junk names clear
+the floor, and every wire builtin would then read as missing. Its real list
+is `maui-builtin-names : List Text =` with the `[` on the NEXT line after
+`sort-by`, and the extraction opens only on `builtin-names\s*=\s*\[`, so
+the list never opens and a reserved-word `n == "x"` chain is what the
+pattern finds instead.
+
+**There is a FOURTH registration shape here and it is worth naming: the
+emitted prelude IS the table.** `wpf` and `winforms` have no name list at
+all; a builtin is covered exactly when their C# prelude happens to define a
+function with the mangled name, which is why `list_snoc` was called and
+never defined and why only a compiler could see it. Modelling that shape
+means extracting `static <type> <name>(` from the prelude strings and
+unmangling `_` to `-`.
+
+**DONE, and all three are wired (reek, 2026-08-19).** Fifteen plugs are
+checked now against twelve. Two changes, both in
+`checkplugbuiltinsScript.codex`: the fourth pattern, GATED to these three
+plugs by name so it cannot inflate a table-shaped plug's extraction and mask
+a real gap there; and the list-open pattern relaxed from
+`builtin-names\s*=\s*\[` to `builtin-names\s*=`, which is what lets `maui`'s
+list open at all. **Relaxing it was measured against the other twelve before
+it was made: all twelve extract exactly the same count either way.**
+Extractions after the change: `wpf` 36, `winforms` 147, `maui` 122, every one
+clear of the floor of 20.
+
+**All three were proved capable of failing.** Renaming `list_length` in each
+plug's prelude reports exactly `wpf list-length`, `winforms list-length` and
+`maui list-length` and exits 1, one plug at a time; restored, the check
+returns to OK. That matters more here than for the table shapes: a prelude
+extraction that silently matched nothing would still have cleared the floor
+on the other names.
+
+**A caution about the maui measurement, because the first run of it was
+vacuous.** `codex/plugs/maui/build-output/CodexApp` is a scaffold that does
+NOT contain the emitted code: building it as shipped reports "Build
+succeeded, 0 Errors" while compiling no Codex output at all. The emission
+has to be copied in as `MainPage.xaml.cs` before the build means anything.
+A green from that directory is a green about the scaffold.
+
+**What this says about the 42 read-and-not-run plugs.** Three of them were
+compilable on this box the whole time and nobody had compiled them. The
+count of plugs "whose runtime is not on this box" is a claim about
+RUNTIMES; it was silently doing duty as a claim about TOOLCHAINS, and for
+these three the toolchain was here. Before recording any plug as
+unrunnable, ask the narrower question first: can it be COMPILED here, which
+is most of the value and none of the UI problem.
+## 1.49 -- three arm64 tests passed at 03:36 on 2026-08-19 and fail now, and it is NOT the plug
+
+`ecdsa-cert` and `tls-cv-schemes` run to the battery's 90 s ceiling
+(92.8 s / 92.9 s, 10 of 18 and 18 of 23 lines) and `ttt-perfect` produces no
+UART output at all (12.8 s). In the 03:36 run the same three passed in 12.6 s,
+17.7 s and 2.1 s. `test-output-cross/history/arm64_20260819-033625.md` is the
+baseline and it is still on disk.
+
+**The plug is exonerated, measured rather than argued.** A battery run with
+the STOCK plug rebuilt on the current seed, on this box, fails all three with
+the same numbers, and the failure set is identical to a run with 1.47's fix
+in. Three separate batteries agree to the decisecond, which is also why this
+is not contention: contention does not reproduce that precisely.
+
+**`ttt-perfect` does the same thing on riscv64**, measured 2026-08-19 in the
+cross battery: FAIL_RUNTIME, no UART output, 12.9 s against 12.8 s on arm64.
+Two independent plugs and two independent emulators producing the same shape
+to the decisecond takes the plug layer out of it entirely.
+
+**The cause is NOT identified and should not be guessed at.** The seed moved
+between the two runs (workspace seed went to change 17315 that morning), which
+makes it the obvious suspect and nothing more than that. Run alone with a
+200 s ceiling all three PASS, so it is a slowdown rather than a wrong answer,
+and `ttt-perfect`'s silence is a third shape again. Whoever takes this should
+start by bisecting the seed against that baseline file rather than by reading
+the plug.
+
+## 1.48 -- the mov-elimination peephole is still unsound in the general case
+
+`a64-peephole-mov-elim` (`Arm64CodeGen.codex`) folds `mov Rd, Rm` into the
+preceding instruction whenever that instruction's `Rd` matches. That is
+sound only while the preceding instruction runs on every path reaching the
+mov. 1.47 was one emitter with that shape; nothing stops the next one.
+
+The obvious guard is to collect the function's branch targets in one pass and
+refuse the fold when the mov is one of them. **That was written and withdrawn**
+on 2026-08-19, not because it was wrong but because it was never shown to be
+needed anywhere else, and a global change to the optimizer earns its keep only
+against a second instance. Fixing the emitter shape costs nothing elsewhere;
+guarding the optimizer touches every function on the lane.
+
+So this stays open as a KNOWN hazard rather than a fix: if a second emitter is
+found ending in a conditionally-skipped write, guard the peephole then, and the
+branch decode (imm26 for `b`, imm19 for `b.cond`/`cbz`/`cbnz`, imm14 for
+`tbz`/`tbnz`, all counted in instructions from the branch) is the whole of it.
 
 ## 1.42 -- CLOSED: a unit constructor was emitted as a CALL on both plug lanes, and it resolved to nothing
 
@@ -354,11 +580,70 @@ catch-all, a guarded tuple payload; rows 41-49 of the truth). Measured through
 | csharp | PASS 40 | FAIL, the emitted program does not build: CS8510 "pattern is unreachable" three times on the switch expression |
 | typescript | PASS 40 | FAIL, the emitted program does not compile, and it is TWO defects: the guards are dropped (`else if (true)` for a guarded catch-all), AND `type Val = { _tag: "Num" } \| { _tag: "Pair" } \| { _tag: "Nil" }never;` -- the first VARIANT type this subject has ever carried, and the emitter writes `never` with no separator after the last alternative |
 
-Python and wasm are the shape the issue names, a wrong answer with no refusal;
-csharp and typescript happen to refuse only because two arms share a
-constructor. The remaining ~40 text plugs are not wired to the oracle and are
-presumed to share the drop; the zig fix is the worked shape (an if-chain with
-bindings before the guard, and `unreachable` after a non-catch-all tail).
+constructor. The remaining text plugs are not wired to the oracle; the zig
+fix is the worked shape (an if-chain with bindings before the guard, and
+`unreachable` after a non-catch-all tail).
+
+**THE PRESUMPTION IS NOW A MEASUREMENT (reek, 2026-08-19): 39 of 45
+source-emitting plugs DROP the guard, and the 6 that keep it are exactly the
+6 the oracle certifies.** The oracle cannot reach the other 39 because it has
+to RUN the output and their runtimes are not here. It does not have to: a
+dropped guard is visible in the EMITTED SOURCE. Every plug was rebuilt on the
+current seed, `codex/test/plug-oracle-arith.codex` emitted through it, and the
+`classify` body read for a comparison against 100, which only the guarded arm
+`is Num (n) when n > 100 -> 2` can produce.
+
+    KEPT (6)     csharp javascript python typescript wasm zig
+    DROPPED (39) ada angular babbage clojure cobol compose d electron elixir
+                 flutter fortran go groovy gtk haskell html java julia kotlin
+                 lua maui nim objc ocaml pascal perl php qt react ruby rust
+                 scala scheme svelte swift swiftui vue winforms wpf
+
+**The six KEPT are the six the oracle passes at 49 of 49, which is the
+control**: two independent instruments, one that runs the program and one
+that reads the text, agreeing exactly on which plugs are fixed.
+
+**Two markers were wrong before this one, and both would have published a
+number.** Searching the whole output for `> 100` reports `wasm` as dropped,
+because WAT writes `(i64.gt_s ... (i64.const 100))` and never `> 100`: 38
+dropped, one of them a plug I had fixed myself. Counting standalone `100`
+anywhere in the file reports `fortran` as KEPT, because 100 appears in its
+prelude: 44 kept, against a `classify` I had read with my own eyes and knew
+was unguarded. Only scoping the search to the `classify` body agrees with
+both controls. A census keyed on one syntactic form across 39 languages is
+the trap this register already names for name censuses, twice over.
+
+**STAGE 2 OPENS: the browser family is fixed (reek, 2026-08-19), 6 of the 39.**
+`react`, `html`, `vue`, `svelte`, `angular` and `electron` all chained their
+arms with `else`, and the guard needs the pattern BINDINGS, which sit inside
+the block. So the guard could not go in the condition and there was nowhere
+else for it to go. Sequential `if` blocks give a failed guard somewhere to
+fall to; an else-chain cannot. Each arm is now
+`if (cond) { binds if (guard) { return body; } }`, which is the zig shape in
+JavaScript.
+
+Verified by the census instrument that found them: all six read GUARD KEPT
+where all six read dropped before. **Five of the six also PARSE**, checked
+with `node --check` on the emitted JavaScript (`react` and `angular`
+directly, `vue`, `svelte` and `electron` through their `<script>` block).
+
+**`html` does not parse, and it did not parse before either**: its script
+block declares `const __seq` twice in one scope, byte-identical error at the
+same line in the pre-change output. That is the compiler's sequencing binding
+emitted as a fresh `const` per use, and it is a separate defect from guards.
+Recorded here rather than fixed in a guard CL.
+
+`react` also carried a second defect this fixed for free: the non-exhaustive
+`throw` was INSIDE the last arm's block, so it fired when that arm's
+condition failed rather than when every arm had. With a trailing catch-all it
+was dead code. **It was NOT a syntax error, which is what I first wrote:
+`node --check` accepted the old output, and the check is why that claim did
+not ship.**
+`cobol` needed reading rather than grepping and is the clearest specimen:
+its `EVALUATE` emits `WHEN TAG-NUM` three times with nothing to tell the arms
+apart, so the first always wins and `classify(Num(500))` answers 1 where the
+truth is 2. `fortran` emits the same shape as three nested
+`if (v%tag == TAG_Num)`.
 
 The typescript `never` is separate from guards and would have failed on any
 variant type; it is recorded here because the subject found it and nothing else
@@ -933,10 +1218,52 @@ What remains open:
      subroutine by construction and could not return anything. The shapes
      are genuinely exclusive: pre-17389 statement position was legal and
      value position was not, now it is the other way round, and no single
-     emission serves both. It wants a generated subroutine wrapper
-     (`counted_s`) called with `call`, or a typed discard variable declared
-     per scope. `counted "discard"` is in the probe so the gap has a
-     subject.
+     emission serves both.
+
+     **CLOSED with the wrapper (reek, 2026-08-19), and it took the flag the
+     two-places bug should have had all along.** `ArityEntry` gained
+     `is-effect-fn`, computed beside `is-proc` from the same predicate, so
+     the question "is this def effectful and value-returning" is answered in
+     ONE place and read wherever it is needed. Every such def is emitted
+     twice, as the function and as a `_s` subroutine that calls it and drops
+     the answer, and a statement that discards emits `call counted_s(...)`.
+     `counted "discard"` is in the probe, which now emits legal Fortran end
+     to end.
+
+     Measured: 4 wrappers in the probe for its 4 effectful value-returning
+     defs, none for `shout`, which is unit-returning and stays a plain
+     subroutine; all eight stock outputs BYTE-IDENTICAL and **0 wrappers**
+     in them, which says again that nothing in `codex/plugs/test-input/`
+     has a def of this shape.
+
+     One cost, stated rather than hidden: the wrapper is emitted for every
+     effectful value-returning def whether or not anything discards it, so
+     an unused one is dead code in the output. Emitting it on demand needs a
+     use scan the plug has no machinery for, and an unused module procedure
+     is legal.
+
+     **THE MERGE HAZARD IS CLOSED FOR THE SHAPE THAT PRODUCES IT (reek,
+     2026-08-19), and it did not need a refusal or an effect analysis.** An
+     act BIND emitted `name = <expr>` directly, so any control flow on the
+     right went through the value-position emitter and came out as
+     `merge()`. `fort-emit-assign` already lowers `IrIf`, `IrMatch` and
+     `IrLet` to statements that assign a target, and it is exactly what a
+     bind wants, so the bind now calls it. `r <- (if c then print-line-uni
+     msg else print-error-uni msg)` emits a statement `if`/`else` assigning
+     `r`, one arm evaluated, instead of a `merge` that ran both. Merge over
+     an effectful arm in the probe: **2 to 0.**
+
+     Containment: all eight stock outputs BYTE-IDENTICAL, because nothing
+     in `codex/plugs/test-input/` binds a control-flow expression in an act
+     block. The probe is the only thing that shows it, which is the second
+     time this stage has needed a written subject to see a real defect.
+
+     **What is left of the hazard, and it is narrower.** An `if` nested
+     inside a larger expression (`f (if c then a else b)`) still emits
+     `merge`, and `merge` still evaluates both arguments. That shape needs
+     a hoisted temporary, which is the machinery stage 4 correctly avoided
+     for subscripts and would genuinely need here. The paragraph below is
+     the original statement of the hazard and stands for that case.
 
      **One hazard the builtin change creates, and it is worth stating
      plainly.** An
@@ -2132,9 +2459,23 @@ was worse than the row's model of a gap: it emitted a paragraph that RUNS and
 answers zero rather than a call COBOL cannot resolve. Closed at 16837 with
 the account.
 
-**THREE PLUGS THAT WRITE THIS SHAPE ARE STILL OUT, each for a different
-reason.** `fortran` extracts 50 and belongs to 1.7, which measures it against
-a wider subject. `riscv` is fester's lane (1.3 family). **`babbage` extracts
+**`fortran` IS WIRED (reek, 2026-08-19), twelve plugs now against eleven.**
+It was held out because 1.7 measures it against a wider subject, which is a
+reason to keep measuring it there and not a reason to leave this check blind
+to it. Read name by name as the doctrine requires: **55 extracted against a
+46-name table**, and the row's old figure of 50 is superseded rather than
+disputed, since 1.7 has since added `n == "x"` arms the extraction sees. The
+nine surplus are `__narrow`, `True`, `False` and `Nothing`, which this plug
+really does answer, plus the five TYPE names `Boolean`, `Character`,
+`Integer`, `Real` and `Text`, which are not declared builtins and so can
+never reach the wire or mask a gap. Green at 7 on the wire, 0 gaps.
+
+**The green was proved capable of failing.** Replacing `list-length` in
+`fort-builtin-names` with a name that is not a builtin reports exactly
+`fortran list-length` and exits 1; restored, the check returns to OK.
+
+**TWO PLUGS THAT WRITE THIS SHAPE ARE STILL OUT, each for a different
+reason.** `riscv` is fester's lane (1.3 family). **`babbage` extracts
 12 and FAILS the floor of 20, and the floor is right.** The Analytical Engine
 has no text and no list, so `list-at`, `list-length`, `list-push` and
 `list-snoc` are absent from that table on purpose and `babbage` answers them
@@ -2203,7 +2544,42 @@ its main thread 1 MB.
 2026-08-16), which is the handoff if this changes hands. It carries the
 inventory of all 54 entry points, the measurements, and the order.
 
-**EVERY PLUG THIS BOX CAN EXECUTE PASSES, AND THE ARM IS WIRED.** The probe
+**Re-measured 2026-08-19 (val) before closing the campaign rather than
+inherited (L-GREEN): plug-oracle is 6 of 6, 49 values each.** The harness
+first refused every arm because **all six plug binaries were STALE**, their
+emitter sources newer than the binaries it would have scored, so nothing had
+re-scored these arms since those emitters last moved. Rebuild all six before
+reading this row as green.
+
+**A red I published from this row on 2026-08-19 was WRONG and is retracted.**
+It said the typescript arm failed, "the plug emitted nothing" with the guest
+dying on `!EXC=06` at RIP `0x12857f`, and it carried a three-row table
+claiming the seed and the VM had been ablated away. The failure was real and
+the diagnosis was not: **every one of those three rows built the plug with the
+same kernel**, so the table was one configuration run three times and never an
+ablation at all.
+
+**The trap, and it is `CLAUDE.md`'s own under R-GATE.**
+`codex/plugs/common/plug-build-lib.ps1` invokes `build/compile.ps1` with NO
+`-Kernel`, and with no `-Kernel` that script falls back to
+`build-output/bare-metal/Codex.cdx` (`compile.ps1:57`) -- which is neither the
+SUT nor the seed, and holds whichever kernel ran last. Here it held
+`D230B11D`, three days stale, and syncing `seed/Codex.cdx` backwards and
+forwards never touched it. Point the fallback at the depot seed and the same
+plug source passes 49 of 49.
+
+**So every plug in this tree was built against whatever kernel happened to be
+sitting in `build-output/bare-metal/`,** a reproducibility gap in the plug
+build rather than a defect in any plug: two agents could build the same plug
+source and get different binaries with no flag distinguishing them and nothing
+printed. **CLOSED by reek at main 17514**, which makes `Build-PlugCdx` pass
+`-Kernel seed`. reek's reading confirms the shape from the other side: their
+stale bare-metal kernel was `318B2BF6` where val's was `D230B11D`, so the two
+of us were building different binaries from identical source and each read the
+other's environment as the variable. Seed-built binaries come out 360 bytes
+larger and are still 6 of 6 at 49 of 49.
+
+**The claim, re-measured and standing.** The probe
 is a `Deep recursion` section in `codex/test/plug-oracle-arith.codex`; the
 truth set goes 28 values to 33. `csharp` and `zig` already carried a 512 MB
 thread; `python` needed one line (`sys.setrecursionlimit`, NOT the thread);
@@ -2235,12 +2611,45 @@ available is set by `ulimit -s`, the linker's stack reserve or
 and is NOT ablated** -- python read as class 1 from the outside and was a
 counter, which is the standing reason not to trust one.
 
-**No new runtime has appeared, measured 2026-08-18 (reek).** A PATH census of
-37 candidate interpreters and compilers answers with exactly five binaries:
-`python`, `node`, `wasmtime`, `dotnet`, `zig`. That is the six oracle
-arms already wired (`node` carries both `javascript` and `typescript`)
-and not one of the 42 parked plugs. Re-run the census before reading this row
-as blocked, rather than carrying this sentence forward (L-COUNT).
+**No new runtime has appeared. Re-measured 2026-08-19 (val), 49 candidates,**
+and the answer is the same five binaries reek's 37-candidate census found on
+2026-08-18: `python` 3.11.9, `node` v24.14.0, `wasmtime`, `dotnet`, `zig`.
+Two near-misses worth naming so the next census does not have to re-derive
+them: `python3` resolves to the Windows Store stub, not an interpreter, and
+`R` resolves to a PowerShell ALIAS for `Invoke-History` with an empty source,
+which `Get-Command` reports as found. That is the six oracle arms already
+wired (`node` carries both `javascript` and `typescript`) and not one of the
+42 parked plugs. Re-run the census before reading this row as blocked, rather
+than carrying this sentence forward (L-COUNT).
+
+### What a caller may rely on, per plug (step 5, val 2026-08-19)
+
+These lived only in `PlugDeepRecursion.md` step 3, which is an ACTIVE design
+that goes to `Done/` when the campaign closes. A caller asking "can I recurse
+deeply through the ruby plug" should not have to find an archived design, so
+the divergences are stated here, which is the register the question belongs to.
+
+**Every plug loops SELF tail recursion**, so that shape is safe everywhere and
+is not what any row below is about. What varies is MUTUAL recursion and
+NON-TAIL depth, which no self-TCO pass can flatten.
+
+| class | plugs | what a caller may rely on |
+|---|---|---|
+| **1, fixed** | `csharp`, `zig`, `javascript`, `typescript`, the JVM six (`java`, `kotlin`, `scala`, `groovy`, `clojure`, `compose`), the native seven (`rust`, `d`, `swift`, `swiftui`, `objc`, `ada`, `pascal`) | Deep mutual and non-tail recursion, to a 512 MB stack. Only `csharp`, `zig`, `javascript` and `typescript` are RUN here; the rest are read-and-not-run emissions. |
+| **1 by mechanism, NOT applied** | `maui`, `wpf`, `winforms` | Nothing beyond the default .NET stack. Each calls `opening()` from a UI constructor and collects into `_output`, which the shell binds to the UI thread, so the `csharp` thread needs a dispatcher hop nobody here can measure. |
+| **counter, fixed** | `python`, `gtk` | Deep mutual and non-tail recursion. CPython 3.11 bounds depth by a COUNTER and not by the C stack, so `sys.setrecursionlimit(1000000)` is the whole fix and the thread buys nothing. On CPython 3.10 and earlier the C stack does grow with recursion, so this is version dependent. |
+| **host, nothing in the plug** | `wasm` | The module is correct and the HOST's stack is the constraint. `wasmtime run -W max-wasm-stack=268435456` answers every row; the default traps `call stack exhausted` after three. |
+| **2, the runtime grows the stack** | `go`, `elixir`, `haskell`, `perl`, `php`, `scheme` | Deep recursion, by the runtime's own mechanism (goroutine stacks to 1 GB; a BEAM process stack on the heap; GHC's heap stack bounded by `-K`; heap interpreter stacks in perl and php; heap continuations in every common scheme). **All six are READINGS of the mechanism, not measurements** -- none of these runtimes is on this box. |
+| **3, recorded divergence** | `ruby`, `julia`, `lua`, `ocaml`, `nim`, `cobol`, `flutter`, `fortran`, `electron`, `qt`, and the browser targets `angular`, `react`, `vue`, `svelte`, `html` | **Self recursion only.** Do not rely on mutual or non-tail depth past the host's stack. In each the lever is outside the emitted source: an environment variable (`RUBY_THREAD_VM_STACK_SIZE`), a build constant (`LUAI_MAXSTACK`), the process (`ulimit -s` for `ocaml` and `fortran`, plus fortran's linker reserve and `OMP_STACKSIZE`), a fixed spawn size (`julia` tasks, Dart isolates), no thread concept at all (`cobol`), or an engine the program does not own (`qt`'s QML engine, Chromium's renderer for `electron` and the five browser targets). |
+
+**Two cautions this table must carry, because the campaign paid for both.**
+`javascript` was the obvious class-3 candidate and turned out to be class 1:
+node's `--stack-size` is a process flag, but `worker_threads` takes
+`resourceLimits.stackSizeMb` from inside the program. And `python` read as
+class 1 from the outside and was a counter. **So a class assignment made by
+mechanism alone is a reading**, and every class-2 and class-3 row above is
+exactly that. The ablation that settles one is cheap and is written down in
+the design: apply each half alone and see which the failure follows.
 
 What remains of this row is measurement when a runtime appears. Order and classes (the design's rule: class by the language's
 mechanism, and say so as a reading): JVM family (`java`, `kotlin`, `scala`,
@@ -2369,6 +2778,27 @@ is the honest reason to do the rest: the harnesses run at `-Jobs 8`, where
 eight pegged cores are contention that does show up as wall clock. It is not
 worth having as a wall-clock claim on a single run, and a CL that says the
 run got faster would be wrong.
+
+**CLOSED for this lane (reek, 2026-08-19). Re-measured rather than counted
+forward, and "six remain" was wrong in both directions.** Six of the ten
+sites carry the bulk write now; **four still carry the per-byte add**, and
+they are exactly the four this row's own triage excludes:
+`codex/plugs/javascript/run.ps1` and `codex/plugs/wpf/run.ps1`, which
+receive text, and `codex/plugs/recheck/kill-rate.ps1` and
+`codex/plugs/recheck/sweep.ps1`, which are that lane's files.
+
+**The triage is now measured for the two plug sites rather than asserted.**
+`javascript` receives 6,067 bytes for the oracle subject and 6,971 for
+`builtin-reach`; `wpf` receives 15,228 for the oracle subject. At single-digit
+to low-double-digit KB the loop is thousands of iterations, not millions, so
+there is no core to buy and the row's rule says leave them. The shape stays
+in the tree in exactly four places, deliberately, and this paragraph is why.
+
+**A method note, because it nearly produced a wrong number here.** Grepping
+the row's own literal (`for ($bi = 0; $bi -lt $n; $bi++)`) finds ONE site;
+grepping the shape (`.Add($buf[$i])`) finds four. The first would have been
+published as "one remains". A census keyed on one syntactic form is the trap
+this register already names for name censuses, and it does not stop at names.
 
 **TWO MORE SITES FIXED (reek, 2026-08-18): `build/run-plug.ps1` and
 `build/boot-arm64.ps1`, the only two remaining that receive a big artifact.**
@@ -2709,13 +3139,36 @@ takes an optional leading minus then digits UNTIL THE FIRST NON-DIGIT and
 answers 0 when there are none, and almost every target's library parse either
 throws or answers a null on exactly those inputs. `winforms` carries the same
 shape under the adjacent name `text_to_int` (`long.TryParse`, so 0 where
-Codex gives 12 for "12ab"); that name is a sixth builtin and outside 1.31.
+Codex gives 12 for "12ab"), but nothing reaches it: see the dead-arm note at
+the end of this row.
 
-What is missing: run the 21-row probe 1.31 used against every plug's INLINE
-arms as well, not only the ones that were bare. The probe is the cheap part;
-it is `codex/plugs/test-input/builtin-reach.codex` narrowed to the five names
-with the edge cases spelled out, and 1.31's account says which six plugs have
-a runtime on this box to execute it against.
+**The INLINE arms are censused too, and they are at parity (reek,
+2026-08-20).** Sixteen
+text plugs had never been named in this row -- angular, compose, electron,
+flutter, gtk, html, java, maui, qt, react, svelte, swiftui, typescript, vue,
+winforms, wpf -- because none of them appears at a builtin DISPATCH site:
+every one arms the five in its PRELUDE, which is the shape this campaign
+fixed everywhere else, and a dispatch census reads that as zero. Read out of
+the prelude text, all five are correct in all sixteen on every row that
+divides them: empty needle leaves `text-replace` unchanged, empty separator
+gives `text-split` one element and the trailing empty field survives, empty
+needle is True for `text-contains`, empty prefix is True for
+`text-starts-with`, and every `text-to-integer` is the hand-rolled
+stop-at-first-non-digit loop rather than a library parse. The browser family
+and `qt` carry byte-identical JavaScript; `swiftui` guards the empty needle
+explicitly (`n.isEmpty || ...`), because Swift's own `contains` answers False
+there.
+
+The three that still lower to a library call inline -- perl `int`, php
+`intval`, ruby `.to_i` -- are the three this row already records as at parity
+as found, and they are: each stops at the first non-digit and answers 0 for
+`""`, `"ab"` and `"-"`.
+
+`winforms`'s `text_to_int` is DEAD, not divergent. The name occurs exactly
+once in the plug, in the prelude blob that defines it; there is no
+`text-to-int` builtin for it to be reached by, and the correct
+`text_to_integer` sits beside it. Delete it if you are next in that file, and
+know it is there before wiring a sixth text builtin.
 
 ## 1.39 -- cobol, staged: all five stages landed; the toolchain is what is left
 

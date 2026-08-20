@@ -1399,7 +1399,7 @@ Section: Check Chapter
   check-rt-no-alloc (st) (expr) (fn) =
    when expr
     is ANameExpr (n) (s) -> if is-rt-unsafe-name (n.value) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses heap-allocating builtin '" & n.value & "'") s)) else st
-    is ABinaryExpr (l) (op) (r) (s) -> let st1 = check-rt-no-alloc (check-rt-no-alloc st l fn) r fn in when op is OpAppend -> __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses text concatenation (&)") s)) is OpAnd -> (if expr-type-recorded-unsorted st1 s then __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses concatenation (&), which allocates") s)) else st1) is otherwise -> st1
+    is ABinaryExpr (l) (op) (r) (s) -> let st1 = check-rt-no-alloc (check-rt-no-alloc st l fn) r fn in when op is OpAppend -> __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses text concatenation (&)") s)) is OpBoolAnd -> st1 is OpAnd -> (when (expr-type-scan st1 s) is BooleanTy -> st1 is ErrorTy -> st1 is otherwise -> __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' uses concatenation (&), which allocates") s))) is otherwise -> st1
     is AIfExpr (c) (t) (e) (s) -> check-rt-no-alloc (check-rt-no-alloc (check-rt-no-alloc st c fn) t fn) e fn
     is ALetExpr (bs) (b) (s) -> check-rt-no-alloc (check-rt-alloc-let-binds st bs fn 0 (list-length bs)) b fn
     is AApplyExpr (f) (a) (s) -> check-rt-no-alloc (check-rt-no-alloc st f fn) a fn
@@ -1717,8 +1717,9 @@ Section: Cost Model 3.3 -- the bounded declaration
   cost-class-rank (c) =
    if c == "none" then 0
    else if c == "fixed" then 1
-   else if c == "linear" then 2
-   else if c == "growing" then 3
+   else if c == "budgeted" then 2
+   else if c == "linear" then 3
+   else if c == "growing" then 4
    else 0 - 1
 
  The growing set is closed under CALLS, which is what makes the refusal
@@ -1761,23 +1762,25 @@ Section: Cost Model 3.3 -- the bounded declaration
    if list-length anns == 0 then st
    else let growing = cost-growing-set st defs
    in let allocating = if cost-any-none anns 0 (list-length anns) then cost-alloc-set st defs else []
-   in check-bounded-loop st defs growing allocating anns 0 (list-length anns)
+   in let over = if cost-any-budgeted anns 0 (list-length anns) then cost-over-set st defs else []
+   in check-bounded-loop st defs growing allocating over anns 0 (list-length anns)
 
-  check-bounded-loop : UnificationState, List ADef, List Text, List Text, List AnnotationNode, Integer, Integer -> UnificationState
-  check-bounded-loop (st) (defs) (growing) (allocating) (anns) (i) (len) =
+  check-bounded-loop : UnificationState, List ADef, List Text, List Text, List Text, List AnnotationNode, Integer, Integer -> UnificationState
+  check-bounded-loop (st) (defs) (growing) (allocating) (over) (anns) (i) (len) =
    if i >= len then st
    else let a = list-at anns i
-   in if a.kind == "bounded" then check-bounded-loop (check-bounded-one st defs growing allocating a) defs growing allocating anns (i + 1) len
-   else check-bounded-loop st defs growing allocating anns (i + 1) len
+   in if a.kind == "bounded" then check-bounded-loop (check-bounded-one st defs growing allocating over a) defs growing allocating over anns (i + 1) len
+   else check-bounded-loop st defs growing allocating over anns (i + 1) len
 
-  check-bounded-one : UnificationState, List ADef, List Text, List Text, AnnotationNode -> UnificationState
-  check-bounded-one (st) (defs) (growing) (allocating) (a) =
+  check-bounded-one : UnificationState, List ADef, List Text, List Text, List Text, AnnotationNode -> UnificationState
+  check-bounded-one (st) (defs) (growing) (allocating) (over) (a) =
    let rank = cost-class-rank (a.body)
    in let span = cost-def-span defs (a.target) 0 (list-length defs)
-   in if rank < 0 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-unknown-class ("'bounded " & a.body & "' on '" & a.target & "' names no class; the lattice is none < fixed < linear < growing") span))
+   in if rank < 0 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-unknown-class ("'bounded " & a.body & "' on '" & a.target & "' names no class; the lattice is none < fixed < budgeted < linear < growing") span))
    else if rank == 0 then (if is-rt-name allocating (a.target) 0 (list-length allocating) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded none but allocates, here or in something it calls") span)) else st)
-   else if rank == 1 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-class-unsupported ("'bounded fixed' on '" & a.target & "' cannot be checked yet: fixed needs a per-builtin allocation class that is not measured. Use 'bounded none' for the no-heap promise or 'bounded linear'") span))
-   else if rank >= 3 then st
+   else if rank == 1 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-class-unsupported ("'bounded fixed' on '" & a.target & "' cannot be checked yet: fixed is the same bytes every call, which no builtin has been measured to be. Use 'bounded budgeted' for a bound the caller names, or 'bounded none' for the no-heap promise") span))
+   else if rank == 2 then (if is-rt-name over (a.target) 0 (list-length over) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded budgeted but allocates past a named bound, here or in something it calls: a builtin whose allocation follows an input, or one bounded by an argument that is not a literal") span)) else st)
+   else if rank >= 4 then st
    else if is-rt-name growing (a.target) 0 (list-length growing)
      then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded " & a.body & " but is inferred growing: an accumulator is copied by & inside a self call, here or in something it calls") span))
    else st
@@ -1797,14 +1800,26 @@ Section: Cost Model -- the none rung
  can decline to write, and a false acceptance is an unchecked promise, which
  is the thing CDX6103 exists to prevent.
 
- The zero-byte builtins are the ones section 3.1 measured against the depot
- seed (DevelopersGuide, "operation / allocation / cost"), plus the accessors
- `punctual` already treats as safe. Everything else, including every builtin
- that has never been measured, sits on the refusing side.
+ The zero-byte set now comes from the REGISTRY rather than from a list kept
+ here. `bs-alloc` on `BuiltinSpec` carries each builtin's measured allocation
+ class, so a measurement widens what `bounded none` accepts by changing the
+ row that names the builtin, next to its type, instead of by editing a
+ literal in the type checker that nothing connects to the table.
+
+ The union with `is-rt-safe-builtin` is deliberate and is not the old list
+ wearing a new coat. That set is `punctual`'s, and it earns its place a
+ different way: those names are no-heap BY CONSTRUCTION, which is why
+ `punctual` may call them at all. The registry's `none` is no-heap BY
+ MEASUREMENT. Two independent grounds for the same claim, and dropping either
+ one would narrow the check for no reason -- the arithmetic and bit builtins
+ are in the first and have never been through the second.
+
+ Everything else, including every builtin whose row still reads `unknown`,
+ sits on the refusing side.
 
   cost-builtin-nonalloc : Text -> Boolean
   cost-builtin-nonalloc (n) =
-   is-rt-safe-builtin n | n == "char-code-at" | n == "char-at" | n == "char-code"
+   is-rt-safe-builtin n | builtin-alloc-by-name builtins n 0 (list-length builtins) == "none"
 
   cost-def-known : List ADef, Text, Integer, Integer -> Boolean
   cost-def-known (defs) (n) (i) (len) =
@@ -1823,9 +1838,15 @@ Section: Cost Model -- the none rung
  exactly as RULE 1 of the growth check found: the boolean route allocates
  nothing and the concatenation route allocates a new value.
 
+ `OpBoolAnd` NEEDS NO LOOKUP, which is the point of it. `OpAnd` has to ask the
+ recorded type because the token is overloaded; the keyword form cannot be
+ anything but boolean, so it answers here without consulting a table that may
+ or may not have been written.
+
   cost-binop-allocates : UnificationState, BinaryOp, SourceSpan -> Boolean
   cost-binop-allocates (st) (op) (s) = when op
     is OpAnd -> when (expr-type-scan st s) is BooleanTy -> False is otherwise -> True
+    is OpBoolAnd -> False
     is OpAppend -> True
     is otherwise -> False
 
@@ -1877,6 +1898,128 @@ Section: Cost Model -- the none rung
    else let grown = cost-alloc-step defs acc 0 (list-length defs) acc
    in if list-length grown == list-length acc then acc
    else cost-alloc-close defs grown (round + 1) rounds
+
+ THE BUDGETED RUNG (ruled 2026-08-19, CurrentPlan 17 and 18). Between "the
+ same bytes every call" and "proportional to the input" sits the shape most of
+ the parsing here actually has: an allocation bounded by something the CALLER
+ can name. `integer-to-text` is bounded by a constant nobody has to state, an
+ `Integer` having at most twenty digits. `substring` is bounded by its LENGTH
+ ARGUMENT, so a four-character field out of a line of any length costs the
+ same 16 bytes, while a slice that grows with the line does not. Measured both
+ ways in `codex/test/cost/builtin-alloc`.
+
+ So the registry word can NAME AN ARGUMENT: `budgeted` alone is bounded by a
+ constant, `budgeted:N` is bounded by the Nth argument counting from the left.
+ A `budgeted:N` call is within budget when argument N is a LITERAL, and over
+ it otherwise. That rule is deliberately blunt: `substring s 0 4` passes and
+ `substring s 0 (text-length s)` does not, which is the distinction the
+ measurement found, but so does any computed length that happens to be small.
+ Abstain toward refusal, as everywhere else here.
+
+  cost-budget-arg : Text -> Integer
+  cost-budget-arg (c) =
+   if text-starts-with c "budgeted:" then text-to-integer (substring c 9 (text-length c - 9))
+   else 0
+
+ `cost-apply-args` above already collects them, and its own note records the
+ convention: arguments come off a curried application OUTERMOST FIRST, so the
+ list is the reverse of source order. That note counts from zero; the registry
+ word counts from one, the way somebody reading `substring s i n` counts, so
+ argument N sits at `count - N`.
+
+  cost-arg-literal : List AExpr, Integer -> Boolean
+  cost-arg-literal (args) (n) =
+   let k = list-length args
+   in if n <= 0 then False
+   else if n > k then False
+   else when list-at args (k - n) is ALitExpr (t) (kk) (s) -> True is otherwise -> False
+
+  cost-head-overbudget : List ADef, List Text, Text, List AExpr -> Boolean
+  cost-head-overbudget (defs) (over) (h) (args) =
+   if h == "" then True
+   else if is-rt-name over h 0 (list-length over) then True
+   else if cost-def-known defs h 0 (list-length defs) then False
+   else let c = builtin-alloc-by-name builtins h 0 (list-length builtins)
+   in if c == "none" then False
+      else if c == "fixed" then False
+      else if c == "budgeted" then False
+      else if cost-budget-arg c > 0 then cost-arg-literal args (cost-budget-arg c) == False
+      else is-rt-safe-builtin h == False
+
+ THE ARGUMENTS ARE COLLECTED ONCE AT THE OUTERMOST NODE and the walk recurses
+ over THEM rather than down the function side. Recursing into `f` would meet
+ the same head again with one fewer argument each time, and the innermost
+ meeting has none at all, so every `budgeted:N` call would be judged on an
+ empty argument list and refused. Anything nested inside an argument is still
+ reached, because it is in the list.
+
+  cost-expr-overbudget : UnificationState, AExpr, List ADef, List Text -> Boolean
+  cost-expr-overbudget (st) (e) (defs) (over) = when e
+    is ALitExpr (t) (k) (s) -> False
+    is ANameExpr (n) (s) -> is-rt-unsafe-name (n.value) | is-rt-name over (n.value) 0 (list-length over)
+    is AApplyExpr (f) (a) (s) -> cost-head-overbudget defs over (cost-apply-head e) (cost-apply-args e []) | cost-args-overbudget st (cost-apply-args e []) defs over 0
+    is ABinaryExpr (l) (op) (r) (s) -> cost-binop-allocates st op s | cost-expr-overbudget st l defs over | cost-expr-overbudget st r defs over
+    is AUnaryExpr (x) (s) -> cost-expr-overbudget st x defs over
+    is AIfExpr (c) (t) (el) (s) -> cost-expr-overbudget st c defs over | cost-expr-overbudget st t defs over | cost-expr-overbudget st el defs over
+    is ALetExpr (bs) (b) (s) -> cost-binds-overbudget st bs defs over 0 (list-length bs) | cost-expr-overbudget st b defs over
+    is AMatchExpr (sc) (arms) (s) -> cost-expr-overbudget st sc defs over | cost-arms-overbudget st arms defs over 0 (list-length arms)
+    is AFieldAccess (obj) (f) (s) -> cost-expr-overbudget st obj defs over
+    is otherwise -> True
+
+  cost-args-overbudget : UnificationState, List AExpr, List ADef, List Text, Integer -> Boolean
+  cost-args-overbudget (st) (args) (defs) (over) (i) =
+   if i >= list-length args then False
+   else if cost-expr-overbudget st (list-at args i) defs over then True
+   else cost-args-overbudget st args defs over (i + 1)
+
+  cost-binds-overbudget : UnificationState, List ALetBind, List ADef, List Text, Integer, Integer -> Boolean
+  cost-binds-overbudget (st) (bs) (defs) (over) (i) (len) =
+   if i >= len then False
+   else if cost-expr-overbudget st ((list-at bs i).value) defs over then True
+   else cost-binds-overbudget st bs defs over (i + 1) len
+
+  cost-arms-overbudget : UnificationState, List AMatchArm, List ADef, List Text, Integer, Integer -> Boolean
+  cost-arms-overbudget (st) (arms) (defs) (over) (i) (len) =
+   if i >= len then False
+   else let arm = list-at arms i
+   in if cost-expr-overbudget st (arm.guard) defs over | cost-expr-overbudget st (arm.body) defs over then True
+   else cost-arms-overbudget st arms defs over (i + 1) len
+
+  cost-over-seed : UnificationState, List ADef, Integer, Integer, List Text -> List Text
+  cost-over-seed (st) (defs) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if cost-expr-overbudget st (d.body) defs [] then cost-over-seed st defs (i + 1) len (list-push acc (d.name.value))
+   else cost-over-seed st defs (i + 1) len acc
+
+  cost-over-step : UnificationState, List ADef, List Text, Integer, Integer, List Text -> List Text
+  cost-over-step (st) (defs) (known) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if is-rt-name acc (d.name.value) 0 (list-length acc) then cost-over-step st defs known (i + 1) len acc
+   else if cost-expr-overbudget st (d.body) defs known
+   then cost-over-step st defs known (i + 1) len (list-push acc (d.name.value))
+   else cost-over-step st defs known (i + 1) len acc
+
+  cost-over-close : UnificationState, List ADef, List Text, Integer, Integer -> List Text
+  cost-over-close (st) (defs) (acc) (round) (rounds) =
+   if round >= rounds then acc
+   else let grown = cost-over-step st defs acc 0 (list-length defs) acc
+   in if list-length grown == list-length acc then acc
+   else cost-over-close st defs grown (round + 1) rounds
+
+  cost-over-set : UnificationState, List ADef -> List Text
+  cost-over-set (st) (defs) =
+   let seed = cost-over-seed st defs 0 (list-length defs) []
+   in if list-length seed == 0 then seed
+   else cost-over-close st defs seed 0 (list-length defs)
+
+  cost-any-budgeted : List AnnotationNode, Integer, Integer -> Boolean
+  cost-any-budgeted (anns) (i) (len) =
+   if i >= len then False
+   else let a = list-at anns i
+   in if a.kind == "bounded" then (if a.body == "budgeted" then True else cost-any-budgeted anns (i + 1) len)
+   else cost-any-budgeted anns (i + 1) len
 
   cost-alloc-set : UnificationState, List ADef -> List Text
   cost-alloc-set (st) (defs) =

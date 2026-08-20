@@ -476,15 +476,15 @@ Section: Source Analysis
     if i >= len then acc
     else let line = list-at lines i
     in if found-eq
-      then find-page-in-lines lines (i + 1) len True (acc & " " & text-trim line)
+      then find-page-in-lines lines (i + 1) len True (acc & " " & pc-text-trim line)
       else if line-has-page-eq line
         then let after-eq = text-after-eq line
-          in find-page-in-lines lines (i + 1) len True (text-trim after-eq)
+          in find-page-in-lines lines (i + 1) len True (pc-text-trim after-eq)
         else find-page-in-lines lines (i + 1) len False acc
 
   line-has-page-eq : Text -> Boolean
   line-has-page-eq (line) =
-    let trimmed = text-trim line
+    let trimmed = pc-text-trim line
     in if text-starts-with trimmed "page " then text-contains trimmed "="
     else if text-starts-with trimmed "app " then text-contains trimmed "="
     else False
@@ -498,22 +498,28 @@ Section: Source Analysis
     else if char-code (char-at s i) == 77 then text-drop s (i + 1)
     else text-after-eq-scan s (i + 1) len
 
-  text-trim : Text -> Text
-  text-trim (s) = text-trim-left (text-trim-right s)
+ Prefixed rather than replaced by `Foreword--TextSearch`'s `text-trim`, and
+ the two are NOT the same function: this one strips characters whose CCE code
+ is 2 or less, that one strips what `is-whitespace` answers for. They agree on
+ a space and need not agree on anything else, so merging them would be a
+ behaviour change wearing the costume of a de-duplication (BROWSER-1).
 
-  text-trim-left : Text -> Text
-  text-trim-left (s) =
+  pc-text-trim : Text -> Text
+  pc-text-trim (s) = pc-text-trim-left (pc-text-trim-right s)
+
+  pc-text-trim-left : Text -> Text
+  pc-text-trim-left (s) =
     if text-length s == 0 then s
     else let cc = char-code (char-at s 0)
-    in if cc <= 2 then text-trim-left (text-drop s 1)
+    in if cc <= 2 then pc-text-trim-left (text-drop s 1)
     else s
 
-  text-trim-right : Text -> Text
-  text-trim-right (s) =
+  pc-text-trim-right : Text -> Text
+  pc-text-trim-right (s) =
     if text-length s == 0 then s
     else let last = text-length s - 1
     in let cc = char-code (char-at s last)
-    in if cc <= 2 then text-trim-right (text-take s last)
+    in if cc <= 2 then pc-text-trim-right (text-take s last)
     else s
 
   extract-chapter-title : Text -> Text
@@ -525,9 +531,9 @@ Section: Source Analysis
   find-chapter-line (lines) (i) (len) =
     if i >= len then "Untitled"
     else let line = list-at lines i
-    in let trimmed = text-trim line
+    in let trimmed = pc-text-trim line
     in if text-starts-with trimmed "Chapter:"
-      then text-trim (text-drop trimmed 8)
+      then pc-text-trim (text-drop trimmed 8)
       else find-chapter-line lines (i + 1) len
 
   extract-effects : Text -> List Text
@@ -539,7 +545,7 @@ Section: Source Analysis
   find-effect-line (lines) (i) (len) =
     if i >= len then ["Display"]
     else let line = list-at lines i
-    in let trimmed = text-trim line
+    in let trimmed = pc-text-trim line
     in if text-starts-with trimmed "page :" then extract-bracket-effects trimmed
     else if text-starts-with trimmed "app :" then extract-bracket-effects trimmed
     else find-effect-line lines (i + 1) len

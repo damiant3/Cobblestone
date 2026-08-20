@@ -42,7 +42,16 @@ param(
     [string]$Only = '',
     [int]$Jobs = 8,
     [string]$Kernel = '',
-    [switch]$KeepUnits
+    [switch]$KeepUnits,
+    # The compiler is assembled by glob, so a name a sibling chapter defines is
+    # present whether or not it is cited, and an INTERNAL borrow there is not a
+    # defect. Every other root is different: an app or plug chapter is compiled
+    # STANDALONE by its tests (gop-scene-backbuffer, gopfish-scene, the desk
+    # arms), so a sibling borrow without a cite is exactly the red that GopScene
+    # shipped at main 17477 (mouse-x from GopUsbMouse, cited nowhere). Internal
+    # borrows are therefore failures for any -Root but the compiler's; -GlobRoot
+    # restores the compiler reading for a tree that is also globbed.
+    [switch]$GlobRoot
 )
 
 Set-StrictMode -Version Latest
@@ -83,7 +92,19 @@ foreach ($fi in (Get-ChildItem $rootDir -Filter '*.codex' -Recurse -File)) {
     if ($head -match '^Chapter:\s*(.+?)\s*$') { $selfIdx[(Get-CiteKey $matches[1])] = $fi.FullName }
     $selfIdx[(Get-CiteKey $fi.BaseName)] = $fi.FullName
 }
-$override = { param($quire, $name) if ($selfIdx.ContainsKey((Get-CiteKey $name))) { return $selfIdx[(Get-CiteKey $name)] } return $null }.GetNewClosure()
+# The key is computed inline rather than through Get-CiteKey: a GetNewClosure()
+# block resolves FUNCTIONS against the global scope, and quire-map.ps1 is
+# dot-sourced into this script's scope, so the call failed "not recognized" in
+# any shell that had not already loaded it globally (val, 2026-08-19).
+# And it answers only for the ROOT's own quire: a cite of a registered quire
+# whose directory is not this tree (Dev chapter HexFormat from a works chapter)
+# goes to the registry, or the same-named works chapter is substituted and the
+# unit fails on names the real one defines (val, 2026-08-19: 6 false borrows).
+$rootFull = (Resolve-Path $rootDir).Path
+$override = { param($quire, $name)
+    $dir = $QuireDirs[$quire]
+    if ($dir) { $full = Join-Path $Repo $dir; if (-not (Test-Path $full) -or (Resolve-Path $full).Path -ne $rootFull) { return $null } }
+    $k = ($name -replace '\s', '').ToLowerInvariant(); if ($selfIdx.ContainsKey($k)) { return $selfIdx[$k] } return $null }.GetNewClosure()
 
 # Every name the tree defines for itself, definitions and constructors alike.
 # An undefined name found here is INTERNAL: co-presence explains it.
@@ -122,7 +143,12 @@ foreach ($chapter in ($byChapter.Keys | Sort-Object)) {
         $unit.Add(''); $unit.Add('')
     }
     foreach ($ln in $body) { $unit.Add($ln) }
-    foreach ($ln in @('', 'Chapter: SubsetCiteEntry', '', 'Section: Body', '', '  opening : Integer', '  opening = 0', '')) { $unit.Add($ln) }
+    # An entry-point chapter (DeskVm, GopBoot, the probes) defines opening itself;
+    # appending a second one fails the unit on CDX3001 before a cite is examined,
+    # and it printed OK regardless (val, 2026-08-19: 7 chapters never measured).
+    $hasOpening = $false
+    foreach ($ln in $body) { if ($ln -match '^\s+opening\s*(:|=)') { $hasOpening = $true; break } }
+    if (-not $hasOpening) { foreach ($ln in @('', 'Chapter: SubsetCiteEntry', '', 'Section: Body', '', '  opening : Integer', '  opening = 0', '')) { $unit.Add($ln) } }
     $src = Join-Path $work "$safe.codex"
     [System.IO.File]::WriteAllLines($src, $unit)
     $units += [pscustomobject]@{ Chapter = $chapter; Src = $src; Safe = $safe }
@@ -138,6 +164,8 @@ $results = $units | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     [pscustomobject]@{ Chapter = $u.Chapter; Code = $LASTEXITCODE; Log = (Join-Path $work "$($u.Safe).log") }
 }
 
+$isCompilerRoot = ((Resolve-Path (Join-Path $Repo $Root)).Path -eq (Resolve-Path (Join-Path $Repo 'codex\compiler')).Path)
+$internalIsDefect = -not ($GlobRoot -or $isCompilerRoot)
 $internal = @{}
 $external = @{}
 $failed = @()
@@ -147,7 +175,7 @@ foreach ($r in $results) {
     foreach ($ln in (Get-Content $r.Log -ErrorAction SilentlyContinue)) {
         if ($ln -match 'CDX(3002|2002): (?:Undefined|Unknown) name: (\S+)') {
             $n = $matches[2]
-            if ($ownNames[$n]) {
+            if ($ownNames[$n] -and -not $internalIsDefect) {
                 $internal[$n] = $true
             } else {
                 if (-not $external.ContainsKey($n)) { $external[$n] = @() }
@@ -158,7 +186,8 @@ foreach ($r in $results) {
 }
 
 Write-Host "  $($units.Count - $failed.Count) compiled standalone, $($failed.Count) did not"
-Write-Host "  $($internal.Count) undefined name(s) INTERNAL to $Root (co-presence in the glob, not a defect)"
+if ($internalIsDefect) { Write-Host "  internal borrows count as failures: $Root is compiled standalone, not by glob (-GlobRoot to exempt)" }
+else { Write-Host "  $($internal.Count) undefined name(s) INTERNAL to $Root (co-presence in the glob, not a defect)" }
 
 if (-not $KeepUnits) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
 
@@ -168,7 +197,7 @@ if ($external.Count -eq 0) {
 }
 
 Write-Host ''
-Write-Host "FAIL: check-subset-cites -- $($external.Count) name(s) borrowed from outside $Root with no cite"
+Write-Host "FAIL: check-subset-cites -- $($external.Count) name(s) borrowed with no cite$(if ($internalIsDefect) { '' } else { " from outside $Root" })"
 foreach ($n in ($external.Keys | Sort-Object)) {
     Write-Host "  '$n' -- undefined when these chapters are built alone: $($external[$n] -join ', ')"
 }

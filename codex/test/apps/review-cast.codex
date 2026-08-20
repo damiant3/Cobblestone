@@ -1,0 +1,74 @@
+Chapter: ReviewCast
+  cites Works chapter GopReview
+  cites Works chapter RepoProtocol
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Identity
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+  cast-seed : List Integer = [7, 1, 8, 2, 8, 1, 8, 2, 8, 4, 5, 9, 0, 4, 5, 2, 3, 5, 3, 6, 0, 2, 8, 7, 4, 7, 1, 3, 5, 2, 6, 6]
+  cast-author : Keypair = generate-keypair [1, 2, 3, 4, 5, 6, 7, 8]
+
+  cast-p : Proposal = create-proposal cast-author (AnnotationTarget { chapter = "Sort", path = "sort-ascending" }) "Sort stops copying" "one allocation" ["sort-ascending"] 1000
+
+  put-list : Integer, List Integer, Integer -> Integer
+  put-list (buf) (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = poke-byte buf i (list-at xs i)
+    in put-list buf xs (i + 1)
+
+Section: Body
+
+  cast-locked : Integer -> [Device.Port, Identity] Text
+  cast-locked (rs) = act
+    d <- grv-load 0
+    r <- grv-cast d rs 3 1500
+    if r == 0 then "PASS-locked" else "FAIL: cast while locked"
+  end
+
+  cast-loaded : Integer -> [Device.Port, Identity] Text
+  cast-loaded (rs) = act
+    d <- grv-load 0
+    if grv-count d /= 1 then "FAIL: proposals " & show (grv-count d)
+    else act
+      r <- grv-cast d rs 3 1500
+      if r /= 1 then "FAIL: cast refused while loaded"
+      else act
+        d2 <- grv-load 0
+        pub0 <- key-public
+        let vs = grv-verdicts-for (d2.gd-verdicts) ((list-at (d2.gd-proposals) 0).id) 0 []
+        in if list-length vs /= 1 then "FAIL: verdicts " & show (list-length vs)
+        else let v = list-at vs 0
+        in when pub0
+          is None -> "FAIL: key-public"
+          is Just (pub) ->
+            let kr = keyring-add keyring-empty "box" pub 100
+            in if verify-verdict-signature kr v == False then "FAIL: signature"
+            else if v.author-fingerprint /= key-fingerprint pub then "FAIL: fingerprint"
+            else if grv-tally (d2.gd-verdicts) (v.proposal-id) 0 0 0 /= 1 then "FAIL: tally"
+            else "PASS-cast"
+      end
+    end
+  end
+
+  opening : [Device.Block, Device.Port, Console.Write, Identity] Nothing = act
+    let s0 = disk-init
+    in let s1 = repo-persist-save-proposal s0 cast-p 1000
+    in let rs = alloc-bytes 64
+    in let z = put-list rs [0, 0, 0, 0, 0, 0, 0, 0] 0
+    in act
+      l0 <- cast-locked rs
+      print-line-uni l0
+      let buf = alloc-bytes 32
+      in let w = put-list buf cast-seed 0
+      in act
+        rc <- key-load buf
+        l1 <- cast-loaded rs
+        print-line-uni l1
+      end
+    end
+  end

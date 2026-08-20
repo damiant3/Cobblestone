@@ -1,0 +1,374 @@
+Chapter: GopReview
+  cites Works chapter RepoProtocol
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter GopFacts
+  cites Works chapter KeyManager
+  cites Foreword chapter Identity
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter DataTable
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+
+Section: State
+
+  grv-sel-cell : Integer = 0
+  grv-mode-cell : Integer = 4
+
+  grv-mode-list : Integer = 0
+  grv-mode-detail : Integer = 1
+
+  grv-sel : Integer -> Integer
+  grv-sel (rs) = peek-32 rs grv-sel-cell
+
+  grv-mode : Integer -> Integer
+  grv-mode (rs) = peek-32 rs grv-mode-cell
+
+  grv-set-sel : Integer, Integer, Integer -> Integer
+  grv-set-sel (rs) (i) (n) =
+    poke-32 rs grv-sel-cell (if i < 0 then 0 else if n <= 0 then 0 else if i >= n then n - 1 else i)
+
+  grv-set-mode : Integer, Integer -> Integer
+  grv-set-mode (rs) (m) = poke-32 rs grv-mode-cell m
+
+Section: The Store
+
+  GrvData = record {
+    gd-ok : Boolean,
+    gd-base : Integer,
+    gd-facts : Integer,
+    gd-proposals : List Proposal,
+    gd-verdicts : List Verdict
+  }
+
+  grv-none : GrvData = GrvData { gd-ok = False, gd-base = 0, gd-facts = 0, gd-proposals = [], gd-verdicts = [] }
+
+  grv-load : Integer -> [Device.Port] GrvData
+  grv-load (dummy) = act
+    st <- gfs-mount
+    if st.gfs-ok == False then grv-none
+    else act
+      ptexts <- gfs-scan-all st persist-kind-proposal
+      vtexts <- gfs-scan-all st persist-kind-verdict
+      GrvData {
+        gd-ok = True,
+        gd-base = st.gfs-base,
+        gd-facts = st.gfs-count,
+        gd-proposals = parse-proposal-list ptexts 0 (list-length ptexts) [],
+        gd-verdicts = parse-verdict-list vtexts 0 (list-length vtexts) []
+      }
+    end
+  end
+
+  grv-reload : Integer, GrvData -> [Device.Port] GrvData
+  grv-reload (cast) (d) = act
+    if cast == 1 then grv-load 0 else d
+  end
+
+  grv-count : GrvData -> Integer
+  grv-count (d) = list-length (d.gd-proposals)
+
+  grv-open-count : List Proposal, Integer, Integer -> Integer
+  grv-open-count (ps) (i) (acc) =
+    if i >= list-length ps then acc
+    else let p = list-at ps i
+    in grv-open-count ps (i + 1) (if (when p.status is ProposalOpen -> True is otherwise -> False) then acc + 1 else acc)
+
+Section: Verdict Tallies
+
+  grv-kind-code : VerdictKind -> Integer
+  grv-kind-code (k) =
+    when k
+      is Accept -> 0
+      is Reject -> 1
+      is Amend (note) -> 2
+      is Abstain -> 3
+
+  grv-tally : List Verdict, Text, Integer, Integer, Integer -> Integer
+  grv-tally (vs) (pid) (code) (i) (acc) =
+    if i >= list-length vs then acc
+    else let v = list-at vs i
+    in let hit = (v.proposal-id == pid) & (grv-kind-code (v.kind) == code)
+    in grv-tally vs pid code (i + 1) (if hit then acc + 1 else acc)
+
+  grv-tally-text : List Verdict, Text -> Text
+  grv-tally-text (vs) (pid) =
+    show (grv-tally vs pid 0 0 0) & "a " & show (grv-tally vs pid 1 0 0) & "r " & show (grv-tally vs pid 2 0 0) & "m " & show (grv-tally vs pid 3 0 0) & "x"
+
+  grv-verdicts-for : List Verdict, Text, Integer, List Verdict -> List Verdict
+  grv-verdicts-for (vs) (pid) (i) (acc) =
+    if i >= list-length vs then acc
+    else let v = list-at vs i
+    in grv-verdicts-for vs pid (i + 1) (if v.proposal-id == pid then list-push acc v else acc)
+
+Section: Names
+
+  grv-short : Text, Integer -> Text
+  grv-short (t) (n) = if text-length t <= n then t else text-take t n
+
+  grv-target-text : AnnotationTarget -> Text
+  grv-target-text (t) = if text-length (t.path) == 0 then t.chapter else t.chapter & ":" & t.path
+
+  grv-verdict-line : Verdict -> Text
+  grv-verdict-line (v) =
+    verdict-kind-name (v.kind) & "  " & grv-short (v.author-fingerprint) 12 & "  " & v.reason
+
+Section: Wrapping
+
+ The glyph width is asked of the widget library rather than written down, the
+ way `dt-elide` asks it, since a wrap that disagreed with `widget-label`'s own
+ arithmetic would break at the wrong column.
+
+  grv-glyph-w : Integer
+  grv-glyph-w = (widget-label "" "M").wn-min-w
+
+ The gutter is `dt-elide`'s and it is there for the same reason: a label's own
+ padding comes off again inside the rect the column layout already stripped it
+ from, so wrapping against the full width leaves the last glyph half outside
+ the box.
+
+  grv-wrap-gutter : Integer = 4
+
+  grv-cpl : Integer -> Integer
+  grv-cpl (wrap-w) = if grv-glyph-w <= 0 then 0 else (wrap-w - grv-wrap-gutter) / grv-glyph-w
+
+  grv-is-space : Integer -> Boolean
+  grv-is-space (cc) = if cc >= 1 then cc <= 2 else False
+
+ The comma is asked of the encoding rather than written down: CCE is not ASCII,
+ so a literal code point here would name a different character.
+
+  grv-comma : Integer
+  grv-comma = char-code (char-at "," 0)
+
+ `last` is where the NEXT line would start if the break were taken here, which
+ is why a space breaks at its own index (the space is dropped) and a comma
+ breaks after itself (the comma is kept). A run with neither, which is what a
+ joined list of definition names is, has no opportunity at all and breaks hard
+ at the column.
+
+  grv-break-at : Text, Integer, Integer, Integer, Integer, Integer -> Integer
+  grv-break-at (s) (cpl) (i) (col) (start) (last) =
+    if i >= text-length s then i
+    else if col >= cpl then (if last > start then last else i)
+    else let cc = char-code (char-at s i)
+    in if grv-is-space cc then grv-break-at s cpl (i + 1) (col + 1) start i
+    else if cc == grv-comma then grv-break-at s cpl (i + 1) (col + 1) start (i + 1)
+    else grv-break-at s cpl (i + 1) (col + 1) start last
+
+  grv-wrap-lines : Text, Integer, Integer, List Text -> List Text
+  grv-wrap-lines (s) (cpl) (start) (acc) =
+    if cpl <= 0 then list-push acc (text-drop s start)
+    else if start >= text-length s then acc
+    else let cut = grv-break-at s cpl start 0 start start
+    in let line = text-substring s start (cut - start)
+    in let skip = if cut >= text-length s then cut else if grv-is-space (char-code (char-at s cut)) then cut + 1 else cut
+    in let next = if skip <= start then start + 1 else skip
+    in grv-wrap-lines s cpl next (list-push acc line)
+
+ The marker rides the last line KEPT rather than taking a line of its own. A
+ line of its own costs the row it is marking, so at a budget of one the field
+ renders as three dots and the text it stands for is gone: less than the single
+ unwrapped line this pane drew before it wrapped anything.
+
+  grv-cap-lines : List Text, Integer, Integer -> List Text
+  grv-cap-lines (ls) (n) (cpl) =
+    if n <= 0 then []
+    else if list-length ls <= n then ls
+    else grv-cap-go ls n cpl 0 []
+
+  grv-cap-go : List Text, Integer, Integer, Integer, List Text -> List Text
+  grv-cap-go (ls) (n) (cpl) (i) (acc) =
+    if i >= n then acc
+    else let raw = list-at ls i
+    in let room = if cpl - 3 < text-length raw then cpl - 3 else text-length raw
+    in let line = if i < n - 1 then raw else if room <= 0 then raw else text-take raw room & "..."
+    in grv-cap-go ls n cpl (i + 1) (list-push acc line)
+
+  grv-line-labels : Text, List Text, Integer, List WidgetNode -> List WidgetNode
+  grv-line-labels (id) (ls) (i) (acc) =
+    if i >= list-length ls then acc
+    else let lbl = widget-set-min (widget-label (id & "-" & show i) (list-at ls i)) 0 18
+    in grv-line-labels id ls (i + 1) (list-push acc lbl)
+
+  grv-body-labels : Text, Text, Integer, Integer -> List WidgetNode
+  grv-body-labels (id) (body) (cpl) (max) =
+    if text-length body == 0 then [widget-set-min (widget-label (id & "-0") "") 0 18]
+    else grv-line-labels id (grv-cap-lines (grv-wrap-lines body cpl 0 []) max cpl) 0 []
+
+ A label's own minimum plus the root panel's gap, which is what one more
+ wrapped line costs the column. Both numbers are this chapter's own and are
+ written a few lines below in `grv-line-labels` and `grv-detail-tree`.
+
+  grv-row-h : Integer = 24
+
+Section: The List
+
+  grv-columns : List TableColumn
+  grv-columns = [
+    table-column "pid" "ID" 84,
+    table-column "target" "Target" 150,
+    table-column "author" "Author" 100,
+    table-column "status" "Status" 60,
+    table-column "verdicts" "Verdicts" 100,
+    table-column "desc" "Description" 94
+  ]
+
+  grv-rows : GrvData, Integer, Integer, List TableRow -> List TableRow
+  grv-rows (d) (sel) (i) (acc) =
+    if i >= grv-count d then acc
+    else let p = list-at (d.gd-proposals) i
+    in let tr = table-row (show (i + 1)) [
+        (if i == sel then "> " else "  ") & grv-short (p.id) 8,
+        grv-target-text (p.target),
+        grv-short (p.author-fingerprint) 12,
+        proposal-status-name (p.status),
+        grv-tally-text (d.gd-verdicts) (p.id),
+        p.description
+      ]
+    in grv-rows d sel (i + 1) (list-push acc tr)
+
+ Paging is `DataTable`'s already: `data-table-fit` sizes a page from the height
+ it is given, `data-table-widget` renders only `data-table-visible-rows`, and
+ the footer says which page. All this pane had to do was hand over a height and
+ say which page the selection is on.
+
+ **The page is DERIVED from the selection rather than stored.** A page cell
+ would be a second piece of state that can disagree with the first, and the
+ launcher and the system menu already settled that shape on this desk: one
+ model, two views. Selection moves, the page follows, and they cannot drift.
+
+ The height arrives as a PARAMETER for the reason the palette does (the desk
+ contract, section 6): `GopDesk` cites this chapter, so reading the desk's band
+ constants from here would be a citation cycle.
+
+  grv-table : GrvData, Integer, Integer -> DataTableState
+  grv-table (d) (sel) (content-h) =
+    let t0 = data-table-new "review" grv-columns (grv-rows d sel 0 [])
+    in let fitted = data-table-fit t0 content-h
+    in let size = fitted.dt-page-size
+    in if size <= 0 then fitted else __record-set fitted "dt-page" (sel / size)
+
+  grv-title : GrvData -> Text
+  grv-title (d) =
+    if d.gd-ok == False then "Review -- no fact store on this medium"
+    else "Review -- " & show (grv-count d) & " proposals, " & show (grv-open-count (d.gd-proposals) 0 0) & " open   (store at LBA " & show (d.gd-base) & ", " & show (d.gd-facts) & " facts)"
+
+  grv-list-tree : GrvData, Integer, Integer -> WidgetNode
+  grv-list-tree (d) (sel) (content-h) =
+    widget-panel "grv-root" DirColumn 6 [
+      widget-label "grv-title" (grv-title d),
+      widget-separator "grv-sep",
+      data-table-widget (grv-table d sel content-h),
+      widget-set-flex (widget-panel "grv-fill" DirColumn 0 []) 1,
+      widget-separator "grv-sep2",
+      widget-label "grv-help" "up/down select   Enter opens   Esc returns"
+    ]
+
+Section: The Detail
+
+  grv-verdict-rows : List Verdict, Integer, Integer, List WidgetNode -> List WidgetNode
+  grv-verdict-rows (vs) (cpl) (i) (acc) =
+    if i >= list-length vs then acc
+    else let txt = "  " & grv-verdict-line (list-at vs i)
+    in let one = grv-cap-lines (grv-wrap-lines txt cpl 0 []) 1 cpl
+    in let head = if list-length one == 0 then "" else list-at one 0
+    in let lbl = widget-set-min (widget-label ("grv-v-" & show i) head) 0 18
+    in grv-verdict-rows vs cpl (i + 1) (list-push acc lbl)
+
+ Wrapping trades a line that ran off the right edge for lines that run off the
+ bottom, and the second is worse: what leaves the box is the verdict list and
+ the line saying whether this boot can cast at all. So the body is bounded by
+ the room the measuring pass found. `slack-h` is the height the flexed filler
+ was given when the same tree was laid out UNWRAPPED, which is the engine's own
+ answer to how many more rows fit, and the three unwrapped lines are already
+ counted in it.
+
+  grv-detail-tree : GrvData, Integer, Maybe Text, Integer, Integer -> WidgetNode
+  grv-detail-tree (d) (sel) (signer) (wrap-w) (slack-h) =
+    let p = list-at (d.gd-proposals) sel
+    in let vs = grv-verdicts-for (d.gd-verdicts) (p.id) 0 []
+    in let cpl = grv-cpl wrap-w
+    in let extra = if slack-h <= 0 then 0 else slack-h / grv-row-h
+    in let budget = 3 + extra
+    in let rest = budget - 1
+    in let desc-max = if rest <= 2 then 1 else rest * 2 / 3
+    in let just-max = if rest - desc-max <= 0 then 1 else rest - desc-max
+    in let head = [
+        widget-label "grv-title" ("Proposal " & grv-short (p.id) 16 & "  " & proposal-status-name (p.status)),
+        widget-separator "grv-sep",
+        widget-set-min (widget-label "grv-target" ("Target:   " & grv-target-text (p.target))) 0 18,
+        widget-set-min (widget-label "grv-author" ("Author:   " & p.author-fingerprint)) 0 18,
+        widget-set-min (widget-label "grv-when" ("When:     " & show (p.timestamp))) 0 18
+      ]
+    in let defs = grv-body-labels "grv-defs" ("Changes:  " & join-with-comma (p.changed-definitions) 0 (list-length (p.changed-definitions)) "") cpl 1
+    in let body = grv-body-labels "grv-desc" (p.description) cpl desc-max & grv-body-labels "grv-just" (p.justification) cpl just-max
+    in let mid = [
+        widget-separator "grv-sep3",
+        widget-set-min (widget-label "grv-vhead" ("Verdicts: " & show (list-length vs))) 0 18
+      ]
+    in let who = when signer
+        is None -> "Identity locked: verdicts cannot be cast this boot"
+        is Just (fp) -> "Signing as " & fp & "   a accept   r reject   b abstain"
+    in let tail = [
+        widget-set-flex (widget-panel "grv-fill" DirColumn 0 []) 1,
+        widget-set-min (widget-label "grv-who" who) 0 18,
+        widget-label "grv-help" "Esc back to the list"
+      ]
+    in let sep2 = [widget-separator "grv-sep2"]
+    in widget-panel "grv-root" DirColumn 6 (head & defs & sep2 & body & mid & grv-verdict-rows vs cpl 0 [] & tail)
+
+  grv-tree : GrvData, Integer, Maybe Text, Integer, Integer, Integer -> WidgetNode
+  grv-tree (d) (rs) (signer) (content-h) (wrap-w) (slack-h) =
+    if grv-mode rs == grv-mode-detail & grv-count d > 0 then grv-detail-tree d (grv-sel rs) signer wrap-w slack-h
+    else grv-list-tree d (grv-sel rs) content-h
+
+Section: Keys
+
+  grv-key-list : Integer, Integer, Integer -> Integer
+  grv-key-list (rs) (sc) (n) =
+    if sc == 72 then let d = grv-set-sel rs (grv-sel rs - 1) n in 1
+    else if sc == 80 then let d = grv-set-sel rs (grv-sel rs + 1) n in 1
+    else if sc == 28 then (if n > 0 then let d = grv-set-mode rs grv-mode-detail in 1 else 0)
+    else if sc == 1 then 2
+    else 0
+
+  grv-key-detail : Integer, Integer -> Integer
+  grv-key-detail (rs) (sc) =
+    if sc == 1 then let d = grv-set-mode rs grv-mode-list in 1
+    else if sc == 30 then 3
+    else if sc == 19 then 4
+    else if sc == 48 then 5
+    else 0
+
+  grv-key : Integer, Integer, Integer -> Integer
+  grv-key (rs) (sc) (n) =
+    if grv-mode rs == grv-mode-detail then grv-key-detail rs sc
+    else grv-key-list rs sc n
+
+Section: Casting
+
+  grv-kind-of : Integer -> VerdictKind
+  grv-kind-of (r) = if r == 3 then Accept else if r == 4 then Reject else Abstain
+
+  grv-cast : GrvData, Integer, Integer, Integer -> [Device.Port, Identity] Integer
+  grv-cast (d) (rs) (r) (ts) = act
+    if grv-count d <= 0 then 0
+    else act
+      let p = list-at (d.gd-proposals) (grv-sel rs)
+      in act
+        v0 <- create-verdict-loaded (p.id) (grv-kind-of r) "" ts
+        when v0
+          is None -> 0
+          is Just (v) -> act
+            st <- gfs-mount
+            if st.gfs-ok == False then 0
+            else act
+              w <- gfs-write-and-checkpoint st persist-kind-verdict (verdict-to-persist-text v) ts
+              if w.gfs-count == st.gfs-count + 1 then 1 else 0
+            end
+          end
+      end
+    end
+  end

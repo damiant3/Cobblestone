@@ -178,7 +178,7 @@ a stage may not draw outside its row:
   row 2   diag <hash8> kernel <digest8> world=EBS|UEFI cfg=<n stages>
   row 3   box: <SMBIOS product or "unnamed"> fb=<w>x<h> stride=<s> ram=<MB>
   rows 4..N   <stage> <state> <readings, wrapped, at most 3 rows>
-  band    SUMMARY  run=<n> skip=<n> bank=<ok NNNN bytes | no bank, mount stage N>
+  band    SUMMARY  run=<n> skip=<n> bank=<ok NNNN bytes | lost at=<stage> size=<n> | no bank, mount stage N>
   below   QR (summary), scale chosen 6/5/4/3, never 2
 ```
 
@@ -187,6 +187,35 @@ fit its readings in three rows banks the rest and paints `+more in bank`.
 The colour of a stage row is its state word's colour and nothing else is
 ever coloured, so "what colour is row 7" is a question a photograph
 answers.
+
+**`bank=ok` used to mean "a medium was selected and the first write
+landed", and nothing more.** Every later write's answer was discarded, so
+a stick that went wedged mid-ladder produced a truncated `DIAG.TXT` under
+a SUMMARY painting `bank=ok`. That is what came back from metal twice
+(`HardwareSitting`, sittings 2 and 3). The bank's truth is the FILE: each
+write reads the size back from the directory entry, a disagreement is a
+refusal, and the first stage that loses an append is banked in cell 90 and
+named in the row. The verdict is on the serial as well as the glass now,
+which it never was, so the record can carry it even when the medium
+cannot. Bed arm: `bank-lost`, which wedges the medium from the refusal
+onward rather than transiently.
+
+**A REHEARSAL CERTIFIES AN IMAGE, so what counts as stale decides what the
+record is worth.** `diag-arm.ps1` refuses an image older than any
+`build/boot/diag/Diag*.codex`, and since 2026-08-19 also one older than
+`seed/Codex.cdx`: the seed moves on any merge-down, nothing rebuilds the
+image when it does, and a rehearsal would otherwise certify an image the
+current compiler never built. That case is not hypothetical, it fired on
+the ladder the hour it was added. **Two holes are left and neither has a
+runner.** The scan covers only the `Diag*.codex` chapters, not the 57
+chapters the image BUNDLES, so a change to `GopFat16` or `GopUsbMsc` leaves
+the image looking fresh; widening it to the bundled set is a superset that
+can only over-refuse, which is the safe direction. And all of this is
+mtime, which a `p4 sync` sets to the sync time rather than the content's
+age, so it is a proxy for the question and not the question. The recipe
+records the `kernel=` digest the image was compiled with, which IS the
+question, but comparing it needs the current seed's digest and that costs a
+compiler run.
 
 **The bank path has a permanent runner so it cannot regress silently
 again.** `diag-arm.ps1` boots the exact image in codex-vm and under OVMF

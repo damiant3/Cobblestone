@@ -438,9 +438,20 @@ Section: The Bank
     in act
       ok <- gfat-write-file (b.db-vol) nb buf n
       let r2 = __heap-restore mark2
-      in if ok then n else -1
+      in if ok == False then -1
+      else act
+        sz <- gfat-file-size (b.db-vol) "DIAG.TXT"
+        let v = gfat-note-lastsize sz
+        in if sz == n then n else -1
+      end
     end
   end
+
+ The write's RETURN is not the bank's truth and the third grouped sitting
+ proved it: `DIAG.TXT` came back at 4,577 bytes with the SUMMARY painting
+ `bank=ok`. The file's own directory entry is the truth, so every write reads
+ the size back and disagreeing with what was handed over is a refusal like
+ any other.
 
  BANK 1 is the first write, and a mount that then refuses the write is not a
  bank: the write stage cell (83) names where it stopped and the bank is
@@ -481,8 +492,13 @@ Section: The Record
 
   dg-bank-line : DiagBank -> Text
   dg-bank-line (b) =
-    if b.db-ok then "bank=ok medium=" & dg-kind-name (b.db-kind)
-    else "bank=none " & (b.db-note)
+    if b.db-ok == False then "bank=none " & (b.db-note)
+    else let lost = xdiag-get gfat-cell-banklost
+    in if lost == 0 then "bank=ok medium=" & dg-kind-name (b.db-kind)
+       else "bank=lost at=" & dg-stage-name (lost - 1) & " size=" & show (xdiag-get gfat-cell-lastsize) & " medium=" & dg-kind-name (b.db-kind)
+
+  dg-bank-whole : DiagBank -> Boolean
+  dg-bank-whole (b) = if b.db-ok == False then False else xdiag-get gfat-cell-banklost == 0
 
 Section: Verdicts
 
@@ -686,7 +702,7 @@ Section: The Codes
 
   dg-summary-body : DiagCtx, List Text, List Text, DiagBank, Integer -> Text
   dg-summary-body (c) (states) (glass) (b) (bytes) =
-    "DIAG1;id=" & (c.dc-id) & ";k=" & (c.dc-kernel) & ";w=" & diag-world-name (c.dc-world) & ";fb=" & show (c.dc-w) & "x" & show (c.dc-h) & "/" & show (c.dc-stride) & ";" & dg-summary-states states 0 "" & (if b.db-ok then "bank=ok " & show bytes else "bank=none " & (b.db-note)) & ";" & text-concat-list glass
+    "DIAG1;id=" & (c.dc-id) & ";k=" & (c.dc-kernel) & ";w=" & diag-world-name (c.dc-world) & ";fb=" & show (c.dc-w) & "x" & show (c.dc-h) & "/" & show (c.dc-stride) & ";" & dg-summary-states states 0 "" & (if dg-bank-whole b then "bank=ok " & show bytes else dg-bank-line b) & ";" & text-concat-list glass
 
   dg-summary-states : List Text, Integer, Text -> Text
   dg-summary-states (states) (i) (acc) =
@@ -751,7 +767,10 @@ Section: The Ladder
     else act
       r2 <- dg-run-one c i r
       w <- dg-bank-write b (r2.run-lines)
-      dg-run-rest c (i + 1) r2 b
+      let l = if w >= 0 then 0
+              else if xdiag-get gfat-cell-banklost == 0 then gfat-note-banklost (i + 1)
+              else 0
+      in dg-run-rest c (i + 1) r2 b
     end
   end
 
@@ -827,7 +846,7 @@ Section: Entry
     let row = dg-band-row 0
     in let cl = dg-clear-rows c row 2
     in let s = "SUMMARY run=" & show (r.run-count) & " skip=" & show (r.run-skip) & " " & dg-bank-line b & (if bytes >= 0 then " bytes=" & show bytes else "")
-    in let a = dg-text c 8 (dg-row-y c row) s (if b.db-ok then diag-col-good else diag-col-warn)
+    in let a = dg-text c 8 (dg-row-y c row) s (if dg-bank-whole b then diag-col-good else diag-col-warn)
     in dg-text c 8 (dg-row-y c (row + 1)) todo diag-col-note
 
   opening : [Device.Port, Device.Mmio, Console] Integer
@@ -854,7 +873,7 @@ Section: Entry
         let vs0 = dg-verdicts (r2.run-states) (r2.run-colours) b
         in let todo = dg-todo vs0
         in let vs = if list-length vs0 == 0 then [todo] else vs0
-        in let sum = "summary run=" & show (r2.run-count) & " skip=" & show (r2.run-skip)
+        in let sum = "summary run=" & show (r2.run-count) & " skip=" & show (r2.run-skip) & " " & dg-bank-line b
         in let final = (list-push (r2.run-lines) sum) & vs
         in act
           bytes <- dg-bank-write b final

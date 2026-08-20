@@ -110,6 +110,161 @@ Section: Ring Reads
    else if (hpet-ticks - start) >= want then e1000-no-frame
    else nir-wait d start want (rounds - 1)
 
+Section: What The Part Says, Not What Our Ring Says
+
+ NIC-4's successor question, from sitting 3: the stage returned `quiet` on the
+ ASUS with link=1, sent=1, txdd=1 and received=0 ddset=0. Our own ring cannot
+ tell the three explanations apart, because all three leave it empty.
+
+ GPRC counts good frames at the MAC, before any descriptor. RNBC counts frames
+ that arrived with no descriptor to put them in. Between them and the ring:
+
+   gprc=0 rnbc=0    nothing arrived. The window was genuinely quiet and
+                    received=0 is honest.
+   gprc>0 ddset=0   frames arrived and we cannot see them. Writeback is
+                    landing somewhere other than the ring being read, which
+                    the aim row below is for.
+   rnbc>0           frames arrived and were turned away for want of a
+                    descriptor, so RDT is not where we think it is.
+
+ They CLEAR ON READ, and sitting 4 turned that into an ambiguity worth
+ closing. GPRC was read once, at the end, so `gprc=1` counted every window
+ since power-on -- including nicinit's, two stages earlier, which builds and
+ listens on a ring of its own. A frame counted there says nothing about the
+ ring THIS stage built, and the reading it produced has a second explanation
+ nobody could exclude from the glass: it arrived before we were looking.
+
+ So GPRC is read TWICE. The read before the attach reports the earlier windows
+ and zeroes the counter; the read at the end then counts only what arrived
+ while this stage was listening on its own ring. Both are banked and the
+ pre-stage count rides the QR, because "1 before, 0 during" and "0 before, 1
+ during" are different findings and sitting 4 could not tell them apart.
+
+ MPC and CRCERRS are banked alongside because they cost one read each and are
+ the next questions if the three above do not settle it; codex-vm does not
+ model either, so a bed reading 0 from them means "not modelled", and no arm
+ asserts on them.
+
+  nir-stats : Integer -> Text
+  nir-stats (mmio) =
+   "stats gprc=" & show (e1000-read mmio e1000-reg-gprc)
+     & " rnbc=" & show (e1000-read mmio e1000-reg-rnbc)
+     & " mpc=" & show (e1000-read mmio e1000-reg-mpc)
+     & " crcerrs=" & show (e1000-read mmio e1000-reg-crcerrs)
+
+ Where the part is actually aimed, against where we think we put the ring. If
+ RDBA does not read back as our own ring, the part is filling somebody else's
+ buffers and every row above is describing the wrong memory. The comparison
+ puts a physical register against our own pointer, so it means what it says
+ only while the guest is identity mapped: `match=y` is not by itself proof of
+ correct aim.
+
+ RDH advances as the part consumes descriptors, and `e1000-setup-rx` writes it
+ zero (`E1000e.codex`, e1000-setup-rx). This block used to say the opposite --
+ that RDH is never written and the head is inherited from whatever ran before,
+ which is what sitting 3's rdh=5 was read against. Because the attach really
+ does zero it, a nonzero RDH at the END of the stage says the part consumed a
+ descriptor from the ring it is aimed at DURING this stage's own window, which
+ is a sharper question than the one the row was built to ask. The arrival row
+ still reports the pre-attach RDH, and that one is inherited.
+
+  nir-aim : Integer, Integer -> Text
+  nir-aim (mmio) (ring) =
+   let lo = e1000-read mmio e1000-reg-rdbal
+   in let hi = e1000-read mmio e1000-reg-rdbah
+   in let base = hi * 4294967296 + lo
+   in "aim rdba=" & show base & " ours=" & show ring
+     & " match=" & (if base == ring then "y" else "n")
+     & " rdlen=" & show (e1000-read mmio e1000-reg-rdlen)
+     & " rdh=" & show (e1000-read mmio e1000-reg-rdh)
+     & " rdt=" & show (e1000-read mmio e1000-reg-rdt)
+
+Section: The Answer Row
+
+ Receive descriptor 0, raw, all sixteen bytes. It is the one reading that does
+ not depend on the aim row being meaningful, because it does not put a
+ physical register against a virtual pointer.
+
+ THE TWO HALVES OF A DESCRIPTOR ARE WRITTEN BY DIFFERENT PARTIES, and the
+ discriminator lives in one of them. `e1000-build-rx-descs` writes the buffer
+ address into bytes 0..7 and zeroes bytes 8..15; the hardware writes back
+ length at 8..9 and status at 12. So "all sixteen bytes zero" cannot happen
+ while our own ring build works, and a raw sixteen-byte test reads NONZERO on
+ every flight -- our own address -- which would be read as "the part wrote our
+ ring" every time, including when it never touched it.
+
+ The writeback half is the question. `wb` counts nonzero bytes in 8..15 only:
+ zero says the part never wrote back into descriptor 0, any nonzero says it
+ did and we are reading the wrong field out of it. `buf` is the other half's
+ own control: bytes 0..7 must still read back as the buffer address we put
+ there, and a `buf=n` says something is scribbling on the ring and no row
+ above it means anything.
+
+  nir-d0-hex : Integer, Integer, Text -> Text
+  nir-d0-hex (ring) (i) (acc) =
+   if i >= e1000-desc-size then acc
+   else nir-d0-hex ring (i + 1) (acc & diag-hex2 (peek-byte ring i))
+
+  nir-d0-wb : Integer, Integer, Integer -> Integer
+  nir-d0-wb (ring) (i) (acc) =
+   if i >= e1000-desc-size then acc
+   else nir-d0-wb ring (i + 1) (acc + (if peek-byte ring i /= 0 then 1 else 0))
+
+  nir-d0-buf : Integer, Integer -> Boolean
+  nir-d0-buf (ring) (bufs) =
+   bit-or (peek-32 ring 0) (bit-shl (peek-32 ring 4) 32) == bufs
+
+ The QR summary is built from each stage's FIRST glass line and nothing else
+ (`Diag.codex`, dg-summary-body), so this row is what reaches anyone when the
+ bank does not survive the ladder. It is budgeted: 72 characters against the
+ 76 of the head row it displaces, so the summary does not gain a QR code and
+ risk the cut. The keys are short for that reason and no other.
+
+  nir-answer : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  nir-answer (mmio) (ring) (bufs) (gprc0) (ddset) (txdd) (listen) =
+   let lo = e1000-read mmio e1000-reg-rdbal
+   in let hi = e1000-read mmio e1000-reg-rdbah
+   in let base = hi * 4294967296 + lo
+   in "m=" & (if base == ring then "y" else "n")
+     & " rdh=" & show (e1000-read mmio e1000-reg-rdh)
+     & " wb=" & show (nir-d0-wb ring 8 0)
+     & " buf=" & (if nir-d0-buf ring bufs then "y" else "n")
+     & " pre=" & show gprc0
+     & " dd=" & show ddset
+     & " tx=" & show txdd
+     & (if listen == 0 then " ln=0" else "")
+     & " d0=" & nir-d0-hex ring 0 ""
+
+Section: The Listen Knob
+
+ OUR OWN POLL PATH WIPES THE EVIDENCE, which is what the bed said the first
+ time the arms ran against this row: `nicring=frames` with `rdh=1`, `buf=y`
+ and `wb=0`. Nothing was wrong with the part. `e1000-poll-raw` takes a frame
+ and recycles the descriptor it came from, so the writeback half is back to
+ zero by the time the row is built, and the bed could not produce a single
+ reading in which `wb` is nonzero.
+
+ That matters beyond the arm. A control that cannot express the positive case
+ is not a control, and this dump would have shipped to metal with nothing
+ anywhere having shown it can read a writeback at all (L-FALSIF).
+
+ `nicring listen=N` in DIAG.CFG. At the default 1 the stage listens as before.
+ At 0 it sends the ARP and then idles the same 1.2 s WITHOUT polling, so the
+ part writes into descriptor 0 and nothing consumes it -- which is the metal
+ case exactly: on the ASUS nothing was consumed either, because nothing was
+ ever seen. With the NAT answering, `wb` must come back nonzero there, and
+ `nic-noread` in `diag-arm.ps1` is that arm.
+
+  nir-listen : DiagCtx -> Integer
+  nir-listen (c) =
+   let v = diag-cfg-value c "nicring"
+   in if text-starts-with v "listen=" then text-to-integer (substring v 7 (text-length v - 7)) else 1
+
+  nir-idle : Integer, Integer -> Integer
+  nir-idle (start) (want) =
+   if (hpet-ticks - start) >= want then 0
+   else nir-idle start want
+
 Section: The Stage
 
   nir-attach : Integer -> E1000Device
@@ -129,8 +284,8 @@ Section: The Stage
    in let tx = e1000-setup-tx dev
    in dev
 
-  nir-run-part : PciDevice -> [Device.Port, Device.Mmio, Console] DiagResult
-  nir-run-part (dv) =
+  nir-run-part : PciDevice, Integer -> [Device.Port, Device.Mmio, Console] DiagResult
+  nir-run-part (dv) (listen) =
    let mmio = na-mmio-of dv
    in let started = hpet-start
    in let hz = hpet-ticks-per-second
@@ -139,7 +294,8 @@ Section: The Stage
    in let rdh1 = e1000-read mmio e1000-reg-rdh
    in let restore = e1000-write mmio e1000-reg-rdh rdh0
    in let writable = if rdh1 == 7 then "y" else "n"
-   in let arrival = "arrival rctl=" & show (e1000-read mmio e1000-reg-rctl) & " rdh=" & show rdh0 & " rdt=" & show (e1000-read mmio e1000-reg-rdt) & " hpet=" & show hz & " rdh-writable=" & writable & " rdh-after=" & show rdh1
+   in let gprc0 = e1000-read mmio e1000-reg-gprc
+   in let arrival = "arrival rctl=" & show (e1000-read mmio e1000-reg-rctl) & " rdh=" & show rdh0 & " rdt=" & show (e1000-read mmio e1000-reg-rdt) & " hpet=" & show hz & " rdh-writable=" & writable & " rdh-after=" & show rdh1 & " gprc-before=" & show gprc0
    in if hz <= 0 then diag-result "no-hpet" diag-col-bad [arrival] [arrival]
    else act
     say0 <- print-line-uni "nicring entering attach (no reset)"
@@ -148,19 +304,23 @@ Section: The Stage
     in act
      say1 <- print-line-uni "nicring entering listen"
      let s0 = hpet-ticks
-     in let listened = nir-wait d s0 ((hz * 1200) / 1000) nir-rounds
+     in let listened = if listen == 0 then e1000-no-frame else nir-wait d s0 ((hz * 1200) / 1000) nir-rounds
      in let after-listen = nir-ring-line "after-listen" (d.e-rx-ring)
      in let sent = e1000-send-frame d (nir-arp (e1000-read-mac mmio))
      in let s1 = hpet-ticks
-     in let after = nir-wait d s1 ((hz * 1200) / 1000) nir-rounds
+     in let idled = if listen == 0 then nir-idle s1 ((hz * 1200) / 1000) else 0
+     in let after = if listen == 0 then e1000-no-frame else nir-wait d s1 ((hz * 1200) / 1000) nir-rounds
      in let after-send = nir-ring-line "after-send" (d.e-rx-ring)
      in let txdd = nir-tx-dd d
      in let got = if listened.r-has-frame then 1 else if after.r-has-frame then 1 else 0
      in let ddset = nir-dd-count (d.e-rx-ring) 0 0
+     in let stats = nir-stats mmio
+     in let aim = nir-aim mmio (d.e-rx-ring)
      in let head = "link=" & show link & " present=" & na-yn (if d.e-present then 1 else 0) & " mac=" & na-yn (if d.e-mac-valid then 1 else 0) & " received=" & show got & " ddset=" & show ddset & " sent=" & show sent & " txdd=" & show txdd & " rdh-writable=" & writable & " rdh=" & show rdh0
      in let state = if sent /= 1 then "send-refused" else if txdd == 0 then "reader-broken" else if got == 1 then "frames" else if ddset > 0 then "frames" else "quiet"
      in let colour = if state == "frames" then diag-col-good else if state == "quiet" then diag-col-warn else diag-col-bad
-     in diag-result state colour [head] [arrival, head, after-listen, after-send]
+     in let answer = nir-answer mmio (d.e-rx-ring) (d.e-rx-bufs) gprc0 ddset txdd listen
+     in diag-result state colour [answer, head, stats] [answer, arrival, head, stats, aim, after-listen, after-send]
     end
    end
 
@@ -170,5 +330,5 @@ Section: The Stage
     is None -> diag-result "no-part" diag-col-dim ["no eligible Intel part on the bus"] ["no eligible Intel part on the bus"]
     is Just (d) -> if na-eligible d == False then diag-result "rejected" diag-col-warn [na-reject-line d] [na-reject-line d]
      else if e1000-bar-verdict (na-bar-of d) /= e1000-bar-ok then diag-result "bar-bad" diag-col-bad ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d)) & ", the part was not touched"] ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d)) & ", the part was not touched"]
-     else nir-run-part d
+     else nir-run-part d (nir-listen c)
   end

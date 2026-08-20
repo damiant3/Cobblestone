@@ -275,8 +275,23 @@ Section: Let, Apply, Match, Act
    in let cond = emit-jsx-pattern-cond (b.pattern) "_s"
    in let binds = emit-jsx-pattern-binds (b.pattern) "_s" indent
    in let body = emit-jsx-expr (b.body) arities indent
-   in let kw = if i == 0 then "if" else "} else if"
-   in react-indent indent & kw & " (" & cond & ") {\n" & binds & react-indent (indent + 1) & "return " & body & ";\n" & emit-jsx-branches branches arities indent (i + 1)
+   in let ret = if jsx-guard-trivial (b.guard)
+                then react-indent (indent + 1) & "return " & body & ";\n"
+                else react-indent (indent + 1) & "if (" & emit-jsx-expr (b.guard) arities indent & ") { return " & body & "; }\n"
+   in react-indent indent & "if (" & cond & ") {\n" & binds & ret & react-indent indent & "}\n" & emit-jsx-branches branches arities indent (i + 1)
+
+ A guarded arm must not chain with else-if: the guard needs the pattern
+ bindings, which sit inside the block, so a failed guard has to fall OUT of
+ the block and reach the next test. Sequential ifs give that and an else-if
+ chain cannot. The old shape also put the non-exhaustive throw INSIDE the
+ last arm's block, where it fires when that arm's condition fails rather
+ than when every arm has. With a trailing catch-all it is dead code.
+
+  jsx-guard-trivial : IRExpr -> Boolean
+  jsx-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
 
   emit-jsx-pattern-cond : IRPat, Text -> Text
   emit-jsx-pattern-cond (p) (scrut) =

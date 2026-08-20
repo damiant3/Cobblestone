@@ -307,8 +307,21 @@ Section: Match
    in let cond = emit-js-pattern-cond (b.pattern) "_s"
    in let binds = emit-js-pattern-binds (b.pattern) "_s" indent
    in let body = emit-js-expr (b.body) arities indent
-   in let kw = if i == 0 then "if" else "else if"
-   in html-indent indent & kw & " (" & cond & ") {\n" & binds & html-indent (indent + 1) & "return " & body & ";\n" & html-indent indent & "}\n" & emit-js-branches branches arities indent (i + 1)
+   in let ret = if html-guard-trivial (b.guard)
+                then html-indent (indent + 1) & "return " & body & ";\n"
+                else html-indent (indent + 1) & "if (" & emit-js-expr (b.guard) arities indent & ") { return " & body & "; }\n"
+   in html-indent indent & "if (" & cond & ") {\n" & binds & ret & html-indent indent & "}\n" & emit-js-branches branches arities indent (i + 1)
+
+ A guarded arm must not chain with else-if: the guard needs the pattern
+ bindings, which sit inside the block, so a failed guard has to fall OUT of
+ the block and reach the next test. Sequential ifs give that and an else-if
+ chain cannot.
+
+  html-guard-trivial : IRExpr -> Boolean
+  html-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
 
   emit-js-pattern-cond : IRPat, Text -> Text
   emit-js-pattern-cond (p) (scrut) =

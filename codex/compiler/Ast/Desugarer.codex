@@ -30,7 +30,11 @@ Section: Expression Desugaring
      in let dr = desugar-expr-at r (depth + 1)
      in if is-pipe-forward (op.kind) then deck-record (AApplyExpr dr dl (desugared-span (token-span op)))
      else deck-record (ABinaryExpr dl (desugar-bin-op (op.kind)) dr (token-span op))
-    is UnaryExpr (op) (operand) -> deck-record (AUnaryExpr (desugar-expr-at operand (depth + 1)) (token-span op))
+    is UnaryExpr (op) (operand) ->
+     let d = desugar-expr-at operand (depth + 1)
+     in if (op.kind) == NotKeyword
+        then deck-record (ABinaryExpr d OpEq (deck-record (ALitExpr "False" BoolLit (token-span op))) (token-span op))
+        else deck-record (AUnaryExpr d (token-span op))
     is IfExpr (c) (t) (e) ->
      let dc = desugar-expr-at c (depth + 1)
      in deck-record (AIfExpr dc (desugar-expr-at t (depth + 1)) (desugar-expr-at e (depth + 1)) (desugared-span (aexpr-span dc)))
@@ -230,6 +234,19 @@ Section: Expression Desugaring
    make-name (token-text tok)
 
 Section: Binary Operator Desugaring
+
+ `and` GETS ITS OWN OPERATOR AND `&` KEEPS THE OLD ONE. `OpAnd` is the
+ overloaded one, decided later by the left operand's type, and it is the shape
+ that has cost this project several rebuilds: the answer is worked out in the
+ type checker and then carried to everyone else as the presence or absence of
+ a span-keyed table entry. `OpBoolAnd` cannot be anything but boolean, so
+ nothing downstream has to ask.
+
+ `xor` AND `not` NEED NO OPERATOR OF THEIR OWN. On Booleans `a xor b` IS
+ `a /= b`, and `not a` is `a == False`; both lower through `IrNotEq` and
+ `IrEq`, which already exist and are already correct. Spelling them as new IR
+ would have meant a new emitter path for something the machine already does.
+
   desugar-bin-op : TokenKind -> BinaryOp
   desugar-bin-op (k) =
    when k
@@ -247,7 +264,10 @@ Section: Binary Operator Desugaring
     is TripleEquals -> OpDefEq
     is ColonColon -> OpCons
     is Ampersand -> OpAnd
+    is AndKeyword -> OpBoolAnd
     is Pipe -> OpOr
+    is OrKeyword -> OpOr
+    is XorKeyword -> OpNotEq
     is Tilde -> OpApproxEq
     is TildeZero -> OpApproxEqExact
     is otherwise -> OpAdd

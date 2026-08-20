@@ -1051,9 +1051,9 @@ Section: Binary Emission
     in A64EmitResult { state = a64-emit (rd.state) (arm64-lsl-imm (rd.reg) (rr.reg) mul-shift-l), reg = rd.reg }
    else if when op is IrMulInt -> a64-is-mul-by-3 left right is otherwise -> False then
     let operand = a64-mul-by-3-operand left right
-    in let or = a64-emit-expr st operand
-    in let rd = a64-alloc-temp (or.state)
-    in A64EmitResult { state = a64-emit (rd.state) (arm64-add-shifted (rd.reg) (or.reg) (or.reg) 1), reg = rd.reg }
+    in let opr = a64-emit-expr st operand
+    in let rd = a64-alloc-temp (opr.state)
+    in A64EmitResult { state = a64-emit (rd.state) (arm64-add-shifted (rd.reg) (opr.reg) (opr.reg) 1), reg = rd.reg }
    else let imm-val = a64-small-imm right
    in if imm-val > 0 then
     if a64-is-imm-eligible op then a64-emit-binary-imm st op left (imm-val - 1)
@@ -1408,6 +1408,23 @@ Section: Real Arithmetic
    in let st3 = a64-emit st2 (fp-op 0 0 1)
    in A64EmitResult { state = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
 
+ THE CLAMP IS BRANCHLESS AND THAT IS NOT A PERFORMANCE CHOICE. Both of
+ these used to skip the clamp with a forward branch, which left the write to
+ the result register on a path that a finite result never took. The
+ mov-elimination peephole then folded the caller's `mov x0, rd` into that
+ skipped instruction, and a finite saturating add, subtract, multiply or
+ divide RETURNED ITS LEFT OPERAND. It was right only when the result
+ overflowed to an infinity, which is why the one test covering it passed:
+ three of its four lines overflow. `codex/test/ops/real-saturating-finite`
+ is the finite case, on the record, in both argument orders.
+
+ A `csel` writes the result on every path, so there is nothing for a fold to
+ land behind. The peephole may still fold into the final `csel` and that is
+ correct, because the `csel` always executes.
+
+ `cmp` sets the flags and the `sub` between the two `csel`s is the
+ non-flag-setting form, so the mantissa test survives to its own select.
+
   a64-emit-real-saturating-arith-f32 : A64State, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> A64EmitResult
   a64-emit-real-saturating-arith-f32 (st) (l-reg) (r-reg) (fp-op) =
    let rd = a64-alloc-temp st
@@ -1415,15 +1432,14 @@ Section: Real Arithmetic
    in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
    in let st3 = a64-emit st2 (fp-op 0 0 1)
    in let st4 = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0)
-   in let st5 = a64-emit st4 (arm64-lsl-imm 9 (rd.reg) 33)
-   in let st6 = a64-emit st5 (arm64-lsr-imm 9 9 56)
-   in let st7 = a64-emit st6 (arm64-cmp-imm 9 255)
-   in let st8 = a64-emit st7 (arm64-b-cond 1 24)
-   in let st9 = a64-emit st8 (arm64-lsl-imm 9 (rd.reg) 41)
-   in let st10 = a64-emit st9 (arm64-cbz 9 12)
-   in let st11 = a64-emit st10 (arm64-movz (rd.reg) 0 0)
-   in let st12 = a64-emit st11 (arm64-b 8)
-   in A64EmitResult { state = a64-emit st12 (arm64-sub-imm (rd.reg) (rd.reg) 1), reg = rd.reg }
+   in let st5 = a64-emit st4 (arm64-lsl-imm a64-x9 (rd.reg) 33)
+   in let st6 = a64-emit st5 (arm64-lsr-imm a64-x9 a64-x9 56)
+   in let st7 = a64-emit st6 (arm64-lsl-imm a64-x10 (rd.reg) 41)
+   in let st8 = a64-emit st7 (arm64-cmp-imm a64-x10 0)
+   in let st9 = a64-emit st8 (arm64-sub-imm a64-x10 (rd.reg) 1)
+   in let st10 = a64-emit st9 (arm64-csel a64-x10 a64-x10 a64-xzr arm64-cond-eq)
+   in let st11 = a64-emit st10 (arm64-cmp-imm a64-x9 255)
+   in A64EmitResult { state = a64-emit st11 (arm64-csel (rd.reg) a64-x10 (rd.reg) arm64-cond-eq), reg = rd.reg }
 
   a64-emit-real-saturating-arith : A64State, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> A64EmitResult
   a64-emit-real-saturating-arith (st) (l-reg) (r-reg) (fp-op) =
@@ -1432,15 +1448,14 @@ Section: Real Arithmetic
    in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
    in let st3 = a64-emit st2 (fp-op 0 0 1)
    in let st4 = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0)
-   in let st5 = a64-emit st4 (arm64-lsl-imm 9 (rd.reg) 1)
-   in let st6 = a64-emit st5 (arm64-lsr-imm 9 9 53)
-   in let st7 = a64-emit st6 (arm64-cmp-imm 9 2047)
-   in let st8 = a64-emit st7 (arm64-b-cond 1 24)
-   in let st9 = a64-emit st8 (arm64-lsl-imm 9 (rd.reg) 12)
-   in let st10 = a64-emit st9 (arm64-cbz 9 12)
-   in let st11 = a64-emit st10 (arm64-movz (rd.reg) 0 0)
-   in let st12 = a64-emit st11 (arm64-b 8)
-   in A64EmitResult { state = a64-emit st12 (arm64-sub-imm (rd.reg) (rd.reg) 1), reg = rd.reg }
+   in let st5 = a64-emit st4 (arm64-lsl-imm a64-x9 (rd.reg) 1)
+   in let st6 = a64-emit st5 (arm64-lsr-imm a64-x9 a64-x9 53)
+   in let st7 = a64-emit st6 (arm64-lsl-imm a64-x10 (rd.reg) 12)
+   in let st8 = a64-emit st7 (arm64-cmp-imm a64-x10 0)
+   in let st9 = a64-emit st8 (arm64-sub-imm a64-x10 (rd.reg) 1)
+   in let st10 = a64-emit st9 (arm64-csel a64-x10 a64-x10 a64-xzr arm64-cond-eq)
+   in let st11 = a64-emit st10 (arm64-cmp-imm a64-x9 2047)
+   in A64EmitResult { state = a64-emit st11 (arm64-csel (rd.reg) a64-x10 (rd.reg) arm64-cond-eq), reg = rd.reg }
 
  The cond argument is the NEGATION of the predicate wanted, because
  csinc rd, xzr, xzr, cond answers 1 exactly when cond fails: eq

@@ -43,8 +43,8 @@ Measured 2026-08-03, except where an item gives its own date.
 1. **The compiler is a hard fixed point of itself on bare metal.** Text
    round-trip (stage1 === stage2) and CDX fixed point (stage1.cdx ===
    stage2.cdx), byte-identical, with no OS and no libc beneath it. The
-   self-hosted compiler is **63 chapters, 53,881 lines** of Codex
-   (measured 2026-08-10) and compiles itself in 22 seconds.
+   self-hosted compiler is **64 chapters, 55,645 lines** of Codex
+   and compiles itself in 22 seconds.
 
 2. **Two independent implementations check the compiler, and they agree**
    (measured 2026-08-10). A fixed point proves the seed is *stable*, not
@@ -57,9 +57,9 @@ Measured 2026-08-03, except where an item gives its own date.
    **Diverse double-compiling.** The whole compiler is rendered to C# by a
    plug, built by Roslyn -- a toolchain with no ancestry in this project --
    and that compiler then compiles the Codex compiler's own source.
-   Measured 2026-08-14 against the seed shipped that day (`8D405FDF`,
-   2,793,222 bytes), its output was **2,793,222 bytes against that seed's
-   2,793,222, with 96 differing bytes, every one of them inside the
+   Measured 2026-08-20 against the seed shipped that day (`930FF7F1`,
+   2,872,563 bytes), its output was **2,872,563 bytes against that seed's
+   2,872,563, with 96 differing bytes, every one of them inside the
    signature region at offsets 40..135 and none outside it.** The signature
    is stamped by the sign phase rather than emitted by the compiler. That is
    Wheeler's `stage2 == X`. The witness is a release gate and is re-run
@@ -214,7 +214,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**68 applications, 1,019 modules**, all written in Codex and compiled by
+**69 applications, 1,024 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -227,14 +227,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,849,516 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,872,563 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `5504267863C9A2CD` |
-| SHA-256 | `E45B56F1643281ED971B4F986D549CDA456D6FC621DB2EC0387E29A99E1A1497` |
-| MD5 | `67278BDF4D5E755C9DE64FA3B8C46F4B` |
+| Content hash prefix | `CAEED9D6F81BB571` |
+| SHA-256 | `930FF7F174E1E126DB95218B5FAA9FC325A030B6CB861691694FCD956568614D` |
+| MD5 | `8AC2CB7FD7B5FAC78713F34ABFA5E445` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -245,7 +245,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `3C47B2A796B1064218C259DD741FBAA1E876C636C488FB2715193A457D594BC4` |
+| SHA-256 | `9221657C3525FD54B48EDA9DFF7792BD9CA7A14B1B6CD24CEB2AFBA91E3DA5E9` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -258,6 +258,22 @@ the keyboard and the disk itself.
 
 Real-UEFI boot needs Secure Boot off, Fast Boot off, and CSM/Legacy off
 (UEFI-only) -- the image is pure GPT.
+
+**`build/boot/diag.img`** (16,777,216 bytes) -- the diagnostic stick: one
+image that boots on a machine we have never seen, enumerates its firmware
+and devices, runs every probe that applies, banks its readings to the stick
+before any risky arm, and prints a report naming what worked and what did
+not. It carries no seed and no identity, so it is safe to hand to a
+stranger; the procedure is in
+[docs/UsersHandbook.md](docs/UsersHandbook.md).
+
+| Algorithm | Digest |
+|---|---|
+| SHA-256 | `130C07F0C7ED32C5AE7C3A91FCFDA9166DD126321B9575BD05D6A2C3B8E88D46` |
+
+The image is reproducible from its source and this seed -- `DIAG.RCP` inside
+it names both, and the hash carries no timestamp -- so a rebuild that
+answers a different hash means something moved.
 
 **`build/boot/deskboot.img`** (16,777,216 bytes, built from source with
 `build/boot/build-option-a.ps1 -Src apps/works/DeskBoot.codex -Kernel
@@ -586,8 +602,8 @@ codex/
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
   plugs/         56 plugs, 151 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,573 files)
-apps/            68 applications, 1,019 modules
+  test/          Compiler samples + OS integration tests (1,603 files)
+apps/            69 applications, 1,024 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions

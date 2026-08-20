@@ -49,7 +49,7 @@ Set-Location (Join-Path $PSScriptRoot '..')
 # because the code computes its cells rather than naming each one, so no
 # constant scan can see them.
 
-$blocks = @(@{ Name = 'xhci scalars (GopXhci private map)'; Lo = 0; Hi = 19 }, @{ Name = 'xhci port cells (20 + port, xhci-port-cells=8)'; Lo = 20; Hi = 27 }, @{ Name = 'xhci ownership/BAR scalars'; Lo = 28; Hi = 46 }, @{ Name = 'usb-hid-cell-count (the HID bind counter)'; Lo = 47; Hi = 47 }, @{ Name = 'xhci controller table (48 + i*4, 4 controllers)'; Lo = 48; Hi = 63 }, @{ Name = 'xhci-ep-base block (6 words)'; Lo = 64; Hi = 69 }, @{ Name = 'msc and FAT cells'; Lo = 70; Hi = 88 }, @{ Name = 'usb-hid-note block (usb-hid-cell-base + idx*4, 4 devices)'; Lo = 96; Hi = 111 })
+$blocks = @(@{ Name = 'xhci scalars (GopXhci private map)'; Lo = 0; Hi = 19 }, @{ Name = 'xhci port cells (20 + port, xhci-port-cells=8)'; Lo = 20; Hi = 27 }, @{ Name = 'xhci ownership/BAR scalars'; Lo = 28; Hi = 46 }, @{ Name = 'usb-hid-cell-count (the HID bind counter)'; Lo = 47; Hi = 47 }, @{ Name = 'xhci controller table (48 + i*4, 4 controllers)'; Lo = 48; Hi = 63 }, @{ Name = 'xhci-ep-base block (6 words)'; Lo = 64; Hi = 69 }, @{ Name = 'msc and FAT cells'; Lo = 70; Hi = 91 }, @{ Name = 'usb-hid-note block (usb-hid-cell-base + idx*4, 4 devices)'; Lo = 96; Hi = 111 })
 
 
 # Constants that name a single cell. gfat-cell-* live inside the msc range

@@ -1,0 +1,44 @@
+Chapter: BedIdentity
+
+ The BED identity: a deterministic IDENTITY.DAT wrapped with wz-auto-pass,
+ so an image built with build-img -Identity build/boot/BEDIDENT.DAT skips
+ the first-boot ceremony and the wizard auto-unlock (bed-only, hypervisor
+ bit, ruling 12) leaves the desk with key-status=1 and no typing. The DAT
+ in build/boot is these bytes; this test is what pins them. It wraps a
+ PUBLIC seed with a PUBLIC passphrase and protects nothing, which is why
+ fixed salt and iv are correct here: wz-keygen's machine-derived pair
+ reads the device seed cell and the tick count, and as first landed this
+ test pinned one boot's random bytes -- any re-run went red.
+  cites Works chapter GopWizard
+  cites Foreword chapter Console
+
+Section: Body
+
+  bed-seed : List Integer = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3, 8, 4, 6, 2, 6, 4, 3, 3, 8, 3, 2, 7, 9, 5]
+
+  bed-fill : Integer, Integer, Integer, List Integer -> List Integer
+  bed-fill (i) (n) (v) (acc) =
+    if i >= n then acc
+    else bed-fill (i + 1) n v (list-push acc v)
+
+  hex-of : Integer -> Text
+  hex-of (b) =
+    let d = "0123456789abcdef"
+    in text-take (text-drop d (b / 16)) 1 & text-take (text-drop d (int-mod b 16)) 1
+
+  dump : Integer, Integer, Integer, Text -> Text
+  dump (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else dump buf (i + 1) n (acc & hex-of (peek-byte buf i))
+
+  opening : [Console.Write] Nothing = act
+    let wid = wz-keygen-with bed-seed wz-auto-pass (bed-fill 0 16 5 []) (bed-fill 0 16 6 [])
+    in let buf = alloc-bytes 512
+    in let z = wz-zero buf 0 512
+    in let len = wz-serialize-identity wid buf
+    in act
+      print-line-uni ("len " & show len)
+      print-line-uni ("fp " & wid.wid-fingerprint)
+      print-line-uni ("hex " & dump buf 0 len "")
+    end
+  end

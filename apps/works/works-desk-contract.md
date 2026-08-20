@@ -76,9 +76,11 @@ it is measured:
   restore. Carrying the old one across would carry pointers into memory just
   handed back. State that must outlive a close still belongs in a `ds` block
   allocated in `desk-run`, which is how the Calculator keeps its number.
-  **`GopEdit`'s 9 MB must not move into this record**: it is parked in a cell
-  with no restore precisely so the base mark cannot reach it, and only Edit's
-  typed values belong here.
+  **`GopEdit`'s 9 MB must not move into this record**: its POINTER is parked
+  in a cell and only Edit's typed values belong here. This bullet said the
+  cell has no restore so the base mark cannot reach the buffer; the pointer
+  survives a restore, the memory does not, and section 3 carries the
+  correction and the fix.
 - **A step may STORE into its record in place, and what it stores decides how
   it must answer.** `__record-set` is an in-place field store, so a step
   changes its own state without a new record and without a parameter. Storing
@@ -222,15 +224,156 @@ dead ends the user leaves with Esc and there is nothing in them to keep.
 Re-entry repaints from `EditState` through `ged-reenter`, which picks the list
 paint or the editor repaint by `ed-mode`.
 
-**The Browser does NOT participate yet**, and its `-open` clears the stack
-rather than pretending to. Opening it is still the full reset it always was:
-every live app is dropped and the next close restores to the base mark. That
-guard is not decoration. Without it a heavy open leaves a live entry on the
-stack that nothing will ever kill, the top never becomes dead, and **no close
-reclaims anything for the rest of the session**. Wiring it means giving it a
-`-focus` that repaints from its own state, and the Browser is the delicate one:
-`gbr-new` and `gbr-first-paint` are already split for the reason section 0
-records.
+**The Browser joined on 2026-08-19 and it is the one pane with a RULE attached:
+it may only ever be the topmost heavy pane, so every other heavy `-open` evicts
+it.** The reason is a property no other pane has. `gbr-repaint` takes
+`bs-laid-mark` at the CURRENT frontier and rebuilds `bp-st` there, so a Browser
+re-entered above another pane has its state above THAT pane's mark; when the
+pane below closes and the cascade pops to its mark, the Browser's state goes
+with it and the record still points at it. Files, Edit and the 3D panes cannot
+do this, because their state is built once by their own `-open`, above their own
+mark and below everything later.
+
+So `desk-files-open`, `desk-edit-open` and `desk-scene-open` each call
+`desk-browser-evict` and set `da-browser = None`. What this buys is the common
+case: the Browser stays alive under any of the nine LIGHT panes, because a light
+pane pushes no mark, and its close finds the Browser's entry live on top,
+reclaims nothing, and leaves the Browser's marks untouched. Measured: two tabs
+open, Tab, the Calculator opened and closed, `b` again, and the frame is
+identical to a Browser that never left except for the strip named below, where a
+fresh one differs across the whole tab bar (26,856 pixels). The eviction arm is
+sharper still: two tabs, Tab, Files opened and closed, `b` again returns a
+Browser **byte-identical to a fresh one-tab Browser**, and the frontier is back
+to `0x645ce8`, so the cascade popped the dead Files entry and the dead evicted
+Browser entry together.
+
+**A live hidden Browser holds 43,800 bytes**, which is the cheapest of the four
+by three orders of magnitude (the 3D panes hold 8.2 MB, Edit 9.6 MB).
+
+**One visible rough edge, and it is NOT the desk's: `BROWSER-5`.** After a hide
+and return the Browser's bottom edge sits 12 device rows higher than it did
+before the hide, and the desk background shows in the gap. **The desk is not
+what moved it.** Measured 2026-08-19 with nothing else running: open the Browser
+and its bottom edge is at y 827; press ANY key and it moves to y 839 and stays
+there, with the diff exactly the band y 828..839 and nothing else in the frame
+changing, not even the address bar text. So the Browser's FIRST paint lays the
+page 12 rows shorter than every repaint after it, and re-entry re-runs the first
+paint through `gbr-first-paint`, which is why the edge goes back up. Neither
+figure is the pane's actual bottom (843), so both layouts are wrong and by
+different amounts. **My first diagnosis of this was wrong** -- it read as
+`gbr-repaint` being incremental and leaving stale rows, and a fill of the region
+before the repaint was tried on that theory and did not close it. The fill is
+not in the tree; the row is in `apps/browser/browser-backlog.md`.
+
+### The taskbar names what is alive, since 2026-08-19
+
+The `tasks` slot between the `Codex` label and the clock was an empty flex
+spacer. It now reads the MARK STACK rather than a list of its own, and that is
+what makes it correct by construction: an app is alive exactly when it holds a
+live entry there, so the row cannot drift from the thing it reports. A dead
+entry takes `desk-focus-none` and names nothing. Only the five heavy panes ever
+push, so only `Files`, `Web`, `3D`, `Fish` and `Edit` can appear.
+
+It is rebuilt by `desk-draw`, which runs at the two moments the live set changes
+AND the desk is visible: `desk-app-hide` and `desk-app-close`. An open does not
+redraw the desk and does not need to, because the pane covers it.
+
+**The two arms that could have falsified it both ran.** With Files hidden the
+row reads `Files`, and with the 3D pane hidden over it `Files   3D`. Closing
+Files leaves a frame **byte-identical to a desk that never opened anything**, so
+the row empties with no residue. And the eviction arm: Browser hidden, then
+Files opened, reads `Files` ALONE rather than `Web   Files`, so the row tells
+the truth about a pane the desk dropped rather than reporting what was asked for.
+
+### The system menu is the launcher in a different box, since 2026-08-19
+
+`desk-menu-tree` wraps `gpr-tree` UNCHANGED and changes only the box: bounded
+width, left-anchored, full height. `gpr-key` and `gpr-id-scan` are its whole
+behaviour, so a row and the key it names still arrive by the same road and
+there is no second table to keep in step. It shares `desk-prog-cell`, and the
+shared SELECTION is the point rather than a saving: one model, two views.
+
+**What the widget layer will not do, measured while trying.** The design asked
+for a panel floating above the taskbar button. That is not reachable here:
+a panel does not size to its children on either axis, so a bottom-anchored box
+with a flex spacer above it gets zero height and its rows draw off the glass;
+and nothing clips or scrolls, so a single column of the thirteen entries and
+four headings (366 logical plus padding) overflows the 400-logical content
+region at 1600x900. Shrinking rows to 18 to fit clips the button chrome against
+its own label. Three shapes were built and captured before the fourth was kept.
+**So the menu takes the launcher's two columns**, which is the same problem the
+launcher solved for the same reason, and anchors them left at 500 logical with
+the right third of the region free.
+
+**Driving a click at this desk, because it is not obvious and it cost several
+boots.** `-mouse` takes a host-tracked position starting at `0,0` and delivers
+the DELTA between consecutive events, clamped to +-127 a sample, so a screen
+coordinate handed to it straight moves the pointer 127 pixels and no further.
+The desk also needs movement and button in the same report: `desk-loop` computes
+`clicked` as `mv == 1 & mouse-clicked`. A pointer starting centred at 800,450
+reaches the taskbar button at 420,857 in four samples of about `-95,+102`,
+ending at `-380,407`; negatives are how you go left and up. `OperatorsManual.md`
+carries the wire.
+
+**The taskbar's `menu` id did not change and must not.** It became a button
+rather than a label, and that is the only visible change to a plain desk: 3,228
+pixels in its own box. Renaming it to `sysmenu` broke `desk-taskbar-hit`, which
+asserts that id resolves in the band. The test was right and the rename bought
+nothing.
+
+## 0.6 The annotation surface, since 2026-08-19
+
+`GopEdit` marks a definition line whose definition carries a trusted
+annotation, reads them on F6, and writes one on F7. WORKS-15 is closed; what
+follows is what a pane touching that surface must not re-learn.
+
+**Do NOT use `CodeBrowser`'s `SourceIndex` to join annotations to lines.** It
+takes the whole file as one Text, then holds every line as Text a second time,
+appends with `list-snoc` once per definition, and recurses once per line. The
+pane exists to open a 2,896,050-byte file of 62,184 lines, and section "Bytes
+To Text" in `GopEdit` records why it never builds a whole-file Text at all.
+Each of those four is disqualifying alone. The join reads BYTES: a target
+becomes a byte pattern once, the buffer is scanned for the matching signature
+line, and a row paints one bit out of a bitmap, which is why `ged-draw-row`
+takes no annotation argument.
+
+**The files on the medium end CRLF, and `ged-chars` renders every byte under
+32 as a space.** So a chapter compared as Text reads `Name ` and never equals
+`Name`. Compare chapter and name as BYTES, or trim, and expect this the next
+time anything on the desk compares a line to a stored string. It cost a blank
+gutter and a staged probe to find.
+
+**`create-annotation` takes the AUTHOR before the body.** Written the other way
+round the store is still valid, the right line is still marked, and every count
+still agrees; only rendering the two fields separately shows it, which is what
+the bubble was the first thing to do. A test that counts annotations passes
+either way.
+
+**Reads and writes go through `GopFacts` over the desk's medium, never
+`disk-load`.** The kernel road is the ATA syscall on the active drive, so it is
+IDE-only and answers zero facts under UEFI or on a stick (WORKS-46). The
+annotation surface is proven on both roads: seeded through the kernel, read
+back through the desk.
+
+**Trust is not a desk decision and needed no ruling.** The medium already
+persists vouches (kind 32); `RepoVouch`'s voucher, subject and level are
+exactly `lattice-add-vouch`'s three arguments; `trust-default-threshold` is
+already a named constant. The loaded identity is added DIRECT at `trust-max`,
+because an author who cannot vouch for themselves would need someone else's
+vouch before their own note appeared on their own machine. **The consequence
+worth knowing: with no identity loaded the lattice is empty and NOTHING is
+above threshold, so no annotation shows.** That is the specified behaviour and
+it means the default `desk.ps1` bed, which loads no identity, shows none.
+
+**To exercise any of this under UEFI**, bake an identity rather than walking
+the first-boot wizard: injected Enter and navigation reach the wizard but
+printable characters never do, so the passphrase answers "Too short" forever.
+`build/build-img.ps1 -Identity build/boot/BEDIDENT.DAT` skips the ceremony.
+Boot with `-kernel <img> -uefi -disk <THE SAME img>`, both and not either, or
+the guest paints "No disk answered on any controller"; drive it with
+`-keys-file` (`-keys` is unpaced) plus `-hid-nak-unchanged`; and allow a long
+runway, about 66 s of boot diagnostics answered by Enter, before anything the
+desk sees will land.
 
 ## 1. The desk never unwinds
 
@@ -271,10 +414,10 @@ parameter.
 
 | offset | constant | holds |
 |---:|---|---|
-| 0 | -- | free |
+| 0 | `desk-review-cell` | pointer: the Review pane's state block (red, 2026-08-19) |
 | 4 | `desk-mark-cell` | the base heap mark (section 3) |
 | 8 | `desk-second-cell` | last RTC second the taskbar clock painted |
-| 12 | `desk-focus-cell` | which app the desk is stepping (0 none, 1 Monitor, 2 Calendar, 3 Appearance, 4 Calculator, 5 Clock, 6 Programs, 7 Diffusion, 8 Issues, 9 Console) |
+| 12 | `desk-focus-cell` | which app the desk is stepping (0 none, 1 Monitor, 2 Calendar, 3 Appearance, 4 Calculator, 5 Clock, 6 Programs, 7 Diffusion, 8 Issues, 9 Console, 10 Files, 11 Browser, 12 3D View, 13 Aquarium, 14 Editor, 15 system menu, 16 Review) |
 | 16 | (bare literal) | the Monitor pane's repaint second |
 | 20 | `desk-marks-cell` | pointer: the app mark stack (val, 2026-08-19) |
 | 24 | (bare literal) | pointer: the calculator's state block |
@@ -288,7 +431,7 @@ parameter.
 | 56 | `dk-adorn-cell` | adornment bits |
 | 60 | `desk-clock-cell` | pointer: the clock pane's state block |
 
-**One cell is free (0). Announce before you take it**, the way the file claims
+**No cell is free: red took cell 0 for the Review pane on 2026-08-19.** The next pane that needs a cell grows the block (`alloc-zeroed 64 64` in `desk-run`, and this table). Announce before you take one, the way the file claims
 table in `docs/PM/CurrentPlan.md` asks. Cell 12 was taken by val on 2026-08-18
 for the focus id and cell 20 by val on 2026-08-19 for the mark stack; the count
 above said three, then two. Two agents took cell 48 independently on
@@ -346,7 +489,15 @@ number of visits.
 
 `ged-init` allocates 8 MB plus 1 MB on first use and parks both pointers in cell
 28, which is persistent, so a restore over them frees the memory and leaves the
-cell pointing at it. This section said the Edit pane had no restore and was
+cell pointing at it.
+
+**Since 2026-08-19 it allocates a third block, the undo ring**, 4096 records of
+12 bytes for a fixed 49,152, on the same lifetime as the other two and reclaimed
+by the same close. The 9,598,200 figure below was measured BEFORE the ring
+existed and has not been re-measured since; the ring's own cost is exact by
+construction rather than measured, because it is one fixed allocation that never
+grows. A keystroke stores three integers into it and allocates nothing, so the
+Edit step still answers 1. This section said the Edit pane had no restore and was
 therefore safe. **It was not: the restore was always happening.**
 
 `ged-init` runs from `desk-edit-open`, which is ABOVE the base mark, so both
@@ -397,6 +548,23 @@ the leaking idle loop with its own bracketed one, so opening a pane paused the
 leak; a step pane leaves `desk-loop` running, so without the bracket the leak
 would run the whole time an app is up.
 
+### The stack half has a row now, and it reports its own absence
+
+The Monitor's `stack` row reads `stack-min-rsp-addr` (28736) and
+`ram-size-addr` (4072) with `peek-qword`. The boot prologue seeds the minimum
+with `ram-size` unconditionally (`X86_64Chapter.codex:385`) and only the
+per-function prologue narrows it, under `trace-alloc` (`X86_64.codex:12`), so
+the two reading EQUAL is exactly what "nothing ever wrote a lower RSP" looks
+like and the row says so rather than printing a depth of zero.
+
+**`compile.ps1 -Trace` does not enable it.** Measured 2026-08-19: a traced desk
+is byte-for-byte the same SIZE as an ordinary one and the row still reads
+never-narrowed, because `compile-to-cdx-with-exit-mode` passes the emitter's
+`trace` argument as a literal `False` (`opening.codex:1325`) and takes no
+parameter that could carry the mode word. So no CDX the shipped path produces
+can narrow that cell. Do not spend a run trying to get a stack figure out of
+this desk until that argument is threaded.
+
 ### The instrument
 
 The Monitor pane's `memory` row prints the frontier and the base mark. The gap
@@ -423,13 +591,25 @@ model of the split.
   arrive by the same road.
 - **Only a keystroke or a click may reach the dispatch.** Section 1 says what
   happens if the idle case goes through it too.
+- **The desk rows carry `Identity` since 2026-08-19.** Every `[Device.Port,
+  Gpu.Compute, Gpu.Memory, Identity]` signature in `GopDesk`, and `DeskVm`'s
+  entry, so a pane may sign with the box identity (`key-sign-bytes`); a step
+  that does declares `[Device.Port, Identity]`, the Review step is the model.
 - **Carry the F12 arm.** Every pane loop has `sc == 88 -> desk-shot`. A pane
   that omits it silently loses the screenshot key, which is also how flights
   are photographed.
-- **Scancodes are a shared namespace.** Taken today: 4, 16, 18, 20, 23, 25, 30,
-  32, 33, 37, 38, 46, 48, 50, plus 1 for Esc, 15 for Tab (leave the pane alive,
-  section 0.5) and 88 for F12. Check `desk-dispatch` and `dk-style-key` before
-  choosing.
+- **A pane that wants the POINTER takes `UsbMouse` and reads it in the step.**
+  `desk-loop` pumps the mouse before calling the step, so `mouse-x` and
+  `mouse-y` are current, and a pane that tracks movement keeps its own last
+  position rather than asking the desk for a delta. Both 3D panes and the
+  Editor pack it as `x * 4096 + y` in a record field, with ZERO meaning never
+  sampled; without that sentinel the first frame reads a delta against an
+  origin the pointer was never at.
+- **Scancodes are a shared namespace.** Taken today: 4, 16, 18, 19, 20, 23, 25,
+  30, 32, 33, 37, 38, 41, 46, 48, 50, plus 1 for Esc, 15 for Tab (leave the pane
+  alive, section 0.5) and 88 for F12. 41 is the backtick and opens the system
+  menu, which is also the taskbar's `menu` button. Check `desk-dispatch` and
+  `dk-style-key` before choosing.
 - **A launcher row is not free.** `gpr-split` in `GopPrograms` is an ENTRY
   INDEX that must land on a group boundary, so inserting before it moves the
   cut and the second column loses its heading. Appending at the end is free.
@@ -454,12 +634,84 @@ back onto the screen.
 `cursor-update` restores what it covered before drawing itself at the new place,
 so a pane that repaints nothing needs no bracket.
 
+## 5.1 `comp-render` clips to the box it was given, since 2026-08-20
+
+`gop-put` is `poke-32 base ((y * stride + x) * 4) color` and there is no height
+anywhere in the drawing layer. `gop-draw-text` bounds x against `stride`,
+because a glyph past the end of a row lands on the NEXT row and shreds it, and
+that clip is documented where it lives. **The y axis has no such bound at all**,
+so a pane that lays a node out below the last scanline writes past the end of
+the framebuffer, silently, on every paint.
+
+Measured 2026-08-20 at 1600x900, framebuffer at `0xBF000000`, last valid row
+899. With the Browser pane open, `-hwwatch` fires at row 950, 960, 970, 976 and
+977 with `writer=0x1084c0` and `now=0x101010`, the page background; rows 978 and
+above are silent, and so is row 950 on a desk with no Browser open. So the pane
+writes rows 900 to 977, which is 78 rows and 499,200 bytes past the end. In the
+bed that address is plain RAM and whatever follows it is corrupted without a
+fault; on metal it is past the GOP aperture the firmware handed us.
+
+The cause is not the Browser's alone and any pane can reach it: `widget-arrange`
+places a child at its measured minimum, `flex-col-place` gives a flex child
+`box-max mh share` so a content minimum larger than the share wins, and
+`comp-walk` paints every node it is handed. Clamping the node would not have
+helped -- the deepest node in the Browser's tree is the one that would be
+clamped, so its children would overflow instead.
+
+**So the bound is a clip rect carried through the walk.** `comp-render` builds
+it from the `w` and `h` it was given, so every existing caller gained the bound
+without changing, and a pane rendered into a box smaller than the screen is
+bounded to the PANE and not merely to the framebuffer. `comp-fill` is
+`gop-fill-rect` intersected with that rect and every rectangle this compositor
+draws goes through it.
+
+The clip does NOT narrow as the walk descends. A child painting outside its own
+parent is still wrong and the goldens must be able to say so; narrowing per node
+would hide the layout defect rather than surface it.
+
+Two things this does not do. **Text is all-or-nothing**: `gop-draw-text` paints
+a glyph as sixteen scaled rows with no row bound, so a line straddling the clip
+is dropped rather than cut, and a bounded glyph primitive is what that would
+need. **The layout is unchanged**: a child is still laid out taller than its
+parent, `codex/test/apps/browser-pane-fit` still reports the Browser's tree
+reaching 138 device pixels past the pane it was granted, and the page is now
+clipped there rather than scrolled.
+
+What it measured, on a golden sweep of thirteen panes against the same seed:
+nine byte-identical, and the four that moved are the ones that were painting
+outside their box. Two escapes showed up, not one. The vertical case is the
+Browser's page, and the horizontal case is a fill running past `x = w` and
+wrapping onto the NEXT row's left edge, which had been breaking the left border
+of the Browser and Review panes in bands -- the same failure `gop-draw-text`
+bounds x to avoid, happening to rectangles.
+
+One bound that looked obviously right and was not: clipping the taskbar clock's
+own repaint to the taskbar band moved 408 pixels on every pane, because the
+band's child widgets carry styles whose boxes reach outside the node's bounds.
+`desk-taskbar-clock` takes `h` and clips to the screen for that reason.
+
 ## 6. The palette arrives as a parameter, not by citation
 
 `GopDesk` cites `GopEdit`, so `GopEdit` reading `dk-pal ds` would be a citation
 cycle. Any pane that needs the colour scheme takes it as an argument from the
-desk. This is structural, not a matter of taste, and it is why `GopEdit` and
-`GopFiles` still paint from fixed constants (`works-backlog.md` WORKS-17).
+desk. **Done for `GopFiles` and `GopEdit` 2026-08-19 (WORKS-17):** both take a
+`Palette` and paint through named role accessors (`gfl-bg`, `ged-cursor` and
+their neighbours) instead of the fixed `gfl-col-*` and `ged-col-*` ramps.
+
+**The cycle is about where `dk-pal` LIVES, and a `Palette` parameter is the
+answer for a second reason that outlives it.** The accessor could be moved
+below both panes -- `GopStyleKit` cites nothing but `UI chapter Theme` -- and
+the cycle would go. It would not help: `gfl-draw-frame` and most of its
+neighbours never receive `ds` either, so a pane reading the palette from `ds`
+would have to be handed `ds` through exactly the same functions. What is
+threaded is the only real choice, and a `Palette` is what those functions
+want, so nothing has to move.
+
+**The palette has ten roles and a pane needs about seven pens, so some
+collapse.** `dim` and `green` are both `pal-primary`, a selection band and the
+editor's current-line band are both `pal-border`. Say so where you do it: a
+collapse that reads as an accident gets "fixed" by the next person into a role
+that means something else.
 
 ## 7. Running the desk
 

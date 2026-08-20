@@ -68,6 +68,12 @@ Section: State
 
 Section: Initialization
 
+ The state is built around the UNLOADED tab and the page is loaded into it
+ afterwards, because the page has to be built for a height only a layout can
+ answer and a layout needs a state to lay out (BROWSER-5). `__record-set`
+ stores in place and hands back the same record, which is what makes the
+ second step a store rather than a second state.
+
   browser-init : Integer, Integer, Theme, DisplayState -> BrowserState
   browser-init (w) (h) (theme) (ds) =
     let comp = compositor-new w h browser-bg
@@ -76,10 +82,8 @@ Section: Initialization
     in let trust = trust-store-new []
     in let sandbox = sandbox-default-config
     in let cache = cache-new 64
-    in act
-      loaded <- load-new-tab-content first-tab sandbox trust cache w h
-      BrowserState {
-      bs-tabs = [loaded],
+    in let blank = BrowserState {
+      bs-tabs = [first-tab],
       bs-active-tab = 1,
       bs-address-bar = addr-bar,
       bs-window-width = w,
@@ -99,12 +103,20 @@ Section: Initialization
       bs-laid = None,
       bs-laid-mark = 0
     }
+    in act
+      loaded <- load-new-tab-content first-tab sandbox trust cache w (browser-viewport-h blank)
+      __record-set blank "bs-tabs" [loaded]
     end
 
+ The last argument is the viewport's MEASURED height, not the window's.
+ `browser-viewport-h` lays the chrome out with an empty viewport and reads
+ what the layout gives it (BROWSER-5); subtracting `chrome-height` here
+ instead was 26 short at 1024x768, and the page painted the difference over
+ whatever was below the pane.
+
   load-new-tab-content : Tab, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer -> Tab
-  load-new-tab-content (t) (sandbox) (trust) (cache) (vw) (vh) =
-    let vp-h = vh - chrome-height
-    in act
+  load-new-tab-content (t) (sandbox) (trust) (cache) (vw) (vp-h) =
+    act
       result <- resolve-and-load t.tab-address sandbox trust cache vw vp-h
       when result
       is PageLoaded (tree) (title) (caps) ->
@@ -121,18 +133,28 @@ Section: Initialization
 
 Section: Chrome Layout
 
+ Both bars hold widgets that declare 24, and since WORKS-45 a panel is at
+ least as tall as what it contains, so the laid-out bars come out 42 each
+ whatever these numbers say. `browser-apply-click` routes by y against them,
+ so a number smaller than the bar it names sends clicks in the difference to
+ the wrong handler: at 28 the bottom 14 rows of the address bar reached the
+ page. `codex/test/apps/browser-chrome-layout` prints the laid-out heights.
+
   chrome-tab-bar-height : Integer
-  chrome-tab-bar-height = 32
+  chrome-tab-bar-height = 42
 
   chrome-address-bar-height : Integer
-  chrome-address-bar-height = 28
+  chrome-address-bar-height = 42
 
   chrome-height : Integer
   chrome-height = chrome-tab-bar-height + chrome-address-bar-height
 
+ This is the box the layout actually gives the page, not `chrome-height`
+ subtracted from the window. The media player is sized by it, so the old
+ arithmetic sized a video 26 rows taller than the space it had.
+
   page-viewport-rect : BrowserState -> LayoutRect
-  page-viewport-rect (state) =
-    layout-rect 0 chrome-height state.bs-window-width (state.bs-window-height - chrome-height)
+  page-viewport-rect (state) = browser-viewport-box state
 
   tab-bar-rect : BrowserState -> LayoutRect
   tab-bar-rect (state) =
@@ -145,10 +167,12 @@ Section: Chrome Layout
 Section: Rendering
 
   browser-render : BrowserState -> WidgetNode
-  browser-render (state) =
+  browser-render (state) = browser-render-with state (browser-render-viewport state)
+
+  browser-render-with : BrowserState, WidgetNode -> WidgetNode
+  browser-render-with (state) (viewport) =
     let tab-bar = browser-render-tab-bar state
     in let addr-bar = browser-render-address-bar state
-    in let viewport = browser-render-viewport state
     in let chrome = widget-panel "chrome" DirColumn 0 [
           widget-set-flex (widget-set-min tab-bar state.bs-window-width chrome-tab-bar-height) 0,
           widget-set-flex (widget-set-min addr-bar state.bs-window-width chrome-address-bar-height) 0,
@@ -158,6 +182,52 @@ Section: Rendering
       then let overlay = browser-render-trust-prompt state
         in widget-panel "root" DirColumn 0 [chrome, overlay]
       else chrome
+
+ BROWSER-5. The page has to be built for a height, and `vh - chrome-height`
+ is not that height. `chrome-height` is the sum of the two bars, where what
+ stands above the viewport is the root panel's own inset and the margins
+ between the bars as well: measured at 1024x768, the page was built for 684
+ and the layout gave it 658. Nothing clips a widget panel to its box, so the
+ surplus painted over whatever sat below the pane, which on the desk is the
+ taskbar.
+
+ So the height is MEASURED, from a layout of this same chrome with an EMPTY
+ viewport. Empty is not an optimisation, it is the whole point: since
+ WORKS-45 a panel is at least as tall as what it holds, so a chrome measured
+ with the real page reports the height that page DEMANDS rather than the
+ height it is going to be given. That is the same circularity the tracker hit
+ on the width axis in WORKS-47, and it is avoided the same way.
+
+  browser-viewport-probe : Text = "viewport-probe"
+
+ The rect is rebuilt before the bracket closes. `widget-layout` returns a
+ fresh tree and the restore frees exactly it, so handing back a rect that
+ still lives in it would hand back reclaimed memory.
+
+  browser-viewport-box : BrowserState -> LayoutRect
+  browser-viewport-box (state) =
+    let mark = __heap-save
+    in let empty = widget-panel browser-viewport-probe DirColumn 0 []
+    in let laid = widget-layout (browser-render-with state empty) (state.bs-theme) (layout-rect 0 0 (state.bs-window-width) (state.bs-window-height))
+    in let found = browser-probe-box laid
+    in let kept = layout-rect (found.lr-x) (found.lr-y) (found.lr-w) (found.lr-h)
+    in let dropped = __heap-restore mark
+    in kept
+
+  browser-viewport-h : BrowserState -> Integer
+  browser-viewport-h (state) = (browser-viewport-box state).lr-h
+
+  browser-probe-box : WidgetNode -> LayoutRect
+  browser-probe-box (w) =
+    if w.wn-id == browser-viewport-probe then w.wn-bounds
+    else browser-probe-box-kids (w.wn-children) 0 (w.wn-child-count)
+
+  browser-probe-box-kids : List WidgetNode, Integer, Integer -> LayoutRect
+  browser-probe-box-kids (kids) (i) (n) =
+    if i >= n then layout-rect-zero
+    else let found = browser-probe-box (list-at kids i)
+    in if found.lr-h > 0 then found
+    else browser-probe-box-kids kids (i + 1) n
 
   browser-render-tab-bar : BrowserState -> WidgetNode
   browser-render-tab-bar (state) =
@@ -260,7 +330,7 @@ Section: Tab Management
     let id = state.bs-next-tab-id
     in let t = tab-new id "New Tab" "codex://local/newtab"
     in act
-      loaded <- load-new-tab-content t state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width state.bs-window-height
+      loaded <- load-new-tab-content t state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width (browser-viewport-h state)
       let s1 = __record-set state "bs-tabs" (list-push state.bs-tabs loaded)
       in let s2 = __record-set s1 "bs-active-tab" id
       in let s3 = __record-set s2 "bs-next-tab-id" (id + 1)
@@ -284,9 +354,17 @@ Section: Tab Management
         in let s2 = __record-set s1 "bs-active-tab" new-active
         in __record-set s2 "bs-address-bar" (address-bar-set-text state.bs-address-bar addr)
 
+ Switching to the tab already active is a no-op and answers the state it was
+ given, for the reason `browser-focus-page` below is written the same way:
+ clicking the tab you are on is an ordinary thing to do, `tab-find-by-id`
+ and three `__record-set` calls are not free, and on a bump allocator in a
+ loop that never returns they are permanent. Measured through
+ `browser-click-heap`: 16 bytes a click before the guard, none after.
+
   browser-switch-tab : BrowserState, Integer -> BrowserState
   browser-switch-tab (state) (id) =
-    let tab = tab-find-by-id state.bs-tabs id
+    if id == state.bs-active-tab then state
+    else let tab = tab-find-by-id state.bs-tabs id
     in let addr = when tab
           is Just (t) -> t.tab-address
           is None -> ""
@@ -326,7 +404,7 @@ Section: Navigation
     let active = browser-active-tab state
     in when active
       is Just (t) -> act
-        loaded <- load-new-tab-content (tab-navigate t address) state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width state.bs-window-height
+        loaded <- load-new-tab-content (tab-navigate t address) state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width (browser-viewport-h state)
         let title = loaded.tab-title
         in let hist = history-visit state.bs-history address title 0
         in let s1 = __record-set state "bs-tabs" (tab-replace state.bs-tabs loaded)
@@ -344,7 +422,7 @@ Section: Navigation
         let backed = tab-go-back t
         in if backed.tab-address /= t.tab-address
           then act
-            loaded <- load-new-tab-content backed state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width state.bs-window-height
+            loaded <- load-new-tab-content backed state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width (browser-viewport-h state)
             let s1 = __record-set state "bs-tabs" (tab-replace state.bs-tabs loaded)
             in let s2 = __record-set s1 "bs-address-bar" (address-bar-set-text state.bs-address-bar backed.tab-address)
             in __record-set s2 "bs-dirty" True
@@ -360,7 +438,7 @@ Section: Navigation
         let forwarded = tab-go-forward t
         in if forwarded.tab-address /= t.tab-address
           then act
-            loaded <- load-new-tab-content forwarded state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width state.bs-window-height
+            loaded <- load-new-tab-content forwarded state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width (browser-viewport-h state)
             let s1 = __record-set state "bs-tabs" (tab-replace state.bs-tabs loaded)
             in let s2 = __record-set s1 "bs-address-bar" (address-bar-set-text state.bs-address-bar forwarded.tab-address)
             in __record-set s2 "bs-dirty" True
@@ -373,7 +451,7 @@ Section: Navigation
     let active = browser-active-tab state
     in when active
       is Just (t) -> act
-        loaded <- load-new-tab-content (__record-set t "tab-status" TabLoading) state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width state.bs-window-height
+        loaded <- load-new-tab-content (__record-set t "tab-status" TabLoading) state.bs-sandbox state.bs-trust-store state.bs-cache state.bs-window-width (browser-viewport-h state)
         let s1 = __record-set state "bs-tabs" (tab-replace state.bs-tabs loaded)
         in __record-set s1 "bs-dirty" True
       end
@@ -437,18 +515,119 @@ Section: Mouse Hit Testing
   browser-handle-mouse-click (state) (mx) (my) =
     browser-apply-click state mx my (browser-click-code state mx my)
 
+  browser-band-page : Integer = 0
+  browser-band-tab-bar : Integer = 1
+  browser-band-address-bar : Integer = 2
+
+ The band is read off the tree the browser painted, not derived from the
+ chrome's heights. Those are heights and the question is POSITION: the root
+ panel is inset by its own margin, border and padding before anything is
+ placed, so the tab bar starts at y 9 and every boundary derived from a
+ height alone sat 9 rows above the bar it named. Ten rows of a 108-row
+ column reached the wrong handler, and no pair of constants closes that,
+ because the inset is the theme's and the widths are the caller's
+ (`codex/test/apps/browser-chrome-click`).
+
+ The heights are still the answer before the first paint, when there is no
+ tree to ask and no pixels on the glass either.
+
+  browser-click-band : BrowserState, Integer, Integer -> Integer
+  browser-click-band (state) (mx) (my) =
+    when state.bs-laid
+      is None ->
+        if my < chrome-tab-bar-height then browser-band-tab-bar
+        else if my < chrome-height then browser-band-address-bar
+        else browser-band-page
+      is Just (tree) ->
+        if browser-point-in tree "tab-bar" mx my then browser-band-tab-bar
+        else if browser-point-in tree "address-bar" mx my then browser-band-address-bar
+        else browser-band-page
+
+ This walks the tree itself rather than calling `widget-find`, and the reason
+ is the same one the focus guard below is written for. `widget-find` answers
+ a `Maybe WidgetNode`, so it ALLOCATES a `Just` on every hit, and this runs
+ on every click: measured through `browser-click-heap`, routing through it
+ cost 96 bytes a cycle where the loop had been costing nothing, and on a bump
+ allocator inside a loop that never returns those are permanent. Answering a
+ Boolean allocates nothing.
+
+  browser-point-in : WidgetNode, Text, Integer, Integer -> Boolean
+  browser-point-in (w) (id) (mx) (my) =
+    if w.wn-id == id then rect-contains (w.wn-bounds) mx my
+    else browser-point-in-children (w.wn-children) id mx my 0 (w.wn-child-count)
+
+  browser-point-in-children : List WidgetNode, Text, Integer, Integer, Integer, Integer -> Boolean
+  browser-point-in-children (children) (id) (mx) (my) (i) (n) =
+    if i >= n then False
+    else if browser-point-in (list-at children i) id mx my then True
+    else browser-point-in-children children id mx my (i + 1) n
+
   browser-apply-click : BrowserState, Integer, Integer, Integer -> BrowserState
   browser-apply-click (state) (mx) (my) (code) =
-    if my < chrome-tab-bar-height
+    let band = browser-click-band state mx my
+    in if band == browser-band-tab-bar
     then browser-handle-tab-bar-click state mx my
-    else if my < chrome-height
+    else if band == browser-band-address-bar
     then browser-handle-address-bar-click state mx my
     else if state.bs-show-trust-prompt
     then browser-handle-trust-click state mx my
     else browser-apply-page-code state code
 
+ BROWSER-7, and it is BROWSER-6's defect one axis over. Dividing x by 120
+ assumes the tabs start at x 0 and are all 120 wide. They start at x 9, for
+ the root panel's inset, and `render-tab-button` sizes each one to its own
+ TITLE, so no two are the same width and none of them is 120. It read
+ correct only because one tab plus the "+" column means almost any x answers
+ the intended index.
+
+ The tree is asked instead, by the id each button already carries. The width
+ arithmetic is kept for the `bs-laid = None` case, which is before the first
+ paint and so before there is a tab on the glass to aim at.
+
   browser-handle-tab-bar-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-tab-bar-click (state) (mx) (my) =
+    when state.bs-laid
+      is None -> browser-tab-click-by-width state mx my
+      is Just (tree) ->
+        if browser-point-in tree "new-tab" mx my then browser-new-tab state
+        else if browser-point-in tree "close-tab" mx my then browser-close-tab state (state.bs-active-tab)
+        else let id = browser-tab-under state tree mx my 0 (list-length state.bs-tabs)
+        in if id < 0 then state else browser-switch-tab state id
+
+ A tab is found by its POSITION among the bar's children rather than by
+ building its id. `"tab-" & show id` per tab per click measured 48 bytes a
+ cycle through `browser-click-heap`, and on a bump allocator in a loop that
+ never returns those are permanent. `browser-render-tab-bar` pushes the tabs
+ first and then `new-tab` and `close-tab`, so child i is tab i, and both
+ buttons are tested by literal id before this runs and cannot reach it.
+
+  browser-tab-index : WidgetNode, Integer, Integer -> Integer
+  browser-tab-index (w) (mx) (my) =
+    if w.wn-id == "tab-bar" then browser-child-index w mx my 0 (w.wn-child-count)
+    else browser-tab-index-kids (w.wn-children) mx my 0 (w.wn-child-count)
+
+  browser-tab-index-kids : List WidgetNode, Integer, Integer, Integer, Integer -> Integer
+  browser-tab-index-kids (kids) (mx) (my) (i) (n) =
+    if i >= n then 0 - 1
+    else let found = browser-tab-index (list-at kids i) mx my
+    in if found >= 0 then found
+    else browser-tab-index-kids kids mx my (i + 1) n
+
+  browser-child-index : WidgetNode, Integer, Integer, Integer, Integer -> Integer
+  browser-child-index (bar) (mx) (my) (i) (n) =
+    if i >= n then 0 - 1
+    else if rect-contains ((list-at (bar.wn-children) i).wn-bounds) mx my then i
+    else browser-child-index bar mx my (i + 1) n
+
+  browser-tab-under : BrowserState, WidgetNode, Integer, Integer, Integer, Integer -> Integer
+  browser-tab-under (state) (tree) (mx) (my) (i) (n) =
+    let idx = browser-tab-index tree mx my
+    in if idx < 0 then 0 - 1
+    else if idx >= n then 0 - 1
+    else (list-at (state.bs-tabs) idx).tab-id
+
+  browser-tab-click-by-width : BrowserState, Integer, Integer -> BrowserState
+  browser-tab-click-by-width (state) (mx) (my) =
     let tab-count = list-length state.bs-tabs
     in let tab-width = 120
     in let click-index = mx / tab-width
@@ -459,8 +638,28 @@ Section: Mouse Hit Testing
       then browser-new-tab state
       else state
 
+ The same defect as the tab bar and fixed the same way, because leaving it
+ would be the identical bug next door: three 28-wide slots from x 0, where
+ the buttons start at x 9 and a `<` button is `text-length * 8 + 16` wide,
+ which is 24. `address-bar-render` already names all three.
+
   browser-handle-address-bar-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-address-bar-click (state) (mx) (my) =
+    when state.bs-laid
+      is None -> browser-addr-click-by-width state mx my
+      is Just (tree) ->
+        if browser-point-in tree "nav-back" mx my then browser-go-back state
+        else if browser-point-in tree "nav-forward" mx my then browser-go-forward state
+        else if browser-point-in tree "nav-reload" mx my then browser-reload state
+        else browser-focus-address state
+
+  browser-focus-address : BrowserState -> BrowserState
+  browser-focus-address (state) =
+    let s1 = __record-set state "bs-focus" FocusAddressBar
+    in __record-set s1 "bs-dirty" True
+
+  browser-addr-click-by-width : BrowserState, Integer, Integer -> BrowserState
+  browser-addr-click-by-width (state) (mx) (my) =
     let nav-btn-width = 28
     in if mx < nav-btn-width
       then browser-go-back state
@@ -468,8 +667,7 @@ Section: Mouse Hit Testing
       then browser-go-forward state
       else if mx < nav-btn-width * 3
       then browser-reload state
-      else let s1 = __record-set state "bs-focus" FocusAddressBar
-        in __record-set s1 "bs-dirty" True
+      else browser-focus-address state
 
   browser-handle-trust-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-trust-click (state) (mx) (my) =

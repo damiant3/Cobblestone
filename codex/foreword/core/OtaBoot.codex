@@ -173,20 +173,27 @@ Section: The Flash Half
   boot-candidate-length : Integer -> Integer
   boot-candidate-length (rec-addr) = boot-read-word (rec-addr + boot-len-offset)
 
-  boot-store : Integer, Integer, BootRecord -> [Flash, Device.Mmio] Integer
-  boot-store (bank) (rec-addr) (r) = act
-   b0 <- flash-open-bank bank
-   b1 <- flash-write-word b0 (rec-addr + boot-flag-offset) (boot-flag-word r)
-   flash-seal-bank b1
+  boot-store : linear Board, Integer, Integer, BootRecord -> [Flash, Device.Mmio] (linear Board, Integer)
+  boot-store (brd) (bank) (rec-addr) (r) = act
+   ob <- flash-open-bank brd bank
+   when ob
+    is (brd1, b0) -> act
+      b1 <- flash-write-word b0 (rec-addr + boot-flag-offset) (boot-flag-word r)
+      s <- flash-seal-bank b1
+      board-pair brd1 s
+    end
   end
 
-  boot-mark : Integer, Integer, BootRecord, BootSlot, List Integer, Integer -> [Flash, Device.Mmio] Integer
-  boot-mark (bank) (rec-addr) (r) (cand) (digest) (len) = act
-   b0 <- flash-open-bank bank
-   b1 <- flash-write-page b0 (rec-addr + boot-digest-offset) digest
-   b2 <- flash-write-word b1 (rec-addr + boot-len-offset) len
-   f <- flash-seal-bank b2
-   boot-store bank rec-addr (ota-mark-candidate r cand)
+  boot-mark : linear Board, Integer, Integer, BootRecord, BootSlot, List Integer, Integer -> [Flash, Device.Mmio] (linear Board, Integer)
+  boot-mark (brd) (bank) (rec-addr) (r) (cand) (digest) (len) = act
+   ob <- flash-open-bank brd bank
+   when ob
+    is (brd1, b0) -> act
+      b1 <- flash-write-page b0 (rec-addr + boot-digest-offset) digest
+      b2 <- flash-write-word b1 (rec-addr + boot-len-offset) len
+      f <- flash-seal-bank b2
+      boot-store brd1 bank rec-addr (ota-mark-candidate r cand)
+    end
   end
 
  Step 6's re-check: hash the bank and compare against the digest Gate A
@@ -222,31 +229,35 @@ Section: The Selector
    if counted.br-attempts > boot-attempt-limit then False
    else boot-verify-candidate rec-addr slot-addr
 
-  boot-give-up-store : Integer, Integer, BootRecord, Boolean -> [Flash, Device.Mmio] Integer
-  boot-give-up-store (bank) (rec-addr) (r) (ok) =
-   if boot-give-up r ok then boot-store bank rec-addr (ota-rollback r)
-   else 0
+  boot-give-up-store : linear Board, Integer, Integer, BootRecord, Boolean -> [Flash, Device.Mmio] (linear Board, Integer)
+  boot-give-up-store (brd) (bank) (rec-addr) (r) (ok) =
+   if boot-give-up r ok then boot-store brd bank rec-addr (ota-rollback r)
+   else board-pair brd 0
 
-  boot-run-candidate : Integer, Integer, Integer, BootRecord, BootSlot -> [Flash, Device.Mmio] BootSlot
-  boot-run-candidate (bank) (rec-addr) (slot-addr) (r) (c) =
+  boot-run-candidate : linear Board, Integer, Integer, Integer, BootRecord, BootSlot -> [Flash, Device.Mmio] (linear Board, BootSlot)
+  boot-run-candidate (brd) (bank) (rec-addr) (slot-addr) (r) (c) =
    let counted = ota-boot-attempt r
    in act
-    w <- boot-store bank rec-addr counted
-    let ok = boot-check counted rec-addr slot-addr
-    in act
-     g <- boot-give-up-store bank rec-addr counted ok
-     boot-select counted ok
-    end
+    w <- boot-store brd bank rec-addr counted
+    when w
+     is (brd1, wr) ->
+       let ok = boot-check counted rec-addr slot-addr
+       in act
+        g <- boot-give-up-store brd1 bank rec-addr counted ok
+        when g
+         is (brd2, gr) -> board-pair brd2 (boot-select counted ok)
+        end
+       end
    end
 
-  boot-run : Integer, Integer, Integer, Integer -> [Flash, Device.Mmio] BootSlot
-  boot-run (bank) (rec-addr) (slot-a-addr) (slot-b-addr) =
+  boot-run : linear Board, Integer, Integer, Integer, Integer -> [Flash, Device.Mmio] (linear Board, BootSlot)
+  boot-run (brd) (bank) (rec-addr) (slot-a-addr) (slot-b-addr) =
    let r = boot-load rec-addr
    in when r.br-candidate
-    is None -> r.br-primary
-    is Just (c) -> boot-run-candidate bank rec-addr (slot-address c slot-a-addr slot-b-addr) r c
+    is None -> board-pair brd (r.br-primary)
+    is Just (c) -> boot-run-candidate brd bank rec-addr (slot-address c slot-a-addr slot-b-addr) r c
 
-  boot-commit : Integer, Integer -> [Flash, Device.Mmio] Integer
-  boot-commit (bank) (rec-addr) =
+  boot-commit : linear Board, Integer, Integer -> [Flash, Device.Mmio] (linear Board, Integer)
+  boot-commit (brd) (bank) (rec-addr) =
    let r = boot-load rec-addr
-   in boot-store bank rec-addr (ota-commit r)
+   in boot-store brd bank rec-addr (ota-commit r)

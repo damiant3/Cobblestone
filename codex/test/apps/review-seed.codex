@@ -1,0 +1,57 @@
+Chapter: ReviewSeed
+  cites Works chapter RepoProtocol
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Works chapter Annotation
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+Section: Authors
+
+  seed-alice : Keypair = generate-keypair [1, 2, 3, 4, 5, 6, 7, 8]
+  seed-bob : Keypair = generate-keypair [9, 10, 11, 12, 13, 14, 15, 16]
+
+Section: Proposals
+
+  seed-target : Text, Text -> AnnotationTarget
+  seed-target (ch) (path) = AnnotationTarget { chapter = ch, path = path }
+
+  seed-p1 : Proposal = create-proposal seed-alice (seed-target "Sort" "sort-ascending") "Sort stops copying its input" "One allocation per call was the whole cost" ["sort-ascending"] 1000
+  seed-p2 : Proposal = create-proposal seed-bob (seed-target "GopFiles" "gfl-pad") "Pad with the column width, not 16" "The Files pane clips at 1600" ["gfl-pad", "gfl-row"] 1100
+  seed-p3 : Proposal = create-proposal seed-alice (seed-target "Lexer" "") "Retire the legacy token kind" "Nothing produced it since the cut" [] 1200
+
+Section: Verdicts
+
+  seed-v1 : Verdict = create-verdict seed-bob (seed-p1.id) Accept "Measured, 1 allocation to 0" 1300
+  seed-v2 : Verdict = create-verdict seed-alice (seed-p2.id) Reject "Clips at 1024 too, the width is the wrong fix" 1400
+  seed-v3 : Verdict = create-verdict seed-bob (seed-p2.id) (Amend "take the column from the layout") "Half right" 1500
+  seed-v4 : Verdict = create-verdict seed-bob (seed-p3.id) Abstain "Not my chapter" 1600
+
+Section: Entry
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let s1 = repo-persist-save-proposal s0 seed-p1 1000
+    in let s2 = repo-persist-save-proposal s1 seed-p2 1100
+    in let s3 = repo-persist-save-proposal s2 seed-p3 1200
+    in let s4 = repo-persist-save-verdict s3 seed-v1 1300
+    in let s5 = repo-persist-save-verdict s4 seed-v2 1400
+    in let s6 = repo-persist-save-verdict s5 seed-v3 1500
+    in let s7 = repo-persist-save-verdict s6 seed-v4 1600
+    in let back = disk-load
+    in act
+      print-line-uni ("proposals " & show (list-length (repo-persist-load-all-proposals back)))
+      print-line-uni ("verdicts " & show (list-length (repo-persist-load-all-verdicts back)))
+      print-line-uni ("p1 " & show (list-length (grv-check back (seed-p1.id))))
+    end
+  end
+
+  grv-check : DiskFactStore, Text -> List Verdict
+  grv-check (store) (pid) = seed-for (repo-persist-load-all-verdicts store) pid 0 []
+
+  seed-for : List Verdict, Text, Integer, List Verdict -> List Verdict
+  seed-for (vs) (pid) (i) (acc) =
+    if i >= list-length vs then acc
+    else let v = list-at vs i
+    in seed-for vs pid (i + 1) (if v.proposal-id == pid then list-push acc v else acc)

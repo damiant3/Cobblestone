@@ -1,0 +1,98 @@
+Chapter: EdgeMeshLiveTest
+
+  cites Foreword chapter Console
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Mesh chapter EdgeMeshLive
+
+ EdgeMeshGameServers phase 2, the first of the three connections: a region's
+ health and a match's placement come from the group's service registry
+ instead of from a field set True at construction and never cleared.
+
+ Every arm is paired with the case that must answer the other way. The one
+ that matters most is the unhealthy registration: a node that announced and
+ then failed its checks is still IN the registry, so a check that counted
+ registrations rather than healthy ones would call that region healthy and
+ place a match on a box that cannot serve it.
+
+ EACH SCENARIO BUILDS ITS OWN GROUP, AND ONLY THE LAST NAME IN A CHAIN IS
+ EVER READ. That is not style. `GroupState` operations are `__record-set` on
+ the argument, which stores in place and returns the same record, so an
+ earlier name is not an earlier state: measured here, a group read after a
+ later registration reported the LATER health. The intermediate names below
+ (`ha`, `hb`, `fa`) exist only to keep each call on one line and are never
+ printed. Reading one of them, or sharing one group across the three
+ scenarios, would be a test that lies.
+
+Section: Fixtures
+
+ A record LITERAL per fixture, for the same reason: `svc-location-new` plus
+ `__record-set` gave two fixtures built from identical constructor arguments
+ one shared record, and the second's health silently became the first's.
+
+  loaded : Text, Text, Integer, Integer, Integer -> ServiceLocation
+  loaded (svc) (member) (port) (load) (health) =
+    ServiceLocation {
+      sl-service = svc,
+      sl-version = "1",
+      sl-member-id = member,
+      sl-address = "10.0.0." & show port,
+      sl-port = port,
+      sl-role = SrLoadBalanced,
+      sl-health = health,
+      sl-load = load,
+      sl-registered = 0,
+      sl-last-check = 0
+    }
+
+Section: Reporting
+
+  region-of : GroupState, EdgeRegion -> Text
+  region-of (g) (r) = mesh-region-label (mesh-region-live g r)
+
+  place-of : GroupState, RegionList, Integer -> Text
+  place-of (g) (rl) (idx) = mesh-placement-label (mesh-place g (mesh-regions-live g rl) idx)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let rl = default-regions
+    in let us-east = list-at (rl.rl-regions) 0
+    in let us-west = list-at (rl.rl-regions) 1
+    in let eu-west = list-at (rl.rl-regions) 2
+    in let east-svc = mesh-region-service us-east
+    in let west-svc = mesh-region-service us-west
+    in let ha = gs-register-service (group-new "mesh-a" "a") (loaded east-svc "node-a" 7000 40 10000)
+    in let hb = gs-register-service ha (loaded east-svc "node-b" 7001 10 10000)
+    in let healthy = gs-register-service hb (loaded west-svc "node-c" 7002 0 3000)
+    in let fa = gs-register-service (group-new "mesh-b" "b") (loaded east-svc "node-a" 7000 40 10000)
+    in let failing = gs-register-service fa (loaded east-svc "node-b" 7001 10 4000)
+    in let spawned = mesh-register-server (group-new "mesh-c" "c") us-east (gs-new 1 0 ModeRanked 7000) "node-a" "10.0.0.7000"
+    in act
+      act
+        print-line-uni (region-of healthy us-east)
+        print-line-uni (region-of healthy us-west)
+        print-line-uni (region-of healthy eu-west)
+        print-line-uni (place-of healthy rl 0)
+        print-line-uni (place-of healthy rl 1)
+        print-line-uni (place-of healthy rl 2)
+        print-line-uni (place-of healthy rl 99)
+        print-line-uni (place-of healthy rl (0 - 1))
+        print-line-uni ("us-east registrations " & show (list-length (gs-find-service healthy east-svc)))
+      end
+
+      act
+        print-line-uni (region-of failing us-east)
+        print-line-uni (place-of failing rl 0)
+        print-line-uni ("us-east registrations " & show (list-length (gs-find-service failing east-svc)))
+      end
+
+      act
+        print-line-uni (region-of spawned us-east)
+        print-line-uni (place-of spawned rl 0)
+      end
+
+      print-line-uni ("the caller's region list is unchanged " & show ((list-at (rl.rl-regions) 0).er-healthy))
+    end
+  end

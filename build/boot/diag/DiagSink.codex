@@ -62,6 +62,18 @@ Section: Payload
 
 Section: The Stage
 
+ `sink chunk=N` sets the MSC chunk for this stage, cell 91, zero for the
+ default of 64 sectors. Sitting 4 banked wr=0 twice, so it is the FIRST
+ chunk of the data run that refuses; the LBA moves only because the file's
+ allocation moves. A flight at a smaller chunk is what separates "the
+ transfer is too big" from "the endpoint halts whatever we send", and the
+ bed cannot answer it because the bed completes the transfer at any size.
+
+  dsk-msc-chunk : DiagCtx -> Integer
+  dsk-msc-chunk (c) =
+    let v = diag-cfg-value c "sink"
+    in if text-starts-with v "chunk=" then text-to-integer (substring v 6 (text-length v - 6)) else 0
+
   dsk-shift : DiagCtx -> Integer
   dsk-shift (c) =
     let v = diag-cfg-value c "sink"
@@ -90,7 +102,7 @@ Section: The Stage
   dsk-lines : Integer, Integer, Integer, Integer, Integer, DskSnap, Integer -> List Text
   dsk-lines (size) (got) (bad) (shift) (wstage) (s) (after) =
     ["size=" & show size & " read=" & show got & " bad=" & show bad & " shift=" & show shift & " wstage=" & show wstage,
-     "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after]
+     "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after & " chunk=" & show (msc-chunk-now 0)]
 
   dsk-finish : Text, Integer, Integer, Integer, Integer, Integer, Integer -> DiagResult
   dsk-finish (state) (colour) (size) (got) (bad) (shift) (wstage) =
@@ -170,7 +182,8 @@ Section: The Stage
   dsk-run : DiagCtx -> [Device.Port] DiagResult
   dsk-run (c) = act
     if c.dc-bank == False then dsk-finish "no-medium" diag-col-dim dsk-size 0 0 (dsk-shift c) 0
-    else act
+    else let ch = xdiag-put msc-cell-chunk (dsk-msc-chunk c)
+    in act
       m <- gfat-mount-esp
       if m.gm-ok == False then dsk-finish "mount-fail" diag-col-bad dsk-size 0 0 (dsk-shift c) (xdiag-get gfat-cell-stage)
       else dsk-write (m.gm-vol) (dsk-shift c)

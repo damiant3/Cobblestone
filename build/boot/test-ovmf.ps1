@@ -107,6 +107,17 @@ $errLog = Join-Path $scratch "qemu-err-$tag.log"
 Copy-Item $imgAbs $imgCopy -Force
 Copy-Item $code $codeCopy -Force            # firmware path has spaces; copy to space-free temp
 if (Test-Path $varsSrc) { Copy-Item $varsSrc $varsCopy -Force }
+# COPY-ITEM CARRIES THE READ-ONLY ATTRIBUTE, and a source under Perforce has it
+# set unless somebody happens to have the file open for edit. QEMU then refuses
+# the drive with "Access is denied" before the guest runs at all, and the caller
+# reads it as the boot producing no serial. Measured 2026-08-19: diag-arm.ps1's
+# ovmf arm passed for whoever had diag.img open and failed for everyone else, on
+# an unchanged image. The vars pflash is written by the firmware and the disk by
+# the guest, so both have to be writable here; the code pflash is attached
+# readonly and is left alone.
+foreach ($c in @($imgCopy, $varsCopy)) {
+    if (Test-Path $c) { Set-ItemProperty $c -Name IsReadOnly -Value $false }
+}
 $code = $codeCopy
 Remove-Item $ppm,$ser -ErrorAction SilentlyContinue
 
@@ -155,6 +166,7 @@ if ($Decoy) {
     $decoyAbs = if ([System.IO.Path]::IsPathRooted($Decoy)) { $Decoy } else { Join-Path $repo $Decoy }
     $decoyCopy = Join-Path $scratch "ovmf-decoy-$tag.img"
     Copy-Item $decoyAbs $decoyCopy -Force
+    Set-ItemProperty $decoyCopy -Name IsReadOnly -Value $false   # as above
     $qargs += @('-drive', "format=raw,file=$decoyCopy,if=ide,index=0")
 }
 if ($UsbKbd) {
