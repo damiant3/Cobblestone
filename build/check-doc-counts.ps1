@@ -200,6 +200,23 @@ function Get-FileDigest([string]$Rel, [string]$Algorithm) {
     return $h
 }
 
+# The CDX content hash at bytes 8..39 deliberately EXCLUDES the signature, so
+# it is a different claim from the SHA-256 over the whole file and no digest
+# of the file can stand in for it. It had NO claim until 2026-08-21 and was
+# stale in README with the other three; nothing would ever have caught it.
+
+function Get-CdxContentPrefix([string]$Rel) {
+    $p = (Join-Path $treeRoot $Rel)
+    if ((-not (Test-Path -PathType Leaf $p))) {
+        return ''
+    }
+    $b = [System.IO.File]::ReadAllBytes($p)
+    if ($b.Length -lt 40) {
+        return ''
+    }
+    return (($b[8..15] | ForEach-Object { $_.ToString('X2') }) -join '')
+}
+
 # Head AND tail. Printing a leading slice alone made a one-digit tail
 # difference render as two identical strings, which reads as the checker
 # malfunctioning rather than as the digest being wrong. Found by sabotage:
@@ -236,6 +253,9 @@ function Measure-Claim([string]$Fn, [string]$Arg) {
     }
     if (($Fn -eq 'md5')) {
         return (Get-FileDigest $Arg 'MD5')
+    }
+    if (($Fn -eq 'cdx-content-prefix')) {
+        return (Get-CdxContentPrefix $Arg)
     }
     if (($Fn -eq 'plugs')) {
         return (Get-PlugCount)
@@ -284,6 +304,7 @@ $claims += @{ Name = 'errors tests (Assay, section)'; Doc = 'docs/ExaminersAssay
 # itself. These rows exist so that cannot recur silently.
 
 $claims += @{ Name = 'seed cdx bytes (README)'; Doc = 'README.md'; Pattern = '\*\*`seed/Codex\.cdx`\*\* \(([\d,]+) bytes'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bytes'; Arg = 'seed/Codex.cdx' }
+$claims += @{ Name = 'seed cdx content prefix (README)'; Doc = 'README.md'; Pattern = 'seed/Codex\.cdx.*?\| Content hash prefix \| `([0-9A-Fa-f]{16})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'cdx-content-prefix'; Arg = 'seed/Codex.cdx' }
 $claims += @{ Name = 'seed cdx sha256 (README)'; Doc = 'README.md'; Pattern = 'seed/Codex\.cdx.*?\| SHA-256 \| `([0-9A-Fa-f]{64})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'sha256'; Arg = 'seed/Codex.cdx' }
 $claims += @{ Name = 'seed cdx md5 (README)'; Doc = 'README.md'; Pattern = 'seed/Codex\.cdx.*?\| MD5 \| `([0-9A-Fa-f]{32})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'md5'; Arg = 'seed/Codex.cdx' }
 $claims += @{ Name = 'seed img bytes (README)'; Doc = 'README.md'; Pattern = '\*\*`seed/Codex\.img`\*\* \(([\d,]+) bytes'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bytes'; Arg = 'seed/Codex.img' }
@@ -327,6 +348,7 @@ $claims += @{ Name = 'app modules (README)'; Doc = 'README.md'; Pattern = '\d+ a
 $claims += @{ Name = 'apps (README tree)'; Doc = 'README.md'; Pattern = 'apps/\s+(\d+) applications, [\d,]+ modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-dirs'; Arg = '' }
 $claims += @{ Name = 'app modules (README tree)'; Doc = 'README.md'; Pattern = 'apps/\s+\d+ applications, ([\d,]+) modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-modules'; Arg = '' }
 $claims += @{ Name = 'test files (README)'; Doc = 'README.md'; Pattern = 'OS integration tests \(([\d,]+) files\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/test' }
+$claims += @{ Name = 'test files (README table)'; Doc = 'README.md'; Pattern = '\| `codex/test/` \| ([\d,]+) \|'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/test' }
 $claims += @{ Name = 'BVT tests (README)'; Doc = 'README.md'; Pattern = 'gates on is (\d+) tests'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bvt-tests'; Arg = '' }
 $claims += @{ Name = 'BVT checks (README)'; Doc = 'README.md'; Pattern = 'for (\d+) checks'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bvt-checks'; Arg = '' }
 

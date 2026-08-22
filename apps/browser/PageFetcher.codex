@@ -92,17 +92,29 @@ Section: TCP Fetch
       fetch-after-connect ts1 req-bytes host path opts
     end
 
+ "No response from" WAS THE ANSWER FOR OUR OWN SHORT REQUEST, and it named the
+ site for a write this end never finished. A server that received half a
+ request cannot answer it, so the browser reported the far end as silent and a
+ reader would go looking at the site, the DNS or the link. A truncated request
+ says so and stops.
+
   fetch-after-connect : TcpTransportState, List Integer, Text, Text, FetchOptions -> [Network.Read, Network.Write] FetchResult
   fetch-after-connect (ts) (req-bytes) (host) (path) (opts) =
     when (ts.session).conn.state
       is TcpEstablished -> act
-        ts2 <- net-io-send-raw ts req-bytes
-        recv <- fetch-recv-response ts2
-        ts3 <- net-io-close (recv.transport)
-        if recv.has-data
-          then let resp = http-parse-response (recv.data)
-            in process-response resp host path opts
-          else FetchNetworkError ("No response from: " & host)
+        s <- net-io-send-raw-checked ts req-bytes
+        if s.ns-complete == False then act
+          tsx <- net-io-close (s.ns-transport)
+          FetchNetworkError ("Request truncated to: " & host)
+        end
+        else act
+          recv <- fetch-recv-response (s.ns-transport)
+          ts3 <- net-io-close (recv.transport)
+          if recv.has-data
+            then let resp = http-parse-response (recv.data)
+              in process-response resp host path opts
+            else FetchNetworkError ("No response from: " & host)
+        end
       end
       is otherwise ->
         FetchNetworkError ("TCP connect failed: " & host)

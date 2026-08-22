@@ -21,6 +21,41 @@ the single source for those.
   red gate means it does not.
 - Sync the main client fully before anything else.
 
+## Step 0b -- The FULL gate, and it is the only place it runs
+
+```powershell
+build/build.ps1        # NO -Internal. Every phase.
+```
+
+**This step exists because nothing else runs the full gate any more.** Since
+2026-08-20 the standing gate every agent runs is `build/build.ps1 -Internal`
+(`CLAUDE.md` R-GATE), which skips a phase whose inputs did not change in that
+workspace, and the deferred phases are deferred TO HERE. Before that day the
+fleet ran every phase on every CL, so the release never had to ask for them
+and this skill never mentioned `build.ps1` at all.
+
+Two phases are proven by nothing except this run, so read them in the phase
+timings rather than assuming they happened:
+
+- **the text leg** (`text-stage1`, `sem-equiv`, `text-stage2`,
+  `text-fixedpoint`) -- the `.codex` printer round-trip. Conditional on the
+  front end since 2026-08-20, so a release whose cycle touched no front-end
+  file is the first thing to compile it.
+- **the full 270-unit app sweep** -- `-Internal` sweeps a strided 30. Step 2
+  below runs the full sweep separately, so this one is belt and braces; a
+  regression confined to a unit outside the stride surfaces at one of them.
+- **the full `test-compile` sweep** -- every chapter under `codex/test`, about
+  1,400 of them, and it is **the longest phase in this gate at roughly 20
+  minutes** (1,202 s at 4 ways, measured 2026-08-20). `-Internal` compiles only
+  the chapters that CITE what changed in that workspace, so a chapter nobody
+  touched is compiled HERE and nowhere else. Budget for it rather than reading
+  the gate as hung: the phase prints its unit count before it starts.
+
+If this gate is red, the release stops here. It is also what makes step 1's
+"rebuild from the release source first and check the digest" true rather than
+advisory: this run leaves `build/output/Sut.cdx` as the compiler the battery
+will then use.
+
 ## Step 1 -- Prove the build end to end (the battery)
 
 **`-Tier all`, and it is not optional.** A bare `build/test.ps1` runs the
@@ -151,6 +186,16 @@ the DDC on the release is what surfaces it if it was missed.
   README beside the seed digest. The image is reproducible from its source
   and seed (`DIAG.RCP` inside it names them; the hash carries no timestamp),
   so a stale one is a drift the hash check catches.
+  **Run `build/check-shipping-images.ps1` before the push, and it is not
+  optional.** It refuses an image whose ESP carries a `DIAG.CFG`, because a
+  SITTING image is the same file with the box baked into it: `diag-sitting6`
+  carries `b3 peer=192.168.6.141:7 ip=192.168.6.200`, which is Damian LAN
+  addresses, and this artifact is published with its hash in the release
+  notes. On 2026-08-21 a bulk `p4 copy --from` carried a sitting image to
+  main head under a changelist about harness timing; it missed a mirror only
+  because no push happened in that window. Rebuilding the default is what
+  the step above already tells you to do, so the check costs nothing when
+  the step was followed and catches it when it was not.
 ## Step 6 -- README and the GitHubUpdate report
 - Update `README.md`: the seed digest and any capability claims that moved.
 - **Re-measure the doc counts, which are off by default and only matter

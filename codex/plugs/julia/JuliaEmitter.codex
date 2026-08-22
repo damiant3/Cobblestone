@@ -235,16 +235,39 @@ Section: Expression Emission
   emit-jl-match-body (branches) (i) (arities) (depth) =
    if i == list-length branches then "error(\"Non-exhaustive match\")"
    else let b = list-at branches i
-   in emit-jl-match-arm (b.pattern) (b.body) branches i arities depth
+   in emit-jl-match-arm (b.pattern) (b.guard) (b.body) branches i arities depth
 
-  emit-jl-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
-  emit-jl-match-arm (pat) (body) (branches) (i) (arities) (depth) =
+ The rest of the match lives in each ternary's ELSE, so a guard cannot sit
+ inside the arm's `let` and fall through from there. It goes in the
+ CONDITION, behind the pattern test's short circuit. The short circuit is
+ load-bearing and not tidiness: field access on the wrong concrete type is an
+ ERROR in Julia, not `nothing` as the same shape is in clojure, so the `let`
+ must not be reached unless `isa` has already said yes.
+
+  jl-guard-trivial : IRExpr -> Boolean
+  jl-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  jl-ctor-guard : List IRPat, IRExpr, List ArityEntry -> Text
+  jl-ctor-guard (subs) (guard) (arities) =
+   " && (let " & emit-jl-ctor-bindings subs 0 & "; " & emit-jl-expr guard arities & " end)"
+
+  emit-jl-match-arm : IRPat, IRExpr, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-jl-match-arm (pat) (guard) (body) (branches) (i) (arities) (depth) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "(_s == " & text & " ? " & emit-jl-expr body arities & " : " & emit-jl-match-body branches (i + 1) arities depth & ")"
-    is IrCtorPat (name) (subs) (ty) (sp) -> "(isa(_s, " & jl-sanitize name & ") ? " & emit-jl-ctor-bind subs body arities & " : " & emit-jl-match-body branches (i + 1) arities depth & ")"
-    is IrVarPat (name) (ty) (sp) -> "(let " & jl-sanitize name & " = _s; " & emit-jl-expr body arities & " end)"
-    is IrWildPat (sp) -> emit-jl-expr body arities
-    is IrVecPat (pats) (ty) (sp) -> emit-jl-expr body arities
+    is IrLitPat (text) (ty) (sp) -> "(_s == " & text & (if jl-guard-trivial guard then "" else " && (" & emit-jl-expr guard arities & ")") & " ? " & emit-jl-expr body arities & " : " & emit-jl-match-body branches (i + 1) arities depth & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(isa(_s, " & jl-sanitize name & ")" & (if jl-guard-trivial guard then "" else jl-ctor-guard subs guard arities) & " ? " & emit-jl-ctor-bind subs body arities & " : " & emit-jl-match-body branches (i + 1) arities depth & ")"
+    is IrVarPat (name) (ty) (sp) ->
+     if jl-guard-trivial guard then "(let " & jl-sanitize name & " = _s; " & emit-jl-expr body arities & " end)"
+     else "((let " & jl-sanitize name & " = _s; " & emit-jl-expr guard arities & " end) ? (let " & jl-sanitize name & " = _s; " & emit-jl-expr body arities & " end) : " & emit-jl-match-body branches (i + 1) arities depth & ")"
+    is IrWildPat (sp) ->
+     if jl-guard-trivial guard then emit-jl-expr body arities
+     else "((" & emit-jl-expr guard arities & ") ? " & emit-jl-expr body arities & " : " & emit-jl-match-body branches (i + 1) arities depth & ")"
+    is IrVecPat (pats) (ty) (sp) ->
+     if jl-guard-trivial guard then emit-jl-expr body arities
+     else "((" & emit-jl-expr guard arities & ") ? " & emit-jl-expr body arities & " : " & emit-jl-match-body branches (i + 1) arities depth & ")"
 
   emit-jl-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
   emit-jl-ctor-bind (subs) (body) (arities) =

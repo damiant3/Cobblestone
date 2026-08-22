@@ -32,6 +32,38 @@ the Update 44 entry was found and worked during the release run at head 15686.*
 
 ## Done
 
+### Update 49 -- two runners contradicted each other and no shipping image could exist
+
+Found at publication 2026-08-21. `build/check-shipping-images.ps1` (red,
+18237) refused ANY `DIAG.CFG` on the shipping `diag.img`; the same day
+`build-diag.ps1` (root, 18645) started refusing to BUILD an image whose cfg
+leaves a non-passive stage unnamed, and bakes `diag-default.cfg` when none
+is given. Every buildable image therefore carried a cfg and the check
+refused every one of them; nothing noticed until the release tried to build
+the image that ships. Fixed by making the check accept a cfg byte-identical
+to the checked-in default and refuse any other, naming the first differing
+line; falsified both ways (sitting 11's image REFUSED, the default OK).
+**The general shape: two guards landed the same day by two lanes, each
+correct alone, jointly impossible, and the only runner that exercises them
+together is the release.** Re-measure:
+
+```powershell
+build/boot/build-diag.ps1          # no -Cfg
+build/check-shipping-images.ps1    # must print OK
+```
+
+### Update 49 -- the sitting configs were untracked, new, and name the box
+
+Found at the pre-push scan 2026-08-21: five `build/boot/diag-sitting*.cfg`
+files sat in `git status` as new paths, every one carrying
+`b3 peer=192.168.6.141:7 ip=192.168.6.200`. The image check kept the box's
+addresses off the mirror inside the image and nothing kept them off one
+file over. Rule added to `PublicPush.md`: they never ship. Re-measure:
+
+```powershell
+git -C D:\Projects\NewRepository-<agent>-main status --porcelain | Select-String 'diag-sitting'
+```
+
 ### Update 48 -- the README states the compiler's size twice and only one copy is checked
 
 Found at publication 2026-08-20. `README.md` carried **63 chapters, 53,881

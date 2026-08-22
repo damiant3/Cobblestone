@@ -108,19 +108,31 @@ Section: Request Dispatch
 
   SparkLoop = record { transport : TcpTransportState, requests : Integer }
 
+ ONE SENDER FOR BOTH RESPONSES. A response that stops part way cannot be
+ repaired mid-stream, and the loop serves the next request on whatever
+ transport it is handed. Closing turns a silent truncation into a short body
+ and a FIN.
+
+  spark-send : TcpTransportState, List Integer -> [Network.Read, Network.Write] TcpTransportState
+  spark-send (ts) (bytes) = act
+    r <- net-io-send-raw-checked ts bytes
+    if r.ns-complete then r.ns-transport
+    else net-io-close (r.ns-transport)
+  end
+
   spark-handle-request : SparkLoop, TransportRecvResult -> [Network.Read, Network.Write] SparkLoop
   spark-handle-request (ls) (recv) =
     let req-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
     in let req = http-parse-request (recv.body)
     in if req.valid == False then act
-      ts2 <- net-io-send-raw (ls.transport) (http-encode (http-error "Bad request"))
+      ts2 <- spark-send (ls.transport) (http-encode (http-error "Bad request"))
       SparkLoop { transport = ts2, requests = ls.requests + 1 }
     end
     else let resp-body = spark-route (req.path)
     in let resp = if text-starts-with resp-body "404" then http-plain resp-body
       else http-html resp-body
     in act
-      ts2 <- net-io-send-raw (ls.transport) (http-encode resp)
+      ts2 <- spark-send (ls.transport) (http-encode resp)
       SparkLoop { transport = ts2, requests = ls.requests + 1 }
     end
 

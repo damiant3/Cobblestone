@@ -27,14 +27,14 @@ Section: Echo Request (Ping)
   icmp-build-echo-request (ident) (seq) (payload) =
     let hdr = [icmp-type-echo-request, 0, 0, 0] & write-be16 ident & write-be16 seq
     in let raw = hdr & payload
-    in let cksum = icmp-checksum raw 0 (list-length raw) 0
+    in let cksum = ip-checksum raw 0 (list-length raw) 0
     in [icmp-type-echo-request, 0] & write-be16 cksum & write-be16 ident & write-be16 seq & payload
 
   icmp-build-echo-reply : IcmpMessage -> List Integer
   icmp-build-echo-reply (msg) =
     let hdr = [icmp-type-echo-reply, 0, 0, 0] & write-be16 (msg.identifier) & write-be16 (msg.sequence)
     in let raw = hdr & msg.payload
-    in let cksum = icmp-checksum raw 0 (list-length raw) 0
+    in let cksum = ip-checksum raw 0 (list-length raw) 0
     in [icmp-type-echo-reply, 0] & write-be16 cksum & write-be16 (msg.identifier) & write-be16 (msg.sequence) & msg.payload
 
 Section: Destination Unreachable
@@ -42,7 +42,7 @@ Section: Destination Unreachable
   icmp-build-unreachable (code) (original-ip-header) =
     let hdr = [icmp-type-dest-unreachable, code, 0, 0, 0, 0, 0, 0]
     in let raw = hdr & original-ip-header
-    in let cksum = icmp-checksum raw 0 (list-length raw) 0
+    in let cksum = ip-checksum raw 0 (list-length raw) 0
     in [icmp-type-dest-unreachable, code] & write-be16 cksum & [0, 0, 0, 0] & original-ip-header
 
 Section: Parsing
@@ -68,17 +68,6 @@ Section: Parsing
 
   icmp-is-echo-reply : IcmpMessage -> Boolean
   icmp-is-echo-reply (msg) = msg.icmp-type == icmp-type-echo-reply
-
-Section: Checksum
-  icmp-checksum : List Integer, Integer, Integer, Integer -> Integer
-  icmp-checksum (data) (i) (len) (sum) =
-    if i >= len then
-      let folded = bit-and sum 65535 + bit-shru sum 16
-      in let folded2 = bit-and folded 65535 + bit-shru folded 16
-      in bit-and (bit-xor folded2 65535) 65535
-    else if i + 1 >= len then
-      icmp-checksum data (i + 1) len (sum + bit-shl (list-at data i) 8)
-    else icmp-checksum data (i + 2) len (sum + read-be16 data i)
 
 Section: IP Integration
   icmp-build-echo-ip : List Integer, List Integer, Integer, Integer, List Integer -> List Integer

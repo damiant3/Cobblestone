@@ -317,6 +317,24 @@ static struct {
 } pci_devices[PCI_MAX_DEVICES];
 static int pci_device_count = 0;
 
+/* -nic-bme-clear: the NIC's Bus Master Enable bit cannot be set. The bed
+   otherwise reads 0x0007 on every run once firmware or the driver has
+   enabled the device, so a stage reading the command register has never
+   seen the BME-clear case and cannot tell it from a device that was never
+   enabled. With this the bit reads back 0 however often it is written, and
+   the device does no DMA while it is clear -- a bus master that DMAs with
+   BME clear would be a bed lying about its own state, which is the defect
+   the device id had.
+
+   The PCI command register's layout and the rule that a master must not
+   initiate transactions with BME clear are standard PCI, and no PCI
+   document is in this tree: shape right, nothing here cites it. */
+static int e1000_bme_clear = 0;
+static int e1000_pci_slot  = -1;
+/* -dmar: publish a DMAR table so a stage can tell "an IOMMU is described"
+   from "it is not". Header only; see the table's own comment. */
+static int acpi_dmar = 0;
+
 /* Locate the array index of the device answering config cycles for
    (bus, slot). Returns -1 if nothing is there, which config reads render as
    the all-ones vendor a bus walk uses to skip an empty slot. */
@@ -435,7 +453,11 @@ static void pci_write_config(int bus, int slot, int func, int offset, unsigned i
         }
         if ((offset & 0xFC) == 0xD8) { xhci_usb3pssen = val & XHCI_USB3PRM; return; }
     }
-    if ((offset & 0xFC) == 0x04) pci_devices[dev].command = (unsigned short)(val & 0xFFFF);
+    if ((offset & 0xFC) == 0x04) {
+        unsigned short cmd = (unsigned short)(val & 0xFFFF);
+        if (e1000_bme_clear && dev == e1000_pci_slot) cmd &= (unsigned short)~0x0004;
+        pci_devices[dev].command = cmd;
+    }
     else if ((offset & 0xFC) >= 0x10 && (offset & 0xFC) <= 0x24) {
         int bar_idx = ((offset & 0xFC) - 0x10) / 4;
         if ((dev == xhci_pci_slot || dev == xhci_pci_slot2) && bar_idx == 0 && val != 0xFFFFFFFF)
@@ -596,13 +618,28 @@ struct xhci_state {
 };
 
 /* TWO controllers. The ASUS carries an Intel PCH xHCI and an ASMedia one
-   (CTL n=2: 8086:a12f ord 0, 1b21:1242 ord 1), and xhci-reloc-base is a
+   (its own ids are 8086:a12f and 1b21:1242; this model presents 1033:0194
+   or, under -xhci-intel, 8086:8C31 as ordinal 0, and 1b21:1242 as ordinal
+   1), and xhci-reloc-base is a
    single constant with no per-controller term, so if both relocate the
    second lands on top of the first. One controller cannot express that. */
 static struct xhci_state xhci_ctl[2];
 static struct xhci_state *xcur = &xhci_ctl[0];
 static int xhci_two = 0;
-static unsigned int xhci_bar2_initial = 0x91000000u;
+/* IN THE MMIO HOLE, not in RAM. This was 0x91000000, which is 2.27 GB and
+   sits inside the guest's own arena: the diag PCI stage answers BELOW3G for
+   it and says in as many words "a device window sits inside our RAM arena
+   ... do not expect the network or USB rows to be right". So every reading
+   taken from the second controller under the default was one the machine had
+   already declared unreliable, and nothing noticed because no arm had ever
+   run this flag (measured 2026-08-21: zero uses of -xhci-two, -xhci-no-disk
+   or -xhci-bar2 anywhere). 0xFE900000 is clear of the VGA at 0xFD000000, the
+   HDA at 0xFE000000, the e1000 at 0xFE400000 and the first xHCI at
+   0xFE800000, whose window is 16 KB.
+
+   -xhci-bar2 still places it anywhere, which is how the collision above is
+   reproduced deliberately rather than by default. */
+static unsigned int xhci_bar2_initial = 0xFE900000u;
 
 static unsigned long long xhci_decode_base_slot(int slot) {
     if (slot < 0) return 0;
@@ -673,12 +710,18 @@ static int hid_idle_rate = 0;
 static int hid_protocol = 1;
 static int hid_configuration = 0;
 
-/* -xhci-no-disk: unplug the SuperSpeed mass storage on root port 1. The bus
-   walk in usb-hosts short-circuits only once keyboard AND mouse AND disk are
-   all found, so with a disk present it stops at controller 0 and never brings
-   up a second one. The ASUS reports disk=n, which is exactly why it walks on
-   to the ASMedia -- without this the two-controller bed cannot reach the
-   second controller at all. */
+/* -xhci-no-disk: unplug the SuperSpeed mass storage on root port 1.
+
+   THE RATIONALE THIS COMMENT CARRIED IS FALSE, measured 2026-08-21 on the
+   diag image. It said the walk stops at controller 0 with a disk present, so
+   the flag was needed to reach the second one at all. It is not: usb-found-all
+   wants a keyboard AND a mouse AND a disk, and this bed HAS NO MOUSE MODEL, so
+   the walk never short-circuits whatever else is found. Under -xhci-two both
+   controllers come up running with the disk present and without it alike.
+
+   The flag still does what its first sentence says and is still worth having.
+   What no bed here can currently express is the walk STOPPING early, because
+   that needs a mouse. */
 static int xhci_no_disk = 0;
 /* The bConfigurationValue the mass-storage model reports and REQUIRES.
    -usb-cfgval N. Default 1 keeps every existing test unchanged. */
@@ -1296,6 +1339,155 @@ static void build_hid_mouse_report(unsigned char *report) {
 static int usb_bot_drop = 0;
 static int usb_bot_drops = 1;
 static int usb_bot_xfer_seen = 0;
+/* -usb-bot-drop-len N: swallow the transfer event for any BULK transfer while
+   the BOT command in flight carries N bytes or more, and let everything
+   smaller through. It is the SIZE-KEYED sibling of -usb-bot-drop, and it
+   exists because an ORDINAL is not a property of the thing under test.
+   -usb-bot-drop 500 names the 500th event since boot, so inserting a stage
+   anywhere upstream moves the drop into a different phase without failing:
+   measured 2026-08-20, adding the xhci stage at 8 moved the sink arm's drop
+   out of the data phase into the MOUNT, and the arm reported mount-fail --
+   a plausible word, not a nonsense one, which is what makes it dangerous.
+   Keyed to dCBWDataTransferLength instead, the same flag means the same
+   thing whatever else the guest does first, and it gives a bed a THRESHOLD
+   to answer with: -usb-bot-drop-len 16384 refuses every command of 32
+   sectors or more and completes everything below it, so an instrument that
+   claims to measure the largest transfer a device accepts must answer 32.
+   WRITES ONLY (dir_in == 0), and that is not a detail: the first version
+   refused reads as well, and the mount reads more than 16 KB, so the volume
+   never mounted and the stage under test reported no-medium instead of the
+   threshold. A size lever aimed at a write path must leave the read path
+   alone or it never reaches the thing it is aimed at.
+   -usb-bot-drop-len-max M bounds it ABOVE, and it exists because the
+   diagnostic bank writes 32,768-byte commands of its own: without an upper
+   bound, every threshold small enough to refuse a rung also refuses the
+   bank, the bank dies before the stage runs, and the row reads no-medium.
+   Measured 2026-08-20. With N == M the lever refuses exactly one command
+   size, which is what a control wants: the bed's answer is a number the
+   instrument must reproduce, not a direction. 0 means no upper bound. */
+static int usb_bot_drop_len = 0;
+static int usb_bot_drop_len_max = 0;
+/* -usb-bot-die-len N: the target stops answering FOREVER once it sees a write
+   command carrying N bytes or more. Not one refused command -- the device is
+   gone from that point on, which is what the metal target does.
+
+   The sink's 2.7 MB write has killed the bank on the board three times
+   (sittings 7, 8 and 9 lost the deferred sink and every stage after it), and
+   no bed could produce that. -usb-bot-drop-len refuses a single command and
+   the device keeps answering, so `sink-drop` reads sink=write-refused with
+   bank=ok and the file whole: the refusal is handled and the run survives.
+   That is a different event from the one metal keeps delivering, and reading
+   one as evidence about the other is what left the deferral ordering without
+   a falsifier.
+
+   KEYED ON THE WRITE'S OWN LENGTH, like -usb-bot-drop-len and unlike
+   -usb-bot-drop, because an ordinal counts transfer events since boot and is
+   a property of the whole run: inserting a stage moved -usb-bot-drop's
+   landing out of the sink's data phase once already and the arm reported a
+   plausible wrong word.
+
+   AND THE LENGTH DOES NOT AIM IT, which is the part to read before using
+   this. "The sink writes 2.7 MB as one write" is true of the sink's own call
+   and false at this layer: measured 2026-08-21, it goes out as 64-sector
+   commands, 32768 bytes each (the stage's own row says chunk=64), and the
+   BANK writes 32768-byte commands too. So no threshold separates them -- at
+   1000000 the flag never fires at all, and at 32768 or below it dies on
+   whichever bulk write comes first. What it gives is a target that survives
+   until the first bulk write and then never answers again, which is a real
+   fault model and is NOT the same as "dies during the sink".
+
+   Measured on the diag image at 32768: the run reaches the deferred sink,
+   the target dies, and the summary reads `bank=none write refused, write
+   stage 13` with sink state=no-medium -- a bank death at the sink, but
+   reported as none rather than the metal word `lost`. Aiming it at the sink
+   specifically needs a key the sink owns and the bank does not; LBA range is
+   the candidate and is not measured yet. Until then this is a lever without
+   a sight, and no arm keys on it. */
+/* -usb-bot-census: print every BOT read and write with its LBA and declared
+   length. Off by default and stderr only, so no arm's output moves. */
+static int usb_bot_census  = 0;
+/* -census FILE: send every census line to FILE instead of stderr, and turn
+   the BOT census on. The point is an ARTIFACT that outlives the run: a
+   rehearsal keeps its bed trace beside the arm's own output, so the board's
+   trace has something to be diffed against row for row when it arrives.
+   stderr does not survive -- diag-arm redirects it per arm and the harness
+   KILLS codex-vm the moment END appears.
+
+   WHICH IS ALSO WHY EVERY LINE IS FLUSHED. A killed process does not drain
+   its buffers, so a census written the ordinary way would be empty or cut
+   at an arbitrary point, and a truncated trace and a complete one look the
+   same when you are reading rows (L-SHORT). The cost is one flush per
+   command on a path that is off by default. */
+static FILE *census_fp = NULL;
+
+static FILE *census_out(void) { return census_fp ? census_fp : stderr; }
+static int usb_bot_die_len = 0;
+/* The LBA at or above which -usb-bot-die-len fires. 0 means anywhere, which
+   is the unaimed lever; see the census note at the die check. */
+static int usb_bot_die_lba = 0;
+static int usb_bot_dead    = 0;
+/* -usb-bot-revive-on-reset: the dead target ANSWERS AGAIN after a Bulk-Only
+   Mass Storage Reset. Default off, so -usb-bot-die-lba stays the latched
+   death every existing arm is written against.
+
+   It keys on the BOT class reset and not on a port reset because that is the
+   one the driver actually issues. Measured 2026-08-21 off sink-dies' own
+   stderr: after the death the guest sends four Mass Storage Resets and no
+   port reset at all. A lever keyed on a reset the driver never performs is
+   an arm that cannot fire, which is the failure this switch exists to let an
+   arm avoid rather than commit.
+
+   The control transfer carrying that reset rides ep0, which the death latch
+   never gated -- it suppresses transfer events on ep 2 and above -- so the
+   reset is seen while the target is dead, and reviving here is the only
+   missing half. Without this, msc-cell-retry can reach msc-retry-failed (2,
+   the reset ran and the retried write did not) and can never reach
+   msc-retry-ok (3), so the driver's recovery has a bed for its failure and
+   none for its success. */
+static int usb_bot_revive  = 0;
+/* -usb-bot-die-on-nic: the BOT target stops answering FOREVER at the first
+   bulk WRITE issued after the e1000 model sees the first observable of NIC
+   bring-up. Latched like -usb-bot-die-lba, and SPEC-FREE in the same way: it
+   injects a symptom, not a mechanism. Nothing here claims to know why a part
+   would behave this way, and no reading taken under it is evidence that it
+   does.
+
+   The symptom it exists for is sitting 11's, measured 2026-08-21. The bank
+   ended at `stage=b3 step=rings-link`; the next two mid-stage notes (k1,
+   calibrate) never landed, b3 nevertheless went on to complete a TCP
+   exchange, and the glass read BANK LOST AT STAGE 15. So the medium stopped
+   taking writes DURING e1000 bring-up -- ring setup, semaphore, link-up --
+   and not at a large write and not at the sink. Sittings 7 to 10 lost the
+   bank at the sink, which was also the first write after the NIC stages, so
+   the two readings are one candidate and not two: the xHCI/MSC path dies
+   when the I219 is brought up, both being on the PCH.
+
+   WHY THIS IS NOT -usb-bot-die-lba WITH A DIFFERENT NUMBER. Both of the
+   existing levers are keyed on properties of the WRITE (its length, its
+   LBA), so both can only express "the medium dies at a certain kind of
+   write". The candidate here is that the write is innocent and its TIMING is
+   the whole of it: the same write survives before bring-up and dies after.
+   No length and no LBA can separate those two, because they are the same
+   command. This keys on the OTHER DEVICE, which is what makes the bed able
+   to say no to the candidate rather than merely reproduce a bank death.
+
+   WHICH observable arms it is measured rather than assumed, and the run says
+   which. Either the CTRL write that sets SLU or the RCTL write that sets EN
+   arms it, whichever the driver issues first, and the arming line names the
+   register. Committing to one in advance would have been a guess about our
+   own driver's order, and that order has already moved once (the quiesce
+   rework put an RCTL write with EN clear ahead of the link-up). */
+static int usb_bot_die_on_nic = 0;
+static int usb_bot_nic_armed  = 0;
+
+/* Called from e1000_write on the first bring-up observable. Idempotent: only
+   the FIRST one arms, so a driver that writes CTRL.SLU repeatedly during a
+   retry does not restate the reading. */
+static void usb_bot_nic_arm(const char *what) {
+    if (!usb_bot_die_on_nic || usb_bot_nic_armed) return;
+    usb_bot_nic_armed = 1;
+    fprintf(stderr, "xHCI: -usb-bot-die-on-nic: ARMED by %s; the target dies on the next bulk write\n", what);
+}
 
 static void xhci_post_event_ep_resid(int trb_type, int slot, int ep_id, int completion, unsigned long long trb_ptr, int resid) {
     if (xcur->er_addr == 0 || xcur->er_size == 0) return;
@@ -1306,6 +1498,45 @@ static void xhci_post_event_ep_resid(int trb_type, int slot, int ep_id, int comp
                     usb_bot_xfer_seen, slot, ep_id, completion);
             return;
         }
+    }
+    /* Already dead: nothing this target does answers again. Latched rather
+       than re-tested so the run cannot recover by sending something small. */
+    if (usb_bot_dead && trb_type == 32 && ep_id >= 2) return;
+    if (usb_bot_die_len > 0 && trb_type == 32 && ep_id >= 2 &&
+        bot.active && !bot.dir_in && bot.xfer_len >= (unsigned int)usb_bot_die_len) {
+        unsigned int lba = ((unsigned int)bot.cb[2] << 24) | ((unsigned int)bot.cb[3] << 16) |
+                           ((unsigned int)bot.cb[4] << 8) | bot.cb[5];
+        /* -usb-bot-die-lba is what AIMS it. Length alone cannot: measured by
+           census 2026-08-21, the bank issues 32768-byte writes too. It issues
+           them at exactly two fixed LBAs, 2049 and 2153, and its file data
+           goes out at 2560..3584 bytes around 3475..3541, while the sink is
+           one contiguous burst of sixty 32768-byte writes at 3548..7324. So
+           the two keys together separate them with about 1300 sectors of
+           margin, where either key alone has none. */
+        if (lba >= (unsigned int)usb_bot_die_lba) {
+            fprintf(stderr, "xHCI: -usb-bot-die-len: target DIED on a %u-byte write at lba=%u (slot=%d ep=%d); nothing answers from here\n",
+                    bot.xfer_len, lba, slot, ep_id);
+            usb_bot_dead = 1;
+            return;
+        }
+    }
+    /* Keyed on the NIC, not on the write. Any bulk write will do once armed,
+       which is the point: the candidate says the write is innocent. */
+    if (usb_bot_die_on_nic && usb_bot_nic_armed && trb_type == 32 && ep_id >= 2 &&
+        bot.active && !bot.dir_in) {
+        unsigned int lba = ((unsigned int)bot.cb[2] << 24) | ((unsigned int)bot.cb[3] << 16) |
+                           ((unsigned int)bot.cb[4] << 8) | bot.cb[5];
+        fprintf(stderr, "xHCI: -usb-bot-die-on-nic: target DIED on the first %u-byte write at lba=%u after NIC bring-up (slot=%d ep=%d); nothing answers from here\n",
+                bot.xfer_len, lba, slot, ep_id);
+        usb_bot_dead = 1;
+        return;
+    }
+    if (usb_bot_drop_len > 0 && trb_type == 32 && ep_id >= 2 &&
+        bot.active && !bot.dir_in && bot.xfer_len >= (unsigned int)usb_bot_drop_len &&
+        (usb_bot_drop_len_max == 0 || bot.xfer_len <= (unsigned int)usb_bot_drop_len_max)) {
+        fprintf(stderr, "xHCI: -usb-bot-drop-len: swallowing transfer event for a %u-byte command (slot=%d ep=%d cc=%d)\n",
+                bot.xfer_len, slot, ep_id, completion);
+        return;
     }
     /* Ring full = advancing the producer would land on the slot the guest's
        last ERDP write-back names (xHCI 4.9.4, one-slot-open convention). Real
@@ -1832,6 +2063,23 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                             bot.active, bot.data_done);
                     bot.active = 0;
                     bot.data_done = 0;
+                    if (usb_bot_revive && usb_bot_dead) {
+                        /* The death is SPENT, not merely lifted. Measured
+                           2026-08-21 without this: the target revives, the
+                           driver retries the very write that killed it, the
+                           length and LBA still match, and it dies again --
+                           death, reset, death, forever, and the run never
+                           ends. A revive that leaves the trigger armed cannot
+                           produce a recovery that SUCCEEDS, which is the only
+                           thing this switch exists to make reachable. */
+                        fprintf(stderr, "xHCI: -usb-bot-revive-on-reset: the target ANSWERS AGAIN after Bulk-Only Mass Storage Reset; the die trigger is spent\n");
+                        usb_bot_dead = 0;
+                        usb_bot_die_len = 0;
+                        /* Same reason, and it bites harder here: -usb-bot-die-on-nic
+                           keys on no property of the write at all, so a revive
+                           leaving it armed kills the retry unconditionally. */
+                        usb_bot_die_on_nic = 0;
+                    }
                 }
 
                 /* Optional DATA stage, then the STATUS stage. Both
@@ -2111,6 +2359,22 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                             memcpy(bot.cb, buf + 15, 16);
                             bot.data_done = 0;
                             bot.csw_status = 0;
+                            /* -usb-bot-census: one line per command, with the
+                               LBA and the declared length. SITES, NOT TOTALS.
+                               -usb-bot-die-len cannot be aimed at the sink
+                               because the sink and the bank both issue
+                               32768-byte writes, and no total says where
+                               either of them lands. */
+                            if (usb_bot_census) {
+                                unsigned char op = bot.cb[0];
+                                if (op == 0x2A || op == 0x28) {
+                                    unsigned int lba = ((unsigned int)bot.cb[2] << 24) | ((unsigned int)bot.cb[3] << 16) |
+                                                       ((unsigned int)bot.cb[4] << 8) | bot.cb[5];
+                                    fprintf(census_out(), "BOT-CENSUS: %s lba=%u len=%u\n",
+                                            op == 0x2A ? "write" : "read", lba, bot.xfer_len);
+                                    fflush(census_out());
+                                }
+                            }
                             /* Unknown commands fail cleanly: report CHECK
                                CONDITION and consume the declared transfer. */
                             {
@@ -2974,6 +3238,17 @@ static LARGE_INTEGER hpet_epoch;
    stop the frame counter for a reason that has nothing to do with the HPET. */
 static int hpet_absent = 0;
 
+/* -hpet-frozen: the window is there and UNDECODED, which is the other dead
+   clock. Every register reads all-ones: the period at 04 is 0xFFFFFFFF, so a
+   guest derives a rate of 232830 Hz, bogus but NONZERO, and takes its CLOCKED
+   wait paths; the counter at F0/F4 is 0xFFFFFFFF and never moves, so every
+   one of those waits is bounded only by its read fuel. That is the shape
+   -no-hpet cannot express (a zero period sends every reader to the counting
+   fallback) and the one blu asked this flag to carry: a rate nothing
+   validates over a counter that is stuck. The diag ladder's b3 clock control
+   reads it and refuses before bring-up. */
+static int hpet_allones = 0;
+
 /* The main counter must advance at the rate the capability register
    advertises. It used to return the raw QueryPerformanceCounter value
    while GCAP claimed a 69841279 fs period, so every elapsed-time
@@ -3034,6 +3309,7 @@ static unsigned long long hpet_now(void) {
 
 static unsigned int hpet_read(unsigned long long offset) {
     if (hpet_absent) return 0;
+    if (hpet_allones) return 0xFFFFFFFFu;
     switch ((int)offset) {
     case 0x00: return 0x8086A201;  /* GCAP_ID: rev=1, num_timers=1, 64-bit, vendor=Intel */
     case 0x04: return 0x0429B17F;  /* period = 69841279 femtoseconds (~14.318 MHz) */
@@ -3051,6 +3327,7 @@ static unsigned int hpet_read(unsigned long long offset) {
 
 static void hpet_write(unsigned long long offset, unsigned int val) {
     if (hpet_absent) return;
+    if (hpet_allones) return;
     switch ((int)offset) {
     case 0x10: {
         int was = hpet.config & 1, now = val & 1;
@@ -3690,6 +3967,10 @@ static void acpi_setup_tables(void *mem) {
     unsigned int xsdt_addr = (unsigned int)(ACPI_BASE + 0x300);
     unsigned int madt_addr = (unsigned int)(ACPI_BASE + 0x400);
     unsigned int dsdt_addr = (unsigned int)(ACPI_BASE + 0x600);
+    /* DMAR sits past the DSDT rather than in the 0x500 gap: the MADT grows
+       with the core count (44 + 8N + 12) and the DSDT with its AML, so the
+       gaps between the fixed slots are not fixed. */
+    unsigned int dmar_addr = (unsigned int)(ACPI_BASE + 0xA00);
 
     /* RSDP at ACPI_BASE. Revision 2 (ACPI 2.0+): 36 bytes, carrying BOTH the
        legacy 32-bit RSDT pointer and the 64-bit XSDT pointer, exactly as real
@@ -3706,9 +3987,10 @@ static void acpi_setup_tables(void *mem) {
     rsdp[8] = acpi_checksum(rsdp, 20);
     rsdp[32] = acpi_checksum(rsdp, 36);
 
-    /* RSDT at +0x100 (header + 2 pointers: FADT, MADT) */
+    /* RSDT at +0x100 (header + 2 pointers: FADT, MADT, plus DMAR when it
+       is present) */
     unsigned char *rsdt = base + rsdt_addr;
-    int rsdt_len = 36 + 8; /* header(36) + 2 entries(8) */
+    int rsdt_len = 36 + 8 + (acpi_dmar ? 4 : 0);
     memset(rsdt, 0, rsdt_len);
     memcpy(rsdt, "RSDT", 4);
     *(unsigned int *)(rsdt + 4) = rsdt_len;
@@ -3718,11 +4000,12 @@ static void acpi_setup_tables(void *mem) {
     *(unsigned int *)(rsdt + 24) = 1;  /* OEM revision */
     *(unsigned int *)(rsdt + 36) = fadt_addr;
     *(unsigned int *)(rsdt + 40) = madt_addr;
+    if (acpi_dmar) *(unsigned int *)(rsdt + 44) = dmar_addr;
     rsdt[9] = acpi_checksum(rsdt, rsdt_len);
 
     /* XSDT at +0x300 (header + 2 sixty-four-bit pointers: FADT, MADT) */
     unsigned char *xsdt = base + xsdt_addr;
-    int xsdt_len = 36 + 16;
+    int xsdt_len = 36 + 16 + (acpi_dmar ? 8 : 0);
     memset(xsdt, 0, xsdt_len);
     memcpy(xsdt, "XSDT", 4);
     *(unsigned int *)(xsdt + 4) = xsdt_len;
@@ -3732,7 +4015,35 @@ static void acpi_setup_tables(void *mem) {
     *(unsigned int *)(xsdt + 24) = 1;  /* OEM revision */
     *(unsigned long long *)(xsdt + 36) = fadt_addr;
     *(unsigned long long *)(xsdt + 44) = madt_addr;
+    if (acpi_dmar) *(unsigned long long *)(xsdt + 52) = dmar_addr;
     xsdt[9] = acpi_checksum(xsdt, xsdt_len);
+
+    /* DMAR, for a stage that needs to tell "an IOMMU is described" from
+       "it is not". Only the HEADER is modelled: signature, length, checksum,
+       plus the two fields the table's own header carries, host address width
+       and flags. There are NO remapping structures behind it, so a guest
+       that walks its body finds an empty table rather than a description of
+       units. That is enough for present-or-absent, which is what the
+       pch-state stage asks, and it is not enough for anything else -- a
+       reader must not take this as a modelled IOMMU.
+
+       The ACPI table header layout is standard and no ACPI or VT-d document
+       is in this tree, so this is the same status as the family-corroborated
+       MAC offsets: the shape is right, nothing here cites it. */
+    if (acpi_dmar) {
+        unsigned char *dmar = base + dmar_addr;
+        int dmar_len = 48;
+        memset(dmar, 0, dmar_len);
+        memcpy(dmar, "DMAR", 4);
+        *(unsigned int *)(dmar + 4) = dmar_len;
+        dmar[8] = 1;
+        memcpy(dmar + 10, "CODEX ", 6);
+        memcpy(dmar + 16, "CODEXVM ", 8);
+        *(unsigned int *)(dmar + 24) = 1;
+        dmar[36] = 38;   /* host address width, 39-bit reported as N-1 */
+        dmar[37] = 0;    /* flags: INTR_REMAP clear */
+        dmar[9] = acpi_checksum(dmar, dmar_len);
+    }
 
     /* FADT at +0x200 (116 bytes, revision 1). Field offsets are the ACPI
        spec's, not an approximation: FIRMWARE_CTRL 36, DSDT 40, SCI_INT 46,
@@ -4154,6 +4465,99 @@ static int mmio_insn_len(const unsigned char *b, int n) {
 #define E1000_PHY_ID1      2
 #define E1000_PHY_ID2      3
 
+/* == I219 (8086:15b8), and ONLY what the I219 datasheet states ==
+
+   The part on Damian's ASUS is a PCH device: the MAC is in the chipset and
+   the I219 is the PHY. This model adds the one requirement with a named
+   failure mode, K1 at 1 Gbps, so a bed run can tell a driver that
+   configures it from one that does not. Everything else in the eight-row
+   table (ULP, SWFLAG, SMBus/LANPHYPC, LCD reload, LTR) is still absent and
+   an arm must not read this model's silence as agreement.
+
+   CITED, I219 datasheet rev 2.02 section 9.5.5.2, "PCIe Power Management
+   Control PHY Address 01, Page 770, Register 17":
+     bit 13 Giga_K1_disable, RW, default 0b -- "When set, the I219 does not
+            enter K1 while link speed at 1000 Mb/s."
+     bit 14 K1 enable,       RW, default 0b -- "Enable K1 Power Save Mode."
+   Section 9.3 gives the addressing: register 31 at PHY address 01 is the
+   page register and belongs to no page, which is the path this model
+   already uses to reach page 769.
+
+   MODELLED, NOT CITED, and the distinction is the point: the datasheet
+   documents the CONTROL, not the consequence. That K1 left enabled at
+   1 Gbps stalls the MAC is the vendor driver's behaviour
+   (e1000_configure_k1_ich8lan), and it is the proposition the campaign
+   exists to test. The model makes it EXPRESSIBLE; it does not assert that
+   silicon does this. A green arm here is evidence about the driver's
+   configuration step and about nothing else.
+
+   The power-on value is the platform's NVM setting, which we do not have
+   for this board, so it is a knob rather than an invention: -i219-k1-nvm 1
+   (the default) powers up with K1 enabled and Giga_K1_disable clear, which
+   is the condition the campaign is about; 0 powers up with K1 off. */
+#define I219_DEVICE_ID     0x15B8
+#define I219_PCIE_PM_PAGE  770
+#define I219_PCIE_PM_REG   17
+#define I219_K1_GIGA_DIS   0x2000u
+#define I219_K1_ENABLE     0x4000u
+
+/* The MDIO/NVM semaphore, the second requirement with a specified
+   mechanism. CITED in two halves with DIFFERENT strengths, and the
+   difference is recorded rather than smoothed over:
+
+   The PROTOCOL is cited exactly, 82583V rev 2.6 section 4.5.2: a request is
+   registered by writing 1b to your own ownership bit; the requester is
+   granted access only when that same bit READS BACK 1b, which it does only
+   while the other two are 0b; at most one bit is set at any time; the owner
+   writes 0b when done. SW and HW clear on reset, MNG clears only on
+   LAN_PWR_GOOD or by firmware.
+
+   The OFFSET is corroborated by FAMILY and not cited for the part: 0x00F00
+   with SW ownership at bit 5, HW at 6, MNG at 7 is 82583V section 9.2.2.15,
+   and the I219's MAC is in the PCH, whose CSR map is in no document we
+   hold. A model built on it inherits that gap.
+
+   Enforcement is its own flag, -i219-swflag, rather than riding -i219. Two
+   requirements enforced by one switch cannot be told apart by an arm: a
+   driver that fails would fail for either reason and the pair would prove
+   nothing about which. */
+#define I219_EXTCNF_CTRL   0x00F00
+#define I219_EXTCNF_SW     0x0020u
+#define I219_EXTCNF_HW     0x0040u
+#define I219_EXTCNF_MNG    0x0080u
+
+/* ULP Configuration 1, PHY page 779 register 16, I219 datasheet 9.5.7.1.
+   Field table cited in full: START 0, SW_ACCESS 1, ULP_IND 2, STICKY_ULP 4
+   (enter ULP on link disconnect), INBAND_EXIT 5, WOL_HOST 6, WOL_ME 7,
+   RESER_TO_SMBUS 8, EN_1G_SMBUS 9, EN_ULP_LANPHYPC 10 (enter ULP on LAN
+   disable), reserved 13:11, FORCE_ULP 14, RESET_ULP_IND 15. The documented
+   default of every one of those fields is 0b. Register 17 on the same page
+   is ULP Configuration 2 (9.5.7.2, MESHADOW 4:0) and is not modelled.
+
+   THE POWER-ON VALUE IS MEASURED AND IS NOT THE DOCUMENTED DEFAULT. The
+   board answers 0x0800 -- bit 11, inside the reserved 13:11 field -- and did
+   so on two independent flights, sittings 8 and 9, each banking
+   `ulp 779.16=0800` in its own DIAG.TXT. Powering up at the documented
+   0x0000 would disagree with the only part anyone has read.
+
+   Both ULP-ENTRY BITS ARE CLEAR ON THAT BOARD, so a driver's entry-disable
+   write has nothing to change and no arm can see it happen. That is what
+   -i219-ulp-armed is for: it powers the register up with STICKY_ULP and
+   EN_ULP_LANPHYPC SET so the write has something to clear, which is what
+   separates the reaching arm from the skipping one. Without it both arms are
+   the same run and the pair proves nothing.
+
+   A PHY reset does NOT clear this register here. The datasheet does not say
+   what a PHY reset does to it, so that is a modelling choice and not a
+   citation; it is the choice that keeps an armed value alive across a driver
+   which resets before writing, and an arm whose subject a reset silently
+   wipes could never fire. */
+#define I219_ULP_PAGE         779
+#define I219_ULP_CFG1_REG     16
+#define I219_ULP_STICKY       0x0010u  /* bit 4 */
+#define I219_ULP_EN_LANPHYPC  0x0400u  /* bit 10 */
+#define I219_ULP_CFG1_BOARD   0x0800u  /* measured, sittings 8 and 9 */
+
 #define E1000_BMCR_RESET   0x8000
 #define E1000_BMCR_ANEG_EN 0x1000
 #define E1000_BMCR_ANEG_RST 0x0200
@@ -4167,6 +4571,26 @@ static int e1000_fault_no_reset = 0;
 static int e1000_fault_no_link  = 0;
 static int e1000_fault_no_mac   = 0;
 static int e1000_fault_no_tx_dd = 0;
+/* -e1000-rdh-ro: RDH ignores writes, the way CTRL does on the I219-V. This
+   exists for the discriminator NIC-4 rests on. DiagNicRing writes RDH=7,
+   reads it back and prints rdh-writable=y/n to tell "frames are moving" from
+   "RDH is not ours to write"; without this switch every bed run answers y,
+   the n branch has never executed anywhere, and the sitting would be reading
+   a field nothing has shown can say no. */
+static int e1000_fault_rdh_ro   = 0;
+/* -i219: present 8086:15b8 and model the K1 requirement above. OFF by
+   default, so the 82540EM every existing arm runs against is unchanged. */
+static int i219_present         = 0;
+static int i219_k1_nvm          = 1;
+static unsigned short i219_k1_reg = 0;
+static unsigned short i219_ulp_cfg1 = I219_ULP_CFG1_BOARD;
+/* -i219-swflag: MDIO is refused unless the caller holds SW ownership.
+   -i219-mng-holds: firmware is holding the MNG bit, so an acquisition
+   attempt is refused however correct the driver's protocol is, which is the
+   case a driver that assumes it always wins cannot survive. */
+static int i219_swflag_enforce  = 0;
+static int i219_mng_holds       = 0;
+static unsigned int i219_extcnf = 0;
 static int e1000_inject_want    = 0;
 static int e1000_nat            = 0;
 static int e1000_strict_filter  = 0;
@@ -4177,6 +4601,57 @@ static int e1000_strict_filter  = 0;
    every existing pci-scan-bus-0 count. Found by blu: pci_add_device hardcoded
    header type 0, so no bridge existed and the descent could not run here. */
 static int pci_bridge           = 0;
+/* -pci-bridge-deep: a second bridge behind the first, so the descent recurses
+   past one level. See where the devices are built for why it is its own flag
+   rather than a change to -pci-bridge. */
+static int pci_bridge_deep      = 0;
+/* -pci-bridge-levels N: N chained bridges, bus 0 -> 1 -> ... -> N, each with
+   an endpoint on the bus it forwards to. 1 is what -pci-bridge builds and 2 is
+   -pci-bridge-deep, so the three are one mechanism and the older flags keep
+   their exact topologies.
+
+   THE POINT IS THE LEVELS THE GUEST REFUSES, not the ones it walks.
+   pci-scan-max-depth is 3 and pci-collect's `depth > max` arm has never
+   executed anywhere, because no bed has ever presented a fourth level. A fuel
+   cap that has never been shown to say no is not a cap, it is an assertion
+   (L-FALSIF), and this project has found a defect behind almost every guard of
+   that shape. -pci-bridge-levels 4 is what makes it fire.
+
+   -pci-bridge-backward points the deepest bridge at a bus number at or below
+   its own, which is the other untravelled branch: pci-bridge-one descends only
+   when sec > bus, and nothing has ever handed it a bridge that fails that
+   test. A real one does exist -- an unconfigured bridge reads 0 there. */
+static int pci_bridge_levels    = 0;
+static int pci_bridge_backward  = 0;
+/* -e1000-inject-armed: hold the canned frames until the guest has READ GPRC,
+   so they arrive after a stage's own opening reading and inside its window.
+
+   THE INJECTOR EMPTIES ITS WHOLE BUDGET AT RCTL.EN, and that is one stage too
+   early for anything the diagnostic image wants to ask. DiagNicRing reads GPRC
+   twice on purpose -- once before its attach, banked as `pre`, and once at the
+   end as `gp` -- so that a frame counted in an EARLIER stage's window cannot be
+   read as one that arrived while this stage was looking (DiagNicRing.codex,
+   "GPRC was read TWICE"). Measured 2026-08-21 on the 18799 image: with
+   -e1000-inject 1 the reading is pre=1 gp=0, which is the counter working
+   exactly as designed and the frame arriving in nicinit. So sitting 9's row --
+   gp above zero with no descriptor writeback -- was not expressible here
+   whatever the FAULT flags said, and the reason was WHEN the frame arrives
+   rather than what the MAC does with it.
+
+   KEYED ON THE GPRC READ AND NOT ON AN ORDINAL, deliberately. Counting RDT
+   writes also works and was built first: measured, `-e1000-inject-late 2` puts
+   the frame in the nicring window and 1 puts it in nicinit, because bring-up
+   writes the tail once and the listener recycles once. But that is a property
+   of the whole run rather than of the thing under test, and this is the exact
+   defect `diag-arm.ps1` documents at length for `-usb-bot-drop N`: inserting a
+   stage moved that arm's drop into a different phase and it reported a
+   plausible wrong word. A band one value wide would have rotted the first time
+   anyone touched the bring-up.
+
+   The GPRC read is the stage's OWN action, it is what separates `pre` from
+   `gp`, and it cannot be moved by anything upstream. */
+static int e1000_inject_armed   = 0;
+static int e1000_gprc_reads     = 0;
 /* -e1000-no-phy: MDIC never reports ready, which is a PHY that is not
    answering. -e1000-phy-err: it reports the error bit instead. The two are
    different failures and a driver can confuse them, which is the reason
@@ -4376,9 +4851,67 @@ static void e1000_phy_reset_regs(void) {
        that the write occurred rather than that it holds. */
     e1000_phy_page = 0;
     e1000_phy_custom_mode = E1000_PHY_CUSTOM_MODE_RESET;
+    /* 770.17 comes back at its NVM value after a PHY reset, which is why
+       the vendor driver reconfigures K1 after every reset rather than once
+       at bring-up. A model that kept the driver's value across a reset
+       would let a driver that configures K1 exactly once pass. */
+    i219_k1_reg = (unsigned short)(i219_k1_nvm ? I219_K1_ENABLE : 0);
 }
 
+/* 4.5.2: a request is granted only if nobody else holds it, and the caller
+   learns the answer by reading the bit back rather than from the write. So
+   the write either takes the bit or leaves it clear, and never reports. */
+static void i219_extcnf_write(unsigned int val) {
+    unsigned int mng = i219_extcnf & I219_EXTCNF_MNG;
+    unsigned int want_sw = val & I219_EXTCNF_SW;
+    unsigned int keep = mng;
+    if (want_sw && !(mng | (i219_extcnf & I219_EXTCNF_HW)))
+        keep |= I219_EXTCNF_SW;
+    i219_extcnf = (val & ~(I219_EXTCNF_SW | I219_EXTCNF_HW | I219_EXTCNF_MNG)) | keep;
+}
+
+
 static unsigned int e1000_regs[E1000_BAR_SIZE / 4];
+
+/* Link is up and the resolved speed is 1000: in this model auto-negotiation
+   completing IS the 1 Gbps case (e1000_read derives STATUS.SPEED from the
+   same bit), so the two conditions are one test. */
+/* No DMA while Bus Master Enable is clear. Checked at the two places the
+   device would touch guest memory, the same two the K1 stall gates, so a
+   bed run can produce a device that is mapped and answering registers and
+   still moves nothing. */
+static int e1000_dma_blocked(void) {
+    if (!e1000_bme_clear || e1000_pci_slot < 0) return 0;
+    return (pci_devices[e1000_pci_slot].command & 0x0004) ? 0 : 1;
+}
+
+/* STATUS.LU, as e1000_read derives it, in one place so the readers of the
+   link cannot drift apart. -e1000-phy-link is what makes aneg-done part of
+   the condition; without it the link rides on CTRL.SLU alone, which is the
+   floor every existing green was measured on. */
+static int e1000_link_up(void) {
+    if (e1000_fault_no_link) return 0;
+    if (!(e1000_regs[E1000_REG_CTRL / 4] & E1000_CTRL_SLU)) return 0;
+    return !e1000_phy_link ||
+           (e1000_phy_regs[E1000_PHY_BMSR] & E1000_BMSR_ANEG_DONE) != 0;
+}
+
+/* THE STALL RIDES ON STATUS.LU, NOT ON BMSR. It required aneg-done outright
+   until 2026-08-21, and ANEG DOES NOT COMPLETE ON THE PART: measured on the
+   ASUS 2026-08-15, e1000-await-aneg ran its full million and returned 0 while
+   STATUS.LU came up and the part negotiated 1000 Mb/s, which E1000e.codex:444
+   documents and which sitting 9's nicinit row read again (s9 ret=0
+   us=3000419). So the bed could only stall in a state the board is never in,
+   and the arm built on it was proving something about a condition that does
+   not occur out there. Same predicate as the STATUS register now, by
+   construction rather than by two copies agreeing. */
+static int i219_mac_stalled(void) {
+    if (!i219_present) return 0;
+    if (!e1000_link_up()) return 0;
+    if (i219_k1_reg & I219_K1_GIGA_DIS) return 0;
+    return (i219_k1_reg & I219_K1_ENABLE) ? 1 : 0;
+}
+
 static int e1000_rx_cursor = 0;
 static int e1000_injected = 0;
 static int e1000_tx_frames = 0;
@@ -4421,9 +4954,38 @@ static unsigned long long e1000_ring_base(int lo_reg, int hi_reg) {
    fetch the descriptor, DMA into the buffer it names, write back the
    length and set DD|EOP. Stops at the tail, because the descriptors
    between head and tail belong to the driver and not to the device. */
+/* GPRC COUNTS A GOOD FRAME AT THE MAC, BEFORE ANY DESCRIPTOR. It used to be
+   incremented inside the delivery loop just after DD was written, so every
+   way of stopping a receive returned above it and the bed could only ever
+   read gprc=0 ddset=0 -- DiagNicRing's "nothing arrived" (:122). Sitting 9
+   read gp=1 ddset=0 off the ASUS on 2026-08-21, which is the row BELOW it,
+   "frames arrived and we cannot see them" (:124), and no flag or fault here
+   could produce that row at all. A row the bed cannot make say "invisible"
+   is a row whose instrument cannot fail (L-FALSIF), and it is the row a
+   flight gets read against.
+
+   82583V stats, and DiagNicRing:119: GPRC is a MAC counter and RNBC is the
+   no-descriptor counter. The frame is accepted and counted here; whether a
+   descriptor is ever written back is the next question and not this one.
+   RNBC stays where it is, at the ring-full test, because turned away for
+   want of a descriptor is a different row again (:127) and a driver acts on
+   it differently. */
 static void e1000_deliver_rx(void) {
-    /* A ring programmed under a live receiver never receives. */
-    if (e1000_ring_poisoned) return;
+    /* Not yet: the frames are being held for a stage that has not started
+       polling. Nothing is counted here either, because a frame the wire has
+       not delivered has not reached the MAC. */
+    if (e1000_inject_armed && e1000_gprc_reads < 1) return;
+    /* The three ways this device stops moving frames. The MAC still takes
+       them and still counts them: the ring is left exactly as the driver
+       programmed it, RDH does not advance and no descriptor gets DD, which
+       is the shape a flight reads off the board. */
+    if (e1000_ring_poisoned || i219_mac_stalled() || e1000_dma_blocked()) {
+        while (e1000_injected < e1000_inject_want) {
+            e1000_regs[E1000_REG_GPRC / 4]++;
+            e1000_injected++;
+        }
+        return;
+    }
     unsigned long long ring = e1000_ring_base(E1000_REG_RDBAL, E1000_REG_RDBAH);
     unsigned int len = e1000_regs[E1000_REG_RDLEN / 4];
     if (!ring || !len) return;
@@ -4454,6 +5016,10 @@ static void e1000_deliver_rx(void) {
    summed rather than retransmitted: what is being tested is that the
    driver built a descriptor the device can follow to the right bytes. */
 static void e1000_consume_tx(unsigned int tail) {
+    /* Stalled: the tail write is accepted and nothing is consumed, so TDH
+       stays put and no descriptor is written back with DD. */
+    if (i219_mac_stalled()) return;
+    if (e1000_dma_blocked()) return;
     unsigned long long ring = e1000_ring_base(E1000_REG_TDBAL, E1000_REG_TDBAH);
     unsigned int len = e1000_regs[E1000_REG_TDLEN / 4];
     if (!ring || !len) { e1000_regs[E1000_REG_TDH / 4] = tail; return; }
@@ -4494,6 +5060,12 @@ static unsigned int e1000_mdic_exec(unsigned int val) {
     unsigned int phy = (val >> E1000_MDIC_PHY_SH) & 0x1F;
     unsigned int op  = val & E1000_MDIC_OP_MASK;
 
+    /* The semaphore gates the MDIO door itself, so a driver that never
+       acquires it cannot reach the PHY at all. Refused as an ERROR rather
+       than a never-ready, because the two are different failures and a
+       driver can tell them apart (-e1000-no-phy is the other one). */
+    if (i219_swflag_enforce && !(i219_extcnf & I219_EXTCNF_SW))
+        return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
     if (!e1000_mdio_window_open()) return val & ~(E1000_MDIC_R | E1000_MDIC_E);
     if (e1000_fault_no_phy) return val & ~(E1000_MDIC_R | E1000_MDIC_E);
     if (e1000_fault_phy_err) return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
@@ -4529,6 +5101,16 @@ static unsigned int e1000_mdic_exec(unsigned int val) {
                 e1000_phy_custom_mode = data;
                 return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | data;
             }
+            if (i219_present && e1000_phy_page == I219_PCIE_PM_PAGE &&
+                reg == I219_PCIE_PM_REG) {
+                i219_k1_reg = data;
+                return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | data;
+            }
+            if (i219_present && e1000_phy_page == I219_ULP_PAGE &&
+                reg == I219_ULP_CFG1_REG) {
+                i219_ulp_cfg1 = data;
+                return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | data;
+            }
             /* Only the one paged register this model has a citation for
                exists. Anything else on a non-zero page is not modelled and
                must not answer as though it were. */
@@ -4546,6 +5128,12 @@ static unsigned int e1000_mdic_exec(unsigned int val) {
                 reg == E1000_PHY_CUSTOM_MODE)
                 return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R |
                        e1000_phy_custom_mode;
+            if (i219_present && e1000_phy_page == I219_PCIE_PM_PAGE &&
+                reg == I219_PCIE_PM_REG)
+                return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | i219_k1_reg;
+            if (i219_present && e1000_phy_page == I219_ULP_PAGE &&
+                reg == I219_ULP_CFG1_REG)
+                return (val & ~E1000_MDIC_DATA) | E1000_MDIC_R | i219_ulp_cfg1;
             return (val & ~E1000_MDIC_R) | E1000_MDIC_E;
         }
         /* The slow-mode gate applies to ordinary register reads only. The
@@ -4570,16 +5158,16 @@ static unsigned int e1000_read(unsigned long long off) {
     case E1000_REG_CRCERRS: {
         unsigned int v = e1000_regs[off / 4];
         e1000_regs[off / 4] = 0;        /* clear on read */
+        /* The stage's own opening reading. -e1000-inject-armed holds the
+           frames until it has happened, so what arrives is inside this
+           stage's window by construction rather than by an ordinal. */
+        if ((unsigned int)off == E1000_REG_GPRC) e1000_gprc_reads++;
         return v;
     }
     case E1000_REG_STATUS: {
         unsigned int v = e1000_regs[E1000_REG_STATUS / 4];
         unsigned int ctrl = e1000_regs[E1000_REG_CTRL / 4];
-        int slu = (ctrl & E1000_CTRL_SLU) != 0;
-        int phy_ok = !e1000_phy_link ||
-            (e1000_phy_regs[E1000_PHY_BMSR] & E1000_BMSR_ANEG_DONE) != 0;
-        int lu = !e1000_fault_no_link && slu && phy_ok;
-        if (lu) v |= E1000_STATUS_LU;
+        if (e1000_link_up()) v |= E1000_STATUS_LU;
         if (e1000_asde) {
             /* The PHY's own resolved speed. It has a speed to report only once
                auto-negotiation has finished, which is the same condition the
@@ -4594,6 +5182,9 @@ static unsigned int e1000_read(unsigned long long off) {
         }
         return v;
     }
+    case I219_EXTCNF_CTRL:
+        if (i219_present) return i219_extcnf;
+        return e1000_regs[off / 4];
     case E1000_REG_RAL:
         return e1000_fault_no_mac ? 0 :
             ((unsigned int)e1000_station_mac[0] | ((unsigned int)e1000_station_mac[1] << 8) |
@@ -4631,6 +5222,10 @@ static void e1000_write(unsigned long long off, unsigned int val) {
             QueryPerformanceCounter(&e1000_reset_at);   /* opens the MDIO window */
             if (!e1000_fault_no_reset) val &= ~E1000_CTRL_RST;
         }
+        /* Link-up is one of the two candidate first observables of bring-up.
+           Read AFTER the RST handling above, so a reset that happens to carry
+           SLU does not arm on a write whose purpose was the reset. */
+        if (val & E1000_CTRL_SLU) usb_bot_nic_arm("CTRL.SLU");
         e1000_regs[E1000_REG_CTRL / 4] = val;
         return;
     case E1000_REG_RCTL:
@@ -4638,6 +5233,10 @@ static void e1000_write(unsigned long long off, unsigned int val) {
            ring safe to reprogram. Clearing the poison here is the whole
            reward for doing it in the right order. */
         if (!(val & E1000_RCTL_EN)) e1000_ring_poisoned = 0;
+        /* The other candidate. Only EN set counts: the quiesce writes RCTL
+           with EN CLEAR, and arming on that would fire one stage early, on
+           the write whose whole purpose is to stop the receiver. */
+        if (val & E1000_RCTL_EN) usb_bot_nic_arm("RCTL.EN");
         e1000_regs[E1000_REG_RCTL / 4] = val;
         if (val & E1000_RCTL_EN) { e1000_deliver_rx(); if (e1000_nat) e1000_nat_rx(); }
         return;
@@ -4649,7 +5248,43 @@ static void e1000_write(unsigned long long off, unsigned int val) {
     case E1000_REG_RDLEN:
         if (e1000_regs[E1000_REG_RCTL / 4] & E1000_RCTL_EN) e1000_ring_poisoned = 1;
         e1000_regs[off / 4] = val;
+        /* The ring moved, so the old receive cursor names a descriptor in a
+           ring that no longer exists. See the RDH case below for what leaving
+           it stale costs. */
+        e1000_rx_cursor = 0;
         return;
+    /* RDH IS DEVICE STATE THE DRIVER INITIALISES, and until 2026-08-20 a write
+       to it fell through to the default store: e1000_rx_cursor, which is what
+       both delivery paths actually use as the head, was never reset by
+       anything. It only ever advanced.
+
+       That is invisible on the first bring-up and fatal on a later one. Our
+       e1000-setup-rx programs RDH=0 and RDT=count-1 with count 16, and both
+       nat and inject delivery declare "ring full: leave it queued" when the
+       cursor equals RDT. So a guest that brings the receiver up a SECOND time
+       after consuming frames -- which the diagnostic ladder does, once per NIC
+       stage -- had one chance in sixteen per bring-up of resuming with the
+       cursor already sitting on 15, and from there NOTHING is ever delivered
+       again: RNBC counts up, the host queue grows without bound, and the guest
+       polls a ring the model refuses to fill. Measured on the b3 stage, where
+       every ARP reply the NAT built (138 of them) sat in rx_queue while the
+       stage reported no-arp.
+
+       The guest cannot see the difference between that and a dead wire, which
+       is the same "arrived but invisible" shape NIC-4 chased on metal -- and a
+       bed that can produce it for a reason the metal does not have is worse
+       than one that cannot. */
+    case E1000_REG_RDH: {
+        unsigned int rdlen = e1000_regs[E1000_REG_RDLEN / 4];
+        unsigned int count = rdlen / 16;
+        /* The part owns the head and the driver's store is dropped on the
+           floor: no register update and no cursor move, so a read-back returns
+           whatever the device already had. */
+        if (e1000_fault_rdh_ro) return;
+        e1000_regs[E1000_REG_RDH / 4] = val;
+        e1000_rx_cursor = count ? (int)(val % count) : 0;
+        return;
+    }
     case E1000_REG_RDT:
         e1000_regs[E1000_REG_RDT / 4] = val;
         e1000_deliver_rx();
@@ -4661,6 +5296,10 @@ static void e1000_write(unsigned long long off, unsigned int val) {
         return;
     case E1000_REG_MDIC:
         e1000_regs[E1000_REG_MDIC / 4] = e1000_mdic_exec(val);
+        return;
+    case I219_EXTCNF_CTRL:
+        if (i219_present) { i219_extcnf_write(val); return; }
+        e1000_regs[off / 4] = val;
         return;
     case E1000_REG_ICR:
         e1000_regs[E1000_REG_ICR / 4] = 0;
@@ -8094,6 +8733,20 @@ static void e1000_nat_rx(void) {
     unsigned int len = e1000_regs[E1000_REG_RDLEN / 4];
     if (!ring || !len) return;
     if (!(e1000_regs[E1000_REG_RCTL / 4] & E1000_RCTL_EN)) return;
+    /* This path had NO stall gate at all until 2026-08-21, so a MAC that
+       e1000_deliver_rx correctly refused to deliver through still received
+       everything the moment the NAT was the source. -e1000-nat -i219 is the
+       combination sitting 9's arm is written on, so the divergence sat
+       exactly under the arm being built. Counted and dropped rather than
+       left queued: the MAC took the frame, and it is not coming back. */
+    if (e1000_ring_poisoned || i219_mac_stalled() || e1000_dma_blocked()) {
+        while (rx_queue_count > 0) {
+            e1000_regs[E1000_REG_GPRC / 4]++;
+            rx_queue_head = (rx_queue_head + 1) % RX_QUEUE_SIZE;
+            rx_queue_count--;
+        }
+        return;
+    }
     unsigned int count = len / 16;
     if (!count) return;
     while (rx_queue_count > 0) {
@@ -9431,8 +10084,11 @@ static void blit_guest_output(void) {
     unsigned long long len  = *(unsigned long long *)((unsigned char *)guest_mem + BLIT_LEN_CELL);
     if (len == 0) return;
     if (addr >= guest_mem_size || len > guest_mem_size - addr) {
+        /* Also a whole-blit discard, and also uncounted until now. */
+        output_dropped += (size_t)len;
         fprintf(stderr, "BLIT: rejected addr=0x%llx len=%llu (guest_mem_size=%llu)\n",
                 addr, len, (unsigned long long)guest_mem_size);
+        fprintf(stderr, "SERIAL: %llu guest serial byte(s) DROPPED (blit out of range); -output is SHORT\n", len);
         return;
     }
     /* APs append serial bytes under output_lock from their own host threads; this
@@ -9444,7 +10100,20 @@ static void blit_guest_output(void) {
         while (output_len + len > new_cap) new_cap *= 2;
         unsigned char *grown = (unsigned char *)realloc(output_buf, new_cap);
         if (!grown) {
+            /* Count it the way output_buf_write counts its own drops, and say
+               the same words. This path discards a WHOLE BLIT -- one contiguous
+               chunk, typically a complete protocol block -- and it used to do so
+               without touching output_dropped, so dump_output_file's "N byte(s)
+               DROPPED ... is SHORT" line could not fire for the path that
+               carries bulk output. The batch parser assigns blocks to test names
+               by sequence and cannot notice a missing one, so a silent drop here
+               files every later block under the wrong test's name
+               (ExaminersAssay, "The batch stream can lose bytes"). One marker
+               for both paths is what lets a reader attribute a short capture. */
+            output_dropped += (size_t)len;
             fprintf(stderr, "BLIT: output buffer growth failed (%zu bytes)\n", new_cap);
+            fprintf(stderr, "SERIAL: %llu guest serial byte(s) DROPPED (blit growth failed at %zu bytes); -output is SHORT\n",
+                    len, output_cap);
             if (output_lock_ready) LeaveCriticalSection(&output_lock);
             return;
         }
@@ -9468,6 +10137,10 @@ static void blit_guest_output(void) {
    because its cost is wall clock rather than a count. */
 static unsigned long long ide_pio_exits = 0;    /* exits taken on the data port */
 static unsigned long long ide_pio_str_exits = 0;/* ...of which carried a string op */
+static unsigned long long ide_out_batched = 0;  /* words the batched OUT arm carried */
+static unsigned long long ide_out_batch_hits = 0;/* exits that arm served */
+static unsigned long long ide_in_batched = 0;   /* words the batched IN arm carried */
+static unsigned long long ide_in_batch_hits = 0;
 static unsigned long long ide_pio_words = 0;    /* words those exits carried */
 static unsigned long long ide_reg_exits = 0;    /* exits on the other task-file registers */
 static unsigned long long ide_flush_calls = 0;  /* ide_flush entries that reached the file */
@@ -11797,6 +12470,8 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 else wval = (int)(*(unsigned int *)(gmem + p));
                 ide_write_data(ide_active(), wval);
             }
+            ide_out_batch_hits++;
+            ide_out_batched += done;
             WHV_REGISTER_NAME sn[] = { WHvX64RegisterRsi, WHvX64RegisterRcx };
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rsi + done * (unsigned long long)size;
@@ -12318,6 +12993,48 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 else if (size == 2) { gmem[p] = rval & 0xFF; gmem[p + 1] = (rval >> 8) & 0xFF; }
                 else *(unsigned int *)(gmem + p) = (unsigned int)rval;
             }
+            WHV_REGISTER_NAME sn[] = { WHvX64RegisterRdi, WHvX64RegisterRcx };
+            WHV_REGISTER_VALUE sv[2];
+            sv[0].Reg64 = ctx->IoPortAccess.Rdi + done * (unsigned long long)size;
+            sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
+            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            if (ctx->IoPortAccess.Rcx - done == 0) {
+                WHV_REGISTER_NAME rn = WHvX64RegisterRip;
+                WHV_REGISTER_VALUE rv;
+                rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
+                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            }
+            return;
+        }
+        /* REP INSW from the IDE data port: a READ SECTORS data phase, batched
+           for the same reason as the NE2K arm above and the OUT arm on the
+           write side. The generic string path below serves one word per exit,
+           and the census says that is where the reads still are: fat16-write
+           took 44,296 string exits of which only 8 were the batched write arm,
+           so all but a sector's worth were reads paying an exit each.
+
+           ide_read_data carries its own sector bookkeeping and calls
+           ide_advance when a sector drains, so the batch sees exactly what
+           separate exits would have seen. A destination outside guest memory
+           SKIPS the store and still advances RDI/RCX: breaking at done == 0
+           would re-execute into the same bad address forever. */
+        if (ctx->IoPortAccess.AccessInfo.StringOp && port == 0x1F0) {
+            unsigned long long gpa = ctx->IoPortAccess.Rdi;
+            unsigned long long cnt = ctx->IoPortAccess.Rcx;
+            unsigned long long done = 0;
+            unsigned char *gmem = (unsigned char *)guest_mem;
+            if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
+            guest_host_touch(gpa, cnt * (unsigned long long)size);
+            for (; done < cnt; done++) {
+                unsigned long long p = gpa + done * (unsigned long long)size;
+                int rval = no_ide ? 0xFF : ide_read_data(ide_active());
+                if (p + (unsigned long long)size > guest_mem_size) continue;
+                if (size == 1) gmem[p] = rval & 0xFF;
+                else if (size == 2) { gmem[p] = rval & 0xFF; gmem[p + 1] = (rval >> 8) & 0xFF; }
+                else *(unsigned int *)(gmem + p) = (unsigned int)rval;
+            }
+            ide_in_batch_hits++;
+            ide_in_batched += done;
             WHV_REGISTER_NAME sn[] = { WHvX64RegisterRdi, WHvX64RegisterRcx };
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rdi + done * (unsigned long long)size;
@@ -13925,10 +14642,22 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-e1000-no-link"))  { e1000_present = 1; e1000_fault_no_link = 1; }
         else if (!strcmp(argv[i], "-e1000-no-mac"))   { e1000_present = 1; e1000_fault_no_mac = 1; }
         else if (!strcmp(argv[i], "-e1000-no-tx-dd")) { e1000_present = 1; e1000_fault_no_tx_dd = 1; }
+        else if (!strcmp(argv[i], "-e1000-rdh-ro"))   { e1000_present = 1; e1000_fault_rdh_ro = 1; }
+        else if (!strcmp(argv[i], "-i219"))           { e1000_present = 1; i219_present = 1; }
+        else if (!strcmp(argv[i], "-i219-k1-nvm") && i+1 < argc) { e1000_present = 1; i219_present = 1; i219_k1_nvm = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "-i219-swflag"))    { e1000_present = 1; i219_present = 1; i219_swflag_enforce = 1; }
+        else if (!strcmp(argv[i], "-i219-mng-holds")) { e1000_present = 1; i219_present = 1; i219_swflag_enforce = 1; i219_mng_holds = 1; }
+        else if (!strcmp(argv[i], "-i219-ulp-armed")) { e1000_present = 1; i219_present = 1; i219_ulp_cfg1 = (unsigned short)(I219_ULP_CFG1_BOARD | I219_ULP_STICKY | I219_ULP_EN_LANPHYPC); }
+        else if (!strcmp(argv[i], "-nic-bme-clear"))  { e1000_present = 1; e1000_bme_clear = 1; }
+        else if (!strcmp(argv[i], "-dmar"))           { acpi_dmar = 1; }
         else if (!strcmp(argv[i], "-dhcp-lease") && i+1 < argc) { nat_dhcp_lease = (unsigned int)atoi(argv[++i]); }
         else if (!strcmp(argv[i], "-e1000-nat"))      { e1000_present = 1; e1000_nat = 1; }
         else if (!strcmp(argv[i], "-e1000-strict-filter")) { e1000_present = 1; e1000_strict_filter = 1; }
         else if (!strcmp(argv[i], "-pci-bridge")) pci_bridge = 1;
+        else if (!strcmp(argv[i], "-pci-bridge-deep")) { pci_bridge = 1; pci_bridge_deep = 1; }
+        else if (!strcmp(argv[i], "-pci-bridge-levels") && i+1 < argc) { pci_bridge = 1; pci_bridge_levels = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "-pci-bridge-backward")) { pci_bridge = 1; pci_bridge_backward = 1; }
+        else if (!strcmp(argv[i], "-e1000-inject-armed")) { e1000_present = 1; e1000_inject_armed = 1; }
         else if (!strcmp(argv[i], "-e1000-no-phy"))   { e1000_present = 1; e1000_fault_no_phy = 1; }
         else if (!strcmp(argv[i], "-e1000-phy-err"))  { e1000_present = 1; e1000_fault_phy_err = 1; }
         else if (!strcmp(argv[i], "-e1000-phy-link")) { e1000_present = 1; e1000_phy_link = 1; }
@@ -13962,7 +14691,19 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-usb-setcfg-fault-once") && i+1 < argc) usb_setcfg_fault_once = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-no-unit-attention")) usb_unit_attention = 0;
         else if (!strcmp(argv[i], "-usb-bot-drop") && i+1 < argc) usb_bot_drop = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-bot-die-len") && i+1 < argc) usb_bot_die_len = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-bot-census")) usb_bot_census = 1;
+        else if (!strcmp(argv[i], "-census") && i+1 < argc) {
+            census_fp = fopen(argv[++i], "w");
+            if (!census_fp) { fprintf(stderr, "codex-vm: -census: cannot open %s\n", argv[i]); return 1; }
+            usb_bot_census = 1;
+        }
+        else if (!strcmp(argv[i], "-usb-bot-die-lba") && i+1 < argc) usb_bot_die_lba = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-bot-revive-on-reset")) usb_bot_revive = 1;
+        else if (!strcmp(argv[i], "-usb-bot-die-on-nic")) usb_bot_die_on_nic = 1;
         else if (!strcmp(argv[i], "-usb-bot-drops") && i+1 < argc) usb_bot_drops = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-bot-drop-len") && i+1 < argc) usb_bot_drop_len = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-bot-drop-len-max") && i+1 < argc) usb_bot_drop_len_max = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-disk-port") && i+1 < argc) {
             usb_disk_port = atoi(argv[++i]);
             if (usb_disk_port < 1) usb_disk_port = 1;
@@ -13992,6 +14733,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-xhci-scratch") && i+1 < argc) xhci_scratch_bufs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-uefi-conout-remode")) uefi_conout_remode = 1;
         else if (!strcmp(argv[i], "-no-hpet")) hpet_absent = 1;
+        else if (!strcmp(argv[i], "-hpet-frozen")) hpet_allones = 1;
         else if (!strcmp(argv[i], "-no-smbios")) uefi_no_smbios = 1;
         else if (!strcmp(argv[i], "-no-edid")) uefi_no_edid = 1;
         else if (!strcmp(argv[i], "-edid-bad")) uefi_edid_bad = 1;
@@ -14084,12 +14826,33 @@ int main(int argc, char **argv) {
     }
     pci_add_device(0x8086, 0x2668, 0x04, 0x03, 0x00, 0xFE000000, 11);  /* slot 2: Intel HDA */
     if (e1000_present) {   /* slot 3: Intel gigabit Ethernet, e1000e family */
-        int ei = pci_add_device(0x8086, 0x15B8, 0x02, 0x00, 0x00, (unsigned int)E1000_BAR, 12);
+        /* 0x100E is an 82540EM, and it is the id this model can honestly
+           carry: what is decoded below is the common 8254x core (CTRL,
+           STATUS, MDIC, ICR, RCTL, TCTL, the two rings, RAL/RAH and four
+           counters) and nothing above it. There is no EXTCNF_CTRL, no
+           SWSM, no MSI-X, so 82574 would overclaim and 0x15B8 (I219-LM,
+           the part on the ASUS) overclaims further: the I219 MAC sits in
+           the PCH and needs a semaphore before any PHY access, which
+           nothing here models.
+
+           It advertised 0x15B8 until 2026-08-20. The driver matches on
+           vendor plus class plus subclass and never reads the device id
+           (E1000e.codex e1000-is-candidate), so the wrong id bound
+           correctly and told a reader the bed was the board. A bed must
+           not advertise an id it does not implement: 0x15B8 is reserved
+           for a model written from the I219 datasheet. */
+        int ei = pci_add_device(0x8086, i219_present ? I219_DEVICE_ID : 0x100E,
+                                0x02, 0x00, 0x00, (unsigned int)E1000_BAR, 12);
         if (ei >= 0) pci_devices[ei].bar_size[0] = E1000_BAR_SIZE;
+        e1000_pci_slot = ei;
         /* Without this the PHY id registers read zero, which is what a bus
            with nothing on it reads, so a driver could not tell a working
            model from an absent PHY. */
         e1000_phy_reset_regs();
+        /* The MNG bit is firmware's and 4.5.2 says a reset does not clear
+           it, so it is seeded here at power-up rather than in the PHY reset
+           path with the bits that do clear. */
+        i219_extcnf = i219_mng_holds ? I219_EXTCNF_MNG : 0;
     }
 
     if (pci_bridge) {
@@ -14100,21 +14863,56 @@ int main(int argc, char **argv) {
            a virtio-net, which this x86 model does not otherwise emulate, so it
            is inert config space -- the walk finds it, nothing tries to drive
            it. Both go on new slots after the bus-0 devices already added. */
-        int br = pci_add_device(0x1B36, 0x000C, 0x06, 0x04, 0x00, 0, 0);
-        if (br >= 0) {
-            pci_devices[br].header_type = 1;
-            pci_devices[br].bus = 0;
-            pci_devices[br].slot = (unsigned char)br;
-            pci_devices[br].sec_bus = 1;
-            pci_devices[br].sub_bus = 1;
+        /* levels: 1 is -pci-bridge, 2 is -pci-bridge-deep, N is
+           -pci-bridge-levels N. One mechanism, and the creation ORDER is
+           preserved so the one- and two-level topologies are exactly the ones
+           those flags already built and their arms keep their floors. */
+        int levels = pci_bridge_levels ? pci_bridge_levels
+                   : (pci_bridge_deep ? 2 : 1);
+        int br = -1;
+        for (int lv = 1; lv <= levels; lv++) {
+            int b = pci_add_device(0x1B36, 0x000C, 0x06, 0x04, 0x00, 0, 0);
+            if (b >= 0) {
+                pci_devices[b].header_type = 1;
+                pci_devices[b].bus = (unsigned char)(lv - 1);
+                /* The first bridge lands on a bus-0 slot after the devices
+                   already there; the rest sit beside the endpoint on their
+                   parent's bus. */
+                pci_devices[b].slot = (unsigned char)(lv == 1 ? b : 1);
+                pci_devices[b].sec_bus = (unsigned char)lv;
+                /* The subordinate is the HIGHEST bus behind this bridge, not
+                   the secondary. Stating the secondary describes a topology
+                   that does not exist. */
+                pci_devices[b].sub_bus = (unsigned char)levels;
+                if (lv == 1) br = b;
+                /* An unconfigured bridge reads 0 in its secondary-bus field,
+                   which is at or below its own bus, and pci-bridge-one is
+                   written to refuse exactly that. Nothing had ever handed it
+                   one, so the refusal was an assertion rather than a branch. */
+                if (pci_bridge_backward && lv == levels)
+                    pci_devices[b].sec_bus = 0;
+            }
+            int e = pci_add_device(0x1AF4, 0x1041, 0x02, 0x00, 0x00, 0, 0);
+            if (e >= 0) {
+                pci_devices[e].bus = (unsigned char)lv;
+                pci_devices[e].slot = 0;  /* first slot on the secondary bus */
+            }
         }
-        int ep = pci_add_device(0x1AF4, 0x1041, 0x02, 0x00, 0x00, 0, 0);
-        if (ep >= 0) {
-            pci_devices[ep].bus = 1;
-            pci_devices[ep].slot = 0;   /* first slot on the secondary bus */
-        }
-        fprintf(stderr, "PCI: bridge 1b36:000c on 00:%02x.0 -> bus 1, endpoint 1af4:1041 at 01:00.0\n",
-                br >= 0 ? pci_devices[br].slot : 0);
+        /* -pci-bridge-deep: a bridge BEHIND the bridge, so pci-collect runs at
+           depth 2. pci-scan-max-depth is 3 and pci-collect has always been
+           written to recurse, but one bridge one level deep is all any bed has
+           ever presented, so depth 2 and 3 have never executed anywhere -- the
+           recursion was reachable and untravelled, which reads exactly like a
+           tested walk (L-UNCALLED one level out). The ASUS presents 21 devices
+           over four buses.
+
+           OFF by default and separate from -pci-bridge (L-FALLBACK): the
+           second level adds devices, so folding it into the existing flag
+           would move pci-bridge-scan's count and cost that arm its floor. */
+        fprintf(stderr, "PCI: %d bridge level(s), first 1b36:000c on 00:%02x.0 -> bus 1, "
+                        "endpoint 1af4:1041 at 01:00.0%s\n",
+                levels, br >= 0 ? pci_devices[br].slot : 0,
+                pci_bridge_backward ? ", deepest points BACKWARD" : "");
     }
 
     /* Resolve -gop-stride before create_vm, which commits the guest GPU/GOP
@@ -15263,10 +16061,13 @@ done:
     if (ide.wfp) { fclose(ide.wfp); ide.wfp = NULL; }
     if (ide_slave.wfp) { fclose(ide_slave.wfp); ide_slave.wfp = NULL; }
     if (ide_pio_words || ide_flush_calls) {
-        fprintf(stderr, "IDE CENSUS: pio-exits=%llu str-exits=%llu words=%llu reg-exits=%llu "
+        fprintf(census_out(), "IDE CENSUS: pio-exits=%llu str-exits=%llu words=%llu reg-exits=%llu "
+                "out-batch(hits=%llu words=%llu) in-batch(hits=%llu words=%llu) "
                 "flush-entries=%llu flush-calls=%llu flush-bytes=%llu flush-ms=%.1f "
                 "refused(nopath=%llu nodata=%llu oob=%llu openfail=%llu)\n",
                 ide_pio_exits, ide_pio_str_exits, ide_pio_words, ide_reg_exits,
+                ide_out_batch_hits, ide_out_batched,
+                ide_in_batch_hits, ide_in_batched,
                 ide_flush_entries, ide_flush_calls, ide_flush_bytes, ide_flush_ms,
                 ide_flush_nopath, ide_flush_nodata, ide_flush_oob, ide_flush_openfail);
     }

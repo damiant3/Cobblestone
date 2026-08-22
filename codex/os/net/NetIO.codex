@@ -50,6 +50,27 @@ Section: The Poll Clock
   net-io-max-polls : Integer
   net-io-max-polls = net-io-tick-interval * net-io-max-ticks
 
+ THE DRAIN IS THE ONE WAIT THAT MUST SIT BELOW THE LADDER, and it is the
+ opposite of the rule above it. A loop waiting for a peer to appear should
+ end by give-up, so its cap sits ABOVE 288 and 500 is right. The drain is
+ not waiting for the connection, it is waiting for room in a retransmit
+ queue, and it is entered ONCE PER 1400-BYTE CHUNK: at 288 ticks a stalled
+ peer costs 28.8 s per chunk and a stage that sends a few kilobytes ends the
+ run. Damian ruled the trade on 2026-08-21 -- "tcp correctness is a working
+ nic, not adherence to a standard I can't use because the nic is broke" --
+ so the drain gives up early and the CALLER decides, which is what
+ `net-io-send-raw-checked` exists to let it do.
+
+ 96 is two clamped RTO intervals (`net-rto-max-ticks` 48), so a merely slow
+ peer still gets two full retransmit cycles before the drain stops, and it
+ cannot reach the 288 the ladder needs. Both numbers are read by
+ `codex/test/net-drain-budget`, which fails if either crosses the ladder.
+
+  net-io-drain-ticks : Integer = 96
+
+  net-io-drain-polls : Integer
+  net-io-drain-polls = net-io-tick-interval * net-io-drain-ticks
+
   net-io-conn-closed : TcpTransportState -> Boolean
   net-io-conn-closed (ts) = when ((ts.session).conn).state
     is TcpClosed -> True
@@ -97,6 +118,50 @@ Section: Listen and Accept
       when (ts1.session).conn.state
        is TcpEstablished -> ts1
        is otherwise -> net-io-accept ts1 (tries + 1)
+    end
+   end
+
+Section: Resolve The Next Hop
+
+ `net-process-arp` learns only from a reply addressed to us (NetworkStack,
+ Damian's ruling of 2026-08-19), so something has to ASK. This is that
+ something: it queues an ARP request for the address `resolve-dst-mac` will
+ look up, flushes it, and polls until the cache holds the answer or the fuel
+ runs out. A caller that skips it is not broken -- `resolve-dst-mac` falls back
+ to broadcast, which a switch delivers -- it is merely shouting.
+
+ THE LOOP IS ONE SELF TAIL CALL and the re-solicit is a branch inside it
+ rather than a second function, for the reason the chapter head gives: a
+ mutually recursive pair here would leave frames on a stack with no guard
+ page. The request goes out once per tick and not once per poll, because a
+ poll is nanoseconds and a broadcast is a frame every host on the segment has
+ to look at.
+
+ It answers the transport unchanged when the fuel runs out. That is
+ deliberate: an unresolved hop is not a failure to connect, it is a caller
+ that will broadcast, and the caller finds out from `net-arp-known` if it
+ cares.
+
+  net-io-resolve : TcpTransportState, List Integer -> [Network.Read, Network.Write] TcpTransportState
+  net-io-resolve (ts) (target) = net-io-resolve-hop ts target 0 net-io-tick-interval
+
+  net-io-resolve-hop : TcpTransportState, List Integer, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
+  net-io-resolve-hop (ts) (target) (tries) (since) =
+   if net-arp-known (ts.session) target then ts
+   else if tries > net-io-max-polls then ts
+   else if since >= net-io-tick-interval then act
+     ts1 <- flush-transport-outbox (transport-set-session ts (net-arp-solicit (ts.session) target))
+     net-io-resolve-hop ts1 target (tries + 1) 0
+   end
+   else let hp = __heap-save
+   in act
+    frame <- net-driver-recv-frame
+    if list-length frame == 0 then let restored = __heap-restore hp
+      in net-io-resolve-hop ts target (tries + 1) (since + 1)
+    else let r = net-process-frame (ts.session) frame
+    in act
+      ts1 <- flush-transport-outbox (transport-set-session ts (r.session))
+      net-io-resolve-hop ts1 target (tries + 1) (since + 1)
     end
    end
 
@@ -152,7 +217,7 @@ Section: Send
 
   net-io-send-drain : TcpTransportState, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-drain (ts) (tries) (since) =
-   if tries > net-io-max-polls then ts
+   if tries > net-io-drain-polls then ts
    else if net-rexmit-full (ts.session) == False then ts
    else if net-io-conn-closed ts then ts
    else if since >= net-io-tick-interval then act

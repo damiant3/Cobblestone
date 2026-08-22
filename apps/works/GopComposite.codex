@@ -1,6 +1,8 @@
 Chapter: GopComposite
   cites Foreword chapter MathLib
   cites Works chapter GopDraw
+  cites Works chapter GopIcon
+  cites Works chapter GopFont
   cites UI chapter Widget
   cites UI chapter Theme
   cites UI chapter StatusBadge
@@ -70,16 +72,23 @@ Section: Decoration
   comp-fit-r : CornerStyle, Integer, Integer, Integer -> Integer
   comp-fit-r (c) (w) (h) (s) = math-min (comp-corner-r c * s) (math-min w h / 2)
 
-  comp-corner-inset : CornerStyle, Integer, Integer, Integer, Integer -> Integer
-  comp-corner-inset (c) (w) (h) (y) (s) =
+ The inset a row actually wants is not a whole number of pixels, and rounding
+ it to one is what makes a corner a staircase. `comp-corner-ins256` answers the
+ same quantity in 256ths: the integer part names the last pixel OUTSIDE the
+ shape and the fraction is how much of that pixel the shape misses, so
+ `255 - fraction` is its coverage. `math-isqrt (v * 65536)` is `sqrt v * 256`
+ to the same one-unit accuracy `math-isqrt` already has.
+
+  comp-corner-ins256 : CornerStyle, Integer, Integer, Integer, Integer -> Integer
+  comp-corner-ins256 (c) (w) (h) (y) (s) =
     let k = comp-fit-r c w h s
     in if k <= 0 then 0
     else let d = math-min y (h - 1 - y)
     in if d >= k then 0
     else when c
       is CornerSharp -> 0
-      is CornerBevel (r) -> k - d
-      is CornerRound (r) -> let dy = k - d in k - math-isqrt (k * k - dy * dy)
+      is CornerBevel (r) -> (k - d) * 256
+      is CornerRound (r) -> let dy = k - d in k * 256 - math-isqrt ((k * k - dy * dy) * 65536)
 
 Section: The Clip
 
@@ -124,16 +133,40 @@ Section: The Clip
       else gop-put base stride x y (comp-lerp a b (x - bx) bw)
     in comp-row-h base stride clip bx bw y (x + 1) xend a b
 
+ A row with no corner takes the old path exactly: one span, no reads. Only the
+ rows a corner actually cuts pay for the two boundary pixels, so a radius of 6
+ at scale 2 costs twenty-four blended pixels for a whole box however tall it is.
+
+  comp-blend-px : Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer -> Integer
+  comp-blend-px (base) (stride) (clip) (x) (y) (c) (a) =
+    if a <= 0 then 0
+    else if x < clip.lr-x then 0
+    else if x >= clip.lr-x + clip.lr-w then 0
+    else if y < clip.lr-y then 0
+    else if y >= clip.lr-y + clip.lr-h then 0
+    else if a >= 255 then gop-put base stride x y c
+    else gop-put base stride x y (comp-lerp (gop-get base stride x y) c a 256)
+
   comp-rows : Integer, Integer, LayoutRect, LayoutRect, CornerStyle, Integer, Integer, Boolean, Boolean, Integer, Integer -> Integer
   comp-rows (base) (stride) (clip) (r) (cs) (c0) (c1) (grad) (horiz) (y) (s) =
     if y >= r.lr-h then 0
-    else let ins = comp-corner-inset cs (r.lr-w) (r.lr-h) y s
+    else let ins256 = comp-corner-ins256 cs (r.lr-w) (r.lr-h) y s
+    in let aa = ins256 > 0
+    in let ip = ins256 / 256
+    in let cov = 255 - (ins256 - ip * 256)
+    in let ins = if aa then ip + 1 else 0
     in let w = box-clamp0 (r.lr-w - 2 * ins)
     in let x = r.lr-x + ins
     in let flat = if grad then comp-lerp c0 c1 y (r.lr-h) else c0
     in let row = r.lr-y + y
     in let inside = row >= clip.lr-y & row < clip.lr-y + clip.lr-h
     in let one = if w <= 0 then 0 else if inside == False then 0 else if grad & horiz then comp-row-h base stride clip (r.lr-x) (r.lr-w) row x (x + w) c0 c1 else comp-fill base stride clip x row w 1 flat
+    in let lx = r.lr-x + ip
+    in let rx = r.lr-x + r.lr-w - 1 - ip
+    in let lc = if grad & horiz then comp-lerp c0 c1 (lx - r.lr-x) (r.lr-w) else flat
+    in let rc = if grad & horiz then comp-lerp c0 c1 (rx - r.lr-x) (r.lr-w) else flat
+    in let el = if aa == False then 0 else if inside == False then 0 else comp-blend-px base stride clip lx row lc cov
+    in let er = if aa == False then 0 else if inside == False then 0 else if rx <= lx then 0 else comp-blend-px base stride clip rx row rc cov
     in comp-rows base stride clip r cs c0 c1 grad horiz (y + 1) s
 
   comp-border-box : LayoutRect, WidgetStyle -> LayoutRect
@@ -152,12 +185,56 @@ Section: The Clip
     in let horiz = on & (g.gr-vertical == False)
     in comp-rows base stride clip r ((st.ws-border).bdr-corner) c0 c1 on horiz 0 s
 
+ `sh-blur` has been carried through `Theme`, the desk's `dk-shade` and the
+ Appearance toggle since they were written, and nothing read it: a shadow was
+ one offset opaque rectangle. It is a ramp now. Layers are drawn outermost
+ first, each one device pixel further out than the last and each at the same
+ alpha, so the blends accumulate densely against the box and thin to a single
+ layer at the edge.
+
+ The interior is skipped rather than blended and overpainted. `comp-box` fills
+ the widget on the next line, so every pixel inside its rectangle is about to
+ be replaced; excluding it is what keeps the cost to the visible band instead
+ of one full box per layer.
+
+  comp-blend-run : Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer -> Integer
+  comp-blend-run (base) (stride) (clip) (x) (xend) (y) (c) (a) =
+    if x >= xend then 0
+    else let p = comp-blend-px base stride clip x y c a
+    in comp-blend-run base stride clip (x + 1) xend y c a
+
+  comp-shadow-row : Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, LayoutRect -> Integer
+  comp-shadow-row (base) (stride) (clip) (x0) (x1) (y) (c) (a) (ex) =
+    if y < ex.lr-y then comp-blend-run base stride clip x0 x1 y c a
+    else if y >= ex.lr-y + ex.lr-h then comp-blend-run base stride clip x0 x1 y c a
+    else let l = comp-blend-run base stride clip x0 (math-min x1 (ex.lr-x)) y c a
+    in comp-blend-run base stride clip (math-max x0 (ex.lr-x + ex.lr-w)) x1 y c a
+
+  comp-shadow-layer : Integer, Integer, LayoutRect, LayoutRect, CornerStyle, Integer, Integer, Integer, LayoutRect, Integer -> Integer
+  comp-shadow-layer (base) (stride) (clip) (r) (cs) (c) (a) (s) (ex) (y) =
+    if y >= r.lr-h then 0
+    else let ins = comp-corner-ins256 cs (r.lr-w) (r.lr-h) y s / 256
+    in let one = comp-shadow-row base stride clip (r.lr-x + ins) (r.lr-x + r.lr-w - ins) (r.lr-y + y) c a ex
+    in comp-shadow-layer base stride clip r cs c a s ex (y + 1)
+
+  comp-grow : LayoutRect, Integer -> LayoutRect
+  comp-grow (r) (k) = layout-rect (r.lr-x - k) (r.lr-y - k) (r.lr-w + 2 * k) (r.lr-h + 2 * k)
+
+  comp-shadow-stack : Integer, Integer, LayoutRect, LayoutRect, CornerStyle, Integer, Integer, Integer, LayoutRect, Integer -> Integer
+  comp-shadow-stack (base) (stride) (clip) (sr) (cs) (c) (a) (s) (ex) (k) =
+    if k < 0 then 0
+    else let one = comp-shadow-layer base stride clip (comp-grow sr k) cs c a s ex 0
+    in comp-shadow-stack base stride clip sr cs c a s ex (k - 1)
+
   comp-shadow : Integer, Integer, LayoutRect, LayoutRect, WidgetStyle, Integer -> Integer
   comp-shadow (base) (stride) (clip) (r) (st) (s) =
     let sh = st.ws-shadow
     in if sh.sh-enabled == False then 0
     else let sr = layout-rect (r.lr-x + sh.sh-offset-x * s) (r.lr-y + sh.sh-offset-y * s) (r.lr-w) (r.lr-h)
-    in comp-rows base stride clip sr ((st.ws-border).bdr-corner) (sh.sh-color) (sh.sh-color) False False 0 s
+    in let cs = (st.ws-border).bdr-corner
+    in let k = sh.sh-blur * s
+    in if k <= 0 then comp-rows base stride clip sr cs (sh.sh-color) (sh.sh-color) False False 0 s
+    else comp-shadow-stack base stride clip sr cs (sh.sh-color) (255 / (k + 1)) s r k
 
  The sides stop short of the corner radius at each end, which is what makes a
  square outline read as a rounded one without tracing the arc a second time.
@@ -236,15 +313,102 @@ Section: Node Drawing
  vanishing rather than being cut, which the desk goldens will show if it ever
  happens to one.
 
-  comp-text : Integer, Integer, LayoutRect, CbfFont, LayoutRect, Text, Integer, Integer -> Integer
-  comp-text (base) (stride) (clip) (font) (c) (t) (fg) (s) =
-    let gh = comp-glyph-h * s
-    in let dy = if c.lr-h > gh then (c.lr-h - gh) / 2 else 0
+ The loaded typeface wins when there is one, which is the same choice
+ `desk-line` makes for the desk's hand-drawn text. It was made in one place
+ and not the other, so a stick carrying a face rendered its prose
+ proportional and every label, button and title beside it as the bitmap
+ grid; the widget layer was never handed the face at all.
+
+ The glyph height comes from the FACE and not from `comp-glyph-h * s` on that
+ path. The two agree today because `desk-font` loads at exactly that ppem,
+ but reading it off the handle keeps this correct if a caller ever loads at
+ another size, and centring by the wrong height is the kind of error that
+ looks like a layout bug three files away.
+
+ `gbf-put-text` is given the clip's bottom as its buffer height, so the
+ TrueType path carries a row bound that `gop-draw-text` does not have. The
+ all-or-nothing test above still applies to both.
+
+ CENTRING PUTS THE CAP BAND IN THE MIDDLE, NOT THE CELL. Halving `gf-gh` centres
+ the glyph BOUNDING BOX, and a bounding box is not what a reader sees: it spans
+ the tallest ascender to the deepest descender, so for cmunss it is 2591 units
+ against a 2048 em, 126 per cent. Centring it sat the capitals 8.5 device pixels
+ low in a 40 pixel button, measured 2026-08-20, and a label with no descender --
+ which is most of them -- looked wrong by that whole amount. The band a reader
+ centres on is `gf-asc - gf-cap` to `gf-asc`, so that band is what this centres,
+ and the descender is allowed to hang below it the way type does on paper.
+
+ `dy` is often NEGATIVE and that is correct rather than a bug to clamp away: a
+ cell taller than its content box must start above it. The clip tests below are
+ what keep that safe, and moving the cell UP makes `ty + gh` smaller, so this
+ refuses strictly less often than centring the box did.
+
+ The BITMAP path keeps the old arithmetic exactly. `comp-glyph-h` really is the
+ cell AND the cap band for that face, so halving it is right there.
+
+ THE PROPORTIONAL PATH MEASURES BEFORE IT DRAWS, which is what lets the
+ guarantee this section rests on survive a face whose glyphs are not all one
+ width. `comp-render` may clip safely because nothing painted here lands
+ outside the clip; with a fixed cell that was arithmetic, and with real
+ advances it has to be a measurement. `comp-fit-px` answers the longest prefix
+ that fits the box, so the string handed to the primitive is bounded on a
+ GLYPH boundary before a pixel is written.
+
+ `gfont-text-clip`'s right edge is still passed and is deliberately not
+ removed. It is now a second bound rather than the only one: measuring decides
+ what to draw and clipping catches anything the measurement did not (L-FALLBACK
+ -- a working path is not disabled in the change that introduces its
+ replacement).
+
+ The BITMAP path is unchanged. Its cell really is `comp-cell-w` wide, so
+ `comp-cols` and `comp-fit` are correct for it and wrong only for the face.
+
+  comp-text : Integer, Integer, LayoutRect, CbfFont, GopFont, LayoutRect, Text, Integer, Integer -> Integer
+  comp-text (base) (stride) (clip) (font) (tf) (c) (t) (fg) (s) =
+    let gh = if tf.gf-ok then tf.gf-gh else comp-glyph-h * s
+    in let dy = if tf.gf-ok then (c.lr-h - tf.gf-cap) / 2 - (tf.gf-asc - tf.gf-cap)
+      else if c.lr-h > gh then (c.lr-h - gh) / 2 else 0
     in let ty = c.lr-y + dy
     in if ty < clip.lr-y then 0
     else if ty + gh > clip.lr-y + clip.lr-h then 0
     else if c.lr-x < clip.lr-x then 0
-    else gop-draw-text base stride font (c.lr-x) ty t fg s 0
+    else if tf.gf-ok then
+      let cr = c.lr-x + c.lr-w
+      in let pr = clip.lr-x + clip.lr-w
+      in let right = if cr < pr then cr else pr
+      in let shown = comp-fit-px tf t (right - c.lr-x)
+      in gfont-text-clip tf base stride (clip.lr-y + clip.lr-h) right (c.lr-x) ty shown fg
+    else gop-draw-text base stride font (c.lr-x) ty (comp-fit t (comp-cols c s)) fg s 0
+
+ THE CALLER NO LONGER DECIDES WHAT FITS. Every call site used to hand this
+ `comp-fit t (comp-cols c s)`, chopping the string to `box width / 8s`
+ CHARACTERS before the face was consulted, so a narrow string was cut early on
+ the proportional path whatever `comp-fit-px` then measured. The bitmap branch
+ keeps that arithmetic exactly, because for a cell that really is
+ `comp-cell-w` wide it is correct. One function now answers "what fits", which
+ is what lets it be the same answer the draw is bounded by.
+
+ The whole string is measured first and returned untouched when it fits, which
+ is the common case and costs one walk of the advance table and no allocation.
+ Only an overflow searches, and it searches by halving rather than stepping so
+ the substrings it builds are bounded by log2 of the length: a 32-character
+ label that does not fit allocates 5, not 32. A step-by-one search reads more
+ simply and allocates one string per character on every repaint, into an arena
+ with no collector, which is the shape R-COST exists to catch.
+
+  comp-fit-px : GopFont, Text, Integer -> Text
+  comp-fit-px (tf) (t) (avail) =
+    if avail <= 0 then ""
+    else if gfont-text-w tf t <= avail then t
+    else comp-fit-px-loop tf t avail 0 (text-length t - 1)
+
+  comp-fit-px-loop : GopFont, Text, Integer, Integer, Integer -> Text
+  comp-fit-px-loop (tf) (t) (avail) (lo) (hi) =
+    if hi <= lo then substring t 0 lo
+    else let mid = (lo + hi + 1) / 2
+    in if gfont-text-w tf (substring t 0 mid) <= avail
+      then comp-fit-px-loop tf t avail mid hi
+      else comp-fit-px-loop tf t avail lo (mid - 1)
 
   comp-cols : LayoutRect, Integer -> Integer
   comp-cols (c) (s) = c.lr-w / (comp-cell-w * s)
@@ -262,12 +426,26 @@ Section: Node Drawing
     else if text-length t <= cols then t
     else substring t 0 cols
 
-  comp-input : Integer, Integer, LayoutRect, CbfFont, LayoutRect, LayoutRect, WidgetStyle, Text, Integer, Integer, Integer -> Integer
-  comp-input (base) (stride) (clip) (font) (b) (c) (st) (t) (cursor) (fg) (s) =
+ THE CARET IS PLACED BY THE SAME METRIC THAT DREW THE TEXT, which is the only
+ way it lands between the right two glyphs. Its x is the measured width of the
+ first `cursor` characters, not `cursor` times an assumed cell: on a
+ proportional face those disagree by more with every character typed, so a
+ caret set by multiplication drifts away from the text it is supposed to sit
+ in. Its height and its top are the CAP BAND -- `gf-cap` at
+ `(c.lr-h - gf-cap) / 2` -- which is exactly where `comp-text` puts the band,
+ so the two cannot come apart.
+
+ The bitmap branch keeps the multiplication and `comp-glyph-h`, because for
+ that face the cell really is `comp-cell-w` wide and the two agree.
+
+  comp-input : Integer, Integer, LayoutRect, CbfFont, GopFont, LayoutRect, LayoutRect, WidgetStyle, Text, Integer, Integer, Integer -> Integer
+  comp-input (base) (stride) (clip) (font) (tf) (b) (c) (st) (t) (cursor) (fg) (s) =
     let fill = comp-box base stride clip b st (st.ws-bg) s
-    in let txt = comp-text base stride clip font c (comp-fit t (comp-cols c s)) fg s
-    in let gh = comp-glyph-h * s
-    in let want = c.lr-x + cursor * comp-cell-w * s
+    in let txt = comp-text base stride clip font tf c t fg s
+    in let n = if cursor < 0 then 0 else if cursor > text-length t then text-length t else cursor
+    in let gh = if tf.gf-ok then tf.gf-cap else comp-glyph-h * s
+    in let want = if tf.gf-ok then c.lr-x + gfont-text-w tf (substring t 0 n)
+      else c.lr-x + cursor * comp-cell-w * s
     in let hi = c.lr-x + c.lr-w - 1
     in let cx = if want > hi then hi else want
     in let ch = if c.lr-h < gh then c.lr-h else gh
@@ -275,10 +453,77 @@ Section: Node Drawing
     in if ch <= 0 | cx < c.lr-x then 0
     else comp-fill base stride clip cx (c.lr-y + dy) s ch fg
 
+ `StatusBadge` has three custom tags and this chapter answered none of them,
+ so every one fell to the box branch below. `status-dot` and
+ `status-dot-filled` painted the SAME rectangle, which is the whole content
+ of the distinction between them, and `BsIcon` did not reach here at all
+ because it rendered as a label carrying the icon's NAME as text.
+
+ A dot is a rounded rectangle whose radius is half its side, which
+ `comp-rows` and `comp-corner-ins256` already draw; there is no circle
+ primitive here and this needs none. The hollow one is the same shape
+ painted again inset in the background colour, which is a ring without a
+ second path to maintain. The rect handed to `comp-rows` is already a DEVICE
+ rectangle, so the scale it is given is 1: the radius must not be multiplied
+ a second time.
+
+ These take the node's BORDER box and not its content box, and the size in
+ the badge is why. `badge-widget` emits its dots at 10 by 10 logical, and at
+ that size the style's padding leaves a content box with nothing in it, so a
+ dot measured off the content box drew ZERO pixels while a 20 by 20 one
+ drew fine. Padding exists to inset TEXT from an edge; a picture that fills
+ its node has nothing to inset, and the node's box is the picture.
+
+  comp-dot : Integer, Integer, LayoutRect, LayoutRect, Integer, Integer, Boolean -> Integer
+  comp-dot (base) (stride) (clip) (c) (fg) (bg) (filled) =
+    let d = math-min (c.lr-w) (c.lr-h)
+    in if d <= 0 then 0
+    else let x = c.lr-x + (c.lr-w - d) / 2
+    in let y = c.lr-y + (c.lr-h - d) / 2
+    in let outer = comp-rows base stride clip (layout-rect x y d d) (CornerRound (d / 2)) fg fg False False 0 1
+    in if filled then outer
+    else let t = if d >= 6 then d / 4 else 1
+    in let id = d - 2 * t
+    in if id <= 0 then outer
+    else comp-rows base stride clip (layout-rect (x + t) (y + t) id id) (CornerRound (id / 2)) bg bg False False 0 1
+
+ An icon is all-or-nothing against the clip, exactly as text is and for the
+ same reason: `gicon-blit` bounds its columns against the stride but knows
+ nothing of a clip rectangle, so a partly visible icon cannot be half drawn
+ without a second bounded primitive. Dropping it keeps the guarantee this
+ section exists for.
+
+ The icon scales to the box it is given rather than to the layout scale,
+ because a badge's box is 16 by 16 LOGICAL and the artwork is 8 wide: the
+ scale is the room divided by the artwork, and a box under 8 device pixels
+ still draws at 1 rather than vanishing.
+
+  comp-icon-tag : Text -> Boolean
+  comp-icon-tag (tag) =
+    if text-length tag <= 5 then False else substring tag 0 5 == "icon:"
+
+  comp-icon : Integer, Integer, LayoutRect, LayoutRect, Text, Integer -> Integer
+  comp-icon (base) (stride) (clip) (c) (tag) (fg) =
+    let name = substring tag 5 (text-length tag - 5)
+    in let d = math-min (c.lr-w) (c.lr-h)
+    in let sc = if d < 8 then 1 else d / 8
+    in let sz = 8 * sc
+    in let x = c.lr-x + (c.lr-w - sz) / 2
+    in let y = c.lr-y + (c.lr-h - sz) / 2
+    in if x < clip.lr-x then 0
+    else if y < clip.lr-y then 0
+    else if x + sz > clip.lr-x + clip.lr-w then 0
+    else if y + sz > clip.lr-y + clip.lr-h then 0
+    else gicon-blit base stride (gicon-named name) x y sc fg
+
   comp-custom : Integer, Integer, LayoutRect, LayoutRect, LayoutRect, WidgetStyle, Text, Integer, Integer -> Integer
   comp-custom (base) (stride) (clip) (b) (c) (st) (tag) (fg) (s) =
-    if tag == "event-dot"
+    if tag == wk-scroll-view-tag then 0
+    else if tag == "event-dot"
     then comp-fill base stride clip (c.lr-x + c.lr-w / 2 - 3 * s) (c.lr-y + c.lr-h / 2 - 3 * s) (6 * s) (6 * s) fg
+    else if tag == "status-dot" then comp-dot base stride clip (comp-mul-rect b s) fg (st.ws-bg) False
+    else if tag == "status-dot-filled" then comp-dot base stride clip (comp-mul-rect b s) fg (st.ws-bg) True
+    else if comp-icon-tag tag then comp-icon base stride clip (comp-mul-rect b s) tag fg
     else comp-box base stride clip b st (st.ws-bg) s
 
  A node's TONE overrides the style's foreground: `tone-success` paints a
@@ -292,8 +537,8 @@ Section: Node Drawing
   comp-fg : Theme, WidgetNode, WidgetStyle -> Integer
   comp-fg (th) (node) (st) = theme-tone-fg th (node.wn-tone) (st.ws-fg)
 
-  comp-draw-node : Integer, Integer, LayoutRect, CbfFont, WidgetNode, Theme, Integer -> Integer
-  comp-draw-node (base) (stride) (clip) (font) (node) (th) (s) =
+  comp-draw-node : Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer -> Integer
+  comp-draw-node (base) (stride) (clip) (font) (tf) (node) (th) (s) =
     let st = widget-resolve-style node th
     in let b = node.wn-bounds
     in let c = comp-mul-rect (box-content-from-style b st) s
@@ -301,16 +546,50 @@ Section: Node Drawing
     in when node.wn-kind
       is WkPanel -> comp-box base stride clip b st (st.ws-bg) s
       is WkSeparator -> comp-box base stride clip b st (st.ws-fg) s
-      is WkLabel (t) -> comp-text base stride clip font c (comp-fit t (comp-cols c s)) fg s
+      is WkLabel (t) -> comp-text base stride clip font tf c t fg s
       is WkButton (t) ->
         let bg = comp-box base stride clip b st (st.ws-bg) s
-        in comp-text base stride clip font c (comp-fit t (comp-cols c s)) fg s
+        in comp-text base stride clip font tf c t fg s
       is WkGauge (v) (mx) ->
         let bg = comp-box base stride clip b st (st.ws-bg) s
         in comp-gauge-fill base stride clip c v mx fg
-      is WkInput (t) (cur) -> comp-input base stride clip font b c st t cur fg s
+      is WkInput (t) (cur) -> comp-input base stride clip font tf b c st t cur fg s
       is WkCustom (tag) -> comp-custom base stride clip b c st tag fg s
       is otherwise -> 0
+
+Section: Translate
+
+ Moving a laid-out subtree is what scrolling a pane of arbitrary content is,
+ and it is only safe now that the walk clips: content pushed out of the box
+ used to be painted anyway, over whatever was next and past the end of the
+ framebuffer.
+
+ `scroll-slice` answers the other shape, a list of uniform rows windowed by
+ index, and a page is labels and separators of differing heights with no row
+ height to give it.
+
+ The bounds on a laid tree are LOGICAL, so the shift is logical too: a caller
+ holding a device offset divides by the same scale it renders at.
+
+ This stores in place rather than rebuilding the way `widget-set-bounds` does,
+ and the reason is that a rebuild would have to rebuild every ancestor as well
+ to repoint their children. `widget-arrange` hands back a tree whose nodes and
+ child lists are freshly allocated and shared with nothing, and this runs on
+ that tree between the layout and the walk, so the only cost is one rectangle
+ per node instead of a second copy of the subtree.
+
+  comp-translate : WidgetNode, Integer, Integer -> WidgetNode
+  comp-translate (n) (dx) (dy) =
+    let b = n.wn-bounds
+    in let moved = __record-set n "wn-bounds" (layout-rect (b.lr-x + dx) (b.lr-y + dy) (b.lr-w) (b.lr-h))
+    in let k = comp-translate-kids (n.wn-children) dx dy 0
+    in moved
+
+  comp-translate-kids : List WidgetNode, Integer, Integer, Integer -> Integer
+  comp-translate-kids (ks) (dx) (dy) (i) =
+    if i >= list-length ks then 0
+    else let t = comp-translate (list-at ks i) dx dy
+    in comp-translate-kids ks dx dy (i + 1)
 
 Section: Tree Walk
 
@@ -319,16 +598,40 @@ Section: Tree Walk
  rather than surface it: the tree still lays out wrong and the goldens would
  stop being able to say so. The bound is the box the render was given, once.
 
-  comp-walk : Integer, Integer, LayoutRect, CbfFont, WidgetNode, Theme, Integer -> Integer
-  comp-walk (base) (stride) (clip) (font) (node) (th) (s) =
-    let d = comp-draw-node base stride clip font node th s
-    in comp-walk-kids base stride clip font (node.wn-children) th 0 s
+  comp-walk : Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer -> Integer
+  comp-walk (base) (stride) (clip) (font) (tf) (node) (th) (s) =
+    let d = comp-draw-node base stride clip font tf node th s
+    in comp-walk-kids base stride clip font tf (node.wn-children) th 0 s
 
-  comp-walk-kids : Integer, Integer, LayoutRect, CbfFont, List WidgetNode, Theme, Integer, Integer -> Integer
-  comp-walk-kids (base) (stride) (clip) (font) (kids) (th) (i) (s) =
+  comp-walk-kids : Integer, Integer, LayoutRect, CbfFont, GopFont, List WidgetNode, Theme, Integer, Integer -> Integer
+  comp-walk-kids (base) (stride) (clip) (font) (tf) (kids) (th) (i) (s) =
     if i >= list-length kids then 0
-    else let w = comp-walk base stride clip font (list-at kids i) th s
-    in comp-walk-kids base stride clip font kids th (i + 1) s
+    else let w = comp-walk base stride clip font tf (list-at kids i) th s
+    in comp-walk-kids base stride clip font tf kids th (i + 1) s
+
+ A scrolled subtree is painted by a SECOND walk under a tighter clip, so the
+ first walk has to leave it alone. Skipping is by id because a node is a record
+ and there is no identity comparison to ask with.
+
+  comp-walk-except : Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer, Text -> Integer
+  comp-walk-except (base) (stride) (clip) (font) (tf) (node) (th) (s) (skip) =
+    if node.wn-id == skip then 0
+    else let d = comp-draw-node base stride clip font tf node th s
+    in comp-walk-except-kids base stride clip font tf (node.wn-children) th 0 s skip
+
+  comp-walk-except-kids : Integer, Integer, LayoutRect, CbfFont, GopFont, List WidgetNode, Theme, Integer, Integer, Text -> Integer
+  comp-walk-except-kids (base) (stride) (clip) (font) (tf) (kids) (th) (i) (s) (skip) =
+    if i >= list-length kids then 0
+    else let w = comp-walk-except base stride clip font tf (list-at kids i) th s skip
+    in comp-walk-except-kids base stride clip font tf kids th (i + 1) s skip
+
+  comp-clip : LayoutRect, LayoutRect -> LayoutRect
+  comp-clip (a) (b) =
+    let x0 = math-max (a.lr-x) (b.lr-x)
+    in let y0 = math-max (a.lr-y) (b.lr-y)
+    in let x1 = math-min (a.lr-x + a.lr-w) (b.lr-x + b.lr-w)
+    in let y1 = math-min (a.lr-y + a.lr-h) (b.lr-y + b.lr-h)
+    in layout-rect x0 y0 (box-clamp0 (x1 - x0)) (box-clamp0 (y1 - y0))
 
 Section: Render
 
@@ -353,8 +656,8 @@ Section: Render
  caller that hands `w` and `h` smaller than the framebuffer, which is what the
  desk does for a pane, is bounded to the pane and not merely to the screen.
 
-  comp-render : Integer, Integer, CbfFont, WidgetNode, Theme, Integer, Integer, Integer -> WidgetNode
-  comp-render (base) (stride) (font) (root) (th) (w) (h) (s) =
+  comp-render : Integer, Integer, CbfFont, GopFont, WidgetNode, Theme, Integer, Integer, Integer -> WidgetNode
+  comp-render (base) (stride) (font) (tf) (root) (th) (w) (h) (s) =
     let laid = widget-layout root th (layout-rect 0 0 (w / s) (h / s))
-    in let d = comp-walk base stride (layout-rect 0 0 w h) font laid th s
+    in let d = comp-walk base stride (layout-rect 0 0 w h) font tf laid th s
     in laid

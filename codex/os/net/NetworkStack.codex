@@ -511,15 +511,49 @@ Section: Inbound Frame Processing
     else if et == eth-type-ipv4 then net-process-ip sess (eth-payload frame)
     else NetResult { session = sess, output = "unknown ethertype", data = [] }
 
+ WE LEARN ONLY FROM A REPLY ADDRESSED TO US. Damian ruled it 2026-08-19
+ (CurrentPlan Decisions 2): learning from any frame on the wire is cache
+ poisoning by construction. Until 2026-08-20 this added the sender of EVERY
+ arriving ARP frame, so any host on the segment could put an entry in, and a
+ request aimed at somebody else entirely still taught us -- `arp-reply-test`
+ pinned that case and read `arp-learned` for it.
+
+ WHAT IT COSTS IS NOTHING, and that is measurable rather than argued.
+ `resolve-dst-mac` is the only consumer of this cache in the tree and it looks
+ up ONE address, `sess.gateway-ip`. Every other entry the old code learned was
+ never read by anything; the flood arm's 64 survivors were pure liability.
+
+ A REQUEST AIMED AT US STILL GETS ITS REPLY and still does not teach us. The
+ reply is addressed to `pkt.sender-mac` out of the frame we just parsed, so
+ answering never needed the cache, and RFC 826's licence to record the sender
+ there is exactly the licence a forged request would use.
+
+ The third arm is `arp-ignored`: not ours to answer and not ours to learn from.
+ It is a distinct word rather than a silent pass because a stack that says
+ nothing about a frame it dropped cannot be told from one that never saw it.
+
   net-process-arp : NetSession, List Integer -> NetResult
   net-process-arp (sess) (payload) =
     let pkt = arp-parse payload
-    in let new-arp = arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)
-    in let s1 = set-arp sess new-arp
     in if (pkt.op == arp-op-request) & ip-equal (pkt.target-ip) (sess.local-ip)
     then let reply = arp-build-reply (sess.local-mac) (sess.local-ip) (pkt.sender-mac) (pkt.sender-ip) (sess.local-mac)
-    in NetResult { session = set-outbox s1 ((s1.outbox) & [reply]), output = "arp-replied", data = [] }
-    else NetResult { session = s1, output = "arp-learned", data = [] }
+    in NetResult { session = set-outbox sess ((sess.outbox) & [reply]), output = "arp-replied", data = [] }
+    else if (pkt.op == arp-op-reply) & ip-equal (pkt.target-ip) (sess.local-ip)
+    then NetResult { session = set-arp sess (arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)), output = "arp-learned", data = [] }
+    else NetResult { session = sess, output = "arp-ignored", data = [] }
+
+ The other half of the ruling, and without it "solicited" is a word with no
+ referent: this stack had no way to ASK. `resolve-dst-mac` broadcast until
+ something happened to teach it, which is why the old learn-from-anything was
+ load-bearing for `cdx-serve`. Queue the request and the reply that comes back
+ is one we solicited.
+
+  net-arp-solicit : NetSession, List Integer -> NetSession
+  net-arp-solicit (sess) (target) =
+    set-outbox sess ((sess.outbox) & [arp-build-request (sess.local-mac) (sess.local-ip) target])
+
+  net-arp-known : NetSession, List Integer -> Boolean
+  net-arp-known (sess) (target) = list-length (arp-cache-lookup (sess.arp) target) == 6
 
  THIS CHECK WAS ABSENT UNTIL 2026-07-20 AND ITS ABSENCE WAS INVISIBLE, because
  nothing in the tree had ever run two connections at once. `net-receive-segment`

@@ -1,0 +1,344 @@
+Chapter: DiagAsde
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Kernel chapter Pci
+  cites Kernel chapter E1000e
+  cites Dev chapter NicAsde
+  cites Works chapter GopDraw
+  cites Diag chapter DiagStage
+
+ `build/boot/diag/AsdeStageProbe.codex` as a stage: finding 4, the last of
+ Track B's metal questions and the riskiest thing in the ladder, so it runs
+ LAST.
+
+ 82583V CTRL bit 5: "When set to 1b, the MAC ignores the speed indicated by
+ the PHY ... This bit must be set to 0b in the 82583V." Whether the part on
+ the desk behaves that way is the question; three flights have failed to
+ answer it and each failure decided a piece of this ordering.
+
+ WHY THE ARMS RUN BEFORE THE RESET. The 2026-08-11 flight died INSIDE
+ `e1000-reset`, upstream of both arms the image existed to compare, so ASDE
+ came back untested rather than disproved. Firmware hands this part over with
+ CTRL.SLU already set (CTRL=0x180240 on that flight, SLU is bit 6), and
+ `na-bring-up-after` is the whole of the bring-up except the reset, so both
+ arms can be compared without pulsing RST at all. They run first. The reset
+ rides last as ONE row, the control against 08-13: the five-way split that
+ named which MMIO operation wedged has been answered twice, a warm reset
+ completes on this part, and the staged version is in the depot history if a
+ wedge ever comes back.
+
+ WHY ASDE=1 RUNS FIRST. The 2026-08-13 flight returned identical values from
+ both arms and could not say why, because three explanations survived it:
+ ASDE does nothing here, the ASDE write does not stick, or the second arm
+ inherited a link the first had already established. Running ASDE=1 first,
+ from the state firmware left, kills the third; reading CTRL back after each
+ arm kills the second.
+
+ WHY A ROW GOES DOWN BEFORE THE TOUCH THAT FOLLOWS IT, and this is the whole
+ instrument rather than an ordering preference. The 2026-08-11 stick came
+ back with NOTHING written, and two boots have established that a wedge
+ leaves the glass intact (HardwareSitting 2026-08-05: rows painted, machine
+ stalled, rows still readable). On that box the glass is the only bank that
+ has ever worked, so the last line standing in this stage's slot names the
+ last thing that completed and the first thing that did not.
+
+ WHAT THE LIFT COST, said plainly because it is a real loss. The probe owned
+ the whole screen and painted about a dozen rows; a ladder stage owns a slot
+ a few lines tall. The progressive lines roll within that slot and the slot
+ is cleared when they wrap, so the glass carries the LAST few rather than all
+ of them. Everything is in the bank as well, for the boxes where a bank
+ works. Last-step-standing survives; the full transcript on glass does not.
+
+ THE RUN ORDER IS NOT THE STATE PRECEDENCE and the two must not be confused.
+ The SLU discriminator runs AFTER the arms, because the run order is decided
+ by wedge risk. Its answer DOMINATES them: if CTRL is read-only to us then
+ nothing we wrote was written and both arms are describing a register we
+ never changed.
+
+ We say:
+
+Section: States
+
+  dasd-states : List Text = ["differs", "same", "asde-stuck", "ctrl-ro", "no-link", "no-part", "rejected", "bar-bad"]
+
+Section: The Slot
+
+ Rolling within the stage's own slot: each line takes the next row, and the
+ slot is cleared when the count wraps, so the newest line is never painted
+ over an older one that is still readable beside it. Serial carries the same
+ line for the bed, where a transcript is free and a photograph is not.
+
+  dasd-slot-rows : DiagCtx -> Integer
+  dasd-slot-rows (c) = (c.dc-slot-h) / (16 * (c.dc-scale))
+
+  dasd-rows : DiagCtx -> Integer
+  dasd-rows (c) =
+   let h = dasd-slot-rows c
+   in if h < 1 then 1 else h
+
+ TWO THINGS THIS GOT WRONG ON THE FIRST FLIGHT and both showed on the glass
+ at the ASUS as an orange box full of noise (red, 2026-08-20).
+
+ IT CLEARS THE ROW IT IS ABOUT TO WRITE. Clearing only when the count wrapped
+ was not enough: gop-draw-text paints glyph pixels and not a background, so
+ a shorter line drawn over a longer one left the older line's tail standing
+ beside it and the slot filled with overlapping glyphs. The ladder never hits
+ this because dg-text is always preceded by dg-clear-rows.
+
+ IT FITS THE LINE TO THE SLOT. A picture stage's slot is the right-hand third
+ (dg-text-end returns dc-w * 2 / 3 - 8), so at scale 2 on a 1920-wide
+ panel it is about forty columns, and these readings are sixty to seventy
+ characters. Painted unfitted they ran off the slot and off the panel. This is
+ dg-fit's job in the ladder and the stage needs its own, because dg-fit
+ lives in Diag.codex and measures against the row rather than the slot.
+
+  dasd-cols : DiagCtx -> Integer
+  dasd-cols (c) = ((c.dc-slot-w) - 8) / (8 * (c.dc-scale))
+
+  dasd-fit : DiagCtx, Text -> Text
+  dasd-fit (c) (s) =
+   let n = dasd-cols c
+   in if n < 4 then ""
+   else if text-length s <= n then s
+   else substring s 0 (n - 3) & "..."
+
+ ROW 0 IS THE STEP AND NOTHING ELSE EVER PAINTS THERE. Rolling every line
+ through every row made the three lines standing appear OUT OF ORDER -- the
+ bed photograph after the first fix showed row 2 holding an older line than
+ rows 0 and 1 -- so a reader at the board cannot tell which of them is the
+ last. That defeats the one property this slot exists for. A step line now
+ clears the whole slot and takes row 0, and readings roll through the rows
+ beneath it, so the top line always names the operation IN PROGRESS and the
+ lines under it are its readings.
+
+  dasd-at : DiagCtx, Integer, Text, Integer -> Integer
+  dasd-at (c) (row) (s) (col) =
+   let y = (c.dc-slot-y) + row * 16 * (c.dc-scale)
+   in let cleared = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-slot-x) y (c.dc-slot-w) (16 * (c.dc-scale)) diag-col-bg
+   in gop-draw-text (c.dc-base) (c.dc-stride) (c.dc-font) (c.dc-slot-x) y (dasd-fit c s) col (c.dc-scale) 0
+
+  dasd-paint : DiagCtx, Integer, Text, Integer -> Integer
+  dasd-paint (c) (n) (s) (col) =
+   let rows = dasd-rows c
+   in let below = if rows > 1 then rows - 1 else 1
+   in dasd-at c (if rows > 1 then 1 + int-mod n below else 0) s col
+
+  dasd-open : DiagCtx, Text -> Integer
+  dasd-open (c) (s) =
+   let wiped = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-slot-x) (c.dc-slot-y) (c.dc-slot-w) (c.dc-slot-h) diag-col-bg
+   in dasd-at c 0 s diag-col-warn
+
+ A READING GOES TO THE GLASS ONLY. The ladder already prints every bank line
+ to serial and banks it, so printing it here again puts it on the wire twice
+ and `Compare-Rows` in `diag-arm.ps1` counts the difference as serial and
+ file disagreeing -- which is what it is for.
+
+ A STEP LINE GOES TO BOTH, and it uses the ladder's live-progress convention
+ (`<stage> entering <step>`) because it is the same thing nicinit's lines
+ are: serial-only by design, skipped by the compare, and unbankable because
+ the step it names may not return. That is exactly why it exists.
+
+  dasd-step : DiagCtx, Integer, Text -> [Console] Integer
+  dasd-step (c) (n) (s) = act
+   p <- print-line-uni ("asde entering " & s)
+   dasd-open c ("-> " & s)
+  end
+
+Section: The SLU Discriminator
+
+ Every CTRL bit this probe has ever written is one that cannot report whether
+ the write took: SLU was already set by firmware, ASDE does not stick, and
+ RST self-clears, so "never written" and "written and completed" both read as
+ settled. So clear a bit that IS currently set and read it back. SLU is the
+ only one available. If SLU still reads set immediately after we cleared it,
+ CTRL is read-only to us and no link behaviour is needed to know it -- which
+ matters well beyond this stage, because RX and TX bring-up write RCTL, TCTL
+ and the ring registers, and a silent CSR write path would surface there as a
+ receive path that never receives.
+
+  dasd-clear-slu : Integer = #FFFFFFFF - e1000-ctrl-slu
+
+  dasd-slu-line : Text, Integer, Integer -> Text
+  dasd-slu-line (label) (ctrl) (status) =
+   label & " CTRL=" & show ctrl & " SLUbit=" & na-yn (bit-and ctrl e1000-ctrl-slu)
+     & " STATUS=" & show status & " LU=" & na-yn (bit-and status na-lu)
+
+  DasdSlu = record {
+    ds-writable : Boolean,
+    ds-lines : List Text
+  }
+
+  dasd-slu : DiagCtx, Integer, Integer -> [Device.Mmio, Console] DasdSlu
+  dasd-slu (c) (mmio) (n) = act
+   e0 <- dasd-step c n "slu s1 read CTRL and STATUS"
+   let c0 = e1000-read mmio e1000-reg-ctrl
+   in let s0 = e1000-read mmio e1000-reg-status
+   in let l1 = dasd-slu-line "slu s1 before" c0 s0
+   in let p1 = dasd-paint c (n + 1) l1 diag-col-dim
+   in act
+    e1 <- dasd-step c (n + 2) "slu s2 CLEAR SLU and read back"
+    let wclr = e1000-write mmio e1000-reg-ctrl (bit-and c0 dasd-clear-slu)
+    in let c1 = e1000-read mmio e1000-reg-ctrl
+    in let s1 = e1000-read mmio e1000-reg-status
+    in let took = bit-and c1 e1000-ctrl-slu == 0
+    in let l2 = dasd-slu-line "slu s2 cleared" c1 s1
+    in let p2 = dasd-paint c (n + 3) l2 (if took then diag-col-note else diag-col-bad)
+    in act
+     e2 <- dasd-step c (n + 4) "slu s3 settle 10ms"
+     let st = e1000-settle-mdio mmio
+     in let c2 = e1000-read mmio e1000-reg-ctrl
+     in let s2 = e1000-read mmio e1000-reg-status
+     in let l3 = dasd-slu-line "slu s3 after 10ms" c2 s2
+     in let p3 = dasd-paint c (n + 5) l3 diag-col-note
+     in act
+      e3 <- dasd-step c (n + 6) "slu s4 RESTORE CTRL"
+      let wr = e1000-write mmio e1000-reg-ctrl c0
+      in let st2 = e1000-settle-mdio mmio
+      in let c3 = e1000-read mmio e1000-reg-ctrl
+      in let l4 = dasd-slu-line "slu s4 restored" c3 (e1000-read mmio e1000-reg-status)
+      in let p4 = dasd-paint c (n + 7) l4 diag-col-good
+      in DasdSlu { ds-writable = took, ds-lines = [l1, l2, l3, l4] }
+     end
+    end
+   end
+  end
+
+Section: The Arms
+
+  dasd-arm-line : Text, NicAsdeArm, Integer -> Text
+  dasd-arm-line (label) (arm) (ctrl) =
+   na-line label arm & " CTRLback=" & show ctrl & " ASDEbit=" & na-yn (bit-and ctrl e1000-ctrl-asde)
+
+  dasd-arms-differ : NicAsdeArm, NicAsdeArm -> Boolean
+  dasd-arms-differ (a) (b) =
+   (a.na-status) /= (b.na-status) | (a.na-aneg) /= (b.na-aneg)
+     | (a.na-gave) /= (b.na-gave) | (a.na-phy) /= (b.na-phy)
+
+  dasd-answer : NicAsdeArm, NicAsdeArm, Integer, Boolean -> Text
+  dasd-answer (on) (off) (onctrl) (writable) =
+   "w=" & na-yn (if writable then 1 else 0)
+     & " stick=" & na-yn (bit-and onctrl e1000-ctrl-asde)
+     & " diff=" & na-yn (if dasd-arms-differ on off then 1 else 0)
+     & " on=" & show (on.na-status) & " off=" & show (off.na-status)
+     & " g1=" & na-gave-text (on.na-gave) & " g0=" & na-gave-text (off.na-gave)
+
+Section: The Stage
+
+ The reset is the control against 08-13 and it is the last thing that runs,
+ so its row is painted before it is attempted and nothing is read from it
+ that any state word depends on.
+
+ IT QUIESCES FIRST, and that is a change of 2026-08-20 made after this stage
+ WEDGED THE ASUS on its first flight, sitting on the RESET step for five
+ minutes.
+
+ THE EVIDENCE IS THE BOUND, not the story. `e1000-await-reset` is a COUNT of
+ a million MMIO reads, about a second on metal, so `e1000-reset` MUST return
+ within seconds -- 0 if the bit never clears, 1 if it does. Five minutes is
+ therefore not a slow reset. It is the reads themselves no longer returning,
+ which is a claim about the part having stopped answering MMIO at all.
+
+ THE EXPLANATION, and it is an explanation rather than a measurement:
+ `e1000-reset` does not quiesce. It masks IMC, pulses RST, waits, masks again,
+ and never writes RCTL or TCTL. On the standalone probe that was a reset of a
+ part firmware had just handed over. In the ladder, nicinit and b3 have each
+ run `e1000-init` and nicring has built live rings by the time this runs, so
+ it was pulsing RST on a receiver that was RUNNING with descriptors in flight.
+
+ THE CHANGE DOES NOT DEPEND ON THAT EXPLANATION BEING RIGHT (red's ruling).
+ Quiescing a DMA-capable part before pulsing reset is correct either way:
+ nicring already does it, and `E1000e`'s own prose says disabling the receiver
+ IS the quiesce. The hazard is recorded at `e1000-reset` itself, not only
+ here, because the convention is caller-responsible and every future caller
+ can make the same mistake.
+
+ IT IS TWO STEPS NOW, NOT ONE, and that is not the five-way split coming
+ back: it separates the operation being ADDED from the one that wedged, so a
+ box that stops inside the quiesce is told apart from one that stops inside
+ the reset. The five-way split stays retired -- it would only name which MMIO
+ stopped answering, which is what we already know.
+
+ AND A COMPLETED RESET ON THE NEXT FLIGHT IS NOT PROOF. If the next stick
+ gets past this row it is CONSISTENT with the explanation above and nothing
+ more; other things will have changed by then.
+
+  dasd-reset : DiagCtx, Integer, Integer -> [Device.Mmio, Console] Text
+  dasd-reset (c) (mmio) (n) = act
+   q <- dasd-step c n "RESET s1 quiesce, RCTL=0 TCTL=0, before pulsing RST"
+   let quiet = e1000-quiesce mmio
+   in act
+    p <- dasd-step c (n + 1) "RESET s2 warm reset, the control for 08-13"
+    let settled = e1000-reset mmio
+    in let t = na-touch mmio
+    in let l = "reset done settled=" & show settled & " CTRL=" & show (t.nt-ctrl) & " STATUS=" & show (t.nt-status)
+    in let p2 = dasd-paint c (n + 2) l diag-col-good
+    in l
+   end
+  end
+
+ EVERY LINE THAT NAMES A STEP IS PAINTED BEFORE THAT STEP RUNS, and the
+ result line after it. Painted after, a wedge leaves the PREVIOUS step's name
+ standing and the glass lies about which operation killed the box -- the same
+ off-by-one as reading a row that has not run yet, and on this box the glass
+ is the whole record. The `->` lines are the ones that carry that property;
+ the lines without it are readings of something that already returned.
+
+  dasd-run-part : DiagCtx, Integer, Integer -> [Device.Port, Device.Mmio, Console] DiagResult
+  dasd-run-part (c) (mmio) (dev-id) = act
+   let p0 = dasd-paint c 0 ("eligible mmio=" & show mmio) diag-col-note
+   in act
+    e0 <- dasd-step c 1 "touch, read-only"
+    let touch = na-touch mmio
+    in let ltouch = na-touch-line mmio touch
+    in let p1 = dasd-paint c 2 ltouch diag-col-note
+    in act
+     e1 <- dasd-step c 3 "arm ASDE=1 FIRST, no reset, from the firmware state"
+     let on = na-bring-up-after mmio dev-id True
+     in let onctrl = e1000-read mmio e1000-reg-ctrl
+     in let lon = dasd-arm-line "asde=1 first" on onctrl
+     in let p3 = dasd-paint c 4 lon diag-col-good
+     in act
+      e2 <- dasd-step c 5 "arm ASDE=0 SECOND, no reset"
+      let off = na-bring-up-after mmio dev-id False
+      in let offctrl = e1000-read mmio e1000-reg-ctrl
+      in let loff = dasd-arm-line "asde=0 second" off offctrl
+      in let p4 = dasd-paint c 6 loff diag-col-good
+      in act
+       slu <- dasd-slu c mmio 7
+       rst <- dasd-reset c mmio 15
+       let stuck = bit-and onctrl e1000-ctrl-asde == 0
+       in let differ = dasd-arms-differ on off
+       in let nolink = (on.na-gave) == na-gave-nolink & (off.na-gave) == na-gave-nolink
+       in let state = if (slu.ds-writable) == False then "ctrl-ro"
+             else if stuck then "asde-stuck"
+             else if nolink then "no-link"
+             else if differ then "differs"
+             else "same"
+       in let colour = if state == "differs" then diag-col-good
+             else if state == "same" then diag-col-note
+             else diag-col-bad
+       in let answer = dasd-answer on off onctrl (slu.ds-writable)
+       in diag-result state colour [answer, lon, loff] ([answer, ltouch, lon, loff] & (slu.ds-lines) & [rst])
+      end
+     end
+    end
+   end
+  end
+
+ The bus is scanned rather than taken from the ladder's context on purpose:
+ the probe's scope was bus 0 and every flight reading is against that scope,
+ so widening it here would silently change what a repeat flight compares to.
+
+  dasd-run : DiagCtx -> [Device.Port, Device.Mmio, Console] DiagResult
+  dasd-run (c) = act
+   let scan = pci-scan-bus 0
+   in when e1000-find scan
+    is None -> diag-result "no-part" diag-col-dim ["no Intel NIC on bus 0 (scope: bus 0 only)"] ["no Intel NIC on bus 0 (scope: bus 0 only)"]
+    is Just (dev) ->
+      if na-eligible dev == False then diag-result "rejected" diag-col-warn [na-reject-line dev] [na-reject-line dev]
+      else if e1000-bar-verdict (na-bar-of dev) /= e1000-bar-ok
+        then diag-result "bar-bad" diag-col-bad ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of dev)) & ", the part was not touched"] ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of dev)) & ", the part was not touched"]
+      else dasd-run-part c (na-mmio-of dev) (dev.pci-device-id)
+  end
+
+Page 1

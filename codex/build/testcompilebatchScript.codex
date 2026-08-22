@@ -45,6 +45,29 @@ Section: S05 -- Write Input and Launch VM
 
   s05 : List ShellCmd = [ScTempFile "inputFile", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "inputFile", SeMethodCall (SeVar "inputSb") "ToString" [], SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScTempFile "outputFile", ScTempFile "stderrFile", ScAssign "Stage0" (SeRaw "Join-Path (Split-Path $PSScriptRoot) 'build-output\\bare-metal\\Codex.cdx'"), ScRaw "if (-not (Test-Path -PathType Leaf $Stage0)) { Write-Error \"MISSING: $Stage0\"; exit 2 }", ScBlank, ScRaw "$resolveSw.Stop()", ScRaw "$batchSw = [System.Diagnostics.Stopwatch]::StartNew()", ScRaw "$startArgs = @{\n    FilePath = $script:CodexVmBin\n    ArgumentList = @('-kernel', $Stage0, '-input', $inputFile, '-output', $outputFile, '-mem', '3072', '-headless')\n    PassThru = $true; RedirectStandardError = $stderrFile\n}", ScComment "-WindowStyle throws on non-Windows editions of pwsh.", ScRaw "if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }", ScRaw "$proc = Start-Process @startArgs", ScRaw "$proc.WaitForExit(1800000)", ScRaw "if (-not $proc.HasExited) { Stop-VmGraceful -ProcessId $proc.Id }", ScRaw "$batchSw.Stop()", ScRaw "$parseSw = [System.Diagnostics.Stopwatch]::StartNew()"]
 
+Section: S05b -- Read the VM's stderr
+
+ codex-vm reports a short capture on stderr and this script redirected it to
+ a temp file that S11 deleted unread, so `stderrFile` had three uses -- create,
+ redirect, delete -- and no reader. That is why the loss documented in
+ `ExaminersAssay.md` ("The batch stream can lose bytes") has never been
+ attributable to a layer.
+
+ It matters more here than in test-run. A dropped blit loses one CONTIGUOUS
+ block, and S09 below assigns blocks to test names by sequence with no way to
+ notice a missing one, so a single silent drop files every later block under
+ the wrong test's name -- which is what was measured at test 178 of batch-0.
+
+ This warns rather than exiting, and the choice is deliberate: `test.ps1`
+ launches this script with Start-Process and never reads its exit code, so an
+ exit here would be discarded. It does NOT redirect our stderr, so the console
+ it inherits is where a human actually sees this. Making the batch fail on a
+ drop needs test.ps1 to read the exit code first; that is not done.
+
+  s05b : List ShellCmd =
+    let dropped = [ScWriteError (SeLit "codex-vm dropped guest serial bytes: this batch's capture is SHORT, and every block after the loss is filed under the WRONG test name"), ScWriteError (SeVar "vmErr")]
+    in [ScIf (SeFileExists (SeVar "stderrFile")) [ScDotNetCallAssign "vmErr" "System.IO.File" "ReadAllText" [SeVar "stderrFile"], ScIf (SeMatch (SeVar "vmErr") "DROPPED") dropped []] []]
+
 Section: S06 -- Read Output Bytes
 
  The Latin-1 shadow string is the whole point of this section. A crashed
@@ -83,7 +106,7 @@ Section: S11 -- Cleanup
 
 Section: Assembly
 
-  batch-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11]
+  batch-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s05b, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11]
 
   batch-script : ShellScript = sh-script "test-compile-batch" "Batch compiler -- boots one VM in REPL mode and feeds all test sources sequentially. One VM boot for the entire batch" batch-params batch-body
 

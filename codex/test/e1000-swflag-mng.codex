@@ -1,0 +1,58 @@
+Chapter: E1000SwflagMng
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+Section: Fixtures
+
+  dev-id-of : PciScanResult -> Integer
+  dev-id-of (scan) =
+    when e1000-find scan
+      is Just (d) -> (d.pci-device-id)
+      is None -> 0
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+ THE CASE A DRIVER THAT ASSUMES IT ALWAYS WINS CANNOT SURVIVE. Firmware holds
+ MNG ownership, so the acquisition is refused however correct the protocol is,
+ and 82583V 4.5.2 is explicit that MNG "is reset only by LAN_PWR_GOOD (or if
+ the firmware clears it)" -- there is nothing this driver can do to take it.
+
+ THIS IS THE ARM THAT MAKES `e1000-swflag` MEAN SOMETHING. That arm's acquire
+ succeeds, and an acquire that cannot fail is not evidence that the protocol
+ was followed: a function that unconditionally answered 1 would pass it. Here
+ the same call must answer 0 and leave the bit clear, and `mng holds` shows the
+ reason is the other agent's bit rather than a broken call.
+
+ IT ALSO ASSERTS THE FUEL TERMINATES. `e1000-swflag-acquire` retries until it
+ reads its own bit back, so a refusal that never ends is a hang rather than a
+ red, and a row printed after it is the proof it returned.
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in let did = dev-id-of scan
+    in let d = bring-up scan
+    in let mmio = d.e-mmio
+    in let ext = e1000-read mmio e1000-reg-extcnf-ctrl
+    in let got = e1000-swflag-acquire mmio e1000-swflag-fuel
+    in let held = e1000-swflag-held mmio
+    in act
+      print-line-uni ("part is pch        : " & yn (e1000-pch-part did))
+      print-line-uni ("mng holds          : " & yn (bit-and ext e1000-extcnf-mng-own /= 0))
+      print-line-uni ("acquire answers    : " & show got)
+      print-line-uni ("flag held          : " & yn held)
+    end
+  end
+
+Page 1

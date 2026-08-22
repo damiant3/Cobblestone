@@ -775,13 +775,73 @@ Section: MMIO Helpers
    in let i = i & arm64-movz 9 #4000 16
    in i & arm64-add 0 0 9
 
+ On this target the device window is reached by the SAME instruction as
+ ordinary memory, so `read-mmio-32` and `peek-32` are one block of code
+ under two names and a `Device.Mmio` row on the gated name gates nothing:
+ inlining the peek walks around it. x86-64 does not have this hole because
+ its devices are on port I/O and `port-in-*`/`port-out-*` carry
+ `Device.Port` by construction. The window therefore has to carry the
+ authority here, exactly as the GPU command window does on x86-64
+ (`emit-gpu-mem-guard`).
+
+ The gated region is defined as EVERYTHING THAT IS NOT RAM, not as one
+ device window, and the board file is why. `codex-arm64.repl` puts the GIC
+ at #8000000 and the PL011 at #9000000, below the RAM base, and PCI ECAM at
+ #4010000000, ABOVE it -- so a single "low addresses are devices" window
+ would have left every PCI BAR and the whole virtio-pci surface ungated
+ while reading as a closed gate. RAM on this plug's boards is the aperture
+ [#40000000, #4000000000): it begins at the base `a64-rt-remap-addr` adds
+ to a program-relative address, and nothing puts 256 GB of it there.
+
+ Two unsigned compares answer the common case. `cap-device` is the bit any
+ `Device` declaration grants -- `Device.Mmio` and `Device.Block` alike,
+ through the `Device` row of `capability-table` -- so a driver that says
+ what it does keeps working and a program that says nothing reads and
+ writes its own memory as before and is answered -1 at a device.
+
+  a64-cap-device : Integer = 16
+
+  a64-mmio-window-base-hi : Integer = #100
+
+  a64-ram-base-hi : Integer = #4000
+
+  a64-ram-limit-hi32 : Integer = #40
+
+  a64-rt-guarded-access : List Integer -> List Integer
+  a64-rt-guarded-access (body) =
+   let i = a64-rt-remap-addr & arm64-add 0 0 1
+   in let i = i & arm64-movz 9 a64-ram-limit-hi32 32
+   in let i = a64-rt-emit i (arm64-cmp 0 9)
+   in let above-ram = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-movz 9 a64-ram-base-hi 16
+   in let i = a64-rt-emit i (arm64-cmp 0 9)
+   in let is-ram = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-movz 9 a64-mmio-window-base-hi 16
+   in let i = a64-rt-emit i (arm64-cmp 0 9)
+   in let below-window = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let gate-label = list-length i / 4
+   in let i = a64-rt-check-capability i a64-cap-device
+   in let cap-deny = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let pass-label = list-length i / 4
+   in let i = i & body
+   in let fail-label = list-length i / 4
+   in let i = a64-rt-proc-fail-minus-one i
+   in let i = a64-patch-insn-raw i above-ram (arm64-b-cond 2 ((gate-label - above-ram) * 4))
+   in let i = a64-patch-insn-raw i is-ram (arm64-b-cond 2 ((pass-label - is-ram) * 4))
+   in let i = a64-patch-insn-raw i below-window (arm64-b-cond 3 ((pass-label - below-window) * 4))
+   in a64-patch-insn-raw i cap-deny (arm64-b-cond arm64-cond-eq ((fail-label - cap-deny) * 4))
+
   a64-rt-peek-byte : List Integer
   a64-rt-peek-byte =
-   a64-rt-remap-addr & arm64-add 0 0 1 & arm64-ldrb 0 0 0 & arm64-ret
+   a64-rt-guarded-access (arm64-ldrb 0 0 0 & arm64-ret)
 
   a64-rt-poke-byte : List Integer
   a64-rt-poke-byte =
-   a64-rt-remap-addr & arm64-add 0 0 1 & arm64-strb 2 0 0 & arm64-dsb-sy & arm64-movz 0 0 0 & arm64-ret
+   a64-rt-guarded-access (arm64-strb 2 0 0 & arm64-dsb-sy & arm64-movz 0 0 0 & arm64-ret)
 
   arm64-ldrh-raw : Integer, Integer -> List Integer
   arm64-ldrh-raw (rt) (rn) =
@@ -799,7 +859,11 @@ Section: MMIO Helpers
 
   a64-rt-peek-16 : List Integer
   a64-rt-peek-16 =
-   let i = a64-rt-remap-addr & arm64-add 0 0 1
+   a64-rt-guarded-access (a64-rt-peek-16-body)
+
+  a64-rt-peek-16-body : List Integer
+  a64-rt-peek-16-body =
+   let i = []
    in let i = i & arm64-movz 9 1 0
    in let i = i & arm64-and 9 0 9
    in let i = i & arm64-cbz 9 24
@@ -813,7 +877,11 @@ Section: MMIO Helpers
 
   a64-rt-poke-16 : List Integer
   a64-rt-poke-16 =
-   let i = a64-rt-remap-addr & arm64-add 0 0 1
+   a64-rt-guarded-access (a64-rt-poke-16-body)
+
+  a64-rt-poke-16-body : List Integer
+  a64-rt-poke-16-body =
+   let i = []
    in let i = i & arm64-movz 9 1 0
    in let i = i & arm64-and 9 0 9
    in let i = i & arm64-cbz 9 20
@@ -826,19 +894,19 @@ Section: MMIO Helpers
 
   a64-rt-peek-32 : List Integer
   a64-rt-peek-32 =
-   a64-rt-remap-addr & arm64-add 0 0 1 & arm64-ldr-w 0 0 0 & arm64-ret
+   a64-rt-guarded-access (arm64-ldr-w 0 0 0 & arm64-ret)
 
   a64-rt-poke-32 : List Integer
   a64-rt-poke-32 =
-   a64-rt-remap-addr & arm64-add 0 0 1 & arm64-str-w 2 0 0 & arm64-dsb-sy & arm64-movz 0 0 0 & arm64-ret
+   a64-rt-guarded-access (arm64-str-w 2 0 0 & arm64-dsb-sy & arm64-movz 0 0 0 & arm64-ret)
 
   a64-rt-peek-qword : List Integer
   a64-rt-peek-qword =
-   a64-rt-remap-addr & arm64-add 0 0 1 & arm64-ldr 0 0 0 & arm64-ret
+   a64-rt-guarded-access (arm64-ldr 0 0 0 & arm64-ret)
 
   a64-rt-poke-qword : List Integer
   a64-rt-poke-qword =
-   a64-rt-remap-addr & arm64-add 0 0 1 & arm64-str 2 0 0 & arm64-movz 0 0 0 & arm64-ret
+   a64-rt-guarded-access (arm64-str 2 0 0 & arm64-movz 0 0 0 & arm64-ret)
 
   a64-rt-tag-equal : List Integer
   a64-rt-tag-equal =

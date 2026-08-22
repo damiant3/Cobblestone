@@ -1,0 +1,65 @@
+Chapter: WebSendShort
+  cites Net chapter WebServer
+  cites Works chapter Http
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+ THE ARM FOR THE BRANCH THE MIGRATION ADDED. `web-send-http` used to hand back
+ whatever the bare sender returned, so a response that stopped part way and one
+ that went whole were the same value and the serve loop read the client's next
+ request into the middle of a corrupted body. It now closes the connection when
+ the send does not complete, and this is what shows that closing HAPPENS rather
+ than being described.
+
+ The fixtures are `net-send-capped`'s, which is deliberate: that arm proves the
+ CHECKED SENDER reports incomplete, and this one proves the SERVER acts on the
+ report. Two different claims, one fixture, and neither covers the other.
+
+ `healthy` is the half that makes the other half mean something. A `web-send-http`
+ that closed unconditionally would pass a truncation arm on its own.
+
+ IT HAS TO BE PUT IN `TcpEstablished` BY HAND, and the first version of this arm
+ did not: a session straight out of `net-session-new` is not connected, so the
+ sender refuses it, the server closes, and BOTH rows read `yes` -- a control
+ that agreed with its subject for the wrong reason. `net-send-capped` sets the
+ state explicitly for the same arm and that is where this was taken from.
+
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  seg0 : RexmitSeg = RexmitSeg { rx-frame = [], rx-ack = 0, rx-sent = 0, rx-resent = False }
+
+  fill-queue : Integer, List RexmitSeg -> List RexmitSeg
+  fill-queue (n) (acc) = if n <= 0 then acc else fill-queue (n - 1) (list-push acc seg0)
+
+  base-sess : NetSession = net-session-new cli-mac cli-ip gw-ip 50000 80 srv-ip 1000
+
+ The queue is full AND the connection is closed, exactly as `net-send-capped`
+ sets it up: `net-io-send-drain` returns at its own closed check before it
+ polls, so the arm needs no NIC.
+
+  stalled : NetSession =
+    let closed = set-conn base-sess (tcp-set-state (base-sess.conn) TcpClosed)
+    in set-rexmit closed (fill-queue net-rexmit-capacity []) 3 0
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    let resp = http-json "{\"ok\":true}"
+    in let ts-stalled = transport-new stalled
+    in let ts-healthy = transport-new (set-conn base-sess (tcp-set-state (base-sess.conn) TcpEstablished))
+    in act
+      short <- web-send-http ts-stalled resp
+      print-line-uni ("stalled closed : " & yn (net-io-conn-closed short))
+      whole <- web-send-http ts-healthy resp
+      print-line-uni ("healthy closed : " & yn (net-io-conn-closed whole))
+    end
+  end

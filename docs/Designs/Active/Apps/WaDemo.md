@@ -3,8 +3,13 @@
 *A schema for census age-sex data, the demographer's toolkit over it, and the
 site that flips the bits.*
 
-**Status: DESIGN. Nothing built.** Opened 2026-08-14 (blu) at Damian's
-direction, on the extract that landed in `apps/wademo/`.
+**Status: PARTLY SHIPPED.** Opened 2026-08-14 (blu) at Damian's direction, on
+the extract that landed in `apps/wademo/`. The app shipped to a customer and
+landed at **main 18080**: pattern and colour choices with a picker, the years
+running with an honest interpolation label, and a second pyramid to compare
+against. This line said "DESIGN. Nothing built." until 2026-08-21, six days
+after that landing. **What the depot says is what shipped; read the sections
+below as design intent, not as an inventory of what exists.**
 
 ---
 

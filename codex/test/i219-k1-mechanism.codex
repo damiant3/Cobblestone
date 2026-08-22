@@ -1,0 +1,94 @@
+Chapter: I219K1Mechanism
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ THIS ARM ASKS WHETHER TRANSMIT TRACKS THE CITED CONTROL, which is a narrower
+ question than whether the driver works and is why it is separate from
+ `e1000-pch-k1`. That arm asks whether the step lifts the stall. This one ties
+ each transmit to the VALUE of the register beside it, so a green cannot be
+ read off a step that ran without the bits landing.
+
+ The control is I219 rev 2.02 section 9.5.5.2: PHY address 01, page 770,
+ register 17, bit 13 `Giga_K1_disable` and bit 14 `K1 enable`, both RW and
+ both defaulting to 0b. 16384 is bit 14 alone, the model's NVM power-up value
+ under `-i219-k1-nvm 1`; 24576 is bits 14 and 13 together, which is what
+ disabling K1 at gigabit leaves behind.
+
+ THE ARM PRODUCES ITS OWN LEADING KILL AND MUST KEEP DOING SO. With
+ `e1000-pch-k1-required` shipping True, `e1000-init` configures K1 before this
+ arm reads anything, so the shipped state is a PASS and a ladder that started
+ there would read pass, pass, kill, pass -- one kill, at the end, after two
+ passes have already been banked. The `e1000-phy-bring-up` ahead of row 1 is
+ what prevents that: section 5.2 says a PHY soft reset returns the PHY
+ registers to their defaults while leaving other registers alone, so 770.17
+ goes back to its NVM value and the part is stalled again. Every kill in this
+ ladder is manufactured by that reset, which is also the post-reset obligation
+ the same section states: "the integrated LAN controller configures the LCD
+ registers".
+
+ The ladder is kill, pass, kill, pass, and each kill costs one reset. Do not
+ "simplify" it by reading the state `e1000-init` leaves: that row is a pass and
+ it belongs at the END, where it cannot displace the leading kill.
+
+Section: Fixtures
+
+  i219-pm-page : Integer = 770
+  i219-pm-reg : Integer = 17
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+  mk-frame : Integer, Integer, List Integer -> List Integer
+  mk-frame (i) (n) (acc) =
+    if i >= n then acc else mk-frame (i + 1) n (list-push acc i)
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  pm-read : Integer -> Integer
+  pm-read (mmio) =
+   let p = e1000-phy-set-page mmio i219-pm-page
+   in let v = e1000-phy-read mmio i219-pm-reg
+   in let b = e1000-phy-set-page mmio 0
+   in v
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let d = bring-up (pci-scan-bus 0)
+    in let mmio = d.e-mmio
+    in let at-init = pm-read mmio
+    in let wipe1 = e1000-phy-bring-up mmio
+    in let cited-killed = pm-read mmio
+    in let send-killed = e1000-send-frame d (mk-frame 0 64 [])
+    in let step1 = e1000-k1-configure mmio False
+    in let cited-stepped = pm-read mmio
+    in let send-stepped = e1000-send-frame d (mk-frame 0 64 [])
+    in let wipe2 = e1000-phy-bring-up mmio
+    in let cited-killed2 = pm-read mmio
+    in let send-killed2 = e1000-send-frame d (mk-frame 0 64 [])
+    in let step2 = e1000-k1-configure mmio False
+    in let cited-again = pm-read mmio
+    in let send-again = e1000-send-frame d (mk-frame 0 64 [])
+    in act
+      print-line-uni ("present            : " & yn (d.e-present))
+      print-line-uni ("cited after wipe   : " & show cited-killed)
+      print-line-uni ("send after wipe    : " & show send-killed)
+      print-line-uni ("step answers       : " & show step1)
+      print-line-uni ("cited after step   : " & show cited-stepped)
+      print-line-uni ("send after step    : " & show send-stepped)
+      print-line-uni ("cited after wipe 2 : " & show cited-killed2)
+      print-line-uni ("send after wipe 2  : " & show send-killed2)
+      print-line-uni ("cited after step 2 : " & show cited-again)
+      print-line-uni ("send after step 2  : " & show send-again)
+      print-line-uni ("cited left by init : " & show at-init)
+    end
+  end
+
+Page 1

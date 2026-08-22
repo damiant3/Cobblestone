@@ -39,6 +39,37 @@ if (-not $m.Success) { Write-Host 'FAIL: dg-stage-run not found in Diag.codex'; 
 foreach ($mm in [regex]::Matches($m.Groups[1].Value, 'i == (\d+) then ([a-z0-9]+)-run c')) { $tags[[int]$mm.Groups[1].Value] = $mm.Groups[2].Value }
 $count = [int]([regex]::Match($ladder, 'dg-stage-count : Integer = (\d+)').Groups[1].Value)
 
+# REFUSE a may-wedge stage while nothing enforces what the word promises.
+#
+# diag-risk-may-wedge exists in DiagStage.codex and DiagnosticStick.md says a
+# may-wedge stage runs "never by default, only when the config names it".
+# NOTHING IMPLEMENTS THAT. dg-stage-risk is printed, and used to decide which
+# stages run before the bank opens; it gates nothing. So the word is currently
+# a promise with no runner, and a lane that labels a stage may-wedge, reads the
+# design and believes the stage is protected would be wrong in the one place
+# where being wrong costs a box.
+#
+# Found by blu, 2026-08-20, catching HIMSELF about to label ASDE may-wedge.
+# The fix is deliberately the refusal and not the gate: the only genuine
+# may-wedge candidate is NIC-5, which is terminal by construction and is not
+# built, so building the gate today would add an "asde on" line to every
+# DIAG.CFG including the sitting's to protect a stage that does not need it.
+# This way the word is unusable until somebody implements what it means, and
+# the person who hits the refusal is whoever builds NIC-5 -- which is exactly
+# when the gate is worth building and exactly who should build it.
+#
+# WHEN YOU IMPLEMENT THE GATE, DELETE THIS BLOCK. It is a placeholder for
+# enforcement, not enforcement.
+$riskM = [regex]::Match($ladder, 'dg-stage-risk \(i\) =(.*?)\r?\n\r?\n', 'Singleline')
+if ($riskM.Success -and $riskM.Groups[1].Value -match 'diag-risk-may-wedge') {
+    $bad++
+    Write-Host 'FAIL: a stage is labelled diag-risk-may-wedge and NOTHING ENFORCES IT.'
+    Write-Host '  dg-stage-risk is printed and used for bank ordering; it does not gate'
+    Write-Host '  a stage on the config. DiagnosticStick.md promises may-wedge runs only'
+    Write-Host '  when the config names it. Implement that gate, then delete this check'
+    Write-Host '  from build/check-diag-verdicts.ps1. Do not relabel to dodge it.'
+}
+
 # declared vocabularies: tag -> words, from every stage chapter
 $vocab = @{}
 foreach ($f in Get-ChildItem $Dir -Filter 'Diag*.codex' -File) {

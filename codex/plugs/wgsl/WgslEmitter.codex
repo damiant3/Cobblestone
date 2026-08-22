@@ -198,7 +198,7 @@ Section: Expression Emission
     is IrIf (cond) (th) (el) (ty) (sp) ->
      "select(" & wgsl-expr-at ctx el (depth + 1) & ", " & wgsl-expr-at ctx th (depth + 1) & ", " & wgsl-expr-at ctx cond (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) ->
-     wgsl-expr-at ctx body (depth + 1)
+     wgsl-expr-at ctx (wgsl-subst-expr body name val (depth + 1)) (depth + 1)
     is IrApply (f) (a) (ty) (sp) ->
      wgsl-expr-apply ctx e depth
     is IrLambda (params) (body) (ty) (sp) ->
@@ -220,6 +220,19 @@ Section: Expression Emission
      wgsl-expr-at ctx task (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "0"
     is IrError (msg) (ty) (sp) -> "0"
+
+  wgsl-subst-expr : IRExpr, Text, IRExpr, Integer -> IRExpr
+  wgsl-subst-expr (e) (n) (rep) (depth) =
+   if depth >= 256 then e
+   else when e
+    is IrName (m) (ty) (sp) -> if m == n then rep else e
+    is IrBinary (op) (l) (r) (ty) (sp) -> IrBinary op (wgsl-subst-expr l n rep (depth + 1)) (wgsl-subst-expr r n rep (depth + 1)) ty sp
+    is IrNegate (o) (nty) (sp) -> IrNegate (wgsl-subst-expr o n rep (depth + 1)) nty sp
+    is IrIf (c) (tb) (el) (ty) (sp) -> IrIf (wgsl-subst-expr c n rep (depth + 1)) (wgsl-subst-expr tb n rep (depth + 1)) (wgsl-subst-expr el n rep (depth + 1)) ty sp
+    is IrLet (nm) (ty) (v) (b) (sp) -> IrLet nm ty (wgsl-subst-expr v n rep (depth + 1)) (if nm == n then b else wgsl-subst-expr b n rep (depth + 1)) sp
+    is IrApply (f) (a) (ty) (sp) -> IrApply (wgsl-subst-expr f n rep (depth + 1)) (wgsl-subst-expr a n rep (depth + 1)) ty sp
+    is IrFieldAccess (r) (fld) (ty) (sp) -> IrFieldAccess (wgsl-subst-expr r n rep (depth + 1)) fld ty sp
+    is otherwise -> e
 
   wgsl-expr-apply : WgslCtx, IRExpr, Integer -> Text
   wgsl-expr-apply (ctx) (e) (depth) =

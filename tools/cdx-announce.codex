@@ -95,15 +95,28 @@ Section: Announcing
         is otherwise -> "connect-failed"
     end
 
+ `no-reply` WAS THE ANSWER FOR OUR OWN SHORT REQUEST, which is the same
+ misattribution `http-exchange` carried: a registry that never received a whole
+ announcement cannot answer it, and the verdict blamed the registry. A
+ truncated request stops here rather than waiting for a reply to something
+ that was never asked.
+
   exchange : TcpTransportState, Text, Text -> [Network.Read, Network.Write, Console.Write] Text
   exchange (ts) (advertise) (hashes) = act
-    ts1 <- net-io-send ts tag-announce-request (encode-announce-request-body (AnnounceRequestMsg { from = ann-id, address = advertise, hashes = hashes }))
-    r <- net-io-recv-loop ts1 0
+    s <- net-io-send-checked ts tag-announce-request (encode-announce-request-body (AnnounceRequestMsg { from = ann-id, address = advertise, hashes = hashes }))
+    if s.ns-complete == False then act
+      tsx <- net-io-close (s.ns-transport)
+      let short-verdict = "request-truncated " & show (s.ns-sent)
+      in short-verdict
+    end
+    else act
+    r <- net-io-recv-loop (s.ns-transport) 0
     ts2 <- net-io-close (r.transport)
     let verdict = if r.has-message == False then "no-reply"
       else if r.tag /= tag-announce-reply then "wrong-tag"
       else "accepted " & show ((decode-announce-reply-body (r.body)).accepted)
     in verdict
+    end
   end
 
 Section: Entry

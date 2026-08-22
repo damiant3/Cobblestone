@@ -75,10 +75,13 @@ Section: The Socket
  transmits into a subnet it does not belong to is harder to diagnose at a
  sitting than one that says it has no address.
 
- The gateway MAC is no longer seeded into the ARP cache. `resolve-dst-mac`
- broadcasts until the cache is filled and `net-process-arp` learns from any ARP
- frame that arrives, so resolution happens the way it will have to happen on
- the LAN.
+ The gateway MAC is no longer seeded into the ARP cache; it is RESOLVED. When
+ this was written `net-process-arp` learned from any ARP frame that arrived,
+ so filling the cache needed nothing but patience. That is cache poisoning by
+ construction and the ruling of 2026-08-19 removed it, which turned the
+ patience into a request: `serve-one` calls `net-io-resolve` for the gateway
+ before it listens. Resolution still happens the way it will have to happen on
+ the LAN, and now it happens the way a LAN host actually does it.
 
   fresh-transport : NetworkConfig -> TcpTransportState
   fresh-transport (cfg) =
@@ -86,6 +89,12 @@ Section: The Socket
     in transport-new sess
 
 Section: Answering
+
+ `served` AND `short` ARE DIFFERENT ANSWERS AND THE VERDICT NOW SAYS WHICH.
+ The bare sender returned a transport and no count, so a reply that stopped
+ part way was reported as `served` -- the one line an operator reads to decide
+ whether a peer got its work. A requester that received half a framed reply
+ sees a frame it cannot decode, and the server's own log agreed it was served.
 
  `net-io-accept`, `net-io-recv-loop`, `net-io-send` and `net-io-close` all carry
  Network rows, so every one of them is bound with `<-` inside an act and every
@@ -97,9 +106,9 @@ Section: Answering
   reply-with (ix) (ts) (req) =
     let reply = serve-work ix serve-id req
     in act
-      ts1 <- net-io-send ts tag-work-reply (encode-work-reply-body reply)
-      ts2 <- net-io-close ts1
-      let verdict = if reply-is-empty reply then "miss " else "served "
+      s <- net-io-send-checked ts tag-work-reply (encode-work-reply-body reply)
+      ts2 <- net-io-close (s.ns-transport)
+      let verdict = if s.ns-complete == False then "short " else if reply-is-empty reply then "miss " else "served "
       in verdict & req.hash
     end
 
@@ -119,9 +128,22 @@ Section: Answering
     else answer ix (r.transport) (dr.message)
   end
 
+ THE GATEWAY IS ASKED FOR BY NAME NOW. `net-process-arp` learns only from a
+ reply addressed to us since 2026-08-20 (Damian's ruling on cache poisoning),
+ so the paragraph above no longer holds on its own: nothing else on the
+ segment will teach us this mapping, and without the request `resolve-dst-mac`
+ broadcasts every frame forever. It still works -- a switch delivers a
+ broadcast -- and it is not what a host on a LAN does. This is the ask.
+
+ It is inside the per-connection function rather than at the entry point
+ because `fresh-transport` builds a NEW session for every connection and the
+ cache goes with it, so a resolution done once at boot would be discarded by
+ the second caller.
+
   serve-one : WorkIndex, NetworkConfig -> [Network.Read, Network.Write] Text
   serve-one (ix) (cfg) = act
-    ts <- net-io-accept (net-io-listen (fresh-transport cfg)) 0
+    resolved <- net-io-resolve (fresh-transport cfg) (cfg.gateway)
+    ts <- net-io-accept (net-io-listen resolved) 0
     when (ts.session).conn.state
       is TcpEstablished -> handle-conn ix ts
       is otherwise -> "no-conn"

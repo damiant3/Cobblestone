@@ -217,7 +217,33 @@ Section: Match
    in let cond = emit-jv-pat-cond (b.pattern) "_s"
    in let binds = emit-jv-pat-binds (b.pattern) "_s"
    in let body = emit-jv-expr (b.body) arities indent
-   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-jv-branches branches arities indent (i + 1)
+   in "if (" & cond & ") { " & binds & jv-guarded-ret (b.guard) body arities indent & " } " & jv-chain-sep branches & emit-jv-branches branches arities indent (i + 1)
+
+ Java emits each arm's remainder in an ELSE, so a guard inside the block
+ would fall out of the whole chain rather than to the next arm. A guarded
+ match drops the `else` and becomes sequential ifs: equivalent when every
+ taken arm returns, and the point when one of them may not. A match with no
+ guard anywhere keeps the else-chain exactly as it was.
+
+  jv-guard-trivial : IRExpr -> Boolean
+  jv-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  jv-branches-guarded : List IRBranch, Integer -> Boolean
+  jv-branches-guarded (bs) (i) =
+   if i >= list-length bs then False
+   else if jv-guard-trivial ((list-at bs i).guard) == False then True
+   else jv-branches-guarded bs (i + 1)
+
+  jv-chain-sep : List IRBranch -> Text
+  jv-chain-sep (bs) = if jv-branches-guarded bs 0 then "" else "else "
+
+  jv-guarded-ret : IRExpr, Text, List ArityEntry, Integer -> Text
+  jv-guarded-ret (guard) (body) (arities) (indent) =
+   if jv-guard-trivial guard then "return " & body & ";"
+   else "if (" & emit-jv-expr guard arities indent & ") { return " & body & "; }"
 
   emit-jv-pat-cond : IRPat, Text -> Text
   emit-jv-pat-cond (p) (scrut) =

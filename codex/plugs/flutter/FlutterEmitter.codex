@@ -176,7 +176,21 @@ Section: Expression Emission
    else let b = list-at branches i
    in let cond = emit-dart-pat-cond (b.pattern) "_s"
    in let binds = emit-dart-pat-binds (b.pattern) "_s" indent
-   in dart-indent indent & "if (" & cond & ") {\n" & binds & dart-indent (indent + 1) & "return " & emit-dart-expr (b.body) arities (indent + 1) & ";\n" & dart-indent indent & "}\n" & emit-dart-arms branches arities indent (i + 1)
+   in dart-indent indent & "if (" & cond & ") {\n" & binds & flt-guarded-ret (b.guard) (emit-dart-expr (b.body) arities (indent + 1)) arities (indent + 1) & dart-indent indent & "}\n" & emit-dart-arms branches arities indent (i + 1)
+
+ The guard sits inside the `if` and after the binds so it can read them, and
+ a refused guard falls out of the block to the next arm's test.
+
+  flt-guard-trivial : IRExpr -> Boolean
+  flt-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  flt-guarded-ret : IRExpr, Text, List ArityEntry, Integer -> Text
+  flt-guarded-ret (guard) (body) (arities) (indent) =
+   if flt-guard-trivial guard then dart-indent indent & "return " & body & ";\n"
+   else dart-indent indent & "if (" & emit-dart-expr guard arities indent & ") {\n" & dart-indent (indent + 1) & "return " & body & ";\n" & dart-indent indent & "}\n"
 
   emit-dart-pat-cond : IRPat, Text -> Text
   emit-dart-pat-cond (p) (scrut) =

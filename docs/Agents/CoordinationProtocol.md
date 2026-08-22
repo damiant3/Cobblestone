@@ -449,7 +449,7 @@ p4 opened                   # LOOK at it before you build
 p4 status                   # a dropped add: the preflight warns, it does not fail
 p4 diff -du //Codex/blu/... # PATHS, not -c <CL>, which is not a diff option (P-DIFFC)
 
-build/build.ps1             # gates
+build/build.ps1 -Internal   # gates (CLAUDE.md R-GATE; the bare form is release only)
 
 p4 shelve -d -c 4712        # rule 7 -- or the submit is refused
 p4 submit -c 4712
@@ -539,6 +539,21 @@ hour that way, while the sender believed they had answered. The routing
 is the whole value of the channel; going around it leaves you with a file
 drop that is slower than the depot it replaced.
 
+**RUN `build/check-mailbox.ps1`. It is the runner this section did not have.**
+Every rule below was already written down on 2026-08-20 and three agents lost
+messages that morning anyway: blu wrote four into red's `inbox/` (never
+delivered, red reported the lane as silent for hours), root had one sitting in
+`outbox/failed/` for two days, and val had one that was a `.TXT` rather than a
+`.json` and was never picked up at all. **All three look exactly like success
+from the sender's side** -- no error, no bounce, the file goes somewhere
+plausible. Prose cannot catch that; a script that looks can. Run it at init and
+after any send you care about. Exit 1 means something of yours never arrived.
+
+**Your own `inbox/` is DELIVERED mail and is NOT evidence of loss** (val,
+2026-08-20, correcting a fleet broadcast that would have had people reporting a
+hundred phantom losses). Files accumulate there normally. A message written by
+hand into SOMEONE ELSE'S inbox is invisible from the receiving side, which is
+exactly why the only reliable check is sender-side on your own outbox.
 **The check that matters is SENDER-side: your own `outbox/sent/` is the
 receipt.** AgentGrid moves a message there when it routes it. If it is
 not there, you did not send it, and no wording of the file can make that
@@ -575,6 +590,61 @@ mimicking the routed naming convention exactly, millisecond field and
 all, and the other not. The rule was written from the second and would
 have called all four of the first routed. A convention two authors
 follow differently decides nothing.
+
+### Your REPORT to Damian is budgeted too, and rulings route through the commander (Damian, 2026-08-21)
+
+The budget below governs agent-to-agent messages. This governs the thing you
+write at the end of your turn, which Damian actually reads, and it is a
+separate rule because the fleet kept the first and ignored the second. His
+words, with four agents idle at the time: **"i can't read the walls of text
+they spew ... surface less details because I wont read it, its tokens spent
+for no purpose."**
+
+**Cut it to the result and what changed.** No journey, no what-you-ruled-out,
+no restatement of a process that went as documented, no detail he would not
+act on. R-REPORT already says this; what is new is that it is now measured
+against a reader who has stopped reading. A report he skips is worth less
+than no report, because it cost his attention to skip.
+
+**A ruling request does NOT go to Damian. It goes to the commander, who
+decides whether it is genuinely his.** Most are not. His words: agents ask
+him to participate in "calls that are really not calls", which is
+**psychological-needs fulfilment wearing the costume of diligence** -- it
+makes the asker feel careful and spends the one attention budget the project
+cannot refill.
+
+The test is already written in `CurrentPlan.md` and has not changed: **only a
+decision he alone can make** -- an outside relationship, an account, a spend,
+a product direction. **A technical trade-off with a defensible answer is the
+commander's call.** What is new is the ROUTE: you send it to the commander,
+the commander decides, and the commander carries it up if it survives. If you
+cannot name which of those four categories your question falls in, it is not
+his.
+
+**Asking is no longer automatically free.** The out clause in `CLAUDE.md`
+still stands for a genuine rule conflict, and a rule that already answers your
+question was never an excuse to ask. Between those, route to the commander.
+
+**THIS RULE DOES NOT TOUCH R-TRUE, AND CANNOT (val, 2026-08-21, within
+minutes of the rule being issued).** He declined the half of it that would
+have filtered what reaches Damian, and he was right to. **R-TRUE is tier 1:
+a red gate, a wrong byte shipped, a test you skipped, or a number you
+published and later found wrong goes to Damian IN FULL, every time, and
+nothing below it may be used as a reason to soften, delay, or omit it.** This
+section is about brevity and about routing REQUESTS FOR A DECISION. It is
+tier 3 and tier 4 material, so by the meta-rule it loses to R-TRUE outright
+and never gets to gate a failure report.
+
+The distinction, since the first wording blurred it and would have been read
+as a filter: **a ruling request is you asking Damian to spend attention
+deciding something. A failure report is you telling him something that is
+already true.** Route the first. Never route the second -- send it, in full,
+and tell the commander afterwards if it matters to the fleet.
+
+That the correction arrived from the fleet within minutes of the rule going
+out is the rule working, not failing. A commander who compresses what reaches
+the human is one bad sentence away from being the reason a red gate went
+unreported.
 
 ### The message budget (Damian, 2026-08-17)
 
@@ -723,8 +793,10 @@ just stack them for one push to main, but you can do builds locally on each
 step to keep the verification simple and cumulative."*
 
 **Iterate on your own stream: submit each step to `//Codex/<agent>`, run
-`build/build.ps1` locally per step, and keep the workspace seed current with
-the local Sut so verification stays cumulative.** Do NOT copy any
+`build/build.ps1 -Internal` locally per step, and keep the workspace seed
+current with the local Sut so verification stays cumulative.** This line said
+the bare `build/build.ps1` until 2026-08-20, which is a full gate per step of
+an arc: measured that day, 644.1 s against 186.1 s. Do NOT copy any
 intermediate CL to main, and do NOT request the token until the final push.
 The last push is then a normal seed-affecting copy-up: token, merge down,
 gate on the target, prove the seed, one copy-up.

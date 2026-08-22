@@ -328,9 +328,56 @@ Section: Expression Emission
    in let sep = if i > 0 then ", " else ""
    in sep & emit-rb-expr (f.value) arities & emit-rb-record-vals fields (i + 1) arities
 
+ A `when` prong that matches cannot fall through to a later prong, and a
+ `case` takes one `else`, so a guarded match cannot be a case at all. It
+ becomes sequential ifs in the same lambda. A match with no guard anywhere
+ stays the case it was.
+
+  rb-guard-trivial : IRExpr -> Boolean
+  rb-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  rb-branches-guarded : List IRBranch, Integer -> Boolean
+  rb-branches-guarded (bs) (i) =
+   if i >= list-length bs then False
+   else if rb-guard-trivial ((list-at bs i).guard) == False then True
+   else rb-branches-guarded bs (i + 1)
+
   emit-rb-match : IRExpr, List IRBranch, List ArityEntry -> Text
   emit-rb-match (scrut) (branches) (arities) =
-   "(lambda { |_s| case _s; " & emit-rb-match-arms branches 0 arities & " end }.call(" & emit-rb-expr scrut arities & "))"
+   if rb-branches-guarded branches 0
+   then "(lambda { |_s| " & emit-rb-chain-arms branches 0 arities & "return nil }.call(" & emit-rb-expr scrut arities & "))"
+   else "(lambda { |_s| case _s; " & emit-rb-match-arms branches 0 arities & " end }.call(" & emit-rb-expr scrut arities & "))"
+
+  emit-rb-chain-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-rb-chain-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-rb-chain-arm (b.pattern) (b.guard) (b.body) arities & emit-rb-chain-arms branches (i + 1) arities
+
+  rb-guarded-return : IRExpr, IRExpr, List ArityEntry -> Text
+  rb-guarded-return (guard) (body) (arities) =
+   if rb-guard-trivial guard then "return " & emit-rb-expr body arities & "; "
+   else "if " & emit-rb-expr guard arities & " then return " & emit-rb-expr body arities & "; end; "
+
+  emit-rb-ctor-pat-binds : List IRPat, Integer -> Text
+  emit-rb-ctor-pat-binds (subs) (i) =
+   if i >= list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> rb-sanitize name & " = _s.field" & integer-to-text i & "; "
+    is otherwise -> "") & emit-rb-ctor-pat-binds subs (i + 1)
+
+  emit-rb-chain-arm : IRPat, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-rb-chain-arm (pat) (guard) (body) (arities) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "if _s == " & text & " then " & rb-guarded-return guard body arities & "end; "
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then emit-rb-tup-pat-names subs 0 & " = *_s; " & rb-guarded-return guard body arities else "if " & rb-sanitize name & " === _s then " & emit-rb-ctor-pat-binds subs 0 & rb-guarded-return guard body arities & "end; "
+    is IrVarPat (name) (ty) (sp) -> rb-sanitize name & " = _s; " & rb-guarded-return guard body arities
+    is IrWildPat (sp) -> rb-guarded-return guard body arities
+    is IrVecPat (pats) (ty) (sp) -> rb-guarded-return guard body arities
 
   emit-rb-match-arms : List IRBranch, Integer, List ArityEntry -> Text
   emit-rb-match-arms (branches) (i) (arities) =

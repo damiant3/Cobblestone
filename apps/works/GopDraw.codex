@@ -139,6 +139,31 @@ Section: Pixel
   gop-put (base) (stride) (x) (y) (color) =
     poke-32 base ((y * stride + x) * 4) color
 
+ The GOP framebuffer is ordinary RAM at GPA 0xBF000000 with no MMIO trap, so
+ reading a pixel back costs what any other load costs. That is what makes
+ partial coverage affordable: a caller that knows a pixel is half covered
+ reads what is under it and mixes.
+
+  gop-get : Integer, Integer, Integer, Integer -> Integer
+  gop-get (base) (stride) (x) (y) =
+    peek-32 base ((y * stride + x) * 4)
+
+  gop-chan : Integer, Integer -> Integer
+  gop-chan (c) (sh) = bit-and (bit-shru c sh) 255
+
+  gop-mix : Integer, Integer, Integer -> Integer
+  gop-mix (dst) (src) (a) =
+    let r = (gop-chan dst 16 * (255 - a) + gop-chan src 16 * a) / 255
+    in let g = (gop-chan dst 8 * (255 - a) + gop-chan src 8 * a) / 255
+    in let b = (gop-chan dst 0 * (255 - a) + gop-chan src 0 * a) / 255
+    in bit-shl r 16 + bit-shl g 8 + b
+
+  gop-blend : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-blend (base) (stride) (x) (y) (color) (a) =
+    if a <= 0 then 0
+    else if a >= 255 then gop-put base stride x y color
+    else gop-put base stride x y (gop-mix (gop-get base stride x y) color a)
+
 Section: Rectangles
 
   gop-rect-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer

@@ -92,7 +92,7 @@ CostModel's none rung (blu). ProductBuilder stages 0-4 landed on main but
   `-WindowStyle Hidden` only when `$IsWindows`, generator and emitted script
   together; `check-generated-scripts -Only test-compile-batch` match, 0 drift.
 
-## The Update 48 release, 2026-08-20 (RELEASE HEAD, MEASUREMENTS AND SEED TO FILL AT PUSH)
+## The Update 48 release, 2026-08-20 (github `b643e7cb`, gitlab the same), seed `930FF7F1`
 
 Themes since the second mirror, in the order they matter to a reader:
 
@@ -179,5 +179,5 @@ Themes since the second mirror, in the order they matter to a reader:
   (codex-vm and OVMF) and recorded in `build/boot/diag.rehearsed`, so
   `flash-usb.ps1 -Rehearsed` accepts it.
 - seed/Codex.map: refreshed from the release build's `Sut.map`.
-- Public commits: github <sha>, gitlab <sha>; PR 75 closed with the commit
+- Public commits: github `b643e7cb`, gitlab the same (master:main). PR 75 closed with that commit and the verification named; PRs 69, 71, 73, 74 and issue 72 were closed in the two interim mirrors above.
 

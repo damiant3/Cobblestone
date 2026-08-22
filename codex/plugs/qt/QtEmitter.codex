@@ -197,7 +197,32 @@ Section: Match
    in let cond = emit-qt-pat-cond (b.pattern) "_s"
    in let binds = emit-qt-pat-binds (b.pattern) "_s"
    in let body = emit-qt-expr (b.body) arities indent
-   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-qt-branches branches arities indent (i + 1)
+   in "if (" & cond & ") { " & binds & qt-guarded-ret (b.guard) body arities indent & " } " & qt-chain-sep branches & emit-qt-branches branches arities indent (i + 1)
+
+ Each arm's remainder lives in an ELSE, so a guard inside the block would
+ fall out of the whole chain rather than to the next arm. A guarded match
+ drops the `else` and becomes sequential ifs, which is equivalent while every
+ taken arm returns and is the point when one may not.
+
+  qt-guard-trivial : IRExpr -> Boolean
+  qt-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  qt-branches-guarded : List IRBranch, Integer -> Boolean
+  qt-branches-guarded (bs) (i) =
+   if i >= list-length bs then False
+   else if qt-guard-trivial ((list-at bs i).guard) == False then True
+   else qt-branches-guarded bs (i + 1)
+
+  qt-chain-sep : List IRBranch -> Text
+  qt-chain-sep (bs) = if qt-branches-guarded bs 0 then "" else "else "
+
+  qt-guarded-ret : IRExpr, Text, List ArityEntry, Integer -> Text
+  qt-guarded-ret (guard) (body) (arities) (indent) =
+   if qt-guard-trivial guard then "return " & body & ";"
+   else "if (" & emit-qt-expr guard arities indent & ") { return " & body & "; }"
 
   emit-qt-pat-cond : IRPat, Text -> Text
   emit-qt-pat-cond (p) (scrut) =

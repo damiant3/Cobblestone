@@ -1,0 +1,91 @@
+Chapter: FilesTypeIconTest
+  cites Works chapter GopFiles
+  cites Works chapter GopIcon
+  cites Works chapter GopDraw
+  cites UI chapter Icon
+  cites Foreword chapter Fat16
+  cites Foreword chapter Console
+
+ The type column and the blit under it. The medium the desk browses carries
+ directories, a `.SRC` and a `.CDX` and no image at all, so a capture can
+ show three of the four classes and never the fourth; the classification is
+ asserted here where an entry can be made rather than found.
+
+ The scale arm is the campaign's claim that an icon renders identically at
+ scale 1 and scale 2 modulo size. It is a doubling and not a resample, so
+ every device pixel of the scale-2 rendering must equal the scale-1 pixel it
+ came from. The shifted count is the control: sampling one SOURCE pixel to
+ the right must disagree somewhere, or the comparison is one that cannot
+ fail and the 64 above it means nothing.
+
+  fti-w1 : Integer = 16
+
+  fti-w2 : Integer = 32
+
+  fti-ink : Integer = 16711680
+
+  fti-bg : Integer = 1
+
+  fti-entry : Text, Integer -> Fat16DirEntry
+  fti-entry (name) (attr) =
+    Fat16DirEntry { de-name = name, de-attr = attr, de-cluster = 2, de-size = 1 }
+
+  fti-kinds : Text
+  fti-kinds =
+    let d = gfl-kind (fti-entry "EFI" 16)
+    in let s = gfl-kind (fti-entry "SOURCE.SRC" 32)
+    in let i = gfl-kind (fti-entry "LOGO.BMP" 32)
+    in let b = gfl-kind (fti-entry "CODEX.CDX" 32)
+    in "dir=" & show d & " src=" & show s & " img=" & show i & " bin=" & show b
+
+  fti-cols : Text
+  fti-cols =
+    let kit = gicon-kit
+    in "col1=" & show (gfl-icon-col kit 1) & " col2=" & show (gfl-icon-col kit 2)
+
+  fti-render : Integer, Integer -> Integer
+  fti-render (stride) (scale) =
+    let buf = alloc-bytes (stride * stride * 4)
+    in let f = gop-fill-rect buf stride 0 0 stride stride fti-bg
+    in let d = gicon-blit buf stride ico-code-8 0 0 scale fti-ink
+    in buf
+
+  fti-row : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fti-row (b1) (b2) (dx) (dy) (y) (x) (acc) =
+    if x >= 8 then acc
+    else let p1 = peek-32 b1 ((y * fti-w1 + x) * 4)
+    in let p2 = peek-32 b2 (((2 * y + dy) * fti-w2 + (2 * x + dx)) * 4)
+    in let hit = if p1 == p2 then 1 else 0
+    in fti-row b1 b2 dx dy y (x + 1) (acc + hit)
+
+  fti-count : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fti-count (b1) (b2) (dx) (dy) (y) (acc) =
+    if y >= 8 then acc
+    else fti-count b1 b2 dx dy (y + 1) (fti-row b1 b2 dx dy y 0 acc)
+
+  fti-scale : Text
+  fti-scale =
+    let b1 = fti-render fti-w1 1
+    in let b2 = fti-render fti-w2 2
+    in let doubled = fti-count b1 b2 0 0 0 0
+    in let shifted = fti-count b1 b2 2 0 0 0
+    in "doubled=" & show doubled & " of 64   shifted=" & show shifted
+
+ An off pixel is left alone, so the background survives under the mask and a
+ highlighted row keeps its fill behind the icon. Row 3 of `code` is
+ `1,0,0,0,0,0,0,1`, so column 0 is ink and column 3 is the background it was
+ given.
+
+  fti-keyed : Text
+  fti-keyed =
+    let b = fti-render fti-w1 1
+    in let on = peek-32 b ((3 * fti-w1 + 0) * 4)
+    in let off = peek-32 b ((3 * fti-w1 + 3) * 4)
+    in "on=" & show on & " off=" & show off
+
+  opening : [Console] Nothing = act
+    print-line-uni fti-kinds
+    print-line-uni fti-cols
+    print-line-uni fti-scale
+    print-line-uni fti-keyed
+  end

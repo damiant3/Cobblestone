@@ -36,6 +36,25 @@ Section: S04 -- VM launch and wait
     let timeout-fail = [ScRaw "Write-SweepLog \"$sample run-fail wall-budget-exceeded pid=$($proc.Id)\"", ScRaw "Stop-VmGraceful -ProcessId $proc.Id", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeLit "", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScExit (SeInt 1)]
     in [ScRaw "$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "Write-SweepLog \"$sample vm-pid=$($proc.Id)\"", ScBlank, ScIf (SeNot (SeRaw "$proc.WaitForExit($wallBudgetMs)")) timeout-fail []]
 
+Section: S04b -- Read the VM's stderr
+
+ codex-vm prints `SERIAL: N guest serial byte(s) DROPPED ... is SHORT` when
+ its output buffer could not grow, and `Output: N bytes` on every clean exit.
+ Nothing read either line: the file was redirected here in S04 and deleted
+ unread in S08, so `stderrFile` had three uses in the generated script --
+ create, redirect, delete -- and no reader.
+
+ That is why a short capture has never been attributable. The drop is printed
+ on a CLEAN exit as well as a dirty one, so the run looks like a pass while
+ the captured output is truncated; in a batch the parser then files every
+ later block under the wrong test's name. Surfacing this only on an exit code
+ would miss exactly that case, which is why the test is on the text and not
+ on the status.
+
+  s04b : List ShellCmd =
+    let dropped = [ScWriteError (SeLit "codex-vm dropped guest serial bytes: the captured output is SHORT and any comparison against it is meaningless"), ScWriteError (SeVar "vmErr"), ScExit (SeInt 1)]
+    in [ScIf (SeFileExists (SeVar "stderrFile")) [ScDotNetCallAssign "vmErr" "System.IO.File" "ReadAllText" [SeVar "stderrFile"], ScIf (SeMatch (SeVar "vmErr") "DROPPED") dropped []] []]
+
 Section: S05 -- Check output exists
 
   s05 : List ShellCmd =
@@ -56,7 +75,7 @@ Section: S08 -- Cleanup
 
 Section: Assembly
 
-  testrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07] [] s08]
+  testrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s04b, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07] [] s08]
 
   testrun-script : ShellScript = sh-script "test-run" "Boot a CDX kernel under codex-vm and capture filtered serial output" testrun-params testrun-body
 

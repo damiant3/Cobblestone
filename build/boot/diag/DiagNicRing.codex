@@ -145,12 +145,18 @@ Section: What The Part Says, Not What Our Ring Says
  model either, so a bed reading 0 from them means "not modelled", and no arm
  asserts on them.
 
-  nir-stats : Integer -> Text
-  nir-stats (mmio) =
-   "stats gprc=" & show (e1000-read mmio e1000-reg-gprc)
-     & " rnbc=" & show (e1000-read mmio e1000-reg-rnbc)
-     & " mpc=" & show (e1000-read mmio e1000-reg-mpc)
-     & " crcerrs=" & show (e1000-read mmio e1000-reg-crcerrs)
+ THE COUNTERS ARE READ ONCE AND PASSED, never read per consumer. GPRC and RNBC
+ clear on read, so a second reader gets zero and the two rows disagree by
+ construction -- and the row that happened to read second would be the one
+ reporting "nothing arrived". That is the same clear-on-read hazard this
+ chapter already pays attention to two blocks up, one level down.
+
+  nir-stats-text : Integer, Integer, Integer, Integer -> Text
+  nir-stats-text (gprc) (rnbc) (mpc) (crcerrs) =
+   "stats gprc=" & show gprc
+     & " rnbc=" & show rnbc
+     & " mpc=" & show mpc
+     & " crcerrs=" & show crcerrs
 
  Where the part is actually aimed, against where we think we put the ring. If
  RDBA does not read back as our own ring, the part is filling somebody else's
@@ -220,8 +226,28 @@ Section: The Answer Row
  76 of the head row it displaces, so the summary does not gain a QR code and
  risk the cut. The keys are short for that reason and no other.
 
-  nir-answer : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
-  nir-answer (mmio) (ring) (bufs) (gprc0) (ddset) (txdd) (listen) =
+ `gp=` AND `rn=` ARE HERE BECAUSE THE STATS ROW CANNOT BE, and sitting 6 is
+ what proved it. `dg-paint-result` paints glass line 0 and glass line 1, and
+ line 2 only for a picture stage (`dg-stage-picture`, scene and asde); nicring
+ is neither, so its `stats` row was FILE ONLY and reached the screen as the
+ words `+more in bank`. The bank then died at the sink, four stages before
+ this one ran, and the during-window GPRC -- the single number that separates
+ "nothing arrived" from "arrived and was invisible", which is the successor
+ question sitting 3 opened -- did not exist anywhere afterwards. A whole metal
+ boot could not answer it.
+
+ So the discriminator rides the row that always paints. The room comes from
+ `d0w=`, which is bytes 8..15 rather than all sixteen: bytes 0..7 are the
+ buffer address WE wrote, they are already reported as `buf=y/n`, and this
+ chapter's own answer-row block says the writeback half is the question. The
+ full sixteen stay in the file as their own line, where they cost nothing.
+
+ Budget, single-digit counters: 3 + 6 + 5 + 6 + 6 + 5 + 5 + 5 + 5 + 5 + 16 =
+ 67, and 72 with `ln=0` aboard. Multi-digit counters eat the margin, as
+ `pre=` always could.
+
+  nir-answer : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  nir-answer (mmio) (ring) (bufs) (gprc0) (gprc1) (rnbc1) (ddset) (txdd) (listen) =
    let lo = e1000-read mmio e1000-reg-rdbal
    in let hi = e1000-read mmio e1000-reg-rdbah
    in let base = hi * 4294967296 + lo
@@ -230,10 +256,12 @@ Section: The Answer Row
      & " wb=" & show (nir-d0-wb ring 8 0)
      & " buf=" & (if nir-d0-buf ring bufs then "y" else "n")
      & " pre=" & show gprc0
+     & " gp=" & show gprc1
+     & " rn=" & show rnbc1
      & " dd=" & show ddset
      & " tx=" & show txdd
      & (if listen == 0 then " ln=0" else "")
-     & " d0=" & nir-d0-hex ring 0 ""
+     & " d0w=" & nir-d0-hex ring 8 ""
 
 Section: The Listen Knob
 
@@ -279,7 +307,7 @@ Section: The Stage
    in let mta = e1000-clear-mta mmio 0
    in let mac-ok = e1000-mac-present mmio
    in let mac = if mac-ok then e1000-read-mac mmio else []
-   in let dev = E1000Device { e-mmio = mmio, e-rx-ring = rx-ring, e-tx-ring = tx-ring, e-rx-bufs = rx-bufs, e-tx-bufs = tx-bufs, e-ctrl-blk = ctrl-blk, e-present = True, e-mac = mac, e-mac-valid = mac-ok }
+   in let dev = E1000Device { e-mmio = mmio, e-rx-ring = rx-ring, e-tx-ring = tx-ring, e-rx-bufs = rx-bufs, e-tx-bufs = tx-bufs, e-ctrl-blk = ctrl-blk, e-present = True, e-mac = mac, e-mac-valid = mac-ok, e-pch = 0, e-ulp = 0 }
    in let rx = e1000-setup-rx dev
    in let tx = e1000-setup-tx dev
    in dev
@@ -314,13 +342,16 @@ Section: The Stage
      in let txdd = nir-tx-dd d
      in let got = if listened.r-has-frame then 1 else if after.r-has-frame then 1 else 0
      in let ddset = nir-dd-count (d.e-rx-ring) 0 0
-     in let stats = nir-stats mmio
+     in let gprc1 = e1000-read mmio e1000-reg-gprc
+     in let rnbc1 = e1000-read mmio e1000-reg-rnbc
+     in let stats = nir-stats-text gprc1 rnbc1 (e1000-read mmio e1000-reg-mpc) (e1000-read mmio e1000-reg-crcerrs)
+     in let d0full = "d0 " & nir-d0-hex (d.e-rx-ring) 0 ""
      in let aim = nir-aim mmio (d.e-rx-ring)
      in let head = "link=" & show link & " present=" & na-yn (if d.e-present then 1 else 0) & " mac=" & na-yn (if d.e-mac-valid then 1 else 0) & " received=" & show got & " ddset=" & show ddset & " sent=" & show sent & " txdd=" & show txdd & " rdh-writable=" & writable & " rdh=" & show rdh0
      in let state = if sent /= 1 then "send-refused" else if txdd == 0 then "reader-broken" else if got == 1 then "frames" else if ddset > 0 then "frames" else "quiet"
      in let colour = if state == "frames" then diag-col-good else if state == "quiet" then diag-col-warn else diag-col-bad
-     in let answer = nir-answer mmio (d.e-rx-ring) (d.e-rx-bufs) gprc0 ddset txdd listen
-     in diag-result state colour [answer, head, stats] [answer, arrival, head, stats, aim, after-listen, after-send]
+     in let answer = nir-answer mmio (d.e-rx-ring) (d.e-rx-bufs) gprc0 gprc1 rnbc1 ddset txdd listen
+     in diag-result state colour [answer, head, stats] [answer, arrival, head, stats, aim, after-listen, after-send, d0full]
     end
    end
 

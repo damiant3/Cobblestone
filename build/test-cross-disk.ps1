@@ -60,8 +60,11 @@ $name = $testFile.BaseName
 $dir = $testFile.DirectoryName
 
 $diskFile = Join-Path $dir "$name.disk"
-if (-not (Test-Path -PathType Leaf $diskFile)) {
-    Write-Host "ERROR: $name has no .disk sidecar; this runner is for block-device tests" -ForegroundColor Red
+$devFile = Join-Path $dir "$name.qemudev"
+$hasDisk = Test-Path -PathType Leaf $diskFile
+$hasDev = Test-Path -PathType Leaf $devFile
+if (-not $hasDisk -and -not $hasDev) {
+    Write-Host "ERROR: $name has neither a .disk nor a .qemudev sidecar; this runner is for tests that need a QEMU device" -ForegroundColor Red
     exit 1
 }
 
@@ -121,9 +124,22 @@ if (Test-Path $uartLog) { Remove-Item $uartLog -Force }
 # driver scans rather than assuming, which is why that costs nothing here,
 # but a reader who probes only the first slot will find an empty one and
 # conclude there is no disk.
-$driveArgs = @('-global','virtio-mmio.force-legacy=false',
-               '-drive',"file=$diskFile,format=raw,if=none,id=hd0,snapshot=on",
-               '-device','virtio-blk-device,drive=hd0')
+$driveArgs = @('-global','virtio-mmio.force-legacy=false')
+if ($hasDisk) {
+    $driveArgs += @('-drive',"file=$diskFile,format=raw,if=none,id=hd0,snapshot=on",
+                    '-device','virtio-blk-device,drive=hd0')
+}
+# A .qemudev sidecar is extra QEMU arguments, one -device pair per line
+# (codex/test/qemu-rng.qemudev is "-device virtio-rng-device"); an empty file
+# attaches nothing, which is the absent arm of the same test expressed by the
+# same mechanism rather than by a second runner.
+if ($hasDev) {
+    foreach ($line in (Get-Content $devFile)) {
+        $t = $line.Trim()
+        if ($t -eq '' -or $t.StartsWith('#')) { continue }
+        $driveArgs += ($t -split '\s+')
+    }
+}
 $machArgs = if ($Arch -eq 'riscv64') {
     @('-M','virt','-m','1024M','-display','none','-monitor','none','-bios','none',
       '-device',"loader,file=$binFile,addr=0x80000000",'-serial',"file:$uartLog") + $driveArgs

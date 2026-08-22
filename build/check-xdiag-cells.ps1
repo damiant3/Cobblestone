@@ -49,7 +49,7 @@ Set-Location (Join-Path $PSScriptRoot '..')
 # because the code computes its cells rather than naming each one, so no
 # constant scan can see them.
 
-$blocks = @(@{ Name = 'xhci scalars (GopXhci private map)'; Lo = 0; Hi = 19 }, @{ Name = 'xhci port cells (20 + port, xhci-port-cells=8)'; Lo = 20; Hi = 27 }, @{ Name = 'xhci ownership/BAR scalars'; Lo = 28; Hi = 46 }, @{ Name = 'usb-hid-cell-count (the HID bind counter)'; Lo = 47; Hi = 47 }, @{ Name = 'xhci controller table (48 + i*4, 4 controllers)'; Lo = 48; Hi = 63 }, @{ Name = 'xhci-ep-base block (6 words)'; Lo = 64; Hi = 69 }, @{ Name = 'msc and FAT cells'; Lo = 70; Hi = 91 }, @{ Name = 'usb-hid-note block (usb-hid-cell-base + idx*4, 4 devices)'; Lo = 96; Hi = 111 })
+$blocks = @(@{ Name = 'xhci scalars (GopXhci private map)'; Lo = 0; Hi = 19 }, @{ Name = 'xhci port cells (20 + port, xhci-port-cells=8)'; Lo = 20; Hi = 27 }, @{ Name = 'xhci ownership/BAR scalars'; Lo = 28; Hi = 46 }, @{ Name = 'usb-hid-cell-count (the HID bind counter)'; Lo = 47; Hi = 47 }, @{ Name = 'xhci controller table (48 + i*4, 4 controllers)'; Lo = 48; Hi = 63 }, @{ Name = 'xhci-ep-base block (6 words)'; Lo = 64; Hi = 69 }, @{ Name = 'msc and FAT cells'; Lo = 70; Hi = 91 }, @{ Name = 'diag b3 bank-loss cells (notes counted, first refused note)'; Lo = 92; Hi = 93 }, @{ Name = 'usb-hid-note block (usb-hid-cell-base + idx*4, 4 devices)'; Lo = 96; Hi = 111 })
 
 
 # Constants that name a single cell. gfat-cell-* live inside the msc range
@@ -73,7 +73,7 @@ foreach ($f in $files) {
     # ADDRESSES of separate scratch regions, not indices into xdiag, and the
     # first run of this script flagged msc-cells at 36480 for exactly that.
 
-    foreach ($m in ([regex]::Matches($text, '(?m)^\s+((?:msc|gfat|xhci)-cell-[\w-]*|usb-hid-cell-base)\s*:\s*Integer\s*=\s*(\d+)\s*$'))) {
+    foreach ($m in ([regex]::Matches($text, '(?m)^\s+((?:msc|gfat|xhci|db3)-cell-[\w-]*|usb-hid-cell-base)\s*:\s*Integer\s*=\s*(\d+)\s*$'))) {
         $name = $m.Groups[1].Value
         $val = [int]$m.Groups[2].Value
         if ((-not $named.ContainsKey($name))) {

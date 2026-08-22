@@ -332,16 +332,32 @@ Section: Expression Emission
   emit-sc-match-arms (branches) (i) (arities) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-sc-match-arm (b.pattern) (b.body) arities & emit-sc-match-arms branches (i + 1) arities
+   in emit-sc-match-arm (b.pattern) (b.guard) (b.body) arities & emit-sc-match-arms branches (i + 1) arities
 
-  emit-sc-match-arm : IRPat, IRExpr, List ArityEntry -> Text
-  emit-sc-match-arm (pat) (body) (arities) =
+  sc-guard-trivial : IRExpr -> Boolean
+  sc-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+ Scala carries the guard itself: `case p if g =>` falls through to the next
+ case when the guard refuses, which is the semantics being lost, so no arm
+ here needs restructuring into ifs the way ruby's did.
+
+  sc-guard-clause : IRExpr, List ArityEntry -> Text
+  sc-guard-clause (guard) (arities) =
+   if sc-guard-trivial guard then " " else " if " & emit-sc-expr guard arities & " "
+
+  emit-sc-match-arm : IRPat, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-sc-match-arm (pat) (guard) (body) (arities) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "case " & text & " => " & emit-sc-expr body arities & "; "
-    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "case (" & emit-sc-tup-pat-names subs 0 & ") => " & emit-sc-expr body arities & "; " else "case _: " & sc-sanitize name & " => " & emit-sc-expr body arities & "; "
-    is IrVarPat (name) (ty) (sp) -> "case " & sc-sanitize name & " => " & emit-sc-expr body arities & "; "
-    is IrWildPat (sp) -> "case _ => " & emit-sc-expr body arities & "; "
-    is IrVecPat (pats) (ty) (sp) -> "case _ => " & emit-sc-expr body arities & "; "
+    is IrLitPat (text) (ty) (sp) -> "case " & text & sc-guard-clause guard arities & "=> " & emit-sc-expr body arities & "; "
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "case (" & emit-sc-tup-pat-names subs 0 & ")" & sc-guard-clause guard arities & "=> " & emit-sc-expr body arities & "; "
+     else if list-length subs == 0 then "case " & sc-sanitize name & sc-guard-clause guard arities & "=> " & emit-sc-expr body arities & "; "
+     else "case " & sc-sanitize name & "(" & emit-sc-tup-pat-names subs 0 & ")" & sc-guard-clause guard arities & "=> " & emit-sc-expr body arities & "; "
+    is IrVarPat (name) (ty) (sp) -> "case " & sc-sanitize name & sc-guard-clause guard arities & "=> " & emit-sc-expr body arities & "; "
+    is IrWildPat (sp) -> "case _" & sc-guard-clause guard arities & "=> " & emit-sc-expr body arities & "; "
+    is IrVecPat (pats) (ty) (sp) -> "case _" & sc-guard-clause guard arities & "=> " & emit-sc-expr body arities & "; "
 
   emit-sc-act : List IRActStmt, List ArityEntry -> Text
   emit-sc-act (stmts) (arities) =

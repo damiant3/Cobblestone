@@ -274,16 +274,27 @@ Section: Expression Emission
   emit-lua-match-arms (branches) (i) (arities) =
    if i == list-length branches then "return nil"
    else let b = list-at branches i
-   in emit-lua-match-arm (b.pattern) (b.body) arities i & " " & emit-lua-match-arms branches (i + 1) arities
+   in emit-lua-match-arm (b.pattern) (b.guard) (b.body) arities i & " " & emit-lua-match-arms branches (i + 1) arities
 
-  emit-lua-match-arm : IRPat, IRExpr, List ArityEntry, Integer -> Text
-  emit-lua-match-arm (pat) (body) (arities) (i) =
+  lua-guard-trivial : IRExpr -> Boolean
+  lua-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  lua-guarded-return : IRExpr, IRExpr, List ArityEntry -> Text
+  lua-guarded-return (guard) (body) (arities) =
+   if lua-guard-trivial guard then "return " & emit-lua-expr body arities & " "
+   else "if " & emit-lua-expr guard arities & " then return " & emit-lua-expr body arities & " end "
+
+  emit-lua-match-arm : IRPat, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-lua-match-arm (pat) (guard) (body) (arities) (i) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "if _s == " & text & " then return " & emit-lua-expr body arities & " end"
-    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "do " & emit-lua-tup-pat-binds subs 1 & "return " & emit-lua-expr body arities & " end" else "if _s.tag == \"" & name & "\" then return " & emit-lua-expr body arities & " end"
-    is IrVarPat (name) (ty) (sp) -> "do local " & lua-sanitize name & " = _s; return " & emit-lua-expr body arities & " end"
-    is IrVecPat (pats) (ty) (sp) -> "do return " & emit-lua-expr body arities & " end"
-    is IrWildPat (sp) -> "do return " & emit-lua-expr body arities & " end"
+    is IrLitPat (text) (ty) (sp) -> "if _s == " & text & " then " & lua-guarded-return guard body arities & "end"
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "do " & emit-lua-tup-pat-binds subs 1 & lua-guarded-return guard body arities & "end" else "if _s.tag == \"" & name & "\" then " & emit-lua-ctor-pat-binds subs 0 & lua-guarded-return guard body arities & "end"
+    is IrVarPat (name) (ty) (sp) -> "do local " & lua-sanitize name & " = _s; " & lua-guarded-return guard body arities & "end"
+    is IrVecPat (pats) (ty) (sp) -> "do " & lua-guarded-return guard body arities & "end"
+    is IrWildPat (sp) -> "do " & lua-guarded-return guard body arities & "end"
 
   emit-lua-act : List IRActStmt, List ArityEntry -> Text
   emit-lua-act (stmts) (arities) =
@@ -435,6 +446,14 @@ Section: Tuple Helpers
   is-tup-type : Text -> Boolean
   is-tup-type (n) =
    n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  emit-lua-ctor-pat-binds : List IRPat, Integer -> Text
+  emit-lua-ctor-pat-binds (subs) (i) =
+   if i >= list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> "local " & lua-sanitize name & " = _s.field" & integer-to-text i & "; "
+    is otherwise -> "") & emit-lua-ctor-pat-binds subs (i + 1)
 
   emit-lua-tup-pat-binds : List IRPat, Integer -> Text
   emit-lua-tup-pat-binds (subs) (i) =

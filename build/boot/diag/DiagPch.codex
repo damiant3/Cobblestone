@@ -1,0 +1,361 @@
+Chapter: DiagPch
+  cites Kernel chapter Pci
+  cites Kernel chapter E1000e
+  cites Dev chapter NicAsde
+  cites Works chapter GopAcpi
+  cites Works chapter GopHandoff
+  cites Foreword chapter Maybe
+  cites Diag chapter DiagStage
+
+ The board's PCH and PHY state, read and painted, for the I219 campaign
+ (`docs/Designs/Active/OS/I219IsNotAnE1000.md`). It is a MEASUREMENT stage and
+ it is the whole payload of sitting 7 (red, 2026-08-21): no driver change flies
+ with it, and it asserts nothing. Eight hypotheses cost a few registers each and
+ the campaign's first rule is that one boot answers all of them rather than one
+ per trip, because the variables were made serial and Damian has been to the
+ machine about 150 times.
+
+ IT WRITES ONE REGISTER AND THAT IS NOT A DRIVER CHANGE. PHY registers above 15
+ are paged and register 31 is the page selector (I219 rev 2.02 section 9.3), so
+ a paged register cannot be read without selecting its page. The page is
+ restored to 0 afterwards. Nothing else here writes anything.
+
+ WHAT IS CITED AND WHAT IS NOT, per line, because on this campaign that
+ distinction is the point and a number without its status is worse than no
+ number. reek holds the datasheets and gave these with their provenance
+ (`I219IsNotAnE1000.md`, main 18349).
+
+Section: What we can read and what we cannot
+
+ FWSM IS NOT PAINTED AND THAT IS DELIBERATE. reek: "I cannot give a cited
+ offset and will not give an uncited one." The string appears in neither
+ datasheet in this tree, I219 or 82583V, zero matches; every offset quotable
+ for it comes from the vendor driver, which is the one source this campaign
+ forbids. So the row says the gap out loud. A measurement flight that paints a
+ number read from a guessed offset is worse than one that paints nothing there:
+ it returns a confident wrong reading that nobody can tell from a right one.
+
+  dpch-states : List Text = ["ok", "no-mdio", "no-part", "rejected", "bar-bad"]
+
+ EVERY READING HAS BEEN SHOWN TO MOVE, and that is the gate this stage had to
+ pass. red, 2026-08-21: a measurement payload asserts nothing the bed could
+ falsify, so it is exempt from the campaign's fly-gate pair, but it is NOT
+ exempt from proving its own instrument. Every register painted here must read
+ TWO DIFFERENT values in the bed, because one that always paints 0000 looks
+ exactly like a board with K1 off.
+
+ ONE ROW FAILS THAT GATE AND SHIPS ANYWAY, DECLARED. The kmrn row below cannot
+ move in this bed for a structural reason rather than a missing arm, and the
+ table says so on its own line instead of omitting it. A gate with a silent
+ exception is worse than one with a stated exception: the silent version leaves
+ the table asserting something false about a row a reader is trusting.
+
+ WHAT WAS PROVEN INSTEAD, because "cannot move" must not become "never checked".
+ The bed shows the row DECLINES rather than guesses: with the bracket silent it
+ answers SAYS NOTHING, so a bed reading can never be mistaken for the board's.
+ The decision itself was then ablated on fixtures, 2026-08-21, and all four
+ branches are reachable and distinct: a value at 0x00034 gives DECODES,
+ all-ones gives UNCLAIMED, everything silent gives SAYS NOTHING, and a bracket
+ that answers over a zero gives ZERO-ON-LIVE-PATH.
+
+ THE ABLATION PASSED AND THE WORDS WERE STILL WRONG, which is the part worth
+ keeping. Four reachable, distinct branches say the decision is not degenerate;
+ they say nothing about whether each branch's SENTENCE is supported by what it
+ read. Two of them claimed a hole from a zero, and the refutation was sitting
+ in this chapter's own prose. A reachability ablation cannot catch that, and
+ reading it as if it could is what let the overclaim ship.
+
+ | reading | values measured | arm that moves it |
+ |---|---|---|
+ | 770.17 raw | 4000 / 0000 / ERR | `-i219`, `-i219-k1-nvm 0`, plain `-e1000` |
+ | K1 decode | moves with the raw value | the same three |
+ | stage state | ok / no-mdio | the same three |
+ | `bmsr` | 0000 / ERR | `-e1000-phy-err` |
+ | MDIO gate 769.16 | 2180 / ERR | `-e1000-phy-err` |
+ | ULP row | three verdicts, see the control below | `-e1000-phy-err` |
+ | DMAR | n / y | `-dmar` |
+ | PCI command | 0007 bm=y / 0003 bm=n | `-nic-bme-clear` |
+ | EXTCNF 0x00F00 | 00000000 / 00000080 | `-i219-mng-holds` |
+ | kmrn 0x00034 + bracket | **DOES NOT MOVE: 00000000 in every arm** | none exists, see below |
+
+ THE LAST THREE ROWS ONLY BECAME PROVABLE BECAUSE THE BED GREW FOR THEM. On the
+ first scoring DMAR, the command word and EXTCNF were constants and carried an
+ `[unproven]` mark in the painted row; reek landed `-dmar`, `-nic-bme-clear` and
+ pointed out that EXTCNF moves only when firmware holds the semaphore
+ (`-i219-mng-holds`), and the marks came off because they had stopped being
+ true. A caveat kept after it is false is worse than none: it trains its reader
+ to skip caveats.
+
+ THE DMAR PAIR IS ALSO THE ONLY THING PROVING THE WALK. reek: no ACPI walker
+ exists in this tree and this stage is its first reader (L-UNCALLED), so `n` in
+ every arm would have been indistinguishable from a walk that never finds
+ anything. The table the bed publishes is header only, which suits a reader that
+ matches a signature and never touches the body.
+
+ ULP CANNOT BE DONE THIS WAY AT ALL, AND GOT SOMETHING BETTER. reek 2026-08-21:
+ the ULP exit sequence is unspecified in the documents we hold, so no bed arm for
+ it can ever exist, which makes a BOARD reading the only evidence obtainable
+ anywhere; red promoted it from one of eight to the row the flight exists to
+ get. A row that can never be proven in the bed and is also the most important
+ row is the worst possible thing to ship with a shrug, so it gets the neighbour
+ control below.
+
+ ULP GETS A NEIGHBOUR CONTROL (red, 2026-08-21), and it is
+ the better instrument: it converts an unprovable read into a provable one using
+ the board itself rather than the bed. A KNOWN-VALUE register is read on the
+ same page selection and the same MDIO path, immediately before the target.
+ PHY ID1 is register 2, and registers 0 to 15 are the IEEE set which is the same
+ in every page (`E1000e.codex`), so it is reachable while page 779 is selected
+ and its value does not depend on the page.
+
+ The three outcomes are distinguishable, which is the whole point:
+ neighbour answers and ULP does not, so the ULP error is REAL and about that
+ register; both fail, so the PATH is down and the ULP error says nothing about
+ ULP; both answer, so the ULP value is a reading taken on a path shown to work
+ in the same breath.
+
+ MEASURED, and this row therefore passes the reading gate on its CONTROL where
+ its value never could. `-i219` and plain `-e1000` both answer
+ `neighbour-id1=0154` with ULP at ERR, so the row says the ULP error is REAL:
+ the bed models the page-770 register and not this one, and the instrument
+ proves that rather than leaving it ambiguous. `-e1000-phy-err` fails the page
+ select and the row says nothing on the page was reached. Three distinguishable
+ answers from an unprovable read.
+
+
+ EXTCNF_CTRL = MAC CSR 0x00F00, and the caveat travels with the number: that is
+ the 82583V rev 2.6 section 9.2.2.15 map, and the I219's MAC is not a discrete
+ controller but sits in the PCH, whose CSR map is in no document here. So it is
+ CORROBORATED BY FAMILY, NOT CITED FOR THE PART. Bit 5 is MDIO/NVM SW Ownership,
+ which is SWFLAG; bit 6 is HW ownership and bit 7 is MNG.
+
+  dpch-extcnf-ctrl : Integer = #00F00
+  dpch-swflag-bit : Integer = #00000020
+
+ ULP Configuration 1 is PHY page 779 register 16, I219 rev 2.02 section 9.5.7.1,
+ and this one IS cited for the part. Bit 2 is ULP_IND, "Power Up from ULP
+ indication", which is the state bit the campaign asks about.
+
+  dpch-ulp-page : Integer = 779
+  dpch-ulp-reg : Integer = 16
+  dpch-ulp-ind-bit : Integer = 4
+
+ PCIe Power Management Control is PHY page 770 register 17, CITED, I219 rev 2.02
+ section 9.5.5.2. Bit 13 is Giga_K1_disable ("When set, the I219 does not enter
+ K1 while link speed at 1000 Mb/s") and bit 14 is K1 enable; both RW, both
+ defaulting to 0b. THIS IS THE ROW THE FLIGHT IS FOR: the power-up value is the
+ platform's NVM setting, which we do not have for this board, and if it already
+ reads K1 disabled then the K1 theory dies on one register read rather than on a
+ driver rewrite.
+
+  dpch-k1-page : Integer = 770
+  dpch-k1-reg : Integer = 17
+  dpch-k1-disable-bit : Integer = #2000
+  dpch-k1-enable-bit : Integer = #4000
+
+ MDIO IS GATED AND THE GATE IS ITSELF A READING. I219 rev 2.02 section 9.2:
+ access using MDIO should be done only when bit 10 in page 769 register 16 is
+ set. THE GATE IS PAINTED AS A FACT AND DOES NOT SUPPRESS THE VALUES, because
+ the flight's whole job is to bring a raw reading back for a human to judge and
+ a stage that withholds the number decides that for them. The state says
+ `no-mdio` only when the paged read ITSELF fails to answer, which is a different
+ claim from the door being shut: measured in the bed, the door reads shut
+ (769.16 = 0x2180, bit 10 clear) and page 770 register 17 answers anyway, so
+ treating the bit as a veto would have thrown away the one reading this stage
+ exists for.
+
+  dpch-gate-page : Integer = 769
+  dpch-gate-reg : Integer = 16
+  dpch-gate-bit : Integer = #0400
+
+ KMRNCTRLSTA IS READ RAW AND SO IS ITS BRACKET, because the question is whether
+ the part decodes MAC CSR 0x00034 AT ALL. reek and blu found independently that
+ the 82583V rev 2.6 map has a HOLE there, between FCT at 0x00030 and VET at
+ 0x00038. That would change a verdict rather than add a number: if the part
+ reads a hole, a kumeran write to it is inert rather than merely untested. The
+ row brings back the evidence for that question. It does not answer it.
+
+ A ZERO AT 0x00034 ON ITS OWN CANNOT SAY THAT, which is why the bracket is read
+ in the same breath. An unimplemented register inside a decoded BAR reads zero
+ and so does an idle implemented one. FCT and VET sit either side of it on the
+ same BAR and the same path, so a bracket that answers proves THE PATH IS LIVE:
+ the BAR decodes, MMIO is returning real data, and a zero at 0x00034 is a real
+ reading rather than an artefact of a dead window.
+
+ THE BRACKET PROVES THE PATH, NOT THE OFFSET, and this row claimed otherwise
+ until 2026-08-21. It read a live bracket over a zero as HOLE and said the
+ kumeran write is INERT, which the paragraph above refutes in its own second
+ sentence: an idle implemented register reads zero on a live path too. red
+ caught it against the board's own numbers before it was routed onward, which
+ would have told another lane its work was pointless on evidence that does not
+ carry that. A PASSIVE READ CANNOT SEPARATE A HOLE FROM AN IDLE REGISTER.
+
+ WHAT WOULD SEPARATE THEM IS A WRITE AND A READ BACK AT 0x00034, AND IT IS
+ RULED OUT (red, 2026-08-21). Do not re-propose it from this row. It is an
+ active write to an offset we cannot cite on the only board we have, and
+ NOTHING DEPENDS ON THE ANSWER: the campaign moved to the cited 770.17 and
+ kumeran is disabled either way, so the write would buy a fact no decision is
+ waiting on. That is the whole test, and it is worth stating in those terms
+ rather than as a safety rule -- risk is not the reason on its own, an
+ unbought answer is. Revisit only if 770.17 proves insufficient; the question
+ then has a decision behind it and earns the risk it costs.
+
+ THE BED CANNOT MOVE THIS ROW, and it is marked in the painted row rather than
+ left for a reader to find. codex-vm backs the whole of BAR0 with a flat array,
+ so every offset decodes, none of these three has a modelled reset value, and
+ all three read 00000000 in every arm. That is the always-one-word instrument
+ this chapter refuses everywhere else, so it is declared: the board is the only
+ place this row can move, exactly as the ULP row above.
+
+  dpch-fct-off : Integer = #00030
+  dpch-kmrn-off : Integer = #00034
+  dpch-vet-off : Integer = #00038
+
+ The PCI command register is config offset 4, low sixteen bits, and bit 2 is bus
+ master. That is architectural rather than part-specific.
+
+  dpch-cmd-off : Integer = 4
+  dpch-cmd-bm : Integer = #0004
+  dpch-cmd-mem : Integer = #0002
+
+Section: Reads
+
+  dpch-paged : Integer, Integer, Integer -> Integer
+  dpch-paged (mmio) (page) (reg) =
+   let p = e1000-phy-set-page mmio page
+   in if p < 0 then 0 - 1
+   else let v = e1000-phy-read mmio reg
+   in let back = e1000-phy-set-page mmio 0
+   in v
+
+  dpch-hex : Integer -> Text
+  dpch-hex (v) = if v < 0 then "ERR" else diag-hex4 v
+
+ THE VERDICT NAMES ITS OWN REGISTER since 2026-08-21, and it did not before.
+ The words were written for the ULP row and read correctly there; the moment a
+ second row shared the control, the SMBus row printed "so the ULP ERR is REAL"
+ about register 23, which is a sentence that names the wrong subject in the
+ one place a reader is trusting it most. Caught by running the row rather than
+ by reading it.
+
+  dpch-path-verdict : Integer, Integer, Text -> Text
+  dpch-path-verdict (ctl) (v) (who) =
+   if ctl < 0 then "BROKEN both reads failed, so this ERR is about the PATH and says nothing about " & who
+   else if v < 0 then "OK neighbour answered and " & who & " did not, so the " & who & " ERR is REAL"
+   else "OK neighbour answered in the same page selection"
+
+  dpch-ulp-row : Integer -> Text
+  dpch-ulp-row (mmio) =
+   let p = e1000-phy-set-page mmio dpch-ulp-page
+   in if p < 0 then "ulp 779.16=ERR page-select FAILED, so nothing on this page was reached"
+   else let ctl = e1000-phy-read mmio e1000-phy-id1
+   in let v = e1000-phy-read mmio dpch-ulp-reg
+   in let back = e1000-phy-set-page mmio 0
+   in "ulp 779.16=" & dpch-hex v & " ulp-ind=" & dpch-bit v dpch-ulp-ind-bit & " neighbour-id1=" & dpch-hex ctl & " path=" & dpch-path-verdict ctl v "ULP"
+
+ THE SMBus CONTROL REGISTER IS READ AND NOT WRITTEN, and the split is the same
+ one ULP turned out to have. I219 rev 2.02 section 9.5.3.4 puts it at PHY page
+ 769 register 23 and names its fields: Force SMBus is bit 0, "Force SMBus,
+ reset on PCI reset de-assertion"; dis_SMB_filtering is bit 1; Use LANWAKE# is
+ bit 4. So the register IS cited for the part, unlike EXTCNF beside it.
+
+ WHY THE ROW STOPS AT READING. Forcing SMBus moves the LAN Connected Device
+ onto the SMBus path, which is the path our MDIO access is not on: a driver
+ that forces it can take its own access to the part away, and sitting 10 has
+ bring-up hanging inside `e1000-reset` for reasons not yet named. A read costs
+ nothing and answers the question the write would be guessing at -- whether
+ this part is in SMBus mode at all -- and nobody has ever read it. The board
+ value is UNKNOWN, so this row's first flight is a reading and not a check.
+
+ It shares the neighbour control rather than repeating it: page 769 is where
+ the MDIO gate at 769.16 already lives, so a failed read here is separable
+ from a dead path by the same PHY ID1 read the ULP row uses.
+
+  dpch-smbus-page : Integer = 769
+  dpch-smbus-reg : Integer = 23
+  dpch-smbus-force-bit : Integer = #0001
+  dpch-smbus-nofilter-bit : Integer = #0002
+  dpch-smbus-lanwake-bit : Integer = #0010
+
+  dpch-smbus-row : Integer -> Text
+  dpch-smbus-row (mmio) =
+   let p = e1000-phy-set-page mmio dpch-smbus-page
+   in if p < 0 then "smbus 769.23=ERR page-select FAILED, so nothing on this page was reached"
+   else let ctl = e1000-phy-read mmio e1000-phy-id1
+   in let v = e1000-phy-read mmio dpch-smbus-reg
+   in let back = e1000-phy-set-page mmio 0
+   in "smbus 769.23=" & dpch-hex v & " force=" & dpch-bit v dpch-smbus-force-bit & " nofilter=" & dpch-bit v dpch-smbus-nofilter-bit & " lanwake=" & dpch-bit v dpch-smbus-lanwake-bit & " neighbour-id1=" & dpch-hex ctl & " path=" & dpch-path-verdict ctl v "SMBUS"
+
+  dpch-bit : Integer, Integer -> Text
+  dpch-bit (v) (mask) = if v < 0 then "?" else na-yn (bit-and v mask)
+
+ ALL-ONES IS NOT A VALUE. A read that nothing claims comes back FFFFFFFF on this
+ bus, so treating non-zero as "it answered" would report the strongest possible
+ evidence of a hole as proof of the opposite.
+
+  dpch-ones : Integer = #FFFFFFFF
+
+  dpch-answered : Integer -> Boolean
+  dpch-answered (v) = v /= 0 & v /= dpch-ones
+
+  dpch-kmrn-verdict : Integer, Integer, Integer -> Text
+  dpch-kmrn-verdict (fct) (kmrn) (vet) =
+   if dpch-answered kmrn then "DECODES 0x00034 answered with a value, so something is implemented there"
+   else if kmrn == dpch-ones then "UNCLAIMED 0x00034 reads all-ones, which is a read nothing answered rather than a value"
+   else if (dpch-answered fct == False) & (dpch-answered vet == False) then "SAYS NOTHING the bracket did not answer either, so the path itself is unproven and the zero means nothing"
+   else "ZERO-ON-LIVE-PATH the bracket answered so the window decodes and this zero is real, but a hole and an idle register both read zero and a passive read cannot separate them"
+
+  dpch-kmrn-row : Integer -> Text
+  dpch-kmrn-row (mmio) =
+   let fct = e1000-read mmio dpch-fct-off
+   in let kmrn = e1000-read mmio dpch-kmrn-off
+   in let vet = e1000-read mmio dpch-vet-off
+   in "kmrn 0x00034=" & diag-hex8 kmrn & " fct 0x00030=" & diag-hex8 fct & " vet 0x00038=" & diag-hex8 vet & " " & dpch-kmrn-verdict fct kmrn vet & " (bed cannot move this row, board only)"
+
+ DMAR present or absent is the IOMMU question and it is one table lookup. The
+ signature bytes are 'D' 'M' 'A' 'R'. A firmware that publishes no DMAR is
+ telling us there is no VT-d unit to have blocked anything.
+
+  dpch-dmar : Integer -> Text
+  dpch-dmar (dummy) =
+   let rsdp = acpi-boot-rsdp 0
+   in if rsdp == 0 then "no-rsdp"
+   else let root = acpi-root-of rsdp
+   in if root == 0 then "no-root"
+   else let entsize = acpi-entsize-of root
+   in let n = acpi-entry-count root entsize
+   in if acpi-find root entsize n 0 68 77 65 82 == 0 then "n" else "y"
+
+Section: Rows
+
+  dpch-bdf : PciDevice -> Text
+  dpch-bdf (d) = show (d.pci-bus) & ":" & show (d.pci-dev) & "." & show (d.pci-func)
+
+  dpch-part : PciDevice -> [Device.Port, Device.Mmio] DiagResult
+  dpch-part (d) =
+   if na-eligible d == False then diag-result "rejected" diag-col-warn ["part " & dpch-bdf d & " " & na-reject-line d] ["part " & dpch-bdf d & " " & na-reject-line d]
+   else let v = e1000-bar-verdict (na-bar-of d)
+   in if v /= e1000-bar-ok then diag-result "bar-bad" diag-col-bad ["part " & dpch-bdf d & " verdict=" & na-verdict-text v] ["part " & dpch-bdf d & " verdict=" & na-verdict-text v]
+   else let mmio = na-mmio-of d
+   in let cmd = bit-and (pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) dpch-cmd-off) #FFFF
+   in let extcnf = e1000-read mmio dpch-extcnf-ctrl
+   in let gate = dpch-paged mmio dpch-gate-page dpch-gate-reg
+   in let k1 = dpch-paged mmio dpch-k1-page dpch-k1-reg
+   in let bmsr = e1000-phy-read mmio e1000-phy-bmsr
+   in let dmar = dpch-dmar 0
+   in let open = if gate < 0 then False else bit-and gate dpch-gate-bit /= 0
+   in let r1 = "pch " & dpch-bdf d & " cmd=" & diag-hex4 cmd & " bm=" & na-yn (bit-and cmd dpch-cmd-bm) & " mem=" & na-yn (bit-and cmd dpch-cmd-mem) & " dmar=" & dmar
+   in let r2 = "k1 770.17=" & dpch-hex k1 & " giga-k1-dis=" & dpch-bit k1 dpch-k1-disable-bit & " k1-en=" & dpch-bit k1 dpch-k1-enable-bit
+   in let r3 = dpch-ulp-row mmio & " mdio-gate 769.16=" & dpch-hex gate & " open=" & na-yn (if open then 1 else 0)
+   in let r4 = "extcnf 0x00F00=" & diag-hex8 extcnf & " swflag=" & na-yn (bit-and extcnf dpch-swflag-bit) & " bmsr=" & dpch-hex bmsr & " (extcnf offset family-corroborated, NOT cited for the part)"
+   in let rs = dpch-smbus-row mmio
+   in let rk = dpch-kmrn-row mmio
+   in let r5 = "fwsm not painted: no cited offset in either datasheet here, and the vendor driver is the one source this campaign forbids"
+   in if k1 < 0 then diag-result "no-mdio" diag-col-warn [r1, r2, r3] [r1, r2, r3, r4, rs, rk, r5]
+   else diag-result "ok" diag-col-good [r1, r2, r3] [r1, r2, r3, r4, rs, rk, r5]
+
+  dpch-run : DiagCtx -> [Device.Port, Device.Mmio] DiagResult
+  dpch-run (c) =
+   when e1000-find (c.dc-pci)
+    is None -> diag-result "no-part" diag-col-dim ["no eligible Intel part on the bus"] ["no eligible Intel part on the bus"]
+    is Just (d) -> dpch-part d

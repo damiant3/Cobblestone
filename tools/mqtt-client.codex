@@ -72,12 +72,19 @@ Section: Pumping
     mr-buf : List Integer
   }
 
+ A HALF-WRITTEN MQTT PACKET ENDS THE SESSION. The fixed header carries a
+ remaining-length varint, so a broker that reads a short packet is left waiting
+ for bytes that are not coming, and the next packet we send lands inside the
+ one it is still counting. The loop stops at the first incomplete packet and
+ closes rather than writing the next one after a gap.
+
   mqtt-send-all : TcpTransportState, List (List Integer), Integer -> [Network.Read, Network.Write] TcpTransportState
   mqtt-send-all (ts) (outs) (i) =
     if i >= list-length outs then ts
     else act
-      ts1 <- net-io-send-raw ts (list-at outs i)
-      mqtt-send-all ts1 outs (i + 1)
+      s <- net-io-send-raw-checked ts (list-at outs i)
+      if s.ns-complete == False then net-io-close (s.ns-transport)
+      else mqtt-send-all (s.ns-transport) outs (i + 1)
     end
 
   mqtt-pump : MqttEp, TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write] MqttRun

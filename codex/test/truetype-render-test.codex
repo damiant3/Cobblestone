@@ -1,6 +1,7 @@
 Chapter: TrueTypeRenderTest
   cites Encode chapter TrueType
   cites Ui chapter GlyphRasterizer
+  cites Guios chapter FontLoad
 
 Section: Embedded Test Font
   test-font-bytes : List Integer
@@ -119,7 +120,91 @@ Section: Anti-Aliased Tests
       else count-gray xs (i + 1) acc
     else count-gray xs (i + 1) acc
 
+Section: The Cell Is The Box, Not The Em
+
+ `fb-render-glyph` rasterizes into a cell sized from `head.yMax - head.yMin`,
+ which for a real face can EXCEED `unitsPerEm`: cmunss is upem 2048 with the
+ box running -725 to 1866, so a 32 pixel em needs 41 rows. Until 2026-08-20
+ the cell was clamped to `ppem + ppem / 4` and then trimmed back to `ppem`,
+ and both cuts came off the bottom of the box, where the descenders are.
+
+ The face embedded above cannot see that, and its inability is the reason
+ this section patches it. Its box is 0 to 700 against upem 1024, so the box
+ is SMALLER than the em, `full-h` lands under `ppem`, and the clamp and the
+ trim are both dead on it: the old code and the new agree. An arm built on
+ it would have passed either way.
+
+ So the head is rewritten in the buffer to a box of -300 to 1000, which is
+ 1300 against an em of 1024, and at ppem 32 that is 41 rows. The old code
+ answered 32 there and the new answers 41. `head` sits at byte 228 of this
+ face, so `yMin` is at 266 and `yMax` at 270, each big-endian.
+
+  ttf-head-ymin-hi : Integer = 266
+
+  ttf-head-ymax-hi : Integer = 270
+
+  test-tall-box : Text =
+    let bytes = test-font-bytes
+    in let n = list-length bytes
+    in let buf = alloc-bytes n
+    in let w = fl-list-to-buf bytes buf 0 n
+    in let a = poke-byte buf ttf-head-ymin-hi 254
+    in let b = poke-byte buf (ttf-head-ymin-hi + 1) 212
+    in let c = poke-byte buf ttf-head-ymax-hi 3
+    in let d = poke-byte buf (ttf-head-ymax-hi + 1) 232
+    in let font = fb-parse-ttf buf n
+    in let g = fb-render-glyph buf font 65 32
+    in let rows = if g.rg-width > 0 then list-length (g.rg-pixels) / g.rg-width else 0
+    in "tall upem=" & show (font.tf-head.th-units-per-em) & " ymin=" & show (font.tf-head.th-y-min) & " ymax=" & show (font.tf-head.th-y-max) & " height=" & show (g.rg-height) & " rows=" & show rows
+
+ The control the defect cannot move: the face UNPATCHED, whose box fits
+ inside its em. `full-h` is 22 at ppem 32, below the em, so the cell floors
+ at `ppem` and reads 32 both before this change and after. A row that stays
+ still is what proves the arm above is measuring the clamp rather than
+ measuring every face.
+
+  test-short-box : Text =
+    let bytes = test-font-bytes
+    in let n = list-length bytes
+    in let buf = alloc-bytes n
+    in let w = fl-list-to-buf bytes buf 0 n
+    in let font = fb-parse-ttf buf n
+    in let g = fb-render-glyph buf font 65 32
+    in let rows = if g.rg-width > 0 then list-length (g.rg-pixels) / g.rg-width else 0
+    in "short ymax=" & show (font.tf-head.th-y-max) & " height=" & show (g.rg-height) & " rows=" & show rows
+
+ `fl-cap-rows` measures the cap band off the 'H' outline. This face's cmap
+ covers 32 to 65, so it has no 'H' at all, which makes this arm a test of
+ the FALLBACK and of nothing else: with no 'H' the cap must come back equal
+ to the ascent rather than as zero, since a zero would collapse every
+ centred band to the top of its box.
+
+ **This arm cannot see the cap path itself**, and no arm here can, because
+ the embedded face has no capital to measure. That path is verified against
+ the real face instead: parsing `fonts/cc0/cmunss.ttf` on the host gives
+ upem 2048, yMax 1866 and an 'H' yMax of 1421, so at ppem 32 the cell is 41
+ rows, the baseline is 29 and the cap is 22, and the running desk's Monitor
+ pane prints `cell 41   baseline 29   cap 22` from the font handle. Two
+ instruments, one answer.
+
+  test-cap-fallback : Text =
+    let bytes = test-font-bytes
+    in let n = list-length bytes
+    in let buf = alloc-bytes n
+    in let w = fl-list-to-buf bytes buf 0 n
+    in let a = poke-byte buf ttf-head-ymin-hi 254
+    in let b = poke-byte buf (ttf-head-ymin-hi + 1) 212
+    in let c = poke-byte buf ttf-head-ymax-hi 3
+    in let d = poke-byte buf (ttf-head-ymax-hi + 1) 232
+    in let font = fb-parse-ttf buf n
+    in let cap = fl-cap-rows buf font 32
+    in let asc = font.tf-head.th-y-max * 32 / (font.tf-head.th-units-per-em)
+    in "cap=" & show cap & " asc=" & show asc & " fell-back=" & (if cap == asc then "yes" else "no")
+
   opening : [Console] Nothing = act
+    print-line-uni test-tall-box
+    print-line-uni test-cap-fallback
+    print-line-uni test-short-box
     print-line-uni test-parse-font
     print-line-uni test-num-glyphs
     print-line-uni test-upem

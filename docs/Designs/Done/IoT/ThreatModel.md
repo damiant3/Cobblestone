@@ -1,7 +1,13 @@
 # IoT Threat Model: Adversarial Analysis
 
 **Created**: 2026-06-12 (reek)
-**Status**: Design -- not yet started
+**Status**: CLOSED 2026-08-21 (fester). Standing analysis, not live work.
+All four Open Questions are settled and measured below; the one that was
+still real work, hardware crypto dispatch, moved to
+`HardwareAbstractionLayer.md` open question 5. The residual-risk register
+stays as the honest statement of exposure and each row points at the lane
+that owns it, so nothing here is drawable and this document is a reference
+rather than a campaign.
 **Upstream**: All six IoT design docs, `docs/Reference/IoT/Compliance/`
 
 ## Purpose
@@ -110,14 +116,24 @@ malicious firmware image, or by abusing a code-loading mechanism
   boot chapter for each target (BackendArchitecture.md, boot
   infrastructure section).
 
-**Residual**: the x86-64 bare-metal kernel currently identity-maps
-with 2 MB pages and does not set NX bits on data pages. This is a
-known gap in the x86 boot infrastructure (the page tables in
-`X86_64Boot.codex` are minimal). Adding NX to data/stack pages is
-straightforward (bit 63 of the PTE) but is not yet implemented.
-For the IoT targets this must be a Phase B1/B3 deliverable, not a
-someday item -- the Cortex-M MPU and the Cortex-A MMU both support
-it and it is table stakes for CRA compliance.
+**x86-64 NX is IMPLEMENTED, measured 2026-08-21 against the source.** This
+paragraph said it was not, and said so long enough that it was drawn as an
+item. `bare-metal-nx-boundary` sets where code ends, `emit-pd-entries` takes
+an `nx` flag, every entry of the device PD carries bit 63, and the
+demand-paging `#PF` handler ORs bit 63 into each identity PDE it writes, so
+everything above the code boundary is non-executable and demand pages match
+it. The 2 MB identity mapping is real and is the granularity, not a gap in
+the enforcement.
+
+What was genuinely missing was one bit, and it was on the other side of the
+boundary: the boot processor never set EFER.NXE and inherited it from
+firmware, while the AP trampoline had always set it. With NXE clear, bit 63
+is RESERVED rather than no-execute, so a machine whose firmware leaves it
+clear faults on the first instruction after the runtime tables reach CR3.
+Fixed at main 18577; both boot-processor sites now set SCE and NXE together.
+
+For the IoT targets the Cortex-M MPU and Cortex-A MMU halves remain a Phase
+B1/B3 deliverable and are not covered by any of the above.
 
 ### 1.3 Return-oriented programming (ROP) / code reuse attacks
 
@@ -663,7 +679,7 @@ effect that the emitter enforces unconditionally.
 | Design Document | Attack classes it addresses |
 |---|---|
 | BackendArchitecture | 1.2 (W^X per target), 1.3 (stack layout), 3.1 (debug lockdown per board) |
-| HardwareAbstractionLayer | 1.1 (linear handles prevent peripheral misuse), 3.1 (JTAG disable in board chapters), 3.2 (hardware crypto preference) |
+| HardwareAbstractionLayer | 1.1 (linear handles prevent peripheral misuse), 3.1 (JTAG disable in board chapters). **NOT 3.2**: this row claimed hardware crypto preference, and measured 2026-08-21 that design did not mention crypto at any point and no board chapter drives an accelerator. It is now that design's open question 5, which is a different claim from a defence it provides |
 | ProtocolStack | 2.1-2.6 (all network attacks), 5.1 (nonce management via TLS/DTLS) |
 | ComplianceEvidence | Maps every attack class to a regulatory requirement and evidence artifact |
 | OTAFirmwareUpdate | 1.5 (malicious firmware), 2.3 (replay/anti-rollback), 4.1 (supply chain via SBOM) |
@@ -679,7 +695,7 @@ address and that the compliance evidence must classify honestly:
 | ID | Gap | SL impact | Mitigation path |
 |---|---|---|---|
 | R1 | No DPA/fault-injection countermeasures in software crypto | SL 3+ | Hardware crypto acceleration via HAL; software blinding is future work |
-| R2 | NX bit not set on x86 data pages (current boot infra) | SL 2 | Straightforward PTE change; must be Phase B1 deliverable for IoT targets |
+| R2 | CLOSED for x86 (implemented; EFER.NXE fixed at main 18577). The Cortex-M MPU and Cortex-A MMU halves are still open | SL 2 | Phase B1 deliverable for the IoT targets only |
 | R3 | FactStore lacks supersession/revocation | SL 2+ | Required for key rotation and OTA trust management; trust-layer open work |
 | R4 | Forensic chain not durably persisted | SL 2+ | Audit-trail claims capped at MECHANISM(partial) until implemented |
 | R5 | Proof-of-work difficulty not dynamically adjustable | SL 2+ | DoS resilience limited under sustained attack; trust-layer enhancement |
@@ -694,33 +710,44 @@ address and that the compliance evidence must classify honestly:
 This document is analysis, not code. No memory or time-complexity
 assessment required.
 
-## Open Questions
+## Open Questions -- all four CLOSED
 
-1. **NX enforcement priority.** Should NX bits on data/stack
-   pages be added to the x86 boot infrastructure now (before IoT
-   work begins), or is it sufficient to implement it per-target
-   in the IoT boot chapters? Recommendation: now, because it
-   strengthens the x86 security story for the Monday demo and
-   the compliance evidence.
-2. **Hardware crypto HAL surface.** The ESP32-C6's RSA/AES/SHA
-   accelerators and the STM32H7's crypto coprocessor have
-   different register interfaces. Should the foreword crypto
-   chapters gain a dispatch mechanism (software vs hardware
-   implementation selected at compile time based on target), or
-   should board chapters provide their own crypto effect handlers?
-   Recommendation: foreword defines the API; board chapters
-   provide the implementation via effect handlers; the capability
-   manifest indicates whether hardware crypto is in use.
-3. **Fault-injection countermeasures scope.** Double-verification
-   of the Ed25519 signature in the boot selector (already
-   designed in OTA) is one countermeasure. Should the verifier
-   itself gain redundant checks (verify, then re-verify with a
-   different code path)? This adds code size and latency.
-   Recommendation: yes, for the boot selector only (it is small
-   and on every boot path); not for the general verifier (it
-   runs behind Gate B, which is already behind Gate A).
-4. **Secure element support.** External secure elements (ATECC608,
-   Infineon OPTIGA) offload key storage and signing to tamper-
-   resistant hardware. Should the Identity design support them?
-   This is an I2C peripheral from the HAL's perspective but adds
-   a new trust anchor model. Defer to design-partner requirements.
+Ruling 19 (red, 2026-08-20) settled these, and each was then
+measured rather than reasoned about (fester, 2026-08-21). The
+measurement is what makes the closure worth anything, so it is
+recorded per question. **The residue is closer to nothing than to
+three recommendations**, which is the sentence a lane needs before
+it spends an item finding out (L-ADJECTIVE: a count standing in for
+a shape).
+
+1. **NX enforcement. CLOSED on x86, and the remainder is not this
+   document's.** It was never really a question: x86 NX was already
+   implemented when it was written, so it asked whether to add
+   something that exists. What was genuinely missing was EFER.NXE on
+   the boot processor, fixed at main 18577. Re-measured 2026-08-21:
+   `bare-metal-nx-boundary` (`X86_64State.codex:199`) and
+   `efer-sce-nxe` = 2049 at both boot-processor sites
+   (`X86_64Chapter.codex:410`, `X86_64Boot.codex:1925`) are present.
+   What remains is per-target enforcement in the IoT boot chapters
+   (Cortex-M MPU, Cortex-A MMU), which is ordinary Phase B1/B3 work
+   in another lane's chapters and is tracked as R2 above.
+2. **Hardware crypto dispatch. Still real work, and it MOVED to
+   `HardwareAbstractionLayer.md` open question 5**, which is the
+   design that owns board peripherals. The shape ruling 19 settled
+   is recorded there. It is not drawable from here and never was:
+   measured 2026-08-21, `aes|sha|crypto` over `codex/boards/`
+   matches twice and both are the word "shared", so no board chapter
+   drives any accelerator, and no other IoT design mentions crypto
+   dispatch. It wants a design before it wants a lane.
+3. **Fault-injection countermeasures. CLOSED as not worth doing
+   yet, because it would harden a path nothing runs.** The
+   recommendation was redundant verification in the boot selector
+   only. Measured 2026-08-21: `boot-load`, `boot-verify-candidate`
+   and `boot-run` (`codex/foreword/core/OtaBoot.codex`) are reached
+   from each other and from `codex/test/apps/ota-boot-rollback`, and
+   from nothing else in the tree. The whole selector is test-only
+   (L-UNCALLED). Redundancy on it would buy a second check of a
+   function no production caller invokes; the first thing that path
+   needs is a caller, not a countermeasure.
+4. **Secure element support.** Deferred to design-partner
+   requirements, and that is not ours to answer. Unchanged.

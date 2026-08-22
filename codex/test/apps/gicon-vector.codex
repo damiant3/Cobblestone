@@ -1,0 +1,83 @@
+Chapter: GiconVectorTest
+  cites Works chapter GopIcon
+  cites Works chapter GopDraw
+  cites UI chapter Vector
+  cites Foreword chapter Console
+
+ The desk's icons are eight-pixel masks shown at three or four times size.
+ `gicon-render` rasterizes a PATH instead, at whatever size the surface asks
+ for, into a byte of coverage per pixel.
+
+ Three shapes, chosen so each one can fail differently. The document is
+ straight segments only, so it isolates the store and the addressing from the
+ flattener. The disc is `vec-circle`, which is line segments about a centre,
+ so it isolates the shape constructor. The drop is TWO CUBICS and nothing
+ else, so its area is the whole of what the curve arm contributes: if
+ `PcBezierTo` were dropped again the path would enclose nothing and the area
+ would be zero, which is the same control the vector arm uses one level down.
+
+ Inside, outside, and a partial byte are asserted separately because only the
+ third distinguishes coverage from a stencil.
+
+Section: Body
+
+  gvt-n : Integer = 32
+
+  gvt-partials : Integer, Integer, Integer, Integer -> Integer
+  gvt-partials (blob) (n) (i) (acc) =
+    if i >= n * n then acc
+    else let v = peek-byte blob i
+    in let p = if v > 0 then (if v < 255 then 1 else 0) else 0
+    in gvt-partials blob n (i + 1) (acc + p)
+
+  gvt-area : Integer, Integer, Integer, Integer -> Integer
+  gvt-area (blob) (n) (i) (acc) =
+    if i >= n * n then acc / 255
+    else gvt-area blob n (i + 1) (acc + peek-byte blob i)
+
+  gvt-row : Text, VecPath -> Text
+  gvt-row (name) (p) =
+    let blob = gicon-render p gvt-n
+    in name & " in=" & show (gicon-cov-at blob gvt-n 16 16)
+       & " out=" & show (gicon-cov-at blob gvt-n 0 0)
+       & " partial=" & show (gvt-partials blob gvt-n 0 0)
+       & " area=" & show (gvt-area blob gvt-n 0 0)
+
+Section: The Shipped Set
+
+ Nineteen drawings reach the desk's chrome and its launcher, and eyeballing
+ them one at a time on the glass does not scale and does not last. A census
+ does both. Two things it catches that a picture does not make obvious: a
+ contour wound so the fill INVERTS, which shows as an area near the whole
+ 1,024 cell box, and a shape that dropped out entirely, which shows as zero.
+
+ Overlapping contours cancel under the even-odd rule the fill uses, so a
+ drawing built from overlapping pieces loses the overlap. That failure lands
+ in the middle of the range rather than at either end, so the census records
+ each area rather than asserting a band: a number that moves is the signal.
+
+  gvt-set : Integer, Text -> Text
+  gvt-set (i) (acc) =
+    if i >= gicon-drawn-count then acc
+    else let name = gicon-drawn-name i
+    in let blob = gicon-render (gicon-vec-named name) gvt-n
+    in gvt-set (i + 1) (acc & name & "=" & show (gvt-area blob gvt-n 0 0) & " ")
+
+  gvt-empty : Integer, Integer -> Integer
+  gvt-empty (i) (acc) =
+    if i >= gicon-drawn-count then acc
+    else let a = gvt-area (gicon-render (gicon-vec-named (gicon-drawn-name i)) gvt-n) gvt-n 0 0
+    in let bad = if a <= 0 then 1 else if a >= gvt-n * gvt-n then 1 else 0
+    in gvt-empty (i + 1) (acc + bad)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (gvt-row "doc " gicon-vec-doc)
+    print-line-uni (gvt-row "disc" gicon-vec-disc)
+    print-line-uni (gvt-row "drop" gicon-vec-drop)
+    print-line-uni ("set " & gvt-set 0 "")
+    print-line-uni ("empty or full : " & show (gvt-empty 0 0) & " of " & show gicon-drawn-count)
+  end
+
+Page 1

@@ -1,0 +1,73 @@
+Chapter: HttpSendShort
+  cites Net chapter HttpFetch
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Foreword chapter Result
+  cites Foreword chapter Console
+
+ THE TWO BRANCHES THE MIGRATION ADDED, neither of which any existing arm can
+ reach. `http-client-test`, `tls-fetch-loopback`, `tls-noauth-loopback` and
+ `tls-record-guard` all pass unchanged across this change, and every one of
+ them sends into a peer that is reading: they exercise the complete path only,
+ so they read the same whether the sender is checked or not.
+
+ `http-exchange` used to send and then wait for a response to a request the
+ server never fully received, and report `http: no response` -- naming the far
+ end for our own short write. It now says which it was, and how far it got.
+
+ `https-send-loop` used to send the NEXT TLS record after one that stopped part
+ way. The record layer is length-prefixed, so the peer cannot resync from a gap
+ in the middle of one; the loop now stops and closes.
+
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  seg0 : RexmitSeg = RexmitSeg { rx-frame = [], rx-ack = 0, rx-sent = 0, rx-resent = False }
+
+  fill-queue : Integer, List RexmitSeg -> List RexmitSeg
+  fill-queue (n) (acc) = if n <= 0 then acc else fill-queue (n - 1) (list-push acc seg0)
+
+  base-sess : NetSession = net-session-new cli-mac cli-ip gw-ip 50000 80 srv-ip 1000
+
+ Queue full AND closed, `net-send-capped`'s fixture: `net-io-send-drain`
+ returns at its own closed check before it polls, so no arm here needs a NIC.
+
+  stalled : NetSession =
+    let closed = set-conn base-sess (tcp-set-state (base-sess.conn) TcpClosed)
+    in set-rexmit closed (fill-queue net-rexmit-capacity []) 3 0
+
+ THE CONTROL MUST BE PUT IN `TcpEstablished` BY HAND. A session out of
+ `net-session-new` is not connected, so the sender refuses it and the control
+ agrees with its subject for the wrong reason.
+
+  established : NetSession = set-conn base-sess (tcp-set-state (base-sess.conn) TcpEstablished)
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  said : Result Text Text -> Text
+  said (r) = when r
+    is Ok (v) -> "ok " & v
+    is Err (e) -> e
+
+  mk-bytes : Integer, List Integer -> List Integer
+  mk-bytes (n) (acc) = if n <= 0 then acc else mk-bytes (n - 1) (list-push acc 65)
+
+Section: Entry
+
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    let req = mk-bytes 40 []
+    in let recs = [mk-bytes 12 [], mk-bytes 12 []]
+    in act
+      short <- http-exchange (transport-new stalled) req
+      print-line-uni ("exchange stalled : " & said short)
+      sent <- https-send-loop (transport-new stalled) recs 0
+      print-line-uni ("records stalled  : closed=" & yn (net-io-conn-closed sent))
+      whole <- https-send-loop (transport-new established) recs 0
+      print-line-uni ("records healthy  : closed=" & yn (net-io-conn-closed whole))
+    end
+  end

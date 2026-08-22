@@ -214,9 +214,49 @@ Section: Expression Emission
    in let sep = if i > 0 then ", " else ""
    in sep & "'" & gvy-sanitize (f.name) & "': " & emit-gvy-expr (f.value) arities & emit-gvy-field-vals fields (i + 1) arities
 
+ Each arm nests the REST of the match inside its own `else`, so a guard
+ written as `if (test) { if (g) { body } else { rest } } else { rest }`
+ duplicates the tail once per guarded arm and is exponential in the number
+ of guards. A guarded match becomes a return chain in the same closure
+ instead, which is linear; a match with no guard keeps the nested if/else.
+
+  gvy-guard-trivial : IRExpr -> Boolean
+  gvy-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  gvy-branches-guarded : List IRBranch, Integer -> Boolean
+  gvy-branches-guarded (bs) (i) =
+   if i >= list-length bs then False
+   else if gvy-guard-trivial ((list-at bs i).guard) == False then True
+   else gvy-branches-guarded bs (i + 1)
+
+  gvy-guarded-return : IRExpr, IRExpr, List ArityEntry -> Text
+  gvy-guarded-return (guard) (body) (arities) =
+   if gvy-guard-trivial guard then "return " & emit-gvy-expr body arities & "; "
+   else "if (" & emit-gvy-expr guard arities & ") { return " & emit-gvy-expr body arities & " } "
+
+  emit-gvy-chain : List IRBranch, Integer, List ArityEntry -> Text
+  emit-gvy-chain (branches) (i) (arities) =
+   if i == list-length branches then "throw new Exception('Non-exhaustive match')"
+   else let b = list-at branches i
+   in emit-gvy-chain-arm (b.pattern) (b.guard) (b.body) arities & emit-gvy-chain branches (i + 1) arities
+
+  emit-gvy-chain-arm : IRPat, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-gvy-chain-arm (pat) (guard) (body) (arities) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "if (_s == " & text & ") { " & gvy-guarded-return guard body arities & "} "
+    is IrCtorPat (name) (subs) (ty) (sp) -> "if (_s.tag == \"" & name & "\") { " & emit-gvy-ctor-bindings subs 0 & gvy-guarded-return guard body arities & "} "
+    is IrVarPat (name) (ty) (sp) -> "def " & gvy-sanitize name & " = _s; " & gvy-guarded-return guard body arities
+    is IrWildPat (sp) -> gvy-guarded-return guard body arities
+    is IrVecPat (pats) (ty) (sp) -> gvy-guarded-return guard body arities
+
   emit-gvy-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
   emit-gvy-match (scrut) (branches) (arities) (depth) =
-   "({ def _s = " & emit-gvy-expr scrut arities & "; " & emit-gvy-match-body branches 0 arities depth & " })()"
+   if gvy-branches-guarded branches 0
+   then "({ def _s = " & emit-gvy-expr scrut arities & "; " & emit-gvy-chain branches 0 arities & " })()"
+   else "({ def _s = " & emit-gvy-expr scrut arities & "; " & emit-gvy-match-body branches 0 arities depth & " })()"
 
   emit-gvy-match-body : List IRBranch, Integer, List ArityEntry, Integer -> Text
   emit-gvy-match-body (branches) (i) (arities) (depth) =

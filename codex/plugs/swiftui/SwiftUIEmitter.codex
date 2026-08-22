@@ -163,7 +163,21 @@ Section: Expression Emission
    else let b = list-at branches i
    in let cond = emit-sw-pat-cond (b.pattern) "_s"
    in let binds = emit-sw-pat-binds (b.pattern) "_s"
-   in "if " & cond & " { " & binds & "return " & emit-sw-expr (b.body) arities indent & " }; " & emit-sw-match-arms branches arities indent (i + 1)
+   in "if " & cond & " { " & binds & sui-guarded-ret (b.guard) (emit-sw-expr (b.body) arities indent) arities indent & " }; " & emit-sw-match-arms branches arities indent (i + 1)
+
+ The guard sits inside the `if` and after the binds so it can read them, and
+ a refused guard falls out of the block to the next arm's test.
+
+  sui-guard-trivial : IRExpr -> Boolean
+  sui-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  sui-guarded-ret : IRExpr, Text, List ArityEntry, Integer -> Text
+  sui-guarded-ret (guard) (body) (arities) (indent) =
+   if sui-guard-trivial guard then "return " & body
+   else "if " & emit-sw-expr guard arities indent & " { return " & body & " }"
 
   emit-sw-pat-cond : IRPat, Text -> Text
   emit-sw-pat-cond (p) (scrut) =

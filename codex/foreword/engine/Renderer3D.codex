@@ -502,9 +502,9 @@ Section: Per-Pixel Shading
     else if w1 < 0 then 0
     else if w2 < 0 then 0
     else let depth = r3d-interp-depth a b c w0 w1 w2 1000
-    in let lit = if ctx.sc-sh-base == 0 then 9 else r3d-shadow-lit ctx a b c w0 w1 w2 bias
+    in let lit = if ctx.sc-sh-base == 0 then r3d-pcf-taps else r3d-shadow-lit ctx a b c w0 w1 w2 bias
     in let color = if lit == 0 then ctx.sc-amb
-      else if lit >= 9 then r3d-shade-px ctx a b c w0 w1 w2
+      else if lit >= r3d-pcf-taps then r3d-shade-px ctx a b c w0 w1 w2
       else r3d-blend-sh (r3d-shade-px ctx a b c w0 w1 w2) (ctx.sc-amb) lit
     in let final = when ctx.sc-tex
       is None -> color
@@ -557,8 +557,8 @@ Section: Per-Pixel Shading
 
   r3d-sh-taps : R3dShadeCtx, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   r3d-sh-taps (ctx) (ld) (tx) (ty) (bias) (oy) (ox) (acc) =
-    if oy > 1 then acc
-    else if ox > 1 then r3d-sh-taps ctx ld tx ty bias (oy + 1) (0 - 1) acc
+    if oy > r3d-pcf-radius then acc
+    else if ox > r3d-pcf-radius then r3d-sh-taps ctx ld tx ty bias (oy + 1) (0 - r3d-pcf-radius) acc
     else let h = r3d-sh-tap ctx ld (tx + ox) (ty + oy) bias
     in r3d-sh-taps ctx ld tx ty bias oy (ox + 1) (acc + h)
 
@@ -566,18 +566,18 @@ Section: Per-Pixel Shading
   r3d-shadow-lit (ctx) (a) (b) (c) (w0) (w1) (w2) (bias) =
     let tx = (a.pv-lx * w0 + b.pv-lx * w1 + c.pv-lx * w2) / 1000000
     in let ty = (a.pv-ly * w0 + b.pv-ly * w1 + c.pv-ly * w2) / 1000000
-    in if tx < 0 then 9
-    else if ty < 0 then 9
-    else if tx >= ctx.sc-sh-size then 9
-    else if ty >= ctx.sc-sh-size then 9
+    in if tx < 0 then r3d-pcf-taps
+    else if ty < 0 then r3d-pcf-taps
+    else if tx >= ctx.sc-sh-size then r3d-pcf-taps
+    else if ty >= ctx.sc-sh-size then r3d-pcf-taps
     else let ld = (a.pv-ld * w0 + b.pv-ld * w1 + c.pv-ld * w2) / 1000
-    in r3d-sh-taps ctx ld tx ty bias (0 - 1) (0 - 1) 0
+    in r3d-sh-taps ctx ld tx ty bias (0 - r3d-pcf-radius) (0 - r3d-pcf-radius) 0
 
   r3d-blend-sh : Integer, Integer, Integer -> Integer
   r3d-blend-sh (lit-color) (sh-color) (lit) =
-    let r = r3d-chan sh-color 16 + (r3d-chan lit-color 16 - r3d-chan sh-color 16) * lit / 9
-    in let g = r3d-chan sh-color 8 + (r3d-chan lit-color 8 - r3d-chan sh-color 8) * lit / 9
-    in let bl = r3d-chan sh-color 0 + (r3d-chan lit-color 0 - r3d-chan sh-color 0) * lit / 9
+    let r = r3d-chan sh-color 16 + (r3d-chan lit-color 16 - r3d-chan sh-color 16) * lit / r3d-pcf-taps
+    in let g = r3d-chan sh-color 8 + (r3d-chan lit-color 8 - r3d-chan sh-color 8) * lit / r3d-pcf-taps
+    in let bl = r3d-chan sh-color 0 + (r3d-chan lit-color 0 - r3d-chan sh-color 0) * lit / r3d-pcf-taps
     in bit-or (bit-shl r 16) (bit-or (bit-shl g 8) bl)
 
   r3d-raster-fan-sh : R3dTriState, List ClipVert, Integer, R3dShadeCtx, Integer, Integer -> Integer
@@ -662,6 +662,31 @@ Section: Shadow Mapping
   r3d-shadow-bias : Integer = 500
 
   r3d-shadow-slope : Integer = 6
+
+ The percentage-closer filter's half-width, and the only place the tap count
+ is written down. Radius 1 is a 3x3 kernel, nine peek-32 taps into the shadow
+ map for every covered pixel, and it is what ships. Radius 0 is one tap and a
+ hard shadow edge. The taps run per PIXEL and the map read is not sequential,
+ so this constant is quadratic in the per-pixel shadow cost.
+
+ **DO NOT RAISE THIS ABOVE 1. It is a correctness bound, not a quality knob,
+ and raising it is the intuitive move.** At radius 2 the kernel reaches far
+ enough from the fragment to compare against map texels belonging to the
+ CASTER, so a caster starts shadowing itself: `codex/test/engine-shadow.codex`
+ asserts `cube pixel unchanged`, meaning its cube sample renders the same
+ shadowed as plain, and that assertion holds at radius 1 and FAILS at radius 2.
+ Measured 2026-08-20 on the cube-on-plane scene. Radius 2 is simply where it
+ was caught; nothing here establishes that radius 1 is the exact edge, and
+ 3 and above were not measured because 2 already refuses.
+
+ Wider is also quadratically slower and the rate is not constant: the marginal
+ cost of a tap measured 881 us over the 1-to-9 range and 1,194 us over the
+ 9-to-25 range at 640x480. So the only useful direction on this constant is
+ DOWN, which trades soft edges for speed and changes the picture honestly.
+
+  r3d-pcf-radius : Integer = 1
+
+  r3d-pcf-taps : Integer = (2 * r3d-pcf-radius + 1) * (2 * r3d-pcf-radius + 1)
 
   r3d-first-dir : List Light3D, Integer, Integer -> Maybe Vec3
   r3d-first-dir (lights) (i) (n) =

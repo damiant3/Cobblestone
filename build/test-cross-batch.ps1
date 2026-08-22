@@ -73,7 +73,14 @@ foreach ($tf in $allTests) {
     $dir = $tf.DirectoryName
     if ($Filter -and $name -notlike "*$Filter*") { continue }
     $skipReason = $null
-    if (Test-Path "$dir\$name.skip")    { $skipReason = (Get-Content -TotalCount 1 "$dir\$name.skip") }
+    # A .qemudev test is ROUTED before .skip is consulted: its .skip is for
+    # the x86 battery, which has no QEMU device to attach, and names this
+    # runner as where the test actually runs (codex/test/qemu-rng, 2026-08-21).
+    # The sidecar's lines are extra QEMU arguments (a -device pair per line);
+    # an EMPTY one routes the test with nothing attached, which is how the
+    # absent arm is expressed from the same mechanism.
+    if (Test-Path "$dir\$name.qemudev") { $skipReason = "QEMU device (build/test-cross-disk.ps1)" }
+    elseif (Test-Path "$dir\$name.skip")    { $skipReason = (Get-Content -TotalCount 1 "$dir\$name.skip") }
     elseif (Test-Path "$dir\$name.slow")    { $skipReason = "slow" }
     elseif (Test-Path "$dir\$name.fatal")   { $skipReason = "fatal" }
     elseif (Test-Path "$dir\$name.failing") { $skipReason = "error test" }

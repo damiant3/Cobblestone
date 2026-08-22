@@ -11,8 +11,16 @@
 #   Get-Disk | Where-Object BusType -eq 'USB'
 #
 # Usage (from an elevated pwsh):
-#   build/flash-usb.ps1 -Image build/boot/optiona.img -DiskNumber N
-#   build/flash-usb.ps1 -Image build/boot/diag.img -DiskNumber N -SpecFit -Rehearsed   # only a fully rehearsed hash flies
+#   build/flash-usb.ps1 -Image build/boot/diag.img -DiskNumber N -SpecFit
+#   build/flash-usb.ps1 -Image <an image no bed has flown> -DiskNumber N -UnrehearsedAnyway
+#
+# ONLY A REHEARSED HASH FLIES, and that is the default since 2026-08-20 (red).
+# It used to be -Rehearsed, opt-in, which meant the 2026-08-14 ruling in
+# HardwareSitting's QUICKREF -- no flash without a same-bytes full-loop bed
+# rehearsal -- was enforced only when the person flashing remembered to ask for
+# it. The override is -UnrehearsedAnyway and it is deliberately NOT -Force:
+# -Force answers the "type YES" prompt, and one switch must not carry both a
+# convenience and a safety guarantee (red's ruling, L-BODY).
 # Or launch elevated in one shot:
 #   Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-File',
 #     'D:\Projects\NewRepository-fester\build\flash-usb.ps1','-Image',
@@ -35,14 +43,25 @@ param(
     # readback, so a stick that silently drops tail writes fails loudly here
     # instead of mysteriously at boot. Supersedes -FixupDir (no Python).
     [switch]$SpecFit,
-    # L-REHEARSE: refuse to flash an image whose SHA-256 is not in the
-    # rehearsal record. build/boot/diag-arm.ps1 appends a line for the exact
-    # bytes it ran through EVERY arm in both beds; a partial run writes nothing.
-    # So with -Rehearsed the only image that reaches a stick is one that
-    # completed its full mission in the bed as those bytes. -RehearsalRecord
-    # names the list (default: the diag ladder's); -ExpectHash pins the one
-    # hash the flight card names, on top of the record check.
+    # L-REHEARSE: the flash refuses an image whose SHA-256 is in no rehearsal
+    # record. build/boot/diag-arm.ps1 appends a line for the exact bytes it ran
+    # through EVERY arm in both beds; a partial run writes nothing. So the only
+    # image that reaches a stick is one that completed its full mission in the
+    # bed as those bytes. -RehearsalRecord names one list explicitly; by default
+    # BOTH <image>.rehearsed beside the image and the diag ladder's record are
+    # searched, because what matters is that the hash was recorded, not which
+    # file recorded it, and diag-arm.ps1 writes build/boot/diag.rehearsed for
+    # whatever image it rehearses. -ExpectHash pins the one hash the flight card
+    # names, on top of the record check.
+    #
+    # RETAINED AND NOW A NO-OP. Every flight card in HardwareSitting quotes a
+    # command line carrying -Rehearsed, and those must keep running; the switch
+    # asks for what now always happens.
     [switch]$Rehearsed,
+    # The override, and it is NOT -Force. -Force answers the "type YES" prompt;
+    # this skips a safety check, and red's ruling is that one switch must not
+    # carry both. It prints exactly what it is waiving.
+    [switch]$UnrehearsedAnyway,
     [string]$RehearsalRecord = '',
     [string]$ExpectHash = '',
     [switch]$Force,
@@ -59,27 +78,61 @@ if ($Log) { Start-Transcript -Path $Log -Force | Out-Null }
 if (-not (Test-Path -PathType Leaf $Image)) { throw "Image not found: $Image" }
 $imgPath = (Resolve-Path $Image).Path
 
-# --- Safety checks ---
-$disk = Get-Disk -Number $DiskNumber
-if ($disk.BusType -ne 'USB') {
-    throw "Disk $DiskNumber is '$($disk.BusType)', not USB (FriendlyName='$($disk.FriendlyName)'). Refusing to write."
-}
-$imgBytes = [System.IO.File]::ReadAllBytes($imgPath)
+# --- Provenance checks, BEFORE any disk enumeration ---
+#
+# These ask only about the image, so they run first. Two reasons, and the second
+# is the one that matters. A flash that is going to be refused for its bytes
+# should be refused before it touches Get-Disk. And a guard that needs a USB
+# stick present in order to run is a guard nobody can test: with this ordering
+# the accept, refuse and waive arms are all exercisable with a bogus
+# -DiskNumber, which is how they were proven when this became the default.
 $imgHash = (Get-FileHash $imgPath -Algorithm SHA256).Hash
 Write-Host "Image : $imgPath"
 Write-Host "SHA256: $imgHash"
 if ($ExpectHash -and ($ExpectHash.ToUpper() -ne $imgHash)) {
     throw "Image hash $imgHash is not the expected $($ExpectHash.ToUpper()). Refusing to flash: these are not the bytes the flight card names."
 }
-if ($Rehearsed) {
-    $rec = if ($RehearsalRecord) { $RehearsalRecord } else { Join-Path $PSScriptRoot 'boot\diag.rehearsed' }
-    if (-not (Test-Path -PathType Leaf $rec)) { throw "-Rehearsed: no rehearsal record at $rec. Run build/boot/diag-arm.ps1 (every arm, both beds) on this image first." }
-    $hit = @(Get-Content $rec | Where-Object { $_ -like "$imgHash *" })
-    if ($hit.Count -eq 0) {
-        throw "-Rehearsed: image hash $imgHash is NOT in $rec. This image has not completed its full mission in the bed as these bytes (L-REHEARSE). Run build/boot/diag-arm.ps1 with every arm and both beds; a -Only or -SkipOvmf run does not count."
-    }
-    Write-Host "Rehearsed: $($hit[0])"
-}Write-Host "Size  : $($imgBytes.Length) bytes ($([math]::Round($imgBytes.Length/1MB,2)) MB)"
+$rehearsalRecords = if ($RehearsalRecord) { @($RehearsalRecord) } else {
+    @(
+        (Join-Path (Split-Path $imgPath -Parent) ([System.IO.Path]::GetFileNameWithoutExtension($imgPath) + '.rehearsed')),
+        (Join-Path $PSScriptRoot 'boot\diag.rehearsed')
+    ) | Select-Object -Unique
+}
+$rehearsalHit = @()
+foreach ($rec in $rehearsalRecords) {
+    if (Test-Path -PathType Leaf $rec) { $rehearsalHit += @(Get-Content $rec | Where-Object { $_ -like "$imgHash *" }) }
+}
+if ($UnrehearsedAnyway) {
+    Write-Host ''
+    Write-Host 'WAIVED: -UnrehearsedAnyway is set, so the L-REHEARSE check did not run.'
+    Write-Host "  These bytes ($imgHash) are not recorded as having completed a full"
+    Write-Host '  mission in the bed. Boot-and-read green is not mission green; the'
+    Write-Host '  failure modes live at the last write, and this stick may carry them.'
+    Write-Host "  Records searched: $($rehearsalRecords -join ', ')"
+    Write-Host ''
+} elseif ($rehearsalHit.Count -eq 0) {
+    throw @"
+REFUSED: image hash $imgHash is in no rehearsal record.
+  Searched: $($rehearsalRecords -join ', ')
+  This image has not completed its full mission in the bed as these exact bytes
+  (L-REHEARSE, and the 2026-08-14 ruling in HardwareSitting's QUICKREF).
+  Rehearse it:  build/boot/diag-arm.ps1  with every arm and both beds. A -Only
+  or -SkipOvmf run is a dev loop and deliberately records nothing.
+  If you mean to fly unrehearsed bytes anyway, say so by name: -UnrehearsedAnyway.
+  Do NOT reach for -Force; that answers the confirmation prompt and has nothing
+  to do with this check.
+"@
+} else {
+    Write-Host "Rehearsed: $($rehearsalHit[0])"
+}
+
+# --- Disk safety checks ---
+$disk = Get-Disk -Number $DiskNumber
+if ($disk.BusType -ne 'USB') {
+    throw "Disk $DiskNumber is '$($disk.BusType)', not USB (FriendlyName='$($disk.FriendlyName)'). Refusing to write."
+}
+$imgBytes = [System.IO.File]::ReadAllBytes($imgPath)
+Write-Host "Size  : $($imgBytes.Length) bytes ($([math]::Round($imgBytes.Length/1MB,2)) MB)"
 Write-Host "Target: Disk $DiskNumber  $($disk.FriendlyName)  $([math]::Round($disk.Size/1GB,1)) GB"
 if ($imgBytes.Length -gt $disk.Size) { throw "Image ($($imgBytes.Length)) exceeds disk ($($disk.Size))" }
 
@@ -217,7 +270,23 @@ try {
         # against one of our sticks applies to every stick we write, because
         # build-img stamps a deterministic GUID for image reproducibility.
         #
-        # MEASURED 2026-07-29, AND THE THEORY IS WRONG. Two facts, in order:
+        # THE HAZARD BELOW IS FIXED AT THE CAUSE AND THE INSTRUCTION IS RETIRED,
+        # exactly as the block near the end of this file is. It is kept because
+        # it killed the disk-GUID theory with a control, and deleting it invites
+        # that patch back. IT IS NOT LIVE ADVICE AND MUST NOT BE READ AS ANY.
+        # build-img.ps1:208-215 now writes a CONFORMING table (128 entries, the
+        # UEFI 16 KB minimum, FirstUsableLBA 34), so Windows has nothing to
+        # normalise, and this script takes the disk offline and locks every
+        # volume for the whole write, so the eject that triggered it is not
+        # reachable. A conforming stick survives reinsertion unchanged, and
+        # reinsertion and eject are NOT hazards (Damian, 2026-08-18;
+        # HardwareSitting section 3). Measured again 2026-08-20: disk 2 dumped
+        # before the fifth diag flight came back byte-identical to
+        # diag4-returned-20260819.img across every insertion between the two,
+        # which a live rewrite could not survive.
+        #
+        # MEASURED 2026-07-29, AND THE DISK-GUID THEORY IS WRONG. Two facts, in
+        # order, both HISTORICAL:
         #
         # 1. -SpecFit does NOT stop Windows rewriting the GPT. A stick flashed and
         #    verified clean by this script's own readback, then ejected and
@@ -244,8 +313,8 @@ try {
         # 16 KB minimum, which would make our table non-conformant and invite the
         # repair. Do not implement that on this note alone; measure it.
         #
-        # THE OPERATIONAL ANSWER IS UNCHANGED AND IT WORKS: flash, verify, PULL.
-        # A stick that has not been reinserted is correct on the medium.
+        # The operational answer AT THE TIME was flash, verify, PULL. That is
+        # history now: the cause is fixed and the instruction is retired.
         #
         # Randomising here rather than in build-img keeps the .img byte-identical
         # so recorded digests still reproduce. The reason to keep three lines that

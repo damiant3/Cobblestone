@@ -1,0 +1,51 @@
+Chapter: HdaPlayGated
+  cites Foreword chapter Console
+  cites Kernel chapter HdaAudio
+
+ codex-vm counts every PCM buffer it drains to the DAC and exposes the
+ running total at HDA #180, which is the only way a headless test can tell
+ that a sound was actually submitted.
+
+ Two things are asserted and the second is the one worth having. The open
+ gate proves `hda-play-pcm-at` streams from a descriptor list and a sample
+ buffer the CALLER owns and reuses, which is what a caller whose heap is
+ rewound every frame needs. The shut gate proves a refusal submits nothing:
+ a mute that still reached the controller would drain buffers silently and
+ look exactly like a mute that worked, because nobody in a headless run can
+ hear either one.
+
+Section: Body
+
+  plays : Integer = 5
+  samples : Integer = 480
+
+  play-if : Boolean, Integer, Integer -> [Audio] Integer
+  play-if (on) (bdl) (buf) =
+    if on then hda-play-pcm-at bdl buf (samples * 4) else 0
+
+  play-loop : Boolean, Integer, Integer, Integer -> [Audio] Integer
+  play-loop (on) (bdl) (buf) (i) =
+    if i >= plays then 0
+    else act
+      p <- play-if on bdl buf
+      rest <- play-loop on bdl buf (i + 1)
+      p + rest
+    end
+
+  opening : [Console, Audio, Device.Mmio] Nothing = act
+    let bdl = alloc-bytes 16
+    in let buf = hda-square-tone 880 samples
+    in act
+      before <- hda-drained-count
+      a <- play-loop True bdl buf 0
+      opened <- hda-drained-count
+      b <- play-loop False bdl buf 0
+      shut <- hda-drained-count
+      print-line-uni ("before=" & show before & " open=" & show opened & " shut=" & show shut)
+      if opened - before /= plays then print-line-uni ("FAIL: open gate drained " & show (opened - before))
+      else if shut /= opened then print-line-uni ("FAIL: shut gate drained " & show (shut - opened))
+      else print-line-uni "PASS"
+    end
+  end
+
+Page 1

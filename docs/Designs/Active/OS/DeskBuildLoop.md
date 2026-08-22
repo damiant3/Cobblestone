@@ -13,21 +13,20 @@ of this.
 
 ## Where this is up to
 
-| Piece | State |
-|---|---|
-| Edit a chapter out of `SRC/` and save it back | DONE, main 14802 (WORKS-20) |
-| A console pane in the desk | DONE, main 14815 |
-| `vmx` probe reading `IA32_FEATURE_CONTROL` from the desk | DONE, main 14829 |
-| EPT, allocated regions, sizing refusal | DONE, main 15147 |
-| Device-path launch sets host state | DONE, main 15161 |
-| An arena big enough to hold a guest | DONE, answered on metal 2026-08-19 (131072 pages, `HardwareSitting.md`) |
-| Compile from the console | WIRED 2026-08-19, and only half of it is PROVEN. See below |
-| Compare the result against `CODEX.CDX` on the same volume | not started |
+The editing, the console pane, the `vmx` probe, EPT and the sizing refusal,
+device-path launch, and an arena big enough to hold a guest are all done and
+in the depot.
 
-`seed/Codex.img` already carries all three of the things the demo needs, side
-by side: `SOURCE.SRC` (2,779,919 bytes, the whole compiler), `CODEX.CDX`
-(2,759,449 bytes, the compiler as a binary) and `SRC/` (the 64 chapters
-individually, plus `INDEX.TXT`). That image is the bed for everything below.
+| What is left | State |
+|---|---|
+| Compile from the console | The read path runs in the bed and is gated (`codex/test/apps/gcon-compile-read`). The LAUNCH has never run anywhere: no bed has VT-x, so metal is the first machine to execute it |
+| Compare the result against `CODEX.CDX` on the same volume | Built and gated (`gcon-cdx-verdict`, `codex/test/apps/gcon-cdx-verdict`). It compares `vcr-binary` against the volume's buffer with `peek-byte`, so it allocates nothing on top of what the compile already holds, and it reports both lengths and the first differing offset rather than a yes or no (L-SHORT). Seven arms cover identical, a differing byte at the first and a middle offset, produced short, produced long, produced empty, and both empty; with the diff sabotaged to answer identical always, six of the seven flip. Only the launch that feeds it real bytes still waits for metal |
+
+`seed/Codex.img` carries the three things the demo needs side by side:
+`SOURCE.SRC` (the whole compiler as one file), `CODEX.CDX` (the compiler as a
+binary) and `SRC/` (the chapters individually, plus `INDEX.TXT`). That image
+is the bed for everything below. Sizes move with every seed, so read them off
+the image rather than from here.
 
 ## What is actually built, measured rather than assumed
 
@@ -58,47 +57,17 @@ signature checking, trust lattice, policy, capability bitmasks. It is worth
 having in the console eventually, and it is NOT the build path. A session
 that reads the verb list will assume otherwise.
 
-## The blocker: ANSWERED 2026-08-13, VT-x IS AVAILABLE
+## VT-x, and the one number that differs between bed and board
 
-**The flight happened and the answer is yes.** `vmxprobe.img` on disk 2,
-read off the glass by Damian through the console `vmx` command:
+`DevHypervisor` is gated on `vmx-available`, which needs both the lock bit and
+the VMX-outside-SMX bit in `IA32_FEATURE_CONTROL` (MSR 58).
 
-```
-IA32_FEATURE_CONTROL = 5
-VT-x available
-VMX revision id 4
-```
-
-5 is `101` -- lock bit set, VMX-outside-SMX set. **Road A is open and
-Road C does not need pricing.** The revision id is a genuine MSR read
-rather than the `vmx-available == False` default of 0, and 4 is what
-this processor reports, so 4 is what stamps the VMCS.
-
-**Keep the paragraph below, because its lesson outlived its blocker.**
-The bed says 1 and the metal says 5. Two independent codex-vm
-measurements on two different days agreed with each other and were both
-irrelevant: reproducibility is not validity when the instrument is
-pointed at the wrong machine. Anything else gated on a bed-measured
-firmware bit deserves the same suspicion.
-
-## The blocker as it stood, and it was one bit
-
-Everything in `DevHypervisor` is gated on `vmx-available`, which requires both
-the lock bit and the VMX-outside-SMX bit in `IA32_FEATURE_CONTROL` (MSR 58).
-
-**Under codex-vm that MSR reads 1** -- lock set, VMX-outside-SMX clear, the
-encoding of firmware with VT-x switched off. First measured 2026-07-27 and
-recorded in `DevHypervisor.codex` prose; independently reproduced 2026-08-13
-through the desk console, which is a different surface on a different day.
-So a guest compile cannot start in the bed at all.
-
-**It has never been read on metal.** There was no surface that could ask: Dev
-Console needs a UART the ASUS does not have. The console `vmx` command is now
-that surface, and the reading costs one keystroke on the next boot of any
-stick carrying a current desk.
-
-**That reading is the cheapest next action on this whole page**, because it
-decides between the two roads below and nothing else can.
+**The board reads 5 and the bed reads 1.** On the ASUS: lock set,
+VMX-outside-SMX set, VMX revision id 4, so Road A is open and 4 is what stamps
+the VMCS. Under codex-vm the same MSR reads 1, which is the encoding of
+firmware with VT-x switched off, so **a guest compile cannot start in the bed
+at all** and never will. Two codex-vm measurements on two different days
+agreed with each other and were both irrelevant to the question (L-OPTIONAL).
 
 ## The roads
 
@@ -228,16 +197,39 @@ compiles itself.
    and the seed with `gcon-buf-list`, and hands both to `vm-compile-cdx` with
    `vmx-read-revision-id`, printing the returned size or the log.
 
-   **What is proven and what is not, because the bed cannot tell you the
-   rest.** Two arms ran under `build\desk.ps1` against `seed\Codex.img`: with
-   no argument the pane answers `compile <path>`, and with an argument it
-   answers `VT-x is locked off in firmware (IA32_FEATURE_CONTROL=1)`. So the
-   verb dispatches and the refusal fires BEFORE any file is touched, which is
-   the order the code is written in. **Everything past that refusal is
-   unexercised.** codex-vm is itself a WHP hypervisor and the guest sees no
-   VT-x, so the bed cannot reach the read, the conversion, or the launch --
-   not one of those lines has ever run. The first machine to execute them is
-   the metal, and a failure there is expected rather than surprising.
+   **What is proven and what is not. RE-MEASURED 2026-08-21, and most of this
+   paragraph was describing code that no longer exists.** It said the refusal
+   fires before any file is touched and that the bed could reach neither the
+   read nor the conversion. That was true of the order the check sat in until
+   main 18368 moved it to just above `vm-compile-cdx`, and the paragraph was
+   not updated with the code it describes.
+
+   Measured against a copy of `seed\Codex.img`, `compile SRC/INDEX.TXT` now
+   answers, in order, `SRC/INDEX.TXT 2320 bytes, CODEX.CDX 2872563 bytes` and
+   then `VT-x is locked off in firmware (IA32_FEATURE_CONTROL=1)`. So the
+   mount, BOTH reads, `unicode-bytes-to-text` and the byte-count report all
+   run in the bed, and the refusal still fires after them. **What remains
+   unexercised anywhere is the launch alone** -- `vm-compile-cdx` and below.
+   codex-vm is itself a WHP hypervisor and its guest sees no VT-x, so the
+   first machine to execute the launch is the metal, and a failure there is
+   expected rather than surprising.
+
+   **Both arms have a runner now** (`codex/test/apps/gcon-compile-read`),
+   which is the point: this paragraph was wrong for two days because a
+   hand-run arm written into prose is a claim nothing re-evaluates. The gated
+   arm takes NO `.disk` sidecar deliberately, and `no FAT volume on the boot
+   medium` is its pass: reaching the mount at all is what proves the check is
+   no longer above it, and restoring the old order makes the same run answer
+   with the VT-x refusal instead. Byte counts are deliberately not pinned
+   there -- they move with every seed refresh, and a fixture re-minted for
+   unrelated reasons is how an arm stops being read. To reproduce the richer
+   reading above, which is the one that needs a real ESP:
+
+   ```powershell
+   pwsh build/compile.ps1 -Src codex/test/apps/gcon-compile-read.codex `
+     -Out <out>.cdx -Log <log> -Kernel seed/Codex.cdx
+   pwsh build/test-run.ps1 -Kernel <out>.cdx -OutFile <out>.txt -DiskFile <a COPY of seed/Codex.img>
+   ```
 
    The peak cost is a little over nine times `CODEX.CDX` held as a
    `List Integer`, plus the source, on top of whatever the pane holds. The
@@ -252,24 +244,6 @@ intra-compiler cites resolve by assembly rather than by the map. So
 `cites Compiler chapter ...` from the desk does not exist and cannot be
 written. Making it exist is an architectural change to how the compiler is
 assembled, not a wiring job. **Do not start here believing it is a shortcut.**
-
-### Road C -- chain-load the compiler binary. NOT NEEDED, kept for the record.
-
-**Road A is open, so this does not need pricing.** It stays written down
-because it is the fallback if the arena question below kills Road A, and
-because it is a genuinely different demo shape.
-
-`CODEX.CDX` is already on the volume beside the source, and A5 proves the
-compiler compiles itself on the box when it IS the payload (2,753,312 bytes
-out, byte-identical to the host compile, 5.0 minutes, UEFI block path). The
-desk already has `GopFat16` and can read that file. What is missing is the
-hand-off: load the CDX and transfer control, which is what `GopBoot` already
-does for payloads.
-
-This needs no VT-x and no quire change. It costs the desk session -- control
-does not come back -- so it is a different shape of demo: "the desk launches
-the build" rather than "the desk runs the build in a pane". Nobody has costed
-it. **If Road A dies on VT-x, price this before Road B.**
 
 ## Resume recipe
 

@@ -169,14 +169,25 @@ Section: Rendering
   browser-render : BrowserState -> WidgetNode
   browser-render (state) = browser-render-with state (browser-render-viewport state)
 
+  browser-active-scroll : BrowserState -> ScrollState
+  browser-active-scroll (state) =
+    when browser-active-tab state
+      is None -> scroll-new 0 0 0 0
+      is Just (t) -> t.tab-scroll
+
   browser-render-with : BrowserState, WidgetNode -> WidgetNode
   browser-render-with (state) (viewport) =
     let tab-bar = browser-render-tab-bar state
     in let addr-bar = browser-render-address-bar state
+    in let vp-clip = widget-scroll-view "viewport-clip" DirColumn 0 [ viewport ]
+    in let vp-row = widget-scroll-view "viewport-row" DirRow 0 [
+          widget-set-flex vp-clip 1,
+          scroll-bar-or-gap "page-scroll" (browser-active-scroll state)
+        ]
     in let chrome = widget-panel "chrome" DirColumn 0 [
           widget-set-flex (widget-set-min tab-bar state.bs-window-width chrome-tab-bar-height) 0,
           widget-set-flex (widget-set-min addr-bar state.bs-window-width chrome-address-bar-height) 0,
-          widget-set-flex viewport 1
+          widget-set-flex vp-row 1
         ]
     in if state.bs-show-trust-prompt
       then let overlay = browser-render-trust-prompt state
@@ -871,6 +882,102 @@ Section: Media Tick
         else state
 
 Section: Page Scroll Handling
+
+ The viewport is the chrome's third child and is found by position rather than
+ by id, because the id is the PAGE's -- `tab-render-content` hands back whatever
+ the page builder named its root, so there is no fixed name to look for.
+
+  browser-laid-viewport : WidgetNode -> Maybe WidgetNode
+  browser-laid-viewport (laid) =
+    when widget-find laid "chrome"
+      is None -> None
+      is Just (ch) ->
+        if ch.wn-child-count < 3 then None
+        else let row = list-at (ch.wn-children) 2
+        in if row.wn-child-count < 1 then Just row
+        else let clip = list-at (row.wn-children) 0
+        in if clip.wn-child-count < 1 then Just clip
+        else Just (list-at (clip.wn-children) 0)
+
+  browser-subtree-bottom : WidgetNode -> Integer
+  browser-subtree-bottom (n) =
+    let b = n.wn-bounds
+    in browser-bottom-kids (n.wn-children) 0 (n.wn-child-count) (b.lr-y + b.lr-h)
+
+  browser-bottom-kids : List WidgetNode, Integer, Integer, Integer -> Integer
+  browser-bottom-kids (ks) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = browser-subtree-bottom (list-at ks i)
+    in browser-bottom-kids ks (i + 1) n (if d > acc then d else acc)
+
+  browser-viewport-top : WidgetNode -> Integer
+  browser-viewport-top (laid) =
+    when browser-laid-viewport laid
+      is None -> 0
+      is Just (vp) -> let b = vp.wn-bounds in b.lr-y
+
+  browser-viewport-extent : WidgetNode -> Integer
+  browser-viewport-extent (laid) =
+    when browser-laid-viewport laid
+      is None -> 0
+      is Just (vp) -> browser-subtree-bottom vp
+
+ A tab is built by `tab-new` with a viewport of 0 by 0 and a content of 800 by
+ 600, which are placeholders: the tab exists before any layout has said how big
+ either is. Until this ran, `scroll-by` clamped against those placeholders, so
+ the offset it produced had nothing to do with the page on the glass.
+
+ The height that matters is the VISIBLE one, `lh - vy`, not the viewport node's
+ own `lr-h`. Those differ here and the difference is BROWSER-5's other half: a
+ flex child is not shrunk below the minimum its content declares, so the node
+ laid into the pane is taller than the pane and its own bounds cannot say how
+ much of it a reader can see.
+
+  browser-laid-clip : WidgetNode -> Maybe WidgetNode
+  browser-laid-clip (laid) =
+    when widget-find laid "chrome"
+      is None -> None
+      is Just (ch) ->
+        if ch.wn-child-count < 3 then None
+        else let row = list-at (ch.wn-children) 2
+        in if row.wn-child-count < 1 then None
+        else Just (list-at (row.wn-children) 0)
+
+  browser-viewport-width : WidgetNode -> Integer
+  browser-viewport-width (laid) =
+    when browser-laid-clip laid
+      is None -> 0
+      is Just (vp) -> let b = vp.wn-bounds in b.lr-w
+
+  browser-scroll-fit : BrowserState, Integer, Integer -> BrowserState
+  browser-scroll-fit (state) (lw) (lh) =
+    let mark = __heap-save
+    in let laid = widget-layout (browser-render state) (state.bs-theme) (layout-rect 0 0 lw lh)
+    in let vy = browser-viewport-top laid
+    in let ext = browser-viewport-extent laid
+    in let vw0 = browser-viewport-width laid
+    in let dropped = __heap-restore mark
+    in let vh = if lh - vy > 0 then lh - vy else 0
+    in let ch = if ext - vy > 0 then ext - vy else 0
+    in let vw = if vw0 > 0 then vw0 else lw
+    in browser-set-scroll state vw vh ch
+
+  browser-set-scroll : BrowserState, Integer, Integer, Integer -> BrowserState
+  browser-set-scroll (state) (vw) (vh) (ch) =
+    when browser-active-tab state
+      is None -> state
+      is Just (t) ->
+        let old = t.tab-scroll
+        in let sized = scroll-new vw vh vw ch
+        in let fresh = scroll-to sized 0 (old.scr-offset-y)
+        in let t1 = __record-set t "tab-scroll" fresh
+        in __record-set state "bs-tabs" (tab-replace state.bs-tabs t1)
+
+  browser-scroll-offset : BrowserState -> Integer
+  browser-scroll-offset (state) =
+    when browser-active-tab state
+      is None -> 0
+      is Just (t) -> let sc = t.tab-scroll in sc.scr-offset-y
 
   browser-scroll-page : BrowserState, Integer -> BrowserState
   browser-scroll-page (state) (delta) =

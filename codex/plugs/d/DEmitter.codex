@@ -237,16 +237,34 @@ Section: Expression Emission
   emit-d-match-body (branches) (i) (arities) (depth) =
    if i == list-length branches then "throw new Exception(\"Non-exhaustive match\");"
    else let b = list-at branches i
-   in emit-d-match-arm (b.pattern) (b.body) branches i arities depth
+   in emit-d-match-arm (b.pattern) (b.guard) (b.body) branches i arities depth
 
-  emit-d-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
-  emit-d-match-arm (pat) (body) (branches) (i) (arities) (depth) =
+  d-guard-trivial : IRExpr -> Boolean
+  d-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  d-guarded-return : IRExpr, IRExpr, List ArityEntry -> Text
+  d-guarded-return (guard) (body) (arities) =
+   if d-guard-trivial guard then "return " & emit-d-expr body arities & "; "
+   else "if (" & emit-d-expr guard arities & ") return " & emit-d-expr body arities & "; "
+
+ A catch-all arm ends the chain when it has no guard, because nothing after
+ it can be reached. A GUARDED catch-all does not: its guard can refuse, and
+ the arms after it have to still be there.
+
+  emit-d-match-arm : IRPat, IRExpr, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-d-match-arm (pat) (guard) (body) (branches) (i) (arities) (depth) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "if (_s == " & text & ") return " & emit-d-expr body arities & "; " & emit-d-match-body branches (i + 1) arities depth
-    is IrCtorPat (name) (subs) (ty) (sp) -> "if (_s.tag == \"" & name & "\") { " & emit-d-ctor-bindings subs 0 & "return " & emit-d-expr body arities & "; } " & emit-d-match-body branches (i + 1) arities depth
-    is IrVarPat (name) (ty) (sp) -> "auto " & d-sanitize name & " = _s; return " & emit-d-expr body arities & ";"
-    is IrVecPat (pats) (ty) (sp) -> "return " & emit-d-expr body arities & ";"
-    is IrWildPat (sp) -> "return " & emit-d-expr body arities & ";"
+    is IrLitPat (text) (ty) (sp) -> "if (_s == " & text & ") { " & d-guarded-return guard body arities & "} " & emit-d-match-body branches (i + 1) arities depth
+    is IrCtorPat (name) (subs) (ty) (sp) -> "if (_s.tag == \"" & name & "\") { " & emit-d-ctor-bindings subs 0 & d-guarded-return guard body arities & "} " & emit-d-match-body branches (i + 1) arities depth
+    is IrVarPat (name) (ty) (sp) -> if d-guard-trivial guard then "auto " & d-sanitize name & " = _s; return " & emit-d-expr body arities & ";"
+     else "{ auto " & d-sanitize name & " = _s; " & d-guarded-return guard body arities & "} " & emit-d-match-body branches (i + 1) arities depth
+    is IrVecPat (pats) (ty) (sp) -> if d-guard-trivial guard then "return " & emit-d-expr body arities & ";"
+     else d-guarded-return guard body arities & emit-d-match-body branches (i + 1) arities depth
+    is IrWildPat (sp) -> if d-guard-trivial guard then "return " & emit-d-expr body arities & ";"
+     else d-guarded-return guard body arities & emit-d-match-body branches (i + 1) arities depth
 
   emit-d-ctor-bindings : List IRPat, Integer -> Text
   emit-d-ctor-bindings (subs) (i) =

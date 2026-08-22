@@ -40,12 +40,36 @@ Address              Size       Region
 
 Fixed addresses for runtime state. Defined in
 `codex/compiler/Emit/X86_64Boot.codex`, starting at byte 28672 (0x7000).
+A few cells are owned by chapters outside it and say so in their row
+(`net-driver-cb` and `net-driver-poll-cell` are `codex/os/net/NetDriver.codex`).
+
+**This table went 23 rows short and nothing noticed, which is the hazard the
+`guard-page-base-addr` row already describes, one scale up.** Measured
+2026-08-20 while claiming a cell for the GOP-mode bank: the source defined 60
+in-band cells and this table listed 40, and the missing ones were not obscure
+-- the whole identity block (`device-seed-addr`, `identity-key-addr` and its
+two companions), both UEFI handles, the four `ata-active-*` cells and the
+profiler pair. **A reader trusting the table saw a free span at 30064..30719
+that is densely claimed.** There is no runner, so the table is only ever as
+good as the last person who looked; until there is one, RECONCILE BEFORE YOU
+CLAIM, and it costs one command:
+
+```powershell
+# every in-band cell the source defines, against every row this table lists
+$src = Get-Content codex\compiler\Emit\X86_64Boot.codex
+$cells = $src | Select-String '^\s{2}([a-z0-9-]+)\s*:\s*Integer\s*=\s*(\d+)\s*$' |
+  ForEach-Object { [double]$_.Matches[0].Groups[2].Value } |
+  Where-Object { $_ -ge 28672 -and $_ -le 36400 }
+$doc = Select-String docs\ArchitectsSketchbook.md -Pattern '^\| (\d{5}) \|' |
+  ForEach-Object { [double]$_.Matches[0].Groups[1].Value }
+$cells | Where-Object { $doc -notcontains $_ }      # must be empty
+```
 
 | Address | Name | Width | Purpose |
 |---------|------|-------|---------|
 | 28672 | tick-count-addr | 8 | Timer tick counter |
 | 28680 | key-buffer-addr | 8 | Keyboard input buffer |
-| 28688 | current-proc-addr | 8 | Running process index |
+| 28688 | current-proc-addr | 8 | **No x86-64 definition, measured 2026-08-20.** Only the ARM64 and RISC-V lanes define a `current-proc-addr` and both put it elsewhere (`Arm64Boot.codex` `#80010`, `Arm64Runtime` `#40006000`, `RiscVRuntime` `#80006000`). The cell is FREE on x86-64; the row is kept saying so rather than deleted, because a reader who finds it in an older revision needs to know why it looked taken |
 | 28696 | arena-base-addr | 8 | Phase allocator mountain base |
 | 28704 | serial-write-pos-addr | 8 | Serial output ring write position |
 | 28712 | serial-read-pos-addr | 8 | Serial input ring read position |
@@ -70,13 +94,36 @@ Fixed addresses for runtime state. Defined in
 | 29488 | ata-identify-buf-addr | 512 | ATA IDENTIFY data buffer |
 | 30000 | ata-sector-count-addr | 8 | ATA detected sector count |
 | 30008 | slice-table-addr | 32 | Scheduler time-slice table |
+| 30040 | fork-free-head-addr | 8 | Fork pool free-list head |
+| 30048 | starve-counter-addr | 8 | Scheduler starvation counter |
 | 30056 | boot-factstore-addr | 8 | Boot fact store pointer |
+| 30064 | identity-table-base | 512 | Spans 30064..30575 |
+| 30576 | **device-seed-addr** | 32 | Entropy seed, filled by the Option A UEFI stub from RDRAND where the processor has it and four rotated TSC samples where it does not. `GopWizard` and `IdentityManager` both mix it into keygen; it is weak in the TSC case and is never the all-zero cell the first keygen mixed in |
+| 30608 | **identity-key-addr** | 32 | The pinned private-key slot. `key-load` (syscall 15) copies the seed in, `key-zero` (16) clears it, and no user-mode page table maps it |
+| 30640 | **identity-key-loaded-addr** | 8 | The loaded flag `key-status` (syscall 18) reads. 1 while unlocked |
+| 30648 | identity-lock-tick-addr | 8 | Last-activity tick for the idle lock timeout (`idm-check-timeout`) |
+| 30656 | ata-active-drive-addr | 8 | Active ATA drive index |
+| 30664 | ata-active-base-addr | 8 | Active ATA I/O base port |
+| 30672 | ata-active-ctrl-addr | 8 | Active ATA control port |
+| 30680 | ata-active-select-addr | 8 | Active ATA drive-select byte |
+| 30688 | demand-fault-count-addr | 8 | Demand-paging faults taken |
+| 30696 | serial-primed-magic-addr | 8 | Serial-primed marker |
+| 30704 | **uefi-systab-addr** | 8 | The UEFI SystemTable the stub hands over. Read by every firmware call after entry; zero in the EBS world |
+| 30712 | **uefi-imghandle-addr** | 8 | The UEFI ImageHandle the stub hands over. `ImageHandle=2` in the bed against AMI's own value is one of the three A5 killers (L-FREEDOM) |
 | 30720 | chan-table-base | 2304 | Channel table (16 × 128 + overhead) |
 | 33024 | nic-present-addr | 8 | NIC detected flag |
+| 33032 | nic-mac-addr | 8 | Detected NIC MAC |
+| 33040 | nic-rx-pending-addr | 8 | A received frame is waiting |
+| 33048 | nic-rx-len-addr | 8 | Length of that frame |
 | 33056 | nic-rx-buf-addr | 1536 | NIC receive buffer |
 | 34592 | nic-tx-buf-addr | 1536 | NIC transmit buffer |
 | 36128 | try-fail-flag-addr | 8 | Try/fail exception flag |
+| 36136 | prof-enabled-addr | 8 | Profiler on |
+| 36144 | prof-cursor-addr | 8 | Profiler write cursor into `prof-buf-addr` (393216) |
 | 36200 | **ap-dispatch-count-addr** | 8 | Processes claimed by a core whose id is not zero. Only `__idle_dispatch` writes it, and the BSP's id is always zero, so a value above zero is evidence an application processor took a process out of the table and ran it. Read by `codex/test/smp-dispatch.codex` |
+| 36216 | ap-preempt-count-addr | 8 | Preemptions taken by an application processor |
+| 36224 | spawn-affinity-addr | 8 | Core affinity requested for the next spawn |
+| 36232 | fs-elevated-addr | 8 | Filesystem elevation flag |
 | 36240 | **devint-count-addr** | 8 | Interrupts taken on a vector that is neither the PIT's (32) nor the local timer's (48). `__interrupt_common` answers those two specially and returns from every other vector, so without this cell a delivered device interrupt and a dropped one are indistinguishable from inside the guest. Incremented with a locked add; the timer vectors branch away before reaching it, so the periodic tick cannot appear here |
 | 36248 | **devint-last-vec-addr** | 8 | The vector of the most recent such interrupt. A test programs a line, then demands that line answered rather than merely that something arrived. Read with 36240 by `codex/test/hpet-interrupt.codex` |
 | 36256 | **ap-id-next-addr** | 8 | The next core id to hand out. An application processor starts in real mode knowing nothing, with no id in any register, so the last act of its trampoline is a locked exchange-add here. The boot processor seeds it with 1 before the start-up IPI and keeps 0 for itself. A dense counter rather than the LAPIC id: the value indexes four arrays of `smp-max-cores` entries, and a LAPIC id is an identifier, not an index |
@@ -745,6 +792,21 @@ collision check watches one direction only: RSP falling below R10.
 There is no stack instrument in a normal build. Anything that needs to know
 what the stack is doing needs a `trace-alloc` build, which also turns on
 allocation tracing and a serial dump, or it needs a new instrument.
+
+**And until 2026-08-20 that advice named a build nobody could make.** The
+switch was severed at three points at once: `build/compile.ps1 -Trace` set the
+mode word `trace`, `emit-cdx` never read it, and
+`compile-to-cdx-with-exit-mode` passed the emitter's `trace` argument as a
+literal `False` -- so this store, `emit-alloc-trace` and
+`emit-trace-serial-dump` were all unreachable while `-Trace` exited 0 and
+handed back an ordinary binary. Found by val 2026-08-19 (a `-Trace` desk was
+byte-for-byte the same SIZE as an ordinary one, which a per-prologue check
+cannot be); reconnected by root 2026-08-20 by threading the mode word through
+that call. `build/trace-arm.ps1` is the runner that keeps it connected: same
+source, same kernel, the switch the only difference, asserting the `-Trace`
+binary is larger AND that `stack-min-rsp-addr` narrows under `-Trace` and only
+under `-Trace`. Measured at the reconnect: plain 88,465 bytes and `narrowed:
+0`, trace 91,721 bytes and `narrowed: 1`.
 
 ### The Guard Page (2026-08-04)
 

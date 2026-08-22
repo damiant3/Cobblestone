@@ -1,0 +1,184 @@
+Chapter: DiagPchK1
+  cites Kernel chapter Pci
+  cites Kernel chapter E1000e
+  cites Dev chapter NicAsde
+  cites Foreword chapter Maybe
+  cites Diag chapter DiagStage
+  cites Diag chapter DiagPch
+  cites Diag chapter DiagNicRing
+  cites Net chapter NetDriver
+
+ The same PHY register `pch` reads at stage 10, read again AFTER the driver
+ has written it, because those two readings answer different questions and
+ only the second one is about the fix.
+
+ `pch` runs before anything touches the part, so its 770.17 is the platform's
+ power-up value. The K1 write happens inside `e1000-init`
+ (`Kernel chapter E1000e`, `e1000-pch-prepare`), which in this ladder is
+ reached only through `net-driver-bring-up` in `b3`. Nothing read the register
+ after that, so a flight where traffic still did not flow could not separate a
+ fix that was applied and did not help from a fix that was never applied at
+ all. This stage is that separation and it is the whole of what it does.
+
+ WHERE IT SITS IS LOAD-BEARING AND IS NOT A MATTER OF TASTE. It must run after
+ the writer and before `asde`. `asde` calls `na-bring-up-after`, which calls
+ `na-phy-kick` (`Dev chapter NicAsde`), which writes BMCR reset; a PHY reset
+ returns 770.17 to its NVM value, which is the documented reason the driver
+ writes K1 after `e1000-phy-bring-up` and not before. A reading taken after
+ `asde` therefore reports the NVM value on every run and would say the write
+ never took even when it took. Moving this stage later re-opens the exact gap
+ it was built to close.
+
+ Not "after b3" -- after the writer. If a later ladder brings `e1000-init` up
+ earlier, this stage follows it.
+
+ The register, its two bits and their citation are `Diag chapter DiagPch`,
+ which owns them; this chapter reads them through that chapter's own accessors
+ rather than restating the numbers, so the pair cannot drift apart.
+
+ THE BED MOVES THIS ROW IN BOTH DIRECTIONS, which is the property `pch`'s
+ kmrn row does not have and declares. `-i219` powers the part up at the
+ campaign's condition (K1 enabled, `Giga_K1_disable` clear) and the driver's
+ write lands, so the row reads `taken`. `-i219-mng-holds` leaves firmware
+ holding the MNG bit, the semaphore acquisition cannot succeed, and MDIO is
+ refused: the row reads `no-mdio`, off `taken`, from the same binary.
+
+ `not-taken` is BOARD-ONLY and is declared rather than left to be discovered.
+ It needs MDIO to answer while the write fails to stick, and the model has no
+ knob for that: every bed arm either lets the write land or refuses the read.
+ On metal it is the reading the stage exists for.
+
+ We say:
+
+Section: States
+
+  dpk-states : List Text = ["taken", "not-taken", "not-pch", "no-mdio", "no-part", "rejected", "bar-bad"]
+
+Section: Verdict
+
+  dpk-verdict : Boolean, Integer -> Text
+  dpk-verdict (pch) (k1) =
+   if pch == False then "not-pch"
+   else if k1 < 0 then "no-mdio"
+   else if bit-and k1 dpch-k1-disable-bit /= 0 then "taken"
+   else "not-taken"
+
+  dpk-colour : Text -> Integer
+  dpk-colour (state) =
+   if state == "taken" then diag-col-good
+   else if state == "not-taken" then diag-col-bad
+   else if state == "no-mdio" then diag-col-warn
+   else diag-col-dim
+
+  dpk-reading : Text -> Text
+  dpk-reading (state) =
+   if state == "taken" then "the write is in the register, so a part that still does not pass traffic was not fixed by K1"
+   else if state == "not-taken" then "MDIO answered and the disable bit is CLEAR, so the K1 step did not take and nothing has tested the theory"
+   else if state == "no-mdio" then "the register did not answer, so this says nothing about the write either way"
+   else if state == "not-pch" then "not an I219, so e1000-pch-prepare returns before the K1 step and there is no write to read back"
+   else "no part"
+
+Section: The Listen After The Write
+
+ NO STAGE LISTENED AFTER THE K1 WRITE (reek, 2026-08-21): the order is
+ nicinit, nicring, b3, pchk1, asde, and only b3's bring-up writes K1, so the
+ board could never show a descriptor landing once K1 was disabled, and the
+ campaign's claim had no row that could confirm it on metal. This listens on
+ the PRODUCTION ring b3 bound, 1.2 s, through the driver's own receive path,
+ with GPRC read before and after. GPRC clears on read, so the first read
+ fences the window and the second counts only frames the MAC accepted inside
+ it. The words are nicring's three, so a reader who has learned one row has
+ learned the other: quiet (nothing counted, nothing seen), arrived-visible
+ (the driver's poll returned a frame), arrived-invisible (the MAC counted a
+ frame and neither the poll nor a DD bit on the ring shows it, which is the
+ stall the K1 step exists to remove). skipped says b3 never bound the driver,
+ which is every run with no peer in DIAG.CFG, and is not a fault.
+
+ The fuel is a bound on a stuck clock and nothing else: nicsit measured
+ 32.6 ns per empty poll on the board and the bed is faster, so a 1.2 s window
+ is some forty million polls, and a cap of twenty million was the bed's
+ window for the first run of this (polls=20000000 on the row, 0.6 s). Two
+ hundred million is five windows; a row reading that number is the clock
+ not advancing, which b3 has already refused on by then.
+
+  dpk-listen-ms : Integer = 1200
+  dpk-listen-chunk : Integer = 2000
+  dpk-listen-fuel : Integer = 200000000
+
+  dpk-poll-chunk : Integer, Integer -> [Network.Read] Integer
+  dpk-poll-chunk (n) (got) =
+   if n <= 0 then got
+   else let hp = __heap-save
+   in act
+    f <- net-driver-recv-frame
+    let seen = if list-length f > 0 then 1 else 0
+    in let r = __heap-restore hp
+    in dpk-poll-chunk (n - 1) (got + seen)
+   end
+
+  dpk-listen-loop : Integer, Integer, Integer, Integer -> [Network.Read] (Integer, Integer)
+  dpk-listen-loop (start) (want) (frames) (polls) =
+   if (hpet-ticks - start) >= want then (frames, polls)
+   else if polls >= dpk-listen-fuel then (frames, polls)
+   else act
+    g <- dpk-poll-chunk dpk-listen-chunk 0
+    dpk-listen-loop start want (frames + g) (polls + dpk-listen-chunk)
+   end
+
+  dpk-listen-word : Integer, Integer -> Text
+  dpk-listen-word (frames) (gprc) =
+   if frames > 0 then "arrived-visible"
+   else if gprc > 0 then "arrived-invisible"
+   else "quiet"
+
+  dpk-listen : Integer -> [Device.Port, Device.Mmio, Network.Read] Text
+  dpk-listen (mmio) =
+   if net-driver-active /= net-card-e1000 then "listen-after-k1 word=skipped (b3 did not bring the driver up, so there is no live ring)"
+   else let started = hpet-start
+   in let hz = hpet-ticks-per-second
+   in if hz <= 0 then "listen-after-k1 word=skipped (no HPET rate to budget the window)"
+   else let ring = bit-and (peek-32 (net-driver-cb + net-driver-off-rx-ring) 0) #FFFFFFFF
+   in let gprc0 = e1000-read mmio e1000-reg-gprc
+   in let rdh0 = e1000-read mmio e1000-reg-rdh
+   in act
+    r <- dpk-listen-loop hpet-ticks ((hz * dpk-listen-ms) / 1000) 0 0
+    when r
+     is (frames, polls) ->
+      let gprc1 = e1000-read mmio e1000-reg-gprc
+      in let dd = nir-dd-count ring 0 0
+      in "listen-after-k1 word=" & dpk-listen-word frames gprc1 & " frames=" & show frames & " gprc-before=" & show gprc0 & " gprc-after=" & show gprc1 & " dd=" & show dd & " rdh=" & show rdh0 & " polls=" & show polls & " ms=" & show dpk-listen-ms
+   end
+
+ The RDH read between the fence and the window is a read and nothing else on
+ the part; nicring reads the same register on every flight. In the bed it is
+ what opens the wire: codex-vm delivers held frames on an RDH read, an RCTL.EN
+ write or an RDT write, and a window that only polls descriptors performs none
+ of those, so the first run of the blocked arm read quiet with the armed frame
+ still held and the instrument could not say no (L-FALSIF).
+
+Section: Rows
+
+  dpk-part : PciDevice -> [Device.Port, Device.Mmio, Network.Read] DiagResult
+  dpk-part (d) =
+   if na-eligible d == False then diag-result "rejected" diag-col-warn ["part " & dpch-bdf d & " " & na-reject-line d] ["part " & dpch-bdf d & " " & na-reject-line d]
+   else let v = e1000-bar-verdict (na-bar-of d)
+   in if v /= e1000-bar-ok then diag-result "bar-bad" diag-col-bad ["part " & dpch-bdf d & " verdict=" & na-verdict-text v] ["part " & dpch-bdf d & " verdict=" & na-verdict-text v]
+   else let mmio = na-mmio-of d
+   in let pch = e1000-pch-part (d.pci-device-id)
+   in let k1 = dpch-paged mmio dpch-k1-page dpch-k1-reg
+   in let extcnf = e1000-read mmio dpch-extcnf-ctrl
+   in let state = dpk-verdict pch k1
+   in let r1 = "k1-after 770.17=" & dpch-hex k1 & " giga-k1-dis=" & dpch-bit k1 dpch-k1-disable-bit & " k1-en=" & dpch-bit k1 dpch-k1-enable-bit
+   in let r2 = "pchk1 " & dpch-bdf d & " devid=" & diag-hex4 (d.pci-device-id) & " pch-part=" & na-yn (if pch then 1 else 0) & " k1-step-shipped=" & na-yn (if e1000-pch-k1-required then 1 else 0)
+   in let r3 = "extcnf 0x00F00=" & diag-hex8 extcnf & " swflag=" & na-yn (bit-and extcnf dpch-swflag-bit) & " (the driver releases it inside e1000-init, so held here is the driver's own leak)"
+   in let r4 = dpk-reading state
+   in act
+    r5 <- dpk-listen mmio
+    diag-result state (dpk-colour state) [r1, r5, r4] [r2, r1, r3, r5, r4]
+   end
+
+  dpk-run : DiagCtx -> [Device.Port, Device.Mmio, Network.Read] DiagResult
+  dpk-run (c) =
+   when e1000-find (c.dc-pci)
+    is None -> diag-result "no-part" diag-col-dim ["no eligible Intel part on the bus"] ["no eligible Intel part on the bus"]
+    is Just (d) -> dpk-part d

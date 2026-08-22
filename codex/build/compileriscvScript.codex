@@ -18,7 +18,16 @@ Section: Parameters
      "throughout), so a caller running several compiles at once must give each",
      "its own directory or they overwrite each other's IR."]
 
-  riscv-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "MemMB" SptInt (SeInt 3072), sh-doc workdir-doc (sh-param-default "WorkDir" SptString (SeLit ""))]
+  kernel-doc : List Text =
+    ["Which compiler compiles the source to IR. Defaults to the DEPOT SEED,",
+     "and that default is the point: compile.ps1's own default is",
+     "build-output/bare-metal/Codex.cdx, which holds whatever the last",
+     "build.ps1 left there. That made the cross bed's answer a property of",
+     "the workspace rather than of the depot, so two agents measured the",
+     "same source against different compilers and disagreed. Pass -Kernel",
+     "only to test a compiler that is not the seed, and say so in the CL."]
+
+  riscv-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "MemMB" SptInt (SeInt 3072), sh-doc workdir-doc (sh-param-default "WorkDir" SptString (SeLit "")), sh-doc kernel-doc (sh-param-default "Kernel" SptString (SeLit ""))]
 
 Section: S00 -- Usage
 
@@ -41,7 +50,7 @@ Section: S02 -- Compile to IR
 
   s02 : List ShellCmd =
     let ir-fail = [ScWriteError (SeRaw "\"FAIL: IR compile step exited $LASTEXITCODE; see $LogFile\""), ScExit (SeInt 3)]
-    in [ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScRaw "Write-Host \"[riscv-compile] Compiling $Src to IR...\"", ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB", ScIf (SeRaw "$LASTEXITCODE -ne 0") ir-fail []]
+    in [ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScAssign "KernelCdx" (SeRaw "if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }"), ScRaw "Write-Host \"[riscv-compile] Compiling $Src to IR...\"", ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx", ScIf (SeRaw "$LASTEXITCODE -ne 0") ir-fail []]
 
 Section: S03 -- RISC-V codegen plug
 

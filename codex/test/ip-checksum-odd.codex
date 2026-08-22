@@ -1,5 +1,4 @@
 Chapter: IpChecksumOdd
-  cites Net chapter Icmp
   cites Net chapter Ethernet
   cites Foreword chapter Console
 
@@ -7,10 +6,22 @@ Chapter: IpChecksumOdd
 
 Section: Fixtures
 
- icmp-checksum is the independent witness. It is a separately written
- one's-complement sum in another chapter that always had the odd-tail arm, so
- agreement between the two is two implementations agreeing rather than one
- agreeing with itself.
+ witness-checksum is the independent witness and it must not be deleted as a
+ duplicate of ip-checksum. It is the separately written one's-complement sum
+ that was icmp-checksum in the Icmp chapter until the two were collapsed onto
+ ip-checksum; it lives here so agreement between the two remains two
+ implementations agreeing rather than one agreeing with itself. Anything that
+ changes ip-checksum must leave this body alone.
+
+  witness-checksum : List Integer, Integer, Integer, Integer -> Integer
+  witness-checksum (data) (i) (len) (sum) =
+    if i >= len then
+      let folded = bit-and sum 65535 + bit-shru sum 16
+      in let folded2 = bit-and folded 65535 + bit-shru folded 16
+      in bit-and (bit-xor folded2 65535) 65535
+    else if i + 1 >= len then
+      witness-checksum data (i + 1) len (sum + bit-shl (list-at data i) 8)
+    else witness-checksum data (i + 2) len (sum + read-be16 data i)
 
   odd3 : List Integer = [1, 2, 3]
   odd5 : List Integer = [255, 1, 128, 7, 200]
@@ -21,8 +32,8 @@ Section: Fixtures
   ip-of : List Integer -> Integer
   ip-of (xs) = ip-checksum xs 0 (list-length xs) 0
 
-  icmp-of : List Integer -> Integer
-  icmp-of (xs) = icmp-checksum xs 0 (list-length xs) 0
+  witness-of : List Integer -> Integer
+  witness-of (xs) = witness-checksum xs 0 (list-length xs) 0
 
  Padding by hand is what a caller had to do to get the right answer before the
  odd-tail arm existed. It must now agree with the unpadded call, which is what
@@ -33,13 +44,13 @@ Section: Fixtures
 
 Section: Entry
   opening : [Console] Nothing = act
-    print-line-uni ("odd3-agrees=" & show (ip-of odd3 == icmp-of odd3))
-    print-line-uni ("odd5-agrees=" & show (ip-of odd5 == icmp-of odd5))
-    print-line-uni ("odd1-agrees=" & show (ip-of odd1 == icmp-of odd1))
+    print-line-uni ("odd3-agrees=" & show (ip-of odd3 == witness-of odd3))
+    print-line-uni ("odd5-agrees=" & show (ip-of odd5 == witness-of odd5))
+    print-line-uni ("odd1-agrees=" & show (ip-of odd1 == witness-of odd1))
     print-line-uni ("odd3-equals-padded=" & show (ip-of odd3 == ip-padded odd3))
     print-line-uni ("odd5-equals-padded=" & show (ip-of odd5 == ip-padded odd5))
-    print-line-uni ("even4-agrees=" & show (ip-of even4 == icmp-of even4))
-    print-line-uni ("even20-agrees=" & show (ip-of even20 == icmp-of even20))
+    print-line-uni ("even4-agrees=" & show (ip-of even4 == witness-of even4))
+    print-line-uni ("even20-agrees=" & show (ip-of even20 == witness-of even20))
     print-line-uni ("even4-value=" & show (ip-of even4))
     print-line-uni ("even20-value=" & show (ip-of even20))
     print-line-uni ("odd3-value=" & show (ip-of odd3))

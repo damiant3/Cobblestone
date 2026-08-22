@@ -1,0 +1,99 @@
+Chapter: CompTextClipAgreesTest
+  cites Works chapter GopComposite
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ THE MEASUREMENT AND THE DRAW MUST AGREE, and nothing pinned that until this.
+ `comp-fit-px` answers the longest prefix that fits a box by summing real
+ advances, and `gbf-put-text-clip` then draws it under a bound of its own. Two
+ bounds, one string: if the primitive's is tighter, `comp-text` hands over a
+ prefix it has proved fits and the primitive silently drops the tail anyway.
+ `comp-text-metrics` measures the first bound and `desk-goldens` photographs
+ the result; neither can see the two disagree, which is how a dropped final
+ glyph reads as a layout fault.
+
+ The face here is SYNTHETIC so both bounds are controllable, and the shape is
+ the one that matters: a NARROW glyph in a WIDE cell. `gf-gw` is the widest
+ glyph in the face, so a bound taken from it is right for the widest glyph and
+ too tight for every other one. Ink 14 wide in a 30 wide cell, advance 14.
+
+ Eight glyphs at advance 14 end their ink at x=111, inside a 116 box, so all
+ eight fit and `comp-fit-px` says so. A bound of `x + cx + gf-gw` refuses the
+ eighth at 98+30=128 and stops at seven, whose ink ends at 97. The two answers
+ are 111 and 97 and the test is which one the buffer holds.
+
+  ctc-gw : Integer = 30
+  ctc-gh : Integer = 16
+  ctc-ink : Integer = 14
+  ctc-adv : Integer = 14
+  ctc-code : Integer = 105
+  ctc-idx : Integer = 73
+  ctc-w : Integer = 200
+  ctc-h : Integer = 20
+  ctc-maxx : Integer = 116
+
+  ctc-adv-off : Integer = 95 * 30 * 16
+
+  ctc-fill-adv : Integer, Integer -> Integer
+  ctc-fill-adv (b) (i) =
+    if i >= 95 then 0
+    else let d = poke-byte b (ctc-adv-off + i) ctc-adv
+    in ctc-fill-adv b (i + 1)
+
+ Only the left `ctc-ink` columns of the cell carry ink. The rest is the
+ transparent margin every proportional cell has, and it is exactly what a
+ bound taken from the cell width mistakes for drawable width.
+
+  ctc-ink-rows : Integer, Integer, Integer -> Integer
+  ctc-ink-rows (b) (row) (col) =
+    if row >= ctc-gh then 0
+    else if col >= ctc-ink then ctc-ink-rows b (row + 1) 0
+    else let d = poke-byte b (ctc-idx * ctc-gw * ctc-gh + row * ctc-gw + col) 255
+    in ctc-ink-rows b row (col + 1)
+
+  ctc-zero : Integer, Integer, Integer -> Integer
+  ctc-zero (b) (i) (n) =
+    if i >= n then 0
+    else let d = poke-byte b i 0
+    in ctc-zero b (i + 1) n
+
+  ctc-face : Integer -> GopFont
+  ctc-face (b) =
+    GopFont { gf-ok = True, gf-base = b, gf-gw = ctc-gw, gf-gh = ctc-gh,
+              gf-asc = ctc-gh, gf-cap = ctc-gh }
+
+ The rightmost column of the target buffer carrying any non-zero pixel. The
+ buffer is 32 bits per pixel and `gb-width` pixels to a row, which is what
+ `gbf-blend-pixel` writes and `gop-buf-present-row` reads.
+
+  ctc-right : Integer, Integer, Integer, Integer -> Integer
+  ctc-right (buf) (x) (y) (best) =
+    if x >= ctc-w then best
+    else if y >= ctc-gh then ctc-right buf (x + 1) 0 best
+    else if peek-32 buf ((y * ctc-w + x) * 4) /= 0 then ctc-right buf (x + 1) 0 x
+    else ctc-right buf x (y + 1) best
+
+  opening : [Console] Nothing =
+    let fb = alloc-bytes (95 * ctc-gw * ctc-gh + 95 + 95)
+    in let z0 = ctc-zero fb 0 (95 * ctc-gw * ctc-gh + 95 + 95)
+    in let a0 = ctc-fill-adv fb 0
+    in let g0 = ctc-ink-rows fb 0 0
+    in let face = ctc-face fb
+    in let buf = alloc-bytes (ctc-w * ctc-h * 4)
+    in let z1 = ctc-zero buf 0 (ctc-w * ctc-h * 4)
+    in let text = "iiiiiiii"
+    in let measured = gfont-text-w face text
+    in let shown = comp-fit-px face text ctc-maxx
+    in let drew = gfont-text-clip face buf ctc-w ctc-h ctc-maxx 0 0 shown 16777215
+    in let right = ctc-right buf 0 0 (0 - 1)
+    in act
+      print-line-uni ("cell width gf-gw            : " & integer-to-text ctc-gw)
+      print-line-uni ("ink width per glyph         : " & integer-to-text ctc-ink)
+      print-line-uni ("advance per glyph           : " & integer-to-text ctc-adv)
+      print-line-uni ("box the text must fit       : " & integer-to-text ctc-maxx)
+      print-line-uni ("measured width of 8 glyphs  : " & integer-to-text measured)
+      print-line-uni ("comp-fit-px keeps           : " & integer-to-text (text-length shown) & " of " & integer-to-text (text-length text))
+      print-line-uni ("rightmost ink column drawn  : " & integer-to-text right)
+      print-line-uni ("all 8 drawn would end at    : " & integer-to-text (ctc-adv * 7 + ctc-ink - 1))
+      print-line-uni ("bounding by the cell ends at: " & integer-to-text (ctc-adv * 6 + ctc-ink - 1))
+    end

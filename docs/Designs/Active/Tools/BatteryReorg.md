@@ -4,6 +4,24 @@
 (steps 1-2 main CL 10881; step 3 main CL 10921 with seed 558; steps 4-5
 main CLs 10962 and 10982). Post-fix `-All` ran with zero batch-VM deaths,
 ~6.6 min under fleet load. Next: step 6, the language axis matrix.
+
+**STEP 6 IS A QUEUE AND NOT A STEP, and "next: step 6" reads as one item
+that can be finished** (fester, 2026-08-21, re-measured). You close CELLS of
+the language axis; there is no state in which it is done. Steps 7 (dedup,
+FIRST PASS) and 9 (the coverage axis, which Damian ruled is a queue
+explicitly) are open on the same terms, so the line above names one of three
+open things and makes it sound like the only one. Anyone planning off it
+budgets for a step and finds an axis.
+
+Re-measured 2026-08-21: **`codex/test/ops` holds 35 members**, against the
+seven this entry names as its first landings. The axis has grown fivefold
+since 2026-07-27 and nothing recorded it, which is the same shape as the
+count this design already warns about -- `real-approx-negate` landed
+2026-08-21 (fester, main 18612/18629) after `negate` on a `Real` was found
+wrong on all three lanes, and no cell of the matrix predicted it: the corpus
+built every negative operand as `0.0 - x`, so nothing ever called the
+operator (L-CONSTRUCT). A matrix is only as good as the SHAPES its fixtures
+are written in.
 Owner: red. Baseline numbers are from ONE instrumented run against seed
 AFFD4511; re-measure before quoting them anywhere else.*
 

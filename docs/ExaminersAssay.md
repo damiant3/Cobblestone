@@ -427,13 +427,13 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **199** expected-failure tests (measured
-2026-08-18).
+`codex/test/errors/` holds **202** expected-failure tests (measured
+2026-08-21).
 
 ## What the standing gate does not cover
 
-`build/build.ps1` is the gate, and four whole classes of change can pass it
-while broken. None is a defect in the gate; all four are things it was never
+`build/build.ps1` is the gate, and five whole classes of change can pass it
+while broken. None is a defect in the gate; all five are things it was never
 pointed at.
 
 **The ai foreword chapters and the tests behind them: no gate phase compiles
@@ -487,7 +487,28 @@ to compile with, which would clobber the stage0 the fixed-point phases
 compare; by then SUT === seed is proven, so the seed it picks up is the
 compiler that run built. Both arms were proven before it was wired in: a
 sabotaged entry chapter turns the gate red naming it, and reverting turns
-it green. Cost measured 2026-08-06: 191 s of a 517 s gate.
+it green. Cost measured 2026-08-06: 191 s of a 517 s gate; re-measured
+2026-08-20 at head 18157, 151.7 s of a 644.1 s gate.
+
+**Since 2026-08-20 the standing gate sweeps a SAMPLE and the release gate
+sweeps all of them** (Damian's call, with `-Internal` published as the gate
+every agent runs). `build/build.ps1 -Internal` passes
+`sweep-app-classes.ps1 -Sample 30`, which takes every 9th unit of the sorted
+270 rather than the first 30, so the subset spreads across apps and is
+deterministic: the same tree sweeps the same units. Measured 36.7 s against
+135.9 s for the full sweep on the same seed.
+
+All three arms were run before it was relied on. A sabotaged unit INSIDE the
+sample turns the sampled sweep red and names it; the same sabotage OUTSIDE
+the sample leaves the sampled sweep green at `29 clean, 1 known-dirty, 0
+regressions`; and the full sweep catches that second one, red, naming
+`apps\calendar\CalendarPage.codex`. **The middle arm is the gap and it is
+real, not theoretical** -- a regression confined to units the stride skipped
+reaches main and waits for the release gate. What makes the trade worth
+taking is that a compiler regression usually moves a CLASS of construct and
+so lands in many units at once; a single-unit regression is what this gives
+up. `-Check` will not report a baseline unit as fixed on a sampled run, for
+the same reason it will not on a filtered one.
 
 **The sweep compiles ENTRY chapters, and that is the shape of its gap.** A
 ported chapter with no `opening` and no citer is compiled by NOTHING in the
@@ -495,6 +516,170 @@ gate: not by the sweep, which never reaches it, and not by the fixed-point
 phases, which only see what the compiler cites. It is not a silent failure, it
 is a silent absence, so the app going green says nothing about it. After
 porting a chapter, confirm something cites it or give it an entry point.
+
+**The tests themselves. No gate phase compiles anything under `codex/test`,** so a test
+chapter can stop compiling outright and every gate afterwards is green. Only
+the battery and the BVT's own 75 reach any of it, and a test in neither is
+compiled by nothing.
+
+Measured 2026-08-20: `codex/test/lib/widget-tone` called `comp-draw-node` with
+the arity it had before a clip parameter was added at main 17846, so it had not
+compiled for four days, across a release. What makes this worse than a red test
+is that a red test at least reports; this one is UNRUNNABLE and the usual
+instruments are all silent about it. `check-sidecars` passes, because the
+`.expected` is still there and still well formed. `check-doc-counts` passes,
+because it is still a file. The battery would have said so and had not run.
+
+**A SECOND INSTANCE, 2026-08-20, and its cause is not a signature change**
+(root found it, blu's lane and blu's fix). `codex/test/cost/accumulator-corpus`
+had not compiled since 08-16: `:84:9: error CDX3002: Undefined name: it`,
+against the depot seed, exit 4. The chapter is one of five under
+`codex/test/cost/**`, and `build/cost-corpus.ps1` is **invoked by nothing**, so
+the whole directory sits outside every instrument exactly as this section
+describes. Nothing changed underneath it; a prose continuation line began with
+`and`, which is a reserved word (`Lexer.codex:315`), so an English sentence was
+parsed as code. The trap is written up in `DevelopersGuide.md` beside the
+`above` case.
+
+Census taken at the fix, all five compiled against `seed/Codex.cdx`:
+`accumulator-corpus` (was the only break, now exit 0), `builtin-alloc`,
+`giveup-beats-fuel`, `literal-alloc`, `str-concat-inplace`. **Re-measure rather
+than quoting that** (L-COUNT); a directory no runner touches is one edit away
+from drifting again, and this entry is the second time this section has been
+written from a live example rather than a worry.
+
+So: **after changing the signature of anything a test can call, grep the test
+tree for the name and compile every hit.** That is the whole of the discipline,
+it costs one grep, and it is the check the caller of a changed signature is best
+placed to run. Compiling only the tests you can think of is what produced this
+one: the same change updated `gop-composite-stride` for the same arity and
+missed the chapter one directory over.
+
+### The discipline did not hold, and here is the census (root, 2026-08-20)
+
+**That paragraph was written, published, and then the same file was missed
+again by the next signature change.** `comp-draw-node` gained a `GopFont`
+parameter when GopFont was threaded at main 18118; every production caller was
+updated, `codex/test/lib/widget-tone` was not, and it was red on main until
+18248. It is the SECOND time this exact chapter has been missed this way. A
+discipline that has now failed twice at the same site is not a discipline, it
+is an unenforced assertion (`LESSONS.md` preamble), which is what CurrentPlan
+18222 exists to fix.
+
+So the whole tree was swept once, to get the cost of a phase and the sites
+rather than a total. **Re-measure before quoting any of this (L-COUNT).**
+
+| | |
+|---|---|
+| chapters under `codex/test`, excluding `errors/` | **1,413** |
+| `errors/`, already compiled by the gate's `check-errors` | 200 |
+| sequential, one VM boot (`test-compile-batch.ps1`) | **1.00 s/unit** |
+| 4-way parallel, whole tree | **1,202 s wall, 0.85 s/unit effective** |
+
+**Do not extrapolate this from a sample, which is the mistake made on the way
+to it.** The first 400 units in sorted order ran at 0.42 s/unit and predicted
+about 10 minutes; the real figure is 20. The sorted head is `codex/test/apps`,
+whose chapters are small, so the sample was not the population (L-DILUTE).
+
+**The result: 1,399 clean, 14 dirty, and only ONE of the fourteen is a red.**
+
+- **11 carry a `.failing` sidecar** and are supposed to be refused.
+- **2 are the instrument measuring its own invocation** (L-SIDECAR):
+  `quote-from-peer` and `quote-from-store` answer CDX3020 `Quoted work 'Sorted'
+  was not supplied` to a bare compile, and that is CORRECT, because
+  `build/quote-from-peer-test.ps1` stands a peer up and compiles them with
+  `-Peer 127.0.0.1:<port>`. A compile-every-chapter phase that does not know
+  this reports two permanent reds, and a red whose answer is always the
+  expected one trains its reader to accept reds. **The phase needs a baseline
+  naming units whose harness supplies an input**, the way
+  `build/app-sweep-baseline.txt` already does for the app sweep.
+- **1 is a genuine red**: `codex/test/cost/accumulator-corpus.codex:84:9`,
+  CDX3002 `Undefined name: it`, on a line of column-2 prose. Reproduced
+  outside the batch harness with a plain `compile.ps1`, exit 4. Its runner
+  `build/cost-corpus.ps1` is **invoked by nothing** in the tree, and the
+  chapter last moved 2026-08-16, so nothing could have noticed. That is a
+  third mechanism for the same class: not a missed caller, but a corpus whose
+  runner nobody calls.
+
+**Two traps for whoever builds the phase.**
+
+- **`test-compile-batch.ps1` keys its output directory by the filename STEM,
+  so two chapters with the same basename in different directories collide and
+  one is silently never measured.** `engine-culling` and `engine-texture` exist
+  in both `codex/test/` and `codex/test/forewords/`; the sweep produced 1,412
+  directories for 1,413 chapters and reported nothing wrong. Key by path. The
+  four colliding files were compiled individually afterwards and all four are
+  clean, which is how the census reconciles to 1,413.
+- The cheap alternative to sweeping everything is to **compile only the tests
+  that CITE what changed**, which is what the grep discipline above was
+  reaching for. Measured over the same 1,413: 756 distinct chapters are cited,
+  the fan-out is **median 2, mean 5.1, max 382** (`Foreword::Console`).
+  `Works::GopComposite`, the chapter both incidents came from, has **11**
+  citers costing **26.3 s**, and those 11 contain `widget-tone` AND exactly the
+  six `gop-composite-*` chapters val fixed at 18220. So a cite-scoped phase
+  would have caught both misses for 26 s.
+
+### The phase, and what each of its exclusions promises
+
+**RULED by red on those numbers, 2026-08-20: cite-scoped in `-Internal`, the
+full sweep in the full gate only.** `build/check-test-compile.ps1` is the
+runner and `test-compile` is the gate phase. It is never SKIPPED, only SCOPED,
+which is why it is not in `build/build.ps1`'s `-Internal` phase map: with
+`-Internal` it compiles the chapters that cite a chapter changed in that
+workspace, and the full gate passes `-Full`.
+
+It matches a changed chapter by its `Chapter:` NAME, read out of the file,
+rather than by path, because that is how a test names it. The quire is
+deliberately not matched, so citing the name alone is over-inclusive, which is
+the safe direction for a check.
+
+Three exclusions, and **each one is a promise not to cry wolf** (red: a check
+that cries wolf gets ignored, and is then worse than nothing):
+
+| excluded | why, and who already covers it |
+|---|---|
+| `codex/test/errors/**`, 200 | the gate's `check-errors` compiles all of them and requires a REFUSAL |
+| a chapter with a `.failing` sidecar, 11 | the chapter declares it is expected to fail |
+| `build/test-compile-baseline.txt`, 2 | the chapter's own runner supplies an input the compiler needs, so no bare compile can ever succeed |
+
+The baseline holds `quote-from-peer` and `quote-from-store` and nothing else.
+Both answer CDX3020 to a bare compile, correctly, because
+`build/quote-from-peer-test.ps1` stands a peer up and compiles with
+`-Peer 127.0.0.1:<port>`. **Add a line there only for a chapter that compiles
+under its own runner and cannot compile without it, and name the runner.** A
+chapter that is merely broken is a red and gets fixed.
+
+**Four arms, run before it landed.** A `GopComposite` change selects exactly 11
+chapters and passes in 12.4 s. Sabotaging one of those 11 turns it red and
+names the chapter and the CDX code. A workspace with no `.codex` open selects
+nothing and returns in under a second. And `-Only codex/test/quote-from-peer`
+fails, which is what makes the baseline entry load-bearing rather than
+decorative: the unit really cannot compile standalone.
+
+**It refuses a silent absence rather than reading it as a pass.** If the number
+of results does not equal the number of chapters submitted, the phase fails
+saying so. That is not hypothetical: `test-compile-batch.ps1` keys its output
+directory by filename STEM, so the census produced 1,412 directories for 1,413
+chapters and reported nothing wrong. The runner splits colliding basenames into
+separate batches so every chapter gets its own directory, and then asserts the
+count.
+
+**And when you write that loop, do not pipe `compile.ps1` into
+`Select-Object -First N`.** `-First` terminates the upstream pipeline once it
+has what it asked for, which ABORTS the compile partway. Measured 2026-08-20:
+a five-test loop written that way reported `COMPILE-FAIL` on all five, with no
+`.cdx` and no `.log` written for any of them, an hour after the fleet had
+converged a seed. Every one of the five passes; the loop killed its own
+subject. The tell is that a single explicit re-run of any one of them succeeds
+immediately, and that the failure is uniform across unrelated tests.
+
+Use `*> $null`, or `| Out-Null`, or `Select-Object -Last N`, none of which
+terminate the producer. This is the same family as P-DIFFC in
+`PerforceProcess.md`, which records the other direction: a `2>&1 |
+Select-String` filter eating a command's own error so a failed command reports
+as a clean result. **A PowerShell pipeline is not a passive observer of the
+command in front of it**, and in this tree both directions of that have now
+produced a wrong published result.
 
 **Six app entry points do not compile DELIBERATELY** and are catalogued
 with their reasons in `build/app-sweep-baseline.txt`. Read that file
@@ -765,10 +950,34 @@ parity"* -- and then went into `Done/`, which init does not read.
 421 of 1404 with one program gated, and RISC-V fails 119 of what it runs.**
 Do not write "parity" without naming the four benchmarks it refers to.
 
+### The cross bed compiles with the SEED, and did not until 2026-08-20
+
+`compile-arm64.ps1` and `compile-riscv.ps1` pass `-Kernel seed/Codex.cdx` to
+`compile.ps1` now. Before that they passed nothing, so Phase 1 used
+`compile.ps1`'s default of `build-output/bare-metal/Codex.cdx`, which holds
+whatever the last `build.ps1` left there. **A cross-lane result was therefore a
+property of the workspace, not of the depot**, and two agents measuring the
+same source could disagree without either being wrong: it is the same
+uncontrolled default that made every plug binary a workspace property until
+main 17516.
+
+It has already cost two investigations. It voided val's typescript red on
+2026-08-19 (a three-day-old kernel), and it is the whole of `plugs` 1.49, where
+a 2.1 s baseline and a 92.8 s failure were compared across workspaces holding
+different compilers and read as a regression. Nothing in a `history/` file
+records which kernel produced it, and `test-output-cross/` is p4-ignored, so
+the baseline never leaves the workspace that wrote it -- **do not compare a
+cross run against a history file another workspace produced.**
+
+Pass `-Kernel <path>` to measure a compiler that is not the seed, and say so in
+the CL. Both directions are measured: with a stale kernel still in
+`build-output` the default reports the seed's digest, and an explicit
+`-Kernel` reports the one you named.
+
 ### What is genuinely unimplemented on the cross lanes
 
 Distinct from untested. Both plugs refuse rather than miscompile, and each
-refusal is pinned by a `.cross-refusal` sidecar (18 of them), so a refusal
+refusal is pinned by a `.cross-refusal` sidecar (23 of them), so a refusal
 arm that silently disappears turns the row red instead of emitting wrong
 code. Refusals carry an `[UNSUPPORTED]` line on the compile log.
 
@@ -790,6 +999,20 @@ So the count that matters is **two capabilities, not sixty**. The number
 people reach for comes from adding the architectural refusals to the skip
 list; those are different things and the sum is not meaningful. What is
 genuinely unknown is the 879.
+
+**And there is a THIRD case, one test wide, that neither bucket describes:
+a PORTABLE subject refused because the lane has no instrument for it.**
+`heap-bracket-shape` asks where `__heap-save` belongs relative to an
+effectful bind, which is a property of the allocator and has nothing to do
+with x86. It reaches `port-in-byte` only because the CMOS RTC is a
+convenient effectful Integer no device has to be present for and the
+compiler cannot fold. Neither cross lane has any substitute -- no clock, no
+tick, no counter, no random (measured 2026-08-20) -- so it carries a
+`.cross-refusal` like the architectural three and the allocator-bracket
+question goes unasked on ARM64 and RISC-V. Counting it as architectural
+would be the mistake this section exists to prevent, one bucket over: it is
+a gap, it is just a gap in the BED rather than in the compiler. The sidecar
+says so in full and names its own deletion condition.
 
 ### The parallelism default, and the flake that was not the harness's
 
@@ -879,15 +1102,31 @@ harness is also the thing enforcing every guest's ceiling. Every I/O call in
 a run block belongs inside a `try`, and a hazard fixed in one of two sites
 is not fixed.
 
-**The class is live in two sibling harnesses and is NOT fixed here.** Seven
-scripts under `build/` drive a `ForEach-Object -Parallel` block. `bvt.ps1`
-and `check-errors.ps1` read their redirected logs with `-ErrorAction
-SilentlyContinue` and are already safe by that. Unguarded, reading a log a
-child process was writing: `sweep-app-classes.ps1:107` and `:114`
-(`[System.IO.File]::ReadAllText` on a redirected stdout and stderr), and
-`test.ps1:738`, `:765`, `:766`. `test.ps1` is the battery and is Damian's to
-run, so this is recorded rather than swept, but it is the one where the
-outage costs the most and it is the same two lines of fix.
+**The class is CLOSED across all three harnesses, 2026-08-20 (fester).** Seven
+scripts under `build/` drive a `ForEach-Object -Parallel` block. `bvt.ps1` and
+`check-errors.ps1` read their redirected logs with `-ErrorAction
+SilentlyContinue` and were already safe by that. The two that were not now
+carry the same `Read-LogShared` helper as `test-cross-batch.ps1`:
+`sweep-app-classes.ps1` on its redirected stdout and stderr, and `test.ps1` on
+`runtime.actual` twice and on the `.expected` beside it.
+
+**`test.ps1` is GENERATED, so the fix went into `codex/build/testScript.codex`
+and the script was regenerated from it.** A hand edit there is discarded by the
+next regeneration and reads as drift until then. The drift was measured before
+anything was touched, because the on-demand contract warns it can run the other
+way and a regeneration can hand back a script that has lost hand edits: `test`
+matched its generator at 0 drift over 1033 lines beforehand, so the generator
+was the source of truth and regenerating was safe. Afterwards it matches again
+at 1051 lines, 0 drift, which is the proof that the shipped script is what the
+generator says.
+
+The battery itself was NOT run to verify this and must not be, being Damian's
+to run. What stands behind the change instead: the emitted script parses, the
+helper is defined at line 726 and first used at 756 so the ordering is right,
+and the helper was A/B'd against a deliberately locked file exactly as the
+original fix was, reproducing the same table. A bare `ReadAllText` threw under
+both share modes; `Read-LogShared` returned the content under `Read` and empty
+under `None`.
 
 ### An elapsed reading is not a measurement unless its run count is stated
 
@@ -952,6 +1191,22 @@ way before believing it**: compile the named test alone with
 red BVT with a broad spread of failures is a different thing and is not
 this.
 
+**Contention corrupts a DURATION as readily as a verdict, and a duration is
+quoted forward.** The section above is about a wrong pass or fail. This is
+the same cause producing a number that everyone then plans around. Measured
+2026-08-16: a release-day gate reported `cross-smoke` at **11,601 s**, and a
+build-token request was made warning of a 3.5 hour hold on the strength of
+it. It did not reproduce. The next gate ran 606 s end to end with
+`cross-smoke` at **16.8 s**, which is a factor of 690, so the sample was
+shared-box contention and not a regression.
+
+**Never quote a timing taken on a contended box, and never budget a token
+hold from one sample.** A phase that suddenly costs hundreds of times its
+usual is contention until a second run on an idle box says otherwise, the
+same rule the paragraph above applies to a verdict. The cost of getting it
+wrong is not a wrong number; it is a build token held out of the fleet's
+queue for an afternoon that the work never needed.
+
 ### A load flake is retried before it is believed
 
 **The batch used to report contention as a test result, and it cost three
@@ -1015,6 +1270,42 @@ worth what no guard is worth:
 
 `-CompileTimeoutSec` exists to make the first of those provocable on demand;
 it is also why the budget is no longer a literal buried in the parallel block.
+
+### `check-errors` has none of that, and reports the silence as a code mismatch
+
+**The refusal harness does not retry, and its summary line names a cause it
+has not measured.** Measured 2026-08-21, twice in one session on one box, with
+no change to the tree between the red and the green:
+
+| run | failing tests | shape |
+|---|---|---|
+| first | 6, `pow-on-real` through `proof-launder-lemma-mutual` | contiguous, alphabetical |
+| second | 5, `list-literal-too-large` through `list-prim2-false` | contiguous, alphabetical, disjoint from the first |
+
+Both cleared on an immediate re-run: `refusals ok (200 refused as declared)`.
+The per-test logs say what actually happened -- two of the six and two of the
+five are **5 bytes**, and the rest open with `FAIL: no output` -- and one was
+itself truncated mid-line. A contiguous alphabetical block is one parallel
+slot's batch, so the failure is the slot dying, which is the same
+silence-under-load this section already calls the machine's fault everywhere
+else.
+
+**The summary line is what makes it expensive**, because it prints the
+declared code in the actual's place: `pow-on-real -- refused, but not with
+9011 (declared: 9011)`. Read literally that says a diagnostic moved to a
+different code, which is a compiler regression and is the reddest thing this
+gate can report. What it means is "did not produce the declared code", and the
+reason is one level down in a log the line does not mention. **A run that
+captured nothing and a diagnostic that genuinely moved are the same glyph
+there** (L-SHORT, and the same shape as the `FAIL_COMPILE` misattribution that
+cost three sessions above).
+
+Two separate repairs, and neither is done: the retry this section describes
+does not exist for `check-errors`, and the message needs the actual code or
+`no output` rather than an echo of the declared one. Reek has the message half
+(`check-errors.ps1` is generated from `codex/build/`, so it is a generator
+change). Until then: **check the per-test log's SIZE before believing a
+refusal red**, and re-run once.
 
 **`still silent alone` does NOT mean broken. The retry re-runs at the SAME
 ceiling, so a test that merely needs longer than the ceiling cannot pass it
@@ -2938,6 +3229,44 @@ metal half is a stick rebuild and a photograph and rides a sitting under
 the standing ruling; the bed cannot answer it (the ASUS's largest mode and
 whether AMI's `SetMode` honours it are the L-FREEDOM questions).
 
+**The guest can now answer it too, and that is the half a flight needs
+(2026-08-20).** Every arm above is a HOST observation: codex-vm's own stderr
+and a screenshot the guest never sees. A stranger booting a stick has neither.
+So the stub banks its selection into the handoff block as version 3 -- maxmode
+and the mode before the choice at +0xC8, the mode chosen and flags at +0xD0,
+the `EFI_STATUS` `SetMode` answered at +0xD8 -- and `DiagGop.codex` reports it
+as stage 6 of the diagnostic ladder. **Geometry alone could never have answered
+this**: 1024x768 reads the same whether it was the largest mode offered or a
+refusal, which is the pass/fail shape L-STATES forbids. The six states are
+`honoured`, `kept`, `single`, `refused`, and two that indict the instrument
+rather than the box, `noloop` (the bank contradicts itself) and `nostub` (a
+v2 block, so an older stub booted this image).
+
+The two instruments agree where they overlap, which is the point of keeping
+both. codex-vm: host says `GOP: SetMode 2` and 1024x768, guest says
+`max=3 before=0 chose=2 flags=3 status=00000000`. OVMF, a completely different
+firmware: `max=30 before=0 chose=27`, 2048x2048.
+
+**Both beds read `honoured`, so the row needed a falsifier before it could be
+believed.** `gop-kept` in `diag-arm.ps1` runs the ladder at
+`-gop-width 1600 -gop-height 900`, where the firmware already boots in the
+largest mode it enumerates: `max=4 before=3 chose=3 flags=1 status=00000000`
+and `SetMode` is never called. Every value there was written into the script
+before the arm ran and all five matched. `refused` cannot be produced in
+either bed -- codex-vm's `SetMode` always succeeds -- and that is precisely
+the state the metal sitting exists to find.
+
+**Two things about the emitter that reading it did not reveal.** The plan of
+record said the six patched jump displacements sit below offset 112, so stores
+appended between `SetMode` and `restore:` move nothing hand-computed. True of
+an append, and the change is not one: the one-mode case has to be banked
+BEFORE the `cmp ecx, 1` that branches away from everything else, so all six
+literal indices moved. They are captured variables now. And the `jle skip` at
+the top had to become a rel32: the stores put `skip:` 134 bytes away, a rel8
+tops out at 127, and **nothing in the emitter range-checks a displacement**,
+so the byte would have been written truncated and the stub would have jumped
+into the middle of its own loop on any single-mode firmware. The function is
+169 bytes and still asserts its own length.
 ## The CDX Input Guard (`build/cdx-guard-test.ps1`)
 
 Blu's audit handed round the fleet 2026-08-15: find the paths in your lane that
@@ -3289,6 +3618,36 @@ count from 10 to 20. Fixed by updating in place and refusing past
 `arp-cache-max`; `gw-survived-flood` is the arm an eviction policy would fail,
 since evicting lets a flood push out the gateway.
 
+**THE FLOOD CHANGED SHAPE 2026-08-20 AND THE TEST WOULD OTHERWISE HAVE STOPPED
+ASKING ITS QUESTION.** `net-process-arp` now learns only from a REPLY addressed
+to us (Damian's ruling, CurrentPlan Decisions 2: learning from any frame on the
+wire is cache poisoning by construction). The flood arm was three hundred
+REQUESTS, which is precisely the shape the narrowing refuses, so left alone it
+would have filled nothing and every capacity assertion above it would have
+passed vacuously against an empty cache. It is three hundred replies now, and
+the capacity, dedup and count-in-step questions are asked exactly as before.
+
+That is the general trap and it is worth more than this instance: **when a
+guard is narrowed, an arm that fed it through the newly-refused path does not
+fail, it goes quiet.** `count-after-300=64` and `count-after-300=0` are both
+"no crash"; only the first is the question. Anything asserting a CAP has to be
+re-aimed at whatever can still reach the cap, or it is asserting that nothing
+happens.
+
+The narrowing brought its own arms into the same file rather than a new one,
+because they are the same subject. `poison-count` floods three hundred requests
+aimed at a THIRD party -- the old shape, kept as evidence rather than deleted --
+and requires the cache to hold exactly the one entry learned before it, with
+nothing queued. `asked-us-*` sends a request aimed at US and requires both
+halves: `arp-replied` with one frame queued, and a cache still empty. The reply
+is built from the sender MAC in the frame just parsed, so answering never needed
+the cache, and RFC 826's licence to record the sender there is the licence a
+forged request would have used. The pre-learned gateway entry is the control in
+both arms: if the cache were broken rather than narrowed, it would be gone too.
+
+Every value in `codex/test/arp-cache-bound.expected` was predicted before the
+run and all sixteen matched.
+
 **The DNS half was twelve bytes.** `dns-parse-response` stored `ancount`
 verbatim while `dns-parse-answers` stops the moment `off + 10` passes the end
 of the datagram, so the list is routinely shorter than the header's number. A
@@ -3310,6 +3669,34 @@ arrives beside the data it describes, ask which side produced each. If the
 count is the peer's, it is an assertion and not a fact. If both are ours, they
 are an invariant somebody has to maintain, and the maintenance is exactly where
 an edit breaks it.
+
+## The Staging Bank Bound (`codex/test/apps/ota-lwm2m-loopback`)
+
+Four arms over the LwM2M firmware download, added 2026-08-20 (reek) on red's
+ruling. `fw-write` wrote each block at `fw-stage + fw-written` with nothing
+bounding the total, so a server sending in-order blocks drove an unbounded
+flash write; `flash-write-page` takes an absolute address, so nothing under it
+refused. The bank size now enforces and CoAP `Size2` refuses early only.
+
+The arms and what each is for: **`size2 honest`** is the positive control, an
+image that fits, staged whole with Gate A passing, and it must never be
+refused; **`bank no-size2`** fires the bound with no hint present at all;
+**`size2 over`** is the early refusal, zero bytes written; **`size2 lying
+low`** declares a small total and sends more, which is the arm that proves the
+hint has not become the bound.
+
+**Each ablation moves only its own arms.** Removing the bank bound takes
+`bank no-size2` and `size2 lying low` from 128 to 254 -- both then overrun a
+128-byte bank -- and leaves `size2 over` at 0. Removing the `Size2` check
+takes `size2 over` from 0 to 254 and leaves both bank arms where they were.
+
+**Two things about the fixture that cost time and would cost it again.** The
+arms deliberately leave PARTIAL images in the one staging bank the fixture
+shares, and Gate A reads that bank, so the positive control is ordered FIRST:
+run last it reports `GateAFailMagic` and the reading is about the fixture
+rather than the bound. And the arm loop stops on the first failure, because
+`fw-stage-block`'s block-order check fires on the next block and would
+overwrite the result code with `conn-lost`, hiding the cause under a symptom.
 
 ## The Transport Length Guards (`codex/test/apps/tcp-transport-guard`)
 
@@ -3444,6 +3831,27 @@ parse, and the arm restores the byte so the version and magic arms that follow
 mutate an otherwise intact record. `version2=rejected` beside
 `version1=rejected`, by the same ruling: no v2 record exists outside the
 bench, and a reader for a superseded format is only a hole going forward.
+
+**WHICH VERSIONS EXIST, MEASURED 2026-08-21 (root), because both refusal
+paragraphs above rest on a premise that is false.** `wz-id-version` is 3 and
+`GopWizard.codex:483` accepts that and nothing else. Stage 1 justified removing
+the v1 reader with "no v1 record exists outside this environment" and stage 4
+justified `version2=rejected` with "no v2 record exists outside the bench".
+**Both are wrong.** A scan of all 31 hardware-returned images in the stick
+archive for the `CIDN` magic found THREE distinct records a board actually
+wrote: v1 in `stick-before-20260811.img` (`AB5C7D83058DC876`), a DIFFERENT v1
+in `vmxprobe-returned-20260813.img` (`D20EFE7F1EF9C0E0`), and a v2 in
+`a8v2-returned-20260819.img` (`D2BF3CB4D86C6878`). All three are ingested at
+`build/boot/archive/` with the images that carry them (rulings queue 4, red
+2026-08-21).
+
+**This does not reopen either ruling**, and the distinction matters: the other
+half of each justification -- a reader for a superseded format is a hole going
+forward -- is untouched by how many records exist, and it is the half that
+decides. What changes is that `version1=rejected` and `version2=rejected` can
+now be armed against a record a BOARD wrote rather than one the bench
+synthesised, which is the only evidence we have about what the parser refuses.
+Nothing in the tree reads those files yet.
 
 **`bed-identity` as first landed (main 17691) was not deterministic, and the
 green that landed it certified one boot.** `wz-keygen` derives salt and iv
@@ -4067,14 +4475,41 @@ still pass. **Ablated to the additive form, `off` and `both` flip to admitted
 while `sane` stays green**, which is the discrimination -- the guard starts
 saying yes to a read of eight bytes at offset i64 max.
 
-**The other 33 sites are NOT swept and are not claimed.** Most are probably
-safe: a constant addend (`off + 4`) cannot wrap unless the offset is already
-absurd, and several take their length from a u16 or u32 that cannot get near
-the ceiling. Judging that is per-site work in files with owners --
-`Tls`, `Dtls*`, `Asn1`, `TlsEndpoint` and `TlsCert` are the net leg's,
-`CCE` and `Pattern` and `TextScan` are foreword. The count is recorded here so
-the next person to touch one knows the idiom is a trap rather than rediscovering
-it.
+**The remainder IS swept now (reek, 2026-08-20), every one is safe, and the
+reason is structural rather than site-by-site luck. WIDTH decides it, not
+shape.** `a + b > len` can only wrap when an operand can approach i64 max.
+Every remaining addend in the tree is one of three things and none of them
+can:
+
+- a literal constant (`off + 4`, `i + 1`, `12 + `, `35 + `);
+- a FIXED-WIDTH field read off the wire -- u8, u16, u24 or u32 -- which
+  ceilings at 2^32-1, nine orders of magnitude below the wrap;
+- `text-length` or `list-length` of an object that EXISTS, which is bounded
+  by memory.
+
+So the rule for new code is one line, and it is cheaper than re-auditing:
+**the additive guard is unsafe exactly when an addend is UNBOUNDED, which in
+this tree means a decimal parse (`text-to-integer`) or a value already
+i64-wide.** That is precisely what `sdw-decode` did, and it is why that site
+and no other was exploitable.
+
+Judged individually, with the width named: `Asn1` long-len (`n > 4` refused
+above it) and `asn1-mk` (`asn1-be` over at most 4 bytes); `DtlsMessage`
+(`dtls-rd24`), `Dtls` plain-decode and `DtlsHello` ext-scan and cookie
+(16-bit), `DtlsHello` session-id (a single byte at index 34); `TlsEndpoint`
+(24-bit, built as `*65536 + *256 +`); `TlsCert` (`ctx-len` is
+`list-at body 0`, one byte); `Tls` record-decrypt (16-bit); `HttpFetch:406`
+(16-bit). `CCE`'s `utf8-assemble` takes `n` from three call sites that pass
+2, 3 and 4 literally. `Pattern`, `TextScan` and `TextSearch` add a real
+`text-length`, and their callers pass 0, a difference of two real lengths, or
+a loop index already bounded by the haystack -- checked, because a caller
+handing one of those an attacker-controlled offset is the one way this
+conclusion could have been wrong.
+
+**What is NOT claimed.** This is the census's population, not a proof over an
+enumeration matching the 71/34 above; those counts were never reproduced here
+and are not the thing that matters. The rule above is, and it does not drift
+the way a count does.
 
 ## The Heap Guard Page (`build/guard-page-test.ps1`)
 
@@ -4127,10 +4562,22 @@ at `-Decks 450` R10 lands above RSP immediately and the pre-existing prologue
 no guard page at all. The 1280 MB run also printed no `SP=`/`HEAP=` line, so it
 was never even shown to have come through `__out_of_memory`.
 
-**State the hole rather than the arm count.** FIRE parks the frontier
-synthetically. Nothing now exercises the guard page under a genuine allocation
-walk, and restoring that needs a workload which overruns at NORMAL memory --
-which this tree no longer has.
+**The hole is closed: the WALK arm (root, 2026-08-20) is the genuine
+allocation walk.** What LEAP got wrong is what shapes it: instead of a real
+workload whose cost can drift back under the guard, `build/guard-page-walk.codex`
+is a runaway by construction -- one ~256 KB `__str_concat` per step (far under
+the 2 MB page, so it cannot step over the hole) from the heap base until the
+page catches it, under a ~6 GB fuel cap whose exhaustion prints
+`WALK COMPLETED` and fails the arm. Its subject cannot drift: the walk always
+overruns at normal memory because overrunning is what it is. The arm also
+checks WHERE the trip landed -- the `HEAP=` address must fall inside
+`[guard, guard + 4 MB)`, so an `OUT OF MEMORY` from a ceiling firing early is
+a failure, which is the discrimination the 1280 MB re-aim could not make.
+First flight on the seed: caught at `HEAP=3118654960`, 185 KB past the guard
+at 3,118,465,024, after a ~2.9 GB march that exercised the allocation path
+and the demand mapping under it together. The probe lives in `build/` beside
+`guard-page-probe.codex` for a sibling reason: it never exits on a healthy
+tree, so the battery's run-and-compare model cannot hold it.
 
 **The harness could not run at all until 2026-08-15, on any box where
 `QEMU_BIN` was unset.** `build/vm-config.ps1` used `$root` as a `foreach`
@@ -4507,7 +4954,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-199 tests in `codex/test/errors/` verify that the compiler rejects
+202 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -5605,6 +6052,63 @@ minutes. Ablated, exactly one row moves.
 the loop is made of and an HPET read is not, so a per-pass check would measure
 the clock rather than the link. The same defect one level out bit the NIC-4
 probe's own listen loop during rehearsal, at a fuel of four million.
+
+## The Invisible Receive (`codex/test/e1000-rx-invisible`, `-off`)
+
+DiagNicRing reads three rows off two counters and the ring: `gprc=0 rnbc=0` is
+nothing arrived (:122), `gprc>0 ddset=0` is frames arrived and we cannot see
+them (:124), and `rnbc>0` is turned away for want of a descriptor (:127). A
+driver acts on the three differently, which is why the counters are read
+together and never the ring alone.
+
+**The bed could only ever answer the first of them.** codex-vm incremented
+GPRC inside the delivery loop just after DD was written, and all three ways of
+stopping a receive -- `e1000_ring_poisoned`, `i219_mac_stalled`,
+`e1000_dma_blocked` -- return above that point, so every fault the model had
+read `gprc=0` and landed on the wrong row. Sitting 9 read `gp=1 rnbc=0
+ddset=0` off the ASUS on 2026-08-21 with the aim row saying RDBA is ours, and
+that reading is what the arms are written against. **A row the bed cannot make
+say "invisible" is a row whose instrument cannot fail** (L-FALSIF), and it is
+the row a flight gets read against.
+
+GPRC now counts where the MAC accepts the frame, which is what 82583V stats
+and `DiagNicRing.codex:119` describe. RNBC did not move: it stays at the
+ring-full test, because it is a different row.
+
+**The before-and-after is one line and it is the evidence.** The same arm,
+same kernel, same sidecar, against the depot emulator and against the fixed
+one:
+
+| | pre-fix | post-fix |
+|---|---|---|
+| `recv happened` | no | no |
+| `gprc over 0` | **no** | **yes** |
+
+Pre-fix it reads "nothing arrived" and post-fix it reads the row the board
+read. The arm fails against the old emulator, which is what makes it evidence
+rather than a green.
+
+**The pair uses `-nic-bme-clear`, not the K1 stall, and the choice is forced
+rather than preferred.** K1 is the cause sitting 9 read, but the canned
+injector empties its whole `-e1000-inject` budget at the `RCTL.EN` write and
+`e1000-init` has performed the shipped K1 step by then, so nothing on that
+path can be stalled at the moment frames arrive. Re-entering the stall
+afterwards does not help either: the frames are already in the ring, and the
+second poll reads a descriptor rather than provoking a delivery. Bus mastering
+is clear from before bring-up, so it reaches the same row without the
+sequencing. **The K1 half rides the NAT path**, where frames arrive over time,
+and belongs to the diag image's nicring stage.
+
+`e1000-rx-invisible-off` is the control and it must read `gprc over 0 : yes`
+as well. That is the point of printing it: **gprc>0 alone is not the
+discriminator**, and an arm that showed only the flagged side would read as
+though it were.
+
+`e1000_nat_rx` had no stall gate at all until this change, so a MAC that
+`e1000_deliver_rx` correctly refused to deliver through still received
+everything the moment the NAT was the source -- and `-e1000-nat -i219` is
+exactly the combination the sitting-9 arm is written on, so the divergence sat
+under the arm being built.
 
 ## The Lz4 Decompressor Guards (`codex/test/apps/lz4-hostile`)
 

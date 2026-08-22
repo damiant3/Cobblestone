@@ -1,0 +1,90 @@
+Chapter: GopCompositeTranslate
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites Works chapter GopFont
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Kernel chapter BitmapFont
+
+ Moving a laid-out subtree is what scrolling arbitrary content is, and the
+ pair that matters is that it moves the WHOLE subtree and that what leaves the
+ box is not painted. The second half is only true because `comp-walk` clips;
+ before that a translated node painted wherever it landed.
+
+ The subject is a column of three panels laid out in a box that holds two of
+ them, which is the shape a page taller than its viewport has.
+
+Section: Geometry
+
+  ct-w : Integer = 200
+
+  ct-h : Integer = 60
+
+  ct-cells : Integer = 24000
+
+  ct-bytes : Integer = 96000
+
+  ct-sentinel : Integer = #111111
+
+Section: Counting
+
+  fill-all : Integer, Integer, Integer, Integer -> Integer
+  fill-all (b) (i) (n) (c) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) c in fill-all b (i + 1) n c
+
+  count-touched : Integer, Integer, Integer, Integer -> Integer
+  count-touched (b) (i) (n) (acc) =
+    if i >= n then acc
+    else count-touched b (i + 1) n (acc + (if peek-32 b (i * 4) == ct-sentinel then 0 else 1))
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+  kid-y : WidgetNode, Integer -> Integer
+  kid-y (n) (i) =
+    let k = list-at (n.wn-children) i
+    in let b = k.wn-bounds
+    in b.lr-y
+
+Section: Subject
+
+  block : Text -> WidgetNode
+  block (id) = widget-set-flex (widget-set-min (widget-panel id DirColumn 0 []) ct-w 30) 0
+
+  ct-tree : WidgetNode
+  ct-tree = widget-panel "page" DirColumn 0 [block "a", block "b", block "c"]
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let buf = __heap-save
+    in let adv = __heap-advance (ct-bytes + 256)
+    in act
+      let laid = widget-layout ct-tree th (layout-rect 0 0 ct-w ct-h)
+      in let y0 = kid-y laid 0
+      in let y1 = kid-y laid 1
+      in let y2 = kid-y laid 2
+      in let shifted = comp-translate laid 0 (0 - 30)
+      in let z0 = kid-y shifted 0
+      in let z1 = kid-y shifted 1
+      in let z2 = kid-y shifted 2
+
+      in let f0 = fill-all buf 0 ct-cells ct-sentinel
+      in let w0 = comp-walk buf ct-w (layout-rect 0 0 ct-w ct-h) font gfont-none shifted th 1
+      in let inside = count-touched buf 0 (ct-h * ct-w) 0
+      in let outside = count-touched buf (ct-h * ct-w) ct-cells 0
+
+      in act
+        print-line-uni ("three blocks, box holds two : " & yn (y2 + 30 > ct-h))
+        print-line-uni ("every child moved by 30     : " & yn (z0 == y0 - 30 & z1 == y1 - 30 & z2 == y2 - 30))
+        print-line-uni ("the third block is now in   : " & yn (z2 < ct-h))
+        print-line-uni ("painted inside the box      : " & yn (inside > 0))
+        print-line-uni ("nothing painted outside it  : " & yn (outside == 0))
+      end
+    end
+  end

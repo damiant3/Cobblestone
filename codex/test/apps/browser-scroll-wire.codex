@@ -1,0 +1,113 @@
+Chapter: BrowserScrollWireTest
+  cites Works chapter GopBrowser
+  cites Works chapter GopFont
+  cites Works chapter GopComposite
+  cites Works chapter GopDraw
+  cites Browser chapter Browser
+  cites Browser chapter Tab
+  cites Browser chapter BrowserTheme
+  cites Browser chapter Display
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter Scroll
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Kernel chapter BitmapFont
+
+ The page is taller than the pane it is given and a reader has to be able to
+ reach the rest of it. Three things have to be true for that and each of them
+ was false: the tab's ScrollState has to describe the page that is actually on
+ the glass, the paint has to move with the offset, and the chrome above the
+ viewport must not move with it.
+
+ The last one is the arm that fails first if the clip is wrong. Two paints of
+ the same page at two offsets are compared pixel for pixel, above the viewport
+ and below it: above must be identical and below must not be, and a scrolled
+ subtree painted under the pane's clip instead of the viewport's fails the
+ first half by overwriting the address bar.
+
+Section: Geometry
+
+  bsw-w : Integer = 200
+
+  bsw-h : Integer = 300
+
+  bsw-cells : Integer = 60000
+
+  bsw-bytes : Integer = 240000
+
+  bsw-sentinel : Integer = #111111
+
+Section: Counting
+
+  bsw-fill : Integer, Integer, Integer, Integer -> Integer
+  bsw-fill (b) (i) (n) (c) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) c in bsw-fill b (i + 1) n c
+
+  bsw-diff : Integer, Integer, Integer, Integer, Integer -> Integer
+  bsw-diff (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else bsw-diff a b (i + 1) n (acc + (if peek-32 a (i * 4) == peek-32 b (i * 4) then 0 else 1))
+
+  bsw-yn : Boolean -> Text
+  bsw-yn (v) = if v then "yes" else "no"
+
+Section: Reading The Tree
+
+  bsw-scroll : BrowserState -> ScrollState
+  bsw-scroll (state) =
+    when browser-active-tab state
+      is None -> scroll-new 0 0 0 0
+      is Just (t) -> t.tab-scroll
+
+  bsw-kid0-y : WidgetNode -> Integer
+  bsw-kid0-y (laid) =
+    when browser-laid-viewport laid
+      is None -> 0
+      is Just (vp) ->
+        if vp.wn-child-count == 0 then let b = vp.wn-bounds in b.lr-y
+        else let k = list-at (vp.wn-children) 0
+        in let b = k.wn-bounds
+        in b.lr-y
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let st = browser-init bsw-w bsw-h browser-theme-default display-init-text-fallback
+    in let fit = browser-scroll-fit st bsw-w bsw-h
+    in let th = fit.bs-theme
+    in let sc = bsw-scroll fit
+    in let mx = scr-max-y sc
+    in let pane = layout-rect 0 0 bsw-w bsw-h
+
+    in let bufa = __heap-save
+    in let adva = __heap-advance (bsw-bytes + 256)
+    in let bufb = __heap-save
+    in let advb = __heap-advance (bsw-bytes + 256)
+
+    in let laida = widget-layout (browser-render fit) th pane
+    in let vy = browser-viewport-top laida
+    in let fa = bsw-fill bufa 0 bsw-cells bsw-sentinel
+    in let pa = gbr-paint bufa bsw-w pane font gfont-none laida th 1 0
+    in let ya = bsw-kid0-y laida
+
+    in let laidb = widget-layout (browser-render fit) th pane
+    in let fb = bsw-fill bufb 0 bsw-cells bsw-sentinel
+    in let pb = gbr-paint bufb bsw-w pane font gfont-none laidb th 1 mx
+    in let yb = bsw-kid0-y laidb
+
+    in let diff-top = bsw-diff bufa bufb 0 (vy * bsw-w) 0
+    in let diff-page = bsw-diff bufa bufb (vy * bsw-w) bsw-cells 0
+
+    in act
+      print-line-uni ("viewport top, logical       : " & integer-to-text vy)
+      print-line-uni ("viewport height is measured : " & bsw-yn (sc.scr-viewport-h == bsw-h - vy))
+      print-line-uni ("page taller than the pane   : " & bsw-yn (sc.scr-content-h > sc.scr-viewport-h))
+      print-line-uni ("max scroll offset           : " & integer-to-text mx)
+      print-line-uni ("chrome unchanged by scroll  : " & bsw-yn (diff-top == 0))
+      print-line-uni ("page changed by the scroll  : " & bsw-yn (diff-page > 0))
+      print-line-uni ("tree follows the scroll     : " & bsw-yn (ya - yb == mx))
+    end
+  end

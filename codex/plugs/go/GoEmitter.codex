@@ -296,7 +296,21 @@ Section: Match
    in let cond = emit-go-pat-cond (b.pattern) "_s"
    in let binds = emit-go-pat-binds (b.pattern) "_s"
    in let body = emit-go-expr (b.body) arities indent
-   in "if " & cond & " { " & binds & "return " & body & " }; " & emit-go-branches branches arities indent (i + 1)
+   in "if " & cond & " { " & binds & go-guarded-return (b.guard) body arities indent & " }; " & emit-go-branches branches arities indent (i + 1)
+
+ The guard goes inside the `if` and after the binds, so it can read them and
+ a failed guard falls through to the next arm's test on its own.
+
+  go-guard-trivial : IRExpr -> Boolean
+  go-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  go-guarded-return : IRExpr, Text, List ArityEntry, Integer -> Text
+  go-guarded-return (guard) (body) (arities) (indent) =
+   if go-guard-trivial guard then "return " & body
+   else "if " & emit-go-expr guard arities indent & " { return " & body & " }"
 
   emit-go-pat-cond : IRPat, Text -> Text
   emit-go-pat-cond (p) (scrut) =

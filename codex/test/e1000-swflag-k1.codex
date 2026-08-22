@@ -1,0 +1,91 @@
+Chapter: E1000SwflagK1
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+Section: Fixtures
+
+  dev-id-of : PciScanResult -> Integer
+  dev-id-of (scan) =
+    when e1000-find scan
+      is Just (d) -> (d.pci-device-id)
+      is None -> 0
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+ THE INSTRUMENT HOLDS THE SEMAPHORE AND THE SUBJECT DOES NOT. The first
+ version of this arm did not, and every row answered `-1`: a reader that
+ reaches its subject through the mechanism under test measures the mechanism
+ and not the subject. `held-read` and `held-relink` take the flag for their
+ own MDIO so that the only unowned access in the boot is the one row 1 is
+ about.
+
+  held-read : Integer -> Integer
+  held-read (mmio) =
+    let got = e1000-swflag-acquire mmio e1000-swflag-fuel
+    in let p = e1000-phy-set-page mmio e1000-phy-pcie-pm-page
+    in let v = e1000-phy-read mmio e1000-phy-pcie-pm-reg
+    in let back = e1000-phy-set-page mmio 0
+    in let rel = e1000-swflag-release mmio
+    in v
+
+  held-relink : Integer -> Integer
+  held-relink (mmio) =
+    let got = e1000-swflag-acquire mmio e1000-swflag-fuel
+    in let r = e1000-link-up mmio
+    in let rel = e1000-swflag-release mmio
+    in r
+
+Section: Entry
+
+ THE COUPLING BETWEEN THE TWO REQUIREMENTS, and it is the one thing neither
+ `e1000-pch-k1` nor `e1000-swflag` can see. K1 shipping on means the driver
+ WRITES a PHY register during bring-up; the semaphore shipping on is what
+ keeps that write from going out unowned. Each arm alone passes with the other
+ requirement broken, because `e1000-pch-k1` runs without MDIO enforcement and
+ `e1000-swflag` never writes 770.17. This arm runs the K1 write UNDER
+ enforcement, which is the only configuration where the guard is load-bearing.
+
+ THE LADDER LEADS WITH A KILL. An UNGUARDED `e1000-k1-configure` under
+ `-i219-swflag` is refused at the MDIO layer and 770.17 keeps its NVM value;
+ the guarded call that follows takes the semaphore and lands. Same function,
+ same register, same boot: the only difference is who holds bit 5.
+
+ The kill is produced by the arm rather than by a flag, so this stays a pair
+ whatever `e1000-pch-swflag-required` ships as, and `770.17 left by init` is
+ read last as evidence that the shipped path did the guarded thing.
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in let did = dev-id-of scan
+    in let d = bring-up scan
+    in let mmio = d.e-mmio
+    in let by-init = held-read mmio
+    in let wipe = held-relink mmio
+    in let after-wipe = held-read mmio
+    in let unguarded = e1000-k1-configure mmio False
+    in let after-unguarded = held-read mmio
+    in let step = e1000-k1-configure-guarded mmio
+    in let guarded = step.k1-value
+    in let after-guarded = held-read mmio
+    in act
+      print-line-uni ("part is pch        : " & yn (e1000-pch-part did))
+      print-line-uni ("shipped swflag step: " & yn e1000-pch-swflag-required)
+      print-line-uni ("770.17 left by init: " & show by-init)
+      print-line-uni ("770.17 after wipe  : " & show after-wipe)
+      print-line-uni ("1 kill unguarded   : " & show after-unguarded)
+      print-line-uni ("2 pass guarded     : " & show after-guarded)
+      print-line-uni ("guarded owned      : " & yn (step.k1-owned))
+    end
+  end
+
+Page 1

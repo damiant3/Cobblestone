@@ -281,7 +281,21 @@ Section: Expression Emission
    else let b = list-at branches i
    in let cond = emit-maui-pat-cond (b.pattern) "_s"
    in let binds = emit-maui-pat-binds (b.pattern) "_s"
-   in "if (" & cond & ") { " & binds & "return " & emit-maui-expr (b.body) arities indent & "; } " & emit-maui-arms branches arities indent (i + 1)
+   in "if (" & cond & ") { " & binds & mui-guarded-ret (b.guard) (emit-maui-expr (b.body) arities indent) arities indent & " } " & emit-maui-arms branches arities indent (i + 1)
+
+ The guard sits inside the `if` and after the binds so it can read them, and
+ a refused guard falls out of the block to the next arm's test.
+
+  mui-guard-trivial : IRExpr -> Boolean
+  mui-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  mui-guarded-ret : IRExpr, Text, List ArityEntry, Integer -> Text
+  mui-guarded-ret (guard) (body) (arities) (indent) =
+   if mui-guard-trivial guard then "return " & body & ";"
+   else "if (" & emit-maui-expr guard arities indent & ") { return " & body & "; }"
 
   emit-maui-pat-cond : IRPat, Text -> Text
   emit-maui-pat-cond (p) (scrut) =

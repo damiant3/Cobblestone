@@ -841,6 +841,18 @@ Section: Server Loop
 
   MagicLoop = record { mstate : MagicStore, transport : TcpTransportState }
 
+ ONE SENDER FOR BOTH RESPONSES. A response that stops part way cannot be
+ repaired mid-stream and the loop below serves the next request on whatever
+ transport it is handed, so a short write left it answering a request read out
+ of the middle of a corrupted body. Closing makes the truncation visible.
+
+  magic-send : TcpTransportState, List Integer -> [Network.Read, Network.Write] TcpTransportState
+  magic-send (ts) (bytes) = act
+    r <- net-io-send-raw-checked ts bytes
+    if r.ns-complete then r.ns-transport
+    else net-io-close (r.ns-transport)
+  end
+
   magic-handle-http : MagicLoop, List Integer -> [Network.Read, Network.Write] MagicLoop
   magic-handle-http (ls) (raw-bytes) =
     let req = http-parse-request raw-bytes
@@ -848,14 +860,14 @@ Section: Server Loop
     in if req.valid == False then
       let err-bytes = http-encode (http-error "Bad request")
       in act
-        ts2 <- net-io-send-raw (ls.transport) err-bytes
+        ts2 <- magic-send (ls.transport) err-bytes
         MagicLoop { mstate = ls.mstate, transport = ts2 }
       end
     else let step = dispatch-request (ls.mstate) line
     in let resp = http-json (step.resp)
     in let resp-bytes = http-encode resp
     in act
-      ts2 <- net-io-send-raw (ls.transport) resp-bytes
+      ts2 <- magic-send (ls.transport) resp-bytes
       MagicLoop { mstate = step.store, transport = ts2 }
     end
 

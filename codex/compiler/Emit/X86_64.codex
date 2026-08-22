@@ -1606,15 +1606,28 @@ Section: Expression Emission
    in if rem == 0 then xs
     else pad-to-8 (list-push xs 0)
 
+ A real is negated by FLIPPING ITS SIGN BIT, which is bit 31 for an f32 and
+ bit 63 for an f64. The value is already in a general register as raw bits at
+ this point, so the flip is an xor there and never reaches an xmm.
+
+ This used to emit `0 - x` as `subsd`, which is wrong twice. It is the DOUBLE
+ subtract whatever the width, so an f32 was negated as though its bit pattern
+ were an f64; and `0 - x` is not negation even at the right width, because
+ IEEE 754 says 0 - (+0) is +0 while the negation of +0 is -0.
+
   emit-negate : CodegenState, IRExpr -> EmitResult
   emit-negate (st) (operand) =
    let op-ty = ir-expr-type operand
    in let r = emit-expr (st-set-tail-pos st False) operand
    in let rd = alloc-temp (r.state)
-   in if is-real-type op-ty then EmitResult {
-    state = st-append-code (rd.state) (movq-to-xmm 0 (r.reg) & xorps-xmm 1 1 & subsd-xmm 1 0 & movq-from-xmm (rd.reg) 1),
-    reg = rd.reg
-   }
+   in if is-real-type op-ty then
+    let m = alloc-temp (rd.state)
+    in let st1 = st-append-code (m.state) (mov-rr (rd.reg) (r.reg))
+    in let st2 = st-append-code st1 (mov-ri64 (m.reg) (if is-real-f32 op-ty then bit-shl 1 31 else bit-shl 1 63))
+    in EmitResult {
+     state = st-append-code st2 (xor-rr64 (rd.reg) (m.reg)),
+     reg = rd.reg
+    }
    else let st1 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
    in EmitResult {
    state = st-append-code st1 (neg-r (rd.reg)),

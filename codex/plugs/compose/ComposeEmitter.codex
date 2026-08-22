@@ -175,7 +175,21 @@ Section: Expression Emission
    else let b = list-at branches i
    in let cond = emit-kt-pat-cond (b.pattern) "_s"
    in let binds = emit-kt-pat-binds (b.pattern) "_s" indent
-   in kt-indent indent & "if (" & cond & ") {\n" & binds & kt-indent (indent + 1) & "return@run " & emit-kt-expr (b.body) arities (indent + 1) & "\n" & kt-indent indent & "}\n" & emit-kt-arms branches arities indent (i + 1)
+   in kt-indent indent & "if (" & cond & ") {\n" & binds & cmp-guarded-ret (b.guard) (emit-kt-expr (b.body) arities (indent + 1)) arities (indent + 1) & kt-indent indent & "}\n" & emit-kt-arms branches arities indent (i + 1)
+
+ The guard sits inside the `if` and after the binds so it can read them, and
+ a refused guard falls out of the block to the next arm's test.
+
+  cmp-guard-trivial : IRExpr -> Boolean
+  cmp-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  cmp-guarded-ret : IRExpr, Text, List ArityEntry, Integer -> Text
+  cmp-guarded-ret (guard) (body) (arities) (indent) =
+   if cmp-guard-trivial guard then kt-indent indent & "return@run " & body & "\n"
+   else kt-indent indent & "if (" & emit-kt-expr guard arities indent & ") {\n" & kt-indent (indent + 1) & "return@run " & body & "\n" & kt-indent indent & "}\n"
 
   emit-kt-pat-cond : IRPat, Text -> Text
   emit-kt-pat-cond (p) (scrut) =

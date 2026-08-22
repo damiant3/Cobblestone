@@ -1,0 +1,439 @@
+Chapter: GopIcon
+  cites UI chapter Icon
+  cites UI chapter Vector
+  cites Works chapter GopDraw
+
+ Icons on the GOP framebuffer. `UI chapter Icon` already carries the
+ artwork and the lookup; what it does not carry is a blit this path can
+ afford. `icon-blit` paints into a `Framebuf`, whose `fb-set` returns a
+ record per pixel at 24 bytes each, so a single 1024x768 pass costs 18.9 MB
+ that nothing reclaims. The desk's buffer is linear XRGB behind `gop-put`
+ at 0 bytes per pixel, and that is what these draw into.
+
+ We say:
+
+Section: The Kit
+
+ Every icon in `UI chapter Icon` is a module-level definition holding a
+ `List Integer`, and a module-level binding is a recipe rather than a cell:
+ each mention re-materialises the whole bitmap, 64 Integers for an 8x8.
+ Mentioning `icon-set-standard` inside a paint would rebuild all 63 of
+ them. So the icons a surface needs are built ONCE into a kit and threaded
+ as a parameter, which is the hoist the Guide prescribes for a table read
+ in a loop, and no function below this section mentions an icon by name.
+
+  IconKit = record {
+    ik-dir : Icon,
+    ik-src : Icon,
+    ik-img : Icon,
+    ik-bin : Icon
+  }
+
+  gicon-dir : Integer = 0
+
+  gicon-src : Integer = 1
+
+  gicon-img : Integer = 2
+
+  gicon-bin : Integer = 3
+
+  gicon-kit : IconKit
+  gicon-kit =
+    IconKit { ik-dir = ico-folder-8, ik-src = ico-code-8, ik-img = ico-image-8, ik-bin = ico-file-8 }
+
+  gicon-pick : IconKit, Integer -> Icon
+  gicon-pick (kit) (kind) =
+    if kind == gicon-dir then kit.ik-dir
+    else if kind == gicon-src then kit.ik-src
+    else if kind == gicon-img then kit.ik-img
+    else kit.ik-bin
+
+Section: Blit
+
+ The framebuffer is linear and `gop-put` is one `poke-32` at
+ `(y * stride + x) * 4`, so a column past the end of a row lands on the
+ NEXT row rather than off the screen. The bound against `stride` is the
+ one `gop-draw-text` carries, for that reason and no other.
+
+ An icon is a 1-bit mask: an on pixel takes the caller's colour and an off
+ pixel is left alone, so an icon over a highlighted row keeps the row's
+ fill behind it.
+
+  gicon-cols : Integer, Integer, Icon, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gicon-cols (base) (stride) (ico) (px) (py) (scale) (color) (row) (col) =
+    if col >= ico.ico-width then 0
+    else if px + (col + 1) * scale > stride then 0
+    else let on = icon-get ico col row
+    in let d = if on == 1 then gop-fill-rect base stride (px + col * scale) (py + row * scale) scale scale color else 0
+    in gicon-cols base stride ico px py scale color row (col + 1)
+
+  gicon-rows : Integer, Integer, Icon, Integer, Integer, Integer, Integer, Integer -> Integer
+  gicon-rows (base) (stride) (ico) (px) (py) (scale) (color) (row) =
+    if row >= ico.ico-height then 0
+    else let r = gicon-cols base stride ico px py scale color row 0
+    in gicon-rows base stride ico px py scale color (row + 1)
+
+  gicon-blit : Integer, Integer, Icon, Integer, Integer, Integer, Integer -> Integer
+  gicon-blit (base) (stride) (ico) (px) (py) (scale) (color) =
+    if scale <= 0 then 0
+    else gicon-rows base stride ico px py scale color 0
+
+ The drawn size is the artwork's width times the scale it is given, and a
+ caller laying a row out needs it before it draws.
+
+  gicon-size : Icon, Integer -> Integer
+  gicon-size (ico) (scale) = ico.ico-width * scale
+
+Section: Drawn Icons
+
+ The artwork above is a 1-bit mask eight pixels across, and `comp-icon` shows
+ it at `d / 8`, so the desk's icons are eight-pixel drawings magnified three
+ or four times. That is a resolution problem before it is a colour one, and
+ no amount of blending fixes a shape that only has sixty-four samples in it.
+
+ A path has no size, so it is rasterized at whatever the surface asks for.
+ `vec-coverage` answers a byte of coverage per pixel; this stores that in an
+ `alloc-bytes` blob rather than keeping the `List Integer`, for the reason
+ the kit above exists: a module-level list is a recipe and re-materialises at
+ every mention, so the artwork has to be rendered once and addressed after.
+
+  gicon-render : VecPath, Integer -> Integer
+  gicon-render (p) (n) =
+    let buf = alloc-bytes (n * n)
+    in let cov = vec-coverage-in p gicon-em n
+    in let w = gicon-store buf cov 0 (n * n)
+    in buf
+
+  gicon-store : Integer, List Integer, Integer, Integer -> Integer
+  gicon-store (buf) (cov) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i (list-at cov i)
+    in gicon-store buf cov (i + 1) n
+
+  gicon-cov-at : Integer, Integer, Integer, Integer -> Integer
+  gicon-cov-at (blob) (n) (x) (y) = peek-byte blob (y * n + x)
+
+  gicon-cov-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gicon-cov-cols (base) (stride) (blob) (n) (px) (py) (color) (row) (col) =
+    if col >= n then 0
+    else if px + col >= stride then 0
+    else let d = gop-blend base stride (px + col) (py + row) color (gicon-cov-at blob n col row)
+    in gicon-cov-cols base stride blob n px py color row (col + 1)
+
+  gicon-cov-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gicon-cov-rows (base) (stride) (blob) (n) (px) (py) (color) (row) =
+    if row >= n then 0
+    else let r = gicon-cov-cols base stride blob n px py color row 0
+    in gicon-cov-rows base stride blob n px py color (row + 1)
+
+  gicon-blit-cov : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gicon-blit-cov (base) (stride) (blob) (n) (px) (py) (color) =
+    if n <= 0 then 0
+    else gicon-cov-rows base stride blob n px py color 0
+
+ Artwork is authored in a box of `gicon-em` units and rasterized to whatever
+ size a surface asks for, so one drawing serves the sidebar's gutter and the
+ launcher's row without a second set.
+
+  gicon-em : Integer = 32
+
+ A `vec-move-to` inside a path starts a new subpath rather than a new path,
+ so a drawing is as many contours as it needs. The fill pairs its scanline
+ crossings, which is the even-odd rule, and that is what makes a ring out of
+ two circles and a frame out of two rectangles without a second primitive:
+ a contour inside another one cuts a hole. A shape meant to be solid must
+ therefore not be drawn inside another one, which is why the power stem sits
+ within the ring's hole rather than across its band.
+
+  gicon-box : VecPath, Integer, Integer, Integer, Integer -> VecPath
+  gicon-box (p) (x) (y) (w) (h) =
+    let a = vec-move-to p x y
+    in let b = vec-line-to a (x + w) y
+    in let c = vec-line-to b (x + w) (y + h)
+    in let d = vec-line-to c x (y + h)
+    in vec-close d
+
+  gicon-ring : VecPath, Integer, Integer, Integer, Integer -> VecPath
+  gicon-ring (p) (cx) (cy) (ro) (ri) =
+    vec-circle-loop (vec-circle-loop p cx cy ro 24 0 True) cx cy ri 24 0 True
+
+  gicon-vec-menu : VecPath
+  gicon-vec-menu =
+    gicon-box (gicon-box (gicon-box vec-path-new 5 7 22 3) 5 14 22 3) 5 21 22 3
+
+  gicon-vec-grid : VecPath
+  gicon-vec-grid =
+    gicon-box (gicon-box (gicon-box (gicon-box vec-path-new 5 5 9 9) 18 5 9 9) 5 18 9 9) 18 18 9 9
+
+  gicon-vec-folder : VecPath
+  gicon-vec-folder =
+    let p = vec-move-to vec-path-new 4 9
+    in let p2 = vec-line-to p 13 9
+    in let p3 = vec-line-to p2 15 12
+    in let p4 = vec-line-to p3 28 12
+    in let p5 = vec-line-to p4 28 26
+    in let p6 = vec-line-to p5 4 26
+    in vec-close p6
+
+  gicon-vec-edit : VecPath
+  gicon-vec-edit =
+    let p = vec-move-to vec-path-new 22 4
+    in let p2 = vec-line-to p 28 10
+    in let p3 = vec-line-to p2 13 25
+    in let p4 = vec-line-to p3 5 27
+    in let p5 = vec-line-to p4 7 19
+    in vec-close p5
+
+  gicon-vec-terminal : VecPath
+  gicon-vec-terminal =
+    let frame = gicon-box (gicon-box vec-path-new 3 6 26 20) 6 9 20 14
+    in let p = vec-move-to frame 9 13
+    in let p2 = vec-line-to p 15 16
+    in let p3 = vec-line-to p2 9 19
+    in let p4 = vec-line-to p3 9 17
+    in let p5 = vec-line-to p4 12 16
+    in let p6 = vec-line-to p5 9 15
+    in vec-close p6
+
+  gicon-vec-power : VecPath
+  gicon-vec-power =
+    gicon-box (gicon-ring vec-path-new 16 18 12 8) 14 4 4 13
+
+ Two contours that OVERLAP cancel where they cross, because the fill pairs
+ its crossings: two rectangles sharing a band leave that band empty. Nested is
+ fine and is how a ring and a cut-out glyph are drawn; overlapping is not, so
+ a cloud is one silhouette rather than three discs and a gear's teeth sit
+ clear of its rim.
+
+  gicon-vec-clock : VecPath
+  gicon-vec-clock =
+    let r = gicon-ring vec-path-new 16 16 13 10
+    in gicon-box (gicon-box r 15 8 2 9) 16 15 7 2
+
+  gicon-vec-calendar : VecPath
+  gicon-vec-calendar =
+    let f = gicon-box (gicon-box vec-path-new 4 7 24 21) 7 14 18 11
+    in gicon-box (gicon-box f 9 3 3 6) 20 3 3 6
+
+  gicon-vec-eye : VecPath
+  gicon-vec-eye =
+    let p = vec-move-to vec-path-new 3 16
+    in let p2 = vec-bezier-to p 10 6 22 6 29 16
+    in let p3 = vec-bezier-to p2 22 26 10 26 3 16
+    in let lens = vec-close p3
+    in vec-circle-loop lens 16 16 4 16 0 True
+
+  gicon-vec-bell : VecPath
+  gicon-vec-bell =
+    let p = vec-move-to vec-path-new 7 22
+    in let p2 = vec-bezier-to p 9 18 8 8 16 5
+    in let p3 = vec-bezier-to p2 24 8 23 18 25 22
+    in let p4 = vec-line-to p3 7 22
+    in let body = vec-close p4
+    in gicon-box body 13 24 6 3
+
+  gicon-vec-cloud : VecPath
+  gicon-vec-cloud =
+    let p = vec-move-to vec-path-new 6 23
+    in let p2 = vec-bezier-to p 1 23 1 15 7 15
+    in let p3 = vec-bezier-to p2 7 6 19 5 21 13
+    in let p4 = vec-bezier-to p3 29 12 31 23 25 23
+    in vec-close p4
+
+  gicon-vec-check : VecPath
+  gicon-vec-check =
+    let p = vec-move-to vec-path-new 5 16
+    in let p2 = vec-line-to p 9 12
+    in let p3 = vec-line-to p2 13 17
+    in let p4 = vec-line-to p3 24 6
+    in let p5 = vec-line-to p4 28 10
+    in let p6 = vec-line-to p5 13 26
+    in vec-close p6
+
+  gicon-vec-image : VecPath
+  gicon-vec-image =
+    let f = gicon-box (gicon-box vec-path-new 3 6 26 20) 6 9 20 14
+    in let s = vec-circle-loop f 11 14 3 16 0 True
+    in let p = vec-move-to s 8 22
+    in let p2 = vec-line-to p 14 15
+    in let p3 = vec-line-to p2 20 22
+    in vec-close p3
+
+  gicon-vec-star : VecPath
+  gicon-vec-star =
+    let p = vec-move-to vec-path-new 16 3
+    in let p2 = vec-line-to p 20 12
+    in let p3 = vec-line-to p2 30 13
+    in let p4 = vec-line-to p3 22 19
+    in let p5 = vec-line-to p4 25 29
+    in let p6 = vec-line-to p5 16 23
+    in let p7 = vec-line-to p6 7 29
+    in let p8 = vec-line-to p7 10 19
+    in let p9 = vec-line-to p8 2 13
+    in let p10 = vec-line-to p9 12 12
+    in vec-close p10
+
+  gicon-vec-settings : VecPath
+  gicon-vec-settings =
+    let r = gicon-ring vec-path-new 16 16 11 6
+    in let t = gicon-box (gicon-box r 13 1 6 4) 13 27 6 4
+    in gicon-box (gicon-box t 1 13 4 6) 27 13 4 6
+
+  gicon-vec-info : VecPath
+  gicon-vec-info =
+    let d = vec-circle-loop vec-path-new 16 16 13 24 0 True
+    in gicon-box (gicon-box d 14 8 4 4) 14 14 4 11
+
+  gicon-vec-code : VecPath
+  gicon-vec-code =
+    let a = vec-move-to vec-path-new 11 8
+    in let a2 = vec-line-to a 14 11
+    in let a3 = vec-line-to a2 8 16
+    in let a4 = vec-line-to a3 14 21
+    in let a5 = vec-line-to a4 11 24
+    in let a6 = vec-line-to a5 2 16
+    in let left = vec-close a6
+    in let b = vec-move-to left 21 8
+    in let b2 = vec-line-to b 30 16
+    in let b3 = vec-line-to b2 21 24
+    in let b4 = vec-line-to b3 18 21
+    in let b5 = vec-line-to b4 24 16
+    in let b6 = vec-line-to b5 18 11
+    in vec-close b6
+
+  gicon-vec-file : VecPath
+  gicon-vec-file =
+    let p = vec-move-to vec-path-new 7 3
+    in let p2 = vec-line-to p 19 3
+    in let p3 = vec-line-to p2 25 9
+    in let p4 = vec-line-to p3 25 29
+    in let p5 = vec-line-to p4 7 29
+    in vec-close p5
+
+  gicon-vec-home : VecPath
+  gicon-vec-home =
+    let p = vec-move-to vec-path-new 16 3
+    in let p2 = vec-line-to p 30 15
+    in let p3 = vec-line-to p2 26 15
+    in let p4 = vec-line-to p3 26 28
+    in let p5 = vec-line-to p4 6 28
+    in let p6 = vec-line-to p5 6 15
+    in let p7 = vec-line-to p6 2 15
+    in vec-close p7
+
+  gicon-vec-named : Text -> VecPath
+  gicon-vec-named (name) =
+    if name == "menu" then gicon-vec-menu
+    else if name == "grid" then gicon-vec-grid
+    else if name == "folder" then gicon-vec-folder
+    else if name == "edit" then gicon-vec-edit
+    else if name == "terminal" then gicon-vec-terminal
+    else if name == "power" then gicon-vec-power
+    else if name == "clock" then gicon-vec-clock
+    else if name == "calendar" then gicon-vec-calendar
+    else if name == "eye" then gicon-vec-eye
+    else if name == "bell" then gicon-vec-bell
+    else if name == "cloud" then gicon-vec-cloud
+    else if name == "check" then gicon-vec-check
+    else if name == "image" then gicon-vec-image
+    else if name == "star" then gicon-vec-star
+    else if name == "settings" then gicon-vec-settings
+    else if name == "info" then gicon-vec-info
+    else if name == "code" then gicon-vec-code
+    else if name == "home" then gicon-vec-home
+    else gicon-vec-file
+
+ A name with no drawing falls back to the eight pixel mask rather than to
+ nothing, so the set can grow one drawing at a time and every surface keeps
+ working while it does.
+
+  gicon-drawn-count : Integer = 19
+
+  gicon-drawn-name : Integer -> Text
+  gicon-drawn-name (i) =
+    if i == 0 then "menu"
+    else if i == 1 then "grid"
+    else if i == 2 then "folder"
+    else if i == 3 then "edit"
+    else if i == 4 then "terminal"
+    else if i == 5 then "power"
+    else if i == 6 then "clock"
+    else if i == 7 then "calendar"
+    else if i == 8 then "eye"
+    else if i == 9 then "bell"
+    else if i == 10 then "cloud"
+    else if i == 11 then "check"
+    else if i == 12 then "image"
+    else if i == 13 then "star"
+    else if i == 14 then "settings"
+    else if i == 15 then "info"
+    else if i == 16 then "code"
+    else if i == 17 then "home"
+    else "file"
+
+ Every name has a drawing now, and `gicon-drawn` still exists rather than
+ being retired: the eight pixel masks are what a surface falls back to when a
+ size disagrees with the one settled at boot, and a name added to the launcher
+ tomorrow with no path of its own has to land somewhere.
+
+  gicon-drawn-slot : Text, Integer -> Integer
+  gicon-drawn-slot (name) (i) =
+    if i >= gicon-drawn-count then 0 - 1
+    else if gicon-drawn-name i == name then i
+    else gicon-drawn-slot name (i + 1)
+
+  gicon-drawn : Text -> Boolean
+  gicon-drawn (name) = gicon-drawn-slot name 0 >= 0
+
+  gicon-vec-disc : VecPath
+  gicon-vec-disc = vec-circle 16 16 13 24
+
+  gicon-vec-doc : VecPath
+  gicon-vec-doc =
+    let p = vec-move-to vec-path-new 8 4
+    in let p2 = vec-line-to p 20 4
+    in let p3 = vec-line-to p2 24 8
+    in let p4 = vec-line-to p3 24 28
+    in let p5 = vec-line-to p4 8 28
+    in vec-close p5
+
+  gicon-vec-drop : VecPath
+  gicon-vec-drop =
+    let p = vec-move-to vec-path-new 16 4
+    in let p2 = vec-bezier-to p 28 14 28 22 16 28
+    in let p3 = vec-bezier-to p2 4 22 4 14 16 4
+    in vec-close p3
+
+Section: By Name
+
+ A surface with one icon per row cannot hold a kit: the launcher's fourteen
+ entries would need fourteen fields. This answers ONE icon, so a caller pays
+ for the one it draws and not for the set, and `icon-set-find` over
+ `icon-set-standard` is never the road because the set mention rebuilds all
+ 63 bitmaps before the search starts.
+
+ An unknown name answers the file icon rather than refusing. A missing glyph
+ on a launcher row is a worse outcome than a generic one, and the caller has
+ no repair to make at that point in a paint.
+
+  gicon-named : Text -> Icon
+  gicon-named (name) =
+    if name == "folder" then ico-folder-8
+    else if name == "code" then ico-code-8
+    else if name == "image" then ico-image-8
+    else if name == "clock" then ico-clock-8
+    else if name == "calendar" then ico-calendar-8
+    else if name == "grid" then ico-grid-8
+    else if name == "eye" then ico-eye-8
+    else if name == "edit" then ico-edit-8
+    else if name == "bell" then ico-bell-8
+    else if name == "terminal" then ico-terminal-8
+    else if name == "cloud" then ico-cloud-8
+    else if name == "check" then ico-check-8
+    else if name == "star" then ico-star-8
+    else if name == "settings" then ico-settings-8
+    else if name == "info" then ico-info-8
+    else if name == "menu" then ico-menu-8
+    else if name == "power" then ico-power-8
+    else if name == "home" then ico-home-8
+    else ico-file-8

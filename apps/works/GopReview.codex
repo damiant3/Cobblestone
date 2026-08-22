@@ -10,14 +10,63 @@ Chapter: GopReview
   cites UI chapter DataTable
   cites Foreword chapter Maybe
   cites Foreword chapter StringUtils
+  cites UI chapter KeyInput
+  cites UI chapter Scroll
 
 Section: State
 
   grv-sel-cell : Integer = 0
   grv-mode-cell : Integer = 4
+  grv-reason-cell : Integer = 8
+  grv-rlen-cell : Integer = 12
+  grv-kind-cell : Integer = 16
+  grv-mods-cell : Integer = 20
+  grv-scroll-cell : Integer = 24
+  grv-view-cell : Integer = 28
+  grv-old-cell : Integer = 32
+  grv-pick-cell : Integer = 36
 
   grv-mode-list : Integer = 0
   grv-mode-detail : Integer = 1
+  grv-mode-reason : Integer = 2
+  grv-mode-pick : Integer = 3
+
+ A reason is stored as the bytes the keyboard speaks rather than as CCE, for
+ the reason the console's line is: they arrive through `apply-mods` and leave
+ through `from-unicode`, and reading them as CCE renders every letter as the
+ wrong glyph.
+
+ The buffer is allocated here, and `desk-run` calls this before it takes the
+ base heap mark. A pane exit restores that mark, so a buffer allocated on
+ first use would leave this cell pointing into reclaimed heap (the desk
+ contract, section 2, and the two ways it has already gone wrong).
+
+  grv-reason-cols : Integer = 72
+
+  grv-init : Integer -> Integer
+  grv-init (rs) =
+    let b = alloc-zeroed grv-reason-cols 64
+    in let a = poke-32 rs grv-reason-cell b
+    in let c = poke-32 rs grv-rlen-cell 0
+    in let d = poke-32 rs grv-kind-cell 0
+    in let e = poke-32 rs grv-mods-cell 0
+    in let f = poke-32 rs grv-scroll-cell 0
+    in let g = poke-32 rs grv-old-cell 0
+    in let h = poke-32 rs grv-pick-cell 0
+    in poke-32 rs grv-view-cell 1
+
+  grv-scroll-y : Integer -> Integer
+  grv-scroll-y (rs) = peek-32 rs grv-scroll-cell
+
+  grv-set-scroll : Integer, Integer -> Integer
+  grv-set-scroll (rs) (y) = poke-32 rs grv-scroll-cell (if y < 0 then 0 else y)
+
+ The view is written by the paint that measured it and read by the key that
+ pages. A page key cannot compute it: the room depends on the theme's padding,
+ which only the layout engine knows.
+
+  grv-view-rows : Integer -> Integer
+  grv-view-rows (rs) = let v = peek-32 rs grv-view-cell in if v < 1 then 1 else v
 
   grv-sel : Integer -> Integer
   grv-sel (rs) = peek-32 rs grv-sel-cell
@@ -32,6 +81,42 @@ Section: State
   grv-set-mode : Integer, Integer -> Integer
   grv-set-mode (rs) (m) = poke-32 rs grv-mode-cell m
 
+Section: The Reason Buffer
+
+  grv-reason-buf : Integer -> Integer
+  grv-reason-buf (rs) = peek-32 rs grv-reason-cell
+
+  grv-reason-len : Integer -> Integer
+  grv-reason-len (rs) = peek-32 rs grv-rlen-cell
+
+  grv-reason-chars : Integer, Integer, Integer, Text -> Text
+  grv-reason-chars (buf) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let b = peek-byte buf i
+    in let ch = if b < 32 then " " else char-to-text (code-to-char (from-unicode b))
+    in grv-reason-chars buf (i + 1) stop (acc & ch)
+
+  grv-reason-text : Integer -> Text
+  grv-reason-text (rs) = grv-reason-chars (grv-reason-buf rs) 0 (grv-reason-len rs) ""
+
+  grv-type : Integer, Integer -> Integer
+  grv-type (rs) (ch) =
+    let n = grv-reason-len rs
+    in if n >= grv-reason-cols then n
+    else let w = poke-byte (grv-reason-buf rs) n ch
+    in poke-32 rs grv-rlen-cell (n + 1)
+
+  grv-back : Integer -> Integer
+  grv-back (rs) =
+    let n = grv-reason-len rs
+    in if n <= 0 then 0 else poke-32 rs grv-rlen-cell (n - 1)
+
+  grv-shift-of : Integer, Integer -> Integer
+  grv-shift-of (mods) (sc) =
+    if sc == 42 | sc == 54 then 1
+    else if sc == 170 | sc == 182 then 0
+    else mods
+
 Section: The Store
 
   GrvData = record {
@@ -39,10 +124,11 @@ Section: The Store
     gd-base : Integer,
     gd-facts : Integer,
     gd-proposals : List Proposal,
-    gd-verdicts : List Verdict
+    gd-verdicts : List Verdict,
+    gd-sups : List Supersession
   }
 
-  grv-none : GrvData = GrvData { gd-ok = False, gd-base = 0, gd-facts = 0, gd-proposals = [], gd-verdicts = [] }
+  grv-none : GrvData = GrvData { gd-ok = False, gd-base = 0, gd-facts = 0, gd-proposals = [], gd-verdicts = [], gd-sups = [] }
 
   grv-load : Integer -> [Device.Port] GrvData
   grv-load (dummy) = act
@@ -51,12 +137,14 @@ Section: The Store
     else act
       ptexts <- gfs-scan-all st persist-kind-proposal
       vtexts <- gfs-scan-all st persist-kind-verdict
+      stexts <- gfs-scan-all st persist-kind-supersession
       GrvData {
         gd-ok = True,
         gd-base = st.gfs-base,
         gd-facts = st.gfs-count,
         gd-proposals = parse-proposal-list ptexts 0 (list-length ptexts) [],
-        gd-verdicts = parse-verdict-list vtexts 0 (list-length vtexts) []
+        gd-verdicts = parse-verdict-list vtexts 0 (list-length vtexts) [],
+        gd-sups = parse-supersession-list stexts 0 (list-length stexts) []
       }
     end
   end
@@ -101,6 +189,74 @@ Section: Verdict Tallies
     if i >= list-length vs then acc
     else let v = list-at vs i
     in grv-verdicts-for vs pid (i + 1) (if v.proposal-id == pid then list-push acc v else acc)
+
+Section: The Chain
+
+ A proposal chain, walked over kind-42 facts. `Historian` is not reached for
+ it and that is the ruling's point rather than an omission: its chain is over
+ ANNOTATION hashes and calls `annotation-get`, and these are proposals, a
+ different kind with no hash chain. What is borrowed is its shape, the cycle
+ guard and the depth cap, because a store is bytes off a medium and two facts
+ can point at each other.
+
+  grv-chain-cap : Integer = 64
+
+  grv-sup-of : List Supersession, Text, Integer -> Text
+  grv-sup-of (sups) (id) (i) =
+    if i >= list-length sups then ""
+    else let s = list-at sups i
+    in if s.sup-old == id then s.sup-new else grv-sup-of sups id (i + 1)
+
+  grv-proposal-by-id : List Proposal, Text, Integer -> Integer
+  grv-proposal-by-id (ps) (id) (i) =
+    if i >= list-length ps then 0 - 1
+    else if (list-at ps i).id == id then i
+    else grv-proposal-by-id ps id (i + 1)
+
+ A step is one line of the view. `ch-index` is where the proposal sits in the
+ list, or negative when the medium does not carry it, which is the orphan the
+ ruling requires be SAID rather than dropped.
+
+  ChainStep = record {
+    ch-id : Text,
+    ch-index : Integer
+  }
+
+  grv-chain : GrvData, Text, Integer, List Text, List ChainStep -> List ChainStep
+  grv-chain (d) (id) (depth) (seen) (acc) =
+    if depth >= grv-chain-cap then acc
+    else if grv-seen seen id 0 then acc
+    else let idx = grv-proposal-by-id (d.gd-proposals) id 0
+    in let acc2 = list-push acc (ChainStep { ch-id = id, ch-index = idx })
+    in let next = grv-sup-of (d.gd-sups) id 0
+    in if text-length next == 0 then acc2
+    else grv-chain d next (depth + 1) (list-push seen id) acc2
+
+  grv-seen : List Text, Text, Integer -> Boolean
+  grv-seen (xs) (id) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == id then True
+    else grv-seen xs id (i + 1)
+
+ The chain is walked from the SELECTED proposal forward. A proposal that
+ supersedes an earlier one shows a chain of one until the reader opens the one
+ it replaced, which is the honest reading of a forward link and the reason the
+ first line names the proposal you are looking at.
+
+  grv-chain-lines : GrvData, List ChainStep, Integer, List Text -> List Text
+  grv-chain-lines (d) (steps) (i) (acc) =
+    if i >= list-length steps then acc
+    else let s = list-at steps i
+    in let marker = if i == 0 then "  this one:  " else "  replaced by:  "
+    in let body = if s.ch-index < 0 then grv-short (s.ch-id) 16 & "   NOT ON THIS MEDIUM" else grv-short (s.ch-id) 16 & "   " & (list-at (d.gd-proposals) (s.ch-index)).description
+    in grv-chain-lines d steps (i + 1) (list-push acc (marker & body))
+
+  grv-chain-block : GrvData, Integer -> List Text
+  grv-chain-block (d) (sel) =
+    let p = list-at (d.gd-proposals) sel
+    in let steps = grv-chain d (p.id) 0 [] []
+    in if list-length steps <= 1 then ["Supersession:  none on this medium"]
+    else list-push (grv-chain-lines d steps 0 []) ""
 
 Section: Names
 
@@ -192,10 +348,30 @@ Section: Wrapping
     else let lbl = widget-set-min (widget-label (id & "-" & show i) (list-at ls i)) 0 18
     in grv-line-labels id ls (i + 1) (list-push acc lbl)
 
-  grv-body-labels : Text, Text, Integer, Integer -> List WidgetNode
-  grv-body-labels (id) (body) (cpl) (max) =
-    if text-length body == 0 then [widget-set-min (widget-label (id & "-0") "") 0 18]
-    else grv-line-labels id (grv-cap-lines (grv-wrap-lines body cpl 0 []) max cpl) 0 []
+  grv-field-lines : Text, Integer -> List Text
+  grv-field-lines (t) (cpl) = if text-length t == 0 then [""] else grv-wrap-lines t cpl 0 []
+
+ The three fields become ONE list of equal-height rows, separated by blank
+ lines rather than by separators, because the scroll model counts rows and a
+ separator is a different height. This is the whole reason the body scrolls as
+ one region instead of three: a window onto three independently sized regions
+ has no single row to be at.
+
+  grv-wrap-all : List Text, Integer, Integer, List Text -> List Text
+  grv-wrap-all (src) (cpl) (i) (acc) =
+    if i >= list-length src then acc
+    else grv-wrap-all src cpl (i + 1) (acc & grv-field-lines (list-at src i) cpl)
+
+  grv-body-lines : GrvData, Integer, Integer -> List Text
+  grv-body-lines (d) (sel) (cpl) =
+    let p = list-at (d.gd-proposals) sel
+    in grv-wrap-all (grv-chain-block d sel) cpl 0 []
+      & [""]
+      & grv-field-lines ("Changes:  " & join-with-comma (p.changed-definitions) 0 (list-length (p.changed-definitions)) "") cpl
+      & [""]
+      & grv-field-lines (p.description) cpl
+      & [""]
+      & grv-field-lines (p.justification) cpl
 
  A label's own minimum plus the root panel's gap, which is what one more
  wrapped line costs the column. Both numbers are this chapter's own and are
@@ -277,24 +453,36 @@ Section: The Detail
     in let lbl = widget-set-min (widget-label ("grv-v-" & show i) head) 0 18
     in grv-verdict-rows vs cpl (i + 1) (list-push acc lbl)
 
- Wrapping trades a line that ran off the right edge for lines that run off the
- bottom, and the second is worse: what leaves the box is the verdict list and
- the line saying whether this boot can cast at all. So the body is bounded by
- the room the measuring pass found. `slack-h` is the height the flexed filler
- was given when the same tree was laid out UNWRAPPED, which is the engine's own
- answer to how many more rows fit, and the three unwrapped lines are already
- counted in it.
+ Wrapping traded a line that ran off the right edge for lines that ran off the
+ bottom, and the second was worse: what left the box was the verdict list and
+ the line saying whether this boot can cast at all. Bounding the body fixed
+ that and could not fix the rest, because the fixed fields take fourteen of the
+ sixteen rows this pane has at 1600x900, so no way of dividing the remainder
+ lets a reader READ a long proposal. The body is a scroll viewport now.
 
-  grv-detail-tree : GrvData, Integer, Maybe Text, Integer, Integer -> WidgetNode
-  grv-detail-tree (d) (sel) (signer) (wrap-w) (slack-h) =
+ `view-rows` is how many rows the body may show, and it arrives from the
+ measuring pass rather than being computed here (that pass renders exactly ONE
+ body row, so the room it reports as slack is rows-beyond-the-first). A
+ `view-rows` of zero IS the measuring pass: the body renders its single probe
+ row, the bar renders as a plain gap of the same width so both passes measure
+ the same text column, and nothing is written back.
+
+  grv-detail-tree : GrvData, Integer, Integer, Maybe Text, Integer, Integer, Text -> WidgetNode
+  grv-detail-tree (d) (sel) (rs) (signer) (wrap-w) (view-rows) (prompt) =
     let p = list-at (d.gd-proposals) sel
     in let vs = grv-verdicts-for (d.gd-verdicts) (p.id) 0 []
     in let cpl = grv-cpl wrap-w
-    in let extra = if slack-h <= 0 then 0 else slack-h / grv-row-h
-    in let budget = 3 + extra
-    in let rest = budget - 1
-    in let desc-max = if rest <= 2 then 1 else rest * 2 / 3
-    in let just-max = if rest - desc-max <= 0 then 1 else rest - desc-max
+    in let measuring = view-rows <= 0
+    in let lines = if measuring then [""] else grv-body-lines d sel cpl
+    in let labels = grv-line-labels "grv-body" lines 0 []
+    in let vr = if measuring then 1 else view-rows
+    in let st = scroll-to (scroll-new 0 (vr * grv-row-h) 0 (list-length labels * grv-row-h)) 0 (if measuring then 0 else grv-scroll-y rs)
+    in let kept = if measuring then 0 else poke-32 rs grv-scroll-cell (st.scr-offset-y)
+    in let keptv = if measuring then 0 else poke-32 rs grv-view-cell vr
+    in let region = widget-set-flex (widget-panel "grv-body-row" DirRow 4 [
+        widget-set-flex (widget-panel "grv-body-col" DirColumn 6 (scroll-slice labels st grv-row-h)) 1,
+        scroll-bar-or-gap "grv-bar" st
+      ]) 0
     in let head = [
         widget-label "grv-title" ("Proposal " & grv-short (p.id) 16 & "  " & proposal-status-name (p.status)),
         widget-separator "grv-sep",
@@ -302,26 +490,45 @@ Section: The Detail
         widget-set-min (widget-label "grv-author" ("Author:   " & p.author-fingerprint)) 0 18,
         widget-set-min (widget-label "grv-when" ("When:     " & show (p.timestamp))) 0 18
       ]
-    in let defs = grv-body-labels "grv-defs" ("Changes:  " & join-with-comma (p.changed-definitions) 0 (list-length (p.changed-definitions)) "") cpl 1
-    in let body = grv-body-labels "grv-desc" (p.description) cpl desc-max & grv-body-labels "grv-just" (p.justification) cpl just-max
     in let mid = [
         widget-separator "grv-sep3",
         widget-set-min (widget-label "grv-vhead" ("Verdicts: " & show (list-length vs))) 0 18
       ]
-    in let who = when signer
+    in let idle = when signer
         is None -> "Identity locked: verdicts cannot be cast this boot"
         is Just (fp) -> "Signing as " & fp & "   a accept   r reject   b abstain"
+    in let who = if text-length prompt == 0 then idle else prompt
+    in let help = if text-length prompt == 0 then "up/down scrolls   Esc back to the list   " & scroll-label st grv-row-h else "Enter casts   Esc cancels   a reason is optional"
     in let tail = [
         widget-set-flex (widget-panel "grv-fill" DirColumn 0 []) 1,
         widget-set-min (widget-label "grv-who" who) 0 18,
-        widget-label "grv-help" "Esc back to the list"
+        widget-label "grv-help" help
       ]
     in let sep2 = [widget-separator "grv-sep2"]
-    in widget-panel "grv-root" DirColumn 6 (head & defs & sep2 & body & mid & grv-verdict-rows vs cpl 0 [] & tail)
+    in widget-panel "grv-root" DirColumn 6 (head & sep2 & [region] & mid & grv-verdict-rows vs cpl 0 [] & tail)
+
+  grv-prompt-text : Integer -> Text
+  grv-prompt-text (rs) =
+    if grv-mode rs == grv-mode-reason then verdict-kind-name (grv-kind-of (peek-32 rs grv-kind-cell)) & ":  " & grv-reason-text rs & "_"
+    else ""
+
+ The pick prompt names the REPLACEMENT rather than the proposal being read,
+ because that is the thing the reader is choosing and the thing they will get
+ wrong if the pane shows the other one.
+
+  grv-pick-text : GrvData, Integer -> Text
+  grv-pick-text (d) (rs) =
+    if grv-mode rs /= grv-mode-pick then ""
+    else let i = peek-32 rs grv-pick-cell
+    in if i < 0 then "" else if i >= grv-count d then ""
+    else "Superseded by:  " & grv-short ((list-at (d.gd-proposals) i).id) 12 & "  " & (list-at (d.gd-proposals) i).description
+
+  grv-in-detail : Integer -> Boolean
+  grv-in-detail (rs) = if grv-mode rs == grv-mode-detail then True else if grv-mode rs == grv-mode-reason then True else grv-mode rs == grv-mode-pick
 
   grv-tree : GrvData, Integer, Maybe Text, Integer, Integer, Integer -> WidgetNode
-  grv-tree (d) (rs) (signer) (content-h) (wrap-w) (slack-h) =
-    if grv-mode rs == grv-mode-detail & grv-count d > 0 then grv-detail-tree d (grv-sel rs) signer wrap-w slack-h
+  grv-tree (d) (rs) (signer) (content-h) (wrap-w) (view-rows) =
+    if grv-in-detail rs & grv-count d > 0 then grv-detail-tree d (grv-sel rs) rs signer wrap-w view-rows (if grv-mode rs == grv-mode-pick then grv-pick-text d rs else grv-prompt-text rs)
     else grv-list-tree d (grv-sel rs) content-h
 
 Section: Keys
@@ -330,21 +537,78 @@ Section: Keys
   grv-key-list (rs) (sc) (n) =
     if sc == 72 then let d = grv-set-sel rs (grv-sel rs - 1) n in 1
     else if sc == 80 then let d = grv-set-sel rs (grv-sel rs + 1) n in 1
-    else if sc == 28 then (if n > 0 then let d = grv-set-mode rs grv-mode-detail in 1 else 0)
+    else if sc == 28 then (if n > 0 then let z = grv-set-scroll rs 0 in let d = grv-set-mode rs grv-mode-detail in 1 else 0)
     else if sc == 1 then 2
     else 0
 
-  grv-key-detail : Integer, Integer -> Integer
-  grv-key-detail (rs) (sc) =
+ `can` is whether an identity is loaded. Without one nothing can be signed, so
+ a verdict key opens no prompt at all: entering one and refusing at the end
+ would ask the reader to type a reason for a verdict this boot was never going
+ to cast, and the pane already says so on its own line.
+
+  grv-key-detail : Integer, Integer, Integer -> Integer
+  grv-key-detail (rs) (sc) (can) =
     if sc == 1 then let d = grv-set-mode rs grv-mode-list in 1
-    else if sc == 30 then 3
-    else if sc == 19 then 4
-    else if sc == 48 then 5
+    else if sc == 72 then let d = grv-set-scroll rs (grv-scroll-y rs - grv-row-h) in 1
+    else if sc == 80 then let d = grv-set-scroll rs (grv-scroll-y rs + grv-row-h) in 1
+    else if sc == 73 then let d = grv-set-scroll rs (grv-scroll-y rs - grv-view-rows rs * grv-row-h) in 1
+    else if sc == 81 then let d = grv-set-scroll rs (grv-scroll-y rs + grv-view-rows rs * grv-row-h) in 1
+    else if sc == 71 then let d = grv-set-scroll rs 0 in 1
+    else if sc == 31 then grv-begin-pick rs
+    else if can == 0 then 0
+    else if sc == 30 then grv-begin-reason rs 3
+    else if sc == 19 then grv-begin-reason rs 4
+    else if sc == 48 then grv-begin-reason rs 5
     else 0
 
-  grv-key : Integer, Integer, Integer -> Integer
-  grv-key (rs) (sc) (n) =
-    if grv-mode rs == grv-mode-detail then grv-key-detail rs sc
+  grv-begin-reason : Integer, Integer -> Integer
+  grv-begin-reason (rs) (kind) =
+    let k = poke-32 rs grv-kind-cell kind
+    in let c = poke-32 rs grv-rlen-cell 0
+    in let m = grv-set-mode rs grv-mode-reason
+    in 1
+
+ Enter answers the KIND, which is what `desk-rev-step` already treats as a
+ cast, and puts the pane back in the detail first so the repaint that follows
+ the cast shows the verdict that was just written.
+
+ Recording a supersession needs no identity and is not gated on one: the fact
+ carries no signature, because the authority for the link is the new proposal,
+ which is signed already. That is why this sits ABOVE the `can` test.
+
+  grv-begin-pick : Integer -> Integer
+  grv-begin-pick (rs) =
+    let o = poke-32 rs grv-old-cell (grv-sel rs)
+    in let p = poke-32 rs grv-pick-cell (grv-sel rs)
+    in let m = grv-set-mode rs grv-mode-pick
+    in 1
+
+  grv-key-pick : Integer, Integer, Integer -> Integer
+  grv-key-pick (rs) (sc) (n) =
+    if sc == 1 then let d = grv-set-mode rs grv-mode-detail in 1
+    else if sc == 72 then let d = grv-set-pick rs (peek-32 rs grv-pick-cell - 1) n in 1
+    else if sc == 80 then let d = grv-set-pick rs (peek-32 rs grv-pick-cell + 1) n in 1
+    else if sc == 28 then let d = grv-set-mode rs grv-mode-detail in 6
+    else 0
+
+  grv-set-pick : Integer, Integer, Integer -> Integer
+  grv-set-pick (rs) (i) (n) =
+    poke-32 rs grv-pick-cell (if i < 0 then 0 else if n <= 0 then 0 else if i >= n then n - 1 else i)
+
+  grv-key-reason : Integer, Integer, Integer -> Integer
+  grv-key-reason (rs) (sc) (md) =
+    if sc == 1 then let d = grv-set-mode rs grv-mode-detail in 1
+    else if sc == 28 then let d = grv-set-mode rs grv-mode-detail in peek-32 rs grv-kind-cell
+    else if sc == 14 then let d = grv-back rs in 1
+    else if sc >= 128 then 0
+    else let ch = apply-mods (scancode-to-keycode sc) md
+    in if ch >= 32 & ch < 127 then let d = grv-type rs ch in 1 else 0
+
+  grv-key : Integer, Integer, Integer, Integer, Integer -> Integer
+  grv-key (rs) (sc) (n) (md) (can) =
+    if grv-mode rs == grv-mode-reason then grv-key-reason rs sc md
+    else if grv-mode rs == grv-mode-pick then grv-key-pick rs sc n
+    else if grv-mode rs == grv-mode-detail then grv-key-detail rs sc can
     else grv-key-list rs sc n
 
 Section: Casting
@@ -352,13 +616,40 @@ Section: Casting
   grv-kind-of : Integer -> VerdictKind
   grv-kind-of (r) = if r == 3 then Accept else if r == 4 then Reject else Abstain
 
+ The production caller for kind 42. A proposal cannot supersede itself, and a
+ link to a proposal that is not on this medium cannot be MADE here even though
+ one can be read here: the pick is an index into what this store carries.
+
+  grv-supersede : GrvData, Integer, Integer -> [Device.Port] Integer
+  grv-supersede (d) (rs) (ts) = act
+    let old-i = peek-32 rs grv-old-cell
+    in let new-i = peek-32 rs grv-pick-cell
+    in if old-i == new-i then 0
+    else if old-i < 0 then 0
+    else if new-i < 0 then 0
+    else if old-i >= grv-count d then 0
+    else if new-i >= grv-count d then 0
+    else act
+      let po = list-at (d.gd-proposals) old-i
+      in let pn = list-at (d.gd-proposals) new-i
+      in act
+        st <- gfs-mount
+        if st.gfs-ok == False then 0
+        else act
+          w <- gfs-write-and-checkpoint st persist-kind-supersession (supersession-to-persist-text (create-supersession (po.id) (pn.id) ts)) ts
+          if w.gfs-count == st.gfs-count + 1 then 1 else 0
+        end
+      end
+    end
+  end
+
   grv-cast : GrvData, Integer, Integer, Integer -> [Device.Port, Identity] Integer
   grv-cast (d) (rs) (r) (ts) = act
     if grv-count d <= 0 then 0
     else act
       let p = list-at (d.gd-proposals) (grv-sel rs)
       in act
-        v0 <- create-verdict-loaded (p.id) (grv-kind-of r) "" ts
+        v0 <- create-verdict-loaded (p.id) (grv-kind-of r) (grv-reason-text rs) ts
         when v0
           is None -> 0
           is Just (v) -> act

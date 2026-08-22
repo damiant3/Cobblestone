@@ -112,14 +112,25 @@ Section: Sending
  flight is ServerHello, EncryptedExtensions, Certificate,
  CertificateVerify and Finished -- and each goes out whole.
 
+ THE PER-RECORD LINE ALREADY PRINTED WHAT WE MEANT TO SEND, which is the trap
+ this loop was in: `out[3] bytes=1200 declared=1195` was written before the
+ send and stood whether 1200 bytes went or 40 did. A reader debugging a
+ handshake from this transcript would see a record we never fully wrote and
+ look at the peer. The SHORT line is the only row here that reports what
+ actually left.
+
   send-all : TcpTransportState, List (List Integer), Integer -> [Network.Read, Network.Write, Console.Write] TcpTransportState
   send-all (ts) (outs) (i) =
     if i >= list-length outs then ts
     else let r = list-at outs i
     in act
       print-line-uni ("  out[" & show i & "] bytes=" & show (list-length r) & " hdr=" & show (list-at r 0) & "," & show (list-at r 1) & "," & show (list-at r 2) & "," & show (list-at r 3) & "," & show (list-at r 4) & " declared=" & show (list-at r 3 * 256 + list-at r 4))
-      ts1 <- net-io-send-raw ts r
-      send-all ts1 outs (i + 1)
+      s <- net-io-send-raw-checked ts r
+      if s.ns-complete == False then act
+        print-line-uni ("  out[" & show i & "] SHORT sent=" & show (s.ns-sent) & " of " & show (list-length r) & ", closing")
+        net-io-close (s.ns-transport)
+      end
+      else send-all (s.ns-transport) outs (i + 1)
     end
 
 Section: The Connection

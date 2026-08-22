@@ -227,16 +227,38 @@ Section: Expression Emission
   emit-scm-match-body (branches) (i) (arities) (depth) =
    if i == list-length branches then "(error \"Non-exhaustive match\")"
    else let b = list-at branches i
-   in emit-scm-match-arm (b.pattern) (b.body) branches i arities depth
+   in emit-scm-match-arm (b.pattern) (b.guard) (b.body) branches i arities depth
 
-  emit-scm-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
-  emit-scm-match-arm (pat) (body) (branches) (i) (arities) (depth) =
+ The rest of the match is the `if`'s else, so a guard goes in the TEST,
+ inside the arm's own `let` so it can see the bindings, and behind the
+ pattern test's short circuit because `(car _s)` on the wrong shape is an
+ error.
+
+  scm-guard-trivial : IRExpr -> Boolean
+  scm-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  scm-ctor-test : Text, List IRPat, IRExpr, List ArityEntry -> Text
+  scm-ctor-test (name) (subs) (guard) (arities) =
+   if scm-guard-trivial guard then "(eq? (car _s) '" & name & ")"
+   else "(and (eq? (car _s) '" & name & ") (let (" & emit-scm-ctor-bindings subs 0 & ") " & emit-scm-expr guard arities & "))"
+
+  emit-scm-match-arm : IRPat, IRExpr, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-scm-match-arm (pat) (guard) (body) (branches) (i) (arities) (depth) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "(if (equal? _s " & text & ") " & emit-scm-expr body arities & " " & emit-scm-match-body branches (i + 1) arities depth & ")"
-    is IrCtorPat (name) (subs) (ty) (sp) -> "(if (eq? (car _s) '" & scm-sanitize name & ") " & emit-scm-ctor-bind subs body arities & " " & emit-scm-match-body branches (i + 1) arities depth & ")"
-    is IrVarPat (name) (ty) (sp) -> "(let ((" & scm-sanitize name & " _s)) " & emit-scm-expr body arities & ")"
-    is IrWildPat (sp) -> emit-scm-expr body arities
-    is IrVecPat (pats) (ty) (sp) -> emit-scm-expr body arities
+    is IrLitPat (text) (ty) (sp) -> "(if " & (if scm-guard-trivial guard then "(equal? _s " & text & ")" else "(and (equal? _s " & text & ") " & emit-scm-expr guard arities & ")") & " " & emit-scm-expr body arities & " " & emit-scm-match-body branches (i + 1) arities depth & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(if " & scm-ctor-test (scm-sanitize name) subs guard arities & " " & emit-scm-ctor-bind subs body arities & " " & emit-scm-match-body branches (i + 1) arities depth & ")"
+    is IrVarPat (name) (ty) (sp) ->
+     if scm-guard-trivial guard then "(let ((" & scm-sanitize name & " _s)) " & emit-scm-expr body arities & ")"
+     else "(if (let ((" & scm-sanitize name & " _s)) " & emit-scm-expr guard arities & ") (let ((" & scm-sanitize name & " _s)) " & emit-scm-expr body arities & ") " & emit-scm-match-body branches (i + 1) arities depth & ")"
+    is IrWildPat (sp) ->
+     if scm-guard-trivial guard then emit-scm-expr body arities
+     else "(if " & emit-scm-expr guard arities & " " & emit-scm-expr body arities & " " & emit-scm-match-body branches (i + 1) arities depth & ")"
+    is IrVecPat (pats) (ty) (sp) ->
+     if scm-guard-trivial guard then emit-scm-expr body arities
+     else "(if " & emit-scm-expr guard arities & " " & emit-scm-expr body arities & " " & emit-scm-match-body branches (i + 1) arities depth & ")"
 
   emit-scm-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
   emit-scm-ctor-bind (subs) (body) (arities) =

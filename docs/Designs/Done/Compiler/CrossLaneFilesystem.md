@@ -1,10 +1,20 @@
 # A File Read on ARM64 and RISC-V
 
-**Status**: steps 1 to 5 DONE on both cross lanes, and step 0 DONE for the
-block builtins (an unresolved `block-` call is a refusal, 2026-08-18). What
-is left of step 0 is the rest of the unresolved-call class, which is blocked
-on `plugs-backlog.md` 1.42, rulings queue 13. Measured 2026-07-21 (val),
-carried through 2026-08-18.
+**Status: COMPLETE. Steps 0 to 5 are DONE on both cross lanes** (verified
+2026-08-20, fester). Measured 2026-07-21 (val), carried through 2026-08-18.
+
+Step 0 is done for the WHOLE unresolved-call class and not only the block
+builtins, which is what this line claimed until 2026-08-20. Verified against
+the source at four points rather than from the prose, because a refusal that
+lands in a channel nothing reads is not a refusal: `a64-unresolved-report` and
+`rv-unresolved-report` answer `[UNSUPPORTED]` for every unresolved name, with
+a `block-` specific message in front of it; both push it into `wcet-reports`
+(`a64-add-shadow-warning` sets the same field the riscv path does); and both
+`codex/plugs/arm64/run.ps1` and `codex/plugs/riscv/run.ps1` match
+`[UNSUPPORTED]` and treat it as a refusal rather than a warning.
+
+The blocker this line named is gone twice over: `plugs-backlog.md` 1.42 is
+CLOSED, and the work it was said to be blocking had already been done.
 
 **Ruling 2026-08-05 (Damian): RESURFACED into the IoT/cross-arch chain.** Steps 2-5 (VirtioBlk on the plug lanes, block-read-sector, FileSystem grounding) are live again alongside ProtocolStack's remainder; step 1 landed independently (see the corrected table below).
 
@@ -76,9 +86,10 @@ a reason per entry, not a weakened check.
 Independently valuable, small, and it belongs on the register as its
 own row rather than here.
 
-**Note 2026-08-05:** what landed is a `[WARN]` shadow warning at the
-unresolved-call path (`Arm64CodeGen3.codex` ~1815), not the hard
-`[UNSUPPORTED]` failure this step prescribes.
+**Note 2026-08-05, SUPERSEDED:** what had landed then was a `[WARN]` shadow
+warning at the unresolved-call path, not the hard `[UNSUPPORTED]` failure this
+step prescribes. It is the hard failure now, on both lanes, for every
+unresolved name.
 
 **Measured 2026-08-18 (fester), and it is what blocks the hard failure
 today: EVERY ordinary compile on both lanes already carries three

@@ -34,6 +34,7 @@ param(
     [int]$TimeoutSec = 300,
     [string]$OutDir = '',
     [switch]$Check,               # exit non-zero when a unit regresses
+    [int]$Sample = 0,             # compile a strided subset of this many units; 0 sweeps all
     [string]$Baseline = '',
     [string]$Kernel = ''          # compiler to sweep with; default seed\Codex.cdx. build.ps1 passes the SUT.
 )
@@ -73,6 +74,27 @@ $files = @(
 )
 if ($Filter) { $files = @($files | Where-Object { $_.FullName -like "*$Filter*" }) }
 
+# -Sample takes every Nth unit of the sorted list rather than the first N, so
+# the subset spreads across apps instead of stopping at whatever sorts early.
+# The stride is derived from the live count, so it needs no maintenance as apps
+# are added, and it is DETERMINISTIC: the same tree sweeps the same units, so a
+# red is reproducible and a green means the same thing twice.
+#
+# What it is for: build.ps1 -Internal runs a sample per CL and the release gate
+# runs all of them. What it CANNOT do is see a regression confined to units the
+# stride skipped, which is the trade, and it is why -Check will not report a
+# baseline unit as fixed on a sampled run (below) any more than on a filtered
+# one. A compiler regression usually moves a CLASS of construct and so shows up
+# in many units at once; one confined to a single unit waits for the full sweep.
+$sweepAll = $files.Count
+if ($Sample -gt 0 -and $Sample -lt $files.Count) {
+    $stride = [math]::Ceiling($files.Count / $Sample)
+    $picked = [System.Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $files.Count; $i += $stride) { $picked.Add($files[$i]) }
+    $files = @($picked)
+    Write-Host "Sweep: SAMPLED $($files.Count) of $sweepAll entry chapters (every ${stride}th); the rest are the release gate's"
+}
+
 Write-Host "Sweep: $($files.Count) entry chapters  (jobs=$Jobs)"
 $compile = Join-Path $Repo 'build\compile.ps1'
 $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -84,6 +106,29 @@ $results = $files | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $compile = $using:compile
     $timeout = $using:TimeoutSec
     $kernel  = $using:Kernel
+
+    # ANY UNCAUGHT THROW IN HERE IS A SWEEP-WIDE OUTAGE, NOT ONE FAILED FILE.
+    # $ErrorActionPreference is Stop at the top of the script, and a bare
+    # ReadAllText on a log a child process was writing can land on a locked
+    # file: WaitForExit returns before Windows releases the redirected handle.
+    # test-cross-batch.ps1 lost 457 tests to exactly that on 2026-08-18 and
+    # stranded five guests at 115,597 CPU-seconds, because the harness that
+    # died is also the thing enforcing every child's ceiling. Share-tolerant
+    # open plus a short retry; an unreadable log reads as empty, which fails
+    # toward a reported error rather than a silent pass.
+    function Read-LogShared([string]$path) {
+        for ($ri = 0; $ri -lt 5; $ri++) {
+            try {
+                $fs = [System.IO.FileStream]::new($path, [System.IO.FileMode]::Open,
+                    [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try {
+                    $sr = [System.IO.StreamReader]::new($fs)
+                    return $sr.ReadToEnd()
+                } finally { $fs.Dispose() }
+            } catch { Start-Sleep -Milliseconds 100 }
+        }
+        return ''
+    }
 
     $rel = $f.FullName.Substring($Repo.Length + 1)
     $tag = ($rel -replace '[\\/]', '_') -replace '\.codex$', ''
@@ -104,14 +149,14 @@ $results = $files | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 
     $codes = @(); $n = 0; $note = ''
     if (Test-Path $log) {
-        $txt = [System.IO.File]::ReadAllText($log)
+        $txt = Read-LogShared $log
         foreach ($m in [regex]::Matches($txt, 'error CDX(\d+)')) { $codes += $m.Groups[1].Value }
         $h = [regex]::Match($txt, 'CODEGEN-ERRORS:(\d+)')
         if ($h.Success) { $n = [int]$h.Groups[1].Value } else { $n = $codes.Count }
     }
     # No log + nonzero exit = died before the compiler ran (unresolvable cite).
     if ($n -eq 0 -and $exit -ne '0' -and (Test-Path $err)) {
-        $etxt = [System.IO.File]::ReadAllText($err)
+        $etxt = Read-LogShared $err
         if ($etxt -match 'Unresolvable cite: (.+?)(\r|\n|$)') { $exit = 'CITE-FAIL'; $note = $matches[1].Trim() }
         elseif ($etxt.Trim()) { $note = ($etxt.Trim() -split "`n")[0] }
     }
@@ -206,9 +251,9 @@ if ($Check) {
     $regressed = @($bad | Where-Object { -not $expected.ContainsKey($_.File) })
     $fixed     = @($expected.Keys | Where-Object { $f = $_; -not ($bad | Where-Object { $_.File -eq $f }) })
 
-    # A filtered run cannot see most of the baseline, so every unit it did
-    # not compile would look "fixed". Only a full run may say that.
-    if ($fixed.Count -and -not $Filter) {
+    # A filtered or sampled run cannot see most of the baseline, so every unit
+    # it did not compile would look "fixed". Only a full run may say that.
+    if ($fixed.Count -and -not $Filter -and $Sample -le 0) {
         Write-Host "`nCHECK: $($fixed.Count) baseline unit(s) now compile -- tighten $Baseline"
         $fixed | ForEach-Object { "  $_" }
     }

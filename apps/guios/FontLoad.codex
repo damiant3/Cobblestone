@@ -532,6 +532,24 @@ Section: Buffer-backed TTF Parse
 
 Section: Buffer-backed Glyph Rasterization
 
+ A TrueType face's bounding box is not its em. `head.yMax - head.yMin` may
+ exceed `unitsPerEm`, and for the faces in `fonts/cc0` it does: cmunss is
+ upem 2048 with yMin -725 and yMax 1866, so a 32 pixel em needs 41 rows to
+ hold every glyph. Measured from the file 2026-08-20.
+
+ So the cell is the FACE's box and not the em, and every glyph is rasterized
+ into that one common frame at `y-off = -font-ymin`. That is what makes the
+ baselines line up with a y-offset table of zeros, and it is why nothing has
+ to write one.
+
+ `ppem * 2` is a bound and not a metric: it stops a pathological face from
+ allocating an unbounded cell, and 2x clears every real face by a wide
+ margin. It was `ppem + ppem / 4`, which is 1.25x, which is BELOW cmunss's
+ 1.28x -- so the clamp fired on an ordinary face and took a row off the
+ bottom, and a trim to `ppem` then took eight more. Descenders live at the
+ bottom of the box, so what those two cuts removed was nine of the twelve
+ rows below the baseline, which sits at row 29 of 41.
+
   fb-render-glyph : Integer, TtfFont, Integer, Integer -> RasterGlyph
   fb-render-glyph (buf) (font) (codepoint) (ppem) =
     let g = fb-glyph-for-char buf font codepoint
@@ -541,32 +559,38 @@ Section: Buffer-backed Glyph Rasterization
     in let w = (g.tg-x-max - g.tg-x-min) * ppem / upem + 1
     in let adv = g.tg-advance * ppem / upem
     in let gw = if w < 1 then 1 else w
+    in let full-h = (font-ymax - font-ymin) * ppem / upem + 1
+    in let max-cell = ppem * 2
+    in let cell-h = if full-h < ppem then ppem else if full-h > max-cell then max-cell else full-h
     in if list-length (g.tg-contours) == 0 then
-      RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = ppem, rg-advance = adv, rg-pixels = gr-make-row (gw * ppem) 0 }
+      RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = cell-h, rg-advance = adv, rg-pixels = gr-make-row (gw * cell-h) 0 }
     else let x-off = -g.tg-x-min
     in let y-off = -font-ymin
-    in let full-h = (font-ymax - font-ymin) * ppem / upem + 1
-    in let max-cell = ppem + ppem / 4
-    in let cell-h = if full-h < ppem then ppem else if full-h > max-cell then max-cell else full-h
     in let edges = gr-all-contour-edges (g.tg-contours) (ppem * 4) upem x-off y-off 0 []
     in let super-w = gw * 4
     in let super-h = cell-h * 4
     in let super-pixels = gr-render-edges edges super-w super-h 0 super-h
     in let downsampled = gr-downsample-4x super-pixels super-w super-h gw cell-h
     in let flipped = gr-flip-y downsampled gw cell-h
-    in let trimmed = if cell-h > ppem then fl-trim-to-ppem flipped gw cell-h ppem else flipped
-    in RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = ppem, rg-advance = adv, rg-pixels = trimmed }
+    in RasterGlyph { rg-code = codepoint, rg-width = gw, rg-height = cell-h, rg-advance = adv, rg-pixels = flipped }
 
-  fl-trim-to-ppem : List Integer, Integer, Integer, Integer -> List Integer
-  fl-trim-to-ppem (pixels) (gw) (full-h) (ppem) =
-    fl-trim-loop pixels gw full-h ppem 0 0 []
+ CAP HEIGHT, measured off the 'H' glyph rather than read from a table. The
+ table answers are `OS/2.sCapHeight`, which exists only from OS/2 version 2
+ and is absent or wrong in plenty of real faces, and `hhea.ascender`, which
+ is a LINE metric and sits above the capitals by the face's internal
+ leading. A cap band centred on either of those is centred on something the
+ reader cannot see. The 'H' outline is the thing being centred.
 
-  fl-trim-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
-  fl-trim-loop (pixels) (gw) (full-h) (ppem) (row) (col) (acc) =
-    if row >= ppem then acc
-    else if col >= gw then fl-trim-loop pixels gw full-h ppem (row + 1) 0 acc
-    else let v = list-at pixels (row * gw + col)
-    in fl-trim-loop pixels gw full-h ppem row (col + 1) (list-push acc v)
+ A face with no 'H' answers glyph 0, whose box is empty, so this falls back
+ to the ascent rather than reporting a cap height of zero and collapsing
+ every band to the top of its box.
+
+  fl-cap-rows : Integer, TtfFont, Integer -> Integer
+  fl-cap-rows (buf) (font) (ppem) =
+    let upem = font.tf-head.th-units-per-em
+    in let g = fb-glyph-for-char buf font 72
+    in let cap = g.tg-y-max * ppem / upem
+    in if cap > 0 then cap else font.tf-head.th-y-max * ppem / upem
 
   fb-render-ascii : Integer, TtfFont, Integer -> List RasterGlyph
   fb-render-ascii (buf) (font) (ppem) = fb-render-range buf font ppem 32 127 []

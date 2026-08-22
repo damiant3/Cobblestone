@@ -142,10 +142,35 @@ Section: The Poll Clock
     if n < net-driver-poll-floor then net-driver-poll-floor else n
    end
 
+ THE CELL IS CLAMPED AT BOTH ENDS, and the ceiling is derived rather than
+ chosen. `net-driver-cal-loop` adds `net-driver-cal-batch` per iteration and
+ runs at most `net-driver-cal-fuel` iterations, so the largest number
+ calibration can possibly write is their product. A value above it did not
+ come from calibration: the cell is 32 bits of memory read by `peek-32`, and
+ nothing guarantees a bring-up ran, that this bring-up wrote it, or that the
+ boot before this one left anything sane there.
+
+ Answering the fallback rather than the ceiling is the point. A value larger
+ than calibration can produce is not a measurement at all, and clamping it to
+ the maximum legitimate measurement would report garbage AS a measurement --
+ a plausible number in place of an honest one, which is the failure this tree
+ has paid for twice this month. The low side has answered the fallback since
+ it was written and this is the same answer at the other end.
+
+ WHAT IT WAS COSTING (root, 2026-08-21): `net-io-max-polls` is this value
+ times `net-io-max-ticks`, so an unclamped read multiplies straight into the
+ ceiling of every NetIO wait. A stale cell of three billion makes that
+ ceiling 1.5 trillion polls, and `net-io-send-drain` is entered once per
+ CHUNK, so a stalled peer pays it per 1400 bytes rather than once per send.
+
+  net-driver-cal-max : Integer = net-driver-cal-fuel * net-driver-cal-batch
+
   net-driver-poll-interval : Integer
   net-driver-poll-interval =
    let v = bit-and (peek-32 net-driver-poll-cell 0) #FFFFFFFF
-   in if v < net-driver-poll-floor then net-driver-poll-fallback else v
+   in if v < net-driver-poll-floor then net-driver-poll-fallback
+   else if v > net-driver-cal-max then net-driver-poll-fallback
+   else v
 
   net-driver-card-name : Integer -> Text
   net-driver-card-name (c) = if c == net-card-e1000 then "e1000" else "ne2000"
@@ -182,7 +207,8 @@ Section: Send
      e-ctrl-blk = net-driver-cell net-driver-off-ctrl-blk,
      e-present = True,
      e-mac = [],
-     e-mac-valid = False
+     e-mac-valid = False,
+     e-pch = 0, e-ulp = 0
    }
 
   net-driver-send-frame : List Integer -> [Network.Write] Integer

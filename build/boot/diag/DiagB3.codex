@@ -1,0 +1,741 @@
+Chapter: DiagB3
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
+  cites Kernel chapter Pci
+  cites Kernel chapter Hpet
+  cites Kernel chapter E1000e
+  cites Dev chapter NicAsde
+  cites Works chapter GopDraw
+  cites Works chapter GopXhci
+  cites Net chapter Ethernet
+  cites Net chapter NetDriver
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter NetIO
+  cites Net chapter Dhcp
+  cites Net chapter DhcpIO
+  cites Diag chapter DiagStage
+
+ Track B's B3 as a stage: one real TCP conversation with a real peer over
+ the Intel part. Every stage before it reads the part; this one is the first
+ that asks whether the STACK works on it, and it is the last stage in the
+ ladder for that reason.
+
+ It runs the production path and not a private one. `net-driver-bring-up`
+ finds the card, calls `e1000-init` and calibrates the poll clock, exactly as
+ `cdx-announce` and every server does, so a green row here is a statement
+ about the code B4 will ship rather than about a bespoke arrangement. That
+ costs a second CTRL.RST after nicinit's, which nicring refused for good
+ reason at sitting 4 -- but nicring's question was what the PART does and
+ this one's is what the STACK does, and the stack cannot be asked without
+ the bring-up it actually uses. Every earlier stage has banked by the time
+ this runs (L-BANK), so the reset is spent after the readings are safe.
+
+ WHAT IT DOES NOT PROVE. The conversation is raw TCP: bytes out, bytes back.
+ It does not speak the repository wire, so it is not B4 step 6, and an `ok`
+ here says the peer was reached and answered and nothing about what it said.
+ The `expect=` knob is the only content test and it is off by default.
+
+ Every wait is budgeted against the HPET or against NetIO's tick count, and
+ the stage refuses rather than spins when there is no clock: the ten-minute
+ grey row on the I219-V is what that rule is made of.
+
+ We say:
+
+Section: States
+
+  db3-states : List Text = ["ok", "short", "mismatch", "no-reply", "refused", "no-arp", "no-lease", "no-link", "no-card", "no-peer", "no-address", "no-part", "rejected", "bar-bad", "no-hpet", "clock-stuck"]
+
+ `short` IS THE SEND SIDE SAYING SO, and until 2026-08-21 the stage could not
+ say it. The exchange sent through `net-io-send-raw`, which hands back a bare
+ transport, so `sent=` printed the length of the payload we INTENDED to send
+ and would have printed it unchanged had the drain given up with the
+ retransmit queue full and half the bytes still in hand. `expect=` cannot
+ cover for that: it tests the REPLY, and it is off by default, so the row
+ would have read `ok` on a truncated conversation. That is L-REFUSED in the
+ one stage the flight is for. `net-io-send-raw-checked` answers how many
+ bytes actually went, and `sent=` is now that number.
+
+ The order the run tries them in is the order a reader eliminates classes:
+ nothing was asked, no address to ask FROM, no part on the bus, a part we will
+ not touch, a part whose window is wrong, no clock to budget with, the driver
+ would not bind, no link, no lease when one was asked for, nobody answered ARP
+ for the next hop, the handshake never completed, the peer said nothing, the
+ peer said the wrong thing, ok.
+
+ `ip=` IS REQUIRED AND THERE IS NO DEFAULT, which is a change of 2026-08-20.
+ It used to fall back to 10.0.2.15, and that is not a default: it is the QEMU
+ NAT guest address, so it is A GUESS ABOUT THE NETWORK that happens to be
+ right in the bed and is off-subnet on any real switch.
+
+ WHAT THAT COST IS A WRONG VERDICT, not a wrong-looking row. On metal without
+ `ip=` the ARP still succeeds -- the request's target is the hop, so the hop
+ answers whatever our sender address claims -- and then the SYN goes out from
+ an address that belongs to nobody, no SYN-ACK comes back, and the stage
+ answers `refused`. `refused`'s verdict row then tells the reader to check the
+ peer address, the port, and reachability from that segment, ALL THREE OF
+ WHICH ARE CORRECT. It does not merely mislead; it dispatches a person
+ standing at the box to search the one place the fault is not.
+
+ SO THIS REPAIRS `refused` RATHER THAN ADDING A STATE. Removing the one cause
+ of `refused` that is ours means a future stick saying `refused` is saying
+ something about the peer.
+
+ A malformed value is the same answer. `ip=` that does not parse to four
+ octets is `no-address` too, because a half-parsed address is the same class
+ of lie as an invented one.
+
+ `ip=dhcp` IS THE ONE WAY TO NOT TYPE AN ADDRESS, and it is a request rather
+ than a fallback. The difference is who chose it: a composer who writes
+ `ip=dhcp` has entered DHCP's failure modes deliberately, where a fallback
+ enters them for somebody who typed nothing and expects nothing. So absent
+ `ip=` the answer is still `no-address`, and it always will be.
+
+ `no-lease` IS NOT `no-address`. An address was asked for FROM THE SEGMENT and
+ no server answered, which is a fact about the segment; `no-address` is a fact
+ about DIAG.CFG. A reader who cannot tell those apart is sent to the wrong end
+ of the wire, which is the whole complaint that deleted the old default.
+
+Section: Knobs
+
+ One ARP request per round and one clock read per round, so the chunk size
+ IS the request rate.
+
+ THE POLL COST IS TWO NUMBERS AND THIS SECTION USED TO QUOTE ONE OF THEM
+ UNLABELLED, which is how it got read back as the wrong one. `nicsit` measures
+ an empty e1000 poll at **13.0 ns in the bed** and **32.9 ns on metal**: its own
+ row bakes the reference `(bed 13034us / 1303us)` for a million polls, and the
+ board answered 32935us on 2026-08-21, which is the 2.53x red recorded. Metal is
+ the one a flight pays, so both are given here and each says which it is.
+
+ Eight million polls is therefore about **104 ms in the bed and 263 ms on
+ metal**. Inside the two-second budget that is at most about nineteen requests
+ on the wire in the bed and about EIGHT on the board, not the twenty this said
+ when it quoted the bed figure as if it were general. The conclusion is
+ unchanged and the margin is wider: a 512-poll chunk copied from the ring stage
+ would still have put four thousand broadcasts on a live segment in a fraction
+ of a second, which is a flood and not a probe.
+
+  db3-chunk : Integer = 8000000
+  db3-arp-rounds : Integer = 32
+  db3-src-port : Integer = 49157
+  db3-initial-seq : Integer = 305419896
+
+  db3-default-send : Text = "codex-diag-b3"
+
+ `sendx=` REPEATS THE SEND AND EXISTS FOR ONE ARM. `short` is reachable only
+ through the retransmit queue, which holds `net-rexmit-capacity` segments;
+ the default payload is thirteen bytes and fills one, so before this knob no
+ DIAG.CFG could drive the stage to the state the row carries and `short` was
+ a word that had never been said.
+
+ IT REPEATS THE CALL, NOT THE BUFFER, and that is the whole design. Building
+ one payload above the 11,200-byte cap would mean 4096 rounds of `&` into an
+ accumulator on a bump allocator with no GC, which is CostModel 3.6's
+ quadratic shape and a wedge of our own making inside a stage whose entire
+ purpose is to not wedge. Each repeat is a fresh send of the same small
+ buffer and allocates nothing extra, while filling one queue slot apiece,
+ which is the quantity the state is actually about.
+
+ The cap is `net-rexmit-capacity`-shaped rather than a round number: enough
+ repeats to overfill the queue and stop, and few enough that a cfg typo
+ cannot turn the stage into a flood.
+
+  db3-send-max-repeats : Integer = 8192
+
+  db3-send-repeats : DiagCtx -> Integer
+  db3-send-repeats (c) =
+    let n = text-to-integer (db3-field c "sendx" "1")
+    in if n < 1 then 1
+    else if n > db3-send-max-repeats then db3-send-max-repeats
+    else n
+
+ The loop stops at the first incomplete send and carries the partial count,
+ because the queue does not empty on its own inside this stage: once the drain
+ has spent its budget with the queue full, every further repeat would spend it
+ again for nothing.
+
+  db3-send-times : TcpTransportState, List Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
+  db3-send-times (ts) (payload) (left) (acc) =
+   if left <= 0 then NetSendResult { ns-transport = ts, ns-sent = acc, ns-complete = True }
+   else act
+    r <- net-io-send-raw-checked ts payload
+    if r.ns-complete == False then NetSendResult { ns-transport = r.ns-transport, ns-sent = acc + r.ns-sent, ns-complete = False }
+    else db3-send-times (r.ns-transport) payload (left - 1) (acc + r.ns-sent)
+   end
+
+ THE DHCP BUDGET IS THE ARP BUDGET'S SHAPE, for the same reason: one DISCOVER
+ per round, so the fuel per round IS the request rate. `dhcp-io-await` spends
+ one fuel unit per empty poll, the same poll `nicsit` measures, so eight million
+ is about 104 ms of listening in the bed and 263 ms on metal. Sixteen rounds
+ inside a four-second deadline puts at most sixteen broadcasts on the wire in
+ the bed; on metal the deadline binds first, at about fifteen. The tests reach for
+ 200,000 (`codex/test/dhcp-acquire.codex`), which is 2.6 ms and passes only
+ because the bed answers instantly; on a segment with a real server that
+ number is a null result waiting to happen.
+
+ EACH ROUND IS A NEW TRANSACTION, not a retransmission of the last one, so
+ the xid moves with the round. A server that already offered on the old xid is
+ answering a conversation we are no longer having.
+
+ NOTHING HERE RESTORES THE HEAP BETWEEN ROUNDS, and it must not start. A
+ DISCOVER is a SEND, and a restore taken after a send hands the stack a
+ pointer into rewound heap (DevelopersGuide, "Never `__heap-restore` around a
+ send"). The receive side inside `dhcp-io-await` already restores per poll,
+ which is where the frames are, so the retained cost is sixteen sockets and
+ sixteen built frames and not sixteen rounds of traffic.
+
+  db3-dhcp-word : Text = "dhcp"
+  db3-dhcp-fuel : Integer = 8000000
+  db3-dhcp-rounds : Integer = 16
+  db3-dhcp-ms : Integer = 4000
+  db3-dhcp-xid : Integer = 305419896
+  db3-dhcp-host : Text = "codex-diag"
+
+  db3-field-scan : List Text, Integer, Text, Text -> Text
+  db3-field-scan (parts) (i) (key) (dflt) =
+   if i >= list-length parts then dflt
+   else let p = list-at parts i
+   in if text-starts-with p (key & "=") then substring p (text-length key + 1) (text-length p - text-length key - 1)
+   else db3-field-scan parts (i + 1) key dflt
+
+  db3-field : DiagCtx, Text, Text -> Text
+  db3-field (c) (key) (dflt) = db3-field-scan (text-split (diag-cfg-value c "b3") " ") 0 key dflt
+
+  db3-octets : List Text, Integer, List Integer -> List Integer
+  db3-octets (parts) (i) (acc) =
+   if i >= list-length parts then acc
+   else db3-octets parts (i + 1) (list-push acc (text-to-integer (list-at parts i)))
+
+  db3-ip : Text -> List Integer
+  db3-ip (a) = db3-octets (text-split (list-at (text-split a ":") 0) ".") 0 []
+
+  db3-port : Text -> Integer
+  db3-port (a) =
+   let parts = text-split a ":"
+   in if list-length parts < 2 then 0 else text-to-integer (list-at parts 1)
+
+  db3-ip-text : List Integer -> Text
+  db3-ip-text (ip) =
+   if list-length ip /= 4 then "?"
+   else show (list-at ip 0) & "." & show (list-at ip 1) & "." & show (list-at ip 2) & "." & show (list-at ip 3)
+
+  db3-mac-loop : List Integer, Integer, Text -> Text
+  db3-mac-loop (m) (i) (acc) =
+   if i >= list-length m then acc
+   else db3-mac-loop m (i + 1) (acc & (if i == 0 then "" else ":") & diag-hex2 (list-at m i))
+
+  db3-mac-text : List Integer -> Text
+  db3-mac-text (m) = if list-length m /= 6 then "none" else db3-mac-loop m 0 ""
+
+Section: The Step Line
+
+ A STEP LINE GOES TO BOTH CHANNELS, and until 2026-08-21 this chapter only
+ sent it to one. `print-line-uni` is SERIAL. **The ASUS has no serial port**
+ (`HardwareSitting.md`), the rig is a phone camera, and `diag-arm.ps1` excludes
+ step lines from the bank by design because the step they name may not return.
+ So on metal the instrument that says which step b3 is inside could not fire at
+ all, and when b3 hung on the 2026-08-21 flight the glass said `b3 running` and
+ nothing else. That is L-CHANNEL: the campaign had no output channel
+ independent of the subsystem under test, and it cost the asde stage and the
+ summary as well as the answer.
+
+ `DiagAsde` had already solved this and this chapter did not follow it. What is
+ copied here, invariant included: **row 0 is the step and nothing else ever
+ paints there**, and a step line CLEARS THE WHOLE SLOT before taking row 0.
+ DiagAsde's prose records why, and it was bought with a bed photograph: rolling
+ lines through every row made the standing lines appear out of order, so a
+ reader at the board could not tell which was last, which defeats the one
+ property the slot exists for.
+
+ IT PAINTS ITS SLOT, and until 2026-08-21 a non-picture stage could not. The
+ grant in `Diag.codex` handed every stage that is not one of the two picture
+ stages **x = dc-w + 8 and w = -16**, at every width, because the two `dc-w`
+ terms cancelled. Measured off the bed with this stage at 1024x768: x=1032,
+ w=-16, cols=-3. A fill of negative width paints nothing and a fitter given
+ negative columns answers the empty string, so the first version of this section
+ compiled clean, printed its serial line, and put NOTHING on the glass; a
+ deliberately red fill was invisible too, which is what turned a theory into a
+ measurement. The grant is fixed at the source and `dg-slot-refuses` now says so
+ out loud rather than painting nothing, so this reads its slot like any other
+ stage.
+
+ The slot a non-picture stage gets IS ITS ROW, so this overwrites the
+ `<name> running` line `dg-paint-running` put there. That is deliberate: the row
+ then reads `b3 -> dhcp`, which says the stage AND the step, and the result
+ overwrites it again when the stage returns.
+
+  db3-cols : DiagCtx -> Integer
+  db3-cols (c) = ((c.dc-slot-w) - 8) / (8 * (c.dc-scale))
+
+  db3-fit : DiagCtx, Text -> Text
+  db3-fit (c) (s) =
+   let n = db3-cols c
+   in if n < 4 then ""
+   else if text-length s <= n then s
+   else substring s 0 (n - 3) & "..."
+
+  db3-at : DiagCtx, Text, Integer -> Integer
+  db3-at (c) (s) (col) =
+   let cleared = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-slot-x) (c.dc-slot-y) (c.dc-slot-w) (c.dc-slot-h) diag-col-bg
+   in gop-draw-text (c.dc-base) (c.dc-stride) (c.dc-font) (c.dc-slot-x) (c.dc-slot-y) (db3-fit c s) col (c.dc-scale) 0
+
+  db3-open : DiagCtx, Text -> Integer
+  db3-open (c) (s) = db3-at c s diag-col-warn
+
+  db3-cell-notes : Integer = 92
+  db3-cell-lost : Integer = 93
+
+  db3-step : DiagCtx, Text -> [Console, Device.Port] Integer
+  db3-step (c) (s) = act
+   let h = __heap-save
+   in let k = xdiag-get db3-cell-notes + 1
+   in let counted = xdiag-put db3-cell-notes k
+   in act
+    n <- diag-bank-note c ("stage=b3 step=" & s & " heap=" & show h)
+    p <- print-line-uni ("b3 entering " & s & " heap=" & show h & " banked=" & show n)
+    if n < 0 & c.dc-bank then db3-lost c s k
+    else db3-open c ("b3 -> " & s)
+   end
+  end
+
+  db3-lost : DiagCtx, Text, Integer -> [Console, Device.Port] Integer
+  db3-lost (c) (s) (k) = act
+   let first = if xdiag-get db3-cell-lost == 0 then xdiag-put db3-cell-lost k else 0
+   in act
+    p <- print-line-uni ("b3 bank lost at " & s)
+    db3-at c ("BANK LOST AT " & s) diag-col-bad
+   end
+  end
+
+  db3-stamp-lost : DiagResult -> DiagResult
+  db3-stamp-lost (r) =
+   let n = xdiag-get db3-cell-lost
+   in if n == 0 then r
+   else let tag = "bank-lost-note=" & show n
+   in diag-result (r.dr-state) diag-col-bad (db3-tag-first (r.dr-glass) tag) (db3-tag-first (r.dr-bank) tag)
+
+  db3-tag-first : List Text, Text -> List Text
+  db3-tag-first (xs) (tag) =
+   when xs
+    is Nil -> [tag]
+    is Cons (h) (t) -> (h & " " & tag) :: t
+   end
+
+Section: The Budgets
+
+ NetIO counts empty polls where another stack would read a clock, so a
+ duration here is expressed as a number of NetIO ticks and converted through
+ the interval NetDriver measured at bring-up. Starting a wait loop at a high
+ try count is how a caller spends less than the full fuel cap: the loop's own
+ give-up ladder and its per-tick retransmit are unchanged, only the ceiling
+ is nearer.
+
+  db3-connect-ticks : Integer = 100
+  db3-reply-ticks : Integer = 100
+
+ THE CAP IS ABSOLUTE AND DOES NOT TRUST THE TICK INTERVAL, which is the fuel cap
+ this stage did not have when it hung on the 2026-08-21 flight and took asde and
+ the summary with it (campaign rule 2: no stage may end the run).
+
+ Every loop on this stage's path is bounded by a COUNTER and none of them is an
+ infinite loop: the ARP and DHCP waits count rounds down, `na-await-lu` carries
+ fuel, and every NetIO wait stops at `tries > net-io-max-polls`. What is not
+ bounded is the SIZE of that bound, and every loop can remain formally
+ terminating while the ceiling is astronomical. That is why a first reading of
+ this said "no NetIO wait can hang, 3.29 s worst case" and was wrong in the
+ direction that matters.
+
+ THE ORDINARY CASE IS ALREADY THE BAD ONE, and this paragraph had it wrong until
+ blu corrected it (main 18389). It said the runaway ceiling needed uninitialised
+ memory, on the reasoning that `net-driver-poll-interval` reads a cell with
+ `peek-32` while the calibration's fuel bounds what it writes. The read is
+ indeed unbounded, but the WRITE is not small either: `net-driver-cal-loop` adds
+ `cal-batch` per iteration, so a perfectly ordinary calibration can write
+ 200,000,000, not the 200,000 the fuel constant reads like. That is
+ `net-io-max-polls` of 1e11, about 55 minutes for ONE wait at the 32.9 ns metal
+ poll `nicsit` measures, from a board doing nothing unusual. No uninitialised
+ memory is required to produce the flight's hang, and attributing it to
+ L-FREEDOM would have sent the next reader to a board-only cause for something
+ the ordinary path does. The uninitialised cell is a further worst case on top,
+ not the mechanism.
+
+ blu has clamped `net-io-max-polls` itself at main 18389, with an arm
+ (`codex/test/net-poll-clamped`, three states, proven to fail without the fix),
+ so the ceiling is bounded for every caller now and not only for this stage.
+
+ So the ceiling is computed from an ABSOLUTE number of polls rather than from
+ the interval. 90,000,000 polls is about 3.0 s at that measured metal poll. The
+ loop's give-up ladder and its per-tick retransmit are unchanged, as before;
+ only the ceiling is now ours.
+
+ THE CLAMP IS NOT MERELY DEFENSIVE: IT ENGAGES IN THE BED TODAY, and the first
+ version of this paragraph said the opposite. It claimed the bed always falls to
+ the 100000 fallback so the clamp could never fire, and one run refuted it:
+ `poll-interval=1758000 spend=90000000 cap=90000000 clamped=y`. The bed
+ CALIBRATES to about 1.76 million, so `want` is 175,800,000 and the cap halves
+ it. Uncapped, `net-io-max-polls` here is 879,000,000 and each of b3's two
+ budgeted waits would spend 175.8 million polls: 2.3 s at the bed's 13.0 ns and
+ 5.8 s on metal, per wait. The measurement was one row away the whole time and
+ the assumption was written first, which is the habit this file keeps paying
+ for.
+
+ THE CEILING REPORTS ITSELF. The head row paints the interval it read, the spend
+ it settled on, the cap, and whether the clamp engaged, so the ceiling a run
+ actually used is a reading rather than something inferred from the fact that
+ the run finished. It was added to make an unfalsifiable defence measurable and
+ it immediately refuted the paragraph above it, which is the best argument for
+ painting a number instead of reasoning about it.
+
+ WHAT THIS CAP DOES NOT REACH. `db3-start-at` is passed to the CONNECT and
+ RECEIVE waits and to nothing else. The send path takes no start value:
+ `net-io-send-chunk` calls `net-io-send-drain ts 0 0`, and blu's second
+ correction is that the drain runs ONCE PER CHUNK, so a stalled peer pays the
+ whole ceiling per 1400 bytes rather than once for the send. Capping that from a
+ caller is not possible and it is not this stage's to fix; blu's clamp on
+ `net-io-max-polls` is what bounds it, for every caller.
+
+  db3-max-spend : Integer = 90000000
+
+  db3-spend : Integer -> Integer
+  db3-spend (ticks) =
+   let want = net-io-tick-interval * ticks
+   in if want > db3-max-spend then db3-max-spend else want
+
+  db3-start-at : Integer -> Integer
+  db3-start-at (ticks) =
+   let n = net-io-max-polls - db3-spend ticks
+   in if n < 0 then 0 else n
+
+  db3-connect : TcpTransportState -> [Network.Read, Network.Write] TcpTransportState
+  db3-connect (ts) =
+   let ts1 = transport-connect ts
+   in act
+    ts2 <- flush-transport-outbox ts1
+    net-io-wait-established-poll ts2 (db3-start-at db3-connect-ticks) 0
+   end
+
+Section: The Next Hop
+
+ The session sends every frame to the ARP entry for its GATEWAY address
+ (`resolve-dst-mac`, NetworkStack) and falls back to broadcast when it has
+ none, so a peer on the same segment is reached by naming it as the next hop.
+ `gw=` overrides it; absent, the next hop is the peer itself, which is right
+ for a desk box and wrong for anything off the segment.
+
+ THE REQUEST IS RE-SENT EVERY ROUND. One ARP request lost on a real switch
+ would otherwise read as `no-arp`, which is a state that says the segment is
+ broken rather than that one frame went missing.
+
+  db3-arp-chunk : List Integer, Integer -> [Network.Read] List Integer
+  db3-arp-chunk (target) (n) =
+   if n <= 0 then []
+   else let hp = __heap-save
+   in act
+    frame <- net-driver-recv-frame
+    if list-length frame == 0 then let r = __heap-restore hp in db3-arp-chunk target (n - 1)
+    else if eth-ethertype frame /= eth-type-arp then let r2 = __heap-restore hp in db3-arp-chunk target (n - 1)
+    else let pkt = arp-parse (eth-payload frame)
+    in if (pkt.op == arp-op-reply) & ip-equal (pkt.sender-ip) target then pkt.sender-mac
+    else let r3 = __heap-restore hp in db3-arp-chunk target (n - 1)
+   end
+
+  db3-arp-wait : List Integer, List Integer, List Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] List Integer
+  db3-arp-wait (mac) (src-ip) (target) (start) (want) (rounds) =
+   if rounds <= 0 then []
+   else let hp = __heap-save
+   in act
+    sent <- net-driver-send-frame (arp-build-request mac src-ip target)
+    m <- db3-arp-chunk target db3-chunk
+    if list-length m == 6 then m
+    else let r = __heap-restore hp
+    in if (hpet-ticks - start) >= want then []
+    else db3-arp-wait mac src-ip target start want (rounds - 1)
+   end
+
+Section: The Reply
+
+  db3-bytes-text : List Integer, Integer, Text -> Text
+  db3-bytes-text (b) (i) (acc) =
+   if i >= list-length b then acc
+   else if i >= 48 then acc
+   else let v = list-at b i
+   in db3-bytes-text b (i + 1) (acc & (if v < 32 then "." else if v > 126 then "." else char-to-text (code-to-char (from-unicode v))))
+
+  db3-bytes-hex : List Integer, Integer, Text -> Text
+  db3-bytes-hex (b) (i) (acc) =
+   if i >= list-length b then acc
+   else if i >= 16 then acc
+   else db3-bytes-hex b (i + 1) (acc & diag-hex2 (list-at b i))
+
+Section: The Lease
+
+  db3-lease-text : DhcpLease -> Text
+  db3-lease-text (l) =
+   "ip=" & db3-ip-text (l.client-ip) & " gw=" & db3-ip-text (l.gateway) & " dns=" & db3-ip-text (l.dns-server) & " lease=" & show (l.lease-time)
+
+  db3-dhcp-wait : List Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] DhcpLease
+  db3-dhcp-wait (mac) (start) (want) (rounds) =
+   if rounds <= 0 then dhcp-lease-empty
+   else act
+    lease <- dhcp-io-acquire mac (db3-dhcp-xid + rounds) db3-dhcp-fuel
+    if dhcp-is-ack lease then lease
+    else if (hpet-ticks - start) >= want then dhcp-lease-empty
+    else db3-dhcp-wait mac start want (rounds - 1)
+   end
+
+Section: The Stage
+
+ THE NEXT HOP IS PASSED IN AND NOT RECOMPUTED HERE. It decides two different
+ things -- who we ARP for, and the address the session resolves every frame's
+ destination MAC against -- and a stage that derived it twice could ARP for
+ one address and address its frames to another after any edit to the default,
+ answering ok while proving nothing about the peer that was named.
+
+  db3-talk : DiagCtx, Integer, List Integer, List Integer, List Integer, List Integer, Integer, Integer, Text -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
+  db3-talk (c) (link) (src-ip) (peer-ip) (hop-ip) (hop-mac) (peer-port) (hz) (head) = act
+   say <- db3-step c "connect"
+   let sess = net-session-new net-driver-mac src-ip hop-ip db3-src-port peer-port peer-ip db3-initial-seq
+   in let seeded = set-arp sess (arp-cache-add (sess.arp) hop-ip hop-mac)
+   in act
+    ts1 <- db3-connect (transport-new seeded)
+    when (ts1.session).conn.state
+     is TcpEstablished -> act
+       say2 <- db3-step c "exchange"
+       let send-text = db3-field c "send" db3-default-send
+       in let payload = text-to-bytes-chunk send-text 0 (text-length send-text) []
+       in act
+        sr <- db3-send-times ts1 payload (db3-send-repeats c) 0
+        r <- net-io-recv-raw (sr.ns-transport) (db3-start-at db3-reply-ticks)
+        ts3 <- net-io-close (r.transport)
+        let n = list-length (r.data)
+        in let want = db3-field c "expect" ""
+        in let seen = db3-bytes-text (r.data) 0 ""
+        in let state = if sr.ns-complete == False then "short"
+              else if r.has-data == False then "no-reply"
+              else if text-length want == 0 then "ok"
+              else if text-contains seen want then "ok"
+              else "mismatch"
+        in let colour = if state == "ok" then diag-col-good else if state == "no-reply" then diag-col-warn else diag-col-bad
+        in let answer = "pe=" & db3-ip-text peer-ip & ":" & show peer-port & " hop=" & db3-mac-text hop-mac & " sent=" & show (sr.ns-sent) & "/" & show (list-length payload * db3-send-repeats c) & " rx=" & show n & " lk=" & show link
+        in let body = "reply bytes=" & show n & " hex=" & db3-bytes-hex (r.data) 0 "" & " text=" & seen
+        in let cfg = "cfg src=" & db3-ip-text src-ip & " hop-ip=" & db3-ip-text hop-ip & " expect=" & (if text-length want == 0 then "(none)" else want) & " hpet=" & show hz
+        in diag-result state colour [answer, body] [answer, head, cfg, body]
+       end
+     end
+     is otherwise -> act
+       ts2 <- net-io-close ts1
+       let answer = "pe=" & db3-ip-text peer-ip & ":" & show peer-port & " hop=" & db3-mac-text hop-mac & " sent=0 rx=0 lk=" & show link
+       in diag-result "refused" diag-col-bad [answer, "handshake never reached established"] [answer, head, "handshake never reached established"]
+     end
+   end
+  end
+
+  db3-after-address : DiagCtx, Integer, List Integer, List Integer, Integer, Integer, Text -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
+  db3-after-address (c) (link) (src-ip) (peer-ip) (peer-port) (hz) (head) = act
+   say2 <- db3-step c "arp"
+   let hop-ip = db3-ip (db3-field c "gw" (db3-ip-text peer-ip))
+   in let s0 = hpet-ticks
+   in act
+    hop-mac <- db3-arp-wait net-driver-mac src-ip hop-ip s0 ((hz * 2000) / 1000) db3-arp-rounds
+    if list-length hop-mac /= 6
+     then diag-result "no-arp" diag-col-bad ["hop=" & db3-ip-text hop-ip & " unanswered lk=" & show link] [head, "no ARP reply for " & db3-ip-text hop-ip & " in 2000 ms"]
+     else db3-talk c link src-ip peer-ip hop-ip hop-mac peer-port hz head
+   end
+  end
+
+  db3-with-dhcp : DiagCtx, Integer, List Integer, Integer, Integer, Text -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
+  db3-with-dhcp (c) (link) (peer-ip) (peer-port) (hz) (head) = act
+   say3 <- db3-step c "dhcp"
+   let d0 = hpet-ticks
+   in act
+    lease <- db3-dhcp-wait net-driver-mac d0 ((hz * db3-dhcp-ms) / 1000) db3-dhcp-rounds
+    if dhcp-is-ack lease == False
+     then diag-result "no-lease" diag-col-bad ["ip=dhcp and no server answered in " & show db3-dhcp-ms & " ms lk=" & show link] [head, "ip=dhcp was asked for and no DHCP server answered in " & show db3-dhcp-ms & " ms across " & show db3-dhcp-rounds & " DISCOVERs; the address was asked for FROM the segment, so this is the segment's answer and not a DIAG.CFG mistake"]
+     else db3-after-address c link (lease.client-ip) peer-ip peer-port hz (head & " addr=dhcp " & db3-lease-text lease)
+   end
+  end
+
+  db3-clock-reads : Integer = 100000
+
+  db3-clock-spin : Integer, Integer, Integer, Integer -> Integer
+  db3-clock-spin (t0) (i) (n) (moved) =
+   if i >= n then moved
+   else let v = hpet-ticks
+   in db3-clock-spin t0 (i + 1) n (if v /= t0 then moved + 1 else moved)
+
+  db3-clock-line : Integer, Integer, Integer, Integer -> Text
+  db3-clock-line (hz) (t0) (t1) (moved) =
+   "clk=" & (if t1 > t0 then "y" else "n") & " dt=" & show (t1 - t0) & " moved=" & show moved & "/" & show db3-clock-reads & " hpet=" & show hz
+
+ The seven operations of `e1000-reset`, in its order, each painted and banked
+ before it runs: `NicInitProbe` runs the same seven at stage 12 in
+ milliseconds and sitting 10 hung inside them here at stage 14, same code,
+ different part state, and the only instrument that can say WHICH operation
+ is one that banks between them. The value returned is what `e1000-reset`
+ returns, `settled`, so bring-up's absent decision is the driver's own.
+
+  db3-reset : DiagCtx, Integer -> [Console, Device.Port] Integer
+  db3-reset (c) (mmio) = act
+   r1 <- db3-step c "reset-imc"
+   let m1 = e1000-write mmio e1000-reg-imc #FFFFFFFF
+   in act
+    r2 <- db3-step c "reset-ctrl-read"
+    let ctrl = e1000-read mmio e1000-reg-ctrl
+    in act
+     r3 <- db3-step c ("reset-rst-write ctrl=" & show ctrl)
+     let w = e1000-write mmio e1000-reg-ctrl (bit-or ctrl e1000-ctrl-rst)
+     in act
+      r4 <- db3-step c "reset-await-reset"
+      let settled = e1000-await-reset mmio 0
+      in act
+       r5 <- db3-step c ("reset-settle-mdio settled=" & show settled)
+       let waited = e1000-settle-mdio mmio
+       in act
+        r6 <- db3-step c "reset-imc-again"
+        let m2 = e1000-write mmio e1000-reg-imc #FFFFFFFF
+        in act
+         r7 <- db3-step c "reset-icr"
+         let cleared = e1000-read mmio e1000-reg-icr
+         in settled
+        end
+       end
+      end
+     end
+    end
+   end
+  end
+
+ `e1000-init-after-reset` in its order, each part painted and banked before
+ it runs, because sitting 11's medium died between the `rings-link` note and
+ the `k1` note and this function is everything between them. Of its parts,
+ the SWFLAG acquire (2,000 read-modify-writes of EXTCNF_CTRL with MNG held)
+ and the CTRL|SLU write in `e1000-link-up` are the two `nicinit`'s bring-up
+ never did; the ring setup is what it did under a receiver that was never
+ quiesced. The record is rebuilt verbatim from the driver's constructor, so a
+ field added there refuses here at compile time rather than drifting.
+
+  db3-init-after-reset : DiagCtx, Integer -> [Console, Device.Port] E1000Device
+  db3-init-after-reset (c) (mmio) = act
+   i1 <- db3-step c "rings-quiesce"
+   let quiet = e1000-quiesce mmio
+   in let rx-ring = e1000-alloc-aligned (e1000-rx-count * e1000-desc-size) 16
+   in let tx-ring = e1000-alloc-aligned (e1000-tx-count * e1000-desc-size) 16
+   in let rx-bufs = e1000-alloc-aligned (e1000-rx-count * e1000-buf-size) 16
+   in let tx-bufs = e1000-alloc-aligned (e1000-tx-count * e1000-buf-size) 16
+   in let ctrl-blk = e1000-alloc-aligned e1000-cb-size 8
+   in let cb-clear = e1000-zero-words ctrl-blk (e1000-cb-size / 4) 0
+   in let mta = e1000-clear-mta mmio 0
+   in let mac-ok = e1000-mac-present mmio
+   in let mac = if mac-ok then e1000-read-mac mmio else []
+   in let dev = E1000Device { e-mmio = mmio, e-rx-ring = rx-ring,
+                              e-tx-ring = tx-ring, e-rx-bufs = rx-bufs,
+                              e-tx-bufs = tx-bufs, e-ctrl-blk = ctrl-blk,
+                              e-present = True, e-mac = mac,
+                              e-mac-valid = mac-ok, e-pch = 0, e-ulp = 0 }
+   in act
+    i2 <- db3-step c "setup-rx"
+    let rx = e1000-setup-rx dev
+    in act
+     i3 <- db3-step c "setup-tx"
+     let tx = e1000-setup-tx dev
+     in act
+      i4 <- db3-step c "swflag"
+      let sem = if e1000-pch-swflag-required then e1000-swflag-acquire mmio e1000-swflag-fuel else 1
+      in act
+       i5 <- db3-step c ("link-up sem=" & show sem)
+       let link = e1000-link-up mmio
+       in act
+        i6 <- db3-step c ("swflag-release link=" & show link)
+        let rel = if e1000-pch-swflag-required then e1000-swflag-release mmio else 0
+        in dev
+       end
+      end
+     end
+    end
+   end
+  end
+
+  db3-init-or-absent : DiagCtx, Integer, Integer -> [Console, Device.Port] E1000Device
+  db3-init-or-absent (c) (settled) (mmio) = act
+   if settled == 0 then e1000-absent else db3-init-after-reset c mmio
+  end
+
+  db3-bring-up : DiagCtx, PciDevice, Integer -> [Console, Device.Port, Network.Read] (Integer, Integer)
+  db3-bring-up (c) (d) (mmio) = act
+   settled <- db3-reset c mmio
+   dev <- db3-init-or-absent c settled mmio
+   s3 <- db3-step c "k1"
+   let pch = e1000-pch-prepare mmio (d.pci-device-id) e1000-pch-k1-required
+   in let card = net-driver-bind-e1000 dev
+   in act
+    k <- diag-bank-note c ("stage=b3 k1=" & show pch)
+    s4 <- db3-step c "calibrate"
+    p <- net-driver-calibrate
+    let w = poke-32 net-driver-poll-cell 0 p
+    in (card, pch)
+   end
+  end
+
+  db3-run-part : DiagCtx, PciDevice, Integer, List Integer, Integer -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
+  db3-run-part (c) (d) (mmio) (peer-ip) (peer-port) = act
+   let started = hpet-start
+   in let hz = hpet-ticks-per-second
+   in if hz <= 0 then diag-result "no-hpet" diag-col-bad ["no HPET, so no wait on this path is budgeted"] ["no HPET, so no wait on this path is budgeted"]
+   else act
+    sayc <- db3-step c "clock"
+    let t0 = hpet-ticks
+    in let moved = db3-clock-spin t0 0 db3-clock-reads 0
+    in let t1 = hpet-ticks
+    in let clk = db3-clock-line hz t0 t1 moved
+    in act
+     noted <- diag-bank-note c ("stage=b3 " & clk)
+     if t1 <= t0 then diag-result "clock-stuck" diag-col-bad [clk] [clk, "the HPET reports a rate and its counter did not advance across " & show db3-clock-reads & " reads, so every budget in the driver would wait forever; nothing was dialled"]
+     else act
+      r <- db3-bring-up c d mmio
+      when r
+       is (card, pch) -> act
+        let ip = db3-field c "ip" ""
+        in let head = "card=" & net-driver-card-name card & " mac=" & db3-mac-text net-driver-mac & " poll-interval=" & show net-io-tick-interval & " spend=" & show (db3-spend db3-connect-ticks) & " cap=" & show db3-max-spend & " clamped=" & (if db3-spend db3-connect-ticks < net-io-tick-interval * db3-connect-ticks then "y" else "n") & " " & clk & " steps=reset(7),init-after-reset(6),k1,calibrate k1=" & show pch
+        in if card /= net-card-e1000 then diag-result "no-card" diag-col-bad [head, "the driver would not bind the part"] [head, "the driver would not bind the part"]
+        else act
+         say1 <- db3-step c "link wait"
+         let link = na-link-wait mmio
+         in if link == 0 then diag-result "no-link" diag-col-bad ["lk=0 " & head] [head, "link never came up inside the budget"]
+         else if ip == db3-dhcp-word then db3-with-dhcp c link peer-ip peer-port hz head
+         else db3-after-address c link (db3-ip ip) peer-ip peer-port hz (head & " addr=static")
+        end
+       end
+     end
+    end
+   end
+  end
+
+  db3-run : DiagCtx -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
+  db3-run (c) = act
+   let z1 = xdiag-put db3-cell-notes 0
+   in let z2 = xdiag-put db3-cell-lost 0
+   in act
+    r <- db3-run-inner c
+    db3-stamp-lost r
+   end
+  end
+
+  db3-run-inner : DiagCtx -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
+  db3-run-inner (c) = act
+   let peer = db3-field c "peer" ""
+   in let ip = db3-field c "ip" ""
+   in let addr-bad = if ip == db3-dhcp-word then False else list-length (db3-ip ip) /= 4
+   in if text-length peer == 0 then diag-result "no-peer" diag-col-dim ["DIAG.CFG names no peer, so nothing was dialled"] ["DIAG.CFG names no peer, so nothing was dialled"]
+   else if text-length ip == 0 then diag-result "no-address" diag-col-warn ["DIAG.CFG names a peer and no ip=, so there is no address to dial FROM"] ["DIAG.CFG names a peer and no ip=, so there is no address to dial FROM; this stage has no default because a default here would be a guess about the network. Type an address, or type ip=dhcp to ask the segment for one"]
+   else if addr-bad then diag-result "no-address" diag-col-bad ["ip=" & ip & " does not parse to four octets"] ["ip=" & ip & " does not parse to four octets"]
+   else when e1000-find (c.dc-pci)
+    is None -> diag-result "no-part" diag-col-dim ["no eligible Intel part on the bus"] ["no eligible Intel part on the bus"]
+    is Just (d) -> if na-eligible d == False then diag-result "rejected" diag-col-warn [na-reject-line d] [na-reject-line d]
+     else if e1000-bar-verdict (na-bar-of d) /= e1000-bar-ok then diag-result "bar-bad" diag-col-bad ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d)) & ", the part was not touched"] ["verdict=" & na-verdict-text (e1000-bar-verdict (na-bar-of d)) & ", the part was not touched"]
+     else db3-run-part c d (na-mmio-of d) (db3-ip peer) (db3-port peer)
+  end
+
+Page 1

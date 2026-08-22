@@ -1,0 +1,118 @@
+Chapter: E1000UlpEntry
+  cites Foreword chapter Console
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ WHAT THIS CAN AND CANNOT PROVE, because the honest scope is the point.
+
+ It CANNOT prove the write reaches the part. codex-vm models PHY page 770 and
+ not page 779, which the `pch` stage's own neighbour control already reports
+ (`ulp 779.16=ERR neighbour-id1=0154`), so no bed run can read this register
+ back. That is also why the ULP row was promoted to a board reading rather
+ than a bed pair.
+
+ It CAN pin the ARITHMETIC against the citation, which is the half that a
+ wrong constant would break silently. I219 rev 2.02 section 9.5.7.1 maps ULP
+ Configuration 1 field by field: STICKY_ULP is bit 4, "Enter ULP on Link
+ disconnect"; EN_ULP_LANPHYPC is bit 10, "Enable ULP on LAN disable
+ (LANPHYPC)". Those two are the entry conditions and nothing else here is.
+
+ THE BOARD'S OWN WORD IS THE FIXTURE. Sittings 8 and 9 both banked
+ `ulp 779.16=0800`, so 0x0800 is used below as the value the mask must leave
+ alone: bit 11 is inside the 13:11 the datasheet marks Reserved, and a mask
+ that took it would be writing a reserved bit on a live part. The synthetic
+ value adds both entry bits to that same word, so one row shows the mask
+ clearing exactly what it should and keeping exactly what it should.
+
+ We say:
+
+Section: The Citation, As Arithmetic
+
+  hex4 : Integer -> Text
+  hex4 (v) = show v
+
+  masked : Integer -> Integer
+  masked (v) = bit-and v (bit-not e1000-ulp-entry-bits)
+
+  board : Integer = #0800
+  armed : Integer = #0C10
+
+ THE GATE ROW USES A REAL MMIO BASE AND NOT ZERO, which matters for whoever
+ flips the constant rather than for this run. With the gate off the step
+ returns before touching anything, so a zero would be harmless today and would
+ become a write to physical address 0x20 -- the IDT band -- the moment the
+ constant went True. This chapter has already paid for bytes landing at
+ address 0 once (`net-io-send-chunk`, 2026-07-14), and an arm that arms that
+ trap for a future editor is not worth the two lines it saves.
+
+  dev-id-of : PciScanResult -> Integer
+  dev-id-of (scan) =
+    when e1000-find scan
+      is Just (d) -> (d.pci-device-id)
+      is None -> 0
+
+  mmio-of : PciScanResult -> Integer
+  mmio-of (scan) =
+    when e1000-find scan
+      is Just (d) -> (e1000-init d).e-mmio
+      is None -> 0
+
+Section: The Pair
+
+ THE PAIR RUNS FROM ONE BINARY AND THE KILL LEADS, which is red's standing
+ condition and the reason it is built this way rather than as two images. The
+ shipped constant is False, so `e1000-ulp-step` is the SKIPPING arm exactly as
+ it ships: it must leave an armed register untouched. `e1000-ulp-disable` is
+ the same write with no gate in front of it, so it is the REACHING arm. Same
+ boot, same part, same register, and the only difference between the two rows
+ is whether the gate was consulted.
+
+ IT NEEDED A MODEL AND NOW HAS ONE. reek's `-i219-ulp-armed` (main 18837)
+ powers 779.16 up with STICKY_ULP and EN_ULP_LANPHYPC SET on top of the
+ measured 0x0800, so the write has something to clear.
+
+ THAT THE FLAG IS LOAD-BEARING IS MEASURED, NOT ASSERTED. The same binary run
+ against plain `-i219` answers 2048 on all three rows -- armed-before, after
+ the gate, and after the write -- so without the flag this pair is VACUOUS and
+ would pass while proving nothing. That is the decoy-arm failure L-FREEDOM
+ names, and one run is what separates a pair that fires from a pair that
+ cannot.
+
+ The `after` row is the one that carries the citation: 0x0C10 becomes 0x0800,
+ so both entry bits went and bit 11, inside the reserved 13:11, stayed.
+
+  ulp-read : Integer -> Integer
+  ulp-read (mmio) =
+    let p = e1000-phy-set-page mmio e1000-ulp-page
+    in let v = e1000-phy-read mmio e1000-ulp-reg
+    in let restore = e1000-phy-set-page mmio 0
+    in v
+
+Section: Entry
+
+  opening : [Console, Network.Read] Nothing = act
+    print-line-uni ("sticky bit 4       : " & hex4 e1000-ulp-sticky)
+    print-line-uni ("lanphypc bit 10    : " & hex4 e1000-ulp-lanphypc)
+    print-line-uni ("entry bits         : " & hex4 e1000-ulp-entry-bits)
+    print-line-uni ("board 0800 masked  : " & hex4 (masked board))
+    print-line-uni ("armed 0C10 masked  : " & hex4 (masked armed))
+    print-line-uni ("reserved bit kept  : " & (if bit-and (masked armed) #0800 /= 0 then "yes" else "no"))
+    print-line-uni ("shipped ulp step   : " & (if e1000-pch-ulp-required then "on" else "off"))
+    let scan = pci-scan-bus 0
+    in let mmio = mmio-of scan
+    in let did = dev-id-of scan
+    in let armed-before = ulp-read mmio
+    in let skipped = e1000-ulp-step mmio did
+    in let after-skip = ulp-read mmio
+    in let reached = e1000-ulp-disable mmio
+    in let after-reach = ulp-read mmio
+    in act
+      print-line-uni ("gate answers       : " & show skipped)
+      print-line-uni ("1 kill armed before: " & show armed-before)
+      print-line-uni ("2 kill after gate  : " & show after-skip)
+      print-line-uni ("3 pass after write : " & show after-reach)
+      print-line-uni ("   write read back : " & show reached)
+      print-line-uni ("   entry bits gone : " & (if bit-and after-reach e1000-ulp-entry-bits == 0 then "yes" else "no"))
+      print-line-uni ("   reserved kept   : " & (if bit-and after-reach #0800 /= 0 then "yes" else "no"))
+    end
+  end

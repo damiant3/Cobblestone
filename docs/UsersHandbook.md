@@ -263,11 +263,19 @@ is not the stick it was built as (`DIAG.ID`). The record's first lines
 (`rcp ...`) name the exact bytes that produced it, so a `DIAG.TXT` from
 last month still tells us which build it came from.
 
-For a fleet lane flashing its OWN build: `flash-usb.ps1 -Rehearsed` refuses
-any image whose hash `build/boot/diag-arm.ps1` has not run through every arm
-in both beds (`build/boot/diag.rehearsed`); a `-Only` or `-SkipOvmf` run
-does not count. That is L-REHEARSE as a runner: the bytes that fly are the
-bytes that completed the mission in the bed.
+For a fleet lane flashing its OWN build: `flash-usb.ps1` refuses any image
+whose hash `build/boot/diag-arm.ps1` has not run through every arm in both
+beds; a `-Only` or `-SkipOvmf` run does not count. That is L-REHEARSE as a
+runner: the bytes that fly are the bytes that completed the mission in the
+bed.
+
+**This is the default, and has been since 2026-08-20** (red's ruling). It
+was the opt-in `-Rehearsed` before that, which is why an unrehearsed image
+could fly at all. `-Rehearsed` is still accepted and now does nothing. The
+override is `-UnrehearsedAnyway`, which prints the hash it is waiving; it is
+NOT `-Force`, which only answers the confirmation prompt and never affects
+this check. Two records are searched: `<image>.rehearsed` beside the image,
+and `build/boot/diag.rehearsed`.
 ### Known flashing issues
 
 **Flashing is not reliably reproducible.** The same image, same

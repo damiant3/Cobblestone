@@ -2,21 +2,33 @@ Chapter: RISC-V Code Generator
 
 Section: Control Flow
 
+ Negation is a SIGN FLIP for a real and a subtract-from-zero only for an
+ integer. The width matters: `fsgnjn.d` flips bit 63, and an f32's sign is bit
+ 31, so negating a `Real approximate` through the double form leaves the value
+ unchanged. `fsgnjn.s` rather than an integer mask because RISC-V NaN-boxes an
+ f32 in a wider f-register and every f32 operation checks that boxing, so a
+ value whose bit 31 was flipped with integer instructions comes back unboxed
+ and the next f32 operation reads it as NaN.
+
+ One helper, two callers, on purpose: `rv-emit-frameless-arg` carried its own
+ copy that was integer-only whatever the type, which is what this defect
+ actually was on this lane -- the general emitter was wrong about width and
+ the frameless one was wrong about floats existing.
+
+  rv-negate-into : RvState, Integer, Integer, CodexType -> RvState
+  rv-negate-into (st) (rd) (src) (ty) =
+   if rv-is-real-approx-type ty then
+    rv-emit (rv-emit (rv-emit st (rv-fmv-w-x rv-ft0 src)) (rv-fsgnjn-s rv-ft0 rv-ft0 rv-ft0)) (rv-fmv-x-w rd rv-ft0)
+   else if rv-is-real-type ty then
+    rv-emit (rv-emit (rv-emit st (rv-fmv-d-x rv-ft0 src)) (rv-fsgnjn-d rv-ft0 rv-ft0 rv-ft0)) (rv-fmv-x-d rd rv-ft0)
+   else rv-emit st (rv-sub rd rv-zero src)
+
   rv-emit-negate : RvState, IRExpr -> RvEmitResult
   rv-emit-negate (st) (operand) =
-   if rv-is-real-type (ir-expr-type operand) then
-    let opr = rv-emit-expr st operand
-    in let tr = rv-alloc-temp (opr.state)
-    in let st1 = rv-emit (tr.state) (rv-fmv-d-x rv-ft0 (opr.reg))
-    in let st2 = rv-emit st1 (rv-fsgnjn-d rv-ft0 rv-ft0 rv-ft0)
-    in RvEmitResult {
-     state = rv-emit st2 (rv-fmv-x-d (tr.reg) rv-ft0),
-     reg = tr.reg
-    }
-   else let opr = rv-emit-expr st operand
+   let opr = rv-emit-expr st operand
    in let tr = rv-alloc-temp (opr.state)
    in RvEmitResult {
-    state = rv-emit (tr.state) (rv-sub (tr.reg) rv-zero (opr.reg)),
+    state = rv-negate-into (tr.state) (tr.reg) (opr.reg) (ir-expr-type operand),
     reg = tr.reg
    }
 

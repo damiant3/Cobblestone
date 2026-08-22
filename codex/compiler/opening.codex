@@ -1289,7 +1289,7 @@ Section: Text Compilation
 Section: Binary Compilation
 
   compile-to-cdx : CompileFrontend -> EmitChapterResult
-  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False WatchdogProgress
+  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress
 
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
@@ -1315,14 +1315,14 @@ Section: Binary Compilation
   ir-emit-roots : List Text
   ir-emit-roots = ["opening", "vb-capacity-auto", "vb-read-auto", "vb-write-auto", "fat16-servicer-read", "fat16-servicer-write"]
 
-  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, X86_64WatchdogMode -> EmitChapterResult
-  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (wd-mode) =
+  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode -> EmitChapterResult
+  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) =
    if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
    else let all-defs = (fe.cdx-ir).defs
     in let proofs = keep-proof-defs [] all-defs 0
     in let pruned = ir-prune-unreachable-roots (fe.cdx-ir) cdx-emit-roots
     in let dropped = ir-dropped-budgeted-punctuals all-defs (pruned.defs)
-    in let emit-result = x86-64-emit-cdx-with-exit-mode (ir-chapter-with-proofs pruned proofs) (fe.sorted-type-defs) exit-mode poison False wd-mode dropped
+    in let emit-result = x86-64-emit-cdx-with-exit-mode (ir-chapter-with-proofs pruned proofs) (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -1487,6 +1487,7 @@ Section: Entry Point
    in let want-map = has-mode-flag mode "map"
    in let want-disk = if force-disk then True else has-mode-flag mode "diskout"
    in let poison = has-mode-flag mode "poison"
+   in let trace = has-mode-flag mode "trace"
    in let debug = has-mode-flag mode "debug"
    in let prof = has-mode-flag mode "profile"
    in let wd-mode = if has-mode-flag mode "pet" then WatchdogPet else WatchdogProgress
@@ -1502,7 +1503,7 @@ Section: Entry Point
       dbg-print-def-names (fe.cdx-ir.defs) 0 (list-length (fe.cdx-ir.defs))
      end
      else print-line-uni ""
-     let result = compile-to-cdx-with-exit-mode fe exit-mode poison wd-mode
+     let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode
      in act
       if prof then print-line-uni ("PROF-END: " & show (prof-dump 0))
       else print-line-uni ""

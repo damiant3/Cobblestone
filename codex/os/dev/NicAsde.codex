@@ -42,14 +42,37 @@ Section: Reading
  there before it gives up, and two arms is a minute or worse. It is
  bounded and it is indistinguishable from a hang.
 
-  na-phy-kick : Integer -> Integer
-  na-phy-kick (mmio) =
+ IT RESETS THE PHY AND NOW PAYS THE LCD RELOAD ITSELF, which is the change of
+ 2026-08-21 and the reason every function here carries a device id. I219 rev
+ 2.02 section 5.2 puts the obligation on the driver after any write of BMCR bit
+ 15, which is the first line below. `e1000-init` pays it by running
+ `e1000-pch-prepare` after bring-up; nothing behind this function did, so with
+ `e1000-pch-k1-required` shipping True an arm here left 770.17 at its NVM value
+ and the part stalled at gigabit. Measured, both rows, in
+ `codex/test/e1000-lcd-reload`.
+
+ THE DEVICE ID IS THREADED RATHER THAN GUESSED, and that is the whole cost of
+ this change: `e1000-lcd-reload` needs it to answer whether the part is a PCH
+ part at all, it is a PCI config read this layer cannot make from an MMIO base,
+ and every stage that calls in here already held it when it chose the part.
+ Passing 0 is legal and means "not a PCH part", which is what the non-I219
+ arms want.
+
+ THE GATE IS STILL OFF, so this call answers 0 and writes nothing until
+ `e1000-pch-lcd-reload-required` flips. The call site is what was missing:
+ `e1000-lcd-reload` had no production caller at all before this, so flipping
+ the constant would have changed nothing anywhere (L-UNCALLED).
+
+  na-phy-kick : Integer, Integer -> Integer
+  na-phy-kick (mmio) (dev-id) =
    let r = e1000-phy-write mmio e1000-phy-bmcr e1000-bmcr-reset
    in if r < 0 then 0
    else let s = e1000-phy-slow-mode mmio
    in let mode = bit-or e1000-bmcr-aneg-en e1000-bmcr-aneg-rst
    in let a = e1000-phy-write mmio e1000-phy-bmcr mode
-   in if a < 0 then 0 else 1
+   in if a < 0 then 0
+   else let reload = e1000-lcd-reload mmio dev-id
+   in 1
 
  Bounded by wall time rather than by iterations, because the two bounds
  want opposite things: a real gigabit link takes a second or more to
@@ -105,16 +128,16 @@ Section: Reading
    in let c = e1000-read mmio e1000-reg-ctrl
    in NicAsdeTouch { nt-status = s, nt-ctrl = c }
 
-  na-bring-up : Integer, Boolean -> NicAsdeArm
-  na-bring-up (mmio) (asde) =
+  na-bring-up : Integer, Integer, Boolean -> NicAsdeArm
+  na-bring-up (mmio) (dev-id) (asde) =
    let r = e1000-reset mmio
    in if r == 0 then NicAsdeArm { na-status = 0, na-aneg = 0,
                                   na-gave = na-gave-reset, na-phy = 0 }
-   else na-bring-up-after mmio asde
+   else na-bring-up-after mmio dev-id asde
 
-  na-bring-up-after : Integer, Boolean -> NicAsdeArm
-  na-bring-up-after (mmio) (asde) =
-   let p = na-phy-kick mmio
+  na-bring-up-after : Integer, Integer, Boolean -> NicAsdeArm
+  na-bring-up-after (mmio) (dev-id) (asde) =
+   let p = na-phy-kick mmio dev-id
    in let ctrl = e1000-read mmio e1000-reg-ctrl
    in let withslu = bit-or ctrl e1000-ctrl-slu
    in let want = if asde then bit-or withslu e1000-ctrl-asde

@@ -112,6 +112,112 @@ are from a quiet host with the arms interleaved. Rebuilding between runs
 is what makes it worst. The metal stick is a dedicated box and its
 numbers are the trustworthy ones.
 
+### Stage 2, 2026-08-20 (val): the taps are three quarters of it
+
+Stage 1 concluded the per-pixel shadow cost is tap-bound **by elimination**,
+having removed the arithmetic and seen no change. That is an argument, not a
+measurement of the taps. This stage measured them.
+
+`r3d-pcf-radius` is now the only place the kernel's tap count is written
+down, and `r3d-pcf-taps` is derived from it, so radius 1 is the shipping 3x3
+and radius 0 is one tap. **The arm was shown to take before it was trusted**:
+`engine-shadow` at radius 0 differs on three lines, the edge stops being a
+blend, the sample darkens, and the ambient pixel count goes 1691 to 1929.
+
+Instrument: cube-on-plane, plain and shadowed measured in the SAME binary at
+three render sizes, 20 frames each, HPET, so host noise moves both arms
+together and the INCREMENT is the reading. Two binaries differing only in the
+radius, run interleaved, three passes. Bed, not metal.
+
+| area | plain | shadowed, 9 taps | shadowed, 1 tap | increment, 9 | increment, 1 |
+|---:|---:|---:|---:|---:|---:|
+| 76,800 | 2,003 us | 5,683 us | 3,719 us | 3,712 us | 1,684 us |
+| 172,800 | 4,284 us | 10,960 us | 6,746 us | 6,673 us | 2,464 us |
+| 307,200 | 7,724 us | 18,679 us | 11,237 us | 10,957 us | 3,511 us |
+
+**Plain is the control and it holds.** It never reaches the PCF, so the two
+arms must agree, and pooled across six runs they do to within a few per cent
+at every size. A systematic difference there would have condemned the
+harness rather than the kernel.
+
+**Eight taps of the nine are what the difference buys**, so one tap over the
+whole frame costs 253, 526 and 931 us at the three sizes, and the nine
+together are **61, 71 and 76 per cent of the shadow increment**. My
+prediction before the run was about 89 per cent, and it was too high.
+
+The residue after the taps is 1,430, 1,938 and 2,578 us, and it does NOT
+scale with area. **Fitting a fixed term plus a per-pixel term on the two
+outer points predicts the middle to 1.5 per cent** (1,908 against 1,938),
+which is a real test rather than the two-point tautology the 08-18 note
+warned about: the fixed term is about 1,050 us, and that is the depth pass,
+which is over the 256x256 map and not over the render region.
+
+So at 640x480 on the bed a shadowed frame's extra cost is roughly **76 per
+cent PCF taps, 14 per cent other per-pixel work, 10 per cent depth-pass
+build.**
+
+**The confound, which was written down before the run.** Radius 0 does not
+only remove eight taps, it also abolishes the penumbra, and a fully shadowed
+pixel skips Phong. The `engine-shadow` counts bound that at about 240 pixels
+of 76,800, a third of a per cent of the frame, far too small to account for
+a 55 to 68 per cent fall.
+
+**What this opens.** With three quarters of the increment in the taps, a
+cheaper kernel is worth about what it removes. **That sentence used to put a
+number on it, "a four-tap kernel would take roughly 44 per cent off", and
+stage 3 below withdraws the number while keeping the direction:** it was an
+extrapolation on a per-tap rate that turns out not to be constant. Caching
+the map remains worth at most the 10 per cent fixed term on a static scene.
+
+### Stage 3, 2026-08-20 (val): the per-tap rate is not a constant, and the knob only goes down
+
+Stage 2 got its per-tap figure by differencing nine taps against one. That is
+a rate only if cost is LINEAR in the tap count, and stage 2 ASSUMED that while
+carefully testing the equivalent assumption for area. Same trap, one level
+along, in the same note that named it. Stage 3 added a third point.
+
+All three arms re-measured on the converged seed **A7EDB7C6**, because the
+seed change alters this unit's emitted bytes (175,062 to 175,329) and stage
+2's binaries are no longer what the compiler produces. **Stage 2's numbers
+were NOT carried forward** (L-COUNT); what follows replaces them. Three
+passes, interleaved, 640x480, 20 frames per arm.
+
+| taps | increment | marginal cost per tap |
+|---:|---:|---:|
+| 1 | 3,474 us | |
+| 9 | 10,520 us | 881 us over the 1-to-9 range |
+| 25 | 29,630 us | **1,194 us over the 9-to-25 range** |
+
+**The prediction written down first was 25,855 us and the answer came in at
+29,630, about 20 per cent above linear.** I had named the superlinear case as
+the least likely of three and bet on the opposite one. The marginal cost of a
+tap rises 36 per cent between the 3x3 and the 5x5 range, so **stage 2's 931 us
+per tap is a LOCAL rate at the shipping radius and not a property of a tap.**
+
+Stage 2's headline survives this intact, and it is worth saying why: the 61,
+71 and 76 per cent figures were measured by differencing AT the shipping
+radius, so they never depended on linearity. Only the extrapolation to a
+cheaper kernel did, and that is the sentence withdrawn above.
+
+**The obvious cause was tested and ruled out.** A wider kernel widens the
+penumbra, and a partial pixel evaluates Phong and the blend where a fully
+shadowed one returns ambient at once, so the excess could have been penumbra
+rather than taps. `engine-shadow`'s ambient count says the penumbra does grow,
+1,929 at one tap to 1,691 at nine to 1,470 at twenty-five. It is far too small
+to matter: that is about 200 pixels at 320x240, some hundreds once scaled, and
+the excess would need 5.6 us per pixel when a whole PLAIN frame of 307,200
+pixels costs 7,500 us. Two orders of magnitude out. **The residue is real and
+this document does not attribute it** -- the simple cache-line story predicts
+the opposite sign, since rows of a 256x256 map are 1,024 bytes apart so the
+line count grows as 3 to 5 while the taps grow as 9 to 25.
+
+**The finding that matters is not the timing.** At radius 2 `engine-shadow`
+reports `cube pixel unchanged : no`: the 5x5 kernel bleeds onto the caster
+itself. **A wider kernel is not a quality setting, it is a defect**, so the
+knob's only useful direction is DOWN, which stage 2 already priced. That
+closes the campaign's measurement arc: what a cheaper kernel buys is bounded
+below by stage 2's differencing and is not to be extrapolated from a rate.
+
 ---
 
 ## Motivation
@@ -613,6 +719,18 @@ Render depth from light's perspective into a shadow depth buffer.
 During the main pass, transform each fragment into light-space and
 compare against the shadow depth. Shadowed fragments receive ambient
 only.
+
+**`r3d-pcf-radius` has a hard upper bound of 1, and it is a CORRECTNESS
+bound rather than a performance one.** The percentage-closer kernel's
+half-width is the engine's one shadow-quality parameter, and raising it is
+the intuitive move for a softer edge. It is not available. At radius 2 the
+kernel reaches map texels belonging to the CASTER and the caster begins
+shadowing itself: `engine-shadow`'s `cube pixel unchanged` assertion holds at
+radius 1 and fails at radius 2, measured 2026-08-20 on cube-on-plane. Radius
+2 is where it was caught, not a proof that 1 is the exact edge; 3 and above
+were not measured because 2 already refuses. **The only useful direction on
+this constant is down**, trading a soft edge for speed, and stage 3 below has
+what that costs.
 
 ### Deferred Rendering (Phase 3)
 

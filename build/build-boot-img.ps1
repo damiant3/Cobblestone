@@ -46,6 +46,18 @@ param(
     # than falling back, since a silent fallback is discovered at the machine
     # after a flash.
     [string]$Identity = '',
+    # The typeface written to the ESP root as CMUNSS.TTF. build-img.ps1 has
+    # taken -Font since the desk learned to read one, and THIS script never
+    # passed it, so every image it produced shipped without a typeface and
+    # every desk booting one fell back to the CBF bitmap face. The Monitor
+    # pane's `font` row says which won, and it said `CBF bitmap` truthfully
+    # rather than reporting a failure.
+    #
+    # Defaulted rather than opt-in: a shell with no typeface was nobody's
+    # choice, and the fallback exists for a stick built without one, not as
+    # the intended appearance. Pass '' to build the old way, which is what
+    # the fallback path's own arm needs.
+    [string]$Font = 'fonts/cc0/cmunss.ttf',
     # GopBoot is an interactive poll loop that makes no heap progress, so the
     # watchdog has to be petted rather than inferred from progress. This is the
     # one compile-mode difference between the two payloads, and it follows the
@@ -173,8 +185,17 @@ $IdentityArgs = @()
 if ($Identity) {
     $IdentityArgs = @('-Identity', $Identity)
 }
+# Resolved against the repo so the default works from any working
+# directory, and checked here rather than left to build-img's hard error,
+# which would name a path the caller never typed.
+$FontArgs = @()
+if ($Font) {
+    $FontPath = if ([System.IO.Path]::IsPathRooted($Font)) { $Font } else { Join-Path $Repo $Font }
+    if (-not (Test-Path -PathType Leaf $FontPath)) { Write-Host "FAIL: font $FontPath missing"; exit 1 }
+    $FontArgs = @('-Font', $FontPath)
+}
 Write-Host '  Building GPT disk image...'
-& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\compiler') -TotalSectors 32768 @AgentArgs @IdentityArgs
+& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\compiler') -TotalSectors 32768 @AgentArgs @IdentityArgs @FontArgs
 if (((-not ($LASTEXITCODE -eq 0)) -or (-not (Test-Path -PathType Leaf $ImgOut)))) {
     Write-Host 'FAIL: IMG build failed'
     exit 1

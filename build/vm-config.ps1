@@ -762,6 +762,46 @@ function Get-SizePayloadEnd {
     return $payloadStart + $payloadLength
 }
 
+# The same line read as its two halves: where the payload would start on the
+# serial wire, and how many bytes SIZE declared. -1 for both while no
+# complete SIZE line has arrived.
+function Get-SizePayload {
+    param([byte[]]$Bytes)
+    $text = [System.Text.Encoding]::ASCII.GetString($Bytes)
+    $sizeLine = [regex]::Match($text, '(?m)^SIZE:(\d+)')
+    if (-not $sizeLine.Success) { return @{ Start = -1; Length = -1 } }
+    $lineEnd = $text.IndexOf("`n", $sizeLine.Index)
+    if ($lineEnd -lt 0) { return @{ Start = -1; Length = -1 } }
+    return @{ Start = ($lineEnd + 1); Length = [long]$sizeLine.Groups[1].Value }
+}
+
+# The debug console's file while QEMU still holds it open for writing. The
+# length comes from the handle rather than the directory entry, which Windows
+# updates lazily for a file another process is writing.
+function Get-DebugconLength {
+    param([string]$Path)
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        try { return [long]$fs.Length } finally { $fs.Dispose() }
+    } catch { return -1 }
+}
+
+function Read-DebugconBytes {
+    param([string]$Path, [long]$Count)
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+    try {
+        $b = New-Object byte[] $Count
+        $got = 0
+        while ($got -lt $Count) {
+            $n = $fs.Read($b, $got, $Count - $got)
+            if ($n -le 0) { break }
+            $got += $n
+        }
+        if ($got -ne $Count) { return $null }
+        return $b
+    } finally { $fs.Dispose() }
+}
+
 
 # One compile through the QEMU fallback's serial wire, honouring codex-vm's
 # -input/-output file contract so compile.ps1 parses the result the same
@@ -785,8 +825,20 @@ function Invoke-VmCompileFallback {
     )
     $extra = @()
     if ($DiskFile) { $extra = @('-drive', "file=$DiskFile,format=raw,if=ide,index=0") }
+    # The Bochs debug console at 0xE9. A guest whose __write_binary helpers
+    # carry the probe (seeds from 2026-08-21) reads 0xE9 back from it and
+    # sends the SIZE payload there in ONE rep outsb, no LSR poll and no
+    # 16-byte FIFO bound; an older guest reads 0xFF from the same port under
+    # every other bed and never touches it, so its payload still arrives on
+    # the serial wire. The reader below accepts either, because the gate's
+    # stage0 is the depot seed and may be the older kind. Wired here and
+    # nowhere else: every other Start-VmRun consumer reads the serial wire
+    # alone, and a device they did not ask for would move their payload
+    # somewhere they do not look.
+    $dbgFile = [System.IO.Path]::GetTempFileName()
+    $extra += @('-chardev', "file,id=dbg,path=$dbgFile", '-device', 'isa-debugcon,iobase=0xe9,chardev=dbg')
     $vm = Start-VmRun -Kernel $Kernel -MemMB $MemMB -ExtraArgs $extra
-    if (-not $vm) { return $false }
+    if (-not $vm) { Remove-Item -Force $dbgFile -ErrorAction SilentlyContinue; return $false }
     try {
         if (-not (Read-VmReady -Conn $vm.Conn -TimeoutSec 120)) {
             [Console]::Error.WriteLine("  qemu fallback: no READY from guest")
@@ -814,6 +866,10 @@ function Invoke-VmCompileFallback {
         $buf = New-Object byte[] 65536
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
         $needed = [long](-1)
+        $payloadStart = [long](-1)
+        $payloadLen = [long](-1)
+        $viaDebugcon = $false
+        $complete = $false
         $sawTerminalReport = $false
         while ([DateTime]::UtcNow -lt $deadline) {
             # Once SIZE's declared payload is fully in hand the loop is only
@@ -821,7 +877,19 @@ function Invoke-VmCompileFallback {
             # read below blocks for the whole timeout before breaking. At
             # 2000ms that was a flat two seconds on every QEMU compile,
             # measured as roughly half the fixed floor.
-            $stream.ReadTimeout = if ($needed -ge 0 -and $out.Length -ge $needed) { 250 } else { 5000 }
+            # Complete means one of two things once SIZE is known: the debug
+            # console holds the declared bytes (a guest with the 0xE9 arm), or
+            # it holds NOTHING and the serial wire carries them (an older
+            # guest). A console with some bytes but not all is still
+            # streaming, whatever the serial side says: the trailer can be
+            # longer than a small payload, so the serial count alone would
+            # read a half-written console as done.
+            if ($needed -ge 0 -and -not $complete) {
+                $dbgLen = Get-DebugconLength -Path $dbgFile
+                if ($dbgLen -ge $payloadLen) { $viaDebugcon = $true; $complete = $true }
+                elseif ($dbgLen -le 0 -and $out.Length -ge $needed) { $complete = $true }
+            }
+            $stream.ReadTimeout = if ($complete) { 250 } else { 5000 }
             $n = 0
             try { $n = $stream.Read($buf, 0, $buf.Length) } catch { $n = -1 }
             if ($n -eq 0) { break }
@@ -829,7 +897,7 @@ function Invoke-VmCompileFallback {
                 # Idle. Done if the payload is complete (the short pass above
                 # was the trailer drain), or if the guest sent a terminal
                 # report that has no SIZE line and never will.
-                if ($needed -ge 0 -and $out.Length -ge $needed) { break }
+                if ($complete) { break }
                 if ($sawTerminalReport) { break }
                 # A read timeout and an abortive socket close both arrive
                 # here as an exception. A dead guest has nothing more to
@@ -842,7 +910,11 @@ function Invoke-VmCompileFallback {
             if ($needed -lt 0) {
                 $bytes = $out.ToArray()
                 $needed = Get-SizePayloadEnd -Bytes $bytes
-                if ($needed -lt 0) {
+                if ($needed -ge 0) {
+                    $sp = Get-SizePayload -Bytes $bytes
+                    $payloadStart = [long]$sp.Start
+                    $payloadLen = [long]$sp.Length
+                } else {
                     $txt = [System.Text.Encoding]::ASCII.GetString($bytes)
                     if ($txt.Contains('!EXC') -or $txt.Contains('CODEGEN-HALTED') -or $txt.Contains('CODEGEN-ERRORS')) {
                         $sawTerminalReport = $true
@@ -850,8 +922,26 @@ function Invoke-VmCompileFallback {
                 }
             }
         }
+        # A payload that travelled by the debug console is spliced back in where
+        # it would have sat on the wire, so OutputFile reads the same to
+        # compile.ps1 whichever channel the guest chose.
+        if ($viaDebugcon) {
+            $serial = $out.ToArray()
+            $payload = Read-DebugconBytes -Path $dbgFile -Count $payloadLen
+            if ($null -eq $payload) {
+                [Console]::Error.WriteLine("  qemu fallback: debug console declared complete and then read short")
+                return $false
+            }
+            $joined = [System.IO.MemoryStream]::new()
+            $joined.Write($serial, 0, $payloadStart)
+            $joined.Write($payload, 0, $payload.Length)
+            $joined.Write($serial, $payloadStart, $serial.Length - $payloadStart)
+            [System.IO.File]::WriteAllBytes($OutputFile, $joined.ToArray())
+            [Console]::Error.WriteLine("  qemu fallback: $payloadLen payload bytes via the debug console")
+            return $true
+        }
         [System.IO.File]::WriteAllBytes($OutputFile, $out.ToArray())
-        if (($needed -ge 0 -and $out.Length -ge $needed) -or $sawTerminalReport) { return $true }
+        if ($complete -or $sawTerminalReport) { return $true }
         [Console]::Error.WriteLine("  qemu fallback: deadline (${TimeoutSec}s) with no complete answer ($($out.Length) bytes so far)")
         return $false
     } finally {
@@ -865,6 +955,6 @@ function Invoke-VmCompileFallback {
         if ($vm.Process -and -not $vm.Process.HasExited) {
             Stop-VmGraceful -ProcessId $vm.Process.Id -TimeoutMs 1000
         }
-        Remove-Item -Force $vm.StdoutFile, $vm.StderrFile -ErrorAction SilentlyContinue
+        Remove-Item -Force $vm.StdoutFile, $vm.StderrFile, $dbgFile -ErrorAction SilentlyContinue
     }
 }

@@ -393,8 +393,45 @@ Section: Expression Emission
    else let hsc = pas-h scrut ctx (depth + 1) n
    in let sc = pas-temp-name (hsc.hn)
    in let tmp = pas-temp-name (hsc.hn + 1)
-   in let hb = pas-h-match-chain branches sc ctx depth (hsc.hn + 2) tmp 0
-   in PasHoist { hs = hsc.hs & "  " & sc & " := " & hsc.hx & ";\n" & hb.hs, hx = tmp, hn = hb.hn }
+   in if pas-branches-guarded branches 0
+      then let flag = pas-temp-name (hsc.hn + 2)
+      in let hg = pas-h-match-guarded branches sc ctx depth (hsc.hn + 3) tmp flag 0
+      in PasHoist { hs = hsc.hs & "  " & sc & " := " & hsc.hx & ";\n  " & flag & " := False;\n" & hg.hs, hx = tmp, hn = hg.hn }
+      else let hb = pas-h-match-chain branches sc ctx depth (hsc.hn + 2) tmp 0
+      in PasHoist { hs = hsc.hs & "  " & sc & " := " & hsc.hx & ";\n" & hb.hs, hx = tmp, hn = hb.hn }
+
+ A guarded arm cannot fall through to the next arm from inside a nested
+ if/else chain, because a Pascal begin block has nothing that resumes the
+ chain. A match carrying a guard is emitted as a flat sequence of arms
+ instead, each skipped once a flag says an earlier arm has answered. The
+ binds stay where they are: they are assignments to real locals declared in
+ the var block, so a guard placed after them can read them by name.
+
+  pas-branches-guarded : List IRBranch, Integer -> Boolean
+  pas-branches-guarded (branches) (i) =
+   if i >= list-length branches then False
+   else if pas-guard-trivial ((list-at branches i).guard) then pas-branches-guarded branches (i + 1)
+   else True
+
+  pas-guard-trivial : IRExpr -> Boolean
+  pas-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  pas-h-match-guarded : List IRBranch, Text, PasCtx, Integer, Integer, Text, Text, Integer -> PasHoist
+  pas-h-match-guarded (branches) (scrut-text) (ctx) (depth) (n) (tmp) (flag) (i) =
+   if i >= list-length branches then PasHoist { hs = "", hx = tmp, hn = n }
+   else let b = list-at branches i
+   in let hbody = pas-h (b.body) ctx (depth + 1) n
+   in let hguard = pas-h (b.guard) ctx (depth + 1) (hbody.hn)
+   in let binds = pas-pat-bind-text (b.pattern) scrut-text
+   in let take = hbody.hs & "  " & tmp & " := " & hbody.hx & ";\n  " & flag & " := True;\n"
+   in let inner = if pas-guard-trivial (b.guard) then take
+                  else hguard.hs & "  if (" & hguard.hx & ") = True then\n  begin\n" & take & "  end;\n"
+   in let arm = "  if " & flag & " = False then\n  begin\n  if " & pas-match-cond-text (b.pattern) scrut-text & " then\n  begin\n" & binds & inner & "  end;\n  end;\n"
+   in let rest = pas-h-match-guarded branches scrut-text ctx depth (hguard.hn) tmp flag (i + 1)
+   in PasHoist { hs = arm & rest.hs, hx = tmp, hn = rest.hn }
 
   pas-h-match-chain : List IRBranch, Text, PasCtx, Integer, Integer, Text, Integer -> PasHoist
   pas-h-match-chain (branches) (scrut-text) (ctx) (depth) (n) (tmp) (i) =

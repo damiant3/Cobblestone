@@ -1,0 +1,119 @@
+Chapter: DiagXhci
+  cites Works chapter GopXhci
+  cites Diag chapter DiagStage
+
+ We say:
+
+Section: Reading The Census
+
+ Every cell here is written by the ORDINARY USB bring-up (`GopUsb`'s
+ `xhci-ctl-census` at `GopUsb.codex:54` and the notes around it), so this row
+ touches no device and issues no transfer. It reports what the bring-up the
+ bank already performed recorded about itself. That is why it sits after
+ `block`: before the medium is opened these cells are all zero and the row
+ could only say so.
+
+  dxh-count : Integer -> Integer
+  dxh-count (dummy) = xdiag-get 40
+
+  dxh-id : Integer -> Integer
+  dxh-id (i) = xdiag-get (xhci-ctl-base + i * 4)
+
+  dxh-loc : Integer -> Integer
+  dxh-loc (i) = xdiag-get (xhci-ctl-base + i * 4 + 1)
+
+  dxh-state : Integer -> Integer
+  dxh-state (i) = xdiag-get (xhci-ctl-base + i * 4 + 2)
+
+  dxh-found : Integer -> Integer
+  dxh-found (i) = xdiag-get (xhci-ctl-base + i * 4 + 3)
+
+  dxh-has-disk : Integer -> Boolean
+  dxh-has-disk (i) = bit-and (dxh-found i) 4 /= 0
+
+Section: Rolling Up
+
+  dxh-any-running : Integer, Integer -> Boolean
+  dxh-any-running (i) (n) =
+    if i >= n then False
+    else if i >= xhci-ctl-max then False
+    else if dxh-state i == xhci-ctl-running then True
+    else dxh-any-running (i + 1) n
+
+  dxh-any-disk : Integer, Integer -> Boolean
+  dxh-any-disk (i) (n) =
+    if i >= n then False
+    else if i >= xhci-ctl-max then False
+    else if dxh-state i == xhci-ctl-running & dxh-has-disk i then True
+    else dxh-any-disk (i + 1) n
+
+Section: Text
+
+  dxh-where : Integer -> Text
+  dxh-where (loc) = show (bit-shru loc 16) & ":" & show (bit-and (bit-shru loc 8) 255) & "." & show (bit-and loc 7)
+
+  dxh-who : Integer -> Text
+  dxh-who (id) = diag-hex4 (bit-shru id 16) & ":" & diag-hex4 (bit-and id 65535)
+
+  dxh-st-name : Integer -> Text
+  dxh-st-name (st) =
+    if st == xhci-ctl-running then "running"
+    else if st == xhci-ctl-failed then "BRINGUP-FAILED"
+    else "never-opened"
+
+  dxh-yn : Integer -> Text
+  dxh-yn (v) = if v == 0 then "n" else "y"
+
+  dxh-one : Integer -> Text
+  dxh-one (i) =
+    let f = dxh-found i
+    in "ctl" & show i & " " & dxh-who (dxh-id i) & " at " & dxh-where (dxh-loc i)
+       & " " & dxh-st-name (dxh-state i)
+       & " kbd=" & dxh-yn (bit-and f 1) & " mouse=" & dxh-yn (bit-and f 2) & " disk=" & dxh-yn (bit-and f 4)
+
+  dxh-rows : Integer, Integer, List Text -> List Text
+  dxh-rows (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= xhci-ctl-max then acc
+    else dxh-rows (i + 1) n (acc & [dxh-one i])
+
+Section: The Endpoint
+
+ `xhci-ep-base` is written when a HID interrupt endpoint is configured
+ (`GopXhci.codex:341-346`). Its first word is the configure status; the two
+ after it pair the interval the descriptor ASKED for with the one actually
+ programmed, which is the pair the keyboard question turns on.
+
+  dxh-ep : Integer -> Text
+  dxh-ep (dummy) =
+    let st = xdiag-get xhci-ep-base
+    in if st == 0 & xdiag-get 47 == 0 then "hid: no interrupt endpoint was configured"
+    else let ask = xdiag-get (xhci-ep-base + 1)
+    in let got = xdiag-get (xhci-ep-base + 2)
+    in "hid: binds=" & show (xdiag-get 47) & " status=" & diag-hex8 st
+       & " asked int=" & show (bit-and ask 65535) & " maxpkt=" & show (bit-shru ask 16)
+       & " programmed int=" & show (bit-and got 65535) & " maxpkt=" & show (bit-shru got 16)
+
+Section: The Stage
+
+ `none` is DELIBERATELY AMBIGUOUS and the verdict says so out loud. A census
+ count of zero is written both by a box with no xHCI controller and by a run
+ where the bring-up never happened, and these cells cannot tell those apart.
+ Splitting them would need a separate "the census ran" flag, which nothing
+ writes today; inventing a distinction the cells do not carry is how a row
+ starts lying (L-STATES).
+
+  dxh-states : List Text = ["running", "no-disk", "bringup-failed", "none"]
+
+  dxh-run : DiagCtx -> DiagResult
+  dxh-run (c) =
+    let n = dxh-count 0
+    in let st = if n <= 0 then "none"
+                else if dxh-any-disk 0 n then "running"
+                else if dxh-any-running 0 n then "no-disk"
+                else "bringup-failed"
+    in let colour = if st == "running" then diag-col-good
+                    else if st == "none" then diag-col-warn
+                    else diag-col-bad
+    in let g1 = "ctls=" & show n & "  " & dxh-ep 0
+    in diag-result st colour ([g1] & dxh-rows 0 n []) ([g1] & dxh-rows 0 n [])

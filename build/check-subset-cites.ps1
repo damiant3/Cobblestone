@@ -186,12 +186,23 @@ foreach ($r in $results) {
 }
 
 Write-Host "  $($units.Count - $failed.Count) compiled standalone, $($failed.Count) did not"
+# A unit that did not compile was not JUDGED, and the only thing this ever
+# named was a borrowed NAME, so a unit failing for any other reason was a bare
+# count above a verdict that still read OK. Finding one cost a re-run with
+# -KeepUnits and a grep of the logs.
+if ($failed.Count -gt 0) {
+    Write-Host "  did not compile, so NOT judged: $($failed -join ', ')"
+}
 if ($internalIsDefect) { Write-Host "  internal borrows count as failures: $Root is compiled standalone, not by glob (-GlobRoot to exempt)" }
 else { Write-Host "  $($internal.Count) undefined name(s) INTERNAL to $Root (co-presence in the glob, not a defect)" }
 
 if (-not $KeepUnits) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
 
 if ($external.Count -eq 0) {
+    if ($failed.Count -gt 0) {
+        Write-Host "check-subset-cites: INCOMPLETE -- no borrowed name found, but $($failed.Count) unit(s) never compiled and were not judged"
+        exit 0
+    }
     Write-Host "check-subset-cites: OK (no chapter borrows a name from outside $Root without citing it)"
     exit 0
 }

@@ -1,0 +1,72 @@
+Chapter: E1000Swflag
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+Section: Fixtures
+
+  dev-id-of : PciScanResult -> Integer
+  dev-id-of (scan) =
+    when e1000-find scan
+      is Just (d) -> (d.pci-device-id)
+      is None -> 0
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  answered : Integer -> Text
+  answered (v) = if v < 0 then "refused" else "answered"
+
+Section: Entry
+
+ THE PROBE IS AN MDIO READ, and it is chosen because it can say no. PHY ID1 is
+ a fixed nonzero register, and `e1000-phy-read` answers negative one both for a
+ PHY that never reports ready and for one that reports an error, so a refusal
+ is distinguishable from a reading and cannot be mistaken for one.
+
+ THE LADDER IS UNOWNED, OWNED, RELEASED, and the first and last rows are the
+ kill states. A model that granted MDIO unconditionally would answer three
+ times and fail rows 1 and 3; one that refused unconditionally would fail row
+ 2. Neither can pass all three (L-STATES, L-FALSIF).
+
+ THE GRANT IS READ BACK, never inferred from the write, which is 82583V 4.5.2:
+ the write either takes the bit or leaves it clear and never reports which.
+ `acquire answers` is the function's verdict and `flag held` is the register,
+ printed separately so a function that lies about its own success is visible.
+
+ `e1000-pch-swflag-required` ships False, so `e1000-init` does not take the
+ semaphore and the first row is the shipped state rather than a contrivance.
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in let did = dev-id-of scan
+    in let d = bring-up scan
+    in let mmio = d.e-mmio
+    in let unowned = e1000-phy-read mmio e1000-phy-id1
+    in let got = e1000-swflag-acquire mmio e1000-swflag-fuel
+    in let held = e1000-swflag-held mmio
+    in let owned = e1000-phy-read mmio e1000-phy-id1
+    in let rel = e1000-swflag-release mmio
+    in let after = e1000-swflag-held mmio
+    in let released = e1000-phy-read mmio e1000-phy-id1
+    in act
+      print-line-uni ("part is pch        : " & yn (e1000-pch-part did))
+      print-line-uni ("shipped swflag step: " & yn e1000-pch-swflag-required)
+      print-line-uni ("mdio unowned       : " & answered unowned)
+      print-line-uni ("acquire answers    : " & show got)
+      print-line-uni ("flag held          : " & yn held)
+      print-line-uni ("mdio owned         : " & answered owned)
+      print-line-uni ("flag after release : " & yn after)
+      print-line-uni ("mdio released      : " & answered released)
+    end
+  end
+
+Page 1
