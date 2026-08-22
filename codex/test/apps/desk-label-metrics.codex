@@ -1,0 +1,95 @@
+Chapter: DeskLabelMetricsTest
+  cites Works chapter GopFat16
+  cites Works chapter GopFont
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopComposite
+  cites UI chapter Widget
+  cites Foreword chapter Console
+
+ `widget-label` and `widget-button` reserve `text-length * 8` logical pixels,
+ an EIGHT PIXEL CELL hardcoded in `Widget.codex`, and the renderer then draws
+ a proportional face. This prints the two numbers side by side so the gap is a
+ table rather than an adjective.
+
+ Measured 2026-08-21 with CMUNSS at 1600 wide, and it answers in BOTH
+ directions: the four lowercase buttons reserve 49 to 72 device pixels MORE
+ than they draw, and `CODEX` reserves 80 against 106 drawn, short by 26.
+ Capitals are wider than the cell and lowercase is narrower, so the error is
+ not a margin to be tuned but a per-string measurement that is missing.
+
+ The under-reservation does no visible harm TODAY only because `flex-col-place`
+ gives every child the container's full width, so the brand label is handed 320
+ pixels rather than the 80 it asked for. That coupling is the finding: a width
+ constraint that stops the full-bleed stretch will start clipping the labels
+ the stretch is currently hiding. The cell has to be fixed FIRST.
+
+ It walks the desk's OWN sidebar tree rather than a copy of its strings. A
+ label listed here would measure this chapter; `desk-sidebar` measured here is
+ the thing that ships.
+
+ WHAT A GATED RUN PROVES IS NOT THE METRIC. `seed/Codex.img` carries no
+ typeface and the battery attaches no disk, so the recorded answer is the
+ no-volume line: it proves this chapter still compiles against `GopDesk` and
+ `GopFont` and that the mount is reached, and NOTHING about type. The table
+ with a face lives in `ShellRefinement.md` beside the command that rebuilds
+ it, which needs an image from `build-boot-img.ps1` (L-NAMED, and the same
+ shape as `desk-leading-metrics`).
+
+Section: Body
+
+  dlm-w : Integer = 1600
+
+  label-of : WidgetNode -> Text
+  label-of (n) = when n.wn-kind
+    is WkLabel (t) -> t
+    is WkButton (t) -> t
+    is otherwise -> ""
+
+  pad : Text, Integer -> Text
+  pad (t) (n) = if text-length t >= n then t else pad (t & " ") n
+
+  row : WidgetNode, GopFont, Integer -> Text
+  row (n) (tf) (s) =
+    let t = label-of n
+    in let reserved = n.wn-min-w * s
+    in let drawn = gfont-text-w tf t
+    in pad (n.wn-id) 10 & pad ("chars " & integer-to-text (text-length t)) 10
+       & pad ("reserved " & integer-to-text reserved) 15
+       & pad ("drawn " & integer-to-text drawn) 12
+       & "slack " & integer-to-text (reserved - drawn)
+
+  walk : List WidgetNode, Integer, Integer, GopFont, Integer -> [Console] Integer
+  walk (kids) (i) (n) (tf) (s) =
+    if i >= n then 0
+    else let k = list-at kids i
+    in if text-length (label-of k) == 0 then walk kids (i + 1) n tf s
+    else act
+      r <- print-line-uni (row k tf s)
+      walk kids (i + 1) n tf s
+    end
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then print-line-uni "no FAT volume on the boot medium"
+    else act
+      let ppem = comp-glyph-h * ui-wscale dlm-w
+      in let s = ui-wscale dlm-w
+      in act
+        f <- gfont-load (m.gm-vol) "CMUNSS.TTF" ppem
+        if f.gf-ok == False then print-line-uni "CMUNSS.TTF: not loaded"
+        else act
+          let bar = widget-measure (desk-sidebar 0) (dk-theme-of 0 dk-adorn-default)
+          in act
+            print-line-uni ("sidebar pinned to     : " & integer-to-text (dk-sidebar-w * s))
+            w <- walk (bar.wn-children) 0 (bar.wn-child-count) f s
+            print-line-uni ("sidebar measured to   : " & integer-to-text (bar.wn-min-w * s))
+          end
+        end
+      end
+    end
+  end
+
+Page 1

@@ -266,16 +266,35 @@ Section: Expression Emission
   emit-php-match-arms (branches) (i) (arities) =
    if i == list-length branches then "return null; "
    else let b = list-at branches i
-   in emit-php-match-arm (b.pattern) (b.body) arities i & emit-php-match-arms branches (i + 1) arities
+   in emit-php-match-arm (b.pattern) (b.guard) (b.body) arities i & emit-php-match-arms branches (i + 1) arities
 
-  emit-php-match-arm : IRPat, IRExpr, List ArityEntry, Integer -> Text
-  emit-php-match-arm (pat) (body) (arities) (i) =
+  php-guard-trivial : IRExpr -> Boolean
+  php-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  php-guarded-return : IRExpr, IRExpr, List ArityEntry -> Text
+  php-guarded-return (guard) (body) (arities) =
+   if php-guard-trivial guard then "return " & emit-php-expr body arities & "; "
+   else "if (" & emit-php-expr guard arities & ") return " & emit-php-expr body arities & "; "
+
+  emit-php-ctor-pat-binds : List IRPat, Integer -> Text
+  emit-php-ctor-pat-binds (subs) (i) =
+   if i >= list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> "$" & php-sanitize name & " = $__s->field" & integer-to-text i & "; "
+    is otherwise -> "") & emit-php-ctor-pat-binds subs (i + 1)
+
+  emit-php-match-arm : IRPat, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-php-match-arm (pat) (guard) (body) (arities) (i) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "if ($__s === " & text & ") return " & emit-php-expr body arities & "; "
-    is IrCtorPat (name) (subs) (ty) (sp) -> "if ($__s instanceof " & php-sanitize name & ") return " & emit-php-expr body arities & "; "
-    is IrVarPat (name) (ty) (sp) -> "$" & php-sanitize name & " = $__s; return " & emit-php-expr body arities & "; "
-    is IrWildPat (sp) -> "return " & emit-php-expr body arities & "; "
-    is IrVecPat (pats) (ty) (sp) -> "return " & emit-php-expr body arities & "; "
+    is IrLitPat (text) (ty) (sp) -> "if ($__s === " & text & ") { " & php-guarded-return guard body arities & "} "
+    is IrCtorPat (name) (subs) (ty) (sp) -> "if ($__s instanceof " & php-sanitize name & ") { " & emit-php-ctor-pat-binds subs 0 & php-guarded-return guard body arities & "} "
+    is IrVarPat (name) (ty) (sp) -> "$" & php-sanitize name & " = $__s; " & php-guarded-return guard body arities
+    is IrWildPat (sp) -> php-guarded-return guard body arities
+    is IrVecPat (pats) (ty) (sp) -> php-guarded-return guard body arities
 
   emit-php-act : List IRActStmt, List ArityEntry -> Text
   emit-php-act (stmts) (arities) =

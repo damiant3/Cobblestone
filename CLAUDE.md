@@ -252,10 +252,30 @@ byte-identical binary (hard fixed point), plus the BVT. The gate is ONE
 command, and these are the only verification commands you run:
 
 ```powershell
-build/build.ps1                     # Text round-trip + CDX fixed-point + BVT. THE gate.
+build/build.ps1 -Internal            # THE standing gate. Every agent, every CL.
+build/build.ps1                      # The FULL gate. Release and public builds only.
 build/compile.ps1 -Src X -Out Y -Log Z   # Compile one .codex file. -Log is MANDATORY:
                                          # omitting it hangs headless on a parameter prompt
 ```
+
+**`-Internal` is the gate you run** (Damian, 2026-08-16, published here
+2026-08-20). It always proves the seed is a byte-identical self-fixed-point
+that boots -- the fixed-point core, the BVT, the oracles and the 176
+refusals -- and it runs a regression phase only when a file that phase
+depends on changed in your workspace. What it defers is caught by the next
+full gate and by the release gate, which is where breadth belongs.
+
+The bare command is the FULL gate and it is for public and release builds.
+This file named it as THE gate until 2026-08-20, which is why the fleet ran
+it on every step of every arc: measured that day at head 18157, the full
+gate is **644.1 s** and the same tree under `-Internal` with nothing
+implicated is **186.1 s**. `CoordinationProtocol.md` tells a many-CL arc to
+gate locally per step; per step, that difference is the whole cost of the
+arc.
+
+Both figures are measurements from one box on one day, not properties of
+the gate. Re-measure before quoting them (L-COUNT): the full gate was 517 s
+on 2026-08-06 and neither number has ever gone down on its own.
 
 Every change that touches codegen must pass the gate before it is done.
 If the gate is red, shelve changes, notify Damian, and re-evaluate. To
@@ -551,9 +571,11 @@ true. Do not audit a block's veracity to decide -- veracity is not the
 test. If it explains our own code to a reader who has that code in front
 of them, delete it.
 
-**Measured 2026-07-28: 64,450 prose lines across 2,601 of 3,249 chapters,
-11 per cent of the tree.** Removal is a campaign and per-block judgement;
-a regex sweep would take the justified blocks with it.
+**Re-measured 2026-08-21: 52,393 prose lines across 2,117 of 3,679 chapters,
+8.3 per cent of all .codex lines.** It was 64,450 across 2,601 of 3,249 on
+2026-07-28, so the campaign is taking it down while the tree grows.
+Removal is a campaign and per-block judgement; a regex sweep would take
+the justified blocks with it.
 
 The cost is not hypothetical. On 2026-07-28 the prose above
 `rv-emit-frameless-mod` asserted that a frameless `int-mod` and `math-mod`

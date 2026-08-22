@@ -1,0 +1,44 @@
+Chapter: E1000SwflagRefused
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ THE FALSIFIER FOR `k1-owned`. `e1000-swflag-k1` proves the guarded step takes
+ the semaphore and lands its write; every row it prints reads the same way
+ whether the acquire succeeded or was never checked, which is exactly how the
+ result stayed unread from the day it was written until sitting 9.
+
+ `-i219-mng-holds` leaves firmware holding MNG ownership, which is what the
+ ASUS reads on the board: `extcnf 0x00F00=002c0089`, bit 7 set. The acquire
+ cannot succeed there, and the step still runs -- bounded acquire, PROCEED on
+ failure, which is the ruling and not an accident. What must not happen is the
+ driver going in unguarded and nothing saying so.
+
+ MDIO is refused in the same configuration, so the register reads -1 and the
+ write cannot be shown to land or not land. That is the point: `k1-owned` is
+ the one thing still answerable when the register is not.
+
+Section: Fixtures
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in let d = bring-up scan
+    in let step = e1000-k1-configure-guarded (d.e-mmio)
+    in act
+      print-line-uni ("shipped swflag step: " & yn e1000-pch-swflag-required)
+      print-line-uni ("guarded owned      : " & yn (step.k1-owned))
+      print-line-uni ("770.17 readable    : " & yn (step.k1-value >= 0))
+      print-line-uni ("pch answer on init : " & show (d.e-pch))
+    end
+  end

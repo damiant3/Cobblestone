@@ -149,8 +149,23 @@ Section: Device Handle
     e-ctrl-blk : Integer,
     e-present : Boolean,
     e-mac : List Integer,
-    e-mac-valid : Boolean
+    e-mac-valid : Boolean,
+    e-pch : Integer,
+    e-ulp : Integer
   }
+
+ `e-ulp` CARRIES `e1000-ulp-step`'S ANSWER for the same reason `e-pch` carries
+ `e1000-pch-prepare`'S: a step whose result nothing reads is a step nothing can
+ report on, which is the defect that stood in this chapter until 2026-08-21.
+ 0 is "not asked or not a PCH part", 1 is "the entry bits are clear", 2 is "the
+ write did not take", -1 is "the register did not answer".
+
+ `e-pch` CARRIES `e1000-pch-prepare`'S ANSWER OFF THE ONE PATH THAT RUNS IT.
+ Every other construction site names it 0, which is the answer's own word for
+ "not an I219, the step did not run", and that is true of all of them: the
+ diag stages build a device by hand to read registers and never run the step.
+ CDX2006 refuses a literal that leaves the field out, so there is no site
+ where this reads as zero by accident rather than by statement.
 
   e1000-cb-rx-next : Integer = 0
   e1000-cb-tx-next : Integer = 4
@@ -193,10 +208,59 @@ Section: Memory
 
 Section: Reset and Link
 
- The reset sequence the datasheet asks for: mask every interrupt so a
+ The reset sequence the 8254x datasheet asks for: mask every interrupt so a
  half-configured device cannot raise one, pulse RST, wait for the bit to
  clear itself, then mask again because the reset restores the interrupt
  mask to its power-on state.
+
+ WHICH DATASHEET MATTERS AND THIS LINE USED TO SAY "THE" DATASHEET. Measured
+ 2026-08-21 against `Intel_I219_Datasheet.txt` section 5.2, "Reset Operation":
+ the I219's reset sources are FOUR and a MAC software reset is not among them.
+ They are the internal power-on reset, the PHY soft reset (MDIO register 0 bit
+ 15), the PCIe reset pin, and an in-band reset message. `CTRL.RST` is an
+ 8254x/8257x MAC register bit, and on this part the MAC is not a discrete
+ controller: it sits in the PCH, whose CSR map is in no document we hold. So
+ the sequence above is CORROBORATED BY FAMILY, NOT CITED FOR THE PART, exactly
+ as `EXTCNF_CTRL` is, and there is NO I219 citation requiring the receiver to
+ be quiesced before it -- nor one permitting it. The 8254x's own order does
+ disable RX and TX first, which is the whole basis for the convention below.
+
+ IT DOES NOT QUIESCE, AND THE CALLER MUST. This pulses RST without touching
+ RCTL or TCTL, so calling it on a part whose receiver is RUNNING pulses reset
+ with descriptors in flight. Call `e1000-quiesce` first if anything has
+ brought the part up since power-on. `e1000-init` is safe because it resets a
+ part before it configures one; every OTHER caller is responsible, and the
+ convention is invisible from here, which is what makes it a trap.
+
+ WHAT IT COST, 2026-08-20: the diagnostic ladder's ASDE stage wedged the ASUS
+ doing exactly this. `nicinit` and `b3` had each run `e1000-init` and
+ `nicring` had built live rings, so by the time the stage reset the part the
+ receiver was enabled, and the glass sat on that step for five minutes.
+ **The evidence is the BOUND rather than the story**: `e1000-await-reset` is
+ a COUNT of a million MMIO reads, about a second on metal, so this function
+ MUST return within seconds whether the bit clears or not. Five minutes means
+ the reads themselves stopped returning, which is the part no longer
+ answering MMIO at all. The DMA-in-flight explanation fits that and is not
+ proved by it.
+
+ A BED RUN CANNOT SPEAK TO THIS, AND THAT IS NOW MEASURED RATHER THAN ASSUMED.
+ codex-vm does not model a DMA-in-flight reset hazard, so an arm that resets a
+ live receiver there completes and proves nothing about the part.
+ `codex/test/e1000-reset-live` is that null, written down: under `-i219` the
+ receiver is live at `rctl=67141658` -- the same value `nicring` banks on the
+ board -- and `e1000-reset` answers 1; after `e1000-quiesce` leaves `rctl=0`
+ it answers 1 again. `bed separates them: no`. The arm exists so nobody later
+ reads a green bed run as evidence that this is safe.
+
+ THE LOOPS ARE ALREADY ELIMINATED, by a board reading rather than by any of
+ this. Sitting 8's stepped bring-up banked `s2 await-reset ret 1 in 16us`,
+ because CTRL is read-only on this part: the RST bit never sets, so
+ `e1000-await-reset`'s FIRST read already sees it clear and the million-read
+ fuel is never approached. `e1000-settle-mdio` is bounded by its own budget
+ and was measured at 10036 us in the same flight. So a hang inside this
+ function is not a loop spinning; it is a SINGLE non-looping MMIO access that
+ did not return, which is the part having stopped answering, and sitting 10's
+ `step=reset` narrows it to these seven operations.
 
   e1000-reset : Integer -> Integer
   e1000-reset (mmio) =
@@ -434,6 +498,23 @@ Section: Reset and Link
  settling: measured 2026-08-16, over ten minutes with no return, which reads as
  a wedge. The regression was mine (15463); the defect is older and was masked.
 
+ AND THAT SENTENCE IS NO LONGER THE LAST WORD ON A LONG WAIT HERE, because
+ sitting 9 ruled this loop out for the hang it describes. Stage 12 banked
+ `s9 phy-bring-up ret=0 us=3000419` and `s10 await-link ret=1 us=36` on the
+ ASUS: the aneg budget spent its 3 s to the microsecond and the link wait
+ returned in 36 us with the link up. A clock that meters a 3.0000 s budget
+ that exactly is advancing, and a wait that answers in 36 us is neither the
+ count path nor a frozen counter. Both explanations for a ten-minute stall
+ are DISFAVOURED here on that board, and the 14 minutes sitting 9 spent were
+ spent somewhere after this, in `e1000-init`'s own bring-up rather than in
+ this loop.
+
+ The reachability question is separate and the answer is still yes: nothing in
+ the diag context gates the count path, because `hpet-ticks-per-second` is a
+ bare `peek-32` of a hardcoded base with no validation, so a board whose HPET
+ period register reads zero takes it. What the budgets settle is that THIS
+ board did not.
+
  THE CLOCK IS READ ONCE PER BATCH, not once per iteration, which is the pattern
  `e1000-await-tx-clocked` already uses in this chapter and for the same reason:
  a STATUS read is the cheap thing this loop is made of and an HPET read is not,
@@ -574,14 +655,377 @@ Section: Bring-up
   e1000-absent =
    E1000Device { e-mmio = 0, e-rx-ring = 0, e-tx-ring = 0, e-rx-bufs = 0,
                  e-tx-bufs = 0, e-ctrl-blk = 0, e-present = False,
-                 e-mac = [], e-mac-valid = False }
+                 e-mac = [], e-mac-valid = False, e-pch = 0, e-ulp = 0 }
+
+Section: The PCH Layer
+
+ 8086:15b8 is Ethernet Connection (2) I219-V, and on that family the MAC lives
+ in the PCH while the I219 is essentially the PHY. The 8254x parts this driver
+ was written against are a combined MAC and PHY on a card, and the difference
+ is not cosmetic: the PCH family has a documented and non-optional extra
+ initialisation layer that an 8254x driver does not perform at all.
+ `docs/Designs/Active/OS/I219IsNotAnE1000.md` has the table of eight and the
+ campaign rules.
+
+ K1 IS FIRST BECAUSE IT HAS A NAMED FAILURE MODE. With K1 enabled at 1 Gbps
+ the MAC stalls, and the signature is exactly what five sittings photographed:
+ link up, every register answering, nothing moving in either direction. Sitting 8
+ then read the control on the board and found K1 enabled with the disable bit
+ clear, which is that condition.
+
+  e1000-dev-i219-v : Integer = #15B8
+
+  e1000-pch-part : Integer -> Boolean
+  e1000-pch-part (dev-id) = dev-id == e1000-dev-i219-v
+
+ REQUIREMENT 2: THE MDIO/NVM SEMAPHORE. Cited in two halves with different
+ strengths, and the difference is the point.
+
+ CITED, 82583V section 4.5.2 and 9.2.2.15: `EXTCNF_CTRL` is at `0x00F00`, with
+ MDIO/NVM SW Ownership at bit 5, MDIO/NVM HW Ownership at bit 6 and MDIO MNG
+ Ownership at bit 7. A request is registered by writing 1b to your own bit.
+ "The requesting agent is granted access when the same bit is read as 1b
+ (access is not granted as long as the bit is 0b)." At most one bit is 1b at
+ any time. The owner writes 0b when done. SW and HW ownership clear on reset;
+ MNG clears only on LAN_PWR_GOOD or when firmware clears it.
+
+ NOT CITED FOR THIS PART, and this is the half to be careful with. The same
+ section says the mechanism "does not block software accesses to MDIO or the
+ NVM, therefore programmers can enable software to use or ignore this process
+ at will", and the bit table calls the register optional for the 82583V. That
+ the PCH REFUSES MDIO without ownership is the vendor driver's behaviour, and
+ the I219 datasheet mentions `EXTCNF_CTRL` only for the extended configuration
+ area. The offset and the bits are family facts; the enforcement is the
+ proposition the campaign exists to test.
+
+ WHERE IT SITS, and it is the OPPOSITE end from K1 (red asked, 2026-08-21).
+ SW ownership is cleared BY RESET, and the reset that clears it is the MAC
+ reset in `e1000-reset`, not the PHY soft reset. So the semaphore is taken
+ AFTER `e1000-reset` and before the first MDIO access, and held across the PHY
+ work. K1 lives in a PHY register and is restored to its NVM value by the PHY
+ soft reset, so it must be written AFTER `e1000-phy-bring-up`. Two resets, two
+ registers, two placements, and each step in the other's position is silently
+ undone by a reset that is not looking at it.
+
+  e1000-reg-extcnf-ctrl : Integer = #00F00
+  e1000-extcnf-sw-own : Integer = #0020
+  e1000-extcnf-hw-own : Integer = #0040
+  e1000-extcnf-mng-own : Integer = #0080
+
+ The grant is READ BACK and never inferred from the write, which is the whole
+ of 4.5.2: the write either takes the bit or leaves it clear and never reports
+ which. Fuel rather than a clock, because this runs before the HPET is known
+ good and a bring-up that needs a clock to bring up is a dependency loop.
+
+  e1000-swflag-fuel : Integer = 2000
+
+  e1000-swflag-held : Integer -> Boolean
+  e1000-swflag-held (mmio) =
+   bit-and (e1000-read mmio e1000-reg-extcnf-ctrl) e1000-extcnf-sw-own /= 0
+
+  e1000-swflag-acquire : Integer, Integer -> Integer
+  e1000-swflag-acquire (mmio) (fuel) =
+   if fuel <= 0 then 0
+   else let cur = e1000-read mmio e1000-reg-extcnf-ctrl
+   in let w = e1000-write mmio e1000-reg-extcnf-ctrl (bit-or cur e1000-extcnf-sw-own)
+   in if e1000-swflag-held mmio then 1
+   else e1000-swflag-acquire mmio (fuel - 1)
+
+  e1000-swflag-release : Integer -> Integer
+  e1000-swflag-release (mmio) =
+   let cur = e1000-read mmio e1000-reg-extcnf-ctrl
+   in e1000-write mmio e1000-reg-extcnf-ctrl (bit-and cur (bit-not e1000-extcnf-sw-own))
+
+ IT SHIPPED OFF UNTIL 2026-08-21, and the pair that earned the flip is reek's
+ `-i219-swflag` (MDIO refused without ownership) and `-i219-mng-holds`
+ (firmware holding MNG, so a correct protocol is still refused), landed at
+ main 18356. What turned it on is the coupling stated below, not either arm.
+
+ A FAILED ACQUISITION PROCEEDS (red's ruling, 2026-08-21), and the board is
+ what decided it. Sitting 8 read `mdio-gate open=n` with the reads working, so
+ this part does NOT refuse an unowned caller: the enforcement half that the
+ vendor driver's abort exists for is absent here, and the datasheet agrees that
+ the mechanism "does not block software accesses". What remains is the ME race,
+ which a bounded acquire narrows and an abort would not narrow at all -- it
+ would turn a race into a refusal to bring the NIC up. So the acquire is
+ fuel-bounded, its answer is reported, and the work happens either way.
+
+  e1000-pch-swflag-required : Boolean = True
+
+ IT IS ON BECAUSE K1 IS ON, and that coupling is the reason the flip is not
+ optional (red, 2026-08-21). `e1000-pch-k1-required` shipping True means the
+ driver now WRITES a PHY register during bring-up, and until this constant
+ followed it that write went out with SW ownership clear: the exact unguarded
+ MDIO access 4.5.2 exists to arbitrate. Two steps that were independent while
+ both were off become one the moment the first is on.
+
+ THE K1 WRITE IS GUARDED SEPARATELY, and it has to be. The semaphore taken in
+ `e1000-init-after-reset` is released when bring-up finishes, and
+ `e1000-pch-prepare` runs AFTER `e1000-init-at` returns, so the K1 step is
+ outside that window by construction. `e1000-k1-configure-guarded` takes its
+ own. Two windows rather than one long hold, because holding across the whole
+ of bring-up would starve the ME for the duration of a link wait.
+
+ THE CITED CONTROL, and it is the one this driver uses (red's ruling 18445).
+ I219 rev 2.02 section 9.5.5.2, PHY address 01, page 770, register 17: bit 13
+ `Giga_K1_disable`, "When set, the I219 does not enter K1 while link speed at
+ 1000 Mb/s"; bit 14 `K1 enable`. Both RW, both default 0b. Disabling at 1 Gbps
+ SETS bit 13 and leaves bit 14 alone, because the two describe different
+ things: 14 is whether K1 exists at all, 13 is whether it may be entered at
+ gigabit.
+
+ The datasheet attaches a footnote to bit 14 that this driver does not yet act
+ on: in SMBus mode the bit is cleared, and the register must be reconfigured
+ after switching back to PCIe. That ties this step to the SMBus row of the
+ eight rather than leaving it independent.
+
+  e1000-phy-pcie-pm-page : Integer = 770
+  e1000-phy-pcie-pm-reg : Integer = 17
+  e1000-k1-giga-disable : Integer = #2000
+  e1000-k1-enable-bit : Integer = #4000
+
+ THIS RUNS AFTER THE PHY RESET, NEVER BEFORE. A PHY reset returns 770.17 to
+ its NVM value, so a K1 configured ahead of `e1000-init-at` is wiped by the
+ BMCR reset inside `e1000-phy-bring-up` and the part comes up in exactly the
+ state the step was meant to leave. That is why `e1000-init` calls this layer
+ after bring-up rather than before it.
+
+ It answers the register READ BACK rather than the value written, so a caller
+ can tell a bit that stuck from one that did not.
+
+ ULP SPLITS IN TWO AND ONLY ONE HALF IS WRITABLE FROM WHAT WE HOLD. The ULP
+ EXIT sequence is unspecified in our documents, which reek established on
+ 2026-08-21 and which is why no bed arm for it can exist; that half is not
+ attempted here and must not be guessed at. ENTRY is a different question and
+ it is fully cited: I219 rev 2.02 section 9.5.7.1 maps ULP Configuration 1,
+ PHY page 779 register 16, field by field. STICKY_ULP bit 4 is "Enter ULP on
+ Link disconnect"; EN_ULP_LANPHYPC bit 10 is "Enable ULP on LAN disable
+ (LANPHYPC)". Those two are what put the part into a state whose exit we
+ cannot specify, so clearing them is the whole of "forcibly disabled" that
+ this driver can honestly claim.
+
+ WHAT THE BOARD ALREADY SAYS. Sittings 8 and 9 both banked
+ `ulp 779.16=0800 ulp-ind=n path=OK`: bit 2 clear, so the part is not
+ indicating a power-up from ULP, and bits 4 and 10 clear, so neither entry
+ condition is armed. The write below is therefore a NO-OP on this board, which
+ is the safest possible thing to ship into a bring-up whose hang is not yet
+ named -- and 0x0800 is bit 11, inside the 13:11 the datasheet marks Reserved,
+ so the one bit the part does set here is not one this step touches.
+
+ The step is read-modify-write for the reason K1 is: the register holds
+ firmware and NVM configuration, and the bits we are not addressing must
+ survive.
+
+  e1000-ulp-page : Integer = 779
+  e1000-ulp-reg : Integer = 16
+  e1000-ulp-sticky : Integer = #0010
+  e1000-ulp-lanphypc : Integer = #0400
+  e1000-ulp-entry-bits : Integer = #0410
+
+  e1000-ulp-disable : Integer -> Integer
+  e1000-ulp-disable (mmio) =
+   let p = e1000-phy-set-page mmio e1000-ulp-page
+   in let v0 = e1000-phy-read mmio e1000-ulp-reg
+   in if v0 < 0 then (let restore0 = e1000-phy-set-page mmio 0 in 0 - 1)
+   else let v1 = bit-and v0 (bit-not e1000-ulp-entry-bits)
+   in let w = e1000-phy-write mmio e1000-ulp-reg v1
+   in let back = e1000-phy-read mmio e1000-ulp-reg
+   in let restore = e1000-phy-set-page mmio 0
+   in back
+
+ IT SHIPS OFF on the same terms as K1, the semaphore and the LCD reload: the
+ write is cited but nothing has flown it, and the bed cannot yet answer it at
+ all because codex-vm models page 770 and not this register -- which the
+ `pch` stage's own neighbour control already reports as `ulp 779.16=ERR` with
+ `neighbour-id1=0154`. The fly gate wants a skipping arm red against a model
+ that implements the step; that model does not exist yet.
+
+  e1000-pch-ulp-required : Boolean = False
+
+  e1000-ulp-step : Integer, Integer -> Integer
+  e1000-ulp-step (mmio) (dev-id) =
+   if e1000-pch-ulp-required == False then 0
+   else if e1000-pch-part dev-id == False then 0
+   else let v = e1000-ulp-disable mmio
+   in if v < 0 then (0 - 1)
+   else if bit-and v e1000-ulp-entry-bits == 0 then 1
+   else 2
+
+  e1000-k1-configure : Integer, Boolean -> Integer
+  e1000-k1-configure (mmio) (enable) =
+   let p = e1000-phy-set-page mmio e1000-phy-pcie-pm-page
+   in let v0 = e1000-phy-read mmio e1000-phy-pcie-pm-reg
+   in let v1 = if enable then bit-and v0 (bit-not e1000-k1-giga-disable) else bit-or v0 e1000-k1-giga-disable
+   in let w = e1000-phy-write mmio e1000-phy-pcie-pm-reg v1
+   in let back = e1000-phy-read mmio e1000-phy-pcie-pm-reg
+   in let restore = e1000-phy-set-page mmio 0
+   in back
+
+ THE OMISSION IS A KNOB ON PURPOSE, and the fly gate is what it is for
+ (`I219IsNotAnE1000.md`, "THE FLY GATE"). A bed that only ever agrees is worth
+ nothing, so the pair that proves both halves is one build reaching the step
+ and one skipping it: the skipping arm must come back RED against a model that
+ implements the requirement, and the reaching arm GREEN on the same bed and
+ the same image. A runtime knob rather than a second compile because the arms
+ already carry DIAG.CFG and a second image costs a compile and a hash nobody
+ checks.
+
+ It is not a foot-gun left lying about: `e1000-pch-prepare` reports the state
+ it left, and omitting the step on a part that needs it is exactly the failure
+ the row is there to name.
+
+ THIS BLOCK SAID "EVERY CALLER PAINTS IT" AND THAT WAS FALSE FOR AS LONG AS IT
+ STOOD. `e1000-init` bound the answer to `pch` and read it nowhere, and it is
+ the only production caller, so the reported state reached nothing at all. The
+ answer now lands on the device as `e-pch`, which is what makes the sentence
+ above true rather than aspirational. Sitting 9 is what exposed it: the K1
+ write is the first thing bring-up does that `nicinit` does not, and no row
+ could say what it did.
+
+ THIS IS THE OMISSION POINT. `e1000-pch-k1-required` is the one line either
+ build changes, and it is a named constant rather than an inline literal so
+ that the fly gate's two builds differ by a value and not by an edit somebody
+ has to describe in prose.
+
+ IT SHIPPED OFF UNTIL 2026-08-21, and that was a decision rather than a
+ placeholder. The layer wrote registers on a part nothing had modelled, so
+ until the fly gate's pair was green the honest default was the one that
+ touches nothing: the board IS a `15b8` part, and a `True` on main would have
+ put an unproven write into every image composed from it, including sitting 7,
+ which existed to measure the board rather than to change it.
+
+ IT IS ON SINCE 2026-08-21, and the thing that turned it on is a BOARD READING
+ rather than a bed result. Sitting 8 read `770.17 = 0xd104` on the ASUS: K1
+ enabled, `Giga_K1_disable` clear. That is the condition this step exists for,
+ measured on the part, so the layer is NEEDED and not merely conforming, which
+ is the distinction red held the flip open for.
+
+ The bed pair is green either way and says the smaller thing:
+ `codex/test/e1000-pch-k1` transmits nothing with K1 at its NVM setting,
+ transmits after the step, and re-runs the PHY reset to show the requirement
+ coming back. Both arms produce their own omission rather than borrowing this
+ constant, which is what let the default move without either pair losing a
+ side.
+
+ THE BOARD'S VALUE IS NOT THE BED'S, and the step is written for the board.
+ The model powers up at `0x4000`; the ASUS reads `0xd104`, five bits apart and
+ three of them different from the datasheet's own reset defaults, because that
+ register holds firmware and NVM configuration on a real part. This is why
+ `e1000-k1-configure` READ-MODIFY-WRITES rather than writing a constant: the
+ board becomes `0xf104` and the five firmware bits survive.
+
+  e1000-pch-k1-required : Boolean = True
+
+ The four answers are distinct on purpose: 2 and 3 both mean the step RAN, and
+ they differ on whether the bit stuck, which is the one thing a caller cannot
+ recover afterwards.
+
+ THE ACQUIRE RESULT WAS BOUND AND NEVER READ until 2026-08-21, and sitting 9
+ is what made that cost something. The board reads `extcnf 0x00F00=002c0089`,
+ bit 7 set: firmware holds MNG ownership, so `e1000-swflag-acquire` cannot
+ succeed there and at most one of the two bits can be 1b. The step then wrote
+ K1 anyway, which is red's standing ruling and stays -- bounded acquire,
+ PROCEED on failure -- but it wrote with nothing recording that it had gone in
+ unguarded, so no row anywhere could say whether the write this campaign is
+ about happened with ownership or without it.
+
+ Proceeding is a POLICY and reporting is not optional, which is why the answer
+ carries both halves rather than a single number that cannot tell them apart.
+
+  K1Step = record {
+    k1-value : Integer,
+    k1-owned : Boolean
+  }
+
+  e1000-k1-configure-guarded : Integer -> K1Step
+  e1000-k1-configure-guarded (mmio) =
+   if e1000-pch-swflag-required == False then K1Step { k1-value = e1000-k1-configure mmio False, k1-owned = True }
+   else let got = e1000-swflag-acquire mmio e1000-swflag-fuel
+   in let v = e1000-k1-configure mmio False
+   in let rel = e1000-swflag-release mmio
+   in K1Step { k1-value = v, k1-owned = got /= 0 }
+
+ The answers keep two independent questions apart, ownership and outcome:
+
+     0  not an I219, the step did not run
+     1  not asked for
+     2  owned, the bit did not stick
+     3  owned, the bit stuck
+     4  unowned, the bit did not stick
+     5  unowned, the bit stuck
+     6  owned, MDIO did not answer
+     7  unowned, MDIO did not answer
+
+ A caller cannot recover either half afterwards: ownership is gone by the time
+ anything reads back, and the bit can be cleared by the next PHY reset.
+
+ THE UNREADABLE CASE NEEDS ITS OWN PAIR AND THE FIRST VERSION OF THIS DID NOT
+ HAVE IT, which `codex/test/e1000-swflag-refused` caught on its first run.
+ `e1000-k1-configure` answers -1 when MDIO is refused, and -1 has every bit
+ set, so testing the disable bit against it reports STUCK for a register that
+ said nothing at all. The board is exactly that case: `-i219-mng-holds` in the
+ bed and `mdio-gate 769.16=2180 open=n` on the ASUS both answer 7.
+
+  e1000-pch-prepare : Integer, Integer, Boolean -> Integer
+  e1000-pch-prepare (mmio) (dev-id) (do-k1) =
+   if e1000-pch-part dev-id == False then 0
+   else if do-k1 == False then 1
+   else let step = e1000-k1-configure-guarded mmio
+   in if step.k1-value < 0 then (if step.k1-owned then 6 else 7)
+   else let stuck = bit-and (step.k1-value) e1000-k1-giga-disable /= 0
+   in if step.k1-owned then (if stuck then 3 else 2)
+   else if stuck then 5
+   else 4
+
+ REQUIREMENT 3: THE LCD REGISTERS AFTER A PHY SOFT RESET.
+
+ CITED, I219 rev 2.02 section 5.2 "Reset Operation", under PHY Soft Reset: "A
+ PHY reset caused by writing to bit 15 in MDIO register 0. Setting the bit
+ resets the PHY, but does not reset non-PHY parts. The PHY registers are
+ reset, but other I219 registers are not." Then the obligation, in the same
+ note: "The integrated LAN controller configures the LCD registers."
+
+ WHICH RESET CLEARS IT, because that is the whole of where it sits (red asked
+ for this explicitly, and it is the two-boundary rule the semaphore and K1
+ already sit on opposite ends of). The LCD registers are PHY registers, so
+ THE PHY SOFT RESET clears them and the MAC reset does not. This is therefore
+ the general obligation behind K1's own placement rather than a second rule:
+ K1 lives at 770.17, which is one of the registers this sentence is about.
+
+ `e1000-init` PAYS IT BY CONSTRUCTION and nothing says so at either site.
+ `e1000-pch-prepare` runs after `e1000-init-at` returns, which is after the
+ BMCR reset inside `e1000-phy-bring-up`, so the shipped bring-up ends with the
+ LCD registers configured. Reorder those two lines and the requirement is
+ silently unmet, which is what `codex/test/e1000-lcd-reload` now watches.
+
+ THE ASDE PATH DOES NOT PAY IT. `na-phy-kick` writes BMCR bit 15 and nothing
+ reconfigures behind it, so an ASDE arm hands whatever runs next a part whose
+ K1 is back at its NVM value. That is measured rather than argued: rows 1 and
+ 3 of the arm are that path, 770.17 at 16384 and the send refused.
+
+  e1000-pch-lcd-reload-required : Boolean = False
+
+ IT SHIPS OFF on red's terms, the same terms K1 and the semaphore shipped on:
+ the pair is green in the bed and nothing has flown it. Flipping it is not
+ enough on its own, and this is the part to read before flipping: the flight
+ path reaches the reset through `dasd-run-part` and its siblings, which carry
+ an MMIO base and not a device, so no caller there can supply the `dev-id`
+ this gate needs. The flip and that one-parameter thread are one change.
+
+  e1000-lcd-reload : Integer, Integer -> Integer
+  e1000-lcd-reload (mmio) (dev-id) =
+   if e1000-pch-lcd-reload-required == False then 0
+   else e1000-pch-prepare mmio dev-id e1000-pch-k1-required
 
   e1000-init : PciDevice -> E1000Device
   e1000-init (pci-dev) =
    let enabled = pci-enable-device pci-dev
    in let bar = pci-parse-bar (pci-dev.pci-bus) (pci-dev.pci-dev) (pci-dev.pci-func) 0
    in if e1000-bar-verdict bar /= e1000-bar-ok then e1000-absent
-   else e1000-init-at (bar.bar-base)
+   else let d = e1000-init-at (bar.bar-base)
+   in let ulp = e1000-ulp-step (bar.bar-base) (pci-dev.pci-device-id)
+   in let pch = e1000-pch-prepare (bar.bar-base) (pci-dev.pci-device-id) e1000-pch-k1-required
+   in __record-set (__record-set d "e-pch" pch) "e-ulp" ulp
 
   e1000-init-at : Integer -> E1000Device
   e1000-init-at (mmio) =
@@ -630,10 +1074,12 @@ Section: Bring-up
                             e-tx-ring = tx-ring, e-rx-bufs = rx-bufs,
                             e-tx-bufs = tx-bufs, e-ctrl-blk = ctrl-blk,
                             e-present = True, e-mac = mac,
-                            e-mac-valid = mac-ok }
+                            e-mac-valid = mac-ok, e-pch = 0, e-ulp = 0 }
    in let rx = e1000-setup-rx d
    in let tx = e1000-setup-tx d
+   in let sem = if e1000-pch-swflag-required then e1000-swflag-acquire mmio e1000-swflag-fuel else 1
    in let link = e1000-link-up mmio
+   in let rel = if e1000-pch-swflag-required then e1000-swflag-release mmio else 0
    in d
 
 Section: Receive

@@ -1,0 +1,82 @@
+Chapter: DeskChromeIconsTest
+  cites Works chapter GopDesk
+  cites Works chapter GopPrograms
+  cites Works chapter GopIcon
+  cites UI chapter Widget
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The chrome and launcher icons are painted after the layout, keyed on
+ `wn-id`. That is what keeps them out of the hit test, and it is also what
+ makes them fail SILENTLY: `desk-icon-on` answers 0 for an id the tree does
+ not carry, so renaming a button removes its icon and nothing says so. This
+ asserts every id the paint asks for is one the tree answers.
+
+ The absent row is the control. Without it a walk that found nothing would
+ report the same shape as one that found everything, since both would print
+ a number equal to their own denominator.
+
+  dci-found : WidgetNode, Text -> Integer
+  dci-found (root) (id) =
+    when widget-find root id
+      is Just (n) -> 1
+      is None -> 0
+
+  dci-chrome-ids : List Text = ["menu", "programs", "files", "edit", "console", "shutdown"]
+
+  dci-count : WidgetNode, List Text, Integer, Integer -> Integer
+  dci-count (root) (ids) (i) (acc) =
+    if i >= list-length ids then acc
+    else dci-count root ids (i + 1) (acc + dci-found root (list-at ids i))
+
+  dci-rows : WidgetNode, List GprEntry, Integer, Integer, Integer -> Integer
+  dci-rows (root) (es) (n) (i) (acc) =
+    if i >= n then acc
+    else let e = list-at es i
+    in dci-rows root es n (i + 1) (acc + dci-found root ("gpr-" & e.ge-label))
+
+  dci-ds : Integer
+  dci-ds = alloc-zeroed 64 64
+
+  dci-chrome : Text
+  dci-chrome =
+    let ds = dci-ds
+    in let root = desk-chrome-with (widget-panel "content" DirColumn 0 []) 1024 ds
+    in let ids = dci-chrome-ids
+    in let hit = dci-count root ids 0 0
+    in let absent = dci-found root "no-such-button"
+    in "chrome=" & show hit & " of " & show (list-length ids) & "   absent=" & show absent
+
+  dci-launcher : Text
+  dci-launcher =
+    let ps = alloc-zeroed 64 64
+    in let root = gpr-tree ps
+    in let es = gpr-entries
+    in let n = list-length es
+    in let hit = dci-rows root es n 0 0
+    in "rows=" & show hit & " of " & show n
+
+ The gutter must be WIDER than the icon or the label sits flush against it,
+ which is what the first version on the glass did. One cell of daylight is
+ the whole assertion.
+
+  dci-gutter : Text
+  dci-gutter =
+    "mark=" & show gpr-mark-cells & " icon=" & show gpr-icon-cells & " gutter=" & show (text-length gpr-gutter) & " gap=" & show (text-length gpr-gutter - gpr-icon-cells)
+
+ An unknown name answers the file icon rather than refusing, so a row whose
+ icon is misspelled still draws something. That is deliberate and it is
+ asserted here so it cannot be quietly changed into a blank.
+
+  dci-fallback : Text
+  dci-fallback =
+    let known = gicon-named "folder"
+    in let unknown = gicon-named "no-such-icon"
+    in "known=" & known.ico-name & " unknown=" & unknown.ico-name
+
+  opening : [Console] Nothing = act
+    print-line-uni dci-chrome
+    print-line-uni dci-launcher
+    print-line-uni dci-gutter
+    print-line-uni dci-fallback
+  end

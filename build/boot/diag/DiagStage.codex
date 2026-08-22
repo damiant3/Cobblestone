@@ -2,6 +2,7 @@ Chapter: DiagStage
   cites Foreword chapter CCE
   cites Kernel chapter BitmapFont
   cites Kernel chapter Pci
+  cites Works chapter GopFat16
 
  We say:
 
@@ -56,6 +57,8 @@ Section: Context
     dc-box : Text,
     dc-ram : Text,
     dc-bank : Boolean,
+    dc-vol : Fat16Volume,
+    dc-lines : List Text,
     dc-slot-x : Integer,
     dc-slot-y : Integer,
     dc-slot-w : Integer,
@@ -64,7 +67,11 @@ Section: Context
 
   diag-ctx-with-slot : DiagCtx, Integer, Integer, Integer, Integer -> DiagCtx
   diag-ctx-with-slot (c) (x) (y) (w) (h) =
-    DiagCtx { dc-base = c.dc-base, dc-w = c.dc-w, dc-h = c.dc-h, dc-stride = c.dc-stride, dc-scale = c.dc-scale, dc-font = c.dc-font, dc-world = c.dc-world, dc-id = c.dc-id, dc-kernel = c.dc-kernel, dc-cfg = c.dc-cfg, dc-cfg-src = c.dc-cfg-src, dc-pci = c.dc-pci, dc-box = c.dc-box, dc-ram = c.dc-ram, dc-bank = c.dc-bank, dc-slot-x = x, dc-slot-y = y, dc-slot-w = w, dc-slot-h = h }
+    DiagCtx { dc-base = c.dc-base, dc-w = c.dc-w, dc-h = c.dc-h, dc-stride = c.dc-stride, dc-scale = c.dc-scale, dc-font = c.dc-font, dc-world = c.dc-world, dc-id = c.dc-id, dc-kernel = c.dc-kernel, dc-cfg = c.dc-cfg, dc-cfg-src = c.dc-cfg-src, dc-pci = c.dc-pci, dc-box = c.dc-box, dc-ram = c.dc-ram, dc-bank = c.dc-bank, dc-vol = c.dc-vol, dc-lines = c.dc-lines, dc-slot-x = x, dc-slot-y = y, dc-slot-w = w, dc-slot-h = h }
+
+  diag-ctx-with-lines : DiagCtx, List Text -> DiagCtx
+  diag-ctx-with-lines (c) (lines) =
+    DiagCtx { dc-base = c.dc-base, dc-w = c.dc-w, dc-h = c.dc-h, dc-stride = c.dc-stride, dc-scale = c.dc-scale, dc-font = c.dc-font, dc-world = c.dc-world, dc-id = c.dc-id, dc-kernel = c.dc-kernel, dc-cfg = c.dc-cfg, dc-cfg-src = c.dc-cfg-src, dc-pci = c.dc-pci, dc-box = c.dc-box, dc-ram = c.dc-ram, dc-bank = c.dc-bank, dc-vol = c.dc-vol, dc-lines = lines, dc-slot-x = c.dc-slot-x, dc-slot-y = c.dc-slot-y, dc-slot-w = c.dc-slot-w, dc-slot-h = c.dc-slot-h }
 
 Section: Result
 
@@ -78,6 +85,145 @@ Section: Result
   diag-result : Text, Integer, List Text, List Text -> DiagResult
   diag-result (state) (colour) (glass) (bank) =
     DiagResult { dr-state = state, dr-colour = colour, dr-glass = glass, dr-bank = bank }
+
+Section: Bank Notes
+
+ gfat has no append, so a bank is a whole-file rewrite: the lines the ladder
+ has banked so far, then whatever is being added, then END. A stage that
+ wants its progress on the medium mid-run rewrites the file with its own
+ note on the end; the ladder rewrites it again when the stage returns, so a
+ note lives on the medium exactly as long as the stage is between it and
+ its result, which is the interval a wedge freezes.
+
+  dg-name-buf : Integer -> Integer
+  dg-name-buf (dummy) =
+    let nb = alloc-zeroed 16 16
+    in let a = poke-byte nb 0 68
+    in let b = poke-byte nb 1 73
+    in let c = poke-byte nb 2 65
+    in let d = poke-byte nb 3 71
+    in let e = poke-byte nb 4 32
+    in let f = poke-byte nb 5 32
+    in let g = poke-byte nb 6 32
+    in let h = poke-byte nb 7 32
+    in let i = poke-byte nb 8 84
+    in let j = poke-byte nb 9 88
+    in let k = poke-byte nb 10 84
+    in nb
+
+  dg-fill : Integer, Text, Integer, Integer -> Integer
+  dg-fill (buf) (s) (i) (n) =
+    if i >= n then i
+    else let b = poke-byte buf i (to-unicode (char-code-at s i))
+    in dg-fill buf s (i + 1) n
+
+  dg-join : List Text, Integer, List Text -> List Text
+  dg-join (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else dg-join xs (i + 1) (list-push (list-push acc (list-at xs i)) "\n")
+
+  dg-body : List Text -> Text
+  dg-body (lines) = text-concat-list (list-push (dg-join lines 0 []) "END")
+
+ to-unicode retains about a kilobyte per call and gfat-write-file loads the
+ FAT onto the heap, so both are taken under a mark and released; only the
+ byte buffer, allocated before the mark, survives to be written. That buffer
+ is permanent per call, so a stage banking a note per step spends one file's
+ length of heap per step.
+
+  diag-bank-write-vol : Fat16Volume, List Text -> [Device.Port] Integer
+  diag-bank-write-vol (vol) (lines) = diag-bank-write-text vol (dg-body lines)
+
+  diag-bank-write-text : Fat16Volume, Text -> [Device.Port] Integer
+  diag-bank-write-text (vol) (body) = act
+    let n = text-length body
+    in let buf = alloc-zeroed (n + 1024) 64
+    in let nb = dg-name-buf 0
+    in let mark = __heap-save
+    in let f = dg-fill buf body 0 n
+    in let r = __heap-restore mark
+    in let mark2 = __heap-save
+    in act
+      ok <- gfat-write-file vol nb buf n
+      let r2 = __heap-restore mark2
+      in if ok == False then -1
+      else act
+        sz <- gfat-file-size vol "DIAG.TXT"
+        let v = gfat-note-lastsize sz
+        in if sz == n then n else -1
+      end
+    end
+  end
+
+ A note APPENDS to what is on the medium, not to what the ladder banked before
+ the stage: the ctx's lines are fixed for the stage's whole run, so a note built
+ on them replaces the note before it, and sitting 10 came back with
+ "stage=b3 step=reset" and no clock row, the control erased by the step after
+ it. The file is read back, its END stripped, the note added, and the whole
+ written again; a file that cannot be read back is written from the ctx's
+ lines as before, so a bank that never opened is still not a crash.
+
+ THE FILE IS NEVER TURNED INTO TEXT. `gfat-text` appends one character at a
+ time, so it leaves every prefix of the file on a bump heap: about eleven
+ megabytes for a 4.8 KB bank, and the first version of this note did it once
+ per step until the seventh note walked the heap into the stack (EXC=06 at a
+ garbage RIP, R10 past RBP). The bytes are copied as bytes: the file's own
+ bytes less a trailing END, the note, a newline, END. One buffer per note is
+ the whole permanent cost, as for any other bank write.
+
+  diag-note-bytes : Fat16Volume, Text -> [Device.Port] Integer
+  diag-note-bytes (vol) (note) = act
+    f <- gfat-read-file vol "DIAG.TXT"
+    if f.gf-ok == False then -1
+    else let keep = diag-keep-len (f.gf-buf) (f.gf-len)
+    in let tail = note & "\n" & "END"
+    in let n = keep + text-length tail
+    in let buf = alloc-zeroed (n + 1024) 64
+    in let nb = dg-name-buf 0
+    in let c = diag-copy-bytes (f.gf-buf) buf 0 keep
+    in let mark = __heap-save
+    in let w = dg-fill-at buf keep tail 0 (text-length tail)
+    in let r = __heap-restore mark
+    in let mark2 = __heap-save
+    in act
+      ok <- gfat-write-file vol nb buf n
+      let r2 = __heap-restore mark2
+      in if ok == False then -1
+      else act
+        sz <- gfat-file-size vol "DIAG.TXT"
+        let v = gfat-note-lastsize sz
+        in if sz == n then n else -1
+      end
+    end
+  end
+
+  diag-keep-len : Integer, Integer -> Integer
+  diag-keep-len (buf) (n) =
+    if n >= 3 & peek-byte buf (n - 3) == 69 & peek-byte buf (n - 2) == 78 & peek-byte buf (n - 1) == 68 then n - 3
+    else if n > 0 & peek-byte buf (n - 1) /= 10 then n
+    else n
+
+  diag-copy-bytes : Integer, Integer, Integer, Integer -> Integer
+  diag-copy-bytes (src) (dst) (i) (n) =
+    if i >= n then i
+    else let w = poke-byte dst i (peek-byte src i)
+    in diag-copy-bytes src dst (i + 1) n
+
+  dg-fill-at : Integer, Integer, Text, Integer, Integer -> Integer
+  dg-fill-at (buf) (at) (s) (i) (n) =
+    if i >= n then i
+    else let b = poke-byte buf (at + i) (to-unicode (char-code-at s i))
+    in dg-fill-at buf at s (i + 1) n
+
+  diag-bank-note : DiagCtx, Text -> [Device.Port] Integer
+  diag-bank-note (c) (note) = act
+    if c.dc-bank == False then -1
+    else act
+      n <- diag-note-bytes (c.dc-vol) note
+      if n >= 0 then n
+      else diag-bank-write-vol (c.dc-vol) (list-push (c.dc-lines) note)
+    end
+  end
 
 Section: Hex
 

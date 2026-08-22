@@ -1,0 +1,57 @@
+Chapter: E1000PchK1Off
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+Section: Fixtures
+
+  mk-frame : Integer, Integer, List Integer -> List Integer
+  mk-frame (i) (n) (acc) =
+    if i >= n then acc else mk-frame (i + 1) n (list-push acc i)
+
+  dev-id-of : PciScanResult -> Integer
+  dev-id-of (scan) =
+    when e1000-find scan
+      is Just (d) -> (d.pci-device-id)
+      is None -> 0
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  moved : Integer -> Text
+  moved (n) = if n == 1 then "yes" else "no"
+
+Section: Entry
+
+ THE CONTROL FOR `e1000-pch-k1`, and it is the row that makes that arm's
+ zeros mean something. Same binary, same I219 path, same everything except
+ `-i219-k1-nvm 0`, which powers the part up with K1 already off. Transmit
+ completes here, so the failure the other arm reports is caused by the K1
+ bits and not by the I219 device path or by the arm.
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in let did = dev-id-of scan
+    in let d = bring-up scan
+    in let sent-shipped = e1000-send-frame d (mk-frame 0 64 [])
+    in let k1 = e1000-k1-configure (d.e-mmio) False
+    in let sent-configured = e1000-send-frame d (mk-frame 0 64 [])
+    in act
+      print-line-uni ("part is pch        : " & yn (e1000-pch-part did))
+      print-line-uni ("shipped k1 step    : " & yn e1000-pch-k1-required)
+      print-line-uni ("link up            : " & yn (e1000-has-link d))
+      print-line-uni ("tx as shipped      : " & moved sent-shipped)
+      print-line-uni ("770.17 read back   : " & show k1)
+      print-line-uni ("tx after our k1    : " & moved sent-configured)
+    end
+  end
+
+Page 1

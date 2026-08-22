@@ -48,6 +48,23 @@ state from prior sessions.
 All three run concurrently. Their reports come back small; the files
 they read never enter your context.
 
+**A COMPRESSED READ OF `CurrentPlan.md` FLATTENS CAMPAIGNS, AND IT PRODUCED
+A WRONG ASSIGNMENT WITHIN HOURS (red, 2026-08-21).** Agent A's report that
+morning listed "Stage 3 -- cheaper kernel" under a Shell Refinement heading.
+`CurrentPlan.md` is correct and unambiguous: that sentence is inside the
+GameEngine SHADOW campaign, whose stage 2 landed 17949, and ShellRefinement's
+own stage 3 is surfaces and depth, landed 18400. **Two campaigns in one
+agent's row, each with its own stage numbering, merged into one stage list.**
+The commander assigned off the summary, val corrected it from the register,
+and the register had been right the whole time.
+
+So: **a stage number carried out of this summary is not addressed until it
+names its CAMPAIGN.** Require Agent A to prefix every staged item with the
+campaign, and re-read the row in `CurrentPlan.md` before acting on any stage
+number. This is the same failure the stories doctrine below exists to
+prevent, one document over -- the summary rots faster than the source, and it
+rots invisibly because it still reads as confident.
+
 **Agent A -- the open work:**
 - `docs/PM/CurrentPlan.md` **in full** -- return every open item in
   priority order, named concretely, with its owner and a word on which

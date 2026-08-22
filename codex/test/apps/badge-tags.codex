@@ -1,0 +1,119 @@
+Chapter: BadgeTagsTest
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopFont
+  cites Works chapter GopComposite
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter StatusBadge
+  cites Kernel chapter BitmapFont
+
+ `StatusBadge` emits three custom tags and `comp-custom` answered none of
+ them until 2026-08-20, so all three fell to its box branch and painted the
+ same rectangle. That is why counting pixels is the arm here rather than
+ asking whether each one painted: a tag that painted SOMETHING was never the
+ question, and "all three painted" was true the whole time it was broken.
+
+ What has to be true is that they DIFFER from each other. A filled dot must
+ cover more than a hollow one of the same size, and an icon must differ from
+ the plain box an unknown tag still gets.
+
+ The unknown tag is the control and it is rendered at BOTH sizes, which is
+ not tidiness. Compared against a 16 by 16 box, a 10 by 10 dot differs
+ whatever the dispatch does, purely because the nodes are different sizes,
+ so that comparison answers the same either way and tests nothing. Each
+ comparison here is therefore against the plain box AT ITS OWN SIZE.
+
+ Measured against the depot compositor before this change, which is what
+ makes the lines below worth printing:
+
+   hollow=204 filled=204 icon=216 box10=204 box16=216
+   filled covers more than hollow : no
+   hollow is not the plain box    : no
+   icon is not the plain box      : no
+
+ All three tags took the box branch, and the two dots were BYTE FOR BYTE the
+ same picture. The last line, that every tag painted something, reads yes in
+ both arms: it is the row the defect cannot move, kept so that a future edge
+ which stops painting entirely is told apart from one that stops
+ distinguishing.
+
+Section: Geometry
+
+  bt-w : Integer = 120
+
+  bt-h : Integer = 40
+
+  bt-cells : Integer = 4800
+
+  bt-bytes : Integer = 19200
+
+Section: Counting
+
+  bt-zero : Integer, Integer, Integer -> Integer
+  bt-zero (b) (i) (n) =
+    if i >= n then 0 else let p = poke-32 b i 0 in bt-zero b (i + 4) n
+
+  bt-diff-at : Integer, Integer, Integer -> Integer
+  bt-diff-at (a) (b) (i) = if peek-32 a (i * 4) /= peek-32 b (i * 4) then 1 else 0
+
+  bt-count : Integer, Integer, Integer, Integer, Integer -> Integer
+  bt-count (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else bt-count a b (i + 1) n (acc + bt-diff-at a b i)
+
+Section: Trees
+
+  bt-bare : WidgetNode
+  bt-bare = widget-panel "root" DirColumn 0 []
+
+  bt-tagged : Text, Integer -> WidgetNode
+  bt-tagged (tag) (size) = widget-panel "root" DirColumn 0 [widget-custom "b" tag size size]
+
+Section: Main
+
+  bt-yn : Boolean -> Text
+  bt-yn (v) = if v then "yes" else "no"
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let base = __heap-save
+    in let adv = __heap-advance (2 * bt-bytes + 256)
+    in let subj = base + bt-bytes
+    in act
+
+      let zb = bt-zero base 0 bt-bytes
+      in let rb = comp-render base bt-w font gfont-none bt-bare th bt-w bt-h 1
+
+      in let z0 = bt-zero subj 0 bt-bytes
+      in let r0 = comp-render subj bt-w font gfont-none (bt-tagged "status-dot" 10) th bt-w bt-h 1
+      in let hollow = bt-count base subj 0 bt-cells 0
+
+      in let z1 = bt-zero subj 0 bt-bytes
+      in let r1 = comp-render subj bt-w font gfont-none (bt-tagged "status-dot-filled" 10) th bt-w bt-h 1
+      in let filled = bt-count base subj 0 bt-cells 0
+
+      in let z2 = bt-zero subj 0 bt-bytes
+      in let r2 = comp-render subj bt-w font gfont-none (bt-tagged "icon:folder" 16) th bt-w bt-h 1
+      in let icon = bt-count base subj 0 bt-cells 0
+
+      in let z3 = bt-zero subj 0 bt-bytes
+      in let r3 = comp-render subj bt-w font gfont-none (bt-tagged "no-such-tag" 16) th bt-w bt-h 1
+      in let box16 = bt-count base subj 0 bt-cells 0
+
+      in let z4 = bt-zero subj 0 bt-bytes
+      in let r4 = comp-render subj bt-w font gfont-none (bt-tagged "no-such-tag" 10) th bt-w bt-h 1
+      in let box10 = bt-count base subj 0 bt-cells 0
+
+      in act
+        print-line-uni ("hollow=" & show hollow & " filled=" & show filled & " icon=" & show icon & " box10=" & show box10 & " box16=" & show box16)
+        print-line-uni ("filled covers more than hollow : " & bt-yn (filled > hollow))
+        print-line-uni ("hollow is not the plain box    : " & bt-yn (hollow /= box10))
+        print-line-uni ("icon is not the plain box      : " & bt-yn (icon /= box16))
+        print-line-uni ("every tag painted (control)    : " & bt-yn (hollow > 0 & filled > 0 & icon > 0 & box16 > 0))
+      end
+    end
+  end

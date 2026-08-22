@@ -1,0 +1,94 @@
+Chapter: ReviewChain
+  cites Works chapter GopReview
+  cites Works chapter RepoProtocol
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Works chapter Annotation
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+  rc-author : Keypair = generate-keypair [1, 2, 3, 4, 5, 6, 7, 8]
+
+  rc-target : AnnotationTarget = AnnotationTarget { chapter = "Sort", path = "" }
+
+  rc-a : Proposal = create-proposal rc-author rc-target "first" "why" [] 1000
+  rc-b : Proposal = create-proposal rc-author rc-target "second" "why" [] 1100
+
+ The chain functions are pure over a loaded store, so these build the store
+ directly rather than through a medium. The medium half is
+ `codex/test/apps/supersession-fact`, which proves the same facts survive a
+ write and a reload; splitting them keeps each arm answering one question.
+
+  rc-data : List Supersession -> GrvData
+  rc-data (sups) = GrvData {
+    gd-ok = True,
+    gd-base = 0,
+    gd-facts = 0,
+    gd-proposals = [rc-a, rc-b],
+    gd-verdicts = [],
+    gd-sups = sups
+  }
+
+  rc-line : List Text, Integer -> Text
+  rc-line (ls) (i) = if i >= list-length ls then "(no line " & show i & ")" else list-at ls i
+
+Section: Body
+
+  rc-none : Text =
+    let block = grv-chain-block (rc-data []) 0
+    in if list-length block /= 1 then "FAIL: none gave " & show (list-length block) & " lines"
+    else if rc-line block 0 /= "Supersession:  none on this medium" then "FAIL: none said " & rc-line block 0
+    else "PASS-none"
+
+  rc-two : Text =
+    let sups = [create-supersession (rc-a.id) (rc-b.id) 1200]
+    in let steps = grv-chain (rc-data sups) (rc-a.id) 0 [] []
+    in if list-length steps /= 2 then "FAIL: steps " & show (list-length steps)
+    else if (list-at steps 0).ch-id /= rc-a.id then "FAIL: step 0 id"
+    else if (list-at steps 1).ch-id /= rc-b.id then "FAIL: step 1 id"
+    else if (list-at steps 1).ch-index /= 1 then "FAIL: step 1 index " & show ((list-at steps 1).ch-index)
+    else "PASS-two"
+
+ The orphan the ruling requires: a link may name a proposal this medium does
+ not carry, and the row must SAY so rather than be dropped. A walk that
+ silently stopped would answer one step and read as a tip.
+
+  rc-orphan : Text =
+    let sups = [create-supersession (rc-a.id) "0000deadbeef0000" 1200]
+    in let steps = grv-chain (rc-data sups) (rc-a.id) 0 [] []
+    in if list-length steps /= 2 then "FAIL: steps " & show (list-length steps)
+    else if (list-at steps 1).ch-index >= 0 then "FAIL: orphan index " & show ((list-at steps 1).ch-index)
+    else let block = grv-chain-block (rc-data sups) 0
+    in if text-contains (rc-line block 1) "NOT ON THIS MEDIUM" == False then "FAIL: orphan line " & rc-line block 1
+    else "PASS-orphan"
+
+ Two facts pointing at each other is a store off a medium, not a fantasy, and
+ the walk has to terminate. Without the guard this arm does not fail, it hangs
+ or exhausts the heap, so the assertion is the STEP COUNT and not a verdict.
+
+  rc-cycle : Text =
+    let sups = [create-supersession (rc-a.id) (rc-b.id) 1200, create-supersession (rc-b.id) (rc-a.id) 1300]
+    in let steps = grv-chain (rc-data sups) (rc-a.id) 0 [] []
+    in if list-length steps /= 2 then "FAIL: cycle gave " & show (list-length steps)
+    else "PASS-cycle"
+
+ A link whose old end is nobody stays out of the way: it must not attach
+ itself to whatever proposal is being read.
+
+  rc-unrelated : Text =
+    let sups = [create-supersession "0000000000000000" (rc-b.id) 1200]
+    in let steps = grv-chain (rc-data sups) (rc-a.id) 0 [] []
+    in if list-length steps /= 1 then "FAIL: unrelated gave " & show (list-length steps)
+    else "PASS-unrelated"
+
+Section: Entry
+
+  opening : [Console.Write] Nothing = act
+    print-line-uni rc-none
+    print-line-uni rc-two
+    print-line-uni rc-orphan
+    print-line-uni rc-cycle
+    print-line-uni rc-unrelated
+  end

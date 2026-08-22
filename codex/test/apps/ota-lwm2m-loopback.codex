@@ -26,6 +26,13 @@ Section: Fixtures
 
   stage-addr : Integer = 536879104
 
+ The staging bank's capacity. Generous against this fixture on purpose: the
+ clean and tampered runs must not brush it, so a refusal in either of them
+ would be a real failure and not the bound firing. The bound's own arms pick
+ their capacity to make it fire.
+
+  stage-capacity : Integer = 65536
+
   firmware-image : List Integer
   firmware-image =
    let caps = [CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }]
@@ -128,7 +135,7 @@ Section: The Runs
   clean-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
   clean-run (x) = act
    brd0 <- board-open 0 0
-   r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr) manifest) firmware-image 0
+   r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr stage-capacity) manifest) firmware-image 0
    when r
     is (brd1, c1) -> act
       bc <- board-close brd1
@@ -145,12 +152,65 @@ Section: The Runs
   tampered-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
   tampered-run (x) = act
    brd0 <- board-open 0 0
-   r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr) manifest) tampered-image 0
+   r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr stage-capacity) manifest) tampered-image 0
    when r
     is (brd1, bad) -> act
       bc <- (board-close brd1)
       bad
     end
+  end
+
+Section: The bank bound and the Size2 hint
+
+ Four arms over the two roles red ruled on 2026-08-20. The BANK SIZE
+ enforces and refuses always; Size2 is an EARLY refusal only and can never
+ permit more. The arms are chosen so each one fails alone if its own half is
+ removed, and the pair that matters most is the last two: a server that
+ omits Size2 and a server that declares a small total both have to be
+ refused by the bank bound, or the hint has become the bound.
+
+ `declared` of 0 means the server sends no Size2 option at all.
+
+  small-capacity : Integer = 128
+
+  serve-block-s2 : List Integer, Integer, Integer -> List Integer
+  serve-block-s2 (image) (num) (declared) =
+   let off = num * block-size
+   in let remaining = list-length image - off
+   in let len = if remaining > block-size then block-size else remaining
+   in let more = if num + 1 < block-count then 1 else 0
+   in let body = slice-of image off len
+   in let blk = coap-block-option coap-opt-block2 num more 2
+   in let opts = if declared == 0 then [blk]
+      else [blk, CoapOption { number = coap-opt-size2, value = coap-uint-bytes declared }]
+   in coap-build-response CoapAcknowledgement coap-205-content (100 + num) [] opts body
+
+ The loop stops on the first failure. A real client abandons a download it
+ has refused, and without that this arm would read the SECOND failure: the
+ block-order check fires on the next block and would overwrite the result
+ code with conn-lost, hiding the cause under a symptom.
+
+  run-s2 : linear Board, Lwm2mFw, List Integer, Integer, Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  run-s2 (brd) (c) (image) (num) (declared) =
+   if num >= block-count then board-pair brd c
+   else if (c.fw-result) /= 0 then board-pair brd c
+   else act
+    r <- fw-feed-response brd c (serve-block-s2 image num declared)
+    when r
+     is (brd1, c2) -> run-s2 brd1 c2 image (num + 1) declared
+    end
+   end
+
+  bound-arm : Integer, Integer -> [Flash, Device.Mmio] Lwm2mFw
+  bound-arm (capacity) (declared) = act
+   brd0 <- board-open 0 0
+   r <- run-s2 brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr capacity) manifest) firmware-image 0 declared
+   when r
+    is (brd1, c1) -> act
+      bc <- board-close brd1
+      c1
+    end
+   end
   end
 
 Section: Body
@@ -169,4 +229,12 @@ Section: Body
    print-line-uni ("tampered state: " & show (fw-state-resource bad))
    print-line-uni ("tampered result: " & show (fw-result-resource bad))
    print-line-uni ("tampered boots: " & show-slot ((fw-boot-config bad).active-slot))
+   fits <- bound-arm stage-capacity 254
+   print-line-uni ("size2 honest wrote: " & show (fits.fw-written) & " result: " & show (fits.fw-result))
+   over <- bound-arm small-capacity 0
+   print-line-uni ("bank no-size2 wrote: " & show (over.fw-written) & " result: " & show (over.fw-result))
+   early <- bound-arm stage-capacity 100000
+   print-line-uni ("size2 over wrote: " & show (early.fw-written) & " result: " & show (early.fw-result))
+   lie <- bound-arm small-capacity 64
+   print-line-uni ("size2 lying low wrote: " & show (lie.fw-written) & " result: " & show (lie.fw-result))
   end

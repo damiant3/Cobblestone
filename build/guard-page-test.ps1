@@ -23,9 +23,15 @@
 # rather than a runaway being caught, and the arm cannot tell those apart --
 # the same defect that got the -Decks 450 arm rejected on 2026-08-04.
 #
-# What that costs is real and is not fixed here: FIRE parks the frontier
-# synthetically, so nothing now exercises the guard under a genuine allocation
-# walk. A replacement needs a workload that overruns at NORMAL memory.
+# The WALK arm (2026-08-20) is the replacement that closes what LEAP's
+# retirement opened: build/guard-page-walk.codex allocates for real -- one
+# ~256 KB __str_concat per step, far under the 2 MB page so it cannot step
+# over the hole -- from the heap base until the page catches it, with a fuel
+# cap (~6 GB) whose exhaustion prints WALK COMPLETED and fails the arm. It is
+# a runaway by construction, so unlike LEAP its subject cannot drift away as
+# the compiler gets cheaper, and the arm checks the HEAP= address the trip
+# reports lands INSIDE the page: an OUT OF MEMORY from anywhere else is a
+# ceiling firing early, not the guard, and is a failure.
 #
 # NOTE ON WHAT TO TEST AGAINST. An emitter change (emit-demand-unmap,
 # emit-pagefault-handler) does NOT appear in build-output/bare-metal/Codex.cdx:
@@ -86,9 +92,9 @@ Write-Host "guard-page-test: reported RAM ${reportedMB} MB, guard page at $guard
 $src = Get-Content (Join-Path $root 'build/guard-page-probe.codex') -Raw
 
 function Invoke-Arm {
-  param([string]$Tag, [long]$Park)
+  param([string]$Tag, [long]$Park, [int]$WaitMs = 45000, [string]$SourcePath = '')
 
-  $armSrc = $src -replace 'park-bytes', "$Park"
+  $armSrc = if ($SourcePath) { Get-Content $SourcePath -Raw } else { $src -replace 'park-bytes', "$Park" }
   $srcFile = Join-Path $out "$Tag.codex"
   [System.IO.File]::WriteAllText($srcFile, $armSrc, [System.Text.UTF8Encoding]::new($false))
 
@@ -112,7 +118,7 @@ function Invoke-Arm {
   if (Test-Path $outFile) { Remove-Item $outFile -Force }
   $vmArgs = @('-kernel', $bin, '-output', $outFile, '-mem', "$MemMB", '-headless')
   $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
-  if (-not $proc.WaitForExit(45000)) {
+  if (-not $proc.WaitForExit($WaitMs)) {
     Stop-VmGraceful -ProcessId $proc.Id
     Start-Sleep -Milliseconds 300
   }
@@ -139,6 +145,35 @@ if ($null -ne $fire) {
   }
   if ($fire -match 'SURVIVED') {
     Write-Host "  FAIL: the arm ran to completion, so it never reached the guard page"
+    $failures++
+  }
+} else { $failures++ }
+
+# The walk starts at the heap base and buys what FIRE cannot: the trip comes at
+# the end of a ~2.9 GB march of real allocations, so the allocation path, the
+# demand mapping under it, and the guard have all been exercised together.
+Write-Host "guard-page-test: WALK arm (genuine allocation walk from the heap base, expect OUT OF MEMORY inside the page)"
+$walk = Invoke-Arm -Tag 'walk' -Park 0 -WaitMs 120000 -SourcePath (Join-Path $root 'build/guard-page-walk.codex')
+if ($null -ne $walk) {
+  if ($walk -match 'WALK COMPLETED') {
+    Write-Host "  FAIL: the walk ran to completion -- the frontier crossed the guard page unnoticed"
+    $failures++
+  } elseif ($walk -match 'OUT OF MEMORY') {
+    if ($walk -match 'HEAP=([0-9a-fA-F]+)') {
+      $heapAt = [Convert]::ToInt64($matches[1], 16)
+      if ($heapAt -ge $guardAddr -and $heapAt -lt ($guardAddr + 4194304)) {
+        Write-Host "  ok: the walk was caught inside the page (HEAP=$heapAt, guard at $guardAddr)"
+      } else {
+        Write-Host "  FAIL: OUT OF MEMORY fired away from the page (HEAP=$heapAt, guard at $guardAddr) -- a ceiling, not the guard"
+        $failures++
+      }
+    } else {
+      Write-Host "  FAIL: OUT OF MEMORY without a HEAP= line, so the trip cannot be located"
+      $failures++
+    }
+  } else {
+    Write-Host "  FAIL: the walk neither completed nor reported OOM"
+    ($walk -split "`n" | Select-Object -First 6) | ForEach-Object { "    $_" }
     $failures++
   }
 } else { $failures++ }
@@ -173,5 +208,5 @@ if ($failures -gt 0) {
   exit 1
 }
 Write-Host ""
-Write-Host "guard-page-test: PASS (a parked probe overrun was refused, healthy input untouched; no arm exercises a genuine allocation walk)"
+Write-Host "guard-page-test: PASS (a parked overrun refused, a genuine allocation walk caught inside the page, healthy input untouched)"
 exit 0

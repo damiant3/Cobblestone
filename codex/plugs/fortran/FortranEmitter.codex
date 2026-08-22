@@ -146,7 +146,7 @@ Section: Type Emission
     is PropEqTy (pl) (pr) -> "integer(8)"
     is UnitTy (n) (inner) -> "integer(8)"
     is ErrorTy -> "integer(8)"
-    is FunTy (p) (fnrow) (r) -> "integer(8)"
+    is FunTy (p) (fnrow) (r) -> "type(cx_fun)"
     is ListTy (elem) -> fort-type elem
     is LinkedListTy (elem) -> fort-type elem
     is TypeVar (id) -> "integer(8)"
@@ -237,7 +237,7 @@ Section: Type Definition Emission
     is ANamedType (name) (s) -> fort-atype-name (name.value)
     is AAppType (base) (args) (s) ->
      if fort-atype-base-is-list base & list-length args > 0 then fort-atype (list-at args 0) else fort-atype base
-    is AFunType (p) (r) (s) -> "integer(8)"
+    is AFunType (p) (r) (s) -> "type(cx_fun)"
     is AEffectType (effs) (scopes) (efftail) (r) (s) -> fort-atype r
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> fort-atype b
     is ALinearType (b) (s) -> fort-atype b
@@ -538,6 +538,120 @@ Section: Lambda Lifting
   fort-lam-name : Integer -> Text
   fort-lam-name (i) = "cx_lam_" & integer-to-text i
 
+ A function VALUE is a `cx_fun`: an id, how many arguments it still NEEDS,
+ how many slots are already filled, four slots, and the result once it is
+ fully applied. One record carries all three shapes Fortran cannot express
+ on its own -- a lambda that escaped its call site, a definition passed as
+ an argument, and a definition applied to fewer arguments than it takes --
+ because at the point of application they differ only in what is already in
+ the slots.
+
+ `cx_apply` answers a `cx_fun` rather than a value, which is what lets a
+ chain be partial in the middle: it fills the next slot and hands the
+ record back while `need` is above one, and dispatches on the last
+ argument. `cx_val` reads the result out, and it exists because Fortran has
+ no component reference on a function result, so `cx_apply(...)%val` is not
+ something that can be written.
+
+ A lambda's captures fill the slots at CONSTRUCTION and a partial
+ application's arguments fill them as they arrive, so one dispatch arm per
+ id serves both: it reads slots 1 to n-1 and takes the final argument
+ directly.
+
+  fort-def-fun-id : Text -> Integer
+  fort-def-fun-id (n) = fort-hash-text ("def|" & n) 0 7
+
+  fort-emit-fun-value : List IRParam, IRExpr, List ArityEntry -> Text
+  fort-emit-fun-value (ps) (body) (arities) =
+   if list-length ps /= 1 then "cx_fun_multiparam_unsupported(" & fort-emit-expr body arities & ")"
+   else let caps = fort-lam-caps-of ps body arities
+   in "cx_fun(" & integer-to-text (fort-lam-key-of ps body arities) & ", 1_8, "
+      & integer-to-text (list-length caps) & "_8, (/ integer(8) :: " & fort-cap-init caps 0 & " /), 0_8)"
+
+  fort-cap-init : List FortCap, Integer -> Text
+  fort-cap-init (cs) (i) =
+   if i >= 4 then ""
+   else (if i > 0 then ", " else "")
+        & (if i < list-length cs then fort-sanitize ((list-at cs i).fc-name) else "0_8")
+        & fort-cap-init cs (i + 1)
+
+  fort-emit-partial : Text, Integer, List IRExpr, List ArityEntry -> Text
+  fort-emit-partial (n) (ar) (args) (arities) =
+   "cx_fun(" & integer-to-text (fort-def-fun-id n) & ", " & integer-to-text (ar - list-length args)
+   & "_8, " & integer-to-text (list-length args) & "_8, (/ integer(8) :: "
+   & fort-arg-slots args arities 0 & " /), 0_8)"
+
+  fort-arg-slots : List IRExpr, List ArityEntry, Integer -> Text
+  fort-arg-slots (args) (arities) (i) =
+   if i >= 4 then ""
+   else (if i > 0 then ", " else "")
+        & (if i < list-length args then fort-emit-expr (list-at args i) arities else "0_8")
+        & fort-arg-slots args arities (i + 1)
+
+  fort-emit-apply-dispatch : List FortLam, List IRDef, List ArityEntry -> Text
+  fort-emit-apply-dispatch (ls) (ds) (arities) =
+   "  recursive function cx_apply(f, a) result(cx_apply_r)\n"
+   & "    type(cx_fun), intent(in) :: f\n"
+   & "    integer(8), intent(in) :: a\n"
+   & "    type(cx_fun) :: cx_apply_r\n"
+   & "    cx_apply_r = f\n"
+   & "    if (f%need > 1_8) then\n"
+   & "      cx_apply_r%n = f%n + 1_8\n"
+   & "      cx_apply_r%cap(int(f%n) + 1) = a\n"
+   & "      cx_apply_r%need = f%need - 1_8\n"
+   & "      return\n"
+   & "    end if\n"
+   & "    cx_apply_r%need = 0_8\n"
+   & "    select case (int(f%id))\n"
+   & fort-dispatch-lams ls 0
+   & fort-dispatch-defs ds 0
+   & "    end select\n"
+   & "  end function cx_apply\n\n"
+   & "  recursive function cx_val(f) result(cx_val_r)\n"
+   & "    type(cx_fun), intent(in) :: f\n"
+   & "    integer(8) :: cx_val_r\n"
+   & "    cx_val_r = f%val\n"
+   & "  end function cx_val\n\n"
+
+  fort-dispatch-lams : List FortLam, Integer -> Text
+  fort-dispatch-lams (ls) (i) =
+   if i >= list-length ls then ""
+   else let l = list-at ls i
+   in (if fort-lam-seen-before ls (l.fl-key) i 0 then ""
+       else if list-length (l.fl-params) /= 1 then ""
+       else "    case (" & integer-to-text (l.fl-key) & ")\n      cx_apply_r%val = "
+            & fort-lam-name (l.fl-key) & "(a" & fort-dispatch-caps (l.fl-caps) 0 & ")\n")
+      & fort-dispatch-lams ls (i + 1)
+
+  fort-dispatch-caps : List FortCap, Integer -> Text
+  fort-dispatch-caps (cs) (i) =
+   if i >= list-length cs then ""
+   else ", f%cap(" & integer-to-text (i + 1) & ")" & fort-dispatch-caps cs (i + 1)
+
+  fort-dispatch-defs : List IRDef, Integer -> Text
+  fort-dispatch-defs (ds) (i) =
+   if i >= list-length ds then ""
+   else let d = list-at ds i
+   in (if list-length (d.params) == 0 then ""
+       else if fort-type (fort-return-type (d.type-val) (list-length (d.params))) /= "integer(8)" then ""
+       else if fort-params-all-int (d.params) 0 == False then ""
+       else "    case (" & integer-to-text (fort-def-fun-id (d.name)) & ")\n      cx_apply_r%val = "
+            & fort-sanitize (d.name) & "(" & fort-dispatch-def-args (list-length (d.params)) 0 & ")\n")
+      & fort-dispatch-defs ds (i + 1)
+
+  fort-params-all-int : List IRParam, Integer -> Boolean
+  fort-params-all-int (ps) (i) =
+   if i >= list-length ps then True
+   else if fort-type ((list-at ps i).type-val) /= "integer(8)" then False
+   else fort-params-all-int ps (i + 1)
+
+  fort-dispatch-def-args : Integer, Integer -> Text
+  fort-dispatch-def-args (ar) (i) =
+   if i >= ar then ""
+   else (if i > 0 then ", " else "")
+        & (if i == ar - 1 then "a" else "f%cap(" & integer-to-text (i + 1) & ")")
+        & fort-dispatch-def-args ar (i + 1)
+
   fort-cap-has : List FortCap, Text, Integer -> Boolean
   fort-cap-has (cs) (n) (i) =
    if i >= list-length cs then False
@@ -757,10 +871,10 @@ Section: Expression Emission
     is IrBinary (op) (l) (r) (ty) (sp) -> fort-emit-binary op l r arities depth
     is IrNegate (operand) (nty) (sp) -> "(-" & fort-emit-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "merge(" & fort-emit-expr-at t arities (depth + 1) & ", " & fort-emit-expr-at el arities (depth + 1) & ", " & fort-emit-expr-at c arities (depth + 1) & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> fort-emit-expr-at body arities (depth + 1)
+    is IrLet (name) (ty) (val) (body) (sp) -> fort-emit-expr-at (fort-subst-expr body name val (depth + 1)) arities (depth + 1)
     is IrApply (f) (a) (ty) (sp) -> fort-emit-apply e arities
     is IrLambda (params) (body) (ty) (sp) ->
-     "fort_lambda_value_unsupported(" & fort-emit-expr-at body arities (depth + 1) & ")"
+     fort-emit-fun-value params body arities
     is IrList (elems) (ty) (sp) -> fort-emit-list elems arities (fort-type ty)
     is IrMatch (scrut) (branches) (ty) (sp) -> fort-emit-match scrut branches arities depth
     is IrAct (stmts) (ty) (sp) -> fort-emit-act-expr stmts arities
@@ -782,6 +896,7 @@ Section: Expression Emission
    else if n == "Nothing" then "0"
    else let ar = lookup-arity arities n
    in if ar == 0 then fort-sanitize n & "()"
+      else if ar >= 1 then "cx_fun(" & integer-to-text (fort-def-fun-id n) & ", " & integer-to-text ar & "_8, 0_8, (/ integer(8) :: 0_8, 0_8, 0_8, 0_8 /), 0_8)"
       else fort-sanitize n
 
   fort-emit-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
@@ -847,11 +962,18 @@ Section: Expression Emission
    if list-length branches == 0 then "0"
    else fort-emit-match-merge branches scrut arities depth 0
 
+ A binder is substituted by the component it stands for, exactly as a guard's
+ is above, because `merge` is a FUNCTION: Fortran evaluates both arms before
+ selecting, and there is no statement here to assign a binder in. Emitting the
+ body unsubstituted declared the name and never assigned it, so the taken arm
+ read uninitialised memory. Reading a component under another tag is defined,
+ every constructor's components living in the one derived type, which is what
+ makes the eager arm safe once the name resolves to a component.
   fort-emit-match-merge : List IRBranch, IRExpr, List ArityEntry, Integer, Integer -> Text
   fort-emit-match-merge (branches) (scrut) (arities) (depth) (i) =
-   if i >= list-length branches - 1 then fort-emit-expr-at (list-at branches i).body arities (depth + 1)
+   if i >= list-length branches - 1 then fort-emit-expr-at (fort-subst-pat (list-at branches i).pattern scrut (list-at branches i).body) arities (depth + 1)
    else let b = list-at branches i
-   in "merge(" & fort-emit-expr-at (b.body) arities (depth + 1) & ", " & fort-emit-match-merge branches scrut arities depth (i + 1) & ", " & fort-emit-match-cond (b.pattern) scrut arities (depth + 1) & ")"
+   in "merge(" & fort-emit-expr-at (fort-subst-pat (b.pattern) scrut (b.body)) arities (depth + 1) & ", " & fort-emit-match-merge branches scrut arities depth (i + 1) & ", " & fort-emit-match-cond (b.pattern) scrut arities (depth + 1) & ")"
 
  A branch's sub-patterns are read out of the scrutinee's per-constructor
  components before the branch body runs. Nothing did this, so every name a
@@ -880,8 +1002,100 @@ Section: Expression Emission
   fort-emit-match-cond (pat) (scrut) (arities) (depth) =
    when pat
     is IrCtorPat (name) (subs) (ty) (sp) -> fort-emit-expr-at scrut arities depth & "%tag == TAG_" & fort-sanitize name
-    is IrLitPat (text) (ty) (sp) -> fort-emit-expr-at scrut arities depth & " == " & text
+    is IrLitPat (text) (ty) (sp) -> fort-emit-expr-at scrut arities depth & fort-lit-pat-cmp text ty
     is otherwise -> ".true."
+
+ Fortran compares logicals with `.eqv.` and spells its literals `.true.` and
+ `.false.`, and a character literal carries its quotes. An integer literal is
+ already Fortran as it stands.
+
+  fort-lit-pat-cmp : Text, CodexType -> Text
+  fort-lit-pat-cmp (text) (ty) =
+   when ty
+    is BooleanTy -> " .eqv. " & (if text == "True" then ".true." else ".false.")
+    is TextTy -> " == '" & fort-escape text & "'"
+    is otherwise -> " == " & text
+
+  fort-guard-trivial : IRExpr -> Boolean
+  fort-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+ A guard rides in the arm's own condition rather than inside the arm, so a
+ failed guard falls to the else that is already there. The binders it names
+ are not assigned until the arm body runs, so in the condition they are
+ replaced by the component they stand for. Every constructor's components
+ are declared in the one derived type, so reading one under another tag is
+ defined and the `.and.` needs no short-circuit guarantee.
+
+  fort-emit-branch-cond : IRBranch, IRExpr, List ArityEntry, Integer -> Text
+  fort-emit-branch-cond (b) (scrut) (arities) (depth) =
+   let base = fort-emit-match-cond (b.pattern) scrut arities depth
+   in if fort-guard-trivial (b.guard) then base
+      else let g = fort-emit-expr-at (fort-subst-pat (b.pattern) scrut (b.guard)) arities depth
+      in if base == ".true." then "(" & g & ")"
+         else base & " .and. (" & g & ")"
+
+  fort-subst-pat : IRPat, IRExpr, IRExpr -> IRExpr
+  fort-subst-pat (pat) (scrut) (e) =
+   when pat
+    is IrCtorPat (name) (subs) (ty) (sp) -> fort-subst-fields subs name scrut e 0
+    is IrVarPat (n) (ty) (sp) -> fort-subst-expr e n scrut 0
+    is otherwise -> e
+
+  fort-subst-fields : List IRPat, Text, IRExpr, IRExpr, Integer -> IRExpr
+  fort-subst-fields (subs) (ctor) (scrut) (e) (i) =
+   if i >= list-length subs then e
+   else fort-subst-fields subs ctor scrut (when (list-at subs i)
+     is IrVarPat (n) (ty) (sp) -> fort-subst-expr e n (IrFieldAccess scrut (fort-vctor-comp-name ctor i) ty sp) 0
+     is otherwise -> e) (i + 1)
+
+  fort-subst-expr : IRExpr, Text, IRExpr, Integer -> IRExpr
+  fort-subst-expr (e) (n) (rep) (depth) =
+   if depth >= 256 then e
+   else when e
+    is IrName (m) (ty) (sp) -> if m == n then rep else e
+    is IrBinary (op) (l) (r) (ty) (sp) -> IrBinary op (fort-subst-expr l n rep (depth + 1)) (fort-subst-expr r n rep (depth + 1)) ty sp
+    is IrNegate (o) (nty) (sp) -> IrNegate (fort-subst-expr o n rep (depth + 1)) nty sp
+    is IrIf (c) (tb) (el) (ty) (sp) -> IrIf (fort-subst-expr c n rep (depth + 1)) (fort-subst-expr tb n rep (depth + 1)) (fort-subst-expr el n rep (depth + 1)) ty sp
+    is IrLet (nm) (ty) (v) (b) (sp) -> IrLet nm ty (fort-subst-expr v n rep (depth + 1)) (if nm == n then b else fort-subst-expr b n rep (depth + 1)) sp
+    is IrApply (f) (a) (ty) (sp) -> IrApply (fort-subst-expr f n rep (depth + 1)) (fort-subst-expr a n rep (depth + 1)) ty sp
+    is IrMatch (sc) (bs) (ty) (sp) -> IrMatch (fort-subst-expr sc n rep (depth + 1)) (fort-subst-branches bs n rep (depth + 1) 0 []) ty sp
+    is IrList (xs) (ty) (sp) -> IrList (fort-subst-exprs xs n rep (depth + 1) 0 []) ty sp
+    is IrFieldAccess (r) (fld) (ty) (sp) -> IrFieldAccess (fort-subst-expr r n rep (depth + 1)) fld ty sp
+    is IrFieldStore (r) (fld) (v) (ty) (sp) -> IrFieldStore (fort-subst-expr r n rep (depth + 1)) fld (fort-subst-expr v n rep (depth + 1)) ty sp
+    is IrHandle (eff) (b) (cs) (ty) (sp) -> IrHandle eff (fort-subst-expr b n rep (depth + 1)) cs ty sp
+    is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (sp) -> IrWithTimeout secs effs scopes (fort-subst-expr b n rep (depth + 1)) ty sp
+    is IrFork (b) (ty) (sp) -> IrFork (fort-subst-expr b n rep (depth + 1)) ty sp
+    is IrAwait (tk) (ty) (sp) -> IrAwait (fort-subst-expr tk n rep (depth + 1)) ty sp
+    is otherwise -> e
+
+  fort-subst-exprs : List IRExpr, Text, IRExpr, Integer, Integer, List IRExpr -> List IRExpr
+  fort-subst-exprs (xs) (n) (rep) (depth) (i) (acc) =
+   if i >= list-length xs then acc
+   else fort-subst-exprs xs n rep depth (i + 1) (list-push acc (fort-subst-expr (list-at xs i) n rep depth))
+
+  fort-subst-branches : List IRBranch, Text, IRExpr, Integer, Integer, List IRBranch -> List IRBranch
+  fort-subst-branches (bs) (n) (rep) (depth) (i) (acc) =
+   if i >= list-length bs then acc
+   else let b = list-at bs i
+   in fort-subst-branches bs n rep depth (i + 1) (list-push acc (if fort-pat-binds (b.pattern) n then b
+      else IRBranch { pattern = b.pattern, body = fort-subst-expr (b.body) n rep depth, guard = fort-subst-expr (b.guard) n rep depth, span = b.span, alt-group = b.alt-group }))
+
+  fort-pat-binds : IRPat, Text -> Boolean
+  fort-pat-binds (pat) (n) =
+   when pat
+    is IrVarPat (m) (ty) (sp) -> m == n
+    is IrCtorPat (name) (subs) (ty) (sp) -> fort-subs-bind subs n 0
+    is IrVecPat (subs) (ty) (sp) -> fort-subs-bind subs n 0
+    is otherwise -> False
+
+  fort-subs-bind : List IRPat, Text, Integer -> Boolean
+  fort-subs-bind (subs) (n) (i) =
+   if i >= list-length subs then False
+   else if fort-pat-binds (list-at subs i) n then True
+   else fort-subs-bind subs n (i + 1)
 
   fort-emit-apply : IRExpr, List ArityEntry -> Text
   fort-emit-apply (e) (arities) =
@@ -889,7 +1103,7 @@ Section: Expression Emission
    in let root = chain.root
    in let args = chain.args
    in when root
-    is IrName (n) (ty) (sp) -> fort-emit-apply-name n args arities
+    is IrName (n) (ty) (sp) -> fort-emit-apply-name n args arities (fort-apply-wants-value e)
     is IrLambda (ps) (body) (lty) (lsp) ->
      let caps = fort-lam-caps-of ps body arities
      in fort-lam-name (fort-lam-key-of ps body arities) & "("
@@ -897,14 +1111,50 @@ Section: Expression Emission
         & fort-lam-cap-args caps 0 (list-length args) & ")"
     is otherwise -> fort-emit-expr root arities & "(" & fort-emit-apply-args args arities 0 & ")"
 
-  fort-emit-apply-name : Text, List IRExpr, List ArityEntry -> Text
-  fort-emit-apply-name (n) (args) (arities) =
+  fort-emit-apply-name : Text, List IRExpr, List ArityEntry, Boolean -> Text
+  fort-emit-apply-name (n) (args) (arities) (wants-value) =
    let fort-bi = fort-try-builtin n args arities
    in if text-length fort-bi > 0 then fort-bi
    else let ar = lookup-arity arities n
-   in if ar >= 1 then if list-length args == ar then fort-sanitize n & "(" & fort-emit-apply-args args arities 0 & ")"
-                      else fort-sanitize n & "(" & fort-emit-apply-args args arities 0 & ")"
+   in if ar >= 1 then (if list-length args == ar
+                       then fort-sanitize n & "(" & fort-emit-apply-args args arities 0 & ")"
+                       else if list-length args < ar
+                       then fort-emit-partial n ar args arities
+                       else fort-wrap-value (fort-emit-apply-extra (fort-sanitize n & "(" & fort-emit-apply-args-upto args ar arities 0 & ")") args ar arities) wants-value)
+      else if ar < 0 then (if list-length args == 0 then fort-sanitize n
+                           else fort-wrap-value (fort-emit-apply-extra (fort-sanitize n) args 0 arities) wants-value)
       else fort-sanitize n & "(" & fort-emit-apply-args args arities 0 & ")"
+
+ Three shapes, decided by the arity map. Exactly its arity is an ordinary
+ call. FEWER is a partial application, which becomes a `cx_fun` carrying
+ the arguments given so far. MORE is a curried application through a
+ function value: the definition consumes its own arity and each remaining
+ argument goes through `cx_apply`. A head with no arity at all is a
+ parameter holding a `cx_fun`, so every argument goes that way.
+
+ `cx_apply` answers a `cx_fun`, so a chain whose own result type is a
+ value is read out with `cx_val`, and one that is still a function is left
+ as the record it is. The IR node's type is what decides, which is the
+ only place that knows.
+
+  fort-apply-wants-value : IRExpr -> Boolean
+  fort-apply-wants-value (e) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> fort-type ty /= "type(cx_fun)"
+    is otherwise -> True
+
+  fort-wrap-value : Text, Boolean -> Text
+  fort-wrap-value (t) (wants-value) = if wants-value then "cx_val(" & t & ")" else t
+
+  fort-emit-apply-args-upto : List IRExpr, Integer, List ArityEntry, Integer -> Text
+  fort-emit-apply-args-upto (args) (n) (arities) (i) =
+   if i >= n then ""
+   else (if i > 0 then ", " else "") & fort-emit-expr (list-at args i) arities & fort-emit-apply-args-upto args n arities (i + 1)
+
+  fort-emit-apply-extra : Text, List IRExpr, Integer, List ArityEntry -> Text
+  fort-emit-apply-extra (acc) (args) (i) (arities) =
+   if i >= list-length args then acc
+   else fort-emit-apply-extra ("cx_apply(" & acc & ", " & fort-emit-expr (list-at args i) arities & ")") args (i + 1) arities
 
   fort-builtin-names : List Text
   fort-builtin-names = ["abs", "await", "bit-and", "bit-not", "bit-or",
@@ -916,7 +1166,8 @@ Section: Expression Emission
    "open-file", "print-error-uni", "print-line-uni", "process-exit",
    "read-text", "show", "substring", "text-compare", "text-concat-list",
    "text-contains", "text-length", "text-replace", "text-split",
-   "text-starts-with", "text-to-integer", "write-file", "list-push"]
+   "text-starts-with", "text-to-integer", "write-file", "list-push",
+   "bit-shru"]
 
   fort-find-builtin : List Text, Text, Integer -> Integer
   fort-find-builtin (names) (target) (i) =
@@ -939,7 +1190,7 @@ Section: Expression Emission
    else if idx == 3 then "not(" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 4 then "ior(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 5 then "ishft(" & fort-emit-expr (list-at args 0) arities & ", int(" & fort-emit-expr (list-at args 1) arities & "))"
-   else if idx == 6 then "ishft(" & fort-emit-expr (list-at args 0) arities & ", -int(" & fort-emit-expr (list-at args 1) arities & "))"
+   else if idx == 6 then "shifta(" & fort-emit-expr (list-at args 0) arities & ", int(" & fort-emit-expr (list-at args 1) arities & "))"
    else if idx == 7 then "ieor(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 8 then "fort_char_code_at(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 9 then fort-emit-expr (list-at args 0) arities
@@ -979,7 +1230,13 @@ Section: Expression Emission
    else if idx == 43 then "fort_text_to_integer(" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 44 then "fort_write_file(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
    else if idx == 45 then "fort_list_snoc(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
+   else if idx == 46 then "ishft(" & fort-emit-expr (list-at args 0) arities & ", -int(" & fort-emit-expr (list-at args 1) arities & "))"
    else "cx_UNSUPPORTED_builtin('" & n & "')"
+
+ `ishft` is Fortran's LOGICAL shift, which is what `bit-shru` means, so the
+ unsigned form is the one that maps directly. `bit-shr` is arithmetic and
+ wants `shifta`, which keeps the sign bit; `ishft` on a negative operand
+ answers a large positive number instead.
 
   fort-emit-exit-code : List IRExpr, List ArityEntry -> Text
   fort-emit-exit-code (args) (arities) =
@@ -1094,8 +1351,10 @@ Section: Tail Call Optimization
    if i >= list-length branches then ""
    else let b = list-at branches i
    in let is-last = i == list-length branches - 1
-   in if is-last then fort-emit-pat-binds (b.pattern) scrut arities 3 & fort-emit-tco-body (b.body) func-name res params arities
-   else "      if (" & fort-emit-match-cond (b.pattern) scrut arities 0 & ") then\n" & fort-emit-pat-binds (b.pattern) scrut arities 4 & fort-emit-tco-body (b.body) func-name res params arities & "      else\n" & fort-emit-tco-match-branches branches scrut func-name res params arities (i + 1) & "      end if\n"
+   in if is-last then (if fort-guard-trivial (b.guard)
+        then fort-emit-pat-binds (b.pattern) scrut arities 3 & fort-emit-tco-body (b.body) func-name res params arities
+        else "      if (" & fort-emit-branch-cond b scrut arities 0 & ") then\n" & fort-emit-pat-binds (b.pattern) scrut arities 4 & fort-emit-tco-body (b.body) func-name res params arities & "      end if\n")
+   else "      if (" & fort-emit-branch-cond b scrut arities 0 & ") then\n" & fort-emit-pat-binds (b.pattern) scrut arities 4 & fort-emit-tco-body (b.body) func-name res params arities & "      else\n" & fort-emit-tco-match-branches branches scrut func-name res params arities (i + 1) & "      end if\n"
 
   fort-emit-tco-jump : IRExpr, List IRParam, List ArityEntry -> Text
   fort-emit-tco-jump (e) (params) (arities) =
@@ -1319,9 +1578,14 @@ Section: Definition Emission
    if list-length branches == 0 then ""
    else if i >= list-length branches - 1
    then let bl = list-at branches i
-        in fort-emit-pat-binds (bl.pattern) scrut arities indent & fort-emit-assign (bl.body) target arities indent
+        in (if fort-guard-trivial (bl.guard)
+            then fort-emit-pat-binds (bl.pattern) scrut arities indent & fort-emit-assign (bl.body) target arities indent
+            else fort-indent indent & "if (" & fort-emit-branch-cond bl scrut arities 0 & ") then\n"
+                 & fort-emit-pat-binds (bl.pattern) scrut arities (indent + 1)
+                 & fort-emit-assign (bl.body) target arities (indent + 1)
+                 & fort-indent indent & "end if\n")
    else let b = list-at branches i
-   in fort-indent indent & "if (" & fort-emit-match-cond (b.pattern) scrut arities 0 & ") then\n"
+   in fort-indent indent & "if (" & fort-emit-branch-cond b scrut arities 0 & ") then\n"
        & fort-emit-pat-binds (b.pattern) scrut arities (indent + 1)
        & fort-emit-assign (b.body) target arities (indent + 1)
        & fort-indent indent & "else\n"
@@ -1361,9 +1625,14 @@ Section: Definition Emission
    if list-length branches == 0 then ""
    else if i >= list-length branches - 1
    then let bl = list-at branches i
-        in fort-emit-pat-binds (bl.pattern) scrut arities indent & fort-emit-statement (bl.body) arities indent
+        in (if fort-guard-trivial (bl.guard)
+            then fort-emit-pat-binds (bl.pattern) scrut arities indent & fort-emit-statement (bl.body) arities indent
+            else fort-indent indent & "if (" & fort-emit-branch-cond bl scrut arities 0 & ") then\n"
+                 & fort-emit-pat-binds (bl.pattern) scrut arities (indent + 1)
+                 & fort-emit-statement (bl.body) arities (indent + 1)
+                 & fort-indent indent & "end if\n")
    else let b = list-at branches i
-   in fort-indent indent & "if (" & fort-emit-match-cond (b.pattern) scrut arities 0 & ") then\n"
+   in fort-indent indent & "if (" & fort-emit-branch-cond b scrut arities 0 & ") then\n"
        & fort-emit-pat-binds (b.pattern) scrut arities (indent + 1)
        & fort-emit-statement (b.body) arities (indent + 1)
        & fort-indent indent & "else\n"
@@ -1438,7 +1707,7 @@ Section: Definition Emission
 Section: Runtime Prelude
 
   fort-prelude : Text =
-   "module codex_fort_prelude\n  implicit none\n  integer, parameter :: FORT_TEXT_LEN = 256\n  interface fort_list_concat\n    module procedure fort_list_concat_i, fort_list_concat_t\n  end interface\n  interface fort_list_cons\n    module procedure fort_list_cons_i, fort_list_cons_t\n  end interface\n  interface fort_list_snoc\n    module procedure fort_list_snoc_i, fort_list_snoc_t\n  end interface\n  interface fort_list_set_at\n    module procedure fort_list_set_at_i, fort_list_set_at_t\n  end interface\n  interface fort_list_insert_at\n    module procedure fort_list_insert_at_i, fort_list_insert_at_t\n  end interface\n  interface fort_list_at\n    module procedure fort_list_at_i, fort_list_at_t\n  end interface\ncontains\n"
+   "module codex_fort_prelude\n  implicit none\n  integer, parameter :: FORT_TEXT_LEN = 256\n  interface fort_list_concat\n    module procedure fort_list_concat_i, fort_list_concat_t\n  end interface\n  interface fort_list_cons\n    module procedure fort_list_cons_i, fort_list_cons_t\n  end interface\n  interface fort_list_snoc\n    module procedure fort_list_snoc_i, fort_list_snoc_t\n  end interface\n  interface fort_list_set_at\n    module procedure fort_list_set_at_i, fort_list_set_at_t\n  end interface\n  interface fort_list_insert_at\n    module procedure fort_list_insert_at_i, fort_list_insert_at_t\n  end interface\n  interface fort_list_at\n    module procedure fort_list_at_i, fort_list_at_t\n  end interface\n  type :: cx_fun\n    integer(8) :: id = 0\n    integer(8) :: need = 0\n    integer(8) :: n = 0\n    integer(8) :: cap(4) = 0\n    integer(8) :: val = 0\n  end type cx_fun\ncontains\n"
    & "  function fort_list_at_i(xs, i) result(r)\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    r = xs(int(i) + 1)\n  end function fort_list_at_i\n"
    & "  function fort_list_at_t(xs, i) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    character(len=FORT_TEXT_LEN) :: r\n    r = xs(int(i) + 1)\n  end function fort_list_at_t\n"
    & "  function fort_char_code_at(s, i) result(r)\n    character(len=*), intent(in) :: s\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    r = int(ichar(s(int(i)+1:int(i)+1)), 8)\n  end function fort_char_code_at\n"
@@ -1501,7 +1770,8 @@ Section: Chapter Emission
    in let mod-name = fort-sanitize (m.name.value)
    in let has-mod = fort-needs-module m
    in let opening-idx = fort-find-opening (m.defs) 0
-   in let mod-part = if has-mod then "module codex_" & mod-name & "\n  use codex_fort_prelude\n  implicit none\n\n" & emit-fort-type-defs type-defs 0 & "contains\n\n" & emit-fort-record-ctors type-defs 0 & emit-fort-variant-ctors type-defs 0 & fort-emit-lam-defs (fort-collect-lams-defs (m.defs) 0 arities []) arities 0 & fort-emit-module-defs (m.defs) arities 0 opening-idx & "end module codex_" & mod-name & "\n\n" else ""
+   in let lams = fort-collect-lams-defs (m.defs) 0 arities []
+   in let mod-part = if has-mod then "module codex_" & mod-name & "\n  use codex_fort_prelude\n  implicit none\n\n" & emit-fort-type-defs type-defs 0 & "contains\n\n" & emit-fort-record-ctors type-defs 0 & emit-fort-variant-ctors type-defs 0 & fort-emit-lam-defs lams arities 0 & fort-emit-apply-dispatch lams (m.defs) arities & fort-emit-module-defs (m.defs) arities 0 opening-idx & "end module codex_" & mod-name & "\n\n" else ""
    in let use-part = if has-mod then "  use codex_" & mod-name & "\n" else ""
    in let main-body = if opening-idx >= 0 then fort-emit-opening-body (list-at (m.defs) opening-idx) arities
                       else if list-length (m.defs) == 0 then "  print *, 'All proofs verified at compile time.'\n"

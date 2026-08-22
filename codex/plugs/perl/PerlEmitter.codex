@@ -232,16 +232,37 @@ Section: Expression Emission
   emit-pl-match-body (branches) (i) (arities) (depth) =
    if i == list-length branches then "die('Non-exhaustive match')"
    else let b = list-at branches i
-   in emit-pl-match-arm (b.pattern) (b.body) branches i arities depth
+   in emit-pl-match-arm (b.pattern) (b.guard) (b.body) branches i arities depth
 
-  emit-pl-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
-  emit-pl-match-arm (pat) (body) (branches) (i) (arities) (depth) =
+ The rest of the match lives in each ternary's else, so a guard goes in the
+ CONDITION, evaluated in the same `sub` that binds the payload, behind the
+ tag test's short circuit so a hashref deref is never reached for the wrong
+ constructor.
+
+  pl-guard-trivial : IRExpr -> Boolean
+  pl-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  pl-ctor-guard : List IRPat, IRExpr, List ArityEntry -> Text
+  pl-ctor-guard (subs) (guard) (arities) =
+   " && (sub { " & emit-pl-ctor-bindings subs 0 & emit-pl-expr guard arities & " })->()"
+
+  emit-pl-match-arm : IRPat, IRExpr, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-pl-match-arm (pat) (guard) (body) (branches) (i) (arities) (depth) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "($_s == " & text & " ? " & emit-pl-expr body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
-    is IrCtorPat (name) (subs) (ty) (sp) -> "($_s->{'tag'} eq \"" & name & "\" ? " & emit-pl-ctor-bind subs body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
-    is IrVarPat (name) (ty) (sp) -> "(sub { my $" & pl-sanitize name & " = $_s; " & emit-pl-expr body arities & " })->()"
-    is IrWildPat (sp) -> emit-pl-expr body arities
-    is IrVecPat (pats) (ty) (sp) -> emit-pl-expr body arities
+    is IrLitPat (text) (ty) (sp) -> "($_s == " & text & (if pl-guard-trivial guard then "" else " && (" & emit-pl-expr guard arities & ")") & " ? " & emit-pl-expr body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "($_s->{'tag'} eq \"" & name & "\"" & (if pl-guard-trivial guard then "" else pl-ctor-guard subs guard arities) & " ? " & emit-pl-ctor-bind subs body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
+    is IrVarPat (name) (ty) (sp) ->
+     if pl-guard-trivial guard then "(sub { my $" & pl-sanitize name & " = $_s; " & emit-pl-expr body arities & " })->()"
+     else "((sub { my $" & pl-sanitize name & " = $_s; " & emit-pl-expr guard arities & " })->() ? (sub { my $" & pl-sanitize name & " = $_s; " & emit-pl-expr body arities & " })->() : " & emit-pl-match-body branches (i + 1) arities depth & ")"
+    is IrWildPat (sp) ->
+     if pl-guard-trivial guard then emit-pl-expr body arities
+     else "((" & emit-pl-expr guard arities & ") ? " & emit-pl-expr body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
+    is IrVecPat (pats) (ty) (sp) ->
+     if pl-guard-trivial guard then emit-pl-expr body arities
+     else "((" & emit-pl-expr guard arities & ") ? " & emit-pl-expr body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
 
   emit-pl-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
   emit-pl-ctor-bind (subs) (body) (arities) =

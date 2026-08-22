@@ -109,6 +109,15 @@ $batchSw.Stop()
 $parseSw = [System.Diagnostics.Stopwatch]::StartNew()
 
 
+if ((Test-Path -PathType Leaf $stderrFile)) {
+    $vmErr = [System.IO.File]::ReadAllText($stderrFile)
+    if (($vmErr -match 'DROPPED')) {
+        [Console]::Error.WriteLine('codex-vm dropped guest serial bytes: this batch''s capture is SHORT, and every block after the loss is filed under the WRONG test name')
+        [Console]::Error.WriteLine($vmErr)
+    }
+}
+
+
 # Parse output: text lines interleaved with binary CDX blocks. Newlines are
 # found with a native string scan, not a PowerShell byte loop: when a batch
 # VM dies mid-binary the framing is lost and the remainder of the output is

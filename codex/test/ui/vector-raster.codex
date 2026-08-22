@@ -1,0 +1,184 @@
+Chapter: VectorRasterTest
+  cites UI chapter Vector
+  cites Foreword chapter Console
+
+ `Vector.codex` had no asserting test before this one: it was cited by
+ `forewords/ui-vector`, which prints "UI/Vector OK" and calls nothing. Stage
+ 2 of the shell refinement wants vector icons so they stop pixelating at
+ `ui-wscale` 2, so the chapter gets armed before it gets wired.
+
+ The arms below are in two halves and the second half is the point. What
+ `vec-rasterize` DOES is stroke straight segments. What it does not do is
+ everything else the chapter's own constructors let a caller build, and the
+ way it does not do it is silence: a curve contributes no pixels and no
+ diagnostic. These arms record that, so a repair moves a number here instead
+ of being believed on inspection.
+
+Section: Body
+
+  vrt-count : VecPath, VecStyle -> Integer
+  vrt-count (p) (st) = list-length (vec-rasterize p st)
+
+  vrt-ink : Integer
+  vrt-ink = 16711680
+
+  vrt-pen : VecStyle
+  vrt-pen = vec-style-stroke vrt-ink 1000
+
+ A horizontal run of four pixels is four pixels, and both ends are drawn.
+ An off-by-one at either end is the classic Bresenham defect and it is
+ exactly what a count alone cannot see, so the ends are read as well.
+
+  vrt-line : Text
+  vrt-line =
+    let px = vec-rasterize (vec-line 0 0 3 0) vrt-pen
+    in let n = list-length px
+    in let first = list-at px 0
+    in let last = list-at px (n - 1)
+    in "line n=" & show n & " first=" & show (first.vpx-x) & "," & show (first.vpx-y) & " last=" & show (last.vpx-x) & "," & show (last.vpx-y)
+
+  vrt-rect : Text
+  vrt-rect =
+    let p = vec-rect 0 0 2 2
+    in let b = vec-bounds p
+    in "rect cmds=" & show (vec-path-length p) & " bounds=" & show (list-at b 0) & "," & show (list-at b 1) & "," & show (list-at b 2) & "," & show (list-at b 3) & " px=" & show (vrt-count p vrt-pen)
+
+ A circle is line segments and not arcs, which is why it draws at all. The
+ containment count is the assertion: every pixel of an eight-segment circle
+ of radius 50 about (100,100) must land inside the square that circle fits
+ in. A rasterizer that dropped a sign or lost the centre would put pixels
+ outside it, and a count of pixels alone would not notice.
+
+  vrt-inside : List VecPixel, Integer, Integer, Integer, Integer, Integer -> Integer
+  vrt-inside (px) (lo) (hi) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at px i
+    in let ok = if p.vpx-x >= lo then (if p.vpx-x <= hi then (if p.vpx-y >= lo then (if p.vpx-y <= hi then 1 else 0) else 0) else 0) else 0
+    in vrt-inside px lo hi (i + 1) n (acc + ok)
+
+  vrt-circle : Text
+  vrt-circle =
+    let p = vec-circle 100 100 50 8
+    in let px = vec-rasterize p vrt-pen
+    in let n = list-length px
+    in "circle cmds=" & show (vec-path-length p) & " inside=" & show (vrt-inside px 50 150 0 n 0) & " of " & show n
+
+Section: Curves
+
+ A bezier and an arc used to build a command, take a slot in the path, move
+ the bounds not at all, and rasterize to NOTHING: `vec-raster-cmds` answered
+ both with its `is otherwise` arm, so a caller drawing a rounded icon got the
+ straight segments and silently lost every curve. Both counts below read 0
+ until 2026-08-21.
+
+ They are flattened now, by the same `vec-edges` the fill uses, so the stroke
+ and the fill cannot disagree about what a path is. The four lines above this
+ one are the control and every one of them is unmoved.
+
+  vrt-curves : Text
+  vrt-curves =
+    let bz = vec-bezier-to (vec-move-to vec-path-new 0 0) 10 0 20 10 30 10
+    in let ar = vec-arc-to (vec-move-to vec-path-new 0 0) 10 10 5 5 1570
+    in "bezier cmds=" & show (vec-path-length bz) & " px=" & show (vrt-count bz vrt-pen) & "   arc cmds=" & show (vec-path-length ar) & " px=" & show (vrt-count ar vrt-pen)
+
+ Three of the five style fields are dead on this path. `vec-rasterize` reads
+ `vs-stroke-color` and nothing else: it never fills, so `vs-filled` and
+ `vs-fill-color` do nothing, and it is one pixel wide, so `vs-stroke-width`
+ does nothing.
+
+ The fill case is worse than a no-op and that is why it is read as a COLOUR
+ rather than as a flag. `vec-style-fill` sets `vs-stroke-color` to 0, so a
+ caller asking for a filled red shape does not get an unfilled red outline,
+ it gets a BLACK one.
+
+ `vs-stroke-width` is `Integer between 0 and 1000` and the chapter's
+ coordinates are scale-1000 fixed point, so 1000 IS one pixel and the field
+ cannot express a wider stroke at all. The bound is enforced rather than
+ documentary: `vec-style-stroke vrt-ink 5000` traps at `__narrow` with
+ `EXC=06` rather than clamping, measured 2026-08-20. The two widths below
+ are both legal, and they are half a pixel and one pixel.
+
+  vrt-style : Text
+  vrt-style =
+    let fill = vec-style-fill vrt-ink
+    in let px = vec-rasterize (vec-rect 0 0 2 2) fill
+    in let c = list-at px 0
+    in let full = vrt-count (vec-line 0 0 9 0) (vec-style-stroke vrt-ink 1000)
+    in let half = vrt-count (vec-line 0 0 9 0) (vec-style-stroke vrt-ink 500)
+    in "asked=" & show vrt-ink & " got=" & show (c.vpx-color) & "   w1000=" & show full & " w500=" & show half
+
+Section: Coverage
+
+ `vec-coverage` is the fill, and what it answers is a grid of 0 to 255 rather
+ than a list of lit pixels. The three questions it has to get right are
+ inside, outside, and the boundary, and only the third distinguishes a
+ coverage rasterizer from a stencil.
+
+ The boundary value is asserted as a NUMBER and not as "some partial pixel
+ exists". `vec-rect 4 4 8 8` closes at x = 12, so pixel column 12 is the one
+ the shape only touches, and it reads 63: four of its sixteen supersamples,
+ which is one full supersample COLUMN across the four supersample rows the
+ pixel spans. A rasterizer that rounded coverage to a bit, or that sampled at
+ the pixel corner rather than across the cell, moves that one number and
+ nothing else here.
+
+ It reads 63 rather than 15 because `gr-fill-span-loop` runs to `x1`
+ INCLUSIVE, so a filled span is one supersample wider than the path asks for
+ on its far edge. Every glyph on the screen is filled by that same span, so
+ it is recorded here rather than changed.
+
+ The circle's area is short of the 112 a radius-6 disc encloses because
+ `vec-circle` truncates each vertex to a whole path unit before anything is
+ scaled: at radius 6 that pulls every vertex inward by up to one unit. It is
+ a property of the SHAPE constructor and not of the fill, which is why the
+ rectangle above lands where arithmetic says it should. Artwork authored at
+ icon sizes rather than at radius 6 pays proportionally less.
+
+  vrt-w : Integer = 16
+
+  vrt-area : List Integer, Integer, Integer -> Integer
+  vrt-area (cov) (i) (acc) =
+    if i >= list-length cov then acc / 255
+    else vrt-area cov (i + 1) (acc + list-at cov i)
+
+  vrt-fill : Text
+  vrt-fill =
+    let cov = vec-coverage (vec-rect 4 4 8 8) vrt-w vrt-w
+    in "fill rect  in=" & show (vec-coverage-at cov vrt-w 8 8)
+       & " out=" & show (vec-coverage-at cov vrt-w 0 0)
+       & " edge=" & show (vec-coverage-at cov vrt-w 12 8)
+       & " area=" & show (vrt-area cov 0 0)
+
+  vrt-round : Text
+  vrt-round =
+    let cov = vec-coverage (vec-circle 8 8 6 24) vrt-w vrt-w
+    in "fill circle  mid=" & show (vec-coverage-at cov vrt-w 8 8)
+       & " corner=" & show (vec-coverage-at cov vrt-w 0 0)
+       & " area=" & show (vrt-area cov 0 0)
+
+ The curve arm is a DIFFERENCE against a control that removes the curve and
+ keeps everything else, because an absolute area says nothing about whether
+ the bezier was the thing that produced it.
+
+  vrt-bowl : VecPath
+  vrt-bowl = vec-close (vec-bezier-to (vec-line-to (vec-move-to vec-path-new 2 4) 14 4) 14 14 2 14 2 4)
+
+  vrt-flat : VecPath
+  vrt-flat = vec-close (vec-line-to (vec-line-to (vec-move-to vec-path-new 2 4) 14 4) 2 4)
+
+  vrt-curve-fill : Text
+  vrt-curve-fill =
+    let a = vrt-area (vec-coverage vrt-bowl vrt-w vrt-w) 0 0
+    in let b = vrt-area (vec-coverage vrt-flat vrt-w vrt-w) 0 0
+    in "curved area=" & show a & " flat area=" & show b & " curve pays=" & (if a > b then "yes" else "NO")
+
+  opening : [Console] Nothing = act
+    print-line-uni vrt-line
+    print-line-uni vrt-rect
+    print-line-uni vrt-circle
+    print-line-uni vrt-curves
+    print-line-uni vrt-style
+    print-line-uni vrt-fill
+    print-line-uni vrt-round
+    print-line-uni vrt-curve-fill
+  end

@@ -1,0 +1,116 @@
+Chapter: ReviewReason
+  cites Works chapter GopReview
+  cites Works chapter RepoProtocol
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Identity
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+  rsn-seed : List Integer = [7, 1, 8, 2, 8, 1, 8, 2, 8, 4, 5, 9, 0, 4, 5, 2, 3, 5, 3, 6, 0, 2, 8, 7, 4, 7, 1, 3, 5, 2, 6, 6]
+  rsn-author : Keypair = generate-keypair [1, 2, 3, 4, 5, 6, 7, 8]
+
+  rsn-p : Proposal = create-proposal rsn-author (AnnotationTarget { chapter = "Sort", path = "sort-ascending" }) "Sort stops copying" "one allocation" ["sort-ascending"] 1000
+
+  put-list : Integer, List Integer, Integer -> Integer
+  put-list (buf) (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = poke-byte buf i (list-at xs i)
+    in put-list buf xs (i + 1)
+
+ Scancode 24 is o and 37 is k on the set-1 map, which `scancode-to-keycode`
+ answers as the UPPER case letter; `apply-mods` with no shift held is what
+ lowers it. A test that poked the bytes straight into the buffer would agree
+ with itself whether or not that translation ran.
+
+  rsn-type : Integer, List Integer, Integer -> Integer
+  rsn-type (rs) (scs) (i) =
+    if i >= list-length scs then 0
+    else let r = grv-key rs (list-at scs i) 1 0 1
+    in rsn-type rs scs (i + 1)
+
+Section: Body
+
+  rsn-locked : Integer -> Text
+  rsn-locked (rs) =
+    let m = grv-set-mode rs grv-mode-detail
+    in let r = grv-key rs 30 1 0 0
+    in if r /= 0 then "FAIL: locked opened a prompt"
+    else if grv-mode rs /= grv-mode-detail then "FAIL: locked changed mode"
+    else "PASS-locked-no-prompt"
+
+  rsn-typing : Integer -> Text
+  rsn-typing (rs) =
+    let m = grv-set-mode rs grv-mode-detail
+    in let r = grv-key rs 30 1 0 1
+    in if r /= 1 then "FAIL: accept did not open a prompt"
+    else if grv-mode rs /= grv-mode-reason then "FAIL: mode is " & show (grv-mode rs)
+    else let t1 = rsn-type rs [24, 37, 57, 24, 37] 0
+    in if grv-reason-text rs /= "ok ok" then "FAIL: typed " & grv-reason-text rs
+    else let b = grv-key rs 14 1 0 1
+    in let b2 = grv-key rs 14 1 0 1
+    in let b3 = grv-key rs 14 1 0 1
+    in if grv-reason-text rs /= "ok" then "FAIL: after backspace " & grv-reason-text rs
+    else "PASS-typing"
+
+  rsn-cancel : Integer -> [Device.Port] Text
+  rsn-cancel (rs) = act
+    before <- grv-load 0
+    let m = grv-set-mode rs grv-mode-detail
+    in let r = grv-key rs 19 1 0 1
+    in let t = rsn-type rs [24, 37] 0
+    in let e = grv-key rs 1 1 0 1
+    in if grv-mode rs /= grv-mode-detail then "FAIL: Esc left mode " & show (grv-mode rs)
+    else act
+      after <- grv-load 0
+      if list-length (after.gd-verdicts) /= list-length (before.gd-verdicts) then "FAIL: Esc wrote a verdict"
+      else "PASS-cancel"
+    end
+  end
+
+  rsn-cast : Integer -> [Device.Port, Identity] Text
+  rsn-cast (rs) = act
+    d <- grv-load 0
+    let m = grv-set-mode rs grv-mode-detail
+    in let r0 = grv-key rs 30 1 0 1
+    in let t = rsn-type rs [24, 37] 0
+    in let r1 = grv-key rs 28 1 0 1
+    in if r1 /= 3 then "FAIL: Enter answered " & show r1
+    else if grv-mode rs /= grv-mode-detail then "FAIL: Enter left mode " & show (grv-mode rs)
+    else act
+      c <- grv-cast d rs r1 1500
+      if c /= 1 then "FAIL: cast refused"
+      else act
+        d2 <- grv-load 0
+        let vs = grv-verdicts-for (d2.gd-verdicts) ((list-at (d2.gd-proposals) 0).id) 0 []
+        in if list-length vs /= 1 then "FAIL: verdicts " & show (list-length vs)
+        else let v = list-at vs 0
+        in if v.reason /= "ok" then "FAIL: reason " & v.reason
+        else if grv-kind-code (v.kind) /= 0 then "FAIL: kind " & show (grv-kind-code (v.kind))
+        else "PASS-cast-reason"
+      end
+    end
+  end
+
+  opening : [Device.Block, Device.Port, Console.Write, Identity] Nothing = act
+    let s0 = disk-init
+    in let s1 = repo-persist-save-proposal s0 rsn-p 1000
+    in let rs = alloc-zeroed 64 64
+    in let i0 = grv-init rs
+    in act
+      print-line-uni (rsn-locked rs)
+      print-line-uni (rsn-typing rs)
+      c0 <- rsn-cancel rs
+      print-line-uni c0
+      let buf = alloc-bytes 32
+      in let w = put-list buf rsn-seed 0
+      in act
+        rc <- key-load buf
+        c1 <- rsn-cast rs
+        print-line-uni c1
+      end
+    end
+  end

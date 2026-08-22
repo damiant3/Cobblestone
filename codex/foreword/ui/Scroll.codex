@@ -1,6 +1,7 @@
 Chapter: Scroll
   cites UI chapter Theme
   cites UI chapter BoxModel
+  cites UI chapter Widget
 
 Section: Scroll State
   ScrollState = record {
@@ -129,6 +130,142 @@ Section: Helpers
 
   scr-clamp : Integer, Integer, Integer -> Integer
   scr-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Rows
+
+ Everything above is pixels, and it stays the one source of truth. A pane whose
+ content is a list of equal-height rows thinks in rows, so these convert rather
+ than keeping a second offset that could disagree with the first.
+
+  scroll-rows-visible : ScrollState, Integer -> Integer
+  scroll-rows-visible (s) (row-h) =
+    if row-h <= 0 then 0 else s.scr-viewport-h / row-h
+
+  scroll-row-first : ScrollState, Integer -> Integer
+  scroll-row-first (s) (row-h) =
+    if row-h <= 0 then 0 else s.scr-offset-y / row-h
+
+ Keep a chosen row on the glass, moving by the least that does it. A view that
+ re-centres on every keystroke reads as the whole page shaking.
+
+  scroll-follow-row : ScrollState, Integer, Integer -> ScrollState
+  scroll-follow-row (s) (index) (row-h) =
+    let first = scroll-row-first s row-h
+    in let rows = scroll-rows-visible s row-h
+    in if index < first then scroll-to s (s.scr-offset-x) (index * row-h)
+    else if index >= first + rows then scroll-to s (s.scr-offset-x) ((index - rows + 1) * row-h)
+    else s
+
+Section: The Visible Slice
+
+ This is the half the model never had, and its absence is why a pane could hold
+ a `ScrollState`, move it correctly, and still paint every row it owns straight
+ through its own footer. A row here is either wholly on the glass or not emitted
+ at all.
+
+ That limit is deliberate rather than deferred, and it is now HALF of what it
+ was when this was written. `GopComposite` clips every rectangle it fills to the
+ box `comp-render` was given (fester, main 17846), so a row emitted past the
+ viewport is no longer painted over whatever is below it. What that fixes is the
+ out-of-bounds WRITE; it does not make a partly-visible row readable, because
+ text is all-or-nothing against that clip: `gop-draw-text` paints a glyph as
+ sixteen scaled rows with no row bound, so a line straddling the edge is dropped
+ rather than cut, and cutting one needs a bounded glyph primitive that does not
+ exist. Clipping and windowing answer different questions and this tree now has
+ both: the clip stops a pane damaging what is under it, and the window is what
+ lets a reader reach the rest.
+
+ **The window is by ROW INDEX, so it fits a list and not a page.** Every row
+ has to be the same height for `sc-viewport-h / row-h` to mean anything, which
+ the list panes satisfy and a rendered page does not: labels, separators and
+ links of differing heights have no single row to be at. Content like that
+ wants the other shape, translating the laid subtree by a pixel offset and
+ letting the compositor's clip cut it, which became possible only when that
+ clip landed (fester, main 17846). Nothing here does that yet. Written down
+ 2026-08-20 after val routed this chapter at the Browser as though it applied
+ and fester read it properly.
+
+  scroll-slice : List WidgetNode, ScrollState, Integer -> List WidgetNode
+  scroll-slice (rows) (s) (row-h) =
+    let from = scroll-row-first s row-h
+    in scroll-take rows from (from + scroll-rows-visible s row-h) 0 []
+
+  scroll-take : List WidgetNode, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  scroll-take (rows) (from) (upto) (i) (acc) =
+    if i >= list-length rows then acc
+    else if i >= upto then acc
+    else if i < from then scroll-take rows from upto (i + 1) acc
+    else scroll-take rows from upto (i + 1) (list-push acc (list-at rows i))
+
+Section: The Bar
+
+ Three nodes in a column and the flex engine does the arithmetic: a spacer
+ above, the thumb, a spacer below.
+
+ The thumb is a BUTTON, and the first attempt made it a separator. A separator
+ was the obvious choice because it is the one node the compositor fills rather
+ than outlines, but what it fills with is the theme's DIVIDER colour, which is
+ chosen to be nearly invisible against the surface it divides: measured
+ 2026-08-20 on the Review detail, a thumb of 6240 device pixels painted
+ `002244` against a panel of `001326`, present in a census of the rect and
+ invisible to a reader. A button is filled with the theme's control colour,
+ which is what a thumb is, and it stays a theme's choice rather than this
+ chapter naming one.
+
+ The flexes are per-mille rather than pixels because `wn-flex` is bounded at
+ 1000, and a content height past that would saturate and paint a thumb that
+ never moved.
+
+ The bar itself is flex ZERO, and that is not decoration: `widget-panel` hands
+ out a flex of 1 by default, so a bar left at the default takes an equal share
+ of the row beside the text it is measuring. Measured 2026-08-20 on the Review
+ detail, that halved the text column and the wrap broke at 28 columns instead
+ of 75.
+
+ `lead` is named that way because `above` is a KEYWORD (`Lexer.codex`, beside
+ `grounds`, `quotes` and `trusting`), and the diagnostic for using one as a
+ binding is `CDX1023: Expected 'in' after let bindings` pointing at the name,
+ which does not say so.
+
+  scroll-bar-w : Integer = 6
+
+  scroll-fits : ScrollState -> Boolean
+  scroll-fits (s) = s.scr-content-h <= s.scr-viewport-h
+
+  scroll-bar : Text, ScrollState -> WidgetNode
+  scroll-bar (id) (s) =
+    let ch = s.scr-content-h
+    in let content = if ch <= 0 then 1 else ch
+    in let lead = s.scr-offset-y * 1000 / content
+    in let want = s.scr-viewport-h * 1000 / content
+    in let thumb = if want < 1 then 1 else if want > 1000 then 1000 else want
+    in let rest = 1000 - lead - thumb
+    in let trail = if rest < 0 then 0 else rest
+    in widget-set-flex (widget-set-min (widget-scroll-view id DirColumn 0 [
+      widget-set-flex (widget-panel (id & "-above") DirColumn 0 []) lead,
+      widget-set-flex (widget-button (id & "-thumb") "") thumb,
+      widget-set-flex (widget-panel (id & "-below") DirColumn 0 []) trail
+    ]) scroll-bar-w 0) 0
+
+ A bar for content that fits is a full-height thumb, which says "there is no
+ more" less clearly than nothing does. This keeps the column's width either way
+ so the text beside it does not jump as the content grows.
+
+  scroll-bar-or-gap : Text, ScrollState -> WidgetNode
+  scroll-bar-or-gap (id) (s) =
+    if scroll-fits s then widget-set-flex (widget-set-min (widget-scroll-view id DirColumn 0 []) scroll-bar-w 0) 0
+    else scroll-bar id s
+
+  scroll-label : ScrollState, Integer -> Text
+  scroll-label (s) (row-h) =
+    if row-h <= 0 then ""
+    else let total = s.scr-content-h / row-h
+    in if total <= 0 then "empty"
+    else if scroll-fits s then show total & " lines"
+    else let first = scroll-row-first s row-h
+    in let last = first + scroll-rows-visible s row-h
+    in let hi = if last > total then total else last
+    in "lines " & show (first + 1) & " to " & show hi & " of " & show total
 
 Section: Formatting
   format-scroll : ScrollState -> Text

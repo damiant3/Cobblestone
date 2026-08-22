@@ -268,18 +268,43 @@ Section: Expression Emission
   emit-sw-match-arms (branches) (i) (arities) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-sw-match-arm (b.pattern) (b.body) arities & emit-sw-match-arms branches (i + 1) arities
+   in emit-sw-match-arm (b.pattern) (b.guard) (b.body) arities & emit-sw-match-arms branches (i + 1) arities
 
-  emit-sw-match-arm : IRPat, IRExpr, List ArityEntry -> Text
-  emit-sw-match-arm (pat) (body) (arities) =
+ Swift carries the guard itself: `case p where g:` falls through to the next
+ case when the guard is false. The BINDING is the other half and was absent:
+ an enum case with associated values has to bind them to read them, so
+ `case .Num(let n)` is what makes `n` mean anything in the body or the guard.
+
+  sw-guard-trivial : IRExpr -> Boolean
+  sw-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  sw-where-clause : IRExpr, List ArityEntry -> Text
+  sw-where-clause (guard) (arities) =
+   if sw-guard-trivial guard then "" else " where " & emit-sw-expr guard arities
+
+  emit-sw-ctor-binders : List IRPat, Integer -> Text
+  emit-sw-ctor-binders (subs) (i) =
+   if i == list-length subs then ""
+   else let sep = if i > 0 then ", " else ""
+   in let sub = list-at subs i
+   in sep & (when sub
+    is IrVarPat (name) (ty) (sp) -> "let " & sw-sanitize name
+    is otherwise -> "_") & emit-sw-ctor-binders subs (i + 1)
+
+  emit-sw-match-arm : IRPat, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-sw-match-arm (pat) (guard) (body) (arities) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "case " & text & ": return " & emit-sw-expr body arities & "; "
+    is IrLitPat (text) (ty) (sp) -> "case " & text & sw-where-clause guard arities & ": return " & emit-sw-expr body arities & "; "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name then "default: let (" & emit-sw-tup-pat-names subs 0 & ") = _s as! (" & emit-sw-tup-pat-types subs 0 & "); return " & emit-sw-expr body arities & "; "
-     else "case ." & sw-sanitize name & ": return " & emit-sw-expr body arities & "; "
-    is IrVarPat (name) (ty) (sp) -> "default: let " & sw-sanitize name & " = _s; return " & emit-sw-expr body arities & "; "
-    is IrWildPat (sp) -> "default: return " & emit-sw-expr body arities & "; "
-    is IrVecPat (pats) (ty) (sp) -> "default: return " & emit-sw-expr body arities & "; "
+     else if list-length subs == 0 then "case ." & sw-sanitize name & sw-where-clause guard arities & ": return " & emit-sw-expr body arities & "; "
+     else "case ." & sw-sanitize name & "(" & emit-sw-ctor-binders subs 0 & ")" & sw-where-clause guard arities & ": return " & emit-sw-expr body arities & "; "
+    is IrVarPat (name) (ty) (sp) -> "case let " & sw-sanitize name & sw-where-clause guard arities & ": return " & emit-sw-expr body arities & "; "
+    is IrWildPat (sp) -> if sw-guard-trivial guard then "default: return " & emit-sw-expr body arities & "; " else "case _ where " & emit-sw-expr guard arities & ": return " & emit-sw-expr body arities & "; "
+    is IrVecPat (pats) (ty) (sp) -> if sw-guard-trivial guard then "default: return " & emit-sw-expr body arities & "; " else "case _ where " & emit-sw-expr guard arities & ": return " & emit-sw-expr body arities & "; "
 
   emit-sw-act : List IRActStmt, List ArityEntry -> Text
   emit-sw-act (stmts) (arities) =

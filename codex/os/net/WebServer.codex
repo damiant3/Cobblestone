@@ -89,10 +89,25 @@ Section: HTTP JSON Response
 
 Section: HTTP Serve Loop
 
+ A HALF-WRITTEN RESPONSE CANNOT BE REPAIRED MID-STREAM, so a send that stops
+ short closes the connection rather than returning a transport the loop will
+ serve the next request on. The bare `net-io-send-raw` hands back a transport
+ and no count, so a truncated response and a complete one were the same value
+ (L-REFUSED); the loop then read the client's next request into the middle of
+ a corrupted body and answered it as though nothing had happened.
+
+ Closing is what makes the truncation VISIBLE at the far end: the client sees
+ a short body and a FIN instead of a stall, which is the difference between an
+ error it can report and a hang it cannot explain.
+
   web-send-http : TcpTransportState, HttpResponse -> [Network.Read, Network.Write] TcpTransportState
   web-send-http (ts) (resp) =
     let response-bytes = http-encode resp
-    in net-io-send-raw ts response-bytes
+    in act
+      r <- net-io-send-raw-checked ts response-bytes
+      if r.ns-complete then r.ns-transport
+      else net-io-close (r.ns-transport)
+    end
 
   WebLoop = record { server : WebState, transport : TcpTransportState }
 
@@ -369,10 +384,8 @@ Section: Legacy Framed Serve (for backward compat)
       in let ns = WebState { request-count = (ls.server).request-count + 1 }
       in let path = extract-web-path request-text
       in let response = route path
-      in let body = "200 application/json " & response
-      in let body-bytes = ws-text-to-bytes body 0 (text-length body) []
       in act
-        ts2 <- net-io-send (ls.transport) 1 body-bytes
+        ts2 <- web-send (ls.transport) response
         web-loop-framed route (WebLoop { server = ns, transport = ts2 })
       end
     end
@@ -385,7 +398,11 @@ Section: Legacy Framed Serve (for backward compat)
   web-send (ts) (response) =
     let body = "200 application/json " & response
     in let body-bytes = ws-text-to-bytes body 0 (text-length body) []
-    in net-io-send ts 1 body-bytes
+    in act
+      r <- net-io-send-checked ts 1 body-bytes
+      if r.ns-complete then r.ns-transport
+      else net-io-close (r.ns-transport)
+    end
 
   extract-web-path : Text -> Text
   extract-web-path (line) =

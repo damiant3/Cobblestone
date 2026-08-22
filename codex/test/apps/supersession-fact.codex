@@ -1,0 +1,87 @@
+Chapter: SupersessionFact
+  cites Works chapter RepoProtocol
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Works chapter Annotation
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+  sf-author : Keypair = generate-keypair [1, 2, 3, 4, 5, 6, 7, 8]
+
+  sf-target : Text -> AnnotationTarget
+  sf-target (ch) = AnnotationTarget { chapter = ch, path = "" }
+
+  sf-p1 : Proposal = create-proposal sf-author (sf-target "Sort") "First attempt" "why" [] 1000
+  sf-p2 : Proposal = create-proposal sf-author (sf-target "Sort") "Second attempt" "why again" [] 1100
+
+Section: Body
+
+ A supersession must survive the medium, which is the whole point of making it
+ a fact. Writing one and reading the SAME store back would not show that: it
+ is `disk-load` re-reading the partition that proves the bytes landed.
+
+  sf-round-trip : DiskFactStore -> Text
+  sf-round-trip (back) =
+    let sups = repo-persist-load-all-supersessions back
+    in if list-length sups /= 1 then "FAIL: loaded " & show (list-length sups)
+    else let s = list-at sups 0
+    in if s.sup-old /= sf-p1.id then "FAIL: old " & s.sup-old
+    else if s.sup-new /= sf-p2.id then "FAIL: new " & s.sup-new
+    else if s.sup-when /= 1200 then "FAIL: when " & show (s.sup-when)
+    else "PASS-round-trip"
+
+ The additive claim from the ruling, as an assertion rather than a promise: a
+ kind-40 fact must not be visible to the readers of kinds 36 and 37, or every
+ medium already written would change meaning.
+
+  sf-does-not-disturb : DiskFactStore -> Text
+  sf-does-not-disturb (back) =
+    let ps = repo-persist-load-all-proposals back
+    in let vs = repo-persist-load-all-verdicts back
+    in if list-length ps /= 2 then "FAIL: proposals " & show (list-length ps)
+    else if list-length vs /= 0 then "FAIL: verdicts " & show (list-length vs)
+    else "PASS-additive"
+
+ A link whose ends are both empty is not a link. The parse refuses it rather
+ than answering a record with two empty ids, which would render as a chain
+ step pointing at nothing and read as an orphan when it is a malformed fact.
+
+  sf-refuses-malformed : Text =
+    let short = supersession-from-persist-text "onlyonefield"
+    in let empty-old = supersession-from-persist-text "|b|5"
+    in let empty-new = supersession-from-persist-text "a||5"
+    in let good = supersession-from-persist-text "a|b|5"
+    in "short=" & sf-say short & " empty-old=" & sf-say empty-old & " empty-new=" & sf-say empty-new & " good=" & sf-say good
+
+  sf-say : Maybe Supersession -> Text
+  sf-say (m) = when m
+    is None -> "refused"
+    is Just (s) -> "accepted"
+
+ A timestamp that is not a number must not become a link dated zero silently
+ while the ids survive: the ids are what the chain walks, so this records what
+ the parse actually does rather than asserting it is right.
+
+  sf-bad-timestamp : Text =
+    when supersession-from-persist-text "a|b|notanumber"
+      is None -> "refused"
+      is Just (s) -> "accepted when=" & show (s.sup-when)
+
+Section: Entry
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let s1 = repo-persist-save-proposal s0 sf-p1 1000
+    in let s2 = repo-persist-save-proposal s1 sf-p2 1100
+    in let s3 = repo-persist-save-supersession s2 (create-supersession (sf-p1.id) (sf-p2.id) 1200) 1200
+    in let back = disk-load
+    in act
+      print-line-uni (sf-round-trip back)
+      print-line-uni (sf-does-not-disturb back)
+      print-line-uni sf-refuses-malformed
+      print-line-uni ("bad-timestamp " & sf-bad-timestamp)
+    end
+  end

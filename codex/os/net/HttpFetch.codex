@@ -318,13 +318,25 @@ Section: The Request
     end
    end
 
+ A TRUNCATED REQUEST IS NOT A REQUEST, and the bare sender could not say it
+ had produced one. `net-io-send-raw` hands back a transport and no count, so a
+ request that stopped part way went on to wait for a response to something the
+ server never received, and the wait then reported "no response" -- which names
+ the far end for our own short write.
+
   http-exchange : TcpTransportState, List Integer -> [Network.Read, Network.Write] Result Text Text
   http-exchange (ts) (bytes) = act
-    ts2 <- net-io-send-raw ts bytes
-    r <- http-recv ts2 (__list-with-capacity http-max-response) (-1) (-1) 0
-    ts3 <- net-io-close (r.transport)
-    let resp = http-parse-response (r.data)
-    in if resp.valid then Ok (resp.body) else Err "http: no response"
+    s <- net-io-send-raw-checked ts bytes
+    if s.ns-complete == False then act
+      tsx <- net-io-close (s.ns-transport)
+      Err ("http: request truncated at " & show (s.ns-sent) & " of " & show (list-length bytes) & " bytes")
+    end
+    else act
+      r <- http-recv (s.ns-transport) (__list-with-capacity http-max-response) (-1) (-1) 0
+      ts3 <- net-io-close (r.transport)
+      let resp = http-parse-response (r.data)
+      in if resp.valid then Ok (resp.body) else Err "http: no response"
+    end
   end
 
 Section: The Refusal
@@ -455,12 +467,20 @@ Section: HTTPS Over TLS 1.3
   https-send-all : TcpTransportState, List (List Integer) -> [Network.Read, Network.Write] TcpTransportState
   https-send-all (ts) (recs) = https-send-loop ts recs 0
 
+ A HALF-WRITTEN TLS RECORD ENDS THE SESSION and the peer cannot resync from
+ one: the record layer is length-prefixed, so a short write leaves the far end
+ waiting for bytes that are never coming. The loop therefore STOPS at the first
+ incomplete record and closes, rather than sending the next record after a gap
+ the peer will read as corruption. The caller sees the handshake fail to
+ complete, which is true, instead of a hang.
+
   https-send-loop : TcpTransportState, List (List Integer), Integer -> [Network.Read, Network.Write] TcpTransportState
   https-send-loop (ts) (recs) (i) =
    if i >= list-length recs then ts
    else act
-    ts1 <- net-io-send-raw ts (list-at recs i)
-    https-send-loop ts1 recs (i + 1)
+    s <- net-io-send-raw-checked ts (list-at recs i)
+    if s.ns-complete == False then net-io-close (s.ns-transport)
+    else https-send-loop (s.ns-transport) recs (i + 1)
    end
 
   https-run : TcpTransportState, Text, Text, List Integer, List Integer, List X509Anchor, List Integer -> [Network.Read, Network.Write] Result Text Text

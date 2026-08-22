@@ -159,7 +159,21 @@ Section: Expression Emission
    else let b = list-at branches i
    in let cond = emit-wf-pat-cond (b.pattern) "_s"
    in let binds = emit-wf-pat-binds (b.pattern) "_s"
-   in "if (" & cond & ") { " & binds & "return " & emit-wf-expr (b.body) arities indent & "; } " & emit-wf-branches branches arities indent (i + 1)
+   in "if (" & cond & ") { " & binds & wf-guarded-ret (b.guard) (emit-wf-expr (b.body) arities indent) arities indent & " } " & emit-wf-branches branches arities indent (i + 1)
+
+ The guard sits inside the `if` and after the binds so it can read them, and
+ a refused guard falls out of the block to the next arm's test.
+
+  wf-guard-trivial : IRExpr -> Boolean
+  wf-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  wf-guarded-ret : IRExpr, Text, List ArityEntry, Integer -> Text
+  wf-guarded-ret (guard) (body) (arities) (indent) =
+   if wf-guard-trivial guard then "return " & body & ";"
+   else "if (" & emit-wf-expr guard arities indent & ") { return " & body & "; }"
 
   emit-wf-pat-cond : IRPat, Text -> Text
   emit-wf-pat-cond (p) (scrut) =
@@ -342,10 +356,9 @@ Section: Builtin Definitions
    let c1 = wf-indent 2 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n"
    in let c2 = wf-indent 2 & "static string integer_to_text(long n) { return n.ToString(); }\n"
    in let c3 = wf-indent 2 & "static long negate(long n) { return -n; }\n"
-   in let c4 = wf-indent 2 & "static long text_to_int(dynamic s) { return long.TryParse((string)s, out var v) ? v : 0L; }\n"
    in let c5 = wf-indent 2 & "static long real_to_int(dynamic d) { return (long)(double)d; }\n"
    in let c6 = wf-indent 2 & "static double int_to_real(dynamic n) { return (double)(long)n; }\n"
-   in c1 & c2 & c3 & c4 & c5 & c6
+   in c1 & c2 & c3 & c5 & c6
 
   wf-bi-text : Text
   wf-bi-text =

@@ -68,6 +68,212 @@ Section: Boolean `&` Allocates Nothing, And Is Now Recorded As Such
   bounded none joins-comparisons : Integer -> Boolean
   joins-comparisons (n) = n > 1 & n < 9
 
+Section: The Arithmetic Names The Safe Set Never Held
+
+ `is-rt-safe-builtin` carries the twelve integer and bit names, so a body using
+ them was accepted through `punctual`'s set and not through the registry at
+ all. `negate`, `real-from-int` and `real-to-int` are in neither, and they were
+ refused CDX6101 until `codex/test/cost/builtin-alloc` measured them at 0 bytes
+ on 2026-08-21 -- measured against depot `Sut` 96CB73CB, where the whole
+ section refuses and the same source compiles once the rows say `none`. These
+ three are the discriminators for that run the way `list-set-at` is for the
+ section above.
+
+  bounded none flipped : Integer -> Integer
+  flipped (n) = negate n
+
+  bounded none rounded : Integer -> Integer
+  rounded (n) = real-to-int (real-from-int n)
+
+Section: The Real Conversion Family, Eight Declarations For Sixteen Rows
+
+ The same shape one family further on. None of these sixteen names is in
+ `is-rt-safe-builtin`, so every one of them widens `bounded none` and every
+ one of them was CDX6101 until `codex/test/cost/builtin-alloc` read its
+ ladder at zero on 2026-08-21. The eight declarations pair off exactly as the
+ eight arms there do, so each row has an arm that fails without it.
+
+ The kill was taken before the rows moved, against depot `Sut` 9F2789C2:
+ all eight refused at exit 4, nothing else in the chapter did, and the same
+ source compiles once the sixteen rows read `none`.
+
+ A Real cannot be handed back to a caller comparing integers, so each body
+ ends in a conversion back. `real-from-int` and `real-to-int` are already
+ `none`, which is why they can carry the ends without deciding the middle.
+
+  bounded none narrowed : Integer -> Integer
+  narrowed (n) = real-approx-to-int (real-approx-from-int n)
+
+  bounded none widened : Integer -> Integer
+  widened (n) = real-to-int (from-real-approx (to-real-approx (real-from-int n)))
+
+  bounded none trapped : Integer -> Integer
+  trapped (n) = real-to-int (from-real-trapping (to-real-trapping (real-from-int n)))
+
+  bounded none saturated : Integer -> Integer
+  saturated (n) = real-to-int (from-real-saturating (to-real-saturating (real-from-int n)))
+
+  bounded none approx-trapped : Integer -> Integer
+  approx-trapped (n) = real-approx-to-int (from-real-approx-trapping (to-real-approx-trapping (real-approx-from-int n)))
+
+  bounded none approx-saturated : Integer -> Integer
+  approx-saturated (n) = real-approx-to-int (from-real-approx-saturating (to-real-approx-saturating (real-approx-from-int n)))
+
+  bounded none punned : Integer -> Integer
+  punned (n) = real-to-int (bits-to-real (real-to-bits (real-from-int n)))
+
+  bounded none approx-punned : Integer -> Integer
+  approx-punned (n) = real-approx-to-int (bits-to-real-approx (real-approx-to-bits (real-approx-from-int n)))
+
+Section: The SIMD Reads, Which Take Their Vectors As Parameters
+
+ Nine of the seventeen SIMD rows are `none` and every one of them is a READ.
+ The other eight allocate a 16-byte box for the vector they produce and are
+ `fixed`, so a `bounded none` body cannot construct a vector at all: there is
+ no cheap way to make one. Each declaration here therefore takes its vector as
+ a parameter, which is what the callers this rung exists for do anyway.
+
+  bounded none lane : Vector 2 Real -> Integer
+  lane (v) = real-to-int (vec-extract v 0)
+
+  bounded none lane4 : Vector 4 (Real approximate) -> Integer
+  lane4 (q) = real-to-int (from-real-approx (vec4-extract q 0))
+
+  bounded none summed : Vector 2 Real -> Integer
+  summed (v) = real-to-int (vec-reduce-add v)
+
+  bounded none stored : Integer, Vector 2 Real -> Integer
+  stored (addr) (v) = vec-store-at addr v
+
+  bounded none widthed : Real -> Integer
+  widthed (x) = suggested-vector-width x
+
+ THE FOUR MASK PREDICATES GET NO ARM HERE AND CANNOT, which is a fact about
+ the type surface rather than about the cost model. `mask-any`, `mask-all`,
+ `mask-none` and `mask-count` all take a `VectorMask 2`, and that type has no
+ surface syntax: `resolve-applied-type` knows `List`, `LinkedList`, `Real` and
+ `Vector`, and anything else becomes an ordinary constructed type. A signature
+ naming it is CDX3008 undefined type name, and the mismatch that follows reads
+ `VectorMask 2 vs Con:VectorMask[Con:2]`, printing both sides with the same
+ name. A mask can therefore only be a local bound from a comparison and cannot
+ cross a declaration boundary, so those four rows are measured without a rung.
+
+Section: The Atomics, Where `bs-varies` And `bs-alloc` Come Apart
+
+ All six of these read True for `bs-varies`, because their answer depends on
+ what another core did. That is the registry's other column and it decides
+ nothing here: measured at zero on 2026-08-21, they retain nothing, so a
+ `bounded none` body may call them. A builtin whose RESULT varies is not
+ thereby a builtin whose ALLOCATION varies, and these six are the arm that
+ says so.
+
+  bounded none peeked : Integer -> Integer
+  peeked (addr) = atomic-load addr
+
+  bounded none poked : Integer, Integer -> Integer
+  poked (addr) (v) = atomic-store addr v
+
+  bounded none bumped : Integer, Integer -> Integer
+  bumped (addr) (d) = atomic-add addr d
+
+  bounded none swapped : Integer, Integer -> Integer
+  swapped (addr) (v) = atomic-exchange addr v
+
+  bounded none swapped-if : Integer, Integer, Integer -> Boolean
+  swapped-if (addr) (e) (v) = atomic-cas addr e v
+
+  bounded none fenced : Integer -> Integer
+  fenced (n) = memory-fence n
+
+Section: The CPU Reads, Including Three That Are Not Calls
+
+ `cpu-read-cr0`, `cpu-read-cr3` and `flush-tlb` are typed plain `Integer` with
+ no `FunTy`, so `machined` below has no call in it at all and is the first
+ body in this chapter whose builtins are bare names.
+
+ `machined` IS A CONTROL AND IT IS THE ONE ARM HERE THAT DOES NOT MOVE. The
+ kill against depot `Sut` D42F8373 refused the other four with CDX6101 and
+ accepted this one while all three of its rows still read `unknown`, which is
+ the measurement: `cost-head-allocates` is reached from a call HEAD, and a
+ nullary builtin is not a call, so the registry is never consulted for these
+ three. Their rows are `none` because they were measured at zero, not because
+ anything in the checker asked. Written down because the arm was added on the
+ opposite assumption and the refusal that did not come is what corrected it.
+
+  bounded none peeked-16 : Integer -> Integer
+  peeked-16 (addr) = peek-16 addr 0
+
+  bounded none peeked-qword : Integer -> Integer
+  peeked-qword (addr) = peek-qword addr 0
+
+  bounded none poked-16 : Integer, Integer -> Integer
+  poked-16 (addr) (v) = poke-16 addr 0 v
+
+  bounded none identified : Integer -> Integer
+  identified (leaf) = cpu-cpuid-eax leaf + cpu-cpuid-ebx leaf + cpu-cpuid-ecx leaf + cpu-cpuid-edx leaf
+
+  bounded none machined : Integer
+  machined = cpu-read-cr0 + cpu-read-cr3 + flush-tlb
+
+Section: `bounded none` On An EFFECTFUL Signature
+
+ The first declarations in this chapter that carry an effect row. `bounded
+ none` is a claim about the heap and an effect row is a claim about the world,
+ and nothing had ever asked whether one function may make both.
+
+  bounded none mmio-read : Integer -> [Device.Mmio] Integer
+  mmio-read (addr) = read-mmio addr 0
+
+  bounded none mmio-read-32 : Integer -> [Device.Mmio] Integer
+  mmio-read-32 (addr) = read-mmio-32 addr 0
+
+  bounded none mmio-poke : Integer, Integer -> [Device.Mmio] Integer
+  mmio-poke (addr) (v) = poke-mmio addr 0 v
+
+  bounded none mmio-poke-32 : Integer, Integer -> [Device.Mmio] Integer
+  mmio-poke-32 (addr) (v) = poke-mmio-32 addr 0 v
+
+  bounded none ported-in : Integer -> [Device.Port] Integer
+  ported-in (p) = port-in-byte p
+
+  bounded none ported-out : Integer, Integer -> [Device.Port] Integer
+  ported-out (p) (v) = port-out-byte p v
+
+  bounded none ported-in-16 : Integer -> [Device.Port] Integer
+  ported-in-16 (p) = port-in-16 p
+
+  bounded none ported-out-16 : Integer, Integer -> [Device.Port] Integer
+  ported-out-16 (p) (v) = port-out-16 p v
+
+  bounded none ported-in-32 : Integer -> [Device.Port] Integer
+  ported-in-32 (p) = port-in-32 p
+
+  bounded none ported-out-32 : Integer, Integer -> [Device.Port] Integer
+  ported-out-32 (p) (v) = port-out-32 p v
+
+Section: The Process And Identity Reads
+
+ Five rows with a rung and six without, and the split is the same one
+ `machined` found: `process-yield`, `get-ticks`, `process-get-pid`,
+ `process-count`, `hardware-random` and `boot-factstore-status` are nullary
+ constants, so no call head reaches the registry for them and no declaration
+ here can fail on their account. The five below are calls and do widen.
+
+  bounded none capped : Integer -> Integer
+  capped (pid) = process-get-cap pid
+
+  bounded none statused : Integer -> Integer
+  statused (pid) = process-status pid
+
+  bounded none who : Integer -> [Identity] Integer
+  who (k) = identity-whoami k
+
+  bounded none seeded : Integer -> [Identity] Integer
+  seeded (k) = device-seed k
+
+  bounded none who-proc : Integer, Integer -> [Identity] Integer
+  who-proc (p) (k) = identity-get-proc p k
+
 Section: A Ceiling Nothing Can Breach
 
  `growing` is the top of the lattice and accepts anything, including a body
@@ -84,4 +290,10 @@ Section: Entry
     print-line-uni ("listed 3 = " & show (listed 3))
     print-line-uni ("seated = " & show (seated [1, 2, 3]))
     print-line-uni ("joins = " & (if joins-literals then "t" else "f") & (if joins-params True True then "t" else "f") & (if joins-comparisons 5 then "t" else "f"))
+    print-line-uni ("flipped 7 = " & show (flipped 7) & " rounded 7 = " & show (rounded 7))
+    print-line-uni ("reals = " & show (narrowed 7) & show (widened 7) & show (trapped 7) & show (saturated 7))
+    print-line-uni ("approx = " & show (approx-trapped 7) & show (approx-saturated 7) & show (punned 7) & show (approx-punned 7))
+    print-line-uni ("cpu = " & show (let c = alloc-bytes 64 in poked-16 c 258 + peeked-16 c + peeked-qword c) & " " & show (identified 0 - identified 0) & " " & show (machined - machined))
+    print-line-uni ("atomics = " & show (let c = alloc-bytes 8 in poked c 5 + peeked c + bumped c 2 + swapped c 1 + (if swapped-if c 1 9 then 1 else 0) + fenced 0))
+    print-line-uni ("simd = " & show (lane (vec-splat 7.0)) & " " & show (lane4 (vec4-splat (to-real-approx 7.0))) & " " & show (summed (vec-splat 3.0)) & " " & show (widthed 0.0) & " " & show (stored (alloc-bytes 16) (vec-splat 5.0)))
   end

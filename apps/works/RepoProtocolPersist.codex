@@ -31,6 +31,15 @@ Section: Kind Constants
   persist-kind-tombstone : Integer = 39
   persist-kind-index-snapshot : Integer = 40
 
+ Ruling 20 said "a new fact kind 40" and 40 was already this snapshot, with 41
+ taken by `FactArchive`'s base record. The ruling's substance is the shape (a
+ new kind, additive, carrying the relation in its own fact) and not the
+ number, so this takes the first free one ABOVE the block rather than filling
+ the 28/29 gap, whose reason is not written down anywhere and which a reader
+ would have to assume was free.
+
+  persist-kind-supersession : Integer = 42
+
 Section: Record Types
 
  New record types for fact kinds that lack existing application
@@ -938,6 +947,53 @@ Section: Proposal Persistence (Kind 36)
     in when parsed
       is Just (p) -> parse-proposal-list texts (i + 1) len (list-push acc p)
       is None -> parse-proposal-list texts (i + 1) len acc
+
+Section: Supersession Persistence (Kind 40)
+
+ Three fields and no signature, deliberately. A verdict is an assertion about a
+ proposal and is signed so a reader can tell who made it; a supersession is a
+ LINK, and the authority for it is the new proposal, which is signed already.
+ Signing the link too would answer a question nobody asks and put a second
+ fingerprint on the chain for a reader to reconcile with the first.
+
+ The ids are opaque here: this chapter does not check that either end exists,
+ because a store is scanned in the order it was written and the new proposal
+ may not have been read yet. Whether a link points at something is the
+ reader's question, and the pane must SAY when it does not rather than drop
+ the row (ruling 20's orphan requirement).
+
+  supersession-to-persist-text : Supersession -> Text
+  supersession-to-persist-text (s) =
+    s.sup-old & "|" & s.sup-new & "|" & show (s.sup-when)
+
+  supersession-from-persist-text : Text -> Maybe Supersession
+  supersession-from-persist-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 3 then None
+    else if text-length (list-at parts 0) == 0 then None
+    else if text-length (list-at parts 1) == 0 then None
+    else Just (Supersession {
+      sup-old = list-at parts 0,
+      sup-new = list-at parts 1,
+      sup-when = parse-decimal-full (list-at parts 2)
+    })
+
+  repo-persist-save-supersession : DiskFactStore, Supersession, Integer -> DiskFactStore
+  repo-persist-save-supersession (store) (sup) (timestamp) =
+    app-write-and-checkpoint store persist-kind-supersession (supersession-to-persist-text sup) timestamp
+
+  repo-persist-load-all-supersessions : DiskFactStore -> List Supersession
+  repo-persist-load-all-supersessions (store) =
+    let texts = app-scan-all store persist-kind-supersession
+    in parse-supersession-list texts 0 (list-length texts) []
+
+  parse-supersession-list : List Text, Integer, Integer, List Supersession -> List Supersession
+  parse-supersession-list (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = supersession-from-persist-text (list-at texts i)
+    in when parsed
+      is Just (s) -> parse-supersession-list texts (i + 1) len (list-push acc s)
+      is None -> parse-supersession-list texts (i + 1) len acc
 
 Section: Verdict Persistence (Kind 37)
 

@@ -195,7 +195,21 @@ Section: Let, Apply, Match, Act
    else let b = list-at branches i
    in let cond = emit-cs-pattern-cond (b.pattern) "_s"
    in let binds = emit-cs-pattern-binds (b.pattern) "_s" indent
-   in wpf-indent indent & "if (" & cond & ") {\n" & binds & wpf-indent (indent + 1) & "return " & emit-cs-expr (b.body) arities indent & ";\n" & wpf-indent indent & "}\n" & emit-cs-branches branches arities indent (i + 1)
+   in wpf-indent indent & "if (" & cond & ") {\n" & binds & wpf-guarded-ret (b.guard) (emit-cs-expr (b.body) arities indent) arities (indent + 1) & wpf-indent indent & "}\n" & emit-cs-branches branches arities indent (i + 1)
+
+ The guard sits inside the `if` and after the binds so it can read them, and
+ a refused guard falls out of the block to the next arm's test.
+
+  wpf-guard-trivial : IRExpr -> Boolean
+  wpf-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  wpf-guarded-ret : IRExpr, Text, List ArityEntry, Integer -> Text
+  wpf-guarded-ret (guard) (body) (arities) (indent) =
+   if wpf-guard-trivial guard then wpf-indent indent & "return " & body & ";\n"
+   else wpf-indent indent & "if (" & emit-cs-expr guard arities indent & ") {\n" & wpf-indent (indent + 1) & "return " & body & ";\n" & wpf-indent indent & "}\n"
 
   emit-cs-pattern-cond : IRPat, Text -> Text
   emit-cs-pattern-cond (p) (scrut) =

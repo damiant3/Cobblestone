@@ -32,36 +32,59 @@ Section: Registers
   hda-fmt-48k-16-stereo : Integer = 17
   hda-run-bit : Integer = 2
   hda-amplitude : Integer = 8000
-  hda-amplitude-neg : Integer = 57536
 
 Section: Tone Buffer
 
   hda-square-tone : Integer, Integer -> Integer
-  hda-square-tone (freq) (nsamples) =
+  hda-square-tone (freq) (nsamples) = hda-square-tone-at freq nsamples hda-amplitude
+
+  hda-square-tone-at : Integer, Integer, Integer -> Integer
+  hda-square-tone-at (freq) (nsamples) (amp) =
     let buf = alloc-bytes (nsamples * 4)
-    in let period = if freq <= 0 then 109 else hda-sample-rate / freq
-    in let w = hda-tone-fill buf period nsamples 0
+    in let w = hda-tone-into buf freq nsamples amp
     in buf
 
-  hda-tone-fill : Integer, Integer, Integer, Integer -> Integer
-  hda-tone-fill (buf) (period) (n) (i) =
+  hda-tone-into : Integer, Integer, Integer, Integer -> Integer
+  hda-tone-into (buf) (freq) (nsamples) (amp) =
+    let period = if freq <= 0 then 109 else hda-sample-rate / freq
+    in hda-tone-fill buf period nsamples amp 0
+
+ The negative half is the two's complement of the positive one in 16 bits,
+ which is what the codec reads: an amplitude of zero has to stay zero on
+ both halves rather than wrapping to 65536.
+
+  hda-tone-fill : Integer, Integer, Integer, Integer, Integer -> Integer
+  hda-tone-fill (buf) (period) (n) (amp) (i) =
     if i >= n then 0
     else let phase = int-mod i period
-    in let s = if phase * 2 < period then hda-amplitude else hda-amplitude-neg
+    in let neg = if amp <= 0 then 0 else 65536 - amp
+    in let s = if phase * 2 < period then amp else neg
     in let lo = bit-and s 255
     in let hi = bit-and (bit-shru s 8) 255
     in let w0 = poke-byte buf (i * 4) lo
     in let w1 = poke-byte buf (i * 4 + 1) hi
     in let w2 = poke-byte buf (i * 4 + 2) lo
     in let w3 = poke-byte buf (i * 4 + 3) hi
-    in hda-tone-fill buf period n (i + 1)
+    in hda-tone-fill buf period n amp (i + 1)
 
 Section: Play
 
-  hda-play-pcm : Integer, Integer -> [Audio] Integer
-  hda-play-pcm (buf) (len) =
-    let bdl = alloc-bytes 16
-    in let w0 = poke-32 bdl 0 buf
+ The controller reads the descriptor list and the samples AFTER the call
+ that starts the stream has returned, so both must outlive the PLAYBACK and
+ not merely the call. A caller whose heap is rewound on a frame boundary has
+ to own them; `hda-play-pcm-at` is for that caller, and it is the same reason
+ the network send path must not be bracketed by a heap restore.
+
+ **A frame-scoped BDL is a DMA read of freed memory**, and this is a lifetime
+ obligation that is invisible at the call site, which is why it is written
+ here rather than left to be noticed. It does not fault where the mistake is:
+ the call returns cleanly, the allocator hands the same bytes to something
+ else, and the controller streams whatever landed there. Pass a descriptor
+ list and a buffer that live at least as long as the sound.
+
+  hda-play-pcm-at : Integer, Integer, Integer -> [Audio] Integer
+  hda-play-pcm-at (bdl) (buf) (len) =
+    let w0 = poke-32 bdl 0 buf
     in let w1 = poke-32 bdl 4 0
     in let w2 = poke-32 bdl 8 len
     in let w3 = poke-32 bdl 12 1
@@ -75,6 +98,9 @@ Section: Play
       g <- mmio-write-32 (hda-bar + hda-reg-sd0ctl) hda-run-bit
       g
     end
+
+  hda-play-pcm : Integer, Integer -> [Audio] Integer
+  hda-play-pcm (buf) (len) = hda-play-pcm-at (alloc-bytes 16) buf len
 
   hda-play-tone : Integer, Integer -> [Audio] Integer
   hda-play-tone (freq) (ms) =

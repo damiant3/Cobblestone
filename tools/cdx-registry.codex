@@ -130,18 +130,25 @@ Section: Answering
 
   answer-locate : List Announcement, TcpTransportState, LocateRequestMsg -> [Network.Read, Network.Write, Console.Write] ServeResult
   answer-locate (anns) (ts) (req) = act
-    ts1 <- net-io-send ts tag-locate-reply (encode-locate-reply-body (LocateReplyMsg { from = reg-id, hash = req.hash, peers = holders-of anns 0 (req.hash) "" }))
-    ts2 <- net-io-close ts1
+    s <- net-io-send-checked ts tag-locate-reply (encode-locate-reply-body (LocateReplyMsg { from = reg-id, hash = req.hash, peers = holders-of anns 0 (req.hash) "" }))
+    ts2 <- net-io-close (s.ns-transport)
     let who = holders-of anns 0 (req.hash) ""
-    in ServeResult { sr-anns = anns, sr-diag = "locate " & req.hash & " -> " & (if text-length who == 0 then "none" else who) }
+    in ServeResult { sr-anns = anns, sr-diag = (if s.ns-complete then "locate " else "locate-short ") & req.hash & " -> " & (if text-length who == 0 then "none" else who) }
   end
 
   answer-announce : List Announcement, TcpTransportState, AnnounceRequestMsg -> [Network.Read, Network.Write, Console.Write] ServeResult
+ THE ANNOUNCEMENT IS RECORDED EITHER WAY AND THAT IS DELIBERATE. What the
+ short send loses is the peer's confirmation, not the peer's data: the request
+ arrived whole or `net-io-recv-loop` would not have decoded it, so dropping a
+ recorded announcement because our own REPLY was truncated would discard a
+ fact we hold over a channel we failed on. The diag line says the peer was not
+ told.
+
   answer-announce (anns) (ts) (req) = act
-    ts1 <- net-io-send ts tag-announce-reply (encode-announce-reply-body (AnnounceReplyMsg { from = reg-id, accepted = count-hashes (req.hashes) }))
-    ts2 <- net-io-close ts1
+    s <- net-io-send-checked ts tag-announce-reply (encode-announce-reply-body (AnnounceReplyMsg { from = reg-id, accepted = count-hashes (req.hashes) }))
+    ts2 <- net-io-close (s.ns-transport)
     let updated = record-announcement anns (req.address) (req.hashes)
-    in ServeResult { sr-anns = updated, sr-diag = "announce " & req.address & " " & show (count-hashes (req.hashes)) & " works" }
+    in ServeResult { sr-anns = updated, sr-diag = (if s.ns-complete then "announce " else "announce-short ") & req.address & " " & show (count-hashes (req.hashes)) & " works" }
   end
 
  A CONNECTION THAT SAYS NOTHING IS ABANDONED, and a server that does not do this

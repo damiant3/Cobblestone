@@ -136,13 +136,33 @@ its state as a thing to reconcile against.
   is intentional** -- Damian ruled it accepted as public 2026-08-17, after
   the Update 45 push scan found 150 files there dating to Update 39; the
   code itself stays hidden as before, so do not re-raise this.
+- **`build/boot/diag-sitting*.cfg` never ship.** Found at the Update 49
+  pre-push scan, 2026-08-21: five of them were untracked and new, and every
+  one names the box (`b3 peer=192.168.6.141:7 ip=192.168.6.200`). They are
+  the sitting IMAGE's questions one file over, which is exactly what
+  `build/check-shipping-images.ps1` keeps off the mirror for the image, and
+  nothing kept them off for the cfg. `git add` them never; re-measure with
+  `git status --porcelain | Select-String 'diag-sitting'` before every push.
+  `diag-default.cfg` ships: it names stages and no address.
 - Do not publish the 8 MB boot image or PNG snapshots; `git reset` them out
   of the stage. **`build/boot/kbd-diag-v16.img` stays up** -- public since
   2026-08-03 and Damian ruled it kept 2026-08-17, on the grounds that it does
-  not hurt and might help someone. **uild/boot/diag.img and
-  uild/boot/diag.rehearsed SHIP on the same grounds and by design
+  not hurt and might help someone. **build/boot/diag.img and
+  build/boot/diag.rehearsed SHIP on the same grounds and by design
   (DiagnosticStick.md step 4): the stranger's instrument, 16 MB, no seed,
   no identity, its SHA-256 in the release notes.
+  **A SITTING image must never be the one that ships, and there is now a
+  runner: `build/check-shipping-images.ps1`.** The same file with a sitting
+  config baked onto its ESP names the box it was built to interrogate:
+  `diag-sitting6.cfg` is two lines and one is
+  `b3 peer=192.168.6.141:7 ip=192.168.6.200`. On 2026-08-21 a bulk
+  `p4 copy --from` carried a sitting image to main head inside a changelist
+  about harness timing, and nothing in the tree would have refused it; it
+  reached no mirror only because no push fell in that window, which is luck
+  rather than a control. The check refuses ANY `DIAG.CFG` on a shipping
+  image rather than arguing about which addresses are private enough to
+  publish. Falsified both ways 2026-08-21: REFUSED on 63EFDB8A naming the
+  two baked lines, OK on the default A92502F8.
 
 ## Divergence (Damian's rule: pull but take nothing, keep all local)
 

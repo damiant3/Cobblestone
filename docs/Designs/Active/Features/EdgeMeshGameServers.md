@@ -2,22 +2,6 @@
 
 ## Status
 
-**Ruling 2026-08-05 (Damian): RESURFACED, chained to blu's network track.** Phase 2 begins when B2-B4 (link bring-up, TCP/IP, the repository protocol) give the mesh a real socket surface; until then this design waits on that lane rather than on an owner of its own.
-
-**The socket surface B4 owed this design exists in the bed, 2026-08-17 (root,
-CurrentPlan B4 step 5).** Phase 2 need not wait on B4 any longer, only on its
-own owner. What it can start against today, all in `codex/os/net` and
-`codex/os/trust` and all driven by host harnesses under codex-vm: a listening
-TCP transport (`net-io-listen`, `net-io-accept`, `net-io-send`,
-`net-io-recv-loop` in `NetIO.codex`; `TcpTransport.codex`), tagged frames
-(`MessageFraming.codex`), the trust-side message codec
-(`TrustTransport.codex`, `AgentProtocol.codex`), and two serving programs to
-copy the shape of, `tools/cdx-serve.codex` (9300) and `tools/cdx-registry.codex`
-(9301), reachable through `codex-vm -portfwd`. The wire itself is written down
-in `DevelopersRulebook.md` "The repository wire". The same conversation over
-the Intel model is `build/cdx-serve-test.ps1 -Card e1000`; on the part it is
-B3's flight. GroupMembership, EdgeRouter and TrustNode remain this design's
-own wiring, as the phasing below says.
 **Phase 1 is shipped -- as a self-contained simulation.**
 `codex/foreword/engine/EdgeMesh.codex` implements the queue, Elo
 pairing, aggregate-latency region selection, fleet lifecycle, and reward
@@ -33,100 +17,44 @@ are all models inside the chapter. What Phase 1 proves is that the
 *orchestration logic* is right, which is worth proving on its own. It is
 not a running edge mesh.
 
-**Next: Phase 2 -- wire it to the real infrastructure.** GroupMembership
-(SWIM), EdgeRouter, and TrustNode all exist and are the three
-connections that turn the simulation into a system.
+**Phase 2 is DONE.** Three chapters in `apps/edgemesh`, each with its arm
+under `codex/test/edge-mesh-*`: `EdgeMeshLive` (discovery -- a region is
+healthy only while the group holds a HEALTHY location for it, and placement
+picks the lowest-load healthy node or REFUSES), `EdgeMeshRoute` (routing --
+a returning player goes back to the node they were on, but only while that
+node is still healthy), and `EdgeMeshAdmit` (authenticated sessions).
 
-**Phase 2 connection 1 is landed (fester, 2026-08-19): discovery.**
-`apps/edgemesh/EdgeMeshLive.codex`, proved by `codex/test/edge-mesh-live`.
-A region advertises a service (`edge-<name>`), a region is healthy when the
-group holds a HEALTHY location for it and not otherwise, a spawned server
-registers as a load-balanced location, and placement picks the lowest-load
-healthy node in the chosen region or REFUSES. Phase 1 could not refuse; it
-spawned into a model.
+**Two ordering decisions the arms exist to hold, because both are invisible
+in a passing run and reversing either looks like a refactor.**
 
-**Phase 2 connection 3 is landed (fester, 2026-08-19): authenticated
-sessions.** `apps/edgemesh/EdgeMeshAdmit.codex`, proved by
-`codex/test/edge-mesh-admit`. A player reaches a placed match only through
-an authenticated peer session on the `TrustNode`.
+Identity is checked BEFORE placement. An unauthenticated caller gets the
+same refusal whether the region is busy, empty, or not a region at all, so
+the refusal text is not a free map of the mesh; an unknown peer and a
+known-but-unauthenticated one give the same answer, because telling them
+apart tells an attacker which names exist.
 
-**Identity is checked BEFORE placement and the order is the design
-decision.** An unauthenticated caller gets the same refusal whether the
-region is busy, empty, or not a region at all, so the refusal text is not a
-free map of the mesh. An unknown peer and a known-but-unauthenticated one
-also give the same answer, because telling them apart tells an attacker
-which names exist. The test's last arm is an unauthenticated caller asking
-for a region that does not exist: it must be told about the authentication
-and not about the region, and reordering the two checks moves that line and
-nothing else.
+Affinity beats load, and health beats affinity. Least-loaded is right for a
+new session and loses a match for a returning one; affinity that outlives
+the node's health sends every reconnect to a box that is already failing. A
+route also answers WHY, sticky or fresh, because a working affinity table
+and one that re-picks every time look identical in a load graph.
 
-**Phase 2 connection 2 is landed (fester, 2026-08-19): routing.**
-`apps/edgemesh/EdgeMeshRoute.codex`, proved by
-`codex/test/edge-mesh-route`. A player is routed to a node in the placed
-region, and a returning player goes back to the node they were on -- but
-only while that node is still healthy in the registry.
+**Two constraints anything continuing this design has to obey.**
 
-**Those two rules pull opposite ways and that is the whole of it.** Picking
-the least-loaded healthy node is right for a new session and loses a match
-for a returning one, so affinity wins; and affinity that outlives the node's
-health is worse than none, because every reconnect of that session then goes
-to a box that is already failing. The arms hold both directions at once: a
-returning player stays on node-a when node-b arrives eight times lighter,
-while a player with NO session takes node-b in the same group, which is what
-shows the pick is load-based rather than "always the first one". A route also
-answers WHY, sticky or fresh, because a caller that cannot tell a resumed
-session from a new one cannot tell a working affinity table from one that
-re-picks every time, and those two look identical in a load graph.
+**"Wire A to B" in the phases below means "a chapter ABOVE A and B", never an
+edit to A.** A foreword module may not depend on `codex.os`, and the quire
+order is foreword, codex, codex.os, apps (`DevelopersRulebook.md`, Library
+Rules 1 and 2). `EdgeMesh` is `codex.foreword.engine` and `GroupMembership`
+is `codex.os.net`, so the chapter that knows both sits right of both, which
+is why phase 2 landed in an app quire.
 
-**With this, phase 2's three connections are all landed.** Remembering is a
-separate call from routing on purpose: a caller that routes without
-remembering gets no affinity, which is visible, rather than an affinity table
-written by a function whose name says it only reads.
-
-**Connection 2 was SHELVED for a day** as CL 17571.
-`EdgeRouter.codex:245` declares `er-rate-limiter : RateLimiterState`, a type
-that does not exist -- the record is `PerKeyRateLimiter`, which line 258
-constructs -- so that chapter has never compiled and neither can
-`ServiceProxy` or `DiagramRenderer`, which cite it. No harness compiles any
-of the three: the app sweep runs ENTRY units, and a library chapter with no
-entry unit is compiled by nothing. `build/check-subset-cites.ps1 -Root` is
-the check for that class (red, 2026-08-19). Routed to blu, who owns
-`codex/os/net/**`, and fixed at main 17589 -- **blu then swept a citer over
-all 39 net chapters and found FIVE that had never compiled**, not one:
-`LoadBalancer` and `MessageQueue` passed `Text` to a function taking
-`Integer`, `DistributedConfig` had two defects of its own, and `ServiceProxy`
-was blocked behind `LoadBalancer` rather than behind `EdgeRouter` as this
-lane had assumed. One blocked chapter was the visible end of five.
-
-**Four things connection 1 had to find out, none of them in the design.**
-
-1. **"Wire EdgeMesh to GroupMembership" cannot be done where it says.** A
-   foreword module may not depend on `codex.os` and the quire order is
-   foreword, codex, codex.os, apps (`DevelopersRulebook.md`, Library Rules 1
-   and 2). `EdgeMesh` is `codex.foreword.engine`, `GroupMembership` is
-   `codex.os.net`, so the chapter that knows both sits right of both. It is
-   an app quire (`Mesh` = `apps/edgemesh`), which also keeps it out of
-   `codex/os/net/**`, claimed by another lane. Read every "wire A to B" in
-   the phases below as "a chapter above A and B", not as an edit to A.
-2. **The two halves would not compile into one unit.** `HelmBridge`, reached
-   through `EdgeMesh`, and `GroupMembership` both defined `RoleLeader` and
-   `RoleMember`. `PlayerRole`'s constructors are now `Pr*`; that was four
-   lines in one file with no other caller in the tree, and it is the
-   smallest change that lets any chapter cite both.
-3. **The service registry was broken and its own test had never run.**
-   `gs-register-service` read `list-length` after `list-push` had mutated the
-   list in place, so one registration reported two and the second walked off
-   the end (invalid opcode). `apps/nettool/tests/TestGroupMembership` dies
-   there after fifteen passing arms and no battery runs it. Fixed by blu at
-   main 17557.
-4. **A `GroupState` cannot be held across a registration.** Its operations
-   are `__record-set` on the argument, which stores in place and returns the
-   same record, so an earlier name is not an earlier state: measured, a group
-   read after a later registration reported the LATER health. Anything
-   built on this chapter must read only the newest state, and a test that
-   registers into one variable and reads another will lie. The same trap in
-   record form: two fixtures built from identical constructor arguments
-   shared one record.
+**A `GroupState` cannot be held across a registration.** Its operations are
+`__record-set` on the argument, which stores in place and returns the same
+record, so an earlier name is not an earlier state: a group read after a
+later registration reports the LATER health. Read only the newest state, and
+know that a test which registers into one variable and reads another will
+lie. Two fixtures built from identical constructor arguments share one
+record for the same reason.
 
 The design below describes the intended end state (GroupMembership,
 MeshRoles, EdgeRouter, RaftConsensus, GossipProtocol, TrustNode,
@@ -378,17 +306,14 @@ draining idle servers when below 30%.
 - Integration with HelmBridge for voice/chat
 - Test coverage for all EdgeMesh operations
 
-### Phase 2: Live Mesh Integration -- NEXT (the real work)
+### Phase 2: Live Mesh Integration -- DONE for the three that matter
 
-This is what turns Phase 1 from a model into infrastructure:
-
-- Wire EdgeMesh to GroupMembership for real SWIM discovery
-- Wire to EdgeRouter for real traffic routing
-- Wire to TrustNode for authenticated game sessions
-- Wire to ChainCore for on-chain reward posting
-
-The first three are the ones that matter: without them there is no mesh,
-only a queue.
+- GroupMembership for real SWIM discovery -- DONE
+- EdgeRouter for real traffic routing -- DONE
+- TrustNode for authenticated game sessions -- DONE
+- ChainCore for on-chain reward posting -- NOT DONE, and it is the one
+  bullet here that is not load-bearing: without the first three there is no
+  mesh, only a queue, and rewards can post from a queue.
 
 ### Phase 3: Multi-Game Support
 

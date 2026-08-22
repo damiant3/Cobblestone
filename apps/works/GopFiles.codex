@@ -2,6 +2,7 @@ Chapter: GopFiles
   cites UI chapter Theme
   cites Works chapter GopFat16
   cites Works chapter GopDraw
+  cites Works chapter GopIcon
   cites Works chapter GopShot
   cites Works chapter GopUsbKbd
   cites Works chapter GopUsbMouse
@@ -209,8 +210,8 @@ Section: Drawing
     in let cap = gop-draw-text base stride font (px + 6 * s) (py + 2 * s) title (gfl-bright pal) s 0
     in gop-draw-text base stride font (px + pw - 14 * s) (py + 2 * s) "x" (gfl-bright pal) s 0
 
-  gfl-draw-rows : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, List Fat16DirEntry, Integer, Integer, Integer -> Integer
-  gfl-draw-rows (base) (w) (h) (stride) (s) (font) (pal) (entries) (sel) (top) (i) =
+  gfl-draw-rows : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, IconKit, List Fat16DirEntry, Integer, Integer, Integer -> Integer
+  gfl-draw-rows (base) (w) (h) (stride) (s) (font) (pal) (kit) (entries) (sel) (top) (i) =
     let n = list-length entries
     in if top + i >= n then 0
     else if i >= gfl-rows-vis h s then 0
@@ -220,16 +221,19 @@ Section: Drawing
     in let hl = if idx == sel then gop-fill-rect base stride px y (gfl-pw w s) (gfl-row-h s) (gfl-sel pal) else 0
     in let e = list-at entries idx
     in let fg = if idx == sel then gfl-on-sel pal else if gfl-is-dir e then gfl-bright pal else gfl-text pal
-    in let t = gop-draw-text base stride font (px + 10 * s) (y + s) (gfl-row-text e) fg s 0
-    in gfl-draw-rows base w h stride s font pal entries sel top (i + 1)
+    in let ico = gicon-pick kit (gfl-kind e)
+    in let d = gicon-blit base stride ico (px + 10 * s) (y + s) (gfl-icon-scale s) fg
+    in let t = gop-draw-text base stride font (px + 10 * s + gfl-icon-col kit s) (y + s) (gfl-row-text e) fg s 0
+    in gfl-draw-rows base w h stride s font pal kit entries sel top (i + 1)
 
   gfl-draw-list : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, List Fat16DirEntry, Integer, Integer, List Text -> Integer
   gfl-draw-list (base) (w) (h) (stride) (s) (font) (pal) (entries) (sel) (top) (names) =
     let f = gfl-draw-frame base w h stride s font pal ("Files  " & gfl-path-text names)
     in let px = gfl-px w s
     in let py = gfl-py h s
-    in let hdr = gop-draw-text base stride font (px + 10 * s) (py + 26 * s) (gfl-pad "name" 16 & "size") (gfl-dim pal) s 0
-    in let rows = gfl-draw-rows base w h stride s font pal entries sel top 0
+    in let kit = gicon-kit
+    in let hdr = gop-draw-text base stride font (px + 10 * s + gfl-icon-col kit s) (py + 26 * s) (gfl-pad "name" 16 & "size") (gfl-dim pal) s 0
+    in let rows = gfl-draw-rows base w h stride s font pal kit entries sel top 0
     in let none = if list-length entries == 0 then gop-draw-text base stride font (px + 10 * s) (gfl-rows-y0 h s) "(empty directory)" (gfl-dim pal) s 0 else 0
     in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Up/Down move   Enter open   Esc back" (gfl-hint pal) s 0
 
@@ -242,6 +246,40 @@ Section: Drawing
     in let m = text-length ext
     in if n < m then False
     else substring name (n - m) m == ext
+
+ `gfl-is-source` decides whether the PREVIEW runs the highlighter and is
+ left as it was. What the type column distinguishes is a wider question
+ than what the highlighter can parse, so the two tests are separate: an
+ `INDEX.TXT` reads as text in the listing and still previews as hex.
+
+ A short name on the medium is upper case and trimmed to `NAME.EXT`
+ (`fat16-extract-name`), which is what these compare against.
+
+  gfl-is-image : Fat16DirEntry -> Boolean
+  gfl-is-image (e) = gfl-ext-is (e.de-name) "BMP" | gfl-ext-is (e.de-name) "PNG" | gfl-ext-is (e.de-name) "JPG"
+
+  gfl-is-textish : Fat16DirEntry -> Boolean
+  gfl-is-textish (e) = gfl-is-source e | gfl-ext-is (e.de-name) "COD" | gfl-ext-is (e.de-name) "TXT" | gfl-ext-is (e.de-name) "MD"
+
+  gfl-kind : Fat16DirEntry -> Integer
+  gfl-kind (e) =
+    if gfl-is-dir e then gicon-dir
+    else if gfl-is-textish e then gicon-src
+    else if gfl-is-image e then gicon-img
+    else gicon-bin
+
+ The icon is drawn at twice the panel scale so an 8x8 mask stands 16 rows
+ tall, which is the height `gop-draw-text` gives a glyph at the same
+ scale. Both start at the same y and the row needs no centring arithmetic.
+
+ The column the icon costs is measured off the artwork rather than written
+ down twice, so the header and the rows cannot drift apart.
+
+  gfl-icon-scale : Integer -> Integer
+  gfl-icon-scale (s) = 2 * s
+
+  gfl-icon-col : IconKit, Integer -> Integer
+  gfl-icon-col (kit) (s) = gicon-size (gicon-pick kit gicon-bin) (gfl-icon-scale s) + 4 * s
 
   gfl-draw-preview : Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, Fat16DirEntry, Integer, Integer -> Integer
   gfl-draw-preview (base) (w) (h) (stride) (s) (font) (pal) (e) (buf) (got) =

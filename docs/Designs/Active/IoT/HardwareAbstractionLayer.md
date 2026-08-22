@@ -425,3 +425,143 @@ the buffer discipline is stated in the chapter prose from day one.
    language of dependencies. Phase 1 hardcodes one known-good
    configuration per board in the board chapter; a typed clock-tree
    model is explicitly deferred.
+5. **Hardware crypto dispatch. DESIGNED 2026-08-21 (root, red's draw);
+   the row is "Hardware crypto dispatch" under The Design below.** Moved
+   here from `ThreatModel.md` recommendation 2 (fester 2026-08-21) and
+   shaped by ruling 19 (red, 2026-08-20): the foreword defines the API,
+   board chapters provide the implementation, and the capability manifest
+   says whether hardware crypto is in use. What the row adds is the
+   measurement that decides what can be BUILT, which is one board, and
+   the two rules that keep the dispatch honest: the software path is the
+   control, and absence refuses.
+
+### Hardware crypto dispatch (root, 2026-08-21)
+
+**The measurement first, because it decides the shape.** Nine board
+chapters, and what each cites for its register map, what of that the
+tree holds, and what the HAL threads today:
+
+| board | cites | held in-tree | crypto block per the cited document | HAL threads |
+|---|---|---|---|---|
+| `Stm32F4Board` (F407) | RM0090 | no; `STM32-Reference.md` (2.8 KB) names "RNG, Hash, Crypto (on some variants)" and "True RNG" | RNG on the F405/F407; CRYP/HASH on the F415/F417 variants only | GPIO, UART, SPI, I2C, ADC, Power, Flash |
+| `Stm32L4Board` (L4x6) | RM0351 | no; same summary | RNG; AES on some L4 parts | the same set |
+| `Nrf52840Board` | nRF52840 PS v1.7 | no | RNG, ECB (AES), CCM, CryptoCell-310 | GPIO, UART, SPI, I2C, ADC, Power, Flash |
+| `Nrf9160Board` | nRF9160 PS v2.1 | no | CryptoCell-310 | the same set |
+| `Rp2040Board` | rp2040-datasheet.pdf | no | none (a ring-oscillator random bit; no TRNG, no AES, no SHA) | GPIO, UART, SPI, I2C, ADC, Power, Flash |
+| `Esp32C6Board` | ESP32-C6 TRM | no; `ESP32-C6-Reference.md` (2.5 KB) names RSA-3072 secure boot, AES-XTS flash encryption, an HMAC peripheral | AES, SHA, RSA, HMAC, ECC, TRNG | GPIO, UART, SPI, I2C (no ADC either: the map was unverifiable in-tree, the ADC ruling) |
+| `Fe310Board` (G002) | FE310-G002 Manual v1p1 | no | none | GPIO, UART, SPI, Power |
+| `Pi4Board` (BCM2711) | BCM2711 ARM Peripherals | no; `RaspberryPi-Reference.md` (1.3 KB) names nothing of it | an RNG block; AES/SHA as ARMv8 CPU instructions, not a peripheral | GPIO, UART, SPI, I2C, Power |
+| `QemuVirtBoard` | the QEMU virt machine model | the model is the bed | virtio-rng, a DEVICE the bed attaches; AES/SHA only as CPU instructions under `-cpu cortex-a72` | UART |
+
+Two things the table says that the question did not. **No board's crypto
+register map can be cited from a document the tree holds**: the nine
+chapters cite reference manuals by name and section, none of which is in
+`docs/Reference`, and the three in-tree summaries name blocks without a
+single register. That is the wall the Esp32C6 ADC hit ("do not add it from
+memory"), and it stands here for every block in the fourth column, which is
+written from memory and says so. **One board's block is a device the bed
+can attach and the spec of which the tree already implements**: QEMU virt's
+virtio-rng is VIRTIO device id 4 on the same virtio-mmio transport
+`codex/foreword/core/VirtioBlk.codex` drives for id 2, through the same
+`vb-find` slot probe, one queue, and requests that are one device-written
+buffer with no header. Nothing else here has silicon.
+
+**The shape, in this design's own convention** (board chapters are plain
+functions threading linear handles, not effect ops; see "Board chapters"):
+
+```
+  effect Rng where
+    rng-open   : linear Board, Integer -> [Rng, Device.Mmio] (linear Board, Result (linear RngUnit))
+    rng-read   : linear RngUnit, Integer -> [Rng, Device.Mmio] (linear RngUnit, Result (List Integer))
+    rng-close  : linear RngUnit -> [Rng, Device.Mmio] Integer
+
+  effect Crypto where
+    aes-unit-open      : linear Board, Integer -> [Crypto, Device.Mmio] (linear Board, Result (linear AesUnit))
+    aes-unit-encrypt   : linear AesUnit, List Integer, List Integer -> [Crypto, Device.Mmio] (linear AesUnit, List Integer)
+    aes-unit-close     : linear AesUnit -> [Crypto, Device.Mmio] Integer
+    sha-unit-open / sha-unit-digest / sha-unit-close, the same shape
+```
+
+`[Rng]` and `[Crypto]` are capability rows beside `[Adc]` and `[Power]`
+(`cs-id` 24 and 25; the bit table's free bits are chosen at build time, not
+here, because the table moved twice this week). A program that touches a
+unit declares the row on `opening`, and the grant is what the manifest
+shows: hardware crypto in use means the bit is granted, and nothing else.
+
+**Rule 1: the software path is the control, and the arm is the same
+answer.** `aes-encrypt-block`, `aes-cbc-encrypt`, `sha256` and the rest of
+`codex/foreword/core/` stay exactly as they are and stay the thing every
+caller reaches for by default. A board's unit is a SECOND implementation
+of the same function, and the arm that admits it is the one `ddc` and the
+rechecker already taught this project: the same input through the unit and
+through the software path must give one answer, on the board, on every
+vector the software path's own known-answer tests carry. A unit that has
+no such arm is not wired. For an RNG there is no same answer; its controls
+are the refusal below and a reading (two reads differ, a 64-byte read has
+at least sixteen distinct bytes), which is weak and is said to be weak.
+
+**Rule 2: absence REFUSES, it never falls back.** There is no dispatcher
+that picks the unit when present and the software otherwise; that is the
+silent shape, and a caller who wanted the hardware would learn from a
+timing that they did not get it. `rng-open` on a board whose chapter has no
+unit does not exist, which is a compile-time refusal (CDX3002), the
+strongest kind; `rng-open` on a board whose unit is declared and absent at
+run time (the bed without the device attached, silicon fused off) answers
+a `Result` failure and the caller decides. A caller that wants "hardware if
+you have it" writes that choice at the call site where a reader can see
+it. The manifest therefore says exactly one thing, and it is true: `[Rng]`
+granted means a unit was opened.
+
+**BUILT, step (1), 2026-08-21 (root), and one deviation from the shape
+above is deliberate.** `Result` at open is spelled as a unit whose device
+base is zero: `rng-open` always hands back a linear `RngUnit` (the checker
+tracks a linear inside a tuple, not yet inside a `Result` constructor), a
+zero-base unit is one that was asked for and not there, `rng-present` says
+which, and every read through it answers zero bytes. The refusal is the
+same, the handle discipline is unchanged, and the caller still cannot be
+handed a software generator by mistake. `VirtioRng.codex` reuses
+`VirtioBlk`'s transport by name, `QemuVirtBoard` threads the linear Board
+through `qemu-rng-open/read/close`, `[Rng]` is `cs-id` 24 at bit 30 (bits
+0 to 29 were all taken; COMPILER-17's imm32 hazard sits at 31 and is still
+latent), and the two arms are `codex/test/qemu-rng` and `qemu-rng-absent`,
+the same program routed to the arm64 bed by a `.qemudev` sidecar, one
+attaching `virtio-rng-device` and the other attaching nothing. The x86
+battery skips both by `.skip`, which names the runner that does run them.
+Measured on the bed before any of the rest existed: with the device
+`rng found=y n1=64 n2=64 distinct=ok differ=y`, without it `rng absent`.
+
+**What gets built, in order, and what waits.** (1) `VirtioRng` beside
+`VirtioBlk` in the foreword: id 4, `vb-find` reused, one queue, the device
+fills the buffer; `QemuVirtBoard` gains `qemu-rng-open/read/close`
+threading the linear Board; the `[Rng]` row; the arms are
+`codex/test/qemu-rng` (positive, `-device virtio-rng-device` attached the
+way `test-cross-disk.ps1` attaches the block device) and `qemu-rng-absent`
+(same binary, no device, `rng-open` answers the failure and the program
+says so), both on the arm64 bed, which is the only bed that can. That is
+one CL, seed-affecting for the capability row, and it is the whole of what
+this question can PROVE today. (2) Every other board's unit waits for its
+register map to be citable, which means the manual in `docs/Reference` or
+the silicon on the bench; the first one with either is the Esp32C6's
+TRNG, because its summary is the only in-tree document that names a block,
+and the C6 is also the board the ADC ruling refused for the same reason,
+so the two wait together. (3) AES/SHA units wait for a board with a
+citable map AND a bed or bench to run the same-answer arm on; none
+qualifies today, and the design says so rather than scheduling one.
+
+**Steps (2) and (3) are BLOCKED, 2026-08-21 (root, red's ruling), and the
+block is a document to acquire, not a mystery: there is no board crypto
+manual in `docs/Reference`.** What the tree holds for the nine boards is
+three summaries, `STM32-Reference.md` (2.8 KB), `ESP32-C6-Reference.md`
+(2.5 KB) and `RaspberryPi-Reference.md` (1.3 KB), each naming blocks and
+none naming a register; the PDFs there are the Intel NICs, USB, xHCI, HID
+and AMI, none of them a board. The first of RM0090, RM0351, the nRF52840 or
+nRF9160 PS, the ESP32-C6 TRM, the FE310-G002 manual or the BCM2711
+peripherals document to land in `docs/Reference` unblocks that board's
+unit, the C6 TRM first. Until then the row gains only what needs no map:
+**the compile-time half of rule 2 has its arm**, `errors/hal-rng-no-unit`,
+which calls `rp-rng-open` on the Rp2040, the one board the table says has
+no TRNG at all, and pins `CDX3002` at the call site. Its control is the
+same program on `QemuVirtBoard` through `qemu-rng-open`, which compiles
+clean, so the refusal is the name and nothing else. The arm goes red the
+day somebody backs `rp-rng-open` with the ring oscillator, which is the
+silent shape rule 2 exists to refuse.

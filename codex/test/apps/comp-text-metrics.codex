@@ -1,0 +1,62 @@
+Chapter: CompTextMetricsTest
+  cites Works chapter GopComposite
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ A SYNTHETIC face, so the metric is testable with no disk and no rasterizer.
+ The buffer is laid out exactly as `fl-raster-to-gobf` writes one -- 95 glyph
+ bitmaps, then a 95-entry advance table, then the y-offset table -- because
+ that layout is what `gbf-measure-text` reads and a test that invented its own
+ would measure nothing. The glyph bitmaps are never initialised and never read;
+ nothing here draws.
+
+ The advances are chosen so a fixed-cell assumption is wrong in BOTH
+ directions, which is the failure the proportional path exists to fix: `i` is
+ narrower than the assumed cell and `W` is wider, so an 8-pixel cell truncates
+ a string of `i` early and lets a string of `W` overflow its box.
+
+  ctm-gw : Integer = 8
+  ctm-gh : Integer = 16
+
+  ctm-adv-off : Integer = 95 * 8 * 16
+
+  ctm-set-adv : Integer, Integer, Integer -> Integer
+  ctm-set-adv (b) (code) (v) = poke-byte b (ctm-adv-off + code - 32) v
+
+  ctm-fill-adv : Integer, Integer, Integer -> Integer
+  ctm-fill-adv (b) (i) (v) =
+    if i >= 95 then 0
+    else let d = poke-byte b (ctm-adv-off + i) v
+    in ctm-fill-adv b (i + 1) v
+
+  ctm-font : Integer -> GopFont
+  ctm-font (b) = GopFont { gf-ok = True, gf-base = b, gf-gw = ctm-gw, gf-gh = ctm-gh, gf-asc = ctm-gh, gf-cap = ctm-gh }
+
+  ctm-show : Text -> Text
+  ctm-show (t) = "[" & t & "]"
+
+  opening : [Console] Nothing =
+    let b = alloc-bytes (95 * ctm-gw * ctm-gh + 95 + 95)
+    in let d0 = ctm-fill-adv b 0 10
+    in let d1 = ctm-set-adv b 105 3
+    in let d2 = ctm-set-adv b 87 20
+    in let f = ctm-font b
+    in let none = gfont-none
+    in act
+      print-line-uni ("width iii, advance 3        : " & integer-to-text (gfont-text-w f "iii"))
+      print-line-uni ("width WWW, advance 20       : " & integer-to-text (gfont-text-w f "WWW"))
+      print-line-uni ("width abc, advance 10       : " & integer-to-text (gfont-text-w f "abc"))
+      print-line-uni ("width of the empty string   : " & integer-to-text (gfont-text-w f ""))
+      print-line-uni ("a fixed 8px cell would say  : " & integer-to-text (text-length "iii" * 8) & " for iii and " & integer-to-text (text-length "WWW" * 8) & " for WWW")
+      print-line-uni ("no face measures            : " & integer-to-text (gfont-text-w none "WWW"))
+      print-line-uni ("fit WWW in 60, exactly      : " & ctm-show (comp-fit-px f "WWW" 60))
+      print-line-uni ("fit WWW in 59, one short    : " & ctm-show (comp-fit-px f "WWW" 59))
+      print-line-uni ("fit WWW in 39               : " & ctm-show (comp-fit-px f "WWW" 39))
+      print-line-uni ("fit WWW in 19, none fits    : " & ctm-show (comp-fit-px f "WWW" 19))
+      print-line-uni ("fit WWW in 0                : " & ctm-show (comp-fit-px f "WWW" 0))
+      print-line-uni ("fit W in 10, single too wide: " & ctm-show (comp-fit-px f "W" 10))
+      print-line-uni ("fit iiiiiiiiii in 30        : " & ctm-show (comp-fit-px f "iiiiiiiiii" 30))
+      print-line-uni ("fit iiiiiiiiii in 29        : " & ctm-show (comp-fit-px f "iiiiiiiiii" 29))
+      print-line-uni ("an 8px cell would fit only  : " & integer-to-text (30 / 8) & " of those 10")
+      print-line-uni ("fit abcdef in 35            : " & ctm-show (comp-fit-px f "abcdef" 35))
+    end

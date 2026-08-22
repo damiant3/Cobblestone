@@ -25,7 +25,16 @@ Section: Parameters
     ["Emit the PSCI CPU_ON sequence in __start (multi-core programs only).",
      "Undefined on boards without PSCI -- see run.ps1."]
 
-  compilearm64-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "MemMB" SptInt (SeInt 3072), sh-doc workdir-doc (sh-param-default "WorkDir" SptString (SeLit "")), sh-doc smp-doc (sh-switch "Smp")]
+  kernel-doc : List Text =
+    ["Which compiler compiles the source to IR. Defaults to the DEPOT SEED,",
+     "and that default is the point: compile.ps1's own default is",
+     "build-output/bare-metal/Codex.cdx, which holds whatever the last",
+     "build.ps1 left there. That made the cross bed's answer a property of",
+     "the workspace rather than of the depot, so two agents measured the",
+     "same source against different compilers and disagreed. Pass -Kernel",
+     "only to test a compiler that is not the seed, and say so in the CL."]
+
+  compilearm64-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "MemMB" SptInt (SeInt 3072), sh-doc workdir-doc (sh-param-default "WorkDir" SptString (SeLit "")), sh-doc kernel-doc (sh-param-default "Kernel" SptString (SeLit "")), sh-doc smp-doc (sh-switch "Smp")]
 
 Section: S00 -- Usage
 
@@ -48,7 +57,7 @@ Section: S02 -- Phase 1: Compile to IR
 
   s02 : List ShellCmd =
     let fail-ir = [ScWriteError (SeRaw "\"FAIL: IR compile step exited $LASTEXITCODE; see $LogFile\""), ScExit (SeInt 3)]
-    in [ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScEcho (SeRaw "\"[arm64-compile] Compiling $Src to IR...\""), ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB", ScIf (SeNot (SeExitCodeEq 0)) fail-ir []]
+    in [ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScAssign "KernelCdx" (SeRaw "if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }"), ScEcho (SeRaw "\"[arm64-compile] Compiling $Src to IR...\""), ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx", ScIf (SeNot (SeExitCodeEq 0)) fail-ir []]
 
 Section: S03 -- Phase 2: ARM64 codegen plug
 

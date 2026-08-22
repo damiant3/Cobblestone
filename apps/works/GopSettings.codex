@@ -1,0 +1,252 @@
+Chapter: GopSettings
+  cites Works chapter GopFat16
+
+ Where a setting lives between one boot and the next.
+
+ A setting is declared, not invented at the call site: every key names its
+ own default and its own range, and a value outside that range is REFUSED
+ rather than quietly moved to the nearest legal one. Clamping is the older
+ habit in this tree and `zone-clamp` is still doing it, which is why a
+ timezone typed as 40 becomes 14 and nothing tells anyone. A refusal is a
+ verdict the caller can show; a clamp is a value nobody chose.
+
+ The same refusal runs on the way IN. A file holding a value this build no
+ longer admits leaves the default standing, so narrowing a range in a later
+ version cannot resurrect a value the range was narrowed to exclude.
+
+ The file is on the ESP root and its layout is fixed, so a reader that is
+ not this code can still tell what it found:
+
+   0..3    magic 'C' 'S' 'T' '1'
+   4..5    record count, u16 little-endian
+   6..7    zero
+   8..     records of eight bytes each:
+             +0..3  key id, u32 little-endian
+             +4..7  value plus 2147483648, u32 little-endian
+
+ The value is stored biased for the reason the timezone byte is: a number
+ read back out of a buffer is unsigned, so an unbiased -1 returns as
+ 4294967295 and the range check then refuses a value that was legal when it
+ was written.
+
+ Values are held in a list parallel to the schema rather than in
+ `Observe chapter ConfigStore`, which was surveyed for this and is the
+ wrong shape: its keys are dynamic and hashed, and a schema fixed at
+ declaration already gives every key an index. It also cannot express a
+ range, which is the half that was missing.
+
+ We say:
+
+Section: Kinds
+
+  gst-kind-int : Integer = 0
+  gst-kind-bool : Integer = 1
+
+Section: The Schema
+
+  SettingKey = record {
+    sk-id : Integer,
+    sk-name : Text,
+    sk-kind : Integer,
+    sk-default : Integer,
+    sk-lo : Integer,
+    sk-hi : Integer
+  }
+
+  SettingsStore = record {
+    st-keys : List SettingKey,
+    st-vals : List Integer,
+    st-count : Integer
+  }
+
+  SetResult =
+    | SetOk (SettingsStore)
+    | SetRefused (Text)
+
+  gst-int-key : Integer, Text, Integer, Integer, Integer -> SettingKey
+  gst-int-key (id) (name) (dflt) (lo) (hi) =
+    SettingKey { sk-id = id, sk-name = name, sk-kind = gst-kind-int, sk-default = dflt, sk-lo = lo, sk-hi = hi }
+
+  gst-bool-key : Integer, Text, Boolean -> SettingKey
+  gst-bool-key (id) (name) (dflt) =
+    SettingKey { sk-id = id, sk-name = name, sk-kind = gst-kind-bool, sk-default = if dflt then 1 else 0, sk-lo = 0, sk-hi = 1 }
+
+  gst-defaults : List SettingKey, Integer, Integer, List Integer -> List Integer
+  gst-defaults (keys) (i) (n) (acc) =
+    if i >= n then acc
+    else let k = list-at keys i
+    in gst-defaults keys (i + 1) n (list-push acc (k.sk-default))
+
+  gst-store : List SettingKey -> SettingsStore
+  gst-store (keys) =
+    let n = list-length keys
+    in SettingsStore { st-keys = keys, st-vals = gst-defaults keys 0 n [], st-count = n }
+
+Section: Reading
+
+  gst-index-of : SettingsStore, Integer, Integer -> Integer
+  gst-index-of (s) (id) (i) =
+    if i >= s.st-count then 0 - 1
+    else let k = list-at (s.st-keys) i
+    in if k.sk-id == id then i else gst-index-of s id (i + 1)
+
+  gst-get : SettingsStore, Integer, Integer -> Integer
+  gst-get (s) (id) (fallback) =
+    let idx = gst-index-of s id 0
+    in if idx < 0 then fallback else list-at (s.st-vals) idx
+
+  gst-get-bool : SettingsStore, Integer, Boolean -> Boolean
+  gst-get-bool (s) (id) (fallback) =
+    gst-get s id (if fallback then 1 else 0) /= 0
+
+Section: Writing
+
+  gst-vals-with : SettingsStore, Integer, Integer, Integer, List Integer -> List Integer
+  gst-vals-with (s) (idx) (v) (i) (acc) =
+    if i >= s.st-count then acc
+    else let cur = if i == idx then v else list-at (s.st-vals) i
+    in gst-vals-with s idx v (i + 1) (list-push acc cur)
+
+  gst-set : SettingsStore, Integer, Integer -> SetResult
+  gst-set (s) (id) (v) =
+    let idx = gst-index-of s id 0
+    in if idx < 0 then SetRefused ("no such setting: " & show id)
+    else let k = list-at (s.st-keys) idx
+    in if v < k.sk-lo then SetRefused (k.sk-name & " rejects " & show v & ", low limit " & show (k.sk-lo))
+    else if v > k.sk-hi then SetRefused (k.sk-name & " rejects " & show v & ", high limit " & show (k.sk-hi))
+    else SetOk (__record-set s "st-vals" (gst-vals-with s idx v 0 []))
+
+  gst-set-bool : SettingsStore, Integer, Boolean -> SetResult
+  gst-set-bool (s) (id) (on) = gst-set s id (if on then 1 else 0)
+
+  gst-or-keep : SettingsStore, SetResult -> SettingsStore
+  gst-or-keep (s) (r) = when r
+    is SetOk (s2) -> s2
+    is SetRefused (why) -> s
+
+  gst-why : SetResult -> Text
+  gst-why (r) = when r
+    is SetOk (s2) -> ""
+    is SetRefused (why) -> why
+
+Section: Restoring A Default
+
+ Restoring is an explicit act on a key. It is deliberately not "delete the
+ file and reboot", which cannot express one key and cannot be undone.
+
+  gst-reset : SettingsStore, Integer -> SetResult
+  gst-reset (s) (id) =
+    let idx = gst-index-of s id 0
+    in if idx < 0 then SetRefused ("no such setting: " & show id)
+    else let k = list-at (s.st-keys) idx
+    in gst-set s id (k.sk-default)
+
+  gst-reset-all : SettingsStore -> SettingsStore
+  gst-reset-all (s) = gst-store (s.st-keys)
+
+Section: The File
+
+  gst-magic0 : Integer = 67
+  gst-magic1 : Integer = 83
+  gst-magic2 : Integer = 84
+  gst-magic3 : Integer = 49
+
+  gst-bias : Integer = 2147483648
+
+  gst-hdr-bytes : Integer = 8
+  gst-rec-bytes : Integer = 8
+  gst-max-keys : Integer = 48
+  gst-buf-bytes : Integer = 512
+
+  gst-name-bytes : Integer, Text, Integer -> Integer
+  gst-name-bytes (buf) (s) (i) =
+    if i >= text-length s then 0
+    else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
+    in gst-name-bytes buf s (i + 1)
+
+  gst-name : Integer
+  gst-name =
+    let b = __heap-save
+    in let adv = __heap-advance 16
+    in let w = gst-name-bytes b "SETTINGSDAT" 0
+    in b
+
+  gst-u16-at : Integer, Integer -> Integer
+  gst-u16-at (buf) (off) =
+    peek-byte buf off + bit-shl (peek-byte buf (off + 1)) 8
+
+  gst-u32-at : Integer, Integer -> Integer
+  gst-u32-at (buf) (off) =
+    gst-u16-at buf off + bit-shl (gst-u16-at buf (off + 2)) 16
+
+Section: Saving
+
+  gst-put-recs : SettingsStore, Integer, Integer, Integer -> Integer
+  gst-put-recs (s) (buf) (i) (off) =
+    if i >= s.st-count then 0
+    else let k = list-at (s.st-keys) i
+    in let a = gfat-put-u32 buf off (k.sk-id)
+    in let b = gfat-put-u32 buf (off + 4) (list-at (s.st-vals) i + gst-bias)
+    in gst-put-recs s buf (i + 1) (off + gst-rec-bytes)
+
+  gst-save : SettingsStore -> [Device.Port] Boolean
+  gst-save (s) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then False
+    else if s.st-count > gst-max-keys then False
+    else
+      let buf = __heap-save
+      in let adv = __heap-advance gst-buf-bytes
+      in let a = poke-byte buf 0 gst-magic0
+      in let b = poke-byte buf 1 gst-magic1
+      in let c = poke-byte buf 2 gst-magic2
+      in let d = poke-byte buf 3 gst-magic3
+      in let e = gfat-put-u16 buf 4 (s.st-count)
+      in let f = poke-byte buf 6 0
+      in let g = poke-byte buf 7 0
+      in let h = gst-put-recs s buf 0 gst-hdr-bytes
+      in gfat-write-small-file (m.gm-vol) gst-name buf (gst-hdr-bytes + gst-rec-bytes * s.st-count)
+  end
+
+Section: Loading
+
+ A machine with no settings file answers the declared defaults, which is
+ the only thing it can honestly answer: the absence of a file says nothing
+ about what anyone wanted.
+
+ A file whose header claims more records than its length can hold is
+ refused whole rather than read as far as it goes, because a truncated
+ file and a short one are the same colour at the call site.
+
+  gst-apply-rec : SettingsStore, Integer, Integer -> SettingsStore
+  gst-apply-rec (s) (buf) (off) =
+    let id = gst-u32-at buf off
+    in let v = gst-u32-at buf (off + 4) - gst-bias
+    in gst-or-keep s (gst-set s id v)
+
+  gst-apply-recs : SettingsStore, Integer, Integer, Integer, Integer -> SettingsStore
+  gst-apply-recs (s) (buf) (i) (n) (off) =
+    if i >= n then s
+    else gst-apply-recs (gst-apply-rec s buf off) buf (i + 1) n (off + gst-rec-bytes)
+
+  gst-load : SettingsStore -> [Device.Port] SettingsStore
+  gst-load (s) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then s
+    else act
+      f <- gfat-read-file (m.gm-vol) "SETTINGS.DAT"
+      if f.gf-ok == False then s
+      else if f.gf-len < gst-hdr-bytes then s
+      else if peek-byte (f.gf-buf) 0 /= gst-magic0 then s
+      else if peek-byte (f.gf-buf) 1 /= gst-magic1 then s
+      else if peek-byte (f.gf-buf) 2 /= gst-magic2 then s
+      else if peek-byte (f.gf-buf) 3 /= gst-magic3 then s
+      else let n = gst-u16-at (f.gf-buf) 4
+      in let avail = (f.gf-len - gst-hdr-bytes) / gst-rec-bytes
+      in if n > avail then s
+      else if n > gst-max-keys then s
+      else gst-apply-recs s (f.gf-buf) 0 n gst-hdr-bytes
+    end
+  end
+
+Page 1

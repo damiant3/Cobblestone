@@ -105,10 +105,30 @@ DRIVER against hardware.
 | Bochs VGA / GOP framebuffer | 1234:1111 | 0xFD000000 | display only, in-RAM, no MMIO trap. **`-gop-stride N` reports a scanline wider than the visible width**, which every panel we have measured does and no bed here could produce before 2026-07-29. It sets PixelsPerScanLine at mode-info +32, which is the field `cdx-to-pe.ps1`'s stub reads into the handoff block at +0x20 (the deleted `option_a_stub.asm` read the same field into its `CELL_STRIDE`), and it survives a guest `SetMode` because padding is a panel property rather than a mode choice. NOT modelled: the host-side triangle rasterizer and its post passes, which address rows by visible width and **refuse a padded stride outright** rather than shear; a bare-metal (non-UEFI) guest, which is handed width and height at GPA 0x7C4/0x7C8 and no stride cell at all | **yes.** A stride not wider than the mode, or one whose framebuffer would exceed `GOP_FB_SIZE`, is refused by name with the byte count rather than clamped into something that looks like it worked |
 | NEC xHCI USB 3.x | 1033:0194 | 0xFE800000 | mass storage, HID keyboard, UVC camera, hubs. **Root port count is variable (`-xhci-ports N`, up to 32)**; the four modelled devices sit on ports 1-4 and everything above is an empty POWERED port, which is what a real wide controller reports. It reported four ports until 2026-08-03, and QEMU reports eight | partial, and less than it looks, but no longer only on the happy path. **`-usb-cfgval N` makes the storage device number its configuration N and REFUSE any other value** (USB 2.0 9.4.7: a request error on a control pipe is a stall); **`-usb-setcfg-fault N` answers SET_CONFIGURATION with completion code N** whatever is sent; `-xhci-no-root-kbd` removes a device. **CLOSED 2026-08-03, and it was the entry that named this rule.** The BOT model now presents the power-on UNIT ATTENTION every conforming target presents: the first command after a controller reset answers CHECK CONDITION, `REQUEST_SENSE` returns sense key 0x06 / ASC 0x29 rather than 18 zero bytes, and reading it is what clears the condition. `-usb-no-unit-attention` restores the old always-ready target |
 | Intel HDA audio | 8086:2668 | 0xFE000000 | host waveOut | no |
-| Intel e1000e NIC | 8086:15B8 | 0xFE400000 | **absent unless a flag selects it.** CTRL with self-clearing RST, STATUS.LU gated on CTRL.SLU, RAL/RAH with the AV bit, both descriptor rings walked out of guest memory, canned frame injection into the receive ring, transmit descriptors consumed with DD written back. NOT modelled: interrupts (the driver polls), multi-descriptor frames, checksum offload, PHY registers, statistics, and a failed reset does not otherwise disable the part the way wedged silicon would | **yes, four ways.** `-e1000-no-reset` holds RST set, `-e1000-no-link` never raises LU, `-e1000-no-mac` clears the AV bit, `-e1000-no-tx-dd` never reports a transmit done. `-e1000-inject N` sets how many frames arrive. Each of the four was run against the driver and the first found a real defect: the reset verdict was computed and discarded (fixed, CL 12079) |
+| Intel e1000e NIC | 8086:100E | 0xFE400000 | **absent unless a flag selects it.** CTRL with self-clearing RST, STATUS.LU gated on CTRL.SLU, RAL/RAH with the AV bit, both descriptor rings walked out of guest memory, canned frame injection into the receive ring, transmit descriptors consumed with DD written back. GPRC counts a good frame WHERE THE MAC ACCEPTS IT, above the ring poison, the K1 stall and the bus-master gate, so a stopped receive reads gprc>0 ddset=0 rather than gprc=0; it was counted after the writeback until 2026-08-21, which made DiagNicRing's `frames arrived and we cannot see them` row unreachable here (arms: codex/test/e1000-rx-invisible, -off). RNBC stays at the ring-full test, which is a different row. NOT modelled: interrupts (the driver polls), multi-descriptor frames, checksum offload, PHY registers, statistics, and a failed reset does not otherwise disable the part the way wedged silicon would | **yes, four ways.** `-e1000-no-reset` holds RST set, `-e1000-no-link` never raises LU, `-e1000-no-mac` clears the AV bit, `-e1000-no-tx-dd` never reports a transmit done. `-e1000-inject N` sets how many frames arrive. Each of the four was run against the driver and the first found a real defect: the reset verdict was computed and discarded (fixed, CL 12079) |
+| Intel I219 NIC | 8086:15B8 | 0xFE400000 | **absent unless `-i219` selects it.** The 82540EM model above plus the one PCH requirement with a named failure mode: PHY page 770 register 17, `Giga_K1_disable` bit 13 and `K1 enable` bit 14, cited to I219 rev 2.02 section 9.5.5.2, and a MAC that makes no progress while K1 is enabled at 1 Gbps; plus the MDIO/NVM semaphore at `EXTCNF_CTRL`. NOT modelled: ULP, SMBus and LANPHYPC, the LCD reload after PHY reset, LTR -- four of the eight rows, and silence here is not agreement | **yes, four ways.** `-i219-k1-nvm 0` powers up with K1 off, the control that says the stall comes from the K1 bits. `-i219-swflag` refuses MDIO unless the caller holds `EXTCNF_CTRL` SW ownership (0x00F00 bit 5, protocol 82583V 4.5.2, offset family-corroborated only). `-i219-mng-holds` starts with firmware holding MNG, so a correct acquisition is still refused. Both pairs and all controls are in `I219IsNotAnE1000.md` |
 | NE2000 NIC | ISA, not PCI | ports 0x300 | exists nowhere outside codex-vm; no real machine has had one for twenty years | no |
 | IDE disk, HPET, IOAPIC, LAPIC, PS/2, CMOS RTC, PC speaker, UEFI firmware | not PCI | see OperatorsManual | varies | no |
 
+**The NIC advertised 8086:15B8 until 2026-08-20, which is an I219-LM, the
+part on the ASUS, and it is not what this model implements.** What is
+decoded is the common 8254x core: CTRL, STATUS, MDIC, ICR, RCTL, TCTL, the
+two rings, RAL/RAH and four counters. There is no EXTCNF_CTRL, no SWSM and
+no MSI-X, so 82574 would overclaim and I219 overclaims further, its MAC
+sitting in the PCH behind a semaphore no line here models. It is 8086:100E,
+an 82540EM, and 15B8 is reserved for a model written from the I219
+datasheet. **A bed must not advertise an id it does not implement** (red's
+ruling, 2026-08-20): an arm that checks the part then passes while the
+behaviour is a different chip.
+
+**Nothing in the tree observed the id, which is why it could be wrong for
+as long as it was.** The driver matches on vendor plus class plus subclass
+and never reads it (`E1000e.codex` `e1000-is-candidate`), and
+`codex/test/e1000-match` uses 5560 as an invented FIXTURE rather than a
+reading, so the wrong id bound correctly and every NIC arm stayed green.
+The check, if you need it again, is a probe calling `pci-scan-bus 0` and
+`e1000-find` and printing `d.pci-device-id`: it answers 4110 on this model
+and answered 5560 before, so it is capable of telling them apart.
 **Every BAR above is inside 3 to 4 GB, and that is load-bearing rather
 than incidental.** The runtime page tables map 0 to 3 GB identity as RAM
 (the heap and stack arena), one directory for 3 to 4 GB as devices, and
@@ -293,7 +313,7 @@ here by construction:
 | Gap | Landed | The defect it hid |
 |---|---|---|
 | A scanline wider than the visible width | **`-gop-stride`, this CL** | Anything stepping framebuffer rows by width. The ASUS pads by 128 pixels |
-| A **second xHCI** controller | **still absent here, and it did not block: reek built that bed in OVMF instead** | `xhci-connect` took the first controller and stopped. The board has two and the boot stick is on the second, which returned `disk=n` and cost a rung. reek's fix is gated against a two-controller OVMF bed whose calibration arm reproduces `disk=n` exactly. **The lesson is that this catalog is not the only place a bed can live**: when the missing state is a TOPOLOGY rather than a device's internals, QEMU already has it and splicing `codex-vm.c` is the expensive route |
+| A **second xHCI** controller | **PRESENT HERE since before 2026-08-21, and this row said otherwise until then (fester)**: `-xhci-two` adds the ASMedia `1b21:1242` as ordinal 1 beside ordinal 0, `-xhci-no-disk` unplugs the mass storage, `-xhci-bar2 N` places the second BAR. reek separately built an OVMF bed, which is what this row recorded, and the note that codex-vm lacked one was carried forward after it stopped being true -- a second bed was nearly built off it. **What was actually missing was an ARM: measured 2026-08-21, zero uses of all three flags across every arm and every `.vmargs`, so a two-controller model nobody had run.** `xhci-two` in `diag-arm.ps1` runs it now. Running it found the default `-xhci-bar2` at `0x91000000`, inside the 3 GB RAM arena, so the diag PCI stage answered `BELOW3G` -- "a device window sits inside our RAM arena ... do not expect the network or USB rows to be right". Every reading the second controller could have given was one the machine had already disowned. Default moved to `0xFE900000`, in the MMIO hole and clear of the other four BARs |
 | The e1000 model **wired to the NAT** | **`-e1000-nat`, blu, this CL** | Its TX summed the bytes and counted them rather than retransmitting, and its RX replayed only the canned frame, so `cdx-serve` could not converse over the e1000 at any flag combination and **the first real TCP conversation over this card would have happened on metal.** It now completes here: the full repository-protocol exchange passes over the e1000 branch, sourced from the address the model answers RAL/RAH with |
 | A storage device that numbers its configuration anything but 1 | **`-usb-cfgval N`, reek, this CL** | `msc-open-endpoints` sent a hardcoded `SET_CONFIGURATION(1)` while the keyboard, mouse, camera and hub paths all read `bConfigurationValue` from descriptor byte 5. **Every bed in reach hid it in a different way**: this model reported 1, and QEMU's `usb-storage` reports 1 *and then accepts any value sent*, so neither could refuse. Calibrated as a 2x2 rather than one arm -- old driver plus `-usb-cfgval 2` is the only cell that fails, which is what shows the model refuses when it should AND only then. Fixed at main 12730 |
 | A control request that can FAIL | **`-usb-setcfg-fault N`, reek, this CL** | Nothing. It reproduces the ASUS symptom (`connect=FAILED` from a transaction-errored SET_CONFIGURATION) so the host's handling can be built here instead of at the board. **It injects a symptom, not a cause, and must never be used to confirm a diagnosis** -- a checker fed a fault you chose will agree with you |
@@ -321,6 +341,186 @@ decorative. What it does not buy: this is a single bridge one level deep with an
 inert endpoint, so multi-level descent, the subordinate-bus range, and a driven
 device behind the bridge are all still unmodelled; the first honest verdict on a
 real four-bus topology is still the board.
+
+**Queue: a target that REVIVES after it died. Owner none, asked for by red
+2026-08-21 for reek's WORKS-9 recovery path.** `usb_bot_dead` is latched on
+purpose (`tools/codex-vm.c`, at the `-usb-bot-die-len` check): once the target
+dies it never answers again, which is what `sink-dies` needs and what the
+metal target does. WORKS-9 needs the other half -- a variant where a device
+that died at `-usb-bot-die-lba` comes back on a port reset, or an endpoint
+reset, whichever the driver can actually issue -- so that a recovery path has
+an arm that can pass AND an arm that cannot. Name it beside the existing flag
+and keep the latched default; tell reek the flag name when it lands.
+
+**Measure before designing it**: which reset the driver issues, and whether
+this model sees it, is the whole question. If codex-vm's xHCI does not already
+observe a port or endpoint reset on the BOT path, the flag has nothing to hang
+off and that is the first finding, not a detail.
+
+**Queue: per-controller device attachment. Owner none, and WORKS-25 is parked
+behind it.** `-xhci-two` gives a second controller with NOTHING on it:
+measured 2026-08-21, `ctl1` reports `kbd=n mouse=n disk=n`, `-usb-disk-port`
+selects a root PORT rather than a controller, and every device model
+(`hid_*`, `usb_bot_*`, `xhci_no_disk`) is a global singleton. So the second
+controller is register-only. `apps/works/works-backlog.md` WORKS-25 --
+`xhci-connect` opens ordinal 0 while `usb-attach` walks, and `GopUsbMsc`,
+`GopUsbKbd` and `CamCapture` still call it -- cannot be fixed until a device
+can be put behind `ctl1`, because the fix is to the boot path and there would
+be no arm able to show it works.
+
+**DEFERRED by red 2026-08-21, with the size measured so the next person sees a
+number and not an adjective**: 42 singleton declarations, about 227 references
+to them, plus 53 on the `bot` struct, in a 15,942-line file, and the control
+surface is 19 arms (10 in `diag-arm.ps1`, 9 in `codex/test`). It rewrites the
+device models underneath the disk and keyboard boot path. The ruling was that
+nothing in the campaign needs `ctl1` -- the stick rides `ctl0` -- so that is
+risk bought for nothing the mission asks. Damian can overrule.
+
+**A target that dies on a bulk write, landed 2026-08-21 (fester).**
+`-usb-bot-die-len N`: the mass-storage target stops answering permanently
+once it sees a write command of N bytes or more. `-usb-bot-drop-len` refuses
+one command and the device keeps answering, so `sink-drop` reads
+`sink=write-refused` with `bank=ok` and the file whole -- a handled refusal,
+which is a different event from the one metal keeps delivering. The sink's
+write has killed the bank on the board three times (sittings 7, 8, 9 lost the
+deferred sink and everything after it).
+
+**Length alone cannot aim it, and `-usb-bot-die-lba N` is what does.** "2.7 MB
+as one write" is true of the sink's own call and false at the BOT layer.
+Censused 2026-08-21 with `-usb-bot-census`, which prints every read and write
+with its LBA and declared length -- 133 writes on a default run:
+
+| what | length | LBA |
+|---|---|---|
+| bank, per banked row | 32768 | **2049** (fixed) |
+| bank, per banked row | 20480 | 2113 |
+| bank, per banked row | 32768 | **2153** (fixed) |
+| bank, per banked row | 20480 | 2217 |
+| bank, per banked row | 512 | 2257 |
+| bank, file data | 2560..3584 | 3475..3541, growing |
+| **the sink** | **32768 x 60** | **3548..7324, one burst** |
+
+So the bank issues 32768-byte writes too, at two fixed LBAs, and no length
+threshold separates the two. `len >= 32768 AND lba >= 3000` catches the sink
+and nothing else, with the gap from 2153 to 3548 as margin -- a band, not a
+value.
+
+**Aimed, it reproduces the metal shape; unaimed it produces a different
+failure entirely.** Same length threshold, LBA gate the only difference:
+
+| | dies at | before-deferred | summary |
+|---|---|---|---|
+| `-usb-bot-die-lba 3000` | lba 3548, the sink's first write | `bank=ok` | `bank=lost at=sink size=3322` |
+| no LBA gate | lba 2049, the FAT | `bank=none` | `bank=none write refused, write stage 13` |
+
+The `before-deferred bank=ok` row is half the reading: it says the run was
+healthy up to the write that killed it, which is what separates this from a
+medium that was never usable. Arm `sink-dies` in `diag-arm.ps1`. `bank-lost`
+beside it reaches the same summary by wedging the medium from transfer 950
+onward, which is an ordinal with a band this tree has already had to
+re-derive once; this arm's two keys are properties of the command itself.
+
+**WHEN a frame arrives is a device state too, landed 2026-08-21 (fester).**
+`-e1000-inject-armed` holds the canned frames until the guest has READ GPRC.
+The injector empties its whole budget at the `RCTL.EN` write, which happens in
+`nicinit`, one stage before anything that wants to ask about a receive.
+DiagNicRing reads GPRC twice on purpose so a frame counted in an earlier
+window cannot be read as one that arrived while it was looking, and measured
+on the 18799 image with `-e1000-inject 1` it reported `pre=1 gp=0`: the
+counter working exactly as designed, and sitting 9's row still not
+expressible. **The gap was not what the MAC does with a frame but WHEN the
+frame arrives**, which is a class this catalog had no entry for.
+
+Keyed on the GPRC read rather than on an ordinal, deliberately.
+`-e1000-inject-late 2` also puts the frame in the right window and was built
+first; it is the `-usb-bot-drop N` defect `diag-arm.ps1` documents at length,
+a property of the whole run rather than of the thing under test, and measured
+the band was **one value wide** -- 1 lands in `nicinit`, 3 and above never
+fire. The GPRC read is the stage's own action and nothing upstream can move
+it. Arms `nic-invisible` and `nic-armed` in `diag-arm.ps1`.
+
+**Multi-level descent, landed 2026-08-21 (fester).** `-pci-bridge-deep` puts a
+second `1b36:000c` at `01:01.0` forwarding to bus 2 with an endpoint at
+`02:00.0`, and sets the first bridge's SUBORDINATE to 2, which is the highest
+bus behind it rather than its secondary. **`pci-scan-max-depth` is 3 and
+`pci-collect` has always been written to recurse, but one bridge one level deep
+is all any bed has ever presented, so depth 2 and 3 had never executed
+anywhere.** A recursion that is reachable and untravelled reads exactly like a
+tested walk, which is L-UNCALLED one level out: the path was not absent, its
+second turn was.
+
+**Calibrated three ways on ONE binary**, which is what separates "the second
+level moved it" from "a bridge moved it":
+
+| flags | `count` | `bus1` | `bus2` |
+|---|---|---|---|
+| `-pci-bridge-deep` | 7 | 2 | 1 |
+| `-pci-bridge` | 5 | 1 | 0 |
+| neither | 3 | 0 | 0 |
+
+`bus2` is non-zero only in the first row. The middle row is the one that
+matters: with a bridge present but no second level the descent still runs and
+still reports `bus2=0`, so the arm is reading the recursion rather than the
+presence of a bridge. **Its own flag rather than a change to `-pci-bridge`
+(L-FALLBACK)**: the second level adds two devices, so folding it in would move
+`pci-bridge-scan`'s counts and cost that arm its floor. Measured, that arm is
+byte-identical with the new flag absent.
+
+What it still does not buy: a subordinate-bus RANGE that anything reads --
+`pci-sec-bus` takes byte 1 of offset `0x18` and nothing in the driver reads
+byte 2, so the subordinate is correct in the model and unconsumed by the
+scanner -- and a driven device behind either bridge. Arm:
+`codex/test/pci-bridge-deep`.
+
+**The depth cap, and the two branches that refuse, landed 2026-08-21
+(fester).** `-pci-bridge-levels N` chains N bridges, bus 0 to N, each with an
+endpoint on the bus it forwards to; 1 and 2 are the topologies `-pci-bridge`
+and `-pci-bridge-deep` already built, so those are one mechanism now and both
+arms are measured byte-identical across the change. `-pci-bridge-backward`
+points the deepest bridge's secondary at bus 0.
+
+**Two guards in `Pci.codex` had never executed anywhere.** `pci-collect`
+refuses below `pci-scan-max-depth`, and no bed had presented a fourth level;
+`pci-bridge-one` descends only when the secondary bus is above its own, and
+nothing had ever handed it a bridge that fails that test, though an
+unconfigured bridge reads 0 there and is a real part in a real state. A guard
+that has never been shown to say no is an assertion rather than a guard
+(L-FALSIF), and this tree has found a defect behind most of that shape.
+
+| flags | `count` | `bus1` | `bus2` | `bus3` | `bus4` |
+|---|---|---|---|---|---|
+| `-pci-bridge` | 5 | 1 | 0 | 0 | 0 |
+| `-pci-bridge-deep` | 7 | 2 | 1 | 0 | 0 |
+| `-pci-bridge-levels 3` | 9 | 2 | 2 | 1 | 0 |
+| `-pci-bridge-levels 4` | 10 | 2 | 2 | 2 | 0 |
+| **`-pci-bridge-levels 5`** | **10** | **2** | **2** | **2** | **0** |
+| `-pci-bridge-levels 2 -pci-bridge-backward` | 6 | 2 | 0 | 0 | 0 |
+
+Arms `codex/test/pci-bridge-cap` (four levels), `pci-bridge-cap-under` (three,
+the control that makes `bus4=0` the cap refusing rather than the topology
+running out) and `pci-bridge-backward`.
+
+**THE FINDING WAS THE FIFTH ROW, AND IT IS NOW FIXED.** Four levels and five
+reported the same count and the same per-bus numbers, because `pci-collect`
+answered `acc` at the cap and said nothing. Eleven devices exist at four
+levels and the scan reported ten; the bus-4 endpoint was not missing from the
+machine, it was missing from the answer, and no caller could tell a complete
+walk from a truncated one. That is the exact failure this whole entry began
+with -- "scanning bus 0 alone returns an answer that looks complete and is
+empty" -- one level further down, and the ASUS has four buses.
+
+`PciScanResult` carries `truncated` as of 2026-08-21 (fester). `pci-collect`
+threads a `PciWalk` so a refusal at the deepest point survives back out
+through every sibling bridge above it. The discriminating pair is the two
+arms already here: `pci-bridge-cap-under` at three levels answers
+`truncated=no` and `pci-bridge-cap` at four answers `truncated=yes`, so the
+flag moves with the cap rather than with the presence of depth.
+
+**It means the cap stopped the walk, not "the answer is complete."** A
+backward-pointing bridge leaves its subtree unfound and `truncated` stays
+False, measured: `pci-bridge-backward` reads `truncated=no` with bus 2 empty.
+Conflating the two would make the flag mean "something somewhere may be
+missing", which no caller can act on.
 
 ### Running the USB storage arms by hand
 

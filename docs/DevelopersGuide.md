@@ -107,7 +107,7 @@ fit in the return type. It answers the letter unchanged rather than a wrong one.
 | Linear | `linear FileHandle` |
 | Vector | `Vector 4 Real` |
 | Vector (bounded) | `Vector 16 (Integer between 0 and 255)` |
-| Vector mask | `VectorMask 4` |
+| Vector mask | not writable; see "Vector Types (SIMD)" |
 | Real (f64) | `Real` |
 | Real approx (f32) | `Real approximate` |
 | Real + safety | `Real trapping`, `Real saturating` |
@@ -1082,6 +1082,62 @@ definitions and are erased at emit time.
 Non-parametric claims (`claim name : prop`) create type annotations
 via `PropEqTy`. The proof's body is checked against the annotation.
 
+### Quantified Claims and Structural Induction
+
+A claim may quantify over a value with `for all (x : T)`, and a proof of
+such a claim may proceed by `induction on x` with one arm per constructor
+of `T`. `T` may be any sum type, including the builtin `List`. The arm for
+a constructor with recursive fields binds an inductive hypothesis after the
+field names:
+
+```
+  claim append-nil : for all (xs : MyList), append xs MyNil === xs
+  proof append-nil =
+   induction on xs
+    is MyNil -> Refl
+    is MyCons (h) (t) (ih) -> cong ih
+   qed
+```
+
+A proof may cite another claim by name and apply it to values, so lemmas
+chain; `codex/test/reverse-reverse.codex` proves
+`reverse (reverse xs) === xs` through four of them. The grammar of a proof
+body is closed (CDX4024): a proof builtin (`Refl`, `sym`, `trans`, `cong`,
+`app-cong`, `assume`), an inductive hypothesis, a cited claim, an
+`induction` expression, or a `let` of proof terms. An `if`, `when`, `act`
+or lambda in proof position is refused, because such a form can launder a
+proof of a false proposition.
+
+**What the checker does with an induction (`codex/compiler/Types/
+TypeChecker.codex`, `check-induction-core`).** For each constructor of the
+scrutinee's type it substitutes the constructor application for the
+quantified variable on both sides of the equality, normalises both sides
+against the definitions in scope under `proof-norm-fuel`, binds the arm's
+field names and inductive hypotheses, elaborates any cited claims, infers
+the type of the arm's proof term, and unifies it with that subgoal. A
+missing arm is refused; an arm that binds fewer names than its constructor
+has fields is refused. The negative corpus under `codex/test/errors/`
+(`induction-unsound`, `induction-list-false`, `proof-qed-vacuous`,
+`proof-launder-lemma-self`, `proof-launder-lemma-mutual`,
+`kleene-excluded-middle`, `list-prim-false`) is what proves the checker can
+say no; a proof checker that has only ever accepted is an instrument that
+cannot fail (L-FALSIF). Lemma chains must be acyclic (CDX4023).
+
+**CDX4022's message is stale as of 2026-08-21.** It says structural subgoal
+checking "is not yet implemented"; it is, as above, and the warning fires
+only on the paths the checker cannot take: a scrutinee that is not a bare
+name, a claim whose proposition is not an equality, or an arm short of its
+constructor's fields. Read it as "this induction could not be checked",
+not as "inductions are not checked". The text is a seed-affecting one-line
+fix and is queued with the type-system lane.
+
+**What a claim cannot yet say.** Every proposition is an equality. There is
+no implication, conjunction, negation or inequality in proposition
+position; `kleene-excluded-middle` is a refusal test precisely because the
+law it wants to state is not expressible as one equality that holds.
+`docs/Reference/LeanAndCodex.md` section 4.3 is the proposal for the two
+additions the corpus already asks for.
+
 ### The Proof Type
 
 `Proof` is a first-class type name. Functions can take or return proofs:
@@ -1303,6 +1359,35 @@ and operate element-wise. Both operands must have matching `N` and `T`.
 
 Scalar broadcast is explicit via `vec-splat`, not implicit.
 
+### A mask cannot be written down
+
+A comparison of two vectors produces a `VectorMask N`, which is what
+`mask-any`, `mask-all`, `mask-none`, `mask-count` and `vec-select` take.
+**That type has no surface syntax.** `resolve-applied-type` knows `List`,
+`LinkedList`, `Real` and `Vector`; anything else parses as an ordinary
+constructed type, so a signature naming `VectorMask 2` is CDX3008 undefined
+type name and the mismatch that follows prints both sides with the same name
+(`Type mismatch: VectorMask 2 vs Con:VectorMask[Con:2]`). A mask can only be a
+local bound from a comparison and cannot cross a declaration boundary. This
+table said `VectorMask 4` was a writable spelling until 2026-08-21; it never
+was.
+
+### What a vector call allocates
+
+Measured 2026-08-21 by `codex/test/cost/builtin-alloc`, at two input sizes.
+The split is produce against read, and it is clean:
+
+| class | bytes | names |
+|---|---|---|
+| `fixed` | 16 | `vec-splat`, `vec-add`, `vec-sub`, `vec-mul`, `vec-div`, `vec-select`, `vec-load-at`, `vec4-splat` |
+| `none` | 0 | `vec-extract`, `vec4-extract`, `vec-reduce-add`, `vec-store-at`, `suggested-vector-width`, `mask-any`, `mask-all`, `mask-none`, `mask-count` |
+
+Every name that RETURNS a vector boxes it at 16 bytes, so a chain of vector
+operations pays one box per step. Nothing that reads out of a vector
+allocates. A `bounded none` function therefore cannot build a vector at all;
+it can only read one it was handed, which is why the arms in
+`codex/test/apps/bounded-none-accepted` take theirs as parameters.
+
 ### Construction and Access
 
 ```
@@ -1490,6 +1575,100 @@ The same measurement carries its own control. At length n + 1 the backing
 array holds 2n, so the identical call takes the spare-capacity path and
 retains **0** at both sizes. All three classes appear in one run, which is
 what shows the instrument can say cheap as well as dear.
+
+### The proof terms are erased, and the linked list is where push is cheap
+
+**`Refl`, `assume`, `sym`, `trans`, `cong` and `app-cong` allocate nothing,
+and that is structural rather than measured.** All six lower through
+`emit-proof-builtin`, which is `emit-int-lit st 0`: a proof term becomes a zero
+literal and there is no allocation path in any of them to find. They are also
+the one family this tree's cost instrument cannot arm, because a proof cannot
+close the bracket that forces its own result to be used -- an arm that bound
+one and discarded it would be measuring dead-code elimination.
+
+Measured 2026-08-21, zero bytes at both sizes: `tag-equal`, `variant-tag`,
+`address-of`, `__memset`.
+
+| operation | class | bytes at n = 64 | at n = 256 |
+|---|---|---|---|
+| `__linked-list-empty n` | **fixed** | 16 | 16 |
+| `__linked-list-push ll v` | **fixed** | 40 | 40 |
+
+**This is the contrast that makes the linked list worth having.**
+`list-push` onto an array list is `input` in the worst case -- 1,040 bytes on a
+list of 64, 4,112 on 256, because the copy path allocates a doubled array.
+`__linked-list-push` is `fixed`: one node, the same bytes whatever the list
+already holds. A caller appending in a loop pays O(1) per push either way when
+the topmost path holds, and pays the difference the moment it does not.
+
+Both linked-list readings include the `__linked-list-to-list` bridge the arm
+needs to reach an integer, so the absolute numbers carry that and the CLASS
+does not. `__linked-list-to-list` is deliberately still unmeasured rather than
+inferred from the difference between two arms that both contain it.
+
+### What the buffer builtins cost, and rule 8's 8x is confirmed
+
+Measured 2026-08-21 by `codex/test/cost/builtin-alloc`.
+
+| operation | class | bytes at n = 64 | at n = 256 |
+|---|---|---|---|
+| `__buf-write-byte buf i v` | none | 0 | 0 |
+| `__buf-write-bytes buf i xs` | none | 0 | 0 |
+| `__narrow v` | none | 0 | 0 |
+| `__buf-read-bytes buf i n` | **input** | 528 | 2,064 |
+| `__list-with-capacity n` | **input** | 528 | 2,064 |
+
+**`CLAUDE.md` rule 8 calls `buf-read-bytes` an "8x blowup" and that number is
+now measured rather than believed: it is 8x plus a 16-byte header.** 64 bytes
+read retains 528, which is 64 x 8 + 16; 256 bytes retains 2,064, which is
+256 x 8 + 16. The claim has been carried in the file that loads every session
+and cited as settled by four designs (`ProtocolStack` twice,
+`ComplianceEvidence`, `EffectRows`) without anyone reading it off the machine.
+It holds.
+
+The reason is structural and worth keeping beside the number: a byte read into
+a `List Integer` occupies a full 8-byte element, so the ratio is a property of
+the element width and not of the buffer. `__list-with-capacity` reads
+identically for the same reason -- it is the same allocation without the copy.
+
+Writing INTO a buffer is free by comparison: both write builtins retain
+nothing, because the destination already exists.
+
+### What the predicates, conversions and raw accessors cost
+
+Measured 2026-08-21 by `codex/test/cost/builtin-alloc`. **Zero bytes retained
+at both input sizes**: `is-letter`, `is-digit`, `is-whitespace`,
+`code-to-char`, `text-to-integer`, `compare`, `peek-byte`, `peek-32`,
+`poke-byte`, `poke-32`.
+
+| operation | class | bytes at n = 64 | at n = 256 |
+|---|---|---|---|
+| `show i` | **fixed** | 16 | 16 |
+| `text-split s sep` | **input** | 1,056 | 4,128 |
+| `alloc-bytes n` | **input** | 64 | 256 |
+
+`alloc-bytes` retains exactly what it is asked for, so its class follows its
+ARGUMENT the way `substring`'s does. That is worth stating because an arm that
+passes it a literal reads `fixed` and is measuring the literal, not the
+builtin.
+
+### What the integer and bit builtins cost
+
+Measured 2026-08-21 by the same `codex/test/cost/builtin-alloc` instrument,
+against depot `Sut` 96CB73CB. Every one of them reads **0 bytes retained at
+both input magnitudes**: `bit-and`, `bit-or`, `bit-xor`, `bit-shl`, `bit-shr`,
+`bit-shru`, `bit-not`, `int-mod`, `int-rem`, `abs`, `min`, `max`, `negate`,
+`real-from-int`, `real-to-int`.
+
+A zero is only worth as much as the run's ability to report something else.
+The same run reads 512, 1,040 and 4,112 bytes on the list arms, and
+`integer-to-text` takes the same constant-shaped argument these arms take and
+reads 16 bytes, so the calls are not being folded away ahead of the marks.
+
+`negate` is measured on both arms of its polymorphism, and the real reading is
+a PAIR: a Real cannot close the instrument's `+ r - r` bracket, so the
+conversion round trip is the control and `negate`'s own class is the
+difference between the two rows.
 
 ## Text
 
@@ -1908,6 +2087,44 @@ by a newline and then `if ...` is CDX1023. A multi-line `if` is fine as
 long as its `then` arm begins on the binding line; it is the empty tail
 after `=` that is rejected, not the length of what follows.
 
+**`above` is a KEYWORD, and binding it reports the same CDX1023 as the
+rule right above this one.** It belongs to the proof and citation
+vocabulary (`Lexer.codex`, beside `in`, `between`, `grounds`, `quotes`,
+`trusting`, `claim`, `proof`, `qed`, `forall`, `linear`, `punctual`,
+`bounded`, `unit`, `effect`, `class`, `instance`, `with`, `trying`,
+`lazy`, `revised`), and it is the one on that list an English sentence
+reaches for by accident: `let above = ...` for the space above a
+scrollbar thumb reads as ordinary naming. The diagnostic is
+`CDX1023: Expected 'in' after let bindings` pointing AT the name, which
+says nothing about a keyword, so the natural reading is that the
+PREVIOUS line is malformed and the natural fix is to rewrite a binding
+that was already correct. Measured 2026-08-20 (val, `Scroll.codex`): the
+error moved with the NAME and not with the shape, which is what
+identifies it. Rename the binding. **`below` is not reserved**, so a
+symmetric pair has to be renamed together for the reader's sake rather
+than the compiler's. The better repair is a diagnostic that says
+"reserved word"; that is a compiler change and is not done.
+
+**`and` is reserved too, and PROSE is where it bites** (blu, 2026-08-20,
+`codex/test/cost/accumulator-corpus.codex`). `Lexer.codex:315` returns
+`AndKeyword` for it, eighteen lines from the `above` case above. The
+sentence that broke a chapter is an ordinary continuation line:
+
+```
+ 3. Appending a constant-size LIST rather than a single element. Same class,
+    and it is the form that reads most like ordinary concatenation.
+```
+
+`:84:9: error CDX3002: Undefined name: it` -- pointing at the word AFTER
+the keyword, saying nothing about a keyword, and naming a column in the
+middle of an English sentence. Thirty-five other continuation lines in
+that same file are indented identically and compile, so the indentation
+is not the variable and reading it as a layout problem is the natural
+wrong turn. Move the conjunction to the end of the previous line. The
+class to remember: **a prose line that BEGINS with a reserved word is
+parsed as code**, and English begins continuation lines with `and` far
+more often than anything reaches for `above`.
+
 **`peek-32` zero-extends, so -1 is not a usable sentinel.** A diagnostic
 cell read back through `peek-32` can never answer negative, and code
 testing `< 0` on it is dead. Pick a sentinel above the field's real
@@ -1959,7 +2176,7 @@ not a variant mention -- `R3dShadeCtx.sc-mode` is the standing example.
 The test that catches the class is two renders at doubled resolution
 asserting equal heap delta.
 
-**lloc-bytes does NOT zero the memory it returns.** It is three
+**alloc-bytes does NOT zero the memory it returns.** It is three
 instructions -- `mov rax, r10; add r10, rdi; ret` -- so it hands back the
 current heap pointer and bumps it. That is a different primitive from
 `__alloc`, which does zero-fill and which the poison build is written

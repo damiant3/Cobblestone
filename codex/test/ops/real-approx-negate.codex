@@ -1,0 +1,49 @@
+Chapter: RealApproxNegate
+
+ Plugs 1.45's second half. `real-mode-compare` builds its negative operands
+ with `0.0 - x`, which is a SUBTRACTION, so nothing in it reaches the negate
+ emitter and it passes on every lane while negate is wrong. This calls
+ `negate` on a `Real approximate` and prints what comes back.
+
+ The riscv emitter is the one measured wrong: it moved the value with
+ `fmv.d.x` and flipped the sign with `fsgnjn.d`, which is bit 63, where an
+ f32's sign is bit 31 -- so the value came back unchanged and, having had bit
+ 63 set, unboxed as well.
+
+Section: Operands
+
+  ran-pos : Real
+  ran-pos = 2.5
+
+  ran-small : Real
+  ran-small = 1.5
+
+Section: The Path
+
+  b2i : Boolean -> Integer
+  b2i (b) = if b then 1 else 0
+
+  approx-neg : Real approximate -> Real approximate
+  approx-neg (a) = negate a
+
+  approx-lt : Real approximate, Real approximate -> Integer
+  approx-lt (a) (b) = b2i (a < b)
+
+ A negate that does nothing leaves the value positive, so this answers 0
+ where it should answer 1. A negate that unboxes leaves the next f32
+ operation reading NaN, and a comparison against NaN is False, so that
+ answers 0 too. The two failures are indistinguishable here on purpose:
+ either way the row is wrong, and the row below separates them.
+
+  approx-round-trip : Real approximate -> Integer
+  approx-round-trip (a) = b2i (negate (negate a) < a)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("neg pos is negative   want 1: " & integer-to-text (approx-lt (approx-neg (to-real-approx ran-pos)) (to-real-approx 0.0)))
+    print-line-uni ("neg 2.5 lt neg 1.5    want 1: " & integer-to-text (approx-lt (approx-neg (to-real-approx ran-pos)) (approx-neg (to-real-approx ran-small))))
+    print-line-uni ("double negate not lt  want 0: " & integer-to-text (approx-round-trip (to-real-approx ran-pos)))
+    print-line-uni ("neg neg is positive   want 0: " & integer-to-text (approx-lt (approx-neg (approx-neg (to-real-approx ran-pos))) (to-real-approx 0.0)))
+  end

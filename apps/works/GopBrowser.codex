@@ -1,12 +1,15 @@
 Chapter: GopBrowser
   cites Works chapter GopComposite
   cites Works chapter GopDraw
+  cites Works chapter GopFont
   cites Works chapter GopUsbKbd
   cites Works chapter GopUsbMouse
   cites Browser chapter Browser
   cites Browser chapter BrowserTheme
   cites Browser chapter Display
   cites UI chapter Widget
+  cites UI chapter BoxModel
+  cites UI chapter Theme
   cites UI chapter Event
   cites UI chapter KeyInput
   cites Kernel chapter BitmapFont
@@ -72,14 +75,47 @@ Section: Pane
  tree is inside the released span too and only the laid-out one is reachable
  afterwards.
 
-  gbr-repaint : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, BrowserState -> BrowserState
-  gbr-repaint (base) (w) (h) (stride) (font) (mouse) (cs) (s) (st) =
+ The scroll is fitted BEFORE the frame mark and the paint is done by hand
+ instead of through `comp-render`, and both are forced by the same thing. The
+ fitted `ScrollState` has to outlive the frame, because every later event
+ restores to `bs-laid-mark` and a state allocated above it would be freed while
+ the tab still pointed at it. And the page cannot be painted in the same pass as
+ the chrome once it moves: shifted up by the offset it would paint over the
+ address bar, which the pane clip cannot stop because the address bar is inside
+ the pane.
+
+ So the chrome is walked with the viewport subtree skipped, the viewport's own
+ box is drawn where the layout put it, and its children are moved by the offset
+ and walked again under a clip that is the viewport box narrowed to the pane.
+ The narrowing is not decoration: since WORKS-45 the viewport node is taller
+ than the space it was given, so its own bounds are not the visible region.
+
+  gbr-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserState -> BrowserState
+  gbr-repaint (base) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (st) =
     let hd = cursor-hide cs base stride
+    in let fit = browser-scroll-fit st (w / s) (h / s)
     in let frame = __heap-save
-    in let laid = comp-render base stride font (browser-render st) (st.bs-theme) w h s
-    in let memo = browser-memo-laid st laid frame
+    in let th = fit.bs-theme
+    in let laid = widget-layout (browser-render fit) th (layout-rect 0 0 (w / s) (h / s))
+    in let d = gbr-paint base stride (layout-rect 0 0 w h) font tf laid th s (browser-scroll-offset fit)
+    in let memo = browser-memo-laid fit laid frame
     in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
     in memo
+
+ The tree handed back is the SHIFTED one, which is what makes a hit test follow
+ the scroll: `comp-translate-kids` stores into the nodes rather than copying
+ them, so `bs-laid` and the painted geometry are the same records.
+
+  gbr-paint : Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer, Integer -> Integer
+  gbr-paint (base) (stride) (pane) (font) (tf) (laid) (th) (s) (off) =
+    when browser-laid-viewport laid
+      is None -> comp-walk base stride pane font tf laid th s
+      is Just (vp) ->
+        let vclip = comp-clip pane (comp-mul-rect (vp.wn-bounds) s)
+        in let d1 = comp-walk-except base stride pane font tf laid th s (vp.wn-id)
+        in let d2 = comp-draw-node base stride vclip font tf vp th s
+        in let mv = comp-translate-kids (vp.wn-children) 0 (0 - off) 0
+        in comp-walk-kids base stride vclip font tf (vp.wn-children) th 0 s
 
  An event releases the memoized tree BEFORE it dispatches, never after. The
  new state a dispatch builds is allocated above the frontier, so a release
@@ -124,9 +160,9 @@ Section: Step
     let st = browser-init w h browser-theme-default display-init-text-fallback
     in BrowserPane { bp-st = st, bp-mods = 0 }
 
-  gbr-first-paint : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, BrowserPane -> Integer
-  gbr-first-paint (base) (w) (h) (stride) (font) (mouse) (cs) (s) (bp) =
-    let shown = gbr-repaint base w h stride font mouse cs s (bp.bp-st)
+  gbr-first-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserPane -> Integer
+  gbr-first-paint (base) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (bp) =
+    let shown = gbr-repaint base w h stride font tf mouse cs s (bp.bp-st)
     in let k = __record-set bp "bp-st" shown
     in 0
 
@@ -140,8 +176,8 @@ Section: Step
  old loop's and steady state is one state and one tree. What it creeps by is
  one `BrowserState` per event, which the loop did too.
 
-  gbr-step : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, BrowserPane, Integer, Boolean -> [Device.Port] Integer
-  gbr-step (base) (w) (h) (stride) (font) (mouse) (cs) (s) (bp) (sc) (clicked) =
+  gbr-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserPane, Integer, Boolean -> [Device.Port] Integer
+  gbr-step (base) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (bp) (sc) (clicked) =
     let st = bp.bp-st
     in let mods = bp.bp-mods
     in if clicked then
@@ -150,7 +186,7 @@ Section: Step
       in let code = browser-click-code st mx my
       in let d = __heap-restore (st.bs-laid-mark)
       in let next = browser-apply-click st mx my code
-      in let shown = gbr-repaint base w h stride font mouse cs s next
+      in let shown = gbr-repaint base w h stride font tf mouse cs s next
       in let k = __record-set bp "bp-st" shown
       in 0 - 1
     else if sc == 0 then 1
@@ -162,6 +198,6 @@ Section: Step
       let key = poll-key-decode sc mods
       in let d = __heap-restore (st.bs-laid-mark)
       in let next = browser-dispatch-event st (event-key-down key mods 0)
-      in let shown = gbr-repaint base w h stride font mouse cs s next
+      in let shown = gbr-repaint base w h stride font tf mouse cs s next
       in let k = __record-set bp "bp-st" shown
       in 0 - 1

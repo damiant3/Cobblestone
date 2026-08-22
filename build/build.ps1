@@ -34,8 +34,8 @@ $Compile = Join-Path $PSScriptRoot 'compile.ps1'
 $BuildLog = Join-Path $OutDir 'build.log'
 
 # Smart coverage for the internal gate. The CORE phases (clean, source-concat,
-# the pre-build guards, cdx-build, sign, canary, the text round-trip, the CDX
-# fixed point, test-bvt, oracles, check-errors) always run: they are what certify the seed is
+# the pre-build guards, cdx-build, sign, canary, the CDX
+# fixed point, test-bvt, test-compile, oracles, check-errors) always run: they are what certify the seed is
 # a byte-identical self-fixed-point that boots. The regression phases below run
 # only when a file they depend on changed in THIS workspace; skipped ones are
 # caught by the next full gate. Mapping, by what actually feeds each phase:
@@ -43,6 +43,19 @@ $BuildLog = Join-Path $OutDir 'build.log'
 #   plug-*                      <- codex/plugs or codex/compiler (codegen feeds plugs)
 #   gen-scripts / deck-headroom <- codex/build or build (the generators + their quire)
 #   app-sweep                   <- apps or codex/compiler (the compiler builds the apps)
+#   text-*  / sem-equiv         <- the front end and the text printer
+# test-compile is NOT in that map. It is never skipped, only scoped: with
+# -Internal it compiles the test chapters that CITE a chapter changed here
+# (11 chapters and 12s for a GopComposite change), and the full gate compiles
+# all 1,400 (1,202s at 4 ways). red's ruling 2026-08-20 on the measured cost.
+# The text leg is conditional as of 2026-08-20 (Damian). Measured at head
+# 18157: the four text phases cost 99.4s of a 644.1s gate and the CDX fixed
+# point that certifies the shipped artifact costs 25.5s. Their unique subject
+# is the .codex printer, which no codegen change can move: cdx-stage1 parses
+# the same source, so what the text leg alone proves is that Emit/CodexEmitter
+# round-trips it. The residual class is a chapter outside the file set below
+# written with a construct the printer mishandles; that is caught by the next
+# full gate rather than at the CL, and it is the trade this switch makes.
 $SkipPhases = [System.Collections.Generic.HashSet[string]]::new()
 if ($Internal) {
     $changed = @()
@@ -51,6 +64,7 @@ if ($Internal) {
     $tPlugs    = [bool]($changed | Where-Object { $_ -match '^codex/plugs/' })
     $tBuild    = [bool]($changed | Where-Object { $_ -match '^(codex/build/|build/)' })
     $tApps     = [bool]($changed | Where-Object { $_ -match '^apps/' })
+    $tFrontEnd = [bool]($changed | Where-Object { $_ -match '^codex/compiler/(Syntax|Ast)/' -or $_ -match '^codex/compiler/Emit/CodexEmitter\.codex$' -or $_ -match '^codex/compiler/Core/(TextFormat|SourceText)\.codex$' })
     $runPhase = [ordered]@{
         'jonquil'         = $tCompiler
         'plug-binary'     = ($tPlugs -or $tCompiler)
@@ -60,6 +74,10 @@ if ($Internal) {
         'vm-differential' = $tCompiler
         'deck-headroom'   = $tBuild
         'app-sweep'       = ($tApps -or $tCompiler)
+        'text-stage1'     = $tFrontEnd
+        'sem-equiv'       = $tFrontEnd
+        'text-stage2'     = $tFrontEnd
+        'text-fixedpoint' = $tFrontEnd
     }
     foreach ($k in $runPhase.Keys) { if (-not $runPhase[$k]) { [void]$SkipPhases.Add($k) } }
     $ran = @($runPhase.Keys | Where-Object { $runPhase[$_] })
@@ -389,15 +407,14 @@ if (Test-Path $chkFactsGuid) {
 # three places and enforced in none. check-doc-counts.ps1 is the reader; on a
 # clean tree it found six false claims, one of them wrong by thirty tests.
 # 
-# OPT-IN, and deliberately so. Turning it on for everyone is a decision about
-# everyone's gate. It is on when either is true:
-#   $env:CODEX_CHECK_DOC_COUNTS = '1'      per run
-#   a file named .doc-counts in the repo root   per agent, per workspace
-# The second is what makes an A/B arm: one workspace carries the file, another
-# does not, and the difference is visible in what comes out.
+# UNCONDITIONAL since 2026-08-21 (red's ruling). It was opt-in behind an env
+# var or a .doc-counts file, and a runner nobody has to invoke is L-BODY's
+# shape rather than a gate: main published a seed SHA-256, MD5, content-hash
+# prefix and byte count for an artifact it no longer carried, across two seed
+# moves in one day, and nothing observed it because no workspace happened to
+# carry the file. Measured 2026-08-21: 63 claims, mean 0.52 s over three runs.
 $chkCounts = Join-Path $PSScriptRoot 'check-doc-counts.ps1'
-$countsOn = ($env:CODEX_CHECK_DOC_COUNTS -eq '1') -or (Test-Path (Join-Path $Repo '.doc-counts'))
-if ($countsOn -and (Test-Path $chkCounts)) {
+if (Test-Path $chkCounts) {
     & pwsh -NoProfile -File $chkCounts -Quiet 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'FAIL: a doc states a count the tree no longer produces'
@@ -621,6 +638,13 @@ Measure-Phase 'cdx-fixedpoint' {
     } else {
         if (-not (Invoke-BuildCdx -InputFile $CodexSrc -Kernel $cdxStage1 -Output $cdxStage2)) { exit 1 }
         $ch2 = Get-CdxContentHash $cdxStage2
+        if ($ch1 -eq $ch2) {
+            Write-Host '(SUT !== stage1 -- CONVERGED ON THE SECOND PASS, stage1 === stage2)'
+            Write-Host '  The fixed point is STAGE1. build\output\Sut.cdx is the PRE-CONVERGENCE'
+            Write-Host '  binary and installing it as the seed ships a compiler that does not'
+            Write-Host '  reproduce itself (PerforceProcess 4.3a, P-STAGE2). Converge first:'
+            Write-Host '  install build\output\NewSeed.cdx, re-run this gate, THEN install Sut.'
+        }
         if ($ch1 -ne $ch2) {
             Write-Host 'FAIL: CDX fixed point -- stage1 !== stage2'
             Write-Host "  stage1: $((Get-Item $cdxStage1).Length) bytes  $ch1"
@@ -695,6 +719,32 @@ Measure-Phase 'check-errors' {
         & pwsh -NoProfile -File $chkErrors -Kernel $testKernel -Jobs 8 2>&1 | ForEach-Object { Write-Host "$_" }
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'FAIL: a program the compiler must refuse was not refused as declared'
+            exit 1
+        }
+    }
+}
+
+# -- the test chapters themselves. No gate phase compiled anything under
+# codex/test until 2026-08-20, so a test chapter that stopped compiling was
+# UNRUNNABLE and every other instrument stayed green over it: the suite stops
+# asking and reports what a suite that asks and agrees reports
+# (L-CAPABILITY-LOST). It cost three times before anything measured it --
+# widget-tone missed by a signature change TWICE, val's 18220 fixing six
+# gop-composite siblings and missing the one directory over, and
+# cost/accumulator-corpus uncompiled since 08-16 because its only runner is
+# invoked by nothing.
+# 
+# Never skipped, only SCOPED. -Internal compiles the chapters that CITE what
+# changed here; the full gate compiles all of them. Measured: 11 chapters and
+# 12s for a GopComposite change, against 1,202s at 4 ways for all 1,400.
+Measure-Phase 'test-compile' {
+    $chkTest = Join-Path $PSScriptRoot 'check-test-compile.ps1'
+    if (Test-Path $chkTest) {
+        $tcArgs = @('-Kernel', $testKernel)
+        if (-not $Internal) { $tcArgs += '-Full' }
+        & pwsh -NoProfile -File $chkTest @tcArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: a chapter under codex/test does not compile'
             exit 1
         }
     }
@@ -892,7 +942,14 @@ Measure-Phase 'deck-headroom' {
 Measure-Phase 'app-sweep' {
     $sweep = Join-Path $PSScriptRoot 'sweep-app-classes.ps1'
     if (Test-Path $sweep) {
-        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 -Kernel $SutCdx 2>&1 | ForEach-Object { "$_" })
+        # -Internal sweeps a strided 30 of the 270; the release gate sweeps all
+        # of them. 151.7s of the 644.1s gate measured at head 18157, and a
+        # compiler regression usually moves a class of construct rather than one
+        # unit, so the stride keeps most of the signal. What it cannot see waits
+        # for the full sweep, which is the trade this makes.
+        $sweepArgs = @()
+        if ($Internal) { $sweepArgs = @('-Sample', '30') }
+        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 -Kernel $SutCdx @sweepArgs 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Host ''

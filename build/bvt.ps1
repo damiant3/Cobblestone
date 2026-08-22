@@ -272,8 +272,25 @@ $runnableTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         ($using:runPass).Add($base)
         Write-Host "  PASS  $base" -ForegroundColor Green
     } else {
-        ($using:runFails).Add("$base (output mismatch)")
-        Write-Host "  FAIL  $base (output mismatch)" -ForegroundColor Red
+        # LENGTH BEFORE CONTENT (L-SHORT). The two 80-character excerpts below
+        # are identical for a truncated capture and for a miscompile, so on their
+        # own they invite every red here to be read as codegen. A strict PREFIX
+        # is the signature of a capture cut off mid-stream and a miscompile has
+        # no reason to produce one; a bare length difference proves nothing,
+        # since ordinary wrong output differs in length too. Report the two as
+        # different claims and say the lengths either way.
+        $lim = [Math]::Min($expected.Length, $actual.Length)
+        $off = 0
+        while ($off -lt $lim -and $expected[$off] -eq $actual[$off]) { $off++ }
+        if ($actual.Length -lt $expected.Length -and $off -eq $actual.Length) {
+            ($using:runFails).Add("$base (output TRUNCATED: $($actual.Length) of $($expected.Length) chars, a strict prefix -- SHORT capture, not codegen; re-run)")
+            Write-Host "  FAIL  $base (output TRUNCATED)" -ForegroundColor Red
+            Write-Host "    actual $($actual.Length) chars is a strict PREFIX of the expected $($expected.Length): the capture is SHORT, not wrong. Re-run before reading this as codegen (L-SHORT)" -ForegroundColor DarkGray
+        } else {
+            ($using:runFails).Add("$base (output mismatch: $($actual.Length) chars vs expected $($expected.Length), diverges at offset $off)")
+            Write-Host "  FAIL  $base (output mismatch)" -ForegroundColor Red
+            Write-Host "    actual $($actual.Length) chars, expected $($expected.Length), diverges at offset $off -- not a prefix, so this is a content difference (L-SHORT)" -ForegroundColor DarkGray
+        }
         Write-Host "    expected: $($expected.Substring(0, [Math]::Min(80, $expected.Length)))" -ForegroundColor DarkGray
         Write-Host "    actual:   $($actual.Substring(0, [Math]::Min(80, $actual.Length)))" -ForegroundColor DarkGray
     }

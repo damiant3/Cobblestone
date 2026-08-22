@@ -90,6 +90,16 @@ try {
     }
 
 
+    if ((Test-Path -PathType Leaf $stderrFile)) {
+        $vmErr = [System.IO.File]::ReadAllText($stderrFile)
+        if (($vmErr -match 'DROPPED')) {
+            [Console]::Error.WriteLine('codex-vm dropped guest serial bytes: the captured output is SHORT and any comparison against it is meaningless')
+            [Console]::Error.WriteLine($vmErr)
+            exit 1
+        }
+    }
+
+
     if (((-not (Test-Path -PathType Leaf $outputFile)) -or (Get-Item $outputFile).Length -eq 0)) {
         Write-SweepLog "$sample run-fail no-output"
         [System.IO.File]::WriteAllText($OutFile, '', [System.Text.UTF8Encoding]::new($false))

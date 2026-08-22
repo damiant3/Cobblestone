@@ -1,5 +1,3 @@
-# The Hardware Sitting -- Run Sheet
-
 ## QUICKREF: returned sticks live in `D:\Projects\stick-archive\`
 
 Damian's ruling, 2026-08-11. **Dump a stick before you flash over it, put
@@ -11,6 +9,52 @@ bed rehearsal, and a board defect is not closed until a bed arm
 expresses it.** The recipe and the account are the 2026-08-14 A5 entry
 below; the lessons are L-REHEARSE and L-FREEDOM in
 `docs/PM/Active/Stories/LESSONS.md`.
+
+**TEN OF THE THIRTEEN DEPOT IMAGES CARRY A STUB THAT PREDATES 2026-08-15,
+and only the three anybody still flies are current** (root, measured
+2026-08-20 against `p4 filelog`, re-derive it rather than copying it).
+`build/cdx-to-pe.ps1` changed twice that evening: red 15469 at 21:28 (the
+stub picks the largest GOP mode) and fester 15503 at 21:51 (`AllocPanic`
+does `cli; hlt; jmp` instead of a bare `hlt` that the firmware timer
+resumed straight through). 15503's own description states the cost: *"the
+layout of every path shifts, INCLUDING -EntryStart ... the next A5 flight
+carries stub bytes that have not flown."*
+
+| current, built after 15503 | stale, built before it |
+|---|---|
+| `diag.img` (18186), `sinkladder.img` (16751), `nicring.img` (15510) | `a5bigflight`, `a5fix`, `a5flight`, `a5flight2`, `asdeflight`, `blockladder`, `kbd-diag-v16`, `nicinit`, `nicsitting`, `optiona-milestone` |
+
+The ten are campaign artifacts and the record of flights already flown, so
+this is NOT a list of rebuilds waiting to happen. Rebuild one only when you
+have a reason to fly it, and then it is a NEW image: rehearse it as the
+exact bytes and say in the flight card that the stub is new. Section count
+is not the tell and will mislead you: all thirteen carry `.text` plus a
+512-byte `.reloc`, and `.text` size differs per payload, so the only cheap
+discriminator is the image's own content date against 2026-08-15 21:51.
+
+**The rehearsal ruling above now has a runner, and it is ON BY DEFAULT**
+(red's ruling, 2026-08-20). `build/flash-usb.ps1` refuses any image whose
+SHA-256 is in no rehearsal record, with no switch required. It was opt-in
+`-Rehearsed` until that day, which meant the 2026-08-14 ruling was enforced
+only when the person flashing remembered to ask: measured then,
+`flash-usb.ps1 -Image build/boot/a5flight.img -DiskNumber N -Force` wrote a
+2026-08-14 stub in silence. L-BODY, and it is fixed.
+
+- **`-Rehearsed` still works and does nothing**, so every command line quoted
+  in the flight cards below keeps running.
+- **The override is `-UnrehearsedAnyway`, and it is deliberately not
+  `-Force`.** `-Force` answers the "type YES" prompt; one switch must not
+  carry a convenience and a safety guarantee at the same time. The override
+  prints the hash it is waiving and which records it searched.
+- **Two records are searched**: `<image>.rehearsed` beside the image, and
+  `build/boot/diag.rehearsed`, which is where `diag-arm.ps1` writes whatever
+  image it rehearses. What matters is that the hash was recorded, not which
+  file holds it.
+- The check runs BEFORE any disk enumeration, so all four arms are
+  exercisable with a bogus `-DiskNumber` and no stick present. They were:
+  unrehearsed refuses; unrehearsed with `-Force` still refuses; the override
+  waives and says what it waived; and `diag.img` at its live 33-arm rehearsal
+  passes and names the record line.
 
 Damian's ruling, 2026-08-18. **A metal question is a STAGE, not a flight.
 Sittings are grouped: one diagnostic boot per sitting carries every
@@ -51,6 +95,17 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 
 | in the archive | SHA-256 | what it is |
 |---|---|---|
+| `diag7-returned-20260821.img` | `4755238F 19338CDB 21783BE2 E1E6C294 6F569FA0 FB0C5658 7038F240 10A0B29D` | SITTING 7 as it came back 2026-08-21, image C5744A6D. Payload id and `rcp` block checked against the flashed bytes rather than assumed (L-SAMEVER): both read `90466df54ddd274f`, so this is the image that was written. `DIAG.TXT` 4,994 bytes, **stages 1 to 8 only, stopping one short of the `pch` row the flight existed for**; extracted beside it in `diag7-20260821\`. 2,643 sectors differ from the flashed image, of which LBA 0, 1 and the two backup-GPT regions are the SpecFit refit rather than guest writes. |
+| `diag11-returned-20260821.img` | `5E20BA45 F310FA5C 24EBA086 4EF1BBAD 6D1819B1 CE62154E 6C9806BB 103C3310` | SITTING 11 as it came back 2026-08-21, image 2C7030D7: THE FLIGHT ON WHICH THE ASUS TALKED TO THE DEV BOX. `DIAG.TXT` 7,469 bytes, stages 1-8 plus pch, nicsit, nicinit, nicring, then b3's stepped trail through all seven reset operations to `rings-link`, then `END`: the medium stopped taking writes inside `e1000-init-after-reset` while b3 went on to complete its exchange. Extracted beside it in `diag11-20260821\`. Flash transcript `diag11-flash-20260821.log`. |
+| `before-diag11-20260821.img` | `0EBA0CB9 DFABBBE9 988838F9 C54B3AB5 AAAF89E6 829067B5 CA6A103B 79320003` | disk 2 read off by red 2026-08-21 before sitting 11 (`diag.img` 2C7030D7) went over it. **Byte-identical to `diag10-returned-20260821.img`**: nothing touched the stick between sitting 10 coming back and this flash. |
+| `diag10-returned-20260821.img` | `0EBA0CB9 DFABBBE9 988838F9 C54B3AB5 AAAF89E6 829067B5 CA6A103B 79320003` | SITTING 10 as it came back 2026-08-21, image C6B1CEAC, the first flight with b3's bring-up stepped and banked. `DIAG.TXT` 6,892 bytes, stages 1-8 plus pch, nicsit, nicinit, nicring, then `stage=b3 step=reset` and `END`: the hang is inside `e1000-reset`, named on the medium. Extracted beside it in `diag10-20260821\`. Flash transcript `diag10-flash-20260821.log`. |
+| `before-diag10-20260821.img` | `4C2416B4 3BCDEA10 C5D071A2 9FA4CE55 9D26DCA6 0F1F07C8 00BF3A54 50CF427B` | disk 2 read off by red 2026-08-21 before sitting 10 (`diag.img` C6B1CEAC) went over it. **Byte-identical to `diag9-returned-20260821.img`**: nothing touched the stick between sitting 9 coming back and this flash. |
+| `diag9-returned-20260821.img` | `4C2416B4 3BCDEA10 C5D071A2 9FA4CE55 9D26DCA6 0F1F07C8 00BF3A54 50CF427B` | SITTING 9 as it came back 2026-08-21, image ECC60AF4, the first flight carrying the K1 write and the SWFLAG semaphore ON. `DIAG.TXT` 6,871 bytes, stages 1-8 plus pch, nicsit, nicinit, nicring, then `END`: no b3 row, the ladder stopped inside b3's bring-up and was pulled after 14 minutes. Extracted beside it in `diag9-20260821\`. Flash transcript `diag9-flash-20260821.log`. |
+| `before-diag9-20260821.img` | `69F02B06 4AD829A8 ABBE87DC B7956632 F740B981 9C72701E A85CB239 8EC93224` | disk 2 read off by red 2026-08-21 before sitting 9 (`diag.img` ECC60AF4) went over it. **Byte-identical to `diag8-returned-20260821.img`**, compared byte for byte (0 differing): nothing touched the stick between sitting 8 coming back and this flash. |
+| `diag8-returned-20260821.img` | `69F02B06 4AD829A8 ABBE87DC B7956632 F740B981 9C72701E A85CB239 8EC93224` | SITTING 8 as it came back 2026-08-21, image 1F46A225, the flight that answered the K1 question. `DIAG.TXT` 6,843 bytes, stages 1-8 plus pch, nicsit, nicinit, nicring and b3, extracted beside it in `diag8-20260821\`. asde wedged and banked no row, so the ladder ends at b3. |
+| `before-diag8-20260821.img` | byte-identical to `diag7-returned-20260821.img` | disk 2 read off before sitting 8 went over it, compared byte for byte rather than by hash. Nothing had touched the stick since sitting 7 returned. |
+| `before-diag7-20260821.img` | `734FF771 51BEEA54 EC42A089 D10ED1FC CAED2E73 94E87516 541FDF77 5E49EDED` | disk 2 read off by red 2026-08-21 before the SEVENTH grouped sitting (`diag.img` C5744A6D) went over it. **Byte-identical to `diag6-returned-20260821.img`**, compared byte for byte rather than by hash alone: nothing touched the stick between the sixth sitting coming back and this flash, so the row preserves no bytes that one does not. Kept because the dump is the record that the standing ruling was followed, and because a pre-flash dump is what would have caught the stick having been swapped. **Three rows are missing from this table above it** -- `diag5-returned-20260820.img`, `before-diag6-20260820.img` and `diag6-returned-20260821.img` are all in the archive with no row here; whoever took them should add them rather than have their provenance guessed from a hash. |
+| `before-diag5-20260820.img` | `A97FFE0C ECB78775 C4C40FC4 78156352 A442DA85 001AAA50 73ECAC2A 7F008FB0` | disk 2 read off by red 2026-08-20 before the fifth grouped diag sitting (`diag.img` 7C3E2218) went over it. **A BYTE-IDENTICAL DUPLICATE of `diag4-returned-20260819.img` below, same hash**: the stick had not been touched since the fourth sitting came back, so this row preserves nothing that row does not. Kept because the standing ruling is to dump before flashing and the dump is the record that it happened, not because the bytes are new. |
 | `diag4-returned-20260819.img` | `A97FFE0C ECB78775 C4C40FC4 78156352 A442DA85 001AAA50 73ECAC2A 7F008FB0` | THE FOURTH GROUPED DIAG SITTING as it came back 2026-08-19, `diag.img` ED90B46A. `DIAG.TXT` 4,577 bytes, ends after `block` as sittings 2 and 3 did; extracted beside it in `diag4-20260819\`. |
 | `diag3-returned-20260819.img` | `330D618B C13A6E20 17B7C1B5 D977B9DB 4A54F8E7 93FFC58D 35E9B5F0 4170D4BB` | THE THIRD GROUPED DIAG SITTING as it came back 2026-08-19, `diag.img` C46DE4DD, the ladder run to SUMMARY. `DIAG.TXT` 4,577 bytes, ends after `block` exactly as sitting 2's did: the bank after the sink refusal is lost on metal while the SUMMARY says `bank=ok`; extracted beside it in `diag3-20260819\`. |
 | `a8v2-returned-20260819.img` | `8D95749A C42A3B3F 29C7B80F A6AFA222 FFAEDFE1 BDC3BD54 C35AF122 CADDE202` | the A8 second flight (`optiona.img` 1D557517) as it came back: the ceremony completed on metal, so it carries the guest-written `IDENTITY.DAT` (124 bytes) and `TIMEZONE.DAT` (8 bytes); identity extracted beside it in `a8v2-20260819\`. |
@@ -140,7 +195,8 @@ same boot as the others says so and says why.
 | ~~NIC-1~~ | **ANSWERED 2026-08-14: no. `RCTL=0` at handoff.** | blu | done | none, pure read |
 | ~~NIC-2~~ | **ANSWERED 2026-08-14: 32606 us per million, 2.50x the bed. The calibration transfers.** | blu | done; opened B5 | none, read and poll only |
 | ~~NIC-3~~ | **ANSWERED 2026-08-15: `e1000-init` does NOT hang. It completes in 93 s, of which 92.9 are `e1000-await-aneg` burning its 1,000,000 fuel at 92.89 us per MDIO read. Aneg never reports done; the link is up anyway. `RDH` moved 0 to 15.** | blu | B2c | done |
-| NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3. **Flew 2026-08-16 and hung in `e1000-await-link`; fixed in 15588, ring question unanswered.** Needs a rebuild against a seed carrying the fix before it flies again |
+| NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3. **THE RING HALF IS ANSWERED, sitting 6, 2026-08-21: `rdh-writable=y`, so RDH is ours to write and the 08-15 movement was real consumption.** Still open on the same card: whether a frame arrives during nicring's own window, which needs the `stats` row's second GPRC read; the bank ended at `xhci` so only the glass survived. The TCP half rides B3 |
+| NIC-6 | With `ip=dhcp`, should the LEASED gateway be the next hop when `gw=` is absent? Red called it yes and conditioned it on an arm; codex-vm CANNOT be that arm (its NAT answers every ARP with one MAC, measured 2026-08-20), so the separating boot is here. Two DIAG.CFG lines, no new image | blu | the leased-gateway default | none; it dials, it does not write |
 | NIC-5 | What wedged the box on 2026-08-11? | blu | nothing; it is the one open unknown | terminal by construction |
 | ~~A8~~ | **ANSWERED 2026-08-19: GRANTED.** `desk.img` at 131072 pages reached the first-boot wizard on the ASUS; the refusal colour never appeared. | fester | A8, the desk build loop | done |
 
@@ -288,7 +344,44 @@ and we are not reading it; neither moved means the receiver is not running.
 **This is the first arm that writes.** Everything above it is already on the
 glass by now, which is the whole point of the ordering.
 
-### NIC-4. A real TCP conversation with a real peer
+### NIC-4. THE DISCRIMINATOR IS ANSWERED, 2026-08-21, sitting 6: RDH IS OURS TO WRITE
+
+**`rdh-writable=y` on the I219-V.** The stage wrote `RDH=7`, read it back as
+7, and restored it. That kills the hypothesis the question was built around:
+RDH is NOT unwritable the way `CTRL` is, so the 08-15 reading of `RDH` moving
+0 to 15 under `RDT=15` was the part advancing its own head over descriptors it
+consumed, and not a register refusing our writes. The `n` branch of that field
+is reachable and proven in the bed (`nic-rdhro`, main 18245), so the `y` is a
+reading and not a field stuck on one word.
+
+**Glass only, and that is a real limit on everything below.** The bank ends at
+`xhci` -- the sink killed the medium -- so `DIAG.TXT`
+(`D:\Projects\stick-archive\diag6-20260821\`) carries nothing after it and the
+nicring row was read off the screen. Payload `4e021f4b6b96c76b`, the same
+payload as the default image.
+
+    nicring quiet  m=y rdh=0 wb=0 buf=y pre=3 dd=0 tx=1 d0=40276875 (8..15 zero)
+                   rdh-writable=y sent=1 txdd=1 received=0
+
+**What that says, in the order a reader eliminates.** `tx=1` is the reader's
+own control: our DD-reading code CAN see a set DD bit, so `dd=0` across the RX
+ring is a true zero and not a broken reader. `buf=y` says nothing scribbled on
+the ring, and `m=y` says the part is aimed at the ring we are reading. `wb=0`
+says the part never wrote back into descriptor 0. `rdh=0` at the end says
+nothing was consumed during this stage's own window.
+
+**`pre=3` IS THE FINDING UNDER THE FINDING.** GPRC clears on read, and the
+pre-attach read counts every window since power-on -- so the MAC on this part
+counted THREE good frames before nicring ever looked. The part receives. What
+this flight cannot say is whether any frame arrived during nicring's OWN
+window, because that is the second GPRC read, in the `stats` row, which is not
+in what reached me. **Until that number is in hand, "nothing arrived" and
+"arrived and was invisible" are BOTH still standing**, and they are the two
+explanations sitting 3 could not separate either. Do not read `received=0`
+with `pre=3` as an answer to it; `pre=3` is about the earlier windows by
+construction.
+
+### NIC-4 (original card). A real TCP conversation with a real peer
 
 **Why it matters.** As of main 15013 the stack holds a real TCP
 conversation over the e1000 MODEL, against a real Windows peer through
@@ -305,6 +398,46 @@ that "the network does not answer" and "our TCP is wrong" are separable.
 **Falsified by** the absence of a control: if nothing on the LAN answers a
 ping from a known-good machine on the same cable, the arm proves nothing and
 the sitting should stop there.
+
+### NIC-6. With `ip=dhcp`, should the LEASED gateway be the next hop?
+
+**Red called it YES on 2026-08-20** (a lease is measured, not invented, and
+peer-as-gateway is only right on-subnet), **and conditioned it on an arm that
+separates the two choices. codex-vm cannot be that arm, measured, so it is
+here rather than in the bed.**
+
+**Why the bed cannot.** `nat_arp_reply` (`tools/codex-vm.c:7002`) answers
+EVERY ARP request, whatever the target, and always with the same
+`nat_gw_mac` as the sender (line 7014); it copies the requested target IP
+back into the reply so the answer looks specific. Booted 2026-08-20 with
+`b3 peer=10.0.2.99:9300 ip=dhcp`, a peer that exists nowhere: the ARP was
+answered, `hop=52:55:0a:00:02:02`, and the stage reached `refused` at the
+handshake rather than `no-arp`. That MAC is the gateway's, and it encodes
+10.0.2.2 in its own low four bytes. So hop=peer and hop=leased-gateway
+resolve to the SAME MAC here and every frame is byte-identical: a green arm
+in this bed would be green under both behaviours and could not have failed.
+That is why the change is NOT in main -- an unfalsifiable preference is the
+class that `ip=` was just fixed to remove.
+
+**The arm, on metal.** Two boots, and the discriminator is a peer that is
+NOT on this box's subnet, because that is the only case where the two
+choices differ:
+
+1. `b3 peer=<an address off this segment>:<port> ip=dhcp`, with `gw=`
+   ABSENT. Today the next hop is the peer, so the box ARPs for an address
+   no router owns.
+2. The same with `gw=<the real router>` typed in, which is today's way of
+   saying what the lease already knows.
+
+**What each outcome means.** If (1) says `no-arp` and (2) reaches the
+handshake, the difference is real on this segment and the leased gateway
+should become the default hop when `gw=` is absent. If BOTH reach the
+handshake, this switch's proxy-ARP is answering for addresses it does not
+own, the way codex-vm does, and the question cannot be settled on this
+segment either: say so and stop rather than reading the green as an answer.
+
+**Costs nothing to carry.** It is two DIAG.CFG lines on a stick that is
+already flying for other rows, and it needs no new image.
 
 ### NIC-5. What wedged the box on 2026-08-11?
 
@@ -379,7 +512,7 @@ image is its reproducer. (The `-Keys` map wants Set-1 make codes; `ret,a`
 is dropped silently and reads as a deaf guest: it was, for one run.)
 
 **Second flight, same day, same box, port and keyboard (Damian): the keyboard
-WORKED, and so did the mouse.** Image uild/boot/optiona.img SHA-256
+WORKED, and so did the mouse.** Image build/boot/optiona.img SHA-256
 `1D557517`, same recipe and seed, the only source change being GopWizard's
 vitals row carrying `ok= ev= cc=` (main 17365); copy kept as
 `D:\Projects\stick-archive\a8v2desk-flashed-20260819.img`. The first-boot
@@ -394,6 +527,632 @@ completes, `ok=Y ev>0 sc=0` reports decode to nothing). The row was not
 read on this flight because there was nothing to read: keys were taken.
 The stick now carries an `IDENTITY.DAT` written by the ceremony; it is
 dumped before it is flashed over.
+## PRE-FLIGHT CARD, 2026-08-20: `diag.img` B7BB445B, the SIXTH grouped sitting. FOURTEEN stages and, for the first time, EVERY INSTRUMENT ABOARD IS SWITCHED ON.
+
+**The image.** `build/boot/diag.img` SHA-256
+`B7BB445B A0F874FE 6AF05ADE 78A8C045 DB68BDA3 BCD62B72 A2486DD0 68CA9BB3`,
+payload id `be035dc89c48c535`, kernel `A7EDB7C69B060396`, `-AllocPages 32768`,
+`-Cfg build/boot/diag-sitting6.cfg`.
+
+**The config is the point of this stick.** Two lines:
+
+```
+sink ladder=1
+b3 peer=192.168.6.141:7 ip=192.168.6.200
+```
+
+The fifth sitting flew with reek's rung ladder and blu's B3 stage both aboard
+and both idle, because red shipped it with no `DIAG.CFG` at all.
+
+**SUPERSEDED 2026-08-21, and the correction is the thing that lost sitting
+7.** `build-diag` used to print ON or DARK for every config-gated
+INSTRUMENT. **That word described an instrument inside a stage, never the
+stage itself**, and the two are not the same: with no cfg the `sink` STAGE
+runs and writes its 2.7 MB, while sink's rung LADDER is inactive; the `b3`
+STAGE runs and answers `no-peer`, while b3's dialling is inactive. The
+sitting-5 sentence above is correct in exactly that narrow sense and reads
+as though the stages were dormant.
+
+Sitting 7 was composed by a commander who read `sink DARK` as `sink does not
+run`. It ran, at stage 9, and took the bank with it before the nine readings
+the flight existed for could be written. `dg-stage-enabled`
+(`Diag.codex:126`) enables a stage unless the cfg names it `off`, and an
+absent cfg answers `""`, which is not `off`.
+
+**root killed the word outright at main 18574** on exactly that ground -- it
+said sink was idle while sink wrote 2.7 MB -- and replaced the whole
+arrangement with a refusal: `build-diag` will not build unless every
+non-passive stage is named in the cfg, `diag-default.cfg` is checked in
+naming all eight, the shipping image builds with THAT rather than with the
+override, the stage list is derived from `Diag.codex` so it cannot drift,
+and it refuses in 0.4 s before the compile. **Do not look for an ON/DARK
+block; there is no longer one to read.**
+
+**A PEER MUST BE LISTENING ON THIS BOX BEFORE THE STICK BOOTS.**
+`build/boot/echo-peer.ps1 -Port 7` on 192.168.6.141, and the inbound rule
+`Codex diag echo 7` must exist or the stick reads `refused` and we learn
+nothing. Verified reachable on the LAN address and not merely on loopback
+before flashing. **The peer log is the registration**: it records the source
+address the stick dials from, which is how we learn what the box is running
+as. **Do not try to ping the box instead** -- `icmp-parse` has no production
+caller and there is no `net-process-icmp` at all (Decision 1, deliberate), so
+the ASUS is silent to a ping on a perfectly working wire.
+
+**What is NEW since the fifth sitting, and it is four rows.**
+
+| row | what to read |
+|---|---|
+| 9 `sink` | **the rung ladder, and the answer is a NUMBER.** `ladder-all` (every rung to 64 sectors completed), `ladder-stop rung=N done=K` (N is the THRESHOLD in sectors), or `rung-1-refused` -- which says size is innocent and the stage itself differs, an outcome no previous sitting could express. Four sittings have returned the same single bit from this row; this one returns a threshold |
+| 13 `b3` | a real TCP conversation. `ok` with `sent=` equal to `rx=` is the whole thing working; `no-reply` means it dialled and nothing answered; `refused` now means the PEER, because the one cause of `refused` that was ours is being removed in its own CL. Cross-check against the echo peer's own log on this box |
+| 14 `asde` | **the reset quiesces first now** and paints as TWO named steps: `RESET s1 quiesce` then `RESET s2 warm reset`. If it stops, WHICH STEP IT STOPS IN IS THE ANSWER -- s1 means the operation we added is the problem, s2 means the wedge is unchanged. **A completed reset is CONSISTENT with blu's DMA-in-flight explanation and is NOT proof of it**; other things changed too |
+| 8 `xhci` | second reading. The fifth sitting said the keyboard BINDS (`kbd=y mouse=y disk=y`, `binds=5`, `asked int=255 programmed int=10`). Confirm it reproduces |
+
+Rows 1-7 and 10-12 should read as the fifth sitting did. **Row 12 `nicring` is
+the slow one** -- it calls raw `e1000-init` a second time with no HPET budget,
+which is the row Damian waited ten minutes on and pulled from on 2026-08-19.
+Everything above it is a couple of minutes.
+
+**The bank is expected to die at the sink again**, so rows below it exist only
+on the glass and in the QR block. Photograph the page.
+
+### FLOWN 2026-08-21: SITTING 11. THE ASUS TALKED TO THE DEV BOX. Image 2C7030D7, payload 3dd423b4df2f510a, kernel F2DA3901, diag source CL 18935
+
+**At 17:01:11 the dev box's echo peer logged `CONNECTION 28 from
+192.168.6.200:49157`, 13 bytes `codex-diag-b3` received and echoed back
+unchanged, closed clean.** That is b3's whole exchange, connect to close,
+over the real I219 on the real segment, and it is the sentence the campaign
+was opened to make true (`build-output/echo-peer.log`, and the line is
+quoted here because that log is p4-ignored and a gate wipes it). Rehearsed
+43 arms both beds at 22:05Z, flashed and verified byte for byte, pre-flash
+dump byte-identical to sitting 10's return. Cfg `diag-sitting11.cfg`, nine
+stages named, `b3 peer=192.168.6.141:7 ip=192.168.6.200`, `asde on`.
+
+**ALL SEVEN `e1000-reset` OPERATIONS RAN, AND THE SITTING-10 HANG DID NOT
+REPRODUCE.** The bank's b3 trail, each line with its heap: `clock` (`clk=y
+dt=32697460 moved=100000/100000 hpet=23999999`: the control row that
+sitting 10 erased, now kept), `reset-imc`, `reset-ctrl-read`,
+`reset-rst-write ctrl=1049152` (0x100240 read from CTRL before the RST
+write), `reset-await-reset`, `reset-settle-mdio settled=1`,
+`reset-imc-again`, `reset-icr`, `rings-link`. Identical code to sitting 10,
+same board, and this time it went through. **So the hang is state-dependent
+or intermittent, and this flight is one measurement of the other outcome**
+(L-GREEN). The board state that differed, on the medium: `nicring` read
+`pre=2 rdh=2` here against `pre=0 rdh=0` on sitting 10, `gp=0` both. The
+hang stays open; the split stays aboard so the next occurrence names its
+line.
+
+**THE MEDIUM DIED INSIDE THE NIC'S BRING-UP, NOT AT `pchk1`.** The bank's
+last line is `step=rings-link`; the `k1` and `calibrate` notes that b3
+writes next never landed, and the glass later said `BANK LOST AT STAGE 15
+pchk1, NOTHING AFTER THIS IS ON THE MEDIUM`, because `pchk1`'s whole-stage
+write was the first the ladder checks. So the USB mass-storage medium
+stopped taking writes somewhere in `e1000-init-after-reset` (ring setup,
+the semaphore, `e1000-link-up`), and b3 then completed a TCP conversation
+on the part that was coming up while the medium died. Sittings 7 to 10
+lost the bank at the sink, which was also the first write after the NIC
+stages. **The candidate, labelled as one and NARROWED the same evening by reek's
+measurement: the medium survived `nicinit`'s whole bring-up (RCTL.EN, rings,
+PHY, link, all banked) and `nicring`, and died inside b3's SECOND bring-up
+between `rings-link` and `k1`. What `e1000-init-after-reset` does there that
+`nicinit` never did is two things: the SWFLAG acquire, 2,000 read-modify-
+writes to `EXTCNF_CTRL` (a PCH ownership register) on a board where MNG
+holds it, and the `CTRL|SLU` write with ASDE cleared. One of those two, or
+the ring re-setup under a live receiver, is where the xHCI/MSC path stopped
+answering; not a write-size threshold, and not "the NIC coming up" in
+general.** reek's bed lever (`nic-kills-msc`) dies at `nicinit` because that
+is where the bed's first RCTL.EN is, and its arm text records that the board
+did not. That is
+L-CHANNEL in the campaign's own words: the bank is not an output channel
+independent of the subsystem under test. Routed to root (sitting 12: a
+step paints `banked=n` the moment a note is refused, so the glass says
+where the medium died rather than where the ladder noticed; built, one line
+left), to reek (WORKS-9's metal mechanism has moved), to blu (the hang is
+not closed).
+
+**`pchk1`, `asde` and the sink ran and are GLASS-ONLY.** Damian read the
+glass; the three words are recorded below if he gave them and "not
+recorded" if he did not. The K1 readback after the write is the campaign's
+question, and it is in that first row.
+
+| row | word | value |
+|---|---|---|
+| `pchk1` | not recorded | `770.17=` not recorded |
+| `asde` | not recorded | |
+| `sink` | not recorded | |
+
+**What this flight did not answer, honestly:** whether the K1 write took
+(above); why the medium dies; why the reset hung last time and not this
+time. **What it did answer:** the ASUS reaches the dev box over TCP with
+the driver as shipped, the seven reset lines all complete when they
+complete, and the clock is proven advancing at stage 14 with its row
+banked.
+
+**Unchanged:** `pch` banked the same readings as sittings 8 to 10
+(`k1 770.17=d104 giga-k1-dis=n`, `extcnf=002c0089`, `ulp 779.16=0800`).
+
+### FLOWN 2026-08-21: SITTING 10 NAMED THE HANG. It is inside `e1000-reset`, the first line of bring-up, and K1 is exonerated. Image C6B1CEAC, payload 48fc2cf8be0fbca2, kernel 014743F4, diag source CL 18825
+
+**The stepped bring-up did its job on its first flight.** Glass painted
+`b3 -> clock`, then `b3 -> reset`, and stopped there. The medium carries
+`stage=b3 step=reset` as its last line before `END`. `DIAG.TXT` 6,892
+bytes, whole through `nicring`, extracted to `stick-archive\diag10-20260821\`.
+Cfg `diag-sitting10.cfg`, nine stages named, `b3 peer=192.168.6.141:7
+ip=192.168.6.200`, `asde on`. Rehearsed 40 arms both beds at 20:18Z,
+flashed and verified byte for byte, pre-flash dump byte-identical to
+sitting 9's return. Damian pulled it; **whether `b3 -> rings-link` ever
+painted and how long he held are his to state and are not yet in this
+card.** That one fact separates "the RST write took and `await-reset`
+burned its million on an unreadable window, then continued" from "a true
+wedge in one of seven lines", and it is not on the medium either way.
+
+**THE HANG IS IN `e1000-reset` (`E1000e.codex:239-247`), BEFORE THE
+SEMAPHORE, BEFORE `e1000-link-up`, BEFORE THE K1 WRITE.** Sitting 9's
+three suspects were the SWFLAG acquire, the SLU write and the K1 MDIC
+write; none of them had run. What makes this a finding rather than a
+relocation: `nicinit` at stage 12 ran the identical seven operations
+(`NicInitProbe.codex:206-224`: IMC write, CTRL read, CTRL|RST write,
+`await-reset` 13 us, `settle-mdio` 10,036 us, IMC write, ICR read) and came
+back in under 11 ms on this same boot. **Same code, same board, two stages
+apart, opposite outcome: that is the part's STATE, not the code**
+(L-SUSPECT). What stands between is `nicring`, which leaves the receiver
+ENABLED with a live ring (`arrival rctl=67141658 rdt=15`) and hands that
+to b3, whereas `nicinit` reset a part nothing had enabled. The candidate,
+labelled as one: a `CTRL.RST` write into a live receiver takes on this part
+where the same write into an idle one is discarded, and either the window
+reads all-ones while the part resets (so `await-reset` spends its fuel) or
+the core stalls on the first MMIO read. Routed to blu with the
+discriminator, not a fix.
+
+**THE CLOCK ADVANCED AT STAGE 14, BY CONSTRUCTION, AND THE INSTRUMENT LOST
+THE WORD.** `db3-run-part` only enters bring-up when `t1 > t0`
+(`DiagB3.codex:575-577`), and bring-up painted, so the HPET was moving.
+But the bank holds no `clk=` line. root measured why the same hour:
+`diag-bank-note` writes the lines banked before the stage plus ONE note,
+so each note replaces the last, and `step=reset` erased the clock row. The
+reading survives by reasoning; the control row does not, which is the
+L-BANK shape one level down. root's fix reads `DIAG.TXT` back and appends,
+so the trail reads clock, reset, rings-link, k1, calibrate; it lands after
+0xE9 releases the token.
+
+**`nicring` read `quiet` this flight: `gp=0 pre=0 ddset=0`, no frame in
+any window.** Sitting 9 read `gp=1` in its own window. The segment was
+simply quiet this time; the bed can now produce sitting 9's shape
+(`nic-invisible`, main 18822) and this flight did not reproduce it.
+Neither reading contradicts the other.
+
+**What sitting 11 asks, routed to root:** split the `reset` step into its
+seven operations, each painted and banked, so the board names the line.
+blu's driver half decides whether the receiver must be quiesced BEFORE the
+RST write and what the model does with RST on a live ring.
+
+**Unchanged and still true:** `pch` banked the same nine readings as
+sittings 8 and 9 (`k1 770.17=d104 giga-k1-dis=n`, `extcnf=002c0089`
+MNG held, `ulp 779.16=0800`); `xhci ctl1 1b21:1242 never-opened`; sink
+never ran (fourth time); `block` wrote and read back LBA 30000.
+
+### FLOWN 2026-08-21: SITTING 9 STOPPED INSIDE `e1000-init` AND BANKED EVERYTHING BEFORE IT. Image ECC60AF4, payload 786c0ec26bec6bf5, kernel 014743F4, diag source CL 18687
+
+**The first flight with the K1 write and the SWFLAG semaphore ON. It did not
+come back from them.** Glass sat at `b3 -> bring-up` from about 11:21 and
+had not moved at 11:35; Damian pulled it. No ARP from `192.168.6.200` and
+no SYN ever reached the dev box, so the stage never left
+`net-driver-bring-up`. `DIAG.TXT` 6,871 bytes, whole through `nicring` and
+then `END`: no b3, pchk1, asde or sink row. Cfg `diag-sitting9.cfg`, nine
+stages named, `b3 peer=192.168.6.141:7 ip=192.168.6.200`, `asde on`.
+Rehearsed 36 arms both beds at 18:14Z, flashed and verified byte for byte,
+pre-flash dump byte-identical to sitting 8's return.
+
+**FIRMWARE HOLDS THE MDIO/NVM OWNERSHIP ON THIS BOARD.** `extcnf
+0x00F00=002c0089`: bit 7, MDIO MNG Ownership, is SET, with `swflag=n`,
+`bmsr=0000`, `mdio-gate 769.16=2180 open=n`. Under 82583V 4.5.2 at most one
+ownership bit is 1b at a time, so `e1000-swflag-acquire` cannot succeed here
+and returns 0 after its 2,000 tries. The full `pch` row as banked: `cmd=0006 bm=y mem=y dmar=n`; `k1 770.17=d104 giga-k1-dis=n k1-en=y`; `ulp 779.16=0800 ulp-ind=n neighbour-id1=0000 path=OK`; `mdio-gate 769.16=2180 open=n`; `extcnf 0x00F00=002c0089 swflag=n bmsr=0000`; `kmrn 0x34=00000000 fct 0x30=80800000 vet 0x38=0000fe00`; `fwsm not painted`. (`ulp` was missing from this card until reek needed it from the archive, 2026-08-21; the bed now powers `779.16` up at that `0800`, main 18837.) **This is the `k1-blocked` arm's
+condition, real, on metal.** The same reading sat in sitting 8's bank
+unremarked; it took a stage that depends on it to make it load-bearing.
+`e1000-k1-configure-guarded` (`E1000e.codex:799`) ignores the acquire result
+and writes K1 regardless, so the K1 write went out with ownership refused
+and the gate closed. Routed to blu as a measurement, not a cause.
+
+**THE RING SUCCESSOR IS ANSWERED: THE FRAME ARRIVES IN THE WINDOW, ON OUR
+RING, AND IS NOT WRITTEN BACK.** `nicring`: `gprc-before=2` zeroed the
+counter before the attach; then `gp=1 rnbc=0 ddset=0`, `aim rdba=ours
+match=y`, `after-listen dd=0 set=0`. One good frame was counted by the MAC
+during this stage's own window, a descriptor was available, the ring base
+the part holds is the one we built, and no descriptor's DD bit was set.
+Sitting 4 could not separate "arrived before we looked" from "arrived and
+invisible"; the second GPRC read separates them and it says invisible.
+`bm=y mem=y` on the PCH row, so bus mastering is enabled. What is between
+the MAC counting a frame and the descriptor write is now the question, and
+it is blu's.
+
+**THE CLOCK IS PROVEN ADVANCING AT STAGE 12.** `nicinit`: `settle-mdio
+us=10043`, `quiesce us=10044`, `phy-bring-up ret=0 us=3000419`,
+`await-link ret=1 us=36`. Three HPET budgets returned within 50 us of what
+they asked for. So the two clock-shaped explanations for the bring-up hang
+(the link wait's count path if `hpet-ticks-per-second` reads 0; a frozen
+counter in the clocked path) both require the clock to die between stage 12
+and stage 14, and nothing in the bank suggests it. **Not excluded**, because
+nothing at stage 14 measured it; sitting 10 banks the clock at b3 entry.
+
+**WHAT THE HANG IS, honestly: not decidable from this medium.** Bring-up
+does three things `nicinit` did not: the semaphore acquire, `e1000-link-up`'s
+SLU write to a CTRL this part keeps read-only, and the K1 MDIC write on page
+769/770 with the gate closed and ownership held by firmware. The stage
+painted one word for the whole of bring-up, so the glass cannot say which,
+and the bank cannot either because b3 banks only when it ends. **Composition
+for sitting 10, routed to root:** bring-up paints and banks its sub-steps
+the way `db3-step` already paints `b3 -> dhcp`; b3 banks the HPET rate and
+two ticks reads at entry; and pchk1, a read, should run BEFORE b3, the
+writer, so the blocked/taken word banks even if bring-up then hangs
+(L-BANK). blu's `b3=short` arm and `sendx=` knob are on main and ride the
+rebuild.
+
+**THE BED CANNOT EXPRESS THE NICRING READING, and the reason is a model
+defect, not a gap** (red, measured the same afternoon). blu's reading of
+the two rows as one fact is the leading explanation: `giga-k1-dis=n` at
+stage 10 means the part is in the K1 gigabit stall the write at stage 14
+exists to disable, and `gp=1 ddset=0` at stage 13 is what a stalled MAC
+looks like. codex-vm models the stall (`i219_mac_stalled`,
+`codex-vm.c:4584`) and it makes `e1000_deliver_rx` return before the ring
+is touched (`:4642`). **But GPRC increments only inside that delivery loop,
+after DD is written (`:4665` canned, `:8416` NAT)**, so a stalled MAC in the
+bed reads `gp=0 ddset=0`, which is the "nothing arrived" word, while the
+board reads `gp=1 ddset=0`. The spec counts GPRC at the MAC before any
+descriptor; the model counts it at the descriptor write. Second divergence
+in the same function: the stall requires `BMSR` aneg-done (`:4588`), and
+this board never reports aneg done while linked at 1000 (`nicinit s9
+ret=0 us=3000419`; `E1000e.codex:438`), so the bed's stall is a state the
+board cannot be in. Both to fester, who is in the model: move the GPRC
+increment to MAC acceptance, gate the stall on `STATUS.LU`, then the
+existing `-i219` arm produces the board's shape and blu's discriminator
+(`-i219` with the write landing sets DD; `-i219-mng-holds` does not) can
+fire. Until then every `nicring` arm is an instrument that cannot say
+"invisible" (L-FALSIF).
+
+**The deferred sink never ran**, so reek's WORKS-9 reading did not come
+home a third time. `block` wrote and read back one sector at LBA 30000.
+
+**What this flight did not cost.** The ladder order held: every stage that
+ran is on the medium, and the one that did not is the one that was being
+tested. That is root's deferral and blu's checked send doing their jobs;
+sitting 7 lost six stages to the same shape.
+
+### FLOWN 2026-08-21: SITTING 8 ANSWERED THE CAMPAIGN'S QUESTION. Image 1F46A225, payload ee40f66bd55596a3, kernel A7EDB7C6
+
+**K1 IS ENABLED ON THIS BOARD.** `pch 770.17 = d104`, `giga-k1-dis = n`,
+`k1-en = y`. blu's K1 layer is needed. Rehearsed 34 arms, flashed and
+verified byte for byte, pre-flash dump byte-identical to sitting 7's return.
+`DIAG.TXT` 6,843 bytes, extracted to `stick-archive\diag8-20260821\`.
+
+**Nine `pch` readings, all banked**, which sitting 7 never reached:
+`cmd=0006 bm=y mem=y dmar=n`; `ulp 779.16=0800 ulp-ind=n` with the neighbour
+control answering `path=OK`; `mdio-gate 769.16=2180 open=n`;
+`extcnf 0x00F00=002c0089 swflag=n bmsr=0000`, carrying its own
+family-corroborated-not-cited caveat into the row; `fwsm not painted` with
+the reason stated. **`fwsm` printing its own absence is the row doing its
+job** -- a blank would have read as a zero.
+
+**The near-miss is worth more than the answer.** The bed powers `770.17` up
+at `0x4000`; the board reads `0xd104`, five bits apart, and those bits are
+firmware state present in no model we hold. `e1000-k1-configure`
+read-modify-writes, so they survive; a constant write would have cleared
+them on every boot, and no bed arm could ever have caught it (L-FREEDOM).
+
+**asde wedged, for the third consecutive sitting.** Glass showed
+`RESET s2 warm reset` then `asde running` and stopped; Damian held it a
+minute, then powered off. It cost asde and the deferred sink and **nothing
+else**, which is exactly what root's ordering was built to guarantee -- on
+sitting 7 the same class of stall cost six stages. blu's two-step reset
+means the box reached `s2` before stopping, so the stall is inside asde
+rather than in the reset that wedged on 08-13. **Tentative, on one glass
+reading with no photograph**, and not to be published further until an
+asde row is actually banked.
+
+**`b3 state=no-peer` is CORRECT, not a fault.** No cfg names a peer, so the
+stage refused instead of dialling an invented address -- L-BEDTRUE working
+as designed on its first metal outing.
+
+**The `kmrn` verdict OVERCLAIMS and was not routed onward** (red). The board
+gave `0x34=00000000` with the bracket alive (`fct=80800000`,
+`vet=0000fe00`), and the row concludes `HOLE ... a kumeran write there is
+INERT`. `DiagPch.codex:169-171` says in its own words that an unimplemented
+register in a decoded BAR reads zero **and so does an idle implemented one**;
+the bracket establishes the path works, not that the offset is absent. The
+code concludes past its own caveat. Probably a hole, but "probably" is not
+what the row asserts, and acting on it would retire a live hypothesis on an
+ambiguous reading. Returned to root to rule.
+
+### FLOWN 2026-08-21: sitting 7 LOST ITS PAYLOAD AT STAGE 9. Image C5744A6D, payload 90466df54ddd274f, kernel A7EDB7C6
+
+**The nine I219 readings this flight existed to obtain are not on the medium
+and were not obtained.** `DIAG.TXT` (4,994 bytes, extracted complete to
+`stick-archive\diag7-20260821\`) holds stages 1 to 8 -- smbios, edid, cpu,
+pci, scene, gopmode, block, xhci -- and stops. `pch` is **stage 10**. The
+flight has to be repeated.
+
+**The cause is mine and it is a composition error, not a board defect.**
+CL 18394 composed this sitting with no `-Cfg` and stated in its own
+description that sink and b3 were therefore DARK. **That is backwards.**
+`Diag.codex:126` is `dg-stage-enabled (c) (i) = diag-cfg-value c
+(dg-stage-name i) /= "off"`, and `diag-cfg-find`
+(`DiagStage.codex:124-130`) answers `""` for an absent cfg. `"" /= "off"`
+is TRUE, so **an absent cfg enables every stage rather than disabling any**.
+Sink is stage 9, it ran, and it took the bank with it before stage 10 could
+write -- which is what the pre-flight card four paragraphs above this one
+already predicted in the words "the bank is expected to die at the sink
+again". I composed the sitting against the opposite belief and the
+rehearsal could not contradict me, because in the bed the sink does not
+kill the bank (root measured that on 2026-08-20: all stages reach
+`DIAG.TXT` in the bed, board-only, L-ARENA).
+
+**Three instruments gave three different answers and only one of them was
+right.** The glass said `BANK LOST AT STAGE 15 asde`; root found the cause
+within the hour and it is an off-by-one, `Diag.codex:916` passing the cell
+value `stage+1` into `:298` which prints it as a stage number, so the glass
+names the NEXT stage and its fix is his. The file's own bank line says
+`bank=ok`, because that block is written at the gopmode checkpoint and
+nothing after the loss can go back and amend it. The stage rows themselves
+are the only honest witness, and they stop at 8. **A reader who trusted
+either summary would have gone looking at asde.**
+
+**What it does confirm, and it is not nothing.** Stages 1 to 8 all read
+`state=ok` on the real board: the NIC enumerates at `00:1f.6 8086:15b8`
+with `MAP=ok`, `gopmode` is `honoured` at 1920x1080 with `max=10 chose=0`
+so the metal half of the GOP row stands, `block` wrote and read back over
+USB, and xhci bound five HID devices on controller 0 with controller 1
+never opened.
+
+**It also validates root's L-BANK fix before he has written it.** His
+proposal -- defer sink to LAST and bank a labelled pre-sink summary -- is
+exactly the repair this flight needed: with sink at 15 instead of 9 every
+one of the nine readings would be on the medium now. Taken, unfrozen, and
+it is the critical path to sitting 8.
+
+### FLOWN 2026-08-21, and it answered. Image 63EFDB8A, payload 4e021f4b6b96c76b, kernel A7EDB7C6
+
+Rehearsed 33 of 33 in both beds before it flew; `flash-usb` verified all
+16,777,216 bytes plus the four SpecFit patch sectors. The payload id on the
+glass matches the image (L-SAMEVER, checked rather than assumed). Returned
+stick archived as `stick-archive\diag6-returned-20260821.img`, bank extracted
+to `stick-archive\diag6-20260821\DIAG.TXT`.
+
+**It did not complete. `b3` HUNG and `asde` never ran, so there is no summary
+row.** The five stages after `sink` exist ONLY in the photograph, exactly as
+this card predicted, so their `+more in bank` detail is gone for good.
+
+| row | what it said, verbatim |
+|---|---|
+| 9 `sink` | **`ladder-stop done=4 rung-sectors=16 rung-bytes=8192 payload-bytes=65536 note=1`**, and `wr=128 cc=256 lba=2169 rty=1 ph=2 after=0 chunk=16`. THE THRESHOLD IS 16 SECTORS. Four sittings returned one bit from this row; this one returns a number |
+| 7 `gopmode` | `honoured max=10 before=3 chose=0 flags=3 status=00000000`, `fb=1920x1080 stride=2048 hv=3 firmware moved to the largest mode it enumerated`. Ten modes enumerated on the real board |
+| 8 `xhci` | `running ctls=2 binds=5 status=00000002 asked int=255 programmed int=10 maxpkt=4`, `ctl0 8086:a12f running kbd=y mouse=y disk=y`, **`ctl1 1b21:1242 never-opened`**. Reproduces the fifth sitting |
+| 11 `nicinit` | `ok part 0:31.6 ctrl0=1573440 pcien=0 mac=y link=1 rdh=3 rdt=15`; `s7 setup-rx ret=0 us=14; s8 setup-tx ret=0 us=14; s9 phy-bring-up ret=0 us=3000372; s10 await-link ret=1 us=35`. PHY bring-up costs 3.0 s |
+| 12 `nicring` | `quiet n=y rdh=0 wb=0 buf=y pre=3 dd=0 tx=1 d0=4027687500000000000000000000000000` and `link=1 present=y mac=y received=0 ddset=0 sent=1 txdd=1 rdh-writable=y rdh=3` |
+| 13 `b3` | `running`, and nothing after it, ever |
+| 14 `asde` | NEVER RAN. The question this row exists for is still open |
+
+**What row 12 establishes, stated narrowly.** `d0` is our own ring build:
+a buffer address in bytes 0-7 and ALL ZEROS in bytes 8-15, the writeback
+half. `wb=0` and `dd=0` agree with it. So the part did not write our
+descriptors THAT WE COULD SEE. **This does NOT eliminate arrived-but-invisible**
+sitting produced. `rdh` reads 3 while descriptor zero is pristine, which is a
+
+**CORRECTED 2026-08-21, same day, by blu.** The paragraph above first said
+this reading eliminated arrived-but-invisible. It does not. `pre=3` covers
+EARLIER windows only, so both readings still stand: frames arrived and we
+could not see the writeback, or nothing arrived at all. **The one number that
+separates them is the stats row second GPRC, and it went to `+more in bank`
+on a bank the sink ladder had already killed.** We flew, the instrument
+produced the discriminator, and our own recorder discarded it. That is the
+cost of the L-BANK defect stated exactly: not "some detail lost" but the
+single number the sitting existed to obtain.
+head that moved with no writeback behind it. `rdh-writable=y` is blu's
+falsifier answering on metal for the first time and it closes one branch: the
+register accepts our writes. TX is whole (`sent=1 txdd=1`).
+
+**Two defects the flight itself exposed, both in `build/boot/diag/**` (root).**
+`b3` has `no-reply` and `refused` states and reached neither, because the wait
+has no fuel cap; a stage that can hang forever costs every stage behind it. And
+the bank dying with the medium `sink` is paid to break is L-BANK: the ASDE arm
+got a bounded capture window for exactly this shape in CL 13355 and the sink
+ladder never did.
+
+**This card predicted the bank death and mitigated it with "photograph the
+page", which is not a fix.** It worked only because a human was standing there
+with a camera, and the one row we most wanted detail from is the one we lost.
+
+
+# The Hardware Sitting -- Run Sheet
+
+## FLOWN 2026-08-20: `diag.img` 346B4000, the FIFTH grouped sitting, fourteen stages. THE KEYBOARD BINDS. ASDE WEDGED AT THE WARM RESET AND THE MECHANISM IS NAMED. TWO OF THE FIVE QUESTIONS WERE NEVER ASKED, AND THAT WAS RED'S COMPOSITION ERROR.
+
+Image `build/boot/diag.img` SHA-256 `346B4000 5D7C3E8F 241F2DB5 7A7D9127 B855D596 5783E51B 02EEFAF9 6BC41F00`
+(blu, main 18104, rehearsed 30 of 30 including both OVMF arms), payload id
+`b819a12eb68699ef`, kernel `A7EDB7C69B060396`. Flown by Damian the same hour;
+the ladder reached `asde` and stopped there.
+
+**The payload id is worth one line.** red built the same source independently
+and got image `CEC62CC1` with payload id `b819a12eb68699ef` -- the SAME id.
+Two agents, two machines, two image hashes differing only in the `DIAG.RCP`
+stamp, one byte-identical payload. That is the reproducibility claim
+`build-diag.ps1` makes about itself, confirmed by accident rather than by a
+test written for it.
+
+### What it answered
+
+1. **THE KEYBOARD BINDS.** First xHCI truth ever taken off that box:
+   `xhci running ctls=2  hid: binds=5 status=00000002 asked int=255 maxpkt=4
+   programmed int=10 maxpkt=4` and `ctl0 8086:a12f at 0:20.0 running kbd=y
+   mouse=y disk=y`. The keyboard is not missing, not unbound, and has an
+   interrupt endpoint configured. **That reframes the standing question from
+   "does it attach" to "does it report"**, which is a different investigation
+   with a different next instrument. The bed reads `asked int=10 programmed
+   int=6` on the same row, so the pair is exercised in both places and the
+   ASUS descriptor asking for 255 is a real difference and not an artefact.
+2. **`gopmode honoured max=10 before=3 chose=0` reproduced exactly** on a
+   second boot, four hours after the first. AMI honours `SetMode`, and the
+   largest mode on this firmware is index 0 while the firmware boots in mode
+   3, so mode index does not track size.
+3. **`nicinit s9 phy-bring-up us=3000387`**, against 3,800,354 and 3,880,441
+   on the two previous sittings. It moved, and nobody predicted that it would.
+   Not chased here; recorded so the next reader does not treat ~3.8 s as fixed.
+
+### What wedged, and the mechanism
+
+`asde` painted `-> RESET, warm reset, the control for 08-13` and sat there.
+Damian waited five minutes and pulled.
+
+**blu's paint-before-the-operation rule is what made that readable.** The
+arrow line names the operation IN PROGRESS rather than the last one completed,
+so the glass names the warm reset and not the step before it. Painted after,
+the row would have accused the wrong operation.
+
+**The evidence is a BOUND, not a story.** `e1000-await-reset` is a count of a
+million MMIO reads, about a second on metal, so it must RETURN within seconds
+whatever the part does. Five minutes is not a slow reset: **the reads
+themselves stopped answering.**
+
+**The mechanism, measured by blu (2026-08-20).** `e1000-reset` does NOT
+quiesce -- it masks IMC, pulses RST, waits, masks again, and never writes
+`RCTL=0` or `TCTL=0`. `e1000-quiesce` exists and does exactly that, and
+`nicring` already calls it before reprogramming rings. By the time `asde`
+resets on this stick, `nicinit` and `b3` have each run `e1000-init` with
+`RCTL.EN` set and rings up, and `nicring` has built live rings -- so `asde`
+pulses RST on a part with **the receiver running and descriptors in flight**.
+The standalone 08-13 probe reset a part firmware had just handed over, with
+our rings not running. That is the difference between "a warm reset completes
+on this part, answered twice" and what happened here.
+
+**Fixed as one line and split into two named steps** (blu): `e1000-quiesce`
+before `e1000-reset`, emitted as `RESET s1 quiesce` then `RESET s2 warm
+reset`, so a future box that stops in the operation we ADDED is distinguished
+from one that stops in the operation that wedged. The five-way split stays
+retired: it existed to name which of five MMIO operations died, and this
+separates two operations with different owners.
+
+**THE HAZARD IS RECORDED AT `e1000-reset` ITSELF**, not in the stage, because
+the convention is caller-responsible and **invisible from the call site** --
+`e1000-init` is safe only because it resets before it configures, and every
+other caller is on its own.
+
+**A completed reset on the next flight is CONSISTENT with this and is NOT
+proof of it.** Other things will have changed. And the bed cannot speak to it
+at all: codex-vm does not model DMA-in-flight hazards, so a green bed arm here
+proves nothing (L-FREEDOM). The bed was run for one purpose only, no
+regression, and said so.
+
+### Two questions were never asked, and it was a composition error
+
+`b3 no-peer  DIAG.CFG names no peer, so nothing was dialled`, and the sink row
+read `write-refused ... chunk=64` -- the OLD path, not reek's rung ladder.
+
+**Red shipped the stick with no `DIAG.CFG` at all.** B3 needs a peer line and
+the ladder needs `sink ladder=1`. Both stages behaved correctly and said
+plainly that they had nothing to do; the composer did not give them anything
+to do. So the sink row returned the same single bit for the FIFTH consecutive
+sitting -- `wr=0 cc=256 ph=2 after=0`, with only the LBA moving as the
+allocation moves -- which is the precise failure Damian had objected to that
+morning, reproduced by the person who had agreed to fix it.
+
+**The instrument existed and was aboard.** reek's ladder (7 rungs, 1 to 64
+sectors, fixed 64 KB payload, banked before each rung risks the next) was in
+the image and switched off by omission. The lesson is not "build the
+instrument" -- it is that **a stage that reads its own configuration is only
+as good as the configuration the composer ships**, and the composer had no
+check that every new instrument aboard was actually enabled.
+
+## PRE-FLIGHT CARD, 2026-08-20: `diag.img` 7C3E2218, the fifth grouped sitting. ELEVEN stages; row 6 is new and is the largest-GOP-mode question.
+
+**FLASHED TO DISK 2 AND CLEARED TO FLY, 2026-08-20 11:42.** Written and
+verified byte for byte (16,777,216 bytes read back matching, plus the four
+SpecFit patch sectors at LBA 0, 1, 60506079 and 60506111). Red raised the seed question before firing and Damian said go; it was then
+measured and came back clean, so the caveat is closed rather than carried.
+
+The stick as it stood before the flash is dumped to
+`stick-archive\before-diag5-20260820.img` and is **byte-identical to
+`diag4-returned-20260819.img`** (`A97FFE0C...`), so nothing unarchived was
+overwritten: disk 2 had not been touched since the fourth sitting came back.
+
+**The image.** `build/boot/diag.img`, SHA-256
+`7C3E2218 4393D04F CBF447CD 50155A5F 58357F23 9E1E7873 E2AF9A47 73E5445C`
+(main 17989), payload id `979cceec4eba530a`, kernel `A6D49D1935CDD414`,
+`diag-src-cl=17983`, `-AllocPages 32768`, no `DIAG.CFG`: the default ladder
+IS the sitting. Rehearsed with `build/boot/diag-arm.ps1`, all 21 arms (19
+codex-vm plus 2 OVMF) on these exact bytes, uncontended; the `.rehearsed`
+line is the proof and `flash-usb.ps1 -Rehearsed -ExpectHash 7C3E2218...`
+refuses anything else.
+
+**Flash (FLASH, elevated, writes disk N; dump disk N to
+`D:\Projects\stick-archive\before-diag5-20260820.img` first):**
+
+```powershell
+pwsh build/flash-usb.ps1 -Image build/boot/diag.img -DiskNumber N -SpecFit -Rehearsed -ExpectHash 7C3E22184393D04FCBF447CD50155A5F58357F239E1E7873E2AF9A4773E5445C
+```
+
+Boot UEFI from the stick, Secure Boot off. Wait for the SUMMARY band and the
+heartbeat square at its right edge. Photograph the page (rows 0-3, eleven
+stage rows, the band and the QR block). Bring the stick back; red reads
+`DIAG.TXT` with `build/read-stick.ps1 -DiskNumber N -Name DIAG.TXT` and dumps
+the returned stick to the archive before anything else touches it.
+
+**What is NEW since sitting 4, and it is one row.** Stage 6 `gopmode`. Every
+other row is the ladder that flew on 2026-08-19 as ED90B46A, renumbered:
+block/sink/nicsit/nicinit/nicring are rows 7..11 now because a PASSIVE stage
+had to go in at 6 (`dg-run-passive` stops at the first non-passive stage, so
+a passive row appended at the end would never have run at all).
+
+**Row 6, written before the boot.** The stub banks what its mode selection
+did into the handoff block (v3) and the row reports the bank, because the
+selection happens before ExitBootServices and the row runs after it.
+
+| reading | what it means |
+|---|---|
+| `honoured` + `fb=1920x1080` | AMI accepted `SetMode` and the stub moved the panel to its largest mode. **The expected answer**, and the first direct proof of it |
+| `kept` + `fb=1920x1080` | the firmware was ALREADY in its largest mode and nothing was asked. Same picture, different fact -- this is the distinction geometry alone could never make, and it is why the row exists |
+| `refused` | **the finding.** AMI said no; the picture is the firmware's own console mode. `status=` on the row is its EFI_STATUS. Send `DIAG.TXT` |
+| `single` | this firmware enumerates one mode. Nothing to fix |
+| `nostub` or `noloop` | the INSTRUMENT is wrong, not the box. `nostub` means an image older than the bank; `noloop` means the bank contradicts itself |
+
+Rows 1-5 and 7-11 should read as sitting 4 did: `smbios ok` SABERTOOTH Z170
+MARK 1, `edid ok` SyncMaster native 1920x1080, `cpu ok` vmx=on hypervisor=n,
+`pci ok`, `scene rendered fb=1920x1080 stride=2048`, `block ok`, **`sink
+write-refused wr=0` (WORKS-9, still open and expected to fail again)**,
+`nicsit ok`, `nicinit ok`, `nicring quiet
+received=0`, and `bank=lost at=sink` on the band. A row that differs from
+that list is a change to chase, not a pass.
+
+**TIMING, AND AN EARLIER DRAFT OF THIS CARD HAD IT BACKWARDS.** `nicinit`'s
+`s9 phy-bring-up` lands in about **3.8 to 3.9 s**, and three flights agree to
+the microsecond (`us=3800354` sitting 4, `us=3880441` sitting 3). It is NOT a
+93 s wait; do not stand there expecting one. **The 93 s belongs to `nicring`,
+row 11**, which calls the raw `e1000-init` a SECOND time
+(`DiagNicRing.codex:99`) and burns the I219-V aneg fuel again with no HPET
+budget. On 2026-08-19 Damian waited more than ten minutes on exactly that row
+and pulled the stick; whether it would have returned at ~8 minutes or never is
+still not measured. **The LAST row is the slow one and it is the row with no
+clock.** Everything above it should be done inside a couple of minutes.
+
+**NOT ABOARD, said plainly (the step-2 lifts are not written):** xHCI truth,
+keyboard and MSC align (red), ASDE (red), B3 the TCP conversation (blu).
+Those three probes exist as standalone one-question images and are NOT
+stages, so this boot cannot answer them. A8 is ANSWERED (2026-08-19,
+GRANTED) and needs no stage. NIC-5 is off by construction.
+
+**THE SEED QUESTION IS ANSWERED AND THIS CARD SAYS GO.** This image is
+compiled by `A6D49D1935CDD414`, the seed at main 17934. That seed was put in
+doubt on 2026-08-20 when root found the NEXT one, `F41C500C` at main 17970,
+was not a fixed point of its own source (the gate took the stage2 path and
+installed `Sut` instead of the converged stage1). **17934 was then measured
+directly and is CLEAN**: main built at @17934 from a forced-clean sync gives
+`Sut = A6D49D1935CDD4149AE37B8A7889457014E342F7163F636FC342DD444D82271F`, the
+DEPOT copy of the seed at that revision is the same digest byte for byte over
+the whole file (per `PerforceProcess` 4.3, not the workspace copy), the kernel
+that produced it was `A6D49D1935CDD414`, and the one-pass line printed. The
+problem is one seed deep and does not touch these bytes.
+
+The digest is quoted here on purpose. A card that blocks a flight on a
+measurement whose answer lives only in one agent's head has no runner: nobody
+re-reads a card, so the next reader would re-derive the whole investigation.
+
 ## FLOWN 2026-08-19: `diag.img` ED90B46A, the fourth grouped sitting. THE BANK VERDICT IS HONEST ON METAL (`bank=lost at=sink size=4577`); NICRING'S QUESTION IS ANSWERED: THE FRAME ARRIVES AND IS INVISIBLE (`gprc=1`, `received=0`).
 
 Image `build/boot/diag.img` SHA-256 `ED90B46A EEAB93FE 3DB7B4BA 1321C40C
@@ -450,6 +1209,55 @@ SUMMARY run=10 skip=0 bank=lost at=sink size=4577 medium=usb
    from "the endpoint halts whatever we send". Bed arm `sink-chunk` proves
    the key reaches the MSC layer (`wr=5364 cc=1 chunk=8` against `chunk=64`
    on every other arm), which is all a bed can prove here.
+
+   **THE INSTRUMENT, RESTATED AFTER FOUR IDENTICAL FLIGHTS (reek,
+   2026-08-20).** `wr=0 cc=256 ph=2 after=0` has now come back four times,
+   with `lba` moving only as the allocation moves (6081 / 5957 / 6103).
+   Four readings of the same cell is the row saying it has nothing left to
+   give at `chunk=64`, so the next flight must change the variable rather
+   than repeat the measurement.
+
+   **If one value can ride, it is `sink chunk=8`, and the reason is
+   arithmetic rather than taste**: a one-sector write COMPLETES at the
+   `block` stage and a 64-sector write gets no completion, so the known-good
+   and known-bad bracket the answer at 1 and 64 and the even split of that
+   bracket is 8. The outcomes:
+
+   - **`chunk=8` completes (`wr=5364`)**: transfer size is the variable, and
+     the boundary is between 4 KB and 32 KB. The next question is which
+     boundary (a page, a TD limit, a scatter-gather list), and it is a bed
+     question again once a size is named.
+   - **`chunk=8` refuses identically (`wr=0 cc=256`)**: 4 KB is already too
+     big, which makes "too big" a poor description of a device that takes
+     512 bytes, and points at the WRITE PATH rather than the size. The
+     `block` stage's one-sector write is then the odd one out and the next
+     instrument is aimed at what differs between them.
+
+   **A LADDER IS STRICTLY BETTER THAN THE SPLIT AND IT IS WHAT I WANT IF THE
+   CODE CAN RIDE.** A flight costs a human at the box; a single split
+   returns one bit. Rungs of 1, 2, 4, 8, 16, 32 and 64 sectors against a
+   fixed small payload, smallest first, banking the rung before the next one
+   risks the wedge (L-BANK, the `MetalLadder` shape), stopping at the first
+   rung with no completion, returns the THRESHOLD in the same flight. Order
+   matters and is not cosmetic: the wedge leaves the endpoint unrecovered
+   (`rty=1`, `after=0`), so anything after the first failure fails whatever
+   its size, and a largest-first ladder would read as "everything fails".
+
+   The ladder also answers a third outcome the split cannot reach. **If rung
+   1 itself refuses inside the sink stage** while the `block` stage's
+   one-sector write succeeded in the same boot, then size is innocent
+   outright and the difference is the STAGE, not the transfer -- a streamed
+   FAT file write against a bare sector write. Neither `chunk=8` reading can
+   separate that.
+
+   **What it costs, honestly.** The ladder is not a config line: `sink
+   chunk=` parses an integer and sets cell 91 once for the stage
+   (`DiagSink.codex:72-75, 185`), so a non-numeric value silently reads as
+   the default and would fly a flight that measures nothing. It wants a new
+   key and a rung loop, and it must use a small fixed payload rather than
+   the 2.7 MB file: at `chunk=1` the full file is 5,364 separate transfers,
+   and a ladder that wedges the sitting on TIME has cost a trip as surely as
+   one that wedges on the defect.
 3. **nicring: arrived-but-invisible** (blu's discriminator, 17492):
    `gprc=1` -- the MAC counted ONE good received frame -- while
    `received=0 ddset=0 rdh=1`. So the network is not quiet and the MAC is

@@ -18,7 +18,7 @@ cluster against the belief this sentence encouraged. When
 you relocate a foreword definition, budget a `cites` line for each
 caller of the old chapter.
 
-### codex.foreword (130 modules, measured 2026-08-18) -- Core
+### codex.foreword (131 modules, measured 2026-08-18) -- Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.

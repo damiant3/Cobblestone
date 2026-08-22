@@ -7,15 +7,26 @@ Chapter: GopFont
 
 Section: Font Handle
 
+ `gf-gh` is the cell, and a cell is not a place to put text. Two more rows
+ say where inside it the type actually sits: `gf-asc` is the distance from
+ the top of the cell down to the BASELINE, and `gf-cap` is the height of a
+ capital above that baseline. A caller centring a line of capitals in a box
+ wants the cap band, which runs from `gf-asc - gf-cap` to `gf-asc`, and it
+ is the only band a reader perceives as the text. Centring the CELL instead
+ sits the type low by half the descent, which is what an all-caps label in a
+ button showed the moment the cell grew to the face's real box.
+
   GopFont = record {
     gf-ok : Boolean,
     gf-base : Integer,
     gf-gw : Integer,
-    gf-gh : Integer
+    gf-gh : Integer,
+    gf-asc : Integer,
+    gf-cap : Integer
   }
 
   gfont-none : GopFont
-  gfont-none = GopFont { gf-ok = False, gf-base = 0, gf-gw = 0, gf-gh = 0 }
+  gfont-none = GopFont { gf-ok = False, gf-base = 0, gf-gw = 0, gf-gh = 0, gf-asc = 0, gf-cap = 0 }
 
 Section: Load
 
@@ -24,8 +35,25 @@ Section: Load
  caller's heap mark is restored; a desktop session loads once at
  entry and reclaims at exit.
 
-  gfont-load : Fat16Volume, Text -> [Device.Port] GopFont
-  gfont-load (vol) (name) = act
+ The face is rasterized AT the size it will be drawn, because `gbf-put-text`
+ has no scale factor: it paints the glyph bitmaps it was given. A 16ppem face
+ on a display the widget layer scales by two therefore draws at half the size
+ of the bitmap fallback beside it, which is what the desk showed while only
+ its hand-drawn prose used this path. Passing the scaled ppem is also the
+ better of the two ways to get there, since the rasterizer hints at the
+ target size rather than magnifying a small raster.
+
+ `gf-gh` is the CELL height and not the ppem, and the two differ. A face's
+ bounding box may exceed its em, so cmunss at a 32 pixel em rasterizes into
+ 41 rows (`FontLoad`, `fb-render-glyph`). Handing `ppem` to
+ `fl-raster-to-gobf` therefore stored 32 of those 41 rows and cut the
+ descenders off at the bottom of the box; the height comes off the rasters
+ now, which is what `fl-max-height` was written for and was never called
+ for. A caller wanting the type size still passes `ppem` in; a caller
+ placing a line reads `gf-gh`.
+
+  gfont-load : Fat16Volume, Text, Integer -> [Device.Port] GopFont
+  gfont-load (vol) (name) (ppem) = act
     size <- gfat-file-size vol name
     if size == 0 then gfont-none
     else act
@@ -36,10 +64,13 @@ Section: Load
         if n == 0 then gfont-none
         else if fb-ttf-plausible buf n then
           let font = fb-parse-ttf buf size
-          in let rasters = fb-render-ascii buf font font-ppem
+          in let rasters = fb-render-ascii buf font ppem
           in let maxw = fl-max-width rasters 0 0
-          in let gbase = fl-raster-to-gobf rasters maxw font-ppem
-          in GopFont { gf-ok = True, gf-base = gbase, gf-gw = maxw, gf-gh = font-ppem }
+          in let maxh = fl-max-height rasters 0 0
+          in let gbase = fl-raster-to-gobf rasters maxw maxh
+          in let upem = font.tf-head.th-units-per-em
+          in let asc = font.tf-head.th-y-max * ppem / upem
+          in GopFont { gf-ok = True, gf-base = gbase, gf-gw = maxw, gf-gh = maxh, gf-asc = asc, gf-cap = fl-cap-rows buf font ppem }
         else gfont-none
       end
     end
@@ -50,3 +81,31 @@ Section: Draw
   gfont-text : GopFont, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
   gfont-text (f) (base) (stride) (h) (x) (y) (s) (fg) =
     gbf-put-text (GopBuf { gb-base = base, gb-width = stride, gb-height = h }) (f.gf-base) (f.gf-gw) (f.gf-gh) x y s fg
+
+ The face is PROPORTIONAL: `fl-raster-to-gobf` writes a 95-entry advance table
+ after the glyph bitmaps, and `gbf-put-text-loop` steps by it. So a string's
+ width is not its length times anything, and a caller that bounds text by an
+ assumed cell width will be wrong in both directions -- it truncates a narrow
+ string early and lets a wide one overflow its box.
+
+ `gbf-put-text-clip` already takes the right edge to stop at. Handing it the
+ box rather than the framebuffer width is what keeps a label inside the button
+ it belongs to. This does NOT make the layout correct, because the widget
+ layer still SIZES boxes from an assumed cell; it makes an overflow clip
+ instead of spilling, which is the difference between a bounded defect and an
+ unbounded one.
+
+  gfont-text-clip : GopFont, Integer, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
+  gfont-text-clip (f) (base) (stride) (h) (max-x) (x) (y) (s) (fg) =
+    gbf-put-text-clip (GopBuf { gb-base = base, gb-width = stride, gb-height = h }) (f.gf-base) (f.gf-gw) (f.gf-gh) x y max-x s fg
+
+ The width a string will occupy, in device pixels, WITHOUT drawing it. A
+ caller that must not overflow its box has to be able to ask before it paints,
+ and `gbf-measure-text` already walks the same advance table `gbf-put-text-loop`
+ steps by, so this is the handle-level wrapper for it and not a second
+ implementation of the metric.
+
+  gfont-text-w : GopFont, Text -> Integer
+  gfont-text-w (f) (s) =
+    if f.gf-ok == False then 0
+    else gbf-measure-text (f.gf-base) (f.gf-gw) (f.gf-gh) s

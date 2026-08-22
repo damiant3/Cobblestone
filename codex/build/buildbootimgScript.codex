@@ -48,6 +48,19 @@ Section: Parameters
      "payload: -Pet is now the default and -Uefi selects the dev console's mode.",
      "-Pet is still accepted so the invocation B5.4 was gated with keeps working."]
 
+  font-doc : List Text =
+    ["The typeface written to the ESP root as CMUNSS.TTF. build-img.ps1 has",
+     "taken -Font since the desk learned to read one, and THIS script never",
+     "passed it, so every image it produced shipped without a typeface and",
+     "every desk booting one fell back to the CBF bitmap face. The Monitor",
+     "pane's `font` row says which won, and it said `CBF bitmap` truthfully",
+     "rather than reporting a failure.",
+     "",
+     "Defaulted rather than opt-in: a shell with no typeface was nobody's",
+     "choice, and the fallback exists for a stick built without one, not as",
+     "the intended appearance. Pass '' to build the old way, which is what",
+     "the fallback path's own arm needs."]
+
   identity-doc : List Text =
     ["An existing IDENTITY.DAT to put on the image. A stick without one boots",
      "into the first-boot wizard instead of the desk, so every freshly built",
@@ -62,7 +75,7 @@ Section: Parameters
      "than falling back, since a silent fallback is discovered at the machine",
      "after a flash."]
 
-  boot-img-params : List ShellParam = [sh-doc agent-doc (sh-switch "Agent"), sh-doc out-doc (sh-param-default "Out" SptString (SeLit "")), sh-doc kernel-doc (sh-param-default "Kernel" SptString (SeLit "")), sh-doc bootsource-doc (sh-param-default "BootSource" SptString (SeLit "apps\\works\\GopBoot.codex")), sh-doc identity-doc (sh-param-default "Identity" SptString (SeLit "")), sh-doc pet-doc (sh-switch "Pet"), sh-switch "Uefi"]
+  boot-img-params : List ShellParam = [sh-doc agent-doc (sh-switch "Agent"), sh-doc out-doc (sh-param-default "Out" SptString (SeLit "")), sh-doc kernel-doc (sh-param-default "Kernel" SptString (SeLit "")), sh-doc bootsource-doc (sh-param-default "BootSource" SptString (SeLit "apps\\works\\GopBoot.codex")), sh-doc identity-doc (sh-param-default "Identity" SptString (SeLit "")), sh-doc font-doc (sh-param-default "Font" SptString (SeLit "fonts/cc0/cmunss.ttf")), sh-doc pet-doc (sh-switch "Pet"), sh-switch "Uefi"]
 
 Section: S01 -- Preamble
 
@@ -125,7 +138,7 @@ Section: S06 -- Build GPT Image
         ScComment "",
         ScComment "A stick that cannot verify or rebuild itself is not what this project",
         ScComment "promises anyone, so both are now required inputs and the concat is generated",
-        ScComment "when it is missing rather than silently skipped.", ScAssign "ImgScript" (SeRaw "Join-Path $PSScriptRoot 'build-img.ps1'"), ScAssign "ConcatScript" (SeRaw "Join-Path $PSScriptRoot 'concat-codex-self.ps1'"), ScAssign "SourceFile" (SeRaw "Join-Path $BuildOut 'Codex.codex'"), ScIf (SeNot (SeFileExists (SeVar "SourceFile"))) make-concat [], ScBlank, ScComment "32768 sectors (16 MB). The payload is now the PE plus a ~2.6 MB seed plus a", ScComment "~2.8 MB source, and build-img refuses a payload over 90 per cent of the", ScComment "partition -- at the old 16384 it fitted with almost nothing to spare and", ScComment "-Agent would not have fitted at all.", ScAssign "IdentityArgs" (SeRaw "@()"), ScIf (SeVar "Identity") [ScRaw "$IdentityArgs = @('-Identity', $Identity)"] [], ScEcho (SeLit "  Building GPT disk image..."), ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\\compiler') -TotalSectors 32768 @AgentArgs @IdentityArgs", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "ImgOut")))) fail-img []]
+        ScComment "when it is missing rather than silently skipped.", ScAssign "ImgScript" (SeRaw "Join-Path $PSScriptRoot 'build-img.ps1'"), ScAssign "ConcatScript" (SeRaw "Join-Path $PSScriptRoot 'concat-codex-self.ps1'"), ScAssign "SourceFile" (SeRaw "Join-Path $BuildOut 'Codex.codex'"), ScIf (SeNot (SeFileExists (SeVar "SourceFile"))) make-concat [], ScBlank, ScComment "32768 sectors (16 MB). The payload is now the PE plus a ~2.6 MB seed plus a", ScComment "~2.8 MB source, and build-img refuses a payload over 90 per cent of the", ScComment "partition -- at the old 16384 it fitted with almost nothing to spare and", ScComment "-Agent would not have fitted at all.", ScAssign "IdentityArgs" (SeRaw "@()"), ScIf (SeVar "Identity") [ScRaw "$IdentityArgs = @('-Identity', $Identity)"] [], ScComment "Resolved against the repo so the default works from any working", ScComment "directory, and checked here rather than left to build-img's hard error,", ScComment "which would name a path the caller never typed.", ScAssign "FontArgs" (SeRaw "@()"), ScIf (SeVar "Font") [ScRaw "$FontPath = if ([System.IO.Path]::IsPathRooted($Font)) { $Font } else { Join-Path $Repo $Font }", ScRaw "if (-not (Test-Path -PathType Leaf $FontPath)) { Write-Host \"FAIL: font $FontPath missing\"; exit 1 }", ScRaw "$FontArgs = @('-Font', $FontPath)"] [], ScEcho (SeLit "  Building GPT disk image..."), ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\\compiler') -TotalSectors 32768 @AgentArgs @IdentityArgs @FontArgs", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "ImgOut")))) fail-img []]
 
 Section: S07 -- Done
 

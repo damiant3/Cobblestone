@@ -256,16 +256,39 @@ Section: Expression Emission
   emit-clj-match-body (branches) (i) (arities) (depth) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-clj-match-arm (b.pattern) (b.body) arities depth & " " & emit-clj-match-body branches (i + 1) arities depth
+   in emit-clj-match-arm (b.pattern) (b.guard) (b.body) arities depth & " " & emit-clj-match-body branches (i + 1) arities depth
 
-  emit-clj-match-arm : IRPat, IRExpr, List ArityEntry, Integer -> Text
-  emit-clj-match-arm (pat) (body) (arities) (depth) =
+ A `cond` test is an arbitrary expression, so a guard goes in the TEST and
+ no form is restructured. The test has to see the pattern's bindings, which
+ live in the arm's own `let`, so it carries the same `let`. Binding a field
+ of a value that turned out to be a different constructor is harmless:
+ `(:field0 x)` on a map without that key is `nil`, and `and` short-circuits
+ on the tag test before the guard can read it.
+
+  clj-guard-trivial : IRExpr -> Boolean
+  clj-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  emit-clj-match-arm : IRPat, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-clj-match-arm (pat) (guard) (body) (arities) (depth) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "(= _s " & text & ") " & emit-clj-expr body arities
-    is IrCtorPat (name) (subs) (ty) (sp) -> "(= (:tag _s) \"" & name & "\") " & emit-clj-ctor-bind subs body arities
-    is IrVarPat (name) (ty) (sp) -> ":else (let [" & clj-sanitize name & " _s] " & emit-clj-expr body arities & ")"
-    is IrWildPat (sp) -> ":else " & emit-clj-expr body arities
-    is IrVecPat (pats) (ty) (sp) -> ":else " & emit-clj-expr body arities
+    is IrLitPat (text) (ty) (sp) ->
+     if clj-guard-trivial guard then "(= _s " & text & ") " & emit-clj-expr body arities
+     else "(and (= _s " & text & ") " & emit-clj-expr guard arities & ") " & emit-clj-expr body arities
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if clj-guard-trivial guard then "(= (:tag _s) \"" & name & "\") " & emit-clj-ctor-bind subs body arities
+     else "(let [" & emit-clj-ctor-bindings subs 0 & "] (and (= (:tag _s) \"" & name & "\") " & emit-clj-expr guard arities & ")) " & emit-clj-ctor-bind subs body arities
+    is IrVarPat (name) (ty) (sp) ->
+     if clj-guard-trivial guard then ":else (let [" & clj-sanitize name & " _s] " & emit-clj-expr body arities & ")"
+     else "(let [" & clj-sanitize name & " _s] " & emit-clj-expr guard arities & ") (let [" & clj-sanitize name & " _s] " & emit-clj-expr body arities & ")"
+    is IrWildPat (sp) ->
+     if clj-guard-trivial guard then ":else " & emit-clj-expr body arities
+     else emit-clj-expr guard arities & " " & emit-clj-expr body arities
+    is IrVecPat (pats) (ty) (sp) ->
+     if clj-guard-trivial guard then ":else " & emit-clj-expr body arities
+     else emit-clj-expr guard arities & " " & emit-clj-expr body arities
 
   emit-clj-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
   emit-clj-ctor-bind (subs) (body) (arities) =

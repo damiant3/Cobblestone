@@ -378,6 +378,10 @@ codex-vm -kernel file.cdx [options]
 | `-usb-setcfg-fault-once <N>` | 0 | As `-usb-setcfg-fault`, but the fault applies to the FIRST SET_CONFIGURATION only and then clears. A TRANSIENT failure and a permanent one want opposite fixes in the host, so a bed that can only produce the permanent kind cannot show that a reading distinguishes them. Pair with the probe's `retry:` field: permanent gives `sc1=4 sc2=4`, transient gives `sc1=4 sc2=1`. |
 | `-usb-bot-drop <N>` | 0 | Swallow the Nth transfer event on a BULK endpoint (EP0 enumeration untouched), counting from 1. The data still moves and the completion code is still success; only the EVENT goes missing, so the guest spins its `xhci-fuel` out and reads no completion. This is the worksflight 2026-08-09 signature exactly: a 32 KB data phase answering `msc-ce-no-event` with no stall and a volume left clean on all four FAT questions. Nothing else can reach a guest's timeout path, and everything behind it -- Stop Endpoint recovery, the latch drain, BOT Reset Recovery, the chunk retry -- was unexecuted code before this flag existed. Also implemented with it: Bulk-Only Mass Storage Reset (`bmRequestType 0x21`, `bRequest 0xFF`), which clears the model's in-flight CBW; without it a retried command arrived while `bot.active` was still set and was consumed as write data. |
 | `-usb-bot-drops <K>` | 1 | How many CONSECUTIVE transfer events `-usb-bot-drop` swallows, starting at N. **One drop is always recovered** -- the driver resets, re-issues, and the write completes (`rty=3`), so with the default K no bed can produce a REFUSED write at all, and the shape the 2026-08-19 metal sitting showed had no bed reproduction. K=4 at index 500 reaches it on `diag.img`: `sink state=write-refused wr=0 cc=256 lba=3574 rty=2 ph=1 after=0`, the medium refusing a small write after the big one as well. The index decides which state you get and the states are distinct, so sweep it rather than assuming one value covers the path (measured 2026-08-19: 300 recovers, 500 refuses, 1000 writes and fails the readback). |
+| `-usb-bot-drop-len <N>` | 0 | Swallow the transfer event for any bulk WRITE while the BOT command in flight carries N bytes or more. The size-keyed sibling of `-usb-bot-drop`, and the reason to prefer it: **an ordinal is not a property of the thing under test.** `-usb-bot-drop 500` names the 500th event since boot, so inserting a stage anywhere upstream moves the drop into a different phase silently. Measured 2026-08-20: adding the xhci stage moved the sink arm's drop out of the data phase into the MOUNT, and the arm reported `mount-fail`, a plausible word rather than a nonsense one. Keyed to `dCBWDataTransferLength` the same flag means the same thing whatever the guest does first, and it gives a bed a THRESHOLD for an instrument to reproduce: with `-usb-bot-drop-len 16384 -usb-bot-drop-len-max 16384` the sink ladder must answer `rung=32`, and at 8192 it must answer `rung=16`. Two arms whose answers move with the bed are what separate an instrument that measures from one that always says the same thing. **WRITES ONLY**, and that is load-bearing: the first version refused reads too, the mount reads more than 16 KB, and the stage under test reported `no-medium` instead of a threshold. |
+| `-usb-bot-drop-len-max <M>` | 0 (no upper bound) | Bound `-usb-bot-drop-len` above, so the lever refuses a BAND of command sizes rather than everything from N upward. It exists because the diagnostic bank writes 32,768-byte commands of its own: without it, every threshold small enough to refuse a rung also refuses the bank, the bank dies before the stage runs, and the row reads `no-medium`. With `N == M` the lever refuses exactly one command size, which is what a control wants. **It cannot rescue an ordinal-keyed arm whose target is the same size as the bank's writes:** the 2.7 MB sink stage writes 32,768-byte commands and so does the bank, so no threshold separates them, and `diag-arm.ps1`'s `sink-drop` stays ordinal-keyed for that reason. |
+| `-usb-bot-revive-on-reset` | off (the death is LATCHED) | Pairs with `-usb-bot-die-len` / `-usb-bot-die-lba`, which kill the BOT target at a write of a given size at or above a given LBA and leave it dead for the rest of the run. With this switch the target ANSWERS AGAIN after a Bulk-Only Mass Storage Reset, and the die trigger is SPENT rather than merely lifted. It keys on the BOT class reset and not a port reset because that is the one the driver issues: measured off `sink-dies`, the guest sends four Mass Storage Resets after the death and no port reset at all. Without the trigger being spent the driver retries the write that killed it, the length and LBA still match, and it dies again forever. This is what makes `msc-cell-retry` reach `msc-retry-ok` (3): the latched default can only ever reach `msc-retry-failed` (2), so the driver's recovery had a bed for its failure and none for its success |
+| `-usb-bot-die-on-nic` | off | The BOT target stops answering FOREVER at the first bulk WRITE issued after the e1000 model sees the first observable of NIC bring-up. Latched like `-usb-bot-die-lba`, and spent by `-usb-bot-revive-on-reset` in the same way. **It injects a symptom, not a mechanism**, exactly as `-usb-setcfg-fault` does: nothing here claims to know why a part would behave this way, and no reading taken under it is evidence that it does. It exists because the other two medium-death levers key on a property of the WRITE (its length, its LBA) and so can only express "the medium dies at a certain kind of write"; the candidate sitting 11 raised is that the write is innocent and its TIMING is the whole of it, which no length and no LBA can separate. Arms on either the CTRL write that sets SLU or the RCTL write that sets EN, whichever comes first, and the stderr line NAMES the register rather than assuming one: measured 2026-08-21 on the diag ladder it is **RCTL.EN**, written by `nicinit`. Its arm is `nic-kills-msc` and its control is `b3-pass` |
 | `-usb-no-unit-attention` | off (the condition is ON) | Restore the old always-ready storage target. **By default the device now presents the power-on UNIT ATTENTION every conforming SCSI target presents:** the first command after a controller reset answers CHECK CONDITION with sense key 0x06 / ASC 0x29, and the condition persists until REQUEST SENSE reads it. A host that skips that handshake sees its first real command fail on real hardware and used to pass here; `msc-wait-ready`'s retry loop had never executed. The condition is armed in the RESET path, not at init, because the guest issues HCRST during bring-up and would wipe it -- a sabotage arm that should have failed and did not is what found that. |
 | `-usb-disk-port <N>` | 1 | Carry the mass-storage device to root port N; its old port goes dark rather than answering as well. Pair with `-xhci-ports` to reproduce a device sitting where no reader can see it. **No bed could put a connected device above root port 7** before this: the model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on port 9, past the probe's eight PORTSC rows, so a count of connected ports named none of them. `-xhci-ports 26 -usb-disk-port 10` reproduces the board's `port=9 speed=4`. **Before believing a wide-port PASS, run the arm that must FAIL:** `-xhci-ports 8 -usb-disk-port 10` seats the disk past the declared port count, so the walk's own bound cannot reach it and the run has to report `connect=FAILED` (or `ok=0` on a `usb-attach` probe). Without that third arm a passing wide-port run is indistinguishable from a flag the emulator ignored. Better still, make the probe PRINT the port the walk settled on, so a vacuous run says `port=0` and convicts itself. |
 | `-usb-cfgval <N>` | 1 | The mass-storage device numbers its configuration N and **refuses any other value** with a STALL (USB 2.0 9.4.7 makes a bad configuration value a request error, and a control pipe reports one by stalling). `bConfigurationValue` is not an index and is not obliged to be 1. Use it on any driver that sends SET_CONFIGURATION: `msc-open-endpoints` sent a hardcoded 1 while every sibling driver read descriptor byte 5, and no bed could refuse it -- this model reported 1, and QEMU's `usb-storage` reports 1 and then accepts anything. |
@@ -389,6 +393,7 @@ codex-vm -kernel file.cdx [options]
 | `-xhci-csz` | off | Advertise CSZ=1 (HCCPARAMS1 bit 2) and hold every context to the 64-byte stride, the way Intel PCH silicon does. Every bed before this flag reported CSZ=0, so the driver's 64-byte context path shipped in every image and executed nowhere but on real Intel parts. A driver that hardcodes 32 writes its slot context inside the input control context and its ring pointers where the controller will not look. |
 | `-xhci-scratch <N>` | 0 | Declare N scratchpad buffers in HCSPARAMS2 and REFUSE the first ENABLE_SLOT (completion code 9, stderr verdict) unless DCBAA[0] points at a 64-byte-aligned array of N page-aligned, in-RAM page pointers. QEMU and this model declared zero forever; Intel parts demand real pages, and a missing array is silent corruption on metal. |
 | `-no-hpet` | off (the HPET answers) | The HPET window at 0xFED00000 is dead: every register reads zero and every write is dropped. What decides is the capability period at offset 04, which a guest divides into a second to get its tick rate, so a zero period is the box saying it has no clock to offer. `Hpet.codex` turns that into a rate of zero, and `E1000e` and `NicAsde` above it fall back to counting reads instead of clocking a deadline -- the path every network timeout on a box without an HPET actually takes, and one that had no bed arm at all until 2026-08-19. Four readers in the diagnostic ladder say so under it (`nicsit`, `nicinit` and `nicring` state `no-hpet`, and the scene stage's frame row reads `plain=no-clock`), which is the `nic-nohpet` arm. The xHCI MFINDEX is unaffected: that runs off host time inside the model rather than off a register the guest was offered. |
+| `-hpet-frozen` | off (the HPET answers) | The HPET window is there and UNDECODED: every register reads all-ones and every write is dropped, which is the other dead clock and the one `-no-hpet` cannot express. A period of 0xFFFFFFFF derives a rate of 232830 Hz, bogus but nonzero, so every reader takes its CLOCKED wait path, and the counter at F0/F4 is 0xFFFFFFFF and never moves, so each of those waits is bounded only by its read fuel (`e1000-await-link-clocked` is 100000 batches of 4096 STATUS reads). The diagnostic ladder's `b3` stage reads the counter across 100000 reads at entry and answers `clock-stuck` before bring-up; that is the `b3-clockstuck` arm, whose cfg turns the three nic stages off so nothing ahead of b3 spends its fuel on the same clock first. (root, 2026-08-21, the shape blu asked for.) |
 | `-no-smbios` | off (SMBIOS is published) | With `-uefi`: leave the SMBIOS entries out of the ConfigurationTable, so a guest that goes looking is told "none offered". The arm for a reader's no-table state; the diagnostic ladder's smbios stage answers `no-table` and its box row `unnamed` under it. |
 | `-no-edid` | off (an EDID is offered) | With `-uefi`: LocateProtocol answers NOT_FOUND for the EDID protocols. The ladder's edid stage answers `absent`. |
 | `-edid-bad` | off | With `-uefi`: the offered EDID has a wrong checksum byte. The ladder's edid stage answers `bad-checksum`, which is what shows the checksum is read rather than assumed. |
@@ -669,6 +674,48 @@ drop, so a harness that wants to refuse a short capture greps stderr for
 `SERIAL:`. The BLIT path (bulk output) reports its own growth failure as
 `BLIT: output buffer growth failed`.
 
+**The compile payload has three ways out, and the guest picks by probing
+(root, 2026-08-21).** `__write_binary` and `__write_binary_buf` first read port
+0x511: `0xB7` means codex-vm and the whole buffer leaves by the blit doorbell in
+one exit. Otherwise they read port 0xE9: `0xE9` read back means QEMU's Bochs
+debug console (`isa-debugcon`) is wired, and the whole buffer leaves as ONE
+`rep outsb` to that port, no LSR poll and no 16-byte FIFO bound, because the
+console is a byte sink with no status register. Anywhere else the port floats
+`0xFF` (QEMU without the device, codex-vm itself, real hardware) and the COM1
+loop runs as before: poll LSR once, burst up to 16 bytes. Only the QEMU compile
+fallback in `vm-config.ps1` (`Invoke-VmCompileFallback`, generated from
+`codex/build/vmconfigScript.codex`) wires the device, to a file chardev, and
+it accepts the payload from EITHER channel: complete means the console holds
+`SIZE:`'s byte count, or holds nothing and the serial wire does. A kernel older
+than the probe (the gate's stage0 is the depot seed) still answers on serial and
+is read unchanged; a console holding some bytes but not all is still streaming
+whatever the serial count says, since a `MAP` trailer can outweigh a small
+payload. The payload is spliced back where it sat on the wire, so `compile.ps1`
+reads `OutputFile` the same way from either host, and the fallback prints
+`qemu fallback: N payload bytes via the debug console` on stderr when that path
+was taken. No other `Start-VmRun` consumer gets the device: each reads the
+serial wire alone, and a device they did not ask for would move their payload
+somewhere they do not look.
+
+Measured 2026-08-21 on the landing, one unit (`codex/test/text-helper-spec`,
+105 KB of output): the same kernel produces a byte-identical binary through
+codex-vm's blit and through QEMU's debug console (one SHA-256 for both), which
+is the claim that matters; the gate's `vm-differential` phase makes the same
+comparison on every seed land. Wall clock under the QEMU fallback at that size
+was 4.0/3.9 s with the pre-change kernel on the COM1 bursts and 3.6/4.0 s with
+the new one on the console: inside noise, because the 16-byte bursts had
+already taken the exits out of the serial path (blu, main 17213) and a compile
+that size is boot and compile time, not output time. The path's own signature
+is two `in al,dx; cmp rax,0xE9` sites in the seed, one per helper: 0 in the
+pre-change seed, 0 in the pre-convergence Sut, 2 in the converged seed, the
+4.3a shape exactly. A larger payload was attempted (`GopBoot`, 1.2 MB of
+output) and the PRE-CHANGE kernel's run under the fallback did not complete:
+36 minutes, 19 s of CPU, no log line, and the fallback's own deadline never
+fired, so the QEMU path on a unit that size has a hang of its own that this
+change neither causes nor measures. Not pursued; named here so the next
+person who wants the big-payload number starts there rather than at the
+console.
+
 **NE2K NIC.** NE2000-compatible ISA NIC at I/O base 0x300. User-mode
 NAT stack with IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3. Handles
 ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS, TCP
@@ -769,6 +816,34 @@ the send buffer is full at the moment the guest's FIN arrives. Measured
 megabyte every time, where the unaided failure rate was about one run in
 five.
 
+**The IDE census, and how to read it.** Any run that touched the disk prints
+one line to stderr at exit:
+
+```
+IDE CENSUS: pio-exits=N str-exits=N words=N reg-exits=N out-batch(hits=N words=N) in-batch(hits=N words=N) flush-entries=N flush-calls=N flush-bytes=N flush-ms=N refused(nopath=0 nodata=0 oob=0 openfail=0)
+```
+
+`pio-exits` counts exits on the data port at 0x1F0 and `words` counts the
+words that crossed it, so their RATIO is the question the line exists to
+answer: 1.0 is one exit per word and 1/256 is one exit per sector.
+`reg-exits` counts the task-file registers at 0x1F1-0x1F7 and 0x3F6, which
+is the driver's polling around the transfer rather than the transfer. The
+`out-batch` and `in-batch` pairs are the string arms in `handle_io`
+consuming a whole `REP OUTSW`/`REP INSW` in one exit.
+
+**Read the `refused` counters before quoting a time from any disk run.** A
+`Copy-Item` of a Perforce file leaves the copy READ-ONLY, every write-back
+is then refused, the guest still reports the save complete, and the run
+comes back about ten times faster. That silent loss is latched, counted and
+reported here; clear the read-only bit rather than trusting the number.
+
+Measured 2026-08-20 on `docs/Probes/fat-write-phases.codex` writing 2,896,050
+bytes (5,657 sectors), a 16 MB image, 3 GB headless: 6,018 exits for 1,540,608
+words, `out-batch` 5,865 hits over 1,501,440 words, whole probe 3.3 s wall. The
+same probe against the compiler of the previous day took 1,540,098 exits for
+the identical 1,540,608 words and 8.2 s, because the guest driver issued a
+plain `OUT` per word and the host batch went unexercised.
+
 **A retransmitted SYN is handled, and before 2026-08-14 it was not.** A SYN
 for a connection the NAT already had fell through the new-connection branch,
 opened a second host socket over the first and leaked it, and the guest's
@@ -792,6 +867,37 @@ promiscuous mode, so a frame addressed to neither the station address nor
 broadcast is dropped and named on stderr -- the metal failure a stack
 sourcing the wrong MAC produces, which our driver's own RCTL.UPE hides.
 
+**A SECOND RECEIVER BRING-UP IN ONE BOOT USED TO STOP DELIVERY FOR GOOD, and
+what that costs is a class of old bed reading rather than anything still
+broken.** Fixed 2026-08-20 (blu, main 18011). `e1000_rx_cursor` is the head
+both delivery paths use, and nothing reset it: there was no
+`case E1000_REG_RDH` in `e1000_write` at all, so a write to RDH fell through
+to the default store and the cursor only ever advanced. `e1000-setup-rx`
+programs RDH=0 and RDT=15 on a 16-descriptor ring, and both paths declare
+"ring full, leave it queued" when the cursor equals RDT, so a guest bringing
+the receiver up a second time had **one chance in sixteen per bring-up** of
+resuming with the cursor already on 15 -- and from there nothing was ever
+delivered again. RNBC counted up, the host queue grew without bound, and the
+guest polled a ring the model refused to fill. Measured on the diagnostic
+ladder, which brings the receiver up four times in one boot: 138 ARP replies
+sat in `rx_queue` while the stage reported `no-arp`. RDH is device state the
+driver initialises, so writing it now moves the cursor, and reprogramming
+RDBAL/RDBAH/RDLEN resets it.
+
+**Which readings this voids, stated narrowly on purpose.** It was a BED
+defect, so **metal readings are untouched** -- the sittings stand because
+they are metal. It is also not "all bed evidence": the fault needs TWO
+receiver bring-ups in ONE boot *and* the cursor landing on RDT, so a test
+that boots, brings the receiver up once and exits could never reach it. All
+22 e1000 and net tests pass identically before and after the fix, and no
+published arm value changes. What IS void is one inference: **"the part did
+not deliver", drawn from an empty receive row taken after a second bring-up
+in the same boot.** In practice that is the diagnostic ladder's `nicring` and
+`b3` rows and nothing else. A bed reading of arrived-but-invisible from that
+shape corroborated nothing, which matters because arrived-but-invisible is
+exactly what NIC-4 was chasing on metal, and a bed that can produce it for a
+reason the metal does not have is worse than one that cannot.
+
 **The PHY, reached through MDIC at 0x0020.** The model answers MDIC with a
 32-register PHY file at address 1; a read of any other address returns the
 error bit rather than zero, because that is what a bus with nothing on it
@@ -807,6 +913,23 @@ negotiated state.
 | `-e1000-mdio-window` | MDIC answers nothing for 10 ms after CTRL.RST (I219 datasheet 9.2) |
 | `-e1000-mdio-slow` | MDIO reads answer E until page 769 register 16 bit 10 is set (I219 9.2) |
 | `-e1000-ctrl-ro` | CTRL is READ-ONLY: writes discarded whole, register keeps the firmware value |
+| `-i219-ulp-armed` | PHY page 779 register 16 powers up with STICKY_ULP (bit 4) and EN_ULP_LANPHYPC (bit 10) SET, on top of the board's measured `0x0800` |
+
+**779.16 is modelled and 779.17 is deliberately not.** ULP Configuration 1
+(I219 datasheet 9.5.7.1) answers reads and writes under `-i219`; ULP
+Configuration 2 at register 17 on the same page still answers `E`, which is
+the control that shows the page dispatch is not blanket-answering everything
+on page 779.
+
+**The power-up value is the BOARD's, not the datasheet's.** Every field in
+that register documents a default of `0b`, and Damian's I219 reads `0x0800`
+(bit 11, inside the reserved field) on two independent flights, sittings 8
+and 9. The model powers up at the measured value.
+
+`-i219-ulp-armed` exists because both ULP-entry bits are CLEAR on that board,
+so a driver's entry-disable write has nothing to change and no arm can see it
+happen. Armed, 779.16 powers up at `0x0C10` and the write has something to
+clear. Without the flag a reaching arm and a skipping arm are the same run.
 
 ### The xdiag cell registry
 
@@ -825,6 +948,7 @@ boot screen.
 | 48..63 | xHCI controller table, `48 + i*4`, four controllers |
 | 64..69 | `xhci-ep-base` block, six words |
 | 70..91 | MSC and FAT cells (`msc-cell-*`, `gfat-cell-*`; 88 is `gfat-cell-written`, the sectors the data run actually wrote; 89 is `gfat-cell-lastsize`, the size read back from the directory entry after the last bank write; 90 is `gfat-cell-banklost`, the stage index plus one of the first bank append that did not land, zero while every one has; 91 is `msc-cell-chunk`, the MSC transfer chunk in sectors for this boot, zero for the default of 64, set by `sink chunk=N` in DIAG.CFG) |
+| 92..93 | diag `b3` bank-loss cells (`db3-cell-notes`, the stage's notes counted as the serial trail counts them, and `db3-cell-lost`, the ordinal of the first note whose write was refused with a bank open, zero while none was; both zeroed at `db3-run` entry because metal RAM is not, and the second is what `bank-lost-note=N` on `b3`'s first row reports) |
 | 96..111 | `usb-hid-note` block, `usb-hid-cell-base + idx*4`, four devices |
 
 `msc-cell-end` = 80 is an EXCLUSIVE bound for `xdiag-zero`, not a stored cell,
@@ -1948,20 +2072,22 @@ than red.
 live there: the `ddc-arm` csproj scaffold and `csharp-plug.cdx`. Expect to
 rebuild the plug (`plugs/csharp/build.ps1 -Force`) and re-create the csproj
 on any release where a gate has run since the last one. The plug's builder
-takes no `-Kernel` and resolves `build-output/bare-metal/Codex.cdx` against
-the process working directory, so stage the seed under audit there first or
-the witness certifies the wrong compiler.
+pins `-Kernel` to `<repo>/seed/Codex.cdx`, resolved from the repo root rather
+than from the process working directory (`plug-build-lib.ps1:149`), so the
+seed under audit has to BE the one in `seed/`; staging a kernel anywhere else
+does nothing.
 
 **Four things that will give you a false answer, three of them measured
 here on 2026-08-10.**
 
-- **The plug must be built with the seed under audit.**
-  `codex/plugs/common/plug-build-lib.ps1` calls `compile.ps1` with no
-  `-Kernel`, so the plug is built by whatever sits in
-  `build-output/bare-metal/`, and that path resolves against the PROCESS
-  working directory rather than the workspace. A plug built by the previous
-  seed certifies the wrong compiler and says so only in a NOTE. Pass
-  `-Kernel` explicitly and read the kernel line it prints.
+- **The plug must be built with the seed under audit, and `seed/Codex.cdx` is
+  the only seed it will use.** `codex/plugs/common/plug-build-lib.ps1`:149
+  passes `-Kernel <repo>/seed/Codex.cdx` explicitly; neither
+  `plugs/<name>/build.ps1` nor `build/plug-build.ps1` takes a `-Kernel` to
+  override it. Auditing any other seed means installing it at that path first.
+  Read the `kernel:` digest the compile prints and check it against the seed
+  you meant to audit. (This paragraph said the opposite until 2026-08-20,
+  when the builder was measured rather than remembered.)
 - **The C# arm writes diagnostics to stdout AHEAD of the binary.** The run
   above put 67,380 bytes of warning text before the CDX. Find the `CDX1`
   magic and slice from there; comparing the raw stream reports total
@@ -2733,6 +2859,28 @@ Both are the wrong instrument on a UEFI boot and both answer plausibly:
   the cell is not written on every allocation. It read as the base while R10
   was 22.9 MB above it.
 
+### BOOTING `build/boot/diag.img` AS ITS OWN DISK REWRITES THE DEPOT ARTIFACT
+
+`codex-vm -kernel build\boot\diag.img -disk build\boot\diag.img` looks like the
+obvious way to try a diagnostic image by hand. It is not: the ladder BANKS, and
+banking means the payload writes `DIAG.TXT` onto the ESP of whatever medium it
+was given. Point `-disk` at the depot file and the depot file is what it edits.
+Measured 2026-08-20 (blu): one probe boot moved `diag.img` from `A6A00B79` to
+`0D69C8FC`, and the next `diag-arm.ps1` run duly reported the mutated image as
+its subject.
+
+**Boot a COPY.** That is what `diag-arm.ps1` does for every arm it runs
+(`New-Copy` / `New-Variant`), and the reason is this and not tidiness. The
+repair when it happens is `build/boot/build-diag.ps1`, which is deterministic:
+the same sources give the same hash back, so a rebuild returns the artifact
+rather than merely a new one.
+
+Two ways this bites beyond the wasted rebuild. A CL that carries the mutated
+image ships an artifact with somebody's test run baked into it, and the hash in
+the rehearsal record will not be the hash of the thing anyone else builds. And
+`build/check-shipping-images.ps1` will NOT catch it, because it refuses a
+`DIAG.CFG` and this writes a `DIAG.TXT`.
+
 ### A guest diagnostic has two channels, and only ONE of them is ever read
 
 | | port | emitter | who reads it |
@@ -2809,11 +2957,15 @@ it is the only one that fires before you start debugging the wrong program.
 warnings about `is-letter`, `is-digit` and `is-whitespace`. There are no
 errors anywhere in it. The same bundle compiles clean by hand.
 
-**Cause:** the message is wrong twice over. `compile.ps1` resolves its
-default `-Kernel` (`build-output\bare-metal\Codex.cdx`) against the CURRENT
-WORKING DIRECTORY, so from the plug directory there is no kernel and it
-exits 2 with `MISSING: build-output\bare-metal\Codex.cdx`. Nothing is
-compiled at all. `Build-PlugCdx` (`codex\plugs\common\plug-build-lib.ps1`:146)
+**Cause:** the message is wrong twice over. Something in the compile
+resolves a path against the CURRENT WORKING DIRECTORY, so from anywhere but
+the repo root the compile exits non-zero and nothing is compiled at all.
+Re-measured 2026-08-20 from `C:\Users\Damian`: it is now the CITE that fails,
+`error 3010: Unresolvable cite: Foreword chapter 'ListUtils' ... (expected
+.\codex\foreword\core\ListUtils.codex)`, not the kernel -- the builder pins
+`-Kernel` to `<repo>/seed/Codex.cdx` now. Same fix, different message, so do
+not use the old text to decide whether this is your failure.
+`Build-PlugCdx` (`codex\plugs\common\plug-build-lib.ps1`:148)
 swallows that output with `| Out-Null`, sees a non-zero exit, reports it as
 "compile errors", and then dumps the FIRST TEN LINES OF THE PREVIOUS RUN'S
 `build.log`. Those warnings are stale and belong to a compile that succeeded.

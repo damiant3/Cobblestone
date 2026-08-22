@@ -375,9 +375,11 @@ and enforced property rather than a document. What is still open:
    `input` when the slice grows. A single scalar class has to take the worst
    case and call it `input`, which refuses exactly the case `fixed` was
    introduced to permit. Either the class becomes per-ARGUMENT, or the
-   over-refusal is accepted and written down as the price. **This is a design
+   over-refusal is accepted and written down as the price. ~~This is a design
    question, not a measurement, and it is the first thing that needs deciding
-   before `fixed` can ship. It is CurrentPlan rulings queue 17.**
+   before `fixed` can ship. It is CurrentPlan rulings queue 17.~~ **RULED
+   2026-08-19 (Damian): the class becomes PER-ARGUMENT. Shipped the same day;
+   the record is below.**
 
    **2. `integer-to-text` is bounded but not constant, and the lattice has no
    rung for that.** 16 bytes at 2 and 3 digits, 16 and 24 at 8 and 10: the
@@ -386,25 +388,131 @@ and enforced property rather than a document. What is still open:
    bytes and cannot cause blow-up, which is what `fixed` exists to promise.
    But "the same bytes every call" is false. Reading it strictly makes it
    `input` and abstain-toward-refusal says take the stricter rung; reading it
-   by the rung's PURPOSE makes it `fixed`. **Its row stays `unknown` -- which
-   is read as allocating, the safe side -- until that is ruled on. It is CurrentPlan rulings queue 18.**
+   by the rung's PURPOSE makes it `fixed`. ~~Its row stays `unknown` -- which
+   is read as allocating, the safe side -- until that is ruled on. It is CurrentPlan rulings queue 18.~~
+   **RULED 2026-08-19 (Damian): NEITHER. Between `fixed` and `input` there is
+   a bounded-or-budgeted class and `integer-to-text` is in it. Shipped the
+   same day; the record is below.**
 
    The narrow arm is worth keeping in view: at 64 and 256 alone,
    `integer-to-text` reads flat and would have been published `fixed`. That is
    the same single-point error the 08-15 table made, caught here only because
    the harness was rerun at a wider spread.
 
+   **THE `budgeted` RUNG SHIPPED (blu, 2026-08-19, main 17581), and it closes
+   17 and 18 together because they were one question.** Both readings above
+   describe the same gap: an allocation that is genuinely bounded by something
+   nobody wrote down. `substring line 0 4` is bounded by the literal it is
+   passed; `integer-to-text` is bounded by the twenty digits an `Integer` has.
+   Neither is `fixed`, because the bytes are not the same every call, and
+   calling either `linear` promises something about the input that is false.
+   So the lattice gained a rung between them rather than forcing either answer:
+
+   ```
+     none  <  fixed  <  budgeted  <  linear  <  growing
+   ```
+
+   `cost-class-rank` carries it at rank 2 (`TypeChecker.codex`), and the
+   registry says which builtins are in it: `integer-to-text`'s `bs-alloc` row
+   is a bare `budgeted`, `substring`'s is **`budgeted:3`** -- the per-argument
+   form question 1 asked for, naming the argument that supplies the bound. **A
+   `budgeted:N` call is accepted when argument N is a LITERAL and refused
+   otherwise**, which is blunt on purpose: it also refuses a computed length
+   that happens to be small, and that is this feature's abstain-toward-refusal
+   applied where the compiler cannot know.
+
+   The arms are `codex/test/apps/bounded-budgeted-accepted` (the control,
+   carrying both shapes the rung was ruled into existence for) and
+   `codex/test/errors/bounded-budgeted-exceeded` (the refusal, whose
+   declaration sits on `clip` while the offending `substring` is in its
+   UNDECLARED callee `half`, so the arm proves the refusal is transitive and
+   not merely local). **Re-measured 2026-08-20 against depot seed A6D49D19**
+   rather than taken from the CL: the control compiles at exit 0 and the
+   refusal answers CDX6101 at exit 4, naming `clip`.
+
+   `fixed` is still the rung that has not shipped, and the reason has not
+   changed: separating "the same bytes every call" from "one walk over an
+   input" needs the 262-entry registry measured, and `bs-alloc` reads
+   `unknown` on 245 of them. What HAS changed is that this no longer blocks
+   ordinary parsing code from declaring anything, because `budgeted` is the
+   rung that code actually sits on. `bounded fixed` is refused as unsupported
+   (CDX6103) rather than accepted unchecked, which is the same
+   abstain-toward-refusal one level up: an unchecked promise reads exactly
+   like a checked one.
+
    **`fixed` is the one rung left and it is STILL blocked, on less than it
    was.** Separating "fixed bytes per call" from "one walk over an input"
    needs a per-builtin allocation class; 3.1 published the text family and
    the list family is now measured too, but the remaining 262-entry builtin
    registry is not, and the check cannot read a class that lives only in a
-   document. **The next unit is `bs-alloc` on `BuiltinSpec`**
-   (`codex/compiler/Types/Builtins.codex`), which is where the class belongs:
-   it puts the answer beside the name and the type, and it replaces the
-   hand-kept name list in `cost-builtin-nonalloc` with a field the registry
-   carries. Until then the zero-byte set stays a literal in the TypeChecker
-   and every widening of it is a hand edit. CDX6103 now names only `fixed` and says so. Do not infer it
+   document. **`bs-alloc` on `BuiltinSpec` SHIPPED (blu, 2026-08-19, main
+   17450)** (`codex/compiler/Types/Builtins.codex`), which is where the class
+   belongs: it puts the answer beside the name and the type, and
+   `cost-builtin-nonalloc` reads `builtin-alloc-by-name` rather than the
+   hand-kept list it used to carry, so a measurement widens what `bounded
+   none` accepts by editing the row that names the builtin. The registry is
+   the mechanism now and the measurement is the remaining work. **Re-measured
+   2026-08-21 after a second family, the 264 rows read: `unknown` 219,
+   `none` 35, `input` 5, `fixed` 3, `budgeted` 1, `budgeted:3` 1.** The second
+   pass measured the character predicates, the small conversions and the raw
+   memory accessors: `is-letter`, `is-digit`, `is-whitespace`, `code-to-char`,
+   `text-to-integer`, `compare`, `peek-byte`, `peek-32`, `poke-byte` and
+   `poke-32` all read 0 at both sizes; `show` is `fixed` at 16 bytes;
+   `text-split` and `alloc-bytes` are `input`.
+
+   **`alloc-bytes` IS WHY AN ARM MUST VARY THE THING IT IS MEASURING.** Its
+   first arm passed the literal 64 and it duly read `fixed` at both sizes,
+   which is a true statement about the arm and says nothing about the builtin:
+   the only quantity that varies is the argument the caller chose. It is
+   `substring`'s shape -- the class follows a parameter -- and an arm holding
+   that parameter constant cannot see the class at all. Varying it, the same
+   builtin reads 64 against 256, exactly 4.0x, `input`. The earlier reading
+   was not wrong about what it measured; it measured the wrong thing.
+
+   **THIRD PASS, the buffer family: `unknown` 214, `none` 38, `input` 7,
+   `fixed` 3, `budgeted` 1, `budgeted:3` 1.** `__buf-write-byte`,
+   `__buf-write-bytes` and `__narrow` retain nothing; `__buf-read-bytes` and
+   `__list-with-capacity` are `input` at 528 bytes for 64 and 2,064 for 256.
+
+   **That pass also settled a number this project has been carrying unmeasured
+   in `CLAUDE.md` itself.** Rule 8 lists `buf-read-bytes` under red flags as an
+   "8x blowup", and four designs cite the figure as settled. It is 8x plus a
+   16-byte header -- 64 x 8 + 16 = 528, 256 x 8 + 16 = 2,064 -- so the rule is
+   RIGHT, and is now right by measurement rather than by repetition. A claim in
+   the file that loads every session, cited across a campaign, had never been
+   read off the machine; the outcome happened to be confirmation, and the value
+   of checking did not depend on that.
+
+   **FOURTH PASS, the proof terms and the pointer family: `unknown` 202,
+   `none` 48, `input` 7, `fixed` 5.** `tag-equal`, `variant-tag`, `address-of`
+   and `__memset` measured at zero; `__linked-list-empty` and
+   `__linked-list-push` are `fixed`, which is the contrast that makes a linked
+   list worth having against `list-push`'s `input` worst case.
+
+   **The six proof terms are `none` STRUCTURALLY and not by measurement**, and
+   the distinction is recorded rather than smoothed over: `Refl`, `assume`,
+   `sym`, `trans`, `cong` and `app-cong` all lower through
+   `emit-proof-builtin`, which is `emit-int-lit st 0`. There is no allocation
+   path to find. They are also the one family this instrument CANNOT arm, since
+   a proof term cannot close the `+ r - r` bracket that forces a result to be
+   used -- so an arm would be measuring dead-code elimination. Classifying them
+   from the emitter is the same footing `list-set-at` already stands on.
+
+   The previous passes read `unknown` 232, then 219, then 214; before them, 247. The registry grew by two rows and
+   fifteen were measured that day: the twelve integer and bit names, `negate`,
+   `real-from-int` and `real-to-int`, all at 0 bytes retained at both input
+   magnitudes (`codex/test/cost/builtin-alloc`, the account in
+   `DevelopersGuide.md`). **Twelve of the fifteen widen nothing**, because
+   `is-rt-safe-builtin` already carried them and `cost-builtin-nonalloc` reads
+   that set first; what they buy is a registry that agrees with a measurement
+   instead of a second hand-kept list. The three that DO widen the rung are
+   `negate` and the two real conversions, and the kill side was taken before
+   the rows moved: against depot `Sut` 96CB73CB the new section of
+   `codex/test/apps/bounded-none-accepted` is refused CDX6101 on both
+   declarations at exit 4, and it compiles once the rows read `none`. It was
+   2026-08-20's reading of
+   `unknown` 245 that this line carried, and the earlier one before it. `unknown` is the refusing side,
+   so 245 builtins are still read as allocating without bound. CDX6103 now names only `fixed` and says so. Do not infer it
    from the code's shape alone: a single `&` allocates in proportion to its
    operands, so a straight-line body with no loop in it is already not
    `fixed`, and a shape-only rule would accept exactly the case the class

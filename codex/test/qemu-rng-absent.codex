@@ -1,0 +1,65 @@
+Chapter: QemuRngAbsent
+  cites Foreword chapter Board
+  cites Boards chapter QemuVirtBoard
+
+Section: Readings
+
+  qr-n : Integer = 64
+
+  qr-distinct-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  qr-distinct-loop (buf) (seen) (i) (n) (acc) =
+   if i >= n then acc
+   else let b = peek-byte buf i
+   in if peek-byte seen b /= 0 then qr-distinct-loop buf seen (i + 1) n acc
+   else let m = poke-byte seen b 1
+   in qr-distinct-loop buf seen (i + 1) n (acc + 1)
+
+  qr-zeroed : Integer -> Integer
+  qr-zeroed (n) = qr-zero-loop (alloc-bytes n) 0 n
+
+  qr-zero-loop : Integer, Integer, Integer -> Integer
+  qr-zero-loop (buf) (i) (n) =
+   if i >= n then buf
+   else let w = poke-byte buf i 0
+   in qr-zero-loop buf (i + 1) n
+
+  qr-distinct : Integer, Integer -> Integer
+  qr-distinct (buf) (n) = qr-distinct-loop buf (qr-zeroed 256) 0 n 0
+
+  qr-differ-loop : Integer, Integer, Integer, Integer -> Boolean
+  qr-differ-loop (a) (b) (i) (n) =
+   if i >= n then False
+   else if peek-byte a i /= peek-byte b i then True
+   else qr-differ-loop a b (i + 1) n
+
+  qr-line : Integer, Integer, Integer, Integer -> Text
+  qr-line (b1) (b2) (n1) (n2) =
+   let d = qr-distinct b1 n1
+   in "rng found=y n1=" & show n1 & " n2=" & show n2 & " distinct=" & (if d >= 16 then "ok" else "low") & " differ=" & (if qr-differ-loop b1 b2 0 (if n1 < n2 then n1 else n2) then "y" else "n")
+
+Section: Opening
+
+  opening : [Console, Rng, Device.Mmio] Nothing
+  opening = act
+   let b1 = qr-zeroed qr-n
+   in let b2 = qr-zeroed qr-n
+   in act
+    brd0 <- board-open 0 0
+    r0 <- qemu-rng-open brd0
+    when r0
+     is (brd1, u0) -> act
+       r1 <- qemu-rng-read u0 b1 qr-n
+       when r1
+        is (u1, n1) -> act
+          r2 <- qemu-rng-read u1 b2 qr-n
+          when r2
+           is (u2, n2) -> act
+             c <- qemu-rng-close u2
+             bc <- (board-close brd1)
+             if n1 == 0 then print-line "rng absent"
+             else print-line (qr-line b1 b2 n1 n2)
+           end
+        end
+     end
+   end
+  end

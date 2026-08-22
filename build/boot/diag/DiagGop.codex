@@ -1,0 +1,60 @@
+Chapter: DiagGop
+  cites Works chapter GopHandoff
+  cites Diag chapter DiagStage
+
+ We say:
+
+Section: The Stage
+
+ The mode selection runs in the UEFI stub before ExitBootServices and this
+ stage runs after it, so QueryMode and SetMode are both gone by the time
+ anything here could ask. The stub therefore banks what it did into the
+ handoff block (v3), and this row reports the bank rather than re-deriving it.
+
+ The six states are distinguishable on purpose. Geometry is not: a box that
+ paints 1024x768 reads identically whether that was the largest mode the
+ firmware offered or whether SetMode was refused and the firmware's own
+ console mode is still up. That ambiguity is the whole reason the bank exists,
+ and reporting a bare pass or fail here would put it straight back.
+
+  dgop-states : List Text = ["honoured", "kept", "single", "refused", "noloop", "nostub"]
+
+  dgop-state : Integer -> Text
+  dgop-state (dummy) =
+    if handoff-has-v3 0 == False then "nostub"
+    else if handoff-gop-maxmode 0 == 0 then "nostub"
+    else if handoff-gop-maxmode 0 == 1 then "single"
+    else if handoff-gop-ran 0 == False then "noloop"
+    else if handoff-gop-called 0 == False then "kept"
+    else if handoff-gop-status 0 == 0 then "honoured"
+    else "refused"
+
+ nostub and noloop are the instrument's own failure states and are warnings,
+ not verdicts about the box: the first says an older stub booted this image,
+ the second says the bank disagrees with itself and nothing here can be
+ trusted. refused is the one real negative answer, and it is the answer the
+ sitting is for.
+
+  dgop-colour : Text -> Integer
+  dgop-colour (st) =
+    if st == "refused" then diag-col-bad
+    else if st == "noloop" then diag-col-warn
+    else if st == "nostub" then diag-col-warn
+    else if st == "single" then diag-col-note
+    else diag-col-good
+
+  dgop-said : Text -> Text
+  dgop-said (st) =
+    if st == "honoured" then "firmware moved to the largest mode it enumerated"
+    else if st == "kept" then "largest mode was already current, nothing asked"
+    else if st == "single" then "firmware enumerated one mode, nothing to choose"
+    else if st == "refused" then "SetMode REFUSED the largest mode"
+    else if st == "noloop" then "v3 bank present but the loop never ran"
+    else "no v3 handoff: this image was built by an older stub"
+
+  dgop-run : DiagCtx -> DiagResult
+  dgop-run (c) =
+    let st = dgop-state 0
+    in let g1 = "max=" & show (handoff-gop-maxmode 0) & " before=" & show (handoff-gop-mode-before 0) & " chose=" & show (handoff-gop-mode-chosen 0) & " flags=" & show (handoff-gop-flags 0) & " status=" & diag-hex8 (handoff-gop-status 0)
+    in let g2 = "fb=" & show (c.dc-w) & "x" & show (c.dc-h) & " stride=" & show (c.dc-stride) & " hv=" & show (handoff-version 0) & "  " & dgop-said st
+    in diag-result st (dgop-colour st) [g1, g2] [g1, g2]

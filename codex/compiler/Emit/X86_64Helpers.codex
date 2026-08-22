@@ -1646,7 +1646,11 @@ Section: I/O Boundary Helpers
 
    in let st36bx = emit-port-out-16-helper st36bw
 
-   in let st36c = emit-port-in-32-helper st36bx
+   in let st36by = emit-port-in-16-block-helper st36bx
+
+   in let st36bz = emit-port-out-16-block-helper st36by
+
+   in let st36c = emit-port-in-32-helper st36bz
 
    in let st36d = emit-port-out-32-helper st36c
 
@@ -3025,7 +3029,45 @@ Section: Binary Output
 
    in let st6v = emit-list-eff-base st6 reg-rbx reg-rax
 
-   in let st7 = st-append-code st6v (li reg-r11 0)
+   in let st6w = st-append-code st6v (xor-rr reg-rax reg-rax)
+
+   in let st6x = st-append-code st6w (li reg-rdx 233)
+
+   in let st6y = st-append-code st6x in-al-dx
+
+   in let st6z = st-append-code st6y (cmp-ri reg-rax 233)
+
+   in let uart-pos = st6z.code-len
+
+   in let st6aa = st-append-code st6z (jcc cc-ne 0)
+
+   in let st6ab = st-append-code st6aa (li reg-r11 0)
+
+   in let dbg-top = st6ab.code-len
+
+   in let st6ac = st-append-code st6ab (cmp-rr reg-r11 reg-rcx)
+
+   in let dbg-done = st6ac.code-len
+
+   in let st6ad = st-append-code st6ac (jcc cc-ge 0)
+
+   in let st6ae = st-append-code st6ad (mov-rr reg-rax reg-r11)
+
+   in let st6af = st-append-code st6ae (shl-ri reg-rax 3)
+
+   in let st6ag = st-append-code st6af (add-rr reg-rax reg-rbx)
+
+   in let st6ah = st-append-code st6ag (mov-load reg-rax reg-rax 8)
+
+   in let st6ai = st-append-code st6ah out-dx-al
+
+   in let st6aj = st-append-code st6ai (add-ri reg-r11 1)
+
+   in let st6ak = st-append-code st6aj (jmp (dbg-top - (st6aj.code-len + 5)))
+
+   in let st6al = patch-jcc-at st6ak uart-pos (st6ak.code-len)
+
+   in let st7 = st-append-code st6al (li reg-r11 0)
 
    in let loop-top = st7.code-len
 
@@ -3079,7 +3121,9 @@ Section: Binary Output
 
    in let st26 = patch-jcc-at st25 done-pos (st25.code-len)
 
-   in let st27 = st-append-code st26 (pop-r reg-r11)
+   in let st26a = patch-jcc-at st26 dbg-done (st26.code-len)
+
+   in let st27 = st-append-code st26a (pop-r reg-r11)
 
    in let st28 = st-append-code st27 (pop-r reg-rcx)
 
@@ -3098,6 +3142,17 @@ Section: Binary Output
  one holding register: poll it once, then rep outsb a burst of up to
  16. A rep string I/O access is a single trap under WHP and KVM, so a
  burst costs two exits where sixteen single bytes cost thirty-two.
+
+ Between those two arms sits the Bochs debug console at port 0xE9
+ (233), which QEMU models as isa-debugcon: every byte written is
+ appended to its chardev with no FIFO and no status register, so a
+ single rep outsb carries the whole buffer in one trap. Its presence
+ probe is that an IN from 0xE9 reads back 0xE9 when the device is
+ wired (the readback property's default) and floats 0xFF everywhere
+ else: QEMU without the device, codex-vm (whose 0x511 arm wins first
+ anyway), and real hardware. The harness that wires the device owns
+ the reader; nothing else changes, because without it the probe fails
+ and the UART loop below runs exactly as before.
 
   emit-write-binary-buf-helper : CodegenState -> CodegenState
 
@@ -3149,7 +3204,27 @@ Section: Binary Output
 
    in let st21 = patch-jcc-at st20 legacy-pos (st20.code-len)
 
-   in let st22 = st-append-code st21 (mov-rr reg-rsi reg-rbx)
+   in let st21a = st-append-code st21 (li reg-rdx 233)
+
+   in let st21b = st-append-code st21a in-al-dx
+
+   in let st21c = st-append-code st21b (cmp-ri reg-rax 233)
+
+   in let uart-pos = st21c.code-len
+
+   in let st21d = st-append-code st21c (jcc cc-ne 0)
+
+   in let st21e = st-append-code st21d (mov-rr reg-rsi reg-rbx)
+
+   in let st21f = st-append-code st21e (cld & rep-outsb)
+
+   in let dbg-done-pos = st21f.code-len
+
+   in let st21g = st-append-code st21f (jmp 0)
+
+   in let st21h = patch-jcc-at st21g uart-pos (st21g.code-len)
+
+   in let st22 = st-append-code st21h (mov-rr reg-rsi reg-rbx)
 
    in let st22a = st-append-code st22 (mov-rr reg-r11 reg-rcx)
 
@@ -3207,7 +3282,9 @@ Section: Binary Output
 
    in let st44 = patch-jmp-at st43 blit-done-pos (st43.code-len)
 
-   in let st45 = st-append-code st44 (pop-r reg-r11)
+   in let st44a = patch-jmp-at st44 dbg-done-pos (st44.code-len)
+
+   in let st45 = st-append-code st44a (pop-r reg-r11)
 
    in let st46 = st-append-code st45 (pop-r reg-rcx)
 
@@ -4127,6 +4204,72 @@ Section: Binary Output
    in let st4 = st-append-code st3 (li reg-rax 0)
 
    in st-append-code st4 x86-ret
+
+  emit-port-in-16-block-helper : CodegenState -> CodegenState
+
+  emit-port-in-16-block-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "port-in-16-block"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let g = emit-gpu-mem-guard st0
+
+   in let st1 = st-append-code (g.state) (mov-rr reg-rcx reg-rsi)
+
+   in let st2 = st-append-code st1 [252]
+
+   in let st3 = st-append-code st2 rep-insw
+
+   in let st4 = st-append-code st3 (li reg-rax 0)
+
+   in let st5 = st-append-code st4 x86-ret
+
+   in let fail-pos = st5.code-len
+
+   in let st6 = st-append-code st5 (li reg-rax (0 - 1))
+
+   in let st7 = st-append-code st6 x86-ret
+
+   in patch-jcc-at st7 (g.deny-offset) fail-pos
+
+  emit-port-out-16-block-helper : CodegenState -> CodegenState
+
+  emit-port-out-16-block-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "port-out-16-block"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let g = emit-gpu-mem-guard st0
+
+   in let st1 = st-append-code (g.state) (mov-rr reg-rcx reg-rsi)
+
+   in let st2 = st-append-code st1 (mov-rr reg-rsi reg-rdi)
+
+   in let st3 = st-append-code st2 [252]
+
+   in let st4 = st-append-code st3 rep-outsw
+
+   in let st5 = st-append-code st4 (li reg-rax 0)
+
+   in let st6 = st-append-code st5 x86-ret
+
+   in let fail-pos = st6.code-len
+
+   in let st7 = st-append-code st6 (li reg-rax (0 - 1))
+
+   in let st8 = st-append-code st7 x86-ret
+
+   in patch-jcc-at st8 (g.deny-offset) fail-pos
 
   emit-port-in-32-helper : CodegenState -> CodegenState
 

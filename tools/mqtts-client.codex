@@ -138,12 +138,18 @@ Section: TLS Record Framing
       else mqtts-recv-record (rr.transport) (buf & (rr.data)) (guard - 1)
     end
 
+ A HALF-WRITTEN TLS RECORD ENDS THE SESSION and the peer cannot resync from
+ one: the record layer is length-prefixed, so a short write leaves the far end
+ waiting inside a record, and everything after it is read as corruption. Same
+ stop-and-close as `https-send-loop` in HttpFetch, for the same reason.
+
   mqtts-send-all : TcpTransportState, List (List Integer), Integer -> [Network.Read, Network.Write] TcpTransportState
   mqtts-send-all (ts) (recs) (i) =
     if i >= list-length recs then ts
     else act
-      ts1 <- net-io-send-raw ts (list-at recs i)
-      mqtts-send-all ts1 recs (i + 1)
+      s <- net-io-send-raw-checked ts (list-at recs i)
+      if s.ns-complete == False then net-io-close (s.ns-transport)
+      else mqtts-send-all (s.ns-transport) recs (i + 1)
     end
 
 Section: The Handshake

@@ -4,10 +4,8 @@
 template project that takes from the existing ones we've done and organizes
 them into something that works for someone downloading this and running on a
 box we've never seen. a procedure for detecting and informing what needs to
-happen." Status: approved as a campaign the same day; step 0 is this document and
-step 1 (the ladder framework, root) landed 2026-08-18. Owner: red, who also
-composes the sittings it flies on. Step 3 (the SMBIOS, EDID and CPU rows and
-the verdict checker) landed the same day.*
+happen." Status: approved as a campaign the same day, and built. Owner: red,
+who also composes the sittings it flies on.*
 
 ## What it is for
 
@@ -103,7 +101,15 @@ stage never re-discovers what an earlier one measured.
    read-only rungs, `MscAlignProbe`. Bank.
 4. **Storage, write-side, on the stick only.** `BlockLadderProbe` (one
    sector at a known LBA past the volume) then `SinkLadderProbe` (the 2.7 MB
-   streamed write, WORKS-9's question). Bank.
+   streamed write, WORKS-9's question). Bank. **`sink` KEEPS THIS NUMBER AND
+   THIS ROW BUT EXECUTES LAST** (root, 2026-08-21): it can kill the medium,
+   and the medium is the bank, so every stage after it in the list would lose
+   its record. Sitting 7 paid for that reading -- `DIAG.TXT` held stages 1 to
+   8 and stopped. Deferral is by `dg-stage-defers`, the main pass reserves the
+   slot, and a labelled `before-deferred` summary is banked before the
+   deferred stage runs. A stage that can END THE RUN rather than the medium
+   (`asde`) is NOT deferred, because deferring it would guarantee it runs
+   unbanked and the ASUS has no serial port.
 5. **NIC, passive.** `e1000-find`, the pre-write register rows
    (`NicSittingProbe` NIC-1/2), the poll calibration. Bank.
 6. **NIC, init and ring.** `NicInitProbe`'s stepwise `e1000-init` under
@@ -111,11 +117,32 @@ stage never re-discovers what an earlier one measured.
    question). Bank.
 7. **NIC, conversation.** B3: bring the stack up and hold one TCP
    conversation with a peer named in the config (or skip if none). Bank.
-8. **The day's questions.** Whatever a lane routed for this sitting, each a
+8. **NIC, the driver's own write read back.** `pchk1` (`DiagPchK1.codex`,
+   added 2026-08-21): PHY page 770 register 17 again, this time AFTER
+   `e1000-init` has written it. The passive `pch` stage reads the same
+   register at the top of the ladder, so its reading is the platform's
+   power-up value; the K1 write happens inside `e1000-init`, which the ladder
+   reaches only through `net-driver-bring-up` in `b3`. Between them nothing
+   read the register, so a flight where traffic still did not flow could not
+   tell **a fix that was applied and did not help from a fix that was never
+   applied at all**. That is the whole of what the stage is for.
+   **Its position is a constraint, not a preference.** It must follow the
+   writer and precede `asde`: `asde` calls `na-phy-kick`, which writes BMCR
+   reset, and a PHY reset returns 770.17 to its NVM value, so a reading taken
+   after `asde` reports the NVM setting on every run and would say the write
+   never took even when it took. A later ladder that brings `e1000-init` up
+   earlier moves this stage with it, not to a fixed number.
+   Bed arms `k1-taken` (`-i219`) and `k1-blocked` (`-i219-mng-holds`) move the
+   row from one binary. **Both name a peer**, because `b3` short-circuits on
+   no-peer before bring-up: with no peer nothing writes K1, and the arm read
+   `not-taken` until it dialled. `not-taken` with MDIO answering is BOARD-ONLY
+   and declared as such in the chapter -- no bed knob lets the read succeed
+   while the write fails.
+9. **The day's questions.** Whatever a lane routed for this sitting, each a
    stage in its own file, run last among the risky ones: ASDE
    (`AsdeStageProbe`), the A8 allocation grant, the largest GOP mode and
    `SetMode`. Bank after each.
-9. **`MayWedge`, never by default.** NIC-5 (what wedged the box on
+10. **`MayWedge`, never by default.** NIC-5 (what wedged the box on
    2026-08-11) and anything else terminal by construction runs only when the
    config names it, and it is always the last line of the ladder.
 
@@ -191,7 +218,11 @@ answers.
 **`bank=ok` used to mean "a medium was selected and the first write
 landed", and nothing more.** Every later write's answer was discarded, so
 a stick that went wedged mid-ladder produced a truncated `DIAG.TXT` under
-a SUMMARY painting `bank=ok`. That is what came back from metal twice
+a SUMMARY painting `bank=ok`. **Naming the loss was never the same as
+stopping it, and sitting 7 is what made the difference visible: the row said
+`bank=lost at=sink` perfectly correctly over a file missing the nine readings
+the flight existed for.** The stage order is what stops it (step 4 above);
+the row below is what reports it. That is what came back from metal twice
 (`HardwareSitting`, sittings 2 and 3). The bank's truth is the FILE: each
 write reads the size back from the directory entry, a disagreement is a
 refusal, and the first stage that loses an append is banked in cell 90 and
@@ -250,6 +281,14 @@ The bank is `DIAG.TXT` on the ESP of the medium we booted from, appended
 after every stage, plain ASCII, one `stage=... state=... ` line then the
 readings, and a final `END` line so a truncated bank is visible as
 truncated. It is the record; the glass and the QR are conveniences.
+
+**A `DIAG.CFG` ON THE ESP CAN ONLY SELECT STAGES THAT RUN AFTER THE BANK,
+and that is a property of the order rather than of the parser.** The passive
+stages run before the bank opens, because opening it means `usb-attach` and
+the medium lock, and a passive stage touches no device. The stub's `-Stdin`
+ring is read first and selects ALL of them. Both sources are read, the header
+row says which arrived (`src=stdin`, `stdin+file`, `default`) and the bank row
+says how many file lines came with it.
 
 Today `GopMedium` writes only to a volume whose ESP holds `CODEX.CDX`
 (`GopMedium.codex:19`), which is why every seedless probe stick paints its
@@ -339,355 +378,259 @@ express a state (OVMF has no `MAP=ok`, `CYAN` has never fired on either
 ladder), the design says so in the stage's account rather than claiming
 coverage (L-GAP).
 
-## Gaps this design has to close (from the 2026-08-18 inventory)
+### A SITTING image cannot be rehearsed by a suite that knows one baseline
 
-1. **CLOSED 2026-08-18 (step 3).** No SMBIOS and no EDID reader in the tree; the
-   box had no name and the monitor no identity in any bank. Now `DiagSmbios`,
-   `DiagEdid` and `DiagCpu` are the first three stages, fed by the stub's
-   handoff block v2 (see the step-3 record).
-2. **Bank coverage.** Only three flown probes bank. Every stage banks after
-   the `DIAG.ID` change.
-3. **The seed lock versus the seedless probe.** Closed by `DIAG.ID` above.
-4. **NIC stages have no bed arm and `test-ovmf.ps1` has no NIC.** The
-   codex-vm e1000 switches are the arm; OVMF gains `-netdev` in
-   `diag-arm.ps1` for the enumeration rows only.
-5. **`-Ebs` versus `-Uefi` is a silent fork.** The payload checks the
-   handoff block's magic and the SystemTable cell at its first row and
-   names which world it is in; the wrong one is a state word, not zeros.
-6. **Recipes no longer reproduce flown hashes.** The image builder writes
-   the recipe (flags, kernel digest, source CLs) INTO the image's ESP as
-   `DIAG.RCP` and into the bank's first lines, so a bank names the bytes
-   that produced it.
-7. **QR chunk count is unbounded.** The summary QR is bounded to the panel;
-   the bank is the record. A `no bank` boot gets the summary only.
-8. **A fresh image boots to the wizard.** Not this image: `Diag.codex` is
-   its own payload with no desk and no identity, and it takes no input.
+The arms were written against the DEFAULT image, and a sitting bakes its
+questions in. `sink ladder=1` moves the sink baseline from `ok` to
+`ladder-all`; a baked `b3 peer=` moves `pass` from `no-peer` to `no-part`;
+and with the ladder on a refused small write lands as `rung-1-refused`
+rather than `write-refused`. Ten arms read as MISMATCH on 2026-08-20 for
+those three reasons and none of them was a defect. That is L-REHEARSE
+pulling against the suite: the exact bytes that fly are the ones the suite
+could not read.
 
-## Steps, each its own CL, none seed-affecting unless a stage touches the foreword
+`diag-arm.ps1` now takes the baseline from `build-output/diag-recipe.txt`,
+and only when that recipe describes the image in hand, so a config the
+bytes do not carry cannot be assumed (L-SAMEVER). Two scopes matter and
+both were learned by getting them wrong: only an arm booting the
+UNMODIFIED subject carries the subject config, because a `New-Variant` arm
+lays down its own `DIAG.CFG`; and the ESP config is read only AFTER the
+bank opens, so `no-medium` and `fat-full` run the default baseline however
+the image was built.
 
-0. This design; the CurrentPlan Track A row; the lane rule (a metal
-   question is a stage routed to red). DONE with this document.
-1. **DONE 2026-08-18 (root); the record is the section below.** The ladder framework: `Diag.codex`, `DiagStage`/`DiagResult`/`DiagCtx`,
-   the row and band painting, `DIAG.CFG` reading (stub `-Stdin` first, ESP
-   file second), the `DIAG.ID` medium lock, `DIAG.TXT` bank with `END`,
-   the verdict table printer, the fixed page (rows 0-3 and the band), and
-   every channel in the table above wired. Two stages only, to prove the shape:
-   `PciProbe` and `SceneProbe` lifted. Bed: codex-vm and OVMF, bank read
-   back and diffed against the glass, and the read-only medium arm reaching
-   `no bank` with the QR still decoding. Ships `diag.img` and `diag-arm.ps1`.
-2. **Block ladder (6), sink ladder (7) and the NIC three (8-10) lifted 2026-08-18 (root); records below.** Lift the rest of the flown probes into stages in the ladder order:
-   USB (xHCI truth, keyboard, MSC align), storage (block ladder, sink
-   ladder), NIC (sitting, init, ring), and the day's-question stages (ASDE,
-   the A8 allocation, the largest GOP mode). Each lift is its own CL and
-   carries the stage's forced-failure arm. Owners: the lane that flew the
-   probe lifts it (reek the sink ladder, blu the NIC three, fester the A8
-   probe, red the rest); red merges the ladder.
-3. **DONE 2026-08-18 (root); record below.** New passive readers: SMBIOS, EDID, the CPU feature row. And
-   `check-diag-verdicts.ps1`: every state word has a verdict row.
-4. **DONE 2026-08-18 (root); record below.** `flash-usb.ps1 -Rehearsed`, `DIAG.RCP` provenance, the UsersHandbook
-   procedure, the release recipe carrying `diag.img` and its hash to the
-   mirrors.
-5. **The first grouped sitting.** `DIAG.CFG` for the ASUS carrying every
-   standing question: A8 allocation, largest GOP mode and `SetMode`, the
-   sink's 2.7 MB write, the e1000 ring, B3 with the desk box as peer, ASDE
-   last; NIC-5 off. Rehearsed hash recorded, Damian sits once, `DIAG.TXT`
-   transcribed to `HardwareSitting.md`, and each lane closes or advances its
-   row from the bank.
-6. Then the road: a stage that compiles a chapter off the stick (the A5
-   ladder as a stage), a stage that writes a rebuilt kernel back, and the
-   resident agent that chooses stages from what stage 1 found. Not
-   scheduled; named so the ladder is built with it in mind (the ctx is the
-   agent's memory, the verdict table is its first policy).
+**A third scope, and until 2026-08-21 it was a composition the suite could
+not rehearse AT ALL: a stage turned OFF.** red built a sitting with `asde
+off` and five arms disagreed (`pass`, `nic-pass`, `nic-nolink`,
+`asde-differs`, `asde-ctrlro`), every one on the same row, `stage=asde
+state=skipped risk=writes cfg=off`. The first two scopes moved a baseline;
+this one had no expressible arm, so the composer either flew unrehearsed
+bytes or abandoned the composition, and red abandoned his. It is two
+repairs rather than one, because the five arms are not one population. A
+general arm does not care what the sitting composed: `diag-arm.ps1` reads
+the recipe's config the way `diag-cfg-find` does (first match, bare key is
+`on`, only the exact word `off` disables, ring before ESP) and expects
+`skipped` for every stage the subject turns off. An arm ABOUT the stage
+must not inherit that, since an asde arm that silently accepts asde being
+skipped is an instrument that cannot fail (L-FALSIF): `asde-differs` and
+`asde-ctrlro` are `New-Variant` arms now, laying down the subject's own
+composition with `asde on` forced ahead of it so first-match takes the
+force and everything else stays as composed. Measured on an `asde off`
+subject: all five green, `asde-differs` reading `differs` (which a skipped
+stage cannot produce), and `pass` on the default image unchanged.
 
-## Step 1, landed 2026-08-18 (root)
+### A stage banks as it goes (root, 2026-08-21, off sitting 9)
 
-What ships: `build/boot/diag/Diag.codex` (the ladder), `DiagStage.codex`
-(the stage shape and the colours), `DiagPci.codex` and `DiagScene.codex`
-(the two lifted stages; `PciProbe.codex` and `SceneProbe.codex` now cite them
-and keep only their one-question rendering), `build/boot/build-diag.ps1`
-(the image: bundle, compile by the depot seed, `cdx-to-pe -ExitBootServices
--Stdin`, `build-img -Extra` with `DIAG.ID`), `build/boot/diag.img`, and
-`build/boot/diag-arm.ps1` (seven arms, five in codex-vm and two under OVMF).
-`build/quire-map.ps1` gained the `Diag` quire (`build\boot\diag`) so a stage
-is `cites Diag chapter X`; `build/build-img.ps1` gained `-Extra
-NAME.EXT=path;...` for files on the ESP root; `build/boot/test-ovmf.ps1`
-gained `-ReadOnlyDisk`. Both generated scripts were changed through their
-generators (0 drift).
+Sitting 9 died inside `b3`'s bring-up and `DIAG.TXT` came back whole through
+`nicring` and then `END`: the only thing the medium said about the stage
+that killed the run was that it was absent. The glass had `b3 -> bring-up`,
+which names a function with four things inside it, and the ASUS has no
+serial port, so the `b3 entering X` lines that name steps on the wire were
+never going to reach anyone. A stage could not bank mid-run at all: the
+ladder holds the `DiagBank` and the lines so far, banks between stages, and
+hands each stage a `DiagCtx` whose `dc-bank` is a Boolean.
 
-**The stage shape as written, and where it differs from the sketch above.**
-No record in the tree carries a function-typed field and the sketch's
-`run : DiagCtx -> DiagResult` would have been the first, so the table is a
-dispatch by stage number: `dg-stage-name`, `dg-stage-risk`,
-`dg-stage-run` (a `when` over the id), `dg-stage-enabled` (the config),
-`dg-stage-picture` (whether the stage draws in its slot). The sketch's
-`applies` was dropped: a box without the part is a STATE the stage answers
-(`no-nic`), never a silent skip; only the config skips. Stages are numbered
-in ladder (risk) order, all passive ones first, and the first non-passive
-lift extends `dg-stage-risk` rather than the run loop. A stage chapter is
-named `Diag*.codex` because that is what `diag-arm.ps1`'s stale check
-watches. A stage chapter
-exports one function `<tag>-run : DiagCtx -> DiagResult` and its state
-vocabulary. `DiagCtx` carries the geometry, the font, the world, the id
-and kernel digest, the config lines, the PCI scan (taken once, before
-stage 1, so no stage re-walks the bus) and the stage's own slot
-(`dc-slot-x/y/w/h`); `DiagResult` is the state word, its colour, the glass
-rows and the bank rows.
+The ctx now carries the bank (`dc-vol`) and the lines banked so far
+(`dc-lines`, set by the runner before each stage), and `DiagStage` owns the
+write path (`diag-bank-write-vol`, the file body, the name buffer) so a
+stage can call `diag-bank-note c "stage=b3 step=reset"`: the file is
+rewritten as everything banked so far plus that note, and the ladder
+rewrites it again when the stage returns. A note therefore lives on the
+medium exactly as long as the stage is between it and its result, which is
+the interval a wedge freezes. Each note costs one file's length of heap
+(the buffer is allocated before the mark by design).
 
-**Two channels the design assumed exist were measured not to, and each got
-the honest substitute:**
+`b3` uses it two ways. **Sub-steps:** bring-up is stepped through the
+driver's own functions in the driver's own order (`e1000-reset`,
+`e1000-init-after-reset`, `e1000-pch-prepare`, bind, `net-driver-calibrate`),
+each painted and banked, and the K1 readback is banked the moment
+`e1000-pch-prepare` returns, so a wedge in calibrate, link wait or ARP keeps
+it. The semaphore and `e1000-link-up` sit inside `e1000-init-after-reset`
+and cannot be separate steps from outside the driver; that half is blu's.
+The cost is that `b3` now mirrors `net-driver-bring-up` rather than calling
+it, at the granularity of the functions it is made of; the drift risk is
+named here because no arm can measure it. **The clock control:** before
+bring-up, `hpet-ticks` is read across 100000 reads and `clk=y/n dt=N
+moved=N/100000 hpet=N` is banked at once. Sitting 9 proved the clock
+advancing at stage 12 (`nicinit`'s budgets landed to the microsecond), so
+at stage 14 this is a control that should read `y`, and a reading that does
+not is the finding. `clock-stuck` refuses before bring-up, because a rate
+nothing validates over a counter that does not move makes every clocked
+wait in the driver effectively endless: `e1000-await-link-clocked` is
+100000 batches of 4096 STATUS reads. `-hpet-frozen` in codex-vm models the
+undecoded-window shape blu named, all-ones everywhere, period 0xFFFFFFFF
+deriving a bogus nonzero 232830 Hz; the `b3-clockstuck` arm turns the three
+nic stages off by cfg so nothing ahead of b3 spends its fuel on the same
+stuck clock, and asserts `clk=n` on the refusing row so the verdict carries
+its measurement.
 
-- **`gfat` has no append.** Every `gfat-write-file` is a whole-file rewrite
-  from a fresh chain, and the old chain is not freed. So the bank is
-  REWRITTEN with every line so far after each stage, ending in `END` each
-  time; the record still cannot be caught half-written, and a stage that
-  wedges leaves the previous complete bank. The cost is one orphaned chain
-  per rewrite, a few clusters a stage on a 16 MB stick; a `gfat-append`
-  that extends the chain in place is the step-2 item that removes it.
-- **`-Stdin` is where the id lives, not a compiled constant.** The payload
-  cannot know its own hash, so `build-diag.ps1` hashes the compiled CDX,
-  writes the prefix into the stub's serial ring as `id <hex>` beside
-  `kernel <digest>`, and onto the ESP as `DIAG.ID`; the payload compares the
-  two before its first write and refuses `no DIAG.ID`, `DIAG.ID mismatch`
-  and `no id in the image` by name. Same bytes, same id, so a rebuild from
-  identical source and seed still matches its stick. The ring is 120 bytes
-  and the two lines take 42, which bounds `-StdinCfg`.
+**Sitting 10 flew the stepped `b3` and it named the hang** (red, 2026-08-21
+night): the ladder ran through `nicring`, the glass painted `b3 -> clock` then
+`b3 -> reset`, and the last line before `END` on the medium was `stage=b3
+step=reset`. The hang is INSIDE `e1000-reset`, before the semaphore, before
+link-up, before K1, the first time it has had a name. The same flight caught
+the instrument dropping its own control row (L-BANK): the clock line was
+banked first and was not in the file, because a note was built as the ctx's
+lines plus one note and the ctx's lines are fixed for the stage's run, so
+every note REPLACED the one before it. A note now reads the medium back,
+strips `END` and appends, so the trail reads clock, reset, rings-link, k1,
+k1=N, calibrate; the `b3-pass` arm refuses a run whose `banked=N` values do
+not strictly grow across the notes, which is the replacing shape exactly.
+The first version of that fix read the file back through `gfat-text`, which
+builds Text with `acc &` per character, eleven megabytes of prefixes per
+4.8 KB read-back, and the seventh note walked the heap into the stack of the
+128 MB arena (EXC=06 at a garbage RIP, R10 past RBP). The file is copied as
+bytes now, and every step note carries `heap=N`, the bump pointer at that
+step, so the arena is read on the medium. Measured on the bed: bring-up's
+steps cost a quarter to half a megabyte each, and the TCP `exchange` step
+costs 33.8 MB, a quarter of the flight arena (L-ARENA); what it costs on
+metal is a bank row now, and the number is for whoever owns the net stack's
+heap rather than for this design.
 
-**Order, and one consequence for `DIAG.CFG`.** The passive stages run before
-the bank opens because opening it means `usb-attach` (our xHCI and MSC
-stack) and the medium lock, and stage 1 touches no device. So a `DIAG.CFG`
-on the ESP can only select stages that run AFTER the bank; the stub ring
-selects all of them. Both are read, the header row says which
-(`src=stdin`, `stdin+file`, `default`) and the bank row says how many file
-lines arrived (`cfg-file=N`). BANK 1 is a real write, not a mount: a
-medium that mounts and locks but refuses the write is reported
-`bank=none write refused, write stage N` (the `gfat` cell 83 code), never
-`bank=ok`.
+**The composition queue after sitting 10, in red's order, one change per
+flight.** Sitting 11: split `reset` into its seven operations (imc,
+ctrl-read, rst-write, await-reset, settle-mdio, imc, icr), each painted and
+banked; `NicInitProbe.codex:206-224` runs the same seven at stage 12 in
+milliseconds and `b3` hangs in them at stage 14, same code, different part
+state. **BUILT (root, 2026-08-21 night): `db3-reset` in `DiagB3.codex`**,
+the seven in `e1000-reset`'s own order, each a `db3-step` so it paints
+`b3 -> reset-X`, banks `stage=b3 step=reset-X heap=N`, and the `rst-write`
+and `settle-mdio` notes carry the CTRL value read and the `settled` answer
+(the `k1=N` in the row is `e1000-pch-prepare`'s code, 0..7 since main
+18736: 3 owned and stuck, 2 owned and not, 6/7 MDIO refused owned/unowned);
+the value returned is `settled`, so bring-up's absent decision stays the
+driver's. The `b3-pass` arm now requires twelve notes. Then: a LISTEN after the K1
+write. reek measured that no stage listens after K1 (order is nicinit,
+nicring, b3, pchk1, asde, and nicinit never does the K1 step), so the board
+can never show DD landing once K1 is disabled; a nicring-shaped window after
+`b3`'s k1 step, or `pchk1` growing one, is the flight-shape change that would
+prove the campaign's claim on metal. **BUILT (root, 2026-08-21 night), for
+sitting 12: `pchk1` listens 1.2 s on the production ring `b3` bound, through
+the driver's receive path, GPRC fenced before and counted after, DD counted
+on the ring, and says `quiet` / `arrived-visible` / `arrived-invisible` /
+`skipped` in its `listen-after-k1` row. The bed pair is the two K1 arms with
+one armed frame released by pchk1's own GPRC read (`nicring off` in their
+cfg): `taken` reads `arrived-visible`, `no-mdio` under MNG held reads
+`arrived-invisible`, K1 the only difference.**
 
-**The hold.** A bare self-call after the summary is a two-instruction loop
-the runtime spine's watchdog reads as a hung guest; it panicked with a
-`WD!` dump on serial about thirty seconds after `END`, in both beds. The
-ladder holds by calling a real function each turn (pet mode pets on every
-prologue) and paints a heartbeat square at the band's right edge, so a
-photograph also says the machine is alive.
+**Sitting 11 flew the seven reset operations and the medium died INSIDE
+bring-up** (red, 2026-08-21 evening): the trail on the stick read clock and
+all seven reset operations and `rings-link`, each with `heap=`, then `END`;
+the `k1` and `calibrate` notes never landed, b3's exchange completed on the
+real I219 (the dev box echoed 13 bytes), and the glass said `BANK LOST AT
+STAGE 15 pchk1`, the stage whose whole-stage write the LADDER first saw
+refused. The medium stopped taking writes between the `rings-link` note and
+the `k1` note, during `e1000-init-after-reset`, and nothing said so where it
+happened: a step's note already answers -1 when its write is refused or its
+size readback disagrees (`diag-note-bytes` reads the root directory sector
+back fresh), and `db3-step` printed that as `banked=-1` on a serial wire the
+ASUS does not have, then painted the step name without it. The bank is not
+independent of the subsystem under test (xHCI and the I219 share the PCH),
+which is L-CHANNEL in the campaign's own words, so the glass is the only
+channel once the medium dies and it has to name the step.
 
-**The arms (`diag-arm.ps1`), all measured green 2026-08-18:**
+**BUILT (root, 2026-08-22), for sitting 12: a step paints its own refusal.**
+`db3-step` now paints `BANK LOST AT <step>` in `diag-col-bad`, the colour
+class of the ladder's band, and says `b3 bank lost at <step>` on serial, the
+moment `diag-bank-note` answers -1 with a bank open (`dc-bank`; no medium at
+all is not loss and paints nothing new). The arm is `b3-banklost`, and its
+death is keyed to the thing under test rather than to an ordinal: the census
+shows every bank rewrite taking a fresh cluster (LBA 3489, 3494, 3500, ...
+climbing) with a length that steps with the file, so `-usb-bot-die-len 5632
+-usb-bot-die-lba 3400` kills the medium on the first eleven-sector file
+write, which by the measured note sizes (4788 to 5460 bytes across b3) is
+the seventh b3 note, `reset-imc-again` at 5141 bytes; the bank's FAT and
+directory writes sit at 2049 and 2153, below the key. Measured: the first
+`bank lost` line names `reset-imc-again`, every note before it banked and
+every note after it `-1`, the medium's last b3 note is `reset-settle-mdio`,
+the summary says `bank=lost at=b3`, and codex-vm's own line says the target
+died on a 5632-byte write at LBA 3617. Ten seconds; a dead medium refuses at
+once. `b3-pass` is the control (fifteen notes, none refused).
 
-| arm | bed | requires |
-|---|---|---|
-| `pass` | codex-vm, image as boot medium and disk | serial block `DIAG1`..`END` == `DIAG.TXT` row for row; `bank=ok`; both stages stated |
-| `no-medium` | codex-vm, no `-disk` | summary reached, `bank=none ... mount stage`, no file |
-| `fat-full` | codex-vm, every free cluster marked bad | mount and lock succeed, `bank=none write refused, write stage 14`, no file |
-| `cfg-off` | second image, `scene off` in the ring | scene `state=skipped`, `bank=ok` |
-| `esp-cfg` | second image, `DIAG.CFG` on the ESP | `cfg-file=1`, `bank=ok` |
-| `ovmf` | QEMU+OVMF, qemu-xhci usb-storage | serial == file, `bank=ok`, the summary QR decodes off the screendump (`tools/qr-read.ps1`) to `DIAG1;...` |
-| `ovmf-ro` | the same, drive `readonly=on` | `bank=none write refused`, QR still decodes |
+**The slot paint is transient, and the screenshot said so before the record
+could claim otherwise.** `dg-paint-result` overwrites the stage's slot with
+its own row when the stage returns, and on sitting 11 `b3` RETURNED (the
+exchange completed), so `BANK LOST AT k1` would have been gone from the glass
+before anyone photographed it; the step paint survives only the wedge shape
+(sittings 9 and 10). So `db3-run` zeroes two diagnostic cells at entry
+(metal RAM is not zeroed: cell 92 counts the stage's notes, cell 93 holds the
+first refused one) and at its single exit stamps `bank-lost-note=N` onto
+`b3`'s FIRST glass line and first bank line and turns the row red, whatever
+its state. The first line is the one the slot keeps and the QR is built from,
+so the ordinal reaches the photograph and the QR both. It is an ordinal and
+not a name on purpose: two step names carry live values and the DHCP path
+adds a step, so a name table would drift, and the count is what the serial
+trail and the stick's own trail already use. **Read the two together**: the
+stick's trail ends at note N-1 and the glass says N, and a medium that
+ACCEPTED a write and lost it, the one shape no in-band readback can see
+because the size readback goes through the same controller, shows as a GAP
+between the two numbers. Sitting 11's trail ended at `rings-link` with
+`b3`'s own result missing and the ladder's whole-stage write after `b3`
+apparently accepted, which is consistent with that shape; the next flight's
+numbers decide. What no arm can judge is the glass itself; the serial line
+and the paint are one branch of one function, and the row was looked at by
+eye under `-screenshot` when it was built.
 
-Two things the arms taught. `-usb-bot-drop 1` (the sketch's read-only
-control) is NOT a no-bank arm any more: the MSC driver's recovery path
-re-issues the transfer and the bank lands, so the no-medium and fat-full
-arms carry that role and the OVMF read-only drive is the honest
-write-protect. And a read-only HOST file under codex-vm forces nothing
-(the guest is served from memory; disk-arm.ps1 had already learned it).
+**BUILT (root, 2026-08-22), for sitting 12: `rings-link` split into the six
+parts of `e1000-init-after-reset`**, in the driver's order, each painted and
+banked before it runs, the same shape as the reset split: `rings-quiesce`
+(quiesce, the ring and buffer allocations, the MTA clear, the MAC read, the
+record), `setup-rx`, `setup-tx`, `swflag` (the acquire, 2,000
+read-modify-writes of EXTCNF_CTRL with MNG held; the note after it carries
+`sem=`), `link-up` (the CTRL|SLU write; the note after it carries `link=`)
+and `swflag-release`. reek measured that sitting 11's medium survived
+`nicinit`'s whole bring-up and died inside this function, and of its parts
+the SWFLAG acquire and the SLU write are the two `nicinit` never did, while
+the ring setup is what it did under a receiver that was never quiesced; the
+next flight's trail names which. `db3-init-after-reset` mirrors the driver
+function at the granularity of its parts and rebuilds the `E1000Device`
+record verbatim, so a field added to the driver refuses here at compile time
+rather than drifting. `b3-pass` now requires twenty notes; `b3-banklost`'s
+seventh note is unchanged, so its key still lands on `reset-imc-again`.
 
-**What the beds showed.** OVMF hands this stub a 2048x2048 GOP mode; the
-page lays out at scale 2 and the QR block takes three codes at scale 6.
-The pci stage answers `BELOW3G` under OVMF (NIC BAR0 at 0x81060000, AHCI
-BAR5 at 0x81084000, as `build/boot/diag/README.md` records) and `ok` under
-codex-vm, so the stage's worst-verdict rule is exercised in both directions
-without a sabotage. Both beds reach END inside the arm deadlines (90 s
-codex-vm, 100 s OVMF); the per-arm time was not measured finer than that.
+### Landing a diag CL while main moves: rebuild after every unshelve
 
-**Not in step 1, by the design's own order.** SMBIOS/EDID/CPU rows (step 3:
-`box: unnamed`, `ram=unread` are the placeholders and say so), the
-verdict-vocabulary checker (step 3), `DIAG.RCP` on the ESP (step 4;
-`build-output/diag-recipe.txt` carries it beside the image for now),
-`flash-usb -Rehearsed` (step 4). Where the runner lives is still open:
-codex-vm reaches `END` inside two seconds, so the five codex-vm arms are
-about three minutes at their 30 s backstops and the two OVMF arms about four
-more, which is a release-proof row rather than a battery row.
-## Step 2, the storage lifts: block ladder and sink ladder, landed 2026-08-18 (root)
+The stale guard compares `diag.img` against the chapters by mtime, and the
+shelve/merge/unshelve dance rewrites every shelved chapter AFTER the image
+that was built from them, so the guard refuses the rehearsal on the very
+first arm even though the bytes are the same. Measured twice on 2026-08-21
+landing the stepped-b3 CL, two cycles of thirty minutes spent reaching a
+refusal. The order that lands is: merge down, unshelve, **rebuild the image**
+(deterministic, so an unchanged source re-hashes to the same image and the
+record already carries it), rehearse only when the bed or a chapter actually
+changed, then gate. And keep the window short: rehearse and gate in one chain
+and copy up the moment it is green, because three merges in one evening each
+brought `tools/codex-vm.c` and the exe has to be rebuilt from merged source
+before the arms certify anything.
 
-`build/boot/diag/DiagBlock.codex` is stage 6, `block`, risk `writes`, the
-first non-passive stage, so it is also the first to exercise the run loop's
-after-the-bank half: `dg-run-rest` starts at the first non-passive stage and
-rewrites the bank after it. `DiagCtx` gained `dc-bank` (set when the bank
-opened) because a write-side stage needs to know whether a medium is
-selected at all; with none it answers `no-medium` and touches nothing. The
-rungs are `BlockLadderProbe`'s in the ladder's own vocabulary: read the ESP
-boot sector back through our driver on the bank's medium (`read-fail` on no
-0x55AA), `bpb-bad`, write one marked sector at the scratch LBA 30000 (inside
-the facts region, so nothing the volume reads is touched; `DIAG.CFG` `block
-lba=N` moves it), `write-refused`, read it back (`readback-fail`,
-`mark-lost`), `ok`. Bank row: `via= bps= lba= write= readback=`. Every word
-has a verdict row (`check-diag-verdicts` 6 stages OK).
+### The subject must not move under the run
 
-**Forced-failure arm:** `diag-arm.ps1 block-oob` builds the variant whose
-`DIAG.CFG` says `block lba=999999999`; the medium refuses the write and the
-row reads `state=write-refused`, every other stage as in `pass`. `no-medium`
-and `fat-full` now assert `block=no-medium` (no bank, no medium). Eleven arms
-green; the record's second line is this image (`EDD54A0E...`, kernel
-`5B2DE4E6`). Measured on codex-vm: `via=USB bps=512 lba=30000 write=1
-readback=1`; the OVMF pass arm banks the same row shape (`ovmf` compares
-serial to file row for row, `block` included).
+Every arm copies the image fresh, so a `p4` sync or revert landing
+mid-rehearsal swaps it for every arm after that point. On 2026-08-20 a
+handoff revert did exactly this: arms before it booted payload `be035dc8`
+and `asde-ctrlro` booted `6e825d95`, a payload whose stage list predates
+`gopmode`, and the verdict read `(no gopmode stage row)`, which is a
+defect-shaped answer to an integrity failure. `Assert-Subject` re-hashes
+the image before every arm and refuses, naming both hashes. The startup
+stale check cannot see this: it runs once, before arm one.
 
-**The sink ladder followed the same day as stage 7 (`DiagSink.codex`, red's
-reassignment from reek).** The 2.7 MB streamed write (`dsk-size` 2745998,
-WORKS-9's number) goes through `gfat-write-file`, the bank's own writer, onto
-the bank's medium as `SINK.CDX` (the stage re-mounts the ESP itself,
-`mount-fail` if that refuses), then `gfat-file-size` and `gfat-read-file` read
-it back whole and `dsk-bad` compares every byte against the pattern:
-`write-refused` (row carries `wstage=`, the writer's stage cell, so a refusal
-names where), `size-bad`, `read-fail`, `bad-bytes`, `ok`, `no-medium`. The
-forced arm is the probe's own calibration, `DIAG.CFG` `sink shift=1`
-(`sink-shift` in `diag-arm.ps1`): the write lands and the verify compares
-against the pattern shifted by one, so the row must read `bad-bytes` with
-`bad=2745998`, and every other stage stays as in `pass`. Measured on
-codex-vm: `size=2745998 read=2745998 bad=0 shift=0 wstage=20`, ~30 s for the
-whole pass arm; the 2.7 MB buffer plus the read-back copy sit inside the
-payload's 128 MB arena with room. Twelve arms; the record's third line is
-this image. `dg-stage-run` and the stage `-run` functions that touch a device
-carry `[Device.Port]`, which the passive stages did not need.
-## Step 2, the NIC three: nicsit, nicinit, nicring, landed 2026-08-18 (root; blu's probes, blu reviews)
+## What is still open
 
-Stages 8, 9 and 10 (`DiagNicSit`, `DiagNicInit`, `DiagNicRing`), the
-mechanical lift of `NicSittingProbe` (NIC-1/NIC-2), `NicInitProbe` and
-`NicRingProbe`; the NIC-3 init-and-frame tail of the sitting probe is the
-init and ring stages. Three things changed shape on the way in:
+Everything else this design describes has landed, and the depot is the
+record of it. Two rows and one direction are left.
 
-- **codex-vm has no Intel card unless `-e1000`.** Every existing arm now
-  asserts `nicsit=nicinit=nicring=no-part` (dim, not a fault, "nothing to do
-  at your end"), and the NIC arms are `nic-pass` (`-e1000 -e1000-nat`: sit
-  ok, init ok, ring `frames` because the NAT answers the ARP), `nic-nolink`
-  (`-e1000-no-link`: init `no-link` with the step durations banked, ring
-  `quiet`, sit ok) and `nic-nomac` (`-e1000-no-mac`: init `no-mac`). Each
-  moves only its stage. OVMF has no NIC (gap 4 stands; the OVMF arms assert
-  the three rows exist and read `no-part`).
-- **Live progress lines are serial-only by design.** `nicinit` says
-  `nicinit entering sN ...` on the wire before every step that can loop, so a
-  hang is named by the last such line (the probe's L-STATES row); the bank
-  cannot carry a line for a step that never returned. `diag-arm.ps1`'s
-  `Compare-Rows` skips `^[a-z0-9]+ entering ` when it demands serial == file.
-- **The link wait is budgeted.** `e1000-await-link mmio 0` is four million
-  MMIO reads; under `-e1000-no-link` in the bed that is longer than the arm's
-  deadline and on metal it is the four-minute spin the probe was written to
-  tell from a hang. The stage uses `na-link-wait` (2 s HPET budget,
-  `NicAsde`), so a no-link box reaches the summary and banks; measured s10 =
-  2,000,068 us under the arm.
+- **`gop-mode-arm.ps1` asserts the wrong half.** Its six arms read
+  `GOP: SetMode N` off codex-vm's stderr and check the BMP geometry, so
+  handoff v3's banked maxmode, mode-before, mode-chosen and `EFI_STATUS` are
+  asserted by nothing, `maxmode1` included. That is red's row: the stage
+  reports the bank, and nothing checks the bank it reports.
+- **`DIAG.RCP` truncates silently past 12 lines or 2 KB.** The recipe fits
+  today. This is the thing to tighten first if it grows.
+- **The road, not scheduled.** A stage that compiles a chapter off the stick,
+  a stage that writes a rebuilt kernel back, and the resident agent that
+  chooses stages from what stage 1 found. Named so the ladder is built with
+  it in mind: the ctx is the agent's memory, the verdict table its first
+  policy.
 
-Measured on codex-vm with the card: `nicsit` poll 1,000,000 empty = 12,903 us
-(bed figure 13,034), `nicinit` s3 settle-mdio 10,049 us, s4 quiesce 10,054 us,
-s9 phy 91 us, s10 link 18 us, `nicring` init 21,397 us, ARP answered
-(`received=1`), TX DD 1 (reader control passes), RDH writable, `rdh=1` after.
-Fifteen arms; `dg-stage-run` and the run loop now carry `[Device.Port,
-Device.Mmio, Console]`. `check-diag-verdicts` 10 stages OK.
-
-**blu's review (same day), both taken:** `nicinit` and `nicring` now gate on
-`e1000-bar-verdict` before touching MMIO (`bar-bad`, "the part was not
-touched"), as `nicsit` already did; and `nicinit` says `entering s5 ring
-alloc + zero` before the five allocations, so an allocation hang no longer
-reads as s4.
-## Step 3, landed 2026-08-18 (root)
-
-**The stub carries the tables, because the payload runs after
-ExitBootServices and the ConfigurationTable and the EDID protocol are only
-valid before it.** `cdx-to-pe.ps1` (through `cdxtopeScript.codex`, 0 drift)
-publishes handoff block VERSION 2, 200 bytes: the SMBIOS 3.0 entry the
-ConfigurationTable names under `SMBIOS3_TABLE_GUID` at +0x30, the 2.x entry
-under `SMBIOS_TABLE_GUID` at +0x38 (`ConfigTablePublish`, the `AcpiPublish`
-walk parameterised by GUID and field), the EDID byte count at +0x40 and up to
-128 bytes of EDID at +0x48 (`EdidPublish`: `LocateProtocol` for
-`EFI_EDID_ACTIVE_PROTOCOL`, then `EFI_EDID_DISCOVERED_PROTOCOL` only if
-active published nothing). Every new field is zeroed with the header, so a
-reader of a v2 block reads "looked, found none" and `GopHandoff`'s new
-readers (`handoff-smbios3`, `handoff-smbios2`, `handoff-edid-size`,
-`handoff-edid-base`) answer zero on a v1 block rather than reading past it.
-The SetMode path is byte-identical; the additions sit after `AcpiPublish`.
-
-**Three passive stages, first in the ladder.** `smbios` (`DiagSmbios`:
-entry point, structure walk with a 256-structure fuel and the table bounded
-to the identity map; types 0/1/2/4/17 decoded, types 0/1/2/3/4/16/17/19
-banked as `type/handle/len/strings`; states `ok`, `no-table`, `bad-anchor`,
-`unmapped`, `no-system`); `edid` (`DiagEdid`: manufacturer, product,
-name, native timing, size, version, checksum; the 128 bytes banked as four
-hex rows; `ok`, `absent`, `short`, `bad-header`, `bad-checksum`); `cpu`
-(`DiagCpu`: vendor, brand, family/model/stepping, a flag list, the
-hypervisor bit, VMX with `IA32_FEATURE_CONTROL` read only behind
-`GenuineIntel` and the VMX bit; `ok`, `hypervisor`, `vmx-locked-off`,
-`no-brand`). Row 3 says `box: <manufacturer> <product> ... ram=<sum of type
-17>` from the SMBIOS read the ctx takes once. Stages are now numbered
-smbios, edid, cpu, pci, scene; a stage takes two rows (three when it draws)
-and the scale drops to 1 when the page plus a row of codes would not fit
-the panel at scale 2.
-
-**`build/check-diag-verdicts.ps1`.** A stage chapter declares
-`<tag>-states : List Text = [...]`; the checker requires a
-`dg-verdict-<name>` with an `if s == "<word>" then` row for every word,
-routed from `dg-verdict-stage`, and refuses a row for an undeclared word.
-`build-diag.ps1` and `diag-arm.ps1` run it first. Its first run caught a real
-mismatch (`pp-states` where the tag was `dpci`). Verdicts are now listed
-worst first (red stages, then amber, then the rest, then the bank), so the
-band's one sentence is the one that matters; `edid absent` and `pci ok` have
-no sentence.
-
-**The bed.** codex-vm's fake UEFI now publishes its (existing, legacy) SMBIOS
-table in the ConfigurationTable with a 3.0 entry, gained a type 17 memory
-device sized from `-mem`, answers `LocateProtocol` for both EDID GUIDs with
-an EDID 1.4 block, and reports the hypervisor bit and a brand string
-(`OperatorsManual.md` has the flags: `-no-smbios`, `-no-edid`, `-edid-bad`).
-The first walk stopped at type 0 because the legacy string sets carried a
-stray third NUL, which a spec walker reads as a zero-length structure; the
-bed was wrong, not the walker, and it is fixed. `diag-arm.ps1` gained
-`no-smbios`, `no-edid` and `edid-bad`; every arm now requires all five stage
-rows and the pass arm the bed's own answers (`box=Codex Project Codex VM`,
-`smbios ok`, `edid ok`, `cpu hypervisor`). Ten arms, all green 2026-08-18.
-Under OVMF: SMBIOS 2.8 from QEMU (`QEMU Standard PC (Q35 + ICH9, 2009)`,
-table at 0x7f587000), EDID `absent` (OVMF offers no EDID protocol, so the
-`ok` path is proven only in codex-vm: L-GAP), cpu `hypervisor`
-(`AuthenticAMD QEMU Virtual CPU`).
-
-**Not exercised by any bed, said plainly:** `bad-anchor`, `unmapped`,
-`no-system` (smbios), `short`, `bad-header` (edid), `vmx-locked-off`,
-`no-brand` (cpu). Each has its verdict row; none has an arm.
-## Step 4, landed 2026-08-18 (root)
-
-**`DIAG.RCP` is inside the image and at the top of every bank.**
-`build-diag.ps1` writes the recipe (id, kernel digest, payload and EFI
-SHA-256, alloc pages, sectors, the stub ring text, the cfg file, the newest
-`build/boot/diag/...` CL) onto the ESP as `DIAG.RCP` through `build-img
--Extra`, and `Diag.codex` reads it right after the bank opens (`dg-esp-rcp`,
-the `DIAG.CFG` path with the same size caps) and banks and says each line as
-`rcp key=value`, so serial and file still agree row for row and a `DIAG.TXT`
-names the bytes that produced it. The image hash is NOT in the file, because
-it cannot be inside the bytes it hashes, and there is deliberately no
-timestamp: two builds of the same source and seed hash identically (measured
-2026-08-18, `FD4D31DB...` twice), which is what closes gap 6 ("recipes no
-longer reproduce flown hashes"). `build-output/diag-recipe.txt` beside the
-image adds `image-sha256`, `kernel-path` and `built=`.
-
-**The rehearsal record and the runner L-REHEARSE asked for.** `diag-arm.ps1`
-appends `<sha256>  <utc>  arms=N  diag.img` to `build/boot/diag.rehearsed`
-ONLY when it ran every arm in both beds and all agreed; `-Only` and
-`-SkipOvmf` runs say in one line that the record was not touched.
-`flash-usb.ps1 -Rehearsed` refuses an image whose SHA-256 is not on that
-list (message names the rule and the fix), `-ExpectHash <sha>` additionally
-pins the flight card's hash, and every run now prints the image hash. The
-record ships in the depot beside the image, so the hash that flew is the
-hash the tree records. First entry: `FD4D31DB3C31E7719F02797E65E35B41D195
-2860E16AB2FE6F8618855B01AFC0`, ten arms, kernel `5B2DE4E6`.
-
-**The stranger's procedure** is `UsersHandbook.md` "The diagnostic stick"
-(download and verify, flash with `-ExpectHash`, boot, read the band, send
-`DIAG.TXT` or the photograph); the fleet-side rule (`-Rehearsed`) is under
-it. **The release recipe** (`.claude/skills/release/SKILL.md` step 5,
-`PublicPush.md`) rebuilds `diag.img` against the release seed, rehearses it
-fully, and ships the image, the `.rehearsed` record and the SHA-256 in the
-GitHubUpdate report and README; `PublicPush.md` names the image as shipping
-by design beside `kbd-diag-v16.img`.
-
-**Not in step 4:** the bank carries one `diag-src-cl` for the directory, not
-a CL per stage chapter, and the `DIAG.RCP` cap is 12 lines / 2 KB, which the
-current nine-line recipe fits; a longer recipe truncates silently, the next
-thing to tighten if the recipe grows.
 ## Cost
 
 The payload is one bare-metal CDX with no GC; each stage's allocations are

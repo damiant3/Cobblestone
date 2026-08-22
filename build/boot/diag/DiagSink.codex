@@ -15,7 +15,7 @@ Chapter: DiagSink
 
 Section: States
 
-  dsk-states : List Text = ["ok", "no-medium", "mount-fail", "write-refused", "size-bad", "read-fail", "bad-bytes"]
+  dsk-states : List Text = ["ok", "recovered", "no-medium", "mount-fail", "write-refused", "died", "size-bad", "read-fail", "bad-bytes", "ladder-all", "ladder-stop", "rung-1-refused"]
 
   dsk-size : Integer = 2745998
   dsk-chunk : Integer = 65536
@@ -104,6 +104,30 @@ Section: The Stage
     ["size=" & show size & " read=" & show got & " bad=" & show bad & " shift=" & show shift & " wstage=" & show wstage,
      "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after & " chunk=" & show (msc-chunk-now 0)]
 
+ A refused write and a dead target are different events on the wire and were
+ one state until now. A refusal COMPLETES: the transfer event arrives and
+ carries a status. A target that has stopped answering posts no transfer
+ event at all, which the driver reports as `msc-ce-no-event` (256) after its
+ poll fuel runs out, and `msc-cell-fail-lba` names the write it died on.
+
+  dsk-write-state : DskSnap -> Text
+  dsk-write-state (s) =
+    if (s.ds-cc) == msc-ce-no-event then "died" else "write-refused"
+
+ A write that SUCCEEDED after the driver reset the endpoint and retried is
+ not the same event as one that never faltered, and the glass said `ok` for
+ both. `msc-cell-retry` reads `msc-retry-ok` when a chunk failed and the
+ retry after recovery carried it, so that is the discriminator.
+
+ The cell is cleared before the stage's own write and not merely read after
+ it. Nothing else scopes it: the MSC layer sets it once at init and then only
+ on a retry, so a recovery in ANY earlier stage would still be sitting in it
+ and this stage would report a recovery it never performed.
+
+  dsk-ok-state : Integer -> Text
+  dsk-ok-state (dummy) =
+    if xdiag-get msc-cell-retry == msc-retry-ok then "recovered" else "ok"
+
   dsk-finish : Text, Integer, Integer, Integer, Integer, Integer, Integer -> DiagResult
   dsk-finish (state) (colour) (size) (got) (bad) (shift) (wstage) =
     dsk-finish-in state colour size got bad shift wstage (dsk-snap 0) (-1)
@@ -121,7 +145,7 @@ Section: The Stage
       if f.gf-ok == False then dsk-finish "read-fail" diag-col-bad sz (f.gf-len) 0 shift (xdiag-get gfat-cell-write)
       else let bad = dsk-bad (f.gf-buf) 0 (f.gf-len) shift 0
       in if bad /= 0 then dsk-finish "bad-bytes" diag-col-bad sz (f.gf-len) bad shift (xdiag-get gfat-cell-write)
-      else dsk-finish "ok" diag-col-good sz (f.gf-len) 0 shift (xdiag-get gfat-cell-write)
+      else dsk-finish (dsk-ok-state 0) (if (dsk-ok-state 0) == "ok" then diag-col-good else diag-col-warn) sz (f.gf-len) 0 shift (xdiag-get gfat-cell-write)
     end
   end
 
@@ -164,6 +188,7 @@ Section: The Stage
     let buf = alloc-zeroed (dsk-size + 512) 512
     in let f = dsk-fill-all buf 0 dsk-size
     in let nb = dsk-name-buf 0
+    in let r0 = xdiag-put msc-cell-retry msc-retry-none
     in let mark = __heap-save
     in act
       ok <- gfat-write-file vol nb buf dsk-size
@@ -173,11 +198,134 @@ Section: The Stage
         in let wstage = xdiag-get gfat-cell-write
         in act
           a <- dsk-after vol
-          dsk-finish-in "write-refused" diag-col-bad dsk-size 0 0 shift wstage snap a
+          dsk-finish-in (dsk-write-state snap) diag-col-bad dsk-size 0 0 shift wstage snap a
         end
       end
       else dsk-verify vol shift
     end
+
+Section: The Rung Ladder
+
+ `sink ladder=1` answers a different question from `sink chunk=N`. The chunk
+ key returns one bit, and four flights have now returned that bit unchanged
+ (`wr=0 cc=256 ph=2 after=0`, the LBA moving only with the allocation). The
+ ladder returns the THRESHOLD in one boot: rungs smallest first, stopping at
+ the first that gets no completion.
+
+ Smallest first is not a preference. The wedge leaves the endpoint
+ unrecovered (`rty=1`, `after=0`), so everything after the first refusal
+ fails whatever its size, and a largest-first ladder reads as "everything
+ fails".
+
+ Each completed rung writes `SINKL.CDX` BEFORE the next rung is attempted,
+ and that ordering is the whole value of the instrument: a wedge at rung N
+ still proves rungs 1..N-1 completed only if the record is already on the
+ medium when the wedge happens (L-BANK). The driver's own bank is written
+ after the stage returns, and the 2026-08-19 sitting watched that bank be
+ lost to this very wedge, so the rung record cannot wait for it.
+
+ The payload is 64 KB rather than the 2.7 MB of the single-shot stage: it is
+ two transfers at rung 64 and 128 at rung 1, which keeps the smallest rung
+ from spending the sitting on time, and it still contains a whole 64-sector
+ chunk so rung 64 is a reproduction of the failing case.
+
+ THE PAYLOAD IS FIXED ON PURPOSE AND MUST NOT BE SCALED WITH THE RUNG. The
+ rung is the only thing that moves; the total written stays 64 KB at every
+ rung. Scaling the payload with the chunk would move two variables at once
+ and the threshold this stage reports would no longer mean "the largest
+ command the device completes" -- it would confound command size with total
+ size, which is the very question the row is trying to separate.
+
+  dsk-rungs : List Integer = [1, 2, 4, 8, 16, 32, 64]
+  dsk-rung-size : Integer = 65536
+
+  dsk-ladder-on : DiagCtx -> Boolean
+  dsk-ladder-on (c) =
+    let v = diag-cfg-value c "sink"
+    in if text-starts-with v "ladder=" then text-to-integer (substring v 7 (text-length v - 7)) /= 0 else False
+
+  dsk-ladder-name : Integer -> Integer
+  dsk-ladder-name (dummy) =
+    let nb = alloc-zeroed 16 16
+    in let a = poke-byte nb 0 83
+    in let b = poke-byte nb 1 73
+    in let c = poke-byte nb 2 78
+    in let d = poke-byte nb 3 75
+    in let e = poke-byte nb 4 76
+    in let f = poke-byte nb 5 32
+    in let g = poke-byte nb 6 32
+    in let h = poke-byte nb 7 32
+    in let i = poke-byte nb 8 67
+    in let j = poke-byte nb 9 68
+    in let k = poke-byte nb 10 88
+    in nb
+
+  dsk-put-text : Integer, Text, Integer, Integer -> Integer
+  dsk-put-text (buf) (s) (i) (n) =
+    if i >= n then i
+    else let b = poke-byte buf i (to-unicode (char-code-at s i))
+    in dsk-put-text buf s (i + 1) n
+
+  dsk-note : Fat16Volume, Integer, Integer -> [Device.Port] Integer
+  dsk-note (vol) (done) (rung) =
+    let body = "ladder done=" & show done & " rung-sectors=" & show rung & " rung-bytes=" & show (rung * 512) & " payload-bytes=" & show dsk-rung-size & " END"
+    in let n = text-length body
+    in let buf = alloc-zeroed (n + 512) 512
+    in let nb = dsk-ladder-name 0
+    in let mark = __heap-save
+    in let f = dsk-put-text buf body 0 n
+    in act
+      ok <- gfat-write-file vol nb buf n
+      let r = __heap-restore mark
+      in if ok then 1 else 0
+    end
+
+  dsk-rung-write : Fat16Volume -> [Device.Port] Boolean
+  dsk-rung-write (vol) =
+    let buf = alloc-zeroed (dsk-rung-size + 512) 512
+    in let f = dsk-fill-all buf 0 dsk-rung-size
+    in let nb = dsk-name-buf 0
+    in let mark = __heap-save
+    in act
+      ok <- gfat-write-file vol nb buf dsk-rung-size
+      let r = __heap-restore mark
+      in ok
+    end
+
+  dsk-rung-word : Integer -> Text
+  dsk-rung-word (n) = if n == 0 then "none" else show n
+
+  dsk-ladder-lines : Integer, Integer, Integer, DskSnap, Integer -> List Text
+  dsk-ladder-lines (done) (rung) (note) (s) (after) =
+    ["ladder done=" & show done & " rung-sectors=" & dsk-rung-word rung & " rung-bytes=" & dsk-rung-word (rung * 512) & " payload-bytes=" & show dsk-rung-size & " note=" & show note,
+     "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after & " chunk=" & show (msc-chunk-now 0)]
+
+  dsk-ladder-stop : Fat16Volume, Integer, Integer, Integer -> [Device.Port] DiagResult
+  dsk-ladder-stop (vol) (done) (rung) (note) =
+    let snap = dsk-snap 0
+    in act
+      a <- dsk-after vol
+      let state = if done == 0 then "rung-1-refused" else "ladder-stop"
+      in diag-result state diag-col-bad (dsk-ladder-lines done rung note snap a) (dsk-ladder-lines done rung note snap a)
+    end
+
+  dsk-ladder-run : Fat16Volume, Integer, Integer, Integer -> [Device.Port] DiagResult
+  dsk-ladder-run (vol) (i) (done) (note) =
+    if i >= list-length dsk-rungs then
+      let snap = dsk-snap 0
+      in diag-result "ladder-all" diag-col-good (dsk-ladder-lines done 0 note snap (-1)) (dsk-ladder-lines done 0 note snap (-1))
+    else let rung = list-at dsk-rungs i
+    in let ch = xdiag-put msc-cell-chunk rung
+    in act
+      ok <- dsk-rung-write vol
+      if ok == False then dsk-ladder-stop vol done rung note
+      else act
+        n <- dsk-note vol (done + 1) rung
+        dsk-ladder-run vol (i + 1) (done + 1) n
+      end
+    end
+
+Section: Entry
 
   dsk-run : DiagCtx -> [Device.Port] DiagResult
   dsk-run (c) = act
@@ -186,6 +334,7 @@ Section: The Stage
     in act
       m <- gfat-mount-esp
       if m.gm-ok == False then dsk-finish "mount-fail" diag-col-bad dsk-size 0 0 (dsk-shift c) (xdiag-get gfat-cell-stage)
+      else if dsk-ladder-on c then dsk-ladder-run (m.gm-vol) 0 0 (-1)
       else dsk-write (m.gm-vol) (dsk-shift c)
     end
   end

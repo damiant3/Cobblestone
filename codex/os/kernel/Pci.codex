@@ -41,9 +41,30 @@ Section: Device Info
   }
 
 Section: Device Scanning
+ `truncated` is the answer to a question no caller could ask before: is this
+ the whole tree, or as much of it as the depth cap allowed? `pci-collect` used
+ to return its accumulator at the cap and say nothing, so a walk that gave up
+ was indistinguishable from one that finished. Measured 2026-08-21 against
+ `-pci-bridge-levels 4`: eleven devices exist and the scan reported ten. The
+ endpoint was not missing from the machine, it was missing from the ANSWER,
+ which is the same failure this walk exists to fix one level further down --
+ scanning bus 0 alone also returns something that looks complete and is empty.
+
+ A single-bus scan is never truncated, so `pci-scan-bus` answers False and
+ only `pci-scan-all` can answer True.
+
+ IT MEANS THE DEPTH CAP STOPPED THE WALK, AND NOT "the answer is complete".
+ A bridge whose secondary bus is at or below its own is refused by
+ `pci-bridge-one` and leaves whatever sits behind it unfound, and this flag
+ stays False for that: the walk was not cut short, it was pointed nowhere it
+ could follow. Measured, `-pci-bridge-levels 2 -pci-bridge-backward` answers
+ `truncated=no` with bus 2 empty. Conflating the two would make the flag mean
+ "something somewhere may be missing", which no caller can act on.
+
   PciScanResult = record {
     devices : List PciDevice,
-    count : Integer
+    count : Integer,
+    truncated : Boolean
   }
 
   pci-scan-bus : Integer -> PciScanResult
@@ -51,7 +72,7 @@ Section: Device Scanning
 
   pci-scan-loop : Integer, Integer, Integer, List PciDevice, Integer -> PciScanResult
   pci-scan-loop (bus) (dev) (func) (acc) (count) =
-    if dev >= 32 then PciScanResult { devices = acc, count = count }
+    if dev >= 32 then PciScanResult { devices = acc, count = count, truncated = False }
     else if func >= 8 then pci-scan-loop bus (dev + 1) 0 acc count
     else let vendor = pci-read-vendor bus dev func
     in if vendor == 65535 then
@@ -87,30 +108,41 @@ Section: The Whole Bus Tree
   pci-sec-bus (d) =
    bit-and (bit-shru (pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 24) 8) 255
 
+ The walk carries the cut flag with the devices rather than returning a bare
+ list, because a refusal happens at the deepest point and has to survive back
+ out through every sibling bridge above it.
+
+  PciWalk = record {
+    pw-devs : List PciDevice,
+    pw-cut : Boolean
+  }
+
   pci-scan-all : PciScanResult
   pci-scan-all =
-   let devs = pci-collect 0 0 []
-   in PciScanResult { devices = devs, count = list-length devs }
+   let w = pci-collect 0 0 (PciWalk { pw-devs = [], pw-cut = False })
+   in PciScanResult { devices = w.pw-devs, count = list-length (w.pw-devs), truncated = w.pw-cut }
 
-  pci-collect : Integer, Integer, List PciDevice -> List PciDevice
-  pci-collect (bus) (depth) (acc) =
-   if depth > pci-scan-max-depth then acc
+  pci-collect : Integer, Integer, PciWalk -> PciWalk
+  pci-collect (bus) (depth) (w) =
+   if depth > pci-scan-max-depth then PciWalk { pw-devs = w.pw-devs, pw-cut = True }
    else let s = pci-scan-bus bus
-   in pci-bridges (s.devices) (s.count) 0 bus depth (acc & s.devices)
+   in let here = PciWalk { pw-devs = (w.pw-devs) & (s.devices), pw-cut = w.pw-cut }
+   in pci-bridges (s.devices) (s.count) 0 bus depth here
 
-  pci-bridges : List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
-  pci-bridges (devs) (n) (i) (bus) (depth) (acc) =
-   if i >= n then acc
+  pci-bridges : List PciDevice, Integer, Integer, Integer, Integer, PciWalk -> PciWalk
+  pci-bridges (devs) (n) (i) (bus) (depth) (w) =
+   if i >= n then w
    else if (list-at devs i).pci-header-type == 1
-   then pci-bridge-one (list-at devs i) devs n i bus depth acc
-   else pci-bridges devs n (i + 1) bus depth acc
+   then pci-bridge-one (list-at devs i) devs n i bus depth w
+   else pci-bridges devs n (i + 1) bus depth w
 
-  pci-bridge-one : PciDevice, List PciDevice, Integer, Integer, Integer, Integer, List PciDevice -> List PciDevice
-  pci-bridge-one (d) (devs) (n) (i) (bus) (depth) (acc) =
+  pci-bridge-one : PciDevice, List PciDevice, Integer, Integer, Integer, Integer, PciWalk -> PciWalk
+  pci-bridge-one (d) (devs) (n) (i) (bus) (depth) (w) =
    let sec = pci-sec-bus d
    in if sec > bus
-   then pci-bridges devs n (i + 1) bus depth (pci-collect sec (depth + 1) acc)
-   else pci-bridges devs n (i + 1) bus depth acc
+   then let sub = pci-collect sec (depth + 1) w
+   in pci-bridges devs n (i + 1) bus depth sub
+   else pci-bridges devs n (i + 1) bus depth w
 
 Section: Config Space Reads
   pci-read-config : Integer, Integer, Integer, Integer -> Integer

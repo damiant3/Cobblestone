@@ -1,0 +1,86 @@
+Chapter: DeskIconGutterTest
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ The desk places an icon in the leading gutter of a label, so it has to know
+ how wide that gutter RENDERS. Until 2026-08-20 it computed
+ `cells * comp-cell-w * ws`, which is the monospace assumption, and the
+ defect was invisible to every test in the tree because it only appears once
+ a proportional face is actually loaded: with the bitmap fallback the two
+ answers agree exactly.
+
+ That is what this arms. The synthetic face below gives every glyph an
+ advance of 3, so three spaces measure 9 device pixels. The cell arithmetic
+ would answer 48 for the same string at scale 2. The two arms therefore
+ DISAGREE by construction, which is the only reason either of them is worth
+ printing, and a return to counting characters moves the first arm to 48.
+
+Section: A Face With Known Advances
+
+  dig-gw : Integer = 4
+
+  dig-gh : Integer = 4
+
+  dig-adv : Integer = 3
+
+  dig-adv-off : Integer = 95 * 4 * 4
+
+  dig-fill-adv : Integer, Integer -> Integer
+  dig-fill-adv (b) (i) =
+    if i >= 95 then 0
+    else let d = poke-byte b (dig-adv-off + i) dig-adv
+    in dig-fill-adv b (i + 1)
+
+  dig-face : Integer -> GopFont
+  dig-face (b) =
+    GopFont { gf-ok = True, gf-base = b, gf-gw = dig-gw, gf-gh = dig-gh, gf-asc = dig-gh, gf-cap = dig-gh }
+
+Section: Body
+
+  dig-measured : Text
+  dig-measured =
+    let b = alloc-bytes (95 * dig-gw * dig-gh + 95 + 95)
+    in let f = dig-fill-adv b 0
+    in let tf = dig-face b
+    in let three = desk-text-w tf 2 "   "
+    in let two = desk-text-w tf 2 "  "
+    in "measured three=" & show three & " two=" & show two
+
+ The no-face arm is the fallback and it is the one that must NOT change: a
+ stick with no typeface on its ESP still draws its chrome, and the cell is
+ the right answer there because the bitmap face is a fixed cell.
+
+  dig-fallback : Text
+  dig-fallback =
+    let three = desk-text-w gfont-none 2 "   "
+    in let two = desk-text-w gfont-none 2 "  "
+    in "fallback three=" & show three & " two=" & show two
+
+ The icon is scaled to the room the gutter actually has, so its drawn width
+ can never exceed the gutter it sits in. That is the invariant the overlap
+ broke, stated as an arithmetic the test can check rather than as a picture
+ somebody looks at: eight is the artwork's width, the scale is the floor of
+ the room divided by it, and a gutter under eight pixels still draws at
+ scale 1 rather than vanishing.
+
+  dig-scale : Integer -> Integer
+  dig-scale (avail) = if avail < 8 then 1 else avail / 8
+
+  dig-fits : Integer, Integer, Integer -> Integer
+  dig-fits (avail) (i) (acc) =
+    if i > avail then acc
+    else let drawn = 8 * dig-scale i
+    in let ok = if i < 8 then 1 else if drawn <= i then 1 else 0
+    in dig-fits avail (i + 1) (acc + ok)
+
+  dig-invariant : Text
+  dig-invariant =
+    let n = dig-fits 200 0 0
+    in "icon fits its gutter: " & show n & " of 201"
+
+  opening : [Console] Nothing = act
+    print-line-uni dig-measured
+    print-line-uni dig-fallback
+    print-line-uni dig-invariant
+  end

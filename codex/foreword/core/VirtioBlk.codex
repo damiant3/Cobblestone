@@ -217,7 +217,21 @@ Section: One-call entry points
  me", and neither can be confused with the 0 a device with no sectors
  would report.
 
-  vb-capacity-auto : Integer, Integer, Integer -> Integer
+ The three `-auto` entry points carry `Device.Mmio` and the rest of the
+ chapter does not, which is deliberate and is the whole of what the row is
+ for. Nothing here PERFORMS a checkable effect: `vb-read` and `vb-write` are
+ `peek-32`/`poke-32`, whose row is empty because they are the general memory
+ accessors, so no row on an inner function would be derived from anything
+ and the checker cannot confirm one. What these three are is the chapter's
+ door -- they are the IR emit roots the block builtins resolve to, and a row
+ here is what makes a CITING program declare `Device`, which is what earns
+ `cap-device` in its manifest. The ARM64 runtime then enforces it on the
+ address (`a64-rt-guarded-access`, plugs 1.34): the declaration is checked
+ where the device actually is, not here. A row on the inner functions would
+ be an instrument reporting "gated" over a hole, since inlining the peeks
+ walks around it.
+
+  vb-capacity-auto : Integer, Integer, Integer -> [Device.Mmio] Integer
   vb-capacity-auto (mmio) (stride) (count) =
    let dev = vb-find mmio stride count
    in if dev == 0 then 0 - 1
@@ -248,13 +262,13 @@ Section: One-call entry points
  bytes and is written by the DEVICE, so it must not be a Codex value the
  collector may move; the plug hands it a freshly bumped heap address.
 
-  vb-read-auto : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  vb-read-auto : Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
   vb-read-auto (mmio) (stride) (count) (ring) (sector) (dest) =
    let dev = vb-ready mmio stride count ring
    in if dev == 0 then 0
    else vb-read-sector dev ring sector dest
 
-  vb-write-auto : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  vb-write-auto : Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
   vb-write-auto (mmio) (stride) (count) (ring) (sector) (src) =
    let dev = vb-ready mmio stride count ring
    in if dev == 0 then 0

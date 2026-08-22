@@ -1,6 +1,7 @@
 Chapter: Vector
   cites Foreword chapter Maybe
   cites Math chapter Cordic
+  cites UI chapter GlyphRasterizer
 
  Vector graphics primitives -- paths, line segments, bezier curves,
  arcs, fills, and strokes. A vector path is a list of path commands
@@ -131,21 +132,13 @@ Section: Rasterization (Bresenham Line)
 
   vec-rasterize : VecPath, VecStyle -> List VecPixel
   vec-rasterize (path) (style) =
-    vec-raster-cmds (path.vp-commands) style 0 (path.vp-count) 0 0 0 0 []
+    vec-stroke-edges (vec-edges path 1) 0 (style.vs-stroke-color) []
 
-  vec-raster-cmds : List PathCmd, VecStyle, Integer, Integer, Integer, Integer, Integer, Integer, List VecPixel -> List VecPixel
-  vec-raster-cmds (cmds) (style) (i) (len) (cx) (cy) (sx) (sy) (acc) =
-    if i >= len then acc
-    else let cmd = list-at cmds i
-    in when cmd
-      is PcMoveTo (x) (y) -> vec-raster-cmds cmds style (i + 1) len x y x y acc
-      is PcLineTo (x) (y) ->
-        let pixels = bresenham cx cy x y (style.vs-stroke-color) []
-        in vec-raster-cmds cmds style (i + 1) len x y sx sy (acc & pixels)
-      is PcClose ->
-        let pixels = bresenham cx cy sx sy (style.vs-stroke-color) []
-        in vec-raster-cmds cmds style (i + 1) len sx sy sx sy (acc & pixels)
-      is otherwise -> vec-raster-cmds cmds style (i + 1) len cx cy sx sy acc
+  vec-stroke-edges : List Edge, Integer, Integer, List VecPixel -> List VecPixel
+  vec-stroke-edges (es) (i) (color) (acc) =
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in vec-stroke-edges es (i + 1) color (acc & bresenham (e.e-x0) (e.e-y0) (e.e-x1) (e.e-y1) color [])
 
   bresenham : Integer, Integer, Integer, Integer, Integer, List VecPixel -> List VecPixel
   bresenham (x0) (y0) (x1) (y1) (color) (acc) =
@@ -170,6 +163,136 @@ Section: Rasterization (Bresenham Line)
     in let err2 = err + (if e2 > 0 - dy then 0 - dy else 0) + (if e2 < dx then dx else 0)
     in bresenham-loop x2 y2 x1 y1 dx dy sx sy err2 color acc
 
+Section: Coverage
+
+ A path could only be stroked. `vs-filled` and `vs-fill-color` were set by
+ `vec-style-fill` and read by nothing, `PcBezierTo` and `PcArcTo` fell to the
+ `otherwise` arm of the rasterizer and never produced a pixel, and `VecPixel`
+ carries a colour with no coverage, so an outline came out as a staircase.
+
+ `GlyphRasterizer` has done coverage-based filling since it was written, for
+ glyphs. Its `Edge` is a plain segment record and `gr-render-edges` is a
+ scanline fill over a list of them, so a path reaches it by being flattened
+ into edges rather than by a second rasterizer being written.
+
+ The edge space is SIXTY-FOURTHS OF A SUPERSAMPLED PIXEL, which is what
+ `gr-scale-pts` produces for a glyph and what `gr-scanline-loop` samples at
+ `y * 64 + 32`. Coordinates are scaled once on the way in, so every
+ subdivision below happens with that precision under it rather than rounding
+ to whole path units.
+
+ `gr-fill-scanline` pairs its intersections and fills between them, which is
+ the EVEN-ODD rule; its `winding` counter is incremented and never returns to
+ zero, so the non-zero arm its chapter header names is unreachable. That is
+ the same rule every glyph on the screen is already filled by. It is recorded
+ here rather than changed, because changing it moves every glyph.
+
+  vec-super : Integer = 4
+  vec-sub : Integer = 64
+
+  vec-abs : Integer -> Integer
+  vec-abs (v) = if v < 0 then 0 - v else v
+
+  vec-min : Integer, Integer -> Integer
+  vec-min (a) (b) = if a < b then a else b
+
+  vec-max : Integer, Integer -> Integer
+  vec-max (a) (b) = if a > b then a else b
+
+  vec-seg : List Edge, Integer, Integer, Integer, Integer -> List Edge
+  vec-seg (acc) (x0) (y0) (x1) (y1) =
+    list-push acc (Edge { e-x0 = x0, e-y0 = y0, e-x1 = x1, e-y1 = y1 })
+
+  vec-cubic : List Edge, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Edge
+  vec-cubic (acc) (k) (x0) (y0) (x1) (y1) (x2) (y2) (x3) (y3) (depth) =
+    let flat = vec-abs (x0 + x3 - x1 - x2) + vec-abs (y0 + y3 - y1 - y2)
+    in if depth >= 8 then vec-seg acc x0 y0 x3 y3
+    else if flat <= k then vec-seg acc x0 y0 x3 y3
+    else let ax = (x0 + x1) / 2
+    in let ay = (y0 + y1) / 2
+    in let bx = (x1 + x2) / 2
+    in let by = (y1 + y2) / 2
+    in let cx = (x2 + x3) / 2
+    in let cy = (y2 + y3) / 2
+    in let dx = (ax + bx) / 2
+    in let dy = (ay + by) / 2
+    in let ex = (bx + cx) / 2
+    in let ey = (by + cy) / 2
+    in let mx = (dx + ex) / 2
+    in let my = (dy + ey) / 2
+    in let left = vec-cubic acc k x0 y0 ax ay dx dy mx my (depth + 1)
+    in vec-cubic left k mx my ex ey cx cy x3 y3 (depth + 1)
+
+ An arc sweeps `angle` from where the path already is, about the centre it
+ names, so its start is the current point's own bearing and needs no separate
+ field. Sixteen segments to the half turn is the same density `vec-circle`
+ chose.
+
+  vec-arc-steps : Integer -> Integer
+  vec-arc-steps (angle) = 1 + vec-abs angle * 16 / cordic-pi
+
+  vec-arc-x : Integer, Integer, Integer -> Integer
+  vec-arc-x (cx) (rx) (a) = cx + rx * cordic-cos a / cordic-scale
+
+  vec-arc-y : Integer, Integer, Integer -> Integer
+  vec-arc-y (cy) (ry) (a) = cy + ry * cordic-sin a / cordic-scale
+
+  vec-arc-edges : List Edge, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Edge
+  vec-arc-edges (acc) (cx) (cy) (rx) (ry) (a0) (sweep) (n) (i) (px) (py) =
+    if i > n then acc
+    else let a = a0 + sweep * i / n
+    in let x = vec-arc-x cx rx a
+    in let y = vec-arc-y cy ry a
+    in vec-arc-edges (vec-seg acc px py x y) cx cy rx ry a0 sweep n (i + 1) x y
+
+  vec-arc-start : Integer, Integer, Integer, Integer -> Integer
+  vec-arc-start (cx) (cy) (px) (py) = (cordic-atan2 (py - cy) (px - cx)).angle
+
+  vec-edges : VecPath, Integer -> List Edge
+  vec-edges (p) (k) = vec-edge-cmds (p.vp-commands) 0 (p.vp-count) k 0 0 0 0 []
+
+  vec-edge-cmds : List PathCmd, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Edge -> List Edge
+  vec-edge-cmds (cmds) (i) (len) (k) (cx) (cy) (sx) (sy) (acc) =
+    if i >= len then acc
+    else let cmd = list-at cmds i
+    in when cmd
+      is PcMoveTo (x) (y) -> vec-edge-cmds cmds (i + 1) len k (x * k) (y * k) (x * k) (y * k) acc
+      is PcLineTo (x) (y) -> vec-edge-cmds cmds (i + 1) len k (x * k) (y * k) sx sy (vec-seg acc cx cy (x * k) (y * k))
+      is PcBezierTo (c1x) (c1y) (c2x) (c2y) (x) (y) ->
+        vec-edge-cmds cmds (i + 1) len k (x * k) (y * k) sx sy (vec-cubic acc k cx cy (c1x * k) (c1y * k) (c2x * k) (c2y * k) (x * k) (y * k) 0)
+      is PcArcTo (ax) (ay) (rx) (ry) (ang) ->
+        let a0 = vec-arc-start (ax * k) (ay * k) cx cy
+        in let n = vec-arc-steps ang
+        in let ex = vec-arc-x (ax * k) (rx * k) (a0 + ang)
+        in let ey = vec-arc-y (ay * k) (ry * k) (a0 + ang)
+        in vec-edge-cmds cmds (i + 1) len k ex ey sx sy (vec-arc-edges acc (ax * k) (ay * k) (rx * k) (ry * k) a0 ang n 1 cx cy)
+      is PcClose -> vec-edge-cmds cmds (i + 1) len k sx sy sx sy (vec-seg acc cx cy sx sy)
+
+  vec-coverage : VecPath, Integer, Integer -> List Integer
+  vec-coverage (p) (w) (h) =
+    let sw = w * vec-super
+    in let sh = h * vec-super
+    in let edges = vec-edges p (vec-super * vec-sub)
+    in gr-downsample-4x (gr-render-edges edges sw sh 0 sh) sw sh w h
+
+ A path has no size of its own, so the grid it is rasterized into is a CROP
+ of its own coordinates unless something maps one onto the other.
+ `vec-coverage` crops, which is what a caller working in pixel coordinates
+ asks for. Artwork is drawn in a box of its own and wants the box mapped onto
+ the grid instead, so the ratio multiplies into the same factor `vec-edges`
+ already applies and the flatness test underneath still means one unit of the
+ box.
+
+  vec-coverage-in : VecPath, Integer, Integer -> List Integer
+  vec-coverage-in (p) (em) (n) =
+    if em <= 0 then vec-coverage p n n
+    else let sw = n * vec-super
+    in let edges = vec-edges p (vec-super * vec-sub * n / em)
+    in gr-downsample-4x (gr-render-edges edges sw sw 0 sw) sw sw n n
+
+  vec-coverage-at : List Integer, Integer, Integer, Integer -> Integer
+  vec-coverage-at (cov) (w) (x) (y) = list-at cov (y * w + x)
+
 Section: Queries
 
   vec-path-length : VecPath -> Integer
@@ -177,15 +300,26 @@ Section: Queries
 
   vec-bounds : VecPath -> List Integer
   vec-bounds (p) =
-    vec-bounds-loop (p.vp-commands) 0 (p.vp-count) 999999 999999 (0 - 999999) (0 - 999999)
+    let es = vec-edges p 1
+    in if list-length es == 0 then vec-bounds-cmds (p.vp-commands) 0 (p.vp-count) 999999 999999 (0 - 999999) (0 - 999999)
+    else vec-bounds-loop es 0 (list-length es) 999999 999999 (0 - 999999) (0 - 999999)
 
-  vec-bounds-loop : List PathCmd, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
-  vec-bounds-loop (cmds) (i) (len) (min-x) (min-y) (max-x) (max-y) =
+  vec-bounds-loop : List Edge, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  vec-bounds-loop (es) (i) (len) (min-x) (min-y) (max-x) (max-y) =
+    if i >= len then [min-x, min-y, max-x, max-y]
+    else let e = list-at es i
+    in let nx = vec-min min-x (vec-min (e.e-x0) (e.e-x1))
+    in let ny = vec-min min-y (vec-min (e.e-y0) (e.e-y1))
+    in let xx = vec-max max-x (vec-max (e.e-x0) (e.e-x1))
+    in let xy = vec-max max-y (vec-max (e.e-y0) (e.e-y1))
+    in vec-bounds-loop es (i + 1) len nx ny xx xy
+
+  vec-bounds-cmds : List PathCmd, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  vec-bounds-cmds (cmds) (i) (len) (min-x) (min-y) (max-x) (max-y) =
     if i >= len then [min-x, min-y, max-x, max-y]
     else let cmd = list-at cmds i
     in when cmd
-      is PcMoveTo (x) (y) -> vec-bounds-loop cmds (i + 1) len (if x < min-x then x else min-x) (if y < min-y then y else min-y) (if x > max-x then x else max-x) (if y > max-y then y else max-y)
-      is PcLineTo (x) (y) -> vec-bounds-loop cmds (i + 1) len (if x < min-x then x else min-x) (if y < min-y then y else min-y) (if x > max-x then x else max-x) (if y > max-y then y else max-y)
-      is otherwise -> vec-bounds-loop cmds (i + 1) len min-x min-y max-x max-y
+      is PcMoveTo (x) (y) -> vec-bounds-cmds cmds (i + 1) len (vec-min min-x x) (vec-min min-y y) (vec-max max-x x) (vec-max max-y y)
+      is otherwise -> vec-bounds-cmds cmds (i + 1) len min-x min-y max-x max-y
 
 Page 1

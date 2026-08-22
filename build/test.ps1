@@ -715,6 +715,24 @@ if ($needsRun.Count -gt 0) {
         $runScript  = Join-Path $using:PSScriptRoot 'test-run.ps1'
         $actual = Join-Path $out 'runtime.actual'
 
+        # ANY UNCAUGHT THROW HERE ENDS THE WHOLE BATTERY, not one test.
+        # WaitForExit returns before Windows releases a redirected handle,
+        # so a bare read of runtime.actual can land on a locked file while
+        # ErrorActionPreference is Stop. test-cross-batch.ps1 lost 457 tests
+        # to exactly that and stranded five guests at 115,597 CPU-seconds,
+        # because the harness that dies is also the thing enforcing every
+        # child ceiling. Unreadable reads as empty, which fails toward a
+        # reported failure rather than a silent pass.
+        function Read-LogShared([string]$path) {
+            for ($ri = 0; $ri -lt 5; $ri++) {
+                try {
+                    $fs = [System.IO.FileStream]::new($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                    try { $sr = [System.IO.StreamReader]::new($fs); return $sr.ReadToEnd() } finally { $fs.Dispose() }
+                } catch { Start-Sleep -Milliseconds 100 }
+            }
+            return ''
+        }
+
         $cq = $using:coreQueue
         $pcore = 1
         [void]$cq.TryDequeue([ref]$pcore)
@@ -735,7 +753,7 @@ if ($needsRun.Count -gt 0) {
             # ContainsKey rather than a property read: the other entries in
             # $needsRun do not carry this key.
             if ($t.ContainsKey('Fatal') -and $t.Fatal) {
-                $txt = if (Test-Path $actual) { [System.IO.File]::ReadAllText($actual) } else { '' }
+                $txt = if (Test-Path $actual) { Read-LogShared $actual } else { '' }
                 if ($txt -match '!EXC=([0-9A-Fa-f]{1,2})') {
                     $got = $matches[1].ToUpper()
                     if ($t.ExpectExc -and ($got -ne $t.ExpectExc)) {
@@ -762,8 +780,8 @@ if ($needsRun.Count -gt 0) {
                 return
             }
 
-            $expectedBytes = [System.IO.File]::ReadAllText($expectedFile) -replace "`r",''
-            $actualBytes   = if (Test-Path $actual) { [System.IO.File]::ReadAllText($actual) } else { '' }
+            $expectedBytes = (Read-LogShared $expectedFile) -replace "`r",''
+            $actualBytes   = if (Test-Path $actual) { Read-LogShared $actual } else { '' }
             if ($expectedBytes -eq $actualBytes) {
                 "PASS_EXPECTED`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
             } else {
@@ -884,6 +902,39 @@ function Get-FailHint {
     if ($Status -eq 'FAIL_OUTPUT') {
         $dir = $srcDirOf[$Name]
         if (-not $dir) { return '' }
+        # LENGTH BEFORE CONTENT (L-SHORT). A truncated artifact and a wrong one
+        # are the same colour on a verdict line, and the line walk below reports
+        # the first differing line either way -- which reads as codegen. Seven
+        # poison subjects went red at Update 48 with ideas-test holding 204 bytes
+        # of a 2,199-byte output and the compiler byte-identical; a re-run cleared
+        # all seven. The normalisation is the SAME one the FAIL_OUTPUT verdict was
+        # decided with (CR stripped from expected only), so this cannot disagree
+        # with it -- comparing raw file bytes here would report SHORT for every
+        # CRLF/LF pair and be worse than the gap it closes.
+        # Read-LogShared is defined INSIDE $runWorker and is not in scope here,
+        # so this reads the two files directly. Same text either way: the worker
+        # only needs the sharing retry because it reads while other jobs write.
+        #
+        # A bare length difference does NOT prove truncation -- most ordinary
+        # wrong-output reds differ in length too, so reporting every one of them
+        # as SHORT would train the reader to ignore the word. A STRICT PREFIX
+        # does prove it: that is what a capture cut off mid-stream looks like and
+        # a miscompile has no reason to produce it. The two are reported as
+        # different claims, and the same-length case says nothing at all and
+        # falls through to the line walk untouched.
+        $efile = Join-Path $dir "$Name.expected"
+        $afile = Join-Path $out 'runtime.actual'
+        $etxt = if (Test-Path -PathType Leaf $efile) { ([System.IO.File]::ReadAllText($efile)) -replace "`r", '' } else { '' }
+        $atxt = if (Test-Path -PathType Leaf $afile) { [System.IO.File]::ReadAllText($afile) } else { '' }
+        if ($etxt.Length -ne $atxt.Length) {
+            $lim = [Math]::Min($etxt.Length, $atxt.Length)
+            $off = 0
+            while ($off -lt $lim -and $etxt[$off] -eq $atxt[$off]) { $off++ }
+            if ($atxt.Length -lt $etxt.Length -and $off -eq $atxt.Length) {
+                return "TRUNCATED: actual $($atxt.Length) chars is a strict PREFIX of the expected $($etxt.Length) -- the capture is SHORT, not wrong; re-run before reading this as codegen (L-SHORT)"
+            }
+            return "LENGTHS DIFFER: actual $($atxt.Length) chars, expected $($etxt.Length), first difference at offset $off -- not a prefix, so this is a content difference and the line below is the one to read (L-SHORT)"
+        }
         $e = @(@(Get-Content (Join-Path $dir "$Name.expected") -ErrorAction SilentlyContinue) -replace "`r", '')
         $a = @(Get-Content (Join-Path $out 'runtime.actual') -ErrorAction SilentlyContinue)
         $n = [Math]::Max($e.Count, $a.Count)

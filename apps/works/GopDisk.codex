@@ -65,19 +65,14 @@ Section: Status Polling
 
 Section: Word Transfer
 
- Read 256 words (one 512-byte sector) from the data port into the
- buffer at addr. Bytes are stored little-endian, matching how the disk
- lays them out. Self-recursive over the word index -- constant stack.
+ One sector is 256 words of the data port, and ATA delivers them
+ little-endian in the order the disk lays them out, which is what the
+ string form moves them as.
 
   ide-read-words : Integer, Integer -> [Device.Port] Integer
   ide-read-words (addr) (i) = act
-    if i >= 256 then 0
-    else act
-      w <- port-in-16 ide-data
-      let lo = poke-byte addr (i * 2) (bit-and w 255)
-      in let hi = poke-byte addr (i * 2 + 1) (bit-and (bit-shru w 8) 255)
-      in ide-read-words addr (i + 1)
-    end
+    r <- (port-in-16-block (addr + i * 2) (256 - i) ide-data)
+    0
   end
 
 Section: Sector Read
@@ -242,15 +237,8 @@ Section: Multi-Sector Write
 
   ide-write-words : Integer, Integer -> [Device.Port] Integer
   ide-write-words (addr) (i) = act
-    if i >= 256 then 0
-    else act
-      let lo = peek-byte addr (i * 2)
-      in let hi = peek-byte addr (i * 2 + 1)
-      in act
-        w <- port-out-16 ide-data (bit-or lo (bit-shl hi 8))
-        ide-write-words addr (i + 1)
-      end
-    end
+    w <- (port-out-16-block (addr + i * 2) (256 - i) ide-data)
+    0
   end
 
   ide-fill-sectors : Integer, Integer, Integer -> [Device.Port] Integer

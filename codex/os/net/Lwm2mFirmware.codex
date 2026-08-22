@@ -57,17 +57,23 @@ Section: The Client
    fw-ctx : OtaContext,
    fw-bank : Integer,
    fw-stage : Integer,
+   fw-capacity : Integer,
    fw-written : Integer,
    fw-next-block : Integer,
    fw-faults : Integer,
    fw-result : Integer between 0 and 9
   }
 
-  fw-new : BootConfig, OtaVersion, Integer, Integer -> Lwm2mFw
-  fw-new (boot) (version) (bank) (stage) = Lwm2mFw {
+ `fw-capacity` is how many bytes the staging bank can hold from `fw-stage`.
+ It is a property of the board, so a frame cannot change it, and that is
+ exactly why the bound lives here and not in anything the server sends.
+
+  fw-new : BootConfig, OtaVersion, Integer, Integer, Integer -> Lwm2mFw
+  fw-new (boot) (version) (bank) (stage) (capacity) = Lwm2mFw {
    fw-ctx = ota-context-new boot version,
    fw-bank = bank,
    fw-stage = stage,
+   fw-capacity = capacity,
    fw-written = 0,
    fw-next-block = 0,
    fw-faults = 0,
@@ -138,9 +144,23 @@ Section: The Download
     is None -> board-pair brd (fw-fail c fw-result-conn-lost "malformed CoAP response")
     is Just (m) ->
       if m.cm-code /= coap-205-content then board-pair brd (fw-fail c fw-result-conn-lost "response was not 2.05 Content")
+      else if fw-size2-too-big c (m.cm-options) then board-pair brd (fw-fail c fw-result-no-flash "declared size exceeds the staging bank")
       else when coap-find-option (m.cm-options) coap-opt-block2
        is None -> fw-stage-last brd c (m.cm-payload)
        is Just (v) -> fw-stage-block brd c (m.cm-payload) (coap-uint-value v)
+
+ Size2 is an EARLY refusal and nothing more. A server that declares a total
+ over the bank is refused before byte one, which saves writing most of an
+ image to learn it never fits. A server that omits Size2, or lies low, gets
+ no concession: `fw-write` still refuses the byte that would leave the bank.
+ That is the whole division of labour -- the hint can only ever refuse
+ sooner, never permit more.
+
+  fw-size2-too-big : Lwm2mFw, List CoapOption -> Boolean
+  fw-size2-too-big (c) (opts) =
+   when coap-find-option opts coap-opt-size2
+    is None -> False
+    is Just (sv) -> coap-uint-value sv > c.fw-capacity
 
   fw-stage-block : linear Board, Lwm2mFw, List Integer, Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
   fw-stage-block (brd) (c) (payload) (bv) =
@@ -164,8 +184,23 @@ Section: The Download
    end
   end
 
+ THE BANK BOUND, and it is here rather than in either caller because this
+ is the only place a byte reaches the flash. `fw-stage-block` bounds the
+ block ORDER, which is a different claim: an in-order sequence of blocks
+ whose payloads are as large as the server likes still walks off the end of
+ the bank, and `flash-write-page` takes an absolute address, so nothing
+ under this refuses it.
+
+ Written subtractively. `written + len > capacity` is the same test with
+ arithmetic that can wrap, which is the class `ExaminersAssay.md` "A Bounds
+ Guard That ADDS Can Be Overflowed" exists for; `capacity - written` cannot,
+ because both are already bounded by a bank that exists.
+
   fw-write : linear Board, Lwm2mFw, List Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
-  fw-write (brd) (c) (payload) = act
+  fw-write (brd) (c) (payload) =
+   if list-length payload > (c.fw-capacity) - (c.fw-written)
+   then board-pair brd (fw-fail c fw-result-no-flash "write past the end of the staging bank")
+   else act
    ob <- flash-open-bank brd (c.fw-bank)
    when ob
     is (brd1, b0) -> act

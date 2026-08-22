@@ -18,6 +18,14 @@ param(
     # throughout), so a caller running several compiles at once must give each
     # its own directory or they overwrite each other's IR.
     [string]$WorkDir = '',
+    # Which compiler compiles the source to IR. Defaults to the DEPOT SEED,
+    # and that default is the point: compile.ps1's own default is
+    # build-output/bare-metal/Codex.cdx, which holds whatever the last
+    # build.ps1 left there. That made the cross bed's answer a property of
+    # the workspace rather than of the depot, so two agents measured the
+    # same source against different compilers and disagreed. Pass -Kernel
+    # only to test a compiler that is not the seed, and say so in the CL.
+    [string]$Kernel = '',
     # Emit the PSCI CPU_ON sequence in __start (multi-core programs only).
     # Undefined on boards without PSCI -- see run.ps1.
     [switch]$Smp
@@ -48,8 +56,9 @@ New-Item -ItemType Directory -Force $OutDir | Out-Null
 $IrFile = Join-Path $OutDir 'last-compile.ir'
 $LogFile = Join-Path $OutDir 'compile-ir.log'
 $compileScript = Join-Path $Repo 'build' 'compile.ps1'
+$KernelCdx = if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }
 Write-Host "[arm64-compile] Compiling $Src to IR..."
-& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB
+& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx
 if ((-not ($LASTEXITCODE -eq 0))) {
     [Console]::Error.WriteLine("FAIL: IR compile step exited $LASTEXITCODE; see $LogFile")
     exit 3

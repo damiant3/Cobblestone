@@ -1,0 +1,99 @@
+Chapter: E1000PchK1
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+Section: Fixtures
+
+  mk-frame : Integer, Integer, List Integer -> List Integer
+  mk-frame (i) (n) (acc) =
+    if i >= n then acc else mk-frame (i + 1) n (list-push acc i)
+
+  dev-id-of : PciScanResult -> Integer
+  dev-id-of (scan) =
+    when e1000-find scan
+      is Just (d) -> (d.pci-device-id)
+      is None -> 0
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  moved : Integer -> Text
+  moved (n) = if n == 1 then "yes" else "no"
+
+  k1-read : Integer -> Integer
+  k1-read (mmio) =
+    let p = e1000-phy-set-page mmio e1000-phy-pcie-pm-page
+    in let v = e1000-phy-read mmio e1000-phy-pcie-pm-reg
+    in let back = e1000-phy-set-page mmio 0
+    in v
+
+Section: Entry
+
+ THE LADDER LEADS WITH A KILL AND ALTERNATES: kill, pass, kill, pass. Red's
+ condition on the flip, 2026-08-21, and it is why the arm is shaped this way
+ rather than the obvious way. Once `e1000-pch-k1-required` ships True the
+ obvious arm opens by transmitting successfully, and a ladder that opens with
+ two passes is one a bed that never refuses anything can produce. A leading
+ kill cannot.
+
+ THE KILL IS A SABOTAGE, NOT THE SHIPPED DEFAULT. Re-running `e1000-link-up`
+ resets the PHY, and a PHY reset returns 770.17 to its NVM value, so the part
+ lands in exactly the state a driver that never performed the step would leave
+ it. The arm producing its own omission is what let the default flip without
+ the pair losing a side: nothing here reads `e1000-pch-k1-required` to decide
+ what to expect.
+
+ THE SHIPPED STEP IS EVIDENCED BY A REGISTER ROW rather than by a transmit.
+ `770.17 as shipped` is 24576 because `e1000-init` performed the step; that is
+ a statement about what the driver did, not a ladder state, so it cannot be
+ counted as one of the four.
+
+ TRANSMIT IS THE CHANNEL, and receive cannot be used. `e1000_deliver_rx` runs
+ on the RCTL and RDT writes of ring setup, before auto-negotiation completes,
+ so a frame is in the ring before the stall condition exists and a receive row
+ reports frame availability rather than MAC progress.
+
+ THE BOARD DOES NOT POWER UP AT THE BED'S VALUE. Sitting 8 read `0xd104` on
+ the ASUS against the model's `0x4000`. Every number below is a bed value and
+ must not be quoted as a board one. What the two share is the state of bit 13,
+ which is the only bit this step writes.
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in let did = dev-id-of scan
+    in let d = bring-up scan
+    in let k1-shipped = k1-read (d.e-mmio)
+    in let relink1 = e1000-link-up (d.e-mmio)
+    in let tx-killed1 = e1000-send-frame d (mk-frame 0 64 [])
+    in let k1-killed1 = k1-read (d.e-mmio)
+    in let cfg1 = e1000-k1-configure (d.e-mmio) False
+    in let tx-passed1 = e1000-send-frame d (mk-frame 0 64 [])
+    in let relink2 = e1000-link-up (d.e-mmio)
+    in let tx-killed2 = e1000-send-frame d (mk-frame 0 64 [])
+    in let cfg2 = e1000-k1-configure (d.e-mmio) False
+    in let tx-passed2 = e1000-send-frame d (mk-frame 0 64 [])
+    in act
+      print-line-uni ("part is pch        : " & yn (e1000-pch-part did))
+      print-line-uni ("shipped k1 step    : " & yn e1000-pch-k1-required)
+      print-line-uni ("link up            : " & yn (e1000-has-link d))
+      print-line-uni ("770.17 as shipped  : " & show k1-shipped)
+      print-line-uni ("1 kill tx          : " & moved tx-killed1)
+      print-line-uni ("  770.17           : " & show k1-killed1)
+      print-line-uni ("2 pass tx          : " & moved tx-passed1)
+      print-line-uni ("  770.17           : " & show cfg1)
+      print-line-uni ("3 kill tx          : " & moved tx-killed2)
+      print-line-uni ("4 pass tx          : " & moved tx-passed2)
+      print-line-uni ("  770.17           : " & show cfg2)
+    end
+  end
+
+Page 1

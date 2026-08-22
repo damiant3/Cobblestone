@@ -1,0 +1,67 @@
+Chapter: E1000ResetLive
+  cites Foreword chapter Console
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ THE QUESTION THIS ANSWERS IS "WHAT DOES THE BED DO", AND THAT IS ALL IT
+ ANSWERS. Sitting 10 banked `step=reset` and stopped: b3's bring-up hangs
+ inside `e1000-reset`, while `nicinit` two stages earlier ran the identical
+ seven operations and came back. The difference between them is the part's
+ STATE -- `nicring` leaves the receiver ENABLED with a live ring
+ (`rctl=67141658 rdt=15`) and b3 resets into that, where nicinit reset a part
+ nothing had enabled.
+
+ `E1000e.codex` already records that a bed run CANNOT speak to this: codex-vm
+ does not model a DMA-in-flight reset hazard, so an arm that resets a live
+ receiver there completes and proves nothing about the part. This chapter
+ exists so that null is MEASURED and written down rather than assumed, because
+ the failure it guards against is somebody later reading a green bed arm as
+ evidence that resetting a live receiver is safe. It is not evidence. It is
+ the bed agreeing with itself.
+
+ THE LOOP EXPLANATIONS ARE ALREADY ELIMINATED AND NOT BY THIS ARM. Sitting 8's
+ stepped bring-up banked `s2 await-reset ret 1 in 16us`, because CTRL is
+ read-only on this part so the RST bit never sets and the loop's first read
+ already sees it clear. `e1000-await-reset` therefore cannot be where five
+ minutes goes, and `settle-mdio` is bounded by its own budget and was measured
+ at 10036 us in the same flight. What is left inside `e1000-reset` is a single
+ non-looping MMIO access that did not return, which is the part no longer
+ answering -- and that is what sitting 11's split should land on.
+
+ We say:
+
+Section: Fixtures
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  dev-of : PciScanResult -> Maybe PciDevice
+  dev-of (scan) = e1000-find scan
+
+Section: Entry
+
+ The two arms differ in ONE thing: whether the receiver is running when RST is
+ written. `quiesced` is what `e1000-quiesce` leaves behind and is the state the
+ chapter's own convention says a caller owes; `live` is what `e1000-init`
+ leaves behind and is what b3 reset into on the board.
+
+  opening : [Console, Network.Read] Nothing = act
+    let scan = pci-scan-bus 0
+    in when dev-of scan
+     is None -> print-line-uni "no part"
+     is Just (d) ->
+       let dev = e1000-init d
+       in let mmio = dev.e-mmio
+       in let rctl-live = e1000-read mmio e1000-reg-rctl
+       in let live = e1000-reset mmio
+       in let q = e1000-quiesce mmio
+       in let rctl-quiet = e1000-read mmio e1000-reg-rctl
+       in let quiet = e1000-reset mmio
+       in act
+         print-line-uni ("rctl while live    : " & show rctl-live)
+         print-line-uni ("reset into live rx : " & show live)
+         print-line-uni ("rctl after quiesce : " & show rctl-quiet)
+         print-line-uni ("reset into quiet rx: " & show quiet)
+         print-line-uni ("bed separates them : " & yn (live /= quiet))
+       end
+  end

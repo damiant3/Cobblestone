@@ -1,0 +1,65 @@
+Chapter: E1000RxInvisibleOff
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+ The row sitting 9 read off the ASUS on 2026-08-21 and that this bed could not
+ produce: the MAC counts a frame in GPRC, RNBC stays 0, and no descriptor is
+ written back, so the ring the driver is reading shows nothing. DiagNicRing
+ calls it "frames arrived and we cannot see them" (:124). It sits between
+ "nothing arrived" (:122) and "turned away for want of a descriptor" (:127),
+ and a driver acts on the three differently, which is why the counters are
+ read together and never the ring alone.
+
+ codex-vm counted GPRC inside the delivery loop just after DD was written, so
+ all three ways of stopping a receive returned above it and every one of them
+ read gprc=0: the bed could only ever answer the row ABOVE this one, whatever
+ fault it was given. Counting where the MAC accepts the frame is the fix, and
+ it took no new switch.
+
+ BUS MASTER CLEAR IS THE CAUSE THIS ARM USES, and the choice is forced rather
+ than preferred. The K1 stall is the cause sitting 9 read, but the canned
+ injector delivers its whole budget at the RCTL.EN write, and e1000-init has
+ performed the shipped K1 step by then, so nothing on this path can be stalled
+ at the moment frames arrive. BME is clear from before bring-up, so it reaches
+ the same row without the sequencing. The K1 half of the same fix rides the
+ NAT path, where frames arrive over time, and belongs to the diag image's
+ nicring stage rather than here.
+
+ This is the CONTROL for e1000-rx-invisible: the same device and the same
+ injected frame, with bus mastering left alone and nothing else different. It
+ must show the frame arriving AND gprc>0, which is what says gprc alone was
+ never the discriminator and that the flagged arm's blindness comes from the
+ DMA gate rather than from a model that delivers nothing.
+
+Section: Fixtures
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  over-zero : Integer -> Text
+  over-zero (n) = if n > 0 then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let d = bring-up (pci-scan-bus 0)
+    in let r = e1000-poll-frame d
+    in let gprc = e1000-read (d.e-mmio) e1000-reg-gprc
+    in let rnbc = e1000-read (d.e-mmio) e1000-reg-rnbc
+    in act
+      print-line-uni ("present       : " & yn (d.e-present))
+      print-line-uni ("link up       : " & yn (e1000-has-link d))
+      print-line-uni ("recv happened : " & yn (r.r-has-frame))
+      print-line-uni ("gprc over 0   : " & over-zero gprc)
+      print-line-uni ("rnbc over 0   : " & over-zero rnbc)
+    end
+  end

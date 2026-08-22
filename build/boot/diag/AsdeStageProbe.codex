@@ -24,8 +24,14 @@ Chapter: AsdeStageProbe
  the whole of the bring-up except the reset. Firmware hands this part over
  with CTRL.SLU set (CTRL=0x180240 on that flight, SLU being bit 6), so
  both arms can be compared without pulsing RST at all. They run FIRST,
- and the reset rides LAST, split into the five MMIO operations e1000-reset
- performs so the last row names the one that did not return.
+ and the reset rides LAST as ONE row, the control against 08-13. This
+ paragraph said "split into the five MMIO operations e1000-reset performs"
+ until 2026-08-20 and the code below has not done that for some time: the
+ split existed to name which operation wedged, that has been answered twice,
+ and `asde-reset-brief` says so ninety lines down. Two paragraphs in one
+ chapter disagreeing about what the reset does is worse than either being
+ wrong, because a reader who takes the first one never reaches the second --
+ it was quoted as binding across lanes the day this was corrected.
 
  The 2026-08-10 flight of this probe returned nothing, and the reason was
  in this file: the mount was a PRECONDITION, so a volume that would not
@@ -208,15 +214,15 @@ Section: Stages
    in let b = a & " CTRLback=" & show ctrl
    in b & " ASDEbit=" & na-yn (bit-and ctrl e1000-ctrl-asde)
 
-  asde-arms : GfatMount, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer -> [Device.Port, Device.Mmio] Integer
-  asde-arms (m) (base) (stride) (font) (scale) (y3) (w) (mmio) =
+  asde-arms : GfatMount, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Device.Mmio] Integer
+  asde-arms (m) (base) (stride) (font) (scale) (y3) (w) (mmio) (dev-id) =
    let y4 = arow base stride font y3 scale "ASDE: no-reset arms, ASDE=1 FIRST from the firmware state" 9474192 w
-   in let on = na-bring-up-after mmio True
+   in let on = na-bring-up-after mmio dev-id True
    in let onctrl = e1000-read mmio e1000-reg-ctrl
    in let y5 = arow base stride font y4 scale (asde-arm-line "ASDE=1 first" on onctrl) 65280 w
    in act
     m3 <- asde-mark m 3 ("stage3 asde1 first " & na-line "ASDE=1" on)
-    let off = na-bring-up-after mmio False
+    let off = na-bring-up-after mmio dev-id False
     in let offctrl = e1000-read mmio e1000-reg-ctrl
     in let y6 = arow base stride font y5 scale (asde-arm-line "ASDE=0 second" off offctrl) 65280 w
     in act
@@ -236,7 +242,7 @@ Section: Stages
     in let y3 = arow base stride font y2 scale (na-touch-line mmio touch) 16776960 w
     in act
       m2 <- asde-mark m 2 ("stage2 touch STATUS=" & show (touch.nt-status) & " CTRL=" & show (touch.nt-ctrl))
-      asde-arms m base stride font scale y3 w mmio
+      asde-arms m base stride font scale y3 w mmio (dev.pci-device-id)
     end
    end
 

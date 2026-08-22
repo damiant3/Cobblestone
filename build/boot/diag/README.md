@@ -41,7 +41,7 @@ means the payload died. Without them every one of those is a black
 screen, because every failure path in the stub ends at `fatal`, which is
 `jmp fatal`. `docs/Hardware/HardwareSitting.md` boot 1 has the table.
 
-## DIAG.RCP, the rehearsal record, and -Rehearsed (step 4)
+## DIAG.RCP, the rehearsal record, and -Rehearsed
 
 The ESP carries `DIAG.RCP` beside `DIAG.ID`: the recipe that produced the
 payload (id, kernel digest, payload/EFI hashes, alloc pages, sectors, ring
@@ -54,11 +54,11 @@ image hash. `diag-arm.ps1` appends the image's SHA-256 to
 `-ExpectHash` pins the flight card's hash. Partial runs (`-Only`, `-SkipOvmf`)
 leave the record alone and say so.
 
-## Diag.codex -- the ladder (DiagnosticStick.md step 1, 2026-08-18)
+## Diag.codex -- the ladder
 
 One payload, one image, `build/boot/diag.img`. It runs the stages in the
 design's order and never returns: `smbios`, `edid` and `cpu` (DiagSmbios,
-DiagEdid, DiagCpu: the passive firmware-table and CPUID rows, step 3), `pci`
+DiagEdid, DiagCpu: the passive firmware-table and CPUID rows), `pci`
 (DiagPci.codex, the walk and BAR verdict lifted out of PciProbe) and `scene`
 (DiagScene.codex, the software-3D scene lifted out of SceneProbe, rendered
 into the stage's own row slot), then it brings the USB stack up, finds the medium whose ESP
@@ -69,10 +69,16 @@ band, the QR block), the bank, and serial (the same lines the bank holds).
 
 ```powershell
 build/boot/build-diag.ps1                     # compile by the depot seed -> build/boot/diag.img
+                                              # takes diag-default.cfg, which NAMES every non-passive stage;
+                                              # a cfg that leaves one unnamed ARMS it, and the build refuses.
+                                              # It also refuses a key named TWICE: diag-cfg-find returns on its
+                                              # FIRST match and the ring is read before the ESP file, so a later
+                                              # line is dropped in silence. `b3 on` then `b3 peer=...` read as
+                                              # asked to the composer and no-peer on the box (red, 2026-08-21)
 build/boot/build-diag.ps1 -StdinCfg "scene off"   # a DIAG.CFG baked into the stub ring
 build/boot/build-diag.ps1 -Cfg my.cfg         # a DIAG.CFG on the ESP (post-bank stages only)
-build/boot/diag-arm.ps1                       # rehearse: 13 codex-vm arms + 2 OVMF arms; a full green run appends the image hash to diag.rehearsed
-build/boot/diag-arm.ps1 -SkipOvmf             # the codex-vm thirteen (does not touch the record)
+build/boot/diag-arm.ps1                       # rehearse: 34 codex-vm arms + 2 OVMF arms; a full green run appends the image hash to diag.rehearsed
+build/boot/diag-arm.ps1 -SkipOvmf             # the codex-vm thirty-four (does not touch the record)
 build/check-diag-verdicts.ps1                 # every state word has a verdict row (both scripts run it first)
 build/boot/test-ovmf.ps1 -Img build/boot/diag.img -Out diag.png -UsbDisk -Seconds 100
 ```
@@ -90,11 +96,16 @@ Reading it, top to bottom:
 | `cpu <state> ...` | `ok`, `hypervisor` (leaf 1 ecx bit 31: a VM), `vmx-locked-off` (Intel with VT-x switched off in firmware setup, the one CPU state a stranger can fix), `no-brand`. Vendor, brand, family/model/stepping, logical count, VMX and SVM, a flag list; the raw leaves banked |
 | `pci <state> devices=N nic=.. / storage=.. usb=..` (row 4 of the stages) | the worst per-device `MAP=` verdict (the table under PciProbe below) among the parts a driver would bind, as a stage word: `ok`, `unassigned` (a `MAP=none`), `ABOVE4G`, `BELOW3G` (the dangerous one, red), `empty` (config space answered nothing: a probe fault). The full device list is `+more in bank` |
 | `scene <state> ...` and the picture at the right | `rendered` (the render wrote inside its frame and the frame stood), `blank`, `spilled`, `no-fb`, `no-room`, read back off the framebuffer: `centre=` is the pixel at the middle of the render (not the band colour when something was drawn), `frame=a/b` two pixels of the surrounding band (both must still be the band, 8405024). Cube blue, pyramid red; swapped means the firmware is RGB and nothing reads `PixelFormat` |
-| `block <state> via=USB bps=512 lba=30000 write=1 readback=1` (row 6, the first write-side stage, runs AFTER the bank on the medium the bank opened; DiagBlock.codex, the block ladder lifted from `apps/works/BlockLadderProbe.codex`) | reads the ESP boot sector back through our driver (`read-fail`: no 0x55AA), checks bytes-per-sector (`bpb-bad`), writes one marked sector at the scratch LBA inside the facts region (`write-refused`), reads it back (`readback-fail`, `mark-lost`), `ok`. `no-medium` when there is no bank. `DIAG.CFG` `block lba=N` moves the LBA; `block-oob` in `diag-arm.ps1` aims it past the medium and reads `write-refused`, every other stage unchanged: the stage's forced-failure arm |
-| `sink <state> size=2745998 read=2745998 bad=0 shift=0 wstage=20` (row 7, DiagSink.codex, the sink ladder lifted from `apps/works/SinkLadderProbe.codex`) | the 2.7 MB streamed write (WORKS-9's question) through the bank's own FAT16 writer onto the bank's medium as `SINK.CDX`, then read back whole and compared byte for byte: `write-refused` (with `wstage=` the writer's stage cell), `size-bad`, `read-fail`, `bad-bytes`, `ok`; `mount-fail` when the volume will not mount a second time, `no-medium` with no bank. `DIAG.CFG` `sink shift=1` compares against a pattern shifted by one so every byte reads bad: `sink-shift` in `diag-arm.ps1` is that arm, the oracle proving it can say no (L-FALSIF) |
-| `nicsit <state> part 0:3.0 verdict=ok mmio=...` and `poll 1000000 empty=12903us tick100k=1290us hpet-hz=...` (row 8, DiagNicSit.codex, NIC-1/NIC-2 of NicSittingProbe) | pure reads: the eligible Intel part, its BAR verdict, STATUS/CTRL/RCTL/TCTL and the RX ring registers as firmware left them (banked), and one million empty polls of a ring we own, the number NetIO spends its retransmit bounds in (bed 13034 us). `no-part` (dim; codex-vm has no Intel card unless `-e1000`), `rejected`, `bar-bad`, `no-hpet`, `ok` |
-| `nicinit <state> part ... mac=y link=1 rdh=0 rdt=15` and per-step `s2 await-reset ret=1 us=22; ...` (row 9, DiagNicInit.codex, NicInitProbe) | e1000-init's own sequence step by step, a serial line `nicinit entering sN ...` BEFORE each step (serial-only by design: the last one on the wire names the step that hung, L-STATES; `diag-arm.ps1` skips them when comparing serial to file), each step's return and HPET duration banked; the link wait is `na-link-wait`'s 2 s budget so a no-link box still banks. `no-link`, `no-mac`, `no-hpet`, `no-part`, `rejected`, `ok`. Arms: `nic-nolink` (`-e1000-no-link` -> no-link, s10 = 2000068 us), `nic-nomac` (`-e1000-no-mac` -> no-mac) |
-| `nicring <state> init=...us present=y mac=y received=1 ddset=0 sent=1 txdd=1 rdh-writable=y rdh=1` and the `after-listen` / `after-send` DD maps (row 10, DiagNicRing.codex, NicRingProbe) | NIC-4's question: a full `e1000-init` (timed), 1.2 s listening, the DD bit of every RX descriptor, one ARP for the gateway and 1.2 s more, the reader's own control (the TX descriptor the send completed on must show DD, else `reader-broken` and every RX bit is void), then the one write: RDH set to 7 and read back. `frames`, `quiet`, `reader-broken`, `send-refused`, `no-part`, `rejected`. `nic-pass` (`-e1000 -e1000-nat`) reads frames because the NAT answers the ARP; without NAT the bed is `quiet`. The stage's FIRST glass line is the answer row, `m=y rdh=1 wb=2 buf=y pre=0 dd=1 tx=1 d0=<32 hex>`, and it is first because the QR summary is built from each stage's first glass line only: it reaches you when the bank does not. `wb` counts nonzero bytes in descriptor 0's WRITEBACK half (8..15) alone, because `e1000-build-rx-descs` writes the buffer address into 0..7 itself, so a raw sixteen-byte test reads nonzero on every flight and answers "the part wrote our ring" unconditionally; `buf` is that half's control. `pre` is GPRC read BEFORE the attach (the counter clears on read, so the late read in the `stats` row counts only this stage's own window; sitting 4's single `gprc=1` could have belonged to nicinit's ring two stages earlier). `ln=0` appears only when the listen knob is off. `nicring listen=0` in DIAG.CFG sends the ARP and idles 1.2 s without polling: nothing recycles the descriptor, so the writeback survives to be read. That is `nic-noread`, and it is the only arm that shows the dump can read a writeback at all -- `nic-pass` cannot, because `e1000-poll-raw` recycles the descriptor it took the frame from and leaves `wb=0` behind || `SUMMARY run=N skip=N bank=ok medium=usb bytes=N` or `bank=none <why>` (on the glass; in the file the same is two lines, `bank=... cfg-file=N` after the stages and `summary run=N skip=N` after that, without a byte count since the file cannot know its own size) | the bank verdict names the medium it wrote through, or why it did not: `no bank, mount stage N`, `no DIAG.ID on any ESP, refused`, `DIAG.ID mismatch, refused`, `write refused, write stage N`, `no id in the image` |
+| `gopmode <state> max=N before=M chose=K flags=F status=HHHHHHHH` (row 6, DiagGop.codex) | what the UEFI stub's mode selection actually did, read out of the v3 handoff block because the guest cannot observe it any other way: the selection runs before ExitBootServices and this row runs after, so QueryMode is gone by the time anything could ask. `honoured` (SetMode moved the firmware to the largest mode it enumerated), `kept` (the largest was already current, nothing asked), `single` (one mode offered, nothing to choose), `refused` (SetMode said no, so the picture is the firmware's own console mode and not our choice), and two instrument states, `noloop` (the bank contradicts itself) and `nostub` (an image built by a stub older than the bank). **Geometry alone cannot separate these** -- 1024x768 reads identically whether it was the largest mode or a refusal -- which is why the stub banks its selection and this row reports the bank rather than inferring from what is on the glass. Arms: every bed arm asserts `honoured` (codex-vm `max=3 chose=2`, OVMF `max=30 chose=27`), and `gop-kept` (`-gop-width 1600 -gop-height 900`) is the falsifier -- the firmware already boots in its largest mode, so `max=4 before=3 chose=3 flags=1` and nothing is called. `refused` cannot be produced in either bed and is the state the metal sitting exists to find |
+| `block <state> via=USB bps=512 lba=30000 write=1 readback=1` (row 7, the first write-side stage, runs AFTER the bank on the medium the bank opened; DiagBlock.codex, the block ladder lifted from `apps/works/BlockLadderProbe.codex`) | reads the ESP boot sector back through our driver (`read-fail`: no 0x55AA), checks bytes-per-sector (`bpb-bad`), writes one marked sector at the scratch LBA inside the facts region (`write-refused`), reads it back (`readback-fail`, `mark-lost`), `ok`. `no-medium` when there is no bank. `DIAG.CFG` `block lba=N` moves the LBA; `block-oob` in `diag-arm.ps1` aims it past the medium and reads `write-refused`, every other stage unchanged: the stage's forced-failure arm |
+| `xhci <state> ctls=N` plus one `ctl<i>` row each (row 8, DiagXhci.codex) | the USB controller census, read from cells the ORDINARY bring-up already wrote (`GopUsb.codex:54`), so it touches no device and issues no transfer. `running`, `no-disk`, `bringup-failed`, `none`. **`none` is deliberately ambiguous and the verdict says so out loud**: a box with no xHCI controller and a run where the bring-up never happened write the same zero, and these cells cannot tell them apart. Carries the HID endpoint's asked-against-programmed interval pair, which is the keyboard question stated numerically -- in the bed `asked int=10 maxpkt=8 programmed int=6 maxpkt=8`, the correct xHCI translation, which is what makes it a usable control |
+| `sink <state> size=2745998 read=2745998 bad=0 shift=0 wstage=20` (row 8, DiagSink.codex, the sink ladder lifted from `apps/works/SinkLadderProbe.codex`) | the 2.7 MB streamed write (WORKS-9's question) through the bank's own FAT16 writer onto the bank's medium as `SINK.CDX`, then read back whole and compared byte for byte: `write-refused` (with `wstage=` the writer's stage cell), `size-bad`, `read-fail`, `bad-bytes`, `ok`; `mount-fail` when the volume will not mount a second time, `no-medium` with no bank. `DIAG.CFG` `sink shift=1` compares against a pattern shifted by one so every byte reads bad: `sink-shift` in `diag-arm.ps1` is that arm, the oracle proving it can say no (L-FALSIF) |
+| `nicsit <state> part 0:3.0 verdict=ok mmio=...` and `poll 1000000 empty=12903us tick100k=1290us hpet-hz=...` (row 9, DiagNicSit.codex, NIC-1/NIC-2 of NicSittingProbe) | pure reads: the eligible Intel part, its BAR verdict, STATUS/CTRL/RCTL/TCTL and the RX ring registers as firmware left them (banked), and one million empty polls of a ring we own, the number NetIO spends its retransmit bounds in (bed 13034 us). `no-part` (dim; codex-vm has no Intel card unless `-e1000`), `rejected`, `bar-bad`, `no-hpet`, `ok` |
+| `nicinit <state> part ... mac=y link=1 rdh=0 rdt=15` and per-step `s2 await-reset ret=1 us=22; ...` (row 10, DiagNicInit.codex, NicInitProbe) | e1000-init's own sequence step by step, a serial line `nicinit entering sN ...` BEFORE each step (serial-only by design: the last one on the wire names the step that hung, L-STATES; `diag-arm.ps1` skips them when comparing serial to file), each step's return and HPET duration banked; the link wait is `na-link-wait`'s 2 s budget so a no-link box still banks. `no-link`, `no-mac`, `no-hpet`, `no-part`, `rejected`, `ok`. Arms: `nic-nolink` (`-e1000-no-link` -> no-link, s10 = 2000068 us), `nic-nomac` (`-e1000-no-mac` -> no-mac) |
+| `nicring <state> init=...us present=y mac=y received=1 ddset=0 sent=1 txdd=1 rdh-writable=y rdh=1` and the `after-listen` / `after-send` DD maps (row 11, DiagNicRing.codex, NicRingProbe) | NIC-4's question: a full `e1000-init` (timed), 1.2 s listening, the DD bit of every RX descriptor, one ARP for the gateway and 1.2 s more, the reader's own control (the TX descriptor the send completed on must show DD, else `reader-broken` and every RX bit is void), then the one write: RDH set to 7 and read back. `frames`, `quiet`, `reader-broken`, `send-refused`, `no-part`, `rejected`. `nic-pass` (`-e1000 -e1000-nat`) reads frames because the NAT answers the ARP; without NAT the bed is `quiet`. The stage's FIRST glass line is the answer row, `m=y rdh=1 wb=2 buf=y pre=0 dd=1 tx=1 d0=<32 hex>`, and it is first because the QR summary is built from each stage's first glass line only: it reaches you when the bank does not. `wb` counts nonzero bytes in descriptor 0's WRITEBACK half (8..15) alone, because `e1000-build-rx-descs` writes the buffer address into 0..7 itself, so a raw sixteen-byte test reads nonzero on every flight and answers "the part wrote our ring" unconditionally; `buf` is that half's control. `pre` is GPRC read BEFORE the attach (the counter clears on read, so the late read in the `stats` row counts only this stage's own window; sitting 4's single `gprc=1` could have belonged to nicinit's ring two stages earlier). `ln=0` appears only when the listen knob is off. `nicring listen=0` in DIAG.CFG sends the ARP and idles 1.2 s without polling: nothing recycles the descriptor, so the writeback survives to be read. That is `nic-noread`, and it is the only arm that shows the dump can read a writeback at all -- `nic-pass` cannot, because `e1000-poll-raw` recycles the descriptor it took the frame from and leaves `wb=0` behind |
+| `b3 <state> card=e1000 mac=... poll-interval=N spend=N cap=N clamped=n clk=y dt=N moved=N/100000 hpet=N steps=reset,rings-link,k1,calibrate k1=N addr=static ...` (row 13, DiagB3.codex) | Track B's TCP conversation, the one stage that asks whether the STACK works on the part. Since 2026-08-21 it BANKS as it goes, not only at the end: every `b3 -> X` it paints is also written to `DIAG.TXT` as `stage=b3 step=X` on top of the lines banked so far, so a wedge leaves the step it died in on the medium as well as on the glass (sitting 9 died inside bring-up and the file said only that b3 was absent). Bring-up is stepped through the driver's own functions in the driver's own order, `reset`, `rings-link` (`e1000-init-after-reset`: quiesce, rings, the semaphore and `e1000-link-up`), `k1` (`e1000-pch-prepare`, whose readback is banked as `stage=b3 k1=N` the moment it returns; N is its code, 0..7 since main 18736: 3 owned and the disable bit stuck, 2 owned and not, 6/7 MDIO refused with/without ownership), `calibrate`; the driver half that would let the semaphore and link-up be separate steps is blu's. First, a CLOCK CONTROL independent of the part (L-CHANNEL): the HPET counter is read across 100000 reads and `clk=y/n dt=N moved=N` is banked at once; `clock-stuck` refuses before bring-up when the counter did not move, because a rate nothing validates over a stuck counter makes every clocked wait in the driver effectively endless. States add `clock-stuck`; arm `b3-clockstuck` (`-hpet-frozen`, nic stages off by cfg). **A step paints its own refusal** (since 2026-08-22, sitting 11's shape): when a step's note is refused with a bank open, the slot reads `BANK LOST AT <step>` in the bad colour and serial says `b3 bank lost at <step>`, so the glass names where the medium DIED rather than the stage whose whole-stage write the ladder noticed. The slot paint is overwritten by b3's own row when the stage returns, so that row is also stamped `bank-lost-note=N`, the ordinal of the first refused note counted as the serial trail counts them, and painted red whatever the state; the stick's trail ends at note N-1, and a gap between the two is a medium that accepted a write and lost it. Arm `b3-banklost` (`-usb-bot-die-len 5632 -usb-bot-die-lba 3400`, the first eleven-sector bank write, b3's seventh note). **`rings-link` is six banked steps since 2026-08-22**, the parts of `e1000-init-after-reset` in the driver's order: `rings-quiesce`, `setup-rx`, `setup-tx`, `swflag` (the acquire; `sem=` on the next note), `link-up` (CTRL|SLU; `link=` on the next note), `swflag-release`, so a trail that ends inside this function names the part that killed the medium. |
+| `pchk1 <state> k1-after 770.17=d104 giga-k1-dis=n k1-en=y` (DiagPchK1.codex) | the same PHY register `pch` reads at stage 10, read again AFTER the driver has written it, because only the second reading is about the fix. The K1 write lives in `e1000-init`, which this ladder reaches only through `net-driver-bring-up` in `b3`, so before this stage existed nothing read 770.17 after the write and a flight where traffic still did not flow could not separate a fix that was applied and did not help from a fix that was never applied. `taken` (the disable bit is set: the driver's write landed), `not-taken` (MDIO answered and the bit is CLEAR, so the K1 theory is untested rather than disproved), `no-mdio` (the register did not answer, which says nothing either way), `not-pch` (not an I219, so there is no K1 step to read back), `no-part`, `rejected`, `bar-bad`. **It runs after the writer and before `asde`, and that is load-bearing**: `asde` calls `na-phy-kick`, which writes BMCR reset, and a PHY reset returns 770.17 to its NVM value, so a reading taken after `asde` would say the write never took on every run. Arms: `k1-taken` (`-i219`) and `k1-blocked` (`-i219-mng-holds`, firmware holds MNG so the semaphore cannot be acquired and MDIO is refused) move the row taken/no-mdio from one binary. Both name a peer, because `b3` short-circuits on no-peer before bring-up and then nothing writes K1 at all. **Since 2026-08-21 the stage also LISTENS after the write** (reek measured that no stage did, so the board could never show DD landing once K1 was disabled): 1.2 s on the production ring `b3` bound, through the driver's own receive path, GPRC read before (it clears on read, fencing the window) and after, and the DD count on the ring, as the row `listen-after-k1 word=W frames=N gprc-before=N gprc-after=N dd=N polls=N ms=1200`. `W` is nicring's vocabulary: `quiet`, `arrived-visible` (the poll returned a frame), `arrived-invisible` (the MAC counted one and nothing shows it: the stall), `skipped` (no peer, so `b3` never bound the driver). Both K1 arms carry `nicring off` and one armed frame released by the guest's first GPRC read, which is then pchk1's own: `k1-taken` reads `arrived-visible`, `k1-blocked` reads `arrived-invisible`, K1 the only difference |
+| `SUMMARY run=N skip=N bank=ok medium=usb bytes=N` or `bank=none <why>` (on the glass; in the file the same is two lines, `bank=... cfg-file=N` after the stages and `summary run=N skip=N` after that, without a byte count since the file cannot know its own size) | the bank verdict names the medium it wrote through, or why it did not: `no bank, mount stage N`, `no DIAG.ID on any ESP, refused`, `DIAG.ID mismatch, refused`, `write refused, write stage N`, `no id in the image` |
 | `todo: ...` | the first verdict row that applies; the bank has all of them |
 | the QR block | the summary body, chunked at 100 bytes, scale 6/5/4/3 chosen to fit and never 2; `CUT` in the label means the body was truncated to what the panel could hold and the bank is the record |
 | the green square at the band's right edge | the heartbeat: it toggles while the machine is alive |
@@ -106,7 +117,7 @@ lines leave ~78 for stage lines, and the ESP file (up to 4 KB) is read
 after the bank opens. A stage chapter is `Diag*.codex` under this directory
 (the stale check in `diag-arm.ps1` watches that glob), exports one
 `<tag>-run : DiagCtx -> DiagResult`, and is registered by number in
-`Diag.codex`'s stage tables; the design's "Step 1, landed" section has the shape.
+`Diag.codex`'s stage tables carry the shape.
 
 ## PciProbe.codex
 
@@ -133,12 +144,6 @@ headed by `devices=N all listed` or, when the screen genuinely cannot
 hold every row, `devices=N ONLY M FIT ON SCREEN` in red followed by the
 statement that the codes carry all N.
 
-That header used to read `devices=N listed=M` in ordinary white, and on
-its first real gate it said `devices=6 listed=4` while silently dropping
-two devices. The call-outs stayed correct, so the failure mode was a
-reader taking an accurate NIC line off a list that was two thirds of the
-truth. A Z170 board presents far more than six devices.
-
 BAR0 is where a NIC and an xHCI put their register window; **BAR5 is
 where an AHCI controller puts its**, so a reading that took BAR0 alone
 would report the storage controller at address nothing (an ICH9 in AHCI
@@ -158,9 +163,7 @@ dwords): a zero BAR is unimplemented and an I/O-space BAR (bit 0 set) is
 a port number, so both are skipped; a 64-bit memory BAR takes its high
 half from the next dword. That reaches BAR5 on an AHCI controller (BAR0
 through BAR4 read zero, or are the vestigial IDE I/O BARs) and BAR2 on
-a Realtek RTL8168, whose BAR0 is I/O. **Until 2026-08-18 the stage
-judged BAR0 outright** and read the RTL8168's port `0xC001` as an address
-below 3 GB (`MAP=BELOW3G`, red on the ASUS flight; HardwareSitting.md).
+a Realtek RTL8168, whose BAR0 is I/O.
 `codex/test/diag-pci-map-judge` is the forced arm: the RTL8168 shape
 answers `ok`, an I/O-only device `none`, and a genuine memory BAR at
 `0x81060000` still answers `BELOW3G`.
@@ -203,10 +206,6 @@ scale 2 the decoder finds the finder patterns and reads none of the
 codes, which is a failure that looks like success on the glass; scale 3
 is flagged in yellow on the screen so the operator knows to shoot close
 and square.
-
-The codes used to take a fixed bottom half of the display. That wasted
-whatever the grid did not need, cost two scale steps, and left the
-device list two rows deep.
 
 Photograph every code and decode the photo on the dev box with `pwsh
 tools/qr-read.ps1 -Path photo.jpg [-Save report.txt]`. Chunks carry
@@ -534,9 +533,7 @@ partial report is the one thing not to read past. Re-shoot rather
 than trust it.
 
 `tools/qr-read.ps1` is the decoder half of GopQr, written as its exact
-inverse and covered by `build/qr-decode-test.ps1`. Earlier revisions of
-this file pointed at a `qrshot.py` in a scratchpad, which needed cv2 and
-no longer exists.
+inverse and covered by `build/qr-decode-test.ps1`.
 
 Press and HOLD a key:
 
@@ -630,8 +627,7 @@ build/boot/build-option-a.ps1 -Src build/boot/diag/PciProbe.codex `
     -Out build/boot/pci-probe.img -Seed '' -Font '' -Source '' -Kernel seed/Codex.cdx
 
 # PASS -Source '' TOO. It is not covered by -Seed '', and it defaults to
-# build-output/Codex.codex, so this command used to ship a 2,994,123-byte
-# SOURCE.SRC that no probe here reads.
+# build-output/Codex.codex, which ships a ~3 MB SOURCE.SRC no probe reads.
 
 # THEN GATE THE FILE YOU ARE ABOUT TO FLASH. Not one built from the same
 # source with different arguments: OsHardwareRoadmap's Loop A wants a GPT

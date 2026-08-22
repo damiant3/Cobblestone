@@ -218,11 +218,11 @@ export plus the rendering in Evidence.html.
 
 ### Threat model integration
 
-The evidence package cross-references `docs/Designs/Active/IoT/ThreatModel.md` for each
+The evidence package cross-references `docs/Designs/Done/IoT/ThreatModel.md` for each
 claim. Where a requirement maps to an attack class:
 
 - The claim cites the specific attack (e.g., "CRA 2(a): memory
-  corruption -- see docs/Designs/Active/IoT/ThreatModel.md §1.1") and the defense
+  corruption -- see docs/Designs/Done/IoT/ThreatModel.md §1.1") and the defense
   mechanism.
 - The residual risk register entries (R1-R10) are included in the
   evidence as an appendix. Each residual states: what is not

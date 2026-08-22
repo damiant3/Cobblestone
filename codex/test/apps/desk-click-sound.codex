@@ -1,0 +1,54 @@
+Chapter: DeskClickSoundTest
+  cites Works chapter GopDesk
+  cites Kernel chapter HdaAudio
+  cites Foreword chapter Console
+
+ codex-vm counts every PCM buffer it drains to the DAC and exposes the
+ running total at HDA #180, which is the only way a headless run can tell
+ that a sound reached the output.
+
+ Three arms, and the first two are the ones stage 4 is about. Muted, a click
+ must submit nothing: a mute that still reached the controller would drain
+ buffers silently and look exactly like a mute that worked. Unmuted, each
+ click must submit exactly one buffer from the block `dk-snd-init` rendered
+ at boot, which is what a caller whose heap is rewound every frame needs. The
+ third arm holds the setting on and passes no click, so a pass cannot come
+ from a gate that reads only one of the two.
+
+Section: Body
+
+  clicks : Integer = 4
+
+  click-loop : Integer, Boolean, Integer -> [Audio] Integer
+  click-loop (ds) (on) (i) =
+    if i >= clicks then 0
+    else act
+      p <- dk-snd-click ds on
+      rest <- click-loop ds on (i + 1)
+      p + rest
+    end
+
+  opening : [Console, Audio, Device.Mmio] Nothing = act
+    let ds = alloc-zeroed 128 64
+    in let sdi = dk-snd-init ds
+    in let off = poke-32 ds dk-sound-on-cell 0
+    in act
+      before <- hda-drained-count
+      a <- click-loop ds True 0
+      muted <- hda-drained-count
+      let on = poke-32 ds dk-sound-on-cell 1
+      in act
+        b <- click-loop ds True 0
+        heard <- hda-drained-count
+        c <- click-loop ds False 0
+        idle <- hda-drained-count
+        print-line-uni ("muted=" & show (muted - before) & " heard=" & show (heard - muted) & " idle=" & show (idle - heard))
+        if muted /= before then print-line-uni ("FAIL: mute drained " & show (muted - before))
+        else if heard - muted /= clicks then print-line-uni ("FAIL: unmuted drained " & show (heard - muted))
+        else if idle /= heard then print-line-uni ("FAIL: no click drained " & show (idle - heard))
+        else print-line-uni "PASS"
+      end
+    end
+  end
+
+Page 1

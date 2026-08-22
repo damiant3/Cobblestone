@@ -214,6 +214,47 @@ memory, and no instruction from the new image executes before
 both gates have passed -- the boot selector's re-check closes the
 TOCTOU window between Gate B and the bank swap.
 
+### The staging bound: the bank enforces, Size2 only refuses earlier
+
+**RULED by red, 2026-08-20, and BUILT the same day (reek).** This design
+guaranteed bounded RAM and said nothing about a bound on the staging bank, so
+`fw-write` wrote each block at `fw-stage + fw-written` and grew `fw-written`
+by the payload's length with nothing stopping it. `fw-stage-block` bounds the
+block ORDER, which is a different claim: a server sending blocks in order with
+payloads as large as it likes still walks off the end of the bank, and
+`flash-write-page` takes an ABSOLUTE address, so nothing underneath refuses
+it. A frame could drive an unbounded flash write.
+
+The two mechanisms have strict and unequal roles:
+
+- **The BANK SIZE enforces.** `Lwm2mFw` carries `fw-capacity`, how many bytes
+  the bank holds from `fw-stage`. It is a property of the board, so no frame
+  can change it. `fw-write` refuses any payload that would leave the bank, and
+  the check sits in `fw-write` rather than in either caller because that is
+  the only place a byte reaches the flash. Written subtractively
+  (`len > capacity - written`, never `written + len > capacity`) for the
+  reason `ExaminersAssay.md` "A Bounds Guard That ADDS Can Be Overflowed"
+  gives.
+- **CoAP `Size2` is an EARLY refusal only.** A declared total over capacity is
+  refused before byte one, which saves staging most of an image to learn it
+  never fits. `Size2` absent, or lying low, buys the server nothing: the bank
+  bound still refuses the byte that would leave the bank. RFC 7959 makes
+  `Size2` a hint and nothing obliges it to be true, so **the hint can only
+  ever refuse sooner, never permit more.**
+
+Both refuse with Update Result 2, which OMA defines as not enough flash for
+the package, and that is what both failures are.
+
+Four arms in `codex/test/apps/ota-lwm2m-loopback`, each isolated by ablation:
+a positive control that must NOT be refused (an image that fits, staged whole,
+Gate A passing); the bank bound firing with no `Size2` present at all; the
+`Size2` early refusal (zero bytes written); and a server declaring a small
+total while sending more, which is the arm that proves the hint has not become
+the bound. Ablating the bank bound moves the two bank arms and leaves the
+`Size2` arm alone; ablating the `Size2` check moves only its own arm. The
+positive control is ordered FIRST because the arms deliberately leave partial
+images in the one staging bank the fixture shares, and Gate A reads that bank.
+
 ### Anti-rollback
 
 The release fact carries a monotonic sequence number per device

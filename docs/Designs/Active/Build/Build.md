@@ -1173,6 +1173,39 @@ the heap at the fixed `0x1000000` edk2 refuses. Regenerating this one
 hands back a stub that triple-faults instead of reporting, and no drift
 number distinguishes those lines from formatting.
 
+## What `gen-scripts` costs, and the fix that does not pay (2026-08-20)
+
+The gate's `gen-scripts` phase is the largest single item on the standing
+`-Internal` gate for anyone touching a build script: **118.5 s of a 238.4 s
+gate**, measured at head 18157. It was 61 s on 2026-08-06. Both halves of the
+growth are real and neither is a defect: the generator count went **42 to 57**,
+and the per-generator cost went **1.45 s to 2.08 s**.
+
+**The obvious fix was tried and is not worth taking.** `check-generated-scripts.ps1`
+compiles the whole set in ONE batch VM boot and then RUNS them one VM boot at a
+time in a serial loop, which reads like the classic serial-harness win. It is
+not. Measured standalone on the same tree and the same seed:
+
+| | s |
+|---|---|
+| depot version (serial run loop) | 101.6 |
+| with the run loop pre-run at `-ThrottleLimit 8` | 92.1 |
+
+**9.5 s.** The 57 serial runs are about 10 s in total, roughly 0.2 s each, and
+`test-compile-batch.ps1` compiling 57 generator chapters is the other ~90 s.
+That is genuine compile work and the only way down is fewer or smaller
+generators. The change was reverted; do not spend the afternoon on it again.
+
+One thing worth keeping from the attempt, because it will bite the next person
+who parallelises anything here. **Do not call `test-run.ps1` with `&` inside
+`ForEach-Object -Parallel`.** Runspaces share one process, that script does
+`Set-Location` and sets `[Environment]::CurrentDirectory`, and eight of them
+fight over one working directory: it fails out of its own stderr read with
+`the process cannot access the file ... because it is being used by another
+process`. The battery has run this same script eight ways for months without
+ever seeing it, because the battery spawns `pwsh -NoProfile -File` per test.
+Spawn the process; the race disappears.
+
 ## Priority Order
 
 1. ~~Wire the FileSystem builtins~~ -- done 2026-07-19, Phase A above.

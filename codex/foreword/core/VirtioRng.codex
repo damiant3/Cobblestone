@@ -1,0 +1,85 @@
+Chapter: VirtioRng
+  cites Foreword chapter VirtioBlk
+
+ The transport is the one VirtioBlk drives and its constants are reused
+ by name; what differs is the device's, fixed by the VIRTIO specification
+ and not derivable from this code. Device id 4 is the entropy device. It
+ has one virtqueue, requestq, and no feature bits this driver needs. A
+ request is a single device-writable buffer with no header and no status
+ byte: the device fills it with entropy and reports through the used ring
+ how many bytes it wrote, which may be fewer than asked.
+
+  vrng-device-id : Integer = 4
+
+Section: Probing
+
+  vrng-slot-is-rng : Integer -> Boolean
+  vrng-slot-is-rng (base) =
+   if vb-read base vb-off-magic /= vb-magic then False
+   else if vb-read base vb-off-version /= vb-version-modern then False
+   else vb-read base vb-off-device-id == vrng-device-id
+
+  vrng-find-loop : Integer, Integer, Integer, Integer -> Integer
+  vrng-find-loop (base) (stride) (count) (i) =
+   if i >= count then 0
+   else if vrng-slot-is-rng (base + i * stride) then base + i * stride
+   else vrng-find-loop base stride count (i + 1)
+
+  vrng-find : Integer, Integer, Integer -> Integer
+  vrng-find (base) (stride) (count) = vrng-find-loop base stride count 0
+
+Section: Initialisation and the ready cache
+
+  vrng-init : Integer, Integer -> Integer
+  vrng-init (base) (ring) = vb-init base ring
+
+  vrng-ready : Integer, Integer, Integer, Integer -> Integer
+  vrng-ready (mmio) (stride) (count) (ring) =
+   let cache = ring + vb-cache-offset
+   in let cached = bit-and (peek-32 cache 0) #FFFFFFFF
+   in if cached /= 0 then cached
+   else let dev = vrng-find mmio stride count
+   in if dev == 0 then 0
+   else if vrng-init dev ring == 0 then 0
+   else let w = poke-32 cache 0 dev
+   in dev
+
+Section: One request
+
+ The used ring holds, after its 2-byte flags and 2-byte index, one
+ 8-byte element per completed request: a 32-bit descriptor id and the
+ 32-bit count of bytes the device wrote. The element for the request the
+ driver just made sits at the index the used counter reached, masked to
+ the queue.
+
+  vrng-used-len : Integer, Integer -> Integer
+  vrng-used-len (ring) (used-idx) =
+   let slot = bit-and (used-idx - 1) (vb-queue-size - 1)
+   in bit-and (peek-32 (ring + vb-ring-used + 4 + slot * 8 + 4) 0) #FFFFFFFF
+
+  vrng-request : Integer, Integer, Integer, Integer -> Integer
+  vrng-request (base) (ring) (buf) (n) =
+   let d0 = ring + vb-ring-desc
+   in let e0 = vb-put-desc d0 buf n vb-desc-write 0
+   in let a = ring + vb-ring-avail
+   in let cur = vb-ring-idx a
+   in let want = bit-and (vb-ring-idx (ring + vb-ring-used) + 1) #FFFF
+   in let slot = vb-put-avail-entry (a + 4 + (bit-and cur (vb-queue-size - 1)) * 2) 0
+   in let bump = vb-set-avail-idx a (cur + 1)
+   in let notify = vb-write base vb-off-queue-notify 0
+   in if vb-await-used ring want 0 == 0 then 0
+   else vrng-used-len ring want
+
+Section: The door
+
+ The only function with a row, for the reason VirtioBlk gives at its own
+ door: a citing program declares Device, the ARM64 runtime enforces it at
+ the address, and a row on the inner functions would be an instrument over
+ a hole. Answers the bytes written into buf, or 0 when no entropy device is
+ on the bus, the handshake was refused, or the request never completed.
+
+  vrng-read-auto : Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
+  vrng-read-auto (mmio) (stride) (count) (ring) (buf) (n) =
+   let dev = vrng-ready mmio stride count ring
+   in if dev == 0 then 0
+   else vrng-request dev ring buf n

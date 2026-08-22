@@ -329,7 +329,56 @@ Section: Expression Emission
 
   emit-kt-match : IRExpr, List IRBranch, List ArityEntry -> Text
   emit-kt-match (scrut) (branches) (arities) =
-   "when (val _s = " & emit-kt-expr scrut arities & ") { " & emit-kt-match-arms branches 0 arities & " }"
+   if kt-branches-guarded branches 0
+   then "run { val _s = " & emit-kt-expr scrut arities & "; " & emit-kt-chain-arms branches 0 arities & " throw RuntimeException(\"non-exhaustive match\") }"
+   else "when (val _s = " & emit-kt-expr scrut arities & ") { " & emit-kt-match-arms branches 0 arities & " }"
+
+ A `when` branch that matches cannot fall through to a later one, and `is Num
+ ->` does not bind the payload either, so a guarded match becomes a `run` of
+ sequential ifs with `return@run`. A match with no guard anywhere stays the
+ `when` it was.
+
+  kt-guard-trivial : IRExpr -> Boolean
+  kt-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  kt-branches-guarded : List IRBranch, Integer -> Boolean
+  kt-branches-guarded (bs) (i) =
+   if i >= list-length bs then False
+   else if kt-guard-trivial ((list-at bs i).guard) == False then True
+   else kt-branches-guarded bs (i + 1)
+
+  kt-chain-binds : List IRPat, Integer, Text -> Text
+  kt-chain-binds (subs) (i) (cast) =
+   if i >= list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> "val " & kt-sanitize name & " = (" & cast & ").field" & integer-to-text i & "; "
+    is otherwise -> "") & kt-chain-binds subs (i + 1) cast
+
+  kt-chain-ret : IRExpr, IRExpr, List ArityEntry -> Text
+  kt-chain-ret (guard) (body) (arities) =
+   if kt-guard-trivial guard then "return@run " & emit-kt-expr body arities & "; "
+   else "if (" & emit-kt-expr guard arities & ") { return@run " & emit-kt-expr body arities & " }; "
+
+  emit-kt-chain-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-kt-chain-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-kt-chain-arm (b.pattern) (b.guard) (b.body) arities & emit-kt-chain-arms branches (i + 1) arities
+
+  emit-kt-chain-arm : IRPat, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-kt-chain-arm (pat) (guard) (body) (arities) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "if (_s == " & text & ") { " & kt-chain-ret guard body arities & "}; "
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "if (true) { val _arr = _s as List<*>; " & emit-kt-tup-binds subs 0 & kt-chain-ret guard body arities & "}; "
+     else "if (_s is " & kt-sanitize name & ") { " & kt-chain-binds subs 0 ("_s as " & kt-sanitize name) & kt-chain-ret guard body arities & "}; "
+    is IrVarPat (name) (ty) (sp) -> "if (true) { val " & kt-sanitize name & " = _s; " & kt-chain-ret guard body arities & "}; "
+    is IrWildPat (sp) -> kt-chain-ret guard body arities
+    is IrVecPat (pats) (ty) (sp) -> kt-chain-ret guard body arities
 
   emit-kt-match-arms : List IRBranch, Integer, List ArityEntry -> Text
   emit-kt-match-arms (branches) (i) (arities) =

@@ -451,7 +451,146 @@ Section: Expression Emission
 
   emit-ada-match : IRExpr, List IRBranch, List ArityEntry -> Text
   emit-ada-match (scrut) (branches) (arities) =
-   "(case " & emit-ada-expr scrut arities & ".Kind is " & emit-ada-match-arms branches arities 0 & "when others => raise Program_Error)"
+   if ada-match-plain branches 0
+   then "(case " & emit-ada-expr scrut arities & ".Kind is " & emit-ada-match-arms branches arities 0 & "when others => raise Program_Error)"
+   else "(" & emit-ada-match-chain branches scrut arities 0 & ")"
+
+ An Ada case_expression takes static choices and declares nothing, so it can
+ carry neither a guard nor a payload binding. A match that needs either, or
+ that tests a literal, is emitted as an if_expression chain instead, with
+ each binder replaced by the field selector it stands for.
+
+  ada-match-plain : List IRBranch, Integer -> Boolean
+  ada-match-plain (branches) (i) =
+   if i >= list-length branches then True
+   else let b = list-at branches i
+   in if ada-guard-trivial (b.guard)
+      then (when b.pattern
+       is IrCtorPat (name) (subs) (ty) (sp) -> if list-length subs == 0 then ada-match-plain branches (i + 1) else False
+       is IrLitPat (text) (ty) (sp) -> False
+       is IrVarPat (name) (ty) (sp) -> False
+       is otherwise -> ada-match-plain branches (i + 1))
+      else False
+
+  ada-guard-trivial : IRExpr -> Boolean
+  ada-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  emit-ada-match-chain : List IRBranch, IRExpr, List ArityEntry, Integer -> Text
+  emit-ada-match-chain (branches) (scrut) (arities) (i) =
+   if i >= list-length branches then " else raise Program_Error"
+   else let b = list-at branches i
+   in let cond = ada-arm-cond (b.pattern) (b.guard) scrut arities
+   in let body = emit-ada-expr (ada-subst-pat (b.pattern) scrut (b.body)) arities
+   in if cond == ""
+      then (if i == 0 then body else " else " & body)
+      else (if i == 0 then "if " else " elsif ") & cond & " then " & body & emit-ada-match-chain branches scrut arities (i + 1)
+
+  ada-arm-cond : IRPat, IRExpr, IRExpr, List ArityEntry -> Text
+  ada-arm-cond (pat) (guard) (scrut) (arities) =
+   when pat
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let base = emit-ada-expr scrut arities & ".Kind = Tag_" & ada-cap-sanitize name
+     in if ada-guard-trivial guard then base
+        else base & " and then (" & emit-ada-expr (ada-subst-pat pat scrut guard) arities & ")"
+    is IrLitPat (text) (ty) (sp) ->
+     let base = "(" & emit-ada-expr scrut arities & " = " & text & ")"
+     in if ada-guard-trivial guard then base
+        else base & " and then (" & emit-ada-expr guard arities & ")"
+    is otherwise ->
+     if ada-guard-trivial guard then ""
+     else "(" & emit-ada-expr (ada-subst-pat pat scrut guard) arities & ")"
+
+  ada-subst-pat : IRPat, IRExpr, IRExpr -> IRExpr
+  ada-subst-pat (pat) (scrut) (e) =
+   when pat
+    is IrCtorPat (name) (subs) (ty) (sp) -> ada-subst-fields subs ("Tag_" & ada-cap-sanitize name) scrut e 0
+    is IrVarPat (n) (ty) (sp) -> ada-subst-expr e n scrut 0
+    is otherwise -> e
+
+  ada-subst-fields : List IRPat, Text, IRExpr, IRExpr, Integer -> IRExpr
+  ada-subst-fields (subs) (tag) (scrut) (e) (i) =
+   if i >= list-length subs then e
+   else ada-subst-fields subs tag scrut (when (list-at subs i)
+     is IrVarPat (n) (ty) (sp) -> ada-subst-expr e n (IrFieldAccess scrut (tag & "_F" & integer-to-text i) ty sp) 0
+     is otherwise -> e) (i + 1)
+
+  ada-subst-expr : IRExpr, Text, IRExpr, Integer -> IRExpr
+  ada-subst-expr (e) (n) (rep) (depth) =
+   if depth >= 256 then e
+   else when e
+    is IrName (m) (ty) (sp) -> if m == n then rep else e
+    is IrBinary (op) (l) (r) (ty) (sp) -> IrBinary op (ada-subst-expr l n rep (depth + 1)) (ada-subst-expr r n rep (depth + 1)) ty sp
+    is IrNegate (o) (nty) (sp) -> IrNegate (ada-subst-expr o n rep (depth + 1)) nty sp
+    is IrIf (c) (t) (el) (ty) (sp) -> IrIf (ada-subst-expr c n rep (depth + 1)) (ada-subst-expr t n rep (depth + 1)) (ada-subst-expr el n rep (depth + 1)) ty sp
+    is IrLet (nm) (ty) (v) (b) (sp) -> IrLet nm ty (ada-subst-expr v n rep (depth + 1)) (if nm == n then b else ada-subst-expr b n rep (depth + 1)) sp
+    is IrApply (f) (a) (ty) (sp) -> IrApply (ada-subst-expr f n rep (depth + 1)) (ada-subst-expr a n rep (depth + 1)) ty sp
+    is IrList (xs) (ty) (sp) -> IrList (ada-subst-exprs xs n rep (depth + 1) 0 []) ty sp
+    is IrFieldAccess (r) (fld) (ty) (sp) -> IrFieldAccess (ada-subst-expr r n rep (depth + 1)) fld ty sp
+    is IrFieldStore (r) (fld) (v) (ty) (sp) -> IrFieldStore (ada-subst-expr r n rep (depth + 1)) fld (ada-subst-expr v n rep (depth + 1)) ty sp
+    is IrMatch (sc) (bs) (ty) (sp) -> IrMatch (ada-subst-expr sc n rep (depth + 1)) (ada-subst-branches bs n rep (depth + 1) 0 []) ty sp
+    is IrRecord (nm) (fs) (ty) (sp) -> IrRecord nm (ada-subst-field-vals fs n rep (depth + 1) 0 []) ty sp
+    is IrAct (ss) (ty) (sp) -> IrAct (ada-subst-stmts ss n rep (depth + 1) 0 []) ty sp
+    is IrLambda (ps) (b) (ty) (sp) -> if ada-params-bind ps n 0 then e else IrLambda ps (ada-subst-expr b n rep (depth + 1)) ty sp
+    is IrHandle (eff) (b) (cs) (ty) (sp) -> IrHandle eff (ada-subst-expr b n rep (depth + 1)) cs ty sp
+    is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (sp) -> IrWithTimeout secs effs scopes (ada-subst-expr b n rep (depth + 1)) ty sp
+    is IrFork (b) (ty) (sp) -> IrFork (ada-subst-expr b n rep (depth + 1)) ty sp
+    is IrAwait (t) (ty) (sp) -> IrAwait (ada-subst-expr t n rep (depth + 1)) ty sp
+    is otherwise -> e
+
+  ada-subst-exprs : List IRExpr, Text, IRExpr, Integer, Integer, List IRExpr -> List IRExpr
+  ada-subst-exprs (xs) (n) (rep) (depth) (i) (acc) =
+   if i >= list-length xs then acc
+   else ada-subst-exprs xs n rep depth (i + 1) (list-push acc (ada-subst-expr (list-at xs i) n rep depth))
+
+  ada-subst-branches : List IRBranch, Text, IRExpr, Integer, Integer, List IRBranch -> List IRBranch
+  ada-subst-branches (bs) (n) (rep) (depth) (i) (acc) =
+   if i >= list-length bs then acc
+   else let b = list-at bs i
+   in ada-subst-branches bs n rep depth (i + 1) (list-push acc (if ada-pat-binds (b.pattern) n then b
+      else IRBranch { pattern = b.pattern, body = ada-subst-expr (b.body) n rep depth, guard = ada-subst-expr (b.guard) n rep depth, span = b.span, alt-group = b.alt-group }))
+
+  ada-pat-binds : IRPat, Text -> Boolean
+  ada-pat-binds (pat) (n) =
+   when pat
+    is IrVarPat (m) (ty) (sp) -> m == n
+    is IrCtorPat (name) (subs) (ty) (sp) -> ada-subs-bind subs n 0
+    is otherwise -> False
+
+  ada-subs-bind : List IRPat, Text, Integer -> Boolean
+  ada-subs-bind (subs) (n) (i) =
+   if i >= list-length subs then False
+   else if ada-pat-binds (list-at subs i) n then True
+   else ada-subs-bind subs n (i + 1)
+
+  ada-subst-field-vals : List IRFieldVal, Text, IRExpr, Integer, Integer, List IRFieldVal -> List IRFieldVal
+  ada-subst-field-vals (fs) (n) (rep) (depth) (i) (acc) =
+   if i >= list-length fs then acc
+   else let f = list-at fs i
+   in ada-subst-field-vals fs n rep depth (i + 1) (list-push acc (IRFieldVal { name = f.name, value = ada-subst-expr (f.value) n rep depth, span = f.span }))
+
+  ada-subst-stmts : List IRActStmt, Text, IRExpr, Integer, Integer, List IRActStmt -> List IRActStmt
+  ada-subst-stmts (ss) (n) (rep) (depth) (i) (acc) =
+   if i >= list-length ss then acc
+   else when (list-at ss i)
+    is IrDoBind (nm) (ty) (v) (sp) ->
+     let acc2 = list-push acc (IrDoBind nm ty (ada-subst-expr v n rep depth) sp)
+     in if nm == n then ada-append-stmts ss (i + 1) acc2
+        else ada-subst-stmts ss n rep depth (i + 1) acc2
+    is IrDoExec (ex) (sp) -> ada-subst-stmts ss n rep depth (i + 1) (list-push acc (IrDoExec (ada-subst-expr ex n rep depth) sp))
+
+  ada-append-stmts : List IRActStmt, Integer, List IRActStmt -> List IRActStmt
+  ada-append-stmts (ss) (i) (acc) =
+   if i >= list-length ss then acc
+   else ada-append-stmts ss (i + 1) (list-push acc (list-at ss i))
+
+  ada-params-bind : List IRParam, Text, Integer -> Boolean
+  ada-params-bind (ps) (n) (i) =
+   if i >= list-length ps then False
+   else if (list-at ps i).name == n then True
+   else ada-params-bind ps n (i + 1)
 
   emit-ada-match-arms : List IRBranch, List ArityEntry, Integer -> Text
   emit-ada-match-arms (branches) (arities) (i) =

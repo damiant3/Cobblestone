@@ -17,7 +17,15 @@ param(
     # paths in this pipeline (compile.ps1 and run.ps1 use GetTempFileName
     # throughout), so a caller running several compiles at once must give each
     # its own directory or they overwrite each other's IR.
-    [string]$WorkDir = ''
+    [string]$WorkDir = '',
+    # Which compiler compiles the source to IR. Defaults to the DEPOT SEED,
+    # and that default is the point: compile.ps1's own default is
+    # build-output/bare-metal/Codex.cdx, which holds whatever the last
+    # build.ps1 left there. That made the cross bed's answer a property of
+    # the workspace rather than of the depot, so two agents measured the
+    # same source against different compilers and disagreed. Pass -Kernel
+    # only to test a compiler that is not the seed, and say so in the CL.
+    [string]$Kernel = ''
 )
 
 # Usage:
@@ -45,8 +53,9 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $IrFile = Join-Path $OutDir 'last-compile.ir'
 $LogFile = Join-Path $OutDir 'compile-ir.log'
 $compileScript = Join-Path $Repo 'build' 'compile.ps1'
+$KernelCdx = if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }
 Write-Host "[riscv-compile] Compiling $Src to IR..."
-& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB
+& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: IR compile step exited $LASTEXITCODE; see $LogFile")
     exit 3
@@ -238,7 +247,7 @@ for ($mi = 0; $mi -lt $funcEntries.Count; $mi++) {
 # which is exactly where this image is loaded, so an image that grows past the
 # threshold overlaps the addresses the remap hands out and a low peek starts
 # reading the guest's own code.
-#
+# 
 # The threshold is READ from rv-remap-addr-insns rather than restated: it is
 # the shift the remap tests, so 24 means 16 MB. An unmatched pattern is a
 # FAILURE, not a skip -- a check whose regex stopped matching has quietly
@@ -270,9 +279,10 @@ if ([uint64]$flatData.Length -ge $rvRemapWindow) {
     Write-Host '  the image.'
     exit 8
 }
+Write-Host ("[riscv-compile] Remap window ok: image {0} bytes, window 0x{1:X}, {2} bytes clear" -f $flatData.Length, $rvRemapWindow, ($rvRemapWindow - [uint64]$flatData.Length))
+
 
 $sz = (Get-Item $Out).Length
-Write-Host ("[riscv-compile] Remap window ok: image {0} bytes, window 0x{1:X}, {2} bytes clear" -f $flatData.Length, $rvRemapWindow, ($rvRemapWindow - [uint64]$flatData.Length))
 Write-Host "[riscv-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')))"
 Write-Host "[riscv-compile] Flat: $flatOut ($($flatData.Length) bytes)"
 Write-Host "[riscv-compile] Map: $mapFile ($($funcEntries.Count) functions)"

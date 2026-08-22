@@ -227,17 +227,30 @@ Section: HTTP Transport
     erp-requests : Integer
   }
 
+ BOTH RESPONSES GO THROUGH ONE SENDER so the truncation branch exists once.
+ A half-written HTTP response cannot be repaired mid-stream, and the loop below
+ keeps serving on whatever transport comes back, so a short write left it
+ reading the client's next request out of the middle of a corrupted body.
+ Closing turns that into a short body and a FIN the client can report.
+
+  erp-send : TcpTransportState, List Integer -> [Network.Read, Network.Write] TcpTransportState
+  erp-send (ts) (bytes) = act
+    r <- net-io-send-raw-checked ts bytes
+    if r.ns-complete then r.ns-transport
+    else net-io-close (r.ns-transport)
+  end
+
   erp-handle-request : ErpLoop, TransportRecvResult -> [Network.Read, Network.Write] ErpLoop
   erp-handle-request (ls) (recv) =
     let req = http-parse-request (recv.body)
     in if req.valid == False then act
-      ts2 <- net-io-send-raw (ls.erp-transport) (http-encode (erp-bad-request "malformed request"))
+      ts2 <- erp-send (ls.erp-transport) (http-encode (erp-bad-request "malformed request"))
       ErpLoop { erp-transport = ts2, erp-state = ls.erp-state, erp-requests = ls.erp-requests + 1 }
     end
     else let (st2, resp) = erp-route (ls.erp-state) req
       in let resp-bytes = http-encode resp
       in act
-        ts2 <- net-io-send-raw (ls.erp-transport) resp-bytes
+        ts2 <- erp-send (ls.erp-transport) resp-bytes
         ErpLoop { erp-transport = ts2, erp-state = st2, erp-requests = ls.erp-requests + 1 }
       end
 

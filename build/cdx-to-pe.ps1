@@ -498,55 +498,83 @@ function GopAcquire() {
 # them. r12/r13 are still zero and untouched.
 function GopSetLargestMode() {
     $s = [System.Collections.Generic.List[byte]]::new()
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))    #  0 mov rax, [rsp+0x28]   gop
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          #  5 mov rax, [rax+0x18]   Mode
-    $s.AddRange([byte[]]@(0x8B, 0x08))                      #  9 mov ecx, [rax]        MaxMode
-    $s.AddRange([byte[]]@(0x83, 0xF9, 0x01))                # 11 cmp ecx, 1
-    $s.AddRange([byte[]]@(0x7E, 0x00))                      # 14 jle skip   (patched)
-    $s.AddRange([byte[]]@(0x8B, 0x70, 0x04))                # 16 mov esi, [rax+4]      best = current mode
-    $s.AddRange([byte[]]@(0x31, 0xFF))                      # 19 xor edi, edi          best area = 0
-    $s.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x30))          # 21 sub rsp, 0x30
-    $s.AddRange([byte[]]@(0x31, 0xDB))                      # 25 xor ebx, ebx          i = 0
-    $loopAt = $s.Count                                      # 27 loop:
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x58))    # 27 mov rax, [rsp+0x58]   gop
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          # 32 mov rax, [rax+0x18]   Mode
-    $s.AddRange([byte[]]@(0x3B, 0x18))                      # 36 cmp ebx, [rax]        i vs MaxMode
-    $s.AddRange([byte[]]@(0x7D, 0x00))                      # 38 jge done   (patched)
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x58))    # 40 mov rcx, [rsp+0x58]   This
-    $s.AddRange([byte[]]@(0x89, 0xDA))                      # 45 mov edx, ebx          ModeNumber
-    $s.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x20))    # 47 lea r8, [rsp+0x20]    &SizeOfInfo
-    $s.AddRange([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x28))    # 52 lea r9, [rsp+0x28]    &Info
-    $s.AddRange([byte[]]@(0xFF, 0x11))                      # 57 call [rcx]            QueryMode
-    $s.AddRange([byte[]]@(0x48, 0x85, 0xC0))                # 59 test rax, rax
-    $s.AddRange([byte[]]@(0x75, 0x00))                      # 62 jnz next   (patched)
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))    # 64 mov rax, [rsp+0x28]   Info
-    $s.AddRange([byte[]]@(0x8B, 0x48, 0x04))                # 69 mov ecx, [rax+4]      HRes
-    $s.AddRange([byte[]]@(0x0F, 0xAF, 0x48, 0x08))          # 72 imul ecx, [rax+8]     * VRes
-    $s.AddRange([byte[]]@(0x39, 0xF9))                      # 76 cmp ecx, edi
-    $s.AddRange([byte[]]@(0x76, 0x00))                      # 78 jbe next   (patched)
-    $s.AddRange([byte[]]@(0x89, 0xCF))                      # 80 mov edi, ecx
-    $s.AddRange([byte[]]@(0x89, 0xDE))                      # 82 mov esi, ebx
-    $nextAt = $s.Count                                      # 84 next:
-    $s.AddRange([byte[]]@(0xFF, 0xC3))                      # 84 inc ebx
-    $s.AddRange([byte[]]@(0xEB, 0x00))                      # 86 jmp loop   (patched)
-    $doneAt = $s.Count                                      # 88 done:
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x58))    # 88 mov rax, [rsp+0x58]   gop
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          # 93 mov rax, [rax+0x18]   Mode
-    $s.AddRange([byte[]]@(0x3B, 0x70, 0x04))                # 97 cmp esi, [rax+4]      best vs current
-    $s.AddRange([byte[]]@(0x74, 0x00))                      # 100 je restore (patched)
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x58))    # 102 mov rcx, [rsp+0x58]  This
-    $s.AddRange([byte[]]@(0x89, 0xF2))                      # 107 mov edx, esi
-    $s.AddRange([byte[]]@(0xFF, 0x51, 0x08))                # 109 call [rcx+8]         SetMode
-    $restoreAt = $s.Count                                   # 112 restore:
-    $s.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x30))          # 112 add rsp, 0x30
-    $skipAt = $s.Count                                      # 116 skip:
-    $s[15]  = [byte]($skipAt - 16)
-    $s[39]  = [byte]($doneAt - 40)
-    $s[63]  = [byte]($nextAt - 64)
-    $s[79]  = [byte]($nextAt - 80)
-    $s[87]  = [byte](256 + ($loopAt - 88))
-    $s[101] = [byte]($restoreAt - 102)
-    if ($s.Count -ne 116) { throw "[cdx-to-pe] GopSetLargestMode is $($s.Count) bytes, displacements assume 116" }
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))    # mov rax, [rsp+0x28]   gop
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          # mov rax, [rax+0x18]   Mode
+    $s.AddRange([byte[]]@(0x8B, 0x08))                      # mov ecx, [rax]        MaxMode
+    # Bank what the firmware offered BEFORE anything can branch away, so the
+    # one-mode case is readable as a fact rather than as an absence. rdx and r8
+    # are both dead here; rax is the Mode pointer and is still wanted below.
+    $s.AddRange([byte[]]@(0xBA)); $s.AddRange([BitConverter]::GetBytes([int]($HandoffAddr + 0xC8)))
+    $s.AddRange([byte[]]@(0x89, 0x0A))                      # mov [rdx], ecx        maxmode
+    $s.AddRange([byte[]]@(0x44, 0x8B, 0x40, 0x04))          # mov r8d, [rax+4]      mode before
+    $s.AddRange([byte[]]@(0x44, 0x89, 0x42, 0x04))          # mov [rdx+4], r8d
+    $s.AddRange([byte[]]@(0x83, 0xF9, 0x01))                # cmp ecx, 1
+    # rel32, not rel8: the banking stores below put skip more than 127 bytes away.
+    $s.AddRange([byte[]]@(0x0F, 0x8E)); $jleAt = $s.Count; $s.AddRange([byte[]]@(0, 0, 0, 0))   # jle skip
+    $s.AddRange([byte[]]@(0x8B, 0x70, 0x04))                # mov esi, [rax+4]      best = current mode
+    $s.AddRange([byte[]]@(0x31, 0xFF))                      # xor edi, edi          best area = 0
+    $s.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x30))          # sub rsp, 0x30
+    $s.AddRange([byte[]]@(0x31, 0xDB))                      # xor ebx, ebx          i = 0
+    $loopAt = $s.Count                                      # loop:
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x58))    # mov rax, [rsp+0x58]   gop
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          # mov rax, [rax+0x18]   Mode
+    $s.AddRange([byte[]]@(0x3B, 0x18))                      # cmp ebx, [rax]        i vs MaxMode
+    $s.Add(0x7D); $jgeAt = $s.Count; $s.Add(0)              # jge done
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x58))    # mov rcx, [rsp+0x58]   This
+    $s.AddRange([byte[]]@(0x89, 0xDA))                      # mov edx, ebx          ModeNumber
+    $s.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x20))    # lea r8, [rsp+0x20]    &SizeOfInfo
+    $s.AddRange([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x28))    # lea r9, [rsp+0x28]    &Info
+    $s.AddRange([byte[]]@(0xFF, 0x11))                      # call [rcx]            QueryMode
+    $s.AddRange([byte[]]@(0x48, 0x85, 0xC0))                # test rax, rax
+    $s.Add(0x75); $jnzAt = $s.Count; $s.Add(0)              # jnz next
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))    # mov rax, [rsp+0x28]   Info
+    $s.AddRange([byte[]]@(0x8B, 0x48, 0x04))                # mov ecx, [rax+4]      HRes
+    $s.AddRange([byte[]]@(0x0F, 0xAF, 0x48, 0x08))          # imul ecx, [rax+8]     * VRes
+    $s.AddRange([byte[]]@(0x39, 0xF9))                      # cmp ecx, edi
+    $s.Add(0x76); $jbeAt = $s.Count; $s.Add(0)              # jbe next
+    $s.AddRange([byte[]]@(0x89, 0xCF))                      # mov edi, ecx
+    $s.AddRange([byte[]]@(0x89, 0xDE))                      # mov esi, ebx
+    $nextAt = $s.Count                                      # next:
+    $s.AddRange([byte[]]@(0xFF, 0xC3))                      # inc ebx
+    $s.Add(0xEB); $jmpLoopAt = $s.Count; $s.Add(0)          # jmp loop
+    $doneAt = $s.Count                                      # done:
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x58))    # mov rax, [rsp+0x58]   gop
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          # mov rax, [rax+0x18]   Mode
+    $s.AddRange([byte[]]@(0x3B, 0x70, 0x04))                # cmp esi, [rax+4]      best vs current
+    $s.Add(0x74); $jeKeptAt = $s.Count; $s.Add(0)           # je kept
+    $s.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x58))    # mov rcx, [rsp+0x58]   This
+    $s.AddRange([byte[]]@(0x89, 0xF2))                      # mov edx, esi
+    $s.AddRange([byte[]]@(0xFF, 0x51, 0x08))                # call [rcx+8]          SetMode
+    # SetMode was CALLED: bank the mode asked for, flags = ran|called, and the
+    # status the firmware answered. rsi is callee-saved and the firmware call
+    # preserves it, so it still holds the chosen mode.
+    $s.AddRange([byte[]]@(0xBA)); $s.AddRange([BitConverter]::GetBytes([int]($HandoffAddr + 0xD0)))
+    $s.AddRange([byte[]]@(0x89, 0x32))                      # mov [rdx], esi        mode chosen
+    $s.AddRange([byte[]]@(0xC7, 0x42, 0x04, 0x03, 0x00, 0x00, 0x00))   # mov dword [rdx+4], 3
+    $s.AddRange([byte[]]@(0x48, 0x89, 0x42, 0x08))          # mov [rdx+8], rax      SetMode status
+    $s.Add(0xEB); $jmpRestoreAt = $s.Count; $s.Add(0)       # jmp restore
+    $keptAt = $s.Count                                      # kept:
+    # The best mode IS the current one, so nothing was called and there is no
+    # status to read. flags = ran, and the status quadword stays the zero
+    # HandoffInit wrote: a reader can tell this from a SetMode that answered 0.
+    $s.AddRange([byte[]]@(0xBA)); $s.AddRange([BitConverter]::GetBytes([int]($HandoffAddr + 0xD0)))
+    $s.AddRange([byte[]]@(0x89, 0x32))                      # mov [rdx], esi        mode chosen
+    $s.AddRange([byte[]]@(0xC7, 0x42, 0x04, 0x01, 0x00, 0x00, 0x00))   # mov dword [rdx+4], 1
+    $restoreAt = $s.Count                                   # restore:
+    $s.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x30))          # add rsp, 0x30
+    $skipAt = $s.Count                                      # skip:
+    # Every displacement is patched through a CAPTURED index. The six that were
+    # hand-written literals here were all correct and all would have moved when
+    # the banking stores went in.
+    $d = [BitConverter]::GetBytes([int]($skipAt - ($jleAt + 4)))
+    $s[$jleAt] = $d[0]; $s[$jleAt+1] = $d[1]; $s[$jleAt+2] = $d[2]; $s[$jleAt+3] = $d[3]
+    $s[$jgeAt]        = [byte]($doneAt - ($jgeAt + 1))
+    $s[$jnzAt]        = [byte]($nextAt - ($jnzAt + 1))
+    $s[$jbeAt]        = [byte]($nextAt - ($jbeAt + 1))
+    $s[$jmpLoopAt]    = [byte](256 + ($loopAt - ($jmpLoopAt + 1)))
+    $s[$jeKeptAt]     = [byte]($keptAt - ($jeKeptAt + 1))
+    $s[$jmpRestoreAt] = [byte]($restoreAt - ($jmpRestoreAt + 1))
+    if ($s.Count -ne 169) { throw "[cdx-to-pe] GopSetLargestMode is $($s.Count) bytes, the layout above assumes 169" }
     return ,$s
 }
 
@@ -588,14 +616,14 @@ function HandoffInit() {
     # size (+0x40) and 128 bytes of EDID (+0x48..+0xC7). Zeroed as one run so a
     # reader of a v2 block reads "the stub looked and found none" everywhere.
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]($HandoffAddr + 0x30)))
-    $bw.Write([byte[]]@(0xB9, 0x13, 0x00, 0x00, 0x00))        # mov ecx, 19  (152 bytes / 8)
+    $bw.Write([byte[]]@(0xB9, 0x16, 0x00, 0x00, 0x00))        # mov ecx, 22  (176 bytes / 8)
     $bw.Write([byte[]]@(0xFC, 0xF3, 0x48, 0xAB))              # cld; rep stosq (rax is still 0)
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))
     $bw.Write([byte[]]@(0x48, 0xB8)); $bw.Write([Text.Encoding]::ASCII.GetBytes('CDXHANDF'))
     $bw.Write([byte[]]@(0x48, 0x89, 0x07))                    # mov [rdi+0x00], rax  magic
-    $bw.Write([byte[]]@(0xB8, 0x02, 0x00, 0x00, 0x00))        # mov eax, 2  (v2: smbios + edid fields)
+    $bw.Write([byte[]]@(0xB8, 0x03, 0x00, 0x00, 0x00))        # mov eax, 3  (v3: + the GOP mode selection)
     $bw.Write([byte[]]@(0x89, 0x47, 0x08))                    # mov [rdi+0x08], eax  version
-    $bw.Write([byte[]]@(0xB8, 0xC8, 0x00, 0x00, 0x00))        # mov eax, 200
+    $bw.Write([byte[]]@(0xB8, 0xE0, 0x00, 0x00, 0x00))        # mov eax, 224
     $bw.Write([byte[]]@(0x89, 0x47, 0x0C))                    # mov [rdi+0x0C], eax  size
 }
 

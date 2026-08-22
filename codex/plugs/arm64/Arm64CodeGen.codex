@@ -348,6 +348,50 @@ Section: Register Allocation
    else if b3 == #CA then True
    else False
 
+ The branch encodings this decode reads are the architecture's, and a reader
+ cannot derive them from anything here. `b` is `000101` in bits 31..26 with a
+ signed imm26 counted in instructions; `b.cond`, `cbz` and `cbnz` carry imm19
+ in bits 23..5; `tbz` and `tbnz` carry imm14 in bits 18..5. The top byte is
+ enough to tell them apart: #14..#17 for `b` (which excludes `bl`, #94..#97,
+ whose target is another function), #54 for `b.cond`, #34/#35 and #B4/#B5 for
+ `cbz`/`cbnz`, #36/#37 and #B6/#B7 for `tbz`/`tbnz`.
+
+ A word that is not a branch can only be misread as one AGAINST the fold, so a
+ false positive costs an optimization and never correctness. `br` is the one
+ real gap: an indirect branch has no target in its encoding, so a jump table
+ would be invisible here. This lane emits none today.
+
+  a64-pe-word-at : A64State, Integer -> Integer
+  a64-pe-word-at (st) (idx) =
+   let p = idx * 4
+   in let w0 = peek-byte (st.code-buf) p
+   in let w1 = peek-byte (st.code-buf) (p + 1)
+   in let w2 = peek-byte (st.code-buf) (p + 2)
+   in let w3 = peek-byte (st.code-buf) (p + 3)
+   in w0 + w1 * 256 + w2 * 65536 + w3 * 16777216
+
+  a64-pe-sx : Integer, Integer -> Integer
+  a64-pe-sx (val) (bits) =
+   let sb = bit-shl 1 (bits - 1)
+   in if bit-and val sb > 0 then val - (bit-shl 1 bits) else val
+
+  a64-pe-branch-target : A64State, Integer -> Integer
+  a64-pe-branch-target (st) (j) =
+   let w = a64-pe-word-at st j
+   in let b3 = bit-and (bit-shru w 24) 255
+   in if b3 >= #14 & b3 <= #17 then j + a64-pe-sx (bit-and w #3FFFFFF) 26
+   else if b3 == #54 | b3 == #34 | b3 == #35 | b3 == #B4 | b3 == #B5
+    then j + a64-pe-sx (bit-and (bit-shru w 5) #7FFFF) 19
+   else if b3 == #36 | b3 == #37 | b3 == #B6 | b3 == #B7
+    then j + a64-pe-sx (bit-and (bit-shru w 5) #3FFF) 14
+   else 0 - 1
+
+  a64-pe-is-target : A64State, Integer, Integer, Integer -> Boolean
+  a64-pe-is-target (st) (i) (j) (stop) =
+   if j >= stop then False
+   else if a64-pe-branch-target st j == i then True
+   else a64-pe-is-target st i (j + 1) stop
+
   a64-peephole-mov-elim : A64State, Integer, Integer -> A64State
   a64-peephole-mov-elim (st) (i) (stop) =
    if i >= stop then st
@@ -364,7 +408,7 @@ Section: Register Allocation
     in let pb0 = peek-byte (st.code-buf) prev-pos
     in let pb3 = peek-byte (st.code-buf) (prev-pos + 3)
     in if bit-and pb0 31 == mov-rm then
-     if a64-is-dp-byte3 pb3 then
+     if a64-is-dp-byte3 pb3 & (not (a64-pe-is-target st i (st.prologue-index) stop)) then
       let w = __buf-write-byte (st.code-buf) prev-pos (bit-or (bit-and pb0 #E0) mov-rd)
       in let st1 = a64-patch-insn st i arm64-nop
       in a64-peephole-mov-elim st1 (i + 1) stop

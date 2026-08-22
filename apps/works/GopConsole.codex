@@ -222,10 +222,44 @@ Section: Commands
  the pane already holds. `seed` pays the larger half of that already and
  prints what it cost.
 
+  gcon-cdx-diff : List Integer, Integer, Integer, Integer, Integer -> Integer
+  gcon-cdx-diff (produced) (buf) (i) (np) (nk) =
+    if i >= np then (if np == nk then 0 - 1 else i)
+    else if i >= nk then i
+    else if list-at produced i == peek-byte buf i then gcon-cdx-diff produced buf (i + 1) np nk
+    else i
+
+ THE VERDICT CARRIES BOTH LENGTHS AND THE OFFSET, never a bare yes or no. A
+ truncated artifact and a wrong artifact are the same colour on a verdict line
+ (L-SHORT), and the desk has no serial port to go back and ask: a reader who
+ sees only DIFFERS cannot tell a guest that halted early from one that emitted
+ the wrong bytes, and those send a person to opposite places.
+
+  gcon-cdx-verdict : List Integer, Integer, Integer -> Text
+  gcon-cdx-verdict (produced) (buf) (nk) =
+    let np = list-length produced
+    in let d = gcon-cdx-diff produced buf 0 np nk
+    in if d < 0 then "identical to CODEX.CDX, " & show np & " bytes"
+    else "DIFFERS from CODEX.CDX at byte " & show d & ", produced " & show np & " bytes, on volume " & show nk & " bytes"
+
   gcon-compile : Integer, Text -> [Device.Port] Integer
+ THE VT-x REFUSAL FIRES WHERE VT-x IS NEEDED, which is at the launch and not at
+ the verb. It used to be the second test in this function, above the mount and
+ both reads, and the cost of that position was not a wrong answer but an
+ unreachable path: codex-vm is itself a hypervisor and its guest sees no VT-x,
+ so every bed run took the refusal and the mount, the two reads and the
+ conversion below could not be exercised anywhere. They do not need VT-x. They
+ were waiting on metal for no reason other than the order of this check, and
+ "it waits for metal" is the kind of stated blocker that stops anyone looking
+ (L-UNCALLED: the read path shipped in every image and had never run).
+
+ Moving it down also makes the refusal on a real board say more: the byte
+ counts are already pushed, so a reader learns the file was found and how big
+ it is BEFORE learning that VT-x is off, which on a board with no serial port
+ is most of the diagnosis.
+
   gcon-compile (ns) (arg) = act
     if text-length arg == 0 then gcon-push ns "compile <path>"
-    else if vmx-available == False then gcon-push ns vmx-unavailable-reason
     else act
       m <- gfat-mount-esp
       if m.gm-ok == False then gcon-push ns "no FAT volume on the boot medium"
@@ -238,9 +272,11 @@ Section: Commands
           else act
             let src = unicode-bytes-to-text (gcon-buf-list (s.gf-buf) 0 (s.gf-len) [])
             in let p = gcon-push ns (arg & " " & show (s.gf-len) & " bytes, CODEX.CDX " & show (k.gf-len) & " bytes")
-            in let r = vm-compile-cdx (gcon-buf-list (k.gf-buf) 0 (k.gf-len) []) src vmx-read-revision-id
+            in if vmx-available == False then gcon-push ns vmx-unavailable-reason
+            else let r = vm-compile-cdx (gcon-buf-list (k.gf-buf) 0 (k.gf-len) []) src vmx-read-revision-id
             in if r.vcr-success
-              then gcon-push ns (arg & ": " & show (r.vcr-size) & " bytes")
+              then let v = gcon-push ns (arg & ": " & show (r.vcr-size) & " bytes")
+              in gcon-push ns (gcon-cdx-verdict (r.vcr-binary) (k.gf-buf) (k.gf-len))
               else gcon-push ns (arg & ": " & r.vcr-log)
           end
         end

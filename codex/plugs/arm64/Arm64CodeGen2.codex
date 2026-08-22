@@ -13,17 +13,27 @@ Section: Control Flow
     is RealTy (w) (m) -> True
     is otherwise -> False
 
+  a64-negate-is-f32 : IRExpr -> Boolean
+  a64-negate-is-f32 (operand) =
+   when ir-expr-type operand
+    is RealTy (w) (m) -> is-width-f32 w
+    is otherwise -> False
+
+ Negation is a SIGN FLIP, and the bits are already in a general register here,
+ so it is an xor there rather than a trip through the FP unit. This emitted
+ `0 - x` as `fsub-d` whatever the width, which is wrong twice: an f32 was
+ subtracted as though its bit pattern were an f64, and 0 - x is not negation
+ even at the right width, because IEEE 754 makes 0 - (+0) equal +0 while the
+ negation of +0 is -0. Bit 31 is the sign for an f32 and bit 63 for an f64.
+
   a64-emit-negate : A64State, IRExpr -> A64EmitResult
   a64-emit-negate (st) (operand) =
    let opr = a64-emit-expr st operand
    in if a64-negate-is-real operand then
-    let tr = a64-alloc-temp (opr.state)
-    in let zero-r = a64-alloc-temp (tr.state)
-    in let st1 = a64-emit-li (zero-r.state) (zero-r.reg) 0
-    in let st2 = a64-emit st1 (arm64-fmov-to-fp 0 (zero-r.reg))
-    in let st3 = a64-emit st2 (arm64-fmov-to-fp 1 (opr.reg))
-    in let st4 = a64-emit st3 (arm64-fsub-d 0 0 1)
-    in A64EmitResult { state = a64-emit st4 (arm64-fmov-from-fp (tr.reg) 0), reg = tr.reg }
+    let mask-r = a64-alloc-temp (opr.state)
+    in let st1 = a64-emit-li (mask-r.state) (mask-r.reg) (if a64-negate-is-f32 operand then bit-shl 1 31 else bit-shl 1 63)
+    in let tr = a64-alloc-temp st1
+    in A64EmitResult { state = a64-emit (tr.state) (arm64-xor (tr.reg) (opr.reg) (mask-r.reg)), reg = tr.reg }
    else let tr = a64-alloc-temp (opr.state)
    in A64EmitResult {
     state = a64-emit (tr.state) (arm64-neg (tr.reg) (opr.reg)),

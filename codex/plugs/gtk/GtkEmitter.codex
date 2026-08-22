@@ -195,32 +195,60 @@ Section: Match
   emit-gtk-match-body (branches) (arities) (i) (opens) =
    if i == list-length branches then "(_ for _ in ()).throw(Exception('non-exhaustive match'))" & emit-gtk-close opens
    else let b = list-at branches i
-   in emit-gtk-match-arm (b.pattern) (b.body) branches arities i opens
+   in emit-gtk-match-arm (b.pattern) (b.guard) (b.body) branches arities i opens
 
-  emit-gtk-match-arm : IRPat, IRExpr, List IRBranch, List ArityEntry, Integer, Integer -> Text
-  emit-gtk-match-arm (pat) (body) (branches) (arities) (i) (opens) =
+  emit-gtk-match-arm : IRPat, IRExpr, IRExpr, List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-gtk-match-arm (pat) (guard) (body) (branches) (arities) (i) (opens) =
    when pat
     is IrLitPat (text) (ty) (sp) ->
      let pre = if i > 0 then " else " else ""
-     in pre & "(" & emit-gtk-expr body arities & " if _s == " & text & emit-gtk-match-body branches arities (i + 1) (opens + 1)
+     in pre & "(" & emit-gtk-expr body arities & " if _s == " & text & gtk-guard-and guard arities & emit-gtk-match-body branches arities (i + 1) (opens + 1)
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let pre = if i > 0 then " else " else ""
-     in pre & "(" & emit-gtk-ctor-body subs body arities & " if isinstance(_s, " & gtk-sanitize name & ")" & emit-gtk-match-body branches arities (i + 1) (opens + 1)
+     in pre & "(" & emit-gtk-ctor-body subs body arities & " if isinstance(_s, " & gtk-sanitize name & ")" & gtk-ctor-guard-and subs guard arities & emit-gtk-match-body branches arities (i + 1) (opens + 1)
     is IrVarPat (name) (ty) (sp) ->
      let pre = if i > 0 then " else " else ""
-     in pre & "(lambda " & gtk-sanitize name & ": " & emit-gtk-expr body arities & ")(_s)" & emit-gtk-close opens
+     in if gtk-guard-trivial guard
+        then pre & "(lambda " & gtk-sanitize name & ": " & emit-gtk-expr body arities & ")(_s)" & emit-gtk-close opens
+        else pre & "((lambda " & gtk-sanitize name & ": " & emit-gtk-expr body arities & ")(_s) if (lambda " & gtk-sanitize name & ": " & emit-gtk-expr guard arities & ")(_s)" & emit-gtk-match-body branches arities (i + 1) (opens + 1)
     is IrVecPat (pats) (ty) (sp) ->
      let pre = if i > 0 then " else " else ""
-     in pre & emit-gtk-expr body arities & emit-gtk-close opens
+     in if gtk-guard-trivial guard
+        then pre & emit-gtk-expr body arities & emit-gtk-close opens
+        else pre & "(" & emit-gtk-expr body arities & " if " & emit-gtk-expr guard arities & emit-gtk-match-body branches arities (i + 1) (opens + 1)
     is IrWildPat (sp) ->
      let pre = if i > 0 then " else " else ""
-     in pre & emit-gtk-expr body arities & emit-gtk-close opens
+     in if gtk-guard-trivial guard
+        then pre & emit-gtk-expr body arities & emit-gtk-close opens
+        else pre & "(" & emit-gtk-expr body arities & " if " & emit-gtk-expr guard arities & emit-gtk-match-body branches arities (i + 1) (opens + 1)
 
   emit-gtk-ctor-body : List IRPat, IRExpr, List ArityEntry -> Text
   emit-gtk-ctor-body (subs) (body) (arities) =
    let binds = collect-gtk-binds subs 0
    in if list-length binds == 0 then emit-gtk-expr body arities
       else "(lambda " & emit-gtk-bind-names binds 0 & ": " & emit-gtk-expr body arities & ")(" & emit-gtk-bind-accesses binds 0 & ")"
+
+ The rest of the match is the `else` of a conditional expression, so a guard
+ goes in the CONDITION, applied to the same lambda that binds the payload and
+ behind the `isinstance` short circuit, because reading `.field0` off the
+ wrong class raises.
+
+  gtk-guard-trivial : IRExpr -> Boolean
+  gtk-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  gtk-guard-and : IRExpr, List ArityEntry -> Text
+  gtk-guard-and (guard) (arities) =
+   if gtk-guard-trivial guard then "" else " and (" & emit-gtk-expr guard arities & ")"
+
+  gtk-ctor-guard-and : List IRPat, IRExpr, List ArityEntry -> Text
+  gtk-ctor-guard-and (subs) (guard) (arities) =
+   if gtk-guard-trivial guard then ""
+   else let binds = collect-gtk-binds subs 0
+   in if list-length binds == 0 then " and (" & emit-gtk-expr guard arities & ")"
+      else " and (lambda " & emit-gtk-bind-names binds 0 & ": " & emit-gtk-expr guard arities & ")(" & emit-gtk-bind-accesses binds 0 & ")"
 
   GtkBind = record { name : Text, access : Text }
 

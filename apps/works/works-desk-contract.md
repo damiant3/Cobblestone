@@ -12,16 +12,16 @@ by nobody.
 `apps/works/works-backlog.md` is the register of what is still missing. This
 file is the standing rules, not the open work.
 
-## 0. Two kinds of pane, since 2026-08-18
+## 0. Two kinds of pane
 
-**A pane is now either a LOOP or a STEP, and the rest of this file describes
-the loop.** **Every pane is a step as of 2026-08-18.** All fourteen: Monitor,
-Calendar, Appearance, Calculator, Clock, Programs, Diffusion, Issues, Console,
-Files, Browser, 3D View, Aquarium, Editor. Sections 1 to 7 below still hold,
-but no pane is a loop any more. The model is
-`docs/Designs/Active/OS/ModernDesk.md` section 2, ruled by Damian on
-2026-08-18. Every other pane is still a loop and sections 1 to 7 apply to it
-unchanged.
+**Every pane is a STEP. No pane owns a loop.** All fourteen: Monitor, Calendar,
+Appearance, Calculator, Clock, Programs, Diffusion, Issues, Console, Files,
+Browser, 3D View, Aquarium, Editor. Sections 1 to 7 below still hold and are
+written in terms of the loop the desk itself runs.
+
+This paragraph carried the transition's own leftovers until 2026-08-21, and
+they said both "no pane is a loop any more" and "every other pane is still a
+loop" four sentences apart. If you are adding a pane, it is a step.
 
 **To convert a pane, or to add one as a step**, it is the same two places
 section 4 already names for a loop pane: a line in `desk-step-of`, which is
@@ -152,7 +152,7 @@ it is measured:
   and is gone within the second. Under a loop pane it survived, because the
   desk was not running to overwrite it.
 
-## 0.5 An app may now stay ALIVE while you use another one, since 2026-08-19
+## 0.5 An app may now stay ALIVE while you use another one
 
 **Files, and since 2026-08-19 the two 3D panes.** Tab in the Files listing answers
 `desk-step-hide`, which returns to the desk WITHOUT closing: the focus cell
@@ -265,7 +265,7 @@ different amounts. **My first diagnosis of this was wrong** -- it read as
 before the repaint was tried on that theory and did not close it. The fill is
 not in the tree; the row is in `apps/browser/browser-backlog.md`.
 
-### The taskbar names what is alive, since 2026-08-19
+### The taskbar names what is alive
 
 The `tasks` slot between the `Codex` label and the clock was an empty flex
 spacer. It now reads the MARK STACK rather than a list of its own, and that is
@@ -285,7 +285,7 @@ the row empties with no residue. And the eviction arm: Browser hidden, then
 Files opened, reads `Files` ALONE rather than `Web   Files`, so the row tells
 the truth about a pane the desk dropped rather than reporting what was asked for.
 
-### The system menu is the launcher in a different box, since 2026-08-19
+### The system menu is the launcher in a different box
 
 `desk-menu-tree` wraps `gpr-tree` UNCHANGED and changes only the box: bounded
 width, left-anchored, full height. `gpr-key` and `gpr-id-scan` are its whole
@@ -321,7 +321,7 @@ pixels in its own box. Renaming it to `sysmenu` broke `desk-taskbar-hit`, which
 asserts that id resolves in the band. The test was right and the rename bought
 nothing.
 
-## 0.6 The annotation surface, since 2026-08-19
+## 0.6 The annotation surface
 
 `GopEdit` marks a definition line whose definition carries a trusted
 annotation, reads them on F6, and writes one on F7. WORKS-15 is closed; what
@@ -408,13 +408,14 @@ owner and no instrument** -- `stack-min-rsp-addr` only moves in a
 
 ## 2. The `ds` block, and the rule about pointers in it
 
-`ds` is `alloc-zeroed 64 64` in `desk-run`: sixteen 32-bit cells at offsets
-0..60. It is how a pane gets state without every pane signature growing a
-parameter.
+`ds` is `alloc-zeroed 128 64` in `desk-run`: thirty-two 32-bit cells at offsets
+0..124. It is how a pane gets state without every pane signature growing a
+parameter. It was 64 bytes until 2026-08-21, when the click sound took the
+first two cells of the second half.
 
 | offset | constant | holds |
 |---:|---|---|
-| 0 | `desk-review-cell` | pointer: the Review pane's state block (red, 2026-08-19) |
+| 0 | `desk-review-cell` | pointer: the Review pane's state block (red, 2026-08-19). Its own cells: 0 selection, 4 mode, 8 pointer to the reason buffer, 12 reason length, 16 the verdict kind being reasoned about, 20 shift state, 24 the detail's scroll offset in pixels, 28 the view height in rows (written by the paint that measured it, read by the key that pages, because a page key cannot compute room that depends on the theme's padding), 32 the proposal being superseded and 36 the replacement being picked. The reason BUFFER is a second pointer one level down, so `grv-init` is called from `desk-run` before the base mark for the same reason `gcon-init` is (val, 2026-08-20) |
 | 4 | `desk-mark-cell` | the base heap mark (section 3) |
 | 8 | `desk-second-cell` | last RTC second the taskbar clock painted |
 | 12 | `desk-focus-cell` | which app the desk is stepping (0 none, 1 Monitor, 2 Calendar, 3 Appearance, 4 Calculator, 5 Clock, 6 Programs, 7 Diffusion, 8 Issues, 9 Console, 10 Files, 11 Browser, 12 3D View, 13 Aquarium, 14 Editor, 15 system menu, 16 Review) |
@@ -430,8 +431,12 @@ parameter.
 | 52 | `dk-scheme-cell` | colour scheme index |
 | 56 | `dk-adorn-cell` | adornment bits |
 | 60 | `desk-clock-cell` | pointer: the clock pane's state block |
+| 64 | `dk-sound-cell` | pointer: the click sound's block (val, 2026-08-21). Its own cells: 0..15 the HDA buffer descriptor list, 16 the rendered PCM buffer, 20 its byte length. Both are read by DMA after `hda-play-pcm-at` returns, so `dk-snd-init` is called from `desk-run` before the base mark for the same reason `grv-init` is |
+| 68 | `dk-sound-on-cell` | are sounds on (0 off, and off is the default) |
+| 72 | `dk-icons-cell` | pointer: the drawn icon set (val, 2026-08-21). Offset 0 is the size every entry was rasterized at and 4..27 are six coverage blobs. `dk-icons-init` runs from `desk-run` before the base mark, for the reason every other pointer here does: a paint's allocations are freed by `desk-loop`'s bracket and a pane exit restores past them |
+| 76..124 | | free |
 
-**No cell is free: red took cell 0 for the Review pane on 2026-08-19.** The next pane that needs a cell grows the block (`alloc-zeroed 64 64` in `desk-run`, and this table). Announce before you take one, the way the file claims
+**Cells 0..72 are taken: red took cell 0 for the Review pane on 2026-08-19 and val cells 64, 68 and 72 on 2026-08-21.** The block was grown to 128 bytes for those, so the next pane that needs a cell takes one of 76..124 and adds a row here rather than growing it again. Announce before you take one, the way the file claims
 table in `docs/PM/CurrentPlan.md` asks. Cell 12 was taken by val on 2026-08-18
 for the focus id and cell 20 by val on 2026-08-19 for the mark stack; the count
 above said three, then two. Two agents took cell 48 independently on
@@ -527,7 +532,7 @@ now it can belong to a LIVE pane.
 allocation in a cell?** Grep the pane's chapter for `poke-32 <state> <n>` with
 an allocation on the right. Integers are always safe; pointers are the question.
 
-### `desk-loop` brackets each iteration, since 2026-08-18
+### `desk-loop` brackets each iteration
 
 The idle loop allocates: `desk-clock` builds Text and walks the taskbar subtree
 on every RTC second edge, and nothing reclaimed it. **Measured before the fix,
@@ -557,13 +562,12 @@ per-function prologue narrows it, under `trace-alloc` (`X86_64.codex:12`), so
 the two reading EQUAL is exactly what "nothing ever wrote a lower RSP" looks
 like and the row says so rather than printing a depth of zero.
 
-**`compile.ps1 -Trace` does not enable it.** Measured 2026-08-19: a traced desk
-is byte-for-byte the same SIZE as an ordinary one and the row still reads
-never-narrowed, because `compile-to-cdx-with-exit-mode` passes the emitter's
-`trace` argument as a literal `False` (`opening.codex:1325`) and takes no
-parameter that could carry the mode word. So no CDX the shipped path produces
-can narrow that cell. Do not spend a run trying to get a stack figure out of
-this desk until that argument is threaded.
+**`compile.ps1 -Trace` DOES enable it**, and a paragraph here said the opposite
+until 2026-08-21. `compile-to-cdx-with-exit-mode` takes the emitter's `trace`
+as a parameter and `compile.ps1 -Trace` sets the mode word; `compile-to-cdx`
+passes `False` for it, which is why an ORDINARY desk reads never-narrowed and
+that reading is correct rather than a fault. Ask for a stack figure with
+`-Trace` and nothing else.
 
 ### The instrument
 
@@ -634,7 +638,7 @@ back onto the screen.
 `cursor-update` restores what it covered before drawing itself at the new place,
 so a pane that repaints nothing needs no bracket.
 
-## 5.1 `comp-render` clips to the box it was given, since 2026-08-20
+## 5.1 `comp-render` clips to the box it was given
 
 `gop-put` is `poke-32 base ((y * stride + x) * 4) color` and there is no height
 anywhere in the drawing layer. `gop-draw-text` bounds x against `stride`,
@@ -673,9 +677,24 @@ Two things this does not do. **Text is all-or-nothing**: `gop-draw-text` paints
 a glyph as sixteen scaled rows with no row bound, so a line straddling the clip
 is dropped rather than cut, and a bounded glyph primitive is what that would
 need. **The layout is unchanged**: a child is still laid out taller than its
-parent, `codex/test/apps/browser-pane-fit` still reports the Browser's tree
-reaching 138 device pixels past the pane it was granted, and the page is now
-clipped there rather than scrolled.
+parent and `codex/test/apps/browser-pane-fit` still reports the Browser's tree
+reaching past the pane it was granted. What the clip does is stop that damaging
+anything; reaching the rest of the page is section 5.2.
+
+**The sweep this section keeps citing is `build/desk-goldens.ps1`**, landed
+2026-08-20 with `build/bmpdiff.ps1` beside it. Until then it lived in one
+agent's scratchpad, so a criterion this file states as the acceptance test for
+a fleet-wide widget change had no runner anybody else could reach. Both carry
+their own reasons in their headers, including the two that are easy to get
+wrong: the kernel is a parameter so a sweep cannot rebuild its own subject
+underneath itself, and `-Disk` decides whether the TrueType path is even awake,
+so a type change measured without a font-bearing image reports fourteen
+identical panes and reads as "my change did nothing".
+
+Proven before it was relied on: two independent sweeps of the same kernel are
+byte-identical on all fourteen panes, which is the property the whole idea
+rests on, and the comparator was shown to report MOVED and exit 1 when a pane
+genuinely differs rather than only ever agreeing.
 
 What it measured, on a golden sweep of thirteen panes against the same seed:
 nine byte-identical, and the four that moved are the ones that were painting
@@ -689,6 +708,70 @@ One bound that looked obviously right and was not: clipping the taskbar clock's
 own repaint to the taskbar band moved 408 pixels on every pane, because the
 band's child widgets carry styles whose boxes reach outside the node's bounds.
 `desk-taskbar-clock` takes `h` and clips to the screen for that reason.
+
+**A pane's height is MEASURED from the laid-out band, not computed.**
+`desk-bro-h` was `h - dk-task-h * ui-wscale w`, which assumes the band is flush
+with the bottom of the screen; the root panel's padding leaves 8 logical rows
+below it and `desk-taskbar-hit.expected` has said so since it was written. It
+reads `widget-find root "taskbar"` now, which is why `root` is threaded through
+`desk-step-of` and `desk-browser-step`. Any pane added below the band should
+take its height the same way rather than reproducing the arithmetic.
+
+**The Monitor pane's golden is build-sensitive by construction** and this is
+not a regression to chase: its `memory` row prints `heap frontier 0x...` as
+hex, so any change to the binary moves those pixels. It moved on both sweeps
+that produced this section.
+
+## 5.2 A pane that scrolls arbitrary content
+
+A pane whose content is a list of equal-height rows scrolls with
+`scroll-slice`, which windows the list by row INDEX. A rendered page has no row
+height to give it -- labels, separators and links are all different heights --
+so the Browser needed the other shape, and this is what it is. Any pane in the
+same position should copy it rather than invent a third.
+
+**Lay out, move the subtree, walk it again under a tighter clip.** Three calls,
+in this order, and each one exists for a reason that bites if it is skipped.
+
+1. `comp-walk-except` paints the tree with the scrolling subtree SKIPPED, under
+   the pane's clip. That is the chrome.
+2. `comp-draw-node` paints the scrolling subtree's own box where the layout put
+   it, unshifted, under the tighter clip. Without it a scrolled subtree leaves
+   the bottom of the viewport holding the previous frame, because the panel that
+   would have covered it moved up with its children.
+3. `comp-translate-kids` moves the children by the offset and `comp-walk-kids`
+   paints them under the tighter clip.
+
+**The tighter clip is the subtree's box INTERSECTED with the pane**, which
+`comp-clip` does. The subtree's own bounds are not the visible region and using
+them alone is the mistake to avoid: since WORKS-45 a flex child is not shrunk
+below the minimum its content declares, so the node laid into the pane is taller
+than the pane. Handing the shifted children the PANE's clip instead is the other
+mistake, and it is the one with a visible symptom -- content shifted up by the
+offset paints over the chrome above the viewport, which the pane clip cannot
+stop because the chrome is inside the pane.
+
+The tree handed back is the SHIFTED one. `comp-translate` stores into the nodes
+rather than copying them, so a memoized tree and the painted geometry are the
+same records and a hit test follows the scroll for free. Anything that memoizes
+an unshifted tree gets clicks at the pre-scroll positions.
+
+**The scroll state has to be fitted from a layout, and fitted BELOW the frame
+mark.** `tab-new` builds a viewport of 0 by 0 and a content of 800 by 600
+because a tab exists before any layout has said how big either is, so until it
+is fitted `scroll-by` clamps against numbers that have nothing to do with the
+page. `browser-scroll-fit` lays the tree out in a `__heap-save` /
+`__heap-restore` bracket, reads two integers out of it, and writes the fitted
+state before the pane takes its frame mark -- a state allocated above that mark
+is freed on the pane's next event while the tab still points at it.
+
+What it measured, at 1600x900 against the same seed: the thirteen-pane golden
+sweep is byte-identical before and after, which is what a wiring that changes
+nothing at offset zero must be. The proof it works is the pair either side of
+one Page Down. Before, the keystroke produces a byte-identical frame, which is
+the whole of what BROWSER-5 complained about. After, it moves 478,420 pixels,
+every one of them in rows 228 to 827: nothing in the tab bar or the address bar
+above, and nothing in the taskbar band at 828 and below.
 
 ## 6. The palette arrives as a parameter, not by citation
 

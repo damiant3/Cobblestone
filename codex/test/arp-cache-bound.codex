@@ -11,6 +11,7 @@ Section: Fixtures
   srv-ip : List Integer = [10, 0, 2, 15]
   gw-ip : List Integer = [10, 0, 2, 2]
   gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  other-ip : List Integer = [10, 0, 2, 99]
 
   srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 [10, 0, 2, 100] 5000
 
@@ -18,16 +19,38 @@ Section: Fixtures
  looks like rather than an attack shape. 300 is past the 0..255 band that used
  to kill the guest and past arp-cache-max.
 
+ THE FLOOD IS REPLIES ADDRESSED TO US, because since 2026-08-20 that is the
+ only frame that can enter the cache at all (Damian's ruling, CurrentPlan
+ Decisions 2). It used to be requests, which is the shape the narrowing exists
+ to refuse, and the capacity question this file is really about would have
+ stopped being reachable if the flood had not moved with it. `arp-build-reply`
+ puts the sender in the reply-mac and src-ip slots and us in the target slots.
+
   arp-frame : Integer -> List Integer
   arp-frame (i) =
     let smac = [2, 0, 0, 0, bit-and (bit-shru i 8) 255, bit-and i 255]
     in let sip = [10, 1, bit-and (bit-shru i 8) 255, bit-and i 255]
-    in arp-build-request smac sip srv-ip
+    in arp-build-reply smac sip srv-mac srv-ip smac
+
+ The old shape, kept as the arm that proves the narrowing rather than deleted:
+ a request aimed at a THIRD party, which is a frame we are neither asked to
+ answer nor entitled to learn from.
+
+  poison-frame : Integer -> List Integer
+  poison-frame (i) =
+    let smac = [2, 0, 0, 0, bit-and (bit-shru i 8) 255, bit-and i 255]
+    in let sip = [10, 1, bit-and (bit-shru i 8) 255, bit-and i 255]
+    in arp-build-request smac sip other-ip
 
   flood : NetSession, Integer, Integer -> NetSession
   flood (s) (i) (n) =
     if i >= n then s
     else flood ((net-process-frame s (arp-frame i)).session) (i + 1) n
+
+  poison-flood : NetSession, Integer, Integer -> NetSession
+  poison-flood (s) (i) (n) =
+    if i >= n then s
+    else poison-flood ((net-process-frame s (poison-frame i)).session) (i + 1) n
 
 Section: The Arms
 
@@ -43,6 +66,20 @@ Section: The Arms
  Ten senders sent twice. Before the duplicate check this read 20.
 
   dup-twice : NetSession = flood (flood srv0 0 10) 0 10
+
+ THE NARROWING, measured rather than asserted. Three hundred requests aimed at
+ a third party used to fill this cache to its cap; now they enter nothing and
+ queue nothing. The gateway entry learned before the flood is the control: if
+ the cache were simply broken rather than narrowed, it would be gone too.
+
+  after-poison : NetSession = poison-flood gw-learned 0 300
+
+ A request aimed at US is answered and STILL teaches us nothing. Both halves
+ matter: the reply proves we did not narrow our way out of being a peer, and
+ the count proves a forged request cannot put an entry in.
+
+  asked-us : NetResult =
+    net-process-frame srv0 (arp-build-request [2, 0, 0, 0, 0, 7] [10, 1, 0, 7] srv-ip)
 
  arp-cache-search bounds its walk by cache.count and NOT by the length of
  entries, so the two have to move together. A count that runs ahead reads past
@@ -60,5 +97,12 @@ Section: Entry
     print-line-uni ("dup-updates-not-appends=" & show ((dup-twice.arp).count == 10))
     print-line-uni ("instep-flood=" & show (list-length ((after-flood.arp).entries) == (after-flood.arp).count))
     print-line-uni ("instep-dup=" & show (list-length ((dup-twice.arp).entries) == (dup-twice.arp).count))
+    print-line-uni ("poison-count=" & show ((after-poison.arp).count))
+    print-line-uni ("poison-taught-nothing=" & show ((after-poison.arp).count == 1))
+    print-line-uni ("poison-queued=" & show (list-length (after-poison.outbox)))
+    print-line-uni ("poison-gw-intact=" & show (mac-equal (arp-cache-lookup ((after-poison.arp)) gw-ip) gw-mac))
+    print-line-uni ("asked-us-output=" & (asked-us.output))
+    print-line-uni ("asked-us-queued=" & show (list-length ((asked-us.session).outbox)))
+    print-line-uni ("asked-us-taught-nothing=" & show (((asked-us.session).arp).count == 0))
     print-line-uni ("survived")
   end

@@ -75,6 +75,51 @@ Section: Block
 
   handoff-edid-base : Integer = handoff-base + 72
 
+ Version 3 (cdx-to-pe.ps1 GopSetLargestMode, 2026-08-20) banks what the mode
+ selection actually did, because the guest cannot observe it any other way: the
+ selection runs before ExitBootServices and the stage that reports it runs
+ after, so QueryMode is gone by the time anyone could ask. Geometry alone
+ cannot answer it either -- 1024x768 reads the same whether that was the
+ largest mode offered or SetMode was refused.
+
+ +0xC8 maxmode and the mode number before the choice, +0xD0 the mode chosen
+ and the flags, +0xD8 the EFI_STATUS SetMode answered. The block is 224 bytes.
+
+  handoff-has-v3 : Integer -> Boolean
+  handoff-has-v3 (dummy) = handoff-version 0 >= 3
+
+ A zero maxmode cannot come from a firmware that has a GOP at all, so it is
+ the honest "the selection never ran" reading and not a real count.
+
+  handoff-gop-maxmode : Integer -> Integer
+  handoff-gop-maxmode (dummy) = if handoff-has-v3 0 then bit-and (peek-qword handoff-base 200) 4294967295 else 0
+
+  handoff-gop-mode-before : Integer -> Integer
+  handoff-gop-mode-before (dummy) = if handoff-has-v3 0 then bit-shru (peek-qword handoff-base 200) 32 else 0
+
+  handoff-gop-mode-chosen : Integer -> Integer
+  handoff-gop-mode-chosen (dummy) = if handoff-has-v3 0 then bit-and (peek-qword handoff-base 208) 4294967295 else 0
+
+ Bit 0 says the block got past the one-mode test and ran the loop; bit 1 says
+ SetMode was actually called. Both clear with maxmode set means the firmware
+ offered exactly one mode. Bit 0 without bit 1 means the largest mode was
+ already the current one, so nothing was called and the status below is the
+ zero HandoffInit wrote rather than an answer.
+
+  handoff-gop-flag-ran : Integer = 1
+  handoff-gop-flag-called : Integer = 2
+
+  handoff-gop-flags : Integer -> Integer
+  handoff-gop-flags (dummy) = if handoff-has-v3 0 then bit-shru (peek-qword handoff-base 208) 32 else 0
+
+  handoff-gop-ran : Integer -> Boolean
+  handoff-gop-ran (dummy) = bit-and (handoff-gop-flags 0) handoff-gop-flag-ran /= 0
+
+  handoff-gop-called : Integer -> Boolean
+  handoff-gop-called (dummy) = bit-and (handoff-gop-flags 0) handoff-gop-flag-called /= 0
+
+  handoff-gop-status : Integer -> Integer
+  handoff-gop-status (dummy) = if handoff-has-v3 0 then peek-qword handoff-base 216 else 0
 Section: Boot Framebuffer
 
   boot-fb-base : Integer -> Integer
