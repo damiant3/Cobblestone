@@ -2170,7 +2170,7 @@ nested conditionals, let bindings are still clearer:
 **Constructing a variant allocates, even a nullary one.** Passing
 `WrapRepeat` to a sampler inside a per-pixel loop grew the render's heap
 in proportion to covered pixels; measured 2026-08-06 by
-`engine-texture`'s cost arm, and cured by inlining the wrap as integer
+`engine-texture-cost`'s cost arm, and cured by inlining the wrap as integer
 arithmetic. A mode a hot loop dispatches on should be an Integer field,
 not a variant mention -- `R3dShadeCtx.sc-mode` is the standing example.
 The test that catches the class is two renders at doubled resolution

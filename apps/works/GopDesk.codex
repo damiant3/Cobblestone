@@ -668,42 +668,8 @@ Section: Clock Gate
 
   desk-second-cell : Integer = 8
 
- The eight raw report bytes, because on the ASUS TUF 2026-08-04 the pair
- above read `ev` climbing and `sc` stuck at 0 -- reports arrive and decode
- to nothing -- and that leaves exactly one question. A boot HID report is
- modifiers, a reserved byte, then six usage codes (HID 1.11 B.1), so
- `rp=00000000...` with a key held means the data never reached the buffer
- and the fault is the transfer, while any non-zero usage byte means the
- data is there and `hid-step` is the fault. Two branches, and no bed here
- can produce either: OVMF answers `ev=0` and never gets this far.
-
-  desk-rep : Integer, Integer, Text -> Text
-  desk-rep (a) (i) (acc) =
-    if i >= 8 then acc
-    else desk-rep a (i + 1) (acc & hex-byte (peek-byte a i))
-
- One block per bound keyboard interface: events then sticky non-zero
- reports, with decoded scancodes once for the shared mailbox. The 13061
- flight answered c=, a=, p= and b= on the glass (SUCCESS, ring walking,
- our own endpoint, low buffer), so those rows retired; e/n per interface
- is the pair that now discriminates -- any interface whose n climbs with
- a key held is the one the person is typing on.
-
-  desk-kbd-line : UsbKbd -> Text
-  desk-kbd-line (kbd) =
-    if kbd.uk-ok == False then "k=n"
-    else desk-kbd-peer-txt kbd ("k" & show (1 + kbd-peers kbd)
-      & " e" & show (kbd-events kbd) & "n" & show (kbd-live kbd)
-      & "s" & show (kbd-scans kbd)) 0
-
-  desk-kbd-peer-txt : UsbKbd, Text, Integer -> Text
-  desk-kbd-peer-txt (kbd) (acc) (i) =
-    if i >= kbd-peers kbd then acc
-    else let p = kbd-peer kbd i
-    in desk-kbd-peer-txt kbd (acc & " |e" & show (kbd-events p) & "n" & show (kbd-live p)) (i + 1)
-
-  desk-clock : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbKbd, WidgetNode -> [Device.Port] Integer
-  desk-clock (base) (w) (h) (stride) (font) (tf) (ds) (kbd) (root) = act
+  desk-clock : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, WidgetNode -> [Device.Port] Integer
+  desk-clock (base) (w) (h) (stride) (font) (tf) (ds) (root) = act
     now <- rtc-seconds 0
     if now < 0 then 0
     else if now == peek-32 ds desk-second-cell then 0
@@ -711,7 +677,7 @@ Section: Clock Gate
       hh <- rtc-read 4
       mm <- rtc-read 2
       let st = poke-32 ds desk-second-cell now
-      in desk-draw-clock base w h stride font tf (desk-kbd-line kbd & "  " & dk-pad2 (dk-bcd hh) & ":" & dk-pad2 (dk-bcd mm) & ":" & dk-pad2 now) ds root
+      in desk-draw-clock base w h stride font tf (dk-pad2 (dk-bcd hh) & ":" & dk-pad2 (dk-bcd mm) & ":" & dk-pad2 now) ds root
     end
   end
 
@@ -2611,7 +2577,7 @@ Section: Browser
     let fmark = __heap-save
     in act
       sc <- kbd-take kbd
-      ck <- desk-clock base w h stride font tf ds kbd root
+      ck <- desk-clock base w h stride font tf ds root
       let mv = mouse-pump mouse w h
       in let cu = if mv == 1 then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
       in let clicked = mv == 1 & mouse-clicked mouse

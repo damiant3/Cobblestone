@@ -14511,6 +14511,308 @@ static void sync_shadow_buffers(void) {
     }
 }
 
+/* ── -run-list ─────────────────────────────────────────────────────────
+   Run many kernels from one invocation, spawning a FRESH codex-vm child
+   per line rather than reusing this process.
+
+   Measured 2026-08-22, one kernel, twelve-core box: 574.8 ms per test
+   through build/test-run.ps1, 73.7 ms for codex-vm alone, and 12.6 ms of
+   that 73.7 is this process's own start. The pwsh child is 501 of the
+   575, so what a batch mode has to remove is the SCRIPT per test, not the
+   exe. Reusing the process would buy the 12.6 ms and require resetting
+   376 file-scope statics between runs: deleting a partition does not
+   reset them, the device models being host state and not partition state,
+   and a single missed one makes a test's result depend on what preceded
+   it in the batch. A fresh child pays the 12.6 ms and makes the batch
+   byte-identical to N single runs by construction rather than by test. */
+
+#define RUNLIST_MAX_ARGS 128
+#define RUNLIST_WALL_MS  60000   /* the per-kernel budget test-run.ps1 keeps */
+#define RUNLIST_CMD_MAX  16384
+
+/* Whitespace-separated, and a token may be double-quoted so a path with a
+   space survives. Rewrites line in place. */
+static int runlist_split(char *line, char **out, int max) {
+    int n = 0;
+    char *p = line;
+    while (*p && n < max) {
+        while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+        if (!*p) break;
+        if (*p == '"') {
+            p++;
+            out[n++] = p;
+            while (*p && *p != '"') p++;
+            if (*p) *p++ = 0;
+        } else {
+            out[n++] = p;
+            while (*p && *p != ' ' && *p != '\t' && *p != '\r') p++;
+            if (*p) *p++ = 0;
+        }
+    }
+    return n;
+}
+
+/* Every token is quoted, which needs no per-token decision and cannot
+   split a path on a space. A run of trailing backslashes is doubled: by
+   the CRT's argv rules those would otherwise escape the closing quote and
+   swallow the next argument into this one. */
+static int runlist_append_arg(char *cmd, size_t cap, const char *arg) {
+    size_t len = strlen(cmd);
+    size_t alen = strlen(arg);
+    size_t bs = 0;
+    while (bs < alen && arg[alen - 1 - bs] == '\\') bs++;
+    if (len + alen + bs + 4 >= cap) return 0;
+    if (len) cmd[len++] = ' ';
+    cmd[len++] = '"';
+    memcpy(cmd + len, arg, alen);
+    len += alen;
+    for (size_t i = 0; i < bs; i++) cmd[len++] = '\\';
+    cmd[len++] = '"';
+    cmd[len] = 0;
+    return 1;
+}
+
+/* Signal the child's own shutdown event and let it leave through the
+   normal WHvDeletePartition path. TerminateProcess mid-hypervisor-call is
+   what corrupts vid.sys's kernel heap, so it is the fallback and not the
+   first move -- the same order build/vm-config.ps1 Stop-VmGraceful uses. */
+static void runlist_stop_child(DWORD pid, HANDLE h) {
+    char ev[64];
+    snprintf(ev, sizeof(ev), "Global\\CodexVmShutdown_%lu", (unsigned long)pid);
+    HANDLE e = OpenEventA(EVENT_MODIFY_STATE, FALSE, ev);
+    if (e) {
+        SetEvent(e);
+        CloseHandle(e);
+        if (WaitForSingleObject(h, 5000) == WAIT_OBJECT_0) return;
+    }
+    TerminateProcess(h, 0xC0DEDEAD);
+    WaitForSingleObject(h, 2000);
+}
+
+/* The child's "Output: N bytes -> path" line, or -1 when it printed none. */
+static long long runlist_scan_output(const char *buf) {
+    long long got = -1;
+    const char *p = buf;
+    while ((p = strstr(p, "Output: ")) != NULL) {
+        p += 8;
+        char *end = NULL;
+        long long v = strtoll(p, &end, 10);
+        if (end && end != p && !strncmp(end, " bytes", 6)) got = v;
+    }
+    return got;
+}
+
+/* Serial bytes the child dropped. Keyed on the whole "SERIAL: N guest
+   serial byte(s) DROPPED" phrase and not on the word DROPPED, which the
+   GPU triangle-cap warning also prints and which is not a short capture. */
+static unsigned long long runlist_scan_dropped(const char *buf) {
+    unsigned long long total = 0;
+    const char *p = buf;
+    while ((p = strstr(p, "SERIAL: ")) != NULL) {
+        p += 8;
+        char *end = NULL;
+        unsigned long long v = strtoull(p, &end, 10);
+        if (end && end != p && !strncmp(end, " guest serial byte(s) DROPPED", 29))
+            total += v;
+    }
+    return total;
+}
+
+static int runlist_main(const char *list_path, unsigned wall_ms) {
+    char self[MAX_PATH];
+    if (!GetModuleFileNameA(NULL, self, sizeof(self))) {
+        fprintf(stderr, "-run-list: cannot resolve my own path\n");
+        return 1;
+    }
+
+    FILE *lf = fopen(list_path, "rb");
+    if (!lf) { fprintf(stderr, "-run-list: cannot open %s\n", list_path); return 1; }
+    fseek(lf, 0, SEEK_END);
+    long lsz = ftell(lf);
+    fseek(lf, 0, SEEK_SET);
+    char *ltext = (char *)malloc((size_t)lsz + 1);
+    if (!ltext) { fclose(lf); fprintf(stderr, "-run-list: out of memory\n"); return 1; }
+    size_t lgot = fread(ltext, 1, (size_t)lsz, lf);
+    ltext[lgot] = 0;
+    fclose(lf);
+
+    /* Counted first so every line can report itself as i/N. */
+    int total = 0;
+    for (char *s = ltext; *s; ) {
+        char *e = strchr(s, '\n');
+        char *stop = e ? e : s + strlen(s);
+        char *t = s;
+        while (t < stop && (*t == ' ' || *t == '\t' || *t == '\r')) t++;
+        if (t < stop && *t != '#') total++;
+        if (!e) break;
+        s = e + 1;
+    }
+
+    char tmpdir[MAX_PATH];
+    if (!GetTempPathA(sizeof(tmpdir), tmpdir)) snprintf(tmpdir, sizeof(tmpdir), ".\\");
+
+    int idx = 0, failed = 0, timed_out = 0, short_caps = 0;
+    for (char *s = ltext; *s; ) {
+        char *e = strchr(s, '\n');
+        if (e) *e = 0;
+        char *t = s;
+        while (*t == ' ' || *t == '\t' || *t == '\r') t++;
+        if (!*t || *t == '#') { if (!e) break; s = e + 1; continue; }
+
+        idx++;
+        char *args[RUNLIST_MAX_ARGS];
+        int n = runlist_split(t, args, RUNLIST_MAX_ARGS);
+
+        const char *tag = n ? args[0] : "(empty)";
+        for (int i = 0; i + 1 < n; i++)
+            if (!strcmp(args[i], "-kernel")) { tag = args[i+1]; break; }
+
+        /* A line may not open a list of its own. One that names its own file
+           is an unbounded fork bomb on a box the whole fleet shares, and it
+           costs a generator bug rather than an attacker to write one. */
+        int nested = 0;
+        for (int i = 0; i < n; i++)
+            if (!strcmp(args[i], "-run-list")) { nested = 1; break; }
+        if (nested) {
+            fprintf(stderr, "RUN-LIST BEGIN [%d/%d] %s\n", idx, total, tag);
+            fprintf(stderr, "-run-list: line %d carries -run-list; a list may not nest\n", idx);
+            fprintf(stderr, "RUN-LIST END [%d/%d] %s exit=SPAWNFAIL output=-1 dropped=0 ms=0\n",
+                    idx, total, tag);
+            failed++;
+            if (!e) break;
+            s = e + 1;
+            continue;
+        }
+
+        char cmd[RUNLIST_CMD_MAX];
+        cmd[0] = 0;
+        int built = runlist_append_arg(cmd, sizeof(cmd), self);
+        for (int i = 0; i < n && built; i++)
+            built = runlist_append_arg(cmd, sizeof(cmd), args[i]);
+        if (!built) {
+            fprintf(stderr, "RUN-LIST BEGIN [%d/%d] %s\n", idx, total, tag);
+            fprintf(stderr, "-run-list: line %d does not fit in %d bytes of command line\n",
+                    idx, RUNLIST_CMD_MAX);
+            fprintf(stderr, "RUN-LIST END [%d/%d] %s exit=SPAWNFAIL output=-1 dropped=0 ms=0\n",
+                    idx, total, tag);
+            failed++;
+            if (!e) break;
+            s = e + 1;
+            continue;
+        }
+
+        char errpath[MAX_PATH];
+        if (!GetTempFileNameA(tmpdir, "cvr", 0, errpath)) {
+            fprintf(stderr, "RUN-LIST BEGIN [%d/%d] %s\n", idx, total, tag);
+            fprintf(stderr, "-run-list: cannot make a temp file for line %d\n", idx);
+            fprintf(stderr, "RUN-LIST END [%d/%d] %s exit=SPAWNFAIL output=-1 dropped=0 ms=0\n",
+                    idx, total, tag);
+            failed++;
+            if (!e) break;
+            s = e + 1;
+            continue;
+        }
+
+        SECURITY_ATTRIBUTES sa;
+        sa.nLength = sizeof(sa);
+        sa.lpSecurityDescriptor = NULL;
+        sa.bInheritHandle = TRUE;
+        HANDLE eh = CreateFileA(errpath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+        fprintf(stderr, "RUN-LIST BEGIN [%d/%d] %s\n", idx, total, tag);
+
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof(si));
+        memset(&pi, 0, sizeof(pi));
+        si.cb = sizeof(si);
+        if (eh != INVALID_HANDLE_VALUE) {
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+            si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+            si.hStdError = eh;
+        }
+
+        BOOL ok = CreateProcessA(self, cmd, NULL, NULL,
+                                 eh != INVALID_HANDLE_VALUE, 0, NULL, NULL, &si, &pi);
+        if (eh != INVALID_HANDLE_VALUE) CloseHandle(eh);
+
+        if (!ok) {
+            fprintf(stderr, "-run-list: CreateProcess failed (%lu) for line %d\n",
+                    GetLastError(), idx);
+            fprintf(stderr, "RUN-LIST END [%d/%d] %s exit=SPAWNFAIL output=-1 dropped=0 ms=0\n",
+                    idx, total, tag);
+            failed++;
+            DeleteFileA(errpath);
+            if (!e) break;
+            s = e + 1;
+            continue;
+        }
+
+        LARGE_INTEGER t0, t1, tf;
+        QueryPerformanceFrequency(&tf);
+        QueryPerformanceCounter(&t0);
+        int tmo = 0;
+        if (WaitForSingleObject(pi.hProcess, wall_ms) == WAIT_TIMEOUT) {
+            tmo = 1;
+            runlist_stop_child(pi.dwProcessId, pi.hProcess);
+        }
+        QueryPerformanceCounter(&t1);
+        unsigned long long elapsed_ms = tf.QuadPart
+            ? (unsigned long long)((t1.QuadPart - t0.QuadPart) * 1000 / tf.QuadPart) : 0;
+        DWORD rc = 0;
+        GetExitCodeProcess(pi.hProcess, &rc);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+
+        /* The child's stderr goes through verbatim. Every existing
+           diagnostic -- the crash report, the RAM cap, the IDE census --
+           is why a red test is readable at all, and a batch mode that
+           summarised them would be the one run nobody can debug. */
+        long long outbytes = -1;
+        unsigned long long dropped = 0;
+        FILE *ef = fopen(errpath, "rb");
+        if (ef) {
+            fseek(ef, 0, SEEK_END);
+            long esz = ftell(ef);
+            fseek(ef, 0, SEEK_SET);
+            char *ebuf = (char *)malloc((size_t)esz + 1);
+            if (ebuf) {
+                size_t egot = fread(ebuf, 1, (size_t)esz, ef);
+                ebuf[egot] = 0;
+                fwrite(ebuf, 1, egot, stderr);
+                outbytes = runlist_scan_output(ebuf);
+                dropped = runlist_scan_dropped(ebuf);
+                free(ebuf);
+            }
+            fclose(ef);
+        }
+        DeleteFileA(errpath);
+
+        if (tmo) {
+            fprintf(stderr, "RUN-LIST END [%d/%d] %s exit=TIMEOUT output=%lld dropped=%llu ms=%llu\n",
+                    idx, total, tag, outbytes, dropped, elapsed_ms);
+            timed_out++;
+        } else {
+            fprintf(stderr, "RUN-LIST END [%d/%d] %s exit=%lu output=%lld dropped=%llu ms=%llu\n",
+                    idx, total, tag, (unsigned long)rc, outbytes, dropped, elapsed_ms);
+        }
+        if (dropped) short_caps++;
+
+        if (!e) break;
+        s = e + 1;
+    }
+
+    free(ltext);
+    fprintf(stderr, "RUN-LIST DONE: %d line(s), %d timed out, %d not spawned, %d with dropped bytes\n",
+            idx, timed_out, failed, short_caps);
+    /* A child's own exit code is NOT a verdict -- a healthy test exits
+       (debug_exit_code << 1) | 1 -- so it is reported per line and never
+       summed. This code answers only whether the supervisor ran the list. */
+    return (timed_out || failed) ? 1 : 0;
+}
+
 /* ── Main loop ─────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
@@ -14542,6 +14844,31 @@ int main(int argc, char **argv) {
     int mem_mb = 3072;  /* matches the build harness; binaries from pre-7209
                            seeds triple-fault below 2 GB + stack reserve */
     int mem_nocap = 0;
+
+    /* -run-list is a supervisor mode: it spawns a child per line and never
+       builds a partition of its own, so it is answered before any of the
+       flags below are parsed. Refusing -kernel beside it keeps the two
+       modes from looking combinable when only one of them would run. */
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-run-list") && i+1 < argc) {
+            /* The budget is a flag defaulting to the 60 s test-run.ps1
+               keeps, because a timeout nothing can provoke is a path
+               nothing has tested: the arm that proves a stopped child does
+               not take the rest of the list runs at two seconds. */
+            unsigned wall = RUNLIST_WALL_MS;
+            for (int j = 1; j < argc; j++) {
+                if (!strcmp(argv[j], "-kernel")) {
+                    fprintf(stderr, "-run-list runs the kernels its list names; "
+                                    "-kernel is not accepted beside it\n");
+                    return 1;
+                }
+                if (!strcmp(argv[j], "-run-list-wall") && j+1 < argc)
+                    wall = (unsigned)strtoul(argv[j+1], NULL, 10);
+            }
+            if (wall == 0) wall = RUNLIST_WALL_MS;
+            return runlist_main(argv[i+1], wall);
+        }
+    }
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-kernel") && i+1 < argc) { kernel = argv[++i]; g_kernel_path = kernel; }
@@ -14788,7 +15115,10 @@ int main(int argc, char **argv) {
                         "       [-disk file.img] [-mem MB] [-mem-nocap] [-args STRING]\n"
                         "       [-watch 0xADDR] [-watch-size N] [-headless] [-uefi] [-uefi-strict]\n"
                         "       [-gop] [-gop-width N] [-gop-height N] [-gop-stride N] [-gop-max-mode N] [-keys sc,sc,..]\n"
-                        "       [-portfwd hostport:guestport] ...\n");
+                        "       [-portfwd hostport:guestport] ...\n"
+                        "   or: codex-vm -run-list file.txt [-run-list-wall MS]\n"
+                        "       one line per run, each line the flags a single run takes;\n"
+                        "       '#' comments and blank lines ignored\n");
         return 1;
     }
     if (watch_size > 64) watch_size = 64;

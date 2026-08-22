@@ -15,8 +15,11 @@ culling wired into the render path, and shadow mapping
 bounds, depth-only pass, per-vertex light-space coords interpolated per
 pixel; bias `r3d-shadow-bias = 3000`). Per-pixel code is integer-only
 and allocation-free, pinned by `engine-render-heap`; the calibrated
-tests are `engine-near-clip`, `engine-shading`, `engine-culling`,
-`engine-shadow`.
+tests are `engine-near-clip`, `engine-shading`, `engine-culling-cost`,
+`engine-shadow` (`engine-culling-cost` and `engine-texture-cost` were
+`engine-culling` and `engine-texture` until 2026-08-22, when the stems
+collided with the `forewords/` smoke tests of the same name in one
+`test-output` directory and the battery reported the wrong one).
 
 **The tree, measured 2026-08-06: 42 chapters, 7,916 lines in
 `codex/foreword/engine/`.** The 9+4 chapter inventory this section used

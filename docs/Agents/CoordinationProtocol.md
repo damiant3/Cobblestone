@@ -215,6 +215,9 @@ item already written in the plan, and every one needed a nudge that cost
 a message. If the row is empty, that is a **question** event (one line to
 the commander: "lane empty, draw?"), and the wait after THAT is a real one.
 
+
+**A mailbox file does not wake a session, and the commander learned it the expensive way (red, 2026-08-21).** Every lane sat idle at its prompt for hours while red wrote `build-request`-shaped notes into their inboxes and waited for replies; the messages were read only when each session next happened to run a tool. `SendMessage` to the session name is an interrupt and wakes the receiver now; `ListAgents` says busy or idle; a `status.json` age is a proxy that lies in both directions (fester read DARK for 91 minutes while busy). A commander that needs a lane to move reaches it through `SendMessage` and reads the depot for what landed; the mailbox is for the coordinator protocol, not for waking anyone.
+
 ## What Happens Next
 
 AgentGrid polls every second and answers **two ways at once**: it
