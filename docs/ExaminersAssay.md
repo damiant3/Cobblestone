@@ -609,7 +609,15 @@ whose chapters are small, so the sample was not the population (L-DILUTE).
   in both `codex/test/` and `codex/test/forewords/`; the sweep produced 1,412
   directories for 1,413 chapters and reported nothing wrong. Key by path. The
   four colliding files were compiled individually afterwards and all four are
-  clean, which is how the census reconciles to 1,413.
+  clean, which is how the census reconciles to 1,413. **The battery has the
+  same collision and it went red on 2026-08-22**: `test.ps1` keys the output
+  directory and the verdict by stem too, the pair had passed by the luck of
+  which one compiled last, and size-balanced dealing flipped it (`engine-culling`
+  `FAIL_OUTPUT`, 222 chars against an expected 18: the root test's output under
+  the forewords test's name). The root pair, the calibrated ones red added
+  2026-08-06 into already-taken names, are renamed `engine-culling-cost` and
+  `engine-texture-cost`; no stem is duplicated under `codex/test` now, and
+  keying by path in the harness is still the real fix.
 - The cheap alternative to sweeping everything is to **compile only the tests
   that CITE what changed**, which is what the grep discipline above was
   reaching for. Measured over the same 1,413: 756 distinct chapters are cited,
@@ -725,6 +733,21 @@ see `docs/Designs/Done/Compiler/ProportionalDecks.md` for one worked
 example, including the probe and the reason its result was negative.
 
 ## Standing bed facts (each cost a session; do not relearn)
+
+- **A `-RedirectStandardError` file on D: costs ~7.5 ms per stderr line; keep
+  harness captures on the system temp** (red, 2026-08-22). The same eight
+  `codex-vm -run-list` supervisors over the BVT's 60 run tests took 2.6 s with
+  the redirect file under `%TEMP%` on C: and 12.3 to 12.7 s with it anywhere
+  on D:, inside the repo or not; the children's own per-kernel ms were
+  identical in both, so nothing in the guest or the hypervisor is involved.
+  PowerShell's redirect is one file write per line and D: pays for each.
+  `test-run.ps1` and `test-compile-batch.ps1` never saw it because they
+  redirect to `GetTempFileName()`, which lands on C:; the first `-run-list`
+  wiring of `bvt.ps1` put the file in `test-output\_bvt-runs` and its run
+  phase went 7.5 s to 12.4 s, worse than the `pwsh`-per-test path it
+  replaced. Before blaming a harness change for a slowdown, move its capture
+  file to C: and re-time. Both batch harnesses now capture on the system temp
+  and `Move-Item` the file into `_runs` for the record.
 
 Consolidated 2026-08-08 out of the retired per-agent workplans.
 
@@ -5979,6 +6002,29 @@ exhausted. These tests compile fine with individual VMs.
 
 Workaround: run `build/test.ps1 -Apps -Jobs 8` for more batch slots,
 or compile stubborn tests individually via `build/compile.ps1`.
+
+### The parser was quadratic, and the VM was a tenth of phase 1 (red, 2026-08-22)
+
+Measured on the 2026-08-20 release battery's own `test.log`: each batch of
+193 tests spent 20 to 62 s in the VM and **417 to 456 s in the host parser**.
+Isolated in a scratchpad with the same script: 24 tests 10 s, 48 tests 31 s,
+96 tests 130 s, all of it in `Add-LogSpan` and `NextLine`. The cause was one
+assignment, `$raw = if (Test-Path $outputFile) { ReadAllBytes } else { ... }`:
+a statement's result goes through the pipeline, which unrolls a `byte[]`
+into an `Object[]` of boxed bytes (`$raw.GetType()` said so), and every
+`GetString($raw, ...)` and `[Array]::Copy($raw, ...)` then re-converted the
+whole buffer, 183 ms per call on a 2.9 MB array. Nothing else in the loop
+was wrong, and the loop's own comments record two earlier campaigns against
+the same symptom that each sped up a different line.
+
+Fixed in the generator (`codex/build/testcompilebatchScript.codex`, a direct
+assignment) and installed at drift 0. Proven on the 96-test list: parse
+132,007 ms to 831 ms, the 93 emitted binaries byte-identical to the pre-fix
+run, all 96 `build.log`s identical, the three expected-error tests at exit 7
+in both arms. `check-test-compile.ps1` compiles through this parser, so the
+standing gate's `test-compile` phase was paying it too. The phase 2 side of
+the same measurement (a `pwsh` child per test against 75 ms for `codex-vm`
+alone) is `CurrentPlan.md` "The battery choreography", with the items.
 
 ### The batch stream can lose bytes, and the loss lands on the wrong names
 

@@ -33,6 +33,8 @@ Write-SweepLog "$sample run-start pcore=$PCore"
 $outputFile = [System.IO.Path]::GetTempFileName()
 $stderrFile = [System.IO.Path]::GetTempFileName()
 $inputFile = $null
+$diskWork = $null
+$disk2Work = $null
 
 
 try {
@@ -132,5 +134,13 @@ try {
     Remove-Item -Force $outputFile, $stderrFile -ErrorAction SilentlyContinue
     if ($inputFile) {
         Remove-Item -Force $inputFile -ErrorAction SilentlyContinue
+    }
+    # The writable disk copies go too. Measured 2026-08-22: 9,340 of them, 15.7 GB, in
+    # %TEMP% since 2026-06-15, one per disk test per battery and gate.
+    if ($diskWork) {
+        Remove-Item -Force $diskWork -ErrorAction SilentlyContinue
+    }
+    if ($disk2Work) {
+        Remove-Item -Force $disk2Work -ErrorAction SilentlyContinue
     }
 }

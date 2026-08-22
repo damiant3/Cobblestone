@@ -125,7 +125,13 @@ if ((Test-Path -PathType Leaf $stderrFile)) {
 # crashed batch (census 2026-07-27). The Latin-1 shadow string maps chars to
 # bytes 1:1, so positions in it are byte positions; line TEXT is still
 # decoded from the bytes as UTF-8.
-$raw = if (Test-Path $outputFile) { [System.IO.File]::ReadAllBytes($outputFile) } else { [byte[]]::new(0) }
+# Assigned DIRECTLY, never as `$raw = if (...) { ReadAllBytes } else { ... }`:
+# a statement's result goes through the pipeline, which unrolls a byte[] into
+# an Object[] of boxed bytes, and every GetString/Array.Copy below then
+# re-converts the whole buffer. Measured 2026-08-22: 183 ms per call on a
+# 2.9 MB capture, quadratic in the batch (96 tests 130 s, 193 tests 450 s).
+$raw = [byte[]]::new(0)
+if (Test-Path $outputFile) { $raw = [System.IO.File]::ReadAllBytes($outputFile) }
 $rawStr = [System.Text.Encoding]::GetEncoding(28591).GetString($raw)
 $pos = 0; $testIdx = 0
 

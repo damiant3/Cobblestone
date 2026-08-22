@@ -147,6 +147,33 @@ entries say only "on blu's box", and that vagueness is half of what made
 
 ## THE SITTING QUEUE: what is waiting on metal, in the order it should fly
 
+### Sitting 12, composed on main, not yet built (red, 2026-08-21 evening)
+
+Everything it carries is on main as of Update 49 (release head 19062):
+root's `banked=n` paint at the step (19021), the six-part `rings-link`
+split (19029) and `pchk1` listening after the K1 write (18948); reek's
+`died` and `recovered` sink words (18932, 18966) and the K1 control
+(18874); blu's SMBus read row (18883) and ULP entry-disable OFF (18819).
+What it asks: which of swflag or the CTRL|SLU write kills the medium
+(sitting 11 card); whether the K1 write took; whether the sitting-10 reset
+hang recurs; and it paints its own refused note so no photograph is needed.
+
+Recipe, in order: merge down to head; copy `build/boot/diag-sitting11.cfg`
+to `diag-sitting12.cfg` (same lines: `b3 peer=192.168.6.141:7
+ip=192.168.6.200`, `pchk1 on`, `asde on`); `build/boot/build-diag.ps1 -Cfg
+build/boot/diag-sitting12.cfg`; `build/boot/diag-arm.ps1` every arm, both
+beds, until the ledger line lands; start `build/boot/echo-peer.ps1 -Port 7`
+on the dev box BEFORE the stick boots; dump disk 2 to
+`D:\Projects\stick-archive\before-diag12-<date>.img`; flash with
+`build/flash-usb.ps1 -Image build/boot/diag.img -DiskNumber 2 -SpecFit
+-Force -ExpectHash <the ledger hash> -Log build-output/flash.log`; when it
+comes back, dump to `diag12-returned-<date>.img`, extract `DIAG.TXT` with
+`build/read-stick.ps1`, write the card here and the rows to their lanes.
+**A sitting image must never reach main's `build/boot/diag.img`**: after the
+flight, main keeps the shipping image (`1190FD4C`, default cfg) and
+`check-shipping-images.ps1` refuses anything else.
+
+
 **This is a queue Damian draws from, not a request.** His standing ruling
 holds: agents do not propose flights or sittings. What this section exists
 for is that when he has the time and his back can take it, the sitting is

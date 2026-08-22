@@ -239,37 +239,119 @@ $runSkip = 0
 $runnableTests = $BvtTests | Where-Object { $exp = $_ -replace '\.codex$', '.expected'; Test-Path $exp }
 
 
-$runnableTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
-    $t = $_
+# One codex-vm -run-list supervisor per job slot, a fresh codex-vm child per
+# test, so the cold boot a single run proves is unchanged (OperatorsManual
+# "Batch mode: -run-list"). Measured 2026-08-22: the pwsh child running
+# test-run.ps1 was 501 of the 575 ms a test cost here. The sidecar copy
+# test-run.ps1 did stays with the caller: a depot .disk is read-only after
+# sync and codex-vm flushes writes durably, so each gets a writable temp.
+$runList = @($runnableTests)
+$runDir = Join-Path $OutRoot '_bvt-runs'
+if (Test-Path $runDir) { Remove-Item -Recurse -Force $runDir }
+New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+$slotLines = @{}
+for ($s = 0; $s -lt $Jobs; $s++) { $slotLines[$s] = [System.Collections.Generic.List[string]]::new() }
+$tempDisks = [System.Collections.Generic.List[string]]::new()
+$rawOf = @{}
+$lineKey = @{}
+for ($i = 0; $i -lt $runList.Count; $i++) {
+    $t = $runList[$i]
     $base = [System.IO.Path]::GetFileNameWithoutExtension($t)
-    $outDir = Join-Path $using:OutRoot $base
+    $outDir = Join-Path $OutRoot $base
     $cdxOut = Join-Path $outDir "$base.cdx"
+    if (-not (Test-Path $cdxOut)) { continue }
+    $raw = Join-Path $outDir "$base.raw"
+    if (Test-Path $raw) { Remove-Item -Force $raw }
+    $rawOf[$base] = $raw
+    $tokens = @('-kernel', $cdxOut, '-output', $raw, '-mem', '3072', '-headless')
+    $diskFile = $t -replace '\.codex$', '.disk'
+    if (Test-Path -PathType Leaf $diskFile) {
+        $diskWork = [System.IO.Path]::GetTempFileName()
+        $tempDisks.Add($diskWork)
+        [System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($diskFile))
+        $tokens += @('-disk', $diskWork)
+    }
+    $s = $i % $Jobs
+    # Every token double-quoted: that is what -run-list's splitter takes.
+    $slotLines[$s].Add((($tokens | ForEach-Object { '"' + $_ + '"' }) -join ' '))
+    $lineKey[$base] = "$s/$($slotLines[$s].Count)"
+}
+$supervisors = @{}
+$slotErrs = @{}
+for ($s = 0; $s -lt $Jobs; $s++) {
+    if ($slotLines[$s].Count -eq 0) { continue }
+    $lf = Join-Path $runDir "run-$s.txt"
+    [System.IO.File]::WriteAllLines($lf, $slotLines[$s], [System.Text.UTF8Encoding]::new($false))
+    # The supervisor's stderr is captured on the SYSTEM temp and moved into
+    # _bvt-runs afterwards. Measured 2026-08-22: the same eight supervisors
+    # took 2.6 s with the redirect file on C: and 12.3 to 12.7 s with it
+    # anywhere on D:, repo or not; a redirect is one write per stderr line
+    # and D: pays ~7.5 ms for each. test-run.ps1 only ever escaped this
+    # because GetTempFileName() lands on C:.
+    $slotErrs[$s] = [System.IO.Path]::GetTempFileName()
+    $sa = @{ FilePath = $vmExe; ArgumentList = @('-run-list', $lf); PassThru = $true; RedirectStandardError = $slotErrs[$s] }
+    if ($IsWindows) { $sa.WindowStyle = 'Hidden' }
+    $supervisors[$s] = Start-Process @sa
+}
+foreach ($s in $supervisors.Keys) { $supervisors[$s].WaitForExit() }
+# One END line per list line, keyed by slot and [i/N] index, so a line the
+# supervisor could not report reads as missing on its own test only.
+$endOf = @{}
+foreach ($s in $supervisors.Keys) {
+    foreach ($l in @(Get-Content $slotErrs[$s] -ErrorAction SilentlyContinue)) {
+        if ($l -match 'RUN-LIST END \[(\d+)/\d+\] .* exit=(\S+) output=(-?\d+) dropped=(\d+) ms=(\d+)') {
+            $endOf["$s/$($matches[1])"] = @{ Exit = $matches[2]; Dropped = [long]$matches[4] }
+        }
+    }
+    if (Test-Path -PathType Leaf $slotErrs[$s]) { Move-Item -Force $slotErrs[$s] (Join-Path $runDir "run-$s.err") }
+}
+foreach ($f in $tempDisks) { Remove-Item -Force $f -ErrorAction SilentlyContinue }
+
+foreach ($t in $runList) {
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($t)
+    $outDir = Join-Path $OutRoot $base
     $runOut = Join-Path $outDir "$base.out"
     $expFile = $t -replace '\.codex$', '.expected'
-    if (-not (Test-Path $cdxOut)) {
-        ($using:runFails).Add("$base (no CDX to run)")
+    if (-not $rawOf.ContainsKey($base)) {
+        $runFails.Add("$base (no CDX to run)")
         Write-Host "  SKIP  $base (no CDX)" -ForegroundColor Yellow
-        return
+        continue
     }
-    # A test with a .disk sidecar needs the block device handed to it. Without
-    # this the BVT could not run one at all, so every disk test lived in the
-    # battery only -- which is to say it never ran at the gate. test-run.ps1
-    # copies the sidecar to a writable temp image, so the depot copy is safe.
-    $runArgs = @('-Kernel', $cdxOut, '-OutFile', $runOut)
-    $diskFile = $t -replace '\.codex$', '.disk'
-    if (Test-Path -PathType Leaf $diskFile) { $runArgs += @('-DiskFile', $diskFile) }
-    & pwsh -NoProfile -File (Join-Path $using:PWD 'build\test-run.ps1') @runArgs 2>$null
-    if (-not (Test-Path $runOut)) {
-        ($using:runFails).Add("$base (no output)")
+    $why = ''
+    if (-not $endOf.ContainsKey($lineKey[$base])) { $why = 'no END line from the -run-list supervisor' }
+    else {
+        $e = $endOf[$lineKey[$base]]
+        if ($e.Exit -eq 'TIMEOUT') { $why = 'wall budget exceeded' }
+        elseif ($e.Exit -eq 'SPAWNFAIL') { $why = 'codex-vm could not be spawned' }
+        elseif ($e.Dropped -gt 0) { $why = "SHORT capture: codex-vm dropped $($e.Dropped) guest serial bytes, not codegen; re-run" }
+    }
+    if ($why) {
+        $runFails.Add("$base ($why)")
+        Write-Host "  FAIL  $base ($why)" -ForegroundColor Red
+        continue
+    }
+    $raw = $rawOf[$base]
+    if (-not (Test-Path $raw) -or (Get-Item $raw).Length -eq 0) {
+        $runFails.Add("$base (no output)")
         Write-Host "  FAIL  $base (no output)" -ForegroundColor Red
-        return
+        continue
     }
-    $actual = (Get-Content $runOut -Raw -ErrorAction SilentlyContinue) -replace "`r", ''
+    # Filtered exactly as test-run.ps1 filtered it: CR and a leading SOH
+    # stripped, HEAP:/WD:/STACK: telemetry dropped, trailing blank lines cut.
+    $rawText = (Get-Content $raw -Raw -ErrorAction SilentlyContinue) -replace "`r", '' -replace "^\x01", ''
+    $kept = [System.Collections.Generic.List[string]]::new()
+    foreach ($l in ($rawText -split "`n")) {
+        if ($l.StartsWith('HEAP:') -or $l.StartsWith('WD:') -or $l.StartsWith('STACK:')) { continue }
+        [void]$kept.Add($l)
+    }
+    while ($kept.Count -gt 0 -and $kept[$kept.Count - 1] -eq '') { $kept.RemoveAt($kept.Count - 1) }
+    $actual = if ($kept.Count -gt 0) { ($kept -join "`n") + "`n" } else { '' }
+    [System.IO.File]::WriteAllText($runOut, $actual, [System.Text.UTF8Encoding]::new($false))
     $expected = (Get-Content $expFile -Raw -ErrorAction SilentlyContinue) -replace "`r", ''
     $actual = $actual.TrimEnd("`n")
     $expected = $expected.TrimEnd("`n")
     if ($actual -eq $expected) {
-        ($using:runPass).Add($base)
+        $runPass.Add($base)
         Write-Host "  PASS  $base" -ForegroundColor Green
     } else {
         # LENGTH BEFORE CONTENT (L-SHORT). The two 80-character excerpts below
@@ -283,11 +365,11 @@ $runnableTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         $off = 0
         while ($off -lt $lim -and $expected[$off] -eq $actual[$off]) { $off++ }
         if ($actual.Length -lt $expected.Length -and $off -eq $actual.Length) {
-            ($using:runFails).Add("$base (output TRUNCATED: $($actual.Length) of $($expected.Length) chars, a strict prefix -- SHORT capture, not codegen; re-run)")
+            $runFails.Add("$base (output TRUNCATED: $($actual.Length) of $($expected.Length) chars, a strict prefix -- SHORT capture, not codegen; re-run)")
             Write-Host "  FAIL  $base (output TRUNCATED)" -ForegroundColor Red
             Write-Host "    actual $($actual.Length) chars is a strict PREFIX of the expected $($expected.Length): the capture is SHORT, not wrong. Re-run before reading this as codegen (L-SHORT)" -ForegroundColor DarkGray
         } else {
-            ($using:runFails).Add("$base (output mismatch: $($actual.Length) chars vs expected $($expected.Length), diverges at offset $off)")
+            $runFails.Add("$base (output mismatch: $($actual.Length) chars vs expected $($expected.Length), diverges at offset $off)")
             Write-Host "  FAIL  $base (output mismatch)" -ForegroundColor Red
             Write-Host "    actual $($actual.Length) chars, expected $($expected.Length), diverges at offset $off -- not a prefix, so this is a content difference (L-SHORT)" -ForegroundColor DarkGray
         }

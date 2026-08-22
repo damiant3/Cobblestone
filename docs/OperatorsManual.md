@@ -434,6 +434,70 @@ codex-vm -kernel file.cdx [options]
 
 Environment: `CODEX_VM_NO_TIMER=1` disables PIT timer interrupts.
 
+#### Batch mode: `-run-list`
+
+```
+codex-vm -run-list list.txt [-run-list-wall MS]
+```
+
+One line per run, each line carrying exactly the flags that run would take on
+its own command line. Tokens are whitespace-separated and may be double-quoted,
+so a path with a space survives; `#` comments and blank lines are ignored.
+`-kernel` beside `-run-list` is REFUSED rather than ignored, so the two modes
+never look combinable.
+
+**It spawns a fresh `codex-vm` child per line. It does not reuse the process.**
+That is the whole design and it is worth knowing before anyone tries to
+"optimise" it: a batch is then byte-identical to N single runs by construction,
+because each line gets a genuinely new process, not a partition delete and a
+hopeful reset. Measured 2026-08-22, one kernel on a twelve-core box:
+
+| path | per kernel |
+|---|---|
+| `pwsh` child running `build/test-run.ps1` | 574.8 ms |
+| `codex-vm.exe` directly, fresh process each | 73.7 ms |
+| bare `codex-vm.exe` process start alone | 12.6 ms |
+
+The `pwsh` child is 501 of the 575, so what a batch mode has to remove is the
+SCRIPT per test and not the exe. Reusing one process would buy the 12.6 ms and
+require resetting 376 file-scope statics between runs: deleting a partition
+does not reset them, because the device models are host state, and one missed
+static makes a test's result depend on what preceded it in the batch.
+
+Per line it writes `RUN-LIST BEGIN [i/N] <kernel>`, then that child's stderr
+verbatim, then:
+
+```
+RUN-LIST END [i/N] <kernel> exit=<code|TIMEOUT|SPAWNFAIL> output=<bytes> dropped=<n> ms=<elapsed>
+```
+
+`output` is the child's own `Output: N bytes` line, or `-1` when it wrote none.
+`dropped` is read from that child's `SERIAL: N guest serial byte(s) DROPPED`
+lines, so L-SHORT's drop signal survives batching and is attributed to the
+kernel that dropped it. It is keyed on that whole phrase and not on the word
+DROPPED, which the GPU triangle-cap warning also prints.
+
+**Do not read `exit` as a verdict.** A healthy test exits
+`(debug_exit_code << 1) | 1`, so 1 is the normal answer and `build/test-run.ps1`
+has always ignored it. The supervisor's OWN exit code is 0 when it ran the
+list and 1 when a line timed out or could not be spawned.
+
+The per-kernel wall budget is the same 60 s `test-run.ps1` keeps. A timeout
+signals the child's own `Global\CodexVmShutdown_<pid>` event first and only
+falls back to `TerminateProcess`, because killing a child mid-hypervisor-call
+is what corrupts vid.sys. `-run-list-wall MS` overrides the budget: it exists
+so the timeout path can be exercised at all, and `build/check-run-list.ps1`
+uses it at 2000 ms.
+
+Sidecar preparation stays with the caller. `test-run.ps1` copies a depot
+`-disk` image to a writable temp because a synced sidecar is read-only; a list
+line carries the FINAL paths, exactly as they would be passed to a single run.
+
+`build/check-run-list.ps1` is the runner: byte-identity against single runs
+(with an ablation proving that comparison can fail), a corrupt kernel mid-list
+not taking its neighbours, the wall budget stopping one line alone, and the
+drop count landing on its own line with the GPU line as a negative control.
+
 **There is no `-timeout` flag, and an unknown flag is ignored in silence.**
 Measured 2026-08-11: `-timeout` appears zero times in `tools/codex-vm.c`, so
 `-timeout 20` parses as two arguments the loop above matches nothing against

@@ -152,8 +152,10 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 # test-compile-batch.ps1 keys its output directory by the filename STEM, so two
 # chapters with the same basename in different directories collide and one is
-# silently never compiled (engine-culling and engine-texture are in both
-# codex/test and codex/test/forewords). Split those into separate batches so
+# silently never compiled (engine-culling and engine-texture were in both
+# codex/test and codex/test/forewords until the root pair was renamed
+# 2026-08-22; none collide today, and this guard stays for the next pair
+# somebody adds). Split those into separate batches so
 # every chapter gets its own directory, and assert the count afterwards.
 $byStem = @{}
 $lists = @()

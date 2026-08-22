@@ -35,4 +35,46 @@ not carried forward (L-COUNT).
 
 ## Landed this cycle
 
-*(nothing yet)*
+### Interim mirror push, 2026-08-22, seed `A01C1547` (unchanged since Update 49)
+
+Not a release: a mirror update carrying main 19069 to 19104, all of it
+build scripts, tests and docs, the seed untouched. No release proof was
+re-run for it and none was owed: the four proofs certify a seed, and this
+seed carried them on 2026-08-21. What it carries is **the battery
+choreography** (Damian's direction 2026-08-22, red coordinating, fester on
+item 2): **the full battery went from about 10.5 minutes to 123 s** on a
+quiet box (phase 1 ~8 min to 58 s, phase 2 151 s to 53 s), measured three
+times that day, the first two on a box something else was loading.
+
+- **The batch compiler's parser was quadratic** (red, main 19081).
+  `$raw = if (...) { ReadAllBytes } else { ... }` ran the `byte[]` through
+  the pipeline and landed an `Object[]` of boxed bytes, so every `GetString`
+  and `Array.Copy` re-converted the whole capture: 96 tests 132 s to 0.8 s,
+  and the release batches of 193 had spent 417 to 456 s parsing against 20
+  to 62 s compiling. One direct assignment in the generator.
+- **Batches are dealt by size** (red, 19086): the last run's `.src-bytes`,
+  heaviest first onto the lightest batch; round-robin had put 11.0 to 17.4 MB
+  per batch, size-dealt 14.2 MB each.
+- **`codex-vm -run-list`** (fester, 19092): a supervisor that spawns a FRESH
+  `codex-vm` child per line and reports `exit`, `output`, `dropped` and `ms`
+  per line, so a batch is byte-identical to N single runs by construction.
+  Measured: the `pwsh` child per test was 501 of the 575 ms a test cost, the
+  exe's own start 12.6 ms; reusing a process would have bought 2 per cent for
+  376 host globals to reset. `build/check-run-list.ps1`, five arms.
+- **Both harnesses run their phase 2 through it** (red, 19095 and 19098),
+  one supervisor per `-Jobs` slot, proven byte-identical to `test-run.ps1`
+  on every sidecar kind. On the way: **a `-RedirectStandardError` file
+  anywhere on D: costs ~7.5 ms per stderr line** (2.6 s against 12.3 s for
+  the same eight supervisors), now a standing bed fact in the Assay; both
+  harnesses capture on the system temp and move the file afterwards.
+- **Two root tests renamed** (red, 19100): `engine-culling-cost` and
+  `engine-texture-cost` had shared stems with the `forewords/` smoke tests
+  and the battery keyed verdicts by stem.
+- **`test-run.ps1` releases its writable disk copies** (red, 19102): 9,340
+  leaked temp images, 15.7 GB, since 2026-06-15.
+- **Open, for the `tools/codex-vm.c` claim holder:** SMP teardown. One SMP
+  test per battery run went red and each a different one: `smp-affinity`
+  hung at exit for 60 s with its complete output on the wire, `smp-halt`'s
+  child faulted on the host (`0xC0000005`) at teardown after its complete
+  output. Each green standalone three of three; the harness passes the case
+  as `test-run.ps1` always did and the register records it.

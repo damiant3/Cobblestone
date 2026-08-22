@@ -338,9 +338,50 @@ for ($j = 0; $j -lt $Jobs; $j++) {
     $listFiles += $lf
     $writers += [System.IO.StreamWriter]::new($lf, $false, [System.Text.UTF8Encoding]::new($false))
 }
+# Dealt by the LAST run's measured unit size (.src-bytes under $OutRoot, which
+# survives between runs), heaviest first onto the lightest batch, rather than
+# $i % $Jobs. Measured 2026-08-20 at -Jobs 8: round-robin put 11.0 to 17.4 MB
+# into the eight batches and their VMs ran 20 to 62 s; size-dealt, 14.2 MB each.
+# A test with no reading goes to the batch with the fewest members (by load it
+# would pile every new test onto one batch: measured, 110 of them on one slot),
+# so a tree with no readings at all deals exactly as round-robin did. Heavy-first
+# order is pinned by the original index, because Sort-Object -Descending reverses
+# tied order and the control came out balanced but not round-robin. Each batch
+# keeps the lightest-first order from above.
+$weightOf = @{}
+$indexOf = @{}
 for ($i = 0; $i -lt $toCompile.Count; $i++) {
-    $writers[$i % $Jobs].WriteLine($toCompile[$i])
+    $src = $toCompile[$i]
+    $indexOf[$src] = $i
+    $n = [System.IO.Path]::GetFileNameWithoutExtension($src)
+    $sbF = Join-Path (Join-Path $OutRoot $n) '.src-bytes'
+    $w = 0L
+    if (Test-Path -PathType Leaf $sbF) {
+        $sbText = (Get-Content -TotalCount 1 $sbF -ErrorAction SilentlyContinue)
+        if ($sbText -and ($sbText.Trim() -match '^\d+$')) { $w = [long]$sbText.Trim() }
+    }
+    $weightOf[$src] = $w
 }
+$slotOf = @{}
+$slotLoad = New-Object 'long[]' $Jobs
+$slotCount = New-Object 'int[]' $Jobs
+$byWeight = @($toCompile | Sort-Object @{ Expression = { $weightOf[$_] }; Descending = $true }, @{ Expression = { $indexOf[$_] }; Descending = $false })
+foreach ($src in $byWeight) {
+    $k = 0
+    if ($weightOf[$src] -gt 0) {
+        for ($s = 1; $s -lt $Jobs; $s++) {
+            if ($slotLoad[$s] -lt $slotLoad[$k] -or ($slotLoad[$s] -eq $slotLoad[$k] -and $slotCount[$s] -lt $slotCount[$k])) { $k = $s }
+        }
+    } else {
+        for ($s = 1; $s -lt $Jobs; $s++) {
+            if ($slotCount[$s] -lt $slotCount[$k] -or ($slotCount[$s] -eq $slotCount[$k] -and $slotLoad[$s] -lt $slotLoad[$k])) { $k = $s }
+        }
+    }
+    $slotOf[$src] = $k
+    $slotLoad[$k] += $weightOf[$src]
+    $slotCount[$k] += 1
+}
+foreach ($src in $toCompile) { $writers[$slotOf[$src]].WriteLine($src) }
 foreach ($w in $writers) { $w.Close() }
 
 $compileScript = Join-Path $PSScriptRoot 'test-compile-batch.ps1'
@@ -688,7 +729,12 @@ foreach ($src in $toCompile) {
 }
 
 # ===========================================================================
-# Phase 2: Run tests with .expected files (individual VM per test)
+# Phase 2: Run tests with .expected files. One codex-vm -run-list supervisor
+# per job slot, a FRESH codex-vm child per test, so the cold boot a single run
+# proves is unchanged (OperatorsManual "Batch mode: -run-list"). Measured
+# 2026-08-22 at -Jobs 8: a pwsh child per test cost 575 ms of which codex-vm
+# itself was 74 ms, and 1,313 runs spent 151 s here. Under CODEX_VM_HOST=qemu
+# the per-test test-run.ps1 path stays, because -run-list is codex-vm's.
 # ===========================================================================
 if ($needsRun.Count -gt 0) {
     $fatalCount = @($needsRun | Where-Object { $_.ContainsKey('Fatal') -and $_.Fatal }).Count
@@ -696,104 +742,247 @@ if ($needsRun.Count -gt 0) {
     if ($fatalCount -gt 0) { $runLabel += " ($fatalCount judged on the fault, not on .expected)" }
     Write-Host "$runLabel, $Jobs parallel..."
 
-    $coreQueue = [System.Collections.Concurrent.ConcurrentQueue[int]]::new()
-    for ($i = 0; $i -lt $Jobs; $i++) { $coreQueue.Enqueue(($i + 1) % 8) }
-
-    $runWorker = {
-        $t = $_
-        $name = $t.Name
-        $bin  = $t.Bin
-        $expectedFile = $t.Expected
-        $stdinFile    = $t.Stdin
-        $keysFile     = $t.Keys
-        $diskFile     = $t.Disk
-        $disk2File    = $t.Disk2
-        $smpCores     = $t.Smp
-        $vmArgsFile   = $t.VmArgs
-        $out  = Join-Path $using:OutRoot $name
-        $resultFile = Join-Path $using:ResultsDir $name
-        $runScript  = Join-Path $using:PSScriptRoot 'test-run.ps1'
-        $actual = Join-Path $out 'runtime.actual'
-
-        # ANY UNCAUGHT THROW HERE ENDS THE WHOLE BATTERY, not one test.
-        # WaitForExit returns before Windows releases a redirected handle,
-        # so a bare read of runtime.actual can land on a locked file while
-        # ErrorActionPreference is Stop. test-cross-batch.ps1 lost 457 tests
-        # to exactly that and stranded five guests at 115,597 CPU-seconds,
-        # because the harness that dies is also the thing enforcing every
-        # child ceiling. Unreadable reads as empty, which fails toward a
-        # reported failure rather than a silent pass.
-        function Read-LogShared([string]$path) {
-            for ($ri = 0; $ri -lt 5; $ri++) {
-                try {
-                    $fs = [System.IO.FileStream]::new($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                    try { $sr = [System.IO.StreamReader]::new($fs); return $sr.ReadToEnd() } finally { $fs.Dispose() }
-                } catch { Start-Sleep -Milliseconds 100 }
-            }
-            return ''
+    # ANY UNCAUGHT THROW HERE ENDS THE WHOLE BATTERY, not one test.
+    # WaitForExit returns before Windows releases a redirected handle,
+    # so a bare read of an output can land on a locked file while
+    # ErrorActionPreference is Stop. test-cross-batch.ps1 lost 457 tests
+    # to exactly that and stranded five guests at 115,597 CPU-seconds,
+    # because the harness that dies is also the thing enforcing every
+    # child ceiling. Unreadable reads as empty, which fails toward a
+    # reported failure rather than a silent pass.
+    function Read-LogShared([string]$path) {
+        for ($ri = 0; $ri -lt 5; $ri++) {
+            try {
+                $fs = [System.IO.FileStream]::new($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try { $sr = [System.IO.StreamReader]::new($fs); return $sr.ReadToEnd() } finally { $fs.Dispose() }
+            } catch { Start-Sleep -Milliseconds 100 }
         }
+        return ''
+    }
 
-        $cq = $using:coreQueue
-        $pcore = 1
-        [void]$cq.TryDequeue([ref]$pcore)
-
-        try {
-            $runArgs = @('-NoProfile', '-File', $runScript, '-Kernel', $bin, '-OutFile', $actual, '-PCore', $pcore)
-            if (Test-Path -PathType Leaf $stdinFile) { $runArgs += @('-StdinFile', $stdinFile) }
-            if (Test-Path -PathType Leaf $keysFile)  { $runArgs += @('-KeysFile', $keysFile) }
-            if (Test-Path -PathType Leaf $diskFile)  { $runArgs += @('-DiskFile', $diskFile) }
-            if (Test-Path -PathType Leaf $disk2File) { $runArgs += @('-Disk2File', $disk2File) }
-            if ($smpCores -gt 1)                     { $runArgs += @('-Smp', $smpCores) }
-            if (Test-Path -PathType Leaf $vmArgsFile) { $runArgs += @('-VmArgsFile', $vmArgsFile) }
-            $runSw = [System.Diagnostics.Stopwatch]::StartNew()
-            & pwsh @runArgs
-            $runSw.Stop()
-            "$($runSw.ElapsedMilliseconds)" | Set-Content -Path (Join-Path $out '.run-ms') -Encoding UTF8
-            # A fatal test is judged on the fault, not on a byte-compare.
-            # ContainsKey rather than a property read: the other entries in
-            # $needsRun do not carry this key.
-            if ($t.ContainsKey('Fatal') -and $t.Fatal) {
-                $txt = if (Test-Path $actual) { Read-LogShared $actual } else { '' }
-                if ($txt -match '!EXC=([0-9A-Fa-f]{1,2})') {
-                    $got = $matches[1].ToUpper()
-                    if ($t.ExpectExc -and ($got -ne $t.ExpectExc)) {
-                        "FAIL_FATAL_EXC`t$name`tfaulted with EXC=$got, expected EXC=$($t.ExpectExc)" | Set-Content -Path $resultFile -Encoding UTF8
-                    } else {
-                        "PASS_FATAL`t$name`tEXC=$got" | Set-Content -Path $resultFile -Encoding UTF8
-                    }
-                } elseif ($LASTEXITCODE -ne 0 -or $txt -eq '') {
-                    # No output at all is not survival and must not be read as
-                    # one: it is a hang, a wall-budget kill, or a VM that died
-                    # without printing. Say so rather than guessing.
-                    "FAIL_RUNTIME`t$name`tno output, so the fault could not be observed" | Set-Content -Path $resultFile -Encoding UTF8
-                } else {
-                    # THE CASE THIS TIER EXISTS FOR. The program ran to
-                    # completion where it was supposed to die, which is what a
-                    # bounds check that stopped firing looks like.
-                    "FAIL_FATAL_SURVIVED`t$name`tran to completion without faulting" | Set-Content -Path $resultFile -Encoding UTF8
-                }
-                return
-            }
-
-            if ($LASTEXITCODE -ne 0) {
-                "FAIL_RUNTIME`t$name`trun failed" | Set-Content -Path $resultFile -Encoding UTF8
-                return
-            }
-
-            $expectedBytes = (Read-LogShared $expectedFile) -replace "`r",''
-            $actualBytes   = if (Test-Path $actual) { Read-LogShared $actual } else { '' }
-            if ($expectedBytes -eq $actualBytes) {
-                "PASS_EXPECTED`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
+    # The verdict on one test from what its run left behind: $RunOk and $Why
+    # from the supervisor's END line, the raw capture filtered exactly as
+    # test-run.ps1 filtered it (CR and a leading SOH stripped, HEAP:/WD:/STACK:
+    # telemetry dropped, trailing blank lines cut) into runtime.actual.
+    function Write-RunVerdict($t, [bool]$RunOk, [string]$Why) {
+        $name = $t.Name
+        $out = Join-Path $OutRoot $name
+        $resultFile = Join-Path $ResultsDir $name
+        $actual = Join-Path $out 'runtime.actual'
+        $txt = ''
+        if ($RunOk) {
+            if ((-not (Test-Path -PathType Leaf $t.Raw)) -or (Get-Item $t.Raw).Length -eq 0) {
+                $RunOk = $false; $Why = 'no output'
             } else {
-                "FAIL_OUTPUT`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
+                $raw = (Read-LogShared $t.Raw) -replace "`r", '' -replace "^\x01", ''
+                $kept = [System.Collections.Generic.List[string]]::new()
+                foreach ($l in ($raw -split "`n")) {
+                    if ($l.StartsWith('HEAP:') -or $l.StartsWith('WD:') -or $l.StartsWith('STACK:')) { continue }
+                    [void]$kept.Add($l)
+                }
+                while ($kept.Count -gt 0 -and $kept[$kept.Count - 1] -eq '') { $kept.RemoveAt($kept.Count - 1) }
+                $txt = if ($kept.Count -gt 0) { ($kept -join "`n") + "`n" } else { '' }
             }
-        } finally {
-            $cq.Enqueue($pcore)
+        }
+        [System.IO.File]::WriteAllText($actual, $txt, [System.Text.UTF8Encoding]::new($false))
+        # A fatal test is judged on the fault, not on a byte-compare.
+        # ContainsKey rather than a property read: the other entries in
+        # $needsRun do not carry this key.
+        if ($t.ContainsKey('Fatal') -and $t.Fatal) {
+            if ($txt -match '!EXC=([0-9A-Fa-f]{1,2})') {
+                $got = $matches[1].ToUpper()
+                if ($t.ExpectExc -and ($got -ne $t.ExpectExc)) {
+                    "FAIL_FATAL_EXC`t$name`tfaulted with EXC=$got, expected EXC=$($t.ExpectExc)" | Set-Content -Path $resultFile -Encoding UTF8
+                } else {
+                    "PASS_FATAL`t$name`tEXC=$got" | Set-Content -Path $resultFile -Encoding UTF8
+                }
+            } elseif ((-not $RunOk) -or $txt -eq '') {
+                # No output at all is not survival and must not be read as
+                # one: it is a hang, a wall-budget kill, or a VM that died
+                # without printing. Say so rather than guessing.
+                "FAIL_RUNTIME`t$name`tno output, so the fault could not be observed" | Set-Content -Path $resultFile -Encoding UTF8
+            } else {
+                # THE CASE THIS TIER EXISTS FOR. The program ran to
+                # completion where it was supposed to die, which is what a
+                # bounds check that stopped firing looks like.
+                "FAIL_FATAL_SURVIVED`t$name`tran to completion without faulting" | Set-Content -Path $resultFile -Encoding UTF8
+            }
+            return
+        }
+        if (-not $RunOk) {
+            "FAIL_RUNTIME`t$name`t$Why" | Set-Content -Path $resultFile -Encoding UTF8
+            return
+        }
+        $expectedBytes = (Read-LogShared $t.Expected) -replace "`r", ''
+        if ($expectedBytes -eq $txt) {
+            "PASS_EXPECTED`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
+        } else {
+            "FAIL_OUTPUT`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
         }
     }
 
     $phase2Sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $needsRun | ForEach-Object -Parallel $runWorker -ThrottleLimit $Jobs
+    if ($env:CODEX_VM_HOST -eq 'qemu') {
+        $runWorker = {
+            $t = $_
+            $runScript = Join-Path $using:PSScriptRoot 'test-run.ps1'
+            $out = Join-Path $using:OutRoot $t.Name
+            $t.Raw = Join-Path $out 'runtime.raw'
+            $runArgs = @('-NoProfile', '-File', $runScript, '-Kernel', $t.Bin, '-OutFile', $t.Raw)
+            if (Test-Path -PathType Leaf $t.Stdin)  { $runArgs += @('-StdinFile', $t.Stdin) }
+            if (Test-Path -PathType Leaf $t.Keys)   { $runArgs += @('-KeysFile', $t.Keys) }
+            if (Test-Path -PathType Leaf $t.Disk)   { $runArgs += @('-DiskFile', $t.Disk) }
+            if (Test-Path -PathType Leaf $t.Disk2)  { $runArgs += @('-Disk2File', $t.Disk2) }
+            if ($t.Smp -gt 1)                       { $runArgs += @('-Smp', $t.Smp) }
+            if (Test-Path -PathType Leaf $t.VmArgs) { $runArgs += @('-VmArgsFile', $t.VmArgs) }
+            $runSw = [System.Diagnostics.Stopwatch]::StartNew()
+            & pwsh @runArgs
+            $runSw.Stop()
+            "$($runSw.ElapsedMilliseconds)" | Set-Content -Path (Join-Path $out '.run-ms') -Encoding UTF8
+            $t.RunOk = ($LASTEXITCODE -eq 0)
+            $t.Why = 'run failed'
+        }
+        $needsRun | ForEach-Object -Parallel $runWorker -ThrottleLimit $Jobs
+        foreach ($t in $needsRun) { Write-RunVerdict $t $t.RunOk $t.Why }
+    } else {
+        $runDir = Join-Path $OutRoot '_runs'
+        if (Test-Path $runDir) { Remove-Item -Recurse -Force $runDir }
+        New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+
+        # Dealt by the last run's .run-ms, heaviest first onto the lightest
+        # slot, the rule phase 1 uses for .src-bytes: a test with no reading
+        # goes to the slot with the fewest members. The few multi-second
+        # network tests are what this balances; the rest run in ~80 ms.
+        $runWeight = @{}
+        $runIndex = @{}
+        for ($i = 0; $i -lt $needsRun.Count; $i++) {
+            $t = $needsRun[$i]
+            $runIndex[$t.Name] = $i
+            $w = 0L
+            $rmF = Join-Path (Join-Path $OutRoot $t.Name) '.run-ms'
+            if (Test-Path -PathType Leaf $rmF) {
+                $rmText = (Get-Content -TotalCount 1 $rmF -ErrorAction SilentlyContinue)
+                if ($rmText -and ($rmText.Trim() -match '^\d+$')) { $w = [long]$rmText.Trim() }
+            }
+            $runWeight[$t.Name] = $w
+        }
+        $slotLoad = New-Object 'long[]' $Jobs
+        $slotCount = New-Object 'int[]' $Jobs
+        $slotMembers = @{}
+        for ($s = 0; $s -lt $Jobs; $s++) { $slotMembers[$s] = [System.Collections.Generic.List[hashtable]]::new() }
+        $byRun = @($needsRun | Sort-Object @{ Expression = { $runWeight[$_.Name] }; Descending = $true }, @{ Expression = { $runIndex[$_.Name] }; Descending = $false })
+        foreach ($t in $byRun) {
+            $k = 0
+            if ($runWeight[$t.Name] -gt 0) {
+                for ($s = 1; $s -lt $Jobs; $s++) {
+                    if ($slotLoad[$s] -lt $slotLoad[$k] -or ($slotLoad[$s] -eq $slotLoad[$k] -and $slotCount[$s] -lt $slotCount[$k])) { $k = $s }
+                }
+            } else {
+                for ($s = 1; $s -lt $Jobs; $s++) {
+                    if ($slotCount[$s] -lt $slotCount[$k] -or ($slotCount[$s] -eq $slotCount[$k] -and $slotLoad[$s] -lt $slotLoad[$k])) { $k = $s }
+                }
+            }
+            $slotMembers[$k].Add($t)
+            $slotLoad[$k] += $runWeight[$t.Name]
+            $slotCount[$k] += 1
+        }
+
+        # Every token double-quoted: that is what -run-list's splitter takes,
+        # and it is what keeps a path with a space in one piece.
+        function Format-RunLine([string[]]$Tokens) { return ($Tokens | ForEach-Object { '"' + $_ + '"' }) -join ' ' }
+
+        # The sidecar preparation test-run.ps1 did stays with the caller: a
+        # depot .disk is read-only after sync and codex-vm flushes writes
+        # durably, so each image is copied to a writable temp for its run.
+        $tempFiles = [System.Collections.Generic.List[string]]::new()
+        $slotLists = @{}
+        $slotErrs = @{}
+        for ($s = 0; $s -lt $Jobs; $s++) {
+            $lines = [System.Collections.Generic.List[string]]::new()
+            foreach ($t in $slotMembers[$s]) {
+                $out = Join-Path $OutRoot $t.Name
+                $t.Raw = Join-Path $out 'runtime.raw'
+                if (Test-Path $t.Raw) { Remove-Item -Force $t.Raw }
+                $tokens = @('-kernel', $t.Bin, '-output', $t.Raw, '-mem', '3072', '-headless')
+                if (Test-Path -PathType Leaf $t.Stdin) { $tokens += @('-input', $t.Stdin) }
+                if (Test-Path -PathType Leaf $t.Keys)  { $tokens += @('-keys-file', $t.Keys) }
+                if (Test-Path -PathType Leaf $t.Disk) {
+                    $diskWork = [System.IO.Path]::GetTempFileName()
+                    $tempFiles.Add($diskWork)
+                    [System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($t.Disk))
+                    $tokens += @('-disk', $diskWork)
+                }
+                if (Test-Path -PathType Leaf $t.Disk2) {
+                    $disk2Work = [System.IO.Path]::GetTempFileName()
+                    $tempFiles.Add($disk2Work)
+                    [System.IO.File]::WriteAllBytes($disk2Work, [System.IO.File]::ReadAllBytes($t.Disk2))
+                    $tokens += @('-disk2', $disk2Work)
+                }
+                if ($t.Smp -gt 1) { $tokens += @('-smp', "$($t.Smp)") }
+                if (Test-Path -PathType Leaf $t.VmArgs) {
+                    foreach ($line in (Get-Content $t.VmArgs)) {
+                        $line = $line.Trim()
+                        if (-not $line -or $line.StartsWith('#')) { continue }
+                        $tokens += ($line -split '\s+')
+                    }
+                }
+                [void]$lines.Add((Format-RunLine $tokens))
+            }
+            $slotLists[$s] = Join-Path $runDir "run-$s.txt"
+            # The supervisor's stderr is captured on the SYSTEM temp and moved
+            # into _runs afterwards. Measured 2026-08-22: the same eight
+            # supervisors took 2.6 s with the redirect file on C: and 12.3 to
+            # 12.7 s with it anywhere on D:, repo or not; a redirect is one
+            # write per stderr line and D: pays ~7.5 ms for each. test-run.ps1
+            # and the batch compiler only ever escaped this because
+            # GetTempFileName() lands on C:.
+            $slotErrs[$s] = [System.IO.Path]::GetTempFileName()
+            [System.IO.File]::WriteAllLines($slotLists[$s], $lines, [System.Text.UTF8Encoding]::new($false))
+        }
+
+        $vmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
+        $supervisors = @{}
+        for ($s = 0; $s -lt $Jobs; $s++) {
+            if ($slotMembers[$s].Count -eq 0) { continue }
+            $sa = @{ FilePath = $vmBin; ArgumentList = @('-run-list', $slotLists[$s]); PassThru = $true; RedirectStandardError = $slotErrs[$s] }
+            if ($IsWindows) { $sa.WindowStyle = 'Hidden' }
+            $supervisors[$s] = Start-Process @sa
+        }
+        foreach ($s in $supervisors.Keys) { $supervisors[$s].WaitForExit() }
+
+        # One END line per list line, attributed by its [i/N] index rather
+        # than by position, so a line the supervisor could not even report
+        # reads as NOEND on its own test and shifts nothing onto a neighbour.
+        foreach ($s in $slotMembers.Keys) {
+            $members = $slotMembers[$s]
+            if ($members.Count -eq 0) { continue }
+            $endOf = @{}
+            $errText = if (Test-Path -PathType Leaf $slotErrs[$s]) { Read-LogShared $slotErrs[$s] } else { '' }
+            if (Test-Path -PathType Leaf $slotErrs[$s]) { Move-Item -Force $slotErrs[$s] (Join-Path $runDir "run-$s.err") }
+            foreach ($l in ($errText -split "`n")) {
+                if ($l -match 'RUN-LIST END \[(\d+)/\d+\] .* exit=(\S+) output=(-?\d+) dropped=(\d+) ms=(\d+)') {
+                    $endOf[[int]$matches[1]] = @{ Exit = $matches[2]; Dropped = [long]$matches[4]; Ms = $matches[5] }
+                }
+            }
+            for ($i = 0; $i -lt $members.Count; $i++) {
+                $t = $members[$i]
+                $out = Join-Path $OutRoot $t.Name
+                $runOk = $true
+                $why = ''
+                if (-not $endOf.ContainsKey($i + 1)) {
+                    $runOk = $false; $why = 'the -run-list supervisor reported no END line for this test'
+                } else {
+                    $e = $endOf[$i + 1]
+                    "$($e.Ms)" | Set-Content -Path (Join-Path $out '.run-ms') -Encoding UTF8
+                    if ($e.Exit -eq 'TIMEOUT') { $runOk = $false; $why = 'wall budget exceeded' }
+                    elseif ($e.Exit -eq 'SPAWNFAIL') { $runOk = $false; $why = 'codex-vm could not be spawned for this test' }
+                    elseif ($e.Dropped -gt 0) { $runOk = $false; $why = "codex-vm dropped $($e.Dropped) guest serial bytes: the capture is SHORT and any comparison against it is meaningless" }
+                }
+                Write-RunVerdict $t $runOk $why
+            }
+        }
+        foreach ($f in $tempFiles) { Remove-Item -Force $f -ErrorAction SilentlyContinue }
+    }
     $phase2Sw.Stop()
     Write-Host "Phase 2 (run) complete in $([int]($phase2Sw.ElapsedMilliseconds/1000))s."
 } else {
