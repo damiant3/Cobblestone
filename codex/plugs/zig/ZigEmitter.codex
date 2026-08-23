@@ -69,10 +69,43 @@ Section: Keywords and Sanitization
   is-zig-prelude-decl (s) =
    is-zig-keyword-loop zig-prelude-decls s 0 (list-length zig-prelude-decls)
 
+ A zig identifier is ASCII: letters, digits and underscore, or any
+ string at all inside @"...". Codex names may carry the Tier-0 letters
+ (CCE 97..127, `café`) and the lexer accepts them, so a name is made
+ ASCII before anything else looks at it -- transliterated, not quoted,
+ because the prefixed names below splice it into a longer identifier
+ where a quote cannot sit. The codes are CCE: 3..12 are the digits and
+ 13..64 the ASCII letters, so the ASCII-identifier set is one band plus
+ the underscore, and any other code becomes `_<code>`. Most names are
+ already ASCII; the scan says so without rebuilding them. Finding 35.
+
+  zig-ident-code-ok : Integer -> Boolean
+  zig-ident-code-ok (c) =
+   ((c >= 3) & (c <= 64)) | (c == char-code '_')
+
+  zig-ident-is-ascii : Text, Integer, Integer -> Boolean
+  zig-ident-is-ascii (s) (i) (len) =
+   if i >= len then True
+   else if zig-ident-code-ok (char-code-at s i) then zig-ident-is-ascii s (i + 1) len
+   else False
+
+  zig-ident-rebuild : Text, Integer, Integer, Text -> Text
+  zig-ident-rebuild (s) (i) (len) (acc) =
+   if i >= len then acc
+   else let c = char-code-at s i
+   in if zig-ident-code-ok c then zig-ident-rebuild s (i + 1) len (acc & char-to-text (char-at s i))
+   else zig-ident-rebuild s (i + 1) len (acc & "_" & integer-to-text c)
+
+  zig-ascii-ident : Text -> Text
+  zig-ascii-ident (s) =
+   let len = text-length s
+   in if zig-ident-is-ascii s 0 len then s
+   else zig-ident-rebuild s 0 len ""
+
   zig-sanitize : Text -> Text
   zig-sanitize (name) =
    let s0 = text-replace name "-" "_"
-   in let s = text-replace s0 "/" "_"
+   in let s = zig-ascii-ident (text-replace s0 "/" "_")
    in if is-zig-prelude-decl s then s & "_"
       else if is-zig-keyword s | is-zig-primitive s then "@\"" & s & "\""
       else s
@@ -85,7 +118,7 @@ Section: Keywords and Sanitization
   zig-raw-ident : Text -> Text
   zig-raw-ident (name) =
    let s0 = text-replace name "-" "_"
-   in text-replace s0 "/" "_"
+   in zig-ascii-ident (text-replace s0 "/" "_")
 
  Field names arrive from the IR as name/index pairs like errors/5; the
  index restates what the name already says, so accessors drop it.
