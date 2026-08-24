@@ -2509,7 +2509,7 @@ Section: Tail Call Loops
 
   ZigTail = record {
    tail-name : Text,
-   tail-arity : Integer between 0 and 255,
+   tail-arity : Integer,
    tail-vars : List Text
   }
 
@@ -2566,10 +2566,23 @@ Section: Tail Call Loops
  and one whose name is not applied at full arity in any tail position
  gains nothing, so both keep the plain form.
 
+ Zig will not hold a bare function type in a var -- it must be const or
+ comptime -- so a parameter of function type has no loop variable to be.
+ Such a definition keeps the plain form; declining is what this walk does
+ with every shape it cannot carry.
+
+  zig-tail-params-ok : List IRParam, Integer -> Boolean
+  zig-tail-params-ok (params) (i) =
+   if i >= list-length params then True
+   else when ((list-at params i).type-val)
+    is FunTy (p) (fnrow) (r) -> False
+    is otherwise -> zig-tail-params-ok params (i + 1)
+
   zig-tail-for : IRDef -> ZigTail
   zig-tail-for (d) =
    let n = list-length (d.params)
    in if n == 0 then zig-tail-none
+   else if zig-tail-params-ok (d.params) 0 == False then zig-tail-none
    else let probe = ZigTail {
     tail-name = d.name,
     tail-arity = n,
@@ -2636,14 +2649,20 @@ Section: Tail Call Loops
  parameter is. It is still assigned by every jump, which is what keeps
  zig from asking for a const instead.
 
-  emit-zig-tail-vars : List IRParam, Integer, IRExpr -> Text
-  emit-zig-tail-vars (params) (i) (body) =
+ The var initialises from the name the PARAMETER is emitted under, not
+ from the name the IR spells: a parameter that shadows a top-level
+ definition has already been renamed by zig-push-param-renames, and
+ reading the raw name here left the real parameter unused and named one
+ that does not exist. zig-def-param-name is the one place that knows.
+
+  emit-zig-tail-vars : List IRParam, Integer, IRExpr, ZigCtx -> Text
+  emit-zig-tail-vars (params) (i) (body) (ctx) =
    if i >= list-length params then ""
    else let p = list-at params i
    in let v = zig-tail-var (p.name)
-   in "    var " & v & " = " & zig-sanitize (p.name) & ";\n"
+   in "    var " & v & " = " & zig-def-param-name ctx (p.name) & ";\n"
     & (if zig-occurs body (p.name) then "" else "    _ = " & v & ";\n")
-    & emit-zig-tail-vars params (i + 1) body
+    & emit-zig-tail-vars params (i + 1) body ctx
 
   zig-push-tail-renames : ZigCtx, List IRParam, Integer -> ZigCtx
   zig-push-tail-renames (ctx) (params) (i) =
@@ -2820,7 +2839,7 @@ Section: Definition Emission
     & zig-eval-quota (d.body)
    in if zig-tail-active tl
    then head
-    & emit-zig-tail-vars (d.params) 0 (d.body)
+    & emit-zig-tail-vars (d.params) 0 (d.body) (zig-push-param-renames ctx (d.params) 0)
     & "    while (true) {\n        "
     & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames ctx (d.params) 0) (d.params) 0) 0 tl
     & "\n    }\n}\n\n"
