@@ -212,12 +212,17 @@ observed end to end: `((even-fn 4) 20) 22` against a one-ary definition
 emits `even_fn(4, 20, 22)` and zig refuses it at compile time with
 `expected 1 argument(s), found 3`. That one is the ladder's to fix and
 is not this row. For riscv and java this entry offers the dispatch code
-and the grep, NOT an observed miscompile: the ladder's host has no
-PowerShell and no prebuilt plug binaries, so `test-plugs.ps1` cannot run
-there, and nothing in the harness compiles emitted Java in any case.
-Per this file's own standing hazard about name censuses, treat the
-runtime consequence as inferred from the emitted shape until someone
-runs a subject through both plugs and reads the output.
+and the grep, NOT an observed miscompile. Per this file's own standing
+hazard about name censuses, treat the runtime consequence as inferred
+from the emitted shape until someone runs a subject through both plugs
+and reads the output. Note what would and would not catch it if someone
+did: `test-plugs.ps1` asserts non-empty text with markers and never
+COMPILES what a plug emitted, so it cannot detect this in `java` however
+often it runs, and by its own prose it does not drive `riscv` or `arm64`
+at all -- the native backends take `-IrInput` and emit the binary wire
+protocol, so they "fail parameter binding and exit 1 in under a second
+having done no work at all" and are deliberately absent from its plug
+list.
 
 **Why none of it was caught, which may be the cheaper half.**
 `codex/plugs/test-input/partial.codex` exercises under-application
