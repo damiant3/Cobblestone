@@ -212,10 +212,17 @@ observed end to end: `((even-fn 4) 20) 22` against a one-ary definition
 emits `even_fn(4, 20, 22)` and zig refuses it at compile time with
 `expected 1 argument(s), found 3`. That one is the ladder's to fix and
 is not this row. For riscv and java this entry offers the dispatch code
-and the grep, NOT an observed miscompile. Per this file's own standing
-hazard about name censuses, treat the runtime consequence as inferred
-from the emitted shape until someone runs a subject through both plugs
-and reads the output. Note what would and would not catch it if someone
+and the grep, NOT an observed miscompile, and the reporter is not going
+to supply one -- **this wants verifying on the depot side, where the
+toolchains are.** Per this file's own standing hazard about name
+censuses, treat the runtime consequence as inferred from the emitted
+shape until a subject has been run through both plugs and the output
+read. Concretely, what would settle it: over-apply a NAMED top-level
+definition that returns a function, emit Java, and check whether the call
+site names a method the same file declares with fewer parameters. The
+ladder host has no JDK and installing one is not its call, so the row is
+deliberately filed as a source-level report rather than held back until
+someone can run it. Note what would and would not catch it if someone
 did: `test-plugs.ps1` asserts non-empty text with markers and never
 COMPILES what a plug emitted, so it cannot detect this in `java` however
 often it runs, and by its own prose it does not drive `riscv` or `arm64`
