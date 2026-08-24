@@ -1368,7 +1368,7 @@ Section: Expression Emission
     is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e ctx d
     is IrLambda (params) (body) (ty) (sp) -> zig-lambda-closure params body ty ctx d
     is IrList (elems) (ty) (sp) -> emit-zig-list elems ty ctx d
-    is IrMatch (scrut) (branches) (ty) (sp) -> emit-zig-match scrut branches ctx d ty
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-zig-match scrut branches ctx d ty zig-tail-none
     is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts ctx d (zig-type-is-void ty)
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> if list-length clauses == 0 then emit-zig-expr body ctx (d + 1) else "@compileError(\"zig plug: effect handlers not supported\")"
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
@@ -1807,20 +1807,20 @@ Section: Match Emission
  it off the match -- the fifth context an empty list can learn from, after
  a record field, a callee parameter, a constructor payload and an if arm.
 
-  emit-zig-match : IRExpr, List IRBranch, ZigCtx, Integer, CodexType -> Text
-  emit-zig-match (scrut) (branches) (ctx) (d) (mty0) =
+  emit-zig-match : IRExpr, List IRBranch, ZigCtx, Integer, CodexType, ZigTail -> Text
+  emit-zig-match (scrut) (branches) (ctx) (d) (mty0) (tl) =
    let mty = if text-length (zig-ll-elem-opt mty0) > 0 then mty0
       else zig-arms-list-type branches 0 mty0
    in let ex = zig-match-exhaustive ctx (zig-expr-type scrut) branches
    in if zig-branches-guarded branches 0 then emit-zig-match-chain scrut branches ctx d mty
-   else zig-pin-lit-arms branches 0 ("switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex mty & " }")
+   else zig-pin-lit-arms branches 0 ("switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex mty tl & " }")
 
-  emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer, Boolean, CodexType -> Text
-  emit-zig-match-arms (branches) (i) (ctx) (d) (ex) (mty) =
+  emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer, Boolean, CodexType, ZigTail -> Text
+  emit-zig-match-arms (branches) (i) (ctx) (d) (ex) (mty) (tl) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty
-      & emit-zig-match-arms branches (i + 1) ctx d ex mty
+   in emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty tl
+      & emit-zig-match-arms branches (i + 1) ctx d ex mty tl
 
  Constructor arms bind payloads: one field binds by name directly; a
  tuple payload binds `_p<d>` and unpacks into consts inside a labeled
@@ -1861,25 +1861,44 @@ Section: Match Emission
     is IrWildPat (sp) -> True
     is otherwise -> False
 
-  emit-zig-match-arm : IRPat, IRExpr, ZigCtx, Integer, Boolean, CodexType -> Text
-  emit-zig-match-arm (pat) (body0) (ctx) (d) (ex) (mty) =
+ An arm body is emitted one of two ways and the choice is the same for
+ every arm shape, so it is a flag rather than a second arm emitter: a
+ duplicate of this walk is exactly the sibling-mechanism drift the
+ renamed-scan and subst-all pair already cost once. When the tail record
+ is active the body is a statement block, and a self-call inside it
+ continues the enclosing loop instead of returning a value.
+
+  emit-zig-arm-body-tail : IRExpr, CodexType, ZigCtx, Integer, ZigTail -> Text
+  emit-zig-arm-body-tail (body) (mty) (ctx) (d) (tl) =
+   if zig-tail-active tl
+   then "{ " & emit-zig-tail body ctx (d + 1) tl & " }"
+   else emit-zig-arm-body body mty ctx d
+
+ A prong that unpacks a tuple payload binds inside a labeled block, which
+ is an expression; in tail form the same unpacking has to sit in a plain
+ block instead, because `break` cannot carry a `continue` out of it.
+
+  emit-zig-match-arm : IRPat, IRExpr, ZigCtx, Integer, Boolean, CodexType, ZigTail -> Text
+  emit-zig-match-arm (pat) (body0) (ctx) (d) (ex) (mty) (tl) =
    let body = body0
    in if ex & zig-pat-is-catch-all pat then ""
    else when pat
-    is IrLitPat (text) (ty) (sp) -> text & " => " & emit-zig-arm-body body mty ctx d & ", "
+    is IrLitPat (text) (ty) (sp) -> text & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
-     in if nsubs == 0 then "." & zig-sanitize name & " => " & emit-zig-arm-body body mty ctx d & ", "
+     in if nsubs == 0 then "." & zig-sanitize name & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
      else if nsubs == 1 then
       let binder = zig-pat-binder (list-at subs 0) 0
       in if (binder == "_") | (zig-occurs body binder == False)
-         then "." & zig-sanitize name & " => " & emit-zig-arm-body body mty ctx d & ", "
-         else "." & zig-sanitize name & " => |" & zig-bind-name ctx binder d & "| " & emit-zig-arm-body body mty (zig-bind-push ctx binder d) d & ", "
+         then "." & zig-sanitize name & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
+         else "." & zig-sanitize name & " => |" & zig-bind-name ctx binder d & "| " & emit-zig-arm-body-tail body mty (zig-bind-push ctx binder d) d tl & ", "
      else if zig-any-sub-occurs subs 0 body == False
-     then "." & zig-sanitize name & " => " & emit-zig-arm-body body mty ctx d & ", "
+     then "." & zig-sanitize name & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
+     else if zig-tail-active tl
+     then "." & zig-sanitize name & " => |_p" & integer-to-text d & "| { " & emit-zig-pat-unpack subs 0 d body ctx & emit-zig-tail body (zig-push-bound-pats ctx subs 0 d) (d + 1) tl & " }, "
      else "." & zig-sanitize name & " => |_p" & integer-to-text d & "| " & zig-label d & ": { " & emit-zig-pat-unpack subs 0 d body ctx & "break :" & zig-label d & " " & emit-zig-arm-body body mty (zig-push-bound-pats ctx subs 0 d) d & "; }, "
-    is IrVarPat (name) (ty) (sp) -> "else => " & emit-zig-arm-body body mty ctx d & ", "
-    is IrWildPat (sp) -> "else => " & emit-zig-arm-body body mty ctx d & ", "
+    is IrVarPat (name) (ty) (sp) -> "else => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
+    is IrWildPat (sp) -> "else => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
     is IrVecPat (pats) (ty) (sp) -> "@compileError(\"zig plug: vector patterns not supported\"), "
 
   zig-any-sub-occurs : List IRPat, Integer, IRExpr -> Boolean
@@ -2467,6 +2486,183 @@ Section: Apply Emission
     & "; break :" & zig-label d & " " & fv & ".call(" & fv & ".ctx"
     & zig-closure-args args ctx d 0 & "); }"
 
+Section: Tail Call Loops
+
+ Bare metal tracks tail position and a self tail call there is a jump, so
+ a `*-loop (xs) (i) (acc)` costs no stack at all. This arm called instead,
+ and a Debug zig frame of a few hundred bytes times three million tokens
+ is a stack the thread does not have: `zigemit` died in tokenize-collect
+ on the 13 MB IR with 512 MB of stack, and with 2 GiB (finding 33).
+
+ So a definition whose TAIL positions include a self-call of its own full
+ arity becomes a loop: the parameters are copied into vars, the tail spine
+ emits as statements, and a self tail call assigns the next arguments and
+ continues. Every other call, including a self-call that is not in tail
+ position, is untouched and stays a call.
+
+ The transformation is an optimisation, so an unhandled shape is not a
+ refusal: a tail position this walk does not descend into simply emits
+ `return <expr>;` and whatever recursion is inside it stays recursion.
+ That keeps the emitted program correct under every shape and makes the
+ feature's reach a matter of how deep the spine walk goes, which is the
+ honest thing for it to depend on.
+
+  ZigTail = record {
+   tail-name : Text,
+   tail-arity : Integer between 0 and 255,
+   tail-vars : List Text
+  }
+
+  zig-tail-none : ZigTail
+  zig-tail-none = ZigTail { tail-name = "", tail-arity = 0, tail-vars = [] }
+
+  zig-tail-active : ZigTail -> Boolean
+  zig-tail-active (t) = text-length (t.tail-name) > 0
+
+ The loop's vars cannot be the parameters themselves: zig parameters are
+ immutable, and zig forbids shadowing them, so the var takes a prefix and
+ every mention of the parameter in the body is renamed to it through the
+ same renamed-from/renamed-to table lambdas and shadowed parameters use.
+
+  zig-tail-var : Text -> Text
+  zig-tail-var (n) = "_tl_" & zig-raw-ident n
+
+  zig-tail-var-names : List IRParam, Integer -> List Text
+  zig-tail-var-names (params) (i) =
+   if i >= list-length params then []
+   else [zig-tail-var ((list-at params i).name)] & zig-tail-var-names params (i + 1)
+
+  zig-tail-self-call : IRExpr, ZigTail -> Boolean
+  zig-tail-self-call (e) (tl) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let chain = collect-apply-chain e []
+     in when chain.root
+      is IrName (n) (nty) (nsp) -> n == (tl.tail-name) & list-length (chain.args) == (tl.tail-arity)
+      is otherwise -> False
+    is otherwise -> False
+
+ A guarded match compiles to a chain of ifs ending in unreachable rather
+ than a switch, and that chain is built as an expression; the spine stops
+ there rather than growing a second statement form for it.
+
+  zig-tail-has-self : IRExpr, ZigTail -> Boolean
+  zig-tail-has-self (e) (tl) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> zig-tail-has-self t tl | zig-tail-has-self el tl
+    is IrLet (m) (ty) (v) (b) (sp) -> zig-tail-has-self b tl
+    is IrMatch (s) (bs) (ty) (sp) ->
+     if zig-branches-guarded bs 0 then False else zig-tail-has-self-branches bs 0 tl
+    is IrApply (f) (a) (ty) (sp) -> zig-tail-self-call e tl
+    is otherwise -> False
+
+  zig-tail-has-self-branches : List IRBranch, Integer, ZigTail -> Boolean
+  zig-tail-has-self-branches (bs) (i) (tl) =
+   if i >= list-length bs then False
+   else if zig-tail-has-self ((list-at bs i).body) tl then True
+   else zig-tail-has-self-branches bs (i + 1) tl
+
+ A definition with no parameters has nothing to assign and cannot loop,
+ and one whose name is not applied at full arity in any tail position
+ gains nothing, so both keep the plain form.
+
+  zig-tail-for : IRDef -> ZigTail
+  zig-tail-for (d) =
+   let n = list-length (d.params)
+   in if n == 0 then zig-tail-none
+   else let probe = ZigTail {
+    tail-name = d.name,
+    tail-arity = n,
+    tail-vars = zig-tail-var-names (d.params) 0
+   }
+   in if zig-tail-has-self (d.body) probe then probe else zig-tail-none
+
+  zig-tail-return : IRExpr, ZigCtx, Integer -> Text
+  zig-tail-return (e) (ctx) (d) = "return " & emit-zig-expr e ctx (d + 1) & ";"
+
+ The arguments are evaluated into temporaries before any var is assigned,
+ because an argument reads the parameters it is about to overwrite:
+ `loop next (acc & [x]) i` assigning left to right would build the new
+ accumulator out of the new list. The temporaries are named by depth, so
+ two jump sites on one spine cannot collide.
+
+  emit-zig-tail-temps : List IRExpr, ZigCtx, Integer, Integer -> Text
+  emit-zig-tail-temps (args) (ctx) (d) (i) =
+   if i >= list-length args then ""
+   else "const _tj" & integer-to-text d & "_" & integer-to-text i & " = "
+      & emit-zig-expr (list-at args i) ctx (d + 1) & "; "
+      & emit-zig-tail-temps args ctx d (i + 1)
+
+  emit-zig-tail-assigns : List Text, Integer, Integer -> Text
+  emit-zig-tail-assigns (vars) (d) (i) =
+   if i >= list-length vars then ""
+   else (list-at vars i) & " = _tj" & integer-to-text d & "_" & integer-to-text i & "; "
+      & emit-zig-tail-assigns vars d (i + 1)
+
+  emit-zig-tail-jump : IRExpr, ZigCtx, Integer, ZigTail -> Text
+  emit-zig-tail-jump (e) (ctx) (d) (tl) =
+   let chain = collect-apply-chain e []
+   in "{ " & emit-zig-tail-temps (chain.args) ctx d 0
+    & emit-zig-tail-assigns (tl.tail-vars) d 0 & "continue; }"
+
+ The statement form of the spine. Everything here has an expression twin
+ in emit-zig-expr and must stay in step with it; what differs is only
+ that a value is returned rather than broken out of a labeled block.
+
+  emit-zig-tail : IRExpr, ZigCtx, Integer, ZigTail -> Text
+  emit-zig-tail (e) (ctx) (d) (tl) =
+   if d >= zig-max-depth then zig-refuse ("tail spine nested past zig-max-depth (" & integer-to-text zig-max-depth & "); raise the cap")
+   else when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     "if (" & emit-zig-expr c ctx (d + 1) & ") { " & emit-zig-tail t ctx (d + 1) tl
+      & " } else { " & emit-zig-tail el ctx (d + 1) tl & " }"
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     if zig-is-seq-name name
+     then "_ = " & emit-zig-expr val ctx (d + 1) & "; " & emit-zig-tail body ctx (d + 1) tl
+     else if zig-occurs body name
+     then "const " & zig-bind-name ctx name d & zig-let-annot ty & " = " & emit-zig-expr val ctx (d + 1) & "; "
+        & emit-zig-tail body (zig-bind-push ctx name d) (d + 1) tl
+     else "_ = " & emit-zig-expr val ctx (d + 1) & "; " & emit-zig-tail body ctx (d + 1) tl
+    is IrMatch (scrut) (branches) (ty) (sp) ->
+     if zig-branches-guarded branches 0 then zig-tail-return e ctx d
+     else "switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { "
+        & emit-zig-match-arms branches 0 ctx d (zig-match-exhaustive ctx (zig-expr-type scrut) branches) ty tl & " }"
+    is IrApply (f) (a) (ty) (sp) ->
+     if zig-tail-self-call e tl then emit-zig-tail-jump e ctx d tl else zig-tail-return e ctx d
+    is otherwise -> zig-tail-return e ctx d
+
+ Zig rejects a local nothing reads, and the IR carries parameters a body
+ never mentions, so an unread var is discarded exactly as an unread
+ parameter is. It is still assigned by every jump, which is what keeps
+ zig from asking for a const instead.
+
+  emit-zig-tail-vars : List IRParam, Integer, IRExpr -> Text
+  emit-zig-tail-vars (params) (i) (body) =
+   if i >= list-length params then ""
+   else let p = list-at params i
+   in let v = zig-tail-var (p.name)
+   in "    var " & v & " = " & zig-sanitize (p.name) & ";\n"
+    & (if zig-occurs body (p.name) then "" else "    _ = " & v & ";\n")
+    & emit-zig-tail-vars params (i + 1) body
+
+  zig-push-tail-renames : ZigCtx, List IRParam, Integer -> ZigCtx
+  zig-push-tail-renames (ctx) (params) (i) =
+   if i >= list-length params then ctx
+   else let nm = (list-at params i).name
+   in let ctx2 = ZigCtx {
+    arities = ctx.arities,
+    ctors = ctx.ctors,
+    typedefs = ctx.typedefs,
+    irdefs = ctx.irdefs,
+    renamed-from = (ctx.renamed-from) & [nm],
+    renamed-to = (ctx.renamed-to) & [zig-tail-var nm],
+    tvar-ids = ctx.tvar-ids,
+    tvar-types = ctx.tvar-types,
+    expected = ctx.expected,
+    bound-names = ctx.bound-names
+   }
+   in zig-push-tail-renames ctx2 params (i + 1)
+
 Section: Definition Emission
 
  subj-deck-record is the bundler's rename of the compiler's deck-record
@@ -2618,9 +2814,17 @@ Section: Definition Emission
     expected = zig-def-return-type d,
     bound-names = []
    }
-   in "fn " & name & "(" & all-params & ") " & ret & " {\n"
+   in let tl = zig-tail-for d
+   in let head = "fn " & name & "(" & all-params & ") " & ret & " {\n"
     & zig-untrusted-return-note d
     & zig-eval-quota (d.body)
+   in if zig-tail-active tl
+   then head
+    & emit-zig-tail-vars (d.params) 0 (d.body)
+    & "    while (true) {\n        "
+    & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames ctx (d.params) 0) (d.params) 0) 0 tl
+    & "\n    }\n}\n\n"
+   else head
     & emit-zig-param-discards (d.params) 0 (d.body)
     & "    return " & emit-zig-expr (d.body) (zig-push-bound-params (zig-push-param-renames ctx (d.params) 0) (d.params) 0) 0 & ";\n}\n\n"
 
