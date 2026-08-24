@@ -2067,6 +2067,7 @@ Section: Apply Emission
      else let ar = lookup-arity (ctx.arities) n
      in if ar < 0 then (if zig-name-known ctx n then zig-closure-invoke (zig-local-ref ctx n) args ctx d else zig-unknown-name n)
         else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
+        else if list-length args > ar then zig-over-apply n args ar ctx d (zig-expr-type e)
         else zig-sanitize n & "(" & zig-call-type-args ctx n args (zig-expr-type e)
              & emit-zig-call-args n args (zig-call-ctx ctx n args (zig-expr-type e)) d 0 & ")"
     is otherwise -> emit-zig-expr-curried e ctx d
@@ -2285,6 +2286,65 @@ Section: Apply Emission
   zig-closure-invoke (f) (args) (ctx) (d) =
    f & ".call(" & f & ".ctx" & zig-closure-args args ctx d 0 & ")"
 
+ An application may carry MORE arguments than the callee was emitted with,
+ because a definition returning a function is emitted at its parameter
+ count and the wire hands the whole curried chain over at once.
+ DevelopersRulebook.md ("What the wire carries") names the three cases a
+ plug that knows the arity owes: flat at that arity, under-applied with one
+ arrow per missing parameter, and over-applied by applying the rest. This
+ is the third. Until 2026-08-24 `args > ar` fell into the saturated branch
+ and emitted every argument flat, which zig refuses outright -- see the
+ ladder's finding 40.
+
+ The remainder goes in ONE call, not one argument at a time. A function
+ type of n arrows is emitted as a single CxFn<n> whose `call` takes all n
+ together (zig-closure-type), so the callee's own return type absorbs the
+ whole remainder by construction. The result is bound to a const first
+ because `.call` names it twice.
+
+ A GENERIC callee is refused rather than guessed. zig-call-type-args
+ resolves a definition's type variables from the argument list and the
+ RESULT type, and the result type here belongs to the whole chain rather
+ than to the head call, so a variable appearing only in the return
+ position would resolve against the wrong type. A marker names the gap; a
+ plausible wrong type argument would not.
+
+ take/drop are `codex/foreword/core/ListUtils.codex`, which this plug does
+ not cite; riscv answered the same need with its own rv-list-take rather
+ than reaching for it, so these follow that. The accumulator is a fresh
+ literal per call, which is what makes list-push safe here -- it mutates,
+ and an accumulator shared with a caller would leak.
+
+  zig-list-take : List IRExpr, Integer -> List IRExpr
+  zig-list-take (xs) (n) = zig-list-take-loop xs 0 n []
+
+  zig-list-take-loop : List IRExpr, Integer, Integer, List IRExpr -> List IRExpr
+  zig-list-take-loop (xs) (i) (n) (acc) =
+   if i >= n then acc
+   else zig-list-take-loop xs (i + 1) n (list-push acc (list-at xs i))
+
+  zig-list-drop : List IRExpr, Integer -> List IRExpr
+  zig-list-drop (xs) (n) = zig-list-drop-loop xs n []
+
+  zig-list-drop-loop : List IRExpr, Integer, List IRExpr -> List IRExpr
+  zig-list-drop-loop (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else zig-list-drop-loop xs (i + 1) (list-push acc (list-at xs i))
+
+  zig-over-apply : Text, List IRExpr, Integer, ZigCtx, Integer, CodexType -> Text
+  zig-over-apply (n) (args) (ar) (ctx) (d) (resty) =
+   let di = zig-find-irdef (ctx.irdefs) 0 n
+   in if di >= 0 & list-length (zig-def-tvar-ids (list-at (ctx.irdefs) di)) > 0
+   then zig-refuse ("over-application of generic " & n)
+   else let head = zig-list-take args ar
+   in let rest = zig-list-drop args ar
+   in let lbl = zig-label d
+   in let o = "_o" & integer-to-text d
+   in lbl & ": { const " & o & " = " & zig-sanitize n & "("
+    & zig-call-type-args ctx n head resty
+    & emit-zig-call-args n head (zig-call-ctx ctx n head resty) d 0 & "); break :"
+    & lbl & " " & zig-closure-invoke o rest ctx d & "; }"
+
   zig-closure-fields : List IRExpr, ZigCtx, Integer -> Text
   zig-closure-fields (args) (ctx) (i) =
    if i == list-length args then ""
@@ -2318,9 +2378,40 @@ Section: Apply Emission
       & (if text-length rest == 0 then "" else ", " & rest)
     is otherwise -> ""
 
+ The wrapper's parameter count comes from the TYPE spine, and the callee
+ is declared at its PARAMETER count. Those two disagree for a definition
+ that returns a function -- `even-fn : Integer -> (Integer, Integer ->
+ Integer)` has three arrows and one parameter -- so passing every wrapper
+ parameter flat calls a one-ary definition with three arguments. That was
+ finding 40's second site, and it is reached whenever such a definition is
+ used as a VALUE rather than applied. The emitter already knew the two
+ numbers could differ: zig-untrusted-return-note prints "type-val has N
+ arrows for M params", and zig-def-return-trusted tests >= rather than ==.
+
+ So only the first `ar - <supplied>` parameters go flat; the rest go
+ through the returned closure in one call, for the same reason
+ zig-over-apply does it that way. An unknown callee (ar < 0) keeps the old
+ shape, which is what the closure-invoke path already handles.
+
+  zig-closure-pass-tail : Integer, Integer -> Text
+  zig-closure-pass-tail (i) (n) =
+   if i >= n then "" else ", p" & integer-to-text i & zig-closure-pass-tail (i + 1) n
+
+  zig-closure-call-body : Text, Integer, Text, Integer, Integer, Integer -> Text
+  zig-closure-call-body (n) (nargs) (ev) (flat) (rem) (d) =
+   if flat >= rem
+   then "return " & zig-sanitize n & "(" & zig-closure-env-refs ev nargs 0
+      & zig-closure-pass rem 0 & ");"
+   else let w = "_w" & integer-to-text d
+   in "const " & w & " = " & zig-sanitize n & "(" & zig-closure-env-refs ev nargs 0
+    & zig-closure-pass flat 0 & "); return " & w & ".call(" & w & ".ctx"
+    & zig-closure-pass-tail flat rem & ");"
+
   zig-closure-make : Text, List IRExpr, ZigCtx, Integer, CodexType -> Text
   zig-closure-make (n) (args) (ctx) (d) (pty) =
    let rem = zig-fn-param-count pty
+   in let car = lookup-arity (ctx.arities) n
+   in let flat = if car < 0 then rem else car - list-length args
    in let lbl = zig-label d
    in let env = "_Env" & integer-to-text d
    in let ev = "_e" & integer-to-text d
@@ -2330,8 +2421,7 @@ Section: Apply Emission
       else "const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); "
    in lbl & ": { const " & env & " = struct { " & zig-closure-fields args ctx 0
     & "fn call(" & cx & ": *anyopaque, " & zig-closure-params pty 0 & ") " & ret
-    & " { " & unpack & "return " & zig-sanitize n & "("
-    & zig-closure-env-refs ev (list-length args) 0 & zig-closure-pass rem 0 & "); } }; break :"
+    & " { " & unpack & zig-closure-call-body n (list-length args) ev flat rem d & " } }; break :"
     & lbl & " " & zig-closure-type rem (zig-fn-param-types pty) ret
     & "{ .ctx = cx_new(" & env & "{ " & zig-closure-inits args ctx d 0 & " }), .call = &" & env & ".call }; }"
 
