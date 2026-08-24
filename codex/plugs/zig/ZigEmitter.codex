@@ -2556,6 +2556,86 @@ Section: Tail Call Loops
     is IrApply (f) (a) (ty) (sp) -> zig-tail-self-call e tl
     is otherwise -> False
 
+ A parameter every self tail call passes straight back needs no loop
+ variable: it never changes, so the function's own parameter is already
+ the right binding and assigning it would be a copy from itself. This
+ matters beyond tidiness. Zig will not hold a bare function type in a
+ var, and `sort-partition (xs) (cmp) (j) (hi) (i) (pv)` -- self
+ tail-recursive in both branches, the compiler's own partition loop --
+ passes `cmp`, `hi` and `pv` through unchanged at every call. Declining
+ the whole definition because one parameter is a function left 10,000
+ partition frames on the stack that the transformation existed to
+ remove; keeping the invariant ones as parameters flattens it.
+
+  zig-tail-arg-invariant : IRExpr, ZigTail, Integer, Text -> Boolean
+  zig-tail-arg-invariant (e) (tl) (i) (nm) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     zig-tail-arg-invariant t tl i nm & zig-tail-arg-invariant el tl i nm
+    is IrLet (m) (ty) (v) (b) (sp) -> zig-tail-arg-invariant b tl i nm
+    is IrMatch (s) (bs) (ty) (sp) ->
+     if zig-branches-guarded bs 0 then True
+     else zig-tail-arg-invariant-branches bs 0 tl i nm
+    is IrApply (f) (a) (ty) (sp) ->
+     if zig-tail-self-call e tl == False then True
+     else when (list-at ((collect-apply-chain e []).args) i)
+      is IrName (n) (nty) (nsp) -> n == nm
+      is otherwise -> False
+    is otherwise -> True
+
+  zig-tail-arg-invariant-branches : List IRBranch, Integer, ZigTail, Integer, Text -> Boolean
+  zig-tail-arg-invariant-branches (bs) (k) (tl) (i) (nm) =
+   if k >= list-length bs then True
+   else if zig-tail-arg-invariant ((list-at bs k).body) tl i nm
+        then zig-tail-arg-invariant-branches bs (k + 1) tl i nm
+        else False
+
+ An empty var name marks a parameter that stays a parameter.
+
+ Whether an invariant parameter needs a discard is a narrower question
+ than zig-occurs answers, and zig rejects both wrong answers: an unused
+ parameter is an error, and so is discarding one that is used. The loop
+ deletes exactly one class of occurrence -- the parameter standing as
+ its OWN argument in a tail self call, which is not re-assigned and so
+ is never emitted. Nothing else is dropped, because an invariant slot's
+ argument is by definition that parameter's own name. So the question is
+ whether the parameter appears anywhere but there.
+
+  zig-tail-occurs-outside : IRExpr, Text, ZigTail, Integer -> Boolean
+  zig-tail-occurs-outside (e) (nm) (tl) (i) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     zig-occurs c nm | zig-tail-occurs-outside t nm tl i | zig-tail-occurs-outside el nm tl i
+    is IrLet (m) (mty) (v) (b) (sp) ->
+     zig-occurs v nm | zig-tail-occurs-outside b nm tl i
+    is IrMatch (scrut) (bs) (ty) (sp) ->
+     if zig-branches-guarded bs 0 then zig-occurs e nm
+     else zig-occurs scrut nm | zig-tail-occurs-outside-branches bs 0 nm tl i
+    is IrApply (f) (a) (ty) (sp) ->
+     if zig-tail-self-call e tl == False then zig-occurs e nm
+     else zig-occurs-args ((collect-apply-chain e []).args) 0 nm i
+    is otherwise -> zig-occurs e nm
+
+  zig-tail-occurs-outside-branches : List IRBranch, Integer, Text, ZigTail, Integer -> Boolean
+  zig-tail-occurs-outside-branches (bs) (k) (nm) (tl) (i) =
+   if k >= list-length bs then False
+   else if zig-tail-occurs-outside ((list-at bs k).body) nm tl i then True
+   else zig-tail-occurs-outside-branches bs (k + 1) nm tl i
+
+  zig-occurs-args : List IRExpr, Integer, Text, Integer -> Boolean
+  zig-occurs-args (args) (k) (nm) (i) =
+   if k >= list-length args then False
+   else if k == i then zig-occurs-args args (k + 1) nm i
+   else if zig-occurs (list-at args k) nm then True
+   else zig-occurs-args args (k + 1) nm i
+
+  zig-tail-var-list : List IRParam, Integer, IRExpr, ZigTail -> List Text
+  zig-tail-var-list (params) (i) (body) (probe) =
+   if i >= list-length params then []
+   else let nm = (list-at params i).name
+   in let one = if zig-tail-arg-invariant body probe i nm then "" else zig-tail-var nm
+   in [one] & zig-tail-var-list params (i + 1) body probe
+
   zig-tail-has-self-branches : List IRBranch, Integer, ZigTail -> Boolean
   zig-tail-has-self-branches (bs) (i) (tl) =
    if i >= list-length bs then False
@@ -2567,28 +2647,32 @@ Section: Tail Call Loops
  gains nothing, so both keep the plain form.
 
  Zig will not hold a bare function type in a var -- it must be const or
- comptime -- so a parameter of function type has no loop variable to be.
- Such a definition keeps the plain form; declining is what this walk does
- with every shape it cannot carry.
+ comptime -- so a function-typed parameter that CHANGES across the loop
+ has no variable to be, and its definition keeps the plain form. One that
+ never changes is not a problem at all: it stays the function's own
+ parameter, which is already const.
 
-  zig-tail-params-ok : List IRParam, Integer -> Boolean
-  zig-tail-params-ok (params) (i) =
+  zig-tail-params-ok : List IRParam, Integer, List Text -> Boolean
+  zig-tail-params-ok (params) (i) (vars) =
    if i >= list-length params then True
+   else if text-length (list-at vars i) == 0 then zig-tail-params-ok params (i + 1) vars
    else when ((list-at params i).type-val)
     is FunTy (p) (fnrow) (r) -> False
-    is otherwise -> zig-tail-params-ok params (i + 1)
+    is otherwise -> zig-tail-params-ok params (i + 1) vars
 
   zig-tail-for : IRDef -> ZigTail
   zig-tail-for (d) =
    let n = list-length (d.params)
    in if n == 0 then zig-tail-none
-   else if zig-tail-params-ok (d.params) 0 == False then zig-tail-none
    else let probe = ZigTail {
     tail-name = d.name,
     tail-arity = n,
     tail-vars = zig-tail-var-names (d.params) 0
    }
-   in if zig-tail-has-self (d.body) probe then probe else zig-tail-none
+   in if zig-tail-has-self (d.body) probe == False then zig-tail-none
+   else let vars = zig-tail-var-list (d.params) 0 (d.body) probe
+   in if zig-tail-params-ok (d.params) 0 vars == False then zig-tail-none
+      else ZigTail { tail-name = d.name, tail-arity = n, tail-vars = vars }
 
   zig-tail-return : IRExpr, ZigCtx, Integer -> Text
   zig-tail-return (e) (ctx) (d) = "return " & emit-zig-expr e ctx (d + 1) & ";"
@@ -2599,23 +2683,27 @@ Section: Tail Call Loops
  accumulator out of the new list. The temporaries are named by depth, so
  two jump sites on one spine cannot collide.
 
-  emit-zig-tail-temps : List IRExpr, ZigCtx, Integer, Integer -> Text
-  emit-zig-tail-temps (args) (ctx) (d) (i) =
+  emit-zig-tail-temps : List IRExpr, ZigCtx, Integer, Integer, List Text -> Text
+  emit-zig-tail-temps (args) (ctx) (d) (i) (vars) =
    if i >= list-length args then ""
+   else if text-length (list-at vars i) == 0
+        then emit-zig-tail-temps args ctx d (i + 1) vars
    else "const _tj" & integer-to-text d & "_" & integer-to-text i & " = "
       & emit-zig-expr (list-at args i) ctx (d + 1) & "; "
-      & emit-zig-tail-temps args ctx d (i + 1)
+      & emit-zig-tail-temps args ctx d (i + 1) vars
 
   emit-zig-tail-assigns : List Text, Integer, Integer -> Text
   emit-zig-tail-assigns (vars) (d) (i) =
    if i >= list-length vars then ""
+   else if text-length (list-at vars i) == 0
+        then emit-zig-tail-assigns vars d (i + 1)
    else (list-at vars i) & " = _tj" & integer-to-text d & "_" & integer-to-text i & "; "
       & emit-zig-tail-assigns vars d (i + 1)
 
   emit-zig-tail-jump : IRExpr, ZigCtx, Integer, ZigTail -> Text
   emit-zig-tail-jump (e) (ctx) (d) (tl) =
    let chain = collect-apply-chain e []
-   in "{ " & emit-zig-tail-temps (chain.args) ctx d 0
+   in "{ " & emit-zig-tail-temps (chain.args) ctx d 0 (tl.tail-vars)
     & emit-zig-tail-assigns (tl.tail-vars) d 0 & "continue; }"
 
  The statement form of the spine. Everything here has an expression twin
@@ -2655,18 +2743,23 @@ Section: Tail Call Loops
  reading the raw name here left the real parameter unused and named one
  that does not exist. zig-def-param-name is the one place that knows.
 
-  emit-zig-tail-vars : List IRParam, Integer, IRExpr, ZigCtx -> Text
-  emit-zig-tail-vars (params) (i) (body) (ctx) =
+  emit-zig-tail-vars : List IRParam, Integer, IRExpr, ZigCtx, List Text, ZigTail -> Text
+  emit-zig-tail-vars (params) (i) (body) (ctx) (vars) (tl) =
    if i >= list-length params then ""
    else let p = list-at params i
-   in let v = zig-tail-var (p.name)
-   in "    var " & v & " = " & zig-def-param-name ctx (p.name) & ";\n"
-    & (if zig-occurs body (p.name) then "" else "    _ = " & v & ";\n")
-    & emit-zig-tail-vars params (i + 1) body ctx
+   in let v = list-at vars i
+   in let line = if text-length v == 0
+      then (if zig-tail-occurs-outside body (p.name) tl i then ""
+            else "    _ = " & zig-def-param-name ctx (p.name) & ";\n")
+      else "    var " & v & " = " & zig-def-param-name ctx (p.name) & ";\n"
+         & (if zig-occurs body (p.name) then "" else "    _ = " & v & ";\n")
+   in line & emit-zig-tail-vars params (i + 1) body ctx vars tl
 
-  zig-push-tail-renames : ZigCtx, List IRParam, Integer -> ZigCtx
-  zig-push-tail-renames (ctx) (params) (i) =
+  zig-push-tail-renames : ZigCtx, List IRParam, Integer, List Text -> ZigCtx
+  zig-push-tail-renames (ctx) (params) (i) (vars) =
    if i >= list-length params then ctx
+   else if text-length (list-at vars i) == 0
+        then zig-push-tail-renames ctx params (i + 1) vars
    else let nm = (list-at params i).name
    in let ctx2 = ZigCtx {
     arities = ctx.arities,
@@ -2674,13 +2767,13 @@ Section: Tail Call Loops
     typedefs = ctx.typedefs,
     irdefs = ctx.irdefs,
     renamed-from = (ctx.renamed-from) & [nm],
-    renamed-to = (ctx.renamed-to) & [zig-tail-var nm],
+    renamed-to = (ctx.renamed-to) & [list-at vars i],
     tvar-ids = ctx.tvar-ids,
     tvar-types = ctx.tvar-types,
     expected = ctx.expected,
     bound-names = ctx.bound-names
    }
-   in zig-push-tail-renames ctx2 params (i + 1)
+   in zig-push-tail-renames ctx2 params (i + 1) vars
 
 Section: Definition Emission
 
@@ -2839,9 +2932,9 @@ Section: Definition Emission
     & zig-eval-quota (d.body)
    in if zig-tail-active tl
    then head
-    & emit-zig-tail-vars (d.params) 0 (d.body) (zig-push-param-renames ctx (d.params) 0)
+    & emit-zig-tail-vars (d.params) 0 (d.body) (zig-push-param-renames ctx (d.params) 0) (tl.tail-vars) tl
     & "    while (true) {\n        "
-    & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames ctx (d.params) 0) (d.params) 0) 0 tl
+    & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames ctx (d.params) 0 (tl.tail-vars)) (d.params) 0) 0 tl
     & "\n    }\n}\n\n"
    else head
     & emit-zig-param-discards (d.params) 0 (d.body)
