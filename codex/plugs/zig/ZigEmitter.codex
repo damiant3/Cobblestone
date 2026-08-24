@@ -2546,6 +2546,20 @@ Section: Tail Call Loops
  than a switch, and that chain is built as an expression; the spine stops
  there rather than growing a second statement form for it.
 
+ An act block is on the spine, and its tail position is its last
+ statement -- but only when that statement EXECUTES. emit-zig-act is the
+ authority: a block whose last statement binds breaks with `undefined`,
+ so it has no tail position at all and nothing may descend into it. An
+ empty block has none either. Every walk below asks the same question in
+ the same shape, and they have to agree: has-self decides whether the
+ definition loops, arg-invariant decides which parameters get variables,
+ occurs-outside decides which get discarded, and emit-zig-tail writes
+ the code. A walk that descends where another does not produces a loop
+ whose parameters were chosen for a different spine.
+
+ The python plug already descends here; ours treated an act as a leaf,
+ so every `*-loop` written as an act kept its frames.
+
   zig-tail-has-self : IRExpr, ZigTail -> Boolean
   zig-tail-has-self (e) (tl) =
    when e
@@ -2553,6 +2567,11 @@ Section: Tail Call Loops
     is IrLet (m) (ty) (v) (b) (sp) -> zig-tail-has-self b tl
     is IrMatch (s) (bs) (ty) (sp) ->
      if zig-branches-guarded bs 0 then False else zig-tail-has-self-branches bs 0 tl
+    is IrAct (ss) (aty) (asp) ->
+     if list-length ss == 0 then False
+     else when (list-at ss (list-length ss - 1))
+      is IrDoExec (last) (lsp) -> zig-tail-has-self last tl
+      is otherwise -> False
     is IrApply (f) (a) (ty) (sp) -> zig-tail-self-call e tl
     is otherwise -> False
 
@@ -2576,6 +2595,11 @@ Section: Tail Call Loops
     is IrMatch (s) (bs) (ty) (sp) ->
      if zig-branches-guarded bs 0 then True
      else zig-tail-arg-invariant-branches bs 0 tl i nm
+    is IrAct (ss) (aty) (asp) ->
+     if list-length ss == 0 then True
+     else when (list-at ss (list-length ss - 1))
+      is IrDoExec (last) (lsp) -> zig-tail-arg-invariant last tl i nm
+      is otherwise -> True
     is IrApply (f) (a) (ty) (sp) ->
      if zig-tail-self-call e tl == False then True
      else when (list-at ((collect-apply-chain e []).args) i)
@@ -2611,10 +2635,27 @@ Section: Tail Call Loops
     is IrMatch (scrut) (bs) (ty) (sp) ->
      if zig-branches-guarded bs 0 then zig-occurs e nm
      else zig-occurs scrut nm | zig-tail-occurs-outside-branches bs 0 nm tl i
+    is IrAct (ss) (aty) (asp) ->
+     if list-length ss == 0 then zig-occurs e nm
+     else when (list-at ss (list-length ss - 1))
+      is IrDoExec (last) (lsp) ->
+       zig-occurs-stmts-init ss 0 nm | zig-tail-occurs-outside last nm tl i
+      is otherwise -> zig-occurs e nm
     is IrApply (f) (a) (ty) (sp) ->
      if zig-tail-self-call e tl == False then zig-occurs e nm
      else zig-occurs-args ((collect-apply-chain e []).args) 0 nm i
     is otherwise -> zig-occurs e nm
+
+ Every statement but the last runs before the tail position, so a name
+ mentioned there is read outside it. Only the last statement continues
+ the spine, and zig-occurs-stmts would fold it back in.
+
+  zig-occurs-stmts-init : List IRActStmt, Integer, Text -> Boolean
+  zig-occurs-stmts-init (ss) (i) (n) =
+   if i >= list-length ss - 1 then False
+   else (when (list-at ss i)
+    is IrDoBind (m) (ty) (v) (sp) -> zig-occurs v n
+    is IrDoExec (e) (sp) -> zig-occurs e n) | zig-occurs-stmts-init ss (i + 1) n
 
   zig-tail-occurs-outside-branches : List IRBranch, Integer, Text, ZigTail, Integer -> Boolean
   zig-tail-occurs-outside-branches (bs) (k) (nm) (tl) (i) =
@@ -2728,9 +2769,42 @@ Section: Tail Call Loops
      if zig-branches-guarded branches 0 then zig-tail-return e ctx d
      else "switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { "
         & emit-zig-match-arms branches 0 ctx d (zig-match-exhaustive ctx (zig-expr-type scrut) branches) ty tl & " }"
+    is IrAct (ss) (aty) (asp) ->
+     if list-length ss == 0 then zig-tail-return e ctx d
+     else when (list-at ss (list-length ss - 1))
+      is IrDoExec (last) (lsp) -> emit-zig-act-tail ss 0 ctx d tl
+      is otherwise -> zig-tail-return e ctx d
     is IrApply (f) (a) (ty) (sp) ->
      if zig-tail-self-call e tl then emit-zig-tail-jump e ctx d tl else zig-tail-return e ctx d
     is otherwise -> zig-tail-return e ctx d
+
+ The twin of emit-zig-act-stmts, and it differs in one statement: the
+ last one, which emit-zig-act breaks out of the labeled block with and
+ this continues the spine into. Everything before it is emitted
+ identically, because a statement that is not last is not in tail
+ position however the block ends.
+
+ No label and no block are emitted around it. Nothing breaks with a
+ value any more -- the last statement either jumps or returns -- and the
+ IrLet arm above already emits its binding into the caller's block for
+ the same reason. `continue` still names the enclosing while, which a
+ labeled block would not have shadowed either.
+
+  emit-zig-act-tail : List IRActStmt, Integer, ZigCtx, Integer, ZigTail -> Text
+  emit-zig-act-tail (stmts) (i) (ctx) (d) (tl) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in let rest = when s
+    is IrDoBind (name) (ty) (val) (sp) -> if zig-is-seq-name name then ctx else zig-bind-push ctx name d
+    is otherwise -> ctx
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) ->
+     if zig-is-seq-name name then "_ = " & emit-zig-expr val ctx (d + 1) & "; "
+     else "const " & zig-bind-name ctx name d & " = " & emit-zig-expr val ctx (d + 1) & "; "
+    is IrDoExec (e) (sp) ->
+     if is-last then emit-zig-tail e ctx (d + 1) tl
+     else "_ = " & emit-zig-expr e ctx (d + 1) & "; ") & emit-zig-act-tail stmts (i + 1) rest d tl
 
  Zig rejects a local nothing reads, and the IR carries parameters a body
  never mentions, so an unread var is discarded exactly as an unread
