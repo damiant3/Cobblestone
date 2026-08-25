@@ -78,3 +78,41 @@ times that day, the first two on a box something else was loading.
   child faulted on the host (`0xC0000005`) at teardown after its complete
   output. Each green standalone three of three; the harness passes the case
   as `test-run.ps1` always did and the register records it.
+
+## The 2026-08-24 interim push: Steve Howell's six PRs absorbed
+
+Interim mirror push, not a release: github `111c0fea` (master), gitlab the
+same commit (main), from main 19154. Seed `6CF4A8E0` (2,876,035 bytes),
+installed per 4.3b off the 19140 gate's one-pass fixed point and proven by
+the full public gate before the copy-up (608.4 s green: 1436 chapters
+compiled, 57 generators 0 drift, deck-headroom floor 1.28, app sweep 265
+clean 0 regressions, vm-differential both hosts agree). No release proofs
+owed or run; img and map unchanged.
+
+What it carries, all reviewed against source before landing (red):
+
+- **PR 77** (19125): the zig plug's allocator becomes bare metal's model --
+  one 4 GiB lazily-faulted region, one bump frontier, the deck a true second
+  cursor with a crossing guard in both directions, exact list capacities,
+  copying text results, trapping substring, heap-relative `address-of`.
+  Rides with the emit deck flat term 24 to 28 MB (`X86_64Chapter.codex`),
+  measured both arms. The design and every measurement are his.
+- **PR 81** (19131): a self tail call in the zig plug emits as a loop;
+  887 of 3,633 compiler definitions loop; `zigemit` on the 13.2 MB fibx IR
+  ran at stock 512 MB stack where 3.5 GiB had not sufficed.
+- **PR 83** (19133): over-application applies the rest through the returned
+  closure instead of calling flat; his tier-14 detector comes back online
+  and isolates COMPILER-18 alone.
+- **PR 82** (19140): the parser's two top-level scans return their item
+  instead of mutually tail-calling, the shape every TCO already flattens;
+  his measurement, 32 MB minimum transpiled stack to 4.
+- **PR 79** (19116): COMPILER-18 recorded -- the native partial-application
+  closure carries no remaining-arity word, so under-application corrupts
+  silently. The representation ruling is in CurrentPlan Pending.
+- **PR 80** (19117): plugs 1.57 recorded -- riscv ships a correct over-apply
+  helper nothing calls, java never consults its arity table. Ruled binding
+  (call 21); wiring is close-out work.
+
+Tweaks made on top during absorb, so the credit stays honest: one duplicated
+prose block trimmed from PR 82's parser change (R-PROSE; the scan-side
+rationale and the state-re-read constraint stay), and nothing else altered.
