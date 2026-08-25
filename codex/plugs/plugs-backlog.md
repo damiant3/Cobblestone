@@ -248,6 +248,85 @@ definition is required of every plug that keeps an arity map -- in which
 case riscv wants its dead function wired up and java wants an arity
 check -- or whether some plugs are exempt, and `:258` should say which.
 
+**1.58 -- the zig plug's self-tail loop reads a TOP-LEVEL DEFINITION where
+the source reads its own parameter, and two blind spots had to line up for
+it to be silent. OURS, from PR 81, and already in the tree.** Found
+2026-08-25 when the ladder's census re-pin moved `dtls-fragment` from
+`match` to `refused`: `corpus/dtls-fragment.zig:942:57: error: unused
+function parameter`. The refusal is the symptom; the defect under it
+returns a wrong number with no diagnostic.
+
+**The mechanism.** `dtls-frag-loop`
+(`codex/foreword/encode/DtlsMessage.codex:97`) takes parameters `body` and
+`msg-type`, and the test bundled beside it defines top-level `body` and
+`msg-type` (`codex/test/dtls-fragment.codex:21,23`). Zig forbids a
+parameter shadowing a top-level declaration, so `zig-def-param-name`
+renames them to `_arg_body` and `_arg_msg_type` -- correctly. The emitted
+loop body then calls `body()` and `msg_type()`, which are the top-level
+definitions. `dtls_msg_encode` in the same file takes the same two renamed
+parameters and reads them correctly (`cx_list_len(_arg_body)`): the
+non-loop emission binds the rename and the self-tail-loop emission did
+not.
+
+`emit-zig-def`'s loop branch built its body context from
+`zig-push-tail-renames`, which covers the parameters the loop REASSIGNS
+and only those. An invariant slot is never assigned, gets no loop var, and
+so got no rename at all -- and a parameter of that kind whose name shadows
+a definition fell through to the definition. The fix composes
+`zig-push-param-renames` underneath it, so an invariant parameter resolves
+to its `_arg_` name while the tail renames still win for the reassigned
+ones (`zig-renamed-scan` reads from the end). The non-loop branch has
+always done this; the two branches now agree.
+
+**Why it was silent, which is the part worth reading.** The obvious
+minimization of this defect CANNOT produce a wrong answer. `zig-occurs`
+drives a discard: a parameter it believes unread is emitted as
+`_ = _arg_x;`, one it believes read is not. So a read the check can SEE
+means no discard, no surviving mention of `_arg_x` after the substitution,
+and zig refusing an unused parameter -- which is exactly what
+`dtls-fragment` did. Measured, not argued: a three-line version refuses
+with the same error.
+
+The silent form needs a read the check is blind to, and
+`zig-occurs-branches` walked a branch's body and not its GUARD. A match
+guard inside one of the loop's own tail-call arguments is therefore
+invisible to the check -- so the discard is emitted and the program builds
+-- and emitted by the loop path, reading the global. That is the second
+hunk. The guard also has to sit inside a tail-call argument rather than at
+the top of the body: a guarded match in tail position is not recognised as
+a self tail call at all, so that shape never becomes a loop and answers
+correctly.
+
+**A third hunk, from the file's own instruction.** `zig-max-list-len`
+carries the note "The walk mirrors zig-occurs: same nodes, same reason to
+visit them, and the same consequence for a node it forgets", and its
+`zig-max-list-len-branches` had the identical guard hole. Demonstrated
+before fixing: the same 40-element literal emits `@setEvalBranchQuota` in
+a branch body and none in a branch guard. That failure is loud (a zig
+comptime resource error) rather than silent, and no program in the corpus
+hits it today. Neither walk descends into an effect handler's clauses, and
+that one is deliberate -- `emit-zig-expr` answers `@compileError` for any
+`IrHandle` carrying clauses, so nothing beneath one is ever emitted.
+
+**Verification, in the order it was done.** A tier row FIRST and it had to
+fail: `prim-tailcall`'s `shadow-guard` row, bare metal 3 against the zig
+arm's 5, on a loop whose parameter `stop-at` is 3 and whose top-level
+`stop-at` is 100. Then the fix, then: the row green on both arms; the
+ladder's 22-tier set green (15 green, 7 noted, 0 unexpected); 14 of 14
+rungs green in a sweep; `dtls-fragment` back to `match` in the census;
+and every one of the ladder's own units emitting byte-identical zig
+across the two emitter builds, save the emitter's own bundle, which
+contains the fix.
+
+**Where the instrument was blind, since that is the reusable part.**
+`prim-tailcall` had exercised loop conversion since the day it was
+written and was green throughout: no row gave a loop a parameter that
+shadowed a top-level definition, so the whole class sat outside the tier
+set. What caught it was the depot's own corpus -- a program written by
+someone with no knowledge of this plug, containing the collision by
+accident.
+
+
 **babbage is SHELVED** (Damian, 2026-08-21): vanity work. Its open items
 moved to `codex/plugs/babbage/babbage-backlog.md`. Do not add babbage items
 here.

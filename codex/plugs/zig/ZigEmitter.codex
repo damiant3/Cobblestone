@@ -1316,10 +1316,19 @@ Section: Expression Emission
    if i >= list-length es then False
    else zig-occurs (list-at es i) n | zig-occurs-list es (i + 1) n
 
+ A branch's GUARD is part of the branch. Reading only the body answered
+ "does not occur" for a name a guard mentions, and every caller of this
+ uses the answer to decide whether to discard something -- so a name
+ read only from a guard was discarded and then emitted, which zig calls
+ a pointless discard, or was left out of a lambda's captures. An
+ unguarded branch carries a True literal here, so this costs nothing on
+ the common shape.
+
   zig-occurs-branches : List IRBranch, Integer, Text -> Boolean
   zig-occurs-branches (bs) (i) (n) =
    if i >= list-length bs then False
-   else zig-occurs ((list-at bs i).body) n | zig-occurs-branches bs (i + 1) n
+   else zig-occurs ((list-at bs i).guard) n | zig-occurs ((list-at bs i).body) n
+      | zig-occurs-branches bs (i + 1) n
 
   zig-occurs-stmts : List IRActStmt, Integer, Text -> Boolean
   zig-occurs-stmts (ss) (i) (n) =
@@ -3067,6 +3076,17 @@ Section: Definition Emission
    else "comptime T" & integer-to-text (list-at ids i) & ": type, "
       & zig-comptime-params ids (i + 1)
 
+ The loop body's context takes BOTH renames, and the order is the whole
+ of it. zig-push-tail-renames covers the parameters the loop reassigns
+ and only those: an invariant slot is never assigned, so it gets no loop
+ var and no rename, and a parameter of that kind whose name shadows a
+ top-level definition then resolved to THE DEFINITION -- the loop read a
+ global where the source read its own argument, silently. Composing
+ zig-push-param-renames underneath restores the `_arg_` name for exactly
+ those parameters, and the tail renames still win for the reassigned
+ ones because zig-renamed-scan reads from the end. The non-loop branch
+ below has always done this; the two branches now agree.
+
   emit-zig-def : IRDef, ZigCtx -> Text
   emit-zig-def (d) (ctx0) =
    if zig-skip-def (d.name) then ""
@@ -3098,7 +3118,7 @@ Section: Definition Emission
    then head
     & emit-zig-tail-vars (d.params) 0 (d.body) (zig-push-param-renames ctx (d.params) 0) (tl.tail-vars) tl
     & "    while (true) {\n        "
-    & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames ctx (d.params) 0 (tl.tail-vars)) (d.params) 0) 0 tl
+    & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames (zig-push-param-renames ctx (d.params) 0) (d.params) 0 (tl.tail-vars)) (d.params) 0) 0 tl
     & "\n    }\n}\n\n"
    else head
     & emit-zig-param-discards (d.params) 0 (d.body)
@@ -3127,6 +3147,14 @@ Section: Definition Emission
  and the same consequence for a node it forgets -- here a quota that
  stays default under a literal that needed it, which fails loudly at
  zig compile time.
+
+ Both walks skipped a branch's GUARD, and both were fixed together for
+ that reason: a 40-element literal in a guard was measured emitting no
+ @setEvalBranchQuota while the identical literal one field over, in the
+ branch's body, emitted one. Neither walk descends into an effect
+ handler's clauses either, and that one is deliberate -- emit-zig-expr
+ answers @compileError for any IrHandle carrying clauses, so nothing
+ beneath one is ever emitted and there is nothing to count.
 
   zig-max2 : Integer, Integer -> Integer
   zig-max2 (a) (b) = if a >= b then a else b
@@ -3161,7 +3189,9 @@ Section: Definition Emission
   zig-max-list-len-branches : List IRBranch, Integer -> Integer
   zig-max-list-len-branches (bs) (i) =
    if i >= list-length bs then 0
-   else zig-max2 (zig-max-list-len ((list-at bs i).body)) (zig-max-list-len-branches bs (i + 1))
+   else let b = list-at bs i
+   in let here = zig-max2 (zig-max-list-len (b.guard)) (zig-max-list-len (b.body))
+   in zig-max2 here (zig-max-list-len-branches bs (i + 1))
 
   zig-max-list-len-stmts : List IRActStmt, Integer -> Integer
   zig-max-list-len-stmts (ss) (i) =
