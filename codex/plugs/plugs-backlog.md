@@ -248,6 +248,83 @@ definition is required of every plug that keeps an arity map -- in which
 case riscv wants its dead function wired up and java wants an arity
 check -- or whether some plugs are exempt, and `:258` should say which.
 
+**1.60 -- the python plug's TCO matches a self-call by NAME and not by
+arity, so its argument loop and its parameter loop can disagree. LATENT:
+whether any well-typed program reaches it is UNESTABLISHED, and that is
+the weakest part of this row.** (1.58 and 1.59 are separate open PRs from
+the same ladder; this row depends on neither.)
+
+**Read this against 1.57 first, because the two rows are about DIFFERENT
+paths in the same plug and 1.57 is right.** 1.57 lists python among the
+plugs that "route every non-exact case to a curried spine, so
+over-application is correct by construction", citing
+`PythonEmitter.codex:646-655`. That holds, and this row does not dispute
+it: `emit-py-apply` sends anything but an exact-arity call to
+`emit-py-expr-curried` (`:646-648`). **This row is about the TCO path,
+which is reached from somewhere else entirely** -- `should-tco`
+(`:696-698`) selects a definition whose body has a tail call to itself,
+and `emit-py-tco-jump` is reached only from the `is-self-call` arm at
+`:712`. Nothing in the curried spine is involved.
+
+**The mismatch, read from source.** `is-self-call-root` (`:664-668`)
+compares the apply chain's ROOT name to the definition's name and returns
+a Boolean; nothing anywhere compares `list-length (chain.args)` to
+`list-length (d.params)`. The jump then evaluates **one temporary per
+ARGUMENT** and assigns **one parameter per PARAMETER**:
+
+    emit-py-tco-temps  args   -> _tco_0 .. _tco_{nargs-1}     (:726)
+    emit-py-tco-assign params -> p_0 = _tco_0 ..              (:736)
+
+So the two loops agree only when a self-call carries exactly the
+definition's arity. Where they disagree, the consequences are not
+crashes: with FEWER arguments the assign loop reads `_tco_k` that this
+iteration never bound, which is a `NameError` on the first turn and, on
+any later turn, a **stale value left in the function local by the
+PREVIOUS iteration** -- python function locals persist across the `while`
+body -- so the loop continues with the wrong argument and no diagnostic.
+With MORE, the extra temporary is evaluated, dropped, and the outer
+application disappears.
+
+The zig plug takes the other choice and is the control:
+`zig-tail-self-call` requires
+`list-length (chain.args) == (tl.tail-arity)` (`ZigEmitter.codex:2631`),
+so an inexact self-call is not a tail call and emits an ordinary return.
+
+**WHAT IS NOT ESTABLISHED, and it is the reachability rather than the
+consequence.** A definition's body has the definition's return type; a
+self-call at less than full arity has a function type. **The ladder could
+not construct a well-typed codex program in which a definition tail-calls
+ITSELF at non-full arity, and does not claim one exists.** So this is a
+guard that is missing rather than a defect with a victim, and it may be
+unreachable today. It is filed because the missing guard is cheap to add
+and because "the type system happens to prevent it" is a different
+statement from "the emitter checks", and only the second survives a
+change to either.
+
+**No python arm was run.** The reporting host has no runner for this
+plug: `codex/plugs/python/build-output` has never existed there,
+`build.ps1` drives `build/compile.ps1`, which is a seed compile in a VM,
+and the run leg is `build/plug-run.ps1:49-53`, which goes straight to
+`tools/codex-vm.exe` -- not built in that tree, with no fallback on that
+path. Same shape as 1.57's java row and filed the same way: report at
+source level, name who can settle it, do not imply a follow-up we cannot
+make.
+
+**What would settle it, in order.** First: does a well-typed
+non-full-arity self tail call exist at all? That is a type-checker
+question and needs no python. If one does, emit python for it and read
+`emit-py-tco-jump`'s output DIRECTLY rather than inferring from the
+answer, since the stale-temporary path produces a plausible number rather
+than an error.
+
+**The fix, if it is wanted, is not quite one clause.**
+`is-self-call : IRExpr, Text -> Boolean` has no access to arity, so
+gating there means a signature change and its three call sites
+(`:662`, `:676`, `:712`). Gating in `should-tco` instead would disable
+TCO for the whole definition rather than for the one inexact call, which
+is a different behaviour; the zig plug's equivalent gates per call.
+
+
 **babbage is SHELVED** (Damian, 2026-08-21): vanity work. Its open items
 moved to `codex/plugs/babbage/babbage-backlog.md`. Do not add babbage items
 here.
