@@ -248,6 +248,82 @@ definition is required of every plug that keeps an arity map -- in which
 case riscv wants its dead function wired up and java wants an arity
 check -- or whether some plugs are exempt, and `:258` should say which.
 
+**1.59 -- the plug corpus cannot reach the Rulebook's over-application
+case, and the reason it cannot is COMPILER-18.** (1.58 is a separate open
+PR from the same ladder; this row does not depend on it.)
+
+**The gap.** `docs/DevelopersRulebook.md:260` requires three cases of a
+plug that knows the callee's arity: flat at that arity, under-applied
+with one arrow per missing parameter, **over-applied by applying the
+rest one at a time**. The third case only exists when the definition
+being over-applied RETURNS a function. `codex/plugs/test-input/`
+contains one input for this area, `partial.codex`, whose only definition
+is `add3 : Integer, Integer, Integer -> Integer`. It returns an Integer.
+So every application in that file applies `add3` itself, and the third
+case is unreachable from the corpus.
+
+That is the case 1.57 records `riscv` and `java` getting wrong, and it
+is the case PR 83 fixed in the zig plug. **1.57 asked for exactly this
+input** ("One added definition in `partial.codex` would put all of these
+in front of a compiler"). This row supplies it -- and reports what
+happened when it was written.
+
+**Not in `partial.codex`, and that is deliberate.** The shape is a new
+file, `codex/plugs/test-input/overapply.codex`, because it does not run
+on the reference implementation and `partial.codex` currently does. A
+known-red file is honest; a green fixture quietly turning red is not.
+Nothing else changes: `partial.codex` is untouched.
+
+**MEASURED 2026-08-25, seed 6CF4A8E0, both arms, on the exact file this
+row adds:**
+
+    bare metal   control-flat: 6
+                 stepwise: 6291512     <- 0x600038, a heap address
+                 <register dump; nothing after this line runs>
+    zig plug     control-flat: 6
+                 stepwise: 6
+                 named-over: 6
+                 named-over-alt: 7
+                 after: 15
+
+The bare-metal arm is the seed compiler on bare metal under QEMU with no
+plug in the path -- so the expected values are not in doubt, and neither
+is the zig plug's agreement with them. **Both of bare metal's failure
+modes appear in one file:** `stepwise` is the SILENT one, printing a heap
+address where 6 belongs, and `named-over` is the loud one. That is
+COMPILER-18, and this measurement is added to that row as a third and
+smallest entry point.
+
+**What it costs to take this file, stated rather than left to be
+found.**
+
+- **It is not in the standing gate.** `build/build.ps1:814` sets
+  `$smokeSrcs = @('hello', 'record')`, so `plug-smoke` does not read
+  `test-input/overapply.codex`. `codex/plugs/test-plugs.ps1` is its only
+  consumer.
+- **In that harness the file is judged on exit code and non-empty
+  output.** The `$markers` table (`test-plugs.ps1:93-98`) has entries for
+  `hello`, `types` and `lambda` only, so the marker leg is vacuous for a
+  new input, as it already is for `partial`.
+- **What is UNMEASURED here, and it is the real risk:** the harness runs
+  every text plug against every input, and this file puts a definition
+  whose RETURN TYPE IS A FUNCTION in front of roughly thirty emitters
+  that have never seen one from this corpus. Any of them exiting nonzero
+  or emitting nothing turns that cell red. **The reporting host has no
+  toolchain for those plugs and did not run them** -- only the zig plug
+  and bare metal, above. COMPILER-13 records four plugs failing the first
+  time a lambda was actually run through them, which is the same class of
+  surprise. If that is not wanted before the COMPILER-18 ruling lands,
+  the file is one `git rm` and the row still stands as a report.
+
+**The finding under the gap.** The corpus is not missing this case
+because nobody wrote the input. Every input that reaches it needs a
+definition returning a function, and every such input lands on
+COMPILER-18. **The hole in the plug corpus and the open ruling in the
+compiler backlog are the same hole from two sides**, which is an argument
+for that ruling rather than a separate ask.
+
+
 **babbage is SHELVED** (Damian, 2026-08-21): vanity work. Its open items
 moved to `codex/plugs/babbage/babbage-backlog.md`. Do not add babbage items
 here.
