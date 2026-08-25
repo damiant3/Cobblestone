@@ -1,5 +1,6 @@
 Chapter: Vector
   cites Foreword chapter Maybe
+  cites Foreword chapter MathLib
   cites Math chapter Cordic
   cites UI chapter GlyphRasterizer
 
@@ -292,6 +293,112 @@ Section: Coverage
 
   vec-coverage-at : List Integer, Integer, Integer, Integer -> Integer
   vec-coverage-at (cov) (w) (x) (y) = list-at cov (y * w + x)
+
+Section: Stroke Coverage
+
+ A stroke is a FILLED region, so an antialiased one is the coverage the fill
+ already produces rather than a second rasterizer. Each segment becomes a
+ quad, extended by half a width along its own axis at both ends so a join is
+ covered without a miter calculation and a cap has square ends.
+
+ THE QUADS ARE RENDERED ONE AT A TIME AND MERGED BY MAXIMUM, and that is the
+ whole reason this is not one edge list handed to `gr-render-edges` once.
+ `gr-fill-scanline` pairs its intersections, which is the even-odd rule, so
+ two overlapping quads CANCEL: a single edge list punches a hole at every
+ join, at every cap that meets another, and wherever a path crosses itself.
+ Merging by maximum is what makes ink stay ink.
+
+ Each quad is rendered over ONLY the rows it spans, and `gr-render-edges`
+ allocates `width * height` on every call, so the buffer is the band rather
+ than the grid. There is no collector: a per-quad full grid would stay
+ resident for the whole paint, which for a twenty segment icon is twenty
+ copies of the supersampled surface.
+
+ The width is in PATH UNITS, the same units as the coordinates. `VecStyle`'s
+ `vs-stroke-width` is not read here: it is capped at 1000 and its scale was
+ never settled, and a caller that has a width in that convention converts at
+ its own boundary rather than having a guess about it baked in.
+
+  vec-half-w : Integer, Integer -> Integer
+  vec-half-w (width) (k) = width * k / 2
+
+  vec-quad : Integer, Integer, Integer, Integer, Integer -> List Edge
+  vec-quad (x0) (y0) (x1) (y1) (hw) =
+    let ex = x1 - x0
+    in let ey = y1 - y0
+    in let len = math-isqrt (ex * ex + ey * ey)
+    in if len <= 0 then []
+    else let ux = ex * hw / len
+    in let uy = ey * hw / len
+    in let nx = 0 - uy
+    in let ny = ux
+    in let ax = x0 - ux + nx
+    in let ay = y0 - uy + ny
+    in let bx = x1 + ux + nx
+    in let by = y1 + uy + ny
+    in let cx = x1 + ux - nx
+    in let cy = y1 + uy - ny
+    in let dx = x0 - ux - nx
+    in let dy = y0 - uy - ny
+    in vec-seg (vec-seg (vec-seg (vec-seg [] ax ay bx by) bx by cx cy) cx cy dx dy) dx dy ax ay
+
+  vec-edges-min-y : List Edge, Integer, Integer, Integer -> Integer
+  vec-edges-min-y (es) (i) (n) (m) =
+    if i >= n then m
+    else let e = list-at es i
+    in vec-edges-min-y es (i + 1) n (vec-min m (vec-min (e.e-y0) (e.e-y1)))
+
+  vec-edges-max-y : List Edge, Integer, Integer, Integer -> Integer
+  vec-edges-max-y (es) (i) (n) (m) =
+    if i >= n then m
+    else let e = list-at es i
+    in vec-edges-max-y es (i + 1) n (vec-max m (vec-max (e.e-y0) (e.e-y1)))
+
+  vec-cov-max : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  vec-cov-max (acc) (band) (sw) (row0) (n) (i) =
+    if i >= n then acc
+    else let v = list-at band i
+    in if v <= 0 then vec-cov-max acc band sw row0 n (i + 1)
+    else let idx = row0 * sw + i
+    in if v <= list-at acc idx then vec-cov-max acc band sw row0 n (i + 1)
+    else vec-cov-max (list-set-at acc idx v) band sw row0 n (i + 1)
+
+  vec-stroke-seg : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  vec-stroke-seg (acc) (sw) (sh) (x0) (y0) (x1) (y1) (hw) =
+    let q = vec-quad x0 y0 x1 y1 hw
+    in if list-length q == 0 then acc
+    else let lo0 = vec-edges-min-y q 0 (list-length q) 999999999 / vec-sub
+    in let hi0 = vec-edges-max-y q 0 (list-length q) (0 - 999999999) / vec-sub + 1
+    in let lo = vec-max 0 lo0
+    in let hi = vec-min sh hi0
+    in if hi <= lo then acc
+    else vec-cov-max acc (gr-render-edges q sw (hi - lo) lo hi) sw lo (sw * (hi - lo)) 0
+
+  vec-stroke-loop : List Integer, List Edge, Integer, Integer, Integer, Integer, Integer -> List Integer
+  vec-stroke-loop (acc) (es) (i) (n) (sw) (sh) (hw) =
+    if i >= n then acc
+    else let e = list-at es i
+    in vec-stroke-loop (vec-stroke-seg acc sw sh (e.e-x0) (e.e-y0) (e.e-x1) (e.e-y1) hw) es (i + 1) n sw sh hw
+
+  vec-stroke-cov-k : VecPath, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  vec-stroke-cov-k (p) (sw) (sh) (w) (h) (hw) (k) =
+    let es = vec-edges p k
+    in let acc = gr-make-row (sw * sh) 0
+    in gr-downsample-4x (vec-stroke-loop acc es 0 (list-length es) sw sh hw) sw sh w h
+
+  vec-stroke-coverage : VecPath, Integer, Integer, Integer -> List Integer
+  vec-stroke-coverage (p) (w) (h) (width) =
+    let k = vec-super * vec-sub
+    in vec-stroke-cov-k p (w * vec-super) (h * vec-super) w h (vec-half-w width k) k
+
+ The em-mapped form, matching `vec-coverage-in`: artwork authored in a box of
+ its own is scaled onto the grid, and the width scales with it.
+
+  vec-stroke-coverage-in : VecPath, Integer, Integer, Integer -> List Integer
+  vec-stroke-coverage-in (p) (em) (n) (width) =
+    if em <= 0 then vec-stroke-coverage p n n width
+    else let k = vec-super * vec-sub * n / em
+    in vec-stroke-cov-k p (n * vec-super) (n * vec-super) n n (vec-half-w width k) k
 
 Section: Queries
 

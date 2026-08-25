@@ -6,11 +6,15 @@ Chapter: DeskLabelMetricsTest
   cites Works chapter GopComposite
   cites UI chapter Widget
   cites Foreword chapter Console
+  cites Foreword chapter Maybe
 
  `widget-label` and `widget-button` reserve `text-length * 8` logical pixels,
  an EIGHT PIXEL CELL hardcoded in `Widget.codex`, and the renderer then draws
  a proportional face. This prints the two numbers side by side so the gap is a
- table rather than an adjective.
+ table rather than an adjective, then prints the same table for the tree
+ `comp-fit-text` has re-measured through the loaded face: the second table's
+ slack is what the desk actually reserves now, and it is the rounding of one
+ device pixel per string rather than tens.
 
  Measured 2026-08-21 with CMUNSS at 1600 wide, and it answers in BOTH
  directions: the four lowercase buttons reserve 49 to 72 device pixels MORE
@@ -59,6 +63,11 @@ Section: Body
        & pad ("drawn " & integer-to-text drawn) 12
        & "slack " & integer-to-text (reserved - drawn)
 
+  min-of : WidgetNode, Text -> Integer
+  min-of (root) (id) = when widget-find root id
+    is Just (n) -> n.wn-min-w
+    is None -> 0 - 1
+
   walk : List WidgetNode, Integer, Integer, GopFont, Integer -> [Console] Integer
   walk (kids) (i) (n) (tf) (s) =
     if i >= n then 0
@@ -81,11 +90,21 @@ Section: Entry
         f <- gfont-load (m.gm-vol) "CMUNSS.TTF" ppem
         if f.gf-ok == False then print-line-uni "CMUNSS.TTF: not loaded"
         else act
-          let bar = widget-measure (desk-sidebar 0) (dk-theme-of 0 dk-adorn-default)
+          let th = dk-theme-of 0 dk-adorn-default
+          in let bar = widget-measure (desk-sidebar 0) th
+          in let fit = widget-measure (comp-fit-text (desk-sidebar 0) f s) th
           in act
             print-line-uni ("sidebar pinned to     : " & integer-to-text (dk-sidebar-w * s))
             w <- walk (bar.wn-children) 0 (bar.wn-child-count) f s
             print-line-uni ("sidebar measured to   : " & integer-to-text (bar.wn-min-w * s))
+            print-line-uni "fitted through the face:"
+            w2 <- walk (fit.wn-children) 0 (fit.wn-child-count) f s
+            print-line-uni ("fitted measured to    : " & integer-to-text (fit.wn-min-w * s))
+            let tb = comp-fit-text (desk-taskbar 0) f s
+            in act
+              print-line-uni ("pinned menu button 72 : " & integer-to-text (min-of tb "menu"))
+              print-line-uni ("pinned clock 220      : " & integer-to-text (min-of tb "task-clock"))
+            end
           end
         end
       end
