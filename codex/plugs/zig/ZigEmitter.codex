@@ -3212,20 +3212,35 @@ Section: Definition Emission
 Section: Chapter Emission
 
  Codex is written to recurse rather than loop, and bare metal answers that
- with a multi-gigabyte arena. Zig gives a main thread 8 MB, which is not
- enough: scan-class-instance-defs recurses once per token, so Parser.codex
- at 18,812 tokens overflows and segfaults. ReleaseFast does not rescue it,
- since the calls sit inside labelled block expressions.
+ with a multi-gigabyte arena. Zig gives a main thread 8 MB. That was not
+ enough when this plug emitted a call for every self-recursion:
+ scan-class-instance-defs recurses once per token, and Parser.codex at
+ 18,812 tokens overflowed and segfaulted. ReleaseFast does not rescue that
+ shape, since the calls sit inside labelled block expressions.
 
  This is the same wall CSharpPlug hit, and this is its answer -- run the
  entry point on a thread with a big stack, reserved address space
- committed on demand. Read the note above opening-on-big-stack there for
- the part that matters most: the case that reaches the limit is MUTUAL
- recursion, the lexer's scan-token -> skip-prose-line -> scan-token cycle,
- and no amount of self-tail-call elimination flattens that. Emitting loops
- for self-recursion would be a real feature and would still not remove the
- need for this. .NET gives its main thread 1 MB and overflows on a 96-byte
- chapter, so this is a property of the source rather than of large input.
+ committed on demand. .NET gives its main thread 1 MB and overflows on a
+ 96-byte chapter, so the need is a property of the source rather than of
+ large input.
+
+ No cycle this note can name is what holds the stack up any more, and the
+ three worth naming are settled, so the next reader does not re-derive
+ them. The lexer's scan-token -> skip-prose-line -> scan-token pair is
+ MUTUAL and no self-tail transformation reaches it -- but it is measured
+ FLAT: 100,000 consecutive prose lines run in a 256 KB stack, so it is not
+ the case to reason from. scan-class-instance-defs recurses once per token
+ and every one of its recursive calls is in tail position, so this plug
+ emits it as a loop. The parser's top-level scans DID drive the depth --
+ 2,393 nested scan-top-level frames on the 2.5 MB back-end unit -- and
+ they now return their item rather than mutually tail-calling, which
+ leaves each one tail-calling ITSELF, so they are loops here too.
+
+ That makes 512 MB a number whose stated mechanism is gone, and the answer
+ to that is to measure before lowering it rather than to lower it. Only
+ codexir has been bisected against real documents; zigemit and the other
+ natives have their own recursion and are unmeasured, so what one input
+ needs is known and what every input needs is not.
 
  512 MB matches the C# default deliberately. What is NOT matched is its
  CODEX_STACK_MB override: zig 0.16's environment API is mid-refactor
