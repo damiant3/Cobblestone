@@ -1,5 +1,6 @@
 Chapter: VectorRasterTest
   cites UI chapter Vector
+  cites UI chapter GlyphRasterizer
   cites Foreword chapter Console
 
  `Vector.codex` had no asserting test before this one: it was cited by
@@ -172,6 +173,83 @@ Section: Coverage
     in let b = vrt-area (vec-coverage vrt-flat vrt-w vrt-w) 0 0
     in "curved area=" & show a & " flat area=" & show b & " curve pays=" & (if a > b then "yes" else "NO")
 
+Section: Stroke Coverage
+
+ The stroke answers coverage the way the fill does, so the same three
+ questions apply: inside the band, outside it, and the boundary.
+
+ The arm that decides the CONSTRUCTION rather than the arithmetic is the
+ crossing. `gr-fill-scanline` is even-odd, so two quads handed to it in one
+ edge list cancel where they overlap, and an X would come out with a HOLE at
+ exactly the point a pen puts the most ink. `vec-stroke-seg` renders each
+ quad on its own and merges by maximum, so the crossing reads full. The
+ single segment beside it is the control: it reads full under either
+ construction, so it cannot tell them apart and is not evidence about them.
+
+  vrt-pen-w : Integer = 2
+
+  vrt-bar : List Integer
+  vrt-bar = vec-stroke-coverage (vec-line 2 8 14 8) vrt-w vrt-w vrt-pen-w
+
+  vrt-cross : VecPath
+  vrt-cross =
+    let p = vec-line-to (vec-move-to vec-path-new 2 2) 14 14
+    in vec-line-to (vec-move-to p 14 2) 2 14
+
+  vrt-stroke : Text
+  vrt-stroke =
+    "stroke bar  mid=" & show (vec-coverage-at vrt-bar vrt-w 8 8)
+    & " far=" & show (vec-coverage-at vrt-bar vrt-w 8 3)
+    & " area=" & show (vrt-area vrt-bar 0 0)
+
+  vrt-stroke-cross : Text
+  vrt-stroke-cross =
+    let cov = vec-stroke-coverage vrt-cross vrt-w vrt-w vrt-pen-w
+    in let mid = vec-coverage-at cov vrt-w 8 8
+    in "stroke cross  mid=" & show mid
+       & " control bar mid=" & show (vec-coverage-at vrt-bar vrt-w 8 8)
+       & " ink at crossing=" & (if mid > 0 then "yes" else "NO, EVEN-ODD CANCELLED")
+
+ The arm above says the crossing has ink. It does not say WHY that needed
+ building, and a reader has to take the even-odd claim on trust. So the
+ rejected construction is built here from the same two quads and rendered in
+ ONE `gr-render-edges` call, which is what a single edge list means. It is
+ the sabotage kept as a row.
+
+ It reads 47 against the per-quad 255, and NOT 0, which is worth stating
+ exactly rather than rounding to "it cancels". The cancelled region is the
+ lozenge where the two quads overlap; the centre pixel straddles its
+ boundary, so a few of its sixteen supersamples fall outside and survive. The
+ claim the row makes is the collapse from 255 to 47 at the point a pen puts
+ the most ink, and the arm at 255 beside it is what says the rest of the
+ stroke is unharmed and the defect is local to the crossing.
+
+  vrt-k : Integer = vec-super * vec-sub
+
+  vrt-quads : List Edge
+  vrt-quads =
+    vec-quad (2 * vrt-k) (2 * vrt-k) (14 * vrt-k) (14 * vrt-k) (vec-half-w vrt-pen-w vrt-k)
+    & vec-quad (14 * vrt-k) (2 * vrt-k) (2 * vrt-k) (14 * vrt-k) (vec-half-w vrt-pen-w vrt-k)
+
+  vrt-evenodd : Text
+  vrt-evenodd =
+    let sw = vrt-w * vec-super
+    in let cov = gr-downsample-4x (gr-render-edges vrt-quads sw sw 0 sw) sw sw vrt-w vrt-w
+    in "one edge list, even-odd  mid=" & show (vec-coverage-at cov vrt-w 8 8)
+       & " arm=" & show (vec-coverage-at cov vrt-w 5 5)
+
+ Width is in path units and the band is that many units across, so doubling
+ the pen doubles the ink over a straight run. It is asserted as a RATIO
+ against the same path rather than as two absolute areas, because the cap
+ adds a fixed amount at each end that neither number is about.
+
+  vrt-stroke-width : Text
+  vrt-stroke-width =
+    let a = vrt-area (vec-stroke-coverage (vec-line 2 8 14 8) vrt-w vrt-w 2) 0 0
+    in let b = vrt-area (vec-stroke-coverage (vec-line 2 8 14 8) vrt-w vrt-w 4) 0 0
+    in "stroke w2 area=" & show a & " w4 area=" & show b
+       & " wider pays=" & (if b > a then "yes" else "NO")
+
   opening : [Console] Nothing = act
     print-line-uni vrt-line
     print-line-uni vrt-rect
@@ -181,4 +259,8 @@ Section: Coverage
     print-line-uni vrt-fill
     print-line-uni vrt-round
     print-line-uni vrt-curve-fill
+    print-line-uni vrt-stroke
+    print-line-uni vrt-stroke-cross
+    print-line-uni vrt-evenodd
+    print-line-uni vrt-stroke-width
   end

@@ -475,15 +475,22 @@ Section: Chrome
  bar. The bar is painted by `desk-topbar` outside the widget tree, so
  nothing in the layout knows it is there unless it is told twice.
 
-  desk-chrome-with : WidgetNode, Integer, Integer -> WidgetNode
-  desk-chrome-with (content) (w) (ds) =
-    let gap = widget-set-flex (widget-set-min (widget-panel "topgap" DirColumn 0 []) 0 (dk-bar-h * ui-scale w / ui-wscale w)) 0
-    in let gap2 = widget-set-flex (widget-set-min (widget-panel "topgap2" DirColumn 0 []) 0 (dk-bar-h * ui-scale w / ui-wscale w)) 0
-    in let left = widget-set-flex (widget-set-min (widget-panel "leftcol" DirColumn 0 [gap2, widget-set-flex (desk-sidebar (dk-gpu ds)) 1]) 160 0) 0
-    in widget-panel "root" DirRow 0 [left, widget-set-flex (widget-panel "right" DirColumn 0 [gap, widget-set-flex content 1, desk-taskbar ds]) 1]
+ The face reaches the CHROME only. A pane's own tree is handed through
+ untouched because a pane that hit-tests its own subtree does so with plain
+ `widget-layout` (`GopBrowser.codex`), and a cell fitted on one side of that
+ pair and not the other puts a click on the wrong widget.
 
-  desk-chrome : Integer, Integer -> WidgetNode
-  desk-chrome (w) (ds) = desk-chrome-with (widget-panel "content" DirColumn 0 []) w ds
+  desk-chrome-face : WidgetNode, Integer, Integer, GopFont -> WidgetNode
+  desk-chrome-face (content) (w) (ds) (tf) =
+    let s = ui-wscale w
+    in let gap = widget-set-flex (widget-set-min (widget-panel "topgap" DirColumn 0 []) 0 (dk-bar-h * ui-scale w / ui-wscale w)) 0
+    in let gap2 = widget-set-flex (widget-set-min (widget-panel "topgap2" DirColumn 0 []) 0 (dk-bar-h * ui-scale w / ui-wscale w)) 0
+    in let bar = comp-fit-text (desk-sidebar (dk-gpu ds)) tf s
+    in let left = widget-set-flex (widget-set-min (widget-panel "leftcol" DirColumn 0 [gap2, widget-set-flex bar 1]) 160 0) 0
+    in widget-panel "root" DirRow 0 [left, widget-set-flex (widget-panel "right" DirColumn 0 [gap, widget-set-flex content 1, comp-fit-text (desk-taskbar ds) tf s]) 1]
+
+  desk-chrome-with : WidgetNode, Integer, Integer -> WidgetNode
+  desk-chrome-with (content) (w) (ds) = desk-chrome-face content w ds gfont-none
 
  Every chrome render goes through here, and the reason is the taskbar clock.
  The band is painted from the widget tree, whose `task-clock` label is empty by
@@ -524,7 +531,7 @@ Section: Chrome
 
   dk-chrome-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Integer -> WidgetNode
   dk-chrome-paint (base) (w) (h) (stride) (font) (tf) (tree) (ds) =
-    let laid = comp-render base stride font tf (desk-chrome-with tree w ds) (dk-theme-ds ds) w h (ui-wscale w)
+    let laid = comp-render base stride font tf (desk-chrome-face tree w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
     in let ic = desk-chrome-icons base stride laid (dk-theme-ds ds) (ui-wscale w) tf ds
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in laid
@@ -616,7 +623,7 @@ Section: Drawing
   desk-draw : Integer, Integer, Integer, Integer, CbfFont, Integer, GopFont, Integer -> WidgetNode
   desk-draw (base) (w) (h) (stride) (font) (s) (tf) (ds) =
     let wall = gop-fill-rect base stride 0 0 w h (dk-wall ds)
-    in let laid = comp-render base stride font tf (desk-chrome w ds) (dk-theme-ds ds) w h (ui-wscale w)
+    in let laid = comp-render base stride font tf (desk-chrome-face (widget-panel "content" DirColumn 0 []) w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
     in let ic = desk-chrome-icons base stride laid (dk-theme-ds ds) (ui-wscale w) tf ds
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in let bar = desk-topbar base w stride font s ds
@@ -1107,11 +1114,11 @@ Section: Calculator
  answers the scancode of whatever button is under the pointer, so a click
  and a keystroke reach `gcalc-key` by the same road.
 
-  dk-calc-hit : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  dk-calc-hit (w) (h) (ks) (mx) (my) (ds) =
+  dk-calc-hit : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
+  dk-calc-hit (w) (h) (ks) (mx) (my) (ds) (tf) =
     let probe = __heap-save
     in let s = ui-wscale w
-    in let laid = widget-layout (desk-chrome-with (gcalc-tree ks) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let laid = widget-layout (desk-chrome-face (gcalc-tree ks) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
           is Just (wgt) -> gcalc-id-scan (wgt.wn-id)
           is None -> 0
@@ -1133,7 +1140,7 @@ Section: Calculator
   desk-calc-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, Boolean -> [Device.Port] Integer
   desk-calc-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) (clicked) =
     let ks = peek-32 ds 24
-    in let hit = if clicked then dk-calc-hit w h ks (mouse-x mouse) (mouse-y mouse) ds else 0
+    in let hit = if clicked then dk-calc-hit w h ks (mouse-x mouse) (mouse-y mouse) ds tf else 0
     in if sc == 1 then 0
     else if sc == 88 then act
       let mark = __heap-save
@@ -1451,11 +1458,11 @@ Section: Programs
     in let p = desk-programs-draw base w h stride font tf ps ds
     in dk-cursor base w h stride cs mouse
 
-  dk-prog-hit : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  dk-prog-hit (w) (h) (ps) (mx) (my) (ds) =
+  dk-prog-hit : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
+  dk-prog-hit (w) (h) (ps) (mx) (my) (ds) (tf) =
     let probe = __heap-save
     in let s = ui-wscale w
-    in let laid = widget-layout (desk-chrome-with (gpr-tree ps) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let laid = widget-layout (desk-chrome-face (gpr-tree ps) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
           is Just (wgt) -> gpr-id-scan (wgt.wn-id) 0
           is None -> 0
@@ -1476,7 +1483,7 @@ Section: Programs
   desk-prog-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, Boolean -> [Device.Port] Integer
   desk-prog-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) (clicked) =
     let ps = peek-32 ds desk-prog-cell
-    in let hit = if clicked then dk-prog-hit w h ps (mouse-x mouse) (mouse-y mouse) ds else 0
+    in let hit = if clicked then dk-prog-hit w h ps (mouse-x mouse) (mouse-y mouse) ds tf else 0
     in if sc == 1 then 0
     else if hit /= 0 then hit
     else if sc == 88 then act
@@ -1555,11 +1562,11 @@ Section: Programs
     in let p = desk-menu-draw base w h stride font tf ps ds
     in dk-cursor base w h stride cs mouse
 
-  dk-menu-hit : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  dk-menu-hit (w) (h) (ps) (mx) (my) (ds) =
+  dk-menu-hit : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
+  dk-menu-hit (w) (h) (ps) (mx) (my) (ds) (tf) =
     let probe = __heap-save
     in let s = ui-wscale w
-    in let laid = widget-layout (desk-chrome-with (desk-menu-tree ps) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let laid = widget-layout (desk-chrome-face (desk-menu-tree ps) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
           is Just (wgt) -> gpr-id-scan (wgt.wn-id) 0
           is None -> 0
@@ -1569,7 +1576,7 @@ Section: Programs
   desk-menu-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, Boolean -> [Device.Port] Integer
   desk-menu-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) (clicked) =
     let ps = peek-32 ds desk-prog-cell
-    in let hit = if clicked then dk-menu-hit w h ps (mouse-x mouse) (mouse-y mouse) ds else 0
+    in let hit = if clicked then dk-menu-hit w h ps (mouse-x mouse) (mouse-y mouse) ds tf else 0
     in if sc == 1 then 0
     else if hit /= 0 then hit
     else if sc == 88 then act
@@ -1669,11 +1676,11 @@ Section: Issues
  the measured node's rect rather than one of its numbers. A second bracketed
  layout to read the other number would double what this already costs.
 
-  desk-trk-table-box : Integer, Integer, DbServer, Integer, Integer, Integer -> LayoutRect
-  desk-trk-table-box (w) (h) (srv) (filter) (sel) (ds) =
+  desk-trk-table-box : Integer, Integer, DbServer, Integer, Integer, Integer, GopFont -> LayoutRect
+  desk-trk-table-box (w) (h) (srv) (filter) (sel) (ds) (tf) =
     let probe = __heap-save
     in let s = ui-wscale w
-    in let measured = widget-layout (desk-chrome-with (gtk-tree srv filter sel (0 - 1) 0) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let measured = widget-layout (desk-chrome-face (gtk-tree srv filter sel (0 - 1) 0) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
     in let found = widget-find measured "issues"
     in let box = when found
       is Just (n) -> layout-rect 0 0 ((n.wn-bounds).lr-w) ((n.wn-bounds).lr-h)
@@ -1687,12 +1694,12 @@ Section: Issues
  tree is built at the height the paint used, so a click answers about the
  page the reader is looking at rather than about a table nobody drew.
 
-  desk-trk-hit : Integer, Integer, UsbMouse, Integer, DbServer, Integer, Integer -> Integer
-  desk-trk-hit (w) (h) (mouse) (ds) (srv) (filter) (sel) =
-    let box = desk-trk-table-box w h srv filter sel ds
+  desk-trk-hit : Integer, Integer, UsbMouse, Integer, DbServer, Integer, Integer, GopFont -> Integer
+  desk-trk-hit (w) (h) (mouse) (ds) (srv) (filter) (sel) (tf) =
+    let box = desk-trk-table-box w h srv filter sel ds tf
     in let probe = __heap-save
     in let s = ui-wscale w
-    in let laid = widget-layout (desk-chrome-with (gtk-tree srv filter sel (box.lr-h) (box.lr-w)) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let laid = widget-layout (desk-chrome-face (gtk-tree srv filter sel (box.lr-h) (box.lr-w)) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
     in let row = when ev-hit-widget laid (comp-hit-x (mouse-x mouse) s) (comp-hit-y (mouse-y mouse) s)
       is Just (wgt) -> gtk-row-at srv filter sel (box.lr-h) (box.lr-w) (wgt.wn-id)
       is None -> 0 - 1
@@ -1701,7 +1708,7 @@ Section: Issues
 
   desk-trk-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, DbServer, Integer, Integer, Integer -> Integer
   desk-trk-draw (base) (w) (h) (stride) (font) (tf) (srv) (filter) (sel) (ds) =
-    let box = desk-trk-table-box w h srv filter sel ds
+    let box = desk-trk-table-box w h srv filter sel ds tf
     in let tree = gtk-tree srv filter sel (box.lr-h) (box.lr-w)
     in let laid = dk-chrome-paint base w h stride font tf tree ds
     in desk-topbar base w stride font (ui-scale w) ds
@@ -1752,7 +1759,7 @@ Section: Issues
       in let ns0 = if sc == 72 then (if sel > 0 then sel - 1 else 0) else sel
       in let ns1 = if sc == 80 then (if ns0 < hi then ns0 + 1 else hi) else ns0
       in let ns2 = if sc == 33 then 0 else ns1
-      in let hit-row = if clicked then desk-trk-hit w h mouse ds srv filter sel else 0 - 1
+      in let hit-row = if clicked then desk-trk-hit w h mouse ds srv filter sel tf else 0 - 1
       in let ns = if hit-row >= 0 then hit-row else ns2
       in if nf == filter & ns == sel then
         let d = __heap-restore mark
@@ -1808,11 +1815,11 @@ Section: Review
  restore has already released, which reads correctly only until the next
  allocation lands on it.
 
-  desk-rev-box : Integer, Integer, GrvData, Integer, Maybe Text, Integer -> LayoutRect
-  desk-rev-box (w) (h) (data) (rs) (signer) (ds) =
+  desk-rev-box : Integer, Integer, GrvData, Integer, Maybe Text, Integer, GopFont -> LayoutRect
+  desk-rev-box (w) (h) (data) (rs) (signer) (ds) (tf) =
     let probe = __heap-save
     in let s = ui-wscale w
-    in let measured = widget-layout (desk-chrome-with (grv-tree data rs signer (desk-content-h w h) (0 - 1) 0) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let measured = widget-layout (desk-chrome-face (grv-tree data rs signer (desk-content-h w h) (0 - 1) 0) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
     in let bw = when widget-find measured "grv-body-0"
       is Just (n) -> (n.wn-bounds).lr-w
       is None -> 0 - 1
@@ -1824,7 +1831,7 @@ Section: Review
 
   desk-rev-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, GrvData, Integer, Integer, Maybe Text -> Integer
   desk-rev-draw (base) (w) (h) (stride) (font) (tf) (data) (rs) (ds) (signer) =
-    let box = if grv-in-detail rs then desk-rev-box w h data rs signer ds else layout-rect-zero
+    let box = if grv-in-detail rs then desk-rev-box w h data rs signer ds tf else layout-rect-zero
     in let view = if box.lr-h <= 0 then 1 else 1 + (box.lr-h) / grv-row-h
     in let tree = grv-tree data rs signer (desk-content-h w h) (box.lr-w) (if grv-in-detail rs then view else 0)
     in let laid = dk-chrome-paint base w h stride font tf tree ds
@@ -1969,12 +1976,12 @@ Section: Appearance Pane
     else if sc == 30 then 6
     else 0
 
-  dk-style-hit : Integer, Integer, Integer, Integer, Integer -> Integer
-  dk-style-hit (w) (h) (mx) (my) (ds) =
+  dk-style-hit : Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
+  dk-style-hit (w) (h) (mx) (my) (ds) (tf) =
     let probe = __heap-save
     in let tree = dk-style-tree (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell) (peek-32 ds dk-sound-on-cell)
     in let s = ui-wscale w
-    in let laid = widget-layout (desk-chrome-with tree w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let laid = widget-layout (desk-chrome-face tree w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
           is Just (wgt) -> dk-style-id-code (wgt.wn-id)
           is None -> 0
@@ -2013,7 +2020,7 @@ Section: Appearance Pane
 
   desk-style-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, Boolean -> [Device.Port] Integer
   desk-style-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) (clicked) =
-    let click = if clicked then dk-style-hit w h (mouse-x mouse) (mouse-y mouse) ds else 0
+    let click = if clicked then dk-style-hit w h (mouse-x mouse) (mouse-y mouse) ds tf else 0
     in let code = if click /= 0 then click else dk-style-key sc
     in if sc == 1 then 0
     else if sc == 88 then act

@@ -35,9 +35,9 @@ not carried forward (L-COUNT).
 
 ## Landed this cycle
 
-### Interim mirror push, 2026-08-22, seed `A01C1547` (unchanged since Update 49)
+### Interim mirror push, 2026-08-22 (github `ff9eaf4c`, gitlab the same), seed `A01C1547` (unchanged since Update 49)
 
-Not a release: a mirror update carrying main 19069 to 19104, all of it
+Not a release: a mirror update carrying main 19069 to 19106, all of it
 build scripts, tests and docs, the seed untouched. No release proof was
 re-run for it and none was owed: the four proofs certify a seed, and this
 seed carried them on 2026-08-21. What it carries is **the battery

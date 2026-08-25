@@ -1473,30 +1473,35 @@ Section: Chapter Pagination
     in let st-i4 = if is-where-keyword (current-kind st-i3) then skip-newlines (advance st-i3) else st-i3
     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-body-lines st-i4)
    else if is-claim-keyword (current-kind st) then parse-claim-arm defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
-   else if is-proof-keyword (current-kind st) then try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (advance st)
+   else if is-proof-keyword (current-kind st) then let item = parse-top-def-item defs type-defs ch-title (advance st)
+    in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns (item.ti-state)
    else if is-punctual-keyword (current-kind st) then let pst = advance st
      in if is-done pst then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns pst
      else if current-kind pst == IntegerLiteral then let budget-text = token-text (current pst)
        in let pst2 = advance pst
        in let pname = if is-done pst2 then "" else token-text (current pst2)
        in let pann = deck-record (AnnotationNode { kind = "hard-realtime", target = pname, body = budget-text })
-       in try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) pst2
+       in let item = parse-top-def-item defs type-defs ch-title pst2
+       in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) (item.ti-state)
      else let pname = token-text (current pst)
      in let pann = deck-record (AnnotationNode { kind = "hard-realtime", target = pname, body = "" })
-     in try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) pst
+     in let item = parse-top-def-item defs type-defs ch-title pst
+     in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) (item.ti-state)
    else if is-bounded-keyword (current-kind st) then let bst = advance st
      in if is-done bst then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns bst
      else let bclass = token-text (current bst)
      in let bst2 = advance bst
      in let bname = if is-done bst2 then "" else token-text (current bst2)
      in let bann = deck-record (AnnotationNode { kind = "bounded", target = bname, body = bclass })
-     in try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns bann) bst2
+     in let item = parse-top-def-item defs type-defs ch-title bst2
+     in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns bann) (item.ti-state)
    else if is-conversion-decl st then let conv-ann = parse-conversion-decl st
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns conv-ann) (skip-to-next-line st)
    else if is-prose-line st then let pr = collect-prose-with-text st prose blocks
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles (pr.lines) (pr.blocks) anns (pr.state)
    else if (current st).column > 3 then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)
-   else try-top-level-type-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
+   else let item = parse-top-item defs type-defs ch-title st
+   in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns (item.ti-state)
 
   parse-top-level-effect : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-top-level-effect (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
@@ -1608,18 +1613,14 @@ Section: Chapter Pagination
     in parse-instance-params st4 (__linked-list-push acc p)
    else (deck-record (__linked-list-to-list acc), st)
 
-  try-top-level-type-def : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
-  try-top-level-type-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
-   let td-result = parse-type-def st
-   in let st2 = td-result.state
-   in when td-result.maybe-type-def
-    is Just (td) ->
-     parse-top-level defs (__linked-list-push type-defs td) effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines st2)
-    is None ->
-     try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
+  TopItem = record {
+   ti-defs : LinkedList Def,
+   ti-type-defs : LinkedList TypeDef,
+   ti-state : ParseState
+  }
 
-  try-top-level-def : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
-  try-top-level-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
+  parse-top-def-item : LinkedList Def, LinkedList TypeDef, Text, ParseState -> TopItem
+  parse-top-def-item (defs) (type-defs) (ch-title) (st) =
    let def-result = parse-definition st
    in let st2 = def-result.state
    in when def-result.maybe-def
@@ -1631,9 +1632,23 @@ Section: Chapter Pagination
       body = d.body,
       chapter-slug = ch-title
      })
-     in parse-top-level (__linked-list-push defs tagged) type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines st2)
+     in TopItem { ti-defs = __linked-list-push defs tagged, ti-type-defs = type-defs, ti-state = skip-newlines st2 }
     is None ->
-     parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines (advance st2))
+     TopItem { ti-defs = defs, ti-type-defs = type-defs, ti-state = skip-newlines (advance st2) }
+
+ A type definition is tried first and the definition parse re-reads from
+ the SAME state when it is not one -- st, not the type parser's returned
+ state, exactly as the two functions this replaces did.
+
+  parse-top-item : LinkedList Def, LinkedList TypeDef, Text, ParseState -> TopItem
+  parse-top-item (defs) (type-defs) (ch-title) (st) =
+   let td-result = parse-type-def st
+   in let st2 = td-result.state
+   in when td-result.maybe-type-def
+    is Just (td) ->
+     TopItem { ti-defs = defs, ti-type-defs = __linked-list-push type-defs td, ti-state = skip-newlines st2 }
+    is None ->
+     parse-top-def-item defs type-defs ch-title st
 
   parse-claim-arm : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-claim-arm (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
@@ -1941,7 +1956,8 @@ Section: Header Scanning (streaming)
     in scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names (skip-body-lines st-i4)
    else if is-prose-line st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names (skip-prose-lines st)
    else if (current st).column > 3 then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names (skip-to-next-line st)
-   else try-scan-type-def headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names st
+   else let item = scan-top-item headers type-defs cur-chap st
+   in scan-top-level (item.si-headers) (item.si-type-defs) effect-defs imports cur-chap ch-title sec-titles chap-names (item.si-state)
 
   scan-top-level-effect : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, LinkedList Text, ParseState -> ScanResult
   scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (chap-names) (st) =
@@ -1956,25 +1972,36 @@ Section: Header Scanning (streaming)
        })
    in scan-top-level headers type-defs (__linked-list-push effect-defs ed) imports cur-chap ch-title sec-titles chap-names (skip-newlines ops-st)
 
-  try-scan-type-def : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, LinkedList Text, ParseState -> ScanResult
-  try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (chap-names) (st) =
+ One top-level item, scanned and RETURNED rather than handed onward.
+ These two used to tail-call scan-top-level between them, which made the
+ scan a three-function mutual recursion nesting once per top-level
+ definition: measured at 2,393 nested scan-top-level frames on the
+ 2.5 MB back-end unit, and mutual tail calls are what no plug and not
+ bare metal flattens (every TCO in the fleet is self-only). Returning
+ the outcome instead leaves scan-top-level tail-calling ITSELF, which is
+ the shape everyone already flattens.
+
+  ScanItem = record {
+   si-headers : LinkedList DefHeader,
+   si-type-defs : LinkedList TypeDef,
+   si-state : ParseState
+  }
+
+  scan-top-item : LinkedList DefHeader, LinkedList TypeDef, Text, ParseState -> ScanItem
+  scan-top-item (headers) (type-defs) (cur-chap) (st) =
    let td-result = parse-type-def st
    in let st2 = td-result.state
    in when td-result.maybe-type-def
     is Just (td) ->
-     scan-top-level headers (__linked-list-push type-defs td) effect-defs imports cur-chap ch-title sec-titles chap-names (skip-newlines st2)
+     ScanItem { si-headers = headers, si-type-defs = __linked-list-push type-defs td, si-state = skip-newlines st2 }
     is None ->
-     try-scan-def-header headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names st
-
-  try-scan-def-header : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, LinkedList Text, ParseState -> ScanResult
-  try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (chap-names) (st) =
-   let hdr-result = scan-definition cur-chap st
-   in let st2 = hdr-result.state
-   in when hdr-result.maybe-header
-    is Just (hdr) ->
-     scan-top-level (__linked-list-push headers hdr) type-defs effect-defs imports cur-chap ch-title sec-titles chap-names (skip-newlines st2)
-    is None ->
-     scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names (skip-newlines (advance st2))
+     let hdr-result = scan-definition cur-chap st
+     in let st3 = hdr-result.state
+     in when hdr-result.maybe-header
+      is Just (hdr) ->
+       ScanItem { si-headers = __linked-list-push headers hdr, si-type-defs = type-defs, si-state = skip-newlines st3 }
+      is None ->
+       ScanItem { si-headers = headers, si-type-defs = type-defs, si-state = skip-newlines (advance st3) }
 
   scan-definition : Text, ParseState -> ScanDefResult
   scan-definition (cur-chap) (st) =

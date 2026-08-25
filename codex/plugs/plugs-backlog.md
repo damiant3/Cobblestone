@@ -165,6 +165,89 @@ preceding instruction runs on every path reaching the mov. The guard is in;
 the general case is not. `br` is the standing gap: an indirect branch carries
 no target in its encoding, and this lane emits none today.
 
+**1.57 -- `riscv` and `java` do not handle over-application of a named
+definition, and riscv's correct fix is in the tree with no caller.**
+From the zig-plug ladder (`contrib/README.md`), 2026-08-24.
+`docs/DevelopersRulebook.md:256-260` requires a plug that knows the
+callee's arity to handle three cases -- flat at that arity,
+under-applied with one arrow per missing parameter, over-applied by
+applying the rest. The rule is unqualified: it binds "a plug", and names
+the TS/JS family only as plugs that already carry the model. Three plugs
+implement two of the three.
+
+**riscv has the fix and does not call it.** The named-definition path
+(`RiscVCodeGen2.codex:583-591`) tests `list-length args < known-arity`
+and routes to `rv-emit-partial-application`; every other case,
+`args > known-arity` included, falls into `rv-emit-direct-call` with the
+whole argument list. Seventy lines below, `rv-emit-closure-over-apply`
+(`:660-668`) is a correct take/drop over-apply, and
+`grep -rn rv-emit-closure-over-apply codex/plugs/` returns exactly three
+hits: its signature, its definition, and its own self-recursive tail.
+Nothing reaches it.
+
+**java never consults arity at all.** `JavaEmitter.codex:158-168` emits
+`func & "(" & emit-jv-apply-args args ... & ")"` for both the `IrName`
+root and the `otherwise` root. `lookup-arity` is defined at `:69-70` and
+has no call site in the file.
+
+**arm64 is a near miss, not a defect.** It has
+`a64-emit-oversaturated-call` (`Arm64CodeGen2.codex:927-932`) reached
+from `:980-981`, but the arity it consults is `a64-known-arity`
+(`:901-915`), a hardcoded table of builtin names, so it does not fire
+for user definitions. Its local-closure path (`:976-978`) does use a
+real def-arity table.
+
+The compliant plugs do it two ways, either of which is a template:
+`csharp` (`CSharpEmitterExpressions.codex:830-841`), `python`
+(`PythonEmitter.codex:646-655`), `javascript` (`:501-511`) and `rust`
+(`RustEmitter.codex:547-560`) route every non-exact case to a curried
+spine, so over-application is correct by construction; the TS family
+(`TypeScriptEmitter.codex:205-214`) splits on `args > ar` with
+take/drop, as does the compiler's own x86-64 back end
+(`X86_64Compound.codex:154`, arity map built at `:38` from
+`list-length (d.params)`).
+
+**What is measured and what is not.** The same gap in the zig plug is
+observed end to end: `((even-fn 4) 20) 22` against a one-ary definition
+emits `even_fn(4, 20, 22)` and zig refuses it at compile time with
+`expected 1 argument(s), found 3`. That one is the ladder's to fix and
+is not this row. For riscv and java this entry offers the dispatch code
+and the grep, NOT an observed miscompile, and the reporter is not going
+to supply one -- **this wants verifying on the depot side, where the
+toolchains are.** Per this file's own standing hazard about name
+censuses, treat the runtime consequence as inferred from the emitted
+shape until a subject has been run through both plugs and the output
+read. Concretely, what would settle it: over-apply a NAMED top-level
+definition that returns a function, emit Java, and check whether the call
+site names a method the same file declares with fewer parameters. The
+ladder host has no JDK and installing one is not its call, so the row is
+deliberately filed as a source-level report rather than held back until
+someone can run it. Note what would and would not catch it if someone
+did: `test-plugs.ps1` asserts non-empty text with markers and never
+COMPILES what a plug emitted, so it cannot detect this in `java` however
+often it runs, and by its own prose it does not drive `riscv` or `arm64`
+at all -- the native backends take `-IrInput` and emit the binary wire
+protocol, so they "fail parameter binding and exit 1 in under a second
+having done no work at all" and are deliberately absent from its plug
+list.
+
+**Why none of it was caught, which may be the cheaper half.**
+`codex/plugs/test-input/partial.codex` exercises under-application
+(`let g = add3 1 2`), saturation (`add3 1 2 3`) and over-application of
+a LOCAL (`let h = add3 10 in (h 20) 12`), but its only definition is
+`add3 : Integer, Integer, Integer -> Integer`, which does not return a
+function. Nothing in the corpus over-applies a NAMED top-level
+definition, so the branch all three plugs get wrong is unreachable from
+it. `codex/plugs/test-plugs.ps1` then judges exit code,
+non-empty output and text markers (`:93-97`, `:163-177`) without ever
+compiling what it emitted. One added definition in `partial.codex` would
+put all of these in front of a compiler.
+
+**The ask is one ruling:** whether over-application of a named
+definition is required of every plug that keeps an arity map -- in which
+case riscv wants its dead function wired up and java wants an arity
+check -- or whether some plugs are exempt, and `:258` should say which.
+
 **babbage is SHELVED** (Damian, 2026-08-21): vanity work. Its open items
 moved to `codex/plugs/babbage/babbage-backlog.md`. Do not add babbage items
 here.

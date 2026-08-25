@@ -569,13 +569,120 @@ guard and left the geometry.
 1. **The shadow is still hard edged.** `comp-shadow` draws its own offset
    shape; it should blur, and a blur is the same coverage primitive applied
    over a kernel rather than a chord.
-2. **An antialiased stroke.** `Vector.codex` rasterizes with Bresenham, so
-   wiring vector icons before this would draw jagged artwork through a smooth
-   compositor.
+2. **An antialiased stroke. DONE.** `vec-stroke-coverage` and its em-mapped
+   form answer a 0 to 255 grid the way `vec-coverage` does, so outline artwork
+   is no longer a Bresenham staircase through a smooth compositor.
+   `vec-rasterize` is left alone: it is the pixel-list stroke its own test
+   asserts, and nothing on the desk calls it.
+
+   **The construction is the finding, and it is forced by the fill's rule.**
+   `gr-fill-scanline` pairs its intersections, which is even-odd, so two
+   overlapping quads CANCEL. Handing one edge list of stroke quads to
+   `gr-render-edges` therefore guts the ink at every join, every meeting cap,
+   and every self-crossing. Each quad is rendered on its own and merged by
+   MAXIMUM instead. Measured on an X of two segments at width 2 in a 16 by 16
+   grid: per quad the crossing pixel reads **255**, the single edge list reads
+   **47**, and a point on one arm away from the crossing reads 255 under both,
+   which is what says the damage is local to the crossing rather than to the
+   stroke. The rejected construction is kept in `codex/test/ui/vector-raster`
+   as a row rather than described, so it is a runner and not a claim. It is 47
+   and not 0 because the centre pixel straddles the cancelled lozenge and a
+   few of its sixteen supersamples fall outside it.
+
+   Segments are square-capped by half a width along their own axis, which
+   covers a join without a miter calculation. Width is in PATH UNITS;
+   `vs-stroke-width` is not read, because it is capped at 1000 and its scale
+   was never settled, and the arms confirm the units by arithmetic rather than
+   by eye: a 12 unit run at width 2 has area 28, which is 2 by 14 with the two
+   caps, and at width 4 it is 64, which is 4 by 16.
+
+   **Cost, and it is the reason the bands exist.** `gr-render-edges` allocates
+   `width * height` on every call and there is no collector, so a per-quad
+   full-grid render would leave one copy of the supersampled surface resident
+   per segment for the whole call. Each quad is rendered over only the rows it
+   spans, so the buffer is the band. A caller should still rasterize a stroke
+   ONCE at load, the way the icons already do for fills, rather than per paint.
 3. **The eight pixel cell** (see `desk-label-metrics`): the widget layer sizes
    text by `text-length * 8` while the renderer draws proportionally, and that
    has to be honest before any width constraint lands, because the full-bleed
    stretch is currently hiding every under-reservation.
+
+   **Where the measurement arrives: settled, and the two obvious routes were
+   both wrong.** `Widget.codex` is a foreword chapter and may not cite the app
+   quire that owns the face (`DevelopersRulebook.md`, dependency direction
+   `codex.foreword -> codex -> codex.os -> apps/`), so the design question was
+   whether the metric rides on `Theme` or arrives as a parameter. Measured
+   rather than argued: `widget-label` and `widget-button` have **2,846 call
+   sites in 116 files**, `widget-layout`/`widget-measure` have **67 in 32
+   files**, and there are **36 `Theme` literals in 34 files**. Both routes
+   therefore churn thirty-odd files across other lanes' quires, and both are
+   ways of smuggling an app-owned measurement into the foreword.
+
+   What the code already says settles it instead. `widget-measure` returns a
+   leaf UNCHANGED (`Widget.codex`, the `wn-child-count == 0` arm), so nothing
+   in the foreword ever revisits a label's intrinsic width; and the desk
+   already measures through the face in `desk-text-w`. So the fit is a WALK
+   over the tree in the app that holds the face: `comp-fit-text`
+   (`GopComposite.codex`) rewrites `wn-min-w` for every `WkLabel` and
+   `WkButton` from `gfont-text-w`, rounded UP to logical units, and answers
+   the tree unchanged when `gf-ok` is false. The foreword gains one additive
+   helper, `widget-set-children`, and no signature in it changes.
+
+   **It is applied to the CHROME only, and that is a correctness bound rather
+   than a scoping preference.** A pane that hit-tests its own subtree does so
+   with plain `widget-layout` (`GopBrowser.codex`), so fitting a pane's tree on
+   the paint side and not on that side puts a click on the wrong widget. The
+   fit therefore lives in `desk-chrome-face`, which wraps the sidebar and the
+   taskbar and hands `content` through untouched; `desk-chrome-with` stays as
+   the faceless caller for the test chapters that have no volume mounted.
+
+   **A pinned width is an intent and the guess is not, and they land in the
+   same field.** `comp-fit-node` therefore replaces `wn-min-w` only while it
+   still equals what the constructor guessed. The taskbar carries one case of
+   each: the menu button is pinned to 72 and `task-clock` to 220 over an EMPTY
+   string, and an unguarded fit measures that empty string and reserves
+   nothing. Sabotage measured 2026-08-24, guard forced true: menu 72 -> 71 and
+   clock 220 -> 0, both rows moving, so the guard has an arm rather than an
+   assertion.
+
+   **Expect no picture change from this alone.** `flex-col-place` still hands
+   every child the container's full width and the sidebar is still pinned to
+   160 logical, so an honest cell is invisible until a maximum width lands. The
+   evidence is `desk-label-metrics`, which now prints the same table twice, the
+   second time through `comp-fit-text`; a golden sweep that moves nothing is
+   the expected result here and not a pass to be quoted as one.
+
+   **The table, and the command that makes it.** The battery runs this arm
+   with no volume, so the recorded `.expected` is the no-volume line and proves
+   only that the chapter still compiles and reaches the mount (L-NAMED). The
+   numbers below need a disk:
+
+   ```powershell
+   build/build-boot-img.ps1 -Out $env:TEMP\face.img -Kernel seed\Codex.cdx
+   build/compile.ps1 -Src codex/test/apps/desk-label-metrics.codex `
+                     -Out dlm.cdx -Log dlm.log -Kernel seed\Codex.cdx
+   build/test-run.ps1 -Kernel dlm.cdx -OutFile dlm.out -DiskFile $env:TEMP\face.img
+   ```
+
+   Measured 2026-08-24 with CMUNSS at 1600 wide, `s` = 2, device pixels:
+
+   | row | guessed | drawn | slack | fitted | slack |
+   |---|---|---|---|---|---|
+   | brand `CODEX` | 80 | 106 | **-26** | 106 | **0** |
+   | programs | 208 | 154 | +54 | 186 | +32 |
+   | files | 160 | 88 | +72 | 120 | +32 |
+   | edit | 144 | 83 | +61 | 116 | +33 |
+   | console | 192 | 131 | +61 | 164 | +33 |
+   | shutdown | 208 | 159 | +49 | 192 | +33 |
+
+   The residual 32 or 33 on every button is `widget-button`'s own 16 logical
+   pixels of padding at `s` = 2, so what was a slack varying from 49 to 72 by
+   string is now a constant the theme owns. The label goes to exactly zero,
+   which is the direction that was under-reserving. Rounding is UP: sabotaged
+   to round down, `edit`, `console` and `shutdown` each lose 2 device pixels
+   and the other three do not move, because 106, 154 and 88 are even and 83,
+   131 and 159 are odd (L-SABOTAGE: the three that cannot move are the control,
+   and they are named rather than counted as a miss).
 4. **Small type.** The face loads at `comp-glyph-h * ui-wscale`, a 41 pixel
    cell. His reference is legible at a third of that and ours has never been
    asked to be.

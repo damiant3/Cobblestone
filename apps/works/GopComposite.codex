@@ -656,6 +656,37 @@ Section: Render
  caller that hands `w` and `h` smaller than the framebuffer, which is what the
  desk does for a pane, is bounded to the pane and not merely to the screen.
 
+  comp-fit-w : GopFont, Integer, Text -> Integer
+  comp-fit-w (tf) (s) (t) = (gfont-text-w tf t + s - 1) / s
+
+ A caller that pinned a width with `widget-set-min` MEANT that number, and it
+ lands in the same field as the eight pixel cell `widget-label` guessed. The
+ taskbar has one of each: the menu button is pinned to 72 and the clock label
+ to 220 over an EMPTY string, which a face-measured width would collapse to
+ nothing. So a cell is replaced only while it still holds the guess.
+
+  comp-fit-guess : WidgetNode, Integer -> Boolean
+  comp-fit-guess (n) (want) = n.wn-min-w == want
+
+  comp-fit-node : WidgetNode, GopFont, Integer -> WidgetNode
+  comp-fit-node (n) (tf) (s) =
+    let fitted = when n.wn-kind
+      is WkLabel (t) -> if comp-fit-guess n (text-length t * 8)
+        then widget-set-min n (comp-fit-w tf s t) (n.wn-min-h) else n
+      is WkButton (t) -> if comp-fit-guess n (text-length t * 8 + 16)
+        then widget-set-min n (comp-fit-w tf s t + 16) (n.wn-min-h) else n
+      is otherwise -> n
+    in if fitted.wn-child-count == 0 then fitted
+    else widget-set-children fitted (comp-fit-kids (fitted.wn-children) tf s 0 (fitted.wn-child-count) [])
+
+  comp-fit-kids : List WidgetNode, GopFont, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  comp-fit-kids (kids) (tf) (s) (i) (n) (acc) =
+    if i >= n then acc
+    else comp-fit-kids kids tf s (i + 1) n (list-push acc (comp-fit-node (list-at kids i) tf s))
+
+  comp-fit-text : WidgetNode, GopFont, Integer -> WidgetNode
+  comp-fit-text (root) (tf) (s) = if tf.gf-ok then comp-fit-node root tf s else root
+
   comp-render : Integer, Integer, CbfFont, GopFont, WidgetNode, Theme, Integer, Integer, Integer -> WidgetNode
   comp-render (base) (stride) (font) (tf) (root) (th) (w) (h) (s) =
     let laid = widget-layout root th (layout-rect 0 0 (w / s) (h / s))

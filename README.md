@@ -231,14 +231,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,877,350 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,876,035 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `3B92E2F38623770E` |
-| SHA-256 | `A01C1547E92EB0D074B80EA3AF3957580307BF68D819D57BB880DB5294CE65D7` |
-| MD5 | `C326838DF70A1E51A33C34BB399D4959` |
+| Content hash prefix | `4B637D52CE014077` |
+| SHA-256 | `6CF4A8E0D5E6D6F2077AD9CF26B211E23899C6A8A28F20554D9325E0994D424F` |
+| MD5 | `129C06DB3AC8964D601FB358063D4101` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
