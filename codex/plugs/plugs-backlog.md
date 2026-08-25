@@ -248,6 +248,109 @@ definition is required of every plug that keeps an arity map -- in which
 case riscv wants its dead function wired up and java wants an arity
 check -- or whether some plugs are exempt, and `:258` should say which.
 
+**1.61 -- no `run.ps1` consults the VM host selection in the config it
+sources, so no plug can be run on Linux.**
+From the zig-plug ladder (`contrib/README.md`; the repository is
+https://github.com/showell/codex-zig-ladder), 2026-08-25, measured on a
+Linux host against the tree at git `0c4327d5`, the Update 50 interim
+push. Not a plug defect -- it is how every plug reaches a VM.
+(1.58-1.60 are claimed by ladder branches in flight.)
+
+**The contract.** `build/vm-config.ps1:14-16`: "codex-vm (the WHP
+hypervisor) is the primary and is Windows-only; QEMU is the fallback and
+the only host on Linux/WSL. Both paths are live: a missing codex-vm is
+not an error, and the hard failure is reserved for having NEITHER host."
+The file implements exactly that -- `:21` chooses (`$script:UseCodexVm`),
+`:22-52` discovers a QEMU, `:55-56` is the error for having neither.
+
+**No `run.ps1` reads any of it.** Across all 56,
+`grep -lni 'qemu|UseCodexVm|Start-VmRun|FallbackVmBin' codex/plugs/*/run.ps1`
+returns nothing. They divide three ways:
+
+- **38 delegate to `build/plug-run.ps1`**, which hardcodes
+  `$vmBin = Join-Path $Repo 'tools\codex-vm.exe'` (`:49`) and launches it
+  (`:53`). No fallback; the string `qemu` does not occur in the file.
+- **8 hardcode the same path themselves** -- `wasm:50`, `html:46`,
+  `spirv:43`, `t3isa:43`, `winforms:40`, `ptx:39`, `wgsl:39`,
+  `evidence:117`.
+- **10 use `$script:CodexVmBin` from the sourced config** -- `riscv:54`,
+  `csharp:81`, `javascript:47`, `maui:65` and six more. These read the
+  config's PATH variable and skip its CHOICE variable, so they look like
+  they consult it.
+
+**What a Linux user gets.** With the zig plug built and a real IR
+(`build/plug-run.ps1 -IrInput hello.ir -PlugCdx zig-plug.cdx -MemMB 3072
+-Port 9145`):
+
+    [plug-run] IR input: 1481 bytes
+    [plug-run] Plug: codex/plugs/zig/build-output/zig-plug.cdx
+    [plug-run] Listening on TCP 9145
+    plug-run.ps1: The variable '$proc' cannot be retrieved because it
+                  has not been set.
+    exit 1, one second
+
+**The message names the wrong thing, and this half is cheap.**
+`$ErrorActionPreference = 'Stop'` (`:20`) makes `Start-Process` on a path
+that does not exist a terminating error at `:53`, so control leaves the
+`try` for the `finally` at `:167` without reaching `:59`. There `:168`'s
+`if (($proc -and (-not $proc.HasExited)))` reads a variable that was
+never assigned, and under `Set-StrictMode -Version Latest` (`:19`) that
+throws -- and an exception raised in a `finally` replaces the original.
+Reproduced in isolation with those four lines and nothing else. The real
+cause is never printed, and `vm-config.ps1:55-56` cannot print it: its
+condition is having NEITHER host, and on this box QEMU is present.
+
+**`build/compile.ps1` is the shape of the fix.** It hardcodes the same
+binary at `:209`, but `:218` is `if ($script:UseCodexVm)` -- the line the
+plug scripts are missing -- and `:239` falls back to
+`Invoke-VmCompileFallback` (`vm-config.ps1:821`). Measured on the same
+box: `codex/plugs/test-input/hello.codex` to IR-CCE in four seconds,
+inside a `qemu-system-x86_64 ... -m 3072` guest.
+
+**Against the design record.** `docs/Designs/Active/Build/Build.md:699`
+says of the non-delegating plugs "The remaining 17 are deliberately
+untouched and are not a residue to close", which stands for what it is
+about -- delegation, not hosting. This gap is orthogonal and cuts across
+all three groups above. (That census also reads 55 plugs and 17; the
+tree now has 56 and 18, the difference being `evidence`.) The mechanism
+is already recorded two paragraphs earlier, at `:684-694`: both
+generated scripts "carried defects that survived because a generator
+with no live target is compiled but never compared against anything".
+This is another one, and the live target it lacks is a Linux run.
+
+**The transport is the part that is not a copy-paste, and there is a
+working recipe.** Under codex-vm the guest dials the host's TCP listener;
+the QEMU consumers in `vm-config.ps1` read the serial wire instead
+(`:835` says so), so `Invoke-VmCompileFallback` is not a template. The
+ladder runs this transport daily against the zig plug: it listens on
+9145 and lets the guest dial out, booting with user-mode networking --
+`-netdev user,id=net0 -device
+ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:34:56`. The
+sources are `plug_run.py` and `codex_vm.py:43-49` in the ladder
+repository named above. Take them or ignore them.
+
+**To reproduce**, on a Linux host with `qemu-system-x86_64` and pwsh:
+`pwsh -NoProfile -File codex/plugs/zig/run.ps1 -Src
+codex/plugs/test-input/hello.codex -Out /tmp/hello.zig`. Note that this
+fails one step earlier still, in one second, because `run.ps1` calls
+`compile.ps1` with no `-Kernel` and the checkout has no
+`build-output/bare-metal/Codex.cdx`; pass `-Kernel seed/Codex.cdx` to
+`compile.ps1` directly to get past it.
+
+**The ask is one ruling: is Linux a supported host for RUNNING plugs, or
+only for building them?** If it is, `plugrunScript.codex` wants the
+choice `compile.ps1` already makes, and the other 18 want it too. If it
+is not, the fix is smaller and different: say so where
+`vm-config.ps1:14-16` currently says the opposite, and print the real
+error instead of a strict-mode complaint.
+
+**Hedges.** We have not tried a fix on Windows and cannot.
+`build/plug-run.ps1` is generated, so any change belongs in
+`codex/build/plugrunScript.codex` and not in the file quoted here --
+which is why this entry carries no patch. And we cannot say whether
+anyone runs plugs on Linux today: the ladder does not, because it wrote
+its own transport rather than wait for this one.
+
 **babbage is SHELVED** (Damian, 2026-08-21): vanity work. Its open items
 moved to `codex/plugs/babbage/babbage-backlog.md`. Do not add babbage items
 here.
