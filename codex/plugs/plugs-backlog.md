@@ -2180,7 +2180,16 @@ and asks the walk to match the two. Both sides are `ConstructedTy`.
     fn __lam_1(comptime T16: type, start: i64, stop: i64, ignored: i64) Step(T16)
     ... __lam_1(@compileError("zig plug: unresolved type variable T16 of __lam_1"), ...)
 
-**It is not confined to lifted lambdas or to ported tests.** Read out of the
+**It has nothing to do with lifted lambdas**, which were only the path that
+exposed it. `codex/test/tvar-in-declared-type.codex` is the whole of it --
+fourteen lines, one generic record, one generic function, no lambda, and
+measured against natives built before the fix: zero `__lam` defs in the IR
+and `unresolved type variable T42 of pair-swap` in the emitted zig. The
+variable appears only inside `Pair a`, in the parameter and in the return,
+so the parameter loop and the return fallback hit the missing arm in turn.
+Bare metal answers 73.
+
+**Nor is it confined to tests written for it.** Read out of the
 IR of two depot programs: `typeclass-smoke`'s `describe` takes `(param
 "__Showable-dict" (ctd "ShowableDict" (args (tvar 44))))` and
 `db-full-test`'s `hamt-fold` takes `(param "m" (ctd "HamtMap" (args (tvar
