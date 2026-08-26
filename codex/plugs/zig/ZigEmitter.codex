@@ -2360,7 +2360,7 @@ Section: Apply Emission
    in when found
       is VoidTy -> zig-tvar-refusal id (d.name)
       is TypeVar (vid) ->
-       if zig-tvar-in-scope vid scope 0 then emit-zig-type found
+       if zig-has-int scope vid 0 then emit-zig-type found
        else zig-tvar-refusal id (d.name)
       is otherwise -> emit-zig-type found
 
@@ -2385,11 +2385,6 @@ Section: Apply Emission
   zig-tvar-refusal (id) (n) =
    "@compileError(\"zig plug: unresolved type variable T" & integer-to-text id & " of " & n & "\")"
 
-  zig-tvar-in-scope : Integer, List (Integer between 0 and 4294967295), Integer -> Boolean
-  zig-tvar-in-scope (id) (scope) (i) =
-   if i >= list-length scope then False
-   else if list-at scope i == id then True
-   else zig-tvar-in-scope id scope (i + 1)
 
   zig-drop-trailing-comma : Text -> Text
   zig-drop-trailing-comma (s) =
@@ -2540,10 +2535,30 @@ Section: Apply Emission
  what resolve it -- emit-zig-name handed it over raw and the tyvar
  travelled into the struct's parameter list and its CxFn type.
 
+  zig-first-stray-tvar : List (Integer between 0 and 4294967295), List (Integer between 0 and 4294967295), Integer -> Integer
+  zig-first-stray-tvar (ids) (scope) (i) =
+   if i >= list-length ids then 0 - 1
+   else let id = list-at ids i
+   in if zig-has-int scope id 0 then zig-first-stray-tvar ids scope (i + 1) else id
+
+ The type arguments are not the only place a variable is emitted: the
+ environment struct's `call` takes its parameters and returns its result from
+ this same type, so a variable the site does not declare reaches zig three
+ ways from one closure. Refusing only the type-argument list left a marker
+ beside a live `use of undeclared identifier`, which is two half-signals
+ where one belongs -- measured 2026-08-26 on
+ `findings/probe-tvar-recovery.codex` case (g).
+
+ So the closure is refused WHOLE. If its type names a variable that
+ `scope-tvars` does not carry, the plug cannot render this closure at all and
+ says so once, in the place the value would have gone.
+
   zig-closure-make : Text, List IRExpr, ZigCtx, Integer, CodexType -> Text
   zig-closure-make (n) (args) (ctx) (d) (pty0) =
    let pty = zig-subst-ctx pty0 ctx
-   in let rem = zig-fn-param-count pty
+   in let stray = zig-first-stray-tvar (zig-tvar-ids pty []) (ctx.scope-tvars) 0
+   in if stray >= 0 then zig-tvar-refusal stray n
+   else let rem = zig-fn-param-count pty
    in let car = lookup-arity (ctx.arities) n
    in let flat = if car < 0 then rem else car - list-length args
    in let actuals = zig-arg-types args 0 [] & zig-fn-param-type-list pty
