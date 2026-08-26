@@ -170,17 +170,17 @@ Section: Type Mapping
  mentions the type stays concrete, so a mistake is a compile error here
  rather than something inferred and silently different.
 
-  zig-type-args : List CodexType -> Text
-  zig-type-args (args) =
+  zig-type-args : List CodexType, List (Integer between 0 and 4294967295) -> Text
+  zig-type-args (args) (scope) =
    if list-length args == 0 then ""
-   else "(" & zig-type-args-loop args 0 & ")"
+   else "(" & zig-type-args-loop args 0 scope & ")"
 
-  zig-type-args-loop : List CodexType, Integer -> Text
-  zig-type-args-loop (args) (i) =
+  zig-type-args-loop : List CodexType, Integer, List (Integer between 0 and 4294967295) -> Text
+  zig-type-args-loop (args) (i) (scope) =
    if i >= list-length args then ""
-   else let one = emit-zig-type (list-at args i)
+   else let one = emit-zig-type (list-at args i) scope
    in if i == list-length args - 1 then one
-      else one & ", " & zig-type-args-loop args (i + 1)
+      else one & ", " & zig-type-args-loop args (i + 1) scope
 
   zig-tparam-params : List Name, Integer -> Text
   zig-tparam-params (ps) (i) =
@@ -219,9 +219,9 @@ Section: Type Mapping
     is FunTy (p) (fnrow) (r) -> 1 + zig-fn-param-count r
     is otherwise -> 0
 
-  emit-zig-fn-type : CodexType -> Text
-  emit-zig-fn-type (ty) =
-   zig-closure-type (zig-fn-param-count ty) (zig-fn-param-types ty) (emit-zig-type (zig-fn-result ty))
+  emit-zig-fn-type : CodexType, List (Integer between 0 and 4294967295) -> Text
+  emit-zig-fn-type (ty) (scope) =
+   zig-closure-type (zig-fn-param-count ty) (zig-fn-param-types ty scope) (emit-zig-type (zig-fn-result ty) scope)
 
  ForAllTy is the TYPE-level quantifier and this emitter handled only the
  effect-level one. Every place ForAllEff is unwrapped below, ForAllTy has
@@ -245,13 +245,13 @@ Section: Type Mapping
     is ForAllEff (c) (inner) -> zig-fn-spine inner
     is otherwise -> ty
 
-  zig-fn-param-types : CodexType -> Text
-  zig-fn-param-types (ty) =
+  zig-fn-param-types : CodexType, List (Integer between 0 and 4294967295) -> Text
+  zig-fn-param-types (ty) (scope) =
    when zig-fn-spine ty
     is FunTy (p) (fnrow) (r) ->
-     let rest = zig-fn-param-types r
-     in if text-length rest == 0 then emit-zig-type p
-        else emit-zig-type p & ", " & rest
+     let rest = zig-fn-param-types r scope
+     in if text-length rest == 0 then emit-zig-type p scope
+        else emit-zig-type p scope & ", " & rest
     is otherwise -> ""
 
   zig-fn-result : CodexType -> CodexType
@@ -279,9 +279,11 @@ Section: Type Mapping
     is CharTy -> ": i64"
     is otherwise -> ""
 
-  emit-zig-type : CodexType -> Text
-  emit-zig-type (ty) =
-   when ty
+  emit-zig-type : CodexType, List (Integer between 0 and 4294967295) -> Text
+  emit-zig-type (ty) (scope) =
+   let stray = zig-stray-tvar ty scope
+   in if stray >= 0 then zig-tvar-scope-refusal stray
+   else when ty
     is IntegerTy (lo) (hi) (mode) -> "i64"
     is RealTy (w) (m) -> "f64"
     is TextTy -> "[]const u8"
@@ -292,17 +294,17 @@ Section: Type Mapping
     is ProofTy -> "void"
     is PropEqTy (pl) (pr) -> "void"
     is UnitTy (n) (inner) -> "void"
-    is ListTy (elem) -> "*CxList(" & emit-zig-type elem & ")"
-    is LinkedListTy (elem) -> "*CxList(" & emit-zig-type elem & ")"
-    is VectorTy (vn) (vt) -> "@Vector(" & show vn & ", " & emit-zig-type vt & ")"
+    is ListTy (elem) -> "*CxList(" & emit-zig-type elem scope & ")"
+    is LinkedListTy (elem) -> "*CxList(" & emit-zig-type elem scope & ")"
+    is VectorTy (vn) (vt) -> "@Vector(" & show vn & ", " & emit-zig-type vt scope & ")"
     is VectorMaskTy (vn) -> "@Vector(" & show vn & ", bool)"
-    is FunTy (p) (fnrow) (r) -> emit-zig-fn-type ty
-    is EffectfulTy (effs) (scopes) (inner) -> emit-zig-type inner
-    is ForAllTy (fid) (inner) -> emit-zig-type inner
-    is ForAllEff (c) (inner) -> emit-zig-type inner
-    is RecordTy (n) (a) (f) -> zig-sanitize (n.value) & zig-type-args a
-    is SumTy (n) (a) (c) -> zig-sanitize (n.value) & zig-type-args a
-    is ConstructedTy (n) (a) -> zig-sanitize (n.value) & zig-type-args a
+    is FunTy (p) (fnrow) (r) -> emit-zig-fn-type ty scope
+    is EffectfulTy (effs) (scopes) (inner) -> emit-zig-type inner scope
+    is ForAllTy (fid) (inner) -> emit-zig-type inner scope
+    is ForAllEff (c) (inner) -> emit-zig-type inner scope
+    is RecordTy (n) (a) (f) -> zig-sanitize (n.value) & zig-type-args a scope
+    is SumTy (n) (a) (c) -> zig-sanitize (n.value) & zig-type-args a scope
+    is ConstructedTy (n) (a) -> zig-sanitize (n.value) & zig-type-args a scope
     is TypeCon (n) -> zig-sanitize (n.value)
     is TypeVar (id) -> "T" & integer-to-text id
     is otherwise -> "@compileError(\"zig plug: no zig type for this codex type\")"
@@ -337,12 +339,56 @@ Section: Type Mapping
     is ConstructedTy (n) (args) -> zig-tvar-ids-list args acc 0
     is SumTy (n) (args) (c) -> zig-tvar-ids-list args acc 0
     is RecordTy (n) (args) (f) -> zig-tvar-ids-list args acc 0
+    is VectorTy (vn) (vt) -> zig-tvar-ids vt acc
+    is UnitTy (n) (inner) -> zig-tvar-ids inner acc
+    is LinearTy (inner) -> zig-tvar-ids inner acc
+    is PropEqTy (pl) (pr) -> zig-tvar-ids pr (zig-tvar-ids pl acc)
+    is TypeApply (f) (a) -> zig-tvar-ids a (zig-tvar-ids f acc)
     is otherwise -> acc
 
   zig-tvar-ids-list : List CodexType, List (Integer between 0 and 4294967295), Integer -> List (Integer between 0 and 4294967295)
   zig-tvar-ids-list (types) (acc) (i) =
    if i >= list-length types then acc
    else zig-tvar-ids-list types (zig-tvar-ids (list-at types i) acc) (i + 1)
+
+ A TYPE VARIABLE IS A ZIG COMPTIME PARAMETER AND NOTHING ELSE, so naming
+ one is legal in exactly the bodies whose signature declared it. `scope` is
+ that set -- what emit-zig-def put in as `comptime T<n>: type` -- and it now
+ rides with every type this emitter renders. Where a variable is not in it,
+ `T<n>` is a name zig has never heard of, and the answer is a refusal.
+
+ This is the third patch of one shape, made once instead. Two sites learned
+ the rule separately -- zig-resolve-tvar's last-resort answer and the
+ closure environment struct -- and a third was queued behind them
+ (a callee's variable emitted untranslated into a caller, `cx_ll_of(
+ HamtEntry(T25), ...)` inside a function declaring T70). The emitter memory
+ had already named the shape in advance: six sites had to learn independently
+ that a generic name must be applied, expect a seventh. Threading the scope
+ through emit-zig-type is what stops the counting.
+
+ The refusal fires at the OUTERMOST type rather than at each variable inside
+ it, which is not only tidier: zig-is-unmapped tests a leading @compileError,
+ and a marker buried inside `*CxList(...)` would not be seen by the two
+ callers that ask "could this type be rendered at all". One gap, one marker,
+ at the front where the test can read it.
+
+ A ForAllTy binder does NOT put its variable in scope. The quantifier is a
+ codex-level fact; the zig declaration is the comptime parameter, and only
+ emit-zig-def makes one.
+
+  zig-stray-tvar : CodexType, List (Integer between 0 and 4294967295) -> Integer
+  zig-stray-tvar (ty) (scope) =
+   zig-first-stray-tvar (zig-tvar-ids ty []) scope 0
+
+  zig-first-stray-tvar : List (Integer between 0 and 4294967295), List (Integer between 0 and 4294967295), Integer -> Integer
+  zig-first-stray-tvar (ids) (scope) (i) =
+   if i >= list-length ids then 0 - 1
+   else let id = list-at ids i
+   in if zig-has-int scope id 0 then zig-first-stray-tvar ids scope (i + 1) else id
+
+  zig-tvar-scope-refusal : Integer -> Text
+  zig-tvar-scope-refusal (id) =
+   "@compileError(\"zig plug: type variable T" & integer-to-text id & " is not declared at this site\")"
 
  Record fields and ctor payloads are declared as ATypeExpr in the type
  defs the plug receives, so they get their own mapping onto the same
@@ -635,8 +681,8 @@ Section: Constructor Map
     (if argi >= list-length (d.params) then ""
      else let pty = zig-subst-ctx ((list-at (d.params) argi).type-val) ctx
      in when pty
-      is ListTy (elem) -> emit-zig-type elem
-      is LinkedListTy (elem) -> emit-zig-type elem
+      is ListTy (elem) -> emit-zig-type elem (ctx.scope-tvars)
+      is LinkedListTy (elem) -> emit-zig-type elem (ctx.scope-tvars)
       is otherwise -> "")
    else zig-param-ll-scan defs (i + 1) fname argi ctx
 
@@ -708,21 +754,21 @@ Section: Builtin Emitter
   sort-zig-builtins : List ZigBuiltinEmitter -> List ZigBuiltinEmitter
   sort-zig-builtins (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
 
-  zig-ll-elem : CodexType -> Text
-  zig-ll-elem (ty) =
-   let e = zig-ll-elem-opt ty
+  zig-ll-elem : CodexType, List (Integer between 0 and 4294967295) -> Text
+  zig-ll-elem (ty) (scope) =
+   let e = zig-ll-elem-opt ty scope
    in if text-length e > 0 then e else "@compileError(\"zig plug: no element type for this list\")"
 
  The annotation is not always a list type -- a type variable reaches here
  unresolved -- so this answers "" for that rather than a default, and the
  callers that have another source say so explicitly.
 
-  zig-ll-elem-opt : CodexType -> Text
-  zig-ll-elem-opt (ty) =
+  zig-ll-elem-opt : CodexType, List (Integer between 0 and 4294967295) -> Text
+  zig-ll-elem-opt (ty) (scope) =
    when ty
-    is ListTy (elem) -> emit-zig-type elem
-    is LinkedListTy (elem) -> emit-zig-type elem
-    is EffectfulTy (effs) (scopes) (inner) -> zig-ll-elem-opt inner
+    is ListTy (elem) -> emit-zig-type elem scope
+    is LinkedListTy (elem) -> emit-zig-type elem scope
+    is EffectfulTy (effs) (scopes) (inner) -> zig-ll-elem-opt inner scope
     is otherwise -> ""
 
  An IrList's own annotation is already the element type, so it renders
@@ -730,12 +776,12 @@ Section: Builtin Emitter
  an unresolved variable and the void a missing annotation becomes -- so
  the callers' own fallbacks still run.
 
-  zig-elem-annotation : CodexType -> Text
-  zig-elem-annotation (ty) =
+  zig-elem-annotation : CodexType, List (Integer between 0 and 4294967295) -> Text
+  zig-elem-annotation (ty) (scope) =
    when ty
     is VoidTy -> ""
     is TypeVar (vid) -> ""
-    is otherwise -> emit-zig-type ty
+    is otherwise -> emit-zig-type ty scope
 
  __record-set names its field with a text literal, so the field is known
  here and becomes a real field access rather than anything dynamic. The
@@ -824,11 +870,11 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "list-insert-at", emit = \args ctx d ty -> "cx_ll_insert_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__deck-enter", emit = \args ctx d ty -> "cx_deck_enter()" },
     ZigBuiltinEmitter { name = "__deck-exit", emit = \args ctx d ty -> "cx_deck_exit()" },
-    ZigBuiltinEmitter { name = "__list-with-capacity", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "__list-with-capacity", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty (ctx.scope-tvars) & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "text-compare", emit = \args ctx d ty -> "cx_text_compare(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "char-to-text", emit = \args ctx d ty -> "cx_char_to_text(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
    ZigBuiltinEmitter { name = "char-encode", emit = \args ctx d ty -> "cx_char_encode(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
-    ZigBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty (ctx.scope-tvars) & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
     ZigBuiltinEmitter { name = "__deck-pos", emit = \args ctx d ty -> "cx_deck_pos()" },
@@ -1016,7 +1062,7 @@ Section: Name Mapping
     let c = list-at (ctx.ctors) ci
     in if c.enum-like then zig-sanitize (c.type-name) & "." & zig-sanitize n
        else let boxed = zig-typedef-recursive ctx (c.type-name)
-       in let base = if boxed then zig-sanitize (c.type-name) & "S" else zig-sanitize (c.type-name) & zig-ctor-type-args ty
+       in let base = if boxed then zig-sanitize (c.type-name) & "S" else zig-sanitize (c.type-name) & zig-ctor-type-args ty (ctx.scope-tvars)
        in if boxed then "cx_new(" & base & "{ ." & zig-sanitize n & " = {} })"
           else base & "{ ." & zig-sanitize n & " = {} }"
    else if lookup-arity (ctx.arities) n == 0 then zig-sanitize n & "()"
@@ -1350,7 +1396,7 @@ Section: Expression Emission
     is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts ctx d (zig-type-is-void ty)
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> if list-length clauses == 0 then emit-zig-expr body ctx (d + 1) else "@compileError(\"zig plug: effect handlers not supported\")"
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
-    is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d (zig-ctor-type-args ty)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d (zig-ctor-type-args ty (ctx.scope-tvars))
     is IrFieldAccess (rec) (field) (ty) (sp) -> zig-field-receiver rec ctx d & "." & zig-field-name field
     is IrFieldStore (rec) (field) (val) (ty) (sp) ->
      let stored = zig-clamp-field-val ctx (zig-type-name-of (zig-expr-type rec)) (zig-plain-field-name field) (emit-zig-expr val ctx (d + 1))
@@ -1583,7 +1629,7 @@ Section: Lambda and List Helpers
    in let ev = "_e" & integer-to-text d
    in let cx = "_ctx" & integer-to-text d
    in let caps = zig-captures ctx body params 0 []
-   in let ret = emit-zig-type (zig-peel-return ty (list-length params))
+   in let ret = emit-zig-type (zig-peel-return ty (list-length params)) (ctx.scope-tvars)
    in let captured = zig-push-capture-renames ctx caps 0 ev
    in let inner = zig-push-lambda-renames captured params d 0
    in let unpack = if list-length caps == 0 then "_ = " & cx & "; "
@@ -1610,14 +1656,14 @@ Section: Lambda and List Helpers
 
   zig-lambda-param-type : CodexType, Integer, IRParam, ZigCtx -> Text
   zig-lambda-param-type (ty) (i) (p) (ctx) =
-   let fromty = zig-fn-nth-param (zig-subst-ctx ty ctx) i
+   let fromty = zig-fn-nth-param (zig-subst-ctx ty ctx) i (ctx.scope-tvars)
    in if text-length fromty > 0 then fromty
-      else emit-zig-type (zig-subst-ctx (p.type-val) ctx)
+      else emit-zig-type (zig-subst-ctx (p.type-val) ctx) (ctx.scope-tvars)
 
-  zig-fn-nth-param : CodexType, Integer -> Text
-  zig-fn-nth-param (ty) (i) =
+  zig-fn-nth-param : CodexType, Integer, List (Integer between 0 and 4294967295) -> Text
+  zig-fn-nth-param (ty) (i) (scope) =
    when zig-fn-spine ty
-    is FunTy (p) (fnrow) (r) -> if i == 0 then emit-zig-type p else zig-fn-nth-param r (i - 1)
+    is FunTy (p) (fnrow) (r) -> if i == 0 then emit-zig-type p scope else zig-fn-nth-param r (i - 1) scope
     is otherwise -> ""
 
   emit-zig-lambda-params : List IRParam, Integer, CodexType, Integer, ZigCtx -> Text
@@ -1641,8 +1687,8 @@ Section: Lambda and List Helpers
   emit-zig-if-branch : IRExpr, CodexType, IRExpr, ZigCtx, Integer -> Text
   emit-zig-if-branch (b) (ity) (other) (ctx) (d) =
    if zig-is-empty-list b
-   then let own = zig-ll-elem-opt ity
-    in let elem = if text-length own > 0 then own else zig-ll-elem-opt (zig-expr-type other)
+   then let own = zig-ll-elem-opt ity (ctx.scope-tvars)
+    in let elem = if text-length own > 0 then own else zig-ll-elem-opt (zig-expr-type other) (ctx.scope-tvars)
     in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
        else emit-zig-expr b ctx (d + 1)
    else emit-zig-expr b ctx (d + 1)
@@ -1657,10 +1703,10 @@ Section: Lambda and List Helpers
 
   emit-zig-list : List IRExpr, CodexType, ZigCtx, Integer -> Text
   emit-zig-list (elems) (ty) (ctx) (d) =
-   let annotated = zig-elem-annotation ty
+   let annotated = zig-elem-annotation ty (ctx.scope-tvars)
    in let et = if text-length annotated > 0 then annotated
-      else if list-length elems > 0 then emit-zig-type (zig-expr-type (list-at elems 0))
-      else let fromctx = zig-ll-elem-opt (ctx.expected)
+      else if list-length elems > 0 then emit-zig-type (zig-expr-type (list-at elems 0)) (ctx.scope-tvars)
+      else let fromctx = zig-ll-elem-opt (ctx.expected) (ctx.scope-tvars)
        in if text-length fromctx > 0 then fromctx
           else "@compileError(\"zig plug: no element type for this empty list\")"
    in if list-length elems == 0 then "cx_ll_empty(" & et & ")"
@@ -1789,8 +1835,8 @@ Section: Match Emission
 
   emit-zig-match : IRExpr, List IRBranch, ZigCtx, Integer, CodexType, ZigTail -> Text
   emit-zig-match (scrut) (branches) (ctx) (d) (mty0) (tl) =
-   let mty = if text-length (zig-ll-elem-opt mty0) > 0 then mty0
-      else zig-arms-list-type branches 0 mty0
+   let mty = if text-length (zig-ll-elem-opt mty0 (ctx.scope-tvars)) > 0 then mty0
+      else zig-arms-list-type branches 0 mty0 (ctx.scope-tvars)
    in let ex = zig-match-exhaustive ctx (zig-expr-type scrut) branches
    in if zig-branches-guarded branches 0 then emit-zig-match-chain scrut branches ctx d mty
    else zig-pin-lit-arms branches 0 ("switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex mty tl & " }")
@@ -1811,14 +1857,14 @@ Section: Match Emission
  as each other, so an arm that is not an empty list answers for the ones
  that are. Same trick the if branches use on each other.
 
-  zig-arms-list-type : List IRBranch, Integer, CodexType -> CodexType
-  zig-arms-list-type (branches) (i) (fallback) =
+  zig-arms-list-type : List IRBranch, Integer, CodexType, List (Integer between 0 and 4294967295) -> CodexType
+  zig-arms-list-type (branches) (i) (fallback) (scope) =
    if i >= list-length branches then fallback
    else let b = list-at branches i
-   in if zig-is-empty-list (b.body) then zig-arms-list-type branches (i + 1) fallback
+   in if zig-is-empty-list (b.body) then zig-arms-list-type branches (i + 1) fallback scope
    else let t = zig-expr-type (b.body)
-   in if text-length (zig-ll-elem-opt t) > 0 then t
-      else zig-arms-list-type branches (i + 1) fallback
+   in if text-length (zig-ll-elem-opt t scope) > 0 then t
+      else zig-arms-list-type branches (i + 1) fallback scope
 
  EVERY arm's body goes through here, binders and catch-all included.
  Only the two binderless shapes did, so an empty list in an `else` arm
@@ -1828,8 +1874,8 @@ Section: Match Emission
   emit-zig-arm-body : IRExpr, CodexType, ZigCtx, Integer -> Text
   emit-zig-arm-body (body) (mty) (ctx) (d) =
    if zig-is-empty-list body
-   then let elem = zig-ll-elem-opt mty
-    in let elem2 = if text-length elem > 0 then elem else zig-ll-elem-opt (ctx.expected)
+   then let elem = zig-ll-elem-opt mty (ctx.scope-tvars)
+    in let elem2 = if text-length elem > 0 then elem else zig-ll-elem-opt (ctx.expected) (ctx.scope-tvars)
     in if text-length elem2 > 0 then "cx_ll_empty(" & elem2 & ")"
        else emit-zig-expr body ctx (d + 1)
    else emit-zig-expr body ctx (d + 1)
@@ -2062,7 +2108,7 @@ Section: Apply Emission
      else let builtin = lookup-zig-builtin n args ctx d (zig-expr-type e)
      in if text-length builtin > 0 then builtin
      else let ci = zig-find-ctor (ctx.ctors) n 0
-     in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-ctor-type-args (zig-expr-type e))
+     in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-ctor-type-args (zig-expr-type e) (ctx.scope-tvars))
      else let ar = lookup-arity (ctx.arities) n
      in if ar < 0 then (if zig-name-known ctx n then zig-closure-invoke (zig-local-ref ctx n) args ctx d else zig-unknown-name n)
         else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
@@ -2099,10 +2145,13 @@ Section: Apply Emission
  rewrite the argument's type before it is emitted so the emitter never
  sees a foreign variable.
 
- Substituting the TYPE rather than threading a binding table through
- emit-zig-type is what keeps this to one place. emit-zig-type is called
- from three dozen functions and knows only the type it is given; it should
- stay that way.
+ Substitution is what makes the emitted type CORRECT, and it stays here
+ rather than becoming a binding table threaded through emit-zig-type: a
+ rewritten type needs no cooperation from the code that renders it.
+
+ What does travel with the type is the SCOPE -- which variables the site may
+ name -- because no amount of substitution can be checked without it. That
+ is a set, not a table, and it is read in one place; see zig-stray-tvar.
 
   zig-subst-tvar : CodexType, Integer, CodexType -> CodexType
   zig-subst-tvar (ty) (id) (with-ty) =
@@ -2359,10 +2408,7 @@ Section: Apply Emission
    let found = zig-resolve-tvar-type id d actuals resty i
    in when found
       is VoidTy -> zig-tvar-refusal id (d.name)
-      is TypeVar (vid) ->
-       if zig-has-int scope vid 0 then emit-zig-type found
-       else zig-tvar-refusal id (d.name)
-      is otherwise -> emit-zig-type found
+      is otherwise -> emit-zig-type found scope
 
  A variable answer is kept as a last resort, and 1.84 gives the reason: inside
  a generic definition the variable IS the answer, because it is a comptime
@@ -2461,7 +2507,7 @@ Section: Apply Emission
   zig-closure-fields : List IRExpr, ZigCtx, Integer -> Text
   zig-closure-fields (args) (ctx) (i) =
    if i == list-length args then ""
-   else "a" & integer-to-text i & ": " & emit-zig-type (zig-expr-type (list-at args i)) & ", "
+   else "a" & integer-to-text i & ": " & emit-zig-type (zig-expr-type (list-at args i)) (ctx.scope-tvars) & ", "
       & zig-closure-fields args ctx (i + 1)
 
   zig-closure-inits : List IRExpr, ZigCtx, Integer, Integer -> Text
@@ -2482,12 +2528,12 @@ Section: Apply Emission
    else let one = "p" & integer-to-text i
    in if i == n - 1 then one else one & ", " & zig-closure-pass n (i + 1)
 
-  zig-closure-params : CodexType, Integer -> Text
-  zig-closure-params (ty) (i) =
+  zig-closure-params : CodexType, Integer, List (Integer between 0 and 4294967295) -> Text
+  zig-closure-params (ty) (i) (scope) =
    when zig-fn-spine ty
     is FunTy (p) (fnrow) (r) ->
-     let rest = zig-closure-params r (i + 1)
-     in "p" & integer-to-text i & ": " & emit-zig-type p
+     let rest = zig-closure-params r (i + 1) scope
+     in "p" & integer-to-text i & ": " & emit-zig-type p scope
       & (if text-length rest == 0 then "" else ", " & rest)
     is otherwise -> ""
 
@@ -2535,28 +2581,18 @@ Section: Apply Emission
  what resolve it -- emit-zig-name handed it over raw and the tyvar
  travelled into the struct's parameter list and its CxFn type.
 
-  zig-first-stray-tvar : List (Integer between 0 and 4294967295), List (Integer between 0 and 4294967295), Integer -> Integer
-  zig-first-stray-tvar (ids) (scope) (i) =
-   if i >= list-length ids then 0 - 1
-   else let id = list-at ids i
-   in if zig-has-int scope id 0 then zig-first-stray-tvar ids scope (i + 1) else id
-
- The type arguments are not the only place a variable is emitted: the
- environment struct's `call` takes its parameters and returns its result from
- this same type, so a variable the site does not declare reaches zig three
- ways from one closure. Refusing only the type-argument list left a marker
- beside a live `use of undeclared identifier`, which is two half-signals
- where one belongs -- measured 2026-08-26 on
- `findings/probe-tvar-recovery.codex` case (g).
-
- So the closure is refused WHOLE. If its type names a variable that
- `scope-tvars` does not carry, the plug cannot render this closure at all and
- says so once, in the place the value would have gone.
+ The central guard in emit-zig-type would refuse each of this closure's
+ stray positions on its own, and the environment struct's `call` takes its
+ parameters and returns its result from the same type, so one closure would
+ answer three times. The coarse refusal here is not a second policy -- it
+ asks zig-stray-tvar the same question -- it is the largest unit that still
+ names one gap, so the closure is refused WHOLE, once, in the place the
+ value would have gone.
 
   zig-closure-make : Text, List IRExpr, ZigCtx, Integer, CodexType -> Text
   zig-closure-make (n) (args) (ctx) (d) (pty0) =
    let pty = zig-subst-ctx pty0 ctx
-   in let stray = zig-first-stray-tvar (zig-tvar-ids pty []) (ctx.scope-tvars) 0
+   in let stray = zig-stray-tvar pty (ctx.scope-tvars)
    in if stray >= 0 then zig-tvar-refusal stray n
    else let rem = zig-fn-param-count pty
    in let car = lookup-arity (ctx.arities) n
@@ -2566,14 +2602,14 @@ Section: Apply Emission
    in let lbl = zig-label d
    in let env = "_Env" & integer-to-text d
    in let ev = "_e" & integer-to-text d
-   in let ret = emit-zig-type (zig-fn-result pty)
+   in let ret = emit-zig-type (zig-fn-result pty) (ctx.scope-tvars)
    in let cx = "_ctx" & integer-to-text d
    in let unpack = if list-length args == 0 then "_ = " & cx & "; "
       else "const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); "
    in lbl & ": { const " & env & " = struct { " & zig-closure-fields args ctx 0
-    & "fn call(" & cx & ": *anyopaque, " & zig-closure-params pty 0 & ") " & ret
+    & "fn call(" & cx & ": *anyopaque, " & zig-closure-params pty 0 (ctx.scope-tvars) & ") " & ret
     & " { " & unpack & zig-closure-call-body n (list-length args) ev flat rem d targs & " } }; break :"
-    & lbl & " " & zig-closure-type rem (zig-fn-param-types pty) ret
+    & lbl & " " & zig-closure-type rem (zig-fn-param-types pty (ctx.scope-tvars)) ret
     & "{ .ctx = cx_new(" & env & "{ " & zig-closure-inits args ctx d 0 & " }), .call = &" & env & ".call }; }"
 
  A generic type emits as a function from types to a type, so constructing
@@ -2582,12 +2618,12 @@ Section: Apply Emission
  known -- the constructor map carries names and arity, not instantiations.
  A non-generic type has no arguments and this contributes nothing.
 
-  zig-ctor-type-args : CodexType -> Text
-  zig-ctor-type-args (ty) =
+  zig-ctor-type-args : CodexType, List (Integer between 0 and 4294967295) -> Text
+  zig-ctor-type-args (ty) (scope) =
    when ty
-    is SumTy (n) (a) (c) -> zig-type-args a
-    is RecordTy (n) (a) (f) -> zig-type-args a
-    is ConstructedTy (n) (a) -> zig-type-args a
+    is SumTy (n) (a) (c) -> zig-type-args a scope
+    is RecordTy (n) (a) (f) -> zig-type-args a scope
+    is ConstructedTy (n) (a) -> zig-type-args a scope
     is otherwise -> ""
 
   emit-zig-ctor-apply : ZigCtorEntry, List IRExpr, ZigCtx, Integer, Text -> Text
@@ -2644,7 +2680,7 @@ Section: Apply Emission
   zig-list-arg-text (args) (li) (ei) (ctx) (d) =
    let a = list-at args li
    in if zig-is-empty-list a == False then emit-zig-expr a ctx (d + 1)
-   else let elem = emit-zig-type (zig-expr-type (list-at args ei))
+   else let elem = emit-zig-type (zig-expr-type (list-at args ei)) (ctx.scope-tvars)
    in if text-length elem > 0 & zig-is-unmapped elem == False
       then "cx_ll_empty(" & elem & ")"
       else emit-zig-expr a ctx (d + 1)
@@ -3126,17 +3162,17 @@ Section: Definition Emission
   zig-def-return-trusted (d) =
    zig-fn-param-count (d.type-val) >= list-length (d.params)
 
-  zig-def-return-type : IRDef -> CodexType
-  zig-def-return-type (d) =
+  zig-def-return-type : IRDef, List (Integer between 0 and 4294967295) -> CodexType
+  zig-def-return-type (d) (scope) =
    if zig-def-return-trusted d == False then zig-expr-type (d.body)
    else let peeled = zig-peel-return (d.type-val) (list-length (d.params))
-   in if zig-is-unmapped (emit-zig-type peeled) then zig-expr-type (d.body) else peeled
+   in if zig-is-unmapped (emit-zig-type peeled scope) then zig-expr-type (d.body) else peeled
 
-  zig-def-return-text : IRDef -> Text
-  zig-def-return-text (d) =
-   if zig-def-return-trusted d == False then emit-zig-type (zig-expr-type (d.body))
-   else let peeled = emit-zig-type (zig-peel-return (d.type-val) (list-length (d.params)))
-   in if zig-is-unmapped peeled then emit-zig-type (zig-expr-type (d.body)) else peeled
+  zig-def-return-text : IRDef, List (Integer between 0 and 4294967295) -> Text
+  zig-def-return-text (d) (scope) =
+   if zig-def-return-trusted d == False then emit-zig-type (zig-expr-type (d.body)) scope
+   else let peeled = emit-zig-type (zig-peel-return (d.type-val) (list-length (d.params))) scope
+   in if zig-is-unmapped peeled then emit-zig-type (zig-expr-type (d.body)) scope else peeled
 
  The marker is the signal. Which codex type an unpopulated type-val holds
  is not something to guess at -- VoidTy was the guess and it was wrong --
@@ -3216,13 +3252,9 @@ Section: Definition Emission
   emit-zig-def (d) (ctx0) =
    if zig-skip-def (d.name) then ""
    else let name = zig-sanitize (d.name)
-   in let params-text = emit-zig-def-params (d.params) 0 ctx0
    in let tvars = zig-def-tvar-ids d
    in let comptimes = zig-comptime-params tvars 0
-   in let all-params = if text-length params-text == 0
-      then zig-drop-trailing-comma comptimes
-      else comptimes & params-text
-   in let ret = zig-def-return-text d
+   in let ret = zig-def-return-text d tvars
    in let ctx = ZigCtx {
     arities = ctx0.arities,
     ctors = ctx0.ctors,
@@ -3232,10 +3264,14 @@ Section: Definition Emission
     renamed-to = ctx0.renamed-to,
     tvar-ids = ctx0.tvar-ids,
     tvar-types = ctx0.tvar-types,
-    expected = zig-def-return-type d,
+    expected = zig-def-return-type d tvars,
     bound-names = [],
     scope-tvars = tvars
    }
+   in let params-text = emit-zig-def-params (d.params) 0 ctx
+   in let all-params = if text-length params-text == 0
+      then zig-drop-trailing-comma comptimes
+      else comptimes & params-text
    in let tl = zig-tail-for d
    in let head = "fn " & name & "(" & all-params & ") " & ret & " {\n"
     & zig-untrusted-return-note d
@@ -3347,7 +3383,7 @@ Section: Definition Emission
   emit-zig-def-params (params) (i) (ctx) =
    if i == list-length params then ""
    else let p = list-at params i
-   in let one = zig-def-param-name ctx (p.name) & ": " & emit-zig-type (p.type-val)
+   in let one = zig-def-param-name ctx (p.name) & ": " & emit-zig-type (p.type-val) (ctx.scope-tvars)
    in if i == list-length params - 1 then one
    else one & ", " & emit-zig-def-params params (i + 1) ctx
 
