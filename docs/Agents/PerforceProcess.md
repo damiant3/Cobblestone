@@ -215,6 +215,7 @@ the same command; reach for a different command (L-FALSIF).
 |---|---|---|
 | P-NOEDIT | `EPERM: operation not permitted` or a similar write error from your edit tool. Perforce marks synced files read-only. | `p4 edit -c <CL> <file>` before modifying anything. Create the CL first if you do not have one. |
 | P-UNRELATED | The CL description says "fix X" and the diff also carries Y and Z, because the file was open in your CL AND modified by other work. Perforce submits whatever is on disk. | `p4 diff` the file before submitting a small CL and confirm the diff matches the intent. If it carries extra, revert and re-edit just the lines you need. |
+| P-MERGEREVERT (L) | You merge down while a file is OPEN in a numbered CL, then revert that CL, and main's incoming content goes with your edits. The merge resolves INTO the working file but the file stays an `edit` in YOUR CL rather than becoming an `integrate` in the default one, so submitting the merge does not carry it and the revert throws both away. The stream is then missing a change main has, `p4 diff2` against main shows content differing, and **your next gate builds source that is not main's** while reporting a perfectly green fixed point, because the source and the compiler it was handed are consistent with each other. Measured 2026-08-25: a reverted CL left `Types/Builtins.codex` at a revision predating another lane's landed row, and the gate's `Sut` came out byte-equal to THIS AGENT'S OWN PREVIOUS SEED. That equality is the fingerprint (L-SUSPECT): identical where you expected different means the input was stale, not that the seed lagged. Reading it the other way says "main's seed does not match main's source", which is a wrong finding about somebody else's work and was one message from being sent. | Prefer the standing order -- shelve, revert, THEN merge -- so nothing of yours is open when the merge runs. If you have already merged with files open, do not revert to clean up: submit the merge first, or re-run `p4 merge -S //Codex/<agent> -r` afterwards, which still lists the file because the credit is NOT consumed by the failed pass. Before trusting any gate that follows a revert, diff the compiler source against main: `p4 diff2 -q //Codex/main/<path> //Codex/<agent>/<path>`. |
 | P-ORDER | You revert before shelving, so the shelf holds an OLDER version than disk. The gate then builds pre-fix code and everything downstream is stale. | `p4 shelve -f` BEFORE `p4 revert`, every time. Re-shelve after any mid-gate edit. |
 | P-STRAY | A build bakes in a name or file that "isn't there": a stray `.codex` from an abandoned branch, or a depot-side delete `sync` left on disk. `sync -f` restores TRACKED files and deletes neither. | `p4 clean codex/... apps/...` It respects `.p4ignore`. **Those two paths, and what READS each, measured 2026-08-15:** `apps/` because `sweep-apps.ps1:36` and `sweep-app-classes.ps1:61` both glob it recursively (not `compile.ps1`, which the old justification named); `codex/` because `concat-codex-self.ps1:60` globs `-Recurse -Depth 2` from `codex\compiler`. **`seed/` does NOT belong here**: `build.ps1:16` names `seed\Codex.cdx` explicitly and no `seed/` glob exists in any `build/*.ps1`. `build/` is a DIFFERENT mechanism wanting a different fix -- a depot-deleted script still on disk and still being dot-sourced -- and `build.ps1:164` already sweeps `*.bak`/`*.tmp`/`*.snap` repo-wide at Depth 3. If you widen these paths, say what reads the one you added. |
 | P-UNSHELVE (L) | After unshelve onto a moved depot your file lacks what the merge-down brought in, and `p4 resolve -n` says "No file(s) to resolve". It is wrong: unshelve opens the file at the revision it was shelved AT, and does not schedule the resolve. | `p4 sync` (this schedules it), then `p4 resolve -am`, then `p4-stale-check.ps1`. Never reach for `-ay` to get moving; it drops every revision landed while you were shelved. |
@@ -401,7 +402,18 @@ landing a seed never met it and ran the full gate on every step of every arc.
   ```powershell
   Copy-Item -Force build/output/Sut.cdx seed/Codex.cdx
   build/test-self-verify.ps1        # THE SEED VERIFIES ITSELF -- seconds
+  build/check-doc-counts.ps1        # four seed digests live in TechnicalDetails.md
   ```
+
+  **THE DOC-COUNT RUN IS NOT OPTIONAL AND YOUR GREEN GATE DID NOT COVER IT.**
+  `TechnicalDetails.md` carries the seed's byte count, content-hash prefix,
+  SHA-256 and MD5, and `check-doc-counts.ps1` measures all four against the
+  seed on disk. The gate runs that check BEFORE this step, when the old seed
+  is still installed, so it agrees -- and installing the new seed invalidates
+  it afterwards, with nothing left to run. Measured 2026-08-25: main 19551
+  landed a seed and left all four stale, and every lane that merged down got
+  a red `check-doc-counts` for a CL that gated clean. Refresh the four, and
+  carry `TechnicalDetails.md` in the copy-up with the seed.
 
   If the gate does NOT print one-pass (rare: the old seed compiled your source
   to a Sut that is not yet a self-fixed-point), you are in the genuine
@@ -681,7 +693,7 @@ standard is Update 41's sentence about PR 63: *"The design and the first working
 version are his."* Where they are right and we were wrong, say so in the same
 breath. A credit that only flows one way is marketing.
 
-**Closing.** GitHub (`damiant3/NewRepository`) is where contributions arrive;
+**Closing.** GitHub (`damiant3/Cobblestone`) is where contributions arrive;
 GitLab is a backup Damian barely looks at, so do not hunt there or wait on its
 state. Prefer to keep a PR open until the push carrying the work goes public.
 At release, per PR: comment with thanks, the release it landed in and the public

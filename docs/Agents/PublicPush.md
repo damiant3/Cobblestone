@@ -46,9 +46,9 @@ pushed at all, so a newest-wins sort is ambiguous exactly where it matters.
 The remote tip is the only thing that settles it:
 
 ```powershell
-$remote = (git ls-remote https://github.com/damiant3/NewRepository.git master) -split '\s+' |
+$remote = (git ls-remote https://github.com/damiant3/Cobblestone.git master) -split '\s+' |
           Select-Object -First 1
-foreach ($w in Get-ChildItem D:\Projects -Directory -Filter 'NewRepository-*-main') {
+foreach ($w in Get-ChildItem D:\Projects -Directory -Filter 'Cobblestone-*-main') {
     if (-not (Test-Path "$($w.FullName)\.git")) { continue }
     $sha  = git -C $w.FullName rev-parse HEAD
     $date = git -C $w.FullName log -1 --format='%ad' --date=short
@@ -83,7 +83,7 @@ another route (L-COUNT).
 
 ## Remotes and branch mapping (mismatched, watch out)
 
-- `github` -> github.com/damiant3/NewRepository, HEAD branch **master**.
+- `github` -> github.com/damiant3/Cobblestone, HEAD branch **master**.
 - `gitlab` -> gitlab.com/damiant3/Codex, HEAD branch **main**.
 - The local branch is **master**.
 - Push: `git push github master` and `git push gitlab master:main`.
@@ -98,7 +98,7 @@ its state as a thing to reconcile against.
 
 1. Sync the main workspace to the intended head:
    `p4 -c BigWhite_Codex_fester_main sync`. Confirm `seed/Codex.cdx` is the
-   intended fixed-point seed and the README digest matches it.
+   intended fixed-point seed and the `TechnicalDetails.md` digest matches it.
 2. Stage WITHOUT `git add -A`. `-A` re-publishes already-tracked files even
    inside a gitignored folder (that is how the secret folder leaked once).
    Use `git add -u` (all modified and deleted tracked files), then
@@ -192,7 +192,7 @@ un-serve bytes already cloned or cached by GitHub or GitLab.
   block, so nothing else refreshes it.
 - **Close out any outside pull requests whose work this push makes public** --
   thanks, the commit, the tweaks made on top, a link to the GitHubUpdate
-  entry, then close. **They arrive on GitHub** (`damiant3/NewRepository`);
+  entry, then close. **They arrive on GitHub** (`damiant3/Cobblestone`);
   GitLab `damiant3/Codex` is a backup against GitHub going away and is barely
   looked at, so do not wait on its state. The whole procedure, including how
   such a PR gets into Perforce in the first place and why it is never merged

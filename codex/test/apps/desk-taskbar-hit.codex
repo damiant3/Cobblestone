@@ -1,5 +1,6 @@
 Chapter: DeskTaskbarHitTest
   cites Works chapter GopDesk
+  cites Works chapter GopFont
   cites UI chapter Widget
   cites UI chapter Layout
   cites UI chapter Event
@@ -16,8 +17,34 @@ Chapter: DeskTaskbarHitTest
  not reach the screen edge. It is printed rather than asserted because it is
  the theme's number, not this file's.
 
+ THE BAND IS NO LONGER A CONSTANT AND THIS ARM NO LONGER ASSERTS ONE. It used
+ to read `band height is dk-task-h`, which is a statement about a number
+ rather than about what the band promises: when the entry's height was lifted
+ the band laid out taller and that row went red for a change that fixed
+ something. What it promises is that the entry inside it can hold a line of
+ the face, and that is what is asserted now -- against the CONTRACT rather
+ than against another instance of the same arithmetic (L-BOTHARMS).
+
+ THE FACE IS SYNTHETIC, and it has to be. `gfont-load` needs a volume and the
+ battery attaches none, so a face-path assertion here would record the
+ no-volume line and prove nothing (L-NAMED). A `GopFont` is a plain record:
+ `gf-ok` true and a `gf-gh` of 18 is the CMUNSS cell at the ppem this desk
+ uses below 1600, measured, and it is all `dk-task-btn-h` reads. The tree is
+ measured DIRECTLY rather than through `desk-chrome-face`, because that path
+ runs `comp-fit-text`, which would measure text through a face whose glyph
+ base is zero.
+
+ The faceless rows are the control and they must NOT move: the bitmap cell
+ fits the band it has, so the entry asks for nothing there and the band stays
+ at its floor. A change that grew both would be a change nobody needed.
+
+Section: Body
+
   tb-yn : Boolean -> Text
   tb-yn (v) = if v then "yes" else "no"
+
+  tb-face : GopFont
+  tb-face = GopFont { gf-ok = True, gf-base = 0, gf-gw = 0, gf-gh = 18, gf-asc = 0, gf-cap = 0 }
 
   tb-hit-id : WidgetNode, Integer, Integer -> Text
   tb-hit-id (laid) (x) (y) =
@@ -34,8 +61,37 @@ Chapter: DeskTaskbarHitTest
   tb-chrome : Integer, Integer -> WidgetNode
   tb-chrome (w) (ds) = desk-chrome-with (widget-panel "content" DirColumn 0 []) w ds
 
+  tb-min-h : WidgetNode, Text -> Integer
+  tb-min-h (root) (id) =
+    when widget-find root id
+      is Just (n) -> n.wn-min-h
+      is None -> 0 - 1
+
+ The cache is written by `desk-run` and by nothing a gated arm reaches, so
+ without this the reading half of `dk-task-px` would be a path nothing calls
+ (L-UNCALLED). Both answers are asserted: the fallback an unwritten cell
+ gives, and the cached value once one is there.
+
+  tb-cached : Integer, Integer -> Integer
+  tb-cached (ds) (v) = let p = poke-32 ds dk-task-band-cell v in ds
+
+  tb-band : Integer, Integer, GopFont, Text -> Text
+  tb-band (w) (ds) (tf) (tag) =
+    let ws = ui-wscale w
+    in let m = widget-measure (desk-taskbar ds tf ws) (dk-theme-ds ds)
+    in let band = m.wn-min-h
+    in let entry = tb-min-h m "menu"
+    in let cell = dk-task-btn-h tf ws
+    in tag & " band " & integer-to-text band
+       & " entry " & integer-to-text entry
+       & " asks " & integer-to-text cell
+       & "  band at least its floor " & tb-yn (band >= dk-task-h)
+       & "  entry holds a line " & tb-yn (entry >= cell)
+
+Section: Entry
+
   opening : [Console] Nothing =
-    let ds = alloc-zeroed 64 64
+    let ds = alloc-zeroed 128 64
     in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
     in let gp = poke-32 ds desk-gpu-cell 1
     in let sd = widget-layout (tb-chrome 1024 ds) (dk-theme-ds ds) (layout-rect 0 0 1024 768)
@@ -45,11 +101,19 @@ Chapter: DeskTaskbarHitTest
     in let cb = tb-rect sd "task-clock"
     in let hb = tb-rect hd "taskbar"
     in act
-      print-line-uni ("band height is dk-task-h : " & tb-yn (band.lr-h == dk-task-h))
+      print-line-uni ("band is at least its floor: " & tb-yn (band.lr-h >= dk-task-h))
       print-line-uni ("logical rows below band  : " & integer-to-text (768 - (band.lr-y + band.lr-h)))
       print-line-uni ("menu inside the band     : " & tb-yn (mb.lr-y >= band.lr-y & mb.lr-y + mb.lr-h <= band.lr-y + band.lr-h))
       print-line-uni ("menu centre resolves to  : " & tb-hit-id sd (mb.lr-x + mb.lr-w / 2) (mb.lr-y + mb.lr-h / 2))
       print-line-uni ("clock right of the menu  : " & tb-yn (cb.lr-x > mb.lr-x + mb.lr-w))
       print-line-uni ("clock ends inside band   : " & tb-yn (cb.lr-x + cb.lr-w <= band.lr-x + band.lr-w))
       print-line-uni ("band height at 1600      : " & integer-to-text (hb.lr-h))
+      print-line-uni (tb-band 1024 ds gfont-none "1024 bitmap")
+      print-line-uni (tb-band 1024 ds tb-face   "1024 face  ")
+      print-line-uni (tb-band 1600 ds gfont-none "1600 bitmap")
+      print-line-uni (tb-band 1600 ds tb-face   "1600 face  ")
+      print-line-uni ("dk-task-px unwritten     : " & integer-to-text (dk-task-px ds 1024))
+      print-line-uni ("dk-task-px from the cache: " & integer-to-text (dk-task-px (tb-cached ds 34) 1024))
     end
+
+Page 1

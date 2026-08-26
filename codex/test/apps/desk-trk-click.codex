@@ -1,0 +1,153 @@
+Chapter: DeskTrkClickTest
+  cites Works chapter GopDesk
+  cites Works chapter GopTrack
+  cites Works chapter GopTrackDb
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Event
+  cites UI chapter DataTable
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Every row of the Issues table is reachable with the pointer, at the place the
+ pane's WINDOW put it.
+
+ `desk-style-click` is the model. What a miss costs here is quieter than the
+ launcher's wrong application and louder than nothing: the reader clicks an
+ issue and a DIFFERENT issue is selected, the table repaints with a row
+ highlighted, and it looks exactly like a click that worked. `desk-trk-hit`
+ had no test of any kind before the pane became a window, and neither did
+ anything else in this pane.
+
+ The sweep hoists the layout out of the probe for the reason `desk-calc-click`
+ gives, and the spot checks go through `desk-trk-hit` itself so the shipped
+ function is not left untested.
+
+ THE PLACED ROW IS WHAT MAKES THE OTHERS MEAN ANYTHING. `desk-trk-hit` reads
+ the pane's block out of `dk-trk-cell` to find the window rect; an unwritten
+ cell reads zero, address zero reads back as zeros, and zeros are
+ `dk-wnd-st-normal` with a width of zero -- the never-placed sentinel -- so the
+ WRONG block yields exactly the default rect the right block yields. Every row
+ above agrees under both. The last row places a window on its own block, at a
+ rect the default arithmetic cannot produce.
+
+ The table is asked for the row rather than for a widget id, because the id
+ carries the ABSOLUTE index across the whole filtered list and that is what a
+ selection is. The state is built once and shared: `gtk-row-at` rebuilds the
+ table on every call, which a twelve thousand point sweep cannot afford.
+
+ TWO SABOTAGES, RUN SEPARATELY, AND THE SWEEP SEES NEITHER. Laying
+ `desk-trk-hit`'s tree back at the screen corner under the chrome moves the
+ placed row from 23 of 23 to 10, and reading its block from address zero
+ instead of `dk-trk-cell` moves it to 10 as well. `reachable` reads
+ 0 1 2 3 4 5 6 under both, because it never calls `desk-trk-hit` at all: it
+ asks which rows the reference layout exposes, which is a question about the
+ table and not about where the window put it.
+
+Section: Test
+
+  tc-at : WidgetNode, DataTableState, Integer, Integer -> Integer
+  tc-at (laid) (dt) (x) (y) =
+    when ev-hit-widget laid x y
+      is Just (wgt) -> data-table-row-of-hit dt (wgt.wn-id)
+      is None -> 0 - 1
+
+  tc-row : WidgetNode, DataTableState, Integer, Integer, Integer -> Integer
+  tc-row (laid) (dt) (seen) (x) (y) =
+    if x >= 1024 then 0
+    else let r = tc-at laid dt x y
+    in let p = if r >= 0 & r < 64 then poke-byte seen r 1 else 0
+    in tc-row laid dt seen (x + 8) y
+
+  tc-grid : WidgetNode, DataTableState, Integer, Integer -> Integer
+  tc-grid (laid) (dt) (seen) (y) =
+    if y >= 768 then 0
+    else let r = tc-row laid dt seen 0 y
+    in tc-grid laid dt seen (y + 8)
+
+  tc-seen : Integer, Integer, Text -> Text
+  tc-seen (seen) (i) (acc) =
+    if i >= 64 then acc
+    else if peek-byte seen i == 1 then tc-seen seen (i + 1) (acc & " " & integer-to-text i)
+    else tc-seen seen (i + 1) acc
+
+  tc-yn : Boolean -> Text
+  tc-yn (v) = if v then "yes" else "no"
+
+ A CENSUS DOWN THE COLUMN, NOT ONE POINT. The first version of this asked the
+ two layouts to agree at the FIRST point the reference answered a row, and
+ that point is where the corner layout has its own first row: both said row
+ zero and the sabotage moved nothing at all. One sample cannot separate two
+ layouts that necessarily agree somewhere. Every eighth pixel down a column
+ inside the window can, because the row a y lands on differs between them
+ everywhere except at the crossing.
+
+ The count is `points * 1000 + agreements`, one integer because that is what a
+ recursion can carry back, and both halves are printed so a drop in either is
+ visible.
+
+  tc-census : WidgetNode, DataTableState, DbServer, Integer, Integer, Integer -> Integer
+  tc-census (laid) (dt) (srv) (ds) (x) (y) =
+    if y >= 768 then 0
+    else let r = tc-at laid dt x y
+    in let a = if r < 0 then 0
+      else if desk-trk-hit 1024 768 x y ds srv 0 0 gfont-none == r then 1001
+      else 1000
+    in a + tc-census laid dt srv ds x (y + 8)
+
+ The window's content box in LOGICAL units, which is what `comp-render-at`
+ lays a window's tree out in and therefore what `desk-trk-hit` divides into.
+ The table height comes from the shipped measuring pass, because the tree the
+ paint drew and the tree a click is resolved against must be the same one; the
+ RECT is duplicated here, because that is the thing under test.
+
+  tc-tree : Integer, Integer, Integer, DbServer, Integer, Integer -> WidgetNode
+  tc-tree (w) (h) (ds) (srv) (filter) (sel) =
+    let box = desk-trk-win-box w h srv filter sel ds gfont-none
+    in let s = ui-wscale w
+    in let blk = peek-32 ds dk-trk-cell
+    in let st = dk-wnd-st blk
+    in let bh = dk-wnd-bar-h gfont-none s
+    in let wx = dk-wnd-rx blk w st
+    in let wy = dk-wnd-ry blk w h st ds + bh
+    in let ww = dk-wnd-rw blk w st
+    in let wh = dk-wnd-rh blk w h st ds - bh
+    in widget-layout (gtk-tree srv filter sel (box.lr-h) (box.lr-w)) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
+
+  tc-state : Integer, Integer, Integer, DbServer, Integer, Integer -> DataTableState
+  tc-state (w) (h) (ds) (srv) (filter) (sel) =
+    let box = desk-trk-win-box w h srv filter sel ds gfont-none
+    in gtk-data-table srv filter sel (box.lr-h) (box.lr-w)
+
+  opening : [Console] Nothing =
+    let seen = alloc-zeroed 64 64
+    in let ds = alloc-zeroed 128 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let gp = poke-32 ds desk-gpu-cell 1
+    in let tp = poke-32 ds dk-trk-cell (alloc-zeroed 64 64)
+    in let srv = tk-init-tracker-db
+    in let laid = tc-tree 1024 768 ds srv 0 0
+    in let dt = tc-state 1024 768 ds srv 0 0
+    in let g = tc-grid laid dt seen 0
+    in let ds2 = alloc-zeroed 128 64
+    in let ap2 = poke-32 ds2 dk-adorn-cell dk-adorn-default
+    in let gp2 = poke-32 ds2 desk-gpu-cell 1
+    in let tp2 = poke-32 ds2 dk-trk-cell (alloc-zeroed 64 64)
+    in let blk2 = peek-32 ds2 dk-trk-cell
+    in let pl = dk-wnd-place blk2 (dk-wnd-x 1024 dk-wnd-st-normal + 40) (dk-wnd-y 1024 768 dk-wnd-st-normal ds2 + 24) 600 400
+    in let pl-tree = tc-tree 1024 768 ds2 srv 0 0
+    in let pl-dt = tc-state 1024 768 ds2 srv 0 0
+    in let pl-x = dk-wnd-x 1024 dk-wnd-st-normal + 40 + 100
+    in let pl-c = tc-census pl-tree pl-dt srv ds2 pl-x 0
+    in let pl-rows = pl-c / 1000
+    in let pl-agree = int-mod pl-c 1000
+    in act
+      print-line-uni ("reachable" & tc-seen seen 0 "")
+      print-line-uni ("miss row=" & integer-to-text (desk-trk-hit 1024 768 0 0 ds srv 0 0 gfont-none))
+      print-line-uni ("sidebar row=" & integer-to-text (desk-trk-hit 1024 768 60 300 ds srv 0 0 gfont-none))
+      print-line-uni ("placed: " & integer-to-text pl-rows & " row points, " & integer-to-text pl-agree & " agree, all " & tc-yn (pl-rows > 0 & pl-rows == pl-agree))
+      print-line-uni ("title " & desk-wnd-title desk-focus-trk & "  block " & tc-yn (desk-wnd-blk desk-focus-trk ds == peek-32 ds dk-trk-cell))
+    end
+
+Page 1

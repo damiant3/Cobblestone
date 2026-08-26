@@ -1,0 +1,111 @@
+Chapter: ScenePlaceTest
+  cites Works chapter GopScene
+  cites Engine chapter Renderer3D
+  cites Engine chapter GpuScene
+  cites Foreword chapter Console
+
+ A windowed 3D pane is placed again before every frame, and placing it does
+ not touch the BUFFERS.
+
+ That is why maximise and restore are affordable for these two panes. The
+ colour and depth buffers are allocated once, at the size of the content box,
+ which is the largest rectangle a window on this desk can take; `gsc-place`
+ rebuilds the render target from them with the window's width and height and
+ the buffer's stride. The alternative was a target reallocated on every
+ resize, which would leave the old one above the pane's own heap mark until
+ the pane closed -- 6.4 measured that tail at about 3 MB stranded per docked
+ pane against a 128 MB arena, and a maximise button is a great deal easier to
+ press than a pane is to dock.
+
+ IT IS NOT FREE, AND THE FIRST VERSION OF THIS FILE CLAIMED IT WAS. Placing
+ builds a `GpuView` and an `R3dTriState` and stores them, and records are
+ heap: two placements measured 1,392 bytes. Per frame that is nothing --
+ `desk-loop` brackets each iteration and drops it -- but it is not zero, and a
+ file asserting zero would have gone red the first time anybody looked.
+
+ So the assertion is the one that matters: what two placements cost, against
+ what ONE buffer would cost if the target were rebuilt instead. Those two
+ numbers are three orders of magnitude apart at this tiny size and five at a
+ real one, which is a comparison rather than a threshold somebody chose.
+
+ THE HEAP PROBE IS `alloc-bytes 0`. It advances the bump allocator by nothing
+ and answers the current frontier, so a difference across a call is the bytes
+ that call made permanent. A probe that always reads zero is not evidence, so
+ the last row allocates a known 64 bytes and the same probe must SEE it; a
+ zero there would mean the instrument was never working.
+
+ The fields are asserted against the rect rather than against recorded
+ numbers, because a recorded number cannot tell a correct placement from a
+ stale one that happens to match at the size every capture is taken at.
+
+ TWO ROWS AND ONLY ONE OF THEM CAN FAIL, WHICH IS THE POINT OF THE SMALL ONE.
+ Sabotaged by forcing the target's width back to the buffer's, `small` reads
+ `tgt 320x120` and disagrees while `full` still agrees -- at the full content
+ box those two numbers ARE equal, so a window the size of the box can never
+ see the difference. A file with only the full row would have passed.
+
+Section: Test
+
+  sp-fake : Integer, Integer -> ScenePane
+  sp-fake (bw) (bh) =
+    let px = alloc-bytes (bw * bh * 4)
+    in let dp = alloc-bytes (bw * bh * 4)
+    in ScenePane {
+      sp-tgt = R3dTriState { r3t-base = px, r3t-depth = dp, r3t-w = bw, r3t-h = bh, r3t-stride = bw },
+      sp-px = px,
+      sp-dp = dp,
+      sp-bw = bw,
+      sp-gv = gv-new 0 0 bw bh,
+      sp-sky = 0,
+      sp-ch = bh,
+      sp-fb = 0,
+      sp-sh = 1,
+      sp-gpu = 0,
+      sp-n = 0,
+      sp-t0 = 0,
+      sp-yaw = 0,
+      sp-look = 0,
+      sp-ptr = 0
+    }
+
+  sp-yn : Boolean -> Text
+  sp-yn (v) = if v then "yes" else "no"
+
+  sp-shows : ScenePane, Integer, Integer, Integer, Integer -> Text
+  sp-shows (sp) (x) (y) (w) (h) =
+    let gv = sp.sp-gv
+    in let t = sp.sp-tgt
+    in "gv " & integer-to-text (gv.gv-x) & "," & integer-to-text (gv.gv-y) & " " & integer-to-text (gv.gv-w) & "x" & integer-to-text (gv.gv-h) & "  tgt " & integer-to-text (t.r3t-w) & "x" & integer-to-text (t.r3t-h) & " stride " & integer-to-text (t.r3t-stride) & "  ch " & integer-to-text (sp.sp-ch)
+
+  sp-agrees : ScenePane, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  sp-agrees (sp) (base) (stride) (x) (y) (w) (h) =
+    let gv = sp.sp-gv
+    in let t = sp.sp-tgt
+    in (gv.gv-x) == x & (gv.gv-y) == y & (gv.gv-w) == w & (gv.gv-h) == h - gsc-label-band
+       & (t.r3t-w) == w & (t.r3t-h) == h & (t.r3t-stride) == sp.sp-bw
+       & sp.sp-ch == h & sp.sp-fb == base + y * stride * 4
+       & (t.r3t-base) == sp.sp-px & (t.r3t-depth) == sp.sp-dp
+
+  opening : [Console] Nothing =
+    let sp = sp-fake 320 200
+    in let base = 4096
+    in let stride = 1600
+    in let h0 = alloc-bytes 0
+    in let p1 = gsc-place sp base stride 40 60 240 120
+    in let ok1 = sp-agrees sp base stride 40 60 240 120
+    in let show1 = sp-shows sp 40 60 240 120
+    in let p2 = gsc-place sp base stride 0 30 320 200
+    in let ok2 = sp-agrees sp base stride 0 30 320 200
+    in let show2 = sp-shows sp 0 30 320 200
+    in let h1 = alloc-bytes 0
+    in let burn = alloc-bytes 64
+    in let h2 = alloc-bytes 0
+    in act
+      print-line-uni ("small   " & show1 & "  agrees " & sp-yn ok1)
+      print-line-uni ("full    " & show2 & "  agrees " & sp-yn ok2)
+      print-line-uni ("two placements cost " & integer-to-text (h1 - h0) & " bytes, one buffer would cost " & integer-to-text (320 * 200 * 4) & ": cheaper " & sp-yn (h1 - h0 < 320 * 200 * 4))
+      print-line-uni ("the probe can see 64: " & sp-yn (h2 - h1 >= 64))
+      print-line-uni ("buffers unmoved: " & sp-yn (sp.sp-px /= 0 & sp.sp-bw == 320))
+    end
+
+Page 1

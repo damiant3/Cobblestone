@@ -16,6 +16,75 @@ exits, the cursor bracket, why the palette arrives as a parameter. Read it
 before adding a pane or taking a cell. This file is what is missing; that one
 is what must not be broken.
 
+## WORKS-51: `gop-scene-backbuffer` measures a pane that no longer paints without a window
+
+Found at the Update 50 release battery (red, 2026-08-25). The test is
+unchanged since 2026-08-05 and answers `rows land by stride: 0 of 24, pane
+fully painted: no` at the release seed: main 19574 (6.5's 3D panes) made
+`ScenePane` derive its view rect from the WINDOW's rect via `gsc-place`
+before every frame, and the test drives the pane with no window, so the
+rect is empty and nothing paints. The change was intended and verified by
+capture in the campaign; the casualty is the instrument (L-INSTRUMENT:
+repoint the arm at the part that still answers its question, never soften
+it). Skipped with a `.skip` citing this row; the repointed setup needs the
+window fact the pane now reads, which is this lane's plumbing to supply.
+Un-skip with the repair.
+
+## WORKS-50: one pane, two names, depending on where you look
+
+Found 2026-08-25 (val) while giving the taskbar pill its app icon, and left
+unfixed deliberately because deciding which name wins is not an icon change's
+business.
+
+**`desk-wnd-title` and `gpr-entries`'s `ge-label` disagree for four of the
+fifteen panes.** The launcher row says `Editor` and its window titlebar says
+`Edit`; `Browser` against `Web`; `System Info` against `Monitor`; and
+`Programs` has a window title but no launcher entry at all. A person opening
+Browser from the start menu gets a window that calls itself Web.
+
+**There is a third table and it is NOT the defect**: `desk-focus-name` gives
+deliberately short names for the taskbar's `tasks` slot (`Web`, `3D`, `Fish`,
+`Edit`) because a band is narrow. That one is fine. The question is only
+whether the two FULL names should agree.
+
+**The cost of the divergence is already paid once.** `dk-pill-icon` had to
+become a second table keyed by focus id rather than a join against
+`gpr-entries`, because the join misses on those four and `gicon-named` answers
+the `file` icon for an unknown name rather than refusing, so four pills would
+have worn the wrong picture with every count still agreeing. Fixing the names
+would make that join sound and let one table go.
+
+**What settling it needs.** Pick the surviving name per pane, then change
+whichever table loses. `desk-wnd-title` is read by the titlebar, the pill and
+`desk-window-registry`'s expectation; `ge-label` is read by the launcher, the
+start menu, and `desk-gpr-icons`'s id join (`"gpr-" & ge-label`), so a label
+change moves widget ids and `gpr-id-scan` with them. Neither is a rename in
+one place, and `codex/test/apps/desk-chrome-icons` counts rows by those ids.
+
+## WORKS-48: a webserver pane in the guios
+
+Damian, 2026-08-24, routed by red. A desk pane over
+`apps/works/WebServer.codex`: start and stop, and a LIVE REQUEST LOG. It
+serves BOTH plain HTTP and the browser app's `codex://` wire, whose client
+side is already written (`PageFetcher`, `DataChannel`).
+
+Bed first, through codex-vm's NAT port-forward, which is host-into-guest and
+is the direction a server needs (`docs/OperatorsManual.md`; outbound needs no
+`-portfwd` because the guest reaches the host at `10.0.2.2`). Metal later.
+blu consults on the net side after COMPILER-18. `docs/PM/CurrentPlan.md`,
+"network demo pair", carries the shape.
+
+**Not started, and it is queued behind the windows campaign** Damian asked
+for directly the same day (`ShellRefinement.md` stage 6). Nothing here is
+blocked; the order is his to change.
+
+Two things to settle before building rather than during: what the pane does
+when the server is serving and the desk wants to step another pane, since the
+desk steps exactly one pane at a time and a server that only runs while its
+own pane is focused is not a server; and where the request log lives, because
+a `ds` cell pointer must be allocated in `desk-run` below the base mark
+(`works-desk-contract.md`) and an unbounded log is a leak with no collector.
+
 ## WORKS-25: `xhci-connect` opens controller 0 and three chapters use it
 
 `GopUsb.usb-attach` walks every xHCI controller (`usb-hosts` recurses on

@@ -78,8 +78,7 @@ $proc = $null
 try {
     # The plug streams C# to its output ring (not TCP); codex-vm dumps the
     # ring to -output on exit. TCP is used only to deliver the IR.
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', "$MemMB", '-headless', '-output', $csOutFile) `
-        -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $csOutFile -StderrFile $stderrFile -MemMB "$MemMB"
 # Accept TCP connection from plug
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {

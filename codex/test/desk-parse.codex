@@ -17,15 +17,66 @@ Chapter: DeskParseTest
 
 Section: Fixture
 
+ A LOADED FACE, WITH THE METRICS A LOADED FACE HAS. This stood at
+ `gf-ok = True` with every metric ZERO, which is a shape `gfont-load` never
+ produces: a face that rasterized has a glyph height. It read as harmless for
+ as long as nothing consumed the metrics, and stopped being harmless the day
+ `dk-line-step` learned to read the face instead of answering a flat constant.
+
+ The arithmetic, measured 2026-08-25: `dk-line-step` answers `gf-gh * 5 / 4`
+ when the face is ok, so a zero height gave a zero line step, `dk-win-h`
+ collapsed from 326 to 74, and `dp-slack` went to MINUS 222 -- the wizard's
+ text running 222 pixels past a window sized for none of it. The file went red
+ at head and stayed red, because nothing in any lane's gate runs it (L-NOGATE);
+ the release battery is what would have found it.
+
+ The numbers are CMUNSS at ppem 16, which is what `dk-ui-ppem` asks for at 1600
+ and above and what `desk-leading-metrics` prints: a 21 row cell with 11 pixel
+ capitals. This is L-CONSTRUCT one level up -- the fixture was built in a shape
+ no real input has, so no amount of running it could say so.
+
+ THE `win` ROW MOVED FOR A DIFFERENT AND EQUALLY INTENDED REASON, and it is
+ written down here so the next reader does not have to re-derive it.
+ `dk-win-x 1280 2` answers 360 where this file recorded 440, because
+ `ui-wscale` steps at 1600 and used to step at 1024 (WORKS-35): at 1280 the
+ sidebar is 160 device pixels now and was 320 then, and `dk-win-x` is measured
+ from the sidebar's right edge. Nothing about the window changed.
+
+ So all four deltas from the recorded expectation have named causes -- the
+ face-aware step, this fixture, the realigned walk below, and `ui-wscale` --
+ and none of them is a defect in the wizard. Re-recording is correct HERE and
+ was not correct before they were each accounted for, which is the whole
+ difference between re-baselining and repairing.
+
   dp-ttf : GopFont
-  dp-ttf = GopFont { gf-ok = True, gf-base = 0, gf-gw = 0, gf-gh = 0, gf-asc = 0, gf-cap = 0 }
+  dp-ttf = GopFont { gf-ok = True, gf-base = 0, gf-gw = 8, gf-gh = 21, gf-asc = 16, gf-cap = 11 }
+
+ THE LEADING IS `dk-line-step`, NOT `dk-line-h`, and this walk is a SHADOW of
+ the painter's own. `dk-wizard-draw` steps each paragraph by `dk-line-step tf s`
+ and gaps by `dk-para-gap * s`; this re-implemented that with the flat
+ `dk-line-h` and an unscaled gap, which was the same arithmetic until
+ `dk-line-step` learned to read the face. The painter moved and the shadow did
+ not, so the test began comparing a window sized one way against text laid out
+ another (L-INSTRUMENT). With a real face that disagreement is 40 pixels; with
+ the zero-metric fixture it read as 222 and looked like nonsense.
+
+ It divides by `s` because it is answering in LOGICAL units, which is what
+ `dk-win-h` answers in and therefore what `dp-slack` can subtract. The painter
+ keeps everything in device pixels and never needs the division.
+
+ So the invariant is now exact rather than approximate: every line the painter
+ draws is counted with the step the painter uses, so the slack IS
+ `dk-win-pad-b`, at every scale and under either font. A slack that is not the
+ footer reserve is the defect, and the number to compare it against is a
+ constant rather than a recorded value.
 
   dp-text-bottom : GopFont, Integer -> Integer
   dp-text-bottom (tf) (s) =
     let cols = dk-wrap-cols s
-    in let y2 = dk-body-y0 + dk-wrap-count dk-para-intro cols * dk-line-h + dk-para-gap
-    in let y3 = y2 + dk-wrap-count (dk-para-font tf) cols * dk-line-h + dk-para-gap
-    in y3 + dk-wrap-count dk-para-hint cols * dk-line-h
+    in let step = dk-line-step tf s / s
+    in let y2 = dk-body-y0 + dk-wrap-count dk-para-intro cols * step + dk-para-gap
+    in let y3 = y2 + dk-wrap-count (dk-para-font tf) cols * step + dk-para-gap
+    in y3 + dk-wrap-count dk-para-hint cols * step
 
   dp-slack : GopFont, Integer -> Integer
   dp-slack (tf) (s) = dk-win-h tf s - dp-text-bottom tf s

@@ -16,18 +16,15 @@ Chapter: GopScene
   cites Math chapter Cordic
   cites Game chapter Color
 
- The chrome sizes here are GopDesk's, and the two files have to agree by
- hand because GopDesk cites this one and the dependency cannot run the
- other way. `dk-bar-h` and `dk-task-h` are scaled by `ui-scale`; the sidebar
- is a widget minimum and so takes `ui-wscale`, which steps at a different
- width. Using the wrong one put this pane's left edge at 160 while the desk's
- column was 320 wide, and the buttons under it lost their last characters.
+ The chrome sizes here are GopDesk's, and `dk-bar-h` and `dk-task-h` have to
+ agree by hand because GopDesk cites this one and the dependency cannot run
+ the other way. Both are scaled by `ui-scale`, which steps at a different
+ width from the `ui-wscale` a widget minimum takes.
 
  We say:
 
 Section: Geometry
 
-  gsc-sidebar-w : Integer = 160
   gsc-topbar-h : Integer = 22
   gsc-taskbar-h : Integer = 28
 
@@ -95,11 +92,17 @@ Section: Loop
     else let d = poke-32 dst ((doff + x) * 4) (peek-32 src ((soff + x) * 4))
     in gsc-blit-span dst doff src soff w (x + 1)
 
-  gsc-blit-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gsc-blit-rows (dst) (stride) (src) (w) (h) (y) =
+ THE SOURCE HAS A STRIDE OF ITS OWN, and it is what lets a window resize
+ without allocating. The colour buffer is allocated once at the content box
+ and a smaller window renders the top-left `w` by `h` of it, so the source
+ row pitch is the BUFFER's width and not the copy's. It was `y * w` and that
+ was correct only while every render filled the whole buffer.
+
+  gsc-blit-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gsc-blit-rows (dst) (stride) (src) (sstride) (w) (h) (y) =
     if y >= h then 0
-    else let d = gsc-blit-span dst (y * stride) src (y * w) w 0
-    in gsc-blit-rows dst stride src w h (y + 1)
+    else let d = gsc-blit-span dst (y * stride) src (y * sstride) w 0
+    in gsc-blit-rows dst stride src sstride w h (y + 1)
 
  The shadow map target is rebuilt by r3d-render-shadowed every frame,
  inside the loop's bracket, so its half megabyte is reclaimed with the
@@ -135,7 +138,7 @@ Section: Loop
     else
       let c = r3d-target-clear tgt sky
       in let d = if sh == 1 then r3d-render-shadowed tgt posed gsc-shadow-map else r3d-render-into tgt posed
-      in let b = gsc-blit-rows (base + gv.gv-x * 4) stride (tgt.r3t-base) (tgt.r3t-w) (tgt.r3t-h) 0
+      in let b = gsc-blit-rows (base + gv.gv-x * 4) stride (tgt.r3t-base) (tgt.r3t-stride) (tgt.r3t-w) (tgt.r3t-h) 0
       in gop-draw-text base stride font (gv.gv-x + 8) (ch - 16) gsc-label-sw 65280 1 0
   end
 
@@ -247,8 +250,26 @@ Section: Step
  The three fields are integers stored in place, so the desk's per-iteration
  restore is harmless to them, which is the same reason the toggles are.
 
+ THE TWO BUFFERS ARE THE PANE'S AND THE TARGET IS THE FRAME'S. `sp-px` and
+ `sp-dp` are allocated once, at the size of the whole content box, which is
+ the largest rectangle a window on this desk can take. `sp-tgt` is rebuilt
+ from them whenever the window moves or resizes, with `r3t-w` and `r3t-h` the
+ window's and `r3t-stride` the buffer's. **That is what makes maximise and
+ restore cost nothing and strand nothing**: a target reallocated per resize
+ would leave the old one above the pane's own heap mark until the pane
+ closed, which is the LIFO tail 6.4 measured, and about 4 MB of a 128 MB
+ arena each time somebody pressed the button.
+
+ The depth buffer is indexed `y * r3t-w + x` rather than by the stride, so a
+ smaller window packs it differently from a larger one. Nothing carries
+ across a frame: `r3d-target-clear` rewrites every word of it before the
+ render, so the packing is the frame's own business.
+
   ScenePane = record {
     sp-tgt : R3dTriState,
+    sp-px : Integer,
+    sp-dp : Integer,
+    sp-bw : Integer,
     sp-gv : GpuView,
     sp-sky : Integer,
     sp-ch : Integer,
@@ -273,24 +294,29 @@ Section: Step
   gsc-look-clamp : Integer -> Integer
   gsc-look-clamp (d) = if d > gsc-look-max then gsc-look-max else if d < 0 - gsc-look-max then 0 - gsc-look-max else d
 
+ IT TAKES THE BOX AND NOT THE SCREEN. The caller decides where this pane
+ lives, because a window can be anywhere and the chrome constants this
+ chapter used to derive it from (`gsc-topbar-h`, `gsc-taskbar-h`, and a
+ sidebar edge) were a hand-synced copy of the desk's own. `gsc-place` is
+ what puts it somewhere; `gsc-new` only says how big the buffers are.
+
   gsc-new : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] ScenePane
-  gsc-new (base) (w) (h) (stride) (cs) (gpu) (sky) = act
+  gsc-new (base) (stride) (cs) (gpu) (sky) (bw) (bh) = act
     hd <- cursor-hide cs base stride
-    let s = ui-scale w
-    in let top = gsc-topbar-h * s
-    in let sw = gsc-sidebar-w * ui-wscale w
-    in let cw = w - sw
-    in let ch = h - gsc-taskbar-h * s - top
-    in let tgt = r3d-target-new cw ch sky
+    let px = alloc-bytes (bw * bh * 4)
+    in let dp = alloc-bytes (bw * bh * 4)
     in act
       tx <- if gpu == 1 then gs-tex-upload gsc-ground-tex else 0
       let started = hpet-start
       in ScenePane {
-        sp-tgt = tgt,
-        sp-gv = gv-new sw top cw (ch - gsc-label-band),
+        sp-tgt = R3dTriState { r3t-base = px, r3t-depth = dp, r3t-w = bw, r3t-h = bh, r3t-stride = bw },
+        sp-px = px,
+        sp-dp = dp,
+        sp-bw = bw,
+        sp-gv = gv-new 0 0 bw (bh - gsc-label-band),
         sp-sky = sky,
-        sp-ch = ch,
-        sp-fb = base + top * stride * 4,
+        sp-ch = bh,
+        sp-fb = base,
         sp-sh = 1,
         sp-gpu = gpu,
         sp-n = 0,
@@ -310,6 +336,25 @@ Section: Step
  pane. `desk-loop` takes once per iteration and an iteration is a frame, so
  without this the defect comes straight back. The desk's scancode is used when
  it found one and the poll runs only when it did not.
+
+ WHERE THE PANE IS, SET BEFORE EVERY FRAME RATHER THAN ONCE. All four fields
+ are stored in place, so the desk's per-iteration heap restore is harmless to
+ them for the same reason the toggles are, and a window that moved between
+ two frames is simply drawn at its new place by the next one.
+
+ `y` is the top of the pane's CONTENT, under the titlebar. `sp-fb` carries
+ the row offset and `sp-gv`'s x carries the column, because that is the split
+ `gsc-frame` and `gsc-hud` already read: the blit destination is
+ `sp-fb + gv-x * 4` and the label band is measured down from `sp-fb` by
+ `sp-ch`.
+
+  gsc-place : ScenePane, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gsc-place (sp) (base) (stride) (x) (y) (w) (h) =
+    let a = __record-set sp "sp-gv" (gv-new x y w (h - gsc-label-band))
+    in let b = __record-set sp "sp-ch" h
+    in let c = __record-set sp "sp-fb" (base + y * stride * 4)
+    in let d = __record-set sp "sp-tgt" (R3dTriState { r3t-base = sp.sp-px, r3t-depth = sp.sp-dp, r3t-w = w, r3t-h = h, r3t-stride = sp.sp-bw })
+    in 0
 
   gsc-take : UsbKbd, Integer -> [Device.Port] Integer
   gsc-take (kbd) (sc0) = act

@@ -334,7 +334,9 @@ stage vocabularies (`build/check-diag-verdicts.ps1`, step 3).
 
 1. Download `diag.img` and its SHA-256 from the release. Verify the hash.
 2. Write it to a USB stick: `build/flash-usb.ps1 -Image diag.img -DiskNumber N`
-   on Windows, or the `dd` line the README gives on anything else. The
+   on Windows, or a raw whole-device write on anything else
+   (`dd if=diag.img of=/dev/sdX bs=4M conv=fsync`, the whole disk and not a
+   partition). The
    image is under 16 MB and carries no seed and no identity.
 3. Boot the box from the stick. Wait for the summary band (under two
    minutes on the default ladder; every stage has an HPET or RTC budget, and

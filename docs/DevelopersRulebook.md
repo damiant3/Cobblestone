@@ -166,7 +166,7 @@ Terrain, Texture, TimeOfDay, Water, WorldGen, WorldHUD
 post-processing, spatial audio, input handling, gameplay systems,
 physics, procedural generation, and edge mesh networking.
 
-### codex.foreword.ui (50 modules) -- User Interface
+### codex.foreword.ui (49 modules) -- User Interface
 
 Accessibility, Animation, AppRunner, Binding, BoxModel, Canvas, Charts,
 Clipboard, CommandPalette, Cursor, DataTable, DetailPane, Dialog, Drag,

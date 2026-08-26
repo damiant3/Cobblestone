@@ -6,7 +6,9 @@ campaign (sixteen probe versions, five metal boots, 2026-07-29 to
 2026-08-03), written for the next person whose device enumerates
 perfectly and then does nothing. The worked example is a USB keyboard,
 but the method is the deliverable. The flyable artifact is
-`build/boot/kbd-diag-v16.img` (digests in the root `README.md`); the
+`build/boot/kbd-diag-v16.img` (its digests rode the root README of its
+era; today's diagnostic stick is `build/boot/diag.img`, digests in the
+root `TechnicalDetails.md`); the
 per-flight record is `docs/Hardware/HardwareSitting.md`.
 
 ## The success record
@@ -157,7 +159,7 @@ instrument (L-ORACLE).
 
 | Artifact | Location |
 |---|---|
-| Flyable diagnostic image + digests | `build/boot/kbd-diag-v16.img`, root `README.md` |
+| Flyable diagnostic image + digests | `build/boot/kbd-diag-v16.img` (era digests); successor `build/boot/diag.img`, digests in root `TechnicalDetails.md` |
 | Per-flight run sheets and reading tables | `docs/Hardware/HardwareSitting.md` |
 | Emulator failure-model flags | `docs/OperatorsManual.md` (CLI table) |
 | Spec PDFs + Grep text + cited derivations | `docs/Reference/` |

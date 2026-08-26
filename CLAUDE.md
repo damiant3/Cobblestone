@@ -366,10 +366,10 @@ builds every time.
 **`R-ONE`, tier 3.**
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~55,645 lines of Codex across
-64 files (re-measured 2026-08-16 at the Update 45 release; this line said
-54,148 on 08-12, 53,652 on 08-09, 57,466 on 07-31 and 55,900 on 07-25, so
-the fall has stopped and it is rising again). A wrong
+Do not "while I'm here." The compiler is ~56,786 lines of Codex across
+64 files (re-measured 2026-08-25; this line said 55,645 on 08-16, 54,148
+on 08-12, 53,652 on 08-09, 57,466 on 07-31 and 55,900 on 07-25, so the
+fall has stopped and it is rising again). A wrong
 change in one place surfaces as a silent corruption three pipeline stages
 later.
 
@@ -646,7 +646,7 @@ it is for artifacts whose value is measured on a reader who lacks your context.
 
 ## Agent Identity
 
-Working directory: `D:\Projects\NewRepository-XXX`. Use pwd to find the
+Working directory: `D:\Projects\Cobblestone-XXX`. Use pwd to find the
 actual XXX value. You are **XXX** -- **everything to the RIGHT of the
 first `-` in your working directory's folder name.** Split on the
 separator; do not take a fixed number of characters.

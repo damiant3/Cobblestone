@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Compiler Builds Itself</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0a0a1a; --surface: #0f0f2a; --border: #1a1a3e;
+  --text: #c8c8e8; --dim: #6868a8; --accent: #00d4ff;
+  --accent2: #7b61ff; --green: #00e88f; --amber: #ffa726; --red: #ff5370;
+}
+body {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+  background: var(--bg); color: var(--text);
+  min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+  padding: 2em 1em;
+}
+.header { text-align: center; margin-bottom: 1.6em; }
+.header h1 {
+  font-size: 2.2em; font-weight: 300; letter-spacing: 0.12em;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.header .sub { color: var(--dim); font-size: 0.85em; margin-top: 0.4em; max-width: 46em; line-height: 1.5; }
+.container { width: 100%; max-width: 780px; }
+.go {
+  display: block; width: 100%; padding: 1.1em; margin-bottom: 1.4em;
+  font: inherit; font-size: 1.05em; letter-spacing: 0.06em;
+  color: var(--bg); background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border: 0; border-radius: 12px; cursor: pointer; transition: filter 0.15s, opacity 0.2s;
+}
+.go:hover { filter: brightness(1.15); }
+.go:disabled { opacity: 0.35; cursor: default; }
+.panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; overflow: hidden; margin-bottom: 1.4em;
+}
+.panel-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.6em 1em; border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+}
+.panel-bar .title { color: var(--dim); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.1em; }
+.panel-bar .status { font-size: 0.75em; }
+.status .ok { color: var(--green); }
+.status .run { color: var(--accent); }
+.status .err { color: var(--amber); }
+.phases { padding: 1em 1.4em; }
+.phase {
+  display: flex; justify-content: space-between; padding: 0.28em 0;
+  font-size: 0.9em; color: var(--dim); transition: color 0.2s;
+}
+.phase.live { color: var(--accent); }
+.phase.done { color: var(--text); }
+.phase .mark { color: var(--green); }
+.emitline { padding: 0 1.4em 1em; font-size: 0.9em; color: var(--dim); }
+.emitline .n { color: var(--accent); }
+.verdict { padding: 1.2em 1.4em; display: none; line-height: 1.9; font-size: 0.9em; }
+.verdict .big { font-size: 1.15em; letter-spacing: 0.04em; }
+.verdict .match { color: var(--green); }
+.verdict .mismatch { color: var(--red); }
+.hash { color: var(--dim); word-break: break-all; font-size: 0.8em; }
+.hash b { color: var(--text); font-weight: normal; }
+.drop-zone {
+  border: 2px dashed var(--border); border-radius: 12px; padding: 1.6em;
+  text-align: center; cursor: pointer; transition: all 0.2s;
+  background: var(--surface); margin-bottom: 1.4em; color: var(--dim); font-size: 0.85em;
+}
+.drop-zone:hover, .drop-zone.hover { border-color: var(--accent); background: rgba(0, 212, 255, 0.04); }
+.drop-zone input[type=file] { display: none; }
+.output-content {
+  padding: 1.2em 1.4em; white-space: pre-wrap; word-break: break-word;
+  font-size: 0.88em; line-height: 1.55; max-height: 46vh; overflow-y: auto; display: none;
+}
+.footer { margin-top: 2.4em; color: var(--dim); font-size: 0.7em; text-align: center; opacity: 0.6; line-height: 1.8; }
+a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>THE COMPILER BUILDS ITSELF</h1>
+  <div class="sub">
+    The Codex compiler, compiled to WebAssembly by its own wasm plug, running in
+    this browser tab. Press the button and it compiles its complete source,
+    every phase from tokenize to emit, then proves its output byte-identical to
+    the same compiler running on bare metal.
+  </div>
+</div>
+
+<div class="container">
+  <button class="go" id="go">Compile the compiler</button>
+
+  <div class="panel">
+    <div class="panel-bar">
+      <span class="title">Build</span>
+      <span class="status" id="status"><span class="run">idle</span></span>
+    </div>
+    <div class="phases" id="phases"></div>
+    <div class="emitline" id="emitline" style="display:none">emitting text&hellip; <span class="n" id="emitted">0</span> bytes</div>
+    <div class="verdict" id="verdict"></div>
+  </div>
+
+  <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+    Or drop your own <strong>.codex</strong> source here and the same compiler builds that instead
+    <input type="file" id="file-input" accept=".codex,.txt">
+  </div>
+
+  <div class="panel" id="user-panel" style="display:none">
+    <div class="panel-bar"><span class="title">Your program, compiled</span><span class="status" id="user-status"></span></div>
+    <div class="output-content" id="user-output"></div>
+  </div>
+</div>
+
+<div class="footer">
+  Codex &mdash; a self-sustaining language, compiler, and computational substrate.<br>
+  The module imports two WASI calls, fd_read and fd_write, shimmed above in a few
+  lines of JavaScript. No server round-trips: the build happens entirely in this tab.<br>
+  Bare-metal reference hash computed at page build from the identical source:
+  <span class="hash">__X86_HASH__</span>
+</div>
+
+<script>
+const PHASES = [
+  ['h0-start','start'],['h1-tokenize','tokenize'],['h2-scan','scan'],
+  ['h3-assignments','assignments'],['h4-parse','parse'],['h5-desugar','desugar'],
+  ['h6-scope','scope'],['h7-resolve','resolve']
+];
+const X86_HASH = '__X86_HASH__';
+const MODE_LINE = 'TEXT decks=125\n';
+
+const goBtn = document.getElementById('go');
+const statusEl = document.getElementById('status');
+const phasesEl = document.getElementById('phases');
+const emitline = document.getElementById('emitline');
+const emittedEl = document.getElementById('emitted');
+const verdictEl = document.getElementById('verdict');
+
+function setStatus(text, cls) { statusEl.innerHTML = '<span class="' + cls + '">' + text + '</span>'; }
+
+function phaseRows() {
+  phasesEl.innerHTML = PHASES.map(p =>
+    '<div class="phase" id="ph-' + p[0] + '"><span>' + p[1] + '</span><span class="mark"></span></div>'
+  ).join('');
+}
+
+// The worker runs the module off the main thread so the page stays live while
+// the compiler works. It streams WD: diagnostic lines as progress the moment
+// they cross fd_write, batches the emitted text as raw bytes, and hands the
+// whole output back once _start returns.
+const workerSrc = `
+let mem = null, inputBytes = null, inputPos = 0;
+let chunks = [], totalLen = 0, lineBuf = [], lastPost = 0;
+function scanLines(bytes) {
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 10) {
+      const line = new TextDecoder().decode(new Uint8Array(lineBuf));
+      lineBuf = [];
+      if (line.startsWith('WD:') || line.startsWith('CODEGEN') || line.indexOf('error CDX') >= 0) {
+        postMessage({ t: 'line', line });
+      }
+    } else if (lineBuf.length < 512) { lineBuf.push(bytes[i]); }
+  }
+}
+const imports = { wasi_snapshot_preview1: {
+  fd_write(fd, iovs, n, outp) {
+    const v = new DataView(mem.buffer); let total = 0;
+    for (let i = 0; i < n; i++) {
+      const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+      const c = new Uint8Array(mem.buffer.slice(p, p + l));
+      chunks.push(c); totalLen += l; scanLines(c); total += l;
+    }
+    v.setUint32(outp, total, true);
+    const now = Date.now();
+    if (now - lastPost > 120) { lastPost = now; postMessage({ t: 'bytes', n: totalLen }); }
+    return 0;
+  },
+  fd_read(fd, iovs, n, outp) {
+    const v = new DataView(mem.buffer); let total = 0;
+    for (let i = 0; i < n; i++) {
+      const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+      const dst = new Uint8Array(mem.buffer, p, l);
+      let k = 0;
+      while (k < l && inputPos < inputBytes.length) { dst[k++] = inputBytes[inputPos++]; }
+      total += k;
+      if (k < l) break;
+    }
+    v.setUint32(outp, total, true);
+    return 0;
+  }
+}};
+onmessage = async (e) => {
+  const { wasmBytes, input } = e.data;
+  inputBytes = input; inputPos = 0; chunks = []; totalLen = 0; lineBuf = [];
+  try {
+    const mod = await WebAssembly.compile(wasmBytes);
+    const inst = await WebAssembly.instantiate(mod, imports);
+    mem = inst.exports.memory;
+    const t0 = performance.now();
+    inst.exports._start();
+    const ms = performance.now() - t0;
+    const all = new Uint8Array(totalLen);
+    let off = 0; for (const c of chunks) { all.set(c, off); off += c.length; }
+    postMessage({ t: 'done', ms, out: all.buffer }, [all.buffer]);
+  } catch (err) {
+    postMessage({ t: 'err', msg: String(err && err.message || err) });
+  }
+};
+`;
+
+let cachedWasm = null, cachedSource = null;
+
+async function fetchArtifacts() {
+  if (!cachedWasm) {
+    setStatus('fetching module…', 'run');
+    cachedWasm = await (await fetch('codex-compiler.wasm')).arrayBuffer();
+  }
+  if (!cachedSource) {
+    setStatus('fetching source…', 'run');
+    cachedSource = new Uint8Array(await (await fetch('Codex.codex')).arrayBuffer());
+  }
+}
+
+function buildInput(sourceBytes) {
+  const hdr = new TextEncoder().encode(MODE_LINE);
+  const input = new Uint8Array(hdr.length + sourceBytes.length + 1);
+  input.set(hdr, 0); input.set(sourceBytes, hdr.length);
+  input[input.length - 1] = 0;
+  return input;
+}
+
+function cleanOutput(bytes) {
+  let text = new TextDecoder().decode(bytes).replace(/\r\n/g, '\n');
+  return text.split('\n').filter(l =>
+    !(l.startsWith('WD:') || l.startsWith('PM:') || l.startsWith('HEAP') || l.startsWith('STACK'))
+  ).join('\n');
+}
+
+async function sha256hex(text) {
+  if (!(crypto && crypto.subtle)) return null;
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+function runWorker(input, onLine, onBytes) {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(URL.createObjectURL(new Blob([workerSrc], { type: 'text/javascript' })));
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.t === 'line') onLine(m.line);
+      else if (m.t === 'bytes') onBytes(m.n);
+      else if (m.t === 'done') { w.terminate(); resolve(m); }
+      else if (m.t === 'err') { w.terminate(); reject(new Error(m.msg)); }
+    };
+    w.postMessage({ wasmBytes: cachedWasm, input }, []);
+  });
+}
+
+// A worker thread's stack is the smallest in the browser and cannot be
+// enlarged; the emit spine's genuinely non-tail recursion needs one to two
+// megabytes of engine stack (measured: a 1 MB worker dies at the first
+// emitted bytes, a 2 MB worker completes). The main thread usually has
+// more, so a stack death in the worker is retried there. The tab freezes
+// for the duration, which is why the worker is still tried first.
+function runMainThread(input, onLine, onBytes) {
+  return new Promise((resolve, reject) => {
+    setTimeout(async () => {
+      try {
+        let mem = null, inputPos = 0;
+        const chunks = []; let totalLen = 0; let lineBuf = [];
+        const scanLines = (bytes) => {
+          for (let i = 0; i < bytes.length; i++) {
+            if (bytes[i] === 10) {
+              const line = new TextDecoder().decode(new Uint8Array(lineBuf));
+              lineBuf = [];
+              if (line.startsWith('WD:') || line.startsWith('CODEGEN') || line.indexOf('error CDX') >= 0) onLine(line);
+            } else if (lineBuf.length < 512) { lineBuf.push(bytes[i]); }
+          }
+        };
+        const imports = { wasi_snapshot_preview1: {
+          fd_write(fd, iovs, n, outp) {
+            const v = new DataView(mem.buffer); let total = 0;
+            for (let i = 0; i < n; i++) {
+              const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+              const c = new Uint8Array(mem.buffer.slice(p, p + l));
+              chunks.push(c); totalLen += l; scanLines(c); total += l;
+            }
+            v.setUint32(outp, total, true);
+            return 0;
+          },
+          fd_read(fd, iovs, n, outp) {
+            const v = new DataView(mem.buffer); let total = 0;
+            for (let i = 0; i < n; i++) {
+              const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+              const dst = new Uint8Array(mem.buffer, p, l);
+              let k = 0;
+              while (k < l && inputPos < input.length) { dst[k++] = input[inputPos++]; }
+              total += k;
+              if (k < l) break;
+            }
+            v.setUint32(outp, total, true);
+            return 0;
+          }
+        }};
+        const mod = await WebAssembly.compile(cachedWasm);
+        const inst = await WebAssembly.instantiate(mod, imports);
+        mem = inst.exports.memory;
+        const t0 = performance.now();
+        inst.exports._start();
+        const ms = performance.now() - t0;
+        const all = new Uint8Array(totalLen);
+        let off = 0; for (const c of chunks) { all.set(c, off); off += c.length; }
+        onBytes(totalLen);
+        resolve({ ms, out: all.buffer });
+      } catch (err) { reject(err); }
+    }, 60);
+  });
+}
+
+function isStackDeath(err) {
+  const m = String(err && err.message || err).toLowerCase();
+  return m.indexOf('call stack') >= 0 || m.indexOf('stack exhausted') >= 0 || m.indexOf('unreachable') >= 0;
+}
+
+async function runCompile(input, onLine, onBytes) {
+  try {
+    return await runWorker(input, onLine, onBytes);
+  } catch (err) {
+    if (!isStackDeath(err)) throw err;
+    setStatus('worker stack exhausted; retrying on the main thread… (the tab will pause)', 'run');
+    return await runMainThread(input, onLine, onBytes);
+  }
+}
+
+goBtn.addEventListener('click', async () => {
+  goBtn.disabled = true;
+  verdictEl.style.display = 'none';
+  emitline.style.display = 'none';
+  phaseRows();
+  try {
+    await fetchArtifacts();
+    setStatus('compiling…', 'run');
+    let lastLive = null;
+    const t0 = performance.now();
+    const done = await runCompile(buildInput(cachedSource), (line) => {
+      const m = line.match(/^WD:PHASE-([a-z0-9-]+):/);
+      if (m) {
+        const el = document.getElementById('ph-' + m[1]);
+        if (el) {
+          if (lastLive) { lastLive.classList.remove('live'); lastLive.classList.add('done'); lastLive.querySelector('.mark').textContent = '✓'; }
+          el.classList.add('live'); lastLive = el;
+        }
+      }
+      if (line.startsWith('CODEGEN-ERRORS') || line.indexOf('error CDX') >= 0) setStatus('refused', 'err');
+    }, (n) => {
+      emitline.style.display = '';
+      emittedEl.textContent = n.toLocaleString();
+    });
+    if (lastLive) { lastLive.classList.remove('live'); lastLive.classList.add('done'); lastLive.querySelector('.mark').textContent = '✓'; }
+    for (const p of PHASES) {
+      const el = document.getElementById('ph-' + p[0]);
+      if (el && !el.classList.contains('done')) { el.classList.add('done'); el.querySelector('.mark').textContent = '✓'; }
+    }
+    const wall = ((performance.now() - t0) / 1000).toFixed(1);
+    const cleaned = cleanOutput(new Uint8Array(done.out));
+    const hash = await sha256hex(cleaned);
+    const match = hash && hash === X86_HASH;
+    setStatus(match ? 'byte-identical' : (hash ? 'output differs' : 'done'), match ? 'ok' : 'err');
+    verdictEl.style.display = 'block';
+    verdictEl.innerHTML =
+      '<div class="big ' + (match ? 'match' : 'mismatch') + '">' +
+        (match ? '✓ BYTE-IDENTICAL TO BARE METAL' : (hash ? '✗ output differs from the bare-metal reference' : 'done (hashing unavailable in this context)')) +
+      '</div>' +
+      '<div>' + cleaned.length.toLocaleString() + ' characters of emitted Codex in ' + wall + ' s, in this tab</div>' +
+      (hash ? '<div class="hash">this tab:&nbsp;&nbsp;&nbsp;<b>' + hash + '</b><br>bare metal:&nbsp;<b>' + X86_HASH + '</b></div>' : '');
+  } catch (err) {
+    setStatus('error', 'err');
+    verdictEl.style.display = 'block';
+    verdictEl.textContent = String(err && err.message || err);
+  }
+  goBtn.disabled = false;
+});
+
+// The second act: the same compiler, in the same tab, builds whatever source
+// is dropped on it.
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const userPanel = document.getElementById('user-panel');
+const userStatus = document.getElementById('user-status');
+const userOutput = document.getElementById('user-output');
+
+async function compileUserSource(file) {
+  userPanel.style.display = '';
+  userOutput.style.display = 'block';
+  userOutput.textContent = '';
+  userStatus.innerHTML = '<span class="run">compiling ' + file.name + '…</span>';
+  try {
+    await fetchArtifacts();
+    const src = new Uint8Array(await file.arrayBuffer());
+    const done = await runCompile(buildInput(src), () => {}, () => {});
+    const cleaned = cleanOutput(new Uint8Array(done.out));
+    userStatus.innerHTML = '<span class="ok">done, ' + cleaned.length.toLocaleString() + ' chars in ' + done.ms.toFixed(0) + ' ms</span>';
+    userOutput.textContent = cleaned.length > 65536 ? cleaned.slice(0, 65536) + '\n… (' + cleaned.length.toLocaleString() + ' chars total)' : cleaned;
+  } catch (err) {
+    userStatus.innerHTML = '<span class="err">error</span>';
+    userOutput.textContent = String(err && err.message || err);
+  }
+}
+
+fileInput.addEventListener('change', e => { if (e.target.files[0]) compileUserSource(e.target.files[0]); });
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('hover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('hover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('hover');
+  if (e.dataTransfer.files[0]) compileUserSource(e.dataTransfer.files[0]);
+});
+
+phaseRows();
+</script>
+</body>
+</html>

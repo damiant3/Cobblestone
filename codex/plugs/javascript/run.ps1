@@ -44,8 +44,7 @@ Write-Host "[js-run] Listening on port $plugPort"
 # -- Phase 3: Boot plug CDX ------------------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
 $consoleFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless', '-output', $consoleFile) `
-        -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB 3072
 # Accept TCP connection from plug
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {

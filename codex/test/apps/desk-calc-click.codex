@@ -24,6 +24,32 @@ Chapter: DeskCalcClickTest
  the layout rather than the mapping. The two spot checks below still go
  through `dk-calc-hit` itself, so the bundled function is not left untested.
 
+ THE REFERENCE LAYOUT MOVED WITH THE PANE, and the arm was REPAIRED rather
+ than re-baselined (L-INSTRUMENT). The Calculator is a window now, so its tree
+ is laid out inside the window's content box through `comp-render-at` and no
+ longer at the screen corner under the full-width chrome. A hoisted layout
+ built the old way would still produce a tidy table of reachable scancodes,
+ and every one of them would name the key at that offset from the CORNER
+ rather than the key under the pointer -- a click landing on a
+ wrong-but-plausible digit, which is the failure a screenshot cannot show.
+ So the hoisted layout repeats `dk-calc-hit`'s own rect arithmetic, and the
+ two spot checks are what tie the copy back to the original.
+
+ `ds` CELL 24 IS NOW LOAD-BEARING HERE and it was never set. `dk-calc-hit`
+ reads the calculator's block out of that cell to find the window rect, and an
+ unwritten cell reads zero, so the rect came off ADDRESS ZERO -- the exact
+ "a cell nobody writes reads as zero, and zero is a writable address" trap
+ `works-desk-contract.md` section 2 records against the Edit pane.
+
+ AND NO ROW ABOVE CAN TELL, which is why the placed row below exists. Measured
+ 2026-08-25 by deleting the `poke-32`: every row still passed. Address zero
+ reads as zeros, zeros mean `dk-wnd-st-normal` and a width of zero means
+ never-placed, so the wrong block yields exactly the default rect the right
+ block yields, and the two agree for as long as no window is ever moved. A
+ guard whose sabotage moves nothing is not a guard, so the last row PLACES a
+ window on its own block and asks the same question there: the default rect
+ and a placed rect disagree, so that row reads the cell for real.
+
  The expected scancodes are the ones `gcalc-key` already dispatches:
  2 to 11 are digits 1-9 then 0, 12 is minus, 13 is plus, 28 is equals, 53 is
  divide, 55 is multiply. Fifteen buttons, and the keypad draws no C, so 46
@@ -79,23 +105,52 @@ Section: Test
     else if peek-byte seen i == 1 then seen-text seen (i + 1) (acc & " " & integer-to-text i)
     else seen-text seen (i + 1) acc
 
+ The window's content box in LOGICAL units, which is what `comp-render-at`
+ lays a window's tree out in and therefore what `dk-calc-hit` divides into.
+ The titlebar comes off the top, because the tree starts below it.
+
+  cc-tree : Integer, Integer, Integer, Integer -> WidgetNode
+  cc-tree (ks) (w) (h) (ds) =
+    let s = ui-wscale w
+    in let st = dk-wnd-st ks
+    in let bh = dk-wnd-bar-h gfont-none s
+    in let wx = dk-wnd-rx ks w st
+    in let wy = dk-wnd-ry ks w h st ds + bh
+    in let ww = dk-wnd-rw ks w st
+    in let wh = dk-wnd-rh ks w h st ds - bh
+    in widget-layout (gcalc-tree ks) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
+
   opening : [Console] Nothing =
     let ks = alloc-zeroed 64 64
     in let seen = alloc-zeroed 64 64
-    in let ds = alloc-zeroed 64 64
+    in let ds = alloc-zeroed 128 64
     in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
     in let gp = poke-32 ds desk-gpu-cell 1
-    in let laid = widget-layout (desk-chrome-with (gcalc-tree ks) 1024 ds) (dk-theme-ds ds) (layout-rect 0 0 1024 768)
+    in let kp = poke-32 ds 24 ks
+    in let laid = cc-tree ks 1024 768 ds
     in let g = scan-grid laid seen 0
-    in let hd-tree = widget-layout (desk-chrome-with (gcalc-tree ks) 1920 ds) (dk-theme-ds ds) (layout-rect 0 0 960 540)
+    in let hd-tree = cc-tree ks 1920 1080 ds
     in let hd-p = fh hd-tree 0
     in let hd-x = hd-p / 1000
     in let hd-y = int-mod hd-p 1000
     in let hd-logical = if hd-p < 0 then 0 else hit-at hd-tree hd-x hd-y
     in let hd-device = if hd-p < 0 then 0 else dk-calc-hit 1920 1080 ks (hd-x * 2) (hd-y * 2) ds gfont-none
+    in let ks2 = alloc-zeroed 64 64
+    in let ds2 = alloc-zeroed 128 64
+    in let ap2 = poke-32 ds2 dk-adorn-cell dk-adorn-default
+    in let gp2 = poke-32 ds2 desk-gpu-cell 1
+    in let kp2 = poke-32 ds2 24 ks2
+    in let pl = dk-wnd-place ks2 (dk-wnd-x 1024 dk-wnd-st-normal + 40) (dk-wnd-y 1024 768 dk-wnd-st-normal ds2 + 24) 300 260
+    in let pl-tree = cc-tree ks2 1024 768 ds2
+    in let pl-p = fh pl-tree 0
+    in let pl-x = pl-p / 1000
+    in let pl-y = int-mod pl-p 1000
+    in let pl-ref = if pl-p < 0 then 0 else hit-at pl-tree pl-x pl-y
+    in let pl-hit = if pl-p < 0 then 0 else dk-calc-hit 1024 768 ks2 pl-x pl-y ds2 gfont-none
     in act
       print-line-uni ("reachable" & seen-text seen 0 "")
       print-line-uni ("miss sc=" & integer-to-text (dk-calc-hit 1024 768 ks 0 0 ds gfont-none))
       print-line-uni ("sidebar sc=" & integer-to-text (dk-calc-hit 1024 768 ks 60 300 ds gfont-none))
       print-line-uni ("hd logical == device: " & yn2 (hd-logical /= 0 & hd-logical == hd-device))
+      print-line-uni ("placed: reference " & integer-to-text pl-ref & " hit " & integer-to-text pl-hit & " agree " & yn2 (pl-ref /= 0 & pl-ref == pl-hit))
     end

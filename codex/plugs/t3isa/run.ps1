@@ -40,12 +40,10 @@ $inputFile = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllBytes($inputFile, $combined)
 
 # Phase 3: run the plug
-$vmBin = Join-Path $Repo 'tools\codex-vm.exe'
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$proc = Start-Process -FilePath $vmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem','3072','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
-$proc.WaitForExit(300000)
-if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force; [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
   $err = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { "" }
   [Console]::Error.WriteLine("FAIL: no output")
@@ -93,9 +91,8 @@ $asmBytes.CopyTo($buf, $hdr2.Count)
 $buf[$buf.Length - 1] = 0
 $in2 = [System.IO.Path]::GetTempFileName(); $out2 = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllBytes($in2, $buf)
-$p2 = Start-Process -FilePath $vmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$in2,'-output',$out2,'-mem','3072','-headless') -PassThru -WindowStyle Hidden
-$p2.WaitForExit(300000)
-if (-not $p2.HasExited) { Stop-Process -Id $p2.Id -Force; [Console]::Error.WriteLine("FAIL: encoder timeout"); exit 7 }
+$vmOk2 = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $in2 -OutputFile $out2 -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+if (-not $vmOk2) { [Console]::Error.WriteLine("FAIL: encoder timeout"); exit 7 }
 # The first output line carries the serial framing's control bytes; a reader
 # that does not strip them loses it, which reads as a dropped instruction.
 $encRaw = ([System.IO.File]::ReadAllText($out2)) -replace '^[\x00-\x1f]+', ''

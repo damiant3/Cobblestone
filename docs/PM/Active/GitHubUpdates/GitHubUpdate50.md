@@ -116,3 +116,132 @@ What it carries, all reviewed against source before landing (red):
 Tweaks made on top during absorb, so the credit stays honest: one duplicated
 prose block trimmed from PR 82's parser change (R-PROSE; the scan-side
 rationale and the state-re-read constraint stay), and nothing else altered.
+
+## The Update 50 release
+
+**Release head: main 19777. Seed `C45E5825` (2,922,230 bytes,
+SHA-256 `C45E582526BAB7BBA313059F9AAFD57FBFA142F358EAAD437B9412C6EE56F9BB`),
+unchanged from the freeze; every proof below ran against it.**
+
+### The compiler compiles itself in WebAssembly, and in a browser tab
+
+The headline of the cycle, all fester:
+
+- **The wasm plug self-compiles the compiler byte-identically to x86-64**
+  (plugs 1.81, main 19763): its own 2,945,373-byte source, 2,460,088
+  characters of emitted text, SHA-256 `B3491BE7..` from the wasm module and
+  from codex-vm running `Sut.cdx` alike, zero diagnostics, five seconds on
+  either target. The mechanism that unlocked it is saturating closure
+  application (`$clo_applyN`), caught by a helper census reading 21.2M
+  one-argument chain calls in one phase span.
+- **`return_call` holds the self-compile at a 1 MB stack under wasmtime**
+  (plugs 1.82, main 19767): 2,874 `return_call` sites in the compiler's own
+  module; mutual tail recursion runs constant-stack. The stack claim is
+  wasmtime's, deliberately: V8's frames are fatter and the same depth needs
+  1-2 MB there (fester's node repro, register 1.83).
+- **The page is real and witnessed** (plugs 1.83): the compiler as a wasm
+  module in a static webpage, source beside it, phases streaming, and on
+  completion the page hashes its output in the tab against a bare-metal
+  anchor computed at page build. Damian's browser, 2026-08-25: 2,460,178
+  characters in 19.0 s, hash `6F0A4122..` computed in the tab, equal to the
+  anchor to all 64 characters. Conditions attached: main-thread fallback
+  (a browser worker's 1 MB stack dies on the emit spine's non-tail
+  recursion; the retry is itself the measurement), `decks=125`, the page's
+  own anchor. De-recursing the emit spine is Update 51 scope.
+
+### What the release proofs found: the lambda lift had broken the DDC
+
+The one red this release surfaced, and the fix it shipped. 19558's
+lambda-lift fix (plugs 1.70) put lifted `__lam_N` defs on every plug's IR
+wire with unresolved type variables in their signatures (the lift runs
+after resolve, so a lifted def carries the expected types its lambda was
+handed). Roslyn refused the emitted C# arm: 484 errors at the freeze,
+which made the DDC witness INCONCLUSIVE with every other proof banked
+green. The fix (main 19775, 19777): tvar-typed lam params emit as
+`dynamic`, lam names convert through bare adapter lambdas, and the four
+CS1977 sites (a `map-list` over a field read off a dynamic value is a
+dynamically dispatched call, which C# refuses to hand a bare lambda) route
+through `_Buf.dmap` with the receiver cast to the non-generic IEnumerable,
+so the binding is static and the result list keeps the input's runtime
+element type. Update 47's parking-lot entry predicted the class ("a
+csharp-plug change is a DDC change"); this cycle proved the converse, a
+compiler change that reshapes the IR wire is a DDC change too, and only
+the DDC sees it.
+
+### The release proofs
+
+- **Full gate** (`build/build.ps1`, every phase): green, 757.4 s, text leg
+  and sem-equiv included.
+- **Battery** (`-Tier all -Jobs 8`): total 1,658, pass 1,608, fail 0,
+  skip 50.
+- **App sweep** (`-Check -Jobs 8`): exit 0, no regressions against
+  baseline.
+- **Poison build** (0xCD fill): one timeout (`smp-affinity`) re-run green
+  in isolation, zero 0xCDCD faults.
+- **DDC witness**: WITNESS HOLDS. Run in the `-main` workspace against the
+  depot at head 19777: the Roslyn-built C# arm and the codex-vm seed arm
+  each produced 2,922,230 bytes from the same input, with 95 differing
+  bytes, every one inside the signature region at offsets 40..135 and
+  none outside it.
+- **Artifacts**: `seed/Codex.map` refreshed from the gate's `Sut.map` and
+  validated against the seed's embedded MAP1 (5,351 of 5,351 names, zero
+  address or size differences); `seed/Codex.img` rebuilt against the
+  release seed (SHA-256
+  `6E1A9A5954874233D03B56660C338C5779342F2622E7A33089B83ED486052C7F`);
+  `build/boot/diag.img` rebuilt against the release seed and rehearsed in
+  full (SHA-256
+  `6F3124AC0E5A71E2E270DF9BD23FED9BA5E87311CCBBEB9FBA4EB81FA3C3E08A`).
+  The rehearsal's first full run went red on one arm, `b3-banklost`: its
+  expected note name was a literal re-pinned the day before, and the bank
+  size drifts run to run, so the note the death lands on flaps across the
+  11-sector boundary. The arm now derives the expected note from the
+  serial trail (first refused note must be a b3 reset-* step, and the
+  medium's last note must be its predecessor), which keeps every
+  falsifiable claim and stops asserting which reset step dies, which was
+  never the arm's subject.
+
+### The CCE/Unicode defect family (blu)
+
+COMPILER-20 (saturated call returning a function), COMPILER-21 (tier-0
+Cyrillic low-byte branch, three print paths fixed), COMPILER-22 (encode
+direction, three further readers), COMPILER-23 split into A/B/C with the
+char-to-text truncation ruled (split primitive; char-encode landed 19579;
+the bounded 0..255 domain waits on COMPILER-28). COMPILER-28: bounds on
+non-Integer bases were silently decorative, zero in-tree reliance, census
+about 875 source declarations.
+
+### Steve Howell's eight PRs, absorbed same-day (84-91)
+
+The zig stack note; the zig self-tail shadow fix (plugs 1.58); the
+overapply corpus fixture (1.59, measured red at his seed and green at
+head); the python TCO guard gap (1.72); the ir- prefix rename; the
+Linux/QEMU runner gap (1.73, RULED supported); COMPILER-26
+(AST-incomplete tparams); COMPILER-27 (advisory deck reservation, 421 of
+512 MB proximity).
+
+### The rest of the cycle
+
+- **QEMU is a supported plug host everywhere** (Damian's ruling): plug-run
+  honors vm-config selection (reek 19743), and plug-smoke gained a QEMU
+  arm with a byte-identical cross-host requirement.
+- **The windows campaign** (val): ShellRefinement 6.3
+  focus/maximize/minimize, 6.4 first units, 6.5 every-pane-a-window (nine
+  panes plus Browser), 6.6 (19720), taskbar pill icons (19742).
+  `Window.codex` deleted (WORKS-49, L-UNCALLED).
+- **Two red-main incidents, both same-day caught, both fixed forward**:
+  builtin-name-shadow (19551 to 19568, new guard arm plus
+  nullary-by-registry-type) and the sem-equiv prose mismatch (19652 to
+  19725; sem-equiv is now R-PROSE's first runner). Gate scoping hardened:
+  compiler-wide test-compile descoping ruled; sem-equiv trigger widening
+  deferred to next cycle.
+- **README split**: `README.md` is the business page (Damian's draft),
+  `TechnicalDetails.md` carries every measured claim; the checker and the
+  release skill are repointed, eleven live docs redirected.
+- **Vec builtins** (reek): four of five repaired with guards; vec-empty's
+  two halves remain. `arm64-build-elf` deleted (L-UNCALLED).
+- **COMPILER-24** (recursive `==` crash) and **COMPILER-25**
+  (emit-zero-region prefix order) recorded, unowned.
+- **CostModel census**: 132 to 107 unknowns (print, VMX/MSR/UEFI,
+  process/channel families).
+- **The email channel**: cobblestone.project.agent@gmail.com, Steve-only
+  reply protocol, instruction census delivered (105 mnemonics).

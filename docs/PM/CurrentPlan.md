@@ -23,10 +23,25 @@ register** (`apps/<app>/<app>-backlog.md`,
 track. There is still no platform-wide register beyond this file; do not
 recreate `docs/PM/BACKLOG.md`.
 
+## THE UPDATE 50 RELEASE IS MID-FLIGHT AND THE DDC IS BLOCKED (2026-08-25, red handoff)
+
+Main is FROZEN (MAIN PINNED) at the release head; seed `C45E5825`. Full
+gate, full battery (1658/0 fail/50 skip), app sweep and poison are ALL
+GREEN against that seed; the crazy-boss page ran green in Damian's own
+browser (fester 1.83). The DDC witness has not run: the csharp arm
+stopped building when 19558's lambda-lift reached the plug wire, and the
+fix attempt is SHELVED as red CL 19760, which does NOT compile as
+shelved. The complete resume recipe, the arm's 4-error frontier, and
+every wire fact the diagnosis paid for are in red's memory
+(`release-u50-resting-state.md`); the release resumes there and nowhere
+else. Nothing lands to main except by Damian's exception until the push
+or an explicit unfreeze.
+
 ## Where we stand, in three sentences
 
-The compiler is a hard fixed point of itself on bare metal, Update 49 is on
-the public mirrors (2026-08-20, github `b643e7cb`, seed `930FF7F1`), and the
+The compiler is a hard fixed point of itself on bare metal, the 2026-08-24
+interim push is on the public mirrors (github `0c4327d5`, seed `6CF4A8E0`,
+carrying Steve Howell's six PRs), and the
 compiler has booted the ASUS from bare UEFI, compiled its own source off the
 stick and written it back byte-identical (A5). The trust audit is closed on
 the whole compiler (diverse double-compiling, the `jonquil` runner, the
@@ -36,6 +51,160 @@ ones named. What is left is metal-gated (the network and the stick, which
 advance at sittings), the plugs register (reek's close-out lane since
 2026-08-18, with items lent to fester and blu), and the unowned defects at
 the bottom of this file.
+
+## THE WEEK: the Cobblestone rename campaign (Damian, 2026-08-24)
+
+The project's public name becomes **the Cobblestone Project**: the GitHub
+repo renames in place to `damiant3/Cobblestone`, the OS and every brand
+surface outside the compiler becomes Cobblestone, and the language and
+compiler stay Codex. Artifacts keep their names. One week, culminating in a
+public push carrying the rename, the prism/REPL surface, and the parallax
+home page. **The plan, the measured blast radius, the ruled boundary, and
+every lane's assignment are in
+`docs/Designs/Active/Marketing/Cobblestone.md`** -- read it before touching
+any brand string; it names the traps (filename strings beside brand strings,
+the width-fitted desk label, no bare-word sweeps, archives untouched).
+Lane summary: red the repo rename, doc references, and the directory-side
+workspace rename (SOLO, fleet stood down for it, Damian's timing); val the
+on-device brand; reek or blu (first free) the web surfaces and live docs;
+fester prism/REPL; Damian + red the home page (draft not yet located in
+the depot; Damian points at it).
+
+**val's on-device brand is DONE (main 19288 and 19293).** Desk chrome (top
+bar, sidebar, taskbar entry, welcome text), the boot ceremony, both wizards,
+the VGA banner, the ESP volume label at BOTH sites that write one, the
+built-in webserver masthead, and the dev console including the
+`install-boot-test` banner assert. Verified by capture at 1024 AND 1600 and
+by a wizard boot, not by grep alone: the top bar and the welcome paragraph
+were invisible to the string sweep and only the picture found them. Left
+deliberately, by this campaign's own boundary rather than as a deferral:
+`apps/cvmm/CvmmServer.codex`'s two lines are MOCK data, `apps/market`'s is
+demo data, and `codex/test/apps` are fixtures.
+
+## The network demo pair (Damian, 2026-08-24)
+
+Two items, deliberately decoupled; the second is the near-term prize.
+
+1. **A webserver app in the guios** (val, desk pane + wiring; blu consults
+   on the net side after COMPILER-18). It serves BOTH protocols: HTTP and
+   the browser app's own `codex://` wire (`apps/browser/PageFetcher.codex`
+   / `DataChannel.codex` are the client side; the server speaks what they
+   fetch). `apps/works/WebServer.codex` and the proven TCP stack are the
+   parts; the work is the desk pane (start/stop, live request log) and the
+   codex:// service. Bed first via codex-vm NAT port-forward; metal rides a
+   future sitting. Originates in the works app; register
+   `apps/works/works-backlog.md`, this row is the pointer.
+2. **The crazy-boss page: the compiler running in WASM, building itself,
+   in a static webpage** (fester; it is the reason the wasm OOM fix is in
+   fester's lane). Compile the compiler through the wasm plug, load it in a
+   browser, feed it its own source, show the build happening on the page.
+   Static hosting anywhere is fine for this step. **Hosting that page from
+   our own kernel and OS is EXPLICITLY a separate later step (Damian: it
+   requires environment he does not have yet); do not couple item 1 to
+   item 2's delivery.** Candidate centerpiece for the Cobblestone
+   culminating push, beside the home page.
+
+   **Where it actually stands, re-measured 2026-08-25 after plugs 1.68
+   (fester). THE COMPILER'S OWN MODULE ASSEMBLES AND STARTS.** The plug
+   emits the whole compiler, 9,468,360 chars of WAT from 16,316,110 bytes of
+   IR, `wat2wasm` exits 0 with ZERO errors, and the 1,508,424-byte module
+   instantiates under wasmtime and runs `_start`. Getting there took plugs
+   1.60 (the builtins), 1.61 (a CCE layer), and 1.63 (partial application as
+   a closure rather than an under-applied call); the undefined-name census is
+   now zero and the 35-to-11 figure is superseded.
+
+   **It reads its own source now** (plugs 1.64 and 1.65): `read-line` and
+   `read-file-uni` are wired to `wasi_snapshot_preview1.fd_read`, one import
+   surface both hosts satisfy, and the browser shim implements it beside the
+   `fd_write` it already had. 1.65 needed NO compiler change: `read-file-uni`
+   reads the WIRE on x86-64 and its name and `FileSystem.Read` row are a
+   misnomer, so there was never a missing stream path.
+
+   **THE SPIN IS FIXED** (fester, main 19524, plugs 1.69). Empty source,
+   `Chapter: Hi` and a hello program all finish in 0.1 to 0.3 s where they
+   ran forever. The cause was in the emitter and was neither of the two
+   defects this row named on 2026-08-25: `$_rp`, `$_lp` and `$_tv` are ONE
+   set of scratch locals per emitted function, so a construction nested
+   inside an enclosing construction's field expression reset the enclosing
+   object's pointer. In `tokenize-collect` the token list was written over
+   the `EndOfFile` TAG, `is-done` never answered True, and
+   `skip-to-next-line` looped. The guard is the wasm operand stack, two
+   instructions, and the module grew 1.05 per cent.
+
+   Plugs 1.68's two defects were real and are also fixed and graded (`==` on
+   a constructor compared POINTERS where the oracle compares STRUCTURALLY;
+   `show` on a Boolean rendered `1`/`0`), and the suite is 13 of 13 against
+   x86-64. **Neither was the spin, and this row said one of them was.**
+
+   **THE TRAP IS FIXED AND IT WAS A COMPILER DEFECT, NOT A WASM ONE**
+   (fester, plugs 1.71). 1.70 called the backtrace impossible and pointed at
+   the funcref path; the chain was real throughout. `emit-ir-cce` calls
+   `compile-frontend-passes`, which stops after LOWER, while only
+   `compile-frontend-cdx` runs LIFT, so **the IR-CCE wire has carried
+   unlifted lambdas to every plug since it existed**. `WasmEmitter.codex:758`
+   emitted a value-position `IrLambda` as its body alone with its parameters
+   hoisted into the enclosing function as uninitialised locals, so `builtins`
+   genuinely called the x86 register allocator with zeroed arguments. The fix
+   runs the lifter the compiler already has, `IR/LambdaLifting.codex`, on the
+   IR-CCE path. Measured: 153 lambdas in `Types/Builtins.codex` became
+   funcref indices, inlined `emit_*_builtin` calls in `$builtins` went 113 to
+   0, the table gained 334 defs and lost none, IR grew 0.39 per cent, and the
+   module went from trapping at 0.06 s to running 21 s and exiting 0.
+
+   **IT COMPILES. The compiler running in WebAssembly compiled a Codex
+   program and its output is BYTE-IDENTICAL to the same compiler on x86-64**
+   (fester, plugs 1.74). Same kernel source, same raw input, two targets:
+   102 chars, SHA-256 `3BE25DB2..0F709CF4` from wasmtime and from codex-vm
+   alike, in 0.26 s with a full phase trace to `h7-resolve`. Nine defects
+   stood in the way and each hid the next; the table is in plugs 1.74 and
+   every one has an arm in `codex/plugs/wasm/test/` graded both ways. The
+   headline three: `phase-compact` was setting `heap_ptr` to zero at every
+   phase boundary (that was the 922 MB of stdout), `list-set-at` was emitted
+   as a copy when it is the in-place mutator the skip list links through, and
+   `text-compare` was emitted as `text_eq` so every ordered lookup missed.
+
+   **IT RECLAIMS. The wasm target has a deck and the self-compile hands
+   memory back at every phase boundary** (fester, plugs 1.75). On the
+   compiler's own 2,945,374-byte source the heap falls 1,377,816,869 to
+   89,357,943 across the desugar boundary and tracks x86-64 within a few per
+   cent at every phase, where before it only ever climbed. The deck is one
+   cursor swapping between two saved positions, not a second region, and the
+   half nothing had named was `deck-record`: this plug had no arm for it, so
+   nothing ever allocated into the deck at all.
+
+   **AND IT COMPILES A 252 KB REAL UNIT BYTE-IDENTICALLY** (plugs 1.76). The
+   wasm plug's own bundled source, 252,035 bytes, emits 216,243 characters,
+   SHA-256 `51CEBB12..1E65CC99` from wasmtime and from codex-vm alike. 1.74's
+   headline was a 102-character program.
+
+   That took fixing a defect 1.75 shipped: `__heap-advance` moved the cursor
+   without growing linear memory, so a deck reservation was backed by no page
+   and the first write into it faulted. **1.75 also published that the trap
+   was an i32 address-space limit at 4 GiB, and that was wrong in every part**
+   -- the fault was at 437 MB and the message says so on its own line. Arm
+   `heap-advance-rt`, ablated against the shipped revision.
+
+   **THE COMPILER COMPILES ITSELF IN WEBASSEMBLY, BYTE-IDENTICALLY TO
+   x86-64** (fester, plugs 1.81, main 19763, pushed on Damian's direct
+   instruction during the freeze). Its own 2.9 MB source, `TEXT decks=125`,
+   wasmtime with a 16 MB wasm stack: **2,460,088 characters, SHA-256
+   `B3491BE7..` from the wasm module and from codex-vm alike, zero
+   diagnostics, five seconds on either target.** The unlocking mechanism was
+   saturating closure application: `$clo_apply1` allocated an intermediate
+   closure per argument, thirty million times per compile; the `$clo_applyN`
+   family calls a bare funcref applied at exactly its arity straight through
+   the table, and the wasm target now allocates LESS deck than x86 on a
+   mid-size unit (lift 4.8x to 0.05x, resolve to 0.93x). Full account and
+   the attribution ladder that found it: plugs 1.77 through 1.81.
+
+   **What still stands between this and the crazy-boss page is ONE item:
+   plugs 1.14.** The 16 MB stack is a wasmtime flag a browser will not
+   honor; the text printer's recursion (`codex-emit-expr` under
+   `emit-streaming-ir-defs`) exhausts a browser-size stack at about 650 KB
+   of source, so it needs trampolining or de-recursing. `decks=125` is just
+   a mode line. Residue, non-gating: parse deck at 2.4x x86; the riscv
+   plug-source unit still faults (unit-specific, measurements in 1.77/1.78);
+   the one-shot oracle-vector red recorded in fester 19756.
 
 ## Track A -- the stick is an OS
 
@@ -66,7 +235,21 @@ the largest GOP mode and `SetMode` (native GOP), the sink's 2.7 MB write
   are per lane; step 5 is the grouped sitting.** The far end of the same road is a
 
 
-  **THE I219 CAMPAIGN IS OPEN (red, 2026-08-21, Damian directed):
+  **THE I219 MEDIUM-DEATH HUNT IS PARKED (Damian, 2026-08-24, after
+  sitting 12).** The production path is proven: boot, bring up once, talk
+  TCP -- b3 ran 13/13 both-ends-verified on metal (card 19188) BEFORE the
+  ladder ran. The death has only ever been observed inside the ladder's own
+  mid-session re-reset, which the production path never does; the capability
+  at stake is warm NIC recovery, which nothing queued needs. Sitting 12
+  eliminated both named candidates (swflag, CTRL|SLU -- both run after the
+  medium is already gone) and the death MOVED between same-shape ladders,
+  so it is state-dependent with no mechanism named. **REVIVE only on
+  production evidence: if a production session ever loses the medium, this
+  block, the sitting cards (19188, sitting 11, sitting 10 in
+  `HardwareSitting.md`), and the banked eliminations are the resume point,
+  and the next arm is blu's to compose.** Everything below stands as the
+  documented investigation; no lane draws from it while parked.
+  **THE I219 CAMPAIGN record (red, 2026-08-21, Damian directed):
   `docs/Designs/Active/OS/I219IsNotAnE1000.md`.** `8086:15b8` is a PCH part,
   MAC in the PCH and the I219 as the PHY, and the family requires ULP disable,
   the `EXTCNF_CTRL` SWFLAG semaphore, K1 disable at 1 Gbps (the MAC STALLS
@@ -283,6 +466,22 @@ the largest GOP mode and `SetMode` (native GOP), the sink's 2.7 MB write
 
 ## Track B -- the network (blu). Metal-gated: advances at sittings, not before.
 
+**SITTING 12 FLEW 2026-08-24 (mastered by blu) AND ELIMINATED BOTH NAMED
+CANDIDATES.** The medium dies at b3's FOURTH note, `reset-rst-write`, so
+`swflag` and the `CTRL|SLU` write both ran after it was already gone and
+neither can be its cause. The death also MOVED earlier than sitting 11's
+(`rings-link`), which is evidence against a specific register write being the
+mechanism at all. b3 answered `ok sent=13/13 rx=13` with the dev box's echo
+peer independently logging the exchange from 192.168.6.200; the K1 write took
+(770.17 `d104` -> `f104`); asde reached `RESET s2 warm reset` and stopped,
+which by its own rule means the wedge is unchanged and is not the added
+quiesce. Card and archive rows in `HardwareSitting.md`.
+**Two consequences for this lane.** The i219 acquire-loop fix is UNBLOCKED:
+its registration gated it on this bank and said it is wrong whichever way the
+bank reads. And NIC-4's successor question is not answerable by a quiet ring
+alone -- `nicring` read `gp=0` on the same boot where the next stage held a
+full TCP conversation, where sitting 11 read `pre=3`.
+
 The queue Damian draws from is `docs/Hardware/HardwareSitting.md`, "THE
 SITTING QUEUE": five questions on one boot, in an argued order (bank before
 you risk, L-BANK). NIC-1, NIC-2 and NIC-3 are ANSWERED on metal (the part
@@ -301,6 +500,26 @@ rows are in `HardwareSitting.md`, not here.
   drain budget to fit under the 28.8 s give-up ladder and does NOT block on
   migrating callers to `net-io-send-raw-checked`; that migration stays worth
   doing and is no longer a gate.
+  **BOTH HALVES ARE DONE, and this entry read as open work for three days
+  after they landed (blu, 2026-08-24).** The cut is `net-io-drain-ticks = 96`
+  at blu 18682, on main as 18685, with `codex/test/net-drain-budget` failing
+  if either number crosses the ladder: 96 is two clamped RTO intervals, so a
+  merely slow peer still gets two full retransmit cycles. **The migration has
+  no production callers left to migrate**, measured over the tree excluding
+  `build-output` (L-COUNT): the bare `net-io-send`, `net-io-send-raw` and
+  `net-io-send-text` are called by NOTHING, and `net-io-send-chunk` is reached
+  only from inside `NetIO.codex` by those three. So the unchecked x86 surface
+  is UNCALLED (L-UNCALLED), which is a different thing from residual risk: the
+  shorter drain cannot make a path hit more often when no caller takes it.
+  **The live unchecked send path is arm64's** -- `arm64-net-io-send-chunk` and
+  `arm64-net-io-send-raw` (`Arm64NetIO.codex:201-215`), called by
+  `codex/test/arm64-web-server` -- and its project is the one Damian deferred
+  2026-08-18, which is where that risk is already registered.
+  Two things that look like callers and are not: `apps/spark/SparkServer.codex:172`
+  is a `print-line-uni` STRING naming the function, and the mentions in
+  `cdx-serve`, `WebServer`, `HttpFetch` and `DiagB3` are backticked prose. That
+  is the prose-read-as-code shape, so a census here has to require a non-name
+  character after the name and still read the hits.
   **The claim this entry carried for an hour was FALSE, and blu's
   verification is what caught it (2026-08-21).** red wrote that `b3` was not
   a blind caller because it compares the reply against `DIAG.CFG`'s
@@ -312,8 +531,9 @@ rows are in `HardwareSitting.md`, not here.
   state with its own verdict row, seven b3 arms green. **Every diag image
   built before 18665 reaches main carries the blind b3, and `45239937`
   (red 18660) is one of them: it does not fly.** The list of callers still
-  on the bare `net-io-send` / `net-io-send-raw` pair is the residual risk and
-  belongs in the CL.
+  on the bare `net-io-send` / `net-io-send-raw` pair was the residual risk and
+  belonged in the CL; censused 2026-08-24 it is EMPTY on x86, per the entry
+  above.
   The lesson is L-MYSIDE one level up: red asserted the safe case from the
   shape of the stage rather than from its send path, and said "verify rather
   than believe" while publishing the unverified half as the premise.
@@ -372,7 +592,14 @@ rows are in `HardwareSitting.md`, not here.
   runs on both cards (`ExaminersAssay.md` "The Serving Peer"). What the
   sitting still needs from whoever composes it: the peer named in `DIAG.CFG`
   has to ECHO, because the stage's conversation is raw TCP and not the
-  repository wire. The next sitting is the gate. **Finding 4 (ASDE) IS A STAGE (blu, 2026-08-20): `build/boot/diag/DiagAsde.codex`, ladder stage 14, risk writes, last after b3** -- eight L-STATES words, the arms run first with no RST pulse and ASDE=1 from the firmware state, the reset rides last as one row, and the positive control `asde-differs` moves with the input (ASDE=1 SPEED=10, ASDE=0 SPEED=1000) rather than merely passing. Its ownership was red's in the DiagnosticStick step-5 table and that contradicted this file; corrected 2026-08-20. Previously: `build/boot/asdeflight.img` is built, bed-verified
+  repository wire. **THAT PEER EXISTS AND B3 HAS ANSWERED ON METAL, so this
+  is a composition step and not open work (blu, 2026-08-24).**
+  `build/boot/echo-peer.ps1 -Port 7` is the listener, it is in main, and
+  sitting 12's recipe already names it; at sitting 11 on 2026-08-21 it logged
+  `CONNECTION 28 from 192.168.6.200:49157`, thirteen bytes `codex-diag-b3`
+  echoed back unchanged and closed clean, which is b3's whole exchange over
+  the real I219 (`HardwareSitting.md`, sitting 11). The next sitting is the
+  gate for what b3 still cannot say, not for whether it works. **Finding 4 (ASDE) IS A STAGE (blu, 2026-08-20): `build/boot/diag/DiagAsde.codex`, ladder stage 14, risk writes, last after b3** -- eight L-STATES words, the arms run first with no RST pulse and ASDE=1 from the firmware state, the reset rides last as one row, and the positive control `asde-differs` moves with the input (ASDE=1 SPEED=10, ASDE=0 SPEED=1000) rather than merely passing. Its ownership was red's in the DiagnosticStick step-5 table and that contradicted this file; corrected 2026-08-20. Previously: `build/boot/asdeflight.img` is built, bed-verified
   both ways, and awaits a sitting.
 - **NIC-5: what wedged the box on 2026-08-11.** Not `CTRL.RST` (discarded on
   this part). Terminal by construction, flies last.
@@ -439,11 +666,11 @@ suggestion. Each lane, in order:
 | agent | now | then | standing |
 |---|---|---|---|
 | **blu** | **B3 IS A STAGE (2026-08-20, blu 17988): build/boot/diag/DiagB3.codex is ladder stage 13, so the grouped sitting can carry the TCP question.** Twelve L-STATES words; it runs the production path (net-driver-bring-up through net-io-close), costing a second CTRL.RST after nicinit's, spent after every earlier stage has banked. Four bed arms including a real-peer positive control through codex-vm's NAT: measured sent=13 rx=13, echo returned byte for byte. **The desk peer must be an ECHO listener** -- the conversation is raw TCP and not the repository wire, so a cdx-serve peer reads as 
-o-reply; it is deliberately not B4 step 6. A codex-vm defect fell out of it and is fixed in the same CL: e1000_rx_cursor was never reset (there was no case E1000_REG_RDH in e1000_write), so one receiver bring-up in sixteen resumed permanently stuck, queueing frames in the host while the guest saw a dead wire. **NIC-4 awaits sitting 5, and the instrument is built.** Sitting 4 flew ED90B46A and answered ARRIVED-BUT-INVISIBLE (gprc=1 rnbc=0, rdh=1, ddset=0). Stage 2 landed 17742 on image **27326F86**, rehearsed 20 of 20 across both beds and carrying reek's sink chunk knob, so one image flies both halves of the sitting. **The discriminator we had agreed on was wrong and would have read backwards on metal**: it was a raw all-sixteen-zero test on receive descriptor 0, but `e1000-build-rx-descs` (`E1000e.codex:537`) writes the buffer address into bytes 0..7 itself and zeroes 8..15, so all-zero cannot happen while our ring build works and the test answers "the part wrote our ring" on every flight. The row now counts nonzero bytes in the WRITEBACK half (8..15) only, keeps the full dump for the eye, and carries `buf=` as the other half's control. It rides the QR because the summary is built from each stage's FIRST glass line, which is also why the ladder was NOT reordered. GPRC is read twice, so a count can no longer belong to nicinit's ring two stages earlier. `nicring listen=0` and the `nic-noread` arm are the positive control: our own `e1000-poll-raw` recycles the descriptor it took a frame from, so a successful listen leaves wb=0 and the bed could not otherwise express a writeback at all. Caveat to state before flying: `match=y` compares RDBA against our ring POINTER and is valid only while the guest is identity-mapped, so it is not by itself proof of correct aim | **17603 LANDED (main 17751), new seed 0A37A56F.** `infer-and` records its boolean arm, so `bounded none` and `punctual` no longer refuse a body joining two conditions with `&`. Proven by the control, not the green: the same three shapes are refused with CDX6101 at exit 4 against the depot seed and clean at exit 0 against the SUT | CostModel: `fixed` still unshipped and still blocked on the registry, re-measured 2026-08-21 at 132 of 264 `bs-alloc` rows reading `unknown`. **The two-consumers-read-absence-oppositely hazard is CLOSED** (main 17822): both consumers now ask WHAT the table recorded rather than whether it recorded anything, so filling a gap for one can no longer invert the other. Decisions 17/18 are closed and their record is in `CostModel.md` 5.1 |
-| **val** | **ShellRefinement stage 9 (crisp) is the lane** (Damian, 2026-08-21, direct, with a photograph of his Windows 11 desktop as the reference). The approved plan is `~/.claude/plans/crystalline-percolating-pinwheel.md`; the account is `docs/Designs/Active/OS/ShellRefinement.md` stage 9. **This row said stage 4 (Sound) until 2026-08-21 evening, five stages behind, and a fresh session reading the register would have been sent to build work that landed at 18696.** The order is Damian's: crisp inside today's one-pane model first, overlapping windows LAST, and icons become drawings rather than hand-authored bitmaps. **LANDED: 18827 antialiased corners, 18893 the soft shadow (`sh-blur` had been threaded through Theme and the Appearance toggle since they were written and nothing read it), 18916 a vector path can be FILLED and a curve draws (by pointing `Vector` at `GlyphRasterizer`'s existing edge scanline, not by writing a second rasterizer), 18943/18975/19008 every icon the desk names is a path rasterized once at boot, 19034 a docs sweep taking ShellRefinement from 809 lines to 538.** **STAGE 9.3 IS DONE (val 19126).** Its measurement arm had landed inside 18827 (`codex/test/apps/desk-label-metrics`) and the fix had not: `widget-label` and `widget-button` reserve `text-length * 8`, so `CODEX` asked for 80 device pixels and drew 106 while the four lowercase sidebar buttons reserved 49 to 72 MORE than they drew. **The design decision the row said was unmade is made, and the code made it rather than a ruling.** A foreword chapter may not cite the app quire that owns the face, and both candidate routes churn thirty-odd files in other lanes' quires: 36 `Theme` literals in 34 files against 67 `widget-layout`/`widget-measure` sites in 32 files. `widget-measure` returns a leaf UNCHANGED, so nothing in the foreword ever revisits a label's width; the fit is therefore a walk in the app that HOLDS the face. `comp-fit-text` (`GopComposite`) rewrites `wn-min-w` from `gfont-text-w`, `Widget.codex` gains one additive helper and no foreword signature moves. **It is applied to the chrome only, and that is correctness rather than scope: a pane that hit-tests its own subtree uses plain `widget-layout` (`GopBrowser`), so fitting the paint side alone misplaces clicks.** A pinned width is replaced only while it still equals the constructor's guess, because the taskbar pins `task-clock` to 220 over an EMPTY string and an unguarded fit reserves nothing for it. Measured with CMUNSS at 1600: the brand label goes to exactly 0 slack and every button to a constant 32 or 33, which is `widget-button`'s own padding. **A maximum width is now unblocked, and no picture moved: `flex-col-place` still hands every child its container's full width, so an honest cell stays invisible until one lands.** The table and the command that makes it are in `ShellRefinement.md`. **The antialiased STROKE is done too: `vec-stroke-coverage` answers a 0 to 255 grid, so outline artwork is no longer a Bresenham staircase. Its construction is the part worth knowing: `gr-fill-scanline` is even-odd, so one edge list of stroke quads CANCELS where they overlap and guts the ink at every join and crossing. Each quad is rendered on its own over only the rows it spans and merged by MAXIMUM. Measured on an X at width 2: crossing 255 per quad against 47 for the single edge list, with an arm pixel at 255 under both, and the rejected construction is kept as a row in `codex/test/ui/vector-raster` rather than described. What stage 9 still owes: small type, then the panes that restate the sidebar's width in three different unit systems (WORKS-35's class), then windows.** **Windows are last for a measured reason and not for taste: the heap is a bump allocator with save and restore, so lifetime order is LIFO and z-order is the same order, and overlapping windows are exactly the feature that decouples them.** `Window.codex` and `Surface.codex` are both written and cited by nothing; `Surface` is one type substitution from usable (`sf-fb` is a `Framebuf` at 24 bytes per pixel, 18.9 MB per full-screen composite against a 128 MB arena). **Stage 4 still owes focus change, error and notification; stage 5's GUI half and stages 6 and 8 are open; stage 7 is PARKED on a user-model ruling that routes through red.** Everything else this lane owns is in `apps/works/works-backlog.md`: WORKS-47 (a button icon painted outside its button -- the drawn icons MAY have closed it and that is unmeasured, so the row stands), WORKS-41, WORKS-44, WORKS-46, WORKS-40. | 18696 the desk click, 18827 antialiased corners and the eight-pixel-cell measurement, 18893 the soft shadow, 18916 the vector fill, 18943 the icon rasterizer, 18975 the chrome icons, 19008 all nineteen drawn, 19034 the docs sweep | 18437 the settings schema, 18478 the desk wire, 18489 WORKS-47, 18508 check-test-compile, 18559 the stage 4 device half, 18615 the BDL lifetime obligation, 18696 the desk click |
-| **fester** | **"The battery choreography" item 2, `codex-vm -run-list`, LANDED fester 19089 (2026-08-22); the block below the pool carries the shape and the measurement. It spawns a fresh child per line rather than reusing the process, which is not what the item asked for: the reason given for reuse being safe does not hold, reuse is worth 12.6 ms of a 575 ms test, and red ruled for the supervisor shape after the measurement. `build/check-run-list.ps1` is its runner.** Previously: **ShellRefinement stage 1, the GopComposite half, is COMPLETE** (Damian, 2026-08-20, who sent me to ask val for parallel work; red released the guios claim to val). Claimed and now done: `comp-text` and its metrics in `apps/works/GopComposite.codex`, sitting on val's threading at main 18118. **Extents before draw, main 18192**: `comp-fit-px` bounds the string on a GLYPH boundary from the real advance table, `gfont-text-w` wraps the existing `gbf-measure-text` rather than being a second implementation of the metric, and `gfont-text-clip` stays as a second bound (L-FALLBACK). Its arm is `codex/test/apps/comp-text-metrics`, a synthetic face needing no disk, whose 16 values were predicted before the run and which an off-by-one sabotage moves in exactly the six truncating rows. **Cap-band centring, main 18258**, on val's `gf-asc`/`gf-cap`: halving `gf-gh` centres the glyph BOUNDING BOX, 2591 units against a 2048 em for cmunss, which sat the capitals 8.5 device pixels low in a 40 pixel button and hung the descender 6 outside it; centring `gf-asc - gf-cap` to `gf-asc` lands the band centre half a pixel from the box centre and brings the tail back inside. **The fit centralised, main 18285**: callers no longer pre-chop to `box width / 8s` CHARACTERS before the face is consulted. **The caret, main 18294**: the measured prefix width and the cap band, not `cursor * comp-cell-w * s`, which had it floating 38 pixels clear of the text in the Browser address bar. **The 40 px shift in files and issues is CLOSED and did not reproduce**: an artifact of the pre-18241 font pipeline when `gf-gh` was the trimmed ppem, dissolved by val's FontLoad work; it was reverted unshipped at the time, so nothing had to be un-landed. **Two findings this row used to carry were wrong and are corrected**: `fl-write-yoffsets` is a STUB, so the y-offset table `gbf-put-text-loop` reads is uniformly zero and nothing is placed by it (L-UNCALLED), and the vertical defect was the rasterizer trim rather than that table. | **The golden sweep has a runner at last** (main 18127, self-check 18134): `build/desk-goldens.ps1` and `build/bmpdiff.ps1`, requested by val for stage 1. **The SCALE-PAIR arm landed main 18175**, requested by val for stage 2's "identical modulo size" claim, and it corrects the pair that claim has to be measured on: the desk lays out in `w / ui-wscale`, so 1024x768 and 1600x900 are different ROOMS (1024x768 against 800x450) and comparing them measures room and scale together; **800x450 against 1600x900 is the pair that isolates scale**, both laying out in 800x450. A plain equality test is useless on it -- 15,029 of 360,000 cells disagree and 14,818 of those are a channel delta of 3 or less, the theme gradient rounding over twice the rows -- so `bmpdiff -Scale N` censuses MAGNITUDES and `-MinDelta` separates them. **Its baseline reading, before stage 2 has drawn an icon: 60 structural cells on the desk pane, all on the corners of the five sidebar buttons**, 1x showing sidebar background where 2x shows the button adornment ramp. That is stage 2's starting reading and not icon breakage to be blamed on the icons later. `works-desk-contract.md` had named that sweep as the acceptance test for any fleet-wide widget change since 17846 while the thing it named lived in one scratchpad. Proven before being relied on: two sweeps of one kernel byte-identical on all 14 panes, and the comparator shown to report MOVED and exit 1. **val found the hole I had missed** -- `browser` and `browser-key` agreeing is correct (scancode 30 is a no-op and `gbr-step` still releases and repaints, which is what BROWSER-5 closed on) but agreement is also what undelivered keys look like, so `browser-newtab` (Ctrl+T, 12,036 pixels in rows 40-79, the tab bar alone) carries the falsifiable half and `-SelfCheck` asserts the relations inside one set. **The BROWSER-5 campaign closed 2026-08-20 across six CLs**: L-BOTHARMS, the compositor clip and the 78-row out-of-bounds write (17846), `desk-bro-h` measuring the band (17892), `comp-translate` (17932), the scroll wiring (17968). **wademo** shipped to a customer and landed at main 18080: pattern and colour choices with a picker, the years running with an honest interpolation label, and a second pyramid to compare against. ProductBuilder stage 5 (main 17784); stage 6 is ON HOLD pending customer approval and lives in `codex/product/product-backlog.md` 6 | **CrossLaneFilesystem is CLOSED and moved to Done/** (2026-08-20): step 0 was already done for the whole unresolved-call class, not only block- names, so the design is complete on both cross lanes. The browser register holds BROWSER-4 alone, and it is network-gated. **BROWSER-8, the scroll indicator, is CLOSED (fester)**, on the second attempt: the first landed at main 18312 and was REVERTED at 18377 for turning `browser-pane-fit` and `browser-scroll-wire` red. The placement was right both times -- wired at `browser-render-with` so the viewport probe narrows with the page, descending to the page column because a bar reserved at viewport height would otherwise make content measure as fitting and kill scrolling silently -- and what was missing was a container the UI quire did not have. **`widget-scroll-view`**: no padding, border or margin, reports only its own declared minimum rather than its content's, paints nothing in all three renderers, and is a `WkCustom` tag rather than a new `WidgetKind` so every existing match site already routes it. Until it existed a scrollable viewport was not expressible at all, because `flex-layout` honours a child's minimum over its container and content taller than its slot is what scrolling MEANS. The measurement that found it, including the mechanism the first post-mortem recorded and that turned out to be false, is in the CL descriptions at 18446 and 18453. First use also found `scroll-bar` itself broken (L-UNCALLED): the bar measured 34 logical pixels against a `scroll-bar-w` of 6 and the gap 14, so its own "the column keeps its width either way" invariant was false in both branches. GopReview's `grv-bar` narrows with it and that pane's golden moves. **The parallel-block throw class is CLOSED in all three harnesses (2026-08-20).** **`ExaminersAssay` gained two classes this session**: no gate phase compiles anything under `codex/test`, so a test chapter that stops compiling is UNRUNNABLE and every instrument stays quiet (`widget-tone` was red four days across a release), and contention corrupts a DURATION as readily as a verdict, which is worse because a duration gets quoted forward rather than checked. Recovered from a message that never arrived: `build/check-mailbox.ps1` catches the three silent-loss paths and is worth running at init. WORKS-24 rides a sitting, WORKS-16 is blu's, WORKS-17's syntax half is a `Theme` decision |
+o-reply; it is deliberately not B4 step 6. A codex-vm defect fell out of it and is fixed in the same CL: e1000_rx_cursor was never reset (there was no case E1000_REG_RDH in e1000_write), so one receiver bring-up in sixteen resumed permanently stuck, queueing frames in the host while the guest saw a dead wire. **NIC-4 awaits sitting 5, and the instrument is built.** Sitting 4 flew ED90B46A and answered ARRIVED-BUT-INVISIBLE (gprc=1 rnbc=0, rdh=1, ddset=0). Stage 2 landed 17742 on image **27326F86**, rehearsed 20 of 20 across both beds and carrying reek's sink chunk knob, so one image flies both halves of the sitting. **The discriminator we had agreed on was wrong and would have read backwards on metal**: it was a raw all-sixteen-zero test on receive descriptor 0, but `e1000-build-rx-descs` (`E1000e.codex:537`) writes the buffer address into bytes 0..7 itself and zeroes 8..15, so all-zero cannot happen while our ring build works and the test answers "the part wrote our ring" on every flight. The row now counts nonzero bytes in the WRITEBACK half (8..15) only, keeps the full dump for the eye, and carries `buf=` as the other half's control. It rides the QR because the summary is built from each stage's FIRST glass line, which is also why the ladder was NOT reordered. GPRC is read twice, so a count can no longer belong to nicinit's ring two stages earlier. `nicring listen=0` and the `nic-noread` arm are the positive control: our own `e1000-poll-raw` recycles the descriptor it took a frame from, so a successful listen leaves wb=0 and the bed could not otherwise express a writeback at all. Caveat to state before flying: `match=y` compares RDBA against our ring POINTER and is valid only while the guest is identity-mapped, so it is not by itself proof of correct aim | **17603 LANDED (main 17751), new seed 0A37A56F.** `infer-and` records its boolean arm, so `bounded none` and `punctual` no longer refuse a body joining two conditions with `&`. Proven by the control, not the green: the same three shapes are refused with CDX6101 at exit 4 against the depot seed and clean at exit 0 against the SUT | CostModel: `fixed` still unshipped and still blocked on the registry, re-measured 2026-08-25 at 81 of 265 `bs-alloc` rows reading `unknown`. **The two-consumers-read-absence-oppositely hazard is CLOSED** (main 17822): both consumers now ask WHAT the table recorded rather than whether it recorded anything, so filling a gap for one can no longer invert the other. Decisions 17/18 are closed and their record is in `CostModel.md` 5.1 |
+| **val** | **ShellRefinement stage 9 (crisp) is the lane** (Damian, 2026-08-21, direct, with a photograph of his Windows 11 desktop as the reference). The approved plan is `~/.claude/plans/crystalline-percolating-pinwheel.md`; the account is `docs/Designs/Active/OS/ShellRefinement.md` stage 9. **This row said stage 4 (Sound) until 2026-08-21 evening, five stages behind, and a fresh session reading the register would have been sent to build work that landed at 18696.** The order is Damian's: crisp inside today's one-pane model first, overlapping windows LAST, and icons become drawings rather than hand-authored bitmaps. **LANDED: 18827 antialiased corners, 18893 the soft shadow (`sh-blur` had been threaded through Theme and the Appearance toggle since they were written and nothing read it), 18916 a vector path can be FILLED and a curve draws (by pointing `Vector` at `GlyphRasterizer`'s existing edge scanline, not by writing a second rasterizer), 18943/18975/19008 every icon the desk names is a path rasterized once at boot, 19034 a docs sweep taking ShellRefinement from 809 lines to 538.** **STAGE 9.3 IS DONE (val 19126).** Its measurement arm had landed inside 18827 (`codex/test/apps/desk-label-metrics`) and the fix had not: `widget-label` and `widget-button` reserve `text-length * 8`, so `CODEX` asked for 80 device pixels and drew 106 while the four lowercase sidebar buttons reserved 49 to 72 MORE than they drew. **The design decision the row said was unmade is made, and the code made it rather than a ruling.** A foreword chapter may not cite the app quire that owns the face, and both candidate routes churn thirty-odd files in other lanes' quires: 36 `Theme` literals in 34 files against 67 `widget-layout`/`widget-measure` sites in 32 files. `widget-measure` returns a leaf UNCHANGED, so nothing in the foreword ever revisits a label's width; the fit is therefore a walk in the app that HOLDS the face. `comp-fit-text` (`GopComposite`) rewrites `wn-min-w` from `gfont-text-w`, `Widget.codex` gains one additive helper and no foreword signature moves. **It is applied to the chrome only, and that is correctness rather than scope: a pane that hit-tests its own subtree uses plain `widget-layout` (`GopBrowser`), so fitting the paint side alone misplaces clicks.** A pinned width is replaced only while it still equals the constructor's guess, because the taskbar pins `task-clock` to 220 over an EMPTY string and an unguarded fit reserves nothing for it. Measured with CMUNSS at 1600: the brand label goes to exactly 0 slack and every button to a constant 32 or 33, which is `widget-button`'s own padding. **A maximum width is now unblocked, and no picture moved: `flex-col-place` still hands every child its container's full width, so an honest cell stays invisible until one lands.** The table and the command that makes it are in `ShellRefinement.md`. **The antialiased STROKE is done too: `vec-stroke-coverage` answers a 0 to 255 grid, so outline artwork is no longer a Bresenham staircase. Its construction is the part worth knowing: `gr-fill-scanline` is even-odd, so one edge list of stroke quads CANCELS where they overlap and guts the ink at every join and crossing. Each quad is rendered on its own over only the rows it spans and merged by MAXIMUM. Measured on an X at width 2: crossing 255 per quad against 47 for the single edge list, with an arm pixel at 255 under both, and the rejected construction is kept as a row in `codex/test/ui/vector-raster` rather than described. Small type is done too: the desk owns `dk-ui-ppem` (16 at 1600 and above, 14 below) and the CBF fallback keeps `comp-glyph-h` at 16, which is the dual purpose that stopped the constant simply being lowered. The MULTIPLIER was the bug: a ppem is already a device size, so `* ui-wscale` made the type exactly twice what it should be. Caps go 22 to 11. Two constants assumed the old cell and the PICTURES found both, not the numbers: `dk-line-step` now reads the face rather than a flat 36 that was too tight at cell 41 and half again too loose at cell 21, and `dk-icon-px` stops quantising a DRAWN icon to a multiple of the 8 pixel stencil it replaced, which had been throwing away seven of the gutter's fifteen pixels. Both metric arms were repaired rather than re-baselined: each was measuring a constant the paint path had stopped using (L-INSTRUMENT). WORKS-35's class is closed too: four chapters restated where the sidebar ends and no two agreed, and `ui-scale` steps at 1024 while `ui-wscale` steps at 1600, so each wrong version was right at SOME width and none was right at both. At 1600 the sidebar is 320 device pixels and the Files pane started at 180, cutting every sidebar button in half on the width every capture is taken at. `ui-sidebar-px` in `GopDraw` answers it once in device pixels; `gsc-sidebar-w` and `dk-mon-x` are deleted. The arm is `codex/test/apps/desk-pane-origin` at BOTH 1280 and 1600, and it compares against the width `widget-measure` lays the sidebar out to rather than only against the function every pane now calls, which would be the instrument built from its subject. Windows are the live campaign, and Damian's ask on 2026-08-24 is wider than the old stage: overlapping windows with focus and alt-tab, close/minimize/maximize, and edge docking (flick from the titlebar, a pill with the app name, click restores, hover shows a live mini-preview). `ShellRefinement.md` stage 6 carries the stage list. **6.1 the offset render path and 6.2 the first window are DONE. 6.3a maximize and restore landed 19312 and the taskbar band that follows the face landed 19342; 6.3c's first half landed 19349 -- a window's rectangle is a stored fact rather than centred arithmetic, which is what two windows were actually blocked on, since every window the old geometry placed landed on the same pixels. **6.3c IS DONE (19392, main 19395): the Calculator is the second windowed pane, the desk paints every open window bottom to top with the focused one last and its titlebar in `pal-primary`, Tab cycles focus, a click raises the window under the pointer, closing one hands focus to the window underneath, and a new window CASCADES so two do not land on the same pixels.** `WindowManager` is deliberately NOT wired in and that is a decision rather than an omission: it is a functional record and the desk's durable state lives below a bump-allocator base mark that every pane exit restores, so a block is the registry and the array order IS the z order. WORKS-49 carries the reasoning and the open question of whether `Window.codex` should be deleted or kept for a caller with a heap. **6.3b MINIMISE IS DONE AND 6.4's FIRST UNIT WITH IT (19469, main 19471): minimise a window to a pill in the taskbar, click the pill to restore.** A minimised window keeps its rect and focus skips it, and restoring needs no kept rectangle because 6.3c made the rect a fact in the pane's own block. The pill is a BUTTON IN THE TASKBAR TREE, which is forced rather than chosen: `desk-taskbar-clock` re-renders that subtree every second, so anything painted into the band from outside it is erased within a second. **6.4's OPEN QUESTION IS ALSO ANSWERED (main 19415), and it moved the item's shape: docking's mechanism already existed as `desk-step-hide`, so what is left is the flick, the pill as its own drawing, and the hover preview.** Measured, a docked HEAVY pane costs 1.6 to 2.1 MB and closing one beneath a live one STRANDS about 3 MB rather than reclaiming (the frontier rises), so 6.4 must not present the pill as a cheap place to leave things. STILL OPEN in stage 6: the flick gesture, the pill drawing, the hover mini-preview, and the heavy-pane decision that stranding forces. **6.5, EVERY PANE A WINDOW, IS UNDER WAY** (Damian, 2026-08-25, on seeing 6.3b run: *"i like the minimize and maximize work. but only for a handfull of the apps. i think they all should do that"*). The flick still waits. **GROUPS A, B AND C ARE ALL CLOSED, NINE PANES: the Console (main 19518), the launcher, the Calendar, the Diffusion pane and Appearance (main 19518, 19521, 19531), with the cascade and the cap at 19518; Issues (main 19544); the Monitor (main 19562); and the 3D View and the Aquarium (main 19574).** `dk-wr-max` was 4 and is 15, which is the registry block's own bound; 4 turned out to be the vertical cascade room divided by the step, so the cascade wraps now, each axis in its own room. Three findings the inventory did not predict, and all three bind the panes still to come. **A pane costs SIX things, not five**: `desk-wnd-over` is a fourth per-pane fact for a pane that paints over its own laid tree, and `dk-wnd-wants-box` is a first placement of the whole content box for a pane whose tree will not fit three quarters of it. **The bigger screen is the tighter one, by nearly half** -- a tree lays out in logical pixels and `ui-wscale` doubles at 1600, so three quarters of the content box goes from 840 by 546 logical at 1280x800 to 480 by 300 at 1600x900, and every line clipped so far was clipped at the LARGE size. **And a full-box window is still one titlebar short of the pane it replaces**, which cost the Diffusion pane a line even with the box. **Review is NOT a group A pane**: `grv-tree` takes data `grv-load` builds by scanning the whole medium, so windowing it needs that cached where the painter can reach it, which is a `DeskApps` field and a signature change through the window machinery. **Issues added a fourth finding and it is the one that generalises: a pane's TREE may be a function of the ROOM it was given**, so `desk-wnd-tree` now takes `w`, `h` and `tf` to find the window's content box rather than the pane's. `desk-wnd-one` is its only caller, so that widening was three lines, and it is the honest reason Review is disqualified and Issues is not. **And a pane that PAGES rather than clips hides a bad fit from every arm and from an eye looking for a clipped edge**: nothing was ever cut off, but at 1600x900 in a three-quarter window the Issues table read `Page 1 of 7` with two rows and every cell truncated to `CD...`, and `dk-wnd-wants-box` takes it to `Page 1 of 4` with four rows and full ids (eight rows to thirteen at 1280x800). **Group C split in two and neither half was a tree.** The Monitor is a pane that DRAWS TEXT, and giving it a tree costs exactly what its draw could reach: what the tree can compute stays in the arm, what is a machine fact too wide for 32 bits joins `desk-wnd-tree`'s arguments (`base` and `stride`, because a framebuffer address is 64 bits and there is no `poke-qword`), and what is settled before the base mark goes in the block (`kbd` and `mouse`). That last kind fails QUIETLY: an unwritten block cell reads zero and zero is `mailbox` and `no`, exactly what a machine with no USB HID reports, so `desk-mon-block` asks the written and unwritten blocks to DISAGREE rather than asserting either reading. **The two 3D panes took the table's other answer and already had it**: `ScenePane` carried a view rect derived from hand-synced copies of the desk's chrome constants, and `gsc-place` replaces that derivation with the window's rect before every frame. **The resize question is answered without spending anything**, and the answer was in `Renderer3D`: `r3d-target-at` models a stride independent of width, so the buffers are allocated once at the content box and a smaller window renders the top-left of them, where a target rebuilt per resize would strand about 4 MB above the pane's own mark until it closed. **GROUP D IS STARTED AND THE BROWSER IS A WINDOW (main 19599), and the stranding decision did NOT have to be made first** -- windowing a heavy pane changes where it paints, not how long it lives, so the mark discipline is untouched and 6.4's 3 MB tail stays a question about DOCKING and about `desk-marks-reclaim` popping from the top only. Two things came out of it: **`dk-wnd-content` is the content box, once**, after that arithmetic had been written out four times and this pane wanted a fifth; and **a heavy pane must repaint itself when the chrome answers `stay`**, because a raise, a Tab cycle or a maximise repaints every window and draws this one's empty body panel, where a 3D pane recovers on its next frame and a pane that only redraws on an event has none. `desk-bro-h` is deleted and `browser-pane-fit` re-pointed at the window content box (L-INSTRUMENT). **THE EDITOR'S BLOCK COLLISION IS CLEARED (main 19619) and it was bigger than the design said.** The row named 56, 60 and 64; grepping the block rather than reading `ged-init` found a fourth and it is the one that mattered, **the filename buffer at bytes 44 to 55**, which is `dk-wnd-st-cell` and the first two words of the rectangle. Nothing had recorded it because nothing but the naming mode reads those bytes and that mode had no test at all (L-UNCALLED). All four are above 108 now, the block is 192 bytes in `desk-run` and in `annot-write` which builds one, and the offsets have names instead of literals. `codex/test/apps/edit-block` is the arm: **the assertion is a CENSUS of bytes 44 to 67 and the two round trips beside it are the control**, because a buffer works perfectly at either offset and only the span can see one sitting on the desk's rectangle. **THE SWEEP IS DONE (main 19645): the panel geometry takes a rect, and Files and the Editor are one argument away from being windows.** `GopFiles` answered where the panel was in four functions of the SCREEN and `GopEdit` called them, so three chapters agreed about one rectangle by each doing the same arithmetic, which is the shape WORKS-35 paid for once already with the sidebar constant. The four are deleted; every drawing and hit function in both chapters takes a `LayoutRect` and the desk says which one: `dk-pane-box` for a pane that owns the desktop, `dk-wnd-content` for one that is a window. **Neither pane is a window yet and that is deliberate** -- this lands the parameter and hands both panes exactly the rect they had, so it is provably inert: `codex/test/files-parse` and `codex/test/apps/desk-pane-origin` are UNCHANGED across it, with the rect spelled out in the first as exactly what the deleted functions computed at 1280x800, and both panes photograph identically. **6.5 IS DONE (main 19665): EVERY PANE ON THE DESK IS A WINDOW, all fourteen.** Files took a `ds` cell at 116; the Editor needed none, its slot being 44 through 60 of the block that grew to 192 bytes for exactly this. **The last finding is one the other twelve could not have shown and it needed a PHOTOGRAPH rather than an arm: a converted pane must not keep its own title bar.** Both drew one through `gfl-draw-frame`, so under the desk's titlebar there were two bars saying `Files` and two `x`es at different heights meaning different things. The bar stays and is a LOCATION now -- the window says which application, the bar says which directory or which file, which is the one thing the window title cannot know. `gfl-close-hit` is deleted rather than left unreachable and **the capability that went with it is written down rather than left to be noticed**: that `x` returned from a preview to the listing and dismissed three of the editor's modes, and Esc does all four. **DAMIAN TESTED 6.5 AND REPORTED SIX THINGS. THREE ARE FIXED (main 19677) AND THREE ARE OPEN.** Fixed: **the desk flickered with two windows open**, because a pane whose content ticks was calling `desk-wnd-paint-all` once a second, which is a full-screen rebuild on a framebuffer with no back buffer; `desk-wnd-paint-from` starts the walk at that window's registry index instead, and **opening and ticking no longer share a paint function** (narrowing the tick had silently narrowed the open, so the chrome was never drawn at all and it looked right for exactly one second). **The taskbar clock flashed** because the tick walked the whole band and drew the time LAST, so the clock was absent for the length of the walk; the erase is `comp-box` over the taskbar's box clipped to the clock's cell, which a flat sub-fill could not do without seaming under a gradient. **And the desk's own hand-drawn text took the bitmap grid** while every widget beside it was proportional: the brand, the Welcome caption and the clock all go through `desk-line` now, with `gfont-text-w` for the clock's right edge. `codex/test/apps/desk-window-repaint` is the arm. **6.6 IS DONE: THE SIDEBAR IS GONE AND THE COBBLESTONE PILL IS A START MENU** (Damian, 2026-08-25, *"lets remove the whole left pane, put the shutdown option inside the cobblestone menu pill on the bottom so it acts more like the start menu than a full screen app. the cobblestone button should expando the program groups and apps."*). Four of the sidebar's five buttons were already rows in `gpr-entries`, so only Shutdown had to move; `ui-sidebar-px` is deleted from `GopDraw` and `dk-cbox-x` answers zero, which widened the content box and is what moved every window rectangle in `desk-window-frame`, `desk-window-registry` and `browser-pane-fit`. **The cascade gets 15 distinct positions of 15 instead of 12, because the wider box wraps later**, and `browser-pane-fit`'s `tree past the granted pane` is UNCHANGED at 430, so nobody should read that file's moved numbers as BROWSER-5 being fixed. **The menu is the launcher COLLAPSED and that is a measurement, not a preference:** put `gpr-tree` whole into a box above the pill and at 1600x900 the Shutdown row lands past the bottom of the glass with the taskbar behind it, while at 1280x800 it fits. `gpr-menu-tree` shows one row per GROUP and expands the group holding the selection, and **the open group is a function of `gpr-sel` rather than state**, so the two presentations stay one model and arrow keys crossing a boundary open the next group with no code that does it. A heading's id carries `gpr-group-prefix` so `gpr-id-scan` cannot match it, or clicking a group would launch an app. **Three findings, each from a capture and none reachable by an arm.** A flex-1 `widget-panel` paints its own background, so the anchoring spacer drew as an empty box until it became a label, which is the shape the deleted sidebar had already proven. **The contract's claim that a panel does not size to its children was FALSE and had been believed for a campaign** -- `widget-measure` propagates minima and `widget-layout` measures before it arranges; the real trap is one line further down `Widget.codex`, that `widget-set-min` preserves flex, so the box stretched rather than collapsed and the two look identical from the far side of a capture. **And the arm written for the overflow could not fail:** an over-tall menu PUSHES the taskbar down rather than overlapping it, so "the menu ends above the band" reported yes on the broken build while the band sat 38 rows off a 450-row screen. Two rectangles that move together cannot adjudicate each other; the row that discriminates compares the band against the GLASS. `codex/test/apps/desk-menu-groups` is the arm and it was proven by sabotage rather than by passing. **`desk-label-metrics` changed specimen and the reason is worth keeping: a row built with `widget-set-min ... 0 h` reserves NO width**, so every launcher row measures zero and a tree that never asks the widget layer's eight-pixel cell for a width cannot measure it. It walks the taskbar now, where the entry reserves 256 device pixels against 93 drawn and 126 against 93 once fitted. **THE PILL AS ITS OWN DRAWING IS DONE (val 19734, main 19742): a taskbar pill carries its app's icon.** `dk-pill-icon` is keyed by focus id beside `desk-wnd-title` and is deliberately a SECOND table rather than a join against `gpr-entries`, because **the window title and the launcher label diverge for four of fifteen panes** (`Edit` against `Editor`, `Web` against `Browser`, `Monitor` against `System Info`, and `Programs` is not an entry at all) and `gicon-named` answers the `file` icon for an unknown name instead of refusing, so the join would have put the wrong picture on four pills with every count still agreeing. The arm is one row in `desk-chrome-icons` covering a missing arm and a misspelled name together, since both land on that same fallback; sabotage-proven both ways at 13 of 14 with `titled=14` unmoved as the control. **That title-versus-label divergence is a real thing a person can see and is NOT fixed: WORKS-50.** **Left in stage 6: the flick, the hover mini-preview, and the heavy-pane stranding decision that docking forces -- and that last one is a product choice about what closing from a pill MEANS, so it is Damian's rather than the lane's.** The table and every measurement are `ShellRefinement.md` stage 6.5.** This sentence read "6.3 and 6.4 are NOT started" until 2026-08-25 and was three CLs behind, which is the register-rot shape the init skill warns about: a stage number carried out of a summary is not addressed until it names its campaign and its CL. Two things 6.1 and 6.2 settled that the old design had wrong or unstated: the origin goes in the LAYOUT RECT so `comp-hit-x`/`comp-hit-y` need no origin, and the close mark must be ONE contour because two crossed bars cancel under the even-odd fill. **The open question for 6.4 is what a docked HEAVY pane costs**, since state above the heap frontier cannot be restored by redrawing, which is the same LIFO constraint that put windows last.** **Windows are last for a measured reason and not for taste: the heap is a bump allocator with save and restore, so lifetime order is LIFO and z-order is the same order, and overlapping windows are exactly the feature that decouples them.** `Window.codex` and `Surface.codex` are both written and cited by nothing; `Surface` is one type substitution from usable (`sf-fb` is a `Framebuf` at 24 bytes per pixel, 18.9 MB per full-screen composite against a 128 MB arena). **Stage 4 still owes focus change, error and notification; stage 5's GUI half and stages 6 and 8 are open; stage 7 is PARKED on a user-model ruling that routes through red.** Everything else this lane owns is in `apps/works/works-backlog.md`: WORKS-47 (a button icon painted outside its button -- the drawn icons MAY have closed it and that is unmeasured, so the row stands), WORKS-41, WORKS-44, WORKS-46, WORKS-40. | 18696 the desk click, 18827 antialiased corners and the eight-pixel-cell measurement, 18893 the soft shadow, 18916 the vector fill, 18943 the icon rasterizer, 18975 the chrome icons, 19008 all nineteen drawn, 19034 the docs sweep | 18437 the settings schema, 18478 the desk wire, 18489 WORKS-47, 18508 check-test-compile, 18559 the stage 4 device half, 18615 the BDL lifetime obligation, 18696 the desk click |
+| **fester** | **NOW (2026-08-25): the wasm plug, `codex/plugs/plugs-backlog.md` 1.60, Damian-directed into this lane for the Cobblestone push; wasm is a first-class target and the crazy-boss page is the centrepiece.** Six of the eleven runtime builtins closed today: the linked list and `text-concat-list` (fester 19281, main 19290), `__list-with-capacity` and `list-insert-at` (19298, main 19300), the three `__buf-*` names (19313, main 19323). Each was taken from the x86-64 answer key rather than from the js plug, which matters twice: `__linked-list-push` conses onto the FRONT so `to-list` REVERSES, and `list-insert-at` fills IN PLACE when capacity allows. **`codex/plugs/wasm/wasm-e2e.ps1` is the runner and is new** -- the three previously proven subjects had been hand-run into prose with nothing to re-evaluate them (L-BODY, L-NOGATE). It grades every subject in `codex/plugs/wasm/test/` through source -> IR -> plug -> WAT -> `wat2wasm` -> `wasmtime` against THE SAME SOURCE COMPILED FOR x86-64, refuses rather than skips on a missing toolchain or a plug binary older than its source or the seed, and passes `-Kernel` to BOTH arms after it was found grading two different compilers against each other. **NEW: plugs 1.61, THE WASM PLUG HAS NO CCE LAYER.** `raw-bytes-to-text` was written, measured, and BACKED OUT rather than shipped: the byte copy matches x86-64 exactly, but bare metal holds those numbers as CCE code units and converts on print while this plug writes raw bytes to `fd_write` and converts nowhere. Every earlier subject missed it because they build text from ASCII LITERALS, which agree under both readings (L-CONSTRUCT). **Scope: anything rendering text through this plug is on the unconverted path, so it is not one builtin.** LEFT in 1.60: `text-to-double-bits` (a real decimal-to-IEEE-754 parser) and `raw-bytes-to-text` (blocked on 1.61). **The compiler EMITS 9.24 MB of WAT and does NOT assemble; the 35-to-11 undefined-name census has NOT been re-measured since 2026-08-24, so how close assembling is remains unknown. Do not say the compiler runs in a browser until a module runs.** Previously: **"The battery choreography" item 2, `codex-vm -run-list`, LANDED fester 19089 (2026-08-22); the block below the pool carries the shape and the measurement. It spawns a fresh child per line rather than reusing the process, which is not what the item asked for: the reason given for reuse being safe does not hold, reuse is worth 12.6 ms of a 575 ms test, and red ruled for the supervisor shape after the measurement. `build/check-run-list.ps1` is its runner.** **Re-run at head 2026-08-24: all 5 arms green, 8.8 s, against a codex-vm binary 15 s younger than its own source. Its gating is HALF, and the honest split is worth writing down: `bvt.ps1` drives every BVT test through `-run-list` and the BVT is a standing-gate phase, so a regression on the HAPPY path turns every agent's gate red without this script. The arms nothing runs are the refusal and isolation half -- a corrupt kernel not taking its neighbours, the wall budget stopping one line alone, drop attribution, a nested list refused -- and those can rot unseen (L-NOGATE). Wiring them means a phase in `build/build.ps1`, which is generated and whose generator `codex/build/BuildScript.codex` is reek's claim, so it is red's call and not taken unilaterally. **DONE 2026-08-25 (reek, on red's clearance): the `run-list` phase is in `build/build.ps1`, 5.7 s, keyed on a per-file `$tVm` covering `tools/codex-vm.c`, `tools/codex-vm.exe` and `build/check-run-list.ps1`. All five arms run; both directions were fired before it was called done, positive by opening `codex-vm.c` alone and negative by sabotaging an arm in place. The account is in `docs/Designs/Active/Build/Build.md` under the trigger audit.** Previously: **ShellRefinement stage 1, the GopComposite half, is COMPLETE** (Damian, 2026-08-20, who sent me to ask val for parallel work; red released the guios claim to val). Claimed and now done: `comp-text` and its metrics in `apps/works/GopComposite.codex`, sitting on val's threading at main 18118. **Extents before draw, main 18192**: `comp-fit-px` bounds the string on a GLYPH boundary from the real advance table, `gfont-text-w` wraps the existing `gbf-measure-text` rather than being a second implementation of the metric, and `gfont-text-clip` stays as a second bound (L-FALLBACK). Its arm is `codex/test/apps/comp-text-metrics`, a synthetic face needing no disk, whose 16 values were predicted before the run and which an off-by-one sabotage moves in exactly the six truncating rows. **Cap-band centring, main 18258**, on val's `gf-asc`/`gf-cap`: halving `gf-gh` centres the glyph BOUNDING BOX, 2591 units against a 2048 em for cmunss, which sat the capitals 8.5 device pixels low in a 40 pixel button and hung the descender 6 outside it; centring `gf-asc - gf-cap` to `gf-asc` lands the band centre half a pixel from the box centre and brings the tail back inside. **The fit centralised, main 18285**: callers no longer pre-chop to `box width / 8s` CHARACTERS before the face is consulted. **The caret, main 18294**: the measured prefix width and the cap band, not `cursor * comp-cell-w * s`, which had it floating 38 pixels clear of the text in the Browser address bar. **The 40 px shift in files and issues is CLOSED and did not reproduce**: an artifact of the pre-18241 font pipeline when `gf-gh` was the trimmed ppem, dissolved by val's FontLoad work; it was reverted unshipped at the time, so nothing had to be un-landed. **Two findings this row used to carry were wrong and are corrected**: `fl-write-yoffsets` is a STUB, so the y-offset table `gbf-put-text-loop` reads is uniformly zero and nothing is placed by it (L-UNCALLED), and the vertical defect was the rasterizer trim rather than that table. | **The golden sweep has a runner at last** (main 18127, self-check 18134): `build/desk-goldens.ps1` and `build/bmpdiff.ps1`, requested by val for stage 1. **The SCALE-PAIR arm landed main 18175**, requested by val for stage 2's "identical modulo size" claim, and it corrects the pair that claim has to be measured on: the desk lays out in `w / ui-wscale`, so 1024x768 and 1600x900 are different ROOMS (1024x768 against 800x450) and comparing them measures room and scale together; **800x450 against 1600x900 is the pair that isolates scale**, both laying out in 800x450. A plain equality test is useless on it -- 15,029 of 360,000 cells disagree and 14,818 of those are a channel delta of 3 or less, the theme gradient rounding over twice the rows -- so `bmpdiff -Scale N` censuses MAGNITUDES and `-MinDelta` separates them. **Its baseline reading, before stage 2 has drawn an icon: 60 structural cells on the desk pane, all on the corners of the five sidebar buttons**, 1x showing sidebar background where 2x shows the button adornment ramp. That is stage 2's starting reading and not icon breakage to be blamed on the icons later. `works-desk-contract.md` had named that sweep as the acceptance test for any fleet-wide widget change since 17846 while the thing it named lived in one scratchpad. Proven before being relied on: two sweeps of one kernel byte-identical on all 14 panes, and the comparator shown to report MOVED and exit 1. **val found the hole I had missed** -- `browser` and `browser-key` agreeing is correct (scancode 30 is a no-op and `gbr-step` still releases and repaints, which is what BROWSER-5 closed on) but agreement is also what undelivered keys look like, so `browser-newtab` (Ctrl+T, 12,036 pixels in rows 40-79, the tab bar alone) carries the falsifiable half and `-SelfCheck` asserts the relations inside one set. **The sweep covered 11 of the 16 panes `desk-dispatch` opens and said so nowhere, which is the same hole one level up: an omission nobody wrote down reads as coverage.** Not rot -- all five were dispatchable at 18127, when the script was written, so this was under-scoping from the start, and `works-desk-contract.md` has named the sweep as the acceptance test for any fleet-wide widget change since 17846, meaning a change that broke the editor or the system menu passed it in silence. Widened 2026-08-24: `diffusion` (32), `edit` (18) and `menu` (41) are rows now, each with a `desk`-differs relation so `-SelfCheck` catches the key never arriving, ablated three for three with the browser relations unmoved as the negative control. `scene` (4) and `fish` (16) stay out and the REASON is now written in the script rather than absent: both route to `desk-scene-step`, which animates, and two boots of one kernel disagree (measured, 1600x900, clock frozen). 18 entries, 199.7 s for a full capture. **The BROWSER-5 campaign closed 2026-08-20 across six CLs**: L-BOTHARMS, the compositor clip and the 78-row out-of-bounds write (17846), `desk-bro-h` measuring the band (17892), `comp-translate` (17932), the scroll wiring (17968). **wademo** shipped to a customer and landed at main 18080: pattern and colour choices with a picker, the years running with an honest interpolation label, and a second pyramid to compare against. ProductBuilder stage 5 (main 17784); stage 6 is ON HOLD pending customer approval and lives in `codex/product/product-backlog.md` 6 | **CrossLaneFilesystem is CLOSED and moved to Done/** (2026-08-20): step 0 was already done for the whole unresolved-call class, not only block- names, so the design is complete on both cross lanes. The browser register holds BROWSER-4 alone, and it is network-gated. **BROWSER-8, the scroll indicator, is CLOSED (fester)**, on the second attempt: the first landed at main 18312 and was REVERTED at 18377 for turning `browser-pane-fit` and `browser-scroll-wire` red. The placement was right both times -- wired at `browser-render-with` so the viewport probe narrows with the page, descending to the page column because a bar reserved at viewport height would otherwise make content measure as fitting and kill scrolling silently -- and what was missing was a container the UI quire did not have. **`widget-scroll-view`**: no padding, border or margin, reports only its own declared minimum rather than its content's, paints nothing in all three renderers, and is a `WkCustom` tag rather than a new `WidgetKind` so every existing match site already routes it. Until it existed a scrollable viewport was not expressible at all, because `flex-layout` honours a child's minimum over its container and content taller than its slot is what scrolling MEANS. The measurement that found it, including the mechanism the first post-mortem recorded and that turned out to be false, is in the CL descriptions at 18446 and 18453. First use also found `scroll-bar` itself broken (L-UNCALLED): the bar measured 34 logical pixels against a `scroll-bar-w` of 6 and the gap 14, so its own "the column keeps its width either way" invariant was false in both branches. GopReview's `grv-bar` narrows with it and that pane's golden moves. **The parallel-block throw class is CLOSED in all three harnesses (2026-08-20).** **`ExaminersAssay` gained two classes this session**: no gate phase compiles anything under `codex/test`, so a test chapter that stops compiling is UNRUNNABLE and every instrument stays quiet (`widget-tone` was red four days across a release), and contention corrupts a DURATION as readily as a verdict, which is worse because a duration gets quoted forward rather than checked. Recovered from a message that never arrived: `build/check-mailbox.ps1` catches the three silent-loss paths and is worth running at init. WORKS-24 rides a sitting, WORKS-16 is blu's, WORKS-17's syntax half is a `Theme` decision |
 | **reek** | **plugs close-out lane** (from val, 2026-08-18): the register in order, one entry at a time, text builtins first (1.31/1.36/1.37); fester keeps the riscv entries (1.3 family), blu the deck/arm64 tail; say so in status.json | (OTA socket wiring DONE 16793; ProtocolStack CLOSED 16780; item 20 CLOSED for the named files 16769) | WORKS-9 is metal-gated, routed to red's sitting; `ShellDslReadability.md` stays reek's |
-| **red** | **NOW (Damian, 2026-08-24): absorb Steve Howell's GitHub PRs and turn the public push around; wrap-up week for every other lane.** All six PRs are reviewed (every citation verified against source) and LANDED in red stream: 19116 COMPILER-18 row (PR 79), 19117 plugs 1.57 row (PR 80), 19125 zig one-heap + emit deck 24 to 28 MB (PR 77, seed-affecting), 19131 zig self-tail-call loops (PR 81), 19133 zig over-application (PR 83), 19140 parser mutual-tail-recursion restructure + COMPILER-19 row (PR 82, seed-affecting). Every CL gated green at its step; the two seed-affecting ones took the token. **REMAINING: copy-up to main with ONE seed rebuild, the public push, then per-PR closeout with credit and MAIN OPEN.** Seed-affecting copy-ups from other lanes are PINNED until that push is public. The battery choreography (the prior NOW) is COMPLETE: items 1/2/3 landed 19081/19089/19086. Then as before: commander; sittings; **the Review pane** (Damian, 2026-08-19: the repository protocol's user-facing half on the desk; stages 1 and 2 DONE 2026-08-19: lists proposals and verdicts from the medium's fact partition and casts a verdict signed by the box identity through the new `key-sign-bytes` primitive in `Foreword chapter Identity`, Damian's ruling that the primitive beats the user-space workaround; `works-backlog.md` WORKS-44 has the account, WORKS-46 the gap that keeps it empty on a USB stick: DiskFacts reads through the kernel's ATA syscalls); identity stage 4 (trust-root write, passphrase change, on `IDENTITY.DAT` on the ESP; stages 1-3 landed 2026-08-18); the diag step-2 lifts red owes (xHCI truth, keyboard, MSC align, largest GOP mode + `SetMode`) so the first grouped sitting carries every standing question | `BatteryReorg.md` step 6 | `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; Update 47 PUBLIC 2026-08-18 (github 69cd9ce8, seed 90646EEB); **interim mirror push 2026-08-19 (github a061c173, seed 800A7683) carrying Steve Howell's PR 69, PR 71 and issue 72, all closed with the commit**; **interim mirror push 2026-08-22 (github ff9eaf4c, gitlab the same, main 19106, seed unchanged A01C1547) carrying the battery choreography, no release proof owed or run; `GitHubUpdate50.md` has the account**; the Update 47 "preview gate on a pre-convergence stage" question is settled by blu's measurement (compile(A)=B, compile(B)=B, ONE fixed point; the preview ran on stage1 of an older seed, which is what the gate said) |
+| **red** | **NOW (Damian, 2026-08-24): absorb Steve Howell's GitHub PRs and turn the public push around; wrap-up week for every other lane.** All six PRs are reviewed (every citation verified against source) and LANDED in red stream: 19116 COMPILER-18 row (PR 79), 19117 plugs 1.57 row (PR 80), 19125 zig one-heap + emit deck 24 to 28 MB (PR 77, seed-affecting), 19131 zig self-tail-call loops (PR 81), 19133 zig over-application (PR 83), 19140 parser mutual-tail-recursion restructure + COMPILER-19 row (PR 82, seed-affecting). Every CL gated green at its step; the two seed-affecting ones took the token. **COMPLETE 2026-08-25: the push is public (github 0c4327d5, seed 6CF4A8E0, GitHubUpdate50), all six PRs closed with credit on 2026-08-25, and red declared MAIN OPEN 2026-08-25.** The pin on seed-affecting copy-ups from other lanes is lifted. The battery choreography (the prior NOW) is COMPLETE: items 1/2/3 landed 19081/19089/19086. Then as before: commander; sittings; **the Review pane** (Damian, 2026-08-19: the repository protocol's user-facing half on the desk; stages 1 and 2 DONE 2026-08-19: lists proposals and verdicts from the medium's fact partition and casts a verdict signed by the box identity through the new `key-sign-bytes` primitive in `Foreword chapter Identity`, Damian's ruling that the primitive beats the user-space workaround; `works-backlog.md` WORKS-44 has the account, WORKS-46 the gap that keeps it empty on a USB stick: DiskFacts reads through the kernel's ATA syscalls); identity stage 4 (trust-root write, passphrase change, on `IDENTITY.DAT` on the ESP; stages 1-3 landed 2026-08-18); the diag step-2 lifts red owes (xHCI truth, keyboard, MSC align, largest GOP mode + `SetMode`) so the first grouped sitting carries every standing question | `BatteryReorg.md` step 6 | `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; Update 47 PUBLIC 2026-08-18 (github 69cd9ce8, seed 90646EEB); **interim mirror push 2026-08-19 (github a061c173, seed 800A7683) carrying Steve Howell's PR 69, PR 71 and issue 72, all closed with the commit**; **interim mirror push 2026-08-22 (github ff9eaf4c, gitlab the same, main 19106, seed unchanged A01C1547) carrying the battery choreography, no release proof owed or run; `GitHubUpdate50.md` has the account**; the Update 47 "preview gate on a pre-convergence stage" question is settled by blu's measurement (compile(A)=B, compile(B)=B, ONE fixed point; the preview ran on stage1 of an older seed, which is what the gate said) |
 | **root** | **HardwareAbstractionLayer.md** (pool, per red; OracleCloudArm64 DEFERRED by Damian). **Board-threading phase DONE 2026-08-18** (main 16944-17016): the foreword got a linear GPIO `Pin` handle, and all nine board chapters now thread the shipped linear `UartPort` + `Pin` for UART and GPIO (`<b>-uart-open/write/close`, `<b>-gpio-open` + `<b>-pin-write/close`), verified by `build/boards-test.ps1` (9 green, 126 sub-tests). Board chapters are non-seed, no token. **Capability phase (foreword) DONE 2026-08-18** (main 17063, SEED 55E53A81 -> 7590CCA1): `[Gpio]`/`[Uart]`/`[Spi]` are rows in `Capability.codex` (cs-id 18/19/20, bits 27/28/29) mirroring `Flash`; the foreword gpio/uart/spi handle ops carry them; a `Device.Mmio`-only driver is refused CDX2031 (three `hal-launder-mmio-*` tests). check-effect-vocab regen 0 drift, gate green, seed self-verifies, 184 refusals ok. **Board wrappers promoted to the caps (main 17084)** and **the read side DONE (main 17139, SEED 318B2BF6)**: the checker mints owners for the linear components of a returned tuple (let-pattern, `when` on the call, act-bind then `when` on the name; `_` at a linear position CDX2063), the tuple-type parser accepts `linear`, and `Board.codex` carries `gpio-read`, `uart-recv`, `SpiTxn` + `spi-select/transfer/deselect` (`hal-tuple-linear`, `errors/hal-tuple-{leak,dup,wild,owner-leak}`, `errors/hal-spi-cs-leak`). Also 2026-08-18: `capability-doors.expected` re-recorded for the 17063 rows (main 17135, was red since 17063). **Board threading of the read side DONE (main 17146/17148/17156):** `<b>-pin-read` on 8 boards, `<b>-uart-recv` on the 3 with a receive primitive, the linear SPI transaction on the 6 SPI boards; boards-test 9 green, 143 sub-tests. Polled receive + `<b>-uart-recv` on Fe310/Rp2040/Stm32L4 landed main 17164 (146 sub-tests). **`[I2c]`/`[Adc]`/`[Power]` rows + `I2cBus`/`AdcUnit` handles landed main 17174 (SEED 5B2DE4E6; the table's unassigned bits 1/2/13, so COMPILER-17, the imm32 grant hazard above bit 30, stays LATENT and recorded). I2C bus threaded on the five I2C boards and the ADC unit on RP2040 (main 17183; 152 sub-tests). nRF EasyDMA receive landed main 17194 (154 sub-tests; every UART board receives through the handle); `TinkersToolbox.md` HAL section and counts refreshed. **ADC threading landed main 17777 (2026-08-20):** ADC1 drivers on Stm32F4/Stm32L4, SAADC wrappers on both nRF boards (nRF9160 gains SAADC at 0x4000E000); five boards carry `AdcUnit`; boards-test 9 green, 161 sub-tests. Esp32C6 left alone (SAR ADC map unverifiable in-tree); Fe310/Pi4/QemuVirt have no on-chip ADC. **Rulings 15 ruled (a) and BUILT (main 17831, 2026-08-20):** the linear Board threads every open on all nine boards, sleep-deep consumes it, sleep-with-open-handle is CDX2063; boards-test 9 green, 161 sub-tests; seed unmoved (DCE). **Flash follow-on CLOSED (main 17839, Damian-directed):** flash-open-bank threads the Board; sleep with an unsealed bank is CDX2063. **The HAL carries its full designed surface; nothing open in the lane.** `build/boot/diag/**` stays root's | then: HAL follow-ons above, next pool item, or red's call | plugs 1.34 is rulings queue 10 |
 
 **Plugs are reek's lane for the close-out** (from val, Damian's direction-08-18: 19 entries open, two or three fleet-days to a green register): when entry closes, reek takes the next open unclaimed one in
@@ -686,36 +913,88 @@ Named here because a register nobody owns is a register nobody reads.
   the same reason. **Whoever lifts the deferral inherits both as the first
   item**, and an arm64 TCP send that hangs or truncates silently before that
   is this row, not a new defect.
-- **The five sized-vector builtins are broken and nothing in the tree calls
-  them** (blu, found 2026-08-21 taking the SIMD family of the `bs-alloc`
-  registry; unowned, compiler codegen). `vec-empty`, `vec-singleton`,
-  `vec-head`, `vec-cons` and `vec-length` have a registry row, a type and
-  an emitter each, and **zero call sites anywhere outside the registry** --
-  L-UNCALLED, measured rather than inferred. Three separate failures, all
-  verified against depot `Sut` 5C58C409. `vec-empty` is CDX2040 unresolved
-  and cannot be called at all. **The mechanism first given here was wrong and
-  is corrected 2026-08-21 in the same lane**: it said "its type being nullary
-  rather than a `FunTy`", and nullarity is not the cause. `cpu-read-cr0`,
-  `cpu-read-cr3` and `flush-tlb` are typed plain `Integer` with no `FunTy` and
-  resolve perfectly, measured against `Sut` D42F8373 answering 0x80000013,
-  0x8000 and 0. What distinguishes `vec-empty` is that its nullary type is
-  POLYMORPHIC, `ForAllTy 0 (VectorTy 0 (TypeVar 0))`. That is the difference
-  and not the diagnosis: nobody has pinned the cause and this row no longer
-  claims one.
-  `vec-singleton` compiles and answers WRONG: it is
-  `emit-helper-call-1 "__list_cons"` while `__list_cons`
-  (`X86_64ListHelpers.codex:62`) reads TWO registers, `rsi` for the list it
-  dereferences at offset 0 and `rdi` for the element, so the tail is whatever
-  was left in `rsi` -- `vec-length (vec-singleton 3)` answered **6**.
-  `vec-cons` compiles and general-protection faults (`!EXC=0d`): it is
-  `emit-helper-call-2 "__list_snoc"` with `(elem, vector)` while the helper
-  takes `(list, elem)`, so an Integer is dereferenced as a list pointer.
-  `vec-head` and `vec-length` are unreachable in practice as a
-  consequence, both producers of a variable-length vector being broken. **All
-  five stay `unknown` in the registry**: a row may only carry a value
-  somebody measured, and a builtin that faults or lies cannot be measured.
-  Whoever takes this answers the honest question first, which is whether these
-  five should exist at all rather than be repaired.
+- **Six `-Internal` phases have their RUNNER under `build/` and do not trigger
+  on it** (reek, audited 2026-08-25 under ruling 20's sibling; PARKED, not
+  claimed). `jonquil`, `plug-binary`, `cross-smoke`, `plug-smoke`, `app-sweep`
+  and `sem-equiv` each invoke a script in `build/`, so `$tBuild` is a true
+  answer-dependency for all six: change `jonquil.ps1` and jonquil's answer can
+  change without jonquil running. **Blanket-widening them is the wrong fix** --
+  `$tBuild` fires on 11 of the last 50 changes on main and would add roughly
+  130 s each time, turning `-Internal` into the full gate for any build change.
+  The precise fix is a per-file trigger, which is machinery in the map to
+  manage a risk the next full gate already catches (L-LESS), so it is recorded
+  as a question rather than built. **Interim rule, costing nothing: whoever
+  edits one of those six harnesses runs its phase by hand and says so.** The
+  three phases whose dependency was real and cheap are already widened
+  (`vm-differential` 19236, `deck-headroom` and `gen-scripts` this session).
+  Table with costs: `docs/Designs/Active/Build/Build.md`.- **Four harnesses are dead on every box: codex-vm never parsed
+  `-data-port`/`-ctrl-port` and silently ignores unknown flags** (reek,
+  found 2026-08-24, recorded in `OperatorsManual.md` and plugs 1.41 at reek
+  19149; unowned). `Start-VmRun`'s codex-vm path always returns null, so
+  `extract-x86-output`, `test-disk-compile`, `sim-test` and `gdb-watchpoint`
+  have never run through it. **UNOWNED again: reek claimed it 2026-08-24,
+  scoped it, and RELEASED it at wind-down 2026-08-25 without touching
+  `tools/codex-vm.c`** (that file is blu's claim elsewhere in this plan, so
+  announce). The scoping is the value and it moved the shape twice, so the
+  two halves this row named are not the work.
+  (1) "Parse the two flags" is not a flag parse: codex-vm's serial is
+  file-based by construction (`-input` preloads a ring buffer, `-output`
+  dumps at exit), so a live ctrl/data socket means making the emulator's I/O
+  loop interactive. (2) `extract-x86-output.ps1` cannot be revived by
+  transport at all, because the `ELF` mode header it sends does not exist in
+  the compiler either -- measured, it returns byte-identical output to a
+  nonsense mode string (plugs 1.41, `DevelopersGuide.md` compile modes).
+  So the live questions are whether these four harnesses are wanted at all
+  (delete is a real answer for at least one) and the refuse-unknown half,
+  which still stands and now has a second instance in the compiler's own
+  mode dispatch (L-ACCEPTED). The refusal ships LAST and only after a census
+  proves no live caller passes a flag it would kill; a first census was too
+  wide and swept up QEMU and openssl flags, so that census is unbuilt. Not
+  push-blocking.
+- **Bare metal prints the fifteen tier-0 Cyrillic code units as unrelated
+  ASCII, because the ASCII-or-UTF-8 branch tests the LOW BYTE of the code
+  point rather than the code point** (fester, measured 2026-08-25 against
+  depot seeds C9395985 and D74D8855, byte-identical output on both; **FIXED
+  2026-08-25 by blu, compiler-backlog COMPILER-21** -- and it was on THREE
+  print paths, not the one cited: the serial loop fester measured plus
+  `__uefi_print` and `__uefi_print_no_nl`, which the UEFI exit selects.
+  Guarded on the serial path by `codex/test/ops/tier0-cyrillic-print`; the
+  two UEFI loops stay ungated because nothing in `codex/test` runs under
+  `-uefi`. **The three further readers are FIXED too (COMPILER-22), and no
+  read of the low table anywhere in `Emit/` is now unpaired with a hi-byte
+  combine.** The one that mattered was `__text_to_unicode_bytes`, the emitter
+  for the live builtin `text-to-unicode-bytes`, so the truncation was
+  reachable from ordinary Codex and returned wrong integers rather than wrong
+  glyphs. FURTHER DEFECTS on this surface are open and unowned, and they are
+  NOT what this line first said: COMPILER-23 carries them, after two
+  retractions. `char-to-text` truncates every multi-byte CCE code to its low
+  byte (`emit-char-to-text-builtin` stores length 1 and one byte, never
+  consulting `cce-encode-length`), which is the cause of the tier-1 print
+  symptom. `text-to-unicode-bytes` answers 0 only when its input text is the
+  TOPMOST allocation, so the earlier "round-trips nothing but ASCII" reading
+  was an artifact of one heap position. And the tier-2 encode collapses
+  u=8364 onto u=192. Damian ruled repair 2 on a mechanism since retracted;
+  red is re-presenting.
+  `X86_64IO.codex:304-307` loads `cce-to-unicode-byte-table` (the low bytes)
+  and branches to the single-byte `__serial_put` when that byte is under
+  128; the hi table at `cce-to-unicode-hi-rodata-offset` is read only on the
+  other arm, at 317. Every tier-0 code unit whose Unicode has a nonzero high
+  byte AND a low byte under 128 therefore prints as that low byte. That is
+  exactly CCE 113..127, U+0430..U+0443, whose low bytes are 0x30..0x43:
+  measured, `char-to-text (code-to-char 113)` prints `0`, 114 prints `>`,
+  127 prints `C`, while 97 (U+00E9, low byte 233) prints correctly. The
+  repair is to combine the hi byte before the `cmp 128`, not after it.
+  Found by the wasm plug disagreeing with the oracle after plugs 1.61 gave
+  the plug a correct CCE layer: the plug prints `d0 b0` and is right.
+  Separately, and NOT the cause: a whole second CCE printer is dead.
+  `emit-cce-to-utf8-helper` (`X86_64Helpers.codex:644`, emitting
+  `__cce_print`) is called from nowhere, so it never reaches a binary, and
+  the tables it would read -- `cce0u2-lo`, `cce0u2-hi`, `cce-t2-rodata` at
+  `X86_64State.codex:500-523` -- are in no `init-rodata` either. Its three
+  offset constants at 525-532 describe a blob layout that is not the one
+  line 281 emits, so it would read past the end if anything did call it.
+  Whoever takes the branch fix decides whether that second printer is the
+  intended replacement or dead weight (L-UNCALLED).
 
 ## Decisions
 
@@ -734,25 +1013,24 @@ overturned in one line.
 
 ### Pending -- only Damian can answer
 
-One item as of 2026-08-24 (arrived with the Steve-PR absorption; the list was
-empty since 2026-08-20). Prism's product scope was asked and RULED the same
-day -- Damian, direct: *"we definitely need compile/transpile on the fly for
-the prism. the canned IR is not the correct design."* So the full scope:
-PRISM-1..3, in-process compile + fan-out, the pre-baked IR path goes.
-fester's lane; `apps/prism/prism-backlog.md` is the register.
+**Nothing. The list is empty again as of 2026-08-24** -- both same-day items
+were ruled within hours:
 
-1. **COMPILER-18: the native closure representation** (Steve Howell PR 79,
-   landed 19116). The Rulebook's declared model says an under-applied closure
-   re-closes (one arrow per missing parameter); the emitted object
-   `[code-ptr][captures]` carries no remaining-arity word, so under-application
-   corrupts silently (measured: a heap address printed where 47 belongs, no
-   crash, no CDX code). The fork: give the closure a remaining-arity word so
-   the trampoline can re-close (implements the declared model, costs a word
-   per closure), or refuse under-application at the emit site (changes what
-   the language promises, so the Rulebook moves). The default reading is
-   "implement the declared model", but changing either the object layout or
-   the spec is yours. The row in `codex/compiler/compiler-backlog.md` has the
-   full measurement.
+- Prism's product scope, RULED (Damian, direct): *"we definitely need
+  compile/transpile on the fly for the prism. the canned IR is not the
+  correct design."* Full scope PRISM-1..3, in-process compile + fan-out, the
+  pre-baked IR path goes. fester's lane; `apps/prism/prism-backlog.md` is
+  the register.
+- COMPILER-18, RULED (Damian, direct): **"the old answer: give it the
+  word."** The partial-application closure gains a remaining-arity word so
+  the trampoline can re-close on under-application, which is the Rulebook's
+  declared model. Seed-affecting; ASSIGNED to blu (compiler codegen, while
+  the I219 swflag item waits on sitting 12's bank). The measurement, the
+  entry paths, and the two unexplained behaviors worth settling on the way
+  are in the COMPILER-18 row (`codex/compiler/compiler-backlog.md`, Steve
+  Howell PR 79); the fix cites that PR. The coverage half of the row --
+  the over-application shape beside `test-input/lambda.codex` whose closure
+  wants MORE than one argument -- lands with the fix.
 
 **On hold, customer-gated (Damian, 2026-08-20):** 16, **ProductBuilder stage 6
 needs a protected-side host.** (fester, 2026-08-19.) Stages 0 to 5 are landed
@@ -856,8 +1134,13 @@ Each was in the pending list and should not have been. Reversible in one line.
    need, bump the constant, let the refusal guard the new number.
    ProportionalDecks is new machinery managing a cost smaller than itself
    (L-LESS) unless the bump recurs a third time, which is the trigger to
-   revisit. reek's 2c stays shelved (19130) until after the Steve-PR push,
-   then lands with the bump.
+   revisit. **CLOSED 2026-08-25 (reek): the bump is not needed and was
+   never made.** 2c landed without it (`SePathJoinN` is on main in all
+   three emitters) and the floor in `build.ps1` is still 1.25. Measured
+   the same day with `deck-headroom.ps1 -Quire codex\build -WithSelf`:
+   `cdxtopeScript` is the tightest unit at **1.33** (48 of 64), where on
+   08-24 it was 1.23 at 52. The shelf cited here as 19130 does not exist;
+   that was the pre-submit number and it renumbered on submit (P-RENUMBER).
 21. **plugs 1.57: the Rulebook's over-application rule binds every plug that
    keeps an arity map.** (red, 2026-08-24.) The rule at
    `DevelopersRulebook.md:258` is unqualified, the zig plug just implemented
@@ -868,6 +1151,31 @@ Each was in the pending list and should not have been. Reversible in one line.
    verification the 1.57 row asks for.
 
 ### Ruled by Damian, kept as one line while the work is in flight
+
+- **Widen the sem-equiv trigger. HOLDS until after the release cycle**
+  (Damian via red, 2026-08-25). Not marked `Deferred`, because it is meant to
+  be picked up rather than skipped: it is gate-cost work and the release full
+  gate covers the class meanwhile. Proposer reek, unowned after that.
+  **Why:** `$tFrontEnd` is `Syntax|Ast|CodexEmitter|TextFormat|SourceText`, so
+  a change to `codex/compiler/opening.codex` never runs sem-equiv under
+  `-Internal`. Main went red on `opening: compile-frontend-passes` on
+  2026-08-25 and no standing gate could see it; a full gate found it. Same
+  shape as 19592, one leg over.
+  **Measured 2026-08-25 at head, this box, re-derived rather than carried
+  (L-COUNT):** text-stage1 34.4 s, sem-equiv 46.2 s (red, green head; reek got
+  47.8 and 50.9 on the red head), text-stage2 24.1 s, text-fixedpoint 0.01 s,
+  whole leg ~107.5 s against the 98.5 s `PerforceProcess` records for
+  2026-08-20.
+  **The structural fact that decides the shape: sem-equiv CANNOT be triggered
+  alone**, because it consumes the `stage1.codex` that only text-stage1
+  produces. So the cheapest useful widening is text-stage1 + sem-equiv at
+  ~83 s, not sem-equiv at ~46 s, leaving text-stage2 and text-fixedpoint on
+  the narrow trigger where CodexEmitter is genuinely their subject.
+  **Name this before ruling:** the comparator counts MID-BODY prose as body
+  tokens while stage1 carries none (fester, 19722), so a compiler CL adding
+  prose inside a function body turns sem-equiv red. Widening exposes that
+  class more often. Arguably right -- it gives R-PROSE a runner -- but it is a
+  consequence, not a free win.
 
 - **5** (2026-08-16): zig 0.16.0, at `D:\zig-0.16.0`.
 - **9** (2026-08-18): `widget-panel` flex defaults to 1, and already did;
@@ -898,8 +1206,8 @@ Each was in the pending list and should not have been. Reversible in one line.
   it proves the refusal is transitive. **Re-measured against depot seed
   A6D49D19 rather than taken from the CL**: control exit 0, refusal CDX6101
   at exit 4. `DevelopersGuide.md` "Bounded Functions" is the reader-facing
-  account. `fixed` is still unshipped and still blocked on the registry: 132
-  of the 264 `bs-alloc` rows read `unknown`, which is the refusing side.
+  account. `fixed` is still unshipped and still blocked on the registry: 81
+  of the 265 `bs-alloc` rows read `unknown`, which is the refusing side.
 - **20** (2026-08-20): (a), a NEW fact kind carrying old-id, new-id and a
   timestamp, and the Review pane shows a PROPOSAL chain. Reasoning and the
   orphan requirement are in the WORKS-44 row; val owns the work.
@@ -919,7 +1227,7 @@ Each was in the pending list and should not have been. Reversible in one line.
 | `codex/foreword/core/VirtioBlk.codex`, `codex/plugs/arm64/Arm64Runtime.codex` block helpers and fs servicer, `codex/compiler/opening.codex` `ir-emit-roots`, `build/test-cross-disk.ps1`, `codex/test/{fs-layer,fs-servicer}.*` | fester, 2026-08-16, CrossLaneFilesystem step 4 (landed 16224) and the RISC-V twin. The `Arm64Runtime` claim is the block/servicer sections only and is **by root's agreement**; the rest of that file is root's |
 | `codex/plugs/riscv/RiscVRuntime.codex` block helpers (the twin) | fester -- DONE, landed main 16474 on 2026-08-17; this row said FREE for a day after. `fs-layer`, `fs-servicer` and `fs-deny-runtime` all pass on the riscv lane through `build/test-cross-disk.ps1` |
 | `codex/os/kernel/{VirtioNet,VirtioBlk}.codex`, `codex/plugs/pe/Arm64PeWriter.codex`, `build/build-arm64-img.ps1` and its generator | FREE -- root closed the OracleCloudArm64 DMA/timeout residues 2026-08-18. Kernel-side `codex/foreword/core/VirtioBlk.codex` is fester's |
-| `tools/codex-vm.c` | **fester announced 2026-08-22 for the `-run-list` mode ("The battery choreography" item 2), Damian-directed, blu absent; blu's claim below stands for the NAT census.** **blu, 2026-08-18**, the NAT guest-to-host byte census and the deferred-shutdown fix above. Previously: FREE -- root landed the PCI-bridge device model 2026-08-18 (DeviceEmulationCatalog queue): `-pci-bridge` puts a header-type-1 bridge on bus 0 -> bus 1, config is bus-aware now, `codex/test/pci-bridge-scan` shows `pci-scan-all` descends (count 5 bus1=1 with the flag, 3/0 without). One owner at a time; announce |
+| `tools/codex-vm.c` | **reek, 2026-08-24, for the dead-harness row (red's grant). The work's actual shape is the ROW's, not this line's: reek corrected it at main 19205 after reading the source (the "parse the flags" half is really interactive serial, and `extract-x86-output` is unrevivable at any price), so read the unowned row, never a restatement. Announce to blu before touching the NAT paths.** Previously: fester's 2026-08-22 `-run-list` claim (landed 19089) and blu's 2026-08-18 NAT-census claim (landed; the census counters are in), both expired by landing. Older still: FREE -- root landed the PCI-bridge device model 2026-08-18 (DeviceEmulationCatalog queue): `-pci-bridge` puts a header-type-1 bridge on bus 0 -> bus 1, config is bus-aware now, `codex/test/pci-bridge-scan` shows `pci-scan-all` descends (count 5 bus1=1 with the flag, 3/0 without). One owner at a time; announce |
 | `build/test-cross-batch.ps1` | **FREE. The parallel-block throw class is CLOSED across all three harnesses** (fester, 18-08 here, 20-08 for the rest): `sweep-app-classes.ps1` and `test.ps1` carry the same `Read-LogShared` helper now, the latter through its generator `codex/build/testScript.codex` with drift measured at 0 both before and after. Account in `ExaminersAssay.md` |
 | `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**` | red |
 | `build/boot/diag/**` (`Diag.codex`, `diag-arm.ps1`, `diag.img`, and the probes as they are lifted into stages) | root, 2026-08-18, DiagnosticStick.md step 1 (landed root 16819). Step-2 lifts by the lane that flew the probe, coordinated with root |
@@ -933,7 +1241,7 @@ Each was in the pending list and should not have been. Reversible in one line.
 | `codex/os/kernel/E1000e.codex`, `codex/os/net/**` | blu |
 | `codex/test/cost/**` and `docs/Designs/Active/Features/CostModel.md` | blu. 3.3 shipped at main 16020, rule 3 at 16118; what is left of it is COMPILER-7 |
 | the integer-literal lexer and text emitter; `codex/plugs/csharp/**` and the `build/` DDC harness; `codex/plugs/recheck/**` | val, lane ownerships rather than open work |
-| `codex/plugs/**` and `codex/plugs/plugs-backlog.md` | **reek, 2026-08-18, the close-out lane** (handed on from val, whose 2026-08-16 claim this row carried until 2026-08-19). The register is the lane. Includes `codex/plugs/zig/**` (ordinary fleet code, Damian 2026-08-18); excludes the entries other lanes hold (named in the lanes table) |
+| `codex/plugs/**` and `codex/plugs/plugs-backlog.md` | **reek, 2026-08-18, the close-out lane** (handed on from val, whose 2026-08-16 claim this row carried until 2026-08-19). The register is the lane. Includes `codex/plugs/zig/**` (ordinary fleet code, Damian 2026-08-18); excludes the entries other lanes hold (named in the lanes table). **`codex/plugs/wasm/**` split OUT to fester 2026-08-24, Damian-directed: the plug OOMs on compiler-scale IR and prism's REPL needs it. Returns to this row when fester lands the fix.** |
 | `codex/plugs/spirv/**` (plugs-backlog 1.24) and every `run.ps1` under `codex/plugs/` (1.15) | reek, with the plugs lane (val released it 2026-08-19 with the rest of the register) |
 | `build/plug-oracle-test.ps1`, `codex/test/plug-oracle-arith.*` | **blu, 2026-08-18.** val released both: the zig wiring they were held for landed at 15687 and 1.13 is done. val's claim is per-ENTRY, not tree-wide |
 | `deck-headroom` | fester |
@@ -966,6 +1274,23 @@ the ruling is reachable by whoever is about to spend a session on one.
 - **An app compile gate.** Compiler work must not be coupled to app drift.
 - **The ARM64/RISC-V LIR retarget.** What landed stays; the rest is not
   reopening.
+
+- **Plug arms for targets whose runtime is not on this box.** Damian,
+  2026-08-25: *"we can skip the plug work that requires runtimes we don't
+  have i dont need my box polluted with the sins of a hundred thousand more
+  engineers."* So `char-encode` has arms in the five plugs that can be
+  executed and compared here (python, javascript, zig, csharp, wasm) and
+  will not get them in ada, cobol, elixir, fortran, maui, nim, objc, pascal,
+  winforms or wpf. Do not install a toolchain to close these.
+
+  **The count is ten and the shape is two.** Eight of those plugs already
+  lack `code-to-char` or `char-code-at`, so they cannot construct a `Char`
+  at all and a migrated call site is already dead in them: nothing changes.
+  Only **ada** and **fortran** can build a `Char` today and would newly lose
+  a site to `char-encode`. Both are recorded in
+  `build/plug-builtin-baseline.txt`, so the gap is known rather than silent.
+  Anyone reading "ten plugs are missing an arm" as ten pieces of work is
+  reading a number where there is a structure (L-ADJECTIVE).
 - **The store cutover** waits on infrastructure and is not available work.
 
 Declined is not deferred. Do not re-propose one of these, do not build a

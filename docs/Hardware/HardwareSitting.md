@@ -95,6 +95,8 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 
 | in the archive | SHA-256 | what it is |
 |---|---|---|
+| `diag12-returned-20260824.img` | `72FD5556 65A1E2E6 DABDEE70 1590ABBD 49CFFC21 69C3CB4B 08FA7ECD 29CCCADD` | SITTING 12 as it came back 2026-08-24, image 8CDF3617: THE FLIGHT THAT ELIMINATED BOTH NAMED CANDIDATES. `DIAG.TXT` 7,177 bytes, stages 1-8 plus pch, nicsit, nicinit, nicring, then b3's trail of THREE step notes (`clock`, `reset-imc`, `reset-ctrl-read`) and `END`. The medium stopped taking writes at b3's FOURTH note, `reset-rst-write`, which the glass row confirms independently as `bank-lost-note=4`, so it died before `swflag` and before the `CTRL|SLU` write and neither can be its cause. `DIAG.CFG` read back off the stick is byte-identical to the one built. Extracted beside it in `diag12-20260824\`. Flash transcript `build-output/flash.log`. |
+| `before-diag12-20260824.img` | `5E20BA45 F310FA5C 24EBA086 4EF1BBAD 6D1819B1 CE62154E 6C9806BB 103C3310` | disk 2 read off by blu 2026-08-24 before sitting 12 (image 8CDF3617) went over it. **Byte-identical to `diag11-returned-20260821.img`**: nothing touched the stick between sitting 11 coming back and this flash. |
 | `diag7-returned-20260821.img` | `4755238F 19338CDB 21783BE2 E1E6C294 6F569FA0 FB0C5658 7038F240 10A0B29D` | SITTING 7 as it came back 2026-08-21, image C5744A6D. Payload id and `rcp` block checked against the flashed bytes rather than assumed (L-SAMEVER): both read `90466df54ddd274f`, so this is the image that was written. `DIAG.TXT` 4,994 bytes, **stages 1 to 8 only, stopping one short of the `pch` row the flight existed for**; extracted beside it in `diag7-20260821\`. 2,643 sectors differ from the flashed image, of which LBA 0, 1 and the two backup-GPT regions are the SpecFit refit rather than guest writes. |
 | `diag11-returned-20260821.img` | `5E20BA45 F310FA5C 24EBA086 4EF1BBAD 6D1819B1 CE62154E 6C9806BB 103C3310` | SITTING 11 as it came back 2026-08-21, image 2C7030D7: THE FLIGHT ON WHICH THE ASUS TALKED TO THE DEV BOX. `DIAG.TXT` 7,469 bytes, stages 1-8 plus pch, nicsit, nicinit, nicring, then b3's stepped trail through all seven reset operations to `rings-link`, then `END`: the medium stopped taking writes inside `e1000-init-after-reset` while b3 went on to complete its exchange. Extracted beside it in `diag11-20260821\`. Flash transcript `diag11-flash-20260821.log`. |
 | `before-diag11-20260821.img` | `0EBA0CB9 DFABBBE9 988838F9 C54B3AB5 AAAF89E6 829067B5 CA6A103B 79320003` | disk 2 read off by red 2026-08-21 before sitting 11 (`diag.img` 2C7030D7) went over it. **Byte-identical to `diag10-returned-20260821.img`**: nothing touched the stick between sitting 10 coming back and this flash. |
@@ -146,6 +148,8 @@ entries say only "on blu's box", and that vagueness is half of what made
 `build-output/` look like a safe habit.
 
 ## THE SITTING QUEUE: what is waiting on metal, in the order it should fly
+
+### Sitting 12 FLEW 2026-08-24. The card is below; this entry is kept because it is what was composed.
 
 ### Sitting 12, composed on main, not yet built (red, 2026-08-21 evening)
 
@@ -621,6 +625,68 @@ Everything above it is a couple of minutes.
 
 **The bank is expected to die at the sink again**, so rows below it exist only
 on the glass and in the QR block. Photograph the page.
+
+### FLOWN 2026-08-24: SITTING 12 ELIMINATED BOTH NAMED CANDIDATES. The medium dies at b3's FOURTH note, before swflag and before the CTRL|SLU write. Image 8CDF3617, payload 2d3e003235a6b8ba, kernel A01C1547, cfg diag-sitting12.cfg
+
+Mastered by blu (Damian's direction, red on a build). Rehearsed 46 arms both
+beds, 0 mismatches; flashed with the hash gate satisfied and verified byte for
+byte; pre-flash dump `before-diag12-20260824.img` (5E20BA45) is BYTE-IDENTICAL
+to sitting 11's return, so nothing touched the stick in between. Returned as
+`diag12-returned-20260824.img` (72FD5556), extracted beside it in
+`diag12-20260824\`. `DIAG.CFG` read back off the returned stick is
+byte-identical to the one built, and the payload id and kernel on the medium
+are the built ones, so the bytes that flew are the bytes that were rehearsed.
+
+**THE ANSWER IS AN ELIMINATION, AND IT IS THE FIRST ONE THIS QUESTION HAS
+HAD.** The composed question was which of `swflag` or the `CTRL|SLU` write
+kills the medium. **Neither can.** b3's glass row carries `bank-lost-note=4`
+and the medium's b3 trail ends at `reset-ctrl-read`, its THIRD note, so the
+first refused note is the fourth, `reset-rst-write`. Both candidates live in
+`db3-init-after-reset`, which runs strictly after all seven `db3-reset` steps,
+so both are downstream of a medium that was already gone. The two channels
+were read independently and agree: the note ordinal was derived from the stick
+before the photograph was seen, and predicted `reset-rst-write` by name.
+
+**IT ALSO MOVED.** Sitting 11 lost the bank at `rings-link`, inside
+init-after-reset; this flight lost it several steps earlier on a ladder of the
+same shape. A death that relocates between two flights is not pinned to a
+particular register write, which is evidence against the whole "which line
+kills it" framing and toward size or timing. **Do not read that as a
+mechanism**: it is an elimination, and the bed does not reproduce this run
+either. `nic-kills-msc` arms the death on RCTL.EN, which is nicinit's, yet
+nicinit and nicring both banked whole here AFTER RCTL.EN.
+
+**b3 IS GREEN TWICE OVER.** `b3 ok pe=192.168.6.141:7 hop=d8:43:ae:bb:b9:46
+sent=13/13 rx=13 lk=1`, and the dev box's echo peer independently logged
+`CONNECTION 1 from 192.168.6.200:49157`, thirteen bytes `codex-diag-b3` echoed
+back unchanged, closed clean, at 22:30:21. The peer log is the registration and
+the only way we learn the box's address, since our stack answers no ping. That
+is the second flight in a row where the stack holds a real conversation over
+the real I219, and the first where a checked send reported `sent=13/13`.
+
+**THE K1 WRITE TOOK:** `pchk1 taken K1-after 770.17=f104 giga-k1-dis=y
+k1-en=y`, against `d104` with `giga-k1-dis=n` read at `pch`. That is the second
+of the composed questions answered.
+
+**asde REACHED s2 AND STOPPED.** The glass ends at `-> RESET s2 warm reset, the
+control for 08-13` with no asde result row. By the verdict rule written for
+this row, s2 means **the wedge is unchanged**: it is not the quiesce that was
+added as s1. asde produced no banked row and could not have, because the
+medium had been gone since b3.
+
+**THE LADDER NOTICED LATE, AND SAID SO CORRECTLY.** The summary paints `BANK
+LOST AT STAGE 15 pchk1, NOTHING AFTER THIS IS ON THE MEDIUM` while b3's own row
+carries `bank-lost-note=4`. Both are true and they are different claims: where
+the ladder noticed, and which write actually died. That pair is what sitting
+11 was unable to say, and it is the whole reason the step notes and the stamp
+were built.
+
+**FOR NIC-4, and it is a new reading:** `nicring quiet` with `gp=0`,
+`gprc-before=0`, `received=0`, `dd=0` on the same boot where the very next
+stage held a full TCP conversation. Sitting 11 read `pre=3`. So nicring's
+silence is a fact about its own window and not about whether the part
+receives, and the successor question NIC-4 left open cannot be answered by a
+quiet ring alone. `rdh-writable=y` again.
 
 ### FLOWN 2026-08-21: SITTING 11. THE ASUS TALKED TO THE DEV BOX. Image 2C7030D7, payload 3dd423b4df2f510a, kernel F2DA3901, diag source CL 18935
 
@@ -2201,10 +2267,10 @@ elevation and somebody to accept the prompt.**
 ```powershell
 pwsh build/dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\before-nicsitting-20260814.img
 Get-Disk | Where-Object BusType -eq 'USB'      # confirm 2 is the stick, check it twice
-(Get-FileHash D:\Projects\NewRepository-blu\build\boot\nicsitting.img -Algorithm SHA256).Hash
+(Get-FileHash D:\Projects\Cobblestone-blu\build\boot\nicsitting.img -Algorithm SHA256).Hash
 Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
-  'D:\Projects\NewRepository-blu\build\flash-usb.ps1','-Image','D:\Projects\NewRepository-blu\build\boot\nicsitting.img',
-  '-DiskNumber','2','-SpecFit','-Force','-Log','D:\Projects\NewRepository-blu\build-output\flash.log'
+  'D:\Projects\Cobblestone-blu\build\flash-usb.ps1','-Image','D:\Projects\Cobblestone-blu\build\boot\nicsitting.img',
+  '-DiskNumber','2','-SpecFit','-Force','-Log','D:\Projects\Cobblestone-blu\build-output\flash.log'
 ```
 
 **Flash, verify, pull.** Reinsertion is NOT a hazard and is not a suspect for
@@ -2727,17 +2793,17 @@ mutually exclusive; do not add `-Uefi` to the command above.
 Self-contained on purpose. The flash recipes further down this file belong
 to other flights and name **other agents' workspaces**; a reader who scrolls
 to the first `flash-usb.ps1` block finds red's `deskboot.img` under
-`D:\Projects\NewRepository-red\`, which is correct there and wrong here.
+`D:\Projects\Cobblestone-red\`, which is correct there and wrong here.
 
 Archive whatever is on the stick first, per the QUICKREF at the top of this
 file: a returned stick is evidence and there is exactly one of it.
 
 ```powershell
 Get-Disk | Where-Object BusType -eq 'USB'      # find N -- check it twice
-(Get-FileHash D:\Projects\NewRepository-blu\build\boot\asdeflight.img -Algorithm SHA256).Hash
+(Get-FileHash D:\Projects\Cobblestone-blu\build\boot\asdeflight.img -Algorithm SHA256).Hash
 Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
-  'D:\Projects\NewRepository-blu\build\flash-usb.ps1','-Image','D:\Projects\NewRepository-blu\build\boot\asdeflight.img',
-  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\NewRepository-blu\build-output\flash.log'
+  'D:\Projects\Cobblestone-blu\build\flash-usb.ps1','-Image','D:\Projects\Cobblestone-blu\build\boot\asdeflight.img',
+  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\Cobblestone-blu\build-output\flash.log'
 ```
 
 Confirm the hash matches the digest above before flashing. **Flash, verify,
@@ -3626,10 +3692,10 @@ before firing:
 ```powershell
 Get-Disk | Where-Object BusType -eq 'USB'      # N is this disk's Number
 Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-File',
-  'D:\Projects\NewRepository-reek\build\flash-usb.ps1','-Image',
-  'D:\Projects\NewRepository-reek\build\boot\sinkladder.img',
+  'D:\Projects\Cobblestone-reek\build\flash-usb.ps1','-Image',
+  'D:\Projects\Cobblestone-reek\build\boot\sinkladder.img',
   '-DiskNumber','N','-SpecFit','-Force','-Log',
-  'D:\Projects\NewRepository-reek\build-output\flash-sinkladder.log'
+  'D:\Projects\Cobblestone-reek\build-output\flash-sinkladder.log'
 ```
 
 `-SpecFit` is required and is what rewrites LBA 0 and 1; the returned stick is
@@ -4782,8 +4848,8 @@ and confirm the digest above, then:
 ```powershell
 Get-Disk | Where-Object BusType -eq 'USB'      # find N -- check it twice
 Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
-  'D:\Projects\NewRepository-red\build\flash-usb.ps1','-Image','D:\Projects\NewRepository-red\build\boot\deskboot.img',
-  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\NewRepository-red\build-output\flash.log'
+  'D:\Projects\Cobblestone-red\build\flash-usb.ps1','-Image','D:\Projects\Cobblestone-red\build\boot\deskboot.img',
+  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\Cobblestone-red\build-output\flash.log'
 ```
 
 Sequence on the glass: bars + mode (held 10 s) -> trace lines -> **the
@@ -5279,8 +5345,8 @@ home.** Flash, verify, pull the stick (the eject hazard is fixed at the cause; s
 ```powershell
 Get-Disk | Where-Object BusType -eq 'USB'
 Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
-  'D:\Projects\NewRepository-red\build\flash-usb.ps1','-Image','<full path to img>',
-  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\NewRepository-red\build-output\flash.log'
+  'D:\Projects\Cobblestone-red\build\flash-usb.ps1','-Image','<full path to img>',
+  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\Cobblestone-red\build-output\flash.log'
 ```
 
 **Reading it:**
@@ -5596,8 +5662,8 @@ the leading lines, which are the verdict fields (`uk-ok`, `EPINT`,
 Get-Disk | Where-Object BusType -eq 'USB'      # find N -- check it twice
 
 Start-Process pwsh -Verb RunAs -PassThru -ArgumentList '-NoProfile','-File',
-  'D:\Projects\NewRepository-red\build\flash-usb.ps1','-Image','<full path to img>',
-  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\NewRepository-red\build-output\flash.log'
+  'D:\Projects\Cobblestone-red\build\flash-usb.ps1','-Image','<full path to img>',
+  '-DiskNumber','N','-SpecFit','-Force','-Log','D:\Projects\Cobblestone-red\build-output\flash.log'
 ```
 
 **This is the whole flash procedure. Do not write a wrapper .ps1 around

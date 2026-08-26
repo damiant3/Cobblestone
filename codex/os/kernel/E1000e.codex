@@ -717,24 +717,75 @@ Section: The PCH Layer
  which. Fuel rather than a clock, because this runs before the HPET is known
  good and a bring-up that needs a clock to bring up is a dependency loop.
 
-  e1000-swflag-fuel : Integer = 2000
+ THE REQUEST CARRIES ONLY OUR OWN BIT. 4.5.2 gives each agent one bit, says
+ at most one is 1b at any time, and says the owner writes 0b when done, so a
+ write that asserts MNG or HW is a request registered on another agent's
+ behalf. Until 2026-08-24 this loop was `bit-or cur e1000-extcnf-sw-own` with
+ no mask, which put firmware's MNG bit back as 1b every time the board held it
+ (`extcnf 0x00F00=002c0089`, sittings 8 and 9). Measured under the bed's EXTCNF
+ census with firmware holding MNG: 6,002 writes, 6,002 of them asserting a bit
+ we do not own. Not 2,000, because the acquire runs from three call sites; the
+ count registered when the defect was found was one site's.
+
+ THE OWNERSHIP BITS ARE MASKED OFF AND THE REST IS PRESERVED, which is a
+ narrower change than "write only bit 5" and deliberately so. The I219
+ datasheet documents this register for the extended configuration area, so
+ writing a bare `#0020` would zero the ext-config fields: that trades a
+ measured defect for an unmeasured one on the one part of the register the
+ part's own datasheet is about. The mask fixes what was proven wrong and
+ leaves untouched what was not.
+
+ A RELEASE WRITES 0b TO OUR BIT AND CANNOT DISTURB FIRMWARE'S. The same
+ section says the MNG bit clears only on LAN_PWR_GOOD or by firmware, so a
+ software 0 there is ignored by the part rather than being a release on
+ firmware's behalf.
+
+  e1000-extcnf-own-mask : Integer = #00E0
+
+ THE COUNT IS BOUNDED WELL BELOW THE OLD ONE AND EACH POLL PAUSES. 2,000
+ immediate retries is roughly 4,000 back-to-back MMIO transactions on the same
+ PCH the xHCI is on, which is a burst rather than a wait. 64 polls at a 100 us
+ window is 6.4 ms of patience for about 128 transactions. There is no timeout
+ for this semaphore in either datasheet we hold, so these are OUR numbers and
+ not cited ones. The no-clock fallback is a short spin rather than a long one
+ for the same reason the count came down: with no clock every unit of waiting
+ is itself MMIO, so a generous fallback would reintroduce the burst it
+ replaces. Worst case with no clock is 64 * (2 + 32) = 2,176 transactions,
+ still below the 4,000 this replaces.
+
+  e1000-swflag-fuel : Integer = 64
+  e1000-swflag-window-us : Integer = 100
+  e1000-swflag-spin-fuel : Integer = 32
 
   e1000-swflag-held : Integer -> Boolean
   e1000-swflag-held (mmio) =
    bit-and (e1000-read mmio e1000-reg-extcnf-ctrl) e1000-extcnf-sw-own /= 0
 
+  e1000-swflag-request : Integer -> Integer
+  e1000-swflag-request (mmio) =
+   let cur = e1000-read mmio e1000-reg-extcnf-ctrl
+   in let keep = bit-and cur (bit-not e1000-extcnf-own-mask)
+   in e1000-write mmio e1000-reg-extcnf-ctrl (bit-or keep e1000-extcnf-sw-own)
+
+  e1000-swflag-pause : Integer -> Integer
+  e1000-swflag-pause (mmio) =
+   let started = hpet-start
+   in let rate = hpet-ticks-per-second
+   in if rate <= 0 then e1000-settle-spin mmio e1000-swflag-spin-fuel
+   else e1000-await-ticks hpet-ticks ((rate * e1000-swflag-window-us) / 1000000) 0
+
   e1000-swflag-acquire : Integer, Integer -> Integer
   e1000-swflag-acquire (mmio) (fuel) =
    if fuel <= 0 then 0
-   else let cur = e1000-read mmio e1000-reg-extcnf-ctrl
-   in let w = e1000-write mmio e1000-reg-extcnf-ctrl (bit-or cur e1000-extcnf-sw-own)
+   else let w = e1000-swflag-request mmio
    in if e1000-swflag-held mmio then 1
-   else e1000-swflag-acquire mmio (fuel - 1)
+   else let d = e1000-swflag-pause mmio
+   in e1000-swflag-acquire mmio (fuel - 1)
 
   e1000-swflag-release : Integer -> Integer
   e1000-swflag-release (mmio) =
    let cur = e1000-read mmio e1000-reg-extcnf-ctrl
-   in e1000-write mmio e1000-reg-extcnf-ctrl (bit-and cur (bit-not e1000-extcnf-sw-own))
+   in e1000-write mmio e1000-reg-extcnf-ctrl (bit-and cur (bit-not e1000-extcnf-own-mask))
 
  IT SHIPPED OFF UNTIL 2026-08-21, and the pair that earned the flip is reek's
  `-i219-swflag` (MDIO refused without ownership) and `-i219-mng-holds`

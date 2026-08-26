@@ -190,9 +190,7 @@ Section: Builtin Emission
   }
 
   emit-vec-empty-builtin : CodegenState, List IRExpr -> EmitResult
-  emit-vec-empty-builtin (st) (args) =
-   let rd = alloc-temp st
-   in EmitResult { state = st-append-code (rd.state) (li (rd.reg) 0), reg = rd.reg }
+  emit-vec-empty-builtin (st) (args) = emit-list st []
 
   emit-vec-head-builtin : CodegenState, List IRExpr -> EmitResult
   emit-vec-head-builtin (st) (args) =
@@ -200,8 +198,14 @@ Section: Builtin Emission
    in let rd = alloc-temp (r.state)
    in EmitResult { state = st-append-code (rd.state) (mov-load (rd.reg) (r.reg) 8), reg = rd.reg }
 
+ A sized vector has a list's layout, the count at offset 0 and the elements
+ from offset 8, so a singleton is the one-element literal and `emit-list`
+ already builds exactly that. The helper route cannot: `__list_cons` reads the
+ list it extends out of `rsi`, `emit-helper-call-1` loads only `rdi`, and
+ there is no list to extend in the first place.
+
   emit-vec-singleton-builtin : CodegenState, List IRExpr -> EmitResult
-  emit-vec-singleton-builtin (st) (args) = emit-helper-call-1 st args "__list_snoc_new"
+  emit-vec-singleton-builtin (st) (args) = emit-list st args
 
   emit-session-new-builtin : CodegenState, List IRExpr -> EmitResult
   emit-session-new-builtin (st) (args) = emit-helper-call-0 st args "chan-kern-create"
@@ -282,6 +286,82 @@ Section: Builtin Emission
    in EmitResult {
    state = result.state,
    reg = result.reg
+  }
+
+ 128, 2176 and 67712 are the CCE band boundaries and 192/224/240/128 the
+ lead and continuation masks. cce-encode in codex/foreword/core/CCE.codex
+ is the authority for all seven.
+
+  emit-char-encode-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-char-encode-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (r.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r.reg)
+   in let alloc = emit-bivy-alloc st1 16
+   in let pl = load-local (alloc.state) (alloc.ptr-loc)
+   in let c0 = load-local (pl.state) (loc.reg)
+   in let ct = alloc-temp (c0.state)
+   in let bt = alloc-temp (ct.state)
+   in let p = pl.reg
+   in let c = ct.reg
+   in let b = bt.reg
+   in let s00 = st-append-code (bt.state) (mov-rr c (c0.reg))
+   in let s01 = st-append-code s00 (cmp-ri c 128)
+   in let j1 = s01.code-len
+   in let s02 = st-append-code s01 (jcc cc-ge 0)
+   in let s03 = st-append-code s02 (li b 1)
+   in let s04 = st-append-code s03 (mov-store p b 0)
+   in let s05 = st-append-code s04 (mov-store-byte p c 8)
+   in let e1 = s05.code-len
+   in let s06 = st-append-code s05 (jmp 0)
+   in let s07 = patch-jcc-at s06 j1 (s06.code-len)
+   in let s08 = st-append-code s07 (cmp-ri c 2176)
+   in let j2 = s08.code-len
+   in let s09 = st-append-code s08 (jcc cc-ge 0)
+   in let s10 = st-append-code s09 (sub-ri c 128)
+   in let s11 = st-append-code s10 (li b 2)
+   in let s12 = st-append-code s11 (mov-store p b 0)
+   in let s13 = st-append-code s12 (mov-rr b c & shr-ri b 6 & or-ri b 192)
+   in let s14 = st-append-code s13 (mov-store-byte p b 8)
+   in let s15 = st-append-code s14 (mov-rr b c & and-ri b 63 & or-ri b 128)
+   in let s16 = st-append-code s15 (mov-store-byte p b 9)
+   in let e2 = s16.code-len
+   in let s17 = st-append-code s16 (jmp 0)
+   in let s18 = patch-jcc-at s17 j2 (s17.code-len)
+   in let s19 = st-append-code s18 (cmp-ri c 67712)
+   in let j3 = s19.code-len
+   in let s20 = st-append-code s19 (jcc cc-ge 0)
+   in let s21 = st-append-code s20 (sub-ri c 2176)
+   in let s22 = st-append-code s21 (li b 3)
+   in let s23 = st-append-code s22 (mov-store p b 0)
+   in let s24 = st-append-code s23 (mov-rr b c & shr-ri b 12 & or-ri b 224)
+   in let s25 = st-append-code s24 (mov-store-byte p b 8)
+   in let s26 = st-append-code s25 (mov-rr b c & shr-ri b 6 & and-ri b 63 & or-ri b 128)
+   in let s27 = st-append-code s26 (mov-store-byte p b 9)
+   in let s28 = st-append-code s27 (mov-rr b c & and-ri b 63 & or-ri b 128)
+   in let s29 = st-append-code s28 (mov-store-byte p b 10)
+   in let e3 = s29.code-len
+   in let s30 = st-append-code s29 (jmp 0)
+   in let s31 = patch-jcc-at s30 j3 (s30.code-len)
+   in let s32 = st-append-code s31 (sub-ri c 67712)
+   in let s33 = st-append-code s32 (li b 4)
+   in let s34 = st-append-code s33 (mov-store p b 0)
+   in let s35 = st-append-code s34 (mov-rr b c & shr-ri b 18 & or-ri b 240)
+   in let s36 = st-append-code s35 (mov-store-byte p b 8)
+   in let s37 = st-append-code s36 (mov-rr b c & shr-ri b 12 & and-ri b 63 & or-ri b 128)
+   in let s38 = st-append-code s37 (mov-store-byte p b 9)
+   in let s39 = st-append-code s38 (mov-rr b c & shr-ri b 6 & and-ri b 63 & or-ri b 128)
+   in let s40 = st-append-code s39 (mov-store-byte p b 10)
+   in let s41 = st-append-code s40 (mov-rr b c & and-ri b 63 & or-ri b 128)
+   in let s42 = st-append-code s41 (mov-store-byte p b 11)
+   in let fin = s42.code-len
+   in let s43 = patch-jmp-at s42 e1 fin
+   in let s44 = patch-jmp-at s43 e2 fin
+   in let s45 = patch-jmp-at s44 e3 fin
+   in let out = load-local s45 (alloc.ptr-loc)
+   in EmitResult {
+   state = out.state,
+   reg = out.reg
   }
 
  A letter is TWO bands, because CCE's punctuation sits between the ASCII
@@ -378,7 +458,8 @@ Section: Builtin Emission
    in let st3 = st-append-code st2 (mov-load reg-rax reg-r11 0)
    in let st4 = st-append-code st3 (mov-rr reg-r15 reg-r11)
    in let st5 = st-append-code st4 (li reg-rdi 0)
-   in let st6 = st-append-code st5 [255, 208]
+   in let st5a = st-append-code st5 (push-i32 1)
+   in let st6 = st-append-code st5a [255, 208]
    in let tmp = alloc-temp st6
    in EmitResult {
    state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
@@ -1701,6 +1782,7 @@ Section: State Effect
 Section: Builtin Registry
   BuiltinX86Emitter = record {
    name : Text,
+   nullary : Boolean,
    emit : CodegenState, List IRExpr -> EmitResult
   }
 
@@ -1730,12 +1812,32 @@ Section: Builtin Registry
   emit-identity-builtin (st) (args) =
    emit-expr (st-set-tail-pos st False) (list-at args 0)
 
+ A NULLARY BUILTIN IS ONE WHOSE REGISTRY TYPE IS NOT A FUNCTION, and the
+ distinction is load-bearing rather than descriptive: `emit-name-nonlocal`
+ hands a bare name's emitter an EMPTY argument list, so an emitter that
+ indexes an argument faults on it. A row with no recorded type answers False
+ and keeps the older behaviour, which is the safe direction: the caller then
+ emits a call, and an unresolved call is a diagnostic rather than a crash.
+
+  ty-is-nullary : CodexType -> Boolean
+  ty-is-nullary (t) =
+   when t
+    is FunTy (pt) (row) (rt) -> False
+    is ForAllTy (v) (inner) -> ty-is-nullary inner
+    is otherwise -> True
+
+  bs-type-is-nullary : Maybe CodexType -> Boolean
+  bs-type-is-nullary (mt) =
+   when mt
+    is Just (t) -> ty-is-nullary t
+    is otherwise -> False
+
   emitters-from-builtins : List BuiltinSpec, Integer, Integer, List BuiltinX86Emitter -> List BuiltinX86Emitter
   emitters-from-builtins (bs) (i) (len) (acc) =
    if i >= len then acc
    else let b = list-at bs i
    in when b.bs-emit
-    is Just (f) -> emitters-from-builtins bs (i + 1) len (list-push acc (BuiltinX86Emitter { name = b.bs-name, emit = f }))
+    is Just (f) -> emitters-from-builtins bs (i + 1) len (list-push acc (BuiltinX86Emitter { name = b.bs-name, nullary = bs-type-is-nullary (b.bs-type), emit = f }))
     is otherwise -> emitters-from-builtins bs (i + 1) len acc
 
   x86-builtin-emitters : List BuiltinX86Emitter
@@ -1785,5 +1887,14 @@ Section: Builtin Registry
       else let e = list-at es pos
       in if e.name == name then (e.emit) st args
          else emit-unknown-builtin st name
+
+  has-nullary-x86-builtin-emitter : CodegenState, Text -> Boolean
+  has-nullary-x86-builtin-emitter (st) (name) =
+   let es = st.builtin-emitters
+   in let len = list-length es
+   in let pos = bsearch-x86-emitter-pos es name 0 len
+   in if pos >= len then False
+      else let e = list-at es pos
+      in (e.name == name) & (e.nullary)
 
 Page 4 of 14

@@ -1,6 +1,6 @@
 # Run WASM plug: source -> IR-CCE -> plug CDX -> WAT
 [CmdletBinding()]
-param([string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Ir)
+param([string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Ir, [string]$Kernel)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
@@ -21,7 +21,13 @@ if ($Ir) {
 # text-plug: this plug resolves a Codex call by its NAME -- ISA-shaped target,
 # by-name resolution -- so the inline passes must not substitute a body and
 # delete the call. See text-plug-ir-pipeline in codex/compiler/IR/Passes.codex.
-    & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug'
+# -Kernel matters here even though this phase only produces IR. Without it
+# compile.ps1 takes whatever build.ps1 last left in build-output, which is not
+# the seed and not necessarily the compiler a caller graded its truth arm with:
+# the two arms would then come from two different compilers and any
+# disagreement could belong to either. build/wasm-e2e.ps1 threads its own.
+    $kernelArg = if ($Kernel) { @('-Kernel', $Kernel) } else { @() }
+    & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' @kernelArg
     if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
 } else {
     [Console]::Error.WriteLine("FAIL: provide -Src <source.codex> or -Ir <prebuilt.ir>")
@@ -47,12 +53,10 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 [System.IO.File]::WriteAllBytes($inputFile, $combined)
 
 # Phase 3: Run plug CDX
-$vmBin = Join-Path $Repo 'tools\codex-vm.exe'
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$proc = Start-Process -FilePath $vmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem', '3072','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
-$proc.WaitForExit(300000)
-if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force; [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
 
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
     $err = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { "" }
@@ -60,7 +64,21 @@ if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
     if ($err -match 'EXC') { [Console]::Error.WriteLine($err.Substring(0, [Math]::Min(300, $err.Length))) }
     exit 5
 }
+# A guest that died is not a plug that answered. The runtime prints OUT OF
+# MEMORY on the same stream as the WAT, so its message IS the output: the
+# non-empty check above passes, the message gets written to -Out, and this
+# script printed OK with exit 0 on a run that emitted nothing. Measured
+# 2026-08-24, that is exactly how 16.3 MB of compiler IR reported success
+# while producing 55 bytes. build/plug-run.ps1 already refuses this class;
+# this plug has its own runner and did not.
 $raw = [System.IO.File]::ReadAllText($outFile)
+foreach ($death in @('OUT OF MEMORY', '!EXC')) {
+    if ($raw.Contains($death)) {
+        [Console]::Error.WriteLine("FAIL: the plug guest died ($death), so $Out would hold a message and not a module.")
+        exit 9
+    }
+}
+
 $lines = $raw -split "`n" | Where-Object { $_ -notmatch '^(HEAP|WD|STACK|PM):' -and $_.Trim().Length -gt 0 }
 $wat = ($lines -join "`n")
 $wat = $wat -replace '^[\x00-\x1f]+', ''

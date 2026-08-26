@@ -285,25 +285,59 @@ the row empties with no residue. And the eviction arm: Browser hidden, then
 Files opened, reads `Files` ALONE rather than `Web   Files`, so the row tells
 the truth about a pane the desk dropped rather than reporting what was asked for.
 
-### The system menu is the launcher in a different box
+### The start menu is the launcher COLLAPSED, anchored above the pill
 
-`desk-menu-tree` wraps `gpr-tree` UNCHANGED and changes only the box: bounded
-width, left-anchored, full height. `gpr-key` and `gpr-id-scan` are its whole
-behaviour, so a row and the key it names still arrive by the same road and
-there is no second table to keep in step. It shares `desk-prog-cell`, and the
-shared SELECTION is the point rather than a saving: one model, two views.
+`gpr-menu-tree` shows one row per GROUP and expands the group holding the
+selection. `gpr-key` and `gpr-id-scan` are still its whole app behaviour, so a
+row and the key it names arrive by the same road and there is no second table
+to keep in step. It shares `desk-prog-cell`, and the shared SELECTION is the
+point rather than a saving: one model, two views. **The open group is a
+FUNCTION of `gpr-sel`, not state of its own**, which is why up and down walking
+off the end of a group opens the next one with no code that does it.
 
-**What the widget layer will not do, measured while trying.** The design asked
-for a panel floating above the taskbar button. That is not reachable here:
-a panel does not size to its children on either axis, so a bottom-anchored box
-with a flex spacer above it gets zero height and its rows draw off the glass;
-and nothing clips or scrolls, so a single column of the thirteen entries and
-four headings (366 logical plus padding) overflows the 400-logical content
-region at 1600x900. Shrinking rows to 18 to fit clips the button chrome against
-its own label. Three shapes were built and captured before the fourth was kept.
-**So the menu takes the launcher's two columns**, which is the same problem the
-launcher solved for the same reason, and anchors them left at 500 logical with
-the right third of the region free.
+**A HEADING'S ID CARRIES `gpr-group-prefix` SO `gpr-id-scan` CANNOT MATCH IT.**
+If the two namespaces overlapped, clicking a group would launch an app.
+`codex/test/apps/desk-menu-groups` asserts both directions, because one
+direction passes with a single function answering for both.
+
+**A PANEL DOES SIZE TO ITS CHILDREN, AND THIS FILE SAID IT DOES NOT.**
+`widget-measure` sets `wn-min-h` to `box-max` of the node's own minimum and the
+SUM of its children's, and `widget-layout` is `widget-arrange (widget-measure w
+th)`, so a minimum propagates. What actually bit is one line further down the
+same page of `Widget.codex`: `widget-panel` defaults flex to 1 and
+`widget-set-min` PRESERVES flex, so a box given only a minimum stretched rather
+than collapsed. Both look like "the anchoring did not work" from the far side
+of a capture. **A flex-0 body under a flex-1 spacer is the whole of the
+anchoring**, and `flex-col-place` gives the body exactly its measured minimum.
+
+**A SPACER IS A LABEL, NOT A PANEL.** A flex-1 `widget-panel` paints its own
+background, so the anchoring spacer drew as an empty box above the menu. The
+deleted sidebar used `widget-label "sidebar-spacer" ""` for this and it was the
+proven shape; `sysmenu-tgap` is a label for the same reason. Caught by a
+capture, invisible to every arm.
+
+**WHAT THE ROOM ACTUALLY IS, MEASURED, AND WHY THE FLAT LIST DOES NOT FIT.**
+The box above the pill has about 400 logical rows at 1600x900. Captured with
+`gpr-tree` in it, the Shutdown row landed past the bottom of the glass, the
+taskbar was behind it, and the box measured 1000 device pixels wide because a
+panel minimum is a floor and `gpr-tree`'s own was larger than `desk-menu-w`.
+At 1280x800 the same tree FITTED, which is the usual direction here: the
+bigger screen is the tighter one.
+
+**AND THE INSTRUMENT FOR THAT CANNOT COMPARE THE MENU TO THE BAND.** An
+over-tall menu does not overlap the taskbar, it PUSHES it down: `flex-col-place`
+moves the band ahead of it, so "the menu ends above the band" reported yes on
+the broken shape while the band sat 38 rows off the bottom of a 450-row screen.
+Two rectangles that move together cannot adjudicate each other. The row that
+fails compares the band against the GLASS, which does not move.
+
+**A ROW BUILT WITH `widget-set-min ... 0 h` RESERVES NO WIDTH AT ALL.**
+`gpr-row` sets the width minimum to zero and lets the column stretch, so the
+whole menu measures to 40 against the 520 it draws at and `desk-menu-w` is what
+actually sizes it. That also disqualifies the menu as a specimen for anything
+measuring the widget layer's eight-pixel cell: a tree that never asks the cell
+for a width cannot measure it, and `desk-label-metrics` walks the taskbar for
+that reason.
 
 **Driving a click at this desk, because it is not obvious and it cost several
 boots.** `-mouse` takes a host-tracked position starting at `0,0` and delivers
@@ -422,7 +456,7 @@ first two cells of the second half.
 | 16 | (bare literal) | the Monitor pane's repaint second |
 | 20 | `desk-marks-cell` | pointer: the app mark stack (val, 2026-08-19) |
 | 24 | (bare literal) | pointer: the calculator's state block |
-| 28 | `desk-edit-cell` | pointer: the editor's state block |
+| 28 | `desk-edit-cell` | pointer: the editor's state block, **192 bytes since 2026-08-25 and no longer 128** (val). `GopEdit` kept four things in exactly the desk's window slot: the filename buffer at bytes 44 to 55, the marks pointer at 56, the chapters pointer at 60 and the draft length at 64. They are `ged-name-off` 108, `ged-marks-cell` 120, `ged-chaps-cell` 124 and `ged-draft-len-cell` 128 now, with the draft buffer at 132, and the block grew to hold them. **A test that builds one builds a 192-byte one**, for the reason the `ds` rule below gives. `codex/test/apps/edit-block` is the arm and its census of bytes 44 to 67 is the assertion; the two round trips beside it are the control, because a buffer works perfectly at either offset |
 | 32 | (bare literal) | the tracker's filter |
 | 36 | `desk-console-cell` | pointer: the console's state block |
 | 40 | (bare literal) | the tracker's selected row |
@@ -434,7 +468,43 @@ first two cells of the second half.
 | 64 | `dk-sound-cell` | pointer: the click sound's block (val, 2026-08-21). Its own cells: 0..15 the HDA buffer descriptor list, 16 the rendered PCM buffer, 20 its byte length. Both are read by DMA after `hda-play-pcm-at` returns, so `dk-snd-init` is called from `desk-run` before the base mark for the same reason `grv-init` is |
 | 68 | `dk-sound-on-cell` | are sounds on (0 off, and off is the default) |
 | 72 | `dk-icons-cell` | pointer: the drawn icon set (val, 2026-08-21). Offset 0 is the size every entry was rasterized at and 4..27 are six coverage blobs. `dk-icons-init` runs from `desk-run` before the base mark, for the reason every other pointer here does: a paint's allocations are freed by `desk-loop`'s bracket and a pane exit restores past them |
-| 76..124 | | free |
+| 76 | `dk-task-band-cell` | the taskbar band in DEVICE pixels, measured once by `dk-task-init` from `desk-run` (val, 2026-08-25). Not a pointer, so it needs no allocation before the base mark; it is written after the face loads because the band follows the face. Zero means unwritten and `dk-task-px` falls back to `dk-task-h * ui-wscale w` |
+| 80 | `dk-wr-cell` | pointer: the window registry (val, 2026-08-25). Offset 0 is the count and entry `i` is a focus id at `4 * i + 4`, up to `dk-wr-max` of them. THE ARRAY ORDER IS THE Z ORDER: entry 0 is the bottom, the last entry is the top, and the top is the focused window. Allocated in `desk-run` before the base mark, for the reason every other pointer here is. **`dk-wr-max` is 15, which is the 64-byte block's own bound** (four bytes for the count, four an entry); it was 4, and 4 was the vertical cascade room divided by the step rather than anything about the block |
+| 84 | `dk-cal-cell` | pointer: the Calendar's block (val, 2026-08-25). It uses only the window slot at 44..60; the pane keeps no other state, which is what made it quiet, and a window is the first thing it has ever had to remember |
+| 88 | `dk-dif-cell` | pointer: the Diffusion pane's block (val, 2026-08-25), same shape and for the same reason |
+| 92 | `dk-sty-cell` | pointer: the Appearance pane's block (val, 2026-08-25). Same shape as the two above: the pane's own state is `dk-scheme-cell` and `dk-adorn-cell`, both integers in `ds`, so the window slot is the only thing this block holds |
+| 96 | `dk-trk-cell` | pointer: the Issues pane's block (val, 2026-08-25). Same shape again, and the pane it belongs to keeps state without keeping a block: the filter is bare cell 32 and the selected row bare cell 40, two integers, so there was nothing a window slot could sit in |
+| 100 | `dk-mon-cell` | pointer: the Monitor's block (val, 2026-08-25). The first block that holds something the PAINTER cannot reach as well as the window slot: cell 0 is whether a USB HID keyboard was enumerated and cell 4 whether a mouse was, written once by `desk-mon-open`. `desk-wnd-paint-all` is handed the screen and `ds` and nothing else, so `kbd` and `mouse` are not in scope where this pane's tree is built, and what it wants of them is settled before `desk-run` takes the base mark and cannot change afterwards |
+| 104 | `dk-scene-cell` | pointer: the 3D View's block (val, 2026-08-25). The window slot and nothing else: everything a scene pane keeps lives in `ScenePane`, which `DeskApps` carries, and everything about where it is drawn is derived from the rect these cells hold |
+| 108 | `dk-fish-cell` | pointer: the Aquarium's block, same shape. Two cells and not one shared, because two focus ids over one block is two windows over one rectangle |
+| 112 | `dk-bro-cell` | pointer: the Browser's block (val, 2026-08-25). The window slot and nothing else, for the same reason the two 3D panes' blocks hold nothing else: a heavy pane's own state is a typed record in `DeskApps`, which no cell can hold |
+| 116 | `dk-files-cell` | pointer: the Files pane's block (val, 2026-08-25). The window slot and nothing else; Files' own state is a `FilesState` in `DeskApps`, which no cell can hold. **The Editor needed no new cell**: its window slot is 44 through 60 of the block `desk-edit-cell` has always pointed at, which grew to 192 bytes so those offsets could be the desk's |
+| 120..124 | | free |
+
+**A PILL GOES IN THE TASKBAR TREE, NEVER PAINTED INTO THE BAND** (val,
+2026-08-25). `desk-taskbar-clock` re-renders the whole taskbar subtree once a
+second to repaint the clock, so anything drawn into that band from outside the
+widget tree is erased within a second of appearing. `desk-taskbar` builds one
+button per minimised window from the registry, which also gives the pill its
+hit test for free. The same rule binds anything else that ever wants to live in
+the band.
+
+**AND ANY PATH THAT REPAINTS MUST BRACKET THE CURSOR** (section 5). The arrow
+keeps the pixels it covered so it can put them back, so a repaint underneath a
+shown cursor is undone by that restore the moment the pointer next moves. The
+pill restore shipped without `cursor-hide` in one draft and left a fragment of
+the pill on the band; a capture caught it and no arm could have.
+
+**A `ds` SHORTER THAN 128 BYTES CANNOT LEGALLY HOLD THE CELLS ABOVE 63**, and
+five test chapters were allocating 64 (`browser-pane-fit`, `desk-chrome-icons`,
+`desk-calc-click`, `desk-taskbar-hit`, `desk-style-render`). That predates cell
+76: `dk-icons-cell` is 72 and has been read off a 64-byte block since it was
+added. It never showed because the arena is bump-allocated and 64-aligned, so
+the over-read landed on padding, answered zero, and every reader's
+absent-is-zero branch took over -- which is the same reading a legitimately
+empty cell gives, so no arm could tell them apart. All five now allocate 128,
+which is what `desk-run` allocates. **A test that builds a `ds` builds a
+128-byte one.**
 
 **Cells 0..72 are taken: red took cell 0 for the Review pane on 2026-08-19 and val cells 64, 68 and 72 on 2026-08-21.** The block was grown to 128 bytes for those, so the next pane that needs a cell takes one of 76..124 and adds a row here rather than growing it again. Announce before you take one, the way the file claims
 table in `docs/PM/CurrentPlan.md` asks. Cell 12 was taken by val on 2026-08-18
@@ -445,6 +515,253 @@ merge, because nothing in the tree cross-checks this block.
 
 `dk-mon-tick-cell = 28672` is NOT a `ds` offset. It is an absolute address, read
 as `peek-32 dk-mon-tick-cell 0`.
+
+### The clock pane's own block, which is not `ds` either
+
+`desk-clock-cell` (60) holds a pointer to a 64-byte block, and that block has
+its own split: **0 to 36 are `GopClock`'s and 40 and up are the desk's.**
+Nothing in the tree cross-checks it, which is why it is written here as well as
+in the chapter.
+
+| offset | name | what |
+|---|---|---|
+| 0..36 | | `GopClock`'s, do not take one |
+| 40 | `dk-clkp-last-cell` | the RTC second this pane last painted, a repaint cache |
+| 44 | `dk-wnd-st-cell` | the window state: `dk-wnd-st-normal`, `dk-wnd-st-max` or `dk-wnd-st-min` (val, 2026-08-25). It was `dk-clkp-state-cell` while the clock was the only windowed pane; the Calculator keeps its state at the same offset, so the name is the desk's rather than the clock's. A MINIMISED window stays in the registry and keeps its rect at 48..60; it is simply not drawn and focus skips it, which is why restoring needs no kept rectangle |
+| 48 | `dk-wnd-rx-cell` | the normal rect's x, in DEVICE pixels (val, 2026-08-25) |
+| 52 | `dk-wnd-ry-cell` | its y |
+| 56 | `dk-wnd-rw-cell` | its width, and the unwritten sentinel for all four |
+| 60 | `dk-wnd-rh-cell` | its height |
+
+**44 to 60 are the WINDOW SLOT and every windowed pane reserves the same four
+offsets plus the state**, which is why they are named `dk-wnd-*` and not
+`dk-clkp-*`: the clock was the first pane to have a window and is no longer the
+only one, and a second pane that put its rect somewhere else would need a
+second set of readers. The block is 64 bytes and cell 60 ends at byte 63, so
+**a windowed pane's block is full** and the next thing a window needs (a dock
+edge, a restore rect distinct from the normal one) grows the allocation in
+`desk-run` rather than taking an offset here.
+
+**THE CALCULATOR IS THE SECOND WINDOWED PANE AND THE CONSOLE THE THIRD** (val,
+2026-08-25). The Calculator's block is the one `ds` cell 24 points at, `GopCalc`
+uses offsets 0, 8 and 16 of it; the Console's is the one cell 36 points at,
+`GopConsole` owns 0 through 12 and the desk 16. For both, the window slot at 44
+through 60 is free space the block was already carrying. A pane
+becomes windowed by taking a line in each of `desk-wnd-blk`, `desk-wnd-title`
+and `desk-wnd-tree`, and by having 44 through 60 free in its own block. Nothing
+in the tree cross-checks the second half of that sentence.
+
+**THE LAUNCHER IS THE FOURTH, AND IT ADDED TWO THINGS THE FIRST THREE DID NOT
+NEED** (val, 2026-08-25).
+
+- **`desk-wnd-over` is a FOURTH per-pane fact**, called by `desk-wnd-one` after
+  the window is drawn and handed the laid tree. A pane that paints over its own
+  laid tree cannot do it from its `-draw` any more, because the painter renders
+  every open window and hands the laid trees to nobody. The launcher's icons
+  ride the laid tree rather than the widget tree, for the reason its own section
+  gives, so they have to be drawn where THIS window put them.
+- **`dk-wnd-wants-box` gives a pane the whole content box as its first
+  placement.** The launcher's tree is two columns sized for the region the
+  chrome used to hand it; at three quarters of that box the tail of each column
+  falls past the bottom edge and `comp-render-at` clips it. Measured at 1600x900
+  the first time it was drawn as a window: fourteen entries in the tree, TWELVE
+  on the screen, the Review pane and the Browser gone, and nothing saying so.
+  **No hit test can find this**, because `widget-layout` places a child past its
+  container rather than clipping it (section 5.1), so the arm reports all
+  fourteen reachable under either rect. The layout and the paint disagree and
+  only the paint is what a person can click.
+
+**A TICK REPAINTS ONE WINDOW AND WHATEVER IS OVER IT, NEVER THE DESK** (val,
+2026-08-25). A pane whose content changes on a clock had been calling
+`desk-wnd-paint-all`, which is the chrome and every open window, on the
+reasoning that repainting one pane would erase the window beside it. That is
+true of a pane that paints the screen and false of one that paints inside its
+own rectangle. What it bought was a full-screen rebuild at 1 Hz, and with two
+windows open a person watches the whole desk rebuild itself once a second.
+`desk-wnd-paint-from` starts the walk at that window's registry index, which
+is the z order, so anything over it is redrawn and nothing else is.
+
+**OPENING AND TICKING MUST NOT SHARE A PAINT FUNCTION.** They did, and
+narrowing the tick silently narrowed the open with it: the wall went down,
+the window went on top of it, and the chrome was never drawn at all. It
+looked right for one second, because the next tick drew the chrome under the
+old arrangement. An open paints everything; a tick paints one window.
+
+**AND NOTHING IN THE BAND EXCEPT THE TIME IS REPAINTED ON A TICK.** The
+taskbar clock used to `comp-walk` the whole subtree, redraw the menu icon the
+walk had erased, and only then draw the time -- so once a second the clock was
+ABSENT for the length of the walk, which on a framebuffer with no back buffer
+is what a person sees as the clock flashing. The erase is now `comp-box` over
+the taskbar's own box CLIPPED to the clock's cell, which is not the same as
+filling the cell: a panel's background may be a gradient computed across its
+whole box, so a flat sub-fill would seam.
+
+**THE DESK'S OWN HAND-DRAWN TEXT TAKES THE FACE.** The brand in the top bar,
+the Welcome caption and the taskbar clock were all `gop-draw-text` straight to
+the bitmap grid while every widget beside them was proportional. They go
+through `desk-line` now, and the clock's right edge is measured with
+`gfont-text-w` rather than assumed to be eight pixels a character.
+
+**EVERY PANE IS A WINDOW** (val, 2026-08-25). All fourteen. The last two were
+Files and the Editor, and they took the rect the sweep below had already made
+a parameter.
+
+**A CONVERTED PANE MUST NOT KEEP ITS OWN TITLE BAR.** Both of these drew one
+through `gfl-draw-frame`, with a caption and a close box, and under the
+desk's titlebar that is two bars saying the same word and two `x`es at
+different heights meaning different things. The bar stays and is a LOCATION
+now: the window title says which application, the bar says which directory or
+which file, which is the one thing the title cannot know. `gfl-close-hit` is
+deleted rather than left unreachable, and **the capability that went with it
+is named here rather than left to be noticed** -- that `x` returned from a
+preview to the listing and dismissed the editor's big-file notice, its naming
+prompt and its annotation bubble. Esc does all four, Enter does the first,
+and the window's own close button closes the pane.
+
+**AND THE PANEL GEOMETRY TAKES A RECT NOW, WHICH IS THE OTHER HALF OF THE
+SAME SENTENCE** (val, 2026-08-25). `GopFiles` used to answer where the Files
+panel was in four functions of the SCREEN -- `gfl-px`, `gfl-py`, `gfl-pw`,
+`gfl-ph` -- and `GopEdit` called them, so three chapters agreed about the
+panel by each doing the same arithmetic. They are deleted. Every drawing and
+hit function in both chapters takes a `LayoutRect` instead, and the desk says
+which one: `dk-pane-box` for a pane that owns the desktop, `dk-wnd-content`
+for one that is a window. **A pane becomes a window by being handed the other
+rect**, which is the whole of what is left for those two.
+
+Two things carry the screen as well as the box and it is not an oversight:
+`cursor-update` clamps to the glass, so the functions that put the pointer
+back after a repaint take `w` and `h` too. **The evidence that the sweep
+moved where a panel can be and not what its arithmetic answers is that
+`codex/test/files-parse` and `codex/test/apps/desk-pane-origin` are both
+UNCHANGED across it**, with the rect spelled out in the first as exactly what
+the four deleted functions computed at 1280x800.
+
+**THE CONTENT BOX IS `dk-wnd-content` AND NOTHING COMPUTES IT AGAIN** (val,
+2026-08-25). Read the block, read the window state, take the titlebar off the
+top: six lines that had been written out four times before the Browser wanted
+a fifth. It answers DEVICE pixels, because that is what a pane's own layout
+call and `comp-render-at` both want. Four copies of one arithmetic is how the
+sidebar constant reached four different values in WORKS-35.
+
+**A HEAVY PANE NEEDS ONE THING A LIGHT ONE DOES NOT: IT MUST REPAINT ITSELF
+AFTER A CHROME EVENT** (val, 2026-08-25, the Browser). `desk-wnd-chrome-step`
+answers `stay` after a raise, a Tab cycle or a maximise, and the repaint it
+did on the way draws that window's EMPTY body panel. A 3D pane gets its
+picture back on the next frame; a pane that only redraws on an event has no
+next frame until somebody presses a key, so it would sit blank looking exactly
+like a pane that had crashed. The Browser paints itself on `stay`, at whatever
+rect the event left it.
+
+**A PANE THAT RENDERS A FRAMEBUFFER IS NOT GIVEN A TREE AT ALL. IT IS GIVEN
+A RECT, AND IT PAINTS OVER ITS OWN WINDOW** (val, 2026-08-25, the two 3D
+panes and the Browser). `desk-wnd-tree` answers an empty panel for both, so `dk-wnd-frame`
+draws the border, the titlebar and the three buttons and leaves the content
+box empty; the pane's own loop then writes inside that box at the frame rate.
+The chrome is painted ONCE, at open and on re-entry, and not per frame,
+because nothing in it moves and a frame's budget should not go on pixels that
+did not change.
+
+**The rect is read again before every frame rather than cached**, which is
+what makes a window that was moved or maximised between two frames simply
+correct on the next one. `gsc-place` writes four fields in place: the GPU
+view, the content height, the framebuffer row pointer, and a render target
+rebuilt from buffers that do not move. **The buffers are allocated once at
+the CONTENT BOX size**, the largest rectangle a window here can take, so a
+resize costs two small records rather than a megabyte-scale target; a target
+reallocated per resize would strand the old one above the pane's own heap
+mark until it closed, which is 6.4's LIFO tail reached by pressing a button.
+`codex/test/apps/scene-place` measures the two placements at 1,392 bytes
+against 256,000 for one buffer at its test size.
+
+**A PANE THAT DRAWS TEXT RATHER THAN BUILDING A TREE IS CONVERTED BY GIVING
+IT A TREE, AND THE COST IS WHAT ITS DRAW COULD REACH THAT A TREE CANNOT**
+(val, 2026-08-25, the Monitor). Absolute `gop-draw-text` at an x and a y can read
+anything its caller had; a tree is built by the painter, which is handed the
+screen and `ds`. Three kinds of thing came out of that, and the third is the
+rule: what the tree can compute for itself stays in the arm (the RTC, the
+ACPI walk, the heap frontier); what is a FACT ABOUT THE MACHINE that cannot
+shrink into 32 bits is added to `desk-wnd-tree`'s arguments (`base`, the
+framebuffer address, is 64 bits and there is no `poke-qword`); and what is
+settled before the base mark and cannot change afterwards goes in the block
+(whether a keyboard and a mouse were enumerated). **The block case is the one
+that fails quietly: an unwritten cell reads zero, and zero here is `mailbox`
+and `no`, which is precisely what a machine with no USB HID reports.**
+`codex/test/apps/desk-mon-block` asks the two blocks to DISAGREE for that
+reason; either reading alone is unfalsifiable.
+
+**AND THE FIFTH FACT IS THAT A PANE'S TREE MAY BE A FUNCTION OF THE ROOM IT
+WAS GIVEN, WHICH IS WHY `desk-wnd-tree` TAKES THE SCREEN** (val, 2026-08-25).
+The Issues table is built at the height the layout engine measured for it
+(WORKS-23), and inside a window that room is the window's content box rather
+than the pane's, so the arm needs `w`, `h` and `tf` to find it.
+`desk-wnd-one` is the only caller and had all three, which is what made the
+widening three lines. The trap underneath is that the measuring pass and the
+paint must agree: a table measured against the whole chrome pages for a
+height nothing draws at, and the reader gets a page size that matches no
+rectangle on the screen.
+
+**THE BIGGER SCREEN IS THE TIGHTER ONE, BY NEARLY HALF, AND EVERY CLIPPED LINE
+SO FAR WAS CLIPPED AT 1600** (val, 2026-08-25). A tree is laid out in LOGICAL
+pixels and `ui-wscale` is 1 below 1600 and 2 at or above it, so in the units a
+tree is measured in the whole content box goes from 1120 by 728 at 1280x800 to
+640 by 400 at 1600x900, and three quarters of it goes from 840 by 546 to 480 by
+300. Every instinct says to check the small size. The Calendar lost
+`Esc returns.` at 1600 and showed it at 1280; the Diffusion pane lost its whole
+status row the same way. **Look at a converted pane at BOTH sizes and expect
+the large one to be where it breaks.**
+
+**AND A FULL-BOX WINDOW IS STILL ONE TITLEBAR SHORT OF THE PANE IT REPLACES.**
+The content box is what a chrome-painted pane was given whole; a window inside
+it must spend `dk-wnd-bar-h` on its own titlebar, so a tree that exactly filled
+the region overflows by about a line the moment it is windowed. Measured
+against a depot-built control, that is what cost the Diffusion pane its last
+line even with `dk-wnd-wants-box`. The repair was to delete the line rather
+than to find room for it: `Esc returns.` is a hint about the only way out, and
+a windowed pane has a close button, a menu and Esc.
+
+**THE CASCADE WRAPS, AND EACH AXIS WRAPS IN ITS OWN ROOM** (val, 2026-08-25).
+The default rect is three quarters of the content box centred, so the free
+margin on each side is an eighth of the box, and an offset past it hangs the
+window off the screen. Measured at 1280x800 the box is 1120 by 728, the margins
+are 140 and 91 against a step of 24, and **the fifth window's offset of 96
+already left the box vertically -- which is why `dk-wr-max` was 4.** Wrapping
+both axes together would be worse than not wrapping: the window after the wrap
+lands exactly under the first, which is the collision the cascade exists to
+prevent and which nothing but a photograph has ever caught. Separate spans, 6
+and 4 at 1280x800, repeat only after twelve. `desk-window-registry`'s
+`cascade at` rows ask for the worst offset against both margins AND for the
+number of distinct positions, because a single span passes the first and fails
+the second.
+
+**THE SYSTEM MENU SHARES THE LAUNCHER'S BLOCK AND MUST NOT BE GIVEN A
+`desk-wnd-blk` ARM.** Sharing `desk-prog-cell` is deliberate and is what makes a
+row chosen in one presentation the row chosen in the other. A window slot is not
+shared state of that kind: two focus ids over one block is two windows over one
+rectangle, which no registry row can express.
+
+**A MISSING `desk-wnd-blk` ARM ANSWERS ZERO, AND ZERO IS A WRITABLE ADDRESS**
+(the same trap section 2's rule already names for an unwritten `ds` cell). The
+window then places itself over physical page zero, reads its rect back from
+whatever else lives there, and lands on the never-placed default -- so it draws,
+it looks plausible, and it sits exactly where the first window sits. No count,
+top or array order can see it. `codex/test/apps/desk-window-registry`'s
+`three open` row asks for the block by identity and the positions pairwise for
+this reason; sabotaged, three of its fields move and every registry field
+stays put.
+
+**Width is the sentinel and it is the only one of the four that can be.** A
+zero x or y is a legal position on this screen; a zero width is not a window.
+So an untouched block reads as never-placed and `dk-wnd-rx` and its three
+siblings answer the arithmetic over the content box instead, which is exactly
+what they answered before a rectangle could be stored at all --
+`desk-window-frame`'s first ten rows are unchanged across that change and are
+the calibration that says so.
+
+The window state is here rather than in `ds` because it is a fact about THIS
+pane's window: the next pane to get a window keeps its own, and a `ds` cell
+would make one window's state the desk's. An unwritten cell reads zero, which
+is `dk-wnd-st-normal`, so a pane that never touches it opens at the
+three-quarter rect.
 
 ### The rule
 
@@ -617,8 +934,13 @@ model of the split.
 - **A launcher row is not free.** `gpr-split` in `GopPrograms` is an ENTRY
   INDEX that must land on a group boundary, so inserting before it moves the
   cut and the second column loses its heading. Appending at the end is free.
-- **The sidebar is full.** It held thirteen at 1024x768 and that is why the
-  launcher exists. A new pane costs a launcher row, not a sidebar button.
+- **There is no sidebar.** It was deleted 2026-08-25 (Damian: *"lets remove
+  the whole left pane, put the shutdown option inside the cobblestone menu
+  pill on the bottom so it acts more like the start menu than a full screen
+  app"*). A new pane costs a launcher row and nothing else, which is what the
+  launcher existed for even before the column ran out at thirteen. `Programs`,
+  `Files`, `Edit` and `Console` were already rows in `gpr-entries`, so only
+  `Shutdown` had to move, and it moved into the start menu.
 
 ## 5. Painting under the cursor
 

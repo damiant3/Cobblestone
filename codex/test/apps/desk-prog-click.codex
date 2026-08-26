@@ -1,0 +1,136 @@
+Chapter: DeskProgClickTest
+  cites Works chapter GopDesk
+  cites Works chapter GopPrograms
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Event
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Every launcher entry is reachable with the pointer, and it is reachable at
+ the place the launcher's WINDOW put it.
+
+ `desk-calc-click` is the model and the reason this is a second file rather
+ than four more rows in that one is that the launcher fails differently. Its
+ answer is not applied to a state block, it is a SCANCODE handed back to
+ `desk-dispatch`, so a hit test one row out does not misprint a digit: it
+ opens the wrong application. Measured 2026-08-25 by laying the tree out the
+ old way -- at the screen corner under the full-width chrome -- and clicking
+ the Calculator row of a launcher window at 1600x900: the Aquarium opened.
+ A real app, no error, and nothing short of a photograph of the result can
+ see it.
+
+ The scan hoists the layout out of the probe for the reason `desk-calc-click`
+ gives, and the spot checks below go through `dk-prog-hit` itself so the
+ bundled function is not left untested.
+
+ THE PLACED ROW IS WHAT MAKES THE OTHERS MEAN ANYTHING, and it is the same
+ defect `desk-calc-click` records against `ds` cell 24. `dk-prog-hit` reads
+ the launcher's block out of `desk-prog-cell` to find the window rect. An
+ unwritten cell reads zero, zero is a writable address, and address zero
+ reads back as zeros -- which is `dk-wnd-st-normal` with a width of zero,
+ the never-placed sentinel, so the WRONG block yields exactly the default
+ rect the right block yields. Every row above agrees under both. The last row
+ places a window on its own block and asks the same question there, where
+ the default and the placed rect disagree.
+
+Section: Test
+
+  ph-at : WidgetNode, Integer, Integer -> Integer
+  ph-at (laid) (x) (y) =
+    when ev-hit-widget laid x y
+      is Just (wgt) -> gpr-id-scan (wgt.wn-id) 0
+      is None -> 0
+
+  ph-row : WidgetNode, Integer, Integer, Integer -> Integer
+  ph-row (laid) (seen) (x) (y) =
+    if x >= 1024 then 0
+    else let sc = ph-at laid x y
+    in let p = if sc > 0 & sc < 64 then poke-byte seen sc 1 else 0
+    in ph-row laid seen (x + 8) y
+
+  ph-grid : WidgetNode, Integer, Integer -> Integer
+  ph-grid (laid) (seen) (y) =
+    if y >= 768 then 0
+    else let r = ph-row laid seen 0 y
+    in ph-grid laid seen (y + 8)
+
+  ph-seen : Integer, Integer, Text -> Text
+  ph-seen (seen) (i) (acc) =
+    if i >= 64 then acc
+    else if peek-byte seen i == 1 then ph-seen seen (i + 1) (acc & " " & integer-to-text i)
+    else ph-seen seen (i + 1) acc
+
+  ph-yn : Boolean -> Text
+  ph-yn (v) = if v then "yes" else "no"
+
+ The first logical point that hits any entry, used by the scale row the same
+ way `desk-calc-click` uses it: above 1600 the tree lays out in logical
+ pixels at half the panel while the pointer arrives in device pixels, and a
+ wrong divide is invisible to a scale-1 sweep.
+
+  ph-first-row : WidgetNode, Integer, Integer -> Integer
+  ph-first-row (laid) (x) (y) =
+    if x >= 960 then 0 - 1
+    else if ph-at laid x y /= 0 then x
+    else ph-first-row laid (x + 4) y
+
+  ph-first : WidgetNode, Integer -> Integer
+  ph-first (laid) (y) =
+    if y >= 540 then 0 - 1
+    else let x = ph-first-row laid 0 y
+    in if x >= 0 then x * 1000 + y else ph-first laid (y + 4)
+
+ The window's content box in LOGICAL units, which is what `comp-render-at`
+ lays a window's tree out in and therefore what `dk-prog-hit` divides into.
+ The titlebar comes off the top, because the tree starts below it.
+
+  ph-tree : Integer, Integer, Integer, Integer -> WidgetNode
+  ph-tree (ps) (w) (h) (ds) =
+    let s = ui-wscale w
+    in let st = dk-wnd-st ps
+    in let bh = dk-wnd-bar-h gfont-none s
+    in let wx = dk-wnd-rx ps w st
+    in let wy = dk-wnd-ry ps w h st ds + bh
+    in let ww = dk-wnd-rw ps w st
+    in let wh = dk-wnd-rh ps w h st ds - bh
+    in widget-layout (gpr-tree ps) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
+
+  opening : [Console] Nothing =
+    let ps = alloc-zeroed 64 64
+    in let seen = alloc-zeroed 64 64
+    in let ds = alloc-zeroed 128 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let gp = poke-32 ds desk-gpu-cell 1
+    in let pp = poke-32 ds desk-prog-cell ps
+    in let laid = ph-tree ps 1024 768 ds
+    in let g = ph-grid laid seen 0
+    in let hd-tree = ph-tree ps 1920 1080 ds
+    in let hd-p = ph-first hd-tree 0
+    in let hd-x = hd-p / 1000
+    in let hd-y = int-mod hd-p 1000
+    in let hd-logical = if hd-p < 0 then 0 else ph-at hd-tree hd-x hd-y
+    in let hd-device = if hd-p < 0 then 0 else dk-prog-hit 1920 1080 ps (hd-x * 2) (hd-y * 2) ds gfont-none
+    in let ps2 = alloc-zeroed 64 64
+    in let ds2 = alloc-zeroed 128 64
+    in let ap2 = poke-32 ds2 dk-adorn-cell dk-adorn-default
+    in let gp2 = poke-32 ds2 desk-gpu-cell 1
+    in let pp2 = poke-32 ds2 desk-prog-cell ps2
+    in let pl = dk-wnd-place ps2 (dk-wnd-x 1024 dk-wnd-st-normal + 40) (dk-wnd-y 1024 768 dk-wnd-st-normal ds2 + 24) 300 260
+    in let pl-tree = ph-tree ps2 1024 768 ds2
+    in let pl-p = ph-first pl-tree 0
+    in let pl-x = pl-p / 1000
+    in let pl-y = int-mod pl-p 1000
+    in let pl-ref = if pl-p < 0 then 0 else ph-at pl-tree pl-x pl-y
+    in let pl-hit = if pl-p < 0 then 0 else dk-prog-hit 1024 768 ps2 pl-x pl-y ds2 gfont-none
+    in act
+      print-line-uni ("reachable" & ph-seen seen 0 "")
+      print-line-uni ("miss sc=" & integer-to-text (dk-prog-hit 1024 768 ps 0 0 ds gfont-none))
+      print-line-uni ("sidebar sc=" & integer-to-text (dk-prog-hit 1024 768 ps 60 300 ds gfont-none))
+      print-line-uni ("hd logical == device: " & ph-yn (hd-logical /= 0 & hd-logical == hd-device))
+      print-line-uni ("placed: reference " & integer-to-text pl-ref & " hit " & integer-to-text pl-hit & " agree " & ph-yn (pl-ref /= 0 & pl-ref == pl-hit))
+      print-line-uni ("title " & desk-wnd-title desk-focus-prog & "  block " & ph-yn (desk-wnd-blk desk-focus-prog ds == ps))
+    end
+
+Page 1

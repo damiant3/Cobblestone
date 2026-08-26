@@ -8,11 +8,13 @@ Chapter: DeskLeadingMetricsTest
 
  ShellRefinement recorded the desk's paragraph leading as a HYPOTHESIS from a
  photograph: too much leading, cause guessed as a line step computed from
- `comp-glyph-h`. The step is `dk-line-h`, a fixed 18 scaled by the desk scale,
- and it never consults the face. This prints the face's own metrics beside it
- so the gap is a number rather than an adjective. Measured 2026-08-21 the step
- is 36 against a face cell of 41, so it is TIGHTER than the face, and the fix
- as recorded would have loosened it.
+ `comp-glyph-h`. The step was `dk-line-h`, a fixed 18 scaled by the desk
+ scale, consulting the face never. This prints the face's own metrics beside
+ it so the gap is a number rather than an adjective. Measured 2026-08-21 that
+ step was 36 against a face cell of 41, so it was TIGHTER than the face and
+ the fix as recorded would have loosened it; at ppem 16 the same constant was
+ 36 against a cell of 21, half again too loose. One constant, wrong in both
+ directions, which is what `dk-line-step` reading `gf-gh` replaced.
 
  WHAT THE GATED RUN PROVES IS NOT THE LEADING. `seed/Codex.img` carries no
  typeface on purpose, and the battery attaches no disk here, so the recorded
@@ -22,17 +24,46 @@ Chapter: DeskLeadingMetricsTest
  it, which needs an image built by `build-boot-img.ps1`. Do not read a green
  here as the leading being settled (L-NAMED).
 
- The ppem is the one `desk-font` loads at, `comp-glyph-h * ui-wscale w`, and
- the width is the desk's default. Reading them off the same expressions the
- desk uses is the point: a constant copied here would measure this chapter.
+ The ppem is the one `desk-font` loads at, `dk-ui-ppem w`, and the width is
+ the desk's default. Reading them off the same expressions the desk uses is
+ the point: a constant copied here would measure this chapter.
 
   dlm-w : Integer = 1600
+
+ Stage 9.5 asks for SMALL type, and "small" is an adjective until the face has
+ been asked what each ppem actually costs in rows (L-ADJECTIVE). The sweep
+ answers the only three numbers a layout cares about, per ppem: the cell the
+ rasterizer produces, the ascent, and the cap height, which is what a reader
+ perceives as the size of the type. It also prints the width of one string, so
+ a ppem that is unusably narrow shows up as an advance and not as a look.
+
+  dlm-pad : Text, Integer -> Text
+  dlm-pad (t) (n) = if text-length t >= n then t else dlm-pad (t & " ") n
+
+  dlm-row : GopFont, Integer -> Text
+  dlm-row (f) (ppem) =
+    dlm-pad ("ppem " & integer-to-text ppem) 10
+    & dlm-pad ("cell " & integer-to-text (f.gf-gh)) 10
+    & dlm-pad ("asc " & integer-to-text (f.gf-asc)) 9
+    & dlm-pad ("cap " & integer-to-text (f.gf-cap)) 9
+    & "CODEX wide " & integer-to-text (gfont-text-w f "CODEX")
+
+  dlm-sweep : Fat16Volume, List Integer, Integer, Integer -> [Console, Device.Port] Integer
+  dlm-sweep (vol) (ppems) (i) (n) =
+    if i >= n then i
+    else act
+      f <- gfont-load vol "CMUNSS.TTF" (list-at ppems i)
+      r <- if f.gf-ok == False
+        then print-line-uni ("ppem " & integer-to-text (list-at ppems i) & ": not loaded")
+        else print-line-uni (dlm-row f (list-at ppems i))
+      dlm-sweep vol ppems (i + 1) n
+    end
 
   opening : [Console, Device.Port] Nothing = act
     m <- gfat-mount-esp
     if m.gm-ok == False then print-line-uni "no FAT volume on the boot medium"
     else act
-      let ppem = comp-glyph-h * ui-wscale dlm-w
+      let ppem = dk-ui-ppem dlm-w
       in let s = ui-scale dlm-w
       in act
         f <- gfont-load (m.gm-vol) "CMUNSS.TTF" ppem
@@ -43,8 +74,12 @@ Chapter: DeskLeadingMetricsTest
           print-line-uni ("face cell gf-gh       : " & integer-to-text (f.gf-gh))
           print-line-uni ("face ascent gf-asc    : " & integer-to-text (f.gf-asc))
           print-line-uni ("face cap gf-cap       : " & integer-to-text (f.gf-cap))
-          print-line-uni ("current step 18 * s   : " & integer-to-text (dk-line-h * s))
-          print-line-uni ("step minus face cell  : " & integer-to-text (dk-line-h * s - f.gf-gh))
+          print-line-uni ("step dk-line-step     : " & integer-to-text (dk-line-step f s))
+          print-line-uni ("bitmap step 18 * s    : " & integer-to-text (dk-line-h * s))
+          print-line-uni ("step minus face cell  : " & integer-to-text (dk-line-step f s - f.gf-gh))
+          print-line-uni "ppem sweep:"
+          q <- dlm-sweep (m.gm-vol) [10, 12, 14, 16, 18, 20, 24, 32] 0 8
+          print-line-uni ("sweep rows            : " & integer-to-text q)
         end
       end
     end

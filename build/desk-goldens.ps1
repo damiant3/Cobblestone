@@ -5,7 +5,7 @@
 # reaches every pane at once and there is no unit test that can say so. The
 # acceptance criterion for such a change is this sweep: every pane that the
 # change does not concern must hash IDENTICALLY before and after, and only the
-# panes it does concern may move. A change that moves all fourteen has done
+# panes it does concern may move. A change that moves all eighteen has done
 # something its author did not intend, and that is the reading this exists to
 # make cheap.
 #
@@ -47,7 +47,7 @@
 # bitmap face and the whole proportional path is DORMANT. Captures taken that
 # way are a baseline of the bitmap face and they are perfectly stable, which is
 # exactly what makes this quiet: a typography change measured against them
-# reports fourteen identical panes and reads as "my change did nothing".
+# reports eighteen identical panes and reads as "my change did nothing".
 #
 # So for anything touching type, pass an image built WITH a font:
 #   build/build-boot-img.ps1 ...        (defaults to fonts/cc0/cmunss.ttf)
@@ -109,11 +109,33 @@ $Panes = [ordered]@{
     'style'          = '6000:30'
     'programs'       = '6000:25'
     'clock'          = '6000:37'
+    'diffusion'      = '6000:32'
+    'edit'           = '6000:18'
+    'menu'           = '6000:41'
     'browser'        = '6000:48'
     'browser-key'    = '6000:48;9000:30'
     'browser-newtab' = '6000:48;9000:29;9200:20;9400:157'
     'browser-scroll' = '6000:48;9000:81'
 }
+
+# WHICH PANES ARE OUT, AND WHY. `desk-dispatch` opens sixteen panes by
+# scancode; this table takes fourteen of them and the desk itself. The two it
+# leaves out are `scene` (4) and `fish` (16), and they are out because they
+# CANNOT be hashed, not because nobody got to them: both route to
+# `desk-scene-step`, which animates, so two boots of one kernel disagree.
+# Measured 2026-08-24 at 1600x900 with the clock frozen, two boots each:
+#
+#   diffusion  STABLE     edit  STABLE     menu  STABLE
+#   scene      UNSTABLE (13552D4E vs 0F791215)
+#   fish       UNSTABLE (88C4ECE0 vs DC6E1DBD)
+#
+# An omission nobody wrote down reads as coverage, which is what this block is
+# for. `diffusion`, `edit` and `menu` had been dispatchable since before this
+# script was written (checked against GopDesk.codex@18127) and were simply
+# never in it, so any fleet-wide widget change that broke the editor or the
+# system menu passed the acceptance test in silence. A golden over an animated
+# pane would flake instead, so those two want a different instrument and not a
+# row here.
 
 # WHAT THE THREE BROWSER EVENT ARMS ARE FOR, and read this before deciding one
 # of them is broken because it agrees with another.
@@ -145,13 +167,19 @@ $Relations = @(
     @{ a = 'browser'; b = 'browser-newtab'; same = $false;
        why = 'Ctrl+T must open a tab; identical here means keys are not arriving' },
     @{ a = 'browser'; b = 'browser-scroll'; same = $false;
-       why = 'Page Down must move the page; identical here means the scroll is dead' }
+       why = 'Page Down must move the page; identical here means the scroll is dead' },
+    @{ a = 'desk'; b = 'diffusion'; same = $false;
+       why = 'scancode 32 must open the Diffusion pane; identical here means it never opened' },
+    @{ a = 'desk'; b = 'edit'; same = $false;
+       why = 'scancode 18 must open the editor; identical here means it never opened' },
+    @{ a = 'desk'; b = 'menu'; same = $false;
+       why = 'scancode 41 must open the system menu; identical here means it never opened' }
 )
 
 function Suffix { "$Width" + 'x' + "$Height" }
 
 # -Pane narrows the sweep. The scale-pair arm needs one pane at two geometries,
-# which is two boots; sweeping all fourteen twice is twenty-eight for no gain.
+# which is two boots; sweeping all eighteen twice is thirty-six for no gain.
 function Pane-Ids {
     $all = @($Panes.Keys)
     if (-not $Pane -or $Pane.Count -eq 0) { return $all }

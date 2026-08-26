@@ -52,11 +52,17 @@ but reading is also what put one of them in wrong in the first place.
 
 ## Drawable, and what I would take first
 
-Three rows are mine and unblocked:
+**Re-checked 2026-08-25. 1.41 is CLOSED and the lane was checkpointed**: all 56
+plugs rebuilt against seed C9395985, 6 of 6 oracle-wired pass 49 of 49, all 50
+`-Src` plugs emit. The account is in `plugs-backlog.md` under "Last full
+checkpoint". Two rows are mine and unblocked:
 
-- **1.41** -- a per-byte receive accumulate costs 116.77 s per 16 MB, and the
-  shape is still in several harnesses. A measured symptom with a real cost.
-  This is the one to take first.
+- **1.41 -- DONE** (reek, main 19203/19227). The elf MAP tail is fixed and the
+  per-line `Add-Content` beside it, which was the bigger cost by far. What the
+  row surfaced instead is that `extract-x86-output.ps1` is dead in both halves
+  and cannot be repaired by transport: the `ELF` mode header does not exist in
+  the compiler. That is a DELETE-or-rebuild call, recorded in 1.41 and in
+  `CurrentPlan`, and it is not a plugs fix.
 - **1.29** -- three stale ARM64 load-address constants, whose only reader is
   `arm64-build-elf`, a second ELF builder nothing invokes beside the
   PowerShell one the cross bed uses. Turns on a DELETION call that a

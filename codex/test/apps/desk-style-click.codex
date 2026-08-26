@@ -1,0 +1,136 @@
+Chapter: DeskStyleClickTest
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Event
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Every Appearance row is reachable with the pointer, at the place the pane's
+ WINDOW put it.
+
+ `desk-prog-click` is the model and the reason this is a third file rather than
+ rows in that one is what a miss costs here. The launcher's wrong answer opens
+ the wrong application, which is loud; this pane's rows are the colour scheme,
+ four adornment bits and the sound, so a hit test one row out flips a DIFFERENT
+ setting and the pane repaints looking exactly as if it had worked. There is no
+ arm anywhere that watched this: `dk-style-hit` had no test at all before the
+ pane became a window.
+
+ The scan hoists the layout out of the probe for the reason `desk-calc-click`
+ gives, and the spot checks go through `dk-style-hit` itself so the bundled
+ function is not left untested.
+
+ THE PLACED ROW IS WHAT MAKES THE OTHERS MEAN ANYTHING. `dk-style-hit` reads
+ the pane's block out of `dk-sty-cell` to find the window rect; an unwritten
+ cell reads zero, address zero reads back as zeros, and zeros are
+ `dk-wnd-st-normal` with a width of zero -- the never-placed sentinel -- so the
+ WRONG block yields exactly the default rect the right block yields. Every row
+ above agrees under both. The last row places a window on its own block, where
+ the default and the placed rect disagree.
+
+ The codes are `dk-style-id-code`'s: 1 the colour scheme, 2 borders, 3
+ gradients, 4 shadows, 5 rounded corners, 6 sounds. Six rows and six codes, so
+ a row that stopped being reachable is a code that stops appearing.
+
+ Sabotaged by laying the tree out the old way -- at the screen corner under the
+ full-width chrome -- two rows move and `reachable` does not: the scale row goes
+ to no, and the placed row reads `reference 1 hit 5`, which is a click on the
+ colour scheme answering ROUNDED CORNERS. That is the whole point of the file.
+ A sweep sees six codes under both arms, so nothing short of asking the two
+ layouts to agree at a placed rectangle can tell them apart.
+
+Section: Test
+
+  sh-at : WidgetNode, Integer, Integer -> Integer
+  sh-at (laid) (x) (y) =
+    when ev-hit-widget laid x y
+      is Just (wgt) -> dk-style-id-code (wgt.wn-id)
+      is None -> 0
+
+  sh-row : WidgetNode, Integer, Integer, Integer -> Integer
+  sh-row (laid) (seen) (x) (y) =
+    if x >= 1024 then 0
+    else let sc = sh-at laid x y
+    in let p = if sc > 0 & sc < 64 then poke-byte seen sc 1 else 0
+    in sh-row laid seen (x + 8) y
+
+  sh-grid : WidgetNode, Integer, Integer -> Integer
+  sh-grid (laid) (seen) (y) =
+    if y >= 768 then 0
+    else let r = sh-row laid seen 0 y
+    in sh-grid laid seen (y + 8)
+
+  sh-seen : Integer, Integer, Text -> Text
+  sh-seen (seen) (i) (acc) =
+    if i >= 64 then acc
+    else if peek-byte seen i == 1 then sh-seen seen (i + 1) (acc & " " & integer-to-text i)
+    else sh-seen seen (i + 1) acc
+
+  sh-yn : Boolean -> Text
+  sh-yn (v) = if v then "yes" else "no"
+
+  sh-first-row : WidgetNode, Integer, Integer -> Integer
+  sh-first-row (laid) (x) (y) =
+    if x >= 960 then 0 - 1
+    else if sh-at laid x y /= 0 then x
+    else sh-first-row laid (x + 4) y
+
+  sh-first : WidgetNode, Integer -> Integer
+  sh-first (laid) (y) =
+    if y >= 540 then 0 - 1
+    else let x = sh-first-row laid 0 y
+    in if x >= 0 then x * 1000 + y else sh-first laid (y + 4)
+
+ The window's content box in LOGICAL units, which is what `comp-render-at` lays
+ a window's tree out in and therefore what `dk-style-hit` divides into.
+
+  sh-tree : Integer, Integer, Integer -> WidgetNode
+  sh-tree (w) (h) (ds) =
+    let s = ui-wscale w
+    in let blk = peek-32 ds dk-sty-cell
+    in let st = dk-wnd-st blk
+    in let bh = dk-wnd-bar-h gfont-none s
+    in let wx = dk-wnd-rx blk w st
+    in let wy = dk-wnd-ry blk w h st ds + bh
+    in let ww = dk-wnd-rw blk w st
+    in let wh = dk-wnd-rh blk w h st ds - bh
+    in widget-layout (dk-style-tree (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell) (peek-32 ds dk-sound-on-cell)) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
+
+  opening : [Console] Nothing =
+    let seen = alloc-zeroed 64 64
+    in let ds = alloc-zeroed 128 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let gp = poke-32 ds desk-gpu-cell 1
+    in let sp = poke-32 ds dk-sty-cell (alloc-zeroed 64 64)
+    in let laid = sh-tree 1024 768 ds
+    in let g = sh-grid laid seen 0
+    in let hd-tree = sh-tree 1920 1080 ds
+    in let hd-p = sh-first hd-tree 0
+    in let hd-x = hd-p / 1000
+    in let hd-y = int-mod hd-p 1000
+    in let hd-logical = if hd-p < 0 then 0 else sh-at hd-tree hd-x hd-y
+    in let hd-device = if hd-p < 0 then 0 else dk-style-hit 1920 1080 (hd-x * 2) (hd-y * 2) ds gfont-none
+    in let ds2 = alloc-zeroed 128 64
+    in let ap2 = poke-32 ds2 dk-adorn-cell dk-adorn-default
+    in let gp2 = poke-32 ds2 desk-gpu-cell 1
+    in let sp2 = poke-32 ds2 dk-sty-cell (alloc-zeroed 64 64)
+    in let blk2 = peek-32 ds2 dk-sty-cell
+    in let pl = dk-wnd-place blk2 (dk-wnd-x 1024 dk-wnd-st-normal + 40) (dk-wnd-y 1024 768 dk-wnd-st-normal ds2 + 24) 300 260
+    in let pl-tree = sh-tree 1024 768 ds2
+    in let pl-p = sh-first pl-tree 0
+    in let pl-x = pl-p / 1000
+    in let pl-y = int-mod pl-p 1000
+    in let pl-ref = if pl-p < 0 then 0 else sh-at pl-tree pl-x pl-y
+    in let pl-hit = if pl-p < 0 then 0 else dk-style-hit 1024 768 pl-x pl-y ds2 gfont-none
+    in act
+      print-line-uni ("reachable" & sh-seen seen 0 "")
+      print-line-uni ("miss sc=" & integer-to-text (dk-style-hit 1024 768 0 0 ds gfont-none))
+      print-line-uni ("sidebar sc=" & integer-to-text (dk-style-hit 1024 768 60 300 ds gfont-none))
+      print-line-uni ("hd logical == device: " & sh-yn (hd-logical /= 0 & hd-logical == hd-device))
+      print-line-uni ("placed: reference " & integer-to-text pl-ref & " hit " & integer-to-text pl-hit & " agree " & sh-yn (pl-ref /= 0 & pl-ref == pl-hit))
+      print-line-uni ("title " & desk-wnd-title desk-focus-style & "  block " & sh-yn (desk-wnd-blk desk-focus-style ds == peek-32 ds dk-sty-cell))
+    end
+
+Page 1

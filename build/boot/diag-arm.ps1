@@ -815,7 +815,7 @@ $expected = [ordered]@{
     'asde-ctrlro' = 'asde=ctrl-ro with -e1000-ctrl-ro: a bit we cleared reads back set, so nothing this stage wrote was written and both arms are void'
     'b3-noaddr' = 'b3=no-address: a peer named with no ip=, so there is no address to dial FROM and the stage refuses instead of inventing one'
     'b3-clockstuck' = 'b3=clock-stuck with -hpet-frozen: the HPET window reads all-ones, a bogus nonzero rate over a counter that never moves, and the clock control at b3 entry refuses before bring-up; the three nic stages are off by cfg so nothing ahead of b3 spends its fuel on the same stuck clock'
-    'b3-banklost' = 'b3 bank lost at reset-imc-again with -usb-bot-die-len 5632 -usb-bot-die-lba 3400: the medium dies on the first 11-sector bank write, which is b3 SEVENTH note, the step says so on serial the moment its note is refused (and paints BANK LOST AT reset-imc-again in the bad colour), every note before it banked and every note after it reads banked=-1, and the medium itself ends at the step before; the summary says bank=lost at=b3. Sitting 11 shape: the glass names where the medium DIED, not where the ladder noticed'
+    'b3-banklost' = 'b3 bank lost inside the reset sequence with -usb-bot-die-len 5632 -usb-bot-die-lba 3400: the medium dies on the first 11-sector bank write, one of the b3 reset-* notes (WHICH one drifts run to run with the digit widths in the note text, so the arm derives it from the trail instead of naming it), the step says so on serial the moment its note is refused, every note before it banked and every note after it reads banked=-1, and the medium itself ends at the step immediately before the refused one; the summary says bank=lost at=b3. Sitting 11 shape: the glass names where the medium DIED, not where the ladder noticed'
     'b3-dhcp'  = 'b3=ok with ip=dhcp: the address is LEARNED from the segment and the row proves it, carrying addr=dhcp and the lease the NAT handed out (ip=10.0.2.15 gw=10.0.2.2). The lease facts are what a guess cannot produce'
     'b3-nolease' = 'b3=no-lease with ip=dhcp and -e1000 alone: the card is present and the link is up, and with no NAT there is no DHCP server, so the stage says the SEGMENT did not answer rather than blaming DIAG.CFG. The falsifier for the state'
     'k1-taken' = 'pchk1=taken with -i219: the part powers up at the campaign condition (K1 enabled, Giga_K1_disable clear) and the readback after e1000-init shows the disable bit SET, so the driver step landed'
@@ -1653,9 +1653,37 @@ foreach ($name in $names) {
             # under test and not to an ordinal: every bank rewrite takes a fresh
             # cluster (census: lba 3489, 3494, 3500, ... climbing) and its length
             # steps with the file, so -usb-bot-die-len 5632 at lba >= 3400 is
-            # the first ELEVEN-SECTOR file write, which by the measured note
-            # sizes (4788 .. 5460 bytes across b3) is the seventh b3 note,
-            # reset-imc-again at 5141 bytes. The bank's FAT and directory writes
+            # the first ELEVEN-SECTOR file write.
+            #
+            # RE-DERIVED 2026-08-24 (blu), AND THE KEY HAD 20 BYTES OF MARGIN.
+            # Eleven sectors begins at 5121 bytes. This block used to say the
+            # first eleven-sector write was the SEVENTH note, reset-imc-again at
+            # 5141 bytes -- twenty bytes above the boundary. Measured off the
+            # dying medium today that same note lands at 5107, a 34-byte drift,
+            # which makes it a TEN-sector write; the first eleven-sector write is
+            # now the EIGHTH note, reset-icr, and the medium ends at
+            # reset-imc-again. The arm went red on main's own shipping diag.img
+            # (1190FD4C), the image the ledger certified at arms=46 on
+            # 2026-08-22, with neither the image nor this script changed since.
+            # The bank size also drifts run to run (5106, 5107, 5108 measured
+            # across three runs of the same image), so the margin was only ever
+            # a few notes' worth of digits in the heap= and hpet= fields.
+            #
+            # THE EXPECTED NOTE IS DERIVED FROM THE TRAIL, NOT NAMED (taken
+            # 2026-08-25 at the Update 50 release, red, after the re-pinned
+            # literal went red a second time in one day: the bank size drifts
+            # run to run, so a fixed note name sits at the edge of a working
+            # band by construction, the header's own sink-drop lesson). The
+            # arm requires the first refused note to be one of b3's reset-*
+            # steps and the medium's last note to be the step immediately
+            # before it ON SERIAL. Every falsifiable claim stands: the death
+            # lands inside the reset sequence, the step says so the moment
+            # its note is refused, the banked flags flip exactly at the
+            # death, and the glass ordinal matches the serial trail. What is
+            # no longer asserted is WHICH reset step dies, which was never
+            # the arm's subject.
+            #
+            # The bank's FAT and directory writes
             # sit at 2049 and 2153, below the key, and the sink is deferred last.
             $port = Get-FreePort
             $job = Start-Peer $port 'echo'
@@ -1682,7 +1710,11 @@ foreach ($name in $names) {
                 elseif (-not $lost.Count) { $v = 'no "b3 bank lost at" line: the step never said its note was refused' }
                 else {
                     $first = [regex]::Match($lost[0], '^b3 bank lost at (.+)$').Groups[1].Value
-                    if ($first -ne 'reset-imc-again') { $v = "the first refused note is [$first], wanted reset-imc-again: the die landed on a different write, re-derive the key from the census" }
+                    $firstIdx = -1
+                    for ($i = 0; $i -lt $notes.Count; $i++) { if ([regex]::Match($notes[$i], '^b3 entering (.+?) (ctrl=\d+ |settled=\d+ )?heap=\d+ banked=(-?\d+)$').Groups[1].Value -eq $first) { $firstIdx = $i; break } }
+                    if ($first -notlike 'reset-*') { $v = "the first refused note is [$first], not one of the reset-* steps: the die landed outside the b3 reset sequence, re-derive the key from the census" }
+                    elseif ($firstIdx -eq -1) { $v = "no b3 entering line for [$first]" }
+                    elseif ($firstIdx -eq 0) { $v = "the first refused note [$first] is the first b3 note on serial, so no healthy note precedes the death" }
                     else {
                         # Every note before the first refusal banked; every note from it on was refused.
                         $seen = $false
@@ -1695,7 +1727,8 @@ foreach ($name in $names) {
                         }
                         if (-not $v -and -not $seen) { $v = "no b3 entering line for [$first]" }
                         if (-not $v -and $notes.Count -lt 12) { $v = "only $($notes.Count) b3 step notes on serial" }
-                        if (-not $v -and $lastOnMedium -ne 'reset-settle-mdio') { $v = "the medium's last b3 note is [$lastOnMedium], wanted reset-settle-mdio, the step before the refused one" }
+                        $prevStep = [regex]::Match($notes[$firstIdx - 1], '^b3 entering (.+?) (ctrl=\d+ |settled=\d+ )?heap=\d+ banked=(-?\d+)$').Groups[1].Value
+                        if (-not $v -and $lastOnMedium -ne $prevStep) { $v = "the medium's last b3 note is [$lastOnMedium], wanted [$prevStep], the step before the refused one on serial" }
                         if (-not $v -and $sum -notmatch 'bank=lost') { $v = "bank row is [$sum], wanted bank=lost" }
                         if (-not $v -and $sum -notmatch 'at=b3') { $v = "bank row names [$sum]; the ladder should have noticed at b3, the stage that died" }
                         # THE SLOT PAINT IS TRANSIENT: dg-paint-result overwrites it with

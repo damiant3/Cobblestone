@@ -40,17 +40,23 @@ Write-Host "[plug-run] IR input: $($irBytes.Length) bytes"
 Write-Host "[plug-run] Plug: $PlugCdx"
 
 
+# The finally block reads $proc, and under Set-StrictMode an unset name THROWS.
+# It was always assigned before anything could fail until the host became a
+# choice; a missing VM binary now makes Start-Process throw first, and the
+# StrictMode error about $proc buried the real cause.
+$proc = $null
+
 try {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
     $listener.Start()
     Write-Host "[plug-run] Listening on TCP $Port"
 
 
-    $vmBin = Join-Path $Repo 'tools\codex-vm.exe'
     $stderrFile = [System.IO.Path]::GetTempFileName()
     $consoleFile = [System.IO.Path]::GetTempFileName()
-    $vmArgs = @('-kernel', $PlugCdx, '-mem', "$MemMB", '-headless', '-output', $consoleFile)
-    $proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+    # The host choice lives in Start-PlugVm (vm-config), not here: eighteen other
+    # runners need the same selection and a copy in each is a copy to drift.
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB
     Write-Host "[plug-run] VM PID $($proc.Id)"
 
 

@@ -135,8 +135,21 @@ the probe.
 recorded divergence**, the same shape 1.8 reached for `haskell`, `elixir`
 and `clojure`. `javascript` is the clear instance: node's stack size is a
 process flag (`--stack-size`), not something emitted source can set, so a
-plug can only document it or emit a launcher. `wasm` is the same question
-against the host's configured stack.
+plug can only document it or emit a launcher.
+
+**`wasm` was classed here as the same question and is NOT: it moved to a
+fourth class this table did not anticipate, the language that EXPRESSES the
+fix** (fester, 2026-08-25, plugs 1.82). The tail-call proposal
+(`return_call`) ships in wasmtime and every major browser engine, and it
+runs any tail call, mutual included, in the caller's frame. The wasm plug
+now emits it for every application in tail position that saturates a known
+arity, and the compiler self-compiles byte-identically at a 1 MB stack --
+the browser's real number, no flag, no thread. The probe's `ping` row is
+constant-stack there; `sum-to` remains a true frame obligation at parity
+with x86, whose own boot stack this work incidentally measured at ~64 MB
+(a 10M-deep mutual probe double-faults it -- the reference has no
+mutual-TCO either, its stack is just bigger). A class-3 reading of a target
+is worth rechecking against what its spec has shipped since the reading.
 
 ## The inventory
 

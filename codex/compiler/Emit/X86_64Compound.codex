@@ -166,7 +166,8 @@ Section: Function Application
                      is FunTy (pt) (row) (rt) ->
                       let is-local = lookup-local (st.locals) (flat.func-name) >= 0
               in if is-local then emit-indirect-call st flat
-                         else emit-partial-application st (flat.func-name) (flat.args)
+                         else if user-arity > 0 & list-length (flat.args) == user-arity then emit-call-or-effect-op st flat user-arity
+                         else emit-partial-application st (flat.func-name) (flat.args) (list-length (flat.args) + 1 + fun-type-arity rt)
                      is otherwise ->
                       let is-local = lookup-local (st.locals) (flat.func-name) >= 0
               in if is-local then emit-indirect-call st flat
@@ -212,7 +213,8 @@ Section: Function Application
    in let closure-load = load-local st2 (lookup-local (st2.locals) (flat.func-name))
    in let st3 = st-append-code (closure-load.state) (mov-rr reg-r11 (closure-load.reg))
    in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
-   in let st5 = st-append-code st4 [255, 208]
+   in let st4a = st-append-code st4 (push-i32 arg-count)
+   in let st5 = st-append-code st4a [255, 208]
    in EmitResult {
    state = __record-set st5 "next-temp" (st5.next-temp + 1),
    reg = reg-rax
@@ -235,7 +237,8 @@ Section: Function Application
    in let st3 = st-append-code st2 (li reg-r11 addr)
    in let st4 = st-append-code st3 (mov-load reg-r11 reg-r11 0)
    in let st5 = st-append-code st4 (mov-load reg-rax reg-r11 0)
-   in let st6 = st-append-code st5 [255, 208]
+   in let st5a = st-append-code st5 (push-i32 arg-count)
+   in let st6 = st-append-code st5a [255, 208]
    in let tmp = alloc-temp st6
    in EmitResult {
     state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
@@ -267,7 +270,8 @@ Section: Function Application
    in let st3 = st-append-code st2 (mov-load reg-rax reg-r11 0)
    in let arg-load = load-local st3 (arg-loc.reg)
    in let st4 = st-append-code (arg-load.state) (mov-rr reg-rdi (arg-load.reg))
-   in let st5 = st-append-code st4 [255, 208]
+   in let st4a = st-append-code st4 (push-i32 1)
+   in let st5 = st-append-code st4a [255, 208]
    in let new-closure = alloc-temp st5
    in let st6 = st-append-code (new-closure.state) (mov-rr (new-closure.reg) reg-rax)
    in let st7 = store-local st6 closure-local (new-closure.reg)
@@ -286,7 +290,8 @@ Section: Function Application
    in let closure-reload = load-local st2 (closure-local.reg)
    in let st3 = st-append-code (closure-reload.state) (mov-rr reg-r11 (closure-reload.reg))
    in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
-   in let st5 = st-append-code st4 [255, 208]
+   in let st4a = st-append-code st4 (push-i32 arg-count)
+   in let st5 = st-append-code st4a [255, 208]
    in let tmp = alloc-temp st5
    in EmitResult {
    state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
@@ -700,6 +705,12 @@ Section: Closures and Partial Application
    in let st2 = __record-set st1 "da-poffsets" da-p
    in __record-set st2 "da-offsets" da-o
 
+  emit-consume-arg-count : CodegenState -> CodegenState
+  emit-consume-arg-count (st) =
+   let st1 = st-append-code st (mov-load reg-rax reg-rsp 0)
+   in let st2 = st-append-code st1 (mov-store reg-rsp reg-rax 8)
+   in st-append-code st2 (add-ri reg-rsp 8)
+
   emit-trampoline-shift-args : CodegenState, Integer, Integer -> CodegenState
   emit-trampoline-shift-args (st) (i) (num-captures) =
    if i < 0 then st
@@ -712,17 +723,81 @@ Section: Closures and Partial Application
    else if i < 6 then emit-trampoline-load-captures (st-append-code st (mov-load (list-at arg-regs i) reg-r11 (8 + i * 8))) (i + 1) num-captures
    else st
 
-  emit-partial-application : CodegenState, Text, List IRExpr -> EmitResult
-  emit-partial-application (st) (func-name) (captured-args) =
+  TrampFamily = record { tf-state : CodegenState, tf-offsets : List Integer }
+
+  emit-reclose-push-args : CodegenState, Integer -> CodegenState
+  emit-reclose-push-args (st) (i) =
+   if i < 0 then st
+   else emit-reclose-push-args (st-append-code st (push-r (list-at arg-regs i))) (i - 1)
+
+  emit-reclose-store-new : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-reclose-store-new (st) (i) (m) (c) =
+   if i == m then st
+   else let st1 = st-append-code st (pop-r reg-rdi)
+   in let st2 = st-append-code st1 (mov-store reg-rax reg-rdi (8 + (c + i) * 8))
+   in emit-reclose-store-new st2 (i + 1) m c
+
+  emit-reclose-copy-captures : CodegenState, Integer, Integer -> CodegenState
+  emit-reclose-copy-captures (st) (i) (c) =
+   if i == c then st
+   else let st1 = st-append-code st (mov-load reg-rdi reg-r11 (8 + i * 8))
+   in let st2 = st-append-code st1 (mov-store reg-rax reg-rdi (8 + i * 8))
+   in emit-reclose-copy-captures st2 (i + 1) c
+
+  emit-reclose-block : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-reclose-block (st) (c) (m) (target-offset) =
+   let st1 = emit-consume-arg-count st
+   in let st2 = st-append-code st1 (push-r reg-r11)
+   in let st3 = emit-reclose-push-args st2 (m - 1)
+   in let st4 = st-append-code st3 (li reg-rdi ((1 + c + m) * 8))
+   in let st5 = emit-call-to st4 "__alloc"
+   in let st6 = emit-load-known-func-offset st5 reg-r11 target-offset
+   in let st7 = st-append-code st6 (mov-store reg-rax reg-r11 0)
+   in let st8 = emit-reclose-store-new st7 0 m c
+   in let st9 = st-append-code st8 (pop-r reg-r11)
+   in let st10 = emit-reclose-copy-captures st9 0 c
+   in st-append-code st10 x86-ret
+
+  emit-trampoline-under-cases : CodegenState, Integer, Integer, Integer, List Integer, Integer -> CodegenState
+  emit-trampoline-under-cases (st) (c) (m) (r) (offsets) (total-arity) =
+   if m >= r then st
+   else if m > 6 then st
+   else let st1 = st-append-code st (cmp-ri reg-rax m)
+   in let skip = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let st3 = emit-reclose-block st2 c m (list-at offsets (total-arity - 1 - (c + m)))
+   in let st4 = patch-jcc-at st3 skip (st3.code-len)
+   in emit-trampoline-under-cases st4 c (m + 1) r offsets total-arity
+
+  emit-one-trampoline : CodegenState, Text, Integer, Integer, List Integer -> CodegenState
+  emit-one-trampoline (st) (func-name) (c) (total-arity) (offsets) =
+   let r = total-arity - c
+   in let st1 = if r <= 1 then st
+    else let sa = st-append-code st (mov-load reg-rax reg-rsp 8)
+    in emit-trampoline-under-cases sa c 1 r offsets total-arity
+   in let st2 = emit-consume-arg-count st1
+   in let st3 = emit-trampoline-shift-args st2 5 c
+   in let st4 = emit-trampoline-load-captures st3 0 c
+   in let st5 = emit-load-func-addr st4 reg-rax func-name
+   in st-append-code st5 [255, 224]
+
+  emit-trampoline-family : CodegenState, Text, Integer, Integer, Integer, List Integer -> TrampFamily
+  emit-trampoline-family (st) (func-name) (c) (num-captures) (total-arity) (offsets) =
+   if c < num-captures then TrampFamily { tf-state = st, tf-offsets = offsets }
+   else let here = st.code-len
+   in let st1 = emit-one-trampoline st func-name c total-arity offsets
+   in emit-trampoline-family st1 func-name (c - 1) num-captures total-arity (list-push offsets here)
+
+  emit-partial-application : CodegenState, Text, List IRExpr, Integer -> EmitResult
+  emit-partial-application (st) (func-name) (captured-args) (type-arity) =
    let saved = save-args-loop (st-set-tail-pos st False) captured-args 0 []
    in let num-captures = list-length captured-args
+   in let total-arity = if type-arity > num-captures then type-arity else num-captures + 1
    in let jmp-over-pos = saved.state.code-len
    in let st1 = st-append-code (saved.state) (jmp 0)
-   in let tramp-offset = st1.code-len
-   in let st3 = emit-trampoline-shift-args st1 5 num-captures
-   in let st4 = emit-trampoline-load-captures st3 0 num-captures
-   in let st5 = emit-load-func-addr st4 reg-rax func-name
-   in let st6 = st-append-code st5 [255, 224]
+   in let fam = emit-trampoline-family st1 func-name (total-arity - 1) num-captures total-arity []
+   in let st6 = fam.tf-state
+   in let tramp-offset = list-at (fam.tf-offsets) (list-length (fam.tf-offsets) - 1)
    in let st7 = patch-jmp-at st6 jmp-over-pos (st6.code-len)
    in let closure-size = (1 + num-captures) * 8
    in let alloc = emit-bivy-alloc st7 closure-size
@@ -781,6 +856,12 @@ Section: Record Emission
     is ForAllTy (id) (body) -> resolve-constructed-ty st body
     is ForAllEff (id) (body) -> resolve-constructed-ty st body
     is otherwise -> ty
+
+  fun-type-arity : CodexType -> Integer
+  fun-type-arity (ty) =
+   when ty
+    is FunTy (p) (row) (r) -> 1 + fun-type-arity r
+    is otherwise -> 0
 
   strip-fun-args-emitter : CodexType -> CodexType
   strip-fun-args-emitter (ty) =

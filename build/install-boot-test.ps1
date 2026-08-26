@@ -55,7 +55,7 @@ function Check ([string]$what, [bool]$ok, [string]$detail) {
 # concatenated source. This is the artifact a person is handed.
 #
 # The payload is named explicitly rather than taken from the default. This
-# harness asserts the 'Codex Dev Console' banner below, so it is testing
+# harness asserts the 'Cobblestone Dev Console' banner below, so it is testing
 # UefiBoot specifically; the default became GopBoot when B5.4 step 3 flipped
 # it, and a harness that checks for one payload must not silently follow a
 # default that names another.
@@ -190,7 +190,7 @@ Check 'both images yield the same payload size' `
 # was satisfiable by a guest that emitted one byte and died, and for months it
 # was satisfied by BOTH sticks failing identically, which is the shape of a test
 # that cannot fail.
-$banner = 'Codex Dev Console'
+$banner = 'Cobblestone Dev Console'
 Write-Host "  target serial: $($tgt.Out.Trim().Length) chars   source serial: $($src.Out.Trim().Length) chars"
 
 Check 'the reference stick reaches the dev console' `

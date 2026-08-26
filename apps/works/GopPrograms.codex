@@ -145,6 +145,60 @@ Section: The Tree
     in let help = widget-set-min (widget-label "gpr-help" "up/down choose   Enter opens   Esc returns") 0 20
     in widget-panel "gpr-pane" DirColumn 6 [widget-set-flex cols 1, help]
 
+Section: The Menu Tree
+
+ THE SAME MODEL, COLLAPSED. The window above shows every entry at once
+ because it is given the whole content region; the start menu is a box above
+ the taskbar pill and has about 400 logical pixels of room at 1600x900, which
+ the flat list does not fit -- measured on the glass, where the Shutdown row
+ landed past the bottom of the screen and the taskbar disappeared behind it.
+
+ So the menu shows the GROUPS, and the group holding the selection is the one
+ that shows its apps. That is not a second model: the rows are `gpr-row`, the
+ ids are the same ids, `gpr-id-scan` resolves them the same way, and the open
+ group is a FUNCTION of `gpr-sel` rather than state of its own -- so a row
+ chosen in either presentation is the row chosen in both, and up and down
+ walking off the end of a group opens the next one with no code to do it.
+
+ A heading is a button here where it is a label in the window, because here
+ it can be clicked. Its id is prefixed so `gpr-id-scan` cannot match it: a
+ heading must not answer a scancode, and the two namespaces sharing a prefix
+ is how it would.
+
+  gpr-group-prefix : Text = "gprg-"
+
+  gpr-open-group : Integer -> Text
+  gpr-open-group (ps) = (gpr-at (gpr-sel ps)).ge-group
+
+ The index of the group's FIRST entry, offset by one so that zero can mean
+ "not a heading". The caller sets the selection to it, which opens the group.
+
+  gpr-group-scan : Text, Integer -> Integer
+  gpr-group-scan (id) (i) =
+    if i >= gpr-count then 0
+    else if gpr-heads i & id == (gpr-group-prefix & (gpr-at i).ge-group) then i + 1
+    else gpr-group-scan id (i + 1)
+
+  gpr-group-mark : Boolean -> Text
+  gpr-group-mark (open) = if open then "- " else "+ "
+
+  gpr-group-row : Integer, Boolean -> WidgetNode
+  gpr-group-row (i) (open) =
+    let e = gpr-at i
+    in widget-set-min (widget-button (gpr-group-prefix & e.ge-group) (gpr-group-mark open & e.ge-group)) 0 22
+
+  gpr-menu-rows : Integer, Integer, Text, List WidgetNode -> List WidgetNode
+  gpr-menu-rows (i) (sel) (open) (acc) =
+    if i >= gpr-count then acc
+    else let e = gpr-at i
+    in let acc1 = if gpr-heads i then list-push acc (gpr-group-row i (e.ge-group == open)) else acc
+    in let acc2 = if e.ge-group == open then list-push acc1 (gpr-row i sel) else acc1
+    in gpr-menu-rows (i + 1) sel open acc2
+
+  gpr-menu-tree : Integer -> WidgetNode
+  gpr-menu-tree (ps) =
+    widget-panel "gpr-menu" DirColumn 2 (gpr-menu-rows 0 (gpr-sel ps) (gpr-open-group ps) [])
+
 Section: Keys
 
  The answer is a scancode the desk already dispatches, or 0 for "nothing

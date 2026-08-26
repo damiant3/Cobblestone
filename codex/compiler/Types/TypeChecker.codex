@@ -2498,8 +2498,9 @@ Section: Proof Acyclicity
    in let fresh-env = __record-set (__record-set (__record-set env "locals" empty-type-bindings) "chapter-renames" chapter-rn) "local-ranges" []
    in let r = check-def st fresh-env defs tdm def renames
    in let lin-st = check-linearity-def def fresh-env (r.state)
+   in let bnd-st = check-bounded-bases-def def tdm lin-st
    in let rt-chk = is-rt-name rt-names (def.name.value) 0 (list-length rt-names)
-   in let rt-st1 = if rt-chk then check-rt-calls (check-rt-no-alloc (check-rt-no-lambda lin-st (def.body) (def.name.value)) (def.body) (def.name.value)) (def.body) (def.name.value) rt-names else lin-st
+   in let rt-st1 = if rt-chk then check-rt-calls (check-rt-no-alloc (check-rt-no-lambda bnd-st (def.body) (def.name.value)) (def.body) (def.name.value)) (def.body) (def.name.value) rt-names else bnd-st
    in let rt-st2 = if rt-chk & has-self-call (def.body) (def.name.value) then __record-set rt-st1 "bag" (bag-add (rt-st1.bag) (make-error cdx-rt-unbounded-recursion ("punctual function '" & def.name.value & "' is self-recursive") (aexpr-span (def.body)))) else rt-st1
    in let rt-st = if rt-chk then check-rt-effects rt-st2 (r.inferred-type) (def.name.value) (aexpr-span (def.body)) else rt-st2
    in let resolved = deep-resolve rt-st (r.inferred-type)
@@ -3207,6 +3208,34 @@ Section: Linearity Checking
    else let st2 = check-linear-params def env (def.params) (list-at (def.declared-type) 0) 0 st
    in check-mints def env True (def.body) st2
 
+ A range on a base that cannot carry one resolves to ErrorTy, and ErrorTy
+ unifies with everything, so without this walk the declaration compiles and
+ the bound is silently ignored. lint-narrowing-check cannot catch it either:
+ it opens on IntegerTy and falls through for anything else, so an ErrorTy
+ parameter is not merely unbounded, it is unchecked.
+
+  check-bounded-bases-def : ADef, List TypeBinding, UnificationState -> UnificationState
+  check-bounded-bases-def (def) (tdm) (st) =
+   if list-length (def.declared-type) == 0 then st
+   else check-bounded-bases (list-at (def.declared-type) 0) def tdm st
+
+  check-bounded-bases : ATypeExpr, ADef, List TypeBinding, UnificationState -> UnificationState
+  check-bounded-bases (t) (def) (tdm) (st) =
+   when t
+    is AFunType (pty) (rty) (s) -> check-bounded-bases rty def tdm (check-bounded-bases pty def tdm st)
+    is ALinearType (inner) (s) -> check-bounded-bases inner def tdm st
+    is AEffectType (effs) (scopes) (tail) (ret) (s) -> check-bounded-bases ret def tdm st
+    is AAppType (head) (args) (s) -> check-bounded-bases-args args def tdm 0 st
+    is ABoundedIntType (base) (lo) (hi) (mode) (s) ->
+     when resolve-bounded-int-type tdm base lo hi mode
+      is ErrorTy -> add-unify-error st cdx-bounded-base-not-integer ("In '" & (def.name.value) & "', a range was written on '" & atype-core-name base & "', which cannot carry one. Only an integer base, or a unit wrapping one, can be bounded; on anything else the range is silently ignored") s
+      is otherwise -> st
+    is otherwise -> st
+
+  check-bounded-bases-args : List ATypeExpr, ADef, List TypeBinding, Integer, UnificationState -> UnificationState
+  check-bounded-bases-args (args) (def) (tdm) (i) (st) =
+   if i >= list-length args then st
+   else check-bounded-bases-args args def tdm (i + 1) (check-bounded-bases (list-at args i) def tdm st)
   check-linear-params : ADef, TypeEnv, List AParam, ATypeExpr, Integer, UnificationState -> UnificationState
   check-linear-params (def) (env) (params) (dt) (i) (st) =
    if i >= list-length params then st

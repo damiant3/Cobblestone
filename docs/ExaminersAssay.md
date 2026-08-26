@@ -5583,8 +5583,8 @@ convention for `codex/test/errors` and `codex/test/apps` rather than an
 omission: `test.ps1` sweeps both tiers, `build.ps1`'s `app-sweep` covers the
 `apps/` entry chapters instead, and the BVT runs a named list neither is on.
 They were compiled and run by hand in both directions when written, and the
-README's `bounded linear unpack-text` example was compiled too rather than
-written from memory -- it refuses with the exact CDX6101 text the README
+`TechnicalDetails.md` `bounded linear unpack-text` example was compiled too rather than
+written from memory -- it refuses with the exact CDX6101 text that doc
 quotes.
 
 ## Two Guest Truncation Report Shapes, And One Pattern Cannot Match Both

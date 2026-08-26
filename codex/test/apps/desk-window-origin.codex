@@ -1,0 +1,143 @@
+Chapter: DeskWindowOriginTest
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites Works chapter GopFont
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter Event
+  cites Kernel chapter BitmapFont
+
+ A window is a tree painted somewhere other than the screen corner, and
+ `comp-render` laid out at a hard-coded `0, 0`. `comp-render-at` takes an
+ origin, and the three things that have to hold are geometry, containment and
+ HIT.
+
+ The hit row is the one worth writing. The origin goes into the layout rect,
+ not into the paint, so the bounds that come back are absolute logical
+ coordinates and `comp-hit-x` and `comp-hit-y` keep working with no origin of
+ their own. That is a claim about a function this chapter does not change, so
+ it is asserted rather than assumed: a point inside the offset window must
+ find the offset widget, and the SAME point against the same tree laid at the
+ corner must not, which is what says the hit path is origin-sensitive at all
+ rather than agreeing by luck.
+
+ Containment is the other half a window needs and a scrolling viewport did
+ not: what a window paints must stay inside the rectangle it was granted, or
+ the pane underneath is corrupted rather than merely overdrawn.
+
+ THAT ROW READ 0 TWICE BEFORE IT MEANT ANYTHING. With a tree that fits its
+ window, widening the clip to the whole buffer changes nothing, because
+ layout was keeping the paint in and the clip was never consulted. With a
+ tree that overflows past the END of the buffer, the widened clip faults
+ instead of reporting. Both read as an arm that passes. The geometry below is
+ chosen so the overflow lands INSIDE the buffer and OUTSIDE the grant, which
+ is the only arrangement where the number can move: measured 2026-08-24, 0
+ with the clip and 3,708 pixels without it.
+
+Section: Geometry
+
+ The buffer is tall enough to HOLD the overflow. A window whose overflowing
+ children would land past the end of the buffer cannot distinguish a clip
+ that works from a clip that is absent: the first sabotage of this arm
+ widened the clip and the third child landed outside the allocation, so the
+ run faulted instead of reporting, and a narrower widening changed nothing
+ because the overflow was past both boxes. The window is 40 device rows at
+ y 40 and the third child lands at y 120, inside the buffer and well outside
+ the grant.
+
+  wo-w : Integer = 160
+  wo-h : Integer = 160
+  wo-s : Integer = 2
+  wo-ox : Integer = 40
+  wo-oy : Integer = 40
+  wo-ww : Integer = 80
+  wo-wh : Integer = 40
+
+  wo-cells : Integer = 25600
+  wo-bytes : Integer = 102400
+  wo-sentinel : Integer = #111111
+
+Section: Counting
+
+  wo-fill : Integer, Integer, Integer -> Integer
+  wo-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) wo-sentinel in wo-fill b (i + 1) n
+
+ Touched pixels OUTSIDE the granted rectangle, walked as x and y rather than
+ as a flat index, because the interesting failure is a row running past the
+ right edge and the flat walk cannot tell that from the next row starting.
+
+  wo-outside : Integer, Integer, Integer, Integer -> Integer
+  wo-outside (b) (x) (y) (acc) =
+    if y >= wo-h then acc
+    else if x >= wo-w then wo-outside b 0 (y + 1) acc
+    else let inside = x >= wo-ox & x < wo-ox + wo-ww & y >= wo-oy & y < wo-oy + wo-wh
+    in let touched = if peek-32 b ((y * wo-w + x) * 4) == wo-sentinel then 0 else 1
+    in wo-outside b (x + 1) y (acc + (if inside then 0 else touched))
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+  wo-kid : WidgetNode, Integer -> LayoutRect
+  wo-kid (n) (i) = (list-at (n.wn-children) i).wn-bounds
+
+  wo-hit-id : WidgetNode, Integer, Integer -> Text
+  wo-hit-id (root) (mx) (my) =
+    when ev-hit-widget root (comp-hit-x mx wo-s) (comp-hit-y my wo-s)
+      is Just (n) -> n.wn-id
+      is None -> "none"
+
+Section: Subject
+
+  wo-block : Text -> WidgetNode
+  wo-block (id) = widget-set-flex (widget-set-min (widget-panel id DirColumn 0 []) 40 20) 0
+
+ THE TREE MUST OVERFLOW THE WINDOW OR THE CONTAINMENT ROW IS VACUOUS. Three
+ blocks of 20 logical rows each go into a window 30 logical rows tall, so the
+ last two lie below it and only the clip keeps them off the pane underneath.
+ With a tree that fits, widening the clip to the whole buffer changes nothing
+ and the row reads 0 either way, which is an instrument that cannot fail.
+
+  wo-tree : WidgetNode
+  wo-tree = widget-panel "win" DirColumn 0 [wo-block "one", wo-block "two", wo-block "three"]
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let buf = __heap-save
+    in let adv = __heap-advance (wo-bytes + 256)
+    in act
+      let f0 = wo-fill buf 0 wo-cells
+      in let corner = comp-render-at buf wo-w font gfont-none wo-tree th 0 0 wo-ww wo-wh wo-s
+      in let c0 = wo-kid corner 0
+      in let f1 = wo-fill buf 0 wo-cells
+      in let win = comp-render-at buf wo-w font gfont-none wo-tree th wo-ox wo-oy wo-ww wo-wh wo-s
+      in let w0 = wo-kid win 0
+      in let w1 = wo-kid win 1
+      in let outside = wo-outside buf 0 0 0
+
+      in let probe-x = (w0.lr-x + w0.lr-w / 2) * wo-s
+      in let probe-y = (w0.lr-y + w0.lr-h / 2) * wo-s
+      in let hit-win = wo-hit-id win probe-x probe-y
+      in let hit-corner = wo-hit-id corner probe-x probe-y
+
+      in act
+        print-line-uni ("child moved by the origin   : " & yn (w0.lr-x == c0.lr-x + wo-ox / wo-s & w0.lr-y == c0.lr-y + wo-oy / wo-s))
+        print-line-uni ("second child follows it     : " & yn (w1.lr-y > w0.lr-y))
+        print-line-uni ("window rows, logical        : " & integer-to-text (wo-wh / wo-s))
+        print-line-uni ("third child y and h         : " & integer-to-text ((wo-kid win 2).lr-y - (wo-oy / wo-s)) & " " & integer-to-text ((wo-kid win 2).lr-h))
+        print-line-uni ("painted outside the grant   : " & integer-to-text outside)
+        print-line-uni ("hit the offset child        : " & hit-win)
+        print-line-uni ("same device point, corner   : " & hit-corner)
+        print-line-uni ("hit is origin-sensitive     : " & yn (hit-win == "one" & hit-win /= hit-corner))
+      end
+    end
+  end
+
+Page 1

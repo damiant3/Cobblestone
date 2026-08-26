@@ -569,7 +569,7 @@ Section: Frontend
    in let cite-bag = deck-record (check-duplicate-cites (scoped.citations))
    in let missing-cite-bag = deck-record (check-cites-resolve (scoped.citations) assignments chapter-names)
    in let resolve-result = resolve-chapter scoped colliding assignments scope-ceiling
-   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, missing-cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag, pmap-selftest-bag True])
+   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, missing-cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag])
    in let scope-end = __deck-pos
    in let scope-sat = if deck-short-of scope-ceiling demand-scope-guard-band then 1 else 0
    in let scope-metrics = phase-measure scope-phase "SCOPE"
@@ -761,6 +761,7 @@ Section: Frontend
    in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling)
    in let passed = if run-passes then deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
       else IRPassResult { chapter = ir-raw, violations = [], infos = [] }
+   in let ir-passed = passed.chapter
    in let ir = passed.chapter
    in let tm = deck-record (IRTextMeta {
     chapter-title = checked.scoped.chapter-title,
@@ -782,10 +783,19 @@ Section: Frontend
    in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
    in let fe-bag = deck-record (frontend-bag-with-passes (checked.bag) lower-ov-bag lower-esc-bag lower-precise-bag passed)
    in let lower-sealed = compact-phase flags poison-lower
+   in let resolved-defs = if run-passes then
+       let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
+       in let resolve-base = build resolve-deck-height
+       in let resolve-ceiling = resolve-base + resolve-deck-height
+       in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
+       in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
+       in deck-record (rewrite-ir-defs stds (ir.defs) resolve-ceiling)
+      else ir.defs
+   in let ir-resolved = __record-set ir "defs" resolved-defs
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
-    ir = ir,
+     ir = ir-resolved,
     cdx-ir = blank-ir,
     sorted-type-defs = [],
     renames = checked.renames,
@@ -885,7 +895,7 @@ Section: Frontend
    in let lir-report-bag = deck-record (occ-info-bag (lir-report-if lir-target-x86 (flags.pipeline) cdx-chapter))
    in let lir-probe-bag = deck-record (occ-info-bag (lir-alloc-probe-if lir-target-a64-shape "A64" "lir-dump-a64" (flags.pipeline) cdx-chapter))
    in let lir-narrow-bag = deck-record (occ-info-bag (lir-alloc-probe-if lir-target-narrow-shape "NARROW" "lir-dump-a64" (flags.pipeline) cdx-chapter))
-   in let fe-bag = deck-record (bag-merge-all [checked.bag, ir-check-bag, occ-report-bag, lir-report-bag, lir-probe-bag, lir-narrow-bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, lower-precise-bag, dl-bag])
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, ir-check-bag, occ-report-bag, lir-report-bag, lir-probe-bag, lir-narrow-bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, lower-precise-bag, dl-bag, pmap-selftest-bag True])
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -1595,7 +1605,7 @@ Section: Entry Point
    if i >= 8 then acc
    else let b = int-mod (bit-shru v (i * 8)) 256
    in if b == 0 then acc
-   else disk-unpack8 v (i + 1) (acc & char-to-text (code-to-char (from-unicode b)))
+   else disk-unpack8 v (i + 1) (acc & char-encode (code-to-char (from-unicode b)))
 
   disk-print-phases : Integer, Integer -> [Console] Nothing
   disk-print-phases (i) (n) =
@@ -1700,10 +1710,14 @@ Section: Entry Point
     if flags.wire-trace then print-line-uni ("FE-DONE frontier " & integer-to-text h-pre-emit) else print-text ""
     print-codegen-error-header (bag-errors (fe.bag))
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
-    else let raw-defs = fe.ir.defs
+    else let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
+     in let lift-base = build lift-deck-height
+     in let lift-ceiling = lift-base + lift-deck-height
+     in let lifted-ir = deck-record (lift-lambdas (fe.ir) lift-ceiling)
+     in let raw-defs = lifted-ir.defs
      in act
       if flags.wire-trace then ir-trace-dce-cost raw-defs 0 (list-length raw-defs) else print-text ""
-      let ir = ir-prune-unreachable-roots (fe.ir) ir-emit-roots
+      let ir = ir-prune-unreachable-roots lifted-ir ir-emit-roots
       in let defs-len = list-length (ir.defs)
       in act
        if flags.wire-trace then ir-trace-def-sizes (ir.defs) 0 defs-len else print-text ""

@@ -105,12 +105,12 @@ A client tracks one stream and one root. Your `.p4config` points at your dev
 client, so **every** command against the sub-stream needs `-c <subclient>`.
 
 ```powershell
-New-Item -ItemType Directory -Force D:\Projects\NewRepository-<a>-<topic> | Out-Null
+New-Item -ItemType Directory -Force D:\Projects\Cobblestone-<a>-<topic> | Out-Null
 $c = p4 client -S //Codex/<a>-<topic> -o BigWhite_Codex_<a>_<topic>
-$c = $c -replace '(?m)^Root:.*$', "Root:`tD:\Projects\NewRepository-<a>-<topic>"
+$c = $c -replace '(?m)^Root:.*$', "Root:`tD:\Projects\Cobblestone-<a>-<topic>"
 $c | p4 client -i
 "P4PORT=localhost:1666`nP4USER=<user>`nP4CLIENT=BigWhite_Codex_<a>_<topic>" |
-  Set-Content D:\Projects\NewRepository-<a>-<topic>\.p4config -NoNewline
+  Set-Content D:\Projects\Cobblestone-<a>-<topic>\.p4config -NoNewline
 ```
 
 ### 3. Populate it from the parent -- BEFORE any work goes in

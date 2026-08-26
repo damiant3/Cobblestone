@@ -336,14 +336,14 @@ not a broken decode. The diagnostic ladder's cpu stage reads `hypervisor`
 here by design.
 
 **Never kill codex-vm by process name.** Several agents run this box at once,
-each booting VMs out of its own `D:\Projects\NewRepository-<agent>\`, so
+each booting VMs out of its own `D:\Projects\Cobblestone-<agent>\`, so
 `Get-Process codex-vm | Stop-Process -Force` takes out **every agent's** VMs and
 not just yours. A gate or a battery that dies for no reason someone can explain
 is what that looks like from the other end. Filter on the executable's path:
 
 ```powershell
 Get-CimInstance Win32_Process -Filter "Name='codex-vm.exe'" |
-  Where-Object { $_.ExecutablePath -like 'D:\Projects\NewRepository-<agent>\*' } |
+  Where-Object { $_.ExecutablePath -like 'D:\Projects\Cobblestone-<agent>\*' } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
 
@@ -355,6 +355,45 @@ Build note: the linker fails with `LNK1104` if a codex-vm is holding
 `tools/codex-vm.exe` open, so stop **your own** VMs (as above) before
 `tools/build-vm.ps1`.
 
+#### codex-vm IGNORES AN UNKNOWN FLAG SILENTLY, so a flag that does nothing is indistinguishable from one that works
+
+That is the defect under the one below, and it is general. Nothing in
+`tools/codex-vm.c` rejects, warns about, or logs an argument it does not
+recognise: measured 2026-08-24 by passing `-not-a-real-flag`, which produces
+no line on stderr and no change in exit status. So a typo, a renamed flag, a
+flag deleted from the emulator, and a flag that was never built all present
+to the caller as a clean launch. **A green boot is not evidence that a flag
+took effect**, and no harness in the tree can currently tell the difference.
+The check that would close it is a refusal on the first unrecognised argument,
+which is a codex-vm change and is unclaimed.
+
+The instrument, when a flag's effect is in doubt: the parse sites are all
+`strcmp(argv[i], "-...")`, so grepping that pattern yields the complete set
+codex-vm actually accepts. It answered 120 flags on 2026-08-24, and
+`-data-port` was not among them.
+
+#### `-data-port` and `-ctrl-port` do not exist, and the usage banner says they do
+
+`tools/codex-vm.c` line 6 advertises `[-data-port 12345] [-ctrl-port 12346]`
+and **no revision of that file has ever parsed either flag** (#1 through #110
+checked 2026-08-24, and the flag table below is the full set it does parse).
+Because unknown flags are dropped in silence the command line looks accepted:
+the guest boots, finds nothing on the wire, and halts inside 500 ms.
+
+That kills `Start-VmRun`'s codex-vm path in `build/vm-config.ps1`, which builds
+exactly those two flags. `Start-CodexVmRun` reads the fast exit as a failed
+launch, retries four times and returns `$null`, so a caller reports
+`FAIL: VM did not start` and the real cause is a flag that was never there.
+Wherever codex-vm is present -- every box -- these are unrunnable:
+`codex/plugs/elf/extract-x86-output.ps1`, `build/test-disk-compile.ps1`,
+`tools/sim-test.ps1`, `build/gdb-watchpoint.ps1`. The QEMU fallback branch does
+carry a real serial wire, so the path works only where codex-vm is ABSENT,
+which is nowhere.
+
+`tools/test-codex-vm.ps1` passes the same two flags directly and also invokes
+`codex.build\sample-compile-selfhost.ps1`, a path that no longer exists.
+
+Whether this gets the serve mode built or the callers deleted is unclaimed.
 #### CLI Flags
 
 ```
@@ -2106,7 +2145,7 @@ in 95 of the 96 is ordinary. Measured 2026-08-10 against seed `AF4E14D9`:
 independently.
 
 ```powershell
-$R = 'D:\Projects\NewRepository-<agent>-main'
+$R = 'D:\Projects\Cobblestone-<agent>-main'
 
 # 1. Emit. Do NOT pass -SkipIr on a release run.
 & "$R\codex\plugs\csharp\emit-compiler.ps1" -Kernel "$R\seed\Codex.cdx" `
@@ -3005,8 +3044,8 @@ of the program is yours, and one cited chapter is somebody else's copy.
 **Fix:** set both, every time:
 
 ```powershell
-Set-Location D:\Projects\NewRepository-<agent>-main
-[Environment]::CurrentDirectory = 'D:\Projects\NewRepository-<agent>-main'
+Set-Location D:\Projects\Cobblestone-<agent>-main
+[Environment]::CurrentDirectory = 'D:\Projects\Cobblestone-<agent>-main'
 build/compile.ps1 -Src codex\test\apps\foo.codex -Out out.cdx -Log out.log -Kernel seed\Codex.cdx
 ```
 
@@ -3037,7 +3076,7 @@ swallows that output with `| Out-Null`, sees a non-zero exit, reports it as
 **Fix:** run it from the repo root.
 
 ```powershell
-cd D:\Projects\NewRepository-<agent>
+cd D:\Projects\Cobblestone-<agent>
 pwsh codex\plugs\csharp\build.ps1        # OK: ...\csharp-plug.cdx (371061 bytes)
 ```
 

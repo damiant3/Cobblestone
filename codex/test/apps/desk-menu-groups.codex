@@ -1,0 +1,135 @@
+Chapter: DeskMenuGroupsTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopPrograms
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Event
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The start menu is the launcher collapsed to its GROUPS, with the group
+ holding the selection showing its apps. Three things about it are decidable
+ here and one of them is the defect a capture found on the first build.
+
+ WHAT THE CAPTURE FOUND AND THIS PINS. The menu's first shape used `gpr-tree`
+ whole, the flat list of fourteen entries in two columns, in a box anchored
+ above the taskbar pill. It did not fit: at 1600x900 the Shutdown row landed
+ past the bottom of the glass and the taskbar band was behind it. Nothing in
+ the widget layer clips or scrolls and `flex-col-place` places a child past
+ its container rather than refusing, so no count, no hit test and no id lookup
+ could see it -- the tree reported every row reachable while a person could
+ not see two of them. The row below measures the laid menu's BOTTOM against
+ the band and is the arm that would have failed on that build.
+
+ WHY THE HEADINGS CARRY A PREFIX, ASSERTED RATHER THAN STATED. `gpr-id-scan`
+ matches a row id against `"gpr-" & label`; a heading's id is
+ `gpr-group-prefix & group`. If the two namespaces ever overlapped, a heading
+ would answer a scancode and clicking a group would launch an app. Both
+ directions are asserted: a heading resolves through `gpr-group-scan` and NOT
+ through `gpr-id-scan`, and a row the other way round. A single direction
+ passes with either function answering for both.
+
+ WHY THE COUNT IS TAKEN AT TWO SELECTIONS. A tree that ignored the selection
+ and expanded everything would give the right ids, the right scancodes and a
+ correct hit test; only the SHAPE would be wrong, and only against a second
+ selection is the shape a claim rather than a number. The two counts differ
+ because the groups differ in size, which is what makes them a discriminator:
+ Accessories has four entries and Productivity six, so an expand-everything
+ tree reports the same count for both and a collapse-everything tree reports
+ the same smaller count for both.
+
+ The face is `gfont-none` because the battery attaches no volume, which is the
+ same reason the sibling arms in this directory use it (L-NAMED).
+
+Section: Body
+
+  dmg-yn : Boolean -> Text
+  dmg-yn (v) = if v then "yes" else "NO"
+
+  dmg-count : Integer -> Integer
+  dmg-count (ps) =
+    let t = gpr-menu-tree ps
+    in t.wn-child-count
+
+  dmg-sel : Integer, Integer -> Integer
+  dmg-sel (ps) (i) = let d = gpr-set-sel ps i in ps
+
+  dmg-shape : Integer, Integer, Text -> Text
+  dmg-shape (ps) (i) (tag) =
+    let p = dmg-sel ps i
+    in tag & " sel " & integer-to-text i
+       & "  open " & gpr-open-group p
+       & "  rows " & integer-to-text (dmg-count p)
+
+ A heading names its group's FIRST entry, offset by one, so that zero can
+ mean "not a heading". Selecting that entry is what opens the group, which is
+ why the desk's step does exactly that with this answer.
+
+  dmg-ids : Text -> Text
+  dmg-ids (id) =
+    "id " & id
+       & "  group " & integer-to-text (gpr-group-scan id 0)
+       & "  scancode " & integer-to-text (gpr-id-scan id 0)
+
+ The laid menu, in LOGICAL units, against the band the taskbar lays out in the
+ same pass and against the GLASS.
+
+ THE GLASS IS THE DISCRIMINATOR AND THE BAND IS NOT, WHICH THE SABOTAGE FOUND
+ AND THE FIRST VERSION OF THIS ARM GOT WRONG. Written as "the menu ends above
+ the band" it reported yes under both shapes, because an over-tall menu does
+ not overlap the band -- `flex-col-place` PUSHES the band down ahead of it and
+ the two move together. Measured on the sabotaged build at 1600x900: the menu
+ ran 58..480 and the band went with it to 488, so the comparison held while
+ the band was 38 rows off the bottom of a 450-row screen. Two rectangles that
+ move together cannot adjudicate each other; the container does not move.
+
+ So the band-versus-menu row stays as a CALIBRATION and says so, and the row
+ that fails is the band against the height the chrome was laid into. Both
+ widths are needed and they do different jobs here: at 1280x800 the flat tree
+ fitted, band at 764 inside 800, so that row is the control that must stay
+ green while 1600 goes red. The bigger screen is the tighter one, as it has
+ been for every clipped line this campaign found.
+
+  dmg-laid : Integer, Integer, Integer -> WidgetNode
+  dmg-laid (w) (h) (ds) =
+    let s = ui-wscale w
+    in widget-layout (desk-chrome-with (desk-menu-tree (peek-32 ds desk-prog-cell)) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+
+  dmg-box : WidgetNode, Text -> LayoutRect
+  dmg-box (laid) (id) =
+    when widget-find laid id
+      is Just (n) -> n.wn-bounds
+      is None -> layout-rect 0 0 0 0
+
+  dmg-fits : Integer, Integer, Integer -> Text
+  dmg-fits (w) (h) (ds) =
+    let laid = dmg-laid w h ds
+    in let menu = dmg-box laid "sysmenu-body"
+    in let band = dmg-box laid "taskbar"
+    in let glass = h / ui-wscale w
+    in "w " & integer-to-text w
+       & "  menu " & integer-to-text (menu.lr-y) & ".." & integer-to-text (menu.lr-y + menu.lr-h)
+       & "  band " & integer-to-text (band.lr-y) & ".." & integer-to-text (band.lr-y + band.lr-h)
+       & " of " & integer-to-text glass
+       & "  band on the glass " & dmg-yn (band.lr-y + band.lr-h <= glass)
+       & "  menu above the band (calibration) " & dmg-yn (menu.lr-y + menu.lr-h <= band.lr-y)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed 128 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pp = poke-32 ds desk-prog-cell (alloc-zeroed 64 64)
+    in let ps = peek-32 ds desk-prog-cell
+    in act
+      print-line-uni (dmg-shape ps 0 "accessories")
+      print-line-uni (dmg-shape ps 4 "productivity")
+      print-line-uni (dmg-ids (gpr-group-prefix & "Productivity"))
+      print-line-uni (dmg-ids "gpr-Files")
+      print-line-uni (dmg-ids "shutdown")
+      print-line-uni (dmg-fits 1280 800 ds)
+      print-line-uni (dmg-fits 1600 900 ds)
+    end
+
+Page 1

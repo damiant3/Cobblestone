@@ -39,10 +39,32 @@ $BuildLog = Join-Path $OutDir 'build.log'
 # a byte-identical self-fixed-point that boots. The regression phases below run
 # only when a file they depend on changed in THIS workspace; skipped ones are
 # caught by the next full gate. Mapping, by what actually feeds each phase:
-#   jonquil / vm-differential  <- codex/compiler   (codegen and the DDC witness)
+#   jonquil                     <- codex/compiler   (codegen)
+#   vm-differential             <- codex/compiler or codex/build or build:
+#     codegen is its SUBJECT, but its INSTRUMENT is two VM hosts and which
+#     host runs is decided in build/vm-config.ps1. Keyed on the subject alone
+#     it went silently stale: reek 19219 changed host selection and this phase
+#     skipped as not implicated (L-INSTRUMENT). A trigger must cover the files
+#     that can change a phase's ANSWER, not only the ones it is about.
 #   plug-*                      <- codex/plugs or codex/compiler (codegen feeds plugs)
-#   gen-scripts / deck-headroom <- codex/build or build (the generators + their quire)
+#   gen-scripts / deck-headroom <- codex/build or build or codex/compiler:
+#     both are COMPILED answers, not static ones. gen-scripts compiles every
+#     generator with the current kernel and diffs the emitted text, and
+#     deck-headroom's per-unit `used` comes from running the compiler while
+#     its per-point divisor is demand-check-floor in Core/BuildSettings.codex.
+#     Measured: that constant went 648 to 704 MB at reek 19178 and every
+#     build-quire unit moved (cdxtope 52 of 64 to 48). Keyed on $tBuild alone
+#     a pure compiler change skips the phase that would see it. ~1 change in
+#     50 on main is compiler-without-build, so this costs 31 s and 63 s that
+#     rarely.
 #   app-sweep                   <- apps or codex/compiler (the compiler builds the apps)
+#   run-list                    <- tools/codex-vm.c or .exe, or build/check-run-list.ps1:
+#     a per-file trigger, which the audit above calls the precise fix and
+#     declined for the six existing phases only because widening them to
+#     $tBuild fires 11 times in 50. This phase costs 5.7 s, so precision is
+#     affordable here: its subject is the -run-list supervisor in codex-vm and
+#     its instrument is that script, and no codegen change can move its answer
+#     because every arm compares two runs of the SAME kernels.
 #   text-*  / sem-equiv         <- the front end and the text printer
 # test-compile is NOT in that map. It is never skipped, only scoped: with
 # -Internal it compiles the test chapters that CITE a chapter changed here
@@ -57,6 +79,7 @@ $BuildLog = Join-Path $OutDir 'build.log'
 # written with a construct the printer mishandles; that is caught by the next
 # full gate rather than at the CL, and it is the trade this switch makes.
 $SkipPhases = [System.Collections.Generic.HashSet[string]]::new()
+$tCompiler = $false
 if ($Internal) {
     $changed = @()
     try { $changed = @(p4 opened 2>$null | ForEach-Object { (($_ -split '#')[0]) -replace '^//[^/]+/[^/]+/','' } | Where-Object { $_ }) } catch { }
@@ -65,15 +88,17 @@ if ($Internal) {
     $tBuild    = [bool]($changed | Where-Object { $_ -match '^(codex/build/|build/)' })
     $tApps     = [bool]($changed | Where-Object { $_ -match '^apps/' })
     $tFrontEnd = [bool]($changed | Where-Object { $_ -match '^codex/compiler/(Syntax|Ast)/' -or $_ -match '^codex/compiler/Emit/CodexEmitter\.codex$' -or $_ -match '^codex/compiler/Core/(TextFormat|SourceText)\.codex$' })
+    $tVm       = [bool]($changed | Where-Object { $_ -match '^tools/codex-vm\.(c|exe)$' -or $_ -match '^build/check-run-list\.ps1$' })
     $runPhase = [ordered]@{
         'jonquil'         = $tCompiler
         'plug-binary'     = ($tPlugs -or $tCompiler)
         'cross-smoke'     = ($tPlugs -or $tCompiler)
         'plug-smoke'      = ($tPlugs -or $tCompiler)
-        'gen-scripts'     = $tBuild
-        'vm-differential' = $tCompiler
-        'deck-headroom'   = $tBuild
+        'gen-scripts'     = ($tBuild -or $tCompiler)
+        'vm-differential' = ($tCompiler -or $tBuild)
+        'deck-headroom'   = ($tBuild -or $tCompiler)
         'app-sweep'       = ($tApps -or $tCompiler)
+        'run-list'        = $tVm
         'text-stage1'     = $tFrontEnd
         'sem-equiv'       = $tFrontEnd
         'text-stage2'     = $tFrontEnd
@@ -724,6 +749,29 @@ Measure-Phase 'check-errors' {
     }
 }
 
+# -- codex-vm -run-list: the supervisor that the BVT runs every test through.
+# Its gating was HALF. bvt.ps1 drives every BVT test through -run-list, so a
+# regression on the HAPPY path already turns this gate red without any of
+# this. What nothing ran is the REFUSAL and ISOLATION half -- a corrupt kernel
+# not taking its neighbours, the wall budget stopping one line alone, drop
+# attribution, a nested list refused -- and those can rot unseen (L-NOGATE).
+# 
+# All five arms run rather than only those four: the whole script is 5.7 s in the gate
+# measured 2026-08-25, and a switch to select four of five is machinery to
+# manage three seconds (L-LESS). It REFUSES rather than skips when a kernel it
+# needs is missing, which is why it sits after the oracles: canary, cdx-sign
+# and Sut all exist by here.
+Measure-Phase 'run-list' {
+    $chkRunList = Join-Path $PSScriptRoot 'check-run-list.ps1'
+    if (Test-Path $chkRunList) {
+        & pwsh -NoProfile -File $chkRunList 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: codex-vm -run-list did not isolate a failing line from its neighbours'
+            exit 1
+        }
+    }
+}
+
 # -- the test chapters themselves. No gate phase compiled anything under
 # codex/test until 2026-08-20, so a test chapter that stopped compiling was
 # UNRUNNABLE and every other instrument stayed green over it: the suite stops
@@ -737,11 +785,21 @@ Measure-Phase 'check-errors' {
 # Never skipped, only SCOPED. -Internal compiles the chapters that CITE what
 # changed here; the full gate compiles all of them. Measured: 11 chapters and
 # 12s for a GopComposite change, against 1,202s at 4 ways for all 1,400.
+# 
+# A COMPILER CHANGE IS THE EXCEPTION AND TAKES THE FULL CORPUS (red's ruling
+# 2026-08-25, widening reek's proposal from Emit/ to the whole compiler).
+# Cite-scoping assumes a change reaches the chapters that CITE it. Nothing
+# cites the compiler: it is global by construction, so the scoped set is
+# chosen by a relation the subject does not participate in. Main 19551
+# shipped a seed that self-verified, passed the BVT, the oracles and 176
+# refusals, and could not compile the desk -- test-compile had run ONE
+# chapter of 1447 and the corpus was the only witness there was. ~115s on
+# compiler CLs, against a fleet pin measured in hours.
 Measure-Phase 'test-compile' {
     $chkTest = Join-Path $PSScriptRoot 'check-test-compile.ps1'
     if (Test-Path $chkTest) {
         $tcArgs = @('-Kernel', $testKernel)
-        if (-not $Internal) { $tcArgs += '-Full' }
+        if ((-not $Internal) -or $tCompiler) { $tcArgs += '-Full' }
         & pwsh -NoProfile -File $chkTest @tcArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'FAIL: a chapter under codex/test does not compile'
@@ -850,6 +908,51 @@ Measure-Phase 'plug-smoke' {
             if (Test-Path $spLog) { Get-Content $spLog | Select-Object -Last 5 | ForEach-Object { Write-Host "  ${sp}: $_" } }
         }
         exit 1
+    }
+# -- the cross-host arm (plugs 1.73 step 3, red's clearance 2026-08-25).
+# The QEMU fallback carries all 56 plug runners since 19697 and NOTHING
+# guarded it: every cross-host result was a hand run (L-NOGATE). The four
+# plugs above already span both launch helpers -- python, typescript and rust
+# through Start-PlugVm, ptx file-serial through Invoke-PlugVmFileSerial -- so
+# this needs a second PASS, not new subjects.
+# 
+# BYTE-IDENTICAL is the assertion, and it has to be. Asking only whether the
+# run exited 0 is what let csharp sit through its full 1800 s timeout
+# undetected while javascript passed beside it; a differential against the
+# codex-vm answer is what catches a host that finishes and lies.
+# 
+# A box with no QEMU SAYS SO and moves on. A silent skip would be a check
+# that cannot fail, which is the thing this arm exists to stop.
+    if (-not $script:FallbackVmBin) {
+        Write-Host '  plug-smoke: cross-host arm SKIPPED, no QEMU on this box (set QEMU_BIN to run it)'
+    } else {
+        $xFail = @()
+        $prevVmHost = $env:CODEX_VM_HOST
+        $env:CODEX_VM_HOST = 'qemu'
+        try {
+            foreach ($sp in $smokePlugs) {
+                $spLog = Join-Path $smokeDir "$sp-smoke-qemu.log"
+                foreach ($si in $smokeSrcs) {
+                    $smokeSrc = Join-Path $Repo "codex\plugs\test-input\$si.codex"
+                    $qOut = Join-Path $smokeDir "$sp-$si.qemu.out"
+                    $cOut = Join-Path $smokeDir "$sp-$si.out"
+                    Remove-Item -Force $qOut -ErrorAction SilentlyContinue
+                    & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $qOut *>> $spLog
+                    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $qOut)) { $xFail += "$sp/$si(qemu produced nothing)"; continue }
+                    if ((Get-FileHash $qOut -Algorithm SHA256).Hash -ne (Get-FileHash $cOut -Algorithm SHA256).Hash) { $xFail += "$sp/$si(hosts differ)" }
+                }
+            }
+        } finally {
+            $env:CODEX_VM_HOST = $prevVmHost
+        }
+        if ($xFail.Count -gt 0) {
+            Write-Host ''
+            Write-Host "FAIL: plug smoke cross-host -- $($xFail -join ', ')"
+            Write-Host '  codex-vm and the QEMU fallback disagree, or the fallback produced nothing.'
+            Write-Host '  A subject that flaps here is a finding about that subject or that host. Record it before quieting it.'
+            exit 1
+        }
+        Write-Host "  plug-smoke: cross-host OK ($($smokePlugs.Count * $smokeSrcs.Count) subjects byte-identical on codex-vm and QEMU)"
     }
 }
 

@@ -36,12 +36,10 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 [System.IO.File]::WriteAllBytes($inputFile, $combined)
 
 # Phase 3: Run plug CDX
-$vmBin = Join-Path $Repo 'tools\codex-vm.exe'
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$proc = Start-Process -FilePath $vmBin -ArgumentList @('-kernel',$PlugCdx,'-input',$inputFile,'-output',$outFile,'-mem', '3072','-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
-$proc.WaitForExit(300000)
-if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force; [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
 
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
     $err = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { "" }

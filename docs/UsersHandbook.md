@@ -420,8 +420,8 @@ fault.
 boots once, indexes, and paints a live header:
 
 ```
-Codex Dev Console
-Indexed 95 definitions, 0 disk facts | Codex Dev Console | 2026-07-29 ...
+Cobblestone Dev Console
+Indexed 95 definitions, 0 disk facts | Cobblestone Dev Console | 2026-07-29 ...
 ```
 
 **The ConOut gap is still real for DevConsoleBoot as an alternate

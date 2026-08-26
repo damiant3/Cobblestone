@@ -16,13 +16,28 @@ Chapter: DeskChromeIconsTest
  report the same shape as one that found everything, since both would print
  a number equal to their own denominator.
 
+ THE PAINTER IS HANDED TWO DIFFERENT TREES AND THE COUNT HAS TO SAY WHICH.
+ `desk-chrome-icons` runs from `dk-chrome-paint`, which paints the desktop
+ chrome and also the start menu, so its two ids live in different trees:
+ `menu` is in the taskbar and `shutdown` is in the menu's body. Counted
+ against the desktop alone that reads `1 of 2`, which is the same shape a
+ genuinely missing icon gives -- the exact confusion this file exists to stop.
+ So each id is counted against the tree it belongs to, and the two cross rows
+ are printed because they say opposite things and both are load-bearing.
+ `shutdown` MUST be absent from the desktop: a desktop carrying a Shutdown
+ button is what the sidebar was. `menu` MUST still be present while the start
+ menu is up, because `desk-chrome-face` wraps both trees and the taskbar is
+ under the menu either way -- which is what keeps the pill there to dismiss
+ it. The second row was written expecting a 0 and the run said 1; the run was
+ right.
+
   dci-found : WidgetNode, Text -> Integer
   dci-found (root) (id) =
     when widget-find root id
       is Just (n) -> 1
       is None -> 0
 
-  dci-chrome-ids : List Text = ["menu", "programs", "files", "edit", "console", "shutdown"]
+  dci-chrome-ids : List Text = ["menu", "shutdown"]
 
   dci-count : WidgetNode, List Text, Integer, Integer -> Integer
   dci-count (root) (ids) (i) (acc) =
@@ -36,25 +51,38 @@ Chapter: DeskChromeIconsTest
     in dci-rows root es n (i + 1) (acc + dci-found root ("gpr-" & e.ge-label))
 
   dci-ds : Integer
-  dci-ds = alloc-zeroed 64 64
+  dci-ds = alloc-zeroed 128 64
+
+  dci-ps : Integer
+  dci-ps = alloc-zeroed 64 64
 
   dci-chrome : Text
   dci-chrome =
     let ds = dci-ds
     in let root = desk-chrome-with (widget-panel "content" DirColumn 0 []) 1024 ds
+    in let menu = desk-chrome-with (desk-menu-tree dci-ps) 1024 ds
     in let ids = dci-chrome-ids
-    in let hit = dci-count root ids 0 0
+    in let both = dci-found root "menu" + dci-found menu "shutdown"
     in let absent = dci-found root "no-such-button"
-    in "chrome=" & show hit & " of " & show (list-length ids) & "   absent=" & show absent
+    in "chrome=" & show both & " of " & show (list-length ids) & "   absent=" & show absent
+       & "   shutdown off the desktop=" & show (dci-found root "shutdown")
+       & "   pill still under the start menu=" & show (dci-found menu "menu")
+
+ The window shows every entry and the start menu shows the OPEN group's, so
+ the two denominators differ on purpose. A menu row count equal to the whole
+ register would mean the collapse had stopped collapsing, and one of zero
+ would mean `desk-gpr-icons` had lost the tree it paints into; the window row
+ beside it is what separates those from a change to the ids themselves.
 
   dci-launcher : Text
   dci-launcher =
-    let ps = alloc-zeroed 64 64
+    let ps = dci-ps
     in let root = gpr-tree ps
     in let es = gpr-entries
     in let n = list-length es
     in let hit = dci-rows root es n 0 0
-    in "rows=" & show hit & " of " & show n
+    in let mhit = dci-rows (gpr-menu-tree ps) es n 0 0
+    in "window rows=" & show hit & " of " & show n & "   menu rows=" & show mhit & " of " & show n & " (the open group)"
 
  The gutter must be WIDER than the icon or the label sits flush against it,
  which is what the first version on the glass did. One cell of daylight is
@@ -63,6 +91,47 @@ Chapter: DeskChromeIconsTest
   dci-gutter : Text
   dci-gutter =
     "mark=" & show gpr-mark-cells & " icon=" & show gpr-icon-cells & " gutter=" & show (text-length gpr-gutter) & " gap=" & show (text-length gpr-gutter - gpr-icon-cells)
+
+ EVERY PANE THAT CAN BE MINIMISED MUST HAVE A PILL ICON, AND IT MUST NOT BE
+ THE FALLBACK. `dk-pill-icon` is keyed by focus id in the same arm order as
+ `desk-wnd-title`, so the failure to catch is an id present in one and absent
+ from the other. That reads as an empty name, `gicon-named` answers the `file`
+ icon for it, and the pill draws a plausible picture. A misspelled name lands
+ on exactly the same fallback, so ONE row covers both: for every id the title
+ table names, the icon must be non-empty and must resolve to ITSELF.
+
+ `file` is not used deliberately by any pane, which is what makes it usable as
+ the sentinel here. Files takes `folder` and Edit takes `edit`. If a pane ever
+ genuinely wants `file`, this row stops discriminating and has to change.
+
+  dci-pill-ids : List Integer = [desk-focus-clkp, desk-focus-calc, desk-focus-con, desk-focus-prog, desk-focus-cal, desk-focus-dif, desk-focus-style, desk-focus-trk, desk-focus-mon, desk-focus-scene, desk-focus-fish, desk-focus-bro, desk-focus-files, desk-focus-edit]
+
+  dci-pill-ok : Integer -> Integer
+  dci-pill-ok (fid) =
+    let n = dk-pill-icon fid
+    in if text-length n == 0 then 0
+    else if (gicon-named n).ico-name /= n then 0
+    else 1
+
+  dci-pill-count : List Integer, Integer, Integer, Integer -> Integer
+  dci-pill-count (ids) (i) (n) (acc) =
+    if i >= n then acc
+    else dci-pill-count ids (i + 1) n (acc + dci-pill-ok (list-at ids i))
+
+  dci-pills : Text
+  dci-pills =
+    let ids = dci-pill-ids
+    in let n = list-length ids
+    in let ok = dci-pill-count ids 0 n 0
+    in let titled = dci-titled ids 0 n 0
+    in "pill icons=" & show ok & " of " & show n
+       & "   titled=" & show titled
+       & "   an untitled id falls back=" & (gicon-named (dk-pill-icon 0)).ico-name
+
+  dci-titled : List Integer, Integer, Integer, Integer -> Integer
+  dci-titled (ids) (i) (n) (acc) =
+    if i >= n then acc
+    else dci-titled ids (i + 1) n (acc + (if text-length (desk-wnd-title (list-at ids i)) == 0 then 0 else 1))
 
  An unknown name answers the file icon rather than refusing, so a row whose
  icon is misspelled still draws something. That is deliberate and it is
@@ -77,6 +146,7 @@ Chapter: DeskChromeIconsTest
   opening : [Console] Nothing = act
     print-line-uni dci-chrome
     print-line-uni dci-launcher
+    print-line-uni dci-pills
     print-line-uni dci-gutter
     print-line-uni dci-fallback
   end
