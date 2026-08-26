@@ -273,11 +273,32 @@ Section: Type Mapping
   zig-let-annot : CodexType -> Text
   zig-let-annot (ty) =
    when ty
+    is UnitTy (n) (inner) -> zig-let-annot inner
     is IntegerTy (lo) (hi) (mode) -> ": i64"
     is RealTy (w) (m) -> ": f64"
     is BooleanTy -> ": bool"
     is CharTy -> ": i64"
     is otherwise -> ""
+
+ A unit family is integer-backed: `Length = unit family Millimeter` with
+ scale factors, and a `Length` value IS its base-unit integer. The plug
+ mapped every `UnitTy` to `void`, which erased the payload while the
+ arithmetic around it stayed correct -- `unit-family`'s emitted body
+ computes 2400, 240, 2 and 100, exactly its `.expected`, and the only
+ wrong thing in the program is that `fn Centimeter(__fv: i64)` returns
+ `void`, which makes `(w +% h)` an `invalid operands: void and void`.
+ Finding 17, and this arm is half of it.
+
+ The other half is not here: a record FIELD typed by a unit family
+ arrives as an `ATypeExpr` and never reaches this function, so it is
+ still emitted as the bare family name. That is 11 more programs and a
+ path this has not touched.
+
+ `zig-let-annot` peels too, or a `let` holding a unit value would be
+ annotated `""` while its expression has an integer type. And the entry
+ shim now recurses instead of assuming `void`, which is what bare metal
+ does (`emit-opening-result-print` recurses into the inner type); it had
+ been calling without printing, correct only while units were void.
 
   emit-zig-type : CodexType, List (Integer between 0 and 4294967295) -> Text
   emit-zig-type (ty) (scope) =
@@ -293,7 +314,7 @@ Section: Type Mapping
     is NothingTy -> "void"
     is ProofTy -> "void"
     is PropEqTy (pl) (pr) -> "void"
-    is UnitTy (n) (inner) -> "void"
+    is UnitTy (n) (inner) -> emit-zig-type inner scope
     is ListTy (elem) -> "*CxList(" & emit-zig-type elem scope & ")"
     is LinkedListTy (elem) -> "*CxList(" & emit-zig-type elem scope & ")"
     is VectorTy (vn) (vt) -> "@Vector(" & show vn & ", " & emit-zig-type vt scope & ")"
@@ -3637,7 +3658,7 @@ Section: Chapter Emission
     is NothingTy -> "    " & name & "();\n"
     is ProofTy -> "    " & name & "();\n"
     is PropEqTy (pl) (pr) -> "    " & name & "();\n"
-    is UnitTy (n) (inner) -> "    " & name & "();\n"
+    is UnitTy (n) (inner) -> zig-entry-call name inner
     is otherwise -> "    " & zig-entry-refusal & ";\n"
 
   zig-entry-real-refusal : Text
