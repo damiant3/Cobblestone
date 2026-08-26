@@ -1,0 +1,30 @@
+Chapter: CSharpStdio
+
+Section: Body
+
+  plug-emit-ir-stream : Text -> [Console] Nothing
+  plug-emit-ir-stream (ir-text) =
+   let tokens = ir-tokenize ir-text
+   in let tree = build-tree tokens
+   in let xs = sexp-list tree
+   in let chap-name = sexp-str (list-at xs 1)
+   in let type-defs = parse-atype-defs (walk-named-list xs "type-defs")
+   in let def-sexps = walk-named-list xs "defs"
+   in let n = list-length def-sexps
+   in let arities = build-arity-map-sexp def-sexps 1 n []
+   in let muts = collect-mut-names def-sexps 1 n []
+   in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [], dyn-locals = [] }
+   in let class-name = "Codex_" & sanitize chap-name
+   in act
+    print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
+    print-uni "\n"
+    print-uni (opening-emit-entry class-name (opening-return-type-sexp def-sexps 1 n))
+    print-uni emit-cce-runtime
+    print-uni emit-buf-runtime
+    print-uni emit-state-runtime
+    print-uni (emit-seam-runtimes arities)
+    print-uni (emit-type-defs type-defs 0 muts)
+    print-uni (emit-class-header chap-name)
+    stream-defs-sexp def-sexps ctx 1 n
+    print-uni "}\n"
+   end

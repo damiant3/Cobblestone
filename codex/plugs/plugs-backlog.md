@@ -14,6 +14,44 @@ call; a wrong field spelling emits a division; a wrong `list-push` emits a
 mutating append. For most of these plugs nothing downstream ever runs, so
 silence is silence, not agreement (L-GAP).
 
+**A LITERAL PATTERN IS A SECOND CODE PATH AND IT IS THE ONE THAT ROTS.**
+Found by Steve Howell, 2026-08-26, who fixed it in his own zig plug and
+reported the class. A Boolean `IrLitPat` carries the SPELLING `True` or
+`False` rather than a number (bare metal decodes it in `pat-lit-to-integer`,
+`codex/compiler/Syntax/Token.codex:149`). **Nearly every plug in this tree
+already maps that spelling correctly where a Boolean appears as an
+EXPRESSION, and did not where it appears as a PATTERN** -- the two paths are
+separate in every plug and the pattern path gets written by copying the
+integer case. Measured by running the emitted programs: csharp CS0103,
+javascript `ReferenceError: True is not defined`, zig undeclared identifier,
+all three fixed 2026-08-26. Python, Haskell, Ada and Pascal spell their
+Booleans the way the wire does and are safe by coincidence, not by handling
+it. **Two further defects surfaced only once the first fix let the programs
+run further, which is the part to generalise: a literal-pattern bug hides
+the next one behind it.** csharp appended a catch-all after arms naming both
+`true` and `false`, which C# rejects as CS8510 unreachable; javascript gave a
+Char literal pattern no BigInt suffix while the scrutinee carried one, so
+`15n === 15` was false and every char arm fell through to the catch-all --
+unrelated to Booleans and failing before any of this. **Grade a plug with
+`codex/test/when-bool-cross` and `when-bool-pattern`**, which carry integer
+and char controls precisely so a fix that breaks the neighbouring literal
+kinds shows up. **UNSWEPT, and this is a lead rather than a finding:** the
+remaining plugs were read, not run, and every one that emits `IrLitPat` text
+verbatim into a target spelling Booleans lowercase is a candidate. **Queued
+for the wasm plug (fester's, not touched here):** these two tests should gate
+it early, per Steve's suggestion.
+
+**RECORDED LEAD, NOT BUILT: the plug wire performs no arity check.**
+`codex/plugs/common/IRTextParser.codex:705` builds `IrApply` structurally,
+so hand-authored IR can express shapes the compiler cannot produce -- a
+non-full-arity self-application in tail position being the measured example
+(`docs/DevelopersRulebook.md`, "What the wire carries"). Every plug's TCO
+gate is safe against COMPILER-produced IR by the type checker's occurs
+check, and unprotected against anything else. Whether that matters is a
+question about the plug wire's TRUST MODEL rather than about any plug, so it
+is recorded here and deliberately not acted on. Raised by Steve Howell's
+PR 87, answered 2026-08-26.
+
 **A name census cannot answer a semantics question, in either direction.**
 Keying on the quoted Codex name misses a plug that declares the arm in a
 prelude and counts a plug whose REFUSAL text contains the name. A registered
@@ -261,7 +299,7 @@ SCOPE tracks x86 closely at both shapes. **CHECK, LOWER and RESOLVE run 2x to
 BEDS COULD NOT** (fester, 2026-08-25).
 
 `codex/plugs/wasm/page/index.html` plus `build-page.ps1`: the compiler as a
-wasm module, its own source beside it, phases streaming live, and on
+wasm module, its own source beside it, phases reported on completion, and on
 completion the page hashes its cleaned output in the tab and compares
 against a bare-metal anchor. **The anchor is computed at page build, never
 hard-coded** -- `build-page.ps1` runs the identical source through the x86
@@ -309,6 +347,168 @@ carries the fix and the account.
 **The durable 1.14 close for browsers remains compiler-side**: de-recurse
 or trampoline the emit spine (`codex-emit-expr`'s tree descent) so a
 worker's stack suffices. Seed-affecting, token, Update 51 scope per red.
+
+**1.83a -- THE PAGE CANNOT STREAM PHASE PROGRESS, AND THE CAUSE IS NOT
+BUFFERING** (reek, 2026-08-26). Measured in node v24 against the built
+module, 2.94 MB source, `--stack-size=8000`: first `fd_write` at **25.395 s
+of a 25.59 s run**, with all eight `WD:PHASE-*` lines inside one
+millisecond of each other.
+
+`TEXT` reaches `emit-text-streaming` through `compile-plain`'s `else`
+(`opening.codex:2127`), and that emitter DOES stream: 18,731 separate
+`fd_write` calls. Emission is **0.20 s, 0.8 per cent of the build.** The
+other **99.2 per cent is `compile-frontend`, which prints nothing at all.**
+The eight phase lines are heap marks read off `fe.heap-marks` AFTER the
+front end returns (`opening.codex:1463`, printed `:1484`), so they cannot
+precede the phases they name; the page was reading a completion report as
+a progress stream.
+
+Two traps this closes. Reading `emit-text` (`opening.codex:1668`), which
+does build the whole output before printing it, gives a mechanism that fits
+the symptom perfectly and is the wrong function (L-MECHANISM). And a
+240-byte CCE flush (`WasmEmitter.codex:290`) makes guest-side buffering the
+obvious suspect; it is not, because the flush fires per print call.
+
+**1.84 -- A PLUG CAN NOW RUN AS A WASM MODULE ON STDIN AND STDOUT, AND THE
+NETWORK ENTRY IS UNTOUCHED** (reek, 2026-08-26, Damian's direction).
+
+Every plug opening in the tree is `[Console, FileSystem, Network.Read,
+Network.Write]`: it takes IR over NE2K and answers over TCP. That was all a
+plug needed while a plug only ran on bare metal behind a socket. A wasm build
+has neither a NIC nor a socket, so no plug could run in a browser at all.
+
+Measured before designing: 45 files carry that opening, and the transpiler
+entries are **byte-identical apart from three things** -- the chapter name,
+the port, and the one `emit-<lang>-chapter` call. `AdaPlug.codex` against
+`JavaScriptPlug.codex` differs in exactly those lines and nothing else.
+
+The generalisation is a second entry, not a change to the first (L-FALLBACK):
+
+- `codex/plugs/common/PlugStdio.codex` is the whole transport, eight lines.
+  It reads IR with `read-file-uni ""` and calls `plug-emit-ir-stream`.
+- A plug supplies `plug-emit-ir-stream : Text -> [Console] Nothing`. For
+  javascript that is `JavaScriptStdio.codex`, reusing `JavaScriptEmitter`
+  unchanged; for csharp, `CSharpStdio.codex`.
+
+**The contract STREAMS rather than returning Text, and csharp is why.** The
+first version was `plug-emit-ir : Text -> Text`, which fits every transpiler
+ending in one `emit-<lang>-chapter` call. `CSharpPlug` does not: it prints def
+by def with `print-uni` and reclaims the per-def heap with `__heap-restore`
+between them, deliberately, so the whole IRChapter is never materialised. A
+Text-returning contract would have forced csharp to give that up. Streaming
+subsumes both shapes, so it is the one contract.
+
+**csharp also needed its shared helpers without its transport, and that is a
+build-script feature rather than a copy.** `stream-defs-sexp` and
+`collect-mut-names` live in `CSharpPlug.codex` itself, beside the network
+opening. `build-plug-wasm.ps1` therefore takes a chapter as
+`Name:Sec1|Sec2` and drops those sections, so csharp bundles `CSharpPlug`
+minus `Helpers`, `Drain` and `Body` and keeps the single definition of the
+rest. Duplicating them into `CSharpStdio` was the alternative and would have
+been two copies nothing compares.
+
+**AND `print-uni` HAD NO ARM IN THE WASM EMITTER AT ALL.** It is a registered
+builtin (`Builtins.codex:77`, `Text -> [Console.Write] Nothing`) and
+`WasmEmitter.codex` had rows for `print-text`, `print-line-uni` and
+`print-line` and none for it, so a bare mention fell through builtin dispatch
+into name resolution and emitted as a CLOSURE VALUE. The failure surfaced at
+`wat2wasm` as `undefined local variable "$print_uni"`, thousands of lines into
+generated wat, naming neither the builtin nor the chapter. That is L-ACCEPTED
+one level down: an `is otherwise` absorbing an unknown instead of refusing it,
+and the diagnosis cost was the whole distance between the two. The arm is one
+line beside `print-text`, which has the same no-newline semantics. Nothing
+that compiled before changes: this path previously produced invalid wat.
+- `codex/plugs/common/build-plug-wasm.ps1` bundles the emitter against
+  PlugStdio instead of the network entry and runs it through the wasm plug.
+  It bundles to `plug-source-stdio.codex` rather than `plug-source.codex`,
+  which `Build-TranspilerPlug` hardcodes: sharing that name would leave the
+  network build's bundle looking like this one.
+
+**No existing file changed.** `codex/plugs/javascript/build.ps1` still builds
+the network CDX and both transports exist.
+
+Two things the design turned on, both read rather than assumed. `read-file-uni`
+already converts to CCE on the way in (`WasmEmitter.codex` above
+`wat-rt-read-file`: "the conversion already happened here"), so `utf8-to-cce`
+is unnecessary, which matters because it lives in `X86_64State.codex` and has
+no wasm arm at all. And a header line was dropped: reading one needs `Just`
+and `None`, the Maybe type is not in a plug bundle, and CDX2072 said so on the
+first build. `read_file_uni` ignores its argument in wasm (`param $ignored`),
+so the contract is simply IR on stdin, which is the shape Steve Howell's
+`zigemit` already uses.
+
+**PROVEN END TO END, with the program's own output as the oracle.** Chained in
+one process the way a page would: `sample.codex` to IR through the compiler
+module (23 ms, 256 MB at decks=12), IR to JavaScript through
+`javascript-stdio.wasm` (**3 ms, 16 MB**, 84,197 bytes of module), and the
+emitted JavaScript RUN, printing `Cobblestone` and `110` where `sum-to 10`
+doubled is 110. Changing the source to `sum-to 5` moved it to `30`, so the
+pipeline is live rather than answering from something canned.
+
+The plug module wanting 16 MB against the compiler's 256 is the number that
+makes a per-target lens affordable in a tab.
+
+**csharp proven the same way**: 129,101 byte module, 5 ms, 16 MB, 11,710
+characters of C# which `dotnet run` compiles (warnings only) and runs,
+printing `Cobblestone` and `110`.
+
+Left: the other transpilers are a few lines each (`plug-emit-ir-stream` plus a
+build invocation). `elf`, `pe` and `img` emit BYTES rather than Text and need
+a `plug-emit-bytes` sibling before they can ride this.
+
+**1.85 -- THE SELF-COMPILE PAGE'S ANCHOR GOES RED THE MOMENT THE SEED MOVES,
+BECAUSE ITS TWO ARMS ARE DIFFERENT COMPILERS** (reek, 2026-08-26).
+
+`build-page.ps1` builds the wasm module from `build/output/Codex.codex` and
+computes the anchor by running `seed/Codex.cdx` over that same source. Those
+are two compilers, and the claim only holds while they agree.
+
+Measured today: `build/output/Codex.codex` is from 08-25 20:46 and the seed
+moved twice on 08-26 under merge-down (kernel digest `591EEA7B` to
+`C3181693`). Rebuilding the page left the module BYTE-IDENTICAL at 1,133,290
+bytes and moved the anchor from `4173E77D` to `8294D658`, 2,458,206 characters
+against 2,458,210. Run against the fresh anchor the module reports **OUTPUT
+DIFFERS**, and nothing about the module changed.
+
+**The deployed page is GREEN and was left alone**: its anchor and its module
+are the matched 08-26 13:04 pair and it verifies byte-identical. The trap is
+that a rebuild of the page ALONE turns it red, and reads as a compiler
+regression rather than as a stale concatenated source. `build/output/Codex.codex`
+is produced by a gate's source-concat phase, so refreshing it means running
+the gate before rebuilding the page, and the two must ship together.
+
+**1.83b -- THE CLICK ERROR IS `Failed to fetch`, AND THE OUT-OF-MEMORY
+MECHANISM PUBLISHED FOR IT IN 19859 IS WITHDRAWN** (reek, 2026-08-26).
+
+The page was reported erroring on the button. Measured that the module grows
+to 1,628.8 MB, found that `codex-compiler.wat:1896` traps `unreachable` when
+`memory.grow` is refused, and that `isStackDeath` matches the word
+"unreachable" -- all three true, and none of them the cause. **Driven under
+CDP, Chrome 151 and Edge 151 both ALLOCATE the full 1,629 MB on demand and
+the page completes byte-identical in 14.8 s and 15.6 s.**
+
+The cause is the ORIGIN. Opened from disk the page reports `status=error`,
+`verdict=Failed to fetch`, in two seconds: it fetches `codex-compiler.wasm`
+and `Codex.codex` from beside itself and a browser refuses a fetch on a
+`file:` origin. Reproduced under CDP against
+`file:///.../web/compile/index.html`, and confirmed by Damian as the message
+he was seeing.
+
+**This is L-MECHANISM's exact shape a second time, and the tell was
+available the whole time: I never asked what URL was in the address bar.** A
+measured 1.6 GB and a real misclassification made a complete-looking story
+out of a number nobody had connected to the symptom. The falsifying test was
+one CDP run.
+
+The page now names it, before the click rather than after, and the
+misclassification fix from 19859 stands on its own merits: an `unreachable`
+that survives the retry still reports the memory it reached, because that
+failure is real even though it was not this one.
+
+The page now states the shape instead of implying a stream. **A real
+progress stream is a compiler-side change to the front end, is nobody's
+item, and nobody is asking for one** -- recorded here so it is not
+re-derived, not proposed as work.
 
 **1.82 -- THE SELF-COMPILE SURVIVES A BROWSER'S STACK: `return_call` CLOSES
 1.14 FOR THIS TARGET** (fester, 2026-08-25). **[1.83 sharpens the claim:

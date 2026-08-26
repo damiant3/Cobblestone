@@ -189,11 +189,20 @@ Section: Loop
     in s2
 
   menu-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+ THE HOVER IS UNGATED BECAUSE THE CLICK IS A LATCH. Both used to be read only
+ on an iteration that consumed a report (`mv == 1`). `mouse-take-click` answers
+ a press that was latched on an EARLIER report, so leaving `hover` gated would
+ take that press on an iteration where the row under the pointer reads as -1
+ and drop it -- turning a lost click into a differently lost click. The
+ published position is valid whether or not a report arrived this time round,
+ so the row is computed from it directly and the no-mouse case is what the
+ guard is for.
+
   menu-loop (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (sel) = act
     sc <- kbd-take kbd
     let mv = mouse-pump mouse w h
-    in let hover = if mv == 1 then menu-row-at w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else -1
-    in let clicked = if mv == 1 then mouse-clicked mouse else False
+    in let hover = if mouse.um-ok then menu-row-at w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else -1
+    in let clicked = mouse-take-click mouse
     in let tgt = if clicked & hover >= 0 then hover else sel
     in let fire = sc == 28 | (clicked & hover >= 0)
     in if fire & tgt == menu-power-off then power-off base w h stride font kbd mouse cs

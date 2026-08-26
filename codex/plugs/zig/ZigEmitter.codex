@@ -1888,12 +1888,22 @@ Section: Match Emission
  is an expression; in tail form the same unpacking has to sit in a plain
  block instead, because `break` cannot carry a `continue` out of it.
 
+ A Boolean IrLitPat carries the SPELLING `True` or `False`, and Zig spells
+ its Boolean literals in lower case, so the wire's text emitted verbatim
+ is an undeclared identifier and the build stops.
+
+  zig-bool-lit-text : Text -> Text
+  zig-bool-lit-text (t) =
+   if t == "True" then "true"
+   else if t == "False" then "false"
+   else t
+
   emit-zig-match-arm : IRPat, IRExpr, ZigCtx, Integer, Boolean, CodexType, ZigTail -> Text
   emit-zig-match-arm (pat) (body0) (ctx) (d) (ex) (mty) (tl) =
    let body = body0
    in if ex & zig-pat-is-catch-all pat then ""
    else when pat
-    is IrLitPat (text) (ty) (sp) -> text & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
+    is IrLitPat (text) (ty) (sp) -> zig-bool-lit-text text & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
      in if nsubs == 0 then "." & zig-sanitize name & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
@@ -2003,7 +2013,7 @@ Section: Match Emission
   emit-zig-chain-arm : IRPat, IRExpr, IRExpr, ZigCtx, Integer, CodexType, Text -> Text
   emit-zig-chain-arm (pat) (guard) (body) (ctx) (d) (mty) (sv) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "if (" & sv & " == " & text & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
+    is IrLitPat (text) (ty) (sp) -> "if (" & sv & " == " & zig-bool-lit-text text & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
      in let test = "if (" & sv & " == ." & zig-sanitize name & ") { "

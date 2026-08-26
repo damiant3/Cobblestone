@@ -1190,7 +1190,7 @@ Section: Expression Emission
   emit-match (scrut) (branches) (ty) (ctx) =
    let result-cast = if has-typevar ty then "" else "(" & cs-type ty & ")"
    in let arms = emit-match-arms branches 0 ctx result-cast
-   in let needs-wild = if has-any-catch-all branches 0 then False else True
+   in let needs-wild = if (has-any-catch-all branches 0) | (cs-bool-exhaustive branches) then False else True
    in let scrut-ty = ir-expr-type scrut
    in let scrut-text = when scrut-ty
       is SumTy (sn) (sa) (sc) -> "((" & cs-type scrut-ty & ")(" & emit-expr scrut ctx & "))"
@@ -1232,11 +1232,48 @@ Section: Expression Emission
    in if (is-catch-all (b.pattern) | is-tup-pattern (b.pattern)) & cs-guard-trivial (b.guard) then True
       else has-any-catch-all branches (i + 1)
 
+ C# treats `true` and `false` as exhausting `bool`, so a trailing `_` arm
+ after both is not dead code it will tolerate: it is CS8510, an error
+ rather than a warning. Codex reaches this shape whenever a `when` on a
+ Boolean names both arms, so the synthetic non-exhaustive arm has to be
+ withheld exactly there. Only trivially-guarded arms count, because a
+ guarded `is True` can fail at runtime and leave the match open.
+
+  cs-pat-is-bool-lit : IRPat, Text -> Boolean
+  cs-pat-is-bool-lit (p) (want) =
+   when p
+    is IrLitPat (text) (ty) (sp) -> text == want
+    is otherwise -> False
+
+  cs-has-bool-lit : List IRBranch, Text, Integer -> Boolean
+  cs-has-bool-lit (branches) (want) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+   in if cs-pat-is-bool-lit (b.pattern) want & cs-guard-trivial (b.guard) then True
+      else cs-has-bool-lit branches want (i + 1)
+
+  cs-bool-exhaustive : List IRBranch -> Boolean
+  cs-bool-exhaustive (branches) =
+   (cs-has-bool-lit branches "True" 0) & (cs-has-bool-lit branches "False" 0)
+
+ A Boolean IrLitPat carries the SPELLING `True` or `False` rather than a
+ number, and C# spells its Boolean keywords in lower case, so the wire's
+ text cannot be emitted verbatim: `True` is an identifier there and the
+ compiler answers CS0103. Bare metal decodes the same two spellings in
+ `pat-lit-to-integer` (`codex/compiler/Syntax/Token.codex:149`); this is
+ that decode for a target whose literals are words instead of integers.
+
+  cs-bool-lit-text : Text -> Text
+  cs-bool-lit-text (t) =
+   if t == "True" then "true"
+   else if t == "False" then "false"
+   else t
+
   emit-pattern : IRPat -> Text
   emit-pattern (p) =
    when p
     is IrVarPat (name) (ty) (sp) -> cs-type ty & " " & sanitize name
-    is IrLitPat (text) (ty) (sp) -> text
+    is IrLitPat (text) (ty) (sp) -> cs-bool-lit-text text
     is IrCtorPat (name) (subs) (ty) (sp) ->
      if is-mktup-name name then "(" & emit-sub-patterns subs 0 & ")"
      else if list-length subs == 0 then sanitize name & extract-ctor-type-args ty & " { }"
@@ -1256,7 +1293,7 @@ Section: Expression Emission
     is IrVarPat (name) (ty) (sp) -> "var " & sanitize name
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-pattern p
     is IrWildPat (sp) -> "_"
-    is IrLitPat (text) (ty) (sp) -> text
+    is IrLitPat (text) (ty) (sp) -> cs-bool-lit-text text
     is IrVecPat (pats) (ty) (sp) -> "_"
 
   emit-cs-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, CodexType, CsCtx -> Text

@@ -1,0 +1,230 @@
+Chapter: DeskWindowDragTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ Dragging a window by its titlebar. The gesture is a state machine over two
+ `ds` cells plus arithmetic over the content box, so where a window lands for
+ a given pointer is decidable here without a screen, a face or a pointer.
+
+ IT CALLS `dk-drag-to-x` AND `dk-drag-to-y`, WHICH ARE THE FUNCTIONS
+ `desk-wnd-drag-step` ITSELF CALLS. The step is effectful and wants a screen,
+ so the arithmetic was named rather than left inline: a test that re-derived
+ `mx - dk-drag-dx ds` beside it would be a SHADOW of the painter's arithmetic,
+ free to drift from it while both stayed green, which is how a golden comes to
+ pin whatever the machine says today.
+
+ The rows below print the PAYLOAD -- the resulting origin, and the offset the
+ gesture is supposed to preserve -- rather than a verdict computed from it. A
+ row printing only "the window moved" would agree with an implementation that
+ dropped the grab offset and put the window's corner under the pointer, which
+ is the one wrong answer a drag can give that still looks like a drag.
+
+Section: Body
+
+  dg-yn : Boolean -> Text
+  dg-yn (v) = if v then "yes" else "no"
+
+  dg-rect : Integer, Integer, Integer, Integer -> Text
+  dg-rect (blk) (w) (h) (ds) =
+    let st = dk-wnd-st blk
+    in "x " & integer-to-text (dk-wnd-rx blk w st)
+       & " y " & integer-to-text (dk-wnd-ry blk w h st ds)
+       & " w " & integer-to-text (dk-wnd-rw blk w st)
+       & " h " & integer-to-text (dk-wnd-rh blk w h st ds)
+
+ THE OFFSET ROUND-TRIPS, and the pair is chosen so a packer that answered one
+ field for both cannot pass: 37 and 9 disagree. The second pair asks the width
+ of the low field, because `dx` is bounded by the window's width and a window
+ on a wide screen is wider than a byte.
+
+  dg-off : Integer, Integer, Integer -> Text
+  dg-off (ds) (dx) (dy) =
+    let g = dk-drag-begin ds desk-focus-clkp dx dy
+    in "begin " & integer-to-text dx & "," & integer-to-text dy
+       & " -> dx " & integer-to-text (dk-drag-dx ds)
+       & " dy " & integer-to-text (dk-drag-dy ds)
+       & "  exact " & dg-yn (dk-drag-dx ds == dx & dk-drag-dy ds == dy)
+       & "  dragging " & integer-to-text (dk-drag-fid ds)
+
+ THE GRAB POINT IS INVARIANT, AND THAT IS WHAT "DRAG" MEANS. The window's
+ origin may be anything; what may not change is the distance from that origin
+ to the point the person is holding. Ten samples, and the row prints how many
+ of the ten held it.
+
+ A count of ten proves nothing on its own, because a clamp that pinned every
+ sample to one corner would also report a constant offset if the offset were
+ recomputed from the pinned rect. So the row prints the FIRST and LAST origins
+ too: they must differ, and the clamp rows below are the arm where this same
+ invariant is supposed to BREAK.
+
+  dg-inv : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dg-inv (ds) (w) (h) (ww) (wh) (dx) (dy) (i) (acc) =
+    if i >= 10 then acc
+    else
+      let mx = 300 + i * 57
+      in let my = 200 + i * 23
+      in let nx = dk-drag-to-x ds mx ww w
+      in let ny = dk-drag-to-y ds my wh w h
+      in dg-inv ds w h ww wh dx dy (i + 1) (if mx - nx == dx & my - ny == dy then acc + 1 else acc)
+
+  dg-follow : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  dg-follow (ds) (w) (h) (ww) (wh) (dx) (dy) =
+    let g = dk-drag-begin ds desk-focus-clkp dx dy
+    in let x0 = dk-drag-to-x ds 300 ww w
+    in let y0 = dk-drag-to-y ds 200 wh w h
+    in let x9 = dk-drag-to-x ds (300 + 9 * 57) ww w
+    in let y9 = dk-drag-to-y ds (200 + 9 * 23) wh w h
+    in "offset held " & integer-to-text (dg-inv ds w h ww wh dx dy 0 0) & " of 10"
+       & "  first " & integer-to-text x0 & "," & integer-to-text y0
+       & "  last " & integer-to-text x9 & "," & integer-to-text y9
+       & "  they differ " & dg-yn (x0 /= x9 & y0 /= y9)
+
+ A STILL POINTER MOVES NOTHING, which is the condition the step repaints on.
+ Without it a held button repaints the whole desk at the pump rate for a
+ pointer that is not moving.
+
+  dg-still : Integer, Integer, Integer, Integer, Integer -> Text
+  dg-still (ds) (w) (h) (ww) (wh) =
+    let a = dk-drag-to-x ds 500 ww w
+    in let b = dk-drag-to-x ds 500 ww w
+    in let c = dk-drag-to-y ds 400 wh w h
+    in let d = dk-drag-to-y ds 400 wh w h
+    in "same pointer twice: " & integer-to-text a & "," & integer-to-text c
+       & " then " & integer-to-text b & "," & integer-to-text d
+       & "  unchanged " & dg-yn (a == b & c == d)
+
+ THE CLAMP, asked at all four edges with a control in the middle. Each operand
+ is far enough outside that the clamped and unclamped answers disagree by
+ hundreds of pixels rather than by one, and the row prints the bound it is
+ supposed to have hit so the number is checkable rather than merely stable.
+
+ THE CONTROL IS THE ROW THAT MATTERS. A clamp that pinned everything would
+ pass all four edges; the middle sample is what says it discriminates.
+
+  dg-edge : Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer -> Text
+  dg-edge (ds) (w) (h) (ww) (wh) (label) (mx) (my) =
+    label & ": pointer " & integer-to-text mx & "," & integer-to-text my
+       & " -> " & integer-to-text (dk-drag-to-x ds mx ww w)
+       & "," & integer-to-text (dk-drag-to-y ds my wh w h)
+
+  dg-bounds : Integer, Integer, Integer, Integer, Integer -> Text
+  dg-bounds (w) (h) (ww) (wh) (ds) =
+    "box x " & integer-to-text (dk-cbox-x w)
+    & " y " & integer-to-text (dk-cbox-y w)
+    & " w " & integer-to-text (dk-cbox-w w)
+    & " h " & integer-to-text (dk-cbox-h w h ds)
+    & "  x in " & integer-to-text (dk-drag-keep - ww)
+    & ".." & integer-to-text (w - dk-drag-keep)
+    & "  y in " & integer-to-text (dk-cbox-y w)
+    & ".." & integer-to-text (dk-cbox-y w + dk-cbox-h w h ds - wh)
+    & "  keep " & integer-to-text dk-drag-keep
+
+ IT CANNOT HIDE, WHICH IS THE REQUIREMENT AND NOT THE FOUR NUMBERS ABOVE.
+ A window may hang off the glass now, so the thing worth asserting is not
+ where the bounds happen to sit but that whatever the pointer does, some of
+ the window is still on the screen to grab. This measures the ON-SCREEN
+ rectangle at each extreme and asks for at least `dk-drag-keep` of it on both
+ axes.
+
+ It is an invariant against the CONSTANT rather than against a recorded
+ coordinate, so it cannot rot the way `far right -> 1216` can.
+
+  dg-vis : Integer, Integer, Integer -> Integer
+  dg-vis (a) (len) (limit) =
+    let lo = if a < 0 then 0 else a
+    in let hi = if a + len > limit then limit else a + len
+    in if hi < lo then 0 else hi - lo
+
+  dg-hide : Integer, Integer, Integer, Integer, Integer -> Text
+  dg-hide (ds) (w) (h) (ww) (wh) =
+    let lw = dg-vis (dk-drag-to-x ds 0 ww w) ww w
+    in let rw = dg-vis (dk-drag-to-x ds 3000 ww w) ww w
+    in let uh = dg-vis (dk-drag-to-y ds 0 wh w h) wh h
+    in let dh = dg-vis (dk-drag-to-y ds 3000 wh w h) wh h
+    in "cannot hide: left " & integer-to-text lw
+       & " right " & integer-to-text rw
+       & " up " & integer-to-text uh
+       & " down " & integer-to-text dh
+       & "  all at least " & integer-to-text dk-drag-keep & " "
+       & dg-yn (lw >= dk-drag-keep & rw >= dk-drag-keep & uh >= dk-drag-keep & dh >= dk-drag-keep)
+
+ A MAXIMISED WINDOW IS NOT DRAGGED, and the refusal in `desk-wnd-chrome-step`
+ is a guard this row cannot reach: the step is effectful. What it CAN ask is
+ the reason the guard exists, which is not circular. `dk-wnd-rx` reads the
+ content box on the maximised arm whatever the block holds, so a rectangle
+ written by a drag would be a rectangle nothing reads. The row writes one and
+ asks what the window's rect answers.
+
+  dg-max : Integer, Integer, Integer -> Text
+  dg-max (w) (h) (ds) =
+    let blk = peek-32 ds desk-clock-cell
+    in let p = dk-wnd-place blk 10 10 400 300
+    in let m = poke-32 blk dk-wnd-st-cell dk-wnd-st-max
+    in "placed at 10,10 while maximised: " & dg-rect blk w h ds
+       & "  the block still says " & integer-to-text (peek-32 blk dk-wnd-rx-cell)
+       & "," & integer-to-text (peek-32 blk dk-wnd-ry-cell)
+       & "  the rect ignores it " & dg-yn (dk-wnd-rx blk w dk-wnd-st-max == dk-cbox-x w)
+
+ A NEGATIVE X SURVIVES THE CELL, which is the whole of the crash this arm
+ exists for. `peek-32` zero-extends, so a rect stored at -400 read back as
+ 4294966896 and every consumer of it was wrong in a different way: the address
+ arithmetic faulted the guest, the clip silently drew nothing, and the window
+ disappeared. None of the rows above could see it, because none of them stores
+ a negative and reads it BACK -- they compute a position and print it.
+
+ The row asks for the round trip and for the sign, not for the number alone: a
+ reader that dropped the sign would still print a plausible coordinate.
+
+  dg-neg : Integer, Integer, Integer -> Text
+  dg-neg (w) (h) (ds) =
+    let blk = peek-32 ds desk-clock-cell
+    in let p = dk-wnd-place blk (0 - 400) 148 1200 500
+    in let rx = dk-wnd-rx blk w dk-wnd-st-normal
+    in let ry = dk-wnd-ry blk w h dk-wnd-st-normal ds
+    in "placed at -400,148 reads back " & integer-to-text rx & "," & integer-to-text ry
+       & "  raw cell " & integer-to-text (peek-32 blk dk-wnd-rx-cell)
+       & "  negative " & dg-yn (rx < 0)
+       & "  exact " & dg-yn (rx == 0 - 400 & ry == 148)
+
+  dg-release : Integer -> Text
+  dg-release (ds) =
+    let e = dk-drag-end ds
+    in "released: dragging " & integer-to-text (dk-drag-fid ds)
+       & "  none " & integer-to-text desk-focus-none
+       & "  ended " & dg-yn (dk-drag-fid ds == desk-focus-none)
+
+Section: Opening
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed 256 64
+    in let a1 = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
+    in let a2 = poke-32 ds desk-clock-cell (alloc-zeroed 64 64)
+    in let a3 = poke-32 ds 24 (alloc-zeroed 64 64)
+    in let w = 1280
+    in let h = 800
+    in let ww = 400
+    in let wh = 300
+    in act
+      print-line-uni (dg-bounds w h ww wh ds)
+      print-line-uni (dg-off ds 37 9)
+      print-line-uni (dg-off ds 1200 3)
+      print-line-uni (dg-follow ds w h ww wh 37 9)
+      print-line-uni (dg-still ds w h ww wh)
+      print-line-uni (dg-edge ds w h ww wh "far left  " 0 400)
+      print-line-uni (dg-edge ds w h ww wh "far right " 3000 400)
+      print-line-uni (dg-edge ds w h ww wh "far up    " 500 0)
+      print-line-uni (dg-edge ds w h ww wh "far down  " 500 3000)
+      print-line-uni (dg-edge ds w h ww wh "the middle" 500 400)
+      print-line-uni (dg-hide ds w h ww wh)
+      let nds = alloc-zeroed 256 64
+      in let n1 = poke-32 nds desk-clock-cell (alloc-zeroed 64 64)
+      in print-line-uni (dg-neg w h nds)
+      print-line-uni (dg-release ds)
+      let mds = alloc-zeroed 256 64
+      in let b1 = poke-32 mds desk-clock-cell (alloc-zeroed 64 64)
+      in print-line-uni (dg-max w h mds)
+    end
+
+Page 1

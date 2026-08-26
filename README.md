@@ -4,6 +4,12 @@
 
 *The Cobblestone Computational Substrate, built with the Codex Programming Language.*
 
+<p align="center">
+  <img src="assets/cobblestone.png" alt="A cobblestone road winding through green hills toward a sunrise" width="420">
+  <br>
+  <em>Cobblestone is the path; Codex is the stone it is paved with.</em>
+</p>
+
 Something started as a language. It became a compiler that needs no operating system underneath it. Then it became the operating system. It is becoming the place where agents -- human and machine -- can work together without the usual silent failures, borrowed trust, and "it worked on my machine" gaps.
 
 Cobblestone is that place. One artifact. Boots itself. Compiles itself. Runs on real hardware. Speaks in capabilities instead of hope.

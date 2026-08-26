@@ -46,6 +46,67 @@ if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: wat2wasm'; exit 1 }
 # 3. The source the page feeds back to the module.
 Copy-Item $Source (Join-Path $OutDir 'Codex.codex') -Force
 
+# 3b. The backdrop: a painted cobblestone roundabout at a crossroads.
+Copy-Item (Join-Path $PSScriptRoot 'page\roundabout.jpg') (Join-Path $OutDir 'roundabout.jpg') -Force
+
+# 3c. Prism rides beside the self-compile page so it can fetch the SAME
+# module from its own directory rather than shipping a second copy.
+Copy-Item (Join-Path $PSScriptRoot 'page\prism.html')    (Join-Path $OutDir 'prism.html') -Force
+Copy-Item (Join-Path $PSScriptRoot 'page\examples.json') (Join-Path $OutDir 'examples.json') -Force
+
+# 3d. The target plugs, each a wasm module reading IR on stdin. Built by
+# codex/plugs/common/build-plug-wasm.ps1; a missing one leaves its lens dark
+# rather than failing the page build, since the page fetches them on demand.
+foreach ($p in @(@{ plug = 'javascript'; file = 'javascript-stdio.wasm' },
+                 @{ plug = 'csharp';     file = 'csharp-stdio.wasm' },
+                 @{ plug = 'evidence';   file = 'evidence-stdio.wasm' })) {
+    $from = Join-Path $Repo ("codex\plugs\{0}\build-output\{1}" -f $p.plug, $p.file)
+    if (Test-Path -PathType Leaf $from) {
+        Copy-Item $from (Join-Path $OutDir $p.file) -Force
+        Write-Host ("[page] plug    : {0} ({1} bytes)" -f $p.file, (Get-Item $from).Length)
+    } else {
+        Write-Host ("[page] plug    : {0} ABSENT; its lens stays dark" -f $p.file)
+    }
+}
+
+# 3e. Prism is ONE self-contained file. A browser refuses fetch on a file:
+# origin, so a fetching page cannot work from disk however it is written, and
+# a separate offline twin only moved the confusion: the copy people open is
+# still the one that does not work. Embedding costs less than it sounds,
+# because the fetching page already pulled 1.35 MB of modules and 215 KB of
+# examples; what is added is base64 overhead, against three saved round trips.
+$offlineSrc = Join-Path $OutDir 'prism.html'
+# The marker must appear EXACTLY once. It first appeared twice, the second time
+# inside a comment describing it, so the replace pasted two megabytes into the
+# middle of the main script and cut it in half: the page then loaded with no
+# syntax error, half its functions defined, and nothing to say why.
+$markerCount = ([regex]::Matches([IO.File]::ReadAllText($offlineSrc), '<!--EMBED-->')).Count
+if ($markerCount -ne 1) {
+    Write-Host "FAIL: prism.html holds $markerCount EMBED markers; it must hold exactly one."; exit 1
+}
+$embed = [System.Text.StringBuilder]::new()
+[void]$embed.AppendLine('<script>')
+[void]$embed.AppendLine('window.__EMBED = {')
+foreach ($f in @('codex-compiler.wasm', 'javascript-stdio.wasm', 'csharp-stdio.wasm', 'evidence-stdio.wasm')) {
+    $p = Join-Path $OutDir $f
+    if (-not (Test-Path -PathType Leaf $p)) { continue }
+    $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($p))
+    [void]$embed.AppendLine(('  "{0}": "{1}",' -f $f, $b64))
+}
+[void]$embed.AppendLine('};')
+$exJson = Join-Path $OutDir 'examples.json'
+if (Test-Path -PathType Leaf $exJson) {
+    [void]$embed.AppendLine('window.__EXAMPLES = ' + ([IO.File]::ReadAllText($exJson)) + ';')
+}
+[void]$embed.AppendLine('</script>')
+$offline = ([IO.File]::ReadAllText($offlineSrc)).Replace('<!--EMBED-->', $embed.ToString())
+[IO.File]::WriteAllText($offlineSrc, $offline, [Text.UTF8Encoding]::new($false))
+Write-Host ("[page] prism   : self-contained, {0:N0} bytes" -f (Get-Item $offlineSrc).Length)
+# A twin was shipped for one build and is gone; clear a stale one so a rebuilt
+# tree does not keep serving the file that could not work.
+$stale = Join-Path $OutDir 'prism-offline.html'
+if (Test-Path -PathType Leaf $stale) { Remove-Item $stale -Force }
+
 # 4. The bare-metal truth for the SAME source and mode line the page uses.
 $modeHeader = [Text.Encoding]::ASCII.GetBytes("TEXT decks=125`n")
 $srcBytes = [IO.File]::ReadAllBytes($Source)

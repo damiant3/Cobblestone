@@ -1,0 +1,192 @@
+Chapter: DeskSizeZonesTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ The resize hot zones and the sizer cursors they select. Which zone a point
+ falls in, which shape that zone asks for, and how much of a centred sprite
+ survives the edge of the glass are all decidable here without a screen, a face
+ or a pointer.
+
+ IT CALLS `dk-size-zone-rect`, `dk-size-cursor`, `cursor-org`, `cursor-lo`,
+ `cursor-skip` AND `cursor-span`, WHICH ARE THE FUNCTIONS THE DESK AND THE
+ PAINTER THEMSELVES CALL. `dk-size-zone` needs a `ds` with a registry and a
+ window block; `cursor-update` needs a framebuffer. The arithmetic under both
+ was named so this chapter could reach it, rather than being re-derived here as
+ a shadow free to drift while both stayed green.
+
+Section: Body
+
+  sz-yn : Boolean -> Text
+  sz-yn (v) = if v then "yes" else "no"
+
+  sz-name : Integer -> Text
+  sz-name (z) =
+    if z == dk-size-none then "none"
+    else if z == dk-size-l then "l"
+    else if z == dk-size-r then "r"
+    else if z == dk-size-t then "t"
+    else if z == dk-size-b then "b"
+    else if z == dk-size-tl then "tl"
+    else if z == dk-size-tr then "tr"
+    else if z == dk-size-bl then "bl"
+    else if z == dk-size-br then "br"
+    else "?"
+
+  sz-shape : Integer -> Text
+  sz-shape (s) =
+    if s == cursor-shape-arrow then "arrow"
+    else if s == cursor-shape-ew then "ew"
+    else if s == cursor-shape-ns then "ns"
+    else if s == cursor-shape-nwse then "nwse"
+    else if s == cursor-shape-nesw then "nesw"
+    else "?"
+
+ THE WINDOW IS AT 100,100 AND IS 400 BY 300, so every edge sits at a round
+ number and a reader can check the operands against the answers by hand. The
+ grip is 6, the value the desk uses at scale 1.
+
+  sz-rx : Integer = 100
+  sz-ry : Integer = 100
+  sz-rw : Integer = 400
+  sz-rh : Integer = 300
+  sz-g : Integer = 6
+
+  sz-at : Integer, Integer -> Integer
+  sz-at (mx) (my) = dk-size-zone-rect sz-rx sz-ry sz-rw sz-rh sz-g mx my
+
+  sz-row : Text, Integer, Integer -> Text
+  sz-row (label) (mx) (my) =
+    let z = sz-at mx my
+    in label & " at " & integer-to-text mx & "," & integer-to-text my
+       & " -> " & sz-name z
+       & "  cursor " & sz-shape (dk-size-cursor z)
+
+ THE BAND STRADDLES THE BORDER, so a point just OUTSIDE the rectangle is still
+ a grab and a point well inside is not. Both directions are asked, because a
+ zone that only answered inside would pass every row above and still be
+ ungrabbable on a window sitting against another one.
+
+  sz-straddle : Text, Integer, Integer, Integer, Integer -> Text
+  sz-straddle (label) (ox) (oy) (ix) (iy) =
+    "  " & label
+      & ": outside " & integer-to-text ox & "," & integer-to-text oy & " -> " & sz-name (sz-at ox oy)
+      & "   inside " & integer-to-text ix & "," & integer-to-text iy & " -> " & sz-name (sz-at ix iy)
+      & "   both grab " & sz-yn (sz-at ox oy /= dk-size-none & sz-at ix iy /= dk-size-none)
+
+ EVERY ZONE MAPS TO A SHAPE AND THE FOUR DIAGONAL CORNERS PAIR UP. A mapping
+ that answered one diagonal for all four corners would still print a plausible
+ shape name on every row above, so the pairing is counted rather than shown.
+
+  sz-pairs : Text
+  sz-pairs =
+    let tl = dk-size-cursor dk-size-tl
+    in let br = dk-size-cursor dk-size-br
+    in let tr = dk-size-cursor dk-size-tr
+    in let bl = dk-size-cursor dk-size-bl
+    in "tl==br " & sz-yn (tl == br)
+       & "   tr==bl " & sz-yn (tr == bl)
+       & "   the two diagonals differ " & sz-yn (tl /= tr)
+
+ THE ARROW KEEPS ITS TIP AND THE SIZERS ARE CENTRED. A hotspot table that
+ answered 0,0 for everything would put every sizer a diagonal away from the
+ edge it claims to grab, and nothing above could see it.
+
+  sz-hot : Integer, Text -> Text
+  sz-hot (s) (label) =
+    "  " & label & " hotspot " & integer-to-text (cursor-hot-x s) & "," & integer-to-text (cursor-hot-y s)
+
+ THE CLIP AT THE EDGE OF THE GLASS, which is the arm the crash class lives in.
+ A centred sprite at x=2 starts at -6, and the save and restore walk the
+ framebuffer with no bound of their own. The row prints the origin, the clamped
+ start, the skipped mask columns and the surviving span: `start` must never be
+ negative and `skip + span` must never exceed the sprite's extent.
+
+  sz-clip : Text, Integer, Integer, Integer -> Text
+  sz-clip (label) (m) (hot) (limit) =
+    let o = cursor-org m hot
+    in let lo = cursor-lo o
+    in let sk = cursor-skip o
+    in let sp = cursor-span o cursor-w limit
+    in "  " & label & " m=" & integer-to-text m
+       & " origin " & integer-to-text o
+       & " start " & integer-to-text lo
+       & " skip " & integer-to-text sk
+       & " span " & integer-to-text sp
+       & "  on the glass " & sz-yn (lo >= 0 & sk + sp <= cursor-w & lo + sp <= limit)
+
+ WHERE THE WINDOW ENDS UP FOR A POINTER AT `m`, which is the whole of the
+ resize. `desk-wnd-size-step` is effectful and wants a screen, so the four
+ functions it calls are named and this row calls those.
+
+ THE OPPOSITE EDGE MUST NOT MOVE, and that is the assertion rather than the
+ four numbers. A resize that dragged the whole window instead of one edge
+ would still print a plausible rectangle on every row.
+
+  sz-minw : Integer = 200
+  sz-minh : Integer = 120
+
+  sz-rect : Integer, Integer, Integer -> Text
+  sz-rect (z) (mx) (my) =
+    let nx = dk-size-new-x z sz-rx sz-rw mx sz-minw
+    in let nw = dk-size-new-w z sz-rx sz-rw mx sz-minw
+    in "x " & integer-to-text nx & " w " & integer-to-text nw
+       & "  right edge " & integer-to-text (nx + nw)
+
+  sz-resize : Text, Integer, Integer -> Text
+  sz-resize (label) (z) (mx) =
+    let nx = dk-size-new-x z sz-rx sz-rw mx sz-minw
+    in let nw = dk-size-new-w z sz-rx sz-rw mx sz-minw
+    in let held = if dk-size-left z then nx + nw == sz-rx + sz-rw else nx == sz-rx
+    in "  " & label & " pointer x=" & integer-to-text mx
+       & " -> " & sz-rect z mx 0
+       & "  opposite edge held " & sz-yn held
+       & "  at least the floor " & sz-yn (nw >= sz-minw)
+
+ THE FLOOR BITES WITHOUT THE OPPOSITE EDGE MOVING, which is the one case where
+ a derived origin and a computed one disagree. Dragging the left edge past the
+ right one pins the width at the floor and the right edge must still be where
+ it was.
+
+Section: Opening
+
+  opening : [Console] Nothing = act
+    print-line-uni ("window " & integer-to-text sz-rx & "," & integer-to-text sz-ry & " " & integer-to-text sz-rw & "x" & integer-to-text sz-rh & "  grip " & integer-to-text sz-g)
+    print-line-uni (sz-row "the middle  " 300 250)
+    print-line-uni (sz-row "left edge   " 101 250)
+    print-line-uni (sz-row "right edge  " 499 250)
+    print-line-uni (sz-row "top edge    " 300 101)
+    print-line-uni (sz-row "bottom edge " 300 399)
+    print-line-uni (sz-row "top left    " 100 100)
+    print-line-uni (sz-row "top right   " 500 100)
+    print-line-uni (sz-row "bottom left " 100 400)
+    print-line-uni (sz-row "bottom right" 500 400)
+    print-line-uni (sz-row "far away    " 800 700)
+    print-line-uni "the band straddles the border:"
+    print-line-uni (sz-straddle "left  " 96 250 104 250)
+    print-line-uni (sz-straddle "right " 504 250 496 250)
+    print-line-uni (sz-straddle "top   " 300 96 300 104)
+    print-line-uni (sz-straddle "bottom" 300 404 300 396)
+    print-line-uni ("corner pairing: " & sz-pairs)
+    print-line-uni "hotspots:"
+    print-line-uni (sz-hot cursor-shape-arrow "arrow")
+    print-line-uni (sz-hot cursor-shape-ew "ew   ")
+    print-line-uni (sz-hot cursor-shape-ns "ns   ")
+    print-line-uni (sz-hot cursor-shape-nwse "nwse ")
+    print-line-uni (sz-hot cursor-shape-nesw "nesw ")
+    print-line-uni "the clip at the edge of the glass, sizer hotspot 8:"
+    print-line-uni (sz-clip "far left  " 0 8 1600)
+    print-line-uni (sz-clip "near left " 2 8 1600)
+    print-line-uni (sz-clip "the middle" 800 8 1600)
+    print-line-uni (sz-clip "far right " 1599 8 1600)
+    print-line-uni "resize, window x 100 w 400, floor 200:"
+    print-line-uni (sz-resize "right edge out  " dk-size-r 700)
+    print-line-uni (sz-resize "right edge in   " dk-size-r 400)
+    print-line-uni (sz-resize "right past floor" dk-size-r 120)
+    print-line-uni (sz-resize "left edge out   " dk-size-l 40)
+    print-line-uni (sz-resize "left edge in    " dk-size-l 200)
+    print-line-uni (sz-resize "left past floor " dk-size-l 480)
+    print-line-uni (sz-resize "top corner tl   " dk-size-tl 40)
+    print-line-uni (sz-resize "an edge that is not x" dk-size-t 40)
+  end

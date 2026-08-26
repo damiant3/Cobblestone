@@ -1681,6 +1681,58 @@ guard and left the geometry.
    `titled=14` unmoved as the control, and the row prints what an untitled id
    falls back to so the sentinel is visible rather than assumed.
 
+   ### WINDOWS ARE MOVABLE. DONE. Damian, 2026-08-26, through red
+
+   A press on a titlebar grabs the window, holding the button and moving the
+   pointer carries it, releasing drops it. It is one arm in
+   `desk-wnd-chrome-step`, so every one of the fourteen windowed panes got it
+   at once, and clicking an unfocused window's bar raises AND grabs in the one
+   gesture rather than costing a second press.
+
+   **This is the flick's own primitive**, which is why it came before the
+   remaining 6.4 items: a flick is a titlebar drag whose release carries
+   velocity, so what is left for the flick is reading the release rather than
+   inventing the gesture.
+
+   **THE LEVEL AND THE EDGE ARE DIFFERENT CELLS AND A DRAG NEEDS BOTH.**
+   `mouse-clicked` is `mouse-click-edge`, true only on the report where the
+   button went down; `mouse-buttons` is the level. The desk had only ever
+   consumed the edge, because every interaction before this one was a click. A
+   drag written against the edge alone moves the window exactly one sample.
+
+   **The rectangle needed no new home**: 6.3c already made it a fact in the
+   pane's own block, and this is the caller that paragraph said would come due.
+   The two `ds` cells the gesture needs are the last two the block has, and the
+   contract now says the block is full.
+
+   **THE CLAMP WAS WRONG IN A WAY ONLY A PICTURE COULD SHOW.** It first kept
+   the TITLEBAR inside the content box and let the body hang off the bottom, on
+   the reasoning that the bar is what a person steers. `desk-wnd-paint-all`
+   paints the chrome first and the windows after, so the hanging body drew over
+   the taskbar and buried the Cobblestone pill. Both axes clamp the whole
+   window now. The arithmetic arm agreed with both versions and could not have
+   caught it, which is the sixth finding across these campaigns invisible to
+   green arms: ask what a photograph would show that an arm cannot.
+
+   **What it costs.** No allocation: two `ds` cells, and the step's own work is
+   arithmetic. The move calls `desk-wnd-repaint`, the same full repaint the
+   shipped raise and maximise paths already call, so the per-event cost is not
+   new; the RATE is, because it is now per mouse sample rather than per click.
+   It repaints only when the rectangle actually changed, so a held button with
+   a still pointer is free. **Unmeasured and named rather than assumed: what
+   that rate costs ON METAL**, where this file already records a desk paint as
+   near a second against about 16 ms in the bed. If it is too slow there, the
+   answer is the outline drag every pre-compositing desktop used, and that is a
+   second unit rather than a repair of this one.
+
+   `codex/test/apps/desk-window-drag` is the arm: the offset round trip, the
+   grab point held across ten samples, the four edges with a middle control
+   that must NOT move, and the maximised refusal asked through the reason it
+   exists rather than through the guard. Sabotage-proven in both directions --
+   collapsing `dk-drag-dy` onto `dk-drag-dx` takes `offset held` to 0 of 10,
+   and deleting the clamp's lower bound moves exactly the two edge rows and
+   leaves the control alone.
+
    **FIRST UNIT LANDED: minimise to a pill, click the pill to restore.** That
    is 6.3b closed and 6.4's core, and it is deliberately the light-pane half
    -- the Clock and the Calculator, which push no mark and cost nothing to

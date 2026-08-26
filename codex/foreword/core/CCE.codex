@@ -147,17 +147,20 @@ Section: Multi-byte Framing
     else 1
 
   cce-encode : Integer -> List Integer
-  cce-encode (cp) =
-    if cp < 128 then [cp]
+  cce-encode (cp) = cce-encode-into [] cp
+
+  cce-encode-into : List Integer, Integer -> List Integer
+  cce-encode-into (acc) (cp) =
+    if cp < 128 then list-push acc cp
     else if cp < 2176 then
       let v = cp - 128
-      in [bit-or 192 (bit-shru v 6), bit-or 128 (bit-and v 63)]
+      in list-push (list-push acc (bit-or 192 (bit-shru v 6))) (bit-or 128 (bit-and v 63))
     else if cp < 67712 then
       let v = cp - 2176
-      in [bit-or 224 (bit-shru v 12), bit-or 128 (bit-and (bit-shru v 6) 63), bit-or 128 (bit-and v 63)]
+      in list-push (list-push (list-push acc (bit-or 224 (bit-shru v 12))) (bit-or 128 (bit-and (bit-shru v 6) 63))) (bit-or 128 (bit-and v 63))
     else
       let v = cp - 67712
-      in [bit-or 240 (bit-shru v 18), bit-or 128 (bit-and (bit-shru v 12) 63), bit-or 128 (bit-and (bit-shru v 6) 63), bit-or 128 (bit-and v 63)]
+      in list-push (list-push (list-push (list-push acc (bit-or 240 (bit-shru v 18))) (bit-or 128 (bit-and (bit-shru v 12) 63))) (bit-or 128 (bit-and (bit-shru v 6) 63))) (bit-or 128 (bit-and v 63))
 
   cce-decode-at : Text, Integer -> Integer
   cce-decode-at (s) (offset) =
@@ -326,9 +329,12 @@ Section: Tier 2 Classification
 Section: Unicode Conversion
 
   to-unicode : Integer -> Integer
-  to-unicode (cp) =
+  to-unicode (cp) = to-unicode-with cce-to-unicode-table cp
+
+  to-unicode-with : List Integer, Integer -> Integer
+  to-unicode-with (tbl) (cp) =
     if cp < 0 then 65533
-    else if cp < 128 then list-at cce-to-unicode-table cp
+    else if cp < 128 then list-at tbl cp
     else if cp < 2176 then
       let block = cce-tier1-block cp
       in if block < 0 then 65533
@@ -349,8 +355,11 @@ Section: Unicode Conversion
     else to-unicode-tier2 cp (block + 1)
 
   from-unicode : Integer -> Integer
-  from-unicode (u) =
-    let t0 = from-unicode-tier0 cce-to-unicode-table u 0 128
+  from-unicode (u) = from-unicode-with cce-to-unicode-table u
+
+  from-unicode-with : List Integer, Integer -> Integer
+  from-unicode-with (tbl) (u) =
+    let t0 = from-unicode-tier0 tbl u 0 128
     in if t0 >= 0 then t0
     else let t1 = from-unicode-tier1 u 0
     in if t1 >= 0 then t1
@@ -522,5 +531,32 @@ Section: UTF-8 Boundary
   text-to-utf8-bytes : Text -> List Integer
   text-to-utf8-bytes (t) =
     utf8-from-text-loop t 0 (text-length t) []
+
+Section: Unicode Code Point Boundary
+
+ These carry Unicode CODE POINTS, one integer per character, where the section
+ above carries UTF-8 bytes. A caller that wants octets on a wire wants
+ text-to-utf8-bytes; a caller that wants to name characters wants these.
+
+  unicode-from-text-loop : List Integer, Text, Integer, Integer, List Integer -> List Integer
+  unicode-from-text-loop (tbl) (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = cce-decode-length (char-code-at t i)
+    in unicode-from-text-loop tbl t (i + n) len (list-push acc (to-unicode-with tbl (cce-decode-at t i)))
+
+  text-to-unicode-bytes : Text -> List Integer
+  text-to-unicode-bytes (t) =
+    unicode-from-text-loop cce-to-unicode-table t 0 (text-length t) []
+
+  unicode-to-text-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  unicode-to-text-loop (tbl) (us) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = from-unicode-with tbl (list-at us i)
+    in if c < 0 then unicode-to-text-loop tbl us (i + 1) len acc
+    else unicode-to-text-loop tbl us (i + 1) len (cce-encode-into acc c)
+
+  unicode-bytes-to-text : List Integer -> Text
+  unicode-bytes-to-text (us) =
+    raw-bytes-to-text (unicode-to-text-loop cce-to-unicode-table us 0 (list-length us) [])
 
 Page 1

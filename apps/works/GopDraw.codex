@@ -12,80 +12,357 @@ Chapter: GopDraw
 
 Section: Cursor
 
-  cursor-w : Integer = 8
-  cursor-h : Integer = 12
+  cursor-w : Integer = 16
+  cursor-h : Integer = 24
 
   cursor-col-edge : Integer = 1052688
   cursor-col-fill : Integer = 16777215
 
- The arrow, one byte of bitmask per row, bit 7 leftmost. Two masks rather
- than one because a pointer has to stay visible over both a dark wall and a
- lit panel: the edge is drawn dark, the fill white, and a pixel in neither
- is left alone so the background shows through the notch under the tail.
+ The arrow, one 16-bit mask per row, bit 15 leftmost. Two masks rather than
+ one because a pointer has to stay visible over both a dark wall and a lit
+ panel: the edge is drawn dark, the fill white, and a pixel in neither is left
+ alone so the background shows through beside the tail.
 
-   r0   E.......      r6   EFFFFFE.
-   r1   EE......      r7   EFFFFFFE
-   r2   EFE.....      r8   EFFFEEEE
-   r3   EFFE....      r9   EFFE....
-   r4   EFFFE...      r10  EFFE....
-   r5   EFFFFE..      r11  EEEE....
+ IT IS 16 BY 24 AND IS DRAWN AT ONE DEVICE PIXEL PER MASK BIT. It was 8 by 12
+ block-scaled by `ui-scale`, so at 1600 and above every mask bit became a 2 by
+ 2 square and the diagonal came out as a staircase of blocks. Damian,
+ 2026-08-26: crisp up that pointer. The device footprint is UNCHANGED at those
+ sizes -- 8 by 12 doubled is the same 16 by 24 -- so the pointer is the same
+ size on the glass with four times the detail, and the save-under buffer,
+ whose row stride is already 16, needs no more room than it always did.
+
+   r0   E...............   r12  EFFFFFFFFFFFE...
+   r1   EE..............   r13  EFFFFFFFFFFFFE..
+   r2   EFE.............   r14  EFFFFFFFFFFFFFE.
+   r3   EFFE............   r15  EFFFFFFFFEEEEEEE
+   r4   EFFFE...........   r16  EFFFFFFFFE......
+   r5   EFFFFE..........   r17  EFFFFEFFFE......
+   r6   EFFFFFE.........   r18  EFFFE.EFFFE.....
+   r7   EFFFFFFE........   r19  EFFE...EFFFE....
+   r8   EFFFFFFFE.......   r20  EFE.....EFFFE...
+   r9   EFFFFFFFFE......   r21  EE.......EFFFE..
+   r10  EFFFFFFFFFE.....   r22  E.........EFFE..
+   r11  EFFFFFFFFFFE....   r23  ...........EEE..
 
  These are functions rather than a `List Integer` constant, and that is not
  style. A top-level list constant is rebuilt at every mention
  (DevelopersGuide, `sha256-h0`), so `list-at cursor-mask r` inside the pixel
- loop would allocate a fresh twelve-element list per pixel, on a routine
- that runs on every mouse move with no GC underneath it. The row masks are
- also hoisted out of the column loop, so the comparison chain runs once per
- row rather than once per pixel.
+ loop would allocate a fresh list per pixel, on a routine that runs on every
+ mouse move with no GC underneath it. The row masks are also hoisted out of
+ the column loop, so the comparison chain runs once per row rather than once
+ per pixel.
 
   cursor-edge-mask : Integer -> Integer
   cursor-edge-mask (r) =
-    if r == 0 then 128
-    else if r == 1 then 192
-    else if r == 2 then 160
-    else if r == 3 then 144
-    else if r == 4 then 136
-    else if r == 5 then 132
-    else if r == 6 then 130
-    else if r == 7 then 129
-    else if r == 8 then 143
-    else if r == 9 then 144
-    else if r == 10 then 144
-    else if r == 11 then 240
+    if r == 0 then 32768
+    else if r == 1 then 49152
+    else if r == 2 then 40960
+    else if r == 3 then 36864
+    else if r == 4 then 34816
+    else if r == 5 then 33792
+    else if r == 6 then 33280
+    else if r == 7 then 33024
+    else if r == 8 then 32896
+    else if r == 9 then 32832
+    else if r == 10 then 32800
+    else if r == 11 then 32784
+    else if r == 12 then 32776
+    else if r == 13 then 32772
+    else if r == 14 then 32770
+    else if r == 15 then 32895
+    else if r == 16 then 32832
+    else if r == 17 then 33856
+    else if r == 18 then 35360
+    else if r == 19 then 37136
+    else if r == 20 then 41096
+    else if r == 21 then 49220
+    else if r == 22 then 32804
+    else if r == 23 then 28
     else 0
 
   cursor-fill-mask : Integer -> Integer
   cursor-fill-mask (r) =
-    if r == 2 then 64
-    else if r == 3 then 96
-    else if r == 4 then 112
-    else if r == 5 then 120
-    else if r == 6 then 124
-    else if r == 7 then 126
-    else if r == 8 then 112
-    else if r == 9 then 96
-    else if r == 10 then 96
+    if r == 2 then 16384
+    else if r == 3 then 24576
+    else if r == 4 then 28672
+    else if r == 5 then 30720
+    else if r == 6 then 31744
+    else if r == 7 then 32256
+    else if r == 8 then 32512
+    else if r == 9 then 32640
+    else if r == 10 then 32704
+    else if r == 11 then 32736
+    else if r == 12 then 32752
+    else if r == 13 then 32760
+    else if r == 14 then 32764
+    else if r == 15 then 32640
+    else if r == 16 then 32640
+    else if r == 17 then 31616
+    else if r == 18 then 29120
+    else if r == 19 then 24800
+    else if r == 20 then 16496
+    else if r == 21 then 56
+    else if r == 22 then 24
     else 0
 
+Section: The sizers
+
+ FOUR MORE SHAPES, ONE PER RESIZE DIRECTION, IN THE SAME 16 BY 24 BOX. Sharing
+ the arrow's box is what keeps the save-under buffer the size it always was:
+ its row stride is 16 words and 2048 bytes holds 16 by 31, so nothing about the
+ `cs` block changes to admit these.
+
+ THE MASKS BELOW WERE GENERATED, NOT TYPED. The fill of each shape is defined
+ by a rule -- two heads and a shaft for the straight pair, two corner triangles
+ and a diagonal shaft for the other -- and the edge is the 8-neighbour outline
+ of that fill. Hand-authoring 96 bitmasks against printed art is how art and
+ mask drift apart while both look right; deriving one from the other means a
+ wrong number would have to be wrong in the picture too. The vertical arrow is
+ the horizontal one TRANSPOSED for the same reason, so the pair cannot disagree
+ about weight or length.
+
+ THEIR HOTSPOT IS THE CENTRE AND THE ARROW'S IS ITS TIP. A sizer that pointed
+ from its top-left corner would sit a diagonal away from the edge it claims to
+ grab, and the hit zone it selects would not be the zone under the point.
+
+  cursor-shape-arrow : Integer = 0
+  cursor-shape-ew : Integer = 1
+  cursor-shape-ns : Integer = 2
+  cursor-shape-nwse : Integer = 3
+  cursor-shape-nesw : Integer = 4
+
+  cursor-hot-x : Integer -> Integer
+  cursor-hot-x (shape) = if shape == cursor-shape-arrow then 0 else 8
+
+  cursor-hot-y : Integer -> Integer
+  cursor-hot-y (shape) = if shape == cursor-shape-arrow then 0 else 12
+
+   EW, the left and right edges
+   r08  ..EEE......EEE..
+   r09  .EEFE......EFEE.
+   r10  EEFFEEEEEEEEFFEE
+   r11  EFFFFFFFFFFFFFFE
+   r12  FFFFFFFFFFFFFFFF
+   r13  EFFFFFFFFFFFFFFE
+   r14  EEFFEEEEEEEEFFEE
+   r15  .EEFE......EFEE.
+   r16  ..EEE......EEE..
+
+  cursor-edge-ew : Integer -> Integer
+  cursor-edge-ew (r) =
+    if r == 8 then 14364
+    else if r == 9 then 26646
+    else if r == 10 then 53235
+    else if r == 11 then 32769
+    else if r == 13 then 32769
+    else if r == 14 then 53235
+    else if r == 15 then 26646
+    else if r == 16 then 14364
+    else 0
+
+  cursor-fill-ew : Integer -> Integer
+  cursor-fill-ew (r) =
+    if r == 9 then 4104
+    else if r == 10 then 12300
+    else if r == 11 then 32766
+    else if r == 12 then 65535
+    else if r == 13 then 32766
+    else if r == 14 then 12300
+    else if r == 15 then 4104
+    else 0
+
+   NS, the top and bottom edges
+   r03  .......EEE......
+   r04  ......EEFEE.....
+   r05  .....EEFFFEE....
+   r06  ....EEFFFFFEE...
+   r07  ....EFFFFFFFE...
+   r08  ....EEEFFFEEE...
+   r09  ......EFFFE.....
+   r10  ......EFFFE.....
+   r11  ......EFFFE.....
+   r12  ......EFFFE.....
+   r13  ......EFFFE.....
+   r14  ......EFFFE.....
+   r15  ....EEEFFFEEE...
+   r16  ....EFFFFFFFE...
+   r17  ....EEFFFFFEE...
+   r18  .....EEFFFEE....
+   r19  ......EEFEE.....
+   r20  .......EEE......
+
+  cursor-edge-ns : Integer -> Integer
+  cursor-edge-ns (r) =
+    if r == 3 then 448
+    else if r == 4 then 864
+    else if r == 5 then 1584
+    else if r == 6 then 3096
+    else if r == 7 then 2056
+    else if r == 8 then 3640
+    else if r >= 9 & r <= 14 then 544
+    else if r == 15 then 3640
+    else if r == 16 then 2056
+    else if r == 17 then 3096
+    else if r == 18 then 1584
+    else if r == 19 then 864
+    else if r == 20 then 448
+    else 0
+
+  cursor-fill-ns : Integer -> Integer
+  cursor-fill-ns (r) =
+    if r == 4 then 128
+    else if r == 5 then 448
+    else if r == 6 then 992
+    else if r == 7 then 2032
+    else if r >= 8 & r <= 15 then 448
+    else if r == 16 then 2032
+    else if r == 17 then 992
+    else if r == 18 then 448
+    else if r == 19 then 128
+    else 0
+
+   NWSE, the top-left and bottom-right corners
+   r06  ..EEEEEEE.......
+   r07  ..EFFFFFE.......
+   r08  ..EFFFFEE.......
+   r09  ..EFFFFEE.......
+   r10  ..EFFFFFEE......
+   r11  ..EFEEFFFEE.....
+   r12  ..EEEEEFFFEEEEE.
+   r13  ......EEFFFEEFE.
+   r14  .......EEFFFFFE.
+   r15  ........EEFFFFE.
+   r16  ........EEFFFFE.
+   r17  ........EFFFFFE.
+   r18  ........EEEEEEE.
+
+  cursor-edge-nwse : Integer -> Integer
+  cursor-edge-nwse (r) =
+    if r == 6 then 16256
+    else if r == 7 then 8320
+    else if r == 8 then 8576
+    else if r == 9 then 8576
+    else if r == 10 then 8384
+    else if r == 11 then 11360
+    else if r == 12 then 15934
+    else if r == 13 then 794
+    else if r == 14 then 386
+    else if r == 15 then 194
+    else if r == 16 then 194
+    else if r == 17 then 130
+    else if r == 18 then 254
+    else 0
+
+  cursor-fill-nwse : Integer -> Integer
+  cursor-fill-nwse (r) =
+    if r == 7 then 7936
+    else if r == 8 then 7680
+    else if r == 9 then 7680
+    else if r == 10 then 7936
+    else if r == 11 then 4992
+    else if r == 12 then 448
+    else if r == 13 then 228
+    else if r == 14 then 124
+    else if r == 15 then 60
+    else if r == 16 then 60
+    else if r == 17 then 124
+    else 0
+
+   NESW, the top-right and bottom-left corners
+   r06  ........EEEEEEE.
+   r07  ........EFFFFFE.
+   r08  ........EEFFFFE.
+   r09  ........EEFFFFE.
+   r10  .......EEFFFFFE.
+   r11  ......EEFFFEEFE.
+   r12  ..EEEEEFFFEEEEE.
+   r13  ..EFEEFFFEE.....
+   r14  ..EFFFFFEE......
+   r15  ..EFFFFEE.......
+   r16  ..EFFFFEE.......
+   r17  ..EFFFFFE.......
+   r18  ..EEEEEEE.......
+
+  cursor-edge-nesw : Integer -> Integer
+  cursor-edge-nesw (r) =
+    if r == 6 then 254
+    else if r == 7 then 130
+    else if r == 8 then 194
+    else if r == 9 then 194
+    else if r == 10 then 386
+    else if r == 11 then 794
+    else if r == 12 then 15934
+    else if r == 13 then 11360
+    else if r == 14 then 8384
+    else if r == 15 then 8576
+    else if r == 16 then 8576
+    else if r == 17 then 8320
+    else if r == 18 then 16256
+    else 0
+
+  cursor-fill-nesw : Integer -> Integer
+  cursor-fill-nesw (r) =
+    if r == 7 then 124
+    else if r == 8 then 60
+    else if r == 9 then 60
+    else if r == 10 then 124
+    else if r == 11 then 228
+    else if r == 12 then 448
+    else if r == 13 then 4992
+    else if r == 14 then 7936
+    else if r == 15 then 7680
+    else if r == 16 then 7680
+    else if r == 17 then 7936
+    else 0
+
+  cursor-edge-of : Integer, Integer -> Integer
+  cursor-edge-of (shape) (r) =
+    if shape == cursor-shape-ew then cursor-edge-ew r
+    else if shape == cursor-shape-ns then cursor-edge-ns r
+    else if shape == cursor-shape-nwse then cursor-edge-nwse r
+    else if shape == cursor-shape-nesw then cursor-edge-nesw r
+    else cursor-edge-mask r
+
+  cursor-fill-of : Integer, Integer -> Integer
+  cursor-fill-of (shape) (r) =
+    if shape == cursor-shape-ew then cursor-fill-ew r
+    else if shape == cursor-shape-ns then cursor-fill-ns r
+    else if shape == cursor-shape-nwse then cursor-fill-nwse r
+    else if shape == cursor-shape-nesw then cursor-fill-nesw r
+    else cursor-fill-mask r
+
+ The shape lives in the cursor block rather than being passed down from the
+ desk on every move, because `cursor-hide` and `cursor-update` are called from
+ a dozen places that have no idea what the pointer is over and must not have to
+ learn.
+
+  cursor-shape-cell : Integer = 20
+
+  cursor-shape : Integer -> Integer
+  cursor-shape (cs) = peek-32 cs cursor-shape-cell
+
+  cursor-set-shape : Integer, Integer -> Integer
+  cursor-set-shape (cs) (shape) = poke-32 cs cursor-shape-cell shape
+
   cursor-paint-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  cursor-paint-cols (base) (stride) (mx) (my) (s) (cwc) (py) (em) (fm) (px) =
+  cursor-paint-cols (base) (stride) (mx) (my) (skipx) (cwc) (py) (em) (fm) (px) =
     if px >= cwc then 0
-    else let lc = px / s
-    in let e = bit-and (bit-shru em (7 - lc)) 1
-    in let f = bit-and (bit-shru fm (7 - lc)) 1
+    else let lc = px + skipx
+    in let e = bit-and (bit-shru em (15 - lc)) 1
+    in let f = bit-and (bit-shru fm (15 - lc)) 1
     in let w = if e == 1 then gop-put base stride (mx + px) (my + py) cursor-col-edge
           else if f == 1 then gop-put base stride (mx + px) (my + py) cursor-col-fill
           else 0
-    in cursor-paint-cols base stride mx my s cwc py em fm (px + 1)
+    in cursor-paint-cols base stride mx my skipx cwc py em fm (px + 1)
 
-  cursor-paint-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  cursor-paint-rows (base) (stride) (mx) (my) (s) (cwc) (chc) (py) =
+  cursor-paint-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-paint-rows (base) (stride) (mx) (my) (skipx) (skipy) (shape) (cwc) (chc) (py) =
     if py >= chc then 0
-    else let lr = py / s
-    in let em = cursor-edge-mask lr
-    in let fm = cursor-fill-mask lr
-    in let w = cursor-paint-cols base stride mx my s cwc py em fm 0
-    in cursor-paint-rows base stride mx my s cwc chc (py + 1)
+    else let lr = py + skipy
+    in let em = cursor-edge-of shape lr
+    in let fm = cursor-fill-of shape lr
+    in let w = cursor-paint-cols base stride mx my skipx cwc py em fm 0
+    in cursor-paint-rows base stride mx my skipx skipy shape cwc chc (py + 1)
 
   cursor-save-cols : Integer, Integer, Integer, Integer, Integer -> Integer
   cursor-save-cols (cs) (base) (stride) (r) (c) =
@@ -120,33 +397,118 @@ Section: Cursor
     else let r = cursor-rest-rows cs base stride 0
     in poke-32 cs 0 0
 
+ THE SAVED RECTANGLE IS CLIPPED TO THE GLASS AND THE MASK IS INDEXED THROUGH
+ THE CLIP. With the arrow's hotspot at its tip the sprite origin was the
+ pointer, which is never negative, so `cursor-save-cols` and `cursor-rest-cols`
+ could walk the framebuffer with raw address arithmetic and no bound. A centred
+ hotspot puts the origin at `mx - 8`, which IS negative along the left edge of
+ the screen, and those two functions have no guard of their own: this is the
+ same shape as the `gop-put`/`gop-get` fault that cost a guest crash on
+ 2026-08-26, one layer over.
+
+ So the origin is clamped and the number of mask rows and columns skipped is
+ carried into the paint. The sprite is CROPPED at the edges of the glass rather
+ than the framebuffer being walked off, and what is saved is exactly what is
+ painted, which is the invariant the restore depends on.
+
+ The clip is four named functions rather than arithmetic inline in
+ `cursor-update`, because the update needs a framebuffer and a pointer and can
+ only be checked by looking at a screen. Where the sprite lands, and how much
+ of it survives the edge of the glass, is decidable without either.
+
+  cursor-org : Integer, Integer -> Integer
+  cursor-org (m) (hot) = m - hot
+
+  cursor-lo : Integer -> Integer
+  cursor-lo (o) = if o < 0 then 0 else o
+
+  cursor-skip : Integer -> Integer
+  cursor-skip (o) = if o < 0 then 0 - o else 0
+
+  cursor-span : Integer, Integer, Integer -> Integer
+  cursor-span (o) (extent) (limit) =
+    cursor-min (extent - cursor-skip o) (limit - cursor-lo o)
+
   cursor-update : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   cursor-update (cs) (base) (stride) (pw) (ph) (s) (mx) (my) =
     let r0 = if peek-32 cs 0 /= 0 then cursor-rest-rows cs base stride 0 else 0
-    in let cwc = cursor-min (cursor-w * s) (pw - mx)
-    in let chc = cursor-min (cursor-h * s) (ph - my)
-    in let s0 = poke-32 cs 4 mx
-    in let s1 = poke-32 cs 8 my
-    in let s2 = poke-32 cs 12 cwc
-    in let s3 = poke-32 cs 16 chc
-    in let sv = cursor-save-rows cs base stride 0
-    in let d0 = cursor-paint-rows base stride mx my s cwc chc 0
-    in poke-32 cs 0 1
+    in let shape = cursor-shape cs
+    in let ox = cursor-org mx (cursor-hot-x shape)
+    in let oy = cursor-org my (cursor-hot-y shape)
+    in let x0 = cursor-lo ox
+    in let y0 = cursor-lo oy
+    in let skipx = cursor-skip ox
+    in let skipy = cursor-skip oy
+    in let cwc = cursor-span ox cursor-w pw
+    in let chc = cursor-span oy cursor-h ph
+    in if cwc <= 0 then poke-32 cs 0 0
+    else if chc <= 0 then poke-32 cs 0 0
+    else
+      let s0 = poke-32 cs 4 x0
+      in let s1 = poke-32 cs 8 y0
+      in let s2 = poke-32 cs 12 cwc
+      in let s3 = poke-32 cs 16 chc
+      in let sv = cursor-save-rows cs base stride 0
+      in let d0 = cursor-paint-rows base stride x0 y0 skipx skipy shape cwc chc 0
+      in poke-32 cs 0 1
 
 Section: Pixel
 
   gop-put : Integer, Integer, Integer, Integer, Integer -> Integer
+ A PIXEL OFF THE SIDE OF THE GLASS LANDS ON THE NEXT ROW, and until windows
+ could hang off the screen nothing ever asked for one. `(y * stride + x) * 4`
+ with `x` past the scan line is simply the next row's arithmetic, so a window
+ dragged off the right edge drew its missing strip down the LEFT of the
+ screen: Damian, 2026-08-26, "like a continuous secret path from screen to
+ screen". A negative `x` does the same thing one row up.
+
+ THE GUARD IS HERE AND NOT AT THE CALLERS because every path funnels through
+ this one write -- the fills, the glyph rows, the icons, the cursor, the
+ window border. Six direct fills in `dk-wnd-frame` alone would each have
+ needed their own, and the tree render's clip is the WINDOW's rect, which is
+ exactly the rect that is off the screen.
+
+ `stride` is the scan line in pixels and is the only bound this function has.
+ It has no height, so `y` is guarded against going negative and nothing more;
+ the bottom is held by the drag clamp keeping a window's whole height on the
+ glass, which is a weaker place for it and is said out loud here rather than
+ left to be discovered.
+
   gop-put (base) (stride) (x) (y) (color) =
-    poke-32 base ((y * stride + x) * 4) color
+    if x < 0 then 0
+    else if x >= stride then 0
+    else if y < 0 then 0
+    else poke-32 base ((y * stride + x) * 4) color
 
  The GOP framebuffer is ordinary RAM at GPA 0xBF000000 with no MMIO trap, so
  reading a pixel back costs what any other load costs. That is what makes
  partial coverage affordable: a caller that knows a pixel is half covered
  reads what is under it and mixes.
 
+ AND THE READ NEEDS THE SAME BOUND, which cost a guest crash to learn. Only
+ the WRITE was guarded at first, on the reasoning that an out-of-bounds write
+ is the dangerous one. Dragging the Calculator off the LEFT edge faulted the
+ guest immediately: `!EXC=0e`, `CR2=0x4bf2ce658`, which is the framebuffer
+ base plus an offset that has run past 4 GiB because a negative `x` was
+ carried into the address as an unsigned 32-bit word. The faulting RIP
+ resolved to `peek-32`, not to any writer.
+
+ IT IS THIS FUNCTION BECAUSE PARTIAL COVERAGE READS WHAT IT IS ABOUT TO
+ BLEND WITH. The rounded corners, the bevel and the soft shadow all sample
+ the destination pixel through here, so they are exactly the paths that run
+ along a window's border -- the border that is off the screen. The note above
+ about reading a pixel back being affordable is what made this reachable at
+ all.
+
+ Off the glass answers 0. Nothing on the screen is blended from it, because
+ the write that would consume it is refused by the guard in `gop-put`.
+
   gop-get : Integer, Integer, Integer, Integer -> Integer
   gop-get (base) (stride) (x) (y) =
-    peek-32 base ((y * stride + x) * 4)
+    if x < 0 then 0
+    else if x >= stride then 0
+    else if y < 0 then 0
+    else peek-32 base ((y * stride + x) * 4)
 
   gop-chan : Integer, Integer -> Integer
   gop-chan (c) (sh) = bit-and (bit-shru c sh) 255
@@ -173,8 +535,17 @@ Section: Rectangles
     in gop-rect-cols base stride px py pw color (x + 1)
 
   gop-fill-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+ THE BULK FILL CLIPS ITS SPAN ONCE RATHER THAN PER PIXEL. `gop-put` guards
+ every write, which is what makes the scattered writers safe, but a
+ full-screen fill is 1.44 million of them and a rect that is entirely on the
+ glass should pay nothing for the window that hangs off it. Narrowing the
+ span here means the inner loop never offers `gop-put` a pixel to reject.
+
   gop-fill-rect (base) (stride) (px) (py) (pw) (ph) (color) =
-    gop-rect-rows base stride px py pw ph color 0
+    let x0 = if px < 0 then 0 else px
+    in let x1 = if px + pw > stride then stride else px + pw
+    in if x1 <= x0 then 0
+    else gop-rect-rows base stride x0 py (x1 - x0) ph color 0
 
   gop-rect-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   gop-rect-rows (base) (stride) (px) (py) (pw) (ph) (color) (y) =
@@ -266,3 +637,67 @@ Section: Scale
   ui-wscale : Integer -> Integer
   ui-wscale (w) = if w >= 1600 then 2 else 1
 
+
+Section: An inverting frame
+
+ A rectangle outline XORed into the framebuffer, which is how a window is
+ dragged without repainting it.
+
+ THERE IS NO BACK BUFFER HERE, so a live move costs an erase and a redraw of
+ the whole window on every mouse sample and the scanout catches the gap. That
+ is what a person sees as flicker, and no amount of narrowing WHICH pixels are
+ repainted removes it: the window's own pixels are the ones that blink.
+ Measured the honest way, by asking Damian twice -- scoping the repaint down
+ from the whole screen to the chrome changed nothing he could see.
+
+ XOR is the classic answer because it is its OWN eraser. Drawing the same
+ frame a second time restores every pixel exactly, whatever was underneath,
+ with no save-under buffer and no knowledge of the background. What moves per
+ sample is then four thin bands rather than a window.
+
+ It inverts the low 24 bits and leaves the top byte alone, so the outline is
+ visible over the wall, over another window and over the chrome, and the
+ padding byte the GOP carries is untouched.
+
+  gop-xor-mask : Integer = 16777215
+
+  gop-xor-span : Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-xor-span (base) (stride) (y) (x) (x1) =
+    if x >= x1 then 0
+    else let o = (y * stride + x) * 4
+    in let v = poke-32 base o (bit-xor (peek-32 base o) gop-xor-mask)
+    in gop-xor-span base stride y (x + 1) x1
+
+  gop-xor-band : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-xor-band (base) (stride) (x0) (x1) (y) (y1) =
+    if y >= y1 then 0
+    else let r = gop-xor-span base stride y x0 x1
+    in gop-xor-band base stride x0 x1 (y + 1) y1
+
+ EVERY BAND IS CLIPPED TO THE GLASS, and that is not defensive tidiness: a
+ window may be dragged partly off the screen, so an unclipped span would walk
+ off the end of a scan line into the next row, or off the end of the
+ framebuffer entirely. A band clipped to nothing answers zero and draws
+ nothing, which is also what makes the degenerate sizes below safe.
+
+  gop-xor-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-xor-rect (base) (stride) (sw) (sh) (x) (y) (w) (h) =
+    let x0 = if x < 0 then 0 else x
+    in let y0 = if y < 0 then 0 else y
+    in let x1 = if x + w > sw then sw else x + w
+    in let y1 = if y + h > sh then sh else y + h
+    in if x0 >= x1 then 0
+    else if y0 >= y1 then 0
+    else gop-xor-band base stride x0 x1 y0 y1
+
+ The two side bands are inset by the thickness so the corners are inverted
+ ONCE. Inverting a corner twice would restore it and leave the frame with four
+ notches, which is the sort of defect that looks like a rounding error and is
+ not.
+
+  gop-xor-frame : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-xor-frame (base) (stride) (sw) (sh) (x) (y) (w) (h) (t) =
+    let a = gop-xor-rect base stride sw sh x y w t
+    in let b = gop-xor-rect base stride sw sh x (y + h - t) w t
+    in let c = gop-xor-rect base stride sw sh x (y + t) t (h - 2 * t)
+    in gop-xor-rect base stride sw sh (x + w - t) (y + t) t (h - 2 * t)

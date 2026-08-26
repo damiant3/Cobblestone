@@ -63,9 +63,9 @@ Measured 2026-08-03, except where an item gives its own date.
    **Diverse double-compiling.** The whole compiler is rendered to C# by a
    plug, built by Roslyn -- a toolchain with no ancestry in this project --
    and that compiler then compiles the Codex compiler's own source.
-   Measured 2026-08-25 against the seed shipped that day (`C45E5825`,
-   2,922,230 bytes), its output was **2,922,230 bytes against that seed's
-   2,922,230, with 95 differing bytes, every one of them inside the
+   Measured 2026-08-26 against the seed shipped that day (`C3181693`,
+   2,917,073 bytes), its output was **2,917,073 bytes against that seed's
+   2,917,073, with 96 differing bytes, every one of them inside the
    signature region at offsets 40..135 and none outside it.** The signature
    is stamped by the sign phase rather than emitted by the compiler. That is
    Wheeler's `stage2 == X`. The witness is a release gate and is re-run
@@ -73,7 +73,7 @@ Measured 2026-08-03, except where an item gives its own date.
    came from rather than standing in for any later one. How many bytes
    differ INSIDE the signature region is not a criterion: 96 is the width
    of the region, and two unrelated signatures agree at a given byte about
-   one time in 256, so a run differing in 95 is equally ordinary.
+   one time in 256, so a run differing in 95 or 96 is equally ordinary.
    **And the witness has been shown to fail.** A check that
    has only ever come back green proves nothing, so we poisoned the
    compiler on purpose. Inject a payload into the code generator: the
@@ -224,7 +224,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**69 applications, 1,026 modules**, all written in Codex and compiled by
+**70 applications, 1,026 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -237,14 +237,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,922,230 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,917,073 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `226B586610A7D70C` |
-| SHA-256 | `C45E582526BAB7BBA313059F9AAFD57FBFA142F358EAAD437B9412C6EE56F9BB` |
-| MD5 | `2CE3DAB6A2226FE6C4F377B32B987984` |
+| Content hash prefix | `D56234986EF451D2` |
+| SHA-256 | `C3181693B2C3733BFA5BC70C19F4E39B4222DD4FB9DC20A5C470DD5AF2B9E483` |
+| MD5 | `93820C4D1F17E7833D0C9CE341C08A06` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -255,7 +255,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `6E1A9A5954874233D03B56660C338C5779342F2622E7A33089B83ED486052C7F` |
+| SHA-256 | `12B7333C2F90FEE0789705F2D11CF48A43BCA506EC3EAA1B242920E1CA4A09CC` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -279,7 +279,7 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `6F3124AC0E5A71E2E270DF9BD23FED9BA5E87311CCBBEB9FBA4EB81FA3C3E08A` |
+| SHA-256 | `682FA342E15D24DC0B8CD11B56D1357DA4BC6BAE32F640D177D3AF03D22C978F` |
 
 The image is reproducible from its source and this seed -- `DIAG.RCP` inside
 it names both, and the hash carries no timestamp -- so a rebuild that
@@ -607,9 +607,9 @@ codex/
   foreword/      434 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
-  plugs/         56 plugs, 140 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,671 files)
-apps/            69 applications, 1,026 modules
+  plugs/         56 plugs, 142 source modules -- IR-text-driven emitters
+  test/          Compiler samples + OS integration tests (1,676 files)
+apps/            70 applications, 1,026 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -634,7 +634,7 @@ together.
 |---|---:|---:|---:|
 | `apps/` | 1,026 | 191,971 | 6,617 |
 | `codex/foreword/` | 434 | 60,399 | 6,546 |
-| `codex/test/` | 1,671 | 56,481 | 5,955 |
+| `codex/test/` | 1,676 | 56,481 | 5,955 |
 | `codex/plugs/` | 172 | 55,275 | 3,414 |
 | `codex/compiler/` | 64 | 42,492 | 5,181 |
 | `codex/os/` | 160 | 24,415 | 1,982 |

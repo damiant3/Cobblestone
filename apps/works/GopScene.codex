@@ -123,7 +123,7 @@ Section: Loop
  stays reachable through G on a box with the rasterizer, which is what makes
  a parity comparison possible at all.
 
-  gsc-label-sw : Text = "3D: software pipeline. S toggles shadows, G the GPU. F12 shoots. Esc returns."
+  gsc-label-sw : Text = "3D: software pipeline. Drag to turn. S toggles shadows, G the GPU. F12 shoots."
 
   gsc-label-gpu : Text = "3D: host rasterizer, culled, shadow-mapped. S toggles shadows, G software."
 
@@ -371,10 +371,27 @@ Section: Step
 
   gsc-step-hide : Integer = 2
 
+ IT TURNS ON A DRAG, NOT ON A PASSING POINTER. Damian, 2026-08-26: rotate with
+ mouse drag on the scene, not just mouse move. It used to turn whenever the
+ pointer moved at all, so crossing the pane on the way to something else span
+ the camera and there was no way to put the mouse down near the scene without
+ steering it.
+
+ THE POINTER IS STILL TRACKED WHILE THE BUTTON IS UP, and that is the part
+ worth keeping: `sp-ptr` is updated on every call whatever the button says, so
+ the first held sample carries the delta since the LAST sample rather than
+ since the button went down. Gating the tracking as well would make the first
+ sample of every drag a jump of however far the pointer had travelled since
+ the last one.
+
+ The auto-orbit falls out of it. `sp-look` flips to manual only on a real
+ drag, so a scene nobody has grabbed keeps orbiting on the HPET.
+
   gsc-look : ScenePane, UsbMouse -> Integer
   gsc-look (sp) (mouse) =
     let px = (mouse-x mouse) * 4096 + (mouse-y mouse)
-    in let moved = mouse.um-ok & sp.sp-ptr /= 0 & px /= sp.sp-ptr
+    in let held = bit-and (mouse-buttons mouse) 1 /= 0
+    in let moved = mouse.um-ok & held & sp.sp-ptr /= 0 & px /= sp.sp-ptr
     in let d = if moved then gsc-look-clamp ((mouse-x mouse) - (sp.sp-ptr / 4096)) else 0
     in let a = __record-set sp "sp-yaw" (int-mod (sp.sp-yaw + d * gsc-look-gain + gsc-turn) gsc-turn)
     in let b = __record-set sp "sp-ptr" (if mouse.um-ok then px else sp.sp-ptr)
@@ -384,11 +401,7 @@ Section: Step
   gsc-step : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, (Integer -> Scene3DState), ScenePane, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   gsc-step (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (build) (sp) (sc0) = act
     sc <- gsc-take kbd sc0
-    if sc == 1 then act
-      v <- (gs-viewport-release)
-      0
-    end
-    else if sc == 15 then act
+    if sc == 15 then act
       v <- (gs-viewport-release)
       gsc-step-hide
     end
@@ -411,11 +424,22 @@ Section: Step
       mins <- rtc-read 2
       let lk = gsc-look sp mouse
       in let ang = if sp.sp-look == 1 then sp.sp-yaw else gsc-orbit now mins
+ THE FRAME HIDES THE CURSOR AND MUST PUT IT BACK. It hid and never restored,
+ so the pointer vanished the moment a scene pane took focus and only reappeared
+ when `desk-loop` next moved it -- which, with a pane rendering a full frame per
+ iteration, is 60 times a second against 20,000 elsewhere. Aiming at a resize
+ band you cannot see is what Damian reported as not being able to grab a 3D
+ window's edge at all (2026-08-26).
+
+ It is the rule `works-desk-contract.md` states for every repainting path and
+ this was the path that did not keep it.
+
       in let hd = cursor-hide cs base stride
       in act
         f <- gsc-frame (sp.sp-tgt) (build now) ang (sp.sp-sky) (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-sh) (sp.sp-gpu) (sp.sp-gv)
         let k = __record-set sp "sp-n" (sp.sp-n + 1)
         in let hud = gsc-hud (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-gv) (sp.sp-n) (sp.sp-t0)
+        in let cu = if mouse.um-ok then cursor-update cs base stride w h 1 (mouse-x mouse) (mouse-y mouse) else 0
         in 1
       end
     end

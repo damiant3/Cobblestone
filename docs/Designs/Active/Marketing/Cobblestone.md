@@ -39,6 +39,48 @@ push.
 4. Prism's scope ruling (same day, recorded in CurrentPlan) is a sibling of
    this campaign: the REPL surface is part of the culminating push.
 
+## How the site deploys, and what that forbids
+
+**Damian, 2026-08-26.** The mid-term plan is to serve the landing pages from
+CobblestoneOS itself, as a **webserver-kernel headless app**. Until that
+exists the site deploys as **static HTML with WebAssembly and WebGPU**.
+
+That is a constraint on every page here, not a note about hosting:
+**nothing in the shipped artifact may depend on `apps/landing/serve.ps1`.**
+Its `/prism/` and `/repl/` proxies exist for local work and are absent from
+the deployed site, so a relative link to either is dead the moment it ships.
+Two links were dead exactly that way before this was written down.
+
+What it forced, and what to keep doing:
+
+- **Prism is a static page** (`codex/plugs/wasm/page/prism.html`, deployed at
+  `compile/prism.html`) that fetches the compiler as a wasm module and
+  compiles in the tab. It is NOT the codex-vm server behind `/prism/`.
+  Damian's 2026-08-24 ruling that Prism must compile on the fly is satisfied
+  by compiling in the browser rather than by a server.
+- **The REPL button points at Steve's live host**, an absolute URL, because
+  no local path survives deployment.
+- **A new capability on these pages has to be reachable from a static file
+  server.** If it needs a process, it belongs behind an absolute URL to a
+  host that runs it, or it waits for the webserver kernel.
+
+**The rule has a runner: `apps/landing/check-links.ps1`.** It reads the BUILT
+site, resolves every relative link and asset against disk, fails on one with
+no file behind it, and reports root-relative links separately because those
+are the ones serve.ps1 answers and a static host does not. `-Live` fetches
+each external URL. It is deliberately NOT wired into `build.ps1` or any gate;
+run it after a build and before a public push. Calibrated when it landed:
+clean tree exits 0, and one href repointed at a missing file produces exactly
+one DEAD row naming that href and exits 1. Measured 2026-08-26 over the three
+built pages, 8 relative links resolve and all 5 external URLs answer 200.
+
+**One standing warning is expected and is not a defect.** `/api/config` is
+root-relative and comes from `check_sd_status`, a helper the html plug emits
+into every page's runtime; it appears once as a definition, is never invoked,
+and the `sd-dot` and `sd-label` elements it wants exist on no page here.
+Confirm that before waving a root-relative warning through, rather than
+assuming it.
+
 ## The boundary: what renames and what does not
 
 **Becomes Cobblestone (the brand layer):**
@@ -211,6 +253,24 @@ contents, not for a date.
 5. **Days 3-6, fester:** prism/REPL continues (its own register:
    `apps/prism/prism-backlog.md`); the REPL surface is a culminating-push
    deliverable.
+
+   **Steve's live REPL is `http://143.244.172.148:9100/repl`** (from Steve
+   by email via red, 2026-08-26; verified 200 the same day, titled
+   "REPL: essay-repl-server"). red's standing caution was to reference it
+   and not hard-link it without Damian; **Damian ruled 2026-08-26 to
+   hard-link it**, and the landing page's `repl-go` CTA now points there.
+   It is a BARE IP over plain HTTP, so when that address moves, the one
+   thing that has to change is `repl-go` in `apps/landing/LandingPage.codex`.
+
+   **Absorbing from his repo is allowed and bounded.** The useful parts of
+   the REPL repo may be folded into the landing pages and he is fine with
+   the drift; **EXCLUDE the essay-server machinery** (accounts, notes,
+   comments, the essay rendering). Treat anything taken as OUTSIDE CODE:
+   read it before absorbing and credit Steve in the CL, the same rule
+   `CurrentPlan.md` sets for the zig plug. His stack is a Python server,
+   light JS, and native zig executables, with the build steps
+   under-documented; what there is sits in `repl.py`'s module docstring and
+   the `codex-zig-ladder` README. No active REPL work from him today.
 6. **Days 4-6, Damian + red:** the home page. Damian has a started draft
    (parallax scroll, the mountain window turned into the cobblestone path).
    **Searched 2026-08-24 and NOT FOUND in the depot**: prism is the
@@ -229,6 +289,22 @@ contents, not for a date.
    it from CobblestoneOS itself is EXPLICITLY a separate later step and
    must not gate the push. Standard interim push unless Damian calls it a
    release (then the release skill and its battery apply).
+
+   **The page's BRAND pass is reek's and landed with this edit.**
+   `codex/plugs/wasm/page/index.html` now carries the site identity: the
+   `&#x2588; COBBLESTONE` nav logo and the gold palette from
+   `apps/site/SiteTheme.codex`, a badge and hero matching the six themed
+   pages, and a dual-brand footer whose credit line is "Built with Codex"
+   by the boundary above. Verified mechanically, not by eye: both
+   `__X86_HASH__` placeholders intact for `build-page.ps1` to inject, all
+   eleven `getElementById` hooks present, CRLF preserved, and the emitted
+   `&mdash;` gone (R-DASH). **The pipeline JS is untouched** -- in
+   particular `cleanOutput`'s filter, which must stay exact-match equal to
+   `build-page.ps1`'s `-cnotmatch` cleaning or the anchor comparison goes
+   red for a reason that is not the compiler (plugs 1.83).
+   **What this pass did NOT do: look at it in a browser.** That needs
+   `build-page.ps1` and its artifacts, which is fester's engineering half;
+   the emit-spine de-recursion (plugs 1.14) stays fester's too.
 
 ## Register
 
