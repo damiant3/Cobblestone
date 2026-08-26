@@ -1,0 +1,248 @@
+Chapter: DeskWindowFrameTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ The first window's frame: where it sits, what the pointer lands on, what
+ maximising moves, and what PLACING it moves.
+
+ `dk-wnd-hit` is the whole of the second question and it is a pure function
+ of a rectangle, the point, the face and the width scale, so it is asserted
+ directly rather than through a paint. The face is `gfont-none` here, which is
+ the CBF fallback branch of `dk-wnd-bar-h`: a titlebar height that does not
+ depend on a volume being mounted is what lets this arm carry a real
+ expectation instead of the no-volume line the other desk arms record.
+
+ The `ds` block is 128 bytes because that is what `desk-run` allocates. A
+ 64-byte block cannot legally hold the cells above 63 -- `dk-icons-cell` at 72
+ and `dk-task-band-cell` at 76 -- and a short block reads whatever the arena
+ put after it rather than the zero the fallbacks are written for.
+
+ BOTH WIDTHS AGAIN. The window rectangle derives from the content box, which
+ carries the 1024 and 1600 scale steps, and a frame that is correct at one
+ width says nothing about the other (`desk-pane-origin` records why).
+
+ BOTH STATES, for the same reason one level up. Every row below runs normal
+ and maximised, because a rect that is right in one state says nothing about
+ the other and the buttons move with it: `dk-wnd-btn-x` is measured from the
+ window's right edge, which is the whole content box when maximised.
+
+ The button row is ordered min, max, close from the left, and the assertion
+ that matters is that the three are DISTINCT and in that order: a strip that
+ answers the same code for all three, or answers them right-to-left, paints
+ identically and closes the window when you meant to minimise it.
+
+ EVERY ROW READS THE RECT THROUGH `dk-wnd-rx` AND ITS THREE SIBLINGS over a
+ block nothing has placed, so this file's expectation not moving is the
+ calibration: the never-placed fallback answers exactly what the arithmetic
+ answered before a rectangle could be stored at all. The placed rows at the
+ end are the half that could not be written before.
+
+Section: Body
+
+  wf-yn : Boolean -> Text
+  wf-yn (v) = if v then "yes" else "no"
+
+  wf-mid : Integer, Integer, Integer, Integer -> Integer
+  wf-mid (wx) (ww) (ws) (i) =
+    dk-wnd-btn-x wx ww gfont-none ws i + dk-wnd-bar-h gfont-none ws / 2
+
+  wf-name : Integer -> Text
+  wf-name (st) = if st == dk-wnd-st-max then "max   " else "normal"
+
+  wf-row : Integer, Integer, Integer, Integer, Integer -> Text
+  wf-row (w) (h) (st) (ds) (blk) =
+    let ws = ui-wscale w
+    in let side = dk-wnd-bar-h gfont-none ws
+    in let wx = dk-wnd-rx blk w st
+    in let wy = dk-wnd-ry blk w h st ds
+    in let ww = dk-wnd-rw blk w st
+    in let wh = dk-wnd-rh blk w h st ds
+    in let barmid = wy + side / 2
+    in "w " & integer-to-text w & " " & wf-name st
+       & "  x " & integer-to-text wx & " y " & integer-to-text wy
+       & " w " & integer-to-text ww & " h " & integer-to-text wh
+       & "  bar " & integer-to-text side
+       & "  min " & integer-to-text (dk-wnd-hit wx wy ww wh (wf-mid wx ww ws 0) barmid gfont-none ws)
+       & " max " & integer-to-text (dk-wnd-hit wx wy ww wh (wf-mid wx ww ws 1) barmid gfont-none ws)
+       & " close " & integer-to-text (dk-wnd-hit wx wy ww wh (wf-mid wx ww ws 2) barmid gfont-none ws)
+       & " bar " & integer-to-text (dk-wnd-hit wx wy ww wh (wx + 8) barmid gfont-none ws)
+       & " body " & integer-to-text (dk-wnd-hit wx wy ww wh (wx + 8) (wy + side + 8) gfont-none ws)
+       & " out " & integer-to-text (dk-wnd-hit wx wy ww wh (wx - 8) barmid gfont-none ws)
+
+ The frame must sit inside what the chrome leaves, the way the panes did not
+ before WORKS-35. A maximised window is the content box exactly, so this is
+ the row that would catch a maximise that filled the SCREEN instead. The left
+ comparison is against `dk-cbox-x`, which is what every pane and every window
+ inherits; it answers zero now that the sidebar is gone, and it is still the
+ one function that would move if a gutter came back.
+
+ The taskbar edge is `dk-task-px`, not the floor constant, and that matters
+ now that the band can be taller than its floor: comparing the window against
+ the constant would agree whatever the band actually did.
+
+  wf-inside : Integer, Integer, Integer, Integer, Integer -> Text
+  wf-inside (w) (h) (st) (ds) (blk) =
+    let ws = ui-wscale w
+    in let wx = dk-wnd-rx blk w st
+    in let wy = dk-wnd-ry blk w h st ds
+    in let ww = dk-wnd-rw blk w st
+    in "w " & integer-to-text w & " " & wf-name st
+       & "  inside the content box " & wf-yn (wx >= dk-cbox-x w)
+       & "  below the top bar " & wf-yn (wy >= dk-bar-h * ui-scale w)
+       & "  above the taskbar " & wf-yn (wy + dk-wnd-rh blk w h st ds <= h - dk-task-px ds w)
+       & "  buttons distinct and in order " & wf-yn (dk-wnd-btn-x wx ww gfont-none ws 0 < dk-wnd-btn-x wx ww gfont-none ws 1 & dk-wnd-btn-x wx ww gfont-none ws 1 < dk-wnd-btn-x wx ww gfont-none ws 2)
+
+ THE ROW THAT DISCRIMINATES, and the reason it uses this point and not the
+ window's own corner. Every row above reads the rect and then asks about a
+ point derived FROM that rect, so it moves with the window and would answer
+ the same thing if maximising did nothing at all. This one fixes one point in
+ SCREEN coordinates -- just inside the content box's top-left, on the titlebar
+ row a maximised window would have there -- and asks what lands on it in each
+ state. Maximised the window starts at that corner, so it answers `bar`;
+ normal the window is inset by an eighth of the box and the same point is
+ outside it, so it answers `none`. Two different answers from one point is
+ what says the rect actually moved.
+
+  wf-corner : Integer, Integer, Integer, Integer, Integer -> Integer
+  wf-corner (w) (h) (st) (ds) (blk) =
+    let ws = ui-wscale w
+    in let side = dk-wnd-bar-h gfont-none ws
+    in dk-wnd-hit (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) (dk-cbox-x w + 8) (dk-cbox-y w + side / 2) gfont-none ws
+
+  wf-max : Integer, Integer, Integer, Integer -> Text
+  wf-max (w) (h) (ds) (blk) =
+    "w " & integer-to-text w
+    & "  maximised is the content box "
+    & wf-yn (dk-wnd-rx blk w dk-wnd-st-max == dk-cbox-x w
+             & dk-wnd-ry blk w h dk-wnd-st-max ds == dk-cbox-y w
+             & dk-wnd-rw blk w dk-wnd-st-max == dk-cbox-w w
+             & dk-wnd-rh blk w h dk-wnd-st-max ds == dk-cbox-h w h ds)
+    & "  the two rects differ "
+    & wf-yn (dk-wnd-rw blk w dk-wnd-st-max /= dk-wnd-rw blk w dk-wnd-st-normal)
+    & "  one screen point: max " & integer-to-text (wf-corner w h dk-wnd-st-max ds blk)
+    & " normal " & integer-to-text (wf-corner w h dk-wnd-st-normal ds blk)
+
+ A never-placed block must answer exactly the arithmetic, or every picture the
+ desk has drawn since the first window moved. This is the calibration row and
+ it is the one that would go red if the sentinel were read the other way
+ round.
+
+  wf-default : Integer, Integer, Integer, Integer, Integer -> Text
+  wf-default (w) (h) (st) (ds) (blk) =
+    "w " & integer-to-text w & " " & wf-name st
+    & "  placed " & wf-yn (dk-wnd-placed blk)
+    & "  matches the arithmetic "
+    & wf-yn (dk-wnd-rx blk w st == dk-wnd-x w st
+             & dk-wnd-ry blk w h st ds == dk-wnd-y w h st ds
+             & dk-wnd-rw blk w st == dk-wnd-w w st
+             & dk-wnd-rh blk w h st ds == dk-wnd-h w h st ds)
+
+ THE HALF THAT COULD NOT BE WRITTEN BEFORE. A rectangle nobody chose is the
+ same rectangle for every window, so two windows landed on the same pixels and
+ no hit test could tell them apart. These rows place one somewhere the default
+ is not and ask the same questions of it.
+
+ The discriminating point is the CENTRE of the default rect, in screen
+ coordinates, and it is chosen for the reason `wf-corner` is: it does not
+ travel with the window under test. The default window contains its own
+ centre, so an unplaced block answers `body` there; the placed rect is a small
+ box in the content box's top-left corner and does not reach it, so it answers
+ `none`.
+
+ THE TWO ROWS CATCH DIFFERENT THINGS AND THE SABOTAGES SAY WHICH, because the
+ obvious reading -- that the centre point catches any placement that is read
+ and ignored -- is wrong and was written here before it was measured. Three
+ sabotages, 2026-08-25, against this expectation:
+
+ | what was made to ignore the block | `reads back` | the centre point |
+ |---|---|---|
+ | `dk-wnd-rx` alone | yes to no | unmoved at 0 |
+ | `dk-wnd-rw` alone | yes to no | unmoved at 0 |
+ | `dk-wnd-placed`, so all four | yes to no | 0 to 5 |
+
+ The centre point cannot move while any ONE of the four still reads the block,
+ because the placed rect is small in both axes and the remaining cell keeps
+ the point outside it. So `reads back` is the row with per-cell sensitivity
+ and the centre point is the row that says placement is read AT ALL. Neither
+ is redundant and neither covers the other. The maximised control and all ten
+ rows above were unmoved by every one of the three.
+
+  wf-place-x : Integer -> Integer
+  wf-place-x (w) = dk-cbox-x w + 40
+
+  wf-place-y : Integer -> Integer
+  wf-place-y (w) = dk-cbox-y w + 30
+
+  wf-mid-x : Integer, Integer -> Integer
+  wf-mid-x (w) (st) = dk-wnd-x w st + dk-wnd-w w st / 2
+
+  wf-mid-y : Integer, Integer, Integer, Integer -> Integer
+  wf-mid-y (w) (h) (st) (ds) = dk-wnd-y w h st ds + dk-wnd-h w h st ds / 2
+
+  wf-centre : Integer, Integer, Integer, Integer, Integer -> Integer
+  wf-centre (w) (h) (st) (ds) (blk) =
+    dk-wnd-hit (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) (wf-mid-x w dk-wnd-st-normal) (wf-mid-y w h dk-wnd-st-normal ds) gfont-none (ui-wscale w)
+
+  wf-placed-row : Integer, Integer, Integer, Integer -> Text
+  wf-placed-row (w) (h) (ds) (blk) =
+    "w " & integer-to-text w
+    & "  placed " & wf-yn (dk-wnd-placed blk)
+    & "  reads back "
+    & wf-yn (dk-wnd-rx blk w dk-wnd-st-normal == wf-place-x w
+             & dk-wnd-ry blk w h dk-wnd-st-normal ds == wf-place-y w
+             & dk-wnd-rw blk w dk-wnd-st-normal == 300
+             & dk-wnd-rh blk w h dk-wnd-st-normal ds == 200)
+    & "  moved off the default "
+    & wf-yn (dk-wnd-rx blk w dk-wnd-st-normal /= dk-wnd-x w dk-wnd-st-normal)
+    & "  the default centre: placed " & integer-to-text (wf-centre w h dk-wnd-st-normal ds blk)
+
+ THE ROW THE CHANGE CANNOT MOVE, and it is here on purpose. Maximised is the
+ content box whatever the block holds, so placement must not reach it. If it
+ ever does, this row is what says so while every row above still agrees.
+
+  wf-max-control : Integer, Integer, Integer, Integer -> Text
+  wf-max-control (w) (h) (ds) (blk) =
+    "w " & integer-to-text w
+    & "  a placed window still maximises to the content box "
+    & wf-yn (dk-wnd-rx blk w dk-wnd-st-max == dk-cbox-x w
+             & dk-wnd-ry blk w h dk-wnd-st-max ds == dk-cbox-y w
+             & dk-wnd-rw blk w dk-wnd-st-max == dk-cbox-w w
+             & dk-wnd-rh blk w h dk-wnd-st-max ds == dk-cbox-h w h ds)
+
+Section: Entry
+
+ The two blocks are bound ONCE here rather than at module level. A nullary
+ definition is a recipe and not a cell, so every mention of one would allocate
+ a fresh zeroed block and the placement below would be written to a block
+ nothing else ever reads.
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed 128 64
+    in let fresh = alloc-zeroed 64 64
+    in let held = alloc-zeroed 64 64
+    in act
+      print-line-uni (wf-row 1280 800 dk-wnd-st-normal ds fresh)
+      print-line-uni (wf-row 1280 800 dk-wnd-st-max ds fresh)
+      print-line-uni (wf-row 1600 900 dk-wnd-st-normal ds fresh)
+      print-line-uni (wf-row 1600 900 dk-wnd-st-max ds fresh)
+      print-line-uni (wf-inside 1280 800 dk-wnd-st-normal ds fresh)
+      print-line-uni (wf-inside 1280 800 dk-wnd-st-max ds fresh)
+      print-line-uni (wf-inside 1600 900 dk-wnd-st-normal ds fresh)
+      print-line-uni (wf-inside 1600 900 dk-wnd-st-max ds fresh)
+      print-line-uni (wf-max 1280 800 ds fresh)
+      print-line-uni (wf-max 1600 900 ds fresh)
+      print-line-uni (wf-default 1280 800 dk-wnd-st-normal ds fresh)
+      print-line-uni (wf-default 1600 900 dk-wnd-st-normal ds fresh)
+      print-line-uni ("unplaced, the default centre: " & integer-to-text (wf-centre 1600 900 dk-wnd-st-normal ds fresh))
+      let p = dk-wnd-place held (wf-place-x 1600) (wf-place-y 1600) 300 200
+      in act
+        print-line-uni (wf-placed-row 1600 900 ds held)
+        print-line-uni (wf-max-control 1600 900 ds held)
+        print-line-uni ("codes: min " & integer-to-text dk-wnd-min & " max " & integer-to-text dk-wnd-max & " close " & integer-to-text dk-wnd-close & " bar " & integer-to-text dk-wnd-bar & " body " & integer-to-text dk-wnd-body & " none " & integer-to-text dk-wnd-none)
+        print-line-uni ("states: normal " & integer-to-text dk-wnd-st-normal & " max " & integer-to-text dk-wnd-st-max)
+      end
+    end
+
+Page 1

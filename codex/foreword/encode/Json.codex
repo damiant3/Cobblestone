@@ -105,8 +105,6 @@ Section: Emitter
     in if u == 34 then json-escape s (i + 1) len (acc & "\\\"")
     else if u == 92 then json-escape s (i + 1) len (acc & "\\\\")
     else if u == 10 then json-escape s (i + 1) len (acc & "\\n")
-    else if u == 13 then json-escape s (i + 1) len (acc & "\\r")
-    else if u == 9 then json-escape s (i + 1) len (acc & "\\t")
     else json-escape s (i + 1) len (acc & char-to-text (char-at s i))
 
   json-emit-array : List JsonValue, Integer, Integer, Text -> Text
@@ -440,16 +438,39 @@ Section: Strings
     if i >= len then string-fail i
     else apply-escape s i len acc (cp-at s i)
 
+ RFC 8259 requires \b \f \r \t to be accepted and we deliberately do not do
+ what it says with them, because CCE has no code point for any of the four:
+ from-unicode answers -1 for Unicode 8, 9, 12 and 13, and tier 0 carries LF
+ at 1 and SPACE at 2 and nothing else in that region. Until 2026-08-25 all
+ four were handed to the encoder as -1 and came back as the single unit 255,
+ which is not a corruption a reader would notice: to-unicode 255 is 255, a
+ legal character that renders as a letter, so three distinct escapes
+ collapsed onto one plausible wrong one.
+
+ The rule now is intent, not conformance. A tab means horizontal whitespace,
+ which CCE can express, so it becomes a space; the column semantics are lost
+ because CCE cannot hold them either way. Backspace and formfeed are
+ teletype and line-printer machinery with no modern meaning, and a carriage
+ return is line-ending machinery whose meaning the LF beside it already
+ carries, so all three are dropped rather than invented. Dropping a lone CR
+ loses an archaic line break; mapping it to a newline would double every
+ CRLF, which is the common case and the worse trade.
+
+ A \\uXXXX escape is different in kind. It is CONTENT rather than machinery,
+ so when CCE cannot represent it the parser refuses instead of dropping it:
+ silently losing what an author wrote is the failure this whole block exists
+ to remove. CCE has no replacement character to substitute either --
+ from-unicode 65533 is also -1.
   apply-escape : Text, Integer, Integer, Text, Integer -> StringReadResult
   apply-escape (s) (i) (len) (acc) (cp) =
     if cp == 34 then read-string-body s (i + 1) len (acc & "\"")
     else if cp == 92 then read-string-body s (i + 1) len (acc & "\\")
     else if cp == 47 then read-string-body s (i + 1) len (acc & "/")
-    else if cp == 98 then read-string-body s (i + 1) len (acc & char-to-text (code-to-char (from-unicode 8)))
-    else if cp == 102 then read-string-body s (i + 1) len (acc & char-to-text (code-to-char (from-unicode 12)))
+    else if cp == 98 then read-string-body s (i + 1) len acc
+    else if cp == 102 then read-string-body s (i + 1) len acc
     else if cp == 110 then read-string-body s (i + 1) len (acc & "\n")
-    else if cp == 114 then read-string-body s (i + 1) len (acc & char-to-text (code-to-char (from-unicode 13)))
-    else if cp == 116 then read-string-body s (i + 1) len (acc & char-to-text (code-to-char (from-unicode 9)))
+    else if cp == 114 then read-string-body s (i + 1) len acc
+    else if cp == 116 then read-string-body s (i + 1) len (acc & " ")
     else if cp == 117 then read-unicode-escape s (i + 1) len acc
     else string-fail i
 
@@ -458,7 +479,9 @@ Section: Strings
     if i + 4 > len then string-fail i
     else if four-hex-digits s i then
       let cp = unicode-from-hex-quad s i
-      in read-string-body s (i + 4) len (acc & char-to-text (code-to-char (from-unicode cp)))
+      in let cce = from-unicode cp
+      in if cce < 0 then string-fail i
+      else read-string-body s (i + 4) len (acc & char-encode (code-to-char cce))
     else string-fail i
 
   four-hex-digits : Text, Integer -> Boolean

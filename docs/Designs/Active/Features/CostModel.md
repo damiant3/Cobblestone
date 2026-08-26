@@ -432,8 +432,9 @@ and enforced property rather than a document. What is still open:
 
    `fixed` is still the rung that has not shipped, and the reason has not
    changed: separating "the same bytes every call" from "one walk over an
-   input" needs the 262-entry registry measured, and `bs-alloc` reads
-   `unknown` on 245 of them. What HAS changed is that this no longer blocks
+   input" needs the 264-entry registry measured, and `bs-alloc` reads
+   `unknown` on 132 of them (re-measure before quoting; it was 245 on
+   2026-08-20 and moved six times on 2026-08-21). What HAS changed is that this no longer blocks
    ordinary parsing code from declaring anything, because `budgeted` is the
    rung that code actually sits on. `bounded fixed` is refused as unsupported
    (CDX6103) rather than accepted unchecked, which is the same
@@ -443,9 +444,9 @@ and enforced property rather than a document. What is still open:
    **`fixed` is the one rung left and it is STILL blocked, on less than it
    was.** Separating "fixed bytes per call" from "one walk over an input"
    needs a per-builtin allocation class; 3.1 published the text family and
-   the list family is now measured too, but the remaining 262-entry builtin
-   registry is not, and the check cannot read a class that lives only in a
-   document. **`bs-alloc` on `BuiltinSpec` SHIPPED (blu, 2026-08-19, main
+   the list family is now measured too, but the 264-entry builtin registry is
+   only half read -- 132 rows still `unknown` -- and the check cannot read a
+   class that lives only in a document. **`bs-alloc` on `BuiltinSpec` SHIPPED (blu, 2026-08-19, main
    17450)** (`codex/compiler/Types/Builtins.codex`), which is where the class
    belongs: it puts the answer beside the name and the type, and
    `cost-builtin-nonalloc` reads `builtin-alloc-by-name` rather than the
@@ -498,7 +499,134 @@ and enforced property rather than a document. What is still open:
    used -- so an arm would be measuring dead-code elimination. Classifying them
    from the emitter is the same footing `list-set-at` already stands on.
 
-   The previous passes read `unknown` 232, then 219, then 214; before them, 247. The registry grew by two rows and
+   **PASSES FIVE TO TEN, all 2026-08-21, and the log stops accumulating here.**
+   Appending a paragraph per family was already the wrong shape at four; what
+   follows is the current measurement plus the one thing each pass established
+   that is NOT a count. **Re-measure before quoting any of it (L-COUNT):
+   `unknown` 86, `none` 156, `fixed` 13, `input` 7, `budgeted` 1,
+   `budgeted:3` 1, of 264.** The sequence of `unknown` readings was 232, 219,
+   214, 202, 186, 169, 163, 153, 143, 132 across 2026-08-21, then 125, 107 and 86 on
+   2026-08-25.
+
+   - **The process and channel family, twenty-one of twenty-two** (blu,
+     2026-08-25). Process memory does not come from the heap:
+     `__spawn_pool_carve` is shift-and-add into a statically reserved pool, the
+     three out-of-family targets are defined in `ProcessHelpers` and allocate
+     nothing, and `process-get-scope` returns a Text by loading a pointer
+     already in the process table rather than building one.
+     **THE TWENTY-SECOND IS WHY THE SCAN PATTERN IS NOW WRITTEN DOWN.**
+     `chan-text-recv` allocates: it rounds the received length up and does
+     `add r10, rax`, advancing the bump allocator INLINE, without ever calling
+     `__alloc` or `emit-bivy-alloc`. A scan for those two names -- which is
+     what classified the eighteen in the entry below, and what I ran first here
+     -- cannot see it, and would have published `none` on a builtin that
+     allocates in proportion to a message. **A false `none` is a false promise,
+     which is the dangerous direction; the too-narrow pattern found it in the
+     cheap direction only by luck of reading the body.** Any future emitter
+     classification must look for `reg-r10` advancement as well as the two
+     allocator names. `chan-text-recv` stays `unknown`: what it retains is
+     proportional to the MESSAGE, and the message size appears in no argument,
+     so no rung in this lattice describes it.
+     **AND `none` MEANS NO HEAP, NOT NO RESOURCE.** A spawn consumes a
+     fixed-pool slot; slot exhaustion is a bounded resource this lattice does
+     not describe, the same way quadratic TIME stays with `punctual`'s budget.
+   - **The VMX/MSR and UEFI console families, eighteen rows, classified from
+     the EMITTER** (blu, 2026-08-25). `builtin-alloc` cannot reach any of them:
+     `vmxon` and its family would fault the moment an arm executed one, and the
+     console calls need a firmware boot nothing in `codex/test` performs. So
+     they take the footing the six proof terms already stand on. Each is a
+     named runtime helper in `X86_64Helpers.codex`, and across the whole span
+     that holds all eighteen there is no `emit-bivy-alloc`, no call to
+     `__alloc`, and no `emit-call-to` at all, so none can allocate directly or
+     through a callee. `uefi-read-key-ex` reserves a stack frame
+     (`sub rsp, 0x58`); that is the stack, and this rung is about the heap.
+     **THE PART THAT IS NOT A COUNT: the cost check reads a builtin's class
+     only in CALL position.** Eleven of the eighteen are refused CDX6101 by the
+     preceding seed and accepted after; the other seven are NOT, and the split
+     is exactly nullary against argument-taking. A nullary builtin used as a
+     value never has its class consulted, so reclassifying those seven changes
+     nothing observable today, and an arm over one would pass under both
+     compilers while testing nothing. Seven such arms were written, measured as
+     vacuous, and REMOVED rather than kept as decoration -- the same
+     vacuous-control trap COMPILER-18 shipped and this file's own corpus exists
+     to forbid. Whether any nullary builtin allocates is NOT established: the
+     one candidate tried, `current-dir`, does not resolve on this target.
+   - **The print family, seven rows on four emitters** (blu, 2026-08-25). All
+     seven measure `none`, and the count is the least of it. `print-line`,
+     `print-line-uni`, `print-error` and `print-error-uni` all lower through
+     `emit-print-line-builtin`, so they CANNOT differ in class; measuring the
+     aliases anyway is what shows that rather than assuming it, and it is the
+     same footing the proof terms stand on one section up. **The ASCII probe
+     would not have earned the class.** `emit-print-text-loop` branches on the
+     code unit, so a text of `x` never enters the multi-byte arm at all; the
+     rows are therefore read four ways -- ASCII, a tier-0 accented unit, a
+     tier-0 Cyrillic unit and a tier-1 unit -- and all four retain zero at
+     n=64 and n=256 against a control that also reads zero. Reading one shape
+     and publishing the class is exactly the fixture-shape trap (L-CONSTRUCT)
+     that COMPILER-21 and COMPILER-22 were both found by, on the same surface,
+     the same day.
+
+   - **The real conversions, sixteen rows on eight arms** (main 18985). A Real
+     cannot close the `+ r - r` bracket, so every reading is a chain that
+     charges its arm for everything in it. Allocation cannot be negative, so a
+     chain reading EQUAL to a control containing a subset of it proves every
+     added member is zero at once. That LADDER is what buys sixteen rows for
+     eight arms, and the f32 rungs sit on the f64 ones because the only route
+     from an Integer to an f32 runs through a pair the rung below settled.
+   - **The SIMD family, seventeen rows** (main 19025 for the arm shape, 18995
+     for the rows). **Every vector this compiler produces is BOXED at 16
+     bytes**, and the split is clean along produce-versus-read: eight names
+     return a vector and each pays a box, nine read out of one and pay
+     nothing. So a chain of vector operations pays one box per step, and
+     `bounded none` cannot construct a vector at all -- only read one it was
+     handed, which is why those arms take theirs as parameters. Published in
+     `DevelopersGuide.md` with the table.
+   - **The atomics, six rows** (main 18999). `bs-varies` and `bs-alloc` come
+     apart here: all six read True for `bs-varies` because their ANSWER
+     depends on another core, and that decides nothing about what they retain.
+   - **The CPU reads and the rest of raw memory, ten rows** (main 19012).
+   - **The port and MMIO rows, ten rows** (main 19025), which needed a new arm
+     shape. See the effectful-arm note below.
+   - **The read-only process and identity rows, eleven rows** (main 19040).
+
+   **A NEW ARM SHAPE NEEDS ITS OWN CONTROL, and this is the general form of
+   the `alloc-bytes` lesson above.** An effectful builtin cannot be bound with
+   `let` (CDX2033), so its arm opens an `act` block and takes the answer with
+   `<-`. A different bracket is a different instrument until something says
+   otherwise, so the section opens with `act-control`: the same block, the same
+   two marks, nothing measured inside. It reads 0, and only then is anything
+   below it attributable. Without it, ten rows reading the same nonzero would
+   be indistinguishable from ten builtins that each allocate that much, and the
+   section would have published `fixed` on the strength of the bracket. The
+   same discipline one level down is why `vec-extract` and `vec4-extract` are
+   measured alone before any arm that contains them, and why the first mask arm
+   was wrong: it built its `VectorMask` inside the heap mark and read 16 bytes
+   for four builtins that return a Boolean or an Integer.
+
+   **THE REGISTRY IS NEVER CONSULTED FOR A NULLARY BUILTIN**, found by an arm
+   written on the opposite assumption. `cost-head-allocates` is reached from a
+   call HEAD, and a bare name is not a call, so `cpu-read-cr0`, `cpu-read-cr3`,
+   `flush-tlb` and the six process constants have rows because they were
+   measured and not because any consumer asks. The `machined` arm in
+   `codex/test/apps/bounded-none-accepted` is the control that established it:
+   the kill refused four of five and accepted that one with all three of its
+   rows still `unknown`. Measure them anyway -- "no consumer asks" is not "the
+   answer does not exist" -- but do not count them as widening the rung.
+
+   **WHAT IS DELIBERATELY STILL `unknown`, so the gap is named rather than
+   silent.** The GPU four (`gpu-in`, `gpu-out`, `gpu-mem-read`,
+   `gpu-mem-write`), the two 16-bit port block forms and `runtime-init`: an arm
+   for `gpu-mem-write` at offset 0 of the window writes over `DeviceBuffer`'s
+   allocation cursor, which is corrupting an allocator in order to measure one.
+   `process-get-scope` and `process-get-network-scope` return Text and both
+   answer the EMPTY string on this bed, so a zero length is a fact about a
+   process with no scope set rather than about the builtin; reading `none` off
+   the empty path is the corpus-shape failure exactly. And the five sized-vector
+   names are BROKEN rather than unmeasured -- `vec-empty` is CDX2040 unresolved,
+   `vec-singleton` answers wrong, `vec-cons` faults -- with the account under
+   the unowned registers in `docs/PM/CurrentPlan.md`.
+
+   The earliest passes read `unknown` 232, then 219, then 214; before them, 247. The registry grew by two rows and
    fifteen were measured that day: the twelve integer and bit names, `negate`,
    `real-from-int` and `real-to-int`, all at 0 bytes retained at both input
    magnitudes (`codex/test/cost/builtin-alloc`, the account in
@@ -512,7 +640,9 @@ and enforced property rather than a document. What is still open:
    declarations at exit 4, and it compiles once the rows read `none`. It was
    2026-08-20's reading of
    `unknown` 245 that this line carried, and the earlier one before it. `unknown` is the refusing side,
-   so 245 builtins are still read as allocating without bound. CDX6103 now names only `fixed` and says so. Do not infer it
+   so every row still reading it is a builtin read as allocating without bound
+   -- 132 of them at the last measurement, and that count IS the block on the
+   rung. CDX6103 now names only `fixed` and says so. Do not infer it
    from the code's shape alone: a single `&` allocates in proportion to its
    operands, so a straight-line body with no loop in it is already not
    `fixed`, and a shape-only rule would accept exactly the case the class

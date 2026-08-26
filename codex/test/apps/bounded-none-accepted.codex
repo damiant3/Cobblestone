@@ -283,6 +283,118 @@ Section: A Ceiling Nothing Can Breach
   bounded growing listed : Integer -> Integer
   listed (n) = list-length (list-push [] n)
 
+Section: The Print Family, Widened By Measurement (2026-08-25)
+
+ The seven print builtins sat on the refusing side as `unknown` for one
+ reason: nobody had measured them. `codex/test/cost/builtin-alloc` now reads
+ them at zero bytes on a list of 64 and of 256, and on four different text
+ shapes -- ASCII, a tier-0 accented unit, a tier-0 Cyrillic unit and a tier-1
+ unit -- because `emit-print-text-loop` branches on the code unit and an ASCII
+ probe never enters the multi-byte arm.
+
+ A body whose whole job is to log was refused `bounded none` before that,
+ which is a large and ordinary class. Both shapes below are refused CDX6101
+ by the seed that preceded this arm.
+
+  bounded none logs : Text -> [Console] Nothing
+  logs (t) = print-line-uni t
+
+  bounded none logs-raw : Text -> [Console] Nothing
+  logs-raw (t) = print-text t
+
+Section: Classified From The Emitter, Not The Instrument (2026-08-25)
+
+ `codex/test/cost/builtin-alloc` cannot reach these eighteen. `vmxon` and its
+ family would fault the moment an arm executed one, and the UEFI console calls
+ need a firmware boot that nothing in `codex/test` performs. They are
+ therefore classified the way the six proof terms already are: by reading what
+ the emitter emits.
+
+ Each is a named runtime helper in `X86_64Helpers.codex` (VMX at the `vmxon`
+ record, UEFI console below it). Across the whole span that holds all
+ eighteen there is no `emit-bivy-alloc`, no call to `__alloc`, and no
+ `emit-call-to` at all, so none of them can allocate directly or through a
+ callee. `uefi-read-key-ex` reserves a stack frame with `sub rsp, 0x58`, which
+ is the stack and not the heap, and this rung is about the heap.
+
+ These declarations are the guard, and they need no `opening` to call them:
+ this chapter is compiled and not output-compared, and the cost check walks
+ every definition. Each one is refused CDX6101 by the seed that preceded them.
+
+ SEVEN MORE WERE RECLASSIFIED AND ARE DELIBERATELY NOT ARMED HERE. The eleven
+ above are refused by the preceding seed; declarations over the seven NULLARY
+ members of the same families -- `vmlaunch`, `vmresume`, `vmlaunch-full`,
+ `vmresume-full`, `uefi-clear-screen`, `uefi-read-key`, `uefi-read-key-ex`
+ -- are NOT, and the split is exactly nullary against argument-taking. The cost
+ check consults a builtin's class only in CALL position, so a nullary builtin
+ used as a value never has its class read at all. An arm over one of those
+ would pass under both compilers and read as a check while testing nothing,
+ which is the trap this file exists to avoid. Whether any nullary builtin
+ actually allocates is NOT established here: the one candidate tried,
+ `current-dir`, does not resolve on this target.
+  bounded none vmx-on : Integer -> Integer
+  vmx-on (p) = vmxon p
+
+  bounded none vmx-clear : Integer -> Integer
+  vmx-clear (p) = vmclear p
+
+  bounded none vmx-ptrld : Integer -> Integer
+  vmx-ptrld (p) = vmptrld p
+
+  bounded none vmx-read : Integer -> Integer
+  vmx-read (f) = vmread f
+
+  bounded none vmx-write : Integer, Integer -> Integer
+  vmx-write (f) (v) = vmwrite f v
+
+  bounded none msr-read : Integer -> Integer
+  msr-read (m) = rdmsr m
+
+  bounded none msr-write : Integer, Integer -> Integer
+  msr-write (m) (v) = wrmsr m v
+
+  bounded none con-attr : Integer -> Integer
+  con-attr (a) = uefi-set-attr a
+
+  bounded none con-cursor : Integer, Integer -> Integer
+  con-cursor (c) (r) = uefi-set-cursor c r
+
+  bounded none con-cursor-on : Integer -> Integer
+  con-cursor-on (e) = uefi-enable-cursor e
+
+  bounded none con-mode : Integer -> Integer
+  con-mode (m) = uefi-set-mode m
+
+Section: The Process And Channel Family (2026-08-25)
+
+ Twenty-one more read from the emitter. All twenty-two members live in
+ `X86_64IPCHelpers.codex` and `X86_64ProcessHelpers.codex`, and process memory
+ does not come from the heap at all: `__spawn_pool_carve` is shift-and-add
+ into a statically reserved pool, and the three out-of-family targets
+ (`__idle_dispatch`, `__process_resume`, `__spawn_pool_carve`) are defined in
+ `ProcessHelpers` and allocate nothing themselves. `process-get-scope` returns
+ a Text but does not build one: it loads a pointer already stored in the
+ process table.
+
+ `chan-text-recv` IS THE TWENTY-SECOND AND IT IS DELIBERATELY NOT HERE. It
+ advances the bump allocator inline -- `add r10, rax` after rounding the
+ received length up -- without ever calling `__alloc` or `emit-bivy-alloc`, so
+ a scan for those two names cannot see it. It stays `unknown`, the refusing
+ side, because what it allocates is proportional to the MESSAGE and the
+ message size is not visible in any argument, so no class here describes it.
+
+ A spawn still consumes a fixed-pool SLOT. `none` means no HEAP, not no
+ resource, and nothing in this lattice describes slot exhaustion.
+
+  bounded none proc-wait : Integer -> Integer
+  proc-wait (p) = process-wait p
+
+  bounded none proc-scope : Integer -> Text
+  proc-scope (p) = process-get-scope p
+
+  bounded none proc-net-scope : Integer -> Text
+  proc-net-scope (p) = process-get-network-scope p
+
 Section: Entry
 
   opening : [Console] Nothing = act
@@ -296,4 +408,5 @@ Section: Entry
     print-line-uni ("cpu = " & show (let c = alloc-bytes 64 in poked-16 c 258 + peeked-16 c + peeked-qword c) & " " & show (identified 0 - identified 0) & " " & show (machined - machined))
     print-line-uni ("atomics = " & show (let c = alloc-bytes 8 in poked c 5 + peeked c + bumped c 2 + swapped c 1 + (if swapped-if c 1 9 then 1 else 0) + fenced 0))
     print-line-uni ("simd = " & show (lane (vec-splat 7.0)) & " " & show (lane4 (vec4-splat (to-real-approx 7.0))) & " " & show (summed (vec-splat 3.0)) & " " & show (widthed 0.0) & " " & show (stored (alloc-bytes 16) (vec-splat 5.0)))
+    logs "logs is bounded none"
   end

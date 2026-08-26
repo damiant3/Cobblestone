@@ -47,5 +47,46 @@ OUTPUT, so each is its own changelist with its own re-recorded expectations.
 
 ## Open
 
-Nothing. The last entry was CORE-7, the `pb-memory-kb` field that held a
-block count, and the field is now `pb-block-count`.
+**CORE-8. CCE cannot represent tab, carriage return, backspace or formfeed,
+and every caller that asks for one is silently handed the character y-diaeresis
+instead.** `from-unicode` answers -1 for Unicode 8, 9, 12 and 13, which is
+correct and deliberate: CCE tier 0 carries LF at 1 and SPACE at 2 and nothing
+else in that region (`to-unicode 1` is 10, `to-unicode 2` is 32). The defect is
+what happens next. `char-encode` and `char-to-text` both accept the -1 without
+complaint and emit a single unit 255, and `cce-encode-length (-1)` answers 1
+rather than refusing, so the sentinel flows all the way into a Text.
+
+**MEASURED end to end through the public parser, seed CA7B018E:**
+
+| input | units out |
+|---|---|
+| `"a\\rb"` | 15 **255** 32 |
+| `"a\\tb"` | 15 **255** 32 |
+| `"a\\bb"` | 15 **255** 32 |
+| `"a\\nb"` | 15 1 32 (correct) |
+| `"ab"` | 15 32 |
+
+**THE VALUE IS NOT GARBAGE, WHICH IS WHY NOTHING CAUGHT IT.** `to-unicode 255`
+is 255, so 255 is a perfectly legal CCE character and renders as a letter. A
+reader sees a plausible character rather than a corruption, and three distinct
+escapes collapse onto one indistinguishable value -- the same lossiness shape
+COMPILER-23 defect B has, one layer up.
+
+`\\n` is right only because `Json.codex:450` uses a literal `"\\n"` instead of
+routing through `from-unicode`. The four broken arms are `Json.codex:448, 449,
+451, 452`, and `read-unicode-escape` at 461 has the same hole for any `\\uXXXX`
+CCE does not map.
+
+**THE DECISION IS NOT MINE AND IS NOT A PATCH.** RFC 8259 requires a conforming
+parser to accept `\\b \\f \\r \\t`, and CCE deliberately has no code point for
+any of them, so the three available answers are: refuse the escape
+(`string-fail`, honest but non-conforming), substitute something chosen and
+documented rather than accidental, or give CCE those code points. Whichever is
+taken, the encoders must stop accepting -1 silently: that is the part with no
+argument on either side.
+
+Found 2026-08-25 while migrating the encode-meaning callers to `char-encode`
+(main 19636). It is PRE-EXISTING and the migration neither caused nor fixed it;
+`char-to-text (-1)` produced the same 255. It surfaced because Damian pushed
+back on "nothing depended on the truncation" -- a dependency on a sentinel
+being silently encoded is exactly the dependency that should fail hard.

@@ -53,66 +53,109 @@ $PlugTargets = @(
     @{name='c#';         dir='codex/plugs/csharp'}
 )
 
-# ── Caches ───────────────────────────────────────────────────
-$IrCache = @{}
-$PlugCache = @{}
-
-function Get-CacheFile([string]$Prefix, [string]$SrcPath) {
-    $name = [System.IO.Path]::GetFileNameWithoutExtension($SrcPath)
-    return Join-Path $CacheDir "$Prefix-$name.txt"
+# ── Per-request working directory ────────────────────────────
+# Every compile gets its own directory and nothing is kept between requests.
+# There is no IR cache and no pre-bake: Damian's ruling 2026-08-24, "we
+# definitely need compile/transpile on the fly for the prism. the canned IR is
+# not the correct design." A cache keyed on a repo PATH could not have served
+# submitted source anyway, because submitted source has no path.
+function New-RequestDir {
+    $d = Join-Path $CacheDir ("req-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 12))
+    New-Item -ItemType Directory -Force $d | Out-Null
+    return $d
 }
 
-# ── Dynamic IR compilation ───────────────────────────────────
-function Compile-ToIr([string]$SrcPath) {
-    if ($IrCache.ContainsKey($SrcPath)) { return $IrCache[$SrcPath] }
+function Remove-RequestDir([string]$Dir) {
+    if ($Dir -and (Test-Path $Dir)) {
+        try { Remove-Item -Recurse -Force $Dir -ErrorAction Stop } catch { }
+    }
+}
 
-    $cacheFile = Get-CacheFile 'ir' $SrcPath
-    if (Test-Path $cacheFile) {
-        $IrCache[$SrcPath] = [System.IO.File]::ReadAllText($cacheFile)
-        return $IrCache[$SrcPath]
+# Reads one member out of a JSON body without throwing when it is absent.
+# `$bodyObj.source` under `Set-StrictMode -Version Latest` THROWS on a missing
+# property, and the throw happened before the `missing source` guard could run,
+# so a request that parsed but carried the wrong member answered 500 with no
+# diagnostic where it meant 400. That was PRISM-4.
+function Read-BodyMember([string]$Body, [string]$Name) {
+    if (-not $Body) { return '' }
+    $obj = $null
+    try { $obj = $Body | ConvertFrom-Json -ErrorAction Stop } catch { return '' }
+    if ($null -eq $obj) { return '' }
+    if (-not ($obj.PSObject.Properties.Name -contains $Name)) { return '' }
+    $v = $obj.$Name
+    if ($null -eq $v) { return '' }
+    return [string]$v
+}
+
+# A compile is bounded. The compiler is a VM boot and a runaway one would hold
+# the single-threaded listener open forever, so the wall budget is the same 60 s
+# the test harness gives a kernel.
+$CompileWallMs = 60000
+
+function Invoke-Bounded([string]$Script, [string[]]$ScriptArgs, [int]$WallMs) {
+    $p = Start-Process -FilePath 'pwsh' `
+        -ArgumentList (@('-NoProfile', '-File', $Script) + $ScriptArgs) `
+        -PassThru -NoNewWindow -RedirectStandardOutput ([System.IO.Path]::GetTempFileName()) `
+        -RedirectStandardError ([System.IO.Path]::GetTempFileName())
+    if (-not $p.WaitForExit($WallMs)) {
+        try { $p.Kill($true) } catch { }
+        return $false
+    }
+    return $true
+}
+
+# ── On-the-fly IR compilation ────────────────────────────────
+# Takes SOURCE TEXT, never a path. The visitor's text is the input, which is
+# what makes this a REPL rather than a viewer over a catalogue.
+function Compile-SourceToIr([string]$Source, [string]$WorkDir) {
+    $srcFile = Join-Path $WorkDir 'prog.codex'
+    # UTF8 without BOM: the compiler reads its source as UTF-8 and a BOM lands
+    # in the first token.
+    [System.IO.File]::WriteAllText($srcFile, $Source, [System.Text.UTF8Encoding]::new($false))
+
+    $irOut = Join-Path $WorkDir 'prog.cdx'
+    $irLog = Join-Path $WorkDir 'prog.log'
+    # `| Out-Null` and not just `2>$null`, matching Invoke-PlugOnSource below. The IR is
+    # read from the LOG, never from stdout, and an uncaptured child's stdout
+    # joins THIS function's output stream: compile.ps1 prints a `kernel:` line
+    # and a bare `True`, so the caller received an ARRAY whose first element was
+    # that noise, and `.StartsWith(...)` then member-enumerated to an array of
+    # booleans, which is truthy.
+    $finished = Invoke-Bounded $compileScript @('-Src', $srcFile, '-Out', $irOut, '-Log', $irLog, '-IrUni') $CompileWallMs
+    if (-not $finished) { return "COMPILE-ERROR:`ncompile exceeded the $([int]($CompileWallMs / 1000)) s budget" }
+
+    if (-not (Test-Path $irLog)) { return "COMPILE-ERROR:`nthe compiler produced no log" }
+
+    $lines = Get-Content $irLog
+    $capturing = $false; $irLines = @()
+    foreach ($l in $lines) {
+        if ($l -eq 'IR-BEGIN') { $capturing = $true; continue }
+        if ($l -eq 'IR-END')   { $capturing = $false; continue }
+        if ($capturing) { $irLines += $l }
+    }
+    if ($irLines.Count -gt 0) {
+        Write-Host "[prism]   -> $($irLines.Count) IR lines" -ForegroundColor Green
+        return ($irLines -join "`n")
     }
 
-    $fullPath = Join-Path $Repo ($SrcPath -replace '/', '\')
-    if (-not (Test-Path -PathType Leaf $fullPath)) { return $null }
-
-    Write-Host "[prism] Compiling $SrcPath to IR..." -ForegroundColor Cyan
-    $irOut = Join-Path $CacheDir "tmp-ir.cdx"
-    $irLog = Join-Path $CacheDir "tmp-ir.log"
-    & pwsh -NoProfile -File $compileScript -Src $fullPath -Out $irOut -Log $irLog -IrUni 2>$null
-
-    if (Test-Path $irLog) {
-        $lines = Get-Content $irLog
-        $capturing = $false; $irLines = @()
-        foreach ($l in $lines) {
-            if ($l -eq 'IR-BEGIN') { $capturing = $true; continue }
-            if ($l -eq 'IR-END')   { $capturing = $false; continue }
-            if ($capturing) { $irLines += $l }
-        }
-        if ($irLines.Count -gt 0) {
-            $ir = $irLines -join "`n"
-            [System.IO.File]::WriteAllText($cacheFile, $ir, [System.Text.UTF8Encoding]::new($false))
-            $IrCache[$SrcPath] = $ir
-            Write-Host "[prism]   -> $($irLines.Count) IR lines" -ForegroundColor Green
-            return $ir
-        }
-        # Grab errors for display
-        $errors = ($lines | Where-Object { $_ -match 'error CDX' }) -join "`n"
-        if ($errors) { return "COMPILE-ERROR:`n$errors" }
+    # No IR means the frontend refused. Report the diagnostics the compiler
+    # actually emitted; falling through to a bare null would render as "no
+    # output" and read as a server fault rather than as a rejected program.
+    $errors = ($lines | Where-Object { $_ -match '(?i)error CDX|^CODEGEN-HALTED' }) -join "`n"
+    if ($errors) {
+        # The compiler names the file it was handed, which is this request's own
+        # scratch directory. Sending that to the browser publishes a server
+        # absolute path and tells the reader nothing: the file is THEIR program.
+        $errors = $errors.Replace($srcFile, 'your program').Replace(($srcFile -replace '\\', '/'), 'your program')
+        return "COMPILE-ERROR:`n$errors"
     }
-    return $null
+    return "COMPILE-ERROR:`nno IR emitted and no diagnostic captured"
 }
 
 # ── Plug invocation ──────────────────────────────────────────
-function Invoke-Plug([string]$PlugName, [string]$SrcPath) {
-    $cacheKey = "$PlugName|$SrcPath"
-    if ($PlugCache.ContainsKey($cacheKey)) { return $PlugCache[$cacheKey] }
-
-    $cacheFile = Get-CacheFile "$PlugName" $SrcPath
-    if (Test-Path $cacheFile) {
-        $PlugCache[$cacheKey] = [System.IO.File]::ReadAllText($cacheFile)
-        return $PlugCache[$cacheKey]
-    }
-
+# Takes SOURCE TEXT and the request's own directory, like the compile above.
+# No cache: a plug output keyed on a repo path cannot answer for submitted text.
+function Invoke-PlugOnSource([string]$PlugName, [string]$Source, [string]$WorkDir) {
     $plug = $PlugTargets | Where-Object { $_.name -eq $PlugName }
     if (-not $plug) { return $null }
 
@@ -123,19 +166,19 @@ function Invoke-Plug([string]$PlugName, [string]$SrcPath) {
     $plugCdx = Join-Path $plugDir 'build-output' "$PlugName-plug.cdx"
     if (-not (Test-Path $plugCdx)) { return "Plug CDX not built. Run: $plugDir\build.ps1" }
 
-    $fullSrc = Join-Path $Repo ($SrcPath -replace '/', '\')
-    if (-not (Test-Path $fullSrc)) { return "Source file not found: $SrcPath" }
+    # The plug takes a source FILE, so the submitted text is written into this
+    # request's directory and never anywhere shared. Written per plug rather
+    # than reused from the compile step so a plug can never read a neighbour's.
+    $srcFile = Join-Path $WorkDir "plug-$PlugName-in.codex"
+    [System.IO.File]::WriteAllText($srcFile, $Source, [System.Text.UTF8Encoding]::new($false))
+    $outFile = Join-Path $WorkDir "plug-$PlugName-out.txt"
 
-    Write-Host "[prism] Running $PlugName plug for $SrcPath..." -ForegroundColor Yellow
-    $outFile = Join-Path $CacheDir "plug-$PlugName-out.txt"
-
+    Write-Host "[prism] Running $PlugName plug..." -ForegroundColor Yellow
     try {
-        if (Test-Path $outFile) { Remove-Item $outFile -Force }
-        & pwsh -NoProfile -File $runScript -Src $fullSrc -Out $outFile 2>$null | Out-Null
+        $finished = Invoke-Bounded $runScript @('-Src', $srcFile, '-Out', $outFile) $CompileWallMs
+        if (-not $finished) { return "Plug $PlugName exceeded the $([int]($CompileWallMs / 1000)) s budget." }
         if ((Test-Path $outFile) -and (Get-Item $outFile).Length -gt 0) {
             $output = [System.IO.File]::ReadAllText($outFile)
-            [System.IO.File]::WriteAllText($cacheFile, $output, [System.Text.UTF8Encoding]::new($false))
-            $PlugCache[$cacheKey] = $output
             Write-Host "[prism]   -> $PlugName OK ($($output.Length) chars)" -ForegroundColor Green
             return $output
         }
@@ -181,6 +224,9 @@ header h1 { font-size:18px; color:#cba6f7; letter-spacing:2px; }
 #compile-btn { padding:5px 20px; font-size:13px; font-family:inherit; background:#45475a; color:#cba6f7; border:1px solid #585b70; border-radius:4px; cursor:pointer; font-weight:bold; letter-spacing:1px; }
 #compile-btn:hover:not(:disabled) { background:#585b70; color:#f5c2e7; }
 #compile-btn:disabled { background:#313244; color:#585b70; border-color:#45475a; cursor:default; }
+#edit-btn { padding:5px 14px; font-size:13px; font-family:inherit; background:#313244; color:#cdd6f4; border:1px solid #45475a; border-radius:4px; cursor:pointer; }
+#edit-btn:hover { background:#45475a; color:#cba6f7; }
+#editor { width:100%; height:100%; min-height:340px; background:#1e1e2e; color:#cdd6f4; border:none; outline:none; resize:none; font-family:inherit; font-size:12px; line-height:1.6; padding:0; tab-size:2; }
 #status { font-size:11px; color:#6c7086; margin-left:8px; }
 .workspace { display:flex; height:calc(100vh - 40px); }
 nav { width:220px; padding:8px; overflow-y:auto; border-right:1px solid #313244; background:#11111b; flex-shrink:0; }
@@ -208,7 +254,8 @@ nav li .dir { color:#6c7086; font-size:10px; }
 </style></head><body>
 <header>
   <h1>Prism</h1><span class="sub">Codex through every lens</span>
-  <button id="compile-btn" onclick="compileAll()" disabled>Compile</button>
+  <button id="edit-btn" onclick="toggleEdit()">Edit</button>
+  <button id="compile-btn" onclick="compileAll()">Compile</button>
   <span id="status"></span>
 </header>
 <div class="workspace">
@@ -234,7 +281,7 @@ nav li .dir { color:#6c7086; font-size:10px; }
   </div>
 </div>
 <script>
-let currentPath=null,currentTab='ir',outputs={};
+let currentPath=null,currentTab='ir',outputs={},buffer='',editing=false;
 async function loadFiles(){
   const r=await fetch('/api/files');const d=await r.json();
   const ul=document.getElementById('file-list');
@@ -254,28 +301,56 @@ async function loadSource(path,el){
   const r=await fetch('/api/source?path='+encodeURIComponent(path));
   const d=await r.json();
   if(d.error){document.getElementById('code').innerHTML='<span class="empty">'+d.error+'</span>';return;}
-  const lines=d.source.split('\n');
-  document.getElementById('code').innerHTML=lines.map((l,i)=>'<span class="line-num">'+(i+1)+'</span>'+hl(l)).join('\n');
+  buffer=d.source;renderSource();
   document.getElementById('source-info').textContent=path+' ('+d.lines+' lines)';
 }
+// The BUFFER is what compiles, never a path. Loading a file seeds it; editing
+// replaces it; either way the bytes sent are the bytes on screen.
+function renderSource(){
+  var el=document.getElementById('code');
+  if(editing){
+    el.innerHTML='';
+    var ta=document.createElement('textarea');
+    ta.id='editor';ta.spellcheck=false;ta.value=buffer;
+    ta.addEventListener('input',function(){buffer=ta.value;});
+    el.appendChild(ta);ta.focus();
+  }else{
+    var lines=buffer.split('\n');
+    el.innerHTML=lines.map((l,i)=>'<span class="line-num">'+(i+1)+'</span>'+hl(l)).join('\n');
+  }
+}
+function toggleEdit(){
+  if(editing){buffer=document.getElementById('editor').value;}
+  editing=!editing;
+  document.getElementById('edit-btn').textContent=editing?'Done':'Edit';
+  document.getElementById('compile-btn').disabled=false;
+  renderSource();
+}
 async function compileAll(){
-  if(!currentPath)return;
+  if(editing){buffer=document.getElementById('editor').value;}
+  if(!buffer){document.getElementById('status').textContent='Nothing to compile. Pick a file or press Edit.';return;}
   var btn=document.getElementById('compile-btn');
   btn.disabled=true;btn.textContent='Compiling...';
   document.getElementById('status').textContent='Compiling IR...';
   outputs={};showOutput();
   try{
-    const r=await fetch('/api/compile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:currentPath})});
+    const r=await fetch('/api/compile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:buffer})});
     const d=await r.json();
     if(d.error){outputs.ir='Error: '+d.error;showOutput();btn.textContent='Compile';btn.disabled=false;return;}
-    outputs.ir=d.ir||d.note||'No output';
+    if(d.status==='error'){
+      // A refused program is not a server fault and must not read as one.
+      outputs.ir=d.diagnostics;showOutput();
+      document.getElementById('status').textContent='The compiler refused this program.';
+      btn.textContent='Compile';btn.disabled=false;return;
+    }
+    outputs.ir=d.ir||'No output';
     document.getElementById('status').textContent='IR ready ('+d.irLines+' lines). Fetching plugs...';
     showOutput();
     var plugs=['python','javascript','rust','haskell','go','c#'];
     for(var p of plugs){
       setTabLoading(p,true);
       try{
-        const pr=await fetch('/api/plug',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:currentPath,plug:p})});
+        const pr=await fetch('/api/plug',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:buffer,plug:p})});
         const pd=await pr.json();
         outputs[p]=pd.output||pd.error||pd.note||'No output';
       }catch(e){outputs[p]='Request failed: '+e;}
@@ -379,42 +454,45 @@ try {
             elseif ($path -eq '/api/compile') {
                 $reader = [System.IO.StreamReader]::new($ctx.Request.InputStream)
                 $body = $reader.ReadToEnd(); $reader.Close()
-                $bodyObj = $body | ConvertFrom-Json -ErrorAction SilentlyContinue
-                $srcPath = if ($bodyObj) { $bodyObj.path } else { '' }
+                $source = Read-BodyMember $body 'source'
 
-                if (-not $srcPath) {
-                    Send-Json -Response $resp -Json '{"error":"missing path"}' -Status 400
+                if (-not $source) {
+                    Send-Json -Response $resp -Json '{"error":"missing source"}' -Status 400
                 } else {
+                    $work = New-RequestDir
                     try {
-                        $ir = Compile-ToIr $srcPath
-                        if (-not $ir) {
-                            Send-Json -Response $resp -Json "{`"error`":`"compilation returned no output`",`"path`":$(ConvertTo-JsonString $srcPath)}"
-                        } elseif ($ir.StartsWith('COMPILE-ERROR:')) {
+                        $ir = Compile-SourceToIr $source $work
+                        if ($ir.StartsWith('COMPILE-ERROR:')) {
                             $errMsg = ($ir -replace '^COMPILE-ERROR:', '').Trim()
                             if (-not $errMsg) { $errMsg = '(no diagnostic details captured)' }
-                            $display = "-- Compile errors for $srcPath --`n`n$errMsg"
-                            Send-Json -Response $resp -Json "{`"path`":$(ConvertTo-JsonString $srcPath),`"ir`":$(ConvertTo-JsonString $display),`"irLines`":$(($display -split "`n").Count)}"
+                            # `status` carries the verdict. The old shape put the
+                            # diagnostics in `ir` behind a "-- Compile errors --"
+                            # banner, so a caller had to parse English out of the
+                            # field it wanted IR in to tell a refusal from a result.
+                            Send-Json -Response $resp -Json "{`"status`":`"error`",`"diagnostics`":$(ConvertTo-JsonString $errMsg),`"ir`":`"`",`"irLines`":0}"
                         } else {
                             $irLines = ($ir -split "`n").Count
-                            Send-Json -Response $resp -Json "{`"path`":$(ConvertTo-JsonString $srcPath),`"ir`":$(ConvertTo-JsonString $ir),`"irLines`":$irLines}"
+                            Send-Json -Response $resp -Json "{`"status`":`"ok`",`"diagnostics`":`"`",`"ir`":$(ConvertTo-JsonString $ir),`"irLines`":$irLines}"
                         }
                     } catch {
                         Send-Json -Response $resp -Json "{`"error`":$(ConvertTo-JsonString "Compile failed: $_")}" -Status 500
+                    } finally {
+                        Remove-RequestDir $work
                     }
                 }
             }
             elseif ($path -eq '/api/plug') {
                 $reader = [System.IO.StreamReader]::new($ctx.Request.InputStream)
                 $body = $reader.ReadToEnd(); $reader.Close()
-                $bodyObj = $body | ConvertFrom-Json -ErrorAction SilentlyContinue
-                $srcPath = if ($bodyObj) { $bodyObj.path } else { '' }
-                $plugName = if ($bodyObj) { $bodyObj.plug } else { '' }
+                $source = Read-BodyMember $body 'source'
+                $plugName = Read-BodyMember $body 'plug'
 
-                if (-not $srcPath -or -not $plugName) {
-                    Send-Json -Response $resp -Json '{"error":"missing path or plug"}' -Status 400
+                if (-not $source -or -not $plugName) {
+                    Send-Json -Response $resp -Json '{"error":"missing source or plug"}' -Status 400
                 } else {
+                    $work = New-RequestDir
                     try {
-                        $output = Invoke-Plug $plugName $srcPath
+                        $output = Invoke-PlugOnSource $plugName $source $work
                         if ($output) {
                             Send-Json -Response $resp -Json "{`"plug`":$(ConvertTo-JsonString $plugName),`"output`":$(ConvertTo-JsonString $output)}"
                         } else {
@@ -422,6 +500,8 @@ try {
                         }
                     } catch {
                         Send-Json -Response $resp -Json "{`"error`":$(ConvertTo-JsonString "Plug failed: $_")}" -Status 500
+                    } finally {
+                        Remove-RequestDir $work
                     }
                 }
             }

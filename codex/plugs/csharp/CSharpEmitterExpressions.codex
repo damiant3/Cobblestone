@@ -102,7 +102,8 @@ Section: Arity Map
   CsCtx = record {
    arities : List ArityEntry,
    type-defs : List ATypeDef,
-   locals : List Text
+   locals : List Text,
+   dyn-locals : List Text
   }
 
   name-in-list : List Text, Text, Integer -> Boolean
@@ -181,7 +182,7 @@ Section: Arity Map
    in build-arity-map-sexp def-sexps (i + 1) n (list-push acc (ArityEntry {
     name = sexp-str (list-at xs 1),
     arity = __narrow (list-length (sexp-list (list-at xs 3)) - 1),
-    generic-count = __narrow (list-length (collect-type-var-ids (parse-type (list-at xs 4)) []))
+    generic-count = __narrow (list-length (collect-type-var-ids (ir-parse-type (list-at xs 4)) []))
    }))
 
   opening-return-type-sexp : List SExp, Integer, Integer -> CodexType
@@ -189,7 +190,7 @@ Section: Arity Map
    if i >= n then NothingTy
    else let xs = sexp-list (list-at def-sexps i)
    in if sexp-str (list-at xs 1) == opening-entry-point
-      then strip-fun-args (parse-type (list-at xs 4))
+      then strip-fun-args (ir-parse-type (list-at xs 4))
       else opening-return-type-sexp def-sexps (i + 1) n
 
   build-arity-map-from-ast : List ADef, Integer, List ArityEntry -> List ArityEntry
@@ -364,6 +365,7 @@ Section: Apply Chain
    BuiltinEmitter { name = "to-unicode", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
    BuiltinEmitter { name = "from-unicode", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
    BuiltinEmitter { name = "char-to-text", emit = \args -> \ctx -> \ty -> "((char)" & emit-expr (list-at args 0) ctx & ").ToString()" },
+   BuiltinEmitter { name = "char-encode", emit = \args -> \ctx -> \ty -> "_CxText.CharEncode(" & emit-expr (list-at args 0) ctx & ")" },
    BuiltinEmitter { name = "list-length", emit = \args -> \ctx -> \ty -> "((long)" & emit-expr (list-at args 0) ctx & ".Count)" },
    BuiltinEmitter { name = "char-at", emit = \args -> \ctx -> \ty -> emit-builtin-char-at args ctx },
    BuiltinEmitter { name = "substring", emit = \args -> \ctx -> \ty -> emit-builtin-substring args ctx },
@@ -721,6 +723,17 @@ Section: Apply Chain
    in let a1 = emit-expr (list-at args 1) ctx
    in a0 & ".Contains(" & a1 & ", StringComparison.Ordinal)"
 
+ A lifted lambda's def takes `dynamic` parameters (see the emitter's
+ def-side note), and C# refuses to convert such a method group to a
+ concrete delegate type. A bare lambda converts where the group cannot,
+ because the site's delegate context target-types it; a cast must NOT be
+ added here, since the site's IR type can carry free type variables that
+ name nothing in the enclosing method.
+
+  is-lam-name : Text -> Boolean
+  is-lam-name (n) =
+   text-length n >= 6 & substring n 0 6 == "__lam_"
+
   emit-builtin-text-starts-with : List IRExpr, CsCtx -> Text
   emit-builtin-text-starts-with (args) (ctx) =
    let a0 = emit-expr (list-at args 0) ctx
@@ -816,6 +829,34 @@ Section: Apply Chain
  live allocation pointer onto the deck for the extent. C# evaluates an
  argument before the call, so only a lambda can bracket it.
 
+ C# refuses a bare lambda as an argument to a dynamically dispatched
+ call (CS1977), and a `map-list` whose list is a field read off a
+ type-variable value is such a call: the receiver is `dynamic`, so the
+ whole invocation is runtime-bound. The emission below makes the
+ binding static instead: the field access is cast to the non-generic
+ IEnumerable, so no argument is dynamic and the lambda converts at
+ compile time, and `_Buf.dmap` rebuilds its result with the input
+ list's own runtime element type, which is what the enclosing
+ constructor call, itself runtime-bound, requires of the value.
+
+  is-tvar-ty : CodexType -> Boolean
+  is-tvar-ty (ty) =
+   when ty
+    is TypeVar (id) -> True
+    is otherwise -> False
+
+  is-dyn-receiver : IRExpr, CsCtx -> Boolean
+  is-dyn-receiver (rec) (ctx) =
+   when rec
+    is IrName (n) (nty) (sp) -> name-in-list (ctx.dyn-locals) n 0 | is-tvar-ty nty
+    is otherwise -> is-tvar-ty (ir-expr-type rec)
+
+  is-tvar-field-list : IRExpr, CsCtx -> Boolean
+  is-tvar-field-list (e) (ctx) =
+   when e
+    is IrFieldAccess (rec) (field) (ty) (sp) -> is-dyn-receiver rec ctx
+    is otherwise -> False
+
   emit-apply : IRExpr, CsCtx -> Text
   emit-apply (e) (ctx) =
    let chain = collect-apply-chain e []
@@ -827,6 +868,7 @@ Section: Apply Chain
        else if is-builtin-name n & prefer-user-over-builtin n args ctx == False then emit-builtin n args ctx (ir-expr-type e)
        else if is-mktup-name n then "(" & emit-apply-args args ctx 0 & ")"
        else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n (applied-result-ty ty (list-length args) (ir-expr-type e)) (emit-apply-args args ctx 0)
+       else if n == "map-list" & list-length args == 2 & is-tvar-field-list (list-at args 1) ctx then "_Buf.dmap(" & emit-expr (list-at args 0) ctx & ", (System.Collections.IEnumerable)(" & emit-expr (list-at args 1) ctx & "))"
    else let ar = lookup-arity (ctx.arities) n
    in if ar > 1 & list-length args == ar then sanitize n & "(" & emit-apply-args args ctx 0 & ")"
             else if ar > 1 & list-length args < ar then let remaining = ar - list-length args
@@ -869,7 +911,7 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & escape-text s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
-    is IrName (n) (ty) (sp) -> if name-in-list (ctx.locals) n 0 then sanitize n else let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity (ctx.arities) n in if ar == 0 then sanitize n & (if lookup-generic-count (ctx.arities) n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then (if ty-is-concrete-value ty then sanitize n else emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")") else sanitize n
+    is IrName (n) (ty) (sp) -> if name-in-list (ctx.locals) n 0 then sanitize n else let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity (ctx.arities) n in if ar == 0 then sanitize n & (if lookup-generic-count (ctx.arities) n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then (if ty-is-concrete-value ty then sanitize n else emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")") else if is-lam-name n then "(_da0 => " & sanitize n & "(_da0))" else sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-binary op l r ty ctx
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-expr-at operand ctx (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr-at c ctx (depth + 1) & " ? " & emit-expr-at t ctx (depth + 1) & " : " & emit-expr-at el ctx (depth + 1) & ")"
@@ -1001,6 +1043,7 @@ Section: Expression Emission
    when op
     is IrAppendList -> "Enumerable.Concat(" & emit-expr l ctx & ", " & emit-expr r ctx & ").ToList()"
     is IrConsList -> "new List<" & cs-type (ir-expr-type l) & "> { " & emit-expr l ctx & " }.Concat(" & emit-expr r ctx & ").ToList()"
+    is IrPowInt -> "((long)Math.Pow(" & emit-expr l ctx & ", " & emit-expr r ctx & "))"
     is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> emit-expr l ctx & ".Zip(" & emit-expr r ctx & ", (a, b) => a " & emit-bin-op op & " b).ToList()"
     is otherwise -> "(" & emit-expr l ctx & " " & emit-bin-op op & " " & emit-expr r ctx & ")"
 

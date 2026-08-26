@@ -254,7 +254,7 @@ The reason is that our parametric containers are mutable in place.
 you could take `List (Integer between 0 and 10)` through the wider view,
 store 15, and the narrower view's bounds claim would then be false while
 the compiler still asserted it. Bounded integers are one of the four safety
-claims the README rests on, so this is a soundness question rather than a
+claims `TechnicalDetails.md` rests on, so this is a soundness question rather than a
 convenience one.
 
 The rule is stated for ALL type arguments and not only for the mutable
@@ -1927,13 +1927,26 @@ Sent as first line on stdin:
 
 | Mode | Output |
 |------|--------|
-| `TEXT` | Codex source text |
 | `CDX` | CDX binary |
-| `ELF` | ELF x86-64 bare-metal |
-| `EFI` | PE32+ UEFI application |
-| `UEFI` | PE32+ UEFI app (ConOut) |
-| `IMG` | GPT disk image |
+| `IR-UNI` | IR text, Unicode |
+| `IR-CCE` | IR text, CCE |
 | `MEASURE` | Phase metrics |
+| anything else | Codex source text |
+
+**`TEXT` is not a mode, it is the FALLTHROUGH, and four modes this table used
+to list do not exist.** `compile-plain` (`codex/compiler/opening.codex:2108`)
+tests `CDX`, `IR-UNI`, `IR-CCE` and `MEASURE` and sends everything else to
+`emit-text-streaming`, so an unrecognised mode is emitted as text with nothing
+said about it. Measured 2026-08-24 against seed C9395985 on one chapter:
+`ELF`, `EFI`, `UEFI` and `IMG` each produced **1,154 bytes byte-identical to
+`TEXT`**, the source echoed back, exactly as a deliberately nonsensical
+`ZZZZ-NOT-A-MODE` did. `CDX` answered 88,394 bytes with a `SIZE:` line and
+`MEASURE` 1,208, which is the control that the probe can tell the difference.
+
+Container formats moved to the plugs and this table was never updated:
+`CLAUDE.md` is right that the compiler emits CDX or text and that ELF, PE and
+GPT/FAT come from plug CDX binaries under `codex/plugs/`. A caller asking for
+`ELF` here does not get a refusal, it gets TEXT (L-ACCEPTED).
 
 Append profile: `ELF QEMU-11.0.0`
 Append flags: `TEXT prose`

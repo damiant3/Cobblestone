@@ -865,6 +865,106 @@ Section: The SIMD Family
     in let a = __heap-save
     in (a - b) + r - r
 
+Section: The Sized Vector Family
+
+ A DIFFERENT `Vector` FROM THE SECTION ABOVE. Those are SIMD lanes of a fixed
+ machine width; these five are the sized-vector builtins, whose value has a
+ list's layout, the count at offset 0 and elements from offset 8, and whose
+ LENGTH IS PART OF THE TYPE.
+
+ THAT IS WHY THESE ARMS DO NOT SCALE THEIR INPUT WITH `n`, AND THE HARNESS'S
+ USUAL DISCRIMINATOR CANNOT BE USED HERE. `mk-list` cannot have a sized-vector
+ twin: a recursive builder returns `Vector 0` on one branch and `Vector 1` on
+ the other and the checker refuses it (CDX2001), so there is no way to spell a
+ vector whose length is a runtime value. Each arm takes its size from the SHAPE
+ it is written in, and the two readings a scaling row needs come from two
+ separately spelled vectors, `v4` and `v16`.
+
+ So `vec-empty` and `vec-singleton` reading the same bytes at both sizes is
+ NOT an arm that failed to vary: neither takes a vector at all, and
+ `vec-singleton` takes exactly one element by its type. There is no larger
+ input to give them. `vec-head` and `vec-length` DO take one, and are read at
+ 4 and at 16 for that reason, which is what makes their zeroes worth having.
+
+ WHAT THE SECTION FOUND: produce-versus-read again, and `vec-cons` is the only
+ row that walks. `vec-empty` retains 16 flat and `vec-singleton` 24. `vec-head`
+ and `vec-length` retain nothing at either size, which is what lets the two
+ producer rows be charged only for what they add. `vec-cons` reads 80 bytes
+ onto a 4-vector and 272 onto a 16-vector, so it copies. It reaches
+ `__list_snoc` through the same buried arm `list-push` uses, because which of
+ that helper's three paths runs is positional and a cost class has to be the
+ worst case over structure.
+
+  v4 : Integer -> Vector 4 Integer
+  v4 (n) = vec-cons 4 (vec-cons 3 (vec-cons 2 (vec-singleton n)))
+
+  v16 : Integer -> Vector 16 Integer
+  v16 (n) = vec-cons 16 (vec-cons 15 (vec-cons 14 (vec-cons 13 (vec-cons 12 (vec-cons 11 (vec-cons 10 (vec-cons 9 (vec-cons 8 (vec-cons 7 (vec-cons 6 (vec-cons 5 (vec-cons 4 (vec-cons 3 (vec-cons 2 (vec-singleton n)))))))))))))))
+
+  m-vec-empty : Integer -> Integer
+  m-vec-empty (n) =
+    let b = __heap-save
+    in let r = vec-length vec-empty
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-vec-singleton : Integer -> Integer
+  m-vec-singleton (n) =
+    let b = __heap-save
+    in let r = vec-length (vec-singleton n)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-vec-length-4 : Integer -> Integer
+  m-vec-length-4 (n) =
+    let v = v4 n
+    in let b = __heap-save
+    in let r = vec-length v
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-vec-length-16 : Integer -> Integer
+  m-vec-length-16 (n) =
+    let v = v16 n
+    in let b = __heap-save
+    in let r = vec-length v
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-vec-head-4 : Integer -> Integer
+  m-vec-head-4 (n) =
+    let v = v4 n
+    in let b = __heap-save
+    in let r = vec-head v
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-vec-head-16 : Integer -> Integer
+  m-vec-head-16 (n) =
+    let v = v16 n
+    in let b = __heap-save
+    in let r = vec-head v
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-vec-cons-4 : Integer -> Integer
+  m-vec-cons-4 (n) =
+    let v = v4 n
+    in let after = mk-list 3 0 []
+    in let b = __heap-save
+    in let r = vec-length (vec-cons 7 v) + keep after
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-vec-cons-16 : Integer -> Integer
+  m-vec-cons-16 (n) =
+    let v = v16 n
+    in let after = mk-list 3 0 []
+    in let b = __heap-save
+    in let r = vec-length (vec-cons 7 v) + keep after
+    in let a = __heap-save
+    in (a - b) + r - r
+
 Section: The Atomics And The Fence
 
  Six names that take an address and return an Integer or a Boolean, so this
@@ -1119,6 +1219,121 @@ Section: The Effectful Arms
       let a = __heap-save in (a - b) + r - r
     end
 
+
+Section: The Print Family
+
+ THE ASCII PROBE IS NOT THE WHOLE PATH. `emit-print-text-loop` branches on the
+ code unit and takes a different arm for anything whose Unicode needs more
+ than one byte, so a text of `x` never enters it. A class read off ASCII alone
+ would be the fixture-shape trap (L-CONSTRUCT), so two arms below build their
+ text from a tier-0 accented code unit and a tier-0 Cyrillic one instead.
+
+  mk-code-text : Integer, Integer, Integer, Text -> Text
+  mk-code-text (code) (n) (i) (acc) =
+    if i >= n then acc
+    else mk-code-text code n (i + 1) (acc & char-to-text (code-to-char code))
+
+  m-print-line-accented : Integer -> [Console] Integer
+  m-print-line-accented (n) =
+    let s = mk-code-text 97 n 0 ""
+    in let b = __heap-save
+    in act
+      print-line-uni s
+      let a = __heap-save in a - b
+    end
+
+  m-print-line-tier1 : Integer -> [Console] Integer
+  m-print-line-tier1 (n) =
+    let s = mk-code-text 192 n 0 ""
+    in let b = __heap-save
+    in act
+      print-line-uni s
+      let a = __heap-save in a - b
+    end
+
+  m-print-line-cyrillic : Integer -> [Console] Integer
+  m-print-line-cyrillic (n) =
+    let s = mk-code-text 113 n 0 ""
+    in let b = __heap-save
+    in act
+      print-line-uni s
+      let a = __heap-save in a - b
+    end
+
+ Seven builtins, FOUR emitters. `print-line`, `print-line-uni`, `print-error`
+ and `print-error-uni` all lower through `emit-print-line-builtin`, so they
+ cannot differ in class and the aliases are measured to show that rather than
+ assumed. `print-uni` takes `emit-print-no-newline-builtin`, `print-text`
+ takes `emit-print-text-builtin`, and `print-line-raw` takes
+ `emit-print-line-raw-builtin`.
+
+ Each arm builds its text BEFORE the bracket, so the text is not in the
+ reading; what is measured is what one call retains. These return Nothing, so
+ the `+ r - r` bracket is not available and is not needed: the call is
+ effectful and nothing may eliminate it.
+
+  m-print-line : Integer -> [Console] Integer
+  m-print-line (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in act
+      print-line s
+      let a = __heap-save in a - b
+    end
+
+  m-print-line-uni : Integer -> [Console] Integer
+  m-print-line-uni (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in act
+      print-line-uni s
+      let a = __heap-save in a - b
+    end
+
+  m-print-error : Integer -> [Console] Integer
+  m-print-error (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in act
+      print-error s
+      let a = __heap-save in a - b
+    end
+
+  m-print-error-uni : Integer -> [Console] Integer
+  m-print-error-uni (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in act
+      print-error-uni s
+      let a = __heap-save in a - b
+    end
+
+  m-print-uni : Integer -> [Console] Integer
+  m-print-uni (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in act
+      print-uni s
+      let a = __heap-save in a - b
+    end
+
+  m-print-text : Integer -> [Console] Integer
+  m-print-text (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in act
+      print-text s
+      let a = __heap-save in a - b
+    end
+
+  m-print-line-raw : Integer -> [Console] Integer
+  m-print-line-raw (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in act
+      print-line-raw s
+      let a = __heap-save in a - b
+    end
 Section: The Read-Only Process And Identity Rows
 
  Only the READS. Everything in this neighbourhood that spawns, kills, sets a
@@ -1250,6 +1465,11 @@ Section: Entry
     print-line-uni (row "vec-store-at  " (m-vec-store base) (m-vec-store (base * 4)))
     print-line-uni (row "vec4-pair     " (m-vec4 base) (m-vec4 (base * 4)))
     print-line-uni (row "vec-width     " (m-vec-width base) (m-vec-width (base * 4)))
+    print-line-uni (row "vec-empty     " (m-vec-empty base) (m-vec-empty (base * 4)))
+    print-line-uni (row "vec-singleton " (m-vec-singleton base) (m-vec-singleton (base * 4)))
+    print-line-uni (row "vec-length    " (m-vec-length-4 base) (m-vec-length-16 base))
+    print-line-uni (row "vec-head      " (m-vec-head-4 base) (m-vec-head-16 base))
+    print-line-uni (row "vec-cons      " (m-vec-cons-4 base) (m-vec-cons-16 base))
     print-line-uni (row "atomic-store  " (m-atomic-store base) (m-atomic-store (base * 4)))
     print-line-uni (row "atomic-load   " (m-atomic-load base) (m-atomic-load (base * 4)))
     print-line-uni (row "atomic-add    " (m-atomic-add base) (m-atomic-add (base * 4)))
@@ -1297,4 +1517,14 @@ Section: Entry
     id0 <- m-identity base
     id1 <- m-identity (base * 4)
     print-line-uni (row "identity-three" id0 id1)
+    print-line-uni (row "print-line    " (m-print-line base) (m-print-line (base * 4)))
+    print-line-uni (row "print-line-uni" (m-print-line-uni base) (m-print-line-uni (base * 4)))
+    print-line-uni (row "print-error   " (m-print-error base) (m-print-error (base * 4)))
+    print-line-uni (row "print-err-uni " (m-print-error-uni base) (m-print-error-uni (base * 4)))
+    print-line-uni (row "print-uni     " (m-print-uni base) (m-print-uni (base * 4)))
+    print-line-uni (row "print-text    " (m-print-text base) (m-print-text (base * 4)))
+    print-line-uni (row "print-line-raw" (m-print-line-raw base) (m-print-line-raw (base * 4)))
+    print-line-uni (row "print-accented" (m-print-line-accented base) (m-print-line-accented (base * 4)))
+    print-line-uni (row "print-cyrillic" (m-print-line-cyrillic base) (m-print-line-cyrillic (base * 4)))
+    print-line-uni (row "print-tier1   " (m-print-line-tier1 base) (m-print-line-tier1 (base * 4)))
   end

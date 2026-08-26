@@ -1,6 +1,6 @@
 # Works -- Codex Developer Environment & Repository Protocol
 
-Works is the application layer of Codex OS: a UEFI-bootable developer console, a content-addressed repository protocol (replacing Git), and the tooling that ties the compiler, AI agents, test harness, and network services together into a self-contained bare-metal development environment.
+Works is the application layer of Cobblestone: a UEFI-bootable developer console, a content-addressed repository protocol (replacing Git), and the tooling that ties the compiler, AI agents, test harness, and network services together into a self-contained bare-metal development environment.
 
 **Before you change the GOP desktop, read
 [works-desk-contract.md](works-desk-contract.md).** It carries the invariants

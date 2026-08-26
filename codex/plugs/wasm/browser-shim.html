@@ -98,7 +98,7 @@ body {
 
 <div class="footer">
   Codex &mdash; a self-sustaining compiler, language, and computational substrate.
-  <br>WASI polyfill &mdash; fd_write only. No filesystem, no network, no clock.
+  <br>WASI polyfill: fd_write and fd_read. No filesystem, no network, no clock.
 </div>
 
 <script>
@@ -120,6 +120,9 @@ async function runWasm(bytes, name) {
   setStatus('loading...', true);
 
   let mem = null;
+  const inputBytes = new TextEncoder().encode(
+    (document.getElementById('stdin') || { value: '' }).value || '');
+  let inputPos = 0;
   const imports = {
     wasi_snapshot_preview1: {
       fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr) {
@@ -133,6 +136,25 @@ async function runWasm(bytes, name) {
           total += len;
         }
         view.setUint32(nwritten_ptr, total, true);
+        return 0;
+      },
+      // The other half of the one import surface the module asks for. The
+      // page holds its input as bytes and hands them over one read at a
+      // time; returning 0 read is end of input, which is what the guest
+      // reads as EOF rather than as an error.
+      fd_read(fd, iovs_ptr, iovs_len, nread_ptr) {
+        const view = new DataView(mem.buffer);
+        let total = 0;
+        for (let i = 0; i < iovs_len; i++) {
+          const ptr = view.getUint32(iovs_ptr + i * 8, true);
+          const len = view.getUint32(iovs_ptr + i * 8 + 4, true);
+          const dst = new Uint8Array(mem.buffer, ptr, len);
+          let k = 0;
+          while (k < len && inputPos < inputBytes.length) { dst[k++] = inputBytes[inputPos++]; }
+          total += k;
+          if (k < len) break;
+        }
+        view.setUint32(nread_ptr, total, true);
         return 0;
       }
     }

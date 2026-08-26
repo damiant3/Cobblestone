@@ -661,9 +661,23 @@ Section: Render
 
  A caller that pinned a width with `widget-set-min` MEANT that number, and it
  lands in the same field as the eight pixel cell `widget-label` guessed. The
- taskbar has one of each: the menu button is pinned to 72 and the clock label
- to 220 over an EMPTY string, which a face-measured width would collapse to
- nothing. So a cell is replaced only while it still holds the guess.
+ taskbar carries the pinned case: the clock label is pinned to 220 over an
+ EMPTY string, which a face-measured width would collapse to nothing. So a
+ cell is replaced only while it still holds the guess.
+
+ A pin is not a floor and must not be made one. Taking the LARGER of the pin
+ and the measurement would keep the clock's 220 and would also keep every
+ constructor guess that happens to exceed what the face needs, which is the
+ slack this function exists to remove.
+
+ A pin costs the FALLBACK path, which is the half easy to miss because no
+ capture with a face shows it. `comp-fit-text` answers the tree unchanged when
+ there is no face, so on the bitmap path a pin IS the whole reservation and
+ the eight pixel cell is what draws. The taskbar's menu button carried 72 for
+ a label of eight characters; at fourteen the cell wants 112 and 72 clips it,
+ while with the face loaded the same label measures 63 and the pin would only
+ have added slack. It was removed rather than raised, so the fit answers on
+ one path and the constructor's own guess on the other.
 
   comp-fit-guess : WidgetNode, Integer -> Boolean
   comp-fit-guess (n) (want) = n.wn-min-w == want
@@ -687,8 +701,23 @@ Section: Render
   comp-fit-text : WidgetNode, GopFont, Integer -> WidgetNode
   comp-fit-text (root) (tf) (s) = if tf.gf-ok then comp-fit-node root tf s else root
 
+ A tree laid out at an ORIGIN, in a device box that need not start at the
+ screen corner. `comp-render` is the `0, 0` case, so no existing caller moves.
+
+ The origin goes into the LAYOUT RECT rather than being added at paint time,
+ and that is what keeps the hit path working. The bounds on the returned tree
+ are then absolute logical coordinates, so `comp-hit-x` and `comp-hit-y`
+ divide a device pointer by the scale and land in the same space, unchanged.
+ Adding the origin at paint time instead would have left every bound reading
+ as though the window were at the corner, and every hit test against an
+ offset window would have been wrong by the offset without anything saying so.
+
+  comp-render-at : Integer, Integer, CbfFont, GopFont, WidgetNode, Theme, Integer, Integer, Integer, Integer, Integer -> WidgetNode
+  comp-render-at (base) (stride) (font) (tf) (root) (th) (ox) (oy) (w) (h) (s) =
+    let laid = widget-layout root th (layout-rect (ox / s) (oy / s) (w / s) (h / s))
+    in let d = comp-walk base stride (layout-rect ox oy w h) font tf laid th s
+    in laid
+
   comp-render : Integer, Integer, CbfFont, GopFont, WidgetNode, Theme, Integer, Integer, Integer -> WidgetNode
   comp-render (base) (stride) (font) (tf) (root) (th) (w) (h) (s) =
-    let laid = widget-layout root th (layout-rect 0 0 (w / s) (h / s))
-    in let d = comp-walk base stride (layout-rect 0 0 w h) font tf laid th s
-    in laid
+    comp-render-at base stride font tf root th 0 0 w h s

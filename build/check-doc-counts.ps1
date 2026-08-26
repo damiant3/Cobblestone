@@ -34,9 +34,11 @@ param(
 # changed shape has quietly stopped being checked, which is the same defect
 # one step earlier and is invisible by construction.
 # 
-# Wired into build.ps1, opt-in and off by default: it runs when the env var
-# CODEX_CHECK_DOC_COUNTS is 1, or a .doc-counts file sits in the repo root.
-# Turning it on for everyone is a decision about everyone's gate.
+# Wired into build.ps1 and UNCONDITIONAL since 2026-08-21 (red's ruling):
+# it runs on every gate, for every agent. The env var and .doc-counts
+# opt-in it used to have are GONE, not merely defaulted off, and this
+# sentence said otherwise until 2026-08-25, when the README split was
+# shipped on the strength of it and turned every lane red.
 # 
 # Exit 1 on any drift or any unmatched pattern.
 # 
@@ -108,7 +110,7 @@ function Get-PlugModuleCount() {
             continue
         }
         foreach ($f in Get-ChildItem $d -Recurse -Filter '*.codex' -File) {
-            if (($f.FullName -match '[\\/]build-output[\\/]')) {
+            if (($f.FullName -match '[\\/](build-output|test)[\\/]')) {
                 continue
             }
             $n++
@@ -303,12 +305,12 @@ $claims += @{ Name = 'errors tests (Assay, section)'; Doc = 'docs/ExaminersAssay
 # more than 2x, and the same fact appeared in three places disagreeing with
 # itself. These rows exist so that cannot recur silently.
 
-$claims += @{ Name = 'seed cdx bytes (README)'; Doc = 'README.md'; Pattern = '\*\*`seed/Codex\.cdx`\*\* \(([\d,]+) bytes'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bytes'; Arg = 'seed/Codex.cdx' }
-$claims += @{ Name = 'seed cdx content prefix (README)'; Doc = 'README.md'; Pattern = 'seed/Codex\.cdx.*?\| Content hash prefix \| `([0-9A-Fa-f]{16})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'cdx-content-prefix'; Arg = 'seed/Codex.cdx' }
-$claims += @{ Name = 'seed cdx sha256 (README)'; Doc = 'README.md'; Pattern = 'seed/Codex\.cdx.*?\| SHA-256 \| `([0-9A-Fa-f]{64})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'sha256'; Arg = 'seed/Codex.cdx' }
-$claims += @{ Name = 'seed cdx md5 (README)'; Doc = 'README.md'; Pattern = 'seed/Codex\.cdx.*?\| MD5 \| `([0-9A-Fa-f]{32})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'md5'; Arg = 'seed/Codex.cdx' }
-$claims += @{ Name = 'seed img bytes (README)'; Doc = 'README.md'; Pattern = '\*\*`seed/Codex\.img`\*\* \(([\d,]+) bytes'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bytes'; Arg = 'seed/Codex.img' }
-$claims += @{ Name = 'seed img sha256 (README)'; Doc = 'README.md'; Pattern = 'seed/Codex\.img.*?\| SHA-256 \| `([0-9A-Fa-f]{64})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'sha256'; Arg = 'seed/Codex.img' }
+$claims += @{ Name = 'seed cdx bytes (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\*\*`seed/Codex\.cdx`\*\* \(([\d,]+) bytes'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bytes'; Arg = 'seed/Codex.cdx' }
+$claims += @{ Name = 'seed cdx content prefix (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'seed/Codex\.cdx.*?\| Content hash prefix \| `([0-9A-Fa-f]{16})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'cdx-content-prefix'; Arg = 'seed/Codex.cdx' }
+$claims += @{ Name = 'seed cdx sha256 (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'seed/Codex\.cdx.*?\| SHA-256 \| `([0-9A-Fa-f]{64})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'sha256'; Arg = 'seed/Codex.cdx' }
+$claims += @{ Name = 'seed cdx md5 (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'seed/Codex\.cdx.*?\| MD5 \| `([0-9A-Fa-f]{32})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'md5'; Arg = 'seed/Codex.cdx' }
+$claims += @{ Name = 'seed img bytes (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\*\*`seed/Codex\.img`\*\* \(([\d,]+) bytes'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bytes'; Arg = 'seed/Codex.img' }
+$claims += @{ Name = 'seed img sha256 (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'seed/Codex\.img.*?\| SHA-256 \| `([0-9A-Fa-f]{64})`'; Group = 1; TolPct = 0; Kind = 'text'; Fn = 'sha256'; Arg = 'seed/Codex.img' }
 
 
 # Repointed 2026-08-12. README was rewritten at rev 25 and every pattern
@@ -319,25 +321,25 @@ $claims += @{ Name = 'seed img sha256 (README)'; Doc = 'README.md'; Pattern = 's
 # modules 1,010 -> 1,008, compiler 63 files -> 64. Patterns now track the
 # README's current shape; the quire table simply lost its bold.
 
-$claims += @{ Name = 'compiler files (README)'; Doc = 'README.md'; Pattern = 'Self-hosted compiler \((\d+) files, [\d,]+ lines\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/compiler' }
-$claims += @{ Name = 'compiler lines (README)'; Doc = 'README.md'; Pattern = 'Self-hosted compiler \(\d+ files, ([\d,]+) lines\)'; Group = 1; TolPct = 2; Kind = 'number'; Fn = 'lines'; Arg = 'codex/compiler' }
-$claims += @{ Name = 'library modules (README)'; Doc = 'README.md'; Pattern = '\*\*(\d+) library modules across \d+ quires\*\* \(\d+ foreword \+ \d+ OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'lib-modules'; Arg = '' }
-$claims += @{ Name = 'foreword modules (README)'; Doc = 'README.md'; Pattern = '\*\*\d+ library modules across \d+ quires\*\* \((\d+) foreword \+ \d+ OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/foreword' }
-$claims += @{ Name = 'os modules (README)'; Doc = 'README.md'; Pattern = '\*\*\d+ library modules across \d+ quires\*\* \(\d+ foreword \+ (\d+) OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/os' }
+$claims += @{ Name = 'compiler files (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'Self-hosted compiler \((\d+) files, [\d,]+ lines\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/compiler' }
+$claims += @{ Name = 'compiler lines (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'Self-hosted compiler \(\d+ files, ([\d,]+) lines\)'; Group = 1; TolPct = 2; Kind = 'number'; Fn = 'lines'; Arg = 'codex/compiler' }
+$claims += @{ Name = 'library modules (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\*\*(\d+) library modules across \d+ quires\*\* \(\d+ foreword \+ \d+ OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'lib-modules'; Arg = '' }
+$claims += @{ Name = 'foreword modules (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\*\*\d+ library modules across \d+ quires\*\* \((\d+) foreword \+ \d+ OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/foreword' }
+$claims += @{ Name = 'os modules (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\*\*\d+ library modules across \d+ quires\*\* \(\d+ foreword \+ (\d+) OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/os' }
 
 
 # The same three facts again in the Library Quires preamble. They disagreed
 # with the headline by a module on 2026-07-31 and again on 2026-08-12, so
 # both statements are checked rather than one.
 
-$claims += @{ Name = 'quire preamble modules (README)'; Doc = 'README.md'; Pattern = '\*\*(\d+) modules\*\* \(\d+ foreword, \d+ OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'lib-modules'; Arg = '' }
-$claims += @{ Name = 'quire preamble foreword (README)'; Doc = 'README.md'; Pattern = '\*\*\d+ modules\*\* \((\d+) foreword, \d+ OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/foreword' }
-$claims += @{ Name = 'foreword modules (README tree)'; Doc = 'README.md'; Pattern = 'foreword/\s+(\d+) library modules across \d+ quires'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/foreword' }
-$claims += @{ Name = 'os modules (README tree)'; Doc = 'README.md'; Pattern = 'observe \((\d+) modules\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/os' }
-$claims += @{ Name = 'plug count (README)'; Doc = 'README.md'; Pattern = '(\d+) plugs, \d+ source modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'plugs'; Arg = '' }
-$claims += @{ Name = 'plug modules (README)'; Doc = 'README.md'; Pattern = '\d+ plugs, ([\d,]+) source modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'plug-modules'; Arg = '' }
-$claims += @{ Name = 'apps (README)'; Doc = 'README.md'; Pattern = '(\d+) applications, [\d,]+ modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-dirs'; Arg = '' }
-$claims += @{ Name = 'app modules (README)'; Doc = 'README.md'; Pattern = '\d+ applications, ([\d,]+) modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-modules'; Arg = '' }
+$claims += @{ Name = 'quire preamble modules (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\*\*(\d+) modules\*\* \(\d+ foreword, \d+ OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'lib-modules'; Arg = '' }
+$claims += @{ Name = 'quire preamble foreword (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\*\*\d+ modules\*\* \((\d+) foreword, \d+ OS\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/foreword' }
+$claims += @{ Name = 'foreword modules (TechDetails tree)'; Doc = 'TechnicalDetails.md'; Pattern = 'foreword/\s+(\d+) library modules across \d+ quires'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/foreword' }
+$claims += @{ Name = 'os modules (TechDetails tree)'; Doc = 'TechnicalDetails.md'; Pattern = 'observe \((\d+) modules\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/os' }
+$claims += @{ Name = 'plug count (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '(\d+) plugs, \d+ source modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'plugs'; Arg = '' }
+$claims += @{ Name = 'plug modules (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\d+ plugs, ([\d,]+) source modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'plug-modules'; Arg = '' }
+$claims += @{ Name = 'apps (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '(\d+) applications, [\d,]+ modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-dirs'; Arg = '' }
+$claims += @{ Name = 'app modules (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = '\d+ applications, ([\d,]+) modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-modules'; Arg = '' }
 
 
 # Both statements of the apps fact. The headline and the tree block
@@ -345,20 +347,20 @@ $claims += @{ Name = 'app modules (README)'; Doc = 'README.md'; Pattern = '\d+ a
 # was ever in front of a reader who was editing it. A regex takes the FIRST
 # match, so a second copy of a fact is unchecked unless it is anchored.
 
-$claims += @{ Name = 'apps (README tree)'; Doc = 'README.md'; Pattern = 'apps/\s+(\d+) applications, [\d,]+ modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-dirs'; Arg = '' }
-$claims += @{ Name = 'app modules (README tree)'; Doc = 'README.md'; Pattern = 'apps/\s+\d+ applications, ([\d,]+) modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-modules'; Arg = '' }
-$claims += @{ Name = 'test files (README)'; Doc = 'README.md'; Pattern = 'OS integration tests \(([\d,]+) files\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/test' }
-$claims += @{ Name = 'test files (README table)'; Doc = 'README.md'; Pattern = '\| `codex/test/` \| ([\d,]+) \|'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/test' }
-$claims += @{ Name = 'BVT tests (README)'; Doc = 'README.md'; Pattern = 'gates on is (\d+) tests'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bvt-tests'; Arg = '' }
-$claims += @{ Name = 'BVT checks (README)'; Doc = 'README.md'; Pattern = 'for (\d+) checks'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bvt-checks'; Arg = '' }
+$claims += @{ Name = 'apps (TechDetails tree)'; Doc = 'TechnicalDetails.md'; Pattern = 'apps/\s+(\d+) applications, [\d,]+ modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-dirs'; Arg = '' }
+$claims += @{ Name = 'app modules (TechDetails tree)'; Doc = 'TechnicalDetails.md'; Pattern = 'apps/\s+\d+ applications, ([\d,]+) modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'app-modules'; Arg = '' }
+$claims += @{ Name = 'test files (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'OS integration tests \(([\d,]+) files\)'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/test' }
+$claims += @{ Name = 'test files (TechDetails table)'; Doc = 'TechnicalDetails.md'; Pattern = '\| `codex/test/` \| ([\d,]+) \|'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/test' }
+$claims += @{ Name = 'BVT tests (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'gates on is (\d+) tests'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bvt-tests'; Arg = '' }
+$claims += @{ Name = 'BVT checks (TechDetails)'; Doc = 'TechnicalDetails.md'; Pattern = 'for (\d+) checks'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'bvt-checks'; Arg = '' }
 
 
 
 # The README per-quire table. Same generated shape as the codex.os rows below,
 # and the same reason: these are the numbers that drift fastest.
-$readmeQuires = @(@{ Label = 'Foreword'; Path = 'codex/foreword/core' }, @{ Label = 'Game'; Path = 'codex/foreword/game' }, @{ Label = 'AI'; Path = 'codex/foreword/ai' }, @{ Label = 'UI'; Path = 'codex/foreword/ui' }, @{ Label = 'Signal'; Path = 'codex/foreword/signal' }, @{ Label = 'Compress'; Path = 'codex/foreword/compress' }, @{ Label = 'Encode'; Path = 'codex/foreword/encode' }, @{ Label = 'Math'; Path = 'codex/foreword/math' }, @{ Label = 'Sim'; Path = 'codex/foreword/sim' }, @{ Label = 'Punctual'; Path = 'codex/foreword/punctual' }, @{ Label = 'Engine'; Path = 'codex/foreword/engine' }, @{ Label = 'GPU'; Path = 'codex/foreword/gpu' }, @{ Label = 'Shell'; Path = 'codex/foreword/shell' }, @{ Label = 'Boards'; Path = 'codex/boards' }, @{ Label = 'Net'; Path = 'codex/os/net' }, @{ Label = 'Kernel'; Path = 'codex/os/kernel' })
-foreach ($q in $readmeQuires) {
-    $claims += @{ Name = ([string]'README quire ' + $q.Label); Doc = 'README.md'; Pattern = ([string]'\| ' + ([string]$q.Label + ([string]' \| `' + ([string]$q.Path + '/` \| (\d+) \|')))); Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = $q.Path }
+$techDetailQuires = @(@{ Label = 'Foreword'; Path = 'codex/foreword/core' }, @{ Label = 'Game'; Path = 'codex/foreword/game' }, @{ Label = 'AI'; Path = 'codex/foreword/ai' }, @{ Label = 'UI'; Path = 'codex/foreword/ui' }, @{ Label = 'Signal'; Path = 'codex/foreword/signal' }, @{ Label = 'Compress'; Path = 'codex/foreword/compress' }, @{ Label = 'Encode'; Path = 'codex/foreword/encode' }, @{ Label = 'Math'; Path = 'codex/foreword/math' }, @{ Label = 'Sim'; Path = 'codex/foreword/sim' }, @{ Label = 'Punctual'; Path = 'codex/foreword/punctual' }, @{ Label = 'Engine'; Path = 'codex/foreword/engine' }, @{ Label = 'GPU'; Path = 'codex/foreword/gpu' }, @{ Label = 'Shell'; Path = 'codex/foreword/shell' }, @{ Label = 'Boards'; Path = 'codex/boards' }, @{ Label = 'Net'; Path = 'codex/os/net' }, @{ Label = 'Kernel'; Path = 'codex/os/kernel' })
+foreach ($q in $techDetailQuires) {
+    $claims += @{ Name = ([string]'TechDetails quire ' + $q.Label); Doc = 'TechnicalDetails.md'; Pattern = ([string]'\| ' + ([string]$q.Label + ([string]' \| `' + ([string]$q.Path + '/` \| (\d+) \|')))); Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = $q.Path }
 }
 
 # The per-sub-quire rows of the codex.os table. These drift most and are the

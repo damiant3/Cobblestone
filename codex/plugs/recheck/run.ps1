@@ -66,9 +66,7 @@ if (-not (Test-Path $IrFile)) {
 $stderrFile = [System.IO.Path]::GetTempFileName()
 $consoleFile = [System.IO.Path]::GetTempFileName()
 try {
-    $proc = Start-Process -FilePath $script:CodexVmBin `
-        -ArgumentList @('-kernel', $PlugCdx, '-mem', "$Mem", '-headless', '-output', $consoleFile) `
-        -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB "$Mem"
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9134)
     $listener.Start()
     $deadline = (Get-Date).AddSeconds(30)

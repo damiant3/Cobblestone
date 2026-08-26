@@ -63,8 +63,7 @@ $listener.Start()
 $stderrFile = [System.IO.Path]::GetTempFileName()
 $consoleFile = [System.IO.Path]::GetTempFileName()
 try {
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless', '-output', $consoleFile) `
-        -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB 3072
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {
         if ([DateTime]::UtcNow -gt $deadline) {

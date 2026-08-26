@@ -32,6 +32,26 @@ the Update 44 entry was found and worked during the release run at head 15686.*
 
 ## Done
 
+### Update 50 -- a compiler change that reshapes the IR wire is a DDC change, and only the DDC sees it
+
+Update 47's first entry recorded the forward direction: a csharp-plug
+change is a DDC change, because the oracle harness does not compile the
+compiler. This release paid for the converse. The 19558 lambda-lift fix
+(plugs 1.70) put lifted `__lam_N` defs with unresolved type variables on
+every plug's IR wire; the standing gate, the battery, the sweep and the
+poison build all stayed green, and the csharp arm had been un-buildable
+for days when the release reached step 4 (484 Roslyn errors). Fixed at
+main 19775/19777 (dynamic lam params, `_Buf.dmap` for the CS1977 sites).
+The general shape: the DDC is the only proof that consumes the IR wire
+through a second implementation, so a wire-shape change's breakage waits
+silently until a release runs it. Re-measure on any cycle that touched
+the lift, lower-lambda, or `codex/plugs/csharp/`:
+
+```powershell
+codex/plugs/csharp/emit-compiler.ps1 -Kernel seed/Codex.cdx
+dotnet build build-output/ddc-arm/CodexCs.csproj -c Release
+```
+
 ### Update 49 -- two runners contradicted each other and no shipping image could exist
 
 Found at publication 2026-08-21. `build/check-shipping-images.ps1` (red,

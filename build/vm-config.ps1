@@ -647,8 +647,18 @@ function Start-VmRun {
         [string]$Kernel, [int]$ConnectTimeoutSec = 30,
         [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()
     )
-    if ($script:UseCodexVm) { return Start-CodexVmRun @PSBoundParameters }
-    if (-not $script:FallbackVmBin) { Write-Host "No fallback VM"; return $null }
+    # THIS MODE IS QEMU'S, whichever host is preferred elsewhere. The
+    # contract here is a LIVE ctrl/data serial pair and codex-vm cannot
+    # serve one: its serial is file-based (-input preloads a ring buffer,
+    # -output dumps at exit) and it has never parsed -data-port or
+    # -ctrl-port in any revision. It ignores an unknown flag in silence, so
+    # routing here by host preference booted a guest with nothing on the
+    # wire, which exited inside 500 ms and read as a failed launch. Four
+    # harnesses sat dead that way and none of them said why.
+    if (-not $script:FallbackVmBin) {
+        Write-Host "No QEMU: Start-VmRun needs a live ctrl/data serial pair, which codex-vm cannot serve. Set QEMU_BIN."
+        return $null
+    }
     # QEMU needs two things pre-boot that codex-vm does for the guest, and
     # both track the ACCELERATOR, not the host OS. Measured on Windows
     # 2026-08-13, seed 9B84FA86, qemu 11.0.0, boot to READY on the ctrl serial:
@@ -700,34 +710,6 @@ function Start-VmRun {
         # -WindowStyle throws on non-Windows editions of pwsh.
         if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }
         $proc = Start-Process @startArgs
-        Start-Sleep -Milliseconds 500
-        if ($proc.HasExited) { continue }
-        $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec
-        if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }
-        Stop-VmGraceful -ProcessId $proc.Id -TimeoutMs 3000
-        Start-Sleep -Milliseconds 500
-    }
-    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
-    return $null
-}
-
-
-function Start-CodexVmRun {
-    param(
-        [string]$Kernel, [int]$ConnectTimeoutSec = 30,
-        [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()
-    )
-    $stdoutFile = [System.IO.Path]::GetTempFileName()
-    $stderrFile = [System.IO.Path]::GetTempFileName()
-    $disk = $null
-    foreach ($ea in $ExtraArgs) { if ($ea -match 'file=([^,]+)') { $disk = $Matches[1] } }
-    for ($attempt = 0; $attempt -lt 4; $attempt++) {
-        $dataPort = Get-VmPort -Attempt $attempt
-        $ctrlPort = $dataPort + 1
-        $vmArgs = @('-kernel', $Kernel, '-data-port', "$dataPort", '-ctrl-port', "$ctrlPort", '-mem', "$MemMB", '-headless')
-        if ($disk) { $vmArgs += @('-disk', $disk) }
-        foreach ($ea in $ExtraArgs) { if ($ea -notmatch 'file=') { $vmArgs += $ea } }
-        $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
         Start-Sleep -Milliseconds 500
         if ($proc.HasExited) { continue }
         $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec
@@ -957,4 +939,150 @@ function Invoke-VmCompileFallback {
         }
         Remove-Item -Force $vm.StdoutFile, $vm.StderrFile, $dbgFile -ErrorAction SilentlyContinue
     }
+}
+
+
+# The plug launch, in ONE place. A plug boots a CDX, prints to a console file
+# and talks to the host over TCP; that is the same shape for every plug that
+# does not preload serial, so the host CHOICE belongs here rather than copied
+# into each runner. Until plugs 1.73 no runner read the choice at all and no
+# plug could run without codex-vm; eight hardcoded the path and ten read
+# $script:CodexVmBin while skipping $script:UseCodexVm, which LOOKS like
+# consulting the config.
+#
+# The QEMU arm is Start-VmRun's measured boot recipe minus its ctrl/data
+# sockets: the 0xfe8 loader cell carries guest RAM size, -cpu max is required
+# under TCG and fatal under WHPX, kernel-irqchip=off is WHPX's and not KVM's,
+# and the NIC is ne2k_isa at irq 9 / iobase 0x300 with the MAC the plug guests
+# expect. A plug dials 127.0.0.1 through gateway 10.0.2.2 and QEMU's user
+# networking carries that unchanged, which was measured rather than reasoned:
+# the reasoning said SLIRP would drop it and the reasoning was wrong.
+#
+# THIS DOES NOT SERVE A PLUG THAT PRELOADS ITS INPUT. codex-vm's -input is a
+# ring buffer filled before boot and QEMU has no such flag; the eleven runners
+# that pass -input need the live-serial route Invoke-VmCompileFallback takes,
+# which is a different piece of work.
+function Start-PlugVm {
+    param(
+        [Parameter(Mandatory=$true)][string]$Kernel,
+        [Parameter(Mandatory=$true)][string]$ConsoleFile,
+        [Parameter(Mandatory=$true)][string]$StderrFile,
+        [int]$MemMB = 3072
+    )
+    if ($script:UseCodexVm) {
+        $bin = $script:CodexVmBin
+        $vmArgs = @('-kernel', $Kernel, '-mem', "$MemMB", '-headless', '-output', $ConsoleFile)
+    } else {
+        $bin = $script:FallbackVmBin
+        $ramBytes = [long]$MemMB * 1048576
+        $vmArgs = @($script:FallbackAccelFlags)
+        if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }
+        if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') }
+        $vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))
+        $vmArgs += @('-kernel', $Kernel, '-netdev', 'user,id=net0', '-device', 'ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:34:56', '-display', 'none', '-no-reboot', '-m', "$MemMB", '-serial', "file:$ConsoleFile")
+        # isa-debug-exit is what makes QEMU LEAVE. codex-vm exits when the guest
+        # halts; QEMU treats a halted CPU as an idle one and sits there, so a
+        # runner that waits on process exit and then reads the console waits
+        # forever. Measured: the csharp plug ran its full 1800s timeout without
+        # it and finishes in seconds with it. The guest already writes the port
+        # -- that is where codex-vm's debug_exit_code comes from -- so this only
+        # gives QEMU the device that listens. Note the exit CODE is then
+        # (value << 1) | 1 and never 0, which is why no caller reads it.
+        $vmArgs += @('-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')
+    }
+    $startArgs = @{ FilePath = $bin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }
+    # -WindowStyle throws on non-Windows editions of pwsh, and Linux is the host
+    # this selection exists for.
+    if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }
+    return Start-Process @startArgs
+}
+
+
+# The OTHER plug shape: no TCP at all, the whole exchange on ONE serial wire.
+# codex-vm spells it -input (a ring filled before boot) and -output (dumped at
+# exit); eleven runners use it and none could run without codex-vm.
+#
+# QEMU HAS NO -input, and the flag that looks like it is a trap: QEMU 11.1.0
+# does carry -chardev file,input-path= and REFUSES it on Windows with
+# 'input-path not supported on Windows'. The route that works on every host is
+# the one Invoke-VmCompileFallback already takes -- a SOCKET chardev on the
+# guest's only serial port, with the host writing the input and reading the
+# answer back off the same wire. server=on,wait=on holds the guest at reset
+# until we have connected, which is what makes a preloaded ring and a live
+# socket interchangeable from the guest's side.
+#
+# The port comes from Get-VmPort, never a literal: a fixed port silently
+# reports another agent's run as yours (L-SHARED).
+#
+# Proven byte-identical against the codex-vm arm on wasm/hello, 69,368 chars
+# sha CB709BEB, after the runner's own HEAP/WD/STACK/PM filter.
+function Invoke-PlugVmFileSerial {
+    param(
+        [Parameter(Mandatory=$true)][string]$Kernel,
+        [Parameter(Mandatory=$true)][string]$InputFile,
+        [Parameter(Mandatory=$true)][string]$OutputFile,
+        [Parameter(Mandatory=$true)][string]$StderrFile,
+        [int]$MemMB = 3072,
+        [int]$TimeoutSec = 300,
+        [string]$DiskFile = ''
+    )
+    if ($script:UseCodexVm) {
+        $vmArgs = @('-kernel', $Kernel, '-input', $InputFile, '-output', $OutputFile, '-mem', "$MemMB", '-headless')
+        if ($DiskFile) { $vmArgs += @('-disk', $DiskFile) }
+        $startArgs = @{ FilePath = $script:CodexVmBin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }
+        if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }
+        $proc = Start-Process @startArgs
+        $null = $proc.WaitForExit($TimeoutSec * 1000)
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; return $false }
+        return $true
+    }
+    $port = Get-VmPort
+    $ramBytes = [long]$MemMB * 1048576
+    $vmArgs = @($script:FallbackAccelFlags)
+    if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }
+    if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') }
+    $vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))
+    $vmArgs += @('-kernel', $Kernel, '-display', 'none', '-no-reboot', '-m', "$MemMB", '-chardev', "socket,id=ch0,host=127.0.0.1,port=$port,server=on,wait=on,nodelay=on", '-serial', 'chardev:ch0', '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')
+    if ($DiskFile) { $vmArgs += @('-drive', "file=$DiskFile,format=raw,if=ide,index=0") }
+    $startArgs = @{ FilePath = $script:FallbackVmBin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }
+    if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }
+    $proc = Start-Process @startArgs
+    $client = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($proc.HasExited) { break }
+        try { $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port); break } catch { Start-Sleep -Milliseconds 200 }
+    }
+    if (-not $client) {
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        [Console]::Error.WriteLine("FAIL: could not reach the QEMU serial socket on port $port")
+        return $false
+    }
+    $ok = $true
+    try {
+        $stream = $client.GetStream()
+        $stream.ReadTimeout = $TimeoutSec * 1000
+        $blob = [System.IO.File]::ReadAllBytes($InputFile)
+        $stream.Write($blob, 0, $blob.Length)
+        $stream.Flush()
+        $outMs = [System.IO.MemoryStream]::new(65536)
+        $buf = New-Object byte[] 65536
+        # The guest closing the wire is the end of the answer. A read timeout is
+        # NOT, so it is reported rather than written out as a whole result.
+        try {
+            while ($true) {
+                $n = $stream.Read($buf, 0, $buf.Length)
+                if ($n -le 0) { break }
+                $outMs.Write($buf, 0, $n)
+            }
+        } catch [System.IO.IOException] {
+            if (-not $proc.HasExited) { $ok = $false; [Console]::Error.WriteLine("FAIL: the QEMU serial read ended by timeout, so the capture may be short") }
+        }
+        [System.IO.File]::WriteAllBytes($OutputFile, $outMs.ToArray())
+    } finally {
+        $client.Close()
+        if (-not $proc.HasExited) { $null = $proc.WaitForExit(20000) }
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $ok = $false }
+    }
+    return $ok
 }

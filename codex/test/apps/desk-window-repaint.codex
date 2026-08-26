@@ -1,0 +1,56 @@
+Chapter: DeskWindowRepaintTest
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites Foreword chapter Console
+
+ A window that ticks repaints itself and whatever is over it, and nothing
+ else.
+
+ The Clock's own repaint used to be `desk-wnd-paint-all`: the chrome and every
+ open window, redrawn on the visible framebuffer once a second. Nothing
+ outside the ticking window had changed, so what that bought was a
+ full-screen rebuild at 1 Hz, which a person sees as the whole desk
+ flickering the moment two windows are open. Redrawing one window alone is
+ wrong only if something sits over it, and the registry's array order IS the z
+ order, so the answer is to start the walk at that window's index.
+
+ THE ASSERTION IS THE INDEX AND THE COUNT IT IMPLIES, because the walk itself
+ paints and a test cannot read pixels back from a framebuffer it does not
+ have. `desk-wnd-index` is what decides how much gets repainted: the number
+ of windows from that index to the top is exactly what `desk-wnd-walk` will
+ draw. A bottom window still costs every window; a top window costs one; a
+ window that was never opened costs nothing at all, which is the arm that
+ stops an absent pane from quietly repainting the whole desk.
+
+ The registry is built through `dk-wr-open` rather than poked, so this
+ measures the order that machinery actually produces.
+
+Section: Test
+
+  dwr-yn : Boolean -> Text
+  dwr-yn (v) = if v then "yes" else "no"
+
+  dwr-from : Integer, Integer -> Integer
+  dwr-from (ws) (fid) =
+    let i = desk-wnd-index ws fid 0
+    in if i < 0 then 0 else dk-wr-count ws - i
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed 128 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let wp = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
+    in let ws = peek-32 ds dk-wr-cell
+    in let o1 = dk-wr-open ws desk-focus-clkp
+    in let o2 = dk-wr-open ws desk-focus-calc
+    in let o3 = dk-wr-open ws desk-focus-cal
+    in act
+      print-line-uni ("open " & integer-to-text (dk-wr-count ws) & ", bottom to top: " & integer-to-text (dk-wr-at ws 0) & " " & integer-to-text (dk-wr-at ws 1) & " " & integer-to-text (dk-wr-at ws 2))
+      print-line-uni ("clock at " & integer-to-text (desk-wnd-index ws desk-focus-clkp 0) & " repaints " & integer-to-text (dwr-from ws desk-focus-clkp))
+      print-line-uni ("calc  at " & integer-to-text (desk-wnd-index ws desk-focus-calc 0) & " repaints " & integer-to-text (dwr-from ws desk-focus-calc))
+      print-line-uni ("cal   at " & integer-to-text (desk-wnd-index ws desk-focus-cal 0) & " repaints " & integer-to-text (dwr-from ws desk-focus-cal))
+      print-line-uni ("never opened: index " & integer-to-text (desk-wnd-index ws desk-focus-mon 0) & " repaints " & integer-to-text (dwr-from ws desk-focus-mon))
+      print-line-uni ("the top window costs one: " & dwr-yn (dwr-from ws (dk-wr-top ws) == 1))
+    end
+
+Page 1

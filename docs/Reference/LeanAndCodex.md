@@ -61,7 +61,7 @@ compiles today, with the file that proves it.
 
 | capability | Lean | Codex | where |
 |---|---|---|---|
-| effects | monads and `do` notation; effects are a library encoding, not a checked row | effect rows inferred as first-class data and checked at every boundary; `act` blocks; handlers; `Device.Port`/`Device.Block`/`Device.Mmio` capability effects; a hardware access with no capability in scope does not compile | `DevelopersGuide.md` "Effects and Act Blocks", "Grounding Hardware Effects"; `README.md` "Verified" item 3 |
+| effects | monads and `do` notation; effects are a library encoding, not a checked row | effect rows inferred as first-class data and checked at every boundary; `act` blocks; handlers; `Device.Port`/`Device.Block`/`Device.Mmio` capability effects; a hardware access with no capability in scope does not compile | `DevelopersGuide.md` "Effects and Act Blocks", "Grounding Hardware Effects"; `TechnicalDetails.md` "Verified" item 3 |
 | linearity | none; reference counting with `@&` borrowed annotations and `unsafe` | `linear` exactly-once ownership through moves, calls, closures, containers and tuple components, with the nine laundering routes closed as `.failing` tests | `DevelopersGuide.md` "Linear Types"; `codex/test/errors/linear-launder-*` |
 | cost | none in the type system | `punctual` (no heap, no recursion, no closures, no effects, instruction count against a budget, CDX6001-6011); `bounded` allocation class lattice `none < fixed < budgeted < linear < growing`, inferred transitively through callees, refused toward abstention (CDX6101-6103); published cost tables for `List`, `Text` and the builtins | `DevelopersGuide.md` "Punctual Functions", "Bounded Functions", "What List operations cost"; `CostModel.md` |
 | integers | `Nat`, `Int`, `UIntN`, `Fin n` | `Integer between L and H` with `wrapping`/`clamping`/`error` overflow modes; a bound is a type but the mode is not part of type identity; the prover elides the check where it can | `DevelopersGuide.md` "Bounded Integers", "Overflow mode is not part of type identity" |
@@ -71,9 +71,9 @@ compiles today, with the file that proves it.
 
 | capability | Lean | Codex | where |
 |---|---|---|---|
-| compiler | Lean written in Lean, compiles to C through an IR; reference-counted runtime; the FRO roadmap names stack allocation and join points as the next optimisations | Codex written in Codex, compiles to native x86-64 on bare metal with no OS, no libc, no runtime and no GC; a hard fixed point of itself (stage 1 CDX = stage 2 CDX, byte-identical, signed) | `CLAUDE.md` "Current State"; `README.md` "Verified" |
+| compiler | Lean written in Lean, compiles to C through an IR; reference-counted runtime; the FRO roadmap names stack allocation and join points as the next optimisations | Codex written in Codex, compiles to native x86-64 on bare metal with no OS, no libc, no runtime and no GC; a hard fixed point of itself (stage 1 CDX = stage 2 CDX, byte-identical, signed) | `CLAUDE.md` "Current State"; `TechnicalDetails.md` "Verified" |
 | targets | C, then whatever C reaches; WebAssembly via C | 60 plugs: native arm64, riscv, wasm, ptx, spirv, wgsl, t3isa; ELF/PE/IMG containers; source emitters for ada, cobol, fortran, pascal, c#, java, kotlin, swift, rust, go, zig, python, javascript, typescript, ocaml, haskell, scheme, clojure, elixir, lua, nim, d, perl, php, ruby, julia, scala, groovy, objc, and UI frameworks (react, vue, svelte, angular, electron, flutter, compose, maui, wpf, winforms, gtk, qt, swiftui) | `codex/plugs/` directory, measured 2026-08-21 |
-| runtime | RC runtime in C; IO monad | none; the OS is Codex (kernel, drivers, net, trust, verify, scheduler) | `README.md` "Library Quires" |
+| runtime | RC runtime in C; IO monad | none; the OS is Codex (kernel, drivers, net, trust, verify, scheduler) | `TechnicalDetails.md` "Library Quires" |
 | hardware | via C | boards quire with linear `Board` handles; IoT targets; a VT-x hypervisor in the desk | `codex/boards/`, `HardwareAbstractionLayer.md` |
 
 ### 2.4 Trust architecture
@@ -96,7 +96,7 @@ compiles today, with the file that proves it.
 | build and packages | Lake, Reservoir | PowerShell build scripts migrating to a Codex `CompilerDriver`; a content-addressed repository protocol replacing Git (facts, proposals, verdicts, supersession, trust lattice, Ed25519 annotations, Historian) | `apps/works/README.md`; `Build.md` |
 | search | Loogle (type-directed search over Mathlib) | `CodeBrowser`, a prefix trie over every chapter's definitions | `apps/works/README.md` |
 | playground | live.lean-lang.org | `prism`: Codex source beside every plug's output | `CuratorsCatalogue.md` |
-| library | Mathlib (over a million lines), CSLib | the foreword (core, encode, ui, punctual, net, trust), 66 applications, and no formalised mathematics beyond arithmetic claims | `CuratorsCatalogue.md`; `README.md` "Library Quires" |
+| library | Mathlib (over a million lines), CSLib | the foreword (core, encode, ui, punctual, net, trust), 66 applications, and no formalised mathematics beyond arithmetic claims | `CuratorsCatalogue.md`; `TechnicalDetails.md` "Library Quires" |
 | AI | lean-beam for agents, Tau Ceti, Hex, Palomar | a local GGUF agent in the desk, AgentGrid fleet coordination, an evidence plug | `apps/works/README.md` "AI Agent System" |
 | verified software showcases | Cedar (AWS authorisation), Aeneas (Rust), ArkLib (SNARKs), Veil (protocols) | the compiler itself (fixed point), the seed (signed, self-verifying), compliance evidence generated as a build artifact against CRA, ETSI EN 303 645, IEC 62443, NISTIR 8259A | `docs/Designs/Active/IoT/*`; `codex/plugs/evidence` |
 
@@ -140,7 +140,7 @@ feature on this list**, because today a proof exists only during the
 compile that accepted it. Retaining the claim, the proof term and the
 normalisation trace in the CDX (erased from code, kept as data) lets the
 rechecker, the verified loader, or a third party re-check every claim a
-shipped binary makes, which is what the README's "machine-checked" ought to
+shipped binary makes, which is what TechnicalDetails.md's "machine-checked" ought to
 mean at the altitude Lean means it. Seed-affecting; one change; the design
 already names the wire atom it needs.
 

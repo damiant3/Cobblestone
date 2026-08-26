@@ -335,7 +335,8 @@ Section: Tail Call Optimization
   emit-tco-def : IRDef, CsCtx -> Text
   emit-tco-def (d) (ctx) =
    let ret = get-return-type (d.type-val) (list-length (d.params))
-   in let gen = generic-suffix (d.type-val)
+   in if is-lam-def (d.name) then "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
+   else let gen = generic-suffix (d.type-val)
    in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
 
   emit-tco-body : IRExpr, Text, List IRParam, CsCtx, Integer -> Text
@@ -500,10 +501,12 @@ Section: Definition Emission
   emit-def : IRDef, CsCtx -> Text
   emit-def (d) (ctx) =
    if is-seam-override (d.name) then ""
-   else let dctx = __record-set ctx "locals" (param-names (d.params) 0 [])
+   else let dctx0 = __record-set ctx "locals" (param-names (d.params) 0 [])
+   in let dctx = __record-set dctx0 "dyn-locals" (if is-lam-def (d.name) then tvar-param-names (d.params) 0 [] else [])
    in if should-tco d then emit-tco-def d dctx
    else let ret = get-return-type (d.type-val) (list-length (d.params))
-   in let gen = generic-suffix (d.type-val)
+   in if is-lam-def (d.name) then "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
+   else let gen = generic-suffix (d.type-val)
    in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
 
   get-return-type : CodexType, Integer -> CodexType
@@ -527,6 +530,37 @@ Section: Definition Emission
    if i == list-length params then ""
    else let p = list-at params i
    in cs-type (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params params (i + 1)
+
+ A lifted lambda reaches this plug with UNRESOLVED type variables in its
+ signature: the compiler's IR-CCE lift runs after the resolve pass, so a
+ `__lam_N` def carries the expected types its lambda was handed, not the
+ resolved ones. C# generics are not templates -- a generic method may not
+ access fields of its type parameter -- so the generic rendering of such a
+ def refuses to compile the moment its body reads a field. `dynamic` is
+ the C# construct for exactly this: the IR is well-typed, so the runtime
+ dispatch always finds the member.
+
+  is-lam-def : Text -> Boolean
+  is-lam-def (n) =
+   text-length n >= 6 & substring n 0 6 == "__lam_"
+
+  tvar-param-names : List IRParam, Integer, List Text -> List Text
+  tvar-param-names (ps) (i) (acc) =
+   if i >= list-length ps then acc
+   else let p = list-at ps i
+   in (when p.type-val is TypeVar (id) -> tvar-param-names ps (i + 1) (list-snoc acc (p.name)) is otherwise -> tvar-param-names ps (i + 1) acc)
+
+  cs-type-lam : CodexType -> Text
+  cs-type-lam (ty) =
+   when ty
+    is TypeVar (id) -> "dynamic"
+    is otherwise -> cs-type ty
+
+  emit-def-params-lam : List IRParam, Integer -> Text
+  emit-def-params-lam (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+   in cs-type-lam (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params-lam params (i + 1)
 
 Section: Chapter Emission
 
@@ -631,6 +665,13 @@ Section: Chapter Emission
    "        return neg ? -v : v;\n",
    "    }\n",
    "    public static string Replace(string s, string a, string b) { return a.Length == 0 ? s : s.Replace(a, b, StringComparison.Ordinal); }\n",
+   "    public static string CharEncode(long c) {\n",
+   "        if (c < 128) return ((char)c).ToString();\n",
+   "        if (c < 2176) { long v = c - 128; return new string(new char[]{ (char)(192 | (v >> 6)), (char)(128 | (v & 63)) }); }\n",
+   "        if (c < 67712) { long v = c - 2176; return new string(new char[]{ (char)(224 | (v >> 12)), (char)(128 | ((v >> 6) & 63)), (char)(128 | (v & 63)) }); }\n",
+   "        long w = c - 67712;\n",
+   "        return new string(new char[]{ (char)(240 | (w >> 18)), (char)(128 | ((w >> 12) & 63)), (char)(128 | ((w >> 6) & 63)), (char)(128 | (w & 63)) });\n",
+   "    }\n",
    "    public static List<string> Split(string s, string sep) {\n",
    "        var r = new List<string>();\n",
    "        if (sep.Length == 0) { r.Add(s); return r; }\n",
@@ -669,6 +710,11 @@ Section: Chapter Emission
    "    public static T store<T, V>(T r, V assigned) => r;\n",
    "    public static T rset<T>(T r, Action<T> f) { f(r); return r; }\n",
    "    public static List<T> lpush<T>(List<T> l, T v) { if (l.Count < l.Capacity) { l.Add(v); return l; } int c = l.Count * 2; if (c < 4) c = 4; var n = new List<T>(c); n.AddRange(l); n.Add(v); return n; }\n",
+   "    public static dynamic dmap(Func<dynamic, dynamic> f, System.Collections.IEnumerable xs) {\n",
+   "        var r = (System.Collections.IList)Activator.CreateInstance(xs.GetType());\n",
+   "        foreach (object x in xs) r.Add((object)f(x));\n",
+   "        return r;\n",
+   "    }\n",
    "    public static long vtag(object o) => o is _ICodexVariant v ? v._ctag : 0L;\n",
    "    public static long deck_pos() => _dptr;\n",
    "    public static long deck_set(object p) { _dptr = (long)p; _want(_dptr); return 0; }\n",
@@ -862,7 +908,7 @@ Section: Chapter Emission
 
   emit-csharp-text-chapter : IRChapter, List ATypeDef, List Text -> Text
   emit-csharp-text-chapter (m) (type-defs) (muts) =
-   let ctx = CsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs, locals = [] }
+   let ctx = CsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs, locals = [], dyn-locals = [] }
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
    in let class-name = "Codex_" & sanitize (m.name.value)
    in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
@@ -870,7 +916,7 @@ Section: Chapter Emission
 
   emit-csharp-parts : IRChapter, List ATypeDef, List Text -> List Text
   emit-csharp-parts (m) (type-defs) (muts) =
-   let ctx = CsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs, locals = [] }
+   let ctx = CsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs, locals = [], dyn-locals = [] }
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
    in let class-name = "Codex_" & sanitize (m.name.value)
    in let entry = opening-emit-entry class-name (opening-return-type (m.defs))

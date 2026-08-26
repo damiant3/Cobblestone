@@ -114,12 +114,10 @@ $inputFile = [IO.Path]::GetTempFileName()
 [IO.File]::WriteAllBytes($inputFile, $buf.ToArray())
 
 # ---- run
-$vmBin = Join-Path $Repo 'tools\codex-vm.exe'
 $outFile = [IO.Path]::GetTempFileName()
 $errFile = [IO.Path]::GetTempFileName()
-$proc = Start-Process -FilePath $vmBin -ArgumentList @('-kernel', $PlugCdx, '-input', $inputFile, '-output', $outFile, '-mem', '3072', '-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $errFile
-$proc.WaitForExit($TimeoutSec * 1000) | Out-Null
-if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force; [Console]::Error.WriteLine('FAIL: timeout'); exit 4 }
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+if (-not $vmOk) { [Console]::Error.WriteLine('FAIL: timeout'); exit 4 }
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
     $err = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
     [Console]::Error.WriteLine('FAIL: no output')
@@ -220,9 +218,8 @@ if ($FactImage) {
     $fin = [IO.Path]::GetTempFileName(); [IO.File]::WriteAllBytes($fin, $fbuf.ToArray())
     $fout = [IO.Path]::GetTempFileName(); $ferr = [IO.Path]::GetTempFileName()
     Set-ItemProperty $FactImage -Name IsReadOnly -Value $false
-    $fp = Start-Process -FilePath $vmBin -ArgumentList @('-kernel', $ingest, '-input', $fin, '-output', $fout, '-disk', (Resolve-Path $FactImage).Path, '-mem', '3072', '-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $ferr
-    $fp.WaitForExit($TimeoutSec * 1000) | Out-Null
-    if (-not $fp.HasExited) { Stop-Process -Id $fp.Id -Force; [Console]::Error.WriteLine('FAIL: ingest timeout'); exit 10 }
+    $fOk = Invoke-PlugVmFileSerial -Kernel $ingest -InputFile $fin -OutputFile $fout -StderrFile $ferr -MemMB 3072 -TimeoutSec $TimeoutSec -DiskFile (Resolve-Path $FactImage).Path
+    if (-not $fOk) { [Console]::Error.WriteLine('FAIL: ingest timeout'); exit 10 }
     $fres = @(if (Test-Path $fout) { Get-Content $fout | Where-Object { $_ -like 'FACT *' } | Select-Object -First 1 })
     foreach ($tmp in @($fin, $fout, $ferr)) { if (Test-Path $tmp) { [IO.File]::Delete($tmp) } }
     $fline = if ($fres.Count -gt 0) { $fres[0] } else { 'FACT refused no answer from the ingest program' }

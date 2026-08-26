@@ -1,6 +1,6 @@
 Chapter: IR Text Parser
 
-   1. tokenize : Text -> List SExpToken
+   1. ir-tokenize : Text -> List SExpToken
    2. build-tree : List SExpToken -> SExp
    3. walk-* : SExp -> {IRChapter, IRDef, IRExpr, ...}
 
@@ -33,30 +33,30 @@ Section: Tokenize
  Every recursion here is a SELF call, and that is load-bearing: the
  emitter turns only self tail calls into jumps (is-self-call gates the
  TCO), so a mutually tail-recursive loop pays one stack frame per hop.
- This tokenizer used to hop tokenize-loop -> tokenize-atom ->
- tokenize-loop per token and scan-string-body <-> scan-string-escape
+ This tokenizer used to hop ir-tokenize-loop -> tokenize-atom ->
+ ir-tokenize-loop per token and ir-scan-string-body <-> scan-string-escape
  per escaped character, which is one frame per token of input: on a
  48 MB IR payload (ui-orchestrator-test, 2026-07-28) the plug VM
  double-faulted with the stack exhausted inside tokenize-atom. The
  helpers now RETURN to the one loop instead of continuing it, and the
  loop alone recurses.
 
-  tokenize : Text -> List SExpToken
-  tokenize (s) = tokenize-loop s 0 (text-length s) []
+  ir-tokenize : Text -> List SExpToken
+  ir-tokenize (s) = ir-tokenize-loop s 0 (text-length s) []
 
-  tokenize-loop : Text, Integer, Integer, List SExpToken -> List SExpToken
-  tokenize-loop (s) (i) (len) (acc) =
+  ir-tokenize-loop : Text, Integer, Integer, List SExpToken -> List SExpToken
+  ir-tokenize-loop (s) (i) (len) (acc) =
    if i >= len then acc
    else let c = char-code-at s i
-   in if is-sexp-space c then tokenize-loop s (i + 1) len acc
-   else if c == char-code-at "(" 0 then tokenize-loop s (i + 1) len (list-push acc TokOpen)
-   else if c == char-code-at ")" 0 then tokenize-loop s (i + 1) len (list-push acc TokClose)
+   in if is-sexp-space c then ir-tokenize-loop s (i + 1) len acc
+   else if c == char-code-at "(" 0 then ir-tokenize-loop s (i + 1) len (list-push acc TokOpen)
+   else if c == char-code-at ")" 0 then ir-tokenize-loop s (i + 1) len (list-push acc TokClose)
    else if c == char-code-at "\"" 0 then
-    let r = scan-string-body s (i + 1) len []
-    in tokenize-loop s (r.next) len (list-push acc (TokStr (r.value)))
+    let r = ir-scan-string-body s (i + 1) len []
+    in ir-tokenize-loop s (r.next) len (list-push acc (TokStr (r.value)))
    else
     let stop = scan-atom-end s i len
-    in tokenize-loop s stop len (list-push acc (TokAtom (substring s i (stop - i))))
+    in ir-tokenize-loop s stop len (list-push acc (TokAtom (substring s i (stop - i))))
 
   is-sexp-space : Integer -> Boolean
   is-sexp-space (c) =
@@ -87,15 +87,15 @@ Section: Tokenize
  rather than handing off to a second function: a hop per escaped
  character is a frame per escaped character (see the tokenizer prose).
 
-  scan-string-body : Text, Integer, Integer, List Text -> StringScanResult
-  scan-string-body (s) (i) (len) (acc) =
+  ir-scan-string-body : Text, Integer, Integer, List Text -> StringScanResult
+  ir-scan-string-body (s) (i) (len) (acc) =
    if i >= len then StringScanResult { value = text-concat-list acc, next = i }
    else let c = char-code-at s i
    in if c == char-code-at "\"" 0 then StringScanResult { value = text-concat-list acc, next = i + 1 }
    else if c == char-code-at "\\" 0 then
     (if i + 1 >= len then StringScanResult { value = text-concat-list acc, next = i + 1 }
-     else scan-string-body s (i + 2) len (list-push acc (unescape-char-text (char-code-at s (i + 1)))))
-   else scan-string-body s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
+     else ir-scan-string-body s (i + 2) len (list-push acc (unescape-char-text (char-code-at s (i + 1)))))
+   else ir-scan-string-body s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
 
   unescape-char-text : Integer -> Text
   unescape-char-text (c) =
@@ -252,15 +252,15 @@ Section: OverflowMode + BinaryOp
 
 Section: CodexType
 
-  parse-type : SExp -> CodexType
-  parse-type (e) =
+  ir-parse-type : SExp -> CodexType
+  ir-parse-type (e) =
    when e
-    is SAtom (a) -> parse-type-atom a
-    is SList (xs) -> parse-type-list xs
+    is SAtom (a) -> ir-parse-type-atom a
+    is SList (xs) -> ir-parse-type-list xs
     is otherwise -> ErrorTy
 
-  parse-type-atom : Text -> CodexType
-  parse-type-atom (a) =
+  ir-parse-type-atom : Text -> CodexType
+  ir-parse-type-atom (a) =
    if a == "int-default" then int-ty-default
    else if a == "real" then real-f64
    else if a == "real-approx" then real-f32
@@ -277,32 +277,32 @@ Section: CodexType
    else if a == "proof" then ProofTy
    else ErrorTy
 
-  parse-type-list : List SExp -> CodexType
-  parse-type-list (xs) =
+  ir-parse-type-list : List SExp -> CodexType
+  ir-parse-type-list (xs) =
    if list-length xs == 0 then ErrorTy
    else let head = sexp-atom (list-at xs 0)
-   in if head == "int" then parse-type-int xs
-   else if head == "fn" then parse-type-fn xs
-   else if head == "list" then ListTy (parse-type (list-at xs 1))
-   else if head == "llist" then LinkedListTy (parse-type (list-at xs 1))
+   in if head == "int" then ir-parse-type-int xs
+   else if head == "fn" then ir-parse-type-fn xs
+   else if head == "list" then ListTy (ir-parse-type (list-at xs 1))
+   else if head == "llist" then LinkedListTy (ir-parse-type (list-at xs 1))
    else if head == "tvar" then TypeVar (__narrow (sexp-int (list-at xs 1)))
-   else if head == "forall" then ForAllTy (__narrow (sexp-int (list-at xs 1))) (parse-type (list-at xs 2))
-   else if head == "sum" then parse-type-sum xs
-   else if head == "record-ty" then parse-type-record xs
-   else if head == "ctd" then parse-type-ctd xs
-   else if head == "effectful" then parse-type-effectful xs
-   else if head == "vector" then VectorTy (sexp-int (list-at xs 1)) (parse-type (list-at xs 2))
-   else if head == "unit" then UnitTy (make-name (sexp-str (list-at xs 1))) (parse-type (list-at xs 2))
+   else if head == "forall" then ForAllTy (__narrow (sexp-int (list-at xs 1))) (ir-parse-type (list-at xs 2))
+   else if head == "sum" then ir-parse-type-sum xs
+   else if head == "record-ty" then ir-parse-type-record xs
+   else if head == "ctd" then ir-parse-type-ctd xs
+   else if head == "effectful" then ir-parse-type-effectful xs
+   else if head == "vector" then VectorTy (sexp-int (list-at xs 1)) (ir-parse-type (list-at xs 2))
+   else if head == "unit" then UnitTy (make-name (sexp-str (list-at xs 1))) (ir-parse-type (list-at xs 2))
    else if head == "vector-mask" then VectorMaskTy (sexp-int (list-at xs 1))
-   else if head == "propeq" then PropEqTy (parse-type (list-at xs 1)) (parse-type (list-at xs 2))
+   else if head == "propeq" then PropEqTy (ir-parse-type (list-at xs 1)) (ir-parse-type (list-at xs 2))
    else if head == "tycon" then TypeCon (make-name (sexp-str (list-at xs 1)))
-   else if head == "tyapply" then TypeApply (parse-type (list-at xs 1)) (parse-type (list-at xs 2))
+   else if head == "tyapply" then TypeApply (ir-parse-type (list-at xs 1)) (ir-parse-type (list-at xs 2))
    else ErrorTy
 
-  parse-type-fn : List SExp -> CodexType
-  parse-type-fn (xs) =
+  ir-parse-type-fn : List SExp -> CodexType
+  ir-parse-type-fn (xs) =
    let row = if list-length xs > 3 then parse-row (list-at xs 3) else empty-row
-   in FunTy (parse-type (list-at xs 1)) row (parse-type (list-at xs 2))
+   in FunTy (ir-parse-type (list-at xs 1)) row (ir-parse-type (list-at xs 2))
 
   parse-row : SExp -> EffectRow
   parse-row (e) =
@@ -318,44 +318,44 @@ Section: CodexType
    in let lab = EffectLabel { name = make-name (sexp-str (list-at l 1)), scope = sexp-str (list-at l 2) }
    in parse-row-labels xs (i + 1) (list-push acc lab)
 
-  parse-type-int : List SExp -> CodexType
-  parse-type-int (xs) =
+  ir-parse-type-int : List SExp -> CodexType
+  ir-parse-type-int (xs) =
    IntegerTy (sexp-int (list-at xs 1)) (sexp-int (list-at xs 2)) (parse-ov-mode (sexp-atom (list-at xs 3)))
 
-  parse-type-sum : List SExp -> CodexType
-  parse-type-sum (xs) =
+  ir-parse-type-sum : List SExp -> CodexType
+  ir-parse-type-sum (xs) =
    let name = make-name (sexp-str (list-at xs 1))
-   in let args = parse-type-args (sexp-list (list-at xs 2))
+   in let args = ir-parse-type-args (sexp-list (list-at xs 2))
    in let ctors = if list-length xs > 3 then parse-sum-ctors (sexp-list (list-at xs 3)) else []
    in SumTy name args ctors
 
-  parse-type-record : List SExp -> CodexType
-  parse-type-record (xs) =
+  ir-parse-type-record : List SExp -> CodexType
+  ir-parse-type-record (xs) =
    let name = make-name (sexp-str (list-at xs 1))
-   in let args = parse-type-args (sexp-list (list-at xs 2))
+   in let args = ir-parse-type-args (sexp-list (list-at xs 2))
    in let fields = if list-length xs > 3 then parse-record-fields (sexp-list (list-at xs 3)) else []
    in RecordTy name args fields
 
-  parse-type-ctd : List SExp -> CodexType
-  parse-type-ctd (xs) =
+  ir-parse-type-ctd : List SExp -> CodexType
+  ir-parse-type-ctd (xs) =
    let name = make-name (sexp-str (list-at xs 1))
-   in let args = parse-type-args (sexp-list (list-at xs 2))
+   in let args = ir-parse-type-args (sexp-list (list-at xs 2))
    in ConstructedTy name args
 
-  parse-type-effectful : List SExp -> CodexType
-  parse-type-effectful (xs) =
+  ir-parse-type-effectful : List SExp -> CodexType
+  ir-parse-type-effectful (xs) =
    let effs = parse-name-list (sexp-list (list-at xs 1))
    in let scopes = parse-text-list (sexp-list (list-at xs 2))
-   in let ret = parse-type (list-at xs 3)
+   in let ret = ir-parse-type (list-at xs 3)
    in EffectfulTy effs scopes ret
 
-  parse-type-args : List SExp -> List CodexType
-  parse-type-args (xs) = parse-type-args-loop xs 1 (list-length xs) []
+  ir-parse-type-args : List SExp -> List CodexType
+  ir-parse-type-args (xs) = ir-parse-type-args-loop xs 1 (list-length xs) []
 
-  parse-type-args-loop : List SExp, Integer, Integer, List CodexType -> List CodexType
-  parse-type-args-loop (xs) (i) (len) (acc) =
+  ir-parse-type-args-loop : List SExp, Integer, Integer, List CodexType -> List CodexType
+  ir-parse-type-args-loop (xs) (i) (len) (acc) =
    if i >= len then acc
-   else parse-type-args-loop xs (i + 1) len (list-push acc (parse-type (list-at xs i)))
+   else ir-parse-type-args-loop xs (i + 1) len (list-push acc (ir-parse-type (list-at xs i)))
 
   parse-sum-ctors : List SExp -> List SumCtor
   parse-sum-ctors (xs) = parse-sum-ctors-loop xs 1 (list-length xs) []
@@ -365,19 +365,19 @@ Section: CodexType
    if i >= len then acc
    else let inner = sexp-list (list-at xs i)
    in let name = make-name (sexp-str (list-at inner 1))
-   in let fields = parse-type-args (sexp-list (list-at inner 2))
+   in let fields = ir-parse-type-args (sexp-list (list-at inner 2))
    in parse-sum-ctors-loop xs (i + 1) len (list-push acc (SumCtor { name = name, fields = fields, return-type = [] }))
 
   parse-record-fields : List SExp -> List RecordField
-  parse-record-fields (xs) = parse-record-fields-loop xs 1 (list-length xs) []
+  parse-record-fields (xs) = ir-parse-record-fields-loop xs 1 (list-length xs) []
 
-  parse-record-fields-loop : List SExp, Integer, Integer, List RecordField -> List RecordField
-  parse-record-fields-loop (xs) (i) (len) (acc) =
+  ir-parse-record-fields-loop : List SExp, Integer, Integer, List RecordField -> List RecordField
+  ir-parse-record-fields-loop (xs) (i) (len) (acc) =
    if i >= len then acc
    else let inner = sexp-list (list-at xs i)
    in let name = make-name (sexp-str (list-at inner 1))
-   in let ty = parse-type (list-at inner 2)
-   in parse-record-fields-loop xs (i + 1) len (list-push acc (RecordField { name = name, type-val = ty }))
+   in let ty = ir-parse-type (list-at inner 2)
+   in ir-parse-record-fields-loop xs (i + 1) len (list-push acc (RecordField { name = name, type-val = ty }))
 
 Section: Type Def Resolution
 
@@ -398,7 +398,7 @@ Section: Type Def Resolution
     is ALinearType (inner) (sp) -> atype-to-codex-type inner
     is AAppType (ctor) (args) (sp) -> atype-app-to-codex-type ctor args
     is ANamedType (n) (sp) ->
-     if is-real-atom-name (n.value) then parse-type-atom (n.value)
+     if is-real-atom-name (n.value) then ir-parse-type-atom (n.value)
      else if n.value == "Boolean" then BooleanTy
      else if n.value == "Text" then TextTy
      else if n.value == "Integer" then int-ty-default
@@ -650,8 +650,8 @@ Section: IRPattern
   parse-pat-list (xs) =
    if list-length xs == 0 then IrWildPat synthetic-span
    else let head = sexp-atom (list-at xs 0)
-   in if head == "var-pat" then IrVarPat (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
-   else if head == "lit-pat" then IrLitPat (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
+   in if head == "var-pat" then IrVarPat (sexp-str (list-at xs 1)) (ir-parse-type (list-at xs 2)) synthetic-span
+   else if head == "lit-pat" then IrLitPat (sexp-str (list-at xs 1)) (ir-parse-type (list-at xs 2)) synthetic-span
    else if head == "ctor-pat" then parse-ctor-pat xs
    else if head == "vec-pat" then parse-vec-pat xs
    else IrWildPat synthetic-span
@@ -660,7 +660,7 @@ Section: IRPattern
   parse-ctor-pat (xs) =
    let name = sexp-str (list-at xs 1)
    in let subs = parse-pat-subs (sexp-list (list-at xs 2))
-   in let ty = parse-type (list-at xs 3)
+   in let ty = ir-parse-type (list-at xs 3)
    in IrCtorPat name subs ty synthetic-span
 
   parse-vec-pat : List SExp -> IRPat
@@ -683,8 +683,8 @@ Section: IRPattern
 
 Section: IRExpr
 
-  parse-expr : SExp -> IRExpr
-  parse-expr (e) =
+  ir-parse-expr : SExp -> IRExpr
+  ir-parse-expr (e) =
    let xs = sexp-list e
    in if list-length xs == 0 then IrError "empty-expr" ErrorTy synthetic-span
    else let head = sexp-atom (list-at xs 0)
@@ -697,57 +697,57 @@ Section: IRExpr
    else if head == "text-lit" then IrTextLit (sexp-str (list-at xs 1)) synthetic-span
    else if head == "bool-lit" then IrBoolLit (sexp-atom (list-at xs 1) == "true") synthetic-span
    else if head == "char-lit" then IrCharLit (sexp-int (list-at xs 1)) synthetic-span
-   else if head == "name" then IrName (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
-   else if head == "binary" then parse-expr-binary xs
-   else if head == "negate" then IrNegate (parse-expr (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
-   else if head == "if" then IrIf (parse-expr (list-at xs 1)) (parse-expr (list-at xs 2)) (parse-expr (list-at xs 3)) (parse-type (list-at xs 4)) synthetic-span
-   else if head == "let" then IrLet (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) (parse-expr (list-at xs 3)) (parse-expr (list-at xs 4)) synthetic-span
-   else if head == "apply" then IrApply (parse-expr (list-at xs 1)) (parse-expr (list-at xs 2)) (parse-type (list-at xs 3)) synthetic-span
-   else if head == "lambda" then parse-expr-lambda xs
-   else if head == "list-expr" then parse-expr-list xs
-   else if head == "match" then parse-expr-match xs
-   else if head == "act" then parse-expr-act xs
-   else if head == "handle" then parse-expr-handle xs
-   else if head == "with-timeout" then parse-expr-timeout xs
-   else if head == "record" then parse-expr-record xs
-   else if head == "field-access" then IrFieldAccess (parse-expr (list-at xs 1)) (sexp-str (list-at xs 2)) (parse-type (list-at xs 3)) synthetic-span
-   else if head == "field-store" then IrFieldStore (parse-expr (list-at xs 1)) (sexp-str (list-at xs 2)) (parse-expr (list-at xs 3)) (parse-type (list-at xs 4)) synthetic-span
-   else if head == "try" then parse-expr-try xs
-   else if head == "fork" then IrFork (parse-expr (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
-   else if head == "await" then IrAwait (parse-expr (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
-   else if head == "error" then IrError (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
+   else if head == "name" then IrName (sexp-str (list-at xs 1)) (ir-parse-type (list-at xs 2)) synthetic-span
+   else if head == "binary" then ir-parse-expr-binary xs
+   else if head == "negate" then IrNegate (ir-parse-expr (list-at xs 1)) (ir-parse-type (list-at xs 2)) synthetic-span
+   else if head == "if" then IrIf (ir-parse-expr (list-at xs 1)) (ir-parse-expr (list-at xs 2)) (ir-parse-expr (list-at xs 3)) (ir-parse-type (list-at xs 4)) synthetic-span
+   else if head == "let" then IrLet (sexp-str (list-at xs 1)) (ir-parse-type (list-at xs 2)) (ir-parse-expr (list-at xs 3)) (ir-parse-expr (list-at xs 4)) synthetic-span
+   else if head == "apply" then IrApply (ir-parse-expr (list-at xs 1)) (ir-parse-expr (list-at xs 2)) (ir-parse-type (list-at xs 3)) synthetic-span
+   else if head == "lambda" then ir-parse-expr-lambda xs
+   else if head == "list-expr" then ir-parse-expr-list xs
+   else if head == "match" then ir-parse-expr-match xs
+   else if head == "act" then ir-parse-expr-act xs
+   else if head == "handle" then ir-parse-expr-handle xs
+   else if head == "with-timeout" then ir-parse-expr-timeout xs
+   else if head == "record" then ir-parse-expr-record xs
+   else if head == "field-access" then IrFieldAccess (ir-parse-expr (list-at xs 1)) (sexp-str (list-at xs 2)) (ir-parse-type (list-at xs 3)) synthetic-span
+   else if head == "field-store" then IrFieldStore (ir-parse-expr (list-at xs 1)) (sexp-str (list-at xs 2)) (ir-parse-expr (list-at xs 3)) (ir-parse-type (list-at xs 4)) synthetic-span
+   else if head == "try" then ir-parse-expr-try xs
+   else if head == "fork" then IrFork (ir-parse-expr (list-at xs 1)) (ir-parse-type (list-at xs 2)) synthetic-span
+   else if head == "await" then IrAwait (ir-parse-expr (list-at xs 1)) (ir-parse-type (list-at xs 2)) synthetic-span
+   else if head == "error" then IrError (sexp-str (list-at xs 1)) (ir-parse-type (list-at xs 2)) synthetic-span
    else IrError "unknown-form" ErrorTy synthetic-span
 
-  parse-expr-binary : List SExp -> IRExpr
-  parse-expr-binary (xs) =
-   IrBinary (parse-bin-op (sexp-atom (list-at xs 1))) (parse-expr (list-at xs 2)) (parse-expr (list-at xs 3)) (parse-type (list-at xs 4)) synthetic-span
+  ir-parse-expr-binary : List SExp -> IRExpr
+  ir-parse-expr-binary (xs) =
+   IrBinary (parse-bin-op (sexp-atom (list-at xs 1))) (ir-parse-expr (list-at xs 2)) (ir-parse-expr (list-at xs 3)) (ir-parse-type (list-at xs 4)) synthetic-span
 
-  parse-expr-lambda : List SExp -> IRExpr
-  parse-expr-lambda (xs) =
+  ir-parse-expr-lambda : List SExp -> IRExpr
+  ir-parse-expr-lambda (xs) =
    let params = parse-params (sexp-list (list-at xs 1))
-   in let body = parse-expr (list-at xs 2)
-   in let ty = parse-type (list-at xs 3)
+   in let body = ir-parse-expr (list-at xs 2)
+   in let ty = ir-parse-type (list-at xs 3)
    in IrLambda params body ty synthetic-span
 
-  parse-expr-list : List SExp -> IRExpr
-  parse-expr-list (xs) =
-   let elems = parse-expr-elems (sexp-list (list-at xs 1))
-   in let ty = parse-type (list-at xs 2)
+  ir-parse-expr-list : List SExp -> IRExpr
+  ir-parse-expr-list (xs) =
+   let elems = ir-parse-expr-elems (sexp-list (list-at xs 1))
+   in let ty = ir-parse-type (list-at xs 2)
    in IrList elems ty synthetic-span
 
-  parse-expr-elems : List SExp -> List IRExpr
-  parse-expr-elems (xs) = parse-expr-elems-loop xs 1 (list-length xs) []
+  ir-parse-expr-elems : List SExp -> List IRExpr
+  ir-parse-expr-elems (xs) = ir-parse-expr-elems-loop xs 1 (list-length xs) []
 
-  parse-expr-elems-loop : List SExp, Integer, Integer, List IRExpr -> List IRExpr
-  parse-expr-elems-loop (xs) (i) (len) (acc) =
+  ir-parse-expr-elems-loop : List SExp, Integer, Integer, List IRExpr -> List IRExpr
+  ir-parse-expr-elems-loop (xs) (i) (len) (acc) =
    if i >= len then acc
-   else parse-expr-elems-loop xs (i + 1) len (list-push acc (parse-expr (list-at xs i)))
+   else ir-parse-expr-elems-loop xs (i + 1) len (list-push acc (ir-parse-expr (list-at xs i)))
 
-  parse-expr-match : List SExp -> IRExpr
-  parse-expr-match (xs) =
-   let scrut = parse-expr (list-at xs 1)
+  ir-parse-expr-match : List SExp -> IRExpr
+  ir-parse-expr-match (xs) =
+   let scrut = ir-parse-expr (list-at xs 1)
    in let branches = parse-branches (sexp-list (list-at xs 2))
-   in let ty = parse-type (list-at xs 3)
+   in let ty = ir-parse-type (list-at xs 3)
    in IrMatch scrut branches ty synthetic-span
 
   parse-branches : List SExp -> List IRBranch
@@ -758,76 +758,76 @@ Section: IRExpr
    if i >= len then acc
    else let inner = sexp-list (list-at xs i)
    in let pat = parse-pat (list-at inner 1)
-   in let body = parse-expr (list-at inner 2)
-   in let guard = if list-length inner > 3 then parse-expr (list-at inner 3) else IrBoolLit True synthetic-span
+   in let body = ir-parse-expr (list-at inner 2)
+   in let guard = if list-length inner > 3 then ir-parse-expr (list-at inner 3) else IrBoolLit True synthetic-span
    in parse-branches-loop xs (i + 1) len (list-push acc (IRBranch { pattern = pat, body = body, guard = guard, span = synthetic-span, alt-group = 0 }))
 
-  parse-expr-act : List SExp -> IRExpr
-  parse-expr-act (xs) =
-   let stmts = parse-act-stmts (sexp-list (list-at xs 1))
-   in let ty = parse-type (list-at xs 2)
+  ir-parse-expr-act : List SExp -> IRExpr
+  ir-parse-expr-act (xs) =
+   let stmts = ir-parse-act-stmts (sexp-list (list-at xs 1))
+   in let ty = ir-parse-type (list-at xs 2)
    in IrAct stmts ty synthetic-span
 
-  parse-act-stmts : List SExp -> List IRActStmt
-  parse-act-stmts (xs) = parse-act-stmts-loop xs 1 (list-length xs) []
+  ir-parse-act-stmts : List SExp -> List IRActStmt
+  ir-parse-act-stmts (xs) = ir-parse-act-stmts-loop xs 1 (list-length xs) []
 
-  parse-act-stmts-loop : List SExp, Integer, Integer, List IRActStmt -> List IRActStmt
-  parse-act-stmts-loop (xs) (i) (len) (acc) =
+  ir-parse-act-stmts-loop : List SExp, Integer, Integer, List IRActStmt -> List IRActStmt
+  ir-parse-act-stmts-loop (xs) (i) (len) (acc) =
    if i >= len then acc
-   else parse-act-stmts-loop xs (i + 1) len (list-push acc (parse-act-stmt (list-at xs i)))
+   else ir-parse-act-stmts-loop xs (i + 1) len (list-push acc (parse-act-stmt (list-at xs i)))
 
   parse-act-stmt : SExp -> IRActStmt
   parse-act-stmt (e) =
    let xs = sexp-list e
    in let head = sexp-atom (list-at xs 0)
-   in if head == "do-bind" then IrDoBind (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) (parse-expr (list-at xs 3)) synthetic-span
-   else if head == "do-exec" then IrDoExec (parse-expr (list-at xs 1)) synthetic-span
+   in if head == "do-bind" then IrDoBind (sexp-str (list-at xs 1)) (ir-parse-type (list-at xs 2)) (ir-parse-expr (list-at xs 3)) synthetic-span
+   else if head == "do-exec" then IrDoExec (ir-parse-expr (list-at xs 1)) synthetic-span
    else IrDoExec (IrError "bad-stmt" ErrorTy synthetic-span) synthetic-span
 
-  parse-expr-handle : List SExp -> IRExpr
-  parse-expr-handle (xs) =
+  ir-parse-expr-handle : List SExp -> IRExpr
+  ir-parse-expr-handle (xs) =
    let eff = sexp-str (list-at xs 1)
-   in let body = parse-expr (list-at xs 2)
-   in let clauses = parse-handle-clauses (sexp-list (list-at xs 3))
-   in let ty = parse-type (list-at xs 4)
+   in let body = ir-parse-expr (list-at xs 2)
+   in let clauses = ir-parse-handle-clauses (sexp-list (list-at xs 3))
+   in let ty = ir-parse-type (list-at xs 4)
    in IrHandle eff body clauses ty synthetic-span
 
-  parse-handle-clauses : List SExp -> List IRHandleClause
-  parse-handle-clauses (xs) = parse-handle-clauses-loop xs 1 (list-length xs) []
+  ir-parse-handle-clauses : List SExp -> List IRHandleClause
+  ir-parse-handle-clauses (xs) = ir-parse-handle-clauses-loop xs 1 (list-length xs) []
 
-  parse-handle-clauses-loop : List SExp, Integer, Integer, List IRHandleClause -> List IRHandleClause
-  parse-handle-clauses-loop (xs) (i) (len) (acc) =
+  ir-parse-handle-clauses-loop : List SExp, Integer, Integer, List IRHandleClause -> List IRHandleClause
+  ir-parse-handle-clauses-loop (xs) (i) (len) (acc) =
    if i >= len then acc
    else let inner = sexp-list (list-at xs i)
    in let op = sexp-str (list-at inner 1)
    in let params = parse-text-list (sexp-list (list-at inner 2))
    in let resume = sexp-str (list-at inner 3)
-   in let body = parse-expr (list-at inner 4)
-   in parse-handle-clauses-loop xs (i + 1) len (list-push acc (IRHandleClause { op-name = op, params = params, resume-name = resume, body = body, span = synthetic-span }))
+   in let body = ir-parse-expr (list-at inner 4)
+   in ir-parse-handle-clauses-loop xs (i + 1) len (list-push acc (IRHandleClause { op-name = op, params = params, resume-name = resume, body = body, span = synthetic-span }))
 
-  parse-expr-timeout : List SExp -> IRExpr
-  parse-expr-timeout (xs) =
+  ir-parse-expr-timeout : List SExp -> IRExpr
+  ir-parse-expr-timeout (xs) =
    let secs = sexp-int (list-at xs 1)
    in let effs = parse-text-list (sexp-list (list-at xs 2))
    in let scopes = parse-text-list (sexp-list (list-at xs 3))
-   in let body = parse-expr (list-at xs 4)
-   in let ty = parse-type (list-at xs 5)
+   in let body = ir-parse-expr (list-at xs 4)
+   in let ty = ir-parse-type (list-at xs 5)
    in IrWithTimeout secs effs scopes body ty synthetic-span
 
-  parse-expr-record : List SExp -> IRExpr
-  parse-expr-record (xs) =
+  ir-parse-expr-record : List SExp -> IRExpr
+  ir-parse-expr-record (xs) =
    let name = sexp-str (list-at xs 1)
    in let fields = parse-field-vals (sexp-list (list-at xs 2))
-   in let ty = parse-type (list-at xs 3)
+   in let ty = ir-parse-type (list-at xs 3)
    in IrRecord name fields ty synthetic-span
 
-  parse-expr-try : List SExp -> IRExpr
-  parse-expr-try (xs) =
+  ir-parse-expr-try : List SExp -> IRExpr
+  ir-parse-expr-try (xs) =
    let max = sexp-int (list-at xs 1)
-   in let body = parse-act-stmts (sexp-list (list-at xs 2))
-   in let fb = parse-act-stmts (sexp-list (list-at xs 3))
-   in let fail = parse-act-stmts (sexp-list (list-at xs 4))
-   in let ty = parse-type (list-at xs 5)
+   in let body = ir-parse-act-stmts (sexp-list (list-at xs 2))
+   in let fb = ir-parse-act-stmts (sexp-list (list-at xs 3))
+   in let fail = ir-parse-act-stmts (sexp-list (list-at xs 4))
+   in let ty = ir-parse-type (list-at xs 5)
    in IrTry max body fb fail ty synthetic-span
 
   parse-field-vals : List SExp -> List IRFieldVal
@@ -838,7 +838,7 @@ Section: IRExpr
    if i >= len then acc
    else let inner = sexp-list (list-at xs i)
    in let name = sexp-str (list-at inner 1)
-   in let val = parse-expr (list-at inner 2)
+   in let val = ir-parse-expr (list-at inner 2)
    in parse-field-vals-loop xs (i + 1) len (list-push acc (IRFieldVal { name = name, value = val, span = synthetic-span }))
 
 Section: Params
@@ -851,7 +851,7 @@ Section: Params
    if i >= len then acc
    else let inner = sexp-list (list-at xs i)
    in let name = sexp-str (list-at inner 1)
-   in let ty = parse-type (list-at inner 2)
+   in let ty = ir-parse-type (list-at inner 2)
    in parse-params-loop xs (i + 1) len (list-push acc (IRParam { name = name, type-val = ty, span = synthetic-span }))
 
 Section: IRDef + Chapter
@@ -870,8 +870,8 @@ Section: IRDef + Chapter
    in let name = sexp-str (list-at xs 1)
    in let slug = sexp-str (list-at xs 2)
    in let params = parse-params (sexp-list (list-at xs 3))
-   in let ty = parse-type (list-at xs 4)
-   in let body = parse-expr (list-at xs 5)
+   in let ty = ir-parse-type (list-at xs 4)
+   in let body = ir-parse-expr (list-at xs 5)
    in let punct = if list-length xs > 6 then sexp-int (list-at xs 6) > 0 else False
    in let budget = if list-length xs > 7 then sexp-int (list-at xs 7) else 0
    in let uniq = if list-length xs > 8 then parse-unique (sexp-list (list-at xs 8)) 1 [] else []
@@ -884,7 +884,7 @@ Section: IRDef + Chapter
 
   parse-ir-chapter : Text -> ParsedIR
   parse-ir-chapter (s) =
-   let tokens = tokenize s
+   let tokens = ir-tokenize s
    in let tree = build-tree tokens
    in walk-chapter tree
 

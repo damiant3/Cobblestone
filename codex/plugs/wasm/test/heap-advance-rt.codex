@@ -1,0 +1,23 @@
+Chapter: HeapAdvanceRt
+
+ x86 runs in a pre-mapped arena, so advancing the bump cursor over a region
+ makes that region writable. A wasm linear memory does not: it starts at its
+ declared page count and only `memory.grow` extends it, so a cursor moved past
+ the frontier by anything other than the allocator leaves the reservation
+ unbacked and the first write into it faults at exactly the memory size. The
+ corpus cannot reach this with ordinary allocation, because every ordinary
+ allocation goes through the allocator and grows.
+
+  opening : [Console] Nothing = act
+   let base = __heap-save
+   in let advanced = __heap-advance 67108864
+   in let top = __heap-save
+   in let wrote-far = poke-byte (top - 8) 0 123
+   in let wrote-mid = poke-byte (base + 33554432) 0 77
+   in act
+    print-line-uni ("advanced by 64 MB " & show (top - base == 67108864))
+    print-line-uni ("far byte " & show (peek-byte (top - 8) 0))
+    print-line-uni ("mid byte " & show (peek-byte (base + 33554432) 0))
+    print-line-uni ("base byte still readable " & show (peek-byte base 0 >= 0))
+   end
+  end

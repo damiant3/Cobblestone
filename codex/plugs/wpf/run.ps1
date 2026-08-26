@@ -60,8 +60,7 @@ $wpfOutFile = Join-Path $IrDir 'plug-wpf.out'
 Remove-Item -Force $wpfOutFile -ErrorAction SilentlyContinue
 $proc = $null
 try {
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', "$MemMB", '-headless', '-output', $wpfOutFile) `
-        -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $wpfOutFile -StderrFile $stderrFile -MemMB "$MemMB"
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {
         if ([DateTime]::UtcNow -gt $deadline) {

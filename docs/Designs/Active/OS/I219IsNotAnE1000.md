@@ -94,7 +94,7 @@ From `drivers/net/ethernet/intel/e1000e/ich8lan.c`:
 | requirement | Linux | ours |
 |---|---|---|
 | ULP forcibly disabled, because its state cannot be known | `e1000_disable_ulp_lpt_lp()` | **THE ROW SPLITS IN TWO AND HALF OF IT IS BUILT, ships OFF** (blu 2026-08-21). The ULP **exit** sequence is unspecified in the documents we hold (reek), and that half is not attempted and must not be guessed. ULP **entry** is fully cited: I219 rev 2.02 section 9.5.7.1 maps ULP Configuration 1, page 779 register 16, and STICKY_ULP bit 4 ("Enter ULP on Link disconnect") plus EN_ULP_LANPHYPC bit 10 ("Enable ULP on LAN disable") are the two conditions that put the part into the state whose exit we cannot specify. `e1000-ulp-disable` clears exactly those, read-modify-write, answer on the device as `e-ulp`. The board already reads both clear (`ulp 779.16=0800`, sittings 8 and 9), so the write is a NO-OP there, and 0x0800 is bit 11 inside the Reserved 13:11 which the mask leaves alone |
-| SW/FW/HW semaphore before PHY and select MAC access | `e1000_acquire_swflag_ich8lan()`, `EXTCNF_CTRL.SWFLAG` | **DONE: ships ON, proceed-on-failure** (blu 2026-08-21). **AND IT CARRIES A DEFECT, registered 2026-08-21 (blu, red asked) so it is not re-derived: `e1000-swflag-acquire` writes far more than its own bit.** The WRITE itself is right and the datasheet does not forbid it -- 4.5.2 says a request is registered by writing 1b to your own bit and the grant is denied by that bit reading back 0b, so an acquire that saw MNG held and refused to write could never acquire at all when firmware released. What is wrong is everything around it. The loop is a full-register read-modify-write, `bit-or cur e1000-extcnf-sw-own` with no mask, so it writes the MNG ownership bit 7 back as 1b when firmware holds it -- registering a request on another agent's behalf, against 4.5.2's "at most one bit is 1b at any time" and "the owner writes 0b when done" -- and it writes back the extended configuration area fields, which on I219 are the only thing the datasheet documents this register for. And it does that **2,000 times with no delay**, roughly 4,000 MMIO transactions back to back on the same PCH as the xHCI. **THE FIX SHAPE, so it is not re-argued:** write ONLY the SW-ownership bit, never MNG and never the ext-config fields; poll with a delay and a bounded count far below 2,000. **It does not fly until sitting 12's bank names which line stops the medium, one change per flight** (red, 2026-08-21) -- but it is wrong whichever way that bank reads, so the fix gets built the moment the bank lands, whether or not it names `swflag`. |
+| SW/FW/HW semaphore before PHY and select MAC access | `e1000_acquire_swflag_ich8lan()`, `EXTCNF_CTRL.SWFLAG` | **DONE: ships ON, proceed-on-failure** (blu 2026-08-21). **AND IT CARRIES A DEFECT, registered 2026-08-21 (blu, red asked) so it is not re-derived: `e1000-swflag-acquire` writes far more than its own bit.** The WRITE itself is right and the datasheet does not forbid it -- 4.5.2 says a request is registered by writing 1b to your own bit and the grant is denied by that bit reading back 0b, so an acquire that saw MNG held and refused to write could never acquire at all when firmware released. What is wrong is everything around it. The loop is a full-register read-modify-write, `bit-or cur e1000-extcnf-sw-own` with no mask, so it writes the MNG ownership bit 7 back as 1b when firmware holds it -- registering a request on another agent's behalf, against 4.5.2's "at most one bit is 1b at any time" and "the owner writes 0b when done" -- and it writes back the extended configuration area fields, which on I219 are the only thing the datasheet documents this register for. And it does that **2,000 times with no delay**, roughly 4,000 MMIO transactions back to back on the same PCH as the xHCI. **THE FIX SHAPE, so it is not re-argued:** write ONLY the SW-ownership bit, never MNG and never the ext-config fields; poll with a delay and a bounded count far below 2,000. **It does not fly until sitting 12's bank names which line stops the medium, one change per flight** (red, 2026-08-21) -- but it is wrong whichever way that bank reads, so the fix gets built the moment the bank lands, whether or not it names `swflag`. **THE BANK LANDED 2026-08-24 AND THE GATE IS LIFTED: it does not name `swflag`, and it cannot.** Sitting 12's medium ends at b3's third note and the glass row carries `bank-lost-note=4`, so the first refused write is `reset-rst-write`; the SWFLAG acquire sits in `e1000-init-after-reset`, strictly after all seven `db3-reset` steps, so it ran after a medium that was already gone. The acquire-loop defect is therefore UNBLOCKED for build on the terms its own registration set, and it is still wrong for the reasons above rather than because any flight blamed it. **BUILT AND FIXED 2026-08-24 (blu), with the count re-measured at THREE TIMES the registered one: 6,002 foreign writes, not 2,000, because the acquire runs from three call sites.** The request now masks all three ownership bits off and sets only ours, the loop is 64 polls with a 100 us pause instead of 2,000 immediate retries, and `foreign` goes 6,002 to 0 with `writes` 6,002 to 194. The account is the section "How the acquire-loop fix was built" below; the row is CLOSED. |
 | **K1 disabled at 1 Gbps or the MAC STALLS** | `e1000_configure_k1_ich8lan()` | **DONE: cited 770.17, ships ON** since main 18562 (blu 2026-08-21) |
 | PHY may be in SMBus mode owned by firmware | `e1e_force_smbus()`, `LANPHYPC` toggle | absent |
 | LCD config reloaded from NVM after PHY reset | `e1000_post_phy_reset_ich8lan()` | **WIRED, ships OFF**: `e1000-lcd-reload` is now CALLED, from `na-phy-kick`, with the device id threaded through `na-bring-up`, `na-bring-up-after` and the four stages that reach them (blu 2026-08-21). Before that it had no production caller at all, so the constant was a switch on a wire to nothing (L-UNCALLED). **THE FLIP IS THE FIRST POST-FLIGHT ITEM**: turning it True adds a second unguarded PHY write to the ASDE path, which is the path sitting 9 hung on with the MDIO gate closed, so it waits for sitting 10's sub-step row to say where bring-up stops (red, 2026-08-21) |
@@ -924,6 +924,54 @@ worth keeping. Every row answered `-1`, because the arm's own reader reached
 subject through the mechanism under test measures the mechanism. The reader
 takes the semaphore now, so the only unowned access in the boot is the one row
 1 is about.
+
+## How the acquire-loop fix was built (blu, 2026-08-24)
+
+**THE DEFECT HAD NO FALSIFIER, AND THAT WAS THE FIRST THING TO FIX.** The bed's
+`i219_extcnf_write` computed `keep = mng`, preserving firmware's bit whatever
+software wrote, so a driver that read-modify-wrote the whole register behaved
+IDENTICALLY to one that wrote only its own. All four existing arms --
+`e1000-swflag`, `e1000-swflag-mng`, `e1000-swflag-refused`, `e1000-swflag-k1`
+-- pass with the defect present and with it fixed. A bed more forgiving than
+the spec (L-GAP), so no amount of running the suite could have found this and
+no arm could have proved the repair.
+
+**THE INSTRUMENT CAME FIRST AND IT IMMEDIATELY CORRECTED THE REGISTRATION.**
+codex-vm gained an EXTCNF census counting writes, writes asserting a bit the
+writer does not own, and writes carrying ext-config bits. Measured against the
+UNFIXED driver with firmware holding MNG: **`writes=6002 foreign=6002`**. Every
+single write was a protocol violation, and the registered figure of 2,000 was
+one call site's; the acquire runs from `e1000-init-at`, `db3-init-after-reset`
+and `e1000-k1-configure-guarded`. After the fix: **`writes=194 foreign=0`**,
+which is 3 sites * 64 polls + 2 releases, with `final=00000080` unchanged so
+firmware still holds MNG and nothing else moved.
+
+**THE SABOTAGE CAUGHT A VACUOUS ARM, WHICH IS THE PART WORTH KEEPING.** The
+first version of `codex/test/e1000-swflag-strict` ran under
+`-i219-extcnf-strict` alone. Restoring the defect changed NOTHING: `foreign=0`,
+arm still green. With MNG never held the register starts at zero, so a
+read-modify-writing driver reads zero and writes only its own bit -- the defect
+cannot appear. And with MNG held forever no acquire can succeed however correct
+the protocol is, so both drivers answer 0. **Only a firmware RELEASE separates
+them**, which is why `-i219-mng-release-after N` exists: 4.5.2 says the MNG bit
+clears when firmware clears it, so a release is the ordinary case the poll loop
+was written for. Under `-i219-extcnf-strict -i219-mng-release-after 3` the arm
+reads `acquire=1 held=yes` fixed and `acquire=0 held=no` sabotaged. That pair is
+the arm's whole value and it did not exist until the sabotage demanded it.
+
+**WHAT THE FIX DELIBERATELY DOES NOT DO.** It does not write a bare `#0020`.
+The registered shape said "write ONLY the SW-ownership bit", and taken
+literally that zeroes the extended-configuration fields -- the one thing the
+I219 datasheet documents this register for. Masking the three ownership bits
+off and setting ours fixes what was measured wrong and leaves untouched what
+was not, rather than trading a proven defect for an unproven one.
+
+**THE STRICT FLAG IS NOT A CLAIM ABOUT THE PART, and must stay off by
+default.** Whether the real PCH enforces "at most one bit is 1b" is uncited;
+4.5.2 says the mechanism "does not block software accesses". The flag exists to
+express the failure mode so the driver can be measured against the protocol,
+which is ours to get right whatever the part tolerates. A bed that enforced it
+by default would be asserting the campaign's open question as its answer.
 
 ## Requirement 2, the MDIO/NVM semaphore: how it was built (blu, 2026-08-21)
 

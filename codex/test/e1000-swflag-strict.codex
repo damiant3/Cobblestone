@@ -1,0 +1,61 @@
+Chapter: E1000SwflagStrict
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+
+Section: Fixtures
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+Section: Judges
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+ THE ARM FOR THE REQUEST CARRYING ONLY OUR OWN BIT. 82583V 4.5.2 gives each
+ agent one ownership bit and says at most one is 1b at any time, so a write
+ that asserts MNG or HW registers a request on another agent's behalf. Until
+ 2026-08-24 `e1000-swflag-acquire` read-modify-wrote the whole register and did
+ exactly that whenever firmware held MNG, which is what the board reads
+ (`extcnf 0x00F00=002c0089`).
+
+ NO ARM COULD SEE IT, AND THAT IS WHY THIS ONE EXISTS. The bed preserved
+ firmware's MNG whatever software wrote, so the violation had no consequence
+ and a read-modify-writing driver was indistinguishable from a correct one:
+ `e1000-swflag`, `e1000-swflag-mng`, `e1000-swflag-refused` and
+ `e1000-swflag-k1` all pass with the defect present. `-i219-extcnf-strict`
+ models a part that enforces the rule instead of tolerating it: a foreign
+ assertion latches, and while latched SW ownership is never granted.
+
+ SO THIS ARM IS FALSIFIABLE BY CONSTRUCTION. The acquire must answer 1 and the
+ flag must be held. A driver that asserts a bit it does not own cannot reach
+ either, and the pre-fix driver was measured doing so 6,002 times in this same
+ configuration. `violated` staying clear is the whole claim.
+
+ THE FLAG IS NOT A STATEMENT ABOUT THE PART. Whether the real PCH enforces
+ 4.5.2 is uncited and is the campaign's open proposition; 4.5.2 itself says the
+ mechanism does not block software accesses. This arm measures the DRIVER
+ against the protocol, which is ours to get right either way.
+
+  opening : [Console] Nothing = act
+    let scan = pci-scan-bus 0
+    in let d = bring-up scan
+    in let mmio = d.e-mmio
+    in let got = e1000-swflag-acquire mmio e1000-swflag-fuel
+    in let held = e1000-swflag-held mmio
+    in let ext = e1000-read mmio e1000-reg-extcnf-ctrl
+    in act
+      print-line-uni ("acquire answers    : " & show got)
+      print-line-uni ("flag held          : " & yn held)
+      print-line-uni ("mng asserted by us : " & yn (bit-and ext e1000-extcnf-mng-own /= 0))
+      print-line-uni ("released clean     : " & show (e1000-swflag-release mmio))
+    end
+  end
+
+Page 1

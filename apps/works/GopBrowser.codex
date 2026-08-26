@@ -90,14 +90,25 @@ Section: Pane
  The narrowing is not decoration: since WORKS-45 the viewport node is taller
  than the space it was given, so its own bounds are not the visible region.
 
-  gbr-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserState -> BrowserState
-  gbr-repaint (base) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (st) =
+ THE ORIGIN IS THE PANE'S AND THE SIZE IS THE FIT'S. `x` and `y` are DEVICE
+ pixels, the top-left of the box this pane was granted, and they move both the
+ layout rect and the clip. A windowed browser needs no origin of its own on
+ the hit side, because a tree laid out at an absolute rect comes back with
+ absolute bounds and `browser-click-code` compares against those
+ (`codex/test/apps/desk-window-origin` is where that was settled).
+
+ `browser-scroll-fit` still takes the SIZE alone. Where the box is has nothing
+ to do with how much of the page fits in it, and handing it an origin would be
+ an argument it could only ignore.
+
+  gbr-repaint : Integer, Integer, Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserState -> BrowserState
+  gbr-repaint (base) (x) (y) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (st) =
     let hd = cursor-hide cs base stride
     in let fit = browser-scroll-fit st (w / s) (h / s)
     in let frame = __heap-save
     in let th = fit.bs-theme
-    in let laid = widget-layout (browser-render fit) th (layout-rect 0 0 (w / s) (h / s))
-    in let d = gbr-paint base stride (layout-rect 0 0 w h) font tf laid th s (browser-scroll-offset fit)
+    in let laid = widget-layout (browser-render fit) th (layout-rect (x / s) (y / s) (w / s) (h / s))
+    in let d = gbr-paint base stride (layout-rect x y w h) font tf laid th s (browser-scroll-offset fit)
     in let memo = browser-memo-laid fit laid frame
     in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
     in memo
@@ -160,9 +171,9 @@ Section: Step
     let st = browser-init w h browser-theme-default display-init-text-fallback
     in BrowserPane { bp-st = st, bp-mods = 0 }
 
-  gbr-first-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserPane -> Integer
-  gbr-first-paint (base) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (bp) =
-    let shown = gbr-repaint base w h stride font tf mouse cs s (bp.bp-st)
+  gbr-first-paint : Integer, Integer, Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserPane -> Integer
+  gbr-first-paint (base) (x) (y) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (bp) =
+    let shown = gbr-repaint base x y w h stride font tf mouse cs s (bp.bp-st)
     in let k = __record-set bp "bp-st" shown
     in 0
 
@@ -176,8 +187,8 @@ Section: Step
  old loop's and steady state is one state and one tree. What it creeps by is
  one `BrowserState` per event, which the loop did too.
 
-  gbr-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserPane, Integer, Boolean -> [Device.Port] Integer
-  gbr-step (base) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (bp) (sc) (clicked) =
+  gbr-step : Integer, Integer, Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserPane, Integer, Boolean -> [Device.Port] Integer
+  gbr-step (base) (x) (y) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (bp) (sc) (clicked) =
     let st = bp.bp-st
     in let mods = bp.bp-mods
     in if clicked then
@@ -186,7 +197,7 @@ Section: Step
       in let code = browser-click-code st mx my
       in let d = __heap-restore (st.bs-laid-mark)
       in let next = browser-apply-click st mx my code
-      in let shown = gbr-repaint base w h stride font tf mouse cs s next
+      in let shown = gbr-repaint base x y w h stride font tf mouse cs s next
       in let k = __record-set bp "bp-st" shown
       in 0 - 1
     else if sc == 0 then 1
@@ -198,6 +209,6 @@ Section: Step
       let key = poll-key-decode sc mods
       in let d = __heap-restore (st.bs-laid-mark)
       in let next = browser-dispatch-event st (event-key-down key mods 0)
-      in let shown = gbr-repaint base w h stride font tf mouse cs s next
+      in let shown = gbr-repaint base x y w h stride font tf mouse cs s next
       in let k = __record-set bp "bp-st" shown
       in 0 - 1

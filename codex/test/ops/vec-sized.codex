@@ -1,0 +1,57 @@
+Chapter: VecSized
+
+ The sized-vector builtins had a registry row, a type and an emitter each and
+ zero call sites, so nothing in the tree ever ran one. `vec-singleton` reached
+ `__list_cons`, which extends the list it finds in `rsi` while
+ `emit-helper-call-1` loads only `rdi`, and the general-protection fault that
+ followed was invisible for the same reason: no test named these.
+
+ One line per builtin, so a fault in one names itself rather than arriving as
+ a silent absence.
+
+ `vec-empty` is the only one of the five reached as a bare name rather than a
+ call, so its rows are what hold the nullary-builtin route open: without it
+ the name is emitted as a call to a symbol nothing defines and the chapter
+ fails to compile at all rather than answering wrong.
+
+ THE TWO LENGTH ROWS CANNOT CATCH THE OTHER HALF, and the two consuming rows
+ below them are not redundant with anything. Measured against a compiler with
+ the empty vector emitted as a literal 0: both length rows still answered 0
+ and PASSED, because a length read is a load from offset 0 and address 0 is
+ mapped and holds zero, so the wrong representation returns the right answer
+ by coincidence. Only a row that dereferences the vector fails, and it fails
+ at `CR2=fffffffffffffff8` -- the count cell one word below a null pointer.
+
+ `vec-cons` APPENDS, and the order rows below are what pin that. Nothing
+ documents these five as a user-facing capability, so the name is the only
+ thing suggesting a prepend and it is outvoted: `PunctualProbe.md` records
+ `__list_snoc` as the one write primitive behind list-push, list-snoc AND
+ vec-cons (Damian, 2026-07-04), which makes `vec-cons` the vector-typed
+ sibling of `list-snoc` and the name a wart. A prepend reading would put 1 at
+ the head below instead of 2, so these rows fail if anyone changes it.
+
+Section: Subjects
+
+  vs-one : Vector 1 Integer
+  vs-one = vec-singleton 7
+
+  vs-two : Vector 2 Integer
+  vs-two = vec-cons 1 (vec-singleton 2)
+
+  vs-nil : Vector 0 Integer
+  vs-nil = vec-empty
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   print-line-uni ("vec-length singleton want 1: " & show (vec-length vs-one))
+   print-line-uni ("vec-head singleton   want 7: " & show (vec-head vs-one))
+   print-line-uni ("vec-length rebuilt    want 1: " & show (vec-length (vec-singleton 42)))
+   print-line-uni ("vec-head rebuilt     want 42: " & show (vec-head (vec-singleton 42)))
+   print-line-uni ("vec-cons length      want 2: " & show (vec-length vs-two))
+   print-line-uni ("vec-cons appends, head stays want 2: " & show (vec-head vs-two))
+   print-line-uni ("vec-length empty     want 0: " & show (vec-length vs-nil))
+   print-line-uni ("vec-length rebuilt empty want 0: " & show (vec-length vec-empty))
+   print-line-uni ("cons onto empty      want 1: " & show (vec-length (vec-cons 5 vec-empty)))
+   print-line-uni ("head of that         want 5: " & show (vec-head (vec-cons 5 vec-empty)))
+  end

@@ -1,0 +1,62 @@
+Chapter: EncodeJsonEscapes
+
+ CCE has no code point for backspace, formfeed, carriage return or tab, so
+ RFC 8259's four named escapes have no literal answer here and this chapter
+ pins the one we chose instead of the one the spec asks for. Until 2026-08-25
+ all four were handed to the encoder as from-unicode's -1 sentinel and came
+ back as the single unit 255, which reads as an ordinary letter rather than a
+ corruption: three distinct escapes collapsed onto one plausible wrong value
+ and no fixture in the tree spelled any of them.
+
+ A tab keeps its whitespace intent as a space. Backspace, formfeed and
+ carriage return are teletype and line-printer machinery and are dropped. An
+ unmappable \uXXXX is content rather than machinery, so it is refused.
+
+  cites Foreword chapter Console
+  cites Encode chapter Json
+
+Section: Probe
+
+  units : Text, Integer, Integer, Text -> Text
+  units (t) (i) (n) (acc) =
+    if i >= n then acc
+    else units t (i + 1) n (acc & " " & show (char-code-at t i))
+
+  verdict : Maybe JsonValue -> Text
+  verdict (m) =
+    when m
+     is Just (v) -> "JUST"
+     is None -> "REFUSED"
+    end
+
+  body : Maybe JsonValue -> Text
+  body (m) =
+    when m
+     is Just (v) -> inner v
+     is None -> "refused"
+    end
+
+  inner : JsonValue -> Text
+  inner (v) =
+    when v
+     is JsonStr (s) -> "len=" & show (text-length s) & " units=" & units s 0 (text-length s) ""
+     is otherwise -> "not a string"
+    end
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line ("plain  " & body (json-parse "\"ab\""))
+    print-line ("bs     " & body (json-parse "\"a\\bb\""))
+    print-line ("ff     " & body (json-parse "\"a\\fb\""))
+    print-line ("cr     " & body (json-parse "\"a\\rb\""))
+    print-line ("tab    " & body (json-parse "\"a\\tb\""))
+    print-line ("lf     " & body (json-parse "\"a\\nb\""))
+    print-line ("u0041  " & body (json-parse "\"a\\u0041b\""))
+    print-line ("u00C0  " & body (json-parse "\"a\\u00C0b\""))
+    print-line ("u0007  " & verdict (json-parse "\"a\\u0007b\""))
+    print-line ("u000D  " & verdict (json-parse "\"a\\u000Db\""))
+    print-line ("bad    " & verdict (json-parse "@@@"))
+  end
+
+Page 1

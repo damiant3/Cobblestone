@@ -262,11 +262,13 @@ wrong answer wearing the costume of a real one.
 
 **`ablate-doctrine -SelfTest` and `-Setup` refuse on main, and its own
 guard is why.** `check-doc-counts` gained README.md claims on 2026-07-31
-and `ablate-doctrine`'s `$scoredDocs` was never extended, so
+(repointed whole to `TechnicalDetails.md` on 2026-08-25, main 19447, when
+the measured claims moved there) and `ablate-doctrine`'s `$scoredDocs` was
+never extended, so
 `Assert-ScoredDocsCoverChecker` throws. That guard is doing exactly its
-job. **The fix is not one line:** adding `README.md` means the scratch
+job. **The fix is not one line:** adding `TechnicalDetails.md` means the scratch
 tree also needs `seed/`, `apps/` and `build/bvt.ps1` junctioned in, or
-every README claim reports NOPATH and every arm scores FAIL for a reason
+every TechnicalDetails claim reports NOPATH and every arm scores FAIL for a reason
 that has nothing to do with the candidate -- which is the failure the
 guard's own comment predicts. It is a design decision about what the
 scratch tree carries, and it is open.
@@ -1212,3 +1214,82 @@ Spawn the process; the race disappears.
 2. **On-disk test runner.**
 3. **Text pingpong on device.**
 4. **Editor and shell as the default on-image path.**
+
+## The `-Internal` dependency map tracks a phase's SUBJECT, not its INSTRUMENT
+
+Found 2026-08-24 by tripping it. `'vm-differential' = $tCompiler`, so the phase
+runs when `codex/compiler` changes. That is right about what it MEASURES: the
+map's own comment calls it the DDC witness for codegen. It is wrong about what
+it measures WITH. The phase compares two VM hosts, and which host runs is
+decided in `build/vm-config.ps1`, which is `$tBuild`.
+
+So a CL that changed VM host selection had the one phase that exercises both
+hosts skipped as "not implicated by this change". It was run by hand and passed
+(both hosts agree, E2EF5CBA5ED6B087), so nothing shipped wrong; the gap is that
+the gate could not have told anyone either way.
+
+Red ruled both halves on 2026-08-25: land the narrow fix, then audit the map
+once. Both are done and this is the audit.
+
+### The audit, one pass over every trigger
+
+The question per phase is whether its trigger covers the files that can change
+its ANSWER, not only the ones it is ABOUT. Frequencies are over the last 50
+changes on main: `$tBuild` without `$tCompiler` fires 11 times, `$tCompiler`
+without `$tBuild` fires once. Phase costs are the max across five gate runs on
+2026-08-24.
+
+| phase | trigger | what else decides its answer | done |
+|---|---|---|---|
+| `vm-differential` | `$tCompiler -or $tBuild` | host selection, `build/vm-config.ps1` | **widened**, 19236 |
+| `deck-headroom` | `$tBuild -or $tCompiler` | `used` is measured by RUNNING the compiler; the per-point divisor is `demand-check-floor` | **widened**, 31 s, ~1 in 50 |
+| `gen-scripts` | `$tBuild -or $tCompiler` | every generator is COMPILED by the current kernel and the emitted text diffed | **widened**, 63 s, ~1 in 50 |
+| `jonquil` | `$tCompiler` | `build/jonquil.ps1` | not widened, below |
+| `plug-binary` | `$tPlugs -or $tCompiler` | `build/test-cross-batch.ps1` | not widened |
+| `cross-smoke` | `$tPlugs -or $tCompiler` | `build/check-cross-smoke.ps1` | not widened |
+| `plug-smoke` | `$tPlugs -or $tCompiler` | `build/plug-run.ps1`, `build/compile.ps1` | not widened |
+| `app-sweep` | `$tApps -or $tCompiler` | `build/sweep-app-classes.ps1` | not widened |
+| `sem-equiv` | `$tFrontEnd` | `build/compare-codex-semantic.ps1` | not widened |
+| `run-list` | `$tVm` | `tools/codex-vm.c`/`.exe`, `build/check-run-list.ps1` | **added**, 5.7 s, per-file |
+
+**`run-list` is the first phase to carry a per-file trigger, and it is the
+shape the six above could not afford.** Added 2026-08-25 (reek, on red's
+clearance) because the arms were half-gated: `bvt.ps1` drives every BVT test
+through `-run-list`, so the HAPPY path already turns the gate red, while the
+refusal and isolation arms -- a corrupt kernel not taking its neighbours, the
+wall budget stopping one line alone, drop attribution, a nested list refused --
+ran nowhere and could rot unseen (L-NOGATE). `$tVm` names two files and a
+binary rather than a directory, which is affordable precisely because the
+phase is 5.7 s: the objection to widening the six is that `$tBuild` fires 11
+times in 50 and costs them ~130 s each, and neither half of that applies here.
+No codegen trigger, because every arm compares two runs of the SAME kernels,
+so a compiler change moves both sides equally.
+
+**Both directions were fired before it was called done**, which is the whole
+point of an item about arms nothing runs. Positive: `p4 edit tools/codex-vm.c`
+alone put `run-list` in the gate's run list and all five arms came back green.
+Negative: one arm sabotaged in place turned the phase red, printed the FAIL
+line, and exited the gate 1. The `.exe` half of the trigger matters because a
+rebuilt VM lands as a change to the versioned binary; `tools/build-vm.ps1`
+needs no trigger of its own for the same reason.
+
+**The two widened are COMPILED answers and that is what separates them.**
+`deck-headroom` and `gen-scripts` do not read a file and report on it; they run
+the compiler and report what came back, so any codegen change can move the
+answer. The measured instance is this session's own: `demand-check-floor` went
+648 to 704 MB at reek 19178 and every build-quire unit moved, `cdxtope` from 52
+of 64 to 48. A CL touching only that constant is `$tCompiler` without
+`$tBuild`, and it would have skipped the phase that exists to see exactly that.
+At ~1 change in 50 the pair costs 94 s that rarely.
+
+**The six NOT widened share one shape and it is deliberately left open.** Each
+is a phase whose RUNNER lives under `build/`, so `$tBuild` is a true
+answer-dependency for all of them -- change `jonquil.ps1` and jonquil's answer
+can change. Blanket-widening them to `$tBuild` is the wrong fix anyway: it
+fires on 11 changes in 50 and would add roughly 130 s to each, which turns
+`-Internal` into the full gate for any build change and defeats the switch.
+The precise fix is a per-file trigger (jonquil runs when `build/jonquil.ps1`
+changes, not when any build file does), and that is machinery in the map to
+manage a modest risk the next full gate already catches -- L-LESS, and the
+reason it is recorded as a question rather than built. **Whoever edits one of
+those six harnesses should run its phase by hand and say so.**

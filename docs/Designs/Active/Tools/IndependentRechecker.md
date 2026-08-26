@@ -240,7 +240,7 @@ precedent is in the same constructor: `IRTextParser.codex` rebuilds a
 def as `IRDef { ... is-punctual = punct, wcet-budget = budget,
 unique-params = [], ... }`. Punctual and WCET are read back off the
 wire as trailing positional fields on `(def ...)`; `unique-params` is
-hardcoded empty. Of the four claims in the README sentence, bounded
+hardcoded empty. Of the four claims in the `TechnicalDetails.md` sentence, bounded
 integers and punctual were pushed out and linear and effects were not.
 
 So stage 3a is additive serialization with no new analysis, in two

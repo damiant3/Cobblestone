@@ -16,11 +16,19 @@ Chapter: DeskLabelMetricsTest
  slack is what the desk actually reserves now, and it is the rounding of one
  device pixel per string rather than tens.
 
- Measured 2026-08-21 with CMUNSS at 1600 wide, and it answers in BOTH
- directions: the four lowercase buttons reserve 49 to 72 device pixels MORE
- than they draw, and `CODEX` reserves 80 against 106 drawn, short by 26.
- Capitals are wider than the cell and lowercase is narrower, so the error is
- not a margin to be tuned but a per-string measurement that is missing.
+ Measured 2026-08-21 with CMUNSS at 1600 wide over the sidebar, and it
+ answered in BOTH directions: the four lowercase buttons reserved 49 to 72
+ device pixels MORE than they drew, and `CODEX` reserved 80 against 106 drawn,
+ short by 26. Capitals are wider than the cell and lowercase is narrower, so
+ the error is not a margin to be tuned but a per-string measurement that is
+ missing.
+
+ RE-MEASURED 2026-08-25 over the taskbar, the sidebar having been deleted:
+ the menu entry reserves 256 device pixels against 93 drawn, and 126 against
+ 93 once `comp-fit-text` has re-measured it through the face. The direction
+ and the size of the correction both survive the change of specimen; the
+ two-directions half does not, because one string cannot show two directions,
+ and that is what the smaller specimen costs.
 
  The under-reservation does no visible harm TODAY only because `flex-col-place`
  gives every child the container's full width, so the brand label is handed 320
@@ -28,9 +36,24 @@ Chapter: DeskLabelMetricsTest
  constraint that stops the full-bleed stretch will start clipping the labels
  the stretch is currently hiding. The cell has to be fixed FIRST.
 
- It walks the desk's OWN sidebar tree rather than a copy of its strings. A
- label listed here would measure this chapter; `desk-sidebar` measured here is
- the thing that ships.
+ It walks the desk's OWN tree rather than a copy of its strings. A label
+ listed here would measure this chapter; the tree measured here is the thing
+ that ships.
+
+ THE SPECIMEN IS THE TASKBAR, AND THE START MENU CANNOT BE ONE. The sidebar
+ was the specimen until it was deleted, and the obvious replacement is the
+ menu, which carries the longest run of labels the desk has. Measured, every
+ row of it reserves ZERO: `gpr-row` and the Shutdown row are built with
+ `widget-set-min ... 0 22`, which sets the width minimum to nothing and lets
+ the column stretch, so the eight-pixel cell is never consulted and the whole
+ menu measures to 40 against the 520 it is drawn at. A tree that never asks
+ the cell for a width cannot measure the cell.
+
+ The taskbar does ask: `desk-taskbar` sets its entry to `mb.wn-min-w`, the
+ button's OWN natural reservation, which is exactly the number under test.
+ That it is a shorter table than the sidebar gave is the honest cost of the
+ sidebar going, and the alternative was a table of zeroes that still looked
+ like a measurement.
 
  WHAT A GATED RUN PROVES IS NOT THE METRIC. `seed/Codex.img` carries no
  typeface and the battery attaches no disk, so the recorded answer is the
@@ -68,6 +91,21 @@ Section: Body
     is Just (n) -> n.wn-min-w
     is None -> 0 - 1
 
+ The rows are a panel down from the menu's root, and `walk` goes one level, so
+ the column is fetched by id rather than reached by descent. `gpr-menu` holds
+ both the group headings and the open group's app rows, which are the two
+ shapes the eight-pixel cell gets wrong in opposite directions.
+
+  kids-of : WidgetNode, Text -> List WidgetNode
+  kids-of (root) (id) = when widget-find root id
+    is Just (n) -> n.wn-children
+    is None -> []
+
+  count-of : WidgetNode, Text -> Integer
+  count-of (root) (id) = when widget-find root id
+    is Just (n) -> n.wn-child-count
+    is None -> 0
+
   walk : List WidgetNode, Integer, Integer, GopFont, Integer -> [Console] Integer
   walk (kids) (i) (n) (tf) (s) =
     if i >= n then 0
@@ -84,25 +122,28 @@ Section: Entry
     m <- gfat-mount-esp
     if m.gm-ok == False then print-line-uni "no FAT volume on the boot medium"
     else act
-      let ppem = comp-glyph-h * ui-wscale dlm-w
+      let ppem = dk-ui-ppem dlm-w
       in let s = ui-wscale dlm-w
       in act
         f <- gfont-load (m.gm-vol) "CMUNSS.TTF" ppem
         if f.gf-ok == False then print-line-uni "CMUNSS.TTF: not loaded"
         else act
           let th = dk-theme-of 0 dk-adorn-default
-          in let bar = widget-measure (desk-sidebar 0) th
-          in let fit = widget-measure (comp-fit-text (desk-sidebar 0) f s) th
+          in let ds = alloc-zeroed 128 64
+          in let ps = alloc-zeroed 64 64
+          in let bar = widget-measure (desk-taskbar ds gfont-none s) th
+          in let fit = widget-measure (comp-fit-text (desk-taskbar ds f s) f s) th
           in act
-            print-line-uni ("sidebar pinned to     : " & integer-to-text (dk-sidebar-w * s))
+            print-line-uni ("clock pinned to       : " & integer-to-text (desk-task-clock-w * s))
             w <- walk (bar.wn-children) 0 (bar.wn-child-count) f s
-            print-line-uni ("sidebar measured to   : " & integer-to-text (bar.wn-min-w * s))
+            print-line-uni ("taskbar measured to   : " & integer-to-text (bar.wn-min-w * s))
             print-line-uni "fitted through the face:"
             w2 <- walk (fit.wn-children) 0 (fit.wn-child-count) f s
             print-line-uni ("fitted measured to    : " & integer-to-text (fit.wn-min-w * s))
-            let tb = comp-fit-text (desk-taskbar 0) f s
+            print-line-uni ("a menu row reserves   : " & integer-to-text (min-of (widget-measure (gpr-menu-tree ps) th) "gpr-Clock"))
+            let tb = comp-fit-text (desk-taskbar 0 f s) f s
             in act
-              print-line-uni ("pinned menu button 72 : " & integer-to-text (min-of tb "menu"))
+              print-line-uni ("fitted menu button    : " & integer-to-text (min-of tb "menu"))
               print-line-uni ("pinned clock 220      : " & integer-to-text (min-of tb "task-clock"))
             end
           end

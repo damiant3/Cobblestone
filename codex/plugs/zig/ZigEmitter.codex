@@ -860,6 +860,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__list-with-capacity", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "text-compare", emit = \args ctx d ty -> "cx_text_compare(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "char-to-text", emit = \args ctx d ty -> "cx_char_to_text(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+   ZigBuiltinEmitter { name = "char-encode", emit = \args ctx d ty -> "cx_char_encode(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
@@ -1316,10 +1317,19 @@ Section: Expression Emission
    if i >= list-length es then False
    else zig-occurs (list-at es i) n | zig-occurs-list es (i + 1) n
 
+ A branch's GUARD is part of the branch. Reading only the body answered
+ "does not occur" for a name a guard mentions, and every caller of this
+ uses the answer to decide whether to discard something -- so a name
+ read only from a guard was discarded and then emitted, which zig calls
+ a pointless discard, or was left out of a lambda's captures. An
+ unguarded branch carries a True literal here, so this costs nothing on
+ the common shape.
+
   zig-occurs-branches : List IRBranch, Integer, Text -> Boolean
   zig-occurs-branches (bs) (i) (n) =
    if i >= list-length bs then False
-   else zig-occurs ((list-at bs i).body) n | zig-occurs-branches bs (i + 1) n
+   else zig-occurs ((list-at bs i).guard) n | zig-occurs ((list-at bs i).body) n
+      | zig-occurs-branches bs (i + 1) n
 
   zig-occurs-stmts : List IRActStmt, Integer, Text -> Boolean
   zig-occurs-stmts (ss) (i) (n) =
@@ -3067,6 +3077,17 @@ Section: Definition Emission
    else "comptime T" & integer-to-text (list-at ids i) & ": type, "
       & zig-comptime-params ids (i + 1)
 
+ The loop body's context takes BOTH renames, and the order is the whole
+ of it. zig-push-tail-renames covers the parameters the loop reassigns
+ and only those: an invariant slot is never assigned, so it gets no loop
+ var and no rename, and a parameter of that kind whose name shadows a
+ top-level definition then resolved to THE DEFINITION -- the loop read a
+ global where the source read its own argument, silently. Composing
+ zig-push-param-renames underneath restores the `_arg_` name for exactly
+ those parameters, and the tail renames still win for the reassigned
+ ones because zig-renamed-scan reads from the end. The non-loop branch
+ below has always done this; the two branches now agree.
+
   emit-zig-def : IRDef, ZigCtx -> Text
   emit-zig-def (d) (ctx0) =
    if zig-skip-def (d.name) then ""
@@ -3098,7 +3119,7 @@ Section: Definition Emission
    then head
     & emit-zig-tail-vars (d.params) 0 (d.body) (zig-push-param-renames ctx (d.params) 0) (tl.tail-vars) tl
     & "    while (true) {\n        "
-    & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames ctx (d.params) 0 (tl.tail-vars)) (d.params) 0) 0 tl
+    & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames (zig-push-param-renames ctx (d.params) 0) (d.params) 0 (tl.tail-vars)) (d.params) 0) 0 tl
     & "\n    }\n}\n\n"
    else head
     & emit-zig-param-discards (d.params) 0 (d.body)
@@ -3127,6 +3148,14 @@ Section: Definition Emission
  and the same consequence for a node it forgets -- here a quota that
  stays default under a literal that needed it, which fails loudly at
  zig compile time.
+
+ Both walks skipped a branch's GUARD, and both were fixed together for
+ that reason: a 40-element literal in a guard was measured emitting no
+ @setEvalBranchQuota while the identical literal one field over, in the
+ branch's body, emitted one. Neither walk descends into an effect
+ handler's clauses either, and that one is deliberate -- emit-zig-expr
+ answers @compileError for any IrHandle carrying clauses, so nothing
+ beneath one is ever emitted and there is nothing to count.
 
   zig-max2 : Integer, Integer -> Integer
   zig-max2 (a) (b) = if a >= b then a else b
@@ -3161,7 +3190,9 @@ Section: Definition Emission
   zig-max-list-len-branches : List IRBranch, Integer -> Integer
   zig-max-list-len-branches (bs) (i) =
    if i >= list-length bs then 0
-   else zig-max2 (zig-max-list-len ((list-at bs i).body)) (zig-max-list-len-branches bs (i + 1))
+   else let b = list-at bs i
+   in let here = zig-max2 (zig-max-list-len (b.guard)) (zig-max-list-len (b.body))
+   in zig-max2 here (zig-max-list-len-branches bs (i + 1))
 
   zig-max-list-len-stmts : List IRActStmt, Integer -> Integer
   zig-max-list-len-stmts (ss) (i) =
@@ -3212,20 +3243,42 @@ Section: Definition Emission
 Section: Chapter Emission
 
  Codex is written to recurse rather than loop, and bare metal answers that
- with a multi-gigabyte arena. Zig gives a main thread 8 MB, which is not
- enough: scan-class-instance-defs recurses once per token, so Parser.codex
- at 18,812 tokens overflows and segfaults. ReleaseFast does not rescue it,
- since the calls sit inside labelled block expressions.
+ with a multi-gigabyte arena. Zig gives a main thread 8 MB. That was not
+ enough when this plug emitted a call for every self-recursion:
+ scan-class-instance-defs recurses once per token, and Parser.codex at
+ 18,812 tokens overflowed and segfaulted. ReleaseFast does not rescue that
+ shape, since the calls sit inside labelled block expressions.
 
  This is the same wall CSharpPlug hit, and this is its answer -- run the
  entry point on a thread with a big stack, reserved address space
- committed on demand. Read the note above opening-on-big-stack there for
- the part that matters most: the case that reaches the limit is MUTUAL
- recursion, the lexer's scan-token -> skip-prose-line -> scan-token cycle,
- and no amount of self-tail-call elimination flattens that. Emitting loops
- for self-recursion would be a real feature and would still not remove the
- need for this. .NET gives its main thread 1 MB and overflows on a 96-byte
- chapter, so this is a property of the source rather than of large input.
+ committed on demand. .NET gives its main thread 1 MB and overflows on a
+ 96-byte chapter, so the need is a property of the source rather than of
+ large input.
+
+ No cycle this note can name is what holds the stack up any more, and the
+ three worth naming are settled, so the next reader does not re-derive
+ them. The lexer's scan-token -> skip-prose-line -> scan-token pair is
+ MUTUAL and no self-tail transformation reaches it -- but it is measured
+ FLAT: 100,000 consecutive prose lines run in a 256 KB stack, so it is not
+ the case to reason from. scan-class-instance-defs recurses once per token
+ and every one of its recursive calls is in tail position, so this plug
+ emits it as a loop. The parser's top-level scans DID drive the depth --
+ 2,393 nested scan-top-level frames on the 2.5 MB back-end unit -- and
+ they now return their item rather than mutually tail-calling, so
+ parse-top-level is a loop here as well. Two of its arms still leave that
+ loop: an `effect` declaration goes out through parse-top-level-effect and
+ a top-level `claim` through parse-claim-arm and parse-simple-claim, and
+ each of those tail-calls parse-top-level back, which self-tail
+ elimination does not reach. They cost a frame apiece and they are rare:
+ eight effect declarations and no claims in that same 2.5 MB unit, three
+ and none in the parser. A residue of eight frames is not what a 512 MB
+ stack is for.
+
+ That makes 512 MB a number whose stated mechanism is gone, and the answer
+ to that is to measure before lowering it rather than to lower it. Only
+ codexir has been bisected against real documents; zigemit and the other
+ natives have their own recursion and are unmeasured, so what one input
+ needs is known and what every input needs is not.
 
  512 MB matches the C# default deliberately. What is NOT matched is its
  CODEX_STACK_MB override: zig 0.16's environment API is mid-refactor
@@ -3266,6 +3319,7 @@ Section: Chapter Emission
    & "fn cx_bits_to_real_approx(bits: i64) f64 {\n    return @floatCast(@as(f32, @bitCast(@as(u32, @truncate(@as(u64, @bitCast(bits)))))));\n}\n"
    & "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\n"
    & "fn cx_char_to_text(c: i64) []const u8 {\n    const b = cx_gpa.alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"
+   & "fn cx_char_encode(c: i64) []const u8 {\n    const u = @as(u64, @bitCast(c));\n    if (u < 128) {\n        const b = cx_gpa.alloc(u8, 1) catch @panic(\"oom\");\n        b[0] = @truncate(u);\n        return b;\n    }\n    if (u < 2176) {\n        const v = u - 128;\n        const b = cx_gpa.alloc(u8, 2) catch @panic(\"oom\");\n        b[0] = @truncate(192 | (v >> 6));\n        b[1] = @truncate(128 | (v & 63));\n        return b;\n    }\n    if (u < 67712) {\n        const v = u - 2176;\n        const b = cx_gpa.alloc(u8, 3) catch @panic(\"oom\");\n        b[0] = @truncate(224 | (v >> 12));\n        b[1] = @truncate(128 | ((v >> 6) & 63));\n        b[2] = @truncate(128 | (v & 63));\n        return b;\n    }\n    const v = u - 67712;\n    const b = cx_gpa.alloc(u8, 4) catch @panic(\"oom\");\n    b[0] = @truncate(240 | (v >> 18));\n    b[1] = @truncate(128 | ((v >> 12) & 63));\n    b[2] = @truncate(128 | ((v >> 6) & 63));\n    b[3] = @truncate(128 | (v & 63));\n    return b;\n}\n"
    & "fn cx_list_len(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"
    & "fn cx_list_at(l: anytype, i: i64) @TypeOf(l.items.items[0]) {\n    return l.items.items[@intCast(i)];\n}\n"
    & "fn cx_text_len(s: []const u8) i64 {\n    return @intCast(s.len);\n}\n"

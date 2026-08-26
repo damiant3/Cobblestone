@@ -4861,11 +4861,78 @@ static void e1000_phy_reset_regs(void) {
 /* 4.5.2: a request is granted only if nobody else holds it, and the caller
    learns the answer by reading the bit back rather than from the write. So
    the write either takes the bit or leaves it clear, and never reports. */
+
+/* THIS MODEL IS MORE FORGIVING THAN THE SPEC, AND THE COUNTERS ARE HERE
+   BECAUSE OF IT. 4.5.2 gives each agent ONE bit, says at most one is 1b at
+   any time, and says the owner writes 0b when done. A software write that
+   asserts MNG or HW is therefore a protocol violation. `keep = mng` below
+   preserves firmware's bit whatever software writes, so the violation has no
+   consequence here and a driver that read-modify-writes the whole register
+   behaves IDENTICALLY to one that writes only its own bit. Every swflag arm
+   passed either way, which is why the registered acquire-loop defect had no
+   falsifier at all (L-FALSIF: an instrument that cannot fail is not
+   evidence; L-GAP: ask what the suite cannot express before reading its
+   silence as agreement).
+
+   These counters change no behaviour. The model still tolerates the
+   violation, because whether the real PCH tolerates it is exactly the
+   proposition the campaign is testing and inventing an answer here would be
+   a bed built from our own beliefs. They only make the difference VISIBLE,
+   so an arm can say no. `foreign` is the discriminating one: it counts
+   writes that assert a bit the writer does not own. `cfgbits` counts writes
+   carrying nonzero extended-configuration bits, which on the board is what a
+   read-modify-write puts back (`extcnf 0x00F00=002c0089`, sitting 8). */
+static unsigned long long i219_extcnf_writes  = 0;
+static unsigned long long i219_extcnf_foreign = 0;
+static unsigned long long i219_extcnf_cfgbits = 0;
+
+/* -i219-extcnf-strict: a part that ENFORCES 4.5.2's "at most one bit is 1b"
+   rather than tolerating a violation. A software write asserting MNG or HW
+   latches the violation, and while it is latched SW ownership is never
+   granted. This is the flag that gives the acquire-loop defect a falsifier:
+   the counters above make it visible to a host census, but a battery arm
+   compares GUEST serial output and cannot read a host counter, so without an
+   effect the guest can see there is no runner and the fix is a one-time
+   measurement (L-BODY: if it is gated only by prose it is not gated).
+
+   IT IS OFF BY DEFAULT AND MUST STAY OFF. Whether the real PCH enforces this
+   is not cited anywhere we hold -- 4.5.2 says the mechanism "does not block
+   software accesses" -- so enforcement is a PROPOSITION, and a bed that
+   enforced it by default would be asserting the campaign's open question as
+   an answer. The flag exists to express the failure mode, not to claim the
+   part has it. */
+static int i219_extcnf_strict   = 0;
+static int i219_extcnf_violated = 0;
+
+/* -i219-mng-release-after N: firmware clears its OWN MNG bit after N software
+   writes to EXTCNF_CTRL. 4.5.2 says that bit clears on LAN_PWR_GOOD or when
+   firmware clears it, so this is the ordinary case the driver's poll loop
+   exists for: the ME finishes and lets go.
+
+   WITHOUT IT THE STRICT ARM IS VACUOUS, and that was measured rather than
+   reasoned. With MNG never held the register starts at zero, so a
+   read-modify-writing driver reads zero and writes only its own bit -- the
+   defect cannot appear and a sabotage of the fix changes nothing (foreign=0).
+   With MNG held forever, no acquire can succeed however correct the protocol
+   is, so both drivers answer 0. Only a release makes the two answers differ:
+   a driver that never asserts a foreign bit is granted the moment firmware
+   lets go, and one that does is latched out by -i219-extcnf-strict. */
+static unsigned int i219_mng_release_after = 0;
+
 static void i219_extcnf_write(unsigned int val) {
+    i219_extcnf_writes++;
+    if (i219_mng_release_after && i219_extcnf_writes >= i219_mng_release_after)
+        i219_extcnf &= ~I219_EXTCNF_MNG;
     unsigned int mng = i219_extcnf & I219_EXTCNF_MNG;
     unsigned int want_sw = val & I219_EXTCNF_SW;
     unsigned int keep = mng;
-    if (want_sw && !(mng | (i219_extcnf & I219_EXTCNF_HW)))
+    if (val & (I219_EXTCNF_MNG | I219_EXTCNF_HW)) {
+        i219_extcnf_foreign++;
+        if (i219_extcnf_strict) i219_extcnf_violated = 1;
+    }
+    if (val & ~(I219_EXTCNF_SW | I219_EXTCNF_HW | I219_EXTCNF_MNG)) i219_extcnf_cfgbits++;
+    if (want_sw && !(mng | (i219_extcnf & I219_EXTCNF_HW))
+        && !(i219_extcnf_strict && i219_extcnf_violated))
         keep |= I219_EXTCNF_SW;
     i219_extcnf = (val & ~(I219_EXTCNF_SW | I219_EXTCNF_HW | I219_EXTCNF_MNG)) | keep;
 }
@@ -14974,6 +15041,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-i219-k1-nvm") && i+1 < argc) { e1000_present = 1; i219_present = 1; i219_k1_nvm = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "-i219-swflag"))    { e1000_present = 1; i219_present = 1; i219_swflag_enforce = 1; }
         else if (!strcmp(argv[i], "-i219-mng-holds")) { e1000_present = 1; i219_present = 1; i219_swflag_enforce = 1; i219_mng_holds = 1; }
+        else if (!strcmp(argv[i], "-i219-extcnf-strict")) { e1000_present = 1; i219_present = 1; i219_swflag_enforce = 1; i219_extcnf_strict = 1; }
+        else if (!strcmp(argv[i], "-i219-mng-release-after") && i+1 < argc) {
+            e1000_present = 1; i219_present = 1; i219_swflag_enforce = 1; i219_mng_holds = 1;
+            i219_mng_release_after = (unsigned int)strtoul(argv[++i], NULL, 0);
+        }
         else if (!strcmp(argv[i], "-i219-ulp-armed")) { e1000_present = 1; i219_present = 1; i219_ulp_cfg1 = (unsigned short)(I219_ULP_CFG1_BOARD | I219_ULP_STICKY | I219_ULP_EN_LANPHYPC); }
         else if (!strcmp(argv[i], "-nic-bme-clear"))  { e1000_present = 1; e1000_bme_clear = 1; }
         else if (!strcmp(argv[i], "-dmar"))           { acpi_dmar = 1; }
@@ -16400,6 +16472,16 @@ done:
                 ide_in_batch_hits, ide_in_batched,
                 ide_flush_entries, ide_flush_calls, ide_flush_bytes, ide_flush_ms,
                 ide_flush_nopath, ide_flush_nodata, ide_flush_oob, ide_flush_openfail);
+    }
+    /* A run that never touches EXTCNF_CTRL prints nothing, so this line
+       appearing at all says the semaphore path executed. foreign=0 is the
+       claim a correct acquire makes; writes= is the loop's cost in MMIO
+       transactions, which is the other half of the registered defect. */
+    if (i219_extcnf_writes) {
+        fprintf(census_out(), "EXTCNF CENSUS: writes=%llu foreign=%llu cfgbits=%llu violated=%d final=%08x\n",
+                i219_extcnf_writes, i219_extcnf_foreign, i219_extcnf_cfgbits,
+                i219_extcnf_violated, i219_extcnf);
+        fflush(census_out());
     }
     if (dumpmem_addr && guest_mem && dumpmem_addr + dumpmem_len <= guest_mem_size) {
         fprintf(stderr, "DUMPMEM 0x%llx len %llu:\n", dumpmem_addr, dumpmem_len);

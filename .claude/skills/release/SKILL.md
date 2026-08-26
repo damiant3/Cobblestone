@@ -1,6 +1,6 @@
 ---
 name: release
-description: Prove the build and publish a release to the public GitHub and GitLab mirrors. The full release gate -- battery, app sweep, poison build, seed + map + img refresh, README digests, GitHubUpdate rotation, and the mirror push. Run ONLY when Damian calls for a public release, never on a routine copy-up.
+description: Prove the build and publish a release to the public GitHub and GitLab mirrors. The full release gate -- battery, app sweep, poison build, seed + map + img refresh, TechnicalDetails digests, GitHubUpdate rotation, and the mirror push. Run ONLY when Damian calls for a public release, never on a routine copy-up.
 shell: powershell
 ---
 
@@ -183,7 +183,7 @@ the DDC on the release is what surfaces it if it was missed.
   appends the image hash to `build/boot/diag.rehearsed`, and only a hash on
   that list is flashable with `flash-usb.ps1 -Rehearsed`. Ship the image, the
   `.rehearsed` record, and put the SHA-256 in the GitHubUpdate report and the
-  README beside the seed digest. The image is reproducible from its source
+  `TechnicalDetails.md` beside the seed digest. The image is reproducible from its source
   and seed (`DIAG.RCP` inside it names them; the hash carries no timestamp),
   so a stale one is a drift the hash check catches.
   **Run `build/check-shipping-images.ps1` before the push, and it is not
@@ -196,11 +196,13 @@ the DDC on the release is what surfaces it if it was missed.
   because no push happened in that window. Rebuilding the default is what
   the step above already tells you to do, so the check costs nothing when
   the step was followed and catches it when it was not.
-## Step 6 -- README and the GitHubUpdate report
-- Update `README.md`: the seed digest and any capability claims that moved.
+## Step 6 -- TechnicalDetails and the GitHubUpdate report
+- Update `TechnicalDetails.md`: the seed digest and any capability claims
+  that moved. `README.md` is the business page (split 2026-08-25) and
+  carries no digests or counts; touch it only when the pitch itself changed.
 - **Re-measure the doc counts, which are off by default and only matter
   here.** `pwsh build/check-doc-counts.ps1` prints a per-claim table and
-  exits 1 on any drift. The drifting claims live in `README.md`, so this is
+  exits 1 on any drift. The drifting claims live in `TechnicalDetails.md`, so this is
   the step that publishes them; during a dev cycle the same drift is noise
   and the checker is correctly left off.
 - **Work `docs/PM/SomethingSeenDuringRelease.md`.** It is the parking lot for

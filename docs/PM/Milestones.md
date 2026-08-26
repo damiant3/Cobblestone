@@ -1,6 +1,6 @@
 # Codex Milestones
 
-Detailed development timeline. See [README.md](../../README.md) for highlights.
+Detailed development timeline. See [TechnicalDetails.md](../../TechnicalDetails.md) for the verified highlights and [README.md](../../README.md) for the shape of the project.
 
 | Milestone | What | Date |
 |-----------|------|------|

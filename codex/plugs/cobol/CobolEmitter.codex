@@ -201,11 +201,59 @@ Section: PIC Clause and Type Helpers
   cobol-decl-pic : Text, Text -> Text
   cobol-decl-pic (name) (pic) = "       01 " & name & "       " & pic & "."
 
-  cobol-decl : Text, CodexType -> Text
-  cobol-decl (name) (ty) =
+  cobol-decl : List ATypeDef, Text, CodexType -> Text
+  cobol-decl (tds) (name) (ty) =
    if cobol-is-text-ty ty then cobol-decl-text name
    else if cobol-is-list-ty ty then (if cobol-list-elem-is-text ty then cobol-decl-list-text name else cobol-decl-list name)
+   else if list-length (cobol-ctors-of tds ty) > 0 then cobol-decl-sum name (cobol-max-ctor-fields (cobol-ctors-of tds ty) 0 0)
    else cobol-decl-pic name (cobol-pic ty)
+
+ A group MOVE between two identically laid out group items is an alphanumeric
+ copy, which is what lets a variant be passed and assigned in one statement,
+ so every value of a type is sized to its widest constructor.
+
+ The wire spells a variant type as its NAME alone -- `(sum "Shape" (args))`
+ carries no constructor list -- so the layout and the tag have to be looked up
+ in the chapter's own type declarations.
+
+  cobol-sum-name : CodexType -> Text
+  cobol-sum-name (ty) =
+   when cobol-strip-forall ty
+    is SumTy (n) (targs) (ctors) -> n.value
+    is EffectfulTy (effs) (sc) (ret) -> cobol-sum-name ret
+    is otherwise -> ""
+
+  cobol-find-variant : List ATypeDef, Text, Integer -> List AVariantCtorDef
+  cobol-find-variant (tds) (target) (i) =
+   if i >= list-length tds then []
+   else let td = list-at tds i
+   in when td
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if name.value == target then ctors else cobol-find-variant tds target (i + 1)
+    is otherwise -> cobol-find-variant tds target (i + 1)
+
+  cobol-ctors-of : List ATypeDef, CodexType -> List AVariantCtorDef
+  cobol-ctors-of (tds) (ty) =
+   let n = cobol-sum-name ty
+   in if text-length n == 0 then [] else cobol-find-variant tds n 0
+
+  cobol-ctor-index : List AVariantCtorDef, Text, Integer -> Integer
+  cobol-ctor-index (ctors) (target) (i) =
+   if i >= list-length ctors then -1
+   else let c = list-at ctors i
+   in if (c.name).value == target then i
+      else cobol-ctor-index ctors target (i + 1)
+
+  cobol-decl-sum : Text, Integer -> Text
+  cobol-decl-sum (name) (count) =
+   "       01 " & name & ".\n" &
+   "         05 " & name & "-TAG    PIC 9(2)." &
+   cobol-sum-field-lines name count 0
+
+  cobol-sum-field-lines : Text, Integer, Integer -> Text
+  cobol-sum-field-lines (name) (count) (i) =
+   if i >= count then ""
+   else "\n         05 " & name & "-F" & integer-to-text i & "     PIC S9(18)." & cobol-sum-field-lines name count (i + 1)
 
   cobol-slice : Text -> Text
   cobol-slice (v) = v & "-D(1:" & v & "-L)"
@@ -221,7 +269,8 @@ Section: Emission State
    var-counter : Integer,
    working-storage : List Text,
    current-func : Text,
-   env : List CobolBind
+   env : List CobolBind,
+   tdefs : List ATypeDef
   }
 
   cobol-alloc-var : CobolState, Text -> CobolAllocResult
@@ -235,7 +284,8 @@ Section: Emission State
      var-counter = next,
      working-storage = st.working-storage,
      current-func = st.current-func,
-     env = st.env
+     env = st.env,
+     tdefs = st.tdefs
     }
    }
 
@@ -250,7 +300,8 @@ Section: Emission State
     var-counter = st.var-counter,
     working-storage = list-snoc (st.working-storage) line,
     current-func = st.current-func,
-    env = st.env
+    env = st.env,
+    tdefs = st.tdefs
    }
 
   cobol-set-func : CobolState, Text -> CobolState
@@ -259,7 +310,18 @@ Section: Emission State
     var-counter = st.var-counter,
     working-storage = st.working-storage,
     current-func = f,
-    env = st.env
+    env = st.env,
+    tdefs = st.tdefs
+   }
+
+  cobol-set-tdefs : CobolState, List ATypeDef -> CobolState
+  cobol-set-tdefs (st) (tds) =
+   CobolState {
+    var-counter = st.var-counter,
+    working-storage = st.working-storage,
+    current-func = st.current-func,
+    env = st.env,
+    tdefs = tds
    }
 
   cobol-initial-state : CobolState
@@ -267,7 +329,8 @@ Section: Emission State
    var-counter = 0,
    working-storage = [],
    current-func = "",
-   env = []
+   env = [],
+   tdefs = []
   }
 
 Section: The Name Environment
@@ -283,7 +346,8 @@ Section: The Name Environment
     var-counter = st.var-counter,
     working-storage = st.working-storage,
     current-func = st.current-func,
-    env = e
+    env = e,
+    tdefs = st.tdefs
    }
 
   cobol-env-bind : CobolState, Text, Text -> CobolState
@@ -372,9 +436,7 @@ Section: Type Definition Emission
   emit-cobol-sum-type (base-name) (ctors) =
    let n = cobol-name base-name
    in let max-fields = cobol-max-ctor-fields ctors 0 0
-   in "       01 WS-" & n & ".\n" &
-      "         05 WS-" & n & "-TAG    PIC 9(2).\n" &
-      emit-cobol-sum-data-fields n max-fields 0 &
+   in cobol-decl-sum ("WS-" & n) max-fields & "\n" &
       emit-cobol-sum-tags ctors 1
 
   cobol-max-ctor-fields : List AVariantCtorDef, Integer, Integer -> Integer
@@ -384,11 +446,6 @@ Section: Type Definition Emission
    in let n = list-length (c.fields)
    in if n > mx then cobol-max-ctor-fields ctors (i + 1) n
       else cobol-max-ctor-fields ctors (i + 1) mx
-
-  emit-cobol-sum-data-fields : Text, Integer, Integer -> Text
-  emit-cobol-sum-data-fields (n) (count) (i) =
-   if i >= count then ""
-   else "         05 WS-" & n & "-F" & integer-to-text i & "     PIC S9(18).\n" & emit-cobol-sum-data-fields n count (i + 1)
 
   emit-cobol-sum-tags : List AVariantCtorDef, Integer -> Text
   emit-cobol-sum-tags (ctors) (tag-num) =
@@ -413,7 +470,7 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> emit-cobol-text-lit s st
     is IrNumLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
     is IrCharLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
-    is IrName (n) (ty) (sp) -> emit-cobol-name-var n st
+    is IrName (n) (ty) (sp) -> emit-cobol-name-var n ty st
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-cobol-binary-var op l r arities st
     is IrNegate (operand) (nty) (sp) -> emit-cobol-negate-var operand arities st
     is IrIf (c) (t) (el) (ty) (sp) -> emit-cobol-if-var c t el arities st
@@ -454,14 +511,37 @@ Section: Expression Emission
     state = st2
    }
 
-  emit-cobol-name-var : Text, CobolState -> CobolExprResult
-  emit-cobol-name-var (n) (st) =
+  emit-cobol-name-var : Text, CodexType, CobolState -> CobolExprResult
+  emit-cobol-name-var (n) (ty) (st) =
    if n == "True" then CobolExprResult { var-name = "1", code = "", state = st }
    else if n == "False" then CobolExprResult { var-name = "0", code = "", state = st }
    else if n == "Nothing" then CobolExprResult { var-name = "0", code = "", state = st }
    else let bound = cobol-env-find st n
    in if text-length bound > 0 then CobolExprResult { var-name = bound, code = "", state = st }
+      else if cobol-ctor-index (cobol-ctors-of (st.tdefs) ty) n 0 >= 0 then emit-cobol-ctor-var n [] ty [] st
       else CobolExprResult { var-name = "WS-" & cobol-name n, code = "", state = st }
+
+  emit-cobol-ctor-var : Text, List IRExpr, CodexType, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-ctor-var (cn) (args) (ty) (arities) (st) =
+   let count = cobol-max-ctor-fields (cobol-ctors-of (st.tdefs) ty) 0 0
+   in let alloc = cobol-alloc-var st (cobol-name cn)
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl-sum (alloc.name) count)
+   in let moves = emit-cobol-ctor-moves args (alloc.name) arities st2 0
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = moves.code & "           MOVE TAG-" & cobol-name cn & " TO " & alloc.name & "-TAG\n",
+    state = moves.state
+   }
+
+  emit-cobol-ctor-moves : List IRExpr, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
+  emit-cobol-ctor-moves (args) (dst) (arities) (st) (i) =
+   if i >= list-length args then CobolMoveResult { code = "", state = st }
+   else let a = emit-cobol-expr-to-var (list-at args i) arities st
+   in let rest = emit-cobol-ctor-moves args dst arities (a.state) (i + 1)
+   in CobolMoveResult {
+    code = a.code & "           MOVE " & a.var-name & " TO " & dst & "-F" & integer-to-text i & "\n" & rest.code,
+    state = rest.state
+   }
 
   emit-cobol-negate-var : IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-negate-var (operand) (arities) (st) =
@@ -669,7 +749,7 @@ Section: Expression Emission
   emit-cobol-let-var (name) (ty) (val) (body) (arities) (st) =
    let val-r = emit-cobol-expr-to-var val arities st
    in let alloc = cobol-alloc-var (val-r.state) (cobol-name name)
-   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (alloc.name) ty)
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (st.tdefs) (alloc.name) ty)
    in let depth = list-length (st2.env)
    in let body-r = emit-cobol-expr-to-var body arities (cobol-env-bind st2 name (alloc.name))
    in CobolExprResult {
@@ -682,7 +762,7 @@ Section: Expression Emission
   emit-cobol-apply-var (e) (arities) (st) =
    let chain = collect-apply-chain e []
    in when chain.root
-    is IrName (n) (ty) (sp) -> emit-cobol-apply-named n (chain.args) arities st
+    is IrName (n) (ty) (sp) -> emit-cobol-apply-named n (chain.args) (ir-expr-type e) arities st
     is otherwise -> let fallback = emit-cobol-expr-to-var (list-at (chain.args) 0) arities st
      in CobolExprResult { var-name = fallback.var-name, code = fallback.code, state = fallback.state }
 
@@ -700,10 +780,11 @@ Section: Expression Emission
    else if list-at names i == target then i
    else cobol-find-builtin names target (i + 1)
 
-  emit-cobol-apply-named : Text, List IRExpr, List ArityEntry, CobolState -> CobolExprResult
-  emit-cobol-apply-named (n) (args) (arities) (st) =
+  emit-cobol-apply-named : Text, List IRExpr, CodexType, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-apply-named (n) (args) (ty) (arities) (st) =
    let idx = cobol-find-builtin cobol-builtin-names n 0
    in if idx >= 0 then emit-cobol-builtin-by-idx idx n args arities st
+      else if cobol-ctor-index (cobol-ctors-of (st.tdefs) ty) n 0 >= 0 then emit-cobol-ctor-var n args ty arities st
       else emit-cobol-call-def n args arities st
 
   emit-cobol-builtin-by-idx : Integer, Text, List IRExpr, List ArityEntry, CobolState -> CobolExprResult
@@ -1337,44 +1418,130 @@ Section: Expression Emission
   emit-cobol-match-var (scrut) (branches) (ty) (arities) (st) =
    let scrut-r = emit-cobol-expr-to-var scrut arities st
    in let alloc = cobol-alloc-var (scrut-r.state) "MATCH"
-   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (alloc.name) ty)
-   in let arms = emit-cobol-match-arms branches (alloc.name) arities st2
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (st.tdefs) (alloc.name) ty)
+   in if cobol-match-plain branches 0
+      then let arms = emit-cobol-match-arms branches (alloc.name) (scrut-r.var-name) arities st2
+      in CobolExprResult {
+       var-name = alloc.name,
+       code = scrut-r.code & "           EVALUATE " & cobol-match-subject branches (scrut-r.var-name) 0 & "\n" &
+        arms.code & "           END-EVALUATE\n",
+       state = arms.state
+      }
+      else emit-cobol-match-chain branches (alloc.name) (scrut-r.var-name) (scrut-r.code) arities st2
+
+ An EVALUATE prong cannot fall through and its WHEN takes a value rather than a
+ condition, so a prong can carry neither a guard nor the statements a guard
+ needs to compute one. A guarded match is emitted as a chain instead: one IF
+ per arm, gated on a flag so that arms after the first match are skipped
+ without nesting each remaining arm inside the previous arm's ELSE.
+
+  cobol-guard-trivial : IRExpr -> Boolean
+  cobol-guard-trivial (g) =
+   when g
+    is IrBoolLit (v) (sp) -> v
+    is otherwise -> False
+
+  cobol-match-plain : List IRBranch, Integer -> Boolean
+  cobol-match-plain (branches) (i) =
+   if i >= list-length branches then True
+   else let b = list-at branches i
+   in if cobol-guard-trivial (b.guard) then cobol-match-plain branches (i + 1)
+      else False
+
+  cobol-pat-cond : IRPat, Text -> Text
+  cobol-pat-cond (pat) (scrut-var) =
+   when pat
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut-var & "-TAG = TAG-" & cobol-name name
+    is IrLitPat (text) (ty) (sp) -> scrut-var & " = " & text
+    is otherwise -> ""
+
+  emit-cobol-match-chain : List IRBranch, Text, Text, Text, List ArityEntry, CobolState -> CobolExprResult
+  emit-cobol-match-chain (branches) (result-var) (scrut-var) (scrut-code) (arities) (st) =
+   let flag = cobol-alloc-var st "MATCHED"
+   in let st2 = cobol-add-ws (flag.state) (cobol-decl-pic (flag.name) "PIC 9(1)")
+   in let arms = emit-cobol-chain-arms branches result-var scrut-var (flag.name) arities st2 0
    in CobolExprResult {
-    var-name = alloc.name,
-    code = scrut-r.code & "           EVALUATE " & scrut-r.var-name & "-TAG\n" &
-     arms.code & "           END-EVALUATE\n",
+    var-name = result-var,
+    code = scrut-code & "           MOVE 0 TO " & flag.name & "\n" & arms.code,
     state = arms.state
    }
 
-  emit-cobol-match-arms : List IRBranch, Text, List ArityEntry, CobolState -> CobolMoveResult
-  emit-cobol-match-arms (branches) (result-var) (arities) (st) =
-   emit-cobol-match-arms-loop branches result-var arities st 0
-
-  emit-cobol-match-arms-loop : List IRBranch, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
-  emit-cobol-match-arms-loop (branches) (result-var) (arities) (st) (i) =
+  emit-cobol-chain-arms : List IRBranch, Text, Text, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
+  emit-cobol-chain-arms (branches) (result-var) (scrut-var) (flag) (arities) (st) (i) =
    if i >= list-length branches then CobolMoveResult { code = "", state = st }
    else let b = list-at branches i
-   in let arm = emit-cobol-match-one-arm b result-var arities st
-   in let rest = emit-cobol-match-arms-loop branches result-var arities (arm.state) (i + 1)
+   in let depth = list-length (st.env)
+   in let bound = cobol-bind-pat (b.pattern) scrut-var st
+   in let guard-r = emit-cobol-expr-to-var (b.guard) arities bound
+   in let body-r = emit-cobol-expr-to-var (b.body) arities (guard-r.state)
+   in let taken = body-r.code & "               MOVE " & body-r.var-name & " TO " & result-var & "\n" &
+                  "               MOVE 1 TO " & flag & "\n"
+   in let guarded = if cobol-guard-trivial (b.guard) then taken
+                    else guard-r.code & "             IF " & guard-r.var-name & " NOT = 0\n" &
+                         taken & "             END-IF\n"
+   in let cond = cobol-pat-cond (b.pattern) scrut-var
+   in let tested = if text-length cond == 0 then guarded
+                   else "             IF " & cond & "\n" & guarded & "             END-IF\n"
+   in let rest = emit-cobol-chain-arms branches result-var scrut-var flag arities (cobol-env-restore (body-r.state) depth) (i + 1)
+   in CobolMoveResult {
+    code = "           IF " & flag & " = 0\n" & tested & "           END-IF\n" & rest.code,
+    state = rest.state
+   }
+
+  cobol-match-subject : List IRBranch, Text, Integer -> Text
+  cobol-match-subject (branches) (scrut-var) (i) =
+   if i >= list-length branches then scrut-var
+   else let b = list-at branches i
+   in when b.pattern
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut-var & "-TAG"
+    is otherwise -> cobol-match-subject branches scrut-var (i + 1)
+
+  emit-cobol-match-arms : List IRBranch, Text, Text, List ArityEntry, CobolState -> CobolMoveResult
+  emit-cobol-match-arms (branches) (result-var) (scrut-var) (arities) (st) =
+   emit-cobol-match-arms-loop branches result-var scrut-var arities st 0
+
+  emit-cobol-match-arms-loop : List IRBranch, Text, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
+  emit-cobol-match-arms-loop (branches) (result-var) (scrut-var) (arities) (st) (i) =
+   if i >= list-length branches then CobolMoveResult { code = "", state = st }
+   else let b = list-at branches i
+   in let arm = emit-cobol-match-one-arm b result-var scrut-var arities st
+   in let rest = emit-cobol-match-arms-loop branches result-var scrut-var arities (arm.state) (i + 1)
    in CobolMoveResult { code = arm.code & rest.code, state = rest.state }
+
+  cobol-bind-ctor-subs : List IRPat, Text, CobolState, Integer -> CobolState
+  cobol-bind-ctor-subs (subs) (scrut-var) (st) (i) =
+   if i >= list-length subs then st
+   else let s = list-at subs i
+   in let st2 = when s
+    is IrVarPat (vname) (ty) (sp) -> cobol-env-bind st vname (scrut-var & "-F" & integer-to-text i)
+    is otherwise -> st
+   in cobol-bind-ctor-subs subs scrut-var st2 (i + 1)
+
+  cobol-bind-pat : IRPat, Text, CobolState -> CobolState
+  cobol-bind-pat (pat) (scrut-var) (st) =
+   when pat
+    is IrCtorPat (name) (subs) (ty) (sp) -> cobol-bind-ctor-subs subs scrut-var st 0
+    is IrVarPat (vname) (ty) (sp) -> cobol-env-bind st vname scrut-var
+    is otherwise -> st
 
   CobolArmResult = record {
    code : Text,
    state : CobolState
   }
 
-  emit-cobol-match-one-arm : IRBranch, Text, List ArityEntry, CobolState -> CobolArmResult
-  emit-cobol-match-one-arm (b) (result-var) (arities) (st) =
+  emit-cobol-match-one-arm : IRBranch, Text, Text, List ArityEntry, CobolState -> CobolArmResult
+  emit-cobol-match-one-arm (b) (result-var) (scrut-var) (arities) (st) =
    let label = when b.pattern
     is IrCtorPat (name) (subs) (ty) (sp) -> "             WHEN TAG-" & cobol-name name & "\n"
     is IrWildPat (sp) -> "             WHEN OTHER\n"
     is IrVecPat (pats) (ty) (sp) -> "             WHEN OTHER\n"
     is IrVarPat (vname) (ty) (sp) -> "             WHEN OTHER\n"
     is IrLitPat (text) (ty) (sp) -> "             WHEN " & text & "\n"
-   in let body-r = emit-cobol-expr-to-var (b.body) arities st
+   in let depth = list-length (st.env)
+   in let body-r = emit-cobol-expr-to-var (b.body) arities (cobol-bind-pat (b.pattern) scrut-var st)
    in CobolArmResult {
     code = label & body-r.code & "               MOVE " & body-r.var-name & " TO " & result-var & "\n",
-    state = body-r.state
+    state = cobol-env-restore (body-r.state) depth
    }
 
   emit-cobol-record-var : Text, List IRFieldVal, List ArityEntry, CobolState -> CobolExprResult
@@ -1527,12 +1694,20 @@ Section: Tail Call Optimization
      }
     is IrMatch (scrut) (branches) (ty) (sp) ->
      let scrut-r = emit-cobol-expr-to-var scrut arities st
-     in let arms = emit-cobol-tco-match-arms branches func-name params arities (scrut-r.state) 0
-     in CobolMoveResult {
-      code = scrut-r.code & "           EVALUATE " & scrut-r.var-name & "-TAG\n" &
-       arms.code & "           END-EVALUATE\n",
-      state = arms.state
-     }
+     in if cobol-match-plain branches 0
+        then let arms = emit-cobol-tco-match-arms branches func-name params (scrut-r.var-name) arities (scrut-r.state) 0
+        in CobolMoveResult {
+         code = scrut-r.code & "           EVALUATE " & cobol-match-subject branches (scrut-r.var-name) 0 & "\n" &
+          arms.code & "           END-EVALUATE\n",
+         state = arms.state
+        }
+        else let flag = cobol-alloc-var (scrut-r.state) "TMATCHED"
+        in let stf = cobol-add-ws (flag.state) (cobol-decl-pic (flag.name) "PIC 9(1)")
+        in let arms = emit-cobol-tco-chain-arms branches func-name params (scrut-r.var-name) (flag.name) arities stf 0
+        in CobolMoveResult {
+         code = scrut-r.code & "           MOVE 0 TO " & flag.name & "\n" & arms.code,
+         state = arms.state
+        }
     is IrApply (f) (a) (rty) (sp) ->
      if cobol-is-self-call e func-name then emit-cobol-tco-jump e func-name params arities st
      else let res = emit-cobol-expr-to-var e arities st
@@ -1579,11 +1754,11 @@ Section: Tail Call Optimization
       state = st
      }
     is IrName (n) (ty) (sp) ->
-     let name-r = emit-cobol-name-var n st
+     let name-r = emit-cobol-name-var n ty st
      in CobolMoveResult {
-      code = "           MOVE " & name-r.var-name & " TO WS-" & name & "-RET\n" &
+      code = name-r.code & "           MOVE " & name-r.var-name & " TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
-      state = st
+      state = name-r.state
      }
     is IrNegate (operand) (nty) (sp) ->
      let res = emit-cobol-expr-to-var e arities st
@@ -1660,8 +1835,8 @@ Section: Tail Call Optimization
       state = st
      }
 
-  emit-cobol-tco-match-arms : List IRBranch, Text, List IRParam, List ArityEntry, CobolState, Integer -> CobolMoveResult
-  emit-cobol-tco-match-arms (branches) (func-name) (params) (arities) (st) (i) =
+  emit-cobol-tco-match-arms : List IRBranch, Text, List IRParam, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
+  emit-cobol-tco-match-arms (branches) (func-name) (params) (scrut-var) (arities) (st) (i) =
    if i >= list-length branches then CobolMoveResult { code = "", state = st }
    else let b = list-at branches i
    in let label = when b.pattern
@@ -1670,9 +1845,35 @@ Section: Tail Call Optimization
     is IrVecPat (pats) (ty) (sp) -> "             WHEN OTHER\n"
     is IrVarPat (vname) (ty) (sp) -> "             WHEN OTHER\n"
     is IrLitPat (text) (ty) (sp) -> "             WHEN " & text & "\n"
-   in let body-r = emit-cobol-tco-body (b.body) func-name params arities st
-   in let rest = emit-cobol-tco-match-arms branches func-name params arities (body-r.state) (i + 1)
+   in let depth = list-length (st.env)
+   in let body-r = emit-cobol-tco-body (b.body) func-name params arities (cobol-bind-pat (b.pattern) scrut-var st)
+   in let rest = emit-cobol-tco-match-arms branches func-name params scrut-var arities (cobol-env-restore (body-r.state) depth) (i + 1)
    in CobolMoveResult { code = label & body-r.code & rest.code, state = rest.state }
+
+ A tail-position arm leaves the paragraph by a GO TO, so the flag is not what
+ stops the next arm running; it is what stops an arm whose body does NOT jump
+ from falling into the next arm's test.
+
+  emit-cobol-tco-chain-arms : List IRBranch, Text, List IRParam, Text, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
+  emit-cobol-tco-chain-arms (branches) (func-name) (params) (scrut-var) (flag) (arities) (st) (i) =
+   if i >= list-length branches then CobolMoveResult { code = "", state = st }
+   else let b = list-at branches i
+   in let depth = list-length (st.env)
+   in let bound = cobol-bind-pat (b.pattern) scrut-var st
+   in let guard-r = emit-cobol-expr-to-var (b.guard) arities bound
+   in let body-r = emit-cobol-tco-body (b.body) func-name params arities (guard-r.state)
+   in let taken = body-r.code & "               MOVE 1 TO " & flag & "\n"
+   in let guarded = if cobol-guard-trivial (b.guard) then taken
+                    else guard-r.code & "             IF " & guard-r.var-name & " NOT = 0\n" &
+                         taken & "             END-IF\n"
+   in let cond = cobol-pat-cond (b.pattern) scrut-var
+   in let tested = if text-length cond == 0 then guarded
+                   else "             IF " & cond & "\n" & guarded & "             END-IF\n"
+   in let rest = emit-cobol-tco-chain-arms branches func-name params scrut-var flag arities (cobol-env-restore (body-r.state) depth) (i + 1)
+   in CobolMoveResult {
+    code = "           IF " & flag & " = 0\n" & tested & "           END-IF\n" & rest.code,
+    state = rest.state
+   }
 
   emit-cobol-tco-jump : IRExpr, Text, List IRParam, List ArityEntry, CobolState -> CobolMoveResult
   emit-cobol-tco-jump (e) (func-name) (params) (arities) (st) =
@@ -1703,7 +1904,7 @@ Section: Tail Call Optimization
    in let pname = cobol-name (p.name)
    in let arg-r = emit-cobol-expr-to-var (list-at args i) arities st
    in let alloc = cobol-alloc-var (arg-r.state) ("TCOARG" & integer-to-text i)
-   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (alloc.name) (p.type-val))
+   in let st2 = cobol-add-ws (alloc.state) (cobol-decl (st.tdefs) (alloc.name) (p.type-val))
    in let rest = emit-cobol-tco-eval-args args params name arities st2 (i + 1)
    in CobolTcoArgs {
     ta-code = arg-r.code & "           MOVE " & arg-r.var-name & " TO " & alloc.name & "\n" & rest.ta-code,
@@ -1713,10 +1914,10 @@ Section: Tail Call Optimization
 
 Section: Definition Emission
 
-  emit-cobol-def-storage : IRDef -> Text
-  emit-cobol-def-storage (d) =
+  emit-cobol-def-storage : IRDef, List ATypeDef -> Text
+  emit-cobol-def-storage (d) (tds) =
    let name = cobol-name (d.name)
-   in emit-cobol-param-storage (d.params) name 0 & cobol-decl ("WS-" & name & "-RET") (cobol-def-ret-type d) & "\n"
+   in emit-cobol-param-storage (d.params) name tds 0 & cobol-decl tds ("WS-" & name & "-RET") (cobol-def-ret-type d) & "\n"
 
   cobol-def-ret-type : IRDef -> CodexType
   cobol-def-ret-type (d) =
@@ -1738,12 +1939,12 @@ Section: Definition Emission
     is TypeApply (body) (tyarg) -> cobol-strip-forall body
     is otherwise -> ty
 
-  emit-cobol-param-storage : List IRParam, Text, Integer -> Text
-  emit-cobol-param-storage (params) (func-name) (i) =
+  emit-cobol-param-storage : List IRParam, Text, List ATypeDef, Integer -> Text
+  emit-cobol-param-storage (params) (func-name) (tds) (i) =
    if i >= list-length params then ""
    else let p = list-at params i
    in let pname = cobol-name (p.name)
-   in cobol-decl ("WS-" & func-name & "-" & pname) (p.type-val) & "\n" & emit-cobol-param-storage params func-name (i + 1)
+   in cobol-decl tds ("WS-" & func-name & "-" & pname) (p.type-val) & "\n" & emit-cobol-param-storage params func-name tds (i + 1)
 
   emit-cobol-def-paragraph : IRDef, List ArityEntry, CobolState -> CobolDefResult
   emit-cobol-def-paragraph (d) (arities) (st) =
@@ -1797,11 +1998,11 @@ Section: Chapter Emission
    in let rest = emit-cobol-all-defs defs arities (r.state) (i + 1) entry-idx
    in CobolDefResult { code = r.code & rest.code, state = rest.state }
 
-  emit-cobol-def-storage-all : List IRDef, Integer, Integer -> Text
-  emit-cobol-def-storage-all (defs) (i) (entry-idx) =
+  emit-cobol-def-storage-all : List IRDef, List ATypeDef, Integer, Integer -> Text
+  emit-cobol-def-storage-all (defs) (tds) (i) (entry-idx) =
    if i >= list-length defs then ""
-   else if i == entry-idx then emit-cobol-def-storage-all defs (i + 1) entry-idx
-   else emit-cobol-def-storage (list-at defs i) & emit-cobol-def-storage-all defs (i + 1) entry-idx
+   else if i == entry-idx then emit-cobol-def-storage-all defs tds (i + 1) entry-idx
+   else emit-cobol-def-storage (list-at defs i) tds & emit-cobol-def-storage-all defs tds (i + 1) entry-idx
 
   cobol-is-effectful : CodexType -> Boolean
   cobol-is-effectful (ty) =
@@ -1854,7 +2055,7 @@ Section: Chapter Emission
     is IrDoBind (name) (ty) (val) (sp) ->
      let res = emit-cobol-expr-to-var val arities st
      in let alloc = cobol-alloc-var (res.state) (cobol-name name)
-     in let st2 = cobol-add-ws (alloc.state) (cobol-decl (alloc.name) ty)
+     in let st2 = cobol-add-ws (alloc.state) (cobol-decl (st.tdefs) (alloc.name) ty)
      in CobolDefResult {
       code = res.code & "           MOVE " & res.var-name & " TO " & alloc.name & "\n",
       state = cobol-env-bind st2 name (alloc.name)
@@ -1870,7 +2071,7 @@ Section: Chapter Emission
    let arities = build-arity-map (m.defs) 0 []
    in let program-id = cobol-name (m.name.value)
    in let entry-idx = cobol-find-entry (m.defs) 0
-   in let st = cobol-initial-state
+   in let st = cobol-set-tdefs cobol-initial-state type-defs
    in let defs-r = emit-cobol-all-defs (m.defs) arities st 0 entry-idx
    in let entry-r = emit-cobol-entry (m.defs) entry-idx arities (defs-r.state)
    in "       IDENTIFICATION DIVISION.\n" &
@@ -1878,7 +2079,7 @@ Section: Chapter Emission
       "       DATA DIVISION.\n" &
       "       WORKING-STORAGE SECTION.\n" &
       emit-cobol-type-defs type-defs 0 &
-      emit-cobol-def-storage-all (m.defs) 0 entry-idx & "       01 WS-RESULT         PIC S9(18).\n" &
+      emit-cobol-def-storage-all (m.defs) type-defs 0 entry-idx & "       01 WS-RESULT         PIC S9(18).\n" &
       "       01 WS-TEMP           PIC S9(18).\n" &
       "       01 WS-STRPTR         PIC S9(18).\n" &
    "       01 WS-LIDX           PIC S9(18).\n" &

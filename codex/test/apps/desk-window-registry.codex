@@ -1,0 +1,382 @@
+Chapter: DeskWindowRegistryTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ Which windows are open and in what order they stack. The registry is pure
+ arithmetic over one block, so alt-tab, click-to-focus, opening, closing and
+ the stacking order are all decidable here without a screen, a face or a
+ volume -- which is the reason this arm exists as well as the pictures: a
+ focus cycle verified only by looking at a capture is verified by the slowest
+ instrument available, and only for the two windows that happened to be open.
+
+ EVERY ROW PRINTS THE WHOLE ARRAY, not just the count and the top. The array
+ order IS the z order, so a row that printed only the top would agree with an
+ implementation that dropped every window beneath it, and a row that printed
+ only the count would agree with one that stacked them backwards. The payload
+ is the assertion; the count and the top are conveniences beside it.
+
+ The ids are `desk-focus-clkp` (5) and `desk-focus-calc` (4), printed as
+ numbers rather than names because the number is what the block holds and a
+ name would be this file's opinion about it.
+
+Section: Body
+
+  wr-item : Integer, Integer, Integer -> Text
+  wr-item (ws) (i) (n) =
+    if i >= n then ""
+    else " " & integer-to-text (dk-wr-at ws i) & wr-item ws (i + 1) n
+
+  wr-show : Text, Integer -> Text
+  wr-show (label) (ws) =
+    label & ": [" & wr-item ws 0 (dk-wr-count ws) & " ]"
+    & "  count " & integer-to-text (dk-wr-count ws)
+    & "  top " & integer-to-text (dk-wr-top ws)
+
+ THE CAP, which nothing else reaches. `dk-wr-max` is the registry BLOCK's own
+ bound -- 64 bytes, four for the count and four an entry, so fifteen fit and a
+ sixteenth writes past it -- and there are fewer windowed panes than that, so
+ the only way this is ever exercised is here. A registry that wrote past its
+ block would corrupt whatever the arena put after it and read as working for
+ exactly as long as nobody opened enough windows.
+
+ It is a REFUSAL and not an eviction: the sixteenth window does not open and
+ the fifteen already open are untouched. Evicting the bottom window instead
+ would leave a pane whose step is still reachable through `desk-focus-cell`
+ with no entry in the registry, which is a window that cannot be closed.
+
+ The ids are the focus ids 1 to 16, used as bare numbers because the registry
+ stores numbers and reads them back without ever asking what pane one names.
+ That is the honest way to reach a cap higher than the number of panes that
+ have windows.
+
+  wr-fill : Integer, Integer, Integer -> Integer
+  wr-fill (ws) (i) (n) =
+    if i > n then 0
+    else let a = dk-wr-open ws i
+    in wr-fill ws (i + 1) n
+
+  wr-overflow : Integer -> Text
+  wr-overflow (ws) =
+    let a = wr-fill ws 1 16
+    in "sixteen into fifteen: count " & integer-to-text (dk-wr-count ws)
+       & "  top " & integer-to-text (dk-wr-top ws)
+       & "  cap " & integer-to-text dk-wr-max
+       & "  bottom " & integer-to-text (dk-wr-at ws 0)
+       & "  the sixteenth is absent " & wf-yn2 (dk-wr-find ws 16 0 < 0)
+
+ EVERY CASCADED WINDOW STAYS INSIDE THE CONTENT BOX, and the positions stay
+ distinct past the wrap. Those are two questions and a single span answers the
+ first while failing the second: wrapping both axes together puts the window
+ after the wrap exactly under the first one, which is the collision the
+ cascade exists to prevent and which nothing but a photograph has ever caught.
+ So this asks for the worst offset over the cap and for the number of DISTINCT
+ (x, y) pairs the cascade produces.
+
+  wr-pairs : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wr-pairs (w) (h) (ds) (i) (n) (acc) =
+    if i >= n then acc
+    else wr-pairs w h ds (i + 1) n (if wr-dup w h ds i 0 then acc else acc + 1)
+
+  wr-dup : Integer, Integer, Integer, Integer, Integer -> Boolean
+  wr-dup (w) (h) (ds) (i) (j) =
+    if j >= i then False
+    else if dk-wnd-cascade-x j w == dk-wnd-cascade-x i w & dk-wnd-cascade-y j w h ds == dk-wnd-cascade-y i w h ds then True
+    else wr-dup w h ds i (j + 1)
+
+  wr-worst-x : Integer, Integer, Integer, Integer -> Integer
+  wr-worst-x (w) (i) (n) (acc) =
+    if i >= n then acc
+    else let ox = dk-wnd-cascade-x i w
+    in wr-worst-x w (i + 1) n (if ox > acc then ox else acc)
+
+  wr-worst-y : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wr-worst-y (w) (h) (ds) (i) (n) (acc) =
+    if i >= n then acc
+    else let oy = dk-wnd-cascade-y i w h ds
+    in wr-worst-y w h ds (i + 1) n (if oy > acc then oy else acc)
+
+  wr-cascade-room : Integer, Integer, Integer -> Text
+  wr-cascade-room (w) (h) (ds) =
+    let mx = dk-cbox-w w / 8
+    in let my = dk-cbox-h w h ds / 8
+    in let bx = wr-worst-x w 0 dk-wr-max 0
+    in let by = wr-worst-y w h ds 0 dk-wr-max 0
+    in "cascade at " & integer-to-text w & "x" & integer-to-text h
+       & ": step " & integer-to-text (dk-wnd-step-px w)
+       & "  margins " & integer-to-text mx & " and " & integer-to-text my
+       & "  worst " & integer-to-text bx & " and " & integer-to-text by
+       & "  inside both " & wf-yn2 (bx <= mx & by <= my)
+       & "  distinct of " & integer-to-text dk-wr-max & ": " & integer-to-text (wr-pairs w h ds 0 dk-wr-max 0)
+
+ THE CASCADE, and it is here because a picture caught what every row above
+ misses. The registry, the painter and the focus cycle were all correct with
+ two windows open and the SCREEN still showed one, because the default rect is
+ a function of the screen alone and both windows took it. Nothing in a count,
+ a top or an array order can see that; the question is whether the two rects
+ DIFFER, so that is what this asks.
+
+ `desk-wnd-open` needs a `ds` with real pane blocks behind cells 24 and 60,
+ because it reads each pane's block to place it. That is the same requirement
+ the desk has and the reason `desk-run` allocates those blocks.
+
+  wr-rect : Integer, Integer, Integer, Integer -> Text
+  wr-rect (blk) (w) (h) (ds) =
+    let st = dk-wnd-st blk
+    in "x " & integer-to-text (dk-wnd-rx blk w st)
+       & " y " & integer-to-text (dk-wnd-ry blk w h st ds)
+       & " w " & integer-to-text (dk-wnd-rw blk w st)
+       & " h " & integer-to-text (dk-wnd-rh blk w h st ds)
+
+  wr-cascade : Integer, Integer, Integer -> Text
+  wr-cascade (w) (h) (ds) =
+    let clk = peek-32 ds desk-clock-cell
+    in let cal = peek-32 ds 24
+    in let a = desk-wnd-open desk-focus-clkp w h ds
+    in let b = desk-wnd-open desk-focus-calc w h ds
+    in "w " & integer-to-text w
+       & "  first " & wr-rect clk w h ds
+       & "  second " & wr-rect cal w h ds
+       & "  they differ " & wf-yn2 (dk-wnd-rx clk w dk-wnd-st-normal /= dk-wnd-rx cal w dk-wnd-st-normal & dk-wnd-ry clk w h dk-wnd-st-normal ds /= dk-wnd-ry cal w h dk-wnd-st-normal ds)
+       & "  step " & integer-to-text (dk-wnd-step-px w)
+
+  wf-yn2 : Boolean -> Text
+  wf-yn2 (v) = if v then "yes" else "no"
+
+ MINIMISE AND RESTORE. A minimised window stays IN the registry and keeps its
+ rect; what changes is that it is not drawn and that focus must skip it. Those
+ are two different questions and the rows below ask both, because a
+ `dk-wr-visible` that returned the registry top regardless would look correct
+ in every count and stack the desk on a pane nobody can see.
+
+ The discriminating pair is `top` against `visible`: they agree until a window
+ is minimised and MUST disagree while the top one is, which is the whole of
+ what focus-skips-minimised means. When every window is minimised, `visible`
+ is `none` and the desk is what shows.
+
+ The restore asks the question 6.3c's stored rect exists to answer: the window
+ comes back to the rect it left, so this compares the rect before minimising
+ against the rect after restoring rather than merely checking the state flag.
+
+  wr-vis : Text, Integer, Integer -> Text
+  wr-vis (label) (ws) (ds) =
+    label & ": [" & wr-item ws 0 (dk-wr-count ws) & " ]"
+    & "  top " & integer-to-text (dk-wr-top ws)
+    & "  visible " & integer-to-text (dk-wr-visible ws ds)
+
+  wr-min-open : Integer, Integer, Integer -> Text
+  wr-min-open (w) (h) (ds) =
+    let a = desk-wnd-open desk-focus-clkp w h ds
+    in let b = desk-wnd-open desk-focus-calc w h ds
+    in wr-vis "both open     " (peek-32 ds dk-wr-cell) ds
+
+  wr-min-one : Integer, Integer -> Text
+  wr-min-one (ds) (fid) =
+    let m = poke-32 (desk-wnd-blk fid ds) dk-wnd-st-cell dk-wnd-st-min
+    in wr-vis "minimised one " (peek-32 ds dk-wr-cell) ds
+
+  wr-min-both : Integer, Integer -> Text
+  wr-min-both (ds) (fid) =
+    let m = poke-32 (desk-wnd-blk fid ds) dk-wnd-st-cell dk-wnd-st-min
+    in wr-vis "minimised both" (peek-32 ds dk-wr-cell) ds
+
+  wr-restore : Integer, Integer -> Text
+  wr-restore (ds) (fid) =
+    let r = poke-32 (desk-wnd-blk fid ds) dk-wnd-st-cell dk-wnd-st-normal
+    in let t = dk-wr-raise (peek-32 ds dk-wr-cell) fid
+    in wr-vis "restored calc " (peek-32 ds dk-wr-cell) ds
+
+ A THIRD WINDOWED PANE. Joining the window world is three arms -- a block, a
+ title and a tree -- and the block is the one that fails silently. A pane
+ `desk-wnd-blk` has no arm for answers ZERO, which is a writable address on
+ this platform, so its window places itself over physical page zero and reads
+ the rect back from whatever else lives there. A pane given the block of a
+ pane that already has one is the other half: two windows in one rectangle,
+ which is exactly the failure the cascade exists to prevent and which no
+ count, top or array order can express.
+
+ So the row asks for the block by identity rather than for a rect that looks
+ plausible, and it asks the three positions to differ pairwise rather than
+ asking whether the newest one moved.
+
+ Sabotaged by deleting the console arm from `desk-wnd-blk`, three fields move
+ and the registry fields do not: `its own block` goes to no, `positions
+ distinct` goes to no, and the rect reads `x 300 y 135`, which is the
+ never-placed default because page zero reads back as an unwritten block. The
+ array, the count and the top are identical in both arms, which is the whole
+ reason this row exists beside them.
+
+  wr-xy : Integer, Integer, Integer, Integer -> Integer
+  wr-xy (blk) (w) (h) (ds) =
+    dk-wnd-rx blk w dk-wnd-st-normal * 100000 + dk-wnd-ry blk w h dk-wnd-st-normal ds
+
+  wr-third : Integer, Integer, Integer -> Text
+  wr-third (w) (h) (ds) =
+    let clk = peek-32 ds desk-clock-cell
+    in let cal = peek-32 ds 24
+    in let con = peek-32 ds desk-console-cell
+    in let a = desk-wnd-open desk-focus-clkp w h ds
+    in let b = desk-wnd-open desk-focus-calc w h ds
+    in let c = desk-wnd-open desk-focus-con w h ds
+    in wr-show "three open    " (peek-32 ds dk-wr-cell)
+       & "  console title " & desk-wnd-title desk-focus-con
+       & "  its own block " & wf-yn2 (con /= 0 & desk-wnd-blk desk-focus-con ds == con)
+       & "  blocks distinct " & wf-yn2 (con /= clk & con /= cal & clk /= cal)
+       & "  positions distinct " & wf-yn2 (wr-xy clk w h ds /= wr-xy cal w h ds & wr-xy cal w h ds /= wr-xy con w h ds & wr-xy clk w h ds /= wr-xy con w h ds)
+       & "  console " & wr-rect con w h ds
+
+ A PANE THAT WANTS THE WHOLE CONTENT BOX. The launcher's tree is sized for the
+ region the chrome used to hand it, so three quarters of that box clips the
+ tail of each column, and `desk-wnd-open` gives it the box instead. The row
+ asks for EQUALITY with the content box rather than for a plausible-looking
+ rect, because the failure it guards is an offset: a full-box window that
+ cascaded like an ordinary one would be a box's worth of content pushed one
+ step off the bottom, which reads as a window that merely sits low.
+
+ It opens the clock FIRST so the cascade would fire if it were going to, and
+ it asks the clock to be unmoved so a bug that gave every window the box would
+ not pass here.
+
+  wr-box : Integer, Integer, Integer -> Text
+  wr-box (w) (h) (ds) =
+    let clk = peek-32 ds desk-clock-cell
+    in let prg = peek-32 ds desk-prog-cell
+    in let a = desk-wnd-open desk-focus-clkp w h ds
+    in let b = desk-wnd-open desk-focus-prog w h ds
+    in "launcher: " & wr-rect prg w h ds
+       & "  is the content box " & wf-yn2 (dk-wnd-rx prg w dk-wnd-st-normal == dk-cbox-x w & dk-wnd-ry prg w h dk-wnd-st-normal ds == dk-cbox-y w & dk-wnd-rw prg w dk-wnd-st-normal == dk-cbox-w w & dk-wnd-rh prg w h dk-wnd-st-normal ds == dk-cbox-h w h ds)
+       & "  clock unmoved " & wf-yn2 (dk-wnd-rx clk w dk-wnd-st-normal == dk-wnd-x w dk-wnd-st-normal)
+       & "  wants the box: launcher " & wf-yn2 (dk-wnd-wants-box desk-focus-prog) & " clock " & wf-yn2 (dk-wnd-wants-box desk-focus-clkp)
+
+ THE TWO QUIET PANES, which are the first to have needed a block at all. Every
+ pane windowed before this one kept state and the window slot at 44 through 60
+ was free space its block already carried; the Calendar and the Diffusion pane
+ keep nothing, so each takes a `ds` cell of its own pointing at a block of its
+ own. Two panes sharing one block is the collision `desk-wnd-blk`'s own
+ paragraph describes, and a cell nobody wrote reads zero, so the row asks for
+ both blocks by identity and asks them to differ.
+
+ Both want the whole content box, which was MEASURED and not predicted: at
+ 1600x900 a three-quarter window is 480 by 300 in the logical units a tree is
+ laid out in, against 840 by 546 at 1280x800, and each pane lost its last line
+ at the larger size. The row asks the placement for equality with the box.
+
+  wr-quiet : Integer, Integer, Integer -> Text
+  wr-quiet (w) (h) (ds) =
+    let cal = peek-32 ds dk-cal-cell
+    in let dif = peek-32 ds dk-dif-cell
+    in let a = desk-wnd-open desk-focus-cal w h ds
+    in let b = desk-wnd-open desk-focus-dif w h ds
+    in "quiet panes: " & desk-wnd-title desk-focus-cal & " and " & desk-wnd-title desk-focus-dif
+       & "  own blocks " & wf-yn2 (cal /= 0 & dif /= 0 & cal /= dif & desk-wnd-blk desk-focus-cal ds == cal & desk-wnd-blk desk-focus-dif ds == dif)
+       & "  both want the box " & wf-yn2 (dk-wnd-wants-box desk-focus-cal & dk-wnd-wants-box desk-focus-dif)
+       & "  both placed at it " & wf-yn2 (dk-wnd-rx cal w dk-wnd-st-normal == dk-cbox-x w & dk-wnd-rw cal w dk-wnd-st-normal == dk-cbox-w w & dk-wnd-rx dif w dk-wnd-st-normal == dk-cbox-x w & dk-wnd-rw dif w dk-wnd-st-normal == dk-cbox-w w)
+       & "  registry [" & wr-item (peek-32 ds dk-wr-cell) 0 (dk-wr-count (peek-32 ds dk-wr-cell)) & " ]"
+
+Section: Entry
+
+ The block is bound ONCE with a `let`. A nullary definition is a recipe and
+ not a cell, so every mention of one would hand back a fresh zeroed block and
+ every row below would report an empty registry while reading as a pass.
+
+ The sequence is one story told in order, because each row is the state the
+ row above left behind: that is what makes a wrong ORDER visible rather than
+ just a wrong answer.
+
+  opening : [Console] Nothing =
+    let ws = alloc-zeroed 64 64
+    in act
+      print-line-uni (wr-show "empty          " ws)
+      let a = dk-wr-open ws desk-focus-clkp
+      in act
+        print-line-uni (wr-show "open clock     " ws)
+        let b = dk-wr-open ws desk-focus-calc
+        in act
+          print-line-uni (wr-show "open calc      " ws)
+          let c = dk-wr-cycle ws
+          in act
+            print-line-uni (wr-show "cycle          " ws)
+            let d = dk-wr-cycle ws
+            in act
+              print-line-uni (wr-show "cycle back     " ws)
+              let e = dk-wr-raise ws desk-focus-clkp
+              in act
+                print-line-uni (wr-show "raise clock    " ws)
+                let f = dk-wr-open ws desk-focus-calc
+                in act
+                  print-line-uni (wr-show "reopen calc    " ws)
+                  let g = dk-wr-close ws (dk-wr-top ws)
+                  in act
+                    print-line-uni (wr-show "close the top  " ws)
+                    let i2 = dk-wr-close ws desk-focus-mon
+                    in act
+                      print-line-uni (wr-show "close a stranger" ws)
+                      let j = dk-wr-cycle ws
+                      in act
+                        print-line-uni (wr-show "cycle over one " ws)
+                        let k = dk-wr-close ws (dk-wr-top ws)
+                        in act
+                          print-line-uni (wr-show "close the last " ws)
+                          let l = dk-wr-cycle ws
+                          in act
+                            print-line-uni (wr-show "cycle over none" ws)
+                            print-line-uni ("ids: clock " & integer-to-text desk-focus-clkp & " calc " & integer-to-text desk-focus-calc & " none " & integer-to-text desk-focus-none & " max " & integer-to-text dk-wr-max)
+                            print-line-uni (wr-overflow (alloc-zeroed 64 64))
+                            let cds = alloc-zeroed 128 64
+                            in let c1 = poke-32 cds dk-wr-cell (alloc-zeroed 64 64)
+                            in let c2 = poke-32 cds desk-clock-cell (alloc-zeroed 64 64)
+                            in let c3 = poke-32 cds 24 (alloc-zeroed 64 64)
+                            in act
+                              print-line-uni (wr-cascade 1280 800 cds)
+                              let mds = alloc-zeroed 128 64
+                              in let d1 = poke-32 mds dk-wr-cell (alloc-zeroed 64 64)
+                              in let d2 = poke-32 mds desk-clock-cell (alloc-zeroed 64 64)
+                              in let d3 = poke-32 mds 24 (alloc-zeroed 64 64)
+                              in act
+                                print-line-uni (wr-min-open 1280 800 mds)
+                                print-line-uni ("the rect calc leaves: " & wr-rect (peek-32 mds 24) 1280 800 mds)
+                                print-line-uni (wr-min-one mds desk-focus-calc)
+                                print-line-uni (wr-min-both mds desk-focus-clkp)
+                                print-line-uni (wr-restore mds desk-focus-calc)
+                                print-line-uni ("the rect calc returns to: " & wr-rect (peek-32 mds 24) 1280 800 mds)
+                                print-line-uni ("minimised now: calc " & wf-yn2 (dk-wnd-minimised (peek-32 mds 24)) & " clock " & wf-yn2 (dk-wnd-minimised (peek-32 mds desk-clock-cell)))
+                                print-line-uni ("states: normal " & integer-to-text dk-wnd-st-normal & " max " & integer-to-text dk-wnd-st-max & " min " & integer-to-text dk-wnd-st-min)
+                                let tds = alloc-zeroed 128 64
+                                in let e1 = poke-32 tds dk-wr-cell (alloc-zeroed 64 64)
+                                in let e2 = poke-32 tds desk-clock-cell (alloc-zeroed 64 64)
+                                in let e3 = poke-32 tds 24 (alloc-zeroed 64 64)
+                                in let e4 = poke-32 tds desk-console-cell (alloc-zeroed 64 64)
+                                in act
+                                  print-line-uni (wr-third 1280 800 tds)
+                                  let bds = alloc-zeroed 128 64
+                                  in let f1 = poke-32 bds dk-wr-cell (alloc-zeroed 64 64)
+                                  in let f2 = poke-32 bds desk-clock-cell (alloc-zeroed 64 64)
+                                  in let f3 = poke-32 bds desk-prog-cell (alloc-zeroed 64 64)
+                                  in act
+                                    print-line-uni (wr-box 1280 800 bds)
+                                    print-line-uni (wr-cascade-room 1280 800 bds)
+                                    print-line-uni (wr-cascade-room 1600 900 bds)
+                                    let qds = alloc-zeroed 128 64
+                                    in let g1 = poke-32 qds dk-wr-cell (alloc-zeroed 64 64)
+                                    in let g2 = poke-32 qds dk-cal-cell (alloc-zeroed 64 64)
+                                    in let g3 = poke-32 qds dk-dif-cell (alloc-zeroed 64 64)
+                                    in print-line-uni (wr-quiet 1280 800 qds)
+                                  end
+                                end
+                              end
+                            end
+                          end
+                        end
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+Page 1

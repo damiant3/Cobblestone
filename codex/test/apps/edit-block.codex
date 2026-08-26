@@ -1,0 +1,80 @@
+Chapter: EditBlockTest
+  cites Works chapter GopEdit
+  cites Foreword chapter Console
+
+ The Editor's state block leaves the desk's window slot alone, and the two
+ buffers that were moved out of it still round-trip.
+
+ Bytes 44 through 67 are the desk's: `dk-wnd-st-cell` at 44 and the window
+ rectangle at 48 through 60, with 64 the first byte past them. The Editor kept
+ four things in exactly that span -- the filename buffer at 44 to 55, the
+ marks pointer at 56, the chapters pointer at 60 and the draft length at 64 --
+ and that is the whole reason it was the one pane the windows campaign could
+ not take. They live above 108 now and the block is 192 bytes.
+
+ THE ZERO ROW IS THE ASSERTION AND THE OTHER TWO ARE ITS CONTROL. A block
+ whose slot reads zero after a name and a draft have been written proves the
+ span is nobody's; the round trips prove the move did not simply break the
+ two buffers, which a zero row alone cannot tell you -- a chapter that stored
+ nothing anywhere would pass the zero row perfectly.
+
+ `ged-name-push` and `ged-name-of` had no test of any kind before this. That
+ is what let the filename buffer sit unrecorded in the block map while two
+ documents named only the marks and chapters pointers as the collision:
+ nothing read those bytes except the Editor's own naming mode, and nothing
+ tested the naming mode.
+
+ SABOTAGED by putting `ged-name-off` back at 44, the zero row reads 5 and the
+ two round trips do not move at all. That is the whole argument for having
+ all three: the buffers work perfectly at either offset, and only the span
+ census can see that one of them is sitting on the desk's rectangle.
+
+ The block is 192 bytes here because `desk-run` allocates 192. A test that
+ builds one of these builds it the size the desk builds it, for the reason the
+ desk contract already gives for `ds`: the arena is bump-allocated and
+ 64-aligned, so a short block's over-read lands on padding and answers zero,
+ which is indistinguishable from a cell that is legitimately empty.
+
+Section: Test
+
+ The characters are UNICODE code points in a list rather than a `Text`,
+ because that is what the naming mode hands these two: a keycode, which
+ `ged-name-push` uppercases and `ged-name-of` converts on the way back out.
+ `annot-write` feeds the draft the same way for the same reason.
+
+  eb-push-name : Integer, List Integer, Integer -> Integer
+  eb-push-name (es) (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = ged-name-push es (list-at xs i)
+    in eb-push-name es xs (i + 1)
+
+  eb-push-draft : Integer, List Integer, Integer -> Integer
+  eb-push-draft (es) (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = ged-draft-push es (list-at xs i)
+    in eb-push-draft es xs (i + 1)
+
+  eb-slot-nonzero : Integer, Integer, Integer -> Integer
+  eb-slot-nonzero (es) (i) (acc) =
+    if i >= 68 then acc
+    else eb-slot-nonzero es (i + 1) (if peek-byte es i /= 0 then acc + 1 else acc)
+
+  eb-yn : Boolean -> Text
+  eb-yn (v) = if v then "yes" else "no"
+
+  opening : [Console] Nothing =
+    let es = alloc-zeroed 192 64
+    in let i0 = ged-init es
+    in let nc = ged-name-clear es
+    in let dc = ged-draft-clear es
+    in let np = eb-push-name es [110, 111, 116, 101, 115] 0
+    in let dp = eb-push-draft es [97, 32, 100, 114, 97, 102, 116] 0
+    in let nonzero = eb-slot-nonzero es 44 0
+    in act
+      print-line-uni ("name round trip  : " & ged-name-of es)
+      print-line-uni ("draft round trip : " & ged-draft-of es)
+      print-line-uni ("marks and chaps set: " & eb-yn (ged-marks es /= 0 & ged-chaps es /= 0))
+      print-line-uni ("bytes 44..67 nonzero: " & integer-to-text nonzero)
+    end
+
+Page 1
