@@ -3558,13 +3558,49 @@ Section: Chapter Emission
  and has no global on POSIX), and a knob is not worth version-fragile code
  in every emitted program. Rebuild to change it.
 
-  zig-main : Text -> Text
-  zig-main (entry) =
-   "pub fn main() void {\n"
+ Zig requires a thread entry to return `u8`, `noreturn`, `!noreturn`,
+ `void` or `!void`, and `opening` is spawned directly. 40 corpus programs
+ declare `opening` returning a VALUE and every one of them was refused
+ inside `std/Thread.zig` before a line of the subject was analysed --
+ the second-largest refusal class in the corpus. Finding 53.
+
+ The value is the program's OUTPUT, not a status: `ble-att-encode` ends
+ `in a + b + c + d + e` and its `.expected` holds `5`. So the shim prints
+ it rather than discarding it; discarding would trade 40 loud refusals
+ for 40 silent mismatches.
+
+ The C# plug has the rule (`opening-call-text`) and dispatches on the
+ return TYPE. This asks `zig-def-return-text` instead -- the same text
+ that was emitted into `fn opening() ...` -- so the shim cannot disagree
+ with the signature it is calling. Duplicating the type list is the
+ mistake the emit-roots drift already taught us.
+
+ The Real arm refuses: printing it wants `cx_real_to_text`, which does not
+ exist here, and finding 50 has the account of why guessing is worse.
+
+  zig-main : Text, List IRDef -> Text
+  zig-main (entry) (defs) =
+   "fn cx_entry() void {\n"
+   & zig-entry-call (zig-sanitize entry) (zig-entry-return-text defs 0)
+   & "}\n\n"
+   & "pub fn main() void {\n"
    & "    const stack_bytes: usize = 512 * 1024 * 1024;\n"
-   & "    const t = std.Thread.spawn(.{ .stack_size = stack_bytes }, "
-   & zig-sanitize entry & ", .{}) catch @panic(\"spawn\");\n"
+   & "    const t = std.Thread.spawn(.{ .stack_size = stack_bytes }, cx_entry, .{}) catch @panic(\"spawn\");\n"
    & "    t.join();\n}\n"
+
+  zig-entry-return-text : List IRDef, Integer -> Text
+  zig-entry-return-text (defs) (i) =
+   if i >= list-length defs then "void"
+   else let d = list-at defs i
+   in if (d.name) == opening-entry-point then zig-def-return-text d []
+   else zig-entry-return-text defs (i + 1)
+
+  zig-entry-call : Text, Text -> Text
+  zig-entry-call (name) (rt) =
+   if rt == "void" then "    " & name & "();\n"
+   else if rt == "[]const u8" then "    cx_print_line(" & name & "());\n"
+   else if rt == "f64" then "    " & zig-show-real-refusal & ";\n"
+   else "    cx_print_line(cx_show_int(" & name & "()));\n"
 
   zig-prelude : Text =
    "const std = @import(\"std\");\n\n"
@@ -3708,6 +3744,6 @@ Section: Chapter Emission
    }
    in let types-text = emit-zig-type-defs type-defs 0
    in let defs-text = emit-zig-defs (m.defs) 0 ctx
-   in zig-prelude & types-text & defs-text & zig-main opening-entry-point
+   in zig-prelude & types-text & defs-text & zig-main opening-entry-point (m.defs)
 
 Page 1
