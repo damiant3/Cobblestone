@@ -2247,20 +2247,37 @@ of the well-typedness `CSharpEmitter.codex:534-541` asserts for this wire:
 the type supplied for a parameter is the type that parameter declares, so a
 mismatched pair cannot arrive.
 
-**VERIFIED 2026-08-26, and it reaches every one of them.** Natives rebuilt
-against the fix, then the whole corpus re-transpiled -- 597 programs:
+**PARTIALLY VERIFIED 2026-08-26, and the first write-up of this row used the
+wrong metric.** Natives rebuilt against the fix, 597 programs re-transpiled:
 
     unresolved type variable markers   40 -> 0 distinct, 51 -> 0 program-hits
     all emitter gaps                  135 -> 95 distinct, 40 gone, 0 NEW
-    programs transpiling clean        326 -> 334
+    programs with no markers          326 -> 334
 
-**Zero new markers anywhere**, and no program still carries a type-variable
-marker of any kind -- `typeclass-smoke`, `db-full-test` and both Roc ports
-included. `db-full-test` still has gaps, and they are real emitter gaps
-rather than this class.
+**Those numbers are true and they do not mean what they look like.** A
+marker count says the emitter stopped SAYING it could not answer; it does not
+say the emitted zig builds. Checked afterwards, by building:
 
-The row above deliberately refused to guess whether one confirmed mechanism
-was the cause of all forty. It was: **three arms in one `when` accounted for
-thirty percent of the distinct entries in the histogram that ranks which
-emitter arm to write next.** What the ranking now shows is 95 real gaps
-instead of 135 mixed ones.
+    tvar-in-declared-type   refused before  ->  RUNS, answers 73   fixed
+    roc-returned-closure    ran before      ->  RUNS, answers 9    unchanged
+    roc-iter-map            refused before  ->  DOES NOT BUILD     not fixed
+
+`roc-iter-map` now emits `Step(T16)` and `__lam_1(T16, ...)` with `T16`
+declared nowhere -- 31 bare `T<n>` identifiers in its output -- where before
+it carried an `@compileError`. **The walk now finds an answer and the answer
+is itself a type variable**, which `zig-prefer-concrete` keeps as a last
+resort by the deliberate rule 1.84 records: inside a generic definition a
+variable IS the right answer. In a closure's environment struct it is not,
+and nothing distinguishes the two.
+
+So this change is a real fix for the shape its reproducer has -- a variable
+inside a declared type whose actual is concrete -- and it converts a REFUSAL
+into an UNDECLARED IDENTIFIER for the shape where the recovered answer is
+another variable. **The second is worse than what it replaced**, because a
+marker is a diagnostic and an undeclared identifier is a build failure with
+no explanation. It should not ship in this state.
+
+**What is owed before this row is worth sending:** the last-resort rule needs
+a scope test -- keep a variable answer only where the emission site declares
+it -- and then `corpus_run.py --run` over the corpus, which BUILDS what it
+transpiles, rather than a marker census.
