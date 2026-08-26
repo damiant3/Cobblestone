@@ -518,6 +518,66 @@ Section: Type Mapping
     is EffectfulTy (effs) (scopes) (inner) -> zig-is-real-type inner
     is otherwise -> False
 
+ `show` is one name over five different jobs. `show : forall a. a -> Text`
+ (`Types/Builtins.codex:69`), and bare metal picks the job from the
+ ARGUMENT's type (`Emit/X86_64.codex:1652`): a Text shows as itself, a
+ Boolean as `True`/`False`, an f32 widens before `__real_to_text`, any
+ other real goes straight there, and everything else is `__itoa`. This
+ plug emitted the last arm for all five, so 40 corpus programs failed
+ with `expected type 'i64', found 'bool'` and 2 with `found 'f64'` --
+ 42 of 113 refusals, the largest single class. Finding 50.
+
+ The unit wrapper comes off first, and bare metal's note says why it
+ learned to: without the strip a `unit Text` misses the arm its inner
+ type is entitled to, falls to `__itoa`, and prints the pointer as a
+ decimal number. `unit Integer` was already right, which is what made it
+ cheap to miss.
+
+ Reals refuse rather than guess. `__real_to_text` on bare metal is
+ hand-written assembly -- sign bit, `cvttsd2si` for the integer part,
+ fifteen fractional-digit iterations, CCE digit offsets -- and no
+ `cx_real_to_text` exists here. `std.fmt` would agree with it on some
+ values and not others, and a `show` that is right for 2.5 and wrong for
+ 0.1 is worse than one that says it cannot. Two corpus programs want it.
+
+  zig-strip-unit : CodexType -> CodexType
+  zig-strip-unit (ty) =
+   when ty
+    is UnitTy (n) (inner) -> zig-strip-unit inner
+    is EffectfulTy (effs) (scopes) (inner) -> zig-strip-unit inner
+    is otherwise -> ty
+
+  zig-is-boolean-type : CodexType -> Boolean
+  zig-is-boolean-type (ty) =
+   when ty
+    is BooleanTy -> True
+    is otherwise -> False
+
+ Bare metal resolves a named type to its underlying form before it
+ dispatches (`resolve-to-sum-with-defs`); this does not. A type alias
+ whose right-hand side is Boolean still shows as an integer here. Named
+ rather than left silent: no corpus program is in that shape, so it is
+ an unmeasured gap and not a measured one.
+
+  zig-show-arg : IRExpr, ZigCtx, Integer -> Text
+  zig-show-arg (a) (ctx) (d) =
+   let e = emit-zig-expr a ctx (d + 1)
+   in let aty = zig-strip-unit (zig-expr-type a)
+   in if zig-is-real-type aty then zig-show-real-refusal
+   else if zig-is-text-type aty then e
+   else if zig-is-boolean-type aty then zig-show-bool-text e
+   else "cx_show_int(" & e & ")"
+
+  zig-show-bool-text : Text -> Text
+  zig-show-bool-text (e) =
+   let t = "@as([]const u8, \"" & zig-escape-text "True" & "\")"
+   in let f = "@as([]const u8, \"" & zig-escape-text "False" & "\")"
+   in "(if (" & e & ") " & t & " else " & f & ")"
+
+  zig-show-real-refusal : Text
+  zig-show-real-refusal =
+   "@compileError(\"zig plug: show on a Real needs __real_to_text, which this plug does not have\")"
+
 Section: Arity Map
 
   ArityEntry = record {
@@ -849,7 +909,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "bits-to-real-approx", emit = \args ctx d ty -> "cx_bits_to_real_approx(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
-    ZigBuiltinEmitter { name = "show", emit = \args ctx d ty -> "cx_show_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "show", emit = \args ctx d ty -> zig-show-arg (list-at args 0) ctx d },
     ZigBuiltinEmitter { name = "integer-to-text", emit = \args ctx d ty -> "cx_show_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "text-length", emit = \args ctx d ty -> "cx_text_len(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "char-code-at", emit = \args ctx d ty -> "cx_char_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
