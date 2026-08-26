@@ -2191,7 +2191,47 @@ Section: Apply Emission
     is ListTy (elem) -> zig-tvar-in-elem-type id elem actual
     is LinkedListTy (elem) -> zig-tvar-in-elem-type id elem actual
     is FunTy (p) (fnrow) (r) -> zig-tvar-in-fun-type id p r actual
+    is ConstructedTy (n) (a) -> zig-tvar-in-args id a (zig-type-arg-list actual) 0
+    is SumTy (n) (a) (c) -> zig-tvar-in-args id a (zig-type-arg-list actual) 0
+    is RecordTy (n) (a) (f) -> zig-tvar-in-args id a (zig-type-arg-list actual) 0
     is otherwise -> VoidTy
+
+ The three arms above are the DECLARED types the subject writes. Without
+ them this walk knew `List a`, `LinkedList a` and `a -> b` and answered
+ VoidTy for every parameterised type a program declares for itself, so a
+ variable inside `Step a` -- or `Iter a`, `Opt a`, a tuple, any record or
+ sum -- could not be recovered from any position, and
+ `zig-resolve-tvar` emitted its @compileError with the answer sitting one
+ argument along in the type it had already been handed.
+
+ One declaration reaches this walk under three different constructors: a
+ name is a ConstructedTy until the checker rewrites it to the SumTy or
+ RecordTy it denotes, and which one arrives depends on how far the type
+ travelled. All three carry the same argument list, so all three descend
+ the same way and `zig-type-arg-list` accepts any of them on the actual
+ side.
+
+ Matching is BY POSITION and does not compare names, which is sound for
+ the reason CSharpEmitter.codex:534-541 gives about this same wire: the IR
+ is well-typed, so the type supplied for a parameter is the type that
+ parameter declares, and a mismatched pair cannot arrive here.
+
+  zig-type-arg-list : CodexType -> List CodexType
+  zig-type-arg-list (ty) =
+   when ty
+    is ConstructedTy (n) (a) -> a
+    is SumTy (n) (a) (c) -> a
+    is RecordTy (n) (a) (f) -> a
+    is EffectfulTy (e) (s) (inner) -> zig-type-arg-list inner
+    is otherwise -> []
+
+  zig-tvar-in-args : Integer, List CodexType, List CodexType, Integer -> CodexType
+  zig-tvar-in-args (id) (decls) (actuals) (i) =
+   if i >= list-length decls | i >= list-length actuals then VoidTy
+   else let found = zig-tvar-in-type id (list-at decls i) (list-at actuals i)
+   in when found
+      is VoidTy -> zig-tvar-in-args id decls actuals (i + 1)
+      is otherwise -> found
 
   zig-tvar-in-elem-type : Integer, CodexType, CodexType -> CodexType
   zig-tvar-in-elem-type (id) (elem) (actual) =
