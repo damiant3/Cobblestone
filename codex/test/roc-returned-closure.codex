@@ -1,0 +1,49 @@
+Chapter: RocReturnedClosure
+  cites Foreword chapter Console
+
+ Ported from roc-lang/roc, src/eval/test/eval_closure_recursion_tests.zig,
+ the case named "inspect: returned closure calls captured function
+ argument". The Roc source is four lines and this is all of it:
+
+     wrap : (I64 -> I64) -> { next : () -> I64 }
+     wrap = |transform| { next: || transform(1.I64) }
+     wrapped = wrap(|_| 9.I64)
+     (wrapped.next)()
+
+ and Roc expects 9.
+
+ One environment adaptation, named here because a reader will otherwise
+ take the port for a loose one: Roc's `next` is a THUNK, `() -> I64`, and
+ Codex has no nullary function type -- a nullary definition is a constant,
+ evaluated once, not a closure to enter. So `next` takes an Integer and
+ ignores it. What the case asks survives that. The closure is still built
+ inside `wrap`, still captures `wrap`'s function-typed PARAMETER, still
+ leaves as a record field, and is still entered through that field after
+ `wrap` has returned and its frame is gone.
+
+ That last part is what no row in this corpus asks yet.
+ `record-smoke.codex` stores a lambda in a record field, but it captures a
+ Text and an Integer. `dce-reach.codex` passes a function as a value, but
+ calls it in the frame that received it. Neither captures a FUNCTION in a
+ closure that outlives the call which built it -- which is the exact
+ neighbourhood of findings 38, 39, 40 and 42, and the reason this file was
+ the one worth porting first.
+
+Section: Types
+
+  Wrapped = record {
+   next : Integer -> Integer
+  }
+
+Section: Functions
+
+  wrap : (Integer -> Integer) -> Wrapped
+  wrap (transform) = Wrapped { next = \ignored -> transform 1 }
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   let wrapped = wrap (\x -> 9)
+   in print-line-uni (show ((wrapped.next) 0))
+  end
