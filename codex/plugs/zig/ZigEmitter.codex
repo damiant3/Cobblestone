@@ -3282,9 +3282,12 @@ Section: Definition Emission
     & "    while (true) {\n        "
     & emit-zig-tail (d.body) (zig-push-bound-params (zig-push-tail-renames (zig-push-param-renames ctx (d.params) 0) (d.params) 0 (tl.tail-vars)) (d.params) 0) 0 tl
     & "\n    }\n}\n\n"
-   else head
-    & emit-zig-param-discards (d.params) 0 (d.body)
-    & "    return " & emit-zig-expr (d.body) (zig-push-bound-params (zig-push-param-renames ctx (d.params) 0) (d.params) 0) 0 & ";\n}\n\n"
+   else let body-text = emit-zig-expr (d.body) (zig-push-bound-params (zig-push-param-renames ctx (d.params) 0) (d.params) 0) 0
+   in head
+    & (if zig-body-refused body-text
+       then emit-zig-all-param-discards (d.params) 0
+       else emit-zig-param-discards (d.params) 0 (d.body))
+    & "    return " & body-text & ";\n}\n\n"
 
  Zig evaluates an array literal's shape at comptime and gives up after
  1000 backwards branches. The builtins table is one literal of about
@@ -3370,6 +3373,31 @@ Section: Definition Emission
  A parameter the body never mentions is a hard error in zig, not a warning,
  so a definition that ignores an argument needs the discard written out.
  The occurs check reads the IR, so the name is compared unsanitized.
+
+ `emit-zig-param-discards` asks `zig-occurs` about the IR body, and that is
+ the right question everywhere the emitter answers. Where it REFUSES it is
+ the wrong one: the refusal replaces the expression that read the
+ parameter, so the IR still uses it and the emitted zig does not. Zig then
+ reports `unused function parameter` against the signature -- before it
+ ever analyses the `@compileError` in the body -- and the plug's sentence
+ is never printed. Finding 51, measured on three Roc ports and the probe
+ matrix.
+
+ So a refused body discards EVERY parameter. Not the ones a name search
+ says are dead: `_ = x;` beside a live use is legal zig, and a substring
+ test on parameter names is the word-boundary collision this tree has
+ already been bitten by. Discarding all of them cannot misfire, and the
+ first thing zig has left to analyse is the message.
+
+  zig-body-refused : Text -> Boolean
+  zig-body-refused (t) =
+   text-contains t "zig plug: "
+
+  emit-zig-all-param-discards : List IRParam, Integer -> Text
+  emit-zig-all-param-discards (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+   in "    _ = " & zig-sanitize (p.name) & ";\n" & emit-zig-all-param-discards params (i + 1)
 
   emit-zig-param-discards : List IRParam, Integer, IRExpr -> Text
   emit-zig-param-discards (params) (i) (body) =
