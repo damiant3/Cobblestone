@@ -2247,10 +2247,20 @@ of the well-typedness `CSharpEmitter.codex:534-541` asserts for this wire:
 the type supplied for a parameter is the type that parameter declares, so a
 mismatched pair cannot arrive.
 
-**NOT YET VERIFIED**, and deliberately filed that way. No natives were built
-against it at the time of writing. What it owes before it is worth anyone's
-time: the marker gone from `tvar-in-declared-type` and `roc-iter-map`, the
-`codexzig` fixed point still holding, the tier set unmoved, and a diff of the
-`unresolved type variable` markers in the corpus census, which is the
-measurement that says whether this reaches the other thirty-eight or only the
-two that found it.
+**VERIFIED 2026-08-26, and it reaches every one of them.** Natives rebuilt
+against the fix, then the whole corpus re-transpiled -- 597 programs:
+
+    unresolved type variable markers   40 -> 0 distinct, 51 -> 0 program-hits
+    all emitter gaps                  135 -> 95 distinct, 40 gone, 0 NEW
+    programs transpiling clean        326 -> 334
+
+**Zero new markers anywhere**, and no program still carries a type-variable
+marker of any kind -- `typeclass-smoke`, `db-full-test` and both Roc ports
+included. `db-full-test` still has gaps, and they are real emitter gaps
+rather than this class.
+
+The row above deliberately refused to guess whether one confirmed mechanism
+was the cause of all forty. It was: **three arms in one `when` accounted for
+thirty percent of the distinct entries in the histogram that ranks which
+emitter arm to write next.** What the ranking now shows is 95 real gaps
+instead of 135 mixed ones.
