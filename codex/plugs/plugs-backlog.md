@@ -2281,3 +2281,191 @@ no explanation. It should not ship in this state.
 a scope test -- keep a variable answer only where the emission site declares
 it -- and then `corpus_run.py --run` over the corpus, which BUILDS what it
 transpiles, rather than a marker census.
+
+**PAID, 2026-08-26.** Both halves. The last-resort rule now carries the scope
+test this row asked for: `emit-zig-type` takes the set of type variables the
+emission site actually declares as `comptime T<n>` parameters (`ZigCtx.scope-tvars`,
+set by `emit-zig-def`), and refuses at the OUTERMOST type when a variable is
+not in it. Outermost because `zig-is-unmapped` tests a leading prefix, so a
+marker buried inside `*CxList(...)` is invisible to it.
+
+Measured by `corpus_run.py --run`, which builds and runs rather than counting
+markers:
+
+    tvar markers          40 -> 8 -> 0    over 606 programs
+    corpus match          183 -> 185      nothing that matched stopped matching
+    ast/allcycles.sh      14/14
+
+`hamt-test`, `kvstore-test` and `inductive-list` traded a diagnostic for a
+build failure under the first attempt; under the scope test `typeclass-poly`
+goes the other way, `refused -> markers`, and `inductive-list`'s remaining
+refusal is a different defect the marker had been standing in front of (a
+self-recursive type that is also generic, emitted with no indirection).
+
+**1.86 -- FIXED, a refusal that replaces an expression kills the parameters
+that fed it, and zig reports the stranding instead of the refusal.** (Steve
+Howell, 2026-08-26; `codex/plugs/zig/`.)
+
+1.85's scope test turned `use of undeclared identifier 'T16'` into a sentence
+naming the variable and the callee. Zig never printed the sentence. The
+refusal consumed the only expression reading a function parameter, so the
+parameter went dead, and zig's unused-parameter check runs against the
+signature before the `@compileError` in the body is analysed.
+
+Measured on four programs, with zig's own column landing on the stranded
+parameter each time:
+
+    roc-iter-map      857:68   transform: CxFn1(T44, T45)
+    roc-iter-keep-if  857:52   pred: CxFn1(T44, bool)
+    roc-iter-drop-if  857:52   pred: CxFn1(T44, bool)
+    probe-tvar-recovery  908   wrap_int(n: i64)
+
+`roc-iter-map` strands `transform` and leaves `it` alone, because `it` still
+has a reader. That asymmetry is what rules out "the parameter was already
+dead for unrelated reasons".
+
+**The mechanism was a liveness question asked of the wrong artifact.**
+`emit-zig-param-discards` asks `zig-occurs` about the IR body -- the right
+question everywhere the emitter answers, the wrong one exactly where it
+refuses, since the IR still uses the parameter and the emitted zig does not.
+A refused body now discards every parameter. Not the ones a name search calls
+dead: `_ = x;` beside a live use is legal zig, and a substring test on
+parameter names is a word-boundary collision this tree has been bitten by.
+
+**1.87 -- FIXED, `show` dispatches five ways on the argument's type and this
+plug implemented one arm for all five.** (Steve Howell, 2026-08-26;
+`codex/plugs/zig/`.)
+
+`show : forall a. a -> Text` (`Types/Builtins.codex:69`). Bare metal picks by
+the argument's type (`Emit/X86_64.codex:1652`): an f32 real widens before
+`__real_to_text`, other reals go straight there, `TextTy` is the expression
+itself, `BooleanTy` is `emit-show-bool`, everything else is `__itoa`. This
+plug emitted `cx_show_int` for all five.
+
+**42 of 113 corpus refusals, the largest single class** -- 40 `expected type
+'i64', found 'bool'` and 2 `found 'f64'`. The refusal site was read at the
+call in three of the forty rather than inferred from the message.
+
+Fixed for Text and Boolean, with the unit wrapper stripped first for the
+reason bare metal records beside its own strip (without it a `unit Text`
+falls to the integer arm and prints its pointer as a decimal). `True` and
+`False` are built through the emitter's existing text escaper rather than
+hand-encoded, so their CCE bytes come from the same place every other
+literal's do.
+
+**Reals REFUSE with a named marker rather than guess.** `__real_to_text` is
+hand-written assembly (`Emit/X86_64TextHelpers.codex:590`) -- sign bit,
+`cvttsd2si` for the integer part, fifteen fractional-digit iterations, CCE
+digit offsets -- and no `cx_real_to_text` exists here. `std.fmt` would agree
+with it on some values and not others, and a `show` that is right for 2.5 and
+wrong for 0.1 is worse than one that says it cannot. That is the remaining 2
+of the 42 and it is open.
+
+Found by a ported Roc snippet on its first run, not by the corpus, although
+the corpus had been carrying the evidence for as long as it has existed.
+
+**1.88 -- FIXED, emitted `main` spawns `opening` directly and zig refuses a
+thread entry that returns a value; 40 corpus programs.** (Steve Howell,
+2026-08-26; `codex/plugs/zig/`.)
+
+Every emitted program runs its entry on a thread for the 512 MB stack -- the
+same workaround the C# plug carries, for the reason it records (the lexer's
+`scan-token -> skip-prose-line -> scan-token` cycle, which self-TCO cannot
+flatten, overflows 1 MB). Zig requires that entry to return `u8`, `noreturn`,
+`!noreturn`, `void` or `!void`. 40 subjects declare `opening` returning a
+value, and all 40 failed inside `std/Thread.zig` before a line of their own
+code was analysed.
+
+**The value is the program's OUTPUT, not a status.** `ble-att-encode` ends
+`in a + b + c + d + e` and its `.expected` is `5`. A shim that discarded it
+would have traded 40 loud refusals for 40 silent mismatches.
+
+`cx_entry` is a void shim that prints, dispatching on the CODEX type arm for
+arm against `emit-opening-result-print` (`Emit/X86_64Chapter.codex:222`).
+
+An earlier draft dispatched on this plug's own rendered zig type text instead,
+reasoning that the shim then could not disagree with the signature it calls.
+That was wrong twice over and is recorded because the reasoning is
+attractive: the zig type text is LOSSY. Boolean and Char both render to
+something that is neither `void` nor `[]const u8` nor `f64`, so both fell to
+the integer arm -- a Boolean entry would have re-created 1.87 at a new site,
+and a Character entry would have printed a number where bare metal prints
+nothing at all. Caught by a cold read before it was built.
+
+**A note for the C# plug, unmeasured by us.** `opening-call-text`
+(`CSharpEmitter.codex`) DISCARDS the value of an effectful `opening`. Bare
+metal peels the effect and prints it, and the depot agrees: `gpu-ptx` and
+`gpu-doorbell` declare `opening : [Console] Integer` and their `.expected`
+files end with the bare `0` that print produces. We followed bare metal. We
+have no C# toolchain here, so this is a lead and not a report.
+
+**1.89 -- FIXED (half), a unit family was mapped to `void`, erasing the
+payload while the arithmetic around it stayed correct.** (Steve Howell,
+2026-08-26; `codex/plugs/zig/`.)
+
+`Length = unit family Millimeter` with scale factors; a `Length` value IS its
+base-unit integer. `emit-zig-type` mapped every `UnitTy` to `void`.
+
+`unit-family`'s emitted body already computed all four of its expected
+answers -- scale factors multiplying, conversions inlined to `@divTrunc`,
+`double-length (Millimeter 50)` constant-folded -- and then failed to compile
+because the values were typed `void`:
+
+    fn Centimeter(__fv: i64) void {          <- void, should be i64
+        return b0: { const __unit_0 = (__fv *% 10); break :b0 __unit_0; };
+    }
+
+Three arms move: `emit-zig-type` recurses into the backing type,
+`zig-let-annot` peels too (or a `let` holding a unit value is annotated `""`
+while its expression has an integer type), and the entry shim of 1.88
+recurses rather than assuming `void`. Six programs, and nothing that matched
+stopped matching.
+
+**NOT fixed, and reported here as open.** A record FIELD typed by a unit
+family arrives as an `ATypeExpr` and takes `emit-zig-atype`, whose
+`ANamedType` arm emits any unrecognized name verbatim
+(`ZigEmitter.codex:445-447`): `ob_sample_rate: Frequency,` against a zig that
+has never heard of `Frequency`. **11 more programs.** That same `else` also
+emits a source-level TYPE VARIABLE verbatim -- `queue-test` emits
+`QueueS(T52){ .front = cx_ll_empty(a), ... }`, where the definition declares
+`comptime T52` and the field's element type is spelled `a` in the same
+expression. And that path takes no scope and has no refusal, so every guard
+from 1.85 walks straight past it. One `else`, two symptoms, twelve programs.
+
+**1.90 -- OPEN, the zig plug's runtime prelude shadows user top-level names
+with its own locals and parameters, and nothing declares them reserved.**
+(Steve Howell, 2026-08-26; `codex/plugs/zig/`.)
+
+Zig forbids a local shadowing a container-level declaration, so every
+identifier the emitted prelude uses privately is effectively a reserved word
+for every Codex program this plug compiles.
+
+    dns-answer-count.zig:26:15  function parameter shadows declaration of 'l'
+    tcp-checksum-refuse.zig     function parameter shadows declaration of 'base'
+
+against user top-levels `fn l() DnsResponse` and `fn base() NetSession`.
+
+**The surface is 66 names**, extracted from the prelude of an emitted
+program: 47 `const`/`var` bindings and 33 parameters. It includes `x`, `y`,
+`d`, `e`, `i`, `n`, `s`, `len`, `ctx`, `a`, `hi`, `lo`, `acc`, `buf`, `out`,
+`top`, `start`, `code`, `path`. **A Codex program defining a top-level `x`
+cannot be compiled by this plug.** `zig-prelude-decls` guards user names
+against prelude DECLARATIONS and against nothing else.
+
+This branch renames four of them (`cx_ll_empty`'s `l`, `cx_ipow`'s `base`,
+`acc`, `e`) and that is deliberately not the fix -- it is included because it
+is what was measured, and because measuring it is how the size of the class
+was learned. The two programs above still refuse: the rename moved the error
+from a `const` to a function PARAMETER of the same name, which is also how we
+found that the first extraction had counted only `const`/`var` and missed
+every parameter.
+
+**Both candidate fixes are larger than they look.** Adding the 66 names to
+`zig-prelude-decls` renames `i`, `n` and `s` through all 55 `zig-sanitize`
+call sites -- type names, constructor names, parameters, definitions -- a
+large blast radius through rename machinery to buy two programs. Renaming the
+prelude's own 66 identifiers is correct and confined to text this plug owns,
+but it is a rewrite over 931 lines of zig embedded in Codex string literals
+where a subtle miss breaks every emitted program. Either wants its own change
+and a check that re-derives the surface from emitted output -- and that check
+must count parameters, or it will certify the same short list we did.
