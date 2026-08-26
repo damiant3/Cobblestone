@@ -344,40 +344,6 @@ Section: Type Mapping
    if i >= list-length types then acc
    else zig-tvar-ids-list types (zig-tvar-ids (list-at types i) acc) (i + 1)
 
- Recovering one variable: walk the declared type and the type actually
- supplied in step, and answer with the zig type sitting where the variable
- sits. An empty answer means this pair does not mention it, and the caller
- tries the next one.
-
-  zig-tvar-in : Integer between 0 and 4294967295, CodexType, CodexType -> Text
-  zig-tvar-in (id) (decl) (actual) =
-   when decl
-    is TypeVar (vid) -> if vid == id then emit-zig-type actual else ""
-    is EffectfulTy (e) (s) (inner) -> zig-tvar-in id inner actual
-    is ForAllTy (fid) (inner) -> zig-tvar-in id inner actual
-    is ForAllEff (c) (inner) -> zig-tvar-in id inner actual
-    is ListTy (elem) -> zig-tvar-in-elem id elem actual
-    is LinkedListTy (elem) -> zig-tvar-in-elem id elem actual
-    is FunTy (p) (fnrow) (r) -> zig-tvar-in-fun id p r actual
-    is otherwise -> ""
-
-  zig-tvar-in-elem : Integer between 0 and 4294967295, CodexType, CodexType -> Text
-  zig-tvar-in-elem (id) (elem) (actual) =
-   when actual
-    is ListTy (ae) -> zig-tvar-in id elem ae
-    is LinkedListTy (ae) -> zig-tvar-in id elem ae
-    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-elem id elem inner
-    is otherwise -> ""
-
-  zig-tvar-in-fun : Integer between 0 and 4294967295, CodexType, CodexType, CodexType -> Text
-  zig-tvar-in-fun (id) (p) (r) (actual) =
-   when actual
-    is FunTy (ap) (afnrow) (ar) ->
-     let fromp = zig-tvar-in id p ap
-     in if text-length fromp > 0 then fromp else zig-tvar-in id r ar
-    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-fun id p r inner
-    is otherwise -> ""
-
  Record fields and ctor payloads are declared as ATypeExpr in the type
  defs the plug receives, so they get their own mapping onto the same
  zig names emit-zig-type produces.
@@ -2097,8 +2063,9 @@ Section: Apply Emission
      in if ar < 0 then (if zig-name-known ctx n then zig-closure-invoke (zig-local-ref ctx n) args ctx d else zig-unknown-name n)
         else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
         else if list-length args > ar then zig-over-apply n args ar ctx d (zig-expr-type e)
-        else zig-sanitize n & "(" & zig-call-type-args ctx n args (zig-expr-type e)
-             & emit-zig-call-args n args (zig-call-ctx ctx n args (zig-expr-type e)) d 0 & ")"
+        else let atys = zig-arg-types args 0 []
+             in zig-sanitize n & "(" & zig-call-type-args ctx n atys (zig-expr-type e)
+             & emit-zig-call-args n args (zig-call-ctx ctx n atys (zig-expr-type e)) d 0 & ")"
     is otherwise -> emit-zig-expr-curried e ctx d
 
  Codex applies partially: a 4-argument function called with 2 yields
@@ -2145,25 +2112,74 @@ Section: Apply Emission
     is ForAllEff (c) (inner) -> ForAllEff c (zig-subst-tvar inner id with-ty)
     is otherwise -> ty
 
-  zig-subst-arg-type : CodexType, IRDef, List IRExpr, CodexType, List Integer, Integer -> CodexType
-  zig-subst-arg-type (ty) (d) (args) (resty) (ids) (i) =
+  zig-subst-arg-type : CodexType, IRDef, List CodexType, CodexType, List Integer, Integer -> CodexType
+  zig-subst-arg-type (ty) (d) (actuals) (resty) (ids) (i) =
    if i >= list-length ids then ty
    else let id = list-at ids i
-   in let bound = zig-resolve-tvar-type id d args resty 0
-   in zig-subst-arg-type (zig-subst-tvar ty id bound) d args resty ids (i + 1)
+   in let bound = zig-resolve-tvar-type id d actuals resty 0
+   in zig-subst-arg-type (zig-subst-tvar ty id bound) d actuals resty ids (i + 1)
+
+ Recovering one variable: walk the declared type and the type actually
+ supplied in step, and answer with the type sitting where the variable
+ sits. VoidTy means this pair does not mention it, and the caller tries
+ the next one.
 
  zig-resolve-tvar answers with emitted text because the type argument list
- needs text. Substitution needs the TYPE, so the walk is shared and only
- the answer differs.
+ needs text. Substitution needs the TYPE, so the walk is SHARED and only
+ the answer differs. It was two walks with the same shape and two
+ sentinels, "" and VoidTy, until the fix below had to be written twice.
 
-  zig-resolve-tvar-type : Integer, IRDef, List IRExpr, CodexType, Integer -> CodexType
-  zig-resolve-tvar-type (id) (d) (args) (resty) (i) =
-   if i >= list-length (d.params) | i >= list-length args
+ The caller supplies the actual types rather than the argument
+ EXPRESSIONS, because one caller has no expressions: a closure built over
+ a generic callee knows its remaining parameter types from the function
+ type it is standing in for, and nothing else.
+
+ AN ANSWER THAT IS ITSELF A TYPE VARIABLE IS NOT A RESOLUTION. Taking one
+ as an answer is what emitted `T23` into a scope holding no such name. A
+ lifted lambda's parameter carries the variable it was HANDED -- the
+ driver lifts lambdas after the resolve pass, and CSharpEmitter.codex says
+ so above `is-lam-def`, where C# answers `dynamic` -- so matching
+ map-list's declared `(a -> b)` against `__lam_0`'s `(tvar 23 -> Integer)`
+ answered `a = tvar 23`. That is non-empty, so the scan stopped there and
+ never read the list argument one place along, whose `List a` against
+ `List Integer` is the answer that was wanted.
+
+ A variable answer is kept only as a LAST RESORT rather than refused,
+ because inside a generic definition it is the right answer: map-list's
+ own body calls map-list-loop, and there `T23` is a comptime parameter
+ that really is in scope. Concrete beats variable; variable beats nothing;
+ nothing is the @compileError marker, which now fires where it could not
+ before -- a variable answer used to look like success.
+
+  zig-resolve-tvar-type : Integer, IRDef, List CodexType, CodexType, Integer -> CodexType
+  zig-resolve-tvar-type (id) (d) (actuals) (resty) (i) =
+   if i >= list-length (d.params) | i >= list-length actuals
    then zig-tvar-in-type id (zig-peel-return (d.type-val) (list-length (d.params))) resty
-   else let found = zig-tvar-in-type id ((list-at (d.params) i).type-val) (zig-expr-type (list-at args i))
+   else let found = zig-tvar-in-type id ((list-at (d.params) i).type-val) (list-at actuals i)
    in when found
-      is VoidTy -> zig-resolve-tvar-type id d args resty (i + 1)
+      is VoidTy -> zig-resolve-tvar-type id d actuals resty (i + 1)
+      is TypeVar (vid) ->
+       let rest = zig-resolve-tvar-type id d actuals resty (i + 1)
+       in zig-prefer-concrete found rest
       is otherwise -> found
+
+  zig-prefer-concrete : CodexType, CodexType -> CodexType
+  zig-prefer-concrete (fallback) (rest) =
+   when rest
+    is VoidTy -> fallback
+    is TypeVar (vid) -> fallback
+    is otherwise -> rest
+
+  zig-arg-types : List IRExpr, Integer, List CodexType -> List CodexType
+  zig-arg-types (args) (i) (acc) =
+   if i >= list-length args then acc
+   else zig-arg-types args (i + 1) (acc & [zig-expr-type (list-at args i)])
+
+  zig-fn-param-type-list : CodexType -> List CodexType
+  zig-fn-param-type-list (ty) =
+   when zig-fn-spine ty
+    is FunTy (p) (fnrow) (r) -> [p] & zig-fn-param-type-list r
+    is otherwise -> []
 
   zig-tvar-in-type : Integer, CodexType, CodexType -> CodexType
   zig-tvar-in-type (id) (decl) (actual) =
@@ -2235,11 +2251,11 @@ Section: Apply Emission
    else let one = zig-subst-tvar ty (list-at (ctx.tvar-ids) i) (list-at (ctx.tvar-types) i)
    in zig-subst-all one ctx (i - 1)
 
-  zig-bind-tvars : ZigCtx, IRDef, List (Integer between 0 and 4294967295), Integer, List IRExpr, CodexType -> ZigCtx
-  zig-bind-tvars (ctx) (d) (ids) (i) (args) (resty) =
+  zig-bind-tvars : ZigCtx, IRDef, List (Integer between 0 and 4294967295), Integer, List CodexType, CodexType -> ZigCtx
+  zig-bind-tvars (ctx) (d) (ids) (i) (actuals) (resty) =
    if i >= list-length ids then ctx
    else let id = list-at ids i
-   in let bound = zig-resolve-tvar-type id d args resty 0
+   in let bound = zig-resolve-tvar-type id d actuals resty 0
    in let ctx2 = ZigCtx {
     arities = ctx.arities,
     ctors = ctx.ctors,
@@ -2252,16 +2268,16 @@ Section: Apply Emission
     expected = ctx.expected,
     bound-names = ctx.bound-names
    }
-   in zig-bind-tvars ctx2 d ids (i + 1) args resty
+   in zig-bind-tvars ctx2 d ids (i + 1) actuals resty
 
-  zig-call-ctx : ZigCtx, Text, List IRExpr, CodexType -> ZigCtx
-  zig-call-ctx (ctx) (n) (args) (resty) =
+  zig-call-ctx : ZigCtx, Text, List CodexType, CodexType -> ZigCtx
+  zig-call-ctx (ctx) (n) (actuals) (resty) =
    let di = zig-find-irdef (ctx.irdefs) 0 n
    in if di < 0 then ctx
    else let d = list-at (ctx.irdefs) di
    in let ids = zig-def-tvar-ids d
    in if list-length ids == 0 then ctx
-   else zig-bind-tvars ctx d ids 0 args resty
+   else zig-bind-tvars ctx d ids 0 actuals resty
 
   zig-find-irdef : List IRDef, Integer, Text -> Integer
   zig-find-irdef (defs) (i) (n) =
@@ -2269,20 +2285,20 @@ Section: Apply Emission
    else if (list-at defs i).name == n then i
    else zig-find-irdef defs (i + 1) n
 
-  zig-call-type-args : ZigCtx, Text, List IRExpr, CodexType -> Text
-  zig-call-type-args (ctx) (n) (args) (resty) =
+  zig-call-type-args : ZigCtx, Text, List CodexType, CodexType -> Text
+  zig-call-type-args (ctx) (n) (actuals) (resty) =
    let di = zig-find-irdef (ctx.irdefs) 0 n
    in if di < 0 then ""
    else let d = list-at (ctx.irdefs) di
    in let ids = zig-def-tvar-ids d
    in if list-length ids == 0 then ""
-   else zig-call-type-args-loop ctx d ids 0 args resty
+   else zig-call-type-args-loop ctx d ids 0 actuals resty
 
-  zig-call-type-args-loop : ZigCtx, IRDef, List (Integer between 0 and 4294967295), Integer, List IRExpr, CodexType -> Text
-  zig-call-type-args-loop (ctx) (d) (ids) (i) (args) (resty) =
+  zig-call-type-args-loop : ZigCtx, IRDef, List (Integer between 0 and 4294967295), Integer, List CodexType, CodexType -> Text
+  zig-call-type-args-loop (ctx) (d) (ids) (i) (actuals) (resty) =
    if i >= list-length ids then ""
-   else let one = zig-resolve-tvar (list-at ids i) d args resty 0
-   in one & ", " & zig-call-type-args-loop ctx d ids (i + 1) args resty
+   else let one = zig-resolve-tvar (list-at ids i) d actuals resty 0
+   in one & ", " & zig-call-type-args-loop ctx d ids (i + 1) actuals resty
 
  A variable no argument mentions used to come out anyopaque, on the
  reasoning that zig refuses anyopaque and so the gap could not pass
@@ -2292,15 +2308,12 @@ Section: Apply Emission
  what went missing. Ten of these in one subject read as one mystery rather
  than ten facts. The marker names the callee and the variable instead.
 
-  zig-resolve-tvar : Integer between 0 and 4294967295, IRDef, List IRExpr, CodexType, Integer -> Text
-  zig-resolve-tvar (id) (d) (args) (resty) (i) =
-   if i >= list-length (d.params) | i >= list-length args
-   then let fromres = zig-tvar-in id (zig-peel-return (d.type-val) (list-length (d.params))) resty
-    in if text-length fromres > 0 then fromres
-       else "@compileError(\"zig plug: unresolved type variable T" & integer-to-text id & " of " & d.name & "\")"
-   else let found = zig-tvar-in id ((list-at (d.params) i).type-val) (zig-expr-type (list-at args i))
-   in if text-length found > 0 then found
-      else zig-resolve-tvar id d args resty (i + 1)
+  zig-resolve-tvar : Integer between 0 and 4294967295, IRDef, List CodexType, CodexType, Integer -> Text
+  zig-resolve-tvar (id) (d) (actuals) (resty) (i) =
+   let found = zig-resolve-tvar-type id d actuals resty i
+   in when found
+      is VoidTy -> "@compileError(\"zig plug: unresolved type variable T" & integer-to-text id & " of " & d.name & "\")"
+      is otherwise -> emit-zig-type found
 
   zig-drop-trailing-comma : Text -> Text
   zig-drop-trailing-comma (s) =
@@ -2370,8 +2383,8 @@ Section: Apply Emission
    in let lbl = zig-label d
    in let o = "_o" & integer-to-text d
    in lbl & ": { const " & o & " = " & zig-sanitize n & "("
-    & zig-call-type-args ctx n head resty
-    & emit-zig-call-args n head (zig-call-ctx ctx n head resty) d 0 & "); break :"
+    & zig-call-type-args ctx n (zig-arg-types head 0 []) resty
+    & emit-zig-call-args n head (zig-call-ctx ctx n (zig-arg-types head 0 []) resty) d 0 & "); break :"
     & lbl & " " & zig-closure-invoke o rest ctx d & "; }"
 
   zig-closure-fields : List IRExpr, ZigCtx, Integer -> Text
@@ -2426,21 +2439,39 @@ Section: Apply Emission
   zig-closure-pass-tail (i) (n) =
    if i >= n then "" else ", p" & integer-to-text i & zig-closure-pass-tail (i + 1) n
 
-  zig-closure-call-body : Text, Integer, Text, Integer, Integer, Integer -> Text
-  zig-closure-call-body (n) (nargs) (ev) (flat) (rem) (d) =
+  zig-closure-call-body : Text, Integer, Text, Integer, Integer, Integer, Text -> Text
+  zig-closure-call-body (n) (nargs) (ev) (flat) (rem) (d) (targs) =
    if flat >= rem
-   then "return " & zig-sanitize n & "(" & zig-closure-env-refs ev nargs 0
+   then "return " & zig-sanitize n & "(" & targs & zig-closure-env-refs ev nargs 0
       & zig-closure-pass rem 0 & ");"
    else let w = "_w" & integer-to-text d
-   in "const " & w & " = " & zig-sanitize n & "(" & zig-closure-env-refs ev nargs 0
+   in "const " & w & " = " & zig-sanitize n & "(" & targs & zig-closure-env-refs ev nargs 0
     & zig-closure-pass flat 0 & "); return " & w & ".call(" & w & ".ctx"
     & zig-closure-pass-tail flat rem & ");"
 
+ A GENERIC callee has to be applied here too. The trampoline calls it by
+ name, and a name is where an unapplied generic stops being visible: the
+ def emitted `fn __lam_0(comptime T23: type, x: T23) i64` and the body
+ emitted `__lam_0(p0)`, one argument against two, with nothing naming the
+ type. Both halves of that came from the same place -- a lifted lambda's
+ unresolved parameter -- and both are recovered the same way.
+
+ The types to recover FROM are in two places, which is why this cannot
+ just call the apply path's version: the arguments already supplied carry
+ theirs, and the parameters the trampoline is about to take are named by
+ the function type this closure stands in for. That type is read through
+ the context first, because the enclosing call's own type arguments are
+ what resolve it -- emit-zig-name handed it over raw and the tyvar
+ travelled into the struct's parameter list and its CxFn type.
+
   zig-closure-make : Text, List IRExpr, ZigCtx, Integer, CodexType -> Text
-  zig-closure-make (n) (args) (ctx) (d) (pty) =
-   let rem = zig-fn-param-count pty
+  zig-closure-make (n) (args) (ctx) (d) (pty0) =
+   let pty = zig-subst-ctx pty0 ctx
+   in let rem = zig-fn-param-count pty
    in let car = lookup-arity (ctx.arities) n
    in let flat = if car < 0 then rem else car - list-length args
+   in let actuals = zig-arg-types args 0 [] & zig-fn-param-type-list pty
+   in let targs = zig-call-type-args ctx n actuals (zig-fn-result pty)
    in let lbl = zig-label d
    in let env = "_Env" & integer-to-text d
    in let ev = "_e" & integer-to-text d
@@ -2450,7 +2481,7 @@ Section: Apply Emission
       else "const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); "
    in lbl & ": { const " & env & " = struct { " & zig-closure-fields args ctx 0
     & "fn call(" & cx & ": *anyopaque, " & zig-closure-params pty 0 & ") " & ret
-    & " { " & unpack & zig-closure-call-body n (list-length args) ev flat rem d & " } }; break :"
+    & " { " & unpack & zig-closure-call-body n (list-length args) ev flat rem d targs & " } }; break :"
     & lbl & " " & zig-closure-type rem (zig-fn-param-types pty) ret
     & "{ .ctx = cx_new(" & env & "{ " & zig-closure-inits args ctx d 0 & " }), .call = &" & env & ".call }; }"
 
