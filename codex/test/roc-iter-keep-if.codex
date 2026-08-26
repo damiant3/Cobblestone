@@ -1,0 +1,61 @@
+Chapter: RocIterKeepIf
+  cites Foreword chapter Console
+
+ Ported from roc-lang/roc, src/eval/test/eval_closure_recursion_tests.zig,
+ "inspect: iterator-like keep_if skips rejected tag payloads". A lazy stream
+ filtered by a predicate:
+
+     keep_if : Iter(a), (a -> Bool) -> Iter(a)
+     keep_if = |iter, pred|
+         { next: || match (iter.next)() {
+             One({ item, rest }) =>
+                 if pred(item) { One({ item, rest: Iter.keep_if(rest, pred) }) }
+                 else { (Iter.keep_if(rest, pred).next)() }
+             Done => Done } }
+     kept = Iter.keep_if(range_to(1, 4), |item| item == 2)
+
+ and Roc expects 2.
+
+ The same two adaptations `roc-iter-map.codex` records -- Codex has no
+ nullary function type, so the thunk takes an ignored Integer; and Codex has
+ no anonymous record, so `One` carries its two as constructor fields.
+
+ What this asks that `roc-iter-map` does not: the REJECT branch. Where map
+ always rebuilds a `One`, keep_if's else-branch builds a fresh iterator and
+ immediately enters it -- `((iter-keep-if rest pred).next) 0` -- so the
+ recursion goes through a record field of a value that was constructed one
+ expression earlier and is never bound. That is a call whose callee is a
+ closure the same expression just built, which is the neighbourhood of
+ findings 38 and 40.
+
+Section: Types
+
+  Iter (a) = record {
+   next : Integer -> Step a
+  }
+
+  Step (a) = | One (a) (Iter a) | Done
+
+Section: Functions
+
+  iter-keep-if : Iter a, (a -> Boolean) -> Iter a
+  iter-keep-if (it) (pred) =
+   Iter { next = \ignored -> when ((it.next) 0)
+     is One (item) (rest) -> if pred item then One item (iter-keep-if rest pred)
+        else ((iter-keep-if rest pred).next) 0
+     is Done -> Done }
+
+  range-to : Integer, Integer -> Iter Integer
+  range-to (start) (stop) =
+   Iter { next = \ignored -> if start == stop then Done
+     else One start (range-to (start + 1) stop) }
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   let kept = iter-keep-if (range-to 1 4) (\item -> item == 2)
+   in when ((kept.next) 0)
+    is One (item) (rest) -> print-line-uni (show item)
+    is Done -> print-line-uni (show (0 - 1))
+  end
