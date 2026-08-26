@@ -540,6 +540,29 @@ Section: Type Mapping
  values and not others, and a `show` that is right for 2.5 and wrong for
  0.1 is worse than one that says it cannot. Two corpus programs want it.
 
+ A `when` on a Boolean reaches the plug as an `IrLitPat` whose value is the
+ SPELLING `True` or `False`, not a number. Bare metal decodes it through
+ `pat-lit-to-integer` (`Syntax/Token.codex:149`), a shared compiler
+ function whose whole body is that rule: `True` is 1, `False` is 0,
+ anything else parses as an integer. This plug emitted the spelling
+ straight into a zig switch label, and zig has no `True` -- it has `true`.
+
+ `codex/test/when-bool-cross.codex` is a cross-backend regression that
+ states the requirement in its own header, and it has been failing here
+ since the plug was written. Finding 52.
+
+ Bare metal's 1 and 0 are right for a machine word; a zig scrutinee of
+ this shape is already `bool`, so the same rule spells out as `true` and
+ `false`. It dispatches on the spelling rather than the type because that
+ is what `pat-lit-to-integer` does, and a divergence there would be its
+ own defect.
+
+  zig-lit-pat-text : Text -> Text
+  zig-lit-pat-text (t) =
+   if t == "True" then "true"
+   else if t == "False" then "false"
+   else t
+
   zig-strip-unit : CodexType -> CodexType
   zig-strip-unit (ty) =
    when ty
@@ -1969,7 +1992,7 @@ Section: Match Emission
    let body = body0
    in if ex & zig-pat-is-catch-all pat then ""
    else when pat
-    is IrLitPat (text) (ty) (sp) -> text & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
+    is IrLitPat (text) (ty) (sp) -> zig-lit-pat-text text & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
      in if nsubs == 0 then "." & zig-sanitize name & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
@@ -2079,7 +2102,7 @@ Section: Match Emission
   emit-zig-chain-arm : IRPat, IRExpr, IRExpr, ZigCtx, Integer, CodexType, Text -> Text
   emit-zig-chain-arm (pat) (guard) (body) (ctx) (d) (mty) (sv) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "if (" & sv & " == " & text & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
+    is IrLitPat (text) (ty) (sp) -> "if (" & sv & " == " & zig-lit-pat-text text & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
      in let test = "if (" & sv & " == ." & zig-sanitize name & ") { "
