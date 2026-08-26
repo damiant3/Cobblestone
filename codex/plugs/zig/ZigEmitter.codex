@@ -546,7 +546,8 @@ Section: Constructor Map
    tvar-ids : List (Integer between 0 and 4294967295),
    tvar-types : List CodexType,
    expected : CodexType,
-   bound-names : List Text
+   bound-names : List Text,
+   scope-tvars : List (Integer between 0 and 4294967295)
   }
 
  An empty list literal reaches the IR without a concrete element type,
@@ -999,7 +1000,8 @@ Section: Name Mapping
     tvar-ids = ctx.tvar-ids,
     tvar-types = ctx.tvar-types,
     expected = ctx.expected,
-    bound-names = (ctx.bound-names) & [p.name]
+    bound-names = (ctx.bound-names) & [p.name],
+    scope-tvars = ctx.scope-tvars
    }
    in zig-push-lambda-renames ctx2 params d (i + 1)
 
@@ -1453,7 +1455,8 @@ Section: Lambda and List Helpers
     tvar-ids = ctx.tvar-ids,
     tvar-types = ctx.tvar-types,
     expected = ctx.expected,
-    bound-names = (ctx.bound-names) & [n]
+    bound-names = (ctx.bound-names) & [n],
+    scope-tvars = ctx.scope-tvars
    }
 
  Zig forbids a local from shadowing a top-level declaration or an
@@ -1555,7 +1558,8 @@ Section: Lambda and List Helpers
     tvar-ids = ctx.tvar-ids,
     tvar-types = ctx.tvar-types,
     expected = ctx.expected,
-    bound-names = ctx.bound-names
+    bound-names = ctx.bound-names,
+    scope-tvars = ctx.scope-tvars
    }
 
   zig-lambda-param-types : List IRParam, Integer, CodexType, ZigCtx -> Text
@@ -2269,7 +2273,8 @@ Section: Apply Emission
     tvar-ids = ctx.tvar-ids,
     tvar-types = ctx.tvar-types,
     expected = ty,
-    bound-names = ctx.bound-names
+    bound-names = ctx.bound-names,
+    scope-tvars = ctx.scope-tvars
    }
 
  Two map-list calls in one expression each bind map-list's OWN type
@@ -2306,7 +2311,8 @@ Section: Apply Emission
     tvar-ids = (ctx.tvar-ids) & [id],
     tvar-types = (ctx.tvar-types) & [bound],
     expected = ctx.expected,
-    bound-names = ctx.bound-names
+    bound-names = ctx.bound-names,
+    scope-tvars = ctx.scope-tvars
    }
    in zig-bind-tvars ctx2 d ids (i + 1) actuals resty
 
@@ -2337,7 +2343,7 @@ Section: Apply Emission
   zig-call-type-args-loop : ZigCtx, IRDef, List (Integer between 0 and 4294967295), Integer, List CodexType, CodexType -> Text
   zig-call-type-args-loop (ctx) (d) (ids) (i) (actuals) (resty) =
    if i >= list-length ids then ""
-   else let one = zig-resolve-tvar (list-at ids i) d actuals resty 0
+   else let one = zig-resolve-tvar (list-at ids i) d actuals resty 0 (ctx.scope-tvars)
    in one & ", " & zig-call-type-args-loop ctx d ids (i + 1) actuals resty
 
  A variable no argument mentions used to come out anyopaque, on the
@@ -2348,12 +2354,42 @@ Section: Apply Emission
  what went missing. Ten of these in one subject read as one mystery rather
  than ten facts. The marker names the callee and the variable instead.
 
-  zig-resolve-tvar : Integer between 0 and 4294967295, IRDef, List CodexType, CodexType, Integer -> Text
-  zig-resolve-tvar (id) (d) (actuals) (resty) (i) =
+  zig-resolve-tvar : Integer between 0 and 4294967295, IRDef, List CodexType, CodexType, Integer, List (Integer between 0 and 4294967295) -> Text
+  zig-resolve-tvar (id) (d) (actuals) (resty) (i) (scope) =
    let found = zig-resolve-tvar-type id d actuals resty i
    in when found
-      is VoidTy -> "@compileError(\"zig plug: unresolved type variable T" & integer-to-text id & " of " & d.name & "\")"
+      is VoidTy -> zig-tvar-refusal id (d.name)
+      is TypeVar (vid) ->
+       if zig-tvar-in-scope vid scope 0 then emit-zig-type found
+       else zig-tvar-refusal id (d.name)
       is otherwise -> emit-zig-type found
+
+ A variable answer is kept as a last resort, and 1.84 gives the reason: inside
+ a generic definition the variable IS the answer, because it is a comptime
+ parameter that definition declares. At an emission site that declares
+ NOTHING -- a closure's environment struct inside a non-generic function --
+ the same answer is a name in a scope that has never heard of it, and zig
+ reports `use of undeclared identifier` with nothing to say why.
+
+ So the last resort is now conditional on the emission site actually
+ declaring the variable. `scope-tvars` carries what `emit-zig-def` put in the
+ signature as `comptime T<n>: type`, which is exactly the set that is legal
+ to name in that body. When it is not in there the refusal fires instead, and
+ the refusal is the same one that fires when nothing was recovered at all:
+ the plug could not answer, and it says so rather than emitting a name.
+
+ Found by `findings/probe-tvar-recovery.codex` case (g), which is the
+ shape a fix for case (a) turned from a diagnostic into a build failure.
+
+  zig-tvar-refusal : Integer between 0 and 4294967295, Text -> Text
+  zig-tvar-refusal (id) (n) =
+   "@compileError(\"zig plug: unresolved type variable T" & integer-to-text id & " of " & n & "\")"
+
+  zig-tvar-in-scope : Integer, List (Integer between 0 and 4294967295), Integer -> Boolean
+  zig-tvar-in-scope (id) (scope) (i) =
+   if i >= list-length scope then False
+   else if list-at scope i == id then True
+   else zig-tvar-in-scope id scope (i + 1)
 
   zig-drop-trailing-comma : Text -> Text
   zig-drop-trailing-comma (s) =
@@ -3016,7 +3052,8 @@ Section: Tail Call Loops
     tvar-ids = ctx.tvar-ids,
     tvar-types = ctx.tvar-types,
     expected = ctx.expected,
-    bound-names = ctx.bound-names
+    bound-names = ctx.bound-names,
+    scope-tvars = ctx.scope-tvars
    }
    in zig-push-tail-renames ctx2 params (i + 1) vars
 
@@ -3138,7 +3175,8 @@ Section: Definition Emission
     tvar-ids = ctx.tvar-ids,
     tvar-types = ctx.tvar-types,
     expected = ctx.expected,
-    bound-names = ctx.bound-names
+    bound-names = ctx.bound-names,
+    scope-tvars = ctx.scope-tvars
    }
    in zig-push-param-renames ctx2 params (i + 1)
 
@@ -3180,7 +3218,8 @@ Section: Definition Emission
     tvar-ids = ctx0.tvar-ids,
     tvar-types = ctx0.tvar-types,
     expected = zig-def-return-type d,
-    bound-names = []
+    bound-names = [],
+    scope-tvars = tvars
    }
    in let tl = zig-tail-for d
    in let head = "fn " & name & "(" & all-params & ") " & ret & " {\n"
@@ -3502,7 +3541,8 @@ Section: Chapter Emission
     tvar-ids = [],
     tvar-types = [],
     expected = VoidTy,
-    bound-names = []
+    bound-names = [],
+    scope-tvars = []
    }
    in let types-text = emit-zig-type-defs type-defs 0
    in let defs-text = emit-zig-defs (m.defs) 0 ctx
