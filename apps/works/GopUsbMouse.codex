@@ -71,8 +71,34 @@ Section: Mouse State
   mouse-buttons : UsbMouse -> Integer
   mouse-buttons (m) = peek-32 (m.um-pos) 12
 
+ CELL 16 IS A LATCH, NOT A SAMPLE, AND `mouse-take-click` IS HOW IT IS READ.
+ It used to be recomputed on every consumed report, so a press that no
+ iteration happened to consume was DISCARDED rather than left pending.
+
+ THE COST OF THAT IS PAID BY WHATEVER RUNS THE LOOP SLOWEST. `mouse-pump-one`
+ alternates arming the endpoint and checking it, so a report costs two
+ iterations of the caller's loop; a desk pane that renders a frame per
+ iteration drops the loop to about 60 a second against 20,000 idle, which
+ samples roughly 30 of a 125 Hz mouse's reports. A press that arrives while
+ the endpoint is unarmed, with its release before the next consume, leaves
+ `prev` and `buttons` both zero and the edge is never seen. Damian, 2026-08-26:
+ minimising the Aquarium sometimes does not take, and only there.
+
+ `mouse-clicked` PEEKS AND IS NOT THE READER. Anything that peeks a sticky
+ latch without clearing turns one press into a click on every iteration, which
+ is worse than the lost click. It stays because `mouse-take-click` is written
+ in terms of it and because a caller may want to ask without consuming; every
+ real consumer takes.
+
   mouse-clicked : UsbMouse -> Boolean
   mouse-clicked (m) = peek-32 (m.um-pos) 16 /= 0
+
+  mouse-take-click : UsbMouse -> Boolean
+  mouse-take-click (m) =
+    if m.um-ok == False then False
+    else let hit = mouse-clicked m
+    in let clr = poke-32 (m.um-pos) 16 0
+    in hit
 
   mouse-events : UsbMouse -> Integer
   mouse-events (m) = if m.um-ok == False then 0 else peek-32 (m.um-state) 20
@@ -187,7 +213,7 @@ Section: The Pump
     in let s0 = poke-32 (m.um-pos) 4 nx
     in let s1 = poke-32 (m.um-pos) 8 ny
     in let s2 = poke-32 (m.um-pos) 12 buttons
-    in let s3 = poke-32 (m.um-pos) 16 (mouse-click-edge prev buttons)
+    in let s3 = poke-32 (m.um-pos) 16 (bit-or (peek-32 (m.um-pos) 16) (mouse-click-edge prev buttons))
     in let s4 = poke-32 (m.um-state) 20 (peek-32 (m.um-state) 20 + 1)
     in let s5 = poke-32 (m.um-state) 0 um-ph-idle
     in let s6 = um-publish nx ny buttons

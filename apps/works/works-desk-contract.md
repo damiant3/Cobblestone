@@ -343,8 +343,13 @@ that reason.
 boots.** `-mouse` takes a host-tracked position starting at `0,0` and delivers
 the DELTA between consecutive events, clamped to +-127 a sample, so a screen
 coordinate handed to it straight moves the pointer 127 pixels and no further.
-The desk also needs movement and button in the same report: `desk-loop` computes
-`clicked` as `mv == 1 & mouse-clicked`. A pointer starting centred at 800,450
+The desk used to need movement and button in the same report, because `clicked`
+was `mv == 1 & mouse-clicked`. **It no longer does, and a scripted press need
+not carry a movement** (val, 2026-08-26): cell 16 is a latch, `desk-loop` reads
+it with `mouse-take-click`, and a press consumed on any earlier report is
+answered on the next iteration whether or not one arrived. Moving a pixel on
+the press sample is still harmless and still what the timelines here do.
+A pointer starting centred at 800,450
 reaches the taskbar button at 420,857 in four samples of about `-95,+102`,
 ending at `-380,407`; negatives are how you go left and up. `OperatorsManual.md`
 carries the wire.
@@ -479,7 +484,54 @@ first two cells of the second half.
 | 108 | `dk-fish-cell` | pointer: the Aquarium's block, same shape. Two cells and not one shared, because two focus ids over one block is two windows over one rectangle |
 | 112 | `dk-bro-cell` | pointer: the Browser's block (val, 2026-08-25). The window slot and nothing else, for the same reason the two 3D panes' blocks hold nothing else: a heavy pane's own state is a typed record in `DeskApps`, which no cell can hold |
 | 116 | `dk-files-cell` | pointer: the Files pane's block (val, 2026-08-25). The window slot and nothing else; Files' own state is a `FilesState` in `DeskApps`, which no cell can hold. **The Editor needed no new cell**: its window slot is 44 through 60 of the block `desk-edit-cell` has always pointed at, which grew to 192 bytes so those offsets could be the desk's |
-| 120..124 | | free |
+| 120 | `dk-drag-cell` | which window is being dragged by its titlebar, `desk-focus-none` when none (val, 2026-08-26). Holding the id IS the in-progress flag; there is no separate one |
+| 124 | `dk-drag-off-cell` | the grab offset, `dx * 65536 + dy` (val, 2026-08-26). Packed because this is the last cell the block has: `dx` is bounded by the window's width and `dy` by the titlebar's height, and both are non-negative because the press was inside the bar |
+
+| 128 | `dk-rate-n-cell` | `desk-loop` iterations counted so far in the open window (val, 2026-08-26) |
+| 132 | `dk-rate-t0-cell` | the HPET tick the window opened at, masked to 32 bits because `peek-32` zero-extends and the counter passes 2^32 in about five minutes |
+| 136 | `dk-rate-cell` | the last completed rate in iterations per second, which is what the topbar paints |
+| 140 | `dk-rate-armed-cell` | whether the counter has taken its first sample. It exists so the first iteration can force one paint: a readout that appears only on success cannot report a stopped HPET (L-STATES) |
+
+| 144 | `dk-size-cell` | which resize zone is in progress, `dk-size-none` when none (val, 2026-08-26). Holding the zone IS the in-progress flag, the way `dk-drag-cell` holds the id |
+| 148 | `dk-size-fid-cell` | which window is being resized |
+| 152 | `dk-size-x0-cell` | the window's x at GRAB time. Signed through `dk-cell-signed`, because a window may sit at a negative x and `peek-32` zero-extends |
+| 156 | `dk-size-y0-cell` | its y at grab time |
+| 160 | `dk-size-w0-cell` | its width at grab time |
+| 164 | `dk-size-h0-cell` | its height at grab time. **The rect at grab time and not the current one**: the step rewrites the block every sample, so computing from the live rect would compound each sample onto the last and the window would run away from the pointer |
+
+**THE BLOCK GREW TO 256 BYTES ON 2026-08-26 (val), so cells 168 through 252 are
+free.** Cells 0 through 164 are taken as listed above. It grew because the
+scheduler needs a period per pane for fourteen panes and the desk-loop rate
+counter needs three more, and the block had been full since `dk-drag-off-cell`
+took cell 124 that morning. Announce first, the way this section already asks.
+
+**GROWING IT AGAIN COSTS 29 SITES, NOT FIVE.** This paragraph said "the five
+test chapters that build a `ds`" and that was wrong when it was written:
+re-measured 2026-08-26 the growth touched `desk-run` plus **28 sites across 18
+test files** (L-COUNT). Grep for `alloc-zeroed <size> 64` and read the BINDING
+before editing any of them: `xhci-speed-psi` has eleven sites and
+`disk-enum-parse` two that allocate the same size and are NOT a `ds`, and
+`desk-run` itself has a second one for `desk-marks-cell`. A blind
+search-and-replace takes all four of those with it, which is how this edit
+nearly shipped a wrongly grown marks block.
+
+**A WINDOW MAY HANG OFF THE GLASS, AND WHAT KEEPS THE TASKBAR IS THE PAINT
+ORDER** (val, 2026-08-26, superseding the rule that stood here earlier the same
+day). `dk-drag-keep` pixels of a dragged window stay on screen on both axes, so
+there is always something to grab and no window can be lost; the TOP is the one
+edge that stays closed, because above the topbar the titlebar is unreachable and
+no gesture the desk has can bring it back. The bottom stops at the content box
+rather than the glass so `shadow-subtle` has somewhere to land.
+
+This paragraph previously said a window may NOT leave the content box, because
+`desk-wnd-paint-all` painted the chrome FIRST and walked the windows after it,
+so a window over the band was drawn on top of it: dragged to 101,486 at
+1600x900 the Calculator buried the Cobblestone pill. **The clamp was the wrong
+place to fix that.** `desk-wnd-band` re-renders the taskbar subtree AFTER the
+windows, so the band is always on top and the clamp is free to let a window
+leave the box. **No arm could see either version** -- the clamp did exactly what
+it was written to do and the arithmetic test agreed with both, which is why this
+rule is stated here rather than left to a test.
 
 **A PILL GOES IN THE TASKBAR TREE, NEVER PAINTED INTO THE BAND** (val,
 2026-08-25). `desk-taskbar-clock` re-renders the whole taskbar subtree once a

@@ -1,0 +1,125 @@
+Chapter: BrowserNewtabOverflowTest
+  cites Browser chapter Browser
+  cites Browser chapter BrowserTheme
+  cites Browser chapter Display
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ WORKS-41 asks where the newtab page's content goes when the box it is given
+ is shorter than the content. The question is decidable without a screen, a
+ face or a pointer: it is `widget-layout` over the tree `browser-render`
+ builds.
+
+ IT DRIVES THE FUNCTIONS `gbr-repaint` ITSELF DRIVES -- `browser-init`,
+ `browser-scroll-fit`, `browser-render`, `widget-layout` and
+ `browser-laid-viewport`, in that order and with the same arguments. A row
+ that re-derived the page's rects beside them would be a SHADOW of the
+ painter's arithmetic, free to drift from it while both stayed green.
+
+ THE WIDTH IS HELD AT 1024 AND ONLY THE HEIGHT MOVES, so any difference
+ between the rows is the height's doing and not a reflow's. The three heights
+ are chosen so the two candidate answers disagree: 768 is the mode the
+ backlog row reports, 400 is shorter than the content by more than one row,
+ and 1600 is taller than the content. **The 1600 row is the control.** A
+ layout that pushed every child past its box, or a probe that counted nodes
+ it should not, would report a non-zero count there too.
+
+ The rows print the PAYLOAD -- each child's top, height and bottom against
+ the box -- rather than a verdict computed from it. A row printing only "the
+ page overflows" would agree with an implementation that put every child at
+ the same coordinate.
+
+Section: Body
+
+  bn-yn : Boolean -> Text
+  bn-yn (v) = if v then "yes" else "no"
+
+  bn-top : WidgetNode -> Integer
+  bn-top (n) = let b = n.wn-bounds in b.lr-y
+
+  bn-h : WidgetNode -> Integer
+  bn-h (n) = let b = n.wn-bounds in b.lr-h
+
+  bn-bot : WidgetNode -> Integer
+  bn-bot (n) = let b = n.wn-bounds in b.lr-y + b.lr-h
+
+  bn-laid : Integer, Integer -> WidgetNode
+  bn-laid (w) (h) =
+    let st = browser-init w h browser-theme-default display-init-text-fallback
+    in let fit = browser-scroll-fit st w h
+    in widget-layout (browser-render fit) (fit.bs-theme) (layout-rect 0 0 w h)
+
+ THE COUNT IS THE ASSERTION AND THE TABLE IS NOT. It walks the whole page
+ subtree rather than the direct children, because a link button sits one
+ level down inside the `links` panel and it is the link rows the report is
+ about.
+
+  bn-past-kids : List WidgetNode, Integer, Integer, Integer, Integer -> Integer
+  bn-past-kids (ks) (n) (i) (limit) (acc) =
+    if i >= n then acc
+    else let one = bn-past (list-at ks i) limit
+    in bn-past-kids ks n (i + 1) limit (acc + one)
+
+  bn-past : WidgetNode, Integer -> Integer
+  bn-past (n) (limit) =
+    let self = if bn-bot n > limit then 1 else 0
+    in let kids = bn-past-kids (n.wn-children) (n.wn-child-count) 0 limit 0
+    in self + kids
+
+  bn-child-row : WidgetNode, Integer, Integer -> Text
+  bn-child-row (vp) (i) (limit) =
+    let c = list-at (vp.wn-children) i
+    in "  " & c.wn-id
+       & " y " & integer-to-text (bn-top c)
+       & " h " & integer-to-text (bn-h c)
+       & " bottom " & integer-to-text (bn-bot c)
+       & "  past " & bn-yn (bn-bot c > limit)
+
+  bn-print-kids : WidgetNode, Integer, Integer, Integer -> [Console] Integer
+  bn-print-kids (vp) (i) (n) (limit) =
+    if i >= n then 0
+    else act
+      print-line-uni (bn-child-row vp i limit)
+      bn-print-kids vp (i + 1) n limit
+    end
+
+  bn-head : Integer, Integer, WidgetNode -> Text
+  bn-head (w) (h) (vp) =
+    "box " & integer-to-text w & "x" & integer-to-text h
+      & "  page root " & vp.wn-id
+      & " y " & integer-to-text (bn-top vp)
+      & " h " & integer-to-text (bn-h vp)
+      & " bottom " & integer-to-text (bn-bot vp)
+      & "  root past box " & bn-yn (bn-bot vp > h)
+
+  bn-report : Integer, Integer, WidgetNode -> [Console] Nothing
+  bn-report (w) (h) (vp) =
+    let head = bn-head w h vp
+    in let tail = "  nodes past the box bottom: " & integer-to-text (bn-past vp h)
+    in act
+      print-line-uni head
+      p <- bn-print-kids vp 0 (vp.wn-child-count) h
+      print-line-uni tail
+    end
+
+  bn-case : Integer, Integer -> [Console] Nothing
+  bn-case (w) (h) =
+    let laid = bn-laid w h
+    in when browser-laid-viewport laid
+      is None ->
+        let miss = "box " & integer-to-text w & "x" & integer-to-text h & ": NO VIEWPORT -- the arm did not run"
+        in act
+          print-line-uni miss
+        end
+      is Just (vp) -> bn-report w h vp
+
+Section: Opening
+
+  opening : [Console] Nothing = act
+    bn-case 1024 768
+    bn-case 1024 400
+    bn-case 1024 1600
+    print-line-uni "the 1600 row is the control and must report zero"
+  end

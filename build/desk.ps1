@@ -2,7 +2,8 @@
 #
 #   build/desk.ps1                       launch the interactive window
 #   build/desk.ps1 -Shot desk.bmp        headless, capture one frame, exit
-#   build/desk.ps1 -Keys '4000:4'        drive it with a scancode timeline
+#   build/desk.ps1 -Keys '4000:4'        type into an ALREADY-FOCUSED pane
+#                                        (it cannot open one; see -Keys below)
 #   build/desk.ps1 -Disk seed/Codex.img  give the Files pane a real ESP
 #
 # GopDesk normally reaches the glass through an Option A boot image. This is
@@ -27,10 +28,24 @@ param(
     # Headless single-frame capture instead of a window.
     [string]$Shot = '',
     [int]$ShotDelayMs = 6000,
-    # Scancode timeline, 't:scancode' separated by ';' or newlines. 33 is f,
-    # 18 is e, 4 is 3, 1 is Esc. Two ADJACENT entries with the same code
-    # deliver as one: under -hid-nak-unchanged an unchanged report is NAKed,
-    # so alternate codes rather than repeating one to drive a pane.
+    # Scancode timeline, 't:scancode' separated by ';' or newlines.
+    #
+    # THIS CANNOT OPEN AN APP ANY MORE, and it could until 2026-08-26. The
+    # desktop no longer launches from a keystroke (GopDesk, "THE DESKTOP NO
+    # LONGER LAUNCHES AN APP FROM A KEYSTROKE"): desk-loop swallows every
+    # scancode except F12 while no pane is focused, so a timeline of 33/46/37
+    # against a bare desktop does nothing at all and looks exactly like key
+    # injection being broken. Measured 2026-08-26: four codes over nine
+    # seconds, no pane opened, and -hid-keys does not change it.
+    #
+    # Keys reach a pane that is ALREADY FOCUSED. To open one, click: the
+    # Cobblestone pill opens the start menu and a row opens its app, which
+    # needs -mouse rather than -keys-file (this script has no -Mouse; invoke
+    # codex-vm directly with these same args plus -mouse-file).
+    #
+    # Two ADJACENT entries with the same code deliver as one: under
+    # -hid-nak-unchanged an unchanged report is NAKed, so alternate codes
+    # rather than repeating one to drive a pane.
     [string]$Keys = '',
     # Freeze the clock so a captured frame is comparable against a recorded
     # one; the taskbar paints the CMOS RTC and is otherwise host state.
@@ -135,7 +150,7 @@ if ($Shot) {
 }
 
 Write-Host "[desk] ${Width}x${Height}; desk paints about 1.5s after launch"
-Write-Host "[desk] keys: f Files, e Edit, 3 3D View, c Calc, l Calendar, i Issues, d Diffusion, m Monitor; Esc leaves a pane."
+Write-Host "[desk] the Cobblestone button opens the start menu; an app opens in a window you move by its title bar and close with the x."
 Write-Host "[desk] the desk itself does not exit by key: Shutdown (bottom-left) or Stop-Process."
 
 if ($Wait) {

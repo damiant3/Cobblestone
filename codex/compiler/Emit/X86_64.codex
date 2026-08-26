@@ -2855,6 +2855,45 @@ Section: Expression Emission
  because Integer equality IS the word compare this arm falls back to and
  the missing strip costs it nothing. It costs Text everything.
 
+  eq-rec-fuel : Integer = 64
+
+  eq-seen-has : List Text, Text, Integer -> Boolean
+  eq-seen-has (xs) (n) (i) =
+   if i >= list-length xs then False
+   else if list-at xs i == n then True
+   else eq-seen-has xs n (i + 1)
+
+  eq-ty-reaches : CodegenState, CodexType, Text, List Text, Integer -> Boolean
+  eq-ty-reaches (st) (ty) (target) (seen) (fuel) =
+   if fuel <= 0 then True
+   else when strip-unit-ty (resolve-to-sum-with-defs st ty)
+    is SumTy (sn) (args) (cs) ->
+     if sn.value == target then True
+     else if eq-seen-has seen (sn.value) 0 then False
+     else eq-ctors-reach st cs target (list-push seen (sn.value)) fuel 0 (list-length cs)
+    is otherwise -> False
+
+  eq-ctors-reach : CodegenState, List SumCtor, Text, List Text, Integer, Integer, Integer -> Boolean
+  eq-ctors-reach (st) (cs) (target) (seen) (fuel) (i) (len) =
+   if i == len then False
+   else let c = list-at cs i
+   in if eq-fields-reach st (c.fields) target seen fuel 0 (list-length (c.fields)) then True
+   else eq-ctors-reach st cs target seen fuel (i + 1) len
+
+  eq-fields-reach : CodegenState, List CodexType, Text, List Text, Integer, Integer, Integer -> Boolean
+  eq-fields-reach (st) (fs) (target) (seen) (fuel) (i) (len) =
+   if i == len then False
+   else if eq-ty-reaches st (list-at fs i) target seen (fuel - 1) then True
+   else eq-fields-reach st fs target seen fuel (i + 1) len
+
+  eq-sum-is-recursive : CodegenState, Text, List SumCtor -> Boolean
+  eq-sum-is-recursive (st) (sn) (cs) =
+   eq-ctors-reach st cs sn [sn] eq-rec-fuel 0 (list-length cs)
+
+  eq-recursive-message : Text -> Text
+  eq-recursive-message (sn) =
+   "Structural equality on '" & sn & "', which contains itself. This backend compares a sum by inlining a field compare per constructor, so a field at the sum's own type re-enters the inliner with the same type and the expansion does not terminate. It is refused here rather than expanded until the compiler dies. Compare the fields you mean by hand, or write a recursive equality function over the type."
+
   emit-eq-op : CodegenState, Integer, Integer, CodexType -> EmitResult
   emit-eq-op (st) (l-reg) (r-reg) (ty) =
    let resolved = strip-unit-ty (resolve-to-sum-with-defs st ty)
@@ -2862,7 +2901,12 @@ Section: Expression Emission
     is TextTy -> emit-helper-call-2-regs st l-reg r-reg "__str_eq"
     is RealTy (rw) (rm) -> emit-num-comparison st cc-e l-reg r-reg
     is SumTy (sn) (args) (cs) ->
-     let type-args = (when ty
+     if eq-sum-is-recursive st (sn.value) cs
+     then EmitResult {
+      state = st-add-error st cdx-recursive-structural-eq (eq-recursive-message (sn.value)) synthetic-span,
+      reg = __narrow l-reg
+     }
+     else let type-args = (when ty
       is ConstructedTy (cn) (ca) -> ca
       is otherwise -> eq-empty-type-args)
      in emit-sum-structural-eq st l-reg r-reg cs type-args
@@ -2881,7 +2925,12 @@ Section: Expression Emission
      }
     is RealTy (rw) (rm) -> emit-num-comparison st cc-ne l-reg r-reg
     is SumTy (sn) (args) (cs) ->
-     let type-args = (when ty
+     if eq-sum-is-recursive st (sn.value) cs
+     then EmitResult {
+      state = st-add-error st cdx-recursive-structural-eq (eq-recursive-message (sn.value)) synthetic-span,
+      reg = __narrow l-reg
+     }
+     else let type-args = (when ty
       is ConstructedTy (cn) (ca) -> ca
       is otherwise -> eq-empty-type-args)
      in let eq-result = emit-sum-structural-eq st l-reg r-reg cs type-args

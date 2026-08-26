@@ -32,6 +32,23 @@ the Update 44 entry was found and worked during the release run at head 15686.*
 
 ## Done
 
+### Update 51 -- compile.ps1's binary write follows the PROCESS working directory, not the shell's
+
+Found at the poison-build step 2026-08-26. `compile.ps1` writes its `-Out`
+binary through .NET (`WriteAllBytes`, `compile.ps1:326`), and .NET's
+current directory does not follow PowerShell's `Set-Location` inside a
+harness-driven shell -- so a RELATIVE `-Out` landed under the session's
+START directory (the red workspace) while the `-Log`, written through
+PowerShell providers, landed where `Set-Location` pointed (red-main). The
+compile exits 0; the consumer then refuses a missing file one step later,
+which reads as a compile failure and is not one. Never bit a human at a
+terminal, where the two directories agree. Re-measure / avoid:
+
+```powershell
+# absolute -Out and -Log always; or launch a child with the cwd set at spawn
+Start-Process pwsh -WorkingDirectory $R -ArgumentList '-File','build\...'
+```
+
 ### Update 50 -- a compiler change that reshapes the IR wire is a DDC change, and only the DDC sees it
 
 Update 47's first entry recorded the forward direction: a csharp-plug

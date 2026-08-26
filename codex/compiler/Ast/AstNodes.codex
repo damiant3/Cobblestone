@@ -169,6 +169,108 @@ Section: Definitions
    span : SourceSpan
   }
 
+Section: Implicit Type Parameters
+
+ A width or mode qualifier on a Real is an application ARGUMENT in the surface
+ syntax and is spelled exactly like a type variable: `Real approximate` parses
+ the same way `List a` does, and the qualifier words are recognised only by
+ `resolve-real-quals` in `Types/TypeChecker.codex`. Without this guard the
+ inference below reads `approximate` as a free type variable and publishes it
+ as a type parameter, which makes the whole declaration spuriously parametric
+ -- and because the parameter belongs to the TYPE rather than the constructor,
+ it poisons every constructor of that type, including the ones carrying no
+ qualifier at all. The condition mirrors `resolve-real-quals`: the arguments
+ are qualifiers only if EVERY one of them is a qualifier word, because one
+ unrecognised word makes the checker treat the whole thing as a genuine
+ application instead.
+
+  ast-real-qual-word-p : Text -> Boolean
+  ast-real-qual-word-p (w) =
+   if w == "approximate" then True
+   else if w == "trapping" then True
+   else if w == "saturating" then True
+   else False
+
+  ast-all-real-quals-p : List ATypeExpr, Integer, Integer -> Boolean
+  ast-all-real-quals-p (args) (i) (len) =
+   if i >= len then True
+   else let w = when (list-at args i) is ANamedType (n) (s) -> n.value is otherwise -> ""
+   in if ast-real-qual-word-p w then ast-all-real-quals-p args (i + 1) len
+   else False
+
+  ast-real-qual-app-p : ATypeExpr, List ATypeExpr -> Boolean
+  ast-real-qual-app-p (base) (args) =
+   if list-length args == 0 then False
+   else let is-real = when base is ANamedType (n) (s) -> n.value == "Real" is otherwise -> False
+   in if is-real then ast-all-real-quals-p args 0 (list-length args)
+   else False
+
+  ast-tparam-name-p : Text -> Boolean
+  ast-tparam-name-p (name) =
+   if text-length name == 0 then False
+   else let code = char-code-at name 0
+   in code >= char-code-at "e" 0 & code <= char-code-at "z" 0
+
+  ast-text-in-list : List Text, Text, Integer, Integer -> Boolean
+  ast-text-in-list (xs) (target) (i) (len) =
+   if i == len then False
+   else if list-at xs i == target then True
+   else ast-text-in-list xs target (i + 1) len
+
+  ast-collect-atexpr-tparams : ATypeExpr, List Text -> List Text
+  ast-collect-atexpr-tparams (te) (acc) =
+   when te
+    is ANamedType (name) (s) ->
+     if ast-tparam-name-p (name.value) & ast-text-in-list acc (name.value) 0 (list-length acc) == False
+     then list-push acc (name.value)
+     else acc
+    is AFunType (p) (r) (s) ->
+     ast-collect-atexpr-tparams r (ast-collect-atexpr-tparams p acc)
+    is AAppType (base) (args) (s) ->
+     if ast-real-qual-app-p base args then acc
+     else ast-collect-atexpr-list-tparams args 0 (list-length args) (ast-collect-atexpr-tparams base acc)
+    is AEffectType (effs) (scopes) (tail) (r) (s) ->
+     ast-collect-atexpr-tparams r acc
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
+     ast-collect-atexpr-tparams b acc
+    is ALinearType (inner) (s) ->
+     ast-collect-atexpr-tparams inner acc
+    is otherwise -> acc
+
+  ast-collect-atexpr-list-tparams : List ATypeExpr, Integer, Integer, List Text -> List Text
+  ast-collect-atexpr-list-tparams (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ast-collect-atexpr-list-tparams xs (i + 1) len (ast-collect-atexpr-tparams (list-at xs i) acc)
+
+  ast-collect-rec-field-tparams : List ARecordFieldDef, Integer, Integer, List Text -> List Text
+  ast-collect-rec-field-tparams (fields) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at fields i
+   in ast-collect-rec-field-tparams fields (i + 1) len (ast-collect-atexpr-tparams (f.type-expr) acc)
+
+  ast-collect-var-ctor-tparams : List AVariantCtorDef, Integer, Integer, List Text -> List Text
+  ast-collect-var-ctor-tparams (ctors) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at ctors i
+   in ast-collect-var-ctor-tparams ctors (i + 1) len (ast-collect-atexpr-list-tparams (c.fields) 0 (list-length (c.fields)) acc)
+
+  ast-names-of-texts : List Text, Integer, Integer, List Name -> List Name
+  ast-names-of-texts (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ast-names-of-texts xs (i + 1) len (list-push acc (make-name (list-at xs i)))
+
+  ast-rec-tparams : List Name, List ARecordFieldDef -> List Name
+  ast-rec-tparams (explicit) (fields) =
+   if list-length explicit > 0 then explicit
+   else let inferred = ast-collect-rec-field-tparams fields 0 (list-length fields) []
+   in ast-names-of-texts inferred 0 (list-length inferred) []
+
+  ast-var-tparams : List Name, List AVariantCtorDef -> List Name
+  ast-var-tparams (explicit) (ctors) =
+   if list-length explicit > 0 then explicit
+   else let inferred = ast-collect-var-ctor-tparams ctors 0 (list-length ctors) []
+   in ast-names-of-texts inferred 0 (list-length inferred) []
+
 Section: Chapter
   ACitesDecl = record {
    quire : Name,

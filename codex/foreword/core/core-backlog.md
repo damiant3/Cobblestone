@@ -90,3 +90,37 @@ Found 2026-08-25 while migrating the encode-meaning callers to `char-encode`
 `char-to-text (-1)` produced the same 255. It surfaced because Damian pushed
 back on "nothing depended on the truncation" -- a dependency on a sentinel
 being silently encoded is exactly the dependency that should fail hard.
+
+**RULED AND HALF FIXED, main 19662. This row read as an open undecided question
+until 2026-08-26 and the decision had been taken and shipped the day before.**
+Damian's ruling: *"we do not conform to a standard that codifies stupidity; do
+what is best for us on input and output and preserve the original intent as far
+as it can be preserved."* So none of the three answers this row offered was
+taken whole. Split by intent against machinery: **tab** means horizontal
+whitespace, which CCE can express, so it becomes a space; **backspace,
+formfeed and carriage return** are teletype and line-printer machinery with no
+modern meaning and are DROPPED, and mapping CR to a newline was rejected
+because it doubles every CRLF, which is the common case and the worse trade;
+an **unmappable `\uXXXX` is CONTENT rather than machinery and is REFUSED**,
+because silently losing what an author wrote is the failure being removed and
+CCE has no replacement character to substitute.
+
+**WHAT IS STILL OPEN IS THE RESIDUE, AND IT IS THE HALF THIS ROW CALLED "the
+part with no argument on either side": the encoders still accept -1 silently
+everywhere OUTSIDE Json.** `char-encode`, `char-to-text` and
+`cce-encode-length (-1)` are unchanged, so any non-JSON caller that builds a
+Char from a Unicode code point can still put unit 255 into a Text with no
+diagnostic.
+
+**AND THE OBVIOUS REPAIR IS RULED OUT, WHICH IS WHY THIS IS NOT A ONE-LINE
+FIX.** Refusing -1 inside `char-encode` traps `HttpClient` on any response body
+containing a carriage return, which is most of them, so **the policy belongs at
+the CALL SITES rather than in the encoder**. Measured 2026-08-26 over a real
+recursive walk of `codex/` and `apps/` (3,650 `.codex` files, `build-output`
+excluded): **36 sites** spell `code-to-char (from-unicode ...)` and are the
+candidate set. `codex/os/net/HttpClient.codex` is first, and its live witness
+is `http-response-guard`'s high-body arm. A compile-time backstop in the
+declared domain is now POSSIBLE where it was not before: COMPILER-28 is fixed
+and CDX2054 makes a range on a non-integer base a refusal instead of
+decoration, so re-read that row before concluding a bounded domain cannot be
+declared. Owner: blu, 2026-08-26.

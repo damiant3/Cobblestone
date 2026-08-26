@@ -390,10 +390,26 @@ Section: Expression Emission
  An integer is a BigInt in the emitted source, and `0n === 0` is false in
  JavaScript, so a literal pattern must carry the suffix its scrutinee has.
 
+ A Boolean IrLitPat carries the SPELLING `True` or `False`, and JavaScript
+ spells its Boolean literals in lower case, so the wire's text emitted
+ verbatim is a bare identifier and the program dies with
+ `ReferenceError: True is not defined`. The spelling is checked before the
+ type so a Boolean carrying an integer annotation cannot pick up the
+ BigInt suffix.
+
+ A Char scrutinee is a BigInt here, because `IrCharLit` emits
+ `integer-to-text n & "n"`, and JavaScript's `===` is false across the
+ BigInt/Number boundary: `15n === 15` does not match. So a Char literal
+ PATTERN needs the same suffix its expression form already carries, or
+ every char arm silently falls through to the catch-all.
+
   js-lit-pat-text : Text , CodexType -> Text
   js-lit-pat-text (text) (ty) =
-   when ty
+   if text == "True" then "true"
+   else if text == "False" then "false"
+   else when ty
     is IntegerTy (lo) (hi) (mode) -> text & "n"
+    is CharTy -> text & "n"
     is otherwise -> text
 
   js-guard-trivial : IRExpr -> Boolean

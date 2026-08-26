@@ -272,7 +272,7 @@ Section: ATypeExpr Emission
     is ANamedType (name) (s) -> "(a-named " & ir-quote (name.value) & ")"
     is AFunType (p) (r) (s) -> "(a-fun " & ir-emit-atype-expr p & " " & ir-emit-atype-expr r & ")"
     is AAppType (base) (args) (s) ->
-     if ir-real-qual-app-p base args then "(a-named " & ir-quote (ir-real-qual-atom args 0 RwF64 RmDefault) & ")"
+     if ast-real-qual-app-p base args then "(a-named " & ir-quote (ir-real-qual-atom args 0 RwF64 RmDefault) & ")"
      else "(a-app " & ir-emit-atype-expr base & " (args" & ir-emit-atype-expr-list args 0 & "))"
     is AEffectType (effs) (scopes) (tail) (r) (s) ->
      if list-length tail == 0 then "(a-eff (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") " & ir-emit-atype-expr r & ")"
@@ -288,41 +288,7 @@ Section: ATypeExpr Emission
   ir-emit-atype-expr-list (xs) (i) =
    ir-cat (for t in xs -> " " & ir-emit-atype-expr t)
 
-Section: Type Parameter Inference
-
- A width or mode qualifier on a Real is an application ARGUMENT in the surface
- syntax and is spelled exactly like a type variable: `Real approximate` parses
- the same way `List a` does, and the qualifier words are recognised only by
- `resolve-real-quals` in `Types/TypeChecker.codex`. Without this guard the
- inference below reads `approximate` as a free type variable and publishes it
- as a type parameter, which makes the whole declaration spuriously parametric
- -- and because the parameter belongs to the TYPE rather than the constructor,
- it poisons every constructor of that type, including the ones carrying no
- qualifier at all. The condition mirrors `resolve-real-quals`: the arguments
- are qualifiers only if EVERY one of them is a qualifier word, because one
- unrecognised word makes the checker treat the whole thing as a genuine
- application instead.
-
-  ir-real-qual-word-p : Text -> Boolean
-  ir-real-qual-word-p (w) =
-   if w == "approximate" then True
-   else if w == "trapping" then True
-   else if w == "saturating" then True
-   else False
-
-  ir-all-real-quals-p : List ATypeExpr, Integer, Integer -> Boolean
-  ir-all-real-quals-p (args) (i) (len) =
-   if i >= len then True
-   else let w = when (list-at args i) is ANamedType (n) (s) -> n.value is otherwise -> ""
-   in if ir-real-qual-word-p w then ir-all-real-quals-p args (i + 1) len
-   else False
-
-  ir-real-qual-app-p : ATypeExpr, List ATypeExpr -> Boolean
-  ir-real-qual-app-p (base) (args) =
-   if list-length args == 0 then False
-   else let is-real = when base is ANamedType (n) (s) -> n.value == "Real" is otherwise -> False
-   in if is-real then ir-all-real-quals-p args 0 (list-length args)
-   else False
+Section: Real Qualifier Atom
 
   ir-real-qual-atom : List ATypeExpr, Integer, RealWidth, RealMode -> Text
   ir-real-qual-atom (args) (i) (w) (m) =
@@ -333,59 +299,9 @@ Section: Type Parameter Inference
       else if word == "saturating" then ir-real-qual-atom args (i + 1) w RmSaturating
       else ir-real-qual-atom args (i + 1) w m
 
-  ir-tparam-name-p : Text -> Boolean
-  ir-tparam-name-p (name) =
-   if text-length name == 0 then False
-   else let code = char-code-at name 0
-   in code >= char-code-at "e" 0 & code <= char-code-at "z" 0
-
-  ir-text-in-list : List Text, Text, Integer, Integer -> Boolean
-  ir-text-in-list (xs) (target) (i) (len) =
-   if i == len then False
-   else if list-at xs i == target then True
-   else ir-text-in-list xs target (i + 1) len
-
-  ir-collect-atexpr-tparams : ATypeExpr, List Text -> List Text
-  ir-collect-atexpr-tparams (te) (acc) =
-   when te
-    is ANamedType (name) (s) ->
-     if ir-tparam-name-p (name.value) & ir-text-in-list acc (name.value) 0 (list-length acc) == False
-     then list-push acc (name.value)
-     else acc
-    is AFunType (p) (r) (s) ->
-     ir-collect-atexpr-tparams r (ir-collect-atexpr-tparams p acc)
-    is AAppType (base) (args) (s) ->
-     if ir-real-qual-app-p base args then acc
-     else ir-collect-atexpr-list-tparams args 0 (list-length args) (ir-collect-atexpr-tparams base acc)
-    is AEffectType (effs) (scopes) (tail) (r) (s) ->
-     ir-collect-atexpr-tparams r acc
-    is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
-     ir-collect-atexpr-tparams b acc
-    is ALinearType (inner) (s) ->
-     ir-collect-atexpr-tparams inner acc
-    is otherwise -> acc
-
-  ir-collect-atexpr-list-tparams : List ATypeExpr, Integer, Integer, List Text -> List Text
-  ir-collect-atexpr-list-tparams (xs) (i) (len) (acc) =
-   if i == len then acc
-   else ir-collect-atexpr-list-tparams xs (i + 1) len (ir-collect-atexpr-tparams (list-at xs i) acc)
-
-  ir-collect-rec-field-tparams : List ARecordFieldDef, Integer, Integer, List Text -> List Text
-  ir-collect-rec-field-tparams (fields) (i) (len) (acc) =
-   if i == len then acc
-   else let f = list-at fields i
-   in ir-collect-rec-field-tparams fields (i + 1) len (ir-collect-atexpr-tparams (f.type-expr) acc)
-
-  ir-collect-var-ctor-tparams : List AVariantCtorDef, Integer, Integer, List Text -> List Text
-  ir-collect-var-ctor-tparams (ctors) (i) (len) (acc) =
-   if i == len then acc
-   else let c = list-at ctors i
-   in ir-collect-var-ctor-tparams ctors (i + 1) len (ir-collect-atexpr-list-tparams (c.fields) 0 (list-length (c.fields)) acc)
-
-  ir-emit-tparams-text : List Name, List Text -> Text
-  ir-emit-tparams-text (explicit) (inferred) =
-   if list-length explicit > 0 then ir-cat (ir-names-quoted explicit 0 [])
-   else ir-cat (ir-strs-quoted inferred 0 [])
+  ir-emit-tparams-text : List Name -> Text
+  ir-emit-tparams-text (resolved) =
+   ir-cat (ir-names-quoted resolved 0 [])
 
 Section: ATypeDef Emission
 
@@ -402,11 +318,9 @@ Section: ATypeDef Emission
   ir-emit-atype-def (td) =
    when td
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
-     let inferred = ir-collect-rec-field-tparams fields 0 (list-length fields) []
-     in "(rec-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams inferred & ") (fields" & ir-emit-rec-field-defs fields 0 & ")" & (if is-mut then " (mutable)" else "") & ")"
+     "(rec-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams & ") (fields" & ir-emit-rec-field-defs fields 0 & ")" & (if is-mut then " (mutable)" else "") & ")"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     let inferred = ir-collect-var-ctor-tparams ctors 0 (list-length ctors) []
-     in "(var-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams inferred & ") (ctors" & ir-emit-var-ctor-defs ctors 0 & "))"
+     "(var-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams & ") (ctors" & ir-emit-var-ctor-defs ctors 0 & "))"
     is AUnitTypeDef (name) (base) (s) ->
      "(unit-def " & ir-quote (name.value) & " " & ir-emit-atype-expr base & ")"
 

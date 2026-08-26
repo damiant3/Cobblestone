@@ -262,6 +262,39 @@ NOT lambda-lifted. RESOLVE and LIFT are phases of the CDX path only
   1.35, closed 2026-08-17): curried lambdas, curried unknown-callee applies,
   a def used as a value eta-wrapped by its arity, and the prelude's own
   functions' arities scanned from the prelude string so they cannot drift.
+- **The wire cannot carry a self-application at NON-FULL arity in tail
+  position, so a plug's TCO gate needs no arity check** (measured
+  2026-08-26, blu, from Steve Howell's PR 87). For a definition with `n`
+  parameters and return type `R`, a self-call at arity `k < n` has type
+  `(P_k+1, ..., P_n) -> R` while the body must have type `R`, so the
+  program is well typed only if `R = T -> R`. The type checker refuses
+  that: with a declared signature it is a plain mismatch (CDX2001), and
+  with an inferred one the occurs check names it (**CDX2010 Infinite
+  type**), including when the return type is a bare type variable. **The
+  protection is the CHECKER, not the pass and not the wire, and that
+  distinction is the reason this is written down.** `is-self-call`
+  (`codex/compiler/Emit/X86_64.codex:75-80`) walks the `IrApply` spine and
+  answers True at the matching `IrName` WITHOUT counting arguments, so the
+  reference implementation's own gate is arity-blind; and since
+  application is curried (above), a partial spine is indistinguishable in
+  shape from a saturated one. **A plug consuming compiler-produced IR is
+  therefore safe by construction. A plug consuming hand-authored IR is
+  not**: `codex/plugs/common/IRTextParser.codex:705` builds `IrApply`
+  structurally with no arity check.
+- **A Boolean literal PATTERN arrives as the SPELLING `True` or `False`,
+  not as a number** (Steve Howell, 2026-08-26). Bare metal decodes it in
+  `pat-lit-to-integer` (`codex/compiler/Syntax/Token.codex:149`). Emitting
+  the wire text verbatim produces a bare identifier in any target that
+  spells its Booleans differently, which is a hard error in most of them
+  (csharp CS0103, javascript `ReferenceError`, zig undeclared identifier;
+  Python, Haskell, Ada and Pascal happen to agree with the wire and are
+  safe by luck). **The trap is that nearly every plug already maps the
+  spelling where a Boolean is an EXPRESSION and not where it is a
+  PATTERN**: the two paths are separate in every plug and the pattern path
+  tends to be copied from the integer case, which is why the class is
+  widespread and why the compiler's own wire never exposed it. Grade a
+  plug with `codex/test/when-bool-cross` and `when-bool-pattern`, which
+  also carry integer and char controls.
 - Types on the wire are the checker's, and one measured shape arrives as
   `error` (a directly-applied inline lambda's parameter, COMPILER-13); a
   typed target should refuse or default visibly rather than emit `error` as
