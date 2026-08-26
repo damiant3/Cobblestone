@@ -63,7 +63,7 @@ Section: Keywords and Sanitization
  are the same identifier -- so these RENAME instead. X86_64Boot binds a
  chain st, sta, stb, stc, std, ste; the sixth one is `std`.
 
-  zig-prelude-decls : List Text = ["std", "main", "cx_heap_mem", "cx_heap_reserve", "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest", "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best", "cx_deck_stride", "cx_deck_armed", "cx_deck_slack"]
+  zig-prelude-decls : List Text = ["std", "main", "cx_entry", "cx_heap_mem", "cx_heap_reserve", "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest", "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best", "cx_deck_stride", "cx_deck_armed", "cx_deck_slack"]
 
   is-zig-prelude-decl : Text -> Boolean
   is-zig-prelude-decl (s) =
@@ -557,8 +557,14 @@ Section: Type Mapping
  is what `pat-lit-to-integer` does, and a divergence there would be its
  own defect.
 
-  zig-lit-pat-text : Text -> Text
-  zig-lit-pat-text (t) =
+  zig-lit-pat-text : Text, CodexType -> Text
+  zig-lit-pat-text (t) (ty) =
+   when ty
+    is TextTy -> t
+    is otherwise -> zig-bool-pat-text t
+
+  zig-bool-pat-text : Text -> Text
+  zig-bool-pat-text (t) =
    if t == "True" then "true"
    else if t == "False" then "false"
    else t
@@ -1992,7 +1998,7 @@ Section: Match Emission
    let body = body0
    in if ex & zig-pat-is-catch-all pat then ""
    else when pat
-    is IrLitPat (text) (ty) (sp) -> zig-lit-pat-text text & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
+    is IrLitPat (text) (ty) (sp) -> zig-lit-pat-text text ty & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
      in if nsubs == 0 then "." & zig-sanitize name & " => " & emit-zig-arm-body-tail body mty ctx d tl & ", "
@@ -2102,7 +2108,7 @@ Section: Match Emission
   emit-zig-chain-arm : IRPat, IRExpr, IRExpr, ZigCtx, Integer, CodexType, Text -> Text
   emit-zig-chain-arm (pat) (guard) (body) (ctx) (d) (mty) (sv) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "if (" & sv & " == " & zig-lit-pat-text text & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
+    is IrLitPat (text) (ty) (sp) -> "if (" & sv & " == " & zig-lit-pat-text text ty & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
      in let test = "if (" & sv & " == ." & zig-sanitize name & ") { "
@@ -3569,38 +3575,78 @@ Section: Chapter Emission
  it rather than discarding it; discarding would trade 40 loud refusals
  for 40 silent mismatches.
 
- The C# plug has the rule (`opening-call-text`) and dispatches on the
- return TYPE. This asks `zig-def-return-text` instead -- the same text
- that was emitted into `fn opening() ...` -- so the shim cannot disagree
- with the signature it is calling. Duplicating the type list is the
- mistake the emit-roots drift already taught us.
+ It dispatches on the CODEX type, arm for arm against
+ `emit-opening-result-print` (`Emit/X86_64Chapter.codex:222`), because
+ that is the oracle. An earlier draft asked the plug's own
+ `zig-def-return-text` instead, reasoning that the shim then could not
+ disagree with the signature it calls. That reasoning was wrong twice
+ over. The zig type text is LOSSY -- Boolean and Char both arrive as
+ something that is not `void`, not `[]const u8` and not `f64`, so both
+ fell to an integer print: a `Boolean` entry would have emitted
+ `cx_show_int(opening())`, which is finding 50 rebuilt at a new site, and
+ a `Character` entry would have printed a number where bare metal prints
+ NOTHING. Agreeing with our own signature is worth nothing; agreeing with
+ the oracle is the whole job.
 
- The Real arm refuses: printing it wants `cx_real_to_text`, which does not
- exist here, and finding 50 has the account of why guessing is worse.
+ C# is not the authority here and the first draft wrongly cited it:
+ `opening-call-text` DISCARDS the value of an effectful `opening`. Bare
+ metal peels the effect and prints, and the depot agrees -- `gpu-ptx` and
+ `gpu-doorbell` declare `opening : [Console] Integer` and their
+ `.expected` files end with the bare `0` that print produces.
+
+ Two arms refuse rather than guess. Real wants `cx_real_to_text`, which
+ does not exist here (finding 50 has the account of why guessing is
+ worse). Lists, records and sums are what bare metal prints through
+ `emit-opening-print-sum`, and this plug has no equivalent; a marker that
+ names the gap beats `cx_show_int` on a pointer.
+
+ `UnitTy` calls without printing, and that is a divergence: bare metal
+ recurses into the inner type and prints it. The cause is upstream of the
+ entry -- `emit-zig-type` maps every unit to `void`, so the signature has
+ already discarded the payload and there is nothing left to print. Finding
+ 17's territory, named here rather than papered over. No depot program
+ declares a unit-typed `opening`.
 
   zig-main : Text, List IRDef -> Text
   zig-main (entry) (defs) =
    "fn cx_entry() void {\n"
-   & zig-entry-call (zig-sanitize entry) (zig-entry-return-text defs 0)
+   & zig-entry-call (zig-sanitize entry) (zig-entry-return-type defs 0)
    & "}\n\n"
    & "pub fn main() void {\n"
    & "    const stack_bytes: usize = 512 * 1024 * 1024;\n"
    & "    const t = std.Thread.spawn(.{ .stack_size = stack_bytes }, cx_entry, .{}) catch @panic(\"spawn\");\n"
    & "    t.join();\n}\n"
 
-  zig-entry-return-text : List IRDef, Integer -> Text
-  zig-entry-return-text (defs) (i) =
-   if i >= list-length defs then "void"
+  zig-entry-return-type : List IRDef, Integer -> CodexType
+  zig-entry-return-type (defs) (i) =
+   if i >= list-length defs then NothingTy
    else let d = list-at defs i
-   in if (d.name) == opening-entry-point then zig-def-return-text d []
-   else zig-entry-return-text defs (i + 1)
+   in if (d.name) == opening-entry-point then zig-def-return-type d (zig-def-tvar-ids d)
+   else zig-entry-return-type defs (i + 1)
 
-  zig-entry-call : Text, Text -> Text
-  zig-entry-call (name) (rt) =
-   if rt == "void" then "    " & name & "();\n"
-   else if rt == "[]const u8" then "    cx_print_line(" & name & "());\n"
-   else if rt == "f64" then "    " & zig-show-real-refusal & ";\n"
-   else "    cx_print_line(cx_show_int(" & name & "()));\n"
+  zig-entry-call : Text, CodexType -> Text
+  zig-entry-call (name) (ret) =
+   when ret
+    is EffectfulTy (effs) (scopes) (inner) -> zig-entry-call name inner
+    is IntegerTy (lo) (hi) (mode) -> "    cx_print_line(cx_show_int(" & name & "()));\n"
+    is TextTy -> "    cx_print_line(" & name & "());\n"
+    is BooleanTy -> "    cx_print_line(" & zig-show-bool-text (name & "()") & ");\n"
+    is RealTy (w) (m) -> "    " & zig-entry-real-refusal & ";\n"
+    is CharTy -> "    _ = " & name & "();\n"
+    is VoidTy -> "    " & name & "();\n"
+    is NothingTy -> "    " & name & "();\n"
+    is ProofTy -> "    " & name & "();\n"
+    is PropEqTy (pl) (pr) -> "    " & name & "();\n"
+    is UnitTy (n) (inner) -> "    " & name & "();\n"
+    is otherwise -> "    " & zig-entry-refusal & ";\n"
+
+  zig-entry-real-refusal : Text
+  zig-entry-real-refusal =
+   "@compileError(\"zig plug: opening returns a Real and printing it needs __real_to_text, which this plug does not have\")"
+
+  zig-entry-refusal : Text
+  zig-entry-refusal =
+   "@compileError(\"zig plug: opening returns a type this plug cannot print at the entry\")"
 
   zig-prelude : Text =
    "const std = @import(\"std\");\n\n"
