@@ -2091,123 +2091,166 @@ detected: say so rather than read its silence as agreement (L-FALSIF).
 moved to `codex/plugs/babbage/babbage-backlog.md`. Do not add babbage items
 here.
 
-**1.74 -- the zig plug took a TYPE VARIABLE for an answer, and emitted it as
-a name into a scope that declares no such name. OURS, latent since Update
-44.** Found 2026-08-26, when Update 50 first sent a lifted lambda through a
-text plug and the compiler's own transpiled source came back with 47
-undeclared `T38`s.
+**1.84 -- FIXED, the zig plug took a TYPE VARIABLE for an answer and emitted
+it as a name into a caller that declares no such name.** (Steve Howell,
+2026-08-26; `codex/plugs/zig/` per the standing note above.) Found when
+Update 50 first sent a lifted lambda through a text plug and the compiler's
+own zig-transpiled source came back with 47 undeclared `T38`s.
 
-**Why a plug meets this at all.** A lifted lambda reaches a plug with
-unresolved type variables in its signature -- `CSharpEmitter.codex:534-541`
-states it: the IR-CCE lift runs after the resolve pass, so a `__lam_N`
-carries the types its lambda was handed rather than the resolved ones, and
-the IR is well-typed. C# answers `dynamic`. This plug recovers the type
-instead, walking each declared parameter type against the type actually
-supplied and answering with whatever sits where the variable sits.
+**Why a plug meets an unresolved variable at all.** `CSharpEmitter.codex:534-541`
+sets it out: "the compiler's IR-CCE lift runs after the resolve pass, so a
+`__lam_N` def carries the expected types its lambda was handed, not the
+resolved ones", and "the IR is well-typed". C# answers `dynamic`. This plug
+recovers the type instead, walking each declared parameter type against the
+type actually supplied and answering with whatever sits where the variable
+sits (`ZigEmitter.codex:2150-2165`).
 
-**The mechanism.** That walk had no sentinel able to tell "no answer here"
-from "an answer that is itself a variable". Matching `map-list`'s declared
-`(a -> b)` against `__lam_0`'s `(tvar 23 -> Integer)` answers `a = tvar 23`,
-which is neither `""` nor `VoidTy`, so the scan stopped there and never read
-the list argument one place along -- whose `List a` against `List Integer`
-is the answer that was wanted. The variable was then emitted as the text
-`T23` into a caller declaring no such name:
-
-    fn mapped_lambda(xs: *CxList(i64)) *CxList(i64) {
-        return map_list(T23, i64, ... p0: T23 ... CxFn1(T23, i64) ...);
-    }
+**The mechanism.** That walk had no way to tell "no answer here" from "an
+answer that is itself a variable" -- it carried two sentinels, `""` on the
+Text-answering copy and `VoidTy` on the CodexType-answering one, and a
+variable answer was neither. Matching `map-list`'s declared `(a -> [e] b)`
+(`codex/foreword/core/ListUtils.codex:41`) against a `__lam_0` of
+`(tvar 23 -> Integer)` answers `a = tvar 23`, so the scan stopped there and
+never read the list argument one place along -- whose `List a` against
+`List Integer` is the answer that was wanted. The variable was then emitted
+as the text `T23` into a caller declaring no such name. `T23` here is one
+worked instance; the 47 that stopped the release were `T38` in the
+compiler's own transpiled source.
 
 Concrete beats variable; variable beats nothing; nothing is the
-`@compileError` marker the function already ended in, which could not fire
-before because a variable answer looked like success. A variable answer is
-KEPT as a last resort rather than refused, because inside a generic
-definition it is the right one: `map-list`'s own body calls `map-list-loop`,
-and there `T23` is a comptime parameter that is in scope.
+`@compileError` marker `zig-resolve-tvar` already ended in
+(`ZigEmitter.codex:2351-2356`), which could not fire while a variable answer
+looked like success. A variable answer is KEPT as a last resort rather than
+refused, because inside a generic definition it is the right one:
+`map-list`'s own body calls `map-list-loop`, and there `T23` is a `comptime`
+parameter that is in scope.
 
-**Two walks were one walk in the prose and two in the source** -- one
-answering Text for the type-argument list, one answering CodexType for
-substitution -- so the fix had to be written twice before they were
-collapsed. The caller now supplies the actual TYPES rather than the argument
-expressions, because one caller has no expressions to offer.
+**The two walks are now one.** The prose above them claimed the walk was
+shared when it had been copied, so the fix had to be written twice before
+they were collapsed (`ZigEmitter.codex:2127-2130`). The caller now supplies
+the actual TYPES rather than the argument expressions, because one caller
+has no expressions to offer.
 
-**That caller is the second half.** With `a` recovered, the closure the plug
-builds around a function value still carried the variable twice: it read the
-lambda's type without passing it through the enclosing call's own bindings,
-and it called a generic callee unapplied -- `fn __lam_0(comptime T23: type,
-x: T23) i64` entered as `__lam_0(p0)`, one argument against two. The
-trampoline is a call site like any other and now applies its callee's type
-arguments.
+**That caller is the second half of the defect.** With `a` recovered, the
+closure the plug builds around a function value still carried the variable in
+two emitted places -- the environment struct's parameter list and its `CxFn`
+type -- because `emit-zig-name` handed the lambda's type over without passing
+it through the enclosing call's own bindings, and because the trampoline
+called a generic callee unapplied: `fn __lam_0(comptime T23: type, x: T23) i64`
+entered as `__lam_0(p0)`, one argument against two
+(`ZigEmitter.codex:2452-2465`). The trampoline is a call site like any other
+and now applies its callee's type arguments.
 
-**Verified on the Update 50 pin:** 47 undeclared-identifier errors in the
-compiler's own transpiled source, gone; `codexzig` builds at 28,112,141
-bytes with 0 `T38` sites; `codexir.ir` byte-for-byte the size the failing
-run produced, so nothing above the emitter moved. The 22-tier set is
-unmoved. In the corpus census `typeclass-smoke` moves `refused -> markers`,
-which is this marker firing where the plug used to emit a bogus name for zig
-to reject.
+**Verified**, in the order a red row first then green demands. On the Update
+50 pin: 47 undeclared-identifier errors in the compiler's own transpiled
+source, gone. Re-measured 2026-08-26 after the fix, in a fresh sandbox:
+`codexzig` builds with **0** `map_list(T…` sites; its FIXED POINT holds --
+re-emitting its own bundle byte for byte at 2,351,567 bytes -- and holds for
+the first time against a subject that actually contains lifted lambdas, 354
+`__lam` definitions on both arms where the driver arm had 300 and ours 0
+before. The 22-tier set shows **0 unexpected on every tier** (15 green, 6
+noted, 1 stale for an unrelated reason recorded in the ladder). In the corpus
+census `typeclass-smoke` moves `refused -> markers`: the marker now fires
+where the plug used to emit a bogus type name for zig to reject, which is an
+improvement rather than a regression.
 
-**1.75 -- the same recovery walk knows `List a` and `a -> b` and nothing the
-subject declares, so a variable inside a program's own generic type cannot
-be recovered from any position. OURS, and the gap 1.74 left.** Found
-2026-08-26 by a corpus program ported from another language's test suite,
-`codex/test/roc-iter-map.codex`.
+**A residue this change does not clean up.** `zig-subst-arg-type`
+(`ZigEmitter.codex:2115-2120`) has no caller -- only its signature, its
+definition and its own recursive call -- and it was already uncalled at the
+pin. This change updates its parameter list (`List IRExpr` to
+`List CodexType`) to keep it compiling, rather than deleting a function that
+is not ours to remove. It is dead either way and worth a decision.
 
-**The mechanism, which is one `when` with three arms missing.**
+**1.85 -- the same recovery walk knows `List a` and `a -> b` and nothing the
+subject declares, so a variable inside a program's own generic type cannot be
+recovered from any position. The gap 1.84 left.** (Steve Howell, 2026-08-26.)
 
-    zig-tvar-in-type (id) (decl) (actual) =
-     when decl
-      is TypeVar (vid) -> if vid == id then actual else VoidTy
-      is ListTy (elem) -> zig-tvar-in-elem-type id elem actual
-      is LinkedListTy (elem) -> zig-tvar-in-elem-type id elem actual
-      is FunTy (p) (fnrow) (r) -> zig-tvar-in-fun-type id p r actual
-      is otherwise -> VoidTy
+**The whole of it is fourteen lines**, `codex/test/tvar-in-declared-type.codex`,
+added by this change:
 
-The walk descends `List`, `LinkedList` and function types. A
-`ConstructedTy`, `SumTy` or `RecordTy` -- every parameterised type a program
-declares for itself -- falls into `otherwise` and answers `VoidTy`. So a
-variable inside `Step a`, `Iter a`, `Opt a`, a tuple or any declared record
-or sum is unrecoverable, in parameter position and in the return fallback
-alike.
+```
+Pair (a) = record { fst : a, snd : a }
 
-**Traced rather than inferred.** For `range-to : Integer, Integer -> Iter
-Integer` -- monomorphic, no generics in the subject at all -- the IR
-annotates the partial application `(fn int-default (ctd "Step" (args (tvar
-16))))`. `zig-closure-make` hands `resty = Step (tvar 16)` to the resolver,
+pair-swap : Pair a -> Pair a
+pair-swap (p) = Pair { fst = p.snd, snd = p.fst }
+```
+
+No lambda, nothing lifted -- measured against natives built before this fix,
+**0** `__lam` definitions in its IR -- and the emitted zig carries
+`unresolved type variable T42 of pair-swap`. Bare metal answers 73. **Lambda
+lifting was the path that exposed this class, not its cause**, which is why
+the reproducer is smaller than the case that found it.
+
+**The mechanism.** At the pin, `zig-tvar-in-type`
+(`ZigEmitter.codex:2184-2194`) reads:
+
+```
+  zig-tvar-in-type : Integer, CodexType, CodexType -> CodexType
+  zig-tvar-in-type (id) (decl) (actual) =
+   when decl
+    is TypeVar (vid) -> if vid == id then actual else VoidTy
+    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-type id inner actual
+    is ForAllTy (fid) (inner) -> zig-tvar-in-type id inner actual
+    is ForAllEff (c) (inner) -> zig-tvar-in-type id inner actual
+    is ListTy (elem) -> zig-tvar-in-elem-type id elem actual
+    is LinkedListTy (elem) -> zig-tvar-in-elem-type id elem actual
+    is FunTy (p) (fnrow) (r) -> zig-tvar-in-fun-type id p r actual
+    is otherwise -> VoidTy
+```
+
+It unwraps three transparent wrappers and descends `List`, `LinkedList` and
+function types. A `ConstructedTy`, `SumTy` or `RecordTy` -- every
+parameterised type a program declares for itself -- falls into `otherwise`
+and answers `VoidTy`. So the variable is unrecoverable both in the parameter
+loop and in the return fallback that `zig-resolve-tvar-type` reaches when the
+parameters run out (`ZigEmitter.codex:2157`).
+
+**Traced through real IR.** `range-to` in `codex/test/roc-iter-map.codex:57`
+has the monomorphic signature `Integer, Integer -> Iter Integer`, though the
+subject around it does declare generics (`Iter (a)`, `Step (a)`, `iter-map`).
+Its partial application is annotated
+`(fn int-default (ctd "Step" (args (tvar 16))))`, so `zig-closure-make`
+(`ZigEmitter.codex:2467`) hands `resty = Step (tvar 16)` to the resolver,
 which peels `__lam_1`'s declared return to `(ctd "Step" (args (tvar 16)))`
 and asks the walk to match the two. Both sides are `ConstructedTy`.
-`otherwise`. `VoidTy`. The emitted zig:
+`otherwise`. `VoidTy`. The emitted zig then carries
+`@compileError("zig plug: unresolved type variable T16 of __lam_1")` in the
+type-argument position, and `Step(T16)` in the closure's `call` return type
+where `T16` is declared nowhere.
 
-    fn __lam_1(comptime T16: type, start: i64, stop: i64, ignored: i64) Step(T16)
-    ... __lam_1(@compileError("zig plug: unresolved type variable T16 of __lam_1"), ...)
+**It is not confined to tests written for it.** Two depot programs put an
+unresolved variable inside a `ConstructedTy`'s arguments -- the arm that is
+missing -- read out of their IR with pre-fix natives:
 
-**It has nothing to do with lifted lambdas**, which were only the path that
-exposed it. `codex/test/tvar-in-declared-type.codex` is the whole of it --
-fourteen lines, one generic record, one generic function, no lambda, and
-measured against natives built before the fix: zero `__lam` defs in the IR
-and `unresolved type variable T42 of pair-swap` in the emitted zig. The
-variable appears only inside `Pair a`, in the parameter and in the return,
-so the parameter loop and the return fallback hit the missing arm in turn.
-Bare metal answers 73.
+    typeclass-smoke   (param "__Showable-dict" (ctd "ShowableDict" (args (tvar 44))))
+    db-full-test      (param "m" (ctd "HamtMap" (args (tvar 88))))
 
-**Nor is it confined to tests written for it.** Read out of the
-IR of two depot programs: `typeclass-smoke`'s `describe` takes `(param
-"__Showable-dict" (ctd "ShowableDict" (args (tvar 44))))` and
-`db-full-test`'s `hamt-fold` takes `(param "m" (ctd "HamtMap" (args (tvar
-88))))`. Both put the unresolved variable inside a `ConstructedTy`'s
-arguments, which is the arm that is missing.
+`hamt-fold` is Foreword's (`codex/foreword/core/Hamt.codex:247`), which
+`db-full-test` reaches through `cites Foreword chapter Hamt`, so it is shared
+with several other subjects. **The denominator, and the caveat:** the
+ladder's corpus census carries 40 distinct `unresolved type variable` markers
+over 51 programs. Whether this fix clears them is NOT established -- the walk
+must also find a concrete type at the matching position on the actual side,
+and `typeclass-smoke`'s `describe` additionally takes a bare-variable
+parameter that the existing `TypeVar` arm already handles, so its failure may
+have a different cause. One confirmed mechanism is not a confirmed cause for
+all forty.
 
-**The fix** adds three arms descending the argument lists pairwise, plus a
-reader for the actual side and a pairwise walk. One declaration reaches this
-code under all three constructors -- a name is a `ConstructedTy` until the
-checker rewrites it to the `SumTy` or `RecordTy` it denotes -- so all three
-descend identically. Matching is BY POSITION and compares no names, sound
-for the reason `CSharpEmitter.codex` gives about this wire: the IR is
-well-typed, so the type supplied for a parameter is the type that parameter
-declares.
+**The fix** adds three arms descending the argument lists pairwise, plus
+`zig-type-arg-list` to read the arguments off the actual side and
+`zig-tvar-in-args` to walk the pair. One declaration reaches this code under
+all three constructors -- a name is a `ConstructedTy` until the checker
+rewrites it to the `SumTy` or `RecordTy` it denotes, and which arrives
+depends on how far the type travelled -- so all three descend identically.
+Matching is BY POSITION and compares no names. That is sound on the strength
+of the well-typedness `CSharpEmitter.codex:534-541` asserts for this wire:
+the type supplied for a parameter is the type that parameter declares, so a
+mismatched pair cannot arrive.
 
-**NOT YET VERIFIED at the time of writing** -- no natives were built against
-it. What it owes before it is worth anyone's time: the marker gone from
-`roc-iter-map`, the `codexzig` fixed point still holding, the tier set
-unmoved, and a diff of the `unresolved type variable` markers in the ladder's
-corpus census, which is the measurement that says whether this reaches the
-other thirty-eight or only the one that found it.
+**NOT YET VERIFIED**, and deliberately filed that way. No natives were built
+against it at the time of writing. What it owes before it is worth anyone's
+time: the marker gone from `tvar-in-declared-type` and `roc-iter-map`, the
+`codexzig` fixed point still holding, the tier set unmoved, and a diff of the
+`unresolved type variable` markers in the corpus census, which is the
+measurement that says whether this reaches the other thirty-eight or only the
+two that found it.
