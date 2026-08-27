@@ -3,9 +3,14 @@
  * Replaces QEMU for development. Serial on TCP sockets, IDE from raw file.
  *
  * Usage: codex-vm.exe -kernel file.cdx [-disk file.img] [-disk2 file.img] [-mem 2048]
- *        [-data-port 12345] [-ctrl-port 12346]
+ *        [-input file] [-output file]
  *        [-watch 0x1a6f7c5] [-watch-size 8]
  *        [-headless]
+ *
+ * This banner advertised [-data-port 12345] [-ctrl-port 12346] and no revision
+ * ever parsed either. They are gone from here rather than implemented: the
+ * argument loop now refuses what it does not recognise, so leaving them would
+ * advertise two flags this program answers with exit 2.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -15180,6 +15185,19 @@ int main(int argc, char **argv) {
             } else {
                 fprintf(stderr, "Bad -natmap spec: %s (expected guestdest:hostport)\n", spec);
             }
+        }
+        /* An unrecognised flag used to fall out of this loop in silence, which
+           made a flag that does nothing indistinguishable from one that works.
+           -data-port and -ctrl-port were built into Start-VmRun's command line
+           for as long as both existed and are parsed here in no revision; the
+           guest booted with nothing on the wire, halted inside 500 ms, and four
+           harnesses read the fast exit as a failed launch. -serial and -timeout
+           sat in test-exception-handler's line the same way. Refusing names the
+           flag on its first run instead. Values are consumed by their own arm
+           above, so what reaches here is a leading '-' nothing claimed. */
+        else if (argv[i][0] == '-') {
+            fprintf(stderr, "codex-vm: unrecognised argument '%s'\n", argv[i]);
+            return 2;
         }
     }
     if (!kernel) {

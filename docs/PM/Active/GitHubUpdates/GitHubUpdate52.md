@@ -19,9 +19,11 @@ re-measured at the release head, not carried forward (L-COUNT).
   mirror): 19963 missed `ZigEmitter.codex` and `plugs-backlog.md` to a
   missed noclobber refusal, so the pushed tree lacked the emitter fixes
   it claimed. Repaired at main 19980 (2026-08-27) with the zig arm
-  graded first; the PR closes with the NEXT mirror push, the one that
-  actually carries the emitter. The Update 51 addendum carries the full
-  correction.
+  graded first; correction push `012a9d2e` (2026-08-27, both mirrors)
+  carries the emitter, verified on the pushed tree (zig-lit-pat-text
+  present, 3315 lines against a0425e10's 3002), and the account went to
+  the PR as a comment. The Update 51 addendum carries the full
+  correction. CLOSED.
 - **COMPILER-29** (an effect op with an argument returns a pointer on
   arm64 and nothing on riscv; cause is an unlifted handler-clause lambda
   on the plug wire, COMPILER-12's declared contract) recorded at 19946,

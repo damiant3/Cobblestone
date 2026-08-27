@@ -1,0 +1,33 @@
+Chapter: InsertAtGrowRt
+
+ The input shape the corpus lacked: a list built by repeated `list-insert-at`
+ rather than by `list-push`. Both primitives fill in place when the capacity
+ allows, and both grow when it does not, but only `list-push` was doubling.
+ `list-insert-at` allocated exactly one more slot than it needed, so the very
+ next insertion found the list full again and copied it whole. n insertions
+ then cost O(n^2) bytes on an allocator that never frees, which no
+ correctness test can see because every one of those copies holds the right
+ answer.
+
+ Inserting AT the length is an append and shifts nothing, so what this
+ measures is the growth policy alone rather than the memmove beside it. The
+ count is set where the two forms part company on this bed rather than where
+ they part company in principle: thirty thousand elements asks the quadratic
+ form for about 3.6 GB, which the host granted, and the arm passed both ways
+ and measured nothing. Fifty thousand asks for about 10 GB, past what a
+ 32-bit address space can hold at all, while the doubling form still asks for
+ under a megabyte.
+
+  build-list : List Integer, Integer, Integer -> List Integer
+  build-list (acc) (i) (n) =
+   if i == n then acc
+   else build-list (list-insert-at acc (list-length acc) i) (i + 1) n
+
+  grown : Integer -> Integer
+  grown (n) =
+   let l = build-list [] 0 n
+   in list-length l + list-at l (n - 1)
+
+  opening : [Console] Nothing = act
+   print-line-uni (show (grown 50000))
+  end

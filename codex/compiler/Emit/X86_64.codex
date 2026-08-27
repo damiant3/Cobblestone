@@ -2890,9 +2890,26 @@ Section: Expression Emission
   eq-sum-is-recursive (st) (sn) (cs) =
    eq-ctors-reach st cs sn [sn] eq-rec-fuel 0 (list-length cs)
 
-  eq-recursive-message : Text -> Text
-  eq-recursive-message (sn) =
-   "Structural equality on '" & sn & "', which contains itself. This backend compares a sum by inlining a field compare per constructor, so a field at the sum's own type re-enters the inliner with the same type and the expansion does not terminate. It is refused here rather than expanded until the compiler dies. Compare the fields you mean by hand, or write a recursive equality function over the type."
+ A field at the sum's own type is compared by CALLING a synthesised helper
+ rather than by inlining another field compare, because inlining is what has
+ no correct bound: any depth limit compares only part of the value. The
+ helper's own `==` on that field reaches this same arm and emits a call to
+ itself, so the recursion happens at RUNTIME where the data terminates it.
+ `eq-helper-defs` below builds one helper per recursive sum the program
+ actually compares, and X86_64Chapter appends them to the definition list.
+
+ The name is deck-recorded, and that is load-bearing rather than tidy.
+ emit-call-to stores the TARGET NAME in cp-targets, which emit-all-defs
+ carries across a per-function __heap-restore; every other caller hands it
+ a string LITERAL, which lives in the constant pool and cannot be reclaimed.
+ This is the first COMPUTED target, so without the deck the concatenation
+ is allocated on the per-function bivy, freed the moment the function is
+ done, and the patch pass reads a name out of reclaimed heap. Measured
+ 2026-08-27: it surfaced as `CDX2040: Unresolved call to` followed by
+ mojibake, and with the helper emitted as well it crashed the compiler.
+
+  eq-helper-name : Text -> Text
+  eq-helper-name (sn) = deck-record ("__eq_" & sn)
 
   emit-eq-op : CodegenState, Integer, Integer, CodexType -> EmitResult
   emit-eq-op (st) (l-reg) (r-reg) (ty) =
@@ -2902,10 +2919,7 @@ Section: Expression Emission
     is RealTy (rw) (rm) -> emit-num-comparison st cc-e l-reg r-reg
     is SumTy (sn) (args) (cs) ->
      if eq-sum-is-recursive st (sn.value) cs
-     then EmitResult {
-      state = st-add-error st cdx-recursive-structural-eq (eq-recursive-message (sn.value)) synthetic-span,
-      reg = __narrow l-reg
-     }
+     then emit-helper-call-2-regs st l-reg r-reg (eq-helper-name (sn.value))
      else let type-args = (when ty
       is ConstructedTy (cn) (ca) -> ca
       is otherwise -> eq-empty-type-args)
@@ -2925,15 +2939,12 @@ Section: Expression Emission
      }
     is RealTy (rw) (rm) -> emit-num-comparison st cc-ne l-reg r-reg
     is SumTy (sn) (args) (cs) ->
-     if eq-sum-is-recursive st (sn.value) cs
-     then EmitResult {
-      state = st-add-error st cdx-recursive-structural-eq (eq-recursive-message (sn.value)) synthetic-span,
-      reg = __narrow l-reg
-     }
-     else let type-args = (when ty
-      is ConstructedTy (cn) (ca) -> ca
-      is otherwise -> eq-empty-type-args)
-     in let eq-result = emit-sum-structural-eq st l-reg r-reg cs type-args
+     let eq-result = (if eq-sum-is-recursive st (sn.value) cs
+      then emit-helper-call-2-regs st l-reg r-reg (eq-helper-name (sn.value))
+      else let type-args = (when ty
+       is ConstructedTy (cn) (ca) -> ca
+       is otherwise -> eq-empty-type-args)
+      in emit-sum-structural-eq st l-reg r-reg cs type-args)
      in let rd = alloc-temp (eq-result.state)
      in EmitResult {
       state = st-append-code (rd.state) (cmp-ri (eq-result.reg) 0 & setcc cc-e (rd.reg) & movzx-byte-self (rd.reg)),
@@ -3047,6 +3058,229 @@ Section: Expression Emission
   patch-eq-jumps (st) (patches) (i) =
    if i == list-length patches then st
    else patch-eq-jumps (patch-jmp-at st (list-at patches i) (st.code-len)) patches (i + 1)
+
+Section: Recursive Structural Equality Helpers
+
+ A helper is an ordinary two-parameter definition emitted through
+ emit-all-defs, so it inherits the standard frame, and the SysV argument
+ registers it binds are the same rdi and rsi emit-helper-call-2-regs loads.
+ That is why no calling-convention code appears here.
+
+ A field declared at a TYPE PARAMETER is compared by POINTER, which is what
+ the inlining path already does when the comparison site carries no type
+ arguments to substitute, and what the wasm plug does. It is not exact
+ structural equality for a generic recursive sum instantiated at Text; that
+ shape refused to compile at all before this, so it is a new answer rather
+ than a changed one.
+
+  EqHelperReq = record {
+   eq-sum-name : Text,
+   eq-sum-ty : CodexType,
+   eq-sum-ctors : List SumCtor
+  }
+
+  eq-req-has : List EqHelperReq, Text, Integer -> Boolean
+  eq-req-has (xs) (n) (i) =
+   if i >= list-length xs then False
+   else if ((list-at xs i).eq-sum-name) == n then True
+   else eq-req-has xs n (i + 1)
+
+ A comparison at a NON-recursive sum still descends: emit-sum-fields-eq calls
+ emit-eq-op again on each field, so a non-recursive sum holding a recursive
+ one reaches the helper arm too and needs that helper synthesised. Following
+ only the eq SITES misses it, and the miss is a call to a function nobody
+ emitted. So the walk mirrors the inliner exactly -- push a req at a
+ recursive sum and stop, descend through a non-recursive one -- and the
+ descent terminates because non-recursive means it cannot reach itself.
+ The fuel is the same bound eq-sum-is-recursive carries and exists for a
+ malformed type graph, not for this walk.
+
+  eq-note-site : CodegenState, CodexType, List EqHelperReq, Integer -> List EqHelperReq
+  eq-note-site (st) (ty) (acc) (fuel) =
+   if fuel <= 0 then acc
+   else let resolved = strip-unit-ty (resolve-to-sum-with-defs st ty)
+   in when resolved
+    is SumTy (sn) (args) (cs) ->
+     if eq-sum-is-recursive st (sn.value) cs
+     then (if eq-req-has acc (sn.value) 0 then acc
+      else list-push acc (deck-record (EqHelperReq {
+        eq-sum-name = sn.value,
+        eq-sum-ty = resolved,
+        eq-sum-ctors = cs
+       })))
+     else eq-site-ctors st cs 0 acc (fuel - 1)
+    is otherwise -> acc
+
+  eq-site-ctors : CodegenState, List SumCtor, Integer, List EqHelperReq, Integer -> List EqHelperReq
+  eq-site-ctors (st) (cs) (i) (acc) (fuel) =
+   if i >= list-length cs then acc
+   else eq-site-ctors st cs (i + 1) (eq-site-fields st ((list-at cs i).fields) 0 acc fuel) fuel
+
+  eq-site-fields : CodegenState, List CodexType, Integer, List EqHelperReq, Integer -> List EqHelperReq
+  eq-site-fields (st) (fs) (i) (acc) (fuel) =
+   if i >= list-length fs then acc
+   else eq-site-fields st fs (i + 1) (eq-note-site st (list-at fs i) acc fuel) fuel
+
+  eq-note-type : CodegenState, CodexType, List EqHelperReq -> List EqHelperReq
+  eq-note-type (st) (ty) (acc) = eq-note-site st ty acc eq-rec-fuel
+
+  eq-op-is-equality : IRBinaryOp -> Boolean
+  eq-op-is-equality (op) =
+   when op
+    is IrEq | IrNotEq -> True
+    is otherwise -> False
+
+  eq-collect-expr : CodegenState, IRExpr, List EqHelperReq -> List EqHelperReq
+  eq-collect-expr (st) (e) (acc) =
+   when e
+    is IrIntLit (n) (sp) | IrNumLit (n) (sp) -> acc
+    is IrTextLit (s) (sp) -> acc
+    is IrBoolLit (b) (sp) | IrCharLit (c) (sp) -> acc
+    is IrName (n) (ty) (sp) -> acc
+    is IrError (m) (ty) (sp) -> acc
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     let noted = if eq-op-is-equality op then eq-note-type st (ir-expr-type l) acc else acc
+     in eq-collect-expr st r (eq-collect-expr st l noted)
+    is IrNegate (x) (ty) (sp) -> eq-collect-expr st x acc
+    is IrIf (c) (t) (el) (ty) (sp) -> eq-collect-expr st el (eq-collect-expr st t (eq-collect-expr st c acc))
+    is IrLet (n) (ty) (v) (b) (sp) -> eq-collect-expr st b (eq-collect-expr st v acc)
+    is IrApply (f) (a) (ty) (sp) -> eq-collect-expr st a (eq-collect-expr st f acc)
+    is IrLambda (ps) (body) (ty) (sp) -> eq-collect-expr st body acc
+    is IrList (es) (ty) (sp) -> eq-collect-expr-list st es 0 acc
+    is IrMatch (sc) (bs) (ty) (sp) -> eq-collect-branches st bs 0 (eq-collect-expr st sc acc)
+    is IrAct (ss) (ty) (sp) -> eq-collect-stmts st ss 0 acc
+    is IrHandle (eff) (h) (cs) (ty) (sp) -> eq-collect-clauses st cs 0 (eq-collect-expr st h acc)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> eq-collect-expr st body acc
+    is IrRecord (n) (fs) (ty) (sp) -> eq-collect-fields st fs 0 acc
+    is IrFieldAccess (r) (f) (ty) (sp) -> eq-collect-expr st r acc
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> eq-collect-expr st v (eq-collect-expr st r acc)
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> eq-collect-stmts st fail 0 (eq-collect-stmts st fb 0 (eq-collect-stmts st body 0 acc))
+    is IrFork (b) (ty) (sp) -> eq-collect-expr st b acc
+    is IrAwait (t) (ty) (sp) -> eq-collect-expr st t acc
+
+  eq-collect-expr-list : CodegenState, List IRExpr, Integer, List EqHelperReq -> List EqHelperReq
+  eq-collect-expr-list (st) (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else eq-collect-expr-list st xs (i + 1) (eq-collect-expr st (list-at xs i) acc)
+
+  eq-collect-branches : CodegenState, List IRBranch, Integer, List EqHelperReq -> List EqHelperReq
+  eq-collect-branches (st) (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else let b = list-at xs i
+   in eq-collect-branches st xs (i + 1) (eq-collect-expr st (b.guard) (eq-collect-expr st (b.body) acc))
+
+  eq-collect-clauses : CodegenState, List IRHandleClause, Integer, List EqHelperReq -> List EqHelperReq
+  eq-collect-clauses (st) (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else eq-collect-clauses st xs (i + 1) (eq-collect-expr st ((list-at xs i).body) acc)
+
+  eq-collect-fields : CodegenState, List IRFieldVal, Integer, List EqHelperReq -> List EqHelperReq
+  eq-collect-fields (st) (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else eq-collect-fields st xs (i + 1) (eq-collect-expr st ((list-at xs i).value) acc)
+
+  eq-collect-stmts : CodegenState, List IRActStmt, Integer, List EqHelperReq -> List EqHelperReq
+  eq-collect-stmts (st) (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else eq-collect-stmts st xs (i + 1) (eq-collect-expr st (ir-act-stmt-expr (list-at xs i)) acc)
+
+  eq-collect-defs : CodegenState, List IRDef, Integer, List EqHelperReq -> List EqHelperReq
+  eq-collect-defs (st) (ds) (i) (acc) =
+   if i >= list-length ds then acc
+   else eq-collect-defs st ds (i + 1) (eq-collect-expr st ((list-at ds i).body) acc)
+
+ The closure is a worklist and not a recursion: a helper's own body compares
+ the fields of its constructors, and a field at ANOTHER recursive sum needs
+ that sum's helper too. Indexing forward over a list that grows as it is
+ walked visits every entry appended by an earlier one, and eq-req-has keeps
+ it finite by refusing a duplicate, so mutual recursion terminates.
+
+  eq-close-reqs : CodegenState, List EqHelperReq, Integer -> List EqHelperReq
+  eq-close-reqs (st) (reqs) (i) =
+   if i >= list-length reqs then reqs
+   else eq-close-reqs st (eq-site-ctors st ((list-at reqs i).eq-sum-ctors) 0 reqs eq-rec-fuel) (i + 1)
+
+  eq-helper-var : Text, Integer -> Text
+  eq-helper-var (prefix) (i) = prefix & show i
+
+  eq-helper-field-pats : List CodexType, Text, Integer, Integer, List IRPat -> List IRPat
+  eq-helper-field-pats (fs) (prefix) (i) (n) (acc) =
+   if i >= n then acc
+   else eq-helper-field-pats fs prefix (i + 1) n (list-push acc (deck-record (IrVarPat (eq-helper-var prefix i) (list-at fs i) synthetic-span)))
+
+  eq-helper-true : IRExpr
+  eq-helper-true = deck-record (IrBoolLit True synthetic-span)
+
+  eq-helper-field-conj : List CodexType, Integer, Integer -> IRExpr
+  eq-helper-field-conj (fs) (i) (n) =
+   if i >= n then eq-helper-true
+   else let fty = list-at fs i
+   in let lhs = deck-record (IrName (eq-helper-var "__eqx" i) fty synthetic-span)
+   in let rhs = deck-record (IrName (eq-helper-var "__eqy" i) fty synthetic-span)
+   in let one = deck-record (IrBinary IrEq lhs rhs BooleanTy synthetic-span)
+   in if i + 1 >= n then one
+   else deck-record (IrBinary IrAnd one (eq-helper-field-conj fs (i + 1) n) BooleanTy synthetic-span)
+
+  eq-helper-inner : Text, List CodexType, CodexType -> IRExpr
+  eq-helper-inner (cn) (fs) (sty) =
+   deck-record (IrMatch (deck-record (IrName "__eqb" sty synthetic-span)) [
+     deck-record (IRBranch {
+      pattern = deck-record (IrCtorPat cn (eq-helper-field-pats fs "__eqy" 0 (list-length fs) []) sty synthetic-span),
+      body = eq-helper-field-conj fs 0 (list-length fs),
+      guard = eq-helper-true,
+      span = synthetic-span,
+      alt-group = 0 - 1
+     }),
+     deck-record (IRBranch {
+      pattern = deck-record (IrWildPat synthetic-span),
+      body = deck-record (IrBoolLit False synthetic-span),
+      guard = eq-helper-true,
+      span = synthetic-span,
+      alt-group = 0 - 1
+     })
+    ] BooleanTy synthetic-span)
+
+  eq-helper-outer-branches : List SumCtor, CodexType, Integer, Integer, List IRBranch -> List IRBranch
+  eq-helper-outer-branches (cs) (sty) (i) (n) (acc) =
+   if i >= n then acc
+   else let c = list-at cs i
+   in let cn = (c.name).value
+   in let fs = c.fields
+   in eq-helper-outer-branches cs sty (i + 1) n (list-push acc (deck-record (IRBranch {
+     pattern = deck-record (IrCtorPat cn (eq-helper-field-pats fs "__eqx" 0 (list-length fs) []) sty synthetic-span),
+     body = eq-helper-inner cn fs sty,
+     guard = eq-helper-true,
+     span = synthetic-span,
+     alt-group = 0 - 1
+    })))
+
+  eq-helper-def : EqHelperReq -> IRDef
+  eq-helper-def (req) =
+   let sty = req.eq-sum-ty
+   in let cs = req.eq-sum-ctors
+   in deck-record (IRDef {
+    name = eq-helper-name (req.eq-sum-name),
+    params = [
+      deck-record (IRParam { name = "__eqa", type-val = sty, span = synthetic-span }),
+      deck-record (IRParam { name = "__eqb", type-val = sty, span = synthetic-span })
+     ],
+    type-val = BooleanTy,
+    body = deck-record (IrMatch (deck-record (IrName "__eqa" sty synthetic-span)) (eq-helper-outer-branches cs sty 0 (list-length cs) []) BooleanTy synthetic-span),
+    chapter-slug = "",
+    is-punctual = False,
+    wcet-budget = 0,
+    unique-params = [],
+    span = synthetic-span
+   })
+
+  eq-helper-defs-acc : List EqHelperReq, Integer, List IRDef -> List IRDef
+  eq-helper-defs-acc (reqs) (i) (acc) =
+   if i >= list-length reqs then acc
+   else eq-helper-defs-acc reqs (i + 1) (list-push acc (eq-helper-def (list-at reqs i)))
+
+  eq-helper-defs : CodegenState, List IRDef -> List IRDef
+  eq-helper-defs (st) (ds) =
+   eq-helper-defs-acc (eq-close-reqs st (eq-collect-defs st ds 0 []) 0) 0 []
 
  `cmp` orders IEEE-754 bit patterns correctly for two non-negatives and for
  mixed signs, and reverses for two negatives. Every caller here is expected to

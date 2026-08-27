@@ -1,0 +1,20 @@
+Chapter: PeStdio
+
+Section: Body
+
+ The payload is the one `codex/plugs/pe/run.ps1` builds: a mode byte, then
+ four bytes of heap pages when the mode is 1, then the CDX. Mode 2 carries an
+ ARM64 wire the parser reads straight out of the buffer.
+
+  plug-emit-bytes : Integer, Integer -> [Console] Nothing
+  plug-emit-bytes (payload-buf) (payload-len) =
+   if payload-len < 2 then print-line-uni ("REFUSED short payload " & show payload-len)
+   else let mode = peek-byte payload-buf 0
+   in if mode > 2 then print-line-uni ("REFUSED unknown mode " & show mode)
+   else if mode == 1 & payload-len < 6 then print-line-uni ("REFUSED mode 1 payload " & show payload-len & " carries no heap-page count")
+   else if mode == 2 then write-binary (build-arm64-pe-from-buf payload-buf 1)
+   else let payload = __buf-read-bytes payload-buf 0 payload-len
+   in let cdx-off = if mode == 0 then 1 else 5
+   in let heap-pages = if mode == 0 then 0 else list-at payload 1 + list-at payload 2 * 256 + list-at payload 3 * 65536 + list-at payload 4 * 16777216
+   in let cdx = slice-bytes payload cdx-off payload-len
+   in write-binary (if mode == 0 then build-pe-from-cdx cdx else build-uefi-app-pe-from-cdx cdx heap-pages)

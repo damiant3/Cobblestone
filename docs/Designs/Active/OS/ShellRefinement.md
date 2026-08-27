@@ -1736,10 +1736,18 @@ guard and left the geometry.
    **FIRST UNIT LANDED: minimise to a pill, click the pill to restore.** That
    is 6.3b closed and 6.4's core, and it is deliberately the light-pane half
    -- the Clock and the Calculator, which push no mark and cost nothing to
-   leave docked. What remains for 6.4 is the FLICK (a titlebar drag whose
-   release carries velocity), the pill as its own drawing rather than a plain
-   button, the hover mini-preview through `comp-render-at`, and the decision
-   the paragraph below forces about heavy panes.
+   leave docked.
+
+   **This sentence used to list what remained and it went stale twice, and the
+   second time it misrouted the commander** (2026-08-27): it still named the
+   pill's own drawing, which landed at 19742 two paragraphs up, and the flick,
+   which landed at 20078 in the section below. red read it and dispatched this
+   lane to build a shipped gesture. **A "what remains" list written beside the
+   work it describes is a summary of a register, and it rots the way every
+   summary in this project has rotted.** What remains lives in ONE place now:
+   the task-frame stage table below for the campaign, and "WHAT IS STILL OPEN
+   IN 6.4" at the end of the flick section for this stage. This paragraph
+   records only what it was for: the light-pane half of docking, closed.
 
    **So 6.4 is not refused, and it carries an obligation.** Docking heavy
    panes is affordable at the depth the desk allows. What 6.4 must not do is
@@ -1749,6 +1757,205 @@ guard and left the geometry.
    above it go. The arm for whichever is chosen is this table re-run, because
    the control and the stranded row are what a "docking is cheap" claim would
    have to move.
+
+   ### THE TASK FRAME, and its four stages, which were written down nowhere
+
+   Damian, 2026-08-27: *"the task bar, as it was, is now more of a task frame.
+   the whole edge of the OS should be dockable like that, with the bottom
+   being the default placement."* Four stages:
+
+   | | stage | state |
+   |---|---|---|
+   | 1 | the band docks to any edge | landed, main 20024 |
+   | 2 | the flick | this section |
+   | 3 | hot-launch pills | not started |
+   | 4 | the Cobblestone button's position | not started |
+
+   **That list existed only in one session's head until now, and recovering
+   it after that session was evicted cost a transcript dig.** A CL description
+   saying "stage 1 of four" names a denominator no register carries, which is
+   L-ADJECTIVE's second half wearing a number: the count was accurate and told
+   nobody what the other three were. A stage list goes in the design before
+   the first stage ships.
+
+   ### 6.4 THE FLICK: DONE, val 2026-08-27
+
+   **The discriminator is the follow-through, not the release velocity, and
+   that is a correction to what this section said above.** 6.4 was written as
+   "a titlebar drag whose release carries velocity: direction from the
+   dominant axis, magnitude past a threshold". Damian's own statement of it is
+   narrower and better: *"a drag for moving purposes usually stops after the
+   mouse up but a flick follows through in the direction of the edge to which
+   the windowpill should be attached."* Release speed alone throws away a
+   window somebody was placing briskly. Follow-through alone fires on the
+   commonest thing a hand does after dropping a window. Both halves are asked.
+
+   The drag primitive was already shipped (2026-08-26), so what this stage
+   built is the reading of the release and the watch after it: a two-sample
+   velocity baseline rolled every 40 ms, a release test at 700 device pixels a
+   second, and a 300 ms window in which the pointer must travel 24 logical
+   pixels further along the dominant axis. The watch answers three states and
+   not two (L-STATES): the hand is still moving, the hand reached, the window
+   closed and this was a move.
+
+   **It ends as `desk-wnd-ev-min`, which is the dock the desk already had.**
+   All twelve windowed panes handle that event, so every one of them got the
+   gesture at once, and the pill, its icon and its click-to-restore are the
+   shipped ones. The window returns to the rectangle it was flicked from,
+   because the flick never moved it: the drag did and the release committed
+   that.
+
+   **THE DIRECTION IS MEASURED AND CURRENTLY UNSPENT, and that is the open
+   product question this stage hands back.** Every edge answers the same dock,
+   because a pill lives in the task band and the band is on one edge at a
+   time. Damian's phrase is "the edge to which the window pill should be
+   attached", which reads as though flicking left should leave the pill on the
+   left. That is a placement question -- per-edge pill strips, their hit
+   testing and their painting -- and not a re-measurement of the gesture, so
+   the edge is recorded rather than discarded.
+
+   `codex/test/apps/desk-window-flick` is the arm. It drives
+   `dk-flick-verdict` and its parts, which are the functions the step itself
+   branches on, so it is not a shadow of the step's arithmetic. Sabotage-
+   proven: collapsing the baseline to one sample takes `still moving` red and
+   leaves the `stopped` control alone. **The predicted failure was the
+   opposite one** -- a one-deep baseline was expected to call a stopped hand
+   fast, and what it actually does is report a 0 ms interval that
+   `dk-flick-fast` refuses, killing the gesture rather than making it
+   trigger-happy (L-SABOTAGE). A suite with only the negative arm would have
+   scored a deleted gesture as a pass.
+
+   `Animation.codex` is still cited by nothing: the dock is instant.
+
+   ### WHAT IS STILL OPEN IN 6.4
+
+   **This list is the only one. Do not restate it beside the code it
+   describes** -- the paragraph that used to do that is the reason red
+   dispatched this lane to build the flick after the flick had shipped.
+
+   | item | state |
+   |---|---|
+   | the flick gesture | **DONE, main 20078** |
+   | the pill as its own drawing | **DONE, main 19742** |
+   | click-to-restore | **DONE**, and double-click to toggle at main 20105 |
+   | the hover mini-preview | **RULED, see below.** The app decides; the default is a mini-render of the whole window, floating by the pill |
+   | whether a flick's DIRECTION picks the edge the pill attaches to | **RULED: YES. The direction IS the selection criterion.** Needs per-edge pill strips |
+   | the heavy-pane stranding decision | Damian-gated, the table above is its arm |
+
+   ### DAMIAN RULED TWO OF THESE, 2026-08-27, and both change the shape
+
+   **THE FLICK'S DIRECTION IS THE SELECTION CRITERION.** In his words: *"yes
+   on the flick direction is the selection criterion."* So a flick left docks
+   the pill to the left edge, and the band is no longer one strip on one edge
+   with every pill in it. That is the per-edge pill strip this table has been
+   naming as a cost, and it is now the work rather than a caveat. What it
+   forces, stated so the next session does not re-derive it: a docked window's
+   edge becomes a per-window fact rather than a property of the band, so it
+   belongs in the window's own registry entry beside its rectangle, and
+   `dk-task-edge` stops being the only answer to "where does a pill live".
+
+   #### 6.7 Per-edge pill strips. THE STAGE LIST, written before stage 1 ships
+
+   A stage list goes in the design BEFORE the first stage lands. The task
+   frame's did not, three of its four stages existed only in one session, and
+   recovering them cost a dig through an evicted transcript. Not again.
+
+   **What is already built and must not be rebuilt.** `dk-flick-edge` already
+   computes the direction from the release vector and `dk-flick-arm` already
+   stores it in `dk-flick-dir-cell`. **The direction is measured and unspent**
+   -- every flick today reaches `desk-wnd-ev-min` and lands in the one band,
+   because a pill lives in the task band and the band is on one edge at a
+   time. So this is not "measure the direction", it is "spend it".
+
+   | stage | what it is |
+   |---|---|
+   | 6.7.1 | A pill's edge is a per-app FACT. One `ds` cell holds a block of `dk-focus-max + 1` entries keyed by focus id, written at dock from `dk-flick-dir-cell`, read by the band. Nothing visible changes yet: every entry defaults to `dk-task-edge ds` and the picture is identical. **That is the point** -- it is provably inert and the arm asserts it |
+   | 6.7.2 | The band FILTERS by edge. `dk-pills` takes an edge and yields only the pills docked to it; the existing band asks for its own edge. Still one band, so still no picture change unless something writes a different edge |
+   | 6.7.3 | A pill-only strip on an edge with no main band. It appears when that edge has at least one pill and disappears when it has none, and `dk-cbox-*` must reserve for it, which is the whole cost: the content box currently subtracts the band on ONE edge |
+   | 6.7.4 | The flick writes the real edge, so the gesture connects end to end |
+
+   **Why the fact is keyed by FOCUS ID and not by registry index.** The
+   registry's order is the z order and it changes when a window is raised;
+   `dk-pills` already walks ids 0 to `dk-focus-max` rather than the registry
+   for exactly that reason, because walking the registry moved a pill out from
+   under the pointer that had just clicked it. An edge keyed by index would
+   inherit that bug; keyed by id it cannot.
+
+   **The `ds` cell is 212.** Re-measured 2026-08-27 against the definitions
+   rather than taken from the contract: cells 0 through 208 are in use and the
+   block is 256 bytes, so 212 through 252 are free, eleven cells. It is a
+   pointer, so it is allocated in `desk-run` BEFORE the base mark, for the
+   reason every other pointer cell is.
+
+   **The cost 6.7.3 has to answer, and it is not obvious.** Four edges each
+   carrying a strip is four bands' worth of content box gone. The band is
+   `dk-task-px` deep, which at 1600 is 56 device pixels; strips on all four
+   edges would take 112 from each axis. A window is three quarters of the
+   content box, so that is visible. Whether a pill-only strip should be
+   thinner than the full band -- it carries no Cobblestone button and no clock
+   -- is a question 6.7.3 must answer with a measurement rather than a
+   preference, and the arm is `desk-pane-origin`, which already asserts the
+   laid content slot against the box at all four edges.
+
+   **THE HOVER PREVIEW IS THE APP'S DECISION, WITH A DEFAULT.** In his words:
+   *"the hover preview should be decided by the app, and in default should be
+   a mini-render of the whole floating there by the pill."* This unblocks the
+   item outright and it dissolves the premise failure below rather than
+   working around it: the reason a preview could not be built was that
+   `desk-wnd-tree` answers an empty panel for the five heavy panes, and the
+   answer is that the preview is not the desk's to compute from a tree. A pane
+   supplies its own; the default, for a pane that supplies nothing, is a
+   mini-render of the whole window floating beside the pill. **The account
+   below of why the tree-based mechanism cannot work stands as the reason this
+   ruling was needed, not as a live blocker.**
+
+   ### THE HOVER PREVIEW'S PREMISE IS FALSE FOR THE FIVE PANES IT IS FOR
+
+   Established by reading, val 2026-08-27, when this was picked up as the
+   unblocked tail of 6.4. **6.4 says a bubble is "the window's own tree
+   rendered into a small rect at scale 1, live rather than a snapshot", and
+   `comp-render-at` is what makes it cheap. The five heavy panes have no
+   tree.** `desk-wnd-tree`'s first arm is
+
+       if fid == desk-focus-scene | fid == desk-focus-fish
+        | fid == desk-focus-bro | fid == desk-focus-files
+        | fid == desk-focus-edit then widget-panel "scene-body" DirColumn 0 []
+
+   an EMPTY panel, and `desk-wnd-over` is the only other thing the shared
+   painter calls, which answers 0 for everything except the launcher's icons.
+   So Files, the Browser, the 3D view, the Aquarium and the Editor paint their
+   content from their own step while focused, and nothing the desk can call
+   reproduces it. A preview built as designed renders an empty box for exactly
+   the five panes a preview is worth having, and a correct-looking one for the
+   Calculator, the Clock and the Console.
+
+   This is not a new fact about those panes -- this file already says Files and
+   the Editor draw directly with zero `comp-render` sites, one section up. What
+   is new is that 6.4's preview mechanism was specified without it, so the item
+   as written cannot be built. **It is recorded rather than half-built**: a
+   bubble that works for the Calculator and is blank for Files is a demo, and
+   it would have been shipped as the item and closed.
+
+   **What a real preview would need, so the next attempt starts from here.**
+   Either the heavy panes gain a tree, which is a per-pane rewrite and much
+   larger than a preview; or the desk keeps a SNAPSHOT of each heavy window's
+   pixels taken when it was last painted, which contradicts 6.4's "live rather
+   than a snapshot" and costs a buffer per pane; or the preview is defined as
+   chrome plus a title and an icon and does not claim to show content. The
+   third is honest, cheap and probably right, and it is a product decision
+   rather than an implementation one.
+
+   **UNMEASURED AND WORTH ONE RUN, because it falls out of the same reading.**
+   `desk-wnd-walk` paints every non-minimised window through `desk-wnd-one`,
+   and `dk-wnd-frame` fills the body with `pal-bg` before rendering the tree.
+   For a heavy pane that tree is empty, so a full repaint while a heavy window
+   is open and NOT focused should leave it a blank framed rectangle until its
+   own step runs again. Whether that is reachable in practice is not
+   established here: heavy panes bind Tab to hide, and the Browser may only
+   ever be the topmost heavy pane, so open-but-unfocused may be rare. Open two
+   heavy panes, focus the second, force a repaint and photograph the first.
+   **Do not report this as a defect before that run** -- it is a prediction
+   from reading, which is the thing L-MECHANISM says to distrust.
 
 ## Constraints on the surface that this campaign does not get to change
 

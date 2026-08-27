@@ -25,8 +25,22 @@ Section: Drain
 
 Section: Body
 
-  opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
-   let sess = net-session-new local-mac local-ip gateway-ip 49152 9114 host-ip 1000
+ The SENDER decides whether this plug stays alive, in the tag byte that rides
+ ahead of the IR. Tag 1 is one payload and exit, which is what
+ build/plug-run.ps1 sends. Tag 3 means another payload may follow: reply,
+ close, and connect again. A plug that decided for itself to wait made every
+ one-shot caller pay for the wait, 1129 ms to 3230 ms when it was measured
+ that way round. Each iteration takes its own source port because a client
+ cannot reuse one it has just closed, and serve-max is a fuel so a host that
+ stops answering cannot make this spin.
+
+  serve-max : Integer = 64
+
+  plug-tag-serve-again : Integer = 3
+
+  serve-once : Integer -> [Console, FileSystem, Network.Read, Network.Write] Integer
+  serve-once (i) =
+   let sess = net-session-new local-mac local-ip gateway-ip (49152 + i) 9114 host-ip 1000
    in let ts = transport-new sess
    in act
     ts1 <- net-io-connect ts
@@ -39,8 +53,29 @@ Section: Body
       sent <- net-io-send-text-checked (recv.transport) output
       ts3 <- net-io-close (sent.ns-transport)
       drained <- drain-wait ts3 0
-      if sent.ns-complete then print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
-      else print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " of " & show (text-length output) & " defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
+      if sent.ns-complete then act
+        (print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained)))
+        (if recv.tag == plug-tag-serve-again then 1 else 0)
+      end
+      else act
+        (print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " of " & show (text-length output) & " defs=" & show (list-length ((parsed.chapter).defs) + drained - drained)))
+        0
+      end
      end
-    else print-line-uni "FAIL"
+    else act
+      (print-line-uni "FAIL")
+      0
+    end
    end
+
+  serve-loop : Integer -> [Console, FileSystem, Network.Read, Network.Write] Nothing
+  serve-loop (i) =
+   if i >= serve-max then print-line-uni ("SERVED " & show i)
+   else act
+    again <- serve-once i
+    if again == 1 then serve-loop (i + 1)
+    else print-line-uni ("SERVED " & show (i + 1))
+   end
+
+  opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
+   serve-loop 0

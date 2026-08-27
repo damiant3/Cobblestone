@@ -1,8 +1,9 @@
 # Run the JavaScript plug over a Codex source file via TCP.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)] [string]$Src,
-    [Parameter(Mandatory=$true)] [string]$Out
+    [string]$Src,
+    [Parameter(Mandatory=$true)] [string]$Out,
+    [string]$Ir
 )
 
 Set-StrictMode -Version Latest
@@ -22,15 +23,31 @@ if (-not (Test-Path -PathType Leaf $PlugCdx)) {
     exit 2
 }
 
-# -- Phase 1: Codex source -> IR text --------------------------------
-$compileScript = Join-Path $Repo 'build\compile.ps1'
+# -- Phase 1: obtain IR text -----------------------------------------
+# Either consume a pre-built IR file (-Ir) or compile -Src here, the shape
+# codex/plugs/csharp/run.ps1 already carries. A fan-out over several plugs
+# compiles the same source once and hands every plug the same bytes.
+#
 # text-plug: js-try-builtin dispatches on the CALL NAME, so a pass that
 # substitutes a body and deletes the call is an interception the emitter never
-# gets to make. See text-plug-ir-pipeline in Passes.codex.
-& pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug'
-if ($LASTEXITCODE -ne 0) {
-    [Console]::Error.WriteLine("FAIL: IR emit step exited $LASTEXITCODE; see $LogFile")
-    exit 3
+# gets to make. See text-plug-ir-pipeline in Passes.codex. A caller supplying
+# -Ir owes those flags.
+if ($Ir) {
+    if (-not (Test-Path -PathType Leaf $Ir)) {
+        [Console]::Error.WriteLine("MISSING: -Ir $Ir")
+        exit 3
+    }
+    $IrFile = (Resolve-Path $Ir).Path
+} elseif ($Src) {
+    $compileScript = Join-Path $Repo 'build\compile.ps1'
+    & pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug'
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("FAIL: IR emit step exited $LASTEXITCODE; see $LogFile")
+        exit 3
+    }
+} else {
+    [Console]::Error.WriteLine("FAIL: provide -Src <source.codex> or -Ir <prebuilt.ir>")
+    exit 1
 }
 $irBytes = [System.IO.File]::ReadAllBytes($IrFile)
 Write-Host "[js-run] IR: $($irBytes.Length) bytes"

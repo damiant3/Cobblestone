@@ -122,7 +122,10 @@ foreach ($f in 'prism-offline.html', 'mosaic.svg') {
     $gone = Join-Path $dst $f
     if (Test-Path -PathType Leaf $gone) { Remove-Item $gone -Force; Write-Host "[landing] retired $f" }
 }
-foreach ($f in 'javascript-stdio.wasm', 'csharp-stdio.wasm', 'evidence-stdio.wasm') {
+foreach ($f in 'javascript-stdio.wasm', 'csharp-stdio.wasm', 'evidence-stdio.wasm',
+           'python-stdio.wasm', 'typescript-stdio.wasm', 'zig-stdio.wasm', 'html-stdio.wasm',
+           'react-stdio.wasm', 'vue-stdio.wasm', 'swiftui-stdio.wasm', 'winforms-stdio.wasm',
+           'pe-bytes.wasm', 'img-bytes.wasm') {
     $from = Join-Path $pageSrc $f
     if (Test-Path -PathType Leaf $from) { Copy-Item $from (Join-Path $dst $f) -Force }
     else { Write-Host "[landing] note: $f absent; that lens stays dark" }

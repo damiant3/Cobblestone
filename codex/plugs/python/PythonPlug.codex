@@ -27,8 +27,32 @@ Section: Drain
 
 Section: Body
 
-  opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
-   let sess = net-session-new local-mac local-ip gateway-ip 49152 9131 host-ip 1000
+ The SENDER decides whether this plug stays alive, and it says so in the tag
+ byte that already rides ahead of the IR. Tag 1 is one payload and exit, which
+ is what build/plug-run.ps1 sends and what every existing caller therefore
+ keeps. Tag 3 means another payload may follow: reply, close, and connect
+ again for the next one.
+
+ It has to be the sender's call. A plug that decided for itself to wait for
+ more work made every one-shot caller pay for the wait: measured 2026-08-27,
+ the same program through run.ps1 went 1129 ms to 3230 ms, because after the
+ first reply the guest kept trying to reach a listener plug-run.ps1 had
+ already stopped and burned its retry budget before giving up.
+
+ Each iteration opens its own session on its own source port. A client cannot
+ reuse a port it has just closed, and the counter is the cheapest thing that
+ is different every time.
+
+ serve-max is a fuel, not a protocol limit. A host that stops answering
+ cannot make this spin: the plug exits and the pool boots another.
+
+  serve-max : Integer = 64
+
+  plug-tag-serve-again : Integer = 3
+
+  serve-once : Integer -> [Console, FileSystem, Network.Read, Network.Write] Integer
+  serve-once (i) =
+   let sess = net-session-new local-mac local-ip gateway-ip (49152 + i) 9131 host-ip 1000
    in let ts = transport-new sess
    in act
     ts1 <- net-io-connect ts
@@ -41,8 +65,29 @@ Section: Body
       sent <- net-io-send-text-checked (recv.transport) output
       ts3 <- net-io-close (sent.ns-transport)
       drained <- drain-wait ts3 0
-      if sent.ns-complete then print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
-      else print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " of " & show (text-length output) & " defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
+      if sent.ns-complete then act
+        (print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained)))
+        (if recv.tag == plug-tag-serve-again then 1 else 0)
+      end
+      else act
+        (print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " of " & show (text-length output) & " defs=" & show (list-length ((parsed.chapter).defs) + drained - drained)))
+        0
+      end
      end
-    else print-line-uni "FAIL"
+    else act
+      (print-line-uni "FAIL")
+      0
+    end
    end
+
+  serve-loop : Integer -> [Console, FileSystem, Network.Read, Network.Write] Nothing
+  serve-loop (i) =
+   if i >= serve-max then print-line-uni ("SERVED " & show i)
+   else act
+    again <- serve-once i
+    if again == 1 then serve-loop (i + 1)
+    else print-line-uni ("SERVED " & show (i + 1))
+   end
+
+  opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
+   serve-loop 0

@@ -182,6 +182,65 @@ branches (gitlab once kept a stale `master` alongside `main`);
 `git push <remote> --delete <branch>` removes one. A force-push cannot
 un-serve bytes already cloned or cached by GitHub or GitLab.
 
+## The website mirror: CobblestoneWeb
+
+github.com/damiant3/CobblestoneWeb serves the landing site through GitHub
+Pages at https://damiant3.github.io/CobblestoneWeb/ (Settings > Pages:
+branch master, folder `/`). It is a PUBLISHED ARTIFACT, not a source
+tree: everything in it is assembled by `apps/landing/build.ps1` from
+`LandingPage.codex` and the wasm plug, and its README says so. Edit in
+the depot, rebuild, republish; a hand edit there is overwritten by the
+next publish.
+
+**Pushes here are independent of the code mirrors, in both directions
+(Damian, 2026-08-27).** The site may publish before the code that builds
+it reaches github/gitlab, or after; nothing in the bundle references the
+code repo at runtime, so neither order can break the other. Keep
+provenance instead of coupling: name the seed the bundle was built from
+in the commit message.
+
+The working copy is `D:\Projects\CobblestoneWeb` (git, remote `origin`,
+branch master; the root `index.html` is a redirect to `landing.html` and
+stays). **The root `CNAME` file is the custom domain
+(cobblestoneproject.com, DNS on Damian's Cloudflare account, records
+DNS-only so GitHub's cert provisioning can see the domain) and must
+survive every republish** -- the robocopy in step 5 does not delete it,
+but do not "clean" it away either: deleting it detaches the domain and
+the site falls back to the github.io URL.
+
+The update procedure:
+
+1. `p4 edit apps/landing/web/landing.html
+   apps/landing/web/compile/prism.html`. Both are tracked build outputs;
+   against read-only files the build fails with "Access to the path ...
+   is denied" (measured 2026-08-27).
+2. **Rebuild the plugs the assembly rides before trusting it.** Both
+   staleness failures happened on the first assembly, same day: an
+   8-day-old wasm-plug binary died OUT OF MEMORY on compiler-scale IR
+   (the fixes were in source, not in the binary it was graded through),
+   and an 11-day html plug emitted a `landing.html` that differed from
+   the fleet-built depot copy. `codex/plugs/wasm/build.ps1` and
+   `codex/plugs/html/build.ps1` are the rebuilds.
+3. `apps/landing/build.ps1` assembles `web/` whole.
+4. **Compare the regenerated tracked artifacts against the depot before
+   landing or shipping them, and take the better one per file.** The
+   stdio lens modules (`javascript-stdio.wasm`, `csharp-stdio.wasm`,
+   `evidence-stdio.wasm`) exist only where they were built; a box
+   without them assembles a Prism with those lenses dark, 365 KB
+   smaller, and shipping that over a lens-carrying depot copy is a
+   regression that reads as a rebuild. On 2026-08-27 the depot copies
+   won on both counts: `p4 revert` restored them and only the untracked
+   `compile/` pieces shipped fresh.
+5. `robocopy apps\landing\web D:\Projects\CobblestoneWeb /E /XF
+   *.landing-save`, then in `D:\Projects\CobblestoneWeb`: `git add -A`,
+   commit as damiant naming the seed, `git push origin master`.
+6. The Pages deploy takes a minute or two. Verify with a request, not by
+   assumption: `landing.html` and `compile/prism.html` both answer 200.
+
+The secret-scan discipline above applies to this push like any other.
+The bundle ships the compiler's own source (`compile/Codex.codex`) by
+design: the self-compile page eats it.
+
 ## Before a RELEASE push (not on routine mirror updates)
 
 - Poison build passes (uninitialized-field safety). Damian's call; it needs

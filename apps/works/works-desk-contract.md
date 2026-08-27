@@ -499,8 +499,18 @@ first two cells of the second half.
 | 160 | `dk-size-w0-cell` | its width at grab time |
 | 164 | `dk-size-h0-cell` | its height at grab time. **The rect at grab time and not the current one**: the step rewrites the block every sample, so computing from the live rect would compound each sample onto the last and the window would run away from the pointer |
 
-**THE BLOCK GREW TO 256 BYTES ON 2026-08-26 (val), so cells 168 through 252 are
-free.** Cells 0 through 164 are taken as listed above. It grew because the
+| 168 | `dk-task-edge-cell` | which edge the task band is docked to, one of `dk-edge-bottom`/`top`/`left`/`right`. Written from settings by `dk-settings-into` |
+| 172..200 | the flick's eight cells | `dk-flick-p1`, `-t1`, `-p0`, `-t0` are the two-sample velocity baseline; `-cell` is the armed window's focus id, `-dir` the edge the release vector pointed at, `-org` the release point and `-rt` the release time |
+| 204, 208 | `dk-pillc-cell`, `dk-pillc-t-cell` | the double-click latch on a pill: which pill was last clicked and when |
+| 212 | `dk-pedge-cell` | pointer: a block of `dk-pedge-slots` (17) entries, one per focus id, holding the edge that app's pill is docked to (val, 2026-08-27, ShellRefinement 6.7.1). **Stored as the edge PLUS ONE so that zero means unwritten**, because `alloc-zeroed` hands back zeros and `dk-edge-bottom` is 0; without the offset a never-flicked app and one flicked to the bottom are the same bits. `dk-pedge-get` falls back to `dk-task-edge ds` for an unwritten or out-of-range id. Allocated by `dk-pedge-init` from `desk-run` before the base mark, for the reason every other pointer cell here is |
+
+**THE BLOCK GREW TO 256 BYTES ON 2026-08-26 (val). Cells 0 through 212 are now
+taken, so 216 through 252 are free -- nine cells.** This paragraph said "168
+through 252 are free" until 2026-08-27, which was true the day it was written
+and stopped being true within hours: `dk-task-edge-cell`, the flick's eight and
+the pill latch's two took 168 through 208 that same week and none of them added
+a row here (L-COUNT). The rows above are the re-measurement, taken from the
+definitions rather than from this list. It grew because the
 scheduler needs a period per pane for fourteen panes and the desk-loop rate
 counter needs three more, and the block had been full since `dk-drag-off-cell`
 took cell 124 that morning. Announce first, the way this section already asks.
@@ -533,6 +543,174 @@ leave the box. **No arm could see either version** -- the clamp did exactly what
 it was written to do and the arithmetic test agreed with both, which is why this
 rule is stated here rather than left to a test.
 
+**THE START MENU IS AN OVERLAY AND IS PAINTED LAST, AFTER THE WINDOWS** (val,
+2026-08-27). `desk-menu-draw` painted the menu through `dk-chrome-paint` and
+never walked the window registry, so opening the menu erased every open window
+from the glass. The windows were still open, still in the registry and still
+named by their pills, and nothing on the screen said so. Measured against a
+depot-built control on one mouse timeline (open the Calculator, then open the
+menu): the control paints the desktop, the menu, and the Calculator's PILL with
+the window itself absent; the fix paints the window and the menu over it. **The
+pill is what makes that pair readable, because it is the row the defect cannot
+move** -- without it the two frames differ only by a window, which a reader
+could take for a window that never opened.
+
+It is `desk-wnd-paint-all` and then a re-render of the laid `sysmenu-body`
+subtree, which is the shape `desk-wnd-band` already uses to keep the taskbar on
+top, and it inherits that shape's caveat: a bare subtree re-render draws the
+labels and not the gutter icons, so `desk-gpr-icons` and the `shutdown` icon go
+back on after it.
+
+**FRONTMOST HERE MEANS PAINTED LAST, NOT A REGISTRY ENTRY.** The rule below in
+this section, that the system menu shares the launcher's block and must not be
+given a `desk-wnd-blk` arm, is unchanged and is what keeps it out of `dk-wr`.
+
+**AND ONE LAYOUT SERVES BOTH THE PAINT AND THE HIT.** `dk-menu-laid` is that
+one call; `desk-menu-draw` and `dk-menu-hit` both take it. The two were already
+the same expression written out twice, which is the drift this file names for
+the Issues table, one menu over.
+
+**THE BAND DOCKS TO AN EDGE, AND THE CONTENT BOX IS THE ONLY THING THAT HAD TO
+LEARN IT** (val, 2026-08-27). Damian: the task bar is now more of a task frame,
+the whole edge of the OS should be dockable, bottom being the default. The edge
+is `dk-task-edge-cell` (168) and a persisted setting; `desk-chrome-face` places
+the band per edge and `desk-taskbar` builds a `DirRow` for a horizontal one and
+a `DirColumn` for a vertical one. Everything else follows from `dk-cbox-x/y/w/h`,
+which all four take `ds` now: every window rectangle, drag clamp, maximise and
+the 3D viewport already read the box through them, so nothing else needed to
+know where the band is. That arity change is 40 call sites in `GopDesk` and 43
+across seven test chapters, and it is the whole cost.
+
+**THE DEFAULT IS PROVEN INERT, NOT ASSUMED INERT.** An unwritten cell reads
+zero, zero is `dk-edge-bottom`, so a desk with no `SETTINGS.DAT` is what it
+always was. Measured: the bottom-edge frame differs from a depot-built
+pre-change frame in 24 rows, twelve topbar and twelve taskbar, which are the
+`it/s` readout and the clock. **Zero content rows differ.** `desk-pane-origin`'s
+first four rows are byte-identical across the change for the same reason and are
+the calibration; its four new rows set each edge and assert the laid `content`
+slot still sits inside the box, which is the row that fails if the two roads to
+"where the band is" ever disagree.
+
+**`dk-task-init` MUST MEASURE THE TREE THE CHROME PAINTS, WHICH MEANS THE
+FITTED ONE.** It measured the unfitted tree, and that was invisible while the
+band was horizontal: `comp-fit-node` only ever rewrites `wn-min-w`, so a row
+band's `wn-min-h` is identical fitted or not. A column band takes its width from
+that same `min-w`, so the constructor's eight-pixels-a-character guess became the
+band's size. With `desk-task-clock-w`'s 220 in the column that measured **464
+device pixels at 1600**; fitting the measured tree and giving the clock a zero
+width minimum on the vertical axis takes it to 280 faceless and 256 with the
+CMUNSS face loaded. The clock's 220 is a HORIZONTAL reservation for
+right-aligned text and means nothing in a column.
+
+**A CHROME LAYOUT CHANGE MUST REBUILD `root`, AND ANSWERING A SCANCODE IS THE
+PATH THAT ALREADY DOES IT.** `root` is threaded through `desk-loop` and rebuilt
+only by `desk-app-hide` and `desk-app-close`; `desk-taskbar-clock` re-renders
+the time into it once a second. Moving the band with a stale `root` paints the
+clock where the band used to be, which is the same failure section 0.5 records
+for a pill. The Appearance edge row answers `dk-sc-style`, so
+`desk-app-close-to` rebuilds `root` and re-dispatches, and the pane reopens
+where the user left it. Every other row on that pane changes colours only and
+may answer 1.
+
+**AND AN ALREADY-PLACED WINDOW DOES NOT KNOW THE BOX MOVED.** A rect is a stored
+fact, so docking the band left leaves each window where it was, UNDER the band
+rather than clipped by it -- which reads as a window that lost a strip.
+`dk-wnd-refit` pulls each one back inside on an edge change, skipping maximised
+and never-placed windows because both already derive from the box. A drag may
+leave the box on purpose and still does; an edge change is not the user moving a
+window.
+
+**THE WELCOME FRAME IS WALLPAPER WEARING WINDOW CHROME, AND THAT IS THE ONE
+THING TO KNOW BEFORE TOUCHING IT** (val, 2026-08-27, from the code review
+Damian asked for). `desk-window` paints a body, a titlebar strip and a
+"Welcome" caption straight to the framebuffer from `desk-draw`. It is not in
+`dk-wr`, it has no `desk-wnd-blk` arm, and **nothing in the tree hit-tests its
+rectangle**: the only readers of `dk-win-x`/`dk-win-y`/`dk-win-h` are two
+paint sites and, since 2026-08-27, the two arms that measure them
+(`codex/test/apps/desk-welcome-box` and `desk-welcome-scale`). So it cannot be
+focused, raised, moved, minimised or closed, and it is not a window that is
+missing its buttons -- it is the desktop's backdrop, drawn to look like one.
+
+**All four of its placement functions take `ds` and read the content box**
+(val, 2026-08-27, WORKS-52). They used to reserve the chrome themselves in the
+frame's own scale, so a band docked to the top put the frame inside the band's
+strip, and even at the bottom the frame sat 28 device pixels high at 1280x800
+because `dk-task-h * s` is not `dk-task-px`. If you add a placement function
+here, route it through `dk-cbox-*` like everything else on this desk; that is
+the rule the sidebar constant (WORKS-35) and this frame have now each paid for
+once.
+
+**It FITS at every supported geometry on both font paths, and the tightest is
+1024x768 faceless at 44 device pixels of slack** (val, 2026-08-27, measured by
+`codex/test/apps/desk-welcome-scale`). Worth knowing before adding a line to
+`dk-para-intro` or `dk-para-hint`: the body is fifteen wrapped lines and each
+one costs `dk-line-step` device pixels, so at scale 2 one more line is 36 to 52
+pixels and eats that margin whole. **When you check that, load the face at
+`dk-ui-ppem w` for the width you are checking.** It answers 16 at 1600 and
+above and 14 below, and a sweep holding one face across widths measures a
+configuration the desk never builds -- that mistake produced a published
+finding of a 34-pixel overflow at 640x480 that does not exist, retracted the
+same day. At the ppem the desk actually loads there, 640x480 needs 404 against
+a 430 box.
+
+**The hint text on it is NOT a promise it breaks, and an earlier note of mine
+said it was.** `dk-para-hint` reads "An app opens in a window you can move by
+its title bar, and close with the x", which is a true sentence about APP
+windows and says nothing about the frame it is printed on. What is real is
+the juxtaposition: a paragraph describing titlebars that drag and x's that
+close, printed inside a titlebar that does neither. That is worth knowing and
+it is not the same claim, so it is written here as the weaker one it is.
+
+The frame's geometry has three open findings from that review: **WORKS-52**
+(the vertical placement never learned the band's edge), **WORKS-53** (whether
+the scale reduction is reachable at all, which gates 54's repair) and
+**WORKS-54** (`desk-window`'s dead `s0`). Do not fix 52 before answering 53.
+
+**A SECOND CLICK ON THE SAME PILL WITHIN 400 ms PUTS THE WINDOW BACK AWAY**
+(val, 2026-08-27), which is Damian's toggle. The first click of the pair has
+already run and raised the window, so the second is what makes the gesture a
+toggle rather than a second raise. Putting it away is
+`poke dk-wnd-st-cell dk-wnd-st-min` plus `desk-app-hide`, which is the path
+the minimise button already takes and which redraws the band, hands focus down
+to whatever is still visible, and brackets its own cursor.
+
+**It is keyed on the PILL and not on the pointer.** Two clicks in time on
+different pills are two raises. The band re-lays on every raise, so a
+position-keyed test would answer yes for two different windows whose pills
+happened to fall under the same point. **The record is cleared when the pair
+fires**, so a third click is a fresh first click rather than another double
+calling the hide path on a window that is already away. Cells 204 and 208.
+
+**Double-clicking an ALREADY minimised pill restores it and puts it straight
+back**, because the first click of the pair is a real restore. That is the
+toggle behaving as specified rather than a defect, and it is what "a second
+click puts it away" means when the first click already acts.
+
+**A FLICK IS A DRAG THAT KEEPS GOING AFTER THE BUTTON COMES UP** (val,
+2026-08-27). Damian: a drag for moving purposes usually stops after the mouse
+up but a flick follows through in the direction of the edge to which the
+window pill should be attached. Both halves are load-bearing. Release speed
+alone throws away a window somebody was placing briskly; follow-through alone
+fires on the commonest thing a hand does after dropping a window, which is
+reach for something else. The gesture ends as `desk-wnd-ev-min`, so it is the
+dock the desk already had and all twelve windowed panes got it at once.
+
+**THE VELOCITY BASELINE IS TWO SAMPLES DEEP AND ONE WILL NOT DO, and the
+failure a one-deep baseline gives is the opposite of the obvious one.** The
+desk goes round about 20,000 times a second idle against a mouse's 125, so a
+baseline rolled every iteration is the release position itself; rolled on a
+timer it is degenerate whenever the release lands just after a roll. Keeping
+the previous window as well puts the measured interval between one and two
+roll periods always. Sabotaged to one deep, the expectation was that a
+stopped hand would read fast; **measured, every release reads an interval of
+0 ms, `dk-flick-fast` refuses that outright, and the whole gesture goes dead
+while the stopped-hand control stays green.** A suite carrying only the
+negative arm would have scored a deleted gesture as a pass.
+
+**A BOARD WITH NO HPET FLICKS NOTHING**, and so does a bed with a pinned
+clock. Every arm of the gesture is a speed or a deadline, so `build/desk.ps1
+-Rtc` cannot flick and a frozen-clock capture is not the instrument for it.
+
 **A PILL GOES IN THE TASKBAR TREE, NEVER PAINTED INTO THE BAND** (val,
 2026-08-25). `desk-taskbar-clock` re-renders the whole taskbar subtree once a
 second to repaint the clock, so anything drawn into that band from outside the
@@ -558,7 +736,17 @@ empty cell gives, so no arm could tell them apart. All five now allocate 128,
 which is what `desk-run` allocates. **A test that builds a `ds` builds a
 128-byte one.**
 
-**Cells 0..72 are taken: red took cell 0 for the Review pane on 2026-08-19 and val cells 64, 68 and 72 on 2026-08-21.** The block was grown to 128 bytes for those, so the next pane that needs a cell takes one of 76..124 and adds a row here rather than growing it again. Announce before you take one, the way the file claims
+**THE BLOCK IS 256 BYTES AND CELLS 0..200 ARE TAKEN. Re-measured 2026-08-27
+against `desk-run` (L-COUNT); this paragraph said 128 bytes and 0..72 for six
+days after the block had been grown.** It was 128 for red's Review cell 0
+(2026-08-19) and val's 64, 68 and 72 (2026-08-21); the grow to 256 came with
+the desk `ds` change at 19874, and 76..168 went to the taskbar band, the
+window registry, the panes, the rate counter, the resize gesture and the band
+edge. val took **172..200 for the flick on 2026-08-27** (`dk-flick-p1`,
+`dk-flick-t1`, `dk-flick-p0`, `dk-flick-t0`, `dk-flick`, `dk-flick-dir`,
+`dk-flick-org`, `dk-flick-rt`). The next pane that needs a cell takes one of
+204..252 and adds a row here rather than growing the block again. Announce
+before you take one, the way the file claims
 table in `docs/PM/CurrentPlan.md` asks. Cell 12 was taken by val on 2026-08-18
 for the focus id and cell 20 by val on 2026-08-19 for the mark stack; the count
 above said three, then two. Two agents took cell 48 independently on

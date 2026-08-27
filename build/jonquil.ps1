@@ -75,8 +75,17 @@ if (-not $IrFile) {
 
     $IrFile = Join-Path $WorkDir 'compiler.ir.log'
     $irOut  = Join-Path $WorkDir 'compiler.ir'
+    # no-lift: this arm needs the SOURCE-shaped defs, not the wire's. Since
+    # main 19558 the IR-CCE path lifts lambdas, and from 20144 IR-UNI does too
+    # so the readable dump matches what a plug receives. Lifting relocates a
+    # lambda body into its own __lam_N def, and the check below compares a
+    # def's string data against ITS OWN header -- so a self-reproducing
+    # construction hiding inside a lambda would move out from under the
+    # comparison and this tripwire would go quiet without failing. The flag
+    # rides -RawFlags rather than a switch because compile.ps1 is generated
+    # from codex/build and a hand edit there must not be submitted.
     & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'compile.ps1') `
-        -Src $Src -Out $irOut -Log $IrFile -Kernel $Kernel -IrUni | Out-Null
+        -Src $Src -Out $irOut -Log $IrFile -Kernel $Kernel -IrUni -RawFlags 'no-lift' | Out-Null
     if (-not (Test-Path -PathType Leaf $IrFile)) {
         Write-Host "jonquil: FAIL -- IR emit produced no log ($IrFile)"; exit 1
     }

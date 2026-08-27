@@ -1525,7 +1525,8 @@ Section: Module Emission
    in let dr-slug = rv-def-chapter-slug (chapter.defs) "deck-record" 0 (list-length (chapter.defs))
    in let st1f = __record-set st1e "deck-record-intrinsic" (pa-slug /= "" & pa-slug == dr-slug)
    in let st1g = __record-set st1f "has-block-driver" (rv-defs-have (chapter.defs) "vb-capacity-auto" 0 (list-length (chapter.defs)))
-   in let st2 = rv-emit-runtime st1g
+   in let st1h = __record-set st1g "ir-defs" (chapter.defs)
+   in let st2 = rv-emit-runtime st1h
    in let st2b = __record-set st2 "runtime-funcs" (list-length (st2.func-names))
    in let st3 = rv-emit-all-defs st2b (chapter.defs) 0
    in let st3w = rv-check-builtin-collisions st3 (st3.func-names) 0
@@ -1673,8 +1674,52 @@ Section: Effect Handler Emission
     is IrLambda (params) (body) (lty) (s) -> rv-flatten-lambda-body body resume-name (acc & params)
     is otherwise -> RvFlatLambda { flat-params = acc, flat-body = rv-strip-resume expr resume-name }
 
+  rv-apply-head-name : IRExpr -> Text
+  rv-apply-head-name (e) =
+   when e
+    is IrApply (f) (a) (t) (s) -> rv-apply-head-name f
+    is IrName (n) (t) (s) -> n
+    is otherwise -> ""
+
+  rv-find-ir-def : List IRDef, Text, Integer -> Integer
+  rv-find-ir-def (defs) (name) (i) =
+   if i >= list-length defs then 0 - 1
+   else if (list-at defs i).name == name then i
+   else rv-find-ir-def defs name (i + 1)
+
+ A clause that captures a local OTHER than resume arrives as a lifted def
+ carrying extra capture parameters, and a handler is installed in the
+ effect-op table and called with the operation's arguments only, so there is
+ nowhere to put them. arm64 refuses that shape by name; this fell through to
+ the inline emission below, which is the older and quieter behaviour and
+ produced a binary for a program it cannot serve. It refuses on the same
+ terms now. Not lifted at all is the ordinary clause and is untouched.
+
+  rv-add-shadow-warning : RvState, Text -> RvState
+  rv-add-shadow-warning (st) (msg) =
+   __record-set st "wcet-reports" (list-push (st.wcet-reports) msg)
+
   rv-unwrap-clause-lambda : IRExpr, Text, RvState, Text -> RvEmitResult
   rv-unwrap-clause-lambda (expr) (resume-name) (st) (op-name) =
+   let head = rv-apply-head-name expr
+   in let lifted = text-starts-with head "__lam_"
+   in let lidx = if lifted then rv-find-ir-def (st.ir-defs) head 0 else 0 - 1
+   in let lparams = if lidx >= 0 then (list-at (st.ir-defs) lidx).params else []
+   in let followable = lidx >= 0 & list-length lparams >= 1 & (list-at lparams 0).name == resume-name
+   in let st0 = if lifted & followable == False
+    then rv-add-shadow-warning st ("[UNSUPPORTED] handler clause for " & op-name & " was lifted as " & head & " and does not carry " & resume-name & " as its first capture; riscv calls a handler from a table with the operation arguments only and cannot carry a closure")
+    else st
+   in if followable
+    then rv-emit-clause-handler st0 resume-name op-name (IrLambda (rv-drop-first lparams 1 []) ((list-at (st.ir-defs) lidx).body) ErrorTy synthetic-span)
+    else rv-emit-clause-handler st0 resume-name op-name expr
+
+  rv-drop-first : List IRParam, Integer, List IRParam -> List IRParam
+  rv-drop-first (ps) (i) (acc) =
+   if i >= list-length ps then acc
+   else rv-drop-first ps (i + 1) (list-push acc (list-at ps i))
+
+  rv-emit-clause-handler : RvState, Text, Text, IRExpr -> RvEmitResult
+  rv-emit-clause-handler (st) (resume-name) (op-name) (expr) =
    when expr
     is IrLambda (params) (body) (lty) (s) ->
      let flat = rv-flatten-lambda-body expr resume-name []

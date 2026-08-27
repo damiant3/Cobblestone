@@ -56,6 +56,25 @@ If this gate is red, the release stops here. It is also what makes step 1's
 advisory: this run leaves `build/output/Sut.cdx` as the compiler the battery
 will then use.
 
+## Step 0c -- IR fidelity (did the IR carry what the checker knew?)
+
+```powershell
+build/ir-fidelity/ir-fidelity.ps1 -Grade    # ~7 s; must end "unexpected: 0"
+```
+
+Damian's ruling, 2026-08-27: this instrument runs at RELEASE, deliberately
+not in `-Internal` -- the class it catches is infrequent and a release
+catches it soon enough, so the fleet pays no standing tax (the same
+principle that puts the BVT in the standing gate and the full battery
+here). `-Grade` runs the reader self-test and the three verdict ablations
+before the real cases, so a pass means the instrument can still fail, not
+just that it agreed (L-FALSIF). Any `>>>` row or nonzero `unexpected` stops
+the release: either the compiler dropped a fact the checker computed
+(upstream defect, route to `codex/compiler/compiler-backlog.md`) or the
+wire/dump format moved under the reader (repoint the case paths, as main
+20176's lift unification required once). The instrument's own account is at
+the head of `build/ir-fidelity/ir-fidelity.ps1`.
+
 ## Step 1 -- Prove the build end to end (the battery)
 
 **`-Tier all`, and it is not optional.** A bare `build/test.ps1` runs the

@@ -25,11 +25,12 @@ Section: Compile Flags
    phase-trace : Boolean,
    wire-trace : Boolean,
    cost-report : Boolean,
+   no-lift : Boolean,
    pipeline : List Text
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, wire-trace = False, cost-report = False, pipeline = default-ir-pipeline }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, wire-trace = False, cost-report = False, no-lift = False, pipeline = default-ir-pipeline }
 
  A floor is a guard band plus a workspace, and only the workspace scales. The
  band is what the phase's write-path check reserves to stop short in, so a
@@ -435,6 +436,7 @@ Section: Frontend
   pmap-selftest-result : Integer -> DiagnosticBag
   pmap-selftest-result (r) =
    if r == 3 then bag-from-list []
+   else if r == 0 - 2 then bag-from-list [make-warning cdx-escape-violation "pmap-walk self-test SKIPPED: this host has no self type table, so there is no pointer map to walk" synthetic-span]
    else bag-from-list [make-warning cdx-escape-violation ("pmap-walk self-test FAILED: got " & show r & " (expect 3)") synthetic-span]
 
   compile-lex : Text, Integer, CompileFlags -> LexResult
@@ -1678,6 +1680,28 @@ Section: Entry Point
     print-line-uni ((format-heap-marks-wd (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "WD:PHASE-"))
    end
 
+ Both IR front doors emit the SAME IR, and this is the function that makes that
+ true. From main 19558 until 20144 emit-ir-cce lifted and emit-ir-uni did not,
+ so `-IrUni` and `-IrCce` carried different IR for the same program while
+ `-IrUni` was the only readable one. COMPILER-29's cause was recorded wrong
+ twice off an `-IrUni` dump for exactly that reason. Both call this now, so a
+ future divergence has to be written down deliberately.
+
+ `no-lift` is the deliberate exception and it has one caller, build/jonquil.ps1,
+ which needs the SOURCE-shaped defs: lifting relocates a lambda body into
+ __lam_N, and jonquil compares a def's string data against its OWN header, so a
+ self-reproducing construction hidden inside a lambda would move out from under
+ the comparison. Suppressing the lift there preserves exactly the arm that
+ shipped before this change.
+
+  lift-ir-for-emit : IRChapter, CompileFlags -> IRChapter
+  lift-ir-for-emit (ir) (flags) =
+   if flags.no-lift then ir
+   else let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
+   in let lift-base = build lift-deck-height
+   in let lift-ceiling = lift-base + lift-deck-height
+   in deck-record (lift-lambdas ir lift-ceiling)
+
   emit-ir-uni : Text, CompileFlags -> [Console] Nothing
   emit-ir-uni (source) (flags) =
    let fe = compile-frontend-ir source "Program" flags
@@ -1686,9 +1710,10 @@ Section: Entry Point
     print-codegen-error-header (bag-errors (fe.bag))
     print-bag-notices (fe.bag)
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
-    else act
+    else let lifted-ir = lift-ir-for-emit (fe.ir) flags
+     in act
      print-line-uni "IR-BEGIN"
-     print-line-uni (emit-ir-chapter (ir-prune-unreachable-roots (fe.ir) ir-emit-roots) (fe.text-meta) (fe.type-defs))
+     print-line-uni (emit-ir-chapter (ir-prune-unreachable-roots lifted-ir ir-emit-roots) (fe.text-meta) (fe.type-defs))
      print-line-uni "IR-END"
     end
     let h-post-emit = __heap-save
@@ -1710,10 +1735,7 @@ Section: Entry Point
     if flags.wire-trace then print-line-uni ("FE-DONE frontier " & integer-to-text h-pre-emit) else print-text ""
     print-codegen-error-header (bag-errors (fe.bag))
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
-    else let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
-     in let lift-base = build lift-deck-height
-     in let lift-ceiling = lift-base + lift-deck-height
-     in let lifted-ir = deck-record (lift-lambdas (fe.ir) lift-ceiling)
+    else let lifted-ir = lift-ir-for-emit (fe.ir) flags
      in let raw-defs = lifted-ir.defs
      in act
       if flags.wire-trace then ir-trace-dce-cost raw-defs 0 (list-length raw-defs) else print-text ""
@@ -1804,7 +1826,7 @@ Section: Entry Point
 
   parse-mode-flags : Text, Integer -> CompileFlags
   parse-mode-flags (mode) (unit-len) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = effective-deck-scale mode unit-len, phase-trace = has-mode-flag mode "debug", wire-trace = has-mode-flag mode "wsz", cost-report = has-mode-flag mode "cost-report", pipeline = pipeline-of mode }
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = effective-deck-scale mode unit-len, phase-trace = has-mode-flag mode "debug", wire-trace = has-mode-flag mode "wsz", cost-report = has-mode-flag mode "cost-report", no-lift = has-mode-flag mode "no-lift", pipeline = pipeline-of mode }
 
  The volume is resolved from the disk's own GPT rather than assumed to
  start at LBA 2048. That constant is only right for an image our own

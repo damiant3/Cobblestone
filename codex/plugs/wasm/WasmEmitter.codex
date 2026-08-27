@@ -738,12 +738,23 @@ Section: Constructor Equality
 
 Section: Expression Emission
 
+ 4096 is the depth at which this emitter gives up, and it refuses there
+ rather than answering. It bailed at 256 with `(i64.const 0)` until
+ 2026-08-27, which is a WRONG ANSWER and not a bound: a chain of 300 nested
+ `let`s printed 44 where x86-64 printed 300, assembling and running clean
+ with no diagnostic anywhere. `let` is what makes that reachable, because it
+ recurses without nesting its output, so wat2wasm's own parser limit (which
+ sits between 200 and 250 folded expressions) never sees it. The number is
+ chosen well above anything real: the largest program we have is the
+ compiler's own 2.9 MB source, and it self-compiles byte-identically, so
+ nothing in it reaches even the old 256.
+
   emit-wat-expr : WasmCtx, IRExpr -> Text
   emit-wat-expr (ctx) (e) = emit-wat-expr-at ctx e 0
 
   emit-wat-expr-at : WasmCtx, IRExpr, Integer -> Text
   emit-wat-expr-at (ctx) (e) (depth) =
-   if depth >= 256 then "(i64.const 0)"
+   if depth >= 4096 then "(unreachable (; wasm plug: expression nested past 4096, no form ;))"
    else when e
     is IrIntLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
     is IrNumLit (n) (sp) -> "(f64.reinterpret_i64 (i64.const " & integer-to-text n & "))"
@@ -956,7 +967,7 @@ Section: Expression Emission
    else if n == "__deck-pos" then "(i64.extend_i32_u (global.get $deck_ptr))"
    else if n == "__deck-enter" then "(block (result i64) (call $__deck_enter) (i64.const 0))"
    else if n == "__deck-exit" then "(block (result i64) (call $__deck_exit) (i64.const 0))"
-   else if n == "__self-type-defs" then "(unreachable (; wasm plug: __self-type-defs has no wasm form ;))"
+   else if n == "__self-type-defs" then "(call $list_with_capacity (i64.const 0))"
    else if n == "read-line" then wat-emit-maybe-line ctx "$read_line_raw"
    else if n == "read-line-cce" then wat-emit-maybe-line ctx "$read_line_cce_raw"
    else if n == "block-sector-count" then "(unreachable (; wasm plug: no block device on this target ;))"
@@ -1327,7 +1338,7 @@ Section: Apply Emission
   wat-no-such-thing : Text -> Boolean
   wat-no-such-thing (n) =
    n == "block-read-sector" | n == "block-write-sector" | n == "port-out-byte" |
-   n == "port-in-byte" | n == "write-binary" | n == "write-binary-buf" |
+   n == "port-in-byte" |
    n == "process-get-scope" | n == "prof-dump" |
    n == "prof-start"
 
@@ -1350,6 +1361,8 @@ Section: Apply Emission
    else if n == "alloc-bytes" then "(i64.extend_i32_u (call $bump_alloc (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")))"
    else if n == "print-text" then "(call $wasi_print_text " & emit-wat-expr ctx (list-at args 0) & ") (i64.const 0)"
    else if n == "print-uni" then "(call $wasi_print_text " & emit-wat-expr ctx (list-at args 0) & ") (i64.const 0)"
+   else if n == "write-binary" then "(call $write_binary " & emit-wat-expr ctx (list-at args 0) & ") (i64.const 0)"
+   else if n == "write-binary-buf" then "(call $write_binary_buf " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ") (i64.const 0)"
    else if n == "char-code-at" then "(i64.load8_u (i32.add (i32.add (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ") (i32.const 4)) (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & ")))"
    else if wat-no-such-thing n then "(unreachable (; wasm plug: " & n & " has no form on this target ;))"
    else if n == "print-line-uni" then wat-emit-print-line ctx (list-at args 0)
@@ -1361,6 +1374,7 @@ Section: Apply Emission
    else if n == "raw-bytes-to-text" then "(call $raw_bytes_to_text " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "read-serial-cce" then "(call $read_serial_cce " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "read-file-uni" then "(call $read_file_uni " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "read-file-raw" then "(call $read_file_raw " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "text-starts-with" then "(call $cx_text_starts_with " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "text-contains" then "(call $cx_text_contains " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "text-replace" then "(call $cx_text_replace " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
@@ -1418,6 +1432,8 @@ Section: Tail Call Optimization
      is-self-tail-call fname body
     is IrMatch (scrut) (branches) (ty) (sp) ->
      is-self-tail-call-branches fname branches 0
+    is IrAct (stmts) (ty) (sp) ->
+     is-self-tail-call-last-exec fname stmts
     is otherwise -> False
 
   is-self-tail-call-branches : Text, List IRBranch, Integer -> Boolean
@@ -1425,6 +1441,13 @@ Section: Tail Call Optimization
    if i >= list-length bs then False
    else if is-self-tail-call fname ((list-at bs i).body) then True
    else is-self-tail-call-branches fname bs (i + 1)
+
+  is-self-tail-call-last-exec : Text, List IRActStmt -> Boolean
+  is-self-tail-call-last-exec (fname) (stmts) =
+   if list-length stmts == 0 then False
+   else when list-at stmts (list-length stmts - 1)
+    is IrDoExec (e) (sp) -> is-self-tail-call fname e
+    is otherwise -> False
 
   emit-tco-temp-decls : Integer, Integer -> Text
   emit-tco-temp-decls (i) (count) =
@@ -1459,7 +1482,18 @@ Section: Tail Call Optimization
      "(local.set $" & wat-sanitize name & " " & emit-wat-expr-at ctx val (depth + 1) & ") " & emit-wat-expr-tco ctx fname params body (depth + 1)
     is IrMatch (scrut) (branches) (ty) (sp) ->
      emit-wat-match-tco ctx fname params scrut branches depth
+    is IrAct (stmts) (ty) (sp) ->
+     emit-wat-act-stmts-tco ctx fname params stmts 0 depth
     is otherwise -> emit-wat-expr-at ctx e depth
+
+  emit-wat-act-stmts-tco : WasmCtx, Text, List IRParam, List IRActStmt, Integer, Integer -> Text
+  emit-wat-act-stmts-tco (ctx) (fname) (params) (stmts) (i) (depth) =
+   if i == list-length stmts then "(i64.const 0)"
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr ctx val & ") "
+    is IrDoExec (e) (sp) -> if is-last then emit-wat-expr-tco ctx fname params e (depth + 1) else "(drop " & emit-wat-expr ctx e & ") ") & (if is-last then "" else emit-wat-act-stmts-tco ctx fname params stmts (i + 1) depth)
 
  A call in tail position to ANOTHER known function is a wasm `return_call`,
  which the engine runs in the caller's frame: mutual tail recursion -- the
@@ -2098,7 +2132,7 @@ Section: WASI Runtime Helpers
    "    (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $c))\n" &
    "    (i64.extend_i32_u (local.get $dst)))\n\n" &
    "  (func $list_insert_at (param $lst i64) (param $idx i64) (param $val i64) (result i64)\n" &
-   "    (local $p i32) (local $n i32) (local $cap i32) (local $i i32) (local $dst i32) (local $k i32)\n" &
+   "    (local $p i32) (local $n i32) (local $cap i32) (local $i i32) (local $dst i32) (local $k i32) (local $nc i32)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
    "    (local.set $n (i32.load (local.get $p)))\n" &
    "    (local.set $cap (i32.load (i32.add (local.get $p) (i32.const 4))))\n" &
@@ -2117,9 +2151,12 @@ Section: WASI Runtime Helpers
    "        (i64.store (i32.add (local.get $p) (i32.add (i32.const 8) (i32.mul (local.get $i) (i32.const 8)))) (local.get $val))\n" &
    "        (i32.store (local.get $p) (i32.add (local.get $n) (i32.const 1)))\n" &
    "        (return (i64.extend_i32_u (local.get $p)))))\n" &
-   "    (local.set $dst (call $bump_alloc (i32.add (i32.const 8) (i32.mul (i32.add (local.get $n) (i32.const 1)) (i32.const 8)))))\n" &
+   "    (local.set $nc (i32.mul (local.get $cap) (i32.const 2)))\n" &
+   "    (if (i32.lt_s (local.get $nc) (i32.add (local.get $n) (i32.const 1))) (then (local.set $nc (i32.add (local.get $n) (i32.const 1)))))\n" &
+   "    (if (i32.lt_s (local.get $nc) (i32.const 4)) (then (local.set $nc (i32.const 4))))\n" &
+   "    (local.set $dst (call $bump_alloc (i32.add (i32.const 8) (i32.mul (local.get $nc) (i32.const 8)))))\n" &
    "    (i32.store (local.get $dst) (i32.add (local.get $n) (i32.const 1)))\n" &
-   "    (i32.store (i32.add (local.get $dst) (i32.const 4)) (i32.add (local.get $n) (i32.const 1)))\n" &
+   "    (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $nc))\n" &
    "    (local.set $k (i32.const 0))\n" &
    "    (block $iad (loop $ial\n" &
    "      (br_if $iad (i32.ge_s (local.get $k) (local.get $i)))\n" &
@@ -2180,6 +2217,43 @@ Section: WASI Runtime Helpers
    "      (local.set $k (i32.add (local.get $k) (i32.const 1)))\n" &
    "      (br $brl)))\n" &
    "    (i64.extend_i32_u (local.get $dst)))\n\n"
+
+ `fd_write` may write FEWER bytes than the iovec offers and report the count,
+ which every other writer here drops because the text printer flushes at most
+ 240 bytes at a time. `write-binary-buf` hands over a whole artifact in one
+ call, so `$write_raw` reads the count and loops (L-SHORT).
+
+  wat-rt-write-binary : Text =
+   "  (func $write_raw (param $at i32) (param $n i32)\n" &
+   "    (local $w i32)\n" &
+   "    (if (i32.le_s (local.get $n) (i32.const 0)) (then (return)))\n" &
+   "    (block $wrd (loop $wrc\n" &
+   "      (i32.store (i32.const 0) (local.get $at))\n" &
+   "      (i32.store (i32.const 4) (local.get $n))\n" &
+   "      (br_if $wrd (i32.ne (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 16)) (i32.const 0)))\n" &
+   "      (local.set $w (i32.load (i32.const 16)))\n" &
+   "      (br_if $wrd (i32.le_s (local.get $w) (i32.const 0)))\n" &
+   "      (local.set $at (i32.add (local.get $at) (local.get $w)))\n" &
+   "      (local.set $n (i32.sub (local.get $n) (local.get $w)))\n" &
+   "      (br_if $wrd (i32.le_s (local.get $n) (i32.const 0)))\n" &
+   "      (br $wrc))))\n\n" &
+   "  (func $write_binary (param $lst i64)\n" &
+   "    (local $p i32) (local $n i32) (local $dst i32) (local $i i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
+   "    (local.set $n (i32.load (local.get $p)))\n" &
+   "    (if (i32.le_s (local.get $n) (i32.const 0)) (then (return)))\n" &
+   "    (local.set $dst (call $bump_alloc (local.get $n)))\n" &
+   "    (local.set $i (i32.const 0))\n" &
+   "    (block $wbd (loop $wbc\n" &
+   "      (br_if $wbd (i32.ge_s (local.get $i) (local.get $n)))\n" &
+   "      (i32.store8 (i32.add (local.get $dst) (local.get $i))\n" &
+   "        (i32.wrap_i64 (i64.load (i32.add (local.get $p) (i32.add (i32.const 8) (i32.mul (local.get $i) (i32.const 8)))))))\n" &
+   "      (local.set $i (i32.add (local.get $i) (i32.const 1)))\n" &
+   "      (br $wbc)))\n" &
+   "    (call $write_raw (local.get $dst) (local.get $n)))\n\n" &
+   "  (func $write_binary_buf (param $buf i64) (param $off i64) (param $len i64)\n" &
+   "    (call $write_raw (i32.add (i32.wrap_i64 (local.get $buf)) (i32.wrap_i64 (local.get $off)))\n" &
+   "      (i32.wrap_i64 (local.get $len))))\n\n"
 
   wat-rt-text-search : Text =
    "  (func $cx_text_match_at (param $s i64) (param $sub i64) (param $at i32) (result i32)\n" &
@@ -2552,6 +2626,49 @@ Section: WASI Runtime Helpers
    "    (i32.store (local.get $buf) (local.get $n))\n" &
    "    (i64.extend_i32_u (local.get $buf)))\n\n"
 
+ `read-file-raw` MEANS SOMETHING WIDER HERE THAN ON BARE METAL, deliberately
+ (Damian, 2026-08-27: a builtin means whatever it needs to mean to make sense
+ for its environment). x86-64's `__bare_metal_read_serial_raw` ends the read
+ at a NUL or an EOT and skips CR, because a serial ring has no end of input
+ and a sentinel is the only terminator available to it. wasm's stdin has a
+ real one, so this arm ends at EOF and at nothing else: every byte value
+ including NUL arrives, which is the whole point, because `elf`, `pe` and
+ `img` take a compiled payload rather than text. A subject that reads
+ NUL-free input agrees with the reference on both arms; past the first NUL
+ the two targets answer different questions and only this one can carry a
+ binary.
+
+ Chunked, unlike `$read_line_raw` beside it. That one reads a byte per
+ `fd_read` because a line ends at a newline and reading ahead would swallow
+ what follows with nowhere to put it back; a slurp to EOF has no such
+ boundary, so it reads 64 KB straight into the destination and a 2 MB payload
+ costs about 32 calls instead of two million. The buffer grows by bumping
+ again rather than truncating at a fixed cap: consecutive `$bump_alloc` calls
+ with nothing allocated between them are contiguous, so the reservation
+ simply extends. The fixed 4 MB cap the text readers use silently DROPS what
+ does not fit, which for an artifact is a truncation wearing the colour of a
+ complete answer (L-SHORT).
+
+  wat-rt-read-file-raw : Text =
+   "  (func $read_file_raw (param $ignored i64) (result i64)\n" &
+   "    (local $buf i32) (local $n i32) (local $cap i32) (local $got i32)\n" &
+   "    (local.set $cap (i32.const 1048576))\n" &
+   "    (local.set $buf (call $bump_alloc (i32.add (local.get $cap) (i32.const 4))))\n" &
+   "    (local.set $n (i32.const 0))\n" &
+   "    (block $rrd (loop $rrc\n" &
+   "      (if (i32.lt_u (i32.sub (local.get $cap) (local.get $n)) (i32.const 65536)) (then\n" &
+   "        (drop (call $bump_alloc (local.get $cap)))\n" &
+   "        (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))))\n" &
+   "      (i32.store (i32.const 0) (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)))\n" &
+   "      (i32.store (i32.const 4) (i32.const 65536))\n" &
+   "      (br_if $rrd (i32.ne (call $fd_read (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 16)) (i32.const 0)))\n" &
+   "      (local.set $got (i32.load (i32.const 16)))\n" &
+   "      (br_if $rrd (i32.eqz (local.get $got)))\n" &
+   "      (local.set $n (i32.add (local.get $n) (local.get $got)))\n" &
+   "      (br $rrc)))\n" &
+   "    (i32.store (local.get $buf) (local.get $n))\n" &
+   "    (i64.extend_i32_u (local.get $buf)))\n\n"
+
   wat-rt-raw-bytes-to-text : Text =
    "  (func $raw_bytes_to_text (param $lst i64) (result i64)\n" &
    "    (local $p i32) (local $n i32) (local $dst i32) (local $i i32)\n" &
@@ -2624,8 +2741,8 @@ Section: WASI Runtime Helpers
 
   wat-runtime-funcs : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
   wat-runtime-funcs (tab) (t2) (out) (arity-base) (max-arity) (rev-base) (in-base) =
-   wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-read-file rev-base &
-   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
+   wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-read-file rev-base & wat-rt-read-file-raw &
+   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
 
 Section: Chapter Emission
 

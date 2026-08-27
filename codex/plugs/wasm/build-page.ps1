@@ -63,7 +63,17 @@ Set-ItemProperty (Join-Path $OutDir 'prism.html') -Name IsReadOnly -Value $false
 # rather than failing the page build, since the page fetches them on demand.
 foreach ($p in @(@{ plug = 'javascript'; file = 'javascript-stdio.wasm' },
                  @{ plug = 'csharp';     file = 'csharp-stdio.wasm' },
-                 @{ plug = 'evidence';   file = 'evidence-stdio.wasm' })) {
+                 @{ plug = 'evidence';   file = 'evidence-stdio.wasm' },
+                 @{ plug = 'python';     file = 'python-stdio.wasm' },
+                 @{ plug = 'typescript'; file = 'typescript-stdio.wasm' },
+                 @{ plug = 'zig';        file = 'zig-stdio.wasm' },
+                 @{ plug = 'html';       file = 'html-stdio.wasm' },
+                 @{ plug = 'react';      file = 'react-stdio.wasm' },
+                 @{ plug = 'vue';        file = 'vue-stdio.wasm' },
+                 @{ plug = 'swiftui';    file = 'swiftui-stdio.wasm' },
+                 @{ plug = 'winforms';   file = 'winforms-stdio.wasm' },
+                 @{ plug = 'pe';         file = 'pe-bytes.wasm' },
+                 @{ plug = 'img';        file = 'img-bytes.wasm' })) {
     $from = Join-Path $Repo ("codex\plugs\{0}\build-output\{1}" -f $p.plug, $p.file)
     if (Test-Path -PathType Leaf $from) {
         Copy-Item $from (Join-Path $OutDir $p.file) -Force
@@ -91,7 +101,10 @@ if ($markerCount -ne 1) {
 $embed = [System.Text.StringBuilder]::new()
 [void]$embed.AppendLine('<script>')
 [void]$embed.AppendLine('window.__EMBED = {')
-foreach ($f in @('codex-compiler.wasm', 'javascript-stdio.wasm', 'csharp-stdio.wasm', 'evidence-stdio.wasm')) {
+foreach ($f in @('codex-compiler.wasm', 'javascript-stdio.wasm', 'csharp-stdio.wasm', 'evidence-stdio.wasm',
+                 'python-stdio.wasm', 'typescript-stdio.wasm', 'zig-stdio.wasm', 'html-stdio.wasm',
+                 'react-stdio.wasm', 'vue-stdio.wasm', 'swiftui-stdio.wasm', 'winforms-stdio.wasm',
+                 'pe-bytes.wasm', 'img-bytes.wasm')) {
     $p = Join-Path $OutDir $f
     if (-not (Test-Path -PathType Leaf $p)) { continue }
     $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($p))
@@ -144,6 +157,67 @@ $clean = ((([Text.Encoding]::UTF8.GetString($raw)) -replace "`r`n", "`n") -split
 $sha = [Security.Cryptography.SHA256]::Create()
 $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($clean))).Replace('-', '')
 Remove-Item $stdinFile, $truthFile -Force
+
+# 4b. CDX mode must WORK in the module, not merely not trap, because the tab's
+# save/download buttons hand the user a binary and a wrong binary is worse
+# than a refused one (PRISM-6 (a)). The module used to trap here: emit_cdx ->
+# compile_frontend_cdx -> pmap_self_test -> __self-type-defs, which exists
+# only for the x86 pointer-map machinery and has no wasm form. That is fixed
+# by the self-test standing down where there is no pointer map to walk, and
+# this arm is what keeps it fixed: one small program, both targets, payloads
+# compared byte for byte. Cheap (a couple of seconds) against a page build
+# measured in minutes, and it fails the build rather than shipping a page
+# whose download button produces rubbish.
+function Get-CdxPayload([string]$path) {
+    if (-not (Test-Path -PathType Leaf $path)) { return $null }
+    $b = [IO.File]::ReadAllBytes($path)
+    if ($b.Length -eq 0) { return $null }
+    if ($b[0] -eq 1) { $b = $b[1..($b.Length - 1)] }
+    $idx = ([Text.Encoding]::ASCII.GetString($b)).IndexOf('SIZE:')
+    if ($idx -lt 0) { return $null }
+    $nl = [Array]::IndexOf($b, [byte]10, $idx)
+    if ($nl -lt 0) { return $null }
+    $n = 0
+    if (-not [int]::TryParse((([Text.Encoding]::ASCII.GetString($b, $idx + 5, $nl - ($idx + 5))).Trim() -replace '[^0-9].*$', ''), [ref]$n)) { return $null }
+    if (($n -le 0) -or (($nl + 1 + $n) -gt $b.Length)) { return $null }
+    $out = New-Object byte[] $n
+    [Array]::Copy($b, $nl + 1, $out, 0, $n)
+    return $out
+}
+$cdxProg = "Chapter: PageCdxArm`n`n  opening : [Console] Nothing = act`n   print-line-uni `"cdx`"`n  end`n"
+$cdxHdr = [Text.Encoding]::ASCII.GetBytes("CDX`n")
+$cdxSrc = [Text.Encoding]::UTF8.GetBytes($cdxProg)
+$cdxIn = New-Object byte[] ($cdxHdr.Length + $cdxSrc.Length + 1)
+[Buffer]::BlockCopy($cdxHdr, 0, $cdxIn, 0, $cdxHdr.Length)
+[Buffer]::BlockCopy($cdxSrc, 0, $cdxIn, $cdxHdr.Length, $cdxSrc.Length)
+$cdxStdin = Join-Path $OutDir 'cdx-arm.stdin'
+$cdxWasmOut = Join-Path $OutDir 'cdx-arm.wasm.out'
+$cdxX86Out = Join-Path $OutDir 'cdx-arm.x86.out'
+[IO.File]::WriteAllBytes($cdxStdin, $cdxIn)
+$wp = Start-Process -FilePath 'wasmtime' `
+      -ArgumentList @('-W', 'max-wasm-stack=16777216', $wasm) -NoNewWindow -PassThru `
+      -RedirectStandardInput $cdxStdin -RedirectStandardOutput $cdxWasmOut -RedirectStandardError "$cdxWasmOut.err"
+$wp.WaitForExit(300000) | Out-Null
+& (Join-Path $Repo 'tools\codex-vm.exe') -kernel $Kernel -headless -mem 3072 -input $cdxStdin -output $cdxX86Out 2>&1 | Out-Null
+$cdxW = Get-CdxPayload $cdxWasmOut
+$cdxX = Get-CdxPayload $cdxX86Out
+if ($null -eq $cdxX) {
+    Write-Host 'FAIL: the x86 CDX arm produced no payload, so the arm has no truth to grade against.'; exit 1
+}
+if ($null -eq $cdxW) {
+    $trap = if (Test-Path "$cdxWasmOut.err") { (Get-Content "$cdxWasmOut.err" -Raw).Trim() } else { '' }
+    Write-Host "FAIL: the module produced no CDX payload. $trap"; exit 1
+}
+if ($cdxW.Length -ne $cdxX.Length) {
+    Write-Host "FAIL: CDX payload sizes differ, wasm $($cdxW.Length) vs x86-64 $($cdxX.Length)."; exit 1
+}
+$cdxDiff = -1
+for ($ci = 0; $ci -lt $cdxW.Length; $ci++) { if ($cdxW[$ci] -ne $cdxX[$ci]) { $cdxDiff = $ci; break } }
+if ($cdxDiff -ge 0) {
+    Write-Host "FAIL: CDX payloads differ at byte $cdxDiff of $($cdxW.Length)."; exit 1
+}
+Remove-Item $cdxStdin, $cdxWasmOut, $cdxX86Out, "$cdxWasmOut.err" -Force -ErrorAction SilentlyContinue
+Write-Host ("[page] cdx arm : {0:N0} payload bytes, byte-identical to x86-64" -f $cdxW.Length)
 
 # 5. Inject the hash into the page.
 $html = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'page\index.html'))

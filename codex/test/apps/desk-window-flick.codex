@@ -1,0 +1,212 @@
+Chapter: DeskWindowFlickTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ A flick is a drag whose release carries speed AND whose pointer keeps going
+ afterwards. Every arm of that is a comparison over integers, so the whole
+ decision is decidable here with no screen, no pointer and no clock.
+
+ IT CALLS THE FUNCTIONS `desk-wnd-flick-step` ITSELF CALLS. The step reads a
+ mouse and a `ds` block, so its decision was named as `dk-flick-verdict` and
+ its parts as `dk-flick-fast`, `dk-flick-edge`, `dk-flick-through` and
+ `dk-flick-expired`. A test that re-derived those comparisons beside the step
+ would be a SHADOW of them, free to drift while both stayed green.
+
+ THE ROWS PRINT THE PAYLOAD. A row that printed "flicked" and nothing else
+ would agree with an implementation that flicked on every release, which is
+ the one wrong answer this gesture can give that still looks like a gesture.
+
+ TIME IS PASSED IN AS TICKS AND A RATE, and every row below uses a rate of
+ 1000 so a tick reads as a millisecond and the arithmetic is checkable by eye
+ rather than merely stable.
+
+Section: Body
+
+  fk-yn : Boolean -> Text
+  fk-yn (v) = if v then "yes" else "no"
+
+  fk-tps : Integer = 1000
+
+  fk-edge-name : Integer -> Text
+  fk-edge-name (e) =
+    if e == dk-edge-left then "left"
+    else if e == dk-edge-right then "right"
+    else if e == dk-edge-top then "top"
+    else if e == dk-edge-bottom then "bottom"
+    else "?"
+
+ THE DOMINANT AXIS NAMES THE EDGE. Each pair is chosen so the two candidate
+ answers DISAGREE: no operand has equal components except the tie row, which
+ exists to pin which way the tie is broken rather than to leave it to whoever
+ reads the code next.
+
+  fk-dir : Text, Integer, Integer, Integer -> Text
+  fk-dir (label) (dx) (dy) (want) =
+    label & ": " & integer-to-text dx & "," & integer-to-text dy
+    & " -> " & fk-edge-name (dk-flick-edge dx dy)
+    & "  code " & integer-to-text (dk-flick-edge dx dy)
+    & "  wanted " & fk-edge-name want
+    & "  " & fk-yn (dk-flick-edge dx dy == want)
+
+ SPEED AT THE RELEASE. 700 device pixels a second against a rate of 1000, so
+ 60 pixels in 50 ms is 1200 and passes, 20 in 50 is 400 and does not, and 35
+ in 50 is exactly 700 and passes because the comparison is `>=`. The three
+ sit either side of the threshold rather than all above it, which is what
+ makes the row an assertion instead of a demonstration.
+
+  fk-fast : Text, Integer, Integer, Integer, Integer, Boolean -> Text
+  fk-fast (label) (dx) (dy) (el) (tps) (want) =
+    label & ": " & integer-to-text dx & "," & integer-to-text dy
+    & " over " & integer-to-text el & " at rate " & integer-to-text tps
+    & " -> " & fk-yn (dk-flick-fast dx dy el tps)
+    & "  wanted " & fk-yn want
+    & "  " & fk-yn (dk-flick-fast dx dy el tps == want)
+
+ THE FOLLOW-THROUGH, AND ITS CONTROL IS THE ROW THAT MATTERS. `stopped` is
+ Damian's drag for moving purposes: released and then still. `reversed` is
+ the other way a null can arrive, and without it a rule reading the magnitude
+ and not the sign would pass every row above.
+
+  fk-through : Text, Integer, Integer, Integer, Integer, Boolean -> Text
+  fk-through (label) (dir) (dx) (dy) (reach) (want) =
+    label & ": " & fk-edge-name dir & " by " & integer-to-text dx & "," & integer-to-text dy
+    & " reach " & integer-to-text reach
+    & " -> " & fk-yn (dk-flick-through dir dx dy reach)
+    & "  wanted " & fk-yn want
+    & "  " & fk-yn (dk-flick-through dir dx dy reach == want)
+
+ THE VERDICT IS THE FUNCTION THE STEP BRANCHES ON, and it has three answers.
+ `wait` and `drop` are the pair a boolean could not tell apart: the hand is
+ still moving, against the window closed and this was a move.
+
+  fk-vname : Integer -> Text
+  fk-vname (v) =
+    if v == dk-flick-dock then "dock"
+    else if v == dk-flick-drop then "drop"
+    else "wait"
+
+  fk-verdict : Text, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  fk-verdict (label) (dir) (dx) (dy) (el) (tps) (want) =
+    let got = dk-flick-verdict dir dx dy 48 el tps
+    in label & ": " & fk-edge-name dir & " by " & integer-to-text dx & "," & integer-to-text dy
+       & " at " & integer-to-text el & " ms -> " & fk-vname got
+       & "  wanted " & fk-vname want
+       & "  " & fk-yn (got == want)
+
+ THE ARM ROUND-TRIPS THROUGH THE CELLS. The release point is packed into one
+ cell, so the pair is chosen to disagree the way the drag offset's is: 1300
+ and 7 cannot both come back right from a packer that answered one field for
+ both, and 1300 is wider than a byte.
+
+  fk-arm : Integer, Integer, Integer, Integer -> Text
+  fk-arm (ds) (fid) (x) (y) =
+    let a = dk-flick-arm ds fid dk-edge-top x y 500
+    in "armed " & integer-to-text (dk-flick-fid ds)
+       & " dir " & fk-edge-name (peek-32 ds dk-flick-dir-cell)
+       & " at " & integer-to-text (dk-pt-x (peek-32 ds dk-flick-org-cell))
+       & "," & integer-to-text (dk-pt-y (peek-32 ds dk-flick-org-cell))
+       & "  exact " & fk-yn (dk-flick-fid ds == fid
+                             & peek-32 ds dk-flick-dir-cell == dk-edge-top
+                             & dk-pt-x (peek-32 ds dk-flick-org-cell) == x
+                             & dk-pt-y (peek-32 ds dk-flick-org-cell) == y)
+
+  fk-disarm : Integer -> Text
+  fk-disarm (ds) =
+    let e = dk-flick-end ds
+    in "disarmed: watching " & integer-to-text (dk-flick-fid ds)
+       & "  none " & integer-to-text desk-focus-none
+       & "  ended " & fk-yn (dk-flick-fid ds == desk-focus-none)
+
+ THE BASELINE ROLLS ONLY WHEN THE ROLL PERIOD HAS PASSED, and the row asks
+ the question the design turns on: what the measured interval is at the
+ moment of a release. It must never be shorter than one roll period, because
+ a baseline that has just been re-based measures nothing.
+
+ THE TWO SEQUENCES ARE THE SAME POINTER UP TO THE RELEASE, and that is what
+ makes the pair readable: they differ only in whether the hand was still
+ moving when the button came up, which is the whole of what the gesture
+ decides.
+
+ COLLAPSING THE BASELINE TO ONE SAMPLE BREAKS THE POSITIVE ARM AND LEAVES THE
+ CONTROL ALONE, measured rather than reasoned, and it is not the failure the
+ first draft of this paragraph predicted. A one-deep baseline was expected to
+ call a stopped hand fast; what it actually does is report an interval of
+ 0 ms, which `dk-flick-fast` refuses outright, so EVERY release reads slow and
+ the gesture is dead rather than trigger-happy. `still moving` is the row that
+ goes red, `stopped` does not move, and a suite without the moving arm would
+ have scored a deleted gesture as a pass.
+
+  fk-roll : Integer, Integer, Integer -> Text
+  fk-roll (ds) (x) (t) =
+    let s = dk-flick-sample ds x 100 t fk-tps
+    in "  at " & integer-to-text t & " ms x " & integer-to-text x
+       & " rolled " & integer-to-text s
+       & " baseline x " & integer-to-text (dk-pt-x (peek-32 ds dk-flick-p1-cell))
+       & " age " & integer-to-text (t - peek-32 ds dk-flick-t1-cell) & " ms"
+
+  fk-release : Integer, Text, Integer, Integer, Boolean -> Text
+  fk-release (ds) (label) (t) (x) (want) =
+    let bp = peek-32 ds dk-flick-p1-cell
+    in let el = t - peek-32 ds dk-flick-t1-cell
+    in let vx = x - dk-pt-x bp
+    in label & ": release at " & integer-to-text t & " ms x " & integer-to-text x
+       & " against baseline x " & integer-to-text (dk-pt-x bp)
+       & " over " & integer-to-text el & " ms"
+       & "  interval at least one roll " & fk-yn (el >= dk-flick-roll)
+       & "  fast " & fk-yn (dk-flick-fast vx 0 el fk-tps)
+       & "  wanted " & fk-yn want
+       & "  " & fk-yn (dk-flick-fast vx 0 el fk-tps == want)
+
+Section: Opening
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed 256 64
+    in let a1 = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
+    in act
+      print-line-uni ("speed " & integer-to-text dk-flick-speed
+                      & " reach " & integer-to-text dk-flick-reach
+                      & " window " & integer-to-text dk-flick-ms
+                      & " roll " & integer-to-text dk-flick-roll)
+      print-line-uni (fk-dir "thrown left " (0 - 300) 40 dk-edge-left)
+      print-line-uni (fk-dir "thrown right" 300 (0 - 40) dk-edge-right)
+      print-line-uni (fk-dir "thrown up   " 40 (0 - 300) dk-edge-top)
+      print-line-uni (fk-dir "thrown down " (0 - 40) 300 dk-edge-bottom)
+      print-line-uni (fk-dir "the tie     " 200 200 dk-edge-right)
+      print-line-uni (fk-fast "a throw    " 60 0 50 fk-tps True)
+      print-line-uni (fk-fast "a placement" 20 0 50 fk-tps False)
+      print-line-uni (fk-fast "exactly 700" 35 0 50 fk-tps True)
+      print-line-uni (fk-fast "no hpet    " 60 0 50 0 False)
+      print-line-uni (fk-fast "no interval" 60 0 0 fk-tps False)
+      print-line-uni (fk-through "followed  " dk-edge-left (0 - 60) 0 48 True)
+      print-line-uni (fk-through "stopped   " dk-edge-left (0 - 10) 0 48 False)
+      print-line-uni (fk-through "reversed  " dk-edge-left 60 0 48 False)
+      print-line-uni (fk-through "up followed" dk-edge-top 0 (0 - 60) 48 True)
+      print-line-uni (fk-through "up stopped " dk-edge-top 0 (0 - 10) 48 False)
+      print-line-uni (fk-through "down       " dk-edge-bottom 0 60 48 True)
+      print-line-uni (fk-through "right      " dk-edge-right 60 0 48 True)
+      print-line-uni (fk-verdict "still going" dk-edge-left (0 - 10) 0 100 fk-tps dk-flick-wait)
+      print-line-uni (fk-verdict "reached    " dk-edge-left (0 - 60) 0 100 fk-tps dk-flick-dock)
+      print-line-uni (fk-verdict "gave up    " dk-edge-left (0 - 10) 0 400 fk-tps dk-flick-drop)
+      print-line-uni (fk-verdict "late reach " dk-edge-left (0 - 60) 0 400 fk-tps dk-flick-drop)
+      print-line-uni (fk-verdict "no hpet    " dk-edge-left (0 - 10) 0 100 0 dk-flick-drop)
+      print-line-uni (fk-arm ds desk-focus-clkp 1300 7)
+      print-line-uni (fk-disarm ds)
+      let b = dk-flick-begin ds 100 100 0
+      in print-line-uni "the baseline, pointer moving throughout:"
+      print-line-uni (fk-roll ds 200 60)
+      print-line-uni (fk-roll ds 300 120)
+      print-line-uni (fk-roll ds 400 180)
+      print-line-uni (fk-release ds "still moving" 180 400 True)
+      let b2 = dk-flick-begin ds 100 100 0
+      in print-line-uni "the same pointer, stopping before the release:"
+      print-line-uni (fk-roll ds 200 60)
+      print-line-uni (fk-roll ds 300 120)
+      print-line-uni (fk-roll ds 400 180)
+      print-line-uni (fk-roll ds 400 240)
+      print-line-uni (fk-roll ds 400 300)
+      print-line-uni (fk-release ds "stopped     " 300 400 False)
+    end
+
+Page 1

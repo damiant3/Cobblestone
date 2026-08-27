@@ -26,7 +26,7 @@ if (-not (Test-Path -PathType Container $Web)) {
 }
 $Web = (Resolve-Path $Web).Path
 
-$pages = Get-ChildItem $Web -Recurse -Filter *.html | Sort-Object FullName
+$pages = @(Get-ChildItem $Web -Recurse -Filter *.html | Sort-Object FullName)
 if ($pages.Count -eq 0) { Write-Host "REFUSE: no .html under $Web"; exit 2 }
 
 $dead = @(); $rootRel = @(); $ok = 0; $external = @()
@@ -46,6 +46,16 @@ foreach ($p in $pages) {
 
     foreach ($h in $hrefs) {
         if ($h -match '^(data:|mailto:|javascript:)') { continue }
+        # A fragment-only href is an in-page anchor. The page assigns DOM ids at
+        # runtime (el.id from the widget id), so the file check cannot see it;
+        # the checkable fact is that the fragment appears as a quoted widget id
+        # in this page's own emitted tree.
+        if ($h.StartsWith('#')) {
+            $frag = $h.Substring(1)
+            if ($frag.Length -gt 0 -and $html.Contains('"' + $frag + '"')) { $ok++ }
+            else { $dead += ,@($rel, "$h (no widget id in page)") }
+            continue
+        }
         if ($h -match '^https?://') { $external += ,@($rel, $h); continue }
         if ($h.StartsWith('/')) { $rootRel += ,@($rel, $h); continue }
         $target = Join-Path (Split-Path $p.FullName) ($h -split '\?')[0]

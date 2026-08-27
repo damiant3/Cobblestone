@@ -1588,7 +1588,7 @@ Section: Module Emission
    in let htb = if list-length eff-ops > 0 then a64-effect-op-table-base else 0
    in let pa-slug = a64-def-chapter-slug (chapter.defs) "init-phase-allocator" 0 (list-length (chapter.defs))
    in let dr-slug = a64-def-chapter-slug (chapter.defs) "deck-record" 0 (list-length (chapter.defs))
-   in let new-extra = A64Extra { effect-op-addrs = addrs, handler-table-base = htb, type-defs = tdefs, learned-fields = [], wcet-reports = [], state-local = 0 - 1, smp-boot = smp, runtime-funcs = 0, boot-cap-mask = pm-opening-cap-mask (chapter.defs), boot-fs-scope = pm-opening-fs-scope (chapter.defs), boot-net-scope = pm-opening-net-scope (chapter.defs), deck-record-intrinsic = pa-slug /= "" & pa-slug == dr-slug, has-block-driver = a64-defs-have (chapter.defs) "vb-capacity-auto" 0 (list-length (chapter.defs)) }
+   in let new-extra = A64Extra { effect-op-addrs = addrs, handler-table-base = htb, type-defs = tdefs, learned-fields = [], wcet-reports = [], state-local = 0 - 1, smp-boot = smp, runtime-funcs = 0, boot-cap-mask = pm-opening-cap-mask (chapter.defs), boot-fs-scope = pm-opening-fs-scope (chapter.defs), boot-net-scope = pm-opening-net-scope (chapter.defs), deck-record-intrinsic = pa-slug /= "" & pa-slug == dr-slug, has-block-driver = a64-defs-have (chapter.defs) "vb-capacity-auto" 0 (list-length (chapter.defs)), ir-defs = chapter.defs }
    in let st1 = __record-set st "extra" new-extra
    in let st1r = if list-length eff-ops > a64-effect-op-slots then a64-add-shadow-warning st1 (a64-effect-op-overrun (list-length eff-ops)) else st1
    in let st2 = a64-emit-runtime st1r
@@ -1763,64 +1763,56 @@ Section: Effect Handler Emission
    flat-body : IRExpr
   }
 
+  a64-apply-head-name : IRExpr -> Text
+  a64-apply-head-name (e) =
+   when e
+    is IrApply (f) (a) (t) (s) -> a64-apply-head-name f
+    is IrName (n) (t) (s) -> n
+    is otherwise -> ""
+
+  a64-find-ir-def : List IRDef, Text, Integer -> Integer
+  a64-find-ir-def (defs) (name) (i) =
+   if i >= list-length defs then 0 - 1
+   else if (list-at defs i).name == name then i
+   else a64-find-ir-def defs name (i + 1)
+
   a64-unwrap-clause-lambda : IRExpr, Text, A64State, Text -> A64EmitResult
   a64-unwrap-clause-lambda (expr) (resume-name) (st) (op-name) =
-   when expr
-    is IrLambda (params) (body) (lty) (s) ->
-     let flat = a64-flatten-lambda-body expr resume-name []
-     in let handler-name = "__handler_" & op-name
-     in let jmp-over-idx = st.insn-count
-     in let st1 = a64-emit st arm64-nop
-     in let st2 = a64-record-func st1 handler-name
-     in let saved-locals = st2.locals
-     in let saved-nl = st2.next-local
-     in let saved-nt = st2.next-temp
-     in let saved-spill = st2.spill-count
-     in let st3 = __record-set (__record-set st2 "locals" []) "next-local" a64-x19
-     in let st4 = __record-set (__record-set st3 "next-temp" a64-x12) "spill-count" 0
-     in let prologue-idx = st4.insn-count
-     in let st4a = a64-emit-prologue st4 5
-     in let st5 = a64-bind-params st4a (flat.flat-params) 0
-     in let er = a64-emit-expr st5 (flat.flat-body)
-     in let st6 = if er.reg == a64-x0 then er.state
-      else a64-emit (er.state) (arm64-mov a64-x0 (er.reg))
-     in let frame-size = a64-compute-frame-size (st6.spill-count)
-     in let st6a = a64-patch-frame-at st6 prologue-idx frame-size
-     in let st7 = a64-emit-epilogue st6a frame-size 5
-     in let after-body = st7.insn-count
-     in let st8 = a64-patch-insn st7 jmp-over-idx (arm64-b ((after-body - jmp-over-idx) * 4))
-     in let st9 = __record-set (__record-set (__record-set (__record-set st8 "locals" saved-locals) "next-local" saved-nl) "next-temp" saved-nt) "spill-count" saved-spill
-     in let tr = a64-alloc-temp st9
-     in let adr-offset = ((jmp-over-idx + 1) - (tr.state).insn-count) * 4
-     in let st10 = a64-emit (tr.state) (a64-encode-adr-signed (tr.reg) adr-offset)
-     in A64EmitResult { state = st10, reg = tr.reg }
-    is otherwise ->
-     let stripped = a64-strip-resume expr resume-name
-     in let handler-name = "__handler_" & op-name
-     in let jmp-over-idx = st.insn-count
-     in let st1 = a64-emit st arm64-nop
-     in let st2 = a64-record-func st1 handler-name
-     in let saved-locals = st2.locals
-     in let saved-nl = st2.next-local
-     in let saved-nt = st2.next-temp
-     in let saved-spill = st2.spill-count
-     in let st3 = __record-set (__record-set st2 "locals" []) "next-local" a64-x19
-     in let st4 = __record-set (__record-set st3 "next-temp" a64-x12) "spill-count" 0
-     in let prologue-idx = st4.insn-count
-     in let st4a = a64-emit-prologue st4 5
-     in let er = a64-emit-expr st4a stripped
-     in let st5 = if er.reg == a64-x0 then er.state
-      else a64-emit (er.state) (arm64-mov a64-x0 (er.reg))
-     in let frame-size = a64-compute-frame-size (st5.spill-count)
-     in let st5a = a64-patch-frame-at st5 prologue-idx frame-size
-     in let st6 = a64-emit-epilogue st5a frame-size 5
-     in let after-body = st6.insn-count
-     in let st7 = a64-patch-insn st6 jmp-over-idx (arm64-b ((after-body - jmp-over-idx) * 4))
-     in let st8 = __record-set (__record-set (__record-set (__record-set st7 "locals" saved-locals) "next-local" saved-nl) "next-temp" saved-nt) "spill-count" saved-spill
-     in let tr = a64-alloc-temp st8
-     in let adr-offset = ((jmp-over-idx + 1) - (tr.state).insn-count) * 4
-     in let st9 = a64-emit (tr.state) (a64-encode-adr-signed (tr.reg) adr-offset)
-     in A64EmitResult { state = st9, reg = tr.reg }
+   let head = a64-apply-head-name expr
+   in let lifted = text-starts-with head "__lam_"
+   in let lidx = if lifted then a64-find-ir-def ((st.extra).ir-defs) head 0 else 0 - 1
+   in let lparams = if lidx >= 0 then (list-at ((st.extra).ir-defs) lidx).params else []
+   in let followable = lidx >= 0 & list-length lparams >= 1 & (list-at lparams 0).name == resume-name
+   in let st0 = if lifted & followable == False then a64-add-shadow-warning st ("[UNSUPPORTED] handler clause for " & op-name & " was lifted as " & head & " and does not carry " & resume-name & " as its first capture; arm64 calls a handler from a table with the operation arguments only and cannot carry a closure") else st
+   in let flat = a64-flatten-lambda-body expr resume-name []
+   in let body = if followable then a64-strip-resume ((list-at ((st.extra).ir-defs) lidx).body) resume-name
+    else flat.flat-body
+   in let handler-name = "__handler_" & op-name
+   in let jmp-over-idx = st0.insn-count
+   in let st1 = a64-emit st0 arm64-nop
+   in let st2 = a64-record-func st1 handler-name
+   in let saved-locals = st2.locals
+   in let saved-nl = st2.next-local
+   in let saved-nt = st2.next-temp
+   in let saved-spill = st2.spill-count
+   in let st3 = __record-set (__record-set st2 "locals" []) "next-local" a64-x19
+   in let st4 = __record-set (__record-set st3 "next-temp" a64-x12) "spill-count" 0
+   in let prologue-idx = st4.insn-count
+   in let st4a = a64-emit-prologue st4 5
+   in let st5 = if followable then a64-bind-params-at st4a lparams 1 (0 - 1) else a64-bind-params st4a (flat.flat-params) 0
+   in let er = a64-emit-expr st5 body
+   in let st6 = if er.reg == a64-x0 then er.state
+    else a64-emit (er.state) (arm64-mov a64-x0 (er.reg))
+   in let frame-size = a64-compute-frame-size (st6.spill-count)
+   in let st6a = a64-patch-frame-at st6 prologue-idx frame-size
+   in let st7 = a64-emit-epilogue st6a frame-size 5
+   in let after-body = st7.insn-count
+   in let st8 = a64-patch-insn st7 jmp-over-idx (arm64-b ((after-body - jmp-over-idx) * 4))
+   in let st9 = __record-set (__record-set (__record-set (__record-set st8 "locals" saved-locals) "next-local" saved-nl) "next-temp" saved-nt) "spill-count" saved-spill
+   in let tr = a64-alloc-temp st9
+   in let adr-offset = ((jmp-over-idx + 1) - (tr.state).insn-count) * 4
+   in let st10 = a64-emit (tr.state) (a64-encode-adr-signed (tr.reg) adr-offset)
+   in A64EmitResult { state = st10, reg = tr.reg }
 
   a64-bind-handler-params : A64State, List IRParam, Integer -> A64State
   a64-bind-handler-params (st) (params) (i) =

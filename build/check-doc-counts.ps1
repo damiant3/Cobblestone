@@ -132,12 +132,16 @@ function Get-AppDirCount() {
 # holds generated .codex, so counting it makes the claim depend on what this
 # workspace last built rather than on the depot revision.
 
+# apps/landing/web/ is the landing site's OUTPUT and is p4-ignored, so the
+# page's Codex.codex payload is a generated module under a directory NOT
+# named build-output. Counting it turns this claim red on any workspace
+# that has built the page and nowhere else.
 function Get-AppModuleCount() {
     $p = (Join-Path $treeRoot 'apps')
     if ((-not (Test-Path -PathType Container $p))) {
         return -1
     }
-    return @((Get-ChildItem $p -Recurse -Filter '*.codex' -File | Where-Object { (-not ($_.FullName -match '[\\/]build-output[\\/]')) })).Count
+    return @((Get-ChildItem $p -Recurse -Filter '*.codex' -File | Where-Object { (-not ($_.FullName -match '[\\/](build-output|landing[\\/]web)[\\/]')) })).Count
 }
 
 

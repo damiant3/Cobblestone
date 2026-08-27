@@ -312,3 +312,13 @@ Campaign items live HERE while the campaign is active; an item originating
 in one app (prism, landing) stays in that app's backlog with this doc
 naming the dependency. When the culminating push is public, this doc moves
 to `docs/Designs/Done/Marketing/` with the push sha in this line.
+
+- **Port of the promoted landing into `LandingPage.codex`: DONE (red
+  20043, 2026-08-27).** The marketing-refocused landing (Damian-directed
+  rewrite: business/family/end-user audiences, effort metrics retired,
+  parallax kept) is now what the generator emits, so the live site and
+  the source agree again and `PublicPush.md`'s do-not-clobber warning is
+  retired. Hero stat provenance: 52 targets = 51 plug dirs with build.ps1
+  (container/verifier plugs excluded) + native x86-64, measured
+  2026-08-27; re-measure before quoting (L-COUNT). The pre-refocus page
+  remains derivable from the file's #4 revision.

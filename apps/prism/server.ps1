@@ -12,6 +12,10 @@ $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $CacheDir = Join-Path $PSScriptRoot 'build-output' 'cache'
 $compileScript = Join-Path $Repo 'build' 'compile.ps1'
 
+# Start-PlugVm carries the codex-vm-or-QEMU host choice, and the sidecar pool
+# below boots plug VMs through it rather than shelling out to plug-run.ps1.
+. (Join-Path $Repo 'build' 'vm-config.ps1')
+
 if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Force $CacheDir | Out-Null }
 
 # ── Source file catalog ──────────────────────────────────────
@@ -44,13 +48,21 @@ $SourcePaths = @(
     'apps/prism/Prism.codex'
 )
 
+# `port` is the port the plug's own CDX dials, baked in at build time, and
+# `sidecar` says whether that plug's entry reads the tag byte and will serve
+# more than one payload. A plug without it takes the run-once path unchanged.
+#
+# c# is deliberately not a sidecar and it is not an oversight: its plug streams
+# the emitted source through print-uni def by def, reclaiming heap between
+# them, so the answer arrives on the guest CONSOLE and its runner captures the
+# file. The pool reads the socket, which for that plug carries nothing.
 $PlugTargets = @(
-    @{name='python';     dir='codex/plugs/python'}
-    @{name='javascript'; dir='codex/plugs/javascript'}
-    @{name='rust';       dir='codex/plugs/rust'}
-    @{name='haskell';    dir='codex/plugs/haskell'}
-    @{name='go';         dir='codex/plugs/go'}
-    @{name='c#';         dir='codex/plugs/csharp'}
+    @{name='python';     dir='codex/plugs/python';     port=9131; sidecar=$false}
+    @{name='javascript'; dir='codex/plugs/javascript'; port=9120; sidecar=$false}
+    @{name='rust';       dir='codex/plugs/rust';       port=9136; sidecar=$false}
+    @{name='haskell';    dir='codex/plugs/haskell';    port=9117; sidecar=$false}
+    @{name='go';         dir='codex/plugs/go';         port=9114; sidecar=$false}
+    @{name='c#';         dir='codex/plugs/csharp';     port=9133; sidecar=$false}
 )
 
 # ── Per-request working directory ────────────────────────────
@@ -155,6 +167,193 @@ function Compile-SourceToIr([string]$Source, [string]$WorkDir) {
 # ── Plug invocation ──────────────────────────────────────────
 # Takes SOURCE TEXT and the request's own directory, like the compile above.
 # No cache: a plug output keyed on a repo path cannot answer for submitted text.
+# The plug half of the pipeline needs IR compiled with -IrCce -Passes
+# text-plug, which is NOT what /api/compile emits for display (-IrUni, default
+# passes). So the fan-out compiles its own, once, into the request's directory
+# and hands every plug the same bytes with -Ir. That is one compile per press
+# instead of one per plug: each run.ps1 used to compile the same source again.
+#
+# This is not a cache. It lives in the request's own directory and dies with
+# it, which is the arrangement the 2026-08-24 ruling left in place; what was
+# removed was the pre-bake and the caches that outlived a request.
+function Compile-SourceToPlugIr([string]$Source, [string]$WorkDir) {
+    $srcFile = Join-Path $WorkDir 'plug-in.codex'
+    [System.IO.File]::WriteAllText($srcFile, $Source, [System.Text.UTF8Encoding]::new($false))
+    $irOut = Join-Path $WorkDir 'plug-in.ir'
+    $irLog = Join-Path $WorkDir 'plug-in.log'
+    $finished = Invoke-Bounded $compileScript @('-Src', $srcFile, '-Out', $irOut, '-Log', $irLog, '-IrCce', '-Passes', 'text-plug') $CompileWallMs
+    if (-not $finished) { return $null }
+    if (-not (Test-Path $irOut)) { return $null }
+    return $irOut
+}
+
+# ── Sidecar pool ─────────────────────────────────────────────
+# A plug VM that stays booted between payloads. Measured 2026-08-27 on python:
+# one boot then four payloads at 250, 78, 89 and 90 ms, against about 1244 ms
+# per payload with a boot each, and every output byte-identical to the
+# run-once path.
+#
+# The plug dials US, so the listener is what has to outlive a payload: it stays
+# bound for the pool's lifetime and each payload is its own accepted
+# connection on its own guest source port. That is the guest's constraint, not
+# a choice here: a client cannot reuse a port it has just closed.
+#
+# Tag 3 is what makes the guest come back. build/plug-run.ps1 sends tag 1 and
+# is untouched, so every other caller of these plugs keeps the run-once path
+# it has today. That direction is load-bearing: a plug that decided FOR itself
+# to wait for more work cost every one-shot caller 1129 ms to 3230 ms.
+#
+# While the pool holds a plug's port, a concurrent run.ps1 for that same plug
+# cannot bind it. One developer box, one server, so this is stated rather than
+# solved.
+#
+# A sidecar VM OUTLIVES A HARD-KILLED SERVER, and the port it holds is what
+# breaks the next run. Measured 2026-08-27: stop the listener cleanly and the
+# guest gives up and exits in 3 s, because its next connect is refused; kill
+# the owning process instead and the guest's connect goes unanswered rather
+# than refused, and the VM was still alive after 60 s. Ctrl-C runs the finally
+# below, Stop-Process does not, and nothing in PowerShell can intercept that.
+#
+# So the pool writes every VM pid it starts and reaps that list on the next
+# startup. A pid is killed only when the live process's Path is the VM binary
+# this config would launch, which is what stops a recycled pid from making
+# this a machine-wide killer.
+$script:Sidecars = @{}
+$SidecarPidFile = Join-Path $CacheDir 'sidecar-pids.txt'
+$SidecarTagServeAgain = 3
+
+function Register-SidecarPid([int]$ProcessId) {
+    Add-Content -Path $SidecarPidFile -Value $ProcessId
+}
+
+function Clear-SidecarPids {
+    if (Test-Path $SidecarPidFile) { Set-Content -Path $SidecarPidFile -Value '' }
+}
+
+function Remove-StaleSidecars {
+    if (-not (Test-Path $SidecarPidFile)) { return }
+    $vmBin = if ($script:UseCodexVm) { $script:CodexVmBin } else { $script:FallbackVmBin }
+    $vmPath = try { (Resolve-Path $vmBin).Path } catch { $vmBin }
+    foreach ($line in (Get-Content $SidecarPidFile)) {
+        if (-not $line.Trim()) { continue }
+        $stale = Get-Process -Id ([int]$line) -ErrorAction SilentlyContinue
+        if (-not $stale) { continue }
+        if ($stale.Path -ne $vmPath) { continue }
+        try { $stale.Kill($true); Write-Host "[prism] reaped a sidecar VM left by an earlier run (pid $line)" -ForegroundColor DarkGray } catch { }
+    }
+    Clear-SidecarPids
+}
+# The guest's own serve-max is 64. Recycling short of it means the pool
+# retires a VM on its own terms instead of discovering a dead one mid-request.
+$SidecarMaxPayloads = 56
+
+function Stop-Sidecar($sc) {
+    if ($null -eq $sc) { return }
+    if ($sc.listener) { try { $sc.listener.Stop() } catch { } }
+    if ($sc.proc -and -not $sc.proc.HasExited) { try { $sc.proc.Kill($true) } catch { } }
+}
+
+function Stop-AllSidecars {
+    foreach ($k in @($script:Sidecars.Keys)) { Stop-Sidecar $script:Sidecars[$k] }
+    $script:Sidecars = @{}
+    Clear-SidecarPids
+}
+
+function Get-Sidecar([hashtable]$Plug) {
+    $sc = $script:Sidecars[$Plug.name]
+    if ($sc -and $sc.proc -and -not $sc.proc.HasExited -and $sc.served -lt $SidecarMaxPayloads) { return $sc }
+    if ($sc) {
+        Write-Host "[prism] recycling $($Plug.name) sidecar after $($sc.served) payloads" -ForegroundColor DarkGray
+        Stop-Sidecar $sc
+        $script:Sidecars.Remove($Plug.name)
+    }
+
+    $plugDir = Join-Path $Repo ($Plug.dir -replace '/', '\')
+    $plugCdx = Join-Path $plugDir 'build-output' "$($Plug.name)-plug.cdx"
+    if ($Plug.name -eq 'c#') { $plugCdx = Join-Path $plugDir 'build-output\csharp-plug.cdx' }
+    if (-not (Test-Path $plugCdx)) { return $null }
+
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, [int]$Plug.port)
+    $listener.Start()
+    $console = Join-Path $CacheDir "sidecar-$($Plug.name)-console.txt"
+    $stderr  = Join-Path $CacheDir "sidecar-$($Plug.name)-stderr.txt"
+    $proc = Start-PlugVm -Kernel $plugCdx -ConsoleFile $console -StderrFile $stderr -MemMB 3072
+    Register-SidecarPid $proc.Id
+    Write-Host "[prism] $($Plug.name) sidecar up, VM pid $($proc.Id) on $($Plug.port)" -ForegroundColor DarkGray
+
+    $sc = @{ proc = $proc; listener = $listener; served = 0 }
+    $script:Sidecars[$Plug.name] = $sc
+    return $sc
+}
+
+function Invoke-SidecarPlug([hashtable]$Plug, [string]$IrFile) {
+    $sc = Get-Sidecar $Plug
+    if (-not $sc) { return "Plug CDX not built for $($Plug.name)." }
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($CompileWallMs)
+    while (-not $sc.listener.Pending()) {
+        if ($sc.proc.HasExited) { Stop-Sidecar $sc; $script:Sidecars.Remove($Plug.name); return "Plug $($Plug.name) sidecar exited before connecting." }
+        if ([DateTime]::UtcNow -gt $deadline) { Stop-Sidecar $sc; $script:Sidecars.Remove($Plug.name); return "Plug $($Plug.name) did not connect within the budget." }
+        Start-Sleep -Milliseconds 20
+    }
+
+    $client = $sc.listener.AcceptTcpClient()
+    try {
+        $stream = $client.GetStream()
+        $bytes = [System.IO.File]::ReadAllBytes($IrFile)
+        # plug-run.ps1's framing: a 4-byte length that COUNTS the tag, then the
+        # tag, then the IR. The reply carries no header at all and ends when
+        # the guest closes.
+        $hdr = [byte[]]::new(5)
+        [Array]::Copy([BitConverter]::GetBytes([int]($bytes.Length + 1)), 0, $hdr, 0, 4)
+        $hdr[4] = $SidecarTagServeAgain
+        $stream.Write($hdr, 0, 5)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush()
+
+        $stream.ReadTimeout = $CompileWallMs
+        $acc = [System.IO.MemoryStream]::new(65536)
+        $buf = [byte[]]::new(8192)
+        while ($true) {
+            $n = $stream.Read($buf, 0, $buf.Length)
+            if ($n -le 0) { break }
+            $acc.Write($buf, 0, $n)
+        }
+        $sc.served = $sc.served + 1
+        if ($acc.Length -eq 0) { return "Plug $($Plug.name) produced no output." }
+        return [System.Text.Encoding]::UTF8.GetString($acc.ToArray())
+    } catch {
+        Stop-Sidecar $sc
+        $script:Sidecars.Remove($Plug.name)
+        return "Plug $($Plug.name) failed: $_"
+    } finally {
+        $client.Close()
+    }
+}
+
+function Invoke-PlugWithIr([string]$PlugName, [string]$IrFile, [string]$WorkDir) {
+    $plug = $PlugTargets | Where-Object { $_.name -eq $PlugName }
+    if (-not $plug) { return $null }
+    $plugDir = Join-Path $Repo ($plug.dir -replace '/', '\')
+    $runScript = Join-Path $plugDir 'run.ps1'
+    if (-not (Test-Path $runScript)) { return "Plug run.ps1 not found at $plugDir" }
+    $outFile = Join-Path $WorkDir "plug-$PlugName-out.txt"
+    Write-Host "[prism] Running $PlugName plug (shared IR)..." -ForegroundColor Yellow
+    try {
+        $finished = Invoke-Bounded $runScript @('-Ir', $IrFile, '-Out', $outFile) $CompileWallMs
+        if (-not $finished) { return "Plug $PlugName exceeded the $([int]($CompileWallMs / 1000)) s budget." }
+        if ((Test-Path $outFile) -and (Get-Item $outFile).Length -gt 0) {
+            $output = [System.IO.File]::ReadAllText($outFile)
+            Write-Host "[prism]   -> $PlugName OK ($($output.Length) chars)" -ForegroundColor Green
+            return $output
+        }
+        return "Plug produced no output. The plug CDX may need rebuilding."
+    } catch {
+        Write-Host "[prism]   -> $PlugName failed: $_" -ForegroundColor Red
+        return "Plug failed: $_"
+    }
+}
+
 function Invoke-PlugOnSource([string]$PlugName, [string]$Source, [string]$WorkDir) {
     $plug = $PlugTargets | Where-Object { $_.name -eq $PlugName }
     if (-not $plug) { return $null }
@@ -347,16 +546,22 @@ async function compileAll(){
     document.getElementById('status').textContent='IR ready ('+d.irLines+' lines). Fetching plugs...';
     showOutput();
     var plugs=['python','javascript','rust','haskell','go','c#'];
-    for(var p of plugs){
-      setTabLoading(p,true);
-      try{
-        const pr=await fetch('/api/plug',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:buffer,plug:p})});
-        const pd=await pr.json();
-        outputs[p]=pd.output||pd.error||pd.note||'No output';
-      }catch(e){outputs[p]='Request failed: '+e;}
-      setTabLoading(p,false);
-      if(currentTab===p)showOutput();
+    // One request, one text-plug compile, six plug runs. The old loop asked
+    // /api/plug once per plug and every one of those compiled the same source
+    // again, so a press paid six compiles to get six outputs.
+    plugs.forEach(p=>setTabLoading(p,true));
+    document.getElementById('status').textContent='IR ready ('+d.irLines+' lines). Running '+plugs.length+' plugs...';
+    try{
+      const pr=await fetch('/api/plugs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:buffer})});
+      const pd=await pr.json();
+      for(var p of plugs){
+        outputs[p]=(pd.outputs&&pd.outputs[p])||pd.error||'No output';
+        setTabLoading(p,false);
+      }
+    }catch(e){
+      for(var p of plugs){outputs[p]='Request failed: '+e;setTabLoading(p,false);}
     }
+    showOutput();
     document.getElementById('status').textContent='Done.';
   }catch(e){document.getElementById('status').textContent='Error: '+e;}
   btn.textContent='Compile';btn.disabled=false;
@@ -405,6 +610,10 @@ loadFiles();
 '@
 
 # ── HTTP Server ──────────────────────────────────────────────
+# Before binding anything: a sidecar VM from a hard-killed earlier run is still
+# holding its plug's port, and this is the only place that can clear it.
+Remove-StaleSidecars
+
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://localhost:$Port/")
 $listener.Start()
@@ -505,6 +714,43 @@ try {
                     }
                 }
             }
+            elseif ($path -eq '/api/plugs') {
+                $reader = [System.IO.StreamReader]::new($ctx.Request.InputStream)
+                $body = $reader.ReadToEnd(); $reader.Close()
+                $source = Read-BodyMember $body 'source'
+
+                if (-not $source) {
+                    Send-Json -Response $resp -Json '{"error":"missing source"}' -Status 400
+                } else {
+                    $work = New-RequestDir
+                    try {
+                        $compSw = [Diagnostics.Stopwatch]::StartNew()
+                        $irFile = Compile-SourceToPlugIr $source $work
+                        Write-Host ("[prism]   {0,-11} {1,6} ms" -f 'text-plug IR', [int]$compSw.Elapsed.TotalMilliseconds) -ForegroundColor DarkGray
+                        if (-not $irFile) {
+                            Send-Json -Response $resp -Json '{"error":"the plug pipeline could not compile this program"}' -Status 200
+                        } else {
+                            # Per-plug elapsed, because a press-level number
+                            # cannot say which leg is the cost and this box is
+                            # shared with other agents' VMs.
+                            $parts = @()
+                            foreach ($t in $PlugTargets) {
+                                $legSw = [Diagnostics.Stopwatch]::StartNew()
+                                if ($t.sidecar) { $out = Invoke-SidecarPlug $t $irFile }
+                                else { $out = Invoke-PlugWithIr $t.name $irFile $work }
+                                if (-not $out) { $out = "Plug $($t.name) not available" }
+                                Write-Host ("[prism]   {0,-11} {1,6} ms {2}" -f $t.name, [int]$legSw.Elapsed.TotalMilliseconds, $(if ($t.sidecar) { 'sidecar' } else { 'run-once' })) -ForegroundColor DarkGray
+                                $parts += "$(ConvertTo-JsonString $t.name):$(ConvertTo-JsonString $out)"
+                            }
+                            Send-Json -Response $resp -Json "{`"outputs`":{$($parts -join ',')}}"
+                        }
+                    } catch {
+                        Send-Json -Response $resp -Json "{`"error`":$(ConvertTo-JsonString "Plug fan-out failed: $_")}" -Status 500
+                    } finally {
+                        Remove-RequestDir $work
+                    }
+                }
+            }
             else {
                 $resp.StatusCode = 404
                 $buf = [System.Text.Encoding]::UTF8.GetBytes('Not found')
@@ -520,6 +766,9 @@ try {
         }
     }
 } finally {
+    # A sidecar VM outlives a request by design, so it has to be killed here or
+    # it outlives the server too.
+    Stop-AllSidecars
     $listener.Stop(); $listener.Close()
     Write-Host "Server stopped." -ForegroundColor Yellow
 }
