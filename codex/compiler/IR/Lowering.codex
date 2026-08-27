@@ -1314,13 +1314,32 @@ Section: Collections and Act
 
   lower-empty-list : CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-empty-list (ty) (ctx) (sp) =
-   let resolved = deep-resolve (ctx.ust) ty
+   let resolved = empty-list-element-source (deep-resolve (ctx.ust) ty) ctx sp
    in when resolved
     is LinkedListTy (e) ->
      let ll-ty = deck-record (LinkedListTy e)
      in deck-record (IrApply (deck-record (IrName "__linked-list-empty" (deck-record (FunTy int-ty-default empty-row ll-ty)) sp)) (deck-record (IrIntLit 0 sp)) ll-ty sp)
     is ListTy (e) -> deck-record (IrList [] e sp)
     is otherwise -> deck-record (IrList [] ErrorTy sp)
+
+ WHEN THE CONTEXT SAYS NOTHING, ASK THE CHECKER. An empty list literal has no
+ element to answer from, so its element type comes from somewhere else
+ entirely -- a declared parameter it is passed to, a signature one line down.
+ The checker solves that and files it under the literal's span; `infer-list`
+ does the filing. This asks for it, and ONLY when the context supplied no list
+ type of its own: when it did, `resolved` is what it always was and every line
+ below is unchanged.
+
+ Without this the `is otherwise` arm emits `ErrorTy` as the element type of a
+ list the compiler had fully resolved, and that reaches a plug as
+ `(list error)` on a program reported clean.
+
+  empty-list-element-source : CodexType, LowerCtx, SourceSpan -> CodexType
+  empty-list-element-source (ctx-ty) (ctx) (sp) =
+   when ctx-ty
+    is ListTy (e) -> ctx-ty
+    is LinkedListTy (e) -> ctx-ty
+    is otherwise -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) sp)
 
   lower-nonempty-list : List AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-nonempty-list (elems) (ty) (ctx) (sp) =

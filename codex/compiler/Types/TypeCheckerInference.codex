@@ -1211,6 +1211,14 @@ Section: Lint value-expression range analysis
     is otherwise -> infer-literal st kind
 
 Section: Infer List
+ An EMPTY list literal answers with a fresh variable, because it has no
+ element to answer from. Unification then solves that variable from wherever
+ the literal is used -- a declared parameter one line down is enough -- and
+ the answer is filed under the literal's span so lowering can ask for it.
+ Without the filing, `lower-empty-list` has only the CONTEXT's expectation,
+ and when nothing above supplies one it emits `ErrorTy` for an element type
+ the checker had resolved.
+
   infer-list : UnificationState, TypeEnv, List AExpr, SourceSpan, Integer -> CheckResult
   infer-list (st0) (env) (elems) (span) (depth) =
    let st = if list-length elems > max-list-literal-elems
@@ -1222,7 +1230,7 @@ Section: Infer List
      in CheckResult {
       inferred-type = fr-ty,
       effect-row = empty-row,
-      state = fr-st
+      state = record-expr-type fr-st span fr-ty
      }
     else let first = infer-expr-at st env (list-at elems 0) (depth + 1)
     in let (elems-row, st2) = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems) (first.effect-row) depth
