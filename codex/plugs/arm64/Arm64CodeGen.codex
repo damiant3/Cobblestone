@@ -119,7 +119,8 @@ Section: Codegen State
    boot-fs-scope : Text,
    boot-net-scope : Text,
    deck-record-intrinsic : Boolean,
-   has-block-driver : Boolean
+   has-block-driver : Boolean,
+   ir-defs : List IRDef
   }
 
   A64State = record {
@@ -228,7 +229,8 @@ Section: State Constructors
      boot-fs-scope = "",
      boot-net-scope = "",
      deck-record-intrinsic = False,
-     has-block-driver = False
+     has-block-driver = False,
+     ir-defs = []
     },
     current-func = "",
     tco = default-a64-tco,
@@ -660,6 +662,20 @@ Section: NOP Compaction
     state = a64-emit (tr.state) (arm64-ldr (tr.reg) a64-sp offset),
     reg = tr.reg
    }
+
+ A stack-passed argument must NOT be staged through a rotating temp. The
+ temp pool is x12 through x15 and the staging registers are x10 + slot, so
+ slots 2 and 3 ARE pool registers: whenever the rotation lands on one that
+ already holds a staged slot, that slot is destroyed before it is stored.
+ Measured 2026-08-27 at Arm64StackArgClobber.codex, where one extra temp
+ earlier in the caller shifted the rotation by one and produced
+ `mov x12, x15` followed immediately by `ldr x12, [sp, #424]`.
+
+  a64-load-local-into : A64State, Integer, Integer -> A64State
+  a64-load-local-into (st) (local) (reg) =
+   if local < a64-spill-base then
+    (if local == reg then st else a64-emit st (arm64-mov reg local))
+   else a64-emit st (arm64-ldr reg a64-sp ((local - a64-spill-base) * 8 + 96))
 
   a64-local-base : A64State, Integer -> A64EmitResult
   a64-local-base (st) (local) =

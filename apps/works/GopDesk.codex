@@ -95,6 +95,31 @@ Section: Palette and Layout
   dk-task-px (ds) (w) =
     let c = peek-32 ds dk-task-band-cell
     in if c <= 0 then dk-task-h * ui-wscale w else c
+
+ THE BAND'S EXTENT IS ACROSS ITS OWN AXIS, which is why `dk-task-px` is not
+ renamed for the vertical edges: on a horizontal band it is the height and on
+ a vertical one the width, and every caller wants the same thing of it, namely
+ how much of the glass the band takes away from the content box.
+
+ `dk-task-w` is the vertical band's floor and is not `dk-task-h`. A row of
+ pills sized by `comp-fit-text` decides a horizontal band's height from the
+ face; stacked in a column the same pills decide its WIDTH, and the widest of
+ them is what the floor has to clear rather than a line's leading.
+
+  dk-task-w : Integer = 120
+
+  dk-edge-bottom : Integer = 0
+  dk-edge-top : Integer = 1
+  dk-edge-left : Integer = 2
+  dk-edge-right : Integer = 3
+
+  dk-task-edge-cell : Integer = 168
+
+  dk-task-edge : Integer -> Integer
+  dk-task-edge (ds) = peek-32 ds dk-task-edge-cell
+
+  dk-task-vertical : Integer -> Boolean
+  dk-task-vertical (ds) = dk-task-edge ds >= dk-edge-left
   dk-win-w : Integer = 360
   dk-title-h : Integer = 20
   dk-body-y0 : Integer = 32
@@ -256,12 +281,14 @@ Section: Appearance That Survives A Reboot
   dk-set-scheme : Integer = 1
   dk-set-adorn : Integer = 2
   dk-set-sound : Integer = 3
+  dk-set-edge : Integer = 4
 
   dk-settings-keys : List SettingKey
   dk-settings-keys = [
     gst-int-key dk-set-scheme "colour scheme" 0 0 (dk-scheme-count - 1),
     gst-int-key dk-set-adorn "adornments" dk-adorn-default 0 15,
-    gst-int-key dk-set-sound "sounds" 0 0 1
+    gst-int-key dk-set-sound "sounds" 0 0 1,
+    gst-int-key dk-set-edge "task frame edge" dk-edge-bottom dk-edge-bottom dk-edge-right
   ]
 
   dk-settings-of : Integer -> SettingsStore
@@ -269,7 +296,8 @@ Section: Appearance That Survives A Reboot
     let s0 = gst-store dk-settings-keys
     in let s1 = gst-or-keep s0 (gst-set s0 dk-set-scheme (peek-32 ds dk-scheme-cell))
     in let s2 = gst-or-keep s1 (gst-set s1 dk-set-adorn (peek-32 ds dk-adorn-cell))
-    in gst-or-keep s2 (gst-set s2 dk-set-sound (peek-32 ds dk-sound-on-cell))
+    in let s3 = gst-or-keep s2 (gst-set s2 dk-set-sound (peek-32 ds dk-sound-on-cell))
+    in gst-or-keep s3 (gst-set s3 dk-set-edge (dk-task-edge ds))
 
   dk-settings-save : Integer -> [Device.Port] Boolean
   dk-settings-save (ds) = gst-save (dk-settings-of ds)
@@ -278,7 +306,8 @@ Section: Appearance That Survives A Reboot
   dk-settings-into (ds) (st) =
     let sp = poke-32 ds dk-scheme-cell (gst-get st dk-set-scheme 0)
     in let ap = poke-32 ds dk-adorn-cell (gst-get st dk-set-adorn dk-adorn-default)
-    in poke-32 ds dk-sound-on-cell (gst-get st dk-set-sound 0)
+    in let sn = poke-32 ds dk-sound-on-cell (gst-get st dk-set-sound 0)
+    in poke-32 ds dk-task-edge-cell (gst-get st dk-set-edge dk-edge-bottom)
 
 Section: Sound
 
@@ -424,30 +453,36 @@ Section: Window Metrics
  The welcome window is hand-drawn rather than laid out, so it is the one
  surface that has to do its own fitting. Its width in columns does not change
  with the scale, so its pixel height is the text height times the scale, and
- at scale 3 that is 1194 pixels against a 1080-pixel panel -- taller than the
- screen, with its title bar off the top. `dk-win-s` therefore picks the
- LARGEST scale that fits rather than trusting `ui-scale`.
+ a scale too large puts its title bar off the top of the screen. `dk-win-s`
+ therefore picks the LARGEST scale that fits rather than trusting `ui-scale`.
 
- It is centred in the CONTENT area, which since the sidebar went is the whole
- width of the glass.
+ ALL FOUR READ THE CONTENT BOX, and that is what makes this surface obey a
+ dockable band. They used to reserve the chrome themselves, in the frame's
+ OWN scale: a bottom band subtracted unconditionally, so a band docked to the
+ top put the frame into its strip, and `dk-task-h * s` against the box's
+ `ui-wscale` put it 28 pixels high at 1280x800 even at the bottom. `dk-win-x`
+ had learned the LEFT edge and not the right, being centred in the width
+ minus the left inset rather than in the box. `codex/test/apps/desk-welcome-box`
+ is the arm and it compares centres per axis, because the frame is 720 device
+ pixels in a 1280 box and mere containment answers yes under every one of
+ those.
 
-  dk-win-fits : Integer, GopFont, Integer -> Boolean
-  dk-win-fits (h) (tf) (s) = dk-win-h tf s * s + dk-task-h * s + dk-bar-h * s <= h
+  dk-win-fits : Integer, Integer, GopFont, Integer, Integer -> Boolean
+  dk-win-fits (w) (h) (tf) (s) (ds) = dk-win-h tf s * s <= dk-cbox-h w h ds
 
-  dk-win-s : Integer, Integer, GopFont -> Integer
-  dk-win-s (w) (h) (tf) =
+  dk-win-s : Integer, Integer, GopFont, Integer -> Integer
+  dk-win-s (w) (h) (tf) (ds) =
     let s = ui-scale w
-    in if dk-win-fits h tf s then s
-    else if s > 1 & dk-win-fits h tf (s - 1) then s - 1
+    in if dk-win-fits w h tf s ds then s
     else 1
 
-  dk-win-x : Integer, Integer -> Integer
-  dk-win-x (w) (s) =
-    let left = dk-cbox-x w
-    in left + (w - left - dk-win-w * s) / 2
+  dk-win-x : Integer, Integer, Integer -> Integer
+  dk-win-x (w) (s) (ds) =
+    dk-cbox-x w ds + (dk-cbox-w w ds - dk-win-w * s) / 2
 
-  dk-win-y : Integer, Integer, GopFont -> Integer
-  dk-win-y (h) (s) (tf) = dk-bar-h * s + (h - dk-bar-h * s - dk-task-h * s - dk-win-h tf s * s) / 2
+  dk-win-y : Integer, Integer, Integer, GopFont, Integer -> Integer
+  dk-win-y (w) (h) (s) (tf) (ds) =
+    dk-cbox-y w ds + (dk-cbox-h w h ds - dk-win-h tf s * s) / 2
 
 Section: RTC
 
@@ -602,10 +637,12 @@ Section: Chrome
     let mb = widget-button "menu" "   Cobblestone"
     in let menu = widget-set-flex (widget-set-min mb (mb.wn-min-w) (dk-task-btn-h tf ws)) 0
     in let tasks = widget-set-flex (widget-label "tasks" "") 1
-    in let clock = widget-set-min (widget-label "task-clock" "") desk-task-clock-w 0
+    in let clock = widget-set-min (widget-label "task-clock" "") (if dk-task-vertical ds then 0 else desk-task-clock-w) 0
     in let kids = dk-pills (peek-32 ds dk-wr-cell) ds 0 (list-push [] menu)
     in let kids2 = list-push (list-push kids tasks) clock
-    in widget-set-flex (widget-set-min (widget-panel "taskbar" DirRow 4 kids2) 0 dk-task-h) 0
+    in if dk-task-vertical ds
+      then widget-set-flex (widget-set-min (widget-panel "taskbar" DirColumn 4 kids2) dk-task-w 0) 0
+      else widget-set-flex (widget-set-min (widget-panel "taskbar" DirRow 4 kids2) 0 dk-task-h) 0
 
  The entry asks for one LINE, in logical units, and the engine adds the
  theme's padding around it. `dk-line-step` is the leading the wrapped
@@ -629,8 +666,8 @@ Section: Chrome
   dk-task-init (ds) (tf) (w) =
     let mk = __heap-save
     in let ws = ui-wscale w
-    in let m = widget-measure (desk-taskbar ds tf ws) (dk-theme-ds ds)
-    in let v = m.wn-min-h * ws
+    in let m = widget-measure (comp-fit-text (desk-taskbar ds tf ws) tf ws) (dk-theme-ds ds)
+    in let v = if dk-task-vertical ds then m.wn-min-w * ws else m.wn-min-h * ws
     in let d = __heap-restore mk
     in poke-32 ds dk-task-band-cell v
 
@@ -642,11 +679,36 @@ Section: Chrome
  `widget-layout` (`GopBrowser.codex`), and a cell fitted on one side of that
  pair and not the other puts a click on the wrong widget.
 
+  dk-topgap : Integer -> WidgetNode
+  dk-topgap (w) =
+    widget-set-flex (widget-set-min (widget-panel "topgap" DirColumn 0 []) 0 (dk-bar-h * ui-scale w / ui-wscale w)) 0
+
+ A SIDE BAND IS WRAPPED UNDER ITS OWN `topgap` RATHER THAN SPANNING THE ROOT.
+ The top bar is painted outside the widget tree, so a band placed as a bare
+ sibling of the content column at root level starts at y zero and the bar is
+ drawn over its first rows. Every edge therefore sits below the same gap, and
+ the two vertical arms differ from the two horizontal ones only in which
+ container the band is a child of.
+
   desk-chrome-face : WidgetNode, Integer, Integer, GopFont -> WidgetNode
   desk-chrome-face (content) (w) (ds) (tf) =
     let s = ui-wscale w
-    in let gap = widget-set-flex (widget-set-min (widget-panel "topgap" DirColumn 0 []) 0 (dk-bar-h * ui-scale w / ui-wscale w)) 0
-    in widget-panel "root" DirRow 0 [widget-set-flex (widget-panel "right" DirColumn 0 [gap, widget-set-flex content 1, comp-fit-text (desk-taskbar ds tf s) tf s]) 1]
+    in let gap = dk-topgap w
+    in let band = comp-fit-text (desk-taskbar ds tf s) tf s
+    in let body = widget-set-flex content 1
+    in let e = dk-task-edge ds
+    in if e == dk-edge-top then
+      widget-panel "root" DirRow 0 [widget-set-flex (widget-panel "right" DirColumn 0 [gap, band, body]) 1]
+    else if e == dk-edge-left then
+      widget-panel "root" DirRow 0 [
+        widget-set-flex (widget-panel "bandcol" DirColumn 0 [dk-topgap w, widget-set-flex band 1]) 0,
+        widget-set-flex (widget-panel "right" DirColumn 0 [gap, body]) 1]
+    else if e == dk-edge-right then
+      widget-panel "root" DirRow 0 [
+        widget-set-flex (widget-panel "right" DirColumn 0 [gap, body]) 1,
+        widget-set-flex (widget-panel "bandcol" DirColumn 0 [dk-topgap w, widget-set-flex band 1]) 0]
+    else
+      widget-panel "root" DirRow 0 [widget-set-flex (widget-panel "right" DirColumn 0 [gap, body, band]) 1]
 
   desk-chrome-with : WidgetNode, Integer, Integer -> WidgetNode
   desk-chrome-with (content) (w) (ds) = desk-chrome-face content w ds gfont-none
@@ -771,12 +833,12 @@ Section: Drawing
     in let bar = gop-fill-rect base stride 0 0 w (dk-bar-h * s) (pal.pal-border)
     in desk-line base stride h font s tf (8 * s) (4 * s) "Cobblestone" (pal.pal-accent)
 
-  desk-window : Integer, Integer, Integer, Integer, CbfFont, Integer, GopFont, Integer -> Integer
-  desk-window (base) (w) (h) (stride) (font) (s0) (tf) (ds) =
+  desk-window : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> Integer
+  desk-window (base) (w) (h) (stride) (font) (tf) (ds) =
     let pal = dk-pal ds
-    in let s = dk-win-s w h tf
-    in let wx = dk-win-x w s
-    in let wy = dk-win-y h s tf
+    in let s = dk-win-s w h tf ds
+    in let wx = dk-win-x w s ds
+    in let wy = dk-win-y w h s tf ds
     in let cols = dk-wrap-cols s
     in let tx = wx + 10 * s
     in let body = gop-fill-rect base stride wx wy (dk-win-w * s) (dk-win-h tf s * s) (pal.pal-muted)
@@ -796,7 +858,7 @@ Section: Drawing
     in let ic = desk-chrome-icons base stride laid (dk-theme-ds ds) (ui-wscale w) tf ds
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in let bar = desk-topbar base w stride font s tf h ds
-    in let win = desk-window base w h stride font s tf ds
+    in let win = desk-window base w h stride font tf ds
     in laid
 
  The band carries a vertical gradient under the default adornments, so a flat
@@ -1473,9 +1535,9 @@ Section: Calculator
     in let blk = peek-32 ds 24
     in let st = dk-wnd-st blk
     in let bh = dk-wnd-bar-h tf s
-    in let wx = dk-wnd-rx blk w st
+    in let wx = dk-wnd-rx blk w st ds
     in let wy = dk-wnd-ry blk w h st ds + bh
-    in let ww = dk-wnd-rw blk w st
+    in let ww = dk-wnd-rw blk w st ds
     in let wh = dk-wnd-rh blk w h st ds - bh
     in let laid = widget-layout (gcalc-tree ks) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
@@ -1635,26 +1697,32 @@ Section: Windows
  DEVICE pixels, because a window rectangle is a screen fact and the two
  scales the desk carries disagree below 1600.
 
- The content box is what the chrome leaves: below the top bar, above the
- taskbar, and the full width of the glass since the sidebar went. The window
- is three quarters of it, centred, so the desktop shows around it and the
- thing reads as a window rather than as a pane with a stripe on top.
+ The content box is what the chrome leaves: below the top bar, and clear of
+ the band on whichever edge the band is docked to. The window is three
+ quarters of it, centred, so the desktop shows around it and the thing reads
+ as a window rather than as a pane with a stripe on top.
 
- It stays a function rather than becoming the literal zero its callers could
- inline, because every window's left edge and every pane's origin derive from
- it and `codex/test/apps/desk-pane-origin` asserts that they do.
+ ALL FOUR TAKE `ds` NOW, AND THAT IS THE WHOLE COST OF A DOCKABLE BAND. Three
+ of them were functions of the width alone and `dk-cbox-x` answered a literal
+ zero, which was true only while the band was always at the bottom. Every
+ window rectangle, every drag clamp, every maximise and the 3D viewport all
+ read the box through these four, so making them edge-aware moves all of it
+ and nothing else had to learn where the band is.
 
-  dk-cbox-x : Integer -> Integer
-  dk-cbox-x (w) = 0
+  dk-cbox-x : Integer, Integer -> Integer
+  dk-cbox-x (w) (ds) = if dk-task-edge ds == dk-edge-left then dk-task-px ds w else 0
 
-  dk-cbox-y : Integer -> Integer
-  dk-cbox-y (w) = dk-bar-h * ui-scale w
+  dk-cbox-y : Integer, Integer -> Integer
+  dk-cbox-y (w) (ds) =
+    dk-bar-h * ui-scale w + (if dk-task-edge ds == dk-edge-top then dk-task-px ds w else 0)
 
-  dk-cbox-w : Integer -> Integer
-  dk-cbox-w (w) = w - dk-cbox-x w
+  dk-cbox-w : Integer, Integer -> Integer
+  dk-cbox-w (w) (ds) =
+    w - dk-cbox-x w ds - (if dk-task-edge ds == dk-edge-right then dk-task-px ds w else 0)
 
   dk-cbox-h : Integer, Integer, Integer -> Integer
-  dk-cbox-h (w) (h) (ds) = h - dk-cbox-y w - dk-task-px ds w
+  dk-cbox-h (w) (h) (ds) =
+    h - dk-cbox-y w ds - (if dk-task-edge ds == dk-edge-bottom then dk-task-px ds w else 0)
 
  A maximised window is the content box exactly, so `x` and `y` need no arm of
  their own: they centre whatever width and height come back, and at the full
@@ -1680,17 +1748,17 @@ Section: Windows
   dk-wnd-minimised : Integer -> Boolean
   dk-wnd-minimised (blk) = dk-wnd-st blk == dk-wnd-st-min
 
-  dk-wnd-w : Integer, Integer -> Integer
-  dk-wnd-w (w) (st) = if st == dk-wnd-st-max then dk-cbox-w w else dk-cbox-w w * 3 / 4
+  dk-wnd-w : Integer, Integer, Integer -> Integer
+  dk-wnd-w (w) (st) (ds) = if st == dk-wnd-st-max then dk-cbox-w w ds else dk-cbox-w w ds * 3 / 4
 
   dk-wnd-h : Integer, Integer, Integer, Integer -> Integer
   dk-wnd-h (w) (h) (st) (ds) = if st == dk-wnd-st-max then dk-cbox-h w h ds else dk-cbox-h w h ds * 3 / 4
 
-  dk-wnd-x : Integer, Integer -> Integer
-  dk-wnd-x (w) (st) = dk-cbox-x w + (dk-cbox-w w - dk-wnd-w w st) / 2
+  dk-wnd-x : Integer, Integer, Integer -> Integer
+  dk-wnd-x (w) (st) (ds) = dk-cbox-x w ds + (dk-cbox-w w ds - dk-wnd-w w st ds) / 2
 
   dk-wnd-y : Integer, Integer, Integer, Integer -> Integer
-  dk-wnd-y (w) (h) (st) (ds) = dk-cbox-y w + (dk-cbox-h w h ds - dk-wnd-h w h st ds) / 2
+  dk-wnd-y (w) (h) (st) (ds) = dk-cbox-y w ds + (dk-cbox-h w h ds - dk-wnd-h w h st ds) / 2
 
  The four above are the DEFAULT rect and they answer from the screen alone, so
  every window they place lands on the same pixels. That is what a second
@@ -1753,23 +1821,23 @@ Section: Windows
   dk-cell-signed : Integer -> Integer
   dk-cell-signed (v) = if v >= 2147483648 then v - 4294967296 else v
 
-  dk-wnd-rx : Integer, Integer, Integer -> Integer
-  dk-wnd-rx (blk) (w) (st) =
-    if st == dk-wnd-st-max then dk-cbox-x w
+  dk-wnd-rx : Integer, Integer, Integer, Integer -> Integer
+  dk-wnd-rx (blk) (w) (st) (ds) =
+    if st == dk-wnd-st-max then dk-cbox-x w ds
     else if dk-wnd-placed blk then dk-cell-signed (peek-32 blk dk-wnd-rx-cell)
-    else dk-wnd-x w dk-wnd-st-normal
+    else dk-wnd-x w dk-wnd-st-normal ds
 
   dk-wnd-ry : Integer, Integer, Integer, Integer, Integer -> Integer
   dk-wnd-ry (blk) (w) (h) (st) (ds) =
-    if st == dk-wnd-st-max then dk-cbox-y w
+    if st == dk-wnd-st-max then dk-cbox-y w ds
     else if dk-wnd-placed blk then dk-cell-signed (peek-32 blk dk-wnd-ry-cell)
     else dk-wnd-y w h dk-wnd-st-normal ds
 
-  dk-wnd-rw : Integer, Integer, Integer -> Integer
-  dk-wnd-rw (blk) (w) (st) =
-    if st == dk-wnd-st-max then dk-cbox-w w
+  dk-wnd-rw : Integer, Integer, Integer, Integer -> Integer
+  dk-wnd-rw (blk) (w) (st) (ds) =
+    if st == dk-wnd-st-max then dk-cbox-w w ds
     else if dk-wnd-placed blk then peek-32 blk dk-wnd-rw-cell
-    else dk-wnd-w w dk-wnd-st-normal
+    else dk-wnd-w w dk-wnd-st-normal ds
 
   dk-wnd-rh : Integer, Integer, Integer, Integer, Integer -> Integer
   dk-wnd-rh (blk) (w) (h) (st) (ds) =
@@ -2172,7 +2240,7 @@ Section: What a windowed pane is
     else if fid == desk-focus-con then act gcon-tree (peek-32 ds desk-console-cell) end
     else if fid == desk-focus-prog then act gpr-tree (peek-32 ds desk-prog-cell) end
     else if fid == desk-focus-dif then act gdf-tree 0 end
-    else if fid == desk-focus-style then act dk-style-tree (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell) (peek-32 ds dk-sound-on-cell) end
+    else if fid == desk-focus-style then act dk-style-tree (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell) (peek-32 ds dk-sound-on-cell) (dk-task-edge ds) end
     else if fid == desk-focus-cal then act
       yy <- rtc-read 9
       mm <- rtc-read 8
@@ -2228,15 +2296,57 @@ Section: What a windowed pane is
   dk-wnd-span : Integer, Integer -> Integer
   dk-wnd-span (room) (step) = if room < step then 1 else room / step + 1
 
-  dk-wnd-cascade-x : Integer, Integer -> Integer
-  dk-wnd-cascade-x (n) (w) =
+  dk-wnd-cascade-x : Integer, Integer, Integer -> Integer
+  dk-wnd-cascade-x (n) (w) (ds) =
     let step = dk-wnd-step-px w
-    in int-mod n (dk-wnd-span (dk-cbox-w w / 8) step) * step
+    in int-mod n (dk-wnd-span (dk-cbox-w w ds / 8) step) * step
 
   dk-wnd-cascade-y : Integer, Integer, Integer, Integer -> Integer
   dk-wnd-cascade-y (n) (w) (h) (ds) =
     let step = dk-wnd-step-px w
     in int-mod n (dk-wnd-span (dk-cbox-h w h ds / 8) step) * step
+
+ MOVING THE BAND MOVES THE CONTENT BOX, AND A WINDOW ALREADY PLACED DOES NOT
+ KNOW. Its rect is a stored fact, so docking the band to the left leaves every
+ open window where it was and the band is painted over its left edge: the
+ window is not clipped, it is UNDERNEATH, which reads as a window that lost a
+ strip rather than as one that needs moving. A drag may leave the box on
+ purpose (`dk-drag-keep` is what makes that safe); an edge change is not the
+ user moving a window, so this pulls each one back inside rather than
+ preserving an overlap nobody asked for.
+
+ A MAXIMISED OR NEVER-PLACED WINDOW IS SKIPPED because both already derive
+ from the box: `dk-wnd-rx` answers the content box on the maximised arm and
+ the default arithmetic on the unplaced one, so writing a rect for either
+ would replace a value that follows the band with one that does not.
+
+ THE HIGH BOUND IS RAISED TO THE LOW ONE WHEN A WINDOW IS WIDER THAN THE BOX.
+ `dk-drag-clamp` takes the high bound when the value is above it, and with the
+ band on a vertical edge the box narrows by 280 device pixels at 1600, so a
+ window wider than what is left would otherwise be placed at a NEGATIVE offset
+ from the box's own origin.
+
+  dk-refit-clamp : Integer, Integer, Integer -> Integer
+  dk-refit-clamp (v) (lo) (hi) = dk-drag-clamp v lo (if hi < lo then lo else hi)
+
+  dk-wnd-refit-one : Integer, Integer, Integer, Integer -> Integer
+  dk-wnd-refit-one (fid) (w) (h) (ds) =
+    let blk = desk-wnd-blk fid ds
+    in let st = dk-wnd-st blk
+    in if st == dk-wnd-st-max then 0
+    else if dk-wnd-placed blk == False then 0
+    else let ww = dk-wnd-rw blk w st ds
+    in let wh = dk-wnd-rh blk w h st ds
+    in let nx = dk-refit-clamp (dk-wnd-rx blk w st ds) (dk-cbox-x w ds) (dk-cbox-x w ds + dk-cbox-w w ds - ww)
+    in let ny = dk-refit-clamp (dk-wnd-ry blk w h st ds) (dk-cbox-y w ds) (dk-cbox-y w ds + dk-cbox-h w h ds - wh)
+    in dk-wnd-place blk nx ny ww wh
+
+  dk-wnd-refit : Integer, Integer, Integer, Integer -> Integer
+  dk-wnd-refit (w) (h) (ds) (i) =
+    let ws = peek-32 ds dk-wr-cell
+    in if i >= dk-wr-count ws then 0
+    else let r = dk-wnd-refit-one (dk-wr-at ws i) w h ds
+    in dk-wnd-refit w h ds (i + 1)
 
  A PANE MAY NEED THE WHOLE CONTENT BOX AS ITS FIRST RECT, and the launcher is
  the one that does. Its tree is two columns of entries plus their group
@@ -2290,7 +2400,7 @@ Section: What a windowed pane is
     let blk = desk-wnd-blk fid ds
     in let st = dk-wnd-st blk
     in let bh = dk-wnd-bar-h tf s
-    in layout-rect (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds + bh) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds - bh)
+    in layout-rect (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds + bh) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds - bh)
 
   dk-wnd-wants-box : Integer -> Boolean
   dk-wnd-wants-box (fid) =
@@ -2302,11 +2412,11 @@ Section: What a windowed pane is
     in let n = dk-wr-count ws
     in let blk = desk-wnd-blk fid ds
     in let full = dk-wnd-wants-box fid
-    in let ox = if full then 0 else dk-wnd-cascade-x n w
+    in let ox = if full then 0 else dk-wnd-cascade-x n w ds
     in let oy = if full then 0 else dk-wnd-cascade-y n w h ds
     in let p = if dk-wnd-placed blk then 0
-       else if full then dk-wnd-place blk (dk-cbox-x w) (dk-cbox-y w) (dk-cbox-w w) (dk-cbox-h w h ds)
-       else dk-wnd-place blk (dk-wnd-x w dk-wnd-st-normal + ox) (dk-wnd-y w h dk-wnd-st-normal ds + oy) (dk-wnd-w w dk-wnd-st-normal) (dk-wnd-h w h dk-wnd-st-normal ds)
+       else if full then dk-wnd-place blk (dk-cbox-x w ds) (dk-cbox-y w ds) (dk-cbox-w w ds) (dk-cbox-h w h ds)
+       else dk-wnd-place blk (dk-wnd-x w dk-wnd-st-normal ds + ox) (dk-wnd-y w h dk-wnd-st-normal ds + oy) (dk-wnd-w w dk-wnd-st-normal ds) (dk-wnd-h w h dk-wnd-st-normal ds)
     in dk-wr-open ws fid
 
  One window, at the rect its own block says, focused if it is the top of the
@@ -2334,7 +2444,7 @@ Section: What a windowed pane is
     tree <- desk-wnd-tree fid ds base w h stride tf
     let blk = desk-wnd-blk fid ds
     in let st = dk-wnd-st blk
-    in let laid = dk-wnd-frame base w h stride font tf tree (desk-wnd-title fid) ds (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) focused
+    in let laid = dk-wnd-frame base w h stride font tf tree (desk-wnd-title fid) ds (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) focused
     in let ov = desk-wnd-over base stride (ui-wscale w) tf fid laid ds
     in laid
   end
@@ -2442,7 +2552,7 @@ Section: What a windowed pane is
       in let blk = desk-wnd-blk fid ds
       in let st = dk-wnd-st blk
       in if dk-wnd-minimised blk then desk-wnd-at w h mx my tf ds ws (i - 1)
-      else if dk-wnd-hit (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) mx my tf (ui-wscale w) /= dk-wnd-none then fid
+      else if dk-wnd-hit (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) mx my tf (ui-wscale w) /= dk-wnd-none then fid
       else desk-wnd-at w h mx my tf ds ws (i - 1)
 
 Section: Dragging a window by its titlebar
@@ -2541,7 +2651,7 @@ Section: Resize zones
         in if st == dk-wnd-st-max then dk-size-none
         else
           let g = dk-size-grip * ui-scale w
-          in dk-size-zone-rect (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) g mx my
+          in dk-size-zone-rect (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) g mx my
 
  OPPOSITE CORNERS SHARE A CURSOR, which is not an economy: the shape says which
  DIAGONAL the drag runs along, and top-left and bottom-right run along the same
@@ -2641,12 +2751,12 @@ Section: Resize zones
   dk-size-new-h : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   dk-size-new-h (z) (y0) (h0) (my) (minh) (w) (h) (ds) =
     if dk-size-top z then
-      let top = dk-cbox-y w
+      let top = dk-cbox-y w ds
       in let ty = if my < top then top else my
       in let nh = (y0 + h0) - ty
       in if nh < minh then minh else nh
     else if dk-size-bot z then
-      let bot = dk-cbox-y w + dk-cbox-h w h ds
+      let bot = dk-cbox-y w ds + dk-cbox-h w h ds
       in let by = if my > bot then bot else my
       in let nh = by - y0
       in if nh < minh then minh else nh
@@ -2764,6 +2874,188 @@ Section: The loop's own rate
   dk-drag-held : UsbMouse -> Boolean
   dk-drag-held (mouse) = bit-and (mouse-buttons mouse) 1 /= 0
 
+ A FLICK IS A DRAG THAT KEEPS GOING AFTER THE BUTTON COMES UP. Damian,
+ 2026-08-27: a drag for moving purposes usually stops after the mouse up but a
+ flick follows through in the direction of the edge to which the window pill
+ should be attached. Both halves are load-bearing and neither alone will do.
+ Release speed alone calls a brisk repositioning a flick, which throws away a
+ window the person was placing. Follow-through alone calls a release followed
+ by a reach for something else a flick, which is the commonest thing a hand
+ does after dropping a window.
+
+  dk-flick-p1-cell : Integer = 172
+  dk-flick-t1-cell : Integer = 176
+  dk-flick-p0-cell : Integer = 180
+  dk-flick-t0-cell : Integer = 184
+  dk-flick-cell : Integer = 188
+  dk-flick-dir-cell : Integer = 192
+  dk-flick-org-cell : Integer = 196
+  dk-flick-rt-cell : Integer = 200
+
+  dk-pt : Integer, Integer -> Integer
+  dk-pt (x) (y) = x * 65536 + y
+
+  dk-pt-x : Integer -> Integer
+  dk-pt-x (v) = v / 65536
+
+  dk-pt-y : Integer -> Integer
+  dk-pt-y (v) = v - dk-pt-x v * 65536
+
+ 700 DEVICE PIXELS A SECOND, 24 LOGICAL PIXELS OF FOLLOW-THROUGH, AND 300 ms
+ TO PRODUCE IT. The speed is a little under half a 1600-wide screen in a
+ second: a throw passes it and a careful placement does not. The reach is
+ scaled because it is a distance a hand makes rather than a count of pixels.
+ The window is long enough that a hand still moving at the release has time to
+ declare itself and short enough that a pointer moved later, for an unrelated
+ reason, has already stopped counting.
+
+  dk-flick-speed : Integer = 700
+  dk-flick-reach : Integer = 24
+  dk-flick-ms : Integer = 300
+
+ THE VELOCITY BASELINE IS TWO SAMPLES DEEP, AND ONE WILL NOT DO. The desk goes
+ round about 20,000 times a second idle while a mouse reports about 125, so a
+ baseline rolled every iteration is almost always the release position itself
+ and measures zero. A baseline rolled on a timer is degenerate whenever the
+ release lands just after a roll, which silently drops about one flick in
+ eight. Keeping the previous window as well as the current one makes the
+ measured interval always between one and two roll periods, so it is never
+ short and never stale.
+
+  dk-flick-roll : Integer = 40
+
+  dk-flick-begin : Integer, Integer, Integer, Integer -> Integer
+  dk-flick-begin (ds) (x) (y) (now) =
+    let a = poke-32 ds dk-flick-p1-cell (dk-pt x y)
+    in let b = poke-32 ds dk-flick-t1-cell now
+    in let c = poke-32 ds dk-flick-p0-cell (dk-pt x y)
+    in poke-32 ds dk-flick-t0-cell now
+
+ THE SAMPLE ROLLS ON A STILL POINTER TOO, and that is what makes a stop
+ readable. A baseline that advanced only when the window moved would hold the
+ last position the hand was moving at, so a person who slid a window, stopped,
+ and let go would release against a stale fast baseline and lose the window.
+
+  dk-flick-sample : Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-flick-sample (ds) (x) (y) (now) (tps) =
+    let el = bit-and (now - peek-32 ds dk-flick-t0-cell) dk-rate-mask
+    in if tps <= 0 then 0
+    else if el * 1000 < dk-flick-roll * tps then 0
+    else
+      let a = poke-32 ds dk-flick-p1-cell (peek-32 ds dk-flick-p0-cell)
+      in let b = poke-32 ds dk-flick-t1-cell (peek-32 ds dk-flick-t0-cell)
+      in let c = poke-32 ds dk-flick-p0-cell (dk-pt x y)
+      in let d = poke-32 ds dk-flick-t0-cell now
+      in 1
+
+ THE DOMINANT AXIS AND NOT THE DIAGONAL, because the thing being chosen is one
+ of four edges and a diagonal names none of them.
+
+  dk-flick-mag : Integer, Integer -> Integer
+  dk-flick-mag (dx) (dy) =
+    let ax = if dx < 0 then 0 - dx else dx
+    in let ay = if dy < 0 then 0 - dy else dy
+    in if ax >= ay then ax else ay
+
+  dk-flick-edge : Integer, Integer -> Integer
+  dk-flick-edge (dx) (dy) =
+    let ax = if dx < 0 then 0 - dx else dx
+    in let ay = if dy < 0 then 0 - dy else dy
+    in if ax >= ay then (if dx < 0 then dk-edge-left else dk-edge-right)
+       else (if dy < 0 then dk-edge-top else dk-edge-bottom)
+
+ A BOARD WITH NO HPET FLICKS NOTHING, which is a refusal rather than an
+ omission. Every arm of this gesture is a speed or a deadline, so without a
+ clock there is no reading to take, and the honest answer is that a drag is
+ always a drag there. `build/desk.ps1 -Rtc` pins the HPET, so a frozen-clock
+ capture cannot flick either.
+
+  dk-flick-fast : Integer, Integer, Integer, Integer -> Boolean
+  dk-flick-fast (dx) (dy) (el) (tps) =
+    if tps <= 0 then False
+    else if el <= 0 then False
+    else dk-flick-mag dx dy * tps >= dk-flick-speed * el
+
+  dk-flick-through : Integer, Integer, Integer, Integer -> Boolean
+  dk-flick-through (dir) (dx) (dy) (reach) =
+    if dir == dk-edge-left then 0 - dx >= reach
+    else if dir == dk-edge-right then dx >= reach
+    else if dir == dk-edge-top then 0 - dy >= reach
+    else dy >= reach
+
+  dk-flick-expired : Integer, Integer -> Boolean
+  dk-flick-expired (el) (tps) =
+    if tps <= 0 then True else el * 1000 > dk-flick-ms * tps
+
+ THREE STATES AND NOT A PASS OR A FAIL (L-STATES). A watch that answered a
+ boolean could not tell "the hand is still moving and has not reached far
+ enough yet" from "the window closed and this was a move", and those two are
+ the whole of what the gesture has to decide.
+
+ THE DEADLINE IS ASKED FIRST, and the order is the rule rather than an
+ accident of writing. Asked second, a follow-through that arrives after the
+ window still docks, which says the deadline is advisory. The step disarms on
+ the drop so it cannot reach that state anyway; the point is that the function
+ states the rule it is supposed to state.
+
+  dk-flick-wait : Integer = 0
+  dk-flick-dock : Integer = 1
+  dk-flick-drop : Integer = 2
+
+  dk-flick-verdict : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-flick-verdict (dir) (dx) (dy) (reach) (el) (tps) =
+    if dk-flick-expired el tps then dk-flick-drop
+    else if dk-flick-through dir dx dy reach then dk-flick-dock
+    else dk-flick-wait
+
+  dk-flick-fid : Integer -> Integer
+  dk-flick-fid (ds) = peek-32 ds dk-flick-cell
+
+ A PILL'S EDGE IS A PER-APP FACT, and it is keyed by focus id rather than by
+ registry index for the reason `dk-pills` already walks ids: the registry's
+ order is the z order and raising a window moves its entry, which once moved a
+ pill out from under the pointer that had just clicked it. An edge keyed by
+ index would inherit that; keyed by id it cannot.
+
+ STAGE 6.7.1 IS DELIBERATELY INERT. Every entry answers `dk-task-edge ds`
+ until something writes one, and nothing writes one yet, so the band and the
+ picture are unchanged.
+
+  dk-pedge-cell : Integer = 212
+
+  dk-pedge-slots : Integer = 17
+
+  dk-pedge-init : Integer -> Integer
+  dk-pedge-init (ds) = poke-32 ds dk-pedge-cell (alloc-zeroed (4 * dk-pedge-slots) 4)
+
+  dk-pedge-set : Integer, Integer, Integer -> Integer
+  dk-pedge-set (ds) (fid) (e) =
+    if fid < 0 then 0
+    else if fid >= dk-pedge-slots then 0
+    else poke-32 (peek-32 ds dk-pedge-cell) (4 * fid) (e + 1)
+
+ ZERO IS UNWRITTEN AND NOT `dk-edge-bottom`, which is why the stored value is
+ the edge PLUS ONE. `alloc-zeroed` hands back zeros and `dk-edge-bottom` is 0,
+ so storing the edge raw makes "never flicked" and "flicked to the bottom" the
+ same reading. The offset is what lets the default fall through to the band.
+
+  dk-pedge-get : Integer, Integer -> Integer
+  dk-pedge-get (ds) (fid) =
+    if fid < 0 then dk-task-edge ds
+    else if fid >= dk-pedge-slots then dk-task-edge ds
+    else let v = peek-32 (peek-32 ds dk-pedge-cell) (4 * fid)
+    in if v == 0 then dk-task-edge ds else v - 1
+
+  dk-flick-arm : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-flick-arm (ds) (fid) (dir) (x) (y) (now) =
+    let a = poke-32 ds dk-flick-dir-cell dir
+    in let b = poke-32 ds dk-flick-org-cell (dk-pt x y)
+    in let c = poke-32 ds dk-flick-rt-cell now
+    in poke-32 ds dk-flick-cell fid
+
+  dk-flick-end : Integer -> Integer
+  dk-flick-end (ds) = poke-32 ds dk-flick-cell desk-focus-none
+
   dk-drag-clamp : Integer, Integer, Integer -> Integer
   dk-drag-clamp (v) (lo) (hi) =
     if v < lo then lo else if v > hi then hi else v
@@ -2805,7 +3097,7 @@ Section: The loop's own rate
 
   dk-drag-y : Integer, Integer, Integer, Integer, Integer -> Integer
   dk-drag-y (y) (wh) (w) (h) (ds) =
-    dk-drag-clamp y (dk-cbox-y w) (dk-cbox-y w + dk-cbox-h w h ds - wh)
+    dk-drag-clamp y (dk-cbox-y w ds) (dk-cbox-y w ds + dk-cbox-h w h ds - wh)
 
  WHERE THE WINDOW GOES FOR A POINTER AT `mx`, `my`, which is the whole of the
  move and is named rather than written inline in the step. `desk-wnd-drag-step`
@@ -2886,14 +3178,22 @@ Section: The loop's own rate
     let fid = dk-drag-fid ds
     in let blk = desk-wnd-blk fid ds
     in let st = dk-wnd-st blk
-    in let ww = dk-wnd-rw blk w st
+    in let ww = dk-wnd-rw blk w st ds
     in let wh = dk-wnd-rh blk w h st ds
-    in let ox = dk-wnd-rx blk w st
+    in let ox = dk-wnd-rx blk w st ds
     in let oy = dk-wnd-ry blk w h st ds
     in if dk-drag-held mouse == False then act
       hd <- act cursor-hide cs base stride end
       let e = gop-xor-frame base stride w h ox oy ww wh dk-drag-edge
+      in let now = hpet-ticks
+      in let bp = peek-32 ds dk-flick-p1-cell
+      in let vx = mouse-x mouse - dk-pt-x bp
+      in let vy = mouse-y mouse - dk-pt-y bp
+      in let el = bit-and (now - peek-32 ds dk-flick-t1-cell) dk-rate-mask
       in let d = dk-drag-end ds
+      in let f = if dk-flick-fast vx vy el hpet-ticks-per-second
+        then dk-flick-arm ds fid (dk-flick-edge vx vy) (mouse-x mouse) (mouse-y mouse) now
+        else 0
       in act
         r <- desk-wnd-paint-all base w h stride font tf ds
         c <- act dk-cursor base w h stride cs mouse end
@@ -2901,7 +3201,8 @@ Section: The loop's own rate
       end
     end
     else
-      let nx = dk-drag-to-x ds (mouse-x mouse) ww w
+      let s = dk-flick-sample ds (mouse-x mouse) (mouse-y mouse) hpet-ticks hpet-ticks-per-second
+      in let nx = dk-drag-to-x ds (mouse-x mouse) ww w
       in let ny = dk-drag-to-y ds (mouse-y mouse) wh w h
       in if nx == ox & ny == oy then act desk-wnd-ev-stay end
       else act
@@ -2914,6 +3215,42 @@ Section: The loop's own rate
           desk-wnd-ev-stay
         end
       end
+
+ THE WATCH IS PURE, AND THAT IS WHY THE GESTURE HAS AN ARM AT ALL. It reads
+ the pointer, the armed direction and a tick it is handed, and it answers one
+ of the three events the chrome step already speaks. Nothing here touches a
+ screen, so `codex/test/apps/desk-window-flick` drives this function itself
+ rather than a shadow of its arithmetic.
+
+ A FLICK ENDS AS A MINIMISE, WHICH IS THE DOCK THE DESK ALREADY HAS.
+ `desk-wnd-ev-min` reaches `desk-step-hide` in all fourteen windowed panes and
+ leaves the pane alive with its state and its mark, and `desk-taskbar` builds
+ the pill from the registry. The window returns to the rectangle it was
+ flicked from, because a flick never moved it: the drag did, and the release
+ committed that.
+
+ THE DIRECTION IS MEASURED AND CURRENTLY UNSPENT. Every edge answers the same
+ dock, because a pill lives in the task band and the band is on one edge at a
+ time. It is recorded rather than discarded so that per-edge docking, if it is
+ wanted, is a placement question and not a re-measurement of the gesture.
+
+  desk-wnd-flick-step : Integer, Integer, UsbMouse, Integer -> Integer
+  desk-wnd-flick-step (w) (ds) (mouse) (now) =
+    let fid = dk-flick-fid ds
+    in let dir = peek-32 ds dk-flick-dir-cell
+    in let org = peek-32 ds dk-flick-org-cell
+    in let dx = mouse-x mouse - dk-pt-x org
+    in let dy = mouse-y mouse - dk-pt-y org
+    in let el = bit-and (now - peek-32 ds dk-flick-rt-cell) dk-rate-mask
+    in let v = dk-flick-verdict dir dx dy (dk-flick-reach * ui-scale w) el hpet-ticks-per-second
+    in if v == dk-flick-dock then
+      let e = dk-flick-end ds
+      in let m = poke-32 (desk-wnd-blk fid ds) dk-wnd-st-cell dk-wnd-st-min
+      in desk-wnd-ev-min
+    else if v == dk-flick-drop then
+      let e = dk-flick-end ds
+      in desk-wnd-ev-stay
+    else desk-wnd-ev-stay
 
  THE RESIZE STEP IS THE DRAG STEP WITH A RECTANGLE INSTEAD OF AN ORIGIN, and
  it is a second function rather than an arm inside the first because the two
@@ -2930,9 +3267,9 @@ Section: The loop's own rate
     in let fid = peek-32 ds dk-size-fid-cell
     in let blk = desk-wnd-blk fid ds
     in let st = dk-wnd-st blk
-    in let ox = dk-wnd-rx blk w st
+    in let ox = dk-wnd-rx blk w st ds
     in let oy = dk-wnd-ry blk w h st ds
-    in let ow = dk-wnd-rw blk w st
+    in let ow = dk-wnd-rw blk w st ds
     in let oh = dk-wnd-rh blk w h st ds
     in if dk-drag-held mouse == False then act
       hd <- act cursor-hide cs base stride end
@@ -3005,10 +3342,12 @@ Section: The window chrome's own step
     in let blk = desk-wnd-blk fid ds
     in let st = dk-wnd-st blk
     in let onto = if clicked then desk-wnd-at w h (mouse-x mouse) (mouse-y mouse) tf ds ws (dk-wr-count ws - 1) else desk-focus-none
-    in let btn = if clicked & onto == fid then dk-wnd-hit (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) (mouse-x mouse) (mouse-y mouse) tf (ui-wscale w) else dk-wnd-none
-    in let zone = if clicked & fid == dk-wr-visible ws ds & st /= dk-wnd-st-max then dk-size-zone-rect (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) (dk-size-grip * ui-scale w) (mouse-x mouse) (mouse-y mouse) else dk-size-none
+    in let btn = if clicked & onto == fid then dk-wnd-hit (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) (mouse-x mouse) (mouse-y mouse) tf (ui-wscale w) else dk-wnd-none
+    in let zone = if clicked & fid == dk-wr-visible ws ds & st /= dk-wnd-st-max then dk-size-zone-rect (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) (dk-size-grip * ui-scale w) (mouse-x mouse) (mouse-y mouse) else dk-size-none
+    in let fd = if dk-flick-fid ds /= desk-focus-none & (clicked | dk-flick-fid ds /= fid) then dk-flick-end ds else 0
     in if dk-size-active ds /= dk-size-none then desk-wnd-size-step base w h stride font tf mouse ds cs
     else if dk-drag-fid ds /= desk-focus-none then desk-wnd-drag-step base w h stride font tf mouse ds cs
+    else if dk-flick-fid ds /= desk-focus-none then act desk-wnd-flick-step w ds mouse hpet-ticks end
     else if sc == desk-wnd-key-cycle & dk-wr-count ws > 1 then act
       let t = dk-wr-cycle ws
       in let f = poke-32 ds desk-focus-cell t
@@ -3042,8 +3381,8 @@ Section: The window chrome's own step
 
     else if zone /= dk-size-none then act
       hd <- act cursor-hide cs base stride end
-      let g = dk-size-begin ds fid zone (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds)
-      in let o = gop-xor-frame base stride w h (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) dk-drag-edge
+      let g = dk-size-begin ds fid zone (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds)
+      in let o = gop-xor-frame base stride w h (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) dk-drag-edge
       in act
         c <- act dk-cursor base w h stride cs mouse end
         desk-wnd-ev-stay
@@ -3054,11 +3393,12 @@ Section: The window chrome's own step
       in let f = poke-32 ds desk-focus-cell t
       in let ob = desk-wnd-blk onto ds
       in let ost = dk-wnd-st ob
-      in let ohit = dk-wnd-hit (dk-wnd-rx ob w ost) (dk-wnd-ry ob w h ost ds) (dk-wnd-rw ob w ost) (dk-wnd-rh ob w h ost ds) (mouse-x mouse) (mouse-y mouse) tf (ui-wscale w)
-      in let g = if ohit == dk-wnd-bar & ost /= dk-wnd-st-max then dk-drag-begin ds onto (mouse-x mouse - dk-wnd-rx ob w ost) (mouse-y mouse - dk-wnd-ry ob w h ost ds) else 0
+      in let ohit = dk-wnd-hit (dk-wnd-rx ob w ost ds) (dk-wnd-ry ob w h ost ds) (dk-wnd-rw ob w ost ds) (dk-wnd-rh ob w h ost ds) (mouse-x mouse) (mouse-y mouse) tf (ui-wscale w)
+      in let g = if ohit == dk-wnd-bar & ost /= dk-wnd-st-max then dk-drag-begin ds onto (mouse-x mouse - dk-wnd-rx ob w ost ds) (mouse-y mouse - dk-wnd-ry ob w h ost ds) else 0
+      in let fb = if dk-drag-fid ds /= desk-focus-none then dk-flick-begin ds (mouse-x mouse) (mouse-y mouse) hpet-ticks else 0
       in if dk-drag-fid ds /= desk-focus-none then act
         hd <- act cursor-hide cs base stride end
-        let o = gop-xor-frame base stride w h (dk-wnd-rx ob w ost) (dk-wnd-ry ob w h ost ds) (dk-wnd-rw ob w ost) (dk-wnd-rh ob w h ost ds) dk-drag-edge
+        let o = gop-xor-frame base stride w h (dk-wnd-rx ob w ost ds) (dk-wnd-ry ob w h ost ds) (dk-wnd-rw ob w ost ds) (dk-wnd-rh ob w h ost ds) dk-drag-edge
         in act
           c <- act dk-cursor base w h stride cs mouse end
           desk-wnd-ev-stay
@@ -3071,8 +3411,9 @@ Section: The window chrome's own step
     end
     else if btn == dk-wnd-bar & st /= dk-wnd-st-max then act
       hd <- act cursor-hide cs base stride end
-      let g = dk-drag-begin ds fid (mouse-x mouse - dk-wnd-rx blk w st) (mouse-y mouse - dk-wnd-ry blk w h st ds)
-      in let o = gop-xor-frame base stride w h (dk-wnd-rx blk w st) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st) (dk-wnd-rh blk w h st ds) dk-drag-edge
+      let g = dk-drag-begin ds fid (mouse-x mouse - dk-wnd-rx blk w st ds) (mouse-y mouse - dk-wnd-ry blk w h st ds)
+      in let fb = dk-flick-begin ds (mouse-x mouse) (mouse-y mouse) hpet-ticks
+      in let o = gop-xor-frame base stride w h (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) dk-drag-edge
       in act
         c <- act dk-cursor base w h stride cs mouse end
         desk-wnd-ev-stay
@@ -3340,9 +3681,9 @@ Section: Programs
     in let blk = peek-32 ds desk-prog-cell
     in let st = dk-wnd-st blk
     in let bh = dk-wnd-bar-h tf s
-    in let wx = dk-wnd-rx blk w st
+    in let wx = dk-wnd-rx blk w st ds
     in let wy = dk-wnd-ry blk w h st ds + bh
-    in let ww = dk-wnd-rw blk w st
+    in let ww = dk-wnd-rw blk w st ds
     in let wh = dk-wnd-rh blk w h st ds - bh
     in let laid = widget-layout (gpr-tree ps) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
@@ -3465,17 +3806,35 @@ Section: Programs
     in let rgap = widget-set-flex (widget-panel "sysmenu-rgap" DirColumn 0 []) 1
     in widget-panel "sysmenu-root" DirRow 0 [col, rgap]
 
-  desk-menu-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> Integer
-  desk-menu-draw (base) (w) (h) (stride) (font) (tf) (ps) (ds) =
-    let laid = dk-chrome-paint base w h stride font tf (desk-menu-tree ps tf (ui-wscale w)) ds
-    in let ic = desk-gpr-icons base stride laid (dk-theme-ds ds) (ui-wscale w) tf gpr-entries gpr-count (gpr-sel ps) 0 ds
-    in desk-topbar base w stride font (ui-scale w) tf h ds
+  dk-menu-laid : Integer, Integer, Integer, Integer, GopFont -> WidgetNode
+  dk-menu-laid (w) (h) (ps) (ds) (tf) =
+    let s = ui-wscale w
+    in widget-layout (desk-chrome-face (desk-menu-tree ps tf s) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
 
-  desk-menu-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer, Integer -> Integer
-  desk-menu-repaint (base) (w) (h) (stride) (font) (tf) (cs) (mouse) (ps) (ds) =
+  desk-menu-over : Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Integer, Integer -> Integer
+  desk-menu-over (base) (w) (stride) (font) (tf) (laid) (ps) (ds) =
+    when widget-find laid "sysmenu-body"
+      is None -> 0
+      is Just (mb) ->
+        let ws = ui-wscale w
+        in let r = comp-walk base stride (comp-mul-rect (mb.wn-bounds) ws) font tf mb (dk-theme-ds ds) ws
+        in let ic = desk-gpr-icons base stride laid (dk-theme-ds ds) ws tf gpr-entries gpr-count (gpr-sel ps) 0 ds
+        in desk-icon-on base stride laid (dk-theme-ds ds) ws tf "" desk-chrome-gutter "shutdown" "power" ds
+
+  desk-menu-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
+  desk-menu-draw (base) (w) (h) (stride) (font) (tf) (ps) (ds) = act
+    p <- desk-wnd-paint-all base w h stride font tf ds
+    desk-menu-over base w stride font tf (dk-menu-laid w h ps ds tf) ps ds
+  end
+
+  desk-menu-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer, Integer -> [Device.Port] Integer
+  desk-menu-repaint (base) (w) (h) (stride) (font) (tf) (cs) (mouse) (ps) (ds) = act
     let hd = cursor-hide cs base stride
-    in let p = desk-menu-draw base w h stride font tf ps ds
-    in dk-cursor base w h stride cs mouse
+    in act
+      p <- desk-menu-draw base w h stride font tf ps ds
+      dk-cursor base w h stride cs mouse
+    end
+  end
 
  NOT A SCANCODE, AND DELIBERATELY OUT OF THE RANGE OF ONE. A menu row answers
  the scancode the desk already dispatches for that pane, which is what keeps
@@ -3525,7 +3884,7 @@ Section: Programs
   dk-menu-hit (w) (h) (ps) (mx) (my) (ds) (tf) =
     let probe = __heap-save
     in let s = ui-wscale w
-    in let laid = widget-layout (desk-chrome-face (desk-menu-tree ps tf s) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let laid = dk-menu-laid w h ps ds tf
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
           is Just (wgt) ->
             if wgt.wn-id == "shutdown" then dk-sc-bye
@@ -3542,12 +3901,15 @@ Section: Programs
     let ps = peek-32 ds desk-prog-cell
     in let hit = if clicked then dk-menu-hit w h ps (mouse-x mouse) (mouse-y mouse) ds tf else 0
     in if hit == dk-sc-toggle then 0
-    else if hit >= dk-sc-group then
+    else if hit >= dk-sc-group then act
       let g = gpr-set-sel ps (hit - dk-sc-group)
       in let mark = __heap-save
-      in let p = desk-menu-repaint base w h stride font tf cs mouse ps ds
-      in let d = __heap-restore mark
-      in 1
+      in act
+        p <- desk-menu-repaint base w h stride font tf cs mouse ps ds
+        let d = __heap-restore mark
+        in 1
+      end
+    end
     else if hit /= 0 then hit
     else if sc == 88 then act
       let mark = __heap-save
@@ -3558,20 +3920,25 @@ Section: Programs
       end
     end
     else if sc == 0 then 1
-    else
+    else act
       let mark = __heap-save
-      in let p = desk-menu-repaint base w h stride font tf cs mouse ps ds
-      in let d = __heap-restore mark
-      in 1
+      in act
+        p <- desk-menu-repaint base w h stride font tf cs mouse ps ds
+        let d = __heap-restore mark
+        in 1
+      end
+    end
 
   desk-menu-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-menu-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (ps) (apps) (root) = act
     hd <- cursor-hide cs base stride
     let e = gpr-ensure ps
-    in let p0 = desk-menu-draw base w h stride font tf ps ds
-    in let sf = poke-32 ds desk-focus-cell desk-focus-menu
-    in let c1 = dk-cursor base w h stride cs mouse
-    in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    in act
+      p0 <- desk-menu-draw base w h stride font tf ps ds
+      let sf = poke-32 ds desk-focus-cell desk-focus-menu
+      in let c1 = dk-cursor base w h stride cs mouse
+      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    end
   end
 
   desk-programs-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
@@ -3668,9 +4035,9 @@ Section: Issues
     in let blk = peek-32 ds dk-trk-cell
     in let st = dk-wnd-st blk
     in let bh = dk-wnd-bar-h tf s
-    in let wx = dk-wnd-rx blk w st
+    in let wx = dk-wnd-rx blk w st ds
     in let wy = dk-wnd-ry blk w h st ds + bh
-    in let ww = dk-wnd-rw blk w st
+    in let ww = dk-wnd-rw blk w st ds
     in let wh = dk-wnd-rh blk w h st ds - bh
     in let measured = widget-layout (gtk-tree srv filter sel (0 - 1) 0) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
     in let bw = when widget-find measured "issues"
@@ -3703,9 +4070,9 @@ Section: Issues
     in let blk = peek-32 ds dk-trk-cell
     in let st = dk-wnd-st blk
     in let bh = dk-wnd-bar-h tf s
-    in let wx = dk-wnd-rx blk w st
+    in let wx = dk-wnd-rx blk w st ds
     in let wy = dk-wnd-ry blk w h st ds + bh
-    in let ww = dk-wnd-rw blk w st
+    in let ww = dk-wnd-rw blk w st ds
     in let wh = dk-wnd-rh blk w h st ds - bh
     in let laid = widget-layout (gtk-tree srv filter sel (box.lr-h) (box.lr-w)) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
     in let row = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
@@ -3970,9 +4337,16 @@ Section: Diffusion
 
 Section: Appearance Pane
 
-  dk-style-tree : Integer, Integer, Integer -> WidgetNode
-  dk-style-tree (scheme) (f) (snd) =
-    widget-panel "style" DirColumn 4 [widget-label "style-title" "APPEARANCE", widget-button "style-scheme" ("Colour scheme: " & dk-scheme-name scheme), widget-button "style-border" ("Borders: " & dk-on-off f dk-adorn-border), widget-button "style-grad" ("Gradients: " & dk-on-off f dk-adorn-gradient), widget-button "style-shadow" ("Shadows: " & dk-on-off f dk-adorn-shadow), widget-button "style-round" ("Rounded corners: " & dk-on-off f dk-adorn-round), widget-button "style-sound" ("Sounds: " & dk-sound-name snd), widget-label "style-hint" "Click a row, or space b g s r a.", widget-set-flex (widget-label "style-spacer" "") 1]
+  dk-edge-name : Integer -> Text
+  dk-edge-name (e) =
+    if e == dk-edge-top then "top"
+    else if e == dk-edge-left then "left"
+    else if e == dk-edge-right then "right"
+    else "bottom"
+
+  dk-style-tree : Integer, Integer, Integer, Integer -> WidgetNode
+  dk-style-tree (scheme) (f) (snd) (edge) =
+    widget-panel "style" DirColumn 4 [widget-label "style-title" "APPEARANCE", widget-button "style-scheme" ("Colour scheme: " & dk-scheme-name scheme), widget-button "style-border" ("Borders: " & dk-on-off f dk-adorn-border), widget-button "style-grad" ("Gradients: " & dk-on-off f dk-adorn-gradient), widget-button "style-shadow" ("Shadows: " & dk-on-off f dk-adorn-shadow), widget-button "style-round" ("Rounded corners: " & dk-on-off f dk-adorn-round), widget-button "style-sound" ("Sounds: " & dk-sound-name snd), widget-button "style-edge" ("Task frame: " & dk-edge-name edge), widget-label "style-hint" "Click a row, or space b g s r a e.", widget-set-flex (widget-label "style-spacer" "") 1]
 
   dk-sound-name : Integer -> Text
   dk-sound-name (v) = if v == 0 then "off" else "on"
@@ -3985,6 +4359,7 @@ Section: Appearance Pane
     else if id == "style-shadow" then 4
     else if id == "style-round" then 5
     else if id == "style-sound" then 6
+    else if id == "style-edge" then 7
     else 0
 
   dk-style-key : Integer -> Integer
@@ -3995,6 +4370,7 @@ Section: Appearance Pane
     else if sc == 31 then 4
     else if sc == 19 then 5
     else if sc == 30 then 6
+    else if sc == 18 then 7
     else 0
 
  IT LAYS THE TREE OUT WHERE THE PAINTER PUT IT, which is the fifth thing a pane
@@ -4008,14 +4384,14 @@ Section: Appearance Pane
   dk-style-hit : Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
   dk-style-hit (w) (h) (mx) (my) (ds) (tf) =
     let probe = __heap-save
-    in let tree = dk-style-tree (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell) (peek-32 ds dk-sound-on-cell)
+    in let tree = dk-style-tree (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell) (peek-32 ds dk-sound-on-cell) (dk-task-edge ds)
     in let s = ui-wscale w
     in let blk = peek-32 ds dk-sty-cell
     in let st = dk-wnd-st blk
     in let bh = dk-wnd-bar-h tf s
-    in let wx = dk-wnd-rx blk w st
+    in let wx = dk-wnd-rx blk w st ds
     in let wy = dk-wnd-ry blk w h st ds + bh
-    in let ww = dk-wnd-rw blk w st
+    in let ww = dk-wnd-rw blk w st ds
     in let wh = dk-wnd-rh blk w h st ds - bh
     in let laid = widget-layout tree (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
@@ -4023,6 +4399,18 @@ Section: Appearance Pane
           is None -> 0
     in let dropped = __heap-restore probe
     in code
+
+ MOVING THE BAND REBUILDS THE DESK'S `root`, AND ANSWERING A SCANCODE IS THE
+ PATH THAT ALREADY DOES IT. Every other Appearance row changes colours, which
+ the repaint settles; the edge changes the LAYOUT, and `root` is the tree
+ `desk-taskbar-clock` re-renders the time into once a second. A stale one
+ paints the clock where the band used to be -- the same failure
+ `desk-app-hide` records one section up for a pill. `desk-app-close-to`
+ rebuilds `root` and then dispatches, so answering this pane's own launch
+ scancode moves the band, redraws the desk and reopens Appearance where the
+ user left it.
+
+  dk-sc-style : Integer = 30
 
   dk-style-flip : Integer, Integer -> Integer
   dk-style-flip (ds) (bit) = poke-32 ds dk-adorn-cell (dk-adorn-flip (peek-32 ds dk-adorn-cell) bit)
@@ -4035,6 +4423,7 @@ Section: Appearance Pane
     else if code == 4 then dk-style-flip ds dk-adorn-shadow
     else if code == 5 then dk-style-flip ds dk-adorn-round
     else if code == 6 then poke-32 ds dk-sound-on-cell (1 - peek-32 ds dk-sound-on-cell)
+    else if code == 7 then poke-32 ds dk-task-edge-cell (int-mod (dk-task-edge ds + 1) 4)
     else 0
 
   desk-style-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
@@ -4073,6 +4462,8 @@ Section: Appearance Pane
     else act
       let mark = __heap-save
       in let a = dk-style-apply ds code
+      in let rt = if code == 7 then dk-task-init ds tf w else 0
+      in let rf = if code == 7 then dk-wnd-refit w h ds 0 else 0
       in act
         sv <- dk-settings-save ds
         let hd = cursor-hide cs base stride
@@ -4080,7 +4471,7 @@ Section: Appearance Pane
           p <- desk-style-paint base w h stride font tf ds
           let c = dk-cursor base w h stride cs mouse
           in let d = __heap-restore mark
-          in 1
+          in if code == 7 then dk-sc-style else 1
         end
       end
     end
@@ -4493,7 +4884,7 @@ Section: The 3D panes
           in let s = ui-wscale w
           in let bh = dk-wnd-bar-h tf s
           in let st = dk-wnd-st blk
-          in let pl = gsc-place sp base stride (dk-wnd-rx blk w st + s) (dk-wnd-ry blk w h st ds + bh) (dk-wnd-rw blk w st - 2 * s) (dk-wnd-rh blk w h st ds - bh - s)
+          in let pl = gsc-place sp base stride (dk-wnd-rx blk w st ds + s) (dk-wnd-ry blk w h st ds + bh) (dk-wnd-rw blk w st ds - 2 * s) (dk-wnd-rh blk w h st ds - bh - s)
           in act
             r <- gsc-step base w h stride font kbd mouse cs build sp sc
             if r == gsc-step-hide then desk-step-hide else r
@@ -4531,7 +4922,7 @@ Section: The 3D panes
     in let ke = desk-browser-evict ds
     in let mp = desk-marks-push ms foc __heap-save
     in act
-    sp <- gsc-new base stride cs (dk-gpu ds) sky (dk-cbox-w w) (dk-cbox-h w h ds)
+    sp <- gsc-new base stride cs (dk-gpu ds) sky (dk-cbox-w w ds) (dk-cbox-h w h ds)
     let apps2 = DeskApps { da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit }
     in let o = desk-wnd-open foc w h ds
     in act
@@ -4581,8 +4972,10 @@ Section: The 3D panes
       t <- shot-take base w h stride
       let pal = dk-pal ds
       in let s = ui-scale w
-      in let bg = gop-fill-rect base stride (200 * s) (h - dk-task-px ds w + 4 * s) (300 * s) (16 * s) (pal.pal-muted)
-      in let tx = gop-draw-text base stride font (204 * s) (h - dk-task-px ds w + 6 * s) t (pal.pal-primary) s 0
+      in let vy = dk-cbox-y w ds + dk-cbox-h w h ds - 20 * s
+      in let vx = dk-cbox-x w ds + 200 * s
+      in let bg = gop-fill-rect base stride vx vy (300 * s) (16 * s) (pal.pal-muted)
+      in let tx = gop-draw-text base stride font (vx + 4 * s) (vy + 2 * s) t (pal.pal-primary) s 0
       in let d = __heap-restore mark
       in 0
     end
@@ -4597,8 +4990,8 @@ Section: The 3D panes
   desk-shutdown : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-shutdown (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
     r <- acpi-poweroff (acpi-boot 0)
-    let s = dk-win-s w h tf
-    in let m = desk-line base stride h font s tf (dk-win-x w s + 10 * s) (dk-win-y h s tf + (dk-win-h tf s - 24) * s) "firmware declined the power transition" ((dk-pal ds).pal-error)
+    let s = dk-win-s w h tf ds
+    in let m = desk-line base stride h font s tf (dk-win-x w s ds + 10 * s) (dk-win-y w h s tf ds + (dk-win-h tf s - 24) * s) "firmware declined the power transition" ((dk-pal ds).pal-error)
     in desk-loop base w h stride font tf kbd mouse ds cs apps root
   end
 
@@ -4828,6 +5221,42 @@ Section: Browser
  is; walking the registry and asking for each minimised window's id costs at
  most `dk-wr-max` comparisons and cannot disagree with the paint.
 
+ A SECOND CLICK ON THE SAME PILL WITHIN 400 ms PUTS THE WINDOW BACK AWAY, which
+ is Damian's toggle. The first click of the pair has already run and raised the
+ window, so the second is what makes the gesture a toggle rather than a second
+ raise: click brings it up, click again puts it down. 400 ms is the interval
+ every desktop uses for this and it is far enough below the flick's own 300 ms
+ follow-through window to be a different gesture on a different control.
+
+ IT IS KEYED ON THE PILL, NOT ON THE POINTER. Two clicks in time on DIFFERENT
+ pills are two raises and not a double-click, which is why the recorded id is
+ compared rather than a position: the band re-lays on every raise, so a
+ position-keyed test would answer yes for two different windows whose pills
+ happened to sit under the same point.
+
+  dk-pillc-cell : Integer = 204
+  dk-pillc-t-cell : Integer = 208
+  dk-dclick-ms : Integer = 400
+
+  dk-dclick : Integer, Integer, Integer, Integer -> Boolean
+  dk-dclick (last) (fid) (el) (tps) =
+    if tps <= 0 then False
+    else if last /= fid then False
+    else el * 1000 <= dk-dclick-ms * tps
+
+ THE RECORD IS CLEARED WHEN THE PAIR FIRES, so a third click is a fresh first
+ click rather than another double. Without it a held-down finger on one pill
+ reads as double, double, double and calls the hide path on a window that is
+ already away.
+
+  dk-pillc-note : Integer, Integer, Integer -> Integer
+  dk-pillc-note (ds) (fid) (now) =
+    let a = poke-32 ds dk-pillc-t-cell now
+    in poke-32 ds dk-pillc-cell fid
+
+  dk-pillc-clear : Integer -> Integer
+  dk-pillc-clear (ds) = poke-32 ds dk-pillc-cell desk-focus-none
+
   dk-pill-hit : WidgetNode, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   dk-pill-hit (root) (mx) (my) (ws) (ds) (s) (i) =
     if i >= dk-wr-count ws then desk-focus-none
@@ -4873,10 +5302,29 @@ Section: Browser
     end
   end
 
+ PUTTING IT AWAY IS THE STATE PLUS `desk-app-hide`, WHICH IS THE PATH THE
+ MINIMISE BUTTON ALREADY TAKES. That function clears the focus, redraws the
+ desk so the band is rebuilt with the pill in it, hands focus down to whatever
+ window is still visible, and brackets its own cursor. None of that wanted
+ saying twice.
+
+  desk-pill-minimise : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  desk-pill-minimise (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (fid) =
+    let st = poke-32 (desk-wnd-blk fid ds) dk-wnd-st-cell dk-wnd-st-min
+    in desk-app-hide base w h stride font tf kbd mouse ds cs apps
+
   desk-dispatch : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer, Boolean -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-dispatch (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sc) (clicked) =
     let pill = if clicked then dk-pill-hit root (mouse-x mouse) (mouse-y mouse) (peek-32 ds dk-wr-cell) ds (ui-wscale w) 0 else desk-focus-none
-    in if pill /= desk-focus-none then desk-pill-restore base w h stride font tf kbd mouse ds cs apps root pill
+    in if pill /= desk-focus-none then
+      let now = hpet-ticks
+      in let el = bit-and (now - peek-32 ds dk-pillc-t-cell) dk-rate-mask
+      in if dk-dclick (peek-32 ds dk-pillc-cell) pill el hpet-ticks-per-second then
+        let c = dk-pillc-clear ds
+        in desk-pill-minimise base w h stride font tf kbd mouse ds cs apps pill
+      else
+        let n = dk-pillc-note ds pill now
+        in desk-pill-restore base w h stride font tf kbd mouse ds cs apps root pill
     else desk-dispatch-app base w h stride font tf kbd mouse ds cs apps root sc clicked
 
  The pill is resolved BEFORE the launcher, because a pill sits in the taskbar
@@ -4991,8 +5439,9 @@ Section: Browser
     in let gpk = poke-32 ds desk-gpu-cell gp
     in let sdi = dk-snd-init ds
     in let ici = dk-icons-init ds tf w
-      in let tki = dk-task-init ds tf w
+    in let pei = dk-pedge-init ds
     in let ap = dk-settings-into ds st
+    in let tki = dk-task-init ds tf w
     in let wp = mouse-warp mouse (w / 2) (h / 2)
     in let apps = desk-apps-empty
     in let bm = poke-32 ds desk-mark-cell __heap-save

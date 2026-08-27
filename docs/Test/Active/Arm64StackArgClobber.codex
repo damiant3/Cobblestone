@@ -1,0 +1,82 @@
+Chapter: Arm64StackArgClobber
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+Section: Fixture
+
+  rw : Integer = 320
+  rh : Integer = 240
+  sky : Integer = #14141E
+
+  sph : Mesh
+  sph = mesh-sphere 800 8 6
+
+  count-painted : Integer, Integer, Integer, Integer -> Integer
+  count-painted (base) (i) (n) (acc) =
+    if i >= n then acc
+    else if peek-32 base (i * 4) == sky then count-painted base (i + 1) n acc
+    else count-painted base (i + 1) n (acc + 1)
+
+  tri-poly : Mesh, Mat4, Mat4, Integer -> List ClipVert
+  tri-poly (m) (model) (mvp) (i) =
+    let c0 = r3d-clip-vertex (mesh-vertex-at m (mesh-index-at m i)) mvp model
+    in let c1 = r3d-clip-vertex (mesh-vertex-at m (mesh-index-at m (i + 1))) mvp model
+    in let c2 = r3d-clip-vertex (mesh-vertex-at m (mesh-index-at m (i + 2))) mvp model
+    in r3d-clip-tri c0 c1 c2
+
+Section: Variants
+
+  sBound : R3dTriState, Mesh, Mat4, Mat4, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sBound (st) (mesh) (model) (mvp) (d5) (d6) (d7) (d8) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let poly = tri-poly mesh model mvp i
+    in if list-length poly < 3 then sBound st mesh model mvp d5 d6 d7 d8 half-w half-h (i + 3) n
+    else let packed = #C8A05A
+    in let drawn = r3d-raster-fan-sh st poly 1 (r3d-shade-ctx-flat packed) half-w half-h
+    in sBound st mesh model mvp d5 d6 d7 d8 half-w half-h (i + 3) n
+
+  sInline : R3dTriState, Mesh, Mat4, Mat4, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sInline (st) (mesh) (model) (mvp) (d5) (d6) (d7) (d8) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let poly = tri-poly mesh model mvp i
+    in if list-length poly < 3 then sInline st mesh model mvp d5 d6 d7 d8 half-w half-h (i + 3) n
+    else let drawn = r3d-raster-fan-sh st poly 1 (r3d-shade-ctx-flat #C8A05A) half-w half-h
+    in sInline st mesh model mvp d5 d6 d7 d8 half-w half-h (i + 3) n
+
+  sLifted : R3dTriState, Mesh, Mat4, Mat4, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sLifted (st) (mesh) (model) (mvp) (d5) (d6) (d7) (d8) (half-w) (half-h) (i) (n) =
+    if i >= n then 0
+    else let poly = tri-poly mesh model mvp i
+    in if list-length poly < 3 then sLifted st mesh model mvp d5 d6 d7 d8 half-w half-h (i + 3) n
+    else let packed = #C8A05A
+    in let cx = r3d-shade-ctx-flat packed
+    in let drawn = r3d-raster-fan-sh st poly 1 cx half-w half-h
+    in sLifted st mesh model mvp d5 d6 d7 d8 half-w half-h (i + 3) n
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let cam = camera3d-new (vec3-new 0.0 0.0 3000.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let vp = camera3d-vp cam
+    in let model = mat4-identity
+    in let mvp = mat4-mul vp model
+    in let n = sph.mesh-index-count
+    in let ta = r3d-target-new rw rh sky
+    in let tb = r3d-target-new rw rh sky
+    in let tc = r3d-target-new rw rh sky
+    in let ra = sBound ta sph model mvp 1 2 3 4 (rw / 2) (rh / 2) 0 n
+    in let rb = sInline tb sph model mvp 1 2 3 4 (rw / 2) (rh / 2) 0 n
+    in let rc = sLifted tc sph model mvp 1 2 3 4 (rw / 2) (rh / 2) 0 n
+    in act
+      print-line-uni ("bound in arg  : " & show (count-painted (ta.r3t-base) 0 (rw * rh) 0))
+      print-line-uni ("literal in arg: " & show (count-painted (tb.r3t-base) 0 (rw * rh) 0))
+      print-line-uni ("ctx lifted    : " & show (count-painted (tc.r3t-base) 0 (rw * rh) 0))
+    end
+  end
+
+Page 1

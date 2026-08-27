@@ -720,12 +720,36 @@ Section: Let and Lambda
 
   lower-lambda : List Name, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-lambda (params) (body) (ty) (ctx) (sp) =
-   let stripped = strip-forall-ty ty
+   let expected = lambda-expected-ty ty ctx sp
+   in let stripped = strip-forall-ty expected
    in let lparams = lower-lambda-params params stripped 0 sp
    in let lctx = bind-lambda-to-ctx ctx params stripped 0
    in let declared-ret = get-lambda-return stripped (list-length params)
    in let body-ir = lower-expr body declared-ret lctx
-   in deck-record (IrLambda lparams body-ir (lambda-recorded-ty declared-ret (ir-expr-type body-ir) ty) sp)
+   in deck-record (IrLambda lparams body-ir (lambda-recorded-ty declared-ret (ir-expr-type body-ir) expected) sp)
+
+ A lambda's parameters are peeled off the type its CONTEXT expects, and
+ `peel-fun-param` answers `ErrorTy` for anything that is not an arrow. When
+ nothing above expects a type there is nothing to peel: `lower-let` hands its
+ bound value `ErrorTy` as the expectation, every parameter peels to `ErrorTy`,
+ and the arrow is recorded with `ErrorTy` in each position. That reaches a
+ plug spelled `error`, which is the compiler's TYPE FAILURE atom, for a
+ program the compiler reported clean.
+
+ The type was never missing. The checker solved these parameters and filed
+ the answer; nothing asked for it here. `lambda-expected-ty` asks -- the same
+ `lookup-expr-type` / `deep-resolve` pair `lower-dict-placeholder` already
+ uses twenty lines above, against the span the checker recorded under.
+
+ Only the no-expectation case changes. When the context DID supply a type,
+ `expected` is `ty` and every line below is what it was, which is why a
+ lambda at a declared parameter was already correct and stays byte-identical.
+
+  lambda-expected-ty : CodexType, LowerCtx, SourceSpan -> CodexType
+  lambda-expected-ty (ty) (ctx) (sp) =
+   when ty
+    is ErrorTy -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) sp)
+    is otherwise -> ty
 
  A lambda used to record the EXPECTED type it was handed, which at a
  polymorphic call is the callee's declared parameter with its type variables

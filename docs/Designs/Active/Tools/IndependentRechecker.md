@@ -84,10 +84,33 @@ text. Measured against main, `ir-emit-type`
 | Claim | IR form | Sufficient to re-check |
 |---|---|---|
 | Bounded integers | `(int lo hi mode)` via `ir-emit-int-bounds`; `(a-bounded ...)` on record fields | yes, with the caveat below |
-| Effect rows | `(effectful (effs ...) (scopes ...) ret)` | **nullary definitions only** |
-| Linear ownership | none: `LinearTy` is erased | **no** |
+| Effect rows | `(effectful (effs ...) (scopes ...) ret)`; on an arrow, a fourth `(row (labels ...) tail id)` slot | yes (was nullary-only; **stage 3a shipped**) |
+| Linear ownership | a trailing `(unique "n" ...)` field on `(def ...)` | yes (was none; **stage 3a shipped**) |
 | Sums / records | ctor payloads and field types emitted | yes |
 | Units, vectors | `(unit ...)`, `(vector n t)`, `(vector-mask n)` | yes |
+
+**Stage 3a is BUILT, and the two rows above are a measurement rather than a
+plan.** Re-measured 2026-08-27 against seed `0634584EF849D297` by
+`build/ir-fidelity`, whose `linear-param` and `effect-row` cases are the two
+pairs this section had reasoned about by hand:
+
+```
+consume : linear Integer -> Integer   (def "consume" ... (fn int-default int-default) ... 0 0 (unique "n"))
+consume : Integer -> Integer          (def "consume" ... (fn int-default int-default) ... 0 0)
+f : Integer -> [Console] Integer      (fn int-default int-default (row (labels (label "Console" "")) "" -1))
+f : Integer -> Integer                (fn int-default int-default)
+```
+
+Both halves reach the consumer as well as the wire:
+`codex/plugs/common/IRTextParser.codex` reads the trailing field through
+`parse-unique` and rebuilds the arrow's row through `parse-row`. The sentences
+below about it hardcoding `unique-params = []` and rebuilding every arrow as
+`FunTy ... empty-row ...` describe that parser as it was.
+
+The type cell itself is unchanged, so the paragraph immediately following still
+holds exactly: `linear T` and `T` remain byte-identical AS TYPES, and the
+linear fact rides beside the type rather than in it. What moved is that the
+fact reaches the wire at all.
 
 **Linear ownership does not reach the wire at all.** The arm is
 `is LinearTy (linner) -> ir-emit-type linner`: it unwraps and emits the
@@ -141,12 +164,34 @@ node's own type as a derived range. A rechecker that did would disagree
 with almost every arithmetic node in the tree and the disagreements
 would all be its own.
 
+**Still true, re-measured 2026-08-27, and now it has a runner.**
+`build/ir-fidelity`'s `bounded-int-derived-range` reports DROPPED: two
+programs whose declared returns are `0..20` and `0..30` both emit the
+body node as `(int 0 10 ov-error)`, the operand type. The checker
+demonstrably computes the derived range, because refusing a too-narrow
+declaration it names it -- CDX2051, "the value's proven range is 0..20".
+So the derivation exists and does not reach the wire, which is a
+sharper statement than the caveat above and is what the case banks.
+
 **Four variants have no arm and are indistinguishable from a type
 error.** `ProofTy`, `PropEqTy`, `TypeCon` and `TypeApply` fall through
 to `is otherwise -> "error"`, which emits the same atom `error` that
 `ErrorTy` emits. A rechecker cannot tell a proof type from a failure on
 the wire, and must answer UNSUPPORTED on the atom rather than treat it
 as either.
+
+**CLOSED. Re-measured 2026-08-27 against seed `4341370C8FE5BAD6`: all
+four now have distinct arms in `ir-emit-type`** -- `proof`,
+`(propeq ...)`, `(tycon ...)`, `(tyapply ...)`. The recommendation this
+section made, that the four be given distinct atoms so a real defect is
+diagnosable from the wire, has been carried out. `is otherwise ->
+"error"` still exists as the floor, but no named variant reaches it.
+
+**The collision that remains is a different one and is NOT four variants
+sharing an atom.** It is `ErrorTy` itself carrying two meanings: the
+type-FAILURE atom, and `lower-let`'s no-expectation sentinel. That is
+Steve Howell's named residue and it is live -- `build/ir-fidelity`'s
+`empty-list-element-type` case is its runner, and reports DROPPED.
 
 **A list expression's type field is the ELEMENT type, and nothing on the
 wire says so** (found 2026-08-03 by stage 1, which reported every list
@@ -200,6 +245,15 @@ every `Maybe`, `Result` and `Either` pattern in the tree, which is to
 say most of them, and a plug that declares a pattern variable from its
 `var-pat` type has been emitting a type-error atom all along.
 
+**CLOSED, re-measured 2026-08-27 against seed `4341370C8FE5BAD6`.** The
+same shape over the foreword's own `Maybe` now emits
+`(var-pat "v" int-default)` against `(var-pat "v" text)`, and the
+enclosing pattern carries `(ctd "Maybe" (args int-default))`, so the
+binding and the use agree. `build/ir-fidelity`'s
+`parametric-sum-pattern-binding` case is the standing guard and reports
+CARRIED; it is banked so that a regression here reds rather than
+waiting for somebody to re-derive this paragraph.
+
 **What the wire cannot say is WHICH type it is**, and that is section
 4's four-variants-one-atom finding biting a second time: `error` is what
 `ErrorTy`, `ProofTy`, `PropEqTy`, `TypeCon` and `TypeApply` all emit.
@@ -227,11 +281,13 @@ finding, which is the same free-standing value the mutation corpus has
 against the compiler.
 
 **Consequence for sequencing.** Stages 1 and 2 are unaffected and still
-need no compiler change. **Stage 3 as written is not implementable over
-IR text**: its linear half has no input at all, and its effect half
+need no compiler change. **Stage 3 as written was not implementable over
+IR text**: its linear half had no input at all, and its effect half
 would cover only nullary definitions while appearing to cover the
-claim. Under section 6 that is the forbidden shape, so stage 3 needs
-`FunTy`'s row and the linear fact pushed onto the wire first.
+claim. Under section 6 that is the forbidden shape, so stage 3 needed
+`FunTy`'s row and the linear fact pushed onto the wire first. Both have
+since been pushed out, so this blocker is cleared; the table above is the
+measurement.
 
 **That is an established pattern here, not new work invented by this
 design** (Damian, 2026-08-03: things get pushed out to the IR so the

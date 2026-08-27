@@ -355,30 +355,42 @@ Build note: the linker fails with `LNK1104` if a codex-vm is holding
 `tools/codex-vm.exe` open, so stop **your own** VMs (as above) before
 `tools/build-vm.ps1`.
 
-#### codex-vm IGNORES AN UNKNOWN FLAG SILENTLY, so a flag that does nothing is indistinguishable from one that works
+#### codex-vm REFUSES AN UNRECOGNISED ARGUMENT (since 2026-08-27)
 
-That is the defect under the one below, and it is general. Nothing in
-`tools/codex-vm.c` rejects, warns about, or logs an argument it does not
-recognise: measured 2026-08-24 by passing `-not-a-real-flag`, which produces
-no line on stderr and no change in exit status. So a typo, a renamed flag, a
-flag deleted from the emulator, and a flag that was never built all present
-to the caller as a clean launch. **A green boot is not evidence that a flag
-took effect**, and no harness in the tree can currently tell the difference.
-The check that would close it is a refusal on the first unrecognised argument,
-which is a codex-vm change and is unclaimed.
+`codex-vm: unrecognised argument '-x'` on stderr, exit 2, on the first one it
+meets. Before that it dropped them in silence, and that was the defect under
+the one below: a typo, a renamed flag, a flag deleted from the emulator and a
+flag that was never built all presented to the caller as a clean launch, so a
+green boot was not evidence that a flag took effect. The parse loop ran 121
+`else if` arms and ended with no final `else`; it has one now.
 
-The instrument, when a flag's effect is in doubt: the parse sites are all
-`strcmp(argv[i], "-...")`, so grepping that pattern yields the complete set
-codex-vm actually accepts. It answered 120 flags on 2026-08-24, and
-`-data-port` was not among them.
+Only a leading `-` reaches the refusal, because every flag's value is consumed
+by its own arm. `-run-list` and `-run-list-wall` are answered in an earlier
+loop that returns before this one runs, so they are unaffected.
 
-#### `-data-port` and `-ctrl-port` do not exist, and the usage banner says they do
+**If a command line that used to work now exits 2, the flag it names was never
+doing anything.** That is what it found on its own first run: `-serial stdio
+-timeout <n>` in `build/test-exception-handler.ps1`, neither parsed in any
+revision, with `Wait-Process -Timeout` beside them doing the work `-timeout`
+appeared to do. Both dropped; the harness still passes 5 of 5.
 
-`tools/codex-vm.c` line 6 advertises `[-data-port 12345] [-ctrl-port 12346]`
-and **no revision of that file has ever parsed either flag** (#1 through #110
-checked 2026-08-24, and the flag table below is the full set it does parse).
-Because unknown flags are dropped in silence the command line looks accepted:
-the guest boots, finds nothing on the wire, and halts inside 500 ms.
+The instrument, when a flag's effect is in doubt, still works and no longer has
+to be reached for first: the parse sites are all `strcmp(argv[i], "-...")`, so
+grepping that pattern yields the complete set codex-vm accepts. It answered 120
+flags on 2026-08-24 and 121 on 2026-08-27; re-measure rather than quoting
+either (L-COUNT).
+
+#### `-data-port` and `-ctrl-port` do not exist, and the usage banner used to say they did
+
+**No revision of `tools/codex-vm.c` has ever parsed either flag** (#1 through
+#110 checked 2026-08-24, and the flag table below is the full set it does
+parse). They are out of the usage banner as of 2026-08-27 and were not
+implemented: with the refusal above in place, advertising them would advertise
+two flags the program answers with exit 2. Passing either now says so.
+
+Until then, because unknown flags were dropped in silence, the command line
+looked accepted: the guest booted, found nothing on the wire, and halted inside
+500 ms.
 
 That kills `Start-VmRun`'s codex-vm path in `build/vm-config.ps1`, which builds
 exactly those two flags. `Start-CodexVmRun` reads the fast exit as a failed
@@ -1790,6 +1802,67 @@ from an earlier run is still sitting there. Measured 2026-08-19: a refusal
 read as a pass off that `True`, and the wrong reading was published before the
 log was opened.
 
+**IN `-Text` AND `-IrUni`, EXIT 4 IS THE SUCCESS PATH AND THE EXIT CODE MEANS
+NOTHING. `-IrCce` IS NOT LIKE THEM.** The paragraph above holds for `CDX`,
+where a clean compile exits 0. The modes do NOT agree with each other, and
+assuming they do is how this entry got written wrong the first time. Measured
+2026-08-27 against seed `0634584EF849D297`, same source and same invocation
+shape:
+
+| mode | exit | `-Out` | `-Log` |
+|---|---|---|---|
+| `-IrUni` | **4** | never written | the wire, bracketed by `IR-BEGIN` / `IR-END` |
+| `-Text` | **4** | never written | the text, no `IR-BEGIN` |
+| `-IrCce` | **0** | **written** (1,109 bytes here) | diagnostics only, no `IR-BEGIN` |
+
+`-Text` and `-IrUni` emit no `SIZE:` line, so the scan that looks for one runs
+off the end of the output and the script falls through to the bare `exit 4` at
+the bottom of the compile loop, having written the whole guest output into
+`-Log`. In those two a clean emit, a crash and a codegen refusal all carry the
+SAME exit code, so the verdict is the `-Log` file: `IR-BEGIN` / `IR-END` bracket
+the wire and `error CDX....` lines carry the diagnostics. `-IrCce` takes the
+binary path instead and behaves like `CDX`, so there the exit code IS the
+verdict.
+
+The first version of this entry said all three behaved alike, on a reading of
+`compile.ps1`'s control flow rather than a measurement of each mode, and a
+naive-reader probe caught it the same day. Reading one branch of a dispatch and
+generalising to its siblings is the same error as reading one tier and
+concluding about three. The half that was right is worth keeping: a harness
+gating on the exit code in `-IrUni` reports every run as a failure with the
+correct IR sitting in the log, which is L-ACCEPTED pointed at a RESULT rather
+than an argument.
+
+### `build/ir-fidelity` -- did the IR carry what the checker knew?
+
+When a plug emits a wrong type for a value and the program compiles clean, the
+question is whether the compiler worked the type out and failed to put it on
+the wire, or whether the program never constrained it. Those need different
+fixes and they look identical from inside a plug, which erases or guesses
+either way.
+
+```powershell
+build\ir-fidelity\ir-fidelity.ps1 -Grade                  # grade the arm, then run every case
+build\ir-fidelity\ir-fidelity.ps1 -Only lambda-param-type # one case
+build\ir-fidelity\ir-fidelity.ps1 -Passes                 # audit the OPTIMIZED program instead
+```
+
+A case is three programs and one wire position: `a` and `b` differ in one
+respect and both compile clean, `knows` is a program the checker must REFUSE
+with a named diagnostic, and `path` names the cell to compare. **CARRIED** means
+the checker knew and the wire carried it, so a wrong type downstream is the
+plug's. **DROPPED** means the checker knew and the wire did not, so it is
+upstream. **UNCONSTRAINED** means the `knows` arm did not refuse, so the case
+proved nothing and wants fixing before its cell is read. **UNSUPPORTED** means
+the reader could not find the cell; expect it under `-Passes` where the
+optimizer inlined the subject away. The last two are deliberately not passes.
+
+The reader (`ir-wire.ps1`) has no plug opinion in it and shares no code with
+`codex/plugs/common/IRTextParser.codex`. Run it from the depot root. Cost is
+about 0.3 s per compile and three compiles per case. It is NOT wired into any
+gate; that is Damian's ruling. `codex/plugs/plugs-backlog.md` 1.96 carries the
+standing verdicts and what they mean.
+
 ### Compile Modes
 
 | Mode | Output |
@@ -3052,6 +3125,31 @@ build/compile.ps1 -Src codex\test\apps\foo.codex -Out out.cdx -Log out.log -Kern
 **Detect:** hash the output. Two compiles of genuinely different source that
 produce the same SHA-256 have not read your file. This is the cheap check and
 it is the only one that fires before you start debugging the wrong program.
+
+### `-IrUni` IS NOT THE WIRE. A plug consumes `-IrCce`, and since main 19558 they carry different IR
+
+**Symptom:** you dump a program's IR with `-IrUni` because `-IrCce` is not
+readable text, read the shape off it, and reason about what the plug does with
+it. The reasoning is sound and the conclusion is wrong.
+
+**Cause:** the two front doors run different pipelines.
+`emit-ir-cce` (`codex/compiler/opening.codex:1707`) calls `lift-lambdas` at
+`:1717` before pruning; `emit-ir-uni` (`:1683`) does not lift at all. That
+second call landed at main 19558 (2026-08-25) to fix a wasm defect. So a
+program with a lambda in it has TWO different IRs depending on which flag you
+pass, and the plug only ever sees the lifted one: where `-IrUni` shows
+`(lambda (params (param "x" ...)) ...)`, the wire carries
+`(apply (name "__lam_0") (name <captured>))`, a partial application.
+
+**Cost so far:** COMPILER-29's cause was recorded wrong twice, both times off
+an `-IrUni` dump, and the second write-up named an innocent IR reader.
+
+**Detect:** if a claim is about what a PLUG receives, do not settle it from
+`-IrUni`. Force a marker constant into the emitted code from inside the arm you
+believe runs, rebuild the plug, and read it off the target -- and put the same
+marker in the arm you believe does NOT run, as the control. That pair is what
+finally answered COMPILER-29; each round is a plug rebuild plus one filtered
+`test-cross-batch.ps1` run, about ninety seconds.
 
 ### Run a plug's `build.ps1` FROM THE REPO ROOT, never from the plug directory
 

@@ -1,0 +1,87 @@
+Chapter: DeskPillEdgeTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Foreword chapter Console
+
+ ShellRefinement 6.7.1. A pill's edge is a per-app fact, keyed by focus id,
+ defaulting to the band's own edge until something writes one. Damian ruled
+ the flick's DIRECTION the selection criterion on 2026-08-27; this is the
+ place the direction will be spent, and this stage lands it inert.
+
+ THE INERTNESS IS THE CLAIM AND IT IS THE HALF WORTH ASSERTING. Nothing writes
+ an entry yet, so every pill must still answer the band's edge at all four
+ edges. A row that only checked "a written value comes back" would pass with
+ the default broken, and a row that only checked the default would pass if the
+ block were never allocated at all -- so both are here and they fail for
+ different reasons.
+
+ ZERO IS THE TRAP. `alloc-zeroed` hands back zeros and `dk-edge-bottom` is 0,
+ so an unwritten slot and a slot flicked to the bottom are the same bits unless
+ the stored value is offset. The row that discriminates is **writing
+ `dk-edge-bottom` explicitly and requiring it to survive a band whose edge is
+ something else**: with a raw store that reads back as the band's edge and the
+ defect is invisible at the default geometry.
+
+Section: Body
+
+  dpe-yn : Boolean -> Text
+  dpe-yn (v) = if v then "yes" else "NO"
+
+  dpe-defaults : Integer, Integer, Integer -> Text
+  dpe-defaults (ds) (e) (i) =
+    if i >= dk-pedge-slots then "all default to the band"
+    else if dk-pedge-get ds i /= e then "id " & integer-to-text i & " answered " & integer-to-text (dk-pedge-get ds i) & " not " & integer-to-text e
+    else dpe-defaults ds e (i + 1)
+
+  dpe-row : Integer, Integer -> Text
+  dpe-row (ds) (e) =
+    let sp = poke-32 ds dk-task-edge-cell e
+    in "edge " & dk-edge-name e
+       & "  band " & integer-to-text (dk-task-edge ds)
+       & "  unwritten id 3 " & integer-to-text (dk-pedge-get ds 3)
+       & "  default follows band " & dpe-yn (dk-pedge-get ds 3 == e)
+       & "  " & dpe-defaults ds e 0
+
+ A WRITE MUST SURVIVE, AND THE ONE THAT DISCRIMINATES IS `dk-edge-bottom`
+ WRITTEN UNDER A BAND THAT IS NOT AT THE BOTTOM. The other three edges would
+ read back correctly even from a raw store.
+
+  dpe-write : Integer -> Text
+  dpe-write (ds) =
+    let sp = poke-32 ds dk-task-edge-cell dk-edge-top
+    in let a = dk-pedge-set ds 5 dk-edge-bottom
+    in let b = dk-pedge-set ds 6 dk-edge-left
+    in "band top, wrote bottom to id 5 and left to id 6"
+       & "  id 5 " & integer-to-text (dk-pedge-get ds 5)
+       & "  survives " & dpe-yn (dk-pedge-get ds 5 == dk-edge-bottom)
+       & "  id 6 " & integer-to-text (dk-pedge-get ds 6)
+       & "  survives " & dpe-yn (dk-pedge-get ds 6 == dk-edge-left)
+       & "  untouched id 7 still band " & dpe-yn (dk-pedge-get ds 7 == dk-edge-top)
+
+ OUT OF RANGE ANSWERS THE BAND RATHER THAN READING PAST THE BLOCK. The block
+ is `dk-pedge-slots` entries and `dk-focus-max` is 16, so id 16 is the last
+ valid one and 17 is the first that must be refused.
+
+  dpe-bounds : Integer -> Text
+  dpe-bounds (ds) =
+    let sp = poke-32 ds dk-task-edge-cell dk-edge-right
+    in "out of range: id -1 " & integer-to-text (dk-pedge-get ds (0 - 1))
+       & "  id 17 " & integer-to-text (dk-pedge-get ds 17)
+       & "  both answer the band " & dpe-yn (dk-pedge-get ds (0 - 1) == dk-edge-right & dk-pedge-get ds 17 == dk-edge-right)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed 256 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pei = dk-pedge-init ds
+    in act
+      print-line-uni (dpe-row ds dk-edge-bottom)
+      print-line-uni (dpe-row ds dk-edge-top)
+      print-line-uni (dpe-row ds dk-edge-left)
+      print-line-uni (dpe-row ds dk-edge-right)
+      print-line-uni (dpe-write ds)
+      print-line-uni (dpe-bounds ds)
+    end
+
+Page 1

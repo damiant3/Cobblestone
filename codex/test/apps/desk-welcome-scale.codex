@@ -1,0 +1,129 @@
+Chapter: DeskWelcomeScaleTest
+  cites Works chapter GopFat16
+  cites Works chapter GopFont
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Foreword chapter Console
+
+ WORKS-53. Is the welcome frame's scale REDUCTION reachable at a supported
+ geometry. It gates WORKS-52: `dk-win-y` reserves chrome at the frame's own
+ `dk-win-s` scale and `dk-cbox-y` reserves it at `ui-scale w`, and those two
+ differ only when `dk-win-s` has reduced, so the repair is inert if the
+ reduction is unreachable and a second live defect if it is not.
+
+ THE HOSTILE ROW IS THE POINT, NOT THE SUPPORTED ONES. Every supported
+ geometry answering "no reduction" is indistinguishable from an instrument
+ that cannot say yes (L-FALSIF). The last row is a synthetic 1024x480 --
+ expressible as `-gop-width 1024 -gop-height 480`, not a mode anything ships
+ at -- chosen as the cheapest geometry where `ui-scale` still answers 2 and
+ the frame cannot fit at 2. Its answer must differ from the rows above it.
+
+ THE FACE HALF NEEDS A VOLUME AND THE BATTERY ATTACHES NONE. `dk-line-step`
+ reads `gf-gh` when the face loaded and falls back to `dk-line-h * s` when it
+ did not, so the two paths compute a different `dk-win-h` and the question has
+ to be asked of both. The gated run records the no-volume line and proves
+ nothing about the face (L-NAMED); run it against an image built by
+ `build-boot-img.ps1` for those rows, the way `desk-leading-metrics` is run.
+
+Section: Body
+
+  dws-yn : Boolean -> Text
+  dws-yn (v) = if v then "yes" else "no"
+
+ `dws-expect` IS THE THREE-ARM VERSION `dk-win-s` USED TO BE, kept here on
+ purpose. The `s - 1` arm was deleted with WORKS-52 because `ui-scale` answers
+ 1 or 2 and nothing else, so the arm is reachable only at `s = 2` where `s - 1`
+ is 1 and the final `else 1` answers 1 as well. `agrees` is that claim being
+ checked on every row rather than asserted once: it compares what the function
+ does now against what the deleted arm would have made it do. Re-deriving the
+ CURRENT two-arm shape here would be printing one road twice (L-BOTHARMS).
+
+  dws-expect : Integer, Integer, GopFont, Integer -> Integer
+  dws-expect (w) (h) (tf) (ds) =
+    let s = ui-scale w
+    in if dk-win-fits w h tf s ds then s
+    else if s > 1 & dk-win-fits w h tf (s - 1) ds then s - 1
+    else 1
+
+  dws-row : Integer, Integer, GopFont, Integer -> Text
+  dws-row (w) (h) (tf) (ds) =
+    let s = ui-scale w
+    in let got = dk-win-s w h tf ds
+    in "  " & integer-to-text w & "x" & integer-to-text h
+       & "  ui-scale " & integer-to-text s
+       & "  win-h " & integer-to-text (dk-win-h tf s)
+       & "  needs " & integer-to-text (dk-win-h tf s * s)
+       & "  box-h " & integer-to-text (dk-cbox-h w h ds)
+       & "  fits " & dws-yn (dk-win-fits w h tf s ds)
+       & "  dk-win-s " & integer-to-text got
+       & "  reduced " & dws-yn (got < s)
+       & "  agrees " & dws-yn (got == dws-expect w h tf ds)
+
+ Whether the `s - 1` arm can ever produce a value the final `else 1` would not
+ is decidable without a screen, since `ui-scale` answers 1 or 2 and nothing
+ else. The two candidate answers are printed side by side rather than the
+ conclusion being asserted.
+
+  dws-arm : Integer -> Text
+  dws-arm (w) =
+    let s = ui-scale w
+    in "  w " & integer-to-text w
+       & "  ui-scale " & integer-to-text s
+       & "  s - 1 " & integer-to-text (s - 1)
+       & "  else-arm 1"
+       & "  distinguishable " & dws-yn (s - 1 /= 1)
+
+ THE FACE MUST BE LOADED AT THE PPEM THIS WIDTH ASKS FOR, NOT AT ONE PPEM FOR
+ THE WHOLE SWEEP. `dk-ui-ppem` answers 16 at 1600 and above and 14 below, so a
+ sweep holding one face measures a configuration the desk never builds at four
+ of its six widths. **This chapter did exactly that when it landed and a
+ finding was published off the 640x480 row** (val, 2026-08-27, corrected the
+ same day). The row that is wrong is the one where the two ppems disagree,
+ which is every row under 1600, and it is wrong in the direction that
+ manufactures a defect: a 16 pixel face where the desk would use 14.
+
+  dws-face : Fat16Volume, Integer, Integer, Integer -> [Console, Device.Port] Nothing
+  dws-face (vol) (w) (h) (ds) = act
+    f <- gfont-load vol "CMUNSS.TTF" (dk-ui-ppem w)
+    if f.gf-ok == False then print-line-uni ("  " & integer-to-text w & "x" & integer-to-text h & "  CMUNSS.TTF not loaded")
+    else print-line-uni ("  ppem " & integer-to-text (dk-ui-ppem w) & " cell " & integer-to-text (f.gf-gh) & dws-row w h f ds)
+  end
+
+  dws-sweep : GopFont, Integer -> [Console] Nothing
+  dws-sweep (tf) (ds) = act
+    print-line-uni (dws-row 640 480 tf ds)
+    print-line-uni (dws-row 800 600 tf ds)
+    print-line-uni (dws-row 1024 768 tf ds)
+    print-line-uni (dws-row 1280 800 tf ds)
+    print-line-uni (dws-row 1600 900 tf ds)
+    print-line-uni (dws-row 1024 480 tf ds)
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    let ds = alloc-zeroed 256 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in act
+    print-line-uni "the s - 1 arm against the else arm:"
+    print-line-uni (dws-arm 640)
+    print-line-uni (dws-arm 1024)
+    print-line-uni (dws-arm 1600)
+    print-line-uni "faceless (no TTF on the ESP), last row is the control:"
+    dws-sweep gfont-none ds
+    m <- gfat-mount-esp
+    if m.gm-ok == False then print-line-uni "CMUNSS face: no FAT volume on the boot medium"
+    else act
+      print-line-uni "CMUNSS, each row at the ppem the desk loads for ITS OWN width:"
+      dws-face (m.gm-vol) 640 480 ds
+      dws-face (m.gm-vol) 800 600 ds
+      dws-face (m.gm-vol) 1024 768 ds
+      dws-face (m.gm-vol) 1280 800 ds
+      dws-face (m.gm-vol) 1600 900 ds
+      dws-face (m.gm-vol) 1024 480 ds
+      print-line-uni "end"
+    end
+    end
+  end
+
+Page 1

@@ -1387,6 +1387,17 @@ Section: Pointer-Map Walk
  below the heap and would never fall in [h0, cap) -- a real pointer the
  escape check correctly ignores. `show N` forces a runtime heap string.
 
+ An EMPTY self-type table answers -2, which the caller reports as skipped
+ rather than failed. The table is baked in by the x86-64 backend, so a host
+ built by a backend that emits no pointer map has none to bake and none to
+ walk; the wasm plug says so by answering the empty list. -2 rather than the
+ expected 3 on purpose: reporting a skip as a pass is how a check that has
+ stopped asking becomes indistinguishable from one that asks and agrees
+ (L-CAPABILITY-LOST), so the skip carries its own value and its own message.
+ On x86-64 the table is never empty, which is why this arm cannot mask a
+ real failure here: an empty table on THIS backend would itself be the
+ defect the walk exists to catch, and it would have to be reached first.
+
   PmInner = record { in-ptr : Text }
 
   PmTestRec = record { tr-num : Integer, tr-ptr : Text, tr-inner : PmInner }
@@ -1394,15 +1405,16 @@ Section: Pointer-Map Walk
   pmap-self-test : Integer
   pmap-self-test =
    let defs = __self-type-defs
-   in let h0 = __heap-save
-   in let sub = show 99
-   in let inner-sub = show 88
-   in let inner = PmInner { in-ptr = inner-sub }
-   in let cap = __heap-save
-   in let rec = PmTestRec { tr-num = 42, tr-ptr = sub, tr-inner = inner }
-   in if rec.tr-num == 42
-      then pmap-walk cap (lookup-type-binding defs "PmTestRec") defs h0 cap 64 1 ""
-      else 0 - 1
+   in if list-length defs == 0 then 0 - 2
+      else let h0 = __heap-save
+      in let sub = show 99
+      in let inner-sub = show 88
+      in let inner = PmInner { in-ptr = inner-sub }
+      in let cap = __heap-save
+      in let rec = PmTestRec { tr-num = 42, tr-ptr = sub, tr-inner = inner }
+      in if rec.tr-num == 42
+         then pmap-walk cap (lookup-type-binding defs "PmTestRec") defs h0 cap 64 1 ""
+         else 0 - 1
 
   pmap-escape-fuel : Integer = 1000000
 

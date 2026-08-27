@@ -44,7 +44,15 @@ Write-Host "[plug-run] Plug: $PlugCdx"
 # It was always assigned before anything could fail until the host became a
 # choice; a missing VM binary now makes Start-Process throw first, and the
 # StrictMode error about $proc buried the real cause.
+# $stderrFile, $consoleFile and $listener are the same class one throw earlier:
+# a port still held from the previous subject makes $listener.Start() throw
+# before any of the three is assigned, and the finally's reference then masks
+# the port error as "variable cannot be retrieved" (gate, 2026-08-27, three
+# plugs reported "produced nothing" on their second subject).
 $proc = $null
+$stderrFile = $null
+$consoleFile = $null
+$listener = $null
 
 try {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
@@ -174,7 +182,7 @@ try {
     if (($proc -and (-not $proc.HasExited))) {
         Stop-VmGraceful -ProcessId $proc.Id
     }
-    Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
-    Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue
-    try { $listener.Stop() } catch {}
+    if ($stderrFile) { Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue }
+    if ($consoleFile) { Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue }
+    try { if ($listener) { $listener.Stop() } } catch {}
 }

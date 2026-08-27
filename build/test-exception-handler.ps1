@@ -53,7 +53,7 @@ foreach ($s in $samples) {
     $so = (Join-Path $outDir ([string]$s.Name + '.stdout'))
     $se = (Join-Path $outDir ([string]$s.Name + '.stderr'))
     $budget = $(if ($s.ContainsKey('TimeoutSec')) { $s.TimeoutSec } else { 45 })
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $cdx, '-serial', 'stdio', '-mem', '3072', '-timeout', $budget) -WindowStyle Hidden -PassThru -RedirectStandardOutput $so -RedirectStandardError $se
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $cdx, '-mem', '3072') -WindowStyle Hidden -PassThru -RedirectStandardOutput $so -RedirectStandardError $se
     $proc | Wait-Process -Timeout ($budget + 30) -ErrorAction SilentlyContinue
     if ((-not $proc.HasExited)) {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}

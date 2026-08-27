@@ -1,0 +1,41 @@
+Chapter: ImgStdio
+
+Section: Body
+
+ The payload is the one `codex/plugs/img/run.ps1` builds: a filesystem byte,
+ then four each of total sectors, PE size, CDX size and source size, then the
+ PE, the CDX and the source laid end to end.
+
+ The image is assembled in a buffer and handed over with `write-binary-buf`,
+ which copies nothing. The network entry streams the same buffer down a
+ socket; a disk image is megabytes, so neither path may go through a list.
+
+  plug-emit-bytes : Integer, Integer -> [Console] Nothing
+  plug-emit-bytes (payload-buf) (payload-len) =
+   let hdr-len = 17
+   in if payload-len < hdr-len then print-line-uni ("REFUSED short payload " & show payload-len)
+   else let hdr = __buf-read-bytes payload-buf 0 hdr-len
+   in let fs-type = list-at hdr 0
+   in let total-sectors = img-read-i32 hdr 1
+   in let pe-size = img-read-i32 hdr 5
+   in let cdx-size = img-read-i32 hdr 9
+   in let src-size = img-read-i32 hdr 13
+   in if hdr-len + pe-size + cdx-size + src-size > payload-len then print-line-uni ("REFUSED payload " & show payload-len & " shorter than its own header claims " & show (hdr-len + pe-size + cdx-size + src-size))
+   else let img-bytes = total-sectors * gpt-sector-size
+   in let img-buf = __heap-save
+   in let img-advance = __heap-advance img-bytes
+   in let w0 = gpt-write-all img-buf total-sectors
+   in let hp1 = __heap-save
+   in let efi-bytes = __buf-read-bytes payload-buf hdr-len pe-size
+   in let cdx-bytes = __buf-read-bytes payload-buf (hdr-len + pe-size) cdx-size
+   in if fs-type == 0 then
+    let lay = fat32-compute-layout total-sectors
+    in let w1 = fat32-write-all img-buf lay efi-bytes cdx-bytes
+    in let restored = __heap-restore hp1
+    in write-binary-buf img-buf 0 img-bytes
+   else
+    let lay = fat16w-compute-layout total-sectors
+    in let source = if src-size > 0 then bytes-to-text-range ((__buf-read-bytes payload-buf (hdr-len + pe-size + cdx-size) src-size)) 0 src-size else ""
+    in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes source
+    in let restored = __heap-restore hp1
+    in write-binary-buf img-buf 0 img-bytes

@@ -143,12 +143,19 @@ function Build-PlugCdx {
         [string]$OutFile,
         [string]$LogFile,
         [string]$PlugName,
-        [string]$Survey = ''
+        [string]$Survey = '',
+        # Deck scale for this bundle; 0 leaves the length derivation alone.
+        # scaled-floor is linear in source length and CHECK is not, so a
+        # dense bundle can sit at zero margin and refuse the next definition
+        # added to it with CDX9002. Deck scale is a reservation and not an
+        # input to codegen: measured 2026-08-27 the arm64 plug is
+        # byte-identical at -Decks 120 and 140, so raising it cannot move
+        # the artifact it produces.
+        [int]$Decks = 0
     )
     $compileScript = Join-Path $script:PlugBuildRepo 'build' 'compile.ps1'
     $compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile, '-Kernel', (Join-Path $script:PlugBuildRepo 'seed' 'Codex.cdx'))
-    # Phase decks are fixed generous floors under demand paging; the old
-    # type-density check-mul pin is gone with the survey system.
+    if ($Decks -ne 0) { $compileArgs += @('-Decks', $Decks) }
     & pwsh @compileArgs 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("FAIL: compile errors; see $LogFile")
@@ -177,7 +184,8 @@ function Build-TranspilerPlug {
         # BEFORE the plug's own: shared helpers a lane opts into by name
         # (PlugManifest for the boot grant), so a second native lane picks
         # up the same derivation instead of a copy.
-        [string[]]$CommonChapters = @()
+        [string[]]$CommonChapters = @(),
+        [int]$Decks = 0
     )
     $outDir    = Join-Path $PlugDir 'build-output'
     $outFile   = Join-Path $outDir "$PlugName-plug.cdx"
@@ -228,5 +236,5 @@ function Build-TranspilerPlug {
 
     $preLines = Resolve-PlugForewords $lines
     Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc $bundleSrc -PlugName "$PlugName-plug"
-    Build-PlugCdx -BundleSrc $bundleSrc -OutFile $outFile -LogFile $logFile -PlugName "$PlugName-plug" -Survey $Survey
+    Build-PlugCdx -BundleSrc $bundleSrc -OutFile $outFile -LogFile $logFile -PlugName "$PlugName-plug" -Survey $Survey -Decks $Decks
 }

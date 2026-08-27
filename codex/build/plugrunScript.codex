@@ -58,11 +58,11 @@ Section: S08 -- Write output
 
 Section: S09 -- Cleanup
 
-  s09 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue", ScRaw "Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue", ScRaw "try { $listener.Stop() } catch {}"]
+  s09 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "if ($stderrFile) { Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue }", ScRaw "if ($consoleFile) { Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue }", ScRaw "try { if ($listener) { $listener.Stop() } } catch {}"]
 
 Section: Assembly
 
-  plugrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScComment "The finally block reads $proc, and under Set-StrictMode an unset name THROWS.", ScComment "It was always assigned before anything could fail until the host became a", ScComment "choice; a missing VM binary now makes Start-Process throw first, and the", ScComment "StrictMode error about $proc buried the real cause.", ScRaw "$proc = $null", ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09]
+  plugrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScComment "The finally block reads $proc, and under Set-StrictMode an unset name THROWS.", ScComment "It was always assigned before anything could fail until the host became a", ScComment "choice; a missing VM binary now makes Start-Process throw first, and the", ScComment "StrictMode error about $proc buried the real cause.", ScComment "$stderrFile, $consoleFile and $listener are the same class one throw earlier:", ScComment "a port still held from the previous subject makes $listener.Start() throw", ScComment "before any of the three is assigned, and the finally's reference then masks", ScComment "the port error as \"variable cannot be retrieved\" (gate, 2026-08-27, three", ScComment "plugs reported \"produced nothing\" on their second subject).", ScRaw "$proc = $null", ScRaw "$stderrFile = $null", ScRaw "$consoleFile = $null", ScRaw "$listener = $null", ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09]
 
   plugrun-script : ShellScript = sh-script "plug-run" "Boot a plug CDX in a VM and send pre-compiled IR over TCP to produce output" plugrun-params plugrun-body
 

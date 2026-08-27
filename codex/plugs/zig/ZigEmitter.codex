@@ -63,7 +63,26 @@ Section: Keywords and Sanitization
  are the same identifier -- so these RENAME instead. X86_64Boot binds a
  chain st, sta, stb, stc, std, ste; the sixth one is `std`.
 
-  zig-prelude-decls : List Text = ["std", "main", "cx_entry", "cx_heap_mem", "cx_heap_reserve", "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest", "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best", "cx_deck_stride", "cx_deck_armed", "cx_deck_slack"]
+ Zig forbids a local shadowing a container-level declaration as well, so a
+ name the prelude uses PRIVATELY is reserved for the whole program just as
+ firmly as one it declares. That half is why this list is long and why it
+ cannot be maintained by eye: `build/check-zig-prelude-surface.ps1` derives
+ the surface from emitted output, as the line-wise common prefix of several
+ programs, and counts parameters and captures as well as const and var. It
+ refuses when a derived name is missing here. Run it after any change to
+ zig-prelude.
+
+  zig-prelude-decls : List Text = ["std", "main", "cx_entry", "cx_heap_mem", "cx_heap_reserve", "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest", "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best", "cx_deck_stride", "cx_deck_armed", "cx_deck_slack",
+   "a", "A", "acc", "al", "alignment", "ascii", "b", "B", "b0", "base",
+   "bits", "bot", "buf", "bytes", "c", "C", "cce_t1_code", "cce_t1_size",
+   "cce_t1_uni", "cce_t2_size", "cce_t2_uni", "cce_table", "chunk", "code",
+   "cp", "ctx", "cx_a", "cx_acc", "cx_ap", "cx_b", "cx_base", "cx_ch",
+   "cx_e", "cx_i", "cx_j", "cx_l", "cx_out", "cx_p", "cx_pa", "cx_pi",
+   "cx_s", "cx_tail", "cx_tmp", "cx_used", "cx_v", "d", "D", "dot", "e",
+   "fd", "frac", "h", "i", "k", "l", "len", "m", "memory", "n", "neg",
+   "new_len", "o", "off", "out", "p", "path", "path_cce", "r", "R", "ra",
+   "raw", "rc", "s", "sep", "size", "start", "T", "top", "u", "uni", "v",
+   "vs", "z"]
 
   is-zig-prelude-decl : Text -> Boolean
   is-zig-prelude-decl (s) =
@@ -735,37 +754,94 @@ Section: Constructor Map
    in if i == list-length args - 1 then one
       else one & ", " & zig-atype-args-loop args (i + 1)
 
-  zig-atype-ll-elem : ATypeExpr -> Text
-  zig-atype-ll-elem (te) =
+ A field declaration is written in the RECORD's type parameters, and a
+ construction site is not inside the record's declaration, so `a` there
+ names nothing zig has declared. The site's own type arguments are the
+ answer and they line up by position, the way zig-ctor-type-args renders
+ them for the struct name on the same line. A variable this cannot place
+ answers nothing rather than its own spelling: the caller's marker is a
+ diagnostic and a bare `a` is an undeclared identifier.
+
+  zig-atype-mentions : ATypeExpr, Text -> Boolean
+  zig-atype-mentions (te) (n) =
+   when te
+    is ANamedType (nm) (s) -> nm.value == n
+    is AAppType (base) (args) (s) -> zig-atype-mentions base n | zig-atype-list-mentions args 0 n
+    is AEffectType (effs) (scopes) (tail) (ret) (s) -> zig-atype-mentions ret n
+    is AFunType (p) (r) (s) -> zig-atype-mentions p n | zig-atype-mentions r n
+    is ALinearType (inner) (s) -> zig-atype-mentions inner n
+    is otherwise -> False
+
+  zig-atype-list-mentions : List ATypeExpr, Integer, Text -> Boolean
+  zig-atype-list-mentions (xs) (i) (n) =
+   if i >= list-length xs then False
+   else if zig-atype-mentions (list-at xs i) n then True
+   else zig-atype-list-mentions xs (i + 1) n
+
+  zig-atype-mentions-any : ATypeExpr, List Name, Integer -> Boolean
+  zig-atype-mentions-any (te) (tparams) (i) =
+   if i >= list-length tparams then False
+   else if zig-atype-mentions te ((list-at tparams i).value) then True
+   else zig-atype-mentions-any te tparams (i + 1)
+
+  zig-tparam-index : List Name, Text, Integer -> Integer
+  zig-tparam-index (ps) (n) (i) =
+   if i >= list-length ps then 0 - 1
+   else if (list-at ps i).value == n then i
+   else zig-tparam-index ps n (i + 1)
+
+  zig-rec-type-args : CodexType -> List CodexType
+  zig-rec-type-args (ty) =
+   when ty
+    is SumTy (n) (a) (c) -> a
+    is RecordTy (n) (a) (f) -> a
+    is ConstructedTy (n) (a) -> a
+    is otherwise -> []
+
+  zig-elem-atype-text : ATypeExpr, List Name, CodexType, ZigCtx -> Text
+  zig-elem-atype-text (te) (tparams) (rty) (ctx) =
+   when te
+    is ANamedType (nm) (s) ->
+     let ti = zig-tparam-index tparams (nm.value) 0
+     in if ti < 0 then emit-zig-atype te
+        else let actuals = zig-rec-type-args rty
+        in if ti >= list-length actuals then ""
+           else emit-zig-type (list-at actuals ti) (ctx.scope-tvars)
+    is otherwise ->
+     if zig-atype-mentions-any te tparams 0 then ""
+     else emit-zig-atype te
+
+  zig-atype-ll-elem : ATypeExpr, List Name, CodexType, ZigCtx -> Text
+  zig-atype-ll-elem (te) (tparams) (rty) (ctx) =
    when te
     is AAppType (base) (args) (s) ->
      when base
       is ANamedType (bn) (bs) ->
        if (bn.value == "List") | (bn.value == "LinkedList")
-       then emit-zig-atype (list-at args 0)
+       then zig-elem-atype-text (list-at args 0) tparams rty ctx
        else ""
       is otherwise -> ""
     is otherwise -> ""
 
-  zig-record-field-ll-elem : ZigCtx, Text, Text -> Text
-  zig-record-field-ll-elem (ctx) (recname) (fieldname) =
-   zig-record-field-ll-scan (ctx.typedefs) 0 recname fieldname
+  zig-record-field-ll-elem : ZigCtx, Text, Text, CodexType -> Text
+  zig-record-field-ll-elem (ctx) (recname) (fieldname) (rty) =
+   zig-record-field-ll-scan (ctx.typedefs) 0 recname fieldname rty ctx
 
-  zig-record-field-ll-scan : List ATypeDef, Integer, Text, Text -> Text
-  zig-record-field-ll-scan (tds) (i) (recname) (fieldname) =
+  zig-record-field-ll-scan : List ATypeDef, Integer, Text, Text, CodexType, ZigCtx -> Text
+  zig-record-field-ll-scan (tds) (i) (recname) (fieldname) (rty) (ctx) =
    if i >= list-length tds then ""
    else when (list-at tds i)
     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     if name.value == recname then zig-field-ll-scan fields 0 fieldname
-     else zig-record-field-ll-scan tds (i + 1) recname fieldname
-    is otherwise -> zig-record-field-ll-scan tds (i + 1) recname fieldname
+     if name.value == recname then zig-field-ll-scan fields 0 fieldname tparams rty ctx
+     else zig-record-field-ll-scan tds (i + 1) recname fieldname rty ctx
+    is otherwise -> zig-record-field-ll-scan tds (i + 1) recname fieldname rty ctx
 
-  zig-field-ll-scan : List ARecordFieldDef, Integer, Text -> Text
-  zig-field-ll-scan (fields) (i) (fieldname) =
+  zig-field-ll-scan : List ARecordFieldDef, Integer, Text, List Name, CodexType, ZigCtx -> Text
+  zig-field-ll-scan (fields) (i) (fieldname) (tparams) (rty) (ctx) =
    if i >= list-length fields then ""
    else let f = list-at fields i
-   in if f.name.value == fieldname then zig-atype-ll-elem (f.type-expr)
-      else zig-field-ll-scan fields (i + 1) fieldname
+   in if f.name.value == fieldname then zig-atype-ll-elem (f.type-expr) tparams rty ctx
+      else zig-field-ll-scan fields (i + 1) fieldname tparams rty ctx
 
  The callee's declared parameter type, translated through whatever
  bindings this call resolved -- a declaration read in the caller names the
@@ -916,11 +992,12 @@ Section: Builtin Emitter
   zig-record-set : List IRExpr, ZigCtx, Integer -> Text
   zig-record-set (args) (ctx) (d) =
    let tmp = "_r" & integer-to-text d
-   in let rec-name = zig-type-name-of (zig-expr-type (list-at args 0))
+   in let rec-ty = zig-expr-type (list-at args 0)
+   in let rec-name = zig-type-name-of rec-ty
    in let field-name = zig-record-set-plain-field (list-at args 1)
    in zig-label d & ": { const " & tmp & " = " & emit-zig-expr (list-at args 0) ctx (d + 1)
     & "; " & tmp & "." & zig-record-set-field (list-at args 1)
-    & " = " & zig-field-value-text rec-name field-name (list-at args 2) ctx d
+    & " = " & zig-field-value-text rec-name field-name (list-at args 2) ctx d rec-ty
     & "; break :" & zig-label d & " " & tmp & "; }"
 
  Text is CCE in the interior -- on bare metal, in the C# plug and here --
@@ -1175,7 +1252,8 @@ Section: Name Mapping
        in let base = if boxed then zig-sanitize (c.type-name) & "S" else zig-sanitize (c.type-name) & zig-ctor-type-args ty (ctx.scope-tvars)
        in if boxed then "cx_new(" & base & "{ ." & zig-sanitize n & " = {} })"
           else base & "{ ." & zig-sanitize n & " = {} }"
-   else if lookup-arity (ctx.arities) n == 0 then zig-sanitize n & "()"
+   else if lookup-arity (ctx.arities) n == 0
+   then zig-sanitize n & "(" & zig-drop-trailing-sep (zig-call-type-args ctx n [] ty) & ")"
    else if lookup-arity (ctx.arities) n >= 1 & zig-fn-param-count ty >= 1
    then zig-closure-make n [] ctx d ty
    else if zig-name-known ctx n then zig-sanitize n
@@ -1250,7 +1328,8 @@ Section: Type Definition Emission
      emit-zig-record-type (name.value) fields tparams
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-zig-sum-type (name.value) ctors tparams
-    is AUnitTypeDef (name) (unitbase) (s) -> ""
+    is AUnitTypeDef (name) (unitbase) (s) ->
+     "const " & zig-sanitize (name.value) & " = " & emit-zig-atype unitbase & ";\n\n"
 
  All-nullary variants become plain enums so tag comparison and member
  references work directly; any payload forces union(enum), with a
@@ -1506,7 +1585,7 @@ Section: Expression Emission
     is IrAct (stmts) (ty) (sp) -> emit-zig-act stmts ctx d (zig-type-is-void ty)
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> if list-length clauses == 0 then emit-zig-expr body ctx (d + 1) else "@compileError(\"zig plug: effect handlers not supported\")"
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-zig-expr body ctx (d + 1)
-    is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d (zig-ctor-type-args ty (ctx.scope-tvars))
+    is IrRecord (name) (fields) (ty) (sp) -> emit-zig-record name fields ctx d ty
     is IrFieldAccess (rec) (field) (ty) (sp) -> zig-field-receiver rec ctx d & "." & zig-field-name field
     is IrFieldStore (rec) (field) (val) (ty) (sp) ->
      let stored = zig-clamp-field-val ctx (zig-type-name-of (zig-expr-type rec)) (zig-plain-field-name field) (emit-zig-expr val ctx (d + 1))
@@ -1836,10 +1915,10 @@ Section: Record Emission
  literal looked the field up, so an update fell through to the no-context
  marker.
 
-  zig-field-value-text : Text, Text, IRExpr, ZigCtx, Integer -> Text
-  zig-field-value-text (recname) (fieldname) (v) (ctx) (d) =
+  zig-field-value-text : Text, Text, IRExpr, ZigCtx, Integer, CodexType -> Text
+  zig-field-value-text (recname) (fieldname) (v) (ctx) (d) (rty) =
    let raw = (if zig-is-empty-list v == False then emit-zig-expr v ctx (d + 1)
-      else let elem = zig-record-field-ll-elem ctx recname fieldname
+      else let elem = zig-record-field-ll-elem ctx recname fieldname rty
       in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
          else emit-zig-expr v ctx (d + 1))
    in zig-clamp-field-val ctx recname fieldname raw
@@ -1888,17 +1967,18 @@ Section: Record Emission
     is IrRecord (n) (fs) (t) (s) -> "(" & emit-zig-expr rec ctx (d + 1) & ")"
     is otherwise -> emit-zig-expr rec ctx (d + 1)
 
-  emit-zig-record : Text, List IRFieldVal, ZigCtx, Integer, Text -> Text
-  emit-zig-record (name) (fields) (ctx) (d) (targs) =
-   "cx_new(" & zig-sanitize name & "S" & targs & "{ " & emit-zig-record-vals name fields 0 ctx d & " })"
+  emit-zig-record : Text, List IRFieldVal, ZigCtx, Integer, CodexType -> Text
+  emit-zig-record (name) (fields) (ctx) (d) (rty) =
+   "cx_new(" & zig-sanitize name & "S" & zig-ctor-type-args rty (ctx.scope-tvars)
+    & "{ " & emit-zig-record-vals name fields 0 ctx d rty & " })"
 
-  emit-zig-record-vals : Text, List IRFieldVal, Integer, ZigCtx, Integer -> Text
-  emit-zig-record-vals (recname) (fields) (i) (ctx) (d) =
+  emit-zig-record-vals : Text, List IRFieldVal, Integer, ZigCtx, Integer, CodexType -> Text
+  emit-zig-record-vals (recname) (fields) (i) (ctx) (d) (rty) =
    if i == list-length fields then ""
    else let f = list-at fields i
    in let sep = if i > 0 then ", " else ""
-   in let val = zig-field-value-text recname (zig-plain-field-name (f.name)) (f.value) ctx d
-   in sep & "." & zig-field-name (f.name) & " = " & val & emit-zig-record-vals recname fields (i + 1) ctx d
+   in let val = zig-field-value-text recname (zig-plain-field-name (f.name)) (f.value) ctx d rty
+   in sep & "." & zig-field-name (f.name) & " = " & val & emit-zig-record-vals recname fields (i + 1) ctx d rty
 
 Section: Match Emission
 
@@ -2218,7 +2298,7 @@ Section: Apply Emission
      else let builtin = lookup-zig-builtin n args ctx d (zig-expr-type e)
      in if text-length builtin > 0 then builtin
      else let ci = zig-find-ctor (ctx.ctors) n 0
-     in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-ctor-type-args (zig-expr-type e) (ctx.scope-tvars))
+     in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-expr-type e)
      else let ar = lookup-arity (ctx.arities) n
      in if ar < 0 then (if zig-name-known ctx n then zig-closure-invoke (zig-local-ref ctx n) args ctx d else zig-unknown-name n)
         else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
@@ -2490,6 +2570,16 @@ Section: Apply Emission
    else if (list-at defs i).name == n then i
    else zig-find-irdef defs (i + 1) n
 
+ zig-call-type-args separates with a trailing ", " because the value
+ arguments follow it. A nullary callee has none, so the separator has to
+ come back off.
+
+  zig-drop-trailing-sep : Text -> Text
+  zig-drop-trailing-sep (t) =
+   if text-length t < 2 then t
+   else if substring t (text-length t - 2) 2 == ", " then substring t 0 (text-length t - 2)
+   else t
+
   zig-call-type-args : ZigCtx, Text, List CodexType, CodexType -> Text
   zig-call-type-args (ctx) (n) (actuals) (resty) =
    let di = zig-find-irdef (ctx.irdefs) 0 n
@@ -2736,18 +2826,18 @@ Section: Apply Emission
     is ConstructedTy (n) (a) -> zig-type-args a scope
     is otherwise -> ""
 
-  emit-zig-ctor-apply : ZigCtorEntry, List IRExpr, ZigCtx, Integer, Text -> Text
-  emit-zig-ctor-apply (c) (args) (ctx) (d) (targs) =
+  emit-zig-ctor-apply : ZigCtorEntry, List IRExpr, ZigCtx, Integer, CodexType -> Text
+  emit-zig-ctor-apply (c) (args) (ctx) (d) (cty) =
    let tname = zig-sanitize (c.type-name)
    in let cname = zig-sanitize (c.ctor-name)
    in let boxed = zig-typedef-recursive ctx (c.type-name)
-   in let base = if boxed then tname & "S" else tname & targs
+   in let base = if boxed then tname & "S" else tname & zig-ctor-type-args cty (ctx.scope-tvars)
    in let open = if boxed then "cx_new(" else ""
    in let close = if boxed then ")" else ""
    in if c.enum-like then tname & "." & cname
    else if list-length args == 0 then open & base & "{ ." & cname & " = {} }" & close
-   else if list-length args == 1 then open & base & "{ ." & cname & " = " & emit-zig-ctor-args c args ctx d 0 & " }" & close
-   else open & base & "{ ." & cname & " = .{ " & emit-zig-ctor-args c args ctx d 0 & " } }" & close
+   else if list-length args == 1 then open & base & "{ ." & cname & " = " & emit-zig-ctor-args c args ctx d 0 cty & " }" & close
+   else open & base & "{ ." & cname & " = .{ " & emit-zig-ctor-args c args ctx d 0 cty & " } }" & close
 
   emit-zig-call-args : Text, List IRExpr, ZigCtx, Integer, Integer -> Text
   emit-zig-call-args (fname) (args) (ctx) (d) (i) =
@@ -2795,43 +2885,43 @@ Section: Apply Emission
       then "cx_ll_empty(" & elem & ")"
       else emit-zig-expr a ctx (d + 1)
 
-  emit-zig-ctor-arg : ZigCtorEntry, IRExpr, ZigCtx, Integer, Integer -> Text
-  emit-zig-ctor-arg (c) (a) (ctx) (d) (i) =
+  emit-zig-ctor-arg : ZigCtorEntry, IRExpr, ZigCtx, Integer, Integer, CodexType -> Text
+  emit-zig-ctor-arg (c) (a) (ctx) (d) (i) (cty) =
    if zig-is-empty-list a
-   then let elem = zig-ctor-ll-elem ctx (c.type-name) (c.ctor-name) i
+   then let elem = zig-ctor-ll-elem ctx (c.type-name) (c.ctor-name) i cty
     in if text-length elem > 0 then "cx_ll_empty(" & elem & ")"
        else emit-zig-expr a ctx (d + 1)
    else emit-zig-expr a ctx (d + 1)
 
-  zig-ctor-ll-elem : ZigCtx, Text, Text, Integer -> Text
-  zig-ctor-ll-elem (ctx) (tyname) (ctorname) (argi) =
-   zig-ctor-ll-scan (ctx.typedefs) 0 tyname ctorname argi
+  zig-ctor-ll-elem : ZigCtx, Text, Text, Integer, CodexType -> Text
+  zig-ctor-ll-elem (ctx) (tyname) (ctorname) (argi) (cty) =
+   zig-ctor-ll-scan (ctx.typedefs) 0 tyname ctorname argi cty ctx
 
-  zig-ctor-ll-scan : List ATypeDef, Integer, Text, Text, Integer -> Text
-  zig-ctor-ll-scan (tds) (i) (tyname) (ctorname) (argi) =
+  zig-ctor-ll-scan : List ATypeDef, Integer, Text, Text, Integer, CodexType, ZigCtx -> Text
+  zig-ctor-ll-scan (tds) (i) (tyname) (ctorname) (argi) (cty) (ctx) =
    if i >= list-length tds then ""
    else when (list-at tds i)
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     if name.value == tyname then zig-ctor-field-scan ctors 0 ctorname argi
-     else zig-ctor-ll-scan tds (i + 1) tyname ctorname argi
-    is otherwise -> zig-ctor-ll-scan tds (i + 1) tyname ctorname argi
+     if name.value == tyname then zig-ctor-field-scan ctors 0 ctorname argi tparams cty ctx
+     else zig-ctor-ll-scan tds (i + 1) tyname ctorname argi cty ctx
+    is otherwise -> zig-ctor-ll-scan tds (i + 1) tyname ctorname argi cty ctx
 
-  zig-ctor-field-scan : List AVariantCtorDef, Integer, Text, Integer -> Text
-  zig-ctor-field-scan (ctors) (i) (ctorname) (argi) =
+  zig-ctor-field-scan : List AVariantCtorDef, Integer, Text, Integer, List Name, CodexType, ZigCtx -> Text
+  zig-ctor-field-scan (ctors) (i) (ctorname) (argi) (tparams) (cty) (ctx) =
    if i >= list-length ctors then ""
    else let c = list-at ctors i
    in if c.name.value == ctorname
       then (if argi >= list-length (c.fields) then ""
-            else zig-atype-ll-elem (list-at (c.fields) argi))
-      else zig-ctor-field-scan ctors (i + 1) ctorname argi
+            else zig-atype-ll-elem (list-at (c.fields) argi) tparams cty ctx)
+      else zig-ctor-field-scan ctors (i + 1) ctorname argi tparams cty ctx
 
-  emit-zig-ctor-args : ZigCtorEntry, List IRExpr, ZigCtx, Integer, Integer -> Text
-  emit-zig-ctor-args (c) (args) (ctx) (d) (i) =
+  emit-zig-ctor-args : ZigCtorEntry, List IRExpr, ZigCtx, Integer, Integer, CodexType -> Text
+  emit-zig-ctor-args (c) (args) (ctx) (d) (i) (cty) =
    if i == list-length args then ""
    else let a = list-at args i
-   in let one = emit-zig-ctor-arg c a ctx d i
+   in let one = emit-zig-ctor-arg c a ctx d i cty
    in if i == list-length args - 1 then one
-      else one & ", " & emit-zig-ctor-args c args ctx d (i + 1)
+      else one & ", " & emit-zig-ctor-args c args ctx d (i + 1) cty
 
  An apply whose root is not a name applies a VALUE, and every function
  value in this emitter is a closure struct -- so it is invoked through

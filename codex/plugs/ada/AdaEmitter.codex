@@ -119,6 +119,12 @@ Section: Apply Chain
 
 Section: Type Emission
 
+ ErrorTy names a type the checker did not resolve, so any concrete answer
+ here is a guess that compiles. An undeclared type name is the loudest
+ refusal Ada offers in a type position, the same shape
+ cx_UNSUPPORTED_builtin already uses for expressions: gnat reports the name
+ as undefined and points at the declaration. Do not map it to a real type.
+
   ada-type : CodexType -> Text
   ada-type (ty) =
    when ty
@@ -131,7 +137,7 @@ Section: Type Emission
     is NothingTy -> "Boolean"
     is ProofTy -> "Boolean"
     is PropEqTy (pl) (pr) -> "Boolean"
-    is ErrorTy -> "Long_Long_Integer"
+    is ErrorTy -> "cx_UNSUPPORTED_ErrorTy"
     is FunTy (p) (fnrow) (r) -> "Long_Long_Integer"
     is ListTy (elem) -> ada-list-type-name elem
     is TypeVar (id) -> "Long_Long_Integer"
@@ -155,9 +161,17 @@ Section: Type Emission
  nothing named the integer one, so `ListTy` answered `Long_Long_Integer` and a
  list value was DECLARED a scalar while literals were emitted as aggregates.
 
+ There are two list types and the element decides which, so an element the
+ checker did not resolve cannot pick one. Falling to Cx_Int_List is the same
+ guess one level in, and it is why a List of an unresolved element showed no
+ refusal while the bare element did.
+
   ada-list-type-name : CodexType -> Text
   ada-list-type-name (elem) =
-   if ada-type elem == "Unbounded_String" then "Cx_Text_List" else "Cx_Int_List"
+   let e = ada-type elem
+   in if e == "Unbounded_String" then "Cx_Text_List"
+      else if e == "cx_UNSUPPORTED_ErrorTy" then "cx_UNSUPPORTED_ErrorTy_List"
+      else "Cx_Int_List"
 
   ada-list-elem-of : CodexType -> CodexType
   ada-list-elem-of (ty) =

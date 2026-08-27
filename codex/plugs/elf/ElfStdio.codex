@@ -1,0 +1,22 @@
+Chapter: ElfStdio
+  cites Foreword chapter CCE
+
+Section: Body
+
+  plug-emit-bytes : Integer, Integer -> [Console] Nothing
+  plug-emit-bytes (payload-buf) (payload-len) =
+   if payload-len < 12 then print-line-uni ("REFUSED short payload " & show payload-len)
+   else let cce-table = build-cce-to-ascii-table cce-to-unicode-table
+   in let hp = __heap-save
+   in let hdr-bytes = __buf-read-bytes payload-buf 0 12
+   in let code-len = read-i32-le hdr-bytes 0
+   in let data-len = read-i32-le hdr-bytes 4
+   in let func-count = read-i32-le hdr-bytes 8
+   in let hr = __heap-restore hp
+   in let code-off = 12
+   in let data-off = code-off + code-len
+   in let func-off = data-off + data-len
+   in if func-off > payload-len then print-line-uni ("REFUSED payload " & show payload-len & " shorter than its own header claims " & show func-off)
+   else let funcs = parse-func-table-from-buf payload-buf func-off func-count
+   in let elf-bytes = build-elf-from-payload payload-buf code-len data-len code-off data-off (funcs.names) (funcs.offsets) cce-table
+   in write-binary elf-bytes

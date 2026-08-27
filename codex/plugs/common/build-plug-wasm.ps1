@@ -15,10 +15,22 @@
 # Usage:
 #   codex/plugs/common/build-plug-wasm.ps1 -Plug javascript `
 #       -Chapters JavaScriptEmitter,JavaScriptStdio
+#
+# -Transport bytes builds the other kind of plug: elf, pe and img take a
+# COMPILED PAYLOAD rather than IR text, so they get PlugBytes instead of
+# PlugStdio and none of the IR declaration chapters, which they have never
+# needed -- codex/plugs/elf/build.ps1 bundles no IR chapter either. The plug
+# supplies, in <PlugDir>/<Chapter>.codex:
+#     plug-emit-bytes : Integer, Integer -> [Console] Nothing
+# taking a buffer address and a byte count.
+#
+#   codex/plugs/common/build-plug-wasm.ps1 -Plug elf -Transport bytes `
+#       -Chapters ByteHelpers,ElfWriter,DwarfWriter,'ElfPlug:Network Config|Drain|Body',ElfStdio
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Plug,
     [Parameter(Mandatory)][string[]]$Chapters,
+    [ValidateSet('ir', 'bytes')][string]$Transport = 'ir',
     [string]$Kernel,
     [string]$OutDir
 )
@@ -46,9 +58,10 @@ foreach ($tool in @('wat2wasm')) {
 # A name of its own. Build-TranspilerPlug hardcodes plug-source.codex, and
 # overwriting that would leave the network build's bundle looking like this
 # one.
-$bundleSrc = Join-Path $OutDir 'plug-source-stdio.codex'
-$wat       = Join-Path $OutDir "$Plug-stdio.wat"
-$wasm      = Join-Path $OutDir "$Plug-stdio.wasm"
+$suffix    = if ($Transport -eq 'bytes') { 'bytes' } else { 'stdio' }
+$bundleSrc = Join-Path $OutDir "plug-source-$suffix.codex"
+$wat       = Join-Path $OutDir "$Plug-$suffix.wat"
+$wasm      = Join-Path $OutDir "$Plug-$suffix.wasm"
 
 $plugQuire = $Plug.Substring(0,1).ToUpper() + $Plug.Substring(1)
 
@@ -60,17 +73,21 @@ $Chapters = @($Chapters | ForEach-Object { $_ -split ',' } | Where-Object { $_ -
 # Same declaration chapters Build-TranspilerPlug bundles: one declaration of
 # Name, SourceSpan, CodexType, the AST nodes and the IR nodes in the tree.
 $lines = [System.Collections.Generic.List[string]]::new()
-foreach ($decl in @('codex\compiler\Core\Name.codex',
-                    'codex\compiler\Core\SourceText.codex',
-                    'codex\compiler\Types\CodexType.codex',
-                    'codex\compiler\Ast\AstNodes.codex',
-                    'codex\compiler\IR\IRChapter.codex')) {
-    $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }
-    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $decl) -Quire $plugQuire -DropSections $drop
+if ($Transport -eq 'ir') {
+    foreach ($decl in @('codex\compiler\Core\Name.codex',
+                        'codex\compiler\Core\SourceText.codex',
+                        'codex\compiler\Types\CodexType.codex',
+                        'codex\compiler\Ast\AstNodes.codex',
+                        'codex\compiler\IR\IRChapter.codex')) {
+        $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }
+        Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $decl) -Quire $plugQuire -DropSections $drop
+    }
+    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugTypes.codex')   -Quire $plugQuire
+    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\IRTextParser.codex') -Quire $plugQuire
+    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugStdio.codex')    -Quire $plugQuire
+} else {
+    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugBytes.codex')    -Quire $plugQuire
 }
-Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugTypes.codex')   -Quire $plugQuire
-Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\IRTextParser.codex') -Quire $plugQuire
-Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugStdio.codex')    -Quire $plugQuire
 # A chapter may be written Name:Sec1|Sec2 to drop those sections from it.
 # That is how a plug whose shared helpers live in its NETWORK entry chapter
 # rides this without duplicating them: bundle the chapter, drop the sections
@@ -83,17 +100,25 @@ foreach ($ch in $Chapters) {
         $name = $Matches[1]
         $drop = @($Matches[2] -split '\|' | Where-Object { $_ -ne '' })
     }
-    Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir "$name.codex") -Quire $plugQuire -DropSections $drop
+    # A bytes plug's chapter list names shared helpers (ByteHelpers, PlugChain)
+    # that live in common/ rather than in the plug's own directory. Look there
+    # second, and REFUSE rather than let ReadAllLines throw a path at the reader.
+    $chPath = Join-Path $PlugDir "$name.codex"
+    if (-not (Test-Path -PathType Leaf $chPath)) { $chPath = Join-Path $Repo "codex\plugs\common\$name.codex" }
+    if (-not (Test-Path -PathType Leaf $chPath)) {
+        Write-Host "REFUSE: no chapter '$name' in $PlugDir or codex\plugs\common"; exit 2
+    }
+    Add-PlugChapter -Lines $lines -Path $chPath -Quire $plugQuire -DropSections $drop
 }
 
 $preLines = Resolve-PlugForewords $lines
-Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc $bundleSrc -PlugName "$Plug-stdio"
+Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc $bundleSrc -PlugName "$Plug-$suffix"
 
-Write-Host "[$Plug-stdio] emitting wat through the wasm plug ..."
+Write-Host "[$Plug-$suffix] emitting wat through the wasm plug ..."
 & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\run.ps1') -Src $bundleSrc -Out $wat -Kernel $Kernel
-if ($LASTEXITCODE -ne 0) { Write-Host "[$Plug-stdio] FAIL: wasm emission"; exit 3 }
+if ($LASTEXITCODE -ne 0) { Write-Host "[$Plug-$suffix] FAIL: wasm emission"; exit 3 }
 
 & wat2wasm --enable-tail-call $wat -o $wasm
-if ($LASTEXITCODE -ne 0) { Write-Host "[$Plug-stdio] FAIL: wat2wasm"; exit 4 }
+if ($LASTEXITCODE -ne 0) { Write-Host "[$Plug-$suffix] FAIL: wat2wasm"; exit 4 }
 
-Write-Host "[$Plug-stdio] OK: $wasm ($((Get-Item $wasm).Length) bytes)"
+Write-Host "[$Plug-$suffix] OK: $wasm ($((Get-Item $wasm).Length) bytes)"

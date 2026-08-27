@@ -75,6 +75,11 @@ select {
   padding: 5px 9px; max-width: 22em;
 }
 select:focus { outline: 1px solid var(--accent); }
+/* The open menu is drawn by the platform, not by this page, and it paints
+   white however dark the page is. Inheriting --text put light gray on that
+   white and made the preset list unreadable. The options carry their own
+   pair; the closed control keeps the page's. */
+select option { background: #ffffff; color: #111111; }
 
 .editor { position: relative; height: 500px; }
 .editor pre, .editor textarea {
@@ -224,6 +229,7 @@ a { color: var(--accent); text-decoration: none; }
     <div class="panel-bar" style="padding-bottom:0">
       <span class="tabs">
         <button class="tab active" data-tab="text">Text</button>
+        <button class="tab" data-tab="ui">UI</button>
         <button class="tab" data-tab="binary">Binary</button>
       </span>
       <span class="status" id="status"><span class="run">idle</span></span>
@@ -232,14 +238,26 @@ a { color: var(--accent); text-decoration: none; }
     <div class="pills" id="pills-text">
       <button class="pill active" data-plug="javascript">JavaScript</button>
       <button class="pill" data-plug="csharp">C#</button>
+      <button class="pill" data-plug="python">Python</button>
+      <button class="pill" data-plug="typescript">TypeScript</button>
+      <button class="pill" data-plug="zig">Zig</button>
       <button class="act" id="runjs" style="margin-left:auto" disabled>Run the JavaScript</button>
     </div>
 
+    <div class="pills" id="pills-ui" style="display:none">
+      <button class="pill active" data-plug="html">HTML</button>
+      <button class="pill" data-plug="react">React</button>
+      <button class="pill" data-plug="vue">Vue</button>
+      <button class="pill" data-plug="swiftui">SwiftUI</button>
+      <button class="pill" data-plug="winforms">WinForms</button>
+      <button class="act" id="showhtml" style="margin-left:auto" disabled>Render the page</button>
+    </div>
+
     <div class="pills" id="pills-binary" style="display:none">
-      <button class="pill" disabled title="Needs a bytes entry point on the plug side">ELF</button>
-      <button class="pill" disabled title="Needs a bytes entry point on the plug side">PE</button>
-      <button class="pill" disabled title="Needs a bytes entry point on the plug side">Disk image</button>
-      <span class="status" style="margin-left:auto"><span class="err">not wired yet</span></span>
+      <button class="pill active" data-bin="pe">PE (UEFI)</button>
+      <button class="pill" data-bin="img">Disk image</button>
+      <button class="pill" disabled title="The ELF plug runs here, but nothing emits the x86 payload it reads: the compiler has no ELF mode, and extract-x86-output.ps1 is dead.">ELF</button>
+      <button class="act" id="savebin" style="margin-left:auto" disabled>Save the file</button>
     </div>
 
     <div class="out" id="out" style="max-height:42vh">Press Compile.</div>
@@ -266,12 +284,17 @@ a { color: var(--accent); text-decoration: none; }
     The compiler emits the intermediate representation itself, so that runs in this
     tab directly. Every other target is a separate program, a <b>plug</b>, that reads
     the IR and writes the target; a plug lights up here once it is compiled to
-    WebAssembly the same way the compiler was. JavaScript and C# are done, and the IR
-    on the first pill is exactly what they consume.
-    <b>The binary formats are not wired yet:</b> ELF, PE and a disk image come from
-    plugs that emit bytes rather than text, which needs one more entry point on the
-    plug side before this page can hand you a file. When it lands, choosing one here
-    downloads it.
+    WebAssembly the same way the compiler was. The IR on its own panel is exactly
+    what every one of them consumes.
+    <b>The UI tab is the same compiler pointed at interfaces:</b> the HTML lens emits
+    a whole document, and <i>Render the page</i> puts it in a sandboxed frame so the
+    box model you described in Codex is the box model the browser lays out.
+    <b>The Binary tab hands you a file.</b> Those plugs read a compiled payload
+    rather than the IR, so the compiler runs again in CDX mode and the CDX goes to
+    the PE plug, and to the disk-image plug after it: what comes back is a bootable
+    EFI binary or an 8 MB GPT image, built in this tab and saved by your own
+    browser. <b>ELF stays dark</b>, and the reason is not the plug: it reads an x86
+    payload nothing in the tree emits.
   </div>
 </div>
 
@@ -306,7 +329,20 @@ const SAMPLE = [
 // Start small and climb only on CDX9002, which is what the compiler says when a
 // deck is short. decks=125 reserves over a gigabyte for a twenty-line program.
 const DECKS = [12, 48, 125];
-const PLUG_FILE = { javascript: 'javascript-stdio.wasm', csharp: 'csharp-stdio.wasm' };
+// The binary targets, each a plug that reads bytes and answers bytes.
+const BYTES_FILE = { pe: 'pe-bytes.wasm', img: 'img-bytes.wasm' };
+const BIN_NAME = { pe: 'BOOTX64.EFI', img: 'codex.img' };
+const IMG_SECTORS = 16384;   // 8 MB, the default codex/plugs/img/run.ps1 uses
+
+const PLUG_FILE = {
+  javascript: 'javascript-stdio.wasm', csharp: 'csharp-stdio.wasm',
+  python: 'python-stdio.wasm', typescript: 'typescript-stdio.wasm', zig: 'zig-stdio.wasm',
+  html: 'html-stdio.wasm', react: 'react-stdio.wasm', vue: 'vue-stdio.wasm',
+  swiftui: 'swiftui-stdio.wasm', winforms: 'winforms-stdio.wasm'
+};
+// Which pill row a tab shows, and which lens it starts on. A tab whose modules
+// are all absent still switches; the lens simply reports itself dark.
+const TAB_PILLS = { text: 'pills-text', ui: 'pills-ui', binary: 'pills-binary' };
 
 const goBtn = document.getElementById('go');
 const srcEl = document.getElementById('src');
@@ -317,6 +353,8 @@ const statusEl = document.getElementById('status');
 const srcStatusEl = document.getElementById('src-status');
 const examplesEl = document.getElementById('examples');
 const runJsBtn = document.getElementById('runjs');
+const showHtmlBtn = document.getElementById('showhtml');
+const saveBinBtn = document.getElementById('savebin');
 const outLogEl = document.getElementById('out-log');
 const outIrEl = document.getElementById('out-ir');
 const outEuEl = document.getElementById('out-eu');
@@ -354,6 +392,9 @@ const wasmCache = {};
 let examples = [];
 let prelude = '';
 let emittedJs = null;
+let emittedHtml = null;
+let binTarget = 'pe';
+let emittedBin = null;   // { name, bytes } once a binary target has produced one
 let lastRun = null;
 
 function setStatus(t, c) { statusEl.innerHTML = '<span class="' + c + '">' + t + '</span>'; }
@@ -409,16 +450,33 @@ for (const t of document.querySelectorAll('.tab')) {
     for (const o of document.querySelectorAll('.tab')) o.classList.remove('active');
     t.classList.add('active');
     tab = t.dataset.tab;
-    document.getElementById('pills-text').style.display = tab === 'text' ? '' : 'none';
-    document.getElementById('pills-binary').style.display = tab === 'binary' ? '' : 'none';
+    for (const [name, id] of Object.entries(TAB_PILLS)) {
+      document.getElementById(id).style.display = tab === name ? '' : 'none';
+    }
+    // The lens follows the tab, or pressing Compile on the UI tab would still
+    // run whichever text plug was last chosen and show it under a UI heading.
+    const act = document.querySelector('#' + TAB_PILLS[tab] + ' .pill.active');
+    if (act && act.dataset.plug) lens = { plug: act.dataset.plug };
     render();
   });
 }
-for (const p of document.querySelectorAll('#pills-text .pill')) {
+for (const row of ['pills-text', 'pills-ui']) {
+  for (const p of document.querySelectorAll('#' + row + ' .pill')) {
+    p.addEventListener('click', () => {
+      for (const o of document.querySelectorAll('#' + row + ' .pill')) o.classList.remove('active');
+      p.classList.add('active');
+      lens = { plug: p.dataset.plug };
+    });
+  }
+}
+for (const p of document.querySelectorAll('#pills-binary .pill')) {
+  if (!p.dataset.bin) continue;
   p.addEventListener('click', () => {
-    for (const o of document.querySelectorAll('#pills-text .pill')) o.classList.remove('active');
+    for (const o of document.querySelectorAll('#pills-binary .pill')) o.classList.remove('active');
     p.classList.add('active');
-    lens = { plug: p.dataset.plug };
+    binTarget = p.dataset.bin;
+    emittedBin = null; saveBinBtn.disabled = true;
+    render();
   });
 }
 for (const p of document.querySelectorAll('#pills-eu .pill')) {
@@ -488,8 +546,45 @@ function runModule(bytes, inputTextOrBytes) {
   inst.exports._start();
   const all = new Uint8Array(total);
   let off = 0; for (const c of chunks) { all.set(c, off); off += c.length; }
-  return { text: new TextDecoder().decode(all), ms: performance.now() - t0,
+  // `bytes` is the raw stream. The binary targets need it: a CDX and a PE are
+  // not text, and decoding then re-encoding them would not survive the trip.
+  return { text: new TextDecoder().decode(all), bytes: all, ms: performance.now() - t0,
            mb: Math.round(mem.buffer.byteLength / 1048576) };
+}
+
+// A CDX arrives on the same stream as the compiler's own chatter, so the
+// payload is found rather than assumed: skip codex-vm's leading 0x01 if it is
+// there, find `SIZE:`, read the count to the newline, take exactly that many
+// bytes after it. Same rule as build-page.ps1's Get-CdxPayload, which is what
+// grades this module's CDX against the x86-64 kernel's byte for byte.
+function cdxPayload(bytes) {
+  let b = bytes;
+  if (b.length && b[0] === 1) b = b.subarray(1);
+  const head = new TextDecoder('latin1').decode(b.subarray(0, Math.min(b.length, 4096)));
+  const idx = head.indexOf('SIZE:');
+  if (idx < 0) return null;
+  const nl = b.indexOf(10, idx);
+  if (nl < 0) return null;
+  const n = parseInt(head.slice(idx + 5, nl).trim(), 10);
+  if (!(n > 0) || nl + 1 + n > b.length) return null;
+  return b.subarray(nl + 1, nl + 1 + n);
+}
+
+function le32(n) { return [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255]; }
+
+// The wire each binary plug reads, built here because the page is the caller
+// now: pe takes a mode byte then the CDX, img takes a 17-byte header then the
+// PE and the CDX end to end. Both are the shapes codex/plugs/*/run.ps1 build,
+// and these modules are the ones proven byte-identical to those runners.
+function peWire(cdx) {
+  const out = new Uint8Array(1 + cdx.length);
+  out[0] = 0; out.set(cdx, 1); return out;
+}
+function imgWire(pe, cdx, sectors) {
+  const hdr = [0].concat(le32(sectors), le32(pe.length), le32(cdx.length), le32(0));
+  const out = new Uint8Array(hdr.length + pe.length + cdx.length);
+  out.set(hdr, 0); out.set(pe, hdr.length); out.set(cdx, hdr.length + pe.length);
+  return out;
 }
 
 function classify(l) {
@@ -510,9 +605,16 @@ function paint(el, lines) {
 }
 function render() {
   if (tab === 'binary') {
-    outEl.innerHTML = '<span class="diag">No binary target is wired yet. ELF, PE and the disk image come from ' +
-      'plugs that emit bytes rather than text; that entry point is the next piece of plug work, and when it ' +
-      'lands, choosing one here downloads the file.</span>';
+    if (!emittedBin) { outEl.textContent = 'Press Compile.'; return; }
+    // A binary has nothing to read on screen, so what is shown is what the file
+    // IS: its size and its opening bytes, which are the signature a reader can
+    // check against the format.
+    const b = emittedBin.bytes;
+    const hex = [...b.subarray(0, 16)].map(x => x.toString(16).padStart(2, '0')).join(' ');
+    const asc = [...b.subarray(0, 16)].map(x => (x >= 32 && x < 127) ? String.fromCharCode(x) : '.').join('');
+    outEl.textContent = emittedBin.name + '\n' + b.length.toLocaleString() + ' bytes\n\n' +
+                        'first 16: ' + hex + '\n          ' + asc + '\n\n' +
+                        'Save the file hands it to the browser; nothing was sent anywhere.';
     return;
   }
   if (!lastRun) { outEl.textContent = 'Press Compile.'; return; }
@@ -622,12 +724,54 @@ goBtn.addEventListener('click', async () => {
     irStatusEl.textContent = ir.length.toLocaleString() + ' chars in ' + r.ms.toFixed(0) +
                              ' ms, ' + r.mb + ' MB';
 
+    // The binary tab takes a different road from here. Its plugs read a
+    // COMPILED PAYLOAD rather than the IR above, so the compiler runs a second
+    // time in CDX mode and the CDX is what gets handed on. The IR and log
+    // panels above still show, because both come out of every compile.
+    if (tab === 'binary') {
+      emittedBin = null; saveBinBtn.disabled = true;
+      const c = runModule(await moduleBytes('codex-compiler.wasm'), 'CDX\n' + prelude + source);
+      const cdx = cdxPayload(c.bytes);
+      if (!cdx) {
+        setStatus('no CDX: the compiler refused this source', 'err');
+        outEl.innerHTML = '<span class="diag">' + esc(c.text.split('\n').filter(l => classify(l) === 'diag').join('\n') || 'the compiler emitted no CDX payload') + '</span>';
+        goBtn.disabled = false; return;
+      }
+      let bytes, ms = c.ms, mb = c.mb;
+      const pe = runModule(await moduleBytes(BYTES_FILE.pe), peWire(cdx));
+      ms += pe.ms; mb = Math.max(mb, pe.mb);
+      if (binTarget === 'pe') { bytes = pe.bytes; }
+      else {
+        const im = runModule(await moduleBytes(BYTES_FILE.img), imgWire(pe.bytes, cdx, IMG_SECTORS));
+        ms += im.ms; mb = Math.max(mb, im.mb);
+        bytes = im.bytes;
+      }
+      // A plug that refuses says so in words on the same stream, and those
+      // words are not a file. Catching it here is what keeps a download button
+      // from handing somebody a text refusal named BOOTX64.EFI.
+      const head = new TextDecoder('latin1').decode(bytes.subarray(0, Math.min(bytes.length, 64)));
+      if (head.startsWith('REFUSED')) {
+        setStatus('the plug refused', 'err');
+        outEl.innerHTML = '<span class="diag">' + esc(new TextDecoder().decode(bytes)) + '</span>';
+        goBtn.disabled = false; return;
+      }
+      emittedBin = { name: BIN_NAME[binTarget], bytes };
+      saveBinBtn.disabled = false;
+      setStatus(binTarget + ' in ' + ms.toFixed(0) + ' ms, ' + mb + ' MB, ' +
+                bytes.length.toLocaleString() + ' bytes', 'ok');
+      lastRun = { body: [] };
+      render();
+      goBtn.disabled = false; return;
+    }
+
     const p = runModule(await moduleBytes(PLUG_FILE[lens.plug]), ir);
     const plines = p.text.split('\n');
     const body = plines.filter(l => !l.startsWith('WD:') && !l.startsWith('PM:'));
     lastRun = { body };
     emittedJs = lens.plug === 'javascript' ? body.join('\n') : null;
     runJsBtn.disabled = !emittedJs;
+    emittedHtml = lens.plug === 'html' ? body.join('\n') : null;
+    showHtmlBtn.disabled = !emittedHtml;
     setStatus(lens.plug + ' in ' + p.ms.toFixed(0) + ' ms, ' + p.mb + ' MB', 'ok');
     render();
 
@@ -675,6 +819,27 @@ runJsBtn.addEventListener('click', () => {
   } catch (e) {
     runoutEl.textContent += '\n' + String(e && e.message || e);
   }
+});
+
+// The html plug emits a whole document, so the honest way to show it is to let
+// the browser lay it out. A sandboxed iframe with no allow-scripts renders the
+// box model and runs nothing: the emitted page is the artifact under
+// inspection, not something this page has decided to trust.
+showHtmlBtn.addEventListener('click', () => {
+  if (!emittedHtml) return;
+  runoutEl.style.display = '';
+  runoutEl.textContent = '';
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', '');
+  frame.style.cssText = 'width:100%;height:340px;border:0;background:#fff;border-radius:6px';
+  frame.srcdoc = emittedHtml;
+  runoutEl.appendChild(frame);
+});
+
+saveBinBtn.addEventListener('click', () => {
+  if (!emittedBin) return;
+  download(emittedBin.name, emittedBin.bytes,
+           binTarget === 'img' ? 'application/octet-stream' : 'application/vnd.microsoft.portable-executable');
 });
 
 async function loadExamples() {

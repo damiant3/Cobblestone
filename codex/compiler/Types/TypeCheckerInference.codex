@@ -485,8 +485,8 @@ Section: Infer Lambda
    else let (t, st2) = fresh-row-id st
    in (make-row (r.labels) "" t, st2)
 
-  infer-lambda : UnificationState, TypeEnv, List Name, AExpr, Integer -> CheckResult
-  infer-lambda (st) (env) (params) (body) (depth) =
+  infer-lambda : UnificationState, TypeEnv, List Name, AExpr, Integer, SourceSpan -> CheckResult
+  infer-lambda (st) (env) (params) (body) (depth) (sp) =
    let pr = bind-lambda-params st env params 0 (list-length params) []
    in let br = infer-expr-at (pr.state) (pr.env) body (depth + 1)
    in let (lam-row, lam-st) = open-row-if-closed (br.state) (br.effect-row)
@@ -494,8 +494,14 @@ Section: Infer Lambda
    in CheckResult {
     inferred-type = fun-ty,
     effect-row = empty-row,
-    state = lam-st
+    state = record-expr-type lam-st sp fun-ty
    }
+
+ The recorded type is what lowering asks for when nothing above the lambda
+ expects one. It carries the parameters' type VARIABLES at this point --
+ unification has not finished -- so the reader resolves it; `lookup-expr-type`
+ hands back what was stored and `deep-resolve` turns it into the answer. The
+ span is threaded in for this and is used for nothing else.
 
   LambdaBindResult = record {
    state : UnificationState,
@@ -1560,7 +1566,7 @@ Section: Infer Expression (dispatch)
     is AApplyExpr (func) (arg) (s) -> infer-application st env func arg s depth
     is AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e s depth
     is ALetExpr (bindings) (body) (s) -> infer-let st env bindings body depth
-    is ALambdaExpr (params) (body) (s) -> infer-lambda st env params body depth
+    is ALambdaExpr (params) (body) (s) -> infer-lambda st env params body depth s
     is AMatchExpr (scrutinee) (arms) (s) -> infer-match st env scrutinee arms depth
     is AListExpr (elems) (s) -> infer-list st env elems s depth
     is AActExpr (stmts) (s) -> infer-act st env stmts depth

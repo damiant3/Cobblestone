@@ -237,14 +237,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,917,073 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,929,040 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `D56234986EF451D2` |
-| SHA-256 | `C3181693B2C3733BFA5BC70C19F4E39B4222DD4FB9DC20A5C470DD5AF2B9E483` |
-| MD5 | `93820C4D1F17E7833D0C9CE341C08A06` |
+| Content hash prefix | `C1FAB1D99481406B` |
+| SHA-256 | `4341370C8FE5BAD605F6E2E5D14D497665F3E060E8C4553AAA7DF7E987321DFC` |
+| MD5 | `7652C84257FBE8CD6852E2E9592EC231` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -607,8 +607,8 @@ codex/
   foreword/      434 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
-  plugs/         56 plugs, 142 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,688 files)
+  plugs/         56 plugs, 153 source modules -- IR-text-driven emitters
+  test/          Compiler samples + OS integration tests (1,693 files)
 apps/            70 applications, 1,026 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
@@ -634,7 +634,7 @@ together.
 |---|---:|---:|---:|
 | `apps/` | 1,026 | 191,971 | 6,617 |
 | `codex/foreword/` | 434 | 60,399 | 6,546 |
-| `codex/test/` | 1,688 | 56,481 | 5,955 |
+| `codex/test/` | 1,693 | 56,481 | 5,955 |
 | `codex/plugs/` | 172 | 55,275 | 3,414 |
 | `codex/compiler/` | 64 | 42,492 | 5,181 |
 | `codex/os/` | 160 | 24,415 | 1,982 |
