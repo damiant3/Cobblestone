@@ -1,0 +1,72 @@
+Chapter: RocIterMap
+  cites Foreword chapter Console
+
+ Ported from roc-lang/roc, src/eval/test/eval_closure_recursion_tests.zig,
+ the case named "inspect: iterator-like map uses transformed tag payload".
+ Roc builds a LAZY stream as a record holding a thunk, maps over it, and
+ reads the first two items:
+
+     Iter(item) :: { next : () -> [One({ item : item, rest : Iter(item) }), Done] }.{
+         map : Iter(a), (a -> b) -> Iter(b)
+         map = |iter, transform|
+             { next: || match (iter.next)() {
+                 One({ item, rest }) => One({ item: transform(item), rest: Iter.map(rest, transform) })
+                 Done => Done } }
+     }
+     range_to = |start, end|
+         { next: || if start == end { Done } else { One({ item: start, rest: range_to(start + 1, end) }) } }
+     mapped = Iter.map(range_to(1, 3), |n| n * 2)
+     -- reads first and second, answers first * 10 + second
+
+ and Roc expects 24.
+
+ Two environment adaptations, both named so the port is not taken for a
+ loose one.
+
+ The THUNK. Roc's `next` is `() -> ...` and Codex has no nullary function
+ type -- a nullary definition is a constant, evaluated once, not a closure
+ to enter -- so `next` takes an Integer it ignores. Nothing the case asks
+ depends on the argument.
+
+ The PAYLOAD. Roc's `One` carries an anonymous record `{ item, rest }`;
+ this carries the two as constructor fields. Codex has no anonymous record
+ type, and naming one would test the name rather than the stream.
+
+ What survives both is the whole of what makes this case interesting: the
+ stream is a record whose field is a CLOSURE, each closure captures the
+ iterator and the transform that built it, the closure outlives the call
+ that made it, and entering it recurses into a fresh one. That is findings
+ 38, 39 and 40's neighbourhood reached three different ways in eight lines.
+
+Section: Types
+
+  Iter (a) = record {
+   next : Integer -> Step a
+  }
+
+  Step (a) = | One (a) (Iter a) | Done
+
+Section: Functions
+
+  iter-map : Iter a, (a -> b) -> Iter b
+  iter-map (it) (transform) =
+   Iter { next = \ignored -> when ((it.next) 0)
+     is One (item) (rest) -> One (transform item) (iter-map rest transform)
+     is Done -> Done }
+
+  range-to : Integer, Integer -> Iter Integer
+  range-to (start) (stop) =
+   Iter { next = \ignored -> if start == stop then Done
+     else One start (range-to (start + 1) stop) }
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   let mapped = iter-map (range-to 1 3) (\n -> n * 2)
+   in when ((mapped.next) 0)
+    is One (first) (rest) -> when ((rest.next) 0)
+      is One (second) (ignored) -> print-line-uni (show (first * 10 + second))
+      is Done -> print-line-uni (show (0 - 2))
+    is Done -> print-line-uni (show (0 - 1))
+  end

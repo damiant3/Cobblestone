@@ -1,0 +1,54 @@
+Chapter: RocRecursiveVar
+  cites Foreword chapter Console
+
+ Ported from roc-lang/roc, src/eval/test/eval_closure_recursion_tests.zig,
+ "inspect: recursive function with var keeps outer binding":
+
+     {
+         f = |n| {
+             var $state = n
+             if n > 0 {
+                 inner = f(n - 1)
+                 $state + inner
+             } else {
+                 $state
+             }
+         }
+         f(3)
+     }
+
+ and Roc expects 6.
+
+ Two adaptations. Roc's decimal default spells its answer `6.0`. And Roc's
+ `var $state` is a MUTABLE local; Codex has no such thing, so `state` is an
+ ordinary `let`.
+
+ **That second one takes a real property out and leaves a real property in,
+ and the difference is the whole reason this case is worth porting.** What
+ is gone: nothing here mutates, so Roc's question -- does a var survive a
+ recursive call into the same function -- cannot be asked. What is left is
+ the half we can ask and the half our findings live in: `state` is bound
+ BEFORE the recursive call and read AFTER it returns, in a frame the callee
+ re-entered. Finding 42 was exactly that read going to the wrong place -- a
+ self-tail loop that read a top-level definition where the source read its
+ own parameter -- and it was found by zig noticing an unused parameter
+ rather than by any row asking for it.
+
+ `f 3` walks three frames deep and each one holds a live binding across its
+ callee, so a rename or a loop variable that leaks between frames is off by
+ more than one: 3 + 2 + 1 + 0.
+
+Section: Functions
+
+  f : Integer -> Integer
+  f (n) =
+   let state = n
+   in if n > 0 then let inner = f (n - 1) in state + inner
+      else state
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni (show (f 3))
+  end

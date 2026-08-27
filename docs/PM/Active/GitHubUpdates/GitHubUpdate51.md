@@ -171,6 +171,28 @@ Damian's ruling).
   `check-shipping-images` OK (the baked cfg is the address-free default).
 - **Doc counts**: 63 claims checked, 0 drifted.
 
+## Addendum: the same-night mirror push
+
+Interim mirror push a few hours after the release, seed `C3181693`
+unchanged, no release proof owed or run (the four proofs certify a seed
+and this one carried them the same evening). What it carries:
+
+- **Steve Howell's PR 92, absorbed** (main 19963): six zig-plug emitter
+  defects fixed, two reported open (plugs register 1.84-1.90); twelve new
+  cross-backend test pairs, every `.expected` re-measured on bare metal
+  against the shipped seed before being trusted, 12 of 12 matching. One
+  reconciliation on top: his typed `zig-lit-pat-text` replaced our
+  same-day fix for the same Boolean-pattern defect, because his dispatches
+  on the pattern's type and ours did not. The PR closes with this push's
+  commit.
+- **COMPILER-9 CLOSED and the compiler register is empty** (blu, main
+  19968): the arm64 helper-versus-arm precedence table turned out not to
+  be needed -- measured with the bed as judge, every registered name takes
+  its arm with no visible change, so the mechanism is kept and the hand
+  data deleted rather than derived.
+- **Prism polish** (reek, 19960/19971): source above the Compile button;
+  Prism ships as one tracked standalone file.
+
 ## Rulings queue (Damian)
 
 - COMPILER-24: refuse-vs-support for `==` on recursive variants (support

@@ -7,10 +7,15 @@ re-measured at the release head, not carried forward (L-COUNT).
 
 ## Open from Update 51
 
-- **Steve Howell's PR 92** (zig plug: six emitter defects, corpus refusals
-  112 -> 24, twelve new cross-backend test pairs) arrived during the
-  release run and is queued for review and absorption -- the twelve
-  `.expected` files get re-measured on bare metal before they are trusted.
+- **Steve Howell's PR 92 is ABSORBED** (red 19961, main 19963): zig plug,
+  six emitter defects fixed, two reported open (plugs register 1.84-1.90);
+  twelve cross-backend test pairs, every `.expected` re-measured on bare
+  metal against seed C3181693 before being trusted, 12 of 12 match. Tweaks
+  on top: blu's 19917 `zig-bool-lit-text` replaced by Steve's typed
+  `zig-lit-pat-text` (same fix, his dispatches on the pattern type);
+  test-file count 1,676 -> 1,688. His corpus headline counts are treated
+  as provisional pending his harness error-gate work. The PR closes at the
+  next mirror push.
 - **COMPILER-29** (an effect op with an argument returns a pointer on
   arm64 and nothing on riscv; cause is an unlifted handler-clause lambda
   on the plug wire, COMPILER-12's declared contract) recorded at 19946,

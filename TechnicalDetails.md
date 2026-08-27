@@ -608,7 +608,7 @@ codex/
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
   plugs/         56 plugs, 142 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,676 files)
+  test/          Compiler samples + OS integration tests (1,688 files)
 apps/            70 applications, 1,026 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
@@ -634,7 +634,7 @@ together.
 |---|---:|---:|---:|
 | `apps/` | 1,026 | 191,971 | 6,617 |
 | `codex/foreword/` | 434 | 60,399 | 6,546 |
-| `codex/test/` | 1,676 | 56,481 | 5,955 |
+| `codex/test/` | 1,688 | 56,481 | 5,955 |
 | `codex/plugs/` | 172 | 55,275 | 3,414 |
 | `codex/compiler/` | 64 | 42,492 | 5,181 |
 | `codex/os/` | 160 | 24,415 | 1,982 |
