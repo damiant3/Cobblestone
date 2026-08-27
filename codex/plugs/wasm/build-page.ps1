@@ -53,6 +53,10 @@ Copy-Item (Join-Path $PSScriptRoot 'page\roundabout.jpg') (Join-Path $OutDir 'ro
 # module from its own directory rather than shipping a second copy.
 Copy-Item (Join-Path $PSScriptRoot 'page\prism.html')    (Join-Path $OutDir 'prism.html') -Force
 Copy-Item (Join-Path $PSScriptRoot 'page\examples.json') (Join-Path $OutDir 'examples.json') -Force
+# A copy of a Perforce file inherits its read-only bit, and step 3e writes the
+# embedded page back over this one. Without this the build dies at the write
+# with an access error naming the output rather than the cause.
+Set-ItemProperty (Join-Path $OutDir 'prism.html') -Name IsReadOnly -Value $false
 
 # 3d. The target plugs, each a wasm module reading IR on stdin. Built by
 # codex/plugs/common/build-plug-wasm.ps1; a missing one leaves its lens dark
@@ -100,6 +104,14 @@ if (Test-Path -PathType Leaf $exJson) {
 }
 [void]$embed.AppendLine('</script>')
 $offline = ([IO.File]::ReadAllText($offlineSrc)).Replace('<!--EMBED-->', $embed.ToString())
+# The backdrop goes in too, or a downloaded prism.html is a working compiler
+# with no picture behind it. That makes this ONE file the whole thing: hand
+# somebody the file and it opens.
+$bg = Join-Path $OutDir 'roundabout.jpg'
+if (Test-Path -PathType Leaf $bg) {
+    $bgB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($bg))
+    $offline = $offline.Replace("url('roundabout.jpg')", "url('data:image/jpeg;base64,$bgB64')")
+}
 [IO.File]::WriteAllText($offlineSrc, $offline, [Text.UTF8Encoding]::new($false))
 Write-Host ("[page] prism   : self-contained, {0:N0} bytes" -f (Get-Item $offlineSrc).Length)
 # A twin was shipped for one build and is gone; clear a stale one so a rebuilt

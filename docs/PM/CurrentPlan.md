@@ -23,7 +23,24 @@ register** (`apps/<app>/<app>-backlog.md`,
 track. There is still no platform-wide register beyond this file; do not
 recreate `docs/PM/BACKLOG.md`.
 
-## THE UPDATE 50 RELEASE IS COMPLETE AND MAIN IS OPEN (2026-08-26, red)
+## THE UPDATE 51 RELEASE IS COMPLETE AND MAIN IS OPEN (2026-08-26, red)
+
+Pushed public: github `7a6c5682` (master), gitlab the same commit (main),
+seed `C3181693` (2,917,073 bytes) unchanged since main 19889. All proofs
+green against that seed: full gate 769.4 s every phase, battery `-Tier
+all` 1,663 total 0 fail 50 skip (after `desk-cursor-arrow` was
+re-baselined to the crisp pointer at 19947/19949 -- the erase invariant
+held throughout), app sweep 265 clean 0 regressions, poison clean, DDC
+witness HOLDS (both arms 2,917,073 bytes, 96 differing all inside the
+signature region, 0 outside). Artifacts shipped: map 5,358/5,358 vs
+embedded MAP1, img `12B7333C`, diag rebuilt + rehearsed full
+(`682FA342`, shipping check OK). Doc counts 63/0.
+`GitHubUpdate51.md` is the report; `GitHubUpdate52.md` is rotated and
+carries the open items (Steve's PR 92 queued for absorption first).
+**RED DECLARED MAIN OPEN 2026-08-26** -- seed-affecting copy-ups are
+unblocked.
+
+## The previous release (Update 50, superseded record)
 
 Pushed public: github `8cc80685` (master), gitlab the same commit (main),
 from main 19779, seed `C45E5825` unchanged from the freeze. All four

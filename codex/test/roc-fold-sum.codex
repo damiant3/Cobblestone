@@ -1,0 +1,53 @@
+Chapter: RocFoldSum
+  cites Foreword chapter Console
+
+ Ported from roc-lang/roc, src/eval/test/eval_closure_recursion_tests.zig,
+ "inspect: inline fold sum lambda". The Roc source is the whole case:
+
+     (|list, init, step| {
+         var $state = init
+         for item in list {
+             $state = step($state, item)
+         }
+         $state
+     })([1, 2, 3, 4], 0, |acc, x| acc + x)
+
+ and Roc expects 10.
+
+ Two adaptations, both named. Roc's numeric literals default to a decimal
+ type, so its expectation reads `10.0` where a Codex Integer prints `10`;
+ the arithmetic is the same and only the spelling differs. And Roc's loop
+ is an imperative `for` over a `var`, which Codex does not have -- the
+ accumulation is a named recursive definition instead, which is Codex's
+ only loop.
+
+ That second one costs something and it is worth being precise about what.
+ The IMMEDIATE APPLICATION survives: the outer lambda is still a literal in
+ function position, still takes `step` as a function-typed parameter, and
+ is still applied to three arguments in the same expression that builds it.
+ What does not survive is the mutable binding across loop iterations, and
+ no port of this file can carry that.
+
+ What it asks that no row in this corpus asks yet: a lambda LITERAL in
+ function position, applied immediately, receiving another lambda literal
+ as an argument and handing it on to a named definition that calls it.
+ `iterate-zip-test.codex` passes lambda literals to `list-zip-with-generic`
+ but the receiver is a name, not a literal under application; nothing here
+ builds a closure and enters it in one expression. That is the
+ neighbourhood of findings 39 and 40 -- a closure's arity, and what happens
+ when application and construction meet.
+
+Section: Functions
+
+  fold-loop : List Integer, Integer, (Integer, Integer -> Integer), Integer -> Integer
+  fold-loop (xs) (acc) (step) (i) =
+   if i >= list-length xs then acc
+   else fold-loop xs (step acc (list-at xs i)) step (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   let total = (\xs base step -> fold-loop xs base step 0) [1, 2, 3, 4] 0 (\acc x -> acc + x)
+   in print-line-uni (show total)
+  end

@@ -1,0 +1,66 @@
+Chapter: RocIterDropIf
+  cites Foreword chapter Console
+
+ Ported from roc-lang/roc, src/eval/test/eval_closure_recursion_tests.zig,
+ "inspect: iterator-like drop_if stops at first kept tag payload". The
+ mirror of `roc-iter-keep-if`, and Roc keeps both:
+
+     drop_if : Iter(a), (a -> Bool) -> Iter(a)
+     drop_if = |iter, pred|
+         { next: || match (iter.next)() {
+             One({ item, rest }) =>
+                 if pred(item) { (Iter.drop_if(rest, pred).next)() }
+                 else { One({ item, rest: Iter.drop_if(rest, pred) }) }
+             Done => Done } }
+     dropped = Iter.drop_if(range_to(1, 4), |item| item == 1)
+
+ and Roc expects 2.
+
+ The same two adaptations `roc-iter-map.codex` records -- Codex has no
+ nullary function type, so the thunk takes an ignored Integer; and Codex
+ has no anonymous record, so `One` carries its two as constructor fields.
+
+ **What separates this from `roc-iter-keep-if`, which is the reason the
+ suite has both.** The two are the same program with the branches swapped,
+ and the swap moves which branch is the recursive one. In keep_if the
+ REJECT branch builds a fresh iterator and immediately enters it; here the
+ KEEP branch does the rebuilding and the reject branch is the one that
+ recurses through a record field of a value nothing bound. So the same
+ defect would surface on different data: keep_if needs a rejected element
+ to reach it, drop_if needs a kept one. `1` is dropped and `2` is kept, so
+ this file exercises both branches once before it answers.
+
+ Neither has run. `roc-iter-keep-if` was committed unexercised and this
+ lands the same way.
+
+Section: Types
+
+  Iter (a) = record {
+   next : Integer -> Step a
+  }
+
+  Step (a) = | One (a) (Iter a) | Done
+
+Section: Functions
+
+  iter-drop-if : Iter a, (a -> Boolean) -> Iter a
+  iter-drop-if (it) (pred) =
+   Iter { next = \ignored -> when ((it.next) 0)
+     is One (item) (rest) -> if pred item then ((iter-drop-if rest pred).next) 0
+        else One item (iter-drop-if rest pred)
+     is Done -> Done }
+
+  range-to : Integer, Integer -> Iter Integer
+  range-to (start) (stop) =
+   Iter { next = \ignored -> if start == stop then Done
+     else One start (range-to (start + 1) stop) }
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   let dropped = iter-drop-if (range-to 1 4) (\item -> item == 1)
+   in when ((dropped.next) 0)
+    is One (item) (rest) -> print-line-uni (show item)
+    is Done -> print-line-uni (show (0 - 1))
+  end
