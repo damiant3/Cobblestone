@@ -1347,10 +1347,41 @@ Section: Collections and Act
    in let from-context = when resolved
       is ListTy (e) -> e
       is otherwise -> ErrorTy
+   in let witness = ir-expr-type (lower-expr (list-at elems 0) NoExpectTy ctx)
    in let elem-ty = when from-context
-      is ErrorTy | NoExpectTy -> ir-expr-type (lower-expr (list-at elems 0) NoExpectTy ctx)
-      is otherwise -> from-context
+      is ErrorTy | NoExpectTy -> witness
+      is otherwise -> if list-elem-prefers-witness from-context witness then witness else from-context
    in deck-record (IrList (for e in elems -> lower-expr e elem-ty ctx) elem-ty sp)
+
+ The elements used to be consulted ONLY when the context said nothing at all,
+ so a context that said something WRONG won unopposed. At a polymorphic call
+ the context is the callee's declared element type with its type variables
+ still in it, and those variables belong to the CALLEE's scope, not to the
+ definition being lowered. `hamt-test` recorded a one-element list of
+ `HamtEntry (tvar 25)` whose element was a `HamtEntry (tvar 70)` and whose
+ target list was `(list (ctd "HamtEntry" (args (tvar 70))))`, inside a
+ definition that is `forall 70` -- and the unit binds no `forall 25` anywhere,
+ so the plug was asked to emit a variable that is declared nowhere.
+
+ This is the same fault `lambda-recorded-ty` twenty lines up already guards
+ against, in its own words: a node recording "the EXPECTED type it was
+ handed, which at a polymorphic call is the callee's declared parameter with
+ its type variables still in it".
+
+  list-elem-prefers-witness : CodexType, CodexType -> Boolean
+  list-elem-prefers-witness (from-context) (witness) =
+   if ty-has-typevars from-context == False then False
+   else if ty-has-error witness then False
+   else ty-admits-widening witness == False
+
+ Deliberately NOT `usable-witness-ty`, and the difference is one clause.
+ That predicate refuses any witness carrying type variables, which is right
+ for a branch join deciding whether to erase one. Here the answer is not to
+ erase a variable but to prefer the one that is BOUND at this site over one
+ that is not, so a witness of `HamtEntry (tvar 70)` inside `forall 70` has to
+ be allowed to win. The other two clauses are kept for the reasons they were
+ written: an `error` witness knows nothing, and a numeric witness must not
+ pin a literal that still has widening to do.
 
   lower-record : Name, List AFieldExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-record (name) (fields) (ty) (ctx) (sp) =
