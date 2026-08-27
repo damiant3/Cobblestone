@@ -14,8 +14,14 @@ re-measured at the release head, not carried forward (L-COUNT).
   on top: blu's 19917 `zig-bool-lit-text` replaced by Steve's typed
   `zig-lit-pat-text` (same fix, his dispatches on the pattern type);
   test-file count 1,676 -> 1,688. His corpus headline counts are treated
-  as provisional pending his harness error-gate work. The PR closes at the
-  next mirror push.
+  as provisional pending his harness error-gate work. **The `a0425e10`
+  close was PARTIAL and its message wrong** (found by Steve against the
+  mirror): 19963 missed `ZigEmitter.codex` and `plugs-backlog.md` to a
+  missed noclobber refusal, so the pushed tree lacked the emitter fixes
+  it claimed. Repaired at main 19980 (2026-08-27) with the zig arm
+  graded first; the PR closes with the NEXT mirror push, the one that
+  actually carries the emitter. The Update 51 addendum carries the full
+  correction.
 - **COMPILER-29** (an effect op with an argument returns a pointer on
   arm64 and nothing on riscv; cause is an unlifted handler-clause lambda
   on the plug wire, COMPILER-12's declared contract) recorded at 19946,

@@ -25,7 +25,10 @@ recreate `docs/PM/BACKLOG.md`.
 
 ## THE UPDATE 51 RELEASE IS COMPLETE AND MAIN IS OPEN (2026-08-26, red)
 
-Pushed public: github `7a6c5682` (master), gitlab the same commit (main),
+Pushed public: github `7a6c5682` (master), gitlab the same commit (main);
+same-night addendum mirror push `a0425e10` carrying PR 92 (absorbed and
+closed), COMPILER-9's close, and the standalone Prism file, seed unchanged.
+Original release line:
 seed `C3181693` (2,917,073 bytes) unchanged since main 19889. All proofs
 green against that seed: full gate 769.4 s every phase, battery `-Tier
 all` 1,663 total 0 fail 50 skip (after `desk-cursor-arrow` was
@@ -59,10 +62,10 @@ Howell's PRs 84-91 closed with credit. **RED DECLARED MAIN OPEN
 
 ## Where we stand, in three sentences
 
-The compiler is a hard fixed point of itself on bare metal, the Update 50
-release is on the public mirrors (github `8cc80685`, seed `C45E5825`,
-headlined by the compiler compiling itself in WebAssembly and in a browser
-tab), and the
+The compiler is a hard fixed point of itself on bare metal, the Update 51
+release is on the public mirrors (github `a0425e10` after the same-night
+addendum, seed `C3181693`, headlined by the Cobblestone landing page and
+Prism compiling in the tab), and the
 compiler has booted the ASUS from bare UEFI, compiled its own source off the
 stick and written it back byte-identical (A5). The trust audit is closed on
 the whole compiler (diverse double-compiling, the `jonquil` runner, the
