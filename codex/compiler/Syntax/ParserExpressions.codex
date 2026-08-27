@@ -870,12 +870,13 @@ Section: Compound Expression Parsing
 
   parse-lambda-expr : ParseState -> ParseExprResult
   parse-lambda-expr (st) =
-   let st2 = advance st
+   let lam-tok = current st
+   in let st2 = advance st
    in let params-result = collect-lambda-params st2 []
    in let st3 = expect Arrow (params-result.state)
    in let st4 = skip-newlines st3
    in let body = parse-expr st4
-   in unwrap-expr-ok body (finish-lambda (deck-record (__linked-list-to-list (params-result.toks))))
+   in unwrap-expr-ok body (finish-lambda lam-tok (deck-record (__linked-list-to-list (params-result.toks))))
 
   LambdaParamsResult = record { toks : LinkedList Token, state : ParseState }
 
@@ -888,9 +889,9 @@ Section: Compound Expression Parsing
      state = st
     }
 
-  finish-lambda : List Token, Expr, ParseState -> ParseExprResult
-  finish-lambda (params) (body) (st) =
-   ExprOk (deck-record (LambdaExpr params body)) st
+  finish-lambda : Token, List Token, Expr, ParseState -> ParseExprResult
+  finish-lambda (lam-tok) (params) (body) (st) =
+   ExprOk (deck-record (LambdaExpr lam-tok params body)) st
 
  The failure arm CONSUMES the dot, and that is the whole point of it. It
  used to return the state it was handed, un-advanced, wearing an ExprOk:
@@ -910,7 +911,7 @@ Section: Compound Expression Parsing
      in let param = deck-record (Token { kind = Identifier, source = "__r", offset = 0, length = 3, line = dot-tok.line, column = dot-tok.column, file-id = dot-tok.file-id })
      in let param-ref = deck-record (NameExpr param)
      in let access = deck-record (FieldExpr param-ref field)
-     in ExprOk (deck-record (LambdaExpr [param] access)) st3
+     in ExprOk (deck-record (LambdaExpr dot-tok [param] access)) st3
      else ExprOk (ErrExpr dot-tok) (__record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-leading-dot-continuation "A '.' selector must be followed by a field name. Field access follows its receiver on the same line (receiver.field), and a bare '.field' selector needs the field name immediately after the dot. A stray '.' often means an act block above was never closed with 'end', so the statement parser is reading prose as code." (token-to-span dot-tok))))
 
   parse-lazy-expr : ParseState -> ParseExprResult
