@@ -61,7 +61,39 @@ Section: Type Substitution
     is ListTy (pe) -> subst-from-list pe arg-ty target
     is FunTy (pp) (prow) (pr) -> subst-from-fun pp pr arg-ty target
     is TypeApply (pf) (pa) -> when arg-ty is TypeApply (af) (aa) -> let t2 = subst-type-vars-from-arg pf af target in subst-type-vars-from-arg pa aa t2 is otherwise -> target
+    is SumTy (pn) (pargs) (pctors) -> when arg-ty is SumTy (an) (aargs) (actors) -> subst-from-named (pn.value) (an.value) pargs aargs target is otherwise -> target
+    is RecordTy (pn) (pargs) (pfields) -> when arg-ty is RecordTy (an) (aargs) (afields) -> subst-from-named (pn.value) (an.value) pargs aargs target is otherwise -> target
+    is ConstructedTy (pn) (pargs) -> when arg-ty is ConstructedTy (an) (aargs) -> subst-from-named (pn.value) (an.value) pargs aargs target is otherwise -> target
+    is LinkedListTy (pe) -> when arg-ty is LinkedListTy (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
+    is VectorTy (pw) (pe) -> when arg-ty is VectorTy (aw) (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
+    is UnitTy (pn) (pe) -> when arg-ty is UnitTy (an) (ae) -> if pn.value == an.value then subst-type-vars-from-arg pe ae target else target is otherwise -> target
+    is LinearTy (pe) -> when arg-ty is LinearTy (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
     is otherwise -> target
+
+ The seven arms above `otherwise` are every remaining variant that carries a
+ type child. Before them this walk knew `List a` and `a -> b` and nothing the
+ SUBJECT declares, so a variable inside a declared `Step a` could not be
+ learned from any position -- and `branch-recorded-ty` would reach here with
+ two concrete branches, a usable witness, and come away with nothing. The
+ asymmetry was the tell: `subst-type-var-in-target` below, which APPLIES a
+ substitution, walks every variant through `codex-type-map-children`; only
+ the LEARNING direction was blind.
+
+ The name guard on the three NAMED variants is not decoration. Positional
+ arguments of two different declared types have nothing to do with each
+ other, and learning `a := Integer` from an unrelated constructor that
+ happens to have one argument would be worse than learning nothing.
+
+  subst-from-named : Text, Text, List CodexType, List CodexType, CodexType -> CodexType
+  subst-from-named (pn) (an) (pargs) (aargs) (target) =
+   if pn == an then subst-from-tyargs pargs aargs target 0 else target
+
+  subst-from-tyargs : List CodexType, List CodexType, CodexType, Integer -> CodexType
+  subst-from-tyargs (ps) (as) (target) (i) =
+   if i >= list-length ps then target
+   else if i >= list-length as then target
+   else let t2 = subst-type-vars-from-arg (list-at ps i) (list-at as i) target
+   in subst-from-tyargs ps as t2 (i + 1)
 
   subst-from-list : CodexType, CodexType, CodexType -> CodexType
   subst-from-list (pe) (arg-ty) (target) =
