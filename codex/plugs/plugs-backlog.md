@@ -2290,3 +2290,382 @@ detected: say so rather than read its silence as agreement (L-FALSIF).
 **babbage is SHELVED** (Damian, 2026-08-21): vanity work. Its open items
 moved to `codex/plugs/babbage/babbage-backlog.md`. Do not add babbage items
 here.
+
+**1.84 -- FIXED, the zig plug took a TYPE VARIABLE for an answer and emitted
+it as a name into a caller that declares no such name.** (Steve Howell,
+2026-08-26; `codex/plugs/zig/` per the standing note above.) Found when
+Update 50 first sent a lifted lambda through a text plug and the compiler's
+own zig-transpiled source came back with 47 undeclared `T38`s.
+
+**Why a plug meets an unresolved variable at all.** `CSharpEmitter.codex:534-541`
+sets it out: "the compiler's IR-CCE lift runs after the resolve pass, so a
+`__lam_N` def carries the expected types its lambda was handed, not the
+resolved ones", and "the IR is well-typed". C# answers `dynamic`. This plug
+recovers the type instead, walking each declared parameter type against the
+type actually supplied and answering with whatever sits where the variable
+sits (`ZigEmitter.codex:2150-2165`).
+
+**The mechanism.** That walk had no way to tell "no answer here" from "an
+answer that is itself a variable" -- it carried two sentinels, `""` on the
+Text-answering copy and `VoidTy` on the CodexType-answering one, and a
+variable answer was neither. Matching `map-list`'s declared `(a -> [e] b)`
+(`codex/foreword/core/ListUtils.codex:41`) against a `__lam_0` of
+`(tvar 23 -> Integer)` answers `a = tvar 23`, so the scan stopped there and
+never read the list argument one place along -- whose `List a` against
+`List Integer` is the answer that was wanted. The variable was then emitted
+as the text `T23` into a caller declaring no such name. `T23` here is one
+worked instance; the 47 that stopped the release were `T38` in the
+compiler's own transpiled source.
+
+Concrete beats variable; variable beats nothing; nothing is the
+`@compileError` marker `zig-resolve-tvar` already ended in
+(`ZigEmitter.codex:2351-2356`), which could not fire while a variable answer
+looked like success. A variable answer is KEPT as a last resort rather than
+refused, because inside a generic definition it is the right one:
+`map-list`'s own body calls `map-list-loop`, and there `T23` is a `comptime`
+parameter that is in scope.
+
+**The two walks are now one.** The prose above them claimed the walk was
+shared when it had been copied, so the fix had to be written twice before
+they were collapsed (`ZigEmitter.codex:2127-2130`). The caller now supplies
+the actual TYPES rather than the argument expressions, because one caller
+has no expressions to offer.
+
+**That caller is the second half of the defect.** With `a` recovered, the
+closure the plug builds around a function value still carried the variable in
+two emitted places -- the environment struct's parameter list and its `CxFn`
+type -- because `emit-zig-name` handed the lambda's type over without passing
+it through the enclosing call's own bindings, and because the trampoline
+called a generic callee unapplied: `fn __lam_0(comptime T23: type, x: T23) i64`
+entered as `__lam_0(p0)`, one argument against two
+(`ZigEmitter.codex:2452-2465`). The trampoline is a call site like any other
+and now applies its callee's type arguments.
+
+**Verified**, in the order a red row first then green demands. On the Update
+50 pin: 47 undeclared-identifier errors in the compiler's own transpiled
+source, gone. Re-measured 2026-08-26 after the fix, in a fresh sandbox:
+`codexzig` builds with **0** `map_list(T…` sites; its FIXED POINT holds --
+re-emitting its own bundle byte for byte at 2,351,567 bytes -- and holds for
+the first time against a subject that actually contains lifted lambdas, 354
+`__lam` definitions on both arms where the driver arm had 300 and ours 0
+before. The 22-tier set shows **0 unexpected on every tier** (15 green, 6
+noted, 1 stale for an unrelated reason recorded in the ladder). In the corpus
+census `typeclass-smoke` moves `refused -> markers`: the marker now fires
+where the plug used to emit a bogus type name for zig to reject, which is an
+improvement rather than a regression.
+
+**A residue this change does not clean up.** `zig-subst-arg-type`
+(`ZigEmitter.codex:2115-2120`) has no caller -- only its signature, its
+definition and its own recursive call -- and it was already uncalled at the
+pin. This change updates its parameter list (`List IRExpr` to
+`List CodexType`) to keep it compiling, rather than deleting a function that
+is not ours to remove. It is dead either way and worth a decision.
+
+**1.85 -- the same recovery walk knows `List a` and `a -> b` and nothing the
+subject declares, so a variable inside a program's own generic type cannot be
+recovered from any position. The gap 1.84 left.** (Steve Howell, 2026-08-26.)
+
+**The whole of it is fourteen lines**, `codex/test/tvar-in-declared-type.codex`,
+added by this change:
+
+```
+Pair (a) = record { fst : a, snd : a }
+
+pair-swap : Pair a -> Pair a
+pair-swap (p) = Pair { fst = p.snd, snd = p.fst }
+```
+
+No lambda, nothing lifted -- measured against natives built before this fix,
+**0** `__lam` definitions in its IR -- and the emitted zig carries
+`unresolved type variable T42 of pair-swap`. Bare metal answers 73. **Lambda
+lifting was the path that exposed this class, not its cause**, which is why
+the reproducer is smaller than the case that found it.
+
+**The mechanism.** At the pin, `zig-tvar-in-type`
+(`ZigEmitter.codex:2184-2194`) reads:
+
+```
+  zig-tvar-in-type : Integer, CodexType, CodexType -> CodexType
+  zig-tvar-in-type (id) (decl) (actual) =
+   when decl
+    is TypeVar (vid) -> if vid == id then actual else VoidTy
+    is EffectfulTy (e) (s) (inner) -> zig-tvar-in-type id inner actual
+    is ForAllTy (fid) (inner) -> zig-tvar-in-type id inner actual
+    is ForAllEff (c) (inner) -> zig-tvar-in-type id inner actual
+    is ListTy (elem) -> zig-tvar-in-elem-type id elem actual
+    is LinkedListTy (elem) -> zig-tvar-in-elem-type id elem actual
+    is FunTy (p) (fnrow) (r) -> zig-tvar-in-fun-type id p r actual
+    is otherwise -> VoidTy
+```
+
+It unwraps three transparent wrappers and descends `List`, `LinkedList` and
+function types. A `ConstructedTy`, `SumTy` or `RecordTy` -- every
+parameterised type a program declares for itself -- falls into `otherwise`
+and answers `VoidTy`. So the variable is unrecoverable both in the parameter
+loop and in the return fallback that `zig-resolve-tvar-type` reaches when the
+parameters run out (`ZigEmitter.codex:2157`).
+
+**Traced through real IR.** `range-to` in `codex/test/roc-iter-map.codex:57`
+has the monomorphic signature `Integer, Integer -> Iter Integer`, though the
+subject around it does declare generics (`Iter (a)`, `Step (a)`, `iter-map`).
+Its partial application is annotated
+`(fn int-default (ctd "Step" (args (tvar 16))))`, so `zig-closure-make`
+(`ZigEmitter.codex:2467`) hands `resty = Step (tvar 16)` to the resolver,
+which peels `__lam_1`'s declared return to `(ctd "Step" (args (tvar 16)))`
+and asks the walk to match the two. Both sides are `ConstructedTy`.
+`otherwise`. `VoidTy`. The emitted zig then carries
+`@compileError("zig plug: unresolved type variable T16 of __lam_1")` in the
+type-argument position, and `Step(T16)` in the closure's `call` return type
+where `T16` is declared nowhere.
+
+**It is not confined to tests written for it.** Two depot programs put an
+unresolved variable inside a `ConstructedTy`'s arguments -- the arm that is
+missing -- read out of their IR with pre-fix natives:
+
+    typeclass-smoke   (param "__Showable-dict" (ctd "ShowableDict" (args (tvar 44))))
+    db-full-test      (param "m" (ctd "HamtMap" (args (tvar 88))))
+
+`hamt-fold` is Foreword's (`codex/foreword/core/Hamt.codex:247`), which
+`db-full-test` reaches through `cites Foreword chapter Hamt`, so it is shared
+with several other subjects. **The denominator, and the caveat:** the
+ladder's corpus census carries 40 distinct `unresolved type variable` markers
+over 51 programs. Whether this fix clears them is NOT established -- the walk
+must also find a concrete type at the matching position on the actual side,
+and `typeclass-smoke`'s `describe` additionally takes a bare-variable
+parameter that the existing `TypeVar` arm already handles, so its failure may
+have a different cause. One confirmed mechanism is not a confirmed cause for
+all forty.
+
+**The fix** adds three arms descending the argument lists pairwise, plus
+`zig-type-arg-list` to read the arguments off the actual side and
+`zig-tvar-in-args` to walk the pair. One declaration reaches this code under
+all three constructors -- a name is a `ConstructedTy` until the checker
+rewrites it to the `SumTy` or `RecordTy` it denotes, and which arrives
+depends on how far the type travelled -- so all three descend identically.
+Matching is BY POSITION and compares no names. That is sound on the strength
+of the well-typedness `CSharpEmitter.codex:534-541` asserts for this wire:
+the type supplied for a parameter is the type that parameter declares, so a
+mismatched pair cannot arrive.
+
+**PARTIALLY VERIFIED 2026-08-26, and the first write-up of this row used the
+wrong metric.** Natives rebuilt against the fix, 597 programs re-transpiled:
+
+    unresolved type variable markers   40 -> 0 distinct, 51 -> 0 program-hits
+    all emitter gaps                  135 -> 95 distinct, 40 gone, 0 NEW
+    programs with no markers          326 -> 334
+
+**Those numbers are true and they do not mean what they look like.** A
+marker count says the emitter stopped SAYING it could not answer; it does not
+say the emitted zig builds. Checked afterwards, by building:
+
+    tvar-in-declared-type   refused before  ->  RUNS, answers 73   fixed
+    roc-returned-closure    ran before      ->  RUNS, answers 9    unchanged
+    roc-iter-map            refused before  ->  DOES NOT BUILD     not fixed
+
+`roc-iter-map` now emits `Step(T16)` and `__lam_1(T16, ...)` with `T16`
+declared nowhere -- 31 bare `T<n>` identifiers in its output -- where before
+it carried an `@compileError`. **The walk now finds an answer and the answer
+is itself a type variable**, which `zig-prefer-concrete` keeps as a last
+resort by the deliberate rule 1.84 records: inside a generic definition a
+variable IS the right answer. In a closure's environment struct it is not,
+and nothing distinguishes the two.
+
+So this change is a real fix for the shape its reproducer has -- a variable
+inside a declared type whose actual is concrete -- and it converts a REFUSAL
+into an UNDECLARED IDENTIFIER for the shape where the recovered answer is
+another variable. **The second is worse than what it replaced**, because a
+marker is a diagnostic and an undeclared identifier is a build failure with
+no explanation. It should not ship in this state.
+
+**What is owed before this row is worth sending:** the last-resort rule needs
+a scope test -- keep a variable answer only where the emission site declares
+it -- and then `corpus_run.py --run` over the corpus, which BUILDS what it
+transpiles, rather than a marker census.
+
+**PAID, 2026-08-26.** Both halves. The last-resort rule now carries the scope
+test this row asked for: `emit-zig-type` takes the set of type variables the
+emission site actually declares as `comptime T<n>` parameters (`ZigCtx.scope-tvars`,
+set by `emit-zig-def`), and refuses at the OUTERMOST type when a variable is
+not in it. Outermost because `zig-is-unmapped` tests a leading prefix, so a
+marker buried inside `*CxList(...)` is invisible to it.
+
+Measured by `corpus_run.py --run`, which builds and runs rather than counting
+markers:
+
+    tvar markers          40 -> 8 -> 0    over 606 programs
+    corpus match          183 -> 185      nothing that matched stopped matching
+    ast/allcycles.sh      14/14
+
+`hamt-test`, `kvstore-test` and `inductive-list` traded a diagnostic for a
+build failure under the first attempt; under the scope test `typeclass-poly`
+goes the other way, `refused -> markers`, and `inductive-list`'s remaining
+refusal is a different defect the marker had been standing in front of (a
+self-recursive type that is also generic, emitted with no indirection).
+
+**1.86 -- FIXED, a refusal that replaces an expression kills the parameters
+that fed it, and zig reports the stranding instead of the refusal.** (Steve
+Howell, 2026-08-26; `codex/plugs/zig/`.)
+
+1.85's scope test turned `use of undeclared identifier 'T16'` into a sentence
+naming the variable and the callee. Zig never printed the sentence. The
+refusal consumed the only expression reading a function parameter, so the
+parameter went dead, and zig's unused-parameter check runs against the
+signature before the `@compileError` in the body is analysed.
+
+Measured on four programs, with zig's own column landing on the stranded
+parameter each time:
+
+    roc-iter-map      857:68   transform: CxFn1(T44, T45)
+    roc-iter-keep-if  857:52   pred: CxFn1(T44, bool)
+    roc-iter-drop-if  857:52   pred: CxFn1(T44, bool)
+    probe-tvar-recovery  908   wrap_int(n: i64)
+
+`roc-iter-map` strands `transform` and leaves `it` alone, because `it` still
+has a reader. That asymmetry is what rules out "the parameter was already
+dead for unrelated reasons".
+
+**The mechanism was a liveness question asked of the wrong artifact.**
+`emit-zig-param-discards` asks `zig-occurs` about the IR body -- the right
+question everywhere the emitter answers, the wrong one exactly where it
+refuses, since the IR still uses the parameter and the emitted zig does not.
+A refused body now discards every parameter. Not the ones a name search calls
+dead: `_ = x;` beside a live use is legal zig, and a substring test on
+parameter names is a word-boundary collision this tree has been bitten by.
+
+**1.87 -- FIXED, `show` dispatches five ways on the argument's type and this
+plug implemented one arm for all five.** (Steve Howell, 2026-08-26;
+`codex/plugs/zig/`.)
+
+`show : forall a. a -> Text` (`Types/Builtins.codex:69`). Bare metal picks by
+the argument's type (`Emit/X86_64.codex:1652`): an f32 real widens before
+`__real_to_text`, other reals go straight there, `TextTy` is the expression
+itself, `BooleanTy` is `emit-show-bool`, everything else is `__itoa`. This
+plug emitted `cx_show_int` for all five.
+
+**42 of 113 corpus refusals, the largest single class** -- 40 `expected type
+'i64', found 'bool'` and 2 `found 'f64'`. The refusal site was read at the
+call in three of the forty rather than inferred from the message.
+
+Fixed for Text and Boolean, with the unit wrapper stripped first for the
+reason bare metal records beside its own strip (without it a `unit Text`
+falls to the integer arm and prints its pointer as a decimal). `True` and
+`False` are built through the emitter's existing text escaper rather than
+hand-encoded, so their CCE bytes come from the same place every other
+literal's do.
+
+**Reals REFUSE with a named marker rather than guess.** `__real_to_text` is
+hand-written assembly (`Emit/X86_64TextHelpers.codex:590`) -- sign bit,
+`cvttsd2si` for the integer part, fifteen fractional-digit iterations, CCE
+digit offsets -- and no `cx_real_to_text` exists here. `std.fmt` would agree
+with it on some values and not others, and a `show` that is right for 2.5 and
+wrong for 0.1 is worse than one that says it cannot. That is the remaining 2
+of the 42 and it is open.
+
+Found by a ported Roc snippet on its first run, not by the corpus, although
+the corpus had been carrying the evidence for as long as it has existed.
+
+**1.88 -- FIXED, emitted `main` spawns `opening` directly and zig refuses a
+thread entry that returns a value; 40 corpus programs.** (Steve Howell,
+2026-08-26; `codex/plugs/zig/`.)
+
+Every emitted program runs its entry on a thread for the 512 MB stack -- the
+same workaround the C# plug carries, for the reason it records (the lexer's
+`scan-token -> skip-prose-line -> scan-token` cycle, which self-TCO cannot
+flatten, overflows 1 MB). Zig requires that entry to return `u8`, `noreturn`,
+`!noreturn`, `void` or `!void`. 40 subjects declare `opening` returning a
+value, and all 40 failed inside `std/Thread.zig` before a line of their own
+code was analysed.
+
+**The value is the program's OUTPUT, not a status.** `ble-att-encode` ends
+`in a + b + c + d + e` and its `.expected` is `5`. A shim that discarded it
+would have traded 40 loud refusals for 40 silent mismatches.
+
+`cx_entry` is a void shim that prints, dispatching on the CODEX type arm for
+arm against `emit-opening-result-print` (`Emit/X86_64Chapter.codex:222`).
+
+An earlier draft dispatched on this plug's own rendered zig type text instead,
+reasoning that the shim then could not disagree with the signature it calls.
+That was wrong twice over and is recorded because the reasoning is
+attractive: the zig type text is LOSSY. Boolean and Char both render to
+something that is neither `void` nor `[]const u8` nor `f64`, so both fell to
+the integer arm -- a Boolean entry would have re-created 1.87 at a new site,
+and a Character entry would have printed a number where bare metal prints
+nothing at all. Caught by a cold read before it was built.
+
+**A note for the C# plug, unmeasured by us.** `opening-call-text`
+(`CSharpEmitter.codex`) DISCARDS the value of an effectful `opening`. Bare
+metal peels the effect and prints it, and the depot agrees: `gpu-ptx` and
+`gpu-doorbell` declare `opening : [Console] Integer` and their `.expected`
+files end with the bare `0` that print produces. We followed bare metal. We
+have no C# toolchain here, so this is a lead and not a report.
+
+**1.89 -- FIXED (half), a unit family was mapped to `void`, erasing the
+payload while the arithmetic around it stayed correct.** (Steve Howell,
+2026-08-26; `codex/plugs/zig/`.)
+
+`Length = unit family Millimeter` with scale factors; a `Length` value IS its
+base-unit integer. `emit-zig-type` mapped every `UnitTy` to `void`.
+
+`unit-family`'s emitted body already computed all four of its expected
+answers -- scale factors multiplying, conversions inlined to `@divTrunc`,
+`double-length (Millimeter 50)` constant-folded -- and then failed to compile
+because the values were typed `void`:
+
+    fn Centimeter(__fv: i64) void {          <- void, should be i64
+        return b0: { const __unit_0 = (__fv *% 10); break :b0 __unit_0; };
+    }
+
+Three arms move: `emit-zig-type` recurses into the backing type,
+`zig-let-annot` peels too (or a `let` holding a unit value is annotated `""`
+while its expression has an integer type), and the entry shim of 1.88
+recurses rather than assuming `void`. Six programs, and nothing that matched
+stopped matching.
+
+**NOT fixed, and reported here as open.** A record FIELD typed by a unit
+family arrives as an `ATypeExpr` and takes `emit-zig-atype`, whose
+`ANamedType` arm emits any unrecognized name verbatim
+(`ZigEmitter.codex:445-447`): `ob_sample_rate: Frequency,` against a zig that
+has never heard of `Frequency`. **11 more programs.** That same `else` also
+emits a source-level TYPE VARIABLE verbatim -- `queue-test` emits
+`QueueS(T52){ .front = cx_ll_empty(a), ... }`, where the definition declares
+`comptime T52` and the field's element type is spelled `a` in the same
+expression. And that path takes no scope and has no refusal, so every guard
+from 1.85 walks straight past it. One `else`, two symptoms, twelve programs.
+
+**1.90 -- OPEN, the zig plug's runtime prelude shadows user top-level names
+with its own locals and parameters, and nothing declares them reserved.**
+(Steve Howell, 2026-08-26; `codex/plugs/zig/`.)
+
+Zig forbids a local shadowing a container-level declaration, so every
+identifier the emitted prelude uses privately is effectively a reserved word
+for every Codex program this plug compiles.
+
+    dns-answer-count.zig:26:15  function parameter shadows declaration of 'l'
+    tcp-checksum-refuse.zig     function parameter shadows declaration of 'base'
+
+against user top-levels `fn l() DnsResponse` and `fn base() NetSession`.
+
+**The surface is 66 names**, extracted from the prelude of an emitted
+program: 47 `const`/`var` bindings and 33 parameters. It includes `x`, `y`,
+`d`, `e`, `i`, `n`, `s`, `len`, `ctx`, `a`, `hi`, `lo`, `acc`, `buf`, `out`,
+`top`, `start`, `code`, `path`. **A Codex program defining a top-level `x`
+cannot be compiled by this plug.** `zig-prelude-decls` guards user names
+against prelude DECLARATIONS and against nothing else.
+
+This branch renames four of them (`cx_ll_empty`'s `l`, `cx_ipow`'s `base`,
+`acc`, `e`) and that is deliberately not the fix -- it is included because it
+is what was measured, and because measuring it is how the size of the class
+was learned. The two programs above still refuse: the rename moved the error
+from a `const` to a function PARAMETER of the same name, which is also how we
+found that the first extraction had counted only `const`/`var` and missed
+every parameter.
+
+**Both candidate fixes are larger than they look.** Adding the 66 names to
+`zig-prelude-decls` renames `i`, `n` and `s` through all 55 `zig-sanitize`
+call sites -- type names, constructor names, parameters, definitions -- a
+large blast radius through rename machinery to buy two programs. Renaming the
+prelude's own 66 identifiers is correct and confined to text this plug owns,
+but it is a rewrite over 931 lines of zig embedded in Codex string literals
+where a subtle miss breaks every emitted program. Either wants its own change
+and a check that re-derives the surface from emitted output -- and that check
+must count parameters, or it will certify the same short list we did.

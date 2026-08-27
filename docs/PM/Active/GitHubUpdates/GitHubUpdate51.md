@@ -185,6 +185,21 @@ and this one carried them the same evening). What it carries:
   same-day fix for the same Boolean-pattern defect, because his dispatches
   on the pattern's type and ours did not. The PR closes with this push's
   commit.
+
+  **CORRECTION 2026-08-27: the emitter did not ride this push, so the
+  bullet above and `a0425e10`'s commit message claim fixes the pushed
+  tree does not contain.** 19963 carried the twelve test pairs and
+  `TechnicalDetails.md` only; `ZigEmitter.codex` and `plugs-backlog.md`
+  were refused by the noclobber client ("Can't clobber writable file",
+  P-CLOBBER's copy-up variant) and the refusal was missed. Found by
+  Steve Howell against the mirror (his branch 3816 lines vs the
+  mirror's 3450); verified against the depot. Repaired at main 19980,
+  with the zig arm graded first with a plug rebuilt from the repaired
+  emitter: 4 of 12 pairs run and match, 8 refuse with the designed
+  clean markers, matching the register rows -- the 19961 re-measure was
+  x86-only and could not observe the emitter, which is the second half
+  of what Steve's side caught. The public tree is corrected by the next
+  mirror push.
 - **COMPILER-9 CLOSED and the compiler register is empty** (blu, main
   19968): the arm64 helper-versus-arm precedence table turned out not to
   be needed -- measured with the bed as judge, every registered name takes
