@@ -74,6 +74,21 @@ Section: Keywords and Sanitization
  and var. It refuses when a derived name is missing here. Run it after any
  change to zig-prelude.
 
+ IT NOW COUNTS FUNCTION NAMES TOO, AND UNTIL 2026-08-28 IT DID NOT. The regex
+ that harvests parameters reads past `fn NAME` to reach the parameter list and
+ dropped the name on the way, so of the prelude's 96 declarations -- 74 fn and
+ 22 const/var -- this list covered the 22 and none of the 74. A zig file is a
+ struct and its top-level declarations are its members, so a Codex program
+ with a top-level named `cx-print` emitted a second `fn cx_print` and the file
+ would not compile: `error: duplicate struct member name`. Finding 67, with
+ both arms reproduced.
+
+ Most of the 74 are `cx_`-prefixed, which is effectively this plug's namespace
+ and is why no corpus program ever collided. Five are not: CxList and
+ CxFn1..CxFn4, the comptime type constructors. Codex type names are CamelCase,
+ so `CxList` is a name a program can pick without any sense of trespassing,
+ and that is the collision worth caring about.
+
  The list is the UNION over the whole prelude and stays that way. A future
  that emits only the parts a program reaches must not narrow it to the parts
  that program got: the cost of keeping a name reserved for a program that
@@ -81,17 +96,37 @@ Section: Keywords and Sanitization
  the same Codex source emits a different spelling depending on which builtins
  it happened to touch.
 
-  zig-prelude-decls : List Text = ["std", "main", "cx_entry", "cx_heap_mem", "cx_heap_reserve", "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest", "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best", "cx_deck_stride", "cx_deck_armed", "cx_deck_slack",
-   "a", "A", "acc", "al", "alignment", "ascii", "b", "B", "b0", "base",
-   "bits", "bot", "buf", "bytes", "c", "C", "cce_t1_code", "cce_t1_size",
-   "cce_t1_uni", "cce_t2_size", "cce_t2_uni", "cce_table", "chunk", "code",
-   "cp", "ctx", "cx_a", "cx_acc", "cx_ap", "cx_b", "cx_base", "cx_ch",
-   "cx_e", "cx_i", "cx_j", "cx_l", "cx_out", "cx_p", "cx_pa", "cx_pi",
-   "cx_s", "cx_tail", "cx_tmp", "cx_used", "cx_v", "d", "D", "dot", "e",
-   "fd", "frac", "h", "i", "k", "l", "len", "m", "memory", "n", "neg",
-   "new_len", "o", "off", "out", "p", "path", "path_cce", "r", "R", "ra",
-   "raw", "rc", "s", "sep", "size", "start", "T", "top", "u", "uni", "v",
-   "vs", "z"]
+  zig-prelude-decls : List Text = ["std", "main", "cx_entry", "cx_heap_mem", "cx_heap_reserve",
+   "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest",
+   "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best",
+   "cx_deck_stride", "cx_deck_armed", "cx_deck_slack", "CxFn1", "CxFn2",
+   "CxFn3", "CxFn4", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
+   "cx_ll_concat", "cx_ll_cons", "cx_ll_insert_at", "cx_ll_with_capacity",
+   "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx",
+   "cx_char_to_text", "cx_char_encode", "cx_list_len", "cx_list_at",
+   "cx_text_len", "cx_char_at", "cx_text_dup", "cx_substring", "cx_ipow",
+   "cx_shl", "cx_shr", "cx_heap_base", "cx_buf_want", "cx_frontier_crosses",
+   "cx_bump_alloc", "cx_bump_resize", "cx_bump_remap", "cx_bump_free",
+   "cx_heap_save", "cx_heap_advance", "cx_heap_restore", "cx_peek_qword",
+   "cx_address_of", "cx_deck_report", "cx_deck_enter", "cx_deck_exit",
+   "cx_deck_pos", "cx_deck_set", "cx_utf8_to_cce", "cx_read_file_uni",
+   "cx_write_all", "cx_write_binary", "cx_write_binary_buf", "cx_vtag",
+   "cx_buf_write_byte", "cx_buf_write_bytes", "cx_peek_byte",
+   "cx_buf_read_bytes", "cx_shru", "cx_mod", "cx_text_eq", "cx_is_letter",
+   "cx_is_digit", "cx_new", "cx_concat", "cx_text_starts_with",
+   "cx_text_contains", "cx_text_concat_list", "cx_list_set_at",
+   "cx_text_to_integer", "cx_text_replace", "cx_text_split", "cx_cce_to_cp",
+   "cx_cp_to_cce", "cx_cce_frame", "cx_cce_to_utf8", "cx_show_int",
+   "cx_print_line", "cx_print", "a", "A", "acc", "al", "alignment", "ascii",
+   "b", "B", "b0", "base", "bits", "bot", "buf", "bytes", "c", "C",
+   "cce_t1_code", "cce_t1_size", "cce_t1_uni", "cce_t2_size", "cce_t2_uni",
+   "cce_table", "chunk", "code", "cp", "ctx", "cx_a", "cx_acc", "cx_ap",
+   "cx_b", "cx_base", "cx_ch", "cx_e", "cx_i", "cx_j", "cx_l", "cx_out",
+   "cx_p", "cx_pa", "cx_pi", "cx_s", "cx_tail", "cx_tmp", "cx_used", "cx_v",
+   "d", "D", "dot", "e", "fd", "frac", "h", "i", "k", "l", "len", "m",
+   "memory", "n", "neg", "new_len", "o", "off", "out", "p", "path",
+   "path_cce", "r", "R", "ra", "raw", "rc", "s", "sep", "size", "start", "T",
+   "top", "u", "uni", "v", "vs", "z"]
 
   is-zig-prelude-decl : Text -> Boolean
   is-zig-prelude-decl (s) =
