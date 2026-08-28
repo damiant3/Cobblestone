@@ -3803,3 +3803,83 @@ not the plug: `elf-bytes.wasm` builds and runs, but its wire is a
 code/data/func-table payload, not a CDX, and nothing emits that from a
 browser -- the compiler has no ELF mode and `extract-x86-output.ps1` is one
 of the four dead harnesses.
+
+## 1.100 -- DONE 2026-08-28 (Claude, contributed by Steve Howell): the zig plug emitted its 37 KB runtime prelude ABOVE the program, so every emitted file opened on 813 identical lines
+
+`emit-zig-chapter` built `zig-prelude & types-text & defs-text & zig-main`.
+The prelude is 37,409 bytes of fixed runtime support -- the bump allocator and
+its heap, the list and text builtins, the CCE tables, the deck -- byte
+identical in every file the plug produces, and the transpiled program began
+past line 840. It now comes LAST, behind `zig-postlude-banner`, which names
+what is below the line and says why.
+
+**The proportion is worse than it sounds.** In the plug's 589-program corpus
+the smallest emitted program is 38,219 bytes of which 37,409 is prelude: the
+program is 2% of its own file.
+
+Two reasons beyond reading comfort. A diff between two emitted programs now
+opens on what differs rather than on hundreds of identical lines; and the
+arbitrary transpiled code, which is where bugs live, is what a reader meets
+first.
+
+**Inert, and graded rather than argued.** Zig does not order declarations at
+container scope. All 589 already-emitted corpus programs were transformed --
+prelude moved below the program, banner inserted -- and both variants of each
+were compiled and run:
+
+    programs graded          589
+    build outcome agrees     589
+    of which built           202
+    zig diagnostics agree    589
+    ran both ways            202
+    output byte-identical    198
+    identical but for source positions in a panic backtrace     4
+    disagreements              0
+
+The four are bounds-check programs whose panic prints a backtrace naming
+source positions, which the move shifts by construction. Same exit status,
+same stdout, same panic message, same machine addresses in the trace.
+
+**And the compiler itself**, which no corpus program resembles in size --
+built both ways, then driven, the input produced once and handed to both
+builds:
+
+    zigemit     445,173 bytes   exit 0, 42,547 bytes out, byte-identical
+    codexir   1,924,806 bytes   exit 0, 18,350 bytes out, byte-identical
+    codexzig  2,276,581 bytes   exit 0, 41,596 bytes out, byte-identical
+
+**The transform was calibrated against real plug output before any of it was
+believed**: it reproduces the plug's own before/after pair for the `arith`
+sample byte for byte (40,941 -> 41,661, delta 720, all banner), so grading the
+transform over the corpus is grading the plug, and no plug rebuild was needed
+to do it. `postlude_verify.py` in the ladder repository.
+
+**Every byte of the transpiled compiler's 3,870-byte growth is accounted for**,
+checked rather than inferred: 720 the banner, 3,116 the new
+`zig-postlude-banner` constant transpiled into the emitted compiler, 34 the
+reordered concatenation in `emit-zig-chapter`. Undo those three differences in
+the 2,387,634-byte file and it is byte-identical to its predecessor.
+
+**It carries a repair it caused.** `build/check-zig-prelude-surface.ps1`
+derived the prelude as the line-wise common PREFIX of several emitted
+programs. With the prelude last that prefix is the emitted tuple types, and
+the check does not fail -- it reports a smaller surface and passes:
+
+    prelude 24 lines over 4 programs; surface 5 names; zig-prelude-decls carries 101
+    OK: every derived name is reserved.
+
+Five names checked where the surface is 98, all five already reserved, exit 0.
+Anchored on the banner instead, and the subjects' preludes are now REQUIRED to
+agree rather than silently truncated to whatever they share. It derives 97
+where the prefix scan derived 98; the one it drops is `d`, which was never a
+prelude name -- the prefix ran past the prelude into `Tup4`'s comptime
+parameters and picked it up by accident.
+
+**What it is not.** Not a fix; nothing was wrong. It is the small half of a
+larger measurement: nothing uses the whole prelude. The greediest program in
+the corpus reaches 55 of its 93 top-level declarations and the median far
+fewer, so most of those 37 KB could be DROPPED per program rather than merely
+moved. Moving it first is worth doing alone and puts the shaking change at the
+same seam.
+
+Renumber freely if 1.100 collides with anything in flight.
