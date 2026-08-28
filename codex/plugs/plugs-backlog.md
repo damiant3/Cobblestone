@@ -99,6 +99,36 @@ mutated) rather than miscompiling them silently.
 
 ## Open
 
+**THE CLOSE-OUT IS DRY OF DRAWABLE ROWS, re-read entry by entry 2026-08-27
+(reek). Nothing here is both open and takeable on this box**, so a lane
+arriving for the next entry in register order should read this paragraph and
+go elsewhere rather than re-derive it.
+
+What is left, and why none of it is a row to pick up:
+
+- **Blocked on the no-new-toolchains rule:** 1.14 (a runtime per language to
+  ablate), 1.20 (`fpc`), 1.39 (`cobc`), 1.46 (any runtime for an unwired
+  plug). `docs/Agents/reek-blocked.md` carries the measurements; re-check
+  them rather than trusting them, since two turn on what is installed.
+- **Another lane's:** 1.3 (fester), 1.33 (blu).
+- **Ruled, deferred or latent, and not to be re-opened without the ruler:**
+  1.1 (Damian, deferred), 1.48 (red, latent), 1.53a and 1.54 (the real
+  closure is a custom allocator over `VirtualAlloc` and `mmap`), 1.72
+  (latent, and whether any well-typed program reaches it is unestablished),
+  1.73 (Damian, SUPPORTED).
+- **A ruling ask, not work:** 1.57's riscv half. The question is whether
+  over-application of a named definition is required of every plug that keeps
+  an arity map.
+- **Design halves of rows whose plug halves landed today:** 1.97 wants the
+  effect-op table to carry an environment pointer; 1.98 wants `-Measure` to
+  report the CDX9002 it currently swallows. Both are named in their rows.
+
+**Everything else in this section is a closed account kept for its
+measurements.** The file's own rule is that a closed entry is DELETED, and
+these have outgrown it: the wasm block from 1.60 to 1.95 is one campaign's
+write-up and reads as open because the headlines are findings rather than
+verdicts. Deleting them is somebody's call, not a side quest.
+
 **1.62 -- DONE 2026-08-25 (reek), red's call.** `Get-PlugModuleCount` now
 excludes `test/` beside `build-output/`, and the README reads **141**, not
 153. Re-measured the day it landed: 153 under the old definition, 12 files
@@ -3151,7 +3181,8 @@ the cap moved a constant, so nothing allocates that did not before; the
 raised ceiling costs emitter frames only on input the front end has already
 refused.
 
-**1.97 -- OPEN, a handler clause that captures a local OTHER than `resume`
+**1.97 -- BOTH PLUGS REFUSE IT NOW (riscv half, reek 2026-08-27); what stays
+OPEN is the design. A handler clause that captures a local OTHER than `resume`
 cannot be compiled by the native plugs.** (blu, 2026-08-27, found while fixing
 COMPILER-29.) Since main 19558 the IR-CCE wire lifts lambdas, so a parameterised
 handler clause arrives as a partial application of `__lam_N` over its captures.
@@ -3198,8 +3229,9 @@ the handler as a free name, and the asymmetry on this shape is not the clause
 path at all: it is that arm64 has an unresolved-name refusal and riscv does
 not. That is a wider gap than this row and it is not closed here.
 
-**1.98 -- OPEN, plug bundles have no deck-margin runner and the arm64 one had
-run out.** (blu, 2026-08-27.) `scaled-floor` derives a unit's deck room linearly
+**1.98 -- CLOSED 2026-08-27. The runner exists (reek), it now SEES the two
+bundles that motivated it and the gate runs it (blu). Plug bundles had no
+deck-margin runner and the arm64 one had run out.** (blu, 2026-08-27.) `scaled-floor` derives a unit's deck room linearly
 from source length; CHECK's cost is not linear in length, so a dense bundle can
 reach zero margin with nothing reporting it. Measured: adding ONE field of type
 `List IRDef` to `A64Extra` -- no new loop, no new call site -- refused the whole
@@ -3215,6 +3247,73 @@ to run out finds out the way this one did. Note for whoever adds them: that
 tool's `derived` column is NOT in the same units as `-Decks`, and reading it as
 one sent me to `-Decks 96`, which is BELOW the derivation and moved the overflow
 from CHECK to LOWER.
+
+**HOW IT CLOSED, and the measurement is the point.** `-Plugs` mode measured each
+bundle at the DERIVED scale, so the two bundles that pass `-Decks` were exactly
+the two it could not answer for: at derived they overflow CHECK, write no deck
+records, and land in reek's `NoDeckRecords` arm, which with `-MinMargin` would
+have failed the gate for a scale nothing uses. The mode now reads each plug's
+own `build.ps1` for its `-Decks` and measures at that, so the question asked is
+the one the build asks. All 12 bundles measure, where 10 of 12 did before.
+**That answer was worth having: at `-Decks 140` arm64 sat at margin 1.19 and
+riscv at 1.21, both UNDER the 1.25 the gate asserts everywhere else, so the
+number I picked while fixing COMPILER-29 was barely enough rather than
+generous.** Both are `-Decks 160` now, giving 1.36 and 1.38 against a required
+118 and 116, and the artifacts are byte-identical to the 140 builds
+(`7D1E295992C46ACE`, `A41AC527ECFBB680`), which is the control that deck scale
+is a reservation and not an input to codegen. The gate runs
+`deck-headroom.ps1 -Plugs -MinMargin 1.25` beside the existing `codex/build`
+arm. **41 plugs have no bundle on disk and 3 are stale; those are NAMED and
+skipped, not measured quietly, so the corpus is 12 rather than 56 and the gate
+covers whatever `plug-binary` built that run.**
+
+**THE CORPUS EXISTS NOW 2026-08-27 (reek), and the two bundles this row is
+about are the two it cannot answer for.** `build/deck-headroom.ps1 -Plugs`
+takes the assembled `build-output/plug-source.codex` of every plug directory
+with a `build.ps1`, which is the unit that overflows and which every other
+mode here skips on purpose, since they walk individual chapters and exclude
+`build-output`. Bundles are read off disk rather than rebuilt, because
+rebuilding 56 of them to ask about deck room costs more than the question, so
+a plug whose newest chapter is newer than its bundle is NAMED and skipped: a
+stale bundle answers for the previous revision in either direction. **Not
+wired into any gate; `build.ps1` runs this tool over `codex/build` and the
+compiler's own unit and that is unchanged, since gate weight is red's
+clearance.**
+
+Measured over 52 bundles, all deriving from the FLOOR of 64 with nothing in
+the linear band or the clamp, so the linear derivation this row names is not
+even in play for a plug: the tightest margins are zig 2.46, csharp 3.56,
+fortran 4.00, cobol 4.27, then wasm, python and javascript at 4.57. The
+binding phase is CHECK-RESOLVE for 38 of them.
+
+**arm64 and riscv are not in those 52 and the reason is the instrument.** Both
+bundles compile through resolve and their measure logs carry no `DECK-N:phase=`
+records at all, so line 260's `if ($decks.Count -eq 0) { continue }` dropped
+them, and the summary asserted the whole remainder was "chapters that are not
+entry points" -- which is a CAUSE the script does not establish and which is
+false for these two. Each bundle has exactly one `opening`. The summary now
+says `measured N of M` and lists what carried no deck records, so the two units
+that motivated this row are visible as unmeasured instead of folded into a
+sentence about something else.
+
+**ANSWERED, and the answer is that the tool was blind to exactly the failure it
+exists to predict.** At the derived scale both bundles refuse with
+`CDX9002: Deck overflow in CHECK; deck floor exceeded`, and the overflow aborts
+CHECK **before any DECK record is written**, so the measure log is empty. The
+`-Measure` run reports neither the records nor the diagnostic: measured
+2026-08-27, `compile.ps1 -Measure` on the arm64 bundle ends at
+`PHASE-h-post-emit` with `EMIT-BYTES:0` and not one `error CDX` line, while the
+same bundle compiled normally prints CDX9002 at once. riscv is identical. So a
+unit with a margin BELOW 1 produced an empty log, and the tool skipped it and
+passed: a check that stops asking reports exactly what one that asks and agrees
+reports (L-CAPABILITY-LOST).
+
+`-MinMargin` now FAILS on a unit with no deck records and names it, which is
+the clause the tool's own header has always carried ("or when the kernel cannot
+answer the question at all") and did not honor. Proven both ways: the plug list
+exits 1 naming arm64 and riscv, and the gate's own corpus
+(`-Quire codex\build -WithSelf -MinMargin 1.25`) still exits 0 at a tightest
+margin of 1.33 over 59 units, so nothing in the gate changes colour.
 **1.96 -- PLUG HALF DONE 2026-08-27 (reek); the upstream half is COMPILER-30.
 The Ada and Fortran ErrorTy arms GUESSED a 64-bit integer, and the guess was a
 silent miscompile on any non-integer value that reached them.** (Steve Howell's note "Zig as the demanding customer", 2026-08-27, via
@@ -3663,3 +3762,44 @@ which is more than fourteen parameters, staging runs into x16, x17 and x18
 -- the intra-procedure-call and platform registers.
 
 Reproducer with its controls: `docs/Test/Active/Arm64StackArgClobber.codex`.
+
+## 1.99 -- the compile page carries 24 lenses, and the module behind each one is now graded
+
+**The page shipped 5 text targets and 5 UI targets against 45 emitters in
+the tree.** Fourteen text lenses are added: rust, go, java, kotlin, swift,
+ruby, php, lua, haskell, ocaml, scala, elixir, cobol, fortran. Each needed
+only a `<Plug>Stdio.codex` shim, the five-line transport half that
+`codex/plugs/common/build-plug-wasm.ps1` bundles in place of the plug's
+network entry, so the emitter itself is untouched and both transports stand.
+
+**Nothing in the tree ever ran these modules.** `build-page.ps1` copies
+whatever it finds in each plug's `build-output` and leaves a lens dark when
+the file is absent, and no script calls `build-plug-wasm.ps1` at all, so the
+chapter list for every module was typed by hand on a command line and lived
+in no file. `codex/plugs/wasm/page-lens-test.ps1` is the runner: it compiles
+one subject to IR against the seed, runs every lens module under wasmtime,
+and records the chapter list per lens because there is nowhere else for it.
+
+**THE VERDICT IS NOT EXIT 0 AND OUTPUT, AND THE CALIBRATION IS WHAT SAYS SO
+(L-FALSIF).** Handed a file that is not IR at all, all 24 modules exit 0 and
+print their prelude, because an empty parse is not an error in any of them.
+The first version of this harness graded on exit code and output length and
+reported 23 of 24 green on that garbage: a screen that cannot fail. The
+verdict now counts how many of the SUBJECT's own definition names reach the
+emitted text. Measured over `accumulator-corpus`, 29 names: boilerplate
+reaches at most 4, the lowest real emission is cobol at 11, and the floor
+sits at 7 between them. 24 of 24 answer on the real subject and 24 of 24 are
+refused on the calibration input.
+
+`-Calibrate` inverts the arms and is the only thing that makes a green here
+worth reading. Run both.
+
+**Two things it found on its first run.** `zig-stdio.wasm` was a rebuild
+behind `ZigEmitter.codex` (the stale-module trap, and the staleness guard
+had to be narrowed to the chapters a module is actually built from: the
+plug's network chapter sits in the same directory and is bundled into
+something else entirely). And the ELF lens stays dark for a reason that is
+not the plug: `elf-bytes.wasm` builds and runs, but its wire is a
+code/data/func-table payload, not a CDX, and nothing emits that from a
+browser -- the compiler has no ELF mode and `extract-x86-output.ps1` is one
+of the four dead harnesses.

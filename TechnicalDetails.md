@@ -237,14 +237,14 @@ for 135 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (2,929,040 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (2,933,240 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `C1FAB1D99481406B` |
-| SHA-256 | `4341370C8FE5BAD605F6E2E5D14D497665F3E060E8C4553AAA7DF7E987321DFC` |
-| MD5 | `7652C84257FBE8CD6852E2E9592EC231` |
+| Content hash prefix | `40C1D96DB6975F5C` |
+| SHA-256 | `61C81B04D0C3CC2EA34603670D0447B6390496D6ABBAAD5D11E037349D880E44` |
+| MD5 | `0C547257A05DB5D2C91E98E293E0DA59` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -255,7 +255,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `12B7333C2F90FEE0789705F2D11CF48A43BCA506EC3EAA1B242920E1CA4A09CC` |
+| SHA-256 | `46320D6203E05807C54E1AB8B1296427561CEBA5DA57E4E090D76C4ED16C1D0B` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -279,7 +279,7 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `682FA342E15D24DC0B8CD11B56D1357DA4BC6BAE32F640D177D3AF03D22C978F` |
+| SHA-256 | `36A7095F843F5BF16DEEE3D32FE8F01E96FC5E5F573FA4C152C66C91D06979DE` |
 
 The image is reproducible from its source and this seed -- `DIAG.RCP` inside
 it names both, and the hash carries no timestamp -- so a rebuild that
@@ -607,8 +607,8 @@ codex/
   foreword/      434 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
-  plugs/         56 plugs, 153 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,693 files)
+  plugs/         56 plugs, 176 source modules -- IR-text-driven emitters
+  test/          Compiler samples + OS integration tests (1,694 files)
 apps/            70 applications, 1,026 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
@@ -634,7 +634,7 @@ together.
 |---|---:|---:|---:|
 | `apps/` | 1,026 | 191,971 | 6,617 |
 | `codex/foreword/` | 434 | 60,399 | 6,546 |
-| `codex/test/` | 1,693 | 56,481 | 5,955 |
+| `codex/test/` | 1,694 | 56,481 | 5,955 |
 | `codex/plugs/` | 172 | 55,275 | 3,414 |
 | `codex/compiler/` | 64 | 42,492 | 5,181 |
 | `codex/os/` | 160 | 24,415 | 1,982 |

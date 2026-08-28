@@ -81,6 +81,7 @@ param(
   [int]$TimeoutSec = 600,
   [int]$Top = 25,
   [double]$MinMargin = 0,
+  [switch]$Plugs,
   [switch]$WithSelf,
   [switch]$Fresh
 )
@@ -140,7 +141,53 @@ function Derive([int64]$len) {
 # followed by the source, which is what compile.ps1 sends and therefore what
 # the compiler derives from; the source file's own length is a different and
 # much smaller number.
-if ($Quire) {
+if ($Plugs) {
+  # A plug's compilation unit is its BUNDLE, assembled into build-output, and
+  # every other mode here walks individual chapters and skips build-output on
+  # purpose. So no plug unit was ever in this corpus, and the arm64 bundle ran
+  # out of deck room with nothing reporting it (plugs 1.98): one field of type
+  # `List IRDef` added to a record refused the whole plug with CDX9002 in
+  # CHECK, no new loop and no new call site.
+  #
+  # The bundles are read off disk rather than rebuilt, because rebuilding 56 of
+  # them to ask a question about deck room costs more than the question. That
+  # makes staleness the hazard, so a plug whose newest chapter is newer than
+  # its bundle is NAMED and skipped rather than measured quietly: a stale
+  # bundle answers for the previous revision in either direction.
+  # A PLUG THAT PASSES -Decks MUST BE MEASURED AT THAT SCALE, not at the
+  # derived one, or this asks a question the build never asks. arm64 and riscv
+  # build at -Decks 140 and do NOT fit the derivation; measured at derived they
+  # overflow CHECK, write no deck records, and land in $NoDeckRecords -- so the
+  # two bundles this mode exists for were the two it could not answer for, and
+  # with -MinMargin they would have failed the gate for a scale nothing uses.
+  # The plug's own build.ps1 is the single source of that number, so it is read
+  # rather than restated here.
+  $units = @()
+  $missing = @()
+  $stale = @()
+  $script:UnitDecks = @{}
+  foreach ($d in (Get-ChildItem (Join-Path $root 'codex\plugs') -Directory | Sort-Object Name)) {
+    $plugBuild = Join-Path $d.FullName 'build.ps1'
+    if (-not (Test-Path $plugBuild)) { continue }
+    $bundle = Join-Path $d.FullName 'build-output\plug-source.codex'
+    if (-not (Test-Path $bundle)) { $missing += $d.Name; continue }
+    $newest = Get-ChildItem $d.FullName -Filter '*.codex' -File |
+              Where-Object { $_.FullName -notmatch '\\build-output\\' } |
+              Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($newest -and $newest.LastWriteTimeUtc -gt (Get-Item $bundle).LastWriteTimeUtc) { $stale += $d.Name; continue }
+    $rel = $bundle.Substring($root.Length + 1)
+    $m = [regex]::Match([System.IO.File]::ReadAllText($plugBuild), '-Decks\s+(\d+)')
+    if ($m.Success) { $script:UnitDecks[$rel] = [int]$m.Groups[1].Value }
+    $units += $rel
+  }
+  $overridden = @($script:UnitDecks.Keys)
+  if ($overridden.Count -gt 0) {
+    Write-Host "[deck-headroom] measured at the scale their build passes, not the derivation ($($overridden.Count)): $(($overridden | ForEach-Object { ($_ -split '\\')[2] + '=' + $script:UnitDecks[$_] }) -join ' ')" -ForegroundColor DarkGray
+  }
+  if ($missing.Count -gt 0) { Write-Host "[deck-headroom] no bundle, not measured ($($missing.Count)): $($missing -join ' ')" -ForegroundColor Yellow }
+  if ($stale.Count -gt 0)   { Write-Host "[deck-headroom] bundle older than its source, not measured ($($stale.Count)): $($stale -join ' ')" -ForegroundColor Yellow }
+  Write-Host "[deck-headroom] $($units.Count) plug bundle(s) in the corpus" -ForegroundColor DarkGray
+} elseif ($Quire) {
   # A directory, not a list, so a unit added to the quire joins the check by
   # existing. The 2026-08-04 sweep certified a floor from a hand-written root
   # list and `codex/build` was not in it; a hand-written list of `codex/build`
@@ -199,7 +246,10 @@ $items = foreach ($u in $units) {
     $len += 1
   } catch { $len = 0 }
   $k = ($u -replace '[\\/:]', '_') -replace '\.codex$',''
-  [pscustomobject]@{ Unit = $u; Key = $k; Len = $len; Derived = (Derive $len)
+  $ovr = 0
+  if ((Test-Path variable:script:UnitDecks) -and $script:UnitDecks.ContainsKey($u)) { $ovr = $script:UnitDecks[$u] }
+  $eff = if ($ovr -gt 0) { $ovr } else { Derive $len }
+  [pscustomobject]@{ Unit = $u; Key = $k; Len = $len; Derived = $eff; Decks = $ovr
                      Log = (Join-Path $out "$k.log"); Bin = (Join-Path $out "$k.bin") }
 }
 
@@ -213,21 +263,24 @@ Write-Host "deck-headroom: $($todo.Count) to measure, $($items.Count - $todo.Cou
 $running = @(); $n = 0
 foreach ($it in $todo) {
   while (@($running | Where-Object { -not $_.HasExited }).Count -ge $Jobs) { Start-Sleep -Milliseconds 300 }
+  $cArgs = @('-NoProfile','-File',$compile,'-Src',$it.Unit,'-Out',$it.Bin,'-Log',$it.Log,
+             '-Kernel',$Kernel,'-Measure','-TimeoutSec',"$TimeoutSec")
+  if ($it.Decks -gt 0) { $cArgs += @('-Decks', "$($it.Decks)") }
   $running += Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru `
     -RedirectStandardError ($it.Log + '.err') `
-    -ArgumentList @('-NoProfile','-File',$compile,'-Src',$it.Unit,'-Out',$it.Bin,'-Log',$it.Log,
-                    '-Kernel',$Kernel,'-Measure','-TimeoutSec',"$TimeoutSec")
+    -ArgumentList $cArgs
   $n++
   if ($n % 200 -eq 0) { Write-Host "  launched $n/$($todo.Count)" }
 }
 foreach ($p in $running) { $p.WaitForExit() }
 
 $script:MissingResolve = @()
+$script:NoDeckRecords = @()
 $rows = foreach ($it in $items) {
-  if (-not (Test-Path $it.Log)) { continue }
+  if (-not (Test-Path $it.Log)) { $script:NoDeckRecords += $it.Unit; continue }
   $text = Get-Content $it.Log -Raw
   $decks = [regex]::Matches($text, 'DECK-\d+:phase=(?<p>[A-Z-]+) origin=\d+ end=\d+ used=(?<u>\d+)')
-  if ($decks.Count -eq 0) { continue }
+  if ($decks.Count -eq 0) { $script:NoDeckRecords += $it.Unit; continue }
   $req = 1; $bind = ''; $worst = 0
   $sawResolve = $false
   foreach ($m in $decks) {
@@ -249,7 +302,18 @@ $csv = Join-Path $out 'headroom.csv'
 $rows | Export-Csv -NoTypeInformation -Path $csv
 
 Write-Host ""
-Write-Host "measured $($rows.Count) of $($items.Count) units (the rest are chapters that are not entry points)"
+# The remainder used to be asserted as "chapters that are not entry points",
+# and for a walk over ordinary chapters that is usually true. It is not a
+# cause this script establishes: a unit is dropped when its measure log
+# carries no DECK records at all, and an entry point whose run produced none
+# lands in the same bucket. arm64's and riscv's plug bundles do exactly that,
+# so naming them is the difference between a corpus that omits two units and
+# a corpus that says which two (plugs 1.98).
+Write-Host "measured $($rows.Count) of $($items.Count) units"
+if ($script:NoDeckRecords.Count -gt 0) {
+  Write-Host "no deck records in the measure log, so not measured ($($script:NoDeckRecords.Count)):"
+  foreach ($u in $script:NoDeckRecords) { Write-Host "  $u" }
+}
 Write-Host ""
 Write-Host "where the derivation comes from:"
 Write-Host ("  floor ($MINSC)  {0,6}" -f @($rows | Where-Object { $_.Derived -eq $MINSC }).Count)
@@ -281,6 +345,22 @@ Write-Host "-> $csv"
 # an empty row set is not a clean tree.
 if ($MinMargin -gt 0) {
   Write-Host ""
+  # A UNIT WITH NO DECK RECORDS IS THE ONE THIS TOOL EXISTS TO CATCH, and it
+  # used to pass silently. Measured 2026-08-27 on the arm64 and riscv plug
+  # bundles: at the derived scale each refuses with
+  # `CDX9002: Deck overflow in CHECK; deck floor exceeded`, and the overflow
+  # aborts CHECK BEFORE any DECK record is written, so the measure log is
+  # empty. `-Measure` reports neither the records nor the diagnostic, so the
+  # tool saw an empty log and skipped the unit -- a check that stops asking
+  # reports exactly what one that asks and agrees reports (L-CAPABILITY-LOST).
+  # The header has always said -MinMargin fails "when the kernel cannot answer
+  # the question at all"; this is that clause, honored.
+  if ($script:NoDeckRecords.Count -gt 0) {
+    Write-Host "FAIL: $($script:NoDeckRecords.Count) unit(s) produced no deck records at all, so their margin is unknown and may be below 1:"
+    foreach ($u in $script:NoDeckRecords) { Write-Host "  $u" }
+    Write-Host "  Compile one without -Measure to see whether it is CDX9002 rather than a chapter with no entry point."
+    exit 1
+  }
   if ($missing -gt 0) {
     Write-Host "FAIL: $missing of $($rows.Count) units reported no CHECK-RESOLVE deck, so no margin here can be believed."
     exit 1

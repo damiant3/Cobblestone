@@ -1840,7 +1840,33 @@ guard and left the geometry.
    | click-to-restore | **DONE**, and double-click to toggle at main 20105 |
    | the hover mini-preview | **RULED, see below.** The app decides; the default is a mini-render of the whole window, floating by the pill |
    | whether a flick's DIRECTION picks the edge the pill attaches to | **RULED: YES. The direction IS the selection criterion.** Needs per-edge pill strips |
-   | the heavy-pane stranding decision | Damian-gated, the table above is its arm |
+   | the heavy-pane stranding decision | **RULED: option D, FIX THE ALLOCATOR.** See below. This lane's, after 6.7 |
+
+   ### THE STRANDING IS RULED: FIX THE ALLOCATOR (Damian, 2026-08-27 evening)
+
+   **Option D of the four this design put to him, and it is the one that was
+   described here as a project rather than a decision.** Buried heap marks
+   become reclaimable; close-from-a-pill stops lying. The three cheaper
+   options -- accept the stranding, refuse to close anything but the top pill,
+   or tombstone the pane and sweep it when its mark surfaces -- are all
+   declined, and the recommendation carried upward was the third. Recorded via
+   red at main 20231; this lane's after 6.7.
+
+   **THE ACCEPTANCE ARM ALREADY EXISTS AND IT IS THE FRONTIER TABLE ABOVE.**
+   The `+5,114,480` row is the subject: Files closed under a live Browser,
+   holding about 3 MB more than the one pane still open costs. It must drop.
+   **What makes that table an arm rather than a set of numbers is its
+   CONTROL** -- the open-then-close row that returns to within 2,152 bytes of
+   baseline. Without it, a change that moved every reading could be read as a
+   fix; with it, the question is whether the buried row joins the control's
+   behaviour, which is a different and falsifiable claim.
+
+   **Take the readings the way the table was taken**: through the Monitor
+   pane's own heap readout with the Monitor open in every arm, so its frame
+   allocations appear in all of them and cancel in the differences. And
+   re-measure the baseline rather than reusing the numbers above (L-COUNT) --
+   they were taken at 1600x900 on 2026-08-25 and the desk has gained the
+   window registry, the pill icons and a per-app edge block since.
 
    ### DAMIAN RULED TWO OF THESE, 2026-08-27, and both change the shape
 
@@ -1869,10 +1895,11 @@ guard and left the geometry.
 
    | stage | what it is |
    |---|---|
-   | 6.7.1 | A pill's edge is a per-app FACT. One `ds` cell holds a block of `dk-focus-max + 1` entries keyed by focus id, written at dock from `dk-flick-dir-cell`, read by the band. Nothing visible changes yet: every entry defaults to `dk-task-edge ds` and the picture is identical. **That is the point** -- it is provably inert and the arm asserts it |
-   | 6.7.2 | The band FILTERS by edge. `dk-pills` takes an edge and yields only the pills docked to it; the existing band asks for its own edge. Still one band, so still no picture change unless something writes a different edge |
-   | 6.7.3 | A pill-only strip on an edge with no main band. It appears when that edge has at least one pill and disappears when it has none, and `dk-cbox-*` must reserve for it, which is the whole cost: the content box currently subtracts the band on ONE edge |
-   | 6.7.4 | The flick writes the real edge, so the gesture connects end to end |
+   | 6.7.1 | **DONE, main 20210.** A pill's edge is a per-app FACT. One `ds` cell holds a block of `dk-focus-max + 1` entries keyed by focus id, written at dock from `dk-flick-dir-cell`, read by the band. Nothing visible changes yet: every entry defaults to `dk-task-edge ds` and the picture is identical. **That is the point** -- it is provably inert and the arm asserts it |
+   | 6.7.2 | **DONE.** The band FILTERS by edge. `dk-pills` takes an edge and yields only the pills docked to it; the existing band asks for its own edge. Still one band, so still no picture change unless something writes a different edge |
+   | 6.7.3a | **DONE. The RESERVATION.** `dk-cbox-*` ask every edge through one `dk-strip-px` instead of four `dk-task-edge ds ==` tests: an edge takes glass if it carries the band, or if it carries pills of its own. Inert until something writes an edge |
+   | 6.7.3b | **DONE. The PAINT.** `desk-chrome-face`'s four edge arms become ONE construction with an optional node per edge, so any combination of band and strips is legal. Clicks and icons needed nothing: `dk-pill-hit` and `desk-pill-icons` search the laid root by widget id. **And the depth question is answered: a strip is the SAME depth as the band on both axes**, since the Cobblestone button and the clock add nothing beyond the floors and a pill's own height, so there is no thinner constant to invent |
+   | 6.7.4 | **DONE. The flick spends the direction**, so a flick left docks the pill to the left edge. `dk-flick-dock-at` is the dock on its own because everything above it in the gesture is a speed and a deadline off the HPET, which `desk.ps1 -Rtc` pins -- the gesture is unverifiable by scripted capture BY CONSTRUCTION and wants a hand on the mouse, so the arm drives the state change the reading leads to instead |
 
    **Why the fact is keyed by FOCUS ID and not by registry index.** The
    registry's order is the z order and it changes when a window is raised;

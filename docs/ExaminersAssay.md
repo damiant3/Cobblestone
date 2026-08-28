@@ -121,6 +121,15 @@ SOH, and the file then begins with a byte the program's real output does not
 have. That sidecar still passes, because the comparison above cannot see the
 difference.
 
+**The CR strip is not a courtesy to a few odd files: measured 2026-08-27, all
+1,429 `.expected` under `codex/test` are CRLF and not one is LF.** So a
+comparison done BY HAND rather than through the harness reports a phantom
+mismatch on every test in the tree, not on a handful of older ones. Strip CR
+from the sidecar side the way `test.ps1` does before reading any verdict off a
+hand diff. This note replaced a private belief that four named desk sidecars
+were CRLF exceptions; the control that killed it was reading three unrelated
+`.expected` files, which are CRLF too (L-COUNT).
+
 **Measured 2026-07-30, by reading the first byte of every file:** 1181
 `.expected` sidecars under `codex/test`, of which **139 begin with the raw
 SOH**. They span the tree rather than clustering in one campaign
@@ -427,7 +436,7 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **202** expected-failure tests (measured
+`codex/test/errors/` holds **203** expected-failure tests (measured
 2026-08-27).
 
 ## What the standing gate does not cover
@@ -664,6 +673,28 @@ nothing and returns in under a second. And `-Only codex/test/quote-from-peer`
 fails, which is what makes the baseline entry load-bearing rather than
 decorative: the unit really cannot compile standalone.
 
+**A GATE RUN AFTER YOU HAVE SUBMITTED SCOPES TO NOTHING, AND IT COMES BACK
+GREEN.** The third arm above is stated as a virtue, and it is the same
+mechanism as a trap nobody had written down. `-Internal` derives its whole
+change set from `p4 opened` (`build/build.ps1:85`); a submit empties that, so
+every trigger is false, every optional phase is skipped, and `test-compile`
+selects zero citing chapters. The run prints `changed here: nothing opened` and
+`core + BVT always, plus: (nothing implicated)`, proves the seed is a
+byte-identical fixed point that boots, and **re-tests none of your work**. It
+is a true answer to a different question. This bites whenever a merge brings
+work in after your submit, and NOT only when that work is a seed. Measured the
+same day: a merge-down submitted before the gate carried fourteen new plug
+chapters from another lane, `p4 opened` was therefore empty, `tPlugs` was
+false, and `plug-binary`, `cross-smoke` and `plug-smoke` were all skipped. The
+run went green in 91 seconds having compiled no plug at all; the same tree
+gated with the files still open took 337.8 s and ran all three. A CodexType
+variant that made five plug emitters non-exhaustive reached main through that
+gap and was caught by another lane. Whatever class the merge brought, re-run
+the affected tests BY HAND -- the gate cannot see them any more. Read the two
+`[internal gate]` lines on every run rather than the exit code, and read the
+second one for what is MISSING from it (val, 2026-08-27; widened by fester the
+same day).
+
 **It refuses a silent absence rather than reading it as a pass.** If the number
 of results does not equal the number of chapters submitted, the phase fails
 saying so. That is not hypothetical: `test-compile-batch.ps1` keys its output
@@ -791,6 +822,18 @@ Consolidated 2026-08-08 out of the retired per-agent workplans.
   check prints a `note:` line when the retry saves it. **If that line
   starts appearing every run, the flake has become a defect and the retry
   is hiding it.**
+
+- **A null container pointer READS AS ZERO in the bed, so a row over a
+  container builtin can pass on a representation that is not a container at
+  all.** Address 0 is mapped and holds zero in codex-vm, so a load from a null
+  pointer does not fault, it answers 0. Measured 2026-08-25 calibrating the
+  `ec-empty` guard: with the empty vector emitted as a literal 0 instead of a
+  counted heap block, both `vec-length` rows still answered 0 and PASSED,
+  because a length read is a load from offset 0. Only a row that DEREFERENCES
+  the container failed, at `CR2=fffffffffffffff8`, the count cell one word
+  below null. A row that reads a field whose correct value happens to be zero
+  cannot fail, and it looks exactly like a row that passed for the right
+  reason. Make the row CONSUME the container, or it discriminates nothing.
 
 ## Battery architecture
 
@@ -4977,7 +5020,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-202 tests in `codex/test/errors/` verify that the compiler rejects
+203 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),

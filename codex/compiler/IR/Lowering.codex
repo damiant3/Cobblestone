@@ -37,7 +37,7 @@ Section: Expression Lowering
      in let then-ir-0 = lower-expr-at t resolved ctx (depth + 1)
      in let then-ty-0 = ir-expr-type then-ir-0
      in let hint-0 = when resolved
-        is ErrorTy -> then-ty-0
+        is ErrorTy | NoExpectTy -> then-ty-0
         is otherwise -> resolved
      in let else-ir = lower-expr-at e2 hint-0 ctx (depth + 1)
      in let else-ty = ir-expr-type else-ir
@@ -52,7 +52,7 @@ Section: Expression Lowering
     is AListExpr (elems) (s) -> lower-list elems ty ctx s
     is ARecordExpr (name) (fields) (s) -> lower-record name fields ty ctx s
     is AFieldAccess (rec) (field) (s) ->
-     let rec-ir = lower-expr-at rec ErrorTy ctx (depth + 1)
+     let rec-ir = lower-expr-at rec NoExpectTy ctx (depth + 1)
      in let rec-ty = deep-resolve (ctx.ust) (ir-expr-type rec-ir)
      in let stripped-rec-ty = when rec-ty
         is EffectfulTy (effs) (sc) (ret) -> deep-resolve (ctx.ust) ret
@@ -65,7 +65,7 @@ Section: Expression Lowering
         is ConstructedTy (cname) (cargs) ->
          let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (cname.value)
      in let resolved-record = when ctor-raw
-            is ErrorTy -> refined-rec-ty
+            is ErrorTy | NoExpectTy -> refined-rec-ty
             is otherwise -> strip-fun-args (deep-resolve (ctx.ust) ctor-raw)
      in when resolved-record
           is RecordTy (rn) (ra) (rf) -> resolved-record
@@ -81,7 +81,7 @@ Section: Expression Lowering
           is otherwise -> field-ty)
         is otherwise -> field-ty
      in let actual-field-ty = when inst-field-ty
-        is ErrorTy -> ty
+        is ErrorTy | NoExpectTy -> ty
         is otherwise -> inst-field-ty
      in let node-rec-ty = instantiate-receiver-ty refined-rec-ty resolved-rec-ty
      in let fixed-rec = when rec-ty
@@ -100,9 +100,9 @@ Section: Expression Lowering
      in let try-ty = act-block-type body-ir ty
      in deck-record (IrTry max body-ir fb-ir fail-ir try-ty s)
     is AFieldAssignExpr (rec) (field) (val) (s) ->
-     let rec-ir = lower-expr-at rec ErrorTy ctx (depth + 1)
+     let rec-ir = lower-expr-at rec NoExpectTy ctx (depth + 1)
      in let rec-ty = deep-resolve (ctx.ust) (ir-expr-type rec-ir)
-     in let val-ir = lower-expr-at val ErrorTy ctx (depth + 1)
+     in let val-ir = lower-expr-at val NoExpectTy ctx (depth + 1)
      in deck-record (IrFieldStore rec-ir (field.value) val-ir rec-ty s)
     is ALazyExpr (inner) (s) -> lower-lazy inner ty ctx s depth
     is AErrorExpr (msg) (s) -> deck-record (IrError msg ty s)
@@ -193,7 +193,7 @@ Section: Expression Lowering
     is IrName (rname) (rt) (rs) ->
      let bound = lookup-type-split (ctx.overlay) (ctx.base) rname
      in when bound
-      is ErrorTy -> stripped
+      is ErrorTy | NoExpectTy -> stripped
       is otherwise ->
        let rb = strip-forall-ty (deep-resolve (ctx.ust) bound)
        in if ty-has-typevars rb then stripped else rb
@@ -207,7 +207,7 @@ Section: Expression Lowering
     is RecordTy (cmn) (cma) (cmf) ->
      let probe = lookup-record-field cmf name
      in when probe
-      is ErrorTy -> lower-name-normal name ty ctx sp
+      is ErrorTy | NoExpectTy -> lower-name-normal name ty ctx sp
       is otherwise -> lower-class-method-ref name ty ctx sp
     is otherwise -> lower-name-normal name ty ctx sp
 
@@ -215,7 +215,7 @@ Section: Expression Lowering
   lower-dict-placeholder (name) (ty) (ctx) (sp) =
    let recorded = lookup-expr-type (ctx.ust) sp
    in let cand = when recorded
-      is ErrorTy -> deep-resolve (ctx.ust) ty
+      is ErrorTy | NoExpectTy -> deep-resolve (ctx.ust) ty
       is otherwise -> deep-resolve (ctx.ust) recorded
    in let cls-dict = type-name-of cand
    in let args = dict-type-args cand
@@ -225,7 +225,7 @@ Section: Expression Lowering
       else let concrete = rename-lookup (ctx.chapter-renames) (substring cls-dict 0 (text-length cls-dict - 4) & "-dict-" & arg-tn)
       in let b = lookup-type-split (ctx.overlay) (ctx.base) concrete
       in when b
-       is ErrorTy -> dict-placeholder-fallback name ty ctx sp
+       is ErrorTy | NoExpectTy -> dict-placeholder-fallback name ty ctx sp
        is otherwise -> deck-record (IrName concrete (deep-resolve (ctx.ust) b) sp)
 
   dict-placeholder-fallback : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
@@ -234,7 +234,7 @@ Section: Expression Lowering
    in let param-name = "__" & cls-name & "-dict"
    in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
    in when pb
-    is ErrorTy -> deck-record (IrName name ty sp)
+    is ErrorTy | NoExpectTy -> deck-record (IrName name ty sp)
     is otherwise -> deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
 
   dict-type-args : CodexType -> List CodexType
@@ -247,7 +247,7 @@ Section: Expression Lowering
   lower-class-method-ref (name) (ty) (ctx) (sp) =
    let recorded = lookup-expr-type (ctx.ust) sp
    in let cand = when recorded
-      is ErrorTy -> deep-resolve (ctx.ust) ty
+      is ErrorTy | NoExpectTy -> deep-resolve (ctx.ust) ty
       is otherwise -> deep-resolve (ctx.ust) recorded
    in let spec-rn = method-spec-rn name (type-name-of cand) ctx
    in if text-length spec-rn == 0 then lower-name-normal name ty ctx sp
@@ -259,10 +259,10 @@ Section: Expression Lowering
    let rn = rename-lookup (ctx.chapter-renames) name
    in let recorded = lookup-expr-type (ctx.ust) sp
    in when recorded
-    is ErrorTy ->
+    is ErrorTy | NoExpectTy ->
      let raw = lookup-type-split (ctx.overlay) (ctx.base) rn
      in when raw
-      is ErrorTy -> deck-record (IrName rn ty sp)
+      is ErrorTy | NoExpectTy -> deck-record (IrName rn ty sp)
       is otherwise ->
        let resolved = deep-resolve (ctx.ust) raw
        in let stripped = strip-forall-ty resolved
@@ -281,14 +281,14 @@ Section: Expression Lowering
   ty-has-error : CodexType -> Boolean
   ty-has-error (t) =
    when t
-    is ErrorTy -> True
+    is ErrorTy | NoExpectTy -> True
     is ListTy (e) -> ty-has-error e
     is otherwise -> False
 
   merge-ty : CodexType, CodexType -> CodexType
   merge-ty (a) (b) =
    when a
-    is ErrorTy -> b
+    is ErrorTy | NoExpectTy -> b
     is ListTy (ea) -> when b
       is ListTy (eb) -> ListTy (merge-ty ea eb)
       is otherwise -> a
@@ -349,7 +349,7 @@ Section: Expression Lowering
       is RecordTy (cmn) (cma) (cmf) ->
        let probe = lookup-record-field cmf (mn.value)
        in when probe
-        is ErrorTy -> lower-apply-normal f a ty ctx sp
+        is ErrorTy | NoExpectTy -> lower-apply-normal f a ty ctx sp
         is otherwise -> lower-method-apply (mn.value) a ty ctx sp f
       is otherwise -> lower-apply-normal f a ty ctx sp
     is AApplyExpr (inner-f) (inner-a) (innersp) ->
@@ -368,19 +368,19 @@ Section: Expression Lowering
 
   lower-apply-lambda-head : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-apply-lambda-head (f) (a) (ty) (ctx) (sp) =
-   let arg-ir = lower-expr a ErrorTy ctx
+   let arg-ir = lower-expr a NoExpectTy ctx
    in let arg-ty = ir-expr-type arg-ir
    in let fn-ty = deck-record (FunTy arg-ty empty-row ty)
    in let func-ir = lower-expr f fn-ty ctx
    in let ret-ty = peel-fun-return (ir-expr-type func-ir)
    in let actual-ret = when ret-ty
-      is ErrorTy -> ty
+      is ErrorTy | NoExpectTy -> ty
       is otherwise -> ret-ty
    in lower-apply-dispatch func-ir arg-ir actual-ret sp
 
   lower-apply-lambda-chain : AExpr, List AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-apply-lambda-chain (lam) (args) (ty) (ctx) (sp) =
-   let arg-irs = for a in args -> lower-expr a ErrorTy ctx
+   let arg-irs = for a in args -> lower-expr a NoExpectTy ctx
    in let n = list-length arg-irs
    in let fn-ty = build-curried-fun-ty arg-irs 0 n ty
    in let func-ir = lower-expr lam fn-ty ctx
@@ -393,7 +393,7 @@ Section: Expression Lowering
 
   chain-ret-or : CodexType, CodexType -> CodexType
   chain-ret-or (r) (fallback) = when r
-    is ErrorTy -> fallback
+    is ErrorTy | NoExpectTy -> fallback
     is otherwise -> r
 
   apply-chain-fold : IRExpr, List IRExpr, Integer, Integer, CodexType, CodexType, SourceSpan -> IRExpr
@@ -418,13 +418,13 @@ Section: Expression Lowering
 
   lower-compare-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-compare-apply (a1) (a2) (ty) (ctx) (sp) =
-   let l-ir = lower-expr a1 ErrorTy ctx
-   in let r-ir = lower-expr a2 ErrorTy ctx
+   let l-ir = lower-expr a1 NoExpectTy ctx
+   in let r-ir = lower-expr a2 NoExpectTy ctx
    in let lt = deep-resolve (ctx.ust) (ir-expr-type l-ir)
    in let tn = type-name-of lt
    in let probe = if text-length tn == 0 | is-primitive-type-name tn then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__compare_" & tn)
    in when probe
-    is ErrorTy -> lower-compare-prim lt l-ir r-ir sp
+    is ErrorTy | NoExpectTy -> lower-compare-prim lt l-ir r-ir sp
     is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
      in deck-record (IrApply (deck-record (IrApply (deck-record (IrName ("__compare_" & tn) fty sp)) l-ir (peel-fun-return fty) sp)) r-ir int-ty-default sp)
 
@@ -442,9 +442,9 @@ Section: Expression Lowering
 
   lower-constrained-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-constrained-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
-   let func-ir = lower-expr inner-f ErrorTy ctx
+   let func-ir = lower-expr inner-f NoExpectTy ctx
    in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
-   in let arg-ir = lower-expr a ErrorTy ctx
+   in let arg-ir = lower-expr a NoExpectTy ctx
    in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
    in let dict-rn = constrained-dict-rn pname (type-name-of arg-ty) ctx
    in if text-length dict-rn > 0
@@ -457,7 +457,7 @@ Section: Expression Lowering
       in let param-name = "__" & cls-name & "-dict"
       in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
       in when pb
-       is ErrorTy -> lower-apply-dispatch (deck-record (IrName ("__no-instance-" & cls-name & "-" & type-name-of arg-ty) ty sp)) arg-ir ty sp
+       is ErrorTy | NoExpectTy -> lower-apply-dispatch (deck-record (IrName ("__no-instance-" & cls-name & "-" & type-name-of arg-ty) ty sp)) arg-ir ty sp
        is otherwise -> let dict-ir = deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
         in let inner-ret = peel-fun-return func-ty
         in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
@@ -465,9 +465,9 @@ Section: Expression Lowering
 
   lower-derived-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-derived-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
-   let func-ir = lower-expr inner-f ErrorTy ctx
+   let func-ir = lower-expr inner-f NoExpectTy ctx
    in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
-   in let arg-ir = lower-expr a ErrorTy ctx
+   in let arg-ir = lower-expr a NoExpectTy ctx
    in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
    in let prefix = if pname == "__dderiv-Show" then "__show_" else "__compare_"
    in let dict-rn = prefix & type-name-of arg-ty
@@ -483,12 +483,12 @@ Section: Expression Lowering
    else let dict-rn = rename-lookup (ctx.chapter-renames) (substring pname 10 (text-length pname - 10) & "-dict-" & tn)
    in let b = lookup-type-split (ctx.overlay) (ctx.base) dict-rn
    in when b
-    is ErrorTy -> ""
+    is ErrorTy | NoExpectTy -> ""
     is otherwise -> dict-rn
 
   lower-method-apply : Text, AExpr, CodexType, LowerCtx, SourceSpan, AExpr -> IRExpr
   lower-method-apply (mname) (a) (ty) (ctx) (sp) (f) =
-   let arg-ir = lower-expr a ErrorTy ctx
+   let arg-ir = lower-expr a NoExpectTy ctx
    in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
    in let tn = type-name-of arg-ty
    in let spec-rn = method-spec-rn mname tn ctx
@@ -505,7 +505,7 @@ Section: Expression Lowering
    else let spec-rn = rename-lookup (ctx.chapter-renames) (mname & "-" & tn)
    in let b = lookup-type-split (ctx.overlay) (ctx.base) spec-rn
    in when b
-    is ErrorTy -> ""
+    is ErrorTy | NoExpectTy -> ""
     is otherwise -> spec-rn
 
   try-unit-convert : IRExpr, CodexType, SourceSpan -> IRExpr
@@ -595,7 +595,7 @@ Section: Expression Lowering
 
   lower-apply-normal : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-apply-normal (f) (a) (ty) (ctx) (sp) =
-   let func-ir = lower-expr f ErrorTy ctx
+   let func-ir = lower-expr f NoExpectTy ctx
    in let func-ty = ir-expr-type func-ir
    in let arg-ty = peel-fun-param func-ty
    in let ret-ty = peel-fun-return func-ty
@@ -603,7 +603,7 @@ Section: Expression Lowering
    in let arg-ir = try-unit-convert raw-arg-ir arg-ty sp
    in let resolved-ret = subst-type-vars-from-arg arg-ty (ir-expr-type arg-ir) ret-ty
    in let actual-ret = when resolved-ret
-      is ErrorTy -> ty
+      is ErrorTy | NoExpectTy -> ty
       is otherwise -> resolved-ret
    in let preferred-ret = prefer-applied-ty ty actual-ret (ctx.local-type-vars)
    in if is-unit-ctor func-ir ret-ty then lower-unit-ctor-value arg-ir ret-ty sp
@@ -611,20 +611,20 @@ Section: Expression Lowering
 
   lower-show-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-show-apply (f) (a) (ty) (ctx) (sp) =
-   let func-ir = lower-expr f ErrorTy ctx
+   let func-ir = lower-expr f NoExpectTy ctx
    in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
    in let arg-ty-hint = peel-fun-param func-ty
    in let ret-ty = peel-fun-return func-ty
    in let arg-ir = lower-expr a arg-ty-hint ctx
    in let resolved-ret = subst-type-vars-from-arg arg-ty-hint (ir-expr-type arg-ir) ret-ty
    in let actual-ret = when resolved-ret
-      is ErrorTy -> ty
+      is ErrorTy | NoExpectTy -> ty
       is otherwise -> resolved-ret
    in let preferred-ret = prefer-applied-ty ty actual-ret (ctx.local-type-vars)
    in let arg-tn = type-name-of (deep-resolve (ctx.ust) (ir-expr-type arg-ir))
    in let probe = if text-length arg-tn == 0 | is-primitive-type-name arg-tn then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__show_" & arg-tn)
    in when probe
-    is ErrorTy -> lower-apply-dispatch func-ir arg-ir preferred-ret sp
+    is ErrorTy | NoExpectTy -> lower-apply-dispatch func-ir arg-ir preferred-ret sp
     is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
      in lower-apply-dispatch (deck-record (IrName ("__show_" & arg-tn) fty sp)) arg-ir (peel-fun-return fty) sp
 
@@ -648,7 +648,7 @@ Section: Expression Lowering
    let tn = type-name-of (deep-resolve (ctx.ust) left-ty)
    in let probe = if text-length tn == 0 then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
    in when probe
-    is ErrorTy -> deck-record (IrBinary (lower-bin-op (eq-op-for positive) left-ty) left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s)
+    is ErrorTy | NoExpectTy -> deck-record (IrBinary (lower-bin-op (eq-op-for positive) left-ty) left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s)
     is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
      in let inner = deck-record (IrApply (deck-record (IrName ("__eq_" & tn) fty s)) left-ir (peel-fun-return fty) s)
      in let call = deck-record (IrApply inner right-ir BooleanTy s)
@@ -686,7 +686,7 @@ Section: Let and Lambda
   lower-let (binds) (body) (ty) (ctx) (sp) (depth) =
    if list-length binds == 0 then lower-expr-at body ty ctx (depth + 1)
    else let b = list-at binds 0
-   in let val-ir = lower-expr-at (b.value) ErrorTy ctx (depth + 1)
+   in let val-ir = lower-expr-at (b.value) NoExpectTy ctx (depth + 1)
    in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
    in let ctx2 = LowerCtx {
     overlay = OverlayCons (TypeBinding {
@@ -704,7 +704,7 @@ Section: Let and Lambda
   lower-let-rest (binds) (body) (ty) (ctx) (i) (sp) (depth) =
    if i == list-length binds then lower-expr-at body ty ctx (depth + 1)
    else let b = list-at binds i
-   in let val-ir = lower-expr-at (b.value) ErrorTy ctx (depth + 1)
+   in let val-ir = lower-expr-at (b.value) NoExpectTy ctx (depth + 1)
    in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
    in let ctx2 = LowerCtx {
     overlay = OverlayCons (TypeBinding {
@@ -731,10 +731,10 @@ Section: Let and Lambda
  A lambda's parameters are peeled off the type its CONTEXT expects, and
  `peel-fun-param` answers `ErrorTy` for anything that is not an arrow. When
  nothing above expects a type there is nothing to peel: `lower-let` hands its
- bound value `ErrorTy` as the expectation, every parameter peels to `ErrorTy`,
- and the arrow is recorded with `ErrorTy` in each position. That reaches a
- plug spelled `error`, which is the compiler's TYPE FAILURE atom, for a
- program the compiler reported clean.
+ bound value `NoExpectTy` as the expectation, every parameter peels, and the
+ arrow is recorded with a failure atom in each position. Before the split that
+ expectation was spelled `ErrorTy` and reached a plug as `error`, the
+ compiler's TYPE FAILURE atom, for a program the compiler reported clean.
 
  The type was never missing. The checker solved these parameters and filed
  the answer; nothing asked for it here. `lambda-expected-ty` asks -- the same
@@ -748,7 +748,8 @@ Section: Let and Lambda
   lambda-expected-ty : CodexType, LowerCtx, SourceSpan -> CodexType
   lambda-expected-ty (ty) (ctx) (sp) =
    when ty
-    is ErrorTy -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) sp)
+    is NoExpectTy -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) sp)
+    is ErrorTy | NoExpectTy -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) sp)
     is otherwise -> ty
 
  A lambda used to record the EXPECTED type it was handed, which at a
@@ -859,13 +860,14 @@ Section: Match Lowering
 
   lower-match : AExpr, List AMatchArm, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-match (scrut) (arms) (ty) (ctx) (sp) =
-   let scrut-ir = lower-expr scrut ErrorTy ctx
+   let scrut-ir = lower-expr scrut NoExpectTy ctx
    in let scrut-ty = ir-expr-type scrut-ir
    in let rty = deep-resolve (ctx.ust) scrut-ty
    in if is-list-ctor-match rty arms then lower-list-match scrut-ir (list-elem-of rty) arms ty ctx sp
    else let branches = lower-match-arms-loop arms ty scrut-ty ctx 0 (list-length arms)
    in let result-ty = when ty
-      is ErrorTy -> infer-match-type branches 0 (list-length branches)
+      is NoExpectTy -> infer-match-type branches 0 (list-length branches)
+      is ErrorTy | NoExpectTy -> infer-match-type branches 0 (list-length branches)
       is otherwise -> branch-recorded-ty ty (match-witness-ty branches 0 (list-length branches))
    in deck-record (IrMatch scrut-ir branches result-ty sp)
 
@@ -913,7 +915,8 @@ Section: Match Lowering
   list-arm-ty : CodexType, IRExpr -> CodexType
   list-arm-ty (ty) (then-ir) =
    when ty
-    is ErrorTy -> ir-expr-type then-ir
+    is NoExpectTy -> ir-expr-type then-ir
+    is ErrorTy | NoExpectTy -> ir-expr-type then-ir
     is otherwise -> ty
 
   lower-list-match : IRExpr, CodexType, List AMatchArm, CodexType, LowerCtx, SourceSpan -> IRExpr
@@ -987,7 +990,7 @@ Section: Match Lowering
    else let b = list-at branches i
    in let body-ty = ir-expr-type (b.body)
    in when body-ty
-     is ErrorTy -> infer-match-type branches (i + 1) len
+     is ErrorTy | NoExpectTy -> infer-match-type branches (i + 1) len
      is otherwise -> body-ty
 
   lower-match-arms-loop : List AMatchArm, CodexType, CodexType, LowerCtx, Integer, Integer -> List IRBranch
@@ -1103,7 +1106,7 @@ Section: Match Lowering
   ctor-field-type-in-ctx (ctx) (scrut-ty) (ctor-name) (field-idx) =
    let direct = lookup-ctor-field-type scrut-ty ctor-name field-idx
    in when direct
-    is ErrorTy -> resolved-ctor-field-type ctx scrut-ty ctor-name field-idx
+    is ErrorTy | NoExpectTy -> resolved-ctor-field-type ctx scrut-ty ctor-name field-idx
     is otherwise -> direct
 
  ORDER IS THE WHOLE OF IT. `apply-ctor-subst` substitutes a bare
@@ -1322,7 +1325,7 @@ Section: Collections and Act
       is ListTy (e) -> e
       is otherwise -> ErrorTy
    in let elem-ty = when from-context
-      is ErrorTy -> ir-expr-type (lower-expr (list-at elems 0) ErrorTy ctx)
+      is ErrorTy | NoExpectTy -> ir-expr-type (lower-expr (list-at elems 0) NoExpectTy ctx)
       is otherwise -> from-context
    in deck-record (IrList (for e in elems -> lower-expr e elem-ty ctx) elem-ty sp)
 
@@ -1330,10 +1333,10 @@ Section: Collections and Act
   lower-record (name) (fields) (ty) (ctx) (sp) =
    let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (name.value)
    in let record-ty = when ctor-raw
-      is ErrorTy -> ty
+      is ErrorTy | NoExpectTy -> ty
       is otherwise -> strip-fun-args (deep-resolve (ctx.ust) ctor-raw)
    in let actual-ty = when record-ty
-      is ErrorTy -> ty
+      is ErrorTy | NoExpectTy -> ty
       is otherwise -> record-ty
    in let lowered-fields = lower-record-fields-typed fields actual-ty ctx 0 (list-length fields)
    in let refined-actual = refine-record-ty-from-fields actual-ty lowered-fields ctx 0 (list-length lowered-fields)
@@ -1477,7 +1480,7 @@ Section: Collections and Act
          else let inner = [deck-record (IrDoExec body-ir (ir-expr-span body-ir))] & rest
          in deck-record (IrAct inner (act-block-type inner (ir-expr-type body-ir)) sp)
    else let b = list-at binds j
-   in let val-ir = lower-expr (b.value) ErrorTy ctx
+   in let val-ir = lower-expr (b.value) NoExpectTy ctx
    in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
    in let ctx2 = LowerCtx {
     overlay = OverlayCons (TypeBinding {

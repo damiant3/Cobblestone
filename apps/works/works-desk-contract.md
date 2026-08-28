@@ -504,8 +504,10 @@ first two cells of the second half.
 | 204, 208 | `dk-pillc-cell`, `dk-pillc-t-cell` | the double-click latch on a pill: which pill was last clicked and when |
 | 212 | `dk-pedge-cell` | pointer: a block of `dk-pedge-slots` (17) entries, one per focus id, holding the edge that app's pill is docked to (val, 2026-08-27, ShellRefinement 6.7.1). **Stored as the edge PLUS ONE so that zero means unwritten**, because `alloc-zeroed` hands back zeros and `dk-edge-bottom` is 0; without the offset a never-flicked app and one flicked to the bottom are the same bits. `dk-pedge-get` falls back to `dk-task-edge ds` for an unwritten or out-of-range id. Allocated by `dk-pedge-init` from `desk-run` before the base mark, for the reason every other pointer cell here is |
 
-**THE BLOCK GREW TO 256 BYTES ON 2026-08-26 (val). Cells 0 through 212 are now
-taken, so 216 through 252 are free -- nine cells.** This paragraph said "168
+| 216, 220 | `dk-strip-h-cell`, `dk-strip-v-cell` | the depth a PILL-ONLY strip takes on a horizontal and on a vertical edge, in device pixels (val, 2026-08-27, ShellRefinement 6.7.3a). Measured once by `dk-strip-init` from `desk-run` the way `dk-task-init` measures the band, by laying one specimen pill and taking its minimum, so "thinner than the band" is a consequence of carrying no Cobblestone button and no clock rather than a chosen number. Two orientations because a row of pills decides a height and a column of them a width, which is why `dk-task-w` is not `dk-task-h`. Not pointers, so they need no allocation before the base mark; zero means unmeasured and `dk-strip-depth` falls back to the same floors the band uses |
+
+**THE BLOCK GREW TO 256 BYTES ON 2026-08-26 (val). Cells 0 through 220 are now
+taken, so 224 through 252 are free -- eight cells.** This paragraph said "168
 through 252 are free" until 2026-08-27, which was true the day it was written
 and stopped being true within hours: `dk-task-edge-cell`, the flick's eight and
 the pill latch's two took 168 through 208 that same week and none of them added
@@ -1181,6 +1183,19 @@ model of the split.
   launcher existed for even before the column ran out at thirteen. `Programs`,
   `Files`, `Edit` and `Console` were already rows in `gpr-entries`, so only
   `Shutdown` had to move, and it moved into the start menu.
+- **`widget-set-flex X 0` is NOT "size to content".** It means no share of
+  the main axis: a node with no min size collapses to nothing and every
+  sibling draws on top of every other. Pair flex 0 with `widget-set-min`,
+  which is what every taskbar and button row in the tree already does.
+- **A button is not born flexible; a panel is.** In a `DirRow` a button
+  with min width 0 lays out zero pixels wide and paints nothing at all.
+  Give it a `widget-set-min` or a flex share.
+- **`settings-widget` lays children OUTSIDE its bounds**, and the
+  compositor fills a node's bounds wherever they are, so it can paint over
+  chrome it does not own. Recorded as WORKS-3.
+- **`tk-init-tracker-db` already seeds**: its last line is
+  `tk-seed-tracker s4` (`GopTrackDb.codex`). Seeding its result doubles
+  every row.
 
 ## 5. Painting under the cursor
 

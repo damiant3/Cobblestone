@@ -1,6 +1,9 @@
 Chapter: DeskPillEdgeTest
   cites Works chapter GopDraw
   cites Works chapter GopDesk
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
   cites Foreword chapter Console
 
  ShellRefinement 6.7.1. A pill's edge is a per-app fact, keyed by focus id,
@@ -69,6 +72,195 @@ Section: Body
        & "  id 17 " & integer-to-text (dk-pedge-get ds 17)
        & "  both answer the band " & dpe-yn (dk-pedge-get ds (0 - 1) == dk-edge-right & dk-pedge-get ds 17 == dk-edge-right)
 
+ 6.7.2. THE BAND FILTERS BY EDGE, AND THE CLAIM THAT CAN FAIL IS THAT A PILL
+ WRITTEN ELSEWHERE LEAVES THE BAND'S SET. The inert half -- everything default,
+ so the band still yields every open window -- would pass with the filter
+ deleted, because `dk-pedge-get` answers the band's edge for every app until
+ something writes one. Only the second half distinguishes a filter that works
+ from no filter at all.
+
+ The registry is built by hand rather than by opening windows: `dk-wr-find`
+ reads a count at offset 0 and a focus id at `4 * i + 4`, which is the whole
+ of what `dk-pills` asks of it.
+
+ IT USES IDS 8, 9 AND 10 BECAUSE THE ROWS ABOVE WROTE 5 AND 6, and a `ds` is
+ shared down the whole entry. Built on 5 and 6 this row read "band had 2" of
+ three registered windows -- self-consistent, and quietly depending on a
+ previous row's side effect. A row whose baseline is another row's leftovers
+ is a row that changes meaning when anything above it is edited.
+
+  dpe-ws : Integer
+  dpe-ws =
+    let ws = alloc-zeroed 64 64
+    in let n = poke-32 ws 0 3
+    in let a = poke-32 ws 4 8
+    in let b = poke-32 ws 8 9
+    in let c = poke-32 ws 12 10
+    in ws
+
+  dpe-count : Integer, Integer, Integer -> Integer
+  dpe-count (ws) (ds) (e) = list-length (dk-pills ws ds e 0 [])
+
+  dpe-filter : Integer -> Text
+  dpe-filter (ds) =
+    let ws = dpe-ws
+    in let sp = poke-32 ds dk-task-edge-cell dk-edge-bottom
+    in let before = dpe-count ws ds dk-edge-bottom
+    in let w = dk-pedge-set ds 9 dk-edge-right
+    in let after = dpe-count ws ds dk-edge-bottom
+    in let moved = dpe-count ws ds dk-edge-right
+    in "filter: band had " & integer-to-text before
+       & "  after moving id 9 to the right the band has " & integer-to-text after
+       & "  and the right edge has " & integer-to-text moved
+       & "  band lost exactly one " & dpe-yn (after == before - 1)
+       & "  the right gained it " & dpe-yn (moved == 1)
+       & "  nothing vanished " & dpe-yn (after + moved == before)
+
+ 6.7.3a. THE CONTENT BOX ASKS EVERY EDGE, and the two claims fail for
+ different reasons. **Inert**: with nothing written, the box is exactly what
+ the old band-keyed arithmetic gave at all four edges, so this stage moves no
+ picture. **Live**: writing a pill to an edge that is not the band's must
+ SHRINK the box on that edge, which is what would fail if `dk-cbox-*` were
+ still keyed on `dk-task-edge` alone.
+
+ The inert half is checked against the arithmetic the old code did rather than
+ against `dk-strip-px` itself, or it would be comparing the new function with
+ itself (L-BOTHARMS).
+
+ ONE OF THE SHRINK ROW'S THREE VERDICTS IS VACUOUS AGAINST THE OBVIOUS BREAK
+ AND IT IS KEPT AND SAID SO. Reverting `dk-cbox-w` to the band-keyed form moves
+ "took glass" and "took the measured strip" to NO and leaves "gave it back"
+ at yes, because with nothing ever taken the width trivially returns to where
+ it started. It stays because it fails against a DIFFERENT defect -- a strip
+ that reserves and never releases -- and a reader who saw only the two moving
+ verdicts would not know which break each one covers.
+
+  dpe-oldbox : Integer, Integer, Integer, Integer -> Text
+  dpe-oldbox (ds) (w) (h) (e) =
+    let sp = poke-32 ds dk-task-edge-cell e
+    in let ox = if e == dk-edge-left then dk-task-px ds w else 0
+    in let oy = dk-bar-h * ui-scale w + (if e == dk-edge-top then dk-task-px ds w else 0)
+    in let ow = w - ox - (if e == dk-edge-right then dk-task-px ds w else 0)
+    in let oh = h - oy - (if e == dk-edge-bottom then dk-task-px ds w else 0)
+    in "box " & dk-edge-name e
+       & "  x " & integer-to-text (dk-cbox-x w ds) & "/" & integer-to-text ox
+       & "  y " & integer-to-text (dk-cbox-y w ds) & "/" & integer-to-text oy
+       & "  w " & integer-to-text (dk-cbox-w w ds) & "/" & integer-to-text ow
+       & "  h " & integer-to-text (dk-cbox-h w h ds) & "/" & integer-to-text oh
+       & "  unchanged " & dpe-yn (dk-cbox-x w ds == ox & dk-cbox-y w ds == oy & dk-cbox-w w ds == ow & dk-cbox-h w h ds == oh)
+
+ A REGISTERED WINDOW IS REQUIRED, not just a written edge: `dk-strip-any` asks
+ the registry first, so a pill for an app with no open window reserves nothing.
+ That is the arm for "the strip disappears when the edge has none".
+
+ THIS ROW BUILDS ITS OWN `ds` AND THAT IS NOT TIDINESS. Written against the
+ shared one it read a baseline width of 1360 rather than 1600, because
+ `dpe-filter` above had already docked id 9 to the right and id 9 is in the
+ registry -- so the right edge was already carrying a strip before the row
+ began, writing another pill there changed nothing, and "the right took glass"
+ answered NO against working code. **The chapter had already been bitten by
+ this once and the repair then was to move the fixture's ids**, which fixed the
+ symptom one row wide and left the shape intact. A row that asserts a
+ DIFFERENCE has to own every input the difference depends on.
+
+  dpe-shrink : Integer, Integer -> Text
+  dpe-shrink (w) (h) =
+    let ds = alloc-zeroed 256 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pei = dk-pedge-init ds
+    in let ws = dpe-ws
+    in let wr = poke-32 ds dk-wr-cell ws
+    in let sp = poke-32 ds dk-task-edge-cell dk-edge-bottom
+    in let w0 = dk-cbox-w w ds
+    in let m = dk-pedge-set ds 8 dk-edge-right
+    in let w1 = dk-cbox-w w ds
+    in let u = dk-pedge-set ds 8 dk-edge-bottom
+    in let w2 = dk-cbox-w w ds
+    in "shrink: width " & integer-to-text w0
+       & "  with a pill on the right " & integer-to-text w1
+       & "  moved back " & integer-to-text w2
+       & "  the right took glass " & dpe-yn (w1 < w0)
+       & "  and gave it back " & dpe-yn (w2 == w0)
+       & "  it took the measured strip " & dpe-yn (w0 - w1 == dk-strip-depth ds w dk-edge-right)
+
+ 6.7.3b. THE STRIP PAINTS, and the claim is that the pill is LAID on its own
+ edge rather than merely accounted for. The reservation rows above prove the
+ content box shrinks; they would all still pass if the strip were never put in
+ the tree and the glass simply went missing.
+
+ THE ASSERTION IS THE PILL'S RECTANGLE AGAINST THE CONTENT BOX, not against
+ the strip's own rectangle, which would be the new code agreeing with itself
+ (L-BOTHARMS). A pill docked right must lie entirely beyond the box's right
+ edge; the same pill on the band's edge must not.
+
+ IT CALLS `dk-task-init` AND `dk-strip-init` BECAUSE `desk-run` DOES. Without
+ them the band and strip cells are unwritten and `dk-strip-depth` answers its
+ FALLBACK floor rather than the measured extent -- 240 device pixels against
+ the measured 280 at 1600 -- so the row laid a strip 140 logical wide into a
+ reservation of 120 and read the pill 2 pixels inside the box. That is an arm
+ measuring a configuration the desk never runs, not a defect in the desk, and
+ it is the same shape as measuring a face at a ppem the desk would not load.
+
+  dpe-pill-x : WidgetNode, Text -> Integer
+  dpe-pill-x (laid) (id) =
+    when widget-find laid id
+      is Just (n) -> n.wn-bounds.lr-x
+      is None -> 0 - 1
+
+  dpe-paint : Integer, Integer -> Text
+  dpe-paint (w) (h) =
+    let ds = alloc-zeroed 256 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pei = dk-pedge-init ds
+    in let wr = poke-32 ds dk-wr-cell dpe-ws
+    in let sp = poke-32 ds dk-task-edge-cell dk-edge-bottom
+    in let tki = dk-task-init ds gfont-none w
+    in let sti = dk-strip-init ds gfont-none w
+    in let s = ui-wscale w
+    in let onband = dpe-pill-x (widget-layout (desk-chrome-with (widget-panel "content" DirColumn 0 []) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))) (dk-pill-id 8)
+    in let mv = dk-pedge-set ds 8 dk-edge-right
+    in let onright = dpe-pill-x (widget-layout (desk-chrome-with (widget-panel "content" DirColumn 0 []) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))) (dk-pill-id 8)
+    in let boxr = (dk-cbox-x w ds + dk-cbox-w w ds) / s
+    in "paint: pill 8 on the band at x " & integer-to-text onband
+       & "  docked right at x " & integer-to-text onright
+       & "  box right edge " & integer-to-text boxr
+       & "  found in both " & dpe-yn (onband >= 0 & onright >= 0)
+       & "  it moved " & dpe-yn (onright /= onband)
+       & "  and it is beyond the box " & dpe-yn (onright >= boxr)
+
+ 6.7.4. THE FLICK SPENDS THE DIRECTION. The gesture above this is a speed and
+ a deadline read off the HPET, and `desk.ps1 -Rtc` pins the HPET, so a flick
+ cannot be driven by a scripted capture at all. What this stage adds is not a
+ reading but what happens once one is taken, and `dk-flick-dock-at` is that
+ step on its own so an arm can drive it.
+
+ EACH DIRECTION IS ASKED SEPARATELY BECAUSE ONE WOULD NOT DISCRIMINATE. A
+ dock that ignored its argument and always wrote the band's edge passes any
+ single-direction row taken at the band's own edge; the four together cannot
+ be satisfied by a constant. The band sits at the BOTTOM throughout, so the
+ bottom row is also the control that a real write and a defaulted read are
+ told apart.
+
+  dpe-dock : Integer, Integer, Integer -> Text
+  dpe-dock (ds) (fid) (dir) =
+    let d = dk-flick-dock-at ds fid dir
+    in " " & dk-edge-name dir & "=" & dk-edge-name (dk-pedge-get ds fid)
+       & dpe-yn (dk-pedge-get ds fid == dir)
+
+  dpe-flick : Integer -> Text
+  dpe-flick (w) =
+    let ds = alloc-zeroed 256 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pei = dk-pedge-init ds
+    in let wr = poke-32 ds dk-wr-cell dpe-ws
+    in let sp = poke-32 ds dk-task-edge-cell dk-edge-bottom
+    in "flick docks where it points, band at the bottom:"
+       & dpe-dock ds 8 dk-edge-left
+       & dpe-dock ds 9 dk-edge-right
+       & dpe-dock ds 10 dk-edge-top
+       & dpe-dock ds 8 dk-edge-bottom
+       & "  and the window minimised " & dpe-yn (peek-32 (desk-wnd-blk 8 ds) dk-wnd-st-cell == dk-wnd-st-min)
+
 Section: Entry
 
   opening : [Console] Nothing =
@@ -82,6 +274,14 @@ Section: Entry
       print-line-uni (dpe-row ds dk-edge-right)
       print-line-uni (dpe-write ds)
       print-line-uni (dpe-bounds ds)
+      print-line-uni (dpe-filter ds)
+      print-line-uni (dpe-oldbox ds 1600 900 dk-edge-bottom)
+      print-line-uni (dpe-oldbox ds 1600 900 dk-edge-top)
+      print-line-uni (dpe-oldbox ds 1600 900 dk-edge-left)
+      print-line-uni (dpe-oldbox ds 1600 900 dk-edge-right)
+      print-line-uni (dpe-shrink 1600 900)
+      print-line-uni (dpe-paint 1600 900)
+      print-line-uni (dpe-flick 1600)
     end
 
 Page 1

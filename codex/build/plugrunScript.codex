@@ -25,7 +25,20 @@ Section: S02 -- Read IR input
 
 Section: S03 -- Start TCP listener
 
-  s03 : List ShellCmd = [ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "$listener.Start()", ScEcho (SeRaw "\"[plug-run] Listening on TCP $Port\"")]
+ The port is FIXED per plug and shared across every workspace on the box, so
+ the second agent to run the same plug binds a port the first is holding.
+ Bare, that surfaces as .NET's "Only one usage of each socket address is
+ normally permitted", which names neither the plug nor the neighbour and reads
+ like a fault in this run. L-SHARED asks a fleet tool to refuse rather than
+ report someone else's screen, and this is that refusal.
+
+ It cannot be repaired by deriving the port here. The guest DIALS a port that
+ is a literal in each plug's own chapter and compiled into its CDX, and
+ nothing carries a port to the VM, so a host that moved would simply never be
+ called. Making the port workspace-derived is a change to all 56 plug sources
+ and their build, not to this script.
+
+  s03 : List ShellCmd = [ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "try { $listener.Start() } catch { [Console]::Error.WriteLine(\"FAIL: TCP $Port is already in use, so this plug cannot be run here now. The port is fixed per plug and shared across workspaces, so another agent running the same plug holds it (L-SHARED). Wait, or run a different plug.\"); exit 7 }", ScEcho (SeRaw "\"[plug-run] Listening on TCP $Port\"")]
 
 Section: S04 -- Boot VM
 

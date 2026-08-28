@@ -611,11 +611,18 @@ Section: Chrome
 
   dk-focus-max : Integer = 16
 
-  dk-pills : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
-  dk-pills (ws) (ds) (fid) (acc) =
+ THE WALK TAKES AN EDGE (6.7.2) AND YIELDS ONLY THE PILLS DOCKED TO IT. While
+ the band is the only strip it asks for its own edge, and `dk-pedge-get`
+ answers that edge for every app until something writes one, so the set is
+ unchanged and so is the picture. The stage that makes it visible is 6.7.3,
+ which gives an edge with no main band a strip of its own.
+
+  dk-pills : Integer, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  dk-pills (ws) (ds) (e) (fid) (acc) =
     if fid > dk-focus-max then acc
-    else if dk-wr-find ws fid 0 < 0 then dk-pills ws ds (fid + 1) acc
-    else dk-pills ws ds (fid + 1) (list-push acc (widget-set-flex (widget-button (dk-pill-id fid) (desk-chrome-gutter & desk-wnd-title fid)) 0))
+    else if dk-wr-find ws fid 0 < 0 then dk-pills ws ds e (fid + 1) acc
+    else if dk-pedge-get ds fid /= e then dk-pills ws ds e (fid + 1) acc
+    else dk-pills ws ds e (fid + 1) (list-push acc (widget-set-flex (widget-button (dk-pill-id fid) (desk-chrome-gutter & desk-wnd-title fid)) 0))
 
  The pill's icon is painted after the layout like every other one, keyed on
  the same id the button carries, so it cannot land anywhere but on the pill.
@@ -638,7 +645,7 @@ Section: Chrome
     in let menu = widget-set-flex (widget-set-min mb (mb.wn-min-w) (dk-task-btn-h tf ws)) 0
     in let tasks = widget-set-flex (widget-label "tasks" "") 1
     in let clock = widget-set-min (widget-label "task-clock" "") (if dk-task-vertical ds then 0 else desk-task-clock-w) 0
-    in let kids = dk-pills (peek-32 ds dk-wr-cell) ds 0 (list-push [] menu)
+    in let kids = dk-pills (peek-32 ds dk-wr-cell) ds (dk-task-edge ds) 0 (list-push [] menu)
     in let kids2 = list-push (list-push kids tasks) clock
     in if dk-task-vertical ds
       then widget-set-flex (widget-set-min (widget-panel "taskbar" DirColumn 4 kids2) dk-task-w 0) 0
@@ -662,14 +669,69 @@ Section: Chrome
  cell; this one is read for one integer and never touched again, and it runs
  BELOW the base mark where nothing would ever reclaim it.
 
+ THE BAND IS MEASURED WITH A SPECIMEN PILL IN IT, AND THAT IS A FIX RATHER
+ THAN A FLOURISH (WORKS-56). This runs at boot and on an edge change and never
+ again, so before it the cached extent was always the EMPTY band's: measured,
+ 28 against 36 at 1280 and 56 against 72 at 1600, so the content box
+ under-reserved by 16 device pixels the moment the first window was minimised
+ and the bottom of the box sat underneath the band. Laying a specimen makes
+ the cache the maximum the band can need, whatever the window state, at the
+ cost of those pixels on a desk with nothing minimised.
+
   dk-task-init : Integer, GopFont, Integer -> Integer
   dk-task-init (ds) (tf) (w) =
     let mk = __heap-save
     in let ws = ui-wscale w
     in let m = widget-measure (comp-fit-text (desk-taskbar ds tf ws) tf ws) (dk-theme-ds ds)
     in let v = if dk-task-vertical ds then m.wn-min-w * ws else m.wn-min-h * ws
+    in let sp = dk-strip-panel ds ws (dk-task-edge ds) [dk-strip-spec ws]
+    in let ms = widget-measure (comp-fit-text sp tf ws) (dk-theme-ds ds)
+    in let sv = if dk-task-vertical ds then ms.wn-min-w * ws else ms.wn-min-h * ws
     in let d = __heap-restore mk
-    in poke-32 ds dk-task-band-cell v
+    in poke-32 ds dk-task-band-cell (if v >= sv then v else sv)
+
+ A STRIP IS ONE SPECIMEN PILL IN A PANEL, measured the same way and bracketed
+ the same way. It is a SPECIMEN rather than the real set because the depth is
+ across the axis and does not depend on how many pills there are, and because
+ this runs at init when no window is open at all. The title is the longest one
+ the desk has so the vertical measurement clears the widest pill it can be
+ asked to hold; on the horizontal axis the title does not matter, and taking
+ both from one tree is what keeps the two orientations honest against each
+ other.
+
+  dk-strip-spec : Integer -> WidgetNode
+  dk-strip-spec (ws) =
+    let b = widget-button "strip-spec" (desk-chrome-gutter & "System Info")
+    in widget-set-flex b 0
+
+ ONE PANEL BUILDER FOR BOTH, so a strip measured at init and a strip laid at
+ paint cannot drift apart, and so `dk-task-init` can measure the same shape
+ rather than a wrapper of its own. A wrapper WAS tried: `DirRow 4 [bar, spec]`
+ answered 72 for an empty band and 88 for one holding a pill where the bar
+ alone answers 36 and 72, and those numbers could not be accounted for against
+ the padding rules without reading the engine. A number that cannot be
+ explained does not ship, so the two trees are measured separately and the
+ larger wins.
+
+  dk-strip-panel : Integer, Integer, Integer, List WidgetNode -> WidgetNode
+  dk-strip-panel (ds) (ws) (e) (kids) =
+    if e >= dk-edge-left
+      then widget-set-flex (widget-set-min (widget-panel "strip" DirColumn 4 kids) dk-task-w 0) 0
+      else widget-set-flex (widget-set-min (widget-panel "strip" DirRow 4 kids) 0 dk-task-h) 0
+
+  dk-strip-init : Integer, GopFont, Integer -> Integer
+  dk-strip-init (ds) (tf) (w) =
+    let mk = __heap-save
+    in let ws = ui-wscale w
+    in let row = comp-fit-text (dk-strip-panel ds ws dk-edge-bottom [dk-strip-spec ws]) tf ws
+    in let col = comp-fit-text (dk-strip-panel ds ws dk-edge-left [dk-strip-spec ws]) tf ws
+    in let mh = widget-measure row (dk-theme-ds ds)
+    in let mv = widget-measure col (dk-theme-ds ds)
+    in let hv = mh.wn-min-h * ws
+    in let vv = mv.wn-min-w * ws
+    in let d = __heap-restore mk
+    in let a = poke-32 ds dk-strip-h-cell hv
+    in poke-32 ds dk-strip-v-cell vv
 
  The top bar is painted by `desk-topbar` OUTSIDE the widget tree, so nothing
  in the layout knows it is there unless it is told. `topgap` is that telling.
@@ -690,25 +752,41 @@ Section: Chrome
  the two vertical arms differ from the two horizontal ones only in which
  container the band is a child of.
 
+ FOUR ARMS BECOME ONE CONSTRUCTION (6.7.3b), because an edge can now carry a
+ band OR a pill-only strip and any combination of the four is legal. With one
+ edge live it builds exactly the tree the four arms built, which is what
+ `desk-pane-origin`, `desk-welcome-box` and `desk-taskbar-hit` assert.
+
+ NOTHING NEW IS NEEDED FOR CLICKS OR ICONS. `dk-pill-hit` and
+ `desk-pill-icons` both search the LAID ROOT by widget id rather than walking
+ the band, so a pill in a side strip is found the moment the strip is in the
+ tree.
+
+  dk-edge-node : Integer, GopFont, Integer, Integer -> WidgetNode
+  dk-edge-node (ds) (tf) (s) (e) =
+    if dk-task-edge ds == e then comp-fit-text (desk-taskbar ds tf s) tf s
+    else comp-fit-text (dk-strip-panel ds s e (dk-pills (peek-32 ds dk-wr-cell) ds e 0 [])) tf s
+
+  dk-edge-live : Integer, Integer -> Boolean
+  dk-edge-live (ds) (e) = if dk-task-edge ds == e then True else dk-strip-any ds e 0
+
+  dk-side-col : Integer, GopFont, Integer, Integer, Integer -> WidgetNode
+  dk-side-col (ds) (tf) (s) (w) (e) =
+    widget-set-flex (widget-panel (if e == dk-edge-left then "bandcol" else "bandcol-r") DirColumn 0 [dk-topgap w, widget-set-flex (dk-edge-node ds tf s e) 1]) 0
+
   desk-chrome-face : WidgetNode, Integer, Integer, GopFont -> WidgetNode
   desk-chrome-face (content) (w) (ds) (tf) =
     let s = ui-wscale w
-    in let gap = dk-topgap w
-    in let band = comp-fit-text (desk-taskbar ds tf s) tf s
     in let body = widget-set-flex content 1
-    in let e = dk-task-edge ds
-    in if e == dk-edge-top then
-      widget-panel "root" DirRow 0 [widget-set-flex (widget-panel "right" DirColumn 0 [gap, band, body]) 1]
-    else if e == dk-edge-left then
-      widget-panel "root" DirRow 0 [
-        widget-set-flex (widget-panel "bandcol" DirColumn 0 [dk-topgap w, widget-set-flex band 1]) 0,
-        widget-set-flex (widget-panel "right" DirColumn 0 [gap, body]) 1]
-    else if e == dk-edge-right then
-      widget-panel "root" DirRow 0 [
-        widget-set-flex (widget-panel "right" DirColumn 0 [gap, body]) 1,
-        widget-set-flex (widget-panel "bandcol" DirColumn 0 [dk-topgap w, widget-set-flex band 1]) 0]
-    else
-      widget-panel "root" DirRow 0 [widget-set-flex (widget-panel "right" DirColumn 0 [gap, body, band]) 1]
+    in let m0 = list-push [] (dk-topgap w)
+    in let m1 = if dk-edge-live ds dk-edge-top then list-push m0 (dk-edge-node ds tf s dk-edge-top) else m0
+    in let m2 = list-push m1 body
+    in let m3 = if dk-edge-live ds dk-edge-bottom then list-push m2 (dk-edge-node ds tf s dk-edge-bottom) else m2
+    in let mid = widget-set-flex (widget-panel "right" DirColumn 0 m3) 1
+    in let r0 = if dk-edge-live ds dk-edge-left then list-push [] (dk-side-col ds tf s w dk-edge-left) else []
+    in let r1 = list-push r0 mid
+    in let r2 = if dk-edge-live ds dk-edge-right then list-push r1 (dk-side-col ds tf s w dk-edge-right) else r1
+    in widget-panel "root" DirRow 0 r2
 
   desk-chrome-with : WidgetNode, Integer, Integer -> WidgetNode
   desk-chrome-with (content) (w) (ds) = desk-chrome-face content w ds gfont-none
@@ -1709,20 +1787,63 @@ Section: Windows
  read the box through these four, so making them edge-aware moves all of it
  and nothing else had to learn where the band is.
 
+ EVERY EDGE IS ASKED THE SAME QUESTION NOW (6.7.3a), and the four `dk-task-edge
+ ds ==` tests collapse into one function. An edge takes glass if it carries the
+ band, or if it carries pills of its own; otherwise it takes none.
+
+ IT IS INERT UNTIL SOMETHING WRITES A PILL'S EDGE, which nothing does until
+ 6.7.4. `dk-pedge-get` answers the band's edge for every app, so the only edge
+ that can hold a pill is the band's, and `dk-strip-px` answers exactly what the
+ old arm answered on all four. `codex/test/apps/desk-pill-edge` asserts that
+ against the four edges and then writes a pill elsewhere and requires the box
+ to shrink, which is the half that would fail if this were still keyed on the
+ band alone.
+
+  dk-strip-any : Integer, Integer, Integer -> Boolean
+  dk-strip-any (ds) (e) (fid) =
+    if fid > dk-focus-max then False
+    else if dk-wr-find (peek-32 ds dk-wr-cell) fid 0 < 0 then dk-strip-any ds e (fid + 1)
+    else if dk-pedge-get ds fid == e then True
+    else dk-strip-any ds e (fid + 1)
+
+ A PILL-ONLY STRIP IS MEASURED, NOT CHOSEN. `dk-strip-init` lays a strip
+ holding one specimen pill and takes its minimum the way `dk-task-init` takes
+ the band's, so "thinner than the band" is a consequence of carrying no
+ Cobblestone button and no clock rather than a number somebody liked. The two
+ orientations are measured separately because a row of pills decides a height
+ and a column of them decides a width, which is the same reason `dk-task-w` is
+ not `dk-task-h`.
+
+  dk-strip-h-cell : Integer = 216
+  dk-strip-v-cell : Integer = 220
+
+  dk-strip-depth : Integer, Integer, Integer -> Integer
+  dk-strip-depth (ds) (w) (e) =
+    let c = peek-32 ds (if e >= dk-edge-left then dk-strip-v-cell else dk-strip-h-cell)
+    in if c > 0 then c
+    else if e >= dk-edge-left then dk-task-w * ui-wscale w
+    else dk-task-h * ui-wscale w
+
+  dk-strip-px : Integer, Integer, Integer -> Integer
+  dk-strip-px (ds) (w) (e) =
+    if dk-task-edge ds == e then dk-task-px ds w
+    else if dk-strip-any ds e 0 then dk-strip-depth ds w e
+    else 0
+
   dk-cbox-x : Integer, Integer -> Integer
-  dk-cbox-x (w) (ds) = if dk-task-edge ds == dk-edge-left then dk-task-px ds w else 0
+  dk-cbox-x (w) (ds) = dk-strip-px ds w dk-edge-left
 
   dk-cbox-y : Integer, Integer -> Integer
   dk-cbox-y (w) (ds) =
-    dk-bar-h * ui-scale w + (if dk-task-edge ds == dk-edge-top then dk-task-px ds w else 0)
+    dk-bar-h * ui-scale w + dk-strip-px ds w dk-edge-top
 
   dk-cbox-w : Integer, Integer -> Integer
   dk-cbox-w (w) (ds) =
-    w - dk-cbox-x w ds - (if dk-task-edge ds == dk-edge-right then dk-task-px ds w else 0)
+    w - dk-cbox-x w ds - dk-strip-px ds w dk-edge-right
 
   dk-cbox-h : Integer, Integer, Integer -> Integer
   dk-cbox-h (w) (h) (ds) =
-    h - dk-cbox-y w ds - (if dk-task-edge ds == dk-edge-bottom then dk-task-px ds w else 0)
+    h - dk-cbox-y w ds - dk-strip-px ds w dk-edge-bottom
 
  A maximised window is the content box exactly, so `x` and `y` need no arm of
  their own: they centre whatever width and height come back, and at the full
@@ -3229,10 +3350,22 @@ Section: The loop's own rate
  flicked from, because a flick never moved it: the drag did, and the release
  committed that.
 
- THE DIRECTION IS MEASURED AND CURRENTLY UNSPENT. Every edge answers the same
- dock, because a pill lives in the task band and the band is on one edge at a
- time. It is recorded rather than discarded so that per-edge docking, if it is
- wanted, is a placement question and not a re-measurement of the gesture.
+ THE DIRECTION IS SPENT NOW (6.7.4). Damian ruled it the selection criterion
+ on 2026-08-27, so a flick left docks the pill to the left edge rather than
+ every direction answering the one band.
+
+ THE DOCK IS ITS OWN FUNCTION SO THAT IT CAN BE TESTED. Everything above it in
+ the gesture is a speed and a deadline against the HPET, and `desk.ps1 -Rtc`
+ pins the HPET, so a scripted capture cannot flick at all -- the gesture is
+ unverifiable by construction and wants a hand on the mouse. What 6.7.4 adds
+ is not a reading, it is what happens once the reading is taken, and that is a
+ pure state change an arm can drive directly.
+
+  dk-flick-dock-at : Integer, Integer, Integer -> Integer
+  dk-flick-dock-at (ds) (fid) (dir) =
+    let e = dk-flick-end ds
+    in let p = dk-pedge-set ds fid dir
+    in poke-32 (desk-wnd-blk fid ds) dk-wnd-st-cell dk-wnd-st-min
 
   desk-wnd-flick-step : Integer, Integer, UsbMouse, Integer -> Integer
   desk-wnd-flick-step (w) (ds) (mouse) (now) =
@@ -3244,8 +3377,7 @@ Section: The loop's own rate
     in let el = bit-and (now - peek-32 ds dk-flick-rt-cell) dk-rate-mask
     in let v = dk-flick-verdict dir dx dy (dk-flick-reach * ui-scale w) el hpet-ticks-per-second
     in if v == dk-flick-dock then
-      let e = dk-flick-end ds
-      in let m = poke-32 (desk-wnd-blk fid ds) dk-wnd-st-cell dk-wnd-st-min
+      let m = dk-flick-dock-at ds fid dir
       in desk-wnd-ev-min
     else if v == dk-flick-drop then
       let e = dk-flick-end ds
@@ -5442,6 +5574,7 @@ Section: Browser
     in let pei = dk-pedge-init ds
     in let ap = dk-settings-into ds st
     in let tki = dk-task-init ds tf w
+    in let sti = dk-strip-init ds tf w
     in let wp = mouse-warp mouse (w / 2) (h / 2)
     in let apps = desk-apps-empty
     in let bm = poke-32 ds desk-mark-cell __heap-save
