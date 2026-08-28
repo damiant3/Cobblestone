@@ -628,6 +628,11 @@ his.
 still stands for a genuine rule conflict, and a rule that already answers your
 question was never an excuse to ask. Between those, route to the commander.
 
+**Two more standing corrections, broadcast at Damian's direction
+2026-08-27:** an empty lane is one line to the commander in the same
+minute, not a wait; and a clear next step with no blocker is taken, not
+reported.
+
 **THIS RULE DOES NOT TOUCH R-TRUE, AND CANNOT (val, 2026-08-21, within
 minutes of the rule being issued).** He declined the half of it that would
 have filtered what reaches Damian, and he was right to. **R-TRUE is tier 1:
@@ -680,6 +685,17 @@ is). Progress between those events goes in `status.json`, which is read
 by the watcher and costs nobody a context. Do not send: acknowledgements,
 thanks, agreement, restatements of a ruling, what you are about to do
 next, or a reply to a message that asked for none.
+
+**When the addressee is the COMMANDER, the five events narrow to three, and
+there is no fourth: blocked, a question only he can answer, and a correction
+to something he ruled** (Damian via red, 2026-08-21). Not taken, not landed,
+not a re-verification, not an acknowledgement. The reason the two extra
+events drop here and nowhere else is that the commander already has both
+without spending anything: `p4 changes` says what landed and `status.json`
+says what was taken, and both are read when he chooses rather than typed
+into his terminal while he is working. So keep `status.json` current INSTEAD
+of announcing. A peer who is waiting on your work still gets taken and
+landed; the commander is not waiting, he is reading the depot.
 
 **Reply.** Reply only when the message asks for one, and reply to the
 sender. If you disagree with a ruling, one line: "disagree, reasons in

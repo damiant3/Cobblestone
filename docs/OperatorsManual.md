@@ -417,7 +417,7 @@ codex-vm -kernel file.cdx [options]
 | `-kernel <file>` | (required) | CDX or multiboot kernel to boot |
 | `-mem <MB>` | 3072 | Guest RAM in megabytes. Binaries compiled by seeds older than CL 7209 require more than 2048 (their boot stack lands in the demand-paged range below 2 GB); current seeds boot at any size from ~128 MB up. **The size REPORTED to the guest is capped at 3040 MB**, so anything above that changes nothing without `-mem-nocap`: see "The guest heap ceiling is 3040 MB" |
 | `-mem-nocap` | off | Report the real `-mem` to the guest instead of the 3040 MB cap. Only for a run that draws nothing: the heap may then grow through the GPU and GOP windows, which are at fixed GPAs |
-| `-input <file>` | -- | Pre-load file into serial ring buffer (source input) |
+| `-input <file>` | -- | Pre-load file into serial ring buffer (source input). **The image needs a TRAILING ZERO BYTE after the source** -- see below |
 | `-output <file>` | -- | Capture serial output to file |
 | `-disk <file>` | -- | Attach IDE disk image as the primary channel's MASTER (read/write, flushed to host) |
 | `-disk2 <file>` | -- | Attach a second image as the primary channel's SLAVE, reached by `block-select 1`. A position with no image behind it answers the floating bus (`0xFF` on the signature registers, `0x00` on status) so the guest's own detect reports it absent. Before this existed there was one image behind every drive position, `dm-enumerate-drives` reported four drives on a machine with one disk, and "Install Codex to Drive" pointed at any of them repartitioned the boot disk. Status answers `0x00` rather than `0xFF` deliberately: `emit-ata-bring-up` runs a bounded BSY wait before it reads the signature, and a floating `0xFF` there costs a million port INs, which is a million VM exits, on every diskless boot |
@@ -788,6 +788,19 @@ short with both ends reporting success). Exit status is unchanged by a
 drop, so a harness that wants to refuse a short capture greps stderr for
 `SERIAL:`. The BLIT path (bulk output) reports its own growth failure as
 `BLIT: output buffer growth failed`.
+
+**A `-input` image needs a TRAILING ZERO BYTE after the source**, so the
+image is header, source, then one `0x00`. Without it the run produces exactly
+one byte of output, `0x01` -- the leading marker with nothing behind it -- and
+that reads as the compiler dying rather than as an empty read, which is a
+diagnosis two steps away from the cause. `codex/plugs/wasm/build-page.ps1`
+builds `header + src + 1` and is the worked example. The expensive half is
+that **wasmtime does not care**, because fd_read's zero return is its own
+terminator: the same malformed image runs clean on the wasm target and fails
+on x86, so the two disagree in the direction that makes wasm look healthy and
+the emulator look broken. (Distinct from the trailing `0x04` in the
+two-compiler comparison recipe further down, which is a mode-line protocol for
+that procedure and does not cover this.)
 
 **The compile payload has three ways out, and the guest picks by probing
 (root, 2026-08-21).** `__write_binary` and `__write_binary_buf` first read port
@@ -1616,6 +1629,16 @@ all the apparatus; the product was fine every time.
   mirror image: `-match 'FAIL'` over an empty string is False, so a real
   failure passes silently. Check the exit code, which is never empty, and if
   you must match text assert `$t.Length -gt 0` first.
+- **`-match` and `-notmatch` are case-INSENSITIVE, and a cleaning filter is
+  where that bites.** `-notmatch 'HEAP-'` also drops every `heap-` line, so a
+  text cleaned for comparison silently lost four emitted `heap-*`/`stack-*`
+  lines while the exact-match consumer downstream still expected them. The
+  failure is quiet in the worst direction: the filter looks like it did its
+  job and the diff that follows is against a text nobody wrote. Use
+  `-cnotmatch` / `-cmatch` wherever a filter has to agree with a
+  case-sensitive reader. Related, same family: `"\$$n"` in a double-quoted
+  string expands `$$` as an automatic variable rather than giving you a
+  literal `$` followed by `$n`.
 - **`Measure-Object -Line` silently DROPS EMPTY LINES, so it is the wrong
   instrument for a file size and it never says so.** Measured 2026-08-15 on
   `docs/Agents/PerforceProcess.md`: `(Get-Content $f).Count` = 500,
@@ -1649,6 +1672,18 @@ all the apparatus; the product was fine every time.
 - **A substring match fails on wrapped prose.** Checking that a merge kept both
   sides, with a phrase that spans a line break in the file, answers False for
   both. Grep a short distinctive fragment, or the line number.
+- **Do not filter a long run's output at the pipe.** `build.ps1 | Select-Object
+  -Last 26` leaves a log holding 26 lines, and a later search of that whole
+  file is not the wide check it feels like: the file is already the narrowed
+  thing. It has twice produced a confident wrong answer -- once reporting that
+  the gate prints no one-pass line when it prints it at `build/build.ps1:620`,
+  and again on 2026-08-27 when a filtered gate capture showed a
+  `deck-headroom` FAIL with the offending unit's name and the entire
+  derivation table absent, so the visible text named a cause the run had not
+  established. Let the log land whole and filter at read time; when the
+  question is "does X ever appear", search the SOURCE that would print X, not
+  a capture of it. The truncation cannot be undone and costs a rerun to
+  recover.
 
 ### Killing codex-vm by NAME kills the whole fleet's
 
@@ -2009,6 +2044,16 @@ build/compile.ps1 -Src x.codex -Out x.cdx -Log x.log -Kernel build/output/Sut.cd
 `build/output/Sut.cdx` is what a gate just built; `seed/Codex.cdx` is the
 shipped compiler. Compare the printed digest against the one you think
 you are testing.
+
+**And the default is resolved RELATIVE TO THE CURRENT DIRECTORY, so the same
+command works from the repo root and reports a missing kernel anywhere else.**
+`compile.ps1:58` sets `$Stage0 = Join-Path 'build-output' 'bare-metal'
+'Codex.cdx'`, a relative path, and prints `MISSING: build-output\bare-metal\
+Codex.cdx - run build.ps1 first`. Run from a subdirectory, or from a
+background call that inherited a different location, that reads as the
+COMPILE failing rather than as the path not resolving, and three subjects in
+a row reported as failing to compile is convincing. `cd` to the repo root
+before any compile, or pass `-Kernel` with an absolute path.
 
 (The CDX fixed-point check compares content ignoring the signature bytes,
 so a signed `Sut` and the unsigned `stage1` still register as one pass when

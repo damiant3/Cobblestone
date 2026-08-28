@@ -1026,6 +1026,21 @@ Measure-Phase 'deck-headroom' {
             Write-Host '      Detail: pwsh build/deck-headroom.ps1 -Quire codex\build -WithSelf -Fresh'
             exit 1
         }
+# The plug bundles, which were in NO corpus until now: a plug's unit is
+# its assembled bundle under build-output, and every other mode here
+# skips build-output on purpose. arm64 ran out of room with nothing
+# reporting it (plugs 1.98). Each is measured at the -Decks its own
+# build.ps1 passes, not at the derivation, or this asks a question the
+# build never asks.
+        & pwsh -NoProfile -File $chkDeck -Plugs -MinMargin 1.25 `
+              -Tag 'gate-plugs' -Top 5 -Jobs 8 -Fresh 2>&1 |
+            Where-Object { $_ -match 'FAIL|^\s+margin\s+\d|OK, tightest|not measured' } |
+            ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: a plug bundle has grown into its deck reservation'
+            Write-Host '      Detail: pwsh build/deck-headroom.ps1 -Plugs -Fresh'
+            exit 1
+        }
     }
 }
 

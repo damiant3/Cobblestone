@@ -172,6 +172,49 @@ function Find-IrDescendant {
     return $null
 }
 
+function Find-IrAtomSites {
+    # Every occurrence of a bare atom, reported with the head of the form it
+    # sits in and its position there. That pairing is the attribution: the wire
+    # says `error` in a dozen places and they do not come from one producer, so
+    # a total tells you nothing and a census by site tells you what to fix
+    # (L-PARTIAL: build the instrument that counts SITES, not totals).
+    # ParentNode travels with the hit because the head and slot alone cannot
+    # separate two producers that emit the same shape. `list-expr` is the case
+    # that forced it: an EMPTY literal comes from lower-empty-list and a
+    # populated one from lower-nonempty-list, and telling them apart means
+    # looking at the form's own (elems), not at a regex over the whole wire,
+    # which attributes every hit in a program by whatever that program happens
+    # to contain somewhere else.
+    param(
+        [Parameter(Mandatory)][AllowNull()]$Node,
+        [Parameter(Mandatory)][string]$Atom,
+        [string]$ParentHead = '<root>',
+        [AllowNull()]$ParentNode = $null,
+        [int]$Index = -1
+    )
+
+    $out = [System.Collections.Generic.List[object]]::new()
+    if ($null -eq $Node) { return $out }
+
+    if ($Node -is [IrAtom]) {
+        if (-not $Node.Quoted -and $Node.Value -eq $Atom) {
+            [void]$out.Add([pscustomobject]@{
+                Parent = $ParentHead; Index = $Index; ParentNode = $ParentNode
+            })
+        }
+        return $out
+    }
+
+    $head = Get-IrHead $Node
+    if (-not $head) { $head = '<list>' }
+    for ($k = 0; $k -lt $Node.Count; $k++) {
+        foreach ($hit in (Find-IrAtomSites -Node $Node[$k] -Atom $Atom -ParentHead $head -ParentNode $Node -Index $k)) {
+            [void]$out.Add($hit)
+        }
+    }
+    return $out
+}
+
 function Get-IrCell {
     # Path grammar, deliberately small. Segments apply left to right:
     #

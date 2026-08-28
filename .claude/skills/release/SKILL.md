@@ -15,6 +15,19 @@ restate Perforce or push mechanics here -- follow
 `docs/Agents/PerforceProcess.md` and `docs/Agents/PublicPush.md`, which are
 the single source for those.
 
+## Conduct (Damian's standing rules for whoever runs a release)
+
+- Run every proof that does not contend for the same box at once, and
+  chain the next proof to start itself when the previous ends.
+- Never end a turn with a proof unlaunched or a blocker unassigned. If a
+  lane holds the critical path, take it yourself rather than wait.
+- When a proof fails, do the bisect or diff BEFORE reporting; a failure
+  claim is worth nothing without its cause. Report cause and fix together.
+- Escalate only what only Damian can decide, and make it impossible to
+  miss.
+- Freeze the release head early: hold non-essential seed CLs for MAIN
+  OPEN after the push, so the proofs run once.
+
 ## Step 0 -- Preconditions
 - main is green and you intend THIS head to be the release.
 - No red gate anywhere in the fleet. A release proves the build works; a
@@ -59,7 +72,7 @@ will then use.
 ## Step 0c -- IR fidelity (did the IR carry what the checker knew?)
 
 ```powershell
-build/ir-fidelity/ir-fidelity.ps1 -Grade    # ~7 s; must end "unexpected: 0"
+build/ir-fidelity/ir-fidelity.ps1 -Grade    # 9-16 s; must end "unexpected: 0"
 ```
 
 Damian's ruling, 2026-08-27: this instrument runs at RELEASE, deliberately
@@ -74,6 +87,21 @@ the release: either the compiler dropped a fact the checker computed
 wire/dump format moved under the reader (repoint the case paths, as main
 20176's lift unification required once). The instrument's own account is at
 the head of `build/ir-fidelity/ir-fidelity.ps1`.
+
+**The `9-16 s` is two measurements, not a range widened for safety** (fester,
+2026-08-27, seven cases at seed `4341370C8FE5BAD6`): 9.4 s median of three on
+a quiet box, and 15.5 s the same afternoon with the fleet gating around it. It
+is three compiles per case and scales linearly, so a case added costs about
+1.5 s. Re-measure rather than quoting this (L-COUNT); it has moved twice
+already.
+
+**Do not read a `DROPPED` row as a release blocker on its own.** Expectations
+are banked MEASURED, so a case recording a known upstream gap sits at
+`DROPPED` with the run green, and today `empty-list-element-type` and
+`bounded-int-derived-range` both do. What stops the release is a `>>>` row,
+meaning a verdict MOVED from what was banked. That includes a `DROPPED` that
+became `CARRIED`, which is somebody having FIXED the compiler: a re-baseline,
+not a fault. Case f went exactly that way on 2026-08-27.
 
 ## Step 1 -- Prove the build end to end (the battery)
 

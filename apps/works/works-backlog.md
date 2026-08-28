@@ -16,6 +16,67 @@ exits, the cursor bracket, why the palette arrives as a parameter. Read it
 before adding a pane or taking a cell. This file is what is missing; that one
 is what must not be broken.
 
+## WORKS-56: the band's cached depth is measured EMPTY, so the content box overlaps it as soon as a pill exists
+
+Found 2026-08-27 (val) while measuring what a pill-only strip costs for
+ShellRefinement 6.7.3. **Measured, not reasoned**, with the band laid twice
+under identical conditions but for its pill set:
+
+| geometry | band with no pills | band with one pill |
+|---|---:|---:|
+| 1280x800 faceless, bottom | 28 | **36** |
+| 1600x900 faceless, bottom | 56 | **72** |
+| 1600x900 CMUNSS, bottom | 56 | **72** |
+
+`dk-task-init` lays the real taskbar and caches its measured extent in
+`dk-task-band-cell`, and it runs from `desk-run` at boot and from the settings
+apply on style code 7 (an edge change) and **nowhere else** -- not on open, not
+on minimise, not on close. At boot no window exists, so the cached number is
+always the EMPTY band's. `dk-task-px` answers it, and all four `dk-cbox-*`
+reserve from it, so **the moment the first window is minimised the band lays
+out 16 device pixels taller at 1600 than the content box has reserved for it**,
+and the bottom of the content box is underneath the band.
+
+**The arm that exists cannot see this and that is the interesting half.**
+`desk-pane-origin` asserts the laid content slot against the content box at all
+four edges, which is exactly the right question -- and it calls `dk-task-init`
+itself, with a `ds` whose registry is empty, so both of its roads are computed
+from the same empty band. An instrument built from its subject (L-BOTHARMS).
+The repair to the arm is to give it a registry with one window in it.
+
+**The cheap fix is to measure the band with a SPECIMEN pill always**, the way
+`dk-strip-init` already measures a strip, so the cached depth is the maximum
+the band can need and cannot under-reserve whatever the window state. That
+costs the empty desk 16 device pixels of glass at 1600 and removes a defect
+that is live on every desk with a minimised window. The alternative, re-running
+`dk-task-init` on every open, minimise, restore and close, keeps the empty
+desk's pixels and adds a measure to four hot paths.
+
+**FIXED, and the fix is the max of two separately measured trees.** A wrapper
+panel holding the bar and a specimen together was tried first and abandoned:
+it answered 72 for an empty band and 88 for one holding a pill where the bar
+alone answers 36 and 72, and those numbers could not be accounted for against
+the engine's padding rules without reading it. A number that cannot be
+explained does not ship. `dk-task-init` now measures the band and a
+one-specimen strip separately and caches the larger, so the depth is the
+maximum the band can need whatever the window state, and `band empty` equals
+`band with a pill` on every geometry measured.
+
+**What moved, all of it accounted for by name.** The horizontal band grows by
+the empty-versus-pill difference, 8 logical, so 8 device at 1280 and 16 at
+1600; the content box loses exactly that; and the centred welcome frame moves
+half of it. `desk-pane-origin` and `desk-welcome-box` re-recorded on those
+rows only. **The vertical rows do not move at all**, because a vertical band is
+already wider than a strip of the same pills, which is also the answer to
+6.7.3's open question: a pill-only strip is the SAME depth as the band on both
+axes once both are built by `dk-strip-panel`, so there is no saving to take and
+no new constant to invent. Every containment and centring verdict in both arms
+still holds.
+
+**`desk-pane-origin` still measures with an empty registry** and the fix is
+what makes that harmless rather than the arm being repaired. Giving it a
+window would be a real strengthening and is not done here.
+
 ## WORKS-51: `gop-scene-backbuffer` measures a pane that no longer paints without a window
 
 Found at the Update 50 release battery (red, 2026-08-25). The test is

@@ -7,4 +7,4 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' 'common' 'plug-build-lib.ps1')
 
-Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'riscv' -Chapters @('RiscVRuntime', 'RiscVCodeGen', 'RiscVCodeGen2', 'RiscVLir', 'RiscVCodeGen3', 'RiscVDisasm', 'RiscVPlug') -Survey 'lower-mul:120000' -WithLir -CommonChapters @('PlugManifest') -Decks 140
+Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'riscv' -Chapters @('RiscVRuntime', 'RiscVCodeGen', 'RiscVCodeGen2', 'RiscVLir', 'RiscVCodeGen3', 'RiscVDisasm', 'RiscVPlug') -Survey 'lower-mul:120000' -WithLir -CommonChapters @('PlugManifest') -Decks 160

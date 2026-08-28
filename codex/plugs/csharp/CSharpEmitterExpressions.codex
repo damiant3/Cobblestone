@@ -61,7 +61,7 @@ Section: Identifier Helpers
     is NothingTy -> "object"
     is ProofTy -> "object"
     is PropEqTy (pl) (pr) -> "object"
-    is ErrorTy -> "object"
+    is ErrorTy | NoExpectTy -> "object"
     is FunTy (p) (fnrow) (r) -> "Func<" & cs-type p & ", " & cs-type r & ">"
     is ListTy (elem) -> "List<" & cs-type elem & ">"
     is LinkedListTy (elem) -> "List<" & cs-type elem & ">"
@@ -1203,12 +1203,31 @@ Section: Expression Emission
     is IrBoolLit (v) (sp) -> v
     is otherwise -> False
 
+ A C# switch EXPRESSION refuses an arm whose pattern an earlier arm has
+ already fully handled: CS8510, an error rather than a warning. Codex
+ permits the same shape (first-match-wins makes the later arm dead), and
+ an or-pattern expands on the IR wire into one branch per alternative, so
+ a source arm overlapping an earlier arm arrives here as a byte-identical
+ duplicate pattern. The duplicate can never fire on any target, so it is
+ dropped rather than translated. Only a trivially-guarded earlier arm
+ shadows: a guarded arm can decline at runtime and leaves the later
+ pattern reachable, which C# also accepts.
+
+  cs-arm-shadowed : List IRBranch, Integer, Text -> Boolean
+  cs-arm-shadowed (branches) (j) (pat-text) =
+   if j <= 0 then False
+   else let b = list-at branches (j - 1)
+   in if (cs-guard-trivial (b.guard)) & (emit-pattern (b.pattern) == pat-text) then True
+      else cs-arm-shadowed branches (j - 1) pat-text
+
   emit-match-arms : List IRBranch, Integer, CsCtx, Text -> Text
   emit-match-arms (branches) (i) (ctx) (result-cast) =
    if i == list-length branches then ""
    else let arm = list-at branches i
-   in let guard-clause = if cs-guard-trivial (arm.guard) then "" else " when " & emit-expr (arm.guard) ctx
-   in let this-arm = emit-pattern (arm.pattern) & guard-clause & " => " & result-cast & "(" & emit-expr (arm.body) ctx & "), "
+   in let pat-text = emit-pattern (arm.pattern)
+   in if cs-arm-shadowed branches i pat-text then emit-match-arms branches (i + 1) ctx result-cast
+   else let guard-clause = if cs-guard-trivial (arm.guard) then "" else " when " & emit-expr (arm.guard) ctx
+   in let this-arm = pat-text & guard-clause & " => " & result-cast & "(" & emit-expr (arm.body) ctx & "), "
    in if is-catch-all (arm.pattern) & cs-guard-trivial (arm.guard) then this-arm
         else this-arm & emit-match-arms branches (i + 1) ctx result-cast
 

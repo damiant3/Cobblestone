@@ -255,6 +255,7 @@ esolve -at takes the delete over your add. Measured 2026-08-16 on codex/test/tex
 | P-WIPED | You suspect the workspace itself: strays you cannot account for, a file that will not come back, a tree of unknown provenance. Reverting and syncing per-file chases it forever. | **Delete every top-level entry except the untracked dot files (`.claude`, `.git`, `.p4config`, `.agentgrid`) and `p4 sync -f`.** It is safe and it is fast, and it is the shortest path to a workspace you can reason about. Confirm with `p4 diff -sd //Codex/<stream>/...` (unopened files missing from the client), which must be EMPTY. Done on eight clients across four agents on 2026-08-15, with the per-client restore counts reported between 9,985 and 19,398 files; `-sd` empty every time, and a restored tree then passed a full `build/build.ps1` with the hard fixed point in one pass, which is the stronger proof: complete AND buildable. Shelve anything you care about first -- this deletes unshelved work by design. |
 | P-SHELFBAD | `p4 unshelve` reports `corrupted during transfer (or bad on the server)`, `p4 print` fails the same way every attempt, and `p4 verify` answers **BAD!**. It looks exactly like data loss. | "Perforce refuses to hand it back" is not "the data is gone". Usually the archive holds intact content and the recorded digest disagrees with it, which a `shelve -f` replace races on. Recover from the archive (section 4.5). `BAD!` with two digests is recoverable; `BAD! (open failed)` means the archive file is missing and nothing can be recovered. |
 | P-SELFAGREE (L) | A check passes for you every time and another agent reports it failing on main. The file it reads was rewritten on disk by a tool's own `-Update` (or by a build phase) and never opened for edit, so it is modified, untracked, and invisible to `p4 opened`. Every local run then compares the tool's fresh answer against the tool's own last answer and agrees with itself, while the depot copy the fleet reads is unchanged. `seed/constants.hash` did this for four days: `check-constants` said MATCH on the workstream and MISMATCH on main, and the copy-up that should have carried it never knew the file existed. | **`p4 diff -sa <file>` cannot see this and will tell you the file is fine.** It reports only OPENED files that differ, so on an unopened one it answers `file(s) not opened on this client`, which reads as agreement and is not. Use `p4 reconcile -n <dir>/...`, which lists modified-but-unopened files, and settle any hash-file question against `p4 print` of the depot copy rather than the workspace one (section 4.3 says the same for the seed). To prove which side is stale, `p4 sync -f` the file and re-run the check: it must FAIL. A check that cannot fail is not a check (L-FALSIF). |
+| P-DOTNETCWD | You run a scripted write aimed at the MAIN client from your dev session and it lands in, or is refused by, the DEV workspace instead. Set-Location does not move the .NET process working directory, so `[System.IO.File]::ReadAllText`/`WriteAllText` on a RELATIVE path resolves against wherever the process started, not against the cd at the top of your command. It surfaces as `Access to the path ... is denied` naming a path in the wrong workspace, which reads as a permissions problem rather than a wrong-tree problem. Bites hardest in a mindmeld, where every agent edits -main files from a -dev session. | Give every .NET file call an ABSOLUTE path, and read the path out of the exception before believing the message. |
 
 ---
 
@@ -641,6 +642,14 @@ Perforce tracks file OPENS, not file CONTENT. There is no staging area.
 - **The on-disk state is the source of truth for compilation.**
 
 Every trap in section 3 is a consequence of one of those four lines.
+
+**So do not explore with files outstanding** (Damian's ruling, recorded here
+2026-08-27 from an agent memory). An open changelist is live state, and an
+unfamiliar command does not merely fail against it: it silently rearranges
+that state, and you find out mid-submit. Once you have a minimal set of
+commands that does the job, stick to it, and try anything unfamiliar against
+a clean workspace instead. Writing the CL description at creation time
+(section 4.7) sidesteps a whole family of this.
 
 ---
 

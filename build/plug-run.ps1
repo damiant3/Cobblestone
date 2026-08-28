@@ -56,7 +56,7 @@ $listener = $null
 
 try {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-    $listener.Start()
+    try { $listener.Start() } catch { [Console]::Error.WriteLine("FAIL: TCP $Port is already in use, so this plug cannot be run here now. The port is fixed per plug and shared across workspaces, so another agent running the same plug holds it (L-SHARED). Wait, or run a different plug."); exit 7 }
     Write-Host "[plug-run] Listening on TCP $Port"
 
 
