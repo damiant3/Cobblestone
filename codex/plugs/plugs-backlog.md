@@ -3883,3 +3883,103 @@ moved. Moving it first is worth doing alone and puts the shaking change at the
 same seam.
 
 Renumber freely if 1.100 collides with anything in flight.
+
+## 2.02 -- DONE 2026-08-28 (Claude, contributed by Steve Howell): the zig prelude is now tree-shaken, and the reserved-name list it depends on covered 22 of its own 96 declarations
+
+Renumber freely: 1.100 was absorbed as 2.01, so this guesses the next free
+slot rather than knowing it.
+
+**Two changes that would be one PR anyway, because they repair the same
+script for unrelated reasons.**
+
+### The shake
+
+`zig-prelude` was one 37,461-byte `Text` emitted whole into every program.
+It is now 96 parts, and a program carries the ones it reaches.
+
+The selection is not in the zig plug. `Foreword chapter Shake` is
+reachability over named parts with the input order preserved, and it mentions
+no target, no syntax and no file format -- the same question a module system
+asks about imports and a linker asks about sections. The zig plug supplies
+parts and roots.
+
+A part records its dependencies BY WRITING THEM. `ShakeFrag` is `ShakeLit`
+(inert text) or `ShakeUse` (text that is also an edge), so `shake-frag-text`
+and `shake-frag-uses` are two projections of one list and cannot drift apart.
+There is no second list to keep in step.
+
+**The parts table is GENERATED**, by the ladder's `shake_parts.py`, from the
+prelude's own 123 chunks. Hand-editing 123 string literals byte-exactly is
+where a week goes, and one dropped `\n` is indistinguishable from a wrong
+closure once both are downstream. Regenerate rather than edit.
+
+**Graded, not argued.** The whole corpus, transpiled through natives built
+from this branch:
+
+    programs transpiled                      607
+    emitted                                  578
+    nothing referenced is undeclared         578 clean, 0 broken
+    each prelude a sub-selection of the whole 578 ok, 0 not
+
+    prelude kept   min 25%   median 43%   max 65%
+    reduction      best 75%  median 57%   worst 35%
+    smallest quartile by program size (145 programs): 61% smaller
+
+And the restructure was proved inert before the shake was turned on: with
+every part name as a root, the closure reproduces the hand-written chunk list
+byte for byte -- `codexir.zig`, 1,979,036 bytes, identical.
+
+**IT IS NOT A COMPILE-TIME OR SIZE ARGUMENT.** Zig already dead-strips the
+unreached declarations; the shaken `codexir` binary is 4,096 bytes LARGER than
+the unshaken one. The case is legibility, and one thing beyond it: 46 of the
+96 parts are kept by some programs and not others, so an edit to any of them
+now moves a strict subset of emitted output. While every program carries the
+whole prelude, a byte-identity sweep cannot see that at all.
+
+### The reserved-name list, which was broken before any of this
+
+A zig file is a struct, so its top-level declarations are its members and two
+with one name is a hard error, not shadowing. `zig-sanitize` renames a
+program's name only if it appears in `zig-prelude-decls`. That list covered
+**22 of the prelude's 96 declarations and none of its 74 functions**:
+
+    a Codex top-level named `cx-print`
+      -> error: duplicate struct member name 'cx_print'
+
+Reproduced on both arms, and on a tree with no tree-shaking in it, so it
+predates this work entirely.
+
+**The cause is a regex, not a judgement.**
+`build/check-zig-prelude-surface.ps1` derives the reserved surface from
+emitted output, and to harvest a function's PARAMETERS it matches
+
+    '\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)'
+
+reading straight past the function's own name to reach the parameter list.
+So it printed `OK: every derived name is reserved` over a surface missing
+three quarters of the declarations, while the emitter's prose asserted the
+list "is the UNION over the whole prelude and stays that way".
+
+Most of the 74 are `cx_`-prefixed, effectively the plug's namespace, which is
+why no corpus program ever collided. **Five are not: `CxList` and
+`CxFn1`..`CxFn4`.** Codex type names are CamelCase, so `CxList` is a name a
+program can pick without any sense of trespassing.
+
+**Measured byte-neutral before being sent:** all 578 corpus programs are
+byte-identical across the change, and `codexir.zig` is too. Nothing that
+compiles today moves; the programs it affects do not compile today.
+
+### The same script needed the other half
+
+It required every subject's emitted prelude to be IDENTICAL, which shaking
+breaks by design. The replacement is stronger: each emitted prelude must be a
+SUB-SELECTION of one known whole, in table order -- walk the parts, consume
+what matches at the cursor, skip the rest, require the cursor to land exactly
+at the end. A prelude that reordered, duplicated, truncated or invented
+anything fails that walk; "they are all identical" tested none of it. The
+whole is reconstructed from `zig-prelude-parts`, so the surface comes from
+every part rather than whichever ones one subject reached -- which is what
+keeps the list a union.
+
+The PowerShell reconstruction was checked against the ladder's Python one
+before being trusted: 96 parts, 37,461 bytes, same md5.
