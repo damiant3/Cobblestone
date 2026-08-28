@@ -7,9 +7,14 @@
 # A by-eye extraction counted const and var only and missed every parameter,
 # which is how the surface was recorded at 66 when it is 102; this counts both.
 #
-# The prelude is emitted wholesale (ZigEmitter's opening concatenates
-# zig-prelude before any type or definition text), so the line-wise common
-# prefix of two or more emitted programs IS the prelude and nothing else.
+# The prelude is emitted wholesale and LAST, behind zig-postlude-banner, so it
+# is the common SUFFIX of every emitted program and the banner says exactly
+# where it starts. Anchor on the banner rather than on a longest-common run:
+# a run-length heuristic that lands in the wrong place still yields a surface,
+# and a surface that is too small passes silently. When the prelude led the
+# file this was a common-prefix scan, and moving the prelude turned it into a
+# 24-line scan of the tuple types -- 5 names derived instead of 98, all five
+# already reserved, so it printed OK.
 #
 # Not wired into any gate. Run it after changing zig-prelude.
 [CmdletBinding()]
@@ -26,7 +31,7 @@ if (-not $OutDir) { $OutDir = Join-Path $repo 'build-output\zig-prelude-surface'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $names = $Subjects -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-if ($names.Count -lt 2) { throw "need at least two subjects: the prelude is derived as their common prefix" }
+if ($names.Count -lt 2) { throw "need at least two subjects: their preludes are required to agree" }
 
 $emitted = @()
 foreach ($n in $names) {
@@ -38,18 +43,22 @@ foreach ($n in $names) {
     $emitted += $zig
 }
 
-$prefix = Get-Content $emitted[0]
-foreach ($f in $emitted | Select-Object -Skip 1) {
-    $l = Get-Content $f
-    $n = [Math]::Min($prefix.Count, $l.Count)
-    $k = 0
-    while ($k -lt $n -and $prefix[$k] -eq $l[$k]) { $k++ }
-    if ($k -eq 0) { throw "no common prefix: these programs do not share a prelude" }
-    $prefix = $prefix[0..($k - 1)]
+$bannerLine = '// THE PRELUDE. Everything ABOVE this line is the transpiled program.'
+$prelude = $null
+foreach ($f in $emitted) {
+    $l = @(Get-Content $f)
+    $i = -1
+    for ($k = 0; $k -lt $l.Count; $k++) { if ($l[$k] -eq $bannerLine) { $i = $k; break } }
+    if ($i -lt 0) { throw "no postlude banner in $f : the prelude is derived from it" }
+    $tail = $l[$i..($l.Count - 1)]
+    if ($null -eq $prelude) { $prelude = $tail }
+    elseif (($prelude -join "`n") -ne ($tail -join "`n")) {
+        throw "emitted preludes disagree between subjects ($f): the prelude is supposed to be identical in every file"
+    }
 }
 
 $surface = New-Object System.Collections.Generic.HashSet[string]
-foreach ($line in $prefix) {
+foreach ($line in $prelude) {
     foreach ($m in [regex]::Matches($line, '\b(?:const|var)\s+([A-Za-z_][A-Za-z0-9_]*)')) {
         [void]$surface.Add($m.Groups[1].Value)
     }
@@ -90,7 +99,7 @@ foreach ($s in $surface) {
 }
 
 "[zig-prelude-surface] prelude {0} lines over {1} programs; surface {2} names; zig-prelude-decls carries {3}" -f `
-    $prefix.Count, $emitted.Count, $surface.Count, $declared.Count
+    $prelude.Count, $emitted.Count, $surface.Count, $declared.Count
 
 if ($renamed.Count -gt 0) {
     "[zig-prelude-surface] RESIDUE ({0}): emitted binders that are the sanitized image of a reserved name. A user top-level spelled the same still collides." -f $renamed.Count
