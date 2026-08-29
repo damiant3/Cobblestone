@@ -2075,11 +2075,46 @@ Section: Match Emission
    in if zig-branches-guarded branches 0 then emit-zig-match-chain scrut branches ctx d mty
    else zig-pin-lit-arms branches 0 ("switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex mty tl & " }")
 
+ A zig `switch` prong refuses a value an earlier prong already names --
+ `error: duplicate switch value`, an error rather than a warning. Codex permits
+ the shape, because first-match-wins makes the later arm dead, and an
+ or-pattern expands on the wire into one branch per alternative, so a source
+ arm overlapping an earlier one arrives here as a second prong for the same
+ value. The duplicate cannot fire on any target, so it is DROPPED rather than
+ translated, which is the route the csharp plug took for CS8510.
+
+ Only a trivially-guarded earlier arm shadows. A guarded arm can decline at
+ runtime, which leaves the later prong reachable, and zig accepts that shape.
+
+ `zig-pat-switch-value` answers "" for every pattern that is not a bare prong
+ value -- a constructor carrying payloads binds names and is not a duplicate of
+ anything, and a var or wildcard is the else arm. Two empty answers are
+ therefore NOT equal for this purpose, which the emptiness test in
+ `zig-arm-shadowed` is there to say.
+
+  zig-pat-switch-value : IRPat -> Text
+  zig-pat-switch-value (pat) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> zig-lit-pat-text text ty
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if list-length subs == 0 then "." & zig-sanitize name else ""
+    is otherwise -> ""
+
+  zig-arm-shadowed : List IRBranch, Integer, Text -> Boolean
+  zig-arm-shadowed (branches) (j) (sv) =
+   if sv == "" then False
+   else if j <= 0 then False
+   else let b = list-at branches (j - 1)
+   in if (zig-guard-trivial (b.guard)) & (zig-pat-switch-value (b.pattern) == sv) then True
+      else zig-arm-shadowed branches (j - 1) sv
+
   emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer, Boolean, CodexType, ZigTail -> Text
   emit-zig-match-arms (branches) (i) (ctx) (d) (ex) (mty) (tl) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty tl
+   in if zig-arm-shadowed branches i (zig-pat-switch-value (b.pattern))
+      then emit-zig-match-arms branches (i + 1) ctx d ex mty tl
+   else emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty tl
       & emit-zig-match-arms branches (i + 1) ctx d ex mty tl
 
  Constructor arms bind payloads: one field binds by name directly; a
