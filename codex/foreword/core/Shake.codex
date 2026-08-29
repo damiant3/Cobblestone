@@ -1,0 +1,136 @@
+Chapter: Shake
+
+ Reachability over named parts, with the input order preserved. Nothing here
+ knows what a part is FOR: no target, no syntax, no file format. A consumer
+ supplies parts and roots and gets back what survives.
+
+ It exists because an emitter that ships a fixed runtime library emits all of
+ it to every program, and most programs reach very little of it. Selecting the
+ reachable subset is the same question a module system asks about imports and
+ a linker asks about sections, which is why this is written once, here, rather
+ than inside the one emitter that needed it first.
+
+ THE ORDER RULE IS LOAD-BEARING. `shake-kept` returns parts in the order the
+ table gave them, never topologically sorted. A consumer whose target does not
+ care about declaration order gets, for free, the property that shaking with
+ every name as a root reproduces the unshaken whole byte for byte -- which is
+ the gate that separates "the parts table is mis-cut" from "the closure is
+ wrong", two faults with one symptom.
+
+ A ShakeFrag is how a part records what it depends on WITHOUT a second list to
+ keep in step. `ShakeLit` is inert text; `ShakeUse` is text that is also an
+ edge. `shake-frag-text` and `shake-frag-uses` are two projections of one
+ list, so they cannot disagree, and writing another part's name is the same
+ act as depending on it rather than a separate one to remember.
+
+Section: Types
+
+  ShakeFrag =
+    | ShakeLit (Text)
+    | ShakeUse (Text)
+
+  ShakePart = record {
+   name : Text,
+   frags : List ShakeFrag
+  }
+
+Section: Projections
+
+  shake-frag-text : List ShakeFrag -> Text
+  shake-frag-text (fs) = shake-frag-text-loop fs 0 ""
+
+  shake-frag-text-loop : List ShakeFrag, Integer, Text -> Text
+  shake-frag-text-loop (fs) (i) (acc) =
+   if i >= list-length fs then acc
+   else when (list-at fs i)
+    is ShakeLit (t) -> shake-frag-text-loop fs (i + 1) (acc & t)
+    is ShakeUse (n) -> shake-frag-text-loop fs (i + 1) (acc & n)
+
+ Deduped, and a part naming itself is dropped: a declaration writes its own
+ name at its declaration site like any other, and a self-edge is noise rather
+ than a dependency.
+
+  shake-frag-uses : Text, List ShakeFrag -> List Text
+  shake-frag-uses (self) (fs) = shake-frag-uses-loop self fs 0 []
+
+  shake-frag-uses-loop : Text, List ShakeFrag, Integer, List Text -> List Text
+  shake-frag-uses-loop (self) (fs) (i) (acc) =
+   if i >= list-length fs then acc
+   else when (list-at fs i)
+    is ShakeLit (t) -> shake-frag-uses-loop self fs (i + 1) acc
+    is ShakeUse (n) ->
+      if n == self then shake-frag-uses-loop self fs (i + 1) acc
+      else if shake-has acc n then shake-frag-uses-loop self fs (i + 1) acc
+      else shake-frag-uses-loop self fs (i + 1) (acc & [n])
+
+Section: Closure
+
+  shake-has : List Text, Text -> Boolean
+  shake-has (xs) (n) = shake-has-loop xs 0 n
+
+  shake-has-loop : List Text, Integer, Text -> Boolean
+  shake-has-loop (xs) (i) (n) =
+   if i >= list-length xs then False
+   else if list-at xs i == n then True
+   else shake-has-loop xs (i + 1) n
+
+  shake-index : List ShakePart, Text -> Integer
+  shake-index (ps) (n) = shake-index-loop ps 0 n
+
+  shake-index-loop : List ShakePart, Integer, Text -> Integer
+  shake-index-loop (ps) (i) (n) =
+   if i >= list-length ps then 0 - 1
+   else if (list-at ps i).name == n then i
+   else shake-index-loop ps (i + 1) n
+
+ `work` is a queue that only grows and `i` walks it. A name already reached is
+ skipped, so a cycle terminates; the queue is extended only when a name is
+ reached for the FIRST time, so it grows at most once per part and the walk is
+ finite. Lists are copied with `&` and never pushed: push mutates its argument
+ and returns the same object, so pushing onto a list a caller still holds
+ changes it for everyone.
+
+  shake-reach : List ShakePart, List Text, Integer, List Text -> List Text
+  shake-reach (ps) (work) (i) (acc) =
+   if i >= list-length work then acc
+   else let n = list-at work i
+   in if shake-has acc n then shake-reach ps work (i + 1) acc
+      else let acc2 = acc & [n]
+      in let j = shake-index ps n
+      in if j < 0 then shake-reach ps work (i + 1) acc2
+         else let p = list-at ps j
+         in shake-reach ps (work & shake-frag-uses (p.name) (p.frags)) (i + 1) acc2
+
+Section: Results
+
+  shake-kept : List ShakePart, List Text -> List ShakePart
+  shake-kept (ps) (roots) = shake-kept-loop ps 0 (shake-reach ps roots 0 []) []
+
+  shake-kept-loop : List ShakePart, Integer, List Text, List ShakePart -> List ShakePart
+  shake-kept-loop (ps) (i) (acc) (out) =
+   if i >= list-length ps then out
+   else let p = list-at ps i
+   in if shake-has acc (p.name) then shake-kept-loop ps (i + 1) acc (out & [p])
+      else shake-kept-loop ps (i + 1) acc out
+
+ Roots naming no part. A consumer that derived its roots by scanning will see
+ false ones here and should ignore them; a consumer that authored them should
+ treat one as a defect. This cannot tell the two apart and does not try.
+
+  shake-unmatched : List ShakePart, List Text -> List Text
+  shake-unmatched (ps) (roots) = shake-unmatched-loop ps roots 0 []
+
+  shake-unmatched-loop : List ShakePart, List Text, Integer, List Text -> List Text
+  shake-unmatched-loop (ps) (roots) (i) (out) =
+   if i >= list-length roots then out
+   else let r = list-at roots i
+   in if shake-index ps r < 0 then shake-unmatched-loop ps roots (i + 1) (out & [r])
+      else shake-unmatched-loop ps roots (i + 1) out
+
+  shake-text : List ShakePart, List Text -> Text
+  shake-text (ps) (roots) = shake-text-loop (shake-kept ps roots) 0 ""
+
+  shake-text-loop : List ShakePart, Integer, Text -> Text
+  shake-text-loop (ps) (i) (acc) =
+   if i >= list-length ps then acc
+   else shake-text-loop ps (i + 1) (acc & shake-frag-text ((list-at ps i).frags))

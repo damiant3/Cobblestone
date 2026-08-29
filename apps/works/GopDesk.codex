@@ -1068,6 +1068,37 @@ Section: Monitor
  (`works-desk-contract.md`): a windowed pane has a close button, a menu and
  Esc, so the hint costs a line to restate what the titlebar already shows.
 
+  dk-mon-entries-text : Integer, Integer, Integer -> Text
+  dk-mon-entries-text (ms) (i) (n) =
+    if i >= n then ""
+    else " " & show (desk-marks-id ms i) & "@" & hex-i64 (desk-marks-mark ms i) & dk-mon-entries-text ms (i + 1) n
+
+ The centre pixel of each slot, which is the cheapest thing that answers both
+ questions an inert-capture arm asks: whether a snapshot was taken at all, and
+ whether it is the window's own colours rather than somebody else's. Sixteen
+ reads a paint, against the 9,216 a whole-slot sum would cost.
+
+  dk-prev-mid : Integer, Integer -> Integer
+  dk-prev-mid (pb) (fid) =
+    peek-32 (dk-prev-at pb fid) ((dk-prev-h / 2 * dk-prev-w + dk-prev-w / 2) * 4)
+
+  dk-mon-prev-entries : Integer, Integer -> Text
+  dk-mon-prev-entries (pb) (fid) =
+    if fid >= dk-prev-slots then ""
+    else if dk-prev-mid pb fid == 0 then dk-mon-prev-entries pb (fid + 1)
+    else " " & show fid & "=0x" & hex-i32 (dk-prev-mid pb fid) & dk-mon-prev-entries pb (fid + 1)
+
+  dk-mon-prev-text : Integer -> Text
+  dk-mon-prev-text (ds) =
+    let pb = peek-32 ds dk-prev-cell
+    in if pb == 0 then "none" else dk-mon-prev-entries pb 1
+
+  dk-mon-marks-text : Integer -> Text
+  dk-mon-marks-text (ds) =
+    let ms = peek-32 ds desk-marks-cell
+    in let d = desk-marks-depth ms
+    in "depth " & show d & "   root 0x" & hex-i64 (peek-32 ds desk-root-cell) & "  " & dk-mon-entries-text ms 0 d
+
   dk-mon-tree : Integer, Integer, Integer, Integer, Integer, GopFont, AcpiInfo, Text, Integer -> WidgetNode
   dk-mon-tree (ds) (base) (w) (h) (stride) (tf) (ai) (clk) (ticks) =
     let blk = peek-32 ds dk-mon-cell
@@ -1082,6 +1113,8 @@ Section: Monitor
       dk-mon-line "power" ("S5 " & dk-yn (ai.ai-s5-ok) & "   reset " & dk-yn (ai.ai-reset-ok) & "   sci " & show (ai.ai-sci)),
       dk-mon-line "clock" (clk & "   ticks " & show ticks),
       dk-mon-line "memory" ("heap frontier 0x" & hex-i64 __heap-save & "   desk mark 0x" & hex-i64 (peek-32 ds desk-mark-cell)),
+      dk-mon-line "marks" (dk-mon-marks-text ds),
+      dk-mon-line "preview" (dk-mon-prev-text ds),
       dk-mon-line "stack" desk-stack-text,
       widget-set-flex (widget-label "mon-spacer" "") 1
     ]
@@ -1266,6 +1299,16 @@ Section: Monitor
     let i = desk-marks-find ms fid (desk-marks-depth ms - 1)
     in if i < 0 then 0 else poke-32 ms (8 * i + 8) desk-focus-none
 
+ A pane that rebuilds its state somewhere else must say so, or every reader of
+ this stack answers about the address the state left (WORKS-59). Only a LIVE
+ entry is remarked, because `desk-marks-find` skips a dead one, and a dead
+ entry's mark is what the cascade pops to.
+
+  desk-marks-remark : Integer, Integer, Integer -> Integer
+  desk-marks-remark (ms) (fid) (mark) =
+    let i = desk-marks-find ms fid (desk-marks-depth ms - 1)
+    in if i < 0 then 0 else poke-32 ms (8 * i + 12) mark
+
   desk-marks-reclaim : Integer, Integer -> Integer
   desk-marks-reclaim (ms) (acc) =
     let d = desk-marks-depth ms
@@ -1281,6 +1324,164 @@ Section: Monitor
     if i < 0 then False
     else if desk-marks-id ms i /= desk-focus-none then True
     else desk-marks-any-live ms (i - 1)
+
+ Cells 224 and 228, free until val took them 2026-08-28; announced in the
+ contract. They hold the frontier immediately BEFORE and immediately AFTER the
+ current desktop root was built. A rebuild frees the root it replaces only when
+ the frontier still stands where the last one ENDED, which is what says nothing
+ was allocated above it since; a pane opened after the root sits above it and
+ must not be freed, and that is WORKS-57.
+
+  desk-root-cell : Integer = 224
+  desk-rootend-cell : Integer = 228
+
+  desk-marks-live-above : Integer, Integer, Integer -> Boolean
+  desk-marks-live-above (ms) (e) (i) =
+    if i < 0 then False
+    else if desk-marks-id ms i /= desk-focus-none & desk-marks-mark ms i >= e then True
+    else desk-marks-live-above ms e (i - 1)
+
+ THE MARK MUST FOLLOW THE STATE, WHICH IS WHAT WORKS-59 WAS. A mark records
+ where a pane's state STARTED, and the Browser is the one pane that rebuilds its
+ state somewhere else afterwards: `gbr-repaint` takes `bs-laid-mark` at the
+ current frontier. A mark left at the original open therefore describes an
+ address the state no longer occupies, this test answers about the wrong place,
+ and the reclaim frees live memory. `desk-browser-reenter` remarks the entry.
+
+ The decision is a pure function of three numbers so that a test can pin it;
+ nothing else about it changed.
+
+  desk-root-may-reclaim : Integer, Integer, Integer -> Boolean
+  desk-root-may-reclaim (ms) (s) (e) =
+    if s == 0 | e == 0 then False
+    else if desk-marks-live-above ms e (desk-marks-depth ms - 1) then False
+    else True
+
+  desk-root-reclaim : Integer -> Integer
+  desk-root-reclaim (ds) =
+    let s = peek-32 ds desk-root-cell
+    in let e = peek-32 ds desk-rootend-cell
+    in let ms = peek-32 ds desk-marks-cell
+    in if desk-root-may-reclaim ms s e then
+      let d = __heap-restore s
+      in 1
+    else 0
+
+  desk-root-note : Integer, Integer -> Integer
+  desk-root-note (ds) (s) =
+    let a = poke-32 ds desk-root-cell s
+    in poke-32 ds desk-rootend-cell __heap-save
+
+ Entry `i` spans its own mark up to the NEXT entry's, and the top entry spans
+ its mark up to `top`, the caller's frontier. The sum of the spans is
+ `top - mark 0` and NOT `top - base`: the desk's own state blocks and its
+ first root are allocated below entry 0's mark and belong to no span.
+
+ A SPAN IS NOT A HOLE. A pane open does not rebuild the root, so a root built
+ while one pane was topmost is buried inside that pane's span once the next
+ pane opens; allocating into such a span would free the root the desk is
+ painting from. `desk-span-reusable` is the question D.5 must ask, and it is
+ the dead test AND the root test, never the dead test alone.
+
+  desk-marks-extent : Integer, Integer, Integer -> Integer
+  desk-marks-extent (ms) (i) (top) =
+    let d = desk-marks-depth ms
+    in if i < 0 then 0
+    else if i >= d then 0
+    else let lo = desk-marks-mark ms i
+    in let hi = if i + 1 < d then desk-marks-mark ms (i + 1) else top
+    in hi - lo
+
+  desk-marks-extent-sum : Integer, Integer, Integer -> Integer
+  desk-marks-extent-sum (ms) (i) (top) =
+    if i < 0 then 0
+    else desk-marks-extent ms i top + desk-marks-extent-sum ms (i - 1) top
+
+  desk-span-holds-root : Integer, Integer, Integer, Integer -> Boolean
+  desk-span-holds-root (ms) (i) (top) (r) =
+    let d = desk-marks-depth ms
+    in if i < 0 then False
+    else if i >= d then False
+    else if r == 0 then False
+    else let lo = desk-marks-mark ms i
+    in let hi = if i + 1 < d then desk-marks-mark ms (i + 1) else top
+    in r >= lo & r < hi
+
+  desk-span-reusable : Integer, Integer, Integer, Integer -> Boolean
+  desk-span-reusable (ms) (i) (top) (r) =
+    if desk-marks-id ms i /= desk-focus-none then False
+    else if desk-span-holds-root ms i top r then False
+    else True
+
+ Cell 232, free until val took it 2026-08-28; announced in the contract. It is
+ a pointer to `dk-prev-slots` downscaled snapshots, one per focus id, so it is
+ allocated in `desk-run` before the base mark for the reason every other
+ pointer cell there is.
+
+ THE SNAPSHOT IS THE DEFAULT PREVIEW AND IT IS NOT A CHOICE. The five heavy
+ panes answer an empty tree from `desk-wnd-tree`, so nothing the desk can call
+ re-renders their content; a preview of the whole window can only come from
+ the window's pixels. Damian's ruling names the product and the tree's absence
+ names the mechanism.
+
+ 128 by 72 DEVICE pixels a slot: 36,864 bytes, times seventeen slots is
+ 626,688 at boot, which is half a per cent of the flying image's 128 MB region.
+ The alternative is a slot allocated on first minimise, and that cannot be
+ done: a pointer parked in a `ds` cell must be allocated below the base mark or
+ a pane exit hands the next visit freed heap.
+
+  dk-prev-w : Integer = 128
+  dk-prev-h : Integer = 72
+  dk-prev-slots : Integer = 17
+  dk-prev-cell : Integer = 232
+
+  dk-prev-bytes : Integer
+  dk-prev-bytes = dk-prev-w * dk-prev-h * 4
+
+  dk-prev-at : Integer, Integer -> Integer
+  dk-prev-at (pb) (fid) = pb + fid * dk-prev-bytes
+
+ Nearest-neighbour, sampled from the live framebuffer: a pixel is
+ `peek-32 base ((y * stride + x) * 4)` because the desk paints 32 bits a pixel
+ at `stride` pixels a row. The source is clamped to the glass so a window
+ dragged partly off it samples inside rather than off the end of RAM.
+
+  dk-prev-clamp : Integer, Integer -> Integer
+  dk-prev-clamp (v) (hi) =
+    if v < 0 then 0
+    else if v >= hi then hi - 1
+    else v
+
+  dk-prev-row : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-prev-row (base) (stride) (w) (h) (dst) (rx) (ry) (rw) (rh) (py) (px) (sy) =
+    if px >= dk-prev-w then 0
+    else
+      let sx = dk-prev-clamp (rx + px * rw / dk-prev-w) w
+      in let c = peek-32 base ((sy * stride + sx) * 4)
+      in let p = poke-32 dst ((py * dk-prev-w + px) * 4) c
+      in dk-prev-row base stride w h dst rx ry rw rh py (px + 1) sy
+
+  dk-prev-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-prev-rows (base) (stride) (w) (h) (dst) (rx) (ry) (rw) (rh) (py) =
+    if py >= dk-prev-h then 0
+    else
+      let sy = dk-prev-clamp (ry + py * rh / dk-prev-h) h
+      in let r = dk-prev-row base stride w h dst rx ry rw rh py 0 sy
+      in dk-prev-rows base stride w h dst rx ry rw rh (py + 1)
+
+  dk-prev-capture : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-prev-capture (base) (w) (h) (stride) (ds) (fid) =
+    let pb = peek-32 ds dk-prev-cell
+    in if pb == 0 then 0
+    else if fid <= desk-focus-none then 0
+    else if fid >= dk-prev-slots then 0
+    else
+      let blk = desk-wnd-blk fid ds
+      in let st = dk-wnd-st blk
+      in let rw = dk-wnd-rw blk w st ds
+      in let rh = dk-wnd-rh blk w h st ds
+      in if rw <= 0 | rh <= 0 then 0
+      else dk-prev-rows base stride w h (dk-prev-at pb fid) (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) rw rh 0
 
   desk-focus-cell : Integer = 12
   desk-focus-none : Integer = 0
@@ -1470,7 +1671,10 @@ Section: Monitor
     in let eb = peek-32 ds desk-edit-cell
     in let ev = if peek-32 eb 0 /= 0 & tgt <= peek-32 eb 0 then poke-32 eb 0 0 else 0
     in let dropped = __heap-restore tgt
+    in let rc = desk-root-reclaim ds
+    in let rm = __heap-save
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
+    in let rn = desk-root-note ds rm
     in let nf = if fid == desk-focus-files then None else sfi
     in let nb = if fid == desk-focus-bro then None else sb
     in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
@@ -1490,9 +1694,13 @@ Section: Monitor
  back over the fresh chrome.
 
   desk-app-hide (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) = act
-    let cf = poke-32 ds desk-focus-cell desk-focus-none
+    let snap = dk-prev-capture base w h stride ds (peek-32 ds desk-focus-cell)
+    in let cf = poke-32 ds desk-focus-cell desk-focus-none
     in let hd2 = cursor-hide cs base stride
+    in let rc = desk-root-reclaim ds
+    in let rm = __heap-save
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
+    in let rn = desk-root-note ds rm
     in let vis = dk-wr-visible (peek-32 ds dk-wr-cell) ds
     in if vis == desk-focus-none then
       let c0 = dk-cursor base w h stride cs mouse
@@ -1509,11 +1717,19 @@ Section: Monitor
 
   desk-app-close : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
  A WINDOW THAT CLOSES OVER ANOTHER WINDOW HANDS FOCUS DOWN INSTEAD OF LEAVING
- FOR THE DESKTOP, which is the one thing about closing that a second window
- changes. The restore still runs and still goes to the base mark: every
- windowed pane keeps its state in a block `desk-run` allocated BELOW that
- mark, so the window left standing survives it and only the closing pane's
- transients go. What changes is where control lands afterwards.
+ FOR THE DESKTOP, and the memory it hands back is decided by the MARK STACK,
+ exactly as the plain close decides it. What changes is only where control
+ lands afterwards.
+
+ This used to restore to the base mark and hand `desk-apps-empty` down, on
+ the premise that every windowed pane keeps its state in a block `desk-run`
+ allocated BELOW that mark, so the window left standing survives it. That is
+ true of the light panes, which own `ds` cell blocks. It is false of the four
+ heavy panes: `-open` builds their `Just st` ABOVE the mark it has just
+ pushed, which is the whole reason the mark stack exists. So closing one
+ window while another was open freed the survivor's heap and dropped its
+ state record. Measured 2026-08-27: Files docked, the Browser docked, raise
+ Files and close it, and the desk came back to a BARE DESKTOP (WORKS-57).
 
   desk-app-close (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) =
     let fid = peek-32 ds desk-focus-cell
@@ -1523,19 +1739,40 @@ Section: Monitor
     else desk-app-close-plain base w h stride font tf kbd mouse ds cs apps
 
  The window is gone from the registry, another is still open, and the heap
- goes back to the base mark exactly as an ordinary close does.
+ goes back as far as the mark stack allows: to the closing pane's own mark
+ when nothing live sits above it, and nowhere at all when something does.
 
   desk-wnd-close-to : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-wnd-close-to (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (nxt) = act
     hd <- act cursor-hide cs base stride end
-    let dropped = __heap-restore (peek-32 ds desk-mark-cell)
+    let fid = peek-32 ds desk-focus-cell
+    in let ms = peek-32 ds desk-marks-cell
+    in let sb = apps.da-browser
+    in let ss = apps.da-scene
+    in let se = apps.da-edit
+    in let sfi = apps.da-files
+    in let kl = desk-marks-kill ms fid
+    in let rec = desk-marks-reclaim ms (0 - 1)
+    in let dep = desk-marks-depth ms
+    in let tgt = if dep <= 0 then peek-32 ds desk-mark-cell else if rec < 0 then __heap-save else rec
+    in let eb = peek-32 ds desk-edit-cell
+    in let ev = if peek-32 eb 0 /= 0 & tgt <= peek-32 eb 0 then poke-32 eb 0 0 else 0
+    in let dropped = __heap-restore tgt
     in let sf = poke-32 ds desk-focus-cell nxt
+    in let rc = desk-root-reclaim ds
+    in let rm = __heap-save
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
+    in let rn = desk-root-note ds rm
     in let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    in let nf = if fid == desk-focus-files then None else sfi
+    in let nb = if fid == desk-focus-bro then None else sb
+    in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
+    in let ne = if fid == desk-focus-edit then None else se
+    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne }
     in act
       p <- desk-wnd-paint-all base w h stride font tf ds
       let c0 = dk-cursor base w h stride cs mouse
-      in desk-loop base w h stride font tf kbd mouse ds cs desk-apps-empty root
+      in desk-loop base w h stride font tf kbd mouse ds cs fresh root
     end
   end
 
@@ -1556,7 +1793,10 @@ Section: Monitor
     in let eb = peek-32 ds desk-edit-cell
     in let ev = if peek-32 eb 0 /= 0 & tgt <= peek-32 eb 0 then poke-32 eb 0 0 else 0
     in let dropped = __heap-restore tgt
+    in let rc = desk-root-reclaim ds
+    in let rm = __heap-save
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
+    in let rn = desk-root-note ds rm
     in let nf = if fid == desk-focus-files then None else sfi
     in let nb = if fid == desk-focus-bro then None else sb
     in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
@@ -4702,7 +4942,10 @@ Section: The Editor
   desk-edit-reenter : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, EditState -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-edit-reenter (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (st) =
     let hd = cursor-hide cs base stride
+    in let rc = desk-root-reclaim ds
+    in let rm = __heap-save
     in let root2 = desk-draw base w h stride font (ui-scale w) tf ds
+    in let rn = desk-root-note ds rm
     in let o = desk-wnd-open desk-focus-edit w h ds
     in let mk = __heap-save
     in act
@@ -5037,7 +5280,10 @@ Section: The 3D panes
   desk-scene-reenter : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-scene-reenter (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (foc) = act
     let hd = cursor-hide cs base stride
+    in let rc = desk-root-reclaim ds
+    in let rm = __heap-save
     in let root2 = desk-draw base w h stride font (ui-scale w) tf ds
+    in let rn = desk-root-note ds rm
     in let o = desk-wnd-open foc w h ds
     in act
       p0 <- desk-wall-paint base w h stride font tf ds
@@ -5176,6 +5422,7 @@ Section: Browser
   desk-browser-reenter (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (bp) = act
     hd <- cursor-hide cs base stride
     let o = desk-wnd-open desk-focus-bro w h ds
+    in let rm = desk-marks-remark (peek-32 ds desk-marks-cell) desk-focus-bro __heap-save
     in act
       c0 <- desk-wall-paint base w h stride font tf ds
       let box = dk-wnd-content desk-focus-bro w h ds tf (ui-wscale w)
@@ -5389,6 +5636,75 @@ Section: Browser
   dk-pillc-clear : Integer -> Integer
   dk-pillc-clear (ds) = poke-32 ds dk-pillc-cell desk-focus-none
 
+ Cells 236 and 240, free until val took them 2026-08-28; announced in the
+ contract. The pill the pointer is resting on and the tick it arrived, which
+ is the dwell: a pointer crossing the band on its way somewhere passes over
+ several pills and must not flash a preview at each.
+
+ THE TICK IS PASSED IN RATHER THAN READ HERE, and that is what makes this
+ testable. `desk.ps1 -Rtc` pins the HPET as well as the CMOS, so a
+ frozen-clock capture can never satisfy a dwell -- the same constraint that
+ makes the flick unverifiable by scripted capture. A function that read
+ `hpet-ticks` itself could only be exercised on a live clock; one that takes
+ `now` can be pinned by a chapter with synthetic times, which is what
+ `codex/test/desk-hover` does.
+
+ Both sides are masked to 32 bits for the reason `dk-rate-*` is: `peek-32`
+ zero-extends and the HPET passes 2^32 in about five minutes, so the
+ subtraction wraps correctly as long as the dwell is far shorter than the wrap
+ period. 400 ms against about 300 s.
+
+  dk-hover-cell : Integer = 236
+  dk-hover-t-cell : Integer = 240
+  dk-hover-ms : Integer = 400
+
+  dk-hover-note : Integer, Integer, Integer -> Integer
+  dk-hover-note (ds) (fid) (now) =
+    if peek-32 ds dk-hover-cell == fid then fid
+    else
+      let a = poke-32 ds dk-hover-t-cell (bit-and now dk-rate-mask)
+      in let b = poke-32 ds dk-hover-cell fid
+      in fid
+
+  dk-hover-held : Integer, Integer, Integer -> Integer
+  dk-hover-held (ds) (now) (tps) =
+    if peek-32 ds dk-hover-cell == desk-focus-none then 0
+    else
+      let d = bit-and (now - peek-32 ds dk-hover-t-cell) dk-rate-mask
+      in d * 1000 / tps
+
+  dk-hover-ready : Integer, Integer, Integer -> Boolean
+  dk-hover-ready (ds) (now) (tps) =
+    if peek-32 ds dk-hover-cell == desk-focus-none then False
+    else dk-hover-held ds now tps >= dk-hover-ms
+
+ WHERE THE BUBBLE SITS. On the pill's own edge, pushed off the band by a gap
+ and centred on the pill along the other axis, then fitted to the glass. The
+ fit is a SHIFT and not a clip, because a preview cropped at the screen edge
+ shows the wrong part of the window; sliding it back keeps all of it. A pill
+ near a corner therefore has its bubble beside it rather than over it.
+
+ It is pure, so it takes an arm with no framebuffer, which is the half of P.3
+ that can be pinned before anything paints.
+
+  dk-prev-gap : Integer = 8
+
+  dk-prev-fit : Integer, Integer, Integer -> Integer
+  dk-prev-fit (v) (size) (limit) =
+    if v < 0 then 0
+    else if v + size > limit then limit - size
+    else v
+
+  dk-prev-bubble : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> LayoutRect
+  dk-prev-bubble (px) (py) (pw) (ph) (e) (w) (h) =
+    let x0 = if e == dk-edge-left then px + pw + dk-prev-gap
+      else if e == dk-edge-right then px - dk-prev-w - dk-prev-gap
+      else px + pw / 2 - dk-prev-w / 2
+    in let y0 = if e == dk-edge-top then py + ph + dk-prev-gap
+      else if e == dk-edge-bottom then py - dk-prev-h - dk-prev-gap
+      else py + ph / 2 - dk-prev-h / 2
+    in layout-rect (dk-prev-fit x0 dk-prev-w w) (dk-prev-fit y0 dk-prev-h h) dk-prev-w dk-prev-h
+
   dk-pill-hit : WidgetNode, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   dk-pill-hit (root) (mx) (my) (ws) (ds) (s) (i) =
     if i >= dk-wr-count ws then desk-focus-none
@@ -5407,10 +5723,19 @@ Section: Browser
  to normal is a no-op, and the raise and the focus were always the rest of
  what it does, which is exactly "make it active and bring it to the front".
 
- RESTORING IS CLEARING THE STATE AND RAISING, and it needs no kept rectangle
- because 6.3c made the normal rect a fact in the pane's own block. The window
- comes back exactly where it was, including a cascade offset or anything a
- later `dk-wnd-place` put there.
+ RESTORING IS CLEARING THE STATE, RAISING, AND HANDING THE PANE ITS OWN
+ RE-ENTRY. It needs no kept rectangle because 6.3c made the normal rect a fact
+ in the pane's own block, so the window comes back exactly where it was,
+ including a cascade offset or anything a later `dk-wnd-place` put there.
+
+ The re-entry is not optional and leaving it out is what WORKS-57 was.
+ `desk-wnd-paint-all` draws each window's chrome and its `desk-wnd-tree`, and
+ that tree is deliberately EMPTY for the five panes that draw their own
+ content -- scene, fish, browser, files and edit. So raising one of those and
+ painting gave a title bar over an empty client area. The `-focus` functions
+ already answer this exactly: each re-enters a live pane and opens a dead one,
+ which is also what makes a restore of a pane whose state was evicted come
+ back as a fresh pane rather than as an empty frame.
 
   desk-pill-restore : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
  THE CURSOR IS HIDDEN FIRST, and leaving it out left a smear of the pill on
@@ -5426,8 +5751,16 @@ Section: Browser
     in let st = poke-32 (desk-wnd-blk fid ds) dk-wnd-st-cell dk-wnd-st-normal
     in let t = dk-wr-raise ws fid
     in let sf = poke-32 ds desk-focus-cell fid
+    in let rc = desk-root-reclaim ds
+    in let rm = __heap-save
     in let root2 = desk-draw base w h stride font (ui-scale w) tf ds
-    in act
+    in let rn = desk-root-note ds rm
+    in if fid == desk-focus-files then desk-files-focus base w h stride font tf kbd mouse ds cs apps root2
+    else if fid == desk-focus-bro then desk-browser-focus base w h stride font tf kbd mouse ds cs apps root2
+    else if fid == desk-focus-edit then desk-edit-focus base w h stride font tf kbd mouse ds cs apps root2
+    else if fid == desk-focus-scene then desk-scene-focus base w h stride font tf kbd mouse ds cs apps root2 gsc-sky desk-focus-scene
+    else if fid == desk-focus-fish then desk-scene-focus base w h stride font tf kbd mouse ds cs apps root2 gf-sky desk-focus-fish
+    else act
       p <- desk-wnd-paint-all base w h stride font tf ds
       let c0 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs apps root2
@@ -5558,6 +5891,7 @@ Section: Browser
     in let rvp = poke-32 ds desk-review-cell (alloc-zeroed 64 64)
     in let rvi = grv-init (peek-32 ds desk-review-cell)
     in let msp = poke-32 ds desk-marks-cell (alloc-zeroed 128 64)
+    in let pvp = poke-32 ds dk-prev-cell (alloc-zeroed (dk-prev-slots * dk-prev-bytes) 64)
     in let wrp = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
     in let calp = poke-32 ds dk-cal-cell (alloc-zeroed 64 64)
     in let difp = poke-32 ds dk-dif-cell (alloc-zeroed 64 64)
@@ -5578,7 +5912,9 @@ Section: Browser
     in let wp = mouse-warp mouse (w / 2) (h / 2)
     in let apps = desk-apps-empty
     in let bm = poke-32 ds desk-mark-cell __heap-save
+    in let rm = __heap-save
     in let root = desk-draw base w h stride font s tf ds
+    in let rn = desk-root-note ds rm
     in let c0 = cursor-update cs base stride w h s (w / 2) (h / 2)
     in desk-loop base w h stride font tf kbd mouse ds cs apps root
   end

@@ -207,7 +207,10 @@ background completion, and either one starts a new turn cleanly.
 
 **A landed report does not end the lane (Damian, 2026-08-18).** Waiting is
 for a token, a reply you asked for, or a ruling only Damian can give. Landing
-an item is none of those: send the one-line landed message, take the next
+an item is none of those: send the one-line landed message TO A PEER who is
+waiting on the work -- landed is not one of the commander's three events, so
+this line is not licence to send him one (see "When the addressee is the
+COMMANDER" below) -- take the next
 item named in your CurrentPlan row or your register in its order, and keep
 working. Do not end the turn to wait for the commander to say "go"; four
 lanes sat at the prompt for fifteen minutes on 2026-08-18 with their next
@@ -631,7 +634,10 @@ question was never an excuse to ask. Between those, route to the commander.
 **Two more standing corrections, broadcast at Damian's direction
 2026-08-27:** an empty lane is one line to the commander in the same
 minute, not a wait; and a clear next step with no blocker is taken, not
-reported.
+reported. "Not a wait" governs the moment BEFORE the line is sent -- do not
+sit on an empty row. Waiting for the answer to it is the real wait the
+empty-row clause above already allows; the two say the same thing from
+opposite ends and have read as contradictory at speed.
 
 **THIS RULE DOES NOT TOUCH R-TRUE, AND CANNOT (val, 2026-08-21, within
 minutes of the rule being issued).** He declined the half of it that would

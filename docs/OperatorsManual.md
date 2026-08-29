@@ -135,7 +135,7 @@ other than what it is:
 
 ```powershell
 build/test.ps1                        # Sample battery (~2-5s per sample)
-build/test.ps1 -Jobs 8                # Parallel test (8 batch slots; 8 is the standard)
+build/test.ps1 -Jobs 4                # Parallel test (4 batch slots; 4 is the standard since 2026-08-27, RAM-bounded)
 build/test.ps1 -All                   # Include foreword + app tests
 build/test.ps1 -Fatal                 # Include fatal (GPF/exception) tests
 build/build.ps1                       # Full pipeline (all gates)
@@ -484,6 +484,18 @@ codex-vm -kernel file.cdx [options]
 | `-trace-file <file>` | -- | Write execution trace to file |
 
 Environment: `CODEX_VM_NO_TIMER=1` disables PIT timer interrupts.
+
+`CODEX_VM_DROP_SERIAL_AT=N` with `CODEX_VM_DROP_SERIAL_LEN=K` (default 1024)
+discards K bytes of capture once N bytes have been taken, on whichever output
+path is carrying them, counted and reported exactly as a real loss is. It is a
+test instrument and it exists because the real drop paths fire only when the
+HOST is out of memory: the failure they cause -- the battery's batch parser
+filing whole binaries under the wrong test's name, every one at exit 0 -- could
+not be produced on demand, so it could not be proven fixed. An environment
+variable rather than a flag because the VM under test is launched by a harness
+several levels down, which no flag of ours reaches. `ExaminersAssay.md`, "The
+batch stream can lose bytes", has the worked reproduction. Never set in a run
+whose output anyone intends to trust.
 
 #### Batch mode: `-run-list`
 
@@ -1397,7 +1409,7 @@ ways, `USE_QEMU=1` leaves `UseCodexVm` **True**.
 
 ```powershell
 $env:CODEX_VM_HOST = 'qemu'
-build/test.ps1 -Jobs 8
+build/test.ps1 -Jobs 4
 ```
 
 `CODEX_ACCEL` overrides the accelerator (`whpx` on Windows, `tcg` on Linux).
@@ -1636,9 +1648,12 @@ all the apparatus; the product was fine every time.
   failure is quiet in the worst direction: the filter looks like it did its
   job and the diff that follows is against a text nobody wrote. Use
   `-cnotmatch` / `-cmatch` wherever a filter has to agree with a
-  case-sensitive reader. Related, same family: `"\$$n"` in a double-quoted
-  string expands `$$` as an automatic variable rather than giving you a
-  literal `$` followed by `$n`.
+  case-sensitive reader. Related, same family: `"$$n"` in a double-quoted
+  string expands `$$` as an automatic variable and leaves `n` literal, so
+  you get `n` rather than a literal `$` followed by `$n`. The specimen was
+  written `"\$$n"` until 2026-08-27; a backslash escapes nothing in
+  PowerShell, whose escape character is the backtick, so as written it was
+  a different construct from the one described.
 - **`Measure-Object -Line` silently DROPS EMPTY LINES, so it is the wrong
   instrument for a file size and it never says so.** Measured 2026-08-15 on
   `docs/Agents/PerforceProcess.md`: `(Get-Content $f).Count` = 500,
@@ -1676,7 +1691,9 @@ all the apparatus; the product was fine every time.
   -Last 26` leaves a log holding 26 lines, and a later search of that whole
   file is not the wide check it feels like: the file is already the narrowed
   thing. It has twice produced a confident wrong answer -- once reporting that
-  the gate prints no one-pass line when it prints it at `build/build.ps1:620`,
+  the gate prints no one-pass line when it prints it -- grep `hard fixed
+  point in one pass`, cited as `build/build.ps1:620` when that was written
+  and at `:662` now, having moved twice since --
   and again on 2026-08-27 when a filtered gate capture showed a
   `deck-headroom` FAIL with the offending unit's name and the entire
   derivation table absent, so the visible text named a cause the run had not
@@ -1685,7 +1702,31 @@ all the apparatus; the product was fine every time.
   a capture of it. The truncation cannot be undone and costs a rerun to
   recover.
 
-### Killing codex-vm by NAME kills the whole fleet's
+### A gate run as a tool-call child dies with the session, and it reads as host trouble
+
+A gate launched as a child of an agent tool call is killed when that tool
+call (or the whole session, on a restart) is killed, and what the next
+reader sees is a run that died mid `test-compile` on a box that measures
+clean -- no stray codex-vm, RAM fine -- which invites the "host
+conditions" diagnosis and, from there, a fleet stand-down that clears
+nothing. It happened exactly that way on 2026-08-28: one lane's gate 4
+died on a clear box, a stand-down was called on the host-conditions
+premise, and the premise was retracted the same hour.
+
+The discriminating measurement (blu, same day): two `-Internal` runs
+died that way as children of killed tool calls; the SAME gate on the
+SAME box relaunched DETACHED via `Start-Process` (PID kept) then
+survived a watcher being killed under it and ran to green. Nothing about
+the box changed between the runs; only the process parentage did.
+Fleet session restarts are not rare -- session addresses visibly roll
+mid-conversation -- so the parent can vanish through no action of
+yours.
+
+The mitigation is the one the kill section below already wants for a
+different reason: **launch the gate detached (`Start-Process`), keep
+the PID, and poll or wait on that** rather than running the gate inline
+in a tool call. Before diagnosing a died-mid-phase gate as host or
+codegen trouble, ask first whether its parent process outlived it.
 
 `Stop-Process -Name codex-vm -Force`, and every spelling of it
 (`Get-Process codex-vm | Stop-Process`), is **machine-wide, not
@@ -1784,22 +1825,35 @@ Timestamps are the fast check -- compare
 `Get-ChildItem codex\plugs\*\build-output\*-plug.cdx` against
 `codex\plugs\common\*.codex`.
 
-### `build/clean-zombies.ps1` is that fleet-wide kill, on purpose
+### `build/clean-zombies.ps1` is scoped to YOUR OWN workspace by default (2026-08-28)
 
 It purges orphaned `qemu-system-x86_64`, `codex-vm` and `wsl` processes
 after a SIGKILL-style abort (a `taskkill /F`, a harness OOM, a wedged WSL
 VM) left the traps in the test, build and 3stage harnesses unable to run.
-It is scoped by process NAME, which is exactly what the section above
-warns about, and that is deliberate: an orphan has no workspace left to
-scope it to.
 
-**So it is safe between test runs and destructive during one.** It kills
-any VM regardless of which agent started it, and the receiving agent sees
-the truncated-artifact failures tabulated above rather than anything that
-names a kill. Do not run it while another agent may be mid-gate.
+**A bare run kills only processes whose command line names the calling
+workspace.** Until 2026-08-28 it was fleet-wide by name, the section above's
+warning made deliberate -- and a bare run during another agent's gate killed
+three gates in one day, each reading as a truncated-artifact failure with
+nothing naming a kill. The old reasoning ("an orphan has no workspace left
+to scope it to") was wrong: the workspace is in the dead launcher's COMMAND
+LINE, which survives it. A foreign agent's VM, a bare WSL bridge and
+`vmmemWSL` all survive a scoped run; your own GDB bridge names your repo
+path, so it does not. `-All` restores the fleet-wide sweep (and is the only
+mode that touches WSL); it is for a wedged BOX, not a wedged workspace, and
+it still spares `-portfwd` servers. Proven by paired impostor arms: the
+owned process dies and the foreign one survives a scoped run, and `-All`
+takes the foreign one.
+
+**Scoped still means YOUR LIVE GUESTS, not just your orphans -- the sweep
+cannot tell them apart.** Run it BETWEEN your runs, never while anything of
+yours is up: a sweep launched beside your own live gate kills that gate by
+your own hand (nearly demonstrated 2026-08-28, caught by the lane it would
+have hit).
 
 ```powershell
-powershell -NoProfile -File build/clean-zombies.ps1
+powershell -NoProfile -File build/clean-zombies.ps1        # your own zombies
+powershell -NoProfile -File build/clean-zombies.ps1 -All   # the whole box
 ```
 
 **It never calls `wsl --shutdown` unless `vmmemWSL` is already up, and
@@ -3497,7 +3551,7 @@ build/compile.ps1 -Src build/output/Codex.codex `
 
 # 3. Run the battery against the poison seed. Name the tiers you want:
 #    a bare invocation is the `lang` tier only, which is NOT the full battery.
-build/test.ps1 -CodexCdx build/output/poison-seed.cdx -Tier all -Jobs 8 -ApprovedBy damian
+build/test.ps1 -CodexCdx build/output/poison-seed.cdx -Tier all -Jobs 4 -ApprovedBy damian
 
 # 4. PUT YOUR KERNEL BACK. Step 3 does not.
 Copy-Item -Force build-output/kernel-backup.cdx build-output/bare-metal/Codex.cdx
@@ -3517,17 +3571,37 @@ poison battery the kernel was still `3AF5763C`, the poison seed, and nothing
 said so. `compile.ps1` prints the kernel and its digest on every run for
 exactly this class of mistake -- read that line.
 
-**`-Jobs 8`, and a release run is not an exception.** A `-Jobs 4` in any
-older recipe is the dead XMP workaround described under "The parallelism
-default" in `ExaminersAssay.md`: the box's DDR5 was running a profile it was
-not stable at, and that was fixed 2026-07-22. Do not copy the lower number
-forward. Measured
-2026-08-02 on the poison run that carried it: **977 s in the compile phase at 4
-slots on a 12-core box.** Damian's ruling is that 8 is the standard everywhere,
-including release proofs. The contention classes that motivated the caution are
-crash-shaped (`FAIL_RUNTIME` with no uart, exit 4 with zero diagnostics) and
-both retry paths already catch them -- `Invoke-StandaloneRetry` here, and the
-sweep re-runs its own no-diagnostic units alone.
+**`-Jobs 4`, RE-RULED by Damian 2026-08-27, superseding the 2026-08-02
+`-Jobs 8` standard, release runs included.** Not the dead XMP workaround
+returning: a different condition, measured and named. The box holds 15.8 GiB
+and 8 slots of 3072 MB guests overcommit it, killing guests with a moving
+culprit that reads as codegen ("The compile batch asks for 12 GB of guest
+RAM, and a short box reports it as a CODEGEN failure", below -- **and read
+"asks for" literally: that number is REQUEST arithmetic, slots times the
+`-mem 3072` ceiling, never a measured appetite.** `-mem` is a ceiling, not a
+commitment; measured 2026-08-28, a self-compile guest peaks ~1.1 GB and a
+compile-BATCH guest scales linearly with its batch, 234 MB at 60 chapters to
+2,134 MB at a 416-chapter slot. On 2026-08-28 this sentence was quoted as
+consumption and a day's regression hunt rode on it before the differential
+came back FLAT; a request figure cited as an appetite is the false report
+that hunt was chasing). The 2026-08-02
+raise was right on its own evidence (977 s of compile phase at 4 slots was
+the XMP-era workaround outliving its condition); this lowering carries its
+condition with it for the same reason -- when the box grows RAM, re-measure
+and re-raise. The crash-shaped contention classes are still caught by the
+retry paths (`Invoke-StandaloneRetry` here, the sweep's no-diagnostic
+re-runs), which is why 4 is enough width to keep.
+
+**A Renode instance is a VM load under this ruling, and its peak is
+invisible to a spot check.** Measured 2026-08-28 during the riscv cross bed:
+four concurrent instances read 268 MB at their largest in a one-shot sample
+while Damian watched the same processes BOUNCE TO ~1 GB EACH at peak, so a
+Renode battery is transiently ~4 GB beside whatever gates are running --
+four gate slots of 3072 MB plus four Renode peaks is the whole box, and
+that day it read as four killed gates and a "qemu produced nothing" with a
+different plausible culprit each time. Count running Renode instances
+against the box before launching a gate, and run Renode beds at `-Jobs 4`
+or serial like every other parallel harness.
 
 **A bare `build/test.ps1` is the `lang` tier, not the full battery.** The
 command above says `-Tier all` on purpose. A poison run over `lang` proves

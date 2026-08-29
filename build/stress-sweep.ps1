@@ -6,7 +6,7 @@
 # file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
-    [int]$Jobs = 8,
+    [int]$Jobs = 4,
     [switch]$Pin,
     [switch]$ContinueOnFailure,
     [string]$LogPath = 'build-output\stress-sweep.log',

@@ -970,8 +970,8 @@ Section: Expression Emission
    else if n == "__self-type-defs" then "(call $list_with_capacity (i64.const 0))"
    else if n == "read-line" then wat-emit-maybe-line ctx "$read_line_raw"
    else if n == "read-line-cce" then wat-emit-maybe-line ctx "$read_line_cce_raw"
-   else if n == "block-sector-count" then "(unreachable (; wasm plug: no block device on this target ;))"
-   else if n == "process-get-pid" then "(unreachable (; wasm plug: no process table on this target ;))"
+   else if n == "block-sector-count" then "(i64.extend_i32_u (i32.div_u (global.get $disk_size) (i32.const 512)))"
+   else if n == "process-get-pid" then "(i64.const 0)"
    else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n []
    else let ar = lookup-arity (ctx.arities) n
    in if ar == 0 then "(call $" & wat-sanitize n & ")"
@@ -1337,9 +1337,9 @@ Section: Apply Emission
 
   wat-no-such-thing : Text -> Boolean
   wat-no-such-thing (n) =
-   n == "block-read-sector" | n == "block-write-sector" | n == "port-out-byte" |
+   n == "port-out-byte" |
    n == "port-in-byte" |
-   n == "process-get-scope" | n == "prof-dump" |
+   n == "prof-dump" |
    n == "prof-start"
 
   wat-try-builtin : WasmCtx, Text, List IRExpr -> Text
@@ -1364,6 +1364,9 @@ Section: Apply Emission
    else if n == "write-binary" then "(call $write_binary " & emit-wat-expr ctx (list-at args 0) & ") (i64.const 0)"
    else if n == "write-binary-buf" then "(call $write_binary_buf " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ") (i64.const 0)"
    else if n == "char-code-at" then "(i64.load8_u (i32.add (i32.add (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ") (i32.const 4)) (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & ")))"
+   else if n == "block-read-sector" then "(call $block_read_sector " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "block-write-sector" then "(call $block_write_sector " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "process-get-scope" then "(call $process_scope_empty " & emit-wat-expr ctx (list-at args 0) & ")"
    else if wat-no-such-thing n then "(unreachable (; wasm plug: " & n & " has no form on this target ;))"
    else if n == "print-line-uni" then wat-emit-print-line ctx (list-at args 0)
    else if n == "print-line" then wat-emit-print-line ctx (list-at args 0)
@@ -1599,6 +1602,8 @@ Section: WASI Runtime Helpers
    "  (global $deck_ptr (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
    "  (global $bivy_save (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
    "  (global $deck_depth (mut i32) (i32.const 0))\n" &
+   "  (global $disk_base (mut i32) (i32.const 0))\n" &
+   "  (global $disk_size (mut i32) (i32.const 0))\n" &
    "  (func $__heap_reset (global.set $heap_ptr (global.get $heap_start)))\n" &
    "  (export \"__heap_reset\" (func $__heap_reset))\n" &
    "  (func $__deck_enter\n" &
@@ -2559,11 +2564,97 @@ Section: WASI Runtime Helpers
  `read-line-cce` answers None, because it is still looking for a CCE 1 that
  ASCII text never contains.
 
+ The scope pair beneath the disk: `fat16-scope-admits` consults
+ `process-get-scope process-get-pid` on EVERY path resolution, so a
+ target with no process table cannot read a volume at all. Here the
+ module IS one process and the embedding page is the trust boundary, so
+ the pid is 0 and the scope is the empty grant, which the scope code
+ itself defines as "admits everything". Writes land in the SAME
+ host-provided region -- the image is the host's own buffer handed in
+ through `disk_reserve`, so a write mutates host-owned bytes and
+ nothing beyond them; DISK mode's write-the-CDX-back tail (OUT.CDX and
+ the re-read verdict) therefore completes in-tab exactly as it does on
+ a stick. The status convention is x86's, not a boolean: 0 IS SUCCESS
+ (`fat16-put-entry-and-write` tests `s == 0`), and an out-of-range
+ write answers 1 and moves nothing. The first build of this function
+ returned it inverted, and the symptom was exact: every byte of
+ OUT.CDX on the image, the directory size right, and the verdict
+ `DISK-OUT: FAILED 89323 of 89323` -- a landed write reported as a
+ failure by its own status word.
+
+ The virtual disk's HOST CONTRACT, for any embedder (the Prism page, a
+ node bed): call the exported `disk_reserve(size)` BEFORE `_start`, copy
+ the image bytes to the returned address, and re-fetch `memory.buffer`
+ after the call, because the reserve may grow the memory and growing
+ detaches the old buffer. Nothing else is required; a host that reserves
+ nothing leaves `disk_size` 0, `block-sector-count` answers 0, and no
+ volume mounts. The reserve goes through `$bump_alloc` so the region can
+ never collide with the heap, and it is permanent for the instance, which
+ is the x86 allocator's own contract. A sector read past `disk_size`
+ answers a zeroed buffer rather than trapping, and 512 fresh bytes are
+ bump-allocated per read exactly as the x86 `block-read-sector` does.
+ The read-back half of the contract is the same region: writes land in
+ it, so after `_start` the host slices `memory.buffer` at the reserved
+ base to read anything the guest wrote (DISK mode's OUT.CDX included).
+ Copy-in and read-back are one buffer; a host that forgets the second
+ half ships a DISK mode that reports success while its artifact stays
+ unread (fester's question at the stage-2 convergence, 2026-08-28).
+
+  wat-rt-disk : Text =
+   "  (func $process_scope_empty (param $pid i64) (result i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (call $bump_alloc (i32.const 4)))\n" &
+   "    (i32.store (local.get $p) (i32.const 0))\n" &
+   "    (i64.extend_i32_u (local.get $p)))\n" &
+   "  (func $disk_reserve (export \"disk_reserve\") (param $size i32) (result i32)\n" &
+   "    (global.set $disk_base (call $bump_alloc (local.get $size)))\n" &
+   "    (global.set $disk_size (local.get $size))\n" &
+   "    (global.get $disk_base))\n" &
+   "  (func $block_read_sector (param $lba i64) (result i64)\n" &
+   "    (local $buf i32) (local $src i32) (local $i i32)\n" &
+   "    (local.set $buf (call $bump_alloc (i32.const 512)))\n" &
+   "    (block $oob\n" &
+   "      (br_if $oob (i64.gt_u (i64.add (i64.mul (local.get $lba) (i64.const 512)) (i64.const 512)) (i64.extend_i32_u (global.get $disk_size))))\n" &
+   "      (local.set $src (i32.add (global.get $disk_base) (i32.wrap_i64 (i64.mul (local.get $lba) (i64.const 512)))))\n" &
+   "      (loop $cp\n" &
+   "        (i64.store (i32.add (local.get $buf) (local.get $i)) (i64.load (i32.add (local.get $src) (local.get $i))))\n" &
+   "        (local.set $i (i32.add (local.get $i) (i32.const 8)))\n" &
+   "        (br_if $cp (i32.lt_u (local.get $i) (i32.const 512))))\n" &
+   "      (return (i64.extend_i32_u (local.get $buf))))\n" &
+   "    (local.set $i (i32.const 0))\n" &
+   "    (loop $zf\n" &
+   "      (i64.store (i32.add (local.get $buf) (local.get $i)) (i64.const 0))\n" &
+   "      (local.set $i (i32.add (local.get $i) (i32.const 8)))\n" &
+   "      (br_if $zf (i32.lt_u (local.get $i) (i32.const 512))))\n" &
+   "    (i64.extend_i32_u (local.get $buf)))\n" &
+   "  (func $block_write_sector (param $lba i64) (param $buf i64) (result i64)\n" &
+   "    (local $dst i32) (local $i i32)\n" &
+   "    (block $oob\n" &
+   "      (br_if $oob (i64.gt_u (i64.add (i64.mul (local.get $lba) (i64.const 512)) (i64.const 512)) (i64.extend_i32_u (global.get $disk_size))))\n" &
+   "      (local.set $dst (i32.add (global.get $disk_base) (i32.wrap_i64 (i64.mul (local.get $lba) (i64.const 512)))))\n" &
+   "      (loop $cp\n" &
+   "        (i64.store (i32.add (local.get $dst) (local.get $i)) (i64.load (i32.add (i32.wrap_i64 (local.get $buf)) (local.get $i))))\n" &
+   "        (local.set $i (i32.add (local.get $i) (i32.const 8)))\n" &
+   "        (br_if $cp (i32.lt_u (local.get $i) (i32.const 512))))\n" &
+   "      (return (i64.const 0)))\n" &
+   "    (i64.const 1))\n\n"
+
+ The 4096 below is a divergence x86 does not have: its `__read_line_cce`
+ stores into the heap frontier byte by byte and sizes the allocation after
+ the terminator, so a line there is as long as the line is. This runtime
+ bump-allocates BEFORE reading, so a bound is structural, and bytes past it
+ are dropped without a word. 256 truncated the evidence wire's `cdx-header`
+ line (11 + 448 hex chars for 224 header bytes) to 122 parsed bytes, and the
+ plug honestly answered "not a CDX" to a CDX (measured 2026-08-28; the x86
+ reference answers present=y on the identical wire). 4096 clears every line
+ the known raw-CCE wires carry by an order of magnitude. (Landed 20600 on
+ red; restored here after a merge-down took main's pre-fix copy over it.)
+
   wat-rt-read-raw : Integer -> Text
   wat-rt-read-raw (cce-nl) =
    "  (func $read_line_cce_raw (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $b i32) (local $cap i32)\n" &
-   "    (local.set $cap (i32.const 256))\n" &
+   "    (local.set $cap (i32.const 4096))\n" &
    "    (local.set $buf (call $bump_alloc (i32.add (local.get $cap) (i32.const 4))))\n" &
    "    (local.set $n (i32.const 0))\n" &
    "    (block $rcd (loop $rcc\n" &
@@ -2741,7 +2832,7 @@ Section: WASI Runtime Helpers
 
   wat-runtime-funcs : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
   wat-runtime-funcs (tab) (t2) (out) (arity-base) (max-arity) (rev-base) (in-base) =
-   wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-read-file rev-base & wat-rt-read-file-raw &
+   wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-disk & wat-rt-read-file rev-base & wat-rt-read-file-raw &
    wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
 
 Section: Chapter Emission

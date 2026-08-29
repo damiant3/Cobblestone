@@ -40,7 +40,7 @@
 param(
     [string]$Root = 'codex\compiler',
     [string]$Only = '',
-    [int]$Jobs = 8,
+    [int]$Jobs = 4,
     [string]$Kernel = '',
     [switch]$KeepUnits,
     # The compiler is assembled by glob, so a name a sibling chapter defines is

@@ -231,9 +231,26 @@ The update procedure:
    regression that reads as a rebuild. On 2026-08-27 the depot copies
    won on both counts: `p4 revert` restored them and only the untracked
    `compile/` pieces shipped fresh.
+   **Normalise line endings before you compare, or this step lies about
+   `landing.html`.** The html plug emits LF and that file is CRLF in the
+   workspace, so a rebuild that ADDED the hero CTA row still measured 104
+   bytes SMALLER than the depot copy and `p4 diff` called all 325 lines
+   changed: +221 content characters on one line against -325 line endings
+   (reek, 2026-08-27). Smaller is the staleness signature, so the raw size
+   reads as the trap when the rebuild is in fact the better file.
 5. `robocopy apps\landing\web D:\Projects\CobblestoneWeb /E /XF
-   *.landing-save`, then in `D:\Projects\CobblestoneWeb`: `git add -A`,
-   commit as damiant naming the seed, `git push origin master`.
+   *.landing-save`, then in `D:\Projects\CobblestoneWeb`: `git add -u`
+   plus `git add <path>` for each new file the site SERVES, commit as
+   damiant naming the seed, `git push origin master`.
+   **Stage what the site serves, not what the bundle holds** (red's
+   ruling, 2026-08-27, on reek's deviation). `git add -A` would have put
+   the 48 sibling lens modules into an append-only public history and
+   nothing ever requests them: `prism.html` resolves a module as
+   `EMBED[file] ? b64ToBytes(...) : fetch(...)` with all 49 keys embedded,
+   and `compile/index.html` fetches `codex-compiler.wasm` and no stdio
+   module, which is why that one is the only module ever tracked there.
+   Show those two facts before claiming a file is unserved; adding a
+   module later is cheap and removing one from history is not.
 6. The Pages deploy takes a minute or two. Verify with a request, not by
    assumption: `landing.html` and `compile/prism.html` both answer 200.
 

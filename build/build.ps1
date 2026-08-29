@@ -65,7 +65,15 @@ $BuildLog = Join-Path $OutDir 'build.log'
 #     affordable here: its subject is the -run-list supervisor in codex-vm and
 #     its instrument is that script, and no codegen change can move its answer
 #     because every arm compares two runs of the SAME kernels.
-#   text-*  / sem-equiv         <- the front end and the text printer
+#   text-stage2 / text-fixedpoint <- the front end and the text printer
+#   text-stage1 / sem-equiv     <- the same, PLUS codex/compiler/opening.codex.
+#     Widened 2026-08-28 on Damian's 2026-08-25 ruling, whose hold expired
+#     with Update 52. opening.codex is not the printer, but it is the phase
+#     driver, and a change to it went red on `opening: compile-frontend-passes`
+#     that only a full gate could see. sem-equiv CANNOT be triggered alone --
+#     it consumes the stage1.codex that only text-stage1 produces -- so the
+#     pair moves together and text-stage2/text-fixedpoint stay narrow, where
+#     CodexEmitter genuinely is their subject.
 # test-compile is NOT in that map. It is never skipped, only scoped: with
 # -Internal it compiles the test chapters that CITE a chapter changed here
 # (11 chapters and 12s for a GopComposite change), and the full gate compiles
@@ -89,6 +97,7 @@ if ($Internal) {
     $tApps     = [bool]($changed | Where-Object { $_ -match '^apps/' })
     $tFrontEnd = [bool]($changed | Where-Object { $_ -match '^codex/compiler/(Syntax|Ast)/' -or $_ -match '^codex/compiler/Emit/CodexEmitter\.codex$' -or $_ -match '^codex/compiler/Core/(TextFormat|SourceText)\.codex$' })
     $tVm       = [bool]($changed | Where-Object { $_ -match '^tools/codex-vm\.(c|exe)$' -or $_ -match '^build/check-run-list\.ps1$' })
+    $tSemantic = [bool]($tFrontEnd -or ($changed | Where-Object { $_ -match '^codex/compiler/opening\.codex$' }))
     $runPhase = [ordered]@{
         'jonquil'         = $tCompiler
         'plug-binary'     = ($tPlugs -or $tCompiler)
@@ -99,8 +108,8 @@ if ($Internal) {
         'deck-headroom'   = ($tBuild -or $tCompiler)
         'app-sweep'       = ($tApps -or $tCompiler)
         'run-list'        = $tVm
-        'text-stage1'     = $tFrontEnd
-        'sem-equiv'       = $tFrontEnd
+        'text-stage1'     = $tSemantic
+        'sem-equiv'       = $tSemantic
         'text-stage2'     = $tFrontEnd
         'text-fixedpoint' = $tFrontEnd
     }
@@ -691,7 +700,7 @@ Write-Host 'imploding vacuum, it sinks into the ground.'
 Measure-Phase 'test-bvt' {
     $bvtScript = Join-Path $PSScriptRoot 'bvt.ps1'
     $testOut = Join-Path $OutDir 'test-results.txt'
-    & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 8 > $testOut 2>&1
+    & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 4 > $testOut 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
         Write-Host 'FAIL: BVT'
@@ -725,7 +734,7 @@ Measure-Phase 'oracles' {
 }
 
 # -- the refusal set: every test under codex/test/errors must still be
-# REFUSED, and with the codes it declares. 176 tests assert a rejection, and
+# REFUSED, and with the codes it declares. 203 tests assert a rejection, and
 # until 2026-08-17 the gate ran the thirteen that bvt.ps1 names. The rest were
 # reachable only from build/test.ps1, which is the battery and refuses to run
 # without Damian, so a refusal that stopped happening was caught by nothing an
@@ -737,11 +746,11 @@ Measure-Phase 'oracles' {
 # list is how thirteen came to stand for a hundred and seventy-six. It always
 # runs, like the BVT and the oracles, because the diagnostic path is what a
 # codegen or foreword change moves without moving any other phase. Measured
-# 22s over 176 refusals at -Jobs 8.
+# 23.4s over 203 refusals, measured at -Jobs 8; re-measure at 4 (L-COUNT).
 Measure-Phase 'check-errors' {
     $chkErrors = Join-Path $PSScriptRoot 'check-errors.ps1'
     if (Test-Path $chkErrors) {
-        & pwsh -NoProfile -File $chkErrors -Kernel $testKernel -Jobs 8 2>&1 | ForEach-Object { Write-Host "$_" }
+        & pwsh -NoProfile -File $chkErrors -Kernel $testKernel -Jobs 4 2>&1 | ForEach-Object { Write-Host "$_" }
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'FAIL: a program the compiler must refuse was not refused as declared'
             exit 1
@@ -791,7 +800,7 @@ Measure-Phase 'run-list' {
 # Cite-scoping assumes a change reaches the chapters that CITE it. Nothing
 # cites the compiler: it is global by construction, so the scoped set is
 # chosen by a relation the subject does not participate in. Main 19551
-# shipped a seed that self-verified, passed the BVT, the oracles and 176
+# shipped a seed that self-verified, passed the BVT, the oracles and 203
 # refusals, and could not compile the desk -- test-compile had run ONE
 # chapter of 1447 and the corpus was the only witness there was. ~115s on
 # compiler CLs, against a fleet pin measured in hours.
@@ -1017,11 +1026,15 @@ Measure-Phase 'deck-headroom' {
     $chkDeck = Join-Path $PSScriptRoot 'deck-headroom.ps1'
     if (Test-Path $chkDeck) {
         # -Fresh: the script serves cached logs without it.
-        & pwsh -NoProfile -File $chkDeck -Quire 'codex\build' -WithSelf -MinMargin 1.25 `
-              -Tag 'gate' -Top 5 -Jobs 8 -Fresh 2>&1 |
-            Where-Object { $_ -match 'FAIL|^\s+margin\s+\d|OK, tightest' } |
-            ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -ne 0) {
+        $dkOut = @(& pwsh -NoProfile -File $chkDeck -Quire 'codex\build' -WithSelf -MinMargin 1.25 `
+              -Tag 'gate' -Top 5 -Jobs 4 -Fresh 2>&1 | ForEach-Object { "$_" })
+        $dkCode = $LASTEXITCODE
+# A filter at the pipe keeps the COUNT and discards the SHAPE: the unit names
+# print as two spaces and a path and match no alternative, so every failure
+# here named a number of units and never which ones. On failure print it whole.
+        if ($dkCode -ne 0) { $dkOut | ForEach-Object { Write-Host "  $_" } }
+        else { $dkOut | Where-Object { $_ -match '^\s+margin\s+\d|OK, tightest' } | ForEach-Object { Write-Host "  $_" } }
+        if ($dkCode -ne 0) {
             Write-Host 'FAIL: a unit has grown into its deck reservation'
             Write-Host '      Detail: pwsh build/deck-headroom.ps1 -Quire codex\build -WithSelf -Fresh'
             exit 1
@@ -1032,13 +1045,18 @@ Measure-Phase 'deck-headroom' {
 # reporting it (plugs 1.98). Each is measured at the -Decks its own
 # build.ps1 passes, not at the derivation, or this asks a question the
 # build never asks.
-        & pwsh -NoProfile -File $chkDeck -Plugs -MinMargin 1.25 `
-              -Tag 'gate-plugs' -Top 5 -Jobs 8 -Fresh 2>&1 |
-            Where-Object { $_ -match 'FAIL|^\s+margin\s+\d|OK, tightest|not measured' } |
-            ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host 'FAIL: a plug bundle has grown into its deck reservation'
-            Write-Host '      Detail: pwsh build/deck-headroom.ps1 -Plugs -Fresh'
+        $dkpOut = @(& pwsh -NoProfile -File $chkDeck -Plugs -MinMargin 1.25 `
+              -Tag 'gate-plugs' -Top 5 -Jobs 4 -Fresh 2>&1 | ForEach-Object { "$_" })
+        $dkpCode = $LASTEXITCODE
+        if ($dkpCode -ne 0) { $dkpOut | ForEach-Object { Write-Host "  $_" } }
+        else { $dkpOut | Where-Object { $_ -match '^\s+margin\s+\d|OK, tightest' } | ForEach-Object { Write-Host "  $_" } }
+        if ($dkpCode -ne 0) {
+# NOT necessarily a deck verdict: the script separates a unit that ran and
+# refused from one that produced no compiler output at all, and prints the
+# exit code, log size and phase count for each. Read those before concluding
+# a reservation has grown.
+            Write-Host 'FAIL: the plug deck check did not pass -- read the per-unit evidence above'
+            Write-Host '      Detail: pwsh build/deck-headroom.ps1 -Plugs -Fresh (and compare -Jobs 1)'
             exit 1
         }
     }
@@ -1067,7 +1085,7 @@ Measure-Phase 'app-sweep' {
         # for the full sweep, which is the trade this makes.
         $sweepArgs = @()
         if ($Internal) { $sweepArgs = @('-Sample', '30') }
-        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 -Kernel $SutCdx @sweepArgs 2>&1 | ForEach-Object { "$_" })
+        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 4 -Kernel $SutCdx @sweepArgs 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Host ''

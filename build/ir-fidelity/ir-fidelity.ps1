@@ -193,6 +193,18 @@ function Write-AtomCensus {
         $v = $Census.Sites[$k]
         Write-Output ('{0,-40} {1,11}  {2,8}  {3}' -f $k, $v.Count, $v.Programs.Count, ($v.Programs | Sort-Object | Select-Object -First 1))
     }
+    # The carriers by name, because a count cannot be acted on. The per-site
+    # column shows ONE example, so a reader with "12 of 596" and five example
+    # names has no way to reach the other seven and no way to pin a test on
+    # them. The names are already held per site; only the printing dropped them.
+    $carriers = [System.Collections.Generic.SortedSet[string]]::new()
+    foreach ($k in $Census.Sites.Keys) {
+        foreach ($p in $Census.Sites[$k].Programs) { [void]$carriers.Add($p) }
+    }
+    if ($carriers.Count -gt 0) {
+        Write-Output ''
+        Write-Output "carriers ($($carriers.Count)): $(($carriers) -join ', ')"
+    }
 }
 
 if ($Census) {
@@ -215,34 +227,107 @@ if ($Census) {
         # reads as an all-clear whether the invariant holds or the reader is
         # blind. Two arms over one corpus, aimed in opposite directions.
         #
-        # The positive arm is a program with an empty list literal and NO type
-        # expectation on it, which is the one input that reaches
-        # Lowering.codex's `lower-empty-list ... is otherwise ->` record. The
-        # constrained sibling next to it takes the ListTy arm instead and must
-        # come back clean, so the pair also proves the census is reading the
-        # program rather than the directory.
+        # The positive arm is a program that REACHES the site the atom is
+        # emitted at, beside a sibling differing in exactly one respect that
+        # must come back clean, so the pair also proves the census is reading
+        # the program rather than the directory. For `error` that is an empty
+        # list literal with NO type expectation, the one input reaching
+        # Lowering.codex's `lower-empty-list ... is otherwise ->` record,
+        # against a constrained sibling taking the ListTy arm. For `noexpect`
+        # it is a single `lazy` cell against the same expression written
+        # eagerly.
+        #
+        # BOTH HALVES OF THE PAIR ARE ATOM-SPECIFIC, so the corpus and the
+        # expected site are selected BY ATOM. They were fixed until 2026-08-27
+        # and existed only for `error`, while line 237 already passed $Atom
+        # through: `-Atom noexpect -Calibrate` therefore asked the empty-list
+        # corpus for a sentinel it cannot produce, found none, and reported
+        # that the census could not see what it exists to count. The reader was
+        # fine and the corpus was aimed elsewhere, which is the same
+        # instrument-built-from-the-wrong-subject failure the arms exist to
+        # catch, one level up. An atom with NO corpus is refused BY NAME rather
+        # than failing as an arm, because "nobody has calibrated this atom" and
+        # "the census is blind" are different problems with different fixes.
         #
         # The negative arm asks the same corpus for an atom that is not in the
         # wire's vocabulary. A reader that answers the same way for everything
         # you ask it is the failure this catches, and it is cheap.
-        $calDir = Join-Path $PSScriptRoot 'census-calibration'
-        if (-not (Test-Path $calDir)) { Write-Output "MISSING calibration corpus: $calDir"; exit 2 }
+        #
+        # The site patterns are -like patterns and the brackets MUST be escaped.
+        # `fn[2]` unescaped is a character class: it fails to match the literal
+        # `fn[2]` and matches `fn2` instead, so an unescaped pattern is an
+        # assertion that cannot fire (verified both directions, 2026-08-27).
+        $calSite = @{
+            'error'    = 'list-expr*empty literal*'
+            'noexpect' = 'fn`[2`]'
+        }
+        # AN ATOM WHOSE DEFECT IS CLOSED CANNOT CALIBRATE ITSELF, AND THAT IS NOT
+        # A BROKEN INSTRUMENT -- IT IS THE INSTRUMENT SUCCEEDING.
+        #
+        # The positive arm above is a SPECIMEN of the defect: for `noexpect` it is
+        # a single `lazy` cell that reached the site. COMPILER-32 closed every
+        # route to it (2026-08-28, 12 carriers and 108 occurrences to zero over
+        # three steps), so the specimen now compiles clean and the arm can never
+        # fire again. Left alone it fails forever and reads as "the census went
+        # blind", which is the opposite of what happened.
+        #
+        # Deleting the arm is the wrong repair, because then nothing proves the
+        # reader can see anything at all and a zero means nothing (L-FALSIF). So a
+        # closed atom BORROWS A LIVE ATOM'S ARM: the reader is proven on an atom
+        # that still occurs, against that atom's own corpus and expected site, so
+        # the arm can still fail. The closed atom's own corpus becomes a
+        # REGRESSION guard instead -- it must come back EMPTY, and a nonzero there
+        # means the defect is back.
+        #
+        # The census's role flips with it, from "count the carriers" to "refuse
+        # any carrier". Remove an entry here only when reopening the defect.
+        $calClosed = @{
+            'noexpect' = 'error'
+        }
+        $calRoot = Join-Path $PSScriptRoot 'census-calibration'
+        $calDir = Join-Path $calRoot $Atom
+        if (-not (Test-Path $calDir)) {
+            $known = @(Get-ChildItem $calRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            Write-Output "NO CALIBRATION CORPUS for atom ``$Atom``: expected $calDir"
+            Write-Output "  calibrated atoms: $(if ($known.Count) { $known -join ', ' } else { '(none)' })"
+            Write-Output '  A census of an uncalibrated atom is not evidence. Add a carrier and a'
+            Write-Output '  non-carrier that differ in exactly one respect, and an expected site.'
+            Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+            exit 2
+        }
+        if (-not $calSite.ContainsKey($Atom)) {
+            Write-Output "NO EXPECTED SITE for atom ``$Atom``; add one beside its corpus in `$calSite."
+            Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+            exit 2
+        }
         $cal = @(Get-ChildItem $calDir -Filter '*.codex' | Sort-Object Name)
         Write-Output "--- calibrating the census on $($cal.Count) program(s) ---"
         Write-Output ''
 
         $fail = 0
 
-        Write-Output "positive arm: ``$Atom`` must be found, and only in the unconstrained program"
-        $pos = Get-AtomCensus -Corpus $cal -Atom $Atom -TagPrefix 'cal-pos'
-        Write-AtomCensus -Census $pos -Atom $Atom
-        $emptySite = @($pos.Sites.Keys | Where-Object { $_ -like 'list-expr*empty literal*' })
+        $isClosed = $calClosed.ContainsKey($Atom)
+        $armAtom  = if ($isClosed) { $calClosed[$Atom] } else { $Atom }
+        $armDir   = if ($isClosed) { Join-Path $calRoot $armAtom } else { $calDir }
+        $armCal   = if ($isClosed) { @(Get-ChildItem $armDir -Filter '*.codex' | Sort-Object Name) } else { $cal }
+        $wantSite = $calSite[$armAtom]
+
+        if ($isClosed) {
+            Write-Output "``$Atom`` is a CLOSED atom: its own specimen is fixed and can no longer arm."
+            Write-Output "  the reader is proven on ``$armAtom`` instead, and ``$Atom`` must be ABSENT."
+            Write-Output ''
+        }
+
+        Write-Output "positive arm: ``$armAtom`` must be found, and only in the unconstrained program"
+        $pos = Get-AtomCensus -Corpus $armCal -Atom $armAtom -TagPrefix 'cal-pos'
+        Write-AtomCensus -Census $pos -Atom $armAtom
+        $wantHit = @($pos.Sites.Keys | Where-Object { $_ -like $wantSite })
         if ($pos.Refused -gt 0) {
             Write-Output "  FAIL: $($pos.Refused) calibration program(s) did not compile; the arm measured nothing"
             $fail++
         }
-        elseif ($emptySite.Count -eq 0) {
-            Write-Output '  FAIL: the empty-list site did not fire. The census cannot see what it exists to count.'
+        elseif ($wantHit.Count -eq 0) {
+            Write-Output "  FAIL: no ``$wantSite`` site fired. The census cannot see what it exists to count."
             $fail++
         }
         elseif ($pos.Carrying -ne 1) {
@@ -251,6 +336,22 @@ if ($Census) {
         }
         else { Write-Output '  ok: found, and only in the unconstrained program' }
         Write-Output ''
+
+        if ($isClosed) {
+            Write-Output "regression arm: ``$Atom`` is closed, so its own specimen must be EMPTY"
+            $reg = Get-AtomCensus -Corpus $cal -Atom $Atom -TagPrefix 'cal-reg'
+            Write-AtomCensus -Census $reg -Atom $Atom
+            if ($reg.Refused -gt 0) {
+                Write-Output "  FAIL: $($reg.Refused) specimen program(s) did not compile; the arm measured nothing"
+                $fail++
+            }
+            elseif ($reg.Carrying -ne 0) {
+                Write-Output "  FAIL: the specimen carries ``$Atom`` again. The defect this atom tracks is BACK."
+                $fail++
+            }
+            else { Write-Output "  ok: the specimen is clean, so the closure still holds" }
+            Write-Output ''
+        }
 
         Write-Output 'negative arm: an atom outside the wire vocabulary must be found NOWHERE'
         $neg = Get-AtomCensus -Corpus $cal -Atom 'zzz-not-a-wire-atom' -TagPrefix 'cal-neg'

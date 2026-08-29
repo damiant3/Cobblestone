@@ -14,6 +14,27 @@
 # genuine. A verifier that checked only the digest would pass `signature`. Only
 # a run that refuses all three establishes that the chain is a chain.
 #
+# Track D item 9 (2026-08-28) added the rest of the chain's refusals, each
+# bundle honest at every link EXCEPT the one its arm aims at, so a refusal
+# naming the wrong link fails the arm:
+#
+#   size          model-bytes claims one byte more     -> refused at the size,
+#                                                         BEFORE the digest runs
+#   not-gguf      magic broken before hashing, so sig
+#                 and digest are honest over a non-GGUF -> refused at the parse
+#   no-tensors    header declares zero tensors          -> refused at the count
+#   no-sig        manifest carries no sig line          -> refused at the scan
+#   short-sig     30 bytes of signature hex             -> refused at the length
+#   short-pub     30 bytes of pubkey hex                -> refused at the length,
+#                                                         never reaching verify
+#   no-model      manifest names no model               -> refused at the name
+#   missing-model manifest names a file not on disk     -> refused at the lookup
+#
+# Absent by design: a "manifest not found" arm. build-img refuses a model with
+# no manifest (both or neither), so that image is not expressible with the
+# shipping builder, and the branch is the same Maybe-None read the
+# missing-model arm exercises one call later.
+#
 # On demand: it boots several VMs and signs with the Codex Ed25519 signer, so
 # it is not in `build/build.ps1`. `codex/test/apps/bundled-agent` pins the
 # honest answer in the battery.
@@ -105,7 +126,15 @@ $cases = @(
     @{ Name = 'digest';    Args = @('-TamperDigest') },
     @{ Name = 'model';     Args = @('-TamperModel') },
     @{ Name = 'large';     Args = @('-PadBytes', '299358') },
-    @{ Name = 'aligned';   Args = @('-PadBytes', '523646') }
+    @{ Name = 'aligned';   Args = @('-PadBytes', '523646') },
+    @{ Name = 'size';          Args = @('-TamperSize') },
+    @{ Name = 'not-gguf';      Args = @('-BreakMagic') },
+    @{ Name = 'no-tensors';    Args = @('-NoTensors') },
+    @{ Name = 'no-sig';        Args = @('-OmitSigLine') },
+    @{ Name = 'short-sig';     Args = @('-ShortSig') },
+    @{ Name = 'short-pub';     Args = @('-ShortPub') },
+    @{ Name = 'no-model';      Args = @('-NoModelLine') },
+    @{ Name = 'missing-model'; Args = @('-ModelNameOverride', 'NOPE.GGU') }
 )
 
 # The heap pair is the runner for the claim that verification does not hold the
@@ -192,6 +221,37 @@ Assert-Contains 'model'     'BUNDLE REFUSED: model digest does not match the sig
 foreach ($t in @('digest', 'model')) {
     if ($results[$t] -like '*signature does not verify*') {
         Write-Host "  FAIL  $t : refused at the signature, but its signature is genuine"
+        $fail++
+    }
+}
+
+Write-Host ''
+Write-Host '--- the rest of the chain: every refusal site, one arm each ---'
+Assert-Contains 'size'          'BUNDLE REFUSED: model is 642 bytes, manifest claims 643'
+Assert-Contains 'not-gguf'      'BUNDLE REFUSED: model is not a GGUF file'
+Assert-Contains 'no-tensors'    'BUNDLE REFUSED: model declares no tensors'
+Assert-Contains 'no-sig'        'BUNDLE REFUSED: manifest carries no signature'
+Assert-Contains 'short-sig'     'BUNDLE REFUSED: signature is not 64 bytes'
+Assert-Contains 'short-pub'     'BUNDLE REFUSED: public key is not 32 bytes'
+Assert-Contains 'no-model'      'BUNDLE REFUSED: manifest names no model'
+Assert-Contains 'missing-model' 'BUNDLE REFUSED: model not found: NOPE.GGU'
+
+# The wrong-link discriminations. Each of these bundles is honest at the link
+# named, so a refusal there means the chain's order or a check is broken:
+# `size` and `not-gguf` carry honest digests (size must refuse BEFORE the
+# digest runs; not-gguf's digest is honest over the broken bytes), `no-tensors`
+# is a valid GGUF header, and the two truncations must refuse on length
+# without reaching the verify.
+$wrongLink = @(
+    @{ Tag = 'size';       Not = 'digest does not match'; Why = 'its digest is honest; size must refuse first' },
+    @{ Tag = 'not-gguf';   Not = 'digest does not match'; Why = 'its digest is honest over the broken bytes' },
+    @{ Tag = 'no-tensors'; Not = 'not a GGUF';            Why = 'its header is valid' },
+    @{ Tag = 'short-sig';  Not = 'signature does not verify'; Why = 'the length check must fire first' },
+    @{ Tag = 'short-pub';  Not = 'signature does not verify'; Why = 'the length check must fire first' }
+)
+foreach ($w in $wrongLink) {
+    if ($results[$w.Tag] -like "*$($w.Not)*") {
+        Write-Host "  FAIL  $($w.Tag) : refused at the wrong link ($($w.Not)) -- $($w.Why)"
         $fail++
     }
 }

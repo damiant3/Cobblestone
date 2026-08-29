@@ -7,7 +7,7 @@
 [CmdletBinding()]
 param(
     [string]$CodexCdx,
-    [int]$Jobs = 8,
+    [int]$Jobs = 4,
     [switch]$ErrorsOnly,
     [switch]$NoErrors,
     [switch]$Apps,
@@ -99,6 +99,7 @@ if ($ApprovedBy -ne 'damian') {
 
 Set-Location (Join-Path $PSScriptRoot '..')
 [Environment]::CurrentDirectory = (Get-Location).Path
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
 $Scope = if ($ErrorsOnly) { 'errors' } elseif ($NoErrors) { 'positive' } else { 'both' }
 $OutRoot     = 'test-output'
 $ResultsDir  = Join-Path $OutRoot '_results'
@@ -321,6 +322,25 @@ $toCompile = @($toCompile | Sort-Object {
     if ($m) { @($m).Count } else { 0 }
 })
 
+# Each batch slot boots one guest, so concurrent guests IS $Jobs. Trim to what
+# the box holds before the deal below, which sizes its lists from $Jobs.
+#
+# A BATCH GUEST IS NOT A SINGLE-COMPILE GUEST and the difference is the whole
+# defect this argument fixes. One VM here compiles the slot's whole share in
+# ONE session, so its arena accumulates: measured 2026-08-28, 60 chapters
+# peaked at 234 MB, 200 at 1,007 MB, and one realistic slot of a 4-way deal
+# (416 chapters, 874 KB of source) at 2,134 MB. The default 1100 is the
+# SINGLE-unit figure, right for deck-headroom and for phase 2 below, where
+# every test gets a fresh VM. Budgeting a batch at it admitted four slots
+# needing ~8.5 GB on a box with ~6.5 GB free, and val's full gate died with
+# 1,110 tests reporting "VM died EARLIER in the batch".
+#
+# The first measurement that set 1100 sampled THIRTY chapters and generalised;
+# it read 1,098 MB only because those thirty were the largest by file size, so
+# a wrong number came out of a fixture whose shape was wrong twice over
+# (L-CONSTRUCT). Re-measure by sampling codex-vm's WorkingSet64 across a full
+# slot, never a subset (L-COUNT).
+$Jobs = Get-VmAdmittedSlots -Slots $Jobs -GuestMB 2200 -What 'phase 1 batch compile'
 Write-Host "Tests: $($tests.Count) total, $($tests.Count - $toCompile.Count) skipped, $($toCompile.Count) to compile ($Jobs batch slots)"
 
 
@@ -387,17 +407,26 @@ foreach ($w in $writers) { $w.Close() }
 $compileScript = Join-Path $PSScriptRoot 'test-compile-batch.ps1'
 $phase1Sw = [System.Diagnostics.Stopwatch]::StartNew()
 $compileProcs = @()
+# The batch child's stderr is where test-compile-batch.ps1 reports a dropped
+# or short stream (DROPPED / BATCH INVALIDATED). Start-Process gave it a
+# hidden console, so that report was written where nobody could ever read it:
+# the Update 52 misattribution shipped 26 false reds with the one line naming
+# the cause discarded. Captured on the SYSTEM temp (a redirect is one write
+# per stderr line and D: pays ~7.5 ms each), moved into _batches after.
+$compileErrs = @()
 for ($j = 0; $j -lt $Jobs; $j++) {
     $lf = $listFiles[$j]
     if ((Get-Item $lf).Length -eq 0) { continue }
     $pcore = ($j + 1) % 8
+    $be = [System.IO.Path]::GetTempFileName()
     $proc = Start-Process -FilePath 'pwsh' -ArgumentList @(
         '-NoProfile', '-File', $compileScript,
         '-ListFile', $lf,
         '-OutRoot', $OutRoot,
         '-PCore', $pcore
-    ) -PassThru -WindowStyle Hidden
+    ) -PassThru -WindowStyle Hidden -RedirectStandardError $be
     $compileProcs += $proc
+    $compileErrs += @{ Err = $be; Name = "batch-$j" }
     Write-Host "  batch $j started (pid $($proc.Id), pcore $pcore)"
 }
 
@@ -408,6 +437,12 @@ foreach ($proc in $compileProcs) {
         Write-Host "  batch pid $($proc.Id) timed out -- killing" -ForegroundColor Yellow
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
+}
+foreach ($c in $compileErrs) {
+    if (-not (Test-Path -PathType Leaf $c.Err)) { continue }
+    $t = [System.IO.File]::ReadAllText($c.Err)
+    Move-Item -Force $c.Err (Join-Path $batchDir "$($c.Name).err")
+    if ($t -match 'DROPPED|BATCH INVALIDATED') { Write-Host "  $($c.Name): $($t.Trim())" -ForegroundColor Yellow }
 }
 $phase1Sw.Stop()
 Write-Host "Phase 1 (compile) complete in $([int]($phase1Sw.ElapsedMilliseconds/1000))s."
@@ -492,15 +527,24 @@ function Invoke-RebatchRound {
     }
     foreach ($w in $rbWriters) { $w.Close() }
     $procs = @()
+    $rbErrs = @()
     for ($k = 0; $k -lt $slots; $k++) {
+        $be = [System.IO.Path]::GetTempFileName()
         $procs += Start-Process -FilePath 'pwsh' -ArgumentList @(
             '-NoProfile', '-File', $compileScript,
             '-ListFile', $lists[$k], '-OutRoot', $OutRoot, '-PCore', (($k + 1) % 8)
-        ) -PassThru -WindowStyle Hidden
+        ) -PassThru -WindowStyle Hidden -RedirectStandardError $be
+        $rbErrs += @{ Err = $be; Name = "rebatch-$RoundNum-$k" }
     }
     foreach ($proc in $procs) {
         $proc.WaitForExit(1800000) | Out-Null
         if (-not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {} }
+    }
+    foreach ($c in $rbErrs) {
+        if (-not (Test-Path -PathType Leaf $c.Err)) { continue }
+        $t = [System.IO.File]::ReadAllText($c.Err)
+        Move-Item -Force $c.Err (Join-Path $batchDir "$($c.Name).err")
+        if ($t -match 'DROPPED|BATCH INVALIDATED') { Write-Host "  $($c.Name): $($t.Trim())" -ForegroundColor Yellow }
     }
     return ,$membership
 }
@@ -738,6 +782,10 @@ foreach ($src in $toCompile) {
 # ===========================================================================
 if ($needsRun.Count -gt 0) {
     $fatalCount = @($needsRun | Where-Object { $_.ContainsKey('Fatal') -and $_.Fatal }).Count
+    # Re-asked rather than reused from phase 1: that was minutes ago and the
+    # box is shared. A -run-list supervisor holds one guest at a time, so
+    # concurrent guests is again $Jobs.
+    $Jobs = Get-VmAdmittedSlots -Slots $Jobs -What 'phase 2 run'
     $runLabel = "Phase 2: running $($needsRun.Count) tests"
     if ($fatalCount -gt 0) { $runLabel += " ($fatalCount judged on the fault, not on .expected)" }
     Write-Host "$runLabel, $Jobs parallel..."
@@ -1085,6 +1133,7 @@ Write-Host "total=$total  pass=$passed  fail=$unexpected  skip=$($buckets.SKIPPE
 # without excavating 600 lines; the delta makes a regression read as a diff.
 # test-output\last-run.json survives across runs (only _results is wiped).
 # ===========================================================================
+$expectedOwners = $null
 function Get-FailHint {
     param([string]$Name, [string]$Status)
     $out = Join-Path $OutRoot $Name
@@ -1115,6 +1164,31 @@ function Get-FailHint {
         $afile = Join-Path $out 'runtime.actual'
         $etxt = if (Test-Path -PathType Leaf $efile) { ([System.IO.File]::ReadAllText($efile)) -replace "`r", '' } else { '' }
         $atxt = if (Test-Path -PathType Leaf $afile) { [System.IO.File]::ReadAllText($afile) } else { '' }
+        # MISATTRIBUTION BEFORE LENGTH. An actual that is byte-for-byte
+        # ANOTHER test's expected is not a wrong answer but a misfiled one:
+        # the batch stream lost a block and every later block ran under the
+        # wrong name (ExaminersAssay "The batch stream can lose bytes"; 26
+        # such reds at the Update 52 battery read as codegen for an evening).
+        # A foreign output usually differs in length too, so the length
+        # claims below would bury this one. The owner map is built once, on
+        # the first FAIL_OUTPUT hint; a green run never pays for it.
+        if ($null -eq $script:expectedOwners) {
+            $script:expectedOwners = @{}
+            foreach ($n2 in $srcDirOf.Keys) {
+                $ef2 = Join-Path $srcDirOf[$n2] "$n2.expected"
+                if (Test-Path -PathType Leaf $ef2) {
+                    $k2 = ([System.IO.File]::ReadAllText($ef2)) -replace "`r", ''
+                    if (-not $script:expectedOwners.ContainsKey($k2)) { $script:expectedOwners[$k2] = [System.Collections.Generic.List[string]]::new() }
+                    $script:expectedOwners[$k2].Add($n2)
+                }
+            }
+        }
+        if ($atxt -and $script:expectedOwners.ContainsKey($atxt)) {
+            $owners = @($script:expectedOwners[$atxt] | Where-Object { $_ -ne $Name } | Sort-Object)
+            if ($owners.Count -gt 0) {
+                return "HOLDS the expected output of $($owners -join ' / ') byte-for-byte -- batch misattribution, not codegen (ExaminersAssay: the batch stream can lose bytes); re-run"
+            }
+        }
         if ($etxt.Length -ne $atxt.Length) {
             $lim = [Math]::Min($etxt.Length, $atxt.Length)
             $off = 0

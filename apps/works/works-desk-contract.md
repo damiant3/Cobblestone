@@ -175,9 +175,27 @@ the cascade paying them all back at once. When the stack empties the close
 restores to `desk-mark-cell` exactly as it always did, so a single-app session
 is byte-for-byte the behaviour that shipped before.
 
+**A SPAN IS NOT A HOLE, and the difference is what the option-D work turns
+on** (val, 2026-08-28). Entry `i` spans its own mark up to the NEXT entry's,
+and the top entry spans its mark up to the caller's frontier;
+`desk-marks-extent` answers that and `desk-marks-extent-sum` sums it. **The
+sum is `top` minus entry 0's mark and NOT `top` minus the base mark**: the
+desk's own state blocks and its first root sit below entry 0 and belong to no
+span. But a dead entry's span is still not free to allocate into, because **a
+pane open does not rebuild the root** -- the four `-open` functions push a
+mark and pass the `root` they were handed straight to `desk-loop` -- so a root
+built while one pane was topmost is buried inside that pane's span the moment
+the next pane opens. `desk-span-holds-root` asks whether `desk-root-cell` lies
+inside a span and `desk-span-reusable` is the dead test AND that test, never
+the dead test alone. Pinned by `codex/test/desk-span`, whose `root-blocks`
+line is the one a sabotage of the root check moves.
+
 **The cost, measured, because it is real.** Each hide-and-return costs a desk
 root: heap frontier `0x672848` after one switch against `0x6a3a18` after ten,
-so **22,352 bytes per switch** while the app stays alive. It is all reclaimed
+so **22,352 bytes per switch** while the app stays alive. **Superseded for the
+root half by WORKS-58, fixed at main 20493**: a rebuild now frees the root it
+replaces when no live entry sits above where the last one ended, and the
+minimize-restore cycle is flat in N rather than costing 1,782,292 a cycle. It is all reclaimed
 when the app finally closes: frontier `0x645ce8` and desk mark `0x63fda8` are
 bit-identical after one switch-then-close and after ten. So this is bounded by
 switches-while-open at a human's rate, not by time, and it is the same
@@ -506,8 +524,14 @@ first two cells of the second half.
 
 | 216, 220 | `dk-strip-h-cell`, `dk-strip-v-cell` | the depth a PILL-ONLY strip takes on a horizontal and on a vertical edge, in device pixels (val, 2026-08-27, ShellRefinement 6.7.3a). Measured once by `dk-strip-init` from `desk-run` the way `dk-task-init` measures the band, by laying one specimen pill and taking its minimum, so "thinner than the band" is a consequence of carrying no Cobblestone button and no clock rather than a chosen number. Two orientations because a row of pills decides a height and a column of them a width, which is why `dk-task-w` is not `dk-task-h`. Not pointers, so they need no allocation before the base mark; zero means unmeasured and `dk-strip-depth` falls back to the same floors the band uses |
 
-**THE BLOCK GREW TO 256 BYTES ON 2026-08-26 (val). Cells 0 through 220 are now
-taken, so 224 through 252 are free -- eight cells.** This paragraph said "168
+| 224, 228 | `desk-root-cell`, `desk-rootend-cell` | the frontier immediately BEFORE and immediately AFTER the current desktop root was built (val, 2026-08-28, WORKS-58). Not pointers, so they need no allocation before the base mark; zero in either means unwritten and nothing is reclaimed. **`desk-root-reclaim` frees the root a rebuild replaces only when no LIVE mark sits at or above where the last root ENDED.** A pane opened after the root has its state above the root, and freeing that is WORKS-57. `desk-root-note` records both after every `desk-draw`, at all eight sites, and a site that builds a root without noting would leave the pair describing a superseded root. **This row said "only when the frontier still stands exactly where the last root ENDED" until 2026-08-28 and the code has never done that** (val). The difference is not academic and both halves are measured: the mark test alone shipped WORKS-59, a guest halt, because a mark records where a pane's state STARTED and the Browser rebuilds its state elsewhere; and the frontier equality this row described is INERT, which WORKS-58's own entry had already recorded ("THE FIRST FORMULATION WAS INERT") and which re-measuring put a number on: 2,394,032 bytes a minimise-restore cycle, because an ordinary re-entry leaves the frontier above the root end, so the reclaim never fires again. **So the rule is the mark test, and the obligation it creates is that a pane which moves its state must move its mark** -- `desk-marks-remark`, called by `desk-browser-reenter`, which is the only pane that does. Any future pane rebuilding its state after its `-open` inherits that obligation. `codex/test/desk-root-guard` pins the decision; its `live-at-e` row is the one remarking produces and a sabotage of the mark test moves |
+
+| 232 | `dk-prev-cell` | pointer: `dk-prev-slots` (17) downscaled window snapshots, one per focus id, 128 by 72 DEVICE pixels each (val, 2026-08-28, ShellRefinement hover preview P.1). Allocated by `desk-run` before the base mark, for the reason every other pointer cell here is; 626,688 bytes at boot, half a per cent of the flying image's 128 MB region. **Written only by `dk-prev-capture` from `desk-app-hide`**, which is the single choke point every windowed pane's minimise reaches, and it is the last moment a minimised window's pixels are both correct and on the glass. Read by nothing yet except the Monitor's `preview` row |
+
+| 236, 240 | `dk-hover-cell`, `dk-hover-t-cell` | the pill the pointer is resting on and the HPET tick it arrived, which is the hover dwell the preview bubble is gated on (val, 2026-08-28, ShellRefinement hover preview P.2). Not pointers, so no allocation before the base mark. **`dk-hover-note` takes `now` as a PARAMETER rather than reading `hpet-ticks` itself**, because `desk.ps1 -Rtc` pins the HPET and a frozen-clock capture could otherwise never satisfy a dwell; passing it in is what lets `codex/test/desk-hover` pin the timing with synthetic values. Both sides masked to 32 bits for the reason `dk-rate-*` is. **Re-noting the same pill must NOT reset the arrival tick**, or a jittering pointer never reaches the threshold; that is the `restated` line of the arm |
+
+**THE BLOCK GREW TO 256 BYTES ON 2026-08-26 (val). Cells 0 through 240 are now
+taken, so 244 through 252 are free -- three cells.** This paragraph said "168
 through 252 are free" until 2026-08-27, which was true the day it was written
 and stopped being true within hours: `dk-task-edge-cell`, the flick's eight and
 the pill latch's two took 168 through 208 that same week and none of them added

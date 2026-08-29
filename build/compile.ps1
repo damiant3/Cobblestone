@@ -376,12 +376,41 @@ try {
                 }
                 exit 0
             } else {
-                Add-Content -Path $Log -Value 'Binary size mismatch' -Encoding UTF8
+                Add-Content -Path $Log -Value "Binary size mismatch: the SIZE: line declared $binSize byte(s), the stream carried $actSize after it, out of $($outBytes.Length) total" -Encoding UTF8
                 exit 5
             }
         }
         if ($hitExc) {
             continue compile_loop
+        }
+        # Output, but nothing that ends the scan: no SIZE:, no CODEGEN-*, no
+        # !EXC. The log above holds only what survived the WD: filter, so when
+        # the VM died early it reads exactly like a SUCCESSFUL compile and the
+        # exit code is the only thing that disagrees. Both things that would
+        # answer it were being discarded: codex-vm's stderr, which carries
+        # `Output: N bytes` and any `SERIAL: ... DROPPED`, and the raw output.
+        Add-Content -Path $Log -Value 'FAIL: the VM produced output but no SIZE: line, no CODEGEN-HALTED or CODEGEN-ERRORS, and no !EXC, so there is neither a binary nor a diagnostic to report.' -Encoding UTF8
+        Add-Content -Path $Log -Value "  output: $($outBytes.Length) byte(s) in $($outLines.Count) line(s)" -Encoding UTF8
+        if ((Test-Path -PathType Leaf $stderrFile)) {
+            # The TAIL: the lines that answer this are the last ones. Bounded
+            # because a repeated device failure prints per occurrence, which
+            # put 29,610 bytes through here in one measured run.
+            $errLinesAll = @(Get-Content $stderrFile -ErrorAction SilentlyContinue)
+            if ($errLinesAll.Count -gt 0) {
+                $errFrom = [Math]::Max(0, $errLinesAll.Count - 40)
+                $hdr = if ($errFrom -gt 0) { "  codex-vm stderr, last 40 of $($errLinesAll.Count) line(s):" } else { "  codex-vm stderr:" }
+                Add-Content -Path $Log -Value $hdr -Encoding UTF8
+                for ($i = $errFrom; $i -lt $errLinesAll.Count; $i++) {
+                    Add-Content -Path $Log -Value "    $($errLinesAll[$i])" -Encoding UTF8
+                }
+            }
+        }
+        $keepFrom = [Math]::Max(0, $outLines.Count - 40)
+        Add-Content -Path $Log -Value "  last $($outLines.Count - $keepFrom) output line(s), WD:/HEAP:/STACK: included:" -Encoding UTF8
+        for ($i = $keepFrom; $i -lt $outLines.Count; $i++) {
+            $ol = $outLines[$i].TrimEnd("`r")
+            if ($ol.Length -gt 200) { $ol = $ol.Substring(0, 200) + ' ...(truncated)' }
+            Add-Content -Path $Log -Value "    $ol" -Encoding UTF8
         }
         exit 4
 

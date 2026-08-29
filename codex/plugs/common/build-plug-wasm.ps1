@@ -25,12 +25,24 @@
 # taking a buffer address and a byte count.
 #
 #   codex/plugs/common/build-plug-wasm.ps1 -Plug elf -Transport bytes `
-#       -Chapters ByteHelpers,ElfWriter,DwarfWriter,'ElfPlug:Network Config|Drain|Body',ElfStdio
+#       -Chapters ByteHelpers,PlugChain,ElfWriter,DwarfWriter,'ElfPlug:Network Config|Drain|Body',ElfStdio
+#
+# The live chapter list per module is codex/plugs/wasm/page-lenses.ps1, the
+# page's one manifest; the example above is a shape, not the record.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Plug,
     [Parameter(Mandatory)][string[]]$Chapters,
-    [ValidateSet('ir', 'bytes')][string]$Transport = 'ir',
+    [ValidateSet('ir', 'bytes', 'irbytes')][string]$Transport = 'ir',
+    # The native backends lower through the compiler's LIR and opt into shared
+    # helpers by name, exactly as their network build does through
+    # Build-TranspilerPlug. Same chapter lists and same ORDER as that function,
+    # because a name resolves here by being present in the one bundled unit.
+    [switch]$WithLir,
+    [string[]]$CommonChapters = @(),
+    # Passed through to wasm/run.ps1 -> compile.ps1 for a bundle whose IR compile
+    # needs a bigger reservation than the default; the native backends do.
+    [int]$Decks = 0,
     [string]$Kernel,
     [string]$OutDir
 )
@@ -73,7 +85,10 @@ $Chapters = @($Chapters | ForEach-Object { $_ -split ',' } | Where-Object { $_ -
 # Same declaration chapters Build-TranspilerPlug bundles: one declaration of
 # Name, SourceSpan, CodexType, the AST nodes and the IR nodes in the tree.
 $lines = [System.Collections.Generic.List[string]]::new()
-if ($Transport -eq 'ir') {
+# irbytes parses IR exactly as ir does, so it needs the same declaration
+# chapters; only the OPENING differs, because it answers a binary wire rather
+# than text.
+if ($Transport -ne 'bytes') {
     foreach ($decl in @('codex\compiler\Core\Name.codex',
                         'codex\compiler\Core\SourceText.codex',
                         'codex\compiler\Types\CodexType.codex',
@@ -82,9 +97,22 @@ if ($Transport -eq 'ir') {
         $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }
         Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $decl) -Quire $plugQuire -DropSections $drop
     }
+    if ($WithLir) {
+        foreach ($lir in @('codex\compiler\Core\BuildSettings.codex',
+                           'codex\compiler\Types\CodexTypeHelpers.codex',
+                           'codex\compiler\Syntax\Token.codex',
+                           'codex\compiler\IR\Lir.codex',
+                           'codex\compiler\IR\LirTargets.codex')) {
+            Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir')
+        }
+    }
     Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugTypes.codex')   -Quire $plugQuire
     Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\IRTextParser.codex') -Quire $plugQuire
-    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugStdio.codex')    -Quire $plugQuire
+    foreach ($cc in $CommonChapters) {
+        Add-PlugChapter -Lines $lines -Path (Join-Path $Repo "codex\plugs\common\$cc.codex") -Quire $plugQuire
+    }
+    $opening = if ($Transport -eq 'irbytes') { 'PlugIrBytes.codex' } else { 'PlugStdio.codex' }
+    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo "codex\plugs\common\$opening") -Quire $plugQuire
 } else {
     Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugBytes.codex')    -Quire $plugQuire
 }
@@ -115,7 +143,8 @@ $preLines = Resolve-PlugForewords $lines
 Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc $bundleSrc -PlugName "$Plug-$suffix"
 
 Write-Host "[$Plug-$suffix] emitting wat through the wasm plug ..."
-& pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\run.ps1') -Src $bundleSrc -Out $wat -Kernel $Kernel
+$decksArg = if ($Decks -ne 0) { @('-Decks', $Decks) } else { @() }
+& pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\run.ps1') -Src $bundleSrc -Out $wat -Kernel $Kernel @decksArg
 if ($LASTEXITCODE -ne 0) { Write-Host "[$Plug-$suffix] FAIL: wasm emission"; exit 3 }
 
 & wat2wasm --enable-tail-call $wat -o $wasm

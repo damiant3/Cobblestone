@@ -10050,6 +10050,23 @@ static size_t output_cap = 0;
    was delivered. */
 static size_t output_dropped = 0;
 
+/* CODEX_VM_DROP_SERIAL_AT=N with CODEX_VM_DROP_SERIAL_LEN=K discards K bytes
+   of capture once N bytes have been taken, on whichever of the two paths
+   below is carrying them, counted and reported exactly as a real loss is. The
+   real drop paths fire only when the HOST is out of memory, so the failure
+   they produce -- a batch parser filing every later block under the wrong
+   test's name -- could not be produced on demand, and a defect nobody can
+   produce is one nobody can prove fixed. An environment variable rather than
+   a flag because the VM under test is launched by a harness several levels
+   down, which no flag of ours reaches. */
+static size_t drop_serial_at = 0;
+static size_t drop_serial_len = 0;
+static size_t drop_serial_done = 0;
+
+static int drop_serial_armed(void) {
+    return drop_serial_at && drop_serial_done < drop_serial_len && output_len >= drop_serial_at;
+}
+
 /* Application processors write serial too -- an AP's exception dump is the only
  * way a fault on one is ever seen -- and they run on their own host threads, so
  * this append is no longer the boot processor's alone. */
@@ -10082,6 +10099,15 @@ static void output_buf_write(unsigned char b) {
         size_t new_cap = output_cap * 2;
         unsigned char *grown = (unsigned char *)realloc(output_buf, new_cap);
         if (grown) { output_buf = grown; output_cap = new_cap; }
+    }
+    if (drop_serial_armed()) {
+        if (!drop_serial_done)
+            fprintf(stderr, "SERIAL: dropping on purpose (CODEX_VM_DROP_SERIAL_AT=%zu LEN=%zu) at output_len=%zu\n",
+                    drop_serial_at, drop_serial_len, output_len);
+        drop_serial_done++;
+        output_dropped++;
+        if (output_lock_ready) LeaveCriticalSection(&output_lock);
+        return;
     }
     if (output_len < output_cap) output_buf[output_len++] = b;
     else {
@@ -10161,6 +10187,17 @@ static void blit_guest_output(void) {
         fprintf(stderr, "BLIT: rejected addr=0x%llx len=%llu (guest_mem_size=%llu)\n",
                 addr, len, (unsigned long long)guest_mem_size);
         fprintf(stderr, "SERIAL: %llu guest serial byte(s) DROPPED (blit out of range); -output is SHORT\n", len);
+        return;
+    }
+    if (drop_serial_armed()) {
+        /* Reported once, the discipline output_buf_write already follows: this
+           fires per blit, and unguarded it put 29,610 bytes of stderr into one
+           build.log. dump_output_file still reports the total at exit. */
+        if (!drop_serial_done)
+            fprintf(stderr, "BLIT: dropping on purpose (CODEX_VM_DROP_SERIAL_AT=%zu LEN=%zu) at output_len=%zu\n",
+                    drop_serial_at, drop_serial_len, output_len);
+        drop_serial_done += (size_t)len;
+        output_dropped += (size_t)len;
         return;
     }
     /* APs append serial bytes under output_lock from their own host threads; this
@@ -15214,6 +15251,16 @@ int main(int argc, char **argv) {
     if (watch_size > 64) watch_size = 64;
 
     if (getenv("CODEX_VM_NO_TIMER")) { no_timer = 1; fprintf(stderr, "TIMER INTERRUPTS DISABLED\n"); }
+    {
+        const char *dsa = getenv("CODEX_VM_DROP_SERIAL_AT");
+        if (dsa && dsa[0]) {
+            const char *dsl = getenv("CODEX_VM_DROP_SERIAL_LEN");
+            drop_serial_at = (size_t)strtoull(dsa, NULL, 0);
+            drop_serial_len = (dsl && dsl[0]) ? (size_t)strtoull(dsl, NULL, 0) : 1024;
+            fprintf(stderr, "SERIAL: will drop %zu byte(s) at or past %zu captured bytes (CODEX_VM_DROP_SERIAL_AT)\n",
+                    drop_serial_len, drop_serial_at);
+        }
+    }
     hprof_file = getenv("CODEX_VM_PROFILE");
     if (hprof_file && !hprof_file[0]) hprof_file = NULL;
 

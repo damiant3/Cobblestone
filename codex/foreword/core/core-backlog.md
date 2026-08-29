@@ -124,3 +124,28 @@ declared domain is now POSSIBLE where it was not before: COMPILER-28 is fixed
 and CDX2054 makes a range on a non-integer base a refusal instead of
 decoration, so re-read that row before concluding a bounded domain cannot be
 declared. Owner: blu, 2026-08-26.
+
+
+## Reading a directory entry name re-materialises the CCE table per character
+
+`fat16-extract-chars` (`Fat16.codex`) calls `from-unicode` once per byte, and
+`from-unicode` names `cce-to-unicode-table`. A nullary definition is a recipe
+rather than a cell, so every one of those mentions rebuilds all 128 elements:
+1,040 bytes a character, about **eleven kilobytes to read one 8.3 name**.
+
+That is most of what a directory walk spends. Measured 2026-08-28 against the
+depot chapter, ten lookups of a name one component deep retained 641,600 bytes
+and ten of a name two deep retained 1,816,160, on a directory holding three
+files.
+
+**The repair is already written twice in the same chapter and was not applied
+here.** `fat16-byte-to-cce` and `fat16-bytes-to-chars` thread the table as a
+parameter for exactly this reason, and `from-unicode`'s own prose in
+`CCE.codex` says why. `fat16-extract-chars` and `fat16-extract-name` need the
+same parameter, and every caller of `fat16-read-dir-entry` has to pass it
+down, which is why this is not a one-line change and is not being folded into
+the long-name work that measured it.
+
+Nothing is wrong with the answers. This is cost alone, and it is paid on every
+path that resolves a path on disk, which includes the compiler's own cite
+resolution.

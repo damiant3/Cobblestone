@@ -1,0 +1,158 @@
+Chapter: Fat16Longname
+
+  cites Foreword chapter Fat16
+
+ Every other fat16 fixture in this directory spells an 8.3 name (APP.TXT,
+ DEEP.TXT), so none of them could ever have caught a name the format's short
+ field cannot hold. This one spells the shapes they do not: a five-character
+ extension, a nine-character base, a lowercase name that fits 8.3 in every
+ other respect, a dotted directory component, a name landing exactly on the
+ 13-character record boundary, and one past every bound there is.
+
+ Before 2026-08-28 the write ANSWERED TRUE and stored a truncated name, while
+ the reader did not truncate, so a write and a read of one path disagreed and
+ nothing said so. The arms below assert that each of those names now goes down
+ as a long-name run and comes back verbatim, and that the ones no run can hold
+ are still refused rather than mangled.
+
+ The two dotted directory arms are the ones worth reading. `quire-to-dir`
+ produces `os.net/`, `os.trust/` and `foreword.compress/`, and the dot is not
+ a separator in FAT: it splits an eight-character base from a THREE-character
+ extension. `os.net` fits the short field and `os.trust` does not, so before
+ long names the quire layout the compiler's on-disk cite resolution asks for
+ was only PARTLY spellable. Both are writable now, and the arms print which
+ one needed a run.
+
+ We say:
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    vol <- fat16-init 2048
+    print-line-uni ("bytes per cluster " & show (fat16-bytes-per-cluster vol))
+
+    d <- fat16-create-directory vol "GOOD"
+    print-line-uni ("mkdir GOOD " & show d)
+
+    ok <- fat16-write-file "GOOD/AAA.COD" "eight three"
+    print-line-uni ("write GOOD/AAA.COD " & show ok & " run " & show (fat16-records-for "AAA.COD"))
+
+    back <- fat16-read-text vol "GOOD/AAA.COD"
+    print-line-uni ("read GOOD/AAA.COD " & ln-text back)
+
+    longext <- fat16-write-file "GOOD/BBB.codex" "five char ext"
+    print-line-uni ("write GOOD/BBB.codex " & show longext & " run " & show (fat16-records-for "BBB.codex"))
+
+    r1 <- fat16-read-text vol "GOOD/BBB.codex"
+    print-line-uni ("read GOOD/BBB.codex " & ln-text r1)
+
+    alias1 <- fat16-read-text vol "GOOD/BBB~1.COD"
+    print-line-uni ("read its alias " & ln-text alias1)
+
+    ghost <- fat16-read-text vol "GOOD/BBB.COD"
+    print-line-uni ("no truncated ghost " & ln-text ghost)
+
+    longbase <- fat16-write-file "GOOD/NINECHARS.TXT" "nine char base"
+    print-line-uni ("write GOOD/NINECHARS.TXT " & show longbase)
+
+    r2 <- fat16-read-text vol "GOOD/NINECHARS.TXT"
+    print-line-uni ("read GOOD/NINECHARS.TXT " & ln-text r2)
+
+    lower <- fat16-write-file "GOOD/readme.txt" "lowercase fits 8.3 but is not it"
+    print-line-uni ("write GOOD/readme.txt " & show lower & " run " & show (fat16-records-for "readme.txt"))
+
+    r3 <- fat16-read-text vol "GOOD/readme.txt"
+    print-line-uni ("read GOOD/readme.txt " & ln-text r3)
+
+    r4 <- fat16-read-text vol "GOOD/README.TXT"
+    print-line-uni ("its uppercase spelling " & ln-text r4)
+
+    dotfits <- fat16-create-directory vol "os.net"
+    print-line-uni ("mkdir os.net " & show dotfits & " run " & show (fat16-records-for "os.net"))
+
+    dotlong <- fat16-create-directory vol "os.trust"
+    print-line-uni ("mkdir os.trust " & show dotlong & " run " & show (fat16-records-for "os.trust"))
+
+    deep <- fat16-write-file "os.trust/Deep.Name.codex" "under a dotted directory"
+    print-line-uni ("write os.trust/Deep.Name.codex " & show deep)
+
+    r5 <- fat16-read-text vol "os.trust/Deep.Name.codex"
+    print-line-uni ("read it back " & ln-text r5)
+
+    b13 <- fat16-write-file (ln-name 13) "exactly one record"
+    print-line-uni ("write a 13 character name " & show b13 & " run " & show (fat16-records-for (ln-name 13)))
+
+    r6 <- fat16-read-text vol (ln-name 13)
+    print-line-uni ("read it back " & ln-text r6)
+
+    b14 <- fat16-write-file (ln-name 14) "two records"
+    print-line-uni ("write a 14 character name " & show b14 & " run " & show (fat16-records-for (ln-name 14)))
+
+    r7 <- fat16-read-text vol (ln-name 14)
+    print-line-uni ("read it back " & ln-text r7)
+
+    b255 <- fat16-write-file (ln-name 255) "the format's longest"
+    print-line-uni ("write a 255 character name " & show b255)
+
+    r8 <- fat16-read-text vol (ln-name 255)
+    print-line-uni ("read it back " & ln-text r8)
+
+    b256 <- fat16-write-file (ln-name 256) "one past the format"
+    print-line-uni ("write a 256 character name " & show b256)
+
+    sub255 <- fat16-write-file ("GOOD/" & ln-name 255) "too many slots for one cluster"
+    print-line-uni ("write 255 characters in a subdirectory " & show sub255)
+
+    over <- fat16-write-file "GOOD/BBB.codex" "written a second time"
+    print-line-uni ("overwrite GOOD/BBB.codex " & show over)
+
+    r9 <- fat16-read-text vol "GOOD/BBB.codex"
+    print-line-uni ("read it back " & ln-text r9)
+
+    entries <- fat16-list-dir vol "GOOD"
+    print-line-uni ("entries under GOOD " & show (list-length entries))
+    print-line-uni ("names under GOOD " & ln-names entries 0 (list-length entries) "")
+
+    chapters <- list-files "GOOD" ".codex"
+    print-line-uni ("list-files GOOD .codex " & ln-texts chapters 0 (list-length chapters) "")
+  end
+
+Section: Names And Reporting
+
+ The names are built rather than written out, so the boundary arms say which
+ boundary they are on. Every character is one a short field would also accept,
+ which is what leaves the LENGTH as the only reason a run is needed.
+
+  ln-name : Integer -> Text
+  ln-name (n) = ln-fill n ""
+
+  ln-fill : Integer, Text -> Text
+  ln-fill (n) (acc) =
+    if n <= 0 then acc
+    else ln-fill (n - 1) (acc & "N")
+
+  ln-text : Maybe Text -> Text
+  ln-text (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"
+
+ The COUNT is what says an overwrite replaced an entry rather than adding a
+ second one under the same name, and the names are what say a listing answers
+ the long spelling. list-files is the arm that matters to anything else: it
+ filters on the extension, and under an alias every one of these chapters
+ would answer .COD to a caller asking for .codex.
+
+  ln-names : List Fat16DirEntry, Integer, Integer, Text -> Text
+  ln-names (es) (i) (n) (acc) =
+    if i >= n then acc
+    else let piece = (list-at es i).de-name & " "
+    in ln-names es (i + 1) n (acc & piece)
+
+  ln-texts : List Text, Integer, Integer, Text -> Text
+  ln-texts (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else let piece = list-at xs i & " "
+    in ln-texts xs (i + 1) n (acc & piece)
+
+Page 1

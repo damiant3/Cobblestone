@@ -535,6 +535,47 @@ function Get-VmPort {
 function Get-VmChardevData { param([int]$Port) "socket,id=ch0,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on" }
 function Get-VmChardevCtrl { param([int]$Port) "socket,id=ch1,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on" }
 
+# How many guests of $GuestMB the box can take right now. Answers a COUNT
+# rather than refusing, because the failure this exists to stop is a guest
+# killed for want of host RAM and then reported as a codegen defect
+# (OperatorsManual, the -Jobs 4 section; deck-headroom read a contended run
+# as 'a plug bundle has grown into its deck reservation', main 20381).
+#
+# Called at a FAN-OUT, before any guest starts, never per guest: a per-guest
+# wait deadlocks, because the slots already running hold the memory the
+# waiter is waiting for and nothing frees until they finish.
+#
+# GuestMB IS NOT THE -mem ASK, and using the ask is the trap this default
+# exists to close. codex-vm reserves its -mem as address space and commits
+# what it touches: measured 2026-08-28 on this box, a guest asking 3072
+# peaked at 1,093 MB working set for a single small compile and 1,098 MB for
+# a 30-chapter batch slot, so the footprint is the arena it touches and not
+# the workload. Budgeting the ask would have admitted ONE slot where four
+# demonstrably run green, quietly serialising every battery.
+#
+# The measured figure also re-derives Damian's -Jobs 4 ruling from the other
+# end: 8 x 1100 = 8,800 MB against ~6,400 MB free overcommits, 4 x 1100 =
+# 4,400 MB fits. Re-measure both numbers on a box with different RAM rather
+# than carrying them (L-COUNT); the sampling recipe is a Get-Process loop on
+# codex-vm's WorkingSet64 while a compile runs.
+#
+# Reserve is host headroom, not a guess about the guest: Windows, the
+# harness's own pwsh children and the file cache all live in it.
+function Get-VmAdmittedSlots {
+    param([int]$Slots, [int]$GuestMB = 1100, [int]$ReserveMB = 1024, [string]$What = 'this phase')
+    if ($Slots -le 1) { return $Slots }
+    $freeMB = 0
+    try { $freeMB = [int]([double](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1024) } catch { return $Slots }
+    if ($freeMB -le 0) { return $Slots }
+    $wantMB = $Slots * $GuestMB
+    if ($freeMB -ge ($wantMB + $ReserveMB)) { return $Slots }
+    $fit = [int][Math]::Floor(($freeMB - $ReserveMB) / [double]$GuestMB)
+    if ($fit -lt 1) { $fit = 1 }
+    if ($fit -ge $Slots) { return $Slots }
+    Write-Host "  [vm admission] $What wants $Slots x ${GuestMB}MB = ${wantMB}MB; free is ${freeMB}MB less ${ReserveMB}MB reserved, so admitting $fit. Overcommitting kills a guest and the verdict reads as codegen." -ForegroundColor Yellow
+    return $fit
+}
+
 
 function Connect-Vm {
     param([int]$DataPort, [int]$CtrlPort, [int]$TimeoutSec = 30)

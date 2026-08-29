@@ -1,0 +1,94 @@
+Chapter: ImgLongname
+
+  cites Foreword chapter Fat16
+
+ The guest reading an image the HOST wrote, which is the only arm that can tell
+ the two VFAT implementations apart. build-img.ps1 writes long-name runs in
+ PowerShell; Fat16.codex reads them in Codex. A round trip through either one
+ alone would pass while proving nothing about the other, which is the shape
+ BrotliBeatsOpus was written about.
+
+ The fixture is six chapters chosen for the name shapes that discriminate, not
+ for realism:
+
+   X86_64CodeGen.codex   19 characters, two records. The name the old flat SRC/
+                         layout mangled to X86_64CO.COD, which is why on-disk
+                         cite resolution could never find it.
+   readme.codex          differs from its own 8.3 form only in CASE, so it
+                         still needs a run; a writer that compared case-blindly
+                         would store README.COD and this arm would catch it.
+   Thirtee.codex         thirteen characters: exactly one record, no terminator.
+   Fourteen.codex        fourteen: exactly two, and the second holds one unit.
+   CollideOne.codex      these two share their first six characters, so their
+   CollideTwo.codex      aliases must differ by the number after the tilde.
+
+ Any name ending in `.codex` needs a run whatever its base, because the format
+ stores three extension characters and `codex` is five. That is the whole
+ reason this work existed, and it is why no arm here can test the no-run path
+ through a `.codex` fixture -- `codex/test/fat16-longname` covers that on names
+ the guest writes itself.
+
+ We say:
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    vol <- fat16-init 2048
+    print-line-uni ("usable " & show (fat16-vol-is-usable vol))
+
+    entries <- fat16-list-dir vol "SRC"
+    print-line-uni ("SRC entries " & show (list-length entries))
+
+    chapters <- list-files "SRC" ".codex"
+    print-line-uni ("list-files SRC .codex " & show (list-length chapters))
+    print-line-uni ("names " & img-texts chapters 0 (list-length chapters) "")
+
+    a <- fat16-read-source vol "SRC/X86_64CodeGen.codex"
+    print-line-uni ("X86_64CodeGen.codex " & img-head a)
+
+    ghost <- fat16-read-source vol "SRC/X86_64CO.COD"
+    print-line-uni ("no truncated ghost " & img-head ghost)
+
+    b <- fat16-read-source vol "SRC/readme.codex"
+    print-line-uni ("readme.codex " & img-head b)
+
+    c <- fat16-read-source vol "SRC/Thirtee.codex"
+    print-line-uni ("Thirtee.codex " & img-head c)
+
+    d <- fat16-read-source vol "SRC/Fourteen.codex"
+    print-line-uni ("Fourteen.codex " & img-head d)
+
+    e <- fat16-read-source vol "SRC/CollideOne.codex"
+    print-line-uni ("CollideOne.codex " & img-head e)
+
+    f <- fat16-read-source vol "SRC/CollideTwo.codex"
+    print-line-uni ("CollideTwo.codex " & img-head f)
+
+    absent <- fat16-read-source vol "SRC/NotThere.codex"
+    print-line-uni ("absent " & img-head absent)
+  end
+
+Section: Reporting
+
+ The first line rather than the whole chapter, so a wrong cluster chain shows
+ as wrong TEXT rather than as a length that happens to match.
+
+  img-head : Maybe Text -> Text
+  img-head (m) = when m
+    is Just (t) -> img-first-line t 0 (text-length t) ""
+    is None -> "<none>"
+
+  img-first-line : Text, Integer, Integer, Text -> Text
+  img-first-line (t) (i) (n) (acc) =
+    if i >= n then acc
+    else if char-code (char-at t i) == from-unicode 10 then acc
+    else img-first-line t (i + 1) n (acc & char-encode (char-at t i))
+
+  img-texts : List Text, Integer, Integer, Text -> Text
+  img-texts (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else let piece = list-at xs i & " "
+    in img-texts xs (i + 1) n (acc & piece)
+
+Page 1

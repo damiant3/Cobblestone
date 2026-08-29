@@ -1,5 +1,14 @@
 # Prism -- Codex Through Every Lens
 
+**DIRECTION SUPERSEDED 2026-08-28 (Damian, via red).** Prism's
+destination is a full local HTML/WASM dev environment built on the
+STATIC page, not on a served compiler process; the campaign design is
+`PrismDevEnvironment.md` beside this file. This document remains the
+record of the compiler-as-server architecture, which survives only as
+the hosted half of the essay-repl-server join (see `prism-backlog.md`);
+PRISM-1's measurement of why the served route is expensive is part of
+why the direction moved.
+
 ## What It Is
 
 A web application that shows Codex source code in the center and the

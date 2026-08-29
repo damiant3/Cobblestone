@@ -16,6 +16,259 @@ exits, the cursor bracket, why the palette arrives as a parameter. Read it
 before adding a pane or taking a cell. This file is what is missing; that one
 is what must not be broken.
 
+## WORKS-59: FIXED. The Browser's second pill restore killed the guest, a regression this lane shipped at 20497
+
+**RE-MEASURED 2026-08-28 (val) and every earlier statement in this entry was
+wrong in the same direction: the symptom is worse than "nothing happens", and
+the mechanism recorded as ruled out is the live one.** Head, seed
+`FFB76AFD9E981B29`, 1600x900, mouse-driven captures.
+
+**The symptom is a HALT.** The second genuine restore of the Browser from its
+pill halts the guest: `Guest halted with IF=0`, `!EXC=06` (invalid opcode) at
+`RIP=0x10b936`, `CR2=0x1400000`. Same signature on both runs that reached it.
+Nothing renders, so a capture arm sees no frame at all rather than a bad one.
+
+**The recorded "nothing happens" WAS THE INSTRUMENT.** Every desk capture is
+taken under `desk.ps1 -Rtc`, which pins the HPET as well as the CMOS. With the
+HPET stopped every elapsed reads zero, so `dk-dclick`'s
+`el * 1000 <= dk-dclick-ms * tps` is true for any second click on the SAME pill,
+and `desk-dispatch` sends a double-click to `desk-pill-minimise`. The window was
+already minimised, so the desk repainted the desktop and the frame showed
+Welcome plus the pill. **The frozen clock converted the crashing click into a
+no-op and the arm recorded the no-op.** Two consequences worth carrying: no
+frozen-clock arm can ever exercise a second same-pill click, and a third click
+CAN, because `dk-pillc-clear` fires on the pair and makes the next click a fresh
+first one -- that third click crashes under `-rtc` exactly as the second does
+without it.
+
+**The arms, all on head unless the row says otherwise:**
+
+| arm | clock | result |
+|---|---|---|
+| Browser, second tab, minimise, pill | live | restores, both tabs, no halt |
+| the same, then minimise, pill again | live | **HALT** |
+| the same double cycle | frozen | no halt; second click is a double-click, so it minimises and nothing appears to happen |
+| frozen double cycle, then a THIRD click | frozen | **HALT**, same signature |
+| Files: minimise, pill, minimise, pill | live | restores fully painted with its ESP listing, no halt |
+| WORKS-57's arm verbatim (two tabs, dock, open the Monitor, close it over the docked Browser, restore) | frozen | **restores with both tabs** |
+| the crashing arm against `GopDesk.codex#140`, the revision BEFORE the reclaim | live | restores, both tabs, no halt |
+| the crashing arm with `desk-root-reclaim` ablated to never reclaim | live | restores, both tabs, no halt |
+
+So WORKS-57's arm still passes and the two are not one defect; Browser-specific
+stands, now measured on an instrument that can express the failure; and the
+cause is the root reclaim.
+
+**THE MECHANISM, AND IT IS THE ONE THIS ENTRY SAID WAS RULED OUT.**
+`desk-root-reclaim` (main 20497, D.1, this lane) rewinds the heap to before the
+desktop root when `desk-marks-live-above` finds no live entry at or above where
+the last root ended. The Browser's mark-stack entry is recorded by
+`desk-browser-open` at the frontier of the ORIGINAL open, but `gbr-repaint`
+rebuilds `bp-st` at the CURRENT frontier on every repaint (the rule written
+above `desk-browser-evict`), and nothing moves the mark when it does. After the
+first restore the Browser's live state therefore sits ABOVE the root while its
+mark still sits below it, the guard cannot see it, `__heap-restore` frees it,
+and the next `desk-browser-reenter` runs `gbr-first-paint` through the freed
+`bp`. Files and the 3D panes cannot reach this state because their own `-open`
+builds their state once, above their own mark.
+
+**Why the earlier ruling-out was invalid, because the shape repeats.** The
+control said "the depot build, which has no guard at all, fails identically".
+Both arms of that control ran under the frozen clock, so NEITHER of them ever
+performed a second re-entry: both were measuring the double-click no-op, and two
+builds agreed about a code path neither one executed. A control that agrees
+because neither arm reaches the subject is not evidence about the subject
+(L-CONTROL), and the agreement was published in a CL description as well as
+here.
+
+**FIXED. `desk-browser-reenter` remarks the Browser's mark-stack entry to the
+frontier its state is about to be rebuilt at (`desk-marks-remark`), so
+`desk-marks-live-above` sees it and the reclaim declines.** The live-clock
+double cycle now restores with both tabs and no halt.
+
+**The obvious fix was tried first and REJECTED on measurement, and WORKS-58
+BELOW ALREADY SAID SO.** The contract's row for cells 224/228 said the reclaim
+fires "only when the frontier still stands exactly where the last root ENDED".
+Implemented, that stops the crash too -- and costs **2,394,032 bytes a
+minimise-restore cycle**, because an ordinary re-entry leaves the frontier above
+the root end, so the reclaim never fires again and WORKS-58 is undone. That is
+the same finding WORKS-58's "THE FIRST FORMULATION WAS INERT" paragraph records
+from the other direction, where it read as three arms byte-identical to the
+pre-fix build; this is the number under it. **I re-derived it at the cost of a
+build and two arms because I did not read the entry two headings down in this
+same file** (L-READ). What the contract still had wrong is separate and is now
+fixed: it described the inert rule as the one the code implements, and the code
+has never implemented it.
+
+**The acceptance, re-measured, and the noise floor is the point.** With the fix,
+Files at 1 cycle and at 3 cycles read `0x15cd8b3` and `0x15d43e3`, which looks
+like 13,704 bytes a cycle until you run the same point twice: two N=1 runs read
+`0x15cd8b3` and `0x15d43a3`, a spread of **27,376 bytes**, so the N=1 against
+N=3 difference is inside the run-to-run noise and is not a per-cycle cost. Head
+shows the same two values in the opposite order. The reading that carries the
+claim instead is the **root address, `0x12dbe63`, identical across every one of
+the six readings on both builds**. The rejected frontier rule sat two orders of
+magnitude outside that noise, which is how it was caught.
+
+The arm cannot resolve anything under ~27 KB, and it cannot be made to: pinning
+the clock is what would settle it and `-rtc` breaks the pill path this arm
+depends on.
+
+**`codex/test/desk-root-guard` is the runner and it is IN THE BVT** (root ruled
+it in, 2026-08-28, on L-NOGATE: a guest-kill guard nothing runs will rot). It
+checks `settled` yes, `live-at-e` no, `live-above` no, `live-below` yes,
+`unwritten` no no. Wired through `codex/build/bvtScript.codex` and the emitted
+`build/bvt.ps1` in one CL, `check-generated-scripts -Only bvt` at match, 0
+drift. The BVT is 76 tests and 137 checks now; deleting the mark test takes
+`desk-root-guard` red ALONE, at `live-at-e` and `live-above`, with the diff
+printed.
+
+**The sabotage that proved it was itself sabotaged first, and the arm said
+PASS.** The first attempt wrote over `GopDesk.codex` while Perforce had it
+read-only, `Set-Content` was denied, and the BVT scored the UNMODIFIED build
+green -- which reads exactly like a guard that cannot fail. The second attempt
+asserts the pattern count goes 1 to 0 on disk before running anything. Any
+scripted ablation here wants that assertion; this is the second time this
+workspace has produced it.
+
+The end-to-end catch is still a hand-driven capture: a `.uiscript` under
+`apps/works/tests/` would record the live-clock double cycle, and nothing
+invokes `test-app-gui.ps1` from any gate either.
+
+## WORKS-58: FIXED at main 20493. Every minimize and every pill restore leaked a desktop root
+
+**The cycle table is flat in N and that is the acceptance.** One window open, so
+no click can reach another pane's content; N cycles of minimize then restore
+from the pill, then the Monitor for the readout:
+
+| cycles | before | after |
+|---:|---|---|
+| 0 | `0x15fd18b` | `0x15fd18b` |
+| 1 | `0x1840fcb` | `0x15276fb` |
+| 3 | `0x1ba73f3` | `0x15276fb` |
+
+One cycle and three now read the SAME frontier. Per-cycle growth **1,782,292
+to 0**, and it settles 875,152 BELOW the 0-cycle baseline, because the first
+minimize also reclaims the root `desk-run` built at boot.
+
+**The fix, and the guard is the whole of it.** `desk-root-note` records the
+frontier either side of every `desk-draw` at all eight sites;
+`desk-root-reclaim` frees the root a rebuild replaces only when no LIVE
+mark-stack entry sits at or above where that root ENDED. A pane opened after
+the root has its state above it and freeing that is WORKS-57, so the guard
+declines exactly once after any pane opens and permits thereafter.
+
+**THE FIRST FORMULATION WAS INERT AND ONLY THE MEASUREMENT SAID SO.** It
+guarded on the frontier still equalling `root-end`, which can never hold: every
+rebuild site allocates after the root, and `desk-loop`'s per-iteration mark
+sits above `root-end`. Three arms came back byte-identical to the pre-fix build.
+It failed CLOSED rather than open, which is the direction to fail in, but a
+change that reads as a fix and reclaims nothing is exactly what a green suite
+cannot distinguish from a working one (L-FALSIF).
+
+**Regression arms.** Files survives three cycles fully painted with its ESP
+listing; the Files-plus-Edit two-pane restore is pixel-identical to the pre-fix
+frame, which is the guard correctly DECLINING; the buried close moves
+`0x24cee7f` to `0x1f86a17` with Edit surviving. Every `-reenter` path brackets
+its own allocations with `__heap-save`/`__heap-restore`, so none of them leaves
+persistent state above the root.
+
+**What is left.** The first cycle still costs, because the root that predates a
+pane sits below that pane's mark and cannot be freed while it lives; that is the
+stranding option D is for, not a separate defect. And WORKS-59 above is
+unexplained.
+
+## WORKS-57: FIXED at main 20387. A window close destroyed every other pane's state, and a pill restore painted an empty window
+
+**Both halves are fixed and the arm that proves it has a depot control.**
+`desk-wnd-close-to` now does what `desk-app-close-plain` does about memory --
+kill the closing pane's entry, reclaim dead entries from the top, restore to
+the reclaimed target or to nothing when a live entry sits above -- and keeps
+every surviving pane's state instead of handing down `desk-apps-empty`.
+`desk-pill-restore` now dispatches to the pane's own `-focus`, which re-enters
+a live pane and opens a dead one.
+
+**The arm, and the second tab is the point.** Open the Browser, add a second
+tab, dock it, open the Monitor, close the Monitor over the docked Browser,
+then restore the Browser from its pill:
+
+| build | result |
+|---|---|
+| depot | bare desktop, no pills, the Browser destroyed |
+| fixed | the Browser restores with BOTH tabs and its page |
+
+A Browser rebuilt fresh shows ONE tab, so a single-tab arm would have passed
+on both builds and proved nothing (L-CONTROL). Also run: the app sweep at
+`-Jobs 4` against the SUT, CHECK OK, 265 clean, 5 known-dirty, 0 regressions;
+and all 27 test chapters citing `GopDesk` compiled clean against the SUT.
+
+**WHAT STILL HAS NO RUNNER, which is why this shipped.** Nothing in the tree
+calls `desk-pill-restore` or `desk-wnd-close-to`. Both are effectful and take
+a framebuffer, so there is no unit arm today, and the decision they now share
+-- which mark to restore to and which states survive -- is written inline in
+both rather than in something a test could call. A guard wants either that
+decision lifted into a pure function over the mark stack, or the arm above
+recorded as a `.uiscript` under `build/test-gui.ps1`. Until one exists this
+path is checked by nothing (L-NOGATE, L-UNCALLED).
+
+The account of how the cause was first got wrong is kept below, because the
+wrong version reached main and someone re-reading the fix should see why it
+is not about eviction.
+
+### The original row, and the correction
+
+Found 2026-08-27 (val) while re-measuring the ShellRefinement 6.4 frontier
+table, which is where the numbers live. Mouse-driven arms on the desk at main
+20359, seed 61C81B04, 1600x900.
+
+**THE FIRST VERSION OF THIS ROW NAMED THE WRONG CAUSE AND IS CORRECTED HERE
+IN FULL.** It said raising a docked Files calls `desk-files-open` and so
+evicts the Browser. **A pill click never reaches `-open`:** `desk-dispatch`
+sends it to `desk-pill-restore`, which sets the window state to normal,
+raises it in the registry, repaints, and passes `apps` through untouched.
+Nothing is evicted on that path. The eviction reading came from reading
+`-open`, finding `desk-browser-evict` and stopping there because it explained
+the symptom -- L-MECHANISM, and the cheap discipline it names (grep the line
+your mechanism runs through) is exactly what was skipped. The measurements
+are unaffected; only the cause was wrong.
+
+**A. `desk-pill-restore` never re-enters the pane, so a restored window comes
+back empty.** It raises and calls `desk-wnd-paint-all`, which paints the
+frames and chrome; nothing asks the pane to redraw its content, and no
+`-reenter` is called. Measured twice in the same arm set: a restored Files
+and a restored Browser both paint a title bar and an empty client area,
+against a live Browser that paints a tab bar, an address bar and the page.
+
+**B. Closing a window while another is open frees the survivor and wipes
+every pane's state.** `desk-app-close` (`GopDesk.codex:1518`) asks the
+registry for a next window and, whenever there is one, routes to
+`desk-wnd-close-to` rather than to `desk-app-close-plain`. That path does
+`__heap-restore (peek-32 ds desk-mark-cell)` -- the DESK BASE MARK -- and
+hands `desk-apps-empty` down to `desk-loop`. So the surviving window's state
+record is dropped and the heap goes back below where its `-open` allocated.
+Measured: dock Files, dock the Browser, raise Files, close it, and the
+desktop comes back BARE, welcome frame and no pills.
+
+**Its own prose says why this was believed safe, and that premise is the
+defect.** `desk-app-close:1511-1516` states that "every windowed pane keeps
+its state in a block `desk-run` allocated BELOW that mark, so the window left
+standing survives it". True of the light panes, which own `ds` cell blocks
+allocated in `desk-run`. **False of the four heavy panes**, whose `Just st`
+is built by `-open` above their own pushed mark -- which is the entire reason
+the mark stack exists.
+
+**What this changes for the stranding work.** `desk-app-close-plain` is the
+only path that kills a mark entry, reclaims, and picks a restore target, and
+by `:1521-1523` it runs ONLY when the closing window is the last one. So the
+buried-mark case the option-D ruling is aimed at is largely unreachable
+through the close button: a close with another window open never consults the
+mark stack at all. Whatever the allocator fix turns out to be, it lands on a
+path that today is bypassed.
+
+**Open and deliberately not guessed at.** B restores to the base mark, and
+yet the frontier after that arm still sits 6,480,104 bytes above a baseline
+desktop (ShellRefinement 6.4). Those two do not fit together and the residual
+has no mechanism yet. It is the next measurement, not a paragraph.
+
 ## WORKS-56: the band's cached depth is measured EMPTY, so the content box overlaps it as soon as a pill exists
 
 Found 2026-08-27 (val) while measuring what a pill-only strip costs for
@@ -139,12 +392,63 @@ blu consults on the net side after COMPILER-18. `docs/PM/CurrentPlan.md`,
 for directly the same day (`ShellRefinement.md` stage 6). Nothing here is
 blocked; the order is his to change.
 
-Two things to settle before building rather than during: what the pane does
-when the server is serving and the desk wants to step another pane, since the
-desk steps exactly one pane at a time and a server that only runs while its
-own pane is focused is not a server; and where the request log lives, because
-a `ds` cell pointer must be allocated in `desk-run` below the base mark
-(`works-desk-contract.md`) and an unbounded log is a leak with no collector.
+**BOTH QUESTIONS SETTLED 2026-08-28 (val), from the code rather than by
+ruling, which is what they turned out to want.**
+
+**1. The serve cannot live in a pane step, and the reason is mechanical rather
+than architectural.** `net-io-accept` (`codex/os/net/NetIO.codex:107`) BLOCKS by
+construction: it recurses on `net-driver-recv-frame` until the connection
+reaches `TcpEstablished` or `net-io-max-polls` is spent. A desk step handles ONE
+event and returns, so a step that calls it stops the desk -- the clock, the
+mouse and every other pane -- for the whole poll budget. So the serve is a PUMP
+driven from `desk-loop`, not a pane: one non-blocking `net-driver-recv-frame`
+attempt per iteration, fed to `transport-process-frame`, with the session in a
+`ds` block. That is the shape `desk-clock` already has (it runs from the loop,
+gated, and belongs to no pane), and it answers the entry's worry directly: the
+server keeps serving while another pane is focused because no pane owns it. The
+pane becomes a VIEW over that state -- start, stop, and the log -- and owns none
+of the serving.
+
+**2. The log is a fixed-size ring in a `ds`-pointed block, allocated in
+`desk-run` before the base mark.** The pattern is already there twice:
+`dk-prev-cell` (232) and `dk-pedge-cell` (212) are both pointers to fixed
+blocks allocated before the mark for exactly this reason. Unbounded is not an
+option and never was -- there is no collector -- so the ring drops the oldest
+entry and the pane says so rather than pretending it holds everything. Three
+`ds` cells are free (244, 248, 252); taking one is announced in the file-claims
+table first, the way the contract asks.
+
+**THIS ROW NAMED THE WRONG CHAPTER, AND THE RIGHT ONE IS ALREADY A REAL
+SERVER** (val, 2026-08-28, after Damian said so). There are TWO chapters called
+`WebServer`:
+
+- **`codex/os/net/WebServer.codex`, 17,619 bytes, cited as `Net chapter
+  WebServer` -- this is the one.** It carries a concurrent event loop:
+  `web-mux-accept`, `web-mux-feed` (demux by segment owner, SYN to accept),
+  `web-mux-serve-conn`, `web-mux-drain`, `web-mux-sweep` (idle reap on
+  `web-sweep-interval`), content-length reassembly (`wb-content-length`,
+  `wb-request-total`, `wb-headers-end`), plus `web-serve`,
+  `web-serve-concurrent` and `web-serve-framed`. Four tests already pin it:
+  `codex/test/web-mux-{concurrent,idle-reap,lifecycle,reassembly}`. Ten
+  chapters consume it, `Prism.codex:340` (`web-serve (prism-route ...)`)
+  among them.
+- `apps/works/WebServer.codex`, 3,411 bytes, a router and handler table with
+  no listen, no accept and no socket, whose only callers in the tree are four
+  lines of `web-server-test.codex` (L-UNCALLED). **A same-named chapter in
+  another quire is exactly the contested-name hazard `cite-override-quire`
+  exists for**, and it is why every consumer writes `cites Net chapter
+  WebServer` rather than the bare name. Whether this stub should survive at
+  all is a question for Damian, not this row.
+
+**So the estimate above is wrong in the useful direction and the pump is
+ALREADY FACTORED.** One iteration of `web-mux-loop` (`:345-361`) is exactly
+what a desk-loop iteration must do: `net-driver-recv-frame` (non-blocking,
+empty list when there is nothing), `web-mux-feed route m frame port`, and
+`web-mux-sweep` on the interval, bracketed by `__heap-save`/`__heap-restore`
+on the empty-frame path -- which is the desk's own per-iteration idiom
+already. Only the LOOP wrapper blocks. The pane therefore needs no new serving
+code: it needs the `WebMux` in a `ds` block and those three calls per
+iteration.
 
 ## WORKS-25: `xhci-connect` opens controller 0 and three chapters use it
 

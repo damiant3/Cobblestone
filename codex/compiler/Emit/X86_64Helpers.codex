@@ -1,5 +1,66 @@
 Chapter: X86-64 Code Generator
 
+Section: Heap Bump
+
+ The guard is 31 bytes and needs no scratch register, which is the constraint
+ that decides both encodings -- see `cmp-r-abs` and `cmp-abs-imm8`. It runs at
+ 59 allocation sites across 8 emitter chapters, where every register is already
+ live.
+
+ A CEILING OF ZERO MEANS UNARMED, AND THE FIRST TEST IS WHAT MAKES THE GUARD
+ SAFE OUTSIDE THE COMPILER. Without this test the second compare reads a
+ zero-initialised cell as a ceiling, every frontier exceeds it, and the trap
+ fires on the FIRST heap allocation of every emitted program: measured
+ 2026-08-27, the sign tool and a five-line probe both died `!EXC=06` at
+ `R10=0x600008` while the guarded compiler itself ran clean, because the
+ compiler is the one program that arms the cell.
+
+ A GREEN GATE IS NOT EVIDENCE THIS GUARD WORKS, AND NEITHER IS THE `-Decks`
+ KNOB. The per-site `deck-short-of` checks raise CDX9002 before the deck
+ cursor ever reaches this ceiling, so every starvation route that exists
+ reports the OLDER guard's refusal and this one stays silent: measured
+ 2026-08-28, a sweep at 50/60/70/80/90 was byte-for-byte identical between a
+ guarded and an unguarded kernel, and `deck-floor-test.ps1` passes all four
+ arms against the guarded kernel while testing that same per-site path. A new
+ guard sitting behind an older one inherits its green rather than earning it.
+ The only instrument that separates this working from dead code is a SABOTAGE
+ of the arming value, one edit and one build: `build` writing `p + 4096`
+ instead of `p + size` dies `!EXC=06` with no output where the good kernel
+ compiles the same chapter at exit 0.
+
+ THE CELL IS ARMED FOR THE LENGTH OF A DECK EXTENT AND ZERO OUTSIDE IT.
+ `__deck-enter` copies the reservation top into it on the counter's 0 to 1
+ crossing and `__deck-exit` writes zero back on the crossing to 0
+ (`emit-deck-enter-builtin` / `emit-deck-exit-builtin`, `X86_64Builtins.codex`);
+ `build` writes only the reservation top, in its own cell. That is what makes
+ R10 here a statement about the DECK CURSOR: inside an extent `__deck-enter`
+ has loaded R10 from the deck-pos cell and every allocation walks it up the
+ deck, while outside one R10 is the bivy frontier, which sits above the
+ reservation by construction and would trip a ceiling that stayed armed. The
+ argument is written once, where the top is written, in
+ `Core/PhaseAllocator.codex`.
+
+ The two rel32 displacements are the lengths of what each branch skips: 16 is
+ the armed compare, its branch and the UD2, and 2 is the UD2 alone.
+
+  deck-guard-code : List Integer
+  deck-guard-code =
+   cmp-abs-imm8 deck-ceiling-addr 0
+     & jcc cc-e 16
+     & cmp-r-abs reg-r10 deck-ceiling-addr
+     & jcc cc-be 2
+     & [15, 11]
+
+  heap-bump-imm : CodegenState, Integer -> CodegenState
+  heap-bump-imm (st) (n) =
+   if deck-guard-enabled == 0 then st-append-code st (add-ri reg-r10 n)
+   else st-append-code st (add-ri reg-r10 n & deck-guard-code)
+
+  heap-bump-reg : CodegenState, Integer -> CodegenState
+  heap-bump-reg (st) (r) =
+   if deck-guard-enabled == 0 then st-append-code st (add-rr reg-r10 r)
+   else st-append-code st (add-rr reg-r10 r & deck-guard-code)
+
 Section: State Records
 
   StrEqHeadResult = record {
@@ -825,7 +886,7 @@ Section: I/O Boundary Helpers
 
    in let st-none-d = st-append-code st-none-c (mov-store reg-rax reg-rdi 0)
 
-   in let st-none-e = st-append-code st-none-d (add-ri reg-r10 8)
+   in let st-none-e = heap-bump-imm st-none-d 8
 
    in let st-none-f = st-append-code st-none-e (pop-r reg-r12)
 
@@ -921,7 +982,7 @@ Section: I/O Boundary Helpers
 
    in let st56 = st-append-code st55 (and-ri reg-rax (-8))
 
-   in let st57 = st-append-code st56 (add-rr reg-r10 reg-rax)
+   in let st57 = heap-bump-reg st56 reg-rax
 
    in let st-just-a = st-append-code st57 (mov-rr reg-rax reg-r10)
 
@@ -931,7 +992,7 @@ Section: I/O Boundary Helpers
 
    in let st-just-d = st-append-code st-just-c (mov-store reg-rax reg-rbx 8)
 
-   in let st-just-e = st-append-code st-just-d (add-ri reg-r10 16)
+   in let st-just-e = heap-bump-imm st-just-d 16
 
    in let st59 = st-append-code st-just-e (pop-r reg-r12)
 
@@ -1041,7 +1102,7 @@ Section: I/O Boundary Helpers
 
    in let st-none-d = st-append-code st-none-c (mov-store reg-rax reg-rdi 0)
 
-   in let st-none-e = st-append-code st-none-d (add-ri reg-r10 8)
+   in let st-none-e = heap-bump-imm st-none-d 8
 
    in let st-none-f = st-append-code st-none-e (pop-r reg-rbx)
 
@@ -1113,7 +1174,7 @@ Section: I/O Boundary Helpers
 
    in let st56 = st-append-code st55 (and-ri reg-rax (-8))
 
-   in let st57 = st-append-code st56 (add-rr reg-r10 reg-rax)
+   in let st57 = heap-bump-reg st56 reg-rax
 
    in let st-just-a = st-append-code st57 (mov-rr reg-rax reg-r10)
 
@@ -1123,7 +1184,7 @@ Section: I/O Boundary Helpers
 
    in let st-just-d = st-append-code st-just-c (mov-store reg-rax reg-rbx 8)
 
-   in let st-just-e = st-append-code st-just-d (add-ri reg-r10 16)
+   in let st-just-e = heap-bump-imm st-just-d 16
 
    in let st59 = st-append-code st-just-e (pop-r reg-rbx)
 
@@ -1263,7 +1324,7 @@ Section: I/O Boundary Helpers
 
    in let st44 = st-append-code st43 (add-ri reg-rax 8)
 
-   in let st45 = st-append-code st44 (add-rr reg-r10 reg-rax)
+   in let st45 = heap-bump-reg st44 reg-rax
 
    in let st46 = st-append-code st45 (mov-rr reg-rax reg-rbx)
 
@@ -1328,7 +1389,7 @@ Section: I/O Boundary Helpers
    in let st39 = st-append-code st38 (add-ri reg-rax 15)
    in let st40 = st-append-code st39 (and-ri reg-rax (-8))
    in let st41 = st-append-code st40 (add-ri reg-rax 8)
-   in let st42 = st-append-code st41 (add-rr reg-r10 reg-rax)
+   in let st42 = heap-bump-reg st41 reg-rax
    in let st43 = st-append-code st42 (mov-rr reg-rax reg-rbx)
    in let st44 = st-append-code st43 (pop-r reg-rcx)
    in let st45 = st-append-code st44 (pop-r reg-rbx)
@@ -1382,7 +1443,7 @@ Section: I/O Boundary Helpers
    in let st39 = st-append-code st38 (add-ri reg-rax 15)
    in let st40 = st-append-code st39 (and-ri reg-rax (-8))
    in let st41 = st-append-code st40 (add-ri reg-rax 8)
-   in let st42 = st-append-code st41 (add-rr reg-r10 reg-rax)
+   in let st42 = heap-bump-reg st41 reg-rax
    in let st43 = st-append-code st42 (mov-rr reg-rax reg-rbx)
    in let st44 = st-append-code st43 (pop-r reg-rcx)
    in let st45 = st-append-code st44 (pop-r reg-rbx)
@@ -2127,7 +2188,7 @@ Section: I/O Boundary Helpers
    in let st98 = st-append-code st97 (mov-rr reg-rax reg-r10)
    in let st99 = st-append-code st98 (li reg-r11 0)
    in let st100 = st-append-code st99 (mov-store reg-rax reg-r11 0)
-   in let st101 = st-append-code st100 (add-ri reg-r10 8)
+   in let st101 = heap-bump-imm st100 8
    in let st102 = patch-jmp-at st101 jmp-end (st101.code-len)
    in let st103 = st-append-code st102 [72, 129, 196, 0, 2, 0, 0]
    in let st104 = st-append-code st103 (pop-r reg-r15 & pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx & pop-r reg-rbp)
@@ -2637,7 +2698,8 @@ Section: Allocator Helpers
 
    let st1 = record-func-offset st "__alloc"
 
-   in let st2 = st-append-code st1 (mov-rr reg-rax reg-r10 & add-rr reg-r10 reg-rdi)
+   in let st1b = st-append-code st1 (mov-rr reg-rax reg-r10)
+   in let st2 = heap-bump-reg st1b reg-rdi
    in let st-tr = if st.trace-alloc then emit-alloc-trace st2 else st2
    in let st3 = st-append-code st-tr (push-r reg-rcx & push-r reg-rax)
    in let st4 = st-append-code st3 (mov-rr reg-rcx reg-rdi & mov-rr reg-rdi reg-rax)
@@ -2880,7 +2942,7 @@ Section: Buffer Helpers
 
    in let st6 = st-append-code st5 (mov-store reg-r10 reg-r13 0)
 
-   in let st7 = st-append-code st6 (add-ri reg-r10 8)
+   in let st7 = heap-bump-imm st6 8
 
    in let st8 = st-append-code st7 (mov-rr reg-rbx reg-r10)
 
@@ -2892,7 +2954,7 @@ Section: Buffer Helpers
 
    in let st12 = st-append-code st11 (shl-ri reg-rax 3)
 
-   in let st13 = st-append-code st12 (add-rr reg-r10 reg-rax)
+   in let st13 = heap-bump-reg st12 reg-rax
 
    in let st14 = st-append-code st13 (li reg-rcx 0)
 
@@ -3257,7 +3319,7 @@ Section: Binary Output
 
    in let st15a = st-append-code st15 (mov-store reg-r10 reg-r12 0)
 
-   in let st15b = st-append-code st15a (add-ri reg-r10 8)
+   in let st15b = heap-bump-imm st15a 8
 
    in let st16 = st-append-code st15b (mov-rr reg-r13 reg-r10)
 
@@ -3269,7 +3331,7 @@ Section: Binary Output
 
    in let st20 = st-append-code st19 (shl-ri reg-rax 3)
 
-   in let st21 = st-append-code st20 (add-rr reg-r10 reg-rax)
+   in let st21 = heap-bump-reg st20 reg-rax
 
    in let st22 = st-append-code st21 (mov-rr reg-rcx reg-rbx)
 
@@ -3333,7 +3395,7 @@ Section: Binary Output
 
    in let st3 = st-append-code st2 (mov-rr reg-rsi reg-r10)
 
-   in let st4 = st-append-code st3 (add-ri reg-r10 512)
+   in let st4 = heap-bump-imm st3 512
 
    in let st5 = st-append-code st4 (mov-rr reg-rdi reg-rbx)
 
@@ -3393,7 +3455,7 @@ Section: Binary Output
 
    in let st3 = st-append-code st2 (mov-rr reg-r12 reg-r10)
 
-   in let st4 = st-append-code st3 (add-ri reg-r10 512)
+   in let st4 = heap-bump-imm st3 512
 
    in let st5 = st-append-code st4 (mov-rr reg-rdi reg-rbx)
 
@@ -3429,7 +3491,7 @@ Section: Binary Output
 
    in let st4 = st-append-code st3 (mov-rr reg-r14 reg-r10)
 
-   in let st5 = st-append-code st4 (add-ri reg-r10 512)
+   in let st5 = heap-bump-imm st4 512
 
    in let st6 = st-append-code st5 (mov-rr reg-r15 reg-r10)
 
@@ -4538,7 +4600,7 @@ Section: Binary Output
 
    in let st1 = st-append-code st0 (mov-rr reg-rax reg-r10)
 
-   in let st2 = st-append-code st1 (add-rr reg-r10 reg-rdi)
+   in let st2 = heap-bump-reg st1 reg-rdi
 
    in st-append-code st2 x86-ret
 

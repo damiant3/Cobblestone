@@ -10,7 +10,7 @@ Chapter: CleanZombiesScript
 
 Section: Parameters
 
-  cleanzombies-params : List ShellParam = []
+  cleanzombies-params : List ShellParam = [sh-doc ["Fleet-wide: kill every codex-vm and QEMU on the box and shut down WSL,", "the pre-2026-08-28 behaviour. WITHOUT it the sweep is scoped to VMs whose", "command line references THIS workspace, because a bare run during another", "agent's gate is friendly fire: it killed three gates in one day. A foreign", "agent's VM, a bare WSL bridge and vmmemWSL all survive a scoped run; your", "own GDB bridge names your repo path and is yours, so it does not."] (sh-switch "All")]
 
 Section: S01 -- Init
 
@@ -20,7 +20,7 @@ Section: S01 -- Init
  the tool reached for when the machine is already wedged. It has to run to
  the end on a box where things are failing; that is its whole job.
 
-  s01 : List ShellCmd = [ScAssign "killed" (SeRaw "$false")]
+  s01 : List ShellCmd = [ScAssign "killed" (SeRaw "$false"), ScAssign "repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path")]
 
 Section: S02 -- Kill VM and WSL Processes
 
@@ -30,15 +30,17 @@ Section: S02 -- Kill VM and WSL Processes
 
   s02-kill-remaining : List ShellCmd = [ScRaw "$procs | Where-Object { -not $_.HasExited } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }", ScAssign "killed" (SeRaw "$true")]
 
-  s02 : List ShellCmd = [ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) [ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue", ScIf (SeAnd (SeStringEq (SeVar "name") (SeLit "codex-vm")) (SeVar "procs")) s02-portfwd-spare [], ScIf (SeVar "procs") [ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal [], ScSequence s02-kill-remaining] []]]
+  s02-own-scope : List ShellCmd = [ScComment "Ownership scope (default): only processes whose command line names", ScComment "THIS workspace are ours to kill. Another agent's VM never matches;", ScComment "a bare wsl bridge never matches; your own GDB bridge does. -All", ScComment "restores the fleet-wide sweep.", ScRaw "$procs = @($procs | Where-Object {", ScRaw "$cl = (Get-CimInstance Win32_Process -Filter \"ProcessId=$($_.Id)\" -ErrorAction SilentlyContinue).CommandLine", ScRaw "\"$cl\" -like \"*$repo*\"", ScRaw "})"]
+
+  s02 : List ShellCmd = [ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) [ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue", ScIf (SeAnd (SeStringEq (SeVar "name") (SeLit "codex-vm")) (SeVar "procs")) s02-portfwd-spare [], ScIf (SeAnd (SeNot (SeVar "All")) (SeVar "procs")) s02-own-scope [], ScIf (SeVar "procs") [ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal [], ScSequence s02-kill-remaining] []]]
 
 Section: S03 -- WSL Shutdown
 
-  s03 : List ShellCmd = [ScIf (SeRaw "Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue") [ScRaw "& wsl.exe --shutdown 2>$null | Out-Null", ScAssign "killed" (SeRaw "$true")] []]
+  s03 : List ShellCmd = [ScIf (SeAnd (SeVar "All") (SeRaw "(Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue)")) [ScRaw "& wsl.exe --shutdown 2>$null | Out-Null", ScAssign "killed" (SeRaw "$true")] []]
 
 Section: S04 -- Summary
 
-  s04 : List ShellCmd = [ScIf (SeVar "killed") [ScRaw "Write-Output \"clean-zombies: done\""] [ScRaw "Write-Output \"clean-zombies: nothing to do\""]]
+  s04 : List ShellCmd = [ScAssign "scope" (SeRaw "if ($All) { 'fleet-wide' } else { 'this workspace only' }"), ScIf (SeVar "killed") [ScRaw "Write-Output \"clean-zombies: done ($scope)\""] [ScRaw "Write-Output \"clean-zombies: nothing to do ($scope)\""]]
 
 Section: Assembly
 

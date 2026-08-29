@@ -7,9 +7,26 @@
 # A by-eye extraction counted const and var only and missed every parameter,
 # which is how the surface was recorded at 66 when it is 102; this counts both.
 #
-# The prelude is emitted wholesale (ZigEmitter's opening concatenates
-# zig-prelude before any type or definition text), so the line-wise common
-# prefix of two or more emitted programs IS the prelude and nothing else.
+# AND IT COUNTS FUNCTION NAMES, which it did not until 2026-08-28. The regex
+# that harvests parameters reads past `fn NAME` to reach the parameter list and
+# dropped the name on the way, so this script printed OK over a surface with
+# none of the prelude's 74 functions in it. A Codex program with a top-level
+# named `cx-print` emitted a second `fn cx_print` and the file would not
+# compile. Finding 67.
+#
+# THE PRELUDE IS NOT THE SAME IN EVERY PROGRAM ANY MORE. It is tree-shaken:
+# each program carries the parts it reaches, so requiring the emitted preludes
+# to be IDENTICAL -- which this did -- now fails by design. The replacement is
+# stronger, not weaker. Every emitted prelude must be a SUB-SELECTION of one
+# known whole, in table order: walk the parts, consume the ones that match at
+# the cursor, skip the rest, and require the cursor to land exactly at the end.
+# A prelude that reordered, duplicated, truncated or invented anything fails
+# that walk, and "they are all identical" tested none of it.
+#
+# The whole comes from the emitter's own `zig-prelude-parts` table, so the
+# surface is derived from EVERY part rather than from whichever ones one
+# subject happened to reach. That keeps zig-prelude-decls a union, which is
+# what its own prose requires.
 #
 # Not wired into any gate. Run it after changing zig-prelude.
 [CmdletBinding()]
@@ -21,12 +38,71 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function ConvertFrom-CodexEscapes([string]$s) {
+    $sb = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $s.Length; $i++) {
+        if ($s[$i] -eq '\' -and $i + 1 -lt $s.Length) {
+            $i++
+            switch ($s[$i]) {
+                'n' { [void]$sb.Append("`n") }
+                't' { [void]$sb.Append("`t") }
+                '"' { [void]$sb.Append('"') }
+                '\' { [void]$sb.Append('\') }
+                default { [void]$sb.Append('\'); [void]$sb.Append($s[$i]) }
+            }
+        } else { [void]$sb.Append($s[$i]) }
+    }
+    $sb.ToString()
+}
+
+# The parts, in table order, reconstructed from the emitter's own generated
+# table. A part's text is the concatenation of its fragments' payloads --
+# ShakeLit and ShakeUse alike, because ShakeUse is text that is ALSO an edge.
+function Get-ShakeParts([string]$src) {
+    $frag = @{}
+    foreach ($m in [regex]::Matches($src, '(?m)^  (zig-p-[a-z0-9-]+) = \[(.*)\]\s*$')) {
+        $sb = New-Object System.Text.StringBuilder
+        foreach ($f in [regex]::Matches($m.Groups[2].Value, 'Shake(?:Lit|Use) "((?:\\.|[^"\\])*)"')) {
+            [void]$sb.Append((ConvertFrom-CodexEscapes $f.Groups[1].Value))
+        }
+        $frag[$m.Groups[1].Value] = $sb.ToString()
+    }
+    if ($frag.Count -eq 0) { throw "no zig-p-* fragment lists in ZigEmitter.codex: is the prelude restructured?" }
+    $order = @()
+    foreach ($m in [regex]::Matches($src, 'ShakePart \{ name = "([^"]*)", frags = ([a-z0-9-]+) \}')) {
+        $key = $m.Groups[2].Value
+        if (-not $frag.ContainsKey($key)) { throw "zig-prelude-parts names $key and no such fragment list exists" }
+        $order += ,@($m.Groups[1].Value, $frag[$key])
+    }
+    if ($order.Count -eq 0) { throw "no ShakePart rows in zig-prelude-parts" }
+    ,$order
+}
+
+# Emitted must be the parts, in table order, with some omitted. Nothing else.
+function Test-SubSelection($parts, [string]$emitted) {
+    $cur = 0
+    $kept = 0
+    foreach ($p in $parts) {
+        $t = $p[1]
+        if ($cur + $t.Length -le $emitted.Length -and
+            [string]::CompareOrdinal($emitted, $cur, $t, 0, $t.Length) -eq 0) {
+            $cur += $t.Length
+            $kept++
+        }
+    }
+    @{ ok = ($cur -eq $emitted.Length); consumed = $cur; kept = $kept }
+}
+
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if (-not $OutDir) { $OutDir = Join-Path $repo 'build-output\zig-prelude-surface' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $names = $Subjects -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-if ($names.Count -lt 2) { throw "need at least two subjects: the prelude is derived as their common prefix" }
+if ($names.Count -lt 1) { throw "need at least one subject" }
+
+$emitterSrc = Get-Content (Join-Path $repo 'codex\plugs\zig\ZigEmitter.codex') -Raw
+$parts = Get-ShakeParts $emitterSrc
+$whole = -join ($parts | ForEach-Object { $_[1] })
 
 $emitted = @()
 foreach ($n in $names) {
@@ -38,19 +114,37 @@ foreach ($n in $names) {
     $emitted += $zig
 }
 
-$prefix = Get-Content $emitted[0]
-foreach ($f in $emitted | Select-Object -Skip 1) {
-    $l = Get-Content $f
-    $n = [Math]::Min($prefix.Count, $l.Count)
-    $k = 0
-    while ($k -lt $n -and $prefix[$k] -eq $l[$k]) { $k++ }
-    if ($k -eq 0) { throw "no common prefix: these programs do not share a prelude" }
-    $prefix = $prefix[0..($k - 1)]
+# Each emitted prelude must be a sub-selection of $whole, in table order.
+$bannerLine = '// THE PRELUDE. Everything ABOVE this line is the transpiled program.'
+foreach ($f in $emitted) {
+    $body = Get-Content $f -Raw
+    $i = $body.IndexOf($bannerLine)
+    if ($i -lt 0) { throw "no postlude banner in $f : the prelude is derived from it" }
+    $start = -1
+    foreach ($p in $parts) {
+        $k = $body.IndexOf($p[1], $i)
+        if ($k -ge 0 -and ($start -lt 0 -or $k -lt $start)) { $start = $k }
+    }
+    if ($start -lt 0) { throw "no part text after the banner in $f : the parts table does not describe this output" }
+    $r = Test-SubSelection $parts $body.Substring($start)
+    if (-not $r.ok) {
+        throw ("emitted prelude in {0} is not a sub-selection of zig-prelude-parts: consumed {1} of {2} bytes after {3} parts. It reordered, duplicated, truncated or invented something." -f `
+            $f, $r.consumed, ($body.Length - $start), $r.kept)
+    }
+    "[zig-prelude-surface] {0}: {1}/{2} parts kept, {3} bytes, sub-selection OK" -f `
+        (Split-Path $f -Leaf), $r.kept, $parts.Count, $r.consumed
 }
 
+# The surface comes from the WHOLE, never from one program's selection.
 $surface = New-Object System.Collections.Generic.HashSet[string]
-foreach ($line in $prefix) {
+foreach ($line in ($whole -split "`n")) {
     foreach ($m in [regex]::Matches($line, '\b(?:const|var)\s+([A-Za-z_][A-Za-z0-9_]*)')) {
+        [void]$surface.Add($m.Groups[1].Value)
+    }
+    # The function's OWN name, which this script read past for months. A zig
+    # file is a struct; `fn cx_print` is a member of it and a user top-level
+    # spelled the same is a duplicate, not a shadow. Finding 67.
+    foreach ($m in [regex]::Matches($line, '(?m)^(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)')) {
         [void]$surface.Add($m.Groups[1].Value)
     }
     foreach ($m in [regex]::Matches($line, '\|\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:,\s*([A-Za-z_][A-Za-z0-9_]*)\s*)?\|')) {
@@ -66,7 +160,6 @@ foreach ($line in $prefix) {
 [void]$surface.Remove('_')
 
 # zig-sanitize already quotes keywords and primitives, so those need no entry.
-$emitterSrc = Get-Content (Join-Path $repo 'codex\plugs\zig\ZigEmitter.codex') -Raw
 function Read-CodexList([string]$decl) {
     if ($emitterSrc -notmatch "(?s)$decl\s*:\s*List Text\s*=\s*\[(.*?)\]") { throw "cannot read $decl" }
     [regex]::Matches($Matches[1], '"([^"]*)"') | ForEach-Object { $_.Groups[1].Value }
@@ -89,8 +182,8 @@ foreach ($s in $surface) {
     $missing += $s
 }
 
-"[zig-prelude-surface] prelude {0} lines over {1} programs; surface {2} names; zig-prelude-decls carries {3}" -f `
-    $prefix.Count, $emitted.Count, $surface.Count, $declared.Count
+"[zig-prelude-surface] whole prelude {0} parts / {1} bytes over {2} programs; surface {3} names; zig-prelude-decls carries {4}" -f `
+    $parts.Count, $whole.Length, $emitted.Count, $surface.Count, $declared.Count
 
 if ($renamed.Count -gt 0) {
     "[zig-prelude-surface] RESIDUE ({0}): emitted binders that are the sanitized image of a reserved name. A user top-level spelled the same still collides." -f $renamed.Count

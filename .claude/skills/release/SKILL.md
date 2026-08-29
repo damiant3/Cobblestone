@@ -23,8 +23,10 @@ the single source for those.
   lane holds the critical path, take it yourself rather than wait.
 - When a proof fails, do the bisect or diff BEFORE reporting; a failure
   claim is worth nothing without its cause. Report cause and fix together.
-- Escalate only what only Damian can decide, and make it impossible to
-  miss.
+- Escalate by `CoordinationProtocol.md`, "When the addressee is the
+  COMMANDER" -- blocked, a question only he can answer, a correction to
+  something he ruled, and no fourth. Stated once there rather than restated
+  here, because two copies of one rule is a version that can drift.
 - Freeze the release head early: hold non-essential seed CLs for MAIN
   OPEN after the push, so the proofs run once.
 
@@ -112,7 +114,7 @@ was sitting. `OperatorsManual.md` says this in the poison recipe; this step
 used to say "the FULL battery" and leave the reader to find that out.
 
 ```powershell
-build/test.ps1 -Tier all -Jobs 8 -ApprovedBy damian
+build/test.ps1 -Tier all -Jobs 4 -ApprovedBy damian
 ```
 
 **Read the kernel line it prints.** The battery uses
@@ -130,7 +132,7 @@ test is a release blocker, not a footnote.
 ## Step 2 -- The app sweep (breadth over the front end)
 
 ```powershell
-pwsh build/sweep-app-classes.ps1 -Check -Jobs 8
+pwsh build/sweep-app-classes.ps1 -Check -Jobs 4
 ```
 
 Must exit 0. The apps are the extended pin on the compiler -- 265 diverse
@@ -139,16 +141,18 @@ that stops compiling is a compiler or foreword regression until proven
 otherwise. It fails against `build/app-sweep-baseline.txt`, which names the
 units known not to compile and why; anything else dirty is the regression.
 
-**`-Jobs 8`, and that includes release runs.** Damian's ruling, 2026-08-02.
-This step said `-Jobs 3` and told you not to raise it, on the grounds that
-high parallelism produces units failing with no diagnostics at all. That
-observation was real and its cause is dead: it was measured 2026-07-20, two
-days before the box's unstable DDR5 XMP profile was corrected on 2026-07-22.
-`ExaminersAssay.md` "The parallelism default" has the account, including the
-general shape -- **a workaround written into a default outlives the condition
-that justified it and then reads as a property of the harness.** The sweep
-already re-runs no-diagnostic units alone (`sweep-app-classes.ps1`), so the
-defence against real contention does not depend on the slot count.
+**`-Jobs 4`, RE-RULED by Damian 2026-08-27, and that includes release runs.**
+It supersedes the 2026-08-02 `-Jobs 8` ruling for a different, measured
+condition: the box holds 15.8 GiB and 8 slots of 3072 MB guests overcommit
+it, killing guests with a moving culprit that reads as codegen
+(`OperatorsManual.md` "The compile batch asks for 12 GB of guest RAM, and a
+short box reports it as a CODEGEN failure"). The condition rides with the
+default on purpose -- **a workaround written into a default outlives the
+condition that justified it and then reads as a property of the harness**
+(`ExaminersAssay.md` "The parallelism default", which carries both raises
+and both lowerings now). When the box grows RAM, re-measure and re-raise.
+The sweep still re-runs no-diagnostic units alone, so the defence against
+crash-shaped contention does not depend on the slot count.
 
 Know what this does NOT prove. It proves the apps COMPILE and nothing more.
 It cannot see a miscompile: the literal-pattern defect fixed in CL 9649 had

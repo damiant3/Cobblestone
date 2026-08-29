@@ -30,44 +30,12 @@ foreach ($tool in @('wasmtime')) {
     }
 }
 
-# The page's lens list. Plug name, the module it fetches, and the chapters the
-# module is built from -- the chapter list is here because it lives nowhere
-# else: build-plug-wasm.ps1 takes it as an argument and no script calls it.
-$LENSES = @(
-    @{ plug = 'javascript'; file = 'javascript-stdio.wasm'; chapters = 'JavaScriptEmitter,JavaScriptStdio' }
-    @{ plug = 'csharp';     file = 'csharp-stdio.wasm';     chapters = 'CSharpEmitter,CSharpPlug:Network Config|Drain|Body,CSharpStdio' }
-    @{ plug = 'python';     file = 'python-stdio.wasm';     chapters = 'PythonEmitter,PythonStdio' }
-    @{ plug = 'typescript'; file = 'typescript-stdio.wasm'; chapters = 'TypeScriptEmitter,TypeScriptStdio' }
-    @{ plug = 'zig';        file = 'zig-stdio.wasm';        chapters = 'ZigEmitter,ZigStdio' }
-    @{ plug = 'rust';       file = 'rust-stdio.wasm';       chapters = 'RustEmitter,RustStdio' }
-    @{ plug = 'go';         file = 'go-stdio.wasm';         chapters = 'GoEmitter,GoStdio' }
-    @{ plug = 'java';       file = 'java-stdio.wasm';       chapters = 'JavaEmitter,JavaStdio' }
-    @{ plug = 'kotlin';     file = 'kotlin-stdio.wasm';     chapters = 'KotlinEmitter,KotlinStdio' }
-    @{ plug = 'swift';      file = 'swift-stdio.wasm';      chapters = 'SwiftEmitter,SwiftStdio' }
-    @{ plug = 'haskell';    file = 'haskell-stdio.wasm';    chapters = 'HaskellEmitter,HaskellStdio' }
-    @{ plug = 'ruby';       file = 'ruby-stdio.wasm';       chapters = 'RubyEmitter,RubyStdio' }
-    @{ plug = 'ocaml';      file = 'ocaml-stdio.wasm';      chapters = 'OCamlEmitter,OCamlStdio' }
-    @{ plug = 'lua';        file = 'lua-stdio.wasm';        chapters = 'LuaEmitter,LuaStdio' }
-    @{ plug = 'php';        file = 'php-stdio.wasm';        chapters = 'PhpEmitter,PhpStdio' }
-    @{ plug = 'scala';      file = 'scala-stdio.wasm';      chapters = 'ScalaEmitter,ScalaStdio' }
-    @{ plug = 'elixir';     file = 'elixir-stdio.wasm';     chapters = 'ElixirEmitter,ElixirStdio' }
-    @{ plug = 'cobol';      file = 'cobol-stdio.wasm';      chapters = 'CobolEmitter,CobolStdio' }
-    @{ plug = 'fortran';    file = 'fortran-stdio.wasm';    chapters = 'FortranEmitter,FortranStdio' }
-    @{ plug = 'html';       file = 'html-stdio.wasm';       chapters = 'HtmlEmitter,HtmlStdio' }
-    @{ plug = 'react';      file = 'react-stdio.wasm';      chapters = 'ReactEmitter,ReactStdio' }
-    @{ plug = 'vue';        file = 'vue-stdio.wasm';        chapters = 'VueEmitter,VueStdio' }
-    @{ plug = 'swiftui';    file = 'swiftui-stdio.wasm';    chapters = 'SwiftUIEmitter,SwiftUIStdio' }
-    @{ plug = 'winforms';   file = 'winforms-stdio.wasm';   chapters = 'WinFormsEmitter,WinFormsStdio' }
-    @{ plug = 'angular';    file = 'angular-stdio.wasm';    chapters = 'AngularEmitter,AngularStdio' }
-    @{ plug = 'svelte';     file = 'svelte-stdio.wasm';     chapters = 'SvelteEmitter,SvelteStdio' }
-    @{ plug = 'wpf';        file = 'wpf-stdio.wasm';        chapters = 'CsAst,WpfEmitter,WpfStdio' }
-    @{ plug = 'qt';         file = 'qt-stdio.wasm';         chapters = 'QtEmitter,QtStdio' }
-    @{ plug = 'gtk';        file = 'gtk-stdio.wasm';        chapters = 'GtkEmitter,GtkStdio' }
-    @{ plug = 'compose';    file = 'compose-stdio.wasm';    chapters = 'ComposeEmitter,ComposeStdio' }
-    @{ plug = 'flutter';    file = 'flutter-stdio.wasm';    chapters = 'FlutterEmitter,FlutterStdio' }
-    @{ plug = 'electron';   file = 'electron-stdio.wasm';   chapters = 'ElectronEmitter,ElectronStdio' }
-    @{ plug = 'maui';       file = 'maui-stdio.wasm';       chapters = 'MauiEmitter,MauiStdio' }
-)
+# The page's lens list comes from the one manifest (page-lenses.ps1, PRISM-7
+# stage 0); this harness grades the IR-transport rows. The bytes rows are
+# page-bytes-test.ps1's, whose input is a compiled payload rather than IR, and
+# the 'self' rows carry their own builder and are graded where they are built.
+. (Join-Path $PSScriptRoot 'page-lenses.ps1')
+$LENSES = @($PageModules | Where-Object { $_.transport -eq 'ir' })
 
 # pwsh -File hands an array argument over as ONE string, so -Only a,b arrives
 # as the single element 'a,b' and matches no plug. Split it, and REFUSE on a
