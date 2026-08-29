@@ -280,6 +280,34 @@ Section: Memory Address Map
 
   guard-page-base-addr : Integer = 36320
 
+ 36328 IS THE NIC'S, NOT OURS. `net-driver-poll-cell`
+ (`codex/os/net/NetDriver.codex:96`) has held it since the poll interval was
+ measured rather than assumed; `net-driver-calibrate` writes it with `poke-32`
+ at :70 and `net-driver-poll-interval` reads it at :170. This chapter claimed
+ the same cell for `deck-ceiling-addr` on 2026-08-27 and the claim carried the
+ words "verified unclaimed against codex-vm.c and net-driver-cb", which is
+ exactly as wide as it sounds and no wider: `net-driver-cb` is a BLOCK based at
+ 36264 declaring offsets 0 and 8, so asking where that block ends answers a
+ question about the block and says nothing about a separate scalar the same
+ chapter declares sixty lines further down. Both halves of the collision are
+ real. `build` writes eight bytes here on every reservation and does it whether
+ or not the guard flag is set, so the compiler would silently overwrite the
+ measured poll interval with the low half of a deck address, and every bound in
+ NetworkStack is denominated in those ticks. In the other direction a
+ calibration write drops a small number into the ceiling, every frontier clears
+ it, and an armed guard raises `!EXC=06` on the next allocation. The cell the
+ newcomer takes is the one that moves.
+
+ The check that finds this shape is a MAP of the band rather than a probe of
+ one address: enumerate every literal in [36240, 36420] across all `.codex` and
+ `tools/codex-vm.c`, and confirm the known-taken cells appear before believing
+ that a candidate does not (L-COUNT, and the negative-result half of
+ `check-your-own-instrument`). Run that way, 36336 and 36344 are clear and
+ 36352 appears only as an unrelated `add-ri` displacement at :1611.
+
+  deck-ceiling-addr : Integer = 36336
+  deck-reservation-top-addr : Integer = 36344
+
  Application-processor idle stacks live in low always-present memory,
  never in the demand-paged heap range: an AP takes its first interrupt
  on this stack, and the CPU cannot deliver a fault frame onto a

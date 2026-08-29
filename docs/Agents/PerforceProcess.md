@@ -108,6 +108,30 @@ p4 status                             # the dropped add the preflight will not f
 build/build.ps1
 ```
 
+### Docs go straight to main (Damian, 2026-08-28, via val)
+
+A docs-only change is edited and submitted on the MAIN client directly:
+no dev-stream CL, no copy-up, and NO GATE.
+
+```powershell
+p4 -c BigWhite_Codex_<agent>_main edit <main-workspace-path>\docs\...
+# edit the file in the MAIN workspace
+p4 -c BigWhite_Codex_<agent>_main submit -d "<description>. Docs only, no seed."
+```
+
+The reason is measured, not stylistic: `-Internal` always runs its
+core + BVT + refusal phases -- four guests at 3 GB -- even when it
+prints "no .codex opened, nothing implicated", and on a docs-only
+change the only phase that can fail is check-doc-counts. The boots buy
+nothing and load the box for whoever is gating code; the day of the
+ruling one lane had run 8 gates, 4 of them on docs-only CLs. Your dev
+stream picks the docs up on its next ordinary merge-down.
+
+**The same ruling: a multi-CL CODE arc gates ONCE PER ARC, at the
+arc's landing, not once per CL.** This supersedes the gate-locally-
+per-step reading for intermediate steps inside one arc; the landing
+that reaches main still meets R-GATE's zero-failures bar.
+
 ### Copy-up to main
 
 ```powershell
@@ -217,6 +241,7 @@ the same command; reach for a different command (L-FALSIF).
 | P-UNRELATED | The CL description says "fix X" and the diff also carries Y and Z, because the file was open in your CL AND modified by other work. Perforce submits whatever is on disk. | `p4 diff` the file before submitting a small CL and confirm the diff matches the intent. If it carries extra, revert and re-edit just the lines you need. |
 | P-MERGEREVERT (L) | You merge down while a file is OPEN in a numbered CL, then revert that CL, and main's incoming content goes with your edits. The merge resolves INTO the working file but the file stays an `edit` in YOUR CL rather than becoming an `integrate` in the default one, so submitting the merge does not carry it and the revert throws both away. The stream is then missing a change main has, `p4 diff2` against main shows content differing, and **your next gate builds source that is not main's** while reporting a perfectly green fixed point, because the source and the compiler it was handed are consistent with each other. Measured 2026-08-25: a reverted CL left `Types/Builtins.codex` at a revision predating another lane's landed row, and the gate's `Sut` came out byte-equal to THIS AGENT'S OWN PREVIOUS SEED. That equality is the fingerprint (L-SUSPECT): identical where you expected different means the input was stale, not that the seed lagged. Reading it the other way says "main's seed does not match main's source", which is a wrong finding about somebody else's work and was one message from being sent. | Prefer the standing order -- shelve, revert, THEN merge -- so nothing of yours is open when the merge runs. If you have already merged with files open, do not revert to clean up: submit the merge first, or re-run `p4 merge -S //Codex/<agent> -r` afterwards, which still lists the file because the credit is NOT consumed by the failed pass. Before trusting any gate that follows a revert, diff the compiler source against main: `p4 diff2 -q //Codex/main/<path> //Codex/<agent>/<path>`. |
 | P-ORDER | You revert before shelving, so the shelf holds an OLDER version than disk. The gate then builds pre-fix code and everything downstream is stale. | `p4 shelve -f` BEFORE `p4 revert`, every time. Re-shelve after any mid-gate edit. |
+| P-DEFSHELVE | Your work is in the DEFAULT changelist, so `p4 shelve -f -c default` fails with "Default change unknown" and shelves nothing. Chained before a revert in the same command, the revert still runs and the work is gone: P-ORDER's protection silently absent while you were obeying P-ORDER. | Number it first (`p4 change`), then shelve that number. Read the shelve's OUTPUT before the revert rather than assuming a step that cannot fail; recovery, if the files are build outputs, is whatever copy the build left behind (reek, 2026-08-27). |
 | P-STRAY | A build bakes in a name or file that "isn't there": a stray `.codex` from an abandoned branch, or a depot-side delete `sync` left on disk. `sync -f` restores TRACKED files and deletes neither. | `p4 clean codex/... apps/...` It respects `.p4ignore`. **Those two paths, and what READS each, measured 2026-08-15:** `apps/` because `sweep-apps.ps1:36` and `sweep-app-classes.ps1:61` both glob it recursively (not `compile.ps1`, which the old justification named); `codex/` because `concat-codex-self.ps1:60` globs `-Recurse -Depth 2` from `codex\compiler`. **`seed/` does NOT belong here**: `build.ps1:16` names `seed\Codex.cdx` explicitly and no `seed/` glob exists in any `build/*.ps1`. `build/` is a DIFFERENT mechanism wanting a different fix -- a depot-deleted script still on disk and still being dot-sourced -- and `build.ps1:164` already sweeps `*.bak`/`*.tmp`/`*.snap` repo-wide at Depth 3. If you widen these paths, say what reads the one you added. |
 | P-UNSHELVE (L) | After unshelve onto a moved depot your file lacks what the merge-down brought in, and `p4 resolve -n` says "No file(s) to resolve". It is wrong: unshelve opens the file at the revision it was shelved AT, and does not schedule the resolve. | `p4 sync` (this schedules it), then `p4 resolve -am`, then `p4-stale-check.ps1`. Never reach for `-ay` to get moving; it drops every revision landed while you were shelved. |
 | P-CLOBBER (L) | **The worst one here.** A CL holds edits plus new files. After the gate dance the edits land and the adds do not. `p4 submit` reports success, `p4 describe` shows only edits, the new files sit on disk looking fine and are in no depot. The tell is `Can't clobber writable file` printed under a line that says "unshelved, opened for add". **The tell is a per-client option and the fleet is SPLIT** -- `noclobber` clients refuse and print it; `clobber` clients do not refuse, they OVERWRITE the writable file silently, so an agent there meets no message, sees the add open normally, and concludes this row is stale. Measured 2026-08-15: `clobber` on the reek and val DEV clients; `noclobber` on the blu, fester and red dev clients, on every `*_main` client, and on `BigWhite_Codex_main`. | `p4 client -o \| Select-String Options` tells you which you are, and neither is the safe half: **noclobber loses an ADD loudly, clobber loses an EDIT silently** -- on a clobber client `p4 sync -f` and `p4 unshelve` will replace a writable on-disk file with depot content, no message, no refusal, uncommitted work gone. Never wave past the message if you get one. Delete the on-disk copy first, or `p4 unshelve -f`, then confirm `p4 opened -c <CL>` lists every file. A dropped add is invisible to every other check: it is not a conflict, not a stale revision, and absence has no diff -- and the preflight will not fail on it (section header). `p4 status` is what sees it. Verify against the shelf before deleting (see P-PRINTEOL). **`p4 copy` loses INTEGRATES to the same refusal** (2026-08-26, main 19963: a copy-up titled "six fixes" landed the tests and not the emitter, and the mirror push shipped the claim; found by an outside reader, repaired 19980). After every copy-up, account the submitted CL's file list against the source CL's in BOTH directions (P-RESURRECT's check) before writing any claim on it. |

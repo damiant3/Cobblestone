@@ -46,7 +46,27 @@ param(
     [switch]$TamperSignature,
     # Flip one hex digit of the claimed digest BEFORE signing, so the manifest
     # is honestly signed and honestly wrong. Only the digest check can catch it.
-    [switch]$TamperDigest
+    [switch]$TamperDigest,
+    # Write model-bytes one higher than the truth, BEFORE signing. Signature
+    # and digest lines are honest; only the size comparison can catch it, and
+    # it must catch it BEFORE the digest runs (size is the cheaper refusal).
+    [switch]$TamperSize,
+    # Corrupt the GGUF magic BEFORE the digest is computed, so signature and
+    # digest are both honest over a file that is not a GGUF. Only the parse
+    # can catch it.
+    [switch]$BreakMagic,
+    # Emit a GGUF whose header declares zero tensors and carries no tensor
+    # table. Honestly signed and hashed; only the tensor-count check refuses.
+    [switch]$NoTensors,
+    # Manifest-shape negatives, each honestly built except for its one defect:
+    # no `sig` line at all; a signature truncated to 30 bytes of hex; a pubkey
+    # line truncated to 30 bytes of hex (the length check must fire before any
+    # verify); no `model` line; a `model` line naming a file the image lacks.
+    [switch]$OmitSigLine,
+    [switch]$ShortSig,
+    [switch]$ShortPub,
+    [switch]$NoModelLine,
+    [string]$ModelNameOverride = ''
 )
 
 Set-StrictMode -Version Latest
@@ -96,7 +116,8 @@ $ALIGN = 32
 # Header
 Put-U32 ([uint32]0x46554747)   # "GGUF"
 Put-U32 ([uint32]3)            # version
-Put-U64 ([uint64]2)            # tensor count
+$tensorCount = if ($NoTensors) { 0 } else { 2 }
+Put-U64 ([uint64]$tensorCount) # tensor count
 Put-U64 ([uint64]7)            # metadata key-value count
 
 # Metadata. The mix is deliberate: strings, fixed-width scalars, and an array
@@ -111,8 +132,13 @@ Put-KvU32    'codex.block_count'            1
 Put-KvStrArr 'tokenizer.ggml.tokens'        @('<pad>', 'a', 'b', 'c')
 
 # Tensor table. Offsets are relative to the start of the tensor data region.
-Put-Str 'token_embd.weight'; Put-U32 ([uint32]2); Put-U64 ([uint64]$EMBED); Put-U64 ([uint64]$ROWS); Put-U32 ([uint32]0); Put-U64 ([uint64]0)
-Put-Str 'output.weight';     Put-U32 ([uint32]2); Put-U64 ([uint64]$EMBED); Put-U64 ([uint64]$ROWS); Put-U32 ([uint32]8); Put-U64 ([uint64]($ELEMS * 4))
+# A -NoTensors bundle declares zero and writes none; the data region below is
+# kept so the file is otherwise the same shape, and trailing bytes are covered
+# by the digest either way.
+if (-not $NoTensors) {
+    Put-Str 'token_embd.weight'; Put-U32 ([uint32]2); Put-U64 ([uint64]$EMBED); Put-U64 ([uint64]$ROWS); Put-U32 ([uint32]0); Put-U64 ([uint64]0)
+    Put-Str 'output.weight';     Put-U32 ([uint32]2); Put-U64 ([uint64]$EMBED); Put-U64 ([uint64]$ROWS); Put-U32 ([uint32]8); Put-U64 ([uint64]($ELEMS * 4))
+}
 
 # Pad to the declared alignment before the data region.
 while (($bytes.Count % $ALIGN) -ne 0) { Put-U8 0 }
@@ -137,6 +163,12 @@ if ($PadBytes -gt 0) {
 
 $model = $bytes.ToArray()
 
+if ($BreakMagic) {
+    # Before the digest, so the manifest is honest about the broken file and
+    # every link before the parse passes.
+    $model[0] = [byte]($model[0] -bxor 0x01)
+}
+
 # ------------------------------------------------------------------- manifest
 
 $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -154,11 +186,15 @@ if ($TamperDigest) {
 $authorSeed = 0..31 | ForEach-Object { [byte](($_ * 7 + 13) -band 0xFF) }
 $seedList = ($authorSeed | ForEach-Object { $_.ToString() }) -join ', '
 
+$modelLine = if ($NoModelLine) { '' }
+             elseif ($ModelNameOverride) { "model $ModelNameOverride`n" }
+             else { "model AGENT.GGU`n" }
+$claimedBytes = if ($TamperSize) { $model.Length + 1 } else { $model.Length }
 $prefix = "codex-agent-manifest 1`n" +
           "name $Name`n" +
           "version $Version`n" +
-          "model AGENT.GGU`n" +
-          "model-bytes $($model.Length)`n" +
+          $modelLine +
+          "model-bytes $claimedBytes`n" +
           "model-sha256 $digest`n"
 
 # The signed message is the manifest prefix INCLUDING the pubkey line, so the
@@ -250,7 +286,14 @@ $sigBytes = $result.Sig
 if ($TamperSignature) { $sigBytes[0] = [byte](($sigBytes[0] -bxor 0x01)) }
 
 $sigHex = ($sigBytes | ForEach-Object { $_.ToString('x2') }) -join ''
-$manifest = $signed + "sig $sigHex`n"
+if ($ShortSig) { $sigHex = $sigHex.Substring(0, 60) }
+if ($ShortPub) {
+    # Truncate the pubkey line in the WRITTEN manifest only. The signature was
+    # taken over the full line, so a verify would fail too -- but the length
+    # check must fire first, which is what the arm asserts.
+    $signed = $signed -replace "pubkey $pubHex", ("pubkey " + $pubHex.Substring(0, 60))
+}
+$manifest = if ($OmitSigLine) { $signed } else { $signed + "sig $sigHex`n" }
 
 if ($TamperModel) {
     # Flip a byte in the tensor data, after the manifest was signed over the
@@ -267,5 +310,13 @@ $tags = @()
 if ($TamperModel) { $tags += 'model' }
 if ($TamperSignature) { $tags += 'signature' }
 if ($TamperDigest) { $tags += 'digest' }
+if ($TamperSize) { $tags += 'size' }
+if ($BreakMagic) { $tags += 'magic' }
+if ($NoTensors) { $tags += 'no-tensors' }
+if ($OmitSigLine) { $tags += 'no-sig' }
+if ($ShortSig) { $tags += 'short-sig' }
+if ($ShortPub) { $tags += 'short-pub' }
+if ($NoModelLine) { $tags += 'no-model' }
+if ($ModelNameOverride) { $tags += "model-name=$ModelNameOverride" }
 $tamper = if ($tags.Count -gt 0) { " TAMPERED: $($tags -join ',')" } else { '' }
 Write-Host "[agent-bundle] OK: $modelPath ($($model.Length) bytes) + $manifestPath$tamper"

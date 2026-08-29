@@ -28,13 +28,53 @@ Section: Primitives
 
   guard-page-plausible-floor : Integer = 1073741824
 
+  deck-reservation-top-cell : Integer = 36344
+
   build : Integer -> Integer
   build (size) =
    let p = __heap-save
    in let deck-init = __deck-set p
    in let guarded = deck-reservation-guard p size
+   in let top = if deck-guard-enabled == 0 then 0 else poke-qword-cell deck-reservation-top-cell (p + size)
    in let advanced = __heap-advance size
    in p
+
+ The reservation's top, written here because this is where it is known, and
+ NOT the value the per-allocation guard compares against. Those were the same
+ cell until 2026-08-28 and that is the whole of what the re-point changes.
+
+ R10 IS THE DECK CURSOR, BUT ONLY INSIDE AN EXTENT. `__deck-enter` copies the
+ deck-pos cell into R10 and `__deck-exit` writes it back, on the zero crossings
+ of the nesting counter (`emit-deck-enter-builtin` / `emit-deck-exit-builtin`,
+ `Emit/X86_64Builtins.codex`), so within an extent every allocation moves R10
+ down the deck and R10 against this top is exactly the question the row asks.
+ Outside an extent R10 is the bivy frontier, which lives ABOVE the reservation
+ and is SUPPOSED to: `build` advances the heap over the whole deck height, so
+ the frontier parks on this top the instant the reservation is made and every
+ ordinary allocation afterwards is legitimately past it.
+
+ Arming the ceiling here is therefore the defect measured 2026-08-27: the guard
+ fired on the first ordinary allocation after every reservation and the guarded
+ compiler could not compile itself (`!EXC=06` at R10=0x14ADAECC, 324.9 MB). The
+ ceiling is armed at `__deck-enter` and disarmed at `__deck-exit` instead, which
+ is what makes the comparison a statement about the deck cursor rather than
+ about the bivy, and it costs the 59 allocation sites nothing: they keep the
+ same two compares, and zero still means unarmed.
+
+ Byte-wise because poke-byte is the only poke primitive; build runs thirteen
+ times per compile, so eight stores apiece is not a cost worth a new builtin.
+
+  poke-qword-cell : Integer, Integer -> Integer
+  poke-qword-cell (addr) (v) =
+   let b0 = poke-byte addr 0 (int-mod v 256)
+   in let b1 = poke-byte addr 1 (int-mod (v / 256) 256)
+   in let b2 = poke-byte addr 2 (int-mod (v / 65536) 256)
+   in let b3 = poke-byte addr 3 (int-mod (v / 16777216) 256)
+   in let b4 = poke-byte addr 4 (int-mod (v / 4294967296) 256)
+   in let b5 = poke-byte addr 5 (int-mod (v / 1099511627776) 256)
+   in let b6 = poke-byte addr 6 (int-mod (v / 281474976710656) 256)
+   in let b7 = poke-byte addr 7 (int-mod (v / 72057594037927936) 256)
+   in v
 
   deck-reservation-guard : Integer, Integer -> Integer
   deck-reservation-guard (p) (size) =

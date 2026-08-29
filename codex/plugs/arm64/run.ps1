@@ -68,6 +68,24 @@ if (-not $vmOk) {
 # Read serial output (binary wire data)
 $outputBytes = [System.IO.File]::ReadAllBytes($outFile)
 [System.IO.File]::WriteAllBytes($Out, $outputBytes)
+
+# A guest FAULT is not an emission. Same arm as the riscv sibling, and the
+# reasoning is there: the plug prints a register dump beginning `!EXC=` and
+# exits cleanly, so without this a crash is written to $Out and reported OK.
+# Found rather than anchored: the dump may carry codex-vm's leading 0x01 marker.
+$leadAscii = [System.Text.Encoding]::ASCII.GetString($outputBytes, 0, [Math]::Min(8, $outputBytes.Length))
+if ($leadAscii.Contains('!EXC')) {
+    $dump = [System.Text.Encoding]::ASCII.GetString($outputBytes)
+    [Console]::Error.WriteLine("FAIL: the plug FAULTED; $Out holds a register dump, not a wire.")
+    [Console]::Error.WriteLine("  " + ($dump -split "`n")[0])
+    Remove-Item -Force $inputFile, $outFile, $errFile -ErrorAction SilentlyContinue
+    exit 7
+}
+if ($outputBytes.Length -eq 0) {
+    [Console]::Error.WriteLine("FAIL: the plug produced no output.")
+    Remove-Item -Force $inputFile, $outFile, $errFile -ErrorAction SilentlyContinue
+    exit 7
+}
 Write-Host "[arm64-run] OK: $Out ($($outputBytes.Length) bytes)"
 
 # Show any WARN/WCET lines from serial. The first report line follows the

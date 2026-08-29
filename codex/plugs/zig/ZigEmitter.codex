@@ -1,5 +1,7 @@
 Chapter: Zig Emitter
   cites Foreword chapter Sort
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Shake
 
 Section: Keywords and Sanitization
 
@@ -67,22 +69,64 @@ Section: Keywords and Sanitization
  name the prelude uses PRIVATELY is reserved for the whole program just as
  firmly as one it declares. That half is why this list is long and why it
  cannot be maintained by eye: `build/check-zig-prelude-surface.ps1` derives
- the surface from emitted output, as the line-wise common prefix of several
- programs, and counts parameters and captures as well as const and var. It
- refuses when a derived name is missing here. Run it after any change to
- zig-prelude.
+ the surface from emitted output, anchored on zig-postlude-banner and reading
+ to the end of the file, and counts parameters and captures as well as const
+ and var. It refuses when a derived name is missing here. Run it after any
+ change to zig-prelude.
 
-  zig-prelude-decls : List Text = ["std", "main", "cx_entry", "cx_heap_mem", "cx_heap_reserve", "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest", "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best", "cx_deck_stride", "cx_deck_armed", "cx_deck_slack",
-   "a", "A", "acc", "al", "alignment", "ascii", "b", "B", "b0", "base",
-   "bits", "bot", "buf", "bytes", "c", "C", "cce_t1_code", "cce_t1_size",
-   "cce_t1_uni", "cce_t2_size", "cce_t2_uni", "cce_table", "chunk", "code",
-   "cp", "ctx", "cx_a", "cx_acc", "cx_ap", "cx_b", "cx_base", "cx_ch",
-   "cx_e", "cx_i", "cx_j", "cx_l", "cx_out", "cx_p", "cx_pa", "cx_pi",
-   "cx_s", "cx_tail", "cx_tmp", "cx_used", "cx_v", "d", "D", "dot", "e",
-   "fd", "frac", "h", "i", "k", "l", "len", "m", "memory", "n", "neg",
-   "new_len", "o", "off", "out", "p", "path", "path_cce", "r", "R", "ra",
-   "raw", "rc", "s", "sep", "size", "start", "T", "top", "u", "uni", "v",
-   "vs", "z"]
+ IT NOW COUNTS FUNCTION NAMES TOO, AND UNTIL 2026-08-28 IT DID NOT. The regex
+ that harvests parameters reads past `fn NAME` to reach the parameter list and
+ dropped the name on the way, so of the prelude's 96 declarations -- 74 fn and
+ 22 const/var -- this list covered the 22 and none of the 74. A zig file is a
+ struct and its top-level declarations are its members, so a Codex program
+ with a top-level named `cx-print` emitted a second `fn cx_print` and the file
+ would not compile: `error: duplicate struct member name`. Finding 67, with
+ both arms reproduced.
+
+ Most of the 74 are `cx_`-prefixed, which is effectively this plug's namespace
+ and is why no corpus program ever collided. Five are not: CxList and
+ CxFn1..CxFn4, the comptime type constructors. Codex type names are CamelCase,
+ so `CxList` is a name a program can pick without any sense of trespassing,
+ and that is the collision worth caring about.
+
+ The list is the UNION over the whole prelude and stays that way. A future
+ that emits only the parts a program reaches must not narrow it to the parts
+ that program got: the cost of keeping a name reserved for a program that
+ never sees it is one spurious underscore, and the cost of narrowing is that
+ the same Codex source emits a different spelling depending on which builtins
+ it happened to touch.
+
+  zig-prelude-decls : List Text = ["std", "main", "cx_entry", "cx_heap_mem", "cx_heap_reserve",
+   "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest",
+   "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best",
+   "cx_deck_stride", "cx_deck_armed", "cx_deck_slack", "CxFn1", "CxFn2",
+   "CxFn3", "CxFn4", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
+   "cx_ll_concat", "cx_ll_cons", "cx_ll_insert_at", "cx_ll_with_capacity",
+   "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx",
+   "cx_char_to_text", "cx_char_encode", "cx_list_len", "cx_list_at",
+   "cx_text_len", "cx_char_at", "cx_text_dup", "cx_substring", "cx_ipow",
+   "cx_shl", "cx_shr", "cx_heap_base", "cx_buf_want", "cx_frontier_crosses",
+   "cx_bump_alloc", "cx_bump_resize", "cx_bump_remap", "cx_bump_free",
+   "cx_heap_save", "cx_heap_advance", "cx_heap_restore", "cx_peek_qword",
+   "cx_address_of", "cx_deck_report", "cx_deck_enter", "cx_deck_exit",
+   "cx_deck_pos", "cx_deck_set", "cx_utf8_to_cce", "cx_read_file_uni",
+   "cx_write_all", "cx_write_binary", "cx_write_binary_buf", "cx_vtag",
+   "cx_buf_write_byte", "cx_buf_write_bytes", "cx_peek_byte",
+   "cx_buf_read_bytes", "cx_shru", "cx_mod", "cx_text_eq", "cx_is_letter",
+   "cx_is_digit", "cx_new", "cx_concat", "cx_text_starts_with",
+   "cx_text_contains", "cx_text_concat_list", "cx_list_set_at",
+   "cx_text_to_integer", "cx_text_replace", "cx_text_split", "cx_cce_to_cp",
+   "cx_cp_to_cce", "cx_cce_frame", "cx_cce_to_utf8", "cx_show_int",
+   "cx_print_line", "cx_print", "a", "A", "acc", "al", "alignment", "ascii",
+   "b", "B", "b0", "base", "bits", "bot", "buf", "bytes", "c", "C",
+   "cce_t1_code", "cce_t1_size", "cce_t1_uni", "cce_t2_size", "cce_t2_uni",
+   "cce_table", "chunk", "code", "cp", "ctx", "cx_a", "cx_acc", "cx_ap",
+   "cx_b", "cx_base", "cx_ch", "cx_e", "cx_i", "cx_j", "cx_l", "cx_out",
+   "cx_p", "cx_pa", "cx_pi", "cx_s", "cx_tail", "cx_tmp", "cx_used", "cx_v",
+   "d", "D", "dot", "e", "fd", "frac", "h", "i", "k", "l", "len", "m",
+   "memory", "n", "neg", "new_len", "o", "off", "out", "p", "path",
+   "path_cce", "r", "R", "ra", "raw", "rc", "s", "sep", "size", "start", "T",
+   "top", "u", "uni", "v", "vs", "z"]
 
   is-zig-prelude-decl : Text -> Boolean
   is-zig-prelude-decl (s) =
@@ -3759,130 +3803,477 @@ Section: Chapter Emission
   zig-entry-refusal =
    "@compileError(\"zig plug: opening returns a type this plug cannot print at the entry\")"
 
-  zig-prelude : Text =
-   "const std = @import(\"std\");\n\n"
-   & "// cx_gpa and the heap it allocates from live beside the buffer\n"
-   & "// builtins below: one region, one bump frontier, bare metal's model.\n\n"
-   & "fn CxFn1(comptime A: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A) R };\n}\n"
-   & "fn CxFn2(comptime A: type, comptime B: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B) R };\n}\n"
-   & "fn CxFn3(comptime A: type, comptime B: type, comptime C: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C) R };\n}\n"
-   & "fn CxFn4(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D) R };\n}\n"
-   & "fn CxList(comptime T: type) type {\n    return struct { items: std.ArrayListUnmanaged(T) = .empty };\n}\n"
-   & "fn cx_ll_empty(comptime T: type) *CxList(T) {\n    const cx_l = cx_gpa.create(CxList(T)) catch @panic(\"oom\");\n    cx_l.* = .{};\n    return cx_l;\n}\n"
-   & "fn cx_ll_push(l: anytype, v: anytype) @TypeOf(l) {\n    l.items.append(cx_gpa, v) catch @panic(\"oom\");\n    return l;\n}\n"
-   & "// Exact, not rounded. These three build most of what emission\n// allocates -- every instruction is a list literal (mov-rr is\n// [rex-w, 137, modrm]) and write-bytes concatenates one per byte of an\n// immediate -- and they all land on the DECK, which is a finite\n// reservation nothing reclaims until the phase ends. Growing through\n// std's geometric growCapacity asked for 17 slots to hold four, twice\n// per concat, and measured 2026-08-21 that cost 6,963,432 bytes of deck\n// on fibx: 9,392,656 bytes of emit-runtime-helpers where bare metal\n// spends at most 2,682,824. Bare metal allocates cap*8 + 16 once, from\n// __list_concat_many over all operands at their true total. Reserve the\n// true total and append without re-checking; cx_ll_push keeps geometric\n// growth on purpose, because it is the repeated-append path.\n"
-   & "fn cx_ll_of(comptime T: type, vs: []const T) *CxList(T) {\n    const l = cx_ll_empty(T);\n    l.items.ensureTotalCapacityPrecise(cx_gpa, vs.len) catch @panic(\"oom\");\n    l.items.appendSliceAssumeCapacity(vs);\n    return l;\n}\n"
-   & "fn cx_ll_concat(a: anytype, b: @TypeOf(a)) @TypeOf(a) {\n    const c = cx_new(@TypeOf(a.*){ .items = .empty });\n    c.items.ensureTotalCapacityPrecise(cx_gpa, a.items.items.len + b.items.items.len) catch @panic(\"oom\");\n    c.items.appendSliceAssumeCapacity(a.items.items);\n    c.items.appendSliceAssumeCapacity(b.items.items);\n    return c;\n}\n"
-   & "fn cx_ll_cons(v: anytype, l: anytype) @TypeOf(l) {\n    const c = cx_new(@TypeOf(l.*){ .items = .empty });\n    c.items.ensureTotalCapacityPrecise(cx_gpa, 1 + l.items.items.len) catch @panic(\"oom\");\n    c.items.appendAssumeCapacity(v);\n    c.items.appendSliceAssumeCapacity(l.items.items);\n    return c;\n}\n"
-   & "fn cx_ll_insert_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.insert(cx_gpa, @intCast(i), v) catch @panic(\"oom\");\n    return l;\n}\n"
-   & "// The capacity is load-bearing, not a hint. The emit tables are\n// pre-sized to accum-capacity precisely so a push inside emit-all-defs'\n// per-definition save/restore bracket never reallocates: a reallocation\n// there lands in scratch the bracket reclaims, and the table's header\n// survives pointing at bytes the next definition overwrites. The\n// compiler says so itself, in the guard beside that bracket -- \"a push\n// past it reallocates into scratch that this loop reclaims, corrupting\n// the table\". Discarding n was survivable only while __heap-restore was\n// a no-op. Precise, not rounded: pre-allocated to accum-capacity is a\n// statement about a number.\n"
-   & "fn cx_ll_with_capacity(comptime T: type, n: i64) *CxList(T) {\n    const l = cx_ll_empty(T);\n    if (n > 0) l.items.ensureTotalCapacityPrecise(cx_gpa, @intCast(n)) catch @panic(\"oom\");\n    return l;\n}\n"
-   & "fn cx_text_compare(a: []const u8, b: []const u8) i64 {\n    return switch (std.mem.order(u8, a, b)) { .lt => -1, .eq => 0, .gt => 1 };\n}\n"
-   & "// Mirrors bare metal's __text_to_double, not a correctly-rounded parse:\n// accumulate the digits as one wrapping integer, count places after the\n// dot, cvtsi2sd once, divide once by 10^frac built by repeated\n// multiplication. The bits land in IrNumLit, so they must match the seed's\n// exactly; a parser that rounds better is a parser that diverges.\n"
-   & "fn cx_text_to_double_bits(s: []const u8) i64 {\n    if (s.len == 0) return 0;\n    var i: usize = 0;\n    var neg = false;\n    if (s[0] == 73) {\n        neg = true;\n        i = 1;\n    }\n    var acc: i64 = 0;\n    var frac: i64 = 0;\n    var dot: i64 = 0;\n    while (i < s.len) : (i += 1) {\n        const b = s[i];\n        if (b == 65) {\n            dot = 1;\n            continue;\n        }\n        acc = acc *% 10 +% (@as(i64, b) -% 3);\n        frac += dot;\n    }\n    if (neg) acc = -%acc;\n    var v: f64 = @floatFromInt(acc);\n    if (frac != 0) {\n        var p: f64 = 1.0;\n        var k = frac;\n        while (k != 0) : (k -= 1) p *= 10.0;\n        v /= p;\n    }\n    return @bitCast(v);\n}\n"
-   & "// real-f32 on bare metal is f32 bits in a general register (a movd\n// round-trip, emit-bits-to-real-approx-builtin); Real is f64 here, and\n// widening the named f32 value is exact.\n"
-   & "fn cx_bits_to_real_approx(bits: i64) f64 {\n    return @floatCast(@as(f32, @bitCast(@as(u32, @truncate(@as(u64, @bitCast(bits)))))));\n}\n"
-   & "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\n"
-   & "fn cx_char_to_text(c: i64) []const u8 {\n    const b = cx_gpa.alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"
-   & "fn cx_char_encode(c: i64) []const u8 {\n    const u = @as(u64, @bitCast(c));\n    if (u < 128) {\n        const b = cx_gpa.alloc(u8, 1) catch @panic(\"oom\");\n        b[0] = @truncate(u);\n        return b;\n    }\n    if (u < 2176) {\n        const v = u - 128;\n        const b = cx_gpa.alloc(u8, 2) catch @panic(\"oom\");\n        b[0] = @truncate(192 | (v >> 6));\n        b[1] = @truncate(128 | (v & 63));\n        return b;\n    }\n    if (u < 67712) {\n        const v = u - 2176;\n        const b = cx_gpa.alloc(u8, 3) catch @panic(\"oom\");\n        b[0] = @truncate(224 | (v >> 12));\n        b[1] = @truncate(128 | ((v >> 6) & 63));\n        b[2] = @truncate(128 | (v & 63));\n        return b;\n    }\n    const v = u - 67712;\n    const b = cx_gpa.alloc(u8, 4) catch @panic(\"oom\");\n    b[0] = @truncate(240 | (v >> 18));\n    b[1] = @truncate(128 | ((v >> 12) & 63));\n    b[2] = @truncate(128 | ((v >> 6) & 63));\n    b[3] = @truncate(128 | (v & 63));\n    return b;\n}\n"
-   & "fn cx_list_len(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"
-   & "fn cx_list_at(l: anytype, i: i64) @TypeOf(l.items.items[0]) {\n    return l.items.items[@intCast(i)];\n}\n"
-   & "fn cx_text_len(s: []const u8) i64 {\n    return @intCast(s.len);\n}\n"
-   & "fn cx_char_at(s: []const u8, i: i64) i64 {\n    return @intCast(s[@intCast(i)]);\n}\n"
-   & "// Traps rather than clamps, because bare metal traps: emit-substring-bounds\n// (Emit/X86_64Builtins.codex:666) emits three UD2s -- negative start,\n// negative length, and len past the end -- at a deliberate ruling, since a\n// clamp turns a program's bug into quietly wrong data and a safety guarantee\n// is never silently degraded. The unchecked version returned the whole of\n// the NEXT allocation verbatim. Note the third check subtracts rather than\n// adding: start + len can wrap, and the input that wraps it is the one an\n// attacker picks; s.len - cx_a cannot, because the guard above pins cx_a to\n// [0, s.len]. Finding 28.\n"
-   & "// Copies, because bare metal copies, and the difference is observable:\n// emit-substring-alloc bumps r10 -- the LIVE allocation register, which\n// inside a deck extent is the deck cursor -- so a substring taken between\n// __deck-enter and __deck-exit lands ON THE DECK and outlives a rewind of\n// the frontier. A slice of the argument cannot: it stays where the argument\n// was, and a value that looks decked and is not becomes a table full of\n// reclaimed bytes. Same reasoning for every piece of a split. Finding 29.\n"
-   & "fn cx_text_dup(s: []const u8) []const u8 {\n    const cx_out = cx_gpa.alloc(u8, s.len) catch @panic(\"oom\");\n    @memcpy(cx_out, s);\n    return cx_out;\n}\n"
-   & "fn cx_substring(s: []const u8, start: i64, len: i64) []const u8 {\n    if (start < 0 or len < 0) @panic(\"cx substring: negative start or length\");\n    const cx_a: usize = @intCast(start);\n    if (cx_a > s.len or len > @as(i64, @intCast(s.len - cx_a))) @panic(\"cx substring: out of range\");\n    return cx_text_dup(s[cx_a .. cx_a + @as(usize, @intCast(len))]);\n}\n"
-   & "fn cx_ipow(a: i64, b: i64) i64 {\n    if (b < 0) return 0;\n    var cx_acc: i64 = 1;\n    var cx_base = a;\n    var cx_e = b;\n    while (cx_e > 0) {\n        if ((cx_e & 1) == 1) cx_acc = cx_acc *% cx_base;\n        cx_base = cx_base *% cx_base;\n        cx_e = cx_e >> 1;\n    }\n    return cx_acc;\n}\n"
-   & "fn cx_shl(a: i64, b: i64) i64 {\n    return a << @as(u6, @intCast(b & 63));\n}\n"
-   & "fn cx_shr(a: i64, b: i64) i64 {\n    return a >> @as(u6, @intCast(b & 63));\n}\n"
-   & "// ONE heap, bare metal's own model: records, lists, text, closures,\n// buffers and the emit workspace all come from a single bump frontier\n// (cx_hp), so __heap-restore reclaims everything allocated since the\n// matching __heap-save. On bare metal __alloc bumps the same pointer\n// the save/restore pair moves, and emit-all-defs brackets EVERY\n// definition in one -- emission costs the max over definitions there\n// and must not cost the sum here. The region is reserved once and\n// never moved: a reallocating region would dangle every pointer\n// handed out before the growth. page_allocator memory is lazily\n// faulted zero pages, so resident stays proportional to what is\n// touched, the zero-fill the guest does at boot comes free, and the\n// byte at index i IS address i. The reservation is finite on purpose:\n// the depot peeks absolute addresses (smp-* boards poll ~2.1 GB), and\n// an address outside the region must refuse with the address in the\n// message, not zero-fill its way up to it. The bump pointer boots at\n// bare metal's own heap base (boot does mov r10, 6291456): the\n// absolute value is observable -- the depot's arith-narrow-proven\n// asserts __heap-save > 0 as a structural fact. Addresses below the\n// base belong to the deck, which swaps cx_hp in and out below.\n"
-   & "// 4 GiB: bare metal's guest is 3 GB and compiles its largest subjects\n// inside it, and the hosted harnesses reserve 512 MB of that as deck;\n// finding 24 measured the fibx subject at 381 MB deck + ~1.2 GB main,\n// which the old 1.5 GiB could not hold. Reserving costs nothing resident\n// (lazily faulted, below); what bounds a runaway is the venue's cgroup\n// MemoryMax (the ladder's bounded_run), not this constant.\n"
-   & "const cx_heap_reserve: usize = 4096 * 1024 * 1024;\n"
-   & "var cx_heap_mem: []u8 = &.{};\n"
-   & "var cx_hp: i64 = 6291456;\n"
-   & "// rawAlloc, NOT Allocator.alloc. The wrapper memsets every allocation to\n// `undefined`, which in a Debug build is 0xAA -- so the whole reserved\n// region arrived filled with 170s instead of zeros, and the memset\n// touched the whole region, committing a reservation that is supposed to\n// stay resident in proportion to what is used. Bare metal reserves a\n// span the guest zero-filled at boot, so a fresh buffer reads as zero\n// there; measured 2026-08-21 with findings/probe-fresh-span.codex,\n// ours read 170 in every byte. rawAlloc hands back the pages the OS\n// gives, which are zero and faulted lazily.\nfn cx_heap_base() [*]u8 {\n    if (cx_heap_mem.len == 0) {\n        const cx_pa = std.heap.page_allocator;\n        const cx_p = cx_pa.rawAlloc(cx_heap_reserve, .fromByteUnits(4096), @returnAddress()) orelse @panic(\"cx heap: cannot reserve the region\");\n        cx_heap_mem = cx_p[0..cx_heap_reserve];\n    }\n    return cx_heap_mem.ptr;\n}\n"
-   & "fn cx_buf_want(n: i64) void {\n    if (n < 0 or @as(usize, @intCast(n)) > cx_heap_reserve) std.debug.panic(\"cx heap: address {d} outside the {d}-byte region\", .{ n, cx_heap_reserve });\n    _ = cx_heap_base();\n}\n"
-   & "// The deck is a FINITE reservation and nothing else enforces it. The\n// program places it with __deck-set and then lifts the main frontier\n// clear of it with __heap-advance (emit-build reserves\n// defs*65536 + 25165824), so the parked main frontier sits exactly at\n// the deck's top: inside an extent, a deck allocation that reaches\n// cx_bivy has overrun its region and is about to write over main's live\n// objects. Outside an extent the deck's live bytes are\n// [cx_deck_base, cx_dptr), and main may not OVERLAP that span anywhere,\n// not merely cross its top: __heap-restore can park the frontier beneath\n// the deck, and a frontier climbing back from below tramples live deck\n// objects long before it straddles cx_dptr -- that is the path the\n// 2026-08-21 crash took, build_debug_map landing on the decked\n// CodegenState. In the standard emit-build shape main lives above the\n// deck, so base < cx_dptr never holds and the overlap test is silent.\n// Checking only the region ceiling lets the two cursors walk through\n// each other in silence -- measured 2026-08-21, fibx's deck ran 8613088\n// bytes past a 25362432-byte reservation and the wreckage surfaced as a\n// segfault in a hash function thousands of allocations later. Upstream knows this\n// failure shape: BuildSettings records that starving the floor crashes\n// on a garbage pointer instead of raising CDX9002, because deck-short-of\n// reads __deck-pos, which is frozen inside a phase-wide extent. resize\n// declines rather than panics, funnelling the crossing into the alloc\n// path so there is one refusal site.\n"
-   & "fn cx_frontier_crosses(base: usize, len: usize) bool {\n    if (cx_nest > 0) {\n        if (cx_bivy <= 0) return false;\n        const o: usize = @intCast(cx_bivy);\n        return base < o and base + len > o;\n    }\n    if (cx_dptr <= 0) return false;\n    const top: usize = @intCast(cx_dptr);\n    const bot: usize = @intCast(cx_deck_base);\n    return base < top and base + len > bot;\n}\n"
-   & "fn cx_bump_alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {\n    const base = alignment.forward(@intCast(cx_hp));\n    if (base + len > cx_heap_reserve) std.debug.panic(\"cx heap: exhausted at {d} + {d} of {d}\", .{ base, len, cx_heap_reserve });\n    if (cx_frontier_crosses(base, len)) std.debug.panic(\"cx heap: the two cursors met -- alloc at {d} + {d} crosses (hp={d} dptr={d} deck_base={d} bivy={d} nest={d})\", .{ base, len, cx_hp, cx_dptr, cx_deck_base, cx_bivy, cx_nest });\n    cx_hp = @intCast(base + len);\n    cx_deck_armed = false;\n    if (cx_nest > 0 and cx_hp > cx_deck_hw) {\n        cx_deck_hw = cx_hp;\n        if (cx_deck_hw - cx_deck_base > cx_deck_best) cx_deck_best = cx_deck_hw - cx_deck_base;\n        cx_deck_report();\n    }\n    return cx_heap_base() + base;\n}\n"
-   & "// In-place growth when the block is the topmost allocation is bare\n// metal's __list_snoc path 2 -- extend the frontier block, reallocate\n// only otherwise. The mirror, not an optimisation: a plug whose list\n// growth reallocates where bare metal extends allocates a different\n// amount for the same program. free rewinds only the topmost block,\n// the same rule from the other side.\n"
-   & "fn cx_bump_resize(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {\n    const off = @intFromPtr(memory.ptr) - @intFromPtr(cx_heap_base());\n    if (off + memory.len == @as(usize, @intCast(cx_hp))) {\n        if (off + new_len > cx_heap_reserve) return false;\n        if (cx_frontier_crosses(off, new_len)) return false;\n        cx_hp = @intCast(off + new_len);\n        return true;\n    }\n    return new_len <= memory.len;\n}\n"
-   & "fn cx_bump_remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {\n    return if (cx_bump_resize(ctx, memory, alignment, new_len, ra)) memory.ptr else null;\n}\n"
-   & "fn cx_bump_free(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {\n    const off = @intFromPtr(memory.ptr) - @intFromPtr(cx_heap_base());\n    if (off + memory.len == @as(usize, @intCast(cx_hp))) cx_hp = @intCast(off);\n}\n"
-   & "const cx_heap_vtable = std.mem.Allocator.VTable{ .alloc = cx_bump_alloc, .resize = cx_bump_resize, .remap = cx_bump_remap, .free = cx_bump_free };\n"
-   & "const cx_gpa = std.mem.Allocator{ .ptr = undefined, .vtable = &cx_heap_vtable };\n"
-   & "fn cx_heap_save() i64 {\n    return cx_hp;\n}\n"
-   & "fn cx_heap_advance(n: i64) i64 {\n    if (cx_deck_armed) {\n        cx_deck_armed = false;\n        cx_deck_top = cx_hp + n;\n        cx_hp += cx_deck_slack;\n    }\n    cx_hp += n;\n    return 0;\n}\n"
-   & "fn cx_heap_restore(h: i64) i64 {\n    cx_hp = h;\n    return 0;\n}\n"
-   & "// Wrapping, because bare metal does a single 64-bit load and every\n// bit pattern is a legal i64. Rebuilding the value with checked * and +\n// traps on any qword whose top byte sets the high bit -- that is, on\n// every NEGATIVE qword. Measured 2026-08-21 with\n// findings/probe-peek-qword.codex: bytes 00 00 00 00 00 00 00 FF answer\n// -72057594037927936 on bare metal and panic here.\n"
-   & "fn cx_peek_qword(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v *% 256 +% cx_heap_mem[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"
-   & "// Bare metal's address-of is emit-identity-builtin: it returns the VALUE,\n// and since records, lists and texts are pointers there, the value IS the\n// address. Answering a constant 0 made every object identical to every other\n// one AND to null, and the compiler reads that as an answer: mode-ordinal and\n// real-width-ordinal short-circuit on `address-of m == 0`, so they returned 0\n// for every input, and copy-sx-text decides durability with `address-of t < b`,\n// so it always shared and never rematerialised -- into a region about to be\n// reclaimed. Finding 31.\n//\n// The 0 was justified by X86_64Compound's note that address-of \"silently\n// answers 0 on any target where it cannot be modelled: that cost the C# arm\n// every tag in this table\". That note describes the hazard as a cost, not a\n// licence, and this is not such a target -- one flat region and pointers into\n// it is exactly the shape bare metal has.\n//\n// HEAP-RELATIVE, not a host pointer: the answers are compared against\n// __heap-save values, which are offsets from cx_heap_base. A raw @intFromPtr\n// would order correctly among itself and be nonsense against those.\n"
-   & "fn cx_address_of(v: anytype) i64 {\n    switch (@typeInfo(@TypeOf(v))) {\n        .int, .comptime_int => return @intCast(v),\n        .bool => return @intFromBool(v),\n        .pointer => |cx_pi| {\n            const cx_p = if (cx_pi.size == .slice) @intFromPtr(v.ptr) else @intFromPtr(v);\n            const cx_base = @intFromPtr(cx_heap_base());\n            return if (cx_p >= cx_base) @intCast(cx_p - cx_base) else 0;\n        },\n        else => @compileError(\"zig plug: no address-of for this type\"),\n    }\n}\n"
-   & "// The deck is the C# plug's rule (_Buf.deck_enter/deck_exit): the\n// outermost enter parks the bump pointer in the bivy and swaps the deck\n// pointer in; the outermost exit swaps back. Deck position is observable\n// (the depot's deck-*-contract subjects print it), so a no-op deck is a\n// wrong answer, not a simplification.\n"
-   & "var cx_dptr: i64 = 0;\n"
-   & "var cx_bivy: i64 = 0;\n"
-   & "var cx_nest: i64 = 0;\n"
-   & "// The deck high-water mark. `emit-build` reserves defs*65536+25165824 for\n// the deck and lifts the main frontier to exactly its top, so while an extent\n// is open the PARKED frontier (cx_bivy) IS the reservation ceiling and cx_hp is\n// the live deck cursor. Peak minus base is what the deck cost; ceiling minus\n// peak is what was left. Nothing else can report this -- the deck-pos cell is\n// frozen inside an extent, which is why upstream's own deck-short-of guard\n// cannot fire where exhaustion actually happens.\n"
-   & "var cx_deck_base: i64 = 0;\n"
-   & "var cx_deck_hw: i64 = 0;\n"
-   & "var cx_deck_top: i64 = 0;\n"
-   & "var cx_deck_best: i64 = 0;\n"
-   & "var cx_deck_stride: i64 = 0;\n"
-   & "var cx_deck_armed: bool = false;\n"
-   & "// Measurement-only headroom, added to the lift that follows __deck-set so\n// the deck can run PAST its reservation without meeting the main frontier.\n// Zero in every normal build, and it must stay zero in anything banked: it\n// changes __deck-pos, which the depot can observe. The point of it is that the\n// guard fires at the FIRST crossing, and a first crossing tells you only that\n// demand exceeded the reservation -- the deficit it reports is bounded by one\n// allocation and is therefore always about zero. Slack lets the program finish\n// so the TRUE peak is knowable.\n"
-   & "const cx_deck_slack: i64 = 0;\n"
-   & "// STDOUT, never stderr. stderr carries the program's output and every\n// comparison in the ladder diffs it, so a measurement written there would\n// corrupt the thing being measured. Raw write syscall rather than\n// std.Io.File, which in 0.16 wants an Io instance. Only on a new peak, so the\n// lines are few and the last one is the answer.\n"
-   & "fn cx_deck_report() void {\n    if (@import(\"builtin\").os.tag != .linux) return;\n    if (cx_deck_base == 0 or cx_deck_top == 0) return;\n    const cx_used = cx_deck_hw - cx_deck_base;\n    if (cx_used - cx_deck_stride < 1048576) return;\n    cx_deck_stride = cx_used;\n    var cx_b: [224]u8 = undefined;\n    const cx_s = std.fmt.bufPrint(&cx_b, \"CX-DECK used={d} reserved={d} headroom={d} base={d} peak={d} best={d}\\n\", .{ cx_used, cx_deck_top - cx_deck_base, cx_deck_top - cx_deck_hw, cx_deck_base, cx_deck_hw, cx_deck_best }) catch return;\n    _ = std.os.linux.write(1, cx_s.ptr, cx_s.len);\n}\n"
-   & "fn cx_deck_enter() i64 {\n    if (cx_nest == 0) {\n        cx_bivy = cx_hp;\n        cx_hp = cx_dptr;\n    }\n    cx_nest += 1;\n    return 0;\n}\n"
-   & "fn cx_deck_exit() i64 {\n    cx_nest -= 1;\n    if (cx_nest == 0) {\n        cx_dptr = cx_hp;\n        cx_hp = cx_bivy;\n        cx_deck_report();\n    }\n    return 0;\n}\n"
-   & "fn cx_deck_pos() i64 {\n    return cx_dptr;\n}\n"
-   & "fn cx_deck_set(p: i64) i64 {\n    cx_dptr = p;\n    cx_deck_base = p;\n    cx_deck_hw = p;\n    cx_deck_top = 0;\n    cx_deck_stride = 0;\n    cx_deck_best = 0;\n    cx_deck_armed = true;\n    return 0;\n}\n"
-   & "// The I/O boundary. Codex text is CCE everywhere inside -- on bare metal\n// and here alike -- so these convert at the edge and nowhere else: bytes\n// arriving become CCE, bytes leaving are already what they are. std.fs in\n// 0.16 wants an Io the generated main has no reason to carry, so this uses\n// the raw syscalls.\nfn cx_utf8_to_cce(bytes: []const u8) []const u8 {\n    var out: std.ArrayListUnmanaged(u8) = .empty;\n    var i: usize = 0;\n    while (i < bytes.len) {\n        const n = std.unicode.utf8ByteSequenceLength(bytes[i]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        const cp = std.unicode.utf8Decode(bytes[i..][0..n]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        cx_cce_frame(cx_cp_to_cce(cp), &out);\n        i += n;\n    }\n    return out.items;\n}\n"
-   & "fn cx_read_file_uni(path_cce: []const u8) []const u8 {\n    const al = cx_gpa;\n    const path = cx_cce_to_utf8(path_cce);\n    const z = al.allocSentinel(u8, path.len, 0) catch @panic(\"oom\");\n    @memcpy(z, path);\n    const rc = std.os.linux.openat(-100, z.ptr, .{ .ACCMODE = .RDONLY }, 0);\n    if (@as(isize, @bitCast(rc)) < 0) @panic(\"cx_read_file_uni: cannot open\");\n    const fd: i32 = @intCast(rc);\n    defer _ = std.os.linux.close(fd);\n    var raw: std.ArrayListUnmanaged(u8) = .empty;\n    var chunk: [65536]u8 = undefined;\n    while (true) {\n        const n = std.os.linux.read(fd, &chunk, chunk.len);\n        if (@as(isize, @bitCast(n)) < 0) @panic(\"cx_read_file_uni: read failed\");\n        if (n == 0) break;\n        raw.appendSlice(al, chunk[0..n]) catch @panic(\"oom\");\n    }\n    return cx_utf8_to_cce(raw.items);\n}\n"
-   & "fn cx_write_all(bytes: []const u8) void {\n    var off: usize = 0;\n    while (off < bytes.len) {\n        const n = std.os.linux.write(1, bytes.ptr + off, bytes.len - off);\n        if (@as(isize, @bitCast(n)) <= 0) @panic(\"cx_write_all: write failed\");\n        off += n;\n    }\n}\n"
-   & "fn cx_write_binary(vs: anytype) void {\n    const al = cx_gpa;\n    var out: std.ArrayListUnmanaged(u8) = .empty;\n    for (vs.items.items) |v| out.append(al, @intCast(@mod(v, 256))) catch @panic(\"oom\");\n    cx_write_all(out.items);\n}\n"
-   & "fn cx_write_binary_buf(b: i64, off: i64, len: i64) void {\n    cx_buf_want(b + off + len);\n    const s: usize = @intCast(b + off);\n    cx_write_all(cx_heap_mem[s .. s + @as(usize, @intCast(len))]);\n}\n"
-   & "// variant-tag is the constructor's 0-based declaration index: bare\n// metal loads word 0 of the variant block (emit-variant-tag-builtin) and\n// writes find-ctor-tag there, and a union(enum)'s tag is numbered the same\n// way by declaration order. Self-recursive variants are pointers here, so\n// the pointer case dereferences first.\nfn cx_vtag(v: anytype) i64 {\n    return switch (@typeInfo(@TypeOf(v))) {\n        .pointer => @intCast(@intFromEnum(v.*)),\n        else => @intCast(@intFromEnum(v)),\n    };\n}\n"
-   & "fn cx_buf_write_byte(b: i64, off: i64, v: i64) i64 {\n    cx_buf_want(b + off + 1);\n    cx_heap_mem[@intCast(b + off)] = @intCast(@mod(v, 256));\n    return off + 1;\n}\n"
-   & "fn cx_buf_write_bytes(b: i64, off: i64, vs: anytype) i64 {\n    const n: i64 = @intCast(vs.items.items.len);\n    cx_buf_want(b + off + n);\n    for (vs.items.items, 0..) |v, i| cx_heap_mem[@as(usize, @intCast(b + off)) + i] = @intCast(@mod(v, 256));\n    return off + n;\n}\n"
-   & "fn cx_peek_byte(b: i64, off: i64) i64 {\n    cx_buf_want(b + off + 1);\n    return cx_heap_mem[@intCast(b + off)];\n}\n"
-   & "fn cx_buf_read_bytes(b: i64, off: i64, n: i64) *CxList(i64) {\n    cx_buf_want(b + off + n);\n    const l = cx_ll_empty(i64);\n    l.items.ensureTotalCapacity(cx_gpa, @intCast(n)) catch @panic(\"oom\");\n    var cx_j: i64 = 0;\n    while (cx_j < n) : (cx_j += 1) l.items.appendAssumeCapacity(cx_heap_mem[@as(usize, @intCast(b + off + cx_j))]);\n    return l;\n}\n"
-   & "fn cx_shru(a: i64, b: i64) i64 {\n    return @bitCast(@as(u64, @bitCast(a)) >> @as(u6, @intCast(b & 63)));\n}\n"
-   & "// int-mod is Euclidean, so the result lands in [0, |b|) regardless of\n// either sign, where @rem takes the dividend's sign.\n"
-   & "fn cx_mod(a: i64, b: i64) i64 {\n    const m = if (b < 0) -b else b;\n    const r = @rem(a, m);\n    return if (r < 0) r + m else r;\n}\n"
-   & "fn cx_text_eq(a: []const u8, b: []const u8) bool {\n    return std.mem.eql(u8, a, b);\n}\n"
-   & "// Classification is banded in CCE: 13..64 are the ASCII letters, 65..96\n// the punctuation between, 97..127 the accented Latin and Cyrillic\n// letters, 3..12 the digits -- the same two-band test bare metal's\n// emit-is-letter-builtin encodes.\n"
-   & "fn cx_is_letter(c: i64) bool {\n    return (c >= 13 and c <= 64) or (c >= 97 and c <= 127);\n}\n"
-   & "fn cx_is_digit(c: i64) bool {\n    return c >= 3 and c <= 12;\n}\n"
-   & "fn cx_new(v: anytype) *@TypeOf(v) {\n    const p = cx_gpa.create(@TypeOf(v)) catch @panic(\"oom\");\n    p.* = v;\n    return p;\n}\n"
-   & "// An accumulator loop appends to the frontier block, and the bytes\n// just past it are free. Growing there leaves every existing holder of\n// `a` seeing the same bytes -- text is immutable and nothing before\n// a.len is written -- so the loop costs n instead of n(n+1)/2. Bare\n// metal reaches the same asymptotics from the other side, statically:\n// is-inplace-append (X86_64.codex:2376) recognises a tail-recursive\n// accumulator parameter and calls __str_concat_inplace. That analysis\n// needs TCO state this emitter does not track, and it does not need to:\n// on a bump frontier the same question is one pointer comparison at run\n// time. Measured 2026-08-21 with findings/probe-memory-model.codex,\n// text accumulation at n = 64/128/256: 2080/8256/32896 bytes before\n// (exactly n(n+1)/2), 64/128/256 after, against bare metal 72/136/264.\n"
-   & "// No empty short-circuit. `a & \"\"` returning `a` is the finding-29 shape:\n// bare metal has no such case -- both emit-str-concat-fast-bump and\n// emit-str-concat-slow-alloc bump r10 unconditionally, so the result is\n// always a fresh block at the live cursor -- and an aliased return inside a\n// deck extent yields a value that looks decked and is not. Falling through\n// costs an empty allocation and buys the guarantee.\n"
-   & "fn cx_concat(a: []const u8, b: []const u8) []const u8 {\n    if (a.len != 0) {\n        const cx_base = @intFromPtr(cx_heap_base());\n        const cx_ap = @intFromPtr(a.ptr);\n        if (cx_ap >= cx_base and cx_ap - cx_base + a.len == @as(usize, @intCast(cx_hp))) {\n            const cx_tail = cx_gpa.alloc(u8, b.len) catch @panic(\"oom\");\n            @memcpy(cx_tail, b);\n            return a.ptr[0 .. a.len + b.len];\n        }\n    }\n    return std.mem.concat(cx_gpa, u8, &.{ a, b }) catch @panic(\"oom\");\n}\n"
-   & "fn cx_text_starts_with(s: []const u8, p: []const u8) bool {\n    return std.mem.startsWith(u8, s, p);\n}\n"
-   & "fn cx_text_contains(h: []const u8, n: []const u8) bool {\n    return std.mem.indexOf(u8, h, n) != null;\n}\n"
-   & "fn cx_text_concat_list(l: anytype) []const u8 {\n    var out = std.ArrayListUnmanaged(u8).empty;\n    for (l.items.items) |p| out.appendSlice(cx_gpa, p) catch @panic(\"oom\");\n    return out.items;\n}\n"
-   & "fn cx_list_set_at(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.items[@intCast(i)] = v;\n    return l;\n}\n"
-   & "// Text is CCE here, so a decimal digit is byte 3 + d and minus is 73;\n// parsing this as ASCII would silently read zero.\n"
-   & "fn cx_text_to_integer(s: []const u8) i64 {\n    var acc: i64 = 0;\n    var neg = false;\n    for (s, 0..) |b, i| {\n        if (i == 0 and b == 73) { neg = true; continue; }\n        if (b < 3 or b > 12) break;\n        acc = acc *% 10 +% @as(i64, b - 3);\n    }\n    return if (neg) -%acc else acc;\n}\n"
-   & "fn cx_text_replace(s: []const u8, a: []const u8, b: []const u8) []const u8 {\n    if (a.len == 0) return cx_text_dup(s);\n    var out = std.ArrayListUnmanaged(u8).empty;\n    var i: usize = 0;\n    while (i < s.len) {\n        if (i + a.len <= s.len and std.mem.eql(u8, s[i .. i + a.len], a)) {\n            out.appendSlice(cx_gpa, b) catch @panic(\"oom\");\n            i += a.len;\n        } else {\n            out.append(cx_gpa, s[i]) catch @panic(\"oom\");\n            i += 1;\n        }\n    }\n    return out.items;\n}\n"
-   & "fn cx_text_split(s: []const u8, sep: []const u8) *CxList([]const u8) {\n    const out = cx_ll_empty([]const u8);\n    if (sep.len == 0) {\n        _ = cx_ll_push(out, cx_text_dup(s));\n        return out;\n    }\n    var start: usize = 0;\n    while (std.mem.indexOfPos(u8, s, start, sep)) |p| {\n        _ = cx_ll_push(out, cx_text_dup(s[start..p]));\n        start = p + sep.len;\n    }\n    _ = cx_ll_push(out, cx_text_dup(s[start..]));\n    return out;\n}\n"
-   & "const cce_table = [128]u32{ 0, 10, 32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 101, 116, 97, 111, 105, 110, 115, 104, 114, 100, 108, 99, 117, 109, 119, 102, 103, 121, 112, 98, 118, 107, 106, 120, 113, 122, 69, 84, 65, 79, 73, 78, 83, 72, 82, 68, 76, 67, 85, 77, 87, 70, 71, 89, 80, 66, 86, 75, 74, 88, 81, 90, 46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41, 43, 61, 42, 60, 62, 47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96, 94, 36, 37, 233, 232, 234, 235, 225, 224, 226, 228, 243, 244, 246, 250, 252, 241, 231, 237, 1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088, 1074, 1083, 1082, 1084, 1076, 1087, 1091 };\n"
-   & "// The multi-byte tiers, from Foreword CCE (which the compiler inlines in\n// X86_64State): codes 128..2175 frame as two bytes and name eleven\n// tier-1 unicode blocks; codes 2176..67711 frame as three bytes and name\n// ten tier-2 blocks, code bases running cumulatively from 2176. The\n// single-byte table wins any overlap (accented Latin, Cyrillic) because\n// it is scanned first, as from-unicode scans tier 0 first.\n"
-   & "const cce_t1_uni = [11]u32{ 128, 1024, 880, 1536, 1424, 2304, 3584, 4352, 19968, 12352, 8704 };\n"
-   & "const cce_t1_size = [11]u32{ 256, 128, 128, 128, 128, 128, 128, 128, 512, 256, 128 };\n"
-   & "const cce_t1_code = [11]u32{ 128, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1792, 2048 };\n"
-   & "const cce_t2_uni = [10]u32{ 12288, 12352, 12448, 19968, 13312, 44032, 3584, 8192, 127744, 9728 };\n"
-   & "const cce_t2_size = [10]u32{ 64, 96, 96, 20992, 6592, 11172, 256, 512, 1024, 256 };\n"
-   & "fn cx_cce_to_cp(c: i64) i64 {\n    if (c < 0) return 65533;\n    if (c < 128) return @intCast(cce_table[@intCast(c)]);\n    if (c < 67712) {\n        const v: u32 = @intCast(c);\n        if (v < 2176) {\n            for (cce_t1_code, cce_t1_size, cce_t1_uni) |start, size, uni| {\n                if (v >= start and v < start + size) return @intCast(uni + (v - start));\n            }\n            return 65533;\n        }\n        var base: u32 = 2176;\n        for (cce_t2_uni, cce_t2_size) |uni, size| {\n            if (v >= base and v < base + size) return @intCast(uni + (v - base));\n            base += size;\n        }\n    }\n    return 65533;\n}\n"
-   & "// A codepoint no tier covers becomes `?`, CCE 68. Bare metal does\n// exactly this and does it silently -- asked for char-code-at on U+22A2\n// it answers 68, text-length 1, and prints `?` on the way out. The\n// substitution is lossy and is upstream's choice, not ours; refusing\n// instead made the native loop abort five seconds into the 2.5 MB fibx\n// subject over one turnstile in type-theory prose, while bare metal\n// compiled the same file. Matching the code matters as much as matching\n// the policy: the encoding is observable, so a different substitute\n// diverges on every text that carries an uncovered character.\n"
-   & "fn cx_cp_to_cce(cp: i64) i64 {\n    for (cce_table, 0..) |u, i| {\n        if (u == cp) return @intCast(i);\n    }\n    const u: u32 = @intCast(cp);\n    for (cce_t1_code, cce_t1_size, cce_t1_uni) |start, size, uni| {\n        if (u >= uni and u < uni + size) return @intCast(start + (u - uni));\n    }\n    var base: u32 = 2176;\n    for (cce_t2_uni, cce_t2_size) |uni, size| {\n        if (u >= uni and u < uni + size) return @intCast(base + (u - uni));\n        base += size;\n    }\n    return 68;\n}\n"
-   & "fn cx_cce_frame(code: i64, out: *std.ArrayListUnmanaged(u8)) void {\n    const al = cx_gpa;\n    const c: u32 = @intCast(code);\n    if (c < 128) {\n        out.append(al, @intCast(c)) catch @panic(\"oom\");\n    } else if (c < 2176) {\n        const v = c - 128;\n        out.append(al, @intCast(192 + (v >> 6))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    } else if (c < 67712) {\n        const v = c - 2176;\n        out.append(al, @intCast(224 + (v >> 12))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 6) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    } else {\n        const v = c - 67712;\n        out.append(al, @intCast(240 + (v >> 18))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 12) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 6) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    }\n}\n"
-   & "fn cx_cce_to_utf8(s: []const u8) []const u8 {\n    var out: std.ArrayListUnmanaged(u8) = .empty;\n    const al = cx_gpa;\n    var i: usize = 0;\n    while (i < s.len) {\n        const b0: i64 = s[i];\n        var code: i64 = b0;\n        if (b0 & 128 == 0) {\n            i += 1;\n        } else if (b0 & 224 == 192) {\n            code = 128 + ((b0 & 31) << 6) + (s[i + 1] & 63);\n            i += 2;\n        } else if (b0 & 240 == 224) {\n            code = 2176 + ((b0 & 15) << 12) + (@as(i64, s[i + 1] & 63) << 6) + (s[i + 2] & 63);\n            i += 3;\n        } else {\n            code = 67712 + ((b0 & 7) << 18) + (@as(i64, s[i + 1] & 63) << 12) + (@as(i64, s[i + 2] & 63) << 6) + (s[i + 3] & 63);\n            i += 4;\n        }\n        const cp: u32 = @intCast(cx_cce_to_cp(code));\n        if (cp < 128) {\n            out.append(al, @intCast(cp)) catch @panic(\"oom\");\n        } else if (cp < 2048) {\n            out.append(al, @intCast(192 + (cp >> 6))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        } else if (cp < 65536) {\n            out.append(al, @intCast(224 + (cp >> 12))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 6) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        } else {\n            out.append(al, @intCast(240 + (cp >> 18))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 12) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 6) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        }\n    }\n    return out.items;\n}\n"
-   & "// One allocation, not two: the digits land in a stack scratch first\n// (i64 needs at most 20 bytes), then the CCE translation is the only\n// heap object. The double allocation left the ASCII copy stranded on\n// the frontier where it blocked in-place extension of whatever grew\n// next.\n"
-   & "fn cx_show_int(n: i64) []const u8 {\n    var cx_tmp: [24]u8 = undefined;\n    const ascii = std.fmt.bufPrint(&cx_tmp, \"{d}\", .{n}) catch unreachable;\n    const buf = cx_gpa.alloc(u8, ascii.len) catch @panic(\"oom\");\n    for (ascii, 0..) |cx_ch, cx_i| {\n        buf[cx_i] = if (cx_ch == '-') 73 else 3 + (cx_ch - '0');\n    }\n    return buf;\n}\n"
-   & "fn cx_print_line(s: []const u8) void {\n    std.debug.print(\"{s}\\n\", .{cx_cce_to_utf8(s)});\n}\n"
-   & "fn cx_print(s: []const u8) void {\n    std.debug.print(\"{s}\", .{cx_cce_to_utf8(s)});\n}\n\n"
+ The banner between the program and the prelude. It lives here rather than
+ inside zig-prelude because placement is emit-zig-chapter's concern, and
+ because build/check-zig-prelude-surface.ps1 derives the reserved-name list
+ from zig-prelude and should not have to read past a comment to do it.
+
+  zig-postlude-banner : Text =
+   "\n"
+   & "// ========================================================================\n"
+   & "// THE PRELUDE. Everything ABOVE this line is the transpiled program.\n"
+   & "//\n"
+   & "// What follows is fixed runtime support, emitted into every file this plug\n"
+   & "// produces and identical in all of them: the bump allocator and its heap,\n"
+   & "// the list and text builtins, the CCE tables, the deck.\n"
+   & "//\n"
+   & "// It is at the BOTTOM so that the code you came to read is the first thing\n"
+   & "// in the file, and so a diff between two emitted programs opens on what\n"
+   & "// differs rather than on hundreds of identical lines. Zig does not order\n"
+   & "// declarations at container scope, so this costs nothing.\n"
+   & "// ========================================================================\n\n"
+
+ The prelude, cut into selectable parts. Each is a `List ShakeFrag` from
+ `Foreword chapter Shake`: `ShakeLit` is inert text, `ShakeUse` is text that is
+ ALSO a dependency on another part -- two projections of one list, so a part's
+ text and its edges cannot drift apart.
+
+ NOTHING HERE IMPLEMENTS THE SELECTION. The closure, the ordering and the
+ reporting live in `Shake`, which knows nothing about zig and is exercised by
+ its own fixtures. This chapter supplies only the data and the roots.
+
+ A part's own declaration site is a ShakeUse of itself; `shake-frag-uses`
+ drops the self-edge, which keeps one rule here instead of two.
+
+ GENERATED by the ladder's `shake_parts.py` and gated part by part:
+ `shake-frag-text` of each list rebuilds its original chunk byte for byte. Do
+ not hand-edit; edit the prelude source and regenerate.
+
+  zig-p-std : List ShakeFrag
+  zig-p-std = [ShakeLit "const ", ShakeUse "std", ShakeLit " = @import(\"std\");\n\n"]
+
+  zig-p-cxfn1 : List ShakeFrag
+  zig-p-cxfn1 = [ShakeLit "// cx_gpa and the heap it allocates from live beside the buffer\n// builtins below: one region, one bump frontier, bare metal's model.\n\nfn ", ShakeUse "CxFn1", ShakeLit "(comptime A: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A) R };\n}\n"]
+
+  zig-p-cxfn2 : List ShakeFrag
+  zig-p-cxfn2 = [ShakeLit "fn ", ShakeUse "CxFn2", ShakeLit "(comptime A: type, comptime B: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B) R };\n}\n"]
+
+  zig-p-cxfn3 : List ShakeFrag
+  zig-p-cxfn3 = [ShakeLit "fn ", ShakeUse "CxFn3", ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C) R };\n}\n"]
+
+  zig-p-cxfn4 : List ShakeFrag
+  zig-p-cxfn4 = [ShakeLit "fn ", ShakeUse "CxFn4", ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D) R };\n}\n"]
+
+  zig-p-cxlist : List ShakeFrag
+  zig-p-cxlist = [ShakeLit "fn ", ShakeUse "CxList", ShakeLit "(comptime T: type) type {\n    return struct { items: ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(T) = .empty };\n}\n"]
+
+  zig-p-cx-ll-empty : List ShakeFrag
+  zig-p-cx-ll-empty = [ShakeLit "fn ", ShakeUse "cx_ll_empty", ShakeLit "(comptime T: type) *", ShakeUse "CxList", ShakeLit "(T) {\n    const cx_l = ", ShakeUse "cx_gpa", ShakeLit ".create(", ShakeUse "CxList", ShakeLit "(T)) catch @panic(\"oom\");\n    cx_l.* = .{};\n    return cx_l;\n}\n"]
+
+  zig-p-cx-ll-push : List ShakeFrag
+  zig-p-cx-ll-push = [ShakeLit "fn ", ShakeUse "cx_ll_push", ShakeLit "(l: anytype, v: anytype) @TypeOf(l) {\n    l.items.append(", ShakeUse "cx_gpa", ShakeLit ", v) catch @panic(\"oom\");\n    return l;\n}\n"]
+
+  zig-p-cx-ll-of : List ShakeFrag
+  zig-p-cx-ll-of = [ShakeLit "// Exact, not rounded. These three build most of what emission\n// allocates -- every instruction is a list literal (mov-rr is\n// [rex-w, 137, modrm]) and write-bytes concatenates one per byte of an\n// immediate -- and they all land on the DECK, which is a finite\n// reservation nothing reclaims until the phase ends. Growing through\n// std's geometric growCapacity asked for 17 slots to hold four, twice\n// per concat, and measured 2026-08-21 that cost 6,963,432 bytes of deck\n// on fibx: 9,392,656 bytes of emit-runtime-helpers where bare metal\n// spends at most 2,682,824. Bare metal allocates cap*8 + 16 once, from\n// __list_concat_many over all operands at their true total. Reserve the\n// true total and append without re-checking; cx_ll_push keeps geometric\n// growth on purpose, because it is the repeated-append path.\nfn ", ShakeUse "cx_ll_of", ShakeLit "(comptime T: type, vs: []const T) *", ShakeUse "CxList", ShakeLit "(T) {\n    const l = ", ShakeUse "cx_ll_empty", ShakeLit "(T);\n    l.items.ensureTotalCapacityPrecise(", ShakeUse "cx_gpa", ShakeLit ", vs.len) catch @panic(\"oom\");\n    l.items.appendSliceAssumeCapacity(vs);\n    return l;\n}\n"]
+
+  zig-p-cx-ll-concat : List ShakeFrag
+  zig-p-cx-ll-concat = [ShakeLit "fn ", ShakeUse "cx_ll_concat", ShakeLit "(a: anytype, b: @TypeOf(a)) @TypeOf(a) {\n    const c = ", ShakeUse "cx_new", ShakeLit "(@TypeOf(a.*){ .items = .empty });\n    c.items.ensureTotalCapacityPrecise(", ShakeUse "cx_gpa", ShakeLit ", a.items.items.len + b.items.items.len) catch @panic(\"oom\");\n    c.items.appendSliceAssumeCapacity(a.items.items);\n    c.items.appendSliceAssumeCapacity(b.items.items);\n    return c;\n}\n"]
+
+  zig-p-cx-ll-cons : List ShakeFrag
+  zig-p-cx-ll-cons = [ShakeLit "fn ", ShakeUse "cx_ll_cons", ShakeLit "(v: anytype, l: anytype) @TypeOf(l) {\n    const c = ", ShakeUse "cx_new", ShakeLit "(@TypeOf(l.*){ .items = .empty });\n    c.items.ensureTotalCapacityPrecise(", ShakeUse "cx_gpa", ShakeLit ", 1 + l.items.items.len) catch @panic(\"oom\");\n    c.items.appendAssumeCapacity(v);\n    c.items.appendSliceAssumeCapacity(l.items.items);\n    return c;\n}\n"]
+
+  zig-p-cx-ll-insert-at : List ShakeFrag
+  zig-p-cx-ll-insert-at = [ShakeLit "fn ", ShakeUse "cx_ll_insert_at", ShakeLit "(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.insert(", ShakeUse "cx_gpa", ShakeLit ", @intCast(i), v) catch @panic(\"oom\");\n    return l;\n}\n"]
+
+  zig-p-cx-ll-with-capacity : List ShakeFrag
+  zig-p-cx-ll-with-capacity = [ShakeLit "// The capacity is load-bearing, not a hint. The emit tables are\n// pre-sized to accum-capacity precisely so a push inside emit-all-defs'\n// per-definition save/restore bracket never reallocates: a reallocation\n// there lands in scratch the bracket reclaims, and the table's header\n// survives pointing at bytes the next definition overwrites. The\n// compiler says so itself, in the guard beside that bracket -- \"a push\n// past it reallocates into scratch that this loop reclaims, corrupting\n// the table\". Discarding n was survivable only while __heap-restore was\n// a no-op. Precise, not rounded: pre-allocated to accum-capacity is a\n// statement about a number.\nfn ", ShakeUse "cx_ll_with_capacity", ShakeLit "(comptime T: type, n: i64) *", ShakeUse "CxList", ShakeLit "(T) {\n    const l = ", ShakeUse "cx_ll_empty", ShakeLit "(T);\n    if (n > 0) l.items.ensureTotalCapacityPrecise(", ShakeUse "cx_gpa", ShakeLit ", @intCast(n)) catch @panic(\"oom\");\n    return l;\n}\n"]
+
+  zig-p-cx-text-compare : List ShakeFrag
+  zig-p-cx-text-compare = [ShakeLit "fn ", ShakeUse "cx_text_compare", ShakeLit "(a: []const u8, b: []const u8) i64 {\n    return switch (", ShakeUse "std", ShakeLit ".mem.order(u8, a, b)) { .lt => -1, .eq => 0, .gt => 1 };\n}\n"]
+
+  zig-p-cx-text-to-double-bits : List ShakeFrag
+  zig-p-cx-text-to-double-bits = [ShakeLit "// Mirrors bare metal's __text_to_double, not a correctly-rounded parse:\n// accumulate the digits as one wrapping integer, count places after the\n// dot, cvtsi2sd once, divide once by 10^frac built by repeated\n// multiplication. The bits land in IrNumLit, so they must match the seed's\n// exactly; a parser that rounds better is a parser that diverges.\nfn ", ShakeUse "cx_text_to_double_bits", ShakeLit "(s: []const u8) i64 {\n    if (s.len == 0) return 0;\n    var i: usize = 0;\n    var neg = false;\n    if (s[0] == 73) {\n        neg = true;\n        i = 1;\n    }\n    var acc: i64 = 0;\n    var frac: i64 = 0;\n    var dot: i64 = 0;\n    while (i < s.len) : (i += 1) {\n        const b = s[i];\n        if (b == 65) {\n            dot = 1;\n            continue;\n        }\n        acc = acc *% 10 +% (@as(i64, b) -% 3);\n        frac += dot;\n    }\n    if (neg) acc = -%acc;\n    var v: f64 = @floatFromInt(acc);\n    if (frac != 0) {\n        var p: f64 = 1.0;\n        var k = frac;\n        while (k != 0) : (k -= 1) p *= 10.0;\n        v /= p;\n    }\n    return @bitCast(v);\n}\n"]
+
+  zig-p-cx-bits-to-real-approx : List ShakeFrag
+  zig-p-cx-bits-to-real-approx = [ShakeLit "// real-f32 on bare metal is f32 bits in a general register (a movd\n// round-trip, emit-bits-to-real-approx-builtin); Real is f64 here, and\n// widening the named f32 value is exact.\nfn ", ShakeUse "cx_bits_to_real_approx", ShakeLit "(bits: i64) f64 {\n    return @floatCast(@as(f32, @bitCast(@as(u32, @truncate(@as(u64, @bitCast(bits)))))));\n}\n"]
+
+  zig-p-cx-char-to-text : List ShakeFrag
+  zig-p-cx-char-to-text = [ShakeLit "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\nfn ", ShakeUse "cx_char_to_text", ShakeLit "(c: i64) []const u8 {\n    const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"]
+
+  zig-p-cx-char-encode : List ShakeFrag
+  zig-p-cx-char-encode = [ShakeLit "fn ", ShakeUse "cx_char_encode", ShakeLit "(c: i64) []const u8 {\n    const u = @as(u64, @bitCast(c));\n    if (u < 128) {\n        const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 1) catch @panic(\"oom\");\n        b[0] = @truncate(u);\n        return b;\n    }\n    if (u < 2176) {\n        const v = u - 128;\n        const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 2) catch @panic(\"oom\");\n        b[0] = @truncate(192 | (v >> 6));\n        b[1] = @truncate(128 | (v & 63));\n        return b;\n    }\n    if (u < 67712) {\n        const v = u - 2176;\n        const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 3) catch @panic(\"oom\");\n        b[0] = @truncate(224 | (v >> 12));\n        b[1] = @truncate(128 | ((v >> 6) & 63));\n        b[2] = @truncate(128 | (v & 63));\n        return b;\n    }\n    const v = u - 67712;\n    const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 4) catch @panic(\"oom\");\n    b[0] = @truncate(240 | (v >> 18));\n    b[1] = @truncate(128 | ((v >> 12) & 63));\n    b[2] = @truncate(128 | ((v >> 6) & 63));\n    b[3] = @truncate(128 | (v & 63));\n    return b;\n}\n"]
+
+  zig-p-cx-list-len : List ShakeFrag
+  zig-p-cx-list-len = [ShakeLit "fn ", ShakeUse "cx_list_len", ShakeLit "(l: anytype) i64 {\n    return @intCast(l.items.items.len);\n}\n"]
+
+  zig-p-cx-list-at : List ShakeFrag
+  zig-p-cx-list-at = [ShakeLit "fn ", ShakeUse "cx_list_at", ShakeLit "(l: anytype, i: i64) @TypeOf(l.items.items[0]) {\n    return l.items.items[@intCast(i)];\n}\n"]
+
+  zig-p-cx-text-len : List ShakeFrag
+  zig-p-cx-text-len = [ShakeLit "fn ", ShakeUse "cx_text_len", ShakeLit "(s: []const u8) i64 {\n    return @intCast(s.len);\n}\n"]
+
+  zig-p-cx-char-at : List ShakeFrag
+  zig-p-cx-char-at = [ShakeLit "fn ", ShakeUse "cx_char_at", ShakeLit "(s: []const u8, i: i64) i64 {\n    return @intCast(s[@intCast(i)]);\n}\n"]
+
+  zig-p-cx-text-dup : List ShakeFrag
+  zig-p-cx-text-dup = [ShakeLit "// Traps rather than clamps, because bare metal traps: emit-substring-bounds\n// (Emit/X86_64Builtins.codex:666) emits three UD2s -- negative start,\n// negative length, and len past the end -- at a deliberate ruling, since a\n// clamp turns a program's bug into quietly wrong data and a safety guarantee\n// is never silently degraded. The unchecked version returned the whole of\n// the NEXT allocation verbatim. Note the third check subtracts rather than\n// adding: start + len can wrap, and the input that wraps it is the one an\n// attacker picks; s.len - cx_a cannot, because the guard above pins cx_a to\n// [0, s.len]. Finding 28.\n// Copies, because bare metal copies, and the difference is observable:\n// emit-substring-alloc bumps r10 -- the LIVE allocation register, which\n// inside a deck extent is the deck cursor -- so a substring taken between\n// __deck-enter and __deck-exit lands ON THE DECK and outlives a rewind of\n// the frontier. A slice of the argument cannot: it stays where the argument\n// was, and a value that looks decked and is not becomes a table full of\n// reclaimed bytes. Same reasoning for every piece of a split. Finding 29.\nfn ", ShakeUse "cx_text_dup", ShakeLit "(s: []const u8) []const u8 {\n    const cx_out = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, s.len) catch @panic(\"oom\");\n    @memcpy(cx_out, s);\n    return cx_out;\n}\n"]
+
+  zig-p-cx-substring : List ShakeFrag
+  zig-p-cx-substring = [ShakeLit "fn ", ShakeUse "cx_substring", ShakeLit "(s: []const u8, start: i64, len: i64) []const u8 {\n    if (start < 0 or len < 0) @panic(\"cx substring: negative start or length\");\n    const cx_a: usize = @intCast(start);\n    if (cx_a > s.len or len > @as(i64, @intCast(s.len - cx_a))) @panic(\"cx substring: out of range\");\n    return ", ShakeUse "cx_text_dup", ShakeLit "(s[cx_a .. cx_a + @as(usize, @intCast(len))]);\n}\n"]
+
+  zig-p-cx-ipow : List ShakeFrag
+  zig-p-cx-ipow = [ShakeLit "fn ", ShakeUse "cx_ipow", ShakeLit "(a: i64, b: i64) i64 {\n    if (b < 0) return 0;\n    var cx_acc: i64 = 1;\n    var cx_base = a;\n    var cx_e = b;\n    while (cx_e > 0) {\n        if ((cx_e & 1) == 1) cx_acc = cx_acc *% cx_base;\n        cx_base = cx_base *% cx_base;\n        cx_e = cx_e >> 1;\n    }\n    return cx_acc;\n}\n"]
+
+  zig-p-cx-shl : List ShakeFrag
+  zig-p-cx-shl = [ShakeLit "fn ", ShakeUse "cx_shl", ShakeLit "(a: i64, b: i64) i64 {\n    return a << @as(u6, @intCast(b & 63));\n}\n"]
+
+  zig-p-cx-shr : List ShakeFrag
+  zig-p-cx-shr = [ShakeLit "fn ", ShakeUse "cx_shr", ShakeLit "(a: i64, b: i64) i64 {\n    return a >> @as(u6, @intCast(b & 63));\n}\n"]
+
+  zig-p-cx-heap-reserve : List ShakeFrag
+  zig-p-cx-heap-reserve = [ShakeLit "// ONE heap, bare metal's own model: records, lists, text, closures,\n// buffers and the emit workspace all come from a single bump frontier\n// (cx_hp), so __heap-restore reclaims everything allocated since the\n// matching __heap-save. On bare metal __alloc bumps the same pointer\n// the save/restore pair moves, and emit-all-defs brackets EVERY\n// definition in one -- emission costs the max over definitions there\n// and must not cost the sum here. The region is reserved once and\n// never moved: a reallocating region would dangle every pointer\n// handed out before the growth. page_allocator memory is lazily\n// faulted zero pages, so resident stays proportional to what is\n// touched, the zero-fill the guest does at boot comes free, and the\n// byte at index i IS address i. The reservation is finite on purpose:\n// the depot peeks absolute addresses (smp-* boards poll ~2.1 GB), and\n// an address outside the region must refuse with the address in the\n// message, not zero-fill its way up to it. The bump pointer boots at\n// bare metal's own heap base (boot does mov r10, 6291456): the\n// absolute value is observable -- the depot's arith-narrow-proven\n// asserts __heap-save > 0 as a structural fact. Addresses below the\n// base belong to the deck, which swaps cx_hp in and out below.\n// 4 GiB: bare metal's guest is 3 GB and compiles its largest subjects\n// inside it, and the hosted harnesses reserve 512 MB of that as deck;\n// finding 24 measured the fibx subject at 381 MB deck + ~1.2 GB main,\n// which the old 1.5 GiB could not hold. Reserving costs nothing resident\n// (lazily faulted, below); what bounds a runaway is the venue's cgroup\n// MemoryMax (the ladder's bounded_run), not this constant.\nconst ", ShakeUse "cx_heap_reserve", ShakeLit ": usize = 4096 * 1024 * 1024;\n"]
+
+  zig-p-cx-heap-mem : List ShakeFrag
+  zig-p-cx-heap-mem = [ShakeLit "var ", ShakeUse "cx_heap_mem", ShakeLit ": []u8 = &.{};\n"]
+
+  zig-p-cx-hp : List ShakeFrag
+  zig-p-cx-hp = [ShakeLit "var ", ShakeUse "cx_hp", ShakeLit ": i64 = 6291456;\n"]
+
+  zig-p-cx-heap-base : List ShakeFrag
+  zig-p-cx-heap-base = [ShakeLit "// rawAlloc, NOT Allocator.alloc. The wrapper memsets every allocation to\n// `undefined`, which in a Debug build is 0xAA -- so the whole reserved\n// region arrived filled with 170s instead of zeros, and the memset\n// touched the whole region, committing a reservation that is supposed to\n// stay resident in proportion to what is used. Bare metal reserves a\n// span the guest zero-filled at boot, so a fresh buffer reads as zero\n// there; measured 2026-08-21 with findings/probe-fresh-span.codex,\n// ours read 170 in every byte. rawAlloc hands back the pages the OS\n// gives, which are zero and faulted lazily.\nfn ", ShakeUse "cx_heap_base", ShakeLit "() [*]u8 {\n    if (", ShakeUse "cx_heap_mem", ShakeLit ".len == 0) {\n        const cx_pa = ", ShakeUse "std", ShakeLit ".heap.page_allocator;\n        const cx_p = cx_pa.rawAlloc(", ShakeUse "cx_heap_reserve", ShakeLit ", .fromByteUnits(4096), @returnAddress()) orelse @panic(\"cx heap: cannot reserve the region\");\n        ", ShakeUse "cx_heap_mem", ShakeLit " = cx_p[0..", ShakeUse "cx_heap_reserve", ShakeLit "];\n    }\n    return ", ShakeUse "cx_heap_mem", ShakeLit ".ptr;\n}\n"]
+
+  zig-p-cx-buf-want : List ShakeFrag
+  zig-p-cx-buf-want = [ShakeLit "fn ", ShakeUse "cx_buf_want", ShakeLit "(n: i64) void {\n    if (n < 0 or @as(usize, @intCast(n)) > ", ShakeUse "cx_heap_reserve", ShakeLit ") ", ShakeUse "std", ShakeLit ".debug.panic(\"cx heap: address {d} outside the {d}-byte region\", .{ n, ", ShakeUse "cx_heap_reserve", ShakeLit " });\n    _ = ", ShakeUse "cx_heap_base", ShakeLit "();\n}\n"]
+
+  zig-p-cx-frontier-crosses : List ShakeFrag
+  zig-p-cx-frontier-crosses = [ShakeLit "// The deck is a FINITE reservation and nothing else enforces it. The\n// program places it with __deck-set and then lifts the main frontier\n// clear of it with __heap-advance (emit-build reserves\n// defs*65536 + 25165824), so the parked main frontier sits exactly at\n// the deck's top: inside an extent, a deck allocation that reaches\n// cx_bivy has overrun its region and is about to write over main's live\n// objects. Outside an extent the deck's live bytes are\n// [cx_deck_base, cx_dptr), and main may not OVERLAP that span anywhere,\n// not merely cross its top: __heap-restore can park the frontier beneath\n// the deck, and a frontier climbing back from below tramples live deck\n// objects long before it straddles cx_dptr -- that is the path the\n// 2026-08-21 crash took, build_debug_map landing on the decked\n// CodegenState. In the standard emit-build shape main lives above the\n// deck, so base < cx_dptr never holds and the overlap test is silent.\n// Checking only the region ceiling lets the two cursors walk through\n// each other in silence -- measured 2026-08-21, fibx's deck ran 8613088\n// bytes past a 25362432-byte reservation and the wreckage surfaced as a\n// segfault in a hash function thousands of allocations later. Upstream knows this\n// failure shape: BuildSettings records that starving the floor crashes\n// on a garbage pointer instead of raising CDX9002, because deck-short-of\n// reads __deck-pos, which is frozen inside a phase-wide extent. resize\n// declines rather than panics, funnelling the crossing into the alloc\n// path so there is one refusal site.\nfn ", ShakeUse "cx_frontier_crosses", ShakeLit "(base: usize, len: usize) bool {\n    if (", ShakeUse "cx_nest", ShakeLit " > 0) {\n        if (", ShakeUse "cx_bivy", ShakeLit " <= 0) return false;\n        const o: usize = @intCast(", ShakeUse "cx_bivy", ShakeLit ");\n        return base < o and base + len > o;\n    }\n    if (", ShakeUse "cx_dptr", ShakeLit " <= 0) return false;\n    const top: usize = @intCast(", ShakeUse "cx_dptr", ShakeLit ");\n    const bot: usize = @intCast(", ShakeUse "cx_deck_base", ShakeLit ");\n    return base < top and base + len > bot;\n}\n"]
+
+  zig-p-cx-bump-alloc : List ShakeFrag
+  zig-p-cx-bump-alloc = [ShakeLit "fn ", ShakeUse "cx_bump_alloc", ShakeLit "(_: *anyopaque, len: usize, alignment: ", ShakeUse "std", ShakeLit ".mem.Alignment, _: usize) ?[*]u8 {\n    const base = alignment.forward(@intCast(", ShakeUse "cx_hp", ShakeLit "));\n    if (base + len > ", ShakeUse "cx_heap_reserve", ShakeLit ") ", ShakeUse "std", ShakeLit ".debug.panic(\"cx heap: exhausted at {d} + {d} of {d}\", .{ base, len, ", ShakeUse "cx_heap_reserve", ShakeLit " });\n    if (", ShakeUse "cx_frontier_crosses", ShakeLit "(base, len)) ", ShakeUse "std", ShakeLit ".debug.panic(\"cx heap: the two cursors met -- alloc at {d} + {d} crosses (hp={d} dptr={d} deck_base={d} bivy={d} nest={d})\", .{ base, len, ", ShakeUse "cx_hp", ShakeLit ", ", ShakeUse "cx_dptr", ShakeLit ", ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_bivy", ShakeLit ", ", ShakeUse "cx_nest", ShakeLit " });\n    ", ShakeUse "cx_hp", ShakeLit " = @intCast(base + len);\n    ", ShakeUse "cx_deck_armed", ShakeLit " = false;\n    if (", ShakeUse "cx_nest", ShakeLit " > 0 and ", ShakeUse "cx_hp", ShakeLit " > ", ShakeUse "cx_deck_hw", ShakeLit ") {\n        ", ShakeUse "cx_deck_hw", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit ";\n        if (", ShakeUse "cx_deck_hw", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit " > ", ShakeUse "cx_deck_best", ShakeLit ") ", ShakeUse "cx_deck_best", ShakeLit " = ", ShakeUse "cx_deck_hw", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ";\n        ", ShakeUse "cx_deck_report", ShakeLit "();\n    }\n    return ", ShakeUse "cx_heap_base", ShakeLit "() + base;\n}\n"]
+
+  zig-p-cx-bump-resize : List ShakeFrag
+  zig-p-cx-bump-resize = [ShakeLit "// In-place growth when the block is the topmost allocation is bare\n// metal's __list_snoc path 2 -- extend the frontier block, reallocate\n// only otherwise. The mirror, not an optimisation: a plug whose list\n// growth reallocates where bare metal extends allocates a different\n// amount for the same program. free rewinds only the topmost block,\n// the same rule from the other side.\nfn ", ShakeUse "cx_bump_resize", ShakeLit "(_: *anyopaque, memory: []u8, _: ", ShakeUse "std", ShakeLit ".mem.Alignment, new_len: usize, _: usize) bool {\n    const off = @intFromPtr(memory.ptr) - @intFromPtr(", ShakeUse "cx_heap_base", ShakeLit "());\n    if (off + memory.len == @as(usize, @intCast(", ShakeUse "cx_hp", ShakeLit "))) {\n        if (off + new_len > ", ShakeUse "cx_heap_reserve", ShakeLit ") return false;\n        if (", ShakeUse "cx_frontier_crosses", ShakeLit "(off, new_len)) return false;\n        ", ShakeUse "cx_hp", ShakeLit " = @intCast(off + new_len);\n        return true;\n    }\n    return new_len <= memory.len;\n}\n"]
+
+  zig-p-cx-bump-remap : List ShakeFrag
+  zig-p-cx-bump-remap = [ShakeLit "fn ", ShakeUse "cx_bump_remap", ShakeLit "(ctx: *anyopaque, memory: []u8, alignment: ", ShakeUse "std", ShakeLit ".mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {\n    return if (", ShakeUse "cx_bump_resize", ShakeLit "(ctx, memory, alignment, new_len, ra)) memory.ptr else null;\n}\n"]
+
+  zig-p-cx-bump-free : List ShakeFrag
+  zig-p-cx-bump-free = [ShakeLit "fn ", ShakeUse "cx_bump_free", ShakeLit "(_: *anyopaque, memory: []u8, _: ", ShakeUse "std", ShakeLit ".mem.Alignment, _: usize) void {\n    const off = @intFromPtr(memory.ptr) - @intFromPtr(", ShakeUse "cx_heap_base", ShakeLit "());\n    if (off + memory.len == @as(usize, @intCast(", ShakeUse "cx_hp", ShakeLit "))) ", ShakeUse "cx_hp", ShakeLit " = @intCast(off);\n}\n"]
+
+  zig-p-cx-heap-vtable : List ShakeFrag
+  zig-p-cx-heap-vtable = [ShakeLit "const ", ShakeUse "cx_heap_vtable", ShakeLit " = ", ShakeUse "std", ShakeLit ".mem.Allocator.VTable{ .alloc = ", ShakeUse "cx_bump_alloc", ShakeLit ", .resize = ", ShakeUse "cx_bump_resize", ShakeLit ", .remap = ", ShakeUse "cx_bump_remap", ShakeLit ", .free = ", ShakeUse "cx_bump_free", ShakeLit " };\n"]
+
+  zig-p-cx-gpa : List ShakeFrag
+  zig-p-cx-gpa = [ShakeLit "const ", ShakeUse "cx_gpa", ShakeLit " = ", ShakeUse "std", ShakeLit ".mem.Allocator{ .ptr = undefined, .vtable = &", ShakeUse "cx_heap_vtable", ShakeLit " };\n"]
+
+  zig-p-cx-heap-save : List ShakeFrag
+  zig-p-cx-heap-save = [ShakeLit "fn ", ShakeUse "cx_heap_save", ShakeLit "() i64 {\n    return ", ShakeUse "cx_hp", ShakeLit ";\n}\n"]
+
+  zig-p-cx-heap-advance : List ShakeFrag
+  zig-p-cx-heap-advance = [ShakeLit "fn ", ShakeUse "cx_heap_advance", ShakeLit "(n: i64) i64 {\n    if (", ShakeUse "cx_deck_armed", ShakeLit ") {\n        ", ShakeUse "cx_deck_armed", ShakeLit " = false;\n        ", ShakeUse "cx_deck_top", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit " + n;\n        ", ShakeUse "cx_hp", ShakeLit " += ", ShakeUse "cx_deck_slack", ShakeLit ";\n    }\n    ", ShakeUse "cx_hp", ShakeLit " += n;\n    return 0;\n}\n"]
+
+  zig-p-cx-heap-restore : List ShakeFrag
+  zig-p-cx-heap-restore = [ShakeLit "fn ", ShakeUse "cx_heap_restore", ShakeLit "(h: i64) i64 {\n    ", ShakeUse "cx_hp", ShakeLit " = h;\n    return 0;\n}\n"]
+
+  zig-p-cx-peek-qword : List ShakeFrag
+  zig-p-cx-peek-qword = [ShakeLit "// Wrapping, because bare metal does a single 64-bit load and every\n// bit pattern is a legal i64. Rebuilding the value with checked * and +\n// traps on any qword whose top byte sets the high bit -- that is, on\n// every NEGATIVE qword. Measured 2026-08-21 with\n// findings/probe-peek-qword.codex: bytes 00 00 00 00 00 00 00 FF answer\n// -72057594037927936 on bare metal and panic here.\nfn ", ShakeUse "cx_peek_qword", ShakeLit "(b: i64, off: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v *% 256 +% ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"]
+
+  zig-p-cx-address-of : List ShakeFrag
+  zig-p-cx-address-of = [ShakeLit "// Bare metal's address-of is emit-identity-builtin: it returns the VALUE,\n// and since records, lists and texts are pointers there, the value IS the\n// address. Answering a constant 0 made every object identical to every other\n// one AND to null, and the compiler reads that as an answer: mode-ordinal and\n// real-width-ordinal short-circuit on `address-of m == 0`, so they returned 0\n// for every input, and copy-sx-text decides durability with `address-of t < b`,\n// so it always shared and never rematerialised -- into a region about to be\n// reclaimed. Finding 31.\n//\n// The 0 was justified by X86_64Compound's note that address-of \"silently\n// answers 0 on any target where it cannot be modelled: that cost the C# arm\n// every tag in this table\". That note describes the hazard as a cost, not a\n// licence, and this is not such a target -- one flat region and pointers into\n// it is exactly the shape bare metal has.\n//\n// HEAP-RELATIVE, not a host pointer: the answers are compared against\n// __heap-save values, which are offsets from cx_heap_base. A raw @intFromPtr\n// would order correctly among itself and be nonsense against those.\nfn ", ShakeUse "cx_address_of", ShakeLit "(v: anytype) i64 {\n    switch (@typeInfo(@TypeOf(v))) {\n        .int, .comptime_int => return @intCast(v),\n        .bool => return @intFromBool(v),\n        .pointer => |cx_pi| {\n            const cx_p = if (cx_pi.size == .slice) @intFromPtr(v.ptr) else @intFromPtr(v);\n            const cx_base = @intFromPtr(", ShakeUse "cx_heap_base", ShakeLit "());\n            return if (cx_p >= cx_base) @intCast(cx_p - cx_base) else 0;\n        },\n        else => @compileError(\"zig plug: no address-of for this type\"),\n    }\n}\n"]
+
+  zig-p-cx-dptr : List ShakeFrag
+  zig-p-cx-dptr = [ShakeLit "// The deck is the C# plug's rule (_Buf.deck_enter/deck_exit): the\n// outermost enter parks the bump pointer in the bivy and swaps the deck\n// pointer in; the outermost exit swaps back. Deck position is observable\n// (the depot's deck-*-contract subjects print it), so a no-op deck is a\n// wrong answer, not a simplification.\nvar ", ShakeUse "cx_dptr", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-bivy : List ShakeFrag
+  zig-p-cx-bivy = [ShakeLit "var ", ShakeUse "cx_bivy", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-nest : List ShakeFrag
+  zig-p-cx-nest = [ShakeLit "var ", ShakeUse "cx_nest", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-deck-base : List ShakeFrag
+  zig-p-cx-deck-base = [ShakeLit "// The deck high-water mark. `emit-build` reserves defs*65536+25165824 for\n// the deck and lifts the main frontier to exactly its top, so while an extent\n// is open the PARKED frontier (cx_bivy) IS the reservation ceiling and cx_hp is\n// the live deck cursor. Peak minus base is what the deck cost; ceiling minus\n// peak is what was left. Nothing else can report this -- the deck-pos cell is\n// frozen inside an extent, which is why upstream's own deck-short-of guard\n// cannot fire where exhaustion actually happens.\nvar ", ShakeUse "cx_deck_base", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-deck-hw : List ShakeFrag
+  zig-p-cx-deck-hw = [ShakeLit "var ", ShakeUse "cx_deck_hw", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-deck-top : List ShakeFrag
+  zig-p-cx-deck-top = [ShakeLit "var ", ShakeUse "cx_deck_top", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-deck-best : List ShakeFrag
+  zig-p-cx-deck-best = [ShakeLit "var ", ShakeUse "cx_deck_best", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-deck-stride : List ShakeFrag
+  zig-p-cx-deck-stride = [ShakeLit "var ", ShakeUse "cx_deck_stride", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-deck-armed : List ShakeFrag
+  zig-p-cx-deck-armed = [ShakeLit "var ", ShakeUse "cx_deck_armed", ShakeLit ": bool = false;\n"]
+
+  zig-p-cx-deck-slack : List ShakeFrag
+  zig-p-cx-deck-slack = [ShakeLit "// Measurement-only headroom, added to the lift that follows __deck-set so\n// the deck can run PAST its reservation without meeting the main frontier.\n// Zero in every normal build, and it must stay zero in anything banked: it\n// changes __deck-pos, which the depot can observe. The point of it is that the\n// guard fires at the FIRST crossing, and a first crossing tells you only that\n// demand exceeded the reservation -- the deficit it reports is bounded by one\n// allocation and is therefore always about zero. Slack lets the program finish\n// so the TRUE peak is knowable.\nconst ", ShakeUse "cx_deck_slack", ShakeLit ": i64 = 0;\n"]
+
+  zig-p-cx-deck-report : List ShakeFrag
+  zig-p-cx-deck-report = [ShakeLit "// STDOUT, never stderr. stderr carries the program's output and every\n// comparison in the ladder diffs it, so a measurement written there would\n// corrupt the thing being measured. Raw write syscall rather than\n// std.Io.File, which in 0.16 wants an Io instance. Only on a new peak, so the\n// lines are few and the last one is the answer.\nfn ", ShakeUse "cx_deck_report", ShakeLit "() void {\n    if (@import(\"builtin\").os.tag != .linux) return;\n    if (", ShakeUse "cx_deck_base", ShakeLit " == 0 or ", ShakeUse "cx_deck_top", ShakeLit " == 0) return;\n    const cx_used = ", ShakeUse "cx_deck_hw", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ";\n    if (cx_used - ", ShakeUse "cx_deck_stride", ShakeLit " < 1048576) return;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = cx_used;\n    var cx_b: [224]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_b, \"CX-DECK used={d} reserved={d} headroom={d} base={d} peak={d} best={d}\\n\", .{ cx_used, ", ShakeUse "cx_deck_top", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_deck_top", ShakeLit " - ", ShakeUse "cx_deck_hw", ShakeLit ", ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_deck_hw", ShakeLit ", ", ShakeUse "cx_deck_best", ShakeLit " }) catch return;\n    _ = ", ShakeUse "std", ShakeLit ".os.linux.write(1, cx_s.ptr, cx_s.len);\n}\n"]
+
+  zig-p-cx-deck-enter : List ShakeFrag
+  zig-p-cx-deck-enter = [ShakeLit "fn ", ShakeUse "cx_deck_enter", ShakeLit "() i64 {\n    if (", ShakeUse "cx_nest", ShakeLit " == 0) {\n        ", ShakeUse "cx_bivy", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit ";\n        ", ShakeUse "cx_hp", ShakeLit " = ", ShakeUse "cx_dptr", ShakeLit ";\n    }\n    ", ShakeUse "cx_nest", ShakeLit " += 1;\n    return 0;\n}\n"]
+
+  zig-p-cx-deck-exit : List ShakeFrag
+  zig-p-cx-deck-exit = [ShakeLit "fn ", ShakeUse "cx_deck_exit", ShakeLit "() i64 {\n    ", ShakeUse "cx_nest", ShakeLit " -= 1;\n    if (", ShakeUse "cx_nest", ShakeLit " == 0) {\n        ", ShakeUse "cx_dptr", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit ";\n        ", ShakeUse "cx_hp", ShakeLit " = ", ShakeUse "cx_bivy", ShakeLit ";\n        ", ShakeUse "cx_deck_report", ShakeLit "();\n    }\n    return 0;\n}\n"]
+
+  zig-p-cx-deck-pos : List ShakeFrag
+  zig-p-cx-deck-pos = [ShakeLit "fn ", ShakeUse "cx_deck_pos", ShakeLit "() i64 {\n    return ", ShakeUse "cx_dptr", ShakeLit ";\n}\n"]
+
+  zig-p-cx-deck-set : List ShakeFrag
+  zig-p-cx-deck-set = [ShakeLit "fn ", ShakeUse "cx_deck_set", ShakeLit "(p: i64) i64 {\n    ", ShakeUse "cx_dptr", ShakeLit " = p;\n    ", ShakeUse "cx_deck_base", ShakeLit " = p;\n    ", ShakeUse "cx_deck_hw", ShakeLit " = p;\n    ", ShakeUse "cx_deck_top", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_best", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_armed", ShakeLit " = true;\n    return 0;\n}\n"]
+
+  zig-p-cx-utf8-to-cce : List ShakeFrag
+  zig-p-cx-utf8-to-cce = [ShakeLit "// The I/O boundary. Codex text is CCE everywhere inside -- on bare metal\n// and here alike -- so these convert at the edge and nowhere else: bytes\n// arriving become CCE, bytes leaving are already what they are. std.fs in\n// 0.16 wants an Io the generated main has no reason to carry, so this uses\n// the raw syscalls.\nfn ", ShakeUse "cx_utf8_to_cce", ShakeLit "(bytes: []const u8) []const u8 {\n    var out: ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8) = .empty;\n    var i: usize = 0;\n    while (i < bytes.len) {\n        const n = ", ShakeUse "std", ShakeLit ".unicode.utf8ByteSequenceLength(bytes[i]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        const cp = ", ShakeUse "std", ShakeLit ".unicode.utf8Decode(bytes[i..][0..n]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        ", ShakeUse "cx_cce_frame", ShakeLit "(", ShakeUse "cx_cp_to_cce", ShakeLit "(cp), &out);\n        i += n;\n    }\n    return out.items;\n}\n"]
+
+  zig-p-cx-read-file-uni : List ShakeFrag
+  zig-p-cx-read-file-uni = [ShakeLit "fn ", ShakeUse "cx_read_file_uni", ShakeLit "(path_cce: []const u8) []const u8 {\n    const al = ", ShakeUse "cx_gpa", ShakeLit ";\n    const path = ", ShakeUse "cx_cce_to_utf8", ShakeLit "(path_cce);\n    const z = al.allocSentinel(u8, path.len, 0) catch @panic(\"oom\");\n    @memcpy(z, path);\n    const rc = ", ShakeUse "std", ShakeLit ".os.linux.openat(-100, z.ptr, .{ .ACCMODE = .RDONLY }, 0);\n    if (@as(isize, @bitCast(rc)) < 0) @panic(\"cx_read_file_uni: cannot open\");\n    const fd: i32 = @intCast(rc);\n    defer _ = ", ShakeUse "std", ShakeLit ".os.linux.close(fd);\n    var raw: ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8) = .empty;\n    var chunk: [65536]u8 = undefined;\n    while (true) {\n        const n = ", ShakeUse "std", ShakeLit ".os.linux.read(fd, &chunk, chunk.len);\n        if (@as(isize, @bitCast(n)) < 0) @panic(\"cx_read_file_uni: read failed\");\n        if (n == 0) break;\n        raw.appendSlice(al, chunk[0..n]) catch @panic(\"oom\");\n    }\n    return ", ShakeUse "cx_utf8_to_cce", ShakeLit "(raw.items);\n}\n"]
+
+  zig-p-cx-write-all : List ShakeFrag
+  zig-p-cx-write-all = [ShakeLit "fn ", ShakeUse "cx_write_all", ShakeLit "(bytes: []const u8) void {\n    var off: usize = 0;\n    while (off < bytes.len) {\n        const n = ", ShakeUse "std", ShakeLit ".os.linux.write(1, bytes.ptr + off, bytes.len - off);\n        if (@as(isize, @bitCast(n)) <= 0) @panic(\"cx_write_all: write failed\");\n        off += n;\n    }\n}\n"]
+
+  zig-p-cx-write-binary : List ShakeFrag
+  zig-p-cx-write-binary = [ShakeLit "fn ", ShakeUse "cx_write_binary", ShakeLit "(vs: anytype) void {\n    const al = ", ShakeUse "cx_gpa", ShakeLit ";\n    var out: ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8) = .empty;\n    for (vs.items.items) |v| out.append(al, @intCast(@mod(v, 256))) catch @panic(\"oom\");\n    ", ShakeUse "cx_write_all", ShakeLit "(out.items);\n}\n"]
+
+  zig-p-cx-write-binary-buf : List ShakeFrag
+  zig-p-cx-write-binary-buf = [ShakeLit "fn ", ShakeUse "cx_write_binary_buf", ShakeLit "(b: i64, off: i64, len: i64) void {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + len);\n    const s: usize = @intCast(b + off);\n    ", ShakeUse "cx_write_all", ShakeLit "(", ShakeUse "cx_heap_mem", ShakeLit "[s .. s + @as(usize, @intCast(len))]);\n}\n"]
+
+  zig-p-cx-vtag : List ShakeFrag
+  zig-p-cx-vtag = [ShakeLit "// variant-tag is the constructor's 0-based declaration index: bare\n// metal loads word 0 of the variant block (emit-variant-tag-builtin) and\n// writes find-ctor-tag there, and a union(enum)'s tag is numbered the same\n// way by declaration order. Self-recursive variants are pointers here, so\n// the pointer case dereferences first.\nfn ", ShakeUse "cx_vtag", ShakeLit "(v: anytype) i64 {\n    return switch (@typeInfo(@TypeOf(v))) {\n        .pointer => @intCast(@intFromEnum(v.*)),\n        else => @intCast(@intFromEnum(v)),\n    };\n}\n"]
+
+  zig-p-cx-buf-write-byte : List ShakeFrag
+  zig-p-cx-buf-write-byte = [ShakeLit "fn ", ShakeUse "cx_buf_write_byte", ShakeLit "(b: i64, off: i64, v: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 1);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[@intCast(b + off)] = @intCast(@mod(v, 256));\n    return off + 1;\n}\n"]
+
+  zig-p-cx-buf-write-bytes : List ShakeFrag
+  zig-p-cx-buf-write-bytes = [ShakeLit "fn ", ShakeUse "cx_buf_write_bytes", ShakeLit "(b: i64, off: i64, vs: anytype) i64 {\n    const n: i64 = @intCast(vs.items.items.len);\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + n);\n    for (vs.items.items, 0..) |v, i| ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off)) + i] = @intCast(@mod(v, 256));\n    return off + n;\n}\n"]
+
+  zig-p-cx-peek-byte : List ShakeFrag
+  zig-p-cx-peek-byte = [ShakeLit "fn ", ShakeUse "cx_peek_byte", ShakeLit "(b: i64, off: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 1);\n    return ", ShakeUse "cx_heap_mem", ShakeLit "[@intCast(b + off)];\n}\n"]
+
+  zig-p-cx-buf-read-bytes : List ShakeFrag
+  zig-p-cx-buf-read-bytes = [ShakeLit "fn ", ShakeUse "cx_buf_read_bytes", ShakeLit "(b: i64, off: i64, n: i64) *", ShakeUse "CxList", ShakeLit "(i64) {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + n);\n    const l = ", ShakeUse "cx_ll_empty", ShakeLit "(i64);\n    l.items.ensureTotalCapacity(", ShakeUse "cx_gpa", ShakeLit ", @intCast(n)) catch @panic(\"oom\");\n    var cx_j: i64 = 0;\n    while (cx_j < n) : (cx_j += 1) l.items.appendAssumeCapacity(", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off + cx_j))]);\n    return l;\n}\n"]
+
+  zig-p-cx-shru : List ShakeFrag
+  zig-p-cx-shru = [ShakeLit "fn ", ShakeUse "cx_shru", ShakeLit "(a: i64, b: i64) i64 {\n    return @bitCast(@as(u64, @bitCast(a)) >> @as(u6, @intCast(b & 63)));\n}\n"]
+
+  zig-p-cx-mod : List ShakeFrag
+  zig-p-cx-mod = [ShakeLit "// int-mod is Euclidean, so the result lands in [0, |b|) regardless of\n// either sign, where @rem takes the dividend's sign.\nfn ", ShakeUse "cx_mod", ShakeLit "(a: i64, b: i64) i64 {\n    const m = if (b < 0) -b else b;\n    const r = @rem(a, m);\n    return if (r < 0) r + m else r;\n}\n"]
+
+  zig-p-cx-text-eq : List ShakeFrag
+  zig-p-cx-text-eq = [ShakeLit "fn ", ShakeUse "cx_text_eq", ShakeLit "(a: []const u8, b: []const u8) bool {\n    return ", ShakeUse "std", ShakeLit ".mem.eql(u8, a, b);\n}\n"]
+
+  zig-p-cx-is-letter : List ShakeFrag
+  zig-p-cx-is-letter = [ShakeLit "// Classification is banded in CCE: 13..64 are the ASCII letters, 65..96\n// the punctuation between, 97..127 the accented Latin and Cyrillic\n// letters, 3..12 the digits -- the same two-band test bare metal's\n// emit-is-letter-builtin encodes.\nfn ", ShakeUse "cx_is_letter", ShakeLit "(c: i64) bool {\n    return (c >= 13 and c <= 64) or (c >= 97 and c <= 127);\n}\n"]
+
+  zig-p-cx-is-digit : List ShakeFrag
+  zig-p-cx-is-digit = [ShakeLit "fn ", ShakeUse "cx_is_digit", ShakeLit "(c: i64) bool {\n    return c >= 3 and c <= 12;\n}\n"]
+
+  zig-p-cx-new : List ShakeFrag
+  zig-p-cx-new = [ShakeLit "fn ", ShakeUse "cx_new", ShakeLit "(v: anytype) *@TypeOf(v) {\n    const p = ", ShakeUse "cx_gpa", ShakeLit ".create(@TypeOf(v)) catch @panic(\"oom\");\n    p.* = v;\n    return p;\n}\n"]
+
+  zig-p-cx-concat : List ShakeFrag
+  zig-p-cx-concat = [ShakeLit "// An accumulator loop appends to the frontier block, and the bytes\n// just past it are free. Growing there leaves every existing holder of\n// `a` seeing the same bytes -- text is immutable and nothing before\n// a.len is written -- so the loop costs n instead of n(n+1)/2. Bare\n// metal reaches the same asymptotics from the other side, statically:\n// is-inplace-append (X86_64.codex:2376) recognises a tail-recursive\n// accumulator parameter and calls __str_concat_inplace. That analysis\n// needs TCO state this emitter does not track, and it does not need to:\n// on a bump frontier the same question is one pointer comparison at run\n// time. Measured 2026-08-21 with findings/probe-memory-model.codex,\n// text accumulation at n = 64/128/256: 2080/8256/32896 bytes before\n// (exactly n(n+1)/2), 64/128/256 after, against bare metal 72/136/264.\n// No empty short-circuit. `a & \"\"` returning `a` is the finding-29 shape:\n// bare metal has no such case -- both emit-str-concat-fast-bump and\n// emit-str-concat-slow-alloc bump r10 unconditionally, so the result is\n// always a fresh block at the live cursor -- and an aliased return inside a\n// deck extent yields a value that looks decked and is not. Falling through\n// costs an empty allocation and buys the guarantee.\nfn ", ShakeUse "cx_concat", ShakeLit "(a: []const u8, b: []const u8) []const u8 {\n    if (a.len != 0) {\n        const cx_base = @intFromPtr(", ShakeUse "cx_heap_base", ShakeLit "());\n        const cx_ap = @intFromPtr(a.ptr);\n        if (cx_ap >= cx_base and cx_ap - cx_base + a.len == @as(usize, @intCast(", ShakeUse "cx_hp", ShakeLit "))) {\n            const cx_tail = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, b.len) catch @panic(\"oom\");\n            @memcpy(cx_tail, b);\n            return a.ptr[0 .. a.len + b.len];\n        }\n    }\n    return ", ShakeUse "std", ShakeLit ".mem.concat(", ShakeUse "cx_gpa", ShakeLit ", u8, &.{ a, b }) catch @panic(\"oom\");\n}\n"]
+
+  zig-p-cx-text-starts-with : List ShakeFrag
+  zig-p-cx-text-starts-with = [ShakeLit "fn ", ShakeUse "cx_text_starts_with", ShakeLit "(s: []const u8, p: []const u8) bool {\n    return ", ShakeUse "std", ShakeLit ".mem.startsWith(u8, s, p);\n}\n"]
+
+  zig-p-cx-text-contains : List ShakeFrag
+  zig-p-cx-text-contains = [ShakeLit "fn ", ShakeUse "cx_text_contains", ShakeLit "(h: []const u8, n: []const u8) bool {\n    return ", ShakeUse "std", ShakeLit ".mem.indexOf(u8, h, n) != null;\n}\n"]
+
+  zig-p-cx-text-concat-list : List ShakeFrag
+  zig-p-cx-text-concat-list = [ShakeLit "fn ", ShakeUse "cx_text_concat_list", ShakeLit "(l: anytype) []const u8 {\n    var out = ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8).empty;\n    for (l.items.items) |p| out.appendSlice(", ShakeUse "cx_gpa", ShakeLit ", p) catch @panic(\"oom\");\n    return out.items;\n}\n"]
+
+  zig-p-cx-list-set-at : List ShakeFrag
+  zig-p-cx-list-set-at = [ShakeLit "fn ", ShakeUse "cx_list_set_at", ShakeLit "(l: anytype, i: i64, v: anytype) @TypeOf(l) {\n    l.items.items[@intCast(i)] = v;\n    return l;\n}\n"]
+
+  zig-p-cx-text-to-integer : List ShakeFrag
+  zig-p-cx-text-to-integer = [ShakeLit "// Text is CCE here, so a decimal digit is byte 3 + d and minus is 73;\n// parsing this as ASCII would silently read zero.\nfn ", ShakeUse "cx_text_to_integer", ShakeLit "(s: []const u8) i64 {\n    var acc: i64 = 0;\n    var neg = false;\n    for (s, 0..) |b, i| {\n        if (i == 0 and b == 73) { neg = true; continue; }\n        if (b < 3 or b > 12) break;\n        acc = acc *% 10 +% @as(i64, b - 3);\n    }\n    return if (neg) -%acc else acc;\n}\n"]
+
+  zig-p-cx-text-replace : List ShakeFrag
+  zig-p-cx-text-replace = [ShakeLit "fn ", ShakeUse "cx_text_replace", ShakeLit "(s: []const u8, a: []const u8, b: []const u8) []const u8 {\n    if (a.len == 0) return ", ShakeUse "cx_text_dup", ShakeLit "(s);\n    var out = ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8).empty;\n    var i: usize = 0;\n    while (i < s.len) {\n        if (i + a.len <= s.len and ", ShakeUse "std", ShakeLit ".mem.eql(u8, s[i .. i + a.len], a)) {\n            out.appendSlice(", ShakeUse "cx_gpa", ShakeLit ", b) catch @panic(\"oom\");\n            i += a.len;\n        } else {\n            out.append(", ShakeUse "cx_gpa", ShakeLit ", s[i]) catch @panic(\"oom\");\n            i += 1;\n        }\n    }\n    return out.items;\n}\n"]
+
+  zig-p-cx-text-split : List ShakeFrag
+  zig-p-cx-text-split = [ShakeLit "fn ", ShakeUse "cx_text_split", ShakeLit "(s: []const u8, sep: []const u8) *", ShakeUse "CxList", ShakeLit "([]const u8) {\n    const out = ", ShakeUse "cx_ll_empty", ShakeLit "([]const u8);\n    if (sep.len == 0) {\n        _ = ", ShakeUse "cx_ll_push", ShakeLit "(out, ", ShakeUse "cx_text_dup", ShakeLit "(s));\n        return out;\n    }\n    var start: usize = 0;\n    while (", ShakeUse "std", ShakeLit ".mem.indexOfPos(u8, s, start, sep)) |p| {\n        _ = ", ShakeUse "cx_ll_push", ShakeLit "(out, ", ShakeUse "cx_text_dup", ShakeLit "(s[start..p]));\n        start = p + sep.len;\n    }\n    _ = ", ShakeUse "cx_ll_push", ShakeLit "(out, ", ShakeUse "cx_text_dup", ShakeLit "(s[start..]));\n    return out;\n}\n"]
+
+  zig-p-cce-table : List ShakeFrag
+  zig-p-cce-table = [ShakeLit "const ", ShakeUse "cce_table", ShakeLit " = [128]u32{ 0, 10, 32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 101, 116, 97, 111, 105, 110, 115, 104, 114, 100, 108, 99, 117, 109, 119, 102, 103, 121, 112, 98, 118, 107, 106, 120, 113, 122, 69, 84, 65, 79, 73, 78, 83, 72, 82, 68, 76, 67, 85, 77, 87, 70, 71, 89, 80, 66, 86, 75, 74, 88, 81, 90, 46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41, 43, 61, 42, 60, 62, 47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96, 94, 36, 37, 233, 232, 234, 235, 225, 224, 226, 228, 243, 244, 246, 250, 252, 241, 231, 237, 1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088, 1074, 1083, 1082, 1084, 1076, 1087, 1091 };\n"]
+
+  zig-p-cce-t1-uni : List ShakeFrag
+  zig-p-cce-t1-uni = [ShakeLit "// The multi-byte tiers, from Foreword CCE (which the compiler inlines in\n// X86_64State): codes 128..2175 frame as two bytes and name eleven\n// tier-1 unicode blocks; codes 2176..67711 frame as three bytes and name\n// ten tier-2 blocks, code bases running cumulatively from 2176. The\n// single-byte table wins any overlap (accented Latin, Cyrillic) because\n// it is scanned first, as from-unicode scans tier 0 first.\nconst ", ShakeUse "cce_t1_uni", ShakeLit " = [11]u32{ 128, 1024, 880, 1536, 1424, 2304, 3584, 4352, 19968, 12352, 8704 };\n"]
+
+  zig-p-cce-t1-size : List ShakeFrag
+  zig-p-cce-t1-size = [ShakeLit "const ", ShakeUse "cce_t1_size", ShakeLit " = [11]u32{ 256, 128, 128, 128, 128, 128, 128, 128, 512, 256, 128 };\n"]
+
+  zig-p-cce-t1-code : List ShakeFrag
+  zig-p-cce-t1-code = [ShakeLit "const ", ShakeUse "cce_t1_code", ShakeLit " = [11]u32{ 128, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1792, 2048 };\n"]
+
+  zig-p-cce-t2-uni : List ShakeFrag
+  zig-p-cce-t2-uni = [ShakeLit "const ", ShakeUse "cce_t2_uni", ShakeLit " = [10]u32{ 12288, 12352, 12448, 19968, 13312, 44032, 3584, 8192, 127744, 9728 };\n"]
+
+  zig-p-cce-t2-size : List ShakeFrag
+  zig-p-cce-t2-size = [ShakeLit "const ", ShakeUse "cce_t2_size", ShakeLit " = [10]u32{ 64, 96, 96, 20992, 6592, 11172, 256, 512, 1024, 256 };\n"]
+
+  zig-p-cx-cce-to-cp : List ShakeFrag
+  zig-p-cx-cce-to-cp = [ShakeLit "fn ", ShakeUse "cx_cce_to_cp", ShakeLit "(c: i64) i64 {\n    if (c < 0) return 65533;\n    if (c < 128) return @intCast(", ShakeUse "cce_table", ShakeLit "[@intCast(c)]);\n    if (c < 67712) {\n        const v: u32 = @intCast(c);\n        if (v < 2176) {\n            for (", ShakeUse "cce_t1_code", ShakeLit ", ", ShakeUse "cce_t1_size", ShakeLit ", ", ShakeUse "cce_t1_uni", ShakeLit ") |start, size, uni| {\n                if (v >= start and v < start + size) return @intCast(uni + (v - start));\n            }\n            return 65533;\n        }\n        var base: u32 = 2176;\n        for (", ShakeUse "cce_t2_uni", ShakeLit ", ", ShakeUse "cce_t2_size", ShakeLit ") |uni, size| {\n            if (v >= base and v < base + size) return @intCast(uni + (v - base));\n            base += size;\n        }\n    }\n    return 65533;\n}\n"]
+
+  zig-p-cx-cp-to-cce : List ShakeFrag
+  zig-p-cx-cp-to-cce = [ShakeLit "// A codepoint no tier covers becomes `?`, CCE 68. Bare metal does\n// exactly this and does it silently -- asked for char-code-at on U+22A2\n// it answers 68, text-length 1, and prints `?` on the way out. The\n// substitution is lossy and is upstream's choice, not ours; refusing\n// instead made the native loop abort five seconds into the 2.5 MB fibx\n// subject over one turnstile in type-theory prose, while bare metal\n// compiled the same file. Matching the code matters as much as matching\n// the policy: the encoding is observable, so a different substitute\n// diverges on every text that carries an uncovered character.\nfn ", ShakeUse "cx_cp_to_cce", ShakeLit "(cp: i64) i64 {\n    for (", ShakeUse "cce_table", ShakeLit ", 0..) |u, i| {\n        if (u == cp) return @intCast(i);\n    }\n    const u: u32 = @intCast(cp);\n    for (", ShakeUse "cce_t1_code", ShakeLit ", ", ShakeUse "cce_t1_size", ShakeLit ", ", ShakeUse "cce_t1_uni", ShakeLit ") |start, size, uni| {\n        if (u >= uni and u < uni + size) return @intCast(start + (u - uni));\n    }\n    var base: u32 = 2176;\n    for (", ShakeUse "cce_t2_uni", ShakeLit ", ", ShakeUse "cce_t2_size", ShakeLit ") |uni, size| {\n        if (u >= uni and u < uni + size) return @intCast(base + (u - uni));\n        base += size;\n    }\n    return 68;\n}\n"]
+
+  zig-p-cx-cce-frame : List ShakeFrag
+  zig-p-cx-cce-frame = [ShakeLit "fn ", ShakeUse "cx_cce_frame", ShakeLit "(code: i64, out: *", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8)) void {\n    const al = ", ShakeUse "cx_gpa", ShakeLit ";\n    const c: u32 = @intCast(code);\n    if (c < 128) {\n        out.append(al, @intCast(c)) catch @panic(\"oom\");\n    } else if (c < 2176) {\n        const v = c - 128;\n        out.append(al, @intCast(192 + (v >> 6))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    } else if (c < 67712) {\n        const v = c - 2176;\n        out.append(al, @intCast(224 + (v >> 12))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 6) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    } else {\n        const v = c - 67712;\n        out.append(al, @intCast(240 + (v >> 18))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 12) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + ((v >> 6) & 63))) catch @panic(\"oom\");\n        out.append(al, @intCast(128 + (v & 63))) catch @panic(\"oom\");\n    }\n}\n"]
+
+  zig-p-cx-cce-to-utf8 : List ShakeFrag
+  zig-p-cx-cce-to-utf8 = [ShakeLit "fn ", ShakeUse "cx_cce_to_utf8", ShakeLit "(s: []const u8) []const u8 {\n    var out: ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8) = .empty;\n    const al = ", ShakeUse "cx_gpa", ShakeLit ";\n    var i: usize = 0;\n    while (i < s.len) {\n        const b0: i64 = s[i];\n        var code: i64 = b0;\n        if (b0 & 128 == 0) {\n            i += 1;\n        } else if (b0 & 224 == 192) {\n            code = 128 + ((b0 & 31) << 6) + (s[i + 1] & 63);\n            i += 2;\n        } else if (b0 & 240 == 224) {\n            code = 2176 + ((b0 & 15) << 12) + (@as(i64, s[i + 1] & 63) << 6) + (s[i + 2] & 63);\n            i += 3;\n        } else {\n            code = 67712 + ((b0 & 7) << 18) + (@as(i64, s[i + 1] & 63) << 12) + (@as(i64, s[i + 2] & 63) << 6) + (s[i + 3] & 63);\n            i += 4;\n        }\n        const cp: u32 = @intCast(", ShakeUse "cx_cce_to_cp", ShakeLit "(code));\n        if (cp < 128) {\n            out.append(al, @intCast(cp)) catch @panic(\"oom\");\n        } else if (cp < 2048) {\n            out.append(al, @intCast(192 + (cp >> 6))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        } else if (cp < 65536) {\n            out.append(al, @intCast(224 + (cp >> 12))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 6) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        } else {\n            out.append(al, @intCast(240 + (cp >> 18))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 12) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + ((cp >> 6) & 63))) catch @panic(\"oom\");\n            out.append(al, @intCast(128 + (cp & 63))) catch @panic(\"oom\");\n        }\n    }\n    return out.items;\n}\n"]
+
+  zig-p-cx-show-int : List ShakeFrag
+  zig-p-cx-show-int = [ShakeLit "// One allocation, not two: the digits land in a stack scratch first\n// (i64 needs at most 20 bytes), then the CCE translation is the only\n// heap object. The double allocation left the ASCII copy stranded on\n// the frontier where it blocked in-place extension of whatever grew\n// next.\nfn ", ShakeUse "cx_show_int", ShakeLit "(n: i64) []const u8 {\n    var cx_tmp: [24]u8 = undefined;\n    const ascii = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_tmp, \"{d}\", .{n}) catch unreachable;\n    const buf = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, ascii.len) catch @panic(\"oom\");\n    for (ascii, 0..) |cx_ch, cx_i| {\n        buf[cx_i] = if (cx_ch == '-') 73 else 3 + (cx_ch - '0');\n    }\n    return buf;\n}\n"]
+
+  zig-p-cx-print-line : List ShakeFrag
+  zig-p-cx-print-line = [ShakeLit "fn ", ShakeUse "cx_print_line", ShakeLit "(s: []const u8) void {\n    ", ShakeUse "std", ShakeLit ".debug.print(\"{s}\\n\", .{", ShakeUse "cx_cce_to_utf8", ShakeLit "(s)});\n}\n"]
+
+  zig-p-cx-print : List ShakeFrag
+  zig-p-cx-print = [ShakeLit "fn ", ShakeUse "cx_print", ShakeLit "(s: []const u8) void {\n    ", ShakeUse "std", ShakeLit ".debug.print(\"{s}\", .{", ShakeUse "cx_cce_to_utf8", ShakeLit "(s)});\n}\n\n"]
+
+  zig-prelude-parts : List ShakePart =
+   [ShakePart { name = "std", frags = zig-p-std },
+    ShakePart { name = "CxFn1", frags = zig-p-cxfn1 },
+    ShakePart { name = "CxFn2", frags = zig-p-cxfn2 },
+    ShakePart { name = "CxFn3", frags = zig-p-cxfn3 },
+    ShakePart { name = "CxFn4", frags = zig-p-cxfn4 },
+    ShakePart { name = "CxList", frags = zig-p-cxlist },
+    ShakePart { name = "cx_ll_empty", frags = zig-p-cx-ll-empty },
+    ShakePart { name = "cx_ll_push", frags = zig-p-cx-ll-push },
+    ShakePart { name = "cx_ll_of", frags = zig-p-cx-ll-of },
+    ShakePart { name = "cx_ll_concat", frags = zig-p-cx-ll-concat },
+    ShakePart { name = "cx_ll_cons", frags = zig-p-cx-ll-cons },
+    ShakePart { name = "cx_ll_insert_at", frags = zig-p-cx-ll-insert-at },
+    ShakePart { name = "cx_ll_with_capacity", frags = zig-p-cx-ll-with-capacity },
+    ShakePart { name = "cx_text_compare", frags = zig-p-cx-text-compare },
+    ShakePart { name = "cx_text_to_double_bits", frags = zig-p-cx-text-to-double-bits },
+    ShakePart { name = "cx_bits_to_real_approx", frags = zig-p-cx-bits-to-real-approx },
+    ShakePart { name = "cx_char_to_text", frags = zig-p-cx-char-to-text },
+    ShakePart { name = "cx_char_encode", frags = zig-p-cx-char-encode },
+    ShakePart { name = "cx_list_len", frags = zig-p-cx-list-len },
+    ShakePart { name = "cx_list_at", frags = zig-p-cx-list-at },
+    ShakePart { name = "cx_text_len", frags = zig-p-cx-text-len },
+    ShakePart { name = "cx_char_at", frags = zig-p-cx-char-at },
+    ShakePart { name = "cx_text_dup", frags = zig-p-cx-text-dup },
+    ShakePart { name = "cx_substring", frags = zig-p-cx-substring },
+    ShakePart { name = "cx_ipow", frags = zig-p-cx-ipow },
+    ShakePart { name = "cx_shl", frags = zig-p-cx-shl },
+    ShakePart { name = "cx_shr", frags = zig-p-cx-shr },
+    ShakePart { name = "cx_heap_reserve", frags = zig-p-cx-heap-reserve },
+    ShakePart { name = "cx_heap_mem", frags = zig-p-cx-heap-mem },
+    ShakePart { name = "cx_hp", frags = zig-p-cx-hp },
+    ShakePart { name = "cx_heap_base", frags = zig-p-cx-heap-base },
+    ShakePart { name = "cx_buf_want", frags = zig-p-cx-buf-want },
+    ShakePart { name = "cx_frontier_crosses", frags = zig-p-cx-frontier-crosses },
+    ShakePart { name = "cx_bump_alloc", frags = zig-p-cx-bump-alloc },
+    ShakePart { name = "cx_bump_resize", frags = zig-p-cx-bump-resize },
+    ShakePart { name = "cx_bump_remap", frags = zig-p-cx-bump-remap },
+    ShakePart { name = "cx_bump_free", frags = zig-p-cx-bump-free },
+    ShakePart { name = "cx_heap_vtable", frags = zig-p-cx-heap-vtable },
+    ShakePart { name = "cx_gpa", frags = zig-p-cx-gpa },
+    ShakePart { name = "cx_heap_save", frags = zig-p-cx-heap-save },
+    ShakePart { name = "cx_heap_advance", frags = zig-p-cx-heap-advance },
+    ShakePart { name = "cx_heap_restore", frags = zig-p-cx-heap-restore },
+    ShakePart { name = "cx_peek_qword", frags = zig-p-cx-peek-qword },
+    ShakePart { name = "cx_address_of", frags = zig-p-cx-address-of },
+    ShakePart { name = "cx_dptr", frags = zig-p-cx-dptr },
+    ShakePart { name = "cx_bivy", frags = zig-p-cx-bivy },
+    ShakePart { name = "cx_nest", frags = zig-p-cx-nest },
+    ShakePart { name = "cx_deck_base", frags = zig-p-cx-deck-base },
+    ShakePart { name = "cx_deck_hw", frags = zig-p-cx-deck-hw },
+    ShakePart { name = "cx_deck_top", frags = zig-p-cx-deck-top },
+    ShakePart { name = "cx_deck_best", frags = zig-p-cx-deck-best },
+    ShakePart { name = "cx_deck_stride", frags = zig-p-cx-deck-stride },
+    ShakePart { name = "cx_deck_armed", frags = zig-p-cx-deck-armed },
+    ShakePart { name = "cx_deck_slack", frags = zig-p-cx-deck-slack },
+    ShakePart { name = "cx_deck_report", frags = zig-p-cx-deck-report },
+    ShakePart { name = "cx_deck_enter", frags = zig-p-cx-deck-enter },
+    ShakePart { name = "cx_deck_exit", frags = zig-p-cx-deck-exit },
+    ShakePart { name = "cx_deck_pos", frags = zig-p-cx-deck-pos },
+    ShakePart { name = "cx_deck_set", frags = zig-p-cx-deck-set },
+    ShakePart { name = "cx_utf8_to_cce", frags = zig-p-cx-utf8-to-cce },
+    ShakePart { name = "cx_read_file_uni", frags = zig-p-cx-read-file-uni },
+    ShakePart { name = "cx_write_all", frags = zig-p-cx-write-all },
+    ShakePart { name = "cx_write_binary", frags = zig-p-cx-write-binary },
+    ShakePart { name = "cx_write_binary_buf", frags = zig-p-cx-write-binary-buf },
+    ShakePart { name = "cx_vtag", frags = zig-p-cx-vtag },
+    ShakePart { name = "cx_buf_write_byte", frags = zig-p-cx-buf-write-byte },
+    ShakePart { name = "cx_buf_write_bytes", frags = zig-p-cx-buf-write-bytes },
+    ShakePart { name = "cx_peek_byte", frags = zig-p-cx-peek-byte },
+    ShakePart { name = "cx_buf_read_bytes", frags = zig-p-cx-buf-read-bytes },
+    ShakePart { name = "cx_shru", frags = zig-p-cx-shru },
+    ShakePart { name = "cx_mod", frags = zig-p-cx-mod },
+    ShakePart { name = "cx_text_eq", frags = zig-p-cx-text-eq },
+    ShakePart { name = "cx_is_letter", frags = zig-p-cx-is-letter },
+    ShakePart { name = "cx_is_digit", frags = zig-p-cx-is-digit },
+    ShakePart { name = "cx_new", frags = zig-p-cx-new },
+    ShakePart { name = "cx_concat", frags = zig-p-cx-concat },
+    ShakePart { name = "cx_text_starts_with", frags = zig-p-cx-text-starts-with },
+    ShakePart { name = "cx_text_contains", frags = zig-p-cx-text-contains },
+    ShakePart { name = "cx_text_concat_list", frags = zig-p-cx-text-concat-list },
+    ShakePart { name = "cx_list_set_at", frags = zig-p-cx-list-set-at },
+    ShakePart { name = "cx_text_to_integer", frags = zig-p-cx-text-to-integer },
+    ShakePart { name = "cx_text_replace", frags = zig-p-cx-text-replace },
+    ShakePart { name = "cx_text_split", frags = zig-p-cx-text-split },
+    ShakePart { name = "cce_table", frags = zig-p-cce-table },
+    ShakePart { name = "cce_t1_uni", frags = zig-p-cce-t1-uni },
+    ShakePart { name = "cce_t1_size", frags = zig-p-cce-t1-size },
+    ShakePart { name = "cce_t1_code", frags = zig-p-cce-t1-code },
+    ShakePart { name = "cce_t2_uni", frags = zig-p-cce-t2-uni },
+    ShakePart { name = "cce_t2_size", frags = zig-p-cce-t2-size },
+    ShakePart { name = "cx_cce_to_cp", frags = zig-p-cx-cce-to-cp },
+    ShakePart { name = "cx_cp_to_cce", frags = zig-p-cx-cp-to-cce },
+    ShakePart { name = "cx_cce_frame", frags = zig-p-cx-cce-frame },
+    ShakePart { name = "cx_cce_to_utf8", frags = zig-p-cx-cce-to-utf8 },
+    ShakePart { name = "cx_show_int", frags = zig-p-cx-show-int },
+    ShakePart { name = "cx_print_line", frags = zig-p-cx-print-line },
+    ShakePart { name = "cx_print", frags = zig-p-cx-print }]
+
+ Every part name, and the roots for one emitted program.
+
+ A part is a root when its name appears anywhere in the program text. That is
+ a crude substring test, and the imprecision it can have runs in the SAFE
+ direction: an extra root keeps a part nobody needed, a missing root drops a
+ live declaration and breaks the build.
+
+ In practice it has no imprecision at all, and the reason is worth writing
+ down rather than measuring again. The two places a name could hide without
+ being a reference are comments and string literals. Emitted zig carries
+ almost no comments, and a Codex text literal is emitted as CCE hex escapes --
+ `"\x30\x0d\x18..."` -- so a program's own strings CANNOT contain a prelude
+ name in a form this scan can see. Crude roots and code-position roots agree
+ exactly on every program tried, and that is structural, not luck.
+
+ COST, measured on this venue before it was written: `index-of` is Codex-level
+ rather than a builtin, so this is naive substring search, 93 names over the
+ program. It runs at about 8.6M characters a second on bare metal under QEMU,
+ which puts the largest program we emit at roughly 21 seconds. Affordable, and
+ checked rather than assumed -- the first draft of that measurement used
+ needles beginning `zzz`, which never appears, so every position failed on the
+ first character and the answer was the best case rather than the worst.
+
+  zig-prelude-part-names : List Text = zig-prelude-names-loop zig-prelude-parts 0 []
+
+  zig-prelude-names-loop : List ShakePart, Integer, List Text -> List Text
+  zig-prelude-names-loop (ps) (i) (acc) =
+   if i >= list-length ps then acc
+   else zig-prelude-names-loop ps (i + 1) (acc & [(list-at ps i).name])
+
+  zig-prelude-roots : Text -> List Text
+  zig-prelude-roots (prog) = zig-roots-loop prog zig-prelude-part-names 0 []
+
+  zig-roots-loop : Text, List Text, Integer, List Text -> List Text
+  zig-roots-loop (prog) (ns) (i) (acc) =
+   if i >= list-length ns then acc
+   else let n = list-at ns i
+   in when index-of prog n
+    is Just (at) -> zig-roots-loop prog ns (i + 1) (acc & [n])
+    is None -> zig-roots-loop prog ns (i + 1) acc
+
+  zig-prelude-for : Text -> Text
+  zig-prelude-for (prog) = shake-text zig-prelude-parts (zig-prelude-roots prog)
+
+ The unshaken whole, kept for the identity gate: shaking with every name as a
+ root must reproduce what the hand-written chunk list produced.
+
+  zig-prelude : Text = shake-text zig-prelude-parts zig-prelude-part-names
+
 
   emit-zig-chapter : IRChapter, List ATypeDef -> Text
   emit-zig-chapter (m) (type-defs) =
@@ -3901,6 +4292,7 @@ Section: Chapter Emission
    }
    in let types-text = emit-zig-type-defs type-defs 0
    in let defs-text = emit-zig-defs (m.defs) 0 ctx
-   in zig-prelude & types-text & defs-text & zig-main opening-entry-point (m.defs)
+   in let zig-prog = types-text & defs-text & zig-main opening-entry-point (m.defs)
+   in zig-prog & zig-postlude-banner & zig-prelude-for zig-prog
 
 Page 1

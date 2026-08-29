@@ -2168,8 +2168,156 @@ there is no complainant. The row stays open as the note to read **before
 adding a `br` to this lane**, which is the moment the general case starts
 mattering; it is not work until then.
 
-**1.57 -- JAVA HALF DONE 2026-08-25 (reek). The RISCV half does not
-reproduce and the row's premise about it needs narrowing.**
+**1.57 -- JAVA HALF DONE 2026-08-25 (reek). RISCV: THE MISCOMPILE
+REPRODUCES, THE RULED FIX DOES NOT FIX IT, AND THE REAL SITE IS FOUND
+(reek, 2026-08-28).**
+
+**THE SITE IS `RiscVCodeGen2.codex:593`, THE `is otherwise` ARM OF
+`when ty`.** `rv-emit-apply` flattens the curried spine at `:536` and then
+dispatches at `:571` on **`ty`, the APPLICATION'S RESULT TYPE**, not on the
+callee's type. A fully-applied call has a non-function result, so it always
+lands in `is otherwise`, which emits a flat `rv-emit-direct-call` with the
+whole argument list and consults no arity at all. That is correct when the
+callee's emitted arity equals the argument count (`add3 1 2 3`) and wrong
+when the callee is a one-parameter definition returning a function
+(`choose 0 2 3`), which returns the closure and ignores the extra
+arguments -- the heap address printed above.
+
+**That is also why ruling 21's wiring was inert, and it is the part worth
+keeping.** The `FunTy` arm at `:581-592`, which holds the recorded arity
+and `rv-emit-partial-application`, is reached only when the result is STILL
+a function -- that is, UNDER-application. **Over-application can never
+arrive there**, so wiring an over-apply route into it could not fire for
+any program.
+
+**Found by markers, not by reading.** Four name-scoped probes emitting the
+constant 777 through `rv-emit-int-lit`: the `IrName` arm printed 777
+(reached), the `known >= 0` branch and the `known < 0` fallback did not
+(not reached), the `is otherwise` arm printed 777 (confirmed). **The first
+prediction was WRONG** -- the `known < 0` fallback was named as the site and
+is not -- and the sabotage that first "tested" it swapped
+`rv-emit-direct-call` for `rv-emit-partial-application`, which for a
+saturated call is not a distinguishable change, so it moved nothing and
+proved nothing (L-SABOTAGE). The 777 marker is what settled every one of
+the four.
+
+**The fix does NOT use `rv-emit-closure-over-apply`, and that function
+still has no caller.** It applies remaining arguments one at a time;
+riscv's closure convention takes them all in one `rv-emit-closure-call`
+(`:1073-1081`, args to registers, closure pointer in `t2`). Wired its way
+the program faulted; passing the rest in a single closure call passes. So
+this row's original "riscv has the fix and does not call it" was mistaken
+about WHICH fix riscv needed.
+
+**FIXED AND VERIFIED.** The subject passes 5 of 5 on Renode against an
+oracle derived from the definitions, and reverting restores both wrong
+values exactly.
+
+**Regression breadth: a compile-only WIRE DIFFERENTIAL over all 613
+eligible cross subjects, control plug against fix plug. 600 byte-identical,
+11 no-wire in BOTH arms (compile-refusal negatives the compiler rejects
+before the plug runs), and 2 moved.** The Renode cross battery was the
+wrong instrument and was abandoned: its 466-subject run phase was killed
+twice at scale on a 15.8 GiB box four lanes were gating on. The
+differential is sharper anyway, because this change can only alter
+emission where a named call carries more arguments than its recorded
+arity, so a subject whose bytes are unchanged cannot regress and only the
+movers need booting. **The two movers are exactly the two over-application
+subjects**, which is the result the argument predicts.
+
+**Two harness defects were found before the differential could lie, and
+both produced plausible numbers.** First it hashed `-Out`, but
+`compile-riscv.ps1` exits 4 without copying `-Out` when the plug issues a
+by-design `[UNSUPPORTED]` refusal **while still emitting the wire**, so 96
+of 466 subjects recorded `NOOUTPUT` and the differential was blind on
+every one. Caught by checking the census's NEGATIVES against an
+independent log rather than trusting the count. Second, and worse: after
+that repair one arm held rows hashed from `-Out` (the ELF) and the other
+from `last-compile.riscv.bin` (the wire). **Those are different artifacts
+of different sizes** -- measured on `act-let-scope`, ELF 45,728 against
+wire 50,101 -- so 372 of 613 subjects reported as "changed" when nothing
+had. The tell was the shape of the result, not any single row: a uniform
++4 to +5 KB across nearly every subject is not what a dispatch change
+looks like. **Both arms were discarded and re-run under one script
+version**; that is where 600/2/11 comes from. L-SAMEVER, one level down:
+prove the two arms are measuring the same KIND of thing, not just the same
+version.
+
+**TWO PRE-EXISTING REDS ON RISCV AT HEAD, neither caused by this change
+(each verified by running the control plug and getting the identical
+failure), and NOTHING RUNS EITHER OF THEM (L-NOGATE):**
+
+- **`codex/test/ops/saturated-call-returning-function`** produces NO
+  output at all, dying before its first line. **This is the canonical test
+  for this very feature** -- nine arms covering one-at-a-time, rest-at-once,
+  flat, arity-two, self-recursive and mutual over-application -- and it has
+  been red on this lane while the defect it exists to catch shipped. Its
+  first statement is `let a = mk 4 in let a2 = a 20 in ... (a2 22)`, a
+  two-level let-bound closure chain, which is NOT this row's site: the
+  single-expression form `(c 2) 3` works. A separate defect and worth its
+  own row.
+- **`codex/test/closure-under-apply`** fails from `split-one-at-a-time`
+  onward.
+
+This change moves `saturated-call-returning-function`'s emitted bytes and
+the test is dead either way, so the move is not observable. **Do not read
+this row as closing over-application on riscv**: it closes the named
+over-apply site, and the canonical test stays red for a different reason.
+
+**Correcting this row's own claim below that riscv "does NOT reproduce":
+it does.** That measurement was taken on two subjects that do not carry
+the shape; `codex/plugs/test-input/overapply.codex` does. Run on Renode
+through `build/test-cross.ps1 -Arch riscv64`, graded against answers
+derived from the definitions rather than from a previous run, riscv
+prints:
+
+```
+named-over: 2148533408      (expected 6)
+named-over-alt: 2148533504  (expected 7)
+```
+
+A heap address where an Integer belongs, which is the over-applied call
+returning the closure unapplied. `control-flat`, `stepwise` and `after`
+are all correct, so the defect is confined to the over-application and
+the subject carries its own controls. This is the depot-side
+observed-miscompile verification the row asked for.
+
+**Ruling 21's riscv half was built and REVERTED, because it is inert.**
+Wiring a named over-apply branch into the `known >= 0` dispatch
+(`RiscVCodeGen2.codex:583-587`) and routing it through a
+`rv-emit-named-over-apply` helper onto `rv-emit-closure-over-apply`
+changes NOTHING: control and fix emit byte-identical wires for
+non-inlined IR (49,980 bytes, same SHA-256), and produce character-identical
+Renode output including the same two wrong values. **The branch is live
+and the arity test is what excludes it**: widening the condition from
+`>` to `>=` moves the emitted binary (49,980 to 50,004 bytes, different
+hash), so the named path IS reached and `list-length args > known-arity`
+is true at no call site in the subject. Sabotaging the under-applied arm
+moves `stepwise` and not `named-over`, so that arm is not the site
+either. **The site is still unidentified**, and it is not the one the
+ruling names. Landing the wiring would have shipped a second correct
+branch nothing takes -- the exact complaint this row opens with -- while
+reading as "riscv over-application is fixed".
+
+**Instrument defect found on the way, FIXED in this CL: both native plug
+runners reported a guest FAULT as a successful emission.**
+`codex/plugs/riscv/run.ps1` and `codex/plugs/arm64/run.ps1` wrote
+whatever came back from the VM to `-Out`, printed `OK: <path> (947
+bytes)` and exited 0, when what came back was a register dump beginning
+`!EXC=06 RIP=...`. **Two such dumps DIFFER from each other, because the
+RIP moves with the plug build, so a control-versus-fix byte comparison
+over them reads as "the change moved the output" when both arms crashed
+and neither emitted anything.** That is what it read as here for an hour,
+until the bytes were looked at. Both scripts now refuse with exit 7 and
+print the dump's first line; an empty output refuses too. The tag is
+FOUND in the first eight bytes rather than compared at offset zero,
+because the dump carries codex-vm's leading `0x01` marker and an anchored
+compare sees `\x01!EX` and misses every real fault -- the first version of
+this guard did exactly that and passed its own positive arm. Proven both
+directions on both plugs, plus `test-cross.ps1 -Arch riscv64` and
+`-Arch arm64` green end to end. **The way to land in it: feeding `-IrUni`
+output to a runner that wants `-IrCce`**, which is what
+`compile-riscv.ps1` passes and what the usage line does not say.
 
 **java is fixed and the defect was observed, not inferred.** Emitting
 this row's own suggested subject (a named 1-ary definition returning a
@@ -2186,9 +2334,12 @@ BYTE-IDENTICAL before and after, so no ordinary call was touched.
 **Not executed: there is no JDK on this box**, so this is verified as
 emitted shape, not as a run.
 
-**riscv does NOT reproduce, and RENODE IS INSTALLED so it can be run
-here.** The row filed the runtime consequence as inferred and asked for
-depot-side verification; this is it. `build/test-cross.ps1 -Arch riscv64`
+**riscv does not reproduce ON THESE TWO SUBJECTS, and RENODE IS INSTALLED
+so it can be run here.** Superseded as a general claim by the 2026-08-28
+block above: neither subject carries a definition returning a function, so
+neither can reach the case, and `overapply.codex` does reproduce it. What
+stands is everything below about the two subjects and the pipelines.
+`build/test-cross.ps1 -Arch riscv64`
 drives `codex/plugs/riscv` under Renode at `C:\Renode\renode.exe`. Two
 subjects, one inlinable and one built to defeat both inline passes, both
 answer exactly what x86-64 answers. **Sabotaging the branch this row
@@ -3803,3 +3954,294 @@ not the plug: `elf-bytes.wasm` builds and runs, but its wire is a
 code/data/func-table payload, not a CDX, and nothing emits that from a
 browser -- the compiler has no ELF mode and `extract-x86-output.ps1` is one
 of the four dead harnesses.
+
+## 2.00 -- the page's 57 examples are graded in the page's own module, which is a stricter bed than compile.ps1
+
+**The dropdown was the only part of the page nothing could grade.** A visitor
+picks an example and presses Compile, so an example that refuses is worse
+than one that is absent, and the bed everyone reached for to check a new one
+is `build/compile.ps1`, which is MORE GENEROUS than the page: it bundles the
+whole foreword where the page's unit is FLAT. `cites Foreword chapter
+MathLib` resolves there and fails here CDX3007, and dropping the cite only
+moves it to CDX3002, because `math-mod` is a foreword function and not a
+builtin. Two examples shipped green under compile.ps1 and refused on the
+page; Damian found them, not a runner. `codex/plugs/wasm/page-example-test.ps1`
+is the runner. **57 of 57 compile, all at decks=12.** The compile arm measured
+9 s and 39 s in two runs an hour apart on 2026-08-28; the spread is other
+lanes' VMs on a shared box, not the arm. Re-measure before quoting (L-COUNT).
+
+**The ladder is DERIVED from `prism.html`, not restated.** The page climbs
+`const DECKS = [12, 48, 125]` on CDX9002, so a runner grading at one fixed
+reservation answers a question the page never asks: an example needing 48
+reads as refused, and one needing more than the ladder's top reads as passing
+at whatever the harness happened to say. The regex is a refusal if it fails
+to match, because grading at a guess measures the harness instead of the page.
+
+**The calibration is the half that makes 57 green mean anything (L-FALSIF).**
+It mangles each subject's `Chapter:` header -- every source carries exactly
+one, so the sabotage reaches the parser on every subject -- and requires all
+57 to refuse, which they do, each at a line inside its own source rather than
+at one shared early failure. **The first sabotage tried was trailing garbage
+after the chapter and it moved NOTHING**: the compiler absorbs it and still
+emits IR, so that arm would have graded nothing while passing (L-SABOTAGE).
+The negative arm is a real one and reproduces the exact defect the runner
+exists for: `greatest-common-divisor` with its `prelude` field emptied goes
+red at `CDX3002: Undefined name: math-mod` with `hello-world` beside it
+unmoved as the control.
+
+**Wired into `build-page.ps1` (step 4c), both arms, seconds against a page
+build measured in minutes.** That is not the standing gate and cannot be
+(L-NOGATE): no gate phase reaches `apps/landing/build.ps1`. It is the path
+that PRODUCES the artifact carrying the examples, which is where an artifact
+arm belongs (L-ARTIFACT), and the build fails rather than shipping a dropdown
+that refuses.
+
+**Found on the first run: an example's `decks` field is read by nothing.**
+`widget-box` declares 200 and compiles at 12; the page's ladder ignores the
+field entirely and no other consumer exists in the tree. It reads as
+load-bearing -- a maintainer would take 200 to mean the page reserves 200 for
+it -- and it is embedded into `prism.html` with the rest of the examples. Not
+swept here (R-ONE); it is a field to delete or to honour, and either is a
+decision about the page rather than about this runner.
+
+
+## 2.01 -- DONE 2026-08-28 (contributed by Steve Howell, PR 95; absorbed by root): the zig plug emitted its 37 KB runtime prelude ABOVE the program, so every emitted file opened on 813 identical lines
+
+`emit-zig-chapter` built `zig-prelude & types-text & defs-text & zig-main`.
+The prelude is 37,409 bytes of fixed runtime support -- the bump allocator and
+its heap, the list and text builtins, the CCE tables, the deck -- byte
+identical in every file the plug produces, and the transpiled program began
+past line 840. It now comes LAST, behind `zig-postlude-banner`, which names
+what is below the line and says why.
+
+**The proportion is worse than it sounds.** In the plug's 589-program corpus
+the smallest emitted program is 38,219 bytes of which 37,409 is prelude: the
+program is 2% of its own file.
+
+Two reasons beyond reading comfort. A diff between two emitted programs now
+opens on what differs rather than on hundreds of identical lines; and the
+arbitrary transpiled code, which is where bugs live, is what a reader meets
+first.
+
+**Inert, and graded rather than argued** (Steve's grading, over his 589-program
+corpus; his log is `MEASURED-prelude-last.log` in his ladder repository): 589
+graded, build outcome agrees 589, zig diagnostics agree 589, 202 ran both
+ways, 198 output byte-identical, 4 identical but for source positions in a
+panic backtrace (the move shifts them by construction; same exit status,
+stdout, panic message and machine addresses), 0 disagreements. Zig does not
+order declarations at container scope. The transpiled compiler was built both
+ways and driven on one shared input: byte-identical output on all three
+natives. Absorption verification on our side: the plug rebuilt at head, the
+banner-anchored surface check green (97 names, all reserved), and the zig
+oracle arm green -- recorded in the absorbing CL.
+
+**It carries a repair it caused.** `build/check-zig-prelude-surface.ps1`
+derived the prelude as the line-wise common PREFIX of several emitted
+programs. With the prelude last that prefix is the emitted tuple types, and
+the check does not fail -- it reports a smaller surface (5 names of 98, all
+five already reserved) and passes: a green light over a check that had
+stopped looking. Anchored on the banner instead, and the subjects' preludes
+are now REQUIRED to agree rather than silently truncated to whatever they
+share. It derives 97 where the prefix scan derived 98; the one it drops is
+`d`, which was never a prelude name -- the prefix ran past the prelude into
+`Tup4`'s comptime parameters and picked it up by accident.
+
+**What it is not.** Not a fix; nothing was wrong. It is the small half of a
+larger measurement: nothing uses the whole prelude. The greediest program in
+the corpus reaches 55 of its 93 top-level declarations and the median far
+fewer, so most of those 37 KB could be DROPPED per program rather than merely
+moved. Moving it first is worth doing alone and puts the shaking change at
+the same seam. (Steve's PR draft numbered this 1.99/1.100; renumbered to 2.01
+at absorption, the register having reached 2.00.)
+
+**Cross-host flap record (red, 2026-08-28): ptx/hello 'qemu produced nothing' once, in a standing gate at ~20543-era head, on a box running multiple lanes' VMs; the identical standalone leg immediately after answered 1,630 chars, exit 0. One occurrence, load-suspected, recorded per the phase's own rule rather than quieted; a second occurrence makes it a finding about the file-serial QEMU path under contention.**
+
+## 2.02 -- the zig plug REFUSES a redundant match arm that the compiler now emits combined, so it refuses legal Codex
+
+**Routed by root 2026-08-28 from Steve Howell's PR 96, which was closed as
+already-fixed COMPILER-side (fester 20398).** The compiler half is
+verified (blu); **the zig half is NOT, and that is the open work here.**
+
+red gave C# the drop at 20352. zig has no such drop, so where the compiler
+now emits a combined arm, the zig plug refuses a program that is legal
+Codex and that every other lane accepts. Evidence is PR 96; read it before
+measuring, and measure the zig arm rather than inferring it from the C#
+one -- the two plugs took different routes to the same requirement.
+
+Unowned. Sized as one entry, not a campaign.
+
+## 2.03 -- the riscv plug runs as a wasm module and its wire is byte-identical to bare metal; wat2wasm cannot assemble it
+
+**IN HAND, SHELVED as reek CL 20659, NOT landed.** Written up now because
+blocker 1 below belongs to another lane.
+
+**What it closes.** `elf-bytes.wasm` has shipped built-but-dark since it
+landed, `ship = false`, for the reason the manifest states: nothing could
+emit the payload it reads. That payload is the native backends' wire,
+`[4B code-len][4B data-len][4B func-count][code][data][func table]`. A riscv
+module supplies it, so the page can go source -> `codex-compiler.wasm` ->
+IR -> `riscv-stdio.wasm` -> wire -> `elf-bytes.wasm` -> ELF with no host in
+the loop. That is a board kernel built in a browser.
+
+**PROVEN, and the oracle is the point.** `rv-build-wire-output` had NO
+callers before this -- its signature and its definition were its only two
+mentions in the tree, the same L-UNCALLED shape as `rv-emit-closure-over-apply`
+in the same plug -- so it is untested code that merely looks right. Graded
+against the serial path on `factorial`: **byte-identical for all 50,085
+bytes of the wire**, same header (code-len 47,328, data 528, 129 functions).
+The metal capture is 52,489 bytes and the 2,404-byte gap is NOT a difference:
+it is codex-vm's leading `0x01` marker plus 2,403 bytes of `FUNCMAP`/WCET
+text the serial path prints AFTER the wire. Compare the wire, not the capture.
+
+**Three pieces, none of which existed.** `PlugIrBytes.codex` is a third
+transport: `PlugStdio` answers text and `PlugBytes` reads a payload, and a
+native backend is neither -- IR text in, binary wire out. `RiscVStdio.codex`
+is the wasm sibling of `RiscVPlug`, which cannot be used here because it
+writes the wire through `port-out-byte` and x86 port I/O does not exist on
+this target. `build-plug-wasm.ps1` gains the `irbytes` transport plus
+`-WithLir`, `-CommonChapters` and `-Decks`, so a native backend gets what
+its NETWORK build already gets.
+
+**Blocker 1, and it is not mine: wabt 1.0.39's JS `wat2wasm` CANNOT
+assemble this module.** It dies `RuntimeError: memory access out of bounds`
+inside its own expression parser. **It is nesting, not size**, and the
+measurement says so three ways: `riscv-stdio.wat` is 2.1 MB at max nesting
+depth **309** and fails; `codex-compiler.wat` is 9.8 MB at depth **188** and
+assembles at 4.6 times the size; a 1.02 MB `zig-stdio.wat` assembles in under
+a second. The ceiling sits between 188 and 309. No native assembler is on this
+box (`wasm-tools`, `wasm-as`, native `wat2wasm` all absent). The module was
+proven anyway by running the `.wat` directly under wasmtime 45, which accepts
+one -- enough to verify, not enough to ship, because the page fetches `.wasm`.
+The fix is either flatter WAT from the emitter (fester speaks for
+`WasmEmitter`) or a native assembler, which is a toolchain question for Damian
+under R-SHELL.
+
+**Blocker 2, closed: the bundle's IR compile needs `-Decks 160`.** Without it
+it dies in `__alloc` at about 542 MB. The riscv NETWORK build has passed
+`-Decks 160` all along; the wasm path had no way to say it, so
+`wasm/run.ps1` gains a pass-through defaulting to 0, which leaves every
+existing caller of that shared service unchanged.
+
+**arm64 is the same shape and is not done.** It has `write-i32-le` in
+`Arm64CodeGen.codex` and the pe plug already carries `Arm64PeWriter`, so
+arm64 -> PE is the second chain once the assembler question is settled.
+
+**ARM64 TOO, SAME SHAPE, SAME RESULT (reek, 2026-08-28).** `Arm64Stdio.codex`
+is the sibling shim; the arm64 module's wire is **byte-identical to bare metal
+on `factorial`, all 18,556 bytes**, header code-len 16,068 / data 528 / 111
+functions. Two differences from riscv, both read off `Arm64Plug`'s own
+dispatch rather than guessed: `a64-emit-module` takes a fifth argument, the
+SMP flag the network entry reads from its mode string, and there is no mode
+string here so it is False; and the state constructor is `make-a64-state`.
+`a64-build-wire-output` already HAD callers, unlike riscv's, so it was
+exercised code rather than dead. `write-binary` takes the byte list itself,
+so the wasm path needs no `a64-wire-length` -- one fewer place for a derived
+count to disagree with the bytes it describes.
+
+**arm64 is the phone lane**, which is why it matters beyond boards: its wire
+feeds `ElfWriter` for Linux and Android, and the pe plug already carries
+`Arm64PeWriter`.
+
+**SECOND DATA POINT ON THE CEILING, and it narrows the cause.** arm64's WAT is
+2.26 MB at max nesting depth **312** and fails wat2wasm exactly as riscv's 309
+does. Two independently written emitters landing at 309 and 312, either side of
+nothing in particular, says the depth comes from a pattern they SHARE rather
+than from anything plug-specific -- the obvious candidate is the long
+instruction-dispatch chain both carry, where each `else if` nests one level in
+the emitted wasm. Whoever flattens it should expect both modules to clear
+together.
+
+**THE SITE IS NAMED AND THE ACCEPTANCE ARM IS AGREED (fester, reek,
+2026-08-28).** `WasmEmitter.codex:1061`, `emit-wat-match-body`: each arm
+emits `(if (result i64) cond (then body) (else <THE NEXT ARM>))`, so the else
+arm CONTAINS the rest of the chain and an N-arm dispatch nests N deep. Line
+767 does the same for `IrIf`. The fix is sibling blocks under one outer
+block -- `(block $try_i (br_if $try_i (i32.eqz cond_i)) (local.set $_r body_i)
+(br $done))` -- which makes nesting a constant 2 whatever the arm count.
+Plug-only, no seed, no token. fester's after the Prism image half; **do not
+write around it in the plugs.**
+
+**Pre-fix baseline, longest consecutive `else if` chain against WAT depth:**
+compiler **42 -> 188** (assembles), riscv **131 -> 309** (fails), arm64
+**152 -> 312** (fails). Monotonic and consistent with the site reading.
+
+**THE PASS CRITERION IS NOT AN ABSOLUTE DEPTH, and this is the part to read
+before grading the fix.** Subtracting chain from depth gives a base of 146,
+178 and 160 across those three points -- it WANDERS, so a three-point fit
+cannot predict a landing depth to within twenty and "riscv should land near
+180" was over-precise (reek proposed it, fester corrected it). If riscv comes
+back at 205 that is not a failed fix. **The discriminating measurement is
+whether depth STOPS TRACKING ARM COUNT**: sibling blocks are constant-2
+regardless of arms, so after the fix riscv (131 arms) and arm64 (152) should
+NO LONGER differ in proportion to their chains. If they still do, the nesting
+is coming from somewhere else and the site reading is wrong. That arm compares
+the two modules to EACH OTHER rather than to an absolute, which is why a
+line-count proxy is good enough for it.
+
+## 2.04 -- DONE 2026-08-28 (contributed by Steve Howell, PR 98; absorbed by reek): the zig plug emitted its whole 37 KB prelude into every program, and now emits only the parts the program reaches
+
+2.01 moved the prelude below the program and closed by naming this as the
+larger half: "nothing uses the whole prelude ... most of those 37 KB could be
+DROPPED per program rather than merely moved". This is that change.
+
+`zig-prelude` was one 37 KB text. It is now `zig-prelude-parts`, a table of 96
+named `ShakePart` rows, and `emit-zig-chapter` emits `shake-text` over the
+parts the program reaches. Reachability is generic and lives in a new foreword
+chapter, `codex/foreword/core/Shake.codex`: parts, roots, closure, input order
+preserved. Nothing in it knows what a part is for, which is why it is written
+once there rather than inside this emitter.
+
+A part records its dependencies as `ShakeFrag` rather than as a second list:
+`ShakeLit` is inert text, `ShakeUse` is text that is ALSO an edge, and the two
+projections `shake-frag-text` and `shake-frag-uses` read the same list, so
+they cannot drift apart. Writing another part's name IS depending on it.
+
+**Measured here, not carried from the PR (L-COUNT).** Emitted bytes for five
+subjects, control against fix, the control being the depot revision installed
+and rebuilt rather than reasoned about:
+
+| subject | before | after | saved |
+|---|---|---|---|
+| arithmetic | 41,714 | 21,716 | 47.9% |
+| queue-test | 40,521 | 20,374 | 49.7% |
+| osc-noise | 47,419 | 26,212 | 44.7% |
+| cce-tier1 | 54,350 | 32,625 | 40.0% |
+| sort-test | 43,421 | 21,526 | 50.4% |
+
+227,425 bytes to 122,453, **46.2% off**, about 20 KB per program. Programs keep
+33 to 48 of the 96 parts.
+
+**Inert on behaviour, and the control is what says so.** 22 subjects graded by
+running the emitted zig and comparing against the battery's own
+`codex/test/*.expected`: 16 passed, 0 failed, 6 refused by zig. The SAME corpus
+on the depot plug gives the same 16 and the same 6, with the same messages. The
+six are pre-existing plug gaps that name themselves (`no emitter for bit-not`,
+`atomic-store`, `atomic-load`, `__real_to_text`) plus two zig-level type
+faults; none is an undeclared `cx_` identifier, which is what a dropped part
+would look like. The grading harness was calibrated against the wrong
+`.expected` first, and it failed every subject. Surface check green, zig oracle
+green (55 values match x86-64).
+
+**It carries a repair it caused, and the repair found a real defect.**
+`build/check-zig-prelude-surface.ps1` required every emitted prelude to be
+IDENTICAL, which a shaken prelude is not by design. The replacement is
+stronger: every prelude must be a SUB-SELECTION of one known whole, in table
+order, cursor landing exactly at the end, so reordering, duplication,
+truncation and invention all fail a check that "they are all identical" never
+tested. Deriving the surface from the parts table also exposed Finding 67: the
+parameter regex read past `fn NAME` and dropped the name, so the check covered
+22 of the prelude's 96 declarations and none of its 74 functions. `CxList` and
+`CxFn1..CxFn4` are CamelCase like any Codex type name, so a program picking one
+emitted a duplicate struct member and would not compile. Surface is 173 names
+against 175 reserved.
+
+**Not seed-affecting, measured rather than assumed.** `Shake` is a foreword
+chapter, but the compiler unit is assembled by walking cites from
+`codex/compiler`, and only `ZigEmitter` cites it. Built the unit: `ZigEmitter`
+and `TextSearch` absent, `Foreword--Sort` present as the calibration.
+Reachability, not directory (DevelopersRulebook 7).
+
+PR 98's third file was `codex/compiler/IR/Lowering.codex`, deleting three
+`is NoExpectTy` arms each shadowed by an identical `is ErrorTy | NoExpectTy`.
+**Already landed as fester 20398** and the file has moved twice since under
+blu's COMPILER-32, so that hunk is dropped here rather than reapplied.

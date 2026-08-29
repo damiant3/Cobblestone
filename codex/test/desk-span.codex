@@ -1,0 +1,48 @@
+Chapter: DeskSpanTest
+  cites Works chapter GopDesk
+
+ Pins the span accessors the option-D allocator work reads: the extent of a
+ mark-stack entry, the sum invariant over all of them, and the two questions
+ that decide whether a dead entry's span may be allocated into.
+
+ The fixture is a mark stack built by hand rather than by running the desk,
+ because the whole point of these functions is to answer about stacks the
+ desk cannot be made to produce on demand -- a buried dead entry with a live
+ one above it, and a span holding the root.
+
+Section: Fixture
+
+ Entry marks stand in for heap addresses. They only have to be increasing,
+ which is what `desk-marks-push` guarantees, so small round numbers make the
+ arithmetic checkable by eye.
+
+ The stack this builds, bottom to top: Files live at 1000, Editor live at
+ 3000, Browser DEAD at 7000, with the caller's frontier at 9000. Spans are
+ therefore 2000, 4000 and 2000, summing to 8000, which is 9000 - 1000 and not
+ 9000 - base: the desk's own blocks sit below entry 0 and belong to no span.
+
+  ds-top : Integer = 9000
+
+  ds-build : Integer -> Integer
+  ds-build (ms) =
+    let a = desk-marks-push ms desk-focus-files 1000
+    in let b = desk-marks-push ms desk-focus-edit 3000
+    in let c = desk-marks-push ms desk-focus-bro 7000
+    in desk-marks-depth ms
+
+Section: Main
+
+  opening : [Console] Nothing =
+    let ms = alloc-zeroed 128 64
+    in let d = ds-build ms
+    in let kill = desk-marks-kill ms desk-focus-bro
+    in act
+    print-line-uni ("depth: " & show d)
+    print-line-uni ("extent: " & show (desk-marks-extent ms 0 ds-top) & " " & show (desk-marks-extent ms 1 ds-top) & " " & show (desk-marks-extent ms 2 ds-top))
+    print-line-uni ("sum: " & show (desk-marks-extent-sum ms (d - 1) ds-top) & " " & show (ds-top - desk-marks-mark ms 0))
+    print-line-uni ("oob: " & show (desk-marks-extent ms (0 - 1) ds-top) & " " & show (desk-marks-extent ms 3 ds-top))
+    print-line-uni ("holds-root: " & dk-yn (desk-span-holds-root ms 0 ds-top 1500) & " " & dk-yn (desk-span-holds-root ms 0 ds-top 3000) & " " & dk-yn (desk-span-holds-root ms 2 ds-top 8000) & " " & dk-yn (desk-span-holds-root ms 2 ds-top 9000))
+    print-line-uni ("no-root: " & dk-yn (desk-span-holds-root ms 0 ds-top 0))
+    print-line-uni ("reusable: " & dk-yn (desk-span-reusable ms 0 ds-top 0) & " " & dk-yn (desk-span-reusable ms 1 ds-top 0) & " " & dk-yn (desk-span-reusable ms 2 ds-top 0))
+    print-line-uni ("root-blocks: " & dk-yn (desk-span-reusable ms 2 ds-top 8000))
+  end

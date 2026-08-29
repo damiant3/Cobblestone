@@ -2,7 +2,7 @@
 # derivation hands it?
 #
 #   pwsh build/deck-headroom.ps1                          # the whole corpus
-#   pwsh build/deck-headroom.ps1 -List units.txt -Jobs 8
+#   pwsh build/deck-headroom.ps1 -List units.txt -Jobs 4
 #   pwsh build/deck-headroom.ps1 -List units.txt -Top 40  # more of the table
 #   pwsh build/deck-headroom.ps1 -Quire codex\build -WithSelf -MinMargin 1.25
 #
@@ -77,7 +77,7 @@ param(
   [string]$Quire = '',
   [string]$Kernel = 'seed/Codex.cdx',
   [string]$Tag = 'corpus',
-  [int]$Jobs = 8,
+  [int]$Jobs = 4,
   [int]$TimeoutSec = 600,
   [int]$Top = 25,
   [double]$MinMargin = 0,
@@ -90,6 +90,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 . (Join-Path $PSScriptRoot 'quire-map.ps1')
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
 
 $out = Join-Path $root "build-output\deck-headroom\$Tag"
 if ($Fresh -and (Test-Path $out)) { Remove-Item -Recurse -Force $out }
@@ -260,15 +261,29 @@ $items = foreach ($u in $units) {
 $compile = Join-Path $PSScriptRoot 'compile.ps1'
 $todo = @($items | Where-Object { -not (Test-Path $_.Log) })
 Write-Host "deck-headroom: $($todo.Count) to measure, $($items.Count - $todo.Count) cached"
+# Admit only as many concurrent guests as the box can hold. This tool is the
+# reason the check exists: at -Jobs 8 it read a contended run as "a plug
+# bundle has grown into its deck reservation" and named a bundle that
+# compiles clean alone (main 20381). A trimmed slot count costs wall time; an
+# overcommitted one costs a wrong deck verdict.
+$Jobs = Get-VmAdmittedSlots -Slots $Jobs -What 'deck-headroom'
 $running = @(); $n = 0
 foreach ($it in $todo) {
   while (@($running | Where-Object { -not $_.HasExited }).Count -ge $Jobs) { Start-Sleep -Milliseconds 300 }
   $cArgs = @('-NoProfile','-File',$compile,'-Src',$it.Unit,'-Out',$it.Bin,'-Log',$it.Log,
              '-Kernel',$Kernel,'-Measure','-TimeoutSec',"$TimeoutSec")
   if ($it.Decks -gt 0) { $cArgs += @('-Decks', "$($it.Decks)") }
-  $running += Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru `
+  $proc = Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru `
     -RedirectStandardError ($it.Log + '.err') `
     -ArgumentList $cArgs
+  # The exit code was launched and thrown away, so the only evidence left about
+  # a unit that produced nothing was the absence of records -- which is the same
+  # absence whatever the cause. compile.ps1 answers 4 for a compile that ran and
+  # refused (measured on a forced -Decks 8 overflow) and 2 or 3 when the VM
+  # never got going, and that is the difference this tool could not previously
+  # see. Keep it beside the unit rather than in a parallel array.
+  $it | Add-Member -NotePropertyName Proc -NotePropertyValue $proc -Force
+  $running += $proc
   $n++
   if ($n % 200 -eq 0) { Write-Host "  launched $n/$($todo.Count)" }
 }
@@ -276,11 +291,42 @@ foreach ($p in $running) { $p.WaitForExit() }
 
 $script:MissingResolve = @()
 $script:NoDeckRecords = @()
+$script:Unmeasured = @()
+# A unit with no DECK records is TWO answers in one bucket and only one of them
+# is about decks. THE DISCRIMINATOR IS NOT THE DIAGNOSTIC: measured 2026-08-27,
+# a real overflow (-Decks 8 on the rust bundle, exit 4) writes a 287-byte log
+# carrying PHASE-h0..h-post-emit and EMIT-BYTES:0 and NO `CDX9002` anywhere,
+# because -Measure suppresses diagnostics. Keying on CDX9002 was written here
+# first and would have downgraded every genuine overflow to the bucket below.
+# So the question this asks is whether the compiler RAN: phase records and no
+# deck records is a unit that got far enough to refuse, and that is the deck
+# answer this tool exists to give. No phase records at all is a measurement
+# that never happened -- eight concurrent VMs at 3072 MB on a 15.8 GB box die
+# instantly leaving an empty log, and the failing set moves run to run (2 units,
+# then 4, then 0, same tree), which is why it must not be reported as a grown
+# reservation: the rust bundle so named compiles alone at exit 0.
+# HONEST LIMIT: the overflow arm above is measured. The empty-log arm is the
+# shape of codex-vm dying (build.ps1's own build-cdx-fail.log came back 5 bytes
+# the same day) and was NOT captured from a contention run, because contention
+# could not be reproduced on demand.
 $rows = foreach ($it in $items) {
-  if (-not (Test-Path $it.Log)) { $script:NoDeckRecords += $it.Unit; continue }
+  if (-not (Test-Path $it.Log)) { $script:Unmeasured += $it.Unit; continue }
+  # -Raw on a zero-byte file answers $null, and [regex]::Matches($null,..) throws
+  # "Value cannot be null" -- which takes the whole run down rather than
+  # reporting the unit. A dead VM is exactly how a zero-byte log gets here.
   $text = Get-Content $it.Log -Raw
+  if ($null -eq $text) { $text = '' }
   $decks = [regex]::Matches($text, 'DECK-\d+:phase=(?<p>[A-Z-]+) origin=\d+ end=\d+ used=(?<u>\d+)')
-  if ($decks.Count -eq 0) { $script:NoDeckRecords += $it.Unit; continue }
+  if ($decks.Count -eq 0) {
+    $code = if ($it.PSObject.Properties['Proc'] -and $it.Proc) { $it.Proc.ExitCode } else { 'cached' }
+    $ph = ([regex]::Matches($text, 'PHASE-h')).Count
+    $ev = "$($it.Unit)  [exit=$code, log=$($text.Length)b, phases=$ph]"
+    # Ran to a refusal is a deck answer. Anything else is not, and the evidence
+    # travels with the unit so the reader does not have to take either on trust.
+    if ($ph -gt 0 -and ($code -eq 4 -or $code -eq 'cached')) { $script:NoDeckRecords += $ev }
+    else { $script:Unmeasured += $ev }
+    continue
+  }
   $req = 1; $bind = ''; $worst = 0
   $sawResolve = $false
   foreach ($m in $decks) {
@@ -311,8 +357,12 @@ Write-Host ""
 # a corpus that says which two (plugs 1.98).
 Write-Host "measured $($rows.Count) of $($items.Count) units"
 if ($script:NoDeckRecords.Count -gt 0) {
-  Write-Host "no deck records in the measure log, so not measured ($($script:NoDeckRecords.Count)):"
+  Write-Host "ran but wrote no deck records, so the margin is below 1 ($($script:NoDeckRecords.Count)):"
   foreach ($u in $script:NoDeckRecords) { Write-Host "  $u" }
+}
+if ($script:Unmeasured.Count -gt 0) {
+  Write-Host "measurement did not happen, so the margin is UNKNOWN ($($script:Unmeasured.Count)):"
+  foreach ($u in $script:Unmeasured) { Write-Host "  $u" }
 }
 Write-Host ""
 Write-Host "where the derivation comes from:"
@@ -356,9 +406,21 @@ if ($MinMargin -gt 0) {
   # The header has always said -MinMargin fails "when the kernel cannot answer
   # the question at all"; this is that clause, honored.
   if ($script:NoDeckRecords.Count -gt 0) {
-    Write-Host "FAIL: $($script:NoDeckRecords.Count) unit(s) produced no deck records at all, so their margin is unknown and may be below 1:"
+    Write-Host "FAIL: $($script:NoDeckRecords.Count) unit(s) ran and wrote no deck records, so their margin is below 1:"
     foreach ($u in $script:NoDeckRecords) { Write-Host "  $u" }
-    Write-Host "  Compile one without -Measure to see whether it is CDX9002 rather than a chapter with no entry point."
+    Write-Host "  Compile one without -Measure to see the diagnostic; -Measure suppresses it."
+    exit 1
+  }
+  # A measurement that did not happen is not a verdict about decks, and saying
+  # it is sends the reader to inspect a reservation that is fine. It still
+  # fails: a check that stops asking reports what one that asks and agrees
+  # reports (L-CAPABILITY-LOST).
+  if ($script:Unmeasured.Count -gt 0) {
+    Write-Host "FAIL: $($script:Unmeasured.Count) unit(s) produced NO compiler output, so nothing about their margin was measured:"
+    foreach ($u in $script:Unmeasured) { Write-Host "  $u" }
+    Write-Host "  This is not a deck verdict. The commonest cause is contention: -Jobs $Jobs at 3072 MB"
+    Write-Host "  each does not fit every box, and codex-vm dies leaving an empty log. Re-run, and"
+    Write-Host "  compare -Jobs 1 before believing any unit here has a deck problem."
     exit 1
   }
   if ($missing -gt 0) {

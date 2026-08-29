@@ -690,10 +690,13 @@ run went green in 91 seconds having compiled no plug at all; the same tree
 gated with the files still open took 337.8 s and ran all three. A CodexType
 variant that made five plug emitters non-exhaustive reached main through that
 gap and was caught by another lane. Whatever class the merge brought, re-run
-the affected tests BY HAND -- the gate cannot see them any more. Read the two
-`[internal gate]` lines on every run rather than the exit code, and read the
-second one for what is MISSING from it (val, 2026-08-27; widened by fester the
-same day).
+the affected tests BY HAND -- the gate cannot see them any more. Read the
+THREE `[internal gate]` lines on every run rather than the exit code
+(`build/build.ps1:109-111`, three unconditional prints in the `if ($Internal)`
+block). The third is the one to read: it names the deferred phases outright,
+`deferred to the next full gate: <phases>`, so what is missing does not have
+to be inferred from the second (val, 2026-08-27; widened by fester the same
+day; corrected from "two" by reek and blu, verified at source, 2026-08-27).
 
 **It refuses a silent absence rather than reading it as a pass.** If the number
 of results does not equal the number of chapters submitted, the phase fails
@@ -1111,6 +1114,19 @@ a release poison battery spent **977 s in its compile phase at 4 slots on a
 not corrected.** The paragraph above had the right answer and the right general
 lesson written down, and neither reached the scripts that had already
 copied the wrong number out of it.
+
+**RE-RULED 2026-08-27 by Damian: `-Jobs 4`, superseding the 8.** Not the old
+workaround returning: a different condition, measured, and NAMED here so this
+default dies with its condition rather than outliving it, which is this
+section's own lesson. The box holds 15.8 GiB; `check-test-compile` at 4 ways
+times `-mem 3072` commits ~12 GB and free host RAM fell 8.5 GB to 1.9 GB with
+four VMs live, so 8 slots of 3072 MB guests cannot fit. The tell that it is
+RAM and not codegen: the named casualty MOVES between runs (three runs, three
+different chapters, 326/1076/340 casualties, one workspace, one kernel, each
+chapter clean alone). The account with the control matrix is
+`OperatorsManual.md` "The compile batch asks for 12 GB of guest RAM, and a
+short box reports it as a CODEGEN failure" (blu, main 20370). When the box
+grows RAM, re-measure and re-raise.
 
 ### A harness that can throw is a harness that can take itself down, and the fix was already in the file
 
@@ -6093,6 +6109,69 @@ in a minute: hash the failing test's `.cdx` against a standalone compile
 whether the batch that produced it lost tail members to exit 99. Neither the
 lossy layer (guest serial, host `-output` writer, or the parser's marker walk)
 nor the role of host load is established; ten VMs is the only measurement.
+
+**Second instance and containment (red, 2026-08-28, red 20450).** The Update 52
+release battery (2026-08-27, hot box) put 26 false `FAIL_OUTPUT` reds on the
+rollup from two death-batches: the shifted members held exit 0 and their
+binaries ran under foreign names, while only the tail 99s were re-batched --
+so the re-batch machinery cleared the honest failures and KEPT the misfiled
+ones, and the one line naming the cause went to a hidden console. Three
+repairs, all in the generators:
+
+- `test-compile-batch.ps1` invalidates the WHOLE batch on either loss signal
+  (a `DROPPED` report on codex-vm's stderr, or a stream that ends short of
+  the test count with no `!EXC`): every member's `.exitcode` becomes 99 with
+  a `BATCH INVALIDATED` build.log line, so phase 1a re-batches all of it and
+  a clean session either reproduces each result or clears it. A crash
+  (`!EXC`) without a drop keeps the old attribution -- framing is intact up
+  to the dump and the crasher's standalone confirm needs its exit 4. Proven
+  by killing the VM mid-batch: new script 20/20 at exit 99; old script kept
+  3 members at exit 0.
+- `test.ps1` redirects each batch child's stderr (main and rebatch launches)
+  to a temp file and moves it into `test-output\_batches\*.err`, echoing any
+  `DROPPED` / `BATCH INVALIDATED` content to the console. The next loss is
+  therefore attributable to a layer: a `.err` naming dropped bytes convicts
+  the serial path; a short stream with a silent `.err` points at the writer
+  or an early VM exit.
+- `test.ps1`'s `Get-FailHint` checks, before its length arithmetic, whether
+  a `FAIL_OUTPUT` actual is byte-for-byte ANOTHER test's expected and says
+  `HOLDS ... batch misattribution` instead of presenting a first-differing
+  line that reads as codegen. The owner map is built once, on the first
+  FAIL_OUTPUT hint; green runs never pay for it.
+
+The lossy LAYER is still not established -- that question now waits on the
+`.err` instrument rather than on a recurrence nobody can read.
+
+**The two loss signals had one control between them, and it is now two**
+(fester, 2026-08-28). Killing the VM mid-batch fires the SHORT-STREAM arm; it
+cannot fire the `DROPPED` arm, because a killed VM never reports a drop. The
+`DROPPED` branch was therefore live, correct and unfired, which is the state
+L-FALSIF is about. `CODEX_VM_DROP_SERIAL_AT=N` with `CODEX_VM_DROP_SERIAL_LEN=K`
+(`OperatorsManual.md`) makes codex-vm discard K bytes of capture once N have
+been taken, on whichever output path is carrying them, counted and reported
+exactly as a real loss is. Both arms measured over the same eight-test list:
+
+| arm | result |
+|---|---|
+| no injection | 8 of 8 at exit 0, eight DISTINCT correct binaries |
+| injected, pre-containment script | tests 4, 5, 6 and 7 each holding the NEXT test's binary byte-identically, test 8 at exit 99, **and 4 through 7 all at exit 0** |
+| injected, shipped script | `BATCH INVALIDATED: codex-vm dropped serial bytes`, 8 of 8 at exit 99 |
+
+The middle row is the defect reproduced on demand rather than waited for, and
+it is what makes the third row mean something: the same input that used to
+ship four foreign binaries at exit 0 now invalidates the batch. It also
+reproduces the 2026-08-16 batch-0 shape exactly -- shifted members above,
+exit 99 on the tail -- from a deliberate byte loss, which is the evidence that
+the sequence-assigning parser is the thing that misattributes, whatever loses
+the bytes.
+
+Invalidation sets the exit code and leaves the misattributed `.cdx` on disk.
+That is inert to the harness and deliberate to leave alone: phase 1b gates
+every downstream decision on `$compileOk = ($exitCode -eq '0')`, and exit 0 is
+written only in the branch that has just written a fresh binary, so a stale
+binary under a 99 can never reach a verdict. It can still mislead a human
+reading `test-output\<name>\` by hand after an invalidated batch, and the
+swap census one screen up is the way to tell.
 
 
 ## The E1000 Bring-Up Budgets (`e1000-aneg-budget`, `e1000-link-budget`, `e1000-link-deadline`)

@@ -983,7 +983,7 @@ Section: Disk Foreword Loading
    in let doc = parse-document (make-parse-state (tok-result.tokens) source) ceiling
    in filter-library-cites (doc.citations) 0 (list-length (doc.citations)) []
 
-  disk-load-cite : Fat16Volume, DiskLoadState, Text, Text, Integer -> DiskLoadState
+  disk-load-cite : Fat16Volume, DiskLoadState, Text, Text, Integer -> [Console] DiskLoadState
   disk-load-cite (vol) (st) (quire) (name) (ceiling) =
    let key = quire & ":" & name
    in if text-set-has (st.dls-seen) key then st
@@ -995,16 +995,18 @@ Section: Disk Foreword Loading
        in let st2 = disk-load-cites-list vol (DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }) deps 0 (list-length deps) ceiling
        in let renamed = text-replace content ("Chapter: " & name) ("Chapter: " & quire & "--" & name)
        in DiskLoadState { dls-seen = st2.dls-seen, dls-chunks = list-push (st2.dls-chunks) (renamed & "\n\n") }
-     is None -> DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }
+     is None ->
+       let noted = print-line-uni ("CITE-MISSING " & quire & " " & name)
+       in DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }
 
-  disk-load-cites-list : Fat16Volume, DiskLoadState, List CitesDecl, Integer, Integer, Integer -> DiskLoadState
+  disk-load-cites-list : Fat16Volume, DiskLoadState, List CitesDecl, Integer, Integer, Integer -> [Console] DiskLoadState
   disk-load-cites-list (vol) (st) (cite-list) (i) (len) (ceiling) =
    if i >= len then st
    else let c = list-at cite-list i
    in let st2 = disk-load-cite vol st (token-text (c.quire)) (c.chapter-name) ceiling
    in disk-load-cites-list vol st2 cite-list (i + 1) len ceiling
 
-  disk-resolve-forewords : Fat16Volume, Text, Text -> Text
+  disk-resolve-forewords : Fat16Volume, Text, Text -> [Console] Text
   disk-resolve-forewords (vol) (source) (mode) =
    let scan-scale = effective-deck-scale mode (text-length source)
    in let scan-height = scaled-floor scan-scale demand-disk-scan-floor demand-disk-scan-guard-band
@@ -2146,7 +2148,31 @@ Section: Entry Point
    else if cmd == "IR-UNI" then emit-ir-uni source flags
    else if cmd == "IR-CCE" then emit-ir-cce source flags
    else if cmd == "MEASURE" then emit-measure source flags
-   else emit-text-streaming source flags
+   else if cmd == "TEXT" then emit-text-streaming source flags
+   else refuse-unknown-mode cmd
+
+ TEXT is named here rather than reached by falling through, and the fall-through
+ is a refusal. An `is otherwise` on a front door makes a setting that does
+ nothing look exactly like one that works (L-ACCEPTED): measured at seed
+ 8769F31E, `ELF`, `EFI`, `UEFI` and `IMG` each emitted text byte-identical to
+ `TEXT` and to a deliberately nonsensical `ZZZZ-NOT-A-MODE` once the WD:/HEAP:
+ telemetry every consumer already strips is removed, with `CDX` at 89,466 bytes
+ as the control.
+
+ The refusal ships only because a census said no live caller dies by it. The
+ mode token is the first space-separated word, so flags ride along untouched;
+ every producer in the tree sends CDX, TEXT, IR-UNI, IR-CCE, MEASURE, or DISK,
+ which `dispatch-on-mode` takes before this. The single producer of anything
+ else is `codex/plugs/elf/extract-x86-output.ps1`, which sends `ELF` and which
+ nothing invokes: both greps that name it are comments, one of them the elf
+ plug's own instructions for a workflow that this defect had already broken.
+
+  refuse-unknown-mode : Text -> [Console, FileSystem] Nothing
+  refuse-unknown-mode (cmd) = act
+   print-line-uni "CODEGEN-ERRORS:1"
+   print-line-uni ("  unknown mode '" & cmd & "': nothing emitted, because a mode this compiler does not implement must not come back looking like a successful TEXT build. Modes are CDX, TEXT, IR-UNI, IR-CCE, MEASURE, DISK and RESOLVE.")
+   print-line-uni ("CODEGEN-HALTED: unknown mode '" & cmd & "'; nothing emitted")
+  end
 
   compile-with-quotations : SourceSplit, Text, Text, CompileFlags -> [Console, FileSystem, Device.Block] Nothing
   compile-with-quotations (split) (cmd) (mode) (flags) =
@@ -2180,10 +2206,51 @@ Section: Entry Point
    in let sealed = compact-phase flags poison-parse
    in compile-plain (kept & split.sp-body) cmd mode flags
 
+ RESOLVE's wire, for the consumers built against it (the Prism page and
+ its beds; the boundary and this wire are recorded in
+ PrismDevEnvironment.md's stage-2 convergence): source arrives on stdin
+ exactly as TEXT/CDX take it; the disk is the linear-memory contract
+ (`disk_reserve` before `_start` on wasm, the boot medium on metal);
+ stdout carries the RESOLVED UNIT between `RESOLVE-BEGIN` and
+ `RESOLVE-END` lines -- resolved chapters first, renamed
+ `Chapter: quire--name` exactly as `disk-load-cite` does, then the source
+ verbatim. A host with no volume (`block-sector-count` 0) gets the source
+ back unchanged: the mount is never attempted, so the zeroed-BPB divide a
+ bare medium produces cannot happen here. Resolution is best-effort: a
+ cite whose chapter is not on the volume prepends nothing, and the
+ downstream compile answers ONE CDX3007 at the cite (measured against a
+ library image and its no-library control, 2026-08-28 -- an earlier
+ draft of this paragraph claimed a use-site cascade, and the measurement
+ killed it). `disk-load-cite` still prints one
+ `CITE-MISSING <quire> <name>` line per absent chapter, before the
+ frame, as a refinement CDX3007 cannot make: CDX3007's "not present in
+ this compilation unit" is also what a typo'd chapter name produces,
+ while CITE-MISSING says specifically that the medium was asked and did
+ not have it, and it says so before a compile is paid for.
+
+  emit-resolved : Text -> [Console, FileSystem, Device.Block] Nothing
+  emit-resolved (mode) = act
+   source-raw <- read-file-uni mode
+   let source = utf8-to-cce source-raw
+   in act
+    sectors <- block-sector-count
+    prefix <- if sectors == 0 then act "" end
+     else act
+      vol <- disk-locate-volume
+      disk-resolve-forewords vol source mode
+     end
+    print-line-uni "RESOLVE-BEGIN"
+    print-text (prefix & source)
+    print-line-uni ""
+    print-line-uni "RESOLVE-END"
+   end
+  end
+
   dispatch-on-mode : Text -> [Console, FileSystem, Device.Block] Nothing
   dispatch-on-mode (mode) = act
    let cmd = parse-mode-cmd mode
    in if cmd == "DISK" then emit-from-disk mode
+   else if cmd == "RESOLVE" then emit-resolved mode
    else act
     source-raw <- read-file-uni mode
     let raw = utf8-to-cce source-raw

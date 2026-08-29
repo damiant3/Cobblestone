@@ -122,14 +122,16 @@ foreach ($f in 'prism-offline.html', 'mosaic.svg') {
     $gone = Join-Path $dst $f
     if (Test-Path -PathType Leaf $gone) { Remove-Item $gone -Force; Write-Host "[landing] retired $f" }
 }
-foreach ($f in 'javascript-stdio.wasm', 'csharp-stdio.wasm', 'evidence-stdio.wasm',
-           'python-stdio.wasm', 'typescript-stdio.wasm', 'zig-stdio.wasm', 'html-stdio.wasm',
-           'react-stdio.wasm', 'vue-stdio.wasm', 'swiftui-stdio.wasm', 'winforms-stdio.wasm',
-           'pe-bytes.wasm', 'img-bytes.wasm') {
-    $from = Join-Path $pageSrc $f
-    if (Test-Path -PathType Leaf $from) { Copy-Item $from (Join-Path $dst $f) -Force }
-    else { Write-Host "[landing] note: $f absent; that lens stays dark" }
-}
+# Taken from what build-page.ps1 actually produced rather than from a list
+# kept by hand here. The hand list was a second register of the same set and
+# it drifted: measured 2026-08-27 it named 13 modules against the page's 48,
+# so every lens added since it was written shipped only because web/compile is
+# never cleaned and old copies lingered. A module the page did not build this
+# run is one this bundle must not carry.
+$mods = @(Get-ChildItem $pageSrc -Filter '*.wasm' -File |
+          Where-Object { $_.Name -ne 'codex-compiler.wasm' })
+foreach ($m in $mods) { Copy-Item $m.FullName (Join-Path $dst $m.Name) -Force }
+Write-Host ("[landing] target modules: {0}" -f $mods.Count)
 
 # The page asserts byte-identity against an anchor injected at ITS build.
 # If the placeholder survived, the copy would claim a match it never made.

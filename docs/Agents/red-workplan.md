@@ -6,10 +6,14 @@ durable from today is already in the doc that owns the subject.
 
 ## In flight
 
-Nothing. Emptied at handoff 2026-08-27; CurrentPlan's red row and the
-rulings queue carry the day. No token held, nothing shelved, no cron
-jobs left running (both fleet-pulse jobs deleted at handoff).
+Nothing. Emptied at handoff 2026-08-28 evening. The Prism campaign's
+state and next action live in
+`apps/prism/design/Active/PrismDevEnvironment.md` and the CurrentPlan
+Prism section; shelf 20550 holds the stage-1 verification arm for
+stage 2's first CL. No token held.
 
 ## Shelved
 
-Nothing shelved. No token held.
+**CL 20550**: `codex/plugs/wasm/page-workspace-arm.js`, the headless node
+arm that proved stage 1 against the shipped page script. Not gated (never
+submitted); unshelve into stage 2's first CL and land it there.

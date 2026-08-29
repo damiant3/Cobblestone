@@ -1627,29 +1627,152 @@ guard and left the geometry.
    Monitor open, so its frame allocations are in all of them and cancel in
    the differences.
 
+   **RE-TAKEN 2026-08-28 ON THE FIXED BUILD at main 20432 against seed
+   71677A66, and the table below is the current one.** This is the first
+   reading of the buried close that measures the mark stack rather than a
+   desk that destroyed the survivor, so it is the first one the option-D
+   ruling can be judged against. Every row was taken by mouse through the
+   Monitor's own `memory` readout, the Monitor open in every arm so its
+   frame allocations cancel in the differences.
+
    | state | heap frontier | against baseline |
    |---|---:|---:|
-   | desktop, nothing opened | `0x12db783` | -- |
-   | Files opened then CLOSED (the control) | `0x12dbfeb` | +2,152 |
-   | Files DOCKED | `0x144f73b` | +1,655,224 |
-   | Files and Browser both docked | `0x16711c3` | +3,759,680 |
-   | Files then CLOSED under a live Browser | `0x17bbff3` | +5,114,480 |
+   | R1 desktop, Monitor only (baseline) | `0x13bead3` | -- |
+   | R2 Files opened then CLOSED, top of stack (**the control**) | `0x13bead3` | **0** |
+   | R3 Files DOCKED | `0x17154bb` | +3,500,520 |
+   | R4 Files docked, Edit opened OVER it | `0x2283c17` | +15,487,300 |
+   | R4b Files RESTORED from its pill, Edit still alive | `0x23b7c9f` | +16,749,004 |
+   | R5 Files CLOSED with Edit alive above it (**the subject**) | `0x24cee7f` | +17,892,268 |
+   | R6 Files REOPENED after that close | `0x2728ef7` | +20,358,180 |
 
-   So **a docked heavy pane costs 1.6 to 2.1 MB** -- Files 1,655,224 bytes,
-   the Browser 2,104,456 on top of it. The control is what makes those
-   numbers mean anything: opening and CLOSING Files returns the frontier to
-   within 2,152 bytes of baseline, so the retention is docking's and not the
-   cost of having opened a pane at all.
+   **D.2: RE-TAKEN ON THE D.1 BUILD, 2026-08-28 at main 20522, seed
+   8769F31E.** The table above is the PRE-D.1 one and is kept because the
+   arm is a before/after. This is the current table:
 
-   **The LIFO tail is the real finding, and it is worse than "not
-   reclaimed".** Closing a docked pane that sits BENEATH a live one does not
-   give its memory back -- `desk-marks-reclaim` pops dead entries from the
-   top only, so Files' mark stays buried under the Browser's. Measured, the
-   frontier does not merely fail to drop, it RISES: reopening Files to close
-   it allocates again, and the desk ends holding 5,114,480 bytes above
-   baseline with ONE pane docked, where that pane alone costs 2,104,456.
-   Roughly 3 MB stranded, from an operation a person would read as tidying
-   up.
+   | state | heap frontier | against baseline | moved by D.1 |
+   |---|---:|---:|---:|
+   | R1 baseline | `0x13bead3` | -- | 0 |
+   | R2 control | `0x13bead3` | **0** | 0 |
+   | R3 Files DOCKED | `0x1520f4b` | +1,451,128 | -2,049,392 |
+   | R4 Files docked, Edit over it | `0x208f6a7` | +13,437,908 | -2,049,392 |
+   | R4b Files restored from its pill | `0x1fb00bf` | +12,522,988 | -4,226,016 |
+   | R5 Files CLOSED buried (the subject) | `0x1f86a17` | +12,353,348 | -5,538,920 |
+   | R6 Files REOPENED after that close | `0x21e0a8f` | +14,819,260 | -5,538,920 |
+
+   **R1 and R2 did not move at all, across a seed change as well as D.1.**
+   The baseline and the control are the two rows that make every other row
+   mean something, and they are the same three ways: pre-D.1 on seed
+   71677A66, post-D.1 on 8769F31E, and against the 20359 reading. A repeat
+   of R5 came back byte-identical (`0x1f86a17`, same tick count), so the bed
+   is deterministic on this build too and these are exact.
+
+   **The three quantities, each internal to its own table so no cross-table
+   or cross-seed comparison is load-bearing:**
+
+   | quantity | before D.1 | after D.1 |
+   |---|---:|---:|
+   | control, a close at the TOP of the stack (R2-R3) | -3,500,520 | -1,451,128 |
+   | restore from the pill (R4b-R4) | +1,261,704 | **-914,920** |
+   | **the buried close (R5-R4b)** | +1,143,264 | **-169,640** |
+   | **the reopen after it (R6-R5)** | +2,465,912 | **+2,465,912** |
+
+   **THE BURIED CLOSE NO LONGER ALLOCATES WHILE RECLAIMING NOTHING.** It was
+   `+1,143,264`; it is now `-169,640`, and the pill restore went from costing
+   1.2 MB to returning 0.9 MB. A docked heavy pane costs 1,451,128 rather
+   than 3,500,520, so **docking is 2 MB cheaper than this design has said
+   since it was first measured.**
+
+   **AND THE ROW D.5 HAS TO MOVE IS UNCHANGED TO THE BYTE.** `R6-R5` is
+   `2,465,912` before and after. D.1 moved every other row in the table and
+   left this one exactly where it was, which is the cleanest thing the
+   re-take produced: the reopen cost contains no root-leak component, it is
+   the stranding and nothing else, and D.5's acceptance is now free of the
+   contamination that made D.2 necessary in the first place. Anyone reading
+   a number out of this design for the allocator work wants `2,465,912` and
+   no other.
+
+   **The control gives back every byte and the buried close gives back
+   none.** R2 minus R3 is `-3,500,520`, exact: a close at the top of the
+   mark stack returns the pane's whole resident cost. R5 minus R4b is
+   `+1,143,264`, which is the finding stated plainly -- **a buried close
+   does not merely fail to reclaim, it ALLOCATES while reclaiming
+   nothing.** One buried close therefore strands 5,905,488 bytes: the
+   pane's 3,500,520 resident, 1,261,704 to restore it from its pill, and
+   1,143,264 spent by the close itself.
+
+   **R4b is why the two are separable and it is not decoration.** R5 minus
+   R4 alone reads `+2,404,968`, and that number is a conflation: the
+   subject arm restores Files from its pill before it can reach a close
+   button, and the restore is 1,261,704 of it. Reporting the conflated
+   figure would have charged the close with the restore's cost.
+
+   Superseded and kept because the arm is a before/after (L-COUNT):
+   2026-08-27 at main 20359, baseline `0x13bead3`, control **0**, Files
+   docked +3,500,520, both docked +6,185,448, and the row then named as
+   the acceptance arm +6,480,104. 2026-08-25, baseline `0x12db783`,
+   control +2,152, Files docked +1,655,224, both docked +3,759,680,
+   acceptance row +5,114,480. **Neither of the two acceptance figures ever
+   described this machine**: both were taken on a desk whose close path
+   destroyed the survivor, so neither is the number to beat. R1 through R3
+   reproduce the 20359 readings byte-for-byte across the seed change,
+   which is what says the instrument is the same one.
+
+   So **a docked heavy pane now costs 2.7 to 3.5 MB**, not the 1.6 to 2.1 MB
+   recorded: Files 3,500,520 bytes and the Browser 2,684,928 on top of it.
+   Both roughly doubled, which is the window registry, the pill icons and the
+   per-app edge block arriving since. **The control got BETTER and is now
+   exact**: opening and CLOSING Files returns the frontier to baseline
+   byte-for-byte, where it used to leave 2,152 bytes. That is worth more than
+   the growth, because the control is what makes every other row mean
+   anything, and an exact one makes the stranded row unarguable.
+
+   **The LIFO tail is still the finding.** `desk-marks-reclaim` pops dead
+   entries from the top only, so a pane's mark stays buried under a later
+   one's and closing it gives nothing back.
+
+   **THE ROW THIS DESIGN NAMED AS THE ACCEPTANCE ARM COULD NOT BE STAGED AT
+   ALL UNTIL WORKS-57 WAS FIXED, and the reason was deeper than this design
+   assumed.** "Files then CLOSED under a live Browser" needs Files closed
+   while another pane is alive. Measured at 20359: it came back to a BARE
+   DESKTOP, welcome frame and no pills, with every pane gone. Fixed at
+   20387 and re-taken 2026-08-28, the survivor survives and the arm reads
+   as the table above.
+
+   **The cause is in the close path, and this paragraph named the wrong one
+   first.** It said raising a docked Files evicts the Browser through
+   `desk-files-open`. A pill click never reaches `-open` -- `desk-dispatch`
+   routes it to `desk-pill-restore`, which raises, repaints and passes `apps`
+   through untouched. That reading came from `-open` explaining the symptom
+   and was not checked against the line the raise runs through (L-MECHANISM).
+   Corrected, from the code:
+
+   - **`desk-app-close` (`GopDesk.codex:1518`) routes to `desk-wnd-close-to`
+     whenever the registry still holds another window**, and that path
+     restores to the DESK BASE MARK and hands `desk-apps-empty` down. Every
+     other pane's state record is dropped and its heap goes back below where
+     its `-open` allocated. Its own prose defends this by saying a windowed
+     pane keeps state below the base mark -- true of the light panes with
+     `ds` blocks, false of the four heavy panes, whose `Just st` sits above
+     their own pushed mark, which is why the mark stack exists at all.
+   - **`desk-pill-restore` never re-enters the pane**, so a restored window
+     paints its frame and nothing else. Seen on Files and on the Browser.
+
+   Both are WORKS-57, and both are FIXED at main 20387. The close path now
+   goes through the mark stack whichever window is closing, so the
+   buried-mark stranding the option-D ruling targets is reachable through
+   the close button and the allocator fix lands on a path that runs.
+
+   **THE RESIDUAL THAT DID NOT FIT IS ACCOUNTED FOR, and it was the broken
+   close path.** This section used to record that `desk-wnd-close-to`
+   restores to the base mark while the frontier after that arm still read
+   6,480,104 bytes above a bare desktop, and said plainly that the two
+   could not both be true. On the fixed build every byte of the subject arm
+   names its own cause: R5's `+17,892,268` is Files resident 3,500,520 plus
+   Edit 11,986,780 plus the restore's 1,261,704 plus the close's own
+   1,143,264, which sums to `17,892,268` exactly, with nothing left over.
+   An unclassified residual was the finding; its disappearance under a
+   change to the close path is the evidence that the close path was what
+   produced it (L-MECHANISM: the fix moved the symptom).
 
    **Against which envelope, because the bed is generous and the artifact is
    not (L-ARENA).** These readings come from codex-vm with about 3 GB; the
@@ -1853,13 +1976,278 @@ guard and left the geometry.
    red at main 20231; this lane's after 6.7.
 
    **THE ACCEPTANCE ARM ALREADY EXISTS AND IT IS THE FRONTIER TABLE ABOVE.**
-   The `+5,114,480` row is the subject: Files closed under a live Browser,
-   holding about 3 MB more than the one pane still open costs. It must drop.
-   **What makes that table an arm rather than a set of numbers is its
-   CONTROL** -- the open-then-close row that returns to within 2,152 bytes of
-   baseline. Without it, a change that moved every reading could be read as a
-   fix; with it, the question is whether the buried row joins the control's
-   behaviour, which is a different and falsifiable claim.
+   The stranded row is the subject and it must drop. **Re-measured 2026-08-27
+   at main 20359, that row is `+6,480,104` and not `+5,114,480`.** It could
+   not be staged at all until WORKS-57 was fixed, because closing a window
+   while another was open returned a BARE DESKTOP: `desk-wnd-close-to`
+   restored to the base mark and wiped every pane's state.
+
+   **WORKS-57 IS FIXED at main 20387, and the close path now goes through the
+   mark stack**, so a buried close is finally expressible: the closing pane's
+   entry is killed, dead entries are reclaimed from the top, and a live entry
+   above means nothing is given back. That is exactly the LIFO tail this
+   campaign is about, and it is now reachable through the close button
+   instead of being bypassed.
+
+   **THE ARM IS RE-TAKEN, 2026-08-28 at main 20432 on the fixed build, and
+   the table above is it.** The number option D must beat is **`+1,143,264`
+   for the buried close (R5 minus R4b)**, against a control that returns
+   `-3,500,520`. Neither `+5,114,480` nor `+6,480,104` was ever the number
+   to beat (L-COUNT). **What makes that table an arm rather than a set of
+   numbers is its CONTROL**, the open-then-close row, which now returns to
+   baseline EXACTLY rather than to within 2,152 bytes. Without it, a change
+   that moved every reading could be read as a fix; with it, the question
+   is whether the buried row joins the control's behaviour, which is a
+   different and falsifiable claim.
+
+   #### Option D. THE STAGE LIST, written before stage 1 ships
+
+   The 6.7 precedent above is the reason this is here and not in a
+   session's head: a stage list goes in the design BEFORE the first stage
+   lands, because the task frame's did not and recovering it cost a dig
+   through an evicted transcript.
+
+   **What the arm found on the way, and it reorders the work.** Two of the
+   three costs measured above are not buried pane state at all. The pill
+   restore's 1,261,704 and the buried close's 1,143,264 both run through
+   `desk-draw` rebuilding the desktop root straight onto the frontier with
+   nothing freeing the root it replaces. That is WORKS-12's mechanism --
+   the desk never unwinds -- on the chrome paths WORKS-12 did not cover,
+   and measured on its own (`works-backlog.md` WORKS-58) it costs about
+   1.78 MB per minimize-and-restore of one window, unbounded. **It is
+   larger in ordinary use than the stranding this campaign was called for,
+   it needs no allocator change, and it must land first or it will
+   contaminate every reading option D is judged by.**
+
+   | stage | what it is |
+   |---|---|
+   | D.1 | **DONE, main 20493. The root leak (WORKS-58).** The cycle table is FLAT IN N: one cycle and three both read `0x15276fb` where they read `0x1840fcb` and `0x1ba73f3` before, so per-cycle growth is 1,782,292 to 0. The guard is not the base mark and not a frontier comparison: `desk-root-reclaim` frees the root a rebuild replaces only when no LIVE mark-stack entry sits at or above where that root ended. **The first formulation compared the frontier to `root-end` and was provably INERT** -- three arms byte-identical to pre-fix -- because every site allocates after the root and `desk-loop`'s per-iteration mark sits above `root-end`. It failed closed, which is the direction to fail in, and only the measurement said so (L-FALSIF) |
+   | D.2 | **DONE, 2026-08-28 at main 20522.** Table re-taken on the D.1 build and recorded above. The buried close went from `+1,143,264` to `-169,640` and the pill restore from `+1,261,704` to `-914,920`; a docked heavy pane costs 1,451,128 rather than 3,500,520. **`R6-R5` is `2,465,912` before and after, unchanged to the byte** -- D.1 moved every other row and left the reopen exactly where it was, so D.5's acceptance number contains no root-leak component. Baseline and control did not move across D.1 OR the seed change, and an R5 repeat was byte-identical |
+   | D.3 | **Accessors and the unit arm DONE; the live reading held.** `desk-marks-extent`, `desk-marks-extent-sum`, `desk-span-holds-root` and `desk-span-reusable`, pinned by `codex/test/desk-span` over a hand-built stack (Files live, Editor live, Browser dead) that the desk cannot be made to produce on demand. **Two corrections to this row as first written.** The sum is `top` minus ENTRY 0's mark, not frontier minus BASE: the desk's own blocks and its first root sit below entry 0 and belong to no span. And **a span is not a hole** -- the live root can be buried in one, so `desk-span-reusable` is the dead test AND the root test, never the dead test alone. Sabotage-proven: dropping the root check moves exactly one line, `root-blocks`, and no other row. The live `[mark_F, mark_E)` reading needs no new arm -- it rides `r4-ref` and the Monitor's new `marks` row |
+   | D.4 | **The bound, and it is the hard part.** `__alloc` is `mov rax,r10; add r10,rdi` plus a zero-fill and checks nothing, so a pane that outgrows a hole silently corrupts the live pane above it. A check in `__alloc` is seed-affecting and lands on every allocation in the system, including the compiler's roughly twenty million per self-compile (L-PEROBJECT), so it must be measured against a self-compile before it is believed cheap. The alternative the tree already ships is the spawn pool's answer: fixed slot regions, never carved from the caller's R10, with an over-request REFUSED rather than overlapped (`ArchitectsSketchbook.md`, "Spawn Regions"; `codex/test/spawn-reuse.codex`). Decide between them HERE, with a measurement, before D.5 |
+   | D.5 | **Reuse.** With an extent and a bound, a pane open picks a dead buried entry whose hole fits instead of pushing a new mark. Acceptance is R6 falling toward zero while R5 stays put |
+
+   ##### A SPAN IS NOT A HOLE: the live root can be buried inside one
+
+   Established by reading at main 20497, val, picking D.3 up. **It is a
+   mechanism from reading and the live arm did NOT confirm it** -- see the
+   reading below, where the root came out in the top span and not the buried
+   one. The account that follows is the argument for why the situation is
+   REACHABLE; it is not evidence that it occurs, and the difference is the
+   whole of L-MECHANISM. The guard ships anyway because it is one comparison
+   and `codex/test/desk-span` proves it discriminates.
+
+   **A pane open does not rebuild the root.** `desk-edit-open`,
+   `desk-files-open`, `desk-browser-open` and `desk-scene-open` each push a
+   mark and pass the `root` they were HANDED through to `desk-loop`; none of
+   them is among the eight `desk-draw` sites. A root is rebuilt only by a
+   close, a hide, a `-reenter` or a pill restore.
+
+   So this sequence, which is the ordinary one, buries a live root:
+
+   1. Files opens. `mark_F` is the frontier at that moment, so the root then
+      current sits BELOW `mark_F`.
+   2. Files is minimised. `desk-app-hide` builds a new root at the frontier,
+      which is now ABOVE `mark_F`.
+   3. The Editor opens. `mark_E` is above that root, and the Editor passes
+      the same root through.
+
+   The live root is now inside `[mark_F, mark_E)`. Close Files and that span
+   is what D.3 was going to call a hole; allocating into it would free the
+   root the desk is still painting from.
+
+   **The repair is already paid for.** D.1's `desk-root-cell` holds the live
+   root's start address for its own guard, so the extent accessor can ask the
+   question directly: **a span is reusable only when `desk-root-cell` does not
+   lie within it.** That is one comparison, it needs no new bookkeeping, and
+   it is the second use of a cell that was added for something else.
+
+   **What would falsify this**, and it is worth stating because the whole
+   paragraph is derived rather than measured: if a pane open DID rebuild the
+   root, or if `desk-loop` rebuilt it per iteration, the root would always sit
+   above every mark and no span could contain it. Both are checkable by grep
+   and both currently say otherwise.
+
+   **The arm, when the hold lifts:** open Files, minimise it, open the
+   Editor, and assert that `desk-root-cell` reads between `mark_F` and
+   `mark_E`. That is a pure reading of three integers and it belongs in D.3
+   beside the extent accessor, not in a later stage -- it is the arm that
+   turns this from a paragraph into a fact.
+
+   **It needs no new timeline: that sequence IS `r4-ref`**, the frontier
+   table's own R4 arm, which opens Files, minimises it, opens the Editor and
+   then the Monitor. What was missing was somewhere to read the numbers, and
+   the Monitor's `marks` row is now it: depth, `desk-root-cell`, and every
+   entry as `id@mark`.
+
+   ###### THE LIVE ARM DID NOT CONFIRM IT, AND THE ARM IS THE REASON
+
+   Taken 2026-08-28 at main 20522 on the D.3 build. The `marks` row read
+   `depth 2   root 0x1d8cc07   10@0x121c50b 14@0x1364cfb`, with the frontier
+   at `0x20cd49f`:
+
+   | | value |
+   |---|---:|
+   | `mark_F` (Files, id 10) | `0x121c50b` |
+   | `mark_E` (Editor, id 14) | `0x1364cfb` |
+   | `desk-root-cell` | `0x1d8cc07` |
+   | frontier | `0x20cd49f` |
+
+   **The root is NOT inside `[mark_F, mark_E)`. It is above `mark_E`, in the
+   TOP span.** The prediction this arm was written to confirm is not
+   confirmed, and that is recorded as the result rather than explained away.
+
+   **What the arm DID confirm is the accessor's arithmetic on live data.**
+   Span F is 1,345,520 and span E is 14,059,428, summing to 15,404,948, which
+   is exactly frontier minus `mark_F` -- so the corrected sum invariant (entry
+   0's mark, not the base mark) holds outside the fixture as well as inside
+   it.
+
+   **Why the arm cannot settle the question, stated rather than guessed at.**
+   Reading the marks costs a Monitor, and opening the Monitor is itself desk
+   activity; between the Editor's open and the reading, one of the eight
+   `desk-draw` sites rebuilt the root above `mark_E`. All eight are
+   instrumented, so the rebuild is accounted for in principle, but **the
+   `marks` row prints only the CURRENT root and not which rebuild placed
+   it**, so this arm cannot name the site and neither will another arm shaped
+   like it. The probe perturbs the state it is trying to observe.
+
+   **The instrument that would settle it is a LATCH**, and it is the shape
+   L-BANK already describes: at the moment a pane's `-open` pushes its mark,
+   record the then-current `desk-root-cell` and the then-top mark into two
+   spare cells, and let the Monitor print the latched pair afterwards. The
+   reading is banked before the Monitor can disturb it. That is small, it is
+   D.5's to build if D.5 needs it, and **it is not a blocker**: the guard
+   costs one comparison and `codex/test/desk-span` proves it discriminates,
+   so shipping it is cheap insurance whether or not the situation is common.
+
+   **What is now honestly open** is whether a buried live root arises in
+   ordinary use at all. The reading above is one sequence and it did not
+   produce one.
+
+   **The unit half does not wait on any of that and is done.**
+   `codex/test/desk-span` builds the stack by hand -- Files live at 1000,
+   Editor live at 3000, Browser dead at 7000, frontier 9000 -- and pins the
+   spans at 2000, 4000 and 2000 summing to 8000, which is `top` minus entry
+   0's mark. Every value was derived from the arithmetic BEFORE the chapter
+   was run and then matched exactly, so the file is a prediction the machine
+   confirmed rather than a recording of whatever it said (L-COUNT). The row
+   that carries the finding is `root-blocks`, and a sabotage that drops the
+   root check from `desk-span-reusable` moves that row and nothing else.
+
+   ##### D.2 MUST BE TAKEN BEFORE THE D.3 ARM GETS ITS INSTRUMENT
+
+   An ordering constraint between two stages, which is why it is here rather
+   than inside either. The D.3 arm needs to READ `mark_F`, `mark_E` and
+   `desk-root-cell`, and the obvious place to surface them is a row in the
+   Monitor beside the `memory` row that already prints the frontier and the
+   desk mark. **But the Monitor is the instrument the whole frontier table is
+   measured through**, and the table exists precisely because the Monitor's
+   own frame allocations appear in every arm and cancel in the differences.
+   Add a row and they stop cancelling against anything recorded earlier: every
+   number in the table shifts, and the shift looks exactly like a result.
+
+   That is L-INSTRUMENT with the roles swapped -- there a function learned to
+   do something new and broke the test that read it; here the test's own
+   instrument would learn to print something new and break the comparison.
+   **So: take D.2 with the Monitor exactly as it is, record the table, and
+   only then give the Monitor whatever D.3 needs.** If the two ever have to
+   happen the other way round, the table has to be re-taken twice, once on
+   each Monitor, and the pair compared before anything is concluded (L-COUNT).
+
+   **AND THE DIFFERENCES SURVIVE IT, WHICH IS WHY THE METHOD WAS CHOSEN.**
+   D.3 added a `marks` row and the preview work added a `preview` row and
+   626,688 bytes of boot allocation, so every ABSOLUTE frontier in the D.2
+   table has since moved. Nothing that matters moved with it: the boot block
+   is a constant present in every arm, and the Monitor is open in every arm,
+   so both cancel in every difference. **The control, the buried close and the
+   reopen are differences, so `R6-R5 = 2,465,912` still stands as D.5's
+   acceptance number.** Re-take the absolute column before quoting a frontier;
+   do not re-take it before quoting a delta.
+
+   **D.4 is the stage that can fail, and it is worth saying why before
+   anyone starts it.** Every other stage is bookkeeping in `GopDesk`; D.4
+   is a decision about the allocator that the whole system pays for. If the
+   measurement says a per-allocation check is too dear and slot regions do
+   not fit the flying image's 128 MB, then option D is bounded by what the
+   desk can afford rather than by what the mark stack can express, and that
+   is a finding for Damian rather than something to work around.
+
+   **A FRONTIER READING AFTER THE CLOSE CANNOT SEE THE FIX OPTION D
+   ACTUALLY IS, AND THIS DESIGN SPECIFIED ONLY THAT READING.** `__alloc` is
+   a bump pointer, so reclaiming a buried mark cannot LOWER the frontier;
+   it can only make the hole available to a later allocation. A design that
+   accepts on "the stranded row must drop" is therefore asking the
+   allocator for something a bump allocator will not do even when the fix
+   is perfect, and the arm would report a correct fix as a failure
+   (L-GAP: ask what the suite cannot express before reading its silence).
+   **R6 is the row that can express it**: after the buried close, reopen
+   the pane. Today that costs a further `+2,465,912` of fresh frontier
+   because the hole is not reused. **Under option D that row is what must
+   fall toward zero, and R5 is expected to stay where it is.** Both rows
+   are acceptance, and they say opposite things about the same fix, which
+   is why neither alone is enough.
+
+   **HOW TO DRIVE IT, because this cost several boots to work out and was
+   written down nowhere.** The arm is `tools/codex-vm.exe` invoked directly
+   with `desk.ps1`'s own arguments plus `-mouse-file`, since `desk.ps1` has no
+   mouse switch, `-headless -screenshot <bmp> -screenshot-delay <ms>`, and
+   `-rtc` to freeze the clock so the Monitor paints once and the reading does
+   not depend on the settle time.
+
+   - **The `x,y` in a mouse timeline are NOT screen coordinates.** The host
+     tracks a position from `0,0`, each event SETS it, and the guest receives
+     the DELTA clamped to +-127 per sample (`OperatorsManual.md`, `-mouse`).
+     The guest pointer starts CENTRED, so a move is a run of samples whose
+     numbers are a running total, not a destination. A single event naming
+     the target moves 127 pixels and stops.
+   - **A pane cannot be opened by keystroke any more** (2026-08-26). Click the
+     Cobblestone pill, at `90,856` in a 1600x900 frame, then the group, then
+     the row.
+   - **The launcher's row positions MOVE when a group expands**, and the
+     expanded group persists across menu opens, so a coordinate is only valid
+     for the menu state that arm has reached. Accessories is expanded on the
+     first open.
+   - **The Monitor is Settings then System Info**; it is not in `gpr-entries`
+     under its own name.
+   - **A heavy `-open` evicts the Browser and a light pane does not**, so an
+     arm that needs a second live pane beside a docked Browser must use a
+     light one. The Monitor is the convenient choice.
+   - **Window positions CASCADE.** The first window's title bar sits at y=160
+     and the second at y=208, so a close or minimise button is not at a fixed
+     point across arms. Take a frame and read the geometry rather than
+     carrying coordinates between arms; two arms were wasted on this.
+   - **Read the frontier off the Monitor's `memory` row** in the captured
+     frame. It prints the heap frontier and the desk mark together.
+   - **The launcher's groups are EXCLUSIVE**: expanding one collapses the
+     last. That is what makes a scripted path stable, and it produces a
+     coincidence worth using -- Settings sits at `144,711` whichever group
+     was open, and expanding it puts System Info at `144,711` too, so the
+     Monitor is two clicks at ONE point. Files is `144,431` and the Editor
+     `144,319` with Productivity expanded.
+   - **Dock with the MINIMIZE button, not the flick.** 6.7.4 records that
+     the gesture is a speed against an HPET deadline and so is
+     unverifiable by scripted capture by construction; minimize reaches the
+     same docked-pill state and is a fixed point on the title bar.
+   - **`-rtc` MAKES EVERY SECOND CLICK ON ONE PILL A DOUBLE-CLICK, and a
+     double-click minimises.** The flick is not the only gesture the pinned
+     HPET eats. `dk-dclick` compares an elapsed that is identically zero
+     while the clock is stopped, so `desk-dispatch` sends the second click
+     on the same pill to `desk-pill-minimise` instead of `desk-pill-restore`.
+     An arm that clicks one pill twice under `-rtc` is measuring the
+     double-click path whatever it believes it is measuring, and it will
+     report a no-op for anything the restore path does -- including a crash.
+     WORKS-59 was recorded as "nothing happens" for a day for exactly this
+     reason. Drop `-rtc` for any arm that clicks a pill more than once, or
+     alternate pills, and accept that the clock and the it/s counter then
+     differ between frames.
+   - **The pill row is not in open order.** Measured 2026-08-28: opening
+     Files, then Edit, then the Monitor lays the pills out Monitor, Files,
+     Edit. Read the row from a frame before clicking a pill.
+   - **A restored window's close button is at its ORIGINAL cascade slot**,
+     not the raising one: Files restored from its pill over a live Edit
+     came back at title-bar y=160 with its close at `1381,160` while Edit
+     stayed at y=208. Take a frame between the restore and the close.
 
    **Take the readings the way the table was taken**: through the Monitor
    pane's own heap readout with the Monitor open in every arm, so its frame
@@ -1935,6 +2323,46 @@ guard and left the geometry.
    mini-render of the whole window floating beside the pill. **The account
    below of why the tree-based mechanism cannot work stands as the reason this
    ruling was needed, not as a live blocker.**
+
+   #### The hover preview. THE STAGE LIST, written before stage 1 ships
+
+   Picked up 2026-08-28 (val) on Damian's ruling: *"the hover preview should
+   be decided by the app, and in default should be a mini-render of the whole
+   floating there by the pill."* The account below of why the tree-based
+   mechanism cannot work is the reason this list looks the way it does, and it
+   is still true; what the ruling changed is that the desk no longer has to
+   compute the preview from a tree.
+
+   **THE DEFAULT MUST BE A SNAPSHOT, AND THAT IS SETTLED BY THE CODE RATHER
+   THAN BY PREFERENCE.** 6.4 specified the bubble as "live rather than a
+   snapshot". The five heavy panes have no tree to render live -- that is the
+   section below, and it has not changed -- so "a mini-render of the whole
+   window" can only come from the window's PIXELS. Damian's ruling names the
+   product; the tree's absence names the mechanism; the two together leave one
+   option, so this is not a decision to route back.
+
+   **Where the pixels come from.** The desk paints into `base` at `stride`, so
+   a pixel is `peek-32 base ((y * stride + x) * 4)` and a downscale is a
+   nearest-neighbour sample loop -- no new primitive. A window that is VISIBLE
+   can be sampled on demand, because it is on the glass. A window that is
+   MINIMISED cannot, so its pixels are taken at the moment it stops being
+   visible. That is the only moment the content is both correct and available,
+   and it is one capture per minimise rather than one per paint.
+
+   | stage | what it is |
+   |---|---|
+   | P.1 | **DONE. The buffer and the capture.** `dk-prev-cell` (ds 232) holds 17 slots of 128 by 72 device pixels, written only by `dk-prev-capture` from `desk-app-hide` -- the single choke point every windowed pane's minimise reaches. Nothing paints from it, so the picture cannot move, the way 6.7.1 was deliberately inert. **Arm: the Monitor's `preview` row is EMPTY with Files open and never minimised, and reads `10=0x00000e1c` after one minimise. `0x000e1c` is the Files window body's own colour, read back off a frame where the window is visible; the taskbar two hundred pixels away is `0x000f1f`, so the snapshot is the WINDOW's pixels and not the band's or the desktop's** |
+   | P.2 | **WRITTEN, arm pending a gate window. Hover with a dwell.** The "which pill" half already existed: `dk-pill-hit` answers the focus id under a point by searching the laid root. What P.2 adds is `dk-hover-note` / `dk-hover-held` / `dk-hover-ready` on cells 236 and 240, so a pointer crossing the band does not flash every pill it passes. **The tick is a PARAMETER and that is the whole of why it is testable**: `desk.ps1 -Rtc` pins the HPET as well as the CMOS, so a frozen-clock capture can never satisfy a dwell -- the same constraint that leaves the flick with no capture arm. `codex/test/desk-hover` drives it with synthetic times and no framebuffer. The assertion that carries the design is `restated`: re-noting the SAME pill must not reset the dwell, or a jittering pointer never reaches the threshold |
+   | P.3a | **WRITTEN, arm pending. The bubble's geometry.** `dk-prev-bubble` answers where the bubble goes from the pill's device rect, the band's edge and the glass: on the pill's own edge, pushed off the band by a gap, centred on the pill along the other axis. **It SHIFTS rather than clips** -- a preview cropped at the screen edge shows the wrong part of the window, so a pill near a corner gets its bubble beside it instead of over it. Pure, so it is pinned with no framebuffer: all four edges plus both shift directions, and the shift cases are chosen so the shifted answer DISAGREES with the unshifted one |
+   | P.3b | **Paint it.** Blit the snapshot into that rect and take it down again when the hover ends. This is the stage the picture moves in, and it needs the cursor's save-and-restore trick or a repaint of the region -- transient chrome over a desktop nothing else redraws |
+   | P.4 | **The app decides.** A pane may supply its own preview instead of the default snapshot. This is the other half of the ruling and it goes LAST on purpose: until P.1 to P.3 exist there is nothing for an app to override, and a hook with no default behind it is the shape that ships as a demo |
+
+   **What this list must not become.** The section below records that a bubble
+   which works for the Calculator and is blank for Files "is a demo, and it
+   would have been shipped as the item and closed". A snapshot default is
+   exactly what stops that: it is content-blind, so it is equally right for
+   all twelve windowed panes, and the panes it was going to fail for are the
+   ones it now serves best.
 
    ### THE HOVER PREVIEW'S PREMISE IS FALSE FOR THE FIVE PANES IT IS FOR
 

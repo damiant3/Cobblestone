@@ -668,10 +668,10 @@ Section: Builtin Emission
     let rd = alloc-temp st
    in let st1 = st-append-code (rd.state) (li reg-r11 0)
    in let st2 = st-append-code st1 (mov-store reg-r10 reg-r11 0)
-   in let st3 = st-append-code st2 (add-ri reg-r10 8)
+   in let st3 = heap-bump-imm st2 8
    in let st4 = st-append-code st3 (mov-rr (rd.reg) reg-r10)
    in let st5 = st-append-code st4 (mov-store reg-r10 reg-r11 0)
-   in let st6 = st-append-code st5 (add-ri reg-r10 8)
+   in let st6 = heap-bump-imm st5 8
    in EmitResult {
    state = st6,
    reg = rd.reg
@@ -683,7 +683,7 @@ Section: Builtin Emission
    in let st1 = st-append-code (rd.state) (mov-rr (rd.reg) reg-r10)
    in let st2 = st-append-code st1 (li reg-r11 0)
    in let st3 = st-append-code st2 (mov-store reg-r10 reg-r11 0)
-   in let st4 = st-append-code st3 (add-ri reg-r10 8)
+   in let st4 = heap-bump-imm st3 8
    in EmitResult {
    state = st4,
    reg = rd.reg
@@ -695,7 +695,7 @@ Section: Builtin Emission
    in let st0 = st-append-code (len-loaded.state) (mov-rr reg-r11 (len-loaded.reg))
    in let st1 = st-append-code st0 (add-ri reg-r11 15)
    in let st2 = st-append-code st1 (and-ri reg-r11 (-8))
-   in st-append-code st2 (add-rr reg-r10 reg-r11)
+   in heap-bump-reg st2 reg-r11
 
   emit-substring-copy : CodegenState, Integer, Integer, Integer, Integer -> CodegenState
   emit-substring-copy (st) (str-loc) (start-loc) (len-loc) (ptr-loc) =
@@ -925,7 +925,7 @@ Section: Builtin Emission
    in let st4 = st-append-code (vr.state) (mov-store (ptr.reg) (vr.reg) 0)
    in let lr = load-local st4 (list-loc.reg)
    in let st5 = st-append-code (lr.state) (mov-store (ptr.reg) (lr.reg) 8)
-   in let st6 = st-append-code st5 (add-ri reg-r10 16)
+   in let st6 = heap-bump-imm st5 16
    in EmitResult {
    state = st6,
    reg = ptr.reg
@@ -1000,7 +1000,7 @@ Section: Builtin Emission
   emit-heap-advance-builtin (st) (args) =
    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let rd = alloc-temp (r.state)
-   in let st1 = st-append-code (rd.state) (add-rr reg-r10 (r.reg))
+   in let st1 = heap-bump-reg (rd.state) (r.reg)
    in EmitResult {
    state = st-append-code st1 (li (rd.reg) 0),
    reg = rd.reg
@@ -1083,6 +1083,30 @@ Section: Builtin Emission
    reg = rd.reg
   }
 
+ Arming rides the same flag as the guard, so at `deck-guard-enabled` 0 an
+ extent's enter and exit are byte-identical to what they were before the guard
+ existed. Without that test the arming would be emitted into every program
+ whether or not anything reads the cell, and `deck-record` is not rare.
+
+  emit-deck-arm : CodegenState -> CodegenState
+  emit-deck-arm (st) =
+   if deck-guard-enabled == 0 then st
+   else let a0 = alloc-temp st
+   in let st1 = st-append-code (a0.state) (li (a0.reg) deck-reservation-top-addr)
+   in let a1 = alloc-temp st1
+   in let st2 = st-append-code (a1.state) (mov-load (a1.reg) (a0.reg) 0)
+   in let st3 = st-append-code st2 (li (a0.reg) deck-ceiling-addr)
+   in st-append-code st3 (mov-store (a0.reg) (a1.reg) 0)
+
+  emit-deck-disarm : CodegenState -> CodegenState
+  emit-deck-disarm (st) =
+   if deck-guard-enabled == 0 then st
+   else let d0 = alloc-temp st
+   in let st1 = st-append-code (d0.state) (li (d0.reg) deck-ceiling-addr)
+   in let d1 = alloc-temp st1
+   in let st2 = st-append-code (d1.state) (li (d1.reg) 0)
+   in st-append-code st2 (mov-store (d0.reg) (d1.reg) 0)
+
   emit-deck-enter-builtin : CodegenState -> EmitResult
   emit-deck-enter-builtin (st) =
    let t0 = alloc-temp st
@@ -1102,7 +1126,8 @@ Section: Builtin Emission
    in let t4 = alloc-temp st9
    in let st10 = st-append-code (t4.state) (li (t4.reg) deck-pos-addr)
    in let st11 = st-append-code st10 (mov-load reg-r10 (t4.reg) 0)
-   in let st12 = patch-jcc-at st11 jcc-pos (st11.code-len)
+   in let st-armed = emit-deck-arm st11
+   in let st12 = patch-jcc-at st-armed jcc-pos (st-armed.code-len)
    in let rd = alloc-temp st12
    in EmitResult {
    state = st-append-code (rd.state) (li (rd.reg) 0),
@@ -1125,7 +1150,8 @@ Section: Builtin Emission
    in let e3 = alloc-temp st7
    in let st8 = st-append-code (e3.state) (li (e3.reg) bivy-save-addr)
    in let st9 = st-append-code st8 (mov-load reg-r10 (e3.reg) 0)
-   in let st10 = patch-jcc-at st9 jcc-pos (st9.code-len)
+   in let st-disarmed = emit-deck-disarm st9
+   in let st10 = patch-jcc-at st-disarmed jcc-pos (st-disarmed.code-len)
    in let rd = alloc-temp st10
    in EmitResult {
    state = st-append-code (rd.state) (li (rd.reg) 0),
@@ -1141,7 +1167,7 @@ Section: Builtin Emission
   emit-list-with-capacity-builtin-bivy (st) (cap-reg) =
    let rd = alloc-temp-avoiding st cap-reg
    in let st1 = st-append-code (rd.state) (mov-store reg-r10 cap-reg 0)
-   in let st2 = st-append-code st1 (add-ri reg-r10 8)
+   in let st2 = heap-bump-imm st1 8
    in let st3 = st-append-code st2 (mov-rr (rd.reg) reg-r10)
    in let zero-tmp = alloc-temp-avoiding st3 cap-reg
    in let st4 = st-append-code (zero-tmp.state) (li (zero-tmp.reg) 0)
@@ -1151,7 +1177,7 @@ Section: Builtin Emission
    in let st7 = st-append-code st6 (shl-ri (adv-tmp.reg) 3)
    in let st8 = st-append-code st7 (add-ri (adv-tmp.reg) 8)
    in EmitResult {
-   state = st-append-code st8 (add-rr reg-r10 (adv-tmp.reg)),
+   state = heap-bump-reg st8 (adv-tmp.reg),
    reg = rd.reg
   }
 

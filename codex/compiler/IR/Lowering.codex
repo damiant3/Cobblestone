@@ -92,7 +92,7 @@ Section: Expression Lowering
     is AHandleExpr (eff) (body) (clauses) (s) -> lower-handle eff body clauses ty ctx s
     is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) ->
      let body-ir = lower-expr body ty ctx
-     in deck-record (IrWithTimeout (lit-text-to-integer timeout) (map-list name-value effs) scopes body-ir ty s)
+     in deck-record (IrWithTimeout (lit-text-to-integer timeout) (map-list name-value effs) scopes body-ir (chain-ret-or ty (ir-expr-type body-ir)) s)
     is ATryExpr (max) (body) (fb) (fail) (s) ->
      let body-ir = lower-act-stmts-loop body ty ctx 0 (list-length body)
      in let fb-ir = lower-act-stmts-loop fb ty ctx 0 (list-length fb)
@@ -110,7 +110,10 @@ Section: Expression Lowering
 
   lower-lazy : AExpr, CodexType, LowerCtx, SourceSpan, Integer -> IRExpr
   lower-lazy (inner) (ty) (ctx) (s) (depth) =
-   let inner-ty = peel-fun-return ty
+   let peeled-inner = peel-fun-return ty
+   in let inner-ty = when peeled-inner
+      is ErrorTy | NoExpectTy -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) (aexpr-span inner))
+      is otherwise -> peeled-inner
    in let sfx = integer-to-text depth
    in let cell-n = "__lz-cell" & sfx
    in let unit-n = "__lz-u" & sfx
@@ -132,18 +135,19 @@ Section: Expression Lowering
     chapter-renames = ctx.chapter-renames
    }
    in let body-ir = lower-expr-at inner inner-ty lctx (depth + 97)
+   in let val-ty = chain-ret-or inner-ty (ir-expr-type body-ir)
    in let zero = deck-record (IrIntLit 0 s)
    in let one = deck-record (IrIntLit 1 s)
    in let done-read = deck-record (IrFieldAccess cell-name "__lz-done" int-ty-default s)
    in let done-check = deck-record (IrBinary IrEq done-read zero BooleanTy s)
-   in let val-name = deck-record (IrName val-n inner-ty s)
+   in let val-name = deck-record (IrName val-n val-ty s)
    in let store-done = deck-record (IrFieldStore cell-name "__lz-done" one cty s)
    in let store-val = deck-record (IrFieldStore cell-name "__lz-val" val-name cty s)
    in let inner-let2 = deck-record (IrLet s2-n cty store-val val-name s)
    in let inner-let1 = deck-record (IrLet s1-n cty store-done inner-let2 s)
-   in let then-body = deck-record (IrLet val-n inner-ty body-ir inner-let1 s)
-   in let else-body = deck-record (IrFieldAccess cell-name "__lz-val" inner-ty s)
-   in let if-expr = deck-record (IrIf done-check then-body else-body inner-ty s)
+   in let then-body = deck-record (IrLet val-n val-ty body-ir inner-let1 s)
+   in let else-body = deck-record (IrFieldAccess cell-name "__lz-val" val-ty s)
+   in let if-expr = deck-record (IrIf done-check then-body else-body val-ty s)
    in let param = deck-record (IRParam { name = unit-n, type-val = int-ty-default, span = s })
    in let lam = deck-record (IrLambda (list-push [] param) if-expr ty s)
    in deck-record (IrLet cell-n cty cell-ir lam s)
@@ -374,7 +378,7 @@ Section: Expression Lowering
    in let func-ir = lower-expr f fn-ty ctx
    in let ret-ty = peel-fun-return (ir-expr-type func-ir)
    in let actual-ret = when ret-ty
-      is ErrorTy | NoExpectTy -> ty
+      is ErrorTy | NoExpectTy -> expected-or-recorded-ty ty ctx sp
       is otherwise -> ret-ty
    in lower-apply-dispatch func-ir arg-ir actual-ret sp
 
@@ -382,9 +386,10 @@ Section: Expression Lowering
   lower-apply-lambda-chain (lam) (args) (ty) (ctx) (sp) =
    let arg-irs = for a in args -> lower-expr a NoExpectTy ctx
    in let n = list-length arg-irs
-   in let fn-ty = build-curried-fun-ty arg-irs 0 n ty
+   in let want = expected-or-recorded-ty ty ctx sp
+   in let fn-ty = build-curried-fun-ty arg-irs 0 n want
    in let func-ir = lower-expr lam fn-ty ctx
-   in apply-chain-fold func-ir arg-irs 0 n (ir-expr-type func-ir) ty sp
+   in apply-chain-fold func-ir arg-irs 0 n (ir-expr-type func-ir) want sp
 
   build-curried-fun-ty : List IRExpr, Integer, Integer, CodexType -> CodexType
   build-curried-fun-ty (irs) (i) (n) (ret) =
@@ -603,7 +608,7 @@ Section: Expression Lowering
    in let arg-ir = try-unit-convert raw-arg-ir arg-ty sp
    in let resolved-ret = subst-type-vars-from-arg arg-ty (ir-expr-type arg-ir) ret-ty
    in let actual-ret = when resolved-ret
-      is ErrorTy | NoExpectTy -> ty
+      is ErrorTy | NoExpectTy -> expected-or-recorded-ty ty ctx sp
       is otherwise -> resolved-ret
    in let preferred-ret = prefer-applied-ty ty actual-ret (ctx.local-type-vars)
    in if is-unit-ctor func-ir ret-ty then lower-unit-ctor-value arg-ir ret-ty sp
@@ -618,7 +623,7 @@ Section: Expression Lowering
    in let arg-ir = lower-expr a arg-ty-hint ctx
    in let resolved-ret = subst-type-vars-from-arg arg-ty-hint (ir-expr-type arg-ir) ret-ty
    in let actual-ret = when resolved-ret
-      is ErrorTy | NoExpectTy -> ty
+      is ErrorTy | NoExpectTy -> expected-or-recorded-ty ty ctx sp
       is otherwise -> resolved-ret
    in let preferred-ret = prefer-applied-ty ty actual-ret (ctx.local-type-vars)
    in let arg-tn = type-name-of (deep-resolve (ctx.ust) (ir-expr-type arg-ir))
@@ -720,7 +725,7 @@ Section: Let and Lambda
 
   lower-lambda : List Name, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-lambda (params) (body) (ty) (ctx) (sp) =
-   let expected = lambda-expected-ty ty ctx sp
+   let expected = expected-or-recorded-ty ty ctx sp
    in let stripped = strip-forall-ty expected
    in let lparams = lower-lambda-params params stripped 0 sp
    in let lctx = bind-lambda-to-ctx ctx params stripped 0
@@ -737,18 +742,19 @@ Section: Let and Lambda
  compiler's TYPE FAILURE atom, for a program the compiler reported clean.
 
  The type was never missing. The checker solved these parameters and filed
- the answer; nothing asked for it here. `lambda-expected-ty` asks -- the same
- `lookup-expr-type` / `deep-resolve` pair `lower-dict-placeholder` already
- uses twenty lines above, against the span the checker recorded under.
+ the answer; nothing asked for it here. `expected-or-recorded-ty` asks -- the
+ same `lookup-expr-type` / `deep-resolve` pair `lower-dict-placeholder`
+ already uses twenty lines above, against the span the checker recorded under.
+ It is named for what it does rather than for the lambda, because the apply
+ family reaches for the same answer when its own fallback is the sentinel.
 
  Only the no-expectation case changes. When the context DID supply a type,
  `expected` is `ty` and every line below is what it was, which is why a
  lambda at a declared parameter was already correct and stays byte-identical.
 
-  lambda-expected-ty : CodexType, LowerCtx, SourceSpan -> CodexType
-  lambda-expected-ty (ty) (ctx) (sp) =
+  expected-or-recorded-ty : CodexType, LowerCtx, SourceSpan -> CodexType
+  expected-or-recorded-ty (ty) (ctx) (sp) =
    when ty
-    is NoExpectTy -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) sp)
     is ErrorTy | NoExpectTy -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) sp)
     is otherwise -> ty
 
@@ -866,7 +872,6 @@ Section: Match Lowering
    in if is-list-ctor-match rty arms then lower-list-match scrut-ir (list-elem-of rty) arms ty ctx sp
    else let branches = lower-match-arms-loop arms ty scrut-ty ctx 0 (list-length arms)
    in let result-ty = when ty
-      is NoExpectTy -> infer-match-type branches 0 (list-length branches)
       is ErrorTy | NoExpectTy -> infer-match-type branches 0 (list-length branches)
       is otherwise -> branch-recorded-ty ty (match-witness-ty branches 0 (list-length branches))
    in deck-record (IrMatch scrut-ir branches result-ty sp)
@@ -915,7 +920,6 @@ Section: Match Lowering
   list-arm-ty : CodexType, IRExpr -> CodexType
   list-arm-ty (ty) (then-ir) =
    when ty
-    is NoExpectTy -> ir-expr-type then-ir
     is ErrorTy | NoExpectTy -> ir-expr-type then-ir
     is otherwise -> ty
 
@@ -1497,7 +1501,7 @@ Section: Collections and Act
   lower-handle : Name, AExpr, List AHandleClause, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-handle (eff) (body) (clauses) (ty) (ctx) (sp) =
    let body-ir = lower-expr body ty ctx
-   in deck-record (IrHandle (eff.value) body-ir (lower-handle-clauses clauses ty ctx) ty sp)
+   in deck-record (IrHandle (eff.value) body-ir (lower-handle-clauses clauses ty ctx) (chain-ret-or ty (ir-expr-type body-ir)) sp)
 
   lower-handle-clauses : List AHandleClause, CodexType, LowerCtx -> List IRHandleClause
   lower-handle-clauses (clauses) (ty) (ctx) =

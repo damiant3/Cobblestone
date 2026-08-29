@@ -1,19 +1,31 @@
 # Run WASM plug: source -> IR-CCE -> plug CDX -> WAT
 [CmdletBinding()]
-param([string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Ir, [string]$Kernel)
+# -Decks is a pass-through to compile.ps1 for a bundle whose IR compile needs a
+# bigger reservation than the default. The native backends need it: the riscv
+# bundle carries the compiler's LIR as well as the whole emitter, and its IR
+# compile dies in __alloc at ~542 MB without one, exactly as its NETWORK build
+# does without the -Decks 160 that build passes. 0 means "say nothing", so every
+# existing caller of this shared service is unchanged.
+param([string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Ir, [string]$Kernel, [int]$Decks = 0)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\wasm-plug.cdx'
-$LogFile = Join-Path $PSScriptRoot 'build-output\run.log'
+# Beside the caller's -Out rather than at a fixed path here. Every other plug's
+# run.ps1 owns its scratch because only that plug uses it; this one is a shared
+# service -- codex/plugs/common/build-plug-wasm.ps1 routes EVERY plug's wasm
+# module through it -- so a fixed path here is one file that concurrent builds
+# of different plugs overwrite in turn. Deriving from -Out, which is unique per
+# caller by construction, makes that collision impossible rather than detectable.
+$LogFile = "$Out.log"
 if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
 
 # Phase 1: source -> IR-CCE, or take IR already compiled by the caller.
 # -Ir is what build/plug-oracle-test.ps1 passes: the harness compiles the
 # subject once and feeds the same IR to every plug, so re-compiling here would
 # grade a different program than the other arms.
-$IrFile = Join-Path $PSScriptRoot 'build-output\last-run.ir'
+$IrFile = "$Out.ir"
 if ($Ir) {
     if (-not (Test-Path -PathType Leaf $Ir)) { [Console]::Error.WriteLine("MISSING: -Ir $Ir"); exit 3 }
     $IrFile = (Resolve-Path $Ir).Path
@@ -27,7 +39,8 @@ if ($Ir) {
 # the two arms would then come from two different compilers and any
 # disagreement could belong to either. build/wasm-e2e.ps1 threads its own.
     $kernelArg = if ($Kernel) { @('-Kernel', $Kernel) } else { @() }
-    & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' @kernelArg
+    $decksArg  = if ($Decks -ne 0) { @('-Decks', $Decks) } else { @() }
+    & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' @kernelArg @decksArg
     if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
 } else {
     [Console]::Error.WriteLine("FAIL: provide -Src <source.codex> or -Ir <prebuilt.ir>")

@@ -594,6 +594,9 @@ Section: Apply
         let handler-name = "__handler_" & name
         in let func-off = rv-find-func-offset (st-nt.func-names) (st-nt.func-offsets) handler-name 0
         in if func-off >= 0 then rv-emit-direct-call st-nt handler-name args
+        else let self-arity = rv-find-func-arity (st-nt.func-names) (st-nt.func-arities) name 0
+        in if self-arity > 0 & list-length args > self-arity
+        then rv-emit-named-over-apply st-nt name args self-arity
         else rv-emit-direct-call st-nt name args
     is otherwise ->
      let fr = rv-emit-expr (rv-set-tail-pos st False) func
@@ -656,6 +659,15 @@ Section: Apply
    when ty
     is FunTy (pt) (fnrow) (rt) -> 1 + rv-fun-arity rt
     is otherwise -> 0
+
+  rv-emit-named-over-apply : RvState, Text, List IRExpr, Integer -> RvEmitResult
+  rv-emit-named-over-apply (st) (name) (args) (arity) =
+   let first-args = rv-list-take args arity
+   in let rest-args = rv-list-drop args arity
+   in let r1 = rv-emit-direct-call st name first-args
+   in let cl = rv-alloc-local (r1.state)
+   in let st1 = rv-store-local (cl.state) (cl.reg) (r1.reg)
+   in rv-emit-closure-call st1 (cl.reg) rest-args
 
   rv-emit-closure-over-apply : RvState, Integer, List IRExpr, Integer -> RvEmitResult
   rv-emit-closure-over-apply (st) (closure-local) (args) (arity) =

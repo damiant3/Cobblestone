@@ -61,19 +61,33 @@ if (-not $vmOk) {
 # Read serial output (binary wire data)
 $outputBytes = [System.IO.File]::ReadAllBytes($outFile)
 
-# Split: wire data is raw bytes, but serial may also contain text lines (WARN, WCET)
-# The wire protocol starts with a 4-byte code-len. Scan for text preamble.
-$wireStart = 0
-$serialLines = @()
-if ($outputBytes.Length -ge 4) {
-    # Check if first bytes look like wire protocol (code-len > 0, reasonable)
-    $possibleCodeLen = [BitConverter]::ToInt32($outputBytes, 0)
-    if ($possibleCodeLen -gt 0 -and $possibleCodeLen -lt $outputBytes.Length) {
-        $wireStart = 0
-    }
-}
-
 [System.IO.File]::WriteAllBytes($Out, $outputBytes)
+
+# A guest FAULT is not an emission. The plug prints a register dump beginning
+# `!EXC=` and exits cleanly, so without this the fault is written to $Out, this
+# script prints OK and exits 0, and the caller grades a 947-byte register dump
+# as a binary. Two such dumps even DIFFER from each other -- the RIP moves with
+# the plug build -- so a control-versus-fix byte comparison over them reads as
+# "the change moved the output" when both arms crashed and neither emitted
+# anything (reek, 2026-08-28, an hour spent before the bytes were read).
+# Feeding IR-UNI where the plug wants IR-CCE is one way to land here.
+# The dump may carry codex-vm's leading 0x01 marker, so the tag is FOUND in the
+# first few bytes rather than compared at offset zero. An anchored compare reads
+# \x01!EX and misses every fault that carries the marker, which is the shape
+# that actually arrives here.
+$leadAscii = [System.Text.Encoding]::ASCII.GetString($outputBytes, 0, [Math]::Min(8, $outputBytes.Length))
+if ($leadAscii.Contains('!EXC')) {
+    $dump = [System.Text.Encoding]::ASCII.GetString($outputBytes)
+    [Console]::Error.WriteLine("FAIL: the plug FAULTED; $Out holds a register dump, not a wire.")
+    [Console]::Error.WriteLine("  " + ($dump -split "`n")[0])
+    Remove-Item -Force $inputFile, $outFile, $errFile -ErrorAction SilentlyContinue
+    exit 7
+}
+if ($outputBytes.Length -eq 0) {
+    [Console]::Error.WriteLine("FAIL: the plug produced no output.")
+    Remove-Item -Force $inputFile, $outFile, $errFile -ErrorAction SilentlyContinue
+    exit 7
+}
 Write-Host "[riscv-run] OK: $Out ($($outputBytes.Length) bytes)"
 
 # Show any WARN/WCET/UNSUPPORTED lines from serial. Match anywhere in the

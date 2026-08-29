@@ -109,11 +109,13 @@ $batchSw.Stop()
 $parseSw = [System.Diagnostics.Stopwatch]::StartNew()
 
 
+$batchDropped = $false
 if ((Test-Path -PathType Leaf $stderrFile)) {
     $vmErr = [System.IO.File]::ReadAllText($stderrFile)
     if (($vmErr -match 'DROPPED')) {
         [Console]::Error.WriteLine('codex-vm dropped guest serial bytes: this batch''s capture is SHORT, and every block after the loss is filed under the WRONG test name')
         [Console]::Error.WriteLine($vmErr)
+        $batchDropped = $true
     }
 }
 
@@ -280,6 +282,8 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length -and -not $vmDead
     $testIdx++
 }
 
+$shortStream = ($testIdx -lt $testNames.Count) -and -not $vmDead
+
 
 while ($testIdx -lt $testNames.Count) {
     $name = $testNames[$testIdx]; $testOut = Join-Path $OutRoot $name
@@ -287,6 +291,17 @@ while ($testIdx -lt $testNames.Count) {
     "99" | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8
     "FAIL: VM died before this test" | Set-Content -Path (Join-Path $testOut 'build.log') -Encoding UTF8
     $testIdx++
+}
+
+
+if ($batchDropped -or $shortStream) {
+    $why = if ($batchDropped) { 'codex-vm dropped serial bytes' } else { 'the output stream ended before every test had a block' }
+    [Console]::Error.WriteLine("BATCH INVALIDATED: $why -- positional attribution cannot be trusted; all $($testNames.Count) members set to exit 99 for re-batch")
+    foreach ($name in $testNames) {
+        $testOut = Join-Path $OutRoot $name
+        "99" | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8
+        Add-Content -Path (Join-Path $testOut 'build.log') -Value "BATCH INVALIDATED: $why -- re-batched" -Encoding UTF8
+    }
 }
 
 

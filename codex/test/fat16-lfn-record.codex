@@ -1,0 +1,104 @@
+Chapter: Fat16LfnRecord
+
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ A directory sector built by hand in a buffer, so the long-name reader is
+ exercised with no disk, no volume and no writer. Nothing else in the tree can
+ tell a reader that assembles a run correctly from one that never sees a run
+ at all, because until this chapter there was no run anywhere to read.
+
+ The checksums pinned below were computed away from this code and are the
+ arithmetic the format specifies, not this chapter's answer echoed back:
+ "BBB~1   COD" is 54 and "LONGNA~1TXT" is 244.
+
+ The layout is three files' worth of records laid out contiguously from slot
+ 0, because a scan stops at the first slot whose first byte is zero:
+
+   slot 0   long record, ordinal 2, last on disk, for LongNameExample.txt
+   slot 1   long record, ordinal 1
+   slot 2   the short entry LONGNA~1.TXT the two records belong to
+   slot 3   long record, ordinal 1, last on disk, for BBB.codex
+   slot 4   the short entry BBB~1.COD
+
+ The last three arms are the controls and they are the point. A run whose
+ checksum does not match the short entry below it must NOT answer to the long
+ name, and the short entry must still answer to its own, because falling back
+ to the 8.3 alias is falling back to a name that is really on the volume.
+
+ We say:
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let buf = alloc-bytes 512
+    in let z = fat16-zero-run buf 0 0 512
+    in act
+      print-line-uni ("short checksum LONGNA~1.TXT " & show (lfn-lay-long buf))
+      print-line-uni ("short checksum BBB~1.COD " & show (lfn-lay-short buf))
+
+      print-line-uni ("ordinal at slot 0 " & show (fat16-lfn-ord buf 0))
+      print-line-uni ("last at slot 0 " & show (fat16-lfn-is-last buf 0))
+      print-line-uni ("ordinal at slot 1 " & show (fat16-lfn-ord buf 32))
+      print-line-uni ("last at slot 1 " & show (fat16-lfn-is-last buf 32))
+
+      print-line-uni ("assembled " & lfn-maybe (lfn-assembled buf))
+
+      print-line-uni ("find LongNameExample.txt " & lfn-hit buf "LongNameExample.txt")
+      print-line-uni ("find lowercase spelling " & lfn-hit buf "longnameexample.TXT")
+      print-line-uni ("find the alias " & lfn-hit buf "LONGNA~1.TXT")
+      print-line-uni ("find BBB.codex " & lfn-hit buf "BBB.codex")
+      print-line-uni ("find absent name " & lfn-hit buf "NOPE.TXT")
+
+      let w = fat16-poke-lfn-record buf 96 "BBB.codex" 1 55 True
+      in act
+        print-line-uni ("wrong checksum finds long " & lfn-hit buf "BBB.codex")
+        print-line-uni ("wrong checksum finds alias " & lfn-hit buf "BBB~1.COD")
+        print-line-uni ("wrong checksum assembles " & lfn-maybe (fat16-lfn-final buf 128 (fat16-lfn-absorb buf 96 fat16-lfn-none)))
+      end
+    end
+  end
+
+Section: Laying The Sector Out
+
+ Each helper pokes its records and answers the checksum it bound them with, so
+ the printed number is the one actually on the bytes rather than a second
+ computation of it.
+
+  lfn-lay-long : Integer -> Integer
+  lfn-lay-long (buf) =
+    let e = fat16-poke-dir-entry buf 64 "LONGNA~1.TXT" 32 7 19
+    in let sum = fat16-short-checksum buf 64
+    in let r2 = fat16-poke-lfn-record buf 0 "LongNameExample.txt" 2 sum True
+    in let r1 = fat16-poke-lfn-record buf 32 "LongNameExample.txt" 1 sum False
+    in sum
+
+  lfn-lay-short : Integer -> Integer
+  lfn-lay-short (buf) =
+    let e = fat16-poke-dir-entry buf 128 "BBB~1.COD" 32 9 13
+    in let sum = fat16-short-checksum buf 128
+    in let r1 = fat16-poke-lfn-record buf 96 "BBB.codex" 1 sum True
+    in sum
+
+Section: Reading It Back
+
+  lfn-assembled : Integer -> Maybe Text
+  lfn-assembled (buf) =
+    let s2 = fat16-lfn-absorb buf 0 fat16-lfn-none
+    in let s1 = fat16-lfn-absorb buf 32 s2
+    in fat16-lfn-final buf 64 s1
+
+  lfn-hit : Integer, Text -> Text
+  lfn-hit (buf) (name) =
+    let r = fat16-scan-sector-lfn buf name 0 16 fat16-lfn-none
+    in when (r.sc-found)
+      is Just (e) -> (e.de-name)
+      is None -> "<none>"
+
+  lfn-maybe : Maybe Text -> Text
+  lfn-maybe (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"
+
+Page 1

@@ -27,6 +27,8 @@ count does.
 
 ## Open
 
+## Done
+
 ### Update 52 -- a battery batch can hand every test in it ANOTHER test's output, whole
 
 Found at the Update 52 step 1, 2026-08-27. The first battery run went red
@@ -37,29 +39,44 @@ class -- actuals were frequently LONGER than expected and none was a strict
 prefix, so the `TRUNCATED`/`LENGTHS DIFFER` guards correctly stayed quiet.
 The run had "re-batching 153 tests from death-batches" in phase 1 (the box
 was still hot from the full gate); the clean re-run had none and cleared
-all 26 with the identical compiler, which convicts the instrument. The
-suspect is the splitter that turns a batch's serial stream into per-test
-outputs, under death-batch re-batching or contention; the mechanism is NOT
-established. A misattributed output can also SILENTLY PASS if the
-neighbour's output happens to match, so this is not only a false-red
-generator. UNOWNED. Re-measure:
+all 26 with the identical compiler, which convicted the instrument. The
+corrective run that evening (three full `-Tier all` batteries) had no
+re-batching and nothing for the swap check to examine; its one red was
+`smp-preempt` `FAIL_RUNTIME` (wall budget, poison battery), a different
+class, cleared solo.
+
+**Mechanism established and contained 2026-08-28 (red, red 20450).** It is
+the byte-loss class `ExaminersAssay.md` "The batch stream can lose bytes"
+had already measured on 2026-08-16: `test-compile-batch.ps1` assigns
+blocks to names by SEQUENCE, so a lost block files every later block under
+the wrong name; the tail lands exit 99, which triggers exactly the
+death-batch re-batching this run showed, while the shifted exit-0 members
+were KEPT and ran their neighbours' binaries. Three repairs, generators
+and scripts together, each proven with a control arm:
+
+- `test-compile-batch.ps1` invalidates the WHOLE batch (every member exit
+  99, build.log noting `BATCH INVALIDATED`) when codex-vm reports dropped
+  bytes or the stream ends short of the test count. Proven by killing the
+  VM mid-batch: new script 20 of 20 members at 99; old script kept 3 at
+  exit 0, which is the defect.
+- `test.ps1` captures each batch child's stderr into `_batches/*.err`
+  (main and rebatch launches both). The DROPPED report used to be written
+  to a hidden console; that discard is why this entry's mechanism could
+  not be established from the 08-27 run.
+- `Get-FailHint` answers a `FAIL_OUTPUT` whose actual is byte-for-byte
+  another test's expected with a `HOLDS ... batch misattribution` claim,
+  before the length arithmetic, so the swap census below is now built into
+  the rollup.
+
+WHICH layer loses the bytes (guest serial, host writer, or parser) is
+still unknown; the `.err` capture is the instrument that answers it on the
+next occurrence. Hand census, for a run predating the fix:
 
 ```powershell
 # after any red battery, before believing FAIL_OUTPUT: is the actual some
 # OTHER test's expected? One line answers it for the whole run:
 Get-ChildItem test-output -Directory | ForEach-Object { $a = Join-Path $_.FullName 'runtime.actual'; if (Test-Path $a) { $h = (Get-FileHash $a).Hash; foreach ($e in Get-ChildItem codex\test -Recurse -Filter *.expected) { if ((Get-FileHash $e.FullName).Hash -eq $h -and $e.BaseName -ne $_.Name) { "$($_.Name) HOLDS $($e.BaseName)'s output" } } } }
 ```
-
-The Update 52 corrective run (2026-08-27 evening): three full `-Tier all`
-batteries (clean, poison, poison-compact) produced zero `FAIL_OUTPUT`
-reds and no death-batch re-batching, so the swap check had nothing to
-examine. The entry stays open: a run without re-batching says nothing
-about the splitter, and the defect is unfixed and unowned. The one red
-across the three runs was `smp-preempt` `FAIL_RUNTIME` (wall budget) in
-the poison battery, a different class, cleared by a solo re-run against
-the same poison seed.
-
-## Done
 
 ### Update 51 -- compile.ps1's binary write follows the PROCESS working directory, not the shell's
 

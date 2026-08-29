@@ -53,7 +53,12 @@ param(
     # stick and every volume past 2 GB actually carries. A REAL FAT32 volume
     # needs >= 65525 clusters (UEFI classifies by cluster count, the CL 7289
     # lesson), so -TotalSectors must be >= ~70000 (34 MB).
-    [switch]$Fat32
+    [switch]$Fat32,
+    # Put the LIBRARY quires on the ESP, each in the directory quire-to-dir
+    # names for it and each chapter under its real name, so disk-load-cite
+    # resolves a cite straight off the medium. Opt-in: it is the whole library
+    # and the ESP is finite.
+    [switch]$Library
 )
 
 #
@@ -525,74 +530,221 @@ foreach ($ef in $extraFiles) {
     $rootIdx++
 }
 
-# The chapters as individual files, in SRC/.
+# The chapters as individual files, under their real names.
 #
-# A FAT short name is eight characters and three, uppercase, with no dot
-# stored, so `X86_64CodeGen.codex` cannot survive as itself. It becomes
-# X86_64CO.COD, and the mangling is lossy and collides: six pairs of chapters
-# in codex/compiler share their first eight characters. Collisions take a
-# digit in the last position, and SRC/INDEX.TXT carries every short name
-# against the path it came from, so the stick explains its own naming without
-# anyone consulting this script.
+# THE OLD LAYOUT COULD NOT BE READ BACK BY ANYTHING. It put every chapter in a
+# flat SRC/ with the name mangled to 8.3 -- `X86_64CodeGen.codex` became
+# X86_64CO.COD -- and wrote SRC/INDEX.TXT to explain the mangling. disk-load-cite
+# asks the volume for `quire-to-dir <quire>` joined to `<Name>.codex`, so both
+# halves were wrong: wrong directory and wrong name. It never complained,
+# because that resolver drops a cite it cannot find without a word.
 #
-# The extension is COD and deliberately not CDX: CDX is the seed binary at the
-# root, and a source file wearing that extension would be the one confusion
-# worth avoiding on a medium whose whole point is to be self-explaining.
+# Fat16.codex reads and writes VFAT long names now, so a chapter goes on under
+# its own name. The checksum, the alias and the record layout below are a
+# SECOND implementation of the format; the guest's reader is the first, and an
+# image that boots and resolves a cite is what proves the two agree.
+
+# The 13 UTF-16 slots of a long-name record sit at three disjoint runs -- five
+# from byte 1, six from 14, two from 28 -- because the bytes between them are
+# the fields an 8.3-only reader inspects. Attribute 0x0F reads to such a reader
+# as read-only+hidden+system+volume-label at once, which no real file is, so it
+# skips the run instead of showing it.
+$LfnSlots = @(1,3,5,7,9, 14,16,18,20,22,24, 28,30)
+
+# A byte-wide rotate-right of the running sum plus each of the eleven stored
+# name bytes. Same arithmetic as fat16-short-checksum; it is the only thing
+# binding a run to the short entry beneath it.
+function Get-ShortChecksum([string]$name11) {
+    if ($name11.Length -ne 11) { throw "short name must be 11 stored bytes: '$name11'" }
+    $s = 0
+    foreach ($ch in $name11.ToCharArray()) { $s = ((($s -band 1) -shl 7) + ($s -shr 1) + [int]$ch) -band 0xFF }
+    return $s
+}
+
+function Split-CodexName([string]$name) {
+    $dot = $name.IndexOf('.')
+    if ($dot -lt 0) { return @($name, '') }
+    return @($name.Substring(0, $dot), $name.Substring($dot + 1))
+}
+
+# Must agree with fat16-needs-long: a name equal to its own 8.3 form needs no
+# run, and anything else does -- including a name that merely has lower case.
+function Test-NeedsLfn([string]$name) {
+    $p = Split-CodexName $name
+    if ($p[0].Length -gt 8 -or $p[1].Length -gt 3) { return $true }
+    $short = if ($p[1].Length -eq 0) { $p[0].ToUpper() } else { $p[0].ToUpper() + '.' + $p[1].ToUpper() }
+    return ($short -cne $name)
+}
+
+function ConvertTo-AliasChars([string]$s) {
+    $out = ''
+    foreach ($c in $s.ToCharArray()) {
+        $u = [int]$c
+        if ($u -ge 97 -and $u -le 122) { $u = $u - 32 }
+        $ok = ($u -ge 65 -and $u -le 90) -or ($u -ge 48 -and $u -le 57) -or $u -eq 95 -or $u -eq 45 -or $u -eq 126
+        $out += $(if ($ok) { [char]$u } else { '_' })
+    }
+    return $out
+}
+
+# The alias is searched rather than derived: uniqueness is a fact about the
+# directory, and two files answering to one alias is the duplicate-name failure
+# every 8.3-only driver would then inherit.
+function Get-ShortName([string]$name, [hashtable]$taken) {
+    $p = Split-CodexName $name
+    if (-not (Test-NeedsLfn $name)) {
+        $s = (ConvertTo-AliasChars $p[0]).PadRight(8) + (ConvertTo-AliasChars $p[1]).PadRight(3)
+        if ($taken.ContainsKey($s)) { throw "duplicate 8.3 name in one directory: $name" }
+        $taken[$s] = $true
+        return $s
+    }
+    $ext = ConvertTo-AliasChars $p[1]
+    if ($ext.Length -gt 3) { $ext = $ext.Substring(0, 3) }
+    for ($n = 1; $n -le 99; $n++) {
+        $tag = "~$n"
+        $keep = [Math]::Min(8 - $tag.Length, $p[0].Length)
+        $cand = ((ConvertTo-AliasChars $p[0].Substring(0, $keep)) + $tag).PadRight(8) + $ext.PadRight(3)
+        if (-not $taken.ContainsKey($cand)) { $taken[$cand] = $true; return $cand }
+    }
+    throw "no free 8.3 alias for '$name' after 99 tries"
+}
+
+function Get-EntrySlots([string]$name) {
+    if (-not (Test-NeedsLfn $name)) { return 1 }
+    return [int][Math]::Ceiling($name.Length / 13.0) + 1
+}
+
+# Records go down in DESCENDING sequence, the one first on disk carrying the
+# highest ordinal with bit 0x40, and the short entry last. Answers the slots
+# consumed so the caller advances by the right amount.
+function Add-NamedEntry($dirOff, $idx, [string]$name, [hashtable]$taken, $attr, $cluster, $size) {
+    $short = Get-ShortName $name $taken
+    if (-not (Test-NeedsLfn $name)) {
+        Add-DirEntry $dirOff $idx $short $attr $cluster $size
+        return 1
+    }
+    $sum = Get-ShortChecksum $short
+    $records = [int][Math]::Ceiling($name.Length / 13.0)
+    for ($j = 0; $j -lt $records; $j++) {
+        $seq = $records - $j
+        $e = $dirOff + ($idx + $j) * 32
+        W8 $e $(if ($j -eq 0) { $seq -bor 0x40 } else { $seq })
+        W8 ($e + 11) 0x0F
+        W8 ($e + 12) 0
+        W8 ($e + 13) $sum
+        W16 ($e + 26) 0
+        $base = ($seq - 1) * 13
+        for ($k = 0; $k -lt 13; $k++) {
+            $i = $base + $k
+            $u = if ($i -lt $name.Length) { [int]$name[$i] } elseif ($i -eq $name.Length) { 0 } else { 0xFFFF }
+            W16 ($e + $LfnSlots[$k]) $u
+        }
+    }
+    Add-DirEntry $dirOff ($idx + $records) $short $attr $cluster $size
+    return $records + 1
+}
+
+# Allocates a contiguous directory of $slots entries, writes its dot pair, and
+# answers its byte offset and first cluster. Contiguous and in one run so a
+# single flat offset addresses every entry, which the bump allocator makes true
+# only while nothing else allocates in the middle.
+function New-SubDir($slots, $parentCluster) {
+    $need = [int][Math]::Ceiling((($slots + 2) * 32) / $clustSz)
+    $first = $script:nextCluster
+    for ($c = 0; $c -lt $need; $c++) {
+        $cn = $first + $c
+        Set-Fat $cn $(if ($c -eq $need - 1) { $EOC } else { $cn + 1 })
+    }
+    $script:nextCluster += $need
+    $off = $dataOff + ($first - 2) * $clustSz
+    Add-DirEntry $off 0 ".          " 0x10 $first 0
+    Add-DirEntry $off 1 "..         " 0x10 $parentCluster 0
+    return @($off, $first)
+}
+
+# Alias uniqueness is per directory, and the root already holds entries this
+# script wrote above (EFI, CODEX.CDX, the -Extra files). Read them back off the
+# bytes rather than tracking them, so a name added earlier cannot be missed.
+$rootTaken = @{}
+for ($ri = 0; $ri -lt $rootIdx; $ri++) {
+    $ro = $rootOff + $ri * 32
+    if ($img[$ro] -ne 0 -and $img[$ro] -ne 0xE5) {
+        $rootTaken[[System.Text.Encoding]::ASCII.GetString($img, $ro, 11)] = $true
+    }
+}
+
 if ($SourceDir -and (Test-Path $SourceDir)) {
     $chapters = @(Get-ChildItem -Path $SourceDir -Recurse -Filter *.codex -File | Sort-Object FullName)
     if ($chapters.Count -gt 0) {
-        $taken = @{}
-        $shorts = @()
-        $indexLines = @()
-        foreach ($ch in $chapters) {
-            $stem = ($ch.BaseName.ToUpper() -replace '[^A-Z0-9]', '_')
-            if ($stem.Length -gt 8) { $stem = $stem.Substring(0, 8) }
-            $stem = $stem.PadRight(8)
-            if ($taken.ContainsKey($stem)) {
-                $n = $taken[$stem]
-                $taken[$stem] = $n + 1
-                $stem = $stem.Substring(0, 7) + ([string]$n)
-            } else {
-                $taken[$stem] = 1
-            }
-            $shorts += $stem
-            $rel = $ch.FullName.Substring((Resolve-Path $SourceDir).Path.Length).TrimStart('\', '/')
-            $indexLines += ($stem.Trim() + '.COD  ' + ($rel -replace '\\', '/'))
-        }
-        $indexBytes = [System.Text.Encoding]::ASCII.GetBytes(($indexLines -join "`n") + "`n")
-
-        # The directory is allocated first and in one run, so its clusters are
-        # contiguous and one flat offset addresses every entry. The bump
-        # allocator is what makes that true; it stops being true the moment
-        # anything else allocates in the middle.
-        $srcEntries = 2 + $chapters.Count + 1
-        $srcDirClusters = [int][Math]::Ceiling(($srcEntries * 32) / $clustSz)
-        $srcDirCluster = $script:nextCluster
-        for ($c = 0; $c -lt $srcDirClusters; $c++) {
-            $cn = $srcDirCluster + $c
-            Set-Fat $cn $(if ($c -eq $srcDirClusters - 1) { $EOC } else { $cn + 1 })
-        }
-        $script:nextCluster += $srcDirClusters
-        $srcDirOff = $dataOff + ($srcDirCluster - 2) * $clustSz
-
-        Add-DirEntry $srcDirOff 0 ".          " 0x10 $srcDirCluster 0
-
-        Add-DirEntry $srcDirOff 1 "..         " 0x10 0 0
+        $srcTaken = @{}
+        $srcSlots = 0
+        foreach ($ch in $chapters) { $srcSlots += Get-EntrySlots $ch.Name }
+        $mk = New-SubDir $srcSlots 0
+        $srcDirOff = $mk[0]
+        $srcDirCluster = $mk[1]
         $sIdx = 2
-        for ($i = 0; $i -lt $chapters.Count; $i++) {
-            $bytes = [System.IO.File]::ReadAllBytes($chapters[$i].FullName)
+        foreach ($ch in $chapters) {
+            $bytes = [System.IO.File]::ReadAllBytes($ch.FullName)
             $cl = Alloc-File $bytes
-            Add-DirEntry $srcDirOff $sIdx ($shorts[$i] + 'COD') 0x20 $cl $bytes.Length
-            $sIdx++
+            $sIdx += Add-NamedEntry $srcDirOff $sIdx $ch.Name $srcTaken 0x20 $cl $bytes.Length
         }
-        $idxCl = Alloc-File $indexBytes
-        Add-DirEntry $srcDirOff $sIdx "INDEX   TXT" 0x20 $idxCl $indexBytes.Length
-
-        Add-DirEntry $rootOff $rootIdx "SRC        " 0x10 $srcDirCluster 0
-        $rootIdx++
-        Write-Host "[build-img] SRC/ holds $($chapters.Count) chapters as files, $(($chapters | Measure-Object Length -Sum).Sum) bytes, plus INDEX.TXT"
+        $rootIdx += Add-NamedEntry $rootOff $rootIdx "SRC" $rootTaken 0x10 $srcDirCluster 0
+        Write-Host "[build-img] SRC/ holds $($chapters.Count) chapters under their own names, $(($chapters | Measure-Object Length -Sum).Sum) bytes"
     }
 }
+
+# The library quires, each in the directory quire-to-dir names for it, so
+# disk-load-cite resolves `<quire-to-dir q><Name>.codex` straight off the
+# medium. Opt-in because it is the whole library and the ESP is finite.
+if ($Library) {
+    . (Join-Path $PSScriptRoot 'quire-map.ps1')
+    $repoRoot = Split-Path $PSScriptRoot -Parent
+
+    # The on-disk name is read out of quire-to-dir in the compiler's own source
+    # rather than copied here, so the image layout and the resolver cannot
+    # drift apart. Its fallback arm (`else "foreword/"`) is deliberately not
+    # read: a quire it does not name is unreachable on the medium under its own
+    # name, so putting one there would be a directory nothing ever opens.
+    $q2dPath = Join-Path $repoRoot 'codex\compiler\opening.codex'
+    $q2d = [ordered]@{}
+    $inQ2d = $false
+    foreach ($l in [System.IO.File]::ReadAllLines($q2dPath)) {
+        if ($l -match '^\s*quire-to-dir\s*\(q\)\s*=') { $inQ2d = $true; continue }
+        if (-not $inQ2d) { continue }
+        if ($l -match 'q == "([A-Za-z0-9]+)" then "([^"]+)/"') { $q2d[$matches[1]] = $matches[2]; continue }
+        break
+    }
+    if ($q2d.Count -eq 0) { throw "build-img: could not read quire-to-dir out of $q2dPath" }
+
+    $libCount = 0
+    $libBytes = 0
+    foreach ($q in $q2d.Keys) {
+        $srcRel = $QuireDirs[$q]
+        if (-not $srcRel) { continue }
+        $srcAbs = Join-Path $repoRoot $srcRel
+        if (-not (Test-Path -PathType Container $srcAbs)) { continue }
+        $files = @(Get-ChildItem -Path $srcAbs -Filter *.codex -File | Sort-Object Name)
+        if ($files.Count -eq 0) { continue }
+        $slots = 0
+        foreach ($f in $files) { $slots += Get-EntrySlots $f.Name }
+        $qmk = New-SubDir $slots $null
+        $qOff = $qmk[0]
+        $qCluster = $qmk[1]
+        $qTaken = @{}
+        $qIdx = 2
+        foreach ($f in $files) {
+            $fb = [System.IO.File]::ReadAllBytes($f.FullName)
+            $fcl = Alloc-File $fb
+            $qIdx += Add-NamedEntry $qOff $qIdx $f.Name $qTaken 0x20 $fcl $fb.Length
+            $libBytes += $fb.Length
+        }
+        $rootIdx += Add-NamedEntry $rootOff $rootIdx $q2d[$q] $rootTaken 0x10 $qCluster 0
+        $libCount += $files.Count
+        Write-Host "[build-img]   $($q2d[$q])/ $($files.Count) chapters"
+    }
+    Write-Host "[build-img] library: $($q2d.Count) quires known to quire-to-dir, $libCount chapters, $libBytes bytes"
+}
+
 
 # Volume label entry in root
 Add-DirEntry $rootOff $rootIdx "CODEX      " 0x08 0 0

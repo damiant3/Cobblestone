@@ -260,7 +260,7 @@ build/compile.ps1 -Src X -Out Y -Log Z   # Compile one .codex file. -Log is MAND
 
 **`-Internal` is the gate you run** (Damian, 2026-08-16, published here
 2026-08-20). It always proves the seed is a byte-identical self-fixed-point
-that boots -- the fixed-point core, the BVT, the oracles and the 176
+that boots -- the fixed-point core, the BVT, the oracles and the 203
 refusals -- and it runs a regression phase only when a file that phase
 depends on changed in your workspace. What it defers is caught by the next
 full gate and by the release gate, which is where breadth belongs.
@@ -310,15 +310,20 @@ row for `OperatorsManual.md`:
   exists to name. (`OperatorsManual.md` seed management;
   `DevelopersRulebook.md` on reachability deciding a seed, not directory.)
 
-**Run every parallel harness at `-Jobs 8`.** Damian's ruling, 2026-08-02:
-batteries, sweeps, cross batteries, release proofs, all of it. `test.ps1`,
-`bvt.ps1`, `test-cross-batch.ps1` and `sweep-app-classes.ps1` all default to 8
-now. **Do not lower it, and do not copy a lower number out of an older doc** --
-the `-Jobs 3` and `-Jobs 4` literals that survived in the release recipes until
-2026-08-02 were a workaround for a DDR5 XMP instability fixed on 2026-07-22, and
-following one cost 977 s of compile phase on a 12-core box. The contention the
-low numbers guarded against is crash-shaped and both harnesses already re-run
-that class alone. `ExaminersAssay.md` "The parallelism default" has the account.
+**Run every parallel harness at `-Jobs 4`.** Damian's ruling, 2026-08-27,
+superseding the 2026-08-02 `-Jobs 8` standard: batteries, sweeps, cross
+batteries, release proofs, all of it. **The condition that justifies 4 is
+NAMED so the default dies with its condition instead of outliving it**,
+which is how the last low-jobs literal went wrong: this box holds 15.8 GiB
+and the heavy phases boot 3072 MB guests, so 8 slots overcommit host RAM
+and kill guests with a DIFFERENT plausible culprit each run -- it reads as
+codegen and it is RAM (`OperatorsManual.md` "The compile batch asks for
+12 GB of guest RAM, and a short box reports it as a CODEGEN failure",
+blu main 20370). If the box grows RAM, re-measure and re-raise; do not
+carry 4 forward past its condition (L-COUNT). Script defaults follow the
+ruling; until every harness default has landed, pass `-Jobs 4` explicitly.
+`ExaminersAssay.md` "The parallelism default" has the full history,
+including the 2026-08-02 raise and why its reasoning was right then.
 
 **The full battery (`build/test.ps1`) is not an agent command.** It is
 Damian's tool; the script refuses to run without his approval, and that
@@ -389,10 +394,12 @@ Use the PowerShell tool for all shell work, and the dedicated tools
 `grep`/`cat`/`sed`/`find` shelled out through bash. Need to run Python
 or another interpreter? Invoke it from PowerShell.
 
-Use PowerShell (.ps1) or Codex for all normal work. The single
-exception is a live GDB debugging session under WSL (trace/probe
-workflow documented in OperatorsManual) -- that, and only that, may use
-Unix tooling. Do not introduce dependencies on anything outside the
+Use PowerShell (.ps1) or Codex for all normal work. Two exceptions may
+use Unix tooling: a live GDB debugging session under WSL (trace/probe
+workflow documented in OperatorsManual), and WSL runs of user-mode ELF
+artifacts as Prism stage-5a verification arms (Damian, 2026-08-28,
+ruling recorded in CurrentPlan's Prism section) -- verification only,
+nothing on the build path. Do not introduce dependencies on anything outside the
 Windows + codex-vm environment. If a capability is missing, build it in
 PowerShell or Codex.
 

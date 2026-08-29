@@ -7,7 +7,7 @@
 [CmdletBinding()]
 param(
     [string]$Dir = 'games',
-    [int]$Jobs = 8,
+    [int]$Jobs = 4,
     [int]$TimeoutSec = 60
 )
 

@@ -52,51 +52,27 @@ Copy-Item (Join-Path $PSScriptRoot 'page\roundabout.jpg') (Join-Path $OutDir 'ro
 # 3c. Prism rides beside the self-compile page so it can fetch the SAME
 # module from its own directory rather than shipping a second copy.
 Copy-Item (Join-Path $PSScriptRoot 'page\prism.html')    (Join-Path $OutDir 'prism.html') -Force
+# An example is only good if it compiles in THIS module, and step 4c below
+# grades every one of them. build/compile.ps1 is a MORE GENEROUS bed and will
+# pass programs the page refuses: it bundles the whole foreword, where the
+# page's unit is flat, so `cites Foreword chapter MathLib` resolves there and
+# fails here CDX3007, and dropping the cite only moves it to CDX3002 because
+# math-mod is a foreword function and not a builtin. That is what the prelude
+# field is for, and gcd and collatz use it (reek, 2026-08-27, caught by Damian
+# after compile.ps1 had reported both green).
 Copy-Item (Join-Path $PSScriptRoot 'page\examples.json') (Join-Path $OutDir 'examples.json') -Force
 # A copy of a Perforce file inherits its read-only bit, and step 3e writes the
 # embedded page back over this one. Without this the build dies at the write
 # with an access error naming the output rather than the cause.
 Set-ItemProperty (Join-Path $OutDir 'prism.html') -Name IsReadOnly -Value $false
 
-# 3d. The target plugs, each a wasm module reading IR on stdin. Built by
-# codex/plugs/common/build-plug-wasm.ps1; a missing one leaves its lens dark
-# rather than failing the page build, since the page fetches them on demand.
-foreach ($p in @(@{ plug = 'javascript'; file = 'javascript-stdio.wasm' },
-                 @{ plug = 'csharp';     file = 'csharp-stdio.wasm' },
-                 @{ plug = 'evidence';   file = 'evidence-stdio.wasm' },
-                 @{ plug = 'python';     file = 'python-stdio.wasm' },
-                 @{ plug = 'typescript'; file = 'typescript-stdio.wasm' },
-                 @{ plug = 'zig';        file = 'zig-stdio.wasm' },
-                 @{ plug = 'rust';       file = 'rust-stdio.wasm' },
-                 @{ plug = 'go';         file = 'go-stdio.wasm' },
-                 @{ plug = 'java';       file = 'java-stdio.wasm' },
-                 @{ plug = 'kotlin';     file = 'kotlin-stdio.wasm' },
-                 @{ plug = 'swift';      file = 'swift-stdio.wasm' },
-                 @{ plug = 'ruby';       file = 'ruby-stdio.wasm' },
-                 @{ plug = 'php';        file = 'php-stdio.wasm' },
-                 @{ plug = 'lua';        file = 'lua-stdio.wasm' },
-                 @{ plug = 'haskell';    file = 'haskell-stdio.wasm' },
-                 @{ plug = 'ocaml';      file = 'ocaml-stdio.wasm' },
-                 @{ plug = 'scala';      file = 'scala-stdio.wasm' },
-                 @{ plug = 'elixir';     file = 'elixir-stdio.wasm' },
-                 @{ plug = 'cobol';      file = 'cobol-stdio.wasm' },
-                 @{ plug = 'fortran';    file = 'fortran-stdio.wasm' },
-                 @{ plug = 'html';       file = 'html-stdio.wasm' },
-                 @{ plug = 'react';      file = 'react-stdio.wasm' },
-                 @{ plug = 'vue';        file = 'vue-stdio.wasm' },
-                 @{ plug = 'swiftui';    file = 'swiftui-stdio.wasm' },
-                 @{ plug = 'winforms';   file = 'winforms-stdio.wasm' },
-                 @{ plug = 'angular';    file = 'angular-stdio.wasm' },
-                 @{ plug = 'svelte';     file = 'svelte-stdio.wasm' },
-                 @{ plug = 'electron';   file = 'electron-stdio.wasm' },
-                 @{ plug = 'flutter';    file = 'flutter-stdio.wasm' },
-                 @{ plug = 'compose';    file = 'compose-stdio.wasm' },
-                 @{ plug = 'maui';       file = 'maui-stdio.wasm' },
-                 @{ plug = 'wpf';        file = 'wpf-stdio.wasm' },
-                 @{ plug = 'qt';         file = 'qt-stdio.wasm' },
-                 @{ plug = 'gtk';        file = 'gtk-stdio.wasm' },
-                 @{ plug = 'pe';         file = 'pe-bytes.wasm' },
-                 @{ plug = 'img';        file = 'img-bytes.wasm' })) {
+# 3d. The target plugs, each a wasm module the page fetches. The list is the
+# one manifest (page-lenses.ps1, PRISM-7 stage 0), built by
+# build-page-modules.ps1; a missing one leaves its lens dark rather than
+# failing the page build, since the page fetches them on demand.
+. (Join-Path $PSScriptRoot 'page-lenses.ps1')
+$shippedModules = @($PageModules | Where-Object { -not ($_.ContainsKey('ship')) -or $_.ship })
+foreach ($p in $shippedModules) {
     $from = Join-Path $Repo ("codex\plugs\{0}\build-output\{1}" -f $p.plug, $p.file)
     if (Test-Path -PathType Leaf $from) {
         Copy-Item $from (Join-Path $OutDir $p.file) -Force
@@ -124,17 +100,11 @@ if ($markerCount -ne 1) {
 $embed = [System.Text.StringBuilder]::new()
 [void]$embed.AppendLine('<script>')
 [void]$embed.AppendLine('window.__EMBED = {')
-foreach ($f in @('codex-compiler.wasm', 'javascript-stdio.wasm', 'csharp-stdio.wasm', 'evidence-stdio.wasm',
-                 'python-stdio.wasm', 'typescript-stdio.wasm', 'zig-stdio.wasm',
-                 'rust-stdio.wasm', 'go-stdio.wasm', 'java-stdio.wasm', 'kotlin-stdio.wasm',
-                 'swift-stdio.wasm', 'ruby-stdio.wasm', 'php-stdio.wasm', 'lua-stdio.wasm',
-                 'haskell-stdio.wasm', 'ocaml-stdio.wasm', 'scala-stdio.wasm', 'elixir-stdio.wasm',
-                 'cobol-stdio.wasm', 'fortran-stdio.wasm', 'html-stdio.wasm',
-                 'react-stdio.wasm', 'vue-stdio.wasm', 'swiftui-stdio.wasm', 'winforms-stdio.wasm',
-                 'angular-stdio.wasm', 'svelte-stdio.wasm', 'electron-stdio.wasm',
-                 'flutter-stdio.wasm', 'compose-stdio.wasm', 'maui-stdio.wasm',
-                 'wpf-stdio.wasm', 'qt-stdio.wasm', 'gtk-stdio.wasm',
-                 'pe-bytes.wasm', 'img-bytes.wasm')) {
+# Codex.codex rides in the embed too: it is the compiler's own concatenated
+# source, and the page offers it as a preset so the self-compile happens HERE
+# (the index.html purpose, being subsumed). It is text, not a module, and the
+# page decodes it back to text on selection.
+foreach ($f in (@('codex-compiler.wasm', 'Codex.codex') + @($shippedModules | ForEach-Object { $_.file }))) {
     $p = Join-Path $OutDir $f
     if (-not (Test-Path -PathType Leaf $p)) { continue }
     $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($p))
@@ -248,6 +218,34 @@ if ($cdxDiff -ge 0) {
 }
 Remove-Item $cdxStdin, $cdxWasmOut, $cdxX86Out, "$cdxWasmOut.err" -Force -ErrorAction SilentlyContinue
 Write-Host ("[page] cdx arm : {0:N0} payload bytes, byte-identical to x86-64" -f $cdxW.Length)
+
+# 4c. Every example in the dropdown must compile in THIS module. Same argument
+# as 4b: a visitor picks an example and presses Compile, and one that refuses is
+# worse than one that is missing. The trap this closes is that build/compile.ps1
+# bundles the whole foreword where the page's unit is flat, so it passes
+# programs the page refuses; two examples shipped that way and Damian found them
+# rather than a runner. `-Calibrate` runs first and is not ceremony -- it mangles
+# each subject's Chapter header and requires every example to refuse, because a
+# harness that reports 57 green without having been shown able to report a red
+# is a screen that cannot fail. Both arms together measured 14 s and 71 s in
+# two runs an hour apart on 2026-08-28, the spread being other lanes' VMs on a
+# shared box rather than anything about the arm; either way it is seconds
+# against a page build measured in minutes. Re-measure before quoting (L-COUNT).
+$exArm = Join-Path $PSScriptRoot 'page-example-test.ps1'
+foreach ($arm in @(@{ label = 'calibrate'; args = @('-Calibrate') }, @{ label = 'compile'; args = @() })) {
+    # Keep the whole output and print the summary on a pass, all of it on a
+    # failure: the per-example rows ARE the diagnosis, and a build that fails
+    # here having thrown them away sends the reader back to run the arm by hand.
+    $exOut = @(& pwsh -NoProfile -File $exArm -Module $wasm -Examples (Join-Path $PSScriptRoot 'page\examples.json') @($arm.args))
+    $failed = ($LASTEXITCODE -ne 0)
+    foreach ($line in $(if ($failed) { $exOut } else { $exOut | Select-Object -Last 2 })) {
+        Write-Host ("[page] ex {0,-9}: {1}" -f $arm.label, $line)
+    }
+    if ($failed) {
+        Write-Host "FAIL: the page's own examples did not pass their $($arm.label) arm."
+        exit 1
+    }
+}
 
 # 5. Inject the hash into the page.
 $html = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'page\index.html'))

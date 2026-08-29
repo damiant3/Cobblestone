@@ -193,6 +193,8 @@ implementation detail, which is why it is written down here instead of taken.
 
 
 
+| PRISM-7 | **The dev-environment campaign (red, opened 2026-08-28, Damian's direction)** | Prism becomes a full local HTML/WASM dev environment: source tree on disk (File System Access API + OPFS), multi-file editor, worker compile, cite resolution in-tab, kernel builds through the existing in-memory pe/img chain, webpage builds through the html lens, user-mode `.exe`/ELF as a NEW hosted-runtime backend, and an optional Claude REPL/agent panel behind a provider interface. Design and stage register: `design/Active/PrismDevEnvironment.md`. Stage 0 (reproducible lens-module builds) closes this register's own recorded gap that nothing in the tree builds the 48 shipped wasm modules. |
+
 ## The essay-repl-server join (Damian, 2026-08-24, via red)
 
 The item is to revive this app and integrate Steve Howell's
