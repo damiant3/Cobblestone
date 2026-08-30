@@ -4345,3 +4345,69 @@ exercises both builtins under test. It came back byte-identical, so the rig
 that produced the new answer is checked against an answer it could not have
 influenced. A rig that emits plausible output is otherwise indistinguishable
 from a correct one.
+
+## 2.07 -- DONE 2026-08-30 (Claude, contributed by Steve Howell): the zig plug had no emitter for `real-to-bits` or `bits-to-real`, so no transpiled program could read a Real's bit pattern -- the only exact way to compare two Reals, and the only way to see a negative zero or a NaN at all
+
+Row 2.06 filled the f64 CONVERSION pair. This fills the f64 BITCAST pair beside
+it, leaving `bits-to-real-approx` no longer the odd one out:
+
+    error: zig plug: no emitter for real-to-bits
+    error: zig plug: no emitter for bits-to-real
+
+Both are declared in `Types/Builtins.codex:285-286` as
+`FunTy real-f64 empty-row int-ty-default` and its inverse, both have bare-metal
+emitters at `Emit/X86_64Builtins.codex:1725-1741`, and `codex/test/ops/`
+already exercises them in four places (`real-bitcast`, `real-trapping`,
+`real-trapping-overflow`, `vec-array`) that the zig arm therefore cannot run.
+
+THESE TWO ARE THE EASIEST ROWS IN THE FAMILY AND THE REASON IS WORTH STATING.
+Bare metal emits `mov-rr` for both -- a register move, which is to say nothing:
+it holds a Real f64 as its own bits in a general register, so the value and its
+pattern are the same sixty-four bits. Zig separates the two types, so the same
+identity is spelled `@bitCast`. Where 2.06 needed three range guards to mirror
+what `cvttsd2si` answers out of range, these need none: the mapping is total in
+both directions, every f64 has a pattern and every i64 names an f64.
+
+AND THEY ARE THE ONLY REMAINING ROWS IN THE FAMILY THAT ARE SAFE TO FILL, which
+is the part of this entry that is a question rather than a patch. Thirteen real
+builtins still have no zig emitter:
+
+    real-approx-from-int   real-approx-to-int   real-approx-to-bits
+    to-real-approx         from-real-approx
+    to-real-trapping       from-real-trapping
+    to-real-saturating     from-real-saturating
+    to-real-approx-trapping    from-real-approx-trapping
+    to-real-approx-saturating  from-real-approx-saturating
+
+Every one of them is blocked on the same fact, and it is not in the conversion
+rows. `ZigEmitter.codex:342` and `:373` map `RealTy (w) (m)` to `f64` --
+DISCARDING BOTH the width and the mode -- and the arithmetic opcodes for approx,
+trapping and saturating are collapsed onto one operator. So in this plug an f32
+Real is an f64, a trapping Real does not trap, and a saturating one does not
+saturate.
+
+That makes the bitcast pair safe for exactly the reason the others are not: a bit
+pattern is a bit pattern, and `real-to-bits` asks nothing about width or mode.
+The other thirteen do. `real-approx-to-bits` would have to narrow an f64 that
+bare metal would never have held, because bare metal rounds to f32 at every
+operation and this plug does not; `to-real-trapping` would hand back a value the
+program is entitled to believe traps. Filling them would replace an HONEST
+REFUSAL with a plausible wrong number, which is the worse of the two failures --
+the refusal is currently the only thing telling the truth about the
+representation.
+
+So the recommendation is that the thirteen stay refused until the representation
+question is answered, and that the question is yours rather than ours: should the
+zig plug carry `Real approximate` as f32 and round its arithmetic accordingly? We
+have not touched it because `ZigEmitter.codex:1270-1273`'s collapse looks
+house-wide -- the C# plug is character-for-character identical and the wasm plug
+states it as policy -- and a convention that deliberate is not one to change from
+outside.
+
+`codex/test/ops/real-bitcast-f64` is new. It covers what a conversion emitter
+cannot fake: NEGATIVE ZERO, which Real comparison cannot distinguish from
+positive zero at all and which a truncating emitter answers 0 for; a NaN, whose
+pattern is the only evidence it survived, since it does not equal itself; and
+infinity beside the largest finite double, one bit apart, where a conversion
+answers indefinite for one and overflows on the other. The ground-truth block is
+checkable against IEEE-754 by hand.
