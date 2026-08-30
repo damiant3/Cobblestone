@@ -1,0 +1,101 @@
+Chapter: FwdDeviceMathAtanTest
+  cites Foreword chapter Console
+  cites Gpu chapter DeviceMath
+
+ Grades real-atan and real-atan2 against zig 0.16.0 std.math.atan and
+ std.math.atan2. The truth column is that library's answer, not this
+ implementation's remembered behaviour, so the test can fail on its first day
+ rather than only on a change.
+
+ ANGLES ARE PRINTED IN NANO-RADIANS AND ROUNDED, NOT TRUNCATED, and the
+ rounding is load-bearing. Truncating puts atan of a billionth exactly on a
+ boundary -- the printed integer would then turn on the last bit of the answer,
+ and the test would be grading the rounding mode. Rounded, the closest any value
+ in this table comes to a boundary is 0.0088 of a unit against a measured error
+ of 0.00000067 of a unit: a margin of thirteen thousand.
+
+ THE LAST LINE DOES NOT CONSULT ZIG AT ALL. Feeding each angle back through this
+ chapter's own real-sin and real-cos must return the argument, which grades the
+ arc tangent against a sine written by someone else for another purpose. A
+ reference table can be transcribed wrongly; that identity cannot.
+
+ IT IS COUNTED AGAINST A TOLERANCE RATHER THAN RECORDED EXACTLY, deliberately.
+ The round trip measures real-sin's accuracy as much as real-atan's -- the
+ errors are 9 nano-radians and below, and they belong to the sine -- so pinning
+ them exactly would redden this test on any improvement to real-sin, which is
+ not a thing an arc tangent should be able to do. Fifty is loose enough to leave
+ the sine alone and five orders tighter than any real defect here.
+
+Section: Scaling
+
+  nano : Real -> Integer
+  nano (v) = real-to-int (v * 1000000000.0 + (if v < 0.0 then 0.0 - 0.5 else 0.5))
+
+  agree : Integer, Integer -> Text
+  agree (got) (want) = if got == want then "ok" else "MISMATCH want " & show want
+
+Section: Report
+
+  a : Text, Real, Integer -> Text
+  a (name) (t) (want) =
+    let got = nano (real-atan t)
+    in "atan " & name & " = " & show got & "  " & agree got want
+
+  a2 : Text, Real, Real, Integer -> Text
+  a2 (name) (y) (x) (want) =
+    let got = nano (real-atan2 y x)
+    in "atan2 " & name & " = " & show got & "  " & agree got want
+
+ The round trip: tan of the angle is sine over cosine, and must give back t.
+
+  rt-abs : Integer -> Integer
+  rt-abs (e) = if e < 0 then 0 - e else e
+
+  rt-ok : Real -> Integer
+  rt-ok (t) =
+    let ang = real-atan t
+    in let back = real-sin ang / real-cos ang
+    in if rt-abs (nano (back - t)) <= 50 then 1 else 0
+
+  rt-report : Text
+  rt-report =
+    let n = rt-ok 0.1 + rt-ok 0.25 + rt-ok 0.5 + rt-ok 1.0 + rt-ok 1.5 + rt-ok 3.0 + rt-ok (0.0 - 0.5) + rt-ok (0.0 - 1.5)
+    in "round trip through real-sin and real-cos, within 50 nano: " & show n & " of 8"
+
+  opening : [Console] Nothing = act
+    print-line-uni (a "0.0" 0.0 0)
+    print-line-uni (a "0.0001" 0.0001 100000)
+    print-line-uni (a "0.1" 0.1 99668652)
+    print-line-uni (a "0.25" 0.25 244978663)
+    print-line-uni (a "0.5" 0.5 463647609)
+    print-line-uni (a "0.7071067811865476" 0.7071067811865476 615479709)
+    print-line-uni (a "0.9" 0.9 732815102)
+    print-line-uni (a "0.99" 0.99 780373080)
+    print-line-uni (a "1.0" 1.0 785398163)
+    print-line-uni (a "1.0000001" 1.0000001 785398213)
+    print-line-uni (a "1.1" 1.1 832981267)
+    print-line-uni (a "1.5" 1.5 982793723)
+    print-line-uni (a "2.0" 2.0 1107148718)
+    print-line-uni (a "3.0" 3.0 1249045772)
+    print-line-uni (a "10.0" 10.0 1471127674)
+    print-line-uni (a "1000000.0" 1000000.0 1570795327)
+    print-line-uni (a "-0.5" (-0.5) -463647609)
+    print-line-uni (a "-1.0" (-1.0) -785398163)
+    print-line-uni (a "-1.5" (-1.5) -982793723)
+    print-line-uni (a "-3.0" (-3.0) -1249045772)
+    print-line-uni (a2 "1.0, 1.0" 1.0 1.0 785398163)
+    print-line-uni (a2 "1.0, -1.0" 1.0 (-1.0) 2356194490)
+    print-line-uni (a2 "-1.0, 1.0" (-1.0) 1.0 -785398163)
+    print-line-uni (a2 "-1.0, -1.0" (-1.0) (-1.0) -2356194490)
+    print-line-uni (a2 "2.0, 0.5" 2.0 0.5 1325817664)
+    print-line-uni (a2 "2.0, -0.5" 2.0 (-0.5) 1815774990)
+    print-line-uni (a2 "-2.0, 0.5" (-2.0) 0.5 -1325817664)
+    print-line-uni (a2 "-2.0, -0.5" (-2.0) (-0.5) -1815774990)
+    print-line-uni (a2 "1.0, 0.0" 1.0 0.0 1570796327)
+    print-line-uni (a2 "-1.0, 0.0" (-1.0) 0.0 -1570796327)
+    print-line-uni (a2 "0.0, -1.0" 0.0 (-1.0) 3141592654)
+    print-line-uni (a2 "0.0, 0.0" 0.0 0.0 0)
+    print-line-uni (a2 "3.0, 4.0" 3.0 4.0 643501109)
+    print-line-uni (a2 "-4.0, 3.0" (-4.0) 3.0 -927295218)
+    print-line-uni rt-report
+  end
