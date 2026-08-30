@@ -757,13 +757,13 @@ Section: Expression Emission
    if depth >= 4096 then "(unreachable (; wasm plug: expression nested past 4096, no form ;))"
    else when e
     is IrIntLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
-    is IrNumLit (n) (sp) -> "(f64.reinterpret_i64 (i64.const " & integer-to-text n & "))"
+    is IrNumLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
     is IrTextLit (s) (sp) -> "(i64.extend_i32_u (i32.const " & integer-to-text (strtab-lookup (ctx.strings) s 0) & "))"
     is IrBoolLit (b) (sp) -> if b then "(i64.const 1)" else "(i64.const 0)"
     is IrCharLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
     is IrName (n) (ty) (sp) -> emit-wat-name ctx n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-wat-binary ctx op l r depth
-    is IrNegate (operand) (nty) (sp) -> "(i64.sub (i64.const 0) " & emit-wat-expr-at ctx operand (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> if wat-is-real-type nty then "(i64.reinterpret_f64 (f64.neg (f64.reinterpret_i64 " & emit-wat-expr-at ctx operand (depth + 1) & ")))" else "(i64.sub (i64.const 0) " & emit-wat-expr-at ctx operand (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if (result i64) (i32.wrap_i64 " & emit-wat-expr-at ctx c (depth + 1) & ") (then " & emit-wat-expr-at ctx t (depth + 1) & ") (else " & emit-wat-expr-at ctx el (depth + 1) & "))"
     is IrLet (name) (ty) (val) (body) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr-at ctx val (depth + 1) & ") " & emit-wat-expr-at ctx body (depth + 1)
     is IrApply (f) (a) (ty) (sp) -> emit-wat-apply ctx e
@@ -987,18 +987,25 @@ Section: Expression Emission
     is IrEq -> if wat-is-text-type (ir-expr-type l) then "(call $text_eq " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
               else let sn = wat-eq-sum-name (ctx.type-defs) (ir-expr-type l)
               in if text-length sn > 0 then "(call " & wat-eq-fn-prefix & wat-sanitize sn & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
+              else if wat-is-real-type (ir-expr-type l) then wat-real-cmp "f64.eq" (emit-wat-expr-at ctx l (depth + 1)) (emit-wat-expr-at ctx r (depth + 1))
               else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
     is IrNotEq -> if wat-is-text-type (ir-expr-type l) then "(i64.extend_i32_u (i64.eqz (call $text_eq " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")))"
                  else let sn = wat-eq-sum-name (ctx.type-defs) (ir-expr-type l)
                  in if text-length sn > 0 then "(i64.extend_i32_u (i64.eqz (call " & wat-eq-fn-prefix & wat-sanitize sn & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")))"
+                 else if wat-is-real-type (ir-expr-type l) then wat-real-cmp "f64.ne" (emit-wat-expr-at ctx l (depth + 1)) (emit-wat-expr-at ctx r (depth + 1))
                  else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrLt | IrLtVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrGt | IrGtVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrLtEq | IrLtEqVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrGtEq | IrGtEqVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrLt | IrLtVec -> if wat-is-real-type (ir-expr-type l) then wat-real-cmp "f64.lt" (emit-wat-expr-at ctx l (depth + 1)) (emit-wat-expr-at ctx r (depth + 1))
+              else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrGt | IrGtVec -> if wat-is-real-type (ir-expr-type l) then wat-real-cmp "f64.gt" (emit-wat-expr-at ctx l (depth + 1)) (emit-wat-expr-at ctx r (depth + 1))
+              else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrLtEq | IrLtEqVec -> if wat-is-real-type (ir-expr-type l) then wat-real-cmp "f64.le" (emit-wat-expr-at ctx l (depth + 1)) (emit-wat-expr-at ctx r (depth + 1))
+              else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrGtEq | IrGtEqVec -> if wat-is-real-type (ir-expr-type l) then wat-real-cmp "f64.ge" (emit-wat-expr-at ctx l (depth + 1)) (emit-wat-expr-at ctx r (depth + 1))
+              else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
     is IrApproxEq -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
     is IrApproxEqExact -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is otherwise -> "(" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
+    is otherwise -> if wat-is-real-op op then wat-real-bin (wat-bin-instr op) (emit-wat-expr-at ctx l (depth + 1)) (emit-wat-expr-at ctx r (depth + 1))
+                   else "(" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
 
   wat-bin-instr : IRBinaryOp -> Text
   wat-bin-instr (op) =
@@ -1247,6 +1254,42 @@ Section: Apply Emission
    if i == list-length args then ""
    else emit-wat-expr ctx (list-at args i) & " " & emit-wat-apply-args ctx args (i + 1)
 
+ EVERY REAL ON THIS TARGET IS AN i64 HOLDING f64 BITS, and that is a decision
+ with a cost: the slot, the list element, the record field and the function
+ result are all i64, so an f64 has to be reinterpreted INTO an operation and the
+ result reinterpreted back OUT of it. Neither reinterpret is an instruction the
+ engine executes -- both are pure retypings of the same 64 bits -- so the cost is
+ in the text and not in the module.
+
+ The three predicates below are what decide where those wrappers go. `RealTy`
+ carries a width and a mode and both are DISCARDED here, exactly as the zig plug
+ discards them (PLUG_WORK.md): an f32 real is computed as f64 and a trapping real
+ does not trap. That is a house-wide position and not this chapter's to take.
+
+  wat-is-real-type : CodexType -> Boolean
+  wat-is-real-type (ty) =
+   when ty
+    is RealTy (w) (m) -> True
+    is EffectfulTy (effs) (scopes) (ret) -> wat-is-real-type ret
+    is otherwise -> False
+
+  wat-is-real-op : IRBinaryOp -> Boolean
+  wat-is-real-op (op) =
+   when op
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> True
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> True
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> True
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> True
+    is otherwise -> False
+
+  wat-real-bin : Text, Text, Text -> Text
+  wat-real-bin (instr) (la) (lb) =
+   "(i64.reinterpret_f64 (" & instr & " (f64.reinterpret_i64 " & la & ") (f64.reinterpret_i64 " & lb & ")))"
+
+  wat-real-cmp : Text, Text, Text -> Text
+  wat-real-cmp (instr) (la) (lb) =
+   "(i64.extend_i32_u (" & instr & " (f64.reinterpret_i64 " & la & ") (f64.reinterpret_i64 " & lb & ")))"
+
   wat-is-text-type : CodexType -> Boolean
   wat-is-text-type (ty) =
    when ty
@@ -1394,6 +1437,9 @@ Section: Apply Emission
    else if n == "code-to-char" then emit-wat-expr ctx (list-at args 0)
    else if n == "negate" then "(i64.sub (i64.const 0) " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "int-mod" then "(call $codex_mod " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "real-to-bits" | n == "bits-to-real" then emit-wat-expr ctx (list-at args 0)
+   else if n == "real-from-int" then "(i64.reinterpret_f64 (f64.convert_i64_s " & emit-wat-expr ctx (list-at args 0) & "))"
+   else if n == "real-to-int" then "(call $cx_real_to_int " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "bit-and" then "(i64.and " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "bit-or" then "(i64.or " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "bit-xor" then "(i64.xor " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
@@ -1616,10 +1662,30 @@ Section: WASI Runtime Helpers
    "    (if (i32.eqz (global.get $deck_depth)) (then\n" &
    "      (global.set $deck_ptr (global.get $heap_ptr))\n" &
    "      (global.set $heap_ptr (global.get $bivy_save)))))\n" &
+   wat-rt-real-to-int &
    "  (func $codex_mod (param $a i64) (param $b i64) (result i64) (local $m i64) (local $r i64)\n" &
    "    (local.set $m (select (i64.sub (i64.const 0) (local.get $b)) (local.get $b) (i64.lt_s (local.get $b) (i64.const 0))))\n" &
    "    (local.set $r (i64.rem_s (local.get $a) (local.get $m)))\n" &
    "    (select (i64.add (local.get $r) (local.get $m)) (local.get $r) (i64.lt_s (local.get $r) (i64.const 0))))\n\n"
+
+ THE TRUNCATION IS x86's, NOT wasm's, and the difference is one input. Bare
+ metal emits `cvttsd2si` for `real-to-int` (X86_64Builtins.codex:1663-1679):
+ truncate toward zero, and the "integer indefinite" INT64_MIN for a NaN, an
+ infinity, or anything whose truncation will not fit. wasm's own
+ `i64.trunc_sat_f64_s` agrees on every one of those EXCEPT NaN, where it
+ saturates to 0, and the positive overflow, where it saturates to INT64_MAX.
+ Emitting the bare instruction would be a plausible wrong number on exactly
+ the inputs a guard exists for, so the two disagreeing cases are tested
+ first and the instruction handles the rest.
+
+  wat-rt-real-to-int : Text =
+   "  (func $cx_real_to_int (param $b i64) (result i64) (local $f f64)\n" &
+   "    (local.set $f (f64.reinterpret_i64 (local.get $b)))\n" &
+   "    (if (result i64) (f64.ne (local.get $f) (local.get $f))\n" &
+   "      (then (i64.const -9223372036854775808))\n" &
+   "      (else (if (result i64) (f64.ge (local.get $f) (f64.const 9223372036854775808))\n" &
+   "        (then (i64.const -9223372036854775808))\n" &
+   "        (else (i64.trunc_sat_f64_s (local.get $f)))))))\n\n"
 
  THE ALLOCATOR GROWS THE MEMORY, because the declared 256 pages are 16 MB
  and the compiler compiling its own source asked for an address 206 MB in.
