@@ -939,12 +939,47 @@ Section: Expression Emission
    in let stores = emit-wat-list-elems ctx elems 0 depth
    in alloc & " " & store-len & " " & store-cap & " " & stores & "(local.get $_lp)"
 
+ A LIST LITERAL IS EMITTED IN HALVES, and that is the difference between a
+ chapter emitting and a chapter exhausting the heap.
+
+ Text is immutable, so `piece & rest` allocates the whole of `piece & rest`.
+ Walking the elements left to right and concatenating as you go therefore
+ allocates THE SUM OF ITS OWN SUFFIXES -- quadratic in the number of elements,
+ for output that is linear in them. Measured 2026-08-31 with
+ `safari-codex/harness/mem_probe.py`, one definition at a time:
+
+     $g_w_trees      171,884 bytes of WAT      97.3 MB of heap
+     $g_w_cows       130,850                   53.2 MB
+     $g_w_treecolor   49,250                    9.5 MB
+
+ That is len^2/300 across all three, and `$g_kd_xy` -- one generated table in
+ one chapter -- takes the frontier from 856 MB into the 4 GiB ceiling on its
+ own. The per-definition __heap-restore below cannot help: this is all inside
+ ONE definition's bracket, which is why the ceiling is the biggest definition
+ rather than the biggest chapter.
+
+ Splitting the range in half and concatenating once copies each byte once per
+ LEVEL instead of once per remaining element: n log n, and about 50x less on
+ the numbers above. The output is byte-identical by construction -- same
+ pieces, same order, different association -- which is what makes this safe to
+ do to an emitter whose whole job is exact bytes.
+
   emit-wat-list-elems : WasmCtx, List IRExpr, Integer, Integer -> Text
   emit-wat-list-elems (ctx) (elems) (i) (depth) =
-   if i >= list-length elems then ""
-   else let off = 8 + i * 8
+   emit-wat-list-span ctx elems i (list-length elems) depth
+
+  emit-wat-list-span : WasmCtx, List IRExpr, Integer, Integer, Integer -> Text
+  emit-wat-list-span (ctx) (elems) (lo) (hi) (depth) =
+   if lo >= hi then ""
+   else if hi - lo == 1 then emit-wat-list-elem ctx elems lo depth
+   else let mid = lo + (hi - lo) / 2
+   in emit-wat-list-span ctx elems lo mid depth & emit-wat-list-span ctx elems mid hi depth
+
+  emit-wat-list-elem : WasmCtx, List IRExpr, Integer, Integer -> Text
+  emit-wat-list-elem (ctx) (elems) (i) (depth) =
+   let off = 8 + i * 8
    in wat-guard-scratch ctx (list-at elems i) "$_lp" (emit-wat-expr-at ctx (list-at elems i) (depth + 1)) &
-      "(i64.store (i32.add (i32.wrap_i64 (local.get $_lp)) (i32.const " & integer-to-text off & ")) (local.get $_tv)) " & emit-wat-list-elems ctx elems (i + 1) depth
+      "(i64.store (i32.add (i32.wrap_i64 (local.get $_lp)) (i32.const " & integer-to-text off & ")) (local.get $_tv)) "
 
   emit-wat-name : WasmCtx, Text -> Text
  `unreachable` is stack-polymorphic, so a refusal assembles wherever a value
