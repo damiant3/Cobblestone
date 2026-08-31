@@ -100,10 +100,22 @@ Section: Arity Map
    else let row = "  (type $fn" & integer-to-text i & " (func" & wat-params-of i "" & " (result i64)))\n"
    in wat-emit-fn-types n (i + 1) (acc & row)
 
+ THE ELEMENT LIST IS BUILT IN HALVES TOO, and this one accumulated on the
+ LEFT rather than the right -- `acc & piece` walking forward, which allocates
+ the sum of its own PREFIXES. Same quadratic, mirrored, and just as invisible:
+ measured at 171 MB on the compiler's own source, inside a function whose
+ output is one `(elem ...)` line.
+
   wat-emit-elem : List ArityEntry, Integer, Text -> Text
   wat-emit-elem (entries) (i) (acc) =
-   if i >= list-length entries then acc
-   else wat-emit-elem entries (i + 1) (acc & " $" & wat-sanitize ((list-at entries i).name))
+   acc & wat-emit-elem-span entries i (list-length entries)
+
+  wat-emit-elem-span : List ArityEntry, Integer, Integer -> Text
+  wat-emit-elem-span (entries) (lo) (hi) =
+   if lo >= hi then ""
+   else if hi - lo == 1 then " $" & wat-sanitize ((list-at entries lo).name)
+   else let mid = lo + (hi - lo) / 2
+   in wat-emit-elem-span entries lo mid & wat-emit-elem-span entries mid hi
 
  `$fn1` is emitted even when nothing in the module has arity 1, because
  `$clo_apply1`'s no-capture fast path names it unconditionally and a module
@@ -295,10 +307,29 @@ Section: String Table
    let len = text-length (e.value)
    in "  (data (i32.const " & integer-to-text (e.offset) & ") \"" & i32-to-hex-bytes len & wat-escape-data (e.value) 0 len [] & "\")\n"
 
+
+ THE DATA SECTIONS ARE BUILT IN HALVES, for the reason `emit-wat-list-elems`
+ is: text is immutable, so `piece & rest` allocates the whole of `piece &
+ rest`, and walking left to right concatenating as you go allocates THE SUM OF
+ ITS OWN SUFFIXES -- quadratic in the number of pieces for output linear in
+ them. Measured before the change, on the Codex compiler's own source, this
+ one function retained 436.8 MB, which was 60% of everything emission cost.
+
+ Splitting the range in half and concatenating once copies each byte once per
+ level instead of once per remaining piece. The output is byte-identical BY
+ CONSTRUCTION -- same pieces, same order, different association -- which is
+ what makes it safe to do to an emitter whose whole job is exact bytes.
+
   emit-data-sections : List StringEntry, Integer -> Text
   emit-data-sections (xs) (i) =
-   if i >= list-length xs then ""
-   else emit-data-section (list-at xs i) & emit-data-sections xs (i + 1)
+   emit-data-span xs i (list-length xs)
+
+  emit-data-span : List StringEntry, Integer, Integer -> Text
+  emit-data-span (xs) (lo) (hi) =
+   if lo >= hi then ""
+   else if hi - lo == 1 then emit-data-section (list-at xs lo)
+   else let mid = lo + (hi - lo) / 2
+   in emit-data-span xs lo mid & emit-data-span xs mid hi
 
 Section: CCE Output Tables
 
