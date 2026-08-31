@@ -1,0 +1,30 @@
+Chapter: GuardNestRt
+
+ A `when` INSIDE a guard. The scrutinee is parked in a local and the else-chain
+ re-reads it for every branch below, while a guard is emitted inside that
+ chain's own condition. A match in a guard that shares the local therefore
+ overwrites the value the branches below still need, and once such a guard is
+ false every later branch dispatches on the INNER scrutinee.
+
+ `Boxed 5` is the case: its guard runs, the inner `when` replaces the scrutinee
+ with 5, the guard is false, and the `is Boxed (y)` arm below then reads a value
+ that is no longer the Boxed record. The match must be INLINE in the guard --
+ a call to a function whose body is a match is compiled as a separate function
+ with a scrutinee local of its own, and cannot collide.
+
+  Box =
+    | Boxed (Integer)
+    | Plain (Integer)
+
+  classify : Box -> Integer
+  classify (v) =
+   when v
+    is Boxed (x) when (when x is 7 -> True is otherwise -> False) -> 100
+    is Boxed (y) -> 200 + y
+    is Plain (z) -> 300 + z
+
+  opening : [Console] Nothing = act
+   print-line-uni ("boxed-7 " & show (classify (Boxed 7)))
+   print-line-uni ("boxed-5 " & show (classify (Boxed 5)))
+   print-line-uni ("plain-5 " & show (classify (Plain 5)))
+  end
