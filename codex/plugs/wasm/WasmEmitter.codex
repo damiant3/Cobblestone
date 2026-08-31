@@ -3003,13 +3003,32 @@ Section: Chapter Emission
  is a boolean and the definitions it was asked to print were never reached.
 
  An import is needed when a definition CALLS the builtin, and the IR says so
- with no allocation at all. The walk mirrors `collect-strings-expr` arm for arm,
- which is the argument for its coverage: that shape already has to reach every
- text literal in the program or the string table comes out short. Where the two
- differ is a case the text scan got WRONG: a chapter that DEFINES `blit-framebuf`
- emits `(func $blit_framebuf`, the old needle hit, and the module declared an
- import and a function under one name -- which `wat2wasm` refuses. Asking about
- call sites cannot do that.
+ with no allocation at all. The walk follows `collect-strings-expr`'s arms.
+
+ TWO THINGS THE FIRST VERSION OF THIS COMMENT CLAIMED AND SHOULD NOT HAVE, both
+ caught by a cold review and both worth leaving written down.
+
+ It said the mirroring was "the argument for its coverage: that shape already
+ has to reach every text literal in the program or the string table comes out
+ short". The shape did not, and the table did: `collect-strings-branches-loop`
+ was skipping every branch GUARD, which is fixed above. Mirroring a walker
+ inherits its blind spots, and an argument from a model is worth an audit of the
+ model.
+
+ It also said that asking about call sites could not produce the module
+ `wat2wasm` refuses -- an import and a function under one name -- the way the old
+ text scan could. It can: a chapter that defines `blit-framebuf` AND calls it
+ sets the flag through the call, and the module still carries both. Measured:
+ `error: redefinition of function "$blit_framebuf"`.
+
+ THE HONEST STATE IS THAT NEITHER IMPORT IS REACHABLE, and the two flags are one
+ hole rather than one hole and one fix. `blit-framebuf` is not a name the
+ language has -- it is nowhere in the foreword -- so a chapter that calls it
+ without defining it halts with CDX3002 and a chapter that defines it emits a
+ module the assembler refuses. `needs-blit` is therefore True only for programs
+ that cannot assemble anyway, which is exactly the shape `$on_key_import` is in
+ for a different reason. Both are recorded as a finding; the query below is
+ correct and cheap, and it is not what is wrong here.
 
   wat-expr-calls-name : IRExpr, Text -> Boolean
   wat-expr-calls-name (e) (n) =
@@ -3066,16 +3085,24 @@ Section: Chapter Emission
    else if wat-expr-calls-name ((list-at fs i).value) n then True
    else wat-fields-call-name fs n (i + 1)
 
- An empty builtin name answers False without walking, and it is not a sentinel
- for "unused": `$on_key_import` HAS no producer -- no arm of this emitter emits
- it -- so the scan that used to look for it walked every definition of every
- chapter to say False, always. The flag and its import line are kept rather than
- deleted because the hole is that `on-key` has no builtin arm, which is finding
- 1's shape, and deleting the line it guards would hide it.
+ `wasm-no-builtin` answers False without walking. It is not a sentinel for
+ "unused": `$on_key_import` HAS no producer -- no arm of this emitter emits it --
+ so the scan that used to look for it walked every definition of every chapter to
+ say False, always. The flag and its import line are kept rather than deleted
+ because the hole is that `on-key` has no builtin arm, which is finding 1's
+ shape, and deleting the line it guards would hide it.
+
+ IT IS NAMED SO THAT FILLING THE HOLE CANNOT MISS IT. Whoever adds the `on-key`
+ arm must also replace this at the call site, or the module emits a call to an
+ import it never declared and `wat2wasm` refuses it -- a flag kept as a signal,
+ wired so that acting on the signal breaks the build. A grep for the name reaches
+ every place that has to move together.
+
+  wasm-no-builtin : Text = ""
 
   wat-defs-call-name : List IRDef, Text, Integer -> Boolean
   wat-defs-call-name (defs) (n) (i) =
-   if n == "" then False
+   if n == wasm-no-builtin then False
    else if i >= list-length defs then False
    else if wat-expr-calls-name ((list-at defs i).body) n then True
    else wat-defs-call-name defs n (i + 1)
@@ -3122,7 +3149,7 @@ Section: Chapter Emission
    in let types-text = emit-wat-type-defs type-defs 0 & wat-eq-funcs type-defs 0
    in let entry = wat-emit-entry (m.defs)
    in let needs-blit = wasm-mention-any (m.defs) runtime types-text entry "$blit_framebuf" "blit-framebuf"
-   in let needs-key = wasm-mention-any (m.defs) runtime types-text entry "$on_key_import" ""
+   in let needs-key = wasm-mention-any (m.defs) runtime types-text entry "$on_key_import" wasm-no-builtin
    in let header = wat-runtime-header heap-start needs-blit needs-key
    in act
     print-uni header
