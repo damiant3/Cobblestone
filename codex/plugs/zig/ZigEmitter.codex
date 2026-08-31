@@ -1946,7 +1946,7 @@ Section: Lambda and List Helpers
       else "cx_ll_of(" & et & ", &[_]" & et & "{ " & emit-zig-list-elems elems 0 ctx d & " })"
 
  JOINED ONCE, NOT RIGHT-RECURSIVELY, and this is the same hazard
- `emit-zig-defs` already names three thousand lines down -- "joining N pieces
+ `emit-zig-defs` already names seventeen hundred lines down -- "joining N pieces
  with a right-recursive `&` copies every piece it has not reached yet, so the
  cost is the output size times the number of definitions rather than the output
  size. Collect and join once." That note was written about the module and the
@@ -4310,15 +4310,32 @@ Section: Chapter Emission
 
  THE SPLIT IS HALF THE TABLE, not a written-down fifty, and that is a guard
  rather than a tidy-up. A fixed fifty sends every future part into the hi mask
- alone: at 115 parts `bit-shl 1 65` becomes `1 << (65 & 63)` -- the emitted
- `cx_shl` masks the shift -- so part 114 would set bit 0, marking part 50 as a
- root it is not and failing to mark itself. That is a prelude that keeps a part
- nothing needs and drops one that is live: the bytes move first and the zig
- compiler complains second. A fixed fifty is also a bounds panic in the other
- direction, since `zig-mask-lo` would walk to index 49 of a shorter table.
+ alone: at 115 parts `bit-shl 1 64` becomes `1 << (64 & 63)` -- the emitted
+ `cx_shl` masks the shift -- so part 114 sets bit 0, the bit part 50 owns.
 
- Half the table shares the growth, so the ceiling is 128 parts rather than 114
- and neither end is unguarded. It is 50 today, for 100 parts, so nothing moves.
+ WHAT THAT COSTS IS A BLOATED PRELUDE, NOT A WRONG ONE, and the first version of
+ this comment had it backwards -- it said the prelude would keep a part nothing
+ needs AND DROP ONE THAT IS LIVE, "bytes move first and the zig compiler
+ complains second". It cannot drop one. `cx_shr` masks its shift exactly as
+ `cx_shl` does, and `zig-roots-mask-loop` reads bit `i - s` with the same
+ arithmetic the writer used, so indices that alias in the write alias in the
+ read too: either one being a root marks BOTH. That runs in the direction the
+ rule above already calls safe -- an extra root keeps a part nobody needed. The
+ real symptom is a prelude that grows and two arms that stop agreeing byte for
+ byte, which build.py's stage 8 fixed point catches by construction.
+
+ A fixed fifty is a bounds panic in the other direction, since `zig-mask-lo`
+ would walk to index 49 of a shorter table. Half the table fixes that end
+ outright: `s = N / 2` is never past the end for any N.
+
+ Half the table shares the growth, so the ceiling is 128 parts rather than 114.
+ It is 50 today, for 100 parts, so nothing moves. THE CEILING IS NOW A GUARD AND
+ NOT A HOPE: at 129 parts the two masks have run out of bits and index 128 would
+ alias index 64 in silence, which is the same defect one table-growth further
+ on, so `zig-mask-ceiling-check` emits a `@compileError` instead. Two i64 masks
+ carry 128 bits and that is the contract; the last two of them are sign bits,
+ which zig's `<<` and `>>` handle without complaint (measured, 0.16.0 Debug --
+ build.py builds without -O).
 
  The names list is threaded as a PARAMETER and not named at each use, for the
  same reason `zig-prelude-roots` already threads it: a nullary definition is a
@@ -4327,6 +4344,15 @@ Section: Chapter Emission
 
   zig-mask-split : List Text -> Integer
   zig-mask-split (ns) = list-length ns / 2
+
+  zig-mask-ceiling-check : List Text -> Text
+  zig-mask-ceiling-check (ns) =
+   if list-length ns <= 128 then ""
+   else "comptime { @compileError(\"cx zig plug: the prelude parts table has "
+        & integer-to-text (list-length ns)
+        & " parts and the two-mask shake answer carries 128. Add a third mask to"
+        & " zig-mask-lo/hi and zig-roots-mask-loop, or the shake keeps the wrong"
+        & " set in silence.\"); }\n"
 
   zig-mask-loop : List Text, Text, Integer, Integer, Integer, Integer -> Integer
   zig-mask-loop (ns) (prog) (i) (hi) (base) (acc) =
@@ -4399,16 +4425,22 @@ Section: Chapter Emission
  took from it.
 
  `emit-zig-chapter` is KEPT and is not a fallback: `ZigPlug`, `ZigStdio` and
- `ZigPlugRing` still call it, so the ring plug that compiles this emitter on
+ `ZigPlugRing` (the last of which is not in this repo -- it is
+ `source/ZigPlugRing.codex` in the codexzig worktree) still call it, so the ring plug that compiles this emitter on
  bare metal emits a module the whole-text way while the native binary emits it
  streaming. The transpiler's fixed point then compares the two against each
  other, which is a better test of this change than any test written for it.
 
- Only a scalar crosses the restore. `ctx`, `ns`, `types-text` and `main-text`
- are all built before the first mark and so outlive every one of them -- that is
- four things and the list has to be complete, because the next editor will trust
- it. The per-definition text is not among them: it is allocated inside the
- bracket and must not be referenced after the restore.
+ Only a scalar crosses the restore. What must be allocated BEFORE the first
+ mark is everything `zig-stream-defs` dereferences after one: `ctx`, `ns`,
+ `main-text`, and `defs` -- which is `m.defs`, the caller's allocation from
+ `parse-ir-chapter`, and is the one an enumeration exists to record because
+ nothing here allocates it. FOUR things, and the list has to be complete because
+ the next editor will trust it. `types-text` is NOT among them, though an
+ earlier version of this list said it was: it is printed before `zig-stream-defs`
+ is entered, is never passed in, and outlives nothing. The per-definition text is
+ not among them either -- it is allocated inside the bracket and must not be
+ referenced after the restore.
 
  THE BARE-METAL ARM KEEPS THE OLD COST. `ZigPlugRing` calls `emit-zig-chapter`,
  so the guest compiling this emitter still holds every definition at once, in
@@ -4436,6 +4468,7 @@ Section: Chapter Emission
    in let m1 = bit-or (zig-mask-lo ns types-text) (zig-mask-lo ns main-text)
    in let m2 = bit-or (zig-mask-hi ns types-text) (zig-mask-hi ns main-text)
    in act
+    print-uni (zig-mask-ceiling-check ns)
     print-uni types-text
     zig-stream-defs ctx (m.defs) 0 main-text ns m1 m2
    end

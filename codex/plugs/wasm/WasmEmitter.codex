@@ -202,9 +202,13 @@ Section: String Table
 
  A BRANCH'S GUARD IS PART OF THE BRANCH, and reading only the body made this
  walker answer a question about a program it had not finished looking at.
- `emit-wat-match-arm` emits the guard -- `emit-wat-guard-test` at :1620, :1623,
- :1627, :1632 and :1640 -- so a text literal that appears ONLY in a guard was
- emitted as a lookup into a table it was never added to, and `strtab-lookup`
+ The guard is emitted at TEN sites in two independent walkers, not five in one:
+ `emit-wat-match-arm` and `emit-wat-ctor-pat` reach `emit-wat-guard-test` five
+ times, and `emit-wat-branches-tco` five more. (The five line numbers this
+ comment used to give were a stale copy of the TCO walker's, and named the wrong
+ walker besides -- grep for the call, which is what a reader has to do anyway
+ once anything above it moves.) So a text literal that appears ONLY in a guard
+ was emitted as a lookup into a table it was never added to, and `strtab-lookup`
  answers 0 for a miss. Address zero, silently, on a module that assembles and
  runs. `probe/plug/guardstr.codex` in safari-codex is the case: the zig plug
  prints `yes` then `no`, and this one printed `no` twice.
@@ -214,6 +218,17 @@ Section: String Table
  discard something". The wasm plug never got that pass; it has the hole in both
  walkers. An unguarded branch carries a True literal as its guard, so walking
  it costs nothing on the common shape and changes no output that has no guard.
+
+ WHAT THIS FIX DID NOT SWEEP, said plainly because the first version of this
+ comment implied it had. The walkers still do not visit `b.pattern`, so a TEXT
+ LITERAL PATTERN -- `when t is "sin" -> ...` -- splices its spelling into
+ `(i64.const sin)` and wat2wasm refuses the module by name. That is a supported
+ feature with tests under `codex/test`, and closing it needs three things, not
+ one: the literal in the table, a `strtab-lookup` at the emission site, and
+ `$text_eq` instead of `i64.eq`. And the byte-identity of safari-codex's
+ seventeen checks is NOT evidence for any of this: there are no guarded match
+ arms in that port at all, so identical output was guaranteed by construction
+ before the fix was written.
 
   collect-strings-branches-loop : List IRBranch, List StringEntry, Integer -> List StringEntry
   collect-strings-branches-loop (bs) (acc) (i) =
