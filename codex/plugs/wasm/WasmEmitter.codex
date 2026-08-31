@@ -200,11 +200,26 @@ Section: String Table
   collect-strings-branches (bs) (acc) =
    collect-strings-branches-loop bs acc 0
 
+ A BRANCH'S GUARD IS PART OF THE BRANCH, and reading only the body made this
+ walker answer a question about a program it had not finished looking at.
+ `emit-wat-match-arm` emits the guard -- `emit-wat-guard-test` at :1620, :1623,
+ :1627, :1632 and :1640 -- so a text literal that appears ONLY in a guard was
+ emitted as a lookup into a table it was never added to, and `strtab-lookup`
+ answers 0 for a miss. Address zero, silently, on a module that assembles and
+ runs. `probe/plug/guardstr.codex` in safari-codex is the case: the zig plug
+ prints `yes` then `no`, and this one printed `no` twice.
+
+ ZigEmitter fixed the same class in `zig-occurs-branches` and its note is the
+ one to read -- "every caller of this uses the answer to decide whether to
+ discard something". The wasm plug never got that pass; it has the hole in both
+ walkers. An unguarded branch carries a True literal as its guard, so walking
+ it costs nothing on the common shape and changes no output that has no guard.
+
   collect-strings-branches-loop : List IRBranch, List StringEntry, Integer -> List StringEntry
   collect-strings-branches-loop (bs) (acc) (i) =
    if i >= list-length bs then acc
    else let b = list-at bs i
-   in collect-strings-branches-loop bs (collect-strings-expr (b.body) acc) (i + 1)
+   in collect-strings-branches-loop bs (collect-strings-expr (b.body) (collect-strings-expr (b.guard) acc)) (i + 1)
 
   collect-strings-stmts : List IRActStmt, List StringEntry -> List StringEntry
   collect-strings-stmts (ss) (acc) =
@@ -541,13 +556,19 @@ Section: Local Collection
   collect-locals-branches (bs) (acc) =
    collect-locals-branches-loop bs acc 0
 
+ The same hole, one walker over. A `let` inside a guard yielded a local that
+ was used and never declared, which `wat2wasm` refuses by name -- so this half
+ fails loudly where the string table's half fails silently, and that is the only
+ reason it was the second one found rather than the first.
+
   collect-locals-branches-loop : List IRBranch, List Text, Integer -> List Text
   collect-locals-branches-loop (bs) (acc) (i) =
    if i >= list-length bs then acc
    else let b = list-at bs i
    in let acc1 = collect-locals-pat (b.pattern) acc
-   in let acc2 = collect-locals-expr (b.body) acc1
-   in collect-locals-branches-loop bs acc2 (i + 1)
+   in let acc2 = collect-locals-expr (b.guard) acc1
+   in let acc3 = collect-locals-expr (b.body) acc2
+   in collect-locals-branches-loop bs acc3 (i + 1)
 
   collect-locals-pat : IRPat, List Text -> List Text
   collect-locals-pat (p) (acc) =
@@ -3027,6 +3048,7 @@ Section: Chapter Emission
   wat-branches-call-name : List IRBranch, Text, Integer -> Boolean
   wat-branches-call-name (bs) (n) (i) =
    if i >= list-length bs then False
+   else if wat-expr-calls-name ((list-at bs i).guard) n then True
    else if wat-expr-calls-name ((list-at bs i).body) n then True
    else wat-branches-call-name bs n (i + 1)
 
