@@ -1425,9 +1425,27 @@ Section: Apply Emission
  type-def and stops at the first match, which is a different record whenever
  two of them share a field name. `ParseResult.parse-bag` is slot 4 and
  `Document.parse-bag` is slot 14, so setting a Document's parse-bag wrote slot
- 4, which is `Document.instance-defs`. The name-only lookup stays as the
- fallback for a wire whose recorded type did not resolve, because that is what
- it was doing before and it is right whenever the name is unique.
+ 4, which is `Document.instance-defs`. The name-only lookup stays as the last
+ fallback, because it is right whenever the name is unique.
+
+ THE RECEIVER'S TYPE IS THE AUTHORITY, and the slot the IR text wire writes
+ into the field name is the fallback rather than the other way round. That is
+ the change, and the reason is that the wire's slot is the SAME NUMBER: it is
+ `ir-resolve-field-index` in IRTextEmitter, which resolves the field against
+ the receiver's record type exactly as `wat-slot-in-ty` does here, and bare
+ metal computes it a third time in X86_64Compound rather than reading it.
+ Measured on 30 programs -- the Codex compiler's own 2.9 MB source and the 29
+ units of the safari port, up to 13.5 MB of WAT -- the two answers are
+ identical, byte for byte, in every module.
+
+ What it buys is that a caller no longer has to have serialised the IR for
+ this emitter to be correct. The driver in a plug that hands over an IRChapter
+ directly currently gets field names with no slot, falls through to the
+ name-only search, and mis-addresses every field whose name is not unique:
+ measured on the compiler's own source, 4,968,460 of 6,760,737 bytes come out
+ different. That is a silent wrong answer, and it is what this ordering
+ removes. It also makes the round trip through IR TEXT optional, which is
+ worth 945 MB of 3,532 MB on that subject.
 
   wat-slot-in-ty : WasmCtx, CodexType, Text, Integer -> Integer
   wat-slot-in-ty (ctx) (ty) (field-name) (fallback) =
@@ -1439,8 +1457,7 @@ Section: Apply Emission
   wat-slot-for-expr : WasmCtx, IRExpr, Text -> Integer
   wat-slot-for-expr (ctx) (rec) (field-name) =
    let named = wat-field-slot (ctx.type-defs) field-name
-   in if wat-slash-pos field-name 0 (text-length field-name) >= 0 then named
-      else wat-slot-in-ty ctx (ir-expr-type rec) field-name named
+   in wat-slot-in-ty ctx (ir-expr-type rec) (wat-field-bare field-name) named
 
   wat-fields-of-ty : WasmCtx, CodexType -> List RecordField
   wat-fields-of-ty (ctx) (ty) =
