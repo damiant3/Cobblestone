@@ -319,7 +319,7 @@ Section: CCE Output Tables
 
   cce-flush-at : Integer = 240
 
-  cce-in-buf-bytes : Integer = 8
+  cce-in-buf-bytes : Integer = 65536
 
   cce-tables-bytes : Integer =
    cce-tab-bytes + cce-tier2-block-count * cce-t2-entry-bytes + cce-out-buf-bytes +
@@ -1765,6 +1765,8 @@ Section: WASI Runtime Helpers
    "  (global $deck_ptr (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
    "  (global $bivy_save (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
    "  (global $deck_depth (mut i32) (i32.const 0))\n" &
+   "  (global $rd_len (mut i32) (i32.const 0))\n" &
+   "  (global $rd_pos (mut i32) (i32.const 0))\n" &
    "  (global $disk_base (mut i32) (i32.const 0))\n" &
    "  (global $disk_size (mut i32) (i32.const 0))\n" &
    "  (func $__heap_reset (global.set $heap_ptr (global.get $heap_start)))\n" &
@@ -1824,17 +1826,54 @@ Section: WASI Runtime Helpers
  past the end and every access past it is an out-of-bounds trap, which reads
  as a codegen defect and is a ceiling.
 
+ GROW IN 16 MB STEPS, AND THE NUMBER OF GROWS IS WHAT COSTS, not the number
+ of pages. `$bump_alloc` grew by exactly the pages an allocation needed,
+ which is the obvious reading and is a call to `memory.grow` roughly every
+ 64 KB -- about 56,000 of them to reach the 3.7 GB the Codex compiler wants
+ for its own source.
+
+ That is free on some hosts and ruinous on others, and the two this plug is
+ actually run under sit on opposite sides. Measured 2026-08-31 on a module
+ that does nothing but grow and touch the last word of each new page:
+
+     56,000 grows of  1 page -> 3.5 GB   node 166.83 s    wasmtime 0.21 s
+     16,000 grows of  1 page -> 1.0 GB   node   5.45 s
+      1,000 grows of 16 pages -> 1.0 GB  node   0.38 s
+
+ The middle two rows are the finding: same final size, same bytes touched,
+ fourteen times the wall clock for growing in smaller pieces. V8's cost per
+ grow rises with the memory it already has, so it is the COUNT that has to
+ come down -- which also means a browser pays this and wasmtime does not,
+ and the browser is where this plug is going.
+
+ 256 pages is 16 MB, so a program that stops just past a step wastes at most
+ 16 MB of address space and reaches its ceiling 0.4% sooner. That is the
+ trade, and it is deliberately a FIXED step rather than a geometric one: a
+ doubling allocator would overshoot by up to 12.5%, and at 3.7 GB of a hard
+ 4 GiB ceiling 12.5% is not headroom anybody has.
+
+ `$grow_by` exists so the policy has one home. There were two copies of the
+ growth arithmetic -- here and in the list-append fast path -- and a policy
+ that lives in two places is a policy that will be changed in one.
+
+  wasm-grow-step-pages : Integer = 256
+
   wat-rt-bump-alloc : Text =
+   "  (func $grow_by (param $need i32) (param $have i32)\n" &
+   "    (local $pages i32)\n" &
+   "    (local.set $pages (i32.add\n" &
+   "      (i32.div_u (i32.sub (local.get $need) (local.get $have)) (i32.const 65536))\n" &
+   "      (i32.const 1)))\n" &
+   "    (if (i32.lt_u (local.get $pages) (i32.const " & integer-to-text wasm-grow-step-pages & "))\n" &
+   "      (then (local.set $pages (i32.const " & integer-to-text wasm-grow-step-pages & "))))\n" &
+   "    (if (i32.eq (memory.grow (local.get $pages)) (i32.const -1)) (then (unreachable))))\n\n" &
    "  (func $bump_alloc (param $size i32) (result i32)\n" &
-   "    (local $ptr i32) (local $need i32) (local $have i32) (local $pages i32)\n" &
+   "    (local $ptr i32) (local $need i32) (local $have i32)\n" &
    "    (local.set $ptr (global.get $heap_ptr))\n" &
    "    (local.set $need (i32.add (local.get $ptr) (local.get $size)))\n" &
    "    (local.set $have (i32.mul (memory.size) (i32.const 65536)))\n" &
-   "    (if (i32.gt_u (local.get $need) (local.get $have)) (then\n" &
-   "      (local.set $pages (i32.add\n" &
-   "        (i32.div_u (i32.sub (local.get $need) (local.get $have)) (i32.const 65536))\n" &
-   "        (i32.const 1)))\n" &
-   "      (if (i32.eq (memory.grow (local.get $pages)) (i32.const -1)) (then (unreachable)))))\n" &
+   "    (if (i32.gt_u (local.get $need) (local.get $have))\n" &
+   "      (then (call $grow_by (local.get $need) (local.get $have))))\n" &
    "    (global.set $heap_ptr (local.get $need))\n" &
    "    (local.get $ptr))\n\n"
 
@@ -2205,8 +2244,8 @@ Section: WASI Runtime Helpers
    "          (then\n" &
    "            (local.set $need2 (i32.add (global.get $deck_ptr) (local.get $delta)))\n" &
    "            (local.set $have2 (i32.mul (memory.size) (i32.const 65536)))\n" &
-   "            (if (i32.gt_u (local.get $need2) (local.get $have2)) (then\n" &
-   "              (if (i32.eq (memory.grow (i32.add (i32.div_u (i32.sub (local.get $need2) (local.get $have2)) (i32.const 65536)) (i32.const 1))) (i32.const -1)) (then (unreachable)))))\n" &
+   "            (if (i32.gt_u (local.get $need2) (local.get $have2))\n" &
+   "              (then (call $grow_by (local.get $need2) (local.get $have2))))\n" &
    "            (global.set $deck_ptr (local.get $need2))\n" &
    "            (i32.store (i32.add (local.get $p) (i32.const 4)) (local.get $nc))\n" &
    "            (i64.store (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.mul (local.get $n) (i32.const 8))) (local.get $val))\n" &
@@ -2702,13 +2741,31 @@ Section: WASI Runtime Helpers
    else let row = byte-to-hex ((list-at entries i).arity)
    in wat-emit-arity-data entries base (i + 1) (list-push acc row)
 
- One byte per `fd_read`, which is the shape the caller needs rather than the
- fast one: a line ends at a newline and reading ahead would swallow the
- bytes after it, with nowhere to put them back. `$read_line_raw` answers 0
- at end of input and a Text pointer otherwise, and an empty line is a Text
- of length 0, which is NOT the same answer. Bytes convert through the
- reverse table on the way in, so what lands in memory is CCE, matching what
- 1.61 established for the way out.
+ `$read_byte` HANDS OUT ONE BYTE AND READS 64 KB, and those are different
+ statements. It used to do both a byte at a time, on the argument that a line
+ ends at a newline and reading ahead would swallow the bytes after it with
+ nowhere to put them back. The buffer IS somewhere to put them back, which is
+ what dissolves that argument rather than trading it away: every caller still
+ sees exactly one byte per call and the boundary decisions above are unchanged,
+ byte for byte.
+
+ What it costs is one `fd_read` per 65,536 bytes instead of one per byte. On a
+ host where that call is a function call the difference is small; on the two
+ beds this plug is actually run under it is not, because both cross into a JS
+ runtime -- measured on a 2.9 MB input, 210 s to 24 s under node. `read-file-raw`
+ below has been chunked for this reason since it was written, and its own
+ comment makes the argument; the text readers were the ones still paying.
+
+ THE BUFFER IS THE STREAM'S ONE READER, which is the part to be careful about.
+ `$read_file_raw` reads fd 0 for itself, so it drains what `$read_byte` has
+ buffered and not yet handed out BEFORE it reads any more -- without that, a
+ program that calls `read-line-uni` and then `read-file-raw` silently loses up
+ to 64 KB, which is a regression this change would otherwise have introduced.
+
+ `$read_line_raw` answers 0 at end of input and a Text pointer otherwise, and
+ an empty line is a Text of length 0, which is NOT the same answer. Bytes
+ convert through the reverse table on the way in, so what lands in memory is
+ CCE, matching what 1.61 established for the way out.
 
  END OF INPUT DISCARDS A PARTIAL LINE, and that is bare metal's answer
  rather than a choice made here: measured against x86-64 on input whose last
@@ -2719,14 +2776,19 @@ Section: WASI Runtime Helpers
 
   wat-rt-read-line : Integer, Integer -> Text
   wat-rt-read-line (rev-base) (scratch) =
-   "  (func $read_byte (result i32)\n" &
-   "    (i32.store (i32.const 0) (i32.const " & integer-to-text scratch & "))\n" &
-   "    (i32.store (i32.const 4) (i32.const 1))\n" &
-   "    (i32.store (i32.const 8) (i32.const 0))\n" &
-   "    (if (i32.ne (call $fd_read (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 8)) (i32.const 0))\n" &
-   "      (then (return (i32.const -1))))\n" &
-   "    (if (i32.eqz (i32.load (i32.const 8))) (then (return (i32.const -1))))\n" &
-   "    (i32.load8_u (i32.const " & integer-to-text scratch & ")))\n\n" &
+   "  (func $read_byte (result i32) (local $b i32)\n" &
+   "    (if (i32.ge_u (global.get $rd_pos) (global.get $rd_len)) (then\n" &
+   "      (i32.store (i32.const 0) (i32.const " & integer-to-text scratch & "))\n" &
+   "      (i32.store (i32.const 4) (i32.const " & integer-to-text cce-in-buf-bytes & "))\n" &
+   "      (i32.store (i32.const 8) (i32.const 0))\n" &
+   "      (if (i32.ne (call $fd_read (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 8)) (i32.const 0))\n" &
+   "        (then (return (i32.const -1))))\n" &
+   "      (global.set $rd_len (i32.load (i32.const 8)))\n" &
+   "      (global.set $rd_pos (i32.const 0))\n" &
+   "      (if (i32.eqz (global.get $rd_len)) (then (return (i32.const -1))))))\n" &
+   "    (local.set $b (i32.load8_u (i32.add (i32.const " & integer-to-text scratch & ") (global.get $rd_pos))))\n" &
+   "    (global.set $rd_pos (i32.add (global.get $rd_pos) (i32.const 1)))\n" &
+   "    (local.get $b))\n\n" &
    "  (func $read_line_raw (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $b i32) (local $cap i32) (local $cc i32)\n" &
    "    (local.set $cap (i32.const 256))\n" &
@@ -2936,12 +2998,22 @@ Section: WASI Runtime Helpers
  does not fit, which for an artifact is a truncation wearing the colour of a
  complete answer (L-SHORT).
 
-  wat-rt-read-file-raw : Text =
+  wat-rt-read-file-raw : Integer -> Text
+  wat-rt-read-file-raw (in-base) =
    "  (func $read_file_raw (param $ignored i64) (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $cap i32) (local $got i32)\n" &
    "    (local.set $cap (i32.const 1048576))\n" &
    "    (local.set $buf (call $bump_alloc (i32.add (local.get $cap) (i32.const 4))))\n" &
    "    (local.set $n (i32.const 0))\n" &
+   "    (local.set $got (i32.sub (global.get $rd_len) (global.get $rd_pos)))\n" &
+   "    (block $rpd (loop $rpc\n" &
+   "      (br_if $rpd (i32.eqz (local.get $got)))\n" &
+   "      (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n))\n" &
+   "        (i32.load8_u (i32.add (i32.const " & integer-to-text in-base & ") (global.get $rd_pos))))\n" &
+   "      (global.set $rd_pos (i32.add (global.get $rd_pos) (i32.const 1)))\n" &
+   "      (local.set $n (i32.add (local.get $n) (i32.const 1)))\n" &
+   "      (local.set $got (i32.sub (local.get $got) (i32.const 1)))\n" &
+   "      (br $rpc)))\n" &
    "    (block $rrd (loop $rrc\n" &
    "      (if (i32.lt_u (i32.sub (local.get $cap) (local.get $n)) (i32.const 65536)) (then\n" &
    "        (drop (call $bump_alloc (local.get $cap)))\n" &
@@ -3028,7 +3100,7 @@ Section: WASI Runtime Helpers
 
   wat-runtime-funcs : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
   wat-runtime-funcs (tab) (t2) (out) (arity-base) (max-arity) (rev-base) (in-base) =
-   wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-disk & wat-rt-read-file rev-base & wat-rt-read-file-raw &
+   wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-disk & wat-rt-read-file rev-base & wat-rt-read-file-raw in-base &
    wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
 
 Section: Chapter Emission
