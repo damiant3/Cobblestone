@@ -1945,11 +1945,35 @@ Section: Lambda and List Helpers
    in if list-length elems == 0 then "cx_ll_empty(" & et & ")"
       else "cx_ll_of(" & et & ", &[_]" & et & "{ " & emit-zig-list-elems elems 0 ctx d & " })"
 
+ JOINED ONCE, NOT RIGHT-RECURSIVELY, and this is the same hazard
+ `emit-zig-defs` already names three thousand lines down -- "joining N pieces
+ with a right-recursive `&` copies every piece it has not reached yet, so the
+ cost is the output size times the number of definitions rather than the output
+ size. Collect and join once." That note was written about the module and the
+ elements of a list literal were left doing it.
+
+ It is not a small residue. Measured 2026-08-31 through
+ `safari-codex/harness/mem_probe.py`, which reads the bump frontier between
+ phases: emitting `cat_draw-unit.codex` cost 2,549 MB of the process's 2,904 MB
+ peak, against 294 MB for the whole front end, and one generated table --
+ 467,670 bytes of zig in a single definition -- accounts for most of it. Cost
+ per byte of output grew 160 -> 375 -> 998 across pond, world and cat_draw,
+ which is the signature: a fixed cost per byte does not grow with the file.
+
+ The wasm plug had the identical defect in `emit-wat-list-elems` and 97.3 MB for
+ one 171,884-byte definition fell to 4.4 MB when it stopped. Same pieces, same
+ order, byte-identical output.
+
   emit-zig-list-elems : List IRExpr, Integer, ZigCtx, Integer -> Text
   emit-zig-list-elems (elems) (i) (ctx) (d) =
-   if i == list-length elems then ""
-   else if i == list-length elems - 1 then emit-zig-expr (list-at elems i) ctx (d + 1)
-   else emit-zig-expr (list-at elems i) ctx (d + 1) & ", " & emit-zig-list-elems elems (i + 1) ctx d
+   text-concat-list (emit-zig-list-elems-loop elems i ctx d [])
+
+  emit-zig-list-elems-loop : List IRExpr, Integer, ZigCtx, Integer, List Text -> List Text
+  emit-zig-list-elems-loop (elems) (i) (ctx) (d) (acc) =
+   if i == list-length elems then acc
+   else let one = emit-zig-expr (list-at elems i) ctx (d + 1)
+   in if i == list-length elems - 1 then list-push acc one
+   else emit-zig-list-elems-loop elems (i + 1) ctx d (list-push (list-push acc one) ", ")
 
 Section: Record Emission
 
