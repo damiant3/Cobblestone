@@ -89,7 +89,35 @@ if (-not $readByte) {
     }
 }
 
-# 3. ONE READER OF THE STREAM.
+# 3. THE TEXT READERS GROW; THEY DO NOT TRUNCATE.
+#
+# `$read_file_uni` and `$read_serial_cce` each used to reserve a fixed 4 MiB
+# and then read the rest of the wire while discarding it. What that produces
+# is not a truncation message: it is `CDX3002 Undefined name: <x>` about a
+# file that plainly defines <x>, because the prefix no longer defines what it
+# references. Nothing anywhere mentions the input, which is the one fact that
+# would explain the error.
+#
+# `$read_serial_cce` is the one that mattered most, and not for source -- it
+# is how WasmPlug.codex receives IR TEXT, which runs several times the size of
+# the program it came from.
+#
+# Both now extend by re-bumping. Two `$bump_alloc` calls in the body is the
+# signature: one for the initial reservation and one inside the loop.
+foreach ($fn in @('read_file_uni', 'read_serial_cce')) {
+    $body = Get-FuncBody $text $fn
+    if (-not $body) { $problems += "no `$$fn"; continue }
+    $bumps = ([regex]::Matches($body, [regex]::Escape('call $bump_alloc'))).Count
+    if ($bumps -lt 2) {
+        $problems += "`$$fn calls bump_alloc $bumps time(s): it reserves once and never extends, so an input past that reservation is read and DISCARDED"
+    }
+    $fixed = [regex]::Match($body, 'local\.set \$cap \(i32\.const (\d+)\)')
+    if ($fixed.Success -and [int]$fixed.Groups[1].Value -gt 2097152) {
+        $problems += "`$$fn reserves $($fixed.Groups[1].Value) bytes up front; the growing form starts small and doubles"
+    }
+}
+
+# 4. ONE READER OF THE STREAM.
 #
 # `$read_file_raw` reads fd 0 for itself, so it must first drain whatever
 # `$read_byte` buffered and did not hand out. Without that, a program that
@@ -104,5 +132,5 @@ if ($problems.Count -gt 0) {
     foreach ($p in $problems) { Write-Host "  - $p" }
     exit 1
 }
-Write-Host "[emitted-runtime] ok: one growth policy with a >=256 page floor, a blocked reader, one reader of the stream"
+Write-Host "[emitted-runtime] ok: one growth policy with a >=256 page floor, a blocked reader that grows, one reader of the stream"
 exit 0

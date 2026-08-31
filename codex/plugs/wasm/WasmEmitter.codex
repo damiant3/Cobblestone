@@ -2819,9 +2819,11 @@ Section: WASI Runtime Helpers
    "        (local.set $cc (if (result i32) (i32.lt_u (local.get $b) (i32.const " & integer-to-text cce-rev-entries & "))\n" &
    "          (then (i32.load8_u (i32.add (i32.const " & integer-to-text rev-base & ") (local.get $b))))\n" &
    "          (else (i32.const 0))))\n" &
-   "        (if (i32.lt_s (local.get $n) (local.get $cap)) (then\n" &
-   "          (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $cc))\n" &
-   "          (local.set $n (i32.add (local.get $n) (i32.const 1)))))))\n" &
+   "        (if (i32.ge_u (local.get $n) (local.get $cap)) (then\n" &
+   "          (drop (call $bump_alloc (local.get $cap)))\n" &
+   "          (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))))\n" &
+   "        (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $cc))\n" &
+   "        (local.set $n (i32.add (local.get $n) (i32.const 1)))))\n" &
    "      (br $rlc)))\n" &
    "    (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const 0))))\n" &
    "    (i32.store (local.get $buf) (local.get $n))\n" &
@@ -2946,19 +2948,47 @@ Section: WASI Runtime Helpers
    "    (i64.extend_i32_u (local.get $buf)))\n\n" &
    "  (func $read_serial_cce (param $ignored i64) (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $b i32) (local $cap i32)\n" &
-   "    (local.set $cap (i32.const 4194304))\n" &
+   "    (local.set $cap (i32.const 1048576))\n" &
    "    (local.set $buf (call $bump_alloc (i32.add (local.get $cap) (i32.const 4))))\n" &
    "    (local.set $n (i32.const 0))\n" &
    "    (block $rsd (loop $rsc\n" &
    "      (local.set $b (call $read_byte))\n" &
    "      (br_if $rsd (i32.lt_s (local.get $b) (i32.const 0)))\n" &
    "      (br_if $rsd (i32.eqz (local.get $b)))\n" &
-   "      (if (i32.lt_s (local.get $n) (local.get $cap)) (then\n" &
-   "        (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $b))\n" &
-   "        (local.set $n (i32.add (local.get $n) (i32.const 1)))))\n" &
+   "      (if (i32.ge_u (local.get $n) (local.get $cap)) (then\n" &
+   "        (drop (call $bump_alloc (local.get $cap)))\n" &
+   "        (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))))\n" &
+   "      (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $b))\n" &
+   "      (local.set $n (i32.add (local.get $n) (i32.const 1)))\n" &
    "      (br $rsc)))\n" &
    "    (i32.store (local.get $buf) (local.get $n))\n" &
    "    (i64.extend_i32_u (local.get $buf)))\n\n"
+
+ THE TWO TEXT READERS GROW RATHER THAN TRUNCATE, which is `read-file-raw`'s
+ idiom below applied at last to its neighbours. Both used to reserve a fixed
+ 4 MiB and then read the rest of the wire while DISCARDING it, so a larger
+ input was compiled as a prefix of itself.
+
+ `$read_serial_cce` is the one that mattered most, and not for source: it is
+ how `WasmPlug.codex` receives IR TEXT from the wire, and IR text runs several
+ times the size of the program it came from -- the Codex compiler's own 2.9 MB
+ of source is about 10 MB of IR. That arm could not have compiled a large
+ chapter at all.
+
+ What truncation actually does is worth recording, because the obvious reading
+ is wrong. It is rarely a wrong answer: a prefix that no longer defines what it
+ references fails the halt gate, and the user is told `CDX3002 Undefined name:
+ final-answer` about a file that plainly defines `final-answer`. Measured on a
+ 4,605,510-byte unit, that is exactly what happens. So the defect is a
+ MISLEADING diagnostic rather than a silent wrong answer -- nothing mentions
+ truncation, and the one fact that would explain the error is the one fact not
+ reported. It is genuinely silent only when the prefix is self-consistent, and
+ then the dropped tail was unreachable and the module is right anyway.
+
+ The growth is by re-bumping and not by copying: consecutive `$bump_alloc`
+ calls with nothing allocated between them are contiguous, and `$read_byte`
+ allocates nothing, so the reservation simply extends. Starting at 1 MiB also
+ stops every program paying 4 MiB up front for a buffer it will not fill.
 
  `read-file-uni` READS THE WIRE. The name says file and the effect row says
  `FileSystem.Read`, but on x86-64 it compiles to
@@ -2973,7 +3003,7 @@ Section: WASI Runtime Helpers
   wat-rt-read-file (rev-base) =
    "  (func $read_file_uni (param $ignored i64) (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $b i32) (local $cap i32) (local $cc i32)\n" &
-   "    (local.set $cap (i32.const 4194304))\n" &
+   "    (local.set $cap (i32.const 1048576))\n" &
    "    (local.set $buf (call $bump_alloc (i32.add (local.get $cap) (i32.const 4))))\n" &
    "    (local.set $n (i32.const 0))\n" &
    "    (block $rfd (loop $rfc\n" &
@@ -2985,9 +3015,11 @@ Section: WASI Runtime Helpers
    "        (local.set $cc (if (result i32) (i32.lt_u (local.get $b) (i32.const " & integer-to-text cce-rev-entries & "))\n" &
    "          (then (i32.load8_u (i32.add (i32.const " & integer-to-text rev-base & ") (local.get $b))))\n" &
    "          (else (local.get $b))))\n" &
-   "        (if (i32.lt_s (local.get $n) (local.get $cap)) (then\n" &
-   "          (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $cc))\n" &
-   "          (local.set $n (i32.add (local.get $n) (i32.const 1)))))))\n" &
+   "        (if (i32.ge_u (local.get $n) (local.get $cap)) (then\n" &
+   "          (drop (call $bump_alloc (local.get $cap)))\n" &
+   "          (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))))\n" &
+   "        (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $cc))\n" &
+   "        (local.set $n (i32.add (local.get $n) (i32.const 1)))))\n" &
    "      (br $rfc)))\n" &
    "    (i32.store (local.get $buf) (local.get $n))\n" &
    "    (i64.extend_i32_u (local.get $buf)))\n\n"
