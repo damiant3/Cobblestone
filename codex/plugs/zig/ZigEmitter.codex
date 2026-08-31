@@ -4308,14 +4308,25 @@ Section: Chapter Emission
  Integers, and an Integer is a scalar, so both survive a `__heap-restore` where
  a list would not.
 
- Split at fifty rather than sixty-four so neither mask reaches a sign bit.
+ THE SPLIT IS HALF THE TABLE, not a written-down fifty, and that is a guard
+ rather than a tidy-up. A fixed fifty sends every future part into the hi mask
+ alone: at 115 parts `bit-shl 1 65` becomes `1 << (65 & 63)` -- the emitted
+ `cx_shl` masks the shift -- so part 114 would set bit 0, marking part 50 as a
+ root it is not and failing to mark itself. That is a prelude that keeps a part
+ nothing needs and drops one that is live: the bytes move first and the zig
+ compiler complains second. A fixed fifty is also a bounds panic in the other
+ direction, since `zig-mask-lo` would walk to index 49 of a shorter table.
+
+ Half the table shares the growth, so the ceiling is 128 parts rather than 114
+ and neither end is unguarded. It is 50 today, for 100 parts, so nothing moves.
 
  The names list is threaded as a PARAMETER and not named at each use, for the
  same reason `zig-prelude-roots` already threads it: a nullary definition is a
  function, so naming it inside a loop rebuilds a hundred-element list every
  time round.
 
-  zig-prelude-split : Integer = 50
+  zig-mask-split : List Text -> Integer
+  zig-mask-split (ns) = list-length ns / 2
 
   zig-mask-loop : List Text, Text, Integer, Integer, Integer, Integer -> Integer
   zig-mask-loop (ns) (prog) (i) (hi) (base) (acc) =
@@ -4325,25 +4336,31 @@ Section: Chapter Emission
     is None -> zig-mask-loop ns prog (i + 1) hi base acc
 
   zig-mask-lo : List Text, Text -> Integer
-  zig-mask-lo (ns) (prog) = zig-mask-loop ns prog 0 zig-prelude-split 0 0
+  zig-mask-lo (ns) (prog) = zig-mask-loop ns prog 0 (zig-mask-split ns) 0 0
 
   zig-mask-hi : List Text, Text -> Integer
-  zig-mask-hi (ns) (prog) = zig-mask-loop ns prog zig-prelude-split (list-length ns) zig-prelude-split 0
+  zig-mask-hi (ns) (prog) =
+   let s = zig-mask-split ns
+   in zig-mask-loop ns prog s (list-length ns) s 0
 
- Rebuilt in `zig-prelude-part-names` order, which is the order `zig-roots-loop`
- produced them in. The two must agree name for name and position for position
- or the shake keeps a different set and the bytes move.
+ Rebuilt in `zig-prelude-part-names` order, the order `zig-roots-loop` produced
+ them in. What has to agree is the SET: `shake-kept` emits in parts-table order
+ and not in root order, so a root list in a different sequence keeps the same
+ parts. The order is matched anyway because it costs nothing and makes the two
+ comparable by eye.
+
+ `s` is threaded rather than named per iteration, the same rule as `ns` above.
 
   zig-roots-of-masks : List Text, Integer, Integer -> List Text
-  zig-roots-of-masks (ns) (m1) (m2) = zig-roots-mask-loop ns m1 m2 0 []
+  zig-roots-of-masks (ns) (m1) (m2) = zig-roots-mask-loop ns (zig-mask-split ns) m1 m2 0 []
 
-  zig-roots-mask-loop : List Text, Integer, Integer, Integer, List Text -> List Text
-  zig-roots-mask-loop (ns) (m1) (m2) (i) (acc) =
+  zig-roots-mask-loop : List Text, Integer, Integer, Integer, Integer, List Text -> List Text
+  zig-roots-mask-loop (ns) (s) (m1) (m2) (i) (acc) =
    if i >= list-length ns then acc
-   else let bit = if i < zig-prelude-split
+   else let bit = if i < s
       then bit-and (bit-shr m1 i) 1
-      else bit-and (bit-shr m2 (i - zig-prelude-split)) 1
-   in zig-roots-mask-loop ns m1 m2 (i + 1) (if bit == 1 then list-push acc (list-at ns i) else acc)
+      else bit-and (bit-shr m2 (i - s)) 1
+   in zig-roots-mask-loop ns s m1 m2 (i + 1) (if bit == 1 then list-push acc (list-at ns i) else acc)
 
   emit-zig-chapter : IRChapter, List ATypeDef -> Text
   emit-zig-chapter (m) (type-defs) =
@@ -4387,9 +4404,16 @@ Section: Chapter Emission
  streaming. The transpiler's fixed point then compares the two against each
  other, which is a better test of this change than any test written for it.
 
- Only a scalar crosses the restore. `types-text` and `main-text` are built
- before the first mark and so outlive every one of them; the per-definition
- text does not, and must not be referenced after the restore.
+ Only a scalar crosses the restore. `ctx`, `ns`, `types-text` and `main-text`
+ are all built before the first mark and so outlive every one of them -- that is
+ four things and the list has to be complete, because the next editor will trust
+ it. The per-definition text is not among them: it is allocated inside the
+ bracket and must not be referenced after the restore.
+
+ THE BARE-METAL ARM KEEPS THE OLD COST. `ZigPlugRing` calls `emit-zig-chapter`,
+ so the guest compiling this emitter still holds every definition at once, in
+ 3072 MB. The fix reaches the native binary only, and the ceiling is unfixed
+ where memory is tightest.
 
   emit-zig-chapter-stream : IRChapter, List ATypeDef -> [Console] Nothing
   emit-zig-chapter-stream (m) (type-defs) =
