@@ -82,6 +82,22 @@ foreach ($s in $subjects) {
     & pwsh -NoProfile -File (Join-Path $PlugDir 'run.ps1') -Src $s -Out $wat -Kernel $Kernel | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wat)) { Write-Host "FAIL $name : the plug did not emit WAT."; $fail++; continue }
 
+    # THE INVARIANTS THIS HARNESS CANNOT GRADE. Everything below compares what
+    # the module PRINTS, and two of the emitted runtime's properties are
+    # invisible to that: a module that grows memory one page at a time and one
+    # that grows in 16 MB steps print the same bytes, agree with x86-64 exactly
+    # as well, and differ by 205 seconds on the Codex compiler's own source.
+    # They are asserted on the emitted text instead, where they are exact.
+    # The runtime is emitted whole into every module, so every subject carries
+    # them and the cost is a file read.
+    & pwsh -NoProfile -File (Join-Path $PlugDir 'check-emitted-runtime.ps1') $wat | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "FAIL $name : the emitted runtime broke an invariant."
+        & pwsh -NoProfile -File (Join-Path $PlugDir 'check-emitted-runtime.ps1') $wat |
+            ForEach-Object { Write-Host "  $_" }
+        $fail++; continue
+    }
+
     # wat2wasm IS the undefined-name census, and a grep is not. A builtin the
     # plug has no arm for does NOT come out as `(call $name)`: the name is
     # treated as a value and reaches the funcref path, so it emits
