@@ -1185,6 +1185,24 @@ Section: Expression Emission
     is IrApproxEq -> "i64.eq"
     is IrApproxEqExact -> "i64.eq"
 
+ A BOOLEAN LITERAL PATTERN IS 1 OR 0, not the word. `IrLitPat` carries the
+ literal's TEXT, and a `when` on a Boolean gives `(lit-pat "True" boolean)` --
+ which went straight into `(i64.const True)` and made a module wat2wasm
+ refuses: "unexpected token \"True\", expected a numeric literal". So `when`
+ over a Boolean has never worked on this target. The zig plug has had
+ `zig-lit-pat-text` for exactly this since it was written.
+
+ Found by assembling all 580 programs of the ladder's corpus: 3 of them are
+ this. A `Text` literal pattern is the same shape and is NOT fixed here -- it
+ needs a string-table entry and a text comparison rather than `i64.eq`, which
+ is a different piece of work; `literal-subpattern` is the case.
+
+  wat-lit-pat-const : Text -> Text
+  wat-lit-pat-const (t) =
+   if t == "True" then "1"
+   else if t == "False" then "0"
+   else t
+
   emit-wat-match : WasmCtx, IRExpr, List IRBranch, Integer -> Text
   emit-wat-match (ctx) (scrut) (branches) (depth) =
    if list-length branches == 0 then "(unreachable)"
@@ -1210,7 +1228,7 @@ Section: Expression Emission
   emit-wat-match-arm (ctx) (pat) (guard) (body) (branches) (i) (depth) =
    when pat
     is IrLitPat (text) (ty) (sp) ->
-     let lit-test = "(i64.eq (local.get " & wat-scrut ctx & ") (i64.const " & text & "))"
+     let lit-test = "(i64.eq (local.get " & wat-scrut ctx & ") (i64.const " & wat-lit-pat-const text & "))"
      in let cond = if wat-guard-trivial guard then lit-test
         else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx guard & ")"
      in "(if (result i64) " & cond & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
@@ -1756,7 +1774,7 @@ Section: Tail Call Optimization
         else bind & "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
     is IrLitPat (text) (ty) (sp) ->
      if is-last then body
-     else let lit-test = "(i64.eq (local.get " & wat-scrut ctx & ") (i64.const " & text & "))"
+     else let lit-test = "(i64.eq (local.get " & wat-scrut ctx & ") (i64.const " & wat-lit-pat-const text & "))"
      in let cond = if guarded == False then lit-test
         else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx (b.guard) & ")"
      in "(if (result i64) " & cond & " (then " & body & ") (else " & rest & "))"
