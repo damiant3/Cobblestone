@@ -490,8 +490,52 @@ Section: Emitter Context
    arities : List ArityEntry,
    strings : List StringEntry,
    type-defs : List ATypeDef,
-   bound : List Text
+   bound : List Text,
+   scrut-depth : Integer
   }
+
+ THE SCRUTINEE LOCAL IS PER GUARD-NESTING DEPTH, and that is a correctness
+ rule rather than hygiene. `emit-wat-match` parks the scrutinee in a local and
+ the else-chain re-reads it for every branch below; a guard is emitted INSIDE
+ that chain's condition, so a `when` in a guard that shared the local would
+ overwrite the value the branches below still need. Measured before the fix:
+ `probe/plug/guardnest.codex` answered 720575940396056776 where the zig plug
+ answered 205, assembling cleanly on the way. A match in a branch BODY is safe
+ and keeps the same local -- once a body is selected the else-chain is dead --
+ so only guards deepen.
+
+ The names are unary (`_s`, `_ss`, `_sss`) so that the collector can shift one
+ level with no arithmetic and no parsing: walk a guard with a FRESH
+ accumulator, shift every scrutinee name it produced by one, merge. That is
+ why there is no depth parameter threaded through `collect-locals-expr` and no
+ second walker to keep in step with this one -- the shift composes, so a match
+ two guards deep is shifted twice by the same rule. A walker mirrored from
+ another walker is what put the last three defects here.
+
+  wat-scrut-name : Integer -> Text
+  wat-scrut-name (d) =
+   if d <= 0 then "_s" else wat-scrut-name (d - 1) & "s"
+
+  wat-scrut : WasmCtx -> Text
+  wat-scrut (ctx) = "$" & wat-scrut-name (ctx.scrut-depth)
+
+  wat-is-scrut : Text -> Boolean
+  wat-is-scrut (n) =
+   text-length n >= 2 & n == wat-scrut-name (text-length n - 2)
+
+  wat-shift-scrut-name : Text -> Text
+  wat-shift-scrut-name (n) =
+   if wat-is-scrut n then wat-scrut-name (text-length n - 1) else n
+
+  wat-shift-scrut : List Text, Integer, List Text -> List Text
+  wat-shift-scrut (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else wat-shift-scrut xs (i + 1) (list-push acc (wat-shift-scrut-name (list-at xs i)))
+
+  locals-merge : List Text, List Text, Integer -> List Text
+  locals-merge (acc) (xs) (i) =
+   if i >= list-length xs then acc
+   else locals-merge (locals-add acc (list-at xs i)) xs (i + 1)
 
 Section: Local Collection
 
@@ -566,7 +610,7 @@ Section: Local Collection
    if i >= list-length bs then acc
    else let b = list-at bs i
    in let acc1 = collect-locals-pat (b.pattern) acc
-   in let acc2 = collect-locals-expr (b.guard) acc1
+   in let acc2 = locals-merge acc1 (wat-shift-scrut (collect-locals-expr (b.guard) []) 0 []) 0
    in let acc3 = collect-locals-expr (b.body) acc2
    in collect-locals-branches-loop bs acc3 (i + 1)
 
@@ -1098,7 +1142,7 @@ Section: Expression Emission
   emit-wat-match : WasmCtx, IRExpr, List IRBranch, Integer -> Text
   emit-wat-match (ctx) (scrut) (branches) (depth) =
    if list-length branches == 0 then "(unreachable)"
-   else "(local.set $_s " & emit-wat-expr ctx scrut & ") " & emit-wat-match-body ctx branches 0 depth
+   else "(local.set " & wat-scrut ctx & " " & emit-wat-expr ctx scrut & ") " & emit-wat-match-body ctx branches 0 depth
 
   emit-wat-match-body : WasmCtx, List IRBranch, Integer, Integer -> Text
   emit-wat-match-body (ctx) (branches) (i) (depth) =
@@ -1113,19 +1157,20 @@ Section: Expression Emission
     is otherwise -> False
 
   emit-wat-guard-test : WasmCtx, IRExpr -> Text
-  emit-wat-guard-test (ctx) (guard) = "(i32.wrap_i64 " & emit-wat-expr ctx guard & ")"
+  emit-wat-guard-test (ctx) (guard) =
+   "(i32.wrap_i64 " & emit-wat-expr (__record-set ctx "scrut-depth" (ctx.scrut-depth + 1)) guard & ")"
 
   emit-wat-match-arm : WasmCtx, IRPat, IRExpr, IRExpr, List IRBranch, Integer, Integer -> Text
   emit-wat-match-arm (ctx) (pat) (guard) (body) (branches) (i) (depth) =
    when pat
     is IrLitPat (text) (ty) (sp) ->
-     let lit-test = "(i64.eq (local.get $_s) (i64.const " & text & "))"
+     let lit-test = "(i64.eq (local.get " & wat-scrut ctx & ") (i64.const " & text & "))"
      in let cond = if wat-guard-trivial guard then lit-test
         else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx guard & ")"
      in "(if (result i64) " & cond & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-wat-ctor-pat ctx name subs guard body branches i depth
     is IrVarPat (name) (ty) (sp) ->
-     let bind = "(local.set $" & wat-sanitize name & " (local.get $_s)) "
+     let bind = "(local.set $" & wat-sanitize name & " (local.get " & wat-scrut ctx & ")) "
      in if wat-guard-trivial guard then bind & emit-wat-expr ctx body
         else bind & "(if (result i64) " & emit-wat-guard-test ctx guard & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
     is IrWildPat (sp) ->
@@ -1146,7 +1191,7 @@ Section: Expression Emission
    in if (i == list-length branches - 1) & wat-guard-trivial guard then
     bind-subs & emit-wat-expr ctx body
    else
-    let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) (i64.const " & integer-to-text tag & "))"
+    let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get " & wat-scrut ctx & "))) (i64.const " & integer-to-text tag & "))"
     in let cond = if wat-guard-trivial guard then tag-test
        else "(if (result i32) " & tag-test & " (then " & bind-subs & emit-wat-guard-test ctx guard & ") (else (i32.const 0)))"
     in "(if (result i64) " & cond & " (then " & bind-subs & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
@@ -1157,7 +1202,7 @@ Section: Expression Emission
    else let off = 8 + i * 8
    in let sub = list-at subs i
    in (when sub
-    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (i64.load (i32.add (i32.wrap_i64 (local.get $_s)) (i32.const " & integer-to-text off & ")))) "
+    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (i64.load (i32.add (i32.wrap_i64 (local.get " & wat-scrut ctx & ")) (i32.const " & integer-to-text off & ")))) "
     is IrWildPat (sp) -> ""
     is IrVecPat (pats) (ty) (sp) -> ""
     is otherwise -> "") & emit-wat-bind-ctor-subs ctx subs (i + 1)
@@ -1625,7 +1670,7 @@ Section: Tail Call Optimization
 
   emit-wat-match-tco : WasmCtx, Text, List IRParam, IRExpr, List IRBranch, Integer -> Text
   emit-wat-match-tco (ctx) (fname) (params) (scrut) (branches) (depth) =
-   "(local.set $_s " & emit-wat-expr-at ctx scrut (depth + 1) & ") " & emit-wat-branches-tco ctx fname params branches 0 depth
+   "(local.set " & wat-scrut ctx & " " & emit-wat-expr-at ctx scrut (depth + 1) & ") " & emit-wat-branches-tco ctx fname params branches 0 depth
 
   emit-wat-branches-tco : WasmCtx, Text, List IRParam, List IRBranch, Integer, Integer -> Text
   emit-wat-branches-tco (ctx) (fname) (params) (bs) (i) (depth) =
@@ -1643,12 +1688,12 @@ Section: Tail Call Optimization
      if guarded == False then body
      else "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
     is IrVarPat (name) (ty) (sp) ->
-     let bind = "(local.set $" & wat-sanitize name & " (local.get $_s)) "
+     let bind = "(local.set $" & wat-sanitize name & " (local.get " & wat-scrut ctx & ")) "
      in if guarded == False then bind & body
         else bind & "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
     is IrLitPat (text) (ty) (sp) ->
      if is-last then body
-     else let lit-test = "(i64.eq (local.get $_s) (i64.const " & text & "))"
+     else let lit-test = "(i64.eq (local.get " & wat-scrut ctx & ") (i64.const " & text & "))"
      in let cond = if guarded == False then lit-test
         else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx (b.guard) & ")"
      in "(if (result i64) " & cond & " (then " & body & ") (else " & rest & "))"
@@ -1656,7 +1701,7 @@ Section: Tail Call Optimization
      let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
      in let bind = emit-wat-bind-ctor-subs ctx subs 0
      in if is-last then bind & body
-     else let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) (i64.const " & integer-to-text tag & "))"
+     else let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get " & wat-scrut ctx & "))) (i64.const " & integer-to-text tag & "))"
      in let cond = if guarded == False then tag-test
         else "(if (result i32) " & tag-test & " (then " & bind & emit-wat-guard-test ctx (b.guard) & ") (else (i32.const 0)))"
      in "(if (result i64) " & cond & " (then " & bind & body & ") (else " & rest & "))"
@@ -3027,8 +3072,25 @@ Section: Chapter Emission
  without defining it halts with CDX3002 and a chapter that defines it emits a
  module the assembler refuses. `needs-blit` is therefore True only for programs
  that cannot assemble anyway, which is exactly the shape `$on_key_import` is in
- for a different reason. Both are recorded as a finding; the query below is
- correct and cheap, and it is not what is wrong here.
+ for a different reason. Both are recorded as a finding.
+
+ AND THE QUERY WAS NOT ASKING ABOUT CALL SITES. It asked whether the name
+ OCCURS: the `IrName` arm answered `nm == n` for any mention, so an ordinary
+ binding spelled `blit-framebuf` -- a local, a parameter -- set the flag and the
+ module carried an `env` import nothing can satisfy. That module ASSEMBLES and
+ dies at instantiation, `unknown import: env::blit_framebuf`, which is worse
+ than the text scan it replaced rather than better. Measured in
+ `probe/plug/blitname.codex`. A call is now a name in the HEAD of an apply
+ spine, which is what the prose above always claimed it was; a bare mention is
+ not a call. Two commits in a row argued from a model of a walker instead of
+ from the walker, and this is the second one.
+
+  wat-apply-head-is : IRExpr, Text -> Boolean
+  wat-apply-head-is (e) (n) =
+   when e
+    is IrName (nm) (ty) (sp) -> nm == n
+    is IrApply (f) (a) (ty) (sp) -> wat-apply-head-is f n
+    is otherwise -> False
 
   wat-expr-calls-name : IRExpr, Text -> Boolean
   wat-expr-calls-name (e) (n) =
@@ -3038,12 +3100,12 @@ Section: Chapter Emission
     is IrTextLit (s) (sp) -> False
     is IrBoolLit (bv) (sp) -> False
     is IrCharLit (cv) (sp) -> False
-    is IrName (nm) (ty) (sp) -> nm == n
+    is IrName (nm) (ty) (sp) -> False
     is IrBinary (op) (l) (r) (ty) (sp) -> wat-expr-calls-name l n | wat-expr-calls-name r n
     is IrNegate (operand) (nty) (sp) -> wat-expr-calls-name operand n
     is IrIf (c) (t) (el) (ty) (sp) -> wat-expr-calls-name c n | wat-expr-calls-name t n | wat-expr-calls-name el n
     is IrLet (name) (ty) (val) (body) (sp) -> wat-expr-calls-name val n | wat-expr-calls-name body n
-    is IrApply (f) (a) (ty) (sp) -> wat-expr-calls-name f n | wat-expr-calls-name a n
+    is IrApply (f) (a) (ty) (sp) -> wat-apply-head-is f n | wat-expr-calls-name f n | wat-expr-calls-name a n
     is IrLambda (params) (body) (ty) (sp) -> wat-expr-calls-name body n
     is IrList (elems) (ty) (sp) -> wat-list-calls-name elems n 0
     is IrMatch (scrut) (branches) (ty) (sp) -> wat-expr-calls-name scrut n | wat-branches-call-name branches n 0
@@ -3143,7 +3205,7 @@ Section: Chapter Emission
    in let fnarity-base = cce-tab-base + cce-tables-bytes
    in let max-arity = wat-fn-type-ceiling arities
    in let heap-start = fnarity-base + list-length arities
-   in let ctx = WasmCtx { arities = arities, strings = strings, type-defs = type-defs, bound = [] }
+   in let ctx = WasmCtx { arities = arities, strings = strings, type-defs = type-defs, bound = [], scrut-depth = 0 }
    in let runtime = wat-runtime-funcs cce-tab-base cce-t2-base cce-out-base fnarity-base max-arity cce-rev-base cce-in-base
    in let data-text = emit-data-sections strings 0
    in let types-text = emit-wat-type-defs type-defs 0 & wat-eq-funcs type-defs 0
