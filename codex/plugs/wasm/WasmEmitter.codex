@@ -1122,7 +1122,7 @@ Section: Expression Emission
    else let ar = lookup-arity (ctx.arities) n
    in if ar == 0 then "(call $" & wat-sanitize n & ")"
       else if ar > 0 then "(i64.const " & integer-to-text (lookup-fn-index (ctx.arities) n) & ")"
-      else "(local.get $" & wat-sanitize n & ")"
+      else wat-refuse-name n
 
   emit-wat-binary : WasmCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> Text
   emit-wat-binary (ctx) (op) (l) (r) (depth) =
@@ -1296,7 +1296,10 @@ Section: Apply Emission
      let bi = wat-try-builtin ctx n args
      in if text-length bi > 0 then bi
      else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n args
-     else if lookup-arity (ctx.arities) n < 0 then wat-emit-indirect ctx args ("(local.get $" & wat-sanitize n & ")")
+     else if lookup-arity (ctx.arities) n < 0 then
+      (if locals-contains (ctx.bound) (wat-sanitize n)
+       then wat-emit-indirect ctx args ("(local.get $" & wat-sanitize n & ")")
+       else wat-refuse-name n)
      else wat-emit-named-apply ctx n args (lookup-arity (ctx.arities) n)
     is IrLambda (ps) (lbody) (lty) (lsp) -> emit-wat-lambda-apply ctx ps lbody args
     is otherwise -> wat-emit-indirect ctx args (emit-wat-expr ctx root)
@@ -1560,6 +1563,32 @@ Section: Apply Emission
  than refusing: `unreachable` is stack-polymorphic, so each assembles where a
  value is expected and traps only if that path runs. Emitting something
  plausible instead is this quire's first standing hazard.
+
+ THE FALL-THROUGH REFUSES INSTEAD OF GUESSING, which is what turns this list
+ from the only guard into a piece of documentation.
+
+ A name that is not bound in this function, is not a constructor and has no
+ arity is not a local -- there is nothing for it to be. It used to be emitted
+ as `(local.get $name)` anyway, on both the bare-name path and the apply path,
+ which produces a module the assembler refuses with "undefined local variable
+ $port_out_32". That names the builtin only because the builtin happens to be
+ the variable, and it reads as an emitter bug rather than as this plug
+ declining to invent an I/O port.
+
+ Measured over the ladder's 580-program corpus: 161 of the 169 modules the
+ assembler refused were this, across 48 distinct builtins -- `port-out-32` in
+ 35 programs, `read-mmio-32` in 17, then gpu, net, process, uefi and the rest.
+ The list below had four names on it.
+
+ `unreachable` is the refusal because it is stack-polymorphic: the module
+ ASSEMBLES, every path that does not reach the builtin runs, and a path that
+ does reach it traps rather than doing something plausible. The block comment
+ beside it is `(; ;)` and not `;;` deliberately -- a line comment would eat the
+ rest of the line, and this emitter writes very long lines.
+
+  wat-refuse-name : Text -> Text
+  wat-refuse-name (n) =
+   "(unreachable) (; no wasm form for " & n & " ;)"
 
   wat-no-such-thing : Text -> Boolean
   wat-no-such-thing (n) =
