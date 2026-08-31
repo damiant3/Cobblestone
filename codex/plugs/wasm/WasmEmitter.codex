@@ -2931,26 +2931,104 @@ Section: Chapter Emission
  shape and the pattern is taken from it: mark the heap, emit ONE definition,
  print it, restore the mark. Only a scalar may cross the restore.
 
-  wasm-defs-mention : WasmCtx, List IRDef, Integer, Text -> Boolean
-  wasm-defs-mention (ctx) (defs) (i) (needle) =
-   if i >= list-length defs then False
-   else let h = __heap-save
-   in let hit = text-contains (emit-wat-def ctx (list-at defs i)) needle
-   in let restored = __heap-restore h
-   in if hit then True else wasm-defs-mention ctx defs (i + 1) needle
+ The header must be printed BEFORE the definitions and depends on whether any
+ of them calls an `env` import, which is why the old code materialised the whole
+ body first. The three FIXED pieces are scanned as text -- they are built
+ already and a needle cannot span the joins, because every piece is
+ newline-terminated and no emitter splits a token across one.
 
- The header must be printed BEFORE the definitions and depends on whether
- any of them calls an `env` import, which is why the old code materialised
- the whole body first. Scanning the pieces separately answers the same
- question without holding them: a needle cannot span the joins, because
- every piece is newline-terminated and no emitter splits a token across one.
+ THE DEFINITIONS ARE ASKED IN THE IR INSTEAD, and that is a fix rather than a
+ tidy-up. Until 2026-08-31 this scanned them by EMITTING EVERY DEFINITION IN
+ FULL and running `text-contains` over the result, twice, throwing both texts
+ away -- so a module cost three emissions of every definition and printed one.
+ Measured on a 95 KB unit: 766 MB of churn through the per-definition brackets,
+ 510 MB of it the two scans. It is also where a 696 KB unit DIED -- 41
+ definitions into the FIRST scan, so the panic named a phase whose entire output
+ is a boolean and the definitions it was asked to print were never reached.
 
-  wasm-mention-any : WasmCtx, List IRDef, Text, Text, Text, Text -> Boolean
-  wasm-mention-any (ctx) (defs) (runtime) (types-text) (entry) (needle) =
+ An import is needed when a definition CALLS the builtin, and the IR says so
+ with no allocation at all. The walk mirrors `collect-strings-expr` arm for arm,
+ which is the argument for its coverage: that shape already has to reach every
+ text literal in the program or the string table comes out short. Where the two
+ differ is a case the text scan got WRONG: a chapter that DEFINES `blit-framebuf`
+ emits `(func $blit_framebuf`, the old needle hit, and the module declared an
+ import and a function under one name -- which `wat2wasm` refuses. Asking about
+ call sites cannot do that.
+
+  wat-expr-calls-name : IRExpr, Text -> Boolean
+  wat-expr-calls-name (e) (n) =
+   when e
+    is IrIntLit (v) (sp) -> False
+    is IrNumLit (v) (sp) -> False
+    is IrTextLit (s) (sp) -> False
+    is IrBoolLit (bv) (sp) -> False
+    is IrCharLit (cv) (sp) -> False
+    is IrName (nm) (ty) (sp) -> nm == n
+    is IrBinary (op) (l) (r) (ty) (sp) -> wat-expr-calls-name l n | wat-expr-calls-name r n
+    is IrNegate (operand) (nty) (sp) -> wat-expr-calls-name operand n
+    is IrIf (c) (t) (el) (ty) (sp) -> wat-expr-calls-name c n | wat-expr-calls-name t n | wat-expr-calls-name el n
+    is IrLet (name) (ty) (val) (body) (sp) -> wat-expr-calls-name val n | wat-expr-calls-name body n
+    is IrApply (f) (a) (ty) (sp) -> wat-expr-calls-name f n | wat-expr-calls-name a n
+    is IrLambda (params) (body) (ty) (sp) -> wat-expr-calls-name body n
+    is IrList (elems) (ty) (sp) -> wat-list-calls-name elems n 0
+    is IrMatch (scrut) (branches) (ty) (sp) -> wat-expr-calls-name scrut n | wat-branches-call-name branches n 0
+    is IrAct (stmts) (ty) (sp) -> wat-stmts-call-name stmts n 0
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> wat-expr-calls-name body n
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> wat-expr-calls-name body n
+    is IrRecord (name) (fields) (ty) (sp) -> wat-fields-call-name fields n 0
+    is IrFieldAccess (rec) (field) (ty) (sp) -> wat-expr-calls-name rec n
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> wat-expr-calls-name rec n | wat-expr-calls-name val n
+    is IrFork (body) (ty) (sp) -> wat-expr-calls-name body n
+    is IrAwait (task) (ty) (sp) -> wat-expr-calls-name task n
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> wat-stmts-call-name body n 0 | wat-stmts-call-name fb n 0 | wat-stmts-call-name fail-stmts n 0
+    is IrError (msg) (ty) (sp) -> False
+
+  wat-list-calls-name : List IRExpr, Text, Integer -> Boolean
+  wat-list-calls-name (xs) (n) (i) =
+   if i >= list-length xs then False
+   else if wat-expr-calls-name (list-at xs i) n then True
+   else wat-list-calls-name xs n (i + 1)
+
+  wat-branches-call-name : List IRBranch, Text, Integer -> Boolean
+  wat-branches-call-name (bs) (n) (i) =
+   if i >= list-length bs then False
+   else if wat-expr-calls-name ((list-at bs i).body) n then True
+   else wat-branches-call-name bs n (i + 1)
+
+  wat-stmts-call-name : List IRActStmt, Text, Integer -> Boolean
+  wat-stmts-call-name (ss) (n) (i) =
+   if i >= list-length ss then False
+   else let hit = when (list-at ss i)
+    is IrDoBind (name) (ty) (val) (sp) -> wat-expr-calls-name val n
+    is IrDoExec (e) (sp) -> wat-expr-calls-name e n
+   in if hit then True else wat-stmts-call-name ss n (i + 1)
+
+  wat-fields-call-name : List IRFieldVal, Text, Integer -> Boolean
+  wat-fields-call-name (fs) (n) (i) =
+   if i >= list-length fs then False
+   else if wat-expr-calls-name ((list-at fs i).value) n then True
+   else wat-fields-call-name fs n (i + 1)
+
+ An empty builtin name answers False without walking, and it is not a sentinel
+ for "unused": `$on_key_import` HAS no producer -- no arm of this emitter emits
+ it -- so the scan that used to look for it walked every definition of every
+ chapter to say False, always. The flag and its import line are kept rather than
+ deleted because the hole is that `on-key` has no builtin arm, which is finding
+ 1's shape, and deleting the line it guards would hide it.
+
+  wat-defs-call-name : List IRDef, Text, Integer -> Boolean
+  wat-defs-call-name (defs) (n) (i) =
+   if n == "" then False
+   else if i >= list-length defs then False
+   else if wat-expr-calls-name ((list-at defs i).body) n then True
+   else wat-defs-call-name defs n (i + 1)
+
+  wasm-mention-any : List IRDef, Text, Text, Text, Text, Text -> Boolean
+  wasm-mention-any (defs) (runtime) (types-text) (entry) (needle) (builtin) =
    if text-contains runtime needle then True
    else if text-contains types-text needle then True
    else if text-contains entry needle then True
-   else wasm-defs-mention ctx defs 0 needle
+   else wat-defs-call-name defs builtin 0
 
   wasm-stream-defs : WasmCtx, List IRDef, Integer -> [Console] Nothing
   wasm-stream-defs (ctx) (defs) (i) =
@@ -2986,8 +3064,8 @@ Section: Chapter Emission
    in let data-text = emit-data-sections strings 0
    in let types-text = emit-wat-type-defs type-defs 0 & wat-eq-funcs type-defs 0
    in let entry = wat-emit-entry (m.defs)
-   in let needs-blit = wasm-mention-any ctx (m.defs) runtime types-text entry "$blit_framebuf"
-   in let needs-key = wasm-mention-any ctx (m.defs) runtime types-text entry "$on_key_import"
+   in let needs-blit = wasm-mention-any (m.defs) runtime types-text entry "$blit_framebuf" "blit-framebuf"
+   in let needs-key = wasm-mention-any (m.defs) runtime types-text entry "$on_key_import" ""
    in let header = wat-runtime-header heap-start needs-blit needs-key
    in act
     print-uni header
