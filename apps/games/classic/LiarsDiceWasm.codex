@@ -1,0 +1,107 @@
+Chapter: LiarsDiceWasm
+  cites Games chapter LiarsDice
+  cites Foreword chapter List
+
+ The browser interface for Liar's Dice, on the handle contract in
+ games-backlog.md GAME-11. The dice pools, the per-player counts and the
+ alive flags are several lists, so the page holds the state's address.
+
+ `ld-lose-die` and the roll write through `list-set-at`, which mutates in
+ place, so `ld-wasm-step` copies the three lists before taking a turn.
+
+ A bid is one integer carrying both halves, quantity and face, which is why
+ the interface exposes `ld-wasm-bid-qty` and `ld-wasm-bid-face` rather than
+ asking the page to know how they are packed.
+
+ We say:
+
+Section: Copying
+
+  ld-copy-list : List Integer, Integer, Integer, List Integer -> List Integer
+  ld-copy-list (src) (i) (n) (acc) =
+    if i >= n then acc
+    else ld-copy-list src (i + 1) n (list-push acc (list-at src i))
+
+  ld-copy-state : LDState -> LDState
+  ld-copy-state (s) =
+    LDState {
+      dice-counts = ld-copy-list (s.dice-counts) 0 (s.num-players) [],
+      dice-pools = ld-copy-list (s.dice-pools) 0 (s.num-players * 5) [],
+      num-players = s.num-players,
+      current-bid = s.current-bid,
+      last-bidder = s.last-bidder,
+      current-turn = s.current-turn,
+      alive = ld-copy-list (s.alive) 0 (s.num-players) [],
+      alive-count = s.alive-count,
+      rng = s.rng
+    }
+
+Section: The Browser Interface
+
+  ld-wasm-new : Integer, Integer -> LDState
+  ld-wasm-new (seed) (players) = ld-init seed players
+
+  ld-wasm-step : LDState -> LDState
+  ld-wasm-step (s) =
+    if s.alive-count <= 1 then s
+    else ld-do-turn (ld-copy-state s)
+
+  ld-wasm-players : LDState -> Integer
+  ld-wasm-players (s) = s.num-players
+
+  ld-wasm-dice : LDState, Integer -> Integer
+  ld-wasm-dice (s) (player) =
+    if player < 0 then (-1)
+    else if player >= s.num-players then (-1)
+    else list-at (s.dice-counts) player
+
+  ld-wasm-die : LDState, Integer, Integer -> Integer
+  ld-wasm-die (s) (player) (k) =
+    if player < 0 then (-1)
+    else if player >= s.num-players then (-1)
+    else if k < 0 then (-1)
+    else if k >= 5 then (-1)
+    else list-at (s.dice-pools) (player * 5 + k)
+
+  ld-wasm-alive : LDState, Integer -> Integer
+  ld-wasm-alive (s) (player) =
+    if player < 0 then (-1)
+    else if player >= s.num-players then (-1)
+    else list-at (s.alive) player
+
+  ld-wasm-alive-count : LDState -> Integer
+  ld-wasm-alive-count (s) = s.alive-count
+
+  ld-wasm-total : LDState -> Integer
+  ld-wasm-total (s) = ld-total-dice s
+
+  ld-wasm-bid : LDState -> Integer
+  ld-wasm-bid (s) = s.current-bid
+
+  ld-wasm-bid-qty : LDState -> Integer
+  ld-wasm-bid-qty (s) = if s.current-bid < 0 then (-1) else ld-bid-qty (s.current-bid)
+
+  ld-wasm-bid-face : LDState -> Integer
+  ld-wasm-bid-face (s) = if s.current-bid < 0 then (-1) else ld-bid-face (s.current-bid)
+
+  ld-wasm-turn : LDState -> Integer
+  ld-wasm-turn (s) = s.current-turn
+
+  ld-wasm-last-bidder : LDState -> Integer
+  ld-wasm-last-bidder (s) = s.last-bidder
+
+  ld-wasm-done : LDState -> Integer
+  ld-wasm-done (s) = if s.alive-count <= 1 then 1 else 0
+
+  ld-wasm-winner : LDState -> Integer
+  ld-wasm-winner (s) =
+    if s.alive-count > 1 then (-1)
+    else ld-find-winner s 0
+
+  ld-wasm-count-face : LDState, Integer -> Integer
+  ld-wasm-count-face (s) (face) =
+    if face < 1 then 0
+    else if face > 6 then 0
+    else ld-count-face s face
+
+Page 1

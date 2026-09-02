@@ -1,0 +1,96 @@
+Chapter: MinesweeperWasm
+  cites Games chapter Minesweeper
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Minesweeper, on the handle contract in
+ games-backlog.md GAME-11. Three grids of eighty-one cells plus the
+ counters are past an i32, so the page holds the state's address.
+
+ `ms-reveal` writes the revealed grid with `list-set-at`, which mutates in
+ place, so `ms-wasm-reveal` copies first.
+
+ The mine grid is exposed as well as the revealed grid, deliberately. A page
+ must only draw a cell whose revealed flag is set, but a GRADER needs the
+ answer key to check that the adjacency counts are right, and a page that
+ has lost needs to show where the mines were.
+
+ We say:
+
+Section: Copying
+
+  ms-copy-grid : List Integer, Integer, List Integer -> List Integer
+  ms-copy-grid (src) (i) (acc) =
+    if i >= 81 then acc
+    else ms-copy-grid src (i + 1) (list-push acc (list-at src i))
+
+  ms-copy-state : MinesweeperState -> MinesweeperState
+  ms-copy-state (st) =
+    MinesweeperState {
+      mine-grid = st.mine-grid,
+      revealed = ms-copy-grid (st.revealed) 0 [],
+      adjacent = st.adjacent,
+      cells-revealed = st.cells-revealed,
+      mines-hit = st.mines-hit,
+      safe-cells = st.safe-cells,
+      game-over = st.game-over,
+      won = st.won,
+      moves = st.moves,
+      rng = st.rng
+    }
+
+Section: The Browser Interface
+
+  ms-wasm-new : Integer -> MinesweeperState
+  ms-wasm-new (seed) = ms-new (rng-new seed)
+
+  ms-wasm-mine : MinesweeperState, Integer -> Integer
+  ms-wasm-mine (st) (i) =
+    if i < 0 then (-1)
+    else if i >= 81 then (-1)
+    else list-at (st.mine-grid) i
+
+  ms-wasm-revealed : MinesweeperState, Integer -> Integer
+  ms-wasm-revealed (st) (i) =
+    if i < 0 then (-1)
+    else if i >= 81 then (-1)
+    else list-at (st.revealed) i
+
+  ms-wasm-adjacent : MinesweeperState, Integer -> Integer
+  ms-wasm-adjacent (st) (i) =
+    if i < 0 then (-1)
+    else if i >= 81 then (-1)
+    else list-at (st.adjacent) i
+
+  ms-wasm-count : MinesweeperState -> Integer
+  ms-wasm-count (st) = st.cells-revealed
+
+  ms-wasm-hits : MinesweeperState -> Integer
+  ms-wasm-hits (st) = st.mines-hit
+
+  ms-wasm-moves : MinesweeperState -> Integer
+  ms-wasm-moves (st) = st.moves
+
+  ms-wasm-done : MinesweeperState -> Integer
+  ms-wasm-done (st) = if st.game-over then 1 else 0
+
+  ms-wasm-won : MinesweeperState -> Integer
+  ms-wasm-won (st) = if st.won then 1 else 0
+
+  ms-wasm-safe : MinesweeperState -> Integer
+  ms-wasm-safe (st) = st.safe-cells
+
+  ms-wasm-reveal : MinesweeperState, Integer -> MinesweeperState
+  ms-wasm-reveal (st) (i) =
+    if st.game-over then st
+    else if i < 0 then st
+    else if i >= 81 then st
+    else if list-at (st.revealed) i /= 0 then st
+    else ms-reveal (ms-copy-state st) i
+
+  ms-wasm-ai : MinesweeperState -> Integer
+  ms-wasm-ai (st) =
+    if st.game-over then (-1)
+    else ms-ai-pick st
+
+Page 1

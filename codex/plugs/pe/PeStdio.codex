@@ -4,13 +4,17 @@ Section: Body
 
  The payload is the one `codex/plugs/pe/run.ps1` builds: a mode byte, then
  four bytes of heap pages when the mode is 1, then the CDX. Mode 2 carries an
- ARM64 wire the parser reads straight out of the buffer.
+ ARM64 wire the parser reads straight out of the buffer. Mode 3 is a WINDOWS
+ CONSOLE program built from a whole CDX -- subsystem 3 with a kernel32 import
+ table, which is a different container from the UEFI application mode 0 and 1
+ produce.
 
   plug-emit-bytes : Integer, Integer -> [Console] Nothing
   plug-emit-bytes (payload-buf) (payload-len) =
    if payload-len < 2 then print-line-uni ("REFUSED short payload " & show payload-len)
    else let mode = peek-byte payload-buf 0
-   in if mode > 2 then print-line-uni ("REFUSED unknown mode " & show mode)
+   in if mode == 3 then (if payload-len < 225 then print-line-uni ("REFUSED mode 3 payload " & show payload-len & " is shorter than a CDX header") else write-binary (build-pe-console-from-cdx payload-buf 1 (payload-len - 1)))
+   else if mode > 3 then print-line-uni ("REFUSED unknown mode " & show mode)
    else if mode == 1 & payload-len < 6 then print-line-uni ("REFUSED mode 1 payload " & show payload-len & " carries no heap-page count")
    else if mode == 2 then write-binary (build-arm64-pe-from-buf payload-buf 1)
    else let payload = __buf-read-bytes payload-buf 0 payload-len

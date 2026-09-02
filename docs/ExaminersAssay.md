@@ -80,6 +80,37 @@ passing test as broken. **A check more forgiving than the runner is not a
 check.** The trailing-newline case this comes from is in
 `docs/Agents/PerforceProcess.md` trap 5b.
 
+### Two sidecars are one byte short of what their subject prints, and three arms agree against them
+
+Found 2026-09-01 by reek, grading the wasm plug against these sidecars. Not
+fixed here: which side is wrong needs the bare-metal battery, which is not an
+agent command.
+
+**The measurement.** `apps/annotation-query-test` and `apps/diagnostic-boot`
+each produce their sidecar's content plus exactly one trailing newline
+(`startsWith` is true, 168 against 167 and 427 against 426) on THREE
+independent arms: the wasm plug under wasmtime, the hosted x86-64 lift on
+linux, and the same lift on windows. Both sidecars grade green on bare metal.
+
+**The source agrees with the three arms, not with the sidecars.**
+`annq-render` (`apps/works/AnnotationsQuery.codex:58`) appends `"\n"` per
+entry and the subject's last statement is `print-line-uni (annq-render
+warns)`, which adds its own. `diag-repl-loop`
+(`codex/os/kernel/DiagnosticShell.codex:210`) is `if diag-is-exit cmd then
+print-line-uni ""`, an empty line after `halting.`. Two newlines is what both
+programs say.
+
+**So either bare metal drops the final newline of a program's output, or the
+two sidecars were captured or trimmed short.** Both are worth knowing and the
+second is the cheaper to check. It is not the culture-sensitive comparison
+documented in the next section: measured, `"abc\n\n" -eq "abc\n"` is False
+both culture-sensitively and ordinally, so a trailing newline is not a
+character the comparison can ignore.
+
+**Why only two subjects show it.** A sidecar one byte short is invisible
+unless the rest of the output matches exactly, so this is a floor on how many
+sidecars carry it, never a count. Do not turn "two" into a census.
+
 ### An `.expected` comparison is not byte-for-byte, and 139 sidecars rely on that without anyone knowing
 
 Found 2026-07-30 by blu, while diagnosing what looked like two failing tests
@@ -436,7 +467,7 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **203** expected-failure tests (measured
+`codex/test/errors/` holds **205** expected-failure tests (measured
 2026-08-27).
 
 ## What the standing gate does not cover
@@ -5036,7 +5067,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-203 tests in `codex/test/errors/` verify that the compiler rejects
+205 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),

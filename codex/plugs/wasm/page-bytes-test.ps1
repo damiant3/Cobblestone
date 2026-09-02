@@ -9,10 +9,15 @@
 # plugs-backlog 1.92; re-proving identity costs a codex-vm boot per arm and
 # belongs to a change that touches an emitter, not to every run of this.
 #
-# elf has no positive arm: nothing in the tree emits the code/data/functable
-# payload it reads (the dark-lens reason, plugs 1.92 "What is left"), so until
-# the hosted-runtime payload mode exists (PrismDevEnvironment.md stage 5a) its
-# arms are the refusal and the module building at all.
+# elf HAS positive arms now, one per container mode. What was missing was never
+# the plug: it was a producer for the code/data/functable payload it reads. The
+# page is that producer -- it takes the x86-64 straight out of the CDX the way
+# build/cdx-to-pe.ps1 does -- so the lens is no longer dark and the arms below
+# grade both modes rather than only a refusal.
+#
+# What stage 5a still owes is the CODE, not the container: the user-mode ELF64
+# is a correct file whose instructions do bare-metal I/O, so it faults at its
+# first print on a hosted OS until the write/mmap arms exist.
 [CmdletBinding()]
 param(
     [string]$Kernel,
@@ -123,14 +128,71 @@ else {
     else { $rows += [pscustomobject]@{ arm = 'img refusal'; verdict = 'BAD'; note = 'a 5-byte payload was not refused' } }
 }
 
-# -- elf: refusal only, until stage 5a gives it a producer --------------------
+# -- elf: kernel and user-mode positives, plus two refusals -------------------
+#
+# elf HAD no positive arm, because nothing emitted the code/data/functable
+# payload it reads. The page emits one now: it takes the x86-64 straight out of
+# the CDX the way build/cdx-to-pe.ps1 does -- text at header offsets 168/176,
+# rodata at 184/192 -- and puts a mode byte in front. So the arms below build
+# the same wire the page builds, and grade the ELF headers that come back.
+#
+# The two modes are graded on the fields that DISTINGUISH them rather than on
+# "an ELF came back": class, machine and entry. A builder wired to the wrong
+# mode still answers a valid ELF, so a magic-number check would pass for both.
 $elfWasm = Get-Module 'elf'
 if (-not $elfWasm) { $rows += [pscustomobject]@{ arm = 'elf'; verdict = 'ABSENT'; note = 'no module' } }
 else {
+    $textOff = [BitConverter]::ToInt64($cdx, 168); $textSz = [BitConverter]::ToInt64($cdx, 176)
+    $roOff = [BitConverter]::ToInt64($cdx, 184);   $roSz = [BitConverter]::ToInt64($cdx, 192)
+    $sane = $textOff -ge 0 -and $textSz -ge 0 -and ($textOff + $textSz) -le $cdx.Length -and
+            $roOff -ge 0 -and $roSz -ge 0 -and ($roOff + $roSz) -le $cdx.Length
+    if (-not $sane) {
+        $rows += [pscustomobject]@{ arm = 'elf'; verdict = 'BAD'; note = "the CDX header's sections run past the file" }
+    } else {
+        $code = $cdx[$textOff..($textOff + $textSz - 1)]
+        $data = if ($roSz -gt 0) { $cdx[$roOff..($roOff + $roSz - 1)] } else { @() }
+        foreach ($m in @(0, 1)) {
+            $payload = [byte[]](@([byte]$m) + (Le32 $textSz) + (Le32 $roSz) + (Le32 0) + $code + $data)
+            $elf = Invoke-BytesModule $elfWasm $payload "elf-mode$m"
+            $label = if ($m -eq 0) { 'elf kernel' } else { 'elf usermode' }
+            if ($null -eq $elf -or $elf.Length -lt 64) {
+                $rows += [pscustomobject]@{ arm = $label; verdict = 'TRAP'; note = 'no clean exit or too short for a header' }
+                continue
+            }
+            $isElf = $elf[0] -eq 0x7F -and $elf[1] -eq 0x45 -and $elf[2] -eq 0x4C -and $elf[3] -eq 0x46
+            if (-not $isElf) {
+                $head = [Text.Encoding]::ASCII.GetString($elf, 0, [Math]::Min(80, $elf.Length))
+                $rows += [pscustomobject]@{ arm = $label; verdict = 'BAD'; note = "not an ELF: $($head.Trim())" }
+                continue
+            }
+            $class = $elf[4]; $machine = [BitConverter]::ToUInt16($elf, 18)
+            if ($m -eq 0) {
+                $entry = [BitConverter]::ToUInt32($elf, 24)
+                # ELF32, EM_386, entry 32 bytes into the bare-metal load address.
+                $want = ($class -eq 1 -and $machine -eq 3 -and $entry -eq (1048576 + 32))
+                $note = "ELF32 machine=0x{0:X} entry=0x{1:X} {2} bytes" -f $machine, $entry, $elf.Length
+            } else {
+                $entry = [BitConverter]::ToUInt64($elf, 24)
+                # ELF64, EM_X86_64, entry past the header and two phdrs at the
+                # conventional Linux base: 0x400000 + 176 + 32.
+                $want = ($class -eq 2 -and $machine -eq 0x3E -and $entry -eq (4194304 + 176 + 32))
+                $note = "ELF64 machine=0x{0:X} entry=0x{1:X} {2} bytes" -f $machine, $entry, $elf.Length
+            }
+            $rows += [pscustomobject]@{ arm = $label; verdict = $(if ($want) { 'OK' } else { 'BAD' }); note = $note }
+        }
+    }
     $ref = Invoke-BytesModule $elfWasm ([byte[]]@(1, 2, 3)) 'elf-short'
     $refTxt = if ($ref) { [Text.Encoding]::UTF8.GetString($ref) } else { '' }
     if ($refTxt -match 'REFUSED') { $rows += [pscustomobject]@{ arm = 'elf refusal'; verdict = 'OK'; note = ($refTxt.Trim() -split "`n")[0] } }
     else { $rows += [pscustomobject]@{ arm = 'elf refusal'; verdict = 'BAD'; note = 'a 3-byte payload was not refused' } }
+    # An unknown MODE is a different refusal from a short payload, and it is the
+    # one a new container target would trip (L-ACCEPTED). Graded separately so
+    # a fallback that silently built a bare-metal image could not pass as this.
+    $badMode = [byte[]](@([byte]9) + (Le32 0) + (Le32 0) + (Le32 0))
+    $ref2 = Invoke-BytesModule $elfWasm $badMode 'elf-badmode'
+    $ref2Txt = if ($ref2) { [Text.Encoding]::UTF8.GetString($ref2) } else { '' }
+    if ($ref2Txt -match 'REFUSED unknown mode') { $rows += [pscustomobject]@{ arm = 'elf mode refusal'; verdict = 'OK'; note = ($ref2Txt.Trim() -split "`n")[0] } }
+    else { $rows += [pscustomobject]@{ arm = 'elf mode refusal'; verdict = 'BAD'; note = 'mode 9 was not refused by name' } }
 }
 
 Write-Host ''

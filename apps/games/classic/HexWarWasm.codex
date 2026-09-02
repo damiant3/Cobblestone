@@ -1,0 +1,178 @@
+Chapter: HexWarWasm
+  cites Games chapter HexWar
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Hex War, on the handle contract in
+ games-backlog.md GAME-11. This game does not keep its state in one record
+ the way the others do: a position is a list of units, a terrain map, whose
+ turn it is and how far through the game we are, threaded as separate
+ arguments through `hexwar-loop`. So the handle the page holds is a record
+ defined here that gathers them, and stepping it is one call of
+ `run-hexwar-turn` rather than a whole game.
+
+ There are thirteen scenarios, each a config of its own. The page picks one
+ by index and the roster and map come with it.
+
+ A unit is never removed from the list. It is marked `eliminated` and stays
+ in place, so the unit COUNT is fixed for a whole game and the alive count
+ is what moves. That is the invariant the grader leans on, since a game
+ that quietly grew or dropped a unit would still play.
+
+ We say:
+
+Section: The Handle
+
+  HwState = record {
+    cfg    : WargameConfig,
+    units  : List Unit,
+    turn   : Integer,
+    active : Integer,
+    rng    : Rng,
+    over   : Boolean
+  }
+
+  hw-scenario : Integer -> WargameConfig
+  hw-scenario (n) =
+    if n == 0 then scenario-stalingrad
+    else if n == 1 then scenario-normandy
+    else if n == 2 then scenario-bulge
+    else if n == 3 then scenario-panzerblitz
+    else if n == 4 then scenario-gettysburg
+    else if n == 5 then scenario-afrika-korps
+    else if n == 6 then scenario-waterloo
+    else if n == 7 then scenario-midway
+    else if n == 8 then scenario-kursk
+    else if n == 9 then scenario-market-garden
+    else if n == 10 then scenario-guadalcanal
+    else if n == 11 then scenario-austerlitz
+    else scenario-blitzkrieg
+
+Section: Copying
+
+ A shallow copy of the unit list is not enough here. The turn writes with
+ `__record-set` as well as `list-set-at`, so it mutates the unit RECORDS
+ and then writes them back into the list; copying only the list leaves both
+ sides pointing at the same units. Every field is copied by hand below for
+ that reason.
+
+  hw-copy-unit : Unit -> Unit
+  hw-copy-unit (u) =
+    Unit {
+      id = u.id, type-id = u.type-id, owner = u.owner,
+      q = u.q, r = u.r,
+      strength = u.strength, max-strength = u.max-strength,
+      movement = u.movement, max-movement = u.max-movement,
+      attack = u.attack, defense = u.defense, range = u.range,
+      experience = u.experience,
+      disrupted = u.disrupted, eliminated = u.eliminated,
+      has-moved = u.has-moved, has-attacked = u.has-attacked
+    }
+
+  hw-copy-units : List Unit, Integer, List Unit -> List Unit
+  hw-copy-units (src) (i) (acc) =
+    if i >= list-length src then acc
+    else hw-copy-units src (i + 1) (list-push acc (hw-copy-unit (list-at src i)))
+
+Section: The Browser Interface
+
+  hw-wasm-new : Integer, Integer -> HwState
+  hw-wasm-new (scenario) (seed) =
+    let cfg = hw-scenario (if scenario < 0 then 0 else if scenario > 12 then 12 else scenario)
+    in HwState { cfg = cfg, units = hw-copy-units (cfg.unit-roster) 0 [], turn = 0, active = 0,
+                 rng = rng-new seed, over = False }
+
+  hw-wasm-step : HwState -> HwState
+  hw-wasm-step (s) =
+    if s.over then s
+    else let cfg = s.cfg
+    in if s.turn >= cfg.turn-limit then HwState { cfg = cfg, units = s.units, turn = s.turn, active = s.active, rng = s.rng, over = True }
+    else if count-alive (s.units) 0 == 0 then HwState { cfg = cfg, units = s.units, turn = s.turn, active = s.active, rng = s.rng, over = True }
+    else if count-alive (s.units) 1 == 0 then HwState { cfg = cfg, units = s.units, turn = s.turn, active = s.active, rng = s.rng, over = True }
+    else let r2 = rng-next (s.rng)
+    in let units2 = run-hexwar-turn (hw-copy-units (s.units) 0 []) (cfg.terrain-data) (s.active) (cfg.map-width) (cfg.map-height) (cfg.stacking-limit) r2
+    in let next-player = rng-mod (s.active + 1) (cfg.num-players)
+    in let next-turn = if next-player == 0 then s.turn + 1 else s.turn
+    in HwState { cfg = cfg, units = units2, turn = next-turn, active = next-player, rng = r2, over = False }
+
+  hw-wasm-units : HwState -> Integer
+  hw-wasm-units (s) = list-length (s.units)
+
+  hw-wasm-unit-owner : HwState, Integer -> Integer
+  hw-wasm-unit-owner (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.units) then (-1)
+    else (list-at (s.units) i).owner
+
+  hw-wasm-unit-q : HwState, Integer -> Integer
+  hw-wasm-unit-q (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.units) then (-1)
+    else (list-at (s.units) i).q
+
+  hw-wasm-unit-r : HwState, Integer -> Integer
+  hw-wasm-unit-r (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.units) then (-1)
+    else (list-at (s.units) i).r
+
+  hw-wasm-unit-strength : HwState, Integer -> Integer
+  hw-wasm-unit-strength (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.units) then (-1)
+    else (list-at (s.units) i).strength
+
+  hw-wasm-unit-max : HwState, Integer -> Integer
+  hw-wasm-unit-max (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.units) then (-1)
+    else (list-at (s.units) i).max-strength
+
+  hw-wasm-unit-dead : HwState, Integer -> Integer
+  hw-wasm-unit-dead (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.units) then (-1)
+    else if (list-at (s.units) i).eliminated then 1 else 0
+
+  hw-wasm-unit-type : HwState, Integer -> Integer
+  hw-wasm-unit-type (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.units) then (-1)
+    else (list-at (s.units) i).type-id
+
+  hw-wasm-alive : HwState, Integer -> Integer
+  hw-wasm-alive (s) (owner) = count-alive (s.units) owner
+
+  hw-wasm-vp : HwState, Integer -> Integer
+  hw-wasm-vp (s) (owner) =
+    ai-count-vp (s.cfg.terrain-data) (s.units) owner (s.cfg.map-width)
+
+  hw-wasm-turn : HwState -> Integer
+  hw-wasm-turn (s) = s.turn
+
+  hw-wasm-active : HwState -> Integer
+  hw-wasm-active (s) = s.active
+
+  hw-wasm-turn-limit : HwState -> Integer
+  hw-wasm-turn-limit (s) = s.cfg.turn-limit
+
+  hw-wasm-width : HwState -> Integer
+  hw-wasm-width (s) = s.cfg.map-width
+
+  hw-wasm-height : HwState -> Integer
+  hw-wasm-height (s) = s.cfg.map-height
+
+  hw-wasm-terrain : HwState, Integer -> Integer
+  hw-wasm-terrain (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.cfg.terrain-data) then (-1)
+    else (list-at (s.cfg.terrain-data) i).terrain
+
+  hw-wasm-done : HwState -> Integer
+  hw-wasm-done (s) = if s.over then 1 else 0
+
+  hw-wasm-winner : HwState -> Integer
+  hw-wasm-winner (s) =
+    determine-winner (s.units) (s.cfg.terrain-data) (s.turn) (s.cfg.turn-limit) (s.cfg.map-width)
+
+Page 1

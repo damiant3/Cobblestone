@@ -103,6 +103,7 @@ Section: Keywords and Sanitization
    "CxFn3", "CxFn4", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
    "cx_ll_concat", "cx_ll_cons", "cx_ll_insert_at", "cx_ll_with_capacity",
    "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx",
+   "cx_real_to_bits", "cx_bits_to_real",
    "cx_char_to_text", "cx_char_encode", "cx_list_len", "cx_list_at",
    "cx_text_len", "cx_char_at", "cx_text_dup", "cx_substring", "cx_ipow",
    "cx_shl", "cx_shr", "cx_heap_base", "cx_buf_want", "cx_frontier_crosses",
@@ -1078,6 +1079,8 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "print-text", emit = \args ctx d ty -> "cx_print(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "text-to-double-bits", emit = \args ctx d ty -> "cx_text_to_double_bits(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "bits-to-real-approx", emit = \args ctx d ty -> "cx_bits_to_real_approx(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "real-to-bits", emit = \args ctx d ty -> "cx_real_to_bits(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "bits-to-real", emit = \args ctx d ty -> "cx_bits_to_real(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "show", emit = \args ctx d ty -> zig-show-arg (list-at args 0) ctx d },
@@ -1120,6 +1123,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__heap-advance", emit = \args ctx d ty -> "cx_heap_advance(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__heap-restore", emit = \args ctx d ty -> "cx_heap_restore(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-qword", emit = \args ctx d ty -> "cx_peek_qword(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "hosted-kind", emit = \args ctx d ty -> "@as(i64, 1)" },
     ZigBuiltinEmitter { name = "address-of", emit = \args ctx d ty -> "cx_address_of(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "variant-tag", emit = \args ctx d ty -> "cx_vtag(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "read-file-uni", emit = \args ctx d ty -> "cx_read_file_uni(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
@@ -1221,6 +1225,7 @@ Section: Name Mapping
     ZigNameEntry { codex-name = "False", zig-name = "false" },
     ZigNameEntry { codex-name = "Nothing", zig-name = "null" },
     ZigNameEntry { codex-name = "__deck-pos", zig-name = "cx_deck_pos()" },
+    ZigNameEntry { codex-name = "hosted-kind", zig-name = "@as(i64, 1)" },
     ZigNameEntry { codex-name = "__heap-save", zig-name = "cx_heap_save()" },
     ZigNameEntry { codex-name = "__deck-enter", zig-name = "cx_deck_enter()" },
     ZigNameEntry { codex-name = "__deck-exit", zig-name = "cx_deck_exit()" }]
@@ -1947,9 +1952,16 @@ Section: Lambda and List Helpers
 
   emit-zig-list-elems : List IRExpr, Integer, ZigCtx, Integer -> Text
   emit-zig-list-elems (elems) (i) (ctx) (d) =
-   if i == list-length elems then ""
-   else if i == list-length elems - 1 then emit-zig-expr (list-at elems i) ctx (d + 1)
-   else emit-zig-expr (list-at elems i) ctx (d + 1) & ", " & emit-zig-list-elems elems (i + 1) ctx d
+   emit-zig-list-span elems i (list-length elems) ctx d
+
+  emit-zig-list-span : List IRExpr, Integer, Integer, ZigCtx, Integer -> Text
+  emit-zig-list-span (elems) (lo) (hi) (ctx) (d) =
+   if lo >= hi then ""
+   else if hi - lo == 1 then
+    (if lo == list-length elems - 1 then emit-zig-expr (list-at elems lo) ctx (d + 1)
+     else emit-zig-expr (list-at elems lo) ctx (d + 1) & ", ")
+   else let mid = lo + (hi - lo) / 2
+   in emit-zig-list-span elems lo mid ctx d & emit-zig-list-span elems mid hi ctx d
 
 Section: Record Emission
 
@@ -2075,11 +2087,45 @@ Section: Match Emission
    in if zig-branches-guarded branches 0 then emit-zig-match-chain scrut branches ctx d mty
    else zig-pin-lit-arms branches 0 ("switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex mty tl & " }")
 
+ A zig `switch` prong refuses a value an earlier prong already names:
+ `error: duplicate switch value`, an error rather than a warning. C# refuses
+ the same shape as CS8510. Codex permits it, because first-match-wins makes
+ the later arm dead, and an or-pattern expands on the wire into one branch per
+ alternative, so a source arm overlapping an earlier one arrives here as a
+ second prong for the same value. The duplicate cannot fire on any target, so
+ it is DROPPED rather than translated.
+
+ `zig-pat-switch-value` answers "" for every pattern that is not a bare prong
+ value, and two empty answers are NOT equal for this purpose, which the
+ emptiness test in `zig-arm-shadowed` is there to say. It answers only for the
+ NULLARY constructor case, so two arms on a payload-carrying constructor whose
+ binders are all unused still collide: `emit-zig-match-arm` emits a bare prong
+ for those too. That shape is under-dropped, which refuses loudly at zig rather
+ than miscompiling, and plugs-backlog 2.02 stays open for it.
+
+  zig-pat-switch-value : IRPat -> Text
+  zig-pat-switch-value (pat) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> zig-lit-pat-text text ty
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if list-length subs == 0 then "." & zig-sanitize name else ""
+    is otherwise -> ""
+
+  zig-arm-shadowed : List IRBranch, Integer, Text -> Boolean
+  zig-arm-shadowed (branches) (j) (sv) =
+   if sv == "" then False
+   else if j <= 0 then False
+   else let b = list-at branches (j - 1)
+   in if (zig-guard-trivial (b.guard)) & (zig-pat-switch-value (b.pattern) == sv) then True
+      else zig-arm-shadowed branches (j - 1) sv
+
   emit-zig-match-arms : List IRBranch, Integer, ZigCtx, Integer, Boolean, CodexType, ZigTail -> Text
   emit-zig-match-arms (branches) (i) (ctx) (d) (ex) (mty) (tl) =
    if i == list-length branches then ""
    else let b = list-at branches i
-   in emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty tl
+   in if zig-arm-shadowed branches i (zig-pat-switch-value (b.pattern))
+      then emit-zig-match-arms branches (i + 1) ctx d ex mty tl
+   else emit-zig-match-arm (b.pattern) (b.body) (zig-expect ctx mty) d ex mty tl
       & emit-zig-match-arms branches (i + 1) ctx d ex mty tl
 
  Constructor arms bind payloads: one field binds by name directly; a
@@ -3835,9 +3881,19 @@ Section: Chapter Emission
  A part's own declaration site is a ShakeUse of itself; `shake-frag-uses`
  drops the self-edge, which keeps one rule here instead of two.
 
- GENERATED by the ladder's `shake_parts.py` and gated part by part:
- `shake-frag-text` of each list rebuilds its original chunk byte for byte. Do
- not hand-edit; edit the prelude source and regenerate.
+ THIS TABLE IS THE SOURCE. A NEW PART IS WRITTEN HERE BY HAND: a `zig-p-`
+ fragment list whose own declaration site is a `ShakeUse` of its name, a
+ `ShakePart` row registering it below, and its name added to
+ `zig-prelude-decls`.
+
+ An EXISTING part should not be hand-edited. Its bytes are what a one-time
+ migration gate certified, chunk for chunk, and nothing re-certifies them.
+
+ `build/check-zig-prelude-surface.ps1` grades a new part. It reconstructs the
+ whole from this table and asks the two questions a new part can get wrong: is
+ every name in the emitted surface covered by `zig-prelude-decls`, and is every
+ emitted prelude a sub-selection of the whole in table order. Run it after
+ changing the prelude.
 
   zig-p-std : List ShakeFrag
   zig-p-std = [ShakeLit "const ", ShakeUse "std", ShakeLit " = @import(\"std\");\n\n"]
@@ -3886,6 +3942,12 @@ Section: Chapter Emission
 
   zig-p-cx-bits-to-real-approx : List ShakeFrag
   zig-p-cx-bits-to-real-approx = [ShakeLit "// real-f32 on bare metal is f32 bits in a general register (a movd\n// round-trip, emit-bits-to-real-approx-builtin); Real is f64 here, and\n// widening the named f32 value is exact.\nfn ", ShakeUse "cx_bits_to_real_approx", ShakeLit "(bits: i64) f64 {\n    return @floatCast(@as(f32, @bitCast(@as(u32, @truncate(@as(u64, @bitCast(bits)))))));\n}\n"]
+
+  zig-p-cx-real-to-bits : List ShakeFrag
+  zig-p-cx-real-to-bits = [ShakeLit "// mov-rr on bare metal (emit-real-to-bits-builtin): a Real f64 and its bit\n// pattern are the same sixty-four bits in a general register, so there the\n// conversion is a register move. Zig separates the two types and spells the\n// same identity @bitCast. Total, since every f64 has a bit pattern: NaN\n// payloads and both signed zeroes come through exactly as they went in.\nfn ", ShakeUse "cx_real_to_bits", ShakeLit "(v: f64) i64 {\n    return @bitCast(v);\n}\n"]
+
+  zig-p-cx-bits-to-real : List ShakeFrag
+  zig-p-cx-bits-to-real = [ShakeLit "// mov-rr on bare metal (emit-bits-to-real-builtin), the same register move in\n// the other direction, and the exact inverse of cx_real_to_bits above. Total\n// likewise: every i64 names an f64, the NaNs and the infinities included.\nfn ", ShakeUse "cx_bits_to_real", ShakeLit "(n: i64) f64 {\n    return @bitCast(n);\n}\n"]
 
   zig-p-cx-char-to-text : List ShakeFrag
   zig-p-cx-char-to-text = [ShakeLit "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\nfn ", ShakeUse "cx_char_to_text", ShakeLit "(c: i64) []const u8 {\n    const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"]
@@ -4144,6 +4206,8 @@ Section: Chapter Emission
     ShakePart { name = "cx_text_compare", frags = zig-p-cx-text-compare },
     ShakePart { name = "cx_text_to_double_bits", frags = zig-p-cx-text-to-double-bits },
     ShakePart { name = "cx_bits_to_real_approx", frags = zig-p-cx-bits-to-real-approx },
+    ShakePart { name = "cx_real_to_bits", frags = zig-p-cx-real-to-bits },
+    ShakePart { name = "cx_bits_to_real", frags = zig-p-cx-bits-to-real },
     ShakePart { name = "cx_char_to_text", frags = zig-p-cx-char-to-text },
     ShakePart { name = "cx_char_encode", frags = zig-p-cx-char-encode },
     ShakePart { name = "cx_list_len", frags = zig-p-cx-list-len },
@@ -4274,6 +4338,49 @@ Section: Chapter Emission
 
   zig-prelude : Text = shake-text zig-prelude-parts zig-prelude-part-names
 
+ Two i64 masks carry the shake answer across a __heap-restore, so the ceiling
+ is 128 parts (100 today). The emitted cx_shl and cx_shr mask their shift, so
+ past the ceiling index 128 would alias index 64 in silence; the check makes
+ that a @compileError instead.
+
+  zig-mask-split : List Text -> Integer
+  zig-mask-split (ns) = list-length ns / 2
+
+  zig-mask-ceiling-check : List Text -> Text
+  zig-mask-ceiling-check (ns) =
+   if list-length ns <= 128 then ""
+   else "comptime { @compileError(\"cx zig plug: the prelude parts table has "
+        & integer-to-text (list-length ns)
+        & " parts and the two-mask shake answer carries 128. Add a third mask to"
+        & " zig-mask-lo/hi and zig-roots-mask-loop, or the shake keeps the wrong"
+        & " set in silence.\"); }\n"
+
+  zig-mask-loop : List Text, Text, Integer, Integer, Integer, Integer -> Integer
+  zig-mask-loop (ns) (prog) (i) (hi) (base) (acc) =
+   if i >= hi then acc
+   else when index-of prog (list-at ns i)
+    is Just (at) -> zig-mask-loop ns prog (i + 1) hi base (bit-or acc (bit-shl 1 (i - base)))
+    is None -> zig-mask-loop ns prog (i + 1) hi base acc
+
+  zig-mask-lo : List Text, Text -> Integer
+  zig-mask-lo (ns) (prog) = zig-mask-loop ns prog 0 (zig-mask-split ns) 0 0
+
+  zig-mask-hi : List Text, Text -> Integer
+  zig-mask-hi (ns) (prog) =
+   let s = zig-mask-split ns
+   in zig-mask-loop ns prog s (list-length ns) s 0
+
+  zig-roots-of-masks : List Text, Integer, Integer -> List Text
+  zig-roots-of-masks (ns) (m1) (m2) = zig-roots-mask-loop ns (zig-mask-split ns) m1 m2 0 []
+
+  zig-roots-mask-loop : List Text, Integer, Integer, Integer, Integer, List Text -> List Text
+  zig-roots-mask-loop (ns) (s) (m1) (m2) (i) (acc) =
+   if i >= list-length ns then acc
+   else let bit = if i < s
+      then bit-and (bit-shr m1 i) 1
+      else bit-and (bit-shr m2 (i - s)) 1
+   in zig-roots-mask-loop ns s m1 m2 (i + 1) (if bit == 1 then list-push acc (list-at ns i) else acc)
+
 
   emit-zig-chapter : IRChapter, List ATypeDef -> Text
   emit-zig-chapter (m) (type-defs) =
@@ -4294,5 +4401,52 @@ Section: Chapter Emission
    in let defs-text = emit-zig-defs (m.defs) 0 ctx
    in let zig-prog = types-text & defs-text & zig-main opening-entry-point (m.defs)
    in zig-prog & zig-postlude-banner & zig-prelude-for zig-prog
+
+ Only a scalar crosses the restore: ctx, ns, main-text and defs are allocated
+ before the first mark and dereferenced after it; the per-definition text is
+ not, and must not be referenced past its bracket.
+
+  emit-zig-chapter-stream : IRChapter, List ATypeDef -> [Console] Nothing
+  emit-zig-chapter-stream (m) (type-defs) =
+   let ctx = ZigCtx {
+    arities = build-arity-map (m.defs) 0 [],
+    ctors = build-ctor-map type-defs 0 [],
+    typedefs = type-defs,
+    irdefs = m.defs,
+    renamed-from = [],
+    renamed-to = [],
+    tvar-ids = [],
+    tvar-types = [],
+    expected = VoidTy,
+    bound-names = [],
+    scope-tvars = []
+   }
+   in let ns = zig-prelude-part-names
+   in let types-text = emit-zig-type-defs type-defs 0
+   in let main-text = zig-main opening-entry-point (m.defs)
+   in let m1 = bit-or (zig-mask-lo ns types-text) (zig-mask-lo ns main-text)
+   in let m2 = bit-or (zig-mask-hi ns types-text) (zig-mask-hi ns main-text)
+   in act
+    print-uni (zig-mask-ceiling-check ns)
+    print-uni types-text
+    zig-stream-defs ctx (m.defs) 0 main-text ns m1 m2
+   end
+
+  zig-stream-defs : ZigCtx, List IRDef, Integer, Text, List Text, Integer, Integer -> [Console] Nothing
+  zig-stream-defs (ctx) (defs) (i) (main-text) (ns) (m1) (m2) =
+   if i >= list-length defs then act
+    print-uni main-text
+    print-uni zig-postlude-banner
+    print-uni (shake-text zig-prelude-parts (zig-roots-of-masks ns m1 m2))
+   end
+   else let h = __heap-save
+   in let text = emit-zig-def (list-at defs i) ctx
+   in let n1 = bit-or m1 (zig-mask-lo ns text)
+   in let n2 = bit-or m2 (zig-mask-hi ns text)
+   in act
+    print-uni text
+    let restored = __heap-restore h
+    in zig-stream-defs ctx defs (i + 1) main-text ns n1 n2
+   end
 
 Page 1

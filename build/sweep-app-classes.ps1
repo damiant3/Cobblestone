@@ -30,7 +30,7 @@
 [CmdletBinding()]
 param(
     [string]$Filter = '',         # substring match on the relative path
-    [int]$Jobs = 4,
+    [int]$Jobs = 8,
     [int]$TimeoutSec = 300,
     [string]$OutDir = '',
     [switch]$Check,               # exit non-zero when a unit regresses

@@ -1,0 +1,96 @@
+Chapter: CheckersWasm
+  cites Games chapter Checkers
+  cites Foreword chapter List
+
+ The browser interface for Checkers, on the handle contract in
+ games-backlog.md GAME-11. Sixty-four cells plus the turn and the verdict
+ are past what an i32 could carry, so the page holds the board's address.
+
+ `apply-move` writes the from square, the captured square and the to square
+ through `list-set-at`, which mutates in place, so `ck-wasm-apply` copies
+ first. The move GENERATOR does not need the copy: `generate-moves` builds
+ its list by pushing onto an accumulator and `ck-score-move` reads the
+ move's own fields rather than applying it, which is why asking this engine
+ for a move does not corrupt the board it is asked about (GAME-13). The
+ grader measures that rather than trusting this paragraph.
+
+ A move is offered to the page as an INDEX into the generated list, with
+ its from, to and captured squares readable, so the page can draw the legal
+ destinations without knowing a rule of checkers.
+
+ We say:
+
+Section: Copying
+
+  ck-copy-cells : List Integer, Integer, List Integer -> List Integer
+  ck-copy-cells (src) (i) (acc) =
+    if i >= 64 then acc
+    else ck-copy-cells src (i + 1) (list-push acc (list-at src i))
+
+  ck-copy-board : CheckerBoard -> CheckerBoard
+  ck-copy-board (b) =
+    CheckerBoard {
+      cells = ck-copy-cells (b.cells) 0 [],
+      turn = b.turn,
+      over = b.over,
+      winner = b.winner
+    }
+
+Section: The Browser Interface
+
+  ck-wasm-new : CheckerBoard
+  ck-wasm-new = checkers-new 0
+
+  ck-wasm-cell : CheckerBoard, Integer -> Integer
+  ck-wasm-cell (b) (sq) =
+    if sq < 0 then (-1)
+    else if sq >= 64 then (-1)
+    else list-at (b.cells) sq
+
+  ck-wasm-turn : CheckerBoard -> Integer
+  ck-wasm-turn (b) = b.turn
+
+  ck-wasm-done : CheckerBoard -> Integer
+  ck-wasm-done (b) = if b.over then 1 else 0
+
+  ck-wasm-winner : CheckerBoard -> Integer
+  ck-wasm-winner (b) = b.winner
+
+  ck-wasm-movecount : CheckerBoard -> Integer
+  ck-wasm-movecount (b) = list-length (generate-moves b)
+
+  ck-wasm-move-from : CheckerBoard, Integer -> Integer
+  ck-wasm-move-from (b) (i) =
+    let ms = generate-moves b
+    in if i < 0 then (-1)
+    else if i >= list-length ms then (-1)
+    else (list-at ms i).from-sq
+
+  ck-wasm-move-to : CheckerBoard, Integer -> Integer
+  ck-wasm-move-to (b) (i) =
+    let ms = generate-moves b
+    in if i < 0 then (-1)
+    else if i >= list-length ms then (-1)
+    else (list-at ms i).to-sq
+
+  ck-wasm-move-cap : CheckerBoard, Integer -> Integer
+  ck-wasm-move-cap (b) (i) =
+    let ms = generate-moves b
+    in if i < 0 then (-2)
+    else if i >= list-length ms then (-2)
+    else (list-at ms i).captured
+
+  ck-wasm-apply : CheckerBoard, Integer -> CheckerBoard
+  ck-wasm-apply (b) (i) =
+    let ms = generate-moves b
+    in if b.over then b
+    else if i < 0 then b
+    else if i >= list-length ms then b
+    else apply-move (ck-copy-board b) (list-at ms i)
+
+  ck-wasm-ai : CheckerBoard -> Integer
+  ck-wasm-ai (b) =
+    if b.over then (-1)
+    else checkers-ai-move b 0
+
+Page 1

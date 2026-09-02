@@ -1,0 +1,90 @@
+Chapter: TicTacToeWasm
+  cites Games chapter TicTacToe
+  cites Games chapter Minimax
+  cites Foreword chapter List
+
+ The whole game is one integer and the browser holds it. Nothing here keeps
+ state between calls, so the page may reset the module's bump allocator
+ before every call and the heap never grows across a session.
+
+ The word is base 4. Digits 0 through 8 are the cells in board order, digit
+ 9 is the player to move, digit 10 is the game-over flag, digit 11 is the
+ winner. Every value stored is 0, 1 or 2, so no digit can carry into the
+ next one.
+
+ We say:
+
+Section: The State Word
+
+  ttt-pow4 : Integer -> Integer
+  ttt-pow4 (i) =
+    if i <= 0 then 1
+    else 4 * ttt-pow4 (i - 1)
+
+  ttt-digit : Integer, Integer -> Integer
+  ttt-digit (w) (i) =
+    let q = w / ttt-pow4 i
+    in q - (q / 4) * 4
+
+  ttt-pack-squares : List Integer, Integer, Integer -> Integer
+  ttt-pack-squares (sq) (i) (acc) =
+    if i >= 9 then acc
+    else ttt-pack-squares sq (i + 1) (acc + list-at sq i * ttt-pow4 i)
+
+  ttt-pack : TttBoard -> Integer
+  ttt-pack (b) =
+    let cells = ttt-pack-squares (b.squares) 0 0
+    in let over = if b.game-over then 1 else 0
+    in cells + b.current-player * ttt-pow4 9
+             + over * ttt-pow4 10
+             + b.winner * ttt-pow4 11
+
+  ttt-unpack-squares : Integer, Integer, List Integer -> List Integer
+  ttt-unpack-squares (w) (i) (acc) =
+    if i >= 9 then acc
+    else ttt-unpack-squares w (i + 1) (list-push acc (ttt-digit w i))
+
+  ttt-unpack : Integer -> TttBoard
+  ttt-unpack (w) =
+    TttBoard {
+      squares = ttt-unpack-squares w 0 [],
+      current-player = ttt-digit w 9,
+      game-over = ttt-digit w 10 == 1,
+      winner = ttt-digit w 11
+    }
+
+Section: The Browser Interface
+
+  ttt-wasm-new : Integer
+  ttt-wasm-new = ttt-pack ttt-new
+
+  ttt-wasm-play : Integer, Integer -> Integer
+  ttt-wasm-play (w) (pos) =
+    if pos < 0 then w
+    else if pos >= 9 then w
+    else ttt-pack (ttt-move (ttt-unpack w) pos)
+
+  ttt-wasm-ai : Integer -> Integer
+  ttt-wasm-ai (w) =
+    let b = ttt-unpack w
+    in if b.game-over then w
+    else let pos = ttt-perfect-ai b
+    in if pos < 0 then w
+    else ttt-pack (ttt-move b pos)
+
+  ttt-wasm-cell : Integer, Integer -> Integer
+  ttt-wasm-cell (w) (i) =
+    if i < 0 then 0
+    else if i >= 9 then 0
+    else ttt-digit w i
+
+  ttt-wasm-cur : Integer -> Integer
+  ttt-wasm-cur (w) = ttt-digit w 9
+
+  ttt-wasm-done : Integer -> Integer
+  ttt-wasm-done (w) = ttt-digit w 10
+
+  ttt-wasm-winner : Integer -> Integer
+  ttt-wasm-winner (w) = ttt-digit w 11
+
+Page 1

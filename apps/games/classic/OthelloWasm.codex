@@ -1,0 +1,93 @@
+Chapter: OthelloWasm
+  cites Games chapter Othello
+  cites Foreword chapter List
+
+ The browser interface for Othello, on the handle contract in
+ games-backlog.md GAME-11. Sixty-four cells and five counters are past an
+ i32, so the page holds the state's address.
+
+ `oth-apply-move` writes the board with `list-set-at`, which mutates in
+ place, so `ot-wasm-place` copies first.
+
+ We say:
+
+Section: Copying
+
+  ot-copy-cells : List Integer, Integer, List Integer -> List Integer
+  ot-copy-cells (src) (i) (acc) =
+    if i >= 64 then acc
+    else ot-copy-cells src (i + 1) (list-push acc (list-at src i))
+
+  ot-copy-board : OthelloBoard -> OthelloBoard
+  ot-copy-board (b) =
+    OthelloBoard {
+      cells = ot-copy-cells (b.cells) 0 [],
+      current-player = b.current-player,
+      game-over = b.game-over,
+      black-count = b.black-count,
+      white-count = b.white-count,
+      moves-made = b.moves-made
+    }
+
+Section: The Browser Interface
+
+  ot-wasm-new : OthelloBoard
+  ot-wasm-new = othello-new
+
+  ot-wasm-cell : OthelloBoard, Integer -> Integer
+  ot-wasm-cell (b) (i) =
+    if i < 0 then (-1)
+    else if i >= 64 then (-1)
+    else list-at (b.cells) i
+
+  ot-wasm-player : OthelloBoard -> Integer
+  ot-wasm-player (b) = b.current-player
+
+  ot-wasm-black : OthelloBoard -> Integer
+  ot-wasm-black (b) = b.black-count
+
+  ot-wasm-white : OthelloBoard -> Integer
+  ot-wasm-white (b) = b.white-count
+
+  ot-wasm-moves : OthelloBoard -> Integer
+  ot-wasm-moves (b) = b.moves-made
+
+  ot-wasm-done : OthelloBoard -> Integer
+  ot-wasm-done (b) = if b.game-over then 1 else 0
+
+  ot-wasm-legal : OthelloBoard, Integer -> Integer
+  ot-wasm-legal (b) (i) =
+    if i < 0 then 0
+    else if i >= 64 then 0
+    else let row = i / 8
+    in let col = i - row * 8
+    in if oth-is-legal (b.cells) (b.current-player) row col then 1 else 0
+
+  ot-wasm-flips : OthelloBoard, Integer -> Integer
+  ot-wasm-flips (b) (i) =
+    if i < 0 then (-1)
+    else if i >= 64 then (-1)
+    else let row = i / 8
+    in let col = i - row * 8
+    in if list-at (b.cells) i /= 0 then 0
+    else oth-flips-for-move (b.cells) (b.current-player) row col
+
+  ot-wasm-place : OthelloBoard, Integer -> OthelloBoard
+  ot-wasm-place (b) (i) =
+    if b.game-over then b
+    else if i < 0 then b
+    else if i >= 64 then b
+    else let row = i / 8
+    in let col = i - row * 8
+    in if oth-is-legal (b.cells) (b.current-player) row col == False then b
+    else othello-place (ot-copy-board b) row col
+
+  ot-wasm-ai : OthelloBoard -> Integer
+  ot-wasm-ai (b) =
+    if b.game-over then (-1)
+    else oth-ai-move b
+
+  ot-wasm-winner : OthelloBoard -> Integer
+  ot-wasm-winner (b) = oth-winner b
+
+Page 1

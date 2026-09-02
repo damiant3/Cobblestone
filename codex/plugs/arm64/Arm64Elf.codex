@@ -1,0 +1,116 @@
+Chapter: ARM64 ELF Writer
+
+Section: ELF64 Constants
+
+ `e_machine` 183 is EM_AARCH64 and 243 is EM_RISCV: the two writers differ in
+ that field and in the load address, and in nothing else. A reader that trusts
+ the magic number alone cannot tell them apart, which is why the page's board
+ arm checks class, machine and load address rather than the magic.
+
+  a64-elf64-magic : List Integer = [127, 69, 76, 70]
+  a64-elf64-class : Integer = 2
+  a64-elf64-lsb : Integer = 1
+  a64-elf64-version : Integer = 1
+  a64-elf64-type-exec : Integer = 2
+  a64-elf64-machine-aarch64 : Integer = 183
+  a64-elf64-header-size : Integer = 64
+  a64-elf64-phdr-size : Integer = 56
+  a64-elf64-pt-load : Integer = 1
+  a64-elf64-pf-rx : Integer = 5
+  a64-elf64-pf-rw : Integer = 6
+  a64-elf64-page-size : Integer = 4096
+
+Section: Byte Writers
+
+  a64-elf-write-i16 : Integer -> List Integer
+  a64-elf-write-i16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  a64-elf-write-i32 : Integer -> List Integer
+  a64-elf-write-i32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  a64-elf-write-i64 : Integer -> List Integer
+  a64-elf-write-i64 (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255,
+    bit-and (bit-shru v 32) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 56) 255]
+
+  a64-elf-pad-zeros : Integer -> List Integer
+  a64-elf-pad-zeros (n) = a64-elf-pad-zeros-loop n []
+
+  a64-elf-pad-zeros-loop : Integer, List Integer -> List Integer
+  a64-elf-pad-zeros-loop (n) (acc) =
+   if n <= 0 then acc
+   else a64-elf-pad-zeros-loop (n - 1) (list-push acc 0)
+
+  a64-elf-align-up : Integer, Integer -> Integer
+  a64-elf-align-up (v) (align) =
+   let r = int-mod v align
+   in if r == 0 then v else v + align - r
+
+Section: ELF64 Header
+
+  a64-elf64-header : Integer, Integer, Integer -> List Integer
+  a64-elf64-header (entry) (phoff) (phnum) =
+   a64-elf64-magic
+   & [a64-elf64-class, a64-elf64-lsb, a64-elf64-version]
+   & a64-elf-pad-zeros 9
+   & a64-elf-write-i16 a64-elf64-type-exec
+   & a64-elf-write-i16 a64-elf64-machine-aarch64
+   & a64-elf-write-i32 a64-elf64-version
+   & a64-elf-write-i64 entry
+   & a64-elf-write-i64 phoff
+   & a64-elf-write-i64 0
+   & a64-elf-write-i32 0
+   & a64-elf-write-i16 a64-elf64-header-size
+   & a64-elf-write-i16 a64-elf64-phdr-size
+   & a64-elf-write-i16 phnum
+   & a64-elf-write-i16 0
+   & a64-elf-write-i16 0
+   & a64-elf-write-i16 0
+
+Section: Program Header
+
+  a64-elf64-phdr : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  a64-elf64-phdr (p-type) (flags) (offset) (vaddr) (paddr) (filesz) (memsz) (align) =
+   a64-elf-write-i32 p-type
+   & a64-elf-write-i32 flags
+   & a64-elf-write-i64 offset
+   & a64-elf-write-i64 vaddr
+   & a64-elf-write-i64 paddr
+   & a64-elf-write-i64 filesz
+   & a64-elf-write-i64 memsz
+   & a64-elf-write-i64 align
+
+Section: Build ELF
+
+ THE LOAD ADDRESS IS #40000000 AND THAT IS NOT THE RISC-V ONE. It is the RAM
+ base `qemu-system-aarch64 -machine virt` maps, where RISC-V's `virt` uses
+ #80000000. The per-board link addresses for the named HAL boards are not
+ derived here, so this builds a generic AArch64 `virt` kernel and must not be
+ labelled with a board name.
+
+ THE FILE OFFSET IS MAPPED TO THE LOAD ADDRESS, not added to it, for the
+ reason `RiscVElf` records: the headers occupy the first `text-start` bytes of
+ the FILE and are not part of the image, so the first instruction has to land
+ ON `load-addr`.
+
+  a64-build-elf : List Integer, List Integer, Integer -> List Integer
+  a64-build-elf (code) (data) (entry-offset) =
+   let load-addr = #40000000
+   in let headers-end = a64-elf64-header-size + a64-elf64-phdr-size * 2
+   in let text-start = a64-elf-align-up headers-end 16
+   in let code-len = list-length code
+   in let data-len = list-length data
+   in let text-end = text-start + code-len
+   in let rodata-start = a64-elf-align-up text-end 8
+   in let loadable-end = rodata-start + data-len
+   in let entry = load-addr + entry-offset
+   in let seg-filesz = loadable-end - text-start
+   in let seg-memsz = seg-filesz + #1000000
+   in let hdr = a64-elf64-header entry a64-elf64-header-size 2
+   in let ph-text = a64-elf64-phdr a64-elf64-pt-load a64-elf64-pf-rx text-start load-addr load-addr code-len code-len a64-elf64-page-size
+   in let ph-data = a64-elf64-phdr a64-elf64-pt-load a64-elf64-pf-rw rodata-start (load-addr + (rodata-start - text-start)) (load-addr + (rodata-start - text-start)) data-len (data-len + #1000000) 8
+   in let padding = a64-elf-pad-zeros (text-start - headers-end)
+   in let rodata-padding = a64-elf-pad-zeros (rodata-start - text-end)
+   in hdr & ph-text & ph-data & padding & code & rodata-padding & data
+
+Page 1

@@ -109,6 +109,108 @@ Section: ELF Builder (buffer-based)
    in let bwe = __buf-write-bytes elf-buf (shoff + shent-size * 5) sh-ss
    in __buf-read-bytes elf-buf 0 file-size
 
+ A USER-MODE ELF64, AND WHAT IT IS NOT. This lays the same payload down as a
+ static ELF64 EXEC at the conventional Linux base, RX and RW split across two
+ PT_LOADs, no interpreter. That is a correct CONTAINER: a loader will map it
+ and a reader will parse it. The CODE inside is still what the backends emit
+ for bare metal, whose console and heap are device registers rather than
+ write(2) and mmap(2), so on a hosted OS it faults at its first print. The
+ hosted arms are PrismDevEnvironment stage 5a and are compiler work; this is
+ the half that does not need them.
+
+ `elf64-header-bytes`, `phdr-64` and `elf-linux-base-addr` were written for
+ exactly this and had no caller in any binary we ever shipped, which is
+ L-UNCALLED: compiled into everything, executed by nothing, and therefore
+ never once proven. This is their first caller.
+
+ Two numbers are read off the existing bare-metal builder above rather than
+ invented. Entry sits 32 bytes into the text, because that is the prologue
+ convention the payload already carries and the bare-metal builder uses the
+ same `+ 32`. And the RX segment maps from file offset 0, so p_offset and
+ p_vaddr are congruent modulo the page size by construction rather than by
+ an alignment that has to be maintained.
+
+ The gap between the text and the page-aligned rodata is written with zeros
+ rather than left as whatever the heap held. An artifact that varies run to
+ run cannot be compared byte for byte, and byte comparison is the only
+ instrument this plug has.
+
+ THE HOSTED CONSOLE ELF. This is the container the compiler's `hosted` mode is
+ built for, and it is not the same shape as the user-mode builder above: that
+ one bases at 4 MB, takes its entry as a fixed offset into the text, and maps
+ two segments. A hosted program needs THREE, because its runtime cells and its
+ arena are at fixed addresses the code carries as absolute immediates, and a
+ segment that does not exist is an access violation on the first allocation.
+
+ The cell band is demand-zero below the text, so it cannot collide with the
+ program however large the program grows. The arena is demand-zero above it.
+ Neither costs a byte in the file: p_filesz is zero and the kernel supplies the
+ pages. Every address here must equal what X86_64Boot.codex and X86_64State.codex
+ emitted -- hosted-cell-base, bare-metal-heap-base, bare-metal-load-addr -- and
+ the entry comes out of the CDX header rather than being assumed, because the
+ hosted entry is not at a fixed offset.
+
+  hosted-elf-cell-base : Integer = 131072
+  hosted-elf-cell-span : Integer = 65536
+  hosted-elf-heap-base : Integer = 6291456
+  hosted-elf-heap-span : Integer = 3221225472
+  cdx-header-bytes : Integer = 224
+
+  build-elf64-console-from-cdx : Integer, Integer, Integer -> List Integer
+  build-elf64-console-from-cdx (cdx-buf) (cdx-off) (cdx-len) =
+   let hp = __heap-save
+   in let hdr = __buf-read-bytes cdx-buf (cdx-off + 168) 40
+   in let text-off = read-i32-le hdr 0
+   in let text-sz = read-i32-le hdr 8
+   in let rod-off = read-i32-le hdr 16
+   in let rod-sz = read-i32-le hdr 24
+   in let entry-off = read-i32-le hdr 32
+   in let hr = __heap-restore hp
+   in let text-aligned = align-up text-sz 8
+   in let content-len = text-aligned + rod-sz
+   in let content-off = elf-page-size
+   in let file-len = content-off + content-len
+   in let ph-count = 3
+   in let headers-end = elf64-header-size + elf64-phdr-size * ph-count
+   in let elf-buf = __heap-save
+   in let ha = __heap-advance file-len
+   in let eh = elf64-header-bytes (elf-bare-metal-load-addr + entry-off) elf64-header-size ph-count
+   in let w0 = __buf-write-bytes elf-buf 0 eh
+   in let p0 = phdr-64 pt-load pf-rw 0 hosted-elf-cell-base hosted-elf-cell-base 0 hosted-elf-cell-span elf-page-size
+   in let w1 = __buf-write-bytes elf-buf elf64-header-size p0
+   in let p1 = phdr-64 pt-load pf-rx content-off elf-bare-metal-load-addr elf-bare-metal-load-addr content-len content-len elf-page-size
+   in let w2 = __buf-write-bytes elf-buf (elf64-header-size + elf64-phdr-size) p1
+   in let p2 = phdr-64 pt-load pf-rw 0 hosted-elf-heap-base hosted-elf-heap-base 0 hosted-elf-heap-span elf-page-size
+   in let w3 = __buf-write-bytes elf-buf (elf64-header-size + elf64-phdr-size * 2) p2
+   in let wpad = __buf-write-bytes elf-buf headers-end (pad-zeros (content-off - headers-end))
+   in let c1 = buf-copy-chunked elf-buf content-off cdx-buf (cdx-off + text-off) text-sz
+   in let cz = __buf-write-bytes elf-buf (content-off + text-sz) (pad-zeros (text-aligned - text-sz))
+   in let c2 = buf-copy-chunked elf-buf (content-off + text-aligned) cdx-buf (cdx-off + rod-off) rod-sz
+   in __buf-read-bytes elf-buf 0 file-len
+
+  build-elf64-user-from-payload : Integer, Integer, Integer, Integer, Integer -> List Integer
+  build-elf64-user-from-payload (payload-buf) (code-len) (data-len) (code-off) (data-off) =
+   let base = elf-linux-base-addr
+   in let headers-end = elf64-header-size + elf64-phdr-size * 2
+   in let text-start = align-up headers-end 16
+   in let text-end = text-start + code-len
+   in let rodata-start = align-up text-end elf-page-size
+   in let file-size = rodata-start + data-len
+   in let entry = base + text-start + 32
+   in let elf-buf = __heap-save
+   in let ha = __heap-advance file-size
+   in let hdr = elf64-header-bytes entry elf64-header-size 2
+   in let bw0 = __buf-write-bytes elf-buf 0 hdr
+   in let ph1 = phdr-64 pt-load pf-rx 0 base base text-end text-end elf-page-size
+   in let bw1 = __buf-write-bytes elf-buf elf64-header-size ph1
+   in let ph2 = phdr-64 pt-load pf-rw rodata-start (base + rodata-start) (base + rodata-start) data-len data-len elf-page-size
+   in let bw2 = __buf-write-bytes elf-buf (elf64-header-size + elf64-phdr-size) ph2
+   in let bwp = __buf-write-bytes elf-buf (text-start - (text-start - headers-end)) (pad-zeros (text-start - headers-end))
+   in let bw3 = buf-copy-chunked elf-buf text-start payload-buf code-off code-len
+   in let bwz = __buf-write-bytes elf-buf text-end (pad-zeros (rodata-start - text-end))
+   in let bw4 = buf-copy-chunked elf-buf rodata-start payload-buf data-off data-len
+   in __buf-read-bytes elf-buf 0 file-size
+
 Section: Body
 
   opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =

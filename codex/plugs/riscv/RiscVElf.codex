@@ -77,6 +77,16 @@ Section: Program Header
 
 Section: Build ELF
 
+ THE FILE OFFSET IS MAPPED TO THE LOAD ADDRESS, not added to it. The headers
+ occupy the first `text-start` bytes of the FILE and are not part of the
+ image, so the first instruction has to land ON `load-addr`. Mapping the text
+ at `load-addr + text-start` instead leaves the bottom 176 bytes of RAM
+ unmapped, and `qemu-system-riscv64 -machine virt -bios none` enters at the
+ RAM base rather than at the ELF entry: measured, it read `0x80000000: 0000
+ illegal` and hung with no output. The x86 builder in `ElfPlug` has always
+ done it this way (`phdr-32 pt-load text-start load-addr load-addr`); this
+ writer had never been run, so nothing caught the difference.
+
   rv-build-elf : List Integer, List Integer, Integer -> List Integer
   rv-build-elf (code) (data) (entry-offset) =
    let load-addr = #80000000
@@ -87,12 +97,12 @@ Section: Build ELF
    in let text-end = text-start + code-len
    in let rodata-start = rv-elf-align-up text-end 8
    in let loadable-end = rodata-start + data-len
-   in let entry = load-addr + text-start + entry-offset
+   in let entry = load-addr + entry-offset
    in let seg-filesz = loadable-end - text-start
    in let seg-memsz = seg-filesz + #1000000
    in let hdr = rv-elf64-header entry rv-elf64-header-size 2
-   in let ph-text = rv-elf64-phdr rv-elf64-pt-load rv-elf64-pf-rx text-start (load-addr + text-start) (load-addr + text-start) code-len code-len rv-elf64-page-size
-   in let ph-data = rv-elf64-phdr rv-elf64-pt-load rv-elf64-pf-rw rodata-start (load-addr + rodata-start) (load-addr + rodata-start) data-len (data-len + #1000000) 8
+   in let ph-text = rv-elf64-phdr rv-elf64-pt-load rv-elf64-pf-rx text-start load-addr load-addr code-len code-len rv-elf64-page-size
+   in let ph-data = rv-elf64-phdr rv-elf64-pt-load rv-elf64-pf-rw rodata-start (load-addr + (rodata-start - text-start)) (load-addr + (rodata-start - text-start)) data-len (data-len + #1000000) 8
    in let padding = rv-elf-pad-zeros (text-start - headers-end)
    in let rodata-padding = rv-elf-pad-zeros (rodata-start - text-end)
    in hdr & ph-text & ph-data & padding & code & rodata-padding & data

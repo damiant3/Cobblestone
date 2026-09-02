@@ -82,8 +82,20 @@ if (-not (Test-Path -PathType Leaf $Stage0)) {
 $digest = (Get-FileHash $Stage0 -Algorithm SHA256).Hash.Substring(0, 16)
 Write-Host "compiler: build-output\bare-metal\Codex.cdx [$digest]"
 
+# A tree we made is ours to remove; one the CALLER named is not, and neither
+# is one behind a failing exit, where it is the evidence. Measured 2026-09-01:
+# 1,058 of these had built up in %TEMP% holding 2.0 GB, one per run since
+# mid-August, because nothing ever removed them. Same shape as the writable
+# disk copies test-run.ps1 cleans up in its finally block.
+$ownRoot = -not $OutRoot
 if (-not $OutRoot) { $OutRoot = Join-Path ([System.IO.Path]::GetTempPath()) "genscripts-$PID" }
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
+
+function Remove-OwnRoot {
+    if ($ownRoot -and (Test-Path -PathType Container $OutRoot)) {
+        Remove-Item -Recurse -Force $OutRoot -ErrorAction SilentlyContinue
+    }
+}
 
 # What each generator claims to emit, and where that lands. $claimed is the
 # same information read the other way round, and it is built BEFORE -Only
@@ -92,7 +104,7 @@ New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
 $specs = @()
 $claimed = @{}
 foreach ($g in (Get-ChildItem (Join-Path $Repo 'codex\build') -Filter '*Script.codex' -File)) {
-    $text = Get-Content $g.FullName -Raw
+    $text = [System.IO.File]::ReadAllText($g.FullName)
     $m = [regex]::Match($text, 'sh-script\s+"([^"]+)"')
     if (-not $m.Success) { continue }
     $name = $m.Groups[1].Value
@@ -110,7 +122,7 @@ foreach ($g in (Get-ChildItem (Join-Path $Repo 'codex\build') -Filter '*Script.c
 $wanted = if ($Diff) { $Diff } else { $Only }
 if ($wanted) {
     $specs = @($specs | Where-Object { $_.Emits -eq $wanted })
-    if ($specs.Count -eq 0) { Write-Host "no generator emits '$wanted'"; exit 2 }
+    if ($specs.Count -eq 0) { Write-Host "no generator emits '$wanted'"; Remove-OwnRoot; exit 2 }
 }
 
 # One VM boot compiles the whole set, INCLUDING the generators whose target
@@ -121,7 +133,7 @@ if ($wanted) {
 # were compiled by hand outside this script. Drift is still asked only of a
 # generator with a live target, since there is nothing to compare a dead one
 # against, but broken is broken either way.
-if ($specs.Count -eq 0) { Write-Host "nothing to check"; exit 0 }
+if ($specs.Count -eq 0) { Write-Host "nothing to check"; Remove-OwnRoot; exit 0 }
 
 $listFile = Join-Path $OutRoot 'generators.txt'
 $specs.Generator.FullName | Set-Content -Path $listFile -Encoding UTF8
@@ -197,7 +209,7 @@ foreach ($s in $specs) {
     # explains what `# <unknown-cmd>` means, so the moment that comment was
     # generated rather than hand-written, the leg reported the build generator
     # as broken. The check was describing itself.
-    $madeText = Get-Content $emitted -Raw
+    $madeText = [System.IO.File]::ReadAllText($emitted)
     $stubs = @([regex]::Matches($madeText, '(?m)^[ \t]*# <unknown-cmd>[ \t]*$|"<unknown-expr>"')).Count
     if ($stubs -gt 0) {
         $rows += [pscustomobject]@{ Emits = $s.Emits; Status = "UNHANDLED NODES ($stubs)"; Lines = 0; Drift = $stubs }
@@ -255,7 +267,7 @@ foreach ($s in $specs) {
         $bareOuter = 'Copy-Item|Move-Item|Rename-Item|New-Item|Remove-Item|Set-Content|Add-Content|Out-File|Test-Path'
         $bare = @()
         $ln = 0
-        foreach ($line in (Get-Content $emitted)) {
+        foreach ($line in [System.IO.File]::ReadAllLines($emitted)) {
             $ln++
             $t = $line.Trim()
             if ($t.StartsWith('#') -or $t -notmatch "\b($bareOuter)\b") { continue }
@@ -283,8 +295,13 @@ foreach ($s in $specs) {
     # counts below read as they always did.
     if (-not $s.Present) { continue }
 
-    $shipped = @(Get-Content (Join-Path $Repo $s.Target))
-    $made = @(Get-Content $emitted)
+    # ReadAllLines, not Get-Content: Get-Content decorates every line with
+    # PSObject note properties. Measured 2026-09-01 over these same 57 pairs
+    # (30,230 lines), separate process per arm: 10.0-11.5 MB against 4.7-5.6,
+    # identical drift. It is 6 MB, and it is named here so the next reader
+    # does not re-derive it expecting more.
+    $shipped = [System.IO.File]::ReadAllLines((Join-Path $Repo $s.Target))
+    $made = [System.IO.File]::ReadAllLines($emitted)
     # Whitespace-only difference is not drift worth porting: the emitter's
     # blank-line and indent conventions differ from the hand-maintained
     # files across the board and would drown every real finding.
@@ -298,6 +315,7 @@ foreach ($s in $specs) {
         Write-Host "  '<=' is in the shipped script only, '=>' is what the generator emits."
         Write-Host ""
         Compare-Object $a $b | Format-Table -AutoSize SideIndicator, InputObject | Out-String -Width 200 | Write-Host
+        if ($delta -eq 0) { Remove-OwnRoot }
         exit ($(if ($delta -gt 0) { 1 } else { 0 }))
     }
 
@@ -409,6 +427,7 @@ if ($Update) {
     )
     Write-Host ""
     Write-Record $BaseFile ($header + $driftedNow) "baseline ($($driftedNow.Count) known drift(s))"
+    Remove-OwnRoot
     exit 0
 }
 
@@ -478,8 +497,10 @@ if ($newDrift.Count -gt 0) {
 if ($fixed.Count -gt 0) {
     Write-Host "check-generated-scripts: OK -- and $($fixed.Count) baselined generator(s) match again:"
     $fixed | ForEach-Object { Write-Host "  $_ (drop it from the baseline)" }
+    Remove-OwnRoot
     exit 0
 }
 
 Write-Host "check-generated-scripts: OK ($($driftedNow.Count) known drift(s))"
+Remove-OwnRoot
 exit 0

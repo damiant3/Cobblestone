@@ -19,6 +19,11 @@ $PlugCdx = Join-Path $PSScriptRoot 'build-output\wasm-plug.cdx'
 # of different plugs overwrite in turn. Deriving from -Out, which is unique per
 # caller by construction, makes that collision impossible rather than detectable.
 $LogFile = "$Out.log"
+# Declared here, not only in the -Src branch: StrictMode makes reading an unset
+# variable an error, and the -Ir path (build/plug-oracle-test.ps1) skips that
+# branch entirely, so the timing line at the end would throw on the one caller
+# that never exercises it.
+$script:irSeconds = $null
 if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
 
 # Phase 1: source -> IR-CCE, or take IR already compiled by the caller.
@@ -40,8 +45,11 @@ if ($Ir) {
 # disagreement could belong to either. build/wasm-e2e.ps1 threads its own.
     $kernelArg = if ($Kernel) { @('-Kernel', $Kernel) } else { @() }
     $decksArg  = if ($Decks -ne 0) { @('-Decks', $Decks) } else { @() }
+    $swIr = [Diagnostics.Stopwatch]::StartNew()
     & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' @kernelArg @decksArg
     if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
+    $swIr.Stop()
+    $script:irSeconds = $swIr.Elapsed.TotalSeconds
 } else {
     [Console]::Error.WriteLine("FAIL: provide -Src <source.codex> or -Ir <prebuilt.ir>")
     exit 1
@@ -68,7 +76,9 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 # Phase 3: Run plug CDX
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
+$swEmit = [Diagnostics.Stopwatch]::StartNew()
 $vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$swEmit.Stop()
 if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
 
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
@@ -97,4 +107,11 @@ $wat = ($lines -join "`n")
 $wat = $wat -replace '^[\x00-\x1f]+', ''
 [System.IO.File]::WriteAllText($Out, $wat, [System.Text.UTF8Encoding]::new($false))
 Write-Host "[wasm-plug] OK: $Out ($($wat.Length) chars)"
+# The two guest passes, timed separately. Whether emitting the BINARY encoding
+# instead of this text is worth building (plugs-backlog 2.11) turns on which of
+# these dominates: the WAT is 8.4x the module it assembles to, but that only
+# matters if EMIT is the expensive half. Nothing measured it before, so the
+# design was being argued without its number.
+$irNote = if ($script:irSeconds) { '{0:N1}s' -f $script:irSeconds } else { 'n/a (-Ir given)' }
+Write-Host ("[wasm-run] passes: source-to-IR {0}, IR-to-WAT {1:N1}s" -f $irNote, $swEmit.Elapsed.TotalSeconds)
 Remove-Item $inputFile,$outFile,$errFile -Force -ErrorAction SilentlyContinue

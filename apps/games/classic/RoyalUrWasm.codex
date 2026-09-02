@@ -1,0 +1,122 @@
+Chapter: RoyalUrWasm
+  cites Games chapter RoyalUr
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for the Royal Game of Ur. TicTacToe threads its whole
+ state through the page as one base-4 integer; Ur cannot, because seven
+ pieces a side at four bits each plus the flags is about 71 bits and the
+ export wrapper narrows to a signed i32. The page therefore holds a HANDLE:
+ a record is a heap object, so the reference the wrapper narrows already is
+ the board's address, and the page hands it back on the next call.
+
+ A handle is a VALUE here, not a cursor into a board that moves underneath
+ it. That takes one deliberate copy. `list-set-at` mutates in place and
+ returns the same list, so `ur-apply-move` writes through to the lists of
+ the board it was handed; without the copy below, playing from a handle
+ would leave the caller's own board holding the move, with its scalar
+ fields still reading the position before it. `ttt-copy-squares` in
+ TicTacToe is the same idiom for the same reason.
+
+ The dice are the page's, not ours. `ur-wasm-roll` takes a seed and answers
+ the four-binary-dice total for it, so a transcript of seeds replays a game
+ exactly and the grader can assert against a fixed one.
+
+ We say:
+
+Section: Copying
+
+  ur-copy-pieces : List Integer, Integer, List Integer -> List Integer
+  ur-copy-pieces (src) (i) (acc) =
+    if i >= 7 then acc
+    else ur-copy-pieces src (i + 1) (list-push acc (list-at src i))
+
+  ur-copy-board : UrBoard -> UrBoard
+  ur-copy-board (b) =
+    UrBoard {
+      p1-pieces = ur-copy-pieces (b.p1-pieces) 0 [],
+      p2-pieces = ur-copy-pieces (b.p2-pieces) 0 [],
+      current-player = b.current-player,
+      p1-scored = b.p1-scored,
+      p2-scored = b.p2-scored,
+      game-over = b.game-over,
+      winner = b.winner,
+      last-roll = b.last-roll,
+      moves-made = b.moves-made
+    }
+
+Section: The Browser Interface
+
+  ur-wasm-new : UrBoard
+  ur-wasm-new = ur-new
+
+  ur-wasm-roll : Integer -> Integer
+  ur-wasm-roll (seed) = ur-roll (rng-new seed)
+
+  ur-wasm-play : UrBoard, Integer, Integer -> UrBoard
+  ur-wasm-play (b) (idx) (roll) =
+    if ur-wasm-can b idx roll == 0 then b
+    else ur-apply-move (ur-copy-board b) idx roll
+
+  ur-wasm-can : UrBoard, Integer, Integer -> Integer
+  ur-wasm-can (b) (idx) (roll) =
+    if b.game-over then 0
+    else if idx < 0 then 0
+    else if idx >= 7 then 0
+    else if roll <= 0 then 0
+    else if roll > 4 then 0
+    else let mine = if b.current-player == 1 then b.p1-pieces else b.p2-pieces
+    in let theirs = if b.current-player == 1 then b.p2-pieces else b.p1-pieces
+    in let step = list-at mine idx
+    in let target = step + roll
+    in if step == 15 then 0
+    else if target > 15 then 0
+    else if target /= 15 & ur-piece-at-step mine target then 0
+    else if ur-is-shared target & ur-piece-at-step theirs target & ur-is-rosette target then 0
+    else 1
+
+  ur-wasm-pass : UrBoard -> UrBoard
+  ur-wasm-pass (b) =
+    if b.game-over then b
+    else UrBoard {
+      p1-pieces = ur-copy-pieces (b.p1-pieces) 0 [],
+      p2-pieces = ur-copy-pieces (b.p2-pieces) 0 [],
+      current-player = if b.current-player == 1 then 2 else 1,
+      p1-scored = b.p1-scored,
+      p2-scored = b.p2-scored,
+      game-over = b.game-over,
+      winner = b.winner,
+      last-roll = 0,
+      moves-made = b.moves-made + 1
+    }
+
+  ur-wasm-ai : UrBoard, Integer -> Integer
+  ur-wasm-ai (b) (roll) =
+    if b.game-over then (-1)
+    else if roll <= 0 then (-1)
+    else ur-ai-pick b roll
+
+  ur-wasm-piece : UrBoard, Integer, Integer -> Integer
+  ur-wasm-piece (b) (player) (i) =
+    if i < 0 then (-1)
+    else if i >= 7 then (-1)
+    else if player == 1 then list-at (b.p1-pieces) i
+    else list-at (b.p2-pieces) i
+
+  ur-wasm-cur : UrBoard -> Integer
+  ur-wasm-cur (b) = b.current-player
+
+  ur-wasm-scored : UrBoard, Integer -> Integer
+  ur-wasm-scored (b) (player) =
+    if player == 1 then b.p1-scored else b.p2-scored
+
+  ur-wasm-done : UrBoard -> Integer
+  ur-wasm-done (b) = if b.game-over then 1 else 0
+
+  ur-wasm-winner : UrBoard -> Integer
+  ur-wasm-winner (b) = b.winner
+
+  ur-wasm-moves : UrBoard -> Integer
+  ur-wasm-moves (b) = b.moves-made
+
+Page 1

@@ -900,10 +900,36 @@ Section: Document Parsing
    in let (imp-list, imp-st) = parse-citations st2 "" []
    in let doc = parse-top-level [] [] [] imp-list "" [] [] [] [] imp-st
    in let short = deck-short-of ceiling demand-parse-scratch-guard-band
-   in let ci = if short then empty-class-instance-scan else scan-class-instance-defs (make-parse-state (st.tokens) "") [] []
-   in let pag-errs = if short then [] else check-pagination (scan-chapter-pages (make-parse-state (st.tokens) "") [])
+   in let ci = if short then empty-class-instance-scan else scan-class-instance-defs-kept (st.tokens)
+   in let pag-errs = if short then [] else check-pagination-kept (st.tokens)
    in let doc2 = __record-set (__record-set doc "class-defs" (ci.class-defs)) "instance-defs" (ci.instance-defs)
    in __record-set doc2 "parse-bag" (add-bag-diags (doc2.parse-bag) pag-errs 0 (list-length pag-errs))
+
+ Both scans walk the whole token stream a second time and allocate a
+ parse state per step, 66 MB of bivy on the compiler's own unit for a few
+ kilobytes of answer. Each runs above a mark, copies its answer onto the
+ deck with the syntax-node copiers, and rewinds.
+
+  scan-class-instance-defs-kept : List Token -> ClassDefsResult
+  scan-class-instance-defs-kept (tokens) =
+   let mark = __heap-save
+   in let floor = __deck-pos
+   in let ci = scan-class-instance-defs (make-parse-state tokens "") [] []
+   in let kept = deck-record (ClassDefsResult {
+    class-defs = for c in (ci.class-defs) -> copy-sx-classdef floor c,
+    instance-defs = for i in (ci.instance-defs) -> copy-sx-instancedef floor i
+   })
+   in let back = __heap-restore mark
+   in kept
+
+  check-pagination-kept : List Token -> List Diagnostic
+  check-pagination-kept (tokens) =
+   let mark = __heap-save
+   in let floor = __deck-pos
+   in let errs = check-pagination (scan-chapter-pages (make-parse-state tokens "") [])
+   in let kept = deck-record (for d in errs -> copy-sx-diag floor d)
+   in let back = __heap-restore mark
+   in kept
 
   deck-copy-text : Text -> Text
   deck-copy-text (t) =
@@ -1473,7 +1499,7 @@ Section: Chapter Pagination
     in let st-i4 = if is-where-keyword (current-kind st-i3) then skip-newlines (advance st-i3) else st-i3
     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-body-lines st-i4)
    else if is-claim-keyword (current-kind st) then parse-claim-arm defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
-   else if is-proof-keyword (current-kind st) then let item = parse-top-def-item defs type-defs ch-title (advance st)
+   else if is-proof-keyword (current-kind st) then let item = parse-top-def-item defs type-defs ch-title (advance st) __heap-save
     in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns (item.ti-state)
    else if is-punctual-keyword (current-kind st) then let pst = advance st
      in if is-done pst then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns pst
@@ -1481,11 +1507,11 @@ Section: Chapter Pagination
        in let pst2 = advance pst
        in let pname = if is-done pst2 then "" else token-text (current pst2)
        in let pann = deck-record (AnnotationNode { kind = "hard-realtime", target = pname, body = budget-text })
-       in let item = parse-top-def-item defs type-defs ch-title pst2
+       in let item = parse-top-def-item defs type-defs ch-title pst2 __heap-save
        in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) (item.ti-state)
      else let pname = token-text (current pst)
      in let pann = deck-record (AnnotationNode { kind = "hard-realtime", target = pname, body = "" })
-     in let item = parse-top-def-item defs type-defs ch-title pst
+     in let item = parse-top-def-item defs type-defs ch-title pst __heap-save
      in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) (item.ti-state)
    else if is-bounded-keyword (current-kind st) then let bst = advance st
      in if is-done bst then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns bst
@@ -1493,7 +1519,7 @@ Section: Chapter Pagination
      in let bst2 = advance bst
      in let bname = if is-done bst2 then "" else token-text (current bst2)
      in let bann = deck-record (AnnotationNode { kind = "bounded", target = bname, body = bclass })
-     in let item = parse-top-def-item defs type-defs ch-title bst2
+     in let item = parse-top-def-item defs type-defs ch-title bst2 __heap-save
      in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns bann) (item.ti-state)
    else if is-conversion-decl st then let conv-ann = parse-conversion-decl st
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns conv-ann) (skip-to-next-line st)
@@ -1619,22 +1645,51 @@ Section: Chapter Pagination
    ti-state : ParseState
   }
 
-  parse-top-def-item : LinkedList Def, LinkedList TypeDef, Text, ParseState -> TopItem
-  parse-top-def-item (defs) (type-defs) (ch-title) (st) =
-   let def-result = parse-definition st
+ One top-level item is the unit of reclamation in the parser. The
+ syntax tree a definition parse builds lives in the bivy, and until
+ 2026-09-01 all of it stayed there until the phase compact: 162 MB on
+ the compiler's own unit for a keep copy of 14 MB, at addresses no later
+ phase touches. The item's survivors are copied onto the scratch deck
+ before the bivy rewinds to the mark taken before the item was tried: the
+ definition or type definition itself, the list cell that holds it, and
+ the parse state, whose bag may carry diagnostics whose text was built in
+ the bivy. Tokens sit on the LEX deck below the mark and are shared by
+ the copy, which is what keeps the copy small. An item that parses as
+ nothing still moves the state, so its state is kept the same way.
+
+ The copy's floor is the DECK cursor at the item's start, not the bivy
+ mark. The parser deck-records some nodes as it goes (a TypeAnn, a claim's
+ Def, a CitesDecl), and those sit below the bivy mark by address while
+ their children sit above it; a copier that shares everything below the
+ bivy mark keeps such a node and lets its children rewind. Measured by
+ the gate, 2026-09-01: 43 definitions with mismatched bodies and 396
+ phantom definitions in the text round-trip. Every deck node the item
+ made is at or above the deck cursor it started from, and so is every
+ bivy node, so that cursor is the one floor that copies both and shares
+ the tokens and earlier items beneath it.
+
+  parse-top-def-item : LinkedList Def, LinkedList TypeDef, Text, ParseState, Integer -> TopItem
+  parse-top-def-item (defs) (type-defs) (ch-title) (st) (mark) =
+   let floor = __deck-pos
+   in let def-result = parse-definition st
    in let st2 = def-result.state
    in when def-result.maybe-def
     is Just (d) ->
      let tagged = deck-record (Def {
-      name = d.name,
-      params = d.params,
-      ann = d.ann,
-      body = d.body,
+      name = copy-sx-token floor (d.name),
+      params = copy-sx-tokens floor (d.params),
+      ann = for a in (d.ann) -> copy-sx-typeann floor a,
+      body = copy-sx-expr floor (d.body),
       chapter-slug = ch-title
      })
-     in TopItem { ti-defs = __linked-list-push defs tagged, ti-type-defs = type-defs, ti-state = skip-newlines st2 }
+     in let defs2 = deck-record (__linked-list-push defs tagged)
+     in let st3 = deck-record (parse-state-keep floor (skip-newlines st2))
+     in let back = __heap-restore mark
+     in TopItem { ti-defs = defs2, ti-type-defs = type-defs, ti-state = st3 }
     is None ->
-     TopItem { ti-defs = defs, ti-type-defs = type-defs, ti-state = skip-newlines (advance st2) }
+     let st3 = deck-record (parse-state-keep floor (skip-newlines (advance st2)))
+     in let back = __heap-restore mark
+     in TopItem { ti-defs = defs, ti-type-defs = type-defs, ti-state = st3 }
 
  A type definition is tried first and the definition parse re-reads from
  the SAME state when it is not one -- st, not the type parser's returned
@@ -1642,13 +1697,19 @@ Section: Chapter Pagination
 
   parse-top-item : LinkedList Def, LinkedList TypeDef, Text, ParseState -> TopItem
   parse-top-item (defs) (type-defs) (ch-title) (st) =
-   let td-result = parse-type-def st
+   let mark = __heap-save
+   in let floor = __deck-pos
+   in let td-result = parse-type-def st
    in let st2 = td-result.state
    in when td-result.maybe-type-def
     is Just (td) ->
-     TopItem { ti-defs = defs, ti-type-defs = __linked-list-push type-defs td, ti-state = skip-newlines st2 }
+     let td2 = deck-record (copy-sx-typedef floor td)
+     in let tds2 = deck-record (__linked-list-push type-defs td2)
+     in let st3 = deck-record (parse-state-keep floor (skip-newlines st2))
+     in let back = __heap-restore mark
+     in TopItem { ti-defs = defs, ti-type-defs = tds2, ti-state = st3 }
     is None ->
-     parse-top-def-item defs type-defs ch-title st
+     parse-top-def-item defs type-defs ch-title st mark
 
   parse-claim-arm : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-claim-arm (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =

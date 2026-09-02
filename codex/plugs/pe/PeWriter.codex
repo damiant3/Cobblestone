@@ -466,3 +466,205 @@ Section: Build PE from CDX Bytes
    else pe-extract-loop src (i + 1) stop (list-push acc (list-at src i))
 
 Page 1
+
+Section: Windows Console PE
+
+ A Windows console program, which is a different animal from the UEFI
+ application the rest of this chapter builds: subsystem 3 rather than 10, and
+ an import table the loader fills in, because a user process reaches the kernel
+ through kernel32 rather than through a system table.
+
+ THE LAYOUT IS FIXED AND SHARED WITH THE COMPILER. The emitted code calls
+ kernel32 through absolute IAT addresses it baked in at compile time, so these
+ numbers must equal hosted-win-image-base, hosted-win-idata-rva,
+ hosted-win-text-rva and the four hosted-win-iat-* constants in
+ X86_64Boot.codex. A disagreement is not a wrong answer, it is a call into
+ whatever happens to be at that address.
+
+ The import order is load-bearing: GetStdHandle, WriteFile, ExitProcess,
+ VirtualAlloc. One descriptor plus its null terminator is 40 bytes, the lookup
+ table is five 8-byte thunks, and the address table follows, so the first IAT
+ slot is 80 bytes into .idata and the four sit at 80, 88, 96 and 104.
+
+ ASLR is off (DllCharacteristics 0) because the code is position-dependent and
+ patched for one address. That is a real constraint on the artifact, not a
+ preference: a host that forces relocation will not run it.
+
+  pec-image-base : Integer = 1048576
+  pec-idata-rva : Integer = 4096
+  pec-text-rva : Integer = 8192
+  pec-file-align : Integer = 512
+  pec-sect-align : Integer = 4096
+  pec-headers-size : Integer = 512
+  pec-subsystem-console : Integer = 3
+ WINDOWS DEFAULTS THE STACK TO 1 MB AND THE COMPILER DOES NOT FIT IN IT. Its
+ front end recurses over the syntax tree, and bare metal hands it a stack of
+ hundreds of megabytes. Measured 2026-08-30: with the 1 MB default the hosted
+ compiler read its input, dispatched on its mode and printed a refusal for an
+ unknown one, all correctly, and died at 0xC0000005 the moment it was asked to
+ compile anything. A reserve costs address space rather than memory, so this is
+ not paid for unless it is used.
+
+  pec-stack-reserve : Integer = 536870912
+
+  pec-iat-off : Integer = 88
+  pec-idata-size : Integer = 220
+  pec-names-off : Integer = 136
+  pec-dll-off : Integer = 206
+  pec-section-idata-rw : Integer = 3221225536
+
+  pec-nm-getstdhandle : List Integer = [71, 101, 116, 83, 116, 100, 72, 97, 110, 100, 108, 101]
+  pec-nm-writefile : List Integer = [87, 114, 105, 116, 101, 70, 105, 108, 101]
+  pec-nm-exitprocess : List Integer = [69, 120, 105, 116, 80, 114, 111, 99, 101, 115, 115]
+  pec-nm-virtualalloc : List Integer = [86, 105, 114, 116, 117, 97, 108, 65, 108, 108, 111, 99]
+  pec-nm-readfile : List Integer = [82, 101, 97, 100, 70, 105, 108, 101]
+  pec-nm-kernel32 : List Integer = [107, 101, 114, 110, 101, 108, 51, 50, 46, 100, 108, 108]
+
+ A hint/name entry is a two-byte hint, the name, a NUL, and a pad to an even
+ boundary. The four offsets below are those lengths accumulated from
+ pec-names-off, written out rather than derived so the IAT arithmetic above
+ stays readable against the assertion it has to satisfy.
+
+  pec-off-getstdhandle : Integer = 136
+  pec-off-writefile : Integer = 152
+  pec-off-exitprocess : Integer = 164
+  pec-off-virtualalloc : Integer = 178
+  pec-off-readfile : Integer = 194
+
+  pec-hint-name : List Integer, Integer -> List Integer
+  pec-hint-name (nm) (slot) =
+   let body = write-i16 0 & nm & [0]
+   in body & pad-zeros (slot - list-length body)
+
+  pec-idata-bytes : List Integer
+  pec-idata-bytes =
+   write-i32 (pec-idata-rva + 40)
+   & write-i32 0
+   & write-i32 0
+   & write-i32 (pec-idata-rva + pec-dll-off)
+   & write-i32 (pec-idata-rva + pec-iat-off)
+   & pad-zeros 20
+   & write-i64 (pec-idata-rva + pec-off-getstdhandle)
+   & write-i64 (pec-idata-rva + pec-off-writefile)
+   & write-i64 (pec-idata-rva + pec-off-exitprocess)
+   & write-i64 (pec-idata-rva + pec-off-virtualalloc)
+   & write-i64 (pec-idata-rva + pec-off-readfile)
+   & write-i64 0
+   & write-i64 (pec-idata-rva + pec-off-getstdhandle)
+   & write-i64 (pec-idata-rva + pec-off-writefile)
+   & write-i64 (pec-idata-rva + pec-off-exitprocess)
+   & write-i64 (pec-idata-rva + pec-off-virtualalloc)
+   & write-i64 (pec-idata-rva + pec-off-readfile)
+   & write-i64 0
+   & pec-hint-name pec-nm-getstdhandle 16
+   & pec-hint-name pec-nm-writefile 12
+   & pec-hint-name pec-nm-exitprocess 14
+   & pec-hint-name pec-nm-virtualalloc 16
+   & pec-hint-name pec-nm-readfile 12
+   & pec-nm-kernel32 & [0] & pad-zeros 1
+
+  pec-dos-header : List Integer
+  pec-dos-header =
+   [77, 90] & pad-zeros 58 & write-i32 64
+
+  pec-coff : List Integer
+  pec-coff =
+   write-i16 pe-machine-amd64
+   & write-i16 2
+   & write-i32 0 & write-i32 0 & write-i32 0
+   & write-i16 240
+   & write-i16 34
+
+  pec-optional : Integer, Integer, Integer -> List Integer
+  pec-optional (entry-rva) (code-size) (image-size) =
+   write-i16 pe-magic-pe32plus
+   & [0, 0]
+   & write-i32 code-size
+   & write-i32 pec-idata-size
+   & write-i32 0
+   & write-i32 entry-rva
+   & write-i32 pec-text-rva
+   & write-i64 pec-image-base
+   & write-i32 pec-sect-align
+   & write-i32 pec-file-align
+   & write-i16 6 & write-i16 0
+   & write-i16 0 & write-i16 0
+   & write-i16 6 & write-i16 0
+   & write-i32 0
+   & write-i32 image-size
+   & write-i32 pec-headers-size
+   & write-i32 0
+   & write-i16 pec-subsystem-console
+   & write-i16 0
+   & write-i64 pec-stack-reserve & write-i64 65536
+   & write-i64 1048576 & write-i64 4096
+   & write-i32 0
+   & write-i32 16
+   & write-i64 0
+   & write-i32 pec-idata-rva & write-i32 pec-idata-size
+   & pad-zeros 80
+   & write-i32 (pec-idata-rva + pec-iat-off) & write-i32 40
+   & pad-zeros 24
+
+  pec-section : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  pec-section (nm) (vsize) (rva) (rawsize) (rawptr) (chars) =
+   nm & pad-zeros (8 - list-length nm)
+   & write-i32 vsize
+   & write-i32 rva
+   & write-i32 rawsize
+   & write-i32 rawptr
+   & write-i32 0 & write-i32 0
+   & write-i16 0 & write-i16 0
+   & write-i32 chars
+
+ A chunked copy of its own, because the elf plug's lives in ElfPlug and this
+ module does not bundle that chapter. The heap mark per chunk is what keeps a
+ multi-megabyte text from being held twice.
+
+  pec-copy-chunk : Integer = 4096
+
+  pec-copy : Integer, Integer, Integer, Integer, Integer -> Integer
+  pec-copy (dst) (dst-off) (src) (src-off) (remaining) =
+   if remaining <= 0 then 0
+   else let chunk = if remaining > pec-copy-chunk then pec-copy-chunk else remaining
+   in let hp = __heap-save
+   in let bs = __buf-read-bytes src src-off chunk
+   in let w = __buf-write-bytes dst dst-off bs
+   in let restored = __heap-restore hp
+   in pec-copy dst (dst-off + chunk) src (src-off + chunk) (remaining - chunk)
+
+  build-pe-console-from-cdx : Integer, Integer, Integer -> List Integer
+  build-pe-console-from-cdx (cdx-buf) (cdx-off) (cdx-len) =
+   let hp = __heap-save
+   in let hdr = __buf-read-bytes cdx-buf (cdx-off + 168) 40
+   in let text-off = read-i32-le hdr 0
+   in let text-sz = read-i32-le hdr 8
+   in let rod-off = read-i32-le hdr 16
+   in let rod-sz = read-i32-le hdr 24
+   in let entry-off = read-i32-le hdr 32
+   in let hr = __heap-restore hp
+   in let text-aligned = align-up text-sz 8
+   in let content-len = text-aligned + rod-sz
+   in let idata-raw = align-up pec-idata-size pec-file-align
+   in let text-raw = align-up content-len pec-file-align
+   in let idata-ptr = pec-headers-size
+   in let text-ptr = idata-ptr + idata-raw
+   in let file-len = text-ptr + text-raw
+   in let image-size = align-up (pec-text-rva + content-len) pec-sect-align
+   in let pe-buf = __heap-save
+   in let ha = __heap-advance file-len
+   in let headers = pec-dos-header
+    & [80, 69, 0, 0]
+    & pec-coff
+    & pec-optional (pec-text-rva + entry-off) content-len image-size
+    & pec-section [46, 105, 100, 97, 116, 97] pec-idata-size pec-idata-rva idata-raw idata-ptr pec-section-idata-rw
+    & pec-section [46, 116, 101, 120, 116] content-len pec-text-rva text-raw text-ptr pe-section-code
+   in let w0 = __buf-write-bytes pe-buf 0 headers
+   in let wpad = __buf-write-bytes pe-buf (list-length headers) (pad-zeros (pec-headers-size - list-length headers))
+   in let w1 = __buf-write-bytes pe-buf idata-ptr pec-idata-bytes
+   in let wz1 = __buf-write-bytes pe-buf (idata-ptr + pec-idata-size) (pad-zeros (idata-raw - pec-idata-size))
+   in let c1 = pec-copy pe-buf text-ptr cdx-buf (cdx-off + text-off) text-sz
+   in let wz2 = __buf-write-bytes pe-buf (text-ptr + text-sz) (pad-zeros (text-aligned - text-sz))
+   in let c2 = pec-copy pe-buf (text-ptr + text-aligned) cdx-buf (cdx-off + rod-off) rod-sz
+   in let wz3 = __buf-write-bytes pe-buf (text-ptr + content-len) (pad-zeros (text-raw - content-len))
+   in __buf-read-bytes pe-buf 0 file-len

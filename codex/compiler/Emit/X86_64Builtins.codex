@@ -845,7 +845,8 @@ Section: Builtin Emission
   emit-read-file-builtin (st) (args) =
     let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let st1 = st-append-code (r.state) (mov-rr reg-rdi (r.reg))
-   in let st2 = emit-call-to st1 "__bare_metal_read_serial"
+   in let st2 = if st-hosted st1 then emit-call-to st1 "__hosted_read_all_uni"
+    else emit-call-to st1 "__bare_metal_read_serial"
    in let rd = alloc-temp st2
    in EmitResult {
    state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
@@ -992,7 +993,7 @@ Section: Builtin Emission
    let msg-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let rd = alloc-temp (msg-result.state)
    in EmitResult {
-   state = st-append-code (rd.state) (li reg-rdi try-fail-flag-addr & li reg-rsi 1 & mov-store reg-rdi reg-rsi 0 & li (rd.reg) 0),
+   state = st-append-code (rd.state) (li reg-rdi (st-cell (rd.state) try-fail-flag-addr) & li reg-rsi 1 & mov-store reg-rdi reg-rsi 0 & li (rd.reg) 0),
    reg = rd.reg
   }
 
@@ -1033,7 +1034,7 @@ Section: Builtin Emission
   emit-deck-pos-builtin : CodegenState -> EmitResult
   emit-deck-pos-builtin (st) =
    let rd = alloc-temp st
-   in let st1 = st-append-code (rd.state) (li (rd.reg) deck-pos-addr)
+   in let st1 = st-append-code (rd.state) (li (rd.reg) (st-cell (rd.state) deck-pos-addr))
    in EmitResult {
    state = st-append-code st1 (mov-load (rd.reg) (rd.reg) 0),
    reg = rd.reg
@@ -1060,7 +1061,7 @@ Section: Builtin Emission
   emit-deck-set-builtin (st) (args) =
    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let addr-tmp = alloc-temp-avoiding (r.state) (r.reg)
-   in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) (st-cell (addr-tmp.state) deck-pos-addr))
    in let st2 = st-append-code st1 (mov-store (addr-tmp.reg) (r.reg) 0)
    in let rd = alloc-temp st2
    in EmitResult {
@@ -1072,7 +1073,7 @@ Section: Builtin Emission
   emit-deck-alloc-builtin (st) (args) =
    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
    in let addr-tmp = alloc-temp-avoiding (r.state) (r.reg)
-   in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) (st-cell (addr-tmp.state) deck-pos-addr))
    in let rd = alloc-temp-avoiding st1 (r.reg)
    in let st2 = st-append-code (rd.state) (mov-load (rd.reg) (addr-tmp.reg) 0)
    in let new-tmp = alloc-temp-avoiding st2 (r.reg)
@@ -1092,17 +1093,17 @@ Section: Builtin Emission
   emit-deck-arm (st) =
    if deck-guard-enabled == 0 then st
    else let a0 = alloc-temp st
-   in let st1 = st-append-code (a0.state) (li (a0.reg) deck-reservation-top-addr)
+   in let st1 = st-append-code (a0.state) (li (a0.reg) (st-cell (a0.state) deck-reservation-top-addr))
    in let a1 = alloc-temp st1
    in let st2 = st-append-code (a1.state) (mov-load (a1.reg) (a0.reg) 0)
-   in let st3 = st-append-code st2 (li (a0.reg) deck-ceiling-addr)
+   in let st3 = st-append-code st2 (li (a0.reg) (st-cell st2 deck-ceiling-addr))
    in st-append-code st3 (mov-store (a0.reg) (a1.reg) 0)
 
   emit-deck-disarm : CodegenState -> CodegenState
   emit-deck-disarm (st) =
    if deck-guard-enabled == 0 then st
    else let d0 = alloc-temp st
-   in let st1 = st-append-code (d0.state) (li (d0.reg) deck-ceiling-addr)
+   in let st1 = st-append-code (d0.state) (li (d0.reg) (st-cell (d0.state) deck-ceiling-addr))
    in let d1 = alloc-temp st1
    in let st2 = st-append-code (d1.state) (li (d1.reg) 0)
    in st-append-code st2 (mov-store (d0.reg) (d1.reg) 0)
@@ -1110,7 +1111,7 @@ Section: Builtin Emission
   emit-deck-enter-builtin : CodegenState -> EmitResult
   emit-deck-enter-builtin (st) =
    let t0 = alloc-temp st
-   in let st1 = st-append-code (t0.state) (li (t0.reg) deck-bound-counter-addr)
+   in let st1 = st-append-code (t0.state) (li (t0.reg) (st-cell (t0.state) deck-bound-counter-addr))
    in let t1 = alloc-temp st1
    in let st2 = st-append-code (t1.state) (mov-load (t1.reg) (t0.reg) 0)
    in let t2 = alloc-temp st2
@@ -1121,10 +1122,10 @@ Section: Builtin Emission
    in let jcc-pos = st6.code-len
    in let st7 = st-append-code st6 (jcc cc-ne 0)
    in let t3 = alloc-temp st7
-   in let st8 = st-append-code (t3.state) (li (t3.reg) bivy-save-addr)
+   in let st8 = st-append-code (t3.state) (li (t3.reg) (st-cell (t3.state) bivy-save-addr))
    in let st9 = st-append-code st8 (mov-store (t3.reg) reg-r10 0)
    in let t4 = alloc-temp st9
-   in let st10 = st-append-code (t4.state) (li (t4.reg) deck-pos-addr)
+   in let st10 = st-append-code (t4.state) (li (t4.reg) (st-cell (t4.state) deck-pos-addr))
    in let st11 = st-append-code st10 (mov-load reg-r10 (t4.reg) 0)
    in let st-armed = emit-deck-arm st11
    in let st12 = patch-jcc-at st-armed jcc-pos (st-armed.code-len)
@@ -1137,7 +1138,7 @@ Section: Builtin Emission
   emit-deck-exit-builtin : CodegenState -> EmitResult
   emit-deck-exit-builtin (st) =
    let e0 = alloc-temp st
-   in let st1 = st-append-code (e0.state) (li (e0.reg) deck-bound-counter-addr)
+   in let st1 = st-append-code (e0.state) (li (e0.reg) (st-cell (e0.state) deck-bound-counter-addr))
    in let e1 = alloc-temp st1
    in let st2 = st-append-code (e1.state) (mov-load (e1.reg) (e0.reg) 0)
    in let st3 = st-append-code st2 (add-ri (e1.reg) (0 - 1))
@@ -1145,10 +1146,10 @@ Section: Builtin Emission
    in let jcc-pos = st4.code-len
    in let st5 = st-append-code st4 (jcc cc-ne 0)
    in let e2 = alloc-temp st5
-   in let st6 = st-append-code (e2.state) (li (e2.reg) deck-pos-addr)
+   in let st6 = st-append-code (e2.state) (li (e2.reg) (st-cell (e2.state) deck-pos-addr))
    in let st7 = st-append-code st6 (mov-store (e2.reg) reg-r10 0)
    in let e3 = alloc-temp st7
-   in let st8 = st-append-code (e3.state) (li (e3.reg) bivy-save-addr)
+   in let st8 = st-append-code (e3.state) (li (e3.reg) (st-cell (e3.state) bivy-save-addr))
    in let st9 = st-append-code st8 (mov-load reg-r10 (e3.reg) 0)
    in let st-disarmed = emit-deck-disarm st9
    in let st10 = patch-jcc-at st-disarmed jcc-pos (st-disarmed.code-len)
@@ -1184,7 +1185,7 @@ Section: Builtin Emission
   emit-list-with-capacity-builtin-deck : CodegenState, Integer -> EmitResult
   emit-list-with-capacity-builtin-deck (st) (cap-reg) =
    let addr-tmp = alloc-temp-avoiding st cap-reg
-   in let st0 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let st0 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) (st-cell (addr-tmp.state) deck-pos-addr))
    in let deckp-tmp = alloc-temp-avoiding st0 cap-reg
    in let st1 = st-append-code (deckp-tmp.state) (mov-load (deckp-tmp.reg) (addr-tmp.reg) 0)
    in let st2 = st-append-code st1 (mov-store (deckp-tmp.reg) cap-reg 0)

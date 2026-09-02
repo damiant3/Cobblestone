@@ -3949,11 +3949,101 @@ worth reading. Run both.
 behind `ZigEmitter.codex` (the stale-module trap, and the staleness guard
 had to be narrowed to the chapters a module is actually built from: the
 plug's network chapter sits in the same directory and is bundled into
-something else entirely). And the ELF lens stays dark for a reason that is
-not the plug: `elf-bytes.wasm` builds and runs, but its wire is a
-code/data/func-table payload, not a CDX, and nothing emits that from a
-browser -- the compiler has no ELF mode and `extract-x86-output.ps1` is one
-of the four dead harnesses.
+something else entirely). **The ELF lens is no longer dark (reek, 2026-08-29,
+see 2.07).** It stayed dark for a reason that was never the plug: its wire is
+a code/data/func-table payload, not a CDX, and nothing emitted that from a
+browser. What was missing was a PRODUCER, and the page is one -- it takes the
+x86-64 out of the CDX the way `build/cdx-to-pe.ps1` does, which needs no
+compile mode and no seed. `extract-x86-output.ps1` remains dead and is a
+different approach entirely: it asks the compiler for an `ELF` mode that has
+never existed.
+
+## 1.100 -- DONE 2026-08-31 (red): riscv real-to-int and `show` on a Real were silently wrong above 2^31, because `rv-fcvt-l-d` encoded the 32-bit instruction
+
+**FIXED. `rv-fcvt-l-d` and `rv-fcvt-l-s` now pass `rs2 = 2`** in
+`codex/foreword/core/RiscVEncoder.codex:355` and `:367`, selecting FCVT.L.D and
+FCVT.L.S rather than the 32-bit FCVT.W.D and FCVT.W.S. Two fields, one value
+each; the rest of the row below is the account as found.
+
+**Verified with a control, not by re-running the arm that already passed.**
+New test `codex/test/ops/real-to-int-wide`, placed in `ops` so the CROSS
+battery grades it on all three backends rather than only x86, which is the arm
+that was already right. Measured on QEMU: riscv now answers all nine lines
+identically to x86-64 and arm64, `show 3000000000.5` included, which printed
+`2147483647.` before. The discriminating run is the one with the fix REVERTED
+and the plug rebuilt: `real-to-int-wide` is the only test that moves, failing
+at `three-bil 2147483647` against an expected `3000000000`. So the test can
+fail, and it fails for this reason.
+
+**Four riscv `real-*` tests are red and were red before this change**, byte
+identical across the fixed and reverted runs, so they are NOT this defect and
+are not fixed by it: `real-approx-equality` (FAIL_OUTPUT, line 1, the f32
+`-0 ~0 +0` row), `real-cert` (FAIL_OUTPUT, line 5, `inter signed by root`
+answers False), `real-compare-negative` (FAIL_STARVED, 1 of 15 lines at the
+ceiling, still incomplete alone) and `real-mode-fields` (FAIL_RUNTIME, no uart
+output, still silent alone). Reported rather than waved through; unowned, and
+none of them is diagnosed here.
+
+**The test the encoder already had could not see this.**
+`codex/test/riscv-encoder.codex` is 64 lines and covers no `fcvt` at all.
+
+**Not seed-affecting, measured:** no file under `codex/compiler` cites
+`RiscVEncoder`; only the riscv plug, its own tests and `RiscV32CEncoder` do.
+Reachability, not directory (DevelopersRulebook 7). So this took no build
+token.
+
+---
+
+*The account as found, kept because the reason it survived is the useful part:*
+
+**Measured on QEMU 2026-08-31 (red), all three backends, same source.** Found
+while reviewing Steve Howell's PR 100, which pointed at the region; the defect
+is ours and predates it.
+
+| probe | x86-64 | arm64 | riscv64 |
+|---|---|---|---|
+| `real-to-int 3000000000.0` | 3000000000 | 3000000000 | **2147483647** |
+| `real-to-int 10000000000.0` | 10000000000 | 10000000000 | **2147483647** |
+| `real-to-int 1000000000000.0` | 1000000000000 | 1000000000000 | **2147483647** |
+| `real-to-int (-3000000000.0)` | -3000000000 | -3000000000 | **-2147483648** |
+| `show 3000000000.5` | 3000000000.5 | -- | **2147483647.** |
+| `show 10000000000.25` | 10000000000.25 | -- | **2147483647.** |
+
+These are ordinary in-range i64 values, not edge cases. arm64 passed the
+in-range battery clean; riscv clamps every magnitude above 2^31.
+
+**Cause, one field in two lines of `codex/foreword/core/RiscVEncoder.codex`.**
+Under `funct7 = 0x61` the RISC-V spec selects the destination width with `rs2`:
+0 is FCVT.**W**.D (32-bit signed), 2 is FCVT.**L**.D (64-bit signed).
+
+    :355  rv-fcvt-l-d (rd) (fs1) = rv-r-type #53 rd 1 fs1 0 #61
+    :367  rv-fcvt-l-s (rd) (fs1) = rv-r-type #53 rd 1 fs1 0 #60
+
+Both pass 0, so a function named `l-d` emits the 32-bit instruction, which
+sign-extends its 32-bit result into the 64-bit register and saturates at INT32
+bounds. That is exactly the numbers above. The int-to-float direction in the
+same screen is correct and is the contrast that names the bug: `:352`
+`rv-fcvt-d-l` and `:364` `rv-fcvt-s-l` both pass `rs2 = 2`.
+
+**The blast radius is wider than the builtin**, because `RiscVRuntime.codex:262`
+and `:321` use `rv-fcvt-l-d` in the double-to-string path, which is why `show`
+on a Real is wrong as well as `real-to-int`.
+
+**Why a green cross battery said nothing (L-CONSTRUCT).** The path is reachable
+and ordinary user code takes it. What was absent was any INPUT that reached it:
+nothing in the corpus calls `real-to-int` on a value above 2^31, and every
+`show` of a Real in the corpus is small. A suite cannot distinguish "the
+operator is correct" from "no fixture ever spelled a large one".
+
+**Fix and its measurement.** `0` to `2` in both lines. It is under
+`codex/foreword/`, so whether it is seed-affecting is a reachability
+measurement rather than a directory question (DevelopersRulebook 7): measure
+before assuming it takes a token. Keep the reproducers as the regression test
+(L-REPRO) -- they are three probes, in this row's table, and they must run on
+the CROSS battery rather than only on x86, since x86 is the arm that is
+already right.
+
+**Unowned. riscv is reek's close-out lane.**
 
 ## 2.00 -- the page's 57 examples are graded in the page's own module, which is a stricter bed than compile.ps1
 
@@ -4068,12 +4158,108 @@ Codex and that every other lane accepts. Evidence is PR 96; read it before
 measuring, and measure the zig arm rather than inferring it from the C#
 one -- the two plugs took different routes to the same requirement.
 
-Unowned. Sized as one entry, not a campaign.
+**STEVE'S TO FINISH, not a lane's to lift (Damian, 2026-08-29):** *"leave the
+zig plug work to Steve, its his bug to finish here, not a cross cutting plug
+lift like we do sometimes."* It came in on his PR 96 and it stays with him. Do
+not claim this row; it is not unowned work waiting for a free lane.
+
+**MOSTLY DONE (Steve Howell, PR 103, absorbed by red 2026-08-31).**
+`zig-arm-shadowed` drops a prong an earlier trivially-guarded arm already
+names, so the nullary-constructor and literal shapes now emit. Verified end to
+end rather than by reading the emitted text: the pre-fix plug refuses
+`codex/test/ops/match-shadowed-arm` with exactly two `duplicate switch value`
+errors, and the rebuilt plug emits zig that compiles under 0.16.0 and prints
+the same five lines as the x86 arm.
+
+**One shape is still open, and it is the reason this row is not closed.**
+`zig-pat-switch-value` answers only for `list-length subs == 0`, but
+`emit-zig-match-arm` also emits a BARE prong for a payload-carrying
+constructor whose binders are all unused (`ZigEmitter.codex:2155` for one sub,
+`:2158` for several). Two such arms on the same constructor still collide and
+still refuse at zig. The failure direction is safe -- it under-drops, so
+nothing is miscompiled -- and the fix is to widen `zig-pat-switch-value` to
+mirror those two conditions.
+
+Two notes for whoever takes that. The PR's prose claimed a guarded earlier arm
+does not shadow; that is unreachable and was dropped at absorption, because
+`emit-zig-match-arms` has exactly two call sites (`:2078`, `:3275`) and both
+sit in the `else` of `zig-branches-guarded`. And `zig-arm-shadowed` scans
+backward per arm, making emission O(n squared) in arm count with one Text
+allocated per comparison; bounded and accepted, but if the widening makes it
+hotter, render each arm's switch value once into a list rather than
+re-rendering the earlier arm's on every comparison.
 
 ## 2.03 -- the riscv plug runs as a wasm module and its wire is byte-identical to bare metal; wat2wasm cannot assemble it
 
-**IN HAND, SHELVED as reek CL 20659, NOT landed.** Written up now because
-blocker 1 below belongs to another lane.
+**BOTH MODULES LANDED: riscv main 20681, arm64 main 20697. THE WAT2WASM
+CEILING IS CLEARED (reek, 2026-08-29) and both modules assemble in 0.2 s.**
+Flipping `ship` is the next entry, not this one.
+
+**ADDENDUM 2026-08-30 (red): "assembles in 0.2 s" is true of a NATIVE
+wat2wasm and was not what bare `wat2wasm` resolved to on this box.**
+`Get-Command wat2wasm` answered the npm wabt shim -- wabt compiled to
+WebAssembly, interpreted by node -- and pwsh prefers its `.ps1` over any
+native exe on a later PATH entry. On `riscv-stdio.wat` (2,135,965 bytes,
+post-depth-fix) that shim spent 26+ CPU-minutes without finishing, measured
+twice; wabt 1.0.41's native `wat2wasm.exe` assembles the same file in
+0.08 s and the result loads and passes the page arms. The 0.2 s above
+cannot be the npm shim (node boot alone exceeds it), so that measurement
+was of a native binary. Native wabt is now installed at
+`%LOCALAPPDATA%\Programs\wabt` (release tar verified against its published
+SHA-256) and prepended to the USER Path; a shell started before that change
+still resolves the npm shim, which is how a 22-minute page build read as
+build cost on 2026-08-30.
+
+**THE CAUSE RECORDED BELOW WAS WRONG, and this row's own baseline table is
+what says so.** Blocker 1 was attributed to the match construct --
+`emit-wat-match-body` and its TCO twin `emit-wat-branches-tco`,
+`WasmEmitter.codex:1061`. Both twins were flattened to sibling blocks
+(fester's shelf 20730) and the depth did not move: arm64 stayed at **312**,
+and the deepest point measured `a64_emit_direct_call` carrying 154 `(if `
+and not one `(block $_a`, which is a shape the match emitter cannot produce.
+
+The third nesting site is **`IrIf`**, at `WasmEmitter.codex:767` and its TCO
+twin, and neither shelf touched it. The table below measured "longest
+consecutive **`else if`** chain against WAT depth" and an `else if` chain IS
+`IrIf`; the correlation was recorded correctly and then read onto the other
+construct. The same sibling-block repair applied to both `IrIf` sites:
+
+| module | `else if` arms | depth before | depth after |
+|---|---|---|---|
+| compiler | 42 | 188 | **48** |
+| riscv | 131 | 309 | **27** |
+| arm64 | 152 | 312 | **24** |
+
+**The criterion this row set is met in the form that inverts the ordering:**
+arm64 has the MORE arms and the LOWER depth, so depth has stopped tracking
+arm count. That is what the row asked for and it deliberately is not an
+absolute landing depth, which the row was right to refuse to predict.
+
+**Proven against an oracle that shares no code with the emitter under test.**
+The bare-metal plug CDX is built from the backend's own chapters and never
+sees `WasmEmitter`, so an emitter defect cannot move both arms together:
+riscv **byte-identical for all 50,184 wire bytes**, arm64 **all 18,667**,
+with a sabotage arm that fails at the corrupted byte. Beyond the boards, the
+compiler module rebuilt by this emitter answers a CDX payload byte-identical
+to x86-64 (89,315 bytes), 69 of 69 page examples compile, and all 45 lens
+modules answer with 0 of 45 answering on non-IR.
+
+**TWO TRAPS IN THE GRADING HARNESS, both of which read exactly like a broken
+plug, and the second survived the first.** `<plug>/run.ps1` stamps an
+**`IR-CCE`** mode header on whatever bytes it is handed and passes them
+through. Given `IR-UNI` instead, the plug parses UTF-8 as CCE and dies
+`!EXC=06` at a fixed RIP -- and BOTH native plugs die the same way, because
+they share the parser, which reads as a common regression rather than as one
+bad input. Then, with the encoding fixed, the wires still differed at byte 0:
+`-Passes 'text-plug'` **REPLACES** the default pipeline rather than adding to
+it, so passing it to one arm and not the other grades folded-and-inlined IR
+against unfolded IR. Compile BOTH arms with the same passes, and give the
+module IR-UNI while the metal plug gets IR-CCE. The metal capture is also not
+the wire: a leading `0x01` marker from codex-vm, then the wire, then
+FUNCMAP/WCET text. The harness is
+`scratchpad/wire-identity.ps1`; it is worth rebuilding as a real runner,
+because nothing in the tree grades the `irbytes` transport at all
+(`page-lens-test.ps1` covers the text lenses only) -- L-NOGATE.
 
 **What it closes.** `elf-bytes.wasm` has shipped built-but-dark since it
 landed, `ship = false`, for the reason the manifest states: nothing could
@@ -4245,3 +4431,2386 @@ PR 98's third file was `codex/compiler/IR/Lowering.codex`, deleting three
 `is NoExpectTy` arms each shadowed by an identical `is ErrorTy | NoExpectTy`.
 **Already landed as fester 20398** and the file has moved twice since under
 blu's COMPILER-32, so that hunk is dropped here rather than reapplied.
+
+## 2.05 -- DONE (contributed by Steve Howell, PR 99): the zig prelude's parts table told a reader not to hand-edit it, and hand-editing it is the only way to add a runtime helper
+
+Row 2.04 landed the shaken prelude and carried a paragraph over from the
+migration that produced it:
+
+    GENERATED by the ladder's `shake_parts.py` and gated part by part:
+    `shake-frag-text` of each list rebuilds its original chunk byte for byte.
+    Do not hand-edit; edit the prelude source and regenerate.
+
+**Both halves are unfollowable, and the instruction is the load-bearing half.**
+
+The prelude source it names does not exist. 2.04 replaced `zig-prelude`'s
+123-chunk text with `shake-text zig-prelude-parts zig-prelude-part-names`, so
+the thing a reader is told to edit instead of this table is the table. And the
+generator never lived in this tree: it is a script in the contributing ladder,
+so no reader here could have run it even while it ran. It has since been
+retired there, because it cannot parse the shape it produced: it looks for a
+`zig-prelude : Text` built from quoted chunks and finds the `shake-text` call.
+
+**The cost is not hypothetical; it was paid immediately.** Adding
+`real-to-int` / `real-from-int` to the zig plug needs two new prelude parts,
+and there is no route to that except editing this file. The note forbids the
+only available action, and the reasonable reading, "then I am doing something
+wrong", is the wrong conclusion.
+
+The paragraph now says what is true: the migration happened once, the gate it
+passed has been paid, this table is the source, a NEW part is written here by
+hand and in what format, an EXISTING part still should not be touched because
+its bytes are what the gate certified and nothing re-certifies them, and
+`build/check-zig-prelude-surface.ps1` is what grades a hand-written part.
+
+**Comment-only, and NOT re-measured here.** This edits a prose block in a Codex
+chapter; it changes the plug's bundle fingerprint and cannot change a byte the
+plug emits. The measurement behind that claim is a prior one rather than a new
+one: a 22-line prose block in this same chapter moved the fingerprint
+`1aba3c41196cb74e` -> `73dc2f1e8cd0ed81` and left all thirteen emitted `.zig`
+files byte-identical (ladder JUSTIFICATIONS.md, "A prose block moves the plug
+and not its output", 2026-08-25). Said plainly so nobody reads a fresh sweep
+into it.
+
+**Landed as red, 2026-08-31.** Placed at 2.05 in row order rather than at the
+file's end, where the PR wrote it: the register gained 2.06 through 2.08 while
+the PR was open.
+
+## 2.06 -- the native backends answer a plausible wire on input that is not IR
+
+Found while calibrating `page-wire-test.ps1` (reek, 2026-08-29). Handed
+`this is not an IR chapter`, `riscv-stdio.wasm` answers 46,886 bytes and
+`arm64-stdio.wasm` 15,737 bytes, both exit 0, where the real subject gives
+50,184 and 18,667. The output does TRACK the input, so the modules are
+reading it -- what is absent is a refusal.
+
+This is L-BAILVALUE on a front door: a producer that answers rather than
+refusing makes a caller unable to tell that anything went wrong, and the
+page's board target would hand somebody a downloadable binary built from
+whatever was in the box. The text lenses do refuse, which is what
+`page-lens-test.ps1 -Calibrate` asserts across all 45 of them; these two are
+the exception.
+
+**Not fixed here, and deliberately not asserted on by the wire runner**, whose
+calibration is a wire-byte sabotage instead. A runner that asserted a refusal
+these modules do not make would be red from its first run and would be
+switched off. The fix belongs with whoever owns `PlugIrBytes`: refuse an
+input with no `IR-BEGIN`, the way `compile-plain` now refuses an unknown mode
+(L-ACCEPTED), and only then can the calibration arm be tightened.
+
+## 2.07 -- the ELF lens lights, with a kernel/usermode switch
+
+Damian, 2026-08-29: *"we need a button then in the prism binary section
+kernel/usermode switch and build it either way."* Both build.
+
+**What was actually missing was a producer, not a plug.** `elf-bytes.wasm`
+has built and run since it landed; its input is the native wire
+`[4B code-len][4B data-len][4B func-count][code][data][functable]`, and
+nothing emitted that from a browser. The page emits it now by taking the
+x86-64 STRAIGHT OUT OF THE CDX, which is what `build/cdx-to-pe.ps1` has
+always done host-side: text at CDX header offsets 168/176, rodata at
+184/192. No compile mode, no seed, no compiler change. The `ELF` mode
+`extract-x86-output.ps1` asks for is a different approach and is still dead.
+
+**The payload now leads with a mode byte, as the pe plug's does.** 0 is the
+existing bare-metal image; 1 is a user-mode ELF64 at the conventional Linux
+base with an RX/RW split and no interpreter. An unknown mode is refused BY
+NAME rather than absorbed by a fallback, because the thing that would look
+like it worked is a downloadable binary (L-ACCEPTED).
+
+| mode | answer |
+|---|---|
+| 0 kernel | ELF32 EXEC, machine 0x3, entry `0x100020` = bare-metal base + 32 |
+| 1 usermode | ELF64 EXEC, machine 0x3E, entry `0x4000D0` = 0x400000 + 176 + 32 |
+| 2, 7, 9 | `REFUSED unknown mode N` |
+
+**`elf64-header-bytes`, `phdr-64` and `elf-linux-base-addr` had no caller in
+any binary we ever shipped** -- L-UNCALLED, compiled into everything and
+executed by nothing. Mode 1 is their first caller, so they were unproven
+code until this arm ran, which is why the arms grade the entry ARITHMETIC
+rather than the magic number.
+
+**WHAT THE USERMODE FILE IS NOT, and this is the part to carry forward.** It
+is a correct ELF64 container whose CODE is still what the backends emit for
+bare metal: console and heap are device registers, not `write(2)` and
+`mmap(2)`. It loads on Linux and stops at its first print. The hosted arms
+are PrismDevEnvironment stage 5a and are compiler work, seed-affecting. The
+switch does not pretend otherwise -- the pill's own title says so.
+
+**Graded in two beds, deliberately.** `page-bytes-test.ps1` gains kernel and
+usermode positives plus a mode refusal, grading the module. The workspace arm
+gains an arm that drives the PAGE'S OWN `elfWire`, because the PowerShell arm
+builds that framing a second time and two implementations of one contract
+drift apart. Both grade class, machine and ENTRY rather than the magic
+number: a builder wired to the wrong mode still answers a valid ELF, and
+sabotaging the mode byte was checked to turn the usermode arm red while the
+kernel arm stayed green. The page's guard against a CDX whose header
+overstates a section has its own control, because that shape otherwise builds
+clean and dies later -- `cdx-to-pe.ps1` records what that cost.
+
+**Boards are one field short of this same chain.** `riscv-stdio.wasm` and
+`arm64-stdio.wasm` already answer exactly the wire the ELF plug reads, so
+source -> IR -> board module -> wire -> elf module is a board kernel built in
+a browser. What stops it is that `ElfWriter` knows only `elf-machine-386` (3)
+and `elf-machine-x86-64` (62) and hardcodes the value in each header builder,
+so a riscv or arm64 wire would come back in an ELF claiming to be x86-64.
+It needs `EM_RISCV` (243) and `EM_AARCH64` (183) and a machine parameter
+threaded through `elf32-header-bytes-shdrs` and `elf64-header-bytes`. Small,
+and not done here rather than shipping a mislabelled header.
+
+## 2.08 -- boards reach the page: the riscv plug's own ELF writer gets its first caller
+
+Damian, 2026-08-29, at the page: *"still not seeing where the boards are in
+the prism ui at all."* They were nowhere, and the reason is findable.
+
+**`RiscVElf.codex` is a complete RISC-V ELF64 writer with ZERO callers.**
+`rv-build-elf` was, like `rv-build-wire-output` before it and
+`elf64-header-bytes` this same day, written for a caller that did not exist --
+L-UNCALLED three times over in one plug. Worse than uncalled: `RiscVElf` was
+not in the module's chapter list at all, so the writer was not even compiled
+into the module that would have used it. Nothing was broken and nothing was
+connected.
+
+**`RiscVStdio` takes a mode line now.** Default is the wire, unchanged; `ELF`
+answers a RISC-V ELF64 from this plug's own writer, with no CDX and no elf
+plug anywhere in the chain. Re-measured after the change: the wire is still
+50,184 bytes and still byte-identical to bare metal (`page-wire-test.ps1`),
+so the default path did not move.
+
+**The entry is LOOKED UP, not assumed.** `rv-build-elf` adds an offset to the
+load address and the emitted functions are not in source order, so entering at
+offset zero enters whichever function happens to be laid down first. It
+resolves `opening` through `rv-find-func-offset` and REFUSES by name when
+there is none: a board kernel with no entry point is not a thing to hand
+somebody, and the alternative is an ELF that jumps into the middle of an
+unrelated function.
+
+**What it honestly is.** ELF64, `EM_RISCV` 243, loaded at `0x80000000` -- the
+RAM base `qemu-system-riscv64 -machine virt` uses and the SiFive one. The
+per-board link and flash addresses for the nine named HAL boards are NOT in,
+so the pill says "RISC-V kernel" rather than naming ESP32-C6 or FE310. Putting
+a board's name on a file whose load address was not derived from that board's
+memory map is the mislabelling this register keeps closing.
+
+**ARM64 is a disabled pill carrying its reason, not an absence.** arm64 emits
+the same wire riscv does and its PE writer lives in the pe plug, but there is
+no `Arm64Elf` chapter anywhere in the tree. That is the next piece if boards
+want a second architecture, and it is a straight port of `RiscVElf` with
+`EM_AARCH64` 183.
+
+**Graded, not just shipped.** The workspace arm gains a board arm driving the
+page's own path, checking class, MACHINE and load address rather than the
+magic number -- an ELF claiming x86-64 is exactly what the missing machine
+field would have produced. Its control runs the DEFAULT mode and requires a
+wire back, so a module that ignored the mode line and always built an ELF
+cannot pass. arm64's module stays `ship = false`: shipping 271 KB the page has
+no way to reach is a dark payload, which is what riscv was until today.
+
+## 2.09 -- the in-tab board kernel BOOTS, and three defects had to go first
+
+**Measured 2026-08-29 (reek): a kernel built through the browser chain boots
+on `qemu-system-riscv64` and prints output byte-identical to
+`codex/test/factorial.expected`, 248 chars, exact.** The chain is source ->
+`codex-compiler.wasm` -> IR -> `riscv-stdio.wasm` -> ELF, with no host in it.
+
+**FIRST, WHAT IS NOT NEW, because the first version of this row overclaimed.**
+RV64 ELFs booting and printing correct output is the CROSS BATTERY's daily
+work (`build/test-cross*.ps1`): it compiles `codex/test` to ARM64/RISC-V ELF
+through the HOST-side builder (`codex/build/compileriscvScript.codex`) and
+boots on Renode or QEMU against the `.expected` sidecars. What was missing was
+only the in-browser half: `rv-build-elf`, this plug's OWN writer, had no
+callers, so the artifact could not be produced without a host.
+
+**THE `-m 1G` REQUIREMENT IS NOT A DISCOVERY EITHER.** `__start` sets the
+stack to `0xBFFF0000`, inherited from the x86 memory map, so QEMU virt's
+default 128 MiB leaves the stack outside RAM and the kernel hangs. That is
+already written into the Renode board model: `tools/renode/codex/
+codex-riscv64.repl` declares `dram ... 0x80000000, size: 0x40000000`, exactly
+1 GiB. Reached from the other end and it agrees, which is the useful part.
+
+    qemu-system-riscv64 -machine virt -m 1G -nographic -bios none -kernel kernel.elf
+
+**THREE DEFECTS, ALL INVISIBLE FROM OUTSIDE.** Every one presented as a silent
+hang with no output; the QEMU instruction trace is what separated them.
+
+1. **An instruction INDEX used as a byte offset (mine).** `rv-record-func`
+   stores `st.insn-count`; `rv-patch-calls-loop` multiplies by 4 to reach
+   bytes. Passing it straight to `rv-build-elf` gave an entry a quarter of
+   the way to the right instruction and, worse, an ODD address --
+   `0x80002D83` -- which no RISC-V core will fetch.
+2. **The wrong entry symbol (mine).** Entering at `opening` skips `__start`,
+   the runtime init that establishes the stack and the heap pointer in S1.
+   `cdx-to-pe.ps1`'s `-EntryStart` switch exists to avoid exactly this on the
+   x86 side.
+3. **A real layout defect in `RiscVElf`.** It mapped the text at
+   `load-addr + text-start`, leaving the bottom 176 bytes of RAM unmapped;
+   `qemu -bios none` enters at the RAM BASE regardless of the ELF entry and
+   read `0x80000000: 0000 illegal`. The x86 builder in `ElfPlug` has always
+   mapped file offset `text-start` TO `load-addr`. **The host-side riscv
+   script proves the defect rather than contradicting it**: it carries the
+   comment "Also produce a flat binary for -bios none (QEMU jumps to
+   0x80000000 regardless of ELF entry)" -- it shipped a SECOND artifact to
+   work around the same thing. Renode honours the ELF entry, so it never saw
+   it. One ELF that boots under both is the right artifact for a download
+   button, and `rv-build-elf` has one caller, so nothing else moves.
+   Safe against the remap window, which constrains image SIZE against 16 MB
+   and not these 176 bytes.
+
+**The arm was too weak and is fixed.** It checked the entry was above the
+load address, which the odd entry satisfied. It now checks 4-byte alignment,
+that the entry lies INSIDE the text segment, and that the text maps at the
+RAM base. Calibrated against the three kernels this row describes: the
+unaligned one is rejected on alignment, the mis-mapped one on the RAM base,
+and the booting one is accepted.
+
+**BOARDS, HONESTLY.** The nine HAL chapters in `codex/boards` cannot run this:
+FE310-G002 is RV32IMAC and ESP32-C6 is RV32IMC, while we emit RV64 -- `LD`
+and `SD` do not exist on RV32 -- and `QemuVirtBoard` is AArch64, with the
+remaining six Cortex-M or Cortex-A and no codegen at all. The board that
+works is the SYNTHETIC RV64 platform the cross battery already uses.
+`PrismDevEnvironment.md` stage 2e says ESP32-C6 and FE310 "have a real chain
+through the riscv plug's own ELF writer"; that is wrong on ISA WIDTH, which
+no link-address work fixes. FE310's SRAM base is `0x80000000`, the same
+number as QEMU virt, which is the likely source of the claim. Reaching those
+chips needs an RV32 mode: ELF32, 32-bit pointers, no doubleword ops.
+
+## 2.10 -- the Windows .exe: the container is PROVEN, the blocker is measured and is shared with the Linux app
+
+Damian, 2026-08-29: *"jump on that windows .exe work."* Findings first, because
+they scope it precisely and two of them are cheap to re-derive wrongly.
+
+**THE CONTAINER WORKS. A hand-built console PE32+ with a real kernel32 import
+table runs on this box, prints, and exits 0.** Prototyped in PowerShell rather
+than in the plug on purpose: iterating a header layout costs a second there and
+a 40-second module rebuild in `PeWriter`. `scratchpad/pe-console-proto.ps1` is
+the proven reference -- subsystem 3, PE32+ optional header, data directory [1]
+IMPORT and [12] IAT, one import descriptor for `kernel32.dll`, ILT and IAT of
+identical thunk arrays, a hint/name table, and `call [rip+disp32]` through the
+IAT. Porting that to Codex is mechanical.
+
+Two layout facts it cost time to learn, both measured:
+
+- **A declared section that starts at `SizeOfImage` makes Windows refuse the
+  image** with "not a valid application for this OS platform", which names
+  nothing. I had declared 3 sections and filled 2.
+- **`ImageBase` has a floor above `0x40000`.** Bases `0x10000`, `0x20000` and
+  `0x40000` are all refused; `0x100000` runs. So the trick of choosing
+  `ImageBase + textRva == 0x100000` to land our position-dependent code
+  where it expects, with NO copy stub, does not work: the only 64K-aligned
+  base that is accepted puts `.text` at `0x101000`, 4 KB high.
+
+**A COPY STUB IS THEREFORE REQUIRED, AND IT WILL WORK.** Measured through
+`VirtualAlloc`: a fixed allocation at **`0x100000` is GRANTED**. So the stub is
+the same shape the UEFI path already uses (`pe-stub-alloc-low-pages` calls
+AllocatePages with AllocateAddress at 0x7000 and 0x8000) -- allocate, copy text
+and rodata, jump to the entry.
+
+**AND HERE IS THE WALL, MEASURED RATHER THAN ARGUED. A fixed `VirtualAlloc` at
+`0x8D40` and at `0x7000` FAILS with error 87.** The runtime keeps its state at
+fixed addresses in the FIRST 64 KB -- the print descriptor at 36160..36192,
+`deck-pos` 28720, `heap-hwm` 28728, `arena-base` 28696 -- and the first 64 KB
+is exactly what Windows reserves and exactly Linux's `mmap_min_addr` (65536,
+measured on the WSL box). Both walls sit in the same place and the whole
+scratch region is behind them.
+
+**HOW MUCH OF THE RUNTIME IS BEHIND THAT WALL: 59 OF 69.** Measured by
+compiling a program whose entire body is one `print-line-uni`, extracting the
+x86-64 text out of the CDX, and searching it for the little-endian encoding of
+every fixed address `X86_64Boot.codex` declares below 65536. 59 are embedded;
+the 10 absent (fork pool, NIC buffers, bivy save, handler table) are what makes
+the scan a measurement rather than a match-everything -- it discriminates.
+
+**THE 59-OF-69 FIGURE ABOVE IS A TRUE MEASUREMENT OF THE WRONG POPULATION, and
+it is corrected rather than deleted because it is what put stage 5a in another
+lane's queue as a large job.** It counted the constants embedded in a BARE-METAL
+image, and the boot infrastructure is exactly what a hosted build never emits:
+page tables, IDT, GDT, LAPIC, SMP trampolines, ATA, NIC, UEFI, the scheduler and
+the process table are all in that 59. Classified instead by the emit function
+that references each cell, an ordinary hosted program reaches ELEVEN, from 57
+sites. L-ADJECTIVE asked of my own number: 59 was a count standing in for a
+shape.
+
+## 2.11 -- DONE 2026-08-29: a Codex program runs as a native Linux app AND a Windows .exe
+
+Damian: *"we need those linux and windows executables to actually perform the
+functions we build"*, then on a report that led with what did not work yet:
+*"the part about making it run is the point, all other steps are meaningless
+without that."*
+
+**BOTH RUN. 60 of 60 grades pass across the two targets** -- 30 Console subjects
+each, compiled to a static ELF64 and to a console PE32+, executed, and graded
+against the SAME `.expected` sidecars the bare-metal battery uses. The oracle is
+independent of both targets, so a match is agreement with bare metal rather than
+with itself. `factorial` is 248 bytes of output on each, exact.
+
+**Bare metal is untouched and checked, not assumed:** the binary the new
+compiler emits for `factorial` is byte-identical to the depot seed's,
+11DC247A94E1F7A7.
+
+### What the shape turned out to be
+
+One selector, `hosted-target` (0 bare, 1 Linux, 2 Windows), rather than a
+Boolean plus a second flag, so a build cannot be half-hosted. Above it:
+
+- **The cells move off the low addresses both systems reserve.** `st-cell` at 57
+  sites. Linux puts the band at 128 KB, below the text, where it can never
+  collide with a program of any size. Windows cannot have it there at all.
+- **The print path funnels through ONE helper.** Hosted swaps `__serial_put` for
+  a `write(2)` on Linux and a kernel32 `WriteFile` on Windows, and inherits the
+  CCE conversion, the newline and the itoa above it unchanged.
+- **`__start` gets a hosted arm** that skips every hardware structure.
+- **Exit is `exit_group(2)` or `ExitProcess`.**
+
+### Four Windows findings, each measured, each cheap to re-derive wrongly
+
+**NO ImageBase LANDS OUR TEXT AT 1 MB.** The floor is real and the whole sweep
+is refused: 0x10000, 0x20000, 0x40000, 0x50000, 0x60000, 0x80000, 0xC0000,
+0xE0000 and 0xF0000 all give "not a valid application for this OS platform",
+with 0x100000/textRva 0x1000 as the positive control that RUNS and prints. PE
+wants a 64K-aligned base and a first section above the headers, so no pair sums
+to 1 MB. Windows is therefore patched for its OWN load address (`st-load-base`,
+1 MB + 0x2000) rather than copied down at startup, which is a constant rather
+than a stub. `pe-console-proto.ps1` in the depot still carried the pre-refusal
+comment claiming the trick works; running it is what settled it.
+
+**THE CELLS CANNOT LIVE LOW ON WINDOWS EVEN THOUGH VirtualAlloc SAYS THEY CAN.**
+A fixed request at 128 KB is GRANTED from inside pwsh and REFUSED from a freshly
+loaded minimal image. Measuring the API from the wrong process says the opposite
+of the truth; the Windows band goes to 0x50000000 instead.
+
+**THE ARENA DOES NOT NEED A FIXED ADDRESS AND THE CELLS DO.** Every cell
+reference is an absolute immediate the compiler baked in; the arena is reached
+only through R10 and one cell. A fixed arena was refused at 0x600000 and again
+at 0x60000000; letting the loader choose is granted first time.
+
+**THE BARE-METAL STACK GUARD IS A MEMORY-MAP ASSUMPTION, NOT A STACK TEST.**
+`emit-prologue` compares RSP against the deck cursor, which is only an overflow
+test while the arena sits BELOW the stack. Windows hands back an arena wherever
+it likes, and when that landed above the stack EVERY prologue trapped to
+`__out_of_memory` on the first call -- an access violation, no output, and
+nothing naming the cause. A hosted process already has a guard page from its
+kernel, so the check is off for hosted rather than taught a second ordering.
+This was the last defect and the one that read least like its cause.
+
+### The instruments, and one of them found a defect in itself
+
+`codex/plugs/elf/cdx-to-elf.ps1` and `codex/plugs/pe/cdx-to-pe-console.ps1`
+relocate nothing; they declare the addresses the code was already built for. The
+PE layout is shared with the compiler by fixed constants and the writer ASSERTS
+every IAT slot against them, because a silent disagreement there is a call into
+the wrong page rather than a diagnostic.
+
+`codex/plugs/elf/hosted-elf-test.ps1` grades both targets and has a `-Calibrate`
+arm that mangles every definition site of `opening` and requires all subjects to
+refuse. **Calibration earned its place immediately:** the first version renamed
+only the SIGNATURE line, and a subject that splits its signature from its body
+still defined `opening`, compiled, and produced its oracle -- one false pass in
+twelve, in the arm whose only job is to prove the harness can fail (L-FALSIF).
+
+**A REFUSAL IGNORED IS AN ACCESS VIOLATION LATER (L-REFUSED).** The first
+Windows entry ignored what VirtualAlloc answered and the next instruction stored
+through the null. Each request is tested now and a refusal exits with its own
+code, which is what turned the next two failures from mystery crashes into "90"
+and "91" and located them in one run each.
+
+### Scope, decided by what the source asks for
+
+A subject naming Device, FileSystem, Network, Identity, Audio, Gpu, Media,
+Concurrent, the GOP desk, `raw-mem`, `address-of`, the atomics or `read-line`
+reaches a kernel service a user process does not have. Three that looked like
+counterexamples were each the subject: `cap-audio` declares `[Console, Audio]`,
+`cap-heap-poke-pure` pokes absolute 786432, `atomic-smoke` writes through
+`address-of 0`. One that looked like a subject was MINE: `consistent-hash-balance`
+crashed until the arena segment was sized to the bare-metal envelope instead of
+64 MB, which is L-ARENA pointed at my own bed.
+
+**WHERE THE LINUX BINARY HAS ACTUALLY RUN, AND WHAT IS ASSERTED RATHER THAN
+MEASURED (Damian ruled 2026-08-29 that the assertion is enough and the bed time
+is not worth it).** Measured: WSL2, kernel 6.6.87.2, every grade in this row.
+Asserted: it runs on any x86-64 Linux. The basis is that the artifact has no
+host surface to depend on -- `readelf` shows ET_EXEC, no INTERP, no dynamic
+section, three PT_LOADs, and the only kernel services it uses are `write` and
+`exit_group`. The one environmental knob suspected of constraining it does NOT:
+with `vm.mmap_min_addr` raised to 262144, far above the cell base, it still
+prints its oracle byte for byte, because a fixed PT_LOAD is placed by the ELF
+loader and not by an mmap from userspace. That measurement also retired a false
+claim this register and `X86_64Boot.codex` both carried, that mmap_min_addr was
+the wall the Linux cell base clears. It is not; the base earns its place by
+sitting BELOW the text, where it cannot collide however large the program grows.
+
+The Windows binary has run on one machine. The PE disables ASLR and depends on
+fixed addresses, so a host that forces relocation is the untested case there.
+**Known limits, named rather than left to be discovered:** one write per byte on
+both targets (staging was written first and withdrawn -- it makes correctness
+depend on every caller bracketing its print, and the raw and itoa paths do not,
+so an unbracketed stage is a wild store rather than a wrong character); no stdin;
+and the Windows arena is 1 GB against bare metal's 3.
+## 2.12 -- DONE 2026-08-29: the two hosted targets reach the PAGE, in Codex, from the page's own modules
+
+The containers proved in 2.11 were PowerShell, which the page cannot run. Both
+are ported to Codex now and built into the modules the site serves, so the
+Binary tab can hand a visitor a Linux app or a Windows `.exe`.
+
+**Proven end to end through the page's OWN modules**, driven exactly as the page
+drives them (`codex-compiler.wasm` with the mode line, then the container
+module): a flat unit compiles to a hosted CDX and both binaries RUN and print
+the right answer. Not a claim about the Codex source -- the artifacts the site
+ships were the ones executed.
+
+`ElfStdio` mode 2 and `PeStdio` mode 3 both take the CDX WHOLE rather than the
+unpacked wire the older modes take, because the hosted container needs the entry
+offset out of the CDX header and the wire does not carry it. The plug parses the
+header itself rather than trusting the caller to have done it.
+
+**The ELF module is byte-identical to the PowerShell writer.** The PE module was
+not, and the difference found two real defects plus one honest disagreement:
+
+- **`pec-section` never wrote the Characteristics field**, so both sections had
+  no flags at all -- not readable, not executable. The image loaded and died.
+- **THE DLL NAME WENT THROUGH THE HINT/NAME SHAPE.** An imported FUNCTION is a
+  two-byte hint then the name; a LIBRARY name is the bare string. Prepending a
+  hint puts two zero bytes where the loader expects the first character, so the
+  import resolved against an empty library name. Invisible in the file, fatal at
+  load, and it surfaced only because the two writers were compared byte for byte
+  rather than both being asked "does it run".
+- The last byte of difference was `SizeOfInitializedData`, which the PowerShell
+  prototype left zero and the Codex writer fills. The Codex one is right, so the
+  prototype was corrected to match: the two agree byte for byte on both targets
+  now, which keeps byte-identity usable as an instrument instead of a difference
+  everyone learns to ignore.
+
+**The page needed a rebuilt `codex-compiler.wasm` before any of this could
+work**, because `hosted` and `hosted-windows` did not exist in the module the
+site was serving. A hosted target is a different COMPILE, not a different
+wrapper, so the mode goes in at the compiler and the container only packages
+what comes out.
+
+The two pills carry what is measured and what is asserted in their tooltips,
+rather than in a doc nobody reading the page will open.
+**The consequence for planning stands: the Windows .exe and the Linux app are
+ONE piece of work, not two.** The container half is a day of plug work each and
+both are understood; the relocation is shared, and it is now done.
+
+## 2.10 -- the binary tab could not compile the compiler: bare `CDX` mode line, and a 4 KB payload-marker window
+
+Two page bugs stacked (red, 2026-08-30). The binary tab's second compile
+sent `CDX` with no `decks=` while the IR pass above it rides the ladder, so
+a compiler-sized unit met the derived clamp and refused `CDX9002 Deck
+overflow in SCOPE` -- 1.75's residue arriving at the published page; the
+underlying wasm deck consumption question stays open there. And
+`cdxPayload` searched only the first 4096 bytes for `SIZE:` where the
+self-compile carries ~69 KB of warnings before the marker, so the decks fix
+alone would have read as "no CDX payload came back". `Get-CdxPayload`
+always searched the whole stream; the page comment claiming "same rule" was
+false until now. Fixed: the CDX compile rides the ladder (bare `CDX` first
+for small units, because an explicit scale below the compiler's own
+derivation can fail silently, per opening.codex's 32-vs-33 record), and the
+marker search is whole-stream. Proven: the wasm CDX is byte-identical to
+the seed kernel's for the full 3,005,132-byte compiler source -- all
+3,064,678 payload bytes at `decks=125` -- and the page arms are green
+(CDX arm byte-identical, 69/69 examples).
+
+Found while verifying, reported and not chased (red lane is elsewhere):
+
+- **FIXED SINCE, and this entry is the record of what was wrong rather than
+    of anything open: arm 12b is GREEN, measured 2026-09-01 (reek)** --
+    `ELF kernel ELF32 entry 0x100020 (85,304 bytes); usermode ELF64 entry
+    0x4000d0 (86,548 bytes); overstated-section control refused`, with the
+    whole suite at ALL ARMS OK. The arm is not passing vacuously: it checks
+    class, machine and the EXACT entry for both modes and requires a CDX
+    overstating its text section to be refused. What follows is the original
+    2026-08 symptom.
+  - `page-workspace-arm.js` arm 12b was RED on this box. The elf plug refuses
+  `payload 84791 shorter than its own header claims 21703180`, a shape
+  `elfWire` cannot construct: its func-off equals the wire's own length by
+  construction, so the strict `>` cannot fire on any wire the page built.
+  The plug received something else; ~3.9 chars per byte fits a stringified
+  Uint8Array. For whoever owns 2.07/2.08's bed.
+- **FIXED 2026-09-01 (reek).** The same arm hard-required `riscv-stdio.wasm`
+  at load (its embed list) while build-page.ps1 treats that module as optional
+  ("ABSENT; its lens stays dark"), so a fresh workspace refused the whole suite
+  before arm 1 with a `readFileSync` stack. The embed now RECORDS an absent
+  module instead of throwing, names them once at start-up, and the `fetch` stub
+  rejects a named module with `module <name> is not in build-output/page; run
+  codex/plugs/wasm/build-page.ps1` rather than the bare "no network in the arm",
+  which is true, useless, and exactly what a missing module looked like.
+  **Measured both ways**: with the module present the suite is ALL ARMS OK;
+  with `arm64-stdio.wasm` moved aside it loads, prints the NOTE, and arm 12d
+  fails with the named message.
+- build-page.ps1 has no incremental path: an HTML-only page edit pays the
+  module rebuild, the x86 truth arm, 69 example compiles and the library
+  volume -- 451 s with the native assembler, ~22 min before the 2.03
+  addendum's fix.
+
+## 2.11 -- emit the binary wasm encoding directly and retire the external assembler (Damian, 2026-08-30: approved, scheduled later)
+
+The wasm plug emits text WAT and every build assembles it with wat2wasm,
+an external tool (2.03's addendum records what the PATH's default cost).
+Emitting the binary encoding directly deletes the dependency and the 9.6 MB
+text intermediate from the module path. Unowned until Damian schedules it.
+
+### Sized host-side before anyone starts it (reek, 2026-09-01)
+
+**wat2wasm IS NOT THE COST, and the row's framing invites the wrong reason.**
+Measured on the shipped module: **0.3 s** to assemble 10,296,178 bytes of WAT
+into 1,223,592 bytes of module, against a **145 s** module phase. Two tenths of
+one per cent. Retiring it buys SELF-SUFFICIENCY, which is the founding
+principle and reason enough, but anyone selling it as a speed win is wrong
+about where the time goes.
+
+**The speed argument that IS real is the text intermediate, and it is
+untested.** The WAT is **8.4x** the size of the binary it assembles to, and the
+145 s is spent building and writing those bytes inside the VM. Emitting the
+binary directly means constructing 1.2 MB instead of 10.3 MB. That could be
+most of the phase or very little of it; run.ps1 runs TWO guest passes (source
+to 16.8 MB of CCE IR via `compile.ps1 -Passes text-plug`, then IR to WAT
+through the plug CDX) and nothing times them separately. **Time those two
+passes before committing to this work**, because if the first pass dominates,
+binary emission saves almost nothing and is a purity change only.
+
+**The subset is bounded and enumerable, which is what makes either design
+finite.** Censused from the shipped module's WAT: **85 distinct instruction
+forms** plus about 24 structural forms (`block`, `loop`, `if`/`then`/`else`,
+`br`, `br_if`, `return_call`, `call`, `call_indirect`, `func`, `type`, `table`,
+`memory`, `global`, `export`, `import`, `data`, `elem`, `local`, `param`,
+`result`, `select`, `drop`, `unreachable`). **No `br_table`, no exceptions, no
+reference types beyond the single funcref table.** SIMD is `v128.load`/`store`,
+`v128.bitselect`, `i64x2.bitmask` and the four shapes' arithmetic and compares.
+
+**Two designs, and the choice is Damian's:**
+
+- **(a) Emit binary from the emitter.** Deletes the text path outright and is
+  the only one that can win back the 8.4x. Costs a structured module
+  representation and an index-space resolver, because every reference in the
+  emitter today is a NAME (`$foo`) and the binary format is indices.
+- **(b) A WAT assembler in Codex.** Parses the subset above and emits binary,
+  leaving the emitter alone. Far cheaper, testable in isolation, reusable by
+  any other plug that emits WAT -- and keeps the 10.3 MB intermediate, so it
+  buys the dependency and nothing else.
+
+### The module both designs have to build, censused from the shipped WAT (reek, 2026-09-01)
+
+**The envelope is small and fixed, which is the good news.** Measured on the
+shipped `codex-compiler.wat`, 10,296,178 bytes:
+
+| part | what is actually there |
+|---|---|
+| imports | 2 always (`fd_write`, `fd_read`), plus `blit_framebuf` and `on_key_import` conditionally |
+| memory | one, exported `memory`, min 256 pages |
+| globals | 9, all `i32`, 8 of them `mut` |
+| types | 49, every one `(func (param i64 x k) (result i64))` -- arity is the only variable |
+| table | one, `funcref`, with a single `elem` at offset 0 |
+| exports | 4: `memory`, `__heap_reset`, `disk_reserve`, `_start` |
+| functions | 5,857 defined |
+| data | 1,786 segments, all `(data (i32.const N) "...")` |
+| local types | three: `i32`, `i64`, `f64` |
+
+**THE TRAP THAT WILL COST A DAY IF IT IS NOT WRITTEN DOWN FIRST: the function
+index space BEGINS WITH THE IMPORTS.** `$fd_write` is func 0 and `$fd_read` is
+func 1, and the conditional imports shift everything after them, so a
+name-to-index resolver that numbers only the DEFINED functions puts every call
+in the module off by the import count -- and two of those imports are
+conditional, so the offset changes with the program. The text form hides this
+completely: `(call $foo)` never mentions a number. Nothing in the emitter
+currently thinks in indices at all.
+
+**The type section is the easy part and should not be over-built.** Every
+defined function is `(param i64 ...) (result i64)`; the 49 types are arities
+0..48. `call_indirect` names them (`(type $fn1)`), which is the only place the
+text refers to a type at all.
+
+**The code section wants locals GROUPED**, as runs of (count, type). The
+emitter declares them individually and by name (`(local $x i64)`, 37,670 of
+them), so the grouping is a real transformation rather than a transcription,
+and with only three local types the grouping is cheap.
+
+**What is NOT in this module, and each absence removes a chunk of encoder:** no
+`br_table`, no exceptions, no multi-value results, no reference types beyond
+the single funcref table, no `start` section (`_start` is an export, not the
+start function), no passive data segments, no multiple memories or tables.
+
+**Either way the oracle already exists and is independent: `wat2wasm`'s own
+output for every corpus subject.** Byte-identity is the strong form and may not
+hold (LEB128 minimality and section ordering are encoder choices); behavioural
+identity through `hosted-wasm-test.ps1` is the fallback and is the standard
+this campaign already grades on. **Keep `wat2wasm` on the PATH as the control
+after it stops being the producer** -- retiring the dependency and retiring the
+oracle are different acts, and doing both at once removes the only instrument
+that can say the new encoder is right.
+
+## 2.13 -- DONE (contributed by Steve Howell, PR 105; absorbed by red 2026-08-31): the zig plug emits real-to-bits and bits-to-real
+
+Both are a bare `mov-rr` on bare metal (`X86_64Builtins.codex:1726-1742`): the
+machine holds a Real f64 as its own bits in a general register, so the value
+and its bit pattern are the same sixty-four bits and the conversion is a
+register move. Zig separates the two types and spells the identity `@bitCast`.
+Total in both directions, so unlike a float-to-int conversion there is no range
+to leave and nothing to guard, and NaN payloads and both signed zeroes survive
+unchanged.
+
+**Verified rather than reasoned.** All twelve expected bit patterns were
+recomputed by hand from IEEE 754 before the run. The x86 arm answers them, and
+the emitted zig compiles under 0.16.0 and prints the same twelve lines,
+negative zero, a quiet NaN, both infinities and max-finite included. New test
+`codex/test/ops/real-bitcast-f64`. `check-zig-prelude-surface.ps1` green at 98
+parts / 177 reserved names, and the two new parts shake out of the four sample
+programs that do not use them.
+
+**TAKEN AS THE INCREMENT ONLY, and this is the part to know before reading the
+PR.** PR 105 is stacked on PR 100 and its diff carries PR 100 in full. PR 100
+is NOT landed: its `.expected` encodes x86's answer for NaN and overflow into
+`codex/test/ops`, which `build/test-cross-batch.ps1` grades on arm64 and
+riscv64 as well, and those two saturate where x86 answers the integer
+indefinite. So the two bitcast rows here are anchored on `bits-to-real-approx`,
+which exists at head, rather than on PR 100's `real-to-int` rows, which do not.
+Nothing of PR 100 is in this row. The `cx_real_to_int` cross-reference in the
+PR's prose was dropped for the same reason: it names a function this tree does
+not have.
+
+**There is no cross-battery hazard here, unlike PR 100.** All three backends
+implement this pair as a register move, so the answers are
+architecture-independent and the test is safe in `codex/test/ops`.
+
+**A sibling test already exists and was deliberately not replaced.**
+`codex/test/ops/real-bitcast` covers the same two builtins plus the f32 pair,
+which the zig plug still refuses, so it cannot simply be superseded. It is also
+a score-counting shape (`f64-bits: 5/5`) that does not say WHICH pattern broke,
+where the new one prints the patterns. Whether they merge is a later question.
+
+**Steve declined the other thirteen Real builtins on purpose, and the reason is
+a real question for us.** `ZigEmitter.codex:342` and `:373` map `RealTy (w) (m)`
+to `f64`, discarding both the width and the overflow mode, so in this plug an
+f32 Real is an f64, a trapping Real does not trap and a saturating one does not
+saturate. Filling those rows would replace an honest refusal with a plausible
+wrong number. Left open deliberately; it wants a representation decision rather
+than an emitter row.
+
+## 2.14 -- the wasm plug on the hosted corpus: 54 of 60 to 60 of 60, the four defects, and why 60 is not the corpus
+
+*Cite this by subject, not by number: this file carries TWO entries numbered
+2.10 and two numbered 2.11, so a bare "2.11" resolves to either the hosted
+lift or the binary-encoding row.*
+
+The hosted x86-64 lift grades 60 of 60 (the first 2.11 above). The wasm plug
+had never been run over that corpus. It is now: **54 pass, 6 fail of the same
+60 subjects**, and the six reds are **four defects**, not six -- the count
+flattens a shape, which is the thing to plan off (L-ADJECTIVE).
+
+**Both sides were measured on the SAME kernel rather than compared against a
+recorded number (L-COUNT).** The hosted arm's 60 of 60 was recorded 2026-08-29
+against a compiler that has since moved, so it was re-run here: **120 pass, 0
+fail** over linux+windows, 60 subjects each, on seed 2B69CDD246E7EE23. The
+figure holds at head, and it is now a measurement rather than a citation.
+
+The instrument is `codex/plugs/wasm/hosted-wasm-test.ps1`, graded against the
+same `.expected` sidecars the bare-metal battery uses, so a match is agreement
+with bare metal rather than with itself. **The corpus is not restated in it.**
+`codex/plugs/elf/hosted-elf-test.ps1` owns the selection rule and now answers
+`-ListSubjects`; a second copy is a set kept equal by hand in two places and is
+silent when it drifts, which would end exactly the comparability the score
+exists for.
+
+Kernel `seed/Codex.cdx` (2B69CDD246E7EE23), which is the kernel the plug is
+built against; the plug was rebuilt first, because `WasmEmitter.codex` moved in
+the 2026-08-31 merge-down and a plug binary older than its source is a
+confident wrong answer in either direction (L-SAMEVER).
+
+### The calibration, and what it does NOT establish
+
+`-Calibrate` mangles each subject's `opening` and requires the subject to fail
+to produce its oracle: **60 of 60 refuse.** That number alone would be worth
+little, because a sabotage that fails UPSTREAM of the graded step proves
+nothing about the graded step. Measured instead of assumed:
+
+| calibrate arm | count |
+|---|---|
+| emitted WAT (the plug did NOT refuse) | 60 of 60 |
+| assembled, and RAN under wasmtime | 54 |
+| produced its oracle anyway | 0 |
+
+So the full path -- plug, wat2wasm, wasmtime, compare -- is exercised for every
+subject that can reach it, and the refusal is not coming from the plug. Of the
+6 that did not assemble under mangling, 5 are the standing defects below;
+`board-types` assembles unmangled and passes the grade arm, so its calibrate
+refusal is a mangle artifact and not a finding.
+
+### The four defects
+
+**1. A shadowed `let` aliases one wasm local, so the inner binding survives the
+arm.** `act-let-scope` is the only red that assembles and runs; it prints
+`arm-local: 41` against the oracle's `23` and every other line agrees. The
+subject binds `v = n`, then `w = if n > 0 then (let v = n * 10 in v + 1) else v`,
+then answers `w + v`. At n=2 the oracle is 21 + 2. **41 is 21 + 20**, so the
+outer `v` was read back as the inner one. `locals-add`
+(`WasmEmitter.codex:493-495`) returns the list unchanged when the sanitized name
+is already present, so two distinct bindings of `v` share one wasm local and the
+inner `local.set` is still live after the arm. The arithmetic and the dedup both
+point one way, but neither is a cause until a fix moves the symptom
+(L-MECHANISM): the failing print is the test.
+
+**2. The `~` operator reinterprets its operands to `f64` and then compares them
+with `i64.eq`.** `approx-eq` is refused by wat2wasm: `type mismatch in i64.eq,
+expected [i64, i64] but got [... f64, f64]`. The emitted form for `1.0 ~ 1.0` is
+`(i64.eq (f64.reinterpret_i64 ...) (f64.reinterpret_i64 ...))`, so the operand
+conversion is right and the comparison is the integer one. Note the arm is wrong
+twice over and the type error is only the half wat2wasm can see: `~` is
+APPROXIMATE equality, so even a well-typed `f64.eq` here would be an exact
+compare with no tolerance, and `1.0 ~ 1.0` would still pass. Same shape as the
+`negate`-on-`Real` class that shipped on all three native lanes (L-CONSTRUCT):
+an operator taking the integer path for a real operand.
+
+**3. A `Real` builtin has no arm at all and reaches the funcref path.**
+`bacnet-encode`: `undefined local variable "$real_approx_to_bits"`. This is the
+failure mode `wasm-e2e.ps1` already documents -- a builtin with no arm is
+treated as a value, so it emits against an undeclared local and no `(call $...)`
+scan can see it. wat2wasm is the census; a grep is not.
+
+Defects 2 and 3 are both `Real` surface and may share a root. Not asserted:
+nothing here has measured that, and a mechanism that explains two symptoms is
+the easiest thing in this project to believe.
+
+**4. The wasm prelude names a builtin helper without the `__` the compiler
+gives it, so a Codex function of the same name collides with it.**
+`db-csv-roundtrip`, `db-full-test` and `db-row-update` -- three subjects, ONE
+defect -- are refused with `redefinition of function "$text_compare"`.
+
+The chain, each link checked rather than inferred:
+
+- `text-compare` is a BUILTIN (`Types/Builtins.codex:83`) and the x86-64
+  compiler lowers it to a helper named **`__text_compare`**, two underscores.
+- `apps/data/Row.codex:294` also defines an ordinary Codex function called
+  `text-compare` (with `text-compare-loop` beside it), and the three db
+  subjects cite `Data chapter Row`.
+- On x86-64 the two therefore have different symbols and coexist, which is why
+  the hosted arm grades 120 of 120 over the same corpus.
+- The wasm plug names its prelude helper **`$text_compare`**, one underscore
+  short (`WasmEmitter.codex:2068`), and its builtin arm calls that name
+  (`:1484`). `wat-sanitize` maps the user's `text-compare` to the same
+  `$text_compare`. Two definitions, one name, and wat2wasm refuses the module.
+
+The WAT shows both: `:515` is the prelude's (i32 locals, byte loop, beside
+`$char_at`) and `:1319` is the user's (i64 locals, `$_rp`/`$_tv`,
+`return_call $text_compare_loop`), sitting among `$val_compare` and `$col_def`
+where the program's own functions are.
+
+So this is not "a prelude helper a program happens to shadow", which is how it
+first read. It is the plug diverging from the compiler's own naming convention:
+every prelude helper standing in for a builtin should carry the `__` prefix the
+compiler already reserves, and any that does not is one user definition away
+from the same refusal.
+
+### Two things the census did NOT find, recorded so they are not re-derived
+
+**`hosted-kind` is hard-coded to 1 and no consumer can currently tell.**
+`WasmEmitter.codex:1009` answers 1, which in the compiler's own convention means
+hosted LINUX (`X86_64State.codex:120`, "between 0 and 2": 0 bare, 1 Linux, 2
+Windows). Every consumer in the tree tests `/= 0` only -- `bp-present`
+(`BootPaint.codex:48`) and two sites in `PhaseAllocator.codex` -- so the wrong
+value is inert today and the first consumer that distinguishes 1 from 2 inherits
+it as data. Whether wasm gets its own value is a compiler call, not a plug one:
+the declared range is 0..2.
+
+**`__self-type-defs` answers an empty list** (`WasmEmitter.codex:1004`), so the
+pmap self-test reads SKIPPED rather than passing. A guard that ANSWERS instead
+of refusing cannot be seen to have fired by any caller or any test
+(L-BAILVALUE); it is why that arm is silent rather than red.
+
+### The re-measurement found a trap, and it now refuses instead of reporting
+
+`hosted-elf-test.ps1` defaults to `build\output\Sut.cdx`, which is whatever this
+workspace built last. Run that way at head it reported `windows arithmetic exit
+1342177280` -- a 62,976-byte `.exe` that was produced, RAN, printed nothing and
+exited 0x50000000, with an empty stderr and no diagnostic anywhere. It reads
+exactly like a codegen regression in the lift.
+
+It is not one. Main 20822 changed `cdx-to-pe-console.ps1`, `PeWriter.codex` and
+the x86-64 emit chapters in ONE changelist with a new seed, so the container and
+the compiler that fills it move together. The workspace `Sut.cdx`
+[B47056219FFEDC23] predates it; against `seed\Codex.cdx` [2B69CDD246E7EE23] the
+same subject passes. New container, old compiler, and the skew announces itself
+nowhere (L-SAMEVER).
+
+The depot revision of the harness fails identically, so the edit in this CL is
+not the cause; that control was run before anything else was believed. The
+harness now REFUSES when the kernel it is about to use is older than
+`cdx-to-elf.ps1`, `cdx-to-pe-console.ps1` or `PeWriter.codex`, rather than
+grading and reporting a red. Calibrated both ways: it refuses the stale
+`Sut.cdx` naming the file, and passes the current seed.
+
+### Running it
+
+```powershell
+codex\plugs\wasm\build.ps1                              # the plug binary, first
+codex\plugs\wasm\hosted-wasm-test.ps1 -Jobs 4           # 54 of 60
+codex\plugs\wasm\hosted-wasm-test.ps1 -Jobs 4 -Calibrate # 60 of 60 refuse
+```
+
+`-Jobs 4` is the standing parallelism for this box. A single subject is
+`-Subject <name>`. Each arm boots two guests per subject (the IR compile and
+the plug), so both are long; neither was timed, and a duration is not quoted
+here rather than guessed.
+
+### Step 2, first pass: two of the four closed, 54 of 60 to 58 of 60
+
+Both fixes are in `WasmEmitter.codex` and neither needed a new subject: the
+census is the runner, and each fix had to MOVE it (L-MECHANISM).
+
+**Defect 4, the `$text_compare` collision, is closed by aligning with the
+compiler's own name.** The prelude helper is `$__text_compare` and the builtin
+arm calls that, which is what `Types/Builtins.codex:83` already says the helper
+is called. `apps/data/Row.codex`'s ordinary `text-compare` now sanitizes to a
+name nothing else claims. Three db subjects went green.
+
+**Defect 2, `~` and `~0`, is closed by implementing the x86-64 semantics rather
+than repairing the type error.** `f64.eq` would have type-checked and been
+wrong: `emit-approx-eq` converts each operand to its IEEE-754 total ORDINAL,
+takes the absolute difference and compares it UNSIGNED against a tolerance in
+ULPs, 4 for `~` and 0 for `~0` (`cmp-ri 4` / `cmp-ri 0` under `setcc cc-be`).
+The new `$__approx_eq` prelude helper is that transform, and the two arms pass
+the tolerance rather than an instruction.
+
+**The corpus cannot tell those two apart and that is worth saying**, because
+the green does not prove as much as it looks. `approx-eq` only ever compares
+equal values and values a whole integer apart, so exact equality passes all six
+of its checks. The evidence for the ULP form is the x86-64 emitter it was read
+off, not the subject. A subject with operands one to five ULPs apart is the one
+that would divide them, and it does not exist in this tree.
+
+### The other two are NOT mine, and the reason is worth recording
+
+Agreed with red, 2026-08-31: Steve Howell's open PR 111 carries Real support
+including the `IrNumLit` f64-into-i64 row, and the shadowed `let` is his issue
+113. Neither is duplicated here. (Superseded 2026-09-01: the Real family landed
+here first in the same representation PR 111 chose, so its Real commit was
+dropped as a duplicate when red absorbed the rest of 111 and 112 as 2.18.)
+
+**The blocker under both was measured from this end before that was known, and
+it stands as a positive control for the absorb.** Every local slot the plug
+declares is `i64`, and `WasmEmitter.codex:760` emits a real LITERAL as
+`(f64.reinterpret_i64 (i64.const N))`, which is an f64 value. So a real that
+passes through a local is a type error, and the four-line probe
+
+```
+  sum-real : Real -> Real
+  sum-real (a) = let x = a in let y = 2.25 in x + y
+```
+
+is refused outright: `type mismatch in local.set, expected [i64] but got
+[f64]`. Not a subtlety, and not reachable from the census: **nothing in the
+60-subject corpus binds a real to a `let`**, which is why 58 of them pass over
+a plug in which reals and locals do not agree on a representation
+(L-CONSTRUCT, the fixture shape the corpus lacks). If 111's absorb is right,
+that probe assembles and prints `sum PASS`.
+
+That is also why the `real-to-bits` / `to-real-approx` family is left
+unimplemented here rather than filled in. Arms for it were written, built and
+measured, and then BACKED OUT: no single arm can be type-correct while a real
+literal is `f64` and a real in a local is `i64`, so each one is only right for
+the operand kind it was tested against. Leaving the builtin absent fails in
+wat2wasm naming the missing builtin, at assembly time; an `(unreachable)` arm
+would have moved the same failure to a runtime trap with the explanation
+stripped out of the binary. The louder failure is the better one until the
+representation is settled.
+
+### Step 2 closed: 60 of 60, and what that number does NOT mean
+
+All four defects from the list above are fixed. GRADE is 60 pass 0 fail;
+CALIBRATE refuses 60 of 60 and 59 of them now reach wasmtime rather than dying
+upstream of the graded step, up from 54 when the census was first written.
+
+**THE DENOMINATOR IS THE CAP, NOT THE CORPUS, WHICH IS EXACTLY WHY IT READS AS
+COMPLETE.** `hosted-elf-test.ps1` globs `codex/test/*.codex` NON-recursively
+(`:63`) and takes `-First $Max` (`:66`) from a default `-Max = 60` (`:14`). So
+the harness selects sixty subjects and then reports "60 of 60", and a score
+whose numerator and denominator are both the cap looks finished at any cap.
+
+Measured 2026-08-31 at reek 20872, by asking the SELECTOR rather than the
+directory (`-ListSubjects -Max 100000`): the eligible population is **383**.
+572 top-level subjects carry a `.expected`, 189 of them are excluded by design
+as unreachable to a user process, and 383 is what is left. A further **44** sit
+under `codex/test/ops/` where a non-recursive glob cannot reach them at any
+`-Max`. The sixty selected run `act-let-scope` to `dtls-openssl-fragments`:
+**the run never gets past the letter D.**
+
+Both agents who measured this got the denominator wrong on the first pass, in
+the same direction, by counting files that carry an oracle (572) instead of
+files the harness would consider (383). The exclusion filter runs BEFORE the
+cap, so the raw alphabetical 60th is not the selected 60th either. Ask the
+selector, not the directory.
+
+This is true of the hosted x86-64 arm in the same words, because its published
+60 of 60 is the SAME sixty. The two arms are comparable, which is the whole
+point of deriving one corpus from the other, and neither is the corpus.
+Widening the harness and re-measuring both is the next row, and it is expected
+to find more.
+
+`codex/test/ops/real-approx-negate` is the proof that this is not pedantry: it
+exists, x86-64 and the cross battery grade it, and nothing has ever run it
+through this plug.
+
+### The two defects closed here
+
+**Defect 1, the shadowed `let`.** A local slot is now per BINDING rather than
+per name. `ctx.shadow` carries one entry per binding in scope, the binding at
+depth d owns `name` at 0 and `name_shD` above it, and a read takes the
+innermost. The declaring walk and the emitting walk are separate and are NOT
+asked to agree: the collector allocates the next free slot per binding
+occurrence, giving K slots for K bindings of a name in a function, and emission
+indexes by scope depth, which is bounded by that count. Emission can only name
+a slot the collector declared, and an over-declared slot is an unused wasm
+local rather than a wrong answer. `act-let-scope` answers 23.
+
+**Defect 3, the `Real` representation, which is the one that was worth the
+detour.** A real is now its f64 BITS in an i64 slot everywhere, which is what
+every local declaration and `wat-eq-field-cmp` already assumed and what the
+x86-64 emitter does. `IrNumLit` was the odd one out, emitting an f64 VALUE, so
+a real that passed through a local was a TYPE ERROR rather than a wrong answer:
+`let y = 2.25` was refused outright, and real arithmetic worked only while
+every operand was a literal. Changed with it: real arithmetic and the four
+ordering comparisons reinterpret in and out, `$__approx_eq` takes i64, and the
+`real-to-bits` / `to-real-approx` family is implementable at all now that the
+operand kind is not a function of which expression produced it.
+
+**`IrNegate` emitted an INTEGER two's-complement negation for a `Real`**, found
+while doing the above. That is the `negate`-on-Real class fester fixed on
+x86-64, riscv and arm64 at 18612 and 18629, still live here. It is not
+L-CONSTRUCT's missing fixture this time: `codex/test/ops/real-approx-negate` is
+exactly that fixture, it exists, and this plug's corpus cannot reach the
+directory it lives in. A fixture that exists and is UNREACHABLE reads identical
+to one that was never written.
+
+### The trap under all of it: `__record-set` does not copy
+
+**It overwrites the field and returns the SAME record**, so extending a context
+with it hands the callee's state to every caller up the stack. The shadowing
+fix was written twice and produced BYTE-IDENTICAL WAT both times, because the
+inner `let`'s extension ran while the outer `let`'s value was still being
+emitted; by the time the outer built its body context the shared record already
+carried the inner binding, and the enclosing body resolved to the inner slot.
+Building a fresh `WasmCtx` literal fixed it in one build.
+
+Two independent confirmations on the same day, which is the argument for
+writing it down rather than for either account: red's review of Steve Howell's
+PR 111 flags the same leak in its own `emit-wat-guard-test`, repaired by PR 112
+building the record explicitly, so 111 must not land without 112 (they landed
+together as 2.18, with the fix applied inline as `ctx-deeper`).
+
+**The general rule for this emitter: extend a context by constructing a record,
+never by `__record-set`.** `ctx-with` exists for that.
+
+
+## 2.18 shadow-stack deletion -- DONE 2026-09-01 (reek, taking red's handoff)
+
+COMPILER-38 uniquifies binders in lowering, so the wasm plug's private repair
+for shadowed `let` is dead code and root's ruling deletes each plug's private
+repair in the same arc. red measured the compiler half, handed the plug half
+over, and this closes it.
+
+Deleted: the `shadow` field on `WasmCtx`, `count-occurrences` and its loop,
+`wat-shadow-slot`, `shadow-push` and its loop, `locals-add-shadow` and its loop,
+and the three prose blocks describing the mechanism. `ctx-with` survives as a
+two-argument function because the per-function context still needs it. Both
+`IrLet` emitters and `emit-wat-name` are back to the pre-shadow shape, taken
+from `@20880` rather than reconstructed by hand.
+
+**Ordering mattered and was honoured (L-FALLBACK).** The plug builds against
+`seed/Codex.cdx`, so the repair could not come out until the COMPILER-38 seed
+was in the depot. It landed as `DE664C4E` at main 20995 and the deletion
+followed it.
+
+**Verified against a before-baseline measured on the SAME seed**, so the
+comparison is not against a moving target: `ops/*` plus `act-let-scope` was
+27 pass 14 fail before and is 27 pass 14 fail after, same subjects, same
+messages. `act-let-scope` passes and answers `arm-local: 23`, which is the
+value the shadow stack existed to produce, with `shadowed: 100` and
+`shadowed-after: 100` beside it.
+
+**And the deletion is shown to be REACHED, not merely present in the source:**
+the emitted wat for that subject carries ZERO `_sh` slots. A green suite over
+unchanged output would have looked the same if the code had never been
+rebuilt, so the slot count is what distinguishes "the compiler now carries
+this" from "nothing happened".
+## 2.17 -- OPEN (reek, 2026-09-01): the HOSTED x86-64 lift mis-renders constructor names, and it is the arm the wasm campaign grades against
+
+Found while diagnosing `ops/real-mode-fields`, which 2.16 recorded as "red on
+BOTH arms" with the x86-64 side exiting 0xC0000005. The crash is real and it is
+the smaller half.
+
+**The same 12-line chapter on three targets, measured 2026-09-01 at seed
+FFA89CACFBB00F8F:**
+
+| target | output |
+|---|---|
+| bare metal (`test-run.ps1`) | `Zebra 7`, correct |
+| hosted Windows, PE console | `Z 7`, **exit 0** |
+| hosted Linux, ELF under WSL | `Ze` then `e` forever, 304 MB before it was killed |
+
+```
+Chapter: CtorName
+Section: Shape
+  Beast =
+   | Zebra (Integer)
+   | Antelope (Integer) (Integer)
+Section: Entry
+  opening : Beast
+  opening = Zebra 7
+```
+
+**Both hosted containers are wrong and they are wrong DIFFERENTLY, while bare
+metal is right, so the defect is in the hosted codegen path the two share
+(`-RawFlags hosted` / `hosted-windows`) rather than in the PE or ELF wrapper.**
+Stopping after one character and running away without stopping are the two ends
+of the same mistake: a text read with a length that is not the name's. The
+integer field and the space around it render correctly in both, so only the
+constructor NAME is affected.
+
+A second, separate defect sits behind the original crash: a `Real` FIELD inside
+a constructor faults. `Just1 (Real)` returning `Just1 1.5` prints `J 1` and then
+exits 0xC0000005, while a bare `opening : Real` answers `1.5` correctly, so
+showing a real is fine and showing a real *inside a constructor* is not.
+
+**Why this is worth a row rather than a note.** The hosted x86-64 arm is the
+CONTROL this campaign grades wasm parity against, and 2.16 used it to move a
+count from 23 to 22. A control with a silent wrong answer of its own is the
+instrument-built-from-its-subject failure one level over: for any subject whose
+`opening` returns a constructor, "x86-64 passes and wasm does not" was never a
+safe reading. It survived 39 of 40 only because few subjects return one.
+
+Not taken here: this is compiler source and therefore seed-affecting, token and
+gate, and `WasmEmitter` was claimed by red for the PR 111/112 rebase at the time
+it was found. Unowned. The reproducers above are the whole instrument.
+
+### 2.17 LOCALIZED 2026-09-01 (reek): `emit-print-text-no-newline` prints ONE character on hosted targets
+
+Not a constructor defect at all. Constructor names were the symptom; the site is
+one function, and it has its own control sitting beside it in the same file.
+
+`X86_64IO.codex` holds two printers that are line-for-line identical except that
+`emit-print-text` sends a newline through `__serial_put` before `__print_flush`
+and `emit-print-text-no-newline` flushes straight away. On hosted targets the
+first prints whole text and the second prints exactly one character.
+
+| program | bare metal | hosted Windows |
+|---|---|---|
+| `opening : Text = "Zebra"` (uses `emit-print-text`) | `Zebra` | `Zebra`, correct |
+| `Wrap (Text) (Text)`, `opening = Wrap "hello" "world"` | `Wrap hello world` | `W h` then 0xC0000005 |
+| `Zebra (Integer)`, `opening = Zebra 7` | `Zebra 7` | `Z 7`, exit 0 |
+
+Both the constructor NAME (`X86_64Chapter.codex:263`) and every Text FIELD
+(`:308`) go through the no-newline printer, and both truncate to one character.
+The integer field, the separator space (`emit-serial-wait-and-send`) and
+ordinary `print-line` all render correctly, which is what makes it survivable
+and invisible.
+
+**What it is NOT, each ruled out by measurement rather than by argument.** Not
+the data: the literal's 8-byte length prefix is **5** in BOTH builds, verified
+by finding the CCE bytes `64 13 32 21 15` in each CDX and reading the qword
+before them (bare `0x15024`, hosted `0xE194`). Not the IR: hosted and bare IR
+are byte-identical, 17 lines each, both non-empty. Not text literals generally,
+not `&` concatenation, and not the CCE-to-Unicode table, all of which print
+correctly on hosted through the same `emit-print-text-loop`.
+
+So the fault is in the flush, not the walk: buffered characters are not counted
+or not written when `__print_flush` runs without a preceding `__serial_put`.
+Hosted Linux fails differently on the same code (`Ze` then `e` forever), which
+is the same accounting read the other way.
+
+**Reproducers are three chapters of a dozen lines each, above.** The control is
+`emit-print-text` in the same file: any fix must leave it printing whole text
+and make its twin agree.
+
+### RETRACTION 2026-09-01 (reek): the localization above is WRONG
+
+**`emit-print-text-no-newline` is not broken.** Measured directly, which is what
+should have been done before publishing it: `print-uni "hello"` routes through
+that exact function and prints `hello` correctly on hosted Windows, matching
+bare metal. The claim that the no-newline printer truncates is false and the
+CL that carried it (main 20974) is wrong on that point.
+
+The reading that produced it was a code path traced by eye, with a real
+measurement attached to a DIFFERENT claim (the two functions differ only by a
+newline, which is true). That is L-MECHANISM exactly, and this row had already
+been warned by it in this same file, one section up: name the line your
+mechanism runs through, and grep it. The discriminating test was one 8-line
+chapter and it refutes the mechanism outright.
+
+**What still stands, all of it measured:**
+
+- Bare metal renders `Wrap hello world` and `Zebra 7`; hosted renders `W h`
+  (then 0xC0000005) and `Z 7` (exit 0).
+- The literal's length prefix is 5 in BOTH CDX builds, so the data is right.
+- Hosted and bare IR are byte-identical.
+- Ordinary `print-line`, `print-uni`, `&` concatenation and the CCE table all
+  print whole text on hosted.
+
+**So the defect is scoped by CONTEXT, not by function.** Every text print
+INSIDE the entry-point's sum printer (`emit-opening-print-sum`) emits exactly
+one character, whether it is the constructor name or a Text field, while the
+same printers called from user code and from the plain-Text entry are correct.
+
+**CORRECTION to the falsification below, found by re-reading my own test.** The
+field-count test does NOT discriminate frame overrun, and calling it a
+falsification was wrong. If the frame is already overrun at the FIRST print the
+symptom saturates, so one field and two fields truncate identically under both
+the overrun hypothesis and its negation. A test whose two arms agree under both
+hypotheses measures nothing.
+
+**The test that does discriminate is frame SIZE**, and it was run: the same
+zero-field constructor returned from a body carrying sixteen `let` bindings
+still answers `S` on hosted. Frame pressure varies by an order of magnitude
+across that pair and the symptom does not move, so frame overrun is now
+falsified on an axis that actually varies the frame.
+
+**A frame-overrun hypothesis was raised and then falsified before publishing**,
+which is the only reason it appears here. It predicted the damage would grow
+with the number of locals, so the test was one Text field against two. It does
+not move: `Only (Text)` answers `O h` and `Wrap (Text) (Text)` answers `W h`,
+both truncating to one character and both faulting. Frame pressure differs
+between them and the symptom does not, so the cause is not the local count.
+
+**What the three measurements actually bound.** The constructor NAME truncates
+to one character in every case. An INTEGER field prints correctly and does not
+fault. A TEXT field truncates to one character AND is followed by 0xC0000005,
+with one field and with two alike. So there are plausibly two faults here, and
+what they share is only the context: the entry point's sum printer. Nothing
+below that is established, and this row deliberately stops here rather than
+name a third mechanism.
+
+**CORRECTION: "the 0xC0000005 requires a TEXT field" is WRONG.** I published
+that from three samples that all returned the FIRST constructor. Varying the
+returned constructor breaks it: a zero-field constructor at index 1 or 2 faults
+too. The matrix, all hosted Windows on seed DE664C4E, bare metal correct in
+every row:
+
+| returned | fields | exit | name |
+|---|---|---|---|
+| index 0 | none | 0 | truncated |
+| index 0 | Integer | 0 | truncated |
+| index 0 | Text | 0xC0000005 | truncated |
+| index 1 | none | 0xC0000005 | truncated |
+| index 2 | none | 0xC0000005 | truncated |
+
+So the fault has TWO independent triggers, a Text field OR a constructor index
+above zero, and the truncation is present in every row regardless of either.
+That a sample of three agreed with the wrong rule is the point: every one of
+them returned the first constructor, so the index was a variable nobody varied.
+
+**Also falsified: the length is not the arm index.** `Triplet` at index 2 emits
+one character, not three, so an index-plus-one reading of the length is out.
+
+**A zero-field constructor settles that the truncation needs no field**
+(measured 2026-09-01): `Box = | Solo | Duo`, `opening = Solo` answers `Solo` on
+bare metal and `S` at exit 0 on hosted. There is no field at all, so the NAME
+print alone is sufficient for the truncation and the fields are irrelevant to
+it. The 0xC0000005 needs a TEXT field and never appears without one. Two faults
+sharing one context, and the truncation is the simpler subject: a constructor
+with no fields is now the smallest reproducer, at nine lines.
+
+Also bounded: the truncation is a CLAMP TO ONE, not a proportional loss. Names
+of four and five characters (`Solo`, `Both`, `Vals`, `Zebra`) and a five
+character field (`hello`) all emit exactly one character, so whatever length the
+printer reads is 1 rather than a scaled or shifted value.
+
+**The next instrument should be the emitted code, not another reading.** Dump
+### Re-graded 2026-09-01 against the FIXED control: the list is 14, not 22
+
+First measurement of this campaign where the control is known correct. Seed
+1CC3265D, both arms same-version, `ops/*`:
+
+| arm | result |
+|---|---|
+| x86-64 hosted (the control) | **40 pass, 0 fail** |
+| wasm plug | **26 pass, 14 fail** |
+
+So every red is now genuinely wasm's. The earlier 22 was measured against an arm
+that mis-rendered any constructor, which is why the number moved without anyone
+fixing a wasm defect.
+
+**The 14, by what they need rather than by symptom:**
+
+- **One missing primitive, five subjects in `ops/*` and one outside it.** There
+  is no real-to-text in this plug, so a real prints as its raw f64 bit pattern:
+  `real-approx`, `real-mode-opening`, `real-mode-show`, `real-to-int-wide`
+  (its last line only), `unit-show`, and `neg-real-repro` at the top level.
+  Oracle and scope are recorded above. **`real-approx-modes`, `real-saturating`
+  and `real-mode-fields` were listed here and are NOT this primitive**, measured
+  by reading each subject's output rather than its symptom: the first two print
+  only integers and are the saturating-mode clamp below, and the third returns a
+  CONSTRUCTOR, which this plug cannot print at all.
+- **Missing builtin arms, by the marker the emitted `.wat` carries** rather than
+  by the name in an earlier list: `is-letter` and `is-whitespace`
+  (`cce-builtin-bounds`), and `vec-extract`, `vec-load-at`, `vec-reduce-add`
+  (`vec-lanes-smoke`). These now ASSEMBLE and trap at RUNTIME rather than
+  failing wat2wasm, which is red 20969's changed refusal shape, so grade them by
+  running. `list-view-bounds` is `__list-head` and `__list-tail`. Grep the
+  emitted `.wat` for `no wasm form for`, over the WHOLE FILE and not line by
+  line: these markers sit inside emitted lines thousands of characters long, and
+  a line-scoped pattern reported this subject as carrying no marker at all.
+- **One units literal** wat2wasm refuses outright (`unit-pattern-lit`, token
+  `sin`).
+- **Two wrong answers not in the above:** `bounded-modes-smoke` (366 against
+  362) and `real-approx-equality` (166 against 165), both off by a few
+  characters and neither yet read.
+- **The saturating and trapping MODES do not clamp**, which the list above hid
+  inside the printer. `real-saturating` wants `9218868437227405311`, the largest
+  finite double, and answers `...312`, an infinity; `nan-zero` wants 0 and
+  answers a NaN pattern. `real-approx-modes` is the same defect at f32 width:
+  `2139095040` against `2139095039`, the one-bit distinction that subject was
+  written to make. Neither prints a real anywhere.
+
+### Real-to-text: `$f64_to_text` (reek, 2026-09-01)
+
+`wat-emit-show` routed a `RealTy` to `$i64_to_text` and `wat-emit-entry-loop`
+picked `$wasi_print_i64` for any non-Text return, so a real printed as its f64
+bit pattern from both. `$f64_to_text` is a port of `__real_to_text`
+(`X86_64TextHelpers.codex:590`): sign bit, `i64.trunc_sat_f64_s` for the integer
+part, fifteen fractional iterations with an early exit when the remainder is
+exactly zero, trailing zeros stripped to one digit. Divergence from the oracle
+is above 2^63 only, where `cvttsd2si` gives the integer indefinite and
+`trunc_sat` saturates; nothing in the corpus spells a value that large.
+
+Measured, same seed and same slice both sides:
+
+| slice | before | after |
+|---|---|---|
+| `ops/*` (40) | 26 pass 14 fail | **31 pass 9 fail** |
+| `*real*`,`*unit-show*` (24) | 14 pass 10 fail | **20 pass 4 fail** |
+| default 60 | 46 pass 14 fail | 46 pass 14 fail |
+
+The 60 is unmoved because only ONE of its subjects reaches the new helper at all
+(`apps/classics-test`, green before and after): grepping the 60 emitted `.wat`
+for `call $f64_to_text` is what says so, rather than the score, which would read
+the same if the change had been inert. The four still red under `*real*` are the
+three classes named above, none of them a printer.
+
+Cost: two 32-byte scratch buffers and the result string per call, bump-allocated
+and not reclaimed, which is `$i64_to_text`'s shape at 24 bytes. Both loops are
+capped (15 fractional digits, at most 20 integer digits), no recursion. The
+helper is emitted into every module whether reached or not, like every other
+runtime helper.
+
+### The character-class predicates: `$is_digit`, `$is_letter`, `$is_whitespace` (reek, 2026-09-01)
+
+`is-letter` and `is-whitespace` had no arm and fell through the dispatch's final
+`else` to the funcref path (L-BAILVALUE), so `cce-builtin-bounds` assembled and
+trapped. `is-digit` had none either and no subject reaches it, which is why no
+score ever said so. All three are prelude helpers taking the code point once, so
+the operand is evaluated once; the bands are the ones `emit-is-letter-builtin`
+(`X86_64Builtins.codex:382`) tests, and the digit band derives from
+`cce-digit-zero` rather than repeating 3 and 12.
+
+`ops/*` 31 pass 9 fail to **32 pass 8 fail**; `cce-builtin-bounds` is green,
+graded at the band edges its own `.expected` spells (12,15,70,97 and 0,1,2,3).
+
+**`is-digit` is graded by nothing in the corpus, so it was measured separately**
+rather than shipped on the other two subjects' green: a scratch chapter through
+the plug and wasmtime, seed 1CC3265D, answers `False True True False` for code
+points 2, 3, 12 and 13, which is both edges of the band in both directions.
+
+**THE FIRST NAMES SHIPPED UNPREFIXED AND COLLIDED, and the `ops/*` slice could
+not see it.** A Codex chapter in the tree defines `is-digit`, `is-letter` and
+`is-whitespace` with these same semantics, so the emitted module carried two
+`$is_digit` and `wat2wasm` refused `redefinition of function` on
+`apps/codex-boot` and `apps/diagnostic-boot`. The default 60 caught it (46 pass
+to 45) while `ops/*` held at 33, because no `ops` subject cites that chapter.
+The helpers are `$__is_digit`, `$__is_letter`, `$__is_whitespace` and
+`$__f64_to_text` now, which is the escape `$__text_compare` already used. This
+is a measured instance of the open row below: **a new prelude helper takes the
+`__` prefix, and a slice narrow enough to be quick is not a regression check.**
+
+### The SIMD family: a vector is a 16-byte BOX (reek, 2026-09-01)
+
+Nothing existed. `vec-splat` and `vec-extract` had no form, and the arithmetic
+wrote `f64x2.add` straight onto two i64 operands, which `wat2wasm` refuses as a
+type mismatch, so the whole family failed before it ran.
+
+**The representation is the language's contract, not a choice made here.**
+`DevelopersGuide.md` measures every vector-returning builtin at `fixed` 16 bytes
+and `vec-load-at` as 16 bytes at an address, so a vector is a pointer to a
+16-byte box and one box is exactly one `v128`. The carrier stays i64 like every
+other pointer, so no local declaration changes; carrying vectors as `v128`
+locals would have touched every local the emitter declares.
+
+Shipped: the box, `vec-splat`/`vec4-splat`, `vec-extract`/`vec4-extract`, the
+four operators, the four NAMED arithmetic builtins, `vec-load-at`,
+`vec-store-at` and `vec-reduce-add`, across `f64x2`, `f32x4`, `i64x2` and
+`i32x4`. The lane count is `16 / lanes` bytes, which the box forces.
+
+**Two refusals rather than plausible answers.** A lane shape this cannot name
+refuses; and so does integer division, because wasm SIMD has no integer divide
+at any width, so there is no instruction to emit.
+
+**A VECTOR PATTERN was not tested, the same shape as a literal inside a
+constructor pattern one CL earlier.** `IrVecPat` bound nothing and tested
+nothing, so `is Vector [0, 0]` matched every vector and `vec-pattern` answered
+`zero` three times. The lanes are compared against their literals out of the
+box now.
+
+**The pattern's recorded type does not survive to this plug, and only a
+measurement said so.** `IrVecPat` carries the scrutinee's `VectorTy`
+(`Lowering.codex:1101`), and reading that is what the first attempt did; it
+arrives empty here, so the refusal fired and the subject went from a wrong
+answer to a trap. The lane WIDTH does not need the type at all: the box is 16
+bytes, so `16 / lanes` is forced, and an integer literal compare at the right
+width is correct whatever the element type is declared to be. Found by emitting
+the computed shape into the `.wat` as a comment, which is the third time today
+that beat reasoning about the AST.
+
+Measured, seed D3A0C75A:
+
+| slice | before | after |
+|---|---|---|
+| `*vec*`,`*vector*` (24) | 11 pass 13 fail | **22 pass 2 fail** |
+| `ops/*` (40) | 39 pass 1 fail | **40 pass 0 fail** |
+| default 60 | 52 pass 8 fail | 52 pass 8 fail, same list |
+
+R-COST: one 16-byte box per vector-returning operation, which is the documented
+allocation for every one of them on every backend. Reductions are helpers taking
+the POINTER, so an operand that allocates is evaluated once rather than four
+times.
+
+### The MASK family, and a vector comparison that was answering a scalar (reek, 2026-09-01)
+
+**`IrLtVec` was folded into the `IrLt` arm, so a vector comparison emitted a
+SCALAR compare on the two POINTERS** and answered a Boolean where a mask was
+wanted. Same for `IrGtVec`, `IrLtEqVec`, `IrGtEqVec`. The four now route to
+`wat-emit-vec-cmp`, which is `wat-emit-vec-arith` with a comparison suffix: the
+integer shapes spell theirs `_s`, the float ones do not.
+
+**A mask needs no representation of its own.** A lane comparison answers
+all-ones or all-zeros per lane, which is the same 16-byte box a vector already
+is (`X86_64Builtins.codex:1770`, where the oracle reads it back with `movmskpd`
+off exactly that box). So `vec-select` is `v128.bitselect` over three boxes and
+nothing else, and the mask queries are `i64x2.bitmask`.
+
+**The width is FORCED and no type is consulted.** Every mask builtin in
+`Types/Builtins.codex:265-271` is declared over `VectorMask 2` and there is no
+other width in the language, so `i64x2.bitmask` is the only form: two lanes, one
+bit each, all-set being 3, `mask-count` a two-bit popcount. That is the same
+answer `16 / lanes` gave the vector patterns, and it is why this did not repeat
+the `IrVecPat` mistake of reading a type that does not survive to the plug.
+
+Measured, seed D3A0C75A:
+
+| slice | before | after |
+|---|---|---|
+| `*vec*`,`*vector*`,`*mask*` (25) | 22 pass 3 fail | **25 pass 0 fail** |
+| `ops/*` (40) | 40 pass 0 fail | 40 pass 0 fail |
+| default 60 | 52 pass 8 fail | 52 pass 8 fail, same list |
+
+**The SIMD family is closed.** Nothing in the vector or mask surface is left
+unemitted; the two forms that refuse do so on purpose, a lane shape the emitter
+cannot name and integer division, which wasm SIMD does not have at any width.
+
+R-COST: `vec-select` is one box; a comparison is one box; a mask query is none.
+`$cx_mask_bits` takes the POINTER, so `mask-count` reads its operand once.
+
+### Neither hosted harness fed the `.stdin` sidecar, and the control was not 60 of 60 (reek, 2026-09-01)
+
+**Both harnesses ran their subject with no stdin while a `.stdin` sidecar sat
+beside it.** `build/test.ps1` feeds one (`-StdinFile`, `-input`);
+`hosted-wasm-test.ps1` and `hosted-elf-test.ps1` did not. A subject that reads
+input then printed its banner and stopped, and the harness graded that as a
+wrong ANSWER rather than as an unfed bed: `apps/diagnostic-boot` answered 67
+chars of 426 on all three arms. Fixed in both; it now answers 427 of 426 on all
+three, which is a different and much smaller claim. Seven subjects carry a
+`.stdin`; one is in the default 60.
+
+**A Perforce-managed sidecar is READ-ONLY and `Start-Process
+-RedirectStandardInput` opens the file for WRITE**, so the depot path fails
+with "Access to the path is denied". Both harnesses copy it to the workdir
+first. This is the whole of why the obvious one-line fix does not work.
+
+**THE CONTROL WAS NOT 60 OF 60.** `CurrentPlan` said the hosted x86-64 lift
+runs 60 of 60 against these sidecars, and every wasm verdict in this campaign
+is graded against that arm (L-CONTROL). Measured at seed D3A0C75A, the whole
+default 60 on both targets: **103 pass, 17 fail -- linux 52 of 60, windows 51
+of 60.** The wasm plug is 52 of 60, equal to linux and one ahead of windows.
+
+**Six of the eight wasm reds were never parity gaps.** `cpu-builtins` and
+`cpu-inspect` read CR0/CR3 and CPUID, `cam-capture`, `console-test` and
+`diagnostic-boot` use port in/out, `bp-symbolic-write` resolves through MAP1
+and patches its own code at 0x100000. Both hosted x86-64 targets die on them:
+SIGSEGV on linux, and windows names the cause outright, `0xC0000096`
+PRIVILEGED_INSTRUCTION for the CPUID and port subjects and `0xC0000005` for the
+rest. No wasm arm can honour any of it, and the refusal markers this plug emits
+are the correct answer rather than a gap.
+
+**What is genuinely left on the default 60 is one subject.** `apps/dev-watch`
+answers `origin-untouched: 2` for 0 and prints a raw heap base (71922 against
+the sidecar's 6291456), and hosted windows fails it too, differently (538
+against 532). `annotation-query-test` and `diagnostic-boot` are one shared
+oracle defect and are recorded in `ExaminersAssay.md`, "Two sidecars are one
+byte short of what their subject prints".
+
+### THE REFUSAL MARKER HAS TWO SPELLINGS, and a census with either one misses subjects (reek, 2026-09-01)
+
+**Grepping the emitted `.wat` for a refusal is the standing way to find a
+missing builtin, and there is no single string that finds them all.** Seven
+emit sites in `WasmEmitter.codex` produce an `unreachable` with an explanatory
+comment, in two spellings:
+
+- `(unreachable (; wasm plug: <why> ;))` -- five sites (the string table, the
+  4096 nesting ceiling, partial application of a lambda, `wat-vec-refuse`, and
+  the `wat-no-such-thing` list).
+- `(unreachable) (; no wasm form for <name> ;)` -- two sites: the wrapping-band
+  refusal, and **`wat-try-builtin`'s generic fallthrough, which is where most
+  refusals actually come from.**
+
+**Measured, and this is not hypothetical:** in one graded run
+`apps/cam-capture` carried 4 of `no wasm form for` and ZERO of `wasm plug:`,
+while `apps/console-test` carried 4 of `wasm plug:` and ZERO of the other. A
+census with either pattern alone finds one of those two subjects and reports
+the other as clean. That happened: the first pass over the default 60's eight
+reds found markers in two subjects and missed six, and the six were the
+interesting ones.
+
+**Until the spellings are unified, the census pattern is
+`no wasm form for|has no form on this target|wasm plug:`**, and it must be run
+over the WHOLE FILE rather than line-scoped, because an emitted line runs to
+thousands of characters.
+
+**Unifying them is a comment-text change with no behavioural effect** -- both
+forms emit the same `unreachable` -- but it moves every subject's emitted bytes,
+so it wants a grading run and is queued rather than done during release mode.
+
+### THERE IS NO WASM DECK INFLATION on the compiler's own source (reek, 2026-09-01)
+
+**Measured at seed 9B73E281, the compiler's own 3,052,663-byte unit, bare `CDX`
+with no explicit `decks=` so both arms take the compiler's OWN derivation:**
+
+| target | mode | result | payload | time |
+|---|---|---|---|---|
+| wasm | `CDX` | **compiled** | 3,092,951 | 4.3 s |
+| wasm | `CDX decks=1` | refused CDX9002 in LEX | -- | 0.1 s |
+| x86 | `CDX` | **compiled** | 3,092,951 | 4.7 s |
+| x86 | `CDX decks=1` | refused CDX9002 in LEX | -- | 0.2 s |
+
+**Both arms compile, and the payloads are byte-count identical.** The `decks=1`
+arms are the instrument's negative control and both refused, so this is not a
+mode line nobody parsed.
+
+**So `prism.html`'s comment is now FALSE where it says "the compiler's own
+source refuses CDX9002 in SCOPE at its derived scale, and the top rung is the
+page's proven answer".** 2.10 left this open as "the underlying wasm deck
+consumption question"; the answer today is that there is no difference to
+explain. The deck derivation is compiler source (`opening.codex`,
+`deck-scale-of` / `scaled-floor`) and identical on both targets, so a difference
+could only ever have been the runtime consuming more inside a deck.
+
+**I HAVE NOT ATTRIBUTED THE CHANGE and will not guess.** The obvious candidate
+is this session's COMPILER-42 work: a list literal was born with capacity 8
+regardless of length, so every literal in the compiler's own source
+over-reserved. That is a hypothesis, not a finding. The control that would
+settle it is a module rebuilt with that fix reverted, about five minutes of box
+time, and it has not been run.
+
+**What NOT to conclude: this says nothing about the IR ladder.** `DECKS =
+[12, 48, 125]` governs the `IR-UNI` path and was not measured here. One unit on
+one mode is what was tested. Before dropping a rung anywhere, measure that path
+too (L-COUNT, and the ladder exists because a rung was needed once).
+
+### The page build is 168 s, not 451, and only ONE phase was worth gating (reek, 2026-09-01)
+
+**THE 451 s FLOOR IS STALE. Measured at seed FD18B0C8: 168.1 s full**, and the
+breakdown had never been taken, which is why the wrong number survived. Per
+phase, and re-measure before quoting any of it (L-COUNT):
+
+| phase | full | note |
+|---|---|---|
+| module (emit + `wat2wasm`) | **145.2 s** | 86 per cent of the build |
+| examples (calibrate + compile) | 13.9 s | correctness arm |
+| x86-truth (the anchor) | 4.3 s | correctness arm |
+| library (volume + gzip) | 2.6 s | |
+| cdx-arm | 0.4 s | correctness arm |
+| TOTAL | 168.1 s | |
+
+**`-Incremental` is OPT-IN and gates exactly one phase.** 168.1 s to **20.6 s**,
+and the anchor hash came back identical, computed fresh both times, which is
+what says the fast build did not fake it. The default stays FULL and every full
+build rewrites the cache, so a cache can only ever describe a build that
+happened.
+
+**The module fingerprint includes `wasm-plug.cdx` and not just the source.** An
+emitter change with an untouched `Codex.codex` produces a different module, and
+a fingerprint that missed it would serve the OLD compiler from a page asserting
+the new one's hash (L-SAMEVER).
+
+**THE GATE I WROTE FOR THE x86 TRUTH ARM CAME OUT, on the measurement.** It was
+gated first on the assumption that pushing the whole compiler source through the
+VM must be expensive. It is 4.3 s. Caching it meant caching THE ANCHOR HASH
+ITSELF, the number the page asserts byte-identity against, to save four seconds.
+That is a correctness surface traded for nothing, and the only reason it looked
+reasonable beforehand is that nobody had timed the phases. **The library is 2.6 s
+and is not gated either**, for the same reason, though the register's complaint
+lists it.
+
+**The control fires, and an untested staleness check is the whole risk here.**
+Touching `wasm-plug.cdx` by ONE SECOND under `-Incremental` rebuilt the module
+phase, 152.5 s, total 176.0 s. Three runs: full 168.1 (module built),
+incremental unchanged 20.6 (module SKIPPED), incremental with one input touched
+176.0 (module built). Anchor identical across all three.
+
+### arm64 SHIPS, and its `ship = $false` was never residue (reek, 2026-09-01)
+
+**The plan called stage 3 item 1 "flip arm64's `ship` (2.03's residue)". It was
+not residue and flipping it alone would have shipped a dark payload.** 2.03 says
+so in terms: "ARM64 is a disabled pill carrying its reason, not an absence ...
+there is no `Arm64Elf` chapter anywhere in the tree", and "shipping 271 KB the
+page has no way to reach is a dark payload". Re-verified before acting: 0 files
+and 0 chapter declarations matching `Arm64Elf`.
+
+**So the work was the chapter, and 2.03 sized it right: a straight port of
+`RiscVElf` with `EM_AARCH64` 183.** `RiscVElf.codex` is 110 lines and the port
+is structurally identical. Two things are NOT identical and both would be silent:
+
+- **The load address is `#40000000`**, the RAM base `qemu-system-aarch64
+  -machine virt` maps, where RISC-V's `virt` uses `#80000000`. An arm64 kernel
+  built at the RISC-V base is the same silent hang `RiscVElf`'s own prose
+  records, one architecture over.
+- **`a64-record-func` stores an instruction INDEX**, like `rv-record-func`, and
+  the builder takes BYTES, so the index is scaled by 4 in `a64-emit-board-elf`.
+  Unscaled it lands a fraction of the way to the entry and unaligned, which no
+  AArch64 core will fetch.
+
+**`Arm64Stdio` needed `cites Foreword chapter StringUtils`**, which `RiscVStdio`
+has and it did not, because the mode line uses `text-drop`. The module failed to
+build with `CDX3002: Undefined name: text-drop` until that was added.
+
+**Graded through the page's own path, arm 12d, beside RISC-V's 12c.** Measured:
+`AArch64 ELF64 machine 183 entry 0x40000800 (14,168 bytes); wire control still a
+wire (15,830 bytes)`, and RISC-V's arm is unmoved at machine 243 entry
+0x80000000. The arm checks class, machine, entry ALIGNMENT, entry inside the
+text segment, and the load address, plus the control that the DEFAULT mode still
+answers a wire -- without that last one a module that ignored the mode line and
+always built an ELF would pass.
+
+**A module an arm reaches must be in `page-workspace-arm.js`'s embed list.** It
+does not fall back: it reaches `fetch`, which the sandbox rejects, and the arm
+dies with "no network in the arm" rather than with a finding. That is what the
+first run of 12d did.
+
+**WHAT THIS IS NOT: the kernel has not been booted.** The arm grades the
+CONTAINER. RISC-V's equivalent claim was earned by a real
+`qemu-system-aarch64`-class boot printing byte-identical output (2.09); arm64 has
+no such measurement and must not be described as booting. The 14,168-byte arm64
+kernel against RISC-V's 45,064 for the same IR is unexplained and worth a look
+before anyone boots it.
+
+Preflight that fires on this change: `check-doc-counts` DRIFTs on
+`plug modules (TechDetails)`, 191 to 192, because the new chapter is a plug
+source module. Corrected in the same CL; the gate runs this check.
+
+### Stage 2's remaining gaps, measured: two are not defects and one is a false claim (reek, 2026-09-01)
+
+**`__self-type-defs` is implemented on ONE back end and the plan reads it as a
+wasm gap.** arm64 (`Arm64CodeGen2.codex:1549`) and RISC-V
+(`RiscVCodeGen2.codex:971`) emit integer `0`; the C# plug emits
+`new List<TypeBinding>()`; wasm emits an empty list. Only x86-64 builds the real
+table. **wasm's answer is strictly better than arm64's and RISC-V's**, which
+hand back a null where a `List TypeBinding` is expected, so `list-length` on it
+reads address 0.
+
+Closing it on wasm means porting `emit-self-type-table` and its chain --
+`emit-const-codextype` (28 arms, recursive, fuelled), `-top`, `-typebinding`,
+`-recordfield`, `-fieldlist`, `-ctorlist`, `-name`, `-text`, `-binding-elems`,
+`-ptr-list`, `const-box`, `live-type-tag`, `live-name-ref-tag`,
+`reach-names-list`, `filter-by-names`, `sort-type-bindings` -- about 250 lines
+across `X86_64Compound.codex:1482-1760` and `:879`, into emitted `(data ...)`
+segments with a different address model. It would then have to track
+`CodexType`'s 28 constructors forever. **Every consumer is inside
+`X86_64Compound.codex` itself** (the pmap self-test at :1407-:1446), and the
+payoff is that one x86-hosted self-test's status. Not taken; a decision for
+Damian if it is ever wanted, and it is a compiler-wide question rather than a
+wasm one.
+
+**THE 4 MB STDIN BUFFER DOES NOT EXIST AND NOTHING TRUNCATES.** The plan carries
+"1.66's unmeasured 4 MB stdin buffer" and this emitter's own prose claimed "the
+fixed 4 MB cap the text readers use silently DROPS what does not fit ...
+(L-SHORT)". Measured against the source: the cap is **1048576, one MiB**, at all
+three sites; and it is **not fixed** -- `$read_serial_cce`, `$read_file_uni` and
+`$read_file_raw` each double it in place when `n` reaches it. Nothing is
+dropped. The prose was an assertion with no runner sitting next to code that
+refutes it, which is R-PROSE's named failure, and it is deleted.
+
+**Why that growth is sound HERE and was not in `$list_push`.** Both use the same
+trick, consecutive `$bump_alloc` calls being contiguous. In a read loop nothing
+else allocates and the buffer is not yet anyone's value. In `$list_push` the
+block being extended is a list a CALLER still holds, which is the defect
+COMPILER-42 records. Do not repair one by analogy with the other.
+
+### Six builtins had no wasm arm, found by CENSUS rather than by a subject (reek, 2026-09-01)
+
+**`abs`, `max`, `print-line-raw`, `print-error`, `print-error-uni` and
+`process-get-network-scope` reached the funcref path**, which is L-BAILVALUE and
+the same class as the nine arms closed earlier in this campaign. Nothing in the
+corpus calls them, so no amount of grading would have found them.
+
+**The instrument is the REGISTRY, not the corpus.** Take every `bs-name` from
+`Types/Builtins.codex` (264) and ask which are absent from the emitter's table:
+136. Most are unsupportable on wasm by nature (VMX, MSR, MMIO, UEFI, CPUID,
+ports, processes, channels, sockets). **The census is a shortlist, not a
+finding** -- `int-rem` and `compare` are in the 136 and are both handled
+elsewhere, so every candidate was probed before it was believed.
+
+**`print-line-raw` looks broken and is not, which is the trap worth recording.**
+It prints a single `I` on a terminal, because it writes RAW CCE bytes with no
+Unicode conversion: `raw-line` is `21 15 27 73 23 17 18` and byte 73 is the only
+one that renders as ASCII. x86-64 emits exactly the same bytes. **Graded
+byte-for-byte against the hosted x86-64 lift, the probe is 66 bytes on both arms
+and identical.** Reading the screen instead of the bytes would have "fixed" a
+correct arm into a wrong one.
+
+**Two of stage 2's named gaps are not defects.** `hosted-kind` answers 1 and all
+three consumers in the tree (`BootPaint.codex:48`, `PhaseAllocator.codex:38` and
+`:86`) test `/= 0` only, so the answer is correct in effect; `opening.codex:1508`
+sets the range, 0 bare metal, 1 hosted, 2 hosted-windows, and reserving a wasm
+value changes a documented range, which is a compiler call. `process-get-scope`
+answering an empty Text is likewise correct and documented at the consumer:
+`Fat16.codex:1804` says an empty scope admits everything and is what an unscoped
+grant means. `process-get-network-scope` was the real gap beside them, and
+`net-scope-admits` reads it exactly the same way.
+
+**The plan's citation for `hosted-kind` is stale**: `CurrentPlan` says
+`WasmEmitter.codex:1009`; the sites are 1109 (`__self-type-defs`), 1113
+(`process-get-pid`), 1114 (`hosted-kind`) and 1877 (the scopes).
+
+Measured, seed D3A0C75A: default 60 unmoved at 52 pass 8 fail with the same
+list, `ops/*` unmoved at 40 pass 0 fail.
+
+R-COST: three tiny runtime helpers, no loops beyond `$write_raw`'s existing one.
+
+### `apps/dev-watch`: two wrong causes before the right one (reek, 2026-09-01)
+
+**The subject's `origin-untouched` answered 2 for 0, and the cause is that a
+list literal was born with SLACK.** `emit-wat-list` set capacity to 8 for any
+literal shorter than 8, and `$list_push` writes into the caller's block
+whenever `len < cap`, so the very first `list-snoc` onto a fresh `[]` grew the
+list the caller still held. Capacity is now the literal's length, which is what
+`$list_append` and `$list_cons` already did and what this file's `$list_push`
+prose already claimed was true of every plain list.
+
+**Two frontier-extend paths went with it.** `$list_push` grew a block in place
+when it ended exactly at the heap or the deck frontier. x86-64's `__list_snoc`
+(`X86_64ListHelpers.codex:224`) has no such path; it has in-place-if-capacity
+and then alloc-and-copy, nothing else. Those paths alias for the same reason.
+
+**Both wrong causes are recorded because each was disproved by measurement and
+the next reader will reach for them in the same order.** The frontier paths
+were the FIRST hypothesis and deleting them changed nothing: `origin-untouched`
+stayed 2, and the emitted `$list_push` was confirmed to contain no `heap_ptr`
+or `deck_ptr` before that was believed. The SECOND was nested record literals
+sharing the `$_rp`/`$_tv` scratch pair, which the emitted `dev_watch_add` does
+do; a two-record probe against a hoisted control showed it is handled and
+answers correctly. Only the third hypothesis survived, and it was found by
+probing `list-snoc` itself rather than by reading further.
+
+**`list-snoc` IS STILL NOT PERSISTENT, on this plug or on the control**, once
+the list has slack: the second push aliases on both arms. That is a language
+defect rather than a parity gap and it is `compiler-backlog.md` COMPILER-42.
+Do not fix it here. Setting capacity equal to length everywhere makes snoc
+fully persistent and was measured: it costs O(N^2) bytes in a bump allocator
+that never reclaims, and took `apps/brotli-hostile` and `apps/deflate-hostile`
+from green to `memory.grow` returning -1, the default 60 from 52 to 50.
+
+**What is left in `dev-watch` cannot be fixed by any plug.** It prints raw
+`alloc-bytes` addresses and the sidecar carries bare metal's heap base:
+`watching alpha at 6291456` where wasm says 71922. Hosted windows fails it too,
+differently. Same class as the six hardware subjects above.
+
+Measured, seed D3A0C75A: default 60 unmoved at 52 pass 8 fail, `ops/*` unmoved
+at 40 pass 0 fail, and the `list-snoc` probe goes from `2,2,2,1,2` to
+`0,1,1,0,2` where a fully persistent snoc would be `0,1,1,0,1`.
+
+R-COST: a shorter literal allocation and one fewer in-place path. Growth keeps
+its doubling, so a push stays amortised O(1); this is the change that does NOT
+cost the O(N^2) named above.
+
+**The harness summary line misreads the wasm failures and it cost a diagnosis.**
+`exit 3 Error: failed to run main module` reads as a module that would not
+instantiate. It instantiates and runs; the trap reason is three lines further
+down the wasmtime error, and for all four it is `wasm trap: wasm 'unreachable'
+instruction executed`, which is this plug's own refusal marker. Take the first
+line that names a trap, not the first line of the error.
+
+### Printing a CONSTRUCTOR from `opening` (reek, 2026-09-01)
+
+The entry printer sent any non-Text return to `$wasi_print_i64`, so an
+`opening` answering a constructor printed the POINTER: `ops/real-mode-fields`
+said `71417` where the oracle says `Vals 1.5 2.5 3.5 4.5`. The form is
+`emit-opening-print-sum` (`X86_64Chapter.codex:242`): the ctor name, then one
+space and one field each, then a newline.
+
+Three things had to change and only the first is the printer. The entry emitter
+took only the DEFINITIONS, so it could reach neither the type-defs that hold the
+ctors nor the string table that must name them; it takes the ctx now. And a
+ctor name appears in no expression, so nothing put it in the table:
+`wat-seed-entry-strings` seeds the return type's names and the separating space
+before offsets are assigned. Had it not, `wat-strtab-ref` from the CL before
+this one would have refused it by name rather than emitting a pointer to
+address 0, which is the argument for that guard.
+
+**Two wrong assumptions, both caught by measuring the emitted output rather
+than by reading.** `wat-type-name` answers for `ConstructedTy`, `TypeCon` and
+`RecordTy`, which is every case its own callers have; an `opening` returning a
+variant arrives as a `SumTy` and it answered the empty string, so the printer
+was emitted for no program at all and the score did not move. And a real in a
+MODE spells its own head: the ATypeExpr heads are `real-approx`,
+`real-trapping` and `real-saturating`, not `Real` applied to a modifier, so a
+test for `Real` alone rendered three of that subject's four fields as integers.
+Both were found by putting the head name into the emitted `.wat` as a comment
+and reading it, which took one build each.
+
+`ops/*` 38 pass 2 fail to **39 pass 1 fail**, the only red left being
+`vec-lanes-smoke` and the SIMD family. The default 60 is unmoved at 52 pass 8
+fail.
+
+**Left alone, and named so it is not rediscovered as a surprise:**
+`wat-eq-field-cmp` tests `fn == "Real"` and so compares a MODED real field as an
+i64 rather than as a double. Same root as the second assumption above, no
+subject reports it, and it is a different function from the one this change
+touches.
+
+### `~` and `~0` counted ULPs at the wrong width, and the string table answered 0 for a miss (reek, 2026-09-01)
+
+**The ULP half.** A ULP is a property of the WIDTH, and `$__approx_eq` maps a
+64-bit pattern to a monotonic ordinal and compares the difference against the
+tolerance. An approximate value is carried here as a promoted f64, so an f32
+comparison was counting doubles: the two smallest denormals either side of zero
+are 2 ULPs apart as singles and astronomically far apart as doubles.
+`$__approx_eq32` is the same ordinal map at 32 bits on the demoted value, chosen
+by the operand type. `ops/*` 37 pass 3 fail to **38 pass 2 fail**;
+`real-approx-equality` green, and its `tiny straddle` line is the one that
+separates the widths.
+
+**The string table half, and it is a guard rather than a defect anyone had
+hit.** `strtab-lookup` answers 0 for a string that is not in the table, the
+table starts at 1024, and all three sites that turn a lookup into a POINTER used
+that answer directly, so a collector that failed to reach a new site would emit
+a pointer to linear-memory address 0 and print whatever is there, with no
+diagnostic. That is L-BAILVALUE sitting under the Text-pattern work above, which
+added two of those three sites. `wat-strtab-ref` is now the single site and it
+refuses with a marker naming the string.
+
+**Both halves have a control, because a guard that never fires and a guard that
+cannot fire read the same.** 157 emitted `.wat` across three slices carry ZERO
+markers, which is what says the collector is complete. Forcing the lookup to
+answer 0 puts 13 markers in `ops/unit-pattern-lit` alone, naming `sin`,
+`matched` and `fell-through`, so the refusal path works and is reached. The fix
+state was hashed before the sabotage and the hash verified after restoring it.
+
+### The saturating and trapping MODES did not clamp (reek, 2026-09-01)
+
+Two defects and they had to be fixed together, which is why the clamp alone
+would have measured as no change.
+
+**An approximate real was computed at f64.** The value is carried as a promoted
+f64 everywhere in this plug, and `wat-bin-instr` answered `f64.add` for
+`IrAddRealApprox` as well as for the double ops, so single arithmetic never
+overflowed: `f32-max * 2` is finite as a double. x86-64 emits the single SSE
+form (`real-sse-prefix f32`). An approximate op now demotes both operands,
+operates at f32 and promotes back, which fixes the rounding as well as the
+range.
+
+**The mode was then dropped.** `IrAddRealTrapping` and `IrAddRealSaturating`
+mapped to the same bare `f64.add` as the plain op, so both modes were the plain
+mode. `$cx_real_trap64/32` and `$cx_real_sat64/32` are
+`emit-real-trapping-arith` and `emit-real-saturating-arith`
+(`X86_64.codex:1887`) written as masks rather than shifts: exponent all-ones is
+infinity or NaN, a nonzero mantissa within that is NaN, trapping traps on
+either, saturating answers 0 for a NaN and DECREMENTS the bit pattern for an
+infinity, which is the largest finite magnitude of the same sign because the
+decrement never reaches the sign bit. The NaN-to-zero is x86-64's answer and a
+language decision, so it is copied rather than revisited. The width comes from
+the OPERAND TYPE, as it does on x86-64, not from the op.
+
+Measured, seed D3A0C75A: `ops/*` 35 pass 5 fail to **37 pass 3 fail**;
+`real-saturating` and `real-approx-modes` green. `real-approx-modes` is the
+one that could not be faked: it distinguishes a working clamp from an absent
+one by a single bit, 2139095039 against 2139095040.
+
+**The 13 SIMD reds in the neighbouring slice are pre-existing, proven and not
+reasoned.** Every real arithmetic op moved in this change, so a `vec` family
+sitting red beside it had to be attributed rather than assumed: the depot
+revision rebuilt and run over `*vec*`,`*vector*` gives 11 pass 13 fail, and the
+same 13 by name after. `IrAddVec` is not in the arm this change touches.
+
+R-COST: one call per moded operation, a leaf with no allocation and no loop; two
+conversions per approximate operation. Nothing on the plain f64 path changes.
+
+### Text literal PATTERNS, and they were not one subject (reek, 2026-09-01)
+
+A Text literal is the one literal whose spelling is not its value, and
+`emit-wat-match-arm` spliced the spelling into `(i64.const sin)`, which
+`wat2wasm` refused as `unexpected token "sin"`. The scrutinee is a pointer, so
+the test is `$text_eq` against the string table entry, the same place an
+`IrTextLit` expression reads; and the collector had to reach into the PATTERN,
+because a string that only a pattern mentions is in no expression and so had no
+table entry to look up. Both emitters take it, the plain one and the TCO one.
+
+**It was carried as one subject and it was seven.** `ops/unit-pattern-lit` was
+the named instance; the same defect refused all six `apps/browser-*` subjects in
+the default 60, which had been read as their own `newtab` failure. `ops/*` 34
+pass 6 fail to **35 pass 5 fail**, and the default 60 **46 pass 14 fail to 52
+pass 8 fail** on one change.
+
+**Two reds found in the neighbouring slice while grading this, neither in the
+14.** `vec-pattern` traps on the SIMD family already listed. The other is
+`literal-subpattern`, FIXED below.
+
+### A LITERAL inside a constructor pattern was never tested (reek, 2026-09-01)
+
+`emit-wat-bind-ctor-subs` bound an `IrVarPat` sub-pattern and sent everything
+else to `is otherwise -> ""`, so `BInt (0)` matched every `BInt` and every arm
+of `codex/test/literal-subpattern` answered the FIRST arm's body: `int-1` said
+10 where the oracle says 11, `txt-cos` 20 where it says 21, eight lines of
+twelve. A literal sub-pattern is a TEST, not a binding, and there was no arm
+that could express one. L-BAILVALUE at the sub-pattern level.
+
+The tests fold onto the TAG test rather than sitting beside it, because a
+payload load on an object of the wrong tag can address past the object and
+trap, which is the reason the guard was already gated that way. The last-arm
+shortcut, which makes a final trivially-guarded constructor arm unconditional,
+now also requires the arm to carry no literal sub-pattern.
+
+**Measured against a rebuilt control, not against reasoning**, because a
+neighbouring subject in the same slice (`lir-selector-smoke`, 28 chars against
+27) was red at the same moment and both had to be attributed. The depot
+revision rebuilt and run over the two: `literal-subpattern` red, `lir-
+selector-smoke` red with the identical byte counts. After: `literal-subpattern`
+green, `lir-selector-smoke` unchanged and still open, so it is a separate red
+and nothing here moved it.
+
+`ops/*` holds at 35 pass 5 fail and the default 60 at 52 pass 8 fail across
+this change; the subjects it moves are outside both slices, which is the whole
+reason it was found by widening rather than by the campaign's own list.
+
+### `__list-head` and `__list-tail`, and the tail is a VIEW (reek, 2026-09-01)
+
+Both had no arm, so any `when xs is Cons (h) (t)` trapped: the lowering desugars
+that match into the three list intrinsics (`Lowering.codex:837`), so a structural
+list match is not a plug feature this plug could decline quietly.
+
+`__list-head` is `$list_at` at index 0. **`__list-tail` was written as a COPY
+first, and `ops/list-view-bounds` went green on it**, which is the reading worth
+keeping: a copying tail is correct for every reader except one, and the one is
+`list-set-at` writing THROUGH a view into the backing, which x86-64 documents as
+the contract (`X86_64ListHelpers.codex:3`). `codex/test/list-view-probe` is built
+to pin exactly that and answered `set=77,30,30` against `set=77,77,77`, one line
+of sixteen. The copy also makes a `Cons` recursion O(n^2), which no output can
+show.
+
+The shipped tail is a view, and the sentinel had to move because the layouts
+differ. x86-64 puts the pointer at the LENGTH cell with capacity behind it at
+`p-8`, so a negative capacity is free; this plug's list is
+`[len i32][cap i32][elements]` with the pointer at the header, so **capacity -1
+is the sentinel** and the view's third cell holds a phantom pointer chosen so
+that phantom+8 is the view's first element, the displacement every element loop
+here already uses. `$cx_list_base` is the one selection and the readers that
+index elements call it: `$list_at`, `$list_set_at`, `$list_append` (both
+operands), `$list_cons`, `$list_push`, `$list_insert_at`, `$text_concat_list`,
+`$raw_bytes_to_text`. `$list_length` reads the view's own header and is
+unchanged.
+
+`$list_push` needed one more thing than a base swap, and it is the trap in this
+design: its two frontier-extend paths test `p + 8 + cap*8` against the allocator
+position, and for a view that address is a cell in the BACKING block, which can
+legitimately equal the frontier. Both tests now require the list not to be a
+view, and a view's capacity is read as 0 so the in-place path cannot fire.
+
+Measured, seed D3A0C75A: `ops/*` 33 pass 7 fail to **34 pass 6 fail**;
+`*list*`,`*cons*` (23 subjects) 21 pass to **22 pass**, `list-view-probe`
+included with its `set=` line correct; `*text*`,`*buf*`,`*cce*` 39 of 39; the
+default 60 unmoved at 46 pass 14 fail with the same fail list.
+
+R-COST: the view is one 16-byte allocation per tail, O(1), against O(n) for the
+copy it replaces. `$cx_list_base` adds one load and one compare to each element
+access on the plain path.
+
+### The wrapping bounded-integer mode did nothing (reek, 2026-09-01)
+
+`wat-atype-band` recognised `OvClamping` and sent every other mode to
+`wat-no-band`, so a clamping field clamped and a wrapping field stored its
+operand unchanged. `bounded-modes-smoke` wanted `wu8 300: 44` and answered
+`300`; all seven clamping rows in the same subject were already right, which is
+why the defect read as a small diff rather than an absent mode.
+
+A wrapping band is admitted only at a hardware width
+(`bounds-are-hw-width`), so the band IS the width and no table is needed: an
+unsigned band's `hi` is exactly the mask (`i64.and`), and a signed band's `hi`
+names the sign-extending instruction (`i64.extend8_s`, `16_s`, `32_s`). A band
+that is neither refuses with a marker rather than answering, because a wrong
+wrap and a correct one are the same kind of number (L-BAILVALUE).
+
+`ops/*` 32 pass 8 fail to **33 pass 7 fail**. The subject grades both
+directions at both edges: 300 to 44, -1 to 255, 256 and 512 to 0, 128 to -128,
+-129 to 127, 130 to -126.
+
+### 2.17 FIXED 2026-09-01 (reek). The hosted entry reserved no stack frame
+
+`emit-hosted-start` set `rbp = rsp` and reserved NOTHING, so every local the
+entry code spilled sat BELOW the stack pointer, where the next push or call
+overwrote it. `emit-hosted-win-prologue` reserves 32 bytes for the Win64 alloc
+calls and gives them straight back, which is right for those calls and leaves
+the entry's own frame at zero.
+
+That is why only the entry sum printer was affected: it is the one place with
+enough live values to SPILL. User code and the plain-Text entry keep the same
+printer's locals in registers, where nothing can reach them, which is exactly
+what the byte diff showed and why the same emitter was correct in one context
+and wrong in the other.
+
+**One cause, both symptoms.** The truncation was the loop's exit test re-reading
+a corrupted length; the 0xC0000005 was the same corruption landing on a pointer.
+Both disappear together.
+
+**The fix is derived, not a magic reservation:** a placeholder at the entry
+prologue, patched with `align-16 (peak-spill * 8 + 64)` once the entry body is
+emitted, which is how `emit-function-standard` has always sized a normal frame.
+`reset-func-scratch` runs first so `peak-spill` counts the ENTRY's spills rather
+than inheriting the last function's.
+
+**Measured with the fix, hosted Windows, against bare metal in every row:**
+`Solo`, `Zebra 7`, `Wrap hello world`, `Only hello`, `Triplet`, `Duotone`, and a
+deliberately wide `Big aa 1 bb 2 cc 3 dd 4` (eight fields, to force more spills
+than the reproducers needed). All exit 0. **The x86-64 control arm over `ops/*`
+is 40 pass 0 fail, up from 39 pass 1 fail**, so `ops/real-mode-fields` closes
+and 2.16's "red on BOTH arms" row is retired.
+
+**This also restores the parity control.** Every wasm verdict this campaign
+published was graded against an arm that mis-rendered any constructor; that arm
+is now correct and the wasm gaps can be trusted as wasm gaps.
+
+### CAUSE FOUND 2026-09-01 (reek): the spilled `saved-len` slot does not survive one iteration
+
+Three probes, each a trap compiled into the printer by a scratch kernel, each
+answering one question and each with the working binary as its control. The
+subject is `Solo`, four characters, in both arms.
+
+| probe | question | userprint (correct) | solo (truncates) |
+|---|---|---|---|
+| trap unless the length READ is 4 | is the length wrong at read time? | no trap | **no trap** |
+| trap at loop exit unless idx is 4 | did the loop run to completion? | no trap | **TRAP** |
+| trap unless the RELOADED length is 4 | does the length survive the loop body? | no trap | **TRAP** |
+
+Read together: the length is read CORRECTLY, the loop nevertheless exits early,
+and the value reloaded for the exit test is not the value that was stored. The
+loop compares `idx` against a length it re-reads every iteration, and after the
+first character that re-read no longer answers 4, so the loop ends and one
+character is all that is printed.
+
+**Why only this context**, from the byte diff above: in the entry sum printer
+the printer's locals are SPILLED to `[rbp-0x28]` and `[rbp-0x30]` and reloaded
+each iteration, while in user code they stay in registers, where nothing in the
+loop body can reach them. Same emitter, same instructions, different storage.
+
+**What is NOT yet distinguished, and it decides the repair:** whether the loop
+body WRITES that slot (a colliding allocation) or the reload ADDRESSES a
+different slot than the store did. Both are slot-allocation defects and both
+produce exactly this reading; the probe cannot tell them apart, so neither is
+claimed. Dump the stores in the loop body against the slot the reload names.
+
+This is also the first mechanism in this row that survived its own test. The
+three before it did not, and the difference was not care, it was that each of
+these probes FAILS on the working arm and passes on the broken one, which is
+what the earlier vacuous arms could never do.
+
+### The byte diff, which is the sharpest evidence so far and still not a cause
+
+Run 2026-09-01 on the matched pair (same text, same hosted target, same printer:
+`print-uni "Solo"` answers `Solo`, `Solo` as a constructor name answers `S`).
+
+**Correct case, every printer local in a REGISTER:**
+
+```
+48 89 C3   mov rbx, rax        ptr
+48 8B 0B   mov rcx, [rbx]      length
+49 89 CD   mov r13, rcx        len
+4D 89 DE   mov r14, r11        idx
+4D 39 EE   cmp r14, r13
+```
+
+**Truncating case, the same locals SPILLED and reloaded each iteration:**
+
+```
+49 8B 4D 00   mov rcx, [r13+0]      length
+48 89 4D D8   mov [rbp-0x28], rcx   len spilled
+4C 89 5D D0   mov [rbp-0x30], r11   idx spilled
+4C 8B 45 D0   mov r8, [rbp-0x30]    reload idx
+4C 8B 4D D8   mov r9, [rbp-0x28]    reload len
+```
+
+Counted across the three binaries (`mov [rbp-0x28],rcx` is the len spill):
+`userprint` 0 spills 0 reloads, `solo` 1 and 1.
+
+**The obvious reading is that the spill slots are wrong, and it is NOT
+established.** The arm built to test it is VACUOUS and is recorded as such: a
+`print-uni` surrounded by twelve live `let` bindings still printed `Solo`, but
+the same byte census shows it never spilled the length (0 spills), so it never
+entered the condition under test. It discriminates nothing, and the earlier
+frame-count arm failed the same way.
+
+**What the next session should do first.** Force the spill in a context known
+correct, by construction rather than by hoping register pressure does it, and
+see whether the truncation follows the SPILL or stays with the sum printer. If
+it follows the spill, the subject is slot allocation in that path; if it does
+not, the spill is a coincidence of the same context and the byte diff has been
+read too eagerly, which is the failure this row has already made three times.
+
+the bytes the sum path emits around the name print and compare them against the
+same printer called from user code, where it is known correct; the difference
+between those two is the whole question, and it is a diff rather than a theory.
+
+## 2.16 -- DONE 2026-09-01 (reek): the hosted harnesses reach every eligible subject, and codex/test/ops is graded for the first time
+
+`hosted-elf-test.ps1` selected `codex/test/*.codex` NON-recursively and capped at
+`-Max 60`, so both hosted arms published "60 of 60" against an eligible population
+they never named. The cap IS the corpus in that sentence and no reader can tell it
+from a complete pass (L-DENOM).
+
+Two changes, both in the selection rule, neither touching how a subject is graded:
+the glob recurses, and `-Max 0` now means the whole eligible corpus. The DEFAULT
+stays a cap of 60, because a bare invocation must not launch a sweep (Damian,
+2026-09-01). The cap was never the lie; the missing denominator was, and that is
+what is repaired. A subject is named by
+its path under `codex\test` with forward slashes, so a top-level subject keeps the
+bare name it always had and a nested one is `ops/real-approx-negate`; consumers
+join that onto `$TestDir` unchanged. Every score line now says what it was drawn
+FROM: `60 selected of 996 eligible`, never `60 of 60`.
+
+**Measured 2026-09-01 at reek 20893.** The eligible population is **996**, not the
+383 this campaign has been quoting: 383 top-level, plus forewords 296, apps 233,
+ops 40, lib 35, ui 7, cost 1, examples 1. The register said "44 more under
+`codex/test/ops`" and the eligible count there is **40** (46 `.codex`, 45 with an
+oracle). Re-measured rather than carried (L-COUNT).
+
+The top-level selection is BYTE-IDENTICAL to the old rule at 383 subjects,
+`-Max 60` still selects the same first subjects (`act-let-scope`, `aesgcm256`,
+`amp-after-call`), and a known kernel-service subject is still excluded. The
+change is additive and the old rule did not move.
+
+### The remaining real cluster is ONE missing primitive, not six mode problems
+
+**Correction to this row's own earlier wording.** 2.16 said the six subjects
+that moved from refusal to a wrong answer "need mode SEMANTICS now". That is
+wrong, and the outputs say so plainly: plain, approx, trapping and saturating
+all print the SAME wrong thing, so the mode is not involved at all.
+
+A real prints as its raw f64 BIT PATTERN. `real-mode-show` answers
+`plain: 4612811918334230528` where the oracle says `plain: 2.5`, and
+4612811918334230528 IS 2.5; `real-approx` answers 4619567317775286272 for 7.0.
+`wat-emit-show` routes anything that is not Text or Boolean to `$i64_to_text`,
+and `wat-emit-entry-loop` picks `$wasi_print_i64` for any non-Text return, so
+neither `show` nor the entry printer can render a real. **There is no
+real-to-text anywhere in this plug.**
+
+That single absence accounts for `real-approx`, `real-approx-modes`,
+`real-mode-fields`, `real-mode-opening`, `real-mode-show`, `real-saturating`
+and the real half of `unit-show`.
+
+**Scope, so the next taker does not re-derive it.** The oracle is
+`__real_to_text`, `codex/compiler/Emit/X86_64TextHelpers.codex:590`, a 225-line
+section that emits the routine by hand: strip the sign bit, integer part by
+`cvttsd2si`, fraction by repeated multiply. wasm has every instruction that
+needs (`f64.trunc`, `f64.mul`, `i64.trunc_sat_f64_s`, `f64.convert_i64_s`), so
+this is a prelude helper `$f64_to_text` plus two call sites, and the risk is
+matching the oracle's FORMATTING exactly (digit count, trailing `.0`, negative
+zero) rather than the arithmetic. Grade it on the seven subjects above; they
+already spell out every case.
+
+### No gate phase touches the wasm plug, so the batching trap does not apply here
+
+Measured 2026-09-01 against `build/build.ps1` at main 20926: **the string
+`wasm` does not appear in that file at all.** `plug-binary` builds
+`riscv, arm64, t3isa, elf, pe, img` and its own prose says the transpiler and
+text plugs are "NOT gated here"; `plug-smoke` runs `typescript, python, rust,
+ptx`; `cross-smoke` is the cross-arch backends. So neither `-Internal` nor the
+full gate compiles, builds or runs this plug.
+
+Two consequences, and the second is the one that costs.
+
+A wasm-plug CL cannot be verified by a gate, hollow or otherwise. The
+`-Internal` scoping trap (a batch already submitted to a stream gates as
+core+BVT+refusals because the phases key off `p4 opened`) is real and worth
+obeying for the phases it governs, and it changes nothing for this plug,
+because there is no phase to scope. `hosted-wasm-test.ps1` over a named slice
+is not a convenience here, it is the ONLY instrument that grades this plug's
+output against the bare-metal oracle.
+
+And a green gate says nothing whatever about the wasm plug, while 51 page
+modules built from it ship on the landing page. That is L-NOGATE's shape: not a
+test going red unnoticed, but a whole backend outside every runner, so the
+first thing that can notice a regression is a person opening the page.
+
+### What is actually missing is measured from REFUSALS, not from a source grep
+
+`wat-try-builtin` has an arm for 107 of the 264 names in
+`codex/compiler/Types/Builtins.codex`. **157 missing is not the campaign's
+number** and nobody should plan off it: most are kernel channels, VMX, MMIO,
+ports, process spawn, UEFI and GPU, which a hosted user process cannot reach
+and which the harness's own exclusion rule already refuses.
+
+**Do not take the reachable subset by grepping the subjects for builtin names.**
+Tried 2026-09-01 and it is wrong: it reported `fail` in 59 eligible subjects,
+and reading six of them by eye, every one was the STRING `"FAIL"` in a
+pass/fail label or the word in column-1 prose. `now`, `max`, `compare`, `abs`
+and `force` collide the same way. A name census cannot answer this, because
+these builtins are spelled like ordinary English and `.codex` files carry prose
+by design.
+
+The instrument already exists and needs no new code: **wat2wasm names the
+builtin in its refusal.** An arm that is missing AND reached produces
+`undefined local variable "$<name>"`, which is a measurement of what actually
+blocks a subject rather than of what a file mentions. Collect those lines from
+a slice run; that list is the work, in the order the corpus cares about.
+
+**THE INSTRUMENT CHANGES SHAPE WHEN RED 20932 LANDS, and this paragraph is
+written before it does.** That CL makes an unbound or arity-less name emit
+`(unreachable) (; no wasm form for <name> ;)` instead of `(local.get $name)`,
+so a missing arm will ASSEMBLE and trap at RUNTIME rather than fail wat2wasm
+(red, 2026-09-01). The stderr-refusal reading above stops working at that
+point, and reading it afterwards would report every missing arm as absent.
+The successor is better anyway: grep the emitted `.wat` for `no wasm form for`,
+which names EVERY missing builtin in the module rather than only the first one
+that happened to stop the assembler. Grade by RUNNING, not by assembling.
+Measured that way on `ops/*` and the default 60: `is_letter`, `__list_head`,
+`vec_load_at`, `port_out_32`, `cpu_read_cr0`, `get_ticks`. The last three are
+the out-of-scope class and belong to no lane.
+
+### Selecting a slice is how this harness is meant to be run
+
+**We do not run 996 (Damian, 2026-09-01).** The eligible count is the honest
+DENOMINATOR, never a run target: it exists so a score cannot be read as a
+corpus, and 996 subjects across two targets is a sweep.
+
+`-Subject` takes wildcard patterns, expanded against the eligible set rather
+than the directory, so a pattern can never select a subject the exclusion rule
+refuses and a slice here is the same slice in the other arm.
+
+```powershell
+codex\plugs\wasm\hosted-wasm-test.ps1 -Subject 'ops/*' -Jobs 4      # 40, the operator corpus
+codex\plugs\wasm\hosted-wasm-test.ps1 -Subject '*negate*' -Jobs 2   # 2, one defect
+codex\plugs\elf\hosted-elf-test.ps1  -Subject 'ops/*' -Target windows  # the control for it
+```
+
+The score line still names the population, so a slice reads `2 matching
+*negate* of 996 eligible` and stays honest without being a sweep. A pattern
+matching nothing REFUSES (exit 2) rather than reporting a clean run over zero
+subjects, which is the emptiest possible green.
+
+The standing slice for this campaign is `ops/*`: 40 subjects, it is where the
+input-shape gaps live, and it is the directory no cap could reach.
+
+### The first grading of codex/test/ops, and its control
+
+Measured on seed 278D8D7FDBC54D26 (main 20898, blu's COMPILER-34) and, before it,
+on 2B69CDD246E7EE23: the two seeds give the SAME 17/23 with the same subjects and
+the same errors, so the numbers below are not a property of either seed.
+
+wasm over the 40 `ops/` subjects: **17 pass, 23 fail**. The x86-64 hosted arm over
+the SAME 40: **39 pass, 1 fail**. The control is what makes the list mean
+anything, and it moved the count: **22 are wasm parity gaps, not 23.**
+`ops/real-mode-fields` is red on BOTH arms -- x86-64 exits `-1073741819`
+(0xC0000005) -- so it is not evidence about the wasm plug, and it is an access
+violation in the hosted x86-64 lift that nothing had graded. Unowned.
+
+The 22 fall in two groups. **Thirteen are WAT2WASM-REFUSED `undefined local
+variable`**, which is a builtin the plug has no arm for reaching the funcref path,
+exactly the shape the harness comment predicts a grep cannot see:
+`$to_real_trapping` (4), `$real_to_int` (3), `$is_letter`, `$__list_len`,
+`$real_approx_from_int`, `$from_real_saturating`, `$to_real_saturating`,
+`$from_real_trapping`, `$vec_load_at`. One more is a units literal
+(`ops/unit-pattern-lit`, `unexpected token "sin"`). **Eight are wrong answers**:
+`bounded-modes-smoke`, `int-min-literal`, `int-pow`, `real-approx`,
+`real-approx-equality`, `real-approx-negate`, `unit-real-compare`, `unit-show`.
+
+### negate on a Real, and the real-mode family: CLOSED 2026-09-01
+
+**The site was `wat-try-builtin`, not `IrNegate`.** 2.16 first pointed the next
+taker at `WasmEmitter.codex:834` and its operand type. That is the wrong path:
+`negate` is a BUILTIN, so it is dispatched in `wat-try-builtin` (`:1579` when
+read), which emitted an integer negation with no type test at all. Settled by
+marking the builtin arm and requiring the emitted wat to move; the marker
+appeared, so 834 was never the site. The arm now tests the operand type the way
+834 already did.
+
+**Nine builtins had no wasm arm** and each fell through `wat-try-builtin`s final
+`else ""` to the funcref path, where the name becomes `(local.get $name)` and
+wat2wasm refuses with `undefined local variable`. That empty string is
+L-BAILVALUE exactly: a bail returning a VALUE the caller cannot tell from an
+answer.
+
+The mode conversions are IDENTITY here, and that follows from the
+representation rather than from taste: a Real is its f64 bits either way, so
+`to/from-real-trapping` and `to/from-real-saturating` (and their approx twins)
+change only the type, which is what `from-real-approx` already did. Added with
+them: `real-from-int`, `real-approx-from-int`, and `real-to-int` /
+`real-approx-to-int` via `i64.trunc_sat_f64_s`.
+
+**Measured on the `ops/*` slice: 17 pass 23 fail, to 23 pass 17 fail.** Six
+subjects closed outright (`real-mode-compare`, `real-neg-neg`, `real-negate`,
+`real-saturating-finite`, `real-trapping`, `real-approx-negate`). Six more moved
+from WAT2WASM-REFUSED to a WRONG ANSWER and are still red: `real-approx-modes`,
+`real-mode-fields`, `real-mode-opening`, `real-mode-show`, `real-saturating`,
+`real-to-int-wide`. Removing the mechanism did not remove the loss (L-PARTIAL);
+those six need mode SEMANTICS now, not a missing arm, and that is the next row.
+
+**No regression, established by a control and not by argument.** The depot
+revision rebuilt and run over the default 60 gives 44 pass 16 fail; the fix
+gives the same 44/16 with every failing subject failing in both. One subject
+advanced: `apps/classics-test` moved off `undefined local variable $real_to_int`
+to a wrong answer. The fix state was hashed before the control ran and verified
+after restoring it.
+
+## 2.18 -- DONE 2026-09-01 (contributed by Steve Howell, PRs 111 and 112; absorbed by red): the wasm plug's silent wrong answers, the 4 MiB truncation, the 4 GiB ceiling and the corpus refusals; the zig plug streams
+
+Both PRs were cut from Update 53 and rebased here onto the 60-of-60 emitter
+(2.14, 2.16). PR 111's Real commit was the same decision 2.14 had already
+landed (f64 bits in an i64 slot) and was dropped as a duplicate; every other
+item was ported onto head, with PR 112's correction of 111's guard leak
+applied inline (`ctx-deeper` builds a fresh `WasmCtx`; no `__record-set`).
+
+**Silent wrong answers, each now a fixture in `codex/plugs/wasm/test` graded
+against x86-64 by `wasm-e2e.ps1`:** `a ^ b` emitted `a * b` (`IrPowInt` had no
+arm; `$cx_ipow`, negative exponent 0 as x86's `__ipow`; `pow-int-rt`); a text
+literal only in a match GUARD never reached the string table so the compare
+ran against address 0 (both walkers visit `b.guard`; `guard-string-rt`); a
+`when` inside a guard overwrote the scrutinee local the arms below still read
+(the local is per guard depth, `_s`, `_ss`, ...; `guard-nest-rt`, bare metal
+205 where the plug printed a heap address); `show` of INT64_MIN printed
+garbage (both print helpers work on the negative magnitude now); an unbound,
+non-constructor, arity-less name was emitted as `(local.get $name)` and
+`wat2wasm` refused by naming the builtin (now `(unreachable) (; no wasm form
+for <n> ;)`, so the module assembles and only that path traps; Steve measured
+161 of 169 corpus refusals as this shape); a field slot was read from the
+wire's positional suffix before the receiver's type (inverted); `when` over a
+Boolean emitted `(i64.const True)` (`wat-lit-pat-const`); `real-to-int` used
+`i64.trunc_sat_f64_s`, which saturates NaN to 0 and positive overflow to
+INT64_MAX where x86's `cvttsd2si` answers INT64_MIN for both
+(`$cx_real_to_int`).
+
+**The 4 MiB truncation.** `$read_serial_cce` and `$read_file_uni` reserved
+4 MiB and read the rest of the wire while DISCARDING it, so a larger input
+compiled as a prefix of itself and failed as `CDX3002` on a name the file
+defines. Both start at 1 MiB and extend by re-bumping (`read-file-raw`'s
+idiom). `$read_byte` reads 64 KB per `fd_read` and hands out one byte
+(`$rd_len`/`$rd_pos`); `$read_file_raw` drains that buffer before reading the
+stream itself. Steve measured 210 s to 24 s on a 2.9 MB input under node.
+
+**The ceiling.** List literals, data sections, the elem list and the zig
+plug's list literals were joined right-recursively (quadratic); each splits
+its range in half and joins once, byte-identical by construction.
+`$bump_alloc` grows in 256-page steps through one `$grow_by` (the list-append
+fast path called `memory.grow` inline and now calls `$grow_by`); Steve
+measured 56,000 one-page grows at 166.83 s under node against 0.21 s under
+wasmtime, and 223 s to 18 s on the compiler compiling itself.
+`check-emitted-runtime.ps1` (new) asserts those invariants on every emitted
+module from `wasm-e2e.ps1`; it rejects the head-built module with 8
+violations, which is its calibration.
+
+**The import scan** emitted every definition twice in full to text-search for
+`$blit_framebuf` and `$on_key_import`. The definitions are asked in the IR: a
+call is a name in the HEAD of an apply spine and a bare mention is not
+(`builtin-name-local-rt`). Neither import is reachable by a program that
+assembles (`blit-framebuf` is not a foreword name; `$on_key_import` has no
+producer); both flags are kept, the second asked with `wasm-no-builtin`, so
+whoever adds the `on-key` arm has to touch the call site.
+
+**Zig.** `emit-zig-list-elems` joins in halves. `emit-zig-chapter-stream`
+emits one definition per heap bracket and carries the prelude shake answer
+across the restore as two i64 masks (ceiling 128 parts, `@compileError` past
+it). `ZigStdio`, which is the compile page's `zig-stdio.wasm` lens, streams
+now; `emit-zig-chapter` stays for `ZigPlug`. Measured: the OLD and NEW
+`zig-stdio.wasm` fed the same `ctor-eq-rt` IR under wasmtime emit IDENTICAL
+bytes (19,824, same SHA-256).
+
+**One fix of ours the regression run found, not in either PR:**
+`param-shadow-rt` was RED AT HEAD (control: a plug built from the depot
+emitter refuses the module, `undefined local variable "$p_sh2"`).
+`emit-wat-def` started the locals collector with an empty accumulator, so the
+first `let p` over a parameter `p` allocated slot `p`, which
+`locals-minus-params` stripped, while emission (seeded with the params) used
+`p_sh1`. The collector is now seeded with the params. Nothing in any gate runs
+`wasm-e2e` (L-NOGATE), which is how a red fixture sat at head.
+
+**Measured:** `wasm-e2e` over all 31 fixtures (27 existing plus the four
+above), 31 of 31 agree with x86-64, every module passing the runtime
+invariants. **Not taken, a commander's call (CurrentPlan's narrow test: a
+technical trade-off with a defensible answer is not Damian's):** PR 112's
+`wasm-exports` declaration (a chapter names its own exports; the 484-name
+allowlist decides where there is none, unchanged). Steve calls it a design
+call and it is; the same goes for his issue 113 proposal that the IR carry a
+source name and a suggested unique spelling per binding, and issue 110's ask
+that `inline-single-caller`'s erasure be visible at the language boundary.
+**RULED 2026-09-01 (root): `wasm-exports` is TAKEN as PR 112 proposed** (a
+chapter's own declaration wins; the 484-name allowlist applies only where a
+chapter declares nothing), and it carries a census: once every shipped page
+module declares, the allowlist is deleted, because a list drawn from unrelated
+applications is a leak in one direction and a coincidence in the other.
+reek's, after the campaign's control fix (2.17 and the 2.16 crash). Issue 113
+is ruled in `compiler-backlog.md` COMPILER-38 (the IR uniquifies binders in
+lowering; red's). Issue 110 is ruled (Damian, 2026-09-01): a declared export
+is exempt from `inline-single-caller`, so the `wasm-exports` list's scope
+extends to the pass pipeline; `compiler-backlog.md` COMPILER-39.
+**Still open from his reports:** `Text` literal PATTERNS splice the spelling
+into `(i64.const sin)` and `wat2wasm` refuses (needs the literal in the table,
+a lookup at the site and `$text_eq`); ~45 runtime helpers carry no prefix so
+each is a name a program may not use (4 of his 12 remaining corpus refusals);
+6 SIMD type mismatches; 26 of 526 corpus programs differ from their
+`.expected`, the largest group being reals printing as bit patterns (2.14's
+open real-to-text).
+
+**FOLLOW-UP, OPEN (red or reek, whoever reaches `WasmEmitter.codex` first;
+safe since main 20995 landed the COMPILER-38 seed DE664C4E, L-FALLBACK):**
+delete the wasm plug's private scoping repair, now dead code under
+COMPILER-38: the `shadow` field of `WasmCtx` and its threading through
+`ctx-with`, `count-occurrences`, `wat-shadow-slot`, `shadow-push`,
+`locals-add-shadow` and the `IrLet` emission that indexes by scope depth,
+returning `IrLet` to a plain `local.set $name`. Grade by `wasm-e2e.ps1` over
+the whole test dir (31 fixtures, all green at 20969) and by
+`hosted-wasm-test.ps1`, since `act-let-scope`, `let-shadow-scope`,
+`scope-let-arm-global`, `inline-single-caller` and `param-shadow-rt` are the
+programs that would move. reek's before-baseline on seed DE664C4E, measured
+2026-09-01: `act-let-scope` PASSES and `hosted-wasm-test` over `ops/*` is 27
+pass, 14 fail; the deletion must leave both exactly there. reek declined the
+refactor (on the 2.17 control fix), so it is red's next session's or whoever
+reaches the file. The zig plug's `renamed-from`/`renamed-to` also
+serves zig's OWN rule (a nested function may not shadow an enclosing
+parameter, which the desugarer's `for p in pats` produces) and is NOT
+obviously dead; assess with a zig e2e before touching it. The C# plug has no
+private repair.
+
+## 2.15 -- OPEN (Damian, 2026-08-31; queued, unowned): text plugs emit CCE encoding code a simple program never needs, and the emitted `opening` round-trips `to-cce (from-cce x)`
+
+Damian's observation at the emitted output, not yet censused: some text
+emitters emit their CCE encode/decode helpers for programs whose text is plain
+ASCII literals, and the emitted `opening` wraps a value in a
+decode-then-encode pair, an encoding dance that changes nothing. Some text
+emitters do NOT do this, and they are the control: the plugs whose `opening`
+comes out clean show the shape the others should produce.
+
+What the taker does, in order:
+
+1. **The census first.** Compile one simple program (a `print-line` of a
+   literal, and one with `text-concat`) through every text plug
+   (`codex/plugs/<plug>/run.ps1`; `build/plug-oracle-test.ps1` names the
+   plugs whose runtime is on this box) and grep each emitted file for (a) the
+   CCE helper definitions it carries and (b) a decode-then-encode pair on one
+   expression in `opening`. Publish the table in this row (plug, helper
+   lines, round-trip sites, runnable or text-only) BEFORE fixing anything:
+   the observation is Damian's eye, the count is the taker's (L-COUNT). A
+   plug with no runtime here (1.14, 1.46) is censused on its emitted text
+   and cannot be run; say so in its row.
+2. **The rule.** A CCE helper is emitted only when the program reaches it
+   (2.04's shape: the zig prelude emits only the parts the program reaches),
+   and a value is never decoded and re-encoded on one path: text stays in
+   the plug's native form until an I/O boundary needs CCE, and stays CCE
+   until a native operation needs the other.
+3. **The proof.** `build/plug-oracle-test.ps1` (49 of 49 values per plug)
+   and each plug's own arms byte-identical before and after; the drop in
+   emitted size per plug is the measurement, and a plug whose output does
+   not shrink was not carrying the dance.
+
+Boundary: the CCE layer itself (R-CCE, `Foreword chapter CCE`) is untouched;
+this row is about emitting it where nothing needs it. One plug per CL
+(R-ONE); the compiler is not on the path, so no token.

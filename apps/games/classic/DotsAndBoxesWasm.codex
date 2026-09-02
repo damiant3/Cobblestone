@@ -1,0 +1,85 @@
+Chapter: DotsAndBoxesWasm
+  cites Games chapter DotsAndBoxes
+  cites Foreword chapter List
+
+ The browser interface for Dots and Boxes, on the handle contract in
+ games-backlog.md GAME-11. Twenty-four edges, nine boxes and two scores are
+ past an i32, so the page holds the board's address.
+
+ `dots-place` writes the edge through `list-set-at`, so `dt-wasm-place`
+ copies first. The move search is the interesting one: `dots-find-completing-move`
+ probes a candidate by setting the edge on the CALLER's own list, asking
+ whether that completes a box, and then setting it back. It borrows the
+ board and returns it rather than working on a copy, which is safe only
+ while the restore always happens. The grader measures the board across a
+ call rather than reading that as a promise (GAME-13).
+
+ We say:
+
+Section: Copying
+
+  dt-copy-list : List Integer, Integer, Integer, List Integer -> List Integer
+  dt-copy-list (src) (i) (n) (acc) =
+    if i >= n then acc
+    else dt-copy-list src (i + 1) n (list-push acc (list-at src i))
+
+  dt-copy-board : DotsBoard -> DotsBoard
+  dt-copy-board (b) =
+    DotsBoard {
+      edges = dt-copy-list (b.edges) 0 24 [],
+      boxes = dt-copy-list (b.boxes) 0 9 [],
+      current-player = b.current-player,
+      p1-score = b.p1-score,
+      p2-score = b.p2-score,
+      moves-made = b.moves-made,
+      rng = b.rng
+    }
+
+Section: The Browser Interface
+
+  dt-wasm-new : Integer -> DotsBoard
+  dt-wasm-new (seed) = dots-new (rng-new seed)
+
+  dt-wasm-edge : DotsBoard, Integer -> Integer
+  dt-wasm-edge (b) (i) =
+    if i < 0 then (-1)
+    else if i >= 24 then (-1)
+    else list-at (b.edges) i
+
+  dt-wasm-box : DotsBoard, Integer -> Integer
+  dt-wasm-box (b) (i) =
+    if i < 0 then (-1)
+    else if i >= 9 then (-1)
+    else list-at (b.boxes) i
+
+  dt-wasm-cur : DotsBoard -> Integer
+  dt-wasm-cur (b) = b.current-player
+
+  dt-wasm-score : DotsBoard, Integer -> Integer
+  dt-wasm-score (b) (player) =
+    if player == 1 then b.p1-score else b.p2-score
+
+  dt-wasm-moves : DotsBoard -> Integer
+  dt-wasm-moves (b) = b.moves-made
+
+  dt-wasm-done : DotsBoard -> Integer
+  dt-wasm-done (b) = if dots-all-placed (b.edges) then 1 else 0
+
+  dt-wasm-can : DotsBoard, Integer -> Integer
+  dt-wasm-can (b) (i) =
+    if i < 0 then 0
+    else if i >= 24 then 0
+    else if list-at (b.edges) i /= 0 then 0
+    else 1
+
+  dt-wasm-place : DotsBoard, Integer -> DotsBoard
+  dt-wasm-place (b) (i) =
+    if dt-wasm-can b i == 0 then b
+    else dots-place (dt-copy-board b) i
+
+  dt-wasm-ai : DotsBoard -> Integer
+  dt-wasm-ai (b) =
+    if dots-all-placed (b.edges) then (-1)
+    else dots-ai-move b
+
+Page 1

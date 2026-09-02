@@ -29,6 +29,62 @@ count does.
 
 ## Done
 
+### Update 54 -- the seed on main was a pre-convergence Sut, and only the release's 4.3 check saw it
+
+Found at step 0b, 2026-09-01. The full gate at head 21221 built `FCBABF07` in
+one pass while main carried `18995A1A` (21215): same size, different content
+hash, identical source. The lane's `-Internal` gate had printed the two-pass
+P-STAGE2 refusal and the pre-convergence Sut was installed against it (the
+wrong log grepped). Nothing between the land and the release compares a
+landed seed to its own source: `-Internal` on the next lane merges the seed
+down and compiles WITH it, which is consistent by construction. The chain's
+seed check (`proofs.ps1`, `PerforceProcess.md` 4.3) is what caught it, on its
+first release run. Re-measure at every release, and after any seed land:
+
+```powershell
+# whole-file, computed; never the header field (bytes 8..39 are STORED, not derived)
+p4 print -q -o build-output/depot-seed.cdx //Codex/main/seed/Codex.cdx
+(Get-FileHash -Algorithm SHA256 build-output/depot-seed.cdx).Hash
+(Get-FileHash -Algorithm SHA256 build/output/Sut.cdx).Hash          # after a gate at head; must match
+```
+
+### Update 54 -- a new compiler builtin reached the wire and only the DDC could see it (third instance)
+
+Found at step 4, 2026-09-01: Roslyn refused the emitted compiler with
+`CS0103: The name 'print_uni' does not exist`. Fester's RESOLVE-mode frame
+(main 20783, four days before the release) made the compiler call `print-uni`,
+and `codex/plugs/csharp/CSharpEmitterExpressions.codex` had no emitter, so the
+gate, the battery, the sweep and the poison battery were all green while the
+witness could not build. Fixed at 21228 (one entry beside `print-text`). This
+is Update 47's and Update 50's entry again. **A static diff of
+`Builtins.codex` names against the plug's table is NOT the instrument**:
+measured at this head it lists 103 of 264 names, nearly all bare-metal
+devices (ports, MMIO, VMX, UEFI, processes) the compiler's own source never
+calls, so it cannot tell the one that matters from the hundred that do not.
+What decides is whether the COMPILER'S IR reaches a name the plug cannot
+emit, and only the arm's build answers that. Re-measure at any CL that makes
+the compiler call a builtin it did not call before (the DDC's steps 1 and 2,
+about five minutes, no seed change needed):
+
+```powershell
+codex/plugs/csharp/emit-compiler.ps1 -Kernel seed/Codex.cdx -Out build-output/Codex.cs
+dotnet build build-output/ddc-arm/CodexCs.csproj -c Release    # CS0103 names the missing emitter
+```
+
+### Update 54 -- an ir-fidelity row moved DROPPED to CARRIED, which is a fix, not a fault
+
+Found at step 0c, 2026-09-01: `empty-list-element-type` reported CARRIED
+against a banked DROPPED (`>>>` row, `unexpected 0`). COMPILER-30's witness
+(PR 101, main 20944) had fixed the compiler five days earlier and nothing
+re-baselines a case when the fix lands. Re-baselined at 21224. The skill
+already says a DROPPED-to-CARRIED move is a re-baseline; what recurs is that
+the lane landing a fix does not run `-Grade`. Re-measure at any CL that
+touches lowering's type carriage:
+
+```powershell
+build/ir-fidelity/ir-fidelity.ps1 -Grade    # a >>> row naming your case means re-baseline its case.psd1 in the same CL
+```
+
 ### Update 52 -- a battery batch can hand every test in it ANOTHER test's output, whole
 
 Found at the Update 52 step 1, 2026-08-27. The first battery run went red

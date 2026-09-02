@@ -1,0 +1,82 @@
+Chapter: WarWasm
+  cites Games chapter War
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for War, on the handle contract in
+ games-backlog.md GAME-11. Two fifty-two slot hands and their sizes are
+ past an i32, so the page holds the state's address.
+
+ `war-shift-hand`, `war-add-card` and `war-deal-half` all write with
+ `list-set-at`, which mutates in place, so `wr-wasm-round` copies first.
+
+ Both hands are exposed slot by slot rather than as a summary, because
+ whether the two players hold the SAME cards is the question a summary
+ cannot answer.
+
+ We say:
+
+Section: Copying
+
+  wr-copy-hand : List Integer, Integer, List Integer -> List Integer
+  wr-copy-hand (src) (i) (acc) =
+    if i >= 52 then acc
+    else wr-copy-hand src (i + 1) (list-push acc (list-at src i))
+
+  wr-copy-state : WarState -> WarState
+  wr-copy-state (s) =
+    WarState {
+      p1-hand = wr-copy-hand (s.p1-hand) 0 [],
+      p1-size = s.p1-size,
+      p2-hand = wr-copy-hand (s.p2-hand) 0 [],
+      p2-size = s.p2-size,
+      rng     = s.rng
+    }
+
+Section: The Browser Interface
+
+  wr-wasm-new : Integer -> WarState
+  wr-wasm-new (seed) = war-init seed
+
+  wr-wasm-p1-size : WarState -> Integer
+  wr-wasm-p1-size (s) = s.p1-size
+
+  wr-wasm-p2-size : WarState -> Integer
+  wr-wasm-p2-size (s) = s.p2-size
+
+  wr-wasm-p1-card : WarState, Integer -> Integer
+  wr-wasm-p1-card (s) (i) =
+    if i < 0 then (-1)
+    else if i >= 52 then (-1)
+    else list-at (s.p1-hand) i
+
+  wr-wasm-p2-card : WarState, Integer -> Integer
+  wr-wasm-p2-card (s) (i) =
+    if i < 0 then (-1)
+    else if i >= 52 then (-1)
+    else list-at (s.p2-hand) i
+
+  wr-wasm-rank : Integer -> Integer
+  wr-wasm-rank (c) =
+    if c < 0 then (-1)
+    else if c >= 52 then (-1)
+    else war-card-rank c
+
+  wr-wasm-round : WarState -> WarState
+  wr-wasm-round (s) =
+    if s.p1-size <= 0 then s
+    else if s.p2-size <= 0 then s
+    else war-do-round (wr-copy-state s)
+
+Section: The Whole Game
+
+  wr-wasm-run : Integer -> WarResult
+  wr-wasm-run (seed) = run-war-game seed
+
+  wr-wasm-res-winner : WarResult -> Integer
+  wr-wasm-res-winner (r) = r.winner
+
+  wr-wasm-res-rounds : WarResult -> Integer
+  wr-wasm-res-rounds (r) = r.rounds-played
+
+Page 1

@@ -1,0 +1,103 @@
+Chapter: BattleshipWasm
+  cites Games chapter Battleship
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Battleship, on the handle contract in
+ games-backlog.md GAME-11. Four ten by ten grids plus the counters and the
+ generator are nowhere near an i32, so the page holds the state's address.
+
+ A round is both sides shooting, which is how `bs-loop` runs it, and
+ `bs-wasm-step` is one turn of that loop rather than the whole game so a
+ watching page can show the shots land one at a time.
+
+ The copy covers the TRACKING grids and nothing else, deliberately.
+ `bs-shoot` writes the shot into the tracking grid through `bs-set`, which
+ goes to `list-set-at` and mutates in place, so a step without the copy
+ would write the shot into the caller's own state. The SHIPS grids are only
+ ever read, by `bs-shoot` deciding hit or miss, so they are shared between
+ a state and its successor on purpose: copying them each turn would allocate
+ two hundred cells a round to no end.
+
+ `bs-empty-grid` is a nullary definition, so it is a recipe rather than a
+ cell and the two fresh tracking grids below are genuinely distinct. If it
+ were a shared value both players would be shooting into one grid.
+
+ We say:
+
+Section: Copying
+
+  bs-copy-cells : List Integer, Integer, List Integer -> List Integer
+  bs-copy-cells (src) (i) (acc) =
+    if i >= 100 then acc
+    else bs-copy-cells src (i + 1) (list-push acc (list-at src i))
+
+  bs-copy-grid : BsGrid -> BsGrid
+  bs-copy-grid (g) = BsGrid { cells = bs-copy-cells (g.cells) 0 [] }
+
+Section: The Browser Interface
+
+  bs-wasm-new : Integer -> BsState
+  bs-wasm-new (seed) =
+    let r0 = rng-new seed
+    in let r1 = rng-next r0
+    in let r2 = rng-next r1
+    in BsState {
+      p1-ships = bs-place-ships r1, p1-tracking = bs-empty-grid,
+      p2-ships = bs-place-ships r2, p2-tracking = bs-empty-grid,
+      p1-hits = 0, p2-hits = 0, p1-shots = 0, p2-shots = 0,
+      rng = r2, game-over = False, winner = 0
+    }
+
+  bs-wasm-step : BsState -> BsState
+  bs-wasm-step (st) =
+    if st.game-over then st
+    else if st.p1-shots > 100 then st
+    else let r1 = rng-next (st.rng)
+    in let p1-idx = bs-ai-pick-shot (st.p1-tracking) r1
+    in let p1-row = p1-idx / 10
+    in let p1-col = p1-idx - p1-row * 10
+    in let new-p1-track = bs-shoot (st.p2-ships) (bs-copy-grid (st.p1-tracking)) p1-row p1-col
+    in let new-p1-hits = bs-count-hits new-p1-track 0 0
+    in let r2 = rng-next r1
+    in let p2-idx = bs-ai-pick-shot (st.p2-tracking) r2
+    in let p2-row = p2-idx / 10
+    in let p2-col = p2-idx - p2-row * 10
+    in let new-p2-track = bs-shoot (st.p1-ships) (bs-copy-grid (st.p2-tracking)) p2-row p2-col
+    in let new-p2-hits = bs-count-hits new-p2-track 0 0
+    in let p1-won = new-p1-hits >= bs-total-ship-cells
+    in let p2-won = new-p2-hits >= bs-total-ship-cells
+    in BsState {
+      p1-ships = st.p1-ships, p1-tracking = new-p1-track,
+      p2-ships = st.p2-ships, p2-tracking = new-p2-track,
+      p1-hits = new-p1-hits, p2-hits = new-p2-hits,
+      p1-shots = st.p1-shots + 1, p2-shots = st.p2-shots + 1,
+      rng = r2, game-over = p1-won | p2-won,
+      winner = if p1-won then 1 else if p2-won then 2 else 0
+    }
+
+  bs-wasm-ship : BsState, Integer, Integer, Integer -> Integer
+  bs-wasm-ship (st) (player) (row) (col) =
+    if player == 1 then bs-cell (st.p1-ships) row col
+    else bs-cell (st.p2-ships) row col
+
+  bs-wasm-track : BsState, Integer, Integer, Integer -> Integer
+  bs-wasm-track (st) (player) (row) (col) =
+    if player == 1 then bs-cell (st.p1-tracking) row col
+    else bs-cell (st.p2-tracking) row col
+
+  bs-wasm-hits : BsState, Integer -> Integer
+  bs-wasm-hits (st) (player) =
+    if player == 1 then st.p1-hits else st.p2-hits
+
+  bs-wasm-shots : BsState, Integer -> Integer
+  bs-wasm-shots (st) (player) =
+    if player == 1 then st.p1-shots else st.p2-shots
+
+  bs-wasm-done : BsState -> Integer
+  bs-wasm-done (st) = if st.game-over then 1 else 0
+
+  bs-wasm-winner : BsState -> Integer
+  bs-wasm-winner (st) = st.winner
+
+Page 1

@@ -27,7 +27,10 @@
 #   chapters  build-plug-wasm.ps1 -Chapters value; Name:Sec1|Sec2 drops
 #             sections (the transport half of a network entry chapter)
 #   ship      $false keeps a module out of the page (built and graded, not
-#             shipped); absent means shipped. Only elf today: its lens is dark
+#             shipped); absent means shipped. NO module carries it today: elf
+#             has never had it in this table, and arm64's went when it gained
+#             an Arm64Elf chapter and stopped being a payload the page cannot
+#             reach
 #             because nothing emits the payload it reads (plugs 1.92).
 
 $PageModules = @(
@@ -86,7 +89,7 @@ $PageModules = @(
     # Read Helpers.
     @{ plug = 'pe';  file = 'pe-bytes.wasm';  transport = 'bytes'; chapters = 'ByteHelpers,PeWriter,Arm64PeWriter,PePlug:Network Config|Spin|Drain|Body,PeStdio' }
     @{ plug = 'img'; file = 'img-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,PlugChain,Fat16Writer,Fat32Writer,GptWriter,ImgPlug:Network Config|Streaming Send|Drain|Body,ImgStdio' }
-    @{ plug = 'elf'; file = 'elf-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,PlugChain,ElfWriter,DwarfWriter,ElfPlug:Network Config|Drain|Body,ElfStdio'; ship = $false }
+    @{ plug = 'elf'; file = 'elf-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,PlugChain,ElfWriter,DwarfWriter,ElfPlug:Network Config|Drain|Body,ElfStdio' }
 
     # -- native backends, IR in and a binary WIRE out -------------------------
     # The board lanes -- riscv for boards, arm64 for boards AND phones. These
@@ -102,11 +105,11 @@ $PageModules = @(
     # for the IR compile (decks) -- without it that compile dies in __alloc at
     # about 542 MB, the same way the network build would without its -Decks 160.
     @{ plug = 'riscv'; file = 'riscv-stdio.wasm'; transport = 'irbytes'
-       chapters = 'RiscVRuntime,RiscVCodeGen,RiscVCodeGen2,RiscVLir,RiscVCodeGen3,RiscVDisasm,RiscVStdio'
-       withLir = $true; common = 'PlugManifest'; decks = 160; ship = $false }
+       chapters = 'RiscVRuntime,RiscVCodeGen,RiscVCodeGen2,RiscVLir,RiscVCodeGen3,RiscVDisasm,RiscVElf,RiscVStdio'
+       withLir = $true; common = 'PlugManifest'; decks = 160 }
     @{ plug = 'arm64'; file = 'arm64-stdio.wasm'; transport = 'irbytes'
-       chapters = 'Arm64Runtime,Arm64CodeGen,Arm64CodeGen2,Arm64Lir,Arm64CodeGen3,Arm64Disasm,Arm64Stdio'
-       withLir = $true; common = 'PlugManifest'; decks = 160; ship = $false }
+       chapters = 'Arm64Runtime,Arm64CodeGen,Arm64CodeGen2,Arm64Lir,Arm64CodeGen3,Arm64Disasm,Arm64Elf,Arm64Stdio'
+       withLir = $true; common = 'PlugManifest'; decks = 160 }
 
     # -- plugs that carry their own wasm builder ------------------------------
     # evidence reads raw CCE lines on stdin (no PlugStdio); its builder is

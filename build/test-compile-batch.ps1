@@ -27,7 +27,15 @@ $resolveSw = [System.Diagnostics.Stopwatch]::StartNew()
 . (Join-Path $PSScriptRoot 'quire-map.ps1')
 
 
-function Resolve-Source {
+# Resolution is split from emission so the batch input never exists as one
+# resident string. It used to be built in a StringBuilder and then written
+# with ToString(), which holds the WHOLE batch twice at the write; measured
+# 2026-09-01 on 400 chapters, driver live heap went 7 MB before this loop to
+# 101 MB after, and peak working set was 711 MB. Each chapter is now written
+# through and only that chapter is in hand. Resolve-CiteOrder can throw, so
+# ordering happens BEFORE anything is written and a failed chapter emits
+# nothing.
+function Resolve-Order {
     param([string]$SrcPath)
     $lines = [System.IO.File]::ReadAllLines($SrcPath)
     $seedSeen = @{}; $embPat = '^Chapter:\s*(\w+)--(.+?)\s*$'
@@ -39,38 +47,35 @@ function Resolve-Source {
     } catch {
         return $null
     }
-    $sb = [System.Text.StringBuilder]::new(524288)
-    foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$sb.Append($l + "`n") }
-    foreach ($l in $lines) { [void]$sb.Append($l + "`n") }
-    # The regions ride along so build.log can name the file and the file's own
-    # line. This assembler builds its own unit and writes its own log, so it
-    # has to map back itself -- compile.ps1 doing it is not enough, and the
-    # battery is the path that matters for a `.failing` position pin.
-    return @{ Text = $sb.ToString(); Regions = (Get-DiagRegions -Ordered $ordered -SrcPath $SrcPath) }
+    return @{ Lines = $lines; Ordered = $ordered }
 }
 
 
 $regionsByName = @{}
 
-# Build combined REPL input
-$inputSb = [System.Text.StringBuilder]::new(10485760)
+# Build combined REPL input, streamed straight to the file so the batch is
+# never resident. The mode line is written only after ordering succeeds, so a
+# chapter that fails resolution emits nothing, exactly as the buffered
+# version did by skipping the appends.
+$inputFile = [System.IO.Path]::GetTempFileName()
+$inputWriter = [System.IO.StreamWriter]::new($inputFile, $false, [System.Text.UTF8Encoding]::new($false))
 $testNames = [System.Collections.Generic.List[string]]::new()
 for ($i = 0; $i -lt $sources.Count; $i++) {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($sources[$i])
     $testOut = Join-Path $OutRoot $name
     New-Item -ItemType Directory -Force -Path $testOut | Out-Null
-    $resolved = Resolve-Source $sources[$i]
+    $resolved = Resolve-Order $sources[$i]
     if ($null -eq $resolved) {
         "8" | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8
         "error 3010: foreword resolution failed" | Set-Content -Path (Join-Path $testOut 'build.log') -Encoding UTF8
         continue
     }
     $testNames.Add($name)
-    $regionsByName[$name] = $resolved.Regions
-    # Census instrumentation: the resolved concat size is the best host-side
-    # proxy for a test's compile cost inside a batch (the VM's output file
-    # flushes on exit, so per-test wall time is not observable from here).
-    "$($resolved.Text.Length)" | Set-Content -Path (Join-Path $testOut '.src-bytes') -Encoding UTF8
+    # The regions ride along so build.log can name the file and the file's own
+    # line. This assembler builds its own unit and writes its own log, so it
+    # has to map back itself -- compile.ps1 doing it is not enough, and the
+    # battery is the path that matters for a `.failing` position pin.
+    $regionsByName[$name] = Get-DiagRegions -Ordered $resolved.Ordered -SrcPath $sources[$i]
     $flagsFile = Join-Path ([System.IO.Path]::GetDirectoryName($sources[$i])) "$name.flags"
     $extraFlags = if (Test-Path -PathType Leaf $flagsFile) { ' ' + (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }
     # Plain CDX: the batch session loops because the SEED is repl-built.
@@ -78,16 +83,18 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
     # (hangs stdin-consuming tests); the 'map' flag would stream the full
     # symbol map over serial per test (the battery-wide map tax). Test
     # binaries get Exit mode and halt cleanly on their own.
-    $mode = "CDX$extraFlags`n"
-    [void]$inputSb.Append($mode)
-    [void]$inputSb.Append($resolved.Text)
-    [void]$inputSb.Append([char]4)
+    $inputWriter.Write("CDX$extraFlags`n")
+    $srcChars = 0
+    foreach ($l in (Format-CiteChapters -Ordered $resolved.Ordered)) { $inputWriter.Write($l); $inputWriter.Write("`n"); $srcChars += $l.Length + 1 }
+    foreach ($l in $resolved.Lines) { $inputWriter.Write($l); $inputWriter.Write("`n"); $srcChars += $l.Length + 1 }
+    $inputWriter.Write([char]4)
+    # Census instrumentation: the resolved concat size is the best host-side
+    # proxy for a test's compile cost inside a batch (the VM's output file
+    # flushes on exit, so per-test wall time is not observable from here).
+    "$srcChars" | Set-Content -Path (Join-Path $testOut '.src-bytes') -Encoding UTF8
 }
-if ($testNames.Count -eq 0) { exit 0 }
-
-
-$inputFile = [System.IO.Path]::GetTempFileName()
-[System.IO.File]::WriteAllText($inputFile, $inputSb.ToString(), [System.Text.UTF8Encoding]::new($false))
+$inputWriter.Dispose()
+if ($testNames.Count -eq 0) { Remove-Item $inputFile -Force -ErrorAction SilentlyContinue; exit 0 }
 $outputFile = [System.IO.Path]::GetTempFileName()
 $stderrFile = [System.IO.Path]::GetTempFileName()
 $Stage0 = Join-Path (Split-Path $PSScriptRoot) 'build-output\bare-metal\Codex.cdx'
@@ -120,13 +127,18 @@ if ((Test-Path -PathType Leaf $stderrFile)) {
 }
 
 
-# Parse output: text lines interleaved with binary CDX blocks. Newlines are
-# found with a native string scan, not a PowerShell byte loop: when a batch
-# VM dies mid-binary the framing is lost and the remainder of the output is
-# walked as "lines", which the per-byte loop turned into 17-23 MINUTES on a
-# crashed batch (census 2026-07-27). The Latin-1 shadow string maps chars to
-# bytes 1:1, so positions in it are byte positions; line TEXT is still
-# decoded from the bytes as UTF-8.
+# Parse output: text lines interleaved with binary CDX blocks. Newlines and
+# markers are found by native byte scans, not a PowerShell byte loop: when a
+# batch VM dies mid-binary the framing is lost and the remainder of the output
+# is walked as "lines", which the per-byte loop turned into 17-23 MINUTES on a
+# crashed batch (census 2026-07-27). [Array]::IndexOf does the skipping
+# natively, so only newline candidates reach PowerShell.
+# A Latin-1 shadow STRING of the whole capture served this until 2026-09-01.
+# It cost 2 bytes per captured byte on top of the byte[], a .NET string being
+# UTF-16: 240 MB of managed heap on a 120 MB capture, per driver, per parallel
+# slot. Byte scanning costs 0.378 s against the shadow's 0.019 s on a full
+# 120 MB pass that finds nothing, so about 1.9 s per driver at worst across
+# the five markers. Memory was the binding constraint, not time.
 # Assigned DIRECTLY, never as `$raw = if (...) { ReadAllBytes } else { ... }`:
 # a statement's result goes through the pipeline, which unrolls a byte[] into
 # an Object[] of boxed bytes, and every GetString/Array.Copy below then
@@ -134,14 +146,13 @@ if ((Test-Path -PathType Leaf $stderrFile)) {
 # 2.9 MB capture, quadratic in the batch (96 tests 130 s, 193 tests 450 s).
 $raw = [byte[]]::new(0)
 if (Test-Path $outputFile) { $raw = [System.IO.File]::ReadAllBytes($outputFile) }
-$rawStr = [System.Text.Encoding]::GetEncoding(28591).GetString($raw)
 $pos = 0; $testIdx = 0
 
 
 function NextLine {
     if ($script:pos -ge $raw.Length) { return $null }
     $start = $script:pos
-    $nl = $rawStr.IndexOf([char]10, $start)
+    $nl = [Array]::IndexOf($raw, [byte]10, $start)
     $end = if ($nl -lt 0) { $raw.Length } else { $nl }
     $script:pos = if ($nl -lt 0) { $raw.Length } else { $nl + 1 }
     $len = $end - $start
@@ -178,10 +189,27 @@ function Add-LogSpan {
 # standing exactly at the current position, e.g. directly after a skipped
 # binary block with no separating newline) is handled by the caller, not
 # here -- position 0 included.
+function Test-MarkerAtPos {
+    param([int]$At, [string]$Marker)
+    $mb = [System.Text.Encoding]::ASCII.GetBytes($Marker)
+    if ($At + $mb.Length -gt $raw.Length) { return $false }
+    for ($k = 0; $k -lt $mb.Length; $k++) { if ($raw[$At + $k] -ne $mb[$k]) { return $false } }
+    return $true
+}
+
 function Get-NextMarkerAt {
     param([string]$Marker, [int]$From)
-    $j = $rawStr.IndexOf("`n$Marker", [Math]::Max(0, $From - 1), [System.StringComparison]::Ordinal)
-    if ($j -ge 0) { return $j + 1 } else { return -1 }
+    $mb = [System.Text.Encoding]::ASCII.GetBytes($Marker)
+    $ml = $mb.Length
+    $i = [Math]::Max(0, $From - 1)
+    while ($true) {
+        $nl = [Array]::IndexOf($raw, [byte]10, $i)
+        if ($nl -lt 0 -or $nl + 1 + $ml -gt $raw.Length) { return -1 }
+        $ok = $true
+        for ($k = 0; $k -lt $ml; $k++) { if ($raw[$nl + 1 + $k] -ne $mb[$k]) { $ok = $false; break } }
+        if ($ok) { return $nl + 1 }
+        $i = $nl + 1
+    }
 }
 
 
@@ -216,7 +244,7 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length -and -not $vmDead
     # (measured 2026-07-27), which put 214 of a 214 s profile in this loop.
     $mkAt = -1; $mkKind = $null
     foreach ($m in $markerList) {
-        if ($rawStr.Length - $pos -ge $m.Length -and $rawStr.Substring($pos, $m.Length) -ceq $m) { $mkAt = $pos; $mkKind = $m; break }
+        if (Test-MarkerAtPos $pos $m) { $mkAt = $pos; $mkKind = $m; break }
     }
     if ($null -eq $mkKind) {
         foreach ($m in $markerList) {

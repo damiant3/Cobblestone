@@ -82,6 +82,18 @@ foreach ($s in $subjects) {
     & pwsh -NoProfile -File (Join-Path $PlugDir 'run.ps1') -Src $s -Out $wat -Kernel $Kernel | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wat)) { Write-Host "FAIL $name : the plug did not emit WAT."; $fail++; continue }
 
+    # The emitted runtime's growth and reader invariants are invisible to the
+    # output comparison below (a module that grows one page at a time prints
+    # the same bytes), so they are asserted on the emitted text. The runtime is
+    # emitted whole into every module, so every subject carries them.
+    & pwsh -NoProfile -File (Join-Path $PlugDir 'check-emitted-runtime.ps1') $wat | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "FAIL $name : the emitted runtime broke an invariant."
+        & pwsh -NoProfile -File (Join-Path $PlugDir 'check-emitted-runtime.ps1') $wat |
+            ForEach-Object { Write-Host "  $_" }
+        $fail++; continue
+    }
+
     # wat2wasm IS the undefined-name census, and a grep is not. A builtin the
     # plug has no arm for does NOT come out as `(call $name)`: the name is
     # treated as a value and reaches the funcref path, so it emits

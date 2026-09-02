@@ -3,20 +3,43 @@ Chapter: ElfStdio
 
 Section: Body
 
+ THE PAYLOAD LEADS WITH A MODE BYTE, the way the pe plug's does: 0 is a
+ bootable bare-metal image, 1 is a user-mode ELF64 at the conventional Linux
+ base, and 2 is a HOSTED CONSOLE ELF built from a whole CDX. One target, three
+ containers, chosen by the caller rather than by which plug got built.
+
+ Mode 2 takes the CDX WHOLE rather than the unpacked wire the other two take,
+ because the hosted container needs the entry offset out of the CDX header and
+ that is not in the wire. It is the same payload shape the pe plug already
+ uses, and the parsing is the plug's rather than the caller's.
+
+ An unknown mode is REFUSED by name and not absorbed by a fallback. A front
+ door whose `otherwise` accepts anything makes a setting that does nothing
+ look exactly like one that works, and here the thing that looks like it
+ worked is a downloadable binary (L-ACCEPTED, and the same reason
+ `compile-plain` names TEXT rather than falling through to it).
+
   plug-emit-bytes : Integer, Integer -> [Console] Nothing
   plug-emit-bytes (payload-buf) (payload-len) =
-   if payload-len < 12 then print-line-uni ("REFUSED short payload " & show payload-len)
+   if payload-len < 13 then print-line-uni ("REFUSED short payload " & show payload-len)
+   else if list-at (__buf-read-bytes payload-buf 0 1) 0 == 2 then
+    if payload-len < 225 then print-line-uni ("REFUSED mode 2 payload " & show payload-len & " is shorter than a CDX header")
+    else write-binary (build-elf64-console-from-cdx payload-buf 1 (payload-len - 1))
    else let cce-table = build-cce-to-ascii-table cce-to-unicode-table
    in let hp = __heap-save
-   in let hdr-bytes = __buf-read-bytes payload-buf 0 12
-   in let code-len = read-i32-le hdr-bytes 0
-   in let data-len = read-i32-le hdr-bytes 4
-   in let func-count = read-i32-le hdr-bytes 8
+   in let hdr-bytes = __buf-read-bytes payload-buf 0 13
+   in let mode = list-at hdr-bytes 0
+   in let code-len = read-i32-le hdr-bytes 1
+   in let data-len = read-i32-le hdr-bytes 5
+   in let func-count = read-i32-le hdr-bytes 9
    in let hr = __heap-restore hp
-   in let code-off = 12
+   in let code-off = 13
    in let data-off = code-off + code-len
    in let func-off = data-off + data-len
    in if func-off > payload-len then print-line-uni ("REFUSED payload " & show payload-len & " shorter than its own header claims " & show func-off)
-   else let funcs = parse-func-table-from-buf payload-buf func-off func-count
-   in let elf-bytes = build-elf-from-payload payload-buf code-len data-len code-off data-off (funcs.names) (funcs.offsets) cce-table
-   in write-binary elf-bytes
+   else if mode == 0 then
+    let funcs = parse-func-table-from-buf payload-buf func-off func-count
+    in write-binary (build-elf-from-payload payload-buf code-len data-len code-off data-off (funcs.names) (funcs.offsets) cce-table)
+   else if mode == 1 then
+    write-binary (build-elf64-user-from-payload payload-buf code-len data-len code-off data-off)
+   else print-line-uni ("REFUSED unknown mode " & show mode & ": 0 is a bare-metal image, 1 is a user-mode ELF64, 2 is a hosted console ELF, and nothing else is implemented")

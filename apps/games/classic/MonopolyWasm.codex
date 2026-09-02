@@ -1,0 +1,135 @@
+Chapter: MonopolyWasm
+  cites Games chapter Monopoly
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Monopoly, on the handle contract in
+ games-backlog.md GAME-11. Four players and twenty-eight properties, each a
+ record of its own, are far past an i32.
+
+ `mono-set-player` and `mono-set-prop` write with `list-set-at`, which
+ mutates in place, so a turn writes through to the caller's lists. Both
+ lists hold RECORDS, and the records are rebuilt rather than mutated in
+ these two functions, so copying the lists is enough here; the deeper copy
+ Hex War needs is not required, and the grader measures that rather than
+ assuming it.
+
+ We say:
+
+Section: Copying
+
+  mo-copy-players : List MonopolyPlayer, Integer, Integer, List MonopolyPlayer -> List MonopolyPlayer
+  mo-copy-players (src) (i) (n) (acc) =
+    if i >= n then acc
+    else mo-copy-players src (i + 1) n (list-push acc (list-at src i))
+
+  mo-copy-props : List PropertyState, Integer, Integer, List PropertyState -> List PropertyState
+  mo-copy-props (src) (i) (n) (acc) =
+    if i >= n then acc
+    else mo-copy-props src (i + 1) n (list-push acc (list-at src i))
+
+  mo-copy-state : MonopolyState -> MonopolyState
+  mo-copy-state (s) =
+    MonopolyState {
+      players = mo-copy-players (s.players) 0 (list-length (s.players)) [],
+      properties = mo-copy-props (s.properties) 0 (list-length (s.properties)) [],
+      current-player = s.current-player,
+      turn-number = s.turn-number,
+      game-over = s.game-over,
+      winner = s.winner,
+      num-players = s.num-players
+    }
+
+Section: The Browser Interface
+
+  mo-wasm-new : Integer, Integer -> MonopolyState
+  mo-wasm-new (seed) (players) = mono-init seed players
+
+  mo-wasm-step : MonopolyState, Integer -> MonopolyState
+  mo-wasm-step (s) (seed) =
+    if s.game-over then s
+    else mono-advance-turn (mono-do-turn (mo-copy-state s) (rng-new seed))
+
+  mo-wasm-players : MonopolyState -> Integer
+  mo-wasm-players (s) = s.num-players
+
+  mo-wasm-cash : MonopolyState, Integer -> Integer
+  mo-wasm-cash (s) (i) =
+    if i < 0 then (-1)
+    else if i >= s.num-players then (-1)
+    else (mono-get-player s i).cash
+
+  mo-wasm-position : MonopolyState, Integer -> Integer
+  mo-wasm-position (s) (i) =
+    if i < 0 then (-1)
+    else if i >= s.num-players then (-1)
+    else (mono-get-player s i).position
+
+  mo-wasm-in-jail : MonopolyState, Integer -> Integer
+  mo-wasm-in-jail (s) (i) =
+    if i < 0 then (-1)
+    else if i >= s.num-players then (-1)
+    else if (mono-get-player s i).in-jail then 1 else 0
+
+  mo-wasm-props : MonopolyState -> Integer
+  mo-wasm-props (s) = list-length (s.properties)
+
+  mo-wasm-prop-owner : MonopolyState, Integer -> Integer
+  mo-wasm-prop-owner (s) (i) =
+    if i < 0 then (-2)
+    else if i >= list-length (s.properties) then (-2)
+    else (list-at (s.properties) i).owner
+
+  mo-wasm-prop-cost : MonopolyState, Integer -> Integer
+  mo-wasm-prop-cost (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.properties) then (-1)
+    else (list-at (s.properties) i).cost
+
+  mo-wasm-prop-color : MonopolyState, Integer -> Integer
+  mo-wasm-prop-color (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.properties) then (-1)
+    else (list-at (s.properties) i).color
+
+  mo-wasm-owned : MonopolyState, Integer -> Integer
+  mo-wasm-owned (s) (i) =
+    if i < 0 then (-1)
+    else if i >= s.num-players then (-1)
+    else list-length ((mono-get-player s i).owned-properties)
+
+  mo-wasm-owned-at : MonopolyState, Integer, Integer -> Integer
+  mo-wasm-owned-at (s) (i) (k) =
+    if i < 0 then (-1)
+    else if i >= s.num-players then (-1)
+    else let owned = (mono-get-player s i).owned-properties
+    in if k < 0 then (-1)
+    else if k >= list-length owned then (-1)
+    else list-at owned k
+
+  mo-wasm-cur : MonopolyState -> Integer
+  mo-wasm-cur (s) = s.current-player
+
+  mo-wasm-turn : MonopolyState -> Integer
+  mo-wasm-turn (s) = s.turn-number
+
+  mo-wasm-done : MonopolyState -> Integer
+  mo-wasm-done (s) = if s.game-over then 1 else 0
+
+  mo-wasm-winner : MonopolyState -> Integer
+  mo-wasm-winner (s) = s.winner
+
+ Bankruptcy is rare in this engine (games-backlog GAME-8: no trading, so a
+ colour group is only ever assembled by luck of the dice), and `mono-loop`
+ resolves an undecided game by capping the turn count and awarding it to the
+ richest player. A page stepping the state itself has to do the same, so the
+ richest player is exported rather than left for the page to work out from
+ cash and property.
+
+  mo-wasm-richest : MonopolyState -> Integer
+  mo-wasm-richest (s) = mono-richest s (s.num-players)
+
+  mo-wasm-turn-cap : Integer
+  mo-wasm-turn-cap = 601
+
+Page 1

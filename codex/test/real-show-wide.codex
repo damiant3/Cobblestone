@@ -1,0 +1,42 @@
+Chapter: RealShowWide
+
+  cites Foreword chapter Console
+
+ The runner for COMPILER-41. `__real_to_text` lays the integer digits up
+ from `rsp` and the fraction digits from a fixed split in the same 48-byte
+ frame, so the split IS the integer region's size and it has to exceed the
+ widest integer part `cvttsd2si` can deliver, which is an i64 at 19 digits.
+ The split was 16. An integer part of 17 or more digits ran past it and the
+ fraction stage overwrote the overrun.
+
+ It never looked like an overflow. Digits are stored least-significant
+ first, so the overrun lands on the MOST significant end and the damage
+ reads as a substituted digit rather than a lost one; with no fraction to
+ write, the zero-fraction path stores CCE 3 at exactly the split and turns
+ that digit into '0'. Before the fix `12345678901234567.0` printed as
+ `02345678901234566.0` and `123456789012345678.0` as
+ `103456789012345680.0`.
+
+ Sixteen digits and below were always correct, which is why this went
+ unseen: every row below is a value the old code got right except the last
+ two, and nothing in the corpus printed a Real that wide.
+
+ Each row is reported through `show` DELIBERATELY. The sibling
+ real-literal-boundary reports the same magnitudes through `real-to-int`
+ precisely because the printer could not be trusted; this file is the one
+ that trusts it, and it is the only thing standing between this defect and
+ its return.
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("d09 : " & show 123456789.0)
+    print-line-uni ("d15 : " & show 123456789012345.0)
+    print-line-uni ("d16 : " & show 1234567890123456.0)
+    print-line-uni ("d17 : " & show 12345678901234567.0)
+    print-line-uni ("d18 : " & show 123456789012345678.0)
+    print-line-uni ("frac: " & show 1.5)
+    print-line-uni ("half: " & show 0.5)
+  end
+
+Page 1

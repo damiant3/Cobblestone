@@ -1,0 +1,129 @@
+Chapter: RiskWasm
+  cites Games chapter Risk
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Risk, on the handle contract in
+ games-backlog.md GAME-11. Twelve territories, their armies, and the player
+ table are past an i32, so the page holds the state's address.
+
+ `risk-set-terr` and `risk-recount-players` both write with `list-set-at`,
+ which mutates in place, so `rk-wasm-turn` copies the state first.
+
+ We say:
+
+Section: Copying
+
+  rk-copy-terrs : List RiskTerritory, Integer, List RiskTerritory -> List RiskTerritory
+  rk-copy-terrs (src) (i) (acc) =
+    if i >= 12 then acc
+    else let t = list-at src i
+    in rk-copy-terrs src (i + 1) (list-push acc (RiskTerritory { owner = t.owner, armies = t.armies }))
+
+  rk-copy-players : List RiskPlayer, Integer, Integer, List RiskPlayer -> List RiskPlayer
+  rk-copy-players (src) (n) (i) (acc) =
+    if i >= n then acc
+    else let p = list-at src i
+    in rk-copy-players src n (i + 1) (list-push acc (RiskPlayer { id = p.id, alive = p.alive, total-armies = p.total-armies }))
+
+  rk-copy-state : RiskState -> RiskState
+  rk-copy-state (s) =
+    RiskState {
+      territories = rk-copy-terrs (s.territories) 0 [],
+      players = rk-copy-players (s.players) (s.num-players) 0 [],
+      current-player = s.current-player,
+      turn-number = s.turn-number,
+      game-over = s.game-over,
+      winner = s.winner,
+      num-players = s.num-players
+    }
+
+Section: The Browser Interface
+
+  rk-wasm-new : Integer, Integer -> RiskState
+  rk-wasm-new (seed) (players) = risk-init seed players
+
+  rk-wasm-owner : RiskState, Integer -> Integer
+  rk-wasm-owner (s) (i) =
+    if i < 0 then (-1)
+    else if i >= 12 then (-1)
+    else let t = list-at (s.territories) i
+    in t.owner
+
+  rk-wasm-armies : RiskState, Integer -> Integer
+  rk-wasm-armies (s) (i) =
+    if i < 0 then (-1)
+    else if i >= 12 then (-1)
+    else let t = list-at (s.territories) i
+    in t.armies
+
+  rk-wasm-current : RiskState -> Integer
+  rk-wasm-current (s) = s.current-player
+
+  rk-wasm-turn-number : RiskState -> Integer
+  rk-wasm-turn-number (s) = s.turn-number
+
+  rk-wasm-done : RiskState -> Integer
+  rk-wasm-done (s) = if s.game-over then 1 else 0
+
+  rk-wasm-winner : RiskState -> Integer
+  rk-wasm-winner (s) = s.winner
+
+  rk-wasm-players : RiskState -> Integer
+  rk-wasm-players (s) = s.num-players
+
+  rk-wasm-alive : RiskState, Integer -> Integer
+  rk-wasm-alive (s) (p) =
+    if p < 0 then (-1)
+    else if p >= s.num-players then (-1)
+    else let pl = list-at (s.players) p
+    in if pl.alive then 1 else 0
+
+  rk-wasm-total : RiskState, Integer -> Integer
+  rk-wasm-total (s) (p) =
+    if p < 0 then (-1)
+    else if p >= s.num-players then (-1)
+    else let pl = list-at (s.players) p
+    in pl.total-armies
+
+  rk-wasm-reinf : RiskState, Integer -> Integer
+  rk-wasm-reinf (s) (p) =
+    if p < 0 then (-1)
+    else if p >= s.num-players then (-1)
+    else risk-calc-reinforcements s p
+
+  rk-wasm-adjacent : Integer, Integer -> Integer
+  rk-wasm-adjacent (a) (b) =
+    if a < 0 then 0
+    else if a >= 12 then 0
+    else if b < 0 then 0
+    else if b >= 12 then 0
+    else if risk-adjacent a b then 1 else 0
+
+  rk-wasm-continent : RiskState, Integer, Integer -> Integer
+  rk-wasm-continent (s) (player) (continent) =
+    if risk-owns-continent s player continent then 1 else 0
+
+  rk-wasm-turn : RiskState, Integer -> RiskState
+  rk-wasm-turn (s) (seed) =
+    if s.game-over then s
+    else risk-do-turn (rk-copy-state s) (rng-new seed)
+
+Section: The Whole Game
+
+  rk-wasm-run : Integer, Integer -> RiskResult
+  rk-wasm-run (seed) (players) = run-risk-game seed players
+
+  rk-wasm-res-winner : RiskResult -> Integer
+  rk-wasm-res-winner (r) = r.winner
+
+  rk-wasm-res-turns : RiskResult -> Integer
+  rk-wasm-res-turns (r) = r.turns
+
+  rk-wasm-res-owner : RiskResult, Integer -> Integer
+  rk-wasm-res-owner (r) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (r.territories) then (-1)
+    else list-at (r.territories) i
+
+Page 1

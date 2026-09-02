@@ -456,8 +456,22 @@ unchanged), so the source alone had to come back verbatim and instead came back
 as `2E9 /64`. That isolates the encoding from the disk path in one run, before
 any of the disk machinery is suspected. Fixed to `print-uni` (unicode, no
 newline, so the frame's byte shape is otherwise unchanged); gate green, hard
-fixed point in one pass. **The post-fix ablation had not run when the release
-window opened and is owed.**
+fixed point in one pass.
+
+**ABLATION MEASURED, and the symptom moved.** Against the fixed kernel, the
+no-disk arm returns the probe source BYTE-IDENTICAL (51 chars, compared
+character by character rather than by eye), where before the fix it returned
+`2E9 /64`. With the volume mounted the frame now reads `Chapter:
+Foreword--Maybe` followed by the chapter. **Both arms are the same LENGTH as
+before the fix -- 79 and 746 bytes -- which is the confirmation rather than a
+coincidence: only the encoding moved, so the resolver was doing the right thing
+all along.**
+
+**Consequence worth recording: Update 53 shipped RESOLVE mode with an
+unreadable frame.** RESOLVE landed at main 20736 and the release cut from
+20765. Nothing at main consumes the frame yet -- the page wiring is still
+shelved -- so the public harm is nil, but the released compiler cannot serve
+the mode it advertises.
 
 **C5a's threshold needs re-deriving before it is quoted again (L-COUNT).** It
 is written as an absolute -- "exceeds 6,311,906 bytes" -- taken when the
@@ -546,7 +560,23 @@ output beside the kernel chain.** The in-tab build half is
 CONSOLIDATED UNDER REEK (native plugs as wasm modules on the page, in
 flight -- `PlugIrBytes`/`RiscVStdio` are its first landings); this
 design carries the artifact map so no dead pills ship (L-ACCEPTED
-applied to UI). Survey (red, same day): ESP32-C6 and FE310 have a real
+applied to UI). **CORRECTED 2026-08-29 (reek), measured: ESP32-C6 and FE310
+do NOT have a chain, and the blocker is ISA WIDTH rather than link
+addresses.** FE310-G002 is RV32IMAC and ESP32-C6 is RV32IMC; the riscv
+backend emits RV64, using `LD` and `SD` (funct3 3), the doubleword load and
+store, which do not exist on RV32. No amount of per-board link/flash work
+reaches them -- it needs an RV32 mode: ELF32, 32-bit pointers, no doubleword
+ops. The likely source of the original reading is that FE310's SRAM base is
+`0x80000000`, the same number as QEMU virt's RAM base. `QemuVirtBoard` in
+`codex/boards` is AArch64, not RISC-V, and the remaining six chapters are
+Cortex-M or Cortex-A with no codegen at all, so **no chapter in
+`codex/boards` can run what we emit**. What DOES work is the synthetic RV64
+platform the cross battery already boots (`tools/renode/codex/
+codex-riscv64.repl`: rv64gc, 1 GiB at 0x80000000, NS16550 at 0x10000000), and
+an in-tab kernel for it is proven -- see `plugs-backlog.md` 2.09, which
+records the boot and the three defects fixed to get it. The original survey
+follows, kept because its OTA and no-chain rows still hold. Survey (red,
+2026-08-28): ESP32-C6 and FE310 have a real
 chain through the riscv plug's own ELF writer
 (`codex/plugs/riscv/RiscVElf.codex`) pending a proven flashable
 board-ELF and per-board link/flash answers; STM32F4 and ESP32-C6 (the
@@ -831,36 +861,41 @@ lane can supply either. Everything reachable without one is now covered.
 
 ### Stage 5 -- User-mode executables (red; seed-affecting; the big one)
 
-The genuinely new backend: a HOSTED runtime target, where console and
-memory come from an OS instead of from our kernel.
+**STAGE 5 IS DONE FOR BOTH TARGETS, 2026-08-29 (reek, Damian direct).** A Codex
+program compiles to a static Linux ELF64 and to a Windows console PE32+ and
+runs on each: 60 of 60 grades across the two, output byte-identical to the
+`.expected` sidecars the bare-metal battery uses.
 
-- **5a. Linux x86-64 first** (recommended order: no import machinery,
-  raw syscalls). Compiler-side: hosted arms for the I/O floor -- print
-  via `write(2)`, read via `read(2)`, heap via `mmap(2)`, exit via
-  `exit_group(2)` -- behind a hosted flag; a payload mode the elf plug
-  consumes (this also lights the dark ELF lens, whose blocker is
-  exactly "nothing emits the payload"). Plug-side: `ElfStdio` gains a
-  user-mode: ELF64 EXEC, conventional base, RX/RW split, no interp.
-  Scope v1 is console programs.
-- **5b. Windows `.exe`**: PE subsystem 3 console, an import table
-  (kernel32: `GetStdHandle`, `ReadFile`, `WriteFile`, `ExitProcess`,
-  `VirtualAlloc`) in `PeWriter`, the same hosted arms routed through
-  those imports.
-- **5c. Sockets** for hosted targets (later): this is the honest
-  endgame of "run a SaaS server" -- the same server app built either as
-  a kernel OR as a normal host process.
+Both were behind one thing, and it was not the container. The runtime kept its
+cells at fixed low addresses that Windows reserves and Linux's mmap_min_addr
+covers. A `hosted-target` selector on `CodegenState` moves them, and above that
+the work was smaller than this design assumed, because the print path funnels
+through one helper: hosted swaps `__serial_put` for `write(2)` or kernel32
+`WriteFile` and inherits the CCE conversion unchanged, `__start` gets an arm
+that skips every hardware structure, and the exit is `exit_group` or
+`ExitProcess`.
 
-Both 5a and 5b are compiler work: seed-affecting, token, R-COST
-assessment per CL, landed in small steps with the hosted flag inert
-until its arms exist. Coordination: reek's riscv codegen and blu's
-compiler lane are adjacent; the hosted-target CLs go through the same
-register visibility as any compiler change.
+Containers: `codex/plugs/elf/cdx-to-elf.ps1`, `codex/plugs/pe/cdx-to-pe-console.ps1`.
+Runner with a calibration arm: `codex/plugs/elf/hosted-elf-test.ps1`. The full
+account, including four Windows findings that are cheap to re-derive wrongly,
+is `plugs-backlog.md` 2.11.
 
-Acceptance: hello-world and a stdin-echo REPL built in-tab; the `.exe`
-runs on this box from a plain shell; the ELF runs on a Linux
-environment -- WHICH Linux environment is the verification bed is a
-ruling this design asks for below rather than assumes.
+**AND THEY REACH THE PAGE (2026-08-29).** Both containers are ported from the
+proving PowerShell into Codex -- `ElfStdio` mode 2, `PeStdio` mode 3, each
+taking the CDX whole because the hosted container needs the entry offset the
+older wire does not carry -- and built into the modules the site serves. Driven
+exactly as the page drives them, the page's own `codex-compiler.wasm` plus the
+container module produce a Linux binary and a Windows `.exe` that both run and
+print the right answer. The compiler module had to be rebuilt first: `hosted`
+and `hosted-windows` did not exist in the one the site was serving, so a hosted
+target is a different compile rather than a different wrapper. Account and the
+two PE defects the byte-comparison caught: `plugs-backlog.md` 2.12.
 
+**5c, sockets, is untouched and is what "run a SaaS server" still waits on.**
+
+**Not in v1:** stdin, and any subject reaching a kernel service. Those are
+scoped out by what the source asks for, which is this design's own "scope v1 is
+console programs".
 ### Stage 6 -- Run-in-tab (later, optional)
 
 Compile-to-wasm of user programs run directly in the page (the two

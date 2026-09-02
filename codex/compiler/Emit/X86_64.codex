@@ -10,12 +10,12 @@ Section: Function Emission
    let st1 = if st.omit-frame-pointer then st-append-code st (push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14)
    else st-append-code st (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14)
    in let st-hwm = if st1.trace-alloc then
-    let st2 = st-append-code st1 (li reg-r11 stack-min-rsp-addr)
+    let st2 = st-append-code st1 (li reg-r11 (st-cell st1 stack-min-rsp-addr))
     in let st3 = st-append-code st2 (mov-load reg-r11 reg-r11 0)
     in let st4 = st-append-code st3 (cmp-rr reg-rsp reg-r11)
     in let skip-pos = st4.code-len
     in let st5 = st-append-code st4 (jcc cc-ae 0)
-    in let st6 = st-append-code st5 (li reg-r11 stack-min-rsp-addr)
+    in let st6 = st-append-code st5 (li reg-r11 (st-cell st5 stack-min-rsp-addr))
     in let st7 = st-append-code st6 (mov-store reg-r11 reg-rsp 0)
     in patch-jcc-at st7 skip-pos (st7.code-len)
    else st1
@@ -1486,7 +1486,7 @@ Section: Expression Emission
 
   emit-try-check-flag : CodegenState, Integer -> CodegenState
   emit-try-check-flag (st) (body-failed-pos) =
-   let st1 = st-append-code st (li reg-rdi try-fail-flag-addr & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
+   let st1 = st-append-code st (li reg-rdi (st-cell st try-fail-flag-addr) & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
    in st-append-code st1 (jcc cc-ne (body-failed-pos - (st1.code-len + 6)))
 
   emit-try-body-stmts : CodegenState, List IRActStmt, Integer, Integer, Integer -> EmitResult
@@ -1520,7 +1520,7 @@ Section: Expression Emission
    in let st3 = st-append-code (heap-loc.state) (mov-rr reg-rax reg-r10)
    in let st4 = store-local st3 (heap-loc.reg) reg-rax
    in let retry-pos = st4.code-len
-   in let st5 = st-append-code st4 (li reg-rdi try-fail-flag-addr & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
+   in let st5 = st-append-code st4 (li reg-rdi (st-cell st4 try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
    in let ld-heap = load-local st5 (heap-loc.reg)
    in let st6 = st-append-code (ld-heap.state) (mov-rr reg-r10 (ld-heap.reg))
    in let jmp-over-pos = st6.code-len
@@ -1544,9 +1544,9 @@ Section: Expression Emission
    in let exhaust-pos = st14.code-len
    in let st15 = patch-jmp-at st14 jmp-exhaust-pos exhaust-pos
    in let st-fb = if list-length fb > 0
-     then let fb-clear = st-append-code st15 (li reg-rdi try-fail-flag-addr & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
+     then let fb-clear = st-append-code st15 (li reg-rdi (st-cell st15 try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
        in let fb-result = emit-act-stmts (st-set-tail-pos fb-clear False) fb 0 (list-length fb)
-       in let fb-flag = st-append-code (restore-locals (fb-result.state) try-locals) (li reg-rdi try-fail-flag-addr & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
+       in let fb-flag = st-append-code (restore-locals (fb-result.state) try-locals) (li reg-rdi (st-cell (fb-result.state) try-fail-flag-addr) & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
        in let jne-fail-pos = fb-flag.code-len
        in let fb-done = st-append-code fb-flag (jcc cc-ne 0)
        in EmitResult { state = fb-done, reg = fb-result.reg }
@@ -1556,7 +1556,7 @@ Section: Expression Emission
    in let st-fail = if list-length fail > 0
      then let fail-pos = st16.code-len
        in let st-pfb = if list-length fb > 0 then patch-jcc-at st16 (jmp-end-fb-pos - 6) fail-pos else st16
-       in let fail-clear = st-append-code st-pfb (li reg-rdi try-fail-flag-addr & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
+       in let fail-clear = st-append-code st-pfb (li reg-rdi (st-cell st-pfb try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
        in let fail-result = emit-act-stmts (st-set-tail-pos fail-clear False) fail 0 (list-length fail)
        in EmitResult { state = restore-locals (fail-result.state) try-locals, reg = fail-result.reg }
      else st-fb

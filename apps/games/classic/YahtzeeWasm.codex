@@ -1,0 +1,96 @@
+Chapter: YahtzeeWasm
+  cites Games chapter Yahtzee
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Yahtzee, on the handle contract in
+ games-backlog.md GAME-11. Two thirteen-entry cards and five dice are past
+ an i32, so the page holds the state's address.
+
+ `yh-do-turn` writes the scorecard with `list-set-at`, which mutates in
+ place, so `yh-wasm-turn` copies first.
+
+ Scoring is exposed on five loose dice rather than on the state, because
+ the whole scoring table is decidable over the 7,776 dice combinations and
+ a grader wants to ask about all of them, not about the ones a game rolled.
+
+ We say:
+
+Section: Copying
+
+  yh-copy-13 : List Integer, Integer, List Integer -> List Integer
+  yh-copy-13 (src) (i) (acc) =
+    if i >= 13 then acc
+    else yh-copy-13 src (i + 1) (list-push acc (list-at src i))
+
+  yh-copy-dice : List Integer, Integer, List Integer -> List Integer
+  yh-copy-dice (src) (i) (acc) =
+    if i >= list-length src then acc
+    else yh-copy-dice src (i + 1) (list-push acc (list-at src i))
+
+  yh-copy-state : YahtzeeState -> YahtzeeState
+  yh-copy-state (s) =
+    YahtzeeState {
+      scorecard = yh-copy-13 (s.scorecard) 0 [],
+      scored    = yh-copy-13 (s.scored) 0 [],
+      dice      = yh-copy-dice (s.dice) 0 [],
+      rng       = s.rng
+    }
+
+Section: Scoring, on Loose Dice
+
+  yh-five : Integer, Integer, Integer, Integer, Integer -> List Integer
+  yh-five (a) (b) (c) (d) (e) =
+    list-push (list-push (list-push (list-push (list-push [] a) b) c) d) e
+
+  yh-wasm-score : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  yh-wasm-score (a) (b) (c) (d) (e) (cat) =
+    if cat < 0 then (-1)
+    else if cat >= 13 then (-1)
+    else yh-score-category (yh-five a b c d e) cat
+
+  yh-wasm-best-cat : Integer, Integer, Integer, Integer, Integer -> Integer
+  yh-wasm-best-cat (a) (b) (c) (d) (e) =
+    yh-ai-pick-category (yh-five a b c d e) (yh-build-zeroes 13 []) (yh-build-zeroes 13 [])
+
+Section: The Browser Interface
+
+  yh-wasm-new : Integer -> YahtzeeState
+  yh-wasm-new (seed) = yh-init seed
+
+  yh-wasm-card : YahtzeeState, Integer -> Integer
+  yh-wasm-card (s) (cat) =
+    if cat < 0 then (-1)
+    else if cat >= 13 then (-1)
+    else list-at (s.scorecard) cat
+
+  yh-wasm-scored : YahtzeeState, Integer -> Integer
+  yh-wasm-scored (s) (cat) =
+    if cat < 0 then (-1)
+    else if cat >= 13 then (-1)
+    else list-at (s.scored) cat
+
+  yh-wasm-die : YahtzeeState, Integer -> Integer
+  yh-wasm-die (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.dice) then (-1)
+    else list-at (s.dice) i
+
+  yh-wasm-total : YahtzeeState -> Integer
+  yh-wasm-total (s) = yh-total-score (s.scorecard) 0 0
+
+  yh-wasm-turn : YahtzeeState -> YahtzeeState
+  yh-wasm-turn (s) = yh-do-turn (yh-copy-state s)
+
+Section: The Whole Game
+
+  yh-wasm-run : Integer -> YahtzeeResult
+  yh-wasm-run (seed) = run-yahtzee-game seed
+
+  yh-wasm-res-score : YahtzeeResult -> Integer
+  yh-wasm-res-score (r) = r.final-score
+
+  yh-wasm-res-turns : YahtzeeResult -> Integer
+  yh-wasm-res-turns (r) = r.turns-taken
+
+Page 1

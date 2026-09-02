@@ -109,15 +109,31 @@ Section: Initialization
 
   risk-assign-territories : Integer, Rng -> List RiskTerritory
   risk-assign-territories (np) (r) =
-    risk-assign-loop np r 0 []
+    let seq = risk-owner-seq np 0 []
+    in let dealt = risk-shuffle-owners seq 11 r
+    in risk-assign-loop dealt 0 []
 
-  risk-assign-loop : Integer, Rng, Integer, List RiskTerritory -> List RiskTerritory
-  risk-assign-loop (np) (r) (i) (acc) =
+  risk-owner-seq : Integer, Integer, List Integer -> List Integer
+  risk-owner-seq (np) (i) (acc) =
     if i >= 12 then acc
+    else risk-owner-seq np (i + 1) (list-push acc (rng-mod i np))
+
+  risk-shuffle-owners : List Integer, Integer, Rng -> List Integer
+  risk-shuffle-owners (xs) (i) (r) =
+    if i <= 0 then xs
     else let r2 = rng-next r
-    in let owner = rng-mod i np
-    in let t = RiskTerritory { owner = owner, armies = 3 }
-    in risk-assign-loop np r2 (i + 1) (list-push acc t)
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at xs i
+    in let b = list-at xs j
+    in let x2 = list-set-at xs i b
+    in let x3 = list-set-at x2 j a
+    in risk-shuffle-owners x3 (i - 1) r2
+
+  risk-assign-loop : List Integer, Integer, List RiskTerritory -> List RiskTerritory
+  risk-assign-loop (dealt) (i) (acc) =
+    if i >= 12 then acc
+    else let t = RiskTerritory { owner = list-at dealt i, armies = 3 }
+    in risk-assign-loop dealt (i + 1) (list-push acc t)
 
   risk-build-players : Integer, Integer, List RiskPlayer -> List RiskPlayer
   risk-build-players (np) (i) (acc) =
@@ -439,9 +455,8 @@ Section: Game Runner
 
   risk-make-result : RiskState, Integer -> RiskResult
   risk-make-result (s) (turns) =
-    let w = if s.winner >= 0 then s.winner else risk-find-alive s
-    in let terr-list = risk-collect-owners s 0 []
-    in RiskResult { winner = w, turns = turns, territories = terr-list }
+    let terr-list = risk-collect-owners s 0 []
+    in RiskResult { winner = s.winner, turns = turns, territories = terr-list }
 
   risk-collect-owners : RiskState, Integer, List Integer -> List Integer
   risk-collect-owners (s) (i) (acc) =

@@ -373,9 +373,82 @@ output) and a **bivy** (scratch). At phase end, `phase-compact`
 restores R10 to the deck-pos, reclaiming all bivy scratch. Deck data
 persists as the base for subsequent phases.
 
-All phase work runs inside `deck-record(...)`, so R10 points at the
-deck during phase execution. Bivy usage is near-zero (only the 16-byte
-`PhaseStart` record per phase).
+Phase work does NOT all run inside one `deck-record` extent, and the bivy is
+not near zero: this paragraph said both until 2026-09-01 and the measurement
+below is what it cost. The CHECK walk, the SCOPE resolver and the parser all
+run deck-exited or through per-call extents, so their per-definition scratch
+lands in the bivy above the phase's reservation, and until the change below
+nothing reclaimed it before the phase compact.
+
+### Per-definition reclamation (2026-09-01, red)
+
+Measured on the compiler's own unit (3,052,663 bytes) against seed
+`D3A0C75A`, host peak working set of the codex-vm process, which is what a
+self-compile costs the box:
+
+| | before | after |
+|---|---:|---:|
+| host peak working set | 1,147 MB | 539 MB |
+| self-compile wall | 6.4 s | 5.1 s |
+| CHECK deck at `check-metrics` | 240 MB | 26 MB |
+| CHECK bivy at `CHECK-RESOLVE` | 643 MB | 49 MB |
+| SCOPE bivy | 251 MB | 34 MB |
+| SCOPE deck | 67 MB | 6 MB |
+| PARSE bivy | 162 MB | 1 MB |
+| LEX bivy | 54 MB | 23 MB |
+
+**What physical memory is, on this design.** A floor is address space and
+pages commit on first touch, so the cost of a compile is the UNION of the
+address ranges every phase ever touched, not the sum of what each phase
+used. Two phases whose scratch lands on the same addresses pay once; scratch
+that lands above every other phase's reach pays in full. Read a MEASURE
+table by address, not by size: the PARSE bivy at 1.16 GB was 162 MB of
+unique pages while the LEX bivy at 348 MB was free, because CHECK's deck
+touched those pages anyway.
+
+**The mechanism, one shape in four places.** A definition's survivors are
+copied out and both cursors rewind to a mark taken before the definition:
+
+- CHECK (`check-all-defs`, `TypeChecker.codex` "Check Batches"): the walk
+  closes a batch every `demand-check-batch-budget` bytes of scratch, copies
+  that batch's survivors into the keep deck through the phase-end copier
+  (dirty and new substitution slots, every row slot, new expr-type entries
+  and bindings, the bag) and rewinds the check deck cursor and the bivy.
+  The copier's floor is the check deck's base, so keep boxes are shared and
+  the phase-end copy then finds almost nothing to do. The address memo is
+  zeroed per batch; the cons layer and a new content-keyed text layer
+  persist, which is what keeps a type a thousand definitions mention at one
+  keep box.
+- CHECK registration: `parameterize-walk` shares a sum or record type that
+  declares no parameters instead of rebuilding its constructors per mention,
+  after an allocation-free scan finds no lowercase type name or open row tail
+  inside it: a class dictionary record has no parameters and still mentions
+  the class variable in its fields, and sharing it skipped the freshening
+  that variable needs (`typeclass-poly` refused with CDX2001 on the first
+  gate). A signature naming `IRStmt` cost 400 KB of duplicated type graph; 1,198
+  definitions cost 89 MB between them, and the phase-end memo was sized to
+  fold it back together.
+- SCOPE (`resolve-all-defs`): a definition that raised nothing rewinds both
+  cursors; one that raised keeps its scratch, because its diagnostics live
+  there.
+- PARSE (`parse-top-item`): a top-level item's definition, list cell and
+  parse state are copied onto the scratch deck before the bivy rewinds; the
+  two whole-stream rescans (class and instance definitions, pagination) and
+  `scan-document` run above a mark and copy their answers out.
+- LEX (`tokenize-collect`): the token list is a flat list with capacity on
+  the deck, clipped to the room the floor leaves, and the lexer state is
+  rebuilt below a per-token mark.
+
+**The two traps the first cut hit, kept because they will recur.** A
+per-batch memo reset makes a saturated side list dangerous: `*-fresh` left
+its slot claimed with value 0, so a later hit in the same batch read that as
+a cycle and answered the ORIGINAL pointer into scratch. Every fresh path now
+unclaims on saturation. And `__deck-pos` is frozen inside an extent, so a
+probe placed inside `check-chapter` read zero for every registration step;
+read R10 (`__heap-save`) inside an extent and the cell outside one.
+
+The rows above are re-measured by `compile.ps1 -Measure`; the batch note
+(`CHECK-REG` and `CHECK-BATCH`) prints under `-DebugMode`.
 
 ### Phase Deck Layout (selfhost, ~1.39 MB source)
 

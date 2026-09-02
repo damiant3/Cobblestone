@@ -1,0 +1,83 @@
+Chapter: MahjongWasm
+  cites Games chapter Mahjong
+  cites Foreword chapter List
+
+ The browser interface for Mahjong Solitaire, on the handle contract in
+ games-backlog.md GAME-11. A hundred and forty-four tiles are past an i32,
+ so the page holds the state's address.
+
+ `remove-pair` writes both slots through `list-set-at`, which mutates in
+ place, so `mj-wasm-step` copies the tile list first.
+
+ The layout holds thirty-six tile types, four of each. A tile's TYPE is
+ what matches, not its value, which is why `mj-wasm-type` is exported: a
+ page must not work out that a type is the value minus one over four.
+
+ We say:
+
+Section: Copying
+
+  mj-copy-tiles : List Integer, Integer, List Integer -> List Integer
+  mj-copy-tiles (src) (i) (acc) =
+    if i >= 144 then acc
+    else mj-copy-tiles src (i + 1) (list-push acc (list-at src i))
+
+  mj-copy-state : MahjongState -> MahjongState
+  mj-copy-state (st) =
+    MahjongState {
+      tiles = mj-copy-tiles (st.tiles) 0 [],
+      removed = st.removed,
+      matched = st.matched,
+      remaining = st.remaining
+    }
+
+Section: The Browser Interface
+
+  mj-wasm-new : Integer -> MahjongState
+  mj-wasm-new (seed) = mahjong-new seed
+
+  mj-wasm-tile : MahjongState, Integer -> Integer
+  mj-wasm-tile (st) (i) =
+    if i < 0 then (-1)
+    else if i >= 144 then (-1)
+    else list-at (st.tiles) i
+
+  mj-wasm-type : Integer -> Integer
+  mj-wasm-type (v) = if v <= 0 then (-1) else tile-type v
+
+  mj-wasm-free : MahjongState, Integer -> Integer
+  mj-wasm-free (st) (i) =
+    if i < 0 then 0
+    else if i >= 144 then 0
+    else if tile-present st i == False then 0
+    else if tile-free st i then 1 else 0
+
+  mj-wasm-removed : MahjongState -> Integer
+  mj-wasm-removed (st) = st.removed
+
+  mj-wasm-matched : MahjongState -> Integer
+  mj-wasm-matched (st) = st.matched
+
+  mj-wasm-remaining : MahjongState -> Integer
+  mj-wasm-remaining (st) = st.remaining
+
+  mj-wasm-stuck : MahjongState -> Integer
+  mj-wasm-stuck (st) = if mahjong-stuck st then 1 else 0
+
+  mj-wasm-pair : MahjongState -> Integer
+  mj-wasm-pair (st) = find-matching-free-pairs st
+
+  mj-wasm-step : MahjongState -> MahjongState
+  mj-wasm-step (st) =
+    if st.remaining <= 0 then st
+    else let code = find-matching-free-pairs st
+    in if code < 0 then st
+    else remove-pair (mj-copy-state st) (code / 144) (rng-mod code 144)
+
+  mj-wasm-done : MahjongState -> Integer
+  mj-wasm-done (st) =
+    if st.remaining <= 0 then 1
+    else if mahjong-stuck st then 1
+    else 0
+
+Page 1

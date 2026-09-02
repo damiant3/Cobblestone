@@ -10,11 +10,45 @@
 param(
     [string]$Kernel,
     [string]$Source,
-    [string]$OutDir
+    [string]$OutDir,
+    # Skip a phase whose declared inputs have not changed since the last FULL
+    # build. OFF by default and it stays off: a wrong staleness check ships a
+    # page that lies about itself, which is worse than a slow build, so the
+    # cache is only ever TRUSTED when asked for and is REWRITTEN by every full
+    # build. Three phases are gated and nothing else: the two that run the
+    # compiler's whole source through a VM, and the library volume.
+    [switch]$Incremental
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$pageSw = [Diagnostics.Stopwatch]::StartNew()
+$phaseTimes = [ordered]@{}
+function Start-Phase([string]$name) {
+    $script:__phase = $name
+    $script:__phaseSw = [Diagnostics.Stopwatch]::StartNew()
+}
+function End-Phase([string]$note) {
+    $script:__phaseSw.Stop()
+    $phaseTimes[$script:__phase] = [string]::Format('{0,7:N1}s  {1}', $script:__phaseSw.Elapsed.TotalSeconds, $note)
+}
+
+# A fingerprint is path + mtime + length, not content: it is CONSERVATIVE in
+# the direction that matters, because touching a file invalidates the phase
+# whether or not its bytes moved. The reverse error, a changed file that keeps
+# its mtime and length, is not one this tree can produce -- every producer here
+# writes through the filesystem.
+function Get-InputFingerprint([string[]]$paths) {
+    $parts = foreach ($p in ($paths | Sort-Object)) {
+        if (Test-Path -PathType Leaf $p) {
+            $i = Get-Item $p
+            '{0}|{1}|{2}' -f $i.FullName, $i.LastWriteTimeUtc.Ticks, $i.Length
+        } else { '{0}|ABSENT' -f $p }
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    return [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($parts -join "`n")))).Replace('-', '')
+}
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
@@ -34,14 +68,43 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $wat = Join-Path $OutDir 'codex-compiler.wat'
 $wasm = Join-Path $OutDir 'codex-compiler.wasm'
 
-# 1. Source -> IR -> WAT through the plug, against the named kernel.
-& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'run.ps1') -Src $Source -Out $wat -Kernel $Kernel
-if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: plug emission'; exit 1 }
+# The cache the -Incremental switch reads. A FULL build rewrites every entry,
+# so a cache can only ever describe a build that actually happened.
+$cacheFile = Join-Path $OutDir '.page-build.json'
+$cache = @{}
+if (Test-Path -PathType Leaf $cacheFile) {
+    try { (Get-Content $cacheFile -Raw | ConvertFrom-Json).PSObject.Properties |
+          ForEach-Object { $cache[$_.Name] = $_.Value } } catch { $cache = @{} }
+}
+function Test-PhaseFresh([string]$name, [string]$fp, [string[]]$outputs) {
+    if (-not $Incremental) { return $false }
+    if (-not $cache.ContainsKey($name)) { return $false }
+    if ($cache[$name] -ne $fp) { return $false }
+    foreach ($o in $outputs) { if (-not (Test-Path -PathType Leaf $o)) { return $false } }
+    return $true
+}
 
-# 2. Assemble. --enable-tail-call: the emitter uses return_call so the
-# module survives a browser's 1 MB stack; the binary runs unflagged.
-& wat2wasm --enable-tail-call $wat -o $wasm
-if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: wat2wasm'; exit 1 }
+# 1+2. Source -> IR -> WAT through the plug, against the named kernel, then
+# assemble. --enable-tail-call: the emitter uses return_call so the module
+# survives a browser's 1 MB stack; the binary runs unflagged.
+#
+# The plug CDX is an input and not just the source: an emitter change with an
+# untouched Codex.codex produces a different module, and a fingerprint that
+# missed it would serve the OLD compiler from a page that says it is the new
+# one (L-SAMEVER).
+$plugCdx = Join-Path $PSScriptRoot 'build-output\wasm-plug.cdx'
+$modFp = Get-InputFingerprint @($Source, $Kernel, $plugCdx)
+Start-Phase 'module'
+if (Test-PhaseFresh 'module' $modFp @($wat, $wasm)) {
+    End-Phase 'SKIPPED (inputs unchanged: source, kernel, wasm-plug.cdx)'
+} else {
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'run.ps1') -Src $Source -Out $wat -Kernel $Kernel
+    if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: plug emission'; exit 1 }
+    & wat2wasm --enable-tail-call $wat -o $wasm
+    if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: wat2wasm'; exit 1 }
+    End-Phase 'built'
+}
+$cache['module'] = $modFp
 
 # 3. The source the page feeds back to the module.
 Copy-Item $Source (Join-Path $OutDir 'Codex.codex') -Force
@@ -82,6 +145,66 @@ foreach ($p in $shippedModules) {
     }
 }
 
+# 3f. The library on board: the whole shipped tree as a FAT16 volume the
+# compiler's own resolver reads in RESOLVE mode, plus a name-only manifest for
+# the toolbox tree. Both ride the embed.
+#
+# GZIP is what makes this affordable and it is not a detail. The volume is
+# 14 MB of which 6.1 MB is chapter text and the rest is zeroes; gzipped it is
+# 1.57 MB, base64 2.10 MB, measured 2026-08-28. Embedding it raw would add
+# 19.6 MB of base64 to a 10.4 MB page. `DecompressionStream` is a browser
+# builtin, so this buys the whole 650-chapter library for a fifth of the
+# page's weight rather than the minimal quire set the design was prepared to
+# fall back to.
+$libImg = Join-Path $OutDir 'library.img'
+$libGz = Join-Path $OutDir 'library.img.gz'
+Start-Phase 'library'
+$libSw = [Diagnostics.Stopwatch]::StartNew()
+& pwsh -NoProfile -File (Join-Path $Repo 'build\build-img.ps1') `
+    -PeInput (Join-Path $Repo 'build\boot\blockladder.efi') -Out $libImg `
+    -Library -TotalSectors 28672 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: the library image did not build'; exit 1 }
+$libIn = [IO.File]::OpenRead($libImg)
+$libOut = [IO.File]::Create($libGz)
+$gzs = [IO.Compression.GZipStream]::new($libOut, [IO.Compression.CompressionLevel]::SmallestSize)
+$libIn.CopyTo($gzs)
+$gzs.Close(); $libOut.Close(); $libIn.Close()
+Write-Host ("[page] library : {0:N0} bytes of volume, {1:N0} gzipped, built in {2:N1}s" -f `
+    (Get-Item $libImg).Length, (Get-Item $libGz).Length, $libSw.Elapsed.TotalSeconds)
+End-Phase 'built (not gated: measured in seconds, so a cache would add risk for no gain)'
+
+# The manifest is NAMES ONLY -- what the toolbox tree paints. It deliberately
+# does not carry chapter text (that is the image, once) and it deliberately
+# does not carry cite ordering: resolution stays the compiler's, in RESOLVE
+# mode, which is the whole point of shipping a volume rather than a JS
+# resolver. Both lists are read from the same two places build-img.ps1 reads
+# them from, so a disagreement can only mean the image and the tree were built
+# from different trees -- and it announces itself, because the resolver answers
+# CITE-MISSING for a chapter the tree offers and the volume lacks.
+. (Join-Path $Repo 'build\quire-map.ps1')
+$q2d = [ordered]@{}
+$inQ2d = $false
+foreach ($l in [IO.File]::ReadAllLines((Join-Path $Repo 'codex\compiler\opening.codex'))) {
+    if ($l -match '^\s*quire-to-dir\s*\(q\)\s*=') { $inQ2d = $true; continue }
+    if (-not $inQ2d) { continue }
+    if ($l -match 'q == "([A-Za-z0-9]+)" then "([^"]+)/"') { $q2d[$matches[1]] = $matches[2]; continue }
+    break
+}
+if ($q2d.Count -eq 0) { Write-Host 'FAIL: could not read quire-to-dir out of opening.codex'; exit 1 }
+$libQuires = @()
+foreach ($q in $q2d.Keys) {
+    $rel = $QuireDirs[$q]
+    if (-not $rel) { continue }
+    $names = @(Get-ChildItem (Join-Path $Repo $rel) -Filter *.codex -File -ErrorAction SilentlyContinue |
+               Sort-Object Name | ForEach-Object { $_.BaseName })
+    if ($names.Count -eq 0) { continue }
+    $libQuires += [ordered]@{ quire = $q; dir = $q2d[$q]; chapters = $names }
+}
+$libJson = (@{ quires = $libQuires } | ConvertTo-Json -Depth 5 -Compress)
+[IO.File]::WriteAllText((Join-Path $OutDir 'library.json'), $libJson, [Text.UTF8Encoding]::new($false))
+Write-Host ("[page] library : {0} quires, {1} chapters in the manifest" -f `
+    $libQuires.Count, (($libQuires | ForEach-Object { $_.chapters.Count }) | Measure-Object -Sum).Sum)
+
 # 3e. Prism is ONE self-contained file. A browser refuses fetch on a file:
 # origin, so a fetching page cannot work from disk however it is written, and
 # a separate offline twin only moved the confusion: the copy people open is
@@ -104,7 +227,7 @@ $embed = [System.Text.StringBuilder]::new()
 # source, and the page offers it as a preset so the self-compile happens HERE
 # (the index.html purpose, being subsumed). It is text, not a module, and the
 # page decodes it back to text on selection.
-foreach ($f in (@('codex-compiler.wasm', 'Codex.codex') + @($shippedModules | ForEach-Object { $_.file }))) {
+foreach ($f in (@('codex-compiler.wasm', 'Codex.codex', 'library.img.gz') + @($shippedModules | ForEach-Object { $_.file }))) {
     $p = Join-Path $OutDir $f
     if (-not (Test-Path -PathType Leaf $p)) { continue }
     $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($p))
@@ -115,6 +238,7 @@ $exJson = Join-Path $OutDir 'examples.json'
 if (Test-Path -PathType Leaf $exJson) {
     [void]$embed.AppendLine('window.__EXAMPLES = ' + ([IO.File]::ReadAllText($exJson)) + ';')
 }
+[void]$embed.AppendLine('window.__LIBRARY = ' + $libJson + ';')
 [void]$embed.AppendLine('</script>')
 $offline = ([IO.File]::ReadAllText($offlineSrc)).Replace('<!--EMBED-->', $embed.ToString())
 # The backdrop goes in too, or a downloaded prism.html is a working compiler
@@ -133,6 +257,14 @@ $stale = Join-Path $OutDir 'prism-offline.html'
 if (Test-Path -PathType Leaf $stale) { Remove-Item $stale -Force }
 
 # 4. The bare-metal truth for the SAME source and mode line the page uses.
+#
+# NOT GATED, and the measurement is why. This phase was gated first, on the
+# assumption that running the whole compiler source through the VM is one of
+# the expensive ones. Measured 2026-09-01 at seed FD18B0C8: it is 4.3 s of a
+# 168.1 s build. Caching it would have meant caching THE ANCHOR HASH ITSELF --
+# the number the page asserts byte-identity against -- to save four seconds,
+# which is a correctness surface traded for nothing. The gate came out.
+Start-Phase 'x86-truth'
 $modeHeader = [Text.Encoding]::ASCII.GetBytes("TEXT decks=125`n")
 $srcBytes = [IO.File]::ReadAllBytes($Source)
 $stdin = New-Object byte[] ($modeHeader.Length + $srcBytes.Length + 1)
@@ -157,6 +289,7 @@ $clean = ((([Text.Encoding]::UTF8.GetString($raw)) -replace "`r`n", "`n") -split
 $sha = [Security.Cryptography.SHA256]::Create()
 $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($clean))).Replace('-', '')
 Remove-Item $stdinFile, $truthFile -Force
+End-Phase ('ran, ' + $clean.Length + ' chars cleaned (never gated: 4.3 s, and the cache would be the anchor itself)')
 
 # 4b. CDX mode must WORK in the module, not merely not trap, because the tab's
 # save/download buttons hand the user a binary and a wrong binary is worse
@@ -190,6 +323,7 @@ $cdxSrc = [Text.Encoding]::UTF8.GetBytes($cdxProg)
 $cdxIn = New-Object byte[] ($cdxHdr.Length + $cdxSrc.Length + 1)
 [Buffer]::BlockCopy($cdxHdr, 0, $cdxIn, 0, $cdxHdr.Length)
 [Buffer]::BlockCopy($cdxSrc, 0, $cdxIn, $cdxHdr.Length, $cdxSrc.Length)
+Start-Phase 'cdx-arm'
 $cdxStdin = Join-Path $OutDir 'cdx-arm.stdin'
 $cdxWasmOut = Join-Path $OutDir 'cdx-arm.wasm.out'
 $cdxX86Out = Join-Path $OutDir 'cdx-arm.x86.out'
@@ -218,6 +352,8 @@ if ($cdxDiff -ge 0) {
 }
 Remove-Item $cdxStdin, $cdxWasmOut, $cdxX86Out, "$cdxWasmOut.err" -Force -ErrorAction SilentlyContinue
 Write-Host ("[page] cdx arm : {0:N0} payload bytes, byte-identical to x86-64" -f $cdxW.Length)
+End-Phase 'ran (a correctness arm; never gated)'
+Start-Phase 'examples'
 
 # 4c. Every example in the dropdown must compile in THIS module. Same argument
 # as 4b: a visitor picks an example and presses Compile, and one that refuses is
@@ -247,12 +383,21 @@ foreach ($arm in @(@{ label = 'calibrate'; args = @('-Calibrate') }, @{ label = 
     }
 }
 
+End-Phase 'ran, calibrate + compile (a correctness arm; never gated)'
+
 # 5. Inject the hash into the page.
 $html = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'page\index.html'))
 $html = $html.Replace('__X86_HASH__', $hash)
 [IO.File]::WriteAllText((Join-Path $OutDir 'index.html'), $html, [Text.UTF8Encoding]::new($false))
 
+$cacheJson = ($cache | ConvertTo-Json -Depth 3 -Compress)
+[IO.File]::WriteAllText($cacheFile, $cacheJson, [Text.UTF8Encoding]::new($false))
+
 Write-Host "[page] $OutDir"
 Write-Host "[page] module  : $((Get-Item $wasm).Length) bytes"
-Write-Host "[page] source  : $($srcBytes.Length) bytes"
+Write-Host "[page] source  : $((Get-Item $Source).Length) bytes"
 Write-Host "[page] anchor  : $hash ($($clean.Length) chars cleaned)"
+Write-Host '-- Page phase timings ----------------------------'
+foreach ($k in $phaseTimes.Keys) { Write-Host ('  {0,-12} {1}' -f $k, $phaseTimes[$k]) }
+Write-Host ('  {0,-12} {1,7:N1}s' -f 'TOTAL', $pageSw.Elapsed.TotalSeconds)
+if (-not $Incremental) { Write-Host '  (full build; -Incremental would skip a phase whose inputs are unchanged)' }

@@ -1,0 +1,95 @@
+Chapter: RPSWasm
+  cites Games chapter RPS
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Rock Paper Scissors, on the handle contract in
+ games-backlog.md GAME-11. Two count triples and three tallies are past an
+ i32, so the page holds the state's address.
+
+ `rps-do-round` writes both count lists with `list-set-at`, which mutates in
+ place, so `rps-wasm-round` copies first.
+
+ Moves are 0 rock, 1 paper, 2 scissors.
+
+ We say:
+
+Section: Copying
+
+  rps-copy-counts : List Integer -> List Integer
+  rps-copy-counts (src) =
+    list-push (list-push (list-push [] (list-at src 0)) (list-at src 1)) (list-at src 2)
+
+  rps-copy-state : RPSState -> RPSState
+  rps-copy-state (s) =
+    RPSState {
+      p1-counts = rps-copy-counts (s.p1-counts),
+      p2-counts = rps-copy-counts (s.p2-counts),
+      p1-wins   = s.p1-wins,
+      p2-wins   = s.p2-wins,
+      ties      = s.ties,
+      rng       = s.rng
+    }
+
+Section: The Browser Interface
+
+  rps-wasm-new : Integer -> RPSState
+  rps-wasm-new (seed) = rps-init seed
+
+  rps-wasm-round : RPSState -> RPSState
+  rps-wasm-round (s) = rps-do-round (rps-copy-state s)
+
+  rps-wasm-p1-count : RPSState, Integer -> Integer
+  rps-wasm-p1-count (s) (m) =
+    if m < 0 then (-1)
+    else if m >= 3 then (-1)
+    else list-at (s.p1-counts) m
+
+  rps-wasm-p2-count : RPSState, Integer -> Integer
+  rps-wasm-p2-count (s) (m) =
+    if m < 0 then (-1)
+    else if m >= 3 then (-1)
+    else list-at (s.p2-counts) m
+
+  rps-wasm-p1-wins : RPSState -> Integer
+  rps-wasm-p1-wins (s) = s.p1-wins
+
+  rps-wasm-p2-wins : RPSState -> Integer
+  rps-wasm-p2-wins (s) = s.p2-wins
+
+  rps-wasm-ties : RPSState -> Integer
+  rps-wasm-ties (s) = s.ties
+
+Section: The Rules, Exposed for Grading
+
+  rps-wasm-beats : Integer -> Integer
+  rps-wasm-beats (m) = rps-beats m
+
+  rps-wasm-outcome : Integer, Integer -> Integer
+  rps-wasm-outcome (m1) (m2) = rps-outcome m1 m2
+
+ The AI's choice is exposed with the opponent's counts and a seed, which is
+ what the engine itself passes it. The seed is the whole Rng: a grader
+ sweeping seeds over one fixed count triple sees the distribution of
+ choices, and the fuzz branch is a minority of it.
+
+  rps-wasm-choice : Integer, Integer, Integer, Integer -> Integer
+  rps-wasm-choice (c0) (c1) (c2) (seed) =
+    let counts = list-push (list-push (list-push [] c0) c1) c2
+    in rps-weighted-move counts (rng-new seed)
+
+Section: The Whole Series
+
+  rps-wasm-run : Integer, Integer -> RPSResult
+  rps-wasm-run (seed) (rounds) = run-rps-series seed rounds
+
+  rps-wasm-res-p1 : RPSResult -> Integer
+  rps-wasm-res-p1 (r) = r.p1-wins
+
+  rps-wasm-res-p2 : RPSResult -> Integer
+  rps-wasm-res-p2 (r) = r.p2-wins
+
+  rps-wasm-res-ties : RPSResult -> Integer
+  rps-wasm-res-ties (r) = r.ties
+
+Page 1

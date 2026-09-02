@@ -1,0 +1,94 @@
+Chapter: BackgammonWasm
+  cites Games chapter Backgammon
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Backgammon, on the handle contract in
+ games-backlog.md GAME-11. Twenty-four signed points plus two bars and two
+ trays is far past what the export wrapper's signed i32 could carry, so the
+ page holds the board's address.
+
+ The copy here guards the apply path only. Unlike Connect Four, this engine's
+ move search does not need one: `bg-pick-loop` scores a candidate by reading
+ `list-at`, `pt-blocked` and `all-in-home`, and never applies a move to find
+ out what it does, so it cannot corrupt the board it is searching (GAME-13).
+ `bg-move-piece` and `bg-enter-from-bar` do write through `list-set-at`, so
+ `bg-wasm-step` copies before it applies.
+
+ A turn is dice, not a move. The engine applies ONE die at a time and does
+ not change hands, so the page drives a turn the way `bg-game-loop` does:
+ step for each die, four times on a double, then end the turn. Splitting it
+ that way is what lets a watching page show the checkers move one at a time
+ rather than jumping a whole turn at once.
+
+ We say:
+
+Section: Copying
+
+  bg-copy-points : List Integer, Integer, List Integer -> List Integer
+  bg-copy-points (src) (i) (acc) =
+    if i >= 24 then acc
+    else bg-copy-points src (i + 1) (list-push acc (list-at src i))
+
+  bg-copy-board : BackgammonBoard -> BackgammonBoard
+  bg-copy-board (b) =
+    BackgammonBoard {
+      points = bg-copy-points (b.points) 0 [],
+      bar-white = b.bar-white,
+      bar-black = b.bar-black,
+      off-white = b.off-white,
+      off-black = b.off-black,
+      current-player = b.current-player
+    }
+
+Section: The Browser Interface
+
+  bg-wasm-new : BackgammonBoard
+  bg-wasm-new = backgammon-new
+
+  bg-wasm-die : Integer -> Integer
+  bg-wasm-die (seed) = rng-range (rng-new seed) 1 6
+
+  bg-wasm-step : BackgammonBoard, Integer -> BackgammonBoard
+  bg-wasm-step (b) (die) =
+    if bg-check-win b then b
+    else if die < 1 then b
+    else if die > 6 then b
+    else bg-apply-die (bg-copy-board b) die
+
+  bg-wasm-endturn : BackgammonBoard -> BackgammonBoard
+  bg-wasm-endturn (b) =
+    if bg-check-win b then b
+    else BackgammonBoard {
+      points = bg-copy-points (b.points) 0 [],
+      bar-white = b.bar-white,
+      bar-black = b.bar-black,
+      off-white = b.off-white,
+      off-black = b.off-black,
+      current-player = 1 - b.current-player
+    }
+
+  bg-wasm-point : BackgammonBoard, Integer -> Integer
+  bg-wasm-point (b) (i) =
+    if i < 0 then 0
+    else if i >= 24 then 0
+    else list-at (b.points) i
+
+  bg-wasm-bar : BackgammonBoard, Integer -> Integer
+  bg-wasm-bar (b) (player) =
+    if player == 0 then b.bar-white else b.bar-black
+
+  bg-wasm-off : BackgammonBoard, Integer -> Integer
+  bg-wasm-off (b) (player) =
+    if player == 0 then b.off-white else b.off-black
+
+  bg-wasm-cur : BackgammonBoard -> Integer
+  bg-wasm-cur (b) = b.current-player
+
+  bg-wasm-done : BackgammonBoard -> Integer
+  bg-wasm-done (b) = if bg-check-win b then 1 else 0
+
+  bg-wasm-winner : BackgammonBoard -> Integer
+  bg-wasm-winner (b) = bg-winner b
+
+Page 1

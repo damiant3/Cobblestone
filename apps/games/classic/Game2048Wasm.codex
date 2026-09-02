@@ -1,0 +1,76 @@
+Chapter: Game2048Wasm
+  cites Games chapter Game2048
+  cites Foreword chapter List
+
+ The browser interface for 2048, on the handle contract in
+ games-backlog.md GAME-11. Sixteen tiles that grow past a thousand each are
+ well past an i32 packed together, so the page holds the state's address.
+
+ `g2048-add-tile` writes the new tile with `list-set-at`, which mutates in
+ place, so `g2-wasm-move` copies the grid before handing it to the engine.
+ The engine has its own `g2048-copy-grid` and this chapter uses it rather
+ than writing a second copier.
+
+ A direction that changes nothing is not a move: `g2048-move` compares the
+ slid grid against the old one and answers the state unchanged, so the page
+ can tell a refused swipe from an accepted one by the handle coming back
+ the same.
+
+ We say:
+
+Section: The Browser Interface
+
+  g2-wasm-new : Integer -> G2048State
+  g2-wasm-new (seed) = g2048-new (rng-new seed)
+
+  g2-wasm-cell : G2048State, Integer -> Integer
+  g2-wasm-cell (st) (i) =
+    if i < 0 then (-1)
+    else if i >= 16 then (-1)
+    else list-at (st.grid) i
+
+  g2-wasm-score : G2048State -> Integer
+  g2-wasm-score (st) = st.score
+
+  g2-wasm-moves : G2048State -> Integer
+  g2-wasm-moves (st) = st.moves
+
+  g2-wasm-done : G2048State -> Integer
+  g2-wasm-done (st) = if st.game-over then 1 else 0
+
+  g2-wasm-max : G2048State -> Integer
+  g2-wasm-max (st) = g2048-max-tile (st.grid)
+
+  g2-wasm-empty : G2048State -> Integer
+  g2-wasm-empty (st) = g2048-empty-count (st.grid)
+
+  g2-wasm-sum : G2048State -> Integer
+  g2-wasm-sum (st) = g2048-sum-grid (st.grid)
+
+  g2-wasm-can : G2048State, Integer -> Integer
+  g2-wasm-can (st) (dir) =
+    if dir < 0 then 0
+    else if dir > 3 then 0
+    else if st.game-over then 0
+    else let after = g2048-apply-dir (g2048-copy-grid (st.grid)) dir
+    in if g2048-grids-equal (st.grid) after then 0 else 1
+
+  g2-wasm-move : G2048State, Integer -> G2048State
+  g2-wasm-move (st) (dir) =
+    if dir < 0 then st
+    else if dir > 3 then st
+    else if st.game-over then st
+    else g2048-move (G2048State {
+      grid = g2048-copy-grid (st.grid),
+      score = st.score,
+      moves = st.moves,
+      game-over = st.game-over,
+      rng = st.rng
+    }) dir
+
+  g2-wasm-ai : G2048State -> Integer
+  g2-wasm-ai (st) =
+    if st.game-over then (-1)
+    else g2048-ai-dir st
+
+Page 1

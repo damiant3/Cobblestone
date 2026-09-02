@@ -1,0 +1,109 @@
+Chapter: CrazyEightsWasm
+  cites Games chapter CrazyEights
+  cites Foreword chapter List
+
+ The browser interface for Crazy Eights, on the handle contract in
+ games-backlog.md GAME-11. A hand here is a bitmap of fifty-two slots per
+ player rather than a list of cards, so the state carries `num-players`
+ times fifty-two flags plus the pile, which is far past an i32.
+
+ `ce-hand-set` writes both the flag and the player's size counter through
+ `list-set-at`, which mutates in place, so `ce-wasm-step` copies the three
+ lists before taking a turn. The size counter is maintained beside the
+ bitmap rather than derived from it, which is the interesting thing to test:
+ the two can disagree, and a hand whose flags say five cards while its
+ counter says four is invisible from watching a game.
+
+ We say:
+
+Section: Copying
+
+  ce-copy-list : List Integer, Integer, Integer, List Integer -> List Integer
+  ce-copy-list (src) (i) (n) (acc) =
+    if i >= n then acc
+    else ce-copy-list src (i + 1) n (list-push acc (list-at src i))
+
+  ce-copy-state : CrazyEightsState -> CrazyEightsState
+  ce-copy-state (s) =
+    CrazyEightsState {
+      hands = ce-copy-list (s.hands) 0 (s.num-players * 52) [],
+      hand-sizes = ce-copy-list (s.hand-sizes) 0 (s.num-players) [],
+      draw-pile = ce-copy-list (s.draw-pile) 0 52 [],
+      pile-size = s.pile-size,
+      discard-rank = s.discard-rank,
+      discard-suit = s.discard-suit,
+      current-player = s.current-player,
+      num-players = s.num-players,
+      direction = s.direction,
+      draw-penalty = s.draw-penalty,
+      game-over = s.game-over,
+      winner = s.winner,
+      declared-suit = s.declared-suit
+    }
+
+Section: The Browser Interface
+
+  ce-wasm-new : Integer, Integer -> CrazyEightsState
+  ce-wasm-new (seed) (players) = ce-init seed players
+
+  ce-wasm-step : CrazyEightsState -> CrazyEightsState
+  ce-wasm-step (s) =
+    if s.game-over then s
+    else ce-do-turn (ce-copy-state s)
+
+  ce-wasm-has : CrazyEightsState, Integer, Integer -> Integer
+  ce-wasm-has (s) (player) (card) =
+    if player < 0 then 0
+    else if player >= s.num-players then 0
+    else if card < 0 then 0
+    else if card >= 52 then 0
+    else if ce-hand-has s player card then 1 else 0
+
+  ce-wasm-size : CrazyEightsState, Integer -> Integer
+  ce-wasm-size (s) (player) =
+    if player < 0 then (-1)
+    else if player >= s.num-players then (-1)
+    else list-at (s.hand-sizes) player
+
+  ce-wasm-can : CrazyEightsState, Integer, Integer -> Integer
+  ce-wasm-can (s) (player) (card) =
+    if player < 0 then 0
+    else if player >= s.num-players then 0
+    else if card < 0 then 0
+    else if card >= 52 then 0
+    else if ce-can-play s player card then 1 else 0
+
+  ce-wasm-players : CrazyEightsState -> Integer
+  ce-wasm-players (s) = s.num-players
+
+  ce-wasm-cur : CrazyEightsState -> Integer
+  ce-wasm-cur (s) = s.current-player
+
+  ce-wasm-pile : CrazyEightsState -> Integer
+  ce-wasm-pile (s) = s.pile-size
+
+  ce-wasm-drank : CrazyEightsState -> Integer
+  ce-wasm-drank (s) = s.discard-rank
+
+  ce-wasm-dsuit : CrazyEightsState -> Integer
+  ce-wasm-dsuit (s) = s.discard-suit
+
+  ce-wasm-declared : CrazyEightsState -> Integer
+  ce-wasm-declared (s) = s.declared-suit
+
+  ce-wasm-penalty : CrazyEightsState -> Integer
+  ce-wasm-penalty (s) = s.draw-penalty
+
+  ce-wasm-done : CrazyEightsState -> Integer
+  ce-wasm-done (s) = if s.game-over then 1 else 0
+
+  ce-wasm-winner : CrazyEightsState -> Integer
+  ce-wasm-winner (s) = s.winner
+
+  ce-wasm-card-rank : Integer -> Integer
+  ce-wasm-card-rank (c) = if c < 0 then (-1) else if c >= 52 then (-1) else ce-rank c
+
+  ce-wasm-card-suit : Integer -> Integer
+  ce-wasm-card-suit (c) = if c < 0 then (-1) else if c >= 52 then (-1) else ce-suit c
+
+Page 1

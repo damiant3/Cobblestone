@@ -264,6 +264,16 @@ the DDC on the release is what surfaces it if it was missed.
   `docs/PM/Active/GitHubUpdates/GitHubUpdateN.md` with this release's
   themes, then start the next `N+1` for the following cycle. The report
   ships IN the same commit as the release.
+- **The seed's full digest belongs in `TechnicalDetails.md`, not in the
+  note, and it is already step 6's first bullet.** Earlier notes
+  duplicated it and that duplication was deliberately dropped: the
+  `TechnicalDetails.md` copy is checked against the actual seed by
+  `check-doc-counts`, so it cannot go stale, while a second copy in a
+  note is checked by nothing. Do not restore the note's digest line
+  (reek tried, 20774, reverted 20776). If an outside consumer needs to
+  identify which Update a checkout holds, point them at
+  `TechnicalDetails.md` at that commit, which carries the release's
+  SHA-256 and is enforced.
 
 ## Step 7 -- Push
 Follow `docs/Agents/PublicPush.md` exactly: sync main, `git add -u` plus

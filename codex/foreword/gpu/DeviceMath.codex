@@ -76,3 +76,78 @@ Section: Sine and Cosine
 
   real-cos : Real -> Real
   real-cos (x) = dm-sin-poly (dm-fold-quadrant (dm-reduce (x + dm-half-pi)))
+
+Section: Arc Tangent
+
+ The inverse of the pair above, and the one this chapter was missing. Nothing in
+ the foreword answered an arc tangent at Real: Math chapter Cordic and Math
+ chapter Geodesic both have one, and both are integer milliradian routines whose
+ output cannot be fed back into real-sin.
+
+ THE ARGUMENT IS HALVED BEFORE THE SERIES, WHICH IS THE WHOLE METHOD. The Taylor
+ series for the arc tangent converges hopelessly near |t| = 1 -- that is where
+ its terms stop shrinking -- and |t| near 1 is exactly what a caller taking the
+ angle of a diagonal hands it. The half-angle identity
+
+     atan t = 2 * atan (t / (1 + sqrt (1 + t*t)))
+
+ shrinks the argument geometrically instead. Four applications take |t| <= 1
+ down to 0.0492: the angle is at most pi/4, so a sixteenth of it is at most
+ 0.0490874 and its tangent is 0.0491258. Six terms there are good to 1.1e-17,
+ and the sixteen the result is multiplied back by cannot undo that.
+
+ Above |t| = 1 the reciprocal identity folds the argument back into range first,
+ so the series never sees a value it handles badly.
+
+ ACCURACY: worst absolute error 6.7e-16 radians, 4 ULP, against zig 0.16.0
+ std.math.atan. The series truncation above is not what bounds it. dm-half-pi
+ parses 2 ulp above pi/2, an error of 4.4e-16, and that flows into every
+ |t| > 1 result and into real-atan2's x = 0 arms, so the constant dominates the
+ method by five orders.
+
+  dm-atan-half-step : Real -> Real
+  dm-atan-half-step (t) = t / (1.0 + real-sqrt (1.0 + t * t))
+
+  dm-atan-halve : Real, Integer -> Real
+  dm-atan-halve (t) (n) =
+    if n <= 0 then t
+    else dm-atan-halve (dm-atan-half-step t) (n - 1)
+
+  dm-atan-series : Real -> Real
+  dm-atan-series (u) =
+    let u2 = u * u
+    in let u3 = u2 * u
+    in let u5 = u3 * u2
+    in let u7 = u5 * u2
+    in let u9 = u7 * u2
+    in let u11 = u9 * u2
+    in u - u3 / 3.0 + u5 / 5.0 - u7 / 7.0 + u9 / 9.0 - u11 / 11.0
+
+ Four halvings, so the series result is scaled back by two to the fourth.
+
+  dm-atan-core : Real -> Real
+  dm-atan-core (t) = 16.0 * dm-atan-series (dm-atan-halve t 4)
+
+  real-atan : Real -> Real
+  real-atan (t) =
+    if t > 1.0 then dm-half-pi - dm-atan-core (1.0 / t)
+    else if t < 0.0 - 1.0 then (0.0 - dm-half-pi) - dm-atan-core (1.0 / t)
+    else dm-atan-core t
+
+ A caller that divides its two coordinates and calls real-atan has folded two
+ quadrants onto one and cannot get them back; real-atan2 branches before it
+ divides.
+
+ The x = 0 arms are exact rather than a limit, and the y = 0, x = 0 case answers
+ zero, which is what a caller comparing against zig's std.math.atan2 will expect
+ of two positive zeroes. It diverges from that reference on a NEGATIVE zero:
+ -0.0 >= 0.0 is true, so real-atan2 (-0.0) (-1.0) answers +pi where zig answers
+ -pi, and real-atan2 (-0.0) (1.0) answers +0.0 where zig answers -0.0.
+
+  real-atan2 : Real, Real -> Real
+  real-atan2 (y) (x) =
+    if x > 0.0 then real-atan (y / x)
+    else if x < 0.0 then (if y >= 0.0 then real-atan (y / x) + dm-pi else real-atan (y / x) - dm-pi)
+    else if y > 0.0 then dm-half-pi
+    else if y < 0.0 then 0.0 - dm-half-pi
+    else 0.0

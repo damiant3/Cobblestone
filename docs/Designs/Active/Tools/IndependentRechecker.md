@@ -191,7 +191,10 @@ diagnosable from the wire, has been carried out. `is otherwise ->
 sharing an atom.** It is `ErrorTy` itself carrying two meanings: the
 type-FAILURE atom, and `lower-let`'s no-expectation sentinel. That is
 Steve Howell's named residue and it is live -- `build/ir-fidelity`'s
-`empty-list-element-type` case is its runner, and reports DROPPED.
+`empty-list-element-type` case is its runner. It reported DROPPED until
+COMPILER-30's witness (PR 101, main 20944) landed; measured at the Update 54
+release head (seed FCBABF07) it reports CARRIED and the case is re-baselined
+to that. The overload itself (one atom, two meanings) is still the row.
 
 **A list expression's type field is the ELEMENT type, and nothing on the
 wire says so** (found 2026-08-03 by stage 1, which reported every list

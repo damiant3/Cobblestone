@@ -1,0 +1,72 @@
+Chapter: Connect4Wasm
+  cites Games chapter Connect4
+  cites Foreword chapter List
+
+ The browser interface for Connect Four, on the handle contract described in
+ games-backlog.md GAME-11. Forty-two cells at two bits each is 84 bits, so
+ the state cannot ride through the page as one integer the way TicTacToe's
+ does; the page holds the board's address instead.
+
+ A handle is a value, which costs one copy. `connect4-drop` writes through
+ `list-set-at`, which mutates in place, and it writes to BOTH lists: the
+ squares and the column heights. Copying one and not the other would leave a
+ board whose heights disagree with its cells, which is worse than copying
+ neither because every query still answers plausibly. `c4-copy-as` in
+ Connect4 is that copy, and it belongs there rather than here because the
+ engine's own move search needs it for the same reason.
+
+ `c4-wasm-can` exists so the page never has to know a rule, and so that a
+ refusal is visible: `c4-wasm-drop` answers the SAME handle back when the
+ move is illegal, which a caller can test. Validating before copying is what
+ makes that true, since a copy taken first would hand back a fresh address
+ whose contents merely happened to be unchanged.
+
+ We say:
+
+Section: The Browser Interface
+
+  c4-wasm-new : Connect4Board
+  c4-wasm-new = connect4-new
+
+  c4-wasm-can : Connect4Board, Integer -> Integer
+  c4-wasm-can (b) (col) =
+    if b.game-over then 0
+    else if col < 0 then 0
+    else if col >= 7 then 0
+    else if c4-col-full b col then 0
+    else 1
+
+  c4-wasm-drop : Connect4Board, Integer -> Connect4Board
+  c4-wasm-drop (b) (col) =
+    if c4-wasm-can b col == 0 then b
+    else connect4-drop (c4-copy-as b (b.current-player)) col
+
+  c4-wasm-ai : Connect4Board -> Integer
+  c4-wasm-ai (b) =
+    if b.game-over then (-1)
+    else c4-ai-move b
+
+  c4-wasm-cell : Connect4Board, Integer, Integer -> Integer
+  c4-wasm-cell (b) (row) (col) =
+    if row < 0 then 0
+    else if row >= 6 then 0
+    else if col < 0 then 0
+    else if col >= 7 then 0
+    else c4-cell b row col
+
+  c4-wasm-height : Connect4Board, Integer -> Integer
+  c4-wasm-height (b) (col) =
+    if col < 0 then 0
+    else if col >= 7 then 0
+    else list-at (b.col-heights) col
+
+  c4-wasm-cur : Connect4Board -> Integer
+  c4-wasm-cur (b) = b.current-player
+
+  c4-wasm-done : Connect4Board -> Integer
+  c4-wasm-done (b) = if b.game-over then 1 else 0
+
+  c4-wasm-winner : Connect4Board -> Integer
+  c4-wasm-winner (b) = b.winner
+
+Page 1

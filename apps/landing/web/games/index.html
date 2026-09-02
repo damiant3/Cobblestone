@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cobblestone -- The Arcade</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0a0a12;color:#e0e0e8;font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+  a{color:#d4a017;text-decoration:none}
+  a:hover{text-decoration:underline}
+  .topbar{display:flex;align-items:center;gap:24px;padding:12px 24px;background:#070710;
+    border-bottom:1px solid #1e1e2e;position:sticky;top:0;z-index:10}
+  .topbar-logo{color:#d4a017;font-size:18px;font-weight:700;letter-spacing:1px}
+  .topbar .here{color:#8b949e;font-size:14px}
+  .wrap{display:grid;grid-template-columns:260px minmax(0,1fr);gap:24px;
+    max-width:1180px;margin:0 auto;padding:24px 20px 64px}
+  @media (max-width:900px){.wrap{grid-template-columns:1fr}}
+
+  .side h2{color:#8b949e;font-size:11px;font-weight:700;letter-spacing:1.4px;
+    text-transform:uppercase;margin:18px 0 8px}
+  .side h2:first-child{margin-top:0}
+  .pick{display:flex;align-items:center;gap:9px;width:100%;text-align:left;cursor:pointer;
+    background:none;border:1px solid transparent;border-radius:8px;color:#c9d1d9;
+    font-family:inherit;font-size:13px;padding:6px 9px}
+  .pick:hover{background:#12121e;border-color:#1e1e2e}
+  .pick.on{background:rgba(212,160,23,.12);border-color:rgba(212,160,23,.45);color:#d4a017;font-weight:600}
+  .pick .ico{font-size:15px;width:20px;text-align:center}
+  .pick.off{color:#4d5560;cursor:default}
+  .pick.off:hover{background:none;border-color:transparent}
+
+  h1{font-size:24px;font-weight:700;color:#fff;margin-bottom:4px}
+  .desc{color:#8b949e;font-size:14px;line-height:1.7;margin-bottom:18px;max-width:70ch}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+  .bar button{background:#12121e;border:1px solid #1e1e2e;border-radius:20px;color:#e0e0e8;
+    font-family:inherit;font-size:13px;padding:7px 16px;cursor:pointer}
+  .bar button:hover:not(:disabled){border-color:#d4a01755}
+  .bar button:disabled{opacity:.35;cursor:default}
+  .bar label{color:#8b949e;font-size:12px}
+  input[type=range]{width:92px;accent-color:#d4a017}
+  #status{color:#d4a017;font-size:14px;font-weight:600;min-height:22px;margin-bottom:12px}
+  .stage{background:#12121e;border:1px solid #1e1e2e;border-radius:16px;padding:18px;
+    margin-bottom:16px;overflow-x:auto}
+  .note{background:#12121e;border:1px solid #1e1e2e;border-radius:12px;padding:16px 18px;
+    color:#8b949e;font-size:13px;line-height:1.75;max-width:80ch}
+  .note b{color:#e0e0e8}
+  .note code{font-family:ui-monospace,monospace;color:#d4a017;font-size:12px}
+  .note p+p{margin-top:9px}
+  .fail{color:#f0883e}
+
+  /* --- board kinds ---------------------------------------------------- */
+  .grid{display:grid;gap:2px;justify-content:center}
+  .g{display:flex;align-items:center;justify-content:center;border-radius:3px;
+    font-size:13px;font-weight:600;line-height:1;aspect-ratio:1;min-width:0}
+  .grid.n3 .g,.grid.n4 .g{font-size:24px}
+  .g.big{font-size:26px}
+
+  .felt{background:#1a7a37}
+  .disc{position:relative}
+  .disc::after{content:'';position:absolute;inset:12%;border-radius:50%;
+    box-shadow:0 1px 4px rgba(0,0,0,.6)}
+  .disc.black::after{background:radial-gradient(circle at 35% 30%,#3a3a3a,#0a0a0a)}
+  .disc.white::after{background:radial-gradient(circle at 35% 30%,#fff,#c6c6c6)}
+  .disc.red::after{background:radial-gradient(circle at 35% 30%,#ff7b6b,#c1352b)}
+  .disc.yellow::after{background:radial-gradient(circle at 35% 30%,#ffe08a,#d1a015)}
+
+  .sq-light{background:#3a3226}.sq-dark{background:#211c15}
+  .south{color:#f0883e}.north{color:#8ab4ff}.king{text-shadow:0 0 6px currentColor}
+  .goban{background:#c8a06a;color:#000;position:relative}
+  .stone::after{content:'';position:absolute;inset:10%;border-radius:50%}
+  .stone.black::after{background:radial-gradient(circle at 35% 30%,#444,#000)}
+  .stone.white::after{background:radial-gradient(circle at 35% 30%,#fff,#c0c0c0)}
+
+  .tile{background:#1c1c2b;color:#e0e0e8}
+  .tile.t0{background:#15151f}
+  .tile.t2,.tile.t4{background:#3a3527;color:#eee}
+  .tile.t8,.tile.t16{background:#7a5a20;color:#fff}
+  .tile.t32,.tile.t64{background:#a5651a;color:#fff}
+  .tile.t128,.tile.t256,.tile.t512{background:#c98a12;color:#12121e}
+  .tile.t1024,.tile.t2048,.tile.tbig{background:#d4a017;color:#12121e}
+  .tile.gone{background:transparent}
+  .tile.free{outline:1px solid #d4a01766}
+
+  .life{border-radius:1px}.life.on{background:#d4a017}.life.off{background:#15151f}
+  .ms{background:#20202e;font-size:11px}
+  .ms.hidden{background:#2a2a3c}
+  .ms.open{background:#141420;color:#8b949e}
+  .ms.boom{background:#7a2418}
+  .ms.n1{color:#58a6ff}.ms.n2{color:#3fb950}.ms.n3{color:#f0883e}
+  .ms.n4{color:#a371f7}.ms.n5{color:#f85149}.ms.n6{color:#39c5cf}
+  .sud{background:#15151f;color:#e0e0e8;font-size:14px}
+  .sud.shade{background:#1c1c2b}
+
+  .space{background:#1a1a28;font-size:11px;color:#d4a017}
+  .space.o1{background:#2a3a2a}.space.o2{background:#3a2a2a}
+  .space.o3{background:#2a2a3a}.space.o4{background:#3a3226}
+  .terr{background:#1a1a28;font-size:12px}
+  .terr.o0{color:#4d5560}.terr.o1{background:#2f4630;color:#8ee79a}
+  .terr.o2{background:#4a2c2c;color:#ff9d92}.terr.o3{background:#2c3a52;color:#8ab4ff}
+  .terr.o4{background:#453a20;color:#ffd97a}
+  .sea{background:#12203a;font-size:11px;color:#8b949e}
+  .sea.t1{background:#1b2c4a}.sea.t2{background:#7a2418;color:#fff}
+  .terrain{background:#1e2a1e}.terrain.t1{background:#2a3a24}.terrain.t2{background:#3a3226}
+  .terrain.t3{background:#24303a}.terrain.t4{background:#2e2436}
+  .unit{font-size:11px;font-weight:700}
+  .unit.o0{background:#2f4630;color:#8ee79a}.unit.o1{background:#4a2c2c;color:#ff9d92}
+
+  .dot{background:#4d5560;border-radius:50%;width:8px;height:8px;margin:auto}
+  .hedge,.vedge{background:#1e1e2e;border-radius:2px}
+  .hedge.on,.vedge.on{background:#d4a017}
+  .boxcell{font-size:11px}
+  .boxcell.o1{background:#2f4630;color:#8ee79a}.boxcell.o2{background:#4a2c2c;color:#ff9d92}
+
+  .hex{display:flex;flex-direction:column;gap:1px;align-items:flex-start}
+  .hexrow{display:flex;gap:1px}
+  .hexrow .g{width:26px;height:26px;aspect-ratio:auto;border-radius:4px;background:#1a1a28;font-size:10px}
+  .hexrow .g.p1{background:#4a2c2c}.hexrow .g.p2{background:#2c3a52}
+
+  .rows{display:flex;flex-direction:column;gap:10px}
+  .rowline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .rowlab{color:#8b949e;font-size:12px;min-width:104px}
+  .chip,.card,.pit,.store,.die,.peg,.pt,.setcard{display:inline-flex;align-items:center;
+    justify-content:center;background:#1c1c2b;border:1px solid #2a2a3c;border-radius:6px;
+    color:#e0e0e8;font-size:12px;min-width:30px;height:28px;padding:0 7px}
+  .chip.big{font-size:18px;height:38px;padding:0 14px;color:#d4a017;font-weight:700}
+  .chip.gold{color:#d4a017}
+  .chip.p1{background:#4a2c2c}.chip.p2{background:#2c3a52}
+  .card{background:#f2f2ea;color:#12121e;font-weight:600;min-width:38px}
+  .card.red{color:#c1352b}
+  .die{background:#f2f2ea;color:#12121e;font-weight:700;min-width:28px}
+  .pit.north{background:#2c3a52}.pit.south{background:#2f4630}
+  .store{background:#3a3226;color:#d4a017;font-weight:700;min-width:44px}
+  .pt.p1{background:#4a2c2c}.pt.p2{background:#2c3a52}.pt.empty{color:#4d5560}
+  .peg.c0{background:#c1352b}.peg.c1{background:#1f6feb}.peg.c2{background:#2f7a3a}
+  .peg.c3{background:#b58b12}.peg.c4{background:#7a3fb3}.peg.c5{background:#2c8a8a}
+  .setcard{min-width:44px;font-weight:700}
+  .setcard.s0{color:#f85149}.setcard.s1{color:#3fb950}.setcard.s2{color:#a371f7}
+  .setcard.f0{opacity:.55}.setcard.f2{text-decoration:underline}
+
+  .cols{display:flex;gap:6px;align-items:flex-start}
+  .col{display:flex;flex-direction:column;gap:2px;min-width:44px}
+  .pair{display:flex;gap:22px;flex-wrap:wrap;justify-content:center}
+  .pair figcaption{color:#8b949e;font-size:12px;text-align:center;margin-bottom:6px}
+  .clickable .g{cursor:pointer}
+  .clickable .g:hover{outline:1px solid #d4a01788}
+</style>
+</head>
+<body>
+<nav class="topbar">
+  <span class="topbar-logo">&#x2588; COBBLESTONE</span>
+  <a href="../landing.html#today">&#x2190; Back to the site</a>
+  <span class="here">The Arcade</span>
+</nav>
+
+<div class="wrap">
+  <aside class="side" id="side"></aside>
+  <main>
+    <h1 id="title">The Arcade</h1>
+    <p class="desc" id="desc">Pick a game. Every one of them is a Codex engine compiled to
+       WebAssembly by the project&#39;s own backend, running in this tab. No server decides
+       anything, and no JavaScript plays a move.</p>
+    <div class="bar">
+      <button id="b-new">&#x21BB; New game</button>
+      <button id="b-play">&#x25B6; Play</button>
+      <button id="b-step">&#x23ED; Step</button>
+      <button id="b-run">&#x23E9; Run to the end</button>
+      <label for="speed">Speed</label>
+      <input type="range" id="speed" min="1" max="10" value="6">
+      <a id="full" href="#" hidden>Open the full page &#8594;</a>
+    </div>
+    <div id="status">Choose a game from the list.</div>
+    <div class="stage" id="stage"></div>
+    <div class="note" id="note">
+      <p><b>What is running here.</b> Each game&#39;s rules live in
+         <code>apps/games/classic/&lt;Game&gt;.codex</code>. <code>apps/games/build-wasm.ps1</code>
+         compiles that to the compiler&#39;s inner language, hands it to
+         <code>codex/plugs/wasm</code>, and the module your browser loaded is what came back.</p>
+      <p>The opponents are the engines&#39; own. Where a game lets you take a turn, your click
+         goes to the module&#39;s legality test first and is refused if the rules refuse it.</p>
+    </div>
+  </main>
+</div>
+
+<script type="module">
+import { GAMES, CHESS, IMPORTS, driver } from './arcade.js';
+
+const $ = id => document.getElementById(id);
+const CATS = ['Board', 'Card', 'Puzzle', 'Dice', 'Strategy', 'Other'];
+const all = [...GAMES, CHESS];
+
+// --- the list -----------------------------------------------------------
+let side = '';
+for (const cat of CATS) {
+  const inCat = all.filter(g => g.cat === cat);
+  if (!inCat.length) continue;
+  side += `<h2>${cat}</h2>`;
+  for (const g of inCat) {
+    const off = g === CHESS ? ' off' : '';
+    side += `<button class="pick${off}" data-id="${g.id}"${off ? ' disabled' : ''}>` +
+            `<span class="ico">${g.icon}</span>${g.name}` +
+            (off ? ' <span style="font-size:11px">(not built)</span>' : '') + `</button>`;
+  }
+}
+$('side').innerHTML = side;
+
+// --- the driver ---------------------------------------------------------
+const cache = new Map();
+let cur = null, timer = null, playing = false, delay = 260;
+
+const DELAYS = [1400, 900, 600, 400, 280, 180, 110, 60, 25, 5];
+$('speed').oninput = () => { delay = DELAYS[$('speed').value - 1]; };
+delay = DELAYS[5];
+
+async function load(game) {
+  if (cache.has(game.id)) return cache.get(game.id);
+  const res = await fetch(`${game.id}.wasm`);
+  if (!res.ok) throw new Error(`${game.id}.wasm did not load (${res.status})`);
+  const mod = await WebAssembly.instantiate(await res.arrayBuffer(), IMPORTS);
+  cache.set(game.id, mod.instance.exports);
+  return mod.instance.exports;
+}
+
+async function select(id) {
+  stop();
+  const game = GAMES.find(g => g.id === id);
+  if (!game) return;
+  for (const b of document.querySelectorAll('.pick')) b.classList.toggle('on', b.dataset.id === id);
+  $('title').textContent = game.name;
+  $('desc').textContent = game.desc;
+  $('status').textContent = 'Loading the engine…';
+  $('stage').innerHTML = '';
+  $('full').hidden = !game.page;
+  if (game.page) $('full').href = game.page;
+  try {
+    cur = driver(game, await load(game));
+  } catch (err) {
+    cur = null;
+    // Opened as a file:// path rather than served, fetch is refused and the
+    // page would otherwise sit on "Loading" with no way to tell why.
+    const served = location.protocol.startsWith('http');
+    $('status').innerHTML = `<span class="fail">${err.message}</span>`;
+    $('stage').innerHTML = served
+      ? `<p class="desc">The module did not load. It is build output, not tracked source: run
+         <code>apps/games/build-wasm.ps1 -Game ${game.id}</code> to produce it.</p>`
+      : `<p class="desc">This page has to be <b>served</b>, not opened from disk: a browser
+         refuses to fetch the wasm modules over <code>file://</code>. Run
+         <code>apps/landing/serve.ps1</code> and open
+         <code>http://localhost:8088/games/index.html</code>.</p>`;
+    return;
+  }
+  newGame();
+}
+
+function newGame() {
+  if (!cur) return;
+  stop();
+  cur.reset();
+  draw();
+}
+
+function stop() {
+  playing = false;
+  clearTimeout(timer);
+  $('b-play').textContent = '▶ Play';
+}
+
+function tick() {
+  if (!playing || !cur) return;
+  if (!cur.step()) { stop(); draw(); return; }
+  draw();
+  if (cur.done()) { stop(); return; }
+  timer = setTimeout(tick, delay);
+}
+
+function draw() {
+  if (!cur) return;
+  $('status').textContent = cur.status();
+  $('stage').innerHTML = render(cur.view());
+  $('b-step').disabled = cur.done() || !cur.game.step;
+  $('b-play').disabled = cur.done() || !cur.game.step;
+  $('b-run').disabled = !cur.game.step && !cur.game.runs;
+}
+
+// --- rendering ----------------------------------------------------------
+const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const gcell = (c, i) => `<div class="g ${c.cls}" data-i="${i}">${esc(c.text)}</div>`;
+
+function gridHtml(cols, cells, clickable) {
+  const px = Math.max(16, Math.min(46, Math.floor(560 / cols)));
+  return `<div class="grid n${cols}${clickable ? ' clickable' : ''}" ` +
+    `style="grid-template-columns:repeat(${cols},${px}px)">` +
+    cells.map(gcell).join('') + '</div>';
+}
+
+function render(v) {
+  if (!v) return '';
+  const clickable = !!(cur && cur.game.click);
+  if (v.kind === 'grid') return gridHtml(v.cols, v.cells, clickable);
+  if (v.kind === 'hex') {
+    let h = '<div class="hex">';
+    for (let r = 0; r * v.cols < v.cells.length; r++) {
+      h += `<div class="hexrow" style="margin-left:${r * 13}px">`;
+      for (let c = 0; c < v.cols; c++) {
+        const i = r * v.cols + c;
+        if (i < v.cells.length) h += gcell(v.cells[i], i);
+      }
+      h += '</div>';
+    }
+    return h + '</div>';
+  }
+  if (v.kind === 'rows') {
+    return '<div class="rows">' + v.rows.map(([lab, cells]) =>
+      `<div class="rowline"><span class="rowlab">${esc(lab)}</span>` +
+      cells.map(c => `<span class="${c.cls}">${esc(c.text)}</span>`).join('') +
+      '</div>').join('') + '</div>';
+  }
+  if (v.kind === 'columns') {
+    return '<div class="cols">' + v.cols.map(col =>
+      '<div class="col">' + col.map(c => `<span class="${c.cls}">${esc(c.text)}</span>`).join('') +
+      '</div>').join('') + '</div>';
+  }
+  if (v.kind === 'pair') {
+    return '<div class="pair">' + v.grids.map((cells, i) =>
+      `<figure><figcaption>${esc(v.labels[i])}</figcaption>` +
+      gridHtml(v.cols, cells, false) + '</figure>').join('') + '</div>';
+  }
+  return '';
+}
+
+// --- input --------------------------------------------------------------
+$('b-new').onclick = newGame;
+$('b-step').onclick = () => { if (cur) { stop(); cur.step(); draw(); } };
+$('b-play').onclick = () => {
+  if (!cur) return;
+  if (playing) { stop(); return; }
+  playing = true;
+  $('b-play').textContent = '⏸ Pause';
+  tick();
+};
+$('b-run').onclick = () => {
+  if (!cur) return;
+  stop();
+  // The module bump-allocates and frees nothing, so a run-to-the-end is
+  // bounded here rather than left to spin. Where the engine offers a
+  // whole-game call it does the same work inside ONE allocation window.
+  const cap = cur.game.steps || 400;
+  for (let i = 0; i < cap && !cur.done(); i++) if (!cur.step()) break;
+  draw();
+  const summary = cur.runs();
+  if (summary) $('status').textContent = cur.status() + ' · whole game: ' + summary;
+};
+
+$('stage').onclick = ev => {
+  const t = ev.target.closest('.g');
+  if (!t || !cur || cur.done()) return;
+  if (cur.click(Number(t.dataset.i))) { stop(); draw(); }
+};
+
+document.addEventListener('keydown', ev => {
+  if (!cur || !cur.game.keys) return;
+  if (cur.key(ev.code)) { stop(); draw(); ev.preventDefault(); }
+});
+
+for (const b of document.querySelectorAll('.pick:not(.off)')) {
+  b.onclick = () => select(b.dataset.id);
+}
+select('othello');
+</script>
+</body>
+</html>

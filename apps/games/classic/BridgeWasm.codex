@@ -1,0 +1,92 @@
+Chapter: BridgeWasm
+  cites Games chapter Bridge
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Bridge, on the handle contract in
+ games-backlog.md GAME-11. Four thirteen-card hands plus the contract are
+ nowhere near an i32, so the page holds the state's address.
+
+ There is no copy in this chapter and that is deliberate rather than an
+ omission. `play-all-br-tricks` consumes its hands through `remove-at`,
+ which builds a fresh list by pushing onto an empty accumulator rather than
+ writing through `list-set-at`, so counting the tricks does not disturb the
+ state it counts. `determine-contract` DOES write in place through
+ `__record-set`, which is why it is called only inside `br-wasm-new` on a
+ state built two lines above it and never on a handle a caller holds.
+
+ Seats are north 0, south 1, east 2, west 3, which is the order the engine's
+ own arguments take rather than the order round a table.
+
+ We say:
+
+Section: The Browser Interface
+
+  br-wasm-new : Integer -> BridgeState
+  br-wasm-new (seed) =
+    let deck = br-shuffle br-deck-new (rng-new seed)
+    in determine-contract (br-deal deck)
+
+  br-wasm-hand : BridgeState, Integer -> List Integer
+  br-wasm-hand (st) (seat) =
+    if seat == 0 then st.north
+    else if seat == 1 then st.south
+    else if seat == 2 then st.east
+    else st.west
+
+  br-wasm-count : BridgeState, Integer -> Integer
+  br-wasm-count (st) (seat) =
+    if seat < 0 then 0
+    else if seat > 3 then 0
+    else list-length (br-wasm-hand st seat)
+
+  br-wasm-card : BridgeState, Integer, Integer -> Integer
+  br-wasm-card (st) (seat) (i) =
+    if seat < 0 then (-1)
+    else if seat > 3 then (-1)
+    else if i < 0 then (-1)
+    else if i >= br-wasm-count st seat then (-1)
+    else list-at (br-wasm-hand st seat) i
+
+  br-wasm-hcp : BridgeState, Integer -> Integer
+  br-wasm-hcp (st) (seat) =
+    if seat < 0 then 0
+    else if seat > 3 then 0
+    else hand-hcp (br-wasm-hand st seat)
+
+  br-wasm-trump : BridgeState -> Integer
+  br-wasm-trump (st) = st.trump
+
+  br-wasm-contract : BridgeState -> Integer
+  br-wasm-contract (st) = st.contract
+
+  br-wasm-declarer : BridgeState -> Integer
+  br-wasm-declarer (st) = st.declarer
+
+  br-wasm-nstricks : BridgeState -> Integer
+  br-wasm-nstricks (st) =
+    play-all-br-tricks (st.north) (st.south) (st.east) (st.west) (st.trump) (st.declarer)
+
+  br-wasm-tricks-made : BridgeState -> Integer
+  br-wasm-tricks-made (st) =
+    let ns = br-wasm-nstricks st
+    in if st.declarer == 0 then ns else 13 - ns
+
+  br-wasm-score : BridgeState -> Integer
+  br-wasm-score (st) =
+    bridge-score (st.contract) (br-wasm-tricks-made st) (st.trump)
+
+  br-wasm-card-suit : Integer -> Integer
+  br-wasm-card-suit (c) = if c < 0 then (-1) else br-suit c
+
+  br-wasm-card-rank : Integer -> Integer
+  br-wasm-card-rank (c) = if c < 0 then (-1) else br-rank c
+
+  br-wasm-card-hcp : Integer -> Integer
+  br-wasm-card-hcp (c) = if c < 0 then (-1) else br-hcp c
+
+  br-wasm-beats : Integer, Integer, Integer, Integer -> Integer
+  br-wasm-beats (challenger) (best) (led-suit) (trump) =
+    if card-beats challenger best led-suit trump then 1 else 0
+
+Page 1

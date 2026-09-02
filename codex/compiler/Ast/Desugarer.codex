@@ -660,8 +660,48 @@ Section: Document Desugaring
   push-derived-for-type : TypeDef, LinkedList ADef -> LinkedList ADef
   push-derived-for-type (td) (acc) =
    let acc1 = if deriving-has (td.deriving) "Show" then __linked-list-push acc (gen-show-def td) else acc
-   in let acc2 = if deriving-has (td.deriving) "Eq" then __linked-list-push acc1 (gen-eq-def td) else acc1
+   in let acc2 = if deriving-has (td.deriving) "Eq" | td-self-recursive td then __linked-list-push acc1 (gen-eq-def td) else acc1
    in if deriving-has (td.deriving) "Ord" then __linked-list-push acc2 (gen-compare-def td) else acc2
+
+  td-self-recursive : TypeDef -> Boolean
+  td-self-recursive (td) =
+   when td.body
+    is VariantBody (ctors) -> ctors-name-type ctors (token-text (td.name)) 0 (list-length ctors)
+    is otherwise -> False
+
+  ctors-name-type : List VariantCtorDef, Text, Integer, Integer -> Boolean
+  ctors-name-type (ctors) (tn) (i) (len) =
+   if i >= len then False
+   else if fields-name-type ((list-at ctors i).fields) tn 0 (list-length ((list-at ctors i).fields)) then True
+   else ctors-name-type ctors tn (i + 1) len
+
+  fields-name-type : List TypeExpr, Text, Integer, Integer -> Boolean
+  fields-name-type (fs) (tn) (i) (len) =
+   if i >= len then False
+   else if type-expr-names tn (list-at fs i) then True
+   else fields-name-type fs tn (i + 1) len
+
+  type-expr-names : Text, TypeExpr -> Boolean
+  type-expr-names (tn) (te) =
+   when te
+    is NamedType (t) -> token-text t == tn
+    is FunType (a) (b) -> type-expr-names tn a | type-expr-names tn b
+    is AppType (h) (args) -> type-expr-names tn h | type-exprs-name tn args 0 (list-length args)
+    is ParenType (inner) -> type-expr-names tn inner
+    is ListType (inner) -> type-expr-names tn inner
+    is LinearTypeExpr (inner) -> type-expr-names tn inner
+    is EffectTypeExpr (e1) (e2) (e3) (inner) -> type-expr-names tn inner
+    is BoundedIntType (inner) (lo) (hi) (m) -> type-expr-names tn inner
+    is PropEqType (a) (b) (sp) -> type-expr-names tn a | type-expr-names tn b
+    is ConstrainedType (a) (b) -> type-expr-names tn a | type-expr-names tn b
+    is TupleType (ts) -> type-exprs-name tn ts 0 (list-length ts)
+    is ForAllType (v) (b) (inner) -> type-expr-names tn b | type-expr-names tn inner
+
+  type-exprs-name : Text, List TypeExpr, Integer, Integer -> Boolean
+  type-exprs-name (tn) (ts) (i) (len) =
+   if i >= len then False
+   else if type-expr-names tn (list-at ts i) then True
+   else type-exprs-name tn ts (i + 1) len
 
   gen-wild-pats : Integer, Integer, LinkedList APat -> List APat
   gen-wild-pats (n) (i) (acc) =

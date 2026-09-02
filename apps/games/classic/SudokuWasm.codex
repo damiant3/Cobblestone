@@ -1,0 +1,82 @@
+Chapter: SudokuWasm
+  cites Games chapter Sudoku
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Sudoku, on the handle contract in
+ games-backlog.md GAME-11. Eighty-one cells are past an i32, so the page
+ holds the state's address.
+
+ `sudoku-solve` and `sudoku-remove-cells` both write the grid with
+ `list-set-at`, which mutates in place. The solver depends on that -- it
+ clears a cell to backtrack -- but it means a puzzle and its solution are
+ otherwise the same list, so `sd-wasm-solve` and `sd-wasm-remove` copy
+ first and a page or a grader can hold both.
+
+ We say:
+
+Section: Copying
+
+  sd-copy-grid : List Integer, Integer, List Integer -> List Integer
+  sd-copy-grid (src) (i) (acc) =
+    if i >= 81 then acc
+    else sd-copy-grid src (i + 1) (list-push acc (list-at src i))
+
+  sd-copy-state : SudokuState -> SudokuState
+  sd-copy-state (st) =
+    SudokuState { grid = sd-copy-grid (st.grid) 0 [], iterations = st.iterations }
+
+Section: The Browser Interface
+
+  sd-wasm-new : Integer -> SudokuState
+  sd-wasm-new (seed) = sudoku-new (rng-new seed)
+
+  sd-wasm-cell : SudokuState, Integer -> Integer
+  sd-wasm-cell (st) (i) =
+    if i < 0 then (-1)
+    else if i >= 81 then (-1)
+    else list-at (st.grid) i
+
+  sd-wasm-iterations : SudokuState -> Integer
+  sd-wasm-iterations (st) = st.iterations
+
+  sd-wasm-givens : SudokuState -> Integer
+  sd-wasm-givens (st) = sudoku-count-givens (st.grid)
+
+  sd-wasm-first-empty : SudokuState -> Integer
+  sd-wasm-first-empty (st) = sudoku-find-empty (st.grid) 0
+
+  sd-wasm-valid : SudokuState, Integer, Integer, Integer -> Integer
+  sd-wasm-valid (st) (row) (col) (val) =
+    if row < 0 then (-1)
+    else if row >= 9 then (-1)
+    else if col < 0 then (-1)
+    else if col >= 9 then (-1)
+    else if val < 1 then (-1)
+    else if val > 9 then (-1)
+    else if sudoku-is-valid (st.grid) row col val then 1
+    else 0
+
+  sd-wasm-solve : SudokuState -> SudokuState
+  sd-wasm-solve (st) = sudoku-solve (sd-copy-state st)
+
+  sd-wasm-remove : SudokuState, Integer, Integer -> SudokuState
+  sd-wasm-remove (st) (seed) (count) =
+    if count < 0 then st
+    else sudoku-remove-cells (sd-copy-state st) (rng-new seed) count
+
+Section: The Pinned Run
+
+  sd-wasm-run : SudokuResult
+  sd-wasm-run = run-sudoku-solve
+
+  sd-wasm-res-solved : SudokuResult -> Integer
+  sd-wasm-res-solved (r) = if r.solved then 1 else 0
+
+  sd-wasm-res-iterations : SudokuResult -> Integer
+  sd-wasm-res-iterations (r) = r.iterations
+
+  sd-wasm-res-givens : SudokuResult -> Integer
+  sd-wasm-res-givens (r) = r.givens
+
+Page 1
