@@ -2681,9 +2681,34 @@ Section: Check Batches
   check-batch-due (cb) =
    (__heap-save - cb.cb-bivy-mark) + (__deck-pos - cb.cb-deck-mark) >= cb.cb-budget
 
+ The close is bare-metal memory management in its entirety -- it moves the
+ deck cursor twice, poisons the two spans it is about to give back, and
+ rewinds the bivy -- and its copier reaches further still: `mcopy-type`
+ validates a box by ranging `peek-qword (address-of ty) 0` against the
+ CodexType tags. A HOSTED target has no such memory. Its objects live wherever
+ its host allocator put them, `address-of`, `peek-*` and `__heap-save` answer
+ for a different region entirely, and the peek reads whatever that region
+ happens to hold. `mcopy-type` then takes its unsafe escape and answers
+ `ErrorTy` for every type in the chapter, which is the safe direction on bare
+ metal only because the caller catches it by comparing the keep frontier
+ against `mc-ceiling` -- a second measurement in the same fictional space, so
+ on a hosted target it fails open. The zig arm of the plug-oracle ladder read
+ `check-errors 0` and bound every top-level function to `ErrorTy`.
+ Guarding the copier alone is not enough: real types behind it reach the next
+ assumption and the walk dies on a corrupt switch. So the guard goes here, at
+ the whole operation, exactly as `deck-reservation-guard` does.
+
+ Nothing is lost by skipping it. The close exists to materialise the batch
+ into the keep BEFORE the scratch is reclaimed, and a hosted target reclaims
+ nothing -- there is no compact to survive. The batch counters and
+ `cb-overflow` stay at their initial values in consequence, so
+ `check-batch-note` reads zeros and CDX9002 cannot fire on a hosted arm.
+ Both follow: a hosted arm has no keep to fill and no reservation to overflow.
+
   check-batch-close : CheckBatch, UnificationState, List TypeBinding -> Integer
   check-batch-close (cb) (st) (acc) =
-   let bivy-now = __heap-save
+   if hosted-kind /= 0 then 0
+   else let bivy-now = __heap-save
    in let deck-now = __deck-pos
    in let bivy-used = bivy-now - cb.cb-bivy-mark
    in let deck-used = deck-now - cb.cb-deck-mark
