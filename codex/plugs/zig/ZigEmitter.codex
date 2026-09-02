@@ -112,7 +112,7 @@ Section: Keywords and Sanitization
    "cx_address_of", "cx_deck_report", "cx_deck_enter", "cx_deck_exit",
    "cx_deck_pos", "cx_deck_set", "cx_utf8_to_cce", "cx_read_file_uni",
    "cx_write_all", "cx_write_binary", "cx_write_binary_buf", "cx_vtag",
-   "cx_buf_write_byte", "cx_buf_write_bytes", "cx_peek_byte",
+   "cx_buf_write_byte", "cx_buf_write_bytes", "cx_peek_byte", "cx_peek_32",
    "cx_buf_read_bytes", "cx_shru", "cx_mod", "cx_text_eq", "cx_is_letter",
    "cx_is_digit", "cx_new", "cx_concat", "cx_text_starts_with",
    "cx_text_contains", "cx_text_concat_list", "cx_list_set_at",
@@ -1132,6 +1132,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__buf-write-byte", emit = \args ctx d ty -> "cx_buf_write_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-write-bytes", emit = \args ctx d ty -> "cx_buf_write_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-byte", emit = \args ctx d ty -> "cx_peek_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "peek-32", emit = \args ctx d ty -> "cx_peek_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-read-bytes", emit = \args ctx d ty -> "cx_buf_read_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "min", emit = \args ctx d ty -> "@min(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "max", emit = \args ctx d ty -> "@max(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
@@ -4105,6 +4106,21 @@ Section: Chapter Emission
   zig-p-cx-peek-byte : List ShakeFrag
   zig-p-cx-peek-byte = [ShakeLit "fn ", ShakeUse "cx_peek_byte", ShakeLit "(b: i64, off: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 1);\n    return ", ShakeUse "cx_heap_mem", ShakeLit "[@intCast(b + off)];\n}\n"]
 
+ Zero-extended, which is what `mov eax, [rdi]` does on bare metal
+ (X86_64Helpers emit-peek-32-helper): a 32-bit load clears the top half of
+ rax, so the answer is 0..4294967295 and never negative. That is the one
+ way this differs from peek-qword beside it, which needs wrapping
+ arithmetic precisely because every 64-bit pattern is a legal i64 and the
+ top bit makes it negative. Four bytes cannot overflow an i64, so the
+ accumulate here is plain.
+
+ U54's per-definition reclamation reads its memo slots with this, so a
+ program that reserves a deck reaches it -- which is how the ladder's check
+ and lower rungs found it missing.
+
+  zig-p-cx-peek-32 : List ShakeFrag
+  zig-p-cx-peek-32 = [ShakeLit "fn ", ShakeUse "cx_peek_32", ShakeLit "(b: i64, off: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 4);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 3;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"]
+
   zig-p-cx-buf-read-bytes : List ShakeFrag
   zig-p-cx-buf-read-bytes = [ShakeLit "fn ", ShakeUse "cx_buf_read_bytes", ShakeLit "(b: i64, off: i64, n: i64) *", ShakeUse "CxList", ShakeLit "(i64) {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + n);\n    const l = ", ShakeUse "cx_ll_empty", ShakeLit "(i64);\n    l.items.ensureTotalCapacity(", ShakeUse "cx_gpa", ShakeLit ", @intCast(n)) catch @panic(\"oom\");\n    var cx_j: i64 = 0;\n    while (cx_j < n) : (cx_j += 1) l.items.appendAssumeCapacity(", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off + cx_j))]);\n    return l;\n}\n"]
 
@@ -4260,6 +4276,7 @@ Section: Chapter Emission
     ShakePart { name = "cx_buf_write_byte", frags = zig-p-cx-buf-write-byte },
     ShakePart { name = "cx_buf_write_bytes", frags = zig-p-cx-buf-write-bytes },
     ShakePart { name = "cx_peek_byte", frags = zig-p-cx-peek-byte },
+    ShakePart { name = "cx_peek_32", frags = zig-p-cx-peek-32 },
     ShakePart { name = "cx_buf_read_bytes", frags = zig-p-cx-buf-read-bytes },
     ShakePart { name = "cx_shru", frags = zig-p-cx-shru },
     ShakePart { name = "cx_mod", frags = zig-p-cx-mod },
