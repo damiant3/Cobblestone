@@ -113,6 +113,7 @@ Section: Keywords and Sanitization
    "cx_deck_pos", "cx_deck_set", "cx_utf8_to_cce", "cx_read_file_uni",
    "cx_write_all", "cx_write_binary", "cx_write_binary_buf", "cx_vtag",
    "cx_buf_write_byte", "cx_buf_write_bytes", "cx_peek_byte", "cx_peek_32",
+   "cx_poke_32", "cx_alloc_bytes",
    "cx_buf_read_bytes", "cx_shru", "cx_mod", "cx_text_eq", "cx_is_letter",
    "cx_is_digit", "cx_new", "cx_concat", "cx_text_starts_with",
    "cx_text_contains", "cx_text_concat_list", "cx_list_set_at",
@@ -1133,6 +1134,8 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__buf-write-bytes", emit = \args ctx d ty -> "cx_buf_write_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-byte", emit = \args ctx d ty -> "cx_peek_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-32", emit = \args ctx d ty -> "cx_peek_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "poke-32", emit = \args ctx d ty -> "cx_poke_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "alloc-bytes", emit = \args ctx d ty -> "cx_alloc_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-read-bytes", emit = \args ctx d ty -> "cx_buf_read_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "min", emit = \args ctx d ty -> "@min(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "max", emit = \args ctx d ty -> "@max(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
@@ -4118,6 +4121,23 @@ Section: Chapter Emission
  program that reserves a deck reaches it -- which is how the ladder's check
  and lower rungs found it missing.
 
+ The write half of the same pair. Little-endian four bytes, and the value is
+ bitcast to u64 first so the shifts are logical -- a negative i64 shifted
+ arithmetically would carry sign bits down into the low byte. C# writes the
+ same four with `(byte)(w >> 8)` and bare metal stores eax.
+
+  zig-p-cx-poke-32 : List ShakeFrag
+  zig-p-cx-poke-32 = [ShakeLit "fn ", ShakeUse "cx_poke_32", ShakeLit "(b: i64, off: i64, v: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 4);\n    const cx_a: usize = @intCast(b + off);\n    const cx_w: u64 = @bitCast(v);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a] = @truncate(cx_w);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 1] = @truncate(cx_w >> 8);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 2] = @truncate(cx_w >> 16);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 3] = @truncate(cx_w >> 24);\n    return 0;\n}\n"]
+
+ A raw byte region from the bump heap, which is what a program pokes into.
+ `cx_bump_alloc` beside it cannot serve: it is the zig Allocator vtable entry
+ and takes an alignment and an opaque self. This is C#'s `alloc_bytes` --
+ take the pointer, advance it, make sure the buffer reaches -- in the plug's
+ own terms.
+
+  zig-p-cx-alloc-bytes : List ShakeFrag
+  zig-p-cx-alloc-bytes = [ShakeLit "fn ", ShakeUse "cx_alloc_bytes", ShakeLit "(n: i64) i64 {\n    const cx_p: i64 = ", ShakeUse "cx_hp", ShakeLit ";\n    ", ShakeUse "cx_hp", ShakeLit " += n;\n    ", ShakeUse "cx_buf_want", ShakeLit "(", ShakeUse "cx_hp", ShakeLit ");\n    return cx_p;\n}\n"]
+
   zig-p-cx-peek-32 : List ShakeFrag
   zig-p-cx-peek-32 = [ShakeLit "fn ", ShakeUse "cx_peek_32", ShakeLit "(b: i64, off: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 4);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 3;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"]
 
@@ -4277,6 +4297,8 @@ Section: Chapter Emission
     ShakePart { name = "cx_buf_write_bytes", frags = zig-p-cx-buf-write-bytes },
     ShakePart { name = "cx_peek_byte", frags = zig-p-cx-peek-byte },
     ShakePart { name = "cx_peek_32", frags = zig-p-cx-peek-32 },
+    ShakePart { name = "cx_poke_32", frags = zig-p-cx-poke-32 },
+    ShakePart { name = "cx_alloc_bytes", frags = zig-p-cx-alloc-bytes },
     ShakePart { name = "cx_buf_read_bytes", frags = zig-p-cx-buf-read-bytes },
     ShakePart { name = "cx_shru", frags = zig-p-cx-shru },
     ShakePart { name = "cx_mod", frags = zig-p-cx-mod },
