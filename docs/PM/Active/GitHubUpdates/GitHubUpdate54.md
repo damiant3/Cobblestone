@@ -57,8 +57,14 @@ at the head (`p4 changes //Codex/main/...@20766,#head`).
   and the seven class-B failures triaged to six causes (21147). arm64
   `print-line-uni` emitted the low byte of a code point instead of UTF-8
   (21158).
-- **Steve Howell's queue, absorbed with credit** (red). Every open PR
-  (99 through 114) is on main: COMPILER-35, a text literal opened at end of
+- **Steve Howell's queue, absorbed with credit** (red). Nine of the ten
+  open PRs are on main and closed with a comment naming the CL; PR 100
+  (the zig plug's real-to-int and real-from-int) is NOT landed, because its
+  expected output encodes x86's NaN and overflow answers and the cross
+  battery grades `codex/test/ops` on arm64 and riscv64 too, where both
+  saturate; the reason is on `plugs-backlog.md` 2.07 and on the PR. The
+  first push of this report said all ten were on main; corrected in the
+  follow-up commit. On main: COMPILER-35, a text literal opened at end of
   line was silently empty (PR 114, main 20906); COMPILER-38, lowering
   renames colliding binders so two live bindings never share a name (issue
   113, main 20995); PRs 111 and 112 on the wasm plug (guard walkers,
