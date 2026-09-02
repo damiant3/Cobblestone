@@ -1,4 +1,5 @@
 Chapter: RiscVStdio
+  cites Foreword chapter StringUtils
 
 Section: Body
 
@@ -14,8 +15,44 @@ Section: Body
  against the serial path rather than trusted: the wire this emits must be
  byte-identical to the one bare metal sends for the same IR.
 
+ TWO OUTPUTS, chosen by a first line, because the wire is a payload and a
+ board wants a FILE. Default is the wire, unchanged and still what the
+ identity arm grades. `ELF` answers a RISC-V ELF64 built by `rv-build-elf`,
+ this plug's own writer, which needs no other plug in the chain.
+
+ `rv-build-elf` had no callers either -- the same L-UNCALLED shape as the wire
+ builder, and for the same reason: it was written for a caller that did not
+ exist yet. This is it.
+
+ THE ENTRY IS `__start`, THE RUNTIME INIT, NOT `opening`. `__start` is what
+ establishes the stack pointer and the heap pointer in S1 that every emitted
+ function then assumes; entering at `opening` runs the program with neither,
+ which is the same mistake `cdx-to-pe.ps1` names on the x86 side where its
+ `-EntryStart` switch exists precisely to avoid it. The offset is looked up
+ rather than assumed to be zero, because emitted functions are not laid down
+ in source order and offset zero is whichever one happened to be first. A unit
+ with no `__start` is REFUSED by name.
+
   plug-emit-ir-bytes : Text -> [Console] Nothing
-  plug-emit-ir-bytes (ir-text) =
-   let parsed = parse-ir-chapter ir-text
+  plug-emit-ir-bytes (input) =
+   let want-elf = text-starts-with input "ELF\n"
+   in let ir-text = if want-elf then text-drop input 4 else input
+   in let parsed = parse-ir-chapter ir-text
    in let cg-state = rv-emit-module empty-rv-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names)
-   in write-binary (rv-build-wire-output cg-state)
+   in if want-elf then rv-emit-board-elf cg-state
+   else write-binary (rv-build-wire-output cg-state)
+
+ `rv-record-func` stores `st.insn-count`, an INSTRUCTION INDEX, not a byte
+ offset -- `rv-patch-calls-loop` multiplies by 4 to reach bytes and so does
+ the auipc fixup. `rv-build-elf` adds its argument to the load address as
+ BYTES, so the index has to be scaled here. Unscaled it produced an entry a
+ quarter of the way to the right instruction and, worse, an ODD address:
+ 0x80002D83 for factorial, which a RISC-V core rejects outright since even
+ compressed instructions are 2-byte aligned. QEMU showed it as a silent hang
+ with no output, which is what any bad entry looks like from outside.
+
+  rv-emit-board-elf : RvState -> [Console] Nothing
+  rv-emit-board-elf (st) =
+   let idx = rv-find-func-offset (st.func-names) (st.func-offsets) "__start" 0
+   in if idx < 0 then print-line-uni "REFUSED this unit has no `__start`, so a board kernel would have no runtime init to enter"
+   else write-binary (rv-build-elf (__buf-read-bytes (st.code-buf) 0 (st.code-pos)) (st.data) (idx * 4))

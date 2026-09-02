@@ -1,0 +1,107 @@
+Chapter: MastermindWasm
+  cites Games chapter Mastermind
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Mastermind, on the handle contract in
+ games-backlog.md GAME-11. A code is one number under 1296 and would fit an
+ i32 easily; what does not fit is the candidate POOL, which starts as all
+ 1296 codes and is filtered after every guess. So the page holds a handle to
+ a state that carries the pool, defined here because the engine threads its
+ pieces as separate arguments through `mm-guess-loop`.
+
+ Nothing needs a copy in this chapter. `mm-filter-pool` builds its result by
+ pushing onto an empty accumulator rather than writing through
+ `list-set-at`, so filtering the pool does not disturb the pool it filters.
+ The grader measures that rather than taking it on trust.
+
+ A score is packed as blacks times ten plus whites, and 40 means solved.
+
+ We say:
+
+Section: The Handle
+
+  MmState = record {
+    secret     : Integer,
+    pool       : List Integer,
+    guesses    : Integer,
+    last-guess : Integer,
+    last-score : Integer,
+    solved     : Boolean
+  }
+
+Section: The Browser Interface
+
+  mm-wasm-new : Integer -> MmState
+  mm-wasm-new (seed) =
+    MmState { secret = mm-make-secret (rng-new seed), pool = mm-all-codes,
+              guesses = 0, last-guess = (-1), last-score = (-1), solved = False }
+
+  mm-wasm-step : MmState -> MmState
+  mm-wasm-step (s) =
+    if s.solved then s
+    else if s.guesses >= 10 then s
+    else if list-length (s.pool) <= 0 then s
+    else let guess = list-at (s.pool) 0
+    in let score = mm-score (s.secret) guess
+    in let won = score == 40
+    in MmState {
+      secret = s.secret,
+      pool = if won then s.pool else mm-filter-pool (s.pool) guess score (list-length (s.pool)),
+      guesses = s.guesses + 1,
+      last-guess = guess,
+      last-score = score,
+      solved = won
+    }
+
+  mm-wasm-secret : MmState -> Integer
+  mm-wasm-secret (s) = s.secret
+
+  mm-wasm-pool : MmState -> Integer
+  mm-wasm-pool (s) = list-length (s.pool)
+
+  mm-wasm-pool-at : MmState, Integer -> Integer
+  mm-wasm-pool-at (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.pool) then (-1)
+    else list-at (s.pool) i
+
+  mm-wasm-guesses : MmState -> Integer
+  mm-wasm-guesses (s) = s.guesses
+
+  mm-wasm-last-guess : MmState -> Integer
+  mm-wasm-last-guess (s) = s.last-guess
+
+  mm-wasm-blacks : MmState -> Integer
+  mm-wasm-blacks (s) = if s.last-score < 0 then (-1) else s.last-score / 10
+
+  mm-wasm-whites : MmState -> Integer
+  mm-wasm-whites (s) = if s.last-score < 0 then (-1) else rng-mod (s.last-score) 10
+
+  mm-wasm-solved : MmState -> Integer
+  mm-wasm-solved (s) = if s.solved then 1 else 0
+
+  mm-wasm-done : MmState -> Integer
+  mm-wasm-done (s) =
+    if s.solved then 1
+    else if s.guesses >= 10 then 1
+    else if list-length (s.pool) <= 0 then 1
+    else 0
+
+  mm-wasm-score : Integer, Integer -> Integer
+  mm-wasm-score (secret) (guess) =
+    if secret < 0 then (-1)
+    else if secret >= 1296 then (-1)
+    else if guess < 0 then (-1)
+    else if guess >= 1296 then (-1)
+    else mm-score secret guess
+
+  mm-wasm-digit : Integer, Integer -> Integer
+  mm-wasm-digit (code) (pos) =
+    if code < 0 then (-1)
+    else if code >= 1296 then (-1)
+    else if pos < 0 then (-1)
+    else if pos >= 4 then (-1)
+    else mm-digit code pos
+
+Page 1

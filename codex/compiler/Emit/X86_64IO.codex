@@ -55,6 +55,10 @@ Section: Serial I/O
 
   emit-serial-wait-and-send : CodegenState, Integer -> CodegenState
   emit-serial-wait-and-send (st) (byte-val) =
+   if st-hosted st then
+    let sh = st-append-code st (li reg-rax byte-val)
+    in emit-call-to sh "__serial_put"
+   else
    let wait-top = st.code-len
    in let st1 = st-append-code st (li reg-rdx 1021)
    in let st2 = st-append-code st1 [236]
@@ -69,6 +73,10 @@ Section: Serial I/O
 
   emit-serial-send-rdi : CodegenState -> CodegenState
   emit-serial-send-rdi (st) =
+   if st-hosted st then
+    let sh = st-append-code st (mov-rr reg-rax reg-rdi)
+    in emit-call-to sh "__serial_put"
+   else
    let wait-top = st.code-len
    in let st1 = st-append-code st (li reg-rdx 1021)
    in let st2 = st-append-code st1 [236]
@@ -277,6 +285,10 @@ Section: Print Text
 
   emit-print-newline : CodegenState -> CodegenState
   emit-print-newline (st) =
+   if st-hosted st then
+    let sh = st-append-code st (li reg-rax 10)
+    in emit-call-to sh "__serial_put"
+   else
    let st1 = emit-serial-wait-thr st
    in let st2 = st-append-code st1 (li reg-rax 10)
    in let st3 = st-append-code st2 (li reg-rdx 1016)
@@ -355,9 +367,10 @@ Section: Print Text
    in let st3 = st-append-code (idx2.state) (lea reg-rsi (ptr-l.reg) 8)
    in let st4 = st-append-code st3 (add-rr reg-rsi (idx2.reg))
    in let st5 = st-append-code st4 (movzx-byte reg-rax reg-rsi 0)
-   in let st6 = emit-serial-wait-thr st5
-   in let st7 = st-append-code st6 (li reg-rdx 1016)
-   in let st8 = st-append-code st7 out-dx-al
+   in let st8 = if st-hosted st5 then emit-call-to st5 "__serial_put"
+    else let st6 = emit-serial-wait-thr st5
+     in let st7 = st-append-code st6 (li reg-rdx 1016)
+     in st-append-code st7 out-dx-al
    in let idx3 = load-local st8 saved-idx
    in let st9 = st-append-code (idx3.state) (add-ri (idx3.reg) 1)
    in let st10 = store-local st9 saved-idx (idx3.reg)
@@ -372,7 +385,8 @@ Section: Print Text
   emit-print-text-raw-no-newline : CodegenState, Integer -> CodegenState
   emit-print-text-raw-no-newline (st) (ptr-reg) =
    let saved-ptr = alloc-local st
-   in let st1 = store-local (saved-ptr.state) (saved-ptr.reg) ptr-reg
+   in let st1a = store-local (saved-ptr.state) (saved-ptr.reg) ptr-reg
+   in let st1 = if st-hosted st1a then emit-call-to st1a "__print_begin" else st1a
    in let ptr-ld = load-local st1 (saved-ptr.reg)
    in let tmp-len = alloc-temp (ptr-ld.state)
    in let st2 = st-append-code (tmp-len.state) (mov-load (tmp-len.reg) (ptr-ld.reg) 0)
@@ -381,7 +395,8 @@ Section: Print Text
    in let saved-idx = alloc-local st3
    in let st4 = st-append-code (saved-idx.state) (li reg-r11 0)
    in let st5 = store-local st4 (saved-idx.reg) reg-r11
-   in emit-print-text-raw-loop st5 (saved-ptr.reg) (saved-len.reg) (saved-idx.reg)
+   in let st6 = emit-print-text-raw-loop st5 (saved-ptr.reg) (saved-len.reg) (saved-idx.reg)
+   in if st-hosted st6 then emit-call-to st6 "__print_flush" else st6
 
   emit-uefi-print-text : CodegenState, Integer -> CodegenState
   emit-uefi-print-text (st) (ptr-reg) =

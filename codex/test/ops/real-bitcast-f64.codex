@@ -1,0 +1,56 @@
+Chapter: RealBitcastF64
+
+  cites Foreword chapter Console
+
+ real-to-bits and bits-to-real, the f64 pair. Bare metal emits mov-rr for both --
+ which is to say nothing at all: it holds a Real f64 as its own bits in a general
+ register, so the value and its pattern are the same sixty-four bits. Zig
+ separates the two types, so the identity is spelled @bitCast there. Every answer
+ below is an Integer, which `show` reads exactly, so no line depends on how a Real
+ prints.
+
+ THE FIRST BLOCK IS GROUND TRUTH, patterns anyone can check against IEEE-754 by
+ hand: 1.0 is #3FF0000000000000, 0.5 is #3FE0000000000000, 42.5 is
+ #4045400000000000. They pin the exponent bias and the mantissa placement, which
+ an emitter reaching for a CONVERSION instead of a cast gets wrong immediately --
+ real-to-int of 1.0 is 1, not 4607182418800017408.
+
+ THE SECOND BLOCK IS WHAT A CONVERSION CANNOT DO, and it is the reason this pair
+ is worth a test of its own rather than a line in the conversion one.
+
+   NEGATIVE ZERO is a value Real comparison cannot see: -0.0 == 0.0 is true, so
+   nothing else in the language distinguishes them. Its bits are INT64_MIN and
+   +0.0's are 0. A truncating emitter answers 0 for both and passes every test
+   that does not look here.
+
+   A NaN has no equal, itself included, so its PATTERN is the only evidence it
+   survived a round trip. #7FF8000000000000 must come back unchanged; an emitter
+   that routes through an arithmetic register on a platform that quiets signalling
+   NaNs would not.
+
+   INFINITY and the largest finite double sit one bit apart -- #7FF0000000000000
+   and #7FEFFFFFFFFFFFFF -- and a conversion answers "integer indefinite" for the
+   first while the second is far past what an i64 holds. Bits distinguish them.
+
+ TOTALITY IS THE LAST LINE. Every i64 names an f64 and every f64 has a pattern,
+ so unlike real-to-int there is no range to fall out of and nothing to guard. The
+ round trip through the bit pattern of the largest finite double is the widest
+ that claim gets tested.
+
+Section: Report
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("bits 0.0 " & show (real-to-bits 0.0))
+    print-line-uni ("bits 1.0 " & show (real-to-bits 1.0))
+    print-line-uni ("bits 0.5 " & show (real-to-bits 0.5))
+    print-line-uni ("bits 42.5 " & show (real-to-bits 42.5))
+    print-line-uni ("bits -1.0 " & show (real-to-bits (0.0 - 1.0)))
+    print-line-uni ("bits -2.0 " & show (real-to-bits (0.0 - 2.0)))
+    print-line-uni ("negzero " & show (real-to-bits (bits-to-real #8000000000000000)))
+    print-line-uni ("poszero " & show (real-to-bits (bits-to-real #0)))
+    print-line-uni ("nan " & show (real-to-bits (bits-to-real #7FF8000000000000)))
+    print-line-uni ("inf " & show (real-to-bits (bits-to-real #7FF0000000000000)))
+    print-line-uni ("maxfinite " & show (real-to-bits (bits-to-real #7FEFFFFFFFFFFFFF)))
+    print-line-uni ("roundtrip 42.5 " & show (real-to-bits (bits-to-real (real-to-bits 42.5))))
+  end

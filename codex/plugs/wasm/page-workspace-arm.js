@@ -4,7 +4,11 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 
-const repo = 'D:\\Projects\\Cobblestone-red';
+// The repo is derived from where this file SITS, not written down. A fleet
+// tool with a fixed workspace path silently measures another agent's tree, or
+// as here refuses to run at all outside the one it was written in (L-SHARED):
+// this arm named Cobblestone-red and could not be run by anyone else.
+const repo = path.resolve(__dirname, '..', '..', '..');
 const html = fs.readFileSync(path.join(repo, 'codex\\plugs\\wasm\\page\\prism.html'), 'utf8');
 const a = html.lastIndexOf('<script>');
 const b = html.lastIndexOf('</script>');
@@ -24,9 +28,15 @@ function el() {
   return e;
 }
 const byId = {};
+const absentModules = [];
 const sandbox = {
   console, TextEncoder, TextDecoder, WebAssembly, performance, URL,
-  setTimeout, clearTimeout, Blob: class { constructor() {} },
+  setTimeout, clearTimeout,
+  // Blob was a do-nothing stub, which was enough while nothing read one back.
+  // libraryImage() pipes a real Blob through DecompressionStream, so the bed
+  // hands over Node's own globals: a stub here would report the library dark
+  // and the arm would pass by measuring the bed.
+  Blob, Response, DecompressionStream, ReadableStream,
   document: {
     getElementById(id) { return byId[id] || (byId[id] = el()); },
     querySelectorAll() { return []; },
@@ -38,7 +48,17 @@ const sandbox = {
   window: {},
   prompt() { return null; }, confirm() { return false; }, alert() {},
   atob(s) { return Buffer.from(s, 'base64').toString('binary'); },
-  fetch() { return Promise.reject(new Error('no network in the arm')); },
+  fetch(u) {
+    // A module the page asks for and the embed does not carry lands here. Say
+    // WHICH one and where it comes from: the bare "no network in the arm" is
+    // true and useless, and it is what a missing module looked like.
+    const name = String(u).split('/').pop();
+    if (absentModules.includes(name)) {
+      return Promise.reject(new Error(
+        'module ' + name + ' is not in build-output/page; run codex/plugs/wasm/build-page.ps1'));
+    }
+    return Promise.reject(new Error('no network in the arm (asked for ' + u + ')'));
+  },
   crypto: require('node:crypto').webcrypto,
   Worker: undefined
 };
@@ -50,11 +70,47 @@ sandbox.Buffer = Buffer;
 // modules the driven Compile paths reach ride the same embed.
 const compilerSrc = fs.readFileSync(path.join(repo, 'build\\output\\Codex.codex'));
 sandbox.window.__EMBED = { 'Codex.codex': compilerSrc.toString('base64') };
-for (const m of ['codex-compiler.wasm', 'pe-bytes.wasm', 'evidence-stdio.wasm', 'javascript-stdio.wasm']) {
-  sandbox.window.__EMBED[m] =
-    fs.readFileSync(path.join(repo, 'codex\\plugs\\wasm\\build-output\\page', m)).toString('base64');
+// A module an arm reaches and this list omits does NOT fall back to the embed:
+// it reaches `fetch`, which the sandbox rejects, and the arm dies with "no
+// network in the arm" instead of with a finding about the module.
+//
+// A module in the list but ABSENT from build-output used to throw here, before
+// arm 1, so a workspace that had never run build-page.ps1 refused the whole
+// suite with a readFileSync stack instead of a finding. Absence is recorded and
+// reported by the arm that reaches for it.
+for (const m of ['codex-compiler.wasm', 'pe-bytes.wasm', 'evidence-stdio.wasm', 'javascript-stdio.wasm', 'elf-bytes.wasm', 'riscv-stdio.wasm', 'arm64-stdio.wasm']) {
+  const p = path.join(repo, 'codex\\plugs\\wasm\\build-output\\page', m);
+  if (fs.existsSync(p)) sandbox.window.__EMBED[m] = fs.readFileSync(p).toString('base64');
+  else absentModules.push(m);
+}
+if (absentModules.length) {
+  console.log('NOTE: not in build-output/page, the arms that need them will say so: ' + absentModules.join(', '));
 }
 sandbox.__compilerSrcText = compilerSrc.toString('utf8');
+// The DISK arm's image is a build asset this file does not lay down, and it is
+// read from inside generated code. Absent, that surfaces as an ENOENT stack
+// naming drive.js and a line number in a string, which says nothing about what
+// to do; the command that fixes it was a comment two hundred lines away. The
+// library arms above already refuse by name when their artifacts are missing,
+// so this one does too rather than being the odd asset that throws.
+const diskImgPath = path.join(repo, 'codex\\plugs\\wasm\\build-output\\page\\disk-arm.img');
+if (!fs.existsSync(diskImgPath)) {
+  console.log('REFUSE: the DISK arm needs ' + diskImgPath + ', which no build lays down. Build it with:');
+  console.log('  build/build-img.ps1 -PeInput build/boot/blockladder.efi \\');
+  console.log('    -Out codex/plugs/wasm/build-output/page/disk-arm.img \\');
+  console.log('    -Source codex/plugs/wasm/disk-arm-src.codex');
+  process.exit(2);
+}
+// The library rides the embed exactly as build-page.ps1 puts it there: the
+// gzipped volume plus the names-only manifest. Both are build artifacts; if
+// they are absent the library arms say so rather than passing quietly.
+const libGzPath = path.join(repo, 'codex\\plugs\\wasm\\build-output\\page\\library.img.gz');
+const libJsonPath = path.join(repo, 'codex\\plugs\\wasm\\build-output\\page\\library.json');
+sandbox.__haveLibrary = fs.existsSync(libGzPath) && fs.existsSync(libJsonPath);
+if (sandbox.__haveLibrary) {
+  sandbox.window.__EMBED['library.img.gz'] = fs.readFileSync(libGzPath).toString('base64');
+  sandbox.window.__LIBRARY = JSON.parse(fs.readFileSync(libJsonPath, 'utf8'));
+}
 vm.createContext(sandbox);
 // The page encodes module input with TextEncoder (runW) and one function
 // later asks `instanceof Uint8Array` (runModule). The host encoder answers a
@@ -95,7 +151,7 @@ const drive = `
 
   // Arm 4: one REAL compile of the assembled two-chapter unit through the
   // actual compiler module, on the sync fallback path (no Worker here).
-  const bytes = __fs.readFileSync(${JSON.stringify('D:\\Projects\\Cobblestone-red\\codex\\plugs\\wasm\\build-output\\page\\codex-compiler.wasm')});
+  const bytes = __fs.readFileSync(${JSON.stringify(path.join(repo, 'codex\\plugs\\wasm\\build-output\\page\\codex-compiler.wasm'))});
   const r = runModule(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
                       'IR-UNI decks=12\\n' + u.text);
   if (r.text.indexOf('IR-BEGIN') < 0) return 'FAIL: no IR from the two-file unit; head: ' + r.text.slice(0, 300);
@@ -319,10 +375,257 @@ const drive = `
   if (noDiskText.indexOf('DISK-OUT: OK') >= 0)
     return 'FAIL: DISK mode with NO disk still went green, so the disk proves nothing';
 
+  // Arm 12b: the ELF targets, driven through the PAGE'S OWN elfWire rather
+  // than a second copy of the framing. page-bytes-test.ps1 builds that wire
+  // again in PowerShell and grades the module; that proves the plug and says
+  // nothing about the page, and two implementations of one contract is how
+  // they drift apart. This one calls the shipped function.
+  //
+  // The two modes are told apart by class, machine and entry, not by "an ELF
+  // came back": a builder wired to the wrong mode still answers a valid ELF,
+  // so the magic number passes for both and proves nothing.
+  const elfCdxRes = runModule(modBuf, 'CDX\\n' + diskSrc);
+  const elfCdx = cdxPayload(elfCdxRes.bytes);
+  let elfNote = '';
+  if (!elfCdx) elfNote = 'FAIL: no CDX to build an ELF from';
+  else {
+    const elfMod = await moduleBytes('elf-bytes.wasm');
+    const shapes = [];
+    for (const mode of [0, 1]) {
+      const w = elfWire(elfCdx, mode);
+      if (w.err) { elfNote = 'FAIL: elfWire refused a good CDX: ' + w.err; break; }
+      const out = runModule(elfMod, w.wire);
+      const b = out.bytes;
+      if (!b || b.length < 64) { elfNote = 'FAIL: mode ' + mode + ' answered ' + (b ? b.length : 0) + ' bytes'; break; }
+      if (!(b[0] === 0x7F && b[1] === 0x45 && b[2] === 0x4C && b[3] === 0x46)) {
+        elfNote = 'FAIL: mode ' + mode + ' did not answer an ELF: ' +
+                  new TextDecoder().decode(b.subarray(0, 80)); break;
+      }
+      const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+      const cls = b[4], machine = dv.getUint16(18, true);
+      const entry = mode === 0 ? dv.getUint32(24, true) : Number(dv.getBigUint64(24, true));
+      const wantCls = mode === 0 ? 1 : 2;
+      const wantMachine = mode === 0 ? 3 : 0x3E;
+      const wantEntry = mode === 0 ? (1048576 + 32) : (4194304 + 176 + 32);
+      if (cls !== wantCls || machine !== wantMachine || entry !== wantEntry) {
+        elfNote = 'FAIL: mode ' + mode + ' answered class ' + cls + ' machine 0x' + machine.toString(16) +
+                  ' entry 0x' + entry.toString(16) + ', wanted class ' + wantCls +
+                  ' machine 0x' + wantMachine.toString(16) + ' entry 0x' + wantEntry.toString(16); break;
+      }
+      shapes.push((mode === 0 ? 'kernel ELF32' : 'usermode ELF64') + ' entry 0x' + entry.toString(16) +
+                  ' (' + b.length.toLocaleString() + ' bytes)');
+    }
+    if (!elfNote) {
+      // The control: a CDX whose header claims a section past the end of the
+      // file must be REFUSED before anything is sliced, because that shape
+      // otherwise builds clean and dies later (build/cdx-to-pe.ps1 records the
+      // cost). Overstate the text length and require a refusal.
+      const bad = elfCdx.slice();
+      new DataView(bad.buffer, bad.byteOffset, bad.byteLength).setBigInt64(176, BigInt(bad.length * 4), true);
+      const guard = elfWire(bad, 0);
+      if (!guard.err) elfNote = 'FAIL: a CDX overstating its text section was not refused';
+      else elfNote = shapes.join('; ') + '; overstated-section control refused';
+    }
+  }
+  if (elfNote.startsWith('FAIL')) return elfNote;
+
+  // Arm 12c: the board kernel. This target shares nothing with the ELF arms
+  // above -- no CDX, no elf plug -- because the riscv backend writes its own
+  // ELF from IR. Graded on class, MACHINE and load address, since an ELF that
+  // came back claiming x86-64 is exactly the mislabelling the machine field
+  // was missing to prevent.
+  const rvMod = await moduleBytes('riscv-stdio.wasm');
+  const rvIr = runModule(modBuf, 'IR-UNI decks=12\\n' + diskSrc);
+  const rvLines = rvIr.text.split('\\n');
+  const rb = rvLines.indexOf('IR-BEGIN'), re2 = rvLines.indexOf('IR-END');
+  let boardNote = '';
+  if (rb < 0 || re2 < 0) boardNote = 'FAIL: no IR to build a board kernel from';
+  else {
+    const irText = rvLines.slice(rb + 1, re2).join('\\n');
+    const kOut = runModule(rvMod, 'ELF\\n' + irText);
+    const kb = kOut.bytes;
+    if (!kb || kb.length < 64) boardNote = 'FAIL: the board module answered ' + (kb ? kb.length : 0) + ' bytes';
+    else if (!(kb[0] === 0x7F && kb[1] === 0x45 && kb[2] === 0x4C && kb[3] === 0x46)) {
+      boardNote = 'FAIL: not an ELF: ' + new TextDecoder().decode(kb.subarray(0, 80));
+    } else {
+      const dv2 = new DataView(kb.buffer, kb.byteOffset, kb.byteLength);
+      const cls2 = kb[4], mach2 = dv2.getUint16(18, true);
+      const entry2 = Number(dv2.getBigUint64(24, true));
+      // The entry is checked for ALIGNMENT and for landing inside the text
+      // segment, not merely for being above the load address. That weaker
+      // check passed a kernel whose entry was 0x80002D83 -- an ODD address,
+      // which no RISC-V core will fetch -- because rv-record-func stores an
+      // instruction INDEX and it was being used as a byte offset. From
+      // outside, a bad entry and a working kernel differ only in that one
+      // of them prints.
+      const phOff = Number(dv2.getBigUint64(32, true));
+      const textVaddr = Number(dv2.getBigUint64(phOff + 16, true));
+      const textSize = Number(dv2.getBigUint64(phOff + 32, true));
+      if (cls2 !== 2 || mach2 !== 243) {
+        boardNote = 'FAIL: class ' + cls2 + ' machine ' + mach2 + ', wanted ELF64 EM_RISCV 243';
+      } else if (entry2 % 4 !== 0) {
+        boardNote = 'FAIL: entry 0x' + entry2.toString(16) + ' is not 4-byte aligned, so no RISC-V core can fetch it';
+      } else if (entry2 < textVaddr || entry2 >= textVaddr + textSize) {
+        boardNote = 'FAIL: entry 0x' + entry2.toString(16) + ' is outside the text segment 0x' +
+                    textVaddr.toString(16) + '..0x' + (textVaddr + textSize).toString(16);
+      } else if (textVaddr !== 0x80000000) {
+        // QEMU with -bios none enters at the RAM base regardless of the ELF
+        // entry, so the first instruction has to BE there.
+        boardNote = 'FAIL: text maps at 0x' + textVaddr.toString(16) + ', not the 0x80000000 RAM base';
+      } else {
+        // The control: the DEFAULT mode must still answer a wire. Without it a
+        // module that ignored the mode line and always built an ELF would pass
+        // the arm above, and the wire every other consumer reads would be gone.
+        const wb = runModule(rvMod, irText).bytes;
+        if (wb.length > 4 && wb[0] === 0x7F && wb[1] === 0x45 && wb[2] === 0x4C && wb[3] === 0x46) {
+          boardNote = 'FAIL: the default mode answered an ELF, so the mode line is selecting nothing';
+        } else {
+          boardNote = 'RISC-V ELF64 machine 243 entry 0x' + entry2.toString(16) +
+                      ' (' + kb.length.toLocaleString() + ' bytes); wire control still a wire (' +
+                      wb.length.toLocaleString() + ' bytes)';
+          // Arm 12d: the same grading for arm64, off the SAME IR. The two
+          // backends write their own ELFs and share no code, so a second
+          // architecture is a second arm and not a parameter. EM_AARCH64 is 183
+          // and the load address is the 0x40000000 RAM base
+          // qemu-system-aarch64 -machine virt maps, not RISC-V's 0x80000000: an
+          // arm64 kernel built at the RISC-V base is the same silent hang the
+          // comment above describes, one architecture over.
+          //
+          // A failure here REPLACES boardNote rather than appending to it,
+          // because the gate below tests startsWith('FAIL') and an appended
+          // failure would read as a pass.
+          const a64Mod = await moduleBytes('arm64-stdio.wasm');
+          const aOut = runModule(a64Mod, 'ELF\\n' + irText);
+          const ab = aOut.bytes;
+          let a64Note = '';
+          if (!ab || ab.length < 64) {
+            a64Note = 'FAIL arm64: the board module answered ' + (ab ? ab.length : 0) + ' bytes';
+          } else if (!(ab[0] === 0x7F && ab[1] === 0x45 && ab[2] === 0x4C && ab[3] === 0x46)) {
+            a64Note = 'FAIL arm64: not an ELF: ' + new TextDecoder().decode(ab.subarray(0, 80));
+          } else {
+            const dv3 = new DataView(ab.buffer, ab.byteOffset, ab.byteLength);
+            const cls3 = ab[4], mach3 = dv3.getUint16(18, true);
+            const entry3 = Number(dv3.getBigUint64(24, true));
+            const phOff3 = Number(dv3.getBigUint64(32, true));
+            const textVaddr3 = Number(dv3.getBigUint64(phOff3 + 16, true));
+            const textSize3 = Number(dv3.getBigUint64(phOff3 + 32, true));
+            if (cls3 !== 2 || mach3 !== 183) {
+              a64Note = 'FAIL arm64: class ' + cls3 + ' machine ' + mach3 + ', wanted ELF64 EM_AARCH64 183';
+            } else if (entry3 % 4 !== 0) {
+              a64Note = 'FAIL arm64: entry 0x' + entry3.toString(16) + ' is not 4-byte aligned, so no AArch64 core can fetch it';
+            } else if (entry3 < textVaddr3 || entry3 >= textVaddr3 + textSize3) {
+              a64Note = 'FAIL arm64: entry 0x' + entry3.toString(16) + ' is outside the text segment 0x' +
+                        textVaddr3.toString(16) + '..0x' + (textVaddr3 + textSize3).toString(16);
+            } else if (textVaddr3 !== 0x40000000) {
+              a64Note = 'FAIL arm64: text maps at 0x' + textVaddr3.toString(16) + ', not the 0x40000000 RAM base';
+            } else {
+              const wb64 = runModule(a64Mod, irText).bytes;
+              if (wb64.length > 4 && wb64[0] === 0x7F && wb64[1] === 0x45 && wb64[2] === 0x4C && wb64[3] === 0x46) {
+                a64Note = 'FAIL arm64: the default mode answered an ELF, so the mode line is selecting nothing';
+              } else {
+                a64Note = 'AArch64 ELF64 machine 183 entry 0x' + entry3.toString(16) +
+                          ' (' + ab.length.toLocaleString() + ' bytes); wire control still a wire (' +
+                          wb64.length.toLocaleString() + ' bytes)';
+              }
+            }
+          }
+          boardNote = a64Note.startsWith('FAIL') ? a64Note : (boardNote + '; ' + a64Note);
+        }
+      }
+    }
+  }
+  if (boardNote.startsWith('FAIL')) return boardNote;
+
+  // Arms 13-17: the library on board. The volume is the whole shipped tree,
+  // gzipped into the embed; RESOLVE mounts it in linear memory and hands back
+  // prefix+source. Every arm here has a control that REMOVES the library,
+  // because a compile that would have succeeded anyway proves nothing about a
+  // resolver.
+  let libNote = 'library arms SKIPPED (no built library.img.gz)';
+  if (__haveLibrary) {
+    // 13. The volume decodes out of the embed.
+    const img = await libraryImage();
+    if (!img) return 'FAIL: the library volume did not load: ' + libraryWhy;
+    if (img.length < 1000000) return 'FAIL: the library volume is implausibly small, ' + img.length;
+
+    // 14. A cite into the library resolves, and the SAME source without the
+    // library refuses. The control is the load-bearing half: without it a
+    // green compile says nothing about where Maybe came from.
+    const userSrc = 'Chapter: UsesMaybe\\n\\n  cites Foreword chapter Maybe\\n\\nSection: Main\\n\\n' +
+      '  pick : Maybe Integer -> Integer\\n  pick (m) = from-maybe m 0\\n';
+    project.files = [{ path: 'uses.codex', text: userSrc }];
+    const uRes = await resolveUnit(assembleUnit());
+    if (!uRes.used) return 'FAIL: the library was not used: ' + (uRes.why || 'no reason given');
+    if (uRes.missing.length) return 'FAIL: unexpected CITE-MISSING: ' + uRes.missing.join(', ');
+    if (uRes.text.indexOf('Chapter: Foreword--Maybe') < 0)
+      return 'FAIL: the resolved unit does not carry the renamed chapter; head: ' + uRes.text.slice(0, 200);
+    if (!uRes.text.endsWith(assembleUnit().text))
+      return 'FAIL: the resolved unit does not end with the source, so positions cannot be mapped';
+    if (!(uRes.shift > 0)) return 'FAIL: a resolved unit shifted 0 lines';
+    const rOk = runModule(modBuf, 'IR-UNI decks=12\\n' + uRes.text);
+    if (rOk.text.indexOf('IR-BEGIN') < 0)
+      return 'FAIL: the resolved unit did not compile; diag: ' +
+             (rOk.text.split('\\n').find(l => l.indexOf('CDX') >= 0) || rOk.text.slice(0, 200));
+    const rCtl = runModule(modBuf, 'IR-UNI decks=12\\n' + assembleUnit().text);
+    if (rCtl.text.indexOf('CDX3007') < 0)
+      return 'FAIL: the UNRESOLVED control compiled or refused for another reason, so the library proves nothing; diag: ' +
+             (rCtl.text.split('\\n').find(l => l.indexOf('CDX') >= 0) || rCtl.text.slice(0, 200));
+
+    // 15. The shift is what makes a diagnostic land in the user's file rather
+    // than N lines into a prepended library chapter. Sabotage the user's own
+    // source and require the mapped position to name uses.codex.
+    project.files = [{ path: 'uses.codex', text: userSrc.replace('from-maybe m 0', 'no-such-fn m 0') }];
+    const uBad = await resolveUnit(assembleUnit());
+    lastRegions = uBad.regions;
+    const badDiag = runModule(modBuf, 'IR-UNI decks=12\\n' + uBad.text).text
+      .split('\\n').find(l => l.indexOf('CDX3002') >= 0);
+    if (!badDiag) return 'FAIL: the sabotaged library user produced no CDX3002';
+    const badHome = mapDiagLine(badDiag);
+    if (badHome.indexOf('uses.codex:8:') !== 0)
+      return 'FAIL: a diagnostic under a resolved prefix mapped to [' + badHome + '], wanted uses.codex:8:...';
+    // The same diagnostic WITHOUT the shift applied must NOT land there, or
+    // the arm above would pass whether the shift were right or absent.
+    lastRegions = assembleUnit().regions;
+    if (mapDiagLine(badDiag).indexOf('uses.codex:8:') === 0)
+      return 'FAIL: the unshifted control mapped home too, so arm 15 cannot see the shift';
+
+    // 16. A cite the volume does not carry is named by the resolver and still
+    // refused by the compiler: CITE-MISSING says the medium was asked, CDX3007
+    // says the name is not in the unit, and both are wanted.
+    project.files = [{ path: 'ghost.codex', text: 'Chapter: Ghost\\n\\n  cites Foreword chapter NoSuchChapterHere\\n' }];
+    const gRes = await resolveUnit(assembleUnit());
+    if (gRes.missing.indexOf('Foreword NoSuchChapterHere') < 0)
+      return 'FAIL: a missing chapter produced no CITE-MISSING; got [' + gRes.missing.join(', ') + ']';
+    const gOut = runModule(modBuf, 'IR-UNI decks=12\\n' + gRes.text).text;
+    if (gOut.indexOf('CDX3007') < 0)
+      return 'FAIL: a missing cite did not answer CDX3007; diag: ' + (gOut.split('\\n').find(l => l.indexOf('CDX') >= 0) || gOut.slice(0, 200));
+
+    // 17. The toolbox reads one chapter off the volume and hands it back under
+    // its OWN header, which is what makes Add to project a real source file.
+    await viewChapter('Foreword', 'Maybe');
+    if (!libShown || !libShown.text) return 'FAIL: the toolbox read no text for Foreword/Maybe';
+    if (libShown.text.indexOf('Chapter: Maybe') !== 0)
+      return 'FAIL: the toolbox chapter does not open with its own header: ' + libShown.text.slice(0, 60);
+    if (libShown.text.indexOf('Foreword--') >= 0)
+      return 'FAIL: the toolbox chapter kept the resolver rename';
+    if (libShown.text.indexOf('maybe-bind') < 0)
+      return 'FAIL: the toolbox chapter looks truncated; it lacks maybe-bind';
+    if (LIBRARY.quires.reduce((n, q) => n + q.chapters.length, 0) < 500)
+      return 'FAIL: the manifest carries implausibly few chapters';
+    libNote = 'library ' + (img.length / 1048576).toFixed(1) + ' MB volume, ' +
+      LIBRARY.quires.length + ' quires / ' +
+      LIBRARY.quires.reduce((n, q) => n + q.chapters.length, 0) + ' chapters; cite resolved (+' +
+      uRes.shift + ' lines) where the no-library control answered CDX3007; toolbox read Maybe (' +
+      libShown.text.length + ' chars)';
+  }
+
   return 'ALL ARMS OK; real diag mapped: ' + home.slice(0, 60) +
          '; self IR ' + r3.text.length.toLocaleString() + ' chars in ' + r3.ms.toFixed(0) + ' ms, ' + r3.mb + ' MB' +
          '; binary evidence claims the CDX, text control does not' +
-         '; DISK round trip in linear memory: OUT.CDX off the mutated image byte-identical to stdin (' + outCdx.length + ' bytes), no-disk control refused';
+         '; DISK round trip in linear memory: OUT.CDX off the mutated image byte-identical to stdin (' + outCdx.length + ' bytes), no-disk control refused' +
+         '; ELF ' + elfNote +
+         '; board ' + boardNote +
+         '; ' + libNote;
 })()
 `;
 vm.runInContext(drive, sandbox, { filename: 'drive.js' }).then(

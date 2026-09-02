@@ -9,33 +9,24 @@ shell: powershell
 You are initializing a new session. Follow every step below in order.
 Do not skip steps. Complete all steps before reporting status.
 
-## Why this file reads the way it does (2026-07-28)
+## Why this file reads the way it does (2026-07-28, Damian's direction)
 
-The previous init read ~190k tokens of documents into the session's own
-context before any work started: ~107k of reference docs, ~21k of
-vision docs, ~56k of PM/Active read "in full, deliberately". Measured
-2026-07-28 (bytes/4); one session arrived at 59 per cent context spent
-having completed one unit of work. Damian's direction: dramatically
-reduce it.
-
-The redesign keeps in DIRECT context only what changes behavior at
-session start (~17k: memory, the lesson index, three agent summaries,
-Perforce state) and converts everything else to on-demand reading with
-an explicit trigger table. The stories doctrine -- lessons live in the
-middle of post-mortems, and summaries rot -- is preserved by a harder
-rule, not a longer read: **when a lesson id becomes load-bearing for
-your work, you read its story THEN, in full.** An unread story that
-never becomes load-bearing costs nothing; before this change every
-story taxed every session of every agent, every day.
+Init keeps in DIRECT context only what changes behavior at session start
+(memory, the lesson index, three agent summaries, Perforce state);
+everything else is on-demand reading with an explicit trigger table. The
+stories doctrine -- lessons live in the middle of post-mortems, and
+summaries rot -- is preserved by a harder rule, not a longer read:
+**when a lesson id becomes load-bearing for your work, you read its
+story THEN, in full.** An unread story that never becomes load-bearing
+costs nothing.
 
 ## Step 1 -- Identify yourself
 
 Run `Get-Location`. Your agent name is everything to the RIGHT of the
-first `-` in the directory name (e.g. `NewRepository-val` -> **val**,
-`NewRepository-fester` -> **fester**). Split on the separator; do not
-take a fixed number of characters. This said "the last 3 characters"
-until 2026-08-05, which gives fester "ter" and reek "eek". You are agent
-**XXX** for this session.
+first `-` in the directory name (e.g. `Cobblestone-val` -> **val**,
+`Cobblestone-fester` -> **fester**). Split on the separator; do not
+take a fixed number of characters. You are agent **XXX** for this
+session.
 
 ## Step 2 -- Read memory
 
@@ -48,22 +39,12 @@ state from prior sessions.
 All three run concurrently. Their reports come back small; the files
 they read never enter your context.
 
-**A COMPRESSED READ OF `CurrentPlan.md` FLATTENS CAMPAIGNS, AND IT PRODUCED
-A WRONG ASSIGNMENT WITHIN HOURS (red, 2026-08-21).** Agent A's report that
-morning listed "Stage 3 -- cheaper kernel" under a Shell Refinement heading.
-`CurrentPlan.md` is correct and unambiguous: that sentence is inside the
-GameEngine SHADOW campaign, whose stage 2 landed 17949, and ShellRefinement's
-own stage 3 is surfaces and depth, landed 18400. **Two campaigns in one
-agent's row, each with its own stage numbering, merged into one stage list.**
-The commander assigned off the summary, val corrected it from the register,
-and the register had been right the whole time.
-
-So: **a stage number carried out of this summary is not addressed until it
-names its CAMPAIGN.** Require Agent A to prefix every staged item with the
-campaign, and re-read the row in `CurrentPlan.md` before acting on any stage
-number. This is the same failure the stories doctrine below exists to
-prevent, one document over -- the summary rots faster than the source, and it
-rots invisibly because it still reads as confident.
+**A compressed read of `CurrentPlan.md` flattens campaigns** (it merged
+two campaigns' stage lists into one and produced a wrong assignment
+within hours, red 2026-08-21). So: **a stage number carried out of this
+summary is not addressed until it names its CAMPAIGN.** Require Agent A
+to prefix every staged item with the campaign, and re-read the row in
+`CurrentPlan.md` before acting on any stage number.
 
 **Agent A -- the open work:**
 - `docs/PM/CurrentPlan.md` **in full** -- return every open item in

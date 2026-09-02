@@ -395,11 +395,29 @@ Section: Resolve All Definitions
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
+   in let bivy-mark = __heap-save
+   in let deck-mark = __deck-pos
    in let fresh-scope = Scope { names = sc.names, locals = skip-list-text-empty, chapter-renames = chapter-rn }
    in let param-result = add-def-params fresh-scope (def.params) 0 (list-length (def.params)) []
    in let body-scope = add-forall-binders (param-result.scope) def
    in let errs2 = resolve-expr body-scope (def.body)
-   in resolve-all-defs sc defs (i + 1) len (errs & param-result.errors & errs2) colliding assignments citations slug-cache (def.chapter-slug) chapter-rn ceiling
+   in let errs-new = param-result.errors & errs2
+   in if list-length errs-new == 0
+      then let deck-back = __deck-set deck-mark
+       in let bivy-back = __heap-restore bivy-mark
+       in resolve-all-defs sc defs (i + 1) len errs colliding assignments citations slug-cache (def.chapter-slug) chapter-rn ceiling
+      else resolve-all-defs sc defs (i + 1) len (errs & errs-new) colliding assignments citations slug-cache (def.chapter-slug) chapter-rn ceiling
+
+ A definition's resolution answers only its diagnostics; every scope,
+ pattern result and rename lookup it built is dead once resolve-expr
+ returns, and until 2026-09-01 all of it stayed until the phase compact,
+ 251 MB of bivy and 53 MB of deck on the compiler's own unit. The marks
+ are taken AFTER the chapter rename table is computed, because that table
+ is carried into the next definition of the same chapter and must sit
+ below every rewind that follows it. A definition that raised something
+ keeps its scratch, since the diagnostics it built live there; a clean
+ unit therefore rewinds every definition, and a unit with errors degrades
+ toward the old shape one definition at a time.
 
   add-forall-binders : Scope, ADef -> Scope
   add-forall-binders (sc) (def) =

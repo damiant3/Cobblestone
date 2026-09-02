@@ -1,0 +1,75 @@
+Chapter: LifeWasm
+  cites Games chapter Life
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Conway's Life, on the handle contract in
+ games-backlog.md GAME-11. Four hundred cells on a twenty by twenty torus
+ are past an i32, so the page holds the state's address.
+
+ `life-set-cell` writes through `list-set-at`, which mutates in place, so
+ placing a pattern copies first. `step-life` builds a fresh grid from the
+ old one rather than writing into it, which is what Life requires anyway: a
+ generation must be computed from the previous one entire, not cell by cell
+ into itself.
+
+ The three patterns are exposed by name because they are what makes this
+ game checkable. A block never changes, a blinker returns after two
+ generations, and a glider returns to its own shape displaced by one row
+ and one column after four. Those are exact statements about Conway's
+ rules, not properties of this implementation, so a grader can hold the
+ engine to them.
+
+ We say:
+
+Section: Copying
+
+  lf-copy-cells : List Integer, Integer, List Integer -> List Integer
+  lf-copy-cells (src) (i) (acc) =
+    if i >= 400 then acc
+    else lf-copy-cells src (i + 1) (list-push acc (list-at src i))
+
+Section: The Browser Interface
+
+  lf-wasm-new : Integer -> LifeState
+  lf-wasm-new (seed) = life-seed-grid seed
+
+  lf-wasm-blank : LifeState
+  lf-wasm-blank = LifeState { cells = life-empty-grid, alive-count = 0 }
+
+  lf-wasm-place : LifeState, Integer, Integer, Integer -> LifeState
+  lf-wasm-place (s) (kind) (row) (col) =
+    if row < 0 then s
+    else if row >= 20 then s
+    else if col < 0 then s
+    else if col >= 20 then s
+    else let base = lf-copy-cells (s.cells) 0 []
+    in let placed = if kind == 0 then life-place-glider base row col
+      else if kind == 1 then life-place-blinker base row col
+      else if kind == 2 then life-place-block base row col
+      else base
+    in LifeState { cells = placed, alive-count = life-count-alive placed 0 0 }
+
+  lf-wasm-step : LifeState -> LifeState
+  lf-wasm-step (s) = step-life s
+
+  lf-wasm-cell : LifeState, Integer, Integer -> Integer
+  lf-wasm-cell (s) (row) (col) =
+    if row < 0 then (-1)
+    else if row >= 20 then (-1)
+    else if col < 0 then (-1)
+    else if col >= 20 then (-1)
+    else life-get s row col
+
+  lf-wasm-alive : LifeState -> Integer
+  lf-wasm-alive (s) = s.alive-count
+
+  lf-wasm-neighbors : LifeState, Integer, Integer -> Integer
+  lf-wasm-neighbors (s) (row) (col) =
+    if row < 0 then (-1)
+    else if row >= 20 then (-1)
+    else if col < 0 then (-1)
+    else if col >= 20 then (-1)
+    else life-count-neighbors s row col
+
+Page 1

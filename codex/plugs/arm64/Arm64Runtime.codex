@@ -715,12 +715,24 @@ Section: ASCII to CCE Reverse Table
 
   a64-ascii-to-cce-table-addr : Integer = #40200000
   a64-cce-to-unicode-table-addr : Integer = #40201000
+  a64-cce-to-unicode-hi-table-addr : Integer = #40201100
 
   a64-build-cce-to-unicode : List Integer, Integer -> List Integer
   a64-build-cce-to-unicode (acc) (cce) =
    if cce >= 128 then acc
    else let uni = if cce < list-length cce-to-unicode-table then list-at cce-to-unicode-table cce else 0
    in a64-build-cce-to-unicode (list-push acc uni) (cce + 1)
+
+ The unicode table is two parallel byte tables rather than one, because a
+ code point does not fit a byte and the store that writes it is strb. The
+ base table's largest entry is 1091, so the high byte is never more than 4
+ and every entry encodes as at most two UTF-8 bytes.
+
+  a64-build-cce-to-unicode-hi : List Integer, Integer -> List Integer
+  a64-build-cce-to-unicode-hi (acc) (cce) =
+   if cce >= 128 then acc
+   else let uni = if cce < list-length cce-to-unicode-table then list-at cce-to-unicode-table cce else 0
+   in a64-build-cce-to-unicode-hi (list-push acc (uni / 256)) (cce + 1)
 
   a64-write-table-loop : A64State, Integer, List Integer, Integer -> A64State
   a64-write-table-loop (st) (base-reg) (table) (i) =
@@ -734,14 +746,16 @@ Section: print-line-uni (PL011 UART output)
   a64-rt-print-line-uni : List Integer
   a64-rt-print-line-uni =
    let i = []
-   in let i = a64-rt-emit i (arm64-stp-pre 29 30 31 (0 - 80))
+   in let i = a64-rt-emit i (arm64-stp-pre 29 30 31 (0 - 96))
    in let i = a64-rt-emit i (arm64-stp 19 20 31 16)
    in let i = a64-rt-emit i (arm64-stp 21 22 31 32)
    in let i = a64-rt-emit i (arm64-stp 23 24 31 48)
+   in let i = a64-rt-emit i (arm64-stp 25 26 31 64)
    in let i = a64-rt-emit i (arm64-mov 19 0)
    in let i = a64-rt-emit i (arm64-ldr 20 19 0)
    in let i = i & arm64-li 21 a64-rt-pl011-base
    in let i = i & arm64-li 24 a64-cce-to-unicode-table-addr
+   in let i = i & arm64-li 25 a64-cce-to-unicode-hi-table-addr
    in let i = i & arm64-movz 22 0 0
    in let loop = list-length i / 4
    in let i = a64-rt-emit i (arm64-cmp 22 20)
@@ -749,20 +763,41 @@ Section: print-line-uni (PL011 UART output)
    in let i = a64-rt-emit i arm64-nop
    in let i = a64-rt-emit i (arm64-add 23 19 22)
    in let i = a64-rt-emit i (arm64-ldrb 23 23 8)
-   in let i = a64-rt-emit i (arm64-add 23 24 23)
-   in let i = a64-rt-emit i (arm64-ldrb 23 23 0)
+   in let i = a64-rt-emit i (arm64-add 11 24 23)
+   in let i = a64-rt-emit i (arm64-ldrb 11 11 0)
+   in let i = a64-rt-emit i (arm64-add 12 25 23)
+   in let i = a64-rt-emit i (arm64-ldrb 12 12 0)
+   in let i = i & arm64-lsl-imm 12 12 8
+   in let i = a64-rt-emit i (arm64-add 23 11 12)
+   in let i = a64-rt-emit i (arm64-cmp-imm 23 128)
+   in let one-byte = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-lsr-imm 26 23 6
+   in let i = a64-rt-emit i (arm64-add-imm 26 26 192)
+   in let i = a64-rt-emit i (arm64-str-w 26 21 0)
+   in let i = i & arm64-li 11 63
+   in let i = a64-rt-emit i (arm64-and 26 23 11)
+   in let i = a64-rt-emit i (arm64-add-imm 26 26 128)
+   in let i = a64-rt-emit i (arm64-str-w 26 21 0)
+   in let skip = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let one-byte-label = list-length i / 4
    in let i = a64-rt-emit i (arm64-str-w 23 21 0)
+   in let next-label = list-length i / 4
    in let i = a64-rt-emit i (arm64-add-imm 22 22 1)
    in let i = a64-rt-emit i (arm64-b ((loop - list-length i / 4) * 4))
    in let exit-label = list-length i / 4
    in let i = i & arm64-movz 9 10 0
    in let i = a64-rt-emit i (arm64-str-w 9 21 0)
+   in let i = a64-rt-emit i (arm64-ldp 25 26 31 64)
    in let i = a64-rt-emit i (arm64-ldp 23 24 31 48)
    in let i = a64-rt-emit i (arm64-ldp 21 22 31 32)
    in let i = a64-rt-emit i (arm64-ldp 19 20 31 16)
-   in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 80)
+   in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 96)
    in let i = a64-rt-emit i arm64-ret
-   in a64-patch-insn-raw i exit (arm64-b-cond 10 ((exit-label - exit) * 4))
+   in let i = a64-patch-insn-raw i exit (arm64-b-cond arm64-cond-ge ((exit-label - exit) * 4))
+   in let i = a64-patch-insn-raw i one-byte (arm64-b-cond arm64-cond-lt ((one-byte-label - one-byte) * 4))
+   in a64-patch-insn-raw i skip (arm64-b ((next-label - skip) * 4))
 
 Section: MMIO Helpers
 
@@ -2915,7 +2950,10 @@ Section: Emit All Runtime Helpers
    in let st3c = a64-emit-li st3b 10 a64-cce-to-unicode-table-addr
    in let c2u-table = a64-build-cce-to-unicode [] 0
    in let st3d0 = a64-write-table-loop st3c 10 c2u-table 0
-   in let st3d1 = a64-emit-proc-table-init st3d0
+   in let st3ch = a64-emit-li st3d0 10 a64-cce-to-unicode-hi-table-addr
+   in let c2u-hi-table = a64-build-cce-to-unicode-hi [] 0
+   in let st3dh = a64-write-table-loop st3ch 10 c2u-hi-table 0
+   in let st3d1 = a64-emit-proc-table-init st3dh
    in let st3d = a64-emit-boot-grant st3d1
    in let st3e = a64-patch-insn st3d cbnz-idx (arm64-cbnz 28 ((uefi-label - cbnz-idx) * 4))
    in let st3f = a64-emit-seed-fs-handlers st3e

@@ -117,13 +117,52 @@ Section: Round Logic
          rng      = s.rng
        }
 
+  war-top-n : List Integer, Integer, Integer, List Integer -> List Integer
+  war-top-n (hand) (i) (n) (acc) =
+    if i >= n then acc
+    else war-top-n hand (i + 1) n (list-push acc (list-at hand i))
+
+  war-add-all : List Integer, List Integer, Integer -> List Integer
+  war-add-all (acc) (extra) (i) =
+    if i >= list-length extra then acc
+    else war-add-all (list-push acc (list-at extra i)) extra (i + 1)
+
+  war-add-list : List Integer, Integer, List Integer, Integer -> List Integer
+  war-add-list (hand) (size) (cards) (i) =
+    if i >= list-length cards then hand
+    else war-add-list (war-add-card hand (size + i) (list-at cards i)) size cards (i + 1)
+
+  war-give : WarState, Integer, List Integer -> WarState
+  war-give (s) (who) (pot) =
+    if who == 1 then
+      WarState {
+        p1-hand  = war-add-list (s.p1-hand) (s.p1-size) pot 0,
+        p1-size  = s.p1-size + list-length pot,
+        p2-hand  = s.p2-hand,
+        p2-size  = s.p2-size,
+        rng      = s.rng
+      }
+    else
+      WarState {
+        p1-hand  = s.p1-hand,
+        p1-size  = s.p1-size,
+        p2-hand  = war-add-list (s.p2-hand) (s.p2-size) pot 0,
+        p2-size  = s.p2-size + list-length pot,
+        rng      = s.rng
+      }
+
   war-do-war : WarState, Integer, Integer -> WarState
   war-do-war (s) (orig1) (orig2) =
     let skip1 = if s.p1-size >= 3 then 3 else s.p1-size
     in let skip2 = if s.p2-size >= 3 then 3 else s.p2-size
+    in let down1 = war-top-n (s.p1-hand) 0 skip1 []
+    in let down2 = war-top-n (s.p2-hand) 0 skip2 []
     in let s2 = war-skip-cards s skip1 skip2
-    in if s2.p1-size <= 0 then s2
-    else if s2.p2-size <= 0 then s2
+    in let pot-a = list-push (list-push [] orig1) orig2
+    in let pot-b = war-add-all pot-a down1 0
+    in let pot = war-add-all pot-b down2 0
+    in if s2.p1-size <= 0 then war-give s2 2 pot
+    else if s2.p2-size <= 0 then war-give s2 1 pot
     else let wc1 = war-take-top (s2.p1-hand) (s2.p1-size)
     in let wc2 = war-take-top (s2.p2-hand) (s2.p2-size)
     in let h1 = war-shift-hand (s2.p1-hand) (s2.p1-size)
@@ -135,10 +174,11 @@ Section: Round Logic
            p2-size  = s2.p2-size - 1,
            rng      = s2.rng
          }
+    in let full-pot = list-push (list-push pot wc1) wc2
     in let wr1 = war-card-rank wc1
     in let wr2 = war-card-rank wc2
-    in if wr1 >= wr2 then war-p1-takes s3 wc1 wc2
-    else war-p2-takes s3 wc1 wc2
+    in if wr1 >= wr2 then war-give s3 1 full-pot
+    else war-give s3 2 full-pot
 
   war-skip-cards : WarState, Integer, Integer -> WarState
   war-skip-cards (s) (n1) (n2) =
@@ -163,9 +203,8 @@ Section: Game Runner
   war-init (seed) =
     let r = rng-new seed
     in let deck = war-shuffle (war-build-deck 0 []) r
-    in let blank = war-build-slots 52 []
-    in let h1 = war-deal-half deck blank 0 0
-    in let h2 = war-deal-half deck blank 26 0
+    in let h1 = war-deal-half deck (war-build-slots 52 []) 0 0
+    in let h2 = war-deal-half deck (war-build-slots 52 []) 26 0
     in WarState {
          p1-hand  = h1,
          p1-size  = 26,

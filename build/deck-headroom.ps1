@@ -77,7 +77,7 @@ param(
   [string]$Quire = '',
   [string]$Kernel = 'seed/Codex.cdx',
   [string]$Tag = 'corpus',
-  [int]$Jobs = 4,
+  [int]$Jobs = 8,
   [int]$TimeoutSec = 600,
   [int]$Top = 25,
   [double]$MinMargin = 0,

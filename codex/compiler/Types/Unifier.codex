@@ -32,7 +32,8 @@ Section: State
    expr-types : List ExprTypeEntry,
    effect-exempt : Boolean,
    scope-grants : List EffectLabel,
-   chapter-grounds : List Text
+   chapter-grounds : List Text,
+   dirty-slots : List Integer
   }
 
 Section: Construction
@@ -47,7 +48,8 @@ Section: Construction
     expr-types = [],
     effect-exempt = False,
     scope-grants = [],
-    chapter-grounds = []
+    chapter-grounds = [],
+    dirty-slots = []
    }
 
 Section: Fresh Variables
@@ -111,6 +113,7 @@ Section: Add Substitution
   add-subst : UnificationState, Integer, CodexType -> UnificationState
   add-subst (st) (var-id) (ty) =
    let __seq = st.substitutions = list-set-at (st.substitutions) var-id ty
+   in let __seq = st.dirty-slots = list-push (st.dirty-slots) var-id
    in st
 
 Section: Expr Types
@@ -898,8 +901,43 @@ Section: Deep Type Copy
    mc-cap-name : Integer,
    mc-cap-row : Integer,
    mc-cap-list : Integer,
-   mc-ceiling : Integer
+   mc-ceiling : Integer,
+   mc-tcons : Integer,
+   mc-tcons-slots : Integer,
+   mc-tcons-shift : Integer
   }
+
+ The text layer. The address memo is reset every batch of the CHECK walk,
+ so a text the memo alone deduplicated would be copied again on every batch
+ that mentions it, and a Name's key mixes its text's address, so every label,
+ row and list above it would stop matching too. This table keys a text by
+ its CONTENT, 16-byte slots like the cons layer, and it persists for the
+ phase: a hit is verified by comparing the characters, so a key collision
+ costs a copy and never a wrong text.
+
+  text-content-key : Text -> Integer
+  text-content-key (t) =
+   cons-norm (text-content-key-loop t 0 (text-length t) (cons-mix 801 (text-length t)))
+
+  text-content-key-loop : Text, Integer, Integer, Integer -> Integer
+  text-content-key-loop (t) (i) (len) (acc) =
+   if i == len then acc
+   else text-content-key-loop t (i + 1) len (cons-mix acc (char-code-at t i))
+
+  tcons-probe : Integer, MemoCtx -> Integer
+  tcons-probe (k) (mc) =
+   if mc.mc-tcons == 0 then 0
+   else cons-probe-at k (mc.mc-tcons) (mc.mc-tcons-slots) (bit-shru (k * 2177342782468422677) (mc.mc-tcons-shift)) 64
+
+  tcons-lookup : Integer, Text, MemoCtx -> Integer
+  tcons-lookup (k) (t) (mc) =
+   let slot = tcons-probe k mc
+   in if slot == 0 then 0
+   else if peek-qword slot 0 /= k then 0
+   else let v = peek-32 (slot + 8) 0
+   in if v == 0 then 0
+   else if text-compare (list-at (mc.mc-text) (v - 1)) t == 0 then v
+   else 0
 
   memo-pow2-at-least : Integer, Integer -> Integer
   memo-pow2-at-least (n) (p) =
@@ -1021,7 +1059,7 @@ Section: Deep Type Copy
 
   mcopy-text-memo : Text, Integer, Integer, MemoCtx -> Text
   mcopy-text-memo (t) (a) (slot) (mc) =
-   if slot == 0 then substring t 0 (text-length t)
+   if slot == 0 then mcopy-text-content t 0 mc
    else if memo-slot-key slot == bit-and a 4294967295 then mcopy-text-hit t slot mc
    else mcopy-text-fresh t a slot mc
 
@@ -1030,15 +1068,38 @@ Section: Deep Type Copy
    let v = peek-32 slot 4
    in if v == 0 then t else list-at (mc.mc-text) (v - 1)
 
+ A saturated side list leaves the memo slot claimed with no value, and a
+ later mention of the same address would then read that as a cycle and hand
+ back the ORIGINAL, which under the batched walk is a pointer into scratch
+ about to be rewound. Every fresh path unclaims its slot on saturation, so
+ the next mention copies again instead: less deduplicated, never dangling.
+
+  memo-unclaim : Integer -> Integer
+  memo-unclaim (slot) = poke-32 slot 0 0
+
   mcopy-text-fresh : Text, Integer, Integer, MemoCtx -> Text
   mcopy-text-fresh (t) (a) (slot) (mc) =
    let claimed = poke-32 slot 0 a
-   in let copy = substring t 0 (text-length t)
+   in mcopy-text-content t slot mc
+
+  mcopy-text-content : Text, Integer, MemoCtx -> Text
+  mcopy-text-content (t) (slot) (mc) =
+   let k = text-content-key t
+   in let v = tcons-lookup k t mc
+   in if v /= 0 then mcopy-text-adopt slot v mc
+   else let copy = substring t 0 (text-length t)
    in let n = list-length (mc.mc-text)
-   in if n >= mc.mc-cap-text then copy
+   in if n >= mc.mc-cap-text then let un = if slot == 0 then 0 else memo-unclaim slot in copy
    else let pushed = list-push (mc.mc-text) copy
-   in let vset = poke-32 slot 4 (n + 1)
+   in let vset = if slot == 0 then 0 else poke-32 slot 4 (n + 1)
+   in let tslot = tcons-probe k mc
+   in let w = if tslot == 0 then 0 else cons-slot-set tslot k (n + 1)
    in copy
+
+  mcopy-text-adopt : Integer, Integer, MemoCtx -> Text
+  mcopy-text-adopt (slot) (v) (mc) =
+   let aset = if slot == 0 then 0 else poke-32 slot 4 v
+   in list-at (mc.mc-text) (v - 1)
 
   mcopy-texts : List Text, MemoCtx -> List Text
   mcopy-texts (ts) (mc) =
@@ -1069,12 +1130,23 @@ Section: Deep Type Copy
   mcopy-name-fresh : Name, Integer, Integer, MemoCtx -> Name
   mcopy-name-fresh (nm) (a) (slot) (mc) =
    let claimed = poke-32 slot 0 a
-   in let copy = Name { value = mcopy-text (nm.value) mc }
+   in let tv = mcopy-text (nm.value) mc
+   in let k = cons-norm (cons-mix 701 (address-of tv))
+   in let v = cons-lookup k mc
+   in if v /= 0 then mcopy-name-adopt slot v mc
+   else let copy = Name { value = tv }
    in let n = list-length (mc.mc-name)
-   in if n >= mc.mc-cap-name then copy
+   in if n >= mc.mc-cap-name then let un = memo-unclaim slot in copy
    else let pushed = list-push (mc.mc-name) copy
    in let vset = poke-32 slot 4 (n + 1)
+   in let cslot = cons-probe k mc
+   in let w = if cslot == 0 then 0 else cons-slot-set cslot k (n + 1)
    in copy
+
+  mcopy-name-adopt : Integer, Integer, MemoCtx -> Name
+  mcopy-name-adopt (slot) (v) (mc) =
+   let aset = poke-32 slot 4 v
+   in list-at (mc.mc-name) (v - 1)
 
   mcopy-names : List Name, MemoCtx -> List Name
   mcopy-names (ns) (mc) =
@@ -1113,7 +1185,7 @@ Section: Deep Type Copy
    in let v2 = cons-lookup k mc
    in if v2 /= 0 then mcopy-row-adopt slot v2 mc
    else let n = list-length (mc.mc-row)
-   in if n >= mc.mc-cap-row then copy
+   in if n >= mc.mc-cap-row then let un = memo-unclaim slot in copy
    else let pushed = list-push (mc.mc-row) copy
    in let aset = poke-32 slot 4 (n + 1)
    in let cslot = cons-probe k mc
@@ -1356,7 +1428,7 @@ Section: Deep Type Copy
    in let v2 = cons-lookup k mc
    in if v2 /= 0 then mcopy-type-adopt slot v2 mc
    else let n = list-length (mc.mc-ty)
-   in if n >= mc.mc-cap-ty then copy
+   in if n >= mc.mc-cap-ty then let un = memo-unclaim slot in copy
    else let pushed = list-push (mc.mc-ty) copy
    in let aset = poke-32 slot 4 (n + 1)
    in let cslot = cons-probe k mc

@@ -116,7 +116,8 @@ Section: Record Types
    field-cache : List FieldCacheEntry,
    fresh-slots : List Integer,
    stype-sites : List Integer,
-   range-env : List RangeBind
+   range-env : List RangeBind,
+   hosted-target : Integer between 0 and 2
   }
 
   EffectOpAddr = record {
@@ -532,6 +533,38 @@ Section: Full CCE Conversion (tier0/1/2, inlined from Foreword CCE)
   cce-t2-rodata-offset = cce0u2-rodata-offset + 4352
 
 Section: State Helpers
+ Three targets share one selector so a build cannot be half-hosted: 0 is bare
+ metal, 1 is a hosted Linux process, 2 is a hosted Windows process.
+
+  st-hosted : CodegenState -> Boolean
+  st-hosted (st) = st.hosted-target /= 0
+
+  st-windows : CodegenState -> Boolean
+  st-windows (st) = st.hosted-target == 2
+
+ Where the text is patched to sit. Windows refuses every ImageBase that would
+ put the text at bare-metal-load-addr: measured 2026-08-29, 0x10000 through
+ 0xF0000 are all rejected as "not a valid application for this OS platform"
+ while 0x100000 runs, and PE requires a 64K-aligned base with the first section
+ above the headers, so no pair sums to 1 MB. The Windows build is therefore
+ patched for its own address rather than copied down to ours at startup.
+
+  st-load-base : CodegenState -> Integer
+  st-load-base (st) = if st-windows st then hosted-win-load-addr else bare-metal-load-addr
+
+ The arena moves for the same reason the cells did: a fixed request low down is
+ refused from a freshly loaded image. Linux keeps the bare-metal base, which its
+ loader grants.
+
+  st-heap-base : CodegenState -> Integer
+  st-heap-base (st) = if st-windows st then hosted-win-heap-base else bare-metal-heap-base
+
+  st-base : CodegenState -> Integer
+  st-base (st) = if st-windows st then hosted-win-cell-base else if st-hosted st then hosted-cell-base else 0
+
+  st-cell : CodegenState, Integer -> Integer
+  st-cell (st) (a) = st-base st + a
+
   empty-codegen-state : CodegenState
   empty-codegen-state =
    CodegenState {
@@ -593,7 +626,8 @@ Section: State Helpers
    field-cache = [],
    fresh-slots = [],
    stype-sites = [],
-   range-env = []
+   range-env = [],
+   hosted-target = 0
   }
 
   fc-flush : CodegenState -> CodegenState
@@ -784,7 +818,8 @@ Section: State Helpers
     field-cache = [],
     fresh-slots = [],
     stype-sites = st.stype-sites,
-    range-env = []
+    range-env = [],
+    hosted-target = st.hosted-target
    }
 
   reset-func-scratch : CodegenState -> CodegenState

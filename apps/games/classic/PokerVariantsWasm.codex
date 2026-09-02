@@ -1,0 +1,108 @@
+Chapter: PokerVariantsWasm
+  cites Games chapter PokerVariants
+  cites Games chapter Poker
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for the poker variants, on the handle contract in
+ games-backlog.md GAME-11.
+
+ A variant arrives as an index rather than as a constructor, because the
+ page and the grader both speak integers. The order is the one
+ `run-poker-variant` matches in.
+
+ We say:
+
+Section: Variant Selection
+
+  pvw-variant : Integer -> PokerVariant
+  pvw-variant (i) =
+    if i == 0 then FiveCardDraw
+    else if i == 1 then FiveCardStud
+    else if i == 2 then SevenCardStud
+    else if i == 3 then Baseball
+    else if i == 4 then HiChicago
+    else if i == 5 then LowChicago
+    else if i == 6 then FollowTheQueen
+    else JacksOrBetter
+
+Section: The Browser Interface
+
+  pvw-wasm-run : Integer, Integer, Integer -> PokerSession
+  pvw-wasm-run (variant) (seed) (players) =
+    run-poker-variant (pvw-variant variant) seed players
+
+  pvw-wasm-winner : PokerSession -> Integer
+  pvw-wasm-winner (s) = s.winner
+
+  pvw-wasm-p1 : PokerSession -> Integer
+  pvw-wasm-p1 (s) = s.p1-hand-rank
+
+  pvw-wasm-p2 : PokerSession -> Integer
+  pvw-wasm-p2 (s) = s.p2-hand-rank
+
+  pvw-wasm-played : PokerSession -> Integer
+  pvw-wasm-played (s) = s.hands-played
+
+  pvw-wasm-special : PokerSession -> Integer
+  pvw-wasm-special (s) = s.special-winner
+
+  pvw-wasm-players : PokerSession -> Integer
+  pvw-wasm-players (s) = s.num-players
+
+Section: Best Five of Seven
+
+  pvw-seven : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  pvw-seven (a) (b) (c) (d) (e) (f) (g) =
+    list-push (list-push (list-push (list-push (list-push (list-push (list-push [] a) b) c) d) e) f) g
+
+  pvw-wasm-best5 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> HandRank
+  pvw-wasm-best5 (a) (b) (c) (d) (e) (f) (g) =
+    evaluate-hand (pv-best-5-of-7 (pvw-seven a b c d e f g))
+
+  pvw-wasm-best5-card : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  pvw-wasm-best5-card (a) (b) (c) (d) (e) (f) (g) =
+    let h = pv-best-5-of-7 (pvw-seven a b c d e f g)
+    in h.cards
+
+  pvw-wasm-card-at : List Integer, Integer -> Integer
+  pvw-wasm-card-at (cards) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length cards then (-1)
+    else list-at cards i
+
+Section: Judging a Choice by the Engine's Own Comparator
+
+ Whether the best five of seven is the BEST five is decidable without a
+ second evaluator: the chosen hand must beat or tie all twenty-one
+ subsets under the same comparison the game itself uses. These two
+ exports are what let a grader ask that question.
+
+  pvw-wasm-eval5 : Integer, Integer, Integer, Integer, Integer -> HandRank
+  pvw-wasm-eval5 (a) (b) (c) (d) (e) =
+    evaluate-hand (PokerHand { cards = pvw-five a b c d e })
+
+  pvw-wasm-cmp : HandRank, HandRank -> Integer
+  pvw-wasm-cmp (a) (b) = compare-hands a b
+
+  pvw-wasm-rank : HandRank -> Integer
+  pvw-wasm-rank (h) = h.rank
+
+Section: Wild Cards
+
+  pvw-five : Integer, Integer, Integer, Integer, Integer -> List Integer
+  pvw-five (a) (b) (c) (d) (e) =
+    list-push (list-push (list-push (list-push (list-push [] a) b) c) d) e
+
+  pvw-wasm-wild-rank : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pvw-wasm-wild-rank (a) (b) (c) (d) (e) (wild-rank) =
+    let hand = PokerHand { cards = pvw-five a b c d e }
+    in let wilds = pv-build-rank-wilds (list-push [] wild-rank)
+    in let hr = pv-evaluate-with-wilds hand wilds
+    in hr.rank
+
+  pvw-wasm-wild-count : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pvw-wasm-wild-count (a) (b) (c) (d) (e) (wild-rank) =
+    pv-count-wilds-in-hand (pvw-five a b c d e) (pv-build-rank-wilds (list-push [] wild-rank))
+
+Page 1

@@ -116,8 +116,8 @@ Section: Melding
     in let delta = if pin-suit c == s & pin-rank c == rk then 1 else 0
     in count-sr-loop hand s rk (i + 1) (acc + delta)
 
-  has-sr : List Integer, Integer, Integer -> Boolean
-  has-sr (hand) (s) (rk) = count-sr-loop hand s rk 0 0 >= 1
+  pin-min : Integer, Integer -> Integer
+  pin-min (a) (b) = if a < b then a else b
 
   meld-marriages : List Integer, Integer -> Integer
   meld-marriages (hand) (trump) =
@@ -126,24 +126,31 @@ Section: Melding
   meld-marriage-loop : List Integer, Integer, Integer, Integer -> Integer
   meld-marriage-loop (hand) (trump) (s) (score) =
     if s >= 4 then score
-    else let has-k = has-sr hand s 3
-    in let has-q = has-sr hand s 2
-    in let pts = if has-k & has-q then if s == trump then 40 else 20 else 0
-    in meld-marriage-loop hand trump (s + 1) (score + pts)
+    else let pairs = pin-min (count-sr-loop hand s 3 0 0) (count-sr-loop hand s 2 0 0)
+    in let each = if s == trump then 40 else 20
+    in meld-marriage-loop hand trump (s + 1) (score + pairs * each)
 
   meld-pinochle : List Integer -> Integer
   meld-pinochle (hand) =
-    let has-jd = has-sr hand 1 1
-    in let has-qs = has-sr hand 3 2
-    in if has-jd & has-qs then 40 else 0
+    let n = pin-min (count-sr-loop hand 1 1 0 0) (count-sr-loop hand 3 2 0 0)
+    in if n >= 2 then 300
+    else if n == 1 then 40
+    else 0
 
   meld-around : List Integer, Integer -> Integer
   meld-around (hand) (rk) =
-    let s0 = count-sr-loop hand 0 rk 0 0 >= 1
-    in let s1 = count-sr-loop hand 1 rk 0 0 >= 1
-    in let s2 = count-sr-loop hand 2 rk 0 0 >= 1
-    in let s3 = count-sr-loop hand 3 rk 0 0 >= 1
-    in if s0 & s1 & s2 & s3 then
+    let s0 = count-sr-loop hand 0 rk 0 0
+    in let s1 = count-sr-loop hand 1 rk 0 0
+    in let s2 = count-sr-loop hand 2 rk 0 0
+    in let s3 = count-sr-loop hand 3 rk 0 0
+    in let n = pin-min (pin-min s0 s1) (pin-min s2 s3)
+    in if n >= 2 then
+      if rk == 5 then 1000
+      else if rk == 3 then 800
+      else if rk == 2 then 600
+      else if rk == 1 then 400
+      else 0
+    else if n == 1 then
       if rk == 5 then 100
       else if rk == 3 then 80
       else if rk == 2 then 60
@@ -153,12 +160,15 @@ Section: Melding
 
   meld-run : List Integer, Integer -> Integer
   meld-run (hand) (trump) =
-    let has-a  = has-sr hand trump 5
-    in let has-t  = has-sr hand trump 4
-    in let has-k  = has-sr hand trump 3
-    in let has-q  = has-sr hand trump 2
-    in let has-j  = has-sr hand trump 1
-    in if has-a & has-t & has-k & has-q & has-j then 150 else 0
+    let a = count-sr-loop hand trump 5 0 0
+    in let t = count-sr-loop hand trump 4 0 0
+    in let k = count-sr-loop hand trump 3 0 0
+    in let q = count-sr-loop hand trump 2 0 0
+    in let j = count-sr-loop hand trump 1 0 0
+    in let n = pin-min (pin-min (pin-min a t) (pin-min k q)) j
+    in if n >= 2 then 1500
+    else if n == 1 then 150
+    else 0
 
   score-meld : List Integer, Integer -> Integer
   score-meld (hand) (trump) =

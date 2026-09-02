@@ -471,7 +471,21 @@ Section: Frontend
    in let scratch-ceiling = scratch-base + parse-scratch-height
    in let parse-phase = phase-start
    in let st = make-parse-state tokens source
-   in let scan = scan-document st
+   in let scan-mark = __heap-save
+   in let scan-floor = __deck-pos
+   in let scan0 = scan-document st
+   in let scan = deck-record (ScanResult {
+    type-defs = [],
+    effect-defs = [],
+    class-defs = [],
+    instance-defs = [],
+    def-headers = for h in (scan0.def-headers) -> DefHeader { name = copy-sx-token scan-floor (h.name), params = copy-sx-tokens scan-floor (h.params), ann = for a in (h.ann) -> copy-sx-typeann scan-floor a, body-pos = h.body-pos, chapter-slug = copy-sx-text scan-floor (h.chapter-slug) },
+    citations = [],
+    chapter-title = "",
+    section-titles = [],
+    chapter-names = copy-sx-texts scan-floor (scan0.chapter-names)
+   })
+   in let scan-back = __heap-restore scan-mark
    in let h2 = __heap-save
    in let assignments-s = if deck-short-of scratch-ceiling demand-parse-scratch-guard-band then [] else deck-record (build-all-assignments source (scan.def-headers) 0 [])
    in let colliding-s = if deck-short-of scratch-ceiling demand-parse-scratch-guard-band then skip-list-text-empty else deck-record (find-colliding-names assignments-s)
@@ -616,7 +630,8 @@ Section: Frontend
    in let check-ceiling = check-base + check-deck-height
    in let check-origin = __deck-pos
    in let check-phase = phase-start
-   in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments) check-ceiling)
+   in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments) check-ceiling check-base keep-base (keep-base + keep-height - 4194304) (if flags.poison-compact then poison-check else 0))
+   in let batch-bag = if flags.phase-trace then deck-record (bag-from-list [make-warning cdx-escape-violation (check-result.batch-note) synthetic-span]) else no-overflow-bag
    in let h8 = __heap-save
    in let cap-diags = deck-record (check-opening-capabilities (check-result.types))
    in let check-bag0 = deck-record (bag-merge-all [sr.resolve-bag, check-result.state.bag, bag-from-list cap-diags])
@@ -627,7 +642,7 @@ Section: Frontend
    in let check-ov-bag = if check-ov == 1 | check-sat == 1 then deck-overflow-bag "CHECK" else no-overflow-bag
    in let check-esc-bag = escape-check-bag (flags.escape-check) check-metrics "CHECK"
    in let cost-bag = deck-record (cost-growth-bag (flags.cost-report) (sr.scoped.defs) (check-result.state))
-   in let check-bag = deck-record (bag-merge-all [check-bag0, check-ov-bag, check-esc-bag, cost-bag])
+   in let check-bag = deck-record (bag-merge-all [check-bag0, check-ov-bag, check-esc-bag, cost-bag, batch-bag])
    in let check-heap-marks = deck-record (list-push (sr.heap-marks) h8)
    in let check-phase-metrics = deck-record (list-push (sr.phase-metrics) check-metrics)
    in if bag-has-errors check-bag
@@ -636,7 +651,7 @@ Section: Frontend
       in let sorted-all0 = deck-record (resolve-all-bindings (check-result.state) (sort-bindings (check-result.types & resolved-env)) 0 (list-length (check-result.types) + list-length resolved-env) (__list-with-capacity (list-length (check-result.types) + list-length resolved-env)))
       in let sorted-et0 = deck-record (resolve-all-expr-types (check-result.state) (sort-expr-types (check-result.state.expr-types)) 0 (list-length (check-result.state.expr-types)) (__list-with-capacity (list-length (check-result.state.expr-types))))
       in let post-ov-bag = if __deck-pos > check-ceiling then deck-overflow-bag "CHECK" else no-overflow-bag
-      in let memo-pop0 = list-length sorted-et0 * 32 + list-length sorted-all0 * 32 + 1024
+      in let memo-pop0 = list-length sorted-et0 / 4 + list-length sorted-all0 + 65536
       in let memo-graph = (check-metrics.deck-end - check-metrics.deck-origin) / 64
       in let memo-pop = if memo-graph > memo-pop0 then memo-graph else memo-pop0
       in let memo-slots = memo-pow2-at-least (memo-pop * 2) 4096
@@ -645,11 +660,14 @@ Section: Frontend
       in let cons-slots = memo-pow2-at-least (memo-pop / 2) 4096
       in let cons-table = pitch (cons-slots * 16)
       in let cons-z = __memset cons-table 0 (cons-slots * 16)
+      in let tcons-slots = memo-pow2-at-least (memo-pop / 4) 4096
+      in let tcons-table = pitch (tcons-slots * 16)
+      in let tcons-z = __memset tcons-table 0 (tcons-slots * 16)
       in let mc = MemoCtx {
        mc-table = memo-table,
        mc-slots = memo-slots,
        mc-shift = memo-shift-for memo-slots 64,
-       mc-floor = keep-base,
+       mc-floor = check-base,
        mc-ty = __list-with-capacity memo-pop,
        mc-text = __list-with-capacity memo-pop,
        mc-name = __list-with-capacity (memo-pop / 2 + 16),
@@ -666,11 +684,14 @@ Section: Frontend
        mc-cap-name = memo-pop / 2 + 16,
        mc-cap-row = memo-pop / 16 + 16,
        mc-cap-list = memo-pop / 4 + 16,
-       mc-ceiling = keep-base + keep-height - 4194304
+       mc-ceiling = keep-base + keep-height - 4194304,
+       mc-tcons = tcons-table,
+       mc-tcons-slots = tcons-slots,
+       mc-tcons-shift = memo-shift-for tcons-slots 64
       }
       in let check-resolve-metrics = phase-measure check-phase "CHECK-RESOLVE"
       in let all-phase-metrics = deck-record (list-push check-phase-metrics check-resolve-metrics)
-      in let keep-set = __deck-set keep-base
+      in let keep-set = __deck-set (check-result.keep-end)
       in let keep-phase = phase-start
       in let sorted-all = deck-record (copy-bindings-deep sorted-all0 mc)
       in let sorted-et = deck-record (copy-expr-types-deep sorted-et0 mc)
@@ -682,7 +703,7 @@ Section: Frontend
       in let kept-metrics = deck-record (for m in all-phase-metrics -> deck-record (PhaseMetrics { label = m.label, bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
       in let keep-metrics = phase-measure keep-phase "CHECK-KEEP"
       in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) keep-height
-      in let keep-ov-bag = if keep-ov == 1 | keep-metrics.deck-end >= mc.mc-ceiling then deck-overflow-bag "CHECK-KEEP" else no-overflow-bag
+      in let keep-ov-bag = if keep-ov == 1 | keep-metrics.deck-end >= mc.mc-ceiling | check-result.keep-overflow then deck-overflow-bag "CHECK-KEEP" else no-overflow-bag
       in let keep-stat-bag = if flags.escape-check then deck-record (bag-from-list [make-warning cdx-escape-violation ("KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " ty=" & show (list-length (mc.mc-ty)) & " text=" & show (list-length (mc.mc-text)) & " name=" & show (list-length (mc.mc-name)) & " row=" & show (list-length (mc.mc-row)) & " tylists=" & show (list-length (mc.mc-tylist)) & "/" & show (sum-tylist-lens (mc.mc-tylist) 0 (list-length (mc.mc-tylist)) 0) & " fieldlists=" & show (list-length (mc.mc-fieldlist)) & "/" & show (sum-fieldlist-lens (mc.mc-fieldlist) 0 (list-length (mc.mc-fieldlist)) 0) & " ctorlists=" & show (list-length (mc.mc-ctorlist)) & "/" & show (sum-ctorlist-lens (mc.mc-ctorlist) 0 (list-length (mc.mc-ctorlist)) 0) & " labellists=" & show (list-length (mc.mc-labellist)) & "/" & show (sum-labellist-lens (mc.mc-labellist) 0 (list-length (mc.mc-labellist)) 0) & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et) & " binds=" & show (list-length sorted-all)) synthetic-span]) else bag-from-list []
       in let final-bag = deck-record (bag-merge-all [kept-bag, keep-ov-bag, keep-stat-bag, post-ov-bag])
       in let pre-sorted-ust = deck-record (UnificationState {
@@ -694,7 +715,8 @@ Section: Frontend
        expr-types = sorted-et,
        effect-exempt = False,
        scope-grants = [],
-       chapter-grounds = []
+       chapter-grounds = [],
+       dirty-slots = []
       })
       in let result0 = deck-record (CompileChecked {
        scoped = sr.scoped,
@@ -760,7 +782,7 @@ Section: Frontend
    in let lower-ceiling = lower-base + lower-deck-height
    in let lower-origin = __deck-pos
    in let lower-phase = phase-start
-   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling)
+   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling run-passes)
    in let passed = if run-passes then deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
       else IRPassResult { chapter = ir-raw, violations = [], infos = [] }
    in let ir-passed = passed.chapter
@@ -817,7 +839,7 @@ Section: Frontend
    in let lower-ceiling = lower-base + lower-deck-height
    in let lower-origin = __deck-pos
    in let lower-phase = phase-start
-   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling)
+   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling True)
    in let passed = deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
    in let ir = passed.chapter
    in let ir-check-bag = deck-record (ir-check-violation-bag (passed.violations))
@@ -1303,7 +1325,7 @@ Section: Text Compilation
 Section: Binary Compilation
 
   compile-to-cdx : CompileFrontend -> EmitChapterResult
-  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress
+  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0
 
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
@@ -1329,14 +1351,14 @@ Section: Binary Compilation
   ir-emit-roots : List Text
   ir-emit-roots = ["opening", "vb-capacity-auto", "vb-read-auto", "vb-write-auto", "fat16-servicer-read", "fat16-servicer-write"]
 
-  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode -> EmitChapterResult
-  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) =
+  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, Integer between 0 and 2 -> EmitChapterResult
+  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) =
    if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
    else let all-defs = (fe.cdx-ir).defs
     in let proofs = keep-proof-defs [] all-defs 0
     in let pruned = ir-prune-unreachable-roots (fe.cdx-ir) cdx-emit-roots
     in let dropped = ir-dropped-budgeted-punctuals all-defs (pruned.defs)
-    in let emit-result = x86-64-emit-cdx-with-exit-mode (ir-chapter-with-proofs pruned proofs) (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped
+    in let emit-result = x86-64-emit-cdx-with-exit-mode (ir-chapter-with-proofs pruned proofs) (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -1505,6 +1527,7 @@ Section: Entry Point
    in let debug = has-mode-flag mode "debug"
    in let prof = has-mode-flag mode "profile"
    in let wd-mode = if has-mode-flag mode "pet" then WatchdogPet else WatchdogProgress
+   in let hosted-target = if has-mode-flag mode "hosted-windows" then 2 else if has-mode-flag mode "hosted" then 1 else 0
    in act
     if debug then print-line-uni ("DBG:frontend src=" & show (text-length source))
     else print-line-uni ""
@@ -1517,7 +1540,7 @@ Section: Entry Point
       dbg-print-def-names (fe.cdx-ir.defs) 0 (list-length (fe.cdx-ir.defs))
      end
      else print-line-uni ""
-     let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode
+     let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target
      in act
       if prof then print-line-uni ("PROF-END: " & show (prof-dump 0))
       else print-line-uni ""
@@ -2212,7 +2235,11 @@ Section: Entry Point
  exactly as TEXT/CDX take it; the disk is the linear-memory contract
  (`disk_reserve` before `_start` on wasm, the boot medium on metal);
  stdout carries the RESOLVED UNIT between `RESOLVE-BEGIN` and
- `RESOLVE-END` lines -- resolved chapters first, renamed
+ `RESOLVE-END` lines, in UNICODE like every other text mode and not in
+ the CCE wire encoding -- the frame's whole purpose is to be read by a
+ host, and `print-text` is `IR-CCE`'s writer, so a frame printed with it
+ came back as mojibake for a consumer that had done nothing wrong --
+ resolved chapters first, renamed
  `Chapter: quire--name` exactly as `disk-load-cite` does, then the source
  verbatim. A host with no volume (`block-sector-count` 0) gets the source
  back unchanged: the mount is never attempted, so the zeroed-BPB divide a
@@ -2240,7 +2267,7 @@ Section: Entry Point
       disk-resolve-forewords vol source mode
      end
     print-line-uni "RESOLVE-BEGIN"
-    print-text (prefix & source)
+    print-uni (prefix & source)
     print-line-uni ""
     print-line-uni "RESOLVE-END"
    end

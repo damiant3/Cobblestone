@@ -36,7 +36,7 @@ Section: Bare-Metal Start
   emit-pet-watchdog-helper (st) =
    let st1 = record-func-offset st "__pet_watchdog"
    in let st2 = st-append-code st1 (push-r reg-rax)
-   in let st3 = st-append-code st2 (li reg-rax wd-stale-tick-addr)
+   in let st3 = st-append-code st2 (li reg-rax (st-cell st2 wd-stale-tick-addr))
    in let st4 = st-append-code st3 [72, 199, 0, 0, 0, 0, 0]
    in let st5 = st-append-code st4 (pop-r reg-rax)
    in st-append-code st5 [195]
@@ -110,12 +110,12 @@ Section: Bare-Metal Start
   emit-watchdog-stack-walk : CodegenState -> CodegenState
   emit-watchdog-stack-walk (st) =
    let st1 = emit-oom-string st [83, 84, 75, 61] 0
-   in let st2 = st-append-code st1 (li reg-rdi wd-ring-head-addr)
+   in let st2 = st-append-code st1 (li reg-rdi (st-cell st1 wd-ring-head-addr))
    in let st3 = st-append-code st2 (mov-load reg-rax reg-rdi 0)
    in let st4 = st-append-code st3 (sub-ri reg-rax 1)
    in let st5 = st-append-code st4 (and-ri reg-rax 3)
    in let st6 = st-append-code st5 (shl-ri reg-rax 5)
-   in let st7 = st-append-code st6 (li reg-rsi wd-ring-buf-addr)
+   in let st7 = st-append-code st6 (li reg-rsi (st-cell st6 wd-ring-buf-addr))
    in let st8 = st-append-code st7 (add-rr reg-rsi reg-rax)
    in let st9 = st-append-code st8 (mov-load reg-rsi reg-rsi 8)
    in emit-watchdog-stack-walk-loop st9 0
@@ -129,7 +129,7 @@ Section: Bare-Metal Start
    in let st4 = emit-oom-string st3 [87, 68, 33, 10] 0
    in let st5 = emit-call-to st4 "__watchdog_dump_slots"
    in let st6 = emit-oom-string st5 [72, 87, 77, 61] 0
-   in let st7 = st-append-code st6 (li reg-rdi heap-hwm-addr)
+   in let st7 = st-append-code st6 (li reg-rdi (st-cell st6 heap-hwm-addr))
    in let st8 = st-append-code st7 (mov-load reg-rdi reg-rdi 0)
    in let st9 = emit-print-hex-qword-rdi st8
    in let st10 = emit-serial-wait-and-send st9 10
@@ -368,8 +368,105 @@ Section: Bare-Metal Start
    in let st5 = st-append-code st4 (li reg-r11 eoa)
    in st-append-code st5 (mov-store reg-r11 reg-rax 0)
 
+ The hosted entry. Everything the bare-metal __start does before calling opening
+ is either a hardware structure or a device: page tables, GDT, IDT, LAPIC, the
+ AP trampoline, ATA, the NIC, the factstore probe. A hosted process is handed
+ all of that by the kernel, so this sets the allocator cells the emitted code
+ actually reads and nothing else. The stack is the one the kernel gave us; bare
+ metal has to build its own out of ram-size-addr.
+
+ A Windows build has to ask for its own scratch. The cells sit below every
+ ImageBase the loader accepts, so no section can cover them; the arena is a
+ separate request for the same reason it is a separate segment on Linux. Both
+ are fixed-address requests and both are granted (measured 2026-08-29). RSP is
+ forced to 16 before the first call because the entry point is entered by the
+ loader rather than by a CALL, and nothing here ever returns.
+
+ A FIXED VirtualAlloc IS A REQUEST, NOT A GUARANTEE, AND IGNORING ITS ANSWER IS
+ HOW THIS PRESENTED AS A CODEGEN BUG. Measured 2026-08-29: 3 GB at the arena
+ base is refused with ERROR_INVALID_ADDRESS because the span runs into
+ something already mapped, while 1 GB is granted. The first version ignored the
+ null and the next instruction stored through it, so a handled refusal arrived
+ as an access violation with no output and nothing naming the cause (L-REFUSED).
+ Each request is tested now and a refusal exits with its own code.
+
+  emit-hosted-win-alloc : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-hosted-win-alloc (st) (base) (span) (fail-code) =
+   let a0 = st-append-code st (li reg-rcx base)
+   in let a1 = st-append-code a0 (li reg-rdx span)
+   in let a2 = st-append-code a1 (li reg-r8 hosted-win-mem-commit-reserve)
+   in let a3 = st-append-code a2 (li reg-r9 hosted-win-page-readwrite)
+   in let a4 = st-append-code a3 (call-abs-ind hosted-win-iat-virtualalloc)
+   in let a5 = st-append-code a4 (test-rr reg-rax reg-rax)
+   in let ok-pos = a5.code-len
+   in let a6 = st-append-code a5 (jcc cc-ne 0)
+   in let a7 = st-append-code a6 (li reg-rcx fail-code)
+   in let a8 = st-append-code a7 (call-abs-ind hosted-win-iat-exitprocess)
+   in patch-jcc-at a8 ok-pos (a8.code-len)
+
+ THE CELLS NEED A FIXED ADDRESS AND THE ARENA DOES NOT, so only one of them is
+ asked for by address. Every cell reference is an absolute immediate the
+ compiler baked in, so that band has to land where it was emitted; the arena is
+ reached only through R10 and the arena-base cell, so whatever Windows hands
+ back is as good as any address we could name. Measured 2026-08-29, that is the
+ difference between working and not: a fixed request for the arena was refused
+ at 0x600000 and again at 0x60000000 from a freshly loaded image, and letting
+ the loader choose is granted first time.
+
+  emit-hosted-win-prologue : CodegenState -> CodegenState
+  emit-hosted-win-prologue (st) =
+   let a0 = st-append-code st (and-ri reg-rsp (0 - 16))
+   in let a1 = st-append-code a0 (emit-sub-rsp-imm32 32)
+   in let a2 = emit-hosted-win-alloc a1 hosted-win-cell-base hosted-cell-span hosted-win-cells-failed-code
+   in let a3 = emit-hosted-win-alloc a2 0 hosted-win-heap-span hosted-win-arena-failed-code
+   in let a4 = st-append-code a3 (mov-rr reg-r10 reg-rax)
+   in st-append-code a4 (add-ri reg-rsp 32)
+
+ The 64 in the frame patch is the callee-saved margin `emit-function-standard`
+ reserves as `unused * 8`, taken at its maximum because the entry pushes no
+ callee-saved registers.
+  emit-hosted-start : CodegenState -> CodegenState
+  emit-hosted-start (st) =
+   let st0a = record-func-offset st "__start"
+   in let st0 = if st-windows st0a then emit-hosted-win-prologue st0a else st0a
+   in let st0r = reset-func-scratch st0
+   in let st1m = st-append-code st0r (mov-rr reg-rbp reg-rsp)
+   in let entry-frame-patch-pos = st1m.code-len
+   in let st1 = st-append-code st1m (emit-sub-rsp-imm32 0)
+   in let st2 = if st-windows st1 then st1 else st-append-code st1 (li reg-r10 (st-heap-base st1))
+   in let st3 = st-append-code st2 (li reg-rdi (st-cell st2 arena-base-addr))
+   in let st4 = st-append-code st3 (mov-store reg-rdi reg-r10 0)
+   in let st5 = st-append-code st4 (li reg-rdi (st-cell st4 deck-pos-addr))
+   in let st6 = st-append-code st5 (mov-store reg-rdi reg-r10 0)
+   in let st7 = st-append-code st6 (li reg-rdi (st-cell st6 heap-hwm-addr))
+   in let st8 = st-append-code st7 (mov-store reg-rdi reg-r10 0)
+   in let st9 = st-append-code st8 (li reg-rax 0)
+   in let st10 = st-append-code st9 (li reg-rdi (st-cell st9 deck-bound-counter-addr))
+   in let st11 = st-append-code st10 (mov-store reg-rdi reg-rax 0)
+   in let st12 = st-append-code st11 (li reg-rdi (st-cell st11 deck-ceiling-addr))
+   in let st13 = st-append-code st12 (mov-store reg-rdi reg-rax 0)
+   in let st14 = st-append-code st13 (li reg-rdi (st-cell st13 try-fail-flag-addr))
+   in let st15 = st-append-code st14 (mov-store reg-rdi reg-rax 0)
+   in let st16 = st-append-code st15 (li reg-rdi (st-cell st15 stdin-eof-flag-addr))
+   in let st17 = st-append-code st16 (mov-store reg-rdi reg-rax 0)
+   in let st18 = st-append-code st17 (li reg-rdi (st-cell st17 stdin-eof-settled-addr))
+   in let st19 = st-append-code st18 (mov-store reg-rdi reg-rax 0)
+   in let st20 = st-append-code st19 (li reg-r11 (st-cell st19 stack-min-rsp-addr))
+   in let st21 = st-append-code st20 (mov-store reg-r11 reg-rsp 0)
+   in let st22 = emit-call-to st21 opening-entry-point
+   in let st23u = emit-opening-result-print st22
+   in let st23 = st-add-deferred-patch st23u (make-i32-patch (entry-frame-patch-pos + 3) (align-16 (st23u.peak-spill * 8 + 64)))
+   in if st-windows st23
+    then let w0 = st-append-code st23 (li reg-rcx 0)
+     in st-append-code w0 (call-abs-ind hosted-win-iat-exitprocess)
+    else let st24 = st-append-code st23 (li reg-rax linux-sys-exit-group)
+     in let st25 = st-append-code st24 (li reg-rdi 0)
+     in st-append-code st25 x86-syscall
+
   emit-start : CodegenState, Integer, Integer, List Text, Text, Text -> CodegenState
   emit-start (st) (first-stub-vaddr) (syscall-handler-offset) (manifest-effs) (fs-scope) (net-scope) =
+   if st-hosted st then emit-hosted-start st
+   else
    let st0 = record-func-offset st "__start"
    in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & emit-sub-rsp-imm32 0)
    in let st2 = st-append-code st1 cli
@@ -377,12 +474,12 @@ Section: Bare-Metal Start
    in let st3 = st-append-code st2a (mov-load reg-rsp reg-rdi 0)
    in let st4 = st-append-code st3 (mov-rr reg-rbp reg-rsp)
    in let st5 = st-append-code st4 (li reg-r10 bare-metal-heap-base)
-   in let st5a = st-append-code st5 (li reg-rdi deck-pos-addr)
+   in let st5a = st-append-code st5 (li reg-rdi (st-cell st5 deck-pos-addr))
    in let st5b = st-append-code st5a (mov-store reg-rdi reg-r10 0)
-   in let st5c = st-append-code st5b (li reg-rdi deck-bound-counter-addr)
+   in let st5c = st-append-code st5b (li reg-rdi (st-cell st5b deck-bound-counter-addr))
    in let st5d = st-append-code st5c (li reg-rax 0)
    in let st5e = st-append-code st5d (mov-store reg-rdi reg-rax 0)
-   in let st7 = st-append-code st5e (li reg-r11 stack-min-rsp-addr)
+   in let st7 = st-append-code st5e (li reg-r11 (st-cell st5e stack-min-rsp-addr))
    in let st7a = st-append-code st7 (li reg-rdi ram-size-addr)
    in let st8 = st-append-code st7a (mov-load reg-rax reg-rdi 0)
    in let st11 = st-append-code st8 (mov-store reg-r11 reg-rax 0)
@@ -451,12 +548,12 @@ Section: Bare-Metal Start
    in let st37 = emit-control-string st36d [82, 69, 65, 68, 89, 10]
    in let st37s1 = emit-seed-fs-handler st37 "read-text" "__fs-read-servicer"
    in let st37s2 = emit-seed-fs-handler st37s1 "write-file" "__fs-write-servicer"
-   in let st38 = st-append-code st37s2 (li reg-rdi arena-base-addr)
+   in let st38 = st-append-code st37s2 (li reg-rdi (st-cell st37s2 arena-base-addr))
    in let st41 = st-append-code st38 (mov-store reg-rdi reg-r10 0)
    in let repl-loop = st41.code-len
-   in let st42 = st-append-code st41 (li reg-rdi heap-hwm-addr)
+   in let st42 = st-append-code st41 (li reg-rdi (st-cell st41 heap-hwm-addr))
    in let st42a = st-append-code st42 (mov-load reg-rbx reg-rdi 0)
-   in let st42b = st-append-code st42a (li reg-rdi arena-base-addr)
+   in let st42b = st-append-code st42a (li reg-rdi (st-cell st42a arena-base-addr))
    in let st45 = st-append-code st42b (mov-load reg-r10 reg-rdi 0)
    in let st45c = st-append-code st45 (cmp-rr reg-rbx reg-r10)
    in let poison-skip-pos = st45c.code-len
@@ -469,18 +566,18 @@ Section: Bare-Metal Start
    in let st45h = st-append-code st45g (cld & rep-stosb)
    in let st45i = st-append-code st45h (pop-r reg-rax & pop-r reg-rcx)
    in let st45j = patch-jcc-at st45i poison-skip-pos (st45i.code-len)
-   in let st45a = st-append-code st45i (li reg-rdi deck-pos-addr)
+   in let st45a = st-append-code st45i (li reg-rdi (st-cell st45i deck-pos-addr))
    in let st45b = st-append-code st45a (mov-store reg-rdi reg-r10 0)
-   in let st46 = st-append-code st45b (li reg-rdi heap-hwm-addr)
+   in let st46 = st-append-code st45b (li reg-rdi (st-cell st45b heap-hwm-addr))
    in let st47 = st-append-code st46 (mov-store reg-rdi reg-r10 0)
    in let st47a = st-append-code st47 (li reg-rax 0)
-   in let st47b = st-append-code st47a (li reg-rdi stdin-eof-flag-addr)
+   in let st47b = st-append-code st47a (li reg-rdi (st-cell st47a stdin-eof-flag-addr))
    in let st47c = st-append-code st47b (mov-store reg-rdi reg-rax 0)
-   in let st47d = st-append-code st47c (li reg-rdi stdin-eof-settled-addr)
+   in let st47d = st-append-code st47c (li reg-rdi (st-cell st47c stdin-eof-settled-addr))
    in let st47e = st-append-code st47d (mov-store reg-rdi reg-rax 0)
-   in let st47f = st-append-code st47e (li reg-rdi try-fail-flag-addr)
+   in let st47f = st-append-code st47e (li reg-rdi (st-cell st47e try-fail-flag-addr))
    in let st47g = st-append-code st47f (mov-store reg-rdi reg-rax 0)
-   in let st47h = st-append-code st47g (li reg-rdi deck-bound-counter-addr)
+   in let st47h = st-append-code st47g (li reg-rdi (st-cell st47g deck-bound-counter-addr))
    in let st47i = st-append-code st47h (mov-store reg-rdi reg-rax 0)
    in let st47t = if st.trace-alloc
     then let sta = st-append-code st47i (li reg-rax 1)
@@ -494,20 +591,20 @@ Section: Bare-Metal Start
    in let st48b = emit-opening-result-print st48
    in let st49 = emit-update-heap-hwm st48b
    in let st50 = emit-control-string st49 [72, 69, 65, 80, 58]
-   in let st51 = st-append-code st50 (li reg-rdi heap-hwm-addr)
+   in let st51 = st-append-code st50 (li reg-rdi (st-cell st50 heap-hwm-addr))
    in let st52 = st-append-code st51 (mov-load reg-rax reg-rdi 0)
    in let st53 = emit-control-inline-itoa-and-print st52
    in let st54 = emit-control-wait-and-send st53 10
    in let st55 = emit-control-string st54 [83, 84, 65, 67, 75, 58]
    in let st55a = st-append-code st55 (li reg-rdi ram-size-addr)
    in let st56 = st-append-code st55a (mov-load reg-rsi reg-rdi 0)
-   in let st57 = st-append-code st56 (li reg-rdi stack-min-rsp-addr)
+   in let st57 = st-append-code st56 (li reg-rdi (st-cell st56 stack-min-rsp-addr))
    in let st58 = st-append-code st57 (mov-load reg-rdi reg-rdi 0)
    in let st59 = st-append-code st58 (sub-rr reg-rsi reg-rdi)
    in let st60 = st-append-code st59 (mov-rr reg-rax reg-rsi)
    in let st61 = emit-control-inline-itoa-and-print st60
    in let st62 = emit-control-wait-and-send st61 10
-   in let st63 = st-append-code st62 (li reg-r11 stack-min-rsp-addr)
+   in let st63 = st-append-code st62 (li reg-r11 (st-cell st62 stack-min-rsp-addr))
    in let st63a = st-append-code st63 (li reg-rdi ram-size-addr)
    in let st64 = st-append-code st63a (mov-load reg-rax reg-rdi 0)
    in let st65 = st-append-code st64 (mov-store reg-r11 reg-rax 0)
@@ -691,7 +788,8 @@ Section: Finalize
    field-cache = [],
    fresh-slots = [],
    stype-sites = __list-with-capacity accum-capacity,
-   range-env = []
+   range-env = [],
+   hosted-target = 0
   }
 
   collect-direct-addr-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
@@ -936,17 +1034,18 @@ Section: Capability Manifest
    in let st2c = check-runtime-symbol st2e func-map "__start"
    in let st2d = if has-oom then check-runtime-symbol st2c func-map "__out_of_memory" else st2c
    in let start-offset = offset-table-lookup func-map "__start"
-   in let start-addr = bare-metal-load-addr + start-offset
+   in let load-base = st-load-base st2d
+   in let start-addr = load-base + start-offset
    in let w-fj = buf-write-i32 (st2d.workspace.code-buffer) (far-jump-patch-pos + 1) start-addr
    in let w-call = apply-call-patches-direct (st2d.workspace.code-buffer) (st2d.cp-offsets) (st2d.cp-targets) func-map 0
-   in let w-addr = apply-func-addr-patches-direct (st2d.workspace.code-buffer) (st2d.fa-offsets) (st2d.fa-targets) func-map bare-metal-load-addr 0
-   in let data-vaddr = compute-data-vaddr-bare (st2d.code-len)
+   in let w-addr = apply-func-addr-patches-direct (st2d.workspace.code-buffer) (st2d.fa-offsets) (st2d.fa-targets) func-map load-base 0
+   in let data-vaddr = compute-data-vaddr-at load-base (st2d.code-len)
    in let has-stype = list-length (st2d.stype-sites) > 0
    in let tbl = if has-stype then emit-self-type-table (st2d.workspace.data-buffer) (st2d.data-len) data-vaddr (st2d.type-defs) else ConstEmit { len = st2d.data-len, off = 0 }
    in let w-stype = if has-stype then patch-stype-sites (st2d.workspace.code-buffer) (st2d.stype-sites) (data-vaddr + tbl.off) 0 else 0
    in let w-rodata = apply-rodata-patches-direct (st2d.workspace.code-buffer) (st2d.rf-poffsets) (st2d.rf-roffsets) data-vaddr 0
    in let w-overflow = if has-oom then let oom-offset = offset-table-lookup func-map "__out_of_memory" in apply-overflow-patches-direct (st2d.workspace.code-buffer) (st2d.stack-overflow-checks) oom-offset 0 else 0
-   in let w-direct = apply-direct-addr-patches-direct (st2d.workspace.code-buffer) (st2d.da-poffsets) (st2d.da-offsets) bare-metal-load-addr 0
+   in let w-direct = apply-direct-addr-patches-direct (st2d.workspace.code-buffer) (st2d.da-poffsets) (st2d.da-offsets) load-base 0
    in let code-len = st2d.code-len
    in let data-len = tbl.len
    in let text-aligned = align-up code-len 8
@@ -980,7 +1079,7 @@ Section: Capability Manifest
    in let eff-off-v = cap-off-v + list-length cap-bytes
    in let debug-off = if func-count > 0 then cdx-header-size + full-len else 0
    in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset debug-off cap-off-v (list-length cap-bytes) eff-off-v (list-length eff-bytes)
-   in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) bare-metal-load-addr code-len 0 func-count []
+   in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) load-base code-len 0 func-count []
    in EmitChapterResult {
     header-bytes = header,
     content-buf = st2d.workspace.code-buffer,
@@ -1125,7 +1224,7 @@ Section: Binary Debug Map (MAP1)
    in build-map-entries offsets names str-offsets code-len (i + 1) count (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push acc (bit-and off 255)) (bit-and (bit-shr off 8) 255)) (bit-and (bit-shr off 16) 255)) (bit-and (bit-shr off 24) 255)) (bit-and size 255)) (bit-and (bit-shr size 8) 255)) (bit-and (bit-shr size 16) 255)) (bit-and (bit-shr size 24) 255)) (bit-and str-off 255)) (bit-and (bit-shr str-off 8) 255)) (bit-and (bit-shr str-off 16) 255)) (bit-and (bit-shr str-off 24) 255))
 
   x86-64-emit-cdx : IRChapter, List TypeBinding -> EmitChapterResult
-  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress []
+  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress [] 0
 
  The emit deck's flat term is 28 MB. Bare metal spends 23.65 MB of it on a
  three-definition subject and 23.71 MB on sixty-one, so the per-definition
@@ -1136,13 +1235,23 @@ Section: Binary Debug Map (MAP1)
  on two of four rungs. 28 MB leaves the zig arm the same few per cent of
  headroom bare metal already had at 24.
 
-  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, List IRDef -> EmitChapterResult
-  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) (unchecked) =
+ The bare-metal stack guard compares RSP against the deck cursor, which is only
+ a stack-overflow test while the arena sits BELOW the stack. That ordering is a
+ property of our own memory map rather than of a process: Windows returns an
+ arena wherever it likes, and when that lands above the stack every prologue
+ traps to __out_of_memory on the first call. A hosted process already has a
+ guard page from its kernel, so the check is switched off for hosted rather
+ than taught a second ordering.
+
+  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, List IRDef, Integer between 0 and 2 -> EmitChapterResult
+  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) (unchecked) (hosted-target) =
    let emit-deck = emit-build (list-length (m.defs) * 65536 + 29360128)
    in let de = __deck-enter
    in let tramp = bare-metal-trampoline
    in let st0 = x86-64-init-codegen-sorted tdefs
-   in let st-mode = __record-set st0 "exit-mode" exit-mode
+   in let st-mode0 = __record-set st0 "exit-mode" exit-mode
+   in let st-mode1 = __record-set st-mode0 "hosted-target" hosted-target
+   in let st-mode = __record-set st-mode1 "stack-guard" (hosted-target == 0)
    in let st-poison = __record-set st-mode "poison-alloc" poison
    in let st-trace = __record-set st-poison "trace-alloc" trace
    in let st-wd = __record-set st-trace "watchdog-mode" wd-mode

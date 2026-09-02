@@ -483,6 +483,131 @@ the depot, and it is not permission to work.**
   Red gates, debugging, writing tests, "just one more thing": all of it
   happens outside the hold (rule 8). The token is for landing finished
   work, not for finishing work.
+- **A hold has a clock (Damian, 2026-08-31): over 20 minutes is a WARNING,
+  over 25 is SEVERE, 30 is a bug.** The dashboard's `tokenHeldMinutes` is
+  the reading and the commander's pulse watches it. A hold that long means
+  the gate was started under the token instead of before the request, or a
+  red gate is being fixed under it (rule 8): shelve, write `build-complete`,
+  do the work, re-request. The measured `-Internal` gate with nothing
+  implicated was 186 s on 2026-08-20, so a 20-minute hold is not a slow gate.
+
+## The token does not cover RAM: ask the fleet before a heavy run (Damian, 2026-09-01)
+
+**The box is one DIMM down and stays that way: 16 GB is all there is**
+(one KSD516G72C34VTR at Controller1-DIMMB2, 15.8 GiB visible, measured
+2026-08-31 and again 2026-09-01 after the fleet resumed). The token
+serialises GATES on the same code; it says nothing about two lanes each
+booting 3072 MB guests at the same time, and on this box that overcommit is
+what kills guests with a plausible-looking codegen error (`OperatorsManual.md`,
+"The compile batch asks for 12 GB").
+
+So the rule, in Damian's words: be conscientious about running builds, and
+**check with the other agents before launching big tests.** Concretely:
+
+- `-Jobs 8` is the default again (Damian, 2026-09-01, on the measurement
+  below), and its condition is THIS section: one heavy run on the box at a
+  time. The 4 was conditioned on two lanes' guests overlapping; with that
+  forbidden, 8 costs the floor and buys a third of the gate.
+- **`build/test.ps1 -All` and every full-battery run are PROHIBITED except
+  for release builds (Damian, 2026-09-01; `CLAUDE.md` R-GATE).** The fleet
+  is on BVT only plus focused test passes: the `-Internal` gate, then the
+  specific tests a change touches, one at a time. There is no "ask first"
+  path for a battery; the ask below is for the runs that remain.
+- Before any remaining run that boots more than one guest (a focused
+  parallel harness, a release proof in red's hands), send ONE message to
+  each lane that could be running guests, within the budget, and wait for
+  the answers. A single `-Internal` gate is not a heavy run and needs no
+  ask; two gates at once from two lanes is exactly the overlap to avoid, so
+  a lane about to gate says so in its `status.json` and a lane reading
+  `Working` with a gate in another lane's status waits.
+- `status.json` is the shared reading: name the run you are about to start
+  and its guest count, so the ask is answerable from the dashboard.
+- **Waiting for a slot is not idle time (Damian, 2026-09-01, the same
+  morning: "the agents are very idle, we need to keep the team working").**
+  A slot ask is non-blocking: keep working the next item in your lane
+  while the box is busy, and gate once per arc with the CLs batched, which
+  is the arc rule below applied under a RAM budget. A single-guest run (a
+  focused test, one hosted binary, one app) needs no ask at all.
+- **Overlap is decided by CONSUMPTION, not by ceiling (L-REQUEST), and the
+  gate's consumption is NOT one number.** A self-compile guest peaks near
+  1.1 GB, but the `-Internal` gate's test-compile phase at `subject: FULL`
+  (every compiler change implicates all ~1,488 test chapters) runs the
+  compile BATCH at four slots, and a batch guest scales with its slot:
+  ~2.1 GB at 416 chapters (`OperatorsManual.md`, "The compile batch asks for
+  12 GB"), so that phase is ~8 GB by itself. A Renode subject bounces to
+  ~1 GB at peak. **Measured 2026-09-01 07:29 (fester, then root): a
+  FULL-subject gate running ALONE, five codex-vm at 5.2 GB of working set,
+  took the box to 0.39 GiB free.** That is the whole box on one gate, with
+  the six agent sessions and the rest of the host holding the balance.
+  **Sampled every 3 s through a second FULL gate alone (red, 08:16-08:21,
+  five sessions after fester was killed): guest working set peaked at
+  5.89 GB over 5 guests, floor 0.86 GiB free, and the four
+  `test-compile-batch.ps1` DRIVERS held 400-900 MB EACH (2.5 GB) beside the
+  guests they feed**, because each reads its whole batch capture as a
+  `byte[]` and then a Latin-1 shadow `string` of it (`:135-137`, UTF-16, so
+  3x the capture in memory for the parse). The host half of a gate is not
+  free either; the reduction is CurrentPlan's item.
+- **`-Jobs 8` MEASURED on this box (blu, 2026-09-01 08:46-08:53, one FULL
+  gate alone, 103 samples at 3 s, with the driver byte-scan fix already
+  in): GREEN, `SUT === stage1` in one pass, no refusal line. Elapsed 412.4 s
+  against the 620.5 s baseline at 4 (test-compile 122.1 s against 180.0 s).
+  Floor 0.44 GiB free. Peak single guest 2,140 MB; peak total guest working
+  set 5,995 MB with only FOUR guests up at that moment, so the heavy-phase
+  guests are ~2.1 GB each, not the ~1.0 GB quoted earlier from a light
+  phase (withdrawn). Max concurrent 7 guests, phases overlap.** The 4-slot
+  baseline floor was 0.86 GiB with one more session alive and the old
+  drivers. So 8 buys 33 per cent of the gate with the whole headroom: a
+  floor of 0.44 GiB is one green sample, which is what CLAUDE.md's `-Jobs`
+  paragraph says an overcommit looks like until it kills a guest and reads
+  as codegen. The criterion set before the run (floor above 1 GiB) said
+  keep 4; **Damian overrode it with the numbers in front of him (09:04):
+  "-jobs 8 runs, is barely more memory now than -jobs 4 and we need that
+  speedup." 8 is the default**, conditioned on one heavy run at a time.
+  Levers that raise the floor: the driver reduction's second half
+  (streaming, not just the shadow string; CurrentPlan gate-RAM 1b), fewer
+  live sessions, and the second DIMM.
+- **RE-MEASURED WITH THE SMALL DRIVERS (blu, 2026-09-01 09:19-09:26, same
+  gate shape, FULL 1,490 chapters forced, alone, 102 samples at 3 s):
+  green, 412.1 s, floor 2.50 GiB free, peak guest 2,139 MB, 8 concurrent,
+  peak DRIVER 183 MB (was 812).** Same slots, same speed, 5.7x the headroom,
+  and the reason is named: `test-compile-batch.ps1` built the whole batch
+  input in a StringBuilder and wrote it with `ToString()` (the batch text
+  resident twice at the write, plus a 512 KB builder and a full copy per
+  chapter); it now streams the input through a StreamWriter and nothing
+  holds the batch. The capture bytes everyone looked at first were 41 MB of
+  it. So `-Jobs 8` clears the 1 GiB bar it failed at 08:53, by 2.5x, for a
+  reason rather than by luck; the one-heavy-run-at-a-time condition still
+  stands, because 2.5 GiB is not two gates. So:
+  a gate whose change touches the compiler runs ALONE on this box, nothing
+  else booting; only a cite-scoped gate (apps, docs,
+  tests) may overlap a single-guest run. `WHvSetupPartition 0x800705aa` is
+  the refusal signature. A run that dies is re-run alone, and the death is
+  reported with its time.
+- **A gate that dies at `subject: FULL` with no refusal line is a
+  TOOL-CALL CHILD dying, until proven otherwise (2026-09-01, blu; the
+  commander got this wrong first).** Two `-Internal` runs died at that
+  line the same morning, both launched as `run_in_background` tool-call
+  children; the first ran with nothing else booting, both gate logs were
+  byte-identical (3,672 bytes) and stopped 24 and 34 s BEFORE the harness
+  recorded `[killed]`, which appears in the task file and in neither log.
+  The commander published RAM as the cause (main 20927) from the
+  arithmetic above and retracted it within the hour on that evidence:
+  RAM pressure does not reproduce a log to the byte, and one of the two
+  runs had no neighbour to blame. This is `OperatorsManual.md`, "A gate run
+  as a tool-call child dies with the session, and it reads as host
+  trouble", measured 2026-08-28 and repeated here. **Launch every gate
+  DETACHED via `Start-Process`, keep the PID and the log path in
+  `status.json`, and before calling a died-mid-phase gate RAM or codegen,
+  ask whether its parent outlived it.**
+
+This rule dies with its condition. When the second DIMM is back and
+`Win32_PhysicalMemory` shows two rows, re-measure and delete this section.
+**That is weeks away (Damian, 2026-09-01): the replacement is an RMA the
+manufacturer will contest, and the part that cost 100 now lists at 750. Plan
+on 16 GB for the rest of September.** So this section is not a stopgap: the
+serialization above is the working shape, and the host-side footprint
+reductions in CurrentPlan ("Gate RAM") are the lever that actually moves the
+floor. Do not schedule anything on the assumption the DIMM returns first.
 
 ## Fleet Messages
 
@@ -520,7 +645,48 @@ When a message starts to argue a case, the case belongs in the CL
 description or the doc, and the message shrinks to the sentence that points
 at it.
 
-To send:
+### The route: agent-to-agent messages go by the cross-session channel (Damian, 2026-08-31)
+
+**A message from one agent to another is sent with the harness's
+`SendMessage` tool, addressed by the name `ListAgents` shows (for example
+`cobblestone-reek-ea`).** It arrives in the recipient's conversation
+asynchronously, as a cyan `<cross-session-message>` notice, without touching
+the input buffer. Damian's preference, stated in those words, and the measured
+reason: the outbox route TYPES a `[fleet message from X]` line into the
+recipient's terminal, and on 2026-08-28 (nine messages) and 2026-08-31 (three
+of three) those lines stranded unsubmitted in the input buffer while every
+sender-side receipt said delivered (GRID-5; the live `stable` coordinator is
+the pre-fix build). The cross-session route delivered four of four the same
+day, each into a busy session, acknowledged inside a minute.
+
+- **Resolve the name every time.** Session names change at rollover
+  (`cobblestone-val-6c` became `-09` became `-0b` in three days); a cached
+  name sends to nobody. `ListAgents` first, then `SendMessage`.
+- **Ask for the ack when the message must land**: "reply one line by
+  SendMessage". The tool's `success: true` says the pipe accepted it, not that
+  the lane read it. An assignment lands in `CurrentPlan.md` on main BEFORE
+  the message, so a lost one self-heals at the lane's next merge-down.
+- The budget below binds unchanged: one claim and where the detail lives,
+  one addressee, one message per event. A fleet-wide notice is the commander's
+  and is one `SendMessage` per lane, not a broadcast.
+- **The outbox is the coordinator's machinery and stays**: `build-request`,
+  `build-grant`, `build-complete`, `status.json`, and the dashboard. Do not use
+  it for agent-to-agent text while the stable coordinator predates
+  AgentGrid CL 20652. When that build is promoted and relaunched, the typed
+  route becomes a fallback for a session `ListAgents` cannot see, and the
+  read-back log in that build is what says whether a typed line submitted.
+- **The coordinator's own lines will arrive on this channel too** (AgentGrid
+  GRID-6, CL 20862, live once Damian relaunches stable): a GO grant, MAIN
+  PINNED, a held-message notice, and any `[fleet message from X]` it routes
+  come as a cyan `<cross-session-message>` from `AgentGrid`, asserting
+  bypass, with NO reply address. AgentGrid is not a peer: nothing answers it
+  by `SendMessage`, and `ListAgents` never lists it. You answer the
+  coordinator the way you always did, with `build-request`, `build-complete`
+  and `status.json`. A session the coordinator cannot find in
+  `~/.claude/sessions/` (or one whose `peerProtocol` it does not know) gets
+  the typed line instead, logged as such on its side.
+
+To send by the outbox (coordinator machinery, or the fallback above):
 
 ```powershell
 $mbox = (Get-Content .agentgrid | ConvertFrom-Json).coordinationDir
@@ -817,14 +983,41 @@ for the queue is that a hold behind you is minutes, not half an hour. The full
 just stack them for one push to main, but you can do builds locally on each
 step to keep the verification simple and cumulative."*
 
-**Iterate on your own stream: submit each step to `//Codex/<agent>`, run
-`build/build.ps1 -Internal` locally per step, and keep the workspace seed
-current with the local Sut so verification stays cumulative.** This line said
-the bare `build/build.ps1` until 2026-08-20, which is a full gate per step of
-an arc: measured that day, 644.1 s against 186.1 s. Do NOT copy any
-intermediate CL to main, and do NOT request the token until the final push.
-The last push is then a normal seed-affecting copy-up: token, merge down,
-gate on the target, prove the seed, one copy-up.
+**Iterate on your own stream: submit each step to `//Codex/<agent>`, verify
+each step by compiling it and running the specific tests it touches, and
+gate ONCE per batch.** Until 2026-09-01 this line said to run
+`build/build.ps1 -Internal` locally per step (and before 2026-08-20 the bare
+`build/build.ps1`, a full gate per step: 644.1 s against 186.1 s). **Damian,
+2026-09-01, with the box one DIMM down: "we need to have the agents batch up
+their builds, so they can ask for the token less, and get more done in a
+shot."** So a step is verified by `compile.ps1` plus its focused tests, several
+steps stack into one batch, and the `-Internal` gate runs once for the batch,
+at the end, under the one token that lands it. Do NOT copy any intermediate
+CL to main, and do NOT request the token until the batch is ready. The last
+push is then a normal seed-affecting copy-up: token, merge down, gate on the
+target, prove the seed, one copy-up.
+
+**The batch gate must SEE the batch (red, 2026-09-01, the same morning the
+rule landed).** `-Internal` chooses its regression phases from `p4 opened`
+(`build/check-test-compile.ps1`, the `changed` list): a batch already
+submitted to your stream has nothing opened, so the gate runs core, BVT and
+refusals only, skips test-compile and the plug phases for a COMPILER change,
+and comes back green in 129 s having proved less than it says. red caught it
+on the first batch gated under this rule and released the token unlanded.
+Until the scoping fix lands (red's), the batch must be OPEN when it gates.
+The clean way (val, same morning): **keep the batch as ONE open CL on your
+stream, shelve it after each verified step, gate with everything still open,
+submit after.** The shelf is the per-step record, there is no phantom edit CL
+and nothing to revert. The fallback, for a batch you already submitted step
+by step, is `p4 edit` on the files it touched before the gate. When the fix
+lands, this paragraph is replaced by the command.
+
+What counts as a batch: every item in your lane that is ready, whether or
+not the items are related; the gate proves the tree, not the item. A red
+batch gate is bisected by the focused tests the steps already carry, which is
+why each step must have run them. R-ONE still holds at the step: one change,
+its tests, its submit to your own stream; batching is about when the GATE
+runs, not about how many things a CL does.
 
 The reason is what the token is FOR. It buys a window in which main gains no
 seed-affecting change underneath a gate you already paid for, and that only

@@ -112,8 +112,19 @@ Section: Lexer State
 
   add-lex-error : LexState, Integer between 0 and 65535, Text, SourceSpan -> LexState
   add-lex-error (st) (code) (msg) (span) =
-   let __seq = st.errors = __linked-list-push (st.errors) (make-error code msg span)
+   let __seq = st.errors = lex-errors-push (st.errors) (make-error code msg span)
    in st
+
+ Every lexer error goes through this push. The lexer rewinds the bivy after
+ every token (`lex-state-below`), so an error cell or a diagnostic built in
+ the bivy is overwritten by the next token's scan; the cell, the diagnostic
+ and everything it points at are copied onto the deck instead, which is what
+ `copy-sx-diag` with a zero floor does. Three sites pushed cells directly
+ before 2026-09-01 and all four lexer refusal tests crashed reading them.
+
+  lex-errors-push : LinkedList Diagnostic, Diagnostic -> LinkedList Diagnostic
+  lex-errors-push (errs) (d) =
+   deck-record (__linked-list-push errs (copy-sx-diag 0 d))
 
   is-at-end : LexState -> Boolean
   is-at-end (st) =
@@ -259,17 +270,17 @@ Section: Character Scanning
   scan-string-body : LexState -> LexState
   scan-string-body (st) =
    let len = text-length (st.source)
+   in let entry = st.offset
    in let stop = scan-string-end (st.source) (st.offset) len
-   in if stop == st.offset then st
-      else let new-col = st.column + (stop - st.offset)
-      in let __seq = st.offset = stop
-      in let __seq = st.column = new-col
-      in let terminated = stop <= len & stop > 0 & char-code-at (st.source) (stop - 1) == cc-double-quote
-      in if terminated then st
-         else let open-span = span-at (st.line) (st.column - 1) (st.offset - 1) 1 (st.file-id)
-         in let err = make-error cdx-unterminated-text "Unterminated text literal: hit end of line before closing '\"'" open-span
-         in let __seq = st.errors = __linked-list-push (st.errors) err
-         in st
+   in let new-col = st.column + (stop - entry)
+   in let __seq = st.offset = stop
+   in let __seq = st.column = new-col
+   in let terminated = stop <= len & stop > entry & char-code-at (st.source) (stop - 1) == cc-double-quote
+   in if terminated then st
+      else let open-span = span-at (st.line) (st.column - 1) (st.offset - 1) 1 (st.file-id)
+      in let err = make-error cdx-unterminated-text "Unterminated text literal: hit end of line before closing '\"'" open-span
+      in let __seq = st.errors = lex-errors-push (st.errors) err
+      in st
 
   validate-escapes-into : Text, Integer between 0 and 131071, Integer between 0 and 4294967295, Integer between 0 and 4294967295, Integer between 0 and 65535, LinkedList Diagnostic -> LinkedList Diagnostic
   validate-escapes-into (s) (base-line) (base-col) (base-off) (fid) (errs) =
@@ -281,8 +292,8 @@ Section: Character Scanning
    else let c = char-code-at s i
    in if c == cc-backslash then if i + 1 < len then let nc = char-code-at s (i + 1)
    in let esc-span = span-at line (col + i) (off + i) 2 fid
-   in if nc == cc-lower-t then validate-escapes-loop s (i + 2) len line col off fid (__linked-list-push errs (make-error cdx-invalid-tab-escape "\\t escape is not valid in CCE; use spaces directly" esc-span))
-          else if nc == cc-lower-r then validate-escapes-loop s (i + 2) len line col off fid (__linked-list-push errs (make-error cdx-invalid-carriage-return-escape "\\r escape is not valid in CCE; use \\n for newlines" esc-span))
+   in if nc == cc-lower-t then validate-escapes-loop s (i + 2) len line col off fid (lex-errors-push errs (make-error cdx-invalid-tab-escape "\\t escape is not valid in CCE; use spaces directly" esc-span))
+          else if nc == cc-lower-r then validate-escapes-loop s (i + 2) len line col off fid (lex-errors-push errs (make-error cdx-invalid-carriage-return-escape "\\r escape is not valid in CCE; use \\n for newlines" esc-span))
           else validate-escapes-loop s (i + 2) len line col off fid errs
        else errs
       else validate-escapes-loop s (i + 1) len line col off fid errs
@@ -534,7 +545,7 @@ Section: Tokenize All
   }
 
   LexCollected = record {
-   collected-tokens : LinkedList Token,
+   collected-tokens : List Token,
    collected-errors : LinkedList Diagnostic
   }
 
@@ -555,29 +566,94 @@ Section: Tokenize All
  `tokens = []` the moment the bag has errors -- so the honest wind-down
  allocates nothing and the band only has to cover the error record.
 
-  tokenize-collect : LexState, LinkedList Token, Integer -> LexCollected
+ The token list is a flat list with capacity taken from the source
+ length, pushed through a deck extent so that a push within capacity is
+ a store and a push past it copies onto the deck rather than into the
+ bivy. Until 2026-09-01 the tokens were collected into a linked list and
+ flattened once at the end, which left one list cell per token in the
+ bivy, 54 MB on the compiler's own unit, and that bivy sat above the LEX
+ floor where nothing later in the compile reuses the pages. A token
+ consumes at least one source character except the synthesized layout
+ tokens, so half the source length plus a margin covers the measured
+ density with room (1.2 million tokens from 3.05 MB on the compiler's own
+ unit); a unit that exceeds it copies on the deck and loses nothing.
+
+  tokenize-collect : LexState, List Token, Integer -> LexCollected
   tokenize-collect (st) (acc) (ceiling) =
    if ceiling > 0 & __deck-pos + demand-lex-guard-band >= ceiling
     then LexCollected {
      collected-tokens = [],
      collected-errors = __linked-list-push (st.errors) (make-error cdx-deck-overflow "Deck overflow in LEX; deck floor exceeded. The lexer's deck reservation ran out mid-stream. Raise demand-lex-floor, or compile this source with a larger -Decks percentage." synthetic-span)
     }
-   else when scan-token st
+   else let mark = __heap-save
+   in when scan-token st
     is LexToken (tok) (next) ->
-     if tok.kind == EndOfFile then LexCollected { collected-tokens = __linked-list-push acc tok, collected-errors = next.errors }
-      else tokenize-collect next (__linked-list-push acc tok) ceiling
+     let acc2 = deck-record (list-push acc tok)
+     in let below = lex-state-below mark next
+     in if tok.kind == EndOfFile then LexCollected { collected-tokens = acc2, collected-errors = below.errors }
+      else tokenize-collect below acc2 ceiling
     is LexEnd ->
-     LexCollected { collected-tokens = __linked-list-push acc (make-token (deck-record EndOfFile) 0 st), collected-errors = st.errors }
+     LexCollected { collected-tokens = deck-record (list-push acc (make-token (deck-record EndOfFile) 0 st)), collected-errors = st.errors }
+
+ Scanning one token leaves the states it stepped through in the bivy, and a
+ token's own record is deck-recorded by make-token, so the only thing the
+ next step needs from above the mark is the final state. Its fields are
+ read into locals, the bivy rewinds to the mark, and the state is rebuilt
+ below it; the errors list is safe to carry because add-lex-error puts its
+ cells and its diagnostic on the deck. Measured on the compiler's own unit
+ this is 45 MB of bivy per compile that nothing later reuses, sitting
+ above the LEX floor.
+
+  lex-state-below : Integer, LexState -> LexState
+  lex-state-below (mark) (next) =
+   let src = next.source
+   in let off = next.offset
+   in let ln = next.line
+   in let col = next.column
+   in let fid = next.file-id
+   in let errs = next.errors
+   in let pm = next.prose-mode
+   in let back = __heap-restore mark
+   in LexState {
+    source = src,
+    offset = off,
+    line = ln,
+    column = col,
+    file-id = fid,
+    errors = errs,
+    prose-mode = pm
+   }
+
+  token-capacity-for : Text -> Integer
+  token-capacity-for (src) = text-length src / 2 + 1024
+
+ The capacity is one allocation of many megabytes, and the per-token guard
+ below cannot see it: a starved floor would be stepped over before the first
+ token was read, and the pushes would then write into the bivy above the
+ reservation, which is the silent corruption `build/deck-floor-test.ps1`
+ exists to catch. So the capacity is clipped to the room the floor leaves
+ above the guard band; a clipped list overflows onto the deck through the
+ copy path, where the guard sees the growth and refuses in the open.
+
+  token-capacity-within : Text, Integer -> Integer
+  token-capacity-within (src) (ceiling) =
+   let want = token-capacity-for src
+   in if ceiling <= 0 then want
+   else let room = (ceiling - demand-lex-guard-band - __deck-pos) / 8 - 16
+   in if room < 1024 then 1024
+   else if room < want then room
+   else want
 
   tokenize : Text, Integer between 0 and 65535 -> TokenizeResult
   tokenize (src) (fid) =
-   let raw = tokenize-collect (make-lex-state src fid []) [] 0
-   in TokenizeResult { tokens = __linked-list-to-list (raw.collected-tokens), errors = __linked-list-to-list (raw.collected-errors) }
+   let raw = tokenize-collect (make-lex-state src fid []) (__list-with-capacity (token-capacity-for src)) 0
+   in TokenizeResult { tokens = raw.collected-tokens, errors = __linked-list-to-list (raw.collected-errors) }
 
   tokenize-into : Text, Integer between 0 and 65535, Boolean, Integer -> TokenizeResult
   tokenize-into (src) (fid) (prose) (ceiling) =
-   let raw = tokenize-collect (make-lex-state-prose src fid [] prose) [] ceiling
-   in deck-record (TokenizeResult { tokens = __linked-list-to-list (raw.collected-tokens), errors = __linked-list-to-list (raw.collected-errors) })
+   let acc0 = deck-record (__list-with-capacity (token-capacity-within src ceiling))
+   in let raw = tokenize-collect (make-lex-state-prose src fid [] prose) acc0 ceiling
+   in deck-record (TokenizeResult { tokens = raw.collected-tokens, errors = __linked-list-to-list (raw.collected-errors) })
 
 Page 1
 

@@ -3571,6 +3571,56 @@ poison battery the kernel was still `3AF5763C`, the poison seed, and nothing
 said so. `compile.ps1` prints the kernel and its digest on every run for
 exactly this class of mistake -- read that line.
 
+## What each build COSTS, so a hang is visible before it is expensive
+
+**Read this before you wait on anything.** The failure it exists to stop is
+not slowness, it is mistaking a hang for slowness: twice on 2026-08-31
+`build-page-modules.ps1` sat silent on one row for 25 minutes, and both times
+the honest-sounding reading ("that is the slow row") was free, available
+immediately, and wrong. A number to compare against is what makes the
+difference between a diagnosis and a nap.
+
+Measured 2026-08-31 on the 15.8 GiB box, on a codegen change implicating nine
+regression phases. **Re-measure before quoting (L-COUNT); none of these has
+ever gone down on its own.**
+
+| step | cost | notes |
+|---|---|---|
+| `build/build.ps1 -Internal`, codegen change | **950 to 1,065 s** | three runs: 953.5, 1,016.2, 1,062.6 |
+| `build/build.ps1 -Internal`, nothing implicated | ~186 s | the figure `CLAUDE.md` carries; not re-measured today |
+| `codex/plugs/wasm/build-page.ps1` | **~13 min** | 01:35 to 01:47 measured; includes the compiler WAT and 69 examples |
+| `build-page-modules.ps1`, all 51 rows, serial | ~11 min | the pre-parallel figure |
+| `build-page-modules.ps1`, 3 rows at `-Jobs 4` | **117 s** | against ~235 s serial for the same three |
+| `codex/plugs/wasm/build.ps1` (the wasm plug) | ~90 s | 5,704 lines bundled to a 388,861-byte CDX |
+| the compiler as a hosted-windows `.exe`, self-compile | **21 s** | 3 MB in, `SIZE:3087504` out |
+
+The gate's own phase breakdown, which is where the time actually goes and
+which phase to suspect when a total moves:
+
+| phase | s | | phase | s |
+|---|---|---|---|---|
+| `test-compile` (1,484 chapters) | **431.6** | | `plug-smoke` | 42.4 |
+| `gen-scripts` | 113.0 | | `test-bvt` | 41.1 |
+| `deck-headroom` | 76.8 | | `app-sweep` | 30.5 |
+| `jonquil` | 68.2 | | `cdx-build` | 22.5 |
+| `plug-binary` | 46.4 | | `cdx-stage1` | 21.5 |
+| `check-errors` | 43.3 | | `cross-smoke` | 18.8 |
+
+**A step past roughly twice its number here, printing nothing, is a hang until
+proven otherwise, and one command settles it:**
+
+```powershell
+Get-Process codex-vm,wat2wasm,pwsh -ErrorAction SilentlyContinue |
+    Select-Object Name,Id,@{n='CPU';e={[int]$_.CPU}},@{n='RAM(MB)';e={[int]($_.WorkingSet64/1MB)}},StartTime
+```
+
+A live build has a `codex-vm` or a `wat2wasm` burning CPU. **A step whose
+owning shell has accumulated about one second of CPU over twenty-five minutes,
+with no child process, is stopped, not working** -- and in PowerShell that is
+also the signature of a headless parameter prompt, which is why `compile.ps1`
+requires `-Log`. Check the artifact's timestamp too: an output file still
+carrying its previous mtime while the step "runs" is the same tell.
+
 **`-Jobs 4`, RE-RULED by Damian 2026-08-27, superseding the 2026-08-02
 `-Jobs 8` standard, release runs included.** Not the dead XMP workaround
 returning: a different condition, measured and named. The box holds 15.8 GiB
@@ -3666,3 +3716,42 @@ needed internally.
 
    The embedded MAP1 in each CDX is authoritative for crash reports
    regardless -- the text map only feeds `-Break` and `Resolve-Rip`.
+
+## Host changes on the build box, 2026-09-01, with the undo for each
+
+The box lost a DIMM (one 16 GB KSD516G72C34VTR at Controller1-DIMMB2,
+15.8 GiB visible) and the replacement is weeks away, so Damian directed a
+host-side purge of resident processes that were not the fleet's. Every
+change below was made from an elevated shell he approved at the UAC prompt
+(root, 2026-09-01, 09:06-09:16) unless marked per-user. Nothing here
+touches the depot, the seed, or the build scripts; the build-side changes
+of the same morning (`-Jobs 8`, the gate-RAM units) are in
+`CoordinationProtocol.md` and `CurrentPlan.md`.
+
+| # | what | how | measured effect | undo |
+|---|---|---|---|---|
+| 1 | NVIDIA App container service stopped and disabled | `Stop-Service NvContainerLocalSystem -Force; Set-Service NvContainerLocalSystem -StartupType Disabled` (elevated) | `NVIDIA Overlay` x5 (300 MB) and `nvcontainer` x4 (180 MB) gone and stay gone; the display driver service `NVDisplay.ContainerLocalSystem` untouched and running; CUDA and the driver unaffected. Lost: the NVIDIA App (overlay, recording, in-app driver updates) | `Set-Service NvContainerLocalSystem -StartupType Automatic; Start-Service NvContainerLocalSystem` |
+| 2 | NVIDIA App self-update task disabled | `Disable-ScheduledTask -TaskName 'NVIDIA App SelfUpdate_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}'` (elevated) | keeps 1 from being re-enabled by the updater | `Enable-ScheduledTask -TaskName 'NVIDIA App SelfUpdate_{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}'` |
+| 3 | Start-menu web suggestions off by policy | `DisableSearchBoxSuggestions` = DWORD 1 under both `HKCU\Software\Policies\Microsoft\Windows\Explorer` and `HKLM\Software\Policies\Microsoft\Windows\Explorer` (elevated) | NONE on its own: `SearchHost` still spawned six `msedgewebview2` (351-366 MB) after `gpupdate /force` and two Explorer restarts. Kept because it is the documented switch and costs nothing | delete the value from both keys |
+| 4 | Bing search and Cortana consent off (per-user) | `BingSearchEnabled` = 0, `CortanaConsent` = 0 under `HKCU\Software\Microsoft\Windows\CurrentVersion\Search` | none measured on the web views | delete both values |
+| 5 | Search highlights and cloud search off (per-user) | `IsDynamicSearchBoxEnabled` = 0, `IsMSACloudSearchEnabled` = 0, `IsAADCloudSearchEnabled` = 0 under `HKCU\Software\Microsoft\Windows\CurrentVersion\SearchSettings` | none measured on the web views | delete the three values |
+| 6 | The `SearchWebView2` feature flag (id 37926450) overridden off | key `HKLM\SYSTEM\CurrentControlSet\Control\FeatureManagement\Overrides\8\1694661260` with `EnabledState`=1, `EnabledStateOptions`=0, `Variant`=0, `VariantPayload`=0, `VariantPayloadKind`=0 (elevated). Reported working on 26200 builds, this box's build | WORKS. Measured 2026-09-01 10:33, four minutes after the reboot (booted 10:29:23), before any session had used the Start menu: `SearchHost` running (1 process), `msedgewebview2` count 0. The pre-reboot count under rows 3-5 alone was six. Re-count after a day's Start-menu use before calling the ~350 MB durable (L-GREEN): `(Get-Process msedgewebview2 -ErrorAction SilentlyContinue \| Measure-Object).Count` | delete the key `...\Overrides\8\1694661260` and reboot |
+| 7 | Explorer restarted | Windows restarted it itself at 09:09:54 and 09:11:37 after `SearchHost` was killed; a deliberate `Stop-Process explorer` at ~09:14 | the repaint Damian saw; no memory effect | none needed |
+| 8 | Logitech Options+ updater service stopped and disabled (second pass, 10:36-10:45, Damian's direction after the reboot) | `Stop-Service OptionsPlusUpdaterService -Force; Set-Service OptionsPlusUpdaterService -StartupType Disabled` (elevated) | `logioptionsplus_updater` (47 MB) and `logioptionsplus_appbroker` (16 MB) gone. The mouse is plain HID and keeps working; Options+ profiles do not apply while the agent is down, and the agent was not running before this either | `Set-Service OptionsPlusUpdaterService -StartupType Automatic; Start-Service OptionsPlusUpdaterService` |
+| 9 | Logitech Download Assistant logon entry removed | `Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Logitech Download Assistant'` (elevated); the value was `C:\Windows\system32\rundll32.exe C:\Windows\System32\LogiLDA.dll,LogiFetch` | no logon-time driver fetch | `New-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Logitech Download Assistant' -PropertyType String -Value 'C:\Windows\system32\rundll32.exe C:\Windows\System32\LogiLDA.dll,LogiFetch'` |
+| 10 | Phone Link uninstalled (per-user) | `Get-AppxPackage Microsoft.YourPhone \| Remove-AppxPackage` (was 1.26071.164.0). It has no startup-approved entry to flip: it self-activates as a background COM server through CDP, so uninstall is the only durable stop | `PhoneExperienceHost` (162 MB) gone | Microsoft Store, `ms-windows-store://pdp/?productid=9NMPJ99VJBWV`; needs row 12 undone first, the Store downloads through DoSvc |
+| 11 | Connected User Experiences and Telemetry disabled | `Stop-Service DiagTrack -Force; Set-Service DiagTrack -StartupType Disabled` (elevated) | 63 MB gone | `Set-Service DiagTrack -StartupType Automatic; Start-Service DiagTrack` |
+| 12 | Delivery Optimization disabled | `Set-Service DoSvc -StartupType Disabled` is REFUSED under an elevated shell (`Access is denied`, the service's own ACL); the registry route works: `reg add HKLM\SYSTEM\CurrentControlSet\Services\DoSvc /v Start /t REG_DWORD /d 4 /f` (elevated), then `Stop-Service DoSvc` | 27 MB gone. SIDE EFFECT: DoSvc is the download engine for Windows Update and the Store, not only the peer-to-peer half, so Store installs and some updates fail while it is disabled; re-enable it for those, then disable again | `reg add HKLM\SYSTEM\CurrentControlSet\Services\DoSvc /v Start /t REG_DWORD /d 2 /f; Start-Service DoSvc` |
+| 13 | Widgets removed (per-user) | The policy route FAILED: `reg add HKLM\SOFTWARE\Policies\Microsoft\Dsh /v AllowNewsAndInterests /t REG_DWORD /d 0 /f` answers `Access is denied` from an elevated shell although `Get-Acl` shows Administrators FullControl and no Deny ACE on the chain; cause not found. Instead: `Get-AppxPackage MicrosoftWindows.Client.WebExperience \| Remove-AppxPackage` (was 526.21100.40.0) and `TaskbarDa`=0 under `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced` | `WidgetBoard` (37 MB) and `WidgetService` (34 MB) gone; `WidgetsPlatformRuntime` stays installed and idle | Microsoft Store, `ms-windows-store://pdp/?productid=9MSSGKG348SP` (Windows Web Experience Pack, needs row 12 undone first); `TaskbarDa`=1 |
+
+| 14 | Edge startup boost and background mode off | `reg add HKLM\SOFTWARE\Policies\Microsoft\Edge /v StartupBoostEnabled /t REG_DWORD /d 0 /f` and the same for `BackgroundModeEnabled` (elevated); `Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'MicrosoftEdgeAutoLaunch_B3417D684B4D5DAA4B9966F05669343B'` (per-user; the value was `msedge.exe --no-startup-window --win-session-start`); the resident instance killed | the headless `msedge` x5 (344 MB) and `identity_helper` gone; Edge opens normally on click. Both policy toggles show as managed in edge://settings/system | `reg delete HKLM\SOFTWARE\Policies\Microsoft\Edge /v StartupBoostEnabled /f` and the same for `BackgroundModeEnabled`; Edge re-creates the Run entry itself once startup boost is back on |
+
+Measured for rows 8-13: ~390 MB of working set retired, and `Win32_OperatingSystem.FreePhysicalMemory` did NOT move (10.65 GiB before, 10.58 after, one session and no guests). The freed pages are on the standby list, which that counter does not credit; the gain is real for a guest that asks, not visible on the free line. After row 14, 10.76 GiB. Not taken: `CrossDeviceResume` (68 MB), `CDPSvc` + `CDPUserSvc` (66 MB, the transport row 10 and the Resume feature rode on), the `NVDisplay.Container` pair (203 MB, the display driver's own container, left for the control panel), and the Explorer-owned shell hosts `SearchHost`, `TextInputHost`, `StartMenuExperienceHost`, `ShellExperienceHost` (~650 MB resting): Explorer relaunches those within two seconds of a kill (measured on `TextInputHost`, back at 188 MB), there is no uninstall short of a shell replacement, and the memory manager trims them when a guest asks.
+
+Not done, and why: the Windows Search indexer (`WSearch`, `SearchIndexer.exe`)
+was left running at 21 MB, not worth its side effects; Defender's exclusion
+list could not be read without admin and was not changed; Edge (2.9 GB at
+07:00, 360 MB by 09:00) and Signal were Damian's own and he closed them.
+
+Measured before and after, no guests running: 08:32 four sessions at 8.2 GiB
+free before any of this; 09:06 after rows 1-2, 9.6 GiB free.

@@ -38,7 +38,7 @@ body::after {
   background: rgba(5,5,16,.85); backdrop-filter: blur(12px);
   border-bottom: 1px solid rgba(30,30,46,.5);
 }
-.nav .logo { font-size: 20px; font-weight: 800; letter-spacing: 3px; color: var(--accent); }
+.nav .logo { font-size: 20px; font-weight: 800; letter-spacing: 3px; color: var(--accent); text-decoration: none; }
 .nav-links { display: flex; gap: 24px; font-size: 14px; }
 .nav-links a { color: var(--dim); }
 .nav-links a:hover { color: var(--accent); }
@@ -153,6 +153,7 @@ select option { background: #ffffff; color: #111111; }
 }
 .tree-rm:hover { color: var(--red); background: rgba(255,255,255,.08); }
 .tree-bar { display: flex; gap: 6px; padding: 7px 10px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.out.lib-view { flex: 1; min-height: 320px; max-height: none; overflow: auto; }
 .tree-bar .act { font-size: .68em; padding: 4px 10px; }
 .edwrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .ftabs {
@@ -208,6 +209,8 @@ select option { background: #ffffff; color: #111111; }
 }
 .pill.active { background: rgba(212,160,23,.16); color: var(--accent); border-color: rgba(212,160,23,.45); }
 .pill:disabled { opacity: .4; cursor: not-allowed; }
+.pill-label { font-size: .78em; text-transform: uppercase; letter-spacing: .07em; opacity: .55; margin-left: 6px; }
+.pill-label:first-child { margin-left: 0; }
 .go {
   font: inherit; font-size: 0.8em; letter-spacing: 0.06em;
   padding: 7px 20px; border-radius: 7px; cursor: pointer;
@@ -348,7 +351,7 @@ body.cl-open { padding-right: 400px; }
 <body>
 
 <div class="nav">
-  <span class="logo">&#x2588; COBBLESTONE</span>
+  <a class="logo" href="../" title="Cobblestone home">&#x2588; COBBLESTONE</a>
   <span class="nav-links">
     <a href="index.html">Self-compile</a>
     <a href="https://github.com/damiant3/Cobblestone">GitHub</a>
@@ -407,6 +410,34 @@ body.cl-open { padding-right: 400px; }
           <span class="status" id="ir-status"></span>
         </div>
         <div class="out" id="out-ir" style="max-height:34vh;display:none">Press Compile.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="lib-panel">
+    <div class="panel-bar clps" data-toggle="lib-body">
+      <span class="title"><span class="chev">&#9656;</span>Library</span>
+      <span class="status" id="lib-status"></span>
+    </div>
+    <div id="lib-body" style="display:none">
+      <div class="workspace">
+        <div class="tree">
+          <div class="tree-list" id="lib-tree"></div>
+          <div class="tree-bar">
+            <input id="lib-filter" placeholder="Filter chapters" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="edwrap">
+          <div class="ftabs" id="lib-head"></div>
+          <!-- Fills the height the workspace has rather than capping at a
+               fixed slice of the viewport. The tree beside it grows when a
+               quire opens, `.workspace` stretches to match, and a fixed
+               max-height left the chapter in a short box with white space
+               under it. min-height keeps it a usable size when the tree is
+               short; flex:1 and min-height:0 together are what let a scrolling
+               child shrink inside a flex column. -->
+          <div class="out lib-view" id="lib-view">Pick a chapter to read it.</div>
+        </div>
       </div>
     </div>
   </div>
@@ -489,10 +520,17 @@ body.cl-open { padding-right: 400px; }
     </div>
 
     <div class="pills" id="pills-binary" style="display:none">
-      <button class="pill active" data-bin="pe">PE (UEFI)</button>
-      <button class="pill" data-bin="img">Disk image</button>
-      <button class="pill" data-bin="cdx">CDX</button>
-      <button class="pill" disabled title="The ELF plug runs here, but nothing emits the x86 payload it reads: the compiler has no ELF mode, and extract-x86-output.ps1 is dead.">ELF</button>
+      <span class="pill-label">Boots a machine</span>
+      <button class="pill active" data-bin="cdx" title="The compiled program in our own container, which is what the boot path and codex-vm load directly. The root artifact: everything to the right is this wrapped in somebody else's format.">CDX kernel</button>
+      <button class="pill" data-bin="elf" data-elf="0" title="A bootable ELF32 at the bare-metal load address, carrying the PVH note. This is the one QEMU takes with -kernel.">ELF kernel</button>
+      <button class="pill" data-bin="pe" title="BOOTX64.EFI: a UEFI application, the file firmware loads from the EFI partition of a disk. Not a Windows program -- it is subsystem 10, and it runs before any OS.">UEFI app</button>
+      <button class="pill" data-bin="img" title="A whole 8 MB disk: GPT partition table, an EFI partition, and the UEFI app inside it. This is the one to write to a USB stick or hand to a VM as a drive.">Bootable disk</button>
+      <span class="pill-label">Boards</span>
+      <button class="pill" data-bin="board" title="A RISC-V ELF64 built by the riscv backend's own writer, loaded at 0x80000000 -- the RAM base qemu-system-riscv64 -machine virt uses, and the SiFive one. Entry is the located `opening`, not offset zero. Per-board link and flash addresses for the named HAL boards are not in yet, so this is the generic RISC-V kernel.">RISC-V kernel</button>
+      <button class="pill" disabled title="No ARM64 ELF writer exists. The arm64 backend emits the same wire riscv does, and its PE writer lives in the pe plug, but there is no Arm64Elf chapter, so there is nothing to build an ARM64 kernel with yet.">ARM64 kernel</button>
+      <span class="pill-label">Runs on an OS</span>
+      <button class="pill" data-bin="elf" data-elf="2" title="A static ELF64 that RUNS: no interpreter, no libc, three segments -- the runtime cells, the program, and a demand-zero arena. Printing goes through write(2) and it exits through exit_group(2). Measured on WSL2 (kernel 6.6.87.2) against the same expected-output files the bare-metal battery grades on; that it runs on any x86-64 Linux is an assertion, and its basis is that the artifact has no host surface to depend on.">Linux app</button>
+      <button class="pill" data-bin="winexe" title="A Windows console program that RUNS: subsystem 3, a kernel32 import table, printing through WriteFile and exiting through ExitProcess. It asks the loader for its runtime cells at startup because they sit below any ImageBase Windows accepts. ASLR is off -- the code is patched for one address -- so a host that forces relocation will not run it. Tested on one machine.">Windows .exe</button>
       <label class="toggle inline" style="margin-left:auto"><input type="checkbox" id="eu-toggle">
         Also produce the compliance evidence package, the CRA and ETSI style
         documents, from this build</label>
@@ -560,8 +598,22 @@ body.cl-open { padding-right: 400px; }
     rather than the IR, so the compiler runs again in CDX mode and the CDX goes to
     the PE plug, and to the disk-image plug after it: what comes back is a bootable
     EFI binary or an 8 MB GPT image, built in this tab and saved by your own
-    browser. <b>ELF stays dark</b>, and the reason is not the plug: it reads an x86
-    payload nothing in the tree emits.
+    browser. The targets are grouped by what you end up with. <b>Boots a
+    machine</b> is four ways to package the same program: the CDX itself, a
+    bootable ELF for <code>qemu -kernel</code>, a UEFI application that firmware
+    loads off an EFI partition, and a whole 8 MB disk with that application
+    already on it, which is the one to write to a stick. <b>Runs on an OS</b> is
+    two programs you can hand to somebody: a Linux app and a Windows
+    <code>.exe</code>. Both are the same compile with a different floor under
+    it -- the runtime cells move off the addresses each system reserves,
+    printing leaves through <code>write(2)</code> or <code>WriteFile</code>, and
+    the entry stops building page tables it does not own. Both were graded
+    against the same expected-output files the bare-metal battery uses, so what
+    they print is what the kernel prints, byte for byte. The Linux one was
+    measured on WSL2; that it runs on any x86-64 Linux is an assertion resting
+    on the artifact having no host surface -- no interpreter, no libc, two
+    syscalls. The Windows one has ASLR off because the code is patched for one
+    address, and it has been run on one machine.
   </div>
 </div>
 
@@ -646,8 +698,11 @@ const MAX_FILE = 8388608;
 const HL_PLAIN = 524288;
 const PAINT_MAX = 5000;
 // The binary targets, each a plug that reads bytes and answers bytes.
-const BYTES_FILE = { pe: 'pe-bytes.wasm', img: 'img-bytes.wasm' };
-const BIN_NAME = { pe: 'BOOTX64.EFI', img: 'codex.img' };
+const BYTES_FILE = { pe: 'pe-bytes.wasm', img: 'img-bytes.wasm', elf: 'elf-bytes.wasm' };
+const BIN_NAME = { pe: 'BOOTX64.EFI', img: 'codex.img', elf: 'codex.elf', board: 'kernel.elf', winexe: 'codex.exe' };
+// The board backend is a lens-shaped module (IR in) that answers a FILE, so it
+// sits in neither BYTES_FILE nor PLUG_FILE.
+const BOARD_FILE = 'riscv-stdio.wasm';
 const IMG_SECTORS = 16384;   // 8 MB, the default codex/plugs/img/run.ps1 uses
 
 const PLUG_FILE = {
@@ -1035,7 +1090,10 @@ const wasmCache = {};
 let examples = [];
 let emittedJs = null;
 let emittedHtml = null;
-let binTarget = 'pe';
+let binTarget = 'cdx';
+// 0 is the bootable image, 1 the user-mode ELF64. Only read when binTarget
+// is 'elf'; the switch beside the pill is hidden otherwise.
+let elfMode = 0;
 let emittedBin = null;   // { name, bytes } once a binary target has produced one
 let lastRun = null;
 
@@ -1585,12 +1643,21 @@ for (const row of ['pills-code', 'pills-scripts', 'pills-frameworks']) {
     });
   }
 }
+// One pill per ARTIFACT, so the ELF container's two modes are two targets
+// rather than a format plus a mode switch. Picking what you want to end up
+// with is the question a visitor can answer; "ELF, and then kernel or
+// usermode" asks them to know what an ELF is first.
 for (const p of document.querySelectorAll('#pills-binary .pill')) {
   if (!p.dataset.bin) continue;
   p.addEventListener('click', () => {
-    for (const o of document.querySelectorAll('#pills-binary .pill')) o.classList.remove('active');
+    for (const o of document.querySelectorAll('#pills-binary .pill')) {
+      if (o.dataset.bin) o.classList.remove('active');
+    }
     p.classList.add('active');
     binTarget = p.dataset.bin;
+    // Absent on every target but the two ELF ones, and Number(undefined) is
+    // NaN rather than 0, so the fallback is explicit.
+    elfMode = p.dataset.elf === undefined ? 0 : Number(p.dataset.elf);
     emittedBin = null; saveBinBtn.disabled = true;
     render();
   });
@@ -1627,7 +1694,21 @@ async function moduleBytes(file) {
   }
   return wasmCache[file];
 }
-function runModule(bytes, inputTextOrBytes) {
+// The module's disk is a region of its OWN linear memory, not an import: the
+// host calls the exported disk_reserve(size) BEFORE _start and copies the
+// image in, and block-read-sector reads it in place. The contract is
+// WasmEmitter.codex's, recorded in PrismDevEnvironment.md's stage-2
+// convergence; a module built before that export exists has no disk_reserve,
+// so the call is guarded rather than assumed.
+function mountDisk(inst, img) {
+  if (!img) return 0;
+  if (typeof inst.exports.disk_reserve !== 'function') return 0;
+  const base = inst.exports.disk_reserve(img.length);
+  if (!base) return 0;
+  new Uint8Array(inst.exports.memory.buffer).set(img, base);
+  return base;
+}
+function runModule(bytes, inputTextOrBytes, disk) {
   // A plug that reads CCE is handed bytes; everything else is handed text and
   // gets the NUL the readers stop on.
   const input = (inputTextOrBytes instanceof Uint8Array)
@@ -1659,6 +1740,7 @@ function runModule(bytes, inputTextOrBytes) {
   const t0 = performance.now();
   const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
   mem = inst.exports.memory;
+  mountDisk(inst, disk);
   inst.exports._start();
   const all = new Uint8Array(total);
   let off = 0; for (const c of chunks) { all.set(c, off); off += c.length; }
@@ -1674,9 +1756,17 @@ function runModule(bytes, inputTextOrBytes) {
 // fallback for a browser whose worker stack is too small for the emitter's
 // tail calls, which announces itself as a call-stack error, and for anything
 // the worker cannot express.
+// The worker body is stringified into a Blob, so it closes over nothing: the
+// disk mount is spelled again here rather than shared with mountDisk above.
 function prismWorkerMain() {
+  // The library volume is 14 MB. It is installed ONCE, by its own message, and
+  // kept: sending it beside every compile would structured-clone 14 MB per
+  // press, and transferring it would empty the main thread's copy.
+  let diskImg = null;
   self.onmessage = (ev) => {
-    const { id, bytes, input } = ev.data;
+    if (ev.data.kind === 'disk') { diskImg = ev.data.disk; self.postMessage({ id: ev.data.id, ok: true, installed: true }); return; }
+    const { id, bytes, input, useDisk } = ev.data;
+    const disk = useDisk ? diskImg : null;
     let mem = null, pos = 0, total = 0;
     const chunks = [];
     const imports = { wasi_snapshot_preview1: {
@@ -1704,6 +1794,10 @@ function prismWorkerMain() {
       const t0 = performance.now();
       const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
       mem = inst.exports.memory;
+      if (disk && typeof inst.exports.disk_reserve === 'function') {
+        const base = inst.exports.disk_reserve(disk.length);
+        if (base) new Uint8Array(mem.buffer).set(disk, base);
+      }
       inst.exports._start();
       const all = new Uint8Array(total);
       let off = 0; for (const c of chunks) { all.set(c, off); off += c.length; }
@@ -1724,6 +1818,7 @@ function getWorker() {
       const w = workerWaiters[ev.data.id];
       if (!w) return;
       delete workerWaiters[ev.data.id];
+      if (ev.data.installed) { w.resolve({ installed: true }); return; }
       if (ev.data.ok) {
         const all = ev.data.bytes;
         w.resolve({ text: new TextDecoder().decode(all), bytes: all, ms: ev.data.ms, mb: ev.data.mb });
@@ -1732,24 +1827,35 @@ function getWorker() {
   }
   return prismWorker;
 }
-async function runW(bytes, inputTextOrBytes) {
+let workerDiskInstalled = false;
+async function runW(bytes, inputTextOrBytes, disk) {
   const input = (inputTextOrBytes instanceof Uint8Array)
     ? inputTextOrBytes
     : new TextEncoder().encode(inputTextOrBytes + '\0');
   let w = null;
   try { w = getWorker(); } catch (e) { w = null; }
-  if (!w) return runModule(bytes, input);
+  if (!w) return runModule(bytes, input, disk);
   const id = ++workerSeq;
   try {
+    if (disk && !workerDiskInstalled) {
+      const iid = ++workerSeq;
+      await new Promise((resolve, reject) => {
+        workerWaiters[iid] = { resolve, reject };
+        // A COPY crosses, and the copy is what the worker keeps: the main
+        // thread's image stays intact for the sync fallback path.
+        w.postMessage({ kind: 'disk', id: iid, disk: disk.slice() });
+      });
+      workerDiskInstalled = true;
+    }
     return await new Promise((resolve, reject) => {
       workerWaiters[id] = { resolve, reject };
-      w.postMessage({ id, bytes, input });
+      w.postMessage({ id, bytes, input, useDisk: !!disk });
     });
   } catch (e) {
     // A stack that ran out in the worker can still fit on the main thread,
     // where the browser grants more. Anything else is a real trap: a refused
     // memory.grow arrives as `unreachable`, so say what that usually means.
-    if (/call stack|stack size/i.test(String(e && e.message || e))) return runModule(bytes, input);
+    if (/call stack|stack size/i.test(String(e && e.message || e))) return runModule(bytes, input, disk);
     if (/unreachable/i.test(String(e && e.message || e))) {
       throw new Error(String(e && e.message || e) +
         ' (an `unreachable` trap from the compiler module is most often memory: a refused memory.grow, or a deliberate refusal in the emitter)');
@@ -1758,15 +1864,218 @@ async function runW(bytes, inputTextOrBytes) {
   }
 }
 
+// ---- The library on board ---------------------------------------------------
+// The shipped tree rides as a FAT16 volume, gzipped, and RESOLVE mode is what
+// reads it: the compiler mounts the volume off its own block builtins, pulls
+// every cited library chapter (transitively, deduped, each renamed
+// `Chapter: quire--name`), and hands back prefix+source between RESOLVE-BEGIN
+// and RESOLVE-END. Nothing here parses FAT and nothing here orders cites --
+// that is the whole reason the volume ships instead of a JS resolver.
+const LIBRARY = (typeof window !== 'undefined' && window.__LIBRARY) || null;
+let libraryImg = null, libraryTried = false, libraryWhy = '';
+async function libraryImage() {
+  if (libraryTried) return libraryImg;
+  libraryTried = true;
+  try {
+    const gz = EMBED['library.img.gz']
+      ? new Uint8Array(b64ToBytes(EMBED['library.img.gz']))
+      : new Uint8Array(await (await fetch('library.img.gz')).arrayBuffer());
+    if (typeof DecompressionStream !== 'function') { libraryWhy = 'this browser has no DecompressionStream'; return null; }
+    const ds = new DecompressionStream('gzip');
+    const stream = new Blob([gz]).stream().pipeThrough(ds);
+    libraryImg = new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch (e) {
+    libraryWhy = String(e && e.message || e);
+    libraryImg = null;
+  }
+  return libraryImg;
+}
+
+// RESOLVE answers the source UNCHANGED when it cites nothing from the library,
+// and the volume is only worth mounting when there is a library cite to serve.
+// The test is the quire name against the manifest, which is what the compiler's
+// own is-library-quire decides on -- a cite of a quire we do not ship is left
+// for the ordinary compile to refuse with CDX3007, exactly as it does today.
+function citesLibrary(text) {
+  if (!LIBRARY) return false;
+  const known = new Set(LIBRARY.quires.map(q => q.quire));
+  const re = /^\s*cites\s+([A-Za-z0-9]+)\s+chapter\s+/gm;
+  let m;
+  while ((m = re.exec(text))) if (known.has(m[1])) return true;
+  return false;
+}
+
+// The resolved unit is prefix + the original source, so every diagnostic
+// position in it sits that many lines below where the file's own region table
+// says. The shift is MEASURED off the returned text rather than counted from
+// the chapters we think were prepended: if the frame does not end with the
+// source we sent, the contract moved and a shifted map would point at the
+// wrong file with full confidence. That case refuses to resolve rather than
+// guessing, because a wrong file:line is worse than an unresolved cite.
+async function resolveUnit(unit) {
+  const img = await libraryImage();
+  if (!img || !citesLibrary(unit.text)) return { text: unit.text, regions: unit.regions, missing: [], used: false };
+  const r = await runW(await moduleBytes('codex-compiler.wasm'), 'RESOLVE\n' + unit.text, img);
+  const lines = r.text.split('\n');
+  const b = lines.indexOf('RESOLVE-BEGIN'), e = lines.lastIndexOf('RESOLVE-END');
+  const missing = lines.filter(l => l.startsWith('CITE-MISSING ')).map(l => l.slice(13).trim());
+  if (b < 0 || e <= b) return { text: unit.text, regions: unit.regions, missing, used: false, why: 'RESOLVE produced no frame' };
+  let resolved = lines.slice(b + 1, e).join('\n');
+  if (!resolved.endsWith(unit.text)) {
+    // The frame carries one trailing blank line by construction; allow that
+    // and nothing else.
+    if (resolved.endsWith(unit.text + '\n')) resolved = resolved.slice(0, -1);
+    else return { text: unit.text, regions: unit.regions, missing, used: false, why: 'the resolved frame does not end with the source, so positions cannot be mapped' };
+  }
+  const prefix = resolved.slice(0, resolved.length - unit.text.length);
+  const shift = prefix === '' ? 0 : prefix.split('\n').length - 1;
+  // We asked BECAUSE the unit cites the library, so an empty prefix with
+  // nothing reported missing means the volume never mounted -- disk_reserve
+  // refused, or the module predates the export. RESOLVE answers the source
+  // unchanged when sector-count is 0, which is indistinguishable from a clean
+  // resolve of nothing, so the one case that would otherwise sail through as
+  // a normal CDX3007 is named here instead.
+  if (shift === 0 && missing.length === 0) {
+    return { text: unit.text, regions: unit.regions, missing, used: false,
+             why: 'the library volume did not mount in the module (disk_reserve refused, or this module has no disk)' };
+  }
+  return {
+    text: resolved,
+    regions: unit.regions.map(rg => ({ path: rg.path, start: rg.start + shift, count: rg.count })),
+    missing, used: true, shift, ms: r.ms
+  };
+}
+
+// ---- The toolbox: the shipped tree, readable, and pullable into a project ---
+// The tree is painted from the manifest (names only). A chapter's TEXT comes
+// back the one way that keeps a single source of truth for the format: a
+// synthetic one-line source citing it, run through RESOLVE against the same
+// volume, and the chapter picked out of the frame by the `quire--name` header
+// the resolver renames it to. No FAT parser, no second copy of the library in
+// the page.
+const libTreeEl = document.getElementById('lib-tree');
+const libViewEl = document.getElementById('lib-view');
+const libHeadEl = document.getElementById('lib-head');
+const libStatusEl = document.getElementById('lib-status');
+const libFilterEl = document.getElementById('lib-filter');
+let libOpenQuire = null, libShown = null;
+
+function renderLibTree() {
+  if (!libTreeEl) return;
+  libTreeEl.innerHTML = '';
+  if (!LIBRARY) { libTreeEl.textContent = 'No library shipped with this page.'; return; }
+  const needle = (libFilterEl && libFilterEl.value || '').trim().toLowerCase();
+  for (const q of LIBRARY.quires) {
+    const hits = needle ? q.chapters.filter(c => c.toLowerCase().indexOf(needle) >= 0) : q.chapters;
+    if (needle && hits.length === 0) continue;
+    const open = libOpenQuire === q.quire || !!needle;
+    const head = document.createElement('div');
+    head.className = 'tree-root';
+    head.style.cursor = 'pointer';
+    head.textContent = (open ? '▾ ' : '▸ ') + q.dir + '  (' + hits.length + ')';
+    head.title = 'cites ' + q.quire + ' chapter <name>';
+    head.addEventListener('click', () => { libOpenQuire = libOpenQuire === q.quire ? null : q.quire; renderLibTree(); });
+    libTreeEl.appendChild(head);
+    if (!open) continue;
+    for (const c of hits) {
+      const shown = libShown && libShown.quire === q.quire && libShown.name === c;
+      const row = document.createElement('div');
+      row.className = 'tree-row' + (shown ? ' active' : '');
+      const b = document.createElement('button');
+      b.className = 'tree-item' + (shown ? ' active' : '');
+      b.textContent = c;
+      b.title = 'cites ' + q.quire + ' chapter ' + c;
+      b.addEventListener('click', () => viewChapter(q.quire, c));
+      row.appendChild(b);
+      libTreeEl.appendChild(row);
+    }
+  }
+}
+
+// The requested chapter is the LAST chunk the resolver pushes (its own
+// dependencies go on before it), but it is found by its renamed header rather
+// than by that ordering: a rule that reads the artifact beats one that assumes
+// the producer's order.
+function chapterOutOfFrame(frame, quire, name) {
+  const head = 'Chapter: ' + quire + '--' + name;
+  const at = frame.indexOf(head);
+  if (at < 0) return null;
+  const rest = frame.slice(at);
+  const next = rest.slice(head.length).search(/\nChapter: /);
+  const body = next < 0 ? rest : rest.slice(0, head.length + next);
+  return body.replace(head, 'Chapter: ' + name).replace(/\s+$/, '') + '\n';
+}
+
+async function viewChapter(quire, name) {
+  libShown = { quire, name, text: null };
+  renderLibTree();
+  libHeadEl.textContent = quire + ' / ' + name;
+  libViewEl.textContent = 'reading ' + name + ' off the library volume…';
+  const img = await libraryImage();
+  if (!img) {
+    libViewEl.textContent = 'The library volume did not load' + (libraryWhy ? ': ' + libraryWhy : '.');
+    return;
+  }
+  const probe = 'Chapter: ToolboxRead\n\n  cites ' + quire + ' chapter ' + name + '\n';
+  const r = await runW(await moduleBytes('codex-compiler.wasm'), 'RESOLVE\n' + probe, img);
+  const lines = r.text.split('\n');
+  const b = lines.indexOf('RESOLVE-BEGIN'), e = lines.lastIndexOf('RESOLVE-END');
+  if (b < 0 || e <= b) { libViewEl.textContent = 'RESOLVE produced no frame for ' + name + '.'; return; }
+  const text = chapterOutOfFrame(lines.slice(b + 1, e).join('\n'), quire, name);
+  if (!text) {
+    const missed = lines.find(l => l.startsWith('CITE-MISSING '));
+    libViewEl.textContent = missed
+      ? missed + ' -- the tree offers this chapter and the volume does not carry it.'
+      : 'The resolver returned no chapter named ' + quire + '--' + name + '.';
+    return;
+  }
+  libShown.text = text;
+  libViewEl.innerHTML = '';
+  const bar = document.createElement('div');
+  bar.className = 'tree-bar';
+  const add = document.createElement('button');
+  add.className = 'act';
+  add.textContent = 'Add to project';
+  add.addEventListener('click', () => {
+    addFile(name + '.codex', text, true);
+    // Pulled in as a file, the chapter carries its ORIGINAL header, so a cite
+    // left behind would resolve the library's copy alongside this one and the
+    // compiler would refuse the duplicate. Say so once, here, rather than
+    // letting the diagnostic be the first news of it.
+    libStatusEl.textContent = name + '.codex added -- drop `cites ' + quire + ' chapter ' + name + '` if you had one';
+  });
+  bar.appendChild(add);
+  libViewEl.appendChild(bar);
+  const pre = document.createElement('div');
+  // Codex source, so it takes the SOURCE highlighter. `paint` is the painter
+  // for compiler OUTPUT -- it runs `classify`, which looks for diagnostics and
+  // WD:/HEAP: metric lines -- and a chapter run through it comes back as
+  // undifferentiated grey with the odd line lit for containing the word
+  // "error". Same cap as the editor, for the same reason.
+  paintSource(pre, text.split('\n'));
+  libViewEl.appendChild(pre);
+  libStatusEl.textContent = quire + '/' + name + ', ' + text.length.toLocaleString() + ' chars in ' + r.ms.toFixed(0) + ' ms';
+}
+
+if (libFilterEl) libFilterEl.addEventListener('input', () => { libOpenQuire = null; renderLibTree(); });
+renderLibTree();
+if (libStatusEl && LIBRARY) {
+  libStatusEl.textContent = LIBRARY.quires.length + ' quires, ' +
+    LIBRARY.quires.reduce((n, q) => n + q.chapters.length, 0).toLocaleString() + ' chapters';
+}
+
 // A CDX arrives on the same stream as the compiler's own chatter, so the
 // payload is found rather than assumed: skip codex-vm's leading 0x01 if it is
 // there, find `SIZE:`, read the count to the newline, take exactly that many
 // bytes after it. Same rule as build-page.ps1's Get-CdxPayload, which is what
-// grades this module's CDX against the x86-64 kernel's byte for byte.
+// grades this module's CDX against the x86-64 kernel's byte for byte. The
+// whole stream is searched, not a head window: the compiler's own source
+// carries ~69 KB of warnings before the marker, and a 4 KB cap here read
+// that build as "no CDX payload came back".
 function cdxPayload(bytes) {
   let b = bytes;
   if (b.length && b[0] === 1) b = b.subarray(1);
-  const head = new TextDecoder('latin1').decode(b.subarray(0, Math.min(b.length, 4096)));
+  const head = new TextDecoder('latin1').decode(b);
   const idx = head.indexOf('SIZE:');
   if (idx < 0) return null;
   const nl = b.indexOf(10, idx);
@@ -1786,6 +2095,40 @@ function peWire(cdx) {
   const out = new Uint8Array(1 + cdx.length);
   out[0] = 0; out.set(cdx, 1); return out;
 }
+// elf is not like the two above: pe and img take the CDX whole, and the ELF
+// plug takes the NATIVE WIRE -- [4B code-len][4B data-len][4B func-count] then
+// code, data, function table -- behind a mode byte. So the page extracts the
+// x86-64 out of the CDX, which is exactly what build/cdx-to-pe.ps1 does
+// host-side: text at header offsets 168/176, rodata at 184/192.
+//
+// EVERY ONE OF THOSE NUMBERS IS READ OUT OF THE FILE, so they are checked
+// before anything is sliced. cdx-to-pe.ps1 records why in its own words: a
+// header understating a section produces a binary that BUILDS CLEAN and dies
+// on the metal with a black screen, which is the most expensive failure this
+// project has. Here it would be a download button handing somebody that file.
+// A function table is not emitted (count 0); it feeds DWARF, which the
+// user-mode container does not carry.
+function elfWire(cdx, mode) {
+  if (cdx.length < 224) return { err: 'the CDX is ' + cdx.length + ' bytes, shorter than its own header' };
+  // Mode 2 hands the CDX WHOLE. The hosted container needs the entry offset out
+  // of the header, which the unpacked wire below does not carry, and the plug
+  // parses the header itself rather than trusting the page to have done it.
+  if (mode === 2) { const out = new Uint8Array(1 + cdx.length); out[0] = 2; out.set(cdx, 1); return { wire: out }; }
+  const dv = new DataView(cdx.buffer, cdx.byteOffset, cdx.byteLength);
+  const textOff = Number(dv.getBigInt64(168, true)), textSz = Number(dv.getBigInt64(176, true));
+  const roOff = Number(dv.getBigInt64(184, true)), roSz = Number(dv.getBigInt64(192, true));
+  for (const [o, s, what] of [[textOff, textSz, 'text'], [roOff, roSz, 'rodata']]) {
+    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(s) || o < 0 || s < 0 || o + s > cdx.length) {
+      return { err: "the CDX header's " + what + ' section (' + o + '+' + s + ') runs past the ' + cdx.length + '-byte file' };
+    }
+  }
+  const out = new Uint8Array(13 + textSz + roSz);
+  out[0] = mode;
+  out.set(le32(textSz), 1); out.set(le32(roSz), 5); out.set(le32(0), 9);
+  out.set(cdx.subarray(textOff, textOff + textSz), 13);
+  out.set(cdx.subarray(roOff, roOff + roSz), 13 + textSz);
+  return { wire: out };
+}
 function imgWire(pe, cdx, sectors) {
   const hdr = [0].concat(le32(sectors), le32(pe.length), le32(cdx.length), le32(0));
   const out = new Uint8Array(hdr.length + pe.length + cdx.length);
@@ -1800,6 +2143,25 @@ function classify(l) {
   if (l.indexOf('error CDX') >= 0 || l.startsWith('CODEGEN')) return 'diag';
   return '';
 }
+// Codex source into an element, coloured by the same highlighter the editor
+// uses, so a chapter read out of the library looks like a chapter and not like
+// build output. Bounded by PAINT_MAX exactly as `paint` is: the library holds
+// chapters far longer than anything a visitor types.
+function paintSource(el, lines) {
+  el.innerHTML = '';
+  if (!lines.length) { el.textContent = '(nothing)'; return; }
+  const shown = Math.min(lines.length, PAINT_MAX);
+  let html = '';
+  for (let i = 0; i < shown; i++) html += highlightLine(lines[i]) + '\n';
+  el.innerHTML = html;
+  if (lines.length > shown) {
+    const d = document.createElement('div');
+    d.className = 'metric';
+    d.textContent = '... ' + (lines.length - shown).toLocaleString() + ' more lines';
+    el.appendChild(d);
+  }
+}
+
 function paint(el, lines) {
   el.innerHTML = '';
   if (!lines.length) { el.textContent = '(nothing)'; return; }
@@ -1927,7 +2289,10 @@ goBtn.addEventListener('click', async () => {
   try {
     const af = activePath && fileByPath(activePath);
     if (af) af.text = srcEl.value;
-    const unit = assembleUnit();
+    // Cites into the shipped library are resolved off the volume FIRST, so the
+    // unit the compiler sees already carries the chapters it needs. A project
+    // that cites nothing from the library comes back untouched.
+    const unit = await resolveUnit(assembleUnit());
     lastRegions = unit.regions;
     let r = null, used = 0;
     const ladder = unit.text.length > BIG_UNIT ? DECKS.slice(-1) : DECKS;
@@ -1941,10 +2306,16 @@ goBtn.addEventListener('click', async () => {
     // marks and heap metrics, the pipeline info line, punctual and WCET rows,
     // and any refusal. Positions arrive in the ASSEMBLED unit's line numbers,
     // so they are mapped home to file:line through the region table first.
-    const all = lines.filter(l => l.trim() !== '' && classify(l) !== '').map(mapDiagLine);
+    // CITE-MISSING is the resolver's own refinement and it says more than the
+    // CDX3007 that follows it: 3007 also fires on a typo'd chapter name, while
+    // this one says the volume was asked and did not have it.
+    const notes = unit.missing.map(m => 'CITE-MISSING ' + m + ' (asked the library volume; not there)');
+    if (!unit.used && unit.why) notes.push('library NOT used: ' + unit.why);
+    const all = notes.concat(lines.filter(l => l.trim() !== '' && classify(l) !== '').map(mapDiagLine));
     paint(outLogEl, all);
-    if (all.some(l => l.indexOf('error CDX') >= 0 || l.startsWith('CODEGEN'))) setPanelOpen('out-log', true);
-    logStatusEl.textContent = all.length + ' lines, decks=' + used;
+    if (all.some(l => l.indexOf('error CDX') >= 0 || l.startsWith('CODEGEN') || l.startsWith('CITE-MISSING'))) setPanelOpen('out-log', true);
+    logStatusEl.textContent = all.length + ' lines, decks=' + used +
+      (unit.used ? ', library resolved ' + unit.shift.toLocaleString() + ' lines' : '');
 
     const b = lines.indexOf('IR-BEGIN'), e = lines.indexOf('IR-END');
     if (b < 0 || e < 0) {
@@ -1967,7 +2338,67 @@ goBtn.addEventListener('click', async () => {
     // panels above still show, because both come out of every compile.
     if (tab === 'binary') {
       emittedBin = null; saveBinBtn.disabled = true;
-      const c = await runW(await moduleBytes('codex-compiler.wasm'), 'CDX\n' + unit.text);
+      // A board kernel does not come through the CDX at all. The riscv backend
+      // reads IR TEXT and writes its own ELF, so this branch takes the IR path
+      // the lenses take and hands it to that module -- no CDX, no pe plug, no
+      // elf plug. It returns before the CDX compile below rather than paying
+      // for an artifact nothing here consumes.
+      if (binTarget === 'board') {
+        const rIr = await runW(await moduleBytes('codex-compiler.wasm'),
+                               'IR-UNI decks=' + DECKS[DECKS.length - 1] + '\n' + unit.text);
+        const ls = rIr.text.split('\n');
+        const b0 = ls.indexOf('IR-BEGIN'), e0 = ls.indexOf('IR-END');
+        if (b0 < 0 || e0 < 0) {
+          setStatus('no IR: the compiler refused this source', 'err');
+          setBuildline('err', 'no IR to build a board kernel from');
+          outEl.innerHTML = '<span class="diag">' + esc(ls.filter(l => classify(l) === 'diag').join('\n') || 'the compiler emitted no IR') + '</span>';
+          endBusy(); return;
+        }
+        const kr = await runW(await moduleBytes(BOARD_FILE), 'ELF\n' + ls.slice(b0 + 1, e0).join('\n'));
+        const kb = kr.bytes;
+        // The plug REFUSES a unit with no `opening` in words, and words are not
+        // a file. Same guard the other targets carry, for the same reason.
+        const kHead = new TextDecoder('latin1').decode(kb.subarray(0, Math.min(kb.length, 64)));
+        if (kHead.startsWith('REFUSED') || kb.length < 64) {
+          setStatus('the board plug refused', 'err');
+          setBuildline('err', 'the riscv backend refused this unit');
+          outEl.innerHTML = '<span class="diag">' + esc(new TextDecoder().decode(kb)) + '</span>';
+          endBusy(); return;
+        }
+        emittedBin = { name: BIN_NAME.board, bytes: kb };
+        saveBinBtn.disabled = false;
+        setStatus('ok', 'ok');
+        setBuildline('ok', BIN_NAME.board + ' · ' + kb.length.toLocaleString() + ' bytes · ' +
+                     (rIr.ms + kr.ms).toFixed(0) + ' ms · ' + Math.max(rIr.mb, kr.mb) + ' MB peak');
+        lastRun = { body: [] };
+        render(); endBusy(); return;
+      }
+      // A hosted target is a DIFFERENT COMPILE, not a different wrapper. The
+      // runtime cells move off the addresses an OS reserves, printing becomes
+      // write(2) or WriteFile, and the entry stops building page tables. None
+      // of that can be added to a bare-metal CDX afterwards, so the mode goes
+      // in here and the container below only packages what comes out.
+      const hostedFlag = binTarget === 'winexe' ? ' hosted-windows'
+                       : (binTarget === 'elf' && elfMode === 2) ? ' hosted' : '';
+      // The claim that used to be here -- that the compiler's own source
+      // refuses CDX9002 in SCOPE at its derived scale -- is FALSE as of
+      // 2026-09-01. Measured at seed 9B73E281, bare CDX on the 3,052,663-byte
+      // self-source COMPILES on the module and on x86-64, same payload size,
+      // 4.3 s against 4.7 s; decks=1 refuses on both as the control. There is
+      // no wasm deck inflation left to route around here.
+      //
+      // The ladder STAYS anyway, and deliberately. It costs one extra compile
+      // only when the first refuses, the IR path's own rungs have NOT been
+      // re-measured, and an explicit scale below the compiler's own derivation
+      // can fail silently (opening.codex's 32-vs-33 record) -- a wrong binary
+      // is worse than a refused one. Remove a rung when the IR path is
+      // measured too, not on this one result.
+      const topDecks = ' decks=' + DECKS[DECKS.length - 1];
+      let c = null;
+      for (const d of (unit.text.length > BIG_UNIT ? [topDecks] : ['', topDecks])) {
+        c = await runW(await moduleBytes('codex-compiler.wasm'), 'CDX' + hostedFlag + d + '\n' + unit.text);
+        if (c.text.indexOf('CDX9002') < 0) break;
+      }
       const cdx = cdxPayload(c.bytes);
       if (!cdx) {
         setStatus('no CDX: the compiler refused this source', 'err');
@@ -1979,6 +2410,27 @@ goBtn.addEventListener('click', async () => {
       // The CDX target IS the compiled payload: the root artifact, no plug
       // after the compiler. The other two wrap it.
       if (binTarget === 'cdx') { bytes = cdx; }
+      else if (binTarget === 'elf') {
+        // The one target that does not wrap the CDX: it takes the x86-64 out
+        // of it. A refusal here is the page's own, before any plug runs, so it
+        // says what is wrong with the CDX rather than reporting a plug error.
+        const w = elfWire(cdx, elfMode);
+        if (w.err) {
+          setStatus('the CDX cannot be unpacked', 'err');
+          setBuildline('err', w.err);
+          outEl.innerHTML = '<span class="diag">' + esc(w.err) + '</span>';
+          endBusy(); return;
+        }
+        const ef = await runW(await moduleBytes(BYTES_FILE.elf), w.wire);
+        ms += ef.ms; mb = Math.max(mb, ef.mb);
+        bytes = ef.bytes;
+      }
+      else if (binTarget === 'winexe') {
+        const w = new Uint8Array(1 + cdx.length); w[0] = 3; w.set(cdx, 1);
+        const ex = await runW(await moduleBytes(BYTES_FILE.pe), w);
+        ms += ex.ms; mb = Math.max(mb, ex.mb);
+        bytes = ex.bytes;
+      }
       else {
         const pe = await runW(await moduleBytes(BYTES_FILE.pe), peWire(cdx));
         ms += pe.ms; mb = Math.max(mb, pe.mb);
@@ -2002,7 +2454,15 @@ goBtn.addEventListener('click', async () => {
       emittedBin = {
         name: binTarget === 'cdx'
           ? (activePath || 'program').replace(/\.codex$/, '').replace(/[^A-Za-z0-9_-]+/g, '-') + '.cdx'
-          : BIN_NAME[binTarget],
+          // A user-mode binary is named for the program: no extension on Linux,
+          // .exe on Windows, which is the convention on each platform it
+          // targets. The bootable ones keep fixed names like other boot
+          // artifacts, because those are loaded by name.
+          : (binTarget === 'elf' && elfMode >= 1)
+            ? (activePath || 'program').replace(/\.codex$/, '').replace(/[^A-Za-z0-9_-]+/g, '-')
+            : binTarget === 'winexe'
+              ? (activePath || 'program').replace(/\.codex$/, '').replace(/[^A-Za-z0-9_-]+/g, '-') + '.exe'
+              : BIN_NAME[binTarget],
         bytes
       };
       saveBinBtn.disabled = false;
@@ -2462,7 +2922,7 @@ let lastAgentCompile = null;
 async function compileForAgent() {
   const af = activePath && fileByPath(activePath);
   if (af) af.text = srcEl.value;
-  const unit = assembleUnit();
+  const unit = await resolveUnit(assembleUnit());
   lastRegions = unit.regions;
   let r = null, used = 0;
   for (const d of DECKS) {
@@ -2471,9 +2931,10 @@ async function compileForAgent() {
     if (r.text.indexOf('CDX9002') < 0) break;
   }
   const lines = r.text.split('\n');
-  const diagnostics = lines
-    .filter(l => l.indexOf('error CDX') >= 0 || l.startsWith('CODEGEN'))
-    .map(mapDiagLine);
+  const diagnostics = unit.missing.map(m => 'CITE-MISSING ' + m + ' (asked the library volume; not there)')
+    .concat(lines
+      .filter(l => l.indexOf('error CDX') >= 0 || l.startsWith('CODEGEN'))
+      .map(mapDiagLine));
   const b = lines.indexOf('IR-BEGIN'), e = lines.indexOf('IR-END');
   const ir = (b >= 0 && e > b) ? lines.slice(b + 1, e).join('\n') : null;
   lastAgentCompile = { ok: !!ir && diagnostics.length === 0, decks: used, diagnostics, ir };

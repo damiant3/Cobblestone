@@ -108,6 +108,36 @@ Section: Literal Range
      else st
     is otherwise -> st
 
+ The digits either side of the point are ONE accumulator. `__text_to_double`
+ walks the whole literal, folds every digit into a single i64 as
+ `acc = acc * 10 + digit`, counts the places after the point separately, and
+ divides once at the end, so the width that matters is the total digit count
+ and not the integer part. `1152921504606846976.0` is twenty digits and wraps;
+ `1.123456789012345678` is nineteen and does not.
+
+  num-lit-out-of-range : Text -> Boolean
+  num-lit-out-of-range (val) =
+   let digits = text-replace val "." ""
+   in let len = text-length digits
+   in let start = int-lit-first-sig digits 0 len
+   in let sig = int-lit-sig-digits digits start len 0
+   in if sig < 19 then False
+      else if sig > 19 then True
+      else int-lit-exceeds digits start len "9223372036854775807" 0
+
+  check-num-lit-range : UnificationState, Text, LiteralKind, SourceSpan -> UnificationState
+  check-num-lit-range (st) (val) (kind) (span) =
+   when kind
+    is NumLit ->
+     if num-lit-out-of-range val
+     then __record-set st "bag" (bag-add (st.bag) (make-error cdx-real-literal-overflow ("Real literal '" & val & "' carries more decimal digits than fit an i64. Every digit on both sides of the point is accumulated into one wrapping i64 before the scale is applied, so this reads back as a different number with no fault") span))
+     else st
+    is otherwise -> st
+
+  check-lit-range : UnificationState, Text, LiteralKind, SourceSpan -> UnificationState
+  check-lit-range (st) (val) (kind) (span) =
+   check-num-lit-range (check-int-lit-range st val kind span) val kind span
+
 Section: Infer Name
 
   infer-name : UnificationState, TypeEnv, Text, SourceSpan -> CheckResult
@@ -581,7 +611,7 @@ Section: Infer Application
   infer-application (st) (env) (func) (arg) (span) (depth) =
    let fr = infer-expr-at st env func (depth + 1)
    in let ar = when arg
-       is ALitExpr (val) (kind) (s) -> infer-int-lit-arg (check-int-lit-range (fr.state) val kind s) (fr.inferred-type) val kind
+       is ALitExpr (val) (kind) (s) -> infer-int-lit-arg (check-lit-range (fr.state) val kind s) (fr.inferred-type) val kind
        is otherwise -> infer-expr-at (fr.state) env arg (depth + 1)
    in let (ret-ty, ret-st) = fresh-and-advance (ar.state)
    in let (call-row-id, row-st) = fresh-row-id ret-st
@@ -1222,7 +1252,7 @@ Section: Infer List
      in CheckResult {
       inferred-type = fr-ty,
       effect-row = empty-row,
-      state = fr-st
+      state = record-expr-type fr-st span fr-ty
      }
     else let first = infer-expr-at st env (list-at elems 0) (depth + 1)
     in let (elems-row, st2) = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems) (first.effect-row) depth
@@ -1545,7 +1575,7 @@ Section: Infer Expression (dispatch)
     state = add-unify-error st cdx-resource-exhausted ("compiler resource exhausted in type-checker.infer-expr (budget " & integer-to-text max-recursion-depth & ")") (aexpr-span expr)
    }
    else when expr
-    is ALitExpr (val) (kind) (s) -> infer-literal (check-int-lit-range st val kind s) kind
+    is ALitExpr (val) (kind) (s) -> infer-literal (check-lit-range st val kind s) kind
     is ANameExpr (name) (s) -> infer-name st env (name.value) s
     is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s depth
     is AUnaryExpr (operand) (s) ->

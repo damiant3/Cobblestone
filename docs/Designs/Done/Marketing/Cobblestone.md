@@ -4,6 +4,17 @@
 a public push that carries the rename, the prism/REPL surface, and the new
 home page.*
 
+**DONE 2026-08-29 (Damian). The campaign is complete and this doc is
+archived.** The site is live at www.cobblestoneproject.com, deployed
+2026-08-28 evening (root; web commit `d2317f3`, main 20780). Step 6's
+"home page" resolved to the **landing app**, which is that homepage --
+Damian, 2026-08-29: *"thats the app called landing, and is the homepage on
+www.cobblestoneproject.com."* There was never a separate parallax draft to
+locate, so the 2026-08-24 search recorded below found nothing because it was
+looking for a second thing that does not exist. Step 4's ERP demo company
+was never drawn and closes undrawn; it was free flavour at the lowest
+priority throughout and gated nothing.
+
 ## The idea
 
 "The new repository" was always the idea, not the moniker. The project's
@@ -308,10 +319,11 @@ contents, not for a date.
 
 ## Register
 
-Campaign items live HERE while the campaign is active; an item originating
-in one app (prism, landing) stays in that app's backlog with this doc
-naming the dependency. When the culminating push is public, this doc moves
-to `docs/Designs/Done/Marketing/` with the push sha in this line.
+Campaign items lived HERE while the campaign was active; an item originating
+in one app (prism, landing) stays in that app's backlog. **The push is
+public and this doc has moved to `docs/Designs/Done/Marketing/`; the sha is
+web commit `d2317f3` (main 20780, 2026-08-28).** Anything still open in
+prism or landing is that app's backlog, not this doc.
 
 - **Port of the promoted landing into `LandingPage.codex`: DONE (red
   20043, 2026-08-27).** The marketing-refocused landing (Damian-directed

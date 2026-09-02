@@ -102,8 +102,14 @@ Section: Arity Map
 
   wat-emit-elem : List ArityEntry, Integer, Text -> Text
   wat-emit-elem (entries) (i) (acc) =
-   if i >= list-length entries then acc
-   else wat-emit-elem entries (i + 1) (acc & " $" & wat-sanitize ((list-at entries i).name))
+   acc & wat-emit-elem-span entries i (list-length entries)
+
+  wat-emit-elem-span : List ArityEntry, Integer, Integer -> Text
+  wat-emit-elem-span (entries) (lo) (hi) =
+   if lo >= hi then ""
+   else if hi - lo == 1 then " $" & wat-sanitize ((list-at entries lo).name)
+   else let mid = lo + (hi - lo) / 2
+   in wat-emit-elem-span entries lo mid & wat-emit-elem-span entries mid hi
 
  `$fn1` is emitted even when nothing in the module has arity 1, because
  `$clo_apply1`'s no-capture fast path names it unconditionally and a module
@@ -145,6 +151,19 @@ Section: String Table
    if i >= list-length xs then 0
    else if (list-at xs i).value == s then (list-at xs i).offset
    else strtab-lookup xs s (i + 1)
+
+ A missing entry answers 0, and the table starts at 1024, so 0 is not an address
+ any string has. Every site that turns a lookup into a POINTER goes through this
+ one, which refuses with a marker naming the string rather than emitting a
+ pointer to linear-memory address 0 and printing whatever is there. A collector
+ that fails to reach some new site is then a named refusal instead of plausible
+ output (L-BAILVALUE).
+
+  wat-strtab-ref : List StringEntry, Text -> Text
+  wat-strtab-ref (strings) (s) =
+   let off = strtab-lookup strings s 0
+   in if off == 0 then "(unreachable (; wasm plug: string literal absent from the table: " & s & " ;))"
+      else "(i64.extend_i32_u (i32.const " & integer-to-text off & "))"
 
   strtab-assign-offsets : List StringEntry, Integer, Integer, List StringEntry -> List StringEntry
   strtab-assign-offsets (xs) (i) (off) (acc) =
@@ -204,7 +223,23 @@ Section: String Table
   collect-strings-branches-loop (bs) (acc) (i) =
    if i >= list-length bs then acc
    else let b = list-at bs i
-   in collect-strings-branches-loop bs (collect-strings-expr (b.body) acc) (i + 1)
+   in collect-strings-branches-loop bs (collect-strings-pat (b.pattern) (collect-strings-expr (b.body) (collect-strings-expr (b.guard) acc))) (i + 1)
+
+ A Text literal in a PATTERN is a string this module needs and no expression
+ mentions, so the collector has to reach into the pattern or the table has no
+ entry to look up.
+
+  collect-strings-pat : IRPat, List StringEntry -> List StringEntry
+  collect-strings-pat (p) (acc) =
+   when p
+    is IrLitPat (t) (ty) (sp) -> if wat-is-text-type ty then strtab-add acc t else acc
+    is IrCtorPat (n) (subs) (ty) (sp) -> collect-strings-pats subs acc 0
+    is otherwise -> acc
+
+  collect-strings-pats : List IRPat, List StringEntry, Integer -> List StringEntry
+  collect-strings-pats (ps) (acc) (i) =
+   if i >= list-length ps then acc
+   else collect-strings-pats ps (collect-strings-pat (list-at ps i) acc) (i + 1)
 
   collect-strings-stmts : List IRActStmt, List StringEntry -> List StringEntry
   collect-strings-stmts (ss) (acc) =
@@ -267,8 +302,14 @@ Section: String Table
 
   emit-data-sections : List StringEntry, Integer -> Text
   emit-data-sections (xs) (i) =
-   if i >= list-length xs then ""
-   else emit-data-section (list-at xs i) & emit-data-sections xs (i + 1)
+   emit-data-span xs i (list-length xs)
+
+  emit-data-span : List StringEntry, Integer, Integer -> Text
+  emit-data-span (xs) (lo) (hi) =
+   if lo >= hi then ""
+   else if hi - lo == 1 then emit-data-section (list-at xs lo)
+   else let mid = lo + (hi - lo) / 2
+   in emit-data-span xs lo mid & emit-data-span xs mid hi
 
 Section: CCE Output Tables
 
@@ -289,7 +330,7 @@ Section: CCE Output Tables
 
   cce-flush-at : Integer = 240
 
-  cce-in-buf-bytes : Integer = 8
+  cce-in-buf-bytes : Integer = 65536
 
   cce-tables-bytes : Integer =
    cce-tab-bytes + cce-tier2-block-count * cce-t2-entry-bytes + cce-out-buf-bytes +
@@ -388,19 +429,21 @@ Section: Type Lookups
 
   WatBand = record {
    clamps : Boolean,
+   wraps : Boolean,
    blo : Integer,
    bhi : Integer
   }
 
   wat-no-band : WatBand
-  wat-no-band = WatBand { clamps = False, blo = 0, bhi = 0 }
+  wat-no-band = WatBand { clamps = False, wraps = False, blo = 0, bhi = 0 }
 
   wat-atype-band : ATypeExpr -> WatBand
   wat-atype-band (te) =
    when te
     is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
      when mode
-      is OvClamping -> WatBand { clamps = True, blo = lo, bhi = hi }
+      is OvClamping -> WatBand { clamps = True, wraps = False, blo = lo, bhi = hi }
+      is OvWrapping -> WatBand { clamps = False, wraps = True, blo = lo, bhi = hi }
       is otherwise -> wat-no-band
     is otherwise -> wat-no-band
 
@@ -416,12 +459,28 @@ Section: Type Lookups
    else when list-at tds i
     is ARecordTypeDef (n) (tp) (fds) (recmut) (sp) ->
      let b = wat-band-in-afields fds field-name 0
-     in if b.clamps then b else wat-band-for-field tds field-name (i + 1)
+     in if b.clamps | b.wraps then b else wat-band-for-field tds field-name (i + 1)
     is otherwise -> wat-band-for-field tds field-name (i + 1)
+
+ A wrapping band is admitted only at a hardware width (`bounds-are-hw-width`,
+ `Types/CodexTypeHelpers.codex`), so the band IS the width and no table is
+ needed: an unsigned band's `hi` is exactly the mask, and a signed band's `hi`
+ names which sign-extending instruction narrows it. A band that is neither
+ refuses rather than answering, because a wrong wrap and a correct one are the
+ same kind of number.
+
+  wat-wrap : WatBand, Text -> Text
+  wat-wrap (b) (v) =
+   if b.blo == 0 then "(i64.and " & v & " (i64.const " & integer-to-text (b.bhi) & "))"
+   else if b.bhi == 127 then "(i64.extend8_s " & v & ")"
+   else if b.bhi == 32767 then "(i64.extend16_s " & v & ")"
+   else if b.bhi == 2147483647 then "(i64.extend32_s " & v & ")"
+   else "(unreachable (; no wasm form for a wrapping band " & integer-to-text (b.blo) & " to " & integer-to-text (b.bhi) & " ;))"
 
   wat-clamp : WatBand, Text -> Text
   wat-clamp (b) (v) =
-   if b.clamps == False then v
+   if b.wraps then wat-wrap b v
+   else if b.clamps == False then v
    else let hi-c = "(i64.const " & integer-to-text (b.bhi) & ")"
    in let lo-c = "(i64.const " & integer-to-text (b.blo) & ")"
    in let hi-done = "(select " & hi-c & " " & v & " (i64.gt_s " & v & " " & hi-c & "))"
@@ -475,8 +534,38 @@ Section: Emitter Context
    arities : List ArityEntry,
    strings : List StringEntry,
    type-defs : List ATypeDef,
-   bound : List Text
+   bound : List Text,
+   scrut-depth : Integer
   }
+
+  wat-scrut-name : Integer -> Text
+  wat-scrut-name (d) =
+   if d <= 0 then "_s" else wat-scrut-name (d - 1) & "s"
+
+  wat-scrut : WasmCtx -> Text
+  wat-scrut (ctx) = "$" & wat-scrut-name (ctx.scrut-depth)
+
+  wat-is-scrut : Text -> Boolean
+  wat-is-scrut (n) =
+   text-length n >= 2 & n == wat-scrut-name (text-length n - 2)
+
+  wat-shift-scrut-name : Text -> Text
+  wat-shift-scrut-name (n) =
+   if wat-is-scrut n then wat-scrut-name (text-length n - 1) else n
+
+  wat-shift-scrut : List Text, Integer, List Text -> List Text
+  wat-shift-scrut (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else wat-shift-scrut xs (i + 1) (list-push acc (wat-shift-scrut-name (list-at xs i)))
+
+  locals-merge : List Text, List Text, Integer -> List Text
+  locals-merge (acc) (xs) (i) =
+   if i >= list-length xs then acc
+   else locals-merge (locals-add acc (list-at xs i)) xs (i + 1)
+
+  ctx-deeper : WasmCtx -> WasmCtx
+  ctx-deeper (ctx) =
+   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth + 1 }
 
 Section: Local Collection
 
@@ -494,6 +583,10 @@ Section: Local Collection
   locals-add (xs) (name) =
    if locals-contains xs name then xs
    else list-push xs name
+
+  ctx-with : WasmCtx, List Text -> WasmCtx
+  ctx-with (ctx) (bd) =
+   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = bd, scrut-depth = ctx.scrut-depth }
 
   collect-locals-params : List IRParam, Integer, List Text -> List Text
   collect-locals-params (ps) (i) (acc) =
@@ -546,8 +639,9 @@ Section: Local Collection
    if i >= list-length bs then acc
    else let b = list-at bs i
    in let acc1 = collect-locals-pat (b.pattern) acc
-   in let acc2 = collect-locals-expr (b.body) acc1
-   in collect-locals-branches-loop bs acc2 (i + 1)
+   in let acc2 = locals-merge acc1 (wat-shift-scrut (collect-locals-expr (b.guard) []) 0 []) 0
+   in let acc3 = collect-locals-expr (b.body) acc2
+   in collect-locals-branches-loop bs acc3 (i + 1)
 
   collect-locals-pat : IRPat, List Text -> List Text
   collect-locals-pat (p) (acc) =
@@ -757,14 +851,15 @@ Section: Expression Emission
    if depth >= 4096 then "(unreachable (; wasm plug: expression nested past 4096, no form ;))"
    else when e
     is IrIntLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
-    is IrNumLit (n) (sp) -> "(f64.reinterpret_i64 (i64.const " & integer-to-text n & "))"
-    is IrTextLit (s) (sp) -> "(i64.extend_i32_u (i32.const " & integer-to-text (strtab-lookup (ctx.strings) s 0) & "))"
+    is IrNumLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
+    is IrTextLit (s) (sp) -> wat-strtab-ref (ctx.strings) s
     is IrBoolLit (b) (sp) -> if b then "(i64.const 1)" else "(i64.const 0)"
     is IrCharLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
     is IrName (n) (ty) (sp) -> emit-wat-name ctx n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-wat-binary ctx op l r depth
-    is IrNegate (operand) (nty) (sp) -> "(i64.sub (i64.const 0) " & emit-wat-expr-at ctx operand (depth + 1) & ")"
-    is IrIf (c) (t) (el) (ty) (sp) -> "(if (result i64) (i32.wrap_i64 " & emit-wat-expr-at ctx c (depth + 1) & ") (then " & emit-wat-expr-at ctx t (depth + 1) & ") (else " & emit-wat-expr-at ctx el (depth + 1) & "))"
+    is IrNegate (operand) (nty) (sp) -> if wat-is-real-type (ir-expr-type operand) then wat-f64-out ("(f64.neg " & wat-f64-in (emit-wat-expr-at ctx operand (depth + 1)) & ")")
+                                        else "(i64.sub (i64.const 0) " & emit-wat-expr-at ctx operand (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> emit-wat-if-chain ctx e depth
     is IrLet (name) (ty) (val) (body) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr-at ctx val (depth + 1) & ") " & emit-wat-expr-at ctx body (depth + 1)
     is IrApply (f) (a) (ty) (sp) -> emit-wat-apply ctx e
     is IrLambda (params) (body) (ty) (sp) -> emit-wat-expr-at ctx body (depth + 1)
@@ -780,6 +875,40 @@ Section: Expression Emission
     is IrAwait (task) (ty) (sp) -> emit-wat-expr-at ctx task (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-wat-act ctx body
     is IrError (msg) (ty) (sp) -> "(unreachable)"
+
+ An `else if` chain is the THIRD nesting site, and flattening the two match
+ paths does not touch it. Measured against arm64-stdio.wat with both match
+ twins already flat: max WAT depth 312, unmoved, and the deepest point is
+ `a64_emit_direct_call` carrying 154 `(if ` and not one `(block $_a`. The
+ chain is 152 alternating `if`/`else` levels, which is this emitter's arm and
+ the arm count of the plug's instruction dispatch. The baseline table in
+ `plugs-backlog.md` 2.03 measured "longest consecutive `else if` chain
+ against WAT depth" and that is exactly what this is.
+
+ Same repair as the match arms: the chain's else-spine becomes siblings under
+ one outer block, so the nesting an `if` chain contributes is TWO whatever the
+ chain length. A test that fails branches to the end of its own block and the
+ next sibling runs; one that passes branches out of the whole chain carrying
+ its value. Falling off the last sibling runs the final `else`, whose value is
+ the block's result, which is what the innermost `else` used to say.
+
+  emit-wat-if-chain : WasmCtx, IRExpr, Integer -> Text
+  emit-wat-if-chain (ctx) (e) (depth) =
+   "(block $_i (result i64) " & emit-wat-if-arms ctx e depth & ")"
+
+  emit-wat-if-arms : WasmCtx, IRExpr, Integer -> Text
+  emit-wat-if-arms (ctx) (e) (depth) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     "(block $_c (br_if $_c (i32.eqz (i32.wrap_i64 " & emit-wat-expr-at ctx c (depth + 1) & "))) (br $_i " & emit-wat-expr-at ctx t (depth + 1) & ")) "
+       & emit-wat-if-arms ctx el depth
+    is otherwise -> emit-wat-expr-at ctx e (depth + 1)
+
+ The labels are plain rather than numbered, so a chain nested inside an arm's
+ body shadows them and an inner chain's branch belongs to the inner chain.
+ That is the wanted reading and it is the same one the match arms rely on for
+ `$_m`. The spine walk does NOT advance `depth`, which is the point: the guard
+ counts real nesting and the spine no longer nests.
 
  `$_rp`, `$_lp` and `$_tv` are ONE set of scratch locals per function, so a
  construction nested inside an enclosing construction's field expression
@@ -931,7 +1060,7 @@ Section: Expression Emission
   emit-wat-list : WasmCtx, List IRExpr, Integer -> Text
   emit-wat-list (ctx) (elems) (depth) =
    let n = list-length elems
-   in let cap = if n < 8 then 8 else n
+   in let cap = n
    in let sz = 8 + cap * 8
    in let alloc = "(local.set $_lp (i64.extend_i32_u (call $bump_alloc (i32.const " & integer-to-text sz & "))))"
    in let store-len = "(i32.store (i32.wrap_i64 (local.get $_lp)) (i32.const " & integer-to-text n & "))"
@@ -941,10 +1070,20 @@ Section: Expression Emission
 
   emit-wat-list-elems : WasmCtx, List IRExpr, Integer, Integer -> Text
   emit-wat-list-elems (ctx) (elems) (i) (depth) =
-   if i >= list-length elems then ""
-   else let off = 8 + i * 8
+   emit-wat-list-span ctx elems i (list-length elems) depth
+
+  emit-wat-list-span : WasmCtx, List IRExpr, Integer, Integer, Integer -> Text
+  emit-wat-list-span (ctx) (elems) (lo) (hi) (depth) =
+   if lo >= hi then ""
+   else if hi - lo == 1 then emit-wat-list-elem ctx elems lo depth
+   else let mid = lo + (hi - lo) / 2
+   in emit-wat-list-span ctx elems lo mid depth & emit-wat-list-span ctx elems mid hi depth
+
+  emit-wat-list-elem : WasmCtx, List IRExpr, Integer, Integer -> Text
+  emit-wat-list-elem (ctx) (elems) (i) (depth) =
+   let off = 8 + i * 8
    in wat-guard-scratch ctx (list-at elems i) "$_lp" (emit-wat-expr-at ctx (list-at elems i) (depth + 1)) &
-      "(i64.store (i32.add (i32.wrap_i64 (local.get $_lp)) (i32.const " & integer-to-text off & ")) (local.get $_tv)) " & emit-wat-list-elems ctx elems (i + 1) depth
+      "(i64.store (i32.add (i32.wrap_i64 (local.get $_lp)) (i32.const " & integer-to-text off & ")) (local.get $_tv)) "
 
   emit-wat-name : WasmCtx, Text -> Text
  `unreachable` is stack-polymorphic, so a refusal assembles wherever a value
@@ -972,11 +1111,20 @@ Section: Expression Emission
    else if n == "read-line-cce" then wat-emit-maybe-line ctx "$read_line_cce_raw"
    else if n == "block-sector-count" then "(i64.extend_i32_u (i32.div_u (global.get $disk_size) (i32.const 512)))"
    else if n == "process-get-pid" then "(i64.const 0)"
+   else if n == "hosted-kind" then "(i64.const 1)"
    else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n []
    else let ar = lookup-arity (ctx.arities) n
    in if ar == 0 then "(call $" & wat-sanitize n & ")"
       else if ar > 0 then "(i64.const " & integer-to-text (lookup-fn-index (ctx.arities) n) & ")"
-      else "(local.get $" & wat-sanitize n & ")"
+      else wat-refuse-name n
+
+ `~` and `~0` are the x86-64 emitter's semantics, not wasm's: `emit-approx-eq`
+ converts each operand to its IEEE-754 total ORDINAL, takes the absolute
+ difference and compares it unsigned against a tolerance in ULPs. The two
+ tolerances are `4` for `~` and `0` for `~0`, which is `cmp-ri 4` and `cmp-ri 0`
+ under `setcc cc-be` in `X86_64.codex`. `f64.eq` would agree with both on equal
+ and on far-apart operands and disagree on every value between, which is the
+ whole span the operator exists for.
 
   emit-wat-binary : WasmCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> Text
   emit-wat-binary (ctx) (op) (l) (r) (depth) =
@@ -992,12 +1140,21 @@ Section: Expression Emission
                  else let sn = wat-eq-sum-name (ctx.type-defs) (ir-expr-type l)
                  in if text-length sn > 0 then "(i64.extend_i32_u (i64.eqz (call " & wat-eq-fn-prefix & wat-sanitize sn & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")))"
                  else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrLt | IrLtVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrGt | IrGtVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrLtEq | IrLtEqVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrGtEq | IrGtEqVec -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrApproxEq -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
-    is IrApproxEqExact -> "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec -> wat-emit-vec-cmp ctx op l r depth
+    is IrLt -> if wat-is-real-type (ir-expr-type l) then "(i64.extend_i32_u (f64.lt " & wat-f64-in (emit-wat-expr-at ctx l (depth + 1)) & " " & wat-f64-in (emit-wat-expr-at ctx r (depth + 1)) & "))"
+                         else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrGt -> if wat-is-real-type (ir-expr-type l) then "(i64.extend_i32_u (f64.gt " & wat-f64-in (emit-wat-expr-at ctx l (depth + 1)) & " " & wat-f64-in (emit-wat-expr-at ctx r (depth + 1)) & "))"
+                         else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrLtEq -> if wat-is-real-type (ir-expr-type l) then "(i64.extend_i32_u (f64.le " & wat-f64-in (emit-wat-expr-at ctx l (depth + 1)) & " " & wat-f64-in (emit-wat-expr-at ctx r (depth + 1)) & "))"
+                             else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrGtEq -> if wat-is-real-type (ir-expr-type l) then "(i64.extend_i32_u (f64.ge " & wat-f64-in (emit-wat-expr-at ctx l (depth + 1)) & " " & wat-f64-in (emit-wat-expr-at ctx r (depth + 1)) & "))"
+                             else "(i64.extend_i32_u (" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & "))"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating | IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating ->
+     wat-emit-real-arith ctx op l r depth
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> wat-emit-vec-arith ctx op l r depth
+    is IrPowInt -> "(call $cx_ipow " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
+    is IrApproxEq -> wat-emit-approx-eq ctx l r depth 4
+    is IrApproxEqExact -> wat-emit-approx-eq ctx l r depth 0
     is otherwise -> "(" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
 
   wat-bin-instr : IRBinaryOp -> Text
@@ -1008,7 +1165,7 @@ Section: Expression Emission
     is IrMulInt -> "i64.mul"
     is IrDivInt -> "i64.div_s"
     is IrRemInt -> "i64.rem_s"
-    is IrPowInt -> "i64.mul"
+    is IrPowInt -> "i64.pow-does-not-exist"
     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "f64.add"
     is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "f64.sub"
     is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "f64.mul"
@@ -1031,16 +1188,76 @@ Section: Expression Emission
     is IrApproxEq -> "i64.eq"
     is IrApproxEqExact -> "i64.eq"
 
+ A match used to emit its arms NESTED, each one inside the previous arm's
+ `else`, so an N-arm match cost N levels of parenthesis in the WAT. That is a
+ property of the arm COUNT and not of the program's size, which is why a 9.8 MB
+ compiler module sat at depth 188 while a 2.1 MB instruction-dispatch module
+ reached 309: measured 2026-08-28, the deepest point in codex-compiler.wat is a
+ constructor-tag chain of exactly this shape. wabt's JS wat2wasm parses
+ expressions recursively and dies with "memory access out of bounds" somewhere
+ between 188 and 309, which held the riscv and arm64 board modules unshippable.
+ THE MATCH HAS A TCO TWIN and it is the one the compiler's own deep path takes;
+ flattening this one alone moved the depth 188 to 188. Both are flat now, and
+ the twin's prose says how the two were told apart.
+
+ The arms are siblings now, one block each under a single outer block, so the
+ nesting a match contributes is TWO whatever the arm count. An arm that does
+ not match branches to the end of its own block and the next sibling runs; an
+ arm that matches branches out of the whole match carrying its value. Falling
+ off the end of every arm is the no-match case, which is what the old innermost
+ `else` said.
+
+ Every arm takes the same shape, including the ones that always match, which
+ carry a constant-true condition rather than a special form. The old code had
+ four separate always-matches cases and each of them re-emitted the tail of the
+ match, which is how the nesting got in.
+
   emit-wat-match : WasmCtx, IRExpr, List IRBranch, Integer -> Text
   emit-wat-match (ctx) (scrut) (branches) (depth) =
    if list-length branches == 0 then "(unreachable)"
-   else "(local.set $_s " & emit-wat-expr ctx scrut & ") " & emit-wat-match-body ctx branches 0 depth
+   else "(local.set " & wat-scrut ctx & " " & emit-wat-expr ctx scrut & ") (block $_m (result i64) "
+        & emit-wat-match-body ctx branches 0 depth & "(unreachable))"
 
   emit-wat-match-body : WasmCtx, List IRBranch, Integer, Integer -> Text
   emit-wat-match-body (ctx) (branches) (i) (depth) =
-   if i == list-length branches then "(unreachable)"
+   if i >= list-length branches then ""
    else let b = list-at branches i
-   in emit-wat-match-arm ctx (b.pattern) (b.guard) (b.body) branches i depth
+   in let arm = emit-wat-match-arm ctx (b.pattern) (b.guard) (b.body) branches i depth
+   in arm & emit-wat-match-body ctx branches (i + 1) depth
+
+ The label is plain rather than numbered, and a match nested inside an arm's
+ body shadows it. That is the wanted reading: an inner match's branch belongs
+ to the inner match. The branch out sits in the arm block and not inside the
+ body, so the body's own blocks have closed before the label is resolved.
+
+ PRE runs before the condition and POST after it, and the split is load-bearing
+ rather than tidy. A variable pattern must bind BEFORE its guard is tested,
+ because the guard names what the pattern bound. A constructor pattern must NOT
+ bind before its tag is tested, because a payload load on an object of the
+ wrong tag can address past the object and trap, which is why its guard stays
+ gated inside the condition rather than anded flat with it.
+
+  emit-wat-arm-block : Text, Text, Text, Text -> Text
+  emit-wat-arm-block (pre) (cond) (post) (body) =
+   "(block $_a " & pre & "(br_if $_a (i32.eqz " & cond & ")) " & post
+     & "(br $_m " & body & ")) "
+
+  wat-lit-pat-const : Text -> Text
+  wat-lit-pat-const (t) =
+   if t == "True" then "1"
+   else if t == "False" then "0"
+   else t
+
+ A Text literal pattern is the one literal whose SPELLING is not its value. The
+ scrutinee is a pointer, so the test is `$text_eq` against the string table
+ entry, the same place an `IrTextLit` expression reads. Splicing the spelling
+ into an `i64.const` is what `wat2wasm` refused as `unexpected token "sin"`.
+
+  wat-lit-pat-test : WasmCtx, Text, CodexType -> Text
+  wat-lit-pat-test (ctx) (text) (ty) =
+   if wat-is-text-type ty then
+    "(i32.wrap_i64 (call $text_eq (local.get " & wat-scrut ctx & ") " & wat-strtab-ref (ctx.strings) text & "))"
+   else "(i64.eq (local.get " & wat-scrut ctx & ") (i64.const " & wat-lit-pat-const text & "))"
 
   wat-guard-trivial : IRExpr -> Boolean
   wat-guard-trivial (g) =
@@ -1049,27 +1266,31 @@ Section: Expression Emission
     is otherwise -> False
 
   emit-wat-guard-test : WasmCtx, IRExpr -> Text
-  emit-wat-guard-test (ctx) (guard) = "(i32.wrap_i64 " & emit-wat-expr ctx guard & ")"
+  emit-wat-guard-test (ctx) (guard) = "(i32.wrap_i64 " & emit-wat-expr (ctx-deeper ctx) guard & ")"
+
+  wat-arm-cond : WasmCtx, IRExpr -> Text
+  wat-arm-cond (ctx) (guard) =
+   if wat-guard-trivial guard then "(i32.const 1)" else emit-wat-guard-test ctx guard
 
   emit-wat-match-arm : WasmCtx, IRPat, IRExpr, IRExpr, List IRBranch, Integer, Integer -> Text
   emit-wat-match-arm (ctx) (pat) (guard) (body) (branches) (i) (depth) =
    when pat
     is IrLitPat (text) (ty) (sp) ->
-     let lit-test = "(i64.eq (local.get $_s) (i64.const " & text & "))"
+     let lit-test = wat-lit-pat-test ctx text ty
      in let cond = if wat-guard-trivial guard then lit-test
         else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx guard & ")"
-     in "(if (result i64) " & cond & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+     in emit-wat-arm-block "" cond "" (emit-wat-expr ctx body)
     is IrCtorPat (name) (subs) (ty) (sp) -> emit-wat-ctor-pat ctx name subs guard body branches i depth
     is IrVarPat (name) (ty) (sp) ->
-     let bind = "(local.set $" & wat-sanitize name & " (local.get $_s)) "
-     in if wat-guard-trivial guard then bind & emit-wat-expr ctx body
-        else bind & "(if (result i64) " & emit-wat-guard-test ctx guard & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+     let bind = "(local.set $" & wat-sanitize name & " (local.get " & wat-scrut ctx & ")) "
+     in emit-wat-arm-block bind (wat-arm-cond ctx guard) "" (emit-wat-expr ctx body)
     is IrWildPat (sp) ->
-     if wat-guard-trivial guard then emit-wat-expr ctx body
-     else "(if (result i64) " & emit-wat-guard-test ctx guard & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+     emit-wat-arm-block "" (wat-arm-cond ctx guard) "" (emit-wat-expr ctx body)
     is IrVecPat (pats) (ty) (sp) ->
-     if wat-guard-trivial guard then emit-wat-expr ctx body
-     else "(if (result i64) " & emit-wat-guard-test ctx guard & " (then " & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+     let vcond = wat-emit-vec-pat-cond ctx pats ty
+     in let cond = if wat-guard-trivial guard then vcond
+        else "(i32.and " & vcond & " " & emit-wat-guard-test ctx guard & ")"
+     in emit-wat-arm-block "" cond "" (emit-wat-expr ctx body)
 
  A payload load on an object of the wrong tag can address past the object,
  which traps. The tag test gates the guard inside the condition rather than
@@ -1079,13 +1300,49 @@ Section: Expression Emission
   emit-wat-ctor-pat (ctx) (name) (subs) (guard) (body) (branches) (i) (depth) =
    let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
    in let bind-subs = emit-wat-bind-ctor-subs ctx subs 0
-   in if (i == list-length branches - 1) & wat-guard-trivial guard then
-    bind-subs & emit-wat-expr ctx body
-   else
-    let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) (i64.const " & integer-to-text tag & "))"
-    in let cond = if wat-guard-trivial guard then tag-test
-       else "(if (result i32) " & tag-test & " (then " & bind-subs & emit-wat-guard-test ctx guard & ") (else (i32.const 0)))"
-    in "(if (result i64) " & cond & " (then " & bind-subs & emit-wat-expr ctx body & ") (else " & emit-wat-match-body ctx branches (i + 1) depth & "))"
+   in if (i == list-length branches - 1) & wat-guard-trivial guard & (wat-ctor-has-lit-subs subs 0 == False) then
+    emit-wat-arm-block "" "(i32.const 1)" bind-subs (emit-wat-expr ctx body)
+   else emit-wat-arm-block "" (wat-ctor-arm-cond ctx tag subs guard bind-subs) bind-subs (emit-wat-expr ctx body)
+
+ A LITERAL inside a constructor pattern is a TEST, not a binding, and
+ `emit-wat-bind-ctor-subs` had no arm for one: it bound a variable sub-pattern
+ and sent everything else to `is otherwise`, so `BInt (0)` matched every `BInt`
+ and every arm answered the first one's body. The tests fold onto the tag test
+ rather than beside it, because a payload load on an object of the wrong tag can
+ address past the object and trap, which is the reason the guard is already
+ gated this way.
+
+  wat-ctor-has-lit-subs : List IRPat, Integer -> Boolean
+  wat-ctor-has-lit-subs (subs) (i) =
+   if i >= list-length subs then False
+   else when list-at subs i
+    is IrLitPat (t) (ty) (sp) -> True
+    is otherwise -> wat-ctor-has-lit-subs subs (i + 1)
+
+  wat-and-tests : Text, Text -> Text
+  wat-and-tests (acc) (t) =
+   if text-length acc == 0 then t else "(i32.and " & acc & " " & t & ")"
+
+  wat-ctor-sub-tests : WasmCtx, List IRPat, Integer, Text -> Text
+  wat-ctor-sub-tests (ctx) (subs) (i) (acc) =
+   if i >= list-length subs then acc
+   else let fld = "(i64.load (i32.add (i32.wrap_i64 (local.get " & wat-scrut ctx & ")) (i32.const " & integer-to-text (8 + i * 8) & ")))"
+   in when list-at subs i
+    is IrLitPat (t) (ty) (sp) ->
+     wat-ctor-sub-tests ctx subs (i + 1) (wat-and-tests acc
+      (if wat-is-text-type ty
+       then "(i32.wrap_i64 (call $text_eq " & fld & " " & wat-strtab-ref (ctx.strings) t & "))"
+       else "(i64.eq " & fld & " (i64.const " & wat-lit-pat-const t & "))"))
+    is otherwise -> wat-ctor-sub-tests ctx subs (i + 1) acc
+
+  wat-ctor-arm-cond : WasmCtx, Integer, List IRPat, IRExpr, Text -> Text
+  wat-ctor-arm-cond (ctx) (tag) (subs) (guard) (bind-subs) =
+   let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get " & wat-scrut ctx & "))) (i64.const " & integer-to-text tag & "))"
+   in let subt = wat-ctor-sub-tests ctx subs 0 ""
+   in let inner = if wat-guard-trivial guard then subt
+      else wat-and-tests subt (emit-wat-guard-test ctx guard)
+   in if text-length inner == 0 then tag-test
+      else "(if (result i32) " & tag-test & " (then " & bind-subs & inner & ") (else (i32.const 0)))"
 
   emit-wat-bind-ctor-subs : WasmCtx, List IRPat, Integer -> Text
   emit-wat-bind-ctor-subs (ctx) (subs) (i) =
@@ -1093,7 +1350,7 @@ Section: Expression Emission
    else let off = 8 + i * 8
    in let sub = list-at subs i
    in (when sub
-    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (i64.load (i32.add (i32.wrap_i64 (local.get $_s)) (i32.const " & integer-to-text off & ")))) "
+    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (i64.load (i32.add (i32.wrap_i64 (local.get " & wat-scrut ctx & ")) (i32.const " & integer-to-text off & ")))) "
     is IrWildPat (sp) -> ""
     is IrVecPat (pats) (ty) (sp) -> ""
     is otherwise -> "") & emit-wat-bind-ctor-subs ctx subs (i + 1)
@@ -1123,7 +1380,10 @@ Section: Apply Emission
      let bi = wat-try-builtin ctx n args
      in if text-length bi > 0 then bi
      else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n args
-     else if lookup-arity (ctx.arities) n < 0 then wat-emit-indirect ctx args ("(local.get $" & wat-sanitize n & ")")
+     else if lookup-arity (ctx.arities) n < 0 then
+      (if locals-contains (ctx.bound) (wat-sanitize n)
+       then wat-emit-indirect ctx args ("(local.get $" & wat-sanitize n & ")")
+       else wat-refuse-name n)
      else wat-emit-named-apply ctx n args (lookup-arity (ctx.arities) n)
     is IrLambda (ps) (lbody) (lty) (lsp) -> emit-wat-lambda-apply ctx ps lbody args
     is otherwise -> wat-emit-indirect ctx args (emit-wat-expr ctx root)
@@ -1251,8 +1511,251 @@ Section: Apply Emission
   wat-is-text-type (ty) =
    when ty
     is TextTy -> True
+    is UnitTy (n) (inner) -> wat-is-text-type inner
     is EffectfulTy (effs) (scopes) (ret) -> wat-is-text-type ret
     is otherwise -> False
+
+ A real is carried as its f64 BITS in an i64 slot, which is what every local
+ declaration and `wat-eq-field-cmp` already assume. It reaches an f64 only
+ inside the operator that needs one, and comes straight back. `IrNumLit` used
+ to emit an f64 VALUE instead, so a real that passed through a local was a type
+ error rather than a wrong answer: `let y = 2.25` was refused outright with
+ `type mismatch in local.set, expected [i64] but got [f64]`, and real
+ arithmetic worked only while every operand was a literal.
+
+ AN APPROXIMATE REAL IS COMPUTED AT f32 AND NOT AT f64, which is what makes an
+ overflow overflow. The value is carried as a promoted f64 everywhere else here,
+ so `f64.add` on two singles answers a finite double where the single arithmetic
+ x86-64 emits (`real-sse-prefix f32`) answers an infinity, and the saturating
+ clamp then has nothing to fire on. `real-approx-modes` distinguishes the two by
+ one bit: 2139095039 is the largest finite single, 2139095040 is `+inf`.
+
+ The mode wrapper is `emit-real-trapping-arith` and `emit-real-saturating-arith`
+ (`X86_64.codex:1887`) read as masks rather than as shifts. Exponent all-ones
+ means infinity or NaN; a nonzero mantissa within that means NaN. Trapping traps
+ on either. Saturating answers 0 for a NaN and DECREMENTS the bit pattern for an
+ infinity, which is the largest finite magnitude of the same sign because the
+ decrement never reaches the sign bit. The NaN-to-zero is x86-64's answer and is
+ a language decision rather than a repair, so it is copied rather than revisited.
+
+ A ULP is a property of the WIDTH, so the tolerance has to be counted in the
+ operand's own representation. An approximate value is carried here as a
+ promoted f64, and the two smallest denormals either side of zero are 2 ULPs
+ apart as singles and astronomically far apart as doubles, which is the line
+ `real-approx-equality` grades.
+
+ A VECTOR IS A POINTER TO A 16-BYTE BOX, which is the language's own contract
+ rather than a choice made here: `DevelopersGuide.md` measures every
+ vector-returning builtin at `fixed` 16 bytes and `vec-load-at` as 16 bytes at
+ an address. One box is exactly one `v128`, so the lanes are the shape and the
+ CARRIER stays i64 like every other pointer, which is why no local declaration
+ changes. The emitter used to write `f64x2.add` straight onto the two i64
+ operands, which `wat2wasm` refuses as a type mismatch, and `vec-splat` had no
+ form at all.
+
+ The shape is `16 / lanes` bytes each, and the lane count is in the NAME
+ (`vec-` is 2, `vec4-` is 4) for a splat, whose argument cannot carry it, and in
+ the operand's `VectorTy` everywhere else. A shape this does not name refuses
+ rather than guessing, and so does integer division: wasm SIMD has no integer
+ divide at any width, so `i64x2.div` does not exist to emit.
+
+  wat-vec-shape : Integer, CodexType -> Text
+  wat-vec-shape (lanes) (elem) =
+   if wat-is-real-type elem then
+    (if lanes == 2 then "f64x2" else if lanes == 4 then "f32x4" else "")
+   else if wat-is-integer-elem elem then
+    (if lanes == 2 then "i64x2" else if lanes == 4 then "i32x4" else "")
+   else ""
+
+  wat-is-integer-elem : CodexType -> Boolean
+  wat-is-integer-elem (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> True
+    is UnitTy (n) (inner) -> wat-is-integer-elem inner
+    is otherwise -> False
+
+  wat-vec-of-type : CodexType -> Text
+  wat-vec-of-type (ty) =
+   when ty
+    is VectorTy (n) (elem) -> wat-vec-shape n elem
+    is UnitTy (n) (inner) -> wat-vec-of-type inner
+    is EffectfulTy (effs) (scopes) (ret) -> wat-vec-of-type ret
+    is otherwise -> ""
+
+  wat-vec-lane-bytes : Text -> Integer
+  wat-vec-lane-bytes (shape) = if shape == "f64x2" | shape == "i64x2" then 8 else 4
+
+  wat-vec-refuse : Text -> Text
+  wat-vec-refuse (why) = "(unreachable (; wasm plug: " & why & " ;))"
+
+  wat-emit-vec-splat : WasmCtx, IRExpr, Integer -> Text
+  wat-emit-vec-splat (ctx) (arg) (lanes) =
+   let shape = wat-vec-shape lanes (ir-expr-type arg)
+   in let v = emit-wat-expr ctx arg
+   in if shape == "f64x2" then "(call $cx_vec_box (f64x2.splat (f64.reinterpret_i64 " & v & ")))"
+      else if shape == "f32x4" then "(call $cx_vec_box (f32x4.splat (f32.demote_f64 (f64.reinterpret_i64 " & v & "))))"
+      else if shape == "i64x2" then "(call $cx_vec_box (i64x2.splat " & v & "))"
+      else if shape == "i32x4" then "(call $cx_vec_box (i32x4.splat (i32.wrap_i64 " & v & ")))"
+      else wat-vec-refuse ("no vector shape for a splat of " & integer-to-text lanes & " lanes")
+
+  wat-emit-vec-extract : WasmCtx, IRExpr, IRExpr -> Text
+  wat-emit-vec-extract (ctx) (vec) (idx) =
+   let shape = wat-vec-of-type (ir-expr-type vec)
+   in if text-length shape == 0 then wat-vec-refuse "no vector shape for an extract"
+   else let at = "(i32.add (i32.wrap_i64 " & emit-wat-expr ctx vec & ") (i32.mul (i32.wrap_i64 " & emit-wat-expr ctx idx & ") (i32.const " & integer-to-text (wat-vec-lane-bytes shape) & ")))"
+   in if shape == "f64x2" | shape == "i64x2" then "(i64.load " & at & ")"
+      else if shape == "f32x4" then "(i64.reinterpret_f64 (f64.promote_f32 (f32.load " & at & ")))"
+      else "(i64.extend_i32_s (i32.load " & at & "))"
+
+  wat-emit-vec-arith : WasmCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> Text
+  wat-emit-vec-arith (ctx) (op) (l) (r) (depth) =
+   let shape = wat-vec-of-type (ir-expr-type l)
+   in let isdiv = when op is IrDivVec -> True is otherwise -> False
+   in if text-length shape == 0 then wat-vec-refuse "no vector shape for this arithmetic"
+   else if isdiv & (shape == "i64x2" | shape == "i32x4") then
+    wat-vec-refuse "wasm SIMD has no integer division, so a vector integer divide has no form"
+   else "(call $cx_vec_box (" & shape & wat-vec-op-suffix op & " (v128.load (i32.wrap_i64 " & emit-wat-expr-at ctx l (depth + 1) & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr-at ctx r (depth + 1) & "))))"
+
+ A VECTOR PATTERN was not tested either, the same shape as a literal inside a
+ constructor pattern: `IrVecPat` bound nothing and tested nothing, so
+ `is Vector [0, 0]` matched every vector and `vec-pattern` answered `zero` three
+ times. The lanes are compared against their literals out of the box. A float
+ shape refuses rather than comparing: a real literal's SPELLING is not an
+ `i64.const`, and nothing in the corpus writes one.
+
+  wat-emit-vec-pat-cond : WasmCtx, List IRPat, CodexType -> Text
+  wat-emit-vec-pat-cond (ctx) (pats) (ty) =
+   let lanes = list-length pats
+   in if lanes == 2 then wat-vec-pat-lanes ctx 8 pats 0 ""
+      else if lanes == 4 then wat-vec-pat-lanes ctx 4 pats 0 ""
+      else wat-vec-refuse ("no vector pattern form for " & integer-to-text lanes & " lanes")
+
+  wat-vec-pat-lanes : WasmCtx, Integer, List IRPat, Integer, Text -> Text
+  wat-vec-pat-lanes (ctx) (lb) (pats) (i) (acc) =
+   if i >= list-length pats then (if text-length acc == 0 then "(i32.const 1)" else acc)
+   else let at = "(i32.add (i32.wrap_i64 (local.get " & wat-scrut ctx & ")) (i32.const " & integer-to-text (i * lb) & "))"
+   in let load = if lb == 8 then "(i64.load " & at & ")" else "(i64.extend_i32_s (i32.load " & at & "))"
+   in when list-at pats i
+    is IrLitPat (t) (pty) (sp) ->
+     wat-vec-pat-lanes ctx lb pats (i + 1) (wat-and-tests acc ("(i64.eq " & load & " (i64.const " & wat-lit-pat-const t & "))"))
+    is otherwise -> wat-vec-pat-lanes ctx lb pats (i + 1) acc
+
+  wat-emit-vec-named-arith : WasmCtx, Text, List IRExpr -> Text
+  wat-emit-vec-named-arith (ctx) (suffix) (args) =
+   let l = list-at args 0
+   in let shape = wat-vec-of-type (ir-expr-type l)
+   in if text-length shape == 0 then wat-vec-refuse "no vector shape for this arithmetic"
+   else if suffix == ".div" & (shape == "i64x2" | shape == "i32x4") then
+    wat-vec-refuse "wasm SIMD has no integer division, so a vector integer divide has no form"
+   else "(call $cx_vec_box (" & shape & suffix & " (v128.load (i32.wrap_i64 " & emit-wat-expr ctx l & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & "))))"
+
+  wat-emit-vec-reduce : WasmCtx, IRExpr -> Text
+  wat-emit-vec-reduce (ctx) (vec) =
+   let shape = wat-vec-of-type (ir-expr-type vec)
+   in if text-length shape == 0 then wat-vec-refuse "no vector shape for a reduction"
+      else "(call $cx_vec_sum_" & shape & " " & emit-wat-expr ctx vec & ")"
+
+  wat-vec-op-suffix : IRBinaryOp -> Text
+  wat-vec-op-suffix (op) =
+   when op
+    is IrAddVec -> ".add"
+    is IrSubVec -> ".sub"
+    is IrMulVec -> ".mul"
+    is otherwise -> ".div"
+
+ A lane comparison answers all-ones or all-zeros in every lane, which is the
+ same 16-byte box a vector is, so a mask needs no representation of its own.
+ The integer shapes spell their comparisons `_s`; the float ones do not.
+
+  wat-emit-vec-cmp : WasmCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> Text
+  wat-emit-vec-cmp (ctx) (op) (l) (r) (depth) =
+   let shape = wat-vec-of-type (ir-expr-type l)
+   in if text-length shape == 0 then wat-vec-refuse "no vector shape for this comparison"
+   else let signed = if shape == "i64x2" | shape == "i32x4" then "_s" else ""
+   in "(call $cx_vec_box (" & shape & wat-vec-cmp-suffix op & signed & " (v128.load (i32.wrap_i64 " & emit-wat-expr-at ctx l (depth + 1) & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr-at ctx r (depth + 1) & "))))"
+
+  wat-vec-cmp-suffix : IRBinaryOp -> Text
+  wat-vec-cmp-suffix (op) =
+   when op
+    is IrLtVec -> ".lt"
+    is IrGtVec -> ".gt"
+    is IrLtEqVec -> ".le"
+    is otherwise -> ".ge"
+
+ Every mask builtin is declared over `VectorMask 2` and there is no other width
+ in the language, so the query is `i64x2.bitmask` with no type consulted: two
+ lanes, one bit each, all-set being 3.
+
+  wat-emit-mask-query : WasmCtx, Text, IRExpr -> Text
+  wat-emit-mask-query (ctx) (n) (m) =
+   let bits = "(call $cx_mask_bits " & emit-wat-expr ctx m & ")"
+   in if n == "mask-any" then "(i64.extend_i32_u (i32.ne " & bits & " (i32.const 0)))"
+      else if n == "mask-all" then "(i64.extend_i32_u (i32.eq " & bits & " (i32.const 3)))"
+      else if n == "mask-none" then "(i64.extend_i32_u (i32.eqz " & bits & "))"
+      else "(call $cx_mask_count " & emit-wat-expr ctx m & ")"
+
+  wat-emit-vec-select : WasmCtx, List IRExpr -> Text
+  wat-emit-vec-select (ctx) (args) =
+   "(call $cx_vec_box (v128.bitselect (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 2) & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & "))))"
+
+  wat-emit-approx-eq : WasmCtx, IRExpr, IRExpr, Integer, Integer -> Text
+  wat-emit-approx-eq (ctx) (l) (r) (depth) (tol) =
+   let a = emit-wat-expr-at ctx l (depth + 1)
+   in let b = emit-wat-expr-at ctx r (depth + 1)
+   in if wat-is-real-f32 (ir-expr-type l)
+      then "(call $__approx_eq32 " & a & " " & b & " (i32.const " & integer-to-text tol & "))"
+      else "(call $__approx_eq " & a & " " & b & " (i64.const " & integer-to-text tol & "))"
+
+  wat-is-real-f32 : CodexType -> Boolean
+  wat-is-real-f32 (ty) =
+   when ty
+    is RealTy (w) (m) -> when w is RwF32 -> True is otherwise -> False
+    is UnitTy (n) (inner) -> wat-is-real-f32 inner
+    is EffectfulTy (effs) (scopes) (ret) -> wat-is-real-f32 ret
+    is otherwise -> False
+
+  wat-f32-instr : IRBinaryOp -> Text
+  wat-f32-instr (op) =
+   when op
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "f32.add"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "f32.sub"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "f32.mul"
+    is otherwise -> "f32.div"
+
+  wat-real-mode-fn : IRBinaryOp, Boolean -> Text
+  wat-real-mode-fn (op) (f32) =
+   when op
+    is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping ->
+     if f32 then "$cx_real_trap32" else "$cx_real_trap64"
+    is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating ->
+     if f32 then "$cx_real_sat32" else "$cx_real_sat64"
+    is otherwise -> ""
+
+  wat-emit-real-arith : WasmCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> Text
+  wat-emit-real-arith (ctx) (op) (l) (r) (depth) =
+   let f32 = wat-is-real-f32 (ir-expr-type l)
+   in let lf = wat-f64-in (emit-wat-expr-at ctx l (depth + 1))
+   in let rf = wat-f64-in (emit-wat-expr-at ctx r (depth + 1))
+   in let raw = if f32
+      then "(f64.promote_f32 (" & wat-f32-instr op & " (f32.demote_f64 " & lf & ") (f32.demote_f64 " & rf & ")))"
+      else "(" & wat-bin-instr op & " " & lf & " " & rf & ")"
+   in let mode-fn = wat-real-mode-fn op f32
+   in if text-length mode-fn == 0 then wat-f64-out raw
+      else "(call " & mode-fn & " " & wat-f64-out raw & ")"
+
+  wat-is-real-type : CodexType -> Boolean
+  wat-is-real-type (ty) =
+   when ty
+    is RealTy (w) (m) -> True
+    is UnitTy (n) (inner) -> wat-is-real-type inner
+    is EffectfulTy (effs) (scopes) (ret) -> wat-is-real-type ret
+    is otherwise -> False
+
+  wat-f64-in : Text -> Text
+  wat-f64-in (x) = "(f64.reinterpret_i64 " & x & ")"
+
+  wat-f64-out : Text -> Text
+  wat-f64-out (x) = "(i64.reinterpret_f64 " & x & ")"
 
   wat-emit-print-line : WasmCtx, IRExpr -> Text
   wat-emit-print-line (ctx) (arg) =
@@ -1279,8 +1782,7 @@ Section: Apply Emission
   wat-slot-for-expr : WasmCtx, IRExpr, Text -> Integer
   wat-slot-for-expr (ctx) (rec) (field-name) =
    let named = wat-field-slot (ctx.type-defs) field-name
-   in if wat-slash-pos field-name 0 (text-length field-name) >= 0 then named
-      else wat-slot-in-ty ctx (ir-expr-type rec) field-name named
+   in wat-slot-in-ty ctx (ir-expr-type rec) (wat-field-bare field-name) named
 
   wat-fields-of-ty : WasmCtx, CodexType -> List RecordField
   wat-fields-of-ty (ctx) (ty) =
@@ -1313,12 +1815,14 @@ Section: Apply Emission
    let ty = ir-expr-type arg
    in if wat-is-text-type ty then emit-wat-expr ctx arg
    else if wat-is-boolean-type ty then "(call $bool_to_text " & emit-wat-expr ctx arg & ")"
+   else if wat-is-real-type ty then "(call $__f64_to_text " & emit-wat-expr ctx arg & ")"
    else "(call $i64_to_text " & emit-wat-expr ctx arg & ")"
 
   wat-is-boolean-type : CodexType -> Boolean
   wat-is-boolean-type (ty) =
    when ty
     is BooleanTy -> True
+    is UnitTy (n) (inner) -> wat-is-boolean-type inner
     is EffectfulTy (effs) (scopes) (ret) -> wat-is-boolean-type ret
     is otherwise -> False
 
@@ -1334,6 +1838,10 @@ Section: Apply Emission
  than refusing: `unreachable` is stack-polymorphic, so each assembles where a
  value is expected and traps only if that path runs. Emitting something
  plausible instead is this quire's first standing hazard.
+
+  wat-refuse-name : Text -> Text
+  wat-refuse-name (n) =
+   "(unreachable) (; no wasm form for " & n & " ;)"
 
   wat-no-such-thing : Text -> Boolean
   wat-no-such-thing (n) =
@@ -1366,10 +1874,14 @@ Section: Apply Emission
    else if n == "char-code-at" then "(i64.load8_u (i32.add (i32.add (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ") (i32.const 4)) (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & ")))"
    else if n == "block-read-sector" then "(call $block_read_sector " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "block-write-sector" then "(call $block_write_sector " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
-   else if n == "process-get-scope" then "(call $process_scope_empty " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "process-get-scope" | n == "process-get-network-scope" then "(call $process_scope_empty " & emit-wat-expr ctx (list-at args 0) & ")"
    else if wat-no-such-thing n then "(unreachable (; wasm plug: " & n & " has no form on this target ;))"
    else if n == "print-line-uni" then wat-emit-print-line ctx (list-at args 0)
    else if n == "print-line" then wat-emit-print-line ctx (list-at args 0)
+   else if n == "print-error-uni" | n == "print-error" then wat-emit-print-line ctx (list-at args 0)
+   else if n == "print-line-raw" then "(call $cx_print_text_raw " & emit-wat-expr ctx (list-at args 0) & ") (i64.const 0)"
+   else if n == "abs" then "(call $cx_abs " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "max" then "(call $cx_max " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "show" then wat-emit-show ctx (list-at args 0)
    else if n == "integer-to-text" then "(call $i64_to_text " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "text-to-integer" then "(call $cx_text_to_integer " & emit-wat-expr ctx (list-at args 0) & ")"
@@ -1387,12 +1899,18 @@ Section: Apply Emission
    else if n == "char-to-text" then "(call $char_to_text " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "char-encode" then "(call $char_encode " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "substring" then "(call $substring " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
-   else if n == "list-length" then "(call $list_length " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "list-length" | n == "__list-len" then "(call $list_length " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "list-at" then "(call $list_at " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "list-push" | n == "list-snoc" then "(call $list_push " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "char-code" then emit-wat-expr ctx (list-at args 0)
    else if n == "code-to-char" then emit-wat-expr ctx (list-at args 0)
-   else if n == "negate" then "(i64.sub (i64.const 0) " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "__list-head" then "(call $list_at " & emit-wat-expr ctx (list-at args 0) & " (i64.const 0))"
+   else if n == "__list-tail" then "(call $cx_list_tail " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "is-digit" then "(call $__is_digit " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "is-letter" then "(call $__is_letter " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "is-whitespace" then "(call $__is_whitespace " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "negate" then if wat-is-real-type (ir-expr-type (list-at args 0)) then wat-f64-out ("(f64.neg " & wat-f64-in (emit-wat-expr ctx (list-at args 0)) & ")")
+                              else "(i64.sub (i64.const 0) " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "int-mod" then "(call $codex_mod " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "bit-and" then "(i64.and " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "bit-or" then "(i64.or " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
@@ -1402,7 +1920,28 @@ Section: Apply Emission
    else if n == "bit-shru" then "(i64.shr_u " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "bit-not" then "(i64.xor " & emit-wat-expr ctx (list-at args 0) & " (i64.const -1))"
    else if n == "process-exit" then "(unreachable)"
-   else if n == "text-compare" then "(call $text_compare " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "text-compare" then "(call $__text_compare " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "real-to-bits" | n == "bits-to-real" | n == "from-real-approx" then emit-wat-expr ctx (list-at args 0)
+   else if n == "to-real-trapping" | n == "from-real-trapping" | n == "to-real-saturating" | n == "from-real-saturating" then emit-wat-expr ctx (list-at args 0)
+   else if n == "to-real-approx-trapping" | n == "from-real-approx-trapping" | n == "to-real-approx-saturating" | n == "from-real-approx-saturating" then emit-wat-expr ctx (list-at args 0)
+   else if n == "real-from-int" then wat-f64-out ("(f64.convert_i64_s " & emit-wat-expr ctx (list-at args 0) & ")")
+   else if n == "real-approx-from-int" then wat-f64-out ("(f64.promote_f32 (f32.convert_i64_s " & emit-wat-expr ctx (list-at args 0) & "))")
+   else if n == "real-to-int" | n == "real-approx-to-int" then "(call $cx_real_to_int " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "to-real-approx" then wat-f64-out ("(f64.promote_f32 (f32.demote_f64 " & wat-f64-in (emit-wat-expr ctx (list-at args 0)) & "))")
+   else if n == "vec-splat" then wat-emit-vec-splat ctx (list-at args 0) 2
+   else if n == "vec4-splat" then wat-emit-vec-splat ctx (list-at args 0) 4
+   else if n == "vec-extract" | n == "vec4-extract" then wat-emit-vec-extract ctx (list-at args 0) (list-at args 1)
+   else if n == "vec-add" then wat-emit-vec-named-arith ctx ".add" args
+   else if n == "vec-sub" then wat-emit-vec-named-arith ctx ".sub" args
+   else if n == "vec-mul" then wat-emit-vec-named-arith ctx ".mul" args
+   else if n == "vec-div" then wat-emit-vec-named-arith ctx ".div" args
+   else if n == "vec-reduce-add" then wat-emit-vec-reduce ctx (list-at args 0)
+   else if n == "vec-load-at" then "(call $cx_vec_box (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")))"
+   else if n == "vec-store-at" then "(call $cx_vec_store " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "vec-select" then wat-emit-vec-select ctx args
+   else if n == "mask-any" | n == "mask-all" | n == "mask-none" | n == "mask-count" then wat-emit-mask-query ctx n (list-at args 0)
+   else if n == "real-approx-to-bits" then "(i64.extend_i32_u (i32.reinterpret_f32 (f32.demote_f64 " & wat-f64-in (emit-wat-expr ctx (list-at args 0)) & ")))"
+   else if n == "bits-to-real-approx" then wat-f64-out ("(f64.promote_f32 (f32.reinterpret_i32 (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")))")
    else if n == "blit-framebuf" then "(call $blit_framebuf (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")) (i64.const 0)"
    else if n == "__buf-write-byte" then "(call $buf_write_byte " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
    else if n == "__buf-write-bytes" then "(call $buf_write_bytes " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
@@ -1480,7 +2019,7 @@ Section: Tail Call Optimization
        else emit-wat-tail-apply ctx e n (chain.args)
       is otherwise -> emit-wat-apply ctx e
     is IrIf (c) (t) (el) (ty) (sp) ->
-     "(if (result i64) (i32.wrap_i64 " & emit-wat-expr-at ctx c (depth + 1) & ") (then " & emit-wat-expr-tco ctx fname params t (depth + 1) & ") (else " & emit-wat-expr-tco ctx fname params el (depth + 1) & "))"
+     emit-wat-if-chain-tco ctx fname params e depth
     is IrLet (name) (ty) (val) (body) (sp) ->
      "(local.set $" & wat-sanitize name & " " & emit-wat-expr-at ctx val (depth + 1) & ") " & emit-wat-expr-tco ctx fname params body (depth + 1)
     is IrMatch (scrut) (branches) (ty) (sp) ->
@@ -1488,6 +2027,23 @@ Section: Tail Call Optimization
     is IrAct (stmts) (ty) (sp) ->
      emit-wat-act-stmts-tco ctx fname params stmts 0 depth
     is otherwise -> emit-wat-expr-at ctx e depth
+
+ The TCO twin of the chain above. An arm here may itself be a self-tail call,
+ which emits its argument stores and a `(br $tco_loop)` and produces no value;
+ that rides inside `(br $_i ...)` exactly as it already rides inside the match
+ arms' `(br $_m ...)`, because a branch out makes what follows unreachable.
+
+  emit-wat-if-chain-tco : WasmCtx, Text, List IRParam, IRExpr, Integer -> Text
+  emit-wat-if-chain-tco (ctx) (fname) (params) (e) (depth) =
+   "(block $_i (result i64) " & emit-wat-if-arms-tco ctx fname params e depth & ")"
+
+  emit-wat-if-arms-tco : WasmCtx, Text, List IRParam, IRExpr, Integer -> Text
+  emit-wat-if-arms-tco (ctx) (fname) (params) (e) (depth) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     "(block $_c (br_if $_c (i32.eqz (i32.wrap_i64 " & emit-wat-expr-at ctx c (depth + 1) & "))) (br $_i " & emit-wat-expr-tco ctx fname params t (depth + 1) & ")) "
+       & emit-wat-if-arms-tco ctx fname params el depth
+    is otherwise -> emit-wat-expr-tco ctx fname params e (depth + 1)
 
   emit-wat-act-stmts-tco : WasmCtx, Text, List IRParam, List IRActStmt, Integer, Integer -> Text
   emit-wat-act-stmts-tco (ctx) (fname) (params) (stmts) (i) (depth) =
@@ -1520,53 +2076,75 @@ Section: Tail Call Optimization
     "(return_call $" & wat-sanitize n & " " & emit-wat-apply-args ctx args 0 & ")"
    else emit-wat-apply ctx e
 
+ This is the TCO twin of the match emission above and it is the one that was
+ actually making the module deep. The measured deepest point in
+ `codex-compiler.wat` is a constructor-tag chain reading
+ `(if (result i64) (i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) ...`,
+ which is THIS function's shape: `emit-wat-expr-at`'s `IrIf` always puts
+ `(i32.wrap_i64` immediately after `(result i64)` and the measured text does
+ not have it, and `local.get $_s` is a match scrutinee rather than anything an
+ `if` produces. Flattening the non-TCO twin alone moved the depth 188 to 188,
+ because the compiler's constructor dispatch is self-tail-recursive and never
+ takes that path.
+
+ Two shapes the old code had that the arm form removes. A last literal or
+ constructor arm was emitted with NO test at all, so an inexhaustive match ran
+ the last arm on a value it did not match; the non-TCO twin has always tested
+ and fallen through to `(unreachable)`, and these now agree. And an unguarded
+ wildcard in the middle discarded every later arm rather than emitting them
+ dead, which was a special case rather than a saving.
+
   emit-wat-match-tco : WasmCtx, Text, List IRParam, IRExpr, List IRBranch, Integer -> Text
   emit-wat-match-tco (ctx) (fname) (params) (scrut) (branches) (depth) =
-   "(local.set $_s " & emit-wat-expr-at ctx scrut (depth + 1) & ") " & emit-wat-branches-tco ctx fname params branches 0 depth
+   if list-length branches == 0 then "(unreachable)"
+   else "(local.set " & wat-scrut ctx & " " & emit-wat-expr-at ctx scrut (depth + 1) & ") (block $_m (result i64) "
+        & emit-wat-branches-tco ctx fname params branches 0 depth & "(unreachable))"
 
   emit-wat-branches-tco : WasmCtx, Text, List IRParam, List IRBranch, Integer, Integer -> Text
   emit-wat-branches-tco (ctx) (fname) (params) (bs) (i) (depth) =
-   if i >= list-length bs then "(unreachable)"
+   if i >= list-length bs then ""
    else let b = list-at bs i
-   in let body = emit-wat-expr-tco ctx fname params (b.body) (depth + 1)
-   in let guarded = wat-guard-trivial (b.guard) == False
-   in let is-last = (i == list-length bs - 1) & (guarded == False)
-   in let rest = emit-wat-branches-tco ctx fname params bs (i + 1) depth
-   in when b.pattern
-    is IrWildPat (sp) ->
-     if guarded == False then body
-     else "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
-    is IrVecPat (pats) (ty) (sp) ->
-     if guarded == False then body
-     else "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
-    is IrVarPat (name) (ty) (sp) ->
-     let bind = "(local.set $" & wat-sanitize name & " (local.get $_s)) "
-     in if guarded == False then bind & body
-        else bind & "(if (result i64) " & emit-wat-guard-test ctx (b.guard) & " (then " & body & ") (else " & rest & "))"
+   in let arm = emit-wat-arm-tco ctx fname params (b.pattern) (b.guard) (b.body) bs i depth
+   in arm & emit-wat-branches-tco ctx fname params bs (i + 1) depth
+
+  emit-wat-arm-tco : WasmCtx, Text, List IRParam, IRPat, IRExpr, IRExpr, List IRBranch, Integer, Integer -> Text
+  emit-wat-arm-tco (ctx) (fname) (params) (pat) (guard) (bexpr) (bs) (i) (depth) =
+   let body = emit-wat-expr-tco ctx fname params bexpr (depth + 1)
+   in when pat
     is IrLitPat (text) (ty) (sp) ->
-     if is-last then body
-     else let lit-test = "(i64.eq (local.get $_s) (i64.const " & text & "))"
-     in let cond = if guarded == False then lit-test
-        else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx (b.guard) & ")"
-     in "(if (result i64) " & cond & " (then " & body & ") (else " & rest & "))"
-    is IrCtorPat (name) (subs) (ty) (sp) ->
-     let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
-     in let bind = emit-wat-bind-ctor-subs ctx subs 0
-     in if is-last then bind & body
-     else let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) (i64.const " & integer-to-text tag & "))"
-     in let cond = if guarded == False then tag-test
-        else "(if (result i32) " & tag-test & " (then " & bind & emit-wat-guard-test ctx (b.guard) & ") (else (i32.const 0)))"
-     in "(if (result i64) " & cond & " (then " & bind & body & ") (else " & rest & "))"
+     let lit-test = wat-lit-pat-test ctx text ty
+     in let cond = if wat-guard-trivial guard then lit-test
+        else "(i32.and " & lit-test & " " & emit-wat-guard-test ctx guard & ")"
+     in emit-wat-arm-block "" cond "" body
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-wat-ctor-arm-tco ctx name subs guard body bs i
+    is IrVarPat (name) (ty) (sp) ->
+     let bind = "(local.set $" & wat-sanitize name & " (local.get " & wat-scrut ctx & ")) "
+     in emit-wat-arm-block bind (wat-arm-cond ctx guard) "" body
+    is IrWildPat (sp) ->
+     emit-wat-arm-block "" (wat-arm-cond ctx guard) "" body
+    is IrVecPat (pats) (ty) (sp) ->
+     let vcond = wat-emit-vec-pat-cond ctx pats ty
+     in let cond = if wat-guard-trivial guard then vcond
+        else "(i32.and " & vcond & " " & emit-wat-guard-test ctx guard & ")"
+     in emit-wat-arm-block "" cond "" body
+
+  emit-wat-ctor-arm-tco : WasmCtx, Text, List IRPat, IRExpr, Text, List IRBranch, Integer -> Text
+  emit-wat-ctor-arm-tco (ctx) (name) (subs) (guard) (body) (bs) (i) =
+   let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
+   in let bind-subs = emit-wat-bind-ctor-subs ctx subs 0
+   in if (i == list-length bs - 1) & wat-guard-trivial guard & (wat-ctor-has-lit-subs subs 0 == False) then
+    emit-wat-arm-block "" "(i32.const 1)" bind-subs body
+   else emit-wat-arm-block "" (wat-ctor-arm-cond ctx tag subs guard bind-subs) bind-subs body
 
 Section: Definition Emission
 
   emit-wat-def : WasmCtx, IRDef -> Text
   emit-wat-def (ctx) (d) =
    let name = wat-sanitize (d.name)
-   in let all-locals = collect-locals-expr (d.body) []
+   in let all-locals = collect-locals-expr (d.body) (collect-locals-params (d.params) 0 [])
    in let locals = locals-minus-params all-locals (d.params) 0 []
    in let bound = collect-locals-params (d.params) 0 all-locals
-   in let dctx = __record-set ctx "bound" bound
+   in let dctx = ctx-with ctx bound
    in if is-self-tail-call (d.name) (d.body) then
     let pc = list-length (d.params)
     in let tco-temps = emit-tco-temp-decls 0 pc
@@ -1602,6 +2180,8 @@ Section: WASI Runtime Helpers
    "  (global $deck_ptr (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
    "  (global $bivy_save (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
    "  (global $deck_depth (mut i32) (i32.const 0))\n" &
+   "  (global $rd_len (mut i32) (i32.const 0))\n" &
+   "  (global $rd_pos (mut i32) (i32.const 0))\n" &
    "  (global $disk_base (mut i32) (i32.const 0))\n" &
    "  (global $disk_size (mut i32) (i32.const 0))\n" &
    "  (func $__heap_reset (global.set $heap_ptr (global.get $heap_start)))\n" &
@@ -1616,10 +2196,50 @@ Section: WASI Runtime Helpers
    "    (if (i32.eqz (global.get $deck_depth)) (then\n" &
    "      (global.set $deck_ptr (global.get $heap_ptr))\n" &
    "      (global.set $heap_ptr (global.get $bivy_save)))))\n" &
+   wat-rt-ipow &
+   wat-rt-real-to-int &
    "  (func $codex_mod (param $a i64) (param $b i64) (result i64) (local $m i64) (local $r i64)\n" &
    "    (local.set $m (select (i64.sub (i64.const 0) (local.get $b)) (local.get $b) (i64.lt_s (local.get $b) (i64.const 0))))\n" &
    "    (local.set $r (i64.rem_s (local.get $a) (local.get $m)))\n" &
    "    (select (i64.add (local.get $r) (local.get $m)) (local.get $r) (i64.lt_s (local.get $r) (i64.const 0))))\n\n"
+
+ `real-to-int` on x86-64 is `cvttsd2si` (X86_64Builtins.codex): truncate toward
+ zero, and the integer indefinite INT64_MIN for a NaN, an infinity, or a value
+ whose truncation does not fit. `i64.trunc_sat_f64_s` agrees on all of those
+ except NaN (saturates to 0) and positive overflow (saturates to INT64_MAX), so
+ those two are tested first.
+
+  wat-rt-ipow : Text =
+   "  (func $cx_ipow (param $b i64) (param $e i64) (result i64)\n" &
+   "    (local $acc i64)\n" &
+   "    (local.set $acc (i64.const 1))\n" &
+   "    (if (i64.lt_s (local.get $e) (i64.const 0)) (then (return (i64.const 0))))\n" &
+   "    (block $done (loop $pow\n" &
+   "      (br_if $done (i64.eqz (local.get $e)))\n" &
+   "      (local.set $acc (i64.mul (local.get $acc) (local.get $b)))\n" &
+   "      (local.set $e (i64.sub (local.get $e) (i64.const 1)))\n" &
+   "      (br $pow)))\n" &
+   "    (local.get $acc))\n\n" &
+   "  (func $cx_abs (param $x i64) (result i64)\n" &
+   "    (if (i64.lt_s (local.get $x) (i64.const 0))\n" &
+   "      (then (return (i64.sub (i64.const 0) (local.get $x)))))\n" &
+   "    (local.get $x))\n\n" &
+   "  (func $cx_max (param $a i64) (param $b i64) (result i64)\n" &
+   "    (if (i64.ge_s (local.get $a) (local.get $b)) (then (return (local.get $a))))\n" &
+   "    (local.get $b))\n\n" &
+   "  (func $cx_print_text_raw (param $t i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $t)))\n" &
+   "    (call $write_raw (i32.add (local.get $p) (i32.const 4)) (i32.load (local.get $p))))\n\n"
+
+  wat-rt-real-to-int : Text =
+   "  (func $cx_real_to_int (param $b i64) (result i64) (local $f f64)\n" &
+   "    (local.set $f (f64.reinterpret_i64 (local.get $b)))\n" &
+   "    (if (result i64) (f64.ne (local.get $f) (local.get $f))\n" &
+   "      (then (i64.const -9223372036854775808))\n" &
+   "      (else (if (result i64) (f64.ge (local.get $f) (f64.const 9223372036854775808))\n" &
+   "        (then (i64.const -9223372036854775808))\n" &
+   "        (else (i64.trunc_sat_f64_s (local.get $f)))))))\n\n"
 
  THE ALLOCATOR GROWS THE MEMORY, because the declared 256 pages are 16 MB
  and the compiler compiling its own source asked for an address 206 MB in.
@@ -1628,17 +2248,31 @@ Section: WASI Runtime Helpers
  past the end and every access past it is an out-of-bounds trap, which reads
  as a codegen defect and is a ceiling.
 
+ GROW IN 16 MB STEPS: V8's cost per memory.grow rises with the memory already
+ held, so the COUNT of grows is what costs (measured 2026-08-31: 56,000 grows
+ of one page to 3.5 GB, node 166.83 s against wasmtime 0.21 s; 1,000 grows of
+ 16 pages to the same 1 GB as 16,000 of one, 0.38 s against 5.45 s). A fixed
+ step rather than doubling, because doubling overshoots by up to 12.5 per cent
+ and a compiler-sized subject sits near wasm32's hard 4 GiB ceiling.
+
+  wasm-grow-step-pages : Integer = 256
+
   wat-rt-bump-alloc : Text =
+   "  (func $grow_by (param $need i32) (param $have i32)\n" &
+   "    (local $pages i32)\n" &
+   "    (local.set $pages (i32.add\n" &
+   "      (i32.div_u (i32.sub (local.get $need) (local.get $have)) (i32.const 65536))\n" &
+   "      (i32.const 1)))\n" &
+   "    (if (i32.lt_u (local.get $pages) (i32.const " & integer-to-text wasm-grow-step-pages & "))\n" &
+   "      (then (local.set $pages (i32.const " & integer-to-text wasm-grow-step-pages & "))))\n" &
+   "    (if (i32.eq (memory.grow (local.get $pages)) (i32.const -1)) (then (unreachable))))\n\n" &
    "  (func $bump_alloc (param $size i32) (result i32)\n" &
-   "    (local $ptr i32) (local $need i32) (local $have i32) (local $pages i32)\n" &
+   "    (local $ptr i32) (local $need i32) (local $have i32)\n" &
    "    (local.set $ptr (global.get $heap_ptr))\n" &
    "    (local.set $need (i32.add (local.get $ptr) (local.get $size)))\n" &
    "    (local.set $have (i32.mul (memory.size) (i32.const 65536)))\n" &
-   "    (if (i32.gt_u (local.get $need) (local.get $have)) (then\n" &
-   "      (local.set $pages (i32.add\n" &
-   "        (i32.div_u (i32.sub (local.get $need) (local.get $have)) (i32.const 65536))\n" &
-   "        (i32.const 1)))\n" &
-   "      (if (i32.eq (memory.grow (local.get $pages)) (i32.const -1)) (then (unreachable)))))\n" &
+   "    (if (i32.gt_u (local.get $need) (local.get $have))\n" &
+   "      (then (call $grow_by (local.get $need) (local.get $have))))\n" &
    "    (global.set $heap_ptr (local.get $need))\n" &
    "    (local.get $ptr))\n\n"
 
@@ -1649,14 +2283,14 @@ Section: WASI Runtime Helpers
    "    (local.set $pos (i32.add (local.get $buf) (i32.const 23)))\n" &
    "    (local.set $neg (i64.lt_s (local.get $val) (i64.const 0)))\n" &
    "    (if (local.get $neg)\n" &
-   "      (then (local.set $abs (i64.sub (i64.const 0) (local.get $val))))\n" &
-   "      (else (local.set $abs (local.get $val))))\n" &
+   "      (then (local.set $abs (local.get $val)))\n" &
+   "      (else (local.set $abs (i64.sub (i64.const 0) (local.get $val)))))\n" &
    "    (if (i64.eqz (local.get $abs))\n" &
    "      (then (i32.store8 (local.get $pos) (i32.const 48))\n" &
    "        (local.set $pos (i32.sub (local.get $pos) (i32.const 1))))\n" &
    "      (else (block $done (loop $digits\n" &
    "          (br_if $done (i64.eqz (local.get $abs)))\n" &
-   "          (local.set $digit (i32.wrap_i64 (i64.rem_s (local.get $abs) (i64.const 10))))\n" &
+   "          (local.set $digit (i32.wrap_i64 (i64.sub (i64.const 0) (i64.rem_s (local.get $abs) (i64.const 10)))))\n" &
    "          (i32.store8 (local.get $pos) (i32.add (local.get $digit) (i32.const 48)))\n" &
    "          (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))\n" &
    "          (local.set $abs (i64.div_s (local.get $abs) (i64.const 10)))\n" &
@@ -1786,14 +2420,14 @@ Section: WASI Runtime Helpers
    "    (local.set $pos (i32.add (local.get $buf) (i32.const 23)))\n" &
    "    (local.set $neg (i64.lt_s (local.get $val) (i64.const 0)))\n" &
    "    (if (local.get $neg)\n" &
-   "      (then (local.set $abs (i64.sub (i64.const 0) (local.get $val))))\n" &
-   "      (else (local.set $abs (local.get $val))))\n" &
+   "      (then (local.set $abs (local.get $val)))\n" &
+   "      (else (local.set $abs (i64.sub (i64.const 0) (local.get $val)))))\n" &
    "    (if (i64.eqz (local.get $abs))\n" &
    "      (then (i32.store8 (local.get $pos) (i32.const " & integer-to-text cce-digit-zero & "))\n" &
    "        (local.set $pos (i32.sub (local.get $pos) (i32.const 1))))\n" &
    "      (else (block $done (loop $digits\n" &
    "          (br_if $done (i64.eqz (local.get $abs)))\n" &
-   "          (local.set $digit (i32.wrap_i64 (i64.rem_s (local.get $abs) (i64.const 10))))\n" &
+   "          (local.set $digit (i32.wrap_i64 (i64.sub (i64.const 0) (i64.rem_s (local.get $abs) (i64.const 10)))))\n" &
    "          (i32.store8 (local.get $pos) (i32.add (local.get $digit) (i32.const " & integer-to-text cce-digit-zero & ")))\n" &
    "          (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))\n" &
    "          (local.set $abs (i64.div_s (local.get $abs) (i64.const 10)))\n" &
@@ -1813,17 +2447,98 @@ Section: WASI Runtime Helpers
    "      (br $cpl)))\n" &
    "    (i64.extend_i32_u (local.get $result)))\n\n"
 
+ The oracle is `__real_to_text`, `codex/compiler/Emit/X86_64TextHelpers.codex:590`,
+ and the FORMAT is the part that has to match rather than the arithmetic: at most
+ fifteen fractional digits, trailing zeros stripped down to one, always a dot and
+ always a digit after it. The two diverge above 2^63, where `cvttsd2si` answers
+ the integer indefinite and `i64.trunc_sat_f64_s` saturates; no `.expected` in the
+ corpus spells a value that large.
+
+  wat-rt-f64-to-text : Text =
+   "  (func $__f64_to_text (param $bits i64) (result i64)\n" &
+   "    (local $neg i32) (local $mag i64) (local $x f64) (local $frac f64)\n" &
+   "    (local $ip i64) (local $ibuf i32) (local $ic i32) (local $fbuf i32) (local $fc i32)\n" &
+   "    (local $d i32) (local $result i32) (local $len i32) (local $w i32) (local $i i32)\n" &
+   "    (local.set $neg (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const 63))))\n" &
+   "    (local.set $mag (i64.shr_u (i64.shl (local.get $bits) (i64.const 1)) (i64.const 1)))\n" &
+   "    (local.set $x (f64.reinterpret_i64 (local.get $mag)))\n" &
+   "    (local.set $ibuf (call $bump_alloc (i32.const 32)))\n" &
+   "    (local.set $fbuf (call $bump_alloc (i32.const 32)))\n" &
+   "    (local.set $ic (i32.const 0))\n" &
+   "    (local.set $fc (i32.const 0))\n" &
+   "    (if (i64.eqz (local.get $mag))\n" &
+   "      (then\n" &
+   "        (i32.store8 (local.get $ibuf) (i32.const " & integer-to-text cce-digit-zero & "))\n" &
+   "        (local.set $ic (i32.const 1))\n" &
+   "        (i32.store8 (local.get $fbuf) (i32.const " & integer-to-text cce-digit-zero & "))\n" &
+   "        (local.set $fc (i32.const 1)))\n" &
+   "      (else\n" &
+   "        (local.set $ip (i64.trunc_sat_f64_s (local.get $x)))\n" &
+   "        (local.set $frac (f64.sub (local.get $x) (f64.convert_i64_s (local.get $ip))))\n" &
+   "        (if (i64.eqz (local.get $ip))\n" &
+   "          (then (i32.store8 (local.get $ibuf) (i32.const " & integer-to-text cce-digit-zero & ")) (local.set $ic (i32.const 1)))\n" &
+   "          (else (block $idone (loop $iloop\n" &
+   "            (br_if $idone (i64.eqz (local.get $ip)))\n" &
+   "            (i32.store8 (i32.add (local.get $ibuf) (local.get $ic))\n" &
+   "              (i32.add (i32.wrap_i64 (i64.rem_u (local.get $ip) (i64.const 10))) (i32.const " & integer-to-text cce-digit-zero & ")))\n" &
+   "            (local.set $ic (i32.add (local.get $ic) (i32.const 1)))\n" &
+   "            (local.set $ip (i64.div_u (local.get $ip) (i64.const 10)))\n" &
+   "            (br $iloop)))))\n" &
+   "        (block $fdone (loop $floop\n" &
+   "          (br_if $fdone (i32.ge_s (local.get $fc) (i32.const 15)))\n" &
+   "          (local.set $frac (f64.mul (local.get $frac) (f64.const 10)))\n" &
+   "          (local.set $d (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $frac))))\n" &
+   "          (local.set $frac (f64.sub (local.get $frac) (f64.convert_i64_s (i64.extend_i32_s (local.get $d)))))\n" &
+   "          (i32.store8 (i32.add (local.get $fbuf) (local.get $fc)) (i32.add (local.get $d) (i32.const " & integer-to-text cce-digit-zero & ")))\n" &
+   "          (local.set $fc (i32.add (local.get $fc) (i32.const 1)))\n" &
+   "          (br_if $fdone (i64.eqz (i64.reinterpret_f64 (local.get $frac))))\n" &
+   "          (br $floop)))\n" &
+   "        (if (i32.eqz (local.get $fc)) (then\n" &
+   "          (i32.store8 (local.get $fbuf) (i32.const " & integer-to-text cce-digit-zero & "))\n" &
+   "          (local.set $fc (i32.const 1))))\n" &
+   "        (block $sdone (loop $sloop\n" &
+   "          (br_if $sdone (i32.le_s (local.get $fc) (i32.const 1)))\n" &
+   "          (br_if $sdone (i32.ne (i32.load8_u (i32.add (local.get $fbuf) (i32.sub (local.get $fc) (i32.const 1)))) (i32.const " & integer-to-text cce-digit-zero & ")))\n" &
+   "          (local.set $fc (i32.sub (local.get $fc) (i32.const 1)))\n" &
+   "          (br $sloop)))))\n" &
+   "    (local.set $len (i32.add (i32.add (local.get $neg) (local.get $ic)) (i32.add (i32.const 1) (local.get $fc))))\n" &
+   "    (local.set $result (call $bump_alloc (i32.add (local.get $len) (i32.const 4))))\n" &
+   "    (i32.store (local.get $result) (local.get $len))\n" &
+   "    (local.set $w (i32.add (local.get $result) (i32.const 4)))\n" &
+   "    (if (local.get $neg) (then\n" &
+   "      (i32.store8 (local.get $w) (i32.const " & integer-to-text cce-minus & "))\n" &
+   "      (local.set $w (i32.add (local.get $w) (i32.const 1)))))\n" &
+   "    (local.set $i (local.get $ic))\n" &
+   "    (block $cdone (loop $cloop\n" &
+   "      (br_if $cdone (i32.eqz (local.get $i)))\n" &
+   "      (local.set $i (i32.sub (local.get $i) (i32.const 1)))\n" &
+   "      (i32.store8 (local.get $w) (i32.load8_u (i32.add (local.get $ibuf) (local.get $i))))\n" &
+   "      (local.set $w (i32.add (local.get $w) (i32.const 1)))\n" &
+   "      (br $cloop)))\n" &
+   "    (i32.store8 (local.get $w) (i32.const " & integer-to-text cce-dot & "))\n" &
+   "    (local.set $w (i32.add (local.get $w) (i32.const 1)))\n" &
+   "    (local.set $i (i32.const 0))\n" &
+   "    (block $fcdone (loop $fcloop\n" &
+   "      (br_if $fcdone (i32.ge_s (local.get $i) (local.get $fc)))\n" &
+   "      (i32.store8 (local.get $w) (i32.load8_u (i32.add (local.get $fbuf) (local.get $i))))\n" &
+   "      (local.set $w (i32.add (local.get $w) (i32.const 1)))\n" &
+   "      (local.set $i (i32.add (local.get $i) (i32.const 1)))\n" &
+   "      (br $fcloop)))\n" &
+   "    (i64.extend_i32_u (local.get $result)))\n\n"
+
   wat-rt-list-ops : Text =
    "  (func $list_length (param $lst i64) (result i64)\n" &
    "    (i64.extend_i32_u (i32.load (i32.wrap_i64 (local.get $lst)))))\n\n" &
    "  (func $list_at (param $lst i64) (param $idx i64) (result i64)\n" &
-   "    (i64.load (i32.add (i32.wrap_i64 (local.get $lst)) (i32.add (i32.const 8) (i32.mul (i32.wrap_i64 (local.get $idx)) (i32.const 8))))))\n\n" &
+   "    (i64.load (i32.add (call $cx_list_base (local.get $lst)) (i32.add (i32.const 8) (i32.mul (i32.wrap_i64 (local.get $idx)) (i32.const 8))))))\n\n" &
    "  (func $list_append (param $a i64) (param $b i64) (result i64)\n" &
    "    (local $pa i32) (local $pb i32) (local $na i32) (local $nb i32) (local $n i32) (local $dst i32) (local $i i32)\n" &
    "    (local.set $pa (i32.wrap_i64 (local.get $a)))\n" &
    "    (local.set $pb (i32.wrap_i64 (local.get $b)))\n" &
    "    (local.set $na (i32.load (local.get $pa)))\n" &
    "    (local.set $nb (i32.load (local.get $pb)))\n" &
+   "    (local.set $pa (call $cx_list_base (local.get $a)))\n" &
+   "    (local.set $pb (call $cx_list_base (local.get $b)))\n" &
    "    (local.set $n (i32.add (local.get $na) (local.get $nb)))\n" &
    "    (local.set $dst (call $bump_alloc (i32.add (i32.const 8) (i32.mul (local.get $n) (i32.const 8)))))\n" &
    "    (i32.store (local.get $dst) (local.get $n))\n" &
@@ -1847,6 +2562,7 @@ Section: WASI Runtime Helpers
    "    (local $p i32) (local $n i32) (local $dst i32) (local $i i32)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
    "    (local.set $n (i32.load (local.get $p)))\n" &
+   "    (local.set $p (call $cx_list_base (local.get $lst)))\n" &
    "    (local.set $dst (call $bump_alloc (i32.add (i32.const 8) (i32.mul (i32.add (local.get $n) (i32.const 1)) (i32.const 8)))))\n" &
    "    (i32.store (local.get $dst) (i32.add (local.get $n) (i32.const 1)))\n" &
    "    (i32.store (i32.add (local.get $dst) (i32.const 4)) (i32.add (local.get $n) (i32.const 1)))\n" &
@@ -1890,6 +2606,132 @@ Section: WASI Runtime Helpers
    wat-bool-text-arm "True" &
    "      ))\n" &
    "    (i64.extend_i32_u (local.get $p)))\n\n"
+
+ The bands are CCE code points and are the ones `emit-is-letter-builtin`
+ (`X86_64Builtins.codex:382`) tests: letters are 13..64 and 97..127, two ranges
+ because Tier 0 puts sixteen accented Latin letters and fifteen Cyrillic ones
+ above the punctuation, and whitespace is 1..2. The digit band is derived from
+ `cce-digit-zero` rather than written down twice.
+
+ `__list-tail` is a VIEW, as it is on x86-64 (`X86_64ListHelpers.codex:3`), and
+ for the same two reasons: O(1) so a `when xs is Cons` recursion is not
+ quadratic, and aliasing, because a write through `list-set-at` on a view must
+ land in the backing where every sibling view can see it. A copy is correct for
+ every reader and wrong for that one, which is the half a green on
+ `list-view-bounds` cannot see and `list-view-probe`'s `set=` line can.
+
+ This plug's list is `[len i32][cap i32][elements]` with the pointer at the
+ header, so the sentinel is the CAPACITY cell rather than x86-64's cell behind
+ the pointer: capacity -1 means view, and the view's third cell holds a phantom
+ pointer chosen so that phantom+8 is the view's first element, which is the
+ displacement every element loop here already uses. `$cx_list_base` is the one
+ selection, and a reader that indexes elements calls it instead of wrapping the
+ pointer. A plain list never carries -1: the empty literal is 0, `$list_append`
+ and `$list_cons` set capacity equal to length, and `$list_with_capacity`
+ floors at 0.
+
+ A reduction reads its operand four times, so it is a helper taking the POINTER
+ rather than four copies of an expression that may allocate. The f32 sum comes
+ back as a promoted f64 because that is how this plug carries an approximate
+ real everywhere else.
+
+  wat-rt-vec : Text =
+   "  (func $cx_vec_box (param $v v128) (result i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (call $bump_alloc (i32.const 16)))\n" &
+   "    (v128.store (local.get $p) (local.get $v))\n" &
+   "    (i64.extend_i32_u (local.get $p)))\n\n" &
+   "  (func $cx_vec_store (param $addr i64) (param $v i64) (result i64)\n" &
+   "    (v128.store (i32.wrap_i64 (local.get $addr)) (v128.load (i32.wrap_i64 (local.get $v))))\n" &
+   "    (local.get $addr))\n\n" &
+   "  (func $cx_mask_bits (param $m i64) (result i32)\n" &
+   "    (i64x2.bitmask (v128.load (i32.wrap_i64 (local.get $m)))))\n\n" &
+   "  (func $cx_mask_count (param $m i64) (result i64)\n" &
+   "    (local $b i32)\n" &
+   "    (local.set $b (call $cx_mask_bits (local.get $m)))\n" &
+   "    (i64.extend_i32_u (i32.add (i32.and (local.get $b) (i32.const 1)) (i32.shr_u (local.get $b) (i32.const 1)))))\n\n" &
+   "  (func $cx_vec_sum_f64x2 (param $v i64) (result i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $v)))\n" &
+   "    (i64.reinterpret_f64 (f64.add (f64.load (local.get $p)) (f64.load offset=8 (local.get $p)))))\n\n" &
+   "  (func $cx_vec_sum_i64x2 (param $v i64) (result i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $v)))\n" &
+   "    (i64.add (i64.load (local.get $p)) (i64.load offset=8 (local.get $p))))\n\n" &
+   "  (func $cx_vec_sum_f32x4 (param $v i64) (result i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $v)))\n" &
+   "    (i64.reinterpret_f64 (f64.promote_f32 (f32.add\n" &
+   "      (f32.add (f32.load (local.get $p)) (f32.load offset=4 (local.get $p)))\n" &
+   "      (f32.add (f32.load offset=8 (local.get $p)) (f32.load offset=12 (local.get $p)))))))\n\n" &
+   "  (func $cx_vec_sum_i32x4 (param $v i64) (result i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $v)))\n" &
+   "    (i64.extend_i32_s (i32.add\n" &
+   "      (i32.add (i32.load (local.get $p)) (i32.load offset=4 (local.get $p)))\n" &
+   "      (i32.add (i32.load offset=8 (local.get $p)) (i32.load offset=12 (local.get $p))))))\n\n"
+
+  wat-rt-real-modes : Text =
+   "  (func $cx_real_sat64 (param $b i64) (result i64)\n" &
+   "    (if (i64.ne (i64.and (local.get $b) (i64.const 0x7ff0000000000000)) (i64.const 0x7ff0000000000000))\n" &
+   "      (then (return (local.get $b))))\n" &
+   "    (if (i64.ne (i64.and (local.get $b) (i64.const 0x000fffffffffffff)) (i64.const 0))\n" &
+   "      (then (return (i64.const 0))))\n" &
+   "    (i64.sub (local.get $b) (i64.const 1)))\n\n" &
+   "  (func $cx_real_trap64 (param $b i64) (result i64)\n" &
+   "    (if (i64.eq (i64.and (local.get $b) (i64.const 0x7ff0000000000000)) (i64.const 0x7ff0000000000000))\n" &
+   "      (then (unreachable)))\n" &
+   "    (local.get $b))\n\n" &
+   "  (func $cx_real_sat32 (param $b i64) (result i64)\n" &
+   "    (local $f i32)\n" &
+   "    (local.set $f (i32.reinterpret_f32 (f32.demote_f64 (f64.reinterpret_i64 (local.get $b)))))\n" &
+   "    (if (i32.ne (i32.and (local.get $f) (i32.const 0x7f800000)) (i32.const 0x7f800000))\n" &
+   "      (then (return (local.get $b))))\n" &
+   "    (if (i32.ne (i32.and (local.get $f) (i32.const 0x007fffff)) (i32.const 0))\n" &
+   "      (then (return (i64.const 0))))\n" &
+   "    (i64.reinterpret_f64 (f64.promote_f32 (f32.reinterpret_i32 (i32.sub (local.get $f) (i32.const 1))))))\n\n" &
+   "  (func $cx_real_trap32 (param $b i64) (result i64)\n" &
+   "    (local $f i32)\n" &
+   "    (local.set $f (i32.reinterpret_f32 (f32.demote_f64 (f64.reinterpret_i64 (local.get $b)))))\n" &
+   "    (if (i32.eq (i32.and (local.get $f) (i32.const 0x7f800000)) (i32.const 0x7f800000))\n" &
+   "      (then (unreachable)))\n" &
+   "    (local.get $b))\n\n"
+
+  wat-rt-list-tail : Text =
+   "  (func $cx_list_base (param $lst i64) (result i32)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
+   "    (if (i32.eq (i32.load (i32.add (local.get $p) (i32.const 4))) (i32.const -1))\n" &
+   "      (then (return (i32.wrap_i64 (i64.load (i32.add (local.get $p) (i32.const 8)))))))\n" &
+   "    (local.get $p))\n\n" &
+   "  (func $cx_list_tail (param $lst i64) (result i64)\n" &
+   "    (local $p i32) (local $n i32) (local $base i32) (local $dst i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
+   "    (local.set $n (i32.load (local.get $p)))\n" &
+   "    (local.set $base (call $cx_list_base (local.get $lst)))\n" &
+   "    (if (i32.gt_s (local.get $n) (i32.const 0))\n" &
+   "      (then (local.set $n (i32.sub (local.get $n) (i32.const 1))))\n" &
+   "      (else (local.set $n (i32.const 0))))\n" &
+   "    (local.set $dst (call $bump_alloc (i32.const 16)))\n" &
+   "    (i32.store (local.get $dst) (local.get $n))\n" &
+   "    (i32.store (i32.add (local.get $dst) (i32.const 4)) (i32.const -1))\n" &
+   "    (i64.store (i32.add (local.get $dst) (i32.const 8))\n" &
+   "      (i64.extend_i32_u (i32.add (local.get $base) (i32.const 8))))\n" &
+   "    (i64.extend_i32_u (local.get $dst)))\n\n"
+
+  wat-rt-char-class : Text =
+   "  (func $__is_digit (param $c i64) (result i64)\n" &
+   "    (i64.extend_i32_u (i32.and\n" &
+   "      (i64.ge_s (local.get $c) (i64.const " & integer-to-text cce-digit-zero & "))\n" &
+   "      (i64.le_s (local.get $c) (i64.const " & integer-to-text (cce-digit-zero + 9) & ")))))\n\n" &
+   "  (func $__is_letter (param $c i64) (result i64)\n" &
+   "    (i64.extend_i32_u (i32.or\n" &
+   "      (i32.and (i64.ge_s (local.get $c) (i64.const 13)) (i64.le_s (local.get $c) (i64.const 64)))\n" &
+   "      (i32.and (i64.ge_s (local.get $c) (i64.const 97)) (i64.le_s (local.get $c) (i64.const 127))))))\n\n" &
+   "  (func $__is_whitespace (param $c i64) (result i64)\n" &
+   "    (i64.extend_i32_u (i32.and\n" &
+   "      (i64.ge_s (local.get $c) (i64.const 1))\n" &
+   "      (i64.le_s (local.get $c) (i64.const 2)))))\n\n"
 
   wat-rt-char-text : Text =
    "  (func $char_to_text (param $ch i64) (result i64)\n" &
@@ -1946,7 +2788,7 @@ Section: WASI Runtime Helpers
    "    (i64.extend_i32_u (local.get $dst)))\n\n" &
    "  (func $char_at (param $s i64) (param $idx i64) (result i64)\n" &
    "    (i64.extend_i32_u (i32.load8_u (i32.add (i32.add (i32.wrap_i64 (local.get $s)) (i32.const 4)) (i32.wrap_i64 (local.get $idx))))))\n\n" &
-   "  (func $text_compare (param $a i64) (param $b i64) (result i64)\n" &
+   "  (func $__text_compare (param $a i64) (param $b i64) (result i64)\n" &
    "    (local $pa i32) (local $pb i32) (local $la i32) (local $lb i32) (local $n i32) (local $i i32) (local $ca i32) (local $cb i32)\n" &
    "    (local.set $pa (i32.wrap_i64 (local.get $a)))\n" &
    "    (local.set $pb (i32.wrap_i64 (local.get $b)))\n" &
@@ -1984,38 +2826,19 @@ Section: WASI Runtime Helpers
    "      (br $c)))\n" &
    "    (i64.const 1))\n\n" &
    "  (func $list_push (param $lst i64) (param $val i64) (result i64)\n" &
-   "    (local $p i32) (local $n i32) (local $cap i32) (local $dst i32) (local $idx i32) (local $nc i32) (local $end i32) (local $delta i32) (local $need2 i32) (local $have2 i32)\n" &
+   "    (local $p i32) (local $n i32) (local $cap i32) (local $dst i32) (local $idx i32) (local $nc i32) (local $eb i32) (local $isv i32)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
    "    (local.set $n (i32.load (local.get $p)))\n" &
    "    (local.set $cap (i32.load (i32.add (local.get $p) (i32.const 4))))\n" &
+   "    (local.set $eb (call $cx_list_base (local.get $lst)))\n" &
+   "    (local.set $isv (i32.eq (local.get $cap) (i32.const -1)))\n" &
+   "    (if (local.get $isv) (then (local.set $cap (i32.const 0))))\n" &
    "    (if (i32.lt_s (local.get $n) (local.get $cap))\n" &
    "      (then\n" &
    "        (i64.store (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.mul (local.get $n) (i32.const 8))) (local.get $val))\n" &
    "        (i32.store (local.get $p) (i32.add (local.get $n) (i32.const 1)))\n" &
    "        (return (i64.extend_i32_u (local.get $p))))\n" &
    "      (else\n" &
-   "        (local.set $nc (i32.mul (local.get $cap) (i32.const 2)))\n" &
-   "        (if (i32.lt_s (local.get $nc) (i32.const 8)) (then (local.set $nc (i32.const 8))))\n" &
-   "        (local.set $end (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.mul (local.get $cap) (i32.const 8))))\n" &
-   "        (local.set $delta (i32.mul (i32.sub (local.get $nc) (local.get $cap)) (i32.const 8)))\n" &
-   "        (if (i32.eq (local.get $end) (global.get $heap_ptr))\n" &
-   "          (then\n" &
-   "            (drop (call $bump_alloc (local.get $delta)))\n" &
-   "            (i32.store (i32.add (local.get $p) (i32.const 4)) (local.get $nc))\n" &
-   "            (i64.store (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.mul (local.get $n) (i32.const 8))) (local.get $val))\n" &
-   "            (i32.store (local.get $p) (i32.add (local.get $n) (i32.const 1)))\n" &
-   "            (return (i64.extend_i32_u (local.get $p)))))\n" &
-   "        (if (i32.eq (local.get $end) (global.get $deck_ptr))\n" &
-   "          (then\n" &
-   "            (local.set $need2 (i32.add (global.get $deck_ptr) (local.get $delta)))\n" &
-   "            (local.set $have2 (i32.mul (memory.size) (i32.const 65536)))\n" &
-   "            (if (i32.gt_u (local.get $need2) (local.get $have2)) (then\n" &
-   "              (if (i32.eq (memory.grow (i32.add (i32.div_u (i32.sub (local.get $need2) (local.get $have2)) (i32.const 65536)) (i32.const 1))) (i32.const -1)) (then (unreachable)))))\n" &
-   "            (global.set $deck_ptr (local.get $need2))\n" &
-   "            (i32.store (i32.add (local.get $p) (i32.const 4)) (local.get $nc))\n" &
-   "            (i64.store (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.mul (local.get $n) (i32.const 8))) (local.get $val))\n" &
-   "            (i32.store (local.get $p) (i32.add (local.get $n) (i32.const 1)))\n" &
-   "            (return (i64.extend_i32_u (local.get $p)))))\n" &
    "        (local.set $nc (i32.mul (local.get $cap) (i32.const 2)))\n" &
    "        (if (i32.lt_s (local.get $nc) (i32.const 8)) (then (local.set $nc (i32.const 8))))\n" &
    "        (local.set $dst (call $bump_alloc (i32.add (i32.const 8) (i32.mul (local.get $nc) (i32.const 8)))))\n" &
@@ -2025,7 +2848,7 @@ Section: WASI Runtime Helpers
    "        (block $d (loop $c\n" &
    "          (br_if $d (i32.ge_s (local.get $idx) (local.get $n)))\n" &
    "          (i64.store (i32.add (i32.add (local.get $dst) (i32.const 8)) (i32.mul (local.get $idx) (i32.const 8)))\n" &
-   "            (i64.load (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.mul (local.get $idx) (i32.const 8)))))\n" &
+   "            (i64.load (i32.add (i32.add (local.get $eb) (i32.const 8)) (i32.mul (local.get $idx) (i32.const 8)))))\n" &
    "          (local.set $idx (i32.add (local.get $idx) (i32.const 1)))\n" &
    "          (br $c)))\n" &
    "        (i64.store (i32.add (i32.add (local.get $dst) (i32.const 8)) (i32.mul (local.get $n) (i32.const 8))) (local.get $val))\n" &
@@ -2034,7 +2857,7 @@ Section: WASI Runtime Helpers
 
   wat-rt-list-mutate : Text =
    "  (func $list_set_at (param $lst i64) (param $idx i64) (param $val i64) (result i64)\n" &
-   "    (i64.store (i32.add (i32.wrap_i64 (local.get $lst)) (i32.add (i32.const 8) (i32.mul (i32.wrap_i64 (local.get $idx)) (i32.const 8)))) (local.get $val))\n" &
+   "    (i64.store (i32.add (call $cx_list_base (local.get $lst)) (i32.add (i32.const 8) (i32.mul (i32.wrap_i64 (local.get $idx)) (i32.const 8)))) (local.get $val))\n" &
    "    (local.get $lst))\n\n"
 
  Text here is a pointer to `[i32 length][bytes]` and a list is a pointer to
@@ -2088,6 +2911,7 @@ Section: WASI Runtime Helpers
    "    (local $dst i32) (local $at i32) (local $e i32) (local $el i32) (local $k i32)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
    "    (local.set $n (i32.load (local.get $p)))\n" &
+   "    (local.set $p (call $cx_list_base (local.get $lst)))\n" &
    "    (local.set $total (i32.const 0))\n" &
    "    (local.set $i (i32.const 0))\n" &
    "    (block $tsd (loop $tsl\n" &
@@ -2141,6 +2965,7 @@ Section: WASI Runtime Helpers
    "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
    "    (local.set $n (i32.load (local.get $p)))\n" &
    "    (local.set $cap (i32.load (i32.add (local.get $p) (i32.const 4))))\n" &
+   "    (local.set $p (call $cx_list_base (local.get $lst)))\n" &
    "    (local.set $i (i32.wrap_i64 (local.get $idx)))\n" &
    "    (if (i32.lt_s (local.get $i) (i32.const 0)) (then (unreachable)))\n" &
    "    (if (i32.gt_s (local.get $i) (local.get $n)) (then (unreachable)))\n" &
@@ -2523,14 +3348,19 @@ Section: WASI Runtime Helpers
 
   wat-rt-read-line : Integer, Integer -> Text
   wat-rt-read-line (rev-base) (scratch) =
-   "  (func $read_byte (result i32)\n" &
-   "    (i32.store (i32.const 0) (i32.const " & integer-to-text scratch & "))\n" &
-   "    (i32.store (i32.const 4) (i32.const 1))\n" &
-   "    (i32.store (i32.const 8) (i32.const 0))\n" &
-   "    (if (i32.ne (call $fd_read (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 8)) (i32.const 0))\n" &
-   "      (then (return (i32.const -1))))\n" &
-   "    (if (i32.eqz (i32.load (i32.const 8))) (then (return (i32.const -1))))\n" &
-   "    (i32.load8_u (i32.const " & integer-to-text scratch & ")))\n\n" &
+   "  (func $read_byte (result i32) (local $b i32)\n" &
+   "    (if (i32.ge_u (global.get $rd_pos) (global.get $rd_len)) (then\n" &
+   "      (i32.store (i32.const 0) (i32.const " & integer-to-text scratch & "))\n" &
+   "      (i32.store (i32.const 4) (i32.const " & integer-to-text cce-in-buf-bytes & "))\n" &
+   "      (i32.store (i32.const 8) (i32.const 0))\n" &
+   "      (if (i32.ne (call $fd_read (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 8)) (i32.const 0))\n" &
+   "        (then (return (i32.const -1))))\n" &
+   "      (global.set $rd_len (i32.load (i32.const 8)))\n" &
+   "      (global.set $rd_pos (i32.const 0))\n" &
+   "      (if (i32.eqz (global.get $rd_len)) (then (return (i32.const -1))))))\n" &
+   "    (local.set $b (i32.load8_u (i32.add (i32.const " & integer-to-text scratch & ") (global.get $rd_pos))))\n" &
+   "    (global.set $rd_pos (i32.add (global.get $rd_pos) (i32.const 1)))\n" &
+   "    (local.get $b))\n\n" &
    "  (func $read_line_raw (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $b i32) (local $cap i32) (local $cc i32)\n" &
    "    (local.set $cap (i32.const 256))\n" &
@@ -2544,9 +3374,11 @@ Section: WASI Runtime Helpers
    "        (local.set $cc (if (result i32) (i32.lt_u (local.get $b) (i32.const " & integer-to-text cce-rev-entries & "))\n" &
    "          (then (i32.load8_u (i32.add (i32.const " & integer-to-text rev-base & ") (local.get $b))))\n" &
    "          (else (i32.const 0))))\n" &
-   "        (if (i32.lt_s (local.get $n) (local.get $cap)) (then\n" &
-   "          (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $cc))\n" &
-   "          (local.set $n (i32.add (local.get $n) (i32.const 1)))))))\n" &
+   "        (if (i32.ge_u (local.get $n) (local.get $cap)) (then\n" &
+   "          (drop (call $bump_alloc (local.get $cap)))\n" &
+   "          (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))))\n" &
+   "        (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $cc))\n" &
+   "        (local.set $n (i32.add (local.get $n) (i32.const 1)))))\n" &
    "      (br $rlc)))\n" &
    "    (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const 0))))\n" &
    "    (i32.store (local.get $buf) (local.get $n))\n" &
@@ -2671,16 +3503,18 @@ Section: WASI Runtime Helpers
    "    (i64.extend_i32_u (local.get $buf)))\n\n" &
    "  (func $read_serial_cce (param $ignored i64) (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $b i32) (local $cap i32)\n" &
-   "    (local.set $cap (i32.const 4194304))\n" &
+   "    (local.set $cap (i32.const 1048576))\n" &
    "    (local.set $buf (call $bump_alloc (i32.add (local.get $cap) (i32.const 4))))\n" &
    "    (local.set $n (i32.const 0))\n" &
    "    (block $rsd (loop $rsc\n" &
    "      (local.set $b (call $read_byte))\n" &
    "      (br_if $rsd (i32.lt_s (local.get $b) (i32.const 0)))\n" &
    "      (br_if $rsd (i32.eqz (local.get $b)))\n" &
-   "      (if (i32.lt_s (local.get $n) (local.get $cap)) (then\n" &
-   "        (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $b))\n" &
-   "        (local.set $n (i32.add (local.get $n) (i32.const 1)))))\n" &
+   "      (if (i32.ge_u (local.get $n) (local.get $cap)) (then\n" &
+   "        (drop (call $bump_alloc (local.get $cap)))\n" &
+   "        (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))))\n" &
+   "      (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $b))\n" &
+   "      (local.set $n (i32.add (local.get $n) (i32.const 1)))\n" &
    "      (br $rsc)))\n" &
    "    (i32.store (local.get $buf) (local.get $n))\n" &
    "    (i64.extend_i32_u (local.get $buf)))\n\n"
@@ -2698,7 +3532,7 @@ Section: WASI Runtime Helpers
   wat-rt-read-file (rev-base) =
    "  (func $read_file_uni (param $ignored i64) (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $b i32) (local $cap i32) (local $cc i32)\n" &
-   "    (local.set $cap (i32.const 4194304))\n" &
+   "    (local.set $cap (i32.const 1048576))\n" &
    "    (local.set $buf (call $bump_alloc (i32.add (local.get $cap) (i32.const 4))))\n" &
    "    (local.set $n (i32.const 0))\n" &
    "    (block $rfd (loop $rfc\n" &
@@ -2710,9 +3544,11 @@ Section: WASI Runtime Helpers
    "        (local.set $cc (if (result i32) (i32.lt_u (local.get $b) (i32.const " & integer-to-text cce-rev-entries & "))\n" &
    "          (then (i32.load8_u (i32.add (i32.const " & integer-to-text rev-base & ") (local.get $b))))\n" &
    "          (else (local.get $b))))\n" &
-   "        (if (i32.lt_s (local.get $n) (local.get $cap)) (then\n" &
-   "          (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $cc))\n" &
-   "          (local.set $n (i32.add (local.get $n) (i32.const 1)))))))\n" &
+   "        (if (i32.ge_u (local.get $n) (local.get $cap)) (then\n" &
+   "          (drop (call $bump_alloc (local.get $cap)))\n" &
+   "          (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))))\n" &
+   "        (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n)) (local.get $cc))\n" &
+   "        (local.set $n (i32.add (local.get $n) (i32.const 1)))))\n" &
    "      (br $rfc)))\n" &
    "    (i32.store (local.get $buf) (local.get $n))\n" &
    "    (i64.extend_i32_u (local.get $buf)))\n\n"
@@ -2734,18 +3570,27 @@ Section: WASI Runtime Helpers
  what follows with nowhere to put it back; a slurp to EOF has no such
  boundary, so it reads 64 KB straight into the destination and a 2 MB payload
  costs about 32 calls instead of two million. The buffer grows by bumping
- again rather than truncating at a fixed cap: consecutive `$bump_alloc` calls
- with nothing allocated between them are contiguous, so the reservation
- simply extends. The fixed 4 MB cap the text readers use silently DROPS what
- does not fit, which for an artifact is a truncation wearing the colour of a
- complete answer (L-SHORT).
+ again: consecutive `$bump_alloc` calls with nothing allocated between them
+ are contiguous, so the reservation simply extends. Nothing allocates inside
+ any of these read loops, which is what makes that sound here and unsound in
+ `$list_push`, where the same trick grew a list a CALLER still held.
 
-  wat-rt-read-file-raw : Text =
+  wat-rt-read-file-raw : Integer -> Text
+  wat-rt-read-file-raw (in-base) =
    "  (func $read_file_raw (param $ignored i64) (result i64)\n" &
    "    (local $buf i32) (local $n i32) (local $cap i32) (local $got i32)\n" &
    "    (local.set $cap (i32.const 1048576))\n" &
    "    (local.set $buf (call $bump_alloc (i32.add (local.get $cap) (i32.const 4))))\n" &
    "    (local.set $n (i32.const 0))\n" &
+   "    (local.set $got (i32.sub (global.get $rd_len) (global.get $rd_pos)))\n" &
+   "    (block $rpd (loop $rpc\n" &
+   "      (br_if $rpd (i32.eqz (local.get $got)))\n" &
+   "      (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $n))\n" &
+   "        (i32.load8_u (i32.add (i32.const " & integer-to-text in-base & ") (global.get $rd_pos))))\n" &
+   "      (global.set $rd_pos (i32.add (global.get $rd_pos) (i32.const 1)))\n" &
+   "      (local.set $n (i32.add (local.get $n) (i32.const 1)))\n" &
+   "      (local.set $got (i32.sub (local.get $got) (i32.const 1)))\n" &
+   "      (br $rpc)))\n" &
    "    (block $rrd (loop $rrc\n" &
    "      (if (i32.lt_u (i32.sub (local.get $cap) (local.get $n)) (i32.const 65536)) (then\n" &
    "        (drop (call $bump_alloc (local.get $cap)))\n" &
@@ -2765,6 +3610,7 @@ Section: WASI Runtime Helpers
    "    (local $p i32) (local $n i32) (local $dst i32) (local $i i32)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $lst)))\n" &
    "    (local.set $n (i32.load (local.get $p)))\n" &
+   "    (local.set $p (call $cx_list_base (local.get $lst)))\n" &
    "    (local.set $dst (call $bump_alloc (i32.add (local.get $n) (i32.const 4))))\n" &
    "    (i32.store (local.get $dst) (local.get $n))\n" &
    "    (local.set $i (i32.const 0))\n" &
@@ -2817,6 +3663,30 @@ Section: WASI Runtime Helpers
    "    (i64.reinterpret_f64 (local.get $v)))\n\n"
 
   wat-rt-extra : Text =
+   "  (func $__approx_eq (param $a i64) (param $b i64) (param $tol i64) (result i64)\n" &
+   "    (local $m i64) (local $x i64) (local $y i64) (local $d i64)\n" &
+   "    (local.set $x (local.get $a))\n" &
+   "    (local.set $m (i64.shr_s (local.get $x) (i64.const 63)))\n" &
+   "    (local.set $x (i64.sub (i64.xor (local.get $x) (i64.shr_u (local.get $m) (i64.const 1))) (local.get $m)))\n" &
+   "    (local.set $y (local.get $b))\n" &
+   "    (local.set $m (i64.shr_s (local.get $y) (i64.const 63)))\n" &
+   "    (local.set $y (i64.sub (i64.xor (local.get $y) (i64.shr_u (local.get $m) (i64.const 1))) (local.get $m)))\n" &
+   "    (local.set $d (i64.sub (local.get $x) (local.get $y)))\n" &
+   "    (local.set $m (i64.shr_s (local.get $d) (i64.const 63)))\n" &
+   "    (local.set $d (i64.sub (i64.xor (local.get $d) (local.get $m)) (local.get $m)))\n" &
+   "    (i64.extend_i32_u (i64.le_u (local.get $d) (local.get $tol))))\n\n" &
+   "  (func $__approx_eq32 (param $a i64) (param $b i64) (param $tol i32) (result i64)\n" &
+   "    (local $m i32) (local $x i32) (local $y i32) (local $d i32)\n" &
+   "    (local.set $x (i32.reinterpret_f32 (f32.demote_f64 (f64.reinterpret_i64 (local.get $a)))))\n" &
+   "    (local.set $m (i32.shr_s (local.get $x) (i32.const 31)))\n" &
+   "    (local.set $x (i32.sub (i32.xor (local.get $x) (i32.shr_u (local.get $m) (i32.const 1))) (local.get $m)))\n" &
+   "    (local.set $y (i32.reinterpret_f32 (f32.demote_f64 (f64.reinterpret_i64 (local.get $b)))))\n" &
+   "    (local.set $m (i32.shr_s (local.get $y) (i32.const 31)))\n" &
+   "    (local.set $y (i32.sub (i32.xor (local.get $y) (i32.shr_u (local.get $m) (i32.const 1))) (local.get $m)))\n" &
+   "    (local.set $d (i32.sub (local.get $x) (local.get $y)))\n" &
+   "    (local.set $m (i32.shr_s (local.get $d) (i32.const 31)))\n" &
+   "    (local.set $d (i32.sub (i32.xor (local.get $d) (local.get $m)) (local.get $m)))\n" &
+   "    (i64.extend_i32_u (i32.le_u (local.get $d) (local.get $tol))))\n\n" &
    "  (func $cx_min (param $a i64) (param $b i64) (result i64)\n" &
    "    (select (local.get $a) (local.get $b) (i64.lt_s (local.get $a) (local.get $b))))\n\n" &
    "  (func $cx_memset (param $p i64) (param $v i64) (param $n i64)\n" &
@@ -2832,8 +3702,8 @@ Section: WASI Runtime Helpers
 
   wat-runtime-funcs : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
   wat-runtime-funcs (tab) (t2) (out) (arity-base) (max-arity) (rev-base) (in-base) =
-   wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-disk & wat-rt-read-file rev-base & wat-rt-read-file-raw &
-   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
+   wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-disk & wat-rt-read-file rev-base & wat-rt-read-file-raw in-base &
+   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-f64-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-vec & wat-rt-real-modes & wat-rt-list-tail & wat-rt-char-class & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
 
 Section: Chapter Emission
 
@@ -2851,26 +3721,88 @@ Section: Chapter Emission
  shape and the pattern is taken from it: mark the heap, emit ONE definition,
  print it, restore the mark. Only a scalar may cross the restore.
 
-  wasm-defs-mention : WasmCtx, List IRDef, Integer, Text -> Boolean
-  wasm-defs-mention (ctx) (defs) (i) (needle) =
-   if i >= list-length defs then False
-   else let h = __heap-save
-   in let hit = text-contains (emit-wat-def ctx (list-at defs i)) needle
-   in let restored = __heap-restore h
-   in if hit then True else wasm-defs-mention ctx defs (i + 1) needle
+  wat-apply-head-is : IRExpr, Text -> Boolean
+  wat-apply-head-is (e) (n) =
+   when e
+    is IrName (nm) (ty) (sp) -> nm == n
+    is IrApply (f) (a) (ty) (sp) -> wat-apply-head-is f n
+    is otherwise -> False
 
- The header must be printed BEFORE the definitions and depends on whether
- any of them calls an `env` import, which is why the old code materialised
- the whole body first. Scanning the pieces separately answers the same
- question without holding them: a needle cannot span the joins, because
- every piece is newline-terminated and no emitter splits a token across one.
+  wat-expr-calls-name : IRExpr, Text -> Boolean
+  wat-expr-calls-name (e) (n) =
+   when e
+    is IrIntLit (v) (sp) -> False
+    is IrNumLit (v) (sp) -> False
+    is IrTextLit (s) (sp) -> False
+    is IrBoolLit (bv) (sp) -> False
+    is IrCharLit (cv) (sp) -> False
+    is IrName (nm) (ty) (sp) -> False
+    is IrBinary (op) (l) (r) (ty) (sp) -> wat-expr-calls-name l n | wat-expr-calls-name r n
+    is IrNegate (operand) (nty) (sp) -> wat-expr-calls-name operand n
+    is IrIf (c) (t) (el) (ty) (sp) -> wat-expr-calls-name c n | wat-expr-calls-name t n | wat-expr-calls-name el n
+    is IrLet (name) (ty) (val) (body) (sp) -> wat-expr-calls-name val n | wat-expr-calls-name body n
+    is IrApply (f) (a) (ty) (sp) -> wat-apply-head-is f n | wat-expr-calls-name f n | wat-expr-calls-name a n
+    is IrLambda (params) (body) (ty) (sp) -> wat-expr-calls-name body n
+    is IrList (elems) (ty) (sp) -> wat-list-calls-name elems n 0
+    is IrMatch (scrut) (branches) (ty) (sp) -> wat-expr-calls-name scrut n | wat-branches-call-name branches n 0
+    is IrAct (stmts) (ty) (sp) -> wat-stmts-call-name stmts n 0
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> wat-expr-calls-name body n
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> wat-expr-calls-name body n
+    is IrRecord (name) (fields) (ty) (sp) -> wat-fields-call-name fields n 0
+    is IrFieldAccess (rec) (field) (ty) (sp) -> wat-expr-calls-name rec n
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> wat-expr-calls-name rec n | wat-expr-calls-name val n
+    is IrFork (body) (ty) (sp) -> wat-expr-calls-name body n
+    is IrAwait (task) (ty) (sp) -> wat-expr-calls-name task n
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> wat-stmts-call-name body n 0 | wat-stmts-call-name fb n 0 | wat-stmts-call-name fail-stmts n 0
+    is IrError (msg) (ty) (sp) -> False
 
-  wasm-mention-any : WasmCtx, List IRDef, Text, Text, Text, Text -> Boolean
-  wasm-mention-any (ctx) (defs) (runtime) (types-text) (entry) (needle) =
+  wat-list-calls-name : List IRExpr, Text, Integer -> Boolean
+  wat-list-calls-name (xs) (n) (i) =
+   if i >= list-length xs then False
+   else if wat-expr-calls-name (list-at xs i) n then True
+   else wat-list-calls-name xs n (i + 1)
+
+  wat-branches-call-name : List IRBranch, Text, Integer -> Boolean
+  wat-branches-call-name (bs) (n) (i) =
+   if i >= list-length bs then False
+   else if wat-expr-calls-name ((list-at bs i).guard) n then True
+   else if wat-expr-calls-name ((list-at bs i).body) n then True
+   else wat-branches-call-name bs n (i + 1)
+
+  wat-stmts-call-name : List IRActStmt, Text, Integer -> Boolean
+  wat-stmts-call-name (ss) (n) (i) =
+   if i >= list-length ss then False
+   else let hit = when (list-at ss i)
+    is IrDoBind (name) (ty) (val) (sp) -> wat-expr-calls-name val n
+    is IrDoExec (e) (sp) -> wat-expr-calls-name e n
+   in if hit then True else wat-stmts-call-name ss n (i + 1)
+
+  wat-fields-call-name : List IRFieldVal, Text, Integer -> Boolean
+  wat-fields-call-name (fs) (n) (i) =
+   if i >= list-length fs then False
+   else if wat-expr-calls-name ((list-at fs i).value) n then True
+   else wat-fields-call-name fs n (i + 1)
+
+ `$on_key_import` has no producer: no arm of this emitter emits it, so its
+ flag is asked with the empty name and answers False without a walk. Whoever
+ adds the `on-key` arm must replace `wasm-no-builtin` at the call site with
+ the builtin's name, or the module calls an import it never declared.
+
+  wasm-no-builtin : Text = ""
+
+  wat-defs-call-name : List IRDef, Text, Integer -> Boolean
+  wat-defs-call-name (defs) (n) (i) =
+   if n == wasm-no-builtin then False
+   else if i >= list-length defs then False
+   else if wat-expr-calls-name ((list-at defs i).body) n then True
+   else wat-defs-call-name defs n (i + 1)
+
+  wasm-mention-any : List IRDef, Text, Text, Text, Text, Text -> Boolean
+  wasm-mention-any (defs) (runtime) (types-text) (entry) (needle) (builtin) =
    if text-contains runtime needle then True
    else if text-contains types-text needle then True
    else if text-contains entry needle then True
-   else wasm-defs-mention ctx defs 0 needle
+   else wat-defs-call-name defs builtin 0
 
   wasm-stream-defs : WasmCtx, List IRDef, Integer -> [Console] Nothing
   wasm-stream-defs (ctx) (defs) (i) =
@@ -2891,7 +3823,7 @@ Section: Chapter Emission
   emit-wasm-chapter-stream : IRChapter, List ATypeDef -> [Console] Nothing
   emit-wasm-chapter-stream (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let raw-strings = collect-strings-defs (m.defs) 0 []
+   in let raw-strings = wat-seed-entry-strings (m.defs) type-defs (collect-strings-defs (m.defs) 0 [])
    in let strings = strtab-assign-offsets raw-strings 0 1024 []
    in let cce-tab-base = strtab-end-offset strings
    in let cce-t2-base = cce-tab-base + cce-tab-bytes
@@ -2901,13 +3833,13 @@ Section: Chapter Emission
    in let fnarity-base = cce-tab-base + cce-tables-bytes
    in let max-arity = wat-fn-type-ceiling arities
    in let heap-start = fnarity-base + list-length arities
-   in let ctx = WasmCtx { arities = arities, strings = strings, type-defs = type-defs, bound = [] }
+   in let ctx = WasmCtx { arities = arities, strings = strings, type-defs = type-defs, bound = [], scrut-depth = 0 }
    in let runtime = wat-runtime-funcs cce-tab-base cce-t2-base cce-out-base fnarity-base max-arity cce-rev-base cce-in-base
    in let data-text = emit-data-sections strings 0
    in let types-text = emit-wat-type-defs type-defs 0 & wat-eq-funcs type-defs 0
-   in let entry = wat-emit-entry (m.defs)
-   in let needs-blit = wasm-mention-any ctx (m.defs) runtime types-text entry "$blit_framebuf"
-   in let needs-key = wasm-mention-any ctx (m.defs) runtime types-text entry "$on_key_import"
+   in let entry = wat-emit-entry ctx (m.defs)
+   in let needs-blit = wasm-mention-any (m.defs) runtime types-text entry "$blit_framebuf" "blit-framebuf"
+   in let needs-key = wasm-mention-any (m.defs) runtime types-text entry "$on_key_import" wasm-no-builtin
    in let header = wat-runtime-header heap-start needs-blit needs-key
    in act
     print-uni header
@@ -2938,17 +3870,109 @@ Section: Chapter Emission
                else ""
    in ex & wat-emit-exports defs (i + 1)
 
-  wat-emit-entry : List IRDef -> Text
-  wat-emit-entry (defs) = wat-emit-entry-loop defs 0 & wat-emit-exports defs 0
+ An `opening` that answers a CONSTRUCTOR prints `Name field field`, one space
+ before each field and a newline at the end, which is `emit-opening-print-sum`
+ (`X86_64Chapter.codex:242`). The entry printer needs the type-defs to find the
+ ctors and the string table to name them, which is why this pair takes the ctx:
+ the ctor names appear in no expression, so `wat-seed-entry-strings` puts them
+ in the table before offsets are assigned or `wat-strtab-ref` would refuse them.
 
-  wat-emit-entry-loop : List IRDef, Integer -> Text
-  wat-emit-entry-loop (defs) (i) =
+  wat-entry-ret-type : List IRDef, Integer -> CodexType
+  wat-entry-ret-type (defs) (i) =
+   if i >= list-length defs then NothingTy
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then
+       (if list-length (d.params) == 0 then strip-fun-args (d.type-val) else NothingTy)
+      else wat-entry-ret-type defs (i + 1)
+
+ `wat-type-name` answers for a `ConstructedTy`, a `TypeCon` and a `RecordTy`,
+ which is every case its own caller has; an `opening` returning a variant
+ arrives as a `SumTy` and it answered the empty string, so the printer below
+ was emitted for no program until this existed. Kept separate rather than
+ widening `wat-type-name`, whose callers are about record FIELDS.
+
+  wat-entry-type-name : CodexType -> Text
+  wat-entry-type-name (ty) =
+   when ty
+    is SumTy (n) (args) (ctors) -> n.value
+    is ConstructedTy (n) (args) -> n.value
+    is TypeCon (n) -> n.value
+    is RecordTy (n) (args) (fields) -> n.value
+    is UnitTy (n) (inner) -> wat-entry-type-name inner
+    is EffectfulTy (effs) (scopes) (ret) -> wat-entry-type-name ret
+    is otherwise -> ""
+
+  wat-ctors-of : List ATypeDef, Text, Integer -> List AVariantCtorDef
+  wat-ctors-of (tds) (name) (i) =
+   if text-length name == 0 then []
+   else if i >= list-length tds then []
+   else when list-at tds i
+    is AVariantTypeDef (n) (tp) (cs) (sp) -> if n.value == name then cs else wat-ctors-of tds name (i + 1)
+    is otherwise -> wat-ctors-of tds name (i + 1)
+
+  wat-seed-ctor-names : List AVariantCtorDef, Integer, List StringEntry -> List StringEntry
+  wat-seed-ctor-names (cs) (i) (acc) =
+   if i >= list-length cs then acc
+   else wat-seed-ctor-names cs (i + 1) (strtab-add acc ((list-at cs i).name.value))
+
+  wat-seed-entry-strings : List IRDef, List ATypeDef, List StringEntry -> List StringEntry
+  wat-seed-entry-strings (defs) (tds) (acc) =
+   let cs = wat-ctors-of tds (wat-entry-type-name (wat-entry-ret-type defs 0)) 0
+   in if list-length cs == 0 then acc
+      else wat-seed-ctor-names cs 0 (strtab-add acc " ")
+
+ A real in a MODE spells its own head: `real-approx`, `real-trapping` and
+ `real-saturating` are separate names rather than `Real` applied to a modifier,
+ so a test for `Real` alone renders three of the four fields of
+ `ops/real-mode-fields` as integers. Measured off the emitted heads, not
+ predicted. `wat-eq-field-cmp` tests `Real` alone and so compares a moded real
+ FIELD as an i64; nothing reports it and it is left alone, recorded in
+ `plugs-backlog.md`.
+
+  wat-head-is-real : Text -> Boolean
+  wat-head-is-real (h) =
+   h == "Real" | h == "real-approx" | h == "real-trapping" | h == "real-saturating"
+
+  wat-entry-field-print : Text, Text -> Text
+  wat-entry-field-print (head) (load) =
+   if head == "Text" then "(call $wasi_print_text " & load & ")"
+   else if wat-head-is-real head then "(call $wasi_print_text (call $__f64_to_text " & load & "))"
+   else if head == "Boolean" then "(call $wasi_print_text (call $bool_to_text " & load & "))"
+   else "(call $wasi_print_text (call $i64_to_text " & load & "))"
+
+  wat-entry-ctor-fields : WasmCtx, List ATypeExpr, Integer -> Text
+  wat-entry-ctor-fields (ctx) (fs) (i) =
+   if i >= list-length fs then ""
+   else let load = "(i64.load (i32.add (i32.wrap_i64 (local.get $__r)) (i32.const " & integer-to-text (8 + i * 8) & ")))"
+   in "      (call $wasi_print_text " & wat-strtab-ref (ctx.strings) " " & ")\n" &
+      "      " & wat-entry-field-print (wat-atype-head-name (list-at fs i)) load & "\n" &
+      wat-entry-ctor-fields ctx fs (i + 1)
+
+  wat-entry-ctor-arms : WasmCtx, List AVariantCtorDef, Integer -> Text
+  wat-entry-ctor-arms (ctx) (cs) (i) =
+   if i >= list-length cs then ""
+   else let c = list-at cs i
+   in "    (if (i64.eq (i64.load (i32.wrap_i64 (local.get $__r))) (i64.const " & integer-to-text i & ")) (then\n" &
+      "      (call $wasi_print_text " & wat-strtab-ref (ctx.strings) (c.name.value) & ")\n" &
+      wat-entry-ctor-fields ctx (c.fields) 0 &
+      "    ))\n" &
+      wat-entry-ctor-arms ctx cs (i + 1)
+
+  wat-emit-entry : WasmCtx, List IRDef -> Text
+  wat-emit-entry (ctx) (defs) = wat-emit-entry-loop ctx defs 0 & wat-emit-exports defs 0
+
+  wat-emit-entry-loop : WasmCtx, List IRDef, Integer -> Text
+  wat-emit-entry-loop (ctx) (defs) (i) =
    if i >= list-length defs then ""
    else let d = list-at defs i
    in if d.name == opening-entry-point then
     if list-length (d.params) == 0 then
      let ret-type = strip-fun-args (d.type-val)
-     in let print-fn = if wat-is-text-type ret-type then "$wasi_print_text" else "$wasi_print_i64"
+     in let print-fn = if wat-is-text-type ret-type then "$wasi_print_text"
+          else if wat-is-real-type ret-type then "$wasi_print_text"
+          else "$wasi_print_i64"
+     in let print-arg = if wat-is-real-type ret-type then "(call $__f64_to_text (local.get $__r))"
+          else "(local.get $__r)"
      in let is-void = when ret-type
           is NothingTy -> True
           is ProofTy -> True
@@ -2957,17 +3981,25 @@ Section: Chapter Emission
           is UnitTy (n) (inner) -> True
           is EffectfulTy (effs) (scopes) (r) -> when r is NothingTy -> True is VoidTy -> True is UnitTy (n2) (inner2) -> True is otherwise -> False
           is otherwise -> False
+     in let ctors = wat-ctors-of (ctx.type-defs) (wat-entry-type-name ret-type) 0
      in if is-void then
       "  (func $__start (drop (call $" & wat-sanitize opening-entry-point & ")))\n" &
+      "  (export \"_start\" (func $__start))\n"
+     else if list-length ctors > 0 then
+      "  (func $__start\n" &
+      "    (local $__r i64)\n" &
+      "    (local.set $__r (call $" & wat-sanitize opening-entry-point & "))\n" &
+      wat-entry-ctor-arms ctx ctors 0 &
+      "    (call $wasi_print_newline))\n" &
       "  (export \"_start\" (func $__start))\n"
      else
       "  (func $__start\n" &
       "    (local $__r i64)\n" &
       "    (local.set $__r (call $" & wat-sanitize opening-entry-point & "))\n" &
-      "    (call " & print-fn & " (local.get $__r))\n" &
+      "    (call " & print-fn & " " & print-arg & ")\n" &
       "    (call $wasi_print_newline))\n" &
       "  (export \"_start\" (func $__start))\n"
     else ""
-   else wat-emit-entry-loop defs (i + 1)
+   else wat-emit-entry-loop ctx defs (i + 1)
 
 Page 1

@@ -1,0 +1,85 @@
+Chapter: HexGameWasm
+  cites Games chapter HexGame
+  cites Foreword chapter List
+
+ The browser interface for Hex, on the handle contract in games-backlog.md
+ GAME-11. A hundred and twenty-one cells at two bits each is 242 bits, so
+ the page holds the board's address.
+
+ `hex-place` writes the stone with `list-set-at`, which mutates in place, so
+ `hx-wasm-place` copies first. The winning-move search borrows the board the
+ same way `dots-find-completing-move` does, setting a cell, asking whether
+ that wins, and setting it back; the grader measures the board across a
+ search rather than reading the restore as a promise (GAME-13).
+
+ Hex cannot be drawn. Once the board is full one side has a connecting
+ path, which is what makes an independent path check a real oracle here
+ rather than a restatement of the engine.
+
+ We say:
+
+Section: Copying
+
+  hx-copy-cells : List Integer, Integer, List Integer -> List Integer
+  hx-copy-cells (src) (i) (acc) =
+    if i >= 121 then acc
+    else hx-copy-cells src (i + 1) (list-push acc (list-at src i))
+
+  hx-copy-board : HexBoard -> HexBoard
+  hx-copy-board (b) =
+    HexBoard {
+      cells = hx-copy-cells (b.cells) 0 [],
+      current-player = b.current-player,
+      game-over = b.game-over,
+      winner = b.winner,
+      moves-made = b.moves-made
+    }
+
+Section: The Browser Interface
+
+  hx-wasm-new : HexBoard
+  hx-wasm-new = hex-new
+
+  hx-wasm-cell : HexBoard, Integer -> Integer
+  hx-wasm-cell (b) (i) =
+    if i < 0 then (-1)
+    else if i >= 121 then (-1)
+    else list-at (b.cells) i
+
+  hx-wasm-cur : HexBoard -> Integer
+  hx-wasm-cur (b) = b.current-player
+
+  hx-wasm-done : HexBoard -> Integer
+  hx-wasm-done (b) = if b.game-over then 1 else 0
+
+  hx-wasm-winner : HexBoard -> Integer
+  hx-wasm-winner (b) = b.winner
+
+  hx-wasm-moves : HexBoard -> Integer
+  hx-wasm-moves (b) = b.moves-made
+
+  hx-wasm-can : HexBoard, Integer -> Integer
+  hx-wasm-can (b) (i) =
+    if b.game-over then 0
+    else if i < 0 then 0
+    else if i >= 121 then 0
+    else if list-at (b.cells) i /= 0 then 0
+    else 1
+
+  hx-wasm-place : HexBoard, Integer -> HexBoard
+  hx-wasm-place (b) (i) =
+    if hx-wasm-can b i == 0 then b
+    else hex-place (hx-copy-board b) (i / 11) (i - (i / 11) * 11)
+
+  hx-wasm-ai : HexBoard -> Integer
+  hx-wasm-ai (b) =
+    if b.game-over then (-1)
+    else hex-ai-move b
+
+  hx-wasm-connected : HexBoard, Integer -> Integer
+  hx-wasm-connected (b) (player) =
+    if player < 1 then 0
+    else if player > 2 then 0
+    else if hex-check-win (b.cells) player then 1 else 0
+
+Page 1

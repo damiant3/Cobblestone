@@ -10,7 +10,7 @@ param(
     # build-output/bare-metal/Codex.cdx and therefore whichever kernel ran
     # LAST. Every caller inside a gate passes this explicitly.
     [string]$Kernel = '',
-    [int]$Jobs = 4
+    [int]$Jobs = 8
 )
 
 Set-StrictMode -Version Latest

@@ -18,7 +18,8 @@
 #            the page's links are plain relative paths either way.
 #
 # build.ps1 assembles. serve.ps1 runs the bundle. Flags:
-#   -Page    regenerate landing.html only, skipping the expensive compile page
+#   -Page    regenerate landing.html only, skipping the games and the
+#            expensive compile page
 #   -Repl    build the REPL's Python venv (opt-in; touches the network)
 [CmdletBinding()]
 param(
@@ -97,11 +98,32 @@ if ($Repl) {
 }
 
 if ($Page) {
-    Write-Host "[landing] -Page given; skipping compile/."
+    Write-Host "[landing] -Page given; skipping games/ and compile/."
     exit 0
 }
 
-# --- 3. compile/ : the wasm self-compile page -------------------------
+# --- 3. games/ : one wasm module per playable game --------------------
+# The pages under web/games are tracked source; the modules beside them are
+# build output (.p4ignore) and are produced here, so the bundle is
+# reproducible from the depot rather than from whoever last ran the game
+# build. A game that fails to build is a PARITY finding for the wasm plug
+# lane, not something to route around: the build stops and names it.
+# The list is READ OUT OF build-wasm.ps1's own $Games table rather than
+# copied here. A second copy is how the bundle ends up shipping the module
+# for a game the arcade no longer lists, or missing one it does, and neither
+# shows up until somebody opens the page.
+$gameBuild = Join-Path $Repo 'apps\games\build-wasm.ps1'
+$GamesWasm = [regex]::Matches((Get-Content $gameBuild -Raw), "(?m)^    '(?<g>[a-z0-9]+)' = @\{") |
+    ForEach-Object { $_.Groups['g'].Value } | Sort-Object
+if ($GamesWasm.Count -lt 1) { Write-Host "[landing] FAIL: no games found in $gameBuild"; exit 8 }
+Write-Host "[landing] $($GamesWasm.Count) game modules to build."
+foreach ($g in $GamesWasm) {
+    Write-Host "[landing] building the $g module ..."
+    & pwsh -NoProfile -File (Join-Path $Repo 'apps\games\build-wasm.ps1') -Game $g -Kernel $Kernel
+    if ($LASTEXITCODE -ne 0) { Write-Host "[landing] FAIL: $g wasm build"; exit 8 }
+}
+
+# --- 4. compile/ : the wasm self-compile page -------------------------
 $pageSrc = Join-Path $Repo 'codex\plugs\wasm\build-output\page'
 Write-Host "[landing] building the wasm self-compile page ..."
 & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\build-page.ps1') -Kernel $Kernel
@@ -145,6 +167,9 @@ Write-Host ''
 Write-Host '[landing] assembled:'
 foreach ($f in (Get-ChildItem $Web -File | Sort-Object Name)) {
     '  {0,-22} {1,10:N0}' -f $f.Name, $f.Length
+}
+foreach ($f in (Get-ChildItem (Join-Path $Web 'games') -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    '  games/{0,-15} {1,10:N0}' -f $f.Name, $f.Length
 }
 foreach ($f in (Get-ChildItem $dst -File | Sort-Object Name)) {
     '  compile/{0,-13} {1,10:N0}' -f $f.Name, $f.Length

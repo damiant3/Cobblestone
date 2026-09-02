@@ -192,6 +192,21 @@ conflict shown. The reading above holds for files you did not write.
 `0 conflicting` on a skipped file means `-am` merges it without loss. Never
 bare-`resolve -at` a merge containing a file you changed yourself (P-BULKAT).
 
+**Merge down with your CL SHELVED AND REVERTED, not merely shelved (P-OPENMERGE,
+red 2026-09-01).** `p4 merge` integrates into a file that is already open, in
+the CL that holds it. So a merge-down while your CL is open lands main's
+change to that file INSIDE your CL, `p4 submit -d "Merge down"` (the default
+CL) does not carry it, the shelf you then refresh conflicts with the pending
+integrate, and the dance's `p4 revert -c <CL>` throws the integrated content
+away: the stream reads as merged (the docs went through) while the source file
+main changed is not. Measured on CL 20975 under the token: the gate that
+launched certified a stream missing `Lowering.codex#71`, was killed at two
+minutes, and cost a second merge and launch. The order that works: `shelve -f`,
+`revert -c <CL>`, THEN `merge -S ... -r`, `resolve -am`, submit the default CL,
+then `unshelve -s <CL> -c <CL>`, `sync`, `resolve -am`, `shelve -f` again.
+`CoordinationProtocol.md`'s example session already has the revert before the
+merge for this reason; the shelve alone is not the protection.
+
 ### Splitting a large CL
 
 ```powershell
@@ -247,7 +262,7 @@ the same command; reach for a different command (L-FALSIF).
 | P-CLOBBER (L) | **The worst one here.** A CL holds edits plus new files. After the gate dance the edits land and the adds do not. `p4 submit` reports success, `p4 describe` shows only edits, the new files sit on disk looking fine and are in no depot. The tell is `Can't clobber writable file` printed under a line that says "unshelved, opened for add". **The tell is a per-client option and the fleet is SPLIT** -- `noclobber` clients refuse and print it; `clobber` clients do not refuse, they OVERWRITE the writable file silently, so an agent there meets no message, sees the add open normally, and concludes this row is stale. Measured 2026-08-15: `clobber` on the reek and val DEV clients; `noclobber` on the blu, fester and red dev clients, on every `*_main` client, and on `BigWhite_Codex_main`. | `p4 client -o \| Select-String Options` tells you which you are, and neither is the safe half: **noclobber loses an ADD loudly, clobber loses an EDIT silently** -- on a clobber client `p4 sync -f` and `p4 unshelve` will replace a writable on-disk file with depot content, no message, no refusal, uncommitted work gone. Never wave past the message if you get one. Delete the on-disk copy first, or `p4 unshelve -f`, then confirm `p4 opened -c <CL>` lists every file. A dropped add is invisible to every other check: it is not a conflict, not a stale revision, and absence has no diff -- and the preflight will not fail on it (section header). `p4 status` is what sees it. Verify against the shelf before deleting (see P-PRINTEOL). **`p4 copy` loses INTEGRATES to the same refusal** (2026-08-26, main 19963: a copy-up titled "six fixes" landed the tests and not the emitter, and the mirror push shipped the claim; found by an outside reader, repaired 19980). After every copy-up, account the submitted CL's file list against the source CL's in BOTH directions (P-RESURRECT's check) before writing any claim on it. |
 | P-PRINTEOL (L) | You hash the on-disk file against its `p4 print -o` copy to check they match, and it reports a mismatch that is not there: `print -o` TRANSLATES line endings on a `text` file. | Normalise CRLF to LF on **BOTH** sides before comparing: `([IO.File]::ReadAllText($f) -replace "`r`n","`n")` applied to each. The `-replace` form appears in section 4.6, which normalises only the expected side because that is what the test runner does -- copying it as-is fixes one side and leaves the mismatch. **Do not follow this row into section 4.2**, which the row used to point at: 4.2 is the byte-level line-ending REPAIR and it WRITES the file, so sending P-CLOBBER's inspect-before-you-delete check through it modifies the thing you were inspecting. A BINARY file compares exact through `print -o`, so binaries matching while only text files "differ" is the tell. |
 | P-INTEGRATE (L) | You merge down, `resolve -at`, edit the resolved file, verify on disk, submit -- and the depot revision comes back WITHOUT your edit. Downstream tell: `p4 copy` answers "File(s) up-to-date" while the files plainly differ. The open action is `integrate`, not `edit`, and `-at` also leaves the file read-only. | `p4 edit <file>` before writing to a file open only for integrate, then `p4 print` the revision you created and grep it for your own text. **A REBUILT BINARY is an edit** and is the flavour that gets missed: after any merge-down touching a build output, `p4 fstat -Ol` both streams before copying up. Identical digests across the merge boundary mean your build did not land. Perforce's own answer is interactive `p4 resolve` (`e` to edit the merged result, `ae` to accept it), which records the edit AS the resolve so nothing is left as a bare integrate -- but **agents in this harness cannot drive it**, since it wants a terminal and tool stdin is the null device. That is why the `p4 edit` recipe exists. State which one you used. |
-| P-BULKAT | A bare `p4 resolve -at` silently reverts your own submitted work, inside a CL called "merge down". The resolve succeeds, the submit succeeds, the file goes back to what it was. | `-at` is for files untouched on YOUR side, named individually. Use `p4 resolve -as` to partition (section 2), `-am` on anything it skips. The tell that you needed `-am` is that the file appears in your own recent submits. |
+| P-BULKAT | A bare `p4 resolve -at` silently reverts your own submitted work, inside a CL called "merge down". The resolve succeeds, the submit succeeds, the file goes back to what it was. | `-at` is for files untouched on YOUR side, named individually. Use `p4 resolve -as` to partition (section 2), `-am` on anything it skips. The tell that you needed `-am` is that the file appears in your own recent submits. **AFTERWARDS THE TELL INVERTS AND READS AS REASSURANCE, so check for it by name: the eaten file goes MISSING from your copy-up preview, and comparing your stream against main answers `identical`.** Of course it does; the revert made both sides agree on the older content. Measured 2026-09-01 (val, main 20910): a module count submitted in 20907 was reverted by 20908's bare `-at`, `filelog` recorded #59 as a wholesale `copy from //Codex/main/...#76`, and the copy-up in 20909 then listed 15 of the CL's 16 files with no warning anywhere. `p4 filelog` is the instrument that answers plainly -- a merge-down revision reading `copy from` rather than `merge from` on a file you edited is the revert, in one line. |
 | P-ATLAZY | You `p4 resolve -at` a shared doc to take main's version, hand-edit your own paragraphs back on top, and submit. The submit reports the file as integrated. The depot gets main's version WITHOUT your edits, and `p4 status` afterwards says "reconcile to edit". `-at` records the result as identical to the source revision, so the submit lazy-copies that revision and never reads your disk file. Measured twice on `GitHubUpdate43.md`, 2026-08-15. | Do not edit a `-at`-resolved file before submitting. Submit the merge-down first, THEN `p4 edit <file>` and submit the edits as their own CL. Verify with `p4 print` of the depot head, not the workspace copy. |
 | P-REGRESS (L) | After a fleet merge-down, definitions you landed hours ago are GONE, the merge resolved `0 yours + N theirs + 0 conflicting`, and nothing looked wrong until a gate went red on names you know you shipped. A later merge can credit your copy-up as already integrated and offer an OLDER sibling revision as "theirs". "0 yours" can mean the merge base swallowed your side. | After any merge-down touching files you recently landed, grep ONE key definition per recent CL before submitting the merge. Repair: `p4 print` main head over the local file, `p4 sync`, `p4 resolve -ay`, resubmit. |
 | P-BACKWARD | You shelve, merge down, unshelve, and a file you never touched in that CL has gone BACKWARDS. No conflict, no warning. A shelf holds file CONTENT, not a diff, so it carries the pre-merge version of everything in it. | After unshelving onto a moved stream, diff the files you did NOT expect to change. Repair: `p4 revert <f>`, `p4 sync -f <f>`, `p4 edit <f>`, redo the edit on head. |
@@ -721,6 +736,43 @@ QEMU fallback, written up in `docs/PM/Done/GitHubUpdates/GitHubUpdate41.md`.
    survives inside Perforce.
 4. **Gate it like your own work**, because it is yours now. "It came from a PR"
    is not a provenance that substitutes for a gate.
+
+**MEASURE WHAT ALREADY LANDED BEFORE YOU RE-APPLY ANY OF IT.** Step 1 says a PR
+can be behind; this is the check, and skipping it costs a day. PR 98 (Steve
+Howell, the zig prelude tree-shake) arrived as five files and **one third of it
+was already in the depot**: its `Lowering.codex` hunk was fester 20398, closed
+as already-fixed on PR 96 hours before the PR was opened, and its first commits
+had come in with root's absorb of PR 95 at 20500, so the PR's own base had
+drifted under us while it sat. Applying the diff would have reapplied a landed
+hunk and fought a file blu had moved twice since. Three checks, each seconds:
+
+```powershell
+p4 files //Codex/main/<each file the PR ADDS>        # already there?
+p4 filelog -m 6 //Codex/main/<each file it EDITS>    # who moved it, and when
+# and hash the PR's BASE blob against the depot file to see if the base drifted:
+gh api "repos/damiant3/Cobblestone/contents/<path>?ref=$(gh pr view <n> --repo damiant3/Cobblestone --json baseRefOid --jq .baseRefOid)" --jq .content
+```
+
+**When the base has drifted, take the PR's HEAD revision wholesale rather than
+applying its diff** -- but only after confirming the depot-only content is the
+PR's own superseded work and not a peer's independent change. Diff base against
+depot, read what is there, and grep the PR head for the peer's marker (for PR 98
+that was root's `zig-postlude-banner`) and require it to SURVIVE. Taking head
+without that check silently reverts whoever landed in between.
+
+**GitHub blobs are LF and the depot is CRLF.** Normalise on the way in or
+`p4 diff -ds` reports the whole file as changed (P-EOL, recipe 4.2). `gh` works
+against `damiant3/Cobblestone` (its base branch is `master`) even when the
+github MCP server is failing auth, which it was on 2026-08-28.
+
+**Whether it is seed-affecting is a MEASUREMENT, not a directory question**
+(`DevelopersRulebook.md` 7). PR 98 added a `codex/foreword/` chapter, which
+reads as seed-affecting and is not: the compiler unit walks cites from
+`codex/compiler`, and only the zig plug cited it. Building the unit and grepping
+for the QUIRE-PREFIXED name turned a token-and-gate arc into an untokened plugs
+CL. **And adding a file under `codex/foreword/` moves seven `check-doc-counts`
+claims.** That check is a gate preflight, so a stale count reds every lane's
+merge-down: re-measure in the SAME copy-up (L-COUNT).
 
 **Keep your changes separable from theirs and say what each is for.** The
 standard is Update 41's sentence about PR 63: *"The design and the first working

@@ -39,26 +39,17 @@ substitute your own init sequence. The skill is at
 If the user's first message asks you to initialize, run `/init`. If
 you are unsure whether init has been done, run `/init`.
 
-### The reading model (redesigned 2026-07-28, Damian's direction)
+### The reading model (2026-07-28, Damian's direction)
 
-Init used to read ~190k tokens of documents directly into context
-before any work started; measured, one session arrived at 59 per cent
-spent after one unit of work. Init now keeps in direct context only
-what changes behavior at session start (~17k: memory, the lesson index
-`docs/PM/Active/Stories/LESSONS.md`, three haiku-agent summaries of
-CurrentPlan + Perforce process + active designs, Perforce state).
-Everything
-else moved to an ON-DEMAND CONTRACT: the skill's Step 5 table maps
-each subject to the doc that is mandatory reading BEFORE touching that
-subject (`.codex` source -> DevelopersGuide; allocators ->
-ArchitectsSketchbook; builds/VM -> OperatorsManual; tests ->
-ExaminersAssay via Grep; and so on). The stories in
-`docs/PM/Active/Stories/` are no longer read wholesale: LESSONS.md
-carries one id per lesson, and **the story behind an id is read in
-full the moment that lesson becomes load-bearing for your work** --
-that rule is what keeps the summaries-rot failure from coming back.
-The reference docs did not move and are not summarized; only WHEN they
-are read changed.
+Init keeps in direct context only what changes behavior at session start:
+memory, the lesson index `docs/PM/Active/Stories/LESSONS.md`, three
+haiku-agent summaries (CurrentPlan, Perforce process, active designs),
+and Perforce state. Everything else is an ON-DEMAND CONTRACT: the skill's
+Step 5 table maps each subject to the doc that is mandatory reading
+BEFORE touching that subject. Stories are not read wholesale: **the story
+behind a LESSONS id is read in full the moment that lesson becomes
+load-bearing for your work** -- that rule is what keeps the
+summaries-rot failure from coming back.
 
 ## Document Lifecycle
 
@@ -83,15 +74,10 @@ verified: the reference docs (`OperatorsManual`, `ExaminersAssay`,
 `DevelopersGuide`, `HardwareSitting`), the design that owns the
 capability, `LESSONS.md` for a lesson, or the relevant backlog for a gap.
 
-That is the fix for two failures the old arrangement kept producing. A
-durable fact parked in a status file is read once at init and then
-reasoned about from memory instead of re-read. And an outbox entry was
-"deleted by the addressee" from the AUTHOR's file in the author's stream,
-which is a cross-workspace write on somebody else's document, so it
-almost never happened: a true, unfixed finding about a switch that does
-not exist sat in one outbox for a day and reached nobody. An entry
-addressed "for the fleet" had no addressee at all and could never be
-cleared by anyone.
+That closes the two failures the old arrangement kept producing: a
+durable fact parked in a status file is read once and then reasoned about
+from memory instead of re-read, and an outbox entry needed a
+cross-workspace write to clear, so verified findings sat unread.
 
 `docs/PM/CurrentPlan.md` is the shape and the priority order.
 `docs/Designs/Active/` means **live work only**. `docs/Designs/Done/` is
@@ -274,12 +260,17 @@ gate locally per step; per step, that difference is the whole cost of the
 arc.
 
 Both figures are measurements from one box on one day, not properties of
-the gate. Re-measure before quoting them (L-COUNT): the full gate was 517 s
-on 2026-08-06 and neither number has ever gone down on its own.
+the gate. Re-measure before quoting them (L-COUNT).
 
 Every change that touches codegen must pass the gate before it is done.
 If the gate is red, shelve changes, notify Damian, and re-evaluate. To
 check one thing, compile and run that one test -- never a sweep.
+
+**Batch your gates (Damian, 2026-09-01).** A step is verified by compiling
+it and running the tests it touches; the `-Internal` gate runs ONCE per
+batch of ready steps, at the end, under the one token that lands the batch.
+Ask for the token less and land more per shot. The mechanics are
+`CoordinationProtocol.md`, "A many-CL arc takes ONE token, at the end".
 
 **Two traps sit in front of every one of those runs, and neither is visible
 at session start.** Both are documented, both have already produced a wrong
@@ -310,20 +301,26 @@ row for `OperatorsManual.md`:
   exists to name. (`OperatorsManual.md` seed management;
   `DevelopersRulebook.md` on reachability deciding a seed, not directory.)
 
-**Run every parallel harness at `-Jobs 4`.** Damian's ruling, 2026-08-27,
-superseding the 2026-08-02 `-Jobs 8` standard: batteries, sweeps, cross
-batteries, release proofs, all of it. **The condition that justifies 4 is
-NAMED so the default dies with its condition instead of outliving it**,
-which is how the last low-jobs literal went wrong: this box holds 15.8 GiB
-and the heavy phases boot 3072 MB guests, so 8 slots overcommit host RAM
-and kill guests with a DIFFERENT plausible culprit each run -- it reads as
-codegen and it is RAM (`OperatorsManual.md` "The compile batch asks for
-12 GB of guest RAM, and a short box reports it as a CODEGEN failure",
-blu main 20370). If the box grows RAM, re-measure and re-raise; do not
-carry 4 forward past its condition (L-COUNT). Script defaults follow the
-ruling; until every harness default has landed, pass `-Jobs 4` explicitly.
-`ExaminersAssay.md` "The parallelism default" has the full history,
-including the 2026-08-02 raise and why its reasoning was right then.
+**Run every parallel harness at `-Jobs 8`.** Damian's ruling, 2026-09-01
+("-jobs 8 runs, is barely more memory now than -jobs 4 and we need that
+speedup"), superseding the 2026-08-27 `-Jobs 4` ruling, which had
+superseded the 2026-08-02 `-Jobs 8` standard. **The condition that
+justifies 8 is NAMED so the default dies with its condition instead of
+outliving it**, the same discipline the 4 carried: this box holds 15.8 GiB
+on one DIMM, and 8 fits ONLY because heavy runs are serialized, one gate or
+harness on the box at a time (`CoordinationProtocol.md`, "The token does
+not cover RAM"). Measured 2026-09-01 (blu, one FULL gate alone, 3 s
+samples): at 8, peak guest working set 5,995 MB against 5,890 MB at 4,
+412 s against 620 s, floor 0.44 GiB free against 0.86. The floor is the
+cost, and two lanes' heavy runs at once would spend it: the 2026-08-27
+finding still holds that an overcommit kills guests with a DIFFERENT
+plausible culprit each run, reading as codegen when it is RAM
+(`OperatorsManual.md` "The compile batch asks for 12 GB of guest RAM, and a
+short box reports it as a CODEGEN failure"). If the box grows RAM or the
+serialization rule is lifted, re-measure before changing either (L-COUNT).
+Script defaults follow the ruling; until every harness default has landed,
+pass `-Jobs 8` explicitly. `ExaminersAssay.md` "The parallelism default"
+has the full history.
 
 **The full battery (`build/test.ps1`) is not an agent command.** It is
 Damian's tool; the script refuses to run without his approval, and that
@@ -332,6 +329,15 @@ not forewords, not apps, not seeds -- that earns a battery run on your
 own initiative. If you believe your change warrants one, say exactly
 that in one sentence and stop; Damian runs it or hands you the command.
 Asking is always right. Launching is always wrong.
+
+**`build/test.ps1 -All` is PROHIBITED except for release builds (Damian,
+2026-09-01).** The fleet is on BVT only plus FOCUSED test passes: the
+`-Internal` gate, and then the specific tests your change touches, compiled
+and run one at a time. Not a tier, not a sweep, not a cross battery, not
+"the apps subset to be safe". This is the battery paragraph above made
+sharper because the box is one DIMM down (16 GB total;
+`CoordinationProtocol.md`, "The token does not cover RAM"), and it stands
+whether or not the DIMM comes back until Damian says otherwise.
 
 **Zero failures before copy-up.** Do not copy up to main with any test
 failures -- whether the CL carries a seed, source, or both. "Verified"
@@ -371,12 +377,10 @@ builds every time.
 **`R-ONE`, tier 3.**
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~56,786 lines of Codex across
-64 files (re-measured 2026-08-25; this line said 55,645 on 08-16, 54,148
-on 08-12, 53,652 on 08-09, 57,466 on 07-31 and 55,900 on 07-25, so the
-fall has stopped and it is rising again). A wrong
-change in one place surfaces as a silent corruption three pipeline stages
-later.
+Do not "while I'm here." The compiler is ~58,054 lines of Codex across
+64 files (re-measured 2026-08-30; re-measure before quoting, L-COUNT). A
+wrong change in one place surfaces as a silent corruption three pipeline
+stages later.
 
 ### 5. CCE is the internal encoding
 **`R-CCE`, tier 2.**
@@ -503,12 +507,8 @@ at column 2, not in a comment, not in a report, not in a reply. The same
 goes for the en-dash outside a numeric range.
 
 It is not house style and it never was. It is a model tic: agents arrive
-mistrained to like it, and it has been spreading through the tree ever
-since one of them started writing docs. Measured 2026-07-17:
-`OperatorsManual.md` held 62, `ExaminersAssay.md` 42, and this file 34
-(the register held 163 before it was deleted). Every one of them is work
-for whoever cleans it up, and blu has had to run a campaign doing
-exactly that.
+mistrained to like it, and it spreads through the tree unless stopped;
+blu has run a removal campaign cleaning it up.
 
 It is not free technically either. An em-dash is a non-ASCII byte, and a
 non-ASCII byte is what made source files land as `text` or `utf8` or
@@ -517,41 +517,15 @@ CL 8778 exists to close. A Windows-1252 em-dash (byte `0x97`) is what
 corrupted two archived docs outright.
 
 Use a comma. Use a colon. Use parentheses. Use a full stop. If a sentence
-genuinely needs a dash, `--` is ASCII and it is what the `.codex` prose
-already uses. It is not the more expensive choice, which is the first
-thing everyone assumes: on disk `--` is `2d 2d`, two bytes, against the
-em-dash's three (`e2 80 94`), so the swap makes a file smaller.
+genuinely needs a dash, `--` is ASCII, two bytes on disk against the
+em-dash's three, and it is what the `.codex` prose already uses.
 
-**This rule used to carry a technical argument, and every mechanical claim
-in it was false.** It said the em-dash has no CCE code point, that General
-Punctuation is not a CCE block at any tier, that `from-unicode` answers
-negative one for it as it does for a carriage return, and that it therefore
-disappears silently at the I/O boundary. Measured 2026-07-25 against the
-depot seed:
-
-| Call | Answer | |
-|---|---|---|
-| `from-unicode 8212` | **41464** | the em-dash HAS a CCE code point |
-| `from-unicode 8211` | **41463** | the en-dash, adjacent, as the tier-2 arithmetic requires |
-| `from-unicode 13` | **-1** | a carriage return genuinely IS unmapped |
-| `to-unicode 41464` | **8212** | it round-trips exactly |
-| `cce-encode-length 41464` | **3** | three bytes |
-
-`from-unicode` (`codex/foreword/core/CCE.codex`) tries tier 0, then tier 1,
-then **tier 2**, and tier 2 block 7 has Unicode base 8192 and size 512, so
-it spans U+2000..U+21FF. General Punctuation is U+2000..U+206F. The old
-paragraph enumerated the eleven Tier 1 blocks, correctly observed that
-U+2014 is in none of them, and concluded from one tier what only three
-tiers can decide. It is the exact failure this project documents everywhere
-else: an instrument pointed at part of the question, read as an answer to
-all of it.
-
-So the honest statement of the cost is the byte count and nothing more. On
-disk `--` is two bytes against the em-dash's three; inside the compiler the
-CCE encoding is also three. Two against three, either way. That is a real
-but small argument, and the rule does not rest on it: **the em-dash is
-banned because it is a model tic and not house style**, which was always
-the actual reason.
+Earlier revisions argued a technical mechanism (no CCE code point, silent
+loss at the I/O boundary) that measurement proved false at every step:
+`from-unicode 8212` answers 41464, it round-trips exactly, and it encodes
+in three bytes (measured 2026-07-25 against the depot seed; this file's
+depot history holds the full table). **The em-dash is banned because it
+is a model tic and not house style**, which was always the actual reason.
 
 Do not sweep other people's em-dashes as a side quest. Blu owns the
 removal campaign. Just stop producing them.
@@ -578,26 +552,20 @@ true. Do not audit a block's veracity to decide -- veracity is not the
 test. If it explains our own code to a reader who has that code in front
 of them, delete it.
 
-**Re-measured 2026-08-21: 52,393 prose lines across 2,117 of 3,679 chapters,
-8.3 per cent of all .codex lines.** It was 64,450 across 2,601 of 3,249 on
-2026-07-28, so the campaign is taking it down while the tree grows.
-Removal is a campaign and per-block judgement; a regex sweep would take
-the justified blocks with it.
+**Re-measured 2026-08-21: 52,393 prose lines across 2,117 of 3,679
+chapters** (re-measure before quoting, L-COUNT). Removal is a campaign
+and per-block judgement; a regex sweep would take the justified blocks
+with it.
 
-The cost is not hypothetical. On 2026-07-28 the prose above
-`rv-emit-frameless-mod` asserted that a frameless `int-mod` and `math-mod`
-both need the non-negative correction. `math-mod (a) (b) = a - (a / b) * b`
-is the TRUNCATING remainder and must not be corrected, so the block was
-false, the code beside it was wrong in the direction the block described as
-right, and an agent who read the block instead of the body wrote that error
-into a CL description. **`math-mod`'s own body is four tokens long and
-settles the question the paragraph got wrong.**
-
-That is the general shape: prose about our own code competes with the code
-as a source of truth, and it loses while still being believed. Nothing
-re-reads it, no gate observes it (`build/build.ps1` never sees prose at
-all), so it is an assertion with no runner -- the exact failure
-`docs/PM/Active/Stories/LESSONS.md` describes for `CLAUDE.md` itself.
+The cost is not hypothetical: prose above `rv-emit-frameless-mod` once
+asserted a correction that `math-mod`'s own four-token body refutes; the
+block was false, the code beside it was wrong in the direction the block
+called right, and the error propagated into a CL description. That is the
+general shape: prose about our own code competes with the code as a
+source of truth and loses while still being believed. No gate observes it
+(`build/build.ps1` never sees prose at all), so it is an assertion with
+no runner -- the exact failure `docs/PM/Active/Stories/LESSONS.md`
+describes for `CLAUDE.md` itself.
 
 Do not sweep other chapters' prose as a side quest, the way rule 11 asks
 about em-dashes. Delete it in files you are already changing, and stop
@@ -657,11 +625,6 @@ Working directory: `D:\Projects\Cobblestone-XXX`. Use pwd to find the
 actual XXX value. You are **XXX** -- **everything to the RIGHT of the
 first `-` in your working directory's folder name.** Split on the
 separator; do not take a fixed number of characters.
-
-This said "the last 3 characters" until 2026-08-05 and that is wrong for
-half the fleet: it gives fester "ter" and reek "eek". blu found it while
-deriving an agent name in `applyannotationsScript.codex` and caught it
-by running the rule over all five workspace names before shipping.
 
 ### Perforce `.p4config`
 

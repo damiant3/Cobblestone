@@ -90,6 +90,151 @@ Section: Memory Address Map
   trace-max-entries : Integer = 12000
   serial-ring-buf-addr : Integer = 5242880
 
+ A hosted build cannot keep the runtime cells where bare metal keeps them,
+ and the two systems refuse them for DIFFERENT reasons -- which matters,
+ because assuming one wall explains both is how the Linux half of this note
+ came to be false.
+
+ Windows refuses a fixed VirtualAlloc below MM_LOWEST_USER_ADDRESS with error
+ 87, measured at 0x7000 and 0x8D40, and that wall is real and binding: the
+ Windows band has to move (hosted-win-cell-base).
+
+ LINUX IS NOT CONSTRAINED BY mmap_min_addr HERE AND THIS NOTE USED TO SAY IT
+ WAS. mmap_min_addr governs mmap() from userspace; our cells arrive as a fixed
+ PT_LOAD placed by the kernel's ELF loader, which is a different path.
+ Measured 2026-08-29: with vm.mmap_min_addr raised to 262144, well above this
+ base, the binary still runs and still prints its oracle byte for byte. So this
+ value is not a wall we are clearing on Linux. It is kept because it is BELOW
+ bare-metal-load-addr, which is the property that actually earns it: the band
+ cannot collide with the text however large the program grows.
+
+ 128 KB answers three constraints and two of them are somebody else's. It is
+ above both walls with margin, so a kernel set stricter than the default 65536
+ still takes it. It is BELOW bare-metal-load-addr, where the text goes, and
+ that is the point of choosing it rather than something above: the band cannot
+ collide with the program no matter how large the program grows, which a base
+ sitting above the text cannot promise. And it keeps base plus cell inside a
+ signed 32-bit displacement, which is what cmp-r-abs and cmp-abs-imm8 encode
+ through their no-base SIB form, and under 2^31 where li still picks mov-ri32,
+ so every one of these instructions keeps the length it already had.
+
+ WHAT IS RELOCATED IS THE SET A HOSTED PROGRAM REACHES, not every cell in this
+ section. The bare-metal-only tables stay where they are: proc-table, chan,
+ identity, the IDT and the AP trampoline are addressed by COMPUTED expressions
+ (`proc-table-base + i * proc-entry-size`) and inside instruction blobs as well
+ as by `li`, so a mechanical relocation of the `li` sites alone would leave one
+ table at two addresses. Hosted mode runs none of those paths. If a later stage
+ needs one, it moves with its computed sites in the same change or not at all.
+
+  hosted-cell-base : Integer = 131072
+
+ The hosted print staging pair. Bare metal stages a print at the heap top and
+ blits the whole thing through one doorbell; hosted stages it exactly the same
+ way and leaves through write(2) instead, which is why the CCE conversion above
+ the sink is shared rather than written twice. Both cells are ABSOLUTE and must
+ not go through st-cell: they carry the base already and exist only in a hosted
+ build, so relocating them a second time would put them out past the band.
+
+  hosted-print-base-addr : Integer = hosted-cell-base + 40960
+  hosted-print-cursor-addr : Integer = hosted-cell-base + 40968
+
+ Linux x86-64 syscall numbers. Ours to use, not ours to define.
+
+  linux-sys-write : Integer = 1
+  linux-sys-read : Integer = 0
+  linux-sys-exit-group : Integer = 231
+  linux-stdout-fd : Integer = 1
+  linux-stdin-fd : Integer = 0
+
+ The byte a hosted read stages through. It is a cell rather than the heap
+ frontier because the frontier is the buffer being filled, and a syscall
+ writing into it would land on the next byte the loop is about to store.
+
+  hosted-read-byte-addr : Integer = hosted-cell-base + 40992
+
+ The Windows console target. The PE layout is FIXED so both sides can agree on
+ addresses without either reading the other's output: the loader gets an image
+ based at 1 MB, a 4 KB .idata at RVA 0x1000 and the text at RVA 0x2000.
+ codex/plugs/pe/cdx-to-pe-console.ps1 asserts every one of these against what
+ it builds, because a silent disagreement here is a jump into the wrong page.
+
+ The import thunks are ordered GetStdHandle, WriteFile, ExitProcess,
+ VirtualAlloc, ReadFile. One descriptor plus its null terminator is 40 bytes,
+ the lookup table is six 8-byte thunks, and the address table follows it -- so
+ the first IAT slot sits 88 bytes into .idata, and the loader writes the
+ resolved addresses there.
+
+ ReadFile is what makes a hosted Windows build able to READ. Without it the
+ target was output-only: the three readers all lowered to the bare-metal serial
+ path, which polls a UART through port I/O and stages through watchdog cells at
+ 28744, and 0x7000 is in the band Windows will not map. A program that only
+ printed ran correctly; one that read a single byte died at 0xC0000005 on its
+ first read, which is why the compiler could never be a Windows binary while
+ every printing arm passed.
+
+ VirtualAlloc is imported because the runtime cells sit BELOW any ImageBase the
+ loader will accept, so a Windows build cannot map them with a section and has
+ to ask for them at startup. Measured 2026-08-29: a fixed request at the cell
+ base and one at the arena base are both granted at exactly those addresses.
+
+  hosted-win-image-base : Integer = 1048576
+  hosted-win-idata-rva : Integer = 4096
+  hosted-win-text-rva : Integer = 8192
+  hosted-win-load-addr : Integer = 1056768
+  hosted-win-iat : Integer = 1052760
+  hosted-win-iat-getstdhandle : Integer = 1052760
+  hosted-win-iat-writefile : Integer = 1052768
+  hosted-win-iat-exitprocess : Integer = 1052776
+
+ Two cells a hosted Windows build needs and Linux does not: the console handle,
+ cached after the first GetStdHandle, and the dword WriteFile insists on
+ writing its transferred count into. Both sit above the print scratch, inside
+ the band the container maps.
+
+  hosted-win-iat-virtualalloc : Integer = 1052784
+
+  hosted-win-iat-readfile : Integer = 1052792
+
+  hosted-win-mem-commit-reserve : Integer = 12288
+  hosted-win-page-readwrite : Integer = 4
+  hosted-cell-span : Integer = 65536
+  hosted-heap-span : Integer = 3221225472
+ THE ARENA IS THE SAME SIZE AS EVERY OTHER TARGET'S AND THAT IS LOAD-BEARING.
+ It was 1 GB while Linux and bare metal took 3, which is invisible to any
+ program that does not reserve a deck and fatal to the one that does: the
+ compiler reserves its phase decks before it prints anything, walked off the
+ end of a 1 GB commit, and died at 0xC0000005 with no output at all. A user
+ program printing and allocating a few megabytes never reached it, so every
+ hosted arm passed over the top of it.
+
+  hosted-win-heap-span : Integer = 3221225472
+  hosted-win-cell-base : Integer = 1342177280
+  hosted-win-heap-base : Integer = 1610612736
+  hosted-win-cells-failed-code : Integer = 90
+
+ WINDOWS CANNOT HAVE THE CELLS AT 128 KB AND LINUX CAN. Measured 2026-08-29: a
+ fixed VirtualAlloc at hosted-cell-base is granted from inside pwsh and REFUSED
+ from a freshly loaded minimal image, which is the shape of a process whose own
+ structures are placed low when little else is mapped. The Linux band stays
+ where it is, below the text, because mmap there is granted; the Windows band
+ goes above the arena instead. It stays under 2^31 so the absolute forms still
+ encode a disp32.
+  hosted-win-arena-failed-code : Integer = 91
+
+  hosted-win-print-base-addr : Integer = hosted-win-cell-base + 40960
+  hosted-win-handle-addr : Integer = hosted-win-cell-base + 40976
+  hosted-win-written-addr : Integer = hosted-win-cell-base + 40984
+
+ The read side's three cells: the cached stdin handle, the dword ReadFile
+ insists on writing its transferred count into, and the one byte it reads into.
+ They are separate from the write side's because a read and a write can be in
+ flight in the same expression and sharing the count cell would lose one.
+
+  hosted-win-in-handle-addr : Integer = hosted-win-cell-base + 40992
+  hosted-win-read-count-addr : Integer = hosted-win-cell-base + 41000
+  hosted-win-read-byte-addr : Integer = hosted-win-cell-base + 41008
+
+
  The page an application processor begins executing in. A start-up IPI's
  vector field names a 4 KB page below 1 MB, and the processor enters it in
  REAL MODE with CS:IP = vector:0000 -- so this is a page of 16-bit code, not
@@ -839,11 +984,11 @@ Section: Watchdog Timer Check
 
   emit-watchdog-ring-write : CodegenState -> CodegenState
   emit-watchdog-ring-write (st) =
-   let st1 = st-append-code st (li reg-rdi wd-ring-head-addr)
+   let st1 = st-append-code st (li reg-rdi (st-cell st wd-ring-head-addr))
    in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
    in let st3 = st-append-code st2 (and-ri reg-rax 3)
    in let st4 = st-append-code st3 (shl-ri reg-rax 5)
-   in let st5 = st-append-code st4 (li reg-rsi wd-ring-buf-addr)
+   in let st5 = st-append-code st4 (li reg-rsi (st-cell st4 wd-ring-buf-addr))
    in let st6 = st-append-code st5 (add-rr reg-rsi reg-rax)
    in let st7 = st-append-code st6 (mov-store reg-rsi reg-rcx 0)
    in let st8 = st-append-code st7 (mov-load reg-rdx reg-rsp 64)
@@ -882,21 +1027,21 @@ Section: Watchdog Timer Check
   emit-watchdog-timer-check : CodegenState -> CodegenState
   emit-watchdog-timer-check (st) =
    let st0 = st-append-code st (mov-load reg-rcx reg-rsp 40)
-   in let st2 = st-append-code st0 (li reg-rdi wd-last-heap-addr)
+   in let st2 = st-append-code st0 (li reg-rdi (st-cell st0 wd-last-heap-addr))
    in let st3 = st-append-code st2 (mov-load reg-rdx reg-rdi 0)
    in let st4 = st-append-code st3 (cmp-rr reg-r10 reg-rdx)
    in let heap-same-pos = st4.code-len
    in let st5 = st-append-code st4 (jcc cc-e 0)
    in let st6 = st-append-code st5 (mov-store reg-rdi reg-r10 0)
-   in let st7 = st-append-code st6 (li reg-rdi wd-last-rip-addr)
+   in let st7 = st-append-code st6 (li reg-rdi (st-cell st6 wd-last-rip-addr))
    in let st8 = st-append-code st7 (mov-store reg-rdi reg-rcx 0)
-   in let st9 = st-append-code st8 (li reg-rdi wd-stale-tick-addr)
+   in let st9 = st-append-code st8 (li reg-rdi (st-cell st8 wd-stale-tick-addr))
    in let st10 = st-append-code st9 (li reg-rax 0)
    in let st11 = st-append-code st10 (mov-store reg-rdi reg-rax 0)
    in let doneA-pos = st11.code-len
    in let st12 = st-append-code st11 (jmp 0)
    in let st13 = patch-jcc-at st12 heap-same-pos (st12.code-len)
-   in let st14 = st-append-code st13 (li reg-rdi wd-last-rip-addr)
+   in let st14 = st-append-code st13 (li reg-rdi (st-cell st13 wd-last-rip-addr))
    in let st15 = st-append-code st14 (mov-load reg-rdx reg-rdi 0)
    in let st16 = st-append-code st15 (mov-rr reg-rax reg-rcx)
    in let st17 = st-append-code st16 (sub-rr reg-rax reg-rdx)
@@ -908,14 +1053,14 @@ Section: Watchdog Timer Check
    in let rip-same-pos = st22.code-len
    in let st23 = st-append-code st22 (jcc cc-be 0)
    in let st24 = st-append-code st23 (mov-store reg-rdi reg-rcx 0)
-   in let st25 = st-append-code st24 (li reg-rdi wd-stale-tick-addr)
+   in let st25 = st-append-code st24 (li reg-rdi (st-cell st24 wd-stale-tick-addr))
    in let st26 = st-append-code st25 (li reg-rax 0)
    in let st27 = st-append-code st26 (mov-store reg-rdi reg-rax 0)
    in let doneB-pos = st27.code-len
    in let st28 = st-append-code st27 (jmp 0)
    in let st29 = patch-jcc-at st28 rip-same-pos (st28.code-len)
    in let st-ring = emit-watchdog-ring-write st29
-   in let st30 = st-append-code st-ring (li reg-rdi wd-stale-tick-addr)
+   in let st30 = st-append-code st-ring (li reg-rdi (st-cell st-ring wd-stale-tick-addr))
    in let st31 = st-append-code st30 (mov-load reg-rax reg-rdi 0)
    in let st32 = st-append-code st31 (add-ri reg-rax 1)
    in let st33 = st-append-code st32 (mov-store reg-rdi reg-rax 0)
@@ -1862,15 +2007,15 @@ Section: Interrupt Setup
    in let st12 = st-append-code st11 (mov-store reg-rdi reg-rax 0)
    in let st13 = st-append-code st12 (li reg-rdi key-buffer-addr)
    in let st14 = st-append-code st13 (mov-store reg-rdi reg-rax 0)
-   in let st15 = st-append-code st14 (li reg-rdi arena-base-addr)
+   in let st15 = st-append-code st14 (li reg-rdi (st-cell st14 arena-base-addr))
    in let st18 = st-append-code st15 (mov-store reg-rdi reg-rax 0)
-   in let st19 = st-append-code st18 (li reg-rdi wd-stale-tick-addr)
+   in let st19 = st-append-code st18 (li reg-rdi (st-cell st18 wd-stale-tick-addr))
    in let st20 = st-append-code st19 (mov-store reg-rdi reg-rax 0)
-   in let st21 = st-append-code st20 (li reg-rdi wd-last-heap-addr)
+   in let st21 = st-append-code st20 (li reg-rdi (st-cell st20 wd-last-heap-addr))
    in let st22 = st-append-code st21 (mov-store reg-rdi reg-rax 0)
-   in let st23 = st-append-code st22 (li reg-rdi wd-last-rip-addr)
+   in let st23 = st-append-code st22 (li reg-rdi (st-cell st22 wd-last-rip-addr))
    in let st24 = st-append-code st23 (mov-store reg-rdi reg-rax 0)
-   in let st25 = st-append-code st24 (li reg-rdi wd-ring-head-addr)
+   in let st25 = st-append-code st24 (li reg-rdi (st-cell st24 wd-ring-head-addr))
    in let st26 = st-append-code st25 (mov-store reg-rdi reg-rax 0)
    in let st27 = st-append-code st26 (li reg-rdi cap-expiry-addr)
    in let st28 = st-append-code st27 (mov-store reg-rdi reg-rax 0)
@@ -3525,7 +3670,7 @@ Section: Heap High-Water Mark
   emit-update-heap-hwm : CodegenState -> CodegenState
   emit-update-heap-hwm (st) =
    let st1 = st-append-code st (push-r reg-r11)
-   in let st2 = st-append-code st1 (li reg-r11 heap-hwm-addr)
+   in let st2 = st-append-code st1 (li reg-r11 (st-cell st1 heap-hwm-addr))
    in let st3 = st-append-code st2 (push-r reg-rax)
    in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
    in let st5 = st-append-code st4 (cmp-rr reg-r10 reg-rax)

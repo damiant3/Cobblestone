@@ -58,9 +58,24 @@ foreach ($p in $pages) {
         }
         if ($h -match '^https?://') { $external += ,@($rel, $h); continue }
         if ($h.StartsWith('/')) { $rootRel += ,@($rel, $h); continue }
-        $target = Join-Path (Split-Path $p.FullName) ($h -split '\?')[0]
-        if (Test-Path -PathType Leaf $target) { $ok++ }
-        else { $dead += ,@($rel, $h) }
+        # `page.html#anchor` is a path AND a fragment, and it used to be
+        # resolved whole: the file "landing.html#today" is on no disk, so a
+        # link that works in every browser was reported DEAD. Split the
+        # fragment off, then hold it to the same standard the fragment-only
+        # branch above uses -- the id has to appear as a quoted widget id in
+        # the page being linked TO. That is what caught `#showcase` on the
+        # games page, which named a section this site does not have.
+        $path = ($h -split '[?#]')[0]
+        $frag = if ($h.Contains('#')) { ($h -split '#', 2)[1] } else { '' }
+        $target = Join-Path (Split-Path $p.FullName) $path
+        if (-not (Test-Path -PathType Leaf $target)) { $dead += ,@($rel, $h); continue }
+        if ($frag -and $path -match '\.html?$') {
+            $targetHtml = [IO.File]::ReadAllText((Resolve-Path $target).Path)
+            if (-not $targetHtml.Contains('"' + $frag + '"')) {
+                $dead += ,@($rel, "$h (no widget id '$frag' in $path)"); continue
+            }
+        }
+        $ok++
     }
 }
 

@@ -49,7 +49,7 @@ Measured 2026-08-03, except where an item gives its own date.
 1. **The compiler is a hard fixed point of itself on bare metal.** Text
    round-trip (stage1 === stage2) and CDX fixed point (stage1.cdx ===
    stage2.cdx), byte-identical, with no OS and no libc beneath it. The
-   self-hosted compiler is **64 chapters, 56,422 lines** of Codex
+   self-hosted compiler is **64 chapters, 57,707 lines** of Codex
    and compiles itself in 22 seconds.
 
 2. **Two independent implementations check the compiler, and they agree**
@@ -224,7 +224,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**70 applications, 1,025 modules**, all written in Codex and compiled by
+**70 applications, 1,058 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -237,14 +237,14 @@ for 137 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,064,878 bytes) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,116,369 bytes) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `69E744A237410054` |
-| SHA-256 | `B066CEB5FE8FC9E861540BE2F279AD4E08450F2E51DC6DCD9D65FD3640EF6DC4` |
-| MD5 | `6F32792D913A208003DB47CBC7D32B9F` |
+| Content hash prefix | `BDCEDB7EE5E017CC` |
+| SHA-256 | `FCBABF07479516DEFBED3A1A56AB9C6D9EB939E6B32151DC1563EC461520D4CE` |
+| MD5 | `E7E81597AA2065F97681CC26064E3D41` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -255,7 +255,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `6009B76E59DD042B9CE9889100D5040F5ABE71E6923FE53C3F824A1C0B0E0F04` |
+| SHA-256 | `D035BD2CEF30271E054A613458104D1CE0ECDFE165E6DAF0D2315167D4FB8679` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -279,7 +279,7 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `6152B28629672C4B571677A6FD7CCDA97DFD3A5DCF2478DAA6A5365F8511E2A1` |
+| SHA-256 | `086C5A6FBEF63B780470D0546EB0AC5631269F62D50A88CE298ABA6AED28BF5E` |
 
 The image is reproducible from its source and this seed -- `DIAG.RCP` inside
 it names both, and the hash carries no timestamp -- so a rebuild that
@@ -297,7 +297,7 @@ people's hardware in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `8763B36A70A5ABDD344CAA09F8F207F1230A0C2E9535BE9677D332EE5A4981AD` |
+| SHA-256 | `8ABB4A7375C88DCDE6E35C0697B4EF80F9CDEF1356E3856F3CF15F2998005361` |
 
 That digest is this build of the image, not a target to reproduce: the
 image embeds a concatenation of the tree's own source, so a rebuild from a
@@ -603,13 +603,13 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (64 files, 56,422 lines)
+  compiler/      Self-hosted compiler (64 files, 57,707 lines)
   foreword/      435 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (160 modules)
-  plugs/         56 plugs, 191 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,700 files)
-apps/            70 applications, 1,025 modules
+  plugs/         56 plugs, 192 source modules -- IR-text-driven emitters
+  test/          Compiler samples + OS integration tests (1,710 files)
+apps/            70 applications, 1,058 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -634,7 +634,7 @@ together.
 |---|---:|---:|---:|
 | `apps/` | 1,025 | 191,971 | 6,617 |
 | `codex/foreword/` | 435 | 60,399 | 6,546 |
-| `codex/test/` | 1,700 | 56,481 | 5,955 |
+| `codex/test/` | 1,710 | 56,481 | 5,955 |
 | `codex/plugs/` | 172 | 55,275 | 3,414 |
 | `codex/compiler/` | 64 | 42,492 | 5,181 |
 | `codex/os/` | 160 | 24,415 | 1,982 |

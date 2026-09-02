@@ -479,6 +479,17 @@ foreach ($pair in $matched) {
     else {
         $bodyMismatches++
         $bodyMismatchList.Add("$($s0.Chapter): $($s0.Name)")
+        if ($Show -and ($s0.Name -eq $Show -or "$($s0.Chapter): $($s0.Name)" -eq $Show)) {
+            $t0 = $b0 -split ' '; $t1 = $b1 -split ' '
+            $lim = [Math]::Min($t0.Count, $t1.Count); $d = -1
+            for ($k = 0; $k -lt $lim; $k++) { if ($t0[$k] -ne $t1[$k]) { $d = $k; break } }
+            if ($d -lt 0) { $d = $lim }
+            Write-Host "--- $($s0.Chapter): $($s0.Name) ---"
+            Write-Host "first differing token: $d  (source $($t0.Count) tokens, stage1 $($t1.Count))"
+            $lo = [Math]::Max(0, $d - 8)
+            Write-Host "  source: $(($t0[$lo..([Math]::Min($t0.Count - 1, $d + 8))]) -join ' ')"
+            Write-Host "  stage1: $(($t1[$lo..([Math]::Min($t1.Count - 1, $d + 8))]) -join ' ')"
+        }
     }
 }
 

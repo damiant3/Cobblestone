@@ -14,7 +14,7 @@ param(
     # folklore. If slot-count flakes ever come back, suspect the hardware
     # before the harness: this one cost two investigations that could not have
     # succeeded.
-    [int]$Jobs = 4,
+    [int]$Jobs = 8,
     # Emulator budget per test -- a CEILING, not a sentence. A run ends the
     # moment its output is COMPLETE against .expected (filtered line count
     # reached, final newline seen): a complete answer, right or wrong, is a

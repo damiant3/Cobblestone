@@ -1,0 +1,97 @@
+Chapter: GoFishWasm
+  cites Games chapter GoFish
+  cites Foreword chapter List
+
+ The browser interface for Go Fish, on the handle contract in
+ games-backlog.md GAME-11. Hands are a bitmap of fifty-two flags per player,
+ so the state is well past an i32.
+
+ `gf-hand-set` writes the flag and the player's size counter through
+ `list-set-at`, which mutates in place, so `gf-wasm-step` copies the four
+ lists before taking a turn.
+
+ This game has an exact conservation law and the grader leans on it: every
+ one of the fifty-two cards is in somebody's hand, in the draw pile, or in
+ a completed book of four. Nothing else can hold a card, so the three
+ counts must add to fifty-two at every moment of every game.
+
+ We say:
+
+Section: Copying
+
+  gf-copy-list : List Integer, Integer, Integer, List Integer -> List Integer
+  gf-copy-list (src) (i) (n) (acc) =
+    if i >= n then acc
+    else gf-copy-list src (i + 1) n (list-push acc (list-at src i))
+
+  gf-copy-state : GoFishState -> GoFishState
+  gf-copy-state (s) =
+    GoFishState {
+      hands = gf-copy-list (s.hands) 0 (s.num-players * 52) [],
+      hand-sizes = gf-copy-list (s.hand-sizes) 0 (s.num-players) [],
+      draw-pile = gf-copy-list (s.draw-pile) 0 52 [],
+      pile-size = s.pile-size,
+      books = gf-copy-list (s.books) 0 (s.num-players) [],
+      current-player = s.current-player,
+      num-players = s.num-players,
+      game-over = s.game-over,
+      total-books = s.total-books
+    }
+
+Section: The Browser Interface
+
+  gf-wasm-new : Integer, Integer -> GoFishState
+  gf-wasm-new (seed) (players) = gf-init seed players
+
+  gf-wasm-step : GoFishState -> GoFishState
+  gf-wasm-step (s) =
+    if s.game-over then s
+    else gf-do-turn (gf-copy-state s)
+
+  gf-wasm-has : GoFishState, Integer, Integer -> Integer
+  gf-wasm-has (s) (player) (card) =
+    if player < 0 then 0
+    else if player >= s.num-players then 0
+    else if card < 0 then 0
+    else if card >= 52 then 0
+    else if gf-hand-has s player card then 1 else 0
+
+  gf-wasm-size : GoFishState, Integer -> Integer
+  gf-wasm-size (s) (player) =
+    if player < 0 then (-1)
+    else if player >= s.num-players then (-1)
+    else list-at (s.hand-sizes) player
+
+  gf-wasm-books : GoFishState, Integer -> Integer
+  gf-wasm-books (s) (player) =
+    if player < 0 then (-1)
+    else if player >= s.num-players then (-1)
+    else list-at (s.books) player
+
+  gf-wasm-total-books : GoFishState -> Integer
+  gf-wasm-total-books (s) = s.total-books
+
+  gf-wasm-pile : GoFishState -> Integer
+  gf-wasm-pile (s) = s.pile-size
+
+  gf-wasm-players : GoFishState -> Integer
+  gf-wasm-players (s) = s.num-players
+
+  gf-wasm-cur : GoFishState -> Integer
+  gf-wasm-cur (s) = s.current-player
+
+  gf-wasm-done : GoFishState -> Integer
+  gf-wasm-done (s) = if s.game-over then 1 else 0
+
+  gf-wasm-rank : Integer -> Integer
+  gf-wasm-rank (c) = if c < 0 then (-1) else if c >= 52 then (-1) else gf-rank c
+
+  gf-wasm-rank-count : GoFishState, Integer, Integer -> Integer
+  gf-wasm-rank-count (s) (player) (rank) =
+    if player < 0 then 0
+    else if player >= s.num-players then 0
+    else if rank < 0 then 0
+    else if rank >= 13 then 0
+    else gf-count-rank-in-hand s player rank
+
+Page 1

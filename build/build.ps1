@@ -700,7 +700,7 @@ Write-Host 'imploding vacuum, it sinks into the ground.'
 Measure-Phase 'test-bvt' {
     $bvtScript = Join-Path $PSScriptRoot 'bvt.ps1'
     $testOut = Join-Path $OutDir 'test-results.txt'
-    & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 4 > $testOut 2>&1
+    & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 8 > $testOut 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
         Write-Host 'FAIL: BVT'
@@ -750,7 +750,7 @@ Measure-Phase 'oracles' {
 Measure-Phase 'check-errors' {
     $chkErrors = Join-Path $PSScriptRoot 'check-errors.ps1'
     if (Test-Path $chkErrors) {
-        & pwsh -NoProfile -File $chkErrors -Kernel $testKernel -Jobs 4 2>&1 | ForEach-Object { Write-Host "$_" }
+        & pwsh -NoProfile -File $chkErrors -Kernel $testKernel -Jobs 8 2>&1 | ForEach-Object { Write-Host "$_" }
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'FAIL: a program the compiler must refuse was not refused as declared'
             exit 1
@@ -1027,7 +1027,7 @@ Measure-Phase 'deck-headroom' {
     if (Test-Path $chkDeck) {
         # -Fresh: the script serves cached logs without it.
         $dkOut = @(& pwsh -NoProfile -File $chkDeck -Quire 'codex\build' -WithSelf -MinMargin 1.25 `
-              -Tag 'gate' -Top 5 -Jobs 4 -Fresh 2>&1 | ForEach-Object { "$_" })
+              -Tag 'gate' -Top 5 -Jobs 8 -Fresh 2>&1 | ForEach-Object { "$_" })
         $dkCode = $LASTEXITCODE
 # A filter at the pipe keeps the COUNT and discards the SHAPE: the unit names
 # print as two spaces and a path and match no alternative, so every failure
@@ -1046,7 +1046,7 @@ Measure-Phase 'deck-headroom' {
 # build.ps1 passes, not at the derivation, or this asks a question the
 # build never asks.
         $dkpOut = @(& pwsh -NoProfile -File $chkDeck -Plugs -MinMargin 1.25 `
-              -Tag 'gate-plugs' -Top 5 -Jobs 4 -Fresh 2>&1 | ForEach-Object { "$_" })
+              -Tag 'gate-plugs' -Top 5 -Jobs 8 -Fresh 2>&1 | ForEach-Object { "$_" })
         $dkpCode = $LASTEXITCODE
         if ($dkpCode -ne 0) { $dkpOut | ForEach-Object { Write-Host "  $_" } }
         else { $dkpOut | Where-Object { $_ -match '^\s+margin\s+\d|OK, tightest' } | ForEach-Object { Write-Host "  $_" } }
@@ -1085,7 +1085,7 @@ Measure-Phase 'app-sweep' {
         # for the full sweep, which is the trade this makes.
         $sweepArgs = @()
         if ($Internal) { $sweepArgs = @('-Sample', '30') }
-        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 4 -Kernel $SutCdx @sweepArgs 2>&1 | ForEach-Object { "$_" })
+        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 -Kernel $SutCdx @sweepArgs 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Host ''

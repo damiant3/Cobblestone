@@ -1,0 +1,119 @@
+Chapter: BlackjackWasm
+  cites Games chapter Blackjack
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Blackjack, on the handle contract in
+ games-backlog.md GAME-11. A fifty-two card deck plus two hands is nowhere
+ near an i32, so the page holds the state's address.
+
+ The copy covers the two HANDS and not the deck. `bj-deal-card` appends with
+ `list-push`, and `list-push` writes in place while the backing array has
+ spare capacity, taking the copy path otherwise; which one you get is
+ decided by the call site's allocation order and `docs/DevelopersGuide.md`
+ says plainly to rely on neither. A hand grown without the copy below would
+ therefore sometimes write into the caller's hand and sometimes not, which
+ is worse than always doing so, because a page would work until the day it
+ did not. The deck is only ever read, by `list-at` at `deck-pos`, and
+ `deck-pos` is a number rather than a cursor into it, so successive states
+ share one deck on purpose.
+
+ `bj-card-rank` and `bj-card-value` are exported as plain functions on a
+ card so the page never has to know that a rank is a card modulo thirteen or
+ that a face card counts ten. The rules stay on this side.
+
+ We say:
+
+Section: Copying
+
+  bj-copy-hand : List Integer, Integer, Integer, List Integer -> List Integer
+  bj-copy-hand (src) (i) (n) (acc) =
+    if i >= n then acc
+    else bj-copy-hand src (i + 1) n (list-push acc (list-at src i))
+
+  bj-copy-state : BjState -> BjState
+  bj-copy-state (s) =
+    BjState {
+      player-cards = bj-copy-hand (s.player-cards) 0 (s.player-count) [],
+      player-count = s.player-count,
+      dealer-cards = bj-copy-hand (s.dealer-cards) 0 (s.dealer-count) [],
+      dealer-count = s.dealer-count,
+      player-soft = s.player-soft,
+      dealer-soft = s.dealer-soft,
+      deck = s.deck,
+      deck-pos = s.deck-pos,
+      rng = s.rng
+    }
+
+Section: The Browser Interface
+
+  bj-wasm-new : Integer -> BjState
+  bj-wasm-new (seed) =
+    let s0 = bj-fresh-state (rng-new seed)
+    in let s1 = bj-deal-card s0 [] 0
+    in let s2 = bj-deal-card s1 [] 1
+    in let s3 = bj-deal-card s2 [] 0
+    in bj-deal-card s3 [] 1
+
+  bj-wasm-pvalue : BjState -> Integer
+  bj-wasm-pvalue (s) = bj-best-value (s.player-cards) (s.player-count)
+
+  bj-wasm-dvalue : BjState -> Integer
+  bj-wasm-dvalue (s) = bj-best-value (s.dealer-cards) (s.dealer-count)
+
+  bj-wasm-hit : BjState -> BjState
+  bj-wasm-hit (s) =
+    if bj-wasm-pvalue s > 21 then s
+    else if s.deck-pos >= 52 then s
+    else bj-deal-card (bj-copy-state s) [] 0
+
+  bj-wasm-stand : BjState -> BjState
+  bj-wasm-stand (s) =
+    if bj-wasm-pvalue s > 21 then s
+    else bj-dealer-turn (bj-copy-state s)
+
+  bj-wasm-auto : BjState -> BjState
+  bj-wasm-auto (s) =
+    let s2 = bj-player-turn (bj-copy-state s)
+    in if bj-best-value (s2.player-cards) (s2.player-count) > 21 then s2
+    else bj-dealer-turn s2
+
+  bj-wasm-pcount : BjState -> Integer
+  bj-wasm-pcount (s) = s.player-count
+
+  bj-wasm-dcount : BjState -> Integer
+  bj-wasm-dcount (s) = s.dealer-count
+
+  bj-wasm-pcard : BjState, Integer -> Integer
+  bj-wasm-pcard (s) (i) =
+    if i < 0 then (-1)
+    else if i >= s.player-count then (-1)
+    else list-at (s.player-cards) i
+
+  bj-wasm-dcard : BjState, Integer -> Integer
+  bj-wasm-dcard (s) (i) =
+    if i < 0 then (-1)
+    else if i >= s.dealer-count then (-1)
+    else list-at (s.dealer-cards) i
+
+  bj-wasm-card-rank : Integer -> Integer
+  bj-wasm-card-rank (card) =
+    if card < 0 then (-1) else bj-rank card
+
+  bj-wasm-card-value : Integer -> Integer
+  bj-wasm-card-value (card) =
+    if card < 0 then (-1) else bj-card-value card
+
+  bj-wasm-psoft : BjState -> Integer
+  bj-wasm-psoft (s) = if bj-is-soft (s.player-cards) (s.player-count) then 1 else 0
+
+  bj-wasm-bust : BjState -> Integer
+  bj-wasm-bust (s) = if bj-wasm-pvalue s > 21 then 1 else 0
+
+  bj-wasm-result : BjState -> Integer
+  bj-wasm-result (s) = bj-hand-result s
+
+  bj-wasm-deckpos : BjState -> Integer
+  bj-wasm-deckpos (s) = s.deck-pos
+
+Page 1

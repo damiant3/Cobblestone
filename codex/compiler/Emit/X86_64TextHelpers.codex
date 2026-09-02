@@ -322,7 +322,7 @@ Section: __deck_str_concat
    in let st2 = st-append-code st1 (push-r reg-r12)
    in let st3 = st-append-code st2 (push-r reg-r13)
    in let st4 = st-append-code st3 (push-r reg-r14)
-   in let st5 = st-append-code st4 (li reg-r11 deck-pos-addr)
+   in let st5 = st-append-code st4 (li reg-r11 (st-cell st4 deck-pos-addr))
    in let st6 = st-append-code st5 (mov-load reg-r14 reg-r11 0)
    in let st7 = st-append-code st6 (mov-rr reg-rbx reg-rdi)
    in let st8 = st-append-code st7 (mov-rr reg-r12 reg-rsi)
@@ -377,7 +377,7 @@ Section: __deck_str_concat
 
   emit-deck-str-concat-tail : CodegenState -> CodegenState
   emit-deck-str-concat-tail (st) =
-    let st0 = st-append-code st (li reg-r11 deck-pos-addr)
+    let st0 = st-append-code st (li reg-r11 (st-cell st deck-pos-addr))
    in let st1 = st-append-code st0 (mov-store reg-r11 reg-r14 0)
    in let st2 = st-append-code st1 (pop-r reg-r14)
    in let st3 = st-append-code st2 (pop-r reg-r13)
@@ -641,6 +641,21 @@ Section: __real_to_text
    in let st11 = st-append-code st10 (jmp (digit-loop - (st10.code-len + 5)))
    in patch-jcc-at st11 digit-done-pos (st11.code-len)
 
+ The 48-byte frame splits at 24, not at 16. The integer digits fill upward
+ from `rsp` and the fraction digits from `rsp + 24`, so the split is the
+ integer region's size and it must exceed the widest integer part
+ `cvttsd2si` can deliver: that is an i64, whose maximum is 19 digits. The
+ split was 16, so an integer part of 17 or more digits ran into the
+ fraction region and was overwritten -- silently, and as a DIGIT
+ SUBSTITUTION rather than a truncation, because the digits are stored
+ least-significant-first and the overrun lands on the most significant end.
+ With no fraction to write, the zero-fraction path below stored CCE 3 at
+ the split and turned that digit into '0': `12345678901234567.0` printed as
+ `02345678901234566.0` and `123456789012345678.0` as
+ `103456789012345680.0`, while `real-to-int` on the same values was right.
+ The fraction loop is capped at 15 digits, so 24 leaves both regions inside
+ the frame with room to spare.
+
   emit-number-to-text-frac-digits : CodegenState -> CodegenState
   emit-number-to-text-frac-digits (st) =
     let st0 = st-append-code st (mov-rr reg-r13 reg-rcx)
@@ -658,7 +673,7 @@ Section: __real_to_text
    in let st10 = st-append-code st9 (subsd-xmm 0 2)
    in let st11 = st-append-code st10 (add-ri reg-rdx 3)
    in let st12 = st-append-code st11 (mov-rr reg-rsi reg-rsp)
-   in let st13 = st-append-code st12 (add-ri reg-rsi 16)
+   in let st13 = st-append-code st12 (add-ri reg-rsi 24)
    in let st14 = st-append-code st13 (add-rr reg-rsi reg-r8)
    in let st15 = st-append-code st14 (mov-store-byte reg-rsi reg-rdx 0)
    in let st16 = st-append-code st15 (add-ri reg-r8 1)
@@ -674,7 +689,7 @@ Section: __real_to_text
    in let st24 = st-append-code st23 (jcc cc-ne 0)
    in let st25 = st-append-code st24 (li reg-rsi 3)
    in let st26 = st-append-code st25 (mov-rr reg-rax reg-rsp)
-   in let st27 = st-append-code st26 (add-ri reg-rax 16)
+   in let st27 = st-append-code st26 (add-ri reg-rax 24)
    in let st28 = st-append-code st27 (mov-store-byte reg-rax reg-rsi 0)
    in let st29 = st-append-code st28 (li reg-r8 1)
    in patch-jcc-at st29 has-frac-pos (st29.code-len)
@@ -686,7 +701,7 @@ Section: __real_to_text
    in let strip-done-pos = st0.code-len
    in let st1 = st-append-code st0 (jcc cc-le 0)
    in let st2 = st-append-code st1 (mov-rr reg-rsi reg-rsp)
-   in let st3 = st-append-code st2 (add-ri reg-rsi 16)
+   in let st3 = st-append-code st2 (add-ri reg-rsi 24)
    in let st4 = st-append-code st3 (add-rr reg-rsi reg-r8)
    in let st5 = st-append-code st4 (sub-ri reg-rsi 1)
    in let st6 = st-append-code st5 (movzx-byte reg-rdi reg-rsi 0)
@@ -747,7 +762,7 @@ Section: __real_to_text
    in let frac-copy-done-pos = st26.code-len
    in let st27 = st-append-code st26 (jcc cc-ge 0)
    in let st28 = st-append-code st27 (mov-rr reg-rsi reg-rsp)
-   in let st29 = st-append-code st28 (add-ri reg-rsi 16)
+   in let st29 = st-append-code st28 (add-ri reg-rsi 24)
    in let st30 = st-append-code st29 (add-rr reg-rsi reg-rcx)
    in let st31 = st-append-code st30 (movzx-byte reg-rsi reg-rsi 0)
    in let st32 = st-append-code st31 (mov-rr reg-rdx reg-rax)

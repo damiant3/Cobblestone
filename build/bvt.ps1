@@ -7,7 +7,7 @@
 [CmdletBinding()]
 param(
     [string]$CodexCdx = '',
-    [int]$Jobs = 4
+    [int]$Jobs = 8
 )
 
 Set-StrictMode -Version Latest

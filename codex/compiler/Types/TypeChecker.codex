@@ -1,5 +1,5 @@
 Chapter: Type Checker
-  cites Codex chapter Build Settings (substitution-capacity, expr-type-capacity, demand-check-guard-band)
+  cites Codex chapter Build Settings (substitution-capacity, expr-type-capacity, demand-check-guard-band, demand-check-batch-budget, demand-check-batch-memo-slots)
   cites Codex chapter Phase Allocator (deck-short-of)
   cites Foreword chapter Tuple
   cites Foreword chapter Capability (capability-names)
@@ -695,7 +695,8 @@ Section: Parameterize Type
       state = args-r.state
      }
     is RecordTy (rname) (rargs) (rfields) ->
-     let args-r = parameterize-walk-list st entries rargs 0 (list-length rargs) []
+     if list-length rargs == 0 & record-fields-have-open-names rfields 0 (list-length rfields) == False then WalkResult { walked = ty, entries = entries, state = st }
+     else let args-r = parameterize-walk-list st entries rargs 0 (list-length rargs) []
      in let fields-r = parameterize-walk-record-fields (args-r.state) (args-r.entries) rfields 0 (list-length rfields) []
      in WalkResult {
       walked = deck-record (RecordTy rname (args-r.walked-list) (fields-r.walked-fields)),
@@ -703,7 +704,8 @@ Section: Parameterize Type
       state = fields-r.state
      }
     is SumTy (sname) (sargs) (sctors) ->
-     let args-r = parameterize-walk-list st entries sargs 0 (list-length sargs) []
+     if list-length sargs == 0 & sum-ctors-have-open-names sctors 0 (list-length sctors) == False then WalkResult { walked = ty, entries = entries, state = st }
+     else let args-r = parameterize-walk-list st entries sargs 0 (list-length sargs) []
      in let ctors-r = parameterize-walk-sum-ctors (args-r.state) (args-r.entries) sctors 0 (list-length sctors) []
      in WalkResult {
       walked = deck-record (SumTy sname (args-r.walked-list) (ctors-r.walked-ctors)),
@@ -763,6 +765,52 @@ Section: Parameterize Type
    in let rr = parameterize-walk-list (r.state) (r.entries) (c.return-type) 0 (list-length (c.return-type)) []
    in let c2 = deck-record (SumCtor { name = c.name, fields = r.walked-list, return-type = rr.walked-list })
    in parameterize-walk-sum-ctors (rr.state) (rr.entries) ctors (i + 1) len (list-push acc c2)
+
+  type-has-open-names : CodexType -> Boolean
+  type-has-open-names (ty) =
+   when ty
+    is ConstructedTy (name) (args) ->
+     if is-value-name (name.value) then True
+     else types-have-open-names args 0 (list-length args)
+    is FunTy (param) (row) (ret) ->
+     if type-has-open-names param then True
+     else if text-length (row.tail-name) > 0 & row.tail-id < 0 then True
+     else type-has-open-names ret
+    is ListTy (elem) -> type-has-open-names elem
+    is LinkedListTy (elem) -> type-has-open-names elem
+    is ForAllTy (id) (body) -> type-has-open-names body
+    is ForAllEff (id) (body) -> type-has-open-names body
+    is EffectfulTy (effs) (sc) (ret) -> type-has-open-names ret
+    is LinearTy (linner) -> type-has-open-names linner
+    is TypeApply (tf) (ta) ->
+     if type-has-open-names tf then True else type-has-open-names ta
+    is RecordTy (rname) (rargs) (rfields) ->
+     if types-have-open-names rargs 0 (list-length rargs) then True
+     else record-fields-have-open-names rfields 0 (list-length rfields)
+    is SumTy (sname) (sargs) (sctors) ->
+     if types-have-open-names sargs 0 (list-length sargs) then True
+     else sum-ctors-have-open-names sctors 0 (list-length sctors)
+    is otherwise -> False
+
+  types-have-open-names : List CodexType, Integer, Integer -> Boolean
+  types-have-open-names (tys) (i) (len) =
+   if i == len then False
+   else if type-has-open-names (list-at tys i) then True
+   else types-have-open-names tys (i + 1) len
+
+  record-fields-have-open-names : List RecordField, Integer, Integer -> Boolean
+  record-fields-have-open-names (fields) (i) (len) =
+   if i == len then False
+   else if type-has-open-names ((list-at fields i).type-val) then True
+   else record-fields-have-open-names fields (i + 1) len
+
+  sum-ctors-have-open-names : List SumCtor, Integer, Integer -> Boolean
+  sum-ctors-have-open-names (ctors) (i) (len) =
+   if i == len then False
+   else let c = list-at ctors i
+   in if types-have-open-names (c.fields) 0 (list-length (c.fields)) then True
+   else if types-have-open-names (c.return-type) 0 (list-length (c.return-type)) then True
+   else sum-ctors-have-open-names ctors (i + 1) len
 
   find-param-entry : List ParamEntry, Text, Boolean, Integer, Integer -> Integer
   find-param-entry (entries) (name) (want-row) (i) (len) =
@@ -1243,7 +1291,10 @@ Section: Check Chapter
   ChapterResult = record {
    types : List TypeBinding,
    env : TypeEnv,
-   state : UnificationState
+   state : UnificationState,
+   keep-end : Integer,
+   keep-overflow : Boolean,
+   batch-note : Text
   }
 
   register-mutable-markers : TypeEnv, List ATypeDef, Integer, Integer -> TypeEnv
@@ -2301,17 +2352,24 @@ Section: Proof Acyclicity
        in check-proof-grammar-loop sorted-st defs names (i + 1) len (add-diagnostics-to-state st errs 0 (list-length errs))
       else check-proof-grammar-loop sorted-st defs names (i + 1) len st
 
-  check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment, Integer -> ChapterResult
-  check-chapter (mod) (renames) (colliding) (assignments) (ceiling) =
-   let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
+  check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment, Integer, Integer, Integer, Integer, Integer -> ChapterResult
+  check-chapter (mod) (renames) (colliding) (assignments) (ceiling) (check-base) (keep-base) (keep-ceiling) (poison) =
+   let p0 = __heap-save
+   in let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
+   in let p1 = __heap-save
    in let arity-errors = check-all-type-arities tdm mod
+   in let p2 = __heap-save
    in let tenv = register-type-defs empty-unification-state builtin-type-env tdm (mod.type-defs) 0 (list-length (mod.type-defs))
+   in let p3 = __heap-save
    in let st-with-arity = add-diagnostics-to-state (tenv.state) arity-errors 0 (list-length arity-errors)
    in let env-with-mut = register-mutable-markers (tenv.env) (mod.type-defs) 0 (list-length (mod.type-defs))
    in let env = register-all-defs st-with-arity env-with-mut tdm (mod.defs) 0 (list-length (mod.defs)) renames
+   in let p4 = __heap-save
    in let env2 = register-effect-ops (env.state) (env.env) tdm (mod.effect-defs) 0 (list-length (mod.effect-defs))
    in let env3 = register-class-methods (env2.state) (env2.env) tdm (mod.class-defs) (mod.instance-defs)
    in let sorted-env = env-finalize (env3.env)
+   in let p5 = __heap-save
+   in let reg-note = "CHECK-REG tdm=" & show (p1 - p0) & " arity=" & show (p2 - p1) & " typedefs=" & show (p3 - p2) & " defs=" & show (p4 - p3) & " effects-classes-sort=" & show (p5 - p4)
    in let def-count = list-length (mod.defs)
    in let pre-st = deck-record (UnificationState {
     substitutions = copy-list-with-headroom (env3.state.substitutions) (def-count * 12),
@@ -2322,12 +2380,16 @@ Section: Proof Acyclicity
     expr-types = copy-list-with-headroom (env3.state.expr-types) (def-count * 56),
     effect-exempt = False,
     scope-grants = [],
-    chapter-grounds = mod.ground-effects
+    chapter-grounds = mod.ground-effects,
+    dirty-slots = []
    })
    in let acc0 = deck-record (__list-with-capacity def-count)
    in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
    in let exit = __deck-exit
-   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names) tdm ceiling
+   in let cb = check-batch-open check-base keep-base keep-ceiling def-count demand-check-batch-budget poison
+   in let __seq = cb.cb-reg-note = reg-note & " pre-st=" & show (__deck-pos - p5)
+   in let opened = check-batch-begin cb pre-st acc0
+   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names) tdm ceiling cb
    in let enter = __deck-enter
    in let cycle-st = check-rt-cycles (mod.defs) (mod.rt-names) (result.state)
    in let bounded-st = check-bounded-decls cycle-st (mod.defs) (mod.annotations)
@@ -2469,8 +2531,8 @@ Section: Proof Acyclicity
  definitions left over means the types are incomplete, so the caller
  halts on the diagnostic rather than trusting them.
 
-  check-all-defs-done : UnificationState, TypeEnv, List TypeBinding -> ChapterResult
-  check-all-defs-done (st) (env) (acc) =
+  check-all-defs-done : UnificationState, TypeEnv, List TypeBinding, CheckBatch -> ChapterResult
+  check-all-defs-done (st) (env) (acc) (cb) =
    let final-st = deck-record (UnificationState {
     substitutions = copy-list-with-headroom (st.substitutions) 0,
     row-substitutions = copy-list-with-headroom (st.row-substitutions) 0,
@@ -2480,18 +2542,239 @@ Section: Proof Acyclicity
     expr-types = copy-list-with-headroom (st.expr-types) 0,
     effect-exempt = False,
     scope-grants = [],
-    chapter-grounds = st.chapter-grounds
+    chapter-grounds = st.chapter-grounds,
+    dirty-slots = []
    })
    in deck-record (ChapterResult {
     types = acc,
     env = env,
-    state = final-st
+    state = final-st,
+    keep-end = cb.cb-keep,
+    keep-overflow = cb.cb-overflow,
+    batch-note = check-batch-note cb
    })
 
-  check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List TypeBinding, Integer -> ChapterResult
-  check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (tdm) (ceiling) =
-   if i == len then check-all-defs-done st env acc
-   else if deck-short-of ceiling demand-check-guard-band then check-all-defs-done st env acc
+Section: Check Batches
+
+ A batch is the unit of reclamation inside the walk. Every definition's
+ inference scratch is bivy and every deck-record it makes lands on the check
+ deck; both are dead once the definition's survivors have been copied out,
+ and the survivors are exactly what the phase-end keep copy already
+ enumerates: the substitution slots written since the batch opened (tracked
+ by add-subst in dirty-slots) plus the slots minted since, every row slot,
+ the expr-type entries and bindings appended since, and the bag. The copy
+ runs inside a keep-deck extent through the memoized copier, whose floor is
+ the check deck's base, so a box already in the keep is shared and a box on
+ the check deck or in the bivy is materialized once; the address memo is
+ zeroed per batch because the rewound region is reused and a stale hit would
+ answer a copy of a box that no longer exists. The cons layer persists across
+ batches, which is what keeps a type mentioned by a thousand definitions at
+ one keep box. A list that outgrew its headroom during the batch has moved
+ into the bivy; it is relocated into the keep with fresh headroom before its
+ entries are rewritten.
+
+  mutable CheckBatch = record {
+   cb-mc : MemoCtx,
+   cb-keep : Integer,
+   cb-ceiling : Integer,
+   cb-budget : Integer,
+   cb-poison : Integer,
+   cb-bivy-mark : Integer,
+   cb-deck-mark : Integer,
+   cb-subs0 : Integer,
+   cb-subs-len0 : Integer,
+   cb-rows0 : Integer,
+   cb-et0 : Integer,
+   cb-et-len0 : Integer,
+   cb-acc-len0 : Integer,
+   cb-bag0 : Integer,
+   cb-batches : Integer,
+   cb-max-bivy : Integer,
+   cb-max-deck : Integer,
+   cb-overflow : Boolean,
+   cb-walk-floor : Integer,
+   cb-reg-note : Text
+  }
+
+  check-batch-open : Integer, Integer, Integer, Integer, Integer, Integer -> CheckBatch
+  check-batch-open (floor) (keep-base) (keep-ceiling) (def-count) (budget) (poison) =
+   let memo-slots = demand-check-batch-memo-slots
+   in let memo-table = __heap-save
+   in let a1 = __heap-advance (memo-slots * 8)
+   in let cons-slots = memo-pow2-at-least (def-count * 48) 4096
+   in let cons-table = __heap-save
+   in let a2 = __heap-advance (cons-slots * 16)
+   in let cz = __memset cons-table 0 (cons-slots * 16)
+   in let tcons-slots = memo-pow2-at-least (def-count * 8) 4096
+   in let tcons-table = __heap-save
+   in let a3 = __heap-advance (tcons-slots * 16)
+   in let tz = __memset tcons-table 0 (tcons-slots * 16)
+   in let cap-ty = def-count * 48 + 4096
+   in let cap-text = def-count * 8 + 16384
+   in let cap-row = def-count * 12 + 4096
+   in let cap-list = def-count * 4 + 4096
+   in let mc = MemoCtx {
+    mc-table = memo-table,
+    mc-slots = memo-slots,
+    mc-shift = memo-shift-for memo-slots 64,
+    mc-floor = floor,
+    mc-ty = __list-with-capacity cap-ty,
+    mc-text = __list-with-capacity cap-text,
+    mc-name = __list-with-capacity cap-text,
+    mc-row = __list-with-capacity cap-row,
+    mc-tylist = __list-with-capacity cap-list,
+    mc-fieldlist = __list-with-capacity cap-list,
+    mc-ctorlist = __list-with-capacity cap-list,
+    mc-labellist = __list-with-capacity cap-list,
+    mc-cons = cons-table,
+    mc-cons-slots = cons-slots,
+    mc-cons-shift = memo-shift-for cons-slots 64,
+    mc-cap-ty = cap-ty,
+    mc-cap-text = cap-text,
+    mc-cap-name = cap-text,
+    mc-cap-row = cap-row,
+    mc-cap-list = cap-list,
+    mc-ceiling = keep-ceiling,
+    mc-tcons = tcons-table,
+    mc-tcons-slots = tcons-slots,
+    mc-tcons-shift = memo-shift-for tcons-slots 64
+   }
+   in CheckBatch {
+    cb-mc = mc,
+    cb-keep = keep-base,
+    cb-ceiling = keep-ceiling,
+    cb-budget = budget,
+    cb-poison = poison,
+    cb-bivy-mark = 0,
+    cb-deck-mark = 0,
+    cb-subs0 = 0,
+    cb-subs-len0 = 0,
+    cb-rows0 = 0,
+    cb-et0 = 0,
+    cb-et-len0 = 0,
+    cb-acc-len0 = 0,
+    cb-bag0 = 0,
+    cb-batches = 0,
+    cb-max-bivy = 0,
+    cb-max-deck = 0,
+    cb-overflow = False,
+    cb-walk-floor = __deck-pos,
+    cb-reg-note = ""
+   }
+
+  check-batch-begin : CheckBatch, UnificationState, List TypeBinding -> Integer
+  check-batch-begin (cb) (st) (acc) =
+   let mz = __memset (cb.cb-mc.mc-table) 0 (cb.cb-mc.mc-slots * 8)
+   in let __seq = cb.cb-bivy-mark = __heap-save
+   in let __seq = cb.cb-deck-mark = __deck-pos
+   in let __seq = cb.cb-subs0 = address-of (st.substitutions)
+   in let __seq = cb.cb-subs-len0 = list-length (st.substitutions)
+   in let __seq = cb.cb-rows0 = address-of (st.row-substitutions)
+   in let __seq = cb.cb-et0 = address-of (st.expr-types)
+   in let __seq = cb.cb-et-len0 = list-length (st.expr-types)
+   in let __seq = cb.cb-acc-len0 = list-length acc
+   in let __seq = cb.cb-bag0 = address-of (st.bag)
+   in let __seq = st.dirty-slots = __list-with-capacity 4096
+   in 0
+
+  check-batch-due : CheckBatch -> Boolean
+  check-batch-due (cb) =
+   (__heap-save - cb.cb-bivy-mark) + (__deck-pos - cb.cb-deck-mark) >= cb.cb-budget
+
+  check-batch-close : CheckBatch, UnificationState, List TypeBinding -> Integer
+  check-batch-close (cb) (st) (acc) =
+   let bivy-now = __heap-save
+   in let deck-now = __deck-pos
+   in let bivy-used = bivy-now - cb.cb-bivy-mark
+   in let deck-used = deck-now - cb.cb-deck-mark
+   in let __seq = cb.cb-max-bivy = if bivy-used > cb.cb-max-bivy then bivy-used else cb.cb-max-bivy
+   in let __seq = cb.cb-max-deck = if deck-used > cb.cb-max-deck then deck-used else cb.cb-max-deck
+   in let set-keep = __deck-set (cb.cb-keep)
+   in let copied = deck-record (check-batch-copy cb st acc)
+   in let keep-end = __deck-pos
+   in let __seq = cb.cb-keep = keep-end
+   in let __seq = cb.cb-overflow = if keep-end >= cb.cb-ceiling then True else cb.cb-overflow
+   in let p1 = check-batch-poison (cb.cb-deck-mark) (cb.cb-poison) (deck-now - cb.cb-deck-mark)
+   in let p2 = check-batch-poison (cb.cb-bivy-mark) (cb.cb-poison) (bivy-now - cb.cb-bivy-mark)
+   in let set-deck = __deck-set (cb.cb-deck-mark)
+   in let restored = __heap-restore (cb.cb-bivy-mark)
+   in let __seq = cb.cb-batches = cb.cb-batches + 1
+   in 0
+
+  check-batch-poison : Integer, Integer, Integer -> Nothing
+  check-batch-poison (base) (byte) (len) =
+   if byte == 0 | len <= 0 then __heap-advance 0
+   else __memset base byte len
+
+  check-batch-copy : CheckBatch, UnificationState, List TypeBinding -> Integer
+  check-batch-copy (cb) (st) (acc) =
+   let mc = cb.cb-mc
+   in let subs1 = st.substitutions
+   in let subs = if address-of subs1 == cb.cb-subs0 then subs1 else copy-list-with-headroom subs1 (list-length subs1 / 2 + 4096)
+   in let __seq = st.substitutions = subs
+   in let rows1 = st.row-substitutions
+   in let rows = if address-of rows1 == cb.cb-rows0 then rows1 else copy-list-with-headroom rows1 (list-length rows1 / 2 + 1024)
+   in let __seq = st.row-substitutions = rows
+   in let et1 = st.expr-types
+   in let et = if address-of et1 == cb.cb-et0 then et1 else copy-list-with-headroom et1 (list-length et1 / 2 + 4096)
+   in let __seq = st.expr-types = et
+   in let d = check-batch-rewrite-slots subs (st.dirty-slots) 0 (list-length (st.dirty-slots)) mc
+   in let n = check-batch-rewrite-range subs (cb.cb-subs-len0) (list-length subs) mc
+   in let r = check-batch-rewrite-rows rows 0 (list-length rows) mc
+   in let e = check-batch-rewrite-et et (cb.cb-et-len0) (list-length et) mc
+   in let a = check-batch-rewrite-acc acc (cb.cb-acc-len0) (list-length acc) mc
+   in let b = if address-of (st.bag) == cb.cb-bag0 then 0 else check-batch-copy-bag st (mc.mc-floor)
+   in 0
+
+  check-batch-copy-bag : UnificationState, Integer -> Integer
+  check-batch-copy-bag (st) (floor) =
+   let nb = copy-sx-bag floor (st.bag)
+   in let __seq = st.bag = nb
+   in 0
+
+  check-batch-rewrite-slots : List CodexType, List Integer, Integer, Integer, MemoCtx -> Integer
+  check-batch-rewrite-slots (subs) (dirty) (i) (len) (mc) =
+   if i == len then 0
+   else let id = list-at dirty i
+   in if id >= list-length subs then check-batch-rewrite-slots subs dirty (i + 1) len mc
+   else let w = list-set-at subs id (mcopy-type (list-at subs id) 0 mc)
+   in check-batch-rewrite-slots subs dirty (i + 1) len mc
+
+  check-batch-rewrite-range : List CodexType, Integer, Integer, MemoCtx -> Integer
+  check-batch-rewrite-range (subs) (i) (len) (mc) =
+   if i >= len then 0
+   else let w = list-set-at subs i (mcopy-type (list-at subs i) 0 mc)
+   in check-batch-rewrite-range subs (i + 1) len mc
+
+  check-batch-rewrite-rows : List EffectRow, Integer, Integer, MemoCtx -> Integer
+  check-batch-rewrite-rows (rows) (i) (len) (mc) =
+   if i >= len then 0
+   else let w = list-set-at rows i (mcopy-row (list-at rows i) mc)
+   in check-batch-rewrite-rows rows (i + 1) len mc
+
+  check-batch-rewrite-et : List ExprTypeEntry, Integer, Integer, MemoCtx -> Integer
+  check-batch-rewrite-et (et) (i) (len) (mc) =
+   if i >= len then 0
+   else let e = list-at et i
+   in let w = list-set-at et i (ExprTypeEntry { key = e.key, ty = mcopy-type (e.ty) 0 mc })
+   in check-batch-rewrite-et et (i + 1) len mc
+
+  check-batch-rewrite-acc : List TypeBinding, Integer, Integer, MemoCtx -> Integer
+  check-batch-rewrite-acc (acc) (i) (len) (mc) =
+   if i >= len then 0
+   else let b = list-at acc i
+   in let w = list-set-at acc i (TypeBinding { name = mcopy-text (b.name) mc, bound-type = mcopy-type (b.bound-type) 0 mc })
+   in check-batch-rewrite-acc acc (i + 1) len mc
+
+  check-batch-note : CheckBatch -> Text
+  check-batch-note (cb) =
+   cb.cb-reg-note & " CHECK-BATCH batches=" & show (cb.cb-batches) & " max-bivy=" & show (cb.cb-max-bivy) & " max-deck=" & show (cb.cb-max-deck) & " keep-end=" & show (cb.cb-keep) & " check-base=" & show (cb.cb-mc.mc-floor) & " walk-floor=" & show (cb.cb-walk-floor) & " done-deck=" & show __deck-pos & " done-bivy=" & show __heap-save & " ty=" & show (list-length (cb.cb-mc.mc-ty)) & "/" & show (cb.cb-mc.mc-cap-ty) & " text=" & show (list-length (cb.cb-mc.mc-text)) & " name=" & show (list-length (cb.cb-mc.mc-name)) & " row=" & show (list-length (cb.cb-mc.mc-row)) & " tylists=" & show (list-length (cb.cb-mc.mc-tylist)) & " fieldlists=" & show (list-length (cb.cb-mc.mc-fieldlist)) & " ctorlists=" & show (list-length (cb.cb-mc.mc-ctorlist)) & " labellists=" & show (list-length (cb.cb-mc.mc-labellist)) & " cons-slots=" & show (cb.cb-mc.mc-cons-slots) & " overflow=" & (if cb.cb-overflow then "1" else "0")
+
+  check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List TypeBinding, Integer, CheckBatch -> ChapterResult
+  check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (tdm) (ceiling) (cb) =
+   if i == len then let closed = check-batch-close cb st acc in check-all-defs-done st env acc cb
+   else if cb.cb-overflow then check-all-defs-done st env acc cb
+   else if deck-short-of ceiling demand-check-guard-band then let closed = check-batch-close cb st acc in check-all-defs-done st env acc cb
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
@@ -2508,7 +2791,12 @@ Section: Proof Acyclicity
     name = resolve-def-name renames (def.name.value) (def.chapter-slug),
     bound-type = resolved
    })
-   in check-all-defs rt-st env defs (i + 1) len (list-push acc entry) renames colliding assignments citations slug-cache (def.chapter-slug) chapter-rn rt-names tdm ceiling
+   in let acc2 = list-push acc entry
+   in if check-batch-due cb
+      then let closed = check-batch-close cb rt-st acc2
+       in let opened = check-batch-begin cb rt-st acc2
+       in check-all-defs rt-st env defs (i + 1) len acc2 renames colliding assignments citations slug-cache "" [] rt-names tdm ceiling cb
+      else check-all-defs rt-st env defs (i + 1) len acc2 renames colliding assignments citations slug-cache (def.chapter-slug) chapter-rn rt-names tdm ceiling cb
 
 Section: Induction Checking
 

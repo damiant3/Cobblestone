@@ -1,0 +1,151 @@
+Chapter: SpiderWasm
+  cites Games chapter Spider
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Spider Solitaire, on the handle contract in
+ games-backlog.md GAME-11. Ten columns, a fifty-card stock and two counters
+ are far past an i32, so the page holds the state's address.
+
+ `sp-append-cols` extends the destination column with `list-push`, which
+ mutates in place, so `sp-wasm-move` and `sp-wasm-deal` copy first.
+
+ A move is one integer, `from * 10000 + seq-start * 10 + to`, which is what
+ `sp-suggest-move` answers and what `sp-decode-move` reads.
+
+ We say:
+
+Section: Copying
+
+  sp-copy-list : List Integer, Integer, List Integer -> List Integer
+  sp-copy-list (src) (i) (acc) =
+    if i >= list-length src then acc
+    else sp-copy-list src (i + 1) (list-push acc (list-at src i))
+
+  sp-copy-of : List Integer -> List Integer
+  sp-copy-of (src) = sp-copy-list src 0 []
+
+  sp-copy-state : SpiderState -> SpiderState
+  sp-copy-state (st) =
+    SpiderState {
+      col0 = sp-copy-of (st.col0), col1 = sp-copy-of (st.col1),
+      col2 = sp-copy-of (st.col2), col3 = sp-copy-of (st.col3),
+      col4 = sp-copy-of (st.col4), col5 = sp-copy-of (st.col5),
+      col6 = sp-copy-of (st.col6), col7 = sp-copy-of (st.col7),
+      col8 = sp-copy-of (st.col8), col9 = sp-copy-of (st.col9),
+      stock = sp-copy-of (st.stock),
+      completed-suits = st.completed-suits,
+      moves = st.moves
+    }
+
+Section: The Card
+
+  sp-wasm-rank : Integer -> Integer
+  sp-wasm-rank (c) =
+    if c < 0 then (-1)
+    else if c >= 104 then (-1)
+    else sp-rank c
+
+  sp-wasm-suit : Integer -> Integer
+  sp-wasm-suit (c) =
+    if c < 0 then (-1)
+    else if c >= 104 then (-1)
+    else sp-suit c
+
+Section: The Browser Interface
+
+  sp-wasm-new : Integer -> SpiderState
+  sp-wasm-new (seed) = spider-new seed
+
+  sp-wasm-col-size : SpiderState, Integer -> Integer
+  sp-wasm-col-size (st) (c) =
+    if c < 0 then (-1)
+    else if c >= 10 then (-1)
+    else list-length (sp-get-col st c)
+
+  sp-wasm-card : SpiderState, Integer, Integer -> Integer
+  sp-wasm-card (st) (c) (i) =
+    if c < 0 then (-1)
+    else if c >= 10 then (-1)
+    else let col = sp-get-col st c
+    in if i < 0 then (-1)
+    else if i >= list-length col then (-1)
+    else list-at col i
+
+  sp-wasm-stock-size : SpiderState -> Integer
+  sp-wasm-stock-size (st) = list-length (st.stock)
+
+  sp-wasm-suits : SpiderState -> Integer
+  sp-wasm-suits (st) = st.completed-suits
+
+  sp-wasm-moves : SpiderState -> Integer
+  sp-wasm-moves (st) = st.moves
+
+  sp-wasm-seq-len : SpiderState, Integer, Integer -> Integer
+  sp-wasm-seq-len (st) (c) (i) =
+    if c < 0 then (-1)
+    else if c >= 10 then (-1)
+    else let col = sp-get-col st c
+    in if i < 0 then (-1)
+    else if i >= list-length col then 0
+    else sp-seq-len col i
+
+  sp-wasm-can-move : SpiderState, Integer, Integer, Integer -> Integer
+  sp-wasm-can-move (st) (from-c) (seq-start) (to-c) =
+    if from-c < 0 then 0
+    else if from-c >= 10 then 0
+    else if to-c < 0 then 0
+    else if to-c >= 10 then 0
+    else if from-c == to-c then 0
+    else let from-col = sp-get-col st from-c
+    in if seq-start < 0 then 0
+    else if seq-start >= list-length from-col then 0
+    else if sp-can-move from-col (sp-get-col st to-c) seq-start then 1
+    else 0
+
+  sp-wasm-move : SpiderState, Integer, Integer, Integer -> SpiderState
+  sp-wasm-move (st) (from-c) (seq-start) (to-c) =
+    if sp-wasm-can-move st from-c seq-start to-c == 0 then st
+    else sp-apply-move (sp-copy-state st) (SpiderMove { from-col = from-c, seq-start = seq-start, to-col = to-c })
+
+  sp-wasm-deal : SpiderState -> SpiderState
+  sp-wasm-deal (st) =
+    if list-length (st.stock) < 10 then st
+    else sp-deal-stock (sp-copy-state st)
+
+  sp-wasm-suggest : SpiderState -> Integer
+  sp-wasm-suggest (st) = sp-suggest-move st
+
+  sp-wasm-move-from : Integer -> Integer
+  sp-wasm-move-from (code) =
+    if code < 0 then (-1)
+    else let m = sp-decode-move code
+    in m.from-col
+
+  sp-wasm-move-start : Integer -> Integer
+  sp-wasm-move-start (code) =
+    if code < 0 then (-1)
+    else let m = sp-decode-move code
+    in m.seq-start
+
+  sp-wasm-move-to : Integer -> Integer
+  sp-wasm-move-to (code) =
+    if code < 0 then (-1)
+    else let m = sp-decode-move code
+    in m.to-col
+
+Section: The Whole Game
+
+  sp-wasm-run : Integer -> SpiderResult
+  sp-wasm-run (seed) = run-spider-game seed
+
+  sp-wasm-res-suits : SpiderResult -> Integer
+  sp-wasm-res-suits (r) = r.completed-suits
+
+  sp-wasm-res-moves : SpiderResult -> Integer
+  sp-wasm-res-moves (r) = r.moves
+
+  sp-wasm-res-won : SpiderResult -> Integer
+  sp-wasm-res-won (r) = if r.won then 1 else 0
+
+Page 1

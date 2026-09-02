@@ -84,7 +84,12 @@ function Invoke-Leg {
 # which phase reported, because "some phase raised CDX9002" would pass just as
 # well if the wrong guard fired first -- and at these percentages more than one
 # floor is genuinely short.
-foreach ($leg in @(@{ Decks = 5; Phase = 'LEX' }, @{ Decks = 20; Phase = 'LEX' }, @{ Decks = 40; Phase = 'DESUGAR' })) {
+# The middle leg moved from 40 to 60 on 2026-09-01: the token list is now a
+# flat list with capacity on the LEX deck (40 MB on the compiler's own unit
+# against 32 before, with 45 MB of bivy gone), so at 40 per cent LEX's 38 MB
+# floor is the first to starve and the leg no longer reaches DESUGAR. At 60
+# LEX has 57 MB, DESUGAR 46 against its 49, and DESUGAR speaks first.
+foreach ($leg in @(@{ Decks = 5; Phase = 'LEX' }, @{ Decks = 20; Phase = 'LEX' }, @{ Decks = 60; Phase = 'DESUGAR' })) {
   $d = $leg.Decks
   $want = $leg.Phase
   Write-Host "deck-floor-test: -Decks $d (expect CDX9002 from $want)"

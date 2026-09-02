@@ -1,4 +1,5 @@
 Chapter: Arm64Stdio
+  cites Foreword chapter StringUtils
 
 Section: Body
 
@@ -17,8 +18,27 @@ Section: Body
  needs no `a64-wire-length`: the length is the list's own. That is one fewer
  place for a derived count to disagree with the bytes it describes.
 
+ An `ELF\n` prefix asks for a board kernel instead of the wire, the same mode
+ line `RiscVStdio` reads. Without this the module ignored the mode and always
+ answered the wire, which is the arm the page's board control exists to catch.
+
+ `a64-record-func` stores `st.insn-count`, an INSTRUCTION INDEX, and
+ `a64-build-elf` adds its argument to the load address as BYTES, so the index
+ is scaled by 4 here. RISC-V records the same trap for the same reason: an
+ unscaled index lands a fraction of the way to the right instruction, and on
+ AArch64 every instruction is 4 bytes so it also lands unaligned.
+
   plug-emit-ir-bytes : Text -> [Console] Nothing
-  plug-emit-ir-bytes (ir-text) =
-   let parsed = parse-ir-chapter ir-text
+  plug-emit-ir-bytes (input) =
+   let want-elf = text-starts-with input "ELF\n"
+   in let ir-text = if want-elf then text-drop input 4 else input
+   in let parsed = parse-ir-chapter ir-text
    in let cg-state = a64-emit-module make-a64-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names) False
-   in write-binary (a64-build-wire-output cg-state)
+   in if want-elf then a64-emit-board-elf cg-state
+   else write-binary (a64-build-wire-output cg-state)
+
+  a64-emit-board-elf : A64State -> [Console] Nothing
+  a64-emit-board-elf (st) =
+   let idx = a64-find-func-offset (st.func-names) (st.func-offsets) "__start" 0
+   in if idx < 0 then print-line-uni "REFUSED this unit has no `__start`, so a board kernel would have no runtime init to enter"
+   else write-binary (a64-build-elf (__buf-read-bytes (st.code-buf) 0 (st.code-pos)) (st.data) (idx * 4))

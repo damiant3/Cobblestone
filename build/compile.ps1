@@ -191,17 +191,21 @@ try {
 
 
     $script:DiagRegions = Get-DiagRegions -Ordered $ordered -SrcPath $Src
-    $bodyBuilder = ([System.Text.StringBuilder]::new(524288))
+    # Streamed, not built. The StringBuilder held the whole unit, ToString copied it, the mode-line interpolation copied it a third time and WriteAllText encoded a fourth, all while srcLines stayed live. Same defect as the batch driver at 21043 and concat-codex-self at 21098, one copy worse. Same bytes: the mode line, a newline, every cite line with a newline, every source line with a newline, then the EOT.
+    $inputFile = [System.IO.Path]::GetTempFileName()
+    $bodyWriter = [System.IO.StreamWriter]::new($inputFile, $false, [System.Text.UTF8Encoding]::new($false))
+    $bodyWriter.Write($baseMode)
+    $bodyWriter.Write("`n")
     foreach ($l in (Format-CiteChapters -Ordered $ordered)) {
-        [void]$bodyBuilder.Append($l + "`n")
+        $bodyWriter.Write($l)
+        $bodyWriter.Write("`n")
     }
     foreach ($line in $srcLines) {
-        [void]$bodyBuilder.Append($line + "`n")
+        $bodyWriter.Write($line)
+        $bodyWriter.Write("`n")
     }
-    [void]$bodyBuilder.Append([char]4)
-    $bodyText = $bodyBuilder.ToString()
-    $inputFile = [System.IO.Path]::GetTempFileName()
-    [System.IO.File]::WriteAllText($inputFile, "$baseMode`n$bodyText", [System.Text.UTF8Encoding]::new($false))
+    $bodyWriter.Write([char]4)
+    $bodyWriter.Dispose()
     $outputFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
 
