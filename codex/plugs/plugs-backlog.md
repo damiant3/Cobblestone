@@ -6662,6 +6662,36 @@ advanced: `apps/classics-test` moved off `undefined local variable $real_to_int`
 to a wrong answer. The fix state was hashed before the control ran and verified
 after restoring it.
 
+## 2.19 -- CONTRIBUTED by Steve Howell (PR pending, 2026-09-03): the zig plug could not emit five memory builtins Update 54's check compact reaches, and six `-> Nothing` builtins it already had returned `i64`
+
+`peek-32`, `poke-32`, `alloc-bytes`, `poke-byte` and `__memset` had no
+`ZigBuiltinEmitter` entry, so any program reaching them refused. Update 54's
+`check-batch-*` memo table reaches all five: the slot table is `alloc-bytes`,
+the key and value cells are `peek-32`/`poke-32`, and the poison is `__memset`.
+Before this the zig plug could not transpile the compiler at all.
+
+Six fragments that were already present emitted `) i64 { ... return 0; }` for
+builtins whose `bs-type` in `Types/Builtins.codex` is `NothingTy`:
+`cx_heap_advance`, `cx_heap_restore`, `cx_deck_enter`, `cx_deck_exit`,
+`cx_deck_set`, `cx_memset`. `ZigEmitter` maps `Nothing` to `void`
+(`NothingTy -> "void"`), so the mismatch was invisible for as long as every
+call site emitted `_ = f(...)`, which is legal either way -- and became a
+build error the moment a `-> Nothing` definition's whole BODY was such a call,
+which `check-batch-poison` is. `cx_print` and `cx_print_line` were already
+`void`, so the convention existed and six were out of step.
+
+`cx_address_of` gained an enum prong: a payload-free Codex union is a bare zig
+enum, and bare metal hands back the tag word, which is the same identity the
+switch already gives an Integer. U54's `mcopy-real-width` is the first caller.
+Its `else` now `@compileError`s with `@typeName`, so an unhandled type names
+itself instead of saying "no address-of for this type" three instantiations
+deep.
+
+MEASURED: `native/codexir` -- the whole compiler, 2.7 MB of source through the
+seed, the plug and `zig build-exe` -- builds and runs, which it could not
+before. NOT MEASURED: Damian's gate, and no non-zig plug was touched or run.
+Steve Howell's lane (COMPILER-13).
+
 ## 2.18 -- DONE 2026-09-01 (contributed by Steve Howell, PRs 111 and 112; absorbed by red): the wasm plug's silent wrong answers, the 4 MiB truncation, the 4 GiB ceiling and the corpus refusals; the zig plug streams
 
 Both PRs were cut from Update 53 and rebased here onto the 60-of-60 emitter
