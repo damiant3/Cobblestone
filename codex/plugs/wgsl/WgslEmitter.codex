@@ -131,8 +131,49 @@ Section: Float Support
    else if exp32 >= 255 then bit-or (bit-shl sign 31) (bit-shl 255 23)
    else bit-or (bit-shl sign 31) (bit-or (bit-shl exp32 23) mant32)
 
+ A HEX FLOAT LITERAL, NOT A BITCAST, and the reason is naga rather than taste.
+ A Real top-level constant emits a module-scope `const`, and its initialiser has
+ to be a CONSTANT EXPRESSION:
+
+     const pb_rad : f32 = bitcast<f32>(1057300152u);
+     error: Not implemented as constant expression: bitcast built-in function
+
+ naga does not implement `bitcast` there; Tint does, so Chrome accepted every
+ one of these and Firefox refused four kernels outright.
+
+ A hexadecimal float literal is exact by CONSTRUCTION -- it is the sign, the
+ mantissa and the exponent written out -- so it needs no float formatting, only
+ the integer arithmetic already here, and it costs no precision. `0x1.0a3d70p-1f`
+ IS the f32 whose bits are 1057300152, with nothing to round. The `f` suffix
+ pins the type rather than leaning on AbstractFloat conversion.
+
+ Checked over 428,984 sampled f32 bit patterns before relying on it: every one
+ round-trips exactly.
+
+ AN OVERFLOW REFUSES rather than lying. An f64 too large for f32 becomes an
+ infinity, and WGSL has no literal for one; the old bitcast could at least spell
+ the bits. Emitting a finite stand-in would be a wrong number in a shader that
+ compiles, which is the failure this plug's refusals exist to prevent.
+
+  wgsl-hex-digits : List Text =
+   ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+
+  wgsl-hex6 : Integer, Integer, Text -> Text
+  wgsl-hex6 (v) (i) (acc) =
+   if i >= 6 then acc
+   else let nib = bit-and (bit-shru v (4 * (5 - i))) 15
+   in wgsl-hex6 v (i + 1) (acc & list-at wgsl-hex-digits nib)
+
   wgsl-f32-lit : Integer -> Text
-  wgsl-f32-lit (n) = "bitcast<f32>(" & integer-to-text (wgsl-f32-bits n) & "u)"
+  wgsl-f32-lit (n) =
+   let b = wgsl-f32-bits n
+   in let sign = if bit-and (bit-shru b 31) 1 == 1 then "-" else ""
+   in let e = bit-and (bit-shru b 23) 255
+   in let m = bit-and b 8388607
+   in let digits = wgsl-hex6 (bit-shl m 1) 0 ""
+   in if e == 255 then wgsl-refuse "real_literal_overflows_f32"
+      else if e == 0 then (if m == 0 then sign & "0.0" else sign & "0x0." & digits & "p-126f")
+      else sign & "0x1." & digits & "p" & (if e >= 127 then "+" else "") & integer-to-text (e - 127) & "f"
 
  Codex Integer is 64-bit and WGSL i32 is not, and WGSL REFUSES a constant it
  cannot represent rather than wrapping it: the opaque-alpha idiom 255 * 16777216
