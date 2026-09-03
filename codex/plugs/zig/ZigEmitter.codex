@@ -2815,15 +2815,25 @@ Section: Apply Emission
   zig-closure-pass : Integer, Integer -> Text
   zig-closure-pass (n) (i) =
    if i >= n then ""
-   else let one = "p" & integer-to-text i
+   else let one = "_cp" & integer-to-text i
    in if i == n - 1 then one else one & ", " & zig-closure-pass n (i + 1)
+
+ A CLOSURE PARAMETER IS IN THE EMITTER'S NAMESPACE, NOT THE PROGRAM'S.
+ These were `p0`, `p1`, ... and zig forbids shadowing, so a Codex definition
+ with a local of the same name emitted invalid zig -- "function parameter 'p0'
+ shadows local constant from outer scope", and nothing here could see it
+ because the collision is with a name the SOURCE chose. Update 54 made it live:
+ check-chapter's CHECK-REG instrumentation binds p0..p5.
+
+ `_cp` puts them where `_Env`, `_ctx` and `__lam_` already are. A Codex
+ identifier cannot sanitize into that prefix.
 
   zig-closure-params : CodexType, Integer, List (Integer between 0 and 4294967295) -> Text
   zig-closure-params (ty) (i) (scope) =
    when zig-fn-spine ty
     is FunTy (p) (fnrow) (r) ->
      let rest = zig-closure-params r (i + 1) scope
-     in "p" & integer-to-text i & ": " & emit-zig-type p scope
+     in "_cp" & integer-to-text i & ": " & emit-zig-type p scope
       & (if text-length rest == 0 then "" else ", " & rest)
     is otherwise -> ""
 
@@ -2844,7 +2854,7 @@ Section: Apply Emission
 
   zig-closure-pass-tail : Integer, Integer -> Text
   zig-closure-pass-tail (i) (n) =
-   if i >= n then "" else ", p" & integer-to-text i & zig-closure-pass-tail (i + 1) n
+   if i >= n then "" else ", _cp" & integer-to-text i & zig-closure-pass-tail (i + 1) n
 
   zig-closure-call-body : Text, Integer, Text, Integer, Integer, Integer, Text -> Text
   zig-closure-call-body (n) (nargs) (ev) (flat) (rem) (d) (targs) =

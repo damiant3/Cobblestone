@@ -6662,6 +6662,28 @@ advanced: `apps/classics-test` moved off `undefined local variable $real_to_int`
 to a wrong answer. The fix state was hashed before the control ran and verified
 after restoring it.
 
+## 2.20 -- CONTRIBUTED by Steve Howell (PR pending, 2026-09-03): an emitted closure parameter was named `p0`, which zig refuses when the Codex source has its own `p0`
+
+`zig-closure-pass` and `zig-closure-params` named a lambda's parameters `p0`,
+`p1`, ... Zig forbids shadowing, so a Codex definition holding a local of the
+same name emitted invalid zig -- "function parameter 'p0' shadows local
+constant from outer scope" -- and nothing in the emitter could see it coming,
+because the colliding name is one the SOURCE chose.
+
+Update 54 made it live. `check-chapter`'s CHECK-REG instrumentation binds
+`p0`..`p5` (`"CHECK-REG tdm=" & show (p1 - p0) & ...`), and `check-chapter`
+also builds its slug cache with a comprehension, which is a closure. That put
+a `p0` parameter inside a scope already holding a `p0` constant.
+
+`_cp` puts closure parameters where `_Env`, `_ctx` and `__lam_` already are:
+the emitter's own namespace, which a Codex identifier cannot sanitize into.
+The class of defect is the general one -- an emitter naming anything in the
+program's namespace is one source identifier away from a collision -- and this
+fix closes the instance rather than the class.
+
+MEASURED: the compiler transpiles and `native/codexir` builds. NOT MEASURED:
+Damian's gate; no non-zig plug touched. Steve Howell's lane (COMPILER-13).
+
 ## 2.18 -- DONE 2026-09-01 (contributed by Steve Howell, PRs 111 and 112; absorbed by red): the wasm plug's silent wrong answers, the 4 MiB truncation, the 4 GiB ceiling and the corpus refusals; the zig plug streams
 
 Both PRs were cut from Update 53 and rebased here onto the 60-of-60 emitter
