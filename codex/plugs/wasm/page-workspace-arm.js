@@ -78,7 +78,7 @@ sandbox.window.__EMBED = { 'Codex.codex': compilerSrc.toString('base64') };
 // arm 1, so a workspace that had never run build-page.ps1 refused the whole
 // suite with a readFileSync stack instead of a finding. Absence is recorded and
 // reported by the arm that reaches for it.
-for (const m of ['codex-compiler.wasm', 'pe-bytes.wasm', 'evidence-stdio.wasm', 'javascript-stdio.wasm', 'elf-bytes.wasm', 'riscv-stdio.wasm', 'arm64-stdio.wasm']) {
+for (const m of ['codex-compiler.wasm', 'pe-bytes.wasm', 'evidence-stdio.wasm', 'javascript-stdio.wasm', 'elf-bytes.wasm', 'riscv-stdio.wasm', 'arm64-stdio.wasm', 'sign-bytes.wasm']) {
   const p = path.join(repo, 'codex\\plugs\\wasm\\build-output\\page', m);
   if (fs.existsSync(p)) sandbox.window.__EMBED[m] = fs.readFileSync(p).toString('base64');
   else absentModules.push(m);
@@ -360,6 +360,32 @@ const drive = `
   if (!stdinCdx) return 'FAIL: the stdin control compile produced no CDX';
   if (outCdx.length !== stdinCdx.length) return 'FAIL: disk and stdin CDX differ in size, ' + outCdx.length + ' vs ' + stdinCdx.length;
   for (let i = 0; i < outCdx.length; i++) if (outCdx[i] !== stdinCdx[i]) return 'FAIL: disk and stdin CDX differ at byte ' + i;
+
+  // SIGN arm: the in-tab signer over the CDX the DISK arm just proved. The
+  // page's own functions with an explicit seed (this bed has no localStorage,
+  // and the key store is the only thing that needs one). Four questions: the
+  // public key is 32 bytes; the signed CDX keeps its length and moves only
+  // bytes 40..135; the key field equals the mode-0 key; a wrong mode refuses
+  // by name rather than answering bytes.
+  let signNote = 'absent';
+  if (window.__EMBED['sign-bytes.wasm']) {
+    const seedArm = new Uint8Array(32); for (let i = 0; i < 32; i++) seedArm[i] = (i * 7 + 3) & 255;
+    const pubArm = await signPublicKey(seedArm);
+    if (pubArm.length !== 32) return 'FAIL: the sign module answered ' + pubArm.length + ' bytes for a public key';
+    const signedArm = await signCdxBytes(seedArm, stdinCdx);
+    if (signedArm.length !== stdinCdx.length) return 'FAIL: signed CDX is ' + signedArm.length + ' bytes, unsigned was ' + stdinCdx.length;
+    let movedOutside = 0, keyField = true;
+    for (let i = 0; i < stdinCdx.length; i++) {
+      if ((i < 40 || i >= 136) && signedArm[i] !== stdinCdx[i]) movedOutside++;
+      if (i >= 40 && i < 72 && signedArm[i] !== pubArm[i - 40]) keyField = false;
+    }
+    if (movedOutside) return 'FAIL: signing moved ' + movedOutside + ' byte(s) outside the key and signature fields';
+    if (!keyField) return 'FAIL: the signed CDX carries a key field that is not the mode-0 public key';
+    let refusedByName = false;
+    try { await signModuleRun(7, seedArm, null); } catch (e) { refusedByName = String(e.message || e).indexOf('REFUSED unknown mode') === 0; }
+    if (!refusedByName) return 'FAIL: mode 7 was not refused by name';
+    signNote = 'key ' + pubArm.length + ' bytes, signed CDX ' + signedArm.length + ' bytes with only 40..135 moved, mode 7 refused';
+  }
   // The control may TRAP rather than print: zeroed sectors mount a volume
   // whose bytes-per-sector is 0 and the fat16 arithmetic divides by it. A
   // trap answers the control's question the same way a refusal does -- the
@@ -624,6 +650,7 @@ const drive = `
          '; binary evidence claims the CDX, text control does not' +
          '; DISK round trip in linear memory: OUT.CDX off the mutated image byte-identical to stdin (' + outCdx.length + ' bytes), no-disk control refused' +
          '; ELF ' + elfNote +
+         '; sign ' + signNote +
          '; board ' + boardNote +
          '; ' + libNote;
 })()

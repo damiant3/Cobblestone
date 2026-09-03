@@ -207,6 +207,54 @@ elseif (-not (Test-Path $n2)) { Fail 'arm5 the refused line took the rest of the
 elseif ($rc5 -eq 0) { Fail 'arm5 the supervisor reported success despite refusing a line' }
 else { Ok 'arm5 a nested -run-list line is refused and the next line still runs' }
 
+# ---- arm 6: a short WRITE is reported, not merely a short capture --------
+# Arm 4 is about bytes that never reached the BUFFER. This is about bytes that
+# reached the buffer and not the FILE. fwrite's return and fclose's were
+# discarded and "Output: N bytes" printed output_len whatever had happened, so
+# a truncated file read as a healthy run and -run-list reported that same
+# self-made number as output=N: nothing in the loop compared what codex-vm
+# said it wrote against what the file holds. The real causes are a full disk
+# and an I/O error, so CODEX_VM_SHORT_WRITE_AT arranges it instead.
+#
+# The cap is the CONTROL's own length minus one, so exactly one byte is lost
+# and the arm asserts dropped=1 rather than "nonzero". A fixed cap would pass
+# vacuously the day the canary's output falls below it (L-VACUOUS).
+$s1 = Join-Path $work 's1.txt'
+$s2 = Join-Path $work 's2.txt'
+$list6 = Join-Path $work 'arm6.txt'
+Set-Content $list6 @( (Format-RunLine @('-kernel', $canary, '-output', $s1, '-mem', '3072', '-headless')) )
+Invoke-RunList $list6 (Join-Path $work 'arm6-ctl.err') | Out-Null
+# @() at the call site, not inside Get-EndLines: a function returning a
+# one-element array hands back the ELEMENT, and every arm above happens to
+# expect two or more lines so none of them met it.
+$ctl = @(Get-EndLines (Join-Path $work 'arm6-ctl.err'))
+$ctlLen = if (Test-Path $s1) { (Get-Item $s1).Length } else { 0 }
+
+if ($ctl.Count -ne 1) { Fail "arm6 control expected 1 END line, saw $($ctl.Count)" }
+elseif ($ctlLen -lt 2) { Fail "arm6 the canary wrote $ctlLen byte(s); too little to truncate, so the arm would pass vacuously" }
+elseif (-not ($ctl[0] -match 'dropped=0')) { Fail 'arm6 the control reported a drop of its own' }
+elseif (-not ($ctl[0] -match "output=$ctlLen\b")) { Fail "arm6 the control said output=? but the file holds $ctlLen bytes" }
+else {
+    $cap = $ctlLen - 1
+    $list6b = Join-Path $work 'arm6b.txt'
+    Set-Content $list6b @( (Format-RunLine @('-kernel', $canary, '-output', $s2, '-mem', '3072', '-headless')) )
+    $env:CODEX_VM_SHORT_WRITE_AT = "$cap"
+    try { Invoke-RunList $list6b (Join-Path $work 'arm6.err') | Out-Null }
+    finally { Remove-Item Env:\CODEX_VM_SHORT_WRITE_AT -ErrorAction SilentlyContinue }
+    $inj = @(Get-EndLines (Join-Path $work 'arm6.err'))
+    $injText = (Get-Content (Join-Path $work 'arm6.err') -Raw)
+    $injLen = if (Test-Path $s2) { (Get-Item $s2).Length } else { -1 }
+
+    $bad = 0
+    if ($inj.Count -ne 1) { Fail "arm6 injected expected 1 END line, saw $($inj.Count)"; $bad++ }
+    if ($injLen -ne $cap) { Fail "arm6 the injection was meant to leave $cap bytes on disk and left $injLen"; $bad++ }
+    if (-not ($injText -match 'the loss is the WRITER')) { Fail 'arm6 the short write did not name the writer as the layer'; $bad++ }
+    if (-not ($injText -match 'guest serial byte\(s\) DROPPED')) { Fail 'arm6 the short write did not use the phrase every reader refuses on'; $bad++ }
+    if ($inj.Count -eq 1 -and -not ($inj[0] -match 'dropped=1\b')) { Fail "arm6 one lost byte was not counted as dropped=1: $($inj[0])"; $bad++ }
+    if ($inj.Count -eq 1 -and -not ($inj[0] -match "output=$cap\b")) { Fail "arm6 output= still reported the buffer's length rather than the bytes written: $($inj[0])"; $bad++ }
+    if ($bad -eq 0) { Ok "arm6 a write short by one byte is counted, named as the WRITER, and output= reports what reached the file ($cap of $ctlLen)" }
+}
+
 } finally {
     if ($KeepWork) { Write-Host "work kept at $work" }
     else { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }

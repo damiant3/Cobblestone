@@ -1,0 +1,84 @@
+Chapter: SparkWasm
+  cites Foreword chapter Console
+  cites Math chapter Quaternion
+  cites Spark chapter MeshPrimitives
+  cites Spark chapter DepthBuffer
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneLight
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneNode
+  cites Spark chapter SceneRender
+  cites Spark chapter SparkDisplay
+
+ Browser entry point for Spark's software renderer. It renders the same scene
+ SparkGfxDemo does and blits it where a page can read it, so the pixels a
+ visitor sees are the ones bare metal draws.
+
+ SparkDisplay is untouched and needs no wasm variant. Every write it makes goes
+ through gd-fb-addr, and only gop-display-new knows the GOP address, so a
+ display record built here with a different address moves the whole surface
+ into WASM linear memory.
+
+ We say:
+
+Section: Framebuffer Reservation
+
+ The heap starts at the end of the data segment and grows upward, so a
+ framebuffer at a fixed address is overwritten by the first large allocation
+ unless the heap is moved above it first. spark-render advances the heap past
+ the reservation before it allocates anything, which is why the advance is the
+ first line of the act and not a note in the page.
+
+  spark-fb-width : Integer = 640
+
+  spark-fb-height : Integer = 480
+
+  spark-fb-base : Integer = 131072
+
+  spark-fb-bytes : Integer = 1228800
+
+  spark-heap-floor : Integer = 1359872
+
+  spark-display : GopDisplay
+  spark-display = GopDisplay {
+    gd-width = spark-fb-width,
+    gd-height = spark-fb-height,
+    gd-stride = spark-fb-width,
+    gd-fb-addr = spark-fb-base
+  }
+
+Section: Render
+
+  spark-render : [Console] Integer
+  spark-render = act
+    adv <- __heap-advance spark-heap-floor
+    let gd = spark-display
+    in let bg = gop-clear gd 2631720
+    in let cam = spark-camera-new spark-fb-width spark-fb-height
+    in let lights = [light-directional (vec3-new 0.577 0.577 0.577) #FFFFFF 0.9, light-ambient #FFFFFF 0.25]
+    in let cube = mesh-cube 1.0
+    in let sphere = mesh-sphere 0.7 10 16
+    in let plane = mesh-plane 8.0 8.0
+    in let ctx = render-ctx-new cam lights
+    in let ctx2 = render-ctx-add-mesh ctx cube
+    in let ctx3 = render-ctx-add-mesh ctx2 sphere
+    in let ctx4 = render-ctx-add-mesh ctx3 plane
+    in let sg = scene-graph-new
+    in let sg2 = sg-add-mesh sg "Cube" 0 0
+    in let sg3 = sg-set-position sg2 0 (vec3-new 0.0 0.6 0.0)
+    in let sg4 = sg-add-mesh sg3 "Sphere" 1 0
+    in let sg5 = sg-set-position sg4 1 (vec3-new 2.5 0.7 (-0.5))
+    in let sg6 = sg-add-mesh sg5 "Ground" 2 0
+    in let scene-fb = scene-render sg6 ctx4 spark-fb-width spark-fb-height 2631720
+    in let w1 = gop-blit gd scene-fb
+    in cube.tm-face-count + sphere.tm-face-count + plane.tm-face-count
+  end
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    faces <- spark-render
+    print-line-uni ("Spark WASM: " & show faces & " faces at " & show spark-fb-width & "x" & show spark-fb-height)
+  end
+
+Page 1

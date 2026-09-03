@@ -1,0 +1,1087 @@
+Chapter: Render
+  cites Gpu chapter DeviceMath
+  cites Foreword chapter ListUtils
+  cites Safari chapter Geom
+  cites Safari chapter World
+  cites Safari chapter Camera
+  cites Safari chapter Num
+  cites Safari chapter Pond
+  cites Safari chapter Tower
+  cites Safari chapter GuardRail
+  cites Safari chapter Cat
+  cites Safari chapter SafariCritter
+
+ The frame mapping: which segments are in view, and how a point authored in any of
+ their frames reaches the rider's.
+
+ A partial port of wasm/render.zig -- the spine, not yet the frame. render.zig is
+ the orchestrator: one 431-line `frame` that walks the chain, lays the road strip
+ and each corner's pavement, collects the trees, towers, critters, cats, rails and
+ the truck, depth-sorts the lot and draws it back to front. Every one of those
+ steps stands on `at (d, a, x)` -- the composition ported here -- so this is the
+ piece the rest of the module has to be built on.
+
+ WHAT IS PORTED HERE IS SHAPED BY WHAT RENDER.ZIG LETS ANYTHING SEE, and that is a
+ finding rather than a preference. Its entire public surface is four names --
+ Chain, Pose, at, and frame. buildChain, Mapper, mapPt, and all four ground and
+ rail emitters are private to the file. So `at` is the ONE piece of this chapter
+ with a direct oracle: a probe can call it and compare. The chain and the prev
+ mapper are graded against what the world and geom already expose, and RenderCheck
+ says exactly where that is weaker and why. PORTING_NOTES E1 records it as the
+ module's shape, not a gap in the check.
+
+ We say:
+
+Section: The Chain
+
+ How many segments ahead are drawn, and the fixed buffer that bounds them. The zig
+ carries both because its Chain is a fixed array that the look-ahead has to fit
+ inside; the port keeps both because the SMALLER of the two is what actually stops
+ the walk, and which one that is should stay visible rather than being folded into
+ one number.
+
+  look-ahead : Integer
+  look-ahead = 7
+
+  max-chain : Integer
+  max-chain = 8
+
+ THE CHAIN IS A LIST OF SEGMENT INDICES. The zig's Chain is an array plus a length
+ because it has to be; a Codex list carries its own length, so the record collapses
+ to the list and every `ch.len` becomes `list-length ch`.
+
+ Follow exit-to from `start`, stopping at the cap or at the terminus -- no segment
+ leads out of the finish line, so the chain ends there rather than looping. `n` is
+ how many indices are already down, which is the zig's `ch.len` read at the TOP of
+ its loop: the cap is tested before the index is appended, so a chain is never
+ longer than the cap and the terminus is never dropped for being one past it.
+
+  build-chain : List Segment, Integer -> List Integer
+  build-chain (segs) (start) = chain-from segs start 0
+
+  chain-from : List Segment, Integer, Integer -> List Integer
+  chain-from (segs) (s) (n) =
+    if n >= look-ahead then []
+    else if n >= max-chain then []
+    else if (list-at segs s).terminates then [s]
+    else [s] & chain-from segs (list-at segs s).exit-to (n + 1)
+
+Section: The Rider Pose
+
+ Where the rider sits on his CURRENT segment and which way he is looking. `hw` is
+ that segment's half width, and it is here rather than being looked up because his
+ `across` is centre-relative while to-rider wants from-the-left -- the same shift
+ Camera's port already threads.
+
+ The `yaw` handed in is not his heading alone. render.zig folds the distracted
+ gaze and the lean's head turn into it before building the pose, so the whole view
+ swings together with the backdrop; the port takes the sum, as the zig does.
+
+  Pose = record {
+    along : Real,
+    across : Real,
+    yaw : Real,
+    hw : Real
+  }
+
+Section: The Frame Composition
+
+ at maps (a, x) in chain[d]'s bottom-left frame into the rider's, composing the
+ joins down to chain[0] and then applying the rider transform. For d = 0 there is
+ nothing to compose and it is just to-rider.
+
+ THE JOINS COMPOSE BACKWARDS, from d down to 1, and the segment that supplies each
+ join is the one BELOW it. chain[k] leads to chain[k+1] through chain[k]'s OWN exit
+ turn, so stepping a point from chain[k+1]'s frame down into chain[k]'s reads
+ chain[k]'s length, angle, direction and width -- never chain[k+1]'s. Off by one
+ here and a distant segment lands rotated by its neighbour's turn, which does not
+ look like corruption; it looks like a plausible road bending the wrong way.
+
+  compose-down : List Segment, List Integer, Integer, Real, Real -> AX
+  compose-down (segs) (ch) (k) (a) (x) =
+    if k <= 0 then AX { a = a, x = x }
+    else let seg = list-at segs (list-at ch (k - 1))
+    in let p = next-to-cur a x seg.length seg.exit-angle seg.exit-right seg.width
+    in compose-down segs ch (k - 1) p.a p.x
+
+  at : List Segment, List Integer, Pose, Integer, Real, Real -> RiderPt
+  at (segs) (ch) (pose) (d) (a) (x) =
+    let p = compose-down segs ch d a x
+    in to-rider p.a p.x pose.along pose.across pose.yaw pose.hw
+
+Section: Mappers
+
+ How to express a point authored in SOME segment's frame in the rider's. A forward
+ joint maps both of its segments through the chain -- `at` at index d, above.
+
+ THE JOINT JUST BEHIND THE RIDER IS THE ONE THAT CANNOT, and it is the reason this
+ abstraction exists at all. Its `from` is the PREVIOUS segment, which is not on the
+ chain: the chain starts at the rider's current segment and only ever runs forward.
+ So a point authored there steps FORWARD through the join with cur-to-next -- the
+ inverse of what every other point does -- and then goes straight to the rider.
+ Without that pass the pavement the rider is still crossing vanishes the instant
+ his segment index flips, which is the bug the behind-joint pass was written for
+ and which the tower and the corner creatures each had in turn.
+
+ The zig's Mapper is a struct with a two-valued tag; the port keeps the struct and
+ narrows the tag to a Boolean, because a Codex variant carries no payload and the
+ four prev fields have to live somewhere. `is-chain` reads as the zig's
+ `kind == .chain`.
+
+  Mapper = record {
+    is-chain : Boolean,
+    d : Integer,
+    prev-len : Real,
+    prev-angle : Real,
+    prev-right : Boolean,
+    prev-w : Real
+  }
+
+ The zig defaults every Mapper field and fills in the one or two that matter. Codex
+ records are built whole, so the two constructors below take that place -- and they
+ also make the two kinds impossible to half-build, which the defaults did not.
+
+  chain-map : Integer -> Mapper
+  chain-map (d) =
+    Mapper { is-chain = True, d = d, prev-len = 0.0, prev-angle = 0.0, prev-right = False, prev-w = 0.0 }
+
+  prev-map : Segment -> Mapper
+  prev-map (s) =
+    Mapper { is-chain = False, d = 0, prev-len = s.length, prev-angle = s.exit-angle, prev-right = s.exit-right, prev-w = s.width }
+
+  map-pt : List Segment, List Integer, Pose, Mapper, Real, Real -> RiderPt
+  map-pt (segs) (ch) (pose) (m) (a) (x) =
+    if m.is-chain
+      then at segs ch pose m.d a x
+      else let p = cur-to-next a x m.prev-len m.prev-angle m.prev-right m.prev-w
+        in to-rider p.a p.x pose.along pose.across pose.yaw pose.hw
+
+Section: Collection Limits and Culls
+
+ Beyond this depth a tree draws as flat triangles rather than cone hulls, and the
+ crown's foliage gradient fades to solid over this much depth. Both are drawing
+ decisions, carried here because the collector is what measures the depth.
+
+  detail-dist : Real
+  detail-dist = 200.0
+
+  crown-shade-dist : Real
+  crown-shade-dist = 80.0
+
+ Scenery shorter than this on screen is skipped.
+
+  min-scenery-px : Real
+  min-scenery-px = 2.0
+
+  min-critter-px : Real
+  min-critter-px = 2.0
+
+ THE TWO CULLS ARE DELIBERATELY DIFFERENT AND BOTH MUST STAY LIVE. The SEGMENT
+ cull saves projecting a critter at all: trees hide the farm animals past a few
+ segments, and the corner safari animals carry a little further before they are
+ worth it. The SIZE cull then trims whatever is left down to a genuine speck. The
+ zig counts each separately every frame so a gate can assert both still fire -- a
+ reach so loose the size cull never fires, or so tight the segments do all the
+ work, is a bug in the budget. Those two counters are `pub`, and they are this
+ chapter's only observable output.
+
+  farm-seg-reach : Integer
+  farm-seg-reach = 3
+
+  safari-seg-reach : Integer
+  safari-seg-reach = 5
+
+ THE SIZE CULL MEASURES AGAINST THE STABLE BASE FOCAL, NOT THE LIVE ONE, and that
+ is not an oversight to tidy up. The focal pulls in to 0.35x during a lean, so
+ culling a critter on the live focal would yank close animals out of view the
+ instant the rider turns and pop them back when he straightened. Scenery -- trees
+ and the cat -- does cull on the live `cam-focal`. The two are different on
+ purpose and the port keeps them different.
+
+ The fixed-array caps. Codex lists carry their own length, so these bound nothing
+ here; they are ported because they are observable IF reached, and the truncation
+ below is where that would show. On this route they are not reached -- render's
+ own note puts the tree peak at about 37 percent of its cap -- so the port
+ truncates at the end where the zig stops mid-segment. Those differ only once a
+ cap is hit, and making them agree there would mean threading a running count
+ through every collector for a case this route cannot produce.
+
+  max-vis-trees : Integer
+  max-vis-trees = 640
+
+  max-vis-towers : Integer
+  max-vis-towers = 16
+
+  max-vis-critters : Integer
+  max-vis-critters = 320
+
+  max-vis-cats : Integer
+  max-vis-cats = 8
+
+Section: Tower Placement
+
+ Out past the corner, off to the right, and yawed. A long segment also stands its
+ own tower halfway down, that far LEFT of the centreline.
+
+  tower-beyond : Real
+  tower-beyond = 160.0
+
+  tower-right : Real
+  tower-right = 20.0
+
+  seg-tower-left : Real
+  seg-tower-left = 100.0
+
+ THE ZIG WRITES ITS OWN PI HERE, TRUNCATED, and the port copies the literal rather
+ than reaching for Trig's `deg`. render.zig says `30.0 * 3.14159265 / 180.0`, which
+ is 0.523598775 where thirty times a full-precision degree is 0.5235987756. The
+ difference is below f32 and would almost certainly vanish at the seam -- but a
+ port that silently improves a constant is a port whose disagreements no longer
+ mean what they say, so the truncation is kept.
+
+  tower-yaw : Real
+  tower-yaw = 30.0 * 3.14159265 / 180.0
+
+Section: The Collected Kinds
+
+ The zig collects into PARALLEL ARRAYS -- t-right, t-fwd, t-h, t-col -- because it
+ has to; the port collects records, which is the same data with the index made
+ implicit. What the port does NOT change is that each kind is collected into its
+ own list and merged only at the sort, because that is what makes the sort one
+ pass over everything rather than a sort per kind.
+
+  TreeItem = record {
+    right : Real,
+    fwd : Real,
+    height : Real,
+    color : Integer
+  }
+
+ A tower is collected as the RECIPE for its base rather than as points: the mapper
+ that owns its frame, its base centre and yaw, and the beacon's blink offset. It
+ has to be, because the four base corners are re-derived at draw time from the
+ yaw. `fwd` is the depth of the centre, which is what it sorts by.
+
+  TowerItem = record {
+    map : Mapper,
+    a0 : Real,
+    x0 : Real,
+    yaw : Real,
+    fwd : Real,
+    off : Real
+  }
+
+ Every emoji animal -- cows, bulls, the pig herd, the corner safari pair, the pond
+ ducks -- collects to the same billboard, which is why one list holds all of them.
+
+  Billboard = record {
+    right : Real,
+    fwd : Real,
+    height : Real,
+    cp : Integer,
+    face-right : Boolean
+  }
+
+ A placement carries its own verdict rather than being dropped, so the two culls
+ can be counted separately. `kept` says it survived both; `size-culled` says which
+ one rejected it. The near-plane cull is SILENT in the zig -- it `continue`s
+ without touching a counter -- so a placement can be neither kept nor size-culled,
+ and that third state is the one the port has to preserve.
+
+  Placed = record {
+    b : Billboard,
+    kept : Boolean,
+    size-culled : Boolean
+  }
+
+Section: The Crossing Cat
+
+ A cat is a billboard like the animals, but its across is not authored -- it comes
+ out of the crossing clock, keyed on the rider's ROAD-ALONG GAP to it. So it needs
+ something none of the other kinds do: how far down the route the chain segment it
+ stands on begins.
+
+ That gap starts NEGATIVE. The rider is already `along` into his own segment, so
+ the start of chain[0] is behind him, and each further segment adds its length.
+ The zig accumulates it as it walks; the port sums it, which is the same number
+ and does not need the walk to carry state.
+
+  chain-gap : List Segment, List Integer, Real, Integer -> Real
+  chain-gap (w) (ch) (along) (d) =
+    if d <= 0 then 0.0 - along
+    else chain-gap w ch along (d - 1) + (list-at w (list-at ch (d - 1))).length
+
+  CatItem = record {
+    right : Real,
+    fwd : Real,
+    height : Real,
+    pose-idx : Integer,
+    lift : Real
+  }
+
+ THE CAT CULLS ON THE LIVE FOCAL, like the trees and unlike the critters, and it
+ culls only at the near plane besides. render.zig argues the point: it is a flat
+ billboard at one depth, so as the rider passes, the whole still scales and slides
+ off to the left together -- it never streaks across the viewport the way a tower
+ can -- and culling it earlier would vanish the collapsed cat exactly as he
+ reaches it, instead of letting him pass it.
+
+  cat-item : List Segment, List Integer, Pose, Integer, Real, Real, Segment, Real -> List CatItem
+  cat-item (w) (ch) (pose) (d) (cf) (gap) (sg) (v) =
+    let st = cat-state sg.cat (gap + sg.cat.along) v
+    in let rp = at w ch pose d sg.cat.along (st.across + sg.width / 2.0)
+    in if rp.forward <= near then []
+      else if sg.cat.height / rp.forward * cf < min-scenery-px then []
+      else [CatItem { right = rp.right, fwd = rp.forward, height = sg.cat.height, pose-idx = st.pose-idx, lift = st.lift }]
+
+  seg-cat : List Segment, List Integer, Pose, Integer, Real, Real, Real -> List CatItem
+  seg-cat (w) (ch) (pose) (d) (cf) (along) (v) =
+    let sg = list-at w (list-at ch d)
+    in if sg.has-cat then cat-item w ch pose d cf (chain-gap w ch along d) sg v else []
+
+  walk-cats : List Segment, List Integer, Pose, Real, Real, Real, Integer -> List CatItem
+  walk-cats (w) (ch) (pose) (cf) (along) (v) (d) =
+    if d >= list-length ch then []
+    else (seg-cat w ch pose d cf along v) & walk-cats w ch pose cf along v (d + 1)
+
+Section: Placing Billboards
+
+ One rule for every emoji animal: map it into the rider frame, drop it if it is
+ behind the near plane, size-cull it if it would project shorter than the floor.
+
+  no-billboard : Billboard
+  no-billboard = Billboard { right = 0.0, fwd = 0.0, height = 0.0, cp = 0, face-right = False }
+
+  verdict : RiderPt, Real, Integer, Boolean -> Placed
+  verdict (rp) (h) (cp) (fr) =
+    if rp.forward <= near
+      then Placed { b = no-billboard, kept = False, size-culled = False }
+      else if h / rp.forward * focal < min-critter-px
+        then Placed { b = no-billboard, kept = False, size-culled = True }
+        else Placed { b = Billboard { right = rp.right, fwd = rp.forward, height = h, cp = cp, face-right = fr }, kept = True, size-culled = False }
+
+  place-critter : List Segment, List Integer, Pose, Integer, Real, Critter -> Placed
+  place-critter (segs) (ch) (pose) (d) (hw) (cr) =
+    let rp = at segs ch pose d cr.along (cr.across + hw)
+    in verdict rp cr.height cr.codepoint cr.face-right
+
+ The behind joint's critters map FORWARD through the join instead, so they take
+ the mapper rather than a chain index. Same verdict.
+
+  place-critter-via : List Segment, List Integer, Pose, Mapper, Real, Critter -> Placed
+  place-critter-via (segs) (ch) (pose) (m) (hw) (cr) =
+    let rp = map-pt segs ch pose m cr.along (cr.across + hw)
+    in verdict rp cr.height cr.codepoint cr.face-right
+
+ A DUCK IS AUTHORED IN THE CORNER FRAME AND MAPS RAW -- no half-width shift. Its
+ `cu` is the bottom-left across directly, which is why the pond's negative cu sits
+ LEFT of the left edge rather than left of the centre line. Getting this wrong
+ would slide the whole pond half a lane and still look like a pond.
+
+  place-duck : List Segment, List Integer, Pose, Mapper, Real, Duck -> Placed
+  place-duck (segs) (ch) (pose) (m) (from-len) (dk) =
+    let rp = map-pt segs ch pose m (from-len + dk.p.cv) dk.p.cu
+    in verdict rp duck-height duck-codepoint dk.face-right
+
+Section: Harvesting a Placement List
+
+ Collect the survivors and count the size-culled, over a list of placements. Two
+ walks over one list rather than one walk returning a pair, because a pair would
+ need a record whose only purpose is to be taken apart again.
+
+  kept-of : List Placed, Integer -> List Billboard
+  kept-of (ps) (i) =
+    if i >= list-length ps then []
+    else if (list-at ps i).kept then [(list-at ps i).b] & kept-of ps (i + 1)
+    else kept-of ps (i + 1)
+
+  size-culled-of : List Placed, Integer -> Integer
+  size-culled-of (ps) (i) =
+    if i >= list-length ps then 0
+    else if (list-at ps i).size-culled then 1 + size-culled-of ps (i + 1)
+    else size-culled-of ps (i + 1)
+
+  place-all : List Segment, List Integer, Pose, Integer, Real, List Critter, Integer -> List Placed
+  place-all (segs) (ch) (pose) (d) (hw) (crs) (i) =
+    if i >= list-length crs then []
+    else [place-critter segs ch pose d hw (list-at crs i)] & place-all segs ch pose d hw crs (i + 1)
+
+  place-all-via : List Segment, List Integer, Pose, Mapper, Real, List Critter, Integer -> List Placed
+  place-all-via (segs) (ch) (pose) (m) (hw) (crs) (i) =
+    if i >= list-length crs then []
+    else [place-critter-via segs ch pose m hw (list-at crs i)] & place-all-via segs ch pose m hw crs (i + 1)
+
+  place-ducks : List Segment, List Integer, Pose, Mapper, Real, Integer -> List Placed
+  place-ducks (segs) (ch) (pose) (m) (from-len) (i) =
+    if i >= list-length ducks then []
+    else [place-duck segs ch pose m from-len (list-at ducks i)] & place-ducks segs ch pose m from-len (i + 1)
+
+Section: Collecting Trees
+
+ Trees are authored centre-relative, so the half width shifts them to
+ from-the-left. They cull on the LIVE focal, unlike the critters above.
+
+  place-tree : List Segment, List Integer, Pose, Integer, Real, Real, Tree -> List TreeItem
+  place-tree (segs) (ch) (pose) (d) (cf) (hw) (tr) =
+    let rp = at segs ch pose d tr.along (tr.across + hw)
+    in if rp.forward <= near then []
+      else if tr.height / rp.forward * cf < min-scenery-px then []
+      else [TreeItem { right = rp.right, fwd = rp.forward, height = tr.height, color = tr.color }]
+
+  seg-trees : List Segment, List Integer, Pose, Integer, Real, Real, List Tree, Integer -> List TreeItem
+  seg-trees (segs) (ch) (pose) (d) (cf) (hw) (trs) (i) =
+    if i >= list-length trs then []
+    else (place-tree segs ch pose d cf hw (list-at trs i)) & seg-trees segs ch pose d cf hw trs (i + 1)
+
+Section: Collecting Towers
+
+ A tower is collected only if its base CENTRE is in front of the near plane, and
+ the centre is what it sorts by. The exit tower is keyed off its own segment; the
+ mid-tower adds sixty so a long segment's two towers do not blink in step.
+
+  tower-if-ahead : List Segment, List Integer, Pose, Mapper, Real, Real, Real, Integer -> List TowerItem
+  tower-if-ahead (segs) (ch) (pose) (m) (a0) (x0) (yw) (key) =
+    let c = map-pt segs ch pose m a0 x0
+    in if c.forward <= near then []
+      else [TowerItem { map = m, a0 = a0, x0 = x0, yaw = yw, fwd = c.forward, off = beacon-offset-for key }]
+
+  seg-towers : List Segment, List Integer, Pose, Integer -> List TowerItem
+  seg-towers (segs) (ch) (pose) (d) =
+    let sg = list-at segs (list-at ch d)
+    in (tower-if-ahead segs ch pose (chain-map d) (sg.length + tower-beyond) (sg.width / 2.0 + tower-right) tower-yaw (list-at ch d))
+       & (seg-mid-tower segs ch pose d)
+
+  seg-mid-tower : List Segment, List Integer, Pose, Integer -> List TowerItem
+  seg-mid-tower (segs) (ch) (pose) (d) =
+    let sg = list-at segs (list-at ch d)
+    in if sg.has-mid-tower
+      then tower-if-ahead segs ch pose (chain-map d) (sg.length / 2.0) (sg.width / 2.0 - seg-tower-left) 0.0 (list-at ch d + 60)
+      else []
+
+Section: Collecting Critters
+
+  is-pond : Creature -> Boolean
+  is-pond (c) =
+   when c
+    is DuckPond -> True
+    is NoCreature -> False
+    is Elephant -> False
+    is Giraffe -> False
+    is Zebra -> False
+    is Rhino -> False
+
+ The farm animals of one chain segment, if it is near enough to be worth
+ projecting at all. Cows first, then the pig herd -- the order the zig fills its
+ array in, which is the order ties break in at the sort.
+
+  seg-farm : List Segment, List Integer, Pose, Integer, Real -> List Placed
+  seg-farm (segs) (ch) (pose) (d) (hw) =
+    let sg = list-at segs (list-at ch d)
+    in if d >= farm-seg-reach then []
+      else (place-all segs ch pose d hw sg.cows 0) & (place-all segs ch pose d hw sg.pigs 0)
+
+ The SEGMENT cull's tally: every farm animal on a chain segment beyond the reach,
+ counted without being placed. This is the counter that makes the chain's own
+ extent observable from outside render.zig, because it sums over exactly the chain
+ indices at or past the reach.
+
+  seg-cull-count : List Segment, List Integer, Integer -> Integer
+  seg-cull-count (segs) (ch) (d) =
+    let sg = list-at segs (list-at ch d)
+    in if d >= farm-seg-reach then list-length sg.cows + list-length sg.pigs else 0
+
+ The corner pair at this segment's exit. Skipped at the terminus, which has no
+ exit corner, and beyond the safari reach.
+
+  seg-safari : List Segment, List Integer, Pose, Integer, Real -> List Placed
+  seg-safari (segs) (ch) (pose) (d) (hw) =
+    let sg = list-at segs (list-at ch d)
+    in if sg.terminates then []
+      else if d >= safari-seg-reach then []
+      else place-all segs ch pose d hw (corner-critters sg.exit-creature sg.length sg.exit-right hw) 0
+
+ The three ducks on the pond at this segment's exit. The pond's WATER and BANK are
+ ground quads and belong to the paint pass, not to this one; only the billboards
+ are collected for the sort.
+
+  seg-ducks : List Segment, List Integer, Pose, Integer -> List Placed
+  seg-ducks (segs) (ch) (pose) (d) =
+    let sg = list-at segs (list-at ch d)
+    in if d >= safari-seg-reach then []
+      else if is-pond sg.exit-creature then place-ducks segs ch pose (chain-map d) sg.length 0
+      else []
+
+ Everything one chain segment contributes to the billboard list, in the zig's own
+ fill order: farm animals, then the corner pair, then the ducks.
+
+  seg-billboards : List Segment, List Integer, Pose, Integer -> List Placed
+  seg-billboards (segs) (ch) (pose) (d) =
+    let hw = (list-at segs (list-at ch d)).width / 2.0
+    in (seg-farm segs ch pose d hw) & (seg-safari segs ch pose d hw) & (seg-ducks segs ch pose d)
+
+Section: Walking the Chain
+
+  walk-trees : List Segment, List Integer, Pose, Real, Integer -> List TreeItem
+  walk-trees (segs) (ch) (pose) (cf) (d) =
+    if d >= list-length ch then []
+    else (seg-trees segs ch pose d cf ((list-at segs (list-at ch d)).width / 2.0) (list-at segs (list-at ch d)).trees 0)
+         & walk-trees segs ch pose cf (d + 1)
+
+  walk-towers : List Segment, List Integer, Pose, Integer -> List TowerItem
+  walk-towers (segs) (ch) (pose) (d) =
+    if d >= list-length ch then []
+    else (seg-towers segs ch pose d) & walk-towers segs ch pose (d + 1)
+
+  walk-billboards : List Segment, List Integer, Pose, Integer -> List Placed
+  walk-billboards (segs) (ch) (pose) (d) =
+    if d >= list-length ch then []
+    else (seg-billboards segs ch pose d) & walk-billboards segs ch pose (d + 1)
+
+  walk-seg-cull : List Segment, List Integer, Integer -> Integer
+  walk-seg-cull (segs) (ch) (d) =
+    if d >= list-length ch then 0
+    else seg-cull-count segs ch d + walk-seg-cull segs ch (d + 1)
+
+Section: The Joint Just Behind
+
+ The segment the rider just left owns a corner, and everything on it -- pavement,
+ tower, creatures, pond -- pops out the instant his segment index flips unless it
+ is drawn through the join. The route is finite, so there is a previous segment
+ everywhere EXCEPT the start.
+
+ THE BEHIND CRITTERS TAKE NO REACH TEST. The forward ones are gated on
+ safari-seg-reach; this pair is one join away by construction, so the zig does not
+ test it and neither does the port.
+
+  behind-billboards : List Segment, List Integer, Pose, Integer -> List Placed
+  behind-billboards (segs) (ch) (pose) (prev-idx) =
+    let pv = list-at segs prev-idx
+    in (place-all-via segs ch pose (prev-map pv) (pv.width / 2.0) (corner-critters pv.exit-creature pv.length pv.exit-right (pv.width / 2.0)) 0)
+       & (behind-ducks segs ch pose pv)
+
+  behind-ducks : List Segment, List Integer, Pose, Segment -> List Placed
+  behind-ducks (segs) (ch) (pose) (pv) =
+    if is-pond pv.exit-creature then place-ducks segs ch pose (prev-map pv) pv.length 0 else []
+
+  behind-tower : List Segment, List Integer, Pose, Integer -> List TowerItem
+  behind-tower (segs) (ch) (pose) (prev-idx) =
+    let pv = list-at segs prev-idx
+    in tower-if-ahead segs ch pose (prev-map pv) (pv.length + tower-beyond) (pv.width / 2.0 + tower-right) tower-yaw prev-idx
+
+Section: The Corner's Outer Shoulders
+
+ Both the corner pavement and the guard rail hang off the same three points: each
+ segment's OUTER shoulder at the join, and the apex Q where the two extended
+ shoulders cross. Which edge is outer flips with the turn -- a right turn's outer
+ edge is the left one.
+
+  outer-cu : Boolean, Real -> Real
+  outer-cu (exit-right) (wd) = if exit-right then 0.0 else wd
+
+ Q is found by extending each shoulder one metre past the join and intersecting
+ the two lines. A real turn has a non-zero angle, so they are never parallel.
+
+  joint-apex : List Segment, List Integer, Pose, Mapper, Mapper, Real, Real, Real, Boolean -> RiderPt
+  joint-apex (segs) (ch) (pose) (from-map) (to-map) (from-len) (from-w) (to-w) (exit-right) =
+    let fcu = outer-cu exit-right from-w
+    in let tx = outer-cu exit-right to-w
+    in line-meet (map-pt segs ch pose from-map from-len fcu) (map-pt segs ch pose from-map (from-len + 1.0) fcu) (map-pt segs ch pose to-map 0.0 tx) (map-pt segs ch pose to-map 1.0 tx)
+
+Section: The Guard Rail Path
+
+ Append points from `from` EXCLUSIVE to `to` inclusive at about one metre spacing
+ -- one rail post per metre along a straight leg of the corner. At least one step
+ always, so a zero-length leg still lands its endpoint.
+
+  leg-steps : Real -> Integer
+  leg-steps (dist) =
+    let r = round-real dist
+    in real-to-int (if r < 1.0 then 1.0 else r)
+
+  leg-points : RiderPt, Real, Real, Integer, Integer -> List RiderPt
+  leg-points (from) (dr) (df) (steps) (i) =
+    if i > steps then []
+    else let t = real-from-int i / real-from-int steps
+    in [RiderPt { right = from.right + dr * t, forward = from.forward + df * t }] & leg-points from dr df steps (i + 1)
+
+  push-leg : RiderPt, RiderPt -> List RiderPt
+  push-leg (from) (to) =
+    let dr = to.right - from.right
+    in let df = to.forward - from.forward
+    in leg-points from dr df (leg-steps (real-sqrt (dr * dr + df * df))) 1
+
+ The run-up counts DOWN to the end edge, so the last point of the run-up is the
+ outer corner itself and the first leg starts from it.
+
+  rail-run-up : List Segment, List Integer, Pose, Mapper, Real, Real, Integer -> List RiderPt
+  rail-run-up (segs) (ch) (pose) (m) (from-len) (cu) (k) =
+    if k < 0 then []
+    else [map-pt segs ch pose m (from-len - real-from-int k) cu] & rail-run-up segs ch pose m from-len cu (k - 1)
+
+  rail-run-out : List Segment, List Integer, Pose, Mapper, Real, Integer -> List RiderPt
+  rail-run-out (segs) (ch) (pose) (m) (x) (k) =
+    if k > rail-runout then []
+    else [map-pt segs ch pose m (real-from-int k) x] & rail-run-out segs ch pose m x (k + 1)
+
+ The whole corner path: run-up along the from segment's outer shoulder, the two
+ legs into and out of the apex, and the run-out along the to segment's. guard_rail
+ then raises that path to a bar strip and its posts.
+
+  joint-rail-path : List Segment, List Integer, Pose, Mapper, Mapper, Real, Real, Real, Boolean -> List RiderPt
+  joint-rail-path (segs) (ch) (pose) (from-map) (to-map) (from-len) (from-w) (to-w) (exit-right) =
+    let fcu = outer-cu exit-right from-w
+    in let tx = outer-cu exit-right to-w
+    in let of-pt = map-pt segs ch pose from-map from-len fcu
+    in let ot-pt = map-pt segs ch pose to-map 0.0 tx
+    in let q = joint-apex segs ch pose from-map to-map from-len from-w to-w exit-right
+    in (rail-run-up segs ch pose from-map from-len fcu rail-runout) & (push-leg of-pt q) & (push-leg q ot-pt) & (rail-run-out segs ch pose to-map tx 1)
+
+  joint-rails : List Segment, List Integer, Pose, Mapper, Mapper, Real, Real, Real, Boolean -> List RailPoly
+  joint-rails (segs) (ch) (pose) (from-map) (to-map) (from-len) (from-w) (to-w) (exit-right) =
+    rail-emit (joint-rail-path segs ch pose from-map to-map from-len from-w to-w exit-right)
+
+ Every FORWARD joint on the chain, in chain order, then the joint behind. That is
+ the order the zig's rail store holds them in, and the order ties break in.
+
+  walk-rails : List Segment, List Integer, Pose, Integer -> List RailPoly
+  walk-rails (segs) (ch) (pose) (d) =
+    if d + 1 >= list-length ch then []
+    else (joint-rails segs ch pose (chain-map d) (chain-map (d + 1)) (list-at segs (list-at ch d)).length (list-at segs (list-at ch d)).width (list-at segs (list-at ch (d + 1))).width (list-at segs (list-at ch d)).exit-right)
+         & walk-rails segs ch pose (d + 1)
+
+  behind-rails : List Segment, List Integer, Pose, Integer -> List RailPoly
+  behind-rails (segs) (ch) (pose) (prev-idx) =
+    let pv = list-at segs prev-idx
+    in joint-rails segs ch pose (prev-map pv) (chain-map 0) pv.length pv.width (list-at segs (list-at ch 0)).width pv.exit-right
+
+Section: The Chased Truck
+
+ Walk the truck's LEAD -- its route distance minus the rider's -- forward along
+ the chain to find which segment its centre lands on. It sorts at that centre-line
+ depth, one item however long the body is.
+
+  TruckAt = record {
+    present : Boolean,
+    d : Integer,
+    along : Real,
+    fwd : Real
+  }
+
+  no-truck : TruckAt
+  no-truck = TruckAt { present = False, d = 0, along = 0.0, fwd = 0.0 }
+
+  truck-step : List Segment, List Integer, Pose, Real, Integer -> TruckAt
+  truck-step (segs) (ch) (pose) (remaining) (d) =
+    if d >= list-length ch then no-truck
+    else if remaining > (list-at segs (list-at ch d)).length
+      then truck-step segs ch pose (remaining - (list-at segs (list-at ch d)).length) (d + 1)
+      else truck-here segs ch pose remaining d
+
+  truck-here : List Segment, List Integer, Pose, Real, Integer -> TruckAt
+  truck-here (segs) (ch) (pose) (remaining) (d) =
+    let c = at segs ch pose d remaining ((list-at segs (list-at ch d)).width / 2.0)
+    in if c.forward > near
+      then TruckAt { present = True, d = d, along = remaining, fwd = c.forward }
+      else no-truck
+
+ A lead of zero or less means the truck is level with or behind the rider, and it
+ is simply not drawn -- the zig does not clamp it forward.
+
+  truck-at : List Segment, List Integer, Pose, Real, Real -> TruckAt
+  truck-at (segs) (ch) (pose) (along) (lead) =
+    if lead > 0.0 then truck-step segs ch pose (along + lead) 0 else no-truck
+
+Section: The Depth Sort
+
+ One order over everything that stands up off the ground, far to near, so a tree
+ occludes a rail and a rail occludes a cow by honest depth rather than by paint
+ order. This is what guard_rail's collect-then-sort design exists to feed, and why
+ its RailPoly carries a `fwd` it never draws with.
+
+  Kind =
+   | KTree
+   | KTower
+   | KCow
+   | KCat
+   | KTruck
+   | KRail
+
+  Item = record {
+    fwd : Real,
+    kind : Kind,
+    i : Integer
+  }
+
+  tree-items : List TreeItem, Integer -> List Item
+  tree-items (ts) (i) =
+    if i >= list-length ts then []
+    else [Item { fwd = (list-at ts i).fwd, kind = KTree, i = i }] & tree-items ts (i + 1)
+
+  tower-items : List TowerItem, Integer -> List Item
+  tower-items (ts) (i) =
+    if i >= list-length ts then []
+    else [Item { fwd = (list-at ts i).fwd, kind = KTower, i = i }] & tower-items ts (i + 1)
+
+  cow-items : List Billboard, Integer -> List Item
+  cow-items (bs) (i) =
+    if i >= list-length bs then []
+    else [Item { fwd = (list-at bs i).fwd, kind = KCow, i = i }] & cow-items bs (i + 1)
+
+  cat-items : List CatItem, Integer -> List Item
+  cat-items (cs) (i) =
+    if i >= list-length cs then []
+    else [Item { fwd = (list-at cs i).fwd, kind = KCat, i = i }] & cat-items cs (i + 1)
+
+  rail-items : List RailPoly, Integer -> List Item
+  rail-items (rs) (i) =
+    if i >= list-length rs then []
+    else [Item { fwd = (list-at rs i).fwd, kind = KRail, i = i }] & rail-items rs (i + 1)
+
+  truck-items : TruckAt -> List Item
+  truck-items (t) = if t.present then [Item { fwd = t.fwd, kind = KTruck, i = 0 }] else []
+
+ THE SORT MUST BE STABLE AND THE ZIG'S IS. Its insertion loop moves a key left
+ only while the element before it is STRICTLY nearer-to-far -- `items[j-1].fwd <
+ key.fwd` -- so equal depths keep the order they were merged in. That matters more
+ here than it looks: a rail bar and its post share a corner and can land on the
+ same depth, and so can two roadside trees on opposite shoulders.
+
+ `core/Sort` EXISTS AND MUST NOT BE SUBSTITUTED HERE, which is worth saying before
+ the merge is described, because the shape of this chapter invites the swap. The
+ foreword's `sort-by : List a, (a, a -> Integer) -> List a` looks like exactly what
+ this wants and is an in-place QUICKSORT with median-of-three pivoting. Quicksort
+ swaps across equal keys; it is not stable and its chapter claims no stability.
+
+ STABILITY IS LOAD-BEARING HERE AND THE EVIDENCE IS A BUG THAT HAPPENED. Ties are
+ real -- render.zig sorts by an f32 depth and equal depths keep merge order -- and
+ PORTING_NOTES D9 records a rail post and a rail bar swapping places in a
+ 3,091-command stream, one adjacent transposition with every other command
+ identical, invisible to every per-module check because both modules were right.
+ Handing this to `sort-by` would reintroduce that class silently and only the
+ whole-frame check would ever say so. De-duplicating against the foreword is right
+ far more often than it is wrong; this is one of the times it is wrong.
+
+ THE PORT SORTS BY MERGING RATHER THAN BY INSERTING, and that is the one place in
+ this chapter where the algorithm departs from the zig on purpose. A stable merge
+ sort and a stable insertion sort produce the SAME total order -- same comparison,
+ same tie rule -- so nothing observable changes. What changes is the cost, and on
+ persistent lists the difference is not a constant factor.
+
+ Insertion sort on a mutable array shifts elements in place. On a Codex list there
+ is nothing to shift: rebuilding the tail past the insertion point allocates a list
+ per element, so ONE insert is quadratic in allocations and the whole sort is
+ cubic. Measured, it is not slow but fatal -- seven hundred items across eight
+ frames exhausted codexzig's whole 4 GiB bump heap, which never reclaims (C6). The
+ merge is quadratic in copies and comes in around a hundred megabytes.
+
+ So the rule this is an instance of: PORTING AN ALGORITHM FAITHFULLY MEANS PORTING
+ ITS ANSWER, NOT ITS COST MODEL. An in-place algorithm carried literally onto
+ persistent lists can gain a whole complexity class, and the bump heap turns that
+ into a crash rather than a wait. See PORTING_NOTES E4.
+
+  rest-from : List Item, Integer -> List Item
+  rest-from (ys) (j) =
+    if j >= list-length ys then []
+    else [list-at ys j] & rest-from ys (j + 1)
+
+ Merge two runs already in far-to-near order. `a` wins ties -- the test asks
+ whether b is STRICTLY deeper -- which is what makes the merge stable and matches
+ the zig's strict `<`.
+
+  merge-items : List Item, List Item, Integer, Integer -> List Item
+  merge-items (a) (b) (i) (j) =
+    if i >= list-length a then rest-from b j
+    else if j >= list-length b then rest-from a i
+    else if deeper-than (list-at b j).fwd (list-at a i).fwd
+      then [list-at b j] & merge-items a b i (j + 1)
+      else [list-at a i] & merge-items a b (i + 1) j
+
+ THE SORT DECLINES TO ORDER TWO DEPTHS IT CANNOT TELL APART, and that is the one
+ place this chapter's comparison is not the zig's character for character. The
+ zig's key is an f32; the port's is a Real, which is f64 in every plug. Two depths
+ that differ by less than the f32 grid are THE SAME NUMBER in the game -- its sort
+ sees a tie and keeps merge order -- while the port can see a difference and would
+ order them by it. Sorting on precision the oracle does not have is not fidelity;
+ it is the port inventing an order.
+
+ So `deeper-than` is a strict comparison with half an f32 ulp of slack, and the
+ slack is measured rather than chosen. A rail post and a rail bar in the whole
+ frame check land within 6e-8 of each other and swap without it; at 2e-8 they
+ still swap, so the gap is between a sixth and a half of an ulp. Half an ulp is
+ the largest threshold that cannot tie two depths the game holds apart, since two
+ distinct f32s differ by a whole one.
+
+ A grader that measures inversions has to use the same rule -- RenderCheck's does,
+ and its own prose says why. A property asserted at a finer resolution than the
+ sort works at reports the rule as a defect.
+
+  sort-tie : Real
+  sort-tie = 0.00000006
+
+  deeper-than : Real, Real -> Boolean
+  deeper-than (x) (y) = x - y > sort-tie * real-max (real-abs y) 1.0
+
+  sort-items : List Item -> List Item
+  sort-items (xs) =
+    if list-length xs <= 1 then xs
+    else merge-items (sort-items (list-take xs (list-length xs / 2))) (sort-items (list-drop xs (list-length xs / 2))) 0 0
+
+Section: The Frame's Collection
+
+ Everything the chain walk gathers, plus the two cull tallies and the one depth
+ order over the lot. What this does NOT carry is the ground -- the road strips,
+ the corner pavement and the pond's water and bank are painted inside the same
+ walk in the zig, but they are quads on the floor and never enter the sort, so
+ they belong to the paint pass and are not ported here.
+
+ ALL SEVEN KINDS ARE COLLECTED NOW. The cat was the last, and what unblocked it
+ was not writing the logarithm its `pow(b, 0.7)` seemed to need: 0.75 is dyadic
+ where 0.7 is not, so the front-loaded leap is a pair of square roots and the
+ approximation is bounded at 8.6 cm for two frames. Safari chapter Cat argues it.
+
+  Collected = record {
+    trees : List TreeItem,
+    towers : List TowerItem,
+    cows : List Billboard,
+    cats : List CatItem,
+    rails : List RailPoly,
+    truck : TruckAt,
+    order : List Item,
+    cull-seg : Integer,
+    cull-size : Integer
+  }
+
+  prev-index : Integer -> Integer
+  prev-index (seg-idx) = if seg-idx > 0 then seg-idx - 1 else 0
+
+  all-towers : List Segment, List Integer, Pose, Integer -> List TowerItem
+  all-towers (segs) (ch) (pose) (seg-idx) =
+    if seg-idx > 0
+      then (walk-towers segs ch pose 0) & (behind-tower segs ch pose (seg-idx - 1))
+      else walk-towers segs ch pose 0
+
+  all-placed : List Segment, List Integer, Pose, Integer -> List Placed
+  all-placed (segs) (ch) (pose) (seg-idx) =
+    if seg-idx > 0
+      then (walk-billboards segs ch pose 0) & (behind-billboards segs ch pose (seg-idx - 1))
+      else walk-billboards segs ch pose 0
+
+  all-rails : List Segment, List Integer, Pose, Integer -> List RailPoly
+  all-rails (segs) (ch) (pose) (seg-idx) =
+    if seg-idx > 0
+      then (walk-rails segs ch pose 0) & (behind-rails segs ch pose (seg-idx - 1))
+      else walk-rails segs ch pose 0
+
+ The merge order is the zig's own array order -- trees, towers, billboards, the
+ truck, then the rails -- and since the sort is stable it is also the order equal
+ depths come out in.
+
+  collect : List Segment, Integer, Pose, Real, Real, Real, Real -> Collected
+  collect (segs) (seg-idx) (pose) (cf) (along) (v) (truck-pos) =
+    let ch = build-chain segs seg-idx
+    in let placed = all-placed segs ch pose seg-idx
+    in let trees = list-take (walk-trees segs ch pose cf 0) max-vis-trees
+    in let towers = list-take (all-towers segs ch pose seg-idx) max-vis-towers
+    in let cows = list-take (kept-of placed 0) max-vis-critters
+    in let cats = list-take (walk-cats segs ch pose cf along v 0) max-vis-cats
+    in let rails = all-rails segs ch pose seg-idx
+    in let tk = truck-at segs ch pose along (truck-pos - route-distance segs seg-idx along)
+    in Collected {
+      trees = trees,
+      towers = towers,
+      cows = cows,
+      cats = cats,
+      rails = rails,
+      truck = tk,
+      order = sort-items ((tree-items trees 0) & (tower-items towers 0) & (cow-items cows 0) & (cat-items cats 0) & (truck-items tk) & (rail-items rails 0)),
+      cull-seg = walk-seg-cull segs ch 0,
+      cull-size = size-culled-of placed 0
+    }
+
+Section: The Ground
+
+ The road surface and everything paved: road strips, each corner's approach and
+ pavement, and the pond's water and bank. These are quads on the FLOOR. They never
+ enter the depth sort -- they are painted first, in walk order, and everything that
+ stands up is sorted and painted over them.
+
+  road-color : Integer
+  road-color = 3421500
+
+ Road strips are sliced this long so a bend reads smooth rather than as one long
+ flat quad cutting the curve.
+
+  road-chunk : Real
+  road-chunk = 25.0
+
+ Metres of approach road a joint paints behind its end edge. It is what covers the
+ joint when the joint is the one BEHIND the rider.
+
+  entry-road-dist : Real
+  entry-road-dist = 40.0
+
+ A ground vertex drops below the rider's tangent plane by the curvature at its
+ horizontal distance, which is what bends the road toward a finite horizon instead
+ of a vanishing point at infinity. The sign is the thing to get right: ground-drop
+ returns a positive distance and the height is its NEGATIVE.
+
+  ground-vert : RiderPt -> Vec3
+  ground-vert (p) =
+    Vec3 { right = p.right, forward = p.forward, height = 0.0 - ground-drop p.right p.forward }
+
+  ground-verts : List RiderPt, Integer -> List Vec3
+  ground-verts (ps) (i) =
+    if i >= list-length ps then []
+    else [ground-vert (list-at ps i)] & ground-verts ps (i + 1)
+
+ THE EIGHT-POINT GUARD IS THE ZIG'S FIXED BUFFER AND IT IS KEPT. A caller handing
+ in more than eight points gets nothing at all rather than a truncated polygon,
+ which is the zig's behaviour and is the safer of the two: a silently shortened
+ ground quad would be a wrong shape painted confidently.
+
+  emit-ground-color : List RiderPt, Integer, Real, Real -> List DrawCmd
+  emit-ground-color (ps) (color) (cf) (view-w) =
+    if list-length ps > 8 then []
+    else ground-clip (clip-near (ground-verts ps 0) near) color cf view-w
+
+  ground-clip : List Vec3, Integer, Real, Real -> List DrawCmd
+  ground-clip (vs) (color) (cf) (view-w) =
+    if list-length vs < 3 then []
+    else push-poly color (project-all vs cf view-w 0)
+
+  emit-ground : List RiderPt, Real, Real -> List DrawCmd
+  emit-ground (ps) (cf) (view-w) = emit-ground-color ps road-color cf view-w
+
+Section: The Road Strip
+
+ The zig takes the ceiling of length over the chunk size and floors it at one
+ chunk. Codex's foreword has a floor and no ceiling, so this is the identity
+ ceil x = -floor(-x) rather than a second rounding rule.
+
+  ceil-real : Real -> Real
+  ceil-real (x) = 0.0 - floor-real (0.0 - x)
+
+  chunks-for : Real -> Integer
+  chunks-for (len) =
+    let c = ceil-real (len / road-chunk)
+    in real-to-int (if c < 1.0 then 1.0 else c)
+
+ EACH SLICE IS CUT FROM THE SEGMENT LENGTH BY INDEX, not accumulated by adding a
+ chunk at a time. It matters: the zig computes a0 and a1 as length*i/n and
+ length*(i+1)/n, so the last slice ends exactly on the segment end and the strip
+ cannot drift short of the joint by an accumulated rounding.
+
+  road-slice : List Segment, List Integer, Pose, Integer, Real, Real, Integer, Integer, Real, Real -> List DrawCmd
+  road-slice (segs) (ch) (pose) (d) (cf) (view-w) (ci) (n) (len) (wd) =
+    if ci >= n then []
+    else (emit-ground (slice-quad segs ch pose d ci n len wd) cf view-w)
+         & road-slice segs ch pose d cf view-w (ci + 1) n len wd
+
+  slice-quad : List Segment, List Integer, Pose, Integer, Integer, Integer, Real, Real -> List RiderPt
+  slice-quad (segs) (ch) (pose) (d) (ci) (n) (len) (wd) =
+    let a0 = len * real-from-int ci / real-from-int n
+    in let a1 = len * real-from-int (ci + 1) / real-from-int n
+    in [at segs ch pose d a0 0.0, at segs ch pose d a0 wd, at segs ch pose d a1 wd, at segs ch pose d a1 0.0]
+
+  seg-road : List Segment, List Integer, Pose, Integer, Real, Real -> List DrawCmd
+  seg-road (segs) (ch) (pose) (d) (cf) (view-w) =
+    let sg = list-at segs (list-at ch d)
+    in road-slice segs ch pose d cf view-w 0 (chunks-for sg.length) sg.length sg.width
+
+Section: A Joint's Ground
+
+ The approach road is the `from` segment's tail, its end edge drawn back
+ entry-road-dist. The corner pavement is a quad from the INNER fuse-corner out to
+ the outer apex Q: inner corner, `from`'s outer corner, Q, `to`'s outer corner.
+
+ THE INNER CORNER IS THE EDGE THE TURN GOES TOWARD and the outer is the one it
+ goes away from, so both flip with the turn direction and they flip oppositely.
+ Getting the pair the wrong way round still paints a quad -- just one folded
+ through the intersection.
+
+  joint-approach : List Segment, List Integer, Pose, Mapper, Real, Real -> List RiderPt
+  joint-approach (segs) (ch) (pose) (from-map) (from-len) (from-w) =
+    [map-pt segs ch pose from-map from-len 0.0,
+     map-pt segs ch pose from-map from-len from-w,
+     map-pt segs ch pose from-map (from-len - entry-road-dist) from-w,
+     map-pt segs ch pose from-map (from-len - entry-road-dist) 0.0]
+
+  joint-pavement : List Segment, List Integer, Pose, Mapper, Mapper, Real, Real, Real, Boolean -> List RiderPt
+  joint-pavement (segs) (ch) (pose) (from-map) (to-map) (from-len) (from-w) (to-w) (exit-right) =
+    let inner = map-pt segs ch pose from-map from-len (if exit-right then from-w else 0.0)
+    in let outer-from = map-pt segs ch pose from-map from-len (outer-cu exit-right from-w)
+    in let outer-to = map-pt segs ch pose to-map 0.0 (outer-cu exit-right to-w)
+    in let q = joint-apex segs ch pose from-map to-map from-len from-w to-w exit-right
+    in [inner, outer-from, q, outer-to]
+
+  emit-joint-ground : List Segment, List Integer, Pose, Mapper, Mapper, Real, Real, Real, Boolean, Real, Real -> List DrawCmd
+  emit-joint-ground (segs) (ch) (pose) (from-map) (to-map) (from-len) (from-w) (to-w) (exit-right) (cf) (view-w) =
+    (emit-ground (joint-approach segs ch pose from-map from-len from-w) cf view-w)
+    & (emit-ground (joint-pavement segs ch pose from-map to-map from-len from-w to-w exit-right) cf view-w)
+
+Section: The Pond's Ground
+
+ The water then the bank, authored in the incoming corner frame: corner (cu, cv)
+ is map (from-len + cv, cu). The ducks that float on it are billboards and were
+ collected for the depth sort; only the two ground shapes are painted here.
+
+  pond-shape : List Segment, List Integer, Pose, Mapper, Real, List PondPt, Integer -> List RiderPt
+  pond-shape (segs) (ch) (pose) (m) (from-len) (ps) (i) =
+    if i >= list-length ps then []
+    else [map-pt segs ch pose m (from-len + (list-at ps i).cv) (list-at ps i).cu] & pond-shape segs ch pose m from-len ps (i + 1)
+
+  emit-pond-ground : List Segment, List Integer, Pose, Mapper, Real, Real, Real -> List DrawCmd
+  emit-pond-ground (segs) (ch) (pose) (m) (from-len) (cf) (view-w) =
+    (emit-ground-color (pond-shape segs ch pose m from-len water-outline 0) water-color cf view-w)
+    & (emit-ground-color (pond-shape segs ch pose m from-len bank 0) bank-color cf view-w)
+
+Section: Walking the Ground
+
+ One chain segment's floor: its road strip, then its exit joint's ground when the
+ next segment is in view, then the pond at that exit if there is one. The pond
+ ground takes NO reach test -- the ducks on it do, but the water is painted
+ wherever the corner is drawn at all.
+
+  seg-ground : List Segment, List Integer, Pose, Integer, Real, Real -> List DrawCmd
+  seg-ground (segs) (ch) (pose) (d) (cf) (view-w) =
+    (seg-road segs ch pose d cf view-w)
+    & (seg-joint-ground segs ch pose d cf view-w)
+    & (seg-pond-ground segs ch pose d cf view-w)
+
+  seg-joint-ground : List Segment, List Integer, Pose, Integer, Real, Real -> List DrawCmd
+  seg-joint-ground (segs) (ch) (pose) (d) (cf) (view-w) =
+    if d + 1 >= list-length ch then []
+    else emit-joint-ground segs ch pose (chain-map d) (chain-map (d + 1)) (list-at segs (list-at ch d)).length (list-at segs (list-at ch d)).width (list-at segs (list-at ch (d + 1))).width (list-at segs (list-at ch d)).exit-right cf view-w
+
+  seg-pond-ground : List Segment, List Integer, Pose, Integer, Real, Real -> List DrawCmd
+  seg-pond-ground (segs) (ch) (pose) (d) (cf) (view-w) =
+    let sg = list-at segs (list-at ch d)
+    in if is-pond sg.exit-creature
+      then emit-pond-ground segs ch pose (chain-map d) sg.length cf view-w
+      else []
+
+  walk-ground : List Segment, List Integer, Pose, Real, Real, Integer -> List DrawCmd
+  walk-ground (segs) (ch) (pose) (cf) (view-w) (d) =
+    if d >= list-length ch then []
+    else (seg-ground segs ch pose d cf view-w) & walk-ground segs ch pose cf view-w (d + 1)
+
+  behind-ground : List Segment, List Integer, Pose, Integer, Real, Real -> List DrawCmd
+  behind-ground (segs) (ch) (pose) (prev-idx) (cf) (view-w) =
+    let pv = list-at segs prev-idx
+    in (emit-joint-ground segs ch pose (prev-map pv) (chain-map 0) pv.length pv.width (list-at segs (list-at ch 0)).width pv.exit-right cf view-w)
+       & (behind-pond-ground segs ch pose pv cf view-w)
+
+  behind-pond-ground : List Segment, List Integer, Pose, Segment, Real, Real -> List DrawCmd
+  behind-pond-ground (segs) (ch) (pose) (pv) (cf) (view-w) =
+    if is-pond pv.exit-creature
+      then emit-pond-ground segs ch pose (prev-map pv) pv.length cf view-w
+      else []
+
+ The whole floor for one frame, forward chain then the joint behind.
+
+  frame-ground : List Segment, Integer, Pose, Real, Real -> List DrawCmd
+  frame-ground (segs) (seg-idx) (pose) (cf) (view-w) =
+    let ch = build-chain segs seg-idx
+    in if seg-idx > 0
+      then (walk-ground segs ch pose cf view-w 0) & (behind-ground segs ch pose (seg-idx - 1) cf view-w)
+      else walk-ground segs ch pose cf view-w 0

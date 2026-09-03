@@ -29,6 +29,79 @@ count does.
 
 ## Done
 
+### Update 55 -- a copy-up drops a file whose target is writable, and submits the rest
+
+Found at the seed land, 2026-09-02 23:17. The release seed had been staged
+by hand over `seed/Codex.cdx` in the copy-up workspace (for the DDC, whose
+plug builder pins that path), so the file was writable. `p4 copy --from`
+answered `Can't clobber writable file` for that ONE path, integrated the
+other three, and `p4 submit` landed a changelist that carried the new
+digests and not the seed: main read `TechnicalDetails.md` for `81F9E817`
+over a seed that was still `B25B5E95`, and the token had been released on
+it. P-CLOBBER names this for adds; it is the same for a copy-up. Re-measure
+before every seed copy-up, and never stage an artifact by hand into a
+`-main` client:
+
+```powershell
+p4 -c <main-client> opened          # every file the copy meant to carry must be listed here
+p4 print -q -o $t //Codex/main/seed/Codex.cdx; (Get-FileHash $t).Hash   # after submit, whole-file
+```
+
+### Update 55 -- lane seeds are not gate seeds: the scratch path never passed -Repl
+
+Found across the release, 2026-09-02: every seed a lane landed (04BA03DB,
+6AD77CCB, A2E240BA, B25B5E95) differed from the full gate's one-pass fixed
+point of the same source by about 275,000 bytes, and each was a genuine
+fixed point of its own build. blu found the cause at 22:58:
+`build.ps1:260` builds the seed with `-Repl` (exit mode `ExitRepl`,
+`opening.codex:1599`) and the lanes' scratch fixed point never passed it, so
+a lane seed was a non-REPL compiler. P-REPL is in `PerforceProcess.md` now
+(blu). Re-measure at any seed land:
+
+```powershell
+# the lane's candidate must equal what build.ps1's Invoke-BuildCdx produces: -Repl -MemMB 3072
+build/compile.ps1 -Src build/output/Codex.codex -Out $c -Log $l -Repl -MemMB 3072 -Kernel seed/Codex.cdx
+```
+
+### Update 55 -- the seed on main was not the fixed point of its source, second release in a row
+
+Found at step 0b, 2026-09-02. The full gate at head 22163 compiled the source
+with the depot seed `04BA03DB` (fester, 22100) and converged in one pass on
+`BBB9907C`: 277,490 bytes differ outside the signature and the file is 8 bytes
+shorter. No compiler or foreword source moved after 22100, so the installed
+artifact was not the compiler its own CL description proved. This is Update
+54's entry again, one seed later, and the runner it asks for (a verdict file
+from THIS run and an install script that refuses anything else, CurrentPlan
+"THE SEED INSTALL IS GUARDED BY PROSE") is still not built: fester's
+`build/sign-seed.ps1` unit is the nearest owner. Re-measure at every release
+and after any seed land, whole-file and computed:
+
+```powershell
+# after a full gate at head: Sut must equal the DEPOT seed whole-file
+p4 print -q -o build-output/depot-seed.cdx //Codex/main/seed/Codex.cdx
+(Get-FileHash -Algorithm SHA256 build-output/depot-seed.cdx).Hash
+(Get-FileHash -Algorithm SHA256 build/output/Sut.cdx).Hash
+```
+
+### Update 55 -- trapping arithmetic reached tests no gate had run since it landed
+
+Found at step 0b, 2026-09-02, in the full gate's test-run phase: three chapters
+red at head with `!EXC=06`, every one a plain `Integer` op that used to wrap
+and now traps under COMPILER-36 (21676, 21798): `st-product` in the SafeTensors
+foreword chapter multiplied a declared shape, `spark-noise-test`'s own hash,
+and `numeric-test` feeding `newton` a diverging function whose recorded answer
+was wrap garbage. `-Internal` runs only the chapters that cite a changed
+chapter and nothing cites the compiler, so the full gate was the first runner
+to reach them (L-NOGATE, fourth instance). Fixed in 22173. The same class
+surfaced the same evening in the wasm plug's build of the arcade (games-backlog,
+reek). Re-measure after any CL that changes what an operator does at a
+boundary, before the release finds it:
+
+```powershell
+# the chapters with an .expected that no cited set reaches: run them, one guest at a time
+build/bvt.ps1 -CodexCdx seed/Codex.cdx -SubjectsFile <list of codex/test/lib and codex/test/apps chapters> -Jobs 1
+```
+
 ### Update 54 -- the seed on main was a pre-convergence Sut, and only the release's 4.3 check saw it
 
 Found at step 0b, 2026-09-01. The full gate at head 21221 built `FCBABF07` in

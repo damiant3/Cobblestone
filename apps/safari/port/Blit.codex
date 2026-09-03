@@ -1,0 +1,195 @@
+Chapter: Blit
+  cites Foreword chapter ListUtils
+  cites Safari chapter Num
+  cites Safari chapter Paint
+
+ The blitter's own arithmetic, in Codex.
+
+ THE ORACLE HERE IS JAVASCRIPT, not a game module, which makes this the second
+ chapter in judge/ whose answer does not come from zig. `HISTORICAL_WASM_ROOT/
+ blitter.js` -- the frozen original, which this project never edits -- owns a
+ shading recipe and four visibility thresholds, numbers chosen by eye in the one
+ file nothing in this project can run. Every other decision the game makes is
+ inside a scene checksum; these were inside nothing at all.
+
+ WHAT IS HERE AND WHAT IS NOT. Only the arithmetic. `ctx.fillStyle` wants a CSS
+ string and the guest has no business knowing that, so the colour crosses as a
+ packed integer and the string stays in the browser. The split is not a
+ compromise -- it is the actual boundary, and the JS half is about six lines.
+
+ THE JS NO LONGER COMPUTES THESE. `blit-expand` below runs the whole recipe over
+ a finished frame and rewrites the commands, so what crosses the wire is already
+ decided and `web/blitter.js` only paints.
+
+ IT DOES THAT WITHOUT MOVING THE GRADED SEAM, which is the reason it is a second
+ pass rather than a change to Render. `port/Paint.codex`'s returned `List DrawCmd`
+ is what nine checks in judge/ compare against paint.zig, and paint.zig is the
+ ORACLE this project exists to agree with. An expansion that runs AFTER that list
+ is complete leaves every one of those comparisons looking at the same thing it
+ looked at yesterday.
+
+ We say:
+
+Section: Colour
+
+ A colour is 0xRRGGBB packed into an Integer, one byte per channel, exactly as it
+ crosses the draw buffer.
+
+  chan-r : Integer -> Integer
+  chan-r (c) = bit-and (bit-shr c 16) 255
+
+  chan-g : Integer -> Integer
+  chan-g (c) = bit-and (bit-shr c 8) 255
+
+  chan-b : Integer -> Integer
+  chan-b (c) = bit-and c 255
+
+  pack-rgb : Integer, Integer, Integer -> Integer
+  pack-rgb (r) (g) (b) = bit-or (bit-or (bit-shl r 16) (bit-shl g 8)) b
+
+ Scale one channel and saturate at 255. Rounding is the game's `round-real`, which
+ ties AWAY FROM ZERO where JavaScript's `Math.round` ties toward +Infinity. The two
+ agree on every value this can be given -- a channel is 0..255 and a brightness
+ factor is never negative -- and they disagree at -0.5, which is why the agreement
+ is written down rather than assumed.
+
+  shade-chan : Integer, Real -> Integer
+  shade-chan (v) (f) =
+    let scaled = real-to-int (round-real (real-from-int v * f))
+    in if scaled > 255 then 255 else scaled
+
+  shade-color : Integer, Real -> Integer
+  shade-color (c) (f) =
+    pack-rgb (shade-chan (chan-r c) f) (shade-chan (chan-g c) f) (shade-chan (chan-b c) f)
+
+Section: Shading Across the Width
+
+ Darken both edges of a polygon and lift its middle, the whole effect scaled by a
+ strength the caller passes so the shading can fade with distance. This is a
+ shading MODEL and it belongs beside the geometry that decides how far away a thing
+ is, not in a renderer.
+
+ IT IS ABOUT POLYGONS AND NOT ABOUT TREES. Safari uses it for tree crowns and the
+ blitter's tag was called CROWN for that reason, which is exactly the kind of name
+ that stops a renderer being reusable: a building face in a night city takes the
+ same recipe. The mechanism is named here and the subject is not.
+
+ The three stop offsets are 0, 0.5 and 1 and are the canvas's business; only the
+ colours are computed here.
+
+  shade-edge-darken : Real = 0.4
+  shade-middle-lift : Real = 0.25
+
+  width-shade-edge : Integer, Real -> Integer
+  width-shade-edge (color) (strength) = shade-color color (1.0 - shade-edge-darken * strength)
+
+  width-shade-middle : Integer, Real -> Integer
+  width-shade-middle (color) (strength) = shade-color color (1.0 + shade-middle-lift * strength)
+
+ The three colours in stop order, which is the shape the blitter wants.
+
+  width-shade-stops : Integer, Real -> List Integer
+  width-shade-stops (color) (strength) =
+    [width-shade-edge color strength, width-shade-middle color strength, width-shade-edge color strength]
+
+Section: Worth Drawing
+
+ Below these a command is not worth emitting, let alone painting. They are the
+ guest's decisions and always were: it computes the radius and the alpha, so it
+ can as easily not write the command -- which would shrink the buffer as well as
+ the renderer.
+
+  min-disc-radius : Real = 0.5
+  min-disc-alpha : Real = 0.02
+  min-gradient-radius : Real = 0.5
+  min-shade-width : Real = 1.0
+
+  disc-visible : Real, Real -> Boolean
+  disc-visible (r) (alpha) = r >= min-disc-radius and alpha >= min-disc-alpha
+
+  radial-visible : Real -> Boolean
+  radial-visible (r) = r >= min-gradient-radius
+
+ A polygon narrower than a pixel gets a flat fill: the gradient has nowhere to go.
+
+  too-narrow-to-shade : Real, Real -> Boolean
+  too-narrow-to-shade (min-x) (max-x) = max-x - min-x < min-shade-width
+
+Section: The Expansion
+
+ Run the recipe over a finished frame. Every command the renderer produced goes in;
+ what comes out is what the canvas can paint without deciding anything.
+
+ THREE KINDS OF REWRITE, and they are the three kinds of decision the browser used
+ to make. A command below a threshold is DROPPED, so the buffer shrinks as well as
+ the renderer. A shaded polygon becomes either a flat fill or a span-shaded one,
+ with its three colours and its span computed here. Everything else passes through
+ untouched.
+
+ THE NEW TAG IS 2, and 2 was free: it used to be an emoji glyph the browser font
+ rasterised, and the critters have been baked to polygons since. It says a polygon
+ is filled with a symmetric three-stop gradient across a span -- edge colour, middle
+ colour, edge colour, at 0, 0.5 and 1 -- and it says nothing about why. The tag it
+ replaces carried a `strength` and left the renderer holding a darkening factor, a
+ lifting factor and a width floor; this one carries two colours and two x's.
+
+  span-lo : List Real, Integer, Real -> Real
+  span-lo (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else span-lo xs (i + 2) (if list-at xs i < acc then list-at xs i else acc)
+
+  span-hi : List Real, Integer, Real -> Real
+  span-hi (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else span-hi xs (i + 2) (if list-at xs i > acc then list-at xs i else acc)
+
+ A shaded polygon with nothing to shade is a flat one, and it keeps its points.
+
+  as-solid : DrawCmd -> DrawCmd
+  as-solid (c) =
+    DrawCmd { tag = 0, color = c.color, color2 = 0, strength = 0.0, geom = [], pts = c.pts }
+
+  as-span-shade : DrawCmd, Real, Real -> DrawCmd
+  as-span-shade (c) (lo) (hi) =
+    DrawCmd {
+      tag = 2,
+      color = width-shade-edge c.color c.strength,
+      color2 = width-shade-middle c.color c.strength,
+      strength = 0.0,
+      geom = [lo, hi],
+      pts = c.pts
+    }
+
+ A polygon with fewer than two points has no extent to read, so it cannot be
+ shaded. push-round-poly already refuses to emit one, and this says so rather than
+ indexing an empty list to find out.
+
+  expand-shade : DrawCmd -> DrawCmd
+  expand-shade (c) =
+    if c.strength <= 0.0 then as-solid c
+    else if list-length c.pts < 2 then as-solid c
+    else let lo = span-lo c.pts 0 (list-at c.pts 0)
+      in let hi = span-hi c.pts 0 (list-at c.pts 0)
+      in if too-narrow-to-shade lo hi then as-solid c else as-span-shade c lo hi
+
+ A disc carries its radius in `geom` and its alpha in `strength`; a radial fill
+ carries its radius third in `geom`, after the centre.
+
+  expand-cmd : DrawCmd -> List DrawCmd
+  expand-cmd (c) =
+    if c.tag == 1 then [expand-shade c]
+    else if c.tag == 3 then (if disc-visible (list-at c.geom 2) c.strength then [c] else [])
+    else if c.tag == 4 then (if radial-visible (list-at c.geom 2) then [c] else [])
+    else [c]
+
+ THE INDEX IS A PARAMETER AND NOT A WRAPPER'S SECRET. A Codex definition whose body
+ is a single application is inlined and never emitted, so a one-argument
+ `blit-expand cs = expand-from cs 0` would not exist for the shim to call
+ (PORTING_NOTES B12). The shim passes the 0.
+
+  blit-expand : List DrawCmd, Integer -> List DrawCmd
+  blit-expand (cs) (i) =
+    if i >= list-length cs then []
+    else expand-cmd (list-at cs i) & blit-expand cs (i + 1)
+
+Page 1

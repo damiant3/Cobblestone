@@ -82,6 +82,135 @@ Section: The Browser Interface
   sg-wasm-sets-here : SetGameState -> Integer
   sg-wasm-sets-here (s) = find-all-sets (s.tableau)
 
+Section: Playing By Hand
+
+ `find-all-sets` COUNTS the sets on the table, which tells a page how many
+ are there and not where any of them is, and `run-set-game` plays the whole
+ game in one call. Neither lets a person take a set. These do.
+
+ `sg-wasm-valid` compares three CARD IDS. Everything here works in tableau
+ INDICES instead, because that is what a click gives you, and the two are
+ easy to confuse: a tableau of twelve holds ids up to 80 at positions 0 to
+ 11, so passing an index where an id belongs is silently a different card
+ rather than an error.
+
+  sg-wasm-can-take : SetGameState, Integer, Integer, Integer -> Integer
+  sg-wasm-can-take (s) (i) (j) (k) =
+    let n = list-length (s.tableau)
+    in if i < 0 then 0
+    else if j < 0 then 0
+    else if k < 0 then 0
+    else if i >= n then 0
+    else if j >= n then 0
+    else if k >= n then 0
+    else if i == j then 0
+    else if i == k then 0
+    else if j == k then 0
+    else let a = set-card-from-id (list-at (s.tableau) i)
+    in let b = set-card-from-id (list-at (s.tableau) j)
+    in let c = set-card-from-id (list-at (s.tableau) k)
+    in if is-valid-set a b c then 1 else 0
+
+ Taking a set: the three go away and the table is refilled from the deck to
+ twelve. When the deck is short the table simply gets smaller, which is how
+ the end of the game arrives.
+
+  sg-keep-rest : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  sg-keep-rest (tab) (i) (j) (k) (n) (acc) =
+    if n >= list-length tab then acc
+    else if n == i then sg-keep-rest tab i j k (n + 1) acc
+    else if n == j then sg-keep-rest tab i j k (n + 1) acc
+    else if n == k then sg-keep-rest tab i j k (n + 1) acc
+    else sg-keep-rest tab i j k (n + 1) (list-push acc (list-at tab n))
+
+  sg-refill : List Integer, List Integer, Integer, Integer -> List Integer
+  sg-refill (tab) (deck) (i) (n) =
+    if i >= n then tab
+    else sg-refill (list-push tab (list-at deck i)) deck (i + 1) n
+
+  sg-wasm-take : SetGameState, Integer, Integer, Integer -> SetGameState
+  sg-wasm-take (s) (i) (j) (k) =
+    if sg-wasm-can-take s i j k == 0 then s
+    else let kept = sg-keep-rest (s.tableau) i j k 0 []
+    in let want = 12 - list-length kept
+    in let have = list-length (s.deck)
+    in let take-n = if have < want then have else want
+    in let filled = sg-refill kept (s.deck) 0 take-n
+    in let rest = set-drop (s.deck) take-n have []
+    in SetGameState { deck = rest, tableau = filled, found = s.found + 1, seed = s.seed }
+
+ WHERE a set is, rather than how many there are. Packed as
+ `i * 10000 + j * 100 + k`, and -1 when the table holds none, which is also
+ how the game ends: no set on the table and nothing left to deal.
+
+  sg-wasm-find : SetGameState -> Integer
+  sg-wasm-find (s) = sg-find-i s 0
+
+  sg-find-i : SetGameState, Integer -> Integer
+  sg-find-i (s) (i) =
+    if i >= list-length (s.tableau) then (-1)
+    else let m = sg-find-j s i (i + 1)
+    in if m >= 0 then m
+    else sg-find-i s (i + 1)
+
+  sg-find-j : SetGameState, Integer, Integer -> Integer
+  sg-find-j (s) (i) (j) =
+    if j >= list-length (s.tableau) then (-1)
+    else let m = sg-find-k s i j (j + 1)
+    in if m >= 0 then m
+    else sg-find-j s i (j + 1)
+
+  sg-find-k : SetGameState, Integer, Integer, Integer -> Integer
+  sg-find-k (s) (i) (j) (k) =
+    if k >= list-length (s.tableau) then (-1)
+    else if sg-wasm-can-take s i j k == 1 then i * 10000 + j * 100 + k
+    else sg-find-k s i j (k + 1)
+
+  sg-wasm-find-i : Integer -> Integer
+  sg-wasm-find-i (code) = if code < 0 then (-1) else code / 10000
+
+  sg-wasm-find-j : Integer -> Integer
+  sg-wasm-find-j (code) = if code < 0 then (-1) else rng-mod (code / 100) 100
+
+  sg-wasm-find-k : Integer -> Integer
+  sg-wasm-find-k (code) = if code < 0 then (-1) else rng-mod code 100
+
+ WHEN NO SET IS ON THE TABLE, DEAL THREE MORE. That is the real rule of Set
+ and the engine did not have it: `set-game-new` deals twelve and nothing
+ ever grew the table, so a table of twelve holding no set ended the game
+ with most of the deck unplayed. Measured before this was added: a run took
+ 17 sets and stopped with 18 cards still in the deck.
+
+ It also explains why `sg-wasm-take` refills only up to twelve. After a set
+ is taken from a table of fifteen the table drops to twelve and stays there,
+ which is what a real game does: the three extra were dealt because the
+ table was stuck, not because the table is fifteen now.
+
+  sg-wasm-can-deal : SetGameState -> Integer
+  sg-wasm-can-deal (s) =
+    if list-length (s.deck) == 0 then 0
+    else if sg-wasm-find s >= 0 then 0
+    else 1
+
+  sg-wasm-deal : SetGameState -> SetGameState
+  sg-wasm-deal (s) =
+    if sg-wasm-can-deal s == 0 then s
+    else let have = list-length (s.deck)
+    in let take-n = if have < 3 then have else 3
+    in let copy = set-take (s.tableau) 0 (list-length (s.tableau)) []
+    in let grown = sg-refill copy (s.deck) 0 take-n
+    in let rest = set-drop (s.deck) take-n have []
+    in SetGameState { deck = rest, tableau = grown, found = s.found, seed = s.seed }
+
+ Watch mode: take the first set on the table, deal three when there is none,
+ and answer the same state when neither is possible, which is the end.
+
+  sg-wasm-step : SetGameState -> SetGameState
+  sg-wasm-step (s) =
+    let m = sg-wasm-find s
+    in if m >= 0 then sg-wasm-take s (m / 10000) (rng-mod (m / 100) 100) (rng-mod m 100)
+    else sg-wasm-deal s
+
   sg-wasm-run : Integer -> Integer
   sg-wasm-run (seed) = run-set-game seed
 

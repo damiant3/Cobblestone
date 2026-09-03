@@ -1,0 +1,120 @@
+Chapter: SkyCheck
+  cites Foreword chapter Console
+  cites Foreword chapter ListUtils
+  cites Safari chapter Camera
+  cites Safari chapter Sky
+  cites Judge chapter Grade
+  cites Gold chapter SkyGold
+
+ Grade the Sky port against wasm/sky.zig.
+
+ Seam 1 on a clock. Every function is a pure function of the STEP, so both sides
+ walk the same table of steps in the same order.
+
+ THE TWO COLOUR STREAMS ARE GRADED EXACTLY, as integers, with no tolerance
+ anywhere near them. That is the whole point of this module: a colour one off is a
+ wrong colour, not a rounding difference, and it is also the first thing in this
+ port that could not be expressed at all before the plug learned real-to-int and
+ real-from-int. skyColor rounds a lerped channel and packs three of them; neither
+ half was reachable. See PORTING_NOTES A1 and plugs-backlog 2.03.
+
+ An exact gate over a ROUNDED quantity is a real bet, and it is worth saying what
+ is being bet. The port computes the channel in f64 and the game in f32, so a
+ channel that lands near a half could round to different integers on the two sides
+ and the colour would differ by one. That is not a tolerance to widen -- it would
+ be a genuine disagreement about a pixel's colour, and the right response would be
+ to say so, not to hide it. Fifteen steps across the whole clock are graded and
+ none of them lands there.
+
+ THE STEPS ARE THE CLOCK'S SHAPE, NOT COVERAGE: step 0, the squared ramp while the
+ sun is high, the disc's centre exactly on the horizon where the warmth peaks at
+ 0.99994, the moment it is FULLY SET -- which is the branch boundary inside
+ sun-set-fraction, and the table straddles it by four hundredths of a pixel -- and
+ well into night where both fractions clamp and stay clamped.
+
+ The placement is graded over eight headings crossing the visibility limit in both
+ directions, at two focals, so `visible` answers False as often as True.
+
+ SUN HEIGHT TAKES THE SCREEN-COORDINATE GATE, and that is not a loosening -- it is
+ the same cancellation D3 records, in its most extreme instance yet. A height is
+ 244 minus a term of nearly the same size, so the disc's centre ON the horizon is
+ a difference of two large numbers: 244 - 243.993609 = 0.006391. Measured there,
+ the f32-against-f64 gap is 2.6e-6 PIXELS in absolute terms -- nothing -- and
+ 4.1e-4 in relative terms, four hundred times a 1e-6 relative gate, because
+ cancellation amplifies by the 38,180 between 244 and 0.0064. The tree's horizon
+ case amplified by fifteen; this is the same defect of a purely relative gate,
+ three orders of magnitude worse.
+
+ These heights ARE screen pixels -- the module says so, they compare directly
+ against the mountain silhouettes -- so the mixed gate that grades every other
+ screen coordinate in this port is the one that belongs here.
+
+ ITS FLOOR IS 1e-4 AND NOT D3's 1e-3, because the floor is CALIBRATED to what it
+ has to admit and nothing more. Here that is one value, the 2.6e-6 at the horizon
+ crossing, so a 1e-3 floor would sit four hundred times above the gap it exists
+ for -- and it showed: perturbing sun-start-px by 2e-4 left this seam green while
+ two others reddened. At 1e-4 it admits the cancellation with forty times to spare
+ and catches that perturbation. Verified both ways. Everything else on
+ the clock is a fraction in 0..1 with no cancellation in it, and stays at 1e-6
+ relative.
+
+ We say:
+
+Section: The Clock
+
+  steps : List Real
+  steps = [0.0, 250.0, 500.0, 1000.0, 2000.0, 3000.0, 3500.0, 3983.0, 4000.0, 4400.0, 4734.0, 4800.0, 5200.0, 6000.0, 8000.0]
+
+
+Section: The Placement
+
+ Eight headings at two focals, the probe's order: every heading at the base focal,
+ then every heading at the pulled-in one.
+
+  headings : List Real
+  headings = [0.0 - 2.2176, 0.0 - 1.6, 0.0 - 1.0, 0.0, 1.0, 2.0, 3.0, 0.0 - 3.0]
+
+  probe-step : Real
+  probe-step = 3000.0
+
+  poses-at : Real, List Real, Integer -> List SunPos
+  poses-at (cf) (hs) (i) =
+    if i >= list-length hs then []
+    else [sun-pos (list-at hs i) probe-step cf camera-w] & poses-at cf hs (i + 1)
+
+  all-poses : List SunPos
+  all-poses = (poses-at focal headings 0) & poses-at (focal * 0.6) headings 0
+
+  pose-visible : List SunPos, Integer -> List Boolean
+  pose-visible (ps) (i) =
+    if i >= list-length ps then []
+    else [(list-at ps i).visible] & pose-visible ps (i + 1)
+
+  pose-x : List SunPos, Integer -> List Real
+  pose-x (ps) (i) =
+    if i >= list-length ps then []
+    else [(list-at ps i).x] & pose-x ps (i + 1)
+
+  pose-y : List SunPos, Integer -> List Real
+  pose-y (ps) (i) =
+    if i >= list-length ps then []
+    else [(list-at ps i).y] & pose-y ps (i + 1)
+
+  pose-scale : List SunPos, Integer -> List Real
+  pose-scale (ps) (i) =
+    if i >= list-length ps then []
+    else [(list-at ps i).scale] & pose-scale ps (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-px   "sky-height  " (list-map sun-height-px steps) g-sky-height 0.0001 0.000001)
+    print-line-uni (grade-rel  "sky-dusk    " (list-map sun-set-fraction steps) g-sky-dusk 0.000001)
+    print-line-uni (grade-rel  "sky-warmth  " (list-map sunset-warmth steps) g-sky-warmth 0.000001)
+    print-line-uni (grade-ints "sky-color   " (list-map sky-color steps) g-sky-color)
+    print-line-uni (grade-ints "sky-horizon " (list-map horizon-color steps) g-sky-horizon)
+    print-line-uni (grade-bools "sun-visible" (pose-visible all-poses 0) g-sun-visible)
+    print-line-uni (grade-px   "sun-x       " (pose-x all-poses 0) g-sun-x 0.001 0.000001)
+    print-line-uni (grade-px   "sun-y       " (pose-y all-poses 0) g-sun-y 0.001 0.000001)
+    print-line-uni (grade-rel  "sun-scale   " (pose-scale all-poses 0) g-sun-scale 0.000001)
+  end

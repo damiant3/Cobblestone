@@ -8,7 +8,11 @@
 #   [code bytes] [data bytes]
 #   [func entries: 2B name-len + name + 4B offset each]
 #
-# Use extract-x86-output.ps1 to create this from a compiler build.
+# NOTHING IN THE TREE PRODUCES THIS FILE. extract-x86-output.ps1 was the only
+# producer and was deleted 2026-09-01: it built the wire by sending an ELF mode
+# header, and compile-plain accepts only CDX, IR-UNI, IR-CCE, MEASURE and TEXT,
+# refusing the rest by name since main 20534. Reviving this plug means writing
+# an ELF emitter, not restoring a script.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string]$X86Input,

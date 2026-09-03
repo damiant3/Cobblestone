@@ -82,6 +82,78 @@ Section: The Browser Interface
   yh-wasm-turn : YahtzeeState -> YahtzeeState
   yh-wasm-turn (s) = yh-do-turn (yh-copy-state s)
 
+Section: Playing By Hand
+
+ `yh-do-turn` rolls three times, picks its own keeps and chooses its own
+ category, all in one call, so a person cannot get inside it. These are the
+ same steps taken one at a time.
+
+ HOW MANY ROLLS ARE LEFT IS NOT KEPT HERE. It is a fact about the turn in
+ progress, not about the game, and `YahtzeeState` has no room for it without
+ a new field on a record built in five places. The page counts the rolls, the
+ same way it holds which square you have picked up in every other game.
+
+ The keep mask arrives as five BITS rather than a list, because a browser
+ hands over one integer: bit i set means die i is held and does not roll
+ again. The engine's own `yh-reroll-some` reads a list where 1 means keep,
+ so `yh-keep-list` is the only translation.
+
+  yh-keep-list : Integer, Integer, List Integer -> List Integer
+  yh-keep-list (bits) (i) (acc) =
+    if i >= 5 then acc
+    else yh-keep-list (bits / 2) (i + 1) (list-push acc (rng-mod bits 2))
+
+  yh-wasm-roll : YahtzeeState -> YahtzeeState
+  yh-wasm-roll (s) =
+    let st = yh-copy-state s
+    in let r = rng-next (st.rng)
+    in YahtzeeState { scorecard = st.scorecard, scored = st.scored,
+                      dice = yh-roll-dice r, rng = r }
+
+  yh-wasm-reroll : YahtzeeState, Integer -> YahtzeeState
+  yh-wasm-reroll (s) (keep) =
+    if keep < 0 then s
+    else if keep > 31 then s
+    else let st = yh-copy-state s
+    in let r = rng-next (st.rng)
+    in let mask = yh-keep-list keep 0 []
+    in YahtzeeState { scorecard = st.scorecard, scored = st.scored,
+                      dice = yh-reroll-some (st.dice) mask r, rng = r }
+
+ Scoring the dice you are holding into a category you have not used. A
+ category already spent is refused rather than overwritten: in Yahtzee a
+ filled box is filled for the rest of the game, and a caller that ignores
+ the refusal would otherwise silently rewrite a score.
+
+  yh-wasm-take : YahtzeeState, Integer -> YahtzeeState
+  yh-wasm-take (s) (cat) =
+    if cat < 0 then s
+    else if cat > 12 then s
+    else if list-at (s.scored) cat == 1 then s
+    else let st = yh-copy-state s
+    in let sc = yh-score-category (st.dice) cat
+    in YahtzeeState { scorecard = list-set-at (st.scorecard) cat sc,
+                      scored = list-set-at (st.scored) cat 1,
+                      dice = st.dice, rng = st.rng }
+
+ What a category WOULD score with the dice on the table. Yahtzee is a game
+ of choosing where to spend a roll, and choosing without this is guesswork
+ rather than play.
+
+  yh-wasm-preview : YahtzeeState, Integer -> Integer
+  yh-wasm-preview (s) (cat) =
+    if cat < 0 then (-1)
+    else if cat > 12 then (-1)
+    else yh-score-category (s.dice) cat
+
+  yh-wasm-filled : YahtzeeState -> Integer
+  yh-wasm-filled (s) = yh-count-filled (s.scored) 0 0
+
+  yh-count-filled : List Integer, Integer, Integer -> Integer
+  yh-count-filled (sc) (i) (acc) =
+    if i >= 13 then acc
+    else yh-count-filled sc (i + 1) (acc + list-at sc i)
+
 Section: The Whole Game
 
   yh-wasm-run : Integer -> YahtzeeResult

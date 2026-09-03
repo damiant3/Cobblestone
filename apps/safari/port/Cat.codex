@@ -1,0 +1,301 @@
+Chapter: Cat
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Trig
+  cites Safari chapter Num
+
+ The cat's placement AND its crossing state.
+
+ A partial port of wasm/cat.zig: the `Cat` record, `CAT_ALONG` and `make`. That is
+ what world.zig needs to author a segment, and it is arithmetic over five
+ constants with no dependencies at all.
+
+ `draw` IS STILL DEFERRED AND THE REASON IS NOT DIFFICULTY. It reaches
+ `cat_frames.zig`, which is 434 KB of BAKED polygons -- and baked means GENERATED,
+ by ops/bake_cat running the real TypeScript drawing code through a recorder.
+ NOTES section 5 scopes that out and says how it should arrive when it does: teach
+ the baker a Codex emitter and the data ports itself. Hand-porting 434 KB of
+ generated coordinates would be the wrong shape of work and would rot the moment
+ the baker ran again.
+
+ But `state` is NOT drawing, and it is ported below. It picks which still to flip
+ to, how far across the cat has walked or leapt, and how high the hop is -- and
+ the pose it returns is an INDEX, a plain integer, not a polygon. Nothing in it
+ reaches the baked tables. So the cat can be placed, clocked and depth-sorted; it
+ just has no art yet, like every other animal on the route.
+
+ We say:
+
+Section: Dimensions
+
+  cat-height : Real
+  cat-height = 1.7
+
+ The desired spot down the road. world.zig rounds it up to just past a tree, so a
+ tree stands between the rider and the cat.
+
+  cat-along : Real
+  cat-along = 105.0
+
+ Clearance beyond the roadside tree line, and how far past the rounding tree it
+ sits.
+
+  cat-road-gap : Real
+  cat-road-gap = 1.5
+
+  cat-beyond-tree : Real
+  cat-beyond-tree = 2.0
+
+ Head-centre x in the unit frame, from the cat's anatomy.
+
+  cat-head-x : Real
+  cat-head-x = 0.0 - 0.48
+
+ The hind paw's reach in the landing pose, and how far past the left edge it
+ settles.
+
+  land-hind-reach : Real
+  land-hind-reach = 0.70 * cat-height
+
+  grass-toehold : Real
+  grass-toehold = 0.3
+
+Section: Placement
+
+  Cat = record {
+    along : Real,
+    start-across : Real,
+    mid-across : Real,
+    end-across : Real,
+    height : Real
+  }
+
+ The waiting spot is right of the road; mid-across is the anchor offset that puts
+ the head centre on the lane; end-across puts the hind paw barely onto the left
+ grass.
+
+  cat-make : Real, Real, Real -> Cat
+  cat-make (lane-half) (tree-offset) (tree-along) =
+    let tree-x = lane-half + tree-offset
+    in Cat {
+      along = tree-along + cat-beyond-tree,
+      start-across = tree-x + cat-road-gap,
+      mid-across = (0.0 - cat-head-x) * cat-height,
+      end-across = (0.0 - (lane-half + grass-toehold)) - land-hind-reach,
+      height = cat-height
+    }
+
+Section: The Crossing Window
+
+ The cat's crossing takes this many frames end to end: ten to enter the road,
+ twenty-four frozen in the headlight, and four to escape -- coil, airborne twice,
+ land, collapse. The rider's throttle gate reads it, which is why these three are
+ here while the poses they name are not.
+
+  enters-road-steps : Real
+  enters-road-steps = 10.0
+
+  frozen-steps : Real
+  frozen-steps = 24.0
+
+  escapes-steps : Real
+  escapes-steps = 4.0
+
+  cross-frames : Real
+  cross-frames = enters-road-steps + frozen-steps + escapes-steps
+
+ Metres of clear road kept between rider and cat.
+
+  road-buffer : Real
+  road-buffer = 3.0
+
+ Is the cat still ahead, beyond the buffer, AND inside the crossing window -- that
+ is, crossing in front of us right now? The rider's accel gate holds the throttle
+ while this holds: he stops CLOSING on the cat but never brakes.
+
+  cat-in-danger : Real, Real -> Boolean
+  cat-in-danger (gap-along) (v) =
+    let e = gap-along - road-buffer
+    in if e > 0.0 then e <= cross-frames * v else False
+
+
+Section: The Crossing Clock
+
+ Progress 0..1 from the rider's along-gap to the cat and his speed. The gap is
+ measured to a point road-buffer short of the cat, so he is clear with road still
+ to spare. A pure function of the clock, so it freezes on pause and scrubs on
+ reverse.
+
+  clamp01 : Real -> Real
+  clamp01 (x) = if x < 0.0 then 0.0 else (if x > 1.0 then 1.0 else x)
+
+  lerp : Real, Real, Real -> Real
+  lerp (a) (b) (t) = a + (b - a) * t
+
+  cross-t : Real, Real -> Real
+  cross-t (gap) (v) =
+    let e = gap - road-buffer
+    in if e <= 0.0 then 1.0
+      else if v <= 0.000001 then 0.0
+      else clamp01 (1.0 - e / (cross-frames * v))
+
+ THE RIDER'S ATTENTION ON THIS CAT, which is the one thing cat.zig computes that
+ is not about drawing or placing it. It feeds `camera.camFocal`: the lens pulls in
+ -- narrows -- as he watches the crossing, peaks at an exaggerated 1.8 as the cat
+ lands, and eases back over eighty-three frames once he is level with the landing
+ point. View only; nothing about the ride changes.
+
+ THE TWO HALVES RUN ON DIFFERENT CLOCKS and that is the whole shape of it. Ramping
+ UP is the crossing's own progress, so it tracks the cat; ramping DOWN is metres
+ behind him over his speed, so it tracks the RIDER. Reading the second as a
+ crossing progress would hold the lens narrow for as long as the cat took to
+ cross, which is not what a person's attention does.
+
+  focus-peak : Real
+  focus-peak = 1.8
+
+  focus-ramp-down : Real
+  focus-ramp-down = 83.0
+
+ Its own smoothstep rather than Gaze's, and the duplication is forced: World cites
+ this chapter to place a cat on every segment, and Gaze cites World, so citing
+ Gaze from here is a cycle. One flat namespace also means the two cannot share a
+ name (PORTING_NOTES B5).
+
+  cat-smoothstep : Real -> Real
+  cat-smoothstep (t) = t * t * (3.0 - 2.0 * t)
+
+  cat-focus : Real, Real -> Real
+  cat-focus (gap-along) (v) =
+    if v <= 0.000001 then 0.0
+    else if gap-along - road-buffer > 0.0 then cat-smoothstep (cross-t gap-along v) * focus-peak
+    else cat-focus-past (gap-along - road-buffer) v
+
+ Past the landing point: `e` is negative, so `0 - e` is how far behind him it is.
+
+  cat-focus-past : Real, Real -> Real
+  cat-focus-past (e) (v) =
+    (1.0 - cat-smoothstep (real-min ((0.0 - e) / v / focus-ramp-down) 1.0)) * focus-peak
+
+ Gait phase over a walk of `phase-len` steps: a whole number of leg cycles, so the
+ legs start and end at rest.
+
+  stride-steps : Real
+  stride-steps = 5.0
+
+  gait : Real, Real -> Real
+  gait (p) (phase-len) =
+    let c = round-real (phase-len / stride-steps)
+    in p * (if c < 1.0 then 1.0 else c) * two-pi
+
+Section: The Stills
+
+ Pose INDICES into cat_frames, which are plain integers. The frames themselves are
+ not ported; these say WHICH one, and that is the part this chapter owns.
+
+  pose-rest : Integer
+  pose-rest = 0
+
+  pose-stride : Integer
+  pose-stride = 1
+
+  pose-frozen : Integer
+  pose-frozen = 2
+
+  pose-coil : Integer
+  pose-coil = 3
+
+  pose-flight : Integer
+  pose-flight = 4
+
+  pose-land : Integer
+  pose-land = 5
+
+  pose-collapse : Integer
+  pose-collapse = 6
+
+  leap-pose-for : Real -> Integer
+  leap-pose-for (t) =
+    if t < 0.20 then pose-coil
+    else if t < 0.70 then pose-flight
+    else if t < 0.95 then pose-land
+    else pose-collapse
+
+  leap-height : Real
+  leap-height = 0.18
+
+Section: The Cat's State
+
+ Which still, how far across, and how high. Three phases: he walks in to the lane
+ centre, freezes in the headlight, then leaps clear.
+
+  CatState = record {
+    pose-idx : Integer,
+    across : Real,
+    lift : Real
+  }
+
+ THE AIRBORNE LATERAL IS AN APPROXIMATION AND IT IS THE ONLY ONE IN THIS PORT.
+
+ cat.zig front-loads the leap with `pow(b, 0.7)`. It is the only `pow` in the
+ whole game -- the sole other transcendental outside the trig is rider.zig's
+ `@exp`, which Num ports -- so the missing piece is a LOGARITHM, since pow is exp
+ of a log, and the foreword has none. Rather than write one for a single call
+ site, this uses `b^0.75`, which needs no logarithm at all: 0.75 is DYADIC where
+ 0.7 is not, so it is `sqrt(b * sqrt(b))` and square roots both languages already
+ have. Verified exact to 1.1e-16 against b^0.75.
+
+ THE COST IS BOUNDED AND MEASURED: |b^0.7 - b^0.75| peaks at 0.0254 near b = 0.27,
+ and it is zero at both ends of the leap, so the cat launches and lands in exactly
+ the right places and is at most 0.0254 of the crossing span off in between. The
+ span is 4.306 m -- mid-across 0.816 to end-across -3.490 -- so the bound is
+ 10.9 cm, for two frames, on a cat being driven past. Steve's call: the game
+ is not changed to suit the port, and the port does not need to be picture-perfect
+ to be useful. CatCheck grades this one seam at a gate sized to that bound and
+ says so; every other value here is graded at the ordinary width tolerance.
+
+  pow075 : Real -> Real
+  pow075 (b) = real-sqrt (b * real-sqrt b)
+
+  cat-state : Cat, Real, Real -> CatState
+  cat-state (c) (gap-along) (v) =
+    let step = cross-t gap-along v * cross-frames
+    in let escape-at = enters-road-steps + frozen-steps
+    in if step <= enters-road-steps then cat-entering c step
+      else if step <= escape-at then CatState { pose-idx = pose-frozen, across = c.mid-across, lift = 0.0 }
+      else cat-escaping c (step - escape-at)
+
+ ENTERING: he walks in to the lane centre, and the still snaps between rest and a
+ single mid-stride on the LIFTED half of the gait. The zig's `> 0` on the sine is
+ a plain comparison, not an approximate one, so it stays exact here.
+
+  cat-entering : Cat, Real -> CatState
+  cat-entering (c) (step) =
+    let p = if enters-road-steps > 0.0 then step / enters-road-steps else 1.0
+    in CatState {
+      pose-idx = if r-sin (gait p enters-road-steps) > 0.0 then pose-stride else pose-rest,
+      across = lerp c.start-across c.mid-across p,
+      lift = 0.0
+    }
+
+ ESCAPING, by whole escape-steps: under one he is coiled and still planted; one to
+ three he is airborne over two frames; past three he is down on the far side,
+ landing then collapsing.
+
+  cat-escaping : Cat, Real -> CatState
+  cat-escaping (c) (raw-k) =
+    let k = if raw-k > escapes-steps then escapes-steps else raw-k
+    in let pose = leap-pose-for (k / escapes-steps)
+    in if k < 1.0 then CatState { pose-idx = pose, across = c.mid-across, lift = 0.0 }
+      else if k < 3.0 then cat-airborne c pose ((k - 1.0) / 2.0)
+      else CatState { pose-idx = pose, across = c.end-across, lift = 0.0 }
+
+ b runs 0 at launch to 1 at touchdown. The lift is a low parabola -- zero, peak,
+ zero -- and is plain arithmetic; only the lateral needs the front-loading.
+
+  cat-airborne : Cat, Integer, Real -> CatState
+  cat-airborne (c) (pose) (b) =
+    CatState {
+      pose-idx = pose,
+      across = lerp c.mid-across c.end-across (pow075 b),
+      lift = leap-height * 4.0 * b * (1.0 - b)
+    }

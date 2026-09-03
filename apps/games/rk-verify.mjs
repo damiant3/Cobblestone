@@ -277,6 +277,203 @@ console.log(`rk-verify ${wasmPath}`);
      capped > 0, `${capped} undecided at the cap, ${decided} decided, longest ${longest} turns`);
 }
 
+// -- THE TURN IN STEPS ----------------------------------------------------
+// Everything above grades whole turns taken by the engine. From 2026-09-02
+// a turn is two phases a person can take one piece at a time, so these arms
+// grade the pieces: that placing puts down exactly one army where you said,
+// that an attack is refused unless it is legal, and that the turn ends when
+// the attacks run out.
+{
+  const bad = [];
+  let placed = 0, attacks = 0, refusals = 0, stops = 0;
+  for (let seed = 1; seed <= 40; seed++) {
+    let h = e.rk_new(seed, 4);
+    const me = e.rk_cur(h);
+    if (e.rk_phase(h) !== 0) bad.push(`seed ${seed}: opens in phase ${e.rk_phase(h)}`);
+    // The reinforcement is territories/3 or three, whichever is larger,
+    // plus continents. It is never nothing, so an opened turn always has a
+    // move in it.
+    if (e.rk_toplace(h) < 3) bad.push(`seed ${seed}: opened with ${e.rk_toplace(h)} to place`);
+    if (e.rk_toplace(h) !== e.rk_reinf(h, me)) {
+      bad.push(`seed ${seed}: opened with ${e.rk_toplace(h)}, reinforcements say ${e.rk_reinf(h, me)}`);
+    }
+
+    // You may not place on somebody else's territory, and a refusal must
+    // leave the board alone.
+    const theirs = [...Array(N).keys()].find(t => e.rk_owner(h, t) !== me);
+    if (theirs !== undefined) {
+      refusals++;
+      if (e.rk_canplace(h, theirs) === 1) bad.push(`seed ${seed}: offered a place on ${theirs}`);
+      if (e.rk_place(h, theirs) !== h) bad.push(`seed ${seed}: placed on somebody else's territory`);
+    }
+    if (e.rk_canplace(h, -1) === 1 || e.rk_canplace(h, 12) === 1) {
+      bad.push(`seed ${seed}: a territory off the board was offered`);
+    }
+    // Attacking is refused while there are armies still to place.
+    if (e.rk_canstop(h) === 1) bad.push(`seed ${seed}: could stop before placing`);
+
+    // Put the whole reinforcement on one territory of yours, one at a time.
+    const mine = [...Array(N).keys()].find(t => e.rk_owner(h, t) === me);
+    const want = e.rk_toplace(h);
+    const startArmies = e.rk_armies(h, mine);
+    let g = h;
+    for (let k = 0; k < want; k++) {
+      const before = e.rk_toplace(g);
+      g = e.rk_place(g, mine);
+      placed++;
+      if (e.rk_toplace(g) !== before - 1) {
+        bad.push(`seed ${seed}: to-place went ${before} to ${e.rk_toplace(g)}`);
+        break;
+      }
+    }
+    if (e.rk_armies(g, mine) !== startArmies + want) {
+      bad.push(`seed ${seed}: ${want} armies placed and the territory gained ${e.rk_armies(g, mine) - startArmies}`);
+    }
+    if (e.rk_phase(g) !== 1) bad.push(`seed ${seed}: still placing after the last army`);
+    if (e.rk_atkleft(g) !== 3) bad.push(`seed ${seed}: ${e.rk_atkleft(g)} attacks after placing`);
+    if (e.rk_canplace(g, mine) === 1) bad.push(`seed ${seed}: still offered a place in the attack phase`);
+    // The handle the caller held is the position it was.
+    if (e.rk_toplace(h) !== want) bad.push(`seed ${seed}: placing wrote through the caller's handle`);
+
+    // An attack must be adjacent, from a territory with something to
+    // attack WITH, and onto somebody else's.
+    for (let from = 0; from < N; from++) {
+      for (let to = 0; to < N; to++) {
+        const legal = e.rk_canattack(g, from, to) === 1;
+        const ok2 = e.rk_owner(g, from) === me && e.rk_owner(g, to) !== me
+          && e.rk_armies(g, from) >= 2 && e.rk_adj(from, to) === 1;
+        if (legal !== ok2) {
+          bad.push(`seed ${seed}: ${from}->${to} offered ${legal}, rules say ${ok2}`);
+          from = to = N;
+        }
+      }
+    }
+
+    // Take a legal attack if one exists, and check the bookkeeping.
+    let found = null;
+    for (let from = 0; from < N && !found; from++) {
+      for (let to = 0; to < N; to++) {
+        if (e.rk_canattack(g, from, to) === 1) { found = [from, to]; break; }
+      }
+    }
+    if (found) {
+      const totalBefore = armies(g).reduce((a, b) => a + b, 0);
+      const left = e.rk_atkleft(g);
+      const after = e.rk_attack(g, found[0], found[1], seed * 31 + 7);
+      attacks++;
+      const totalAfter = armies(after).reduce((a, b) => a + b, 0);
+      // Combat destroys armies and never creates them.
+      if (totalAfter > totalBefore) {
+        bad.push(`seed ${seed}: the board gained armies in a battle, ${totalBefore} to ${totalAfter}`);
+      }
+      // Either this was the last attack, in which case the turn moved on,
+      // or one fewer remains.
+      if (e.rk_cur(after) === me && e.rk_done(after) !== 1) {
+        if (e.rk_atkleft(after) !== left - 1) {
+          bad.push(`seed ${seed}: attacks went ${left} to ${e.rk_atkleft(after)}`);
+        }
+      }
+      if (e.rk_armies(g, found[0]) < 2) bad.push(`seed ${seed}: attacked from a single army`);
+    }
+
+    // Stopping ends the turn without spending the attacks.
+    if (e.rk_canstop(g) === 1) {
+      const s = e.rk_stop(g);
+      stops++;
+      if (e.rk_done(s) !== 1) {
+        if (e.rk_cur(s) === me) bad.push(`seed ${seed}: stopping did not end the turn`);
+        // The next player's turn is OPEN, or the page has nothing to offer.
+        if (e.rk_phase(s) !== 0 || e.rk_toplace(s) < 3) {
+          bad.push(`seed ${seed}: the next turn opened at phase ${e.rk_phase(s)} with ${e.rk_toplace(s)} to place`);
+        }
+      }
+    }
+  }
+  ok('a turn places one army at a time and then offers three attacks',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '40 turns');
+  // L-VACUOUS: each claim above is silent unless its branch was reached.
+  ok('control: every branch was reached',
+     placed > 0 && attacks > 0 && refusals > 0 && stops > 0,
+     `${placed} armies placed, ${attacks} attacks, ${refusals} refusals, ${stops} stops`);
+}
+
+// -- THE RULE THAT TURN ONE CANNOT REACH ----------------------------------
+// An army has to stay behind, so a territory holding one cannot attack out
+// of. Nothing in the block above can see that rule: every territory is
+// dealt three armies and the opening reinforcement only adds more, so
+// across forty openings there is not ONE single-army territory to refuse.
+// Sabotaging `a.armies < 2` to `< 1` changed no arm's colour, which is how
+// this was found. The corpus has to be positions the game has been PLAYED
+// into, not positions it starts in.
+{
+  const bad = [];
+  let singles = 0, refusedFromSingle = 0, states = 0;
+  for (let seed = 1; seed <= 60; seed++) {
+    let h = e.rk_new(seed, 4);
+    // Step into the middle of the game, where territories have been worn
+    // down, then examine whoever is on the go.
+    for (let n = 0; n < 12 && e.rk_done(h) !== 1; n++) h = e.rk_turn(h, seed * 977 + n);
+    if (e.rk_done(h) === 1) continue;
+    // Put the reinforcement somewhere out of the way so the attack phase
+    // is reached without inflating the territory under test.
+    const me = e.rk_cur(h);
+    const dump = [...Array(N).keys()].find(t => e.rk_owner(h, t) === me);
+    if (dump === undefined) continue;
+    let g = h;
+    let guard = 0;
+    while (e.rk_phase(g) === 0 && guard++ < 40) g = e.rk_place(g, dump);
+    if (e.rk_phase(g) !== 1) continue;
+    states++;
+    for (let from = 0; from < N; from++) {
+      if (e.rk_owner(g, from) !== me) continue;
+      if (e.rk_armies(g, from) !== 1) continue;
+      singles++;
+      for (let to = 0; to < N; to++) {
+        if (e.rk_adj(from, to) !== 1) continue;
+        if (e.rk_owner(g, to) === me) continue;
+        // Adjacent, enemy-held, and only one army: the rules refuse it.
+        if (e.rk_canattack(g, from, to) === 1) {
+          bad.push(`seed ${seed}: ${from} holds one army and was offered an attack on ${to}`);
+        } else if (e.rk_attack(g, from, to, seed) !== g) {
+          bad.push(`seed ${seed}: ${from} attacked ${to} with its last army`);
+        } else refusedFromSingle++;
+      }
+    }
+  }
+  ok('a territory holding one army cannot attack out of', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : `${refusedFromSingle} refusals over ${states} positions`);
+  // Without this the arm above is the same silence that let the sabotage
+  // through: no single-army territory means nothing was refused.
+  ok('control: single-army territories were actually reached', singles > 0,
+     `${singles} found across ${states} mid-game positions`);
+}
+
+// -- A SELF-PLAYED TURN LEAVES A PLAYABLE POSITION ------------------------
+// `risk-do-turn` advances the player without opening the next turn, because
+// the watch-only runner opens each one as it takes it. A page holds the
+// state BETWEEN turns, so if the wrapper did not open it the visitor would
+// be handed a board with nothing to place and no attacks left.
+{
+  const bad = [];
+  for (let seed = 1; seed <= 30; seed++) {
+    let h = e.rk_new(seed, 4);
+    for (let n = 0; n < 8 && e.rk_done(h) !== 1; n++) {
+      h = e.rk_turn(h, seed * 101 + n);
+      if (e.rk_done(h) === 1) break;
+      if (e.rk_phase(h) !== 0 || e.rk_toplace(h) < 3) {
+        bad.push(`seed ${seed} turn ${n}: phase ${e.rk_phase(h)}, ${e.rk_toplace(h)} to place`);
+        break;
+      }
+      if (!(e.rk_alive(h, e.rk_cur(h)) === 1)) {
+        bad.push(`seed ${seed} turn ${n}: the turn opened on a dead player`);
+        break;
+      }
+    }
+  }
+  ok('a stepped turn hands back a board the next player can act on',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '30 games');
+}
+
 console.log(fail === 0
   ? `\nPASS: Risk deals, reinforces and conquers by its rules (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

@@ -176,24 +176,36 @@ Section: Folding
   fold-some : IRExpr -> FoldRes
   fold-some (e) = FoldRes { folded = True, expr = e }
 
- Integer arithmetic and comparison over two integer literals. The
- compiler runs on the same 64-bit two's-complement integers the emitted
- code uses, so the folded value is the value the program would compute,
- wrap for wrap. Division and remainder are absent by intent.
-
   simp-fold-int : IRBinaryOp, Integer, Integer, CodexType, SourceSpan -> FoldRes
   simp-fold-int (op) (a) (b) (ty) (sp) =
    when op
-    is IrAddInt -> fold-some (deck-record (IrIntLit (a + b) sp))
-    is IrSubInt -> fold-some (deck-record (IrIntLit (a - b) sp))
-    is IrMulInt -> fold-some (deck-record (IrIntLit (a * b) sp))
+    is IrAddInt -> if int-ty-wraps ty == False & add-fold-fits a b then fold-some (deck-record (IrIntLit (a + b) sp)) else simp-fold-keep op a b ty sp
+    is IrSubInt -> if int-ty-wraps ty == False & sub-fold-fits a b then fold-some (deck-record (IrIntLit (a - b) sp)) else simp-fold-keep op a b ty sp
+    is IrMulInt -> if int-ty-wraps ty == False & mul-fold-fits a b then fold-some (deck-record (IrIntLit (a * b) sp)) else simp-fold-keep op a b ty sp
     is IrEq -> fold-some (deck-record (IrBoolLit (a == b) sp))
     is IrNotEq -> fold-some (deck-record (IrBoolLit (a /= b) sp))
     is IrLt -> fold-some (deck-record (IrBoolLit (a < b) sp))
     is IrGt -> fold-some (deck-record (IrBoolLit (a > b) sp))
     is IrLtEq -> fold-some (deck-record (IrBoolLit (a <= b) sp))
     is IrGtEq -> fold-some (deck-record (IrBoolLit (a >= b) sp))
-    is otherwise -> fold-none (deck-record (IrBinary op (deck-record (IrIntLit a sp)) (deck-record (IrIntLit b sp)) ty sp))
+    is otherwise -> simp-fold-keep op a b ty sp
+
+  simp-fold-keep : IRBinaryOp, Integer, Integer, CodexType, SourceSpan -> FoldRes
+  simp-fold-keep (op) (a) (b) (ty) (sp) = fold-none (deck-record (IrBinary op (deck-record (IrIntLit a sp)) (deck-record (IrIntLit b sp)) ty sp))
+
+  add-fold-fits : Integer, Integer -> Boolean
+  add-fold-fits (a) (b) =
+   if b >= 0 then a <= i64-max - b else a >= i64-min - b
+
+  sub-fold-fits : Integer, Integer -> Boolean
+  sub-fold-fits (a) (b) =
+   if b >= 0 then a >= i64-min + b else a <= i64-max + b
+
+  mul-fold-fits : Integer, Integer -> Boolean
+  mul-fold-fits (a) (b) =
+   if a == 0 | b == 0 then True
+   else if a == i64-min | b == i64-min then False
+   else (if a < 0 then 0 - a else a) <= i64-max / (if b < 0 then 0 - b else b)
 
   simp-fold-bool : IRBinaryOp, Boolean, Boolean, CodexType, SourceSpan -> FoldRes
   simp-fold-bool (op) (a) (b) (ty) (sp) =
@@ -310,8 +322,14 @@ Section: Purity and Deadness
   simp-op-trapfree : IRBinaryOp -> Boolean
   simp-op-trapfree (op) =
    when op
-    is IrAddInt | IrSubInt | IrMulInt | IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq | IrAnd | IrOr | IrAppendText | IrAppendList | IrConsList -> True
+    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq | IrAnd | IrOr | IrAppendText | IrAppendList | IrConsList -> True
     is otherwise -> False
+
+  simp-op-trapfree-typed : IRBinaryOp, CodexType -> Boolean
+  simp-op-trapfree-typed (op) (t) =
+   when op
+    is IrAddInt | IrSubInt | IrMulInt -> int-ty-wraps t
+    is otherwise -> simp-op-trapfree op
 
   simp-pure-trapfree : IRExpr, Integer -> Boolean
   simp-pure-trapfree (e) (depth) =
@@ -321,7 +339,7 @@ Section: Purity and Deadness
     is IrName (nm) (t) (s) -> True
     is IrNegate (x) (t) (s) -> simp-pure-trapfree x (depth + 1)
     is IrBinary (op) (l) (r) (t) (s) ->
-     if simp-op-trapfree op then (if simp-pure-trapfree l (depth + 1) then simp-pure-trapfree r (depth + 1) else False) else False
+     if simp-op-trapfree-typed op t then (if simp-pure-trapfree l (depth + 1) then simp-pure-trapfree r (depth + 1) else False) else False
     is IrIf (c) (th) (el) (t) (s) ->
      if simp-pure-trapfree c (depth + 1) then (if simp-pure-trapfree th (depth + 1) then simp-pure-trapfree el (depth + 1) else False) else False
     is IrLet (nm) (t) (v) (bd) (s) ->

@@ -1,4 +1,4 @@
-# Grade the compile page's BYTES modules (pe, img, elf): the plugs that take a
+# Grade the compile page's BYTES modules (pe, img, elf, sign): the plugs that take a
 # compiled payload rather than IR text, which page-lens-test.ps1 therefore
 # cannot grade. One real payload arm per branch that has a live producer, and
 # a refusal arm per module, because a plug that answers bytes on garbage is a
@@ -193,6 +193,37 @@ else {
     $ref2Txt = if ($ref2) { [Text.Encoding]::UTF8.GetString($ref2) } else { '' }
     if ($ref2Txt -match 'REFUSED unknown mode') { $rows += [pscustomobject]@{ arm = 'elf mode refusal'; verdict = 'OK'; note = ($ref2Txt.Trim() -split "`n")[0] } }
     else { $rows += [pscustomobject]@{ arm = 'elf mode refusal'; verdict = 'BAD'; note = 'mode 9 was not refused by name' } }
+}
+
+# -- sign: public key, signed CDX, unknown-mode refusal -----------------------
+# The identity proof (wasm signature == bare-metal signature for one key and
+# hash, and the signed CDX passing test-self-verify.ps1 with a flipped byte
+# failing it) was run by hand at the module's landing; this grades the SHAPE:
+# 32 bytes back for mode 0, the CDX back at its own length with only the key
+# and signature fields moved for mode 1, and the mode-0 key sitting in the
+# mode-1 field so the two answers agree with each other.
+$signWasm = Get-Module 'sign'
+if (-not $signWasm) { $rows += [pscustomobject]@{ arm = 'sign'; verdict = 'ABSENT'; note = 'no module' } }
+else {
+    $seed = [byte[]](1..32 | ForEach-Object { [byte](($_ * 7 + 3) % 256) })
+    $pub = Invoke-BytesModule $signWasm ([byte[]](@([byte]0) + $seed)) 'sign-pub'
+    if ($null -eq $pub) { $rows += [pscustomobject]@{ arm = 'sign pubkey'; verdict = 'TRAP'; note = 'no clean exit' } }
+    elseif ($pub.Length -eq 32) { $rows += [pscustomobject]@{ arm = 'sign pubkey'; verdict = 'OK'; note = '32 bytes' } }
+    else { $rows += [pscustomobject]@{ arm = 'sign pubkey'; verdict = 'BAD'; note = "$($pub.Length) bytes, wanted 32" } }
+    $signed = Invoke-BytesModule $signWasm ([byte[]](@([byte]1) + $seed + $cdx)) 'sign-cdx'
+    if ($null -eq $signed) { $rows += [pscustomobject]@{ arm = 'sign cdx'; verdict = 'TRAP'; note = 'no clean exit' } }
+    elseif ($signed.Length -ne $cdx.Length) { $rows += [pscustomobject]@{ arm = 'sign cdx'; verdict = 'BAD'; note = "length $($signed.Length), wanted $($cdx.Length)" } }
+    else {
+        $moved = 0
+        for ($i = 0; $i -lt $cdx.Length; $i++) { if (($i -lt 40 -or $i -ge 136) -and $signed[$i] -ne $cdx[$i]) { $moved++ } }
+        $keyAgrees = ($null -ne $pub) -and $pub.Length -eq 32 -and ((($signed[40..71] | ForEach-Object { "$_" }) -join ',') -eq (($pub | ForEach-Object { "$_" }) -join ','))
+        if ($moved -eq 0 -and $keyAgrees) { $rows += [pscustomobject]@{ arm = 'sign cdx'; verdict = 'OK'; note = 'only bytes 40..135 moved; key field equals the mode-0 key' } }
+        else { $rows += [pscustomobject]@{ arm = 'sign cdx'; verdict = 'BAD'; note = "$moved byte(s) moved outside 40..135; key field agrees: $keyAgrees" } }
+    }
+    $ref = Invoke-BytesModule $signWasm ([byte[]](@([byte]7) + $seed)) 'sign-badmode'
+    $refTxt = if ($ref) { [Text.Encoding]::UTF8.GetString($ref) } else { '' }
+    if ($refTxt -match 'REFUSED unknown mode') { $rows += [pscustomobject]@{ arm = 'sign refusal'; verdict = 'OK'; note = ($refTxt.Trim() -split "`n")[0] } }
+    else { $rows += [pscustomobject]@{ arm = 'sign refusal'; verdict = 'BAD'; note = 'mode 7 was not refused by name' } }
 }
 
 Write-Host ''

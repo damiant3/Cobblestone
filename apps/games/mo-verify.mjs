@@ -204,6 +204,115 @@ ok('control: the ledger reader can see an owner change', (() => {
   return owners(h).some(o => o !== -1);
 })());
 
+// -- EVERY SEAT GETS A TURN -----------------------------------------------
+// Nothing above could see a player being SKIPPED. The ledger balances, the
+// cash balances, the turn counter climbs and the game still finishes, all
+// of which are true of a game two of whose four players never move: this
+// wrapper called `mono-advance-turn` on top of a `mono-do-turn` that had
+// already advanced, so the page dealt every other seat out of its own game.
+// The board cycles, so the arm is that it cycles.
+{
+  const seen = new Map();
+  const order = [];
+  let h = e.mo_new(23, 4);
+  for (let i = 0; i < 40 && e.mo_done(h) !== 1; i++) {
+    const who = e.mo_cur(h);
+    order.push(who);
+    seen.set(who, (seen.get(who) || 0) + 1);
+    h = e.mo_step(h, 1000 + i);
+  }
+  const counts = [0, 1, 2, 3].map(p => seen.get(p) || 0);
+  ok('every seat comes round, and in order', counts.every(c => c >= 9),
+     `turns taken: ${counts.join(', ')}`);
+  ok('the seat advances by exactly one each step',
+     order.every((w, k) => k === 0 || w === (order[k - 1] + 1) % 4),
+     order.slice(0, 12).join(''));
+  // The turn NUMBER has to move with the seat, or a page's turn cap counts
+  // something other than turns.
+  const t0 = e.mo_turn(e.mo_new(23, 4));
+  const t1 = e.mo_turn(e.mo_step(e.mo_new(23, 4), 5));
+  ok('one step is one turn', t1 - t0 === 1, `${t0} then ${t1}`);
+}
+
+// -- THE TURN SPLITS WHERE THE DECISION IS --------------------------------
+// A turn is a roll and, when the square is worth deciding about, a choice.
+// These arms are the difference between a game you watch and one you play.
+{
+  const bad = [];
+  let offers = 0, bought = 0, passed = 0, noOffer = 0;
+  for (let seed = 1; seed <= 120; seed++) {
+    let h = e.mo_new(seed, 4);
+    if (e.mo_canroll(h) !== 1) { bad.push(`seed ${seed}: cannot roll at the open`); continue; }
+    if (e.mo_candecide(h, e.mo_cur(h)) === 1) bad.push(`seed ${seed}: a decision before a roll`);
+    // Rolling must not decide anything for you.
+    const who = e.mo_cur(h);
+    const r = e.mo_roll(h, seed);
+    if (e.mo_phase(r) === 1) {
+      offers++;
+      const pi = e.mo_offered(r);
+      if (pi < 0) bad.push(`seed ${seed}: phase 1 with nothing pending`);
+      if (e.mo_owner(r, pi) !== -1) bad.push(`seed ${seed}: offered a property somebody owns`);
+      if (e.mo_cur(r) !== who) bad.push(`seed ${seed}: the turn passed while a decision was open`);
+      const cost = e.mo_offercost(r);
+      if (cost !== e.mo_cost(r, pi)) bad.push(`seed ${seed}: the offer quotes ${cost}, the board says ${e.mo_cost(r, pi)}`);
+      const cashBefore = e.mo_cash(r, who);
+
+      // Taking it: the property changes hands and it costs exactly the price.
+      const t = e.mo_take(r);
+      bought++;
+      if (e.mo_owner(t, pi) !== who) bad.push(`seed ${seed}: bought and the deed did not move`);
+      if (e.mo_cash(t, who) !== cashBefore - cost) {
+        bad.push(`seed ${seed}: paid ${cashBefore - e.mo_cash(t, who)} for a ${cost} property`);
+      }
+      if (e.mo_phase(t) !== 0) bad.push(`seed ${seed}: buying left the turn open`);
+      if (e.mo_cur(t) === who) bad.push(`seed ${seed}: buying did not end the turn`);
+
+      // Leaving it: nothing moves but the turn.
+      const l = e.mo_leave(r);
+      passed++;
+      if (e.mo_owner(l, pi) !== -1) bad.push(`seed ${seed}: passed and the deed moved anyway`);
+      if (e.mo_cash(l, who) !== cashBefore) bad.push(`seed ${seed}: passing cost money`);
+      if (e.mo_cur(l) === who) bad.push(`seed ${seed}: passing did not end the turn`);
+
+      // The handle the caller still holds is the position it was.
+      if (e.mo_phase(r) !== 1 || e.mo_owner(r, pi) !== -1) {
+        bad.push(`seed ${seed}: deciding wrote through the caller's handle`);
+      }
+    } else {
+      noOffer++;
+      if (e.mo_cur(r) === who) bad.push(`seed ${seed}: nothing to decide and the turn did not end`);
+      if (e.mo_candecide(r, who) === 1) bad.push(`seed ${seed}: a decision offered with no offer`);
+    }
+  }
+  ok('rolling stops at the decision, and both answers end the turn',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '120 openings');
+  // L-VACUOUS: every claim above about an offer is silent unless an offer
+  // was actually made, and the no-offer claims unless one was not.
+  ok('control: both branches were reached', offers > 0 && noOffer > 0,
+     `${offers} offers (${bought} taken, ${passed} passed), ${noOffer} turns with nothing to decide`);
+}
+
+// -- ONE MODEL, NOT TWO ---------------------------------------------------
+// The watch-only runner is a POLICY over the same turn: roll, and take what
+// you were offered if you can afford it. If that stops being true the page
+// and the self-playing game have drifted apart, which is the failure the
+// whole split risks and no other arm here would notice.
+{
+  const bad = [];
+  for (let seed = 1; seed <= 60; seed++) {
+    const base = e.mo_new(seed, 4);
+    const byStep = e.mo_step(base, seed);
+    const rolled = e.mo_roll(base, seed);
+    const byHand = e.mo_phase(rolled) === 1 ? e.mo_take(rolled) : rolled;
+    const shape = h => [e.mo_cur(h), e.mo_turn(h), ...cashes(h), ...owners(h)].join(',');
+    if (shape(byStep) !== shape(byHand)) {
+      bad.push(`seed ${seed}: step and roll-then-take disagree`);
+    }
+  }
+  ok('the self-playing turn is the same turn a person takes',
+     bad.length === 0, bad.length ? bad.slice(0, 2).join('; ') : '60 turns');
+}
+
 console.log(fail === 0
   ? `\nPASS: Monopoly's ownership ledger agrees with itself (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

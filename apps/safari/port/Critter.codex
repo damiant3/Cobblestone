@@ -1,0 +1,112 @@
+Chapter: Critter
+  cites Safari chapter Camera
+  cites Safari chapter Geom
+  cites Safari chapter Paint
+  cites Safari chapter Stills
+  cites Safari chapter EmojiStills
+
+ A roadside animal as a baked-polygon billboard.
+
+ A port of wasm/critter.zig. It projects the feet and the top to get a pixel
+ height, then transforms the baked unit-frame polygons to that screen anchor and
+ emits them. It knows how to PLACE and FLIP a billboard and nothing else -- where
+ the animals stand is world.zig and safari_critter.zig, both already ported, and
+ what they look like is the baked table `Safari chapter EmojiStills`.
+
+ THE HEIGHT IS MEASURED IN PIXELS, NOT METRES, and that is the whole trick of a
+ billboard. Project the feet, project a point `height` metres above them, and the
+ gap between the two screen y values is how tall the animal is on this frame at
+ this distance. Everything in the unit frame then scales by that one number, so
+ perspective is applied ONCE, to a scalar, rather than per vertex.
+
+ UNDER A PIXEL IT DRAWS NOTHING. The zig returns early, and so does this: a
+ sub-pixel animal is not worth a polygon, and the collector's own size cull has
+ usually caught it long before.
+
+ THE BULL IS SHADED NOW, and it was the last animal that was not. Seven of the
+ eight are the Fluent Flat art and solid throughout; the bull is the Color variant
+ and 40 of its 43 polygons carry a 2-stop gradient, which the baker used to
+ flatten to its first stop because Paint modelled tags 0, 1 and 3 only. Paint has
+ 5 and 6, the table carries the stops and the geometry, and the arm below emits
+ them -- so the bull grades like every other animal instead of being excluded.
+
+ A POINT AND A VECTOR MAP DIFFERENTLY, and that is the one thing in this chapter
+ easy to get wrong. A gradient's linear endpoints and its radial CENTRE are
+ points: they translate to the feet anchor. Its radial AXES are vectors: they only
+ scale and flip. Mapping an axis as a point would anchor the ellipse's shape to
+ the animal's feet, which looks like a shading bug and is really a coordinate one.
+
+ We say:
+
+Section: The Billboard Map
+
+ A POINT translates to the feet anchor and scales by the pixel height; the art is
+ baked facing LEFT, so an animal that faces right mirrors in x. Mirrors mapP.
+
+  map-p : ScreenPt, Real, Real, Real, Real -> ScreenPt
+  map-p (b) (s) (ht) (x) (y) =
+    ScreenPt { x = b.x + s * x * ht, y = b.y - y * ht }
+
+  facing : Boolean -> Real
+  facing (face-right) = if face-right then 0.0 - 1.0 else 1.0
+
+  mapped-pts : ScreenPt, Real, Real, List StillPt, Integer -> List ScreenPt
+  mapped-pts (b) (s) (ht) (ps) (i) =
+    if i >= list-length ps then []
+    else [map-p b s ht (list-at ps i).x (list-at ps i).y] & mapped-pts b s ht ps (i + 1)
+
+ The zig's screen buffer holds 512 points and a longer polygon is SKIPPED rather
+ than truncated -- the same choice emit-ground makes about its eight, and for the
+ same reason: a silently shortened polygon is a wrong shape drawn confidently.
+ Nothing in the baked table comes close, but the guard is the zig's and is kept.
+
+  max-critter-pts : Integer
+  max-critter-pts = 512
+
+ A VECTOR takes the mirror and the scale and NOT the translation. Mirrors mapV.
+
+  map-v : Real, Real, Real, Real -> ScreenPt
+  map-v (s) (ht) (x) (y) =
+    ScreenPt { x = s * x * ht, y = 0.0 - y * ht }
+
+  critter-poly : ScreenPt, Real, Real, StillPoly -> List DrawCmd
+  critter-poly (b) (s) (ht) (poly) =
+    if list-length poly.pts > max-critter-pts then []
+    else if list-length poly.grad > 0 then critter-grad b s ht poly (list-at poly.grad 0)
+    else push-poly poly.color (mapped-pts b s ht poly.pts 0)
+
+  critter-grad : ScreenPt, Real, Real, StillPoly, StillGrad -> List DrawCmd
+  critter-grad (b) (s) (ht) (poly) (g) =
+    let pts = mapped-pts b s ht poly.pts 0
+    in if g.kind == 1 then critter-linear b s ht g pts else critter-radial b s ht g pts
+
+  critter-linear : ScreenPt, Real, Real, StillGrad, List ScreenPt -> List DrawCmd
+  critter-linear (b) (s) (ht) (g) (pts) =
+    let p0 = map-p b s ht g.ax g.ay
+    in let p1 = map-p b s ht g.bx g.by
+    in push-linear-grad-poly g.rgba0 g.rgba1 g.off0 g.off1 p0.x p0.y p1.x p1.y pts
+
+  critter-radial : ScreenPt, Real, Real, StillGrad, List ScreenPt -> List DrawCmd
+  critter-radial (b) (s) (ht) (g) (pts) =
+    let c = map-p b s ht g.cx g.cy
+    in let u = map-v s ht g.ux g.uy
+    in let v = map-v s ht g.vx g.vy
+    in push-radial-grad-poly g.rgba0 g.rgba1 g.off0 g.off1 c.x c.y u.x u.y v.x v.y pts
+
+  critter-polys : ScreenPt, Real, Real, List StillPoly, Integer -> List DrawCmd
+  critter-polys (b) (s) (ht) (ps) (i) =
+    if i >= list-length ps then []
+    else (critter-poly b s ht (list-at ps i)) & critter-polys b s ht ps (i + 1)
+
+Section: Drawing One
+
+ Painted in array order, which is the SVG document order the baker preserved --
+ painter's order, so a later polygon covers an earlier one.
+
+  critter-draw : Real, Real, Real, Integer, Boolean, Real, Real -> List DrawCmd
+  critter-draw (right) (forward) (height) (cp) (face-right) (cf) (view-w) =
+    let base = project (Vec3 { right = right, forward = forward, height = 0.0 }) cf view-w
+    in let top = project (Vec3 { right = right, forward = forward, height = height }) cf view-w
+    in let h = base.y - top.y
+    in if h < 1.0 then []
+      else critter-polys base (facing face-right) h (emoji-polys-for cp) 0

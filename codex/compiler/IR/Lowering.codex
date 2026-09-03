@@ -1,6 +1,9 @@
 Chapter: Lowering
   cites Codex chapter Build Settings (max-recursion-depth, demand-lower-guard-band)
   cites Codex chapter Phase Allocator (deck-bound-short-of)
+  cites Codex chapter Unification (MemoCtx, mcopy-type, mcopy-text, mcopy-texts, memo-pow2-at-least, memo-shift-for)
+  cites Codex chapter Syntax Nodes (copy-sx-span)
+  cites Foreword chapter Tuple
 
 Section: Lower Context
   BinderRename =
@@ -231,7 +234,7 @@ Section: Expression Lowering
       is otherwise -> deep-resolve (ctx.ust) recorded
    in let cls-dict = type-name-of cand
    in let args = dict-type-args cand
-   in let arg-tn = if list-length args > 0 then type-name-of (deep-resolve (ctx.ust) (list-at args 0)) else ""
+   in let arg-tn = if list-length args > 0 then type-key-of (deep-resolve (ctx.ust) (list-at args 0)) else ""
    in if text-length arg-tn == 0 then dict-placeholder-fallback name ty ctx sp
       else if text-length cls-dict <= 4 then dict-placeholder-fallback name ty ctx sp
       else let concrete = rename-lookup (ctx.chapter-renames) (substring cls-dict 0 (text-length cls-dict - 4) & "-dict-" & arg-tn)
@@ -261,7 +264,7 @@ Section: Expression Lowering
    in let cand = when recorded
       is ErrorTy | NoExpectTy -> deep-resolve (ctx.ust) ty
       is otherwise -> deep-resolve (ctx.ust) recorded
-   in let spec-rn = method-spec-rn name (type-name-of cand) ctx
+   in let spec-rn = method-spec-rn name (type-key-of cand) ctx
    in if text-length spec-rn == 0 then lower-name-normal name ty ctx sp
       else let fty = strip-forall-ty (deep-resolve (ctx.ust) (lookup-type-split (ctx.overlay) (ctx.base) spec-rn))
       in deck-record (IrName spec-rn fty sp)
@@ -462,7 +465,7 @@ Section: Expression Lowering
    in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
    in let arg-ir = lower-expr a NoExpectTy ctx
    in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
-   in let dict-rn = constrained-dict-rn pname (type-name-of arg-ty) ctx
+   in let dict-rn = constrained-dict-rn pname (type-key-of arg-ty) ctx
    in if text-length dict-rn > 0
       then let db = lookup-type-split (ctx.overlay) (ctx.base) dict-rn
       in let dict-ir = deck-record (IrName dict-rn (deep-resolve (ctx.ust) db) sp)
@@ -473,7 +476,7 @@ Section: Expression Lowering
       in let param-name = "__" & cls-name & "-dict"
       in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
       in when pb
-       is ErrorTy | NoExpectTy -> lower-apply-dispatch (deck-record (IrName ("__no-instance-" & cls-name & "-" & type-name-of arg-ty) ty sp)) arg-ir ty sp
+       is ErrorTy | NoExpectTy -> lower-apply-dispatch (deck-record (IrName ("__no-instance-" & cls-name & "-" & type-key-of arg-ty) ty sp)) arg-ir ty sp
        is otherwise -> let dict-ir = deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
         in let inner-ret = peel-fun-return func-ty
         in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
@@ -506,7 +509,7 @@ Section: Expression Lowering
   lower-method-apply (mname) (a) (ty) (ctx) (sp) (f) =
    let arg-ir = lower-expr a NoExpectTy ctx
    in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
-   in let tn = type-name-of arg-ty
+   in let tn = type-key-of arg-ty
    in let spec-rn = method-spec-rn mname tn ctx
    in if text-length spec-rn == 0
       then lower-apply-dispatch (deck-record (IrName ("__no-instance-" & mname & "-" & tn) ty sp)) arg-ir ty sp
@@ -661,8 +664,10 @@ Section: Expression Lowering
 
   lower-eq-dispatch : CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan, Boolean -> IRExpr
   lower-eq-dispatch (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) (positive) =
-   let tn = type-name-of (deep-resolve (ctx.ust) left-ty)
-   in let probe = if text-length tn == 0 then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
+   let resolved-left = deep-resolve (ctx.ust) left-ty
+   in let tn = type-name-of resolved-left
+   in let probe = if text-length tn == 0 | eq-type-has-args (strip-unit-ty resolved-left) then ErrorTy
+    else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
    in when probe
     is ErrorTy | NoExpectTy -> deck-record (IrBinary (lower-bin-op (eq-op-for positive) left-ty) left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s)
     is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
@@ -670,6 +675,20 @@ Section: Expression Lowering
      in let call = deck-record (IrApply inner right-ir BooleanTy s)
      in if positive then call
         else deck-record (IrIf call (deck-record (IrBoolLit False s)) (deck-record (IrBoolLit True s)) BooleanTy s)
+
+ The desugarer mints one __eq_<T> per type NAME, and type-name-of has already
+ dropped the arguments, so every instantiation of a parameterised type would
+ share a helper whose field stays at the declaration's own type variable. An
+ instantiated type is sent to the emitter instead, which carries the actuals
+ and substitutes them.
+
+  eq-type-has-args : CodexType -> Boolean
+  eq-type-has-args (ty) =
+   when ty
+    is ConstructedTy (n) (as) -> list-length as > 0
+    is SumTy (n) (as) (cs) -> list-length as > 0
+    is RecordTy (n) (as) (fs) -> list-length as > 0
+    is otherwise -> False
 
   is-primitive-type-name : Text -> Boolean
   is-primitive-type-name (tn) =
@@ -687,6 +706,35 @@ Section: Expression Lowering
     is ListTy (e) | LinkedListTy (e) -> "List"
     is ConstructedTy (n) (args) | RecordTy (n) (ar) (fs) | SumTy (n) (ar) (cs) -> n.value
     is otherwise -> ""
+
+ `type-name-of` DISCARDS type arguments and has ten callers that all want
+ the bare name, so the instance key is computed BESIDE it rather than
+ folded into it. It renders identically to `instance-head-key` in
+ `Ast/Desugarer.codex`, which builds the same name from the SYNTAX head:
+ with no arguments it is exactly `type-name-of`, so every nullary
+ instance keeps the name it had.
+
+  type-key-args : CodexType -> List CodexType
+  type-key-args (ty) =
+   when ty
+    is ConstructedTy (n) (as) -> as
+    is SumTy (n) (as) (cs) -> as
+    is RecordTy (n) (as) (fs) -> as
+    is ListTy (e) | LinkedListTy (e) -> [e]
+    is otherwise -> []
+
+  type-key-of : CodexType -> Text
+  type-key-of (ty) =
+   let base = type-name-of ty
+   in if text-length base == 0 then ""
+   else let as = type-key-args ty
+   in if list-length as == 0 then base
+   else base & "[" & type-key-of-args as 0 (list-length as) & "]"
+
+  type-key-of-args : List CodexType, Integer, Integer -> Text
+  type-key-of-args (as) (i) (n) =
+   if i >= n then ""
+   else (if i == 0 then "" else ",") & type-key-of (list-at as i) & type-key-of-args as (i + 1) n
 
   lower-apply-dispatch : IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
   lower-apply-dispatch (func-ir) (arg-ir) (ret-ty) (sp) =
@@ -1680,15 +1728,29 @@ Section: Definition Lowering
     is FunTy (p) (row) (r) -> get-return-type-n r (n - 1)
     is otherwise -> ty
 
-  lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment, Integer, Boolean -> IRChapter
-  lower-chapter (m) (all-types) (ust) (ctor-names) (renames) (colliding) (assignments) (ceiling) (rename) =
+  lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment, Integer, Boolean, Integer, Integer -> (IRChapter, Integer)
+  lower-chapter (m) (all-types) (ust) (ctor-names) (renames) (colliding) (assignments) (ceiling) (rename) (keep-base) (keep-ceiling) =
    let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
-   in deck-record (IRChapter {
+   in let def-count = list-length (m.defs)
+   in let exit = __deck-exit
+   in let scratch-base = __deck-pos
+   in let set-k0 = __deck-set keep-base
+   in let acc0 = deck-record (__list-with-capacity def-count)
+   in let eff-names = deck-record (lower-collect-effect-op-names (m.effect-defs) 0 (list-length (m.effect-defs)) [])
+   in let keep0 = __deck-pos
+   in let set-s0 = __deck-set scratch-base
+   in let mc = lower-keep-open scratch-base keep-ceiling def-count
+   in let (defs, keep-end) = lower-defs-keep (m.defs) all-types ust 0 acc0 renames colliding assignments (m.citations) slug-cache "" [] (m.rt-names) (m.rt-budgets) ceiling rename mc keep0 keep-ceiling
+   in let set-k1 = __deck-set keep-end
+   in let ch = deck-record (IRChapter {
     name = m.name,
-    defs = lower-defs (m.defs) all-types ust 0 renames colliding assignments (m.citations) slug-cache "" [] (m.rt-names) (m.rt-budgets) ceiling rename,
-    effect-op-names = lower-collect-effect-op-names (m.effect-defs) 0 (list-length (m.effect-defs)) [],
+    defs = defs,
+    effect-op-names = eff-names,
     span = m.span
    })
+   in let keep-end2 = __deck-pos
+   in let enter = __deck-enter
+   in (ch, keep-end2)
 
   lower-collect-effect-op-names : List AEffectDef, Integer, Integer, List Text -> List Text
   lower-collect-effect-op-names (effs) (i) (len) (acc) =
@@ -1740,6 +1802,239 @@ Section: Definition Lowering
    in let ir-def = lower-def d types ust renames chapter-rn rename
    in let tagged = if is-in-rt-names rt-names (d.name.value) 0 (list-length rt-names) then __record-set (__record-set ir-def "is-punctual" True) "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names)) else ir-def
    in lower-defs-acc defs types ust (i + 1) (list-push acc tagged) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling rename
+
+Section: Per-Definition Reclamation
+
+  lower-keep-open : Integer, Integer, Integer -> MemoCtx
+  lower-keep-open (floor) (ceiling) (def-count) =
+   let memo-slots = 4096
+   in let memo-table = __heap-save
+   in let a1 = __heap-advance (memo-slots * 8)
+   in let cons-slots = memo-pow2-at-least (def-count * 48) 4096
+   in let cons-table = __heap-save
+   in let a2 = __heap-advance (cons-slots * 16)
+   in let cz = __memset cons-table 0 (cons-slots * 16)
+   in let tcons-slots = memo-pow2-at-least (def-count * 8) 4096
+   in let tcons-table = __heap-save
+   in let a3 = __heap-advance (tcons-slots * 16)
+   in let tz = __memset tcons-table 0 (tcons-slots * 16)
+   in let cap-ty = def-count * 48 + 4096
+   in let cap-text = def-count * 8 + 16384
+   in let cap-row = def-count * 12 + 4096
+   in let cap-list = def-count * 4 + 4096
+   in let l-ty = __list-with-capacity cap-ty
+   in let l-text = __list-with-capacity cap-text
+   in let l-name = __list-with-capacity cap-text
+   in let l-row = __list-with-capacity cap-row
+   in let l-tylist = __list-with-capacity cap-list
+   in let l-fieldlist = __list-with-capacity cap-list
+   in let l-ctorlist = __list-with-capacity cap-list
+   in let l-labellist = __list-with-capacity cap-list
+   in MemoCtx {
+    mc-table = memo-table,
+    mc-slots = memo-slots,
+    mc-shift = memo-shift-for memo-slots 64,
+    mc-floor = floor,
+    mc-ty = l-ty,
+    mc-text = l-text,
+    mc-name = l-name,
+    mc-row = l-row,
+    mc-tylist = l-tylist,
+    mc-fieldlist = l-fieldlist,
+    mc-ctorlist = l-ctorlist,
+    mc-labellist = l-labellist,
+    mc-cons = cons-table,
+    mc-cons-slots = cons-slots,
+    mc-cons-shift = memo-shift-for cons-slots 64,
+    mc-cap-ty = cap-ty,
+    mc-cap-text = cap-text,
+    mc-cap-name = cap-text,
+    mc-cap-row = cap-row,
+    mc-cap-list = cap-list,
+    mc-ceiling = ceiling,
+    mc-tcons = tcons-table,
+    mc-tcons-slots = tcons-slots,
+    mc-tcons-shift = memo-shift-for tcons-slots 64
+   }
+
+  lower-defs-keep : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean, MemoCtx, Integer, Integer -> (List IRDef, Integer)
+  lower-defs-keep (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) (mc) (keep) (keep-ceiling) =
+   if i == list-length defs then (acc, keep)
+   else if keep + demand-lower-guard-band >= keep-ceiling then (acc, keep)
+   else if deck-short-of ceiling demand-lower-guard-band then (acc, keep)
+   else let d = list-at defs i
+   in let scratch-mark = __deck-pos
+   in let bivy-mark = __heap-save
+   in let (chapter-rn, keep1) = if d.chapter-slug == cur-slug then (cur-chapter-rn, keep)
+      else let set-k = __deck-set keep
+      in let rn = deck-record (apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0)
+      in let k2 = __deck-pos
+      in let set-s = __deck-set scratch-mark
+      in (rn, k2)
+   in let ir-def = lower-def d types ust renames chapter-rn rename
+   in let tagged = if is-in-rt-names rt-names (d.name.value) 0 (list-length rt-names) then __record-set (__record-set ir-def "is-punctual" True) "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names)) else ir-def
+   in let z = __memset (mc.mc-table) 0 (mc.mc-slots * 8)
+   in let set-keep = __deck-set keep1
+   in let kept = deck-record (lcopy-def tagged mc)
+   in let keep2 = __deck-pos
+   in let set-scratch = __deck-set scratch-mark
+   in let r = __heap-restore bivy-mark
+   in lower-defs-keep defs types ust (i + 1) (list-push acc kept) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling rename mc keep2 keep-ceiling
+
+  lcopy-text : Text, MemoCtx -> Text
+  lcopy-text (t) (mc) = mcopy-text t mc
+
+  lcopy-type : CodexType, MemoCtx -> CodexType
+  lcopy-type (t) (mc) = mcopy-type t 0 mc
+
+  lcopy-span : SourceSpan, MemoCtx -> SourceSpan
+  lcopy-span (s) (mc) = copy-sx-span (mc.mc-floor) s
+
+  lcopy-def : IRDef, MemoCtx -> IRDef
+  lcopy-def (d) (mc) =
+   IRDef {
+    name = lcopy-text (d.name) mc,
+    params = lcopy-params (d.params) mc,
+    type-val = lcopy-type (d.type-val) mc,
+    body = lcopy-expr (d.body) mc,
+    chapter-slug = lcopy-text (d.chapter-slug) mc,
+    is-punctual = d.is-punctual,
+    wcet-budget = d.wcet-budget,
+    unique-params = mcopy-texts (d.unique-params) mc,
+    span = lcopy-span (d.span) mc
+   }
+
+  lcopy-params : List IRParam, MemoCtx -> List IRParam
+  lcopy-params (ps) (mc) =
+   if address-of ps < mc.mc-floor then ps
+   else for p in ps -> lcopy-param p mc
+
+  lcopy-param : IRParam, MemoCtx -> IRParam
+  lcopy-param (p) (mc) =
+   if address-of p < mc.mc-floor then p
+   else IRParam { name = lcopy-text (p.name) mc, type-val = lcopy-type (p.type-val) mc, span = lcopy-span (p.span) mc }
+
+  lcopy-exprs : List IRExpr, MemoCtx -> List IRExpr
+  lcopy-exprs (es) (mc) =
+   if address-of es < mc.mc-floor then es
+   else for e in es -> lcopy-expr e mc
+
+  lcopy-expr : IRExpr, MemoCtx -> IRExpr
+  lcopy-expr (e) (mc) =
+   if address-of e < mc.mc-floor then e
+   else when e
+    is IrIntLit (v) (s) -> IrIntLit v (lcopy-span s mc)
+    is IrNumLit (v) (s) -> IrNumLit v (lcopy-span s mc)
+    is IrTextLit (v) (s) -> IrTextLit (lcopy-text v mc) (lcopy-span s mc)
+    is IrBoolLit (v) (s) -> IrBoolLit v (lcopy-span s mc)
+    is IrCharLit (v) (s) -> IrCharLit v (lcopy-span s mc)
+    is IrName (n) (t) (s) -> IrName (lcopy-text n mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrBinary (op) (l) (r) (t) (s) -> IrBinary (lcopy-op op) (lcopy-expr l mc) (lcopy-expr r mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrNegate (x) (t) (s) -> IrNegate (lcopy-expr x mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrIf (c) (th) (el) (t) (s) -> IrIf (lcopy-expr c mc) (lcopy-expr th mc) (lcopy-expr el mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrLet (n) (t) (v) (b) (s) -> IrLet (lcopy-text n mc) (lcopy-type t mc) (lcopy-expr v mc) (lcopy-expr b mc) (lcopy-span s mc)
+    is IrApply (f) (a) (t) (s) -> IrApply (lcopy-expr f mc) (lcopy-expr a mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrLambda (ps) (b) (t) (s) -> IrLambda (lcopy-params ps mc) (lcopy-expr b mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrList (es) (t) (s) -> IrList (lcopy-exprs es mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrMatch (sc) (bs) (t) (s) -> IrMatch (lcopy-expr sc mc) (lcopy-branches bs mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrAct (ss) (t) (s) -> IrAct (lcopy-stmts ss mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrHandle (eff) (h) (cs) (t) (s) -> IrHandle (lcopy-text eff mc) (lcopy-expr h mc) (lcopy-clauses cs mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) -> IrWithTimeout secs (mcopy-texts effs mc) (mcopy-texts scopes mc) (lcopy-expr body mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrRecord (n) (fs) (t) (s) -> IrRecord (lcopy-text n mc) (lcopy-fields fs mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrFieldAccess (r) (f) (t) (s) -> IrFieldAccess (lcopy-expr r mc) (lcopy-text f mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrFork (body) (t) (s) -> IrFork (lcopy-expr body mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrAwait (task) (t) (s) -> IrAwait (lcopy-expr task mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrTry (max) (body) (fb) (fail) (t) (s) -> IrTry max (lcopy-stmts body mc) (lcopy-stmts fb mc) (lcopy-stmts fail mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrFieldStore (r) (f) (v) (t) (s) -> IrFieldStore (lcopy-expr r mc) (lcopy-text f mc) (lcopy-expr v mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrError (m) (t) (s) -> IrError (lcopy-text m mc) (lcopy-type t mc) (lcopy-span s mc)
+
+  lcopy-branches : List IRBranch, MemoCtx -> List IRBranch
+  lcopy-branches (bs) (mc) =
+   if address-of bs < mc.mc-floor then bs
+   else for b in bs -> if address-of b < mc.mc-floor then b
+    else IRBranch { pattern = lcopy-pat (b.pattern) mc, body = lcopy-expr (b.body) mc, guard = lcopy-expr (b.guard) mc, span = lcopy-span (b.span) mc, alt-group = b.alt-group }
+
+  lcopy-pats : List IRPat, MemoCtx -> List IRPat
+  lcopy-pats (ps) (mc) =
+   if address-of ps < mc.mc-floor then ps
+   else for p in ps -> lcopy-pat p mc
+
+  lcopy-pat : IRPat, MemoCtx -> IRPat
+  lcopy-pat (p) (mc) =
+   if address-of p < mc.mc-floor then p
+   else when p
+    is IrVarPat (n) (t) (s) -> IrVarPat (lcopy-text n mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrLitPat (v) (t) (s) -> IrLitPat (lcopy-text v mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrCtorPat (n) (subs) (t) (s) -> IrCtorPat (lcopy-text n mc) (lcopy-pats subs mc) (lcopy-type t mc) (lcopy-span s mc)
+    is IrWildPat (s) -> IrWildPat (lcopy-span s mc)
+    is IrVecPat (subs) (t) (s) -> IrVecPat (lcopy-pats subs mc) (lcopy-type t mc) (lcopy-span s mc)
+
+  lcopy-stmts : List IRActStmt, MemoCtx -> List IRActStmt
+  lcopy-stmts (ss) (mc) =
+   if address-of ss < mc.mc-floor then ss
+   else for st in ss -> if address-of st < mc.mc-floor then st
+    else when st
+     is IrDoBind (n) (t) (v) (sp) -> IrDoBind (lcopy-text n mc) (lcopy-type t mc) (lcopy-expr v mc) (lcopy-span sp mc)
+     is IrDoExec (v) (sp) -> IrDoExec (lcopy-expr v mc) (lcopy-span sp mc)
+
+  lcopy-clauses : List IRHandleClause, MemoCtx -> List IRHandleClause
+  lcopy-clauses (cs) (mc) =
+   if address-of cs < mc.mc-floor then cs
+   else for c in cs -> if address-of c < mc.mc-floor then c
+    else IRHandleClause { op-name = lcopy-text (c.op-name) mc, params = mcopy-texts (c.params) mc, resume-name = lcopy-text (c.resume-name) mc, body = lcopy-expr (c.body) mc, span = lcopy-span (c.span) mc }
+
+  lcopy-fields : List IRFieldVal, MemoCtx -> List IRFieldVal
+  lcopy-fields (fs) (mc) =
+   if address-of fs < mc.mc-floor then fs
+   else for f in fs -> if address-of f < mc.mc-floor then f
+    else IRFieldVal { name = lcopy-text (f.name) mc, value = lcopy-expr (f.value) mc, span = lcopy-span (f.span) mc }
+
+  lcopy-op : IRBinaryOp -> IRBinaryOp
+  lcopy-op (op) =
+   when op
+    is IrAddInt -> IrAddInt
+    is IrSubInt -> IrSubInt
+    is IrMulInt -> IrMulInt
+    is IrDivInt -> IrDivInt
+    is IrPowInt -> IrPowInt
+    is IrRemInt -> IrRemInt
+    is IrAddNum -> IrAddNum
+    is IrSubNum -> IrSubNum
+    is IrMulNum -> IrMulNum
+    is IrDivNum -> IrDivNum
+    is IrAddRealApprox -> IrAddRealApprox
+    is IrSubRealApprox -> IrSubRealApprox
+    is IrMulRealApprox -> IrMulRealApprox
+    is IrDivRealApprox -> IrDivRealApprox
+    is IrAddRealTrapping -> IrAddRealTrapping
+    is IrSubRealTrapping -> IrSubRealTrapping
+    is IrMulRealTrapping -> IrMulRealTrapping
+    is IrDivRealTrapping -> IrDivRealTrapping
+    is IrAddRealSaturating -> IrAddRealSaturating
+    is IrSubRealSaturating -> IrSubRealSaturating
+    is IrMulRealSaturating -> IrMulRealSaturating
+    is IrDivRealSaturating -> IrDivRealSaturating
+    is IrEq -> IrEq
+    is IrNotEq -> IrNotEq
+    is IrLt -> IrLt
+    is IrGt -> IrGt
+    is IrLtEq -> IrLtEq
+    is IrGtEq -> IrGtEq
+    is IrAnd -> IrAnd
+    is IrOr -> IrOr
+    is IrAppendText -> IrAppendText
+    is IrAppendList -> IrAppendList
+    is IrConsList -> IrConsList
+    is IrApproxEq -> IrApproxEq
+    is IrApproxEqExact -> IrApproxEqExact
+    is IrAddVec -> IrAddVec
+    is IrSubVec -> IrSubVec
+    is IrMulVec -> IrMulVec
+    is IrDivVec -> IrDivVec
+    is IrLtVec -> IrLtVec
+    is IrGtVec -> IrGtVec
+    is IrLtEqVec -> IrLtEqVec
+    is IrGtEqVec -> IrGtEqVec
 
 Section: Constant Folding
 

@@ -646,6 +646,25 @@ Damian, 2026-08-14. The pipeline for this is built and proven, not speculative.
 
 ### 9.1 What already exists, measured
 
+**CORRECTION 2026-09-02 (val). THE SUBJECT OF THIS SECTION IS DELETED and the
+evidence sentence under the table was already false before it went.** Damian
+ruled `spark-webgpu.codex` a superseded experiment, not worth resurrecting as
+it sits, and `build-spark.ps1` went with it (`spark-backlog.md` SPARK-4). The
+four phases below are still an accurate description of the general wasm plug
+path -- it is the same one the games arcade uses and that path is proven and
+gated -- but read them as the SHAPE of a pipeline rather than as proof that
+this particular page ever runs today.
+
+Two measurements behind the ruling, both taken 2026-09-02. The `.wasm` this
+section names as evidence did not exist anywhere in the tree, so the demo had
+been broken end to end by the route `spark-app.js` takes. And the bundle was
+never a snapshot of `apps/spark` that a generator could rebuild: the page
+calls 98 distinct exports, all 98 are in the bundle and SIX are in the
+chapters, and the missing ones are not shims -- `canvas-paint` and
+`add-scene-object` implement painting and scene management directly against
+raw addresses where the chapters use records. It was a second, independent
+implementation of Spark, which is why nothing generated it.
+
 `codex/plugs/wasm/build-spark.ps1` is a working four-phase build that has
 already shipped `apps/spark` to WebGPU in the browser:
 
@@ -656,9 +675,10 @@ already shipped `apps/spark` to WebGPU in the browser:
 | WAT to `.wasm` | `wat2wasm` | **theirs**, npm wabt. Present on this box |
 | HTML assembly | template + CSS + JS | hand-written glue in `apps/spark` |
 
-Built artifacts are on disk from 2026-08-09: `spark-webgpu.wasm`,
+Built artifacts were on disk from 2026-08-09: `spark-webgpu.wasm`, and
 `spark-webgpu.html` at 136 KB, which loads WebAssembly and requests a `webgpu`
-context. There is a `wgsl` plug (`WgslEmitter.codex`, 33 KB) for shader
+context. Neither survives: the `.wasm` was already gone when this was
+re-measured, and the `.html` was deleted with the bundle. There is a `wgsl` plug (`WgslEmitter.codex`, 33 KB) for shader
 generation and an `html` plug (`HtmlEmitter.codex`, 56 KB) beside it.
 
 **The one outside dependency is `wat2wasm`**, which encodes WAT text to the WASM

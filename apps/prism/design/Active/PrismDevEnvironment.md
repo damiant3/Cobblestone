@@ -511,7 +511,9 @@ builds and the arm runs.
   merge-down's accept-theirs dropped them from head; all twelve red
   arms plus val's panel arm green over the union.
 
-### Stage 2c -- Signing keys and the Config section (red; design first)
+### Stage 2c -- Signing keys and the Config section (red; LANDED main 21450)
+
+**Landed 2026-09-02 (red 21448, main 21450), the shape below as written:** `codex/plugs/sign/SignStdio.codex` is the signer module (bytes transport; mode 0 public key, mode 1 signs the CDX that follows; refusals by name), listed in `page-lenses.ps1` and graded by `page-bytes-test.ps1` (three arms) and `page-workspace-arm.js` (drives the page's own `signPublicKey`/`signCdxBytes` on the DISK arm's CDX). The key is a 32-byte seed the page generates with `crypto.getRandomValues`, held in `localStorage` (`prism.signkey`) and exported or imported as a 32-byte file from the Signing key entry that heads the Toolchains panel; the public key shown there comes from the module. Save signed sits beside Save the file on a CDX build and writes the author key at 40..71 and the signature at 72..135, which `test-self-verify.ps1` accepts and a flipped byte fails. Proven equal to the bare-metal Ed25519 for one key and hash. Not in scope, and the panel says so: whether a device ACCEPTS the key is trust-lattice policy. The deployed page carries it only after the public refresh.
 
 A Config section on the page. The user can GENERATE a signing keypair
 in-tab (the identity/keygen machinery we already ship, compiled to

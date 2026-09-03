@@ -14,6 +14,7 @@ param(
 
 $script:PlugBuildRepo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 . (Join-Path $script:PlugBuildRepo 'build' 'vm-config.ps1')
+. (Join-Path $script:PlugBuildRepo 'build' 'plug-source-digest.ps1')
 
 # The registry and the pattern come from build/quire-map.ps1. This used to
 # DERIVE a quire table by globbing codex\foreword, codex\os, apps and
@@ -133,6 +134,11 @@ function Bundle-PlugSource {
     )
     $body = (($PreLines + $Lines) -join "`n") + "`n"
     [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))
+    # The digest of the sources this bundle was assembled from. deck-headroom
+    # compares it to tell a stale bundle from a restamped one; mtime cannot,
+    # because p4 sync -f touches every tracked file.
+    $plugDir = Split-Path (Split-Path $BundleSrc -Parent) -Parent
+    [System.IO.File]::WriteAllText((Get-PlugSourceDigestPath $BundleSrc), (Get-PlugSourceDigest $plugDir), [System.Text.UTF8Encoding]::new($false))
     Write-Host "[$PlugName] bundled $($PreLines.Count + $Lines.Count) lines, $($body.Length) bytes"
 }
 

@@ -1,0 +1,75 @@
+Chapter: NumCheck
+  cites Foreword chapter Console
+  cites Foreword chapter ListUtils
+  cites Safari chapter Num
+  cites Judge chapter Grade
+  cites Gold chapter NumGold
+
+ Grade Safari chapter Num -- rounding, flooring, modulo and the exponential --
+ against zig's own builtins.
+
+ THIS IS THE ONE CHECK WHOSE ORACLE IS NOT A GAME MODULE. Num is not a port of a
+ wasm/ file; it is the Real primitives Codex's foreword does not have, written to
+ zig's semantics because zig is what the game calls. So probe_num.zig imports
+ nothing and the oracle is `@round`, `@floor`, `@mod`, `@exp` and `@exp2`
+ themselves.
+
+ AND IT IS THE ONE CHECK WITH NO f32/f64 GAP TO ABSORB. Every other seam compares
+ a Real the port computed against an f32 the game computed, so a tolerance is
+ forced on it. Here both sides are f64 and the operations are the same
+ operations, so rounding, flooring, modulo and the power of two are graded at
+ tolerance 0.0. Only `exp-real` gets a tolerance, because it is a Taylor series
+ against a library function and the two are not the same algorithm.
+
+ WHY THIS CHAPTER IS WORTH A CHECK AT ALL, given that ten chapters use it and all
+ of them are graded: because those ten only ever call it on their own domains.
+ Every `@round` in the game rounds a 0..255 colour channel, a stride count, a step
+ count or a whole number of degrees, so a rounding that is wrong on a value none
+ of them produces is invisible to every check in judge/ and is still a trap for
+ the next caller. `exp-real` is the sharper case: its docstring claims a
+ truncation remainder "around 1e-17" and nothing measured it. This port's own
+ FINDINGS.md sends upstream a Cordic docstring that claims ~0.1% and delivers
+ 0.45%, with a test that never calls a Cordic function. An unmeasured accuracy
+ claim in our own chapter is the same defect, and it should not survive being
+ written down twice.
+
+ THE INPUTS COME FROM THE GOLD, and that is a deliberate difference from the rest
+ of judge/. CameraCheck and its probe each hold their own copy of the input table,
+ written twice in two languages and kept in step by hand; the length check is the
+ only thing guarding the pair. Here the probe prints its tables as `n-*-in` gold
+ lines and this chapter maps over those, so there is exactly ONE copy of every
+ input and drift between the arms is not a thing that can happen. It costs the
+ tables their readability at this end, which is why probe_num.zig explains each
+ one where it is written.
+
+ We say:
+
+Section: Mapping
+
+ One shape per primitive: walk the gold's input list and apply the chapter under
+ test. Nothing here is clever; the interest is entirely in the tables.
+
+ THE DIVISOR IS THE OUTER LOOP, matching the probe's `for (MOD_M) |m| for (MOD_X)
+ |x|`. Getting this the wrong way round would compare a correct set of answers in
+ the wrong order, which the grader would report as a disagreement at index 13 --
+ true, and the least useful true thing it could say.
+
+  mod-inner : Real, List Real, Integer -> List Real
+  mod-inner (m) (xs) (j) =
+    if j >= list-length xs then []
+    else [mod-real (list-at xs j) m] & mod-inner m xs (j + 1)
+
+  mod-outer : List Real, List Real, Integer -> List Real
+  mod-outer (ms) (xs) (i) =
+    if i >= list-length ms then []
+    else (mod-inner (list-at ms i) xs 0) & mod-outer ms xs (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-reals "n-round" (list-map round-real g-n-round-in) g-n-round 0.0)
+    print-line-uni (grade-reals "n-floor" (list-map floor-real g-n-floor-in) g-n-floor 0.0)
+    print-line-uni (grade-reals "n-mod  " (mod-outer g-n-mod-m g-n-mod-x 0) g-n-mod 0.0)
+    print-line-uni (grade-reals "n-pow2 " (list-map pow2-int g-n-pow2-k) g-n-pow2 0.0)
+    print-line-uni (grade-rel   "n-exp  " (list-map exp-real g-n-exp-in) g-n-exp 0.000000000000001)
+  end

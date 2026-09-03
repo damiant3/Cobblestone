@@ -46,6 +46,102 @@ Section: The Browser Interface
     if s.alive-count <= 1 then s
     else ld-do-turn (ld-copy-state s)
 
+Section: Playing By Hand
+
+ `ld-do-turn` decides for itself whether to raise or to call, and what to
+ raise to, so a person cannot take a turn. A turn here is exactly one of two
+ things: bid higher, or call the last bid a lie.
+
+ WHAT COUNTS AS A RAISE IS STATED HERE BECAUSE THE ENGINE NEVER SAYS IT.
+ `ld-ai-bid` only ever CONSTRUCTS raises, so the rule lives in that
+ function's arithmetic and nowhere as a test: more dice than the standing
+ bid, or the same number of a higher face. Reached from a browser that is
+ not enough, because a page can offer any pair of numbers it likes, so the
+ rule is written out. A bid is `qty * 10 + face` and 0 means no bid yet,
+ which is why the first bid of a round is any legal pair rather than a
+ raise over nothing.
+
+  ld-wasm-can-bid : LDState, Integer, Integer -> Integer
+  ld-wasm-can-bid (s) (qty) (face) =
+    if s.alive-count <= 1 then 0
+    else if face < 1 then 0
+    else if face > 6 then 0
+    else if qty < 1 then 0
+    else if qty > ld-total-dice s then 0
+    else if s.current-bid == 0 then 1
+    else let cq = ld-bid-qty (s.current-bid)
+    in let cf = ld-bid-face (s.current-bid)
+    in if qty > cq then 1
+    else if qty == cq then (if face > cf then 1 else 0)
+    else 0
+
+ Named `make-bid` rather than `bid`: `ld-wasm-bid` is already taken by the
+ READER of the standing bid, and the two would be a duplicate definition.
+
+  ld-wasm-make-bid : LDState, Integer, Integer -> LDState
+  ld-wasm-make-bid (s) (qty) (face) =
+    if ld-wasm-can-bid s qty face == 0 then s
+    else let c = ld-copy-state s
+    in let p = c.current-turn
+    in LDState {
+         dice-counts  = c.dice-counts,
+         dice-pools   = c.dice-pools,
+         num-players  = c.num-players,
+         current-bid  = qty * 10 + face,
+         last-bidder  = p,
+         current-turn = ld-next-alive c p,
+         alive        = c.alive,
+         alive-count  = c.alive-count,
+         rng          = c.rng
+       }
+
+ Calling the bid a lie. The loser is whoever was wrong: if the dice really
+ are there the CHALLENGER loses one, otherwise the last bidder does. Every
+ die is then rerolled and the bidding starts again from nothing, which is
+ what `ld-do-turn` does on the same branch.
+
+  ld-wasm-can-challenge : LDState -> Integer
+  ld-wasm-can-challenge (s) =
+    if s.alive-count <= 1 then 0
+    else if s.current-bid == 0 then 0
+    else 1
+
+  ld-wasm-challenge : LDState -> LDState
+  ld-wasm-challenge (s) =
+    if ld-wasm-can-challenge s == 0 then s
+    else let c = ld-copy-state s
+    in let p = c.current-turn
+    in let qty = ld-bid-qty (c.current-bid)
+    in let face = ld-bid-face (c.current-bid)
+    in let actual = ld-count-face c face
+    in if actual >= qty then ld-settle c p
+    else ld-settle c (c.last-bidder)
+
+  ld-settle : LDState, Integer -> LDState
+  ld-settle (s) (loser) =
+    let s2 = ld-lose-die s loser
+    in let s3 = ld-roll-all s2
+    in LDState {
+         dice-counts  = s3.dice-counts,
+         dice-pools   = s3.dice-pools,
+         num-players  = s3.num-players,
+         current-bid  = 0,
+         last-bidder  = s3.last-bidder,
+         current-turn = ld-next-alive s3 loser,
+         alive        = s3.alive,
+         alive-count  = s3.alive-count,
+         rng          = s3.rng
+       }
+
+ How many of a face are REALLY on the table. This is the answer a challenge
+ turns on, and the page shows it only after the call has been made, because
+ before that it is exactly the thing nobody is allowed to know.
+
+  ld-wasm-actual : LDState -> Integer
+  ld-wasm-actual (s) =
+    if s.current-bid == 0 then (-1)
+    else ld-count-face s (ld-bid-face (s.current-bid))
+
   ld-wasm-players : LDState -> Integer
   ld-wasm-players (s) = s.num-players
 

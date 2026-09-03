@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cobblestone -- The Notebook</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --ink:#e8e6df; --dim:#9a9488; --gold:#d4a017; --deep:#0a0a12;
+    --panel:rgba(18,18,30,.82); --edge:rgba(212,160,23,.18);
+  }
+  body{background:var(--deep);color:var(--ink);
+    font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+  a{color:var(--gold);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  .topbar{display:flex;align-items:center;gap:22px;padding:12px 24px;background:#070710;
+    border-bottom:1px solid #1e1e2e;position:sticky;top:0;z-index:20}
+  .topbar-logo{color:var(--gold);font-size:18px;font-weight:700;letter-spacing:1px}
+  .topbar .here{color:var(--dim);font-size:14px}
+
+  .wrap{max-width:860px;margin:0 auto;padding:26px 20px 64px}
+  h1{font-size:26px;font-weight:700;margin-bottom:6px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:22px;line-height:1.55}
+
+  .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:16px}
+  .row{display:flex;gap:10px}
+  input[type=text]{flex:1;background:#0e0e18;border:1px solid #26263a;border-radius:8px;
+    color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:15px;padding:11px 13px}
+  input[type=text]:focus{outline:none;border-color:rgba(212,160,23,.55)}
+  button{background:rgba(212,160,23,.14);border:1px solid rgba(212,160,23,.5);
+    border-radius:8px;color:var(--gold);font-family:inherit;font-size:14px;
+    padding:0 18px;cursor:pointer}
+  button:hover{background:rgba(212,160,23,.24)}
+
+  .examples{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+  .examples button{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:12px;padding:4px 10px;border-radius:14px}
+
+  .tape{margin-top:18px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px}
+  .entry{border-top:1px solid #1e1e2e;padding:10px 2px}
+  .entry:first-child{border-top:none}
+  .q{color:var(--dim)}
+  .a{color:var(--ink);font-size:16px;margin-top:3px}
+  .a.err{color:#e8b3b3}
+
+  .note{color:var(--dim);font-size:13px;line-height:1.6;margin-top:22px}
+  .note code{color:var(--ink);background:#16162a;padding:1px 5px;border-radius:3px}
+  .bad{background:rgba(180,60,60,.12);border:1px solid rgba(180,60,60,.45);
+    border-radius:8px;padding:14px 16px;color:#e8b3b3;font-size:14px;line-height:1.6;margin-top:16px}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="topbar-logo">COBBLESTONE</span>
+  <span class="here">The Notebook</span>
+  <span style="flex:1"></span>
+  <a href="../landing.html">Back to the site</a>
+</div>
+
+<div class="wrap">
+  <h1>A computer algebra system, in this tab</h1>
+  <p class="sub">Type an expression. It is parsed, simplified and printed by a symbolic
+  algebra engine written in Codex and compiled to WebAssembly by the project's own backend.
+  It keeps exact rationals rather than falling back to floating point, and it collects like
+  terms instead of just doing arithmetic.</p>
+
+  <div class="panel">
+    <div class="row">
+      <input type="text" id="expr" placeholder="1/2 + 1/3" autocomplete="off" spellcheck="false">
+      <button id="go">Evaluate</button>
+    </div>
+    <div class="examples" id="examples"></div>
+    <div class="tape" id="tape"></div>
+  </div>
+
+  <div id="err"></div>
+
+  <p class="note">Each evaluation runs a fresh instance of the module: the expression goes in
+  on standard input and the answer comes back on standard output, which is how the compiler's
+  own page works. That means there is no collector to worry about and no state carried between
+  lines, so <code>x := 3</code> will not be remembered by the next expression yet.</p>
+</div>
+
+<script>
+const EXAMPLES = ['2+2', '1+2*3', '(1+2)*3', '1/2+1/3', '2^10', 'x+x', 'x*1+0', '3*x+2*x'];
+
+const exprEl = document.getElementById('expr');
+const tapeEl = document.getElementById('tape');
+const errEl  = document.getElementById('err');
+
+let mod = null;
+
+// The module is a WASI program. The expression arrives on fd_read and the
+// answer leaves on fd_write, both plain UTF-8, because the foreword converts
+// to and from CCE at the I/O boundary rather than in the middle. That is why
+// this page needs no character-encoding table of its own.
+function evaluate(line) {
+  const input = new TextEncoder().encode(line + '\n');
+  let mem = null, pos = 0;
+  const chunks = [];
+  const imports = { wasi_snapshot_preview1: {
+    fd_write(fd, iovs, n, outp) {
+      const v = new DataView(mem.buffer); let t = 0;
+      for (let i = 0; i < n; i++) {
+        const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+        chunks.push(new Uint8Array(mem.buffer.slice(p, p + l))); t += l;
+      }
+      v.setUint32(outp, t, true); return 0;
+    },
+    fd_read(fd, iovs, n, outp) {
+      const v = new DataView(mem.buffer); let t = 0;
+      for (let i = 0; i < n; i++) {
+        const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+        const dst = new Uint8Array(mem.buffer, p, l);
+        let k = 0; while (k < l && pos < input.length) dst[k++] = input[pos++];
+        t += k; if (k < l) break;
+      }
+      v.setUint32(outp, t, true); return 0;
+    }
+  }};
+  const inst = new WebAssembly.Instance(mod, imports);
+  mem = inst.exports.memory;
+  inst.exports._start();
+  let total = 0; for (const c of chunks) total += c.length;
+  const all = new Uint8Array(total); let off = 0;
+  for (const c of chunks) { all.set(c, off); off += c.length; }
+  return new TextDecoder().decode(all).trim();
+}
+
+function ask(line) {
+  const q = line.trim();
+  if (!q) return;
+  let answer, bad = false;
+  try {
+    answer = evaluate(q);
+    bad = answer.startsWith('parse error');
+  } catch (e) {
+    answer = 'the module failed: ' + e.message; bad = true;
+  }
+  const entry = document.createElement('div');
+  entry.className = 'entry';
+  const qe = document.createElement('div'); qe.className = 'q'; qe.textContent = q;
+  const ae = document.createElement('div'); ae.className = 'a' + (bad ? ' err' : ''); ae.textContent = answer;
+  entry.append(qe, ae);
+  tapeEl.prepend(entry);
+}
+
+for (const ex of EXAMPLES) {
+  const b = document.createElement('button');
+  b.textContent = ex;
+  b.addEventListener('click', () => { exprEl.value = ex; ask(ex); exprEl.focus(); });
+  document.getElementById('examples').append(b);
+}
+
+document.getElementById('go').addEventListener('click', () => ask(exprEl.value));
+exprEl.addEventListener('keydown', e => { if (e.key === 'Enter') ask(exprEl.value); });
+
+(async function () {
+  try {
+    const res = await fetch('mathbook.wasm');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    mod = new WebAssembly.Module(await res.arrayBuffer());
+  } catch (e) {
+    errEl.innerHTML = '<div class="bad">The notebook module did not load (' + e.message +
+      '). <code>mathbook.wasm</code> is build output, not a tracked file: build it with ' +
+      '<code>pwsh apps/mathbook/build-wasm.ps1</code>.</div>';
+    document.getElementById('go').disabled = true;
+    return;
+  }
+  ask('1/2 + 1/3');
+  exprEl.focus();
+})();
+</script>
+</body>
+</html>

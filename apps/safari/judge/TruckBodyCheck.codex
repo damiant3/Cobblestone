@@ -1,0 +1,173 @@
+Chapter: TruckBodyCheck
+  cites Foreword chapter Console
+  cites Foreword chapter ListUtils
+  cites Safari chapter World
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Safari chapter Render
+  cites Safari chapter TruckBody
+  cites Judge chapter Grade
+  cites Gold chapter TruckBodyGold
+
+ Grade Safari chapter TruckBody against wasm/truck.zig's drawBody.
+
+ A REAL ORACLE, and a stronger one than the drawing seams that came before it.
+ drawBody is `pub` -- render.zig's own comment says so and names this as the
+ reason -- so the probe calls the game's function and reads the words it wrote on
+ paint's wire. `render.at` is pub too, and it is the only render entry drawBody
+ touches, so unlike RenderCheck nothing on this seam is graded against a mirror of
+ something private. PORTING_NOTES E2 is the rule and this is the happy case of it.
+
+ WHAT A COMMAND SEQUENCE ASSERTS THAT A PICTURE DOES NOT. The order of these 113
+ commands is the depth sort, the sixteen faces, and the three-phase sequence --
+ beams, body, lights -- all at once. A face sorted one place wrong shows up as two
+ swapped colours in `tb-col` long before any coordinate moves, and a beam pushed
+ after the body instead of before it moves a tag 4 past sixteen tag 0s.
+
+ THE SIX CASES ARE BRANCHES:
+
+   d = 0 mid-distance      sixteen opaque faces and nothing else -- the shape of
+                           a plain frame, and the only case with no gradient.
+   the same, lit + braking  the full sequence: two wedges, the body, then two
+                           halo-and-core pairs. 24 commands where the first was 16.
+   d = 1 across a 50 turn   the join composition. A wrong `at` bends the box
+                           around its neighbour's turn instead of its own, which
+                           is exactly the failure Render's prose warns is
+                           invisible as corruption and plausible as a road.
+   d = 2 from segment 3     two joins deep, rider off centre and yawed, so the
+                           pose transform and the composition are both live.
+   fifteen metres ahead     near geometry: large screen coordinates and beams
+                           that fan across most of the canvas.
+   two metres ahead         THE CLIPPING CASE, and it is the one that earns its
+                           place. The trailer rear is BEHIND the eye, so the near
+                           clip fires on the faces, and the brake panel -- which
+                           lives on that rear face -- fails the wedge/halo
+                           behind-test outright. Both brake commands and both
+                           halos are simply absent, and the port has to be absent
+                           in the same places. Two structural streams shorter is
+                           the assertion; nothing about it is a tolerance.
+
+ STRUCTURE EXACTLY. Tags, both colour words and every point count compare with no
+ tolerance at all, which is D4. The gradient's own three numbers -- the lamp's x
+ and y and the radius -- get their own stream rather than riding with the polygon,
+ so a beam that kept its outline and lost its centre fails on `tb-geom` and names
+ itself.
+
+ THE COORDINATE GATE IS FIFTEEN TIMES LOOSER THAN EVERY OTHER SCREEN SEAM IN THIS
+ PORT, AND THE CLIPPING CASE IS WHY. 1.5e-5 relative against the 1e-6 the cat, the
+ animals and the rails are graded at, and it is measured rather than chosen: the
+ stream reddens at 7.5e-6 and passes above it, on one vertex -- a tire in the
+ two-metres-ahead case, clipped against the near plane.
+
+ It is D3's cancellation argument in a third place, and the ratio is arithmetic
+ rather than a mystery. A clipped vertex sits at forward = near = 0.4 m exactly,
+ so the projection divides by 0.4 and multiplies by the 685 px focal: a 1,713x
+ amplification of an error in metres. The error in metres is one f32 ulp at the
+ coordinate the rider transform passes through -- his own `along` of 100 m, where
+ an ulp is 7.6e-6 m -- because the port carries that subtraction in f64 and the
+ game in f32. 7.6e-6 m x 1713 is 0.013 px, against an x of about -1300, which is
+ 1e-5 relative. The measurement and the prediction agree to within the width of
+ the bisection.
+
+ So the loosening is the near plane's, not the truck's: the same seam grades at
+ 1e-6 in every case where nothing is clipped. Dropping the clipping case would buy
+ back the tighter gate and lose the only structural assertion about what happens
+ when the chase closes, which is a bad trade.
+
+ THE FLOOR IS THE STANDARD THOUSANDTH OF A PIXEL AND IT IS NOT LOAD-BEARING HERE:
+ every coordinate in these six cases is hundreds of pixels or more, and the stream
+ passes with the floor set to zero. It is kept because the seam can produce a
+ coordinate near zero and a bare relative gate has no answer for one. On `tb-geom`
+ the floor IS the governing half -- a beam's radius is 4.6 px in the far cases,
+ where a relative gate is worth 5e-6 -- and that stream's worst absolute
+ disagreement is under 5e-4 px, so it reddens within 2x of its setting.
+
+ We say:
+
+Section: The Cases
+
+  TbCase = record {
+    start : Integer,
+    along : Real,
+    across : Real,
+    yaw : Real,
+    d : Integer,
+    center : Real,
+    braking : Boolean,
+    headlights : Boolean
+  }
+
+  tb-cases : List TbCase
+  tb-cases = [TbCase { start = 0, along = 100.0, across = 0.0, yaw = 0.0, d = 0, center = 250.0, braking = False, headlights = False }, TbCase { start = 0, along = 100.0, across = 0.0, yaw = 0.0, d = 0, center = 250.0, braking = True, headlights = True }, TbCase { start = 0, along = 460.0, across = 0.8, yaw = 0.0 - 0.06, d = 1, center = 160.0, braking = True, headlights = True }, TbCase { start = 2, along = 50.0, across = 0.0 - 1.1, yaw = 0.12, d = 2, center = 200.0, braking = False, headlights = False }, TbCase { start = 0, along = 100.0, across = 0.3, yaw = 0.0, d = 0, center = 115.0, braking = True, headlights = True }, TbCase { start = 0, along = 100.0, across = 0.0, yaw = 0.0, d = 0, center = 102.0, braking = True, headlights = True }]
+
+ THE WORLD IS THREADED, not mentioned. A nullary binding emits as a function and
+ rebuilds all nineteen segments at every mention (PORTING_NOTES B13); each case
+ below mentions it four times.
+
+  tb-pose : List Segment, List Integer, TbCase -> Pose
+  tb-pose (w) (ch) (c) =
+    Pose { along = c.along, across = c.across, yaw = c.yaw, hw = (list-at w (list-at ch 0)).width / 2.0 }
+
+ The half width handed to the body is the width of the segment the truck's CENTRE
+ is on, which is chain index d and not the rider's own. On this route they are the
+ same number, and passing the rider's would still be wrong.
+
+  tb-wire-of : List Segment, TbCase -> List DrawCmd
+  tb-wire-of (w) (c) =
+    let ch = build-chain w c.start
+    in let hw = (list-at w (list-at ch c.d)).width / 2.0
+    in truck-draw-body w ch (tb-pose w ch c) c.d c.center hw c.braking c.headlights focal camera-w
+
+  tb-wire : List Segment, Integer -> List DrawCmd
+  tb-wire (w) (i) =
+    if i >= list-length tb-cases then []
+    else (tb-wire-of w (list-at tb-cases i)) & tb-wire w (i + 1)
+
+  all-cmds : List DrawCmd
+  all-cmds = tb-wire build-world 0
+
+Section: Flattening
+
+  tb-tags : List DrawCmd, Integer -> List Integer
+  tb-tags (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).tag] & tb-tags cs (i + 1)
+
+  tb-cols : List DrawCmd, Integer -> List Integer
+  tb-cols (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).color] & tb-cols cs (i + 1)
+
+  tb-cols2 : List DrawCmd, Integer -> List Integer
+  tb-cols2 (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).color2] & tb-cols2 cs (i + 1)
+
+  tb-counts : List DrawCmd, Integer -> List Integer
+  tb-counts (cs) (i) =
+    if i >= list-length cs then []
+    else [list-length (list-at cs i).pts / 2] & tb-counts cs (i + 1)
+
+ Only tag 4 defines `geom`, so concatenating every command's is the gradient
+ stream and nothing else -- the solid fills contribute an empty list each.
+
+  tb-geoms : List DrawCmd, Integer -> List Real
+  tb-geoms (cs) (i) =
+    if i >= list-length cs then []
+    else (list-at cs i).geom & tb-geoms cs (i + 1)
+
+  tb-coords : List DrawCmd, Integer -> List Real
+  tb-coords (cs) (i) =
+    if i >= list-length cs then []
+    else (list-at cs i).pts & tb-coords cs (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-ints "tb-tag  " (tb-tags all-cmds 0) g-tb-tag)
+    print-line-uni (grade-ints "tb-col  " (tb-cols all-cmds 0) g-tb-col)
+    print-line-uni (grade-ints "tb-col2 " (tb-cols2 all-cmds 0) g-tb-col2)
+    print-line-uni (grade-ints "tb-cnt  " (tb-counts all-cmds 0) g-tb-cnt)
+    print-line-uni (grade-px   "tb-geom " (tb-geoms all-cmds 0) g-tb-geom 0.001 0.000001)
+    print-line-uni (grade-px   "tb-xy   " (tb-coords all-cmds 0) g-tb-xy 0.001 0.000015)
+  end

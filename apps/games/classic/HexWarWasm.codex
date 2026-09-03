@@ -29,7 +29,9 @@ Section: The Handle
     turn   : Integer,
     active : Integer,
     rng    : Rng,
-    over   : Boolean
+    over   : Boolean,
+    opened : Boolean,
+    attacks-left : Integer
   }
 
   hw-scenario : Integer -> WargameConfig
@@ -80,20 +82,44 @@ Section: The Browser Interface
   hw-wasm-new (scenario) (seed) =
     let cfg = hw-scenario (if scenario < 0 then 0 else if scenario > 12 then 12 else scenario)
     in HwState { cfg = cfg, units = hw-copy-units (cfg.unit-roster) 0 [], turn = 0, active = 0,
-                 rng = rng-new seed, over = False }
+                 rng = rng-new seed, over = False, opened = False, attacks-left = 0 }
+
+ A state whose turn has been opened has already had its bookkeeping done,
+ so the runner takes the opened turn rather than beginning it a second
+ time. A watch-only session never opens one, which is why `hw-wasm-step`
+ alone plays exactly the game it always did.
+
+  hw-over : HwState -> HwState
+  hw-over (s) =
+    HwState { cfg = s.cfg, units = s.units, turn = s.turn, active = s.active, rng = s.rng,
+              over = True, opened = s.opened, attacks-left = 0 }
+
+ Whether this turn is the one that ends the battle, asked BEFORE the turn
+ is begun. Opening a turn asks it at the same point, so a turn that is
+ opened and then stepped settles exactly as one that is only stepped: a
+ side that supply attrition is about to wipe out is still alive when the
+ question is put, in both.
+
+  hw-settled : HwState -> Boolean
+  hw-settled (s) =
+    if s.turn >= s.cfg.turn-limit then True
+    else if count-alive (s.units) 0 == 0 then True
+    else count-alive (s.units) 1 == 0
 
   hw-wasm-step : HwState -> HwState
   hw-wasm-step (s) =
     if s.over then s
+    else if s.opened == False & hw-settled s then hw-over s
     else let cfg = s.cfg
-    in if s.turn >= cfg.turn-limit then HwState { cfg = cfg, units = s.units, turn = s.turn, active = s.active, rng = s.rng, over = True }
-    else if count-alive (s.units) 0 == 0 then HwState { cfg = cfg, units = s.units, turn = s.turn, active = s.active, rng = s.rng, over = True }
-    else if count-alive (s.units) 1 == 0 then HwState { cfg = cfg, units = s.units, turn = s.turn, active = s.active, rng = s.rng, over = True }
-    else let r2 = rng-next (s.rng)
-    in let units2 = run-hexwar-turn (hw-copy-units (s.units) 0 []) (cfg.terrain-data) (s.active) (cfg.map-width) (cfg.map-height) (cfg.stacking-limit) r2
+    in let r2 = rng-next (s.rng)
+    in let copy = hw-copy-units (s.units) 0 []
+    in let units2 = if s.opened
+         then run-opened-hexwar-turn copy (cfg.terrain-data) (s.active) (cfg.map-width) (cfg.map-height) (cfg.stacking-limit) r2
+         else run-hexwar-turn copy (cfg.terrain-data) (s.active) (cfg.map-width) (cfg.map-height) (cfg.stacking-limit) r2
     in let next-player = rng-mod (s.active + 1) (cfg.num-players)
     in let next-turn = if next-player == 0 then s.turn + 1 else s.turn
-    in HwState { cfg = cfg, units = units2, turn = next-turn, active = next-player, rng = r2, over = False }
+    in HwState { cfg = cfg, units = units2, turn = next-turn, active = next-player, rng = r2,
+                 over = False, opened = False, attacks-left = 0 }
 
   hw-wasm-units : HwState -> Integer
   hw-wasm-units (s) = list-length (s.units)
@@ -174,5 +200,97 @@ Section: The Browser Interface
   hw-wasm-winner : HwState -> Integer
   hw-wasm-winner (s) =
     determine-winner (s.units) (s.cfg.terrain-data) (s.turn) (s.cfg.turn-limit) (s.cfg.map-width)
+
+Section: Taking A Turn Yourself
+
+ Opening a turn is what `run-hexwar-turn` does to its own first, and it is
+ idempotent here so a page cannot spend a side's supply twice by asking
+ again. Until a turn is opened its units carry last turn's movement, so a
+ page opens before it reads anything it means to offer as a move.
+
+  hw-wasm-open : HwState -> HwState
+  hw-wasm-open (s) =
+    if s.over then s
+    else if s.opened then s
+    else if hw-settled s then hw-over s
+    else HwState { cfg = s.cfg,
+                   units = hw-begin-turn (hw-copy-units (s.units) 0 []) (s.active) (s.cfg.map-width) (s.cfg.map-height),
+                   turn = s.turn, active = s.active, rng = s.rng, over = False,
+                   opened = True, attacks-left = 1 }
+
+  hw-wasm-opened : HwState -> Integer
+  hw-wasm-opened (s) = if s.opened then 1 else 0
+
+  hw-wasm-attacks-left : HwState -> Integer
+  hw-wasm-attacks-left (s) = s.attacks-left
+
+  hw-wasm-movement : HwState, Integer -> Integer
+  hw-wasm-movement (s) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (s.units) then (-1)
+    else (list-at (s.units) i).movement
+
+  hw-wasm-can-move : HwState, Integer, Integer, Integer -> Integer
+  hw-wasm-can-move (s) (i) (tq) (tr) =
+    if s.over then 0
+    else if s.opened == False then 0
+    else if hw-can-move (s.units) (s.active) i tq tr (s.cfg.terrain-data) (s.cfg.map-width) (s.cfg.map-height) (s.cfg.stacking-limit)
+      then 1 else 0
+
+  hw-wasm-has-move : HwState, Integer -> Integer
+  hw-wasm-has-move (s) (i) =
+    if s.over then 0
+    else if s.opened == False then 0
+    else if i < 0 then 0
+    else if i >= list-length (s.units) then 0
+    else if (list-at (s.units) i).owner /= s.active then 0
+    else if hw-unit-has-move (s.units) (s.active) i (s.cfg.terrain-data) (s.cfg.map-width) (s.cfg.map-height) (s.cfg.stacking-limit) 0
+      then 1 else 0
+
+ A REFUSAL ANSWERS THE STATE IT WAS GIVEN, unchanged and un-copied. Copying
+ first and letting the engine refuse the copy is the same game and a
+ different handle, so a page comparing what came back against what it sent
+ could not tell a refusal from a move.
+
+  hw-wasm-move : HwState, Integer, Integer, Integer -> HwState
+  hw-wasm-move (s) (i) (tq) (tr) =
+    if hw-wasm-can-move s i tq tr == 0 then s
+    else HwState { cfg = s.cfg,
+                   units = hw-move-unit (hw-copy-units (s.units) 0 []) i tq tr (s.cfg.terrain-data) (s.cfg.map-width),
+                   turn = s.turn, active = s.active, rng = s.rng, over = False,
+                   opened = True, attacks-left = s.attacks-left }
+
+  hw-wasm-can-attack : HwState, Integer -> Integer
+  hw-wasm-can-attack (s) (target) =
+    if s.over then 0
+    else if s.opened == False then 0
+    else if s.attacks-left <= 0 then 0
+    else if hw-can-attack (s.units) (s.active) target then 1 else 0
+
+ The die is the caller's to supply, the same way the runner takes its own:
+ a page that reused one seed would fight the same battle every time.
+
+  hw-wasm-attack : HwState, Integer, Integer -> HwState
+  hw-wasm-attack (s) (target) (seed) =
+    if hw-wasm-can-attack s target == 0 then s
+    else let r2 = rng-new seed
+    in HwState { cfg = s.cfg,
+                 units = hw-resolve-attack (hw-copy-units (s.units) 0 []) (s.cfg.terrain-data) target (s.active) (s.cfg.map-width) r2,
+                 turn = s.turn, active = s.active, rng = r2, over = False,
+                 opened = True, attacks-left = s.attacks-left - 1 }
+
+ Ending your turn passes the seat on without running one, and settles the
+ game if your own attack finished it: `hw-wasm-step` is what sets `over`
+ for a side the runner plays, and nothing else would set it for yours.
+
+  hw-wasm-end-turn : HwState -> HwState
+  hw-wasm-end-turn (s) =
+    if s.over then s
+    else let next-player = rng-mod (s.active + 1) (s.cfg.num-players)
+    in let next-turn = if next-player == 0 then s.turn + 1 else s.turn
+    in let wiped = count-alive (s.units) 0 == 0 | count-alive (s.units) 1 == 0
+    in let finished = wiped | next-turn >= s.cfg.turn-limit
+    in HwState { cfg = s.cfg, units = s.units, turn = next-turn, active = next-player,
+                 rng = s.rng, over = finished, opened = False, attacks-left = 0 }
 
 Page 1

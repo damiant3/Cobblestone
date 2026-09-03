@@ -1,0 +1,71 @@
+Chapter: ListGrowth
+
+  cites Foreword chapter Console
+
+ COMPILER-42 arm 2, the growth harness, and this file is its CALIBRATION.
+
+ A pass/fail arm cannot tell linear from quadratic, so the harness records
+ heap allocation at N, 2N and 4N and reports the RATIO between successive
+ sizes (L-THRESHOLD: count the signature rather than threshold the
+ magnitude). Linear roughly doubles per doubling; quadratic roughly
+ quadruples.
+
+ Two arms with known answers, because a harness that has only ever been
+ pointed at the subject cannot be shown to work. `build-lin` is an ordinary
+ accumulator loop. `build-quad` copies the whole accumulator before every
+ push, so it allocates the triangular number of cells by construction. If
+ the ratios these two produce are not clearly apart, the instrument cannot
+ answer the question the design is asking and no reading from it means
+ anything.
+
+ Allocation is measured with `__heap-save`, which returns the bump pointer.
+ Bare metal has no GC and nothing is reclaimed inside a call, so the
+ difference between two reads IS the allocation total over the span.
+
+Section: Body
+
+  build-lin : Integer, List Integer -> List Integer
+  build-lin (n) (acc) = if n <= 0 then acc else build-lin (n - 1) (list-push acc n)
+
+  copy-into : List Integer, Integer, List Integer -> List Integer
+  copy-into (src) (i) (dst) =
+    if i >= list-length src then dst
+    else copy-into src (i + 1) (list-push dst (list-at src i))
+
+  build-quad : Integer, List Integer -> List Integer
+  build-quad (n) (acc) =
+    if n <= 0 then acc
+    else build-quad (n - 1) (list-push (copy-into acc 0 []) n)
+
+  grow-lin : Integer -> Integer
+  grow-lin (n) =
+    let h0 = __heap-save
+    in let xs = build-lin n []
+    in let h1 = __heap-save
+    in (h1 - h0) + (0 * list-length xs)
+
+  grow-quad : Integer -> Integer
+  grow-quad (n) =
+    let h0 = __heap-save
+    in let xs = build-quad n []
+    in let h1 = __heap-save
+    in (h1 - h0) + (0 * list-length xs)
+
+  classify : Integer, Integer -> Text
+  classify (small) (big) =
+    let pct = if small <= 0 then 0 else (big * 100) / small
+    in if pct < 300 then "LINEAR" else "QUADRATIC"
+
+ The verdict is the RATIO between successive sizes, never the byte counts.
+ A raw count is a fact about today's allocator and goes red the first time
+ anything about allocation changes, which trains a reader to ignore the
+ arm; the ratio is the property under test and holds across that. The cut
+ at 300 sits between the two measured populations (about 199 and about 396)
+ and is nowhere near either.
+
+  opening : [Console] Nothing = act
+    print-line-uni ("lin  100->200 : " & classify (grow-lin 100) (grow-lin 200))
+    print-line-uni ("lin  200->400 : " & classify (grow-lin 200) (grow-lin 400))
+    print-line-uni ("quad 100->200 : " & classify (grow-quad 100) (grow-quad 200))
+    print-line-uni ("quad 200->400 : " & classify (grow-quad 200) (grow-quad 400))
+  end

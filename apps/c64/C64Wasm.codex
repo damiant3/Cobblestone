@@ -1,0 +1,295 @@
+Chapter: C64Wasm
+  cites C64 chapter Memory
+  cites C64 chapter Cpu6502
+  cites C64 chapter Cia
+  cites C64 chapter RomData
+
+ The browser interface for the emulator. Three facts about the machine
+ decide the whole shape of this chapter.
+
+ The C64's state already lives at fixed absolute addresses -- RAM at
+ #A00000, the ROMs, colour RAM, the SID, VIC and CIA registers, all
+ inside one band under #A18000. A wasm module's linear memory persists
+ between calls and the emitter declares 256 pages (16 MB), so that band
+ survives from one call to the next with no handle and no page-held
+ state. This is a third state contract beside the two in
+ games-backlog.md GAME-11: the machine IS the state, and it is already
+ where it needs to be.
+
+ What does NOT survive is the framebuffer. Bare metal renders to the GOP
+ at #BF000000, which is 3.2 GB: past the declared memory, and past what
+ an i32 store address can even name. The browser gets its own
+ framebuffer low in the same linear memory, and the page reads the
+ pixels straight out of it.
+
+ The third fact is the cost of a CPU step. `cpu-step` answers a fresh
+ CpuState, and a frame is 19,656 of them, so a frame allocates a couple
+ of megabytes that no collector will ever take back. `c64w-frame` saves
+ the heap pointer on the way in and restores it on the way out, and the
+ registers cross that boundary through the fixed band rather than on the
+ heap. Without it the bump allocator walks up into the machine's own
+ memory within a few seconds of play.
+
+Section: The Browser Machine's Addresses
+
+ The framebuffer is 640 by 480 by 4 bytes = 1,228,800, so it runs
+ #C00000 to #D2C000 and stays clear of both the machine band below it
+ and the 16 MB ceiling above.
+
+  c64w-fb : Integer = #C00000
+  c64w-width : Integer = 640
+  c64w-height : Integer = 480
+
+ Fourteen registers, one 32-bit slot each, above the VIC registers at
+ #A17000 and below the keyboard ring.
+
+  c64w-cpu : Integer = #A19000
+
+Section: Carrying the Registers Across a Call
+
+  c64w-cpu-save : CpuState -> Integer
+  c64w-cpu-save (s) =
+    let d0 = poke-32 c64w-cpu 0 s.cpu-a
+    in let d1 = poke-32 c64w-cpu 4 s.cpu-x
+    in let d2 = poke-32 c64w-cpu 8 s.cpu-y
+    in let d3 = poke-32 c64w-cpu 12 s.cpu-sp
+    in let d4 = poke-32 c64w-cpu 16 s.cpu-pc
+    in let d5 = poke-32 c64w-cpu 20 s.cpu-flag-c
+    in let d6 = poke-32 c64w-cpu 24 s.cpu-flag-z
+    in let d7 = poke-32 c64w-cpu 28 s.cpu-flag-i
+    in let d8 = poke-32 c64w-cpu 32 s.cpu-flag-d
+    in let d9 = poke-32 c64w-cpu 36 s.cpu-flag-b
+    in let d10 = poke-32 c64w-cpu 40 s.cpu-flag-v
+    in let d11 = poke-32 c64w-cpu 44 s.cpu-flag-n
+    in let d12 = poke-32 c64w-cpu 48 s.cpu-cycles
+    in let d13 = poke-32 c64w-cpu 52 s.cpu-halted
+    in d0 + d1 + d2 + d3 + d4 + d5 + d6 + d7 + d8 + d9 + d10 + d11 + d12 + d13
+
+  c64w-cpu-load : Integer -> CpuState
+  c64w-cpu-load (dummy) =
+    CpuState {
+      cpu-a = peek-32 c64w-cpu 0,
+      cpu-x = peek-32 c64w-cpu 4,
+      cpu-y = peek-32 c64w-cpu 8,
+      cpu-sp = peek-32 c64w-cpu 12,
+      cpu-pc = peek-32 c64w-cpu 16,
+      cpu-flag-c = peek-32 c64w-cpu 20,
+      cpu-flag-z = peek-32 c64w-cpu 24,
+      cpu-flag-i = peek-32 c64w-cpu 28,
+      cpu-flag-d = peek-32 c64w-cpu 32,
+      cpu-flag-b = peek-32 c64w-cpu 36,
+      cpu-flag-v = peek-32 c64w-cpu 40,
+      cpu-flag-n = peek-32 c64w-cpu 44,
+      cpu-cycles = peek-32 c64w-cpu 48,
+      cpu-halted = peek-32 c64w-cpu 52
+    }
+
+Section: The Palette
+
+ The sixteen C64 colours, stored the way a canvas ImageData wants them.
+ A little-endian 32-bit store lays the bytes down R, G, B, A, so each
+ constant here is the bare-metal ARGB value of the same colour with red
+ and blue exchanged. Writing them out once is cheaper than swapping two
+ bytes on every one of the quarter-million pixels a frame stores.
+
+  c64w-palette : Integer -> Integer
+  c64w-palette (idx) =
+    when bit-and idx 15
+      is 0 -> #FF000000
+      is 1 -> #FFFFFFFF
+      is 2 -> #FF2B3768
+      is 3 -> #FFB2A470
+      is 4 -> #FF863D6F
+      is 5 -> #FF438D58
+      is 6 -> #FF792835
+      is 7 -> #FF6FC7B8
+      is 8 -> #FFB55E6C
+      is 9 -> #FF294444
+      is 10 -> #FF6E73A9
+      is 11 -> #FF444444
+      is 12 -> #FF6C6C6C
+      is 13 -> #FF84D29A
+      is 14 -> #FFB55E6C
+      is 15 -> #FF959595
+      is otherwise -> #FF000000
+
+Section: Rendering
+
+ Forty by twenty-five characters at 2x is 640 by 400, laid into a 640 by
+ 480 frame at y = 40, which leaves a forty-row border band above and
+ below and none at the sides. Only those two bands need the border
+ colour: the characters cover every pixel between them, so filling the
+ whole frame first would store 307,200 pixels to overwrite 256,000 of
+ them.
+
+  c64w-fill-row : Integer, Integer, Integer -> Integer
+  c64w-fill-row (y) (color) (x) =
+    if x >= c64w-width then 0
+    else let d = poke-32 c64w-fb ((y * c64w-width + x) * 4) color
+    in d + c64w-fill-row y color (x + 1)
+
+  c64w-fill-band : Integer, Integer, Integer -> Integer
+  c64w-fill-band (y) (limit) (color) =
+    if y >= limit then 0
+    else let d = c64w-fill-row y color 0
+    in d + c64w-fill-band (y + 1) limit color
+
+  c64w-glyph-bits : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  c64w-glyph-bits (px) (y) (bits) (fg) (bg) (b) =
+    if b >= 8 then 0
+    else let color = if bit-and bits (bit-shl 1 (7 - b)) /= 0 then fg else bg
+    in let x = px + b * 2
+    in let off0 = (y * c64w-width + x) * 4
+    in let off1 = ((y + 1) * c64w-width + x) * 4
+    in let d0 = poke-32 c64w-fb off0 color
+    in let d1 = poke-32 c64w-fb (off0 + 4) color
+    in let d2 = poke-32 c64w-fb off1 color
+    in let d3 = poke-32 c64w-fb (off1 + 4) color
+    in d0 + d1 + d2 + d3 + c64w-glyph-bits px y bits fg bg (b + 1)
+
+  c64w-glyph-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  c64w-glyph-rows (ch) (px) (py) (fg) (bg) (r) =
+    if r >= 8 then 0
+    else let bits = peek-byte char-rom (ch * 8 + r)
+    in let y = py + r * 2
+    in let d = c64w-glyph-bits px y bits fg bg 0
+    in d + c64w-glyph-rows ch px py fg bg (r + 1)
+
+  c64w-render-chars : Integer, Integer -> Integer
+  c64w-render-chars (bg) (idx) =
+    if idx >= 1000 then 0
+    else let col = int-mod idx 40
+    in let row = idx / 40
+    in let ch = peek-byte c64-ram (#0400 + idx)
+    in let fg = c64w-palette (bit-and (peek-byte color-ram-base idx) 15)
+    in let d = c64w-glyph-rows ch (col * 16) (row * 16 + 40) fg bg 0
+    in d + c64w-render-chars bg (idx + 1)
+
+  c64w-render : Integer -> Integer
+  c64w-render (dummy) =
+    let bg = c64w-palette (peek-byte vic-state #21)
+    in let border = c64w-palette (peek-byte vic-state #20)
+    in let d0 = c64w-fill-band 0 40 border
+    in let d1 = c64w-fill-band 440 c64w-height border
+    in d0 + d1 + c64w-render-chars bg 0
+
+Section: Running the Machine
+
+  c64w-run-cycles : CpuState, Integer -> CpuState
+  c64w-run-cycles (s) (remaining) =
+    if remaining <= 0 then s
+    else if s.cpu-halted /= 0 then s
+    else c64w-run-cycles (cpu-step s) (remaining - 1)
+
+ PAL: 312 raster lines of 63 cycles. Line number is published to the VIC
+ raster register at #12 with its ninth bit in #11, because a program that
+ waits on the raster is waiting on those two.
+
+  c64w-run-raster : CpuState, Integer -> CpuState
+  c64w-run-raster (s) (line) =
+    if line >= 312 then s
+    else let d = poke-byte vic-state #12 (bit-and line #FF)
+    in let d2 = if line > 255
+      then poke-byte vic-state #11 (bit-or (peek-byte vic-state #11) #80)
+      else poke-byte vic-state #11 (bit-and (peek-byte vic-state #11) #7F)
+    in c64w-run-raster (c64w-run-cycles s 63) (line + 1)
+
+Section: Bringing the Machine Up
+
+  c64w-init-screen : Integer -> Integer
+  c64w-init-screen (i) =
+    if i >= 1000 then 0
+    else let d = poke-byte c64-ram (#0400 + i) 32
+    in d + c64w-init-screen (i + 1)
+
+  c64w-init-color : Integer -> Integer
+  c64w-init-color (i) =
+    if i >= 1000 then 0
+    else let d = poke-byte color-ram-base i 14
+    in d + c64w-init-color (i + 1)
+
+ #2F and #37 are the 6510 data-direction register and processor port at
+ $0000 and $0001: all ROMs and I/O banked in, which is what the KERNAL
+ reset expects to find.
+
+  c64w-init-ram : Integer -> Integer
+  c64w-init-ram (dummy) =
+    let d0 = poke-byte c64-ram 0 #2F
+    in let d1 = poke-byte c64-ram 1 #37
+    in d0 + d1 + c64w-init-screen 0 + c64w-init-color 0
+
+ VIC control and memory pointers: 25 rows and the screen on, 40 columns,
+ screen at $0400 with the character generator at $1000, no interrupts,
+ light blue on blue.
+
+  c64w-init-vic : Integer -> Integer
+  c64w-init-vic (dummy) =
+    let d0 = poke-byte vic-state #11 #1B
+    in let d1 = poke-byte vic-state #16 #C8
+    in let d2 = poke-byte vic-state #18 #15
+    in let d3 = poke-byte vic-state #19 0
+    in let d4 = poke-byte vic-state #20 14
+    in let d5 = poke-byte vic-state #21 6
+    in d0 + d1 + d2 + d3 + d4 + d5
+
+Section: The Browser Interface
+
+  c64w-reset : Integer -> Integer
+  c64w-reset (dummy) =
+    let d0 = c64w-init-ram 0
+    in let d1 = cia-init 0
+    in let d2 = c64w-init-vic 0
+    in let d3 = init-all-roms 0
+    in let d4 = poke-byte kbd-ring-base 0 0
+    in let d5 = poke-byte kbd-ring-base 1 0
+    in let boot = __record-set cpu-new "cpu-pc" (mem-read-16 #FFFC)
+    in d0 + d1 + d2 + d3 + d4 + d5 + c64w-cpu-save boot
+
+  c64w-frame : Integer -> Integer
+  c64w-frame (dummy) =
+    let h = __heap-save
+    in let s = c64w-cpu-load 0
+    in let dk = kbd-poll 0
+    in let s1 = c64w-run-raster s 0
+    in let dc = poke-byte cia-state 29 (bit-or (peek-byte cia-state 29) #81)
+    in let s2 = cpu-irq s1
+    in let ds = c64w-cpu-save s2
+    in let dr = c64w-render 0
+    in let restored = __heap-restore h
+    in dk + dc + ds + dr
+
+ A PC set-1 scancode into the ring `kbd-poll` drains. Byte 0 is the write
+ counter, byte 1 the read counter, and the 64 slots start at 16.
+
+  c64w-key : Integer -> Integer
+  c64w-key (sc) =
+    let wc = peek-byte kbd-ring-base 0
+    in let d0 = poke-byte kbd-ring-base (16 + bit-and wc 63) (bit-and sc #FF)
+    in d0 + poke-byte kbd-ring-base 0 (bit-and (wc + 1) #FF)
+
+  c64w-fb-addr : Integer -> Integer
+  c64w-fb-addr (dummy) = c64w-fb
+
+  c64w-frame-width : Integer -> Integer
+  c64w-frame-width (dummy) = c64w-width
+
+  c64w-frame-height : Integer -> Integer
+  c64w-frame-height (dummy) = c64w-height
+
+ The screen and colour RAM are what a grader reads: forty by twenty-five
+ screen codes is what the machine believes it is showing, independent of
+ whether a single pixel was stored correctly.
+
+  c64w-screen : Integer -> Integer
+  c64w-screen (i) =
+    if i < 0 then (-1)
+    else if i >= 1000 then (-1)
+    else peek-byte c64-ram (#0400 + i)
+
+  c64w-pc : Integer -> Integer
+  c64w-pc (dummy) = peek-32 c64w-cpu 16
+
+  c64w-halted : Integer -> Integer
+  c64w-halted (dummy) = peek-32 c64w-cpu 52
+
+Page 1

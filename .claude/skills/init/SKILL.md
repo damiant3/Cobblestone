@@ -58,8 +58,12 @@ to prefix every staged item with the campaign, and re-read the row in
 - `docs/Agents/PerforceProcess.md` and
   `docs/Agents/CoordinationProtocol.md` -- return the gate-dance and
   build-token checklists.
-- Glob `docs/Agents/*-workplan.md` and read every match. **These are
-  EMPTY BY DESIGN since 2026-08-08** and hold only a session's
+- Glob `docs/Agents/*-workplan.md` (forward slashes, relative to the
+  workspace root) and read every match. **Return the list of files the
+  glob matched before anything else**: a glob that matched nothing
+  reads exactly like five empty workplans, and on 2026-09-02 it did
+  (the agent answered "no files found" over five files on disk). These
+  are **EMPTY BY DESIGN since 2026-08-08** and hold only a session's
   in-flight lane state (what is shelved, what is mid-gate). Return
   anything actually in one, and say "all empty" when they are, which
   is the expected answer. **A workplan carrying work items, standing
@@ -139,6 +143,28 @@ stale `build-grant` means you may still hold the token (write
 `build-complete` if you are not mid-gate); delete any stale
 `build-request` you no longer intend. If `.agentgrid` does not exist,
 AgentGrid is not managing this workspace -- skip.
+
+**A `*-merge-down-directive-*.json` file in your inbox is an ORDER, and it
+is the first thing you do after this step** (Damian, 2026-09-02):
+`build/merge-down-all.ps1` ran while you were down and could not bring
+your stream to main, so you are behind on rulings and registers by
+everything since the `head` it names. Merge down (`p4 merge -S
+//Codex/XXX -r; p4 resolve -am; submit`, or the shelve-first dance in
+`PerforceProcess.md` if you hold open work), verify with `p4 diff2 -q`,
+then delete the directive file. Do not read CurrentPlan or take an item
+before that merge lands: the register you would read is the stale one.
+
+**The dashboard is `status.json`, and you maintain it (Damian, 2026-09-02).**
+Before Step 9, write `<coordinationDir>\status.json` with your live state:
+`state` (`Idle`, `Working`, `Building`, `WaitingForBuild`, `Error`), `task`
+(the unit you are on and its current step, or what you are waiting on),
+and `claim` (the files or subsystems you hold). Then rewrite it at every
+change of state for the rest of the session: taken, gating, waiting on
+the box or the token, landed, handed off. A `status.json` still carrying
+the previous session's handoff text is what the fleet dashboard showed
+for four of six lanes at 12:00 on 2026-09-02, three hours into the day,
+and that is the failure this paragraph exists to name. The contract is
+`docs/Agents/CoordinationProtocol.md`, "status.json -- keep it fresh".
 
 **Fleet messages are budgeted (Damian, 2026-08-17), and this binds from
 your first message of the session:** at most 300 characters, ONE

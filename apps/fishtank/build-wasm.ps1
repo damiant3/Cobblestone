@@ -152,16 +152,20 @@ Remove-Item $inputFile,$outFile,$errFile -Force -ErrorAction SilentlyContinue
 
 # -- Phase 3: WAT -> WASM --
 if (-not $WatOnly) {
-    $wat2wasm = Get-Command 'wat2wasm' -ErrorAction SilentlyContinue
-    if ($wat2wasm) {
-        $wasmFile = Join-Path $OutDir 'fishtank.wasm'
-        & wat2wasm $watFile -o $wasmFile
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "[fishtank-wasm] WASM: $wasmFile ($((Get-Item $wasmFile).Length) bytes)"
-        } else { Write-Warning "wat2wasm failed; WAT is still available at $watFile" }
-    } else {
-        Write-Host "[fishtank-wasm] wat2wasm not found; WAT ready at $watFile"
+    if (-not (Get-Command 'wat2wasm' -ErrorAction SilentlyContinue)) {
+        Write-Host "FAIL: wat2wasm is not on the Path; WAT is at $watFile"
+        exit 7
     }
+    $wasmFile = Join-Path $OutDir 'fishtank.wasm'
+    # --enable-tail-call: the emitter writes `return_call` for a tail position and
+    # wat2wasm will not assemble one without permission. Tail calls are baseline in
+    # every major browser; this is the same flag apps/games/build-wasm.ps1,
+    # codex/plugs/wasm/build-page.ps1 and wasm-e2e.ps1 pass for the same reason.
+    & wat2wasm --enable-tail-call $watFile -o $wasmFile
+    # A warning here left the previous run's .wasm on disk beside a freshly
+    # assembled page and still printed "done", which is how a stale module ships.
+    if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: wat2wasm; WAT is at $watFile"; exit 7 }
+    Write-Host "[fishtank-wasm] WASM: $wasmFile ($((Get-Item $wasmFile).Length) bytes)"
 }
 
 # -- Phase 4: Assemble HTML page --

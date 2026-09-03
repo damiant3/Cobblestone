@@ -318,17 +318,17 @@ Section: Function Application
          when op
           is IrAddInt ->
            let l = emit-expr (st-set-tail-pos st False) left
-           in st-append-code (l.state) (lea target (l.reg) v)
+           in st-append-code (l.state) (tail-add-imm target (l.reg) v ty)
           is IrSubInt ->
            let l = emit-expr (st-set-tail-pos st False) left
-           in st-append-code (l.state) (lea target (l.reg) (0 - v))
+           in st-append-code (l.state) (tail-sub-imm target (l.reg) v ty)
           is otherwise -> emit-to-local st arg target False
         else emit-to-local st arg target False
        is IrName (n) (nty) (nsp) ->
         let slot = lookup-local (st.locals) n
         in if slot >= 0 & slot < spill-base & is-tco-binop op then
          let l = emit-expr (st-set-tail-pos st False) left
-         in st-append-code (l.state) (mov-rr target (l.reg) & emit-tco-binop op target slot)
+         in st-append-code (l.state) (mov-rr target (l.reg) & emit-tco-binop op target slot ty)
         else emit-to-local st arg target False
        is otherwise -> emit-to-local st arg target False
      is otherwise -> emit-to-local st arg target False
@@ -340,13 +340,23 @@ Section: Function Application
     is IrAddInt | IrSubInt | IrMulInt -> True
     is otherwise -> False
 
-  emit-tco-binop : IRBinaryOp, Integer, Integer -> List Integer
-  emit-tco-binop (op) (target) (right-reg) =
+  emit-tco-binop : IRBinaryOp, Integer, Integer, CodexType -> List Integer
+  emit-tco-binop (op) (target) (right-reg) (lty) =
    when op
-    is IrAddInt -> add-rr target right-reg
-    is IrSubInt -> sub-rr target right-reg
-    is IrMulInt -> imul-rr target right-reg
-    is otherwise -> add-rr target right-reg
+    is IrAddInt -> add-rr target right-reg & int-trap-after lty
+    is IrSubInt -> sub-rr target right-reg & int-trap-after lty
+    is IrMulInt -> imul-rr target right-reg & int-trap-after lty
+    is otherwise -> add-rr target right-reg & int-trap-after lty
+
+  tail-add-imm : Integer, Integer, Integer, CodexType -> List Integer
+  tail-add-imm (target) (src) (imm) (ty) =
+   if int-ty-wraps ty then lea target src imm
+   else mov-rr target src & add-ri target imm & int-trap-after ty
+
+  tail-sub-imm : Integer, Integer, Integer, CodexType -> List Integer
+  tail-sub-imm (target) (src) (imm) (ty) =
+   if int-ty-wraps ty then lea target src (0 - imm)
+   else mov-rr target src & sub-ri target imm & int-trap-after ty
 
   eval-tail-arg-standard : CodegenState, IRExpr, Integer -> CodegenState
   eval-tail-arg-standard (st) (arg) (target) =
@@ -557,9 +567,9 @@ Section: Function Application
      in when right
       is IrIntLit (v) (s) ->
        when op
-        is IrAddInt -> st-append-code (lload.state) (lea target (lload.reg) v)
-        is IrSubInt -> st-append-code (lload.state) (lea target (lload.reg) (0 - v))
-        is IrMulInt -> st-append-code (lload.state) (imul-rri target (lload.reg) v)
+        is IrAddInt -> st-append-code (lload.state) (tail-add-imm target (lload.reg) v (ir-expr-type arg))
+        is IrSubInt -> st-append-code (lload.state) (tail-sub-imm target (lload.reg) v (ir-expr-type arg))
+        is IrMulInt -> st-append-code (lload.state) (imul-rri target (lload.reg) v & int-trap-after (ir-expr-type arg))
         is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left then
          let shift = int-log2 v
          in if lload.reg == target then st-append-code (lload.state) (sar-ri target shift)
@@ -572,9 +582,9 @@ Section: Function Application
         is otherwise -> emit-to-local st arg target False
       is IrName (rn) (rt) (rs) ->
        let rload = load-local (lload.state) (lookup-local (st.locals) rn)
-       in if rload.reg == target then st-append-code (rload.state) (emit-tco-binop op target (lload.reg))
-          else if lload.reg == target then st-append-code (rload.state) (emit-tco-binop op target (rload.reg))
-          else st-append-code (rload.state) (mov-rr target (lload.reg) & emit-tco-binop op target (rload.reg))
+       in if rload.reg == target then st-append-code (rload.state) (emit-tco-binop op target (lload.reg) (ir-expr-type arg))
+          else if lload.reg == target then st-append-code (rload.state) (emit-tco-binop op target (rload.reg) (ir-expr-type arg))
+          else st-append-code (rload.state) (mov-rr target (lload.reg) & emit-tco-binop op target (rload.reg) (ir-expr-type arg))
       is otherwise -> emit-to-local st arg target False
     is otherwise -> emit-to-local st arg target False
 
@@ -1018,7 +1028,7 @@ Section: Narrow-store with overflow-mode dispatch
          else int-ty-default
         is otherwise -> int-ty-default
       is otherwise -> int-ty-default
-    is IrBinary (op) (left) (right) (ty) (sp) -> proven-binary-range env op left right
+    is IrBinary (op) (left) (right) (ty) (sp) -> proven-binary-range env op left right ty
     is IrNegate (x) (t) (s) -> proven-negate-range env x
     is IrIf (cond) (then-e) (else-e) (ty) (sp) -> proven-if-range env then-e else-e
     is IrLet (name) (lty) (value) (body) (sp) -> ir-expr-proven-range (range-env-bind env name (ir-expr-proven-range env value)) body
@@ -1061,8 +1071,8 @@ Section: Narrow-store with overflow-mode dispatch
       is otherwise -> int-ty-default
     is otherwise -> int-ty-default
 
-  proven-binary-range : List RangeBind, IRBinaryOp, IRExpr, IRExpr -> CodexType
-  proven-binary-range (env) (op) (left) (right) =
+  proven-binary-range : List RangeBind, IRBinaryOp, IRExpr, IRExpr, CodexType -> CodexType
+  proven-binary-range (env) (op) (left) (right) (ty) =
    let lr = ir-expr-proven-range env left
    in let rr = ir-expr-proven-range env right
    in when lr
@@ -1072,7 +1082,7 @@ Section: Narrow-store with overflow-mode dispatch
        when op
         is IrAddInt -> proven-add-range l-lo l-hi r-lo r-hi
         is IrSubInt -> proven-sub-range l-lo l-hi r-lo r-hi
-        is IrMulInt -> proven-mul-range l-lo l-hi r-lo r-hi
+        is IrMulInt -> if int-ty-wraps ty then int-ty-default else proven-mul-range l-lo l-hi r-lo r-hi
         is IrDivInt -> proven-div-range l-lo l-hi r-lo r-hi
         is otherwise -> int-ty-default
       is otherwise -> int-ty-default

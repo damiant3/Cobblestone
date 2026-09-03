@@ -140,9 +140,9 @@ Section: LIR Instruction Selection (x86-64)
   lir-alu-rr : CodegenState, LirOp, Integer, Integer -> CodegenState
   lir-alu-rr (st) (op) (pd) (pr) =
    when op
-    is LoAdd -> st-append-code st (add-rr pd pr)
-    is LoSub -> st-append-code st (sub-rr pd pr)
-    is LoMul -> st-append-code st (imul-rr pd pr)
+    is LoAdd -> st-append-code st (add-rr pd pr & jcc cc-no 2 & [15, 11])
+    is LoSub -> st-append-code st (sub-rr pd pr & jcc cc-no 2 & [15, 11])
+    is LoMul -> st-append-code st (imul-rr pd pr & jcc cc-no 2 & [15, 11])
     is LoRem -> st
     is LoDiv -> st
 
@@ -154,9 +154,9 @@ Section: LIR Instruction Selection (x86-64)
   lir-alu-imm : CodegenState, LirOp, Integer, Integer -> CodegenState
   lir-alu-imm (st) (op) (pd) (k) =
    when op
-    is LoAdd -> st-append-code st (add-ri pd k)
-    is LoSub -> st-append-code st (sub-ri pd k)
-    is LoMul -> st-append-code st (imul-rri pd pd k)
+    is LoAdd -> st-append-code st (add-ri pd k & jcc cc-no 2 & [15, 11])
+    is LoSub -> st-append-code st (sub-ri pd k & jcc cc-no 2 & [15, 11])
+    is LoMul -> st-append-code st (imul-rri pd pd k & jcc cc-no 2 & [15, 11])
     is LoRem -> st
     is LoDiv -> st
 
@@ -171,25 +171,6 @@ Section: LIR Instruction Selection (x86-64)
      if imm-fits-i32 k then lir-alu-imm st op w k
      else lir-alu-rr (st-append-code st (li lir-scratch2 k)) op w lir-scratch2
 
- Fusing an add or subtract of a constant into an `lea`. x86's ALU is
- two-operand -- `dst op= src` -- so a binary whose destination is not its left
- operand has to move first: `v = n - 1` with `v` and `n` in different
- registers costs `mov v, n; sub v, 1`. `lea` reads a base and a displacement
- and writes a third register, so the same value is one instruction:
- `lea v, [n - 1]`.
-
- Only for add and subtract (a multiply is not a displacement), only for an
- immediate right operand that fits one, and only when the left operand is in
- a register that is *not* the destination. If it were the destination the move
- is already nothing -- `mov-rr` elides a self-move -- and `sub dst, 1` is
- optimal on its own; fusing there would trade one instruction for one
- instruction and change the bytes for no reason.
-
- `lea` does not write flags, where `add`/`sub` do. That is a safe direction
- and not a coincidence to rely on: the LIR never reuses arithmetic flags, it
- emits `LiCmp` to set them and `LiBranch` to read them, and the lowering only
- ever puts those two next to each other at the end of a block.
-
   lir-lea-src : LirValue, List Location -> Integer
   lir-lea-src (l) (assign) =
    when l
@@ -199,49 +180,6 @@ Section: LIR Instruction Selection (x86-64)
       is LocSlot (ks) -> 0 - 1
     is LvImm (k) -> 0 - 1
 
-  lir-lea-disp : LirOp, LirValue -> Integer
-  lir-lea-disp (op) (r) =
-   when r
-    is LvImm (k) -> when op is LoSub -> 0 - k is otherwise -> k
-    is LvReg (rr) -> 0
-
-  lir-lea-ok : LirOp, Integer, LirValue, LirValue, List Location -> Boolean
-  lir-lea-ok (op) (w) (l) (r) (assign) =
-   when op
-    is LoMul -> False
-    is otherwise ->
-     when r
-      is LvReg (rr) -> False
-      is LvImm (k) ->
-       if imm-fits-i32 (lir-lea-disp op r) == False then False
-       else let lw = lir-lea-src l assign
-       in if lw < 0 then False
-          else lw /= w
-
- The same trade for a sum of two registers. `v = a + b` with all three in
- different registers is `mov v, a; add v, b`; `lea v, [a + b]` is one
- instruction. Add only -- there is no `lea` for a difference of two registers,
- and a product only for the scale factors.
-
- Both operands must be in registers, and neither may be the destination. The
- allocator does not hand a definition the register of a live operand, so a
- binary over three distinct vregs always qualifies; the exclusions are for the
- shapes where the destination *is* an operand, which is how a loop's own
- parameter update looks (`v1 = add v1 v0`). There the move is already elided
- and `add v1, v0` is one instruction, so fusing would trade nothing for
- nothing and change the bytes.
-
-  lir-lea-rr-ok : LirOp, Integer, LirValue, LirValue, List Location -> Boolean
-  lir-lea-rr-ok (op) (w) (l) (r) (assign) =
-   when op
-    is LoAdd ->
-     let lw = lir-lea-src l assign
-     in let rw = lir-lea-src r assign
-     in if lw < 0 then False
-        else if rw < 0 then False
-        else if lw == w then False
-        else rw /= w
-    is otherwise -> False
 
  The destination sharing the right operand's register. The two-operand
  lowering is `mov w, l; op w, r`, which writes `w` before it reads `r`, so
@@ -249,11 +187,10 @@ Section: LIR Instruction Selection (x86-64)
  when the numbering started modelling read-then-write and let a definition
  take a register its operand was still nominally holding.
 
- `w` already holds `r`, which is most of the work. Add and multiply commute,
- so `op w, l` is the answer and it is one instruction rather than two.
- Subtract does not: `l - r` with `r` in `w` is `-(r - l)`, so negate and add.
- Two instructions -- the same as the move-and-subtract it replaces, and
- correct, which that would not be.
+ `w` already holds `r`. Add and multiply commute, so `op w, l` is the
+ answer. Subtract does not, and `neg w; add w, l` would raise OF on
+ `r == i64-min` where `l - r` does not, so `r` is parked in the scratch
+ register and the subtract runs the right way round.
 
   lir-alias-r : Integer, LirValue, LirValue, List Location -> Boolean
   lir-alias-r (w) (l) (r) (assign) =
@@ -264,7 +201,7 @@ Section: LIR Instruction Selection (x86-64)
   lir-sel-bin-aliased : CodegenState, LirOp, Integer, LirValue, List Location -> CodegenState
   lir-sel-bin-aliased (st) (op) (w) (l) (assign) =
    when op
-    is LoSub -> lir-alu-gen (st-append-code st (neg-r w)) LoAdd w l assign
+    is LoSub -> lir-alu-rr (lir-load-into (st-append-code st (mov-rr lir-scratch2 w)) w l assign) LoSub w lir-scratch2
     is otherwise -> lir-alu-gen st op w l assign
 
  A remainder, and the only operator here that does not get to pick its
@@ -371,11 +308,7 @@ Section: LIR Instruction Selection (x86-64)
    when (list-at assign dst)
     is LocReg (pr) ->
      let w = list-at lir-phys pr
-     in if lir-lea-ok op w l r assign
-        then st-append-code st (lea w (lir-lea-src l assign) (lir-lea-disp op r))
-        else if lir-lea-rr-ok op w l r assign
-        then st-append-code st (lea-rr w (lir-lea-src l assign) (lir-lea-src r assign))
-        else if lir-mul-rri-ok op l r assign
+     in if lir-mul-rri-ok op l r assign
         then lir-sel-mul-rri st w l r assign
         else if lir-alias-r w l r assign
         then lir-sel-bin-aliased st op w l assign

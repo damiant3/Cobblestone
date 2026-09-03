@@ -914,7 +914,7 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & escape-text s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
-    is IrName (n) (ty) (sp) -> if name-in-list (ctx.locals) n 0 then sanitize n else let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity (ctx.arities) n in if ar == 0 then sanitize n & (if lookup-generic-count (ctx.arities) n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then (if ty-is-concrete-value ty then sanitize n else emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")") else if is-lam-name n then "(_da0 => " & sanitize n & "(_da0))" else sanitize n
+    is IrName (n) (ty) (sp) -> if name-in-list (ctx.locals) n 0 then sanitize n else let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity (ctx.arities) n in if ar == 0 then sanitize n & (if lookup-generic-count (ctx.arities) n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then (if ty-is-concrete-value ty then sanitize n else emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")") else if is-lam-name n then (if ty-has-tvar ty then "(_da0 => " & sanitize n & "(_da0))" else "((" & cs-type ty & ")(_da0 => " & sanitize n & "(_da0)))") else sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-binary op l r ty ctx
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-expr-at operand ctx (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr-at c ctx (depth + 1) & " ? " & emit-expr-at t ctx (depth + 1) & " : " & emit-expr-at el ctx (depth + 1) & ")"
@@ -1041,9 +1041,16 @@ Section: Expression Emission
     is IrAppendList -> "+"
     is IrConsList -> "+"
 
+ A plain Integer traps on signed overflow (COMPILER-36 contract): `checked(...)`
+ raises System.OverflowException on a long; the wrapping band is C#'s default
+ unchecked arithmetic.
+
   emit-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, CsCtx -> Text
   emit-binary (op) (l) (r) (ty) (ctx) =
    when op
+    is IrAddInt | IrSubInt | IrMulInt ->
+     if int-ty-wraps ty then "(" & emit-expr l ctx & " " & emit-bin-op op & " " & emit-expr r ctx & ")"
+     else "checked(" & emit-expr l ctx & " " & emit-bin-op op & " " & emit-expr r ctx & ")"
     is IrAppendList -> "Enumerable.Concat(" & emit-expr l ctx & ", " & emit-expr r ctx & ").ToList()"
     is IrConsList -> "new List<" & cs-type (ir-expr-type l) & "> { " & emit-expr l ctx & " }.Concat(" & emit-expr r ctx & ").ToList()"
     is IrPowInt -> "((long)Math.Pow(" & emit-expr l ctx & ", " & emit-expr r ctx & "))"
@@ -1133,7 +1140,7 @@ Section: Expression Emission
   emit-lambda (params) (body) (ty) (ctx) =
    let raw = if list-length params == 0 then "(() => " & emit-expr body ctx & ")"
              else "(" & emit-lambda-params params 0 (list-length params) & emit-expr body ctx & ")"
-   in if has-typevar ty then raw else "((" & cs-type ty & ")" & raw & ")"
+   in if ty-has-tvar ty then raw else "((" & cs-type ty & ")" & raw & ")"
 
   emit-lambda-params : List IRParam, Integer, Integer -> Text
   emit-lambda-params (params) (i) (len) =
@@ -1183,11 +1190,24 @@ Section: Expression Emission
    else let et = if ty-has-tvar ty then ir-expr-type (list-at elems 0) else ty
    in "new List<" & cs-type et & "> { " & emit-list-elems elems 0 ctx & " }"
 
+ The elements are pushed and concatenated ONCE. Joining them with `&` down the
+ recursion copies the whole accumulated tail at every element, which is
+ quadratic in the emitted length: the guide measures 2,000 characters built by
+ 200 straight-line appends retaining 203,200 bytes. `builtins()` is one list
+ literal of 151,094 emitted characters, and that quadratic is what exhausted
+ the guest's 3 GB heap part-way through it. Nothing here is reclaimed until the
+ def finishes, because `__heap-restore` runs BETWEEN defs.
+
+  emit-list-elems-acc : List IRExpr, CsCtx, Integer, Integer, List Text -> List Text
+  emit-list-elems-acc (elems) (ctx) (i) (len) (acc) =
+   if i == len then acc
+   else let piece = emit-expr (list-at elems i) ctx
+   in let part = if i == len - 1 then piece else piece & ", "
+   in emit-list-elems-acc elems ctx (i + 1) len (list-snoc acc part)
+
   emit-list-elems : List IRExpr, Integer, CsCtx -> Text
   emit-list-elems (elems) (i) (ctx) =
-   if i == list-length elems then ""
-   else if i == list-length elems - 1 then emit-expr (list-at elems i) ctx
-   else emit-expr (list-at elems i) ctx & ", " & emit-list-elems elems (i + 1) ctx
+   text-concat-list (emit-list-elems-acc elems ctx i (list-length elems) [])
 
   emit-match : IRExpr, List IRBranch, CodexType, CsCtx -> Text
   emit-match (scrut) (branches) (ty) (ctx) =

@@ -68,6 +68,70 @@ Section: The Browser Interface
       current-player = 1 - b.current-player
     }
 
+Section: One Move At A Time
+
+ `bg-apply-die` picks its own point, which is all a watching page needs and
+ nothing a playing one can use. These name the point instead, so a person can
+ say which checker moves. The legality test is the same one `bg-pick-loop`
+ applies when it searches: `all-in-home` gates bearing off, `pt-blocked` gates
+ a landing, and a player with a checker on the bar may do nothing else until
+ it is entered.
+
+  bg-wasm-can : BackgammonBoard, Integer, Integer -> Integer
+  bg-wasm-can (b) (from) (die) =
+    if bg-check-win b then 0
+    else if die < 1 then 0
+    else if die > 6 then 0
+    else if from < 0 then 0
+    else if from >= 24 then 0
+    else let player = b.current-player
+    in if on-bar b player then 0
+    else let v = list-at (b.points) from
+    in let mine = if player == 0 then v > 0 else v < 0
+    in if mine == False then 0
+    else let target = if player == 0 then from - die else from + die
+    in let bearing-off = if player == 0 then target < 0 else target >= 24
+    in if bearing-off then (if all-in-home b player then 1 else 0)
+    else if target < 0 then 0
+    else if target >= 24 then 0
+    else if pt-blocked b target player then 0
+    else 1
+
+  bg-wasm-move : BackgammonBoard, Integer, Integer -> BackgammonBoard
+  bg-wasm-move (b) (from) (die) =
+    if bg-wasm-can b from die == 0 then b
+    else bg-move-piece (bg-copy-board b) from die
+
+  bg-wasm-can-enter : BackgammonBoard, Integer -> Integer
+  bg-wasm-can-enter (b) (die) =
+    if bg-check-win b then 0
+    else if die < 1 then 0
+    else if die > 6 then 0
+    else let player = b.current-player
+    in if on-bar b player == False then 0
+    else let target = if player == 0 then 24 - die else die - 1
+    in if pt-blocked b target player then 0
+    else 1
+
+  bg-wasm-enter : BackgammonBoard, Integer -> BackgammonBoard
+  bg-wasm-enter (b) (die) =
+    if bg-wasm-can-enter b die == 0 then b
+    else bg-enter-from-bar (bg-copy-board b) die
+
+ A die with no legal move anywhere is forfeit rather than a stuck turn, and
+ the page needs to know which case it is in before it offers a click.
+
+  bg-wasm-any : BackgammonBoard, Integer -> Integer
+  bg-wasm-any (b) (die) =
+    if bg-wasm-can-enter b die == 1 then 1
+    else bg-wasm-any-loop b die 0
+
+  bg-wasm-any-loop : BackgammonBoard, Integer, Integer -> Integer
+  bg-wasm-any-loop (b) (die) (i) =
+    if i >= 24 then 0
+    else if bg-wasm-can b i die == 1 then 1
+    else bg-wasm-any-loop b die (i + 1)
+
   bg-wasm-point : BackgammonBoard, Integer -> Integer
   bg-wasm-point (b) (i) =
     if i < 0 then 0

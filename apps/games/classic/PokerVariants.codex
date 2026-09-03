@@ -489,6 +489,297 @@ Section: JacksOrBetter
     else if rank1.rank == 1 then rank1.primary >= 9
     else False
 
+Section: A Table You Can Sit At, Per Variant
+
+ The variants are one table, not eight games. `PokerTable` already holds a
+ deck, a position in it, two hands, chips, bets, a pot, a stage, the marks
+ and a winner, and its `pk-award` does all the money; what a variant
+ changes is how many cards are dealt and how the two hands are RANKED. So
+ this wraps that table rather than rebuilding it, and every ranking below
+ is the one the watch-only session already uses, called from one more
+ place.
+
+ A variant arrives as an integer in the order `pvw-variant` maps: 0 draw,
+ 1 five stud, 2 seven stud, 3 baseball, 4 hi chicago, 5 low chicago,
+ 6 follow the queen, 7 jacks or better.
+
+  PvTable = record {
+    table   : PokerTable,
+    variant : Integer,
+    wilds   : List Boolean,
+    spade   : Integer
+  }
+
+  pvt-cards-per-hand : Integer -> Integer
+  pvt-cards-per-hand (v) =
+    if v == 0 then 5
+    else if v == 1 then 5
+    else if v == 7 then 5
+    else 7
+
+  pvt-has-wilds : Integer -> Boolean
+  pvt-has-wilds (v) = v == 3 | v == 6
+
+  pvt-is-draw : Integer -> Boolean
+  pvt-is-draw (v) = v == 0
+
+  pvt-wild-table : Integer, List Integer -> List Boolean
+  pvt-wild-table (v) (deck) =
+    if v == 3 then pv-build-rank-wilds [1, 7]
+    else if v == 6 then pvt-queen-wilds (pv-find-follow-queen deck 14)
+    else pv-build-false-list 52
+
+  pvt-queen-wilds : Integer -> List Boolean
+  pvt-queen-wilds (wild-rank) =
+    if wild-rank < 0 then pv-build-false-list 52
+    else pv-build-rank-wilds [wild-rank]
+
+ The deal is `pk-table-new`'s, with the variant's hand size in place of
+ five. The position after the deal is what the draw and the showdown both
+ read, so it moves with the hand size rather than staying at ten.
+
+  pvt-new : Integer, Integer -> PvTable
+  pvt-new (variant) (seed) =
+    let v = if variant < 0 then 0 else if variant > 7 then 7 else variant
+    in let deck = poker-shuffle poker-deck-new (rng-new seed)
+    in let n = pvt-cards-per-hand v
+    in PvTable {
+         table = PokerTable {
+           deck = deck, pos = n * 2,
+           h0 = pk-take deck 0 n [], h1 = pk-take deck n n [],
+           chips0 = pk-start-chips - pk-ante, chips1 = pk-start-chips - pk-ante,
+           bet0 = 0, bet1 = 0, pot = pk-ante * 2,
+           stage = 0, turn = 0, acted = 0, marked = 0,
+           folded = (-1), winner = (-1), last = (-1), done = False
+         },
+         variant = v,
+         wilds = pvt-wild-table v deck,
+         spade = (-1)
+       }
+
+  pvt-with : PvTable, PokerTable -> PvTable
+  pvt-with (p) (t) =
+    PvTable { table = t, variant = p.variant, wilds = p.wilds, spade = p.spade }
+
+ The ranking, and it is the whole of what a variant is here. Five cards go
+ straight to `evaluate-hand`; seven go through `pv-best-5-of-7` first; a
+ wild variant asks `pv-evaluate-with-wilds` instead, which is the same call
+ `pv-baseball` and `pv-follow-the-queen` make.
+
+  pvt-best-hand : PvTable, Integer -> PokerHand
+  pvt-best-hand (p) (who) =
+    let cards = pk-hand-of (p.table) who
+    in if pvt-cards-per-hand (p.variant) == 5 then PokerHand { cards = cards }
+    else pv-best-5-of-7 cards
+
+  pvt-eval : PvTable, Integer -> HandRank
+  pvt-eval (p) (who) =
+    let h = pvt-best-hand p who
+    in if pvt-has-wilds (p.variant) then pv-evaluate-with-wilds h (p.wilds)
+    else evaluate-hand h
+
+ A wild variant is compared on rank then primary, because that is what
+ `pv-baseball` and `pv-follow-the-queen` do rather than calling
+ `compare-hands`; keeping the two the same is what stops a hand played at
+ this table from disagreeing with the same hand watched.
+
+  pvt-compare : PvTable, HandRank, HandRank -> Integer
+  pvt-compare (p) (a) (b) =
+    if pvt-has-wilds (p.variant) then pvt-compare-wild a b
+    else compare-hands a b
+
+  pvt-compare-wild : HandRank, HandRank -> Integer
+  pvt-compare-wild (a) (b) =
+    if a.rank > b.rank then 1
+    else if b.rank > a.rank then 2
+    else if a.primary > b.primary then 1
+    else if b.primary > a.primary then 2
+    else 0
+
+ The spade in the hole is a side pot in the Chicagos, decided off the first
+ two cards dealt to each seat, and it can carry a hand that lost.
+
+  pvt-hole : PvTable, Integer -> List Integer
+  pvt-hole (p) (who) =
+    let cards = pk-hand-of (p.table) who
+    in list-push (list-push [] (list-at cards 0)) (list-at cards 1)
+
+  pvt-spade-winner : PvTable -> Integer
+  pvt-spade-winner (p) =
+    if p.variant == 4 then pvt-hi-spade p
+    else if p.variant == 5 then pvt-low-spade p
+    else 0
+
+  pvt-hi-spade : PvTable -> Integer
+  pvt-hi-spade (p) =
+    let s0 = pv-highest-spade-in-hole (pvt-hole p 0)
+    in let s1 = pv-highest-spade-in-hole (pvt-hole p 1)
+    in if s0 > s1 then 1 else if s1 > s0 then 2 else 0
+
+  pvt-low-spade : PvTable -> Integer
+  pvt-low-spade (p) =
+    let s0 = pv-lowest-spade-in-hole (pvt-hole p 0)
+    in let s1 = pv-lowest-spade-in-hole (pvt-hole p 1)
+    in pvt-low-pick s0 s1
+
+  pvt-low-pick : Integer, Integer -> Integer
+  pvt-low-pick (s0) (s1) =
+    if s0 < 0 & s1 < 0 then 0
+    else if s0 < 0 then 2
+    else if s1 < 0 then 1
+    else if s0 < s1 then 1
+    else if s1 < s0 then 2
+    else 0
+
+ Who wins, in the seat numbering `pk-award` takes: 0, 1, or -1 for a split.
+ The one-based answer the variant sessions speak is converted here rather
+ than left for a caller to guess at.
+
+  pvt-winner-1based : PvTable -> Integer
+  pvt-winner-1based (p) =
+    let hand-winner = pvt-compare p (pvt-eval p 0) (pvt-eval p 1)
+    in let sw = pvt-spade-winner p
+    in if sw == 0 then hand-winner
+    else if hand-winner == sw then hand-winner
+    else if hand-winner == 0 then sw
+    else hand-winner
+
+  pvt-seat-of : Integer -> Integer
+  pvt-seat-of (w) = if w == 1 then 0 else if w == 2 then 1 else (-1)
+
+  pvt-showdown : PvTable -> PvTable
+  pvt-showdown (p) =
+    let sw = pvt-spade-winner p
+    in let w = pvt-seat-of (pvt-winner-1based p)
+    in PvTable { table = pk-award (p.table) w, variant = p.variant,
+                 wilds = p.wilds, spade = sw }
+
+ Jacks or better is the one variant whose RULE is a decision rather than an
+ evaluation: a seat may not open the betting without a pair of jacks or
+ better. `pv-can-open` already answers it and nothing asked, because the
+ watch-only session computes the opener instead of offering it.
+
+  pvt-can-open : PvTable, Integer -> Boolean
+  pvt-can-open (p) (who) =
+    if p.variant /= 7 then True
+    else pv-can-open (pvt-best-hand p who)
+
+  pvt-can-raise : PvTable, Integer -> Boolean
+  pvt-can-raise (p) (who) =
+    if pk-can-raise (p.table) who == False then False
+    else if pk-to-call (p.table) who > 0 then True
+    else pvt-can-open p who
+
+Section: The Moves, Over The Same Table
+
+ Only ONE of the table's moves is re-expressed here, and it is the end of a
+ betting round: `pk-advance-now` goes to `pk-showdown`, which ranks five
+ cards with `evaluate-hand`, and a seven-card or wild variant ranked that
+ way would pay the wrong seat. Everything else -- what is owed, putting it
+ in, noting it, folding, marking, drawing -- is the table's own and is
+ called rather than copied.
+
+  pvt-advance : PvTable -> PvTable
+  pvt-advance (p) =
+    if pk-round-over (p.table) then pvt-advance-now p else p
+
+  pvt-advance-now : PvTable -> PvTable
+  pvt-advance-now (p) =
+    if (p.table).stage == 0 & pvt-is-draw (p.variant)
+      then pvt-with p (pk-open-stage (p.table) 1)
+    else pvt-showdown p
+
+ A REFUSAL ANSWERS THE STATE IT WAS GIVEN. `pvt-with` builds a new record
+ every time it is called, so wrapping a table move that refuses hands back
+ a different handle for a move that did not happen, and a page comparing
+ what came back against what it sent cannot tell the two apart. Every
+ move below asks whether it is legal BEFORE it wraps anything. This was
+ wrong here first and three arms caught it (games-backlog GAME-55).
+
+ A fold needs no ranking: the seat that folded loses, whatever it held, so
+ the table's own fold is right for every variant.
+
+  pvt-fold : PvTable, Integer -> PvTable
+  pvt-fold (p) (who) =
+    if pk-can-fold (p.table) who == False then p
+    else pvt-with p (pk-fold (p.table) who)
+
+  pvt-call : PvTable, Integer -> PvTable
+  pvt-call (p) (who) =
+    if pk-can-call (p.table) who == False then p
+    else let owed = pk-to-call (p.table) who
+    in let paid = pk-put-in (p.table) who owed
+    in pvt-advance (pvt-with p (pk-note paid (if owed == 0 then 1 else 2)))
+
+  pvt-raise : PvTable, Integer -> PvTable
+  pvt-raise (p) (who) =
+    if pvt-can-raise p who == False then p
+    else let owed = pk-to-call (p.table) who
+    in let paid = pk-put-in (p.table) who (owed + pk-bet-size)
+    in pvt-advance (pvt-with p (pk-note paid 3))
+
+ The draw belongs to five card draw alone, and the mark mask is the
+ table's, so a variant that deals seven never reaches it.
+
+  pvt-can-draw : PvTable, Integer -> Boolean
+  pvt-can-draw (p) (who) =
+    if pvt-is-draw (p.variant) == False then False
+    else pk-can-draw (p.table) who
+
+ A click may only ever ADD a mark, never take one off, and clearing them
+ is a move of its own. One direction per click is what stops a page that
+ drives itself by scanning positions from marking a card, coming round,
+ unmarking it, and never reaching the draw.
+
+  pvt-can-mark : PvTable, Integer -> Boolean
+  pvt-can-mark (p) (i) =
+    if pvt-can-draw p 0 == False then False
+    else if i < 0 then False
+    else if i >= 5 then False
+    else pk-bit ((p.table).marked) i == 0
+
+  pvt-mark : PvTable, Integer -> PvTable
+  pvt-mark (p) (i) =
+    if pvt-can-mark p i == False then p
+    else pvt-with p (pk-mark (p.table) i)
+
+  pvt-clear-marks : PvTable -> PvTable
+  pvt-clear-marks (p) =
+    if pvt-is-draw (p.variant) == False then p
+    else if (p.table).marked == 0 then p
+    else pvt-with p (pk-clear-marks (p.table))
+
+  pvt-draw : PvTable -> PvTable
+  pvt-draw (p) =
+    if pvt-can-draw p 0 == False then p
+    else pvt-with p (pk-draw (p.table))
+
+ The opponent plays the same moves through the same functions, and it
+ judges its hand the VARIANT's way: `pk-ai-bet` reads `evaluate-hand` over
+ whatever the seat holds, which for seven cards is not that seat's hand.
+
+  pvt-ai-move : PvTable -> PvTable
+  pvt-ai-move (p) =
+    if (p.table).done then p
+    else if (p.table).stage >= 3 then p
+    else let who = (p.table).turn
+    in if (p.table).stage == 1 then pvt-ai-draw p who
+    else pvt-ai-bet p who
+
+  pvt-ai-draw : PvTable, Integer -> PvTable
+  pvt-ai-draw (p) (who) =
+    let mask = pk-discard-mask (pk-hand-of (p.table) who)
+    in pvt-with p (pk-after-draw (pk-draw-for (p.table) who mask))
+
+  pvt-ai-bet : PvTable, Integer -> PvTable
+  pvt-ai-bet (p) (who) =
+    let strength = (pvt-eval p who).rank
+    in let owed = pk-to-call (p.table) who
+    in if strength >= 2 & pvt-can-raise p who then pvt-raise p who
+    else if owed == 0 then pvt-call p who
+    else if strength >= 1 then pvt-call p who
+    else pvt-fold p who
+
 Section: Game Runner
 
   run-poker-variant : PokerVariant, Integer, Integer -> PokerSession

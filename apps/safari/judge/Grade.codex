@@ -1,0 +1,173 @@
+Chapter: Grade
+
+ The reusable grader: compare a flattened list of values against gold and say
+ WHERE the first disagreement is.
+
+ Every seam in this port reduces to the same shape -- a list of Reals, a list of
+ Integers, a list of Booleans -- so one grader serves pond, the camera, and later
+ the draw-command buffer, which is itself a flat list. Flattening at the seam is
+ what makes that true.
+
+ The judge is built out of nothing it judges: g-abs duplicates real-abs on
+ purpose. DeviceMath's own accuracy test records why -- when its judge called the
+ chapter under test, collapsing that chapter left every cell reading ok.
+
+ A failure names the INDEX, not just BAD. `show` on a Real is refused by the zig
+ plug, which needs a __real_to_text it does not have, so a Real cannot be printed
+ to say what it was; an Integer index can, and it points at one value instead of
+ at a whole seam. When real-to-int lands, this is the chapter that grows a
+ scaled-integer dump and the tolerance argument goes away.
+
+ We say:
+
+Section: Judging Reals
+
+  g-abs : Real -> Real
+  g-abs (x) = if x < 0.0 then 0.0 - x else x
+
+ A NaN USED TO PASS EVERY GATE IN THIS CHAPTER, silently, and it is worth saying
+ exactly how. Each grader below asks "is |got - want| GREATER THAN the tolerance".
+ Subtract a NaN and the difference is a NaN; `g-abs` of a NaN is a NaN, because
+ `NaN < 0.0` is false and the else arm hands it back; and `NaN > tol` is false, so
+ the value is not flagged and the walk moves on. Infinity was always caught --
+ `inf - want` is `inf`, which does exceed any tolerance -- but a NaN is invisible
+ to a comparison-based gate BY CONSTRUCTION, and there were tens of thousands of
+ Reals a run passing through gates shaped exactly like this.
+
+ IT WAS ALSO UNDETECTABLE UNTIL 2026-08-30. `show` on a Real is refused by the zig
+ plug, and a NaN is the one value that does not equal itself, so no comparison and
+ no printing available to this chapter could see one. `real-to-bits` is what
+ changed: it landed in the zig plug that day (plugs-backlog 2.07) and a bit pattern
+ does not care whether the value has an equal.
+
+ THE TEST IS ONE MASK AND ONE COMPARISON. Clear the sign bit and every finite
+ double is below #7FF0000000000000; positive infinity IS that number and every NaN
+ is above it. So one gate catches both, and it is exact rather than approximate.
+
+  g-finite : Real -> Boolean
+  g-finite (x) = bit-and (real-to-bits x) #7FFFFFFFFFFFFFFF < #7FF0000000000000
+
+  first-real-diff : List Real, List Real, Real, Integer -> Integer
+  first-real-diff (got) (want) (tol) (i) =
+    if i >= list-length got then 0 - 1
+    else if g-finite (list-at got i) then
+      (if g-abs (list-at got i - list-at want i) > tol then i
+       else first-real-diff got want tol (i + 1))
+    else i
+
+  grade-reals : Text, List Real, List Real, Real -> Text
+  grade-reals (name) (got) (want) (tol) =
+    if list-length got /= list-length want
+      then name & " BAD length " & show (list-length got) & " want " & show (list-length want)
+      else let i = first-real-diff got want tol 0
+        in if i < 0 then name & " ok " & show (list-length got)
+           else name & " BAD at " & show i
+
+Section: Judging Reals Relatively
+
+ A RELATIVE tolerance, scaled by the larger of 1 and the wanted magnitude -- the
+ form DeviceMath's own accuracy test uses. Computed values need it: the port
+ works in Real (f64) while the game computes in f32, so a projected pixel and a
+ focal length disagree in proportion to their size, not by a fixed amount. An
+ absolute tolerance that passes a 0.9 duck height would wave through a 4-pixel
+ error on a 685-pixel focal.
+
+  g-max : Real, Real -> Real
+  g-max (a) (b) = if a > b then a else b
+
+  first-rel-diff : List Real, List Real, Real, Integer -> Integer
+  first-rel-diff (got) (want) (tol) (i) =
+    if i >= list-length got then 0 - 1
+    else if g-finite (list-at got i) then
+      (let w = list-at want i
+       in if g-abs (list-at got i - w) > tol * g-max 1.0 (g-abs w) then i
+       else first-rel-diff got want tol (i + 1))
+    else i
+
+  grade-rel : Text, List Real, List Real, Real -> Text
+  grade-rel (name) (got) (want) (tol) =
+    if list-length got /= list-length want
+      then name & " BAD length " & show (list-length got) & " want " & show (list-length want)
+      else let i = first-rel-diff got want tol 0
+        in if i < 0 then name & " ok " & show (list-length got)
+           else name & " BAD at " & show i
+
+Section: Judging Cancelled Coordinates
+
+ A MIXED tolerance: an absolute floor plus a relative term, which is the only form
+ that fits a value produced by cancellation. Neither half works alone, and both
+ failures were measured rather than guessed.
+
+ IT IS NAMED FOR THE FAILURE MODE, NOT THE UNIT, and `grade-px` keeps its name
+ because screen pixels were the first seam to need it and most of its callers are
+ still projections. RenderCheck grades rider-frame METRES with it: `at` composes a
+ point down a kilometre of chain and returns one a metre or two off the rider's
+ nose, which is the same small-difference-of-two-large-numbers this gate exists
+ for, in a different unit. The FLOOR is what changes with the unit -- a thousandth
+ of a pixel on a canvas, an f32 ulp at the range a chain reaches -- and D5's rule
+ is that it is calibrated per seam and never inherited.
+
+ A RELATIVE gate fails near the horizon. A screen y is 300 minus a term of about
+ the same size, so a y of 20.6 is a small difference of two large numbers and
+ cancellation amplifies f32's relative error by the ratio between them -- fifteen
+ times epsilon on the first cone tier of a near tree.
+
+ An ABSOLUTE gate fails far off screen. Projecting a point 37 m to the side at the
+ 0.4 m near plane puts x at about -62929, where one f32 ulp is already 0.0075 px --
+ seven times a thousandth-of-a-pixel floor, before any port is involved.
+
+ The floor governs coordinates near zero and on the canvas; the relative term
+ governs the far-off-screen ones the near plane throws out. At a hundred pixels the
+ gate is about a thousandth of a pixel, which is the precision worth asserting.
+
+  grade-px : Text, List Real, List Real, Real, Real -> Text
+  grade-px (name) (got) (want) (atol) (rtol) =
+    if list-length got /= list-length want
+      then name & " BAD length " & show (list-length got) & " want " & show (list-length want)
+      else let i = first-px-diff got want atol rtol 0
+        in if i < 0 then name & " ok " & show (list-length got)
+           else name & " BAD at " & show i
+
+  first-px-diff : List Real, List Real, Real, Real, Integer -> Integer
+  first-px-diff (got) (want) (atol) (rtol) (i) =
+    if i >= list-length got then 0 - 1
+    else if g-finite (list-at got i) then
+      (let w = list-at want i
+       in if g-abs (list-at got i - w) > atol + rtol * g-abs w then i
+       else first-px-diff got want atol rtol (i + 1))
+    else i
+
+Section: Judging Integers
+
+  first-int-diff : List Integer, List Integer, Integer -> Integer
+  first-int-diff (got) (want) (i) =
+    if i >= list-length got then 0 - 1
+    else if list-at got i /= list-at want i then i
+    else first-int-diff got want (i + 1)
+
+  grade-ints : Text, List Integer, List Integer -> Text
+  grade-ints (name) (got) (want) =
+    if list-length got /= list-length want
+      then name & " BAD length " & show (list-length got) & " want " & show (list-length want)
+      else let i = first-int-diff got want 0
+        in if i < 0 then name & " ok " & show (list-length got)
+           else name & " BAD at " & show i & " got " & show (list-at got i) & " want " & show (list-at want i)
+
+Section: Judging Booleans
+
+  bool-eq : Boolean, Boolean -> Boolean
+  bool-eq (a) (b) = if a then b else if b then False else True
+
+  first-bool-diff : List Boolean, List Boolean, Integer -> Integer
+  first-bool-diff (got) (want) (i) =
+    if i >= list-length got then 0 - 1
+    else if bool-eq (list-at got i) (list-at want i) then first-bool-diff got want (i + 1)
+    else i
+
+  grade-bools : Text, List Boolean, List Boolean -> Text
+  grade-bools (name) (got) (want) =
+    if list-length got /= list-length want
+      then name & " BAD length " & show (list-length got) & " want " & show (list-length want)
+      else let i = first-bool-diff got want 0
+        in if i < 0 then name & " ok " & show (list-length got)
+           else name & " BAD at " & show i

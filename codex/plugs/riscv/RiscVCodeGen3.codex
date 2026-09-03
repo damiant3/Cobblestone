@@ -701,26 +701,29 @@ Section: Tail Call Optimization
   rv-emit-frameless-mod (st) (left) (right) =
    let p2 = rv-pow2-lit right
    in if p2 > 1 then rv-emit-rem-pow2 st left p2
-   else let lr = rv-emit-frameless-arg st left
-   in let rr = rv-emit-frameless-arg (lr.state) right
-   in let rd = rv-alloc-temp (rr.state)
-   in let st1 = rv-emit (rd.state) (rv-rem (rd.reg) (lr.reg) (rr.reg))
+   else let mask = st.temp-reserved
+   in let lr = rv-emit-frameless-arg st left
+   in let rr = rv-emit-frameless-arg (rv-reserve-temp (lr.state) (lr.reg)) right
+   in let rd = rv-alloc-temp (rv-reserve-temp (rr.state) (rr.reg))
+   in let st1 = rv-emit (rv-restore-reserved (rd.state) mask) (rv-rem (rd.reg) (lr.reg) (rr.reg))
    in rv-emit-mod-correction st1 (rd.reg) (rr.reg)
 
   rv-emit-frameless-rem : RvState, IRExpr, IRExpr -> RvEmitResult
   rv-emit-frameless-rem (st) (left) (right) =
    let p2 = rv-pow2-lit right
    in if p2 > 1 & rv-pow2-dividend-nonneg left then rv-emit-rem-pow2 st left p2
-   else let lr = rv-emit-frameless-arg st left
-   in let rr = rv-emit-frameless-arg (lr.state) right
-   in let rd = rv-alloc-temp (rr.state)
+   else let mask = st.temp-reserved
+   in let lr = rv-emit-frameless-arg st left
+   in let rr = rv-emit-frameless-arg (rv-reserve-temp (lr.state) (lr.reg)) right
+   in let rd = rv-alloc-temp (rv-restore-reserved (rr.state) mask)
    in RvEmitResult { state = rv-emit (rd.state) (rv-rem (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
 
   rv-emit-frameless-binop-reg : RvState, IRBinaryOp, IRExpr, IRExpr -> RvEmitResult
   rv-emit-frameless-binop-reg (st) (op) (left) (right) =
-   let lr = rv-emit-frameless-arg st left
-   in let rr = rv-emit-frameless-arg (lr.state) right
-   in let rd = rv-alloc-temp (rr.state)
+   let mask = st.temp-reserved
+   in let lr = rv-emit-frameless-arg st left
+   in let rr = rv-emit-frameless-arg (rv-reserve-temp (lr.state) (lr.reg)) right
+   in let rd = rv-alloc-temp (rv-restore-reserved (rr.state) mask)
    in when op
     is IrAddInt -> RvEmitResult { state = rv-emit (rd.state) (rv-add (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
     is IrSubInt -> RvEmitResult { state = rv-emit (rd.state) (rv-sub (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
@@ -735,6 +738,18 @@ Section: Tail Call Optimization
   rv-frameless-bit-imm (st) (left) (imm) (which) =
    let lr = rv-emit-frameless-arg st left
    in rv-bit-imm-apply (lr.state) (lr.reg) imm which
+
+  rv-frameless-bit-reg : RvState, IRExpr, IRExpr, Text -> RvEmitResult
+  rv-frameless-bit-reg (st) (left) (right) (which) =
+   let mask = st.temp-reserved
+   in let lr = rv-emit-frameless-arg st left
+   in let rr = rv-emit-frameless-arg (rv-reserve-temp (lr.state) (lr.reg)) right
+   in let rd = rv-alloc-temp (rv-restore-reserved (rr.state) mask)
+   in let ins = if which == "shl" then rv-sll (rd.reg) (lr.reg) (rr.reg)
+      else if which == "shru" then rv-srl (rd.reg) (lr.reg) (rr.reg)
+      else if which == "shr" then rv-sra (rd.reg) (lr.reg) (rr.reg)
+      else rv-xor (rd.reg) (lr.reg) (rr.reg)
+   in RvEmitResult { state = rv-emit (rd.state) ins, reg = rd.reg }
 
   rv-emit-frameless-arg : RvState, IRExpr -> RvEmitResult
   rv-emit-frameless-arg (st) (e) =
@@ -783,31 +798,19 @@ Section: Tail Call Optimization
          else if n2 == "bit-shl" then
           let im = rv-bit-imm-ok a True
           in if im >= 0 then rv-frameless-bit-imm st a2 im "shl"
-             else let lr = rv-emit-frameless-arg st a2
-          in let rr = rv-emit-frameless-arg (lr.state) a
-          in let rd = rv-alloc-temp (rr.state)
-          in RvEmitResult { state = rv-emit (rd.state) (rv-sll (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+             else rv-frameless-bit-reg st a2 a "shl"
          else if n2 == "bit-shru" then
           let im = rv-bit-imm-ok a True
           in if im >= 0 then rv-frameless-bit-imm st a2 im "shru"
-             else let lr = rv-emit-frameless-arg st a2
-          in let rr = rv-emit-frameless-arg (lr.state) a
-          in let rd = rv-alloc-temp (rr.state)
-          in RvEmitResult { state = rv-emit (rd.state) (rv-srl (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+             else rv-frameless-bit-reg st a2 a "shru"
          else if n2 == "bit-xor" then
           let im = rv-bit-imm-ok a False
           in if im >= 0 then rv-frameless-bit-imm st a2 im "xor"
-             else let lr = rv-emit-frameless-arg st a2
-          in let rr = rv-emit-frameless-arg (lr.state) a
-          in let rd = rv-alloc-temp (rr.state)
-          in RvEmitResult { state = rv-emit (rd.state) (rv-xor (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+             else rv-frameless-bit-reg st a2 a "xor"
          else if n2 == "bit-shr" then
           let im = rv-bit-imm-ok a True
           in if im >= 0 then rv-frameless-bit-imm st a2 im "shr"
-             else let lr = rv-emit-frameless-arg st a2
-          in let rr = rv-emit-frameless-arg (lr.state) a
-          in let rd = rv-alloc-temp (rr.state)
-          in RvEmitResult { state = rv-emit (rd.state) (rv-sra (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+             else rv-frameless-bit-reg st a2 a "shr"
          else rv-emit-expr st e
         is _ -> rv-emit-expr st e
       is _ -> rv-emit-expr st e
@@ -835,9 +838,10 @@ Section: Tail Call Optimization
    in let a1 = list-at args 1
    in let p0 = list-at (tco.param-locals) 0
    in let p1 = list-at (tco.param-locals) 1
+   in let mask = st0.temp-reserved
    in let er0 = rv-emit-frameless-arg st0 a0
-   in let er1 = rv-emit-frameless-arg (er0.state) a1
-   in rv-parallel-assign-2 (er1.state) p0 (er0.reg) p1 (er1.reg) (tco.loop-top)
+   in let er1 = rv-emit-frameless-arg (rv-reserve-temp (er0.state) (er0.reg)) a1
+   in rv-parallel-assign-2 (rv-restore-reserved (er1.state) mask) p0 (er0.reg) p1 (er1.reg) (tco.loop-top)
 
   rv-parallel-assign-2 : RvState, Integer, Integer, Integer, Integer, Integer -> RvEmitResult
   rv-parallel-assign-2 (st) (p0) (r0) (p1) (r1) (loop-top) =
@@ -1017,6 +1021,33 @@ Section: Module Emission
       is _ -> False
     is otherwise -> False
 
+ `max pl (1 + pr)` is Sethi-Ullman numbering and not an off-by-one: the left
+ operand stays live across the right operand's emission, so the right side
+ needs one register more than its own depth. `pl + pr` over-counts and
+ `max pl pr` under-counts into a wrong register.
+
+  rv-pressure-2 : IRExpr, IRExpr -> Integer
+  rv-pressure-2 (l) (r) =
+   let pl = rv-arg-temp-pressure l
+   in let pr = 1 + rv-arg-temp-pressure r
+   in if pl > pr then pl else pr
+
+  rv-arg-temp-pressure : IRExpr -> Integer
+  rv-arg-temp-pressure (e) =
+   when e
+    is IrBinary (op) (l) (r) (t) (s) -> rv-pressure-2 l r
+    is IrNegate (x) (nty) (s) -> rv-arg-temp-pressure x
+    is IrApply (f) (a) (t) (s) ->
+     when f
+      is IrName (n) (ft) (fs) -> rv-arg-temp-pressure a
+      is IrApply (f2) (a2) (t2) (s2) -> rv-pressure-2 a2 a
+      is _ -> 1
+    is otherwise -> 1
+
+  rv-arg-fits-frameless : IRExpr -> Boolean
+  rv-arg-fits-frameless (e) =
+   if rv-arg-is-frameless-safe e then rv-arg-temp-pressure e <= 4 else False
+
   rv-body-is-frameless : IRExpr, Text -> Boolean
   rv-body-is-frameless (e) (fname) =
    when e
@@ -1028,11 +1059,11 @@ Section: Module Emission
     is IrApply (f) (a) (t) (s) ->
      when f
       is IrName (n) (ft) (fs) ->
-       if n == fname then rv-arg-is-frameless-safe a else False
+       if n == fname then rv-arg-fits-frameless a else False
       is IrApply (f2) (a2) (t2) (s2) ->
        when f2
         is IrName (n2) (ft2) (fs2) ->
-         if n2 == fname then rv-arg-is-frameless-safe a & rv-arg-is-frameless-safe a2
+         if n2 == fname then rv-arg-fits-frameless a & rv-arg-fits-frameless a2
          else False
         is _ -> False
       is _ -> False

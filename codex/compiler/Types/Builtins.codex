@@ -35,6 +35,22 @@ Chapter: Builtins
 
 Section: The Table
 
+ `list-push` and `list-snoc` MUTATE their list argument in place when the
+ block has room, and return the possibly-moved pointer. That is the contract,
+ not a defect, and it is why this compiler self-compiles inside its 2 GB
+ memory budget: it took more than 4 GB before appends grew in place, and every
+ attempt to give them value semantics has put it back. Measured: capacity
+ equal to length killed `apps/brotli-hostile` and `apps/deflate-hostile`, and
+ a build that copied at unproven call sites could not compile a three-line
+ source at all.
+
+ **A caller that needs the old list to survive an append copies it AT THE
+ HOLDER**, where exactly one caller pays. Do not add a copying spelling, do not
+ make the append persistent, and do not write a pass that decides between them.
+ RULED by Damian 2026-09-03, and this note exists because the absent contract
+ is what made the behaviour read as a bug and pulled agents into rebuilding it
+ twice.
+
   BuiltinSpec = record {
    bs-name : Text,
    bs-alloc : Text,
@@ -143,6 +159,7 @@ Section: The Table
    BuiltinSpec { bs-name = "peek-32", bs-alloc = "none", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default)), bs-emit = None },
    BuiltinSpec { bs-name = "peek-16", bs-alloc = "none", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default)), bs-emit = None },
    BuiltinSpec { bs-name = "peek-qword", bs-alloc = "none", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default)), bs-emit = None },
+   BuiltinSpec { bs-name = "poke-qword", bs-alloc = "none", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))), bs-emit = None },
    BuiltinSpec { bs-name = "poke-32", bs-alloc = "none", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))), bs-emit = None },
    BuiltinSpec { bs-name = "poke-16", bs-alloc = "none", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))), bs-emit = None },
    BuiltinSpec { bs-name = "read-mmio", bs-alloc = "none", bs-varies = True, bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default (concrete-row "Device.Mmio") int-ty-default)), bs-emit = None },

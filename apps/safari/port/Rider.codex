@@ -1,0 +1,355 @@
+Chapter: Rider
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Num
+  cites Safari chapter Trig
+  cites Safari chapter Pose
+  cites Safari chapter World
+  cites Safari chapter Cat
+  cites Safari chapter Gaze
+  cites Foreword chapter ListUtils
+
+ The RIDER: his state and how he decides to move, one frame at a time.
+
+ A port of wasm/rider.zig.
+
+ THREE THINGS HAPPEN EACH FRAME. He picks a lean by BINARY SEARCH -- the held lean
+ whose projected arc stays on the road and ends nearest an asymptotic centre
+ target. He picks a forward acceleration, taking the most restrictive of several
+ brakes. Then the physics integrates both, and if his real position has crossed
+ into the next segment he is re-expressed in that segment's frame.
+
+ THE BINARY SEARCH IS THE HAZARD NOTES WARNS ABOUT. Twelve iterations, each
+ deciding on a float comparison after simulating up to two thousand physics steps.
+ A difference of 1e-7 between f32 and f64 will eventually flip one of those
+ comparisons, and from there the two rides are on different trajectories -- so a
+ long trace comparison WILL go red and it will NOT mean the port is wrong. The
+ check therefore compares ONE STEP FROM A SHARED STATE and never a trajectory.
+
+ Deferred exactly as the zig defers them, and for the same reason: the cat's
+ drawing and pose machinery is out of scope, but `cat-in-danger` is arithmetic and
+ is ported, so the throttle hold is real here rather than a no-op.
+
+ We say:
+
+Section: Physics Constants
+
+  yaw-per-tilt : Real
+  yaw-per-tilt = 0.1
+
+ The route never banks past this, and the focal pull-in normalises the lean by it.
+
+  max-lean : Real
+  max-lean = 20.0 * deg
+
+  a-accel : Real
+  a-accel = 0.010
+
+  v-max : Real
+  v-max = 2.5
+
+  approach-intersection-dist : Real
+  approach-intersection-dist = 60.0
+
+  straighten-margin : Real
+  straighten-margin = 0.05
+
+  turn-danger-steps : Integer
+  turn-danger-steps = 2000
+
+  min-forward-progress : Real
+  min-forward-progress = 25.0
+
+  tilt-hold : Real
+  tilt-hold = 2.0 * deg
+
+  brake-decay : Real
+  brake-decay = 20.0
+
+  asymptote-tuning : Real
+  asymptote-tuning = 0.30
+
+  center-lane-epsilon : Real
+  center-lane-epsilon = 0.04
+
+  max-tilt-correction : Real
+  max-tilt-correction = 1.0 * deg
+
+  lean-search-iters : Integer
+  lean-search-iters = 12
+
+Section: One Physics Step
+
+ A lean tip and an acceleration, integrated. He leans FIRST, then that tilt yaws
+ the heading, then the new speed along the MID heading moves the position -- which
+ is a midpoint rule, not an Euler step, and the halving is load-bearing.
+
+ The absolute heading turns by the same delta as the frame-relative yaw.
+
+  simulate-rider-step : RiderState, Real, Real -> RiderState
+  simulate-rider-step (s) (tilt-step) (accel) =
+    let tilt = s.tilt + tilt-step
+    in let v = s.v + accel
+    in let heading-change = yaw-per-tilt * tilt
+    in let mid = s.yaw + heading-change / 2.0
+    in RiderState { segment = s.segment, along = s.along + v * r-cos mid, across = s.across + v * r-sin mid, yaw = s.yaw + heading-change, v = v, tilt = tilt, heading = s.heading + heading-change, gaze-yaw = s.gaze-yaw, focus = s.focus }
+
+Section: Projecting the Arc
+
+ Project the held-lean, constant-speed arc forward and score how it plays out: off
+ a shoulder is a bad lean, net-backward is a disaster, and clearing the forward
+ progress is a good lean -- all pinned to the SAME forward, so survivors tie and
+ the search then separates them on where they end up across the road.
+
+ Side is which shoulder he left, if any.
+
+  Side =
+   | SideLeft
+   | SideNone
+   | SideRight
+
+  PathSim = record {
+    side : Side,
+    forward : Real,
+    crossed : Boolean,
+    end-across : Real,
+    frames : Real
+  }
+
+ The zig uses 1e9 as the frames answer for the arms that did not leave the road,
+ and the shoulder brake only reads frames when side is not none, so the value is a
+ placeholder rather than a number. It is kept because it is what the zig stores.
+
+  no-frames : Real
+  no-frames = 1000000000.0
+
+  sim-loop : RiderState, Real, Real, Real, Real, Boolean, Integer, RiderState -> PathSim
+  sim-loop (start) (left-bound) (right-bound) (start-side) (start-along) (crossed) (i) (phys) =
+    if i >= turn-danger-steps then PathSim { side = SideNone, forward = phys.along - start-along, crossed = crossed, end-across = phys.across, frames = no-frames }
+    else sim-step start left-bound right-bound start-side start-along crossed i (simulate-rider-step phys 0.0 0.0)
+
+  sim-step : RiderState, Real, Real, Real, Real, Boolean, Integer, RiderState -> PathSim
+  sim-step (start) (left-bound) (right-bound) (start-side) (start-along) (crossed0) (i) (phys) =
+    let across = phys.across
+    in let forward = phys.along - start-along
+    in let crossed = if across * start-side < 0.0 then True else crossed0
+    in if across < left-bound then PathSim { side = SideLeft, forward = real-min forward min-forward-progress, crossed = crossed, end-across = across, frames = real-from-int i }
+    else if across > right-bound then PathSim { side = SideRight, forward = real-min forward min-forward-progress, crossed = crossed, end-across = across, frames = real-from-int i }
+    else if forward < 0.0 then PathSim { side = SideNone, forward = forward, crossed = crossed, end-across = across, frames = no-frames }
+    else if forward >= min-forward-progress then PathSim { side = SideNone, forward = min-forward-progress, crossed = crossed, end-across = across, frames = no-frames }
+    else sim-loop start left-bound right-bound start-side start-along crossed (i + 1) phys
+
+ The bounds widen to wherever he already is, so a rider who starts outside the
+ inset is not instantly judged to have left the road.
+
+  simulate-rider-path : RiderState, Segment -> PathSim
+  simulate-rider-path (state) (seg) =
+    let inset-hw = seg.width / 2.0 - straighten-margin
+    in let right-bound = real-max inset-hw state.across
+    in let left-bound = real-min (0.0 - inset-hw) state.across
+    in sim-loop state left-bound right-bound (r-sign state.across) state.along False 0 state
+
+Section: The Lean Search
+
+  want-more-right : PathSim, Real -> Boolean
+  want-more-right (sim) (target) =
+   when sim.side
+    is SideLeft -> True
+    is SideRight -> False
+    is SideNone -> sim.end-across < target
+
+ Binary-search the held lean whose arc stays on the road and ends closest to the
+ asymptotic centre target. TWELVE ITERATIONS, each running a fresh path
+ simulation, and each deciding on one float comparison -- which is exactly why the
+ judge never compares a trajectory.
+
+ The target is an asymptote rather than the centre line: he aims at a fraction of
+ his current offset, so he converges on the middle without ever committing to a
+ lean that would overshoot it. Dead centre gets a signed epsilon instead, because
+ a target of exactly zero has no side to lean toward.
+
+  lean-target : Real -> Real
+  lean-target (across) =
+    if real-abs across < center-lane-epsilon then (if across >= 0.0 then center-lane-epsilon else 0.0 - center-lane-epsilon)
+    else across * asymptote-tuning
+
+  with-tilt : RiderState, Real -> RiderState
+  with-tilt (s) (t) =
+    RiderState { segment = s.segment, along = s.along, across = s.across, yaw = s.yaw, v = s.v, tilt = t, heading = s.heading, gaze-yaw = s.gaze-yaw, focus = s.focus }
+
+  search-lean : RiderState, Segment, Real, Real, Real, Integer -> Real
+  search-lean (state) (seg) (target) (lo) (hi) (i) =
+    if i >= lean-search-iters then (lo + hi) / 2.0
+    else search-step state seg target lo hi i ((lo + hi) / 2.0)
+
+  search-step : RiderState, Segment, Real, Real, Real, Integer, Real -> Real
+  search-step (state) (seg) (target) (lo) (hi) (i) (mid) =
+    if want-more-right (simulate-rider-path (with-tilt state mid) seg) target
+      then search-lean state seg target mid hi (i + 1)
+      else search-lean state seg target lo mid (i + 1)
+
+  best-tilt-correction : RiderState, Segment -> Real
+  best-tilt-correction (state) (seg) =
+    search-lean state seg (lean-target state.across) (state.tilt - max-tilt-correction) (state.tilt + max-tilt-correction) 0
+
+Section: Throttle and Brakes
+
+ The safe entry speed for a turn angle: the table from the TypeScript, and every
+ angle on this route is tabulated. The comparison is on the ROUNDED degrees, which
+ is what makes an exact match on a Real safe here.
+
+  turn-speed : Real -> Real
+  turn-speed (angle-rad) =
+    let d = round-real (angle-rad * 180.0 / pi)
+    in if d ~0 15.0 then 1.297
+    else if d ~0 20.0 then 0.840
+    else if d ~0 30.0 then 0.461
+    else if d ~0 50.0 then 0.222
+    else if d ~0 70.0 then 0.139
+    else if d ~0 80.0 then 0.117
+    else 0.222
+
+ Accelerate, but only while near-upright, and then take the MOST RESTRICTIVE of
+ the brakes: reach the corner's entry speed by the commit point, hold the throttle
+ for a crossing cat, ease down for the pigs, and do not run off the shoulder.
+
+ The order is the zig's and matters: the cat gate sits after the corner brake and
+ before the shoulder brake.
+
+  corner-brake : RiderState, Segment, Real, Real -> Real
+  corner-brake (state) (seg) (v-end) (a) =
+    let d = seg.commit-along - state.along
+    in let corner-a = if d <= 0.000001 then 0.0 else (v-end * v-end - state.v * state.v) / (2.0 * d)
+    in if corner-a < a then corner-a else a
+
+ While the cat is in its danger window he stops CLOSING on it -- the acceleration
+ goes to zero -- but he never brakes. Coasting in slows his approach, so he reaches
+ the final segment later and there is more time for the sunset.
+
+  cat-gate : RiderState, Segment, Real -> Real
+  cat-gate (state) (seg) (a) =
+    if seg.has-cat then (if a > 0.0 then (if cat-in-danger (seg.cat.along - state.along) state.v then 0.0 else a) else a) else a
+
+  pig-gate : RiderState, Segment, Real -> Real
+  pig-gate (state) (seg) (a) =
+    let b = pig-gaze-brake state seg
+    in if b.engaged then (if b.accel < a then b.accel else a) else a
+
+ The decayed kinematic stop: the further ahead the shoulder is, the gentler the
+ brake, and the decay makes a distant shoulder almost free.
+
+  shoulder-brake : RiderState, Segment, Real -> Real
+  shoulder-brake (state) (seg) (a) =
+    let sim = simulate-rider-path state seg
+    in if side-none sim then a else shoulder-brake-at state sim a
+
+  side-none : PathSim -> Boolean
+  side-none (sim) =
+   when sim.side
+    is SideNone -> True
+    is SideLeft -> False
+    is SideRight -> False
+
+  shoulder-brake-at : RiderState, PathSim, Real -> Real
+  shoulder-brake-at (state) (sim) (a) =
+    let n = sim.frames
+    in let sa = (0.0 - state.v) / (2.0 * real-max n 1.0) * exp-real ((0.0 - n) / brake-decay)
+    in if sa < a then sa else a
+
+ Do not crawl below the corner's entry speed approaching it -- UNLESS he is
+ gawking at the pigs, where staying at the slow gawk speed and taking the corner
+ slow beats snapping back up, because he never re-accelerates.
+
+  clamp-v : RiderState, Segment, Real, Real, Boolean -> Real
+  clamp-v (state) (seg) (v-end) (v0) (near) =
+    let v1 = if v0 > v-max then v-max else v0
+    in let v2 = if v1 < 0.0 then 0.0 else v1
+    in if near then (if v2 < v-end then (if gawk-engaged state seg then v2 else v-end) else v2) else v2
+
+  get-forward-accel-decel : RiderState, Segment -> Real
+  get-forward-accel-decel (state) (seg) =
+    let a0 = if real-abs state.tilt >= tilt-hold then 0.0 else a-accel
+    in let v-end = if seg.terminates then 0.0 else turn-speed seg.exit-angle
+    in let near = (seg.length - state.along) <= approach-intersection-dist
+    in let a1 = if near then corner-brake state seg v-end a0 else a0
+    in let a3 = pig-gate state seg (cat-gate state seg a1)
+    in let a4 = shoulder-brake state seg a3
+    in clamp-v state seg v-end (state.v + a4) near - state.v
+
+Section: Deciding
+
+  Decision = record {
+    tilt-step : Real,
+    accel : Real
+  }
+
+ The acceleration is chosen for the LEANED state, not the current one: he commits
+ to the lean first, and the throttle then answers the bike he is about to be.
+
+  decide : RiderState, Segment -> Decision
+  decide (state) (seg) =
+    let tilt-step = best-tilt-correction state seg - state.tilt
+    in Decision { tilt-step = tilt-step, accel = get-forward-accel-decel (with-tilt state (state.tilt + tilt-step)) seg }
+
+Section: Crossing a Seam
+
+ Re-express the rider onto the next segment as he commits to the turn: the same
+ physical point, read in the next frame. Speed and lean carry; the frame-relative
+ yaw rotates by the turn while the ABSOLUTE heading does not, because the crossing
+ changes the frame and not the bearing.
+
+ His eyes go back on the road across the seam, but the FOCUS carries, so its slow
+ re-widen keeps easing out instead of snapping open.
+
+  rider-state-for-next-segment : RiderState, List Segment -> RiderState
+  rider-state-for-next-segment (rs) (segs) =
+    let seg = list-at segs rs.segment
+    in let hw = seg.width / 2.0
+    in let theta = seg.exit-angle
+    in let sgn = if seg.exit-right then 1.0 else 0.0 - 1.0
+    in let c = r-cos theta
+    in let s = r-sin theta
+    in let da = rs.along - (seg.length + hw * s)
+    in let dx = rs.across - sgn * hw * (1.0 - c)
+    in RiderState { segment = seg.exit-to, along = c * da + sgn * s * dx, across = (0.0 - sgn) * s * da + c * dx, yaw = rs.yaw - sgn * theta, v = rs.v, tilt = rs.tilt, heading = rs.heading, gaze-yaw = 0.0, focus = rs.focus }
+
+Section: One Frame
+
+ Decide the controls, run them through the physics, then resolve the road graph BY
+ POSITION: commit to the next segment the moment his real point is inside it.
+
+ At the terminus there is no segment to lead out, so he is clamped to the end and
+ stopped. The snap fires once he has crept to the line OR slowed to a crawl inside
+ the braking zone -- because the kinematic brake would otherwise Zeno-stall him a
+ hair short and leave him stopped forever, never finished.
+
+  finish-clamp : RiderState, Segment -> RiderState
+  finish-clamp (moved) (seg) =
+    let in-zone = (seg.length - moved.along) < approach-intersection-dist
+    in if moved.along >= seg.length then stopped-at moved seg.length
+       else if in-zone then (if moved.v < 0.1 then stopped-at moved seg.length else moved)
+       else moved
+
+  stopped-at : RiderState, Real -> RiderState
+  stopped-at (s) (at) =
+    RiderState { segment = s.segment, along = at, across = s.across, yaw = s.yaw, v = 0.0, tilt = s.tilt, heading = s.heading, gaze-yaw = s.gaze-yaw, focus = s.focus }
+
+  resolve-cross : RiderState, Segment, List Segment -> RiderState
+  resolve-cross (moved) (seg) (segs) =
+    let on-next = rider-state-for-next-segment moved segs
+    in if real-abs on-next.across < (list-at segs seg.exit-to).width / 2.0 then on-next else moved
+
+ The gaze is its own step and runs AFTER the bike has moved, because it reads the
+ RESOLVED segment and position.
+
+  get-next-rider-state : RiderState, List Segment -> RiderState
+  get-next-rider-state (state) (segs) =
+    let seg = list-at segs state.segment
+    in let dec = decide state seg
+    in let moved = simulate-rider-step state dec.tilt-step dec.accel
+    in let resolved = if seg.terminates then finish-clamp moved seg else resolve-cross moved seg segs
+    in next-rider-gaze resolved segs
+
+  is-finished : RiderState, List Segment -> Boolean
+  is-finished (s) (segs) =
+    let seg = list-at segs s.segment
+    in if seg.terminates then s.along >= seg.length else False

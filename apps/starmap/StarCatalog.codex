@@ -11,32 +11,59 @@ Section: Star Builder Helpers
 
   mk-star : Integer, Text, Integer, Integer, Integer, Integer, Integer, Integer, SpectralClass, Text -> CelestialObj
   mk-star (id) (name) (x) (y) (z) (mag) (absmag) (bv) (sp) (con) =
-    co-set-constellation
-      (co-set-color
-        (co-set-mag
-          (co-set-pos
-            (co-set-dist (co-new id name CkStar)
-              (star-dist x y z))
-            x y z)
-          mag absmag)
-        bv sp)
-      con
+    let base = co-new id name CkStar
+    in let sized = co-set-dist base (star-dist x y z)
+    in let placed = co-set-pos sized x y z
+    in let bright = co-set-mag placed mag absmag
+    in let tinted = co-set-color bright bv sp
+    in co-set-constellation tinted con
 
   mk-dso : Integer, Text, CelestialKind, Integer, Integer, Integer, Integer, Text, Text -> CelestialObj
   mk-dso (id) (name) (kind) (x) (y) (z) (mag) (con) (desc) =
-    co-set-desc
-      (co-set-constellation
-        (co-set-mag
-          (co-set-pos
-            (co-set-dist (co-new id name kind)
-              (star-dist x y z))
-            x y z)
-          mag 0)
-        con)
-      desc
+    let base = co-new id name kind
+    in let sized = co-set-dist base (star-dist x y z)
+    in let placed = co-set-pos sized x y z
+    in let bright = co-set-mag placed mag 0
+    in let named = co-set-constellation bright con
+    in co-set-desc named desc
+
+ The far galaxies sit at 320,000,000,000 (parsecs x 1000), whose square is
+ 1.02e23 and does not fit a 64-bit integer, so the sum of squares has to be
+ taken on scaled coordinates for them. 1,500,000,000 is the largest magnitude
+ whose three squares still fit: 3 x 1.5e9 squared is 6.75e18 against a ceiling
+ of 9.22e18. Everything nearer than 1.5 million parsecs, which is every star and
+ every Messier object, takes the exact path.
+
+  star-abs : Integer -> Integer
+  star-abs (v) = if v < 0 then 0 - v else v
+
+  star-widest : Integer, Integer, Integer -> Integer
+  star-widest (x) (y) (z) =
+    let a = star-abs x
+    in let b = star-abs y
+    in let c = star-abs z
+    in let ab = if a > b then a else b
+    in if ab > c then ab else c
+
+  star-exact-limit : Integer = 1500000000
+
+  star-isqrt : Integer -> Integer
+  star-isqrt (n) = star-isqrt-loop n 0 3000000000
+
+  star-isqrt-loop : Integer, Integer, Integer -> Integer
+  star-isqrt-loop (n) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi + 1) / 2
+    in if mid * mid > n then star-isqrt-loop n lo (mid - 1)
+    else star-isqrt-loop n mid hi
 
   star-dist : Integer, Integer, Integer -> Integer
-  star-dist (x) (y) (z) = x * x / 1000 + y * y / 1000 + z * z / 1000
+  star-dist (x) (y) (z) =
+    if star-widest x y z < star-exact-limit then star-isqrt (x * x + y * y + z * z)
+    else star-dist-scaled (x / 1000) (y / 1000) (z / 1000)
+
+  star-dist-scaled : Integer, Integer, Integer -> Integer
+  star-dist-scaled (a) (b) (c) = star-isqrt (a * a + b * b + c * c) * 1000
 
 Section: Named Stars (brightest 50)
 
@@ -73,7 +100,7 @@ Section: Named Stars (brightest 50)
     mk-star 29 "Alnair" (6600) (-12600) (-17400) 1740 (-700) (-70) SpB "Gru",
     mk-star 30 "Dubhe" (-25000) 26200 43700 1790 (-1100) 1010 SpK "UMa",
     mk-star 31 "Alkaid" (-38900) (6100) 34600 1860 (-1600) (-190) SpB "UMa",
-    mk-star 32 "Polaris" (-28000) 76200) 97700 1980 (-3640) 600 SpF "UMi",
+    mk-star 32 "Polaris" (-28000) 76200 97700 1980 (-3640) 600 SpF "UMi",
     mk-star 33 "Wezen" (-218000) (-98000) (-108000) 1840 (-6870) 680 SpF "CMa",
     mk-star 34 "Sargas" (-13600) (-13600) (-29000) 1870 (-2680) 400 SpF "Sco",
     mk-star 35 "Avior" (41200) (61600) (-37000) 1860 (-4470) 1270 SpK "Car",

@@ -1,0 +1,154 @@
+Chapter: CameraCheck
+  cites Foreword chapter Console
+  cites Safari chapter Trig
+  cites Safari chapter Geom
+  cites Safari chapter Camera
+  cites Judge chapter Grade
+  cites Gold chapter CameraGold
+
+ Grade Camera, Geom and Trig against wasm/camera.zig and wasm/geom.zig.
+
+ Seam 1: pure functions of scalars, walked over the same table of inputs on both
+ sides. THE ORDER OF THE NESTED WALKS MUST MATCH probe_camera.zig EXACTLY -- a
+ transposed loop compares real numbers against real numbers and disagrees for a
+ reason that has nothing to do with the port.
+
+ THIS IS THE FIRST TOLERANCE THAT DOES ANY WORK. Pond compared exactly because it
+ was data. Here the port computes in Real (f64) and the game computes in f32, so
+ every value differs by about f32's epsilon, relatively -- and the tolerance is
+ relative for that reason. It is stated at 1e-6, which is roughly ten times the
+ f32/f64 gap: tight enough to catch a wrong formula, loose enough to ignore the
+ width.
+
+ EXCEPT for `project`, which is a screen coordinate and takes the mixed
+ pixel gate -- a thousandth-of-a-pixel floor plus a relative term. Grade's own
+ comment records why neither half suffices; both failure modes are in this table,
+ the horizon cancellation and the near-plane point that projects to x = -62929.
+
+ We say:
+
+Section: Input Tables
+
+  leans : List Real
+  leans = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+  attns : List Real
+  attns = [0.0, 0.2, 0.5, 0.9, 1.0, 1.3]
+
+  fwds : List Real
+  fwds = [0.4, 1.0, 3.0, 7.5, 20.0, 63.0, 200.0, 900.0]
+
+  rights : List Real
+  rights = [0.0 - 37.0, 0.0 - 4.0, 0.0, 2.5, 31.0]
+
+  heights : List Real
+  heights = [0.0, 1.2, 5.75]
+
+  yaws : List Real
+  yaws = [0.0, 0.05, 0.0 - 0.35, 0.9, 0.0 - 1.4, 2.2, 0.0 - 3.0]
+
+  thetas : List Real
+  thetas = [0.15, 0.4, 0.0 - 0.25]
+
+Section: The Focal Pull-In
+
+  cf-inner : Real, Integer -> List Real
+  cf-inner (l) (j) =
+    if j >= list-length attns then []
+    else [cam-focal l (list-at attns j)] & cf-inner l (j + 1)
+
+  cf-outer : Integer -> List Real
+  cf-outer (i) =
+    if i >= list-length leans then []
+    else (cf-inner (list-at leans i) 0) & cf-outer (i + 1)
+
+Section: The Projection
+
+  pr-h : Real, Real, Integer -> List Real
+  pr-h (f) (r) (k) =
+    if k >= list-length heights then []
+    else let s = project (Vec3 { right = r, forward = f, height = list-at heights k }) focal camera-w
+      in [s.x, s.y] & pr-h f r (k + 1)
+
+  pr-r : Real, Integer -> List Real
+  pr-r (f) (j) =
+    if j >= list-length rights then []
+    else (pr-h f (list-at rights j) 0) & pr-r f (j + 1)
+
+  pr-f : Integer -> List Real
+  pr-f (i) =
+    if i >= list-length fwds then []
+    else (pr-r (list-at fwds i) 0) & pr-f (i + 1)
+
+Section: Ground and Rider
+
+  gd : List Real
+  gd =
+    [ ground-drop 0.0 0.0, ground-drop 3.0 20.0, ground-drop 300.0 900.0,
+      ground-drop (0.0 - 120.0) 45.5, ground-drop 1000.0 1000.0 ]
+
+  tr : Integer -> List Real
+  tr (i) =
+    if i >= list-length yaws then []
+    else let y = list-at yaws i
+      in let a = to-rider 10.0 3.0 2.0 0.5 y 4.0
+      in let b = to-rider 140.0 7.25 61.0 (0.0 - 1.5) y 4.0
+      in [a.right, a.forward, b.right, b.forward] & tr (i + 1)
+
+Section: The Frame Fusion
+
+  fu-dir : Real, Boolean -> List Real
+  fu-dir (th) (rt) =
+    let f = next-to-cur 12.0 3.5 80.0 th rt 8.0
+    in let b = cur-to-next 95.0 2.0 80.0 th rt 8.0
+    in [f.a, f.x, b.a, b.x]
+
+  fu : Integer -> List Real
+  fu (i) =
+    if i >= list-length thetas then []
+    else let th = list-at thetas i
+      in (fu-dir th False) & (fu-dir th True) & fu (i + 1)
+
+  lm : List Real
+  lm =
+    let m = line-meet (RiderPt { right = 0.0 - 4.0, forward = 0.0 }) (RiderPt { right = 0.0 - 4.0, forward = 10.0 }) (RiderPt { right = 0.0 - 20.0, forward = 6.0 }) (RiderPt { right = 5.0, forward = 9.0 })
+    in let m2 = line-meet (RiderPt { right = 0.0, forward = 0.0 }) (RiderPt { right = 3.0, forward = 7.0 }) (RiderPt { right = 0.0 - 8.0, forward = 2.0 }) (RiderPt { right = 6.0, forward = 0.0 - 1.0 })
+    in [m.right, m.forward, m2.right, m2.forward]
+
+Section: Near-Plane Clipping
+
+  poly-a : List Vec3
+  poly-a = [ Vec3 { right = 0.0 - 4.0, forward = 5.0, height = 0.0 }, Vec3 { right = 4.0, forward = 5.0, height = 0.0 }, Vec3 { right = 4.0, forward = 30.0, height = 0.0 } ]
+
+  poly-b : List Vec3
+  poly-b = [ Vec3 { right = 0.0 - 4.0, forward = 0.0 - 5.0, height = 0.0 }, Vec3 { right = 4.0, forward = 0.0 - 5.0, height = 0.0 }, Vec3 { right = 4.0, forward = 0.0 - 1.0, height = 0.0 } ]
+
+  poly-c : List Vec3
+  poly-c = [ Vec3 { right = 0.0 - 4.0, forward = 0.0 - 2.0, height = 1.0 }, Vec3 { right = 4.0, forward = 6.0, height = 2.0 }, Vec3 { right = 8.0, forward = 20.0, height = 3.0 } ]
+
+  poly-d : List Vec3
+  poly-d = [ Vec3 { right = 0.0 - 4.0, forward = 12.0, height = 1.0 }, Vec3 { right = 4.0, forward = 0.0 - 3.0, height = 2.0 }, Vec3 { right = 8.0, forward = 25.0, height = 0.0 }, Vec3 { right = 0.0 - 9.0, forward = 0.1, height = 4.0 } ]
+
+  clipped : List Vec3, Integer -> List Real
+  clipped (poly) (i) =
+    let cl = clip-near poly near
+    in if i >= list-length cl then []
+    else let v = list-at cl i
+      in [v.right, v.forward, v.height] & clipped poly (i + 1)
+
+  clip-count : List Vec3 -> Integer
+  clip-count (poly) = list-length (clip-near poly near)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-rel "focal      " [focal] g-focal 0.000001)
+    print-line-uni (grade-rel "cam-focal  " (cf-outer 0) g-cam-focal 0.000001)
+    print-line-uni (grade-px "project    " (pr-f 0) g-project 0.001 0.000001)
+    print-line-uni (grade-rel "ground-drop" gd g-ground-drop 0.000001)
+    print-line-uni (grade-rel "to-rider   " (tr 0) g-to-rider 0.000001)
+    print-line-uni (grade-rel "fusion     " (fu 0) g-fusion 0.000001)
+    print-line-uni (grade-rel "line-meet  " lm g-line-meet 0.000001)
+    print-line-uni (grade-ints "clip-count " [clip-count poly-a, clip-count poly-b, clip-count poly-c, clip-count poly-d] g-clip-counts)
+    print-line-uni (grade-rel "clip-pts   " ((clipped poly-a 0) & (clipped poly-b 0) & (clipped poly-c 0) & (clipped poly-d 0)) g-clip-pts 0.000001)
+  end

@@ -1,4 +1,6 @@
 Chapter: Emit Allocator
+  cites Codex chapter Phase Allocator (deck-reservation-guard, poke-qword-cell, deck-reservation-top-cell)
+  cites Codex chapter Build Settings (deck-guard-enabled)
 
 Section: Workspace
 
@@ -9,10 +11,19 @@ Section: Workspace
    data-capacity : Integer between 0 and 4294967295
   }
 
+ These two lines are `build`'s and must stay `build`'s. Without them an emit
+ reservation published no ceiling, so `__deck-enter` armed whatever the last
+ phase had left in the cell: measured 2026-09-02 at ceiling 449,847,088 against
+ an emit top of 16,392,728, 27x above the extent, which made the UD2
+ unreachable and emit the one phase where a deck overflow corrupted instead of
+ faulting (COMPILER-48 instance 5, Steve Howell's issue 115).
+
   emit-build : Integer -> Integer
   emit-build (size) =
    let p = __heap-save
    in let deck-init = __deck-set p
+   in let guarded = deck-reservation-guard p size
+   in let top = if deck-guard-enabled == 0 | hosted-kind /= 0 then 0 else poke-qword-cell deck-reservation-top-cell (p + size)
    in let advanced = __heap-advance size
    in p
 

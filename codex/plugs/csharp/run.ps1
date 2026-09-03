@@ -133,7 +133,32 @@ try {
         [System.Text.Encoding]::UTF8.GetString($raw, $start, $raw.Length - $start)
     } else { "" }
     [System.IO.File]::WriteAllText($Out, $csText, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "[csharp-run] OK: $Out ($($csText.Length) chars)"
+
+    # A TRUNCATED emission is not a success, and until 2026-09-02 it read as one.
+    # The guest writes its own death into the ring, so an out-of-memory halt left
+    # `OUT OF MEMORY` and a register dump at the end of Codex.cs and this script
+    # printed OK and exited 0. Nothing downstream looked either: the DDC witness
+    # would have certified a compiler missing everything after the halt.
+    # Measured that day on the head IR: 3,281,441 chars, builtins() absent,
+    # braces 12,362 open against 12,361 closed.
+    #
+    # Both checks are on the ARTIFACT rather than on how the run went, because
+    # the run reported fine. Braces are the completeness test a C# file can
+    # actually answer: the emission is one class and its closing brace is the
+    # last thing written, so an unbalanced count means it stopped early.
+    $halt = [regex]::Match($csText, 'OUT OF MEMORY|!EXC=|\bSP=[0-9a-fA-F]{8,}')
+    if ($halt.Success) {
+        [Console]::Error.WriteLine("FAIL: the guest halted mid-emission; '$($halt.Value)' is in the output at char $($halt.Index) of $($csText.Length).")
+        [Console]::Error.WriteLine("      $Out is TRUNCATED and must not be used as a witness. See $IrDir\vm-stderr.log")
+        exit 6
+    }
+    $open = ([regex]::Matches($csText, '\{')).Count
+    $close = ([regex]::Matches($csText, '\}')).Count
+    if ($open -ne $close) {
+        [Console]::Error.WriteLine("FAIL: $Out is unbalanced, $open '{' against $close '}', so the emission stopped early.")
+        exit 6
+    }
+    Write-Host "[csharp-run] OK: $Out ($($csText.Length) chars, braces balanced at $open)"
 
 } finally {
     # -- Phase 5b: stop the VM, clean up temp files -------------------

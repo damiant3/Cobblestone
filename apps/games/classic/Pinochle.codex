@@ -19,13 +19,22 @@ Section: Types
   }
 
   PinochleState = record {
-    deck       : List Integer,
-    h0         : List Integer,
-    h1         : List Integer,
-    h2         : List Integer,
-    h3         : List Integer,
-    trump      : Integer,
-    tricks-won : List Integer
+    deck   : List Integer,
+    h0     : List Integer,
+    h1     : List Integer,
+    h2     : List Integer,
+    h3     : List Integer,
+    trump  : Integer,
+    leader : Integer,
+    turn   : Integer,
+    p0     : Integer,
+    p1     : Integer,
+    p2     : Integer,
+    p3     : Integer,
+    t0     : Integer,
+    t1     : Integer,
+    tricks : Integer,
+    done   : Boolean
   }
 
   PinochleResult = record {
@@ -95,8 +104,10 @@ Section: Deck
     in let h2 = pin-collect deck 24 36 []
     in let h3 = pin-collect deck 36 48 []
     in let trump = pin-suit (list-at deck 0)
-    in let tw = list-push (list-push (list-push (list-push [] 0) 0) 0) 0
-    in PinochleState { deck = deck, h0 = h0, h1 = h1, h2 = h2, h3 = h3, trump = trump, tricks-won = tw }
+    in PinochleState { deck = deck, h0 = h0, h1 = h1, h2 = h2, h3 = h3,
+                       trump = trump, leader = 0, turn = 0,
+                       p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
+                       t0 = 0, t1 = 0, tricks = 0, done = False }
 
   pin-collect : List Integer, Integer, Integer, List Integer -> List Integer
   pin-collect (deck) (lo) (hi) (acc) =
@@ -181,77 +192,247 @@ Section: Melding
     in let run = meld-run hand trump
     in m + p + aa + ka + qa + ja + run
 
-Section: Trick Points
+Section: The Trick
 
-  score-tricks : List Integer -> Integer
-  score-tricks (cards) =
-    score-tricks-loop cards 0 0
+ Seats are 0..3 in play order and the teams are the two diagonals, 0 with 2
+ against 1 with 3, which is what makes `seat mod 2` the team.
 
-  score-tricks-loop : List Integer, Integer, Integer -> Integer
-  score-tricks-loop (cards) (i) (acc) =
-    if i >= list-length cards then acc
-    else let pts = pin-point-value (pin-rank (list-at cards i))
-    in score-tricks-loop cards (i + 1) (acc + pts)
+  pin-hand : PinochleState, Integer -> List Integer
+  pin-hand (st) (seat) =
+    if seat == 0 then st.h0
+    else if seat == 1 then st.h1
+    else if seat == 2 then st.h2
+    else st.h3
 
-  pick-card : List Integer, Integer -> Integer
-  pick-card (hand) (idx) =
-    let n = list-length hand
-    in if n == 0 then (-1)
-    else list-at hand (rng-mod idx n)
+  pin-played : PinochleState, Integer -> Integer
+  pin-played (st) (seat) =
+    if seat == 0 then st.p0
+    else if seat == 1 then st.p1
+    else if seat == 2 then st.p2
+    else st.p3
 
-Section: Simulated Play
+  pin-team : Integer -> Integer
+  pin-team (seat) = rng-mod seat 2
 
-  sim-trick : List Integer, List Integer, List Integer, List Integer, Integer -> Integer
-  sim-trick (h0) (h1) (h2) (h3) (trump) =
-    let c0 = if list-length h0 > 0 then list-at h0 0 else 0
-    in let c1 = if list-length h1 > 0 then list-at h1 0 else 0
-    in let c2 = if list-length h2 > 0 then list-at h2 0 else 0
-    in let c3 = if list-length h3 > 0 then list-at h3 0 else 0
-    in let led-suit = pin-suit c0
-    in let w01 = trick-winner c0 c1 led-suit trump
-    in let w012 = trick-winner w01 c2 led-suit trump
-    in let w0123 = trick-winner w012 c3 led-suit trump
-    in let pts = pin-point-value (pin-rank c0) + pin-point-value (pin-rank c1) +
-                 pin-point-value (pin-rank c2) + pin-point-value (pin-rank c3)
-    in if w0123 == c0 | w0123 == c2 then pts * 10 + 0
-    else pts * 10 + 1
+  pin-remove-at : List Integer, Integer -> List Integer
+  pin-remove-at (xs) (idx) = pin-remove-loop xs idx 0 []
 
-  trick-winner : Integer, Integer, Integer, Integer -> Integer
-  trick-winner (current-best) (challenger) (led-suit) (trump) =
-    let bs = pin-suit current-best
-    in let cs = pin-suit challenger
-    in let br = pin-rank current-best
-    in let cr = pin-rank challenger
-    in if cs == bs then
-      if cr > br then challenger else current-best
-    else if cs == trump then challenger
-    else current-best
-
-  play-all-tricks : PinochleState -> Integer
-  play-all-tricks (st) =
-    play-tricks-loop (st.h0) (st.h1) (st.h2) (st.h3) (st.trump) 0 0
-
-  play-tricks-loop : List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer -> Integer
-  play-tricks-loop (h0) (h1) (h2) (h3) (trump) (trick) (team0-pts) =
-    if list-length h0 == 0 then team0-pts
-    else let result = sim-trick h0 h1 h2 h3 trump
-    in let pts = result / 10
-    in let team-won = rng-mod result 10
-    in let new-t0 = if team-won == 0 then team0-pts + pts else team0-pts
-    in let h0b = drop-first h0
-    in let h1b = drop-first h1
-    in let h2b = drop-first h2
-    in let h3b = drop-first h3
-    in play-tricks-loop h0b h1b h2b h3b trump (trick + 1) new-t0
-
-  drop-first : List Integer -> List Integer
-  drop-first (xs) =
-    drop-first-loop xs 1 []
-
-  drop-first-loop : List Integer, Integer, List Integer -> List Integer
-  drop-first-loop (xs) (i) (acc) =
+  pin-remove-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  pin-remove-loop (xs) (idx) (i) (acc) =
     if i >= list-length xs then acc
-    else drop-first-loop xs (i + 1) (list-push acc (list-at xs i))
+    else if i == idx then pin-remove-loop xs idx (i + 1) acc
+    else pin-remove-loop xs idx (i + 1) (list-push acc (list-at xs i))
+
+  pin-trick-full : PinochleState -> Boolean
+  pin-trick-full (st) =
+    st.p0 >= 0 & st.p1 >= 0 & st.p2 >= 0 & st.p3 >= 0
+
+  pin-led-suit : PinochleState -> Integer
+  pin-led-suit (st) =
+    let c = pin-played st (st.leader)
+    in if c < 0 then (-1) else pin-suit c
+
+  pin-beats : Integer, Integer, Integer, Integer -> Boolean
+  pin-beats (challenger) (best) (led-suit) (trump) =
+    let cs = pin-suit challenger
+    in let bs = pin-suit best
+    in let cr = pin-rank challenger
+    in let br = pin-rank best
+    in if cs == trump & bs /= trump then True
+    else if cs == trump & bs == trump then cr > br
+    else if cs == bs then cr > br
+    else False
+
+ The trick is won by a SEAT and not by a card. A pinochle deck holds two of
+ every card, so two seats can play the identical suit and rank in one trick
+ and a winner read back as a card value cannot say which of them played it.
+
+  pin-best-seat : PinochleState -> Integer
+  pin-best-seat (st) =
+    pin-seat-loop st (pin-led-suit st) (st.trump) 0 (st.leader)
+
+  pin-seat-loop : PinochleState, Integer, Integer, Integer, Integer -> Integer
+  pin-seat-loop (st) (led) (trump) (seat) (best-seat) =
+    if seat >= 4 then best-seat
+    else let c = pin-played st seat
+    in let b = pin-played st best-seat
+    in if c < 0 then pin-seat-loop st led trump (seat + 1) best-seat
+    else if pin-beats c b led trump then pin-seat-loop st led trump (seat + 1) seat
+    else pin-seat-loop st led trump (seat + 1) best-seat
+
+  pin-best-card : PinochleState -> Integer
+  pin-best-card (st) = pin-played st (pin-best-seat st)
+
+Section: Legality
+
+ Follow the suit that was led if you hold it, and head the trick if you can
+ do that too. Void in the suit led, you must trump, and overtrump if the
+ trick is already trumped. Void in both, anything goes.
+
+  pin-has-suit : List Integer, Integer -> Boolean
+  pin-has-suit (hand) (s) = pin-has-suit-loop hand s 0
+
+  pin-has-suit-loop : List Integer, Integer, Integer -> Boolean
+  pin-has-suit-loop (hand) (s) (i) =
+    if i >= list-length hand then False
+    else if pin-suit (list-at hand i) == s then True
+    else pin-has-suit-loop hand s (i + 1)
+
+  pin-can-beat : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  pin-can-beat (hand) (s) (best) (led) (trump) =
+    pin-can-beat-loop hand s best led trump 0
+
+  pin-can-beat-loop : List Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  pin-can-beat-loop (hand) (s) (best) (led) (trump) (i) =
+    if i >= list-length hand then False
+    else let c = list-at hand i
+    in if pin-suit c == s & pin-beats c best led trump then True
+    else pin-can-beat-loop hand s best led trump (i + 1)
+
+  pin-legal : PinochleState, Integer -> Boolean
+  pin-legal (st) (idx) =
+    if st.done then False
+    else let hand = pin-hand st (st.turn)
+    in if idx < 0 then False
+    else if idx >= list-length hand then False
+    else let led = pin-led-suit st
+    in if led < 0 then True
+    else let c = list-at hand idx
+    in let trump = st.trump
+    in let best = pin-best-card st
+    in if pin-has-suit hand led then pin-legal-follow hand c led best led trump
+    else if pin-has-suit hand trump then pin-legal-follow hand c trump best led trump
+    else True
+
+  pin-legal-follow : List Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  pin-legal-follow (hand) (c) (s) (best) (led) (trump) =
+    if pin-suit c /= s then False
+    else if pin-can-beat hand s best led trump then pin-beats c best led trump
+    else True
+
+Section: Choosing A Card
+
+ The engine's own seats pick through the same legality the page does, so
+ there is one set of rules in this chapter rather than one for the person
+ and one for the opponent.
+
+ Each of the three choices is a maximum over the same loop, differing only
+ in the key it scores an index by. An illegal index scores -1, and a legal
+ nine scores 0, so the two are never confused: this is why the keys carry
+ the legality rather than the loop.
+
+  pin-key-high : PinochleState, List Integer, Integer -> Integer
+  pin-key-high (st) (hand) (i) =
+    if pin-legal st i then pin-point-value (pin-rank (list-at hand i)) else (-1)
+
+  pin-key-low : PinochleState, List Integer, Integer -> Integer
+  pin-key-low (st) (hand) (i) =
+    if pin-legal st i then 100 - pin-point-value (pin-rank (list-at hand i)) else (-1)
+
+  pin-key-win : PinochleState, List Integer, Integer -> Integer
+  pin-key-win (st) (hand) (i) =
+    if pin-legal st i then pin-key-win-legal st hand i else (-1)
+
+  pin-key-win-legal : PinochleState, List Integer, Integer -> Integer
+  pin-key-win-legal (st) (hand) (i) =
+    let c = list-at hand i
+    in let led = pin-led-suit st
+    in let best = pin-best-card st
+    in if pin-beats c best led (st.trump) then 100 - pin-point-value (pin-rank c)
+    else (-1)
+
+  pin-key : PinochleState, List Integer, Integer, Integer -> Integer
+  pin-key (st) (hand) (kind) (i) =
+    if kind == 0 then pin-key-high st hand i
+    else if kind == 1 then pin-key-low st hand i
+    else pin-key-win st hand i
+
+  pin-pick : PinochleState, List Integer, Integer, Integer, Integer, Integer -> Integer
+  pin-pick (st) (hand) (kind) (i) (best) (best-key) =
+    if i >= list-length hand then best
+    else let k = pin-key st hand kind i
+    in if k > best-key then pin-pick st hand kind (i + 1) i k
+    else pin-pick st hand kind (i + 1) best best-key
+
+  pin-ai-pick : PinochleState -> Integer
+  pin-ai-pick (st) =
+    let hand = pin-hand st (st.turn)
+    in if pin-led-suit st < 0 then pin-pick st hand 0 0 (-1) (-1)
+    else let w = pin-pick st hand 2 0 (-1) (-1)
+    in if w >= 0 then w else pin-pick st hand 1 0 (-1) (-1)
+
+Section: Playing One Card
+
+  pin-place : PinochleState, Integer -> PinochleState
+  pin-place (st) (idx) =
+    let seat = st.turn
+    in let hand = pin-hand st seat
+    in let c = list-at hand idx
+    in let nh = pin-remove-at hand idx
+    in let s2 = PinochleState {
+      deck = st.deck,
+      h0 = if seat == 0 then nh else st.h0,
+      h1 = if seat == 1 then nh else st.h1,
+      h2 = if seat == 2 then nh else st.h2,
+      h3 = if seat == 3 then nh else st.h3,
+      trump = st.trump,
+      leader = st.leader,
+      turn = rng-mod (seat + 1) 4,
+      p0 = if seat == 0 then c else st.p0,
+      p1 = if seat == 1 then c else st.p1,
+      p2 = if seat == 2 then c else st.p2,
+      p3 = if seat == 3 then c else st.p3,
+      t0 = st.t0,
+      t1 = st.t1,
+      tricks = st.tricks,
+      done = False
+    }
+    in if pin-trick-full s2 then pin-resolve s2 else s2
+
+ The last trick is worth ten on top of what its cards carry, which is why
+ the bonus is decided here rather than in the runner: this is the only place
+ that knows a trick was the last one.
+
+  pin-resolve : PinochleState -> PinochleState
+  pin-resolve (st) =
+    let w = pin-best-seat st
+    in let a = pin-point-value (pin-rank (st.p0)) + pin-point-value (pin-rank (st.p1))
+    in let b = pin-point-value (pin-rank (st.p2)) + pin-point-value (pin-rank (st.p3))
+    in let over = list-length (st.h0) == 0
+    in let bonus = if over then 10 else 0
+    in let gain = a + b + bonus
+    in let team = pin-team w
+    in PinochleState {
+      deck = st.deck, h0 = st.h0, h1 = st.h1, h2 = st.h2, h3 = st.h3,
+      trump = st.trump,
+      leader = w,
+      turn = w,
+      p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
+      t0 = if team == 0 then st.t0 + gain else st.t0,
+      t1 = if team == 1 then st.t1 + gain else st.t1,
+      tricks = st.tricks + 1,
+      done = over
+    }
+
+  pin-play-at : PinochleState, Integer -> PinochleState
+  pin-play-at (st) (idx) =
+    if pin-legal st idx then pin-place st idx else st
+
+  pin-step : PinochleState -> PinochleState
+  pin-step (st) =
+    if st.done then st
+    else let idx = pin-ai-pick st
+    in if idx < 0 then st else pin-place st idx
+
+ Forty-eight cards is forty-eight steps, and the fuel is what stops a seat
+ that can find no legal card from spinning here instead of failing where a
+ caller can see it.
+
+  pin-play-out : PinochleState, Integer -> PinochleState
+  pin-play-out (st) (fuel) =
+    if fuel <= 0 then st
+    else if st.done then st
+    else pin-play-out (pin-step st) (fuel - 1)
 
 Section: Game Runner
 
@@ -261,14 +442,9 @@ Section: Game Runner
     in let st = pin-deal deck
     in let meld0 = score-meld (st.h0) (st.trump) + score-meld (st.h2) (st.trump)
     in let meld1 = score-meld (st.h1) (st.trump) + score-meld (st.h3) (st.trump)
-    in let trick-pts = play-all-tricks st
-    in let trick1 = trick-pts
-    in let total-pts = score-tricks (st.h0) + score-tricks (st.h1) +
-                       score-tricks (st.h2) + score-tricks (st.h3)
-    in let trick0-pts = trick1
-    in let trick1-pts = total-pts - trick0-pts
-    in let team0 = meld0 + trick0-pts
-    in let team1 = meld1 + trick1-pts
+    in let fin = pin-play-out st 60
+    in let team0 = meld0 + fin.t0
+    in let team1 = meld1 + fin.t1
     in let w = if team0 > team1 then 0 else if team1 > team0 then 1 else (-1)
     in PinochleResult { team0-score = team0, team1-score = team1, winner = w }
 

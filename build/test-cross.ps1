@@ -134,7 +134,7 @@ $compileLog = Join-Path $testOutDir 'compile.log'
 
 Write-Host -NoNewline '  compile ... '
 $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8
+& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut -WorkDir $testOutDir 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8
 $compileExit = $LASTEXITCODE
 $ErrorActionPreference = $prev
 

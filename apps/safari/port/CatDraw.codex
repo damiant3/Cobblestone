@@ -1,0 +1,79 @@
+Chapter: CatDraw
+  cites Safari chapter Camera
+  cites Safari chapter Geom
+  cites Safari chapter Paint
+  cites Safari chapter Stills
+  cites Safari chapter CatStills
+
+ The crossing cat's flipbook still, drawn as a billboard.
+
+ A port of wasm/cat.zig's `draw`, and the rest of that file is `Safari chapter
+ Cat`. SPLIT FOR A NAMESPACE-WEIGHT REASON, not a logical one: world.zig places a
+ cat on every segment, so World cites Cat, so EVERY check that touches the world
+ would drag 534 KB of baked stills into its bundle for the sake of a five-constant
+ placement record. Keeping the art on this side means only the chapters that
+ actually draw a cat pay for it. Pose was split out of Rider for a comparable
+ reason -- there to cut a cite cycle, here to cut a cite's weight.
+
+ THE HOP IS APPLIED IN THE UNIT FRAME, NOT TO THE ANCHOR, and it is the one thing
+ worth reading twice. The feet are projected at height ZERO and the lift is added
+ to each polygon's own y before scaling -- `base.y - (p.y + lift) * h` -- so the
+ hop is measured in CAT-HEIGHTS and scales with distance like the rest of the
+ still. Projecting the anchor at the lift instead would be a metres-based hop that
+ grows wrong as the cat recedes. (The spike's throwaway marker did exactly that,
+ which is a fair illustration of the difference being small and real.)
+
+ NO HORIZONTAL FLIP. The art faces LEFT, which is the escape direction, and the
+ cat only ever crosses one way -- so unlike the animals there is no facing to pass
+ in and no mirror to apply.
+
+ NO NEAR-CLIP EITHER. It is a billboard at a single depth, and render only
+ collects it when it is already in front of the near plane, so there is nothing to
+ clip against. Ground quads clip because they are big and flat and can straddle
+ the eye; this cannot.
+
+ We say:
+
+Section: Drawing One Still
+
+ The zig's screen buffer holds 256 points here -- half what critter.zig gives an
+ animal -- and a longer polygon is SKIPPED rather than truncated. The largest
+ baked cat polygon is 216 points, so the guard never fires on this art, but a
+ silently shortened polygon would be a wrong shape drawn confidently and the zig
+ declines to draw one.
+
+  max-cat-pts : Integer
+  max-cat-pts = 256
+
+  cat-pt : ScreenPt, Real, Real, StillPt -> ScreenPt
+  cat-pt (b) (h) (lift) (p) =
+    ScreenPt { x = b.x + p.x * h, y = b.y - (p.y + lift) * h }
+
+  cat-pts : ScreenPt, Real, Real, List StillPt, Integer -> List ScreenPt
+  cat-pts (b) (h) (lift) (ps) (i) =
+    if i >= list-length ps then []
+    else [cat-pt b h lift (list-at ps i)] & cat-pts b h lift ps (i + 1)
+
+  cat-poly : ScreenPt, Real, Real, StillPoly -> List DrawCmd
+  cat-poly (b) (h) (lift) (poly) =
+    if list-length poly.pts > max-cat-pts then []
+    else push-poly poly.color (cat-pts b h lift poly.pts 0)
+
+  cat-polys : ScreenPt, Real, Real, List StillPoly, Integer -> List DrawCmd
+  cat-polys (b) (h) (lift) (ps) (i) =
+    if i >= list-length ps then []
+    else (cat-poly b h lift (list-at ps i)) & cat-polys b h lift ps (i + 1)
+
+Section: The Billboard
+
+ The pixel height is the gap between the projected feet and a point `height` metres
+ above them, exactly as an animal's is. Under a pixel it draws nothing; the
+ renderer's size cull is the real cutoff and has usually caught it first.
+
+  cat-draw : Real, Real, Real, Integer, Real, Real, Real -> List DrawCmd
+  cat-draw (right) (forward) (height) (pose-idx) (lift) (cf) (view-w) =
+    let base = project (Vec3 { right = right, forward = forward, height = 0.0 }) cf view-w
+    in let top = project (Vec3 { right = right, forward = forward, height = height }) cf view-w
+    in let h = base.y - top.y
+    in if h < 1.0 then []
+      else cat-polys base h lift (cat-polys-for pose-idx) 0

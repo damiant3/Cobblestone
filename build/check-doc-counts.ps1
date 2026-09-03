@@ -289,8 +289,6 @@ function Measure-Claim([string]$Fn, [string]$Arg) {
 
 
 $claims = @()
-$claims += @{ Name = 'compiler files (CLAUDE)'; Doc = 'CLAUDE.md'; Pattern = 'The compiler is ~[\d,]+ lines of Codex across\s+(\d+)\s+files'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/compiler' }
-$claims += @{ Name = 'compiler lines (CLAUDE)'; Doc = 'CLAUDE.md'; Pattern = 'The compiler is ~([\d,]+) lines of Codex across\s+\d+\s+files'; Group = 1; TolPct = 2; Kind = 'number'; Fn = 'lines'; Arg = 'codex/compiler' }
 $claims += @{ Name = 'compiler files (Vision)'; Doc = 'docs/VisionAndVirtues.md'; Pattern = 'The compiler is ~[\d,]+ lines across\s+(\d+)\s+files'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files-r'; Arg = 'codex/compiler' }
 $claims += @{ Name = 'compiler lines (Vision)'; Doc = 'docs/VisionAndVirtues.md'; Pattern = 'The compiler is ~([\d,]+) lines across\s+\d+\s+files'; Group = 1; TolPct = 2; Kind = 'number'; Fn = 'lines'; Arg = 'codex/compiler' }
 $claims += @{ Name = 'codex.foreword modules'; Doc = 'docs/DevelopersRulebook.md'; Pattern = '### codex\.foreword \((\d+) modules'; Group = 1; TolPct = 0; Kind = 'number'; Fn = 'files'; Arg = 'codex/foreword/core' }

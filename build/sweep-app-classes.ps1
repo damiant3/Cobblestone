@@ -36,7 +36,18 @@ param(
     [switch]$Check,               # exit non-zero when a unit regresses
     [int]$Sample = 0,             # compile a strided subset of this many units; 0 sweeps all
     [string]$Baseline = '',
-    [string]$Kernel = ''          # compiler to sweep with; default seed\Codex.cdx. build.ps1 passes the SUT.
+    [string]$Kernel = '',         # compiler to sweep with; default seed\Codex.cdx. build.ps1 passes the SUT.
+    # Sweep only the entry chapters a change can actually REACH. build.ps1
+    # -Internal passes this for an apps change and keeps -Sample for a compiler
+    # one, because nothing cites the compiler: it is global by construction, so
+    # a scoped set chosen by a relation the subject does not participate in
+    # would be empty and would read as green (the same reasoning red used to
+    # give test-compile its full corpus on a compiler CL).
+    [switch]$CiteScoped,
+    # Treat these as the changed files instead of asking Perforce. This is what
+    # makes the scoping testable without staging a real edit, and it is how the
+    # arms below fire both ways.
+    [string[]]$ChangedIs = @()
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -74,6 +85,83 @@ $files = @(
 )
 if ($Filter) { $files = @($files | Where-Object { $_.FullName -like "*$Filter*" }) }
 
+# THE CLOSURE IS TRANSITIVE AND THAT IS THE WHOLE POINT. An entry chapter cites
+# its siblings and compile.ps1 resolves the graph, so the file a change touches
+# is usually NOT an entry chapter and usually NOT cited by one directly. A
+# one-level "who cites the changed chapter" selector -- which is what
+# check-test-compile can afford, its subjects being test chapters that cite what
+# they test -- would miss an app whose entry reaches the change two hops down,
+# and it would miss it SILENTLY, reporting the same green as a sweep that looked
+# (L-CAPABILITY-LOST). Measured 2026-09-02: reading every .codex under apps/ and
+# codex/ is 3,796 files, 11,380 cite lines, 1.45 s, against the 151.7 s sweep it
+# is choosing for. Precision is affordable here; imprecision is not.
+if ($CiteScoped) {
+    $sweepAllBeforeScope = $files.Count
+    $changed = @()
+    if ($ChangedIs.Count -gt 0) { $changed = @($ChangedIs) }
+    else {
+        try {
+            $changed = @(p4 opened 2>$null |
+                ForEach-Object { (($_ -split '#')[0]) -replace '^//[^/]+/[^/]+/', '' } |
+                Where-Object { $_ })
+        } catch { }
+    }
+    $changed = @($changed | Where-Object { $_ -like '*.codex' })
+
+    # A chapter is named by its Chapter: line, not by its path, so the path has
+    # to be READ. The quire is deliberately not matched: citing the bare name is
+    # over-inclusive, which is the safe direction for a check.
+    $changedNames = @{}
+    foreach ($c in $changed) {
+        $fp = Join-Path $Repo ($c -replace '/', '\')
+        if (-not (Test-Path -PathType Leaf $fp)) { continue }
+        foreach ($l in [System.IO.File]::ReadAllLines($fp)) {
+            if ($l -match '^\s*Chapter:\s*(\S+)') { $changedNames[$matches[1]] = $true; break }
+        }
+    }
+
+    $citeOf = @{}
+    foreach ($f in @(Get-ChildItem -Path (Join-Path $Repo 'apps'), (Join-Path $Repo 'codex') -Recurse -Include '*.codex' -File |
+                     Where-Object { $_.FullName -notmatch '\\build-output\\' })) {
+        $nm = ''
+        $cs = [System.Collections.Generic.List[string]]::new()
+        foreach ($l in [System.IO.File]::ReadAllLines($f.FullName)) {
+            if ((-not $nm) -and $l -match '^\s*Chapter:\s*(\S+)') { $nm = $matches[1]; continue }
+            if ($l -match '^\s*cites\s+\S+\s+chapter\s+([^\s(]+)') { $cs.Add($matches[1]) }
+        }
+        if ($nm -and -not $citeOf.ContainsKey($nm)) { $citeOf[$nm] = $cs }
+    }
+
+    $picked = [System.Collections.Generic.List[object]]::new()
+    foreach ($u in $files) {
+        $entry = ''
+        $stack = [System.Collections.Generic.Stack[string]]::new()
+        foreach ($l in [System.IO.File]::ReadAllLines($u.FullName)) {
+            if ((-not $entry) -and $l -match '^\s*Chapter:\s*(\S+)') { $entry = $matches[1]; continue }
+            if ($l -match '^\s*cites\s+\S+\s+chapter\s+([^\s(]+)') { $stack.Push($matches[1]) }
+        }
+        $hit = [bool]($entry -and $changedNames.ContainsKey($entry))
+        $seen = @{}
+        while ((-not $hit) -and $stack.Count -gt 0) {
+            $n = $stack.Pop()
+            if ($seen.ContainsKey($n)) { continue }
+            $seen[$n] = $true
+            if ($changedNames.ContainsKey($n)) { $hit = $true; break }
+            if ($citeOf.ContainsKey($n)) {
+                foreach ($m in $citeOf[$n]) { if (-not $seen.ContainsKey($m)) { $stack.Push($m) } }
+            }
+        }
+        if ($hit) { $picked.Add($u) }
+    }
+    $files = @($picked)
+
+    # "no .codex changed" and "nothing reaches an app" are different states and
+    # a single message for both reads as an all-clear for the first.
+    Write-Host ("Sweep: changed here: " + $(if ($changed.Count) { ($changed | Sort-Object -Unique) -join ', ' } else { 'no .codex changed' }))
+    Write-Host ("Sweep: chapters changed: " + $(if ($changedNames.Count) { (($changedNames.Keys | Sort-Object) -join ', ') } else { '(none)' }))
+    Write-Host "Sweep: CITE-SCOPED, $($files.Count) entry chapter(s) of $sweepAllBeforeScope reachable from the change"
+}
+
 # -Sample takes every Nth unit of the sorted list rather than the first N, so
 # the subset spreads across apps instead of stopping at whatever sorts early.
 # The stride is derived from the live count, so it needs no maintenance as apps
@@ -99,7 +187,12 @@ Write-Host "Sweep: $($files.Count) entry chapters  (jobs=$Jobs)"
 $compile = Join-Path $Repo 'build\compile.ps1'
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
-$results = $files | ForEach-Object -ThrottleLimit $Jobs -Parallel {
+# @() because a sweep of ZERO units is now an ordinary outcome: cite-scoping
+# selects nothing when the change reaches no entry chapter, and a pipeline that
+# yields nothing hands back $null, whose .Count is a StrictMode error. Before
+# scoping this was only reachable by a -Filter that matched nothing, which
+# nobody had done.
+$results = @($files | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $f       = $_
     $Repo    = $using:Repo
     $OutDir  = $using:OutDir
@@ -161,7 +254,7 @@ $results = $files | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         elseif ($etxt.Trim()) { $note = ($etxt.Trim() -split "`n")[0] }
     }
     [pscustomobject]@{ File=$rel; Exit=$exit; Errors=$n; Capped=($n -ge 20); Codes=$codes; Note=$note }
-}
+})
 $sw.Stop()
 Write-Host "elapsed: $([math]::Round($sw.Elapsed.TotalMinutes,1)) min`n"
 
@@ -185,7 +278,11 @@ $other = @($results | Where-Object { $_.Exit -notin @('0','4','TIMEOUT','CITE-FA
 Write-Host ("units: {0}   CLEAN: {1}   diagnostics: {2}   cite-fail: {3}   other-exit: {4}   timeout: {5}" -f `
     $results.Count, $clean.Count, $diag.Count, $cite.Count, $other.Count, $to.Count)
 Write-Host ("capped at max-errors=20 (lower bounds): {0}" -f @($results | Where-Object { $_.Capped }).Count)
-Write-Host ("total diagnosed errors: {0}`n" -f (($results | Measure-Object -Property Errors -Sum).Sum))
+# Measure-Object over an EMPTY set answers an object with a null Sum, and a
+# zero-unit sweep is now ordinary rather than impossible.
+$errSum = if ($results.Count) { ($results | Measure-Object -Property Errors -Sum).Sum } else { 0 }
+if ($null -eq $errSum) { $errSum = 0 }
+Write-Host ("total diagnosed errors: {0}`n" -f $errSum)
 
 Write-Host "diagnostic codes, by total occurrences:"
 $byCode.Values | Sort-Object Count -Descending | ForEach-Object {
@@ -251,9 +348,10 @@ if ($Check) {
     $regressed = @($bad | Where-Object { -not $expected.ContainsKey($_.File) })
     $fixed     = @($expected.Keys | Where-Object { $f = $_; -not ($bad | Where-Object { $_.File -eq $f }) })
 
-    # A filtered or sampled run cannot see most of the baseline, so every unit
-    # it did not compile would look "fixed". Only a full run may say that.
-    if ($fixed.Count -and -not $Filter -and $Sample -le 0) {
+    # A filtered, sampled or cite-scoped run cannot see most of the baseline, so
+    # every unit it did not compile would look "fixed". Only a full run may say
+    # that.
+    if ($fixed.Count -and -not $Filter -and $Sample -le 0 -and -not $CiteScoped) {
         Write-Host "`nCHECK: $($fixed.Count) baseline unit(s) now compile -- tighten $Baseline"
         $fixed | ForEach-Object { "  $_" }
     }

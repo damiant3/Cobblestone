@@ -1,0 +1,194 @@
+Chapter: KlondikeWasm
+  cites Games chapter Klondike
+  cites Games chapter Rng
+  cites Foreword chapter List
+
+ The browser interface for Klondike, on the handle contract in
+ games-backlog.md GAME-11. Seven columns, four foundations, a stock and a
+ waste are far past an i32, so the page holds the state's address.
+
+ `list-push` and `list-set-at` mutate in place, so every entry point that
+ changes the game copies the state first: the page keeps the old handle and
+ undo depends on it still meaning what it meant.
+
+ A move is one integer, `from * 10000 + start * 100 + to`, which is what
+ `kd-ai` answers and `kd-decode` reads. `kd-ai` also answers -2 for "turn
+ the stock", -3 for "gather the waste back up" and -1 for "nothing left".
+
+ THE PAGE NEVER LEARNS A FACE-DOWN CARD. `kd-wasm-card` answers -1 for any
+ card the player has not turned over, so the module cannot be read for the
+ hidden half of the deal.
+
+ We say:
+
+Section: Copying
+
+  kd-wasm-copy-list : List Integer, Integer, List Integer -> List Integer
+  kd-wasm-copy-list (src) (i) (acc) =
+    if i >= list-length src then acc
+    else kd-wasm-copy-list src (i + 1) (list-push acc (list-at src i))
+
+  kd-wasm-copy-of : List Integer -> List Integer
+  kd-wasm-copy-of (src) = kd-wasm-copy-list src 0 []
+
+  kd-copy-state : KlondikeState -> KlondikeState
+  kd-copy-state (st) =
+    KlondikeState {
+      col0 = kd-wasm-copy-of (st.col0), col1 = kd-wasm-copy-of (st.col1),
+      col2 = kd-wasm-copy-of (st.col2), col3 = kd-wasm-copy-of (st.col3),
+      col4 = kd-wasm-copy-of (st.col4), col5 = kd-wasm-copy-of (st.col5),
+      col6 = kd-wasm-copy-of (st.col6),
+      downs = kd-wasm-copy-of (st.downs), founds = kd-wasm-copy-of (st.founds),
+      stock = kd-wasm-copy-of (st.stock), waste = kd-wasm-copy-of (st.waste),
+      draw = st.draw, sterile = st.sterile, moves = st.moves
+    }
+
+Section: The Card
+
+  kd-wasm-rank : Integer -> Integer
+  kd-wasm-rank (c) =
+    if c < 0 then (-1)
+    else if c >= 52 then (-1)
+    else kd-rank c
+
+  kd-wasm-suit : Integer -> Integer
+  kd-wasm-suit (c) =
+    if c < 0 then (-1)
+    else if c >= 52 then (-1)
+    else kd-suit c
+
+Section: The Browser Interface
+
+ One card turned at a time or three: the two ways Klondike is dealt, and the
+ difference between a game that is usually winnable and one that is not.
+ Clamped rather than trusted, because it arrives from a browser.
+
+  kd-wasm-new : Integer, Integer -> KlondikeState
+  kd-wasm-new (seed) (draw) =
+    klondike-new seed (if draw < 1 then 1 else if draw > 3 then 3 else draw)
+
+  kd-wasm-col-size : KlondikeState, Integer -> Integer
+  kd-wasm-col-size (st) (c) =
+    if c < 0 then (-1)
+    else if c >= 7 then (-1)
+    else list-length (kd-get-col st c)
+
+  kd-wasm-card : KlondikeState, Integer, Integer -> Integer
+  kd-wasm-card (st) (c) (i) =
+    if c < 0 then (-1)
+    else if c >= 7 then (-1)
+    else kd-visible-card st c i
+
+  kd-wasm-down : KlondikeState, Integer -> Integer
+  kd-wasm-down (st) (c) =
+    if c < 0 then (-1)
+    else if c >= 7 then (-1)
+    else kd-down-at st c
+
+  kd-wasm-found : KlondikeState, Integer -> Integer
+  kd-wasm-found (st) (s) =
+    if s < 0 then (-1)
+    else if s >= 4 then (-1)
+    else kd-found-at st s
+
+  kd-wasm-found-card : KlondikeState, Integer -> Integer
+  kd-wasm-found-card (st) (s) =
+    if s < 0 then (-1)
+    else if s >= 4 then (-1)
+    else kd-found-card st s
+
+  kd-wasm-stock-size : KlondikeState -> Integer
+  kd-wasm-stock-size (st) = list-length (st.stock)
+
+  kd-wasm-waste-size : KlondikeState -> Integer
+  kd-wasm-waste-size (st) = list-length (st.waste)
+
+  kd-wasm-waste-top : KlondikeState -> Integer
+  kd-wasm-waste-top (st) = kd-waste-top st
+
+  kd-wasm-founded : KlondikeState -> Integer
+  kd-wasm-founded (st) = kd-founded st 0 0
+
+  kd-wasm-moves : KlondikeState -> Integer
+  kd-wasm-moves (st) = st.moves
+
+  kd-wasm-draw-count : KlondikeState -> Integer
+  kd-wasm-draw-count (st) = st.draw
+
+  kd-wasm-won : KlondikeState -> Integer
+  kd-wasm-won (st) = if kd-won st then 1 else 0
+
+ How long a liftable run is from this index down. The page reads it at the
+ index it is thinking of picking up, and it answers 0 for a face-down card
+ rather than measuring a run through cards the player cannot see.
+
+  kd-wasm-run-len : KlondikeState, Integer, Integer -> Integer
+  kd-wasm-run-len (st) (c) (i) =
+    if c < 0 then (-1)
+    else if c >= 7 then (-1)
+    else let col = kd-get-col st c
+    in if i < 0 then (-1)
+    else if i >= list-length col then 0
+    else if i < kd-down-at st c then 0
+    else kd-run-len col i
+
+  kd-wasm-can-move : KlondikeState, Integer, Integer, Integer -> Integer
+  kd-wasm-can-move (st) (from) (start) (to) =
+    if kd-can-move st from start to then 1 else 0
+
+  kd-wasm-move : KlondikeState, Integer, Integer, Integer -> KlondikeState
+  kd-wasm-move (st) (from) (start) (to) =
+    if kd-can-move st from start to == False then st
+    else kd-apply-move (kd-copy-state st) from start to
+
+  kd-wasm-can-draw : KlondikeState -> Integer
+  kd-wasm-can-draw (st) = if kd-can-draw st then 1 else 0
+
+  kd-wasm-draw : KlondikeState -> KlondikeState
+  kd-wasm-draw (st) =
+    if kd-can-draw st == False then st
+    else kd-draw (kd-copy-state st)
+
+  kd-wasm-can-recycle : KlondikeState -> Integer
+  kd-wasm-can-recycle (st) = if kd-can-recycle st then 1 else 0
+
+  kd-wasm-recycle : KlondikeState -> KlondikeState
+  kd-wasm-recycle (st) =
+    if kd-can-recycle st == False then st
+    else kd-recycle (kd-copy-state st)
+
+  kd-wasm-ai : KlondikeState -> Integer
+  kd-wasm-ai (st) = kd-ai st
+
+  kd-wasm-move-from : Integer -> Integer
+  kd-wasm-move-from (code) =
+    if code < 0 then (-1)
+    else let m = kd-decode code
+    in m.from
+
+  kd-wasm-move-start : Integer -> Integer
+  kd-wasm-move-start (code) =
+    if code < 0 then (-1)
+    else let m = kd-decode code
+    in m.start
+
+  kd-wasm-move-to : Integer -> Integer
+  kd-wasm-move-to (code) =
+    if code < 0 then (-1)
+    else let m = kd-decode code
+    in m.to
+
+Section: The Whole Game
+
+  kd-wasm-run : Integer, Integer -> KlondikeResult
+  kd-wasm-run (seed) (draw) =
+    klondike-run seed (if draw < 1 then 1 else if draw > 3 then 3 else draw)
+
+  kd-wasm-run-founded : KlondikeResult -> Integer
+  kd-wasm-run-founded (r) = r.founded
+
+  kd-wasm-run-moves : KlondikeResult -> Integer
+  kd-wasm-run-moves (r) = r.moves
+
+  kd-wasm-run-won : KlondikeResult -> Integer
+  kd-wasm-run-won (r) = if r.won then 1 else 0

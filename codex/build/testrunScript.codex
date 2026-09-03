@@ -55,6 +55,26 @@ Section: S04b -- Read the VM's stderr
     let dropped = [ScWriteError (SeLit "codex-vm dropped guest serial bytes: the captured output is SHORT and any comparison against it is meaningless"), ScWriteError (SeVar "vmErr"), ScExit (SeInt 1)]
     in [ScIf (SeFileExists (SeVar "stderrFile")) [ScDotNetCallAssign "vmErr" "System.IO.File" "ReadAllText" [SeVar "stderrFile"], ScIf (SeMatch (SeVar "vmErr") "DROPPED") dropped []] []]
 
+Section: S04c -- Refuse a host crash
+
+ The exit code is the only signal for a host crash that happens AFTER the guest
+ has written complete output. codex-vm's crash filter prints HOST CRASH and
+ `_exit(0xC0DE)`; a heap death fast-fails PAST that filter as 0xC0000374 and
+ prints nothing at all, so there is no text to match on and S04b's shape cannot
+ be reused. Reading the output file alone reports both as a pass.
+
+ Two codes by name, not a bare nonzero test. An access violation reaches the
+ filter and returns as 0xC0DE, so nonzero adds no case and would red on ordinary
+ guest exits.
+
+ The comparison is against the SIGNED int, deliberately: PowerShell parses a hex
+ literal signed, so `0xC0000374` IS -1073740940 and equals `$proc.ExitCode`
+ directly. Masking with `0xFFFFFFFF` looks more careful and is wrong twice: that
+ literal is int -1, so the mask is a no-op, and the `[uint32]` cast then throws
+ on the negative value, leaving the comparison reading a stale variable.
+
+  s04c : List ShellCmd = [ScRaw "    # codex-vm's exit code is the only signal for a host crash AFTER complete", ScRaw "    # output: its crash filter _exit(0xC0DE), and a heap death fast-fails past", ScRaw "    # that filter as 0xC0000374 printing nothing. Two codes BY NAME; a bare", ScRaw "    # nonzero test adds no case. The comparison is signed on purpose, because a", ScRaw "    # PowerShell hex literal parses signed and 0xC0000374 IS -1073740940. Do not", ScRaw "    # add a 0xFFFFFFFF mask: that literal is int -1 and the cast then throws.", ScRaw "    $rc = $proc.ExitCode",ScRaw "    if ((($rc -eq 0xC0DE) -or ($rc -eq 0xC0000374))) {", ScRaw "        $rcHex = '0x{0:X8}' -f $rc", ScRaw "        Write-SweepLog \"$sample run-fail host-crash rc=$rcHex\"", ScRaw "        [Console]::Error.WriteLine(\"HOST CRASH: codex-vm exited $rcHex. This is a defect in codex-vm itself, not in the guest, and the captured output cannot be trusted however complete it looks.\")", ScRaw "        if ((Test-Path -PathType Leaf $stderrFile)) {", ScRaw "            [Console]::Error.WriteLine([System.IO.File]::ReadAllText($stderrFile))", ScRaw "        }", ScRaw "        [System.IO.File]::WriteAllText($OutFile, '', [System.Text.UTF8Encoding]::new($false))", ScRaw "        exit 1", ScRaw "    }"]
+
 Section: S05 -- Check output exists
 
   s05 : List ShellCmd =
@@ -75,7 +95,7 @@ Section: S08 -- Cleanup
 
 Section: Assembly
 
-  testrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s04b, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07] [] s08]
+  testrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s04b, ScBlank, ScSequence s04c, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07] [] s08]
 
   testrun-script : ShellScript = sh-script "test-run" "Boot a CDX kernel under codex-vm and capture filtered serial output" testrun-params testrun-body
 

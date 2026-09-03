@@ -51,6 +51,99 @@ Section: The Browser Interface
     if s.game-over then s
     else ce-do-turn (ce-copy-state s)
 
+Section: Playing By Hand
+
+ `ce-do-turn` finds its own card and, for an eight, names its own suit, so a
+ person cannot take a turn. These are the three things a turn can be: play a
+ card, draw because you cannot, or take the penalty a two has left you.
+
+ THE SUIT AN EIGHT NAMES IS THE PLAYER'S TO CHOOSE. `ce-play-card` calls
+ `ce-best-suit-for-player`, which is right for the engine's own player and
+ wrong for a person: declaring is the whole reason to hold an eight. Rather
+ than restate that function's twenty lines with one value changed, the play
+ goes through it and the declared suit is set afterwards -- `ce-advance`
+ and the winning branch both carry `declared-suit` through untouched, so
+ the override lands on either.
+
+ A two adds two to the draw penalty (`ce-play-card`, rank 0), and while a
+ penalty stands the only legal turn is to take it. That is why
+ `ce-wasm-can-play` refuses everything until the penalty is cleared: a page
+ that let you play over it would be playing a different game from the one
+ the opponent is playing.
+
+  ce-wasm-can-play : CrazyEightsState, Integer -> Integer
+  ce-wasm-can-play (s) (card) =
+    if s.game-over then 0
+    else if s.draw-penalty > 0 then 0
+    else if card < 0 then 0
+    else if card >= 52 then 0
+    else if ce-can-play s (s.current-player) card then 1
+    else 0
+
+  ce-wasm-play : CrazyEightsState, Integer, Integer -> CrazyEightsState
+  ce-wasm-play (s) (card) (suit) =
+    if ce-wasm-can-play s card == 0 then s
+    else let played = ce-play-card (ce-copy-state s) (s.current-player) card
+    in if ce-rank card /= 6 then played
+    else if suit < 0 then played
+    else if suit > 3 then played
+    else ce-declare played suit
+
+  ce-declare : CrazyEightsState, Integer -> CrazyEightsState
+  ce-declare (s) (suit) =
+    CrazyEightsState {
+      hands = s.hands, hand-sizes = s.hand-sizes,
+      draw-pile = s.draw-pile, pile-size = s.pile-size,
+      discard-rank = s.discard-rank, discard-suit = s.discard-suit,
+      current-player = s.current-player, num-players = s.num-players,
+      direction = s.direction, draw-penalty = s.draw-penalty,
+      game-over = s.game-over, winner = s.winner,
+      declared-suit = suit
+    }
+
+ Whether the player to move holds anything at all that will go. A page uses
+ it to offer the draw honestly rather than as a way out of a turn that had a
+ legal play in it.
+
+  ce-wasm-stuck : CrazyEightsState -> Integer
+  ce-wasm-stuck (s) =
+    if s.game-over then 0
+    else if s.draw-penalty > 0 then 0
+    else if ce-find-play s (s.current-player) >= 0 then 0
+    else 1
+
+  ce-wasm-draw : CrazyEightsState -> CrazyEightsState
+  ce-wasm-draw (s) =
+    if s.game-over then s
+    else if s.draw-penalty > 0 then s
+    else if ce-find-play s (s.current-player) >= 0 then s
+    else let s2 = ce-draw-one (ce-copy-state s) (s.current-player)
+    in ce-advance s2
+
+  ce-wasm-can-take-penalty : CrazyEightsState -> Integer
+  ce-wasm-can-take-penalty (s) =
+    if s.game-over then 0
+    else if s.draw-penalty > 0 then 1
+    else 0
+
+  ce-wasm-take-penalty : CrazyEightsState -> CrazyEightsState
+  ce-wasm-take-penalty (s) =
+    if ce-wasm-can-take-penalty s == 0 then s
+    else let s2 = ce-draw-n (ce-copy-state s) (s.current-player) (s.draw-penalty)
+    in ce-advance (ce-clear-penalty s2)
+
+  ce-clear-penalty : CrazyEightsState -> CrazyEightsState
+  ce-clear-penalty (s) =
+    CrazyEightsState {
+      hands = s.hands, hand-sizes = s.hand-sizes,
+      draw-pile = s.draw-pile, pile-size = s.pile-size,
+      discard-rank = s.discard-rank, discard-suit = s.discard-suit,
+      current-player = s.current-player, num-players = s.num-players,
+      direction = s.direction, draw-penalty = 0,
+      game-over = s.game-over, winner = s.winner,
+      declared-suit = s.declared-suit
+    }
+
   ce-wasm-has : CrazyEightsState, Integer, Integer -> Integer
   ce-wasm-has (s) (player) (card) =
     if player < 0 then 0

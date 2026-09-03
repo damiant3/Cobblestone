@@ -14,7 +14,7 @@ An interactive 3D star map rendering 80+ named celestial objects (stars, Messier
 
 ## Completeness
 
-65% -- Data layer (catalog, types, scene state, DB queries) and WASM memory-write path are implemented. Missing: 3D-to-2D projection delegated to JS/WebGPU harness; camera control WASM exports return 0 (stubs); octree spatial partitioning typed but not built; constellation lines sparse; catalog-all only includes stars (messier/galaxies not concatenated).
+65% -- Data layer (catalog, types, scene state, DB queries) and WASM memory-write path are implemented. Missing: 3D-to-2D projection delegated to JS/WebGPU harness; octree spatial partitioning typed but not built; constellation lines sparse; catalog-all only includes stars (messier/galaxies not concatenated).
 
 ## Codex Conformance
 

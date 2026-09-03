@@ -1,0 +1,150 @@
+Chapter: Num
+
+ The Real primitives Codex's foreword does not have.
+
+ `Gpu chapter DeviceMath` is the only Real chapter in the foreword and its whole
+ surface is min, max, abs, sqrt, sin and cos. There is no rounding, no floor and
+ no modulo, and the foreword's other numeric chapters -- Cordic, Easing, Color,
+ GameCamera, Numeric -- are all INTEGER milli-units, so they answer a different
+ question. Everything here is a gap upstream rather than a hole in the zig plug,
+ and unlike `Safari chapter Trig` none of it is a stand-in for something that
+ already exists.
+
+ EVERY FUNCTION HERE NEEDS real-to-int, so none of it could have been written
+ before 2026-08-29 -- see PORTING_NOTES A1 and plugs-backlog row 2.03. That is
+ the honest reason this chapter did not exist earlier: the port had no way to
+ reach the integers at all.
+
+ We say:
+
+Section: Rounding
+
+ Zig's @round goes to nearest and ties AWAY FROM ZERO, which truncation does not
+ give. TRUNCATE FIRST AND THEN LOOK AT WHAT IS LEFT: real-to-int already truncates
+ toward zero, `x - t` is exact for every x this converter accepts, and a leftover
+ of half or more in either direction is precisely the away-from-zero tie. One rule
+ covers both signs, which is why there is no sign branch here any more.
+
+ ADDING THE HALF FIRST IS THE VERSION THAT WAS WRONG, and NumCheck is what found
+ it. `real-to-int (x + 0.5)` answers 1 for x = 0.49999999999999994 -- the largest
+ double below a half -- because x + 0.5 is not representable and rounds UP to
+ exactly 1.0, and the mirrored form answered -1 at -0.49999999999999994 where zig
+ answers -0. Every caller in the game rounds a 0..255 colour channel, a stride
+ count, a step count or a whole number of degrees, so not one of them could see
+ it; a round that is wrong on a value none of today's callers produces is a trap
+ for the next caller, and that is the whole reason this chapter is graded on a
+ domain wider than its callers'.
+
+  round-real : Real -> Real
+  round-real (x) =
+    let t = real-from-int (real-to-int x)
+    in let f = x - t
+    in if f >= 0.5 then t + 1.0 else if f <= 0.0 - 0.5 then t - 1.0 else t
+
+ real-to-int truncates toward zero, so for a negative non-integral value it lands
+ ABOVE its argument and floor is one less. An exact integer is its own floor in
+ both arms, which is why the test is `>` and not `>=`.
+
+  floor-real : Real -> Real
+  floor-real (x) =
+    let t = real-from-int (real-to-int x)
+    in if t > x then t - 1.0 else t
+
+Section: Modulo
+
+ Zig's @mod is the FLOORED modulo -- its result takes the sign of the divisor --
+ and that is not the truncated remainder. Floored is x - m * floor (x / m), and
+ this is the faithful reading of what tower.zig asks for.
+
+ BUT THE ONE CALLER CANNOT TELL THE DIFFERENCE, and that is worth stating rather
+ than implying coverage this does not have. tower.zig writes
+
+     @mod(@mod(phase, P) + P, P)
+
+ which looks like belt and braces over an operator that is already non-negative,
+ and is in fact exactly what makes the two semantics AGREE. Floored gives m in
+ [0, P) directly and the second pass is a no-op. Truncated gives r in (-P, P);
+ adding P lands in (0, 2P); the second pass takes P off again when it overflowed
+ and leaves it alone when it did not -- and r + P is precisely floored's answer
+ whenever r was negative. So the double form is semantics-agnostic by
+ construction.
+
+ MEASURED, not reasoned about after the fact: replacing this with the truncated
+ remainder leaves TowerCheck entirely green, including its negative-phase case.
+ An earlier draft of this note claimed tower.zig "relies on" the floored form and
+ that the two "disagree there". Both were wrong, and the red test said so.
+
+ Floored stays because it is what @mod means and the next caller may not wrap its
+ argument twice. But nothing in this port grades the choice today.
+
+  mod-real : Real, Real -> Real
+  mod-real (x) (m) = x - m * floor-real (x / m)
+
+Section: The Exponential
+
+ rider.zig's shoulder brake decays as exp(-n / 20) over up to 2000 frames, so the
+ argument reaches -100 and a bare Taylor series is useless there. The standard
+ reduction: take k as the nearest integer to x / ln 2, so the remainder r is
+ within half a ln 2 of zero, sum the series there, and scale by 2^k.
+
+ THIS NEEDS real-to-int TWICE OVER -- once to round k, once to count the doublings
+ -- so like everything else here it could not have been written before the
+ conversion emitters landed.
+
+  ln2 : Real
+  ln2 = 0.6931471805599453
+
+ TWELVE TERMS OVER |r| <= 0.347 LEAVE A REMAINDER OF 1.7e-16, NOT THE 1e-17 THIS
+ NOTE CLAIMED BEFORE IT WAS MEASURED. r^13/13! at r = ln2/2 is 1.671e-16, which is
+ an arithmetic fact nobody had worked out. NumCheck now measures the whole chapter
+ end to end against zig's @exp over eighteen arguments: the worst RELATIVE error is
+ 8.5e-16, at x = 20, and the gate is 1e-15 because the stream reddens at 8e-16.
+
+ AND IT IS THE REDUCTION, NOT THE SERIES, THAT SETS THAT NUMBER. The three
+ arguments small enough to need no reduction at all -- -0.05, 0 and 0.05 -- come
+ out EXACT; every nonzero error in the table belongs to a reduced case. Taking
+ k * ln2 off x cancels, and `ln2` here is one f64 where a library keeps a hi/lo
+ pair for exactly this reason. Splitting it is the fix if it ever matters:
+ rider.zig consumes the answer in f32, where 8.5e-16 is nine orders below the last
+ bit it can hold, so today it does not.
+
+ WRITING A BOUND NOBODY CHECKED IS THE DEFECT THIS PORT IS SENDING UPSTREAM.
+ FINDINGS.md item 2 is `Math chapter Cordic` claiming ~0.1% and delivering 0.45%,
+ with a test that never calls a Cordic function. The claim above was 17x out for
+ the same reason -- it was reasoned about rather than run -- and it is corrected
+ here rather than left standing while we mail someone else's.
+
+  exp-poly : Real -> Real
+  exp-poly (r) =
+    let t1 = r
+    in let t2 = t1 * r / 2.0
+    in let t3 = t2 * r / 3.0
+    in let t4 = t3 * r / 4.0
+    in let t5 = t4 * r / 5.0
+    in let t6 = t5 * r / 6.0
+    in let t7 = t6 * r / 7.0
+    in let t8 = t7 * r / 8.0
+    in let t9 = t8 * r / 9.0
+    in let t10 = t9 * r / 10.0
+    in let t11 = t10 * r / 11.0
+    in let t12 = t11 * r / 12.0
+    in 1.0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12
+
+ 2^k by repeated multiplication rather than by assembling an exponent field: the
+ bit-level route would need real-to-bits, which this arm still has no emitter for,
+ and k is small enough here that the loop is exact anyway -- every step multiplies
+ by a power of two, which is exact in binary until it underflows.
+
+  pow2-up : Integer, Real -> Real
+  pow2-up (k) (acc) = if k <= 0 then acc else pow2-up (k - 1) (acc * 2.0)
+
+  pow2-down : Integer, Real -> Real
+  pow2-down (k) (acc) = if k >= 0 then acc else pow2-down (k + 1) (acc * 0.5)
+
+  pow2-int : Integer -> Real
+  pow2-int (k) = if k >= 0 then pow2-up k 1.0 else pow2-down k 1.0
+
+  exp-real : Real -> Real
+  exp-real (x) =
+    let k = real-to-int (round-real (x / ln2))
+    in exp-poly (x - real-from-int k * ln2) * pow2-int k

@@ -46,6 +46,19 @@ Gather, with tools (do not answer from memory):
    authority if the transcript format ever moves:
    `D:\Projects\AgentGrid\AgentGrid\Services\ContextService.cs`.
 
+   **THE HARNESS SHOWS A SECOND NUMBER AND IT IS NOT THIS ONE.** The
+   session carries a `total_tokens` figure that counts DOWN from a
+   number in the millions. That is a CUMULATIVE BUDGET for the whole
+   session, not the context window, and the two are unrelated: work
+   already summarised out of context still spends the budget. Reading
+   it as context understates by roughly the number of turns you have
+   taken. Measured 2026-09-02 (fester): the budget said ~13.99M of 15M
+   left and the agent reported "context 6%" to the commander twice,
+   while the transcript said 697,660 of 1,000,000 -- **69.8 per cent
+   used, and one lane-hour from Damian's 75 per cent handoff
+   trigger**. The command above is the only number to quote, and it
+   errs in neither direction because it is not an estimate at all.
+
    **Why this replaced the old rule.** On 2026-07-28 an agent measured
    33.9 per cent used, 660k free, having spent the whole session
    telling the human it was "nearly out of context" and "critically

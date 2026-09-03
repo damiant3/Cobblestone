@@ -1,0 +1,102 @@
+Chapter: Fat32Longwrite
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ FAT32 gained a long-name READER on 2026-09-01 and could still only WRITE an
+ 8.3 entry, so every name this library wrote came back under its alias and a
+ caller that wrote `LongNameOnFat32.txt` could not read it by that name.
+ `codex/test/fat32-longname` grades the reader against runs laid down by
+ hand, deliberately, because a reader graded by our own encoder would agree
+ with itself whatever both did. This chapter is the other half and it has the
+ opposite obligation: the writer is graded by the reader, so every arm here
+ is a round trip and the discriminating ones are the two that would still
+ pass if the run were never written.
+
+ Arm B is the one that pays. Two names share the first six characters, so
+ they are offered the same alias, and only a search of the DIRECTORY can tell
+ them apart. Their contents differ, so reading each long name and getting the
+ other one's bytes is a failure the arm can express. A writer that skipped
+ the search would give both `LONGNA~1.TXT` and one of the two reads would
+ answer the wrong file rather than answering nothing.
+
+ Arm A's second read is the control in the other direction: a long-named file
+ must STILL answer under its 8.3 alias, because the short entry is what every
+ 8.3 reader sees and the run is an addition to it, not a replacement.
+
+ We say:
+
+Section: Reporting
+
+  f32w-say : Maybe Text -> Text
+  f32w-say (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"
+
+  f32w-rep : Integer, Text -> Text
+  f32w-rep (n) (acc) =
+    if n <= 0 then acc
+    else f32w-rep (n - 1) (acc & "N")
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    fmt <- fat32-format 2048 30720 "CODEX"
+    print-line-uni ("format " & show fmt)
+
+    vol <- fat32-init 2048
+    print-line-uni ("root cluster " & show (vol.f32-root-cluster)
+      & " spc " & show (vol.f32-sectors-per-cluster))
+
+    print-line-uni ("A slots " & show (fat32-slots-for "LongNameOnFat32.txt"))
+
+    a <- fat32-write-file vol "LongNameOnFat32.txt" [72, 105]
+    print-line-uni ("A write " & show a)
+
+    a1 <- fat32-read-text vol "LongNameOnFat32.txt"
+    print-line-uni ("A by long name " & f32w-say a1)
+
+    a2 <- fat32-read-text vol "LONGNA~1.TXT"
+    print-line-uni ("A by alias " & f32w-say a2)
+
+    a3 <- fat32-read-text vol "LongNameOnFat32"
+    print-line-uni ("A no truncated ghost " & f32w-say a3)
+
+    b <- fat32-write-file vol "LongNameOnFat32-second.txt" [79, 75]
+    print-line-uni ("B write " & show b)
+
+    b1 <- fat32-read-text vol "LongNameOnFat32-second.txt"
+    print-line-uni ("B by long name " & f32w-say b1)
+
+    b2 <- fat32-read-text vol "LONGNA~2.TXT"
+    print-line-uni ("B by second alias " & f32w-say b2)
+
+    b3 <- fat32-read-text vol "LongNameOnFat32.txt"
+    print-line-uni ("A survives B " & f32w-say b3)
+
+    c <- fat32-write-file vol "SHORT.TXT" [90]
+    print-line-uni ("C write " & show c
+      & " slots " & show (fat32-slots-for "SHORT.TXT"))
+
+    c1 <- fat32-read-text vol "SHORT.TXT"
+    print-line-uni ("C by its own name " & f32w-say c1)
+
+    d <- fat32-write-file vol "LongDirectoryName/inner.txt" [68, 111, 116]
+    print-line-uni ("D write " & show d)
+
+    d1 <- fat32-read-text vol "LongDirectoryName/inner.txt"
+    print-line-uni ("D through a long directory " & f32w-say d1)
+
+    let over = f32w-rep 300 ""
+    in act
+      e <- fat32-write-file vol (over & ".txt") [1]
+      print-line-uni ("E past 255 refused " & show (e == False))
+
+      e1 <- fat32-read-text vol "LongNameOnFat32.txt"
+      print-line-uni ("A survives the refusal " & f32w-say e1)
+    end
+  end
+
+Page 1

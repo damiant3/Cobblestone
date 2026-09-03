@@ -83,7 +83,13 @@ param(
   [double]$MinMargin = 0,
   [switch]$Plugs,
   [switch]$WithSelf,
-  [switch]$Fresh
+  [switch]$Fresh,
+  # -Plugs reads staleness off mtimes, and a forced sync (the gate dance's
+  # `p4 sync -f`) rewrites every source mtime, after which every bundle reads
+  # stale and the corpus is empty. That is a fact about the sync, not the
+  # bundles. This says: measure the bundles as they are and print that the
+  # mtimes were overridden; it never hides a MISSING bundle.
+  [switch]$TrustBundles
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -91,6 +97,9 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 . (Join-Path $PSScriptRoot 'quire-map.ps1')
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
+# One definition, shared with the assembler that writes the digest. See the
+# header of plug-source-digest.ps1 for why it is not copied into both.
+. (Join-Path $PSScriptRoot 'plug-source-digest.ps1')
 
 $out = Join-Path $root "build-output\deck-headroom\$Tag"
 if ($Fresh -and (Test-Path $out)) { Remove-Item -Recurse -Force $out }
@@ -152,9 +161,17 @@ if ($Plugs) {
   #
   # The bundles are read off disk rather than rebuilt, because rebuilding 56 of
   # them to ask a question about deck room costs more than the question. That
-  # makes staleness the hazard, so a plug whose newest chapter is newer than
-  # its bundle is NAMED and skipped rather than measured quietly: a stale
-  # bundle answers for the previous revision in either direction.
+  # makes staleness the hazard, so a plug whose sources no longer match the
+  # ones its bundle records is NAMED and skipped rather than measured quietly:
+  # a stale bundle answers for the previous revision in either direction.
+  # The comparison is on CONTENT, against the digest the assembler wrote
+  # beside the bundle. It was mtime until 2026-09-02, and mtime cannot tell a
+  # changed source from a restamped one: `p4 sync -f`, which the gate dance
+  # requires, touches every tracked file, so all 56 bundles read stale at once
+  # and the gate's plug deck phase measured NOTHING and failed. A bundle with
+  # no recorded digest reads stale and is rebuilt by the normal plug-build
+  # path, once per workspace; blessing whatever is on disk instead would be a
+  # check that opens by agreeing with its subject (L-FASTER).
   # A PLUG THAT PASSES -Decks MUST BE MEASURED AT THAT SCALE, not at the
   # derived one, or this asks a question the build never asks. arm64 and riscv
   # build at -Decks 140 and do NOT fit the derivation; measured at derived they
@@ -166,16 +183,27 @@ if ($Plugs) {
   $units = @()
   $missing = @()
   $stale = @()
+  $nodigest = @()
   $script:UnitDecks = @{}
   foreach ($d in (Get-ChildItem (Join-Path $root 'codex\plugs') -Directory | Sort-Object Name)) {
     $plugBuild = Join-Path $d.FullName 'build.ps1'
     if (-not (Test-Path $plugBuild)) { continue }
     $bundle = Join-Path $d.FullName 'build-output\plug-source.codex'
     if (-not (Test-Path $bundle)) { $missing += $d.Name; continue }
-    $newest = Get-ChildItem $d.FullName -Filter '*.codex' -File |
-              Where-Object { $_.FullName -notmatch '\\build-output\\' } |
-              Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-    if ($newest -and $newest.LastWriteTimeUtc -gt (Get-Item $bundle).LastWriteTimeUtc) { $stale += $d.Name; continue }
+    $digestFile = Get-PlugSourceDigestPath $bundle
+    $recorded = if (Test-Path $digestFile) { ([System.IO.File]::ReadAllText($digestFile)).Trim() } else { '' }
+    # NO DIGEST is reported apart from a MISMATCH, and the difference is not
+    # cosmetic: a mismatch clears when the plug is rebuilt, and no digest means
+    # this plug's build never writes one, so it leaves the corpus permanently
+    # while reading as the kind that clears. evidence bundles through
+    # bundle-app.ps1 rather than the plug library and was exactly that.
+    if ($recorded -eq '') {
+      $nodigest += $d.Name
+      if (-not $TrustBundles) { continue }
+    } elseif ($recorded -ne (Get-PlugSourceDigest $d.FullName)) {
+      $stale += $d.Name
+      if (-not $TrustBundles) { continue }
+    }
     $rel = $bundle.Substring($root.Length + 1)
     $m = [regex]::Match([System.IO.File]::ReadAllText($plugBuild), '-Decks\s+(\d+)')
     if ($m.Success) { $script:UnitDecks[$rel] = [int]$m.Groups[1].Value }
@@ -186,7 +214,20 @@ if ($Plugs) {
     Write-Host "[deck-headroom] measured at the scale their build passes, not the derivation ($($overridden.Count)): $(($overridden | ForEach-Object { ($_ -split '\\')[2] + '=' + $script:UnitDecks[$_] }) -join ' ')" -ForegroundColor DarkGray
   }
   if ($missing.Count -gt 0) { Write-Host "[deck-headroom] no bundle, not measured ($($missing.Count)): $($missing -join ' ')" -ForegroundColor Yellow }
-  if ($stale.Count -gt 0)   { Write-Host "[deck-headroom] bundle older than its source, not measured ($($stale.Count)): $($stale -join ' ')" -ForegroundColor Yellow }
+  if ($stale.Count -gt 0) {
+    if ($TrustBundles) { Write-Host "[deck-headroom] bundle does not match its recorded sources, measured anyway under -TrustBundles ($($stale.Count)): $($stale -join ' ')" -ForegroundColor Yellow }
+    else { Write-Host "[deck-headroom] bundle does not match its recorded sources, not measured ($($stale.Count)): $($stale -join ' ')" -ForegroundColor Yellow }
+    # Every present bundle reading stale at once no longer means a forced sync
+    # (the digest is content, not mtime). It means these bundles predate the
+    # digest and have none recorded, which is true once per workspace.
+  }
+  if ($nodigest.Count -gt 0) {
+    if ($TrustBundles) { Write-Host "[deck-headroom] bundle records NO source digest, measured anyway under -TrustBundles ($($nodigest.Count)): $($nodigest -join ' ')" -ForegroundColor Yellow }
+    else {
+      Write-Host "[deck-headroom] bundle records NO source digest, not measured ($($nodigest.Count)): $($nodigest -join ' ')" -ForegroundColor Yellow
+      Write-Host "[deck-headroom] rebuild those plugs (each plug's build.ps1) -- once per workspace. If one stays here after a successful rebuild, its build does not write a digest and it has left the corpus for good: that is a defect in the plug's build, not a stale bundle." -ForegroundColor Yellow
+    }
+  }
   Write-Host "[deck-headroom] $($units.Count) plug bundle(s) in the corpus" -ForegroundColor DarkGray
 } elseif ($Quire) {
   # A directory, not a list, so a unit added to the quire joins the check by
@@ -233,9 +274,16 @@ if ($Plugs) {
   $units += $self
 }
 Write-Host "deck-headroom: $($units.Count) units"
+# An empty corpus is a verdict with a name, not a crash: `foreach` over nothing
+# yields $null, and the first `.Count` on it used to take the run down under
+# StrictMode (red, 2026-08-28, after a forced sync emptied the -Plugs corpus).
+if ($units.Count -eq 0) {
+  Write-Host "FAIL: the corpus is empty, nothing was measured. The lines above say why (no bundle, stale bundle, empty -List, missing quire)."
+  exit 1
+}
 
 $embeddedPat = '^Chapter:\s*(\w+)--(.+?)\s*$'
-$items = foreach ($u in $units) {
+$items = @(foreach ($u in $units) {
   $len = 0
   try {
     $srcLines = [System.IO.File]::ReadAllLines((Join-Path $root $u))
@@ -252,7 +300,7 @@ $items = foreach ($u in $units) {
   $eff = if ($ovr -gt 0) { $ovr } else { Derive $len }
   [pscustomobject]@{ Unit = $u; Key = $k; Len = $len; Derived = $eff; Decks = $ovr
                      Log = (Join-Path $out "$k.log"); Bin = (Join-Path $out "$k.bin") }
-}
+})
 
 # Separate processes, not ForEach-Object -Parallel: fresh runspaces race on
 # the type-accelerator table at five or more concurrent legs and throw "An

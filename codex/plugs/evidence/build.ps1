@@ -31,6 +31,12 @@ $body = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'EvidencePackage.codex')
 
 & pwsh -NoProfile -File (Join-Path $Repo 'build\bundle-app.ps1') -Src $root -Out $bundled
 if ($LASTEXITCODE -ne 0) { throw "[evidence] bundle failed" }
+# deck-headroom decides bundle staleness on this digest, and it is written by
+# the plug library's Bundle-PlugSource, which this plug does not go through.
+# Without it evidence records no digest and is dropped from the plug deck
+# corpus for good, reading as ordinary staleness that a rebuild would clear.
+. (Join-Path $Repo 'build' 'plug-source-digest.ps1')
+[IO.File]::WriteAllText((Get-PlugSourceDigestPath $bundled), (Get-PlugSourceDigest $PSScriptRoot), [Text.UTF8Encoding]::new($false))
 $args = @('-Src', $bundled, '-Out', $cdx, '-Log', $log)
 if ($Kernel) { $args += @('-Kernel', (Resolve-Path $Kernel).Path) }
 & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') @args

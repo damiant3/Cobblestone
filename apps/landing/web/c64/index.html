@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cobblestone -- The Commodore 64</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --ink:#e8e6df; --dim:#9a9488; --gold:#d4a017; --deep:#0a0a12;
+    --panel:rgba(18,18,30,.82); --edge:rgba(212,160,23,.18);
+  }
+  body{background:var(--deep);color:var(--ink);
+    font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+  a{color:var(--gold);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  .topbar{display:flex;align-items:center;gap:22px;padding:12px 24px;background:#070710;
+    border-bottom:1px solid #1e1e2e;position:sticky;top:0;z-index:20}
+  .topbar-logo{color:var(--gold);font-size:18px;font-weight:700;letter-spacing:1px}
+  .topbar .here{color:var(--dim);font-size:14px}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:26px 20px 64px}
+  h1{font-size:26px;font-weight:700;margin-bottom:6px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:22px;max-width:70ch;line-height:1.55}
+
+  .stage{background:var(--panel);border:1px solid var(--edge);border-radius:10px;
+    padding:16px;display:flex;flex-direction:column;align-items:center;gap:12px}
+  /* The emulator renders 640x480 into linear memory and the canvas is that
+     buffer, so the element must never be resized by layout: it is scaled with
+     CSS and the backing store stays 1:1 with the framebuffer. */
+  canvas{width:100%;max-width:800px;height:auto;aspect-ratio:4/3;
+    image-rendering:pixelated;background:#3b3bd0;border-radius:4px;
+    box-shadow:0 0 0 10px #7a7ae0,0 0 0 12px #23233a}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center}
+  button{background:rgba(212,160,23,.14);border:1px solid rgba(212,160,23,.5);
+    border-radius:16px;color:var(--gold);font-family:inherit;font-size:12px;
+    padding:6px 14px;cursor:pointer}
+  button:hover{background:rgba(212,160,23,.24)}
+  .stat{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
+  .note{color:var(--dim);font-size:13px;line-height:1.6;margin-top:22px;max-width:78ch}
+  .note code{color:var(--ink);background:#16162a;padding:1px 5px;border-radius:3px}
+  .bad{background:rgba(180,60,60,.12);border:1px solid rgba(180,60,60,.45);
+    border-radius:8px;padding:14px 16px;color:#e8b3b3;font-size:14px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="topbar-logo">COBBLESTONE</span>
+  <span class="here">The Commodore 64</span>
+  <span style="flex:1"></span>
+  <a href="../landing.html">Back to the site</a>
+</div>
+
+<div class="wrap">
+  <h1>A Commodore 64, in this tab</h1>
+  <p class="sub">A 6502, the VIC-II, the CIAs and the real BASIC, KERNAL and character ROMs,
+  written in Codex and compiled to WebAssembly by the project's own backend. Nothing here is
+  JavaScript but the keyboard and the canvas blit: the CPU runs, the screen is drawn, and the
+  READY prompt you see is the actual KERNAL booting. Click the screen and type.</p>
+
+  <div class="stage">
+    <canvas id="screen" width="640" height="480"></canvas>
+    <div class="row">
+      <button id="reset">Power cycle</button>
+      <span class="stat" id="stat">loading...</span>
+    </div>
+  </div>
+
+  <div id="err"></div>
+
+  <p class="note">Type <code>PRINT 2+2</code> and press Return. BASIC is the real thing, so
+  <code>10 PRINT "HI"</code> / <code>20 GOTO 10</code> / <code>RUN</code> works too. The
+  emulator's whole machine -- 64 KB of RAM, the ROMs, the colour RAM, the VIC and CIA
+  registers -- lives at fixed addresses in the module's linear memory, which is why it keeps
+  running between frames without the page holding any state at all.</p>
+</div>
+
+<script>
+// Browser key -> PC set-1 scancode. Only the codes apps/c64/Cia.codex
+// (scancode-to-petscii) actually decodes are listed; anything else would be
+// dropped by the emulator anyway, and sending it would only steal the key
+// from the browser.
+const KEYMAP = {
+  KeyA:0x1E, KeyB:0x30, KeyC:0x2E, KeyD:0x20, KeyE:0x12, KeyF:0x21, KeyG:0x22,
+  KeyH:0x23, KeyI:0x17, KeyJ:0x24, KeyK:0x25, KeyL:0x26, KeyM:0x32, KeyN:0x31,
+  KeyO:0x18, KeyP:0x19, KeyQ:0x10, KeyR:0x13, KeyS:0x1F, KeyT:0x14, KeyU:0x16,
+  KeyV:0x2F, KeyW:0x11, KeyX:0x2D, KeyY:0x15, KeyZ:0x2C,
+  Digit1:0x02, Digit2:0x03, Digit3:0x04, Digit4:0x05, Digit5:0x06,
+  Digit6:0x07, Digit7:0x08, Digit8:0x09, Digit9:0x0A, Digit0:0x0B,
+  Space:0x39, Enter:0x1C, Backspace:0x0E, Comma:0x33, Period:0x34,
+  Minus:0x0C, Equal:0x0D, Semicolon:0x27, Quote:0x28, Slash:0x35
+};
+
+const canvas = document.getElementById('screen');
+const ctx    = canvas.getContext('2d');
+const statEl = document.getElementById('stat');
+const errEl  = document.getElementById('err');
+
+function fail(msg) {
+  statEl.textContent = 'not running';
+  errEl.innerHTML = '<div class="bad">' + msg + '</div>';
+}
+
+(async function () {
+  let mod;
+  try {
+    const res = await fetch('c64.wasm');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    // Every module the wasm plug emits declares the two WASI descriptors, the
+    // arcade's games included. The emulator uses neither: it renders into
+    // linear memory and takes keys through a ring. These are the arcade's
+    // throwing stubs rather than working ones, so a module that ever asks to
+    // read or write says so instead of being quietly satisfied.
+    mod = await WebAssembly.instantiate(await res.arrayBuffer(), {
+      wasi_snapshot_preview1: {
+        fd_write: () => { throw new Error('fd_write: the c64 module must not write'); },
+        fd_read:  () => { throw new Error('fd_read: the c64 module must not read'); },
+      },
+    });
+  } catch (e) {
+    fail('The emulator module did not load (' + e.message + '). <code>c64.wasm</code> is ' +
+         'build output, not a tracked file: build it with ' +
+         '<code>pwsh apps/c64/build-wasm.ps1</code>.');
+    return;
+  }
+
+  const x = mod.instance.exports;
+  const W = x.c64_w(0), H = x.c64_h(0), FB = x.c64_fb(0);
+  if (W !== canvas.width || H !== canvas.height) {
+    canvas.width = W; canvas.height = H;
+  }
+  const image = ctx.createImageData(W, H);
+
+  x.c64_reset(0);
+
+  let frames = 0, acc = 0, last = performance.now();
+
+  function tick(now) {
+    x.c64_frame(0);
+
+    // The view is rebuilt each frame on purpose: a memory.grow inside the
+    // module would detach any buffer captured once, and a detached view reads
+    // as an all-black screen rather than as an error.
+    const px = new Uint8Array(x.memory.buffer, FB, W * H * 4);
+    image.data.set(px);
+    ctx.putImageData(image, 0, 0);
+
+    frames++; acc += now - last; last = now;
+    if (acc >= 500) {
+      statEl.textContent = (frames * 1000 / acc).toFixed(1) + ' fps   PC $' +
+        (x.c64_pc(0) >>> 0).toString(16).toUpperCase().padStart(4, '0');
+      frames = 0; acc = 0;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(t => { last = t; tick(t); });
+
+  window.addEventListener('keydown', e => {
+    const sc = KEYMAP[e.code];
+    if (sc === undefined) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    x.c64_key(sc);
+  });
+
+  document.getElementById('reset').addEventListener('click', () => {
+    x.c64_reset(0);
+    canvas.focus();
+  });
+})();
+</script>
+</body>
+</html>

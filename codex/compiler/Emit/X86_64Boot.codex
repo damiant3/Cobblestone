@@ -303,6 +303,11 @@ Section: Memory Address Map
  at runtime, long after the tables exist, and they occupy PML4 entries no
  canonical address reaches. This cell is the one exception, because the UEFI
  stub primes it before jumping, and that write is the one the page tables eat.
+ The spawn-affinity REST VALUE was the second exception (COMPILER-49,
+ 2026-09-02): emit-process-setup stored its -1 into 36224 twelve instructions
+ before emit-build-process-page-tables zeroed the page, so a program's first
+ spawn read 0 and pinned to the BSP. Any cell in 0x8000..0x9FFF that must hold
+ a value at rest is written AFTER the tables are built.
 
  Measured under -EntryStart: cell read 0 and 0x8000 read 0x9023, a PML4 entry
  pointing at the PDPT. Every uefi-* helper then dereferenced null, which is
@@ -2644,10 +2649,7 @@ Section: Process Management
    in let dvv0 = st-append-code dvc2 (li reg-rdi devint-last-vec-addr)
    in let dvv1 = st-append-code dvv0 (li reg-rax 0)
    in let dvv2 = st-append-code dvv1 (mov-store reg-rdi reg-rax 0)
-   in let saff0 = st-append-code dvv2 (li reg-rdi spawn-affinity-addr)
-   in let saff1 = st-append-code saff0 (li reg-rax (-1))
-   in let saff2 = st-append-code saff1 (mov-store reg-rdi reg-rax 0)
-   in let slt0 = st-append-code saff2 (li reg-rdi slice-table-addr)
+   in let slt0 = st-append-code dvv2 (li reg-rdi slice-table-addr)
    in let slt1 = st-append-code slt0 (li reg-rax 0)
    in let slt2 = st-append-code slt1 (mov-store reg-rdi reg-rax 0)
    in let slt3 = st-append-code slt2 (li reg-rax proc-slice-system)
@@ -2658,7 +2660,10 @@ Section: Process Management
    in let slt8 = st-append-code slt7 (mov-store reg-rdi reg-rax 24)
    in let st5 = emit-build-process-page-tables slt8 32768 6291456
    in let st5u = emit-demand-unmap st5
-   in let st6 = emit-create-process st5u 0 proc-state-running 32768 6291456
+   in let saff0 = st-append-code st5u (li reg-rdi spawn-affinity-addr)
+   in let saff1 = st-append-code saff0 (li reg-rax (-1))
+   in let saff2 = st-append-code saff1 (mov-store reg-rdi reg-rax 0)
+   in let st6 = emit-create-process saff2 0 proc-state-running 32768 6291456
    in let p0aff0 = st-append-code st6 (li reg-rdi (proc-table-base + proc-affinity-offset))
    in let p0aff1 = st-append-code p0aff0 (li reg-rax 0)
    in let p0aff2 = st-append-code p0aff1 (mov-store reg-rdi reg-rax 0)
@@ -2684,18 +2689,24 @@ Section: Device Seed
 
 Section: Capabilities
 
- emit-grant-cap-mask writes a whole capability mask in one or-store --
- the boot path grants proc 0 exactly the mask derived from the
- binary's own manifest (stage 4 of the capability wiring: authority
- comes from the declared effect rows, not a grant-all list).
+ The mask goes through a REGISTER, never an immediate. x86-64 encodes the
+ ALU immediate forms as imm32 and the CPU SIGN-EXTENDS it under REX.W, so
+ `or rax, 0x80000000` sets bits 31 through 63 and an immediate above 32 bits
+ cannot be expressed at all. `li` picks mov-ri64 above the imm32 range, so
+ loading the mask into rdi and OR-ing register to register is exact for every
+ bit. rdi carries the address, is clobbered by the mask, and is re-materialised
+ for the store: cap-addr is a compile-time constant, so re-loading it costs ten
+ bytes of boot code and avoids asking which third register is live here.
 
   emit-grant-cap-mask : CodegenState, Integer, Integer -> CodegenState
   emit-grant-cap-mask (st) (proc-index) (mask) =
    let cap-addr = proc-table-base + proc-index * proc-entry-size + proc-cap-offset
    in let st1 = st-append-code st (li reg-rdi cap-addr)
    in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
-   in let st3 = st-append-code st2 (or-ri reg-rax mask)
-   in st-append-code st3 (mov-store reg-rdi reg-rax 0)
+   in let st3 = st-append-code st2 (li reg-rdi mask)
+   in let st4 = st-append-code st3 (or-rr reg-rax reg-rdi)
+   in let st5 = st-append-code st4 (li reg-rdi cap-addr)
+   in st-append-code st5 (mov-store reg-rdi reg-rax 0)
 
   emit-grant-capability : CodegenState, Integer, Integer -> CodegenState
   emit-grant-capability (st) (proc-index) (cap-bit) =
@@ -2703,8 +2714,10 @@ Section: Capabilities
    in let st1 = st-append-code st (li reg-rdi cap-addr)
    in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
    in let bit-mask = shl-1 cap-bit
-   in let st3 = st-append-code st2 (or-ri reg-rax bit-mask)
-   in st-append-code st3 (mov-store reg-rdi reg-rax 0)
+   in let st3 = st-append-code st2 (li reg-rdi bit-mask)
+   in let st4 = st-append-code st3 (or-rr reg-rax reg-rdi)
+   in let st5 = st-append-code st4 (li reg-rdi cap-addr)
+   in st-append-code st5 (mov-store reg-rdi reg-rax 0)
 
   emit-revoke-capability : CodegenState, Integer, Integer -> CodegenState
   emit-revoke-capability (st) (proc-index) (cap-bit) =
@@ -2712,8 +2725,10 @@ Section: Capabilities
    in let st1 = st-append-code st (li reg-rdi cap-addr)
    in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
    in let inv-mask = bit-xor (shl-1 cap-bit) (0 - 1)
-   in let st3 = st-append-code st2 (and-ri reg-rax inv-mask)
-   in st-append-code st3 (mov-store reg-rdi reg-rax 0)
+   in let st3 = st-append-code st2 (li reg-rdi inv-mask)
+   in let st4 = st-append-code st3 (and-rr reg-rax reg-rdi)
+   in let st5 = st-append-code st4 (li reg-rdi cap-addr)
+   in st-append-code st5 (mov-store reg-rdi reg-rax 0)
 
   shl-1 : Integer -> Integer
   shl-1 (n) =

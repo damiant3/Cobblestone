@@ -475,6 +475,7 @@ Section: Type Lookups
    else if b.bhi == 127 then "(i64.extend8_s " & v & ")"
    else if b.bhi == 32767 then "(i64.extend16_s " & v & ")"
    else if b.bhi == 2147483647 then "(i64.extend32_s " & v & ")"
+   else if b.bhi == 9223372036854775807 then v
    else "(unreachable (; no wasm form for a wrapping band " & integer-to-text (b.blo) & " to " & integer-to-text (b.bhi) & " ;))"
 
   wat-clamp : WatBand, Text -> Text
@@ -856,7 +857,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "(i64.const 1)" else "(i64.const 0)"
     is IrCharLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
     is IrName (n) (ty) (sp) -> emit-wat-name ctx n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-wat-binary ctx op l r depth
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-wat-binary ctx op l r ty depth
     is IrNegate (operand) (nty) (sp) -> if wat-is-real-type (ir-expr-type operand) then wat-f64-out ("(f64.neg " & wat-f64-in (emit-wat-expr-at ctx operand (depth + 1)) & ")")
                                         else "(i64.sub (i64.const 0) " & emit-wat-expr-at ctx operand (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> emit-wat-if-chain ctx e depth
@@ -1126,9 +1127,12 @@ Section: Expression Emission
  and on far-apart operands and disagree on every value between, which is the
  whole span the operator exists for.
 
-  emit-wat-binary : WasmCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> Text
-  emit-wat-binary (ctx) (op) (l) (r) (depth) =
+  emit-wat-binary : WasmCtx, IRBinaryOp, IRExpr, IRExpr, CodexType, Integer -> Text
+  emit-wat-binary (ctx) (op) (l) (r) (ty) (depth) =
    when op
+    is IrAddInt | IrSubInt | IrMulInt ->
+     if int-ty-wraps ty then "(" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
+     else "(call " & wat-int-trap-fn op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
     is IrAppendText -> "(call $text_append " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
     is IrAppendList -> "(call $list_append " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
     is IrConsList -> "(call $list_cons " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
@@ -1156,6 +1160,13 @@ Section: Expression Emission
     is IrApproxEq -> wat-emit-approx-eq ctx l r depth 4
     is IrApproxEqExact -> wat-emit-approx-eq ctx l r depth 0
     is otherwise -> "(" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
+
+  wat-int-trap-fn : IRBinaryOp -> Text
+  wat-int-trap-fn (op) =
+   when op
+    is IrAddInt -> "$cx_add_trap"
+    is IrSubInt -> "$cx_sub_trap"
+    is otherwise -> "$cx_mul_trap"
 
   wat-bin-instr : IRBinaryOp -> Text
   wat-bin-instr (op) =
@@ -1242,11 +1253,17 @@ Section: Expression Emission
    "(block $_a " & pre & "(br_if $_a (i32.eqz " & cond & ")) " & post
      & "(br $_m " & body & ")) "
 
+ A hex literal in a PATTERN reaches here as its SPELLING, and Codex spells hex
+ with a leading #, which wat2wasm refuses as "unexpected token #A9". wat takes
+ 0x, so the prefix is rewritten; a decimal spelling carries no # and is left
+ alone, and a sign survives because only the prefix moves. The expression side
+ never needed this: an IrIntLit carries a value, not a spelling.
+
   wat-lit-pat-const : Text -> Text
   wat-lit-pat-const (t) =
    if t == "True" then "1"
    else if t == "False" then "0"
-   else t
+   else text-replace t "#" "0x"
 
  A Text literal pattern is the one literal whose SPELLING is not its value. The
  scrutinee is a pointer, so the test is `$text_eq` against the string table
@@ -2197,6 +2214,7 @@ Section: WASI Runtime Helpers
    "      (global.set $deck_ptr (global.get $heap_ptr))\n" &
    "      (global.set $heap_ptr (global.get $bivy_save)))))\n" &
    wat-rt-ipow &
+   wat-rt-int-trap &
    wat-rt-real-to-int &
    "  (func $codex_mod (param $a i64) (param $b i64) (result i64) (local $m i64) (local $r i64)\n" &
    "    (local.set $m (select (i64.sub (i64.const 0) (local.get $b)) (local.get $b) (i64.lt_s (local.get $b) (i64.const 0))))\n" &
@@ -2208,6 +2226,33 @@ Section: WASI Runtime Helpers
  whose truncation does not fit. `i64.trunc_sat_f64_s` agrees on all of those
  except NaN (saturates to 0) and positive overflow (saturates to INT64_MAX), so
  those two are tested first.
+
+ A plain Integer traps on signed overflow (COMPILER-36 contract); only a node
+ typed with the wrapping band takes the raw instruction. wasm has no overflow
+ flag and no i128, so each check is on the result: add and sub overflow iff
+ the sign of the result differs from both operands (add) or the operands'
+ signs differ and the result's sign differs from the left's (sub); mul checks
+ the quotient, which is exact whenever no overflow occurred and cannot equal
+ the multiplier otherwise, because the wrapped result is off by a multiple of
+ 2^64 and the divisor is below 2^63. The two divisions that themselves trap,
+ a = 0 and (i64-min / -1), are answered before the quotient is taken.
+
+  wat-rt-int-trap : Text =
+   "  (func $cx_add_trap (param $a i64) (param $b i64) (result i64) (local $r i64)\n" &
+   "    (local.set $r (i64.add (local.get $a) (local.get $b)))\n" &
+   "    (if (i64.lt_s (i64.and (i64.xor (local.get $r) (local.get $a)) (i64.xor (local.get $r) (local.get $b))) (i64.const 0)) (then (unreachable)))\n" &
+   "    (local.get $r))\n\n" &
+   "  (func $cx_sub_trap (param $a i64) (param $b i64) (result i64) (local $r i64)\n" &
+   "    (local.set $r (i64.sub (local.get $a) (local.get $b)))\n" &
+   "    (if (i64.lt_s (i64.and (i64.xor (local.get $a) (local.get $b)) (i64.xor (local.get $a) (local.get $r))) (i64.const 0)) (then (unreachable)))\n" &
+   "    (local.get $r))\n\n" &
+   "  (func $cx_mul_trap (param $a i64) (param $b i64) (result i64) (local $r i64)\n" &
+   "    (local.set $r (i64.mul (local.get $a) (local.get $b)))\n" &
+   "    (if (i64.eqz (local.get $a)) (then (return (local.get $r))))\n" &
+   "    (if (i64.eq (local.get $a) (i64.const -1))\n" &
+   "      (then (if (i64.eq (local.get $b) (i64.const -9223372036854775808)) (then (unreachable))) (return (local.get $r))))\n" &
+   "    (if (i64.ne (i64.div_s (local.get $r) (local.get $a)) (local.get $b)) (then (unreachable)))\n" &
+   "    (local.get $r))\n\n"
 
   wat-rt-ipow : Text =
    "  (func $cx_ipow (param $b i64) (param $e i64) (result i64)\n" &

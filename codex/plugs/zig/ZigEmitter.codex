@@ -1338,9 +1338,23 @@ Section: Binary Operator Mapping
 
     is IrAppendText | IrAppendList | IrConsList -> "@compileError(\"list operator needs a runtime call\")"
 
-  emit-zig-binary : IRBinaryOp, IRExpr, IRExpr, ZigCtx, Integer -> Text
-  emit-zig-binary (op) (l) (r) (ctx) (d) =
+ A plain Integer traps on signed overflow (COMPILER-36 contract), which is
+ zig's own `+`, `-` and `*` under the safety checks `zig run` builds with; the
+ wrapping band is the `%` family. Both forms are zig's, so neither needs a
+ helper.
+
+  zig-bin-op-plain : IRBinaryOp -> Text
+  zig-bin-op-plain (op) =
    when op
+    is IrAddInt -> "+"
+    is IrSubInt -> "-"
+    is otherwise -> "*"
+
+  emit-zig-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, ZigCtx, Integer -> Text
+  emit-zig-binary (op) (l) (r) (ty) (ctx) (d) =
+   when op
+    is IrAddInt | IrSubInt | IrMulInt ->
+     "(" & emit-zig-expr l ctx (d + 1) & " " & (if int-ty-wraps ty then zig-bin-op-symbol op else zig-bin-op-plain op) & " " & emit-zig-expr r ctx (d + 1) & ")"
     is IrAppendText -> "cx_concat(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
     is IrAppendList -> "cx_ll_concat(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
     is IrConsList -> "cx_ll_cons(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
@@ -1618,7 +1632,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-zig-name n ty ctx d
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-zig-binary op l r ctx d
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-zig-binary op l r ty ctx d
     is IrNegate (operand) (nty) (sp) ->
      if zig-is-real-type nty then "(-" & emit-zig-expr operand ctx (d + 1) & ")"
      else "(-%" & emit-zig-expr operand ctx (d + 1) & ")"

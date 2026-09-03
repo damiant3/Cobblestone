@@ -38,7 +38,7 @@ Each test `foo.codex` may have sidecars that control its behavior:
 | `foo.skip` | Skipped entirely; first line is the reason |
 | `foo.slow` | Skipped unless `-Slow`; first line is the reason |
 | `foo.fatal` | Skipped unless `-Fatal`; kills the VM at runtime |
-| `foo.flags` | First line is appended to the test's **compile mode line**, so the test states its own compiler requirements. `prose` selects CPL; `passes=+name` adds an IR pass; `decks=N` scales every phase deck floor to N per cent, which is what a compilation unit larger than the floors were sized for needs (`codex/test/apps/foreword-all-compile` cites all 416 foreword chapters and carries `decks=150`; without it the compile is `CDX9002: Deck overflow in LOWER`, run both ways 2026-07-22). Read by `build/test-compile-batch.ps1`, so it applies to the battery and **not** to a hand-run `build/compile.ps1`, which takes the same settings as switches |
+| `foo.flags` | First line is appended to the test's **compile mode line**, so the test states its own compiler requirements. `prose` selects CPL; `passes=+name` adds an IR pass; `decks=N` scales every phase deck floor to N per cent, which is what a compilation unit larger than the floors were sized for needs (`codex/test/apps/foreword-all-compile` cites all 416 foreword chapters and carries `decks=200`, re-measured 2026-09-02 off the file and not carried forward; without it the compile is `CDX9002: Deck overflow in LOWER`, run both ways 2026-07-22). Read by `build/test-compile-batch.ps1` and, since 2026-09-02, by `build/bvt.ps1`, so it applies to the battery and the BVT but **not** to a hand-run `build/compile.ps1`, which takes the same settings as switches. **Until then the BVT could not have run a `.flags` subject at all**: it compiled every subject with bare switches, so a chapter needing `decks=200` failed COMPILE there while compiling fine in the battery, and the runner was measuring its own invocation rather than the test (L-SIDECAR). Nothing had noticed because no BVT subject carried a `.flags`; it surfaced the moment the gate's cited-test run phase pointed the same runner at `foreword-all-compile` |
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
 | `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot, `#` comments) handed to codex-vm as `-keys-file`. **Not interchangeable with `.stdin`** -- see below |
 | `foo.disk` | Attached as IDE disk image via codex-vm `-disk` flag (primary master) |
@@ -467,8 +467,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **205** expected-failure tests (measured
-2026-08-27).
+`codex/test/errors/` holds **206** expected-failure tests (measured
+2026-09-02).
 
 ## What the standing gate does not cover
 
@@ -983,6 +983,58 @@ build/test-cross-smp.ps1 -Arch riscv64 -Test smp-riscv-boot    # one multi-core 
 build/test-cross-batch.ps1 -Arch arm64 -Filter lir-            # a subset by name
 build/test-cross-batch.ps1 -Arch arm64 -CompileTimeoutSec 2    # provoke the retry (see below)
 ```
+
+### `test-cross.ps1` beside itself: the collision, the measurement, and the fix
+
+**It is safe to run beside itself now, and it was not before 2026-09-01.** The
+single-test script invoked `compile-<arch>.ps1` with no `-WorkDir`, so every
+concurrent instance shared one `build-output/last-compile.ir`, one
+`last-compile.<arch>.bin` and one `compile-ir.log`, and the slots overwrote
+each other's IR: **the ELF you graded could be built from another test's
+program.** `test-cross-batch.ps1` was parallel-safe only because it hands each
+slot its own `-WorkDir` (`test-cross-batch.ps1:167`), which is the mechanism
+and not a style difference. The single-test script now computes `$testOutDir`
+before it compiles and passes it the same way, which is the whole fix.
+
+**Measured before the fix (fester, 2026-09-01) over 77 named subjects, the same
+plug and the same harness on both arms, `-Jobs 4` against `-Jobs 1` as the only
+variable: 3 of 77 verdicts moved.** `engine-shadow` failed with `compile-ir.log`
+"being used by another process", and `ttt-perfect` and `vec-nested-binop`
+reported `[UNSUPPORTED] char-encode` and `raw-bytes-to-text` refusals belonging
+to OTHER subjects' programs. All three read as `FAIL (compile)` under four slots
+and `FAIL (output mismatch)` run alone.
+
+**Do not read that 3 as a small blast radius, because of what the corpus could
+not express.** All 77 subjects were already red, so the arm can show a failure
+changing CLASS and is structurally incapable of showing a green turning red or a
+red turning green -- the two outcomes that would actually mislead somebody
+(L-GAP). What it does establish is that the corruption is QUIET: two of the three
+surfaced as a plausible builtin refusal, which on a cross lane is an ordinary
+result nobody would chase. A run that looks clean is not evidence the collision
+did not happen.
+
+**The hazard was LATENT rather than active while it stood**, because the only
+caller in the tree, `check-cross-smoke.ps1`, runs its arches and tests strictly
+serially. What made it worth fixing rather than noting is that the two scripts
+are listed as peers in the block above, and reaching for parallelism on the
+single-test one is the obvious move for anyone wanting a named subset the
+`-Filter` substring cannot express -- which is exactly what plugs 1.3's two-arm
+subset needed.
+
+`test-cross.ps1` is GENERATED, so the change is in `codex/build/testcrossScript.codex`
+and the shipped script matched to it by hand; `check-generated-scripts.ps1 -Only
+test-cross` reports 0 drift. **There is no `-Write` flag on that checker and the
+omission is load-bearing** -- measured 2026-08-03, 39 of 40 generators had
+drifted and the SHIPPED script was the maintained side every time, so a bulk
+regenerate would destroy working scripts.
+
+**The cross phase was NOT run against this change, and the rerun is owed.** What
+was run is `test-cross.ps1 -Arch riscv64 -Test rv-frameless-temp` through the
+changed path (compile OK, run PASS, exit 0) and `check-generated-scripts -Only
+test-cross` at 0 drift, which is the only gate check that reads this script.
+`build/build.ps1 -Internal` was not run: Renode is banned on this box from
+2026-09-01, the box being one DIMM down and a riscv arm peaking 2.0 GB per boot.
+Rerun the cross phase when the ban lifts.
 
 ### What the cross battery actually covers, and the word "parity"
 
@@ -5067,7 +5119,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-205 tests in `codex/test/errors/` verify that the compiler rejects
+206 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -6093,6 +6145,31 @@ exhausted. These tests compile fine with individual VMs.
 Workaround: run `build/test.ps1 -Apps -Jobs 8` for more batch slots,
 or compile stubborn tests individually via `build/compile.ps1`.
 
+### `test-compile` grades with whatever kernel `build-output` was left holding (val, 2026-09-02)
+
+`test-compile-batch.ps1:100` takes its compiler from
+`build-output/bare-metal/Codex.cdx` and refuses only if the file is ABSENT.
+Nothing checks that it is the seed of record, and on an `-Internal` run whose
+core is SKIPPED nothing writes it: the `clean` phase is skipped too, so the
+file is whichever kernel some earlier run happened to leave there.
+
+Measured: a workspace at seed `E0042890` (red's multiply unit, main 21676)
+had a `BE8B04B5` kernel sitting in `build-output` from three seeds earlier.
+The exact i64 `wrapping` band that 21676 accepts, that older compiler
+REFUSES, so `test-compile` reported `CDX1073` in
+`codex/foreword/core/Wrap64.codex` and `Hamt.codex` for every chapter whose
+subset reaches `Random` -- and those files are untouched at head, so it reads
+as another lane's regression rather than as a stale instrument. It was
+published as a red at head before the control was run. Copying the seed over
+that path made all of it compile clean with nothing else changed.
+
+**The gate prints a `kernel:` line, and it is NOT this phase's kernel.** That
+line comes from `compile.ps1`; `test-compile-batch` launches its own VM with
+`$Stage0`. Reading the printed digest and concluding the phase used it is the
+L-SAMEVER trap one level along, and it is what made the wrong reading
+plausible. Hash `build-output/bare-metal/Codex.cdx` before believing a
+`test-compile` red that names a file your change never touched.
+
 ### The parser was quadratic, and the VM was a tenth of phase 1 (red, 2026-08-22)
 
 Measured on the 2026-08-20 release battery's own `test.log`: each batch of
@@ -6170,8 +6247,60 @@ repairs, all in the generators:
   line that reads as codegen. The owner map is built once, on the first
   FAIL_OUTPUT hint; green runs never pay for it.
 
-The lossy LAYER is still not established -- that question now waits on the
-`.err` instrument rather than on a recurrence nobody can read.
+**The lossy layer of the two historical events is unknowable now, and does not
+need to be: the NEXT one names itself.** Since main 21584 codex-vm's output
+writer checks its own write and reports a shortfall in the canonical
+`N guest serial byte(s) DROPPED ... is SHORT` wording with the CAUSE in
+parentheses, and there are five of them -- the output file could not be opened,
+the output write went short at N of M, buffer growth failed, a blit was out of
+range, blit growth failed. So the attribution rule above is now wrong in one
+direction and it matters: **a short stream with a SILENT `.err` no longer points
+at the writer, because the writer can no longer be silent.** It points at an
+early VM exit or at a guest that never produced the bytes.
+
+**Reproducible on demand, so the chain is proven rather than assumed** (fester,
+2026-09-02). `CODEX_VM_SHORT_WRITE_AT=N` truncates every `-output` write to N
+bytes. Over a three-subject batch at N=500 the writer reported
+`SERIAL: 297074 guest serial byte(s) DROPPED (output write short at 500 of
+297574 bytes)`, `test-compile-batch.ps1` matched the wording and warned that
+every block after the loss is filed under the wrong name, and the containment
+engaged end to end: 3 of 3 members at exit 99 with `BATCH INVALIDATED` in their
+build logs. That is one arm per layer away from a full census -- the guest-serial
+and blit causes have no injection knob yet -- but the half that carries the
+host writer is measured rather than argued.
+
+**The layer is decidable from the SHAPE, and it did not need a recurrence**
+(fester, 2026-09-02). Both writers `fopen` the output `"wb"` and rewrite the
+whole buffer from byte 0, so the file on disk is always a PREFIX of the
+capture and a writer fault can only truncate the TAIL. The parser assigns
+blocks by sequence and loses nothing; it misattributes, which the injection
+above already proved. So a MIDDLE hole with later blocks present -- the
+2026-08-16 shape -- can only be `output_buf_write` or `blit_guest_output`
+failing to grow the buffer, which is the host out of memory, and both have
+counted and reported it since blu's fix. **A capture that ends EARLY is the
+writer or an early exit; a capture missing a block in the MIDDLE is host RAM.**
+
+That left the first of those two unattributable, and it was silent by
+construction. Neither writer checked `fwrite`'s return or `fclose`'s,
+`dump_output_file` printed `output_len` whatever had happened, and
+`runlist_scan_output` propagated that same self-made number as `output=N`:
+nothing in the loop compared what codex-vm SAID it wrote against what the file
+HOLDS, so a short or failed write read as a healthy run. It reported the
+intent rather than the outcome, which is L-REQUEST's shape sitting inside the
+instrument this row was relying on. Both writes are checked now; `Output: N
+bytes` reports the bytes that reached the file; and a shortfall prints an
+`OUTPUT:` line naming the writer as the layer followed by the canonical
+`guest serial byte(s) DROPPED ... is SHORT`, so `test-run.ps1`,
+`test-compile-batch.ps1` and `runlist_scan_dropped` all refuse with no harness
+change (L-UNHEARD's repair: route the signal into a state something already
+acts on). The `OUTPUT:` line matters because the rule above would otherwise
+convict the serial path for a loss that never touched it.
+
+The arm is `check-run-list.ps1` arm 6, with `CODEX_VM_SHORT_WRITE_AT` as the
+injection. Its cap is the CONTROL run's own file length minus one, so exactly
+one byte is lost and the arm asserts `dropped=1` and `output=<len-1>` rather
+than "nonzero"; a fixed cap would pass vacuously the day the canary's output
+fell below it (L-VACUOUS).
 
 **The two loss signals had one control between them, and it is now two**
 (fester, 2026-08-28). Killing the VM mid-batch fires the SHORT-STREAM arm; it
@@ -6989,3 +7118,48 @@ the tier defaults to `seed/Codex.cdx`.
 and section extents and have no arm; `t3isa` has `gate.ps1`, which is
 machine-only (`D:\Toolchain-Ternary`) and would be a permanent skip. The tier
 takes a plug the moment somebody writes an assertion over its artifact.
+
+## The gpushow WGSL Sweep (`apps/gpushow/tools/validate-all.mjs`)
+
+**A census of `kernels/*.wgsl` measures about half the shaders gpushow ships,
+and reports full coverage while doing it.** Each demo page creates TWO shader
+modules: the compute kernel, which the page FETCHES from `/kernels/<Name>.wgsl`
+(`cube.html:35`), and a render shader written as a template literal inside the
+page itself (`cube.html:50`). Only the first is a file. Measured 2026-09-01:
+the 42 kernel files against **83 modules across the 40 pages**. A file-glob run
+is not wrong so much as silently partial, which is L-DENOM with the population
+wearing the costume of the corpus.
+
+So the sweep drives the PAGES and records every module the page actually
+creates, by wrapping `createShaderModule` through
+`Page.addScriptToEvaluateOnNewDocument` before any page script runs. What it
+grades is what a visitor compiles (L-ARTIFACT). Kernels no page fetches are
+compiled standalone in the same browser so a file cannot hide by being
+unreferenced; at the time of writing all 42 are fetched and none are orphaned.
+
+```powershell
+node apps\gpushow\tools\validate-all.mjs                 # all 40 pages
+node apps\gpushow\tools\validate-all.mjs --only cube     # substring filter
+```
+
+Exit 0 every module compiled clean, 1 at least one WGSL error, **2 could not
+run at all** -- no Chrome, no adapter, or no module created anywhere. The third
+state is the point: a run that compiled nothing must not read as a pass.
+
+**Calibrated in both directions before its first green was believed**, because
+the two halves fail differently and a file-only instrument can only see one.
+An undefined identifier appended to `cube.html`'s INLINE render shader was
+caught at 4:18, and one appended to the FETCHED `CubeKernel.wgsl` at 91:34,
+each exit 1; the clean tree is 83 modules and 0 errors, exit 0. Note the broken
+kernel produced ONE module rather than two, because the page stops before
+building its render shader, so a module COUNT is not a coverage check.
+
+**It is an instrument, not a gate**, for the same reason as
+`build/check-app-pages.ps1`: it needs an installed browser, so it cannot live
+in `build/build.ps1`. Nothing invokes it automatically. Run it when you touch a
+kernel, the WGSL plug, or a demo page.
+
+Both tools ask the OS for a free CDP port rather than pinning one. The
+single-file `validate.mjs` pinned 9223, which on a shared box lets a peer's
+browser answer your query (L-SHARED); the sweep additionally uses ONE Chrome
+for every shader instead of one launch per file.

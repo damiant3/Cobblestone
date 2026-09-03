@@ -12,7 +12,7 @@ platform below rather than a board game. Thirty-three ids have both a
 ways with neither side carrying an orphan. This file said 35 and the landing
 page said 34; both were counting rows rather than games (L-COUNT).
 
-## Classic Games (33 games)
+## Classic Games (34 games)
 
 ### Abstract / Strategy
 - **TicTacToe** -- 3x3 rules + full-depth minimax (battery-verified: never loses, self-play always draws)
@@ -33,6 +33,11 @@ page said 34; both were counting rows rather than games (L-COUNT).
 - **Poker, PokerVariants** -- Texas Hold'em, Seven-Card Stud
 - **Pinochle, Bridge** -- Trick-taking with melding/bidding
 - **CrazyEights, GoFish, Blackjack, War, Spider** -- Classic card games
+- **Klondike** -- The solitaire everybody means by solitaire: seven columns
+  dealt mostly face down, four foundations built ace upward in suit, a stock
+  turned one card or three. The engine holds the face-down cards and never
+  hands one to the page (`kd-visible-card`), so the module cannot be read for
+  the half of the deal the player has not turned over.
 - **Yahtzee** -- Five-dice scoring
 - **Mahjong** -- Tile-draw-and-discard with hand scoring
 - **SetGame** -- Pattern-matching speed game
@@ -79,7 +84,7 @@ page said 34; both were counting rows rather than games (L-COUNT).
 
 ## Completeness
 
-Classic: 90% -- All 33 games are fully implemented with complete rule sets and
+Classic: 90% -- All 34 games are fully implemented with complete rule sets and
 AI, and each has a web HTML shell. Chess is listed in `games.json` and is not
 one of them (GAME-10).
 
@@ -98,23 +103,26 @@ calls it directly:
 functions to export -- and runs source -> IR-CCE -> `codex/plugs/wasm` -> WAT ->
 `wat2wasm`. `apps/landing/build.ps1` calls it while assembling the site, so the
 module is build output rather than a tracked binary. Adding a game is a wasm
-chapter plus a row plus a page under `apps/landing/web/games/`.
+chapter plus a row plus an arcade descriptor in
+`apps/landing/web/games/arcade.js`; the arcade is the one page a game is
+played on (the stage-1 standalone pages were removed 2026-09-01).
 
 The wasm-facing chapter exists because the module keeps no state between calls:
 `TicTacToeWasm.codex` packs the whole game into one integer the page holds, so
 the page can reset the module's bump allocator before every call. There is no
 collector in a wasm module either.
 
-Two graders, and neither is optional:
+Three graders, and none is optional:
 
     node apps/games/wasm-verify.mjs   # the module against the battery's answer key
-    node apps/games/page-test.mjs     # the shipped page's own script against the module
+    node apps/games/page-verify.mjs   # the arcade page's own script runs and builds its gallery
+    node apps/games/ar-verify.mjs     # every arcade descriptor drives its module to progress
 
 `wasm-verify.mjs` replays `codex/test/ttt-perfect.expected` -- the exhaustive
 walk, 92 games as X and 569 as O with zero losses -- through the wasm exports,
-so "it assembled" is never read as "it computes". `page-test.mjs` reads the
-script out of the shipped HTML rather than copying it, so it cannot drift from
-what is served. Both carry a control that fires.
+so "it assembled" is never read as "it computes". `page-verify.mjs` reads the
+script out of the shipped `index.html` rather than copying it, so it cannot
+drift from what is served. Each carries a control that fires.
 
 A game whose module will not build is a PARITY finding for the wasm plug lane,
 not something to work around here: report the game and the failing step and

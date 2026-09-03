@@ -1,0 +1,57 @@
+Chapter: EqGenericRecursive
+
+  cites Foreword chapter Console
+
+ COMPILER-43. A recursive sum's `==` never reached `emit-eq-op`:
+ `lower-eq-dispatch` looked `__eq_<T>` up by NAME with the type arguments
+ already dropped, so every instantiation of a parameterised recursive type
+ shared one desugared helper whose field stayed at the declaration's own
+ type variable, and a `tvar` operand falls through to a word compare on two
+ heap pointers.
+
+ Every row builds one side at RUNTIME with `integer-to-text`, so the two
+ sides are separate allocations holding equal content; `text-control` is the
+ check that the instrument itself is honest, because a pooled literal on
+ both sides would compare equal by pointer for the wrong reason.
+
+ `named-concrete` is the positive control: a recursive sum with a CONCRETE
+ field compared structurally before this fix and must keep doing so.
+ `pair-generic` is the non-recursive generic, which the inlining path
+ already instantiated correctly.
+
+ THE TWO-INSTANTIATION ROWS ARE THE POINT, and they are why the helper key
+ carries the type arguments. Keyed on the bare sum name, `Box Text` and
+ `Box Integer` share one helper: whichever instantiation is requested first
+ builds it, and the other compares its field with the wrong routine --
+ an Integer field handed to `__str_eq` reads a length and a payload out of
+ an integer. `box-int-eq` and `box-int-ne` are that case, and they must
+ disagree with each other or the helper is comparing pointers again.
+
+Section: Types
+
+  Pair a = | P (a) (a)
+
+  Box a = | Empty | Cell (a) (Box a)
+
+  Named = | Nil | Node (Text) (Named)
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("text-control   : " & yn ("12" == integer-to-text 12))
+    print-line-uni ("named-concrete : " & yn (Node "12" Nil == Node (integer-to-text 12) Nil))
+    print-line-uni ("pair-generic   : " & yn (P "12" "9" == P (integer-to-text 12) "9"))
+    print-line-uni ("box-text-eq    : " & yn (Cell "12" Empty == Cell (integer-to-text 12) Empty))
+    print-line-uni ("box-text-ne    : " & yn (Cell "12" Empty == Cell (integer-to-text 13) Empty))
+    print-line-uni ("box-int-eq     : " & yn (Cell 12 Empty == Cell (6 + 6) Empty))
+    print-line-uni ("box-int-ne     : " & yn (Cell 12 Empty == Cell (6 + 7) Empty))
+    print-line-uni ("box-nested     : " & yn (Cell "12" (Cell "9" Empty) == Cell (integer-to-text 12) (Cell "9" Empty)))
+    print-line-uni ("box-depth-ne   : " & yn (Cell "12" (Cell "9" Empty) == Cell "12" Empty))
+  end
+
+Page 1

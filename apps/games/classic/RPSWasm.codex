@@ -39,6 +39,48 @@ Section: The Browser Interface
   rps-wasm-round : RPSState -> RPSState
   rps-wasm-round (s) = rps-do-round (rps-copy-state s)
 
+ A round where PLAYER ONE'S THROW IS GIVEN, which is the whole of letting a
+ person play this game. `rps-do-round` chooses both throws, so it cannot be
+ handed one; this is the same round with `m1` supplied and every other step
+ taken from the engine unchanged, including the count that the opponent
+ reads. That matters more here than in most games: the opponent is a
+ counter-strategy over the history of what you have thrown, so recording
+ YOUR throw in `p1-counts` is what makes it adapt to you rather than to
+ itself. Leave that out and the game still runs, still tallies, and quietly
+ plays a different opponent from the one the watch mode shows.
+
+ The rng advances twice, exactly as the engine's own round does, so a
+ played game and a watched game consume the stream at the same rate.
+
+  rps-wasm-play : RPSState, Integer -> RPSState
+  rps-wasm-play (st) (throw) =
+    if throw < 0 then st
+    else if throw > 2 then st
+    else rps-play-with (rps-copy-state st) throw
+
+  rps-play-with : RPSState, Integer -> RPSState
+  rps-play-with (s) (m1) =
+    let r1 = rng-next (s.rng)
+    in let r2 = rng-next r1
+    in let m2 = rps-weighted-move (s.p1-counts) r2
+    in let result = rps-outcome m1 m2
+    in let new-p1-counts = list-set-at (s.p1-counts) m1 (list-at (s.p1-counts) m1 + 1)
+    in let new-p2-counts = list-set-at (s.p2-counts) m2 (list-at (s.p2-counts) m2 + 1)
+    in RPSState {
+         p1-counts = new-p1-counts,
+         p2-counts = new-p2-counts,
+         p1-wins   = if result == 1 then s.p1-wins + 1 else s.p1-wins,
+         p2-wins   = if result == (-1) then s.p2-wins + 1 else s.p2-wins,
+         ties      = if result == 0 then s.ties + 1 else s.ties,
+         rng       = r2
+       }
+
+ The page shows what the opponent threw by diffing `rps-wasm-p2-count`
+ across the round: exactly one of the three goes up, and that one IS the
+ throw. Recording it in the state instead would mean two new fields on
+ `RPSState` and an edit to every literal that builds one, to hold something
+ the counts already say.
+
   rps-wasm-p1-count : RPSState, Integer -> Integer
   rps-wasm-p1-count (s) (m) =
     if m < 0 then (-1)

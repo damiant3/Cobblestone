@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cobblestone -- The Database</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --ink:#e8e6df; --dim:#9a9488; --gold:#d4a017; --deep:#0a0a12;
+    --panel:rgba(18,18,30,.82); --edge:rgba(212,160,23,.18);
+  }
+  body{background:var(--deep);color:var(--ink);
+    font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+  a{color:var(--gold);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  .topbar{display:flex;align-items:center;gap:22px;padding:12px 24px;background:#070710;
+    border-bottom:1px solid #1e1e2e;position:sticky;top:0;z-index:20}
+  .topbar-logo{color:var(--gold);font-size:18px;font-weight:700;letter-spacing:1px}
+  .topbar .here{color:var(--dim);font-size:14px}
+
+  .wrap{max-width:980px;margin:0 auto;padding:26px 20px 64px}
+  h1{font-size:26px;font-weight:700;margin-bottom:6px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:22px;line-height:1.55;max-width:76ch}
+
+  .plans{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+  .plans button{background:rgba(212,160,23,.12);border:1px solid rgba(212,160,23,.42);
+    border-radius:16px;color:var(--gold);font-family:inherit;font-size:13px;
+    padding:6px 15px;cursor:pointer}
+  .plans button:hover{background:rgba(212,160,23,.24)}
+  .plans button.on{background:rgba(212,160,23,.28);font-weight:600}
+
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+  @media (max-width:820px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:16px}
+  .panel h2{font-size:12px;font-weight:600;letter-spacing:1.1px;color:var(--dim);
+    text-transform:uppercase;margin-bottom:10px}
+  pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
+    line-height:1.6;white-space:pre;overflow-x:auto;color:var(--ink)}
+  .algebra{color:#b8c2cc}
+  .count{color:var(--gold);font-size:12px;margin-bottom:8px}
+  .bad{background:rgba(180,60,60,.12);border:1px solid rgba(180,60,60,.45);
+    border-radius:8px;padding:14px 16px;color:#e8b3b3;font-size:14px;line-height:1.6;margin-top:16px}
+  .note{color:var(--dim);font-size:13px;line-height:1.6;margin-top:22px;max-width:80ch}
+  .note code{color:var(--ink);background:#16162a;padding:1px 5px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="topbar-logo">COBBLESTONE</span>
+  <span class="here">The Database</span>
+  <span style="flex:1"></span>
+  <a href="../landing.html">Back to the site</a>
+</div>
+
+<div class="wrap">
+  <h1>A relational database, answering in this tab</h1>
+  <p class="sub">Codex DB is a real relational engine written in Codex: a catalog, typed rows,
+  a query executor, and a relational algebra of scans, filters, projections, sorts, limits,
+  joins and grouped aggregates. Here it is compiled to WebAssembly. Pick a query and you get
+  two things: the algebra that was executed, and the rows it returned. Nothing is precomputed
+  and no server is involved.</p>
+
+  <div class="plans" id="plans"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>The plan</h2>
+      <pre class="algebra" id="algebra"></pre>
+    </div>
+    <div class="panel">
+      <h2>The result</h2>
+      <div class="count" id="count"></div>
+      <pre id="result"></pre>
+    </div>
+  </div>
+
+  <div id="err"></div>
+
+  <p class="note">There is no SQL here, and the page is not hiding one: this application has no
+  SQL parser, so what it offers is the algebra underneath SQL, selected by name. The engine also
+  carries a write-ahead log, MVCC, a lock manager and two-phase commit, none of which this page
+  exercises. Each query runs a fresh instance of the module against a freshly seeded catalog.</p>
+</div>
+
+<script>
+// Column headings are the page's, because the module renders values and not a
+// header row. They are stated per plan rather than guessed from width, so a
+// projection that changes shape shows wrong headings loudly instead of
+// silently mislabelling a column.
+const PLANS = [
+  { id: 'all', label: 'Everyone by salary',
+    cols: ['id', 'name', 'department', 'salary', 'hire-year'],
+    algebra: 'RelSort\n  (RelScan "employees")\n  [salary DESC]' },
+  { id: 'engineering', label: 'Engineering roster',
+    cols: ['name', 'salary'],
+    algebra: 'RelSort\n  (RelProject\n    (RelFilter (RelScan "employees")\n      (department = "Engineering"))\n    [name, salary])\n  [salary DESC]' },
+  { id: 'top', label: 'Top 3 earners',
+    cols: ['name', 'department', 'salary'],
+    algebra: 'RelProject\n  (RelLimit\n    (RelSort (RelScan "employees") [salary DESC])\n    3)\n  [name, department, salary]' },
+  { id: 'departments', label: 'Department summary',
+    cols: ['department', 'headcount', 'total-salary', 'avg-salary'],
+    algebra: 'RelGroup (RelScan "employees")\n  by [department]\n  [ AggCount        -> headcount\n  , AggSum "salary" -> total-salary\n  , AggAvg "salary" -> avg-salary ]' },
+  { id: 'recent', label: 'Hired since 2024',
+    cols: ['id', 'name', 'department', 'salary', 'hire-year'],
+    algebra: 'RelSort\n  (RelFilter (RelScan "employees")\n    (hire-year >= 2024))\n  [hire-year DESC]' },
+];
+
+const algebraEl = document.getElementById('algebra');
+const resultEl  = document.getElementById('result');
+const countEl   = document.getElementById('count');
+const errEl     = document.getElementById('err');
+let mod = null;
+
+// WASI program: the plan name goes in on fd_read, the rendered table comes
+// back on fd_write, both plain UTF-8 because the foreword converts at the I/O
+// boundary. A fresh instance per query, so each one sees a freshly seeded
+// catalog and a clean heap.
+function run(plan) {
+  const input = new TextEncoder().encode(plan + '\n');
+  let mem = null, pos = 0;
+  const chunks = [];
+  const imports = { wasi_snapshot_preview1: {
+    fd_write(fd, iovs, n, outp) {
+      const v = new DataView(mem.buffer); let t = 0;
+      for (let i = 0; i < n; i++) {
+        const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+        chunks.push(new Uint8Array(mem.buffer.slice(p, p + l))); t += l;
+      }
+      v.setUint32(outp, t, true); return 0;
+    },
+    fd_read(fd, iovs, n, outp) {
+      const v = new DataView(mem.buffer); let t = 0;
+      for (let i = 0; i < n; i++) {
+        const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+        const dst = new Uint8Array(mem.buffer, p, l);
+        let k = 0; while (k < l && pos < input.length) dst[k++] = input[pos++];
+        t += k; if (k < l) break;
+      }
+      v.setUint32(outp, t, true); return 0;
+    }
+  }};
+  const inst = new WebAssembly.Instance(mod, imports);
+  mem = inst.exports.memory;
+  inst.exports._start();
+  let total = 0; for (const c of chunks) total += c.length;
+  const all = new Uint8Array(total); let off = 0;
+  for (const c of chunks) { all.set(c, off); off += c.length; }
+  return new TextDecoder().decode(all).trim();
+}
+
+function pad(cells, widths) {
+  return cells.map((c, i) => String(c).padEnd(widths[i])).join('  ').trimEnd();
+}
+
+function show(spec) {
+  algebraEl.textContent = spec.algebra;
+  let out;
+  try { out = run(spec.id); }
+  catch (e) { countEl.textContent = ''; resultEl.textContent = 'the module failed: ' + e.message; return; }
+
+  const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
+  const m = /^(\d+) rows$/.exec(lines[0] || '');
+  if (!m) { countEl.textContent = ''; resultEl.textContent = out; return; }
+
+  const rows = lines.slice(1).map(l => l.split('|').map(c => c.trim()));
+  countEl.textContent = m[1] + ' rows';
+  const cols = spec.cols;
+  const widths = cols.map((c, i) =>
+    Math.max(c.length, ...rows.map(r => (r[i] || '').length)));
+  const head = pad(cols, widths);
+  const rule = widths.map(w => '-'.repeat(w)).join('  ');
+  resultEl.textContent = [head, rule, ...rows.map(r => pad(r, widths))].join('\n');
+}
+
+let current = null;
+for (const spec of PLANS) {
+  const b = document.createElement('button');
+  b.textContent = spec.label;
+  b.addEventListener('click', () => {
+    if (current) current.classList.remove('on');
+    b.classList.add('on'); current = b;
+    show(spec);
+  });
+  document.getElementById('plans').append(b);
+}
+
+(async function () {
+  try {
+    const res = await fetch('data.wasm');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    mod = new WebAssembly.Module(await res.arrayBuffer());
+  } catch (e) {
+    errEl.innerHTML = '<div class="bad">The database module did not load (' + e.message +
+      '). <code>data.wasm</code> is build output, not a tracked file: build it with ' +
+      '<code>pwsh apps/data/build-wasm.ps1</code>.</div>';
+    return;
+  }
+  document.getElementById('plans').firstChild.click();
+})();
+</script>
+</body>
+</html>

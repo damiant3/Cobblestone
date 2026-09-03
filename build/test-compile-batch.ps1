@@ -10,6 +10,7 @@ param(
     [string]$ListFile,
     [Parameter(Mandatory=$true)]
     [string]$OutRoot,
+    [string]$Kernel = '',
     [int]$PCore = 1
 )
 
@@ -97,8 +98,21 @@ $inputWriter.Dispose()
 if ($testNames.Count -eq 0) { Remove-Item $inputFile -Force -ErrorAction SilentlyContinue; exit 0 }
 $outputFile = [System.IO.Path]::GetTempFileName()
 $stderrFile = [System.IO.Path]::GetTempFileName()
-$Stage0 = Join-Path (Split-Path $PSScriptRoot) 'build-output\bare-metal\Codex.cdx'
+# -Kernel is what the CALLER decided to grade with. Without it this script read
+# build-output\bare-metal\Codex.cdx and nothing else, so check-test-compile.ps1
+# printed "kernel: <seed> [digest]" and then compiled with whatever the last run
+# had left there -- a printed claim nothing could contradict (L-FALSIF). On a
+# gate whose core RAN the two agree by luck, so it was invisible until a
+# core-SKIPPED gate: val, main ~21736, graded with depot seed E0042890 while
+# this compiled under BE8B04B5 from an 07:18 run, and three foreword subjects
+# went red CDX1073 that a seed copy cleared.
+# The default stays build-output because build/test.ps1 stages exactly that file
+# on purpose and passes no kernel.
+$Stage0 = if ($Kernel) { (Resolve-Path $Kernel).Path } else { Join-Path (Split-Path $PSScriptRoot) 'build-output\bare-metal\Codex.cdx' }
 if (-not (Test-Path -PathType Leaf $Stage0)) { Write-Error "MISSING: $Stage0"; exit 2 }
+# Printed from the file actually handed to codex-vm, so the line cannot drift
+# from the kernel in use the way the caller's line did.
+Write-Host "batch kernel: $Stage0 [$((Get-FileHash -Algorithm SHA256 $Stage0).Hash.Substring(0,16))]"
 
 $resolveSw.Stop()
 $batchSw = [System.Diagnostics.Stopwatch]::StartNew()

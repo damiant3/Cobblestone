@@ -1,0 +1,194 @@
+Chapter: Fat32ClusterLfn
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+
+ `fat32-find-in-dir` threads its long-name run state across TWO boundaries and
+ `codex/test/fat32-longname` grades only one of them. Its arm B straddles a
+ SECTOR boundary inside one cluster. The CLUSTER boundary, threaded by
+ `fat32-find-in-dir-step` handing `r.sc-lfn` to the next cluster's walk, had no
+ arm, and that chapter gives the reason: a root directory spanning two clusters
+ has to be grown first, and growing one meant leaning on a writer that did not
+ exist.
+
+ THE STATED BLOCKER DOES NOT HOLD, and it is worth saying because it kept the
+ arm unwritten rather than merely undone. Growing a directory by hand is two
+ FAT writes and a zeroed cluster: `fat32-set-fat-entry` marks the fresh cluster
+ end-of-chain and points the root at it. Those are FAT primitives that predate
+ any long-name work. No writer is involved here, so this chapter keeps the
+ property the reader's other arms have, which is the one that matters: every
+ byte it grades was laid down by hand, and a reader graded by our own encoder
+ would agree with itself whatever both did.
+
+ What a run cannot do is span the boundary by arithmetic. Slots are
+ consecutive in a cluster and clusters are not consecutive on the medium, so
+ the placer below carries its own slot-to-byte map over the two-cluster chain.
+ That is precisely the mapping the reader performs by walking, and it is why a
+ run laid across the seam is the thing worth grading: the state has to survive
+ a jump the addresses do not describe.
+
+ We say:
+
+Section: The Two-Cluster Root
+
+ 128 slots to a cluster at eight sectors of sixteen entries. Slot 128 is the
+ first slot of the second cluster.
+
+  f32cl-slots-per-cluster : Fat32Volume -> Integer
+  f32cl-slots-per-cluster (vol) = (vol.f32-sectors-per-cluster) * 16
+
+  f32cl-slot-byte : Fat32Volume, Integer, Integer -> Integer
+  f32cl-slot-byte (vol) (second) (i) =
+    let n = f32cl-slots-per-cluster vol
+    in if i < n then fat32-cluster-sector vol (vol.f32-root-cluster) * 512 + i * 32
+       else fat32-cluster-sector vol second * 512 + (i - n) * 32
+
+  f32cl-zero-sector : Integer -> [Device.Block] Integer
+  f32cl-zero-sector (sector) =
+    let buf = alloc-bytes 512
+    in let z = f32cl-zero-buf buf 0
+    in block-write-sector sector buf
+
+  f32cl-zero-buf : Integer, Integer -> Integer
+  f32cl-zero-buf (buf) (i) =
+    if i >= 512 then 0
+    else let w = poke-byte buf i 0
+    in f32cl-zero-buf buf (i + 1)
+
+  f32cl-zero-cluster : Fat32Volume, Integer, Integer -> [Device.Block] Integer
+  f32cl-zero-cluster (vol) (cluster) (i) =
+    if i >= (vol.f32-sectors-per-cluster) then 0
+    else act
+      f32cl-zero-sector (fat32-cluster-sector vol cluster + i)
+      f32cl-zero-cluster vol cluster (i + 1)
+    end
+
+  f32cl-grow-root : Fat32Volume, Integer -> [Device.Block] Integer
+  f32cl-grow-root (vol) (second) = act
+    z <- f32cl-zero-cluster vol second 0
+    e <- fat32-set-fat-entry vol second 268435455
+    fat32-set-fat-entry vol (vol.f32-root-cluster) second
+  end
+
+Section: Placing A Run By Hand
+
+ A deleted marker rather than a real entry, because the scan stops dead at the
+ first slot whose first byte is zero and would never reach the seam. 0xE5 keeps
+ the walk going and resets the run state, which is what a real unrelated entry
+ would do.
+
+  f32cl-pad : Fat32Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  f32cl-pad (vol) (second) (i) (upto) =
+    if i >= upto then 0
+    else act
+      f32cl-mark-free (f32cl-slot-byte vol second i)
+      f32cl-pad vol second (i + 1) upto
+    end
+
+  f32cl-mark-free : Integer -> [Device.Block] Integer
+  f32cl-mark-free (at) = act
+    buf <- block-read-sector (at / 512)
+    let p = poke-byte buf (int-mod at 512) 229
+    in block-write-sector (at / 512) buf
+  end
+
+  f32cl-put-lfn : Integer, Text, Integer, Integer, Boolean -> [Device.Block] Integer
+  f32cl-put-lfn (at) (name) (seq) (sum) (last) = act
+    buf <- block-read-sector (at / 512)
+    let p = fat16-poke-lfn-record buf (int-mod at 512) name seq sum last
+    in block-write-sector (at / 512) buf
+  end
+
+  f32cl-put-short : Integer, Text -> [Device.Block] Integer
+  f32cl-put-short (at) (n83) = act
+    buf <- block-read-sector (at / 512)
+    let p = fat32-write-entry-fields buf (int-mod at 512) n83 32 0 0
+    in block-write-sector (at / 512) buf
+  end
+
+  f32cl-sum-at : Integer -> [Device.Block] Integer
+  f32cl-sum-at (at) = act
+    buf <- block-read-sector (at / 512)
+    fat16-short-checksum buf (int-mod at 512)
+  end
+
+ The short entry goes down first so its bytes can be read back for the
+ checksum, which is the same quantity `fat16-lfn-final` recomputes when it
+ decides a run belongs to the entry beneath it.
+
+  f32cl-place : Fat32Volume, Integer, Integer, Text, Text -> [Device.Block] Integer
+  f32cl-place (vol) (second) (first-slot) (long) (n83) =
+    let records = fat16-lfn-records-needed (text-length long)
+    in act
+      s <- f32cl-put-short (f32cl-slot-byte vol second (first-slot + records)) n83
+      sum <- f32cl-sum-at (f32cl-slot-byte vol second (first-slot + records))
+      f32cl-run vol second first-slot long sum records 0
+    end
+
+  f32cl-run : Fat32Volume, Integer, Integer, Text, Integer, Integer, Integer -> [Device.Block] Integer
+  f32cl-run (vol) (second) (first-slot) (long) (sum) (records) (j) =
+    if j >= records then 0
+    else act
+      w <- f32cl-put-lfn (f32cl-slot-byte vol second (first-slot + j)) long (records - j) sum (j == 0)
+      f32cl-run vol second first-slot long sum records (j + 1)
+    end
+
+Section: Reporting
+
+  f32cl-say : Maybe Fat16DirEntry -> Text
+  f32cl-say (m) = when m
+    is Just (e) -> "found " & (e.de-name)
+    is None -> "<none>"
+
+  f32cl-name : Integer, Text -> Text
+  f32cl-name (n) (acc) =
+    if n <= 0 then acc
+    else f32cl-name (n - 1) (acc & "C")
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    fmt <- fat32-format 2048 30720 "CODEX"
+    print-line-uni ("format " & show fmt)
+
+    vol <- fat32-init 2048
+    print-line-uni ("root cluster " & show (vol.f32-root-cluster)
+      & " spc " & show (vol.f32-sectors-per-cluster)
+      & " slots per cluster " & show (f32cl-slots-per-cluster vol))
+
+    g <- f32cl-grow-root vol 3
+    nxt <- fat32-next-cluster vol (vol.f32-root-cluster)
+    print-line-uni ("root chain now " & show (vol.f32-root-cluster) & " then " & show nxt)
+
+    p <- f32cl-pad vol 3 0 126
+    print-line-uni ("padded slots 0 to 125")
+
+    let cn = f32cl-name 30 ""
+    in act
+      c <- f32cl-place vol 3 126 cn "CROSSC~1TXT"
+      print-line-uni ("C records " & show (fat16-lfn-records-needed 30)
+        & " at slots 126 127 128, short at 129, so the run crosses slot 128")
+
+      let dn = f32cl-name 20 ""
+      in act
+        d <- f32cl-place vol 3 130 dn "INNER2~1TXT"
+        print-line-uni ("D records " & show (fat16-lfn-records-needed 20)
+          & " at slots 130 131, short at 132, wholly inside the second cluster")
+
+        e1 <- fat32-find-in-dir vol (vol.f32-root-cluster) cn
+        print-line-uni ("C run straddling a cluster " & f32cl-say e1)
+
+        e2 <- fat32-find-in-dir vol (vol.f32-root-cluster) dn
+        print-line-uni ("D run inside the second cluster " & f32cl-say e2)
+
+        e3 <- fat32-find-in-dir vol (vol.f32-root-cluster) "CROSSC~1.TXT"
+        print-line-uni ("C still answers its alias " & f32cl-say e3)
+
+        e4 <- fat32-find-in-dir vol (vol.f32-root-cluster) "NoSuchNameHere.txt"
+        print-line-uni ("absent name " & f32cl-say e4)
+      end
+    end
+  end
+
+Page 1

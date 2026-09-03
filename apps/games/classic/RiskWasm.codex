@@ -35,13 +35,20 @@ Section: Copying
       turn-number = s.turn-number,
       game-over = s.game-over,
       winner = s.winner,
-      num-players = s.num-players
+      num-players = s.num-players,
+      phase = s.phase,
+      to-place = s.to-place,
+      attacks-left = s.attacks-left
     }
 
 Section: The Browser Interface
 
+ A fresh board has nobody's turn open on it, so this opens the first one:
+ until `risk-open-turn` runs there is nothing to place and nothing to
+ attack with, and a page handed that state would have no move to offer.
+
   rk-wasm-new : Integer, Integer -> RiskState
-  rk-wasm-new (seed) (players) = risk-init seed players
+  rk-wasm-new (seed) (players) = risk-open-turn (risk-init seed players)
 
   rk-wasm-owner : RiskState, Integer -> Integer
   rk-wasm-owner (s) (i) =
@@ -104,10 +111,97 @@ Section: The Browser Interface
   rk-wasm-continent (s) (player) (continent) =
     if risk-owns-continent s player continent then 1 else 0
 
+ `risk-do-turn` leaves the next player advanced but not OPENED, because
+ the watch-only runner opens each turn as it takes it. A page holds the
+ state between turns, so this opens it here.
+
+ A dead player has no turn to open. `risk-do-turn` advances to the next
+ seat whether or not it is still alive, because the watch-only runner takes
+ the empty turn and advances again on the following call; a page that
+ opened one would be handed a board with a reinforcement to place and no
+ territory to place it on.
+
   rk-wasm-turn : RiskState, Integer -> RiskState
   rk-wasm-turn (s) (seed) =
     if s.game-over then s
-    else risk-do-turn (rk-copy-state s) (rng-new seed)
+    else rk-open-live (risk-do-turn (rk-copy-state s) (rng-new seed))
+
+  rk-open-live : RiskState -> RiskState
+  rk-open-live (s) =
+    if s.game-over then s
+    else risk-open-turn (risk-skip-dead s 0)
+
+Section: Taking A Turn Yourself
+
+ Two phases: put the reinforcement down a territory at a time, then take
+ up to three attacks, or stop early. Every one of these refuses rather
+ than being refused silently, so a page can ring what is legal instead of
+ letting a visitor find out by clicking.
+
+  rk-wasm-phase : RiskState -> Integer
+  rk-wasm-phase (s) = s.phase
+
+  rk-wasm-to-place : RiskState -> Integer
+  rk-wasm-to-place (s) = s.to-place
+
+  rk-wasm-attacks-left : RiskState -> Integer
+  rk-wasm-attacks-left (s) = s.attacks-left
+
+  rk-wasm-can-place : RiskState, Integer -> Integer
+  rk-wasm-can-place (s) (terr) =
+    if risk-can-place s (s.current-player) terr then 1 else 0
+
+ A REFUSAL ANSWERS THE STATE IT WAS GIVEN, unchanged and un-copied. Copying
+ first and letting the engine refuse the copy is the same game and a
+ different handle, and a page comparing what came back against what it sent
+ cannot then tell a refusal from a move: everything it clicks looks
+ accepted. So legality is asked before the copy, never after.
+
+  rk-wasm-place : RiskState, Integer -> RiskState
+  rk-wasm-place (s) (terr) =
+    if risk-can-place s (s.current-player) terr
+      then risk-place-one (rk-copy-state s) (s.current-player) terr
+    else s
+
+  rk-wasm-can-attack : RiskState, Integer, Integer -> Integer
+  rk-wasm-can-attack (s) (from) (to) =
+    if risk-can-attack s (s.current-player) from to then 1 else 0
+
+ The dice are the caller's to supply, the same way the watch-only turn
+ takes its own: a page that reused one seed would fight the same battle
+ every time.
+
+  rk-wasm-attack : RiskState, Integer, Integer, Integer -> RiskState
+  rk-wasm-attack (s) (from) (to) (seed) =
+    if risk-can-attack s (s.current-player) from to
+      then risk-attack (rk-copy-state s) (s.current-player) from to (rng-new seed)
+    else s
+
+  rk-wasm-can-stop : RiskState -> Integer
+  rk-wasm-can-stop (s) =
+    if risk-can-stop s (s.current-player) then 1 else 0
+
+  rk-wasm-stop : RiskState -> RiskState
+  rk-wasm-stop (s) =
+    if risk-can-stop s (s.current-player)
+      then risk-stop (rk-copy-state s) (s.current-player)
+    else s
+
+ Whether a territory of yours has anything worth attacking next to it,
+ which is what a page rings when you are choosing what to attack FROM.
+
+  rk-wasm-can-attack-from : RiskState, Integer -> Integer
+  rk-wasm-can-attack-from (s) (terr) =
+    if s.phase /= 1 then 0
+    else if terr < 0 then 0
+    else if terr >= 12 then 0
+    else rk-any-target s terr 0
+
+  rk-any-target : RiskState, Integer, Integer -> Integer
+  rk-any-target (s) (from) (i) =
+    if i >= 12 then 0
+    else if risk-can-attack s (s.current-player) from i then 1
+    else rk-any-target s from (i + 1)
 
 Section: The Whole Game
 

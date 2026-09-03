@@ -995,6 +995,25 @@ the deck is ONE cursor swapping between two saved positions, its window carved
 out of the same bump region by `build`, so the whole change is a `$deck_ptr`
 global, a saved bivy cursor and a depth counter.
 
+**THE RESIDUE IS NOT A WASM FACT, IT IS A COMPILER ONE (reek, 2026-09-02, read
+not run).** `derive-deck-scale` (`opening.codex:165`) computes
+`unit-len * 100 * deck-scale-margin / deck-scale-anchor` with margin 2 and
+anchor 2,993,576, then CLAMPS AT 100. A compiler-sized unit estimates exactly
+200, twice the clamp, so every unit at or above HALF the anchor, 1,496,788
+bytes, receives the identical reservation and the derivation stops tracking
+length there. That is why the binary tab refused: it sent `CDX` with no
+`decks=`, derived, and was clamped. The page ladder `DECKS = [12, 48, 125]`
+(`prism.html:693`) tops out ABOVE the clamp, which is why riding it fixed the
+symptom without touching the derivation. Whether the repair is a higher clamp,
+a non-linear estimate, or leaving the ladder to carry it is a compiler decision:
+`compiler-backlog.md` COMPILER-50.
+
+**Do not quote PARSE-KEEP for this.** The `CDX9002: Deck overflow in PARSE-KEEP`
+recorded under 1.71 was measured on a target with NO deck at all (`emit-wat-name`
+mapped `__deck-pos` to a constant 0), and 1.75 is the entry that gave wasm a
+deck, so it is a pre-deck symptom. The phase that binds the wasm self-compile
+TODAY is unnamed here and wants the per-phase deck metrics the module emits.
+
 **`deck-record` had no arm in this plug at all**, and that is the half nothing
 in the six-primitive table named. Every other backend intercepts it as an
 intrinsic bracketing its argument with enter/exit; wasm let it fall through to
@@ -1631,7 +1650,12 @@ digit-bearing rows and leaves the other three unmoved.
 **`raw-bytes-to-text` is unblocked by this and is 1.60's row to close.**
 
 **One consequence, for whoever next REBUILDS the spark or designer pages
-with `build-spark.ps1` / `build-designer.ps1`.** Their JS reads exported
+with `build-spark.ps1` / `build-designer.ps1`.** (2026-09-02, val: the SPARK
+half of this is now moot. `build-spark.ps1` and the bundle it consumed are
+deleted under `spark-backlog.md` SPARK-4, Damian's ruling; this paragraph was
+one of the two measurements that priced the alternative, because a rebuilt
+spark page would have been wrong in a visible way until the CCE side was
+repaired. The DESIGNER half stands unchanged and is still owed.) Their JS reads exported
 text a byte at a time and calls `String.fromCharCode` on it
 (`spark-webgpu.html:136`, `readExportText`), while the app fills that buffer
 with `char-code (char-at s i)` (`write-str-loop`, and `write-int-at` through
@@ -1778,9 +1802,64 @@ sites are `clamp-field-val` (csharp), `a64-field-type-for-store`,
 `rv-find-field-type-st`, `a64-collect-field-types`, `rv-collect-field-types`,
 `rc-check-ctor-ref-sum`, and the python and javascript clamp paths.
 
-**1.3 (residue) -- the general RISC-V temp-collision defect either side of a
-frameless binop is open** (fester). `RiscVCodeGen.codex:1880-1884` records
-that the frameless literal-operand fix is not the general fix.
+**1.3 -- CLOSED 2026-09-01 (reek, landing fester's unshelved 20867). The
+general RISC-V temp-collision defect either side of a frameless binop is
+fixed, and the fix is a liveness bit rather than a patch.** `RvState` gains
+`temp-reserved`, a four-bit mask over t3..t6; every frameless binop reserves
+its left operand's register across the right operand's emission and restores
+the mask after; `rv-alloc-temp` becomes a scan that SKIPS reserved registers
+and REFUSES with `[UNSUPPORTED] register allocator: five live temporaries
+wanted and this target has four` rather than emitting wrong code; and
+Sethi-Ullman pressure numbering (`rv-arg-temp-pressure`, `rv-pressure-2`)
+keeps an expression needing more than four off the frameless path entirely.
+
+**MEASURED TWO-ARM, both arms built and run on seed 83C9E0B1**, 20 subjects
+chosen by BIT-OP DENSITY rather than arbitrarily (the two existing pins, the
+densest fourteen of 576 top-level subjects carrying sidecars, and `factorial`
+as a no-bit-ops control a register-allocator change must not move):
+
+| | control | fixed |
+|---|---|---|
+| | 16 pass, 4 fail | 17 pass, 3 fail |
+
+**Exactly one subject moves.** `codex/test/rv-frameless-temp`, the pin fester
+wrote for this, FAILS on the control and PASSES with the fix. Every other
+subject is identical in both arms, `factorial` included.
+
+**THE THREE REMAINING REDS ARE PRE-EXISTING AND THAT IS NOW MEASURED, NOT
+INHERITED:** `files-parse`, `engine-shading` and `ecdsa-sha384` fail
+identically on both arms at near-identical timings (4.0 against 4.1 s, 38.9
+against 38.9, 38.1 against 38.1).
+
+**74 OF THE 77 STAY UNATTRIBUTED.** fester's handoff claimed all 77 riscv reds
+are pre-existing; what is measured here is three of them, the three that fall
+inside this subset. The rest waits on Damian's call for the full two-arm cross
+battery, which R-GATE puts out of a lane's own reach. Sizing for whoever takes
+it: 34.2 s per subject SERIAL, so 421 eligible is about four hours per arm the
+way this was run; `test-cross-batch` at `-Jobs 8` would be far less and has
+never been measured on this box.
+
+**Two things about the recovery, because the next lane inheriting a parked
+lane's shelf will hit both.** The shelf lives on `//Codex/fester`, which
+another agent's client view cannot map, so `p4 unshelve` is not the route:
+read each file with `p4 print ...@=20867`, and CHECK THE SHELF'S BASE against
+your own stream first -- both riscv files were byte-identical to `fester#33`
+and `#36`, which is what made a whole-file apply safe rather than a silent
+revert of anything landed since. And **fester's shelved `plugs-backlog.md` was
+byte-identical to its base**, 292,486 bytes both: the file was opened for edit
+and never written, so there was no entry to inherit and this one is written
+from measurement instead.
+
+**The instrument had no staleness guard and that nearly cost the result.** A
+killed control arm left the CONTROL plug built while the workspace held the
+FIXED source; `test-cross.ps1` takes whatever plug it finds, unlike
+`hosted-wasm-test.ps1` which refuses one older than its source. Two arms that
+silently share one plug AGREE, and agreement reads as "the fix changes
+nothing" -- a wrong finding with a clean face. The subset runner now states
+per arm what it expects the plug's bundled source to contain and refuses if it
+disagrees. **A guard on this path belongs in `test-cross.ps1` itself**, and
+that script is GENERATED, so it goes through `codex/build/` and is not a hand
+edit.
 
 **1.53a -- the reservation fix TRADES peak memory on a fully-touched
 reservation, and my CL 18594 cost note was wrong to say otherwise.** That note
@@ -2510,6 +2589,36 @@ function-returning definition in front of roughly thirty emitters that
 have never seen one from this corpus, which is UNMEASURED and stays open
 in this row -- COMPILER-13's four-plugs-failed-on-first-lambda is the
 precedent for what that sweep may find.
+
+**THE SWEEP IS PARTLY MEASURED AND THE PRECEDENT HELD ON THE FIRST PLUG (reek,
+2026-09-02).** The corpus program was never the gap: `test-input/overapply.codex`
+already carries the third case (`choose 0 2 3`, a definition returning a
+function, over-applied) and says so in its own prose. What was unmeasured is the
+SWEEP, and three emissions exist so far, read off disk rather than re-run:
+
+| plug | emitted for `choose 0 2 3` | verdict |
+|---|---|---|
+| `angular` | `choose(0)(2)(3)` | curried over-application, correct |
+| `babbage` | exit 6 | REFUSES, honestly |
+| `ada` | `function Choose(N : Long_Long_Integer) return Long_Long_Integer`, body `Add3(1)` | **UNCOMPILABLE, and scored PASS** |
+
+**The ada row is the finding.** `choose` RETURNS a function and is typed as
+returning a scalar; `Add3` has arity 3 and is emitted as a one-argument call.
+No Ada compiler accepts either. `test-plugs.ps1` grades exit code, non-empty
+output and a stray `__narrow` token, so 7,166 bytes of confident nonsense scores
+PASS. This is distinct from 1.96, which is Ada GUESSING a type it never
+resolved; here the type is knowable from the signature and is emitted wrong.
+
+**So the sweep's own line can never report OK.** It reports REFUSE or EMITS, and
+`ada` proves EMITS is not a pass. The remaining 48 will be classified by reading
+each `test-output/<plug>/overapply.out` FAMILY-AWARE, because one `$markers`
+entry cannot serve both: the C-family shape is `(0)(`, while Ada, COBOL, Fortran
+and Pascal have no first-class functions and must LIFT (`DevelopersRulebook.md`
+:260), so a single marker would score their correct output as a miss.
+
+Denominator: 51 transpiler plugs carry a `run.ps1` and a binary; **43 of the 51
+have source newer than their binary**, so those rows are provisional until
+rebuilt.
 
 **1.72 -- the python plug's TCO matches a self-call by NAME and not by
 arity, so its argument loop and its parameter loop can disagree. LATENT:
@@ -4937,19 +5046,49 @@ Found while verifying, reported and not chased (red lane is elsewhere):
   **Measured both ways**: with the module present the suite is ALL ARMS OK;
   with `arm64-stdio.wasm` moved aside it loads, prints the NOTE, and arm 12d
   fails with the named message.
-- build-page.ps1 has no incremental path: an HTML-only page edit pays the
-  module rebuild, the x86 truth arm, 69 example compiles and the library
-  volume -- 451 s with the native assembler, ~22 min before the 2.03
-  addendum's fix.
+- build-page.ps1 has a PARTIAL incremental path, corrected 2026-09-02 (reek):
+  `-Incremental` gates the `module` phase and nothing else, so an HTML-only page
+  edit still pays the x86 truth arm, 69 example compiles and the library volume.
+  Three of the four costs this bullet named stand; the module rebuild does not.
+  The switch's own comment claimed THREE gated phases and was wrong:
+  `Test-PhaseFresh` has exactly one call site. 451 s with the native assembler,
+  ~22 min before the 2.03 addendum's fix, both measured before the switch and
+  not re-measured since (L-COUNT).
 
-## 2.11 -- emit the binary wasm encoding directly and retire the external assembler (Damian, 2026-08-30: approved, scheduled later)
+## 2.11 -- emit the binary wasm encoding directly and retire the external assembler (CLOSED BY RULING, Damian, 2026-09-02: "wat2wasm is fine")
+
+**CLOSED 2026-09-02 (Damian, via red). Not built, by design.** The project
+runs in two directions: the transpiler stack is the rope thrown back to the
+old world, and the cord is cut in the forward direction. A binary wasm
+emitter or a WAT assembler in Codex serves neither direction, so neither is
+built and wat2wasm stays on the PATH as the assembler. This supersedes the
+2026-08-30 "approved, scheduled later". The sizing below stays as the record.
 
 The wasm plug emits text WAT and every build assembles it with wat2wasm,
 an external tool (2.03's addendum records what the PATH's default cost).
 Emitting the binary encoding directly deletes the dependency and the 9.6 MB
-text intermediate from the module path. Unowned until Damian schedules it.
+text intermediate from the module path.
 
 ### Sized host-side before anyone starts it (reek, 2026-09-01)
+
+**THE TWO PASSES ARE MEASURED AND THE SPEED CASE FOR THIS WORK IS DEAD
+(reek, 2026-09-01, seed 18995A1A):**
+
+```
+[wasm-run] passes: source-to-IR 144.8s, IR-to-WAT 3.6s
+```
+
+**The wasm plug's own emission is 3.6 s of a 149.4 s module phase -- 2.4 per
+cent.** The other 144.8 s is `compile.ps1` turning the compiler's source into
+16.9 MB of CCE IR, which is the COMPILER compiling itself and has nothing to do
+with this plug or with WAT. So emitting the binary encoding instead of text can
+save at most 3.6 s of a 172.8 s page build, and the 8.4x text-size argument
+below is worth two per cent of one phase.
+
+**Do this work for self-sufficiency or do not do it.** That is a good reason on
+its own -- it is the founding principle -- but the register should stop
+implying a build-time win, and anyone sizing it against the 145 s is sizing it
+against the compiler's self-compile.
 
 **wat2wasm IS NOT THE COST, and the row's framing invites the wrong reason.**
 Measured on the shipped module: **0.3 s** to assemble 10,296,178 bytes of WAT
@@ -5398,6 +5537,88 @@ together as 2.18, with the fix applied inline as `ctx-deeper`).
 **The general rule for this emitter: extend a context by constructing a record,
 never by `__record-set`.** `ctx-with` exists for that.
 
+
+**REPAIRED 2026-09-01, and the scores above are SUPERSEDED: the re-measure is
+at the foot of this section.**
+The comparison now lives once, in `codex/plugs/common/hosted-compare-lib.ps1`,
+mirroring `build/test-run.ps1:112-125` -- the normalisation these oracles were
+recorded through. Both harnesses dot-source it (the wasm arm per worker, since
+functions do not cross into a `-Parallel` runspace). Proven before it was
+believed, because relaxing a comparison reports the same thing whether it is
+right or has quietly stopped asking (L-CAPABILITY-LOST):
+`codex/plugs/common/hosted-compare-mutation.ps1` grades OLD against NEW over 20
+crafted cases and refuses if no RELAX case moves. **5 relax repaired, 11 guards
+still refuse** -- including a MISSING final content line, an interior blank line
+dropped, a trailing space on a line, and a content line that merely looks like
+telemetry. On the real harness: `apps/annotation-query-test` and
+`apps/diagnostic-boot` now pass, `apps/dev-watch` still fails 528 vs 532.
+
+**RE-MEASURED 2026-09-01 after the repair, seed 42ACED00, plug rebuilt to
+match: wasm 53 pass 7 fail; hosted 105 pass 15 fail over both targets, which is
+linux 53 and windows 52. Parity HOLDS: wasm 53 = linux 53, one ahead of windows
+52.** The repair moved all three arms EQUALLY, by exactly the two subjects that
+were false reds everywhere, so the verdict did not move and the numbers above
+are measurements rather than the arithmetic this row refused to do.
+`apps/annotation-query-test` and `apps/diagnostic-boot` are gone from all three
+failure lists. The seven remaining wasm reds are the same shape as before:
+`apps/dev-watch` NOT a gap after all (see its row), `apps/classic-games-run` still failing
+identically on all three arms, and five that no hosted target can run.
+`apps/classic-games-run` staying red is the lib earning its restraint: the
+leading SOH is stripped from the ACTUAL only, so `want` is still 1456 and the
+real Backgammon difference underneath is still visible. Stripping both sides
+would have turned that subject green and buried a live finding.
+
+### Re-measured 2026-09-01 on seed D6ED6F35, and the SAMPLE moved under the score
+
+**Parity HOLDS: wasm 51 = hosted linux 51, one ahead of hosted windows 50**,
+over 60 selected of 1002 eligible, both arms on the same kernel, the plug
+rebuilt first (L-SAMEVER), calibration passed. Hosted totals 101 pass 19 fail
+across linux+windows.
+
+**Every score above this line was taken over a DIFFERENT SIXTY, and nothing
+announced the change.** 2.16 made the harness reach every eligible subject,
+which grew the corpus from 998 to 1002 and pulled `codex/test/apps/**` into
+range; the alphabet is dominated by that directory, so the default cap now
+selects **56 `apps/*` of its 60** where it used to select `act-let-scope` ..
+`dtls-openssl-fragments`. Hosted reading 101/19 against this row's recorded
+120/0 is that slice change and NOT a regression. The default 60 is no longer a
+sample of the corpus, it is a sample of one directory, and `apps/*` is full of
+subjects asserting bare-metal machine facts that no hosted target can run. Fix
+the sample or quote a named slice; do not read the default as a corpus score
+(L-DENOM, one level further in than the row that first caught it).
+
+**The nine wasm reds are one parity gap, not nine.**
+
+| subject | wasm | linux | windows | what it is |
+|---|---|---|---|---|
+| `apps/dev-watch` | 528 | 532 | 538 | **NOT a gap in any target.** Diagnosed 2026-09-01: only 2 of 16 lines differ and both print a RAW ALLOCATOR ADDRESS. Bare metal and linux both land the arena at 6291456 (0x600000) so linux passes by COINCIDENCE of layout; windows says 2147418112, wasm says 71922, and all three put beta exactly 64 bytes after alpha. The oracle pins a bare-metal address, so the subject cannot pass on a target that allocates elsewhere. Source: `codex/os/dev/DevState.codex:82`, `wa-message` embedding `show addr` -- correct for its other consumer `apps/works/DevConsoleBoot.codex:1315`, which shows a human the address at a debugger. The repair is the TEST (`codex/test/apps/dev-watch.codex:27`): assert the RELATIONSHIP (beta - alpha = 64, non-zero, right length), not the absolute value. Moves a battery oracle, so it wants its own CL and a gate. |
+| `apps/codex-boot` | **pass** | exit 139 | 0xC0000005 | wasm is AHEAD; both hosted targets fault. |
+| `apps/classic-games-run` | 104 | 104 | 104 | NOT a wasm gap. All three print `Backgammon: Black wins in 104 plies`; the oracle says 174. Three independent targets agree with each other and disagree with bare metal, so the question is on the bare-metal side. |
+| `apps/annotation-query-test` | +1 LF | +1 LF | +1 LF | HARNESS artifact, no defect anywhere. |
+| `apps/diagnostic-boot` | +1 LF | +1 LF | +1 LF | HARNESS artifact, no defect anywhere. |
+| `apps/bp-symbolic-write` | 16 of 166 | exit 139 | 0xC0000005 | fails on all three, in three manners. |
+| `apps/cam-capture`, `console-test`, `cpu-builtins`, `cpu-inspect` | exit 3 | exit 139 | fault | machine-fact subjects; all three arms refuse. |
+
+**The two harness artifacts are a real gap in the hosted beds and cost two
+false reds per run on every arm.** `build/test-run.ps1:112-125` is the
+normalisation the oracle was recorded through: it strips CR, strips a leading
+`^\x01`, drops `HEAP:`/`WD:`/`STACK:` lines, drops TRAILING BLANK LINES and
+then emits exactly one LF. Both hosted harnesses do only `-replace CRLF, LF`,
+so they are STRICTER than the battery whose oracle they borrow, and a subject
+differing by one trailing newline reads as a codegen failure. Aligning them is
+mechanical, and it changes how a comparison is DECIDED, so it wants a mutation
+aimed at that direction before the new greens are believed (L-CAPABILITY-LOST)
+rather than a quiet edit inside a measurement run.
+
+**Two traps that each nearly produced a wrong report here.**
+`classic-games-run`'s oracle begins with a stray `0x01` SOH, as 153 of 1446
+`.expected` files do; `docs/ExaminersAssay.md` documents the convention and
+PowerShell `-eq` ignores the byte. Writing the red off as "the known SOH thing"
+would have buried the Backgammon divergence, which is only visible AFTER the
+SOH is stripped and the strings are still unequal at equal length. And
+`-Calibrate` reports inverted on purpose: "3 pass, 0 fail" means three
+sabotages were CAUGHT, and a genuine miss says `CALIBRATION FAILED: mangled
+subject still produced its oracle`.
 
 ## 2.18 shadow-stack deletion -- DONE 2026-09-01 (reek, taking red's handoff)
 
@@ -5898,12 +6119,20 @@ explain. The deck derivation is compiler source (`opening.codex`,
 `deck-scale-of` / `scaled-floor`) and identical on both targets, so a difference
 could only ever have been the runtime consuming more inside a deck.
 
-**I HAVE NOT ATTRIBUTED THE CHANGE and will not guess.** The obvious candidate
-is this session's COMPILER-42 work: a list literal was born with capacity 8
-regardless of length, so every literal in the compiler's own source
-over-reserved. That is a hypothesis, not a finding. The control that would
-settle it is a module rebuilt with that fix reverted, about five minutes of box
-time, and it has not been run.
+**THE ATTRIBUTION CONTROL WAS RUN AND IT REFUTES MY HYPOTHESIS (2026-09-01,
+seed 18995A1A).** I named COMPILER-42's list-literal fix as the likely cause: a
+literal was born with capacity 8 regardless of length, so every literal in the
+compiler's own source over-reserved. **Wrong.** With that fix REVERTED in the
+emitter and the module rebuilt from it, bare `CDX` still compiles on wasm --
+payload 3,116,377, identical to the fixed build's and to x86's, and both
+`decks=1` arms still refusing. The fix is worth 1,495 bytes of module
+(1,233,588 against 1,235,083) and nothing measurable to deck consumption.
+
+So the inflation was gone before that change, or was never real at the derived
+scale for this unit. **What removed it is unattributed, and the honest form of
+this row is that the difference does not exist today -- not that anything here
+fixed it.** The emitter was restored and rebuilt to the same 450,969 bytes it
+carried before the experiment.
 
 **What NOT to conclude: this says nothing about the IR ladder.** `DECKS =
 [12, 48, 125]` governs the `IR-UNI` path and was not measured here. One unit on
@@ -6780,37 +7009,523 @@ parameter, which the desugarer's `for p in pats` produces) and is NOT
 obviously dead; assess with a zig e2e before touching it. The C# plug has no
 private repair.
 
-## 2.15 -- OPEN (Damian, 2026-08-31; queued, unowned): text plugs emit CCE encoding code a simple program never needs, and the emitted `opening` round-trips `to-cce (from-cce x)`
+## 2.15 -- LANDED (Damian, 2026-08-31; fester, main 21297 / 21349 / 21396): text plugs emit CCE encoding code a simple program never needs, and the emitted `opening` round-trips `to-cce (from-cce x)`
 
-Damian's observation at the emitted output, not yet censused: some text
-emitters emit their CCE encode/decode helpers for programs whose text is plain
-ASCII literals, and the emitted `opening` wraps a value in a
-decode-then-encode pair, an encoding dance that changes nothing. Some text
-emitters do NOT do this, and they are the control: the plugs whose `opening`
-comes out clean show the shape the others should produce.
+Damian's observation at the emitted output. **The census is done (fester,
+2026-09-01) and BOTH halves reproduce, but not in the same plugs, and the
+control the row predicted is 41 of 44 rather than a handful.**
 
-What the taker does, in order:
+### What was run
 
-1. **The census first.** Compile one simple program (a `print-line` of a
-   literal, and one with `text-concat`) through every text plug
-   (`codex/plugs/<plug>/run.ps1`; `build/plug-oracle-test.ps1` names the
-   plugs whose runtime is on this box) and grep each emitted file for (a) the
-   CCE helper definitions it carries and (b) a decode-then-encode pair on one
-   expression in `opening`. Publish the table in this row (plug, helper
-   lines, round-trip sites, runnable or text-only) BEFORE fixing anything:
-   the observation is Damian's eye, the count is the taker's (L-COUNT). A
-   plug with no runtime here (1.14, 1.46) is censused on its emitted text
-   and cannot be run; say so in its row.
-2. **The rule.** A CCE helper is emitted only when the program reaches it
-   (2.04's shape: the zig prelude emits only the parts the program reaches),
-   and a value is never decoded and re-encoded on one path: text stays in
-   the plug's native form until an I/O boundary needs CCE, and stays CCE
-   until a native operation needs the other.
-3. **The proof.** `build/plug-oracle-test.ps1` (49 of 49 values per plug)
-   and each plug's own arms byte-identical before and after; the drop in
-   emitted size per plug is the measurement, and a plug whose output does
-   not shrink was not carrying the dance.
+Three subjects, compiled `-IrCce -Passes text-plug` against seed 83C9E0B1
+and delivered to each plug's CDX: a `print-line-uni` of the literal
+`"hello"`, the same through `&` concatenation, and an ECHO
+(`read-line` then `print-line-uni`) which is the subject that provokes the
+round-trip. 44 text plugs, one guest at a time. riscv and arm64 are absent
+by Damian's 2026-09-01 ruling, wasm is reek's; `html`, `maui`,
+`winforms` and `csharp` answer on their own transport rather than
+`run-plug.ps1` (L-AXIS) and were censused through their own `run.ps1`.
+
+**The instrument was ablated before any of the numbers below were believed.**
+On `plug-oracle-arith`, which genuinely calls `char-encode`, the same
+detector finds `_cx_char_encode` plus TWO call sites; on the simple subjects
+it finds the definition and ZERO. A count that could not have come out the
+other way is not evidence.
+
+### The table
+
+| plug | lines, literal | lines, concat | text model | run |
+|---|---|---|---|---|
+| zig | 282 | 312 | CCE-native | runnable | (corrected; see below)
+| fortran | 371 | 371 | host-native | text-only |
+| maui | 333 | 333 | host-native | text-only |
+| winforms | 322 | 322 | host-native | text-only |
+| ada | 212 | 212 | host-native | text-only |
+| csharp | 199 | 199 | CCE-native | runnable |
+| pascal | 186 | 186 | host-native | text-only |
+| html | 153 | 153 | host-native | text-only |
+| wpf | 133 | 133 | host-native | text-only |
+| gtk | 92 | 92 | host-native | text-only |
+| nim | 71 | 71 | host-native | text-only |
+| julia | 70 | 70 | host-native | text-only |
+| flutter | 69 | 69 | host-native | text-only |
+| compose | 64 | 64 | host-native | text-only |
+| ocaml | 61 | 61 | host-native | text-only |
+| swiftui | 58 | 58 | host-native | text-only |
+| go | 58 | 58 | host-native | text-only |
+| python | 54 | 54 | host-native | runnable |
+| lua | 54 | 54 | host-native | text-only |
+| cobol | 53 | 72 | host-native | text-only |
+| scheme | 51 | 51 | host-native | text-only |
+| d | 49 | 49 | host-native | text-only |
+| electron | 49 | 49 | host-native | text-only |
+| qt | 48 | 48 | host-native | text-only |
+| angular | 47 | 47 | host-native | text-only |
+| vue | 47 | 47 | host-native | text-only |
+| react | 45 | 45 | host-native | text-only |
+| svelte | 45 | 45 | host-native | text-only |
+| typescript | 40 | 40 | host-native | runnable |
+| haskell | 39 | 39 | host-native | text-only |
+| ruby | 39 | 39 | host-native | text-only |
+| rust | 38 | 38 | host-native | text-only |
+| java | 32 | 32 | host-native | text-only |
+| swift | 29 | 29 | host-native | text-only |
+| babbage | 27 | 27 | n/a (numeric) | text-only |
+| objc | 25 | 25 | host-native | text-only |
+| elixir | 23 | 23 | host-native | text-only |
+| perl | 20 | 20 | host-native | text-only |
+| javascript | 20 | 20 | host-native | runnable |
+| groovy | 18 | 18 | host-native | text-only |
+| clojure | 17 | 17 | host-native | text-only |
+| php | 16 | 16 | host-native | text-only |
+| scala | 12 | 12 | host-native | text-only |
+| kotlin | 11 | 11 | host-native | text-only |
+
+### CORRECTION, 2026-09-01, and it retires the zig half of this row
+
+**The zig figures first published here (853 lines, 75 of 81 functions
+unreached) were measured on a STALE PLUG BINARY and are wrong.** The sweep
+ran each plug's existing `build-output/<plug>-plug.cdx` without rebuilding.
+For 43 of 44 that was harmless, because their source had not moved. `zig` was
+the exception: `ZigEmitter.codex` and `ZigStdio.codex` arrived on this
+workspace in the merge-down at 21284 (main's `#42,#43`) while the binary on
+disk was still 2026-08-27, so the census scored a zig emitter two revisions
+behind its own source. Re-measured against a rebuilt plug:
+
+| subject | lines | fn defs |
+|---|---|---|
+| literal | 282 | 18 |
+| concat | 312 | 19 |
+| textops | 373 | 27 |
+| arith | 529 | 62 |
+
+Monotone in program size, which is what a working shaker looks like.
+
+**So zig needs NO fix under this row, and is the reference implementation of
+the rule the row asks for.** `zig-prelude-for` shakes per DECLARATION
+(`ShakePart` is one part per decl, not a chunk) with a real transitive
+closure in `shake-reach`, and `zig-stream-defs` carries the answer across
+`__heap-restore` in two i64 masks because only a scalar survives that
+bracket. The csharp fix copied that design rather than inventing one.
+
+The tell was that the stale reading was BACKWARDS: it made the simplest
+program emit the most, 853 lines for a hello-world against 529 for a
+55-operation subject. An ordering that cannot be right is worth more than a
+number that looks plausible.
+
+The guard is one `LastWriteTime` comparison between a plug's newest `.codex`
+and its `.cdx`, run BEFORE the census rather than after (L-SAMEVER, whose
+story says exactly that and was not followed here). A census that reads
+prebuilt binaries must either rebuild them or prove them current; this one
+did neither.
+
+### The helper half: three plugs, and reachability decides it, not a name
+
+Only `python`, `csharp` and `zig` emit CCE helpers at all. Reachability
+from `opening` over the emitted call graph:
+
+- **python**: ALL FIVE helpers unreached, `_cx_char_encode` among them.
+  54 lines for a program whose body is `print("hello")`.
+- **zig**: WITHDRAWN, see the correction above. That figure came from a
+  stale binary; at head zig shakes correctly and carries no unreached CCE
+  helper.
+- **csharp**: the `_Cce` class is about 60 lines of a 199-line file;
+  `ToUnicode` IS reached, `UniToCce`, `FromUnicode`, `CceToUni`,
+  `ReadStream` and `FromUnicodeArr` are not.
+
+**A flat helper count would still score zig wrong, and the point survives**:
+`cx_cce_to_utf8` is reached, by `cx_print_line`, at the I/O boundary, which
+is exactly where the rule wants it. The unreached set is what this row is
+about; the reached one is correct and must survive any fix.
+
+### The round-trip half: it is csharp, and only on the echo subject
+
+Neither simple subject produces a round-trip in ANY of the 44. The echo
+subject produces it in `csharp`:
+
+`_Cce.FromUnicode` at `Console.ReadLine()`, the value passing through a
+`when` unchanged, then `_Cce.ToUnicode` at `Console.WriteLine` -- a
+decode and a re-encode with nothing between them that needs either.
+
+### The control is 41 plugs, and it is clean for a reason worth naming
+
+41 of 44 keep text in the HOST's form and never mention CCE: python prints
+`"hello"`, javascript `"\u0068\u0065..."`, rust `"\u{68}..."`. Only
+`csharp` and `zig` are CCE-native (`"\u0014\u000D..."` and
+`"\x14\x0d..."`); `babbage` is a numeric machine with no text output.
+
+**So "no round-trip" splits into two opposite states and a census that scored
+them alike would be wrong** (L-CONTROL): a CCE-native plug converting ONCE per
+boundary is correct, while a host-native plug that never converts has no
+round-trip because it never adopted CCE at all. Whether the second is a
+latent non-ASCII defect is NOT settled by this row and is not assumed here.
+
+**A first pass classified javascript and rust as CCE-native and it was the
+grep, not the tree.** Keying on the absence of a plain `hello` scores any
+escaping plug as CCE-native; the discriminator is the escape VALUE, CCE
+`0x14` against Unicode `0x68`.
+
+### Found while censusing, not part of this row
+
+`typescript` has no `read-line` emitter and does not say so: it emits
+`const m: any = read_line;`, an identifier defined nowhere in the file, so
+the artifact is plausible and throws at run time. `zig` meets the same gap
+with `@compileError("zig plug: no emitter for read-line")`. That is
+L-ACCEPTED's shape on the emitter side and belongs in its own row.
+
+### What was done
+
+Nothing is left. All three are on main at 21396, one plug per CL (R-ONE):
+
+- **python** (21308): five helpers emitted only when reached. Literal 54 to
+  12 lines; the arith control keeps `_cx_char_encode` and `_cx_lpush` and
+  drops only the three it does not call. plug-oracle 55 of 55.
+- **csharp** (21323): `_Cce` members emitted only when reached, the used-set
+  carried as an Integer because `stream-defs-sexp` reclaims per def and only
+  a scalar survives `__heap-restore`. Literal 199 to 168; the echo control
+  keeps `FromUnicode`. plug-oracle 55 of 55, and each emitted program built
+  with dotnet and run, identical behaviour across the change.
+- **rust** (21341): three text helpers emitted only when reached, Damian's
+  pick after csharp. Literal 38 to 15 lines; a `textops` control that calls
+  all three comes out BYTE-IDENTICAL. Rust carries no CCE helper at all, so
+  this was the prelude half and not the round-trip half.
+- **zig**: nothing to do, see the correction above.
+
+Also landed on the way, and NOT part of this row: **csharp 21320**, a CS0149
+that was RED AT HEAD in `plug-oracle-test -Only csharp`. The plug eta-expanded
+a `__lam_` name to a bare lambda, which C# cannot invoke in application
+position. Found by taking a baseline after my own first edit failed the same
+way, and reproduced with my work shelved, so it is a defect at head that no
+lane was watching rather than a regression.
+
+Two arms are RED at head and are NOT touched by any of the above:
+`plug-oracle-test` reports **typescript** failing 109 lines and **wasm**
+failing at `wat2wasm`. The typescript red is consistent with what this census
+found and recorded below (`const m: any = read_line`, an identifier defined
+nowhere). Neither has been investigated here; wasm is reek's campaign.
 
 Boundary: the CCE layer itself (R-CCE, `Foreword chapter CCE`) is untouched;
 this row is about emitting it where nothing needs it. One plug per CL
 (R-ONE); the compiler is not on the path, so no token.
+
+## 2.19 -- FIXED reek 21526 (2026-09-02): the img plug wrote SOURCE.SRC through
+one spurious CCE conversion, so every FAT16 image carried a corrupted source
+
+`ImgPlug.codex:108` and `ImgStdio.codex:38` build the embedded source with
+`bytes-to-text-range` (`codex/plugs/common/PlugChain.codex:98`), which is
+`char-to-text (code-to-char b)` on each RAW byte: it labels a byte a CCE code
+point without decoding it. `fat16w-write-text-to-buf`
+(`codex/plugs/img/Fat16Writer.codex:135`) then applies the real `to-unicode`
+and writes `63` for anything answering 128 or more. One conversion too many,
+and it is silent.
+
+MEASURED 2026-09-02 off `disk-test.img`, geometry derived from the BPB and
+independently confirmed against the guest DIAG line (data start 2129 both
+ways). The directory entry is CORRECT: `SOURCE.SRC`, cluster 178, size 651.
+The 651 bytes at that cluster are not the source. `C` (67) lands as 33, `:`
+(58) as 66, ` ` (32) as 98, and every lowercase letter as 63, which is the
+`to-unicode` table applied to values that were never CCE.
+
+The consequence is a guest that compiles a file with no parseable
+definitions and correctly reports `error CDX2040: Unresolved call to 'opening'`.
+That is what `build/test-disk-compile.ps1` has been failing on,
+and until reek 21506 the harness discarded the line, so the row read as a
+DISK-mode defect in the compiler. DISK mode is so far unindicted.
+
+The read side already decodes bytes to CCE (`fat16-bytes-to-text`,
+`codex/foreword/core/Fat16.codex:1916`, via `fat16-byte-to-cce`), so the
+on-disk format is plain bytes and the Text round-trip is pure loss.
+RECOMMENDED FIX: keep the source as bytes end to end and give the writer a
+raw-byte path, rather than decoding on the way in. A `from-unicode` decode
+would cancel the conversion but answers -1 for byte 13, which the read side
+drops by design (that chapter says so at `Fat16.codex:1926`), so a
+byte-exact round trip is not available through Text at all.
+
+`fat16w-write-str` is NOT at fault and must keep its `to-unicode`: its
+callers pass Codex string literals (`CODEXOS `, `FAT16   `), which are
+genuine CCE, and those landed correctly in the image.
+
+Not seed-affecting, no token. Plug source, so it implicates `plug-binary`
+and `plug-smoke` for img under the 21440 rule.
+
+### The fix, and what it proved (reek 21526)
+
+`fat16w-write-all` and `fat16w-write-fs` take `List Integer`, the source lands
+through `__buf-write-bytes`, and `fat16w-write-text-to-buf` is deleted. The 651
+bytes at cluster 178 of `disk-test.img` are now byte-identical to
+`codex/test/field-range-proven.codex`. That is the artifact-level proof and it
+does not depend on any downstream stage. `img-plug.cdx` moved 93AF573C to
+88D16035 and the deleted helper is absent from the rebundled source, so it was
+not a stale plug binary.
+
+`fat16w-write-str` was NOT at fault and keeps its `to-unicode`.
+
+### What is now the frontier, and it is NOT this row
+
+`build/test-disk-compile.ps1` is STILL RED, one stage later. Step 2 reports
+`Compiled: 89515 bytes`, matching the host-built CDX from the same compiler and
+source, and then the run dies at `FAIL: binary read incomplete`. That failure
+is pre-existing and was UNREACHABLE until this fix, because the compile had
+never produced a binary to read, so nothing in the tree has ever exercised the
+DISK binary transfer.
+
+ANSWERED 2026-09-02, by reading plus a free measurement on the image the run
+left behind. It is not a transport fault and there is nothing to chase in
+`vm-config.ps1`. `emit-binary-tail` (`codex/compiler/opening.codex:1642`) prints
+the `SIZE:` line and THEN BRANCHES: `if to-disk then emit-binary-to-disk` writes
+`OUT.CDX` to the volume, and only the else arm streams the bytes. The prose
+below it states that DISK mode takes that arm unconditionally. So the harness
+reads `SIZE:` and then waits for a binary that DISK mode never sends.
+
+**DISK MODE IS CORRECT, AND THE COMPILE FULLY SUCCEEDED.** The post-run image
+carries `OUT.CDX` at 89515 bytes and `OUT.TXT` reading `OK OUT.CDX 89515`, and
+the extracted `OUT.CDX` is BYTE-IDENTICAL to the host-built CDX from the same
+compiler and source (sha BB4E870F). The guest read its own disk, compiled, and
+produced the same bytes the host did.
+
+That harness contract defect is FIXED (reek 21550): step 2 reads on to the
+`DISK-OUT:` line and step 2b extracts `OUT.CDX` from the image host-side, with
+the guest's declared `SIZE:` as the oracle. `test-disk-compile` PASSES end to
+end for the first time, printing 12.
+
+Falsified along the way, so nobody spends it again: `Read-StreamLine` reads ONE
+byte at a time (`build/vm-config.ps1:619`) and is not consuming the head of the
+binary. Separately worth fixing but NOT the cause: `Read-StreamBytes` (`:637`)
+returns `$null` on a partial read and discards how far it got, so the harness
+cannot say how many bytes arrived.
+
+## 2.20 -- CLOSED by `plug-selftest` (reek, main 21608): the `evidence` plug was BUILT by the gate and never RUN, and the harness that would run it had no caller
+
+Found by censusing `-Src` capability across all 56 plugs while repairing
+`plug-smoke`s scope (reek 21440 had widened it by "carries a run.ps1", which is
+the wrong axis). Six plugs bind no `-Src` and so cannot be driven by
+`plug-smoke`: `arm64`, `elf`, `evidence`, `img`, `pe`, `riscv`.
+
+**Correcting this row's own first version, which said `evidence` is graded by no
+phase at all. It is build-graded.** `plug-binary` appends the changed plug to its
+set (21440), runs that plug's `build.ps1`, and fails on a missing
+`<plug>-plug.cdx` or a build log carrying `CODEGEN-ERRORS`. `evidence/build.ps1`
+emits `build-output/evidence-plug.cdx`, which is the name that phase looks for
+and which is present on disk, so a change to `evidence` IS compiled and checked
+by the gate. What it is not is RUN.
+
+**The grader already exists and nothing calls it.** `test-evidence.ps1` (12 KB,
+beside the plug) carries **EIGHT** arms, read off its `$expected` table, which is
+the authoritative list: `self`, `stable`, `board` and `fact-ingest` positive, and
+`no-log`, `not-cdx`, `dirty-log` and `no-store` requiring the plug to REFUSE a
+claim it cannot support. A complete census through `Get-ChildItem |
+Select-String`, not the indexed search: no file in `build/`, `codex/build/` or
+the plug directory invokes it. The only references anywhere are its own header
+and two docs (`ComplianceEvidence.md`, `GitHubUpdate47.md`). That is L-NOGATE
+with the runner already written.
+
+**Count it from `$expected`, never from the header.** This row first said FIVE
+arms because that is what the file's own header comment lists; it documents five
+of the eight and omits `board`, `fact-ingest` and `no-store`. Prose about our own
+code losing to the code, in the file a reader would trust most (R-PROSE, L-COUNT).
+`ComplianceEvidence.md:311` names two of the missing three, so the header was
+already contradicted in the tree.
+
+It cannot be `plug-smoke`: that phase's contract is `run.ps1 -Src <subject> -Out
+<file>` producing non-empty target text, and `evidence` takes `-Cdx` and emits a
+package (`Evidence.cdxe`, `Evidence.html`, `SBOM.cdx.json`).
+
+Also corrected here: `t3isa` DOES take `-Src` and is smoke-capable, so the
+"binary plugs" set and the "no `-Src`" set are NOT the same set. Anyone reasoning
+from `plug-binary`s list will get this wrong, which is how the red at 21440
+happened.
+
+### What a control looks like, if Damian and red clear a phase for it
+
+NOT TAKEN: adding a test to the gate needs red's clearance first (Damian,
+2026-08-21), so this is the proposal and the calibration, not a change.
+
+The trigger is derivable rather than listed, the same repair as 21557: a plug
+that ships its own `test-*.ps1` gets it run when THAT plug changes. `evidence`
+is the only plug that currently has one, so the phase costs nothing on every
+other CL.
+
+Four arms, and the two that matter are the ones that must go RED:
+
+1. POSITIVE. `test-evidence.ps1` at head: all five of its arms pass.
+2. SABOTAGE, and `stable` is the right one to break because byte-stability is
+   the property an innocent change actually loses and it is constraint 1 of
+   `ComplianceEvidence.md`. Make `Evidence.cdxe` vary between two runs of the
+   same inputs; the phase MUST fail. A sabotage of `dirty-log` is the second
+   choice: let the plug claim effect-types over a log carrying `error CDX2031:`.
+3. REACHED, per L-VACUOUS. A red is only evidence if the arm ran: confirm the
+   sabotaged plug REBUILT and the arm EXECUTED, rather than the phase dying
+   earlier on a build error and being read as the sabotage being caught.
+4. DEFERRED. A CL touching nothing under `codex/plugs/evidence/**` leaves the
+   phase skipped, so the cost lands only on the lane that changed the plug.
+
+The sabotage must be calibrated BEFORE the fix is believed, which is the half
+21440 skipped: its control used `qt`, a plug of the passing shape, so the
+failing shape was never exercised.
+
+### CLOSED (reek, main 21608), and the scope was wider than this row first said
+
+`plug-selftest` runs a plug's own `test-*.ps1` when THAT plug changes, with the
+trigger derived from the plug directory rather than listed. It is NOT the
+evidence plug alone: four plugs ship six harnesses (evidence, img, ptx, spirv).
+This row asserted evidence was the only one; that was wrong and was caught by
+the phase's own selection control before landing.
+
+All six measured GREEN at head first, so no `.skip` was needed and the phase
+cannot red a change for a pre-existing failure. Costs, the sabotage, and red's
+ruling that `img/test-img` stays uncapped are in
+`docs/Designs/Active/Build/Build.md`, the phase row and the section under it.
+
+**That finding is now CLOSED (reek, 2026-09-02).** `plug-binary` graded one
+binary per plug and asserted `<plug>-plug.cdx`, so `spirvbin-plug.cdx` was built
+and checked by nothing. The phase now walks every `build*.ps1` a graded plug
+ships and reads the binary's name off that script's own
+`Build-TranspilerPlug -PlugName`, so a second binary added later is graded
+without editing a list here, and a failure is labelled `plug(binary)`.
+
+**The predicate is the declaration, not the script count, and the first cut got
+that wrong.** Keying on "-PlugName" alone red-gated the CONTROL: `elf`, `pe` and
+`img` hand-roll `Bundle-PlugSource -PlugName 'elf-plug'`, whose value already
+carries the suffix, so the phase looked for `elf-plug-plug.cdx` and failed three
+passing plugs. Anchoring the match to `Build-TranspilerPlug` fixes it. The other
+two multi-script plugs are correctly skipped: `evidence/build-wasm.ps1` and
+`wasm`'s four page builds declare no plug name because they emit no plug binary
+(L-AXIS: the axis is what a script DECLARES, not how many a plug ships).
+
+**Calibrated in both directions, and the first sabotage was vacuous.** Appending
+`name : Integer =` to `SpirvBinPlug.codex` reached the bundle and compiled
+CLEAN, so that arm measured nothing (L-CONSTRUCT: a sabotage that moves no
+colour is the arm saying it never reached the branch). A real one, an undefined
+name in `dispatch-bin`, breaks `build-bin.ps1` at `CDX3002` with exit 5 and
+leaves `spirv-plug.cdx` building fine, which is the discrimination this needed.
+Control clean: PASS. Sabotage: `FAIL: binary plug build -- spirv(spirvbin)`.
+**Stale-artifact arm: still FAILS** with a previous `spirvbin-plug.cdx` in
+place, because the `build.log` check fires even when `Test-Path` is satisfied.
+
+## 2.21 -- OPEN (red, 2026-09-02, from COMPILER-36): the wire now states the integer overflow contract, and every plug wraps where the contract says trap
+
+Ruled 2026-09-01 (root, COMPILER-36): mul-int on a plain Integer is TRAPPING by contract; a wrapping multiply is spelled mul-int-wrapping and its node type reads (int i64-min 9223372036854775807 ov-wrap). codex/plugs/common/IRTextParser.codex parses the new spelling to IrMulInt, so every plug compiles unchanged and every plug still wraps on the trapping default. That is now a defect against a stated contract rather than blindness, one row per family, and x86-64 bare metal is the only lane that traps today. What each family needs: the native lanes (arm64, riscv) a trap after the multiply keyed on the op spelling or the node type; wasm an i64.mul overflow check (reek's parity work); the text plugs whatever the target language does for a checked multiply, or a documented refusal. add-int and sub-int landed the same day (red): add-int-wrapping and sub-int-wrapping are their wrapping spellings, parsed to the plain ops the same way, so the same gap now covers three ops per family. The fixtures are codex/test/ops/int-mul-wrapping and int-add-wrapping (wrapping arms, must PASS on every lane) and a trapping arm is x86-only until a lane traps. The default also reaches a plug's own PROGRAM, and plug-selftest is the only runner that sees it: the evidence plug's ev-u64-loop assembled a little-endian u64 as acc + byte * mul with mul * 256, which reaches 2^64 on the eighth byte, and it died !EXC=06 at the first plug-selftest after 21676 (fester, seed 15A1A565); it is bit-or/bit-shl now (red, 2026-09-02). A byte assembler is a shift, not a multiply.
+
+**SIZED 2026-09-02 (red, read only, no run), and it is a shape, not a count (L-ADJECTIVE).** The parser needs NOTHING: `ir-parse-expr-binary` (`IRTextParser.codex:727`) already parses the binary node's TYPE from the wire and `parse-ov-mode` reads `ov-wrap`, so every plug holds the mode per node today and can key on `int-ty-wraps ty` (`Types/CodexType.codex:141`, a chapter every bundle carries). The collapse of the `-wrapping` spellings to the plain ops is therefore harmless; the gap is at the EMIT sites only. Three closures: **(1) native and wasm, three lanes.** arm64 emits at `a64-emit-binary` (`Arm64CodeGen.codex:1101`, the type is already a parameter) with two mul fast paths (shift, mul-by-3) that cannot observe overflow and must be gated on wraps; riscv at 6 sites across `RiscVCodeGen*.codex`; wasm at `wat-bin-instr` (`WasmEmitter.codex:1165`), which takes the OP alone and needs the type threaded in, then `i64.add`/`sub` get a sign-overflow check and `i64.mul` a checked helper (no i128 in wasm). About half a lane-day each; arm64 and riscv are UNGRADABLE while Renode is banned, wasm is gradable on reek's hosted parity harness. **(2) text plugs, 47 emitters with ONE `when op` table each** (`Select-String IrMulInt` over `codex/plugs/*/*.codex`), and the work per plug is a language decision, not a patch: targets that trap on signed overflow by default need nothing but a sentence (Swift, Zig safe modes, Nim, Ada with range checks; assumed from the languages, not measured here); targets with a checked primitive get a helper (Rust `checked_*`, C# `checked`, Java/Kotlin/Scala/Groovy `Math.*Exact`, Go by hand); bignum targets (Python, Ruby, Elixir, Clojure, Scheme, Julia is not one) need an explicit i64 range check or a documented refusal; double-valued targets (JavaScript, TypeScript and the eight front-end wrappers that emit through them, Lua, PHP, Perl) are already wrong past 2^53 and want a REFUSAL rather than a check. **(3) a ruling before (2):** whether a text plug may refuse the trapping default outright (the row's own "documented refusal"), because that decides about 20 of the 47. Grading: `codex/test/ops/int-mul-wrapping` and `int-add-wrapping` must stay green on every lane and a trapping arm exists only for x86; each text plug is graded only where its toolchain is on the box. Order if taken: wasm first (gradable), then the checked-primitive text plugs, natives when Renode returns.
+
+**WASM HALF LANDED (red, 2026-09-02, red 22093).** `emit-wat-binary` takes the node type and keys on `int-ty-wraps`: a wrapping-band node keeps `i64.add`/`sub`/`mul`, a plain Integer calls `$cx_add_trap`/`$cx_sub_trap`/`$cx_mul_trap`, three constant-time helpers in the module preamble that end in `unreachable` (the plug's refusal form) on signed overflow: add and sub by the sign-xor test, mul by the quotient after answering `a = 0` and `i64-min / -1` first so the division itself cannot trap. Measured at kernel 3127F4C7 under wasmtime 45: the three wrapping fixtures PASS unchanged; a probe (band add, in-band mul, small add, then a plain `top + 1`) prints its three good lines and traps at the fourth; the CONTROL is the same WAT with the three calls replaced by the raw instructions, which assembles, exits 0 and prints `-9223372036854775808` then `UNREACHED`, so the arm reaches the overflow and the check is what traps (L-VACUOUS). The probe is not a fixture because bare metal cannot grade a program that traps (`.expected` would enshrine a partial capture); it lives in the CL description. **Text plugs, ruled by root 2026-09-02:** a target with a checked primitive emits it; a target without one (the JavaScript family, the bignum languages) REFUSES the op with a named diagnostic rather than emitting a silently wrapping one (L-ACCEPTED, L-BAILVALUE). arm64 and riscv wait on Damian's Renode ruling.
+
+**TEXT FAMILY 1 LANDED (red, 2026-09-02, red 22107): zig, csharp, rust.** Each keys on `int-ty-wraps` at its one binary site: zig emits `+`/`-`/`*` for a plain Integer (zig's own safety checks trap under `zig run`) and `+%`/`-%`/`*%` for the band, which was the table's answer for EVERY integer op before, so a plain Integer wrapped by construction there; csharp emits `checked(...)` and the unchecked default for the band; rust emits `checked_*(...).expect("integer overflow")` and `wrapping_*`, by emission only (no rustc on this box). `codex/test/plug-oracle-arith` gains `wrap-mul` and `wrap-add` rows with their truth lines in `.expected`, so a plug that answers a band op with a bignum or a double now fails the oracle: measured, zig 57/57 and csharp 57/57 PASS; python, javascript and typescript are the refusal family and answer those two rows wrong until their CL lands. The probe (plain `top + 1` after three good lines) panics in zig (`integer overflow`, exit 3) and throws `OverflowException` in csharp; the controls are the same emitted programs with only `add_plain`'s operator swapped (`+%` in zig, `checked(` removed in cs), which exit 0 and print `-9223372036854775808` then `UNREACHED`. One trap the control paid for: a global `+` to `+%` swap in emitted zig also rewrites the prelude's pointer arithmetic and does not compile, so a zig sabotage is cut to the one function. Remaining checked-primitive plugs with no runtime here: java, kotlin, scala, groovy (`Math.*Exact`), go (by hand); then the refusal family (python, ruby, elixir, clojure, scheme, javascript, typescript and its eight front-end wrappers, lua, php, perl) as one mechanical CL under root's ruling.
+
+## 2.22 -- OPEN (fester, 2026-09-02): a bundle's staleness check reads only the plug's own chapters
+
+`build/deck-headroom.ps1 -Plugs` now decides staleness on a CONTENT digest of the
+plug's sources (main CL for the mtime fix), and the digest covers the plug
+directory's own `*.codex` only, which is the set the mtime check covered. But
+`Add-PlugChapter` also bundles compiler declaration chapters, Lir,
+`codex/plugs/common/PlugTypes.codex` and `IRTextParser.codex`. A change to one of
+those leaves every bundle reading FRESH while every bundle is in fact out of
+date, so the plug deck check measures the previous revision and says nothing.
+Widening the digest to the assembler's actual input list is the fix; it changes
+which plugs read stale, so it is its own change and its own rebuild, not a
+rider on the mtime one. Named rather than built on root's ruling, 2026-09-02.
+
+## 2.23 -- OPEN (reek, 2026-09-02, measured not investigated): two wasm-e2e subjects disagree with x86-64 on a non-ASCII character
+
+wasm-e2e.ps1 over all 31 fixtures after the 21960 plug rebuild: 29 passed,
+2 failed. cce-text-rt and aw-bytes-rt both fail the same way, and only on
+the accented rows: where x86-64 prints the letter, the wasm arm prints the two
+bytes of its UTF-8 form, so the lines differ by exactly one character
+(cce-text-rt 151 against 149, aw-bytes-rt 68 against 67). Every other row
+of both subjects agrees, including the numeric-code-unit and length rows, so
+this is the accented LITERAL path rather than Text generally.
+
+Those two subjects are the ones 1.61 and 1.60 added when the plug's Text was
+moved off end-to-end UTF-8 onto CCE, so this is either a regression of that
+work or the harness comparing a UTF-8 capture against a CCE one, and which of
+the two it is has NOT been established. Noticed while grading an unrelated
+change; not caused by it, and the check is mechanical: neither subject
+contains a # at all, so wat-lit-pat-const never sees a hex spelling in
+either. Unowned.
+
+## 2.26 -- OPEN (unowned, found by reek 2026-09-02): all 49 plug run.ps1 share a fixed scratch path, so two concurrent runs cross their outputs
+
+Every `codex/plugs/<p>/run.ps1` writes its IR to `build-output/last-run.ir`
+and its compile log to `build-output/run.log`, both fixed. Two invocations of
+the same plug in parallel race on those, and the loser reads the winner's IR.
+
+It does not fail. Both runs exit 0 and emit well-formed, plausible output for
+the wrong subject, so a harness that runs plug runners in parallel reports a
+content difference that reads as a defect in the emitter. Measured on wgsl at
+2 concurrent: five gpushow kernels graded DIFFERS, and the tell was ReflectKernel
+coming back at exactly D20Kernel's line count (L-SUSPECT). Sequentially the same
+five are byte-identical. Cost ten guests.
+
+wgsl is FIXED (reek, this row's CL): the scratch is keyed to the output file
+name, proven by running the crossed pair concurrently and requiring both to
+match their sequential baselines, against the crossed run as the negative arm.
+The other 48 are untouched and carry the trap.
+
+The sweep is safe and mechanical: nothing outside these scripts reads
+`last-run.ir` or `run.log`, measured over build, codex/plugs and apps. Two
+lines per plug.
+
+## 2.27 -- FIXED (reek, 2026-09-02): build-page trusted a concatenated compiler source it does not produce, and shipped a page built from five-hour-old compiler
+
+`build-page.ps1` takes the compiler's concatenated source from
+`build/output/Codex.codex` and REFUSED only when the file was ABSENT. Nothing in
+the page build produces that file: a gate's source-concat phase does, so between
+gates it is whatever the last one left, and a merge-down moves `codex/compiler`
+without touching it.
+
+The failure is not quiet in the end, and that is the only reason it was caught.
+The `cdx-arm` parity check compiles a 92-byte program through the wasm module and
+through bare metal and demands byte-identical CDX. It read:
+
+    FAIL: CDX payload sizes differ, wasm 89347 vs x86-64 89506.
+
+which reads as a wasm-vs-x86 CODEGEN divergence and is not one. Localised by
+header field: text 84249 against 84390, so 141 bytes of extra CODE, with rodata
+(524), capability (16) and proof (11) byte-identical in size, debug +23 and
+alignment padding -5, accounting for all 159. The 141 bytes are COMPILER-48 (5)'s
+reservation guard and top-cell poke (main 22100). The concat's `emit-build` was
+`build minus deck-reservation-guard and minus the top-cell poke`, fester's own
+words for the PRE-fix state, so the two arms were different versions of the
+compiler and not two backends disagreeing (L-SAMEVER). Regenerating the concat
+moved it 6,029 bytes.
+
+Two things nearly sent this the wrong way. The previously PUBLISHED module gives a
+byte-identical 89347, so a rebuilt plug looked innocent and was; and the module,
+the .wat and the IR were all freshly stamped by the failing run, so every mtime
+in the output directory said "fresh" while the INPUT was stale.
+
+FIXED: `build-page.ps1` now refuses when the concat is older than the newest
+`codex/compiler/**/*.codex`, and names the file and the regeneration command. The
+plug fingerprint beside it already guards the EMITTER for this reason; this guards
+the SOURCE. Calibrated both ways: the stale concat exits 2 with the refusal, the
+regenerated one passes.
+
+## 2.28 -- findings routed from Steve Howell's safari-codex intake, UNVERIFIED
+
+Routed as pointers by val on 2026-09-02 during the safari intake (`apps/safari`,
+provenance commit `571d7d08`), at root's direction, and deliberately NOT acted
+on. None of these was reproduced here, so each is his claim rather than our
+measurement, and the falsifying test runs before any of it is believed or quoted
+(L-ROUTE). His documents are the source and they are not in our depot: read them
+in his repository at that commit.
+
+- **`FINDINGS.md` item 3, the zig plug: single-letter function names `a` to `d`
+  are unusable.** A Codex function named `d` emits `fn d_`, which collides with
+  the `Tup4` comptime parameter `d_`, and the resulting error appears at a
+  distance from its cause. He rates it low and calls it his strongest PR
+  candidate after the Cordic one, the fix being to move the tuple constructors'
+  comptime parameters out of the namespace `zig-sanitize` renames reserved user
+  names into. **Never sent upstream: this is in no PR and no issue.**
+- **`WASM_FINDINGS.md` 4, OPEN: `show` on a `Real` prints its bit pattern.**
+- **`WASM_FINDINGS.md` 7, OPEN: the vector ops have finding 1's shape**, finding
+  1 being that `Real` was not implemented, which he has since fixed on his side.
+- **`WASM_FINDINGS.md` 9, OPEN: neither `env` import can be reached by any
+  program.** Note his own local commit `e6f09556` is titled for this and the
+  document still marks it OPEN, so establish which is current before working it.
+
+Nine further entries in `WASM_FINDINGS.md` are marked FIXED on his side and are
+not routed here as gaps; nine of the twenty commits his fork carries are already
+proposed to us as PR 112, whose emitter is byte-for-byte the one his seventeen
+programs and ten differential probes ran against (`apps/safari/PROVENANCE.md`
+has the content hash that settles it). His items 7 and 8 belong to a different
+repository entirely (`angry-gopher`) and are not ours.

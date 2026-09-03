@@ -1,0 +1,530 @@
+Chapter: FireworksShow
+
+ The skyline is BUILT here, not in the browser. The page's claim is that the
+ pictures are compiled rather than hand-written, and a city drawn by a
+ JavaScript function is a hole straight through it: the compute kernel would be
+ Codex and everything the viewer actually recognises as a city would not be.
+ So this chapter is the geometry, compiled to WebAssembly by codex/plugs/wasm,
+ and the page is left holding a vertex buffer it did not compose.
+
+ It emits a TRIANGLE mesh rather than a rectangle list. Landmarks are the
+ reason: a pyramid, a dome, a splayed leg and a tapered crown are not
+ rectangles, and stacking narrowing boxes to imitate one is what makes a
+ skyline read as a bar chart.
+
+ Everything is integer. Coordinates are in 1/16 of a pixel so a taper or a
+ dome has somewhere to put its fractions, colours are 0..1000 per channel, and
+ the trig below returns 1/1000, which is the same fixed point the GPU kernel
+ beside this file uses.
+
+ Memory, as byte offsets into WASM linear memory. The page reads all of it:
+
+   131072  vertex count written by build-city
+   131076  RNG state
+   262144  vertex data, 8 words per vertex, 12000 vertices maximum
+             x, y, r, g, b, kind, phase, spare
+             kind 0 masonry, 1 window, 2 aviation beacon
+
+ We say:
+
+Section: Memory
+
+  w32 : Integer, Integer -> Integer
+  w32 (addr) (val) = poke-32 0 addr val
+
+  rd : Integer -> Integer
+  rd (addr) = peek-32 0 addr
+
+  vtx-count-addr : Integer = 131072
+  roof-count-addr : Integer = 131080
+  vtx-base : Integer = 262144
+  vtx-stride : Integer = 32
+  vtx-max : Integer = 60000
+
+ Rooftops, so the page launches shells off the buildings it is drawing rather
+ than off a straight line it picked. Two words per roof, x then y.
+
+  roof-base : Integer = 196608
+  roof-max : Integer = 128
+
+  roof-add : Integer, Integer -> Integer
+  roof-add (x) (y) =
+    let c = rd roof-count-addr
+    in if c >= roof-max then c
+    else let a = w32 (roof-base + c * 8) x
+    in let b = w32 (roof-base + c * 8 + 4) y
+    in w32 roof-count-addr (c + 1)
+
+Section: Screen
+
+ Sim space is 1024 by 768 pixels, held here in 1/16 of a pixel.
+
+  q : Integer = 16
+  sw : Integer = 16384
+  sh : Integer = 12288
+  horizon : Integer = 9024
+
+Section: Random
+
+ A hash rather than a stream, so a city is a pure function of its seed and the
+ same seed rebuilds the same skyline on any machine.
+
+  hsh : Integer -> Integer
+  hsh (n) =
+    let a = bit-xor (n * 374761393 + 668265263) (bit-shru n 13)
+    in let b = bit-xor (a * 1274126177) (bit-shru a 16)
+    in bit-and b 1048575
+
+  hsh-range : Integer, Integer, Integer -> Integer
+  hsh-range (n) (lo) (hi) =
+    if hi <= lo then lo else lo + (hsh n) - ((hsh n) / (hi - lo)) * (hi - lo)
+
+Section: Fixed-Point Trig
+
+ Milliradian in, 1/1000 out.
+
+  tw : Integer -> Integer
+  tw (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
+
+  sin-core : Integer -> Integer
+  sin-core (x) =
+    let x2 = x * x / 1000
+    in let x3 = x2 * x / 1000
+    in let x5 = x3 * x2 / 1000
+    in x - x3 / 6 + x5 / 120
+
+  tsin : Integer -> Integer
+  tsin (raw) =
+    let a = tw raw
+    in if a <= 1570 then sin-core a
+    else if a <= 3141 then sin-core (3141 - a)
+    else if a <= 4712 then 0 - sin-core (a - 3141)
+    else 0 - sin-core (6283 - a)
+
+  tcos : Integer -> Integer
+  tcos (raw) = tsin (raw + 1570)
+
+Section: Vertex Emission
+
+ Each of these takes the running vertex index and returns the next one, so a
+ shape is a chain of calls and the count falls out of the last.
+
+  emit-v : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-v (n) (x) (y) (r) (g) (b) (kind) (phase) =
+    if n >= vtx-max then n
+    else let o = vtx-base + n * vtx-stride
+    in let a = w32 o x
+    in let bb = w32 (o + 4) y
+    in let c = w32 (o + 8) r
+    in let d = w32 (o + 12) g
+    in let e = w32 (o + 16) b
+    in let f = w32 (o + 20) kind
+    in let g2 = w32 (o + 24) phase
+    in let h = w32 (o + 28) 0
+    in n + 1
+
+  emit-tri : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-tri (n) (x0) (y0) (x1) (y1) (x2) (y2) (r) (g) (b) (kind) (phase) =
+    emit-v (emit-v (emit-v n x0 y0 r g b kind phase) x1 y1 r g b kind phase) x2 y2 r g b kind phase
+
+ Four corners, top-left first and clockwise, with the top and bottom colours
+ given separately so a facade can be graded up its own height.
+
+  emit-quad : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-quad (n) (x0) (y0) (x1) (y1) (x2) (y2) (x3) (y3) (rt) (gt) (bt) (rb) (gb) (bb) (kind) (phase) =
+    let a = emit-v n x0 y0 rt gt bt kind phase
+    in let b = emit-v a x1 y1 rt gt bt kind phase
+    in let c = emit-v b x2 y2 rb gb bb kind phase
+    in let d = emit-v c x0 y0 rt gt bt kind phase
+    in let e = emit-v d x2 y2 rb gb bb kind phase
+    in emit-v e x3 y3 rb gb bb kind phase
+
+  emit-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-rect (n) (x) (y) (w) (h) (r) (g) (b) (kind) (phase) =
+    emit-quad n x y (x + w) y (x + w) (y + h) x (y + h) r g b r g b kind phase
+
+  emit-rect-g : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-rect-g (n) (x) (y) (w) (h) (rt) (gt) (bt) (rb) (gb) (bb) =
+    emit-quad n x y (x + w) y (x + w) (y + h) x (y + h) rt gt bt rb gb bb 0 0
+
+ A centred trapezoid. Every tower, spire, obelisk and crown in the file is one
+ or a stack of them.
+
+  emit-taper : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-taper (n) (cx) (yt) (wt) (yb) (wb) (rt) (gt) (bt) (rb) (gb) (bb) =
+    emit-quad n (cx - wt / 2) yt (cx + wt / 2) yt (cx + wb / 2) yb (cx - wb / 2) yb rt gt bt rb gb bb 0 0
+
+ A half-ellipse fan, for the domes and the saucer.
+
+  emit-dome : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-dome (n) (cx) (cy) (rx) (ry) (r) (g) (b) (i) (seg) =
+    if i >= seg then n
+    else let a0 = 3141 + i * 3141 / seg
+    in let a1 = 3141 + (i + 1) * 3141 / seg
+    in let x0 = cx + (tcos a0) * rx / 1000
+    in let y0 = cy + (tsin a0) * ry / 1000
+    in let x1 = cx + (tcos a1) * rx / 1000
+    in let y1 = cy + (tsin a1) * ry / 1000
+    in let m = emit-tri n cx cy x0 y0 x1 y1 r g b 0 0
+    in emit-dome m cx cy rx ry r g b (i + 1) seg
+
+Section: Palette
+
+ Masonry is a cold near-black that the burst light in the page's fragment
+ shader lifts. The three shades are the base, the roofline, and the stone the
+ monuments are cut from, which is warmer and far lighter because those two are
+ floodlit in life and read wrong at facade darkness.
+
+  mas-r : Integer = 22
+  mas-g : Integer = 24
+  mas-b : Integer = 40
+
+  top-r : Integer = 58
+  top-g : Integer = 62
+  top-b : Integer = 96
+
+  stone-r : Integer = 300
+  stone-g : Integer = 290
+  stone-b : Integer = 260
+
+  stone-hi-r : Integer = 400
+  stone-hi-g : Integer = 390
+  stone-hi-b : Integer = 350
+
+  beacon-r : Integer = 950
+  beacon-g : Integer = 160
+  beacon-b : Integer = 100
+
+  emit-beacon : Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-beacon (n) (x) (y) (s) (phase) =
+    emit-rect n (x - s) (y - s) (s * 2) (s * 2) beacon-r beacon-g beacon-b 2 phase
+
+Section: Depth Ranks
+
+ Three rows of city, drawn back to front. Without them a skyline is one line of
+ boxes on a flat backdrop, which is the cardboard-cutout look: everything the
+ same darkness at the same distance with nothing behind it.
+
+ Rank decides four things at once, and it is the combination that reads as
+ depth rather than any one of them. Distant buildings are LIGHTER, not darker,
+ because the air between is full of city glow, which is the whole of
+ atmospheric perspective and the part that gets left out. They are also
+ shorter on screen, narrower, and their windows are dimmer and denser.
+
+  rank-base-r : Integer -> Integer
+  rank-base-r (k) = if k == 0 then 46 else if k == 1 then 30 else 15
+
+  rank-base-g : Integer -> Integer
+  rank-base-g (k) = if k == 0 then 52 else if k == 1 then 34 else 17
+
+  rank-base-b : Integer -> Integer
+  rank-base-b (k) = if k == 0 then 86 else if k == 1 then 58 else 31
+
+  rank-top-r : Integer -> Integer
+  rank-top-r (k) = if k == 0 then 78 else if k == 1 then 54 else 34
+
+  rank-top-g : Integer -> Integer
+  rank-top-g (k) = if k == 0 then 86 else if k == 1 then 60 else 38
+
+  rank-top-b : Integer -> Integer
+  rank-top-b (k) = if k == 0 then 130 else if k == 1 then 96 else 62
+
+ How bright a lit window is at that distance, in percent.
+
+  rank-win : Integer -> Integer
+  rank-win (k) = if k == 0 then 42 else if k == 1 then 72 else 100
+
+Section: Windows
+
+ A real facade is a GRID, and the grid is most of what makes a building look
+ like a building. The pitch is 7 by 9 pixels rather than 13 by 15, which is
+ roughly four times as many openings, and a lit one is 3 by 4 with the rest of
+ the cell left as the gap between them. Two tempers, a warm office and a cold
+ one, and a run of consecutive cells shares a temper so a floor reads as a
+ floor rather than as confetti.
+
+ A window is its own emitter in the page, so these colours are light rather
+ than surface.
+
+  win-pitch-x : Integer = 112
+  win-pitch-y : Integer = 144
+
+  win-cols : Integer -> Integer
+  win-cols (w) = let c = (w - 6 * q) / win-pitch-x in if c < 1 then 1 else c
+
+  win-rows : Integer -> Integer
+  win-rows (h) = let r = (h - 12 * q) / win-pitch-y in if r < 1 then 1 else r
+
+  emit-windows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-windows (n) (x) (top) (seed) (k) (cols) (rows) (rank) (guard) (spare) =
+    if k >= cols * rows then n
+    else if guard <= 0 then n
+    else if n >= vtx-max then n
+    else let cc = k - (k / cols) * cols
+    in let rr = k / cols
+    in let lit = hsh (seed + k * 2654435 + x)
+ A whole floor is dark now and then, which is what an office block at night
+ looks like and what a per-cell hash on its own never produces.
+    in let floor-dark = bit-and (hsh (seed + rr * 7919)) 7
+    in if floor-dark == 0 then emit-windows n x top seed (k + 1) cols rows rank (guard - 1) spare
+    else if bit-and lit 15 >= 7 then emit-windows n x top seed (k + 1) cols rows rank (guard - 1) spare
+    else let wx = x + 3 * q + cc * win-pitch-x
+    in let wy = top + 7 * q + rr * win-pitch-y
+    in let warm = bit-and (hsh (seed + rr * 31 + cc / 3)) 3
+    in let br = (430 + bit-and (bit-shru lit 11) 340) * rank-win rank / 100
+    in let wr = if warm == 0 then br * 60 / 100 else br
+    in let wg = br * 78 / 100
+    in let wb = if warm == 0 then br else br * 40 / 100
+    in let m = emit-rect n wx wy (3 * q) (4 * q) wr wg wb 1 0
+    in emit-windows m x top seed (k + 1) cols rows rank (guard - 1) spare
+
+Section: Buildings
+
+ A tower is a graded box, and above a certain height it sets back twice and
+ carries a mast, which is most of what separates a skyline from a bar chart.
+
+ A flat rectangle of one colour is a cutout. Three things fix that and they
+ are all cheap: the facade is graded up its height, a narrow strip down the
+ left edge is lighter so the building has a lit corner and therefore a
+ direction, and a darker strip down the right gives it a shaded one. That is
+ a box with a light source rather than a silhouette.
+
+  emit-tower : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-tower (n) (x) (w) (h) (seed) (rank) =
+    let top = horizon - h
+    in let shade = bit-and (hsh (seed + 71)) 15
+    in let br = rank-base-r rank + shade
+    in let bg = rank-base-g rank + shade
+    in let bb = rank-base-b rank + shade * 2
+    in let tr = rank-top-r rank + shade
+    in let tg = rank-top-g rank + shade
+    in let tb = rank-top-b rank + shade * 2
+    in let body = emit-rect-g n x top w (h + 4 * q) tr tg tb br bg bb
+    in let edge = 2 * q
+    in let litc = emit-rect-g body x top edge (h + 4 * q) (tr * 190 / 100) (tg * 190 / 100) (tb * 175 / 100) (br * 210 / 100) (bg * 210 / 100) (bb * 190 / 100)
+    in let dark = emit-rect-g litc (x + w - edge) top edge (h + 4 * q) (tr * 55 / 100) (tg * 55 / 100) (tb * 60 / 100) (br * 50 / 100) (bg * 50 / 100) (bb * 55 / 100)
+    in let ledged = emit-ledges dark x top w h seed rank 0
+    in let cols = win-cols w
+    in let rows = win-rows h
+    in let lit = emit-windows ledged x top seed 0 cols rows rank 900 0
+    in let rf = roof-add (x + w / 2) top
+    in emit-roof lit x top w h seed rank
+
+ A mechanical band every eight floors or so, lighter than the facade. It is
+ the horizontal line that stops a tall building being a smooth column.
+
+  emit-ledges : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-ledges (n) (x) (top) (w) (h) (seed) (rank) (i) =
+    if i >= 6 then n
+    else let y = top + (i + 1) * h / 7
+    in if y >= top + h then n
+    else if n >= vtx-max then n
+    else let c = bit-and (hsh (seed + i * 337)) 3
+    in if c == 0 then emit-ledges n x top w h seed rank (i + 1)
+    else let lr = rank-top-r rank * 150 / 100
+    in let lg = rank-top-g rank * 150 / 100
+    in let lb = rank-top-b rank * 150 / 100
+    in emit-ledges (emit-rect n x y w (2 * q) lr lg lb 0 0) x top w h seed rank (i + 1)
+
+ Rooftops carry things. A bare parapet on every building is the other half of
+ the cutout look, and the clutter is what the eye reads as "somebody works
+ there": a water tank on legs, a mechanical penthouse, a mast, a stub aerial.
+
+  emit-roof : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-roof (n) (x) (top) (w) (h) (seed) (rank) =
+    let cx = x + w / 2
+    in let tr = rank-top-r rank
+    in let tg = rank-top-g rank
+    in let tb = rank-top-b rank
+    in let pick = bit-and (hsh (seed + 913)) 7
+ A parapet lip on every roof, one pixel proud of the facade and lighter.
+    in let lip = emit-rect n (x - q) (top - 2 * q) (w + 2 * q) (3 * q) (tr * 160 / 100) (tg * 160 / 100) (tb * 160 / 100) 0 0
+    in if h > 300 * q then
+      let a = emit-taper lip cx (top - 26 * q) (w * 62 / 100) top w tr tg tb tr tg tb
+      in let b = emit-taper a cx (top - 46 * q) (w * 34 / 100) (top - 26 * q) (w * 62 / 100) tr tg tb tr tg tb
+      in let c = emit-rect b (cx - 2 * q) (top - 92 * q) (4 * q) (46 * q) tr tg tb 0 0
+      in emit-beacon c cx (top - 94 * q) (2 * q) (bit-and (hsh (seed + 7)) 999)
+    else if pick == 0 then emit-water-tank lip cx top tr tg tb
+    else if pick == 1 then
+      let a = emit-rect lip (cx - w / 6) (top - 13 * q) (w / 3) (13 * q) tr tg tb 0 0
+      in emit-rect a (cx + w / 8) (top - 20 * q) (2 * q) (20 * q) tr tg tb 0 0
+    else if pick == 2 then
+      let a = emit-rect lip (cx - 5 * q) (top - 30 * q) (10 * q) (14 * q) tr tg tb 0 0
+      in let b = emit-rect a (cx - q) (top - 44 * q) (2 * q) (44 * q) tr tg tb 0 0
+      in emit-beacon b cx (top - 46 * q) (q + q / 2) (bit-and (hsh (seed + 23)) 999)
+    else if pick == 3 then emit-water-tank (emit-rect lip (x + 3 * q) (top - 9 * q) (w / 4) (9 * q) tr tg tb 0 0) (x + w * 3 / 4) top tr tg tb
+    else if pick == 4 then
+      emit-rect lip (x + w / 5) (top - 7 * q) (w * 3 / 5) (7 * q) tr tg tb 0 0
+    else lip
+
+ A rooftop water tank: a barrel on four legs. The shape is unmistakable at
+ this size and it is the single most city-looking object on a roof.
+
+  emit-water-tank : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-water-tank (n) (cx) (top) (tr) (tg) (tb) =
+    let legs = emit-rect (emit-rect n (cx - 6 * q) (top - 9 * q) (2 * q) (9 * q) (tr * 70 / 100) (tg * 70 / 100) (tb * 70 / 100) 0 0) (cx + 4 * q) (top - 9 * q) (2 * q) (9 * q) (tr * 70 / 100) (tg * 70 / 100) (tb * 70 / 100) 0 0
+    in let drum = emit-rect legs (cx - 8 * q) (top - 24 * q) (16 * q) (15 * q) (tr * 125 / 100) (tg * 122 / 100) (tb * 115 / 100) 0 0
+    in emit-tri drum (cx - 8 * q) (top - 24 * q) (cx + 8 * q) (top - 24 * q) cx (top - 32 * q) (tr * 150 / 100) (tg * 146 / 100) (tb * 135 / 100) 0 0
+
+ Height is distributed on a CUBE, not a square. Squaring put the median tower
+ at 152 pixels against a 400 pixel ceiling, so nearly every building landed in
+ the same band and the skyline read as a wall of equal blocks. Cubing drops the
+ median to about 110 and makes the top of the range rare, which is the shape a
+ skyline actually has: a low mass with a few things standing well out of it.
+
+ Rank 0 is the far bank: narrow, short, packed shoulder to shoulder with a
+ negative gap so they overlap and read as a mass rather than as a comb. Rank 2
+ is the near one and carries the height.
+
+  rank-min-w : Integer -> Integer
+  rank-min-w (k) = if k == 0 then 14 * q else if k == 1 then 20 * q else 28 * q
+
+  rank-span-w : Integer -> Integer
+  rank-span-w (k) = if k == 0 then 22 * q else if k == 1 then 40 * q else 66 * q
+
+  rank-min-h : Integer -> Integer
+  rank-min-h (k) = if k == 0 then 40 * q else if k == 1 then 52 * q else 62 * q
+
+  rank-span-h : Integer -> Integer
+  rank-span-h (k) = if k == 0 then 180 * q else if k == 1 then 300 * q else 440 * q
+
+  rank-gap : Integer -> Integer
+  rank-gap (k) = if k == 0 then 0 - q else if k == 1 then 2 * q else 5 * q
+
+  emit-row : Integer, Integer, Integer, Integer, Integer -> Integer
+  emit-row (n) (x) (seed) (guard) (rank) =
+    if x >= sw + 30 * q then n
+    else if guard <= 0 then n
+    else if n >= vtx-max then n
+    else let w = rank-min-w rank + hsh-range (x + seed) 0 (rank-span-w rank)
+    in let hr = hsh-range (x * 3 + seed + 11) 0 1000
+    in let h = rank-min-h rank + hr * hr / 1000 * hr / 1000 * (rank-span-h rank) / 1000
+    in let m = emit-tower n x w h (seed + x) rank
+    in let nx = x + w + rank-gap rank + hsh-range (x + seed + 3) 0 (7 * q)
+    in emit-row m nx seed (guard - 1) rank
+
+Section: Landmarks
+
+ Read as silhouettes at roughly 500 pixels of height. The test is whether the
+ outline alone names the city.
+
+  emit-empire : Integer, Integer -> Integer
+  emit-empire (n) (cx) =
+    let a = emit-rect-g n (cx - 66 * q) (horizon - 250 * q) (132 * q) (254 * q) top-r top-g top-b mas-r mas-g mas-b
+    in let b = emit-rect-g a (cx - 48 * q) (horizon - 340 * q) (96 * q) (92 * q) top-r top-g top-b mas-r mas-g mas-b
+    in let c = emit-rect-g b (cx - 33 * q) (horizon - 408 * q) (66 * q) (70 * q) top-r top-g top-b mas-r mas-g mas-b
+    in let d = emit-taper c cx (horizon - 452 * q) (30 * q) (horizon - 408 * q) (66 * q) 120 126 175 top-r top-g top-b
+    in let e = emit-rect-g d (cx - 15 * q) (horizon - 486 * q) (30 * q) (36 * q) 120 126 175 top-r top-g top-b
+    in let f = emit-taper e cx (horizon - 512 * q) (9 * q) (horizon - 486 * q) (30 * q) 120 126 175 120 126 175
+    in let g = emit-rect f (cx - 2 * q) (horizon - 566 * q) (5 * q) (56 * q) top-r top-g top-b 0 0
+    in emit-beacon g cx (horizon - 570 * q) (2 * q) 0
+
+ Nine bundled tubes topping out at four heights, which is the whole of what
+ makes the Willis silhouette recognisable.
+
+  willis-top : Integer -> Integer
+  willis-top (i) =
+    if i == 0 then 212 else if i == 1 then 300 else if i == 2 then 386
+    else if i == 3 then 300 else 212
+
+  emit-willis-tubes : Integer, Integer, Integer -> Integer
+  emit-willis-tubes (n) (cx) (i) =
+    if i >= 5 then n
+    else let w = 26 * q
+    in let x = cx - 65 * q + i * 27 * q
+    in let t = willis-top i
+    in emit-willis-tubes (emit-rect-g n x (horizon - t * q) w (t * q + 4 * q)
+        (if i == 2 then 78 else top-r) top-g top-b mas-r mas-g mas-b) cx (i + 1)
+
+  emit-willis : Integer, Integer -> Integer
+  emit-willis (n) (cx) =
+    let a = emit-willis-tubes n cx 0
+    in let b = emit-rect a (cx - 17 * q) (horizon - 458 * q) (4 * q) (74 * q) top-r top-g top-b 0 0
+    in let c = emit-rect b (cx + 13 * q) (horizon - 458 * q) (4 * q) (74 * q) top-r top-g top-b 0 0
+    in let d = emit-beacon c (cx - 15 * q) (horizon - 462 * q) (2 * q) 350
+    in emit-beacon d (cx + 15 * q) (horizon - 462 * q) (2 * q) 800
+
+  emit-pyramid : Integer, Integer -> Integer
+  emit-pyramid (n) (cx) =
+    let a = emit-rect-g n (cx - 13 * q) (horizon - 96 * q) (26 * q) (100 * q) top-r top-g top-b mas-r mas-g mas-b
+    in let b = emit-tri a cx (horizon - 420 * q) (cx - 46 * q) (horizon - 96 * q) (cx + 46 * q) (horizon - 96 * q) 46 50 82 0 0
+    in let c = emit-tri b cx (horizon - 420 * q) (cx + 46 * q) (horizon - 96 * q) (cx + 20 * q) (horizon - 96 * q) 74 78 118 0 0
+    in let d = emit-rect-g c (cx - 50 * q) (horizon - 210 * q) (9 * q) (116 * q) mas-r mas-g mas-b mas-r mas-g mas-b
+    in let e = emit-rect-g d (cx + 41 * q) (horizon - 210 * q) (9 * q) (116 * q) mas-r mas-g mas-b mas-r mas-g mas-b
+    in let f = emit-taper e cx (horizon - 462 * q) (2 * q) (horizon - 420 * q) (9 * q) 120 126 175 top-r top-g top-b
+    in emit-beacon f cx (horizon - 464 * q) (2 * q) 150
+
+  emit-needle : Integer, Integer -> Integer
+  emit-needle (n) (cx) =
+    let a = emit-quad n (cx - 9 * q) (horizon - 300 * q) (cx + 9 * q) (horizon - 300 * q) (cx + 46 * q) horizon (cx + 28 * q) horizon top-r top-g top-b mas-r mas-g mas-b 0 0
+    in let b = emit-quad a (cx - 9 * q) (horizon - 300 * q) (cx + 9 * q) (horizon - 300 * q) (cx - 28 * q) horizon (cx - 46 * q) horizon top-r top-g top-b mas-r mas-g mas-b 0 0
+    in let c = emit-rect-g b (cx - 7 * q) (horizon - 300 * q) (14 * q) (300 * q) top-r top-g top-b mas-r mas-g mas-b
+    in let d = emit-dome c cx (horizon - 306 * q) (58 * q) (15 * q) top-r top-g top-b 0 18
+    in let e = emit-rect-g d (cx - 58 * q) (horizon - 322 * q) (116 * q) (17 * q) 120 126 175 top-r top-g top-b
+    in let f = emit-dome e cx (horizon - 322 * q) (40 * q) (16 * q) 120 126 175 0 18
+    in let g = emit-taper f cx (horizon - 400 * q) (2 * q) (horizon - 338 * q) (7 * q) top-r top-g top-b top-r top-g top-b
+    in emit-beacon g cx (horizon - 402 * q) (2 * q) 500
+
+  emit-monument : Integer, Integer -> Integer
+  emit-monument (n) (cx) =
+    let a = emit-taper n cx (horizon - 400 * q) (19 * q) horizon (30 * q) stone-hi-r stone-hi-g stone-hi-b stone-r stone-g stone-b
+    in let b = emit-tri a cx (horizon - 432 * q) (cx - 9 * q) (horizon - 400 * q) (cx + 9 * q) (horizon - 400 * q) stone-hi-r stone-hi-g stone-hi-b 0 0
+    in let c = emit-beacon b (cx - 5 * q) (horizon - 396 * q) (2 * q) 0
+    in emit-beacon c (cx + 5 * q) (horizon - 396 * q) (2 * q) 500
+
+  emit-columns : Integer, Integer, Integer, Integer -> Integer
+  emit-columns (n) (cx) (i) (seg) =
+    if i >= seg then n
+    else emit-columns (emit-rect n (cx - 37 * q + i * 8 * q - i * q / 2) (horizon - 114 * q) (3 * q) (34 * q) stone-hi-r stone-hi-g stone-hi-b 0 0) cx (i + 1) seg
+
+  emit-capitol : Integer, Integer -> Integer
+  emit-capitol (n) (cx) =
+    let a = emit-rect-g n (cx - 130 * q) (horizon - 52 * q) (260 * q) (56 * q) stone-r stone-g stone-b 200 194 174
+    in let b = emit-rect-g a (cx - 62 * q) (horizon - 78 * q) (124 * q) (30 * q) stone-hi-r stone-hi-g stone-hi-b stone-r stone-g stone-b
+    in let c = emit-rect-g b (cx - 40 * q) (horizon - 118 * q) (80 * q) (42 * q) stone-r stone-g stone-b stone-r stone-g stone-b
+    in let d = emit-columns c cx 0 9
+    in let e = emit-dome d cx (horizon - 118 * q) (40 * q) (46 * q) stone-hi-r stone-hi-g stone-hi-b 0 22
+    in let f = emit-rect-g e (cx - 8 * q) (horizon - 178 * q) (16 * q) (16 * q) stone-hi-r stone-hi-g stone-hi-b stone-r stone-g stone-b
+    in emit-taper f cx (horizon - 192 * q) (3 * q) (horizon - 178 * q) (9 * q) stone-hi-r stone-hi-g stone-hi-b stone-hi-r stone-hi-g stone-hi-b
+
+  emit-landmark : Integer, Integer -> Integer
+  emit-landmark (n) (city) =
+    if city == 0 then emit-empire n (512 * q)
+    else if city == 1 then emit-willis n (512 * q)
+    else if city == 2 then emit-pyramid n (500 * q)
+    else if city == 3 then emit-needle n (512 * q)
+    else emit-capitol (emit-monument n (300 * q)) (700 * q)
+
+Section: Entry
+
+  city-seed : Integer -> Integer
+  city-seed (city) =
+    if city == 0 then 101 else if city == 1 then 203 else if city == 2 then 307
+    else if city == 3 then 411 else 523
+
+ build-city fills the vertex buffer for one city and leaves the vertex count
+ at 131072 for the page to read. It is the only export the page calls for
+ geometry, and it returns the count as well so a caller that already has the
+ result does not have to go back to memory for it.
+
+ Back to front, because there is no depth buffer: the page draws this mesh in
+ the order it is written and a later triangle wins. The landmark goes last so
+ it stands in front of its own city.
+
+ Only the near rank contributes rooftops, so a shell never launches from a
+ building on the far bank and appears to come out of the middle of the city.
+
+  build-city : Integer -> Integer
+  build-city (city) =
+    let s = city-seed city
+    in let z = w32 roof-count-addr 0
+    in let far = emit-row 0 (0 - 30 * q) (s + 9173) 130 0
+    in let z2 = w32 roof-count-addr 0
+    in let mid = emit-row far (0 - 30 * q) (s + 4451) 100 1
+    in let z3 = w32 roof-count-addr 0
+    in let near = emit-row mid (0 - 30 * q) s 80 2
+    in let m = emit-landmark near city
+    in let w = w32 vtx-count-addr m
+    in m
+
+Page 1

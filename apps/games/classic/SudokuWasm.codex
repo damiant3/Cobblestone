@@ -65,6 +65,59 @@ Section: The Browser Interface
     if count < 0 then st
     else sudoku-remove-cells (sd-copy-state st) (rng-new seed) count
 
+Section: Playing By Hand
+
+ `sd-wasm-solve` fills the whole grid in one call, which is a solver and not
+ a game. These write ONE cell, so a person can.
+
+ `sudoku-is-valid` asks whether a value may go at a row and column by
+ scanning the row, the column and the box -- and it does NOT exclude the
+ target cell from that scan. So overwriting a cell that already holds a
+ digit has to CLEAR it first, or the cell's own value is found in its own
+ row and the placement is refused as a duplicate of itself. Writing into an
+ empty cell has no such problem, which is exactly why this would have
+ survived a test that only ever filled blanks.
+
+  sd-set-cell : SudokuState, Integer, Integer -> SudokuState
+  sd-set-cell (st) (i) (val) =
+    SudokuState { grid = list-set-at (st.grid) i val, iterations = st.iterations }
+
+  sd-wasm-place : SudokuState, Integer, Integer -> SudokuState
+  sd-wasm-place (st) (i) (val) =
+    if i < 0 then st
+    else if i >= 81 then st
+    else if val < 0 then st
+    else if val > 9 then st
+    else if val == 0 then sd-set-cell (sd-copy-state st) i 0
+    else let cleared = sd-set-cell (sd-copy-state st) i 0
+    in if sudoku-is-valid (cleared.grid) (i / 9) (rng-mod i 9) val then sd-set-cell cleared i val
+    else st
+
+ Whether a digit may go in a cell, asked by INDEX rather than by row and
+ column, because that is what a page holds after a click. Same clearing rule
+ as above.
+
+  sd-wasm-fits : SudokuState, Integer, Integer -> Integer
+  sd-wasm-fits (st) (i) (val) =
+    if i < 0 then 0
+    else if i >= 81 then 0
+    else if val < 1 then 0
+    else if val > 9 then 0
+    else let cleared = sd-set-cell (sd-copy-state st) i 0
+    in if sudoku-is-valid (cleared.grid) (i / 9) (rng-mod i 9) val then 1 else 0
+
+ How many cells are still empty, so the page can say how far along you are
+ without walking the grid itself.
+
+  sd-wasm-empty-count : SudokuState -> Integer
+  sd-wasm-empty-count (st) = sd-count-empty (st.grid) 0 0
+
+  sd-count-empty : List Integer, Integer, Integer -> Integer
+  sd-count-empty (grid) (i) (acc) =
+    if i >= 81 then acc
+    else if list-at grid i == 0 then sd-count-empty grid (i + 1) (acc + 1)
+    else sd-count-empty grid (i + 1) acc
+
 Section: The Pinned Run
 
   sd-wasm-run : SudokuResult

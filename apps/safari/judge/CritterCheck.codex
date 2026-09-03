@@ -1,0 +1,153 @@
+Chapter: CritterCheck
+  cites Foreword chapter Console
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Safari chapter Critter
+  cites Judge chapter Grade
+  cites Gold chapter CritterGold
+
+ Grade Safari chapter Critter, which draws the animals' baked stills.
+
+ A CHECK OF ITS OWN FOR A BUNDLE-SIZE REASON, not a logical one. The two generated
+ tables are 216 KB and 534 KB of Codex literals; folded into RenderCheck on top of
+ everything that check already cites, codexzig aborts outright -- not a diagnostic,
+ a core dump. Apart they transpile comfortably. That is PORTING_NOTES C7 shaping
+ the port's STRUCTURE rather than just a tolerance, for the second time.
+
+ Both draw functions ARE pub, so both seams are real oracles: the probe calls the
+ game's own function and reads the words it put on paint's wire.
+
+ STRUCTURE EXACTLY, COORDINATES WITH THE PIXEL GATE. A still is baked art scaled by
+ one number, so a wrong point count is a wrong polygon and every colour is a
+ literal carried through unchanged; neither takes any tolerance.
+
+ ALL EIGHT SPECIES ARE GRADED NOW, and the bull is the reason this paragraph used
+ to say the opposite. It is the only Fluent COLOR animal and 40 of its 43 polygons
+ carry a 2-stop gradient, which paint.zig writes as wire tags 5 and 6. While
+ Safari chapter Paint modelled tags 0, 1 and 3 the generated table flattened each
+ gradient to its first stop, so the port emitted tag 0 where the game emits 5 or
+ 6 -- two different wire shapes, and comparing them would have proved nothing.
+ Paint has the tags, the baker carries the stops and the geometry, and Critter has
+ the arm that emits them.
+
+ THE BULL IS DRAWN TWICE, FACING BOTH WAYS, and the mirrored case is the one worth
+ having. A gradient's axis is a VECTOR and its centre is a POINT: mirroring flips
+ the axis without translating it, and mapping an axis as a point would still
+ produce a polygon of exactly the right shape with its shading anchored somewhere
+ else. `cr-geom` is the stream where that shows, and it is why the gradient's own
+ numbers do not ride with the polygon's.
+
+ ONLY THE BULL'S COORDINATES ARE THINNED. Adding it took the coordinate stream
+ from 5,916 Reals to 15,152, close enough to C7's ceiling to be asking for the
+ abort; every third point of the bull brings it to 9,044. The other seven species
+ stay exact, and they exercise the same mapping code, so what the thinning costs
+ is density on art whose density is already proven elsewhere.
+
+ THE CAT'S COORDINATES ARE SAMPLED EVERY THIRD POINT and that is C7 again: seven
+ stills are 13,453 points, 26,906 Reals, and one Real literal past about 16,868
+ exhausts the transpiler's bump heap. Point counts stay exact, so a still that
+ gained or lost a polygon fails hard regardless; only the density is thinned.
+ Mountains hit the same ceiling and took the same answer.
+
+ THE CAT'S HOP IS WHAT ITS CASES ARE FOR. It is applied in the UNIT FRAME -- added
+ to each polygon's own y before scaling -- so it is measured in cat-heights and
+ shrinks with distance like the rest of the still. Reading it as a metres offset to
+ the anchor would look nearly right up close and drift wrong as the cat recedes,
+ which one near sample would wave through. Two of the seven cases are airborne, at
+ different depths.
+
+ We say:
+
+Section: The Cases
+
+  CritterCase = record {
+    cp : Integer,
+    h : Real,
+    fwd : Real,
+    face : Boolean
+  }
+
+  critter-cases : List CritterCase
+  critter-cases = [CritterCase { cp = 129414, h = 0.9, fwd = 14.0, face = False }, CritterCase { cp = 128024, h = 2.8, fwd = 40.0, face = True }, CritterCase { cp = 129426, h = 4.5, fwd = 90.0, face = False }, CritterCase { cp = 129427, h = 1.6, fwd = 25.0, face = True }, CritterCase { cp = 129423, h = 2.2, fwd = 60.0, face = False }, CritterCase { cp = 128004, h = 1.4, fwd = 18.0, face = True }, CritterCase { cp = 128022, h = 1.1, fwd = 9.0, face = False }, CritterCase { cp = 128002, h = 1.7, fwd = 22.0, face = False }, CritterCase { cp = 128002, h = 1.7, fwd = 22.0, face = True }]
+
+  bull-cp : Integer
+  bull-cp = 128002
+
+  case-wire : Integer -> List DrawCmd
+  case-wire (i) =
+    let c = list-at critter-cases i
+    in critter-draw 2.5 c.fwd c.h c.cp c.face focal camera-w
+
+  critter-wire : Integer -> List DrawCmd
+  critter-wire (i) =
+    if i >= list-length critter-cases then []
+    else (case-wire i) & critter-wire (i + 1)
+
+Section: Flattening
+
+  s-tags : List DrawCmd, Integer -> List Integer
+  s-tags (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).tag] & s-tags cs (i + 1)
+
+  s-cols : List DrawCmd, Integer -> List Integer
+  s-cols (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).color] & s-cols cs (i + 1)
+
+  s-counts : List DrawCmd, Integer -> List Integer
+  s-counts (cs) (i) =
+    if i >= list-length cs then []
+    else [list-length (list-at cs i).pts / 2] & s-counts cs (i + 1)
+
+  s-cols2 : List DrawCmd, Integer -> List Integer
+  s-cols2 (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).color2] & s-cols2 cs (i + 1)
+
+ Only tags 5 and 6 define `geom`, so concatenating every command's is the gradient
+ stream and nothing else -- a solid fill contributes an empty list.
+
+  s-geoms : List DrawCmd, Integer -> List Real
+  s-geoms (cs) (i) =
+    if i >= list-length cs then []
+    else (list-at cs i).geom & s-geoms cs (i + 1)
+
+ Codex has no `%`, so a modulo is spelled the way Tower spells it: n - (n/d)*d.
+ x and y are kept together so the pairing survives the thinning.
+
+  keep-nth : Integer, Integer -> Boolean
+  keep-nth (k) (n) = k - (k / n) * n == 0
+
+  every-nth : List Real, Integer, Integer -> List Real
+  every-nth (ps) (i) (n) =
+    if i + 1 >= list-length ps then []
+    else if keep-nth (i / 2) n then [list-at ps i, list-at ps (i + 1)] & every-nth ps (i + 2) n
+    else every-nth ps (i + 2) n
+
+  thin-cmds : List DrawCmd, Integer, Integer -> List Real
+  thin-cmds (cs) (n) (i) =
+    if i >= list-length cs then []
+    else (every-nth (list-at cs i).pts 0 n) & thin-cmds cs n (i + 1)
+
+ THE STEP IS PER CASE, not per check: the bull's stream is sampled and the other
+ seven are whole.
+
+  case-step : Integer -> Integer
+  case-step (i) = if (list-at critter-cases i).cp == bull-cp then 3 else 1
+
+  s-coords : Integer -> List Real
+  s-coords (i) =
+    if i >= list-length critter-cases then []
+    else (thin-cmds (case-wire i) (case-step i) 0) & s-coords (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-ints "cr-tag  " (s-tags (critter-wire 0) 0) g-cr-tag)
+    print-line-uni (grade-ints "cr-col  " (s-cols (critter-wire 0) 0) g-cr-col)
+    print-line-uni (grade-ints "cr-col2 " (s-cols2 (critter-wire 0) 0) g-cr-col2)
+    print-line-uni (grade-ints "cr-cnt  " (s-counts (critter-wire 0) 0) g-cr-cnt)
+    print-line-uni (grade-px   "cr-geom " (s-geoms (critter-wire 0) 0) g-cr-geom 0.001 0.000001)
+    print-line-uni (grade-px   "cr-xy   " (s-coords 0) g-cr-xy 0.001 0.000001)
+  end

@@ -1,0 +1,367 @@
+Chapter: SafariWasm
+  cites Foreword chapter ListUtils
+  cites Safari chapter Blit
+  cites Safari chapter Paint
+  cites Safari chapter Pose
+  cites Safari chapter Safari
+  cites Safari chapter Sky
+  cites Safari chapter Truck
+  cites Safari chapter World
+
+ The browser interface for Steve Howell's safari port.
+
+ THE PAGE PAINTS DRAW COMMANDS, NOT PIXELS, and that is the port's own design
+ rather than a choice made here. `port/Render.codex` and `port/Paint.codex`
+ answer a `List DrawCmd` -- polygons, gradients and a beacon disc in screen
+ coordinates -- and the original game's `blitter.js` paints exactly that onto a
+ canvas. So this chapter is a SERIALISER: it writes the expanded command list
+ into linear memory in the order the painter reads it, and the page paints it.
+ Nothing here decides what is worth drawing; `port/Blit.codex` already did,
+ which is why `blit-expand` runs before the write.
+
+ THE WIRE IS f64 WHERE THE ORIGINAL IS f32, and that is the one place this
+ deliberately differs from the upstream page. `Paint.codex` says its screen
+ coordinates "narrow to f32 in the shim, at the buffer", which is true of the
+ harness that built the upstream module. Narrowing costs a conversion this
+ language has no builtin for, and buys nothing on a canvas that takes doubles,
+ so the wire carries `real-to-bits` output straight through and our reader uses
+ a DataView. A reader written for the upstream wire will NOT read this one.
+
+ THE LAYOUT IS ONE RULE FOR EVERY TAG, which is the shape `Paint.codex` earned
+ when it split `geom` from `pts`: tag, colour, then the second colour unless the
+ tag has none, then the command's own parameters from `geom`, then the polygon
+ as a point count and that many x,y pairs. A disc carries no polygon and stops
+ after `geom`. Nothing reads a field its tag does not define.
+
+   Each command is: tag, colour, the second colour unless the tag has none,
+   STRENGTH, the geom LENGTH, that many geom values, then unless it is a disc
+   the point count and that many x,y pairs.
+
+ STRENGTH IS ON THE WIRE BECAUSE A DISC'S ALPHA LIVES THERE, and leaving it off
+ was a real hole rather than a saving. The upstream painter reads a disc as
+ colour then four floats, x y r alpha; `Paint.codex` puts x, y and r in `geom`
+ and the alpha in the record's own `strength` field, so a wire carrying only
+ `geom` hands the painter three numbers where it wants four. The decoder found
+ it by reporting the disc's geom length as 3 against an assumed 4, which is the
+ self-describing wire paying for itself the first time it was read.
+
+   tag 0 SOLID         colour,                geom empty,   polygon
+   tag 2 SPAN_SHADE    edge, middle,          x0 x1,        polygon
+   tag 3 DISC          colour,                x y r alpha,  no polygon
+   tag 4 RADIAL_POLY   centre, edge,          cx cy r,      polygon
+   tag 5 LINEAR_POLY   c0, c1,                o0 o1 ax ay bx by, polygon
+   tag 6 ELLIPSE_POLY  c0, c1,                o0 o1 cx cy ux uy vx vy, polygon
+
+Section: The Buffer
+
+ THE HEAP WALKS THROUGH THIS BUFFER EVERY FRAME, and that is the fact the whole
+ chapter is arranged around. The buffer is at 12 MB and the state at 15 MB, and
+ one frame's heap reaches 59,528,656 bytes (`sfw-heap-probe`), so a fixed
+ address anywhere below that is inside the range the bump allocator crosses. The
+ frame mark makes each frame start from the same low pointer; it does not keep
+ anything safe from the frame that is running.
+
+ So the invariant is an ORDER rather than a place: read anything held before
+ anything allocates, and write anything that must survive after all allocation
+ is done. Both halves were learned the hard way and both are recorded at the
+ functions that keep them.
+
+ `sfw-cap` is a refusal rather than a comment, because a serialiser that runs
+ off the end of its buffer corrupts whatever is above it and still answers a
+ plausible length.
+
+  sfw-buf : Integer = #C00000
+
+  sfw-cap : Integer = 3145728
+
+Section: Writing Primitives
+
+ A `Real` goes out as its IEEE-754 bits in two 32-bit halves, low first, which
+ is what a little-endian DataView reads back as a float64. The split is
+ `bit-and` and `bit-shr` rather than `int-mod` and division because the sign bit
+ of a negative coordinate makes the arithmetic form answer a negative low word;
+ `poke-32` writes four bytes, so the sign extension `bit-shr` leaves in the high
+ half is discarded where it should be.
+
+  sfw-w-u32 : Integer, Integer -> Integer
+  sfw-w-u32 (off) (v) =
+    let d = poke-32 sfw-buf off v
+    in off + 4
+
+  sfw-w-real : Integer, Real -> Integer
+  sfw-w-real (off) (v) =
+    let b = real-to-bits v
+    in let lo = poke-32 sfw-buf off (bit-and b 4294967295)
+    in let hi = poke-32 sfw-buf (off + 4) (bit-and (bit-shr b 32) 4294967295)
+    in off + 8
+
+  sfw-w-reals : Integer, List Real, Integer -> Integer
+  sfw-w-reals (off) (xs) (i) =
+    if i >= list-length xs then off
+    else sfw-w-reals (sfw-w-real off (list-at xs i)) xs (i + 1)
+
+Section: Writing Commands
+
+ THE GEOM LENGTH IS ON THE WIRE RATHER THAN IMPLIED BY THE TAG, and it is worth
+ saying why because the first version did imply it. A reader that knows "tag 4
+ carries three geom values" is encoding an assumption about `Paint.codex` that
+ nothing checks, and when it is wrong the reader does not fail where the wrong
+ field is: it desynchronises and reads a coordinate as a point count several
+ commands later. Measured, that is exactly what happened -- absurd counts of
+ 1,232,924,824 at command 737 and 2,441,335,823 at command 144, with the first
+ 143 commands decoding perfectly. A self-describing wire costs four bytes a
+ command and cannot drift from the chapter that fills it.
+
+  sfw-w-cmd : Integer, DrawCmd -> Integer
+  sfw-w-cmd (off) (c) =
+    let o1 = sfw-w-u32 off c.tag
+    in let o2 = sfw-w-u32 o1 c.color
+    in let o3 = if c.tag == 0 then o2 else if c.tag == 3 then o2 else sfw-w-u32 o2 c.color2
+    in let o4 = sfw-w-real o3 c.strength
+    in let o5 = sfw-w-u32 o4 (list-length c.geom)
+    in let o6 = sfw-w-reals o5 c.geom 0
+    in if c.tag == 3 then o6
+       else let o7 = sfw-w-u32 o6 (list-length c.pts / 2)
+       in sfw-w-reals o7 c.pts 0
+
+ The cap is checked between commands rather than inside one, so a refusal ends
+ on a command boundary and the page paints a short frame instead of a corrupt
+ one.
+
+  sfw-w-cmds : Integer, List DrawCmd, Integer -> Integer
+  sfw-w-cmds (off) (cs) (i) =
+    if i >= list-length cs then off
+    else if off > sfw-cap then off
+    else sfw-w-cmds (sfw-w-cmd off (list-at cs i)) cs (i + 1)
+
+Section: The Held Ride
+
+ THE RIDE IS HELD IN LINEAR MEMORY BETWEEN CALLS, and the first version's
+ alternative is why. That one advanced from `ride-initial` on every call, so the
+ cost of a frame grew with the step: measured on the built module, 13.9 ms at
+ step 0, 15.7 at 100, 23.7 at 400 and 31.0 at 800, which is a screensaver that
+ gets slower the longer anybody watches it. Holding the state makes a step O(1)
+ and the frame cost flat.
+
+ Reading a `Real` back needs `bits-to-real`, and it is worth saying that the
+ wasm plug emits both bitcasts as the IDENTITY (`WasmEmitter.codex`): a `Real`
+ there is already its f64 bits in an i64 slot, so there is nothing to convert.
+ On x86-64 they are true bitcasts. Both roads mean the same thing.
+
+  sfw-state : Integer = #F00000
+
+  sfw-r-real : Integer -> Real
+  sfw-r-real (off) =
+    let lo = bit-and (peek-32 sfw-state off) 4294967295
+    in let hi = bit-and (peek-32 sfw-state (off + 4)) 4294967295
+    in bits-to-real (bit-or lo (bit-shl hi 32))
+
+  sfw-s-real : Integer, Real -> Integer
+  sfw-s-real (off) (v) =
+    let b = real-to-bits v
+    in let lo = poke-32 sfw-state off (bit-and b 4294967295)
+    in let hi = poke-32 sfw-state (off + 4) (bit-and (bit-shr b 32) 4294967295)
+    in off
+
+  sfw-save : Ride -> Integer
+  sfw-save (r) =
+    let a = poke-32 sfw-state 8 r.rider.segment
+    in let b = sfw-s-real 16 r.rider.along
+    in let c = sfw-s-real 24 r.rider.across
+    in let d = sfw-s-real 32 r.rider.yaw
+    in let e = sfw-s-real 40 r.rider.v
+    in let f = sfw-s-real 48 r.rider.tilt
+    in let g = sfw-s-real 56 r.rider.heading
+    in let h = sfw-s-real 64 r.rider.gaze-yaw
+    in let i = sfw-s-real 72 r.rider.focus
+    in let j = sfw-s-real 80 r.truck.pos
+    in let k = sfw-s-real 88 r.truck.v
+    in let l = poke-32 sfw-state 96 (if r.truck.braking then 1 else 0)
+    in let m = sfw-s-real 104 r.clock
+    in poke-32 sfw-state 0 1
+
+  sfw-load : Integer -> Ride
+  sfw-load (dummy) =
+    Ride {
+      rider = RiderState {
+        segment = peek-32 sfw-state 8,
+        along = sfw-r-real 16,
+        across = sfw-r-real 24,
+        yaw = sfw-r-real 32,
+        v = sfw-r-real 40,
+        tilt = sfw-r-real 48,
+        heading = sfw-r-real 56,
+        gaze-yaw = sfw-r-real 64,
+        focus = sfw-r-real 72
+      },
+      truck = TruckState { pos = sfw-r-real 80, v = sfw-r-real 88, braking = peek-32 sfw-state 96 == 1 },
+      clock = sfw-r-real 104
+    }
+
+  sfw-ride : Integer -> Ride
+  sfw-ride (dummy) = if peek-32 sfw-state 0 == 1 then sfw-load 0 else ride-initial
+
+  sfw-reset : Integer -> Integer
+  sfw-reset (dummy) = poke-32 sfw-state 0 0
+
+ THE STATE IS READ BEFORE ANYTHING ALLOCATES, for the same reason the header is
+ written after everything does. `sfw-state` is at 15 MB and a frame's heap
+ reaches 59 MB, so the saved ride is inside the range the bump allocator walks
+ through. Reading it first means the read happens while it is still intact;
+ writing it last means the write lands after the walking is done.
+
+  sfw-forward : Integer -> Integer
+  sfw-forward (dummy) =
+    let h = __heap-save
+    in let r0 = sfw-ride 0
+    in let w = build-world
+    in let r = ride-step w r0
+    in let saved = sfw-save r
+    in let restored = __heap-restore h
+    in 0
+
+Section: The Frame
+
+ THE HEADER CARRIES WHAT THE PAGE PAINTS ITSELF. The backdrop is not in the
+ command list and never was: the original page draws the sky band, the grass and
+ the sun, and asks the guest only for the numbers, which is why a page that
+ painted commands alone came out as geometry on a black field with no sky, no
+ grass and no sun. The guest owns the two sky colours and the sun's placement;
+ the grass colour and the gradient stops are the page's. The roll is here for the
+ same reason: the whole frame banks into a turn, and the page rotates the canvas
+ rather than the geometry.
+
+   0  sky colour        u32
+   4  horizon colour    u32
+   8  sun visible       u32
+  12  (pad)             u32
+  16  sun x             f64
+  24  sun y             f64
+  32  sun scale         f64
+  40  camera roll       f64
+  48  the commands
+
+ THE HEADER IS WRITTEN AS A LIST AND EVERY FIELD IS AN f64, and both halves of
+ that are a bug fix rather than a taste.
+
+ The first version wrote the fields one at a time through `sfw-w-u32` at
+ constant offsets, and NOTHING LANDED. `sfw-w-u32` binds the poke to a `let` it
+ does not use and answers `off + 4`; with every offset a constant the whole
+ chain folds to 48 and the pokes, whose results nothing reads, go with it. The
+ command path survives the same shape only because its offsets are
+ data-dependent. The tell was two builds producing byte-identical buffers when
+ the source between them had changed (L-SUSPECT), with `used` still exactly 48
+ bytes longer than the headerless build: the arithmetic ran and the writes did
+ not. `apps/c64/C64Wasm.codex` avoids this by SUMMING its poke results
+ (`c64w-cpu-save` answers `d0 + d1 + ...`), which is what keeps them alive.
+
+ Writing the header through `sfw-w-reals` puts it on the recursive path the
+ commands already prove lands. Making every field an f64 is what lets it: the
+ two colours go out through `real-from-int` and the page reads them back with a
+ rounding conversion. Uniform width also means no alignment question.
+
+   0  sky colour        f64 (an integer value)
+   8  horizon colour    f64 (an integer value)
+  16  sun visible       f64 (1.0 or 0.0)
+  24  sun x             f64
+  32  sun y             f64
+  40  sun scale         f64
+  48  camera roll       f64
+  56  the commands
+
+ THE COLOURS STAY INTEGERS AND ONLY RECORD-FIELD REALS CROSS AS f64, and that
+ division is forced by a defect in our wasm plug rather than chosen.
+
+ `real-to-bits` is emitted there as the IDENTITY, on the stated ground that a
+ Real is already its f64 bits in an i64 slot. That holds for a Real read out of
+ a record -- `geom`, `pts` and the held ride all round-trip correctly -- and it
+ does NOT hold for one produced by `real-from-int` or written as a literal:
+ those come back as values unrelated to the source, in a run where each is
+ exactly four times the previous. Isolated by exporting `sky-color` as an
+ Integer through the wrapper, which answers 9358054 on wasm and 9358054 on
+ x86-64, so the arithmetic is sound on both roads and only the carrying is not.
+ Steve's fork carries `e8486215 wasm: Real is an f64, not an i64 with f64 bits
+ in it`; this is that, and it is the wasm lane's to fix rather than ours.
+
+  sfw-w-header : Ride, SunPos -> Integer
+  sfw-w-header (r) (s) =
+    let a = sfw-w-u32 0 (sky-color r.clock)
+    in let b = sfw-w-u32 a (horizon-color r.clock)
+    in let c = sfw-w-u32 b (if s.visible then 1 else 0)
+    in let d = sfw-w-u32 c 0
+    in let e = sfw-w-real d s.x
+    in let f = sfw-w-real e s.y
+    in let g = sfw-w-real f s.scale
+    in sfw-w-real g (rider-roll r.rider)
+
+ EVERY ALLOCATION HAPPENS BEFORE THE FIRST BYTE IS WRITTEN, and the order here
+ is the whole correctness of this function rather than a preference.
+
+ The buffer sits at 12 MB inside a 16 MB linear memory and the bump heap grows
+ up from below, so a frame that allocates its way past 12 MB writes THROUGH the
+ buffer. The first version wrote the header, then called `ride-frame` and
+ `blit-expand`, and those allocations overwrote it: the header came back as heap
+ bytes (47467, which is 0xB96B, at offset 0) while the commands were perfect,
+ because the commands are written last and nothing allocates after them. It
+ reads exactly like a plug defect -- literals and computed values equally
+ corrupt, the module's own `peek-32` agreeing with the page's DataView, and
+ `sky-color` answering correctly when exported instead of written -- and it is
+ not one. Build the whole frame first, then write.
+
+  sfw-heap-probe : Integer -> Integer
+  sfw-heap-probe (dummy) =
+    let h = __heap-save
+    in let w = build-world
+    in let cmds = blit-expand (ride-frame w (sfw-ride 0)) 0
+    in let top = __heap-save
+    in let restored = __heap-restore h
+    in top
+
+  sfw-render : Integer -> Integer
+  sfw-render (dummy) =
+    let h = __heap-save
+    in let r = sfw-ride 0
+    in let w = build-world
+    in let sun = ride-sun w r
+    in let cmds = blit-expand (ride-frame w r) 0
+    in let head = sfw-w-header r sun
+    in let used = sfw-w-cmds head cmds 0
+    in let kept = sfw-save r
+    in let restored = __heap-restore h
+    in used
+
+ RENDERING RE-SAVES THE RIDE, and without it the screensaver restarts forever.
+ The state lives at 15 MB and a frame's heap reaches 59 MB, so rendering walks
+ through the saved ride exactly as it walks through the buffer. The page calls
+ `sfw_render` and then `sfw_forward`, so by the time `forward` reads the state
+ its flag has been overwritten, `sfw-ride` does not recognise it and answers
+ `ride-initial`, and the ride begins again every single frame. Writing the ride
+ back at the end of a render -- after all the allocation, like everything else
+ that has to survive here -- leaves valid state behind whichever call ran last.
+
+  sfw-buffer-at : Integer -> Integer
+  sfw-buffer-at (dummy) = sfw-buf
+
+  sfw-segments : Integer -> Integer
+  sfw-segments (dummy) =
+    let h = __heap-save
+    in let n = list-length build-world
+    in let restored = __heap-restore h
+    in n
+
+Section: Why There Is No Entry Here
+
+ THIS CHAPTER DELIBERATELY HAS NO `opening`, and that is the whole difference
+ between a browser module and a program. `apps/c64/C64Wasm.codex` has none
+ either. Give this chapter an entry and the compiler treats it as a program and
+ keeps only what the entry reaches: `sfw-buffer-at` returns a bare constant and
+ had exactly one caller, so `inline-single-caller` folded it away, its
+ definition vanished from the WAT, and the export wrapper had nothing to call.
+ The build refused with "the module does not define: sfw_buffer_at", which is
+ the wrapper check earning its keep. Without an entry every top-level
+ definition is emitted and the wrappers bind.
+
+ The serialiser was smoke-tested on the host before the entry came out, through
+ a temporary opening: 19 segments, buffer at 12582912, and 342,604 bytes for
+ frame 0 against 359,100 for frame 200 -- two different lengths, which is what
+ says the ride actually advances rather than the same frame being written twice.

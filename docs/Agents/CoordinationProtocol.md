@@ -469,6 +469,28 @@ Set-Content "$mbox\status.json" '{ "state": "Working", "task": "post-submit clea
 **The token prevents colliding BUILDS on the same code. It is not a lock on
 the depot, and it is not permission to work.**
 
+**RULED AGAIN, sharper (Damian, 2026-09-02): "the point of the token is to
+freeze main for a quick proof build because you already know your code is
+good and you just need to sync, freeze, merge, quickbuild, bvt, promote."**
+So the shape of a seed-affecting landing is:
+
+1. **Before the request, WITHOUT the token:** merge down to head, gate,
+   and fix until green. Every red you find here costs nobody else anything.
+   A lane that requests the token for a CL it has not seen green is
+   requesting it to debug, which is rule 8's violation before the fact.
+2. **The request names the main head you merged to.** A request behind head
+   is answered "merge down first", not queued; since main 21620 the gate
+   itself refuses a workspace behind main, so this only moves that check to
+   before the queue.
+3. **Under the token:** sync, merge whatever landed since (usually nothing),
+   the `-Internal` proof run, the BVT, promote, `build-complete`. One run.
+4. **Two reds under one grant end it.** Write `build-complete`, shelve,
+   and re-request BEHIND everyone already queued. Measured 2026-09-02: one
+   lane held the token about 75 minutes across four launches and landed
+   nothing while a green compiler CL waited 50 minutes behind it; three of
+   the four reds were coordination (a runner blind spot, a tree behind
+   main) and none of them needed the token to find.
+
 - **Docs-only changes do not need the token.** Edit them directly on main and
   submit. No gates run, so there is no race to prevent. A workplan, a backlog
   entry, a design note, a README -- just submit it. Rule 1 is about gates and
@@ -490,6 +512,15 @@ the depot, and it is not permission to work.**
   red gate is being fixed under it (rule 8): shelve, write `build-complete`,
   do the work, re-request. The measured `-Internal` gate with nothing
   implicated was 186 s on 2026-08-20, so a 20-minute hold is not a slow gate.
+- **A grant can be CANCELLED while your run is still in flight** (blu,
+  2026-09-02). The coordinator, or Damian through it, may clear
+  `build-grant` and pass the token on without your run ending; the files
+  simply vanish from your coordination dir. Check for `build-grant` before
+  assuming you still hold it, and never infer from "I never wrote
+  `build-complete`" that the token is still yours; only the mailbox shows it.
+  A run that was in flight when the grant went keeps its VERDICT (a green is
+  still a green on your stream) but not its landing: the copy-up waits for
+  a new grant, taken the 4.4 way.
 
 ## The token does not cover RAM: ask the fleet before a heavy run (Damian, 2026-09-01)
 
@@ -504,30 +535,48 @@ what kills guests with a plausible-looking codegen error (`OperatorsManual.md`,
 So the rule, in Damian's words: be conscientious about running builds, and
 **check with the other agents before launching big tests.** Concretely:
 
-- `-Jobs 8` is the default again (Damian, 2026-09-01, on the measurement
-  below), and its condition is THIS section: one heavy run on the box at a
-  time. The 4 was conditioned on two lanes' guests overlapping; with that
-  forbidden, 8 costs the floor and buys a third of the gate.
+- `-Jobs 8` is the default (Damian, 2026-09-01, on the measurement
+  below). **The one-at-a-time rule was LOOSENED the same evening to TWO
+  heavy runs at once (Damian: "loosen up on the concurrents, measure to be
+  sure").** The Update 54 memory campaign is the condition: self-compile
+  host peak 1,147 to 537 MB, gate drivers 812 to 183 MB. Measured by root
+  2026-09-01: one `-Internal` gate alone peaks 844 MB of guest working set
+  with a 5.0 GiB floor; two runs overlapping (a 0.54 GB codex-vm guest
+  plus a riscv Renode pair that peaks 2.0 GB per boot, drivers 1.4 GB)
+  floor at 3.86 GiB, and a heavier pair (a `-Jobs 4` module build's four
+  guests at 1.4 GB against the same Renode peak, drivers 2.3 GB) touched
+  2.45 GiB for one sample, and a compiler gate beside a Renode arm floored
+  at 3.08 GiB, after which that Renode arm died with no output (18:45,
+  cause unmeasured). Grants still come from the commander, who holds new
+  grants under 3 GiB free. **Renode arms run ALONE**; the two-run
+  allowance is for codex-vm shapes, and a THIRD concurrent run is not
+  allowed on those numbers (L-COUNT: re-measure before raising the count).
 - **`build/test.ps1 -All` and every full-battery run are PROHIBITED except
-  for release builds (Damian, 2026-09-01; `CLAUDE.md` R-GATE).** The fleet
-  is on BVT only plus focused test passes: the `-Internal` gate, then the
-  specific tests a change touches, one at a time. There is no "ask first"
+  for release builds (Damian, 2026-09-01; `CLAUDE.md` R-GATE), and
+  `-Internal` is BANNED (Damian, 2026-09-02 15:52).** The fleet is on
+  focused test passes: the specific tests a change touches, one at a
+  time, and the BVT only on a seed candidate. There is no "ask first"
   path for a battery; the ask below is for the runs that remain.
-- Before any remaining run that boots more than one guest (a focused
-  parallel harness, a release proof in red's hands), send ONE message to
-  each lane that could be running guests, within the budget, and wait for
-  the answers. A single `-Internal` gate is not a heavy run and needs no
-  ask; two gates at once from two lanes is exactly the overlap to avoid, so
-  a lane about to gate says so in its `status.json` and a lane reading
-  `Working` with a gate in another lane's status waits.
+- Before any run that boots guests or a Renode/QEMU bed (a gate, a
+  focused harness, a release proof), ask the COMMANDER (root) for the box
+  with the honest size, one message within the budget, and wait for the
+  go. **The GO is a MESSAGE FROM ROOT. The AgentGrid coordinator's GO grants
+  the TOKEN and nothing else; three lanes on 2026-09-01 read it as the box and
+  launched compiler gates onto a box already granted twice, and one granted
+  run died under the overlap.** The commander keeps at most two such runs live and hands the box
+  on by done-message, never by an instantaneous guest count. **Every run
+  that starts a guest is asked, a single compile alike (Damian, 2026-09-02
+  15:55, `CLAUDE.md` R-GATE); the earlier single-guest exemption is
+  withdrawn.** Name the run and its guest count in `status.json` so the
+  dashboard can answer the question too.
 - `status.json` is the shared reading: name the run you are about to start
   and its guest count, so the ask is answerable from the dashboard.
 - **Waiting for a slot is not idle time (Damian, 2026-09-01, the same
   morning: "the agents are very idle, we need to keep the team working").**
   A slot ask is non-blocking: keep working the next item in your lane
   while the box is busy, and gate once per arc with the CLs batched, which
-  is the arc rule below applied under a RAM budget. A single-guest run (a
-  focused test, one hosted binary, one app) needs no ask at all.
+  is the arc rule below applied under a RAM budget. A hosted binary that
+  starts no guest needs no ask; anything that boots a guest does.
 - **Overlap is decided by CONSUMPTION, not by ceiling (L-REQUEST), and the
   gate's consumption is NOT one number.** A self-compile guest peaks near
   1.1 GB, but the `-Internal` gate's test-compile phase at `subject: FULL`
@@ -659,6 +708,16 @@ sender-side receipt said delivered (GRID-5; the live `stable` coordinator is
 the pre-fix build). The cross-session route delivered four of four the same
 day, each into a busy session, acknowledged inside a minute.
 
+**Measured again 2026-09-02 (fester), and the two channels behaved
+DIFFERENTLY for the same three messages.** The `SendMessage` originals all
+arrived on time, mid-turn or into an idle session, and were acted on within
+the turn. The coordinator's typed-line copies of the same three arrived 42,
+30 and 17 minutes late, BATCHED, in the one turn that Damian's next prompt
+opened; the recipient was idle at its prompt with no wait, shell or task
+outstanding. So a typed line reaches an IDLE lane only when something else
+opens a turn, which is the one case a bump exists for: never bump a quiet
+lane by the outbox alone (AgentGrid GRID-7).
+
 - **Resolve the name every time.** Session names change at rollover
   (`cobblestone-val-6c` became `-09` became `-0b` in three days); a cached
   name sends to nobody. `ListAgents` first, then `SendMessage`.
@@ -777,6 +836,15 @@ no restatement of a process that went as documented, no detail he would not
 act on. R-REPORT already says this; what is new is that it is now measured
 against a reader who has stopped reading. A report he skips is worth less
 than no report, because it cost his attention to skip.
+
+Anthropic's guide for the models the fleet runs names this as a default,
+not a lapse: Claude Opus 5's user-facing replies run longer than earlier
+models' and it narrates readily during tool use, and effort settings do
+not shorten either. The only lever is an explicit instruction, which
+`CLAUDE.md` R-REPORT carries as a cadence (one line before the first tool
+call, a line at a change of direction, outcome first at the end) and
+repeats at the end of that file. A lane reading this after a long report
+is being handed the instruction the model needs, not scolded.
 
 **A ruling request does NOT go to Damian. It goes to the commander, who
 decides whether it is genuinely his.** Most are not. His words: agents ask
@@ -997,20 +1065,20 @@ CL to main, and do NOT request the token until the batch is ready. The last
 push is then a normal seed-affecting copy-up: token, merge down, gate on the
 target, prove the seed, one copy-up.
 
-**The batch gate must SEE the batch (red, 2026-09-01, the same morning the
-rule landed).** `-Internal` chooses its regression phases from `p4 opened`
-(`build/check-test-compile.ps1`, the `changed` list): a batch already
-submitted to your stream has nothing opened, so the gate runs core, BVT and
-refusals only, skips test-compile and the plug phases for a COMPILER change,
-and comes back green in 129 s having proved less than it says. red caught it
-on the first batch gated under this rule and released the token unlanded.
-Until the scoping fix lands (red's), the batch must be OPEN when it gates.
-The clean way (val, same morning): **keep the batch as ONE open CL on your
-stream, shelve it after each verified step, gate with everything still open,
-submit after.** The shelf is the per-step record, there is no phantom edit CL
-and nothing to revert. The fallback, for a batch you already submitted step
-by step, is `p4 edit` on the files it touched before the gate. When the fix
-lands, this paragraph is replaced by the command.
+**The batch gate SEES the batch (red, 2026-09-01; fixed main 21381).**
+`-Internal` chooses its regression phases from a `changed` list that is
+`p4 opened` UNIONED with `p4 diff2 -q //Codex/main/... <your stream>/...`
+(`build/build.ps1`, the detect block; generator `codex/build/BuildScript.codex`),
+so a batch already submitted to your stream is seen and a COMPILER batch
+runs test-compile and the plug phases whether or not anything is opened.
+Nothing needs `p4 edit` before a gate any more. The union reads a stream
+that is BEHIND main as changed too, which over-triggers and never
+under-triggers, and the merge-down every grant requires removes it. Before
+the fix, a submitted batch gated as core, BVT and refusals only and came back
+green in 129 s having proved less than it said; red caught it on the first
+batch gated under this rule and released the token unlanded. Keeping the
+batch as ONE open CL, shelved after each verified step (val's way), is
+still a fine per-step record; it is no longer what makes the gate honest.
 
 What counts as a batch: every item in your lane that is ready, whether or
 not the items are related; the gate proves the tree, not the item. A red

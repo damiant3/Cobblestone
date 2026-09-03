@@ -1,0 +1,62 @@
+Chapter: BitOpsArm
+  cites Gpu chapter DeviceEffect
+
+ The positive arm for the bit lowering. Before it existed the corpus could not
+ spell a bit operation at all: not one kernel in the tree uses `bit-and` or its
+ siblings, so every sweep over the shaders was green about a capability that
+ was absent (L-CONSTRUCT). This chapter is the input shape that was missing.
+
+ What the emitted WGSL must contain, from docs/Reference/WgslSpec.md 8.10:
+
+   bit-and    (a & b)
+   bit-or     (a | b)
+   bit-xor    (a ^ b)
+   bit-not    (~a)
+   bit-shl    (a << (u32(b) & 31u))          the count is u32, not i32
+   bit-shr    (a >> (u32(b) & 31u))          arithmetic, sign propagating
+   bit-shru   bitcast<i32>(bitcast<u32>(a) >> (u32(b) & 31u))
+
+ The last two are the pair that matters: WGSL's >> on a signed operand is
+ arithmetic, so bit-shr and bit-shru are the SAME token in WGSL and differ only
+ in the round trip through u32. An emitter that lowered both to >> would pass
+ every validator and be wrong for exactly the negative inputs a hash produces.
+
+ We say:
+
+Section: Field Extraction
+
+  ba-red : Integer -> Integer
+  ba-red (c) = bit-and (bit-shru c 16) 255
+
+  ba-green : Integer -> Integer
+  ba-green (c) = bit-and (bit-shru c 8) 255
+
+  ba-blue : Integer -> Integer
+  ba-blue (c) = bit-and c 255
+
+  ba-pack : Integer, Integer, Integer -> Integer
+  ba-pack (r) (g) (b) = bit-or (bit-shl r 16) (bit-or (bit-shl g 8) b)
+
+Section: Signed Shifts
+
+ ba-arith keeps the sign and ba-logical does not, which is the whole
+ distinction the lowering has to preserve.
+
+  ba-arith : Integer, Integer -> Integer
+  ba-arith (v) (n) = bit-shr v n
+
+  ba-logical : Integer, Integer -> Integer
+  ba-logical (v) (n) = bit-shru v n
+
+  ba-mix : Integer, Integer -> Integer
+  ba-mix (a) (b) = bit-xor a (bit-not b)
+
+Section: Kernel
+
+  bitops-step : Integer, Integer, Integer -> [Device] Integer
+  bitops-step (inb) (outb) (gid) = act
+    c <- device-load inb gid
+    device-store outb gid (ba-pack (ba-blue c) (ba-mix (ba-red c) (ba-arith c 3)) (ba-logical (ba-green c) 2))
+  end
+
+Page 1

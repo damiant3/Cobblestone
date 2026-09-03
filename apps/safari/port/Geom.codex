@@ -1,0 +1,144 @@
+Chapter: Geom
+  cites Safari chapter Trig
+
+ Pure rider-relative geometry: the coordinate types, the world-to-rider transform,
+ the ground curvature, and near-plane clipping. No projection -- that is Camera --
+ no drawing, no allocation. The math leaf the rest of the camera stands on.
+
+ A port of wasm/geom.zig.
+
+ We say:
+
+Section: Coordinates
+
+ A ground-plane point measured FROM THE RIDER: how far forward, down his look
+ axis, and how far to his right. The fundamental coordinate of the whole scene.
+
+  RiderPt = record {
+    right : Real,
+    forward : Real
+  }
+
+ A rider-relative vertex carrying a height off the ground -- what the road quads
+ and raised structures clip and project as.
+
+  Vec3 = record {
+    right : Real,
+    forward : Real,
+    height : Real
+  }
+
+ A point in a segment's bottom-left frame: `a` along, `x` across-from-left.
+
+  AX = record {
+    a : Real,
+    x : Real
+  }
+
+Section: Ground
+
+ The local ground is a gentle spherical plateau: a point drops this far below the
+ rider's tangent plane at horizontal distance d, so the road bends toward a finite
+ horizon instead of a vanishing point at infinity. Larger radius = gentler.
+
+  ground-radius : Real
+  ground-radius = 100000.0
+
+  ground-drop : Real, Real -> Real
+  ground-drop (right) (forward) = (right * right + forward * forward) / (2.0 * ground-radius)
+
+Section: The Rider Transform
+
+ to-rider maps a point in a segment's bottom-left frame -- `a` along the segment,
+ `x` across from its LEFT edge -- into the rider's frame, given his pose along and
+ across the segment's centre line and his look angle `yaw`. His pose is
+ centre-relative, so the half-width `hw` shifts x to from-the-left.
+
+  to-rider : Real, Real, Real, Real, Real, Real -> RiderPt
+  to-rider (a) (x) (cam-along) (cam-across) (yaw) (hw) =
+    let d-a = a - cam-along
+    in let d-x = x - (cam-across + hw)
+    in let c = r-cos yaw
+    in let s = r-sin yaw
+    in RiderPt { forward = d-a * c + d-x * s, right = (0.0 - d-a) * s + d-x * c }
+
+Section: The Frame Fusion
+
+ next-to-cur maps a point from the NEXT segment's bottom-left frame into the
+ CURRENT segment's, across the join. LEFT and RIGHT are NOT mirror images: a left
+ turn fuses on the end-left edge, where the origin is the inner corner; a right
+ turn fuses on the end-right edge and pays a width shift. `turns-right` is the
+ turn direction.
+
+  next-to-cur : Real, Real, Real, Real, Boolean, Real -> AX
+  next-to-cur (a-b) (x-b) (seg-len) (theta) (turns-right) (width) =
+    let c = r-cos theta
+    in let s = r-sin theta
+    in if turns-right
+      then AX { a = a-b * c - x-b * s + width * s + seg-len, x = x-b * c + a-b * s + width * (1.0 - c) }
+      else AX { a = a-b * c + x-b * s + seg-len, x = x-b * c - a-b * s }
+
+ cur-to-next is the inverse: a point in the CURRENT segment's frame expressed in
+ the NEXT segment's, across the same join. Used to draw the joint just BEHIND the
+ rider, so the pavement he is still crossing does not vanish.
+
+  cur-to-next : Real, Real, Real, Real, Boolean, Real -> AX
+  cur-to-next (a) (x) (seg-len) (theta) (turns-right) (width) =
+    let c = r-cos theta
+    in let s = r-sin theta
+    in if turns-right
+      then let a0 = a - seg-len - width * s
+        in let x0 = x - width * (1.0 - c)
+        in AX { a = a0 * c + x0 * s, x = (0.0 - a0) * s + x0 * c }
+      else let a0 = a - seg-len
+        in AX { a = a0 * c - x * s, x = a0 * s + x * c }
+
+Section: Line Intersection
+
+ line-meet returns where two infinite lines cross in the rider frame: line A
+ through a0 toward a1, line B through b0 toward b1. Used for the corner's outer
+ apex, where the two segments' outer shoulders meet. A real turn has a non-zero
+ angle, so the lines are never parallel.
+
+  line-meet : RiderPt, RiderPt, RiderPt, RiderPt -> RiderPt
+  line-meet (a0) (a1) (b0) (b1) =
+    let dax = a1.right - a0.right
+    in let daf = a1.forward - a0.forward
+    in let dbx = b1.right - b0.right
+    in let dbf = b1.forward - b0.forward
+    in let t = ((b0.right - a0.right) * dbf - (b0.forward - a0.forward) * dbx) / (dax * dbf - daf * dbx)
+    in RiderPt { right = a0.right + t * dax, forward = a0.forward + t * daf }
+
+Section: Near-Plane Clipping
+
+ Clip a rider-frame polygon against the near plane at `near` metres forward, so no
+ vertex sits behind the eye where the perspective divide would fling it across the
+ screen. Fewer than 3 vertices out means the caller skips the polygon.
+
+ The zig writes into a caller-supplied `out` slice and returns a count; this
+ returns the list, which is the same thing without the buffer. The wrap-around
+ edge is the reason the index walks to the length and reads (i + 1) modulo it: the
+ polygon is closed, so the last vertex pairs with the first.
+
+  clip-cross : Vec3, Vec3, Real -> List Vec3
+  clip-cross (a) (b) (near) =
+    let f = (near - a.forward) / (b.forward - a.forward)
+    in [Vec3 { right = a.right + f * (b.right - a.right), forward = near, height = a.height + f * (b.height - a.height) }]
+
+  both-sides : Boolean, Boolean -> Boolean
+  both-sides (a-in) (b-in) = if a-in then b-in else (if b-in then False else True)
+
+  clip-near-edge : List Vec3, Real, Integer -> List Vec3
+  clip-near-edge (poly) (near) (i) =
+    let n = list-length poly
+    in if i >= n then []
+    else let a = list-at poly i
+    in let b = list-at poly ((i + 1) - (((i + 1) / n) * n))
+    in let a-in = a.forward >= near
+    in let b-in = b.forward >= near
+    in let kept = if a-in then [a] else []
+    in let crossed = if both-sides a-in b-in then [] else clip-cross a b near
+    in kept & crossed & clip-near-edge poly near (i + 1)
+
+  clip-near : List Vec3, Real -> List Vec3
+  clip-near (poly) (near) = clip-near-edge poly near 0

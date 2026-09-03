@@ -200,39 +200,58 @@ Section: FAT Write
 
 Section: Directory Reading
 
+ A run is up to 640 bytes and a FAT32 directory is walked one 512-byte sector
+ at a time inside a cluster chain, so the assembling state has to survive both
+ a sector boundary and a cluster boundary. That is why the 8.3 scanner was
+ this chapter's until now: pointing the assembling one at an untreaded walk
+ would have caught a run only when it happened to fall inside one sector.
+ `Fat16.codex` "Two scanners over the same bytes" recorded that, and the state
+ is threaded here rather than the scanner being swapped underneath it.
+
+ `fat32-find-in-dir` keeps its three arguments because `DriveManager` resolves
+ the ESP through it; the run state is opened here and never crosses the seam.
+
   fat32-find-in-dir : Fat32Volume, Integer, Text -> [Device.Block] Maybe Fat16DirEntry
   fat32-find-in-dir (vol) (cluster) (name) =
-    fat32-find-in-dir-walk vol cluster name cluster 1 0
+    fat32-find-in-dir-walk vol cluster name cluster 1 0 fat16-lfn-none
 
-  fat32-find-in-dir-walk : Fat32Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
-  fat32-find-in-dir-walk (vol) (cluster) (name) (saved) (power) (steps) =
+  fat32-find-in-dir-walk : Fat32Volume, Integer, Text, Integer, Integer, Integer, Fat16Lfn -> [Device.Block] Maybe Fat16DirEntry
+  fat32-find-in-dir-walk (vol) (cluster) (name) (saved) (power) (steps) (st) =
     if fat32-is-end cluster then None
     else if cluster < 2 then None
-    else when fat32-scan-dir-sectors vol name (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster)
-      is Just (entry) -> Just entry
-      is None -> fat32-find-in-dir-step vol cluster name saved power steps
-
-  fat32-find-in-dir-step : Fat32Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
-  fat32-find-in-dir-step (vol) (cluster) (name) (saved) (power) (steps) = act
-    nxt <- fat32-next-cluster vol cluster
-    if nxt == saved then None
-    else if steps + 1 == power then fat32-find-in-dir-walk vol nxt name nxt (power * 2) 0
-    else fat32-find-in-dir-walk vol nxt name saved power (steps + 1)
-  end
-
-  fat32-scan-dir-sectors : Fat32Volume, Text, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
-  fat32-scan-dir-sectors (vol) (name) (sector) (remaining) =
-    if remaining == 0 then None
     else act
-      buf <- block-read-sector sector
-      fat32-scan-dir-step vol name sector remaining buf
+      r <- fat32-scan-dir-sectors vol name (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster) st
+      fat32-dir-found-or-next vol cluster name saved power steps r
     end
 
-  fat32-scan-dir-step : Fat32Volume, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
-  fat32-scan-dir-step (vol) (name) (sector) (remaining) (buf) =
-    when fat16-scan-sector-entries buf name 0 (512 / 32)
+  fat32-dir-found-or-next : Fat32Volume, Integer, Text, Integer, Integer, Integer, Fat16Scan -> [Device.Block] Maybe Fat16DirEntry
+  fat32-dir-found-or-next (vol) (cluster) (name) (saved) (power) (steps) (r) =
+    when (r.sc-found)
       is Just (entry) -> Just entry
-      is None -> fat32-scan-dir-sectors vol name (sector + 1) (remaining - 1)
+      is None -> fat32-find-in-dir-step vol cluster name saved power steps (r.sc-lfn)
+
+  fat32-find-in-dir-step : Fat32Volume, Integer, Text, Integer, Integer, Integer, Fat16Lfn -> [Device.Block] Maybe Fat16DirEntry
+  fat32-find-in-dir-step (vol) (cluster) (name) (saved) (power) (steps) (st) = act
+    nxt <- fat32-next-cluster vol cluster
+    if nxt == saved then None
+    else if steps + 1 == power then fat32-find-in-dir-walk vol nxt name nxt (power * 2) 0 st
+    else fat32-find-in-dir-walk vol nxt name saved power (steps + 1) st
+  end
+
+  fat32-scan-dir-sectors : Fat32Volume, Text, Integer, Integer, Fat16Lfn -> [Device.Block] Fat16Scan
+  fat32-scan-dir-sectors (vol) (name) (sector) (remaining) (st) =
+    if remaining == 0 then Fat16Scan { sc-found = None, sc-lfn = st }
+    else act
+      buf <- block-read-sector sector
+      fat32-scan-dir-step vol name sector remaining buf st
+    end
+
+  fat32-scan-dir-step : Fat32Volume, Text, Integer, Integer, Integer, Fat16Lfn -> [Device.Block] Fat16Scan
+  fat32-scan-dir-step (vol) (name) (sector) (remaining) (buf) (st) =
+    let r = fat16-scan-sector-lfn buf name 0 (512 / 32) st
+    in when (r.sc-found)
+      is Just (e) -> r
+      is None -> fat32-scan-dir-sectors vol name (sector + 1) (remaining - 1) (r.sc-lfn)
 
 Section: Path Resolution
 
@@ -327,9 +346,16 @@ Section: Root Listing
 
 Section: File Writing
 
+ A name no run can hold is refused rather than written short. The format caps
+ a long name at 255 characters and a run at 20 records, and a name past that
+ would be spelled by a run whose ordinals no reader will reassemble, which
+ comes back under the 8.3 alias and reads as a file that was written with a
+ different name.
+
   fat32-write-file : Fat32Volume, Text, List Integer -> [Device.Block] Boolean
   fat32-write-file (vol) (path) (data) =
-    let parts = fat16-split-path path
+    if fat16-path-writable path == False then False
+    else let parts = fat16-split-path path
     in act
       dir-cluster <- fat32-ensure-parent-dirs vol parts 0 (list-length parts - 1) (vol.f32-root-cluster)
       fat32-write-file-step vol parts data dir-cluster
@@ -350,8 +376,12 @@ Section: File Writing
     if first-cluster == 0 then False
     else act
       fat32-write-data-to-chain vol first-cluster data 0
-      fat32-done (fat32-add-dir-entry vol dir-cluster file-name 32 first-cluster (list-length data))
+      r <- fat32-add-dir-entry vol dir-cluster file-name 32 first-cluster (list-length data)
+      fat32-entry-ok r
     end
+
+  fat32-entry-ok : Integer -> Boolean
+  fat32-entry-ok (r) = r == 0
 
   fat32-write-data-to-chain : Fat32Volume, Integer, List Integer, Integer -> [Device.Block] Integer
   fat32-write-data-to-chain (vol) (cluster) (data) (offset) =
@@ -392,50 +422,246 @@ Section: File Writing
 
 Section: Directory Entry Writing
 
+ VFAT spells a name the 8.3 field cannot hold as a run of 32-byte records
+ placed IMMEDIATELY BEFORE the short entry they belong to, in descending
+ sequence, and that adjacency is the only thing binding the two. Slots run
+ consecutively across the sectors of a cluster, which are contiguous on the
+ medium, but NOT across a directory's clusters: the next one sits wherever
+ the allocator put it. So a run goes inside one cluster, and a directory
+ with no cluster roomy enough grows a fresh one.
+
+ A slot is addressed by absolute byte throughout, which is what lets a run
+ straddle a sector boundary without the placer knowing it happened. It is
+ also the arithmetic the reader already uses, and the same arithmetic
+ `fat16-write-lfn-slot` performs on the FAT16 side.
+
+  fat32-slots-for : Text -> Integer
+  fat32-slots-for (name) = fat16-records-for name + 1
+
   fat32-add-dir-entry : Fat32Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Integer
-  fat32-add-dir-entry (vol) (dir-cluster) (name) (attr) (cluster) (size) =
-    let name83 = fat32-to-83 name
-    in fat32-add-entry-to-cluster vol dir-cluster name83 attr cluster size
+  fat32-add-dir-entry (vol) (dir-cluster) (name) (attr) (cluster) (size) = act
+    short <- fat32-pick-alias-dir vol dir-cluster name 1
+    fat32-add-with-alias vol dir-cluster name short attr cluster size
+  end
 
-  fat32-add-entry-to-cluster : Fat32Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Integer
-  fat32-add-entry-to-cluster (vol) (cluster) (name83) (attr) (file-cluster) (size) =
-    if fat32-is-end cluster then 0
+  fat32-add-with-alias : Fat32Volume, Integer, Text, Text, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-add-with-alias (vol) (dir-cluster) (name) (short) (attr) (cluster) (size) =
+    if text-length short == 0 then 0 - 1
     else act
-      result <- fat32-find-free-entry-sectors (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster)
-      fat32-add-entry-step vol cluster name83 attr file-cluster size result
+      slot <- fat32-find-or-grow-run-in-dir vol dir-cluster (fat32-slots-for name)
+      fat32-add-at-run vol name short attr cluster size slot
     end
 
-  fat32-add-entry-step : Fat32Volume, Integer, Text, Integer, Integer, Integer, Integer -> [Device.Block] Integer
-  fat32-add-entry-step (vol) (cluster) (name83) (attr) (file-cluster) (size) (result) =
-    if result >= 0 then
-      let s = result / 16
-      in let off = (result - (result / 16) * 16) * 32
-      in fat32-write-entry-at (fat32-cluster-sector vol cluster + s) off name83 attr file-cluster size
+ The records go down before the short entry. A run with no short entry
+ beneath it is skipped by every reader, ours included, because a run is only
+ ever claimed by the entry it sits on; a short entry with no run reads under
+ its 8.3 alias, which is a real file. Either half alone is harmless, and
+ writing the cheap half last is what makes the file appear whole.
+
+  fat32-add-at-run : Fat32Volume, Text, Text, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-add-at-run (vol) (name) (short) (attr) (cluster) (size) (slot) =
+    if slot < 0 then 0 - 1
     else act
-      next <- fat32-next-cluster vol cluster
-      if fat32-is-end next then 0 else fat32-add-entry-to-cluster vol next name83 attr file-cluster size
+      w <- fat32-write-run name short slot (fat16-records-for name)
+      fat32-commit-short w name short attr cluster size slot
     end
 
-  fat32-find-free-entry-sectors : Integer, Integer -> [Device.Block] Integer
-  fat32-find-free-entry-sectors (sector) (remaining) =
+  fat32-commit-short : Integer, Text, Text, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-commit-short (w) (name) (short) (attr) (cluster) (size) (slot) =
+    if w /= 0 then w
+    else let at = slot + fat16-records-for name * 32
+    in fat32-write-entry-at (at / 512) (int-mod at 512) (fat32-to-83 short) attr cluster size
+
+Section: Writing A Long Name
+
+ `block-write-sector` answers 0 for SUCCESS. A record write that fails and
+ is not read leaves the run short while the short entry below it still
+ lands, so the file comes back under its 8.3 alias and not under the name it
+ was written with, which is the write-and-read disagreement this whole
+ section exists to remove, reintroduced one layer down. The status is
+ threaded and the first failure stops the walk.
+
+  fat32-write-run : Text, Text, Integer, Integer -> [Device.Block] Integer
+  fat32-write-run (name) (short) (slot) (records) =
+    fat32-write-run-step name (fat16-short-checksum-of short) slot records 0
+
+  fat32-write-run-step : Text, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-write-run-step (name) (sum) (slot) (records) (j) =
+    if j >= records then 0
+    else act
+      w <- fat16-write-lfn-slot name sum (slot + j * 32) (records - j) (j == 0)
+      fat32-write-run-next name sum slot records j w
+    end
+
+  fat32-write-run-next : Text, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-write-run-next (name) (sum) (slot) (records) (j) (w) =
+    if w /= 0 then w
+    else fat32-write-run-step name sum slot records (j + 1)
+
+Section: Finding A Run Of Free Slots
+
+ A run that began in an earlier sector answers a NEGATIVE slot index, and
+ the address arithmetic below is what makes that the right answer rather
+ than a special case: sector times 512 plus a negative offset lands in the
+ previous sector, which is where the run really starts. The streak resets at
+ every cluster because a run may not cross one.
+
+  fat32-find-run-in-dir : Fat32Volume, Integer, Integer -> [Device.Block] Integer
+  fat32-find-run-in-dir (vol) (cluster) (need) =
+    fat32-run-dir-walk vol cluster need cluster 1 0
+
+  fat32-run-dir-walk : Fat32Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-run-dir-walk (vol) (cluster) (need) (saved) (power) (steps) =
+    if fat32-is-end cluster then 0 - 1
+    else if cluster < 2 then 0 - 1
+    else act
+      found <- fat32-run-dir-sectors vol need (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster) 0
+      fat32-run-dir-or-next vol cluster need found saved power steps
+    end
+
+  fat32-run-dir-or-next : Fat32Volume, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-run-dir-or-next (vol) (cluster) (need) (found) (saved) (power) (steps) = act
+    if found >= 0 then found
+    else act
+      nxt <- fat32-next-cluster vol cluster
+      if nxt == saved then 0 - 1
+      else if steps + 1 == power then fat32-run-dir-walk vol nxt need nxt (power * 2) 0
+      else fat32-run-dir-walk vol nxt need saved power (steps + 1)
+    end
+  end
+
+  fat32-run-dir-sectors : Fat32Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-run-dir-sectors (vol) (need) (sector) (remaining) (streak) =
     if remaining == 0 then 0 - 1
     else act
       buf <- block-read-sector sector
-      fat32-find-free-step sector remaining (fat32-find-free-in-sector buf 0 16)
+      fat32-run-dir-step vol need sector remaining streak buf
     end
 
-  fat32-find-free-step : Integer, Integer, Integer -> [Device.Block] Integer
-  fat32-find-free-step (sector) (remaining) (result) =
-    if result >= 0 then (sector - sector) * 16 + result
-    else fat32-find-free-entry-sectors (sector + 1) (remaining - 1)
+  fat32-run-dir-step : Fat32Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-run-dir-step (vol) (need) (sector) (remaining) (streak) (buf) =
+    let eps = (vol.f32-bytes-per-sector) / 32
+    in let r = fat16-run-in-sector buf 0 eps need streak
+    in if (r.rn-found) then sector * 512 + (r.rn-at) * 32
+       else fat32-run-dir-sectors vol need (sector + 1) (remaining - 1) (r.rn-streak)
 
-  fat32-find-free-in-sector : Integer, Integer, Integer -> Integer
-  fat32-find-free-in-sector (buf) (i) (count) =
-    if i >= count then 0 - 1
-    else let first = peek-byte buf (i * 32)
-    in if first == 0 then i
-    else if first == 229 then i
-    else fat32-find-free-in-sector buf (i + 1) count
+  fat32-find-or-grow-run-in-dir : Fat32Volume, Integer, Integer -> [Device.Block] Integer
+  fat32-find-or-grow-run-in-dir (vol) (cluster) (need) = act
+    found <- fat32-find-run-in-dir vol cluster need
+    fat32-run-or-grow vol cluster need found
+  end
+
+  fat32-run-or-grow : Fat32Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-run-or-grow (vol) (cluster) (need) (found) =
+    if found >= 0 then found
+    else if need * 32 > (vol.f32-sectors-per-cluster) * 512 then 0 - 1
+    else act
+      last <- fat32-find-chain-end vol cluster
+      fat32-grow-dir-at vol last
+    end
+
+Section: Growing A Directory
+
+ The fresh cluster is claimed and zeroed BEFORE it is linked. A directory's
+ extent is not recorded anywhere: a reader stops at the first slot whose
+ first byte is zero, so a cluster carrying a previous tenant's bytes reads
+ as entries, and one linked before it is terminated is a chain a reader can
+ walk off the end of.
+
+  fat32-grow-dir-at : Fat32Volume, Integer -> [Device.Block] Integer
+  fat32-grow-dir-at (vol) (last) = act
+    fresh <- fat32-alloc-cluster vol (vol.f32-next-free)
+    fat32-grow-dir-with vol last fresh
+  end
+
+  fat32-grow-dir-with : Fat32Volume, Integer, Integer -> [Device.Block] Integer
+  fat32-grow-dir-with (vol) (last) (fresh) =
+    if fresh == 0 then 0 - 1
+    else act
+      m <- fat32-set-fat-entry vol fresh 268435455
+      z <- fat32-zero-dir-cluster vol fresh 0
+      l <- fat32-set-fat-entry vol last fresh
+      fat32-cluster-byte vol fresh
+    end
+
+  fat32-cluster-byte : Fat32Volume, Integer -> Integer
+  fat32-cluster-byte (vol) (cluster) = fat32-cluster-sector vol cluster * 512
+
+ One buffer for the whole cluster, because every sector of it is the same
+ bytes. Taking it inside the loop costs 512 bytes per sector with no
+ collector to take them back, which at eight sectors per cluster is 4 KB
+ permanent per directory created or grown.
+
+  fat32-zero-dir-cluster : Fat32Volume, Integer, Integer -> [Device.Block] Integer
+  fat32-zero-dir-cluster (vol) (cluster) (i) =
+    let buf = alloc-bytes 512
+    in let z = fat32-zero-buf buf 0
+    in fat32-zero-dir-sectors vol cluster i buf
+
+  fat32-zero-dir-sectors : Fat32Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-zero-dir-sectors (vol) (cluster) (i) (buf) =
+    if i >= (vol.f32-sectors-per-cluster) then 0
+    else act
+      block-write-sector (fat32-cluster-sector vol cluster + i) buf
+      fat32-zero-dir-sectors vol cluster (i + 1) buf
+    end
+
+Section: Choosing An Alias
+
+ An alias is searched for rather than derived, because uniqueness is a fact
+ about the directory and not about the name. A name needing no run keeps its
+ own spelling and no search happens at all. An empty answer means the search
+ ran out of numbers, and it is a refusal: there is no alias left to write
+ under, and writing a duplicate would be the failure this is here to avoid.
+
+  fat32-pick-alias-dir : Fat32Volume, Integer, Text, Integer -> [Device.Block] Text
+  fat32-pick-alias-dir (vol) (cluster) (name) (n) =
+    if fat16-needs-long name == False then name
+    else if n > fat16-alias-max-tries then ""
+    else let cand = fat16-alias-of name n
+    in act
+      taken <- fat32-find-name-slot-in-dir vol cluster cand
+      if taken >= 0 then fat32-pick-alias-dir vol cluster name (n + 1) else cand
+    end
+
+  fat32-find-name-slot-in-dir : Fat32Volume, Integer, Text -> [Device.Block] Integer
+  fat32-find-name-slot-in-dir (vol) (cluster) (name) =
+    fat32-name-slot-walk vol cluster name cluster 1 0
+
+  fat32-name-slot-walk : Fat32Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-name-slot-walk (vol) (cluster) (name) (saved) (power) (steps) =
+    if fat32-is-end cluster then 0 - 1
+    else if cluster < 2 then 0 - 1
+    else act
+      found <- fat32-name-slot-sectors vol name (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster)
+      fat32-name-slot-or-next vol cluster name found saved power steps
+    end
+
+  fat32-name-slot-or-next : Fat32Volume, Integer, Text, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-name-slot-or-next (vol) (cluster) (name) (found) (saved) (power) (steps) = act
+    if found >= 0 then found
+    else act
+      nxt <- fat32-next-cluster vol cluster
+      if nxt == saved then 0 - 1
+      else if steps + 1 == power then fat32-name-slot-walk vol nxt name nxt (power * 2) 0
+      else fat32-name-slot-walk vol nxt name saved power (steps + 1)
+    end
+  end
+
+  fat32-name-slot-sectors : Fat32Volume, Text, Integer, Integer -> [Device.Block] Integer
+  fat32-name-slot-sectors (vol) (name) (sector) (remaining) =
+    if remaining == 0 then 0 - 1
+    else act
+      buf <- block-read-sector sector
+      fat32-name-slot-step vol name sector remaining buf
+    end
+
+  fat32-name-slot-step : Fat32Volume, Text, Integer, Integer, Integer -> [Device.Block] Integer
+  fat32-name-slot-step (vol) (name) (sector) (remaining) (buf) =
+    let eps = (vol.f32-bytes-per-sector) / 32
+    in let found = fat16-name-slot-in-sector buf name 0 eps
+    in if found >= 0 then sector * 512 + found
+       else fat32-name-slot-sectors vol name (sector + 1) (remaining - 1)
 
   fat32-write-entry-at : Integer, Integer, Text, Integer, Integer, Integer -> [Device.Block] Integer
   fat32-write-entry-at (sector) (off) (name83) (attr) (cluster) (size) = act
@@ -520,10 +746,14 @@ Section: Directory Creation
     in let z = fat32-zero-buf buf 0
     in let w = fat32-mkdir-dot-entries buf dir-cluster parent-cluster
     in act
+      c <- fat32-zero-dir-cluster vol dir-cluster 0
       block-write-sector (fat32-cluster-sector vol dir-cluster) buf
-      fat32-add-dir-entry vol parent-cluster name 16 dir-cluster 0
-      dir-cluster
+      r <- fat32-add-dir-entry vol parent-cluster name 16 dir-cluster 0
+      fat32-mkdir-result r dir-cluster
     end
+
+  fat32-mkdir-result : Integer, Integer -> Integer
+  fat32-mkdir-result (r) (dir-cluster) = if r == 0 then dir-cluster else 0
 
   fat32-mkdir-dot-entries : Integer, Integer, Integer -> Integer
   fat32-mkdir-dot-entries (buf) (dir-cluster) (parent-cluster) =

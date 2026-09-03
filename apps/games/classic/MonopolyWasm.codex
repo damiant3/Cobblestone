@@ -37,7 +37,10 @@ Section: Copying
       turn-number = s.turn-number,
       game-over = s.game-over,
       winner = s.winner,
-      num-players = s.num-players
+      num-players = s.num-players,
+      phase = s.phase,
+      pending = s.pending,
+      last-roll = s.last-roll
     }
 
 Section: The Browser Interface
@@ -45,10 +48,99 @@ Section: The Browser Interface
   mo-wasm-new : Integer, Integer -> MonopolyState
   mo-wasm-new (seed) (players) = mono-init seed players
 
+ `mono-do-turn` ENDS a turn, advancing to the next player itself. This
+ wrapper used to call `mono-advance-turn` on top of it, so every step of
+ the page advanced twice and half the table never took a turn: with four
+ players, two of them sat still for a whole game while the counters kept
+ reading as a game being played. Nothing that counts turns, cash or
+ properties can see a player being skipped.
+
   mo-wasm-step : MonopolyState, Integer -> MonopolyState
   mo-wasm-step (s) (seed) =
     if s.game-over then s
-    else mono-advance-turn (mono-do-turn (mo-copy-state s) (rng-new seed))
+    else mono-do-turn (mo-copy-state s) (rng-new seed)
+
+Section: Taking A Turn Yourself
+
+ A turn is a roll and then, when the square is worth deciding about, a
+ choice. `mo-wasm-roll` stops at the offer; `mo-wasm-take` and
+ `mo-wasm-leave` are the two ways past it, and both end the turn.
+
+  mo-wasm-roll : MonopolyState, Integer -> MonopolyState
+  mo-wasm-roll (s) (seed) =
+    if s.game-over then s
+    else mono-roll (mo-copy-state s) (rng-new seed)
+
+  mo-wasm-take : MonopolyState -> MonopolyState
+  mo-wasm-take (s) = mono-take (mo-copy-state s) (s.current-player)
+
+  mo-wasm-leave : MonopolyState -> MonopolyState
+  mo-wasm-leave (s) = mono-leave (mo-copy-state s) (s.current-player)
+
+  mo-wasm-phase : MonopolyState -> Integer
+  mo-wasm-phase (s) = s.phase
+
+  mo-wasm-offered : MonopolyState -> Integer
+  mo-wasm-offered (s) = mono-offered s
+
+  mo-wasm-last-roll : MonopolyState -> Integer
+  mo-wasm-last-roll (s) = s.last-roll
+
+  mo-wasm-can-roll : MonopolyState -> Integer
+  mo-wasm-can-roll (s) =
+    if s.game-over then 0 else if s.phase == 0 then 1 else 0
+
+  mo-wasm-can-decide : MonopolyState, Integer -> Integer
+  mo-wasm-can-decide (s) (player) =
+    if mono-can-decide s player then 1 else 0
+
+ What the offer would cost you, and what you would still be holding after
+ it. A page that showed the price without the balance would be asking for a
+ decision it had not given you the numbers for.
+
+  mo-wasm-offer-cost : MonopolyState -> Integer
+  mo-wasm-offer-cost (s) =
+    if s.phase /= 1 then (-1)
+    else if s.pending < 0 then (-1)
+    else (list-at (s.properties) (s.pending)).cost
+
+  mo-wasm-offer-color : MonopolyState -> Integer
+  mo-wasm-offer-color (s) =
+    if s.phase /= 1 then (-1)
+    else if s.pending < 0 then (-1)
+    else (list-at (s.properties) (s.pending)).color
+
+ A BOARD SPACE and a PROPERTY INDEX are different numbers, and both are
+ different again from a player. Forty spaces hold twenty-two properties, so
+ `mo_owner` takes 0..21 and a page drawing the board has 0..39 in its hand.
+ Without this export a page has to guess, and the arcade's did: it read the
+ board space as a property index AND as a player, so the board has never
+ coloured a single owned square in.
+
+  mo-wasm-prop-at : Integer -> Integer
+  mo-wasm-prop-at (space) =
+    if space < 0 then (-1)
+    else if space >= 40 then (-1)
+    else if mono-is-property space then mono-prop-index space
+    else (-1)
+
+  mo-wasm-offer-space : MonopolyState -> Integer
+  mo-wasm-offer-space (s) =
+    if s.phase /= 1 then (-1)
+    else if s.pending < 0 then (-1)
+    else mo-space-of (s.pending) 0
+
+  mo-space-of : Integer, Integer -> Integer
+  mo-space-of (pi) (space) =
+    if space >= 40 then (-1)
+    else if mo-wasm-prop-at space == pi then space
+    else mo-space-of pi (space + 1)
+
+  mo-wasm-offer-rent : MonopolyState -> Integer
+  mo-wasm-offer-rent (s) =
+    if s.phase /= 1 then (-1)
+    else if s.pending < 0 then (-1)
+    else (list-at (s.properties) (s.pending)).base-rent
 
   mo-wasm-players : MonopolyState -> Integer
   mo-wasm-players (s) = s.num-players

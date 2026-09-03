@@ -202,6 +202,43 @@ was the right gate for what the CL did to the plug and the wrong gate for what
 it did to the script; the two are different questions and the second has its
 own runner, which is the same lesson as the section below in the other
 direction.
+### How to actually make the shipped script match, and the two things that bite
+
+`check-generated-scripts.ps1` has no `-Write` and that omission is deliberate,
+which leaves the question of how the shipped script is supposed to catch up
+with a generator you just changed. **`-OutRoot <dir>` is the answer**: it writes
+the generator's emitted text to `<dir>/<Chapter>/emitted.txt`, and installing
+THAT over the shipped script makes the two agree by construction instead of by
+hand-transcription. `-Diff <name>` shows the delta; `-Update` records a drift
+rather than fixing it.
+
+Two things bite when you do it, both measured 2026-09-02 (fester):
+
+- **The emitted text is LF and the shipped scripts are CRLF.** Copy it in
+  unconverted and `p4 diff` reports the whole file as changed, which buries a
+  five-line change and turns the next merge into a conflict (P-EOL). Convert on
+  the way in.
+- **The emitted text can differ from the shipped script in places you did not
+  touch**, and that is not always drift to fix. Every `Sc*` node, `ScComment`
+  included, pads with `ps-indent indent` (`PowerShellEmit.codex:122`, the
+  same as `ScAssign`/`ScEcho`/`ScRaw`); an entry sits at column 0 only because
+  it is at the TOP LEVEL of the phase list, indent 0. So a comment that the
+  shipped script keeps indented inside a scriptblock has to be emitted from
+  inside that scriptblock (as `ScRaw` with its own indent), not appended to
+  the phase list; four `plug-smoke` comments were the wrong way round until
+  main 21690. The checker tolerated it; a wholesale install does not, and
+  re-indenting afterwards is what keeps the CL to the change you meant
+  (P-UNRELATED).
+
+**A Codex text literal cannot span lines.** `ScRaw "line one` + newline +
+`line two"` is `CDX0007: Unterminated text literal: hit end of line before
+closing '"'`, pointing at the column where the line ended. A multi-line emitted
+block is written as SEPARATE `ScRaw` entries, one per emitted line, which is
+what every existing block in `BuildScript.codex` already does. Worth naming
+beside the backslash trap below because the two look alike from the outside:
+both are the generator's own string rules leaking into what you thought was
+PowerShell.
+
 ### A generator chapter is a compiled unit. Run the gate.
 
 **Two of the nine went to main red and blu found them, not me.** I verified
@@ -821,6 +858,29 @@ that was a fiction the shipped script had never had.
   fine, which is why the tree's other bare `foreach ... in <cmd>` lines
   are not bugs: a cmdlet streams, a function returning a collection does
   not. Use `SeCallArgs`, which parenthesises.
+- **A generator's column-2 prose is NOT emitted.** Writing a comment into
+  the shipped `.ps1` without a matching entry in the generator is instant
+  drift. `ScComment` pads like every other node (`PowerShellEmit.codex:122`);
+  an INDENTED comment comes out indented only if it is emitted from inside
+  the scriptblock that indents it, which in practice means `ScRaw` at that
+  level rather than an `ScComment` appended to the top-level list (the
+  mechanism is above, under "-OutRoot"). Prose is for the reader of the
+  generator; a comment the shipped script needs has to be emitted like any
+  other line (reek, 2026-09-02; mechanism corrected in the mindmeld).
+- **`SeRaw` emits ONE paren pair where `SeOr` and its siblings add their
+  own.** `ScIf (SeRaw "$a -ne $b")` emits `if ($a -ne $b) {`; `ScIf (SeOr ...)`
+  emits `if ((...)) {`. Hand-matching a shipped script to its generator fails
+  on exactly that one character pair, and it is the whole of the drift the
+  checker will report.
+- **A PowerShell hex literal parses SIGNED, so `0xFFFFFFFF` is int -1.** A
+  mask written to normalise a negative process exit code is therefore a no-op,
+  the `[uint32]` cast that follows THROWS, and in a loop the failed assignment
+  leaves the comparison reading a STALE value, which answers True for the
+  wrong reason. Compare the signed literal directly: `0xC0000374` IS
+  -1073740940 and equals `$proc.ExitCode` with no conversion. Test the
+  arithmetic against real values before trusting a check like this; the
+  careful-looking version is the broken one (reek, 2026-09-02, the test-run
+  host-crash refusal).
 
 `bvt` was closed 2026-08-11 (fester) and is the one that shows what this
 campaign is actually FOR. **The generator's test list held 16 of the 75
@@ -1245,12 +1305,82 @@ without `$tBuild` fires once. Phase costs are the max across five gate runs on
 | `deck-headroom` | `$tBuild -or $tCompiler` | `used` is measured by RUNNING the compiler; the per-point divisor is `demand-check-floor` | **widened**, 31 s, ~1 in 50 |
 | `gen-scripts` | `$tBuild -or $tCompiler` | every generator is COMPILED by the current kernel and the emitted text diffed | **widened**, 63 s, ~1 in 50 |
 | `jonquil` | `$tCompiler` | `build/jonquil.ps1` | not widened, below |
-| `plug-binary` | `$tPlugs -or $tCompiler` | `build/test-cross-batch.ps1` | not widened |
+| `plug-binary` | `$tPlugs -or $tCompiler` | `build/test-cross-batch.ps1` | **graded set widened**, reek 2026-09-01 |
 | `cross-smoke` | `$tPlugs -or $tCompiler` | `build/check-cross-smoke.ps1` | not widened |
-| `plug-smoke` | `$tPlugs -or $tCompiler` | `build/plug-run.ps1`, `build/compile.ps1` | not widened |
+| `plug-smoke` | `$tPlugs -or $tCompiler` | `build/plug-run.ps1`, `build/compile.ps1` | **graded set widened**, reek 2026-09-01; **scope repaired** reek 2026-09-02 (it invokes `run.ps1 -Src`, and a plug binding none exits 1 at parameter binding, so capability is read off the param block) |
+| `plug-selftest` | the changed plug ships a `test-*.ps1` | that harness, plus every `build*.ps1` the plug ships | **new**, reek 2026-09-02, red's clearance |
 | `app-sweep` | `$tApps -or $tCompiler` | `build/sweep-app-classes.ps1` | not widened |
-| `sem-equiv` | `$tFrontEnd` | `build/compare-codex-semantic.ps1` | not widened |
+| `sem-equiv` | `$coreRuns` | `build/compare-codex-semantic.ps1` | **widened**, fester 2026-09-02, Damian's ruling; was `$tSemantic`, which left every compiler chapter outside the front end ungated (L-NOGATE). `text-stage1` moves with it, 34.5 s + 59.6 s measured |
 | `run-list` | `$tVm` | `tools/codex-vm.c`/`.exe`, `build/check-run-list.ps1` | **added**, 5.7 s, per-file |
+
+**The TRIGGER was never the gap for the plug phases; the GRADED SET was.**
+Both fire on `$tPlugs`, which is correct and always was. But `plug-binary`
+graded a hardcoded `@('riscv','arm64','t3isa','elf','pe','img')` and
+`plug-smoke` a hardcoded `@('typescript','python','rust','ptx')`, against
+**56 plugs that have a `build.ps1`**. So 46 plugs were in NEITHER list: change
+one and both phases ran, graded plugs it had not touched, and came back green.
+The audit above asks whether a trigger covers the files that can change a
+phase's ANSWER, and this is the same question one level in -- whether the
+phase's SUBJECTS cover the change that implicated it.
+
+Fixed 2026-09-01 (reek): `$changedPlugs` names the plug directories in the
+change and both lists append it, deduped. Safe to widen because all 56 plugs
+carry both `build.ps1` and `run.ps1`, and `plug-smoke` asserts only that
+`run.ps1` exits 0 with non-empty output, so no target toolchain is required and
+a widened plug cannot go red for a missing compiler. `common` and `test-input`
+are excluded, being the only two directories under `codex/plugs` with no
+`build.ps1`. Proven both directions before it was believed: a sabotaged `qt`
+(in neither list) turned the gate RED with `FAIL: binary plug build -- qt` and
+exit 1, and a change touching no plug deferred all three plug phases and
+finished green in 374.8 s.
+
+### `$tCompiler` fires on a PROSE file, and the register under it moves weekly
+
+`$tCompiler` is `^codex/compiler/`, which is a DIRECTORY and not a subject.
+Measured 2026-09-01: `codex/compiler` holds 64 `.codex` files and exactly ONE
+file that is not source, `compiler-backlog.md`. That register is edited by
+every lane that opens or closes a compiler item, and it moved in **8 of the
+last 50 changes on main** (21289..21440) -- the same order as the `$tBuild`
+frequency this document cites as the reason NOT to widen the six phases.
+
+So a docs-only CL that closes a backlog row pays the full compiler subject:
+`$tCompiler` switches on EIGHT phases (`jonquil`, `plug-binary`, `cross-smoke`,
+`plug-smoke`, `gen-scripts`, `vm-differential`, `deck-headroom`, `app-sweep`),
+and `-Internal` stops being the switch it exists to be. Of those, the four that
+ran in the 2026-09-01 control cost 90.8 s together (`gen-scripts` 46.8,
+`deck-headroom` 30.7, `app-sweep` 8.3, `vm-differential` 5.0); the four plug
+and jonquil phases are on top of that and rebuild six plug binaries.
+
+**It also voids a control, which is how it was found.** Proving that the plug
+phases DEFER needs a change that implicates neither, and an unrelated
+`compiler-backlog.md` arriving from main set `$tCompiler` and ran them. That
+cost three merge-downs and one discarded gate before a clean control existed,
+and the file had nothing to do with the change under test.
+
+The repair is the same question this audit already asks, pointed at the file
+rather than the phase: **can this file change the phase's ANSWER?** A prose
+register cannot. The discriminator is not the extension, though -- non-source
+files that DO decide an answer exist and must keep their trigger
+(`build/app-sweep-baseline.txt` is the standing example), so the fix scopes
+`$tCompiler` to compiler SOURCE rather than banning a suffix. **Done 2026-09-01 (reek):** `$tCompiler` is now
+`^codex/compiler/.*\.codex$`. The mutation ran first and needed no box, the
+subject being a predicate over a file list: `compiler-backlog.md` is the ONLY
+file that moves True to False, while `IR/Lowering.codex`, `opening.codex`,
+`Emit/X86_64.codex` and `Types/CodexTypeHelpers.codex` all still fire and
+`codex/plugs/**` and `build/**` are unmoved. The gate that landed it confirms
+the GUARD half on the real thing rather than the relax: an unrelated
+`Types/TypeCheckerInference.codex` was in the same diff, so `$tCompiler` was
+correctly true and all eight phases ran, green in 404.7 s.
+
+**The generator ATE THE BACKSLASH and the drift check is the only reason it did
+not ship.** Codex reads `\` as an escape introducer, so `'\.'` in the
+generator emitted `'.'` and the first attempt produced
+`^codex/compiler/.*.codex$` -- a dot matching ANY character, which also accepts
+`codex/compiler/fooXcodex`. It would have behaved correctly on every file in the
+tree today and misfired only on a name nobody has written yet. The generator
+source carries `\\.` and emits `\.`; the SHIPPED script was right throughout,
+which is the drift direction this document already warns about and the reason
+`check-generated-scripts` has no `-Write`.
 
 **`run-list` is the first phase to carry a per-file trigger, and it is the
 shape the six above could not afford.** Added 2026-08-25 (reek, on red's
@@ -1293,3 +1423,194 @@ changes, not when any build file does), and that is machinery in the map to
 manage a modest risk the next full gate already catches -- L-LESS, and the
 reason it is recorded as a question rather than built. **Whoever edits one of
 those six harnesses should run its phase by hand and say so.**
+
+## A gate runs only the steps the change can affect (Damian, 2026-09-02)
+
+Ruled through root: an apps-only CL must not build the seed, run the compiler
+BVT, or stride an app sweep. `-Internal` already defers thirteen phases on a
+trigger map; what it never defers is the fixed-point core, and the core is most
+of the cost. Measured on this box today: an apps-and-docs CL with nothing
+implicated still paid **172.0 s**, of which `cdx-build` 18.8, `cdx-stage1` 17.2,
+`test-bvt` 30.9 and `check-errors` 26.1 are steps that cannot answer differently
+because nothing they read had moved.
+
+This section is the design and is deliberately written before the code, because
+the change REMOVES checks. A change that stops asking a question reports exactly
+what one that asks and agrees reports (L-CAPABILITY-LOST), so each removal below
+names the trigger that must cover it and the arm that must fail without it.
+
+### The hazard that decides whether this is safe at all
+
+**Every phase after the core is pointed at a kernel the core BUILT.**
+`$testKernel = $cdxStage1` drives `oracles`, `check-errors` and `test-compile`;
+`app-sweep` sweeps with `-Kernel $SutCdx`; `plug-binary` copies `$SutCdx` over
+`build-output/bare-metal/Codex.cdx`. Skipping the core leaves every one of those
+paths holding **whatever the last run left on disk**, which is the trap
+`CLAUDE.md` already names for `-Kernel`: it reported ~80 of 84 chapters
+compiling where the truth was ~55, because the default kernel was the previous
+compiler. Deferring the core without repointing them turns a saving into a
+silently stale grade, which is worse than the cost it saves.
+
+So the rule is not "skip the core" but **"skip the core AND grade with the seed
+of record"**, and the second half is what makes the first admissible:
+
+- when the core is skipped, `$testKernel` and `$SutCdx` both become
+  `seed/Codex.cdx`, so no phase can reach a stale build output;
+- the run PRINTS the kernel digest it graded with, the way `compile.ps1`
+  already prints `kernel: <path> [DIGEST]` on every compile;
+- and it REFUSES if the workspace seed differs from the DEPOT seed, because a
+  locally rebuilt seed is not the compiler of record and grading against one is
+  the same wrong answer wearing a different hat. One `p4 print` and one hash,
+  about two seconds, against the whole core it replaces.
+
+### The triggers
+
+Two new predicates, and one existing one reused:
+
+```
+$tForeword = ^codex/foreword/
+$tSeed     = ^seed/
+$tKernel   = $tCompiler -or $tForeword -or $tSeed -or $tBuild
+$tTest     = ^codex/test/
+```
+
+`$tKernel` is Damian's "compiler, foreword, seed, build paths" verbatim. It is
+deliberately CONSERVATIVE on the foreword: measured 2026-09-02 against the
+concat, `Foreword--Fat32` is absent from the compiler unit and `Foreword--Fat16`
+is present, so a `Fat32.codex` change moves no seed and would fire `$tKernel`
+for nothing. Asking the concat which chapters are in the unit is a two-second
+answer and would make the trigger exact; it is not done here, because a trigger
+that is too wide costs time and a trigger that is too narrow ships a
+miscompile, and the two errors are not the same size.
+
+### What each phase becomes, and what covers it
+
+| phase | today | proposed | what would be uncovered without the trigger |
+|---|---|---|---|
+| `clean`, `source-concat`, `cdx-build`, `sign`, `canary`, `cdx-stage1`, `cdx-fixedpoint` | always | `$tKernel` | the fixed point itself. Nothing else asks whether the compiler is a fixed point of itself, so this trigger must never be narrower than the set of files that can move the compiler binary |
+| `test-bvt` | always | `$tKernel -or $tTest` | **the BVT's subjects ARE `codex/test/*.codex`.** Its list is hardcoded in `bvt.ps1` and every member is a test chapter, so a `codex/test/` CL that skipped the BVT would skip the phase that grades the file it changed. `$tTest` is wider than the BVT's own list on purpose: reading that list from `build.ps1` couples the two, and 30 s on a test-only CL is the right price for not having to keep them in step |
+| `oracles`, `check-errors` | always | `$tKernel -or $tTest` | `check-errors` grades `codex/test/errors/**`, which `$tTest` covers; both otherwise read only the kernel |
+| `test-compile` | always, cite-scoped | unchanged | already correct. It printed `subject: CITE-SCOPED, 0 chapter(s) of 1500` and `OK (nothing implicated)` on a docs CL today, which is the shape the rest of this section copies |
+| `app-sweep` | `$tApps -or $tCompiler`, strides 30 of 267 | same trigger, **cite-scoped like test-compile**; the stride only when `$tCompiler` | a compiler change can move any app, so it keeps the stride; an apps change can only move the apps that cite what changed |
+
+### The controls, and neither is optional
+
+The ruling itself names the positive one and it is the one that catches a
+trigger written too narrow:
+
+- **positive: a compiler CL still runs the core.** Open one `codex/compiler/*.codex`
+  file and the core, the BVT and the fixed point must all run and the log must
+  say so.
+- **negative: an apps-only CL runs neither.** The log must name `seed/Codex.cdx`
+  as the kernel with its digest, and the phases that do run must be graded by
+  it.
+- **the stale-kernel arm, which is the one this design exists for.** Skip the
+  core with a DELIBERATELY WRONG `build/output/stage1.cdx` on disk -- the
+  previous run's, or a corrupted copy -- and the run must still grade correctly,
+  because it must never have read that file. An arm that only checks the timing
+  fell would pass with the stale kernel in place, and that is precisely the
+  failure being designed against.
+
+### What a green `-Internal` will no longer mean
+
+Every CL description in this project quotes `SUT === stage1 -- hard fixed point
+in one pass` as its evidence, and after this change an apps-only gate does not
+run that comparison and cannot quote it. The line is not weakened; it is absent,
+and an absent line quoted from habit is a false claim. Whoever lands this owes
+the fleet one sentence saying so, because the alternative is six agents pasting
+a proof their run never produced.
+
+### `plug-selftest`, and what the six harnesses cost (reek, 2026-09-02)
+
+The phase runs a plug's own `test-*.ps1` when THAT plug changes. The trigger is
+derived from the plug directory, not a list, so a plug gaining a harness is
+picked up without editing the phase. A CL touching no plug prints
+`not implicated` and costs nothing.
+
+**All six measured GREEN at head before the phase landed**, sequentially, with
+the free-memory floor sampled through each run (the floor is the box rule since
+main 21587, so a red has to be attributable to the harness and not to
+overcommit):
+
+| harness | verdict | elapsed | floor |
+|---|---|---|---|
+| `evidence/test-evidence` | PASS | 21.7 s | 6.01 GiB |
+| `img/test-img` | PASS | **389.6 s** | 1.46 GiB |
+| `ptx/test-f64` | PASS | 3.1 s | 6.93 GiB |
+| `spirv/test-binary` | PASS | 3.1 s | 6.97 GiB |
+| `spirv/test-emit` | PASS | 3.1 s | 6.87 GiB |
+| `spirv/test-spirv` | PASS | 3.1 s | 6.85 GiB |
+
+**`img/test-img` is 390 s and it dominates everything else combined.** An img CL
+therefore pays about six and a half minutes it did not pay before. That is the
+number to argue with if the phase is ever felt to be too expensive; the other
+five total 34 s. `test-img` is the arm for plugs 1.25, where the plug
+page-faulted before it sent and the host wrote a 1,400-byte file under an OK
+line, so it is not a candidate for trimming without replacing what it catches.
+
+**RULED (red, 2026-09-02): do NOT cap it.** Only an img CL pays it, and **a
+capped harness is a runner that passes by not running**, which is the failure
+this whole phase exists to end. If it ever grows past the gate's own core, the
+move is to SPLIT it: a fast arm stays in the gate, the long arm becomes an
+img-owned focused test. Shortening the assertion is not on the table.
+
+**`spirv/test-emit` failed on the first pass and was NOT a red.** It exits 2 with
+`MISSING plug; run build-bin.ps1`: spirv ships TWO build scripts and
+`plug-binary` only ever runs `build.ps1`, so `spirvbin-plug.cdx` is built by
+nothing in the gate. Built by hand it passes in 3.1 s. The phase therefore runs
+every `build*.ps1` a plug ships before its harnesses, or it would red a spirv CL
+for a missing prerequisite rather than for the plug, which is the worst kind of
+false red. Re-run ALONE with the prerequisite present: exit 0, floor 6.28 GiB.
+
+**Sabotage, calibrated before the phase was believed.** `Evidence.cdxe` is
+byte-stable by design (`run.ps1` carries no timestamp into the package, only
+into the fact record). Appending `[DateTimeOffset]::UtcNow.Ticks` to the written
+package made two runs of identical inputs differ: `stable` flipped to "the two
+runs differ", `self` caught the broken END framing, and the harness exited 1 in
+15.5 s. Restored by `p4 revert` and the restore VERIFIED by hash against the
+pre-sabotage state (053C6FC9), because after a control run the tree is in the
+CONTROL state and that is what ships if nobody checks.
+
+### Landed, and the controls that say it works (fester, 2026-09-02)
+
+`$tKernel` is `$tCompiler -or $tForeword -or $tSeed -or $tBuild`; `$coreRuns`
+is that or `$tVm`; `test-bvt`, `oracles` and `check-errors` are
+`$tKernel -or $tTest`. When the core is deferred, `$testKernel` and `$SutCdx`
+both become `seed/Codex.cdx`, the digest is printed, and the run refuses if the
+workspace seed is not the depot seed.
+
+| control | result |
+|---|---|
+| **nothing implicated** | `core SKIPPED; graded with depot seed BE8B04B5`, every phase deferred, exit 0. **Wall clock is NOT settled: 10.1 s on one sample and 225.2 s on another of the same shape on the same box** (fester, 2026-09-02). The idle components sum to about 10 s (diff2 2 s, sidecars 2 s, p4-stale 5 s, cdx-registry 1 s) and the slow sample's phase timings sum to 0.6 s, so about 224 s sat outside every phase, cause not isolated. Against the 172.0 s the same shape cost that morning the saving is real on the fast sample and NEGATIVE on the slow one; the unaccounted time is the same defect val measured at 311 s in a 615 s gate, and it is OPEN and unowned (L-COUNT, L-GREEN: quote the spread, not the sample) |
+| **the stale-kernel arm** | `build/output/stage1.cdx` replaced with 64 junk bytes before that run. It came out clean, so nothing read it. This is the arm the design exists for: a timing-only check would have passed with the stale kernel in place |
+| **a build change** | core runs, `SUT === stage1 -- hard fixed point in one pass`, and `changed here` names exactly the CL's own files |
+
+### The scope was wrong in a way that would have made all of it worthless
+
+`p4 diff2` reports a file that differs in EITHER DIRECTION, so a stream BEHIND
+main reads another lane's landed files as its own change. **Measured with
+NOTHING opened at all**: `changed here` named
+`.claude/skills/init/SKILL.md, build/merge-down-all.ps1,
+docs/Agents/PerforceProcess.md` and the whole fixed-point core ran, because one
+of them is under `build/`. val hit the same thing from the other end, an apps CL
+running `plug-binary`, `plug-smoke`, `vm-differential` and `run-list` off 22
+merged files. 21381's claim is accurate as written -- the scope IS `p4 opened`
+UNION `diff2` -- and the union is the defect, not drift from it. With it
+unfixed, `$tKernel` is true in almost every workspace almost always and the
+ruling buys nothing.
+
+**Subtracting the incoming set was the first repair and it is wrong** (root's
+reading, and it is the right one): a code arc gates ONCE at the end, so a stream
+CL is not gated at submit, and a file changed on both sides would be dropped
+along with the lane's own change. The gate REFUSES instead, naming the count and
+the first five files. Merging down before a gate was already the rule with
+nothing enforcing it, which is L-BODY's shape exactly; this gives it a runner,
+and after the merge `opened UNION diff2` is exact with no edge left to reason
+about. Proven: behind by 11 files, the gate exits 1 without building anything.
+
+### Still open on this row
+
+`app-sweep` is NOT yet cite-scoped -- it keeps `$tApps -or $tCompiler` and its
+30-of-267 stride. That is the second half of Damian's ruling and it is its own
+CL (R-ONE), because it needs a subject selector in `sweep-app-classes.ps1`
+rather than a trigger change here.

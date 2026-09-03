@@ -4,9 +4,9 @@ Chapter: Risk
  Simplified Risk: 12 territories in 4 continents (3 territories each).
  Territories 0-2: Continent A, 3-5: Continent B, 6-8: Continent C, 9-11: Continent D.
  Each continent bonus = 2 armies. Adjacency is hardcoded.
- Turn: reinforcements (territories/3 + continent bonuses, min 3), attack
- weakest adjacent enemy (attacker up to 3 dice, defender up to 2,
- compare sorted descending -- attacker wins ties go to defender), fortify.
+ Turn: reinforcements (territories/3 + continent bonuses, min 3), then up
+ to three attacks on an adjacent enemy (attacker up to 3 dice, defender up
+ to 2, compare sorted descending, ties to the defender).
  Win when one player owns all territories.
 
  We say:
@@ -24,6 +24,15 @@ Section: Types
     total-armies : Integer
   }
 
+ A Risk turn here is TWO phases and not three: reinforce, then attack.
+ There is no fortify in this engine and nothing moves armies between two
+ territories you already hold.
+
+ `phase` is 0 while there are armies to place, 1 while attacks remain, and
+ 2 when the game is over. `to-place` is what is left of the reinforcement,
+ and `attacks-left` counts down from three, which is the bound
+ `risk-do-attacks` has always used.
+
   RiskState = record {
     territories    : List RiskTerritory,
     players        : List RiskPlayer,
@@ -31,7 +40,10 @@ Section: Types
     turn-number    : Integer,
     game-over      : Boolean,
     winner         : Integer,
-    num-players    : Integer
+    num-players    : Integer,
+    phase          : Integer,
+    to-place       : Integer,
+    attacks-left   : Integer
   }
 
   RiskResult = record {
@@ -103,7 +115,10 @@ Section: Initialization
          turn-number = 0,
          game-over = False,
          winner = (-1),
-         num-players = np
+         num-players = np,
+         phase = 0,
+         to-place = 0,
+         attacks-left = 0
        }
     in risk-update-army-counts s0
 
@@ -151,7 +166,10 @@ Section: Initialization
          turn-number = s.turn-number,
          game-over = s.game-over,
          winner = s.winner,
-         num-players = s.num-players
+         num-players = s.num-players,
+         phase = s.phase,
+         to-place = s.to-place,
+         attacks-left = s.attacks-left
        }
 
   risk-recount-players : RiskState, Integer, List RiskPlayer -> List RiskPlayer
@@ -187,7 +205,10 @@ Section: Territory Helpers
       turn-number = s.turn-number,
       game-over = s.game-over,
       winner = s.winner,
-      num-players = s.num-players
+      num-players = s.num-players,
+      phase = s.phase,
+      to-place = s.to-place,
+      attacks-left = s.attacks-left
     }
 
   risk-count-player-territories : RiskState, Integer -> Integer
@@ -209,14 +230,6 @@ Section: Reinforcements
     in let base = if terr-count / 3 < 3 then 3 else terr-count / 3
     in let bonus = risk-continent-bonus s player
     in base + bonus
-
-  risk-place-reinforcements : RiskState, Integer, Integer -> RiskState
-  risk-place-reinforcements (s) (player) (armies) =
-    let best-terr = risk-find-border-territory s player
-    in if best-terr < 0 then s
-    else let t = risk-get-terr s best-terr
-    in let new-t = RiskTerritory { owner = t.owner, armies = t.armies + armies }
-    in risk-set-terr s best-terr new-t
 
   risk-find-border-territory : RiskState, Integer -> Integer
   risk-find-border-territory (s) (player) =
@@ -347,7 +360,125 @@ Section: AI Strategy
     else if t.armies < best-armies then risk-weakest-loop s player terr (i + 1) i t.armies
     else risk-weakest-loop s player terr (i + 1) best best-armies
 
+Section: A Turn In Steps
+
+ Opening a turn is what puts the reinforcement in the record. Until this
+ runs there is nothing to place and nothing to attack with, which is why a
+ fresh state has `to-place` and `attacks-left` at zero rather than at their
+ full values: whose turn it is has not been settled yet.
+
+  risk-open-turn : RiskState -> RiskState
+  risk-open-turn (s) =
+    if s.game-over then s
+    else risk-set-turn-state s 0 (risk-calc-reinforcements s (s.current-player)) 3
+
+  risk-set-turn-state : RiskState, Integer, Integer, Integer -> RiskState
+  risk-set-turn-state (s) (phase) (to-place) (attacks) =
+    RiskState {
+      territories = s.territories, players = s.players,
+      current-player = s.current-player, turn-number = s.turn-number,
+      game-over = s.game-over, winner = s.winner,
+      num-players = s.num-players,
+      phase = phase, to-place = to-place, attacks-left = attacks
+    }
+
+  risk-can-place : RiskState, Integer, Integer -> Boolean
+  risk-can-place (s) (player) (terr) =
+    if s.game-over then False
+    else if s.phase /= 0 then False
+    else if s.to-place <= 0 then False
+    else if s.current-player /= player then False
+    else if terr < 0 then False
+    else if terr >= 12 then False
+    else (list-at (s.territories) terr).owner == player
+
+ One army at a time, and the phase turns over on its own when the last one
+ is down. A page that had to say "I have finished placing" would be asking
+ for a click that carries no information.
+
+  risk-place-one : RiskState, Integer, Integer -> RiskState
+  risk-place-one (s) (player) (terr) =
+    if risk-can-place s player terr then risk-place-ok s terr else s
+
+  risk-place-ok : RiskState, Integer -> RiskState
+  risk-place-ok (s) (terr) =
+    let t = list-at (s.territories) terr
+    in let s2 = risk-set-terr s terr (RiskTerritory { owner = t.owner, armies = t.armies + 1 })
+    in let left = s.to-place - 1
+    in let s3 = risk-set-turn-state s2 (if left <= 0 then 1 else 0) left (s.attacks-left)
+    in risk-update-army-counts s3
+
+ An attack needs a territory of yours with something to attack WITH: an
+ army has to stay behind, so one on its own cannot move.
+
+  risk-can-attack : RiskState, Integer, Integer, Integer -> Boolean
+  risk-can-attack (s) (player) (from) (to) =
+    if s.game-over then False
+    else if s.phase /= 1 then False
+    else if s.attacks-left <= 0 then False
+    else if s.current-player /= player then False
+    else if from < 0 then False
+    else if from >= 12 then False
+    else if to < 0 then False
+    else if to >= 12 then False
+    else risk-attack-legal s player from to
+
+  risk-attack-legal : RiskState, Integer, Integer, Integer -> Boolean
+  risk-attack-legal (s) (player) (from) (to) =
+    let a = list-at (s.territories) from
+    in let d = list-at (s.territories) to
+    in if a.owner /= player then False
+    else if d.owner == player then False
+    else if a.armies < 2 then False
+    else risk-adjacent from to
+
+  risk-attack : RiskState, Integer, Integer, Integer, Rng -> RiskState
+  risk-attack (s) (player) (from) (to) (r) =
+    if risk-can-attack s player from to then risk-attack-ok s from to r else s
+
+  risk-attack-ok : RiskState, Integer, Integer, Rng -> RiskState
+  risk-attack-ok (s) (from) (to) (r) =
+    let s2 = risk-attack-result r from to s
+    in let s3 = risk-set-turn-state s2 1 0 (s.attacks-left - 1)
+    in let s4 = risk-check-winner (risk-update-alive s3)
+    in if s4.attacks-left <= 0 then risk-end-turn s4 else s4
+
+ Giving up the rest of your attacks is a real move: three are offered and
+ taking none of them is often right.
+
+  risk-can-stop : RiskState, Integer -> Boolean
+  risk-can-stop (s) (player) =
+    if s.game-over then False
+    else if s.phase /= 1 then False
+    else s.current-player == player
+
+  risk-stop : RiskState, Integer -> RiskState
+  risk-stop (s) (player) =
+    if risk-can-stop s player then risk-end-turn s else s
+
+  risk-end-turn : RiskState -> RiskState
+  risk-end-turn (s) =
+    if s.game-over then s
+    else risk-open-turn (risk-skip-dead (risk-advance-player s) 0)
+
+ A dead player has no turn to take. The fuel is the table size, so a board
+ on which everybody is out stops rather than hunting for a live seat that
+ is not there.
+
+  risk-skip-dead : RiskState, Integer -> RiskState
+  risk-skip-dead (s) (tried) =
+    if tried >= s.num-players then s
+    else if (list-at (s.players) (s.current-player)).alive then s
+    else risk-skip-dead (risk-advance-player s) (tried + 1)
+
 Section: Turn
+
+ The self-playing turn is a POLICY over the steps above rather than a
+ second copy of them: put the whole reinforcement on the territory
+ `risk-find-border-territory` picks, then take up to three of the attacks
+ `risk-find-attack` picks. The placement target is chosen ONCE and every
+ army goes there, which is what the old single call did; re-choosing per
+ army would move the target as the pile grew.
 
   risk-do-turn : RiskState, Rng -> RiskState
   risk-do-turn (s) (r) =
@@ -356,12 +487,18 @@ Section: Turn
     in let p = list-at (s.players) player
     in if p.alive == False then risk-advance-player s
     else
-      let reinf = risk-calc-reinforcements s player
-      in let s2 = risk-place-reinforcements s player reinf
+      let opened = risk-open-turn s
+      in let s2 = risk-ai-place opened player (risk-find-border-territory opened player)
       in let s3 = risk-do-attacks s2 player r 0
       in let s4 = risk-update-alive s3
       in let s5 = risk-check-winner s4
       in risk-advance-player s5
+
+  risk-ai-place : RiskState, Integer, Integer -> RiskState
+  risk-ai-place (s) (player) (terr) =
+    if terr < 0 then risk-set-turn-state s 1 0 (s.attacks-left)
+    else if s.to-place <= 0 then s
+    else risk-ai-place (risk-place-one s player terr) player terr
 
   risk-do-attacks : RiskState, Integer, Rng, Integer -> RiskState
   risk-do-attacks (s) (player) (r) (attack-count) =
@@ -385,7 +522,10 @@ Section: Turn
          turn-number = s.turn-number,
          game-over = s.game-over,
          winner = s.winner,
-         num-players = s.num-players
+         num-players = s.num-players,
+         phase = s.phase,
+         to-place = s.to-place,
+         attacks-left = s.attacks-left
        }
 
   risk-check-winner : RiskState -> RiskState
@@ -400,7 +540,10 @@ Section: Turn
            turn-number = s.turn-number,
            game-over = True,
            winner = w,
-           num-players = s.num-players
+           num-players = s.num-players,
+           phase = 2,
+           to-place = 0,
+           attacks-left = 0
          }
     else s
 
@@ -436,7 +579,10 @@ Section: Turn
          turn-number = s.turn-number + 1,
          game-over = s.game-over,
          winner = s.winner,
-         num-players = s.num-players
+         num-players = s.num-players,
+         phase = s.phase,
+         to-place = s.to-place,
+         attacks-left = s.attacks-left
        }
 
 Section: Game Runner

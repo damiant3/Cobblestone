@@ -444,16 +444,23 @@ Section: Turn Structure
     in let next-num = if next-player == 0 then t.number + 1 else t.number
     in Turn { number = next-num, phase = 0, active-player = next-player }
 
-  reset-units-for-turn : List Unit -> List Unit
-  reset-units-for-turn (units) =
-    reset-units-loop units 0
+ A turn restores the movement of the side taking it and leaves the other
+ side's alone. Restoring both was inert while a turn was one call, because
+ movement is only ever read for the side to move; it stops being inert once
+ a turn can be opened before it is taken, since opening one side's turn
+ would then reach into the other's.
 
-  reset-units-loop : List Unit, Integer -> List Unit
-  reset-units-loop (units) (i) =
+  reset-units-for-turn : List Unit, Integer -> List Unit
+  reset-units-for-turn (units) (owner) =
+    reset-units-loop units owner 0
+
+  reset-units-loop : List Unit, Integer, Integer -> List Unit
+  reset-units-loop (units) (owner) (i) =
     if i >= list-length units then units
     else let u = list-at units i
-    in let u2 = __record-set (__record-set (__record-set u "has-moved" False) "has-attacked" False) "movement" u.max-movement
-    in reset-units-loop (list-set-at units i u2) (i + 1)
+    in if u.owner /= owner then reset-units-loop units owner (i + 1)
+    else let u2 = __record-set (__record-set (__record-set u "has-moved" False) "has-attacked" False) "movement" u.max-movement
+    in reset-units-loop (list-set-at units i u2) owner (i + 1)
 
 Section: Game Configuration
 
@@ -1035,11 +1042,7 @@ Section: AI
     if dir >= 6 then best
     else let nq = hex-neighbor-q dir u.q
     in let nr = hex-neighbor-r dir u.r
-    in if hex-valid (HexCoord { q = nq, r = nr }) width height == False
-      then ai-step-toward u eq er td units width height stack-limit (dir + 1) best best-d
-    else if can-move-to u nq nr td units width == False
-      then ai-step-toward u eq er td units width height stack-limit (dir + 1) best best-d
-    else if ai-hex-occupancy units nq nr 0 0 >= stack-limit
+    in if hw-unit-can-step u nq nr td units width height stack-limit == False
       then ai-step-toward u eq er td units width height stack-limit (dir + 1) best best-d
     else let d = hex-distance (HexCoord { q = nq, r = nr }) (HexCoord { q = eq, r = er })
     in if d < best-d then ai-step-toward u eq er td units width height stack-limit (dir + 1) (nr * width + nq) d
@@ -1158,22 +1161,20 @@ Section: Game Runner
 
   run-hexwar-turn : List Unit, List TerrainHex, Integer, Integer, Integer, Integer, Rng -> List Unit
   run-hexwar-turn (units) (terrain-data) (active-player) (width) (height) (stack-limit) (r) =
-    let units0 = reset-units-for-turn units
-    in let units1 = apply-supply-attrition units0 active-player width height
-    in let units2 = ai-advance-units units1 terrain-data active-player width height stack-limit 0
+    let units1 = hw-begin-turn units active-player width height
+    in run-opened-hexwar-turn units1 terrain-data active-player width height stack-limit r
+
+ A turn whose bookkeeping has already been done, which is what a side
+ played by hand hands back when it ends its turn. Splitting it here rather
+ than beginning the turn twice is what keeps the two callers on one model.
+
+  run-opened-hexwar-turn : List Unit, List TerrainHex, Integer, Integer, Integer, Integer, Rng -> List Unit
+  run-opened-hexwar-turn (units) (terrain-data) (active-player) (width) (height) (stack-limit) (r) =
+    let units2 = ai-advance-units units terrain-data active-player width height stack-limit 0
     in let r2 = rng-next r
     in let target = ai-find-target units2 active-player terrain-data width
     in if target < 0 then units2
-    else let tu = list-at units2 target
-    in let def-str = tu.strength
-    in let def-hex = list-at terrain-data (tu.r * width + tu.q)
-    in let def-bonus = get-defense-bonus def-hex.terrain
-    in let atk-str = ai-count-attack-strength units2 active-player tu.q tu.r
-    in let arty = artillery-support units2 tu.q tu.r active-player
-    in let total-atk = atk-str + arty
-    in let die = rng-range r2 1 6
-    in let result = combat-result total-atk def-str def-bonus die
-    in apply-combat-result units2 target result active-player r2
+    else hw-resolve-attack units2 terrain-data target active-player width r2
 
   ai-count-attack-strength : List Unit, Integer, Integer, Integer -> Integer
   ai-count-attack-strength (units) (owner) (tq) (tr) =
@@ -1284,6 +1285,83 @@ Section: Game Runner
          vp-a = va,
          vp-b = vb
        }
+
+Section: Taking A Turn Yourself
+
+ A turn is the bookkeeping, then any number of one-hex steps while movement
+ lasts, then at most one attack. `run-hexwar-turn` above is a POLICY over
+ these same steps rather than a second copy of them, so a side played by
+ hand and a side played by the runner obey one set of rules.
+
+ An attack names the DEFENDER and not an attacker, because that is the
+ model the combat already has: `ai-count-attack-strength` sums every
+ adjacent friendly unit and `artillery-support` adds the guns behind them,
+ so a hex is assaulted by everything that can reach it. Choosing a single
+ attacker would be a second combat model.
+
+  hw-begin-turn : List Unit, Integer, Integer, Integer -> List Unit
+  hw-begin-turn (units) (owner) (width) (height) =
+    let units0 = reset-units-for-turn units owner
+    in apply-supply-attrition units0 owner width height
+
+  hw-unit-can-step : Unit, Integer, Integer, List TerrainHex, List Unit, Integer, Integer, Integer -> Boolean
+  hw-unit-can-step (u) (tq) (tr) (td) (units) (width) (height) (stack-limit) =
+    if u.eliminated then False
+    else if hex-valid (HexCoord { q = tq, r = tr }) width height == False then False
+    else if hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = tq, r = tr }) /= 1 then False
+    else if can-move-to u tq tr td units width == False then False
+    else ai-hex-occupancy units tq tr 0 0 < stack-limit
+
+  hw-can-move : List Unit, Integer, Integer, Integer, Integer, List TerrainHex, Integer, Integer, Integer -> Boolean
+  hw-can-move (units) (owner) (idx) (tq) (tr) (td) (width) (height) (stack-limit) =
+    if idx < 0 then False
+    else if idx >= list-length units then False
+    else let u = list-at units idx
+    in if u.owner /= owner then False
+    else hw-unit-can-step u tq tr td units width height stack-limit
+
+  hw-move-unit : List Unit, Integer, Integer, Integer, List TerrainHex, Integer -> List Unit
+  hw-move-unit (units) (idx) (tq) (tr) (td) (width) =
+    let u = list-at units idx
+    in let u2 = spend-movement u tq tr td units width
+    in list-set-at units idx u2
+
+ The predicate `ai-find-target` filters on, so a side played by hand can
+ assault exactly what the runner could have chosen.
+
+  hw-can-attack : List Unit, Integer, Integer -> Boolean
+  hw-can-attack (units) (owner) (target) =
+    if target < 0 then False
+    else if target >= list-length units then False
+    else let u = list-at units target
+    in if u.owner == owner then False
+    else if u.eliminated then False
+    else ai-any-adjacent-friendly units owner u.q u.r
+
+  hw-resolve-attack : List Unit, List TerrainHex, Integer, Integer, Integer, Rng -> List Unit
+  hw-resolve-attack (units) (td) (target) (owner) (width) (r2) =
+    let tu = list-at units target
+    in let def-str = tu.strength
+    in let def-hex = list-at td (tu.r * width + tu.q)
+    in let def-bonus = get-defense-bonus def-hex.terrain
+    in let atk-str = ai-count-attack-strength units owner tu.q tu.r
+    in let arty = artillery-support units tu.q tu.r owner
+    in let total-atk = atk-str + arty
+    in let die = rng-range r2 1 6
+    in let result = combat-result total-atk def-str def-bonus die
+    in apply-combat-result units target result owner r2
+
+ Whether a unit of yours has anywhere to go, and whether a hex of theirs
+ can be assaulted at all, which is what a page rings.
+
+  hw-unit-has-move : List Unit, Integer, Integer, List TerrainHex, Integer, Integer, Integer, Integer -> Boolean
+  hw-unit-has-move (units) (owner) (idx) (td) (width) (height) (stack-limit) (dir) =
+    if dir >= 6 then False
+    else let u = list-at units idx
+    in let nq = hex-neighbor-q dir u.q
+    in let nr = hex-neighbor-r dir u.r
+    in if hw-can-move units owner idx nq nr td width height stack-limit then True
+    else hw-unit-has-move units owner idx td width height stack-limit (dir + 1)
 
 Section: Formatting
 

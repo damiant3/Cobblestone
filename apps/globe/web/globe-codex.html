@@ -1,0 +1,190 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Codex Globe -- Earth and a black hole, from Codex [Device] kernels</title>
+<style>
+  html,body { margin:0; background:#05060c; color:#8aa; font:13px system-ui,sans-serif; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:10px; }
+  canvas { border:1px solid #182a4a; cursor:grab; }
+  canvas:active { cursor:grabbing; }
+  #bar { display:flex; gap:14px; align-items:center; }
+  button { background:#0d1830; color:#9bd; border:1px solid #24406e; padding:4px 12px; font:12px system-ui; cursor:pointer; }
+  button.on { background:#1b3462; color:#cfe; }
+  #status { opacity:.7; min-height:1.2em; }
+</style>
+<div id="wrap">
+  <canvas id="c" width="1024" height="768"></canvas>
+  <div id="bar">
+    <button id="bEarth" class="on">Earth</button>
+    <button id="bBh">Black hole</button>
+    <span id="status">initializing WebGPU...</span>
+  </div>
+</div>
+<script type="module">
+// earth_pixel_main and bh_pixel_main are GENERATED FROM CODEX [Device] AST
+// (apps/globe/kernels/GlobeKernels.codex) by codex/plugs/wgsl. Nothing in this
+// page computes a pixel: it allocates the buffers the kernels declare, packs
+// their parameters, dispatches one thread per pixel, and blits the storage
+// buffer the kernels wrote. The render pass is hand-written host wiring, the
+// same split gpushow ships on.
+
+const W = 1024, H = 768, N = W * H;
+// Kernel parameters are fixed-point: the emitted WGSL divides each by 1000.0.
+const SCALE = 1000;
+// apps/globe/earth-texture.raw is width*height*3 bytes, row-major RGB
+// (TerrainGen.codex, "Texture buffer layout"), and the kernel indexes it as
+// ti = (ty*tw + tx)*3 with ONE i32 per BYTE, so the buffer is 3 i32 per texel.
+const TW = 2048, TH = 1024;
+
+const status = document.getElementById('status');
+function fail(m){ status.textContent = 'ERROR: ' + m; window.__error = m; window.__ready = true; }
+
+let mode = 'earth';
+// earth-pixel puts the camera at (0, oy, -zoom) looking toward +Z against a unit
+// sphere, so the visible hemisphere is the one with hz < 0 and the sun has to
+// carry a NEGATIVE z to light it. bh-pixel's zoom is the camera DISTANCE and its
+// accretion disk runs from radius 0.7 to 2.2 (bh-march), so anything under about
+// 3 puts the camera inside the disk.
+let yaw = 0.6, pitch = 0.35, zoom = 2.4, bhYaw = 0.0, bhPitch = 0.45, bhZoom = 7.0;
+let dragging = false, lastX = 0, lastY = 0;
+
+async function main(){
+  if (!navigator.gpu) return fail('navigator.gpu unavailable (needs a secure context)');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return fail('no GPU adapter');
+  const device = await adapter.requestDevice();
+  device.addEventListener?.('uncapturederror', e => fail(String(e.error)));
+  const ctx = document.getElementById('c').getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+
+  status.textContent = 'loading kernels...';
+  const code = await (await fetch('../kernels/GlobeKernels.wgsl')).text();
+  const mod = device.createShaderModule({ code });
+  const ci = await mod.getCompilationInfo();
+  const err = ci.messages.find(m => m.type === 'error');
+  if (err) return fail(`GlobeKernels.wgsl ${err.lineNum}:${err.linePos} ${err.message}`);
+
+  const earthPipe = device.createComputePipeline({
+    layout: 'auto', compute: { module: mod, entryPoint: 'earth_pixel_main' } });
+  const bhPipe = device.createComputePipeline({
+    layout: 'auto', compute: { module: mod, entryPoint: 'bh_pixel_main' } });
+
+  // One framebuffer, bound as binding 1 by both kernels, so the render pass
+  // reads whichever kernel ran without knowing which.
+  const frameBuf = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+
+  const earthParams = device.createBuffer({ size: 8 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const earthUni    = device.createBuffer({ size: 16,    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const bhParams    = device.createBuffer({ size: 8 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const bhUni       = device.createBuffer({ size: 16,    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  status.textContent = 'loading earth texture (6 MB)...';
+  const raw = new Uint8Array(await (await fetch('../earth-texture.raw')).arrayBuffer());
+  if (raw.length !== TW * TH * 3) return fail(`earth-texture.raw is ${raw.length} bytes, expected ${TW*TH*3} for ${TW}x${TH} RGB`);
+  const texBuf = device.createBuffer({
+    size: raw.length * 4, usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });
+  { const view = new Int32Array(texBuf.getMappedRange());
+    for (let i = 0; i < raw.length; i++) view[i] = raw[i];
+    texBuf.unmap(); }
+  device.queue.writeBuffer(earthUni, 0, new Int32Array([TW, TH, W, H]));
+  device.queue.writeBuffer(bhUni, 0, new Int32Array([W, H, 0, 0]));
+
+  const earthBG = device.createBindGroup({ layout: earthPipe.getBindGroupLayout(0), entries: [
+    { binding: 0, resource: { buffer: earthParams } },
+    { binding: 1, resource: { buffer: frameBuf } },
+    { binding: 2, resource: { buffer: texBuf } },
+    { binding: 3, resource: { buffer: earthUni } } ] });
+  const bhBG = device.createBindGroup({ layout: bhPipe.getBindGroupLayout(0), entries: [
+    { binding: 0, resource: { buffer: bhParams } },
+    { binding: 1, resource: { buffer: frameBuf } },
+    { binding: 2, resource: { buffer: bhUni } } ] });
+
+  // The kernels pack 0xAARRGGBB (earth-shade-pixel and bh-write both compute
+  // cr*65536 + cg*256 + cb + 0xFF000000), so red is bits 16..23.
+  const renderMod = device.createShaderModule({ code: `
+    @group(0) @binding(0) var<storage, read> px : array<i32>;
+    @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4f {
+      var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+      return vec4f(p[vi], 0.0, 1.0);
+    }
+    @fragment fn fs(@builtin(position) pos : vec4f) -> @location(0) vec4f {
+      let c = bitcast<u32>(px[i32(pos.y) * ${W} + i32(pos.x)]);
+      return vec4f(f32((c >> 16u) & 255u) / 255.0,
+                   f32((c >>  8u) & 255u) / 255.0,
+                   f32( c         & 255u) / 255.0, 1.0);
+    }` });
+  const renderPipe = device.createRenderPipeline({
+    layout: 'auto',
+    vertex:   { module: renderMod, entryPoint: 'vs' },
+    fragment: { module: renderMod, entryPoint: 'fs', targets: [{ format }] },
+    primitive:{ topology: 'triangle-list' } });
+  const renderBG = device.createBindGroup({
+    layout: renderPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: frameBuf } }] });
+
+  const canvas = document.getElementById('c');
+  canvas.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener('pointerup',   e => { dragging = false; });
+  canvas.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = (e.clientX - lastX) / 200, dy = (e.clientY - lastY) / 200;
+    lastX = e.clientX; lastY = e.clientY;
+    if (mode === 'earth') { yaw += dx; pitch = Math.max(-1.4, Math.min(1.4, pitch + dy)); }
+    else                  { bhYaw += dx; bhPitch = Math.max(-1.4, Math.min(1.4, bhPitch + dy)); }
+  });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const f = Math.exp(e.deltaY / 400);
+    if (mode === 'earth') zoom = Math.max(1.2, Math.min(12, zoom * f));
+    else                  bhZoom = Math.max(3.0, Math.min(20, bhZoom * f));
+  }, { passive: false });
+
+  const bEarth = document.getElementById('bEarth'), bBh = document.getElementById('bBh');
+  function setMode(m){ mode = m; bEarth.classList.toggle('on', m === 'earth'); bBh.classList.toggle('on', m === 'bh'); }
+  bEarth.onclick = () => setMode('earth');
+  bBh.onclick    = () => setMode('bh');
+
+  const aspect = W / H;
+  let frame = 0;
+  window.__ready = false;
+  function tick(){
+    const enc = device.createCommandEncoder();
+    const cp = enc.beginComputePass();
+    if (mode === 'earth') {
+      yaw += 0.0025;
+      // The earth spins; the sun drifts only a little and stays camera-side, so
+      // the face on screen is always lit. A sun that orbits fully leaves the
+      // demo dark half the time.
+      const sunA = frame * 0.004;
+      const sx = 0.55 * Math.sin(sunA), sy = 0.28, sz = -0.78;
+      const len = Math.hypot(sx, sy, sz);
+      device.queue.writeBuffer(earthParams, 0, new Int32Array([
+        Math.round(aspect * SCALE), Math.round(zoom * SCALE), Math.round(pitch * SCALE),
+        Math.round(yaw * SCALE), Math.round(0 * SCALE),
+        Math.round(sx / len * SCALE), Math.round(sy / len * SCALE), Math.round(sz / len * SCALE) ]));
+      cp.setPipeline(earthPipe); cp.setBindGroup(0, earthBG);
+    } else {
+      device.queue.writeBuffer(bhParams, 0, new Int32Array([
+        Math.round(aspect * SCALE), Math.round(bhZoom * SCALE), Math.round(bhPitch * SCALE),
+        Math.round(bhYaw * SCALE), Math.round((frame * 0.016) * SCALE), 0, 0, 0 ]));
+      cp.setPipeline(bhPipe); cp.setBindGroup(0, bhBG);
+    }
+    cp.dispatchWorkgroups(Math.ceil(N / 64)); cp.end();
+
+    const rp = enc.beginRenderPass({ colorAttachments: [{
+      view: ctx.getCurrentTexture().createView(),
+      clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }] });
+    rp.setPipeline(renderPipe); rp.setBindGroup(0, renderBG); rp.draw(3); rp.end();
+    device.queue.submit([enc.finish()]);
+
+    frame++;
+    window.__frame = frame;
+    if (frame > 1 && !window.__ready) {
+      window.__ready = true;
+      status.textContent = `Codex [Device] kernels on the GPU -- ${(N/1000|0)}k threads per frame, drag to rotate, wheel to zoom`;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+main().catch(e => fail(String(e)));
+</script>

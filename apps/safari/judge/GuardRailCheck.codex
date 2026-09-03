@@ -1,0 +1,148 @@
+Chapter: GuardRailCheck
+  cites Foreword chapter Console
+  cites Safari chapter Camera
+  cites Safari chapter Geom
+  cites Safari chapter Paint
+  cites Safari chapter GuardRail
+  cites Judge chapter Grade
+  cites Gold chapter GuardRailGold
+
+ Grade the GuardRail port against wasm/guard_rail.zig.
+
+ TWO SEAMS, because guard_rail.zig is deliberately two halves and they fail in
+ different ways.
+
+ emit is seam 2 on a structure: it COLLECTS polys rather than drawing them, so the
+ gold is read straight off the store -- the poly count per case, every colour, the
+ mean forward depth each poly sorts by, and all twelve corner coordinates. The
+ DEPTH IS GRADED, not merely used: it is guard_rail's whole contribution to
+ render's unified back-to-front pass, and a rail sorted wrong is a rail a tree
+ paints over, which is the exact bug the collect-then-sort design exists to
+ prevent. A wrong depth would be invisible to a check that only looked at pixels.
+
+ drawPoly is seam 3: it writes paint's buffer, so the gold is the words the game
+ actually put on the wire, decoded back into tags, point counts and coordinates.
+
+ STRUCTURE EXACTLY, COORDINATES WITH TOLERANCE, as everywhere in this port. The
+ poly counts, colours, tags and point counts take no tolerance at all. World
+ coordinates are metres and take the relative gate; screen coordinates take the
+ mixed pixel gate, for the cancellation reason Grade sets out.
+
+ THE CASES ARE BRANCHES, NOT COVERAGE:
+
+   corner  a realistic outer-corner path -- run-up, both legs into and out of the
+           apex, run-out. Six bars and seven posts.
+   dupe    a path whose third point REPEATS its first, so the middle post's two
+           neighbours coincide, its run length is exactly zero, and the fallback
+           direction fires. That test is bitwise in the zig and bitwise here; a
+           4-ULP tolerance would fire it on merely-close points and swing a post.
+   near    a path running from behind the eye to well ahead. Five quads sit wholly
+           behind the near plane and must be DROPPED -- twenty-nine polys are
+           emitted across the four cases and only twenty-four reach the wire, and
+           that difference is the assertion.
+   single  one point. Fewer than two has no run direction, so emit raises nothing.
+
+ A rail quad is vertical: both of its bottom corners share a forward with the two
+ above them. So the near plane always cuts it 0, 2 or 4 vertices in, never 3, and
+ every surviving poly still has four points. That is why rail-counts is uniformly
+ 4 and is a property being asserted, not a coincidence being tolerated.
+
+ We say:
+
+Section: The Paths
+
+  path-corner : List RiderPt
+  path-corner = [RiderPt { right = 6.0, forward = 44.0 }, RiderPt { right = 6.0, forward = 34.0 }, RiderPt { right = 6.0, forward = 24.0 }, RiderPt { right = 7.4, forward = 17.5 }, RiderPt { right = 11.0, forward = 13.0 }, RiderPt { right = 17.0, forward = 11.4 }, RiderPt { right = 27.0, forward = 11.4 }]
+
+  path-dupe : List RiderPt
+  path-dupe = [RiderPt { right = 0.0 - 4.0, forward = 20.0 }, RiderPt { right = 0.0 - 4.0, forward = 12.0 }, RiderPt { right = 0.0 - 4.0, forward = 20.0 }, RiderPt { right = 0.0 - 4.5, forward = 6.0 }]
+
+  path-near : List RiderPt
+  path-near = [RiderPt { right = 3.0, forward = 0.0 - 12.0 }, RiderPt { right = 3.0, forward = 0.0 - 4.0 }, RiderPt { right = 3.0, forward = 0.2 }, RiderPt { right = 3.2, forward = 6.0 }, RiderPt { right = 3.6, forward = 30.0 }]
+
+  path-single : List RiderPt
+  path-single = [RiderPt { right = 2.0, forward = 9.0 }]
+
+Section: The Stores
+
+  store-corner : List RailPoly
+  store-corner = rail-emit path-corner
+
+  store-dupe : List RailPoly
+  store-dupe = rail-emit path-dupe
+
+  store-near : List RailPoly
+  store-near = rail-emit path-near
+
+  store-single : List RailPoly
+  store-single = rail-emit path-single
+
+  all-polys : List RailPoly
+  all-polys = store-corner & store-dupe & store-near & store-single
+
+ The per-case poly count, in the probe's case order. Six bars plus seven posts,
+ three plus four, four plus five, and nothing.
+
+  poly-counts : List Integer
+  poly-counts = [list-length store-corner, list-length store-dupe, list-length store-near, list-length store-single]
+
+Section: The Store Streams
+
+  poly-colors : List RailPoly, Integer -> List Integer
+  poly-colors (ps) (i) =
+    if i >= list-length ps then []
+    else [(list-at ps i).color] & poly-colors ps (i + 1)
+
+  poly-fwds : List RailPoly, Integer -> List Real
+  poly-fwds (ps) (i) =
+    if i >= list-length ps then []
+    else [(list-at ps i).fwd] & poly-fwds ps (i + 1)
+
+ Every corner of every poly, right then forward then height, in vertex order --
+ the same walk the probe makes over the store's fixed array.
+
+  flatten-vec3 : List Vec3, Integer -> List Real
+  flatten-vec3 (vs) (i) =
+    if i >= list-length vs then []
+    else let v = list-at vs i
+    in [v.right, v.forward, v.height] & flatten-vec3 vs (i + 1)
+
+  poly-verts : List RailPoly, Integer -> List Real
+  poly-verts (ps) (i) =
+    if i >= list-length ps then []
+    else (flatten-vec3 (list-at ps i).v 0) & poly-verts ps (i + 1)
+
+Section: The Wire Streams
+
+ The store drawn in STORE ORDER, which is what the probe does. Render would sort
+ first; the sort is render's and is not what is under test here.
+
+  wire : List DrawCmd
+  wire = (rail-draw-all store-corner focal camera-w 0) & (rail-draw-all store-dupe focal camera-w 0) & (rail-draw-all store-near focal camera-w 0) & (rail-draw-all store-single focal camera-w 0)
+
+  cmd-tags : List DrawCmd, Integer -> List Integer
+  cmd-tags (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).tag] & cmd-tags cs (i + 1)
+
+  cmd-counts : List DrawCmd, Integer -> List Integer
+  cmd-counts (cs) (i) =
+    if i >= list-length cs then []
+    else [list-length (list-at cs i).pts / 2] & cmd-counts cs (i + 1)
+
+  cmd-coords : List DrawCmd, Integer -> List Real
+  cmd-coords (cs) (i) =
+    if i >= list-length cs then []
+    else (list-at cs i).pts & cmd-coords cs (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-ints "rail-polys  " poly-counts g-rail-polys)
+    print-line-uni (grade-ints "rail-colors " (poly-colors all-polys 0) g-rail-colors)
+    print-line-uni (grade-rel  "rail-fwd    " (poly-fwds all-polys 0) g-rail-fwd 0.000001)
+    print-line-uni (grade-rel  "rail-verts  " (poly-verts all-polys 0) g-rail-verts 0.000001)
+    print-line-uni (grade-ints "rail-tags   " (cmd-tags wire 0) g-rail-tags)
+    print-line-uni (grade-ints "rail-counts " (cmd-counts wire 0) g-rail-counts)
+    print-line-uni (grade-px   "rail-coords " (cmd-coords wire 0) g-rail-coords 0.001 0.000001)
+  end

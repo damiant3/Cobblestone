@@ -90,8 +90,14 @@ $live = @()
 function Start-Row($r) {
     $out = Join-Path $logDir ("{0}.out" -f $r.plug)
     $err = Join-Path $logDir ("{0}.err" -f $r.plug)
+    # Start-Process joins -ArgumentList with spaces and quotes nothing, so a
+    # chapter selector carrying a space ('PePlug:Network Config|Drain|Body')
+    # arrived at the builder as two arguments and four rows (csharp, img, pe,
+    # elf) failed on a path made of the second half. The serial launcher this
+    # replaced splatted the array and never met it. Quote what has whitespace.
+    $quoted = @($r.args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
     $p = Start-Process -FilePath 'pwsh' -PassThru -NoNewWindow `
-         -ArgumentList (@('-NoProfile', '-File', $r.script) + $r.args) `
+         -ArgumentList (@('-NoProfile', '-File', $r.script) + $quoted) `
          -RedirectStandardOutput $out -RedirectStandardError $err
     Write-Host ("[modules] start {0}" -f $r.plug)
     @{ row = $r; proc = $p; out = $out; err = $err; t0 = [DateTime]::UtcNow }

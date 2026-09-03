@@ -1,0 +1,39 @@
+Chapter: SignStdio
+  cites Foreword chapter Console
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha512
+
+Section: Helpers
+
+  take-range : List Integer, Integer, Integer, List Integer -> List Integer
+  take-range (bs) (i) (stop) (acc) =
+   if i >= stop then acc
+   else take-range bs (i + 1) stop (list-push acc (list-at bs i))
+
+  splice-at : List Integer, Integer, List Integer -> List Integer
+  splice-at (bs) (at) (patch) =
+   (take-range bs 0 at []) & patch & (take-range bs (at + list-length patch) (list-length bs) [])
+
+Section: Body
+
+ The payload is a mode byte then a 32-byte Ed25519 seed. Mode 0 answers the
+ seed's 32-byte public key. Mode 1 carries a CDX after the seed and answers
+ the same CDX signed: the header's content hash sits at bytes 8..39 and
+ deliberately excludes the signature, the author key is written at 40..71
+ and the signature over the hash at 72..135, which is the layout build.ps1's
+ sign phase writes and CdxVerifier.codex reads.
+
+  plug-emit-bytes : Integer, Integer -> [Console] Nothing
+  plug-emit-bytes (payload-buf) (payload-len) =
+   if payload-len < 33 then print-line-uni ("REFUSED short payload " & show payload-len)
+   else let mode = peek-byte payload-buf 0
+   in if mode > 1 then print-line-uni ("REFUSED unknown mode " & show mode)
+   else let payload = __buf-read-bytes payload-buf 0 payload-len
+   in let key = take-range payload 1 33 []
+   in let pub = ed25519-public-key key
+   in if mode == 0 then write-binary pub
+   else if payload-len < 169 then print-line-uni ("REFUSED mode 1 payload " & show payload-len & " is shorter than a CDX header")
+   else let cdx = take-range payload 33 payload-len []
+   in let hash = take-range cdx 8 40 []
+   in let sig = ed25519-sign key pub hash
+   in write-binary (splice-at (splice-at cdx 40 pub) 72 sig)

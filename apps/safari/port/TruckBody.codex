@@ -1,0 +1,494 @@
+Chapter: TruckBody
+  cites Gpu chapter DeviceMath
+  cites Foreword chapter ListUtils
+  cites Safari chapter Geom
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Safari chapter Trig
+  cites Safari chapter World
+  cites Safari chapter GuardRail
+  cites Safari chapter Render
+
+ The trailer, the cab, the tires, the headlight beams and the brake lights: the
+ truck as it is SEEN, where `Safari chapter Truck` is the truck as it MOVES.
+
+ A port of wasm/truck.zig's `drawBody` and the three private drawers under it.
+ SPLIT FROM Truck FOR THE SAME REASON CatDraw IS SPLIT FROM Cat, and the split is
+ the zig's own seam read twice. Truck's motion half reaches nothing but the world
+ and a few of the rider's constants, so World can cite it and every check that
+ touches the world pays five constants for it. This half reaches `render.at`, the
+ whole chain composition, the camera and the paint wire -- so it cites Render, and
+ anything citing it pays for the mapping spine. Keeping them apart is what lets
+ TruckCheck stay a nine-case motion oracle while this one grades a draw.
+
+ IT IS THE LAST UNPORTED DRAWING CODE IN THE GAME. What unblocked it was Paint's
+ tag 4: the beams and the brake glow are radial-gradient polygons, and until Paint
+ modelled that tag there was no honest way to emit them.
+
+ THE ZIG'S OWN COMMENTS SAY THE BEAMS AND THE GLOW ARE DEFERRED, AND THEY ARE
+ STALE. drawBody's header and the brake-light block both claim the wedges and the
+ halo still need "a gradient/alpha seam tag the polygon-only blitter doesn't have
+ yet", and the file's top comment still calls the truck a placeholder blue dot.
+ The CODE calls drawWedge and drawBrakeGlow and pushes tag 4 for both. The code is
+ the oracle -- the port follows what runs, not what the comment says, and the
+ check would have caught the difference either way, because a missing wedge is two
+ missing commands and structure is graded exactly.
+
+ EVERY VERTEX GOES THROUGH `at` AND THEN DROPS BY THE GROUND CURVE. That is `p3`
+ in the zig, and it is the whole reason the truck reads as sitting on the road
+ rather than floating above it: the body is authored in the segment-local frame of
+ whichever chain index its centre landed on -- along the road, across from the
+ left edge, metres up -- and the fake-horizon curvature is subtracted at the end,
+ per vertex, so a long trailer bends with the road it is standing on.
+
+ We say:
+
+Section: Dimensions
+
+ Metres, and all of them mirror truck.ts's buildTruck. The trailer is narrower
+ than the four-metre lane so it can round a corner without clipping the rails.
+
+  truck-length : Real
+  truck-length = 8.4
+
+  truck-width : Real
+  truck-width = 2.4
+
+  truck-height : Real
+  truck-height = 3.6
+
+ The cab sticks this far out in front of the trailer, and its roof is this
+ fraction of it -- the windshield rakes down over the rest.
+
+  cab-length : Real
+  cab-length = 3.5
+
+  cab-roof-frac : Real
+  cab-roof-frac = 0.3
+
+  tire-radius : Real
+  tire-radius = 0.5
+
+ The trailer floor sits just above the tire tops; the cab floor sits at the tire
+ centre line, which is the step the side silhouette walks up.
+
+  trailer-bottom : Real
+  trailer-bottom = 2.0 * tire-radius + 0.12
+
+  cab-bottom : Real
+  cab-bottom = tire-radius
+
+  tire-pair-gap : Real
+  tire-pair-gap = 1.2
+
+  trailer-axle-inset : Real
+  trailer-axle-inset = 1.6
+
+  cab-axle-frac : Real
+  cab-axle-frac = 0.55
+
+  tire-sides : Integer
+  tire-sides = 16
+
+Section: Colours
+
+ Three shades of the same dark blue, which is what makes the prism read as solid
+ rather than as a flat silhouette: the sides are darkest, the rear and nose are
+ the body colour, the roof is lightest.
+
+  body-color : Integer
+  body-color = 1846886
+
+  roof-color : Integer
+  roof-color = 3822248
+
+  side-color : Integer
+  side-color = 1384784
+
+  brake-color : Integer
+  brake-color = 16722456
+
+  tire-color : Integer
+  tire-color = 1381658
+
+Section: The Headlight Beams
+
+ Two WEDGES of light thrown forward from the cab-front corners, each a flat 3D
+ side-silhouette -- a slit at the truck face fanning open down the road -- filled
+ with a radial glow from the lamp. Its 3D angle alone decides how it reads: broad
+ in profile, a sliver head-on. Shown only once the sun is behind the mountains.
+
+  headlight-h : Real
+  headlight-h = 1.0
+
+  headlight-inset : Real
+  headlight-inset = 0.3
+
+  cone-near-half : Real
+  cone-near-half = 0.25
+
+  cone-far-center : Real
+  cone-far-center = 0.7
+
+  cone-far-half : Real
+  cone-far-half = 0.9
+
+  cone-length : Real
+  cone-length = 20.4
+
+ THE TWO-COLOUR WORDS ARE 0xAARRGGBB, NOT 0xRRGGBB, and that is what makes a beam
+ light rather than a white wedge painted on the road. Warm white 255,248,214 at
+ alpha 0.765 in the core, the same white at 0.27 at the edge. Paint's tag 4 is the
+ only command besides the beacon that carries alpha at all.
+
+  beam-core : Integer
+  beam-core = 3288332502
+
+  beam-edge : Integer
+  beam-edge = 1174403286
+
+ The brake-light halo: red 255,80,60 at alpha 0.9 falling to 255,42,24 at zero.
+ The edge stop being FULLY TRANSPARENT is the point -- the halo has no rim.
+
+  glow-core : Integer
+  glow-core = 3875491900
+
+  glow-edge : Integer
+  glow-edge = 16722456
+
+  glow-sides : Integer
+  glow-sides = 16
+
+Section: A Body Point
+
+ A point authored in the body's frame -- along the segment, across from its left
+ edge, metres up -- mapped into the rider's frame and then lowered onto the curved
+ ground. The drop is a POSITIVE distance and the height is `h` minus it, which is
+ the same sign convention Render's ground pass states.
+
+  truck-p3 : List Segment, List Integer, Pose, Integer, Real, Real, Real -> Vec3
+  truck-p3 (segs) (ch) (pose) (d) (along) (x) (h) =
+    let r = at segs ch pose d along x
+    in Vec3 { right = r.right, forward = r.forward, height = h - ground-drop r.right r.forward }
+
+ The five abscissas and two edges every face is built from, computed once. `a0` is
+ the trailer rear -- the face we chase -- and `a2` is the cab nose.
+
+  TruckBox = record {
+    a0 : Real,
+    a1 : Real,
+    a2 : Real,
+    a-roof : Real,
+    xl : Real,
+    xr : Real
+  }
+
+  truck-box : Real, Real -> TruckBox
+  truck-box (center-along) (hw) =
+    let a0 = center-along - truck-length / 2.0
+    in let a1 = center-along + truck-length / 2.0
+    in TruckBox { a0 = a0, a1 = a1, a2 = a1 + cab-length, a-roof = a1 + cab-length * cab-roof-frac, xl = hw - truck-width / 2.0, xr = hw + truck-width / 2.0 }
+
+Section: The Faces
+
+ A face is a polygon in the rider frame plus the colour it fills with and the mean
+ depth it sorts by. The zig recomputes that mean inside its sort's comparison;
+ the port stores it, which is the same number and turns a repeated fold into one.
+
+  TruckFace = record {
+    color : Integer,
+    fwd : Real,
+    v : List Vec3
+  }
+
+  sum-fwd : List Vec3, Integer -> Real
+  sum-fwd (ps) (i) =
+    if i >= list-length ps then 0.0
+    else (list-at ps i).forward + sum-fwd ps (i + 1)
+
+  truck-face : Integer, List Vec3 -> TruckFace
+  truck-face (color) (ps) =
+    TruckFace { color = color, fwd = sum-fwd ps 0 / real-from-int (list-length ps), v = ps }
+
+ EACH SIDE IS ONE SILHOUETTE, not a stack of quads, and walking it is the clearest
+ statement of the truck's shape in the whole file: up the rear, along the roof,
+ down the windshield and the nose, back along the lower cab floor, up the step to
+ the higher trailer floor.
+
+  truck-side : List Segment, List Integer, Pose, Integer, TruckBox, Real -> TruckFace
+  truck-side (segs) (ch) (pose) (d) (bx) (x) =
+    let p0 = truck-p3 segs ch pose d bx.a0 x trailer-bottom
+    in let p1 = truck-p3 segs ch pose d bx.a0 x truck-height
+    in let p2 = truck-p3 segs ch pose d bx.a-roof x truck-height
+    in let p3 = truck-p3 segs ch pose d bx.a2 x (truck-height / 2.0)
+    in let p4 = truck-p3 segs ch pose d bx.a2 x cab-bottom
+    in let p5 = truck-p3 segs ch pose d bx.a1 x cab-bottom
+    in let p6 = truck-p3 segs ch pose d bx.a1 x trailer-bottom
+    in truck-face side-color [p0, p1, p2, p3, p4, p5, p6]
+
+  truck-rear : List Segment, List Integer, Pose, Integer, TruckBox -> TruckFace
+  truck-rear (segs) (ch) (pose) (d) (bx) =
+    let p0 = truck-p3 segs ch pose d bx.a0 bx.xl trailer-bottom
+    in let p1 = truck-p3 segs ch pose d bx.a0 bx.xr trailer-bottom
+    in let p2 = truck-p3 segs ch pose d bx.a0 bx.xr truck-height
+    in let p3 = truck-p3 segs ch pose d bx.a0 bx.xl truck-height
+    in truck-face body-color [p0, p1, p2, p3]
+
+  truck-roof : List Segment, List Integer, Pose, Integer, TruckBox -> TruckFace
+  truck-roof (segs) (ch) (pose) (d) (bx) =
+    let p0 = truck-p3 segs ch pose d bx.a0 bx.xl truck-height
+    in let p1 = truck-p3 segs ch pose d bx.a0 bx.xr truck-height
+    in let p2 = truck-p3 segs ch pose d bx.a-roof bx.xr truck-height
+    in let p3 = truck-p3 segs ch pose d bx.a-roof bx.xl truck-height
+    in truck-face roof-color [p0, p1, p2, p3]
+
+  truck-windshield : List Segment, List Integer, Pose, Integer, TruckBox -> TruckFace
+  truck-windshield (segs) (ch) (pose) (d) (bx) =
+    let p0 = truck-p3 segs ch pose d bx.a-roof bx.xl truck-height
+    in let p1 = truck-p3 segs ch pose d bx.a-roof bx.xr truck-height
+    in let p2 = truck-p3 segs ch pose d bx.a2 bx.xr (truck-height / 2.0)
+    in let p3 = truck-p3 segs ch pose d bx.a2 bx.xl (truck-height / 2.0)
+    in truck-face body-color [p0, p1, p2, p3]
+
+  truck-nose : List Segment, List Integer, Pose, Integer, TruckBox -> TruckFace
+  truck-nose (segs) (ch) (pose) (d) (bx) =
+    let p0 = truck-p3 segs ch pose d bx.a2 bx.xl (truck-height / 2.0)
+    in let p1 = truck-p3 segs ch pose d bx.a2 bx.xr (truck-height / 2.0)
+    in let p2 = truck-p3 segs ch pose d bx.a2 bx.xr cab-bottom
+    in let p3 = truck-p3 segs ch pose d bx.a2 bx.xl cab-bottom
+    in truck-face body-color [p0, p1, p2, p3]
+
+Section: The Tires
+
+ Five axles a side: a tandem pair inset from each trailer end and one under the
+ cab. Each tire is a FLAT CIRCLE in its side plane -- no depth, no rim -- so it
+ costs one polygon and still occludes correctly, because it joins the face sort.
+
+  truck-axles : TruckBox -> List Real
+  truck-axles (bx) =
+    let rear = bx.a0 + trailer-axle-inset
+    in let front = bx.a1 - trailer-axle-inset
+    in let cab = bx.a1 + cab-length * cab-axle-frac
+    in [rear - tire-pair-gap / 2.0, rear + tire-pair-gap / 2.0, front - tire-pair-gap / 2.0, front + tire-pair-gap / 2.0, cab]
+
+ The circle is swept in the (along, height) plane at a fixed x, so it lies in the
+ side of the body rather than facing the camera. Its centre is one tire radius up,
+ which puts the bottom of every tire exactly on the road.
+
+  tire-pt : List Segment, List Integer, Pose, Integer, Real, Real, Integer -> Vec3
+  tire-pt (segs) (ch) (pose) (d) (ac) (x) (i) =
+    let th = real-from-int i / real-from-int tire-sides * two-pi
+    in truck-p3 segs ch pose d (ac + tire-radius * r-cos th) x (tire-radius + tire-radius * r-sin th)
+
+  tire-pts : List Segment, List Integer, Pose, Integer, Real, Real, Integer -> List Vec3
+  tire-pts (segs) (ch) (pose) (d) (ac) (x) (i) =
+    if i >= tire-sides then []
+    else [tire-pt segs ch pose d ac x i] & tire-pts segs ch pose d ac x (i + 1)
+
+  side-tires : List Segment, List Integer, Pose, Integer, List Real, Real, Integer -> List TruckFace
+  side-tires (segs) (ch) (pose) (d) (axles) (x) (i) =
+    if i >= list-length axles then []
+    else [truck-face tire-color (tire-pts segs ch pose d (list-at axles i) x 0)] & side-tires segs ch pose d axles x (i + 1)
+
+ SIXTEEN FACES, AND THE ORDER THEY ARE BUILT IN IS PART OF THE ANSWER. The sort
+ below is stable, so two faces at the same mean depth stay in build order -- and
+ the two sides are at the same depth whenever the truck is square-on to the eye,
+ which is most of a straight. Build order is the zig's: both sides, then the rear,
+ roof, windshield and nose, then the left tires and the right.
+
+  truck-faces : List Segment, List Integer, Pose, Integer, TruckBox -> List TruckFace
+  truck-faces (segs) (ch) (pose) (d) (bx) =
+    let axles = truck-axles bx
+    in [truck-side segs ch pose d bx bx.xl, truck-side segs ch pose d bx bx.xr]
+       & [truck-rear segs ch pose d bx, truck-roof segs ch pose d bx]
+       & [truck-windshield segs ch pose d bx, truck-nose segs ch pose d bx]
+       & side-tires segs ch pose d axles bx.xl 0
+       & side-tires segs ch pose d axles bx.xr 0
+
+Section: The Painter's Sort
+
+ Farthest first, so the body occludes itself and its own far-side tires. The zig
+ insertion-sorts sixteen faces in place and moves a key left only while the
+ element before it is STRICTLY nearer, which is stable; this merges instead, for
+ the reason Render's own sort gives at length -- an in-place insertion sort
+ carried onto persistent lists gains a complexity class. Sixteen faces would
+ survive it, but the answer is identical and there is no reason to keep two rules.
+
+ It shares Render's `deeper-than` too, and for the same argument: two depths
+ closer than half an f32 ulp are one number in the game and the port must not
+ order them. The truck is where that is most likely to matter -- square-on to the
+ eye, its two sides sit at exactly the same depth, and which one paints second
+ decides nothing about the picture but everything about the command stream.
+
+  face-rest : List TruckFace, Integer -> List TruckFace
+  face-rest (ys) (j) =
+    if j >= list-length ys then []
+    else [list-at ys j] & face-rest ys (j + 1)
+
+  merge-faces : List TruckFace, List TruckFace, Integer, Integer -> List TruckFace
+  merge-faces (a) (b) (i) (j) =
+    if i >= list-length a then face-rest b j
+    else if j >= list-length b then face-rest a i
+    else if deeper-than (list-at b j).fwd (list-at a i).fwd
+      then [list-at b j] & merge-faces a b i (j + 1)
+      else [list-at a i] & merge-faces a b (i + 1) j
+
+  sort-faces : List TruckFace -> List TruckFace
+  sort-faces (xs) =
+    if list-length xs <= 1 then xs
+    else merge-faces (sort-faces (list-take xs (list-length xs / 2))) (sort-faces (list-drop xs (list-length xs / 2))) 0 0
+
+Section: Filling
+
+ Near-clip, project, push -- the same pipeline a rail poly goes through, and it
+ borrows GuardRail's `project-all` rather than restating it. push-poly's own
+ under-three guard is what drops a polygon the clip reduced to a sliver.
+
+  truck-fill : Integer, List Vec3, Real, Real -> List DrawCmd
+  truck-fill (color) (ps) (cf) (view-w) =
+    push-poly color (project-all (clip-near ps near) cf view-w 0)
+
+  draw-faces : List TruckFace, Real, Real, Integer -> List DrawCmd
+  draw-faces (fs) (cf) (view-w) (i) =
+    if i >= list-length fs then []
+    else (truck-fill (list-at fs i).color (list-at fs i).v cf view-w) & draw-faces fs cf view-w (i + 1)
+
+Section: The Wedges And The Halo
+
+ NEITHER GRADIENT SHAPE IS CLIPPED, AND BOTH ARE DROPPED WHOLE INSTEAD. The zig
+ returns from drawWedge and from drawBrakeGlow the moment any corner is at or
+ behind the near plane, rather than clipping it as a face is clipped. That is not
+ an oversight to be improved on in the port: a radial gradient carries a centre
+ and a radius in SCREEN space, and clipping the outline would leave the fill
+ centred on a lamp that is no longer a corner of it. The truck is always at the
+ far end of the chase, so the case is rare -- but it is the case where a clipped
+ beam would be visibly wrong rather than merely absent.
+
+  any-behind : List Vec3, Integer -> Boolean
+  any-behind (ps) (i) =
+    if i >= list-length ps then False
+    else if (list-at ps i).forward <= near then True
+    else any-behind ps (i + 1)
+
+  mid-vec : Vec3, Vec3 -> Vec3
+  mid-vec (p) (q) =
+    Vec3 { right = (p.right + q.right) / 2.0, forward = (p.forward + q.forward) / 2.0, height = (p.height + q.height) / 2.0 }
+
+  pt-dist : ScreenPt, ScreenPt -> Real
+  pt-dist (p) (c) =
+    real-sqrt ((p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y))
+
+ The gradient's radius is the FARTHEST corner, so the fill reaches every vertex of
+ the shape it is filling and nothing is left flat at the tip.
+
+  max-radius : List ScreenPt, ScreenPt, Integer -> Real
+  max-radius (sp) (c) (i) =
+    if i >= list-length sp then 0.0
+    else real-max (pt-dist (list-at sp i) c) (max-radius sp c (i + 1))
+
+ One wedge from one cab-front corner: near-bottom and near-top at the truck face
+ (the slit), then far-top and far-bottom twenty metres down the road (fanned
+ open). The lamp is the midpoint of the near edge and the glow is centred there.
+
+  truck-wedge : List Segment, List Integer, Pose, Integer, TruckBox, Real, Real, Real -> List DrawCmd
+  truck-wedge (segs) (ch) (pose) (d) (bx) (src-x) (cf) (view-w) =
+    let p0 = truck-p3 segs ch pose d bx.a2 src-x (headlight-h - cone-near-half)
+    in let p1 = truck-p3 segs ch pose d bx.a2 src-x (headlight-h + cone-near-half)
+    in let p2 = truck-p3 segs ch pose d (bx.a2 + cone-length) src-x (cone-far-center + cone-far-half)
+    in let p3 = truck-p3 segs ch pose d (bx.a2 + cone-length) src-x (cone-far-center - cone-far-half)
+    in wedge-emit [p0, p1, p2, p3] cf view-w
+
+  wedge-emit : List Vec3, Real, Real -> List DrawCmd
+  wedge-emit (ps) (cf) (view-w) =
+    if any-behind ps 0 then [] else wedge-cmd ps cf view-w
+
+  wedge-cmd : List Vec3, Real, Real -> List DrawCmd
+  wedge-cmd (ps) (cf) (view-w) =
+    let sp = project-all ps cf view-w 0
+    in let lamp = project (mid-vec (list-at ps 0) (list-at ps 1)) cf view-w
+    in push-grad-poly beam-core beam-edge lamp.x lamp.y (max-radius sp lamp 0) sp
+
+ Both beams, inset from each cab-front corner. They are pushed BEFORE the body so
+ the opaque faces draw over them where they overlap -- mostly they spill onto the
+ road ahead, which is what a headlight does.
+
+  truck-wedges : List Segment, List Integer, Pose, Integer, TruckBox, Real, Real -> List DrawCmd
+  truck-wedges (segs) (ch) (pose) (d) (bx) (cf) (view-w) =
+    (truck-wedge segs ch pose d bx (bx.xl + headlight-inset) cf view-w)
+    & (truck-wedge segs ch pose d bx (bx.xr - headlight-inset) cf view-w)
+
+ The halo behind a brake-light panel: the panel's screen centre, a radius three
+ times its own, and a sixteen-gon laid over it. It is a SCREEN-SPACE circle rather
+ than a mapped one -- the light is a glow in the image, not a shape in the world.
+
+  sum-x : List ScreenPt, Integer -> Real
+  sum-x (ps) (i) =
+    if i >= list-length ps then 0.0
+    else (list-at ps i).x + sum-x ps (i + 1)
+
+  sum-y : List ScreenPt, Integer -> Real
+  sum-y (ps) (i) =
+    if i >= list-length ps then 0.0
+    else (list-at ps i).y + sum-y ps (i + 1)
+
+  glow-pt : Real, Real, Real, Integer -> ScreenPt
+  glow-pt (cx) (cy) (rad) (i) =
+    let th = real-from-int i / real-from-int glow-sides * two-pi
+    in ScreenPt { x = cx + rad * r-cos th, y = cy + rad * r-sin th }
+
+  glow-circle : Real, Real, Real, Integer -> List ScreenPt
+  glow-circle (cx) (cy) (rad) (i) =
+    if i >= glow-sides then []
+    else [glow-pt cx cy rad i] & glow-circle cx cy rad (i + 1)
+
+  brake-glow : List Vec3, Real, Real -> List DrawCmd
+  brake-glow (panel) (cf) (view-w) =
+    if any-behind panel 0 then [] else glow-cmd panel cf view-w
+
+  glow-cmd : List Vec3, Real, Real -> List DrawCmd
+  glow-cmd (panel) (cf) (view-w) =
+    let sp = project-all panel cf view-w 0
+    in let cx = sum-x sp 0 / 4.0
+    in let cy = sum-y sp 0 / 4.0
+    in let rad = max-radius sp (ScreenPt { x = cx, y = cy }) 0 * 3.2
+    in push-grad-poly glow-core glow-edge cx cy rad (glow-circle cx cy rad 0)
+
+Section: The Brake Lights
+
+ Two panels low on the trailer rear, drawn AFTER the body so they land on the face
+ we chase rather than being sorted behind it. Each is a soft halo first and the
+ bright core on top. They show only while the truck is ACTUALLY slowing, which is
+ the flag Truck's motion half computes against the previous speed.
+
+  brake-light : List Segment, List Integer, Pose, Integer, Real, Real, Real, Real, Real -> List DrawCmd
+  brake-light (segs) (ch) (pose) (d) (a0) (x0) (x1) (cf) (view-w) =
+    let bl = trailer-bottom + 0.20 * (truck-height - trailer-bottom)
+    in let bh = trailer-bottom + 0.50 * (truck-height - trailer-bottom)
+    in let q0 = truck-p3 segs ch pose d a0 x0 bl
+    in let q1 = truck-p3 segs ch pose d a0 x1 bl
+    in let q2 = truck-p3 segs ch pose d a0 x1 bh
+    in let q3 = truck-p3 segs ch pose d a0 x0 bh
+    in emit-brake [q0, q1, q2, q3] cf view-w
+
+  emit-brake : List Vec3, Real, Real -> List DrawCmd
+  emit-brake (panel) (cf) (view-w) =
+    (brake-glow panel cf view-w) & (truck-fill brake-color panel cf view-w)
+
+  brake-lights : List Segment, List Integer, Pose, Integer, TruckBox, Real, Real -> List DrawCmd
+  brake-lights (segs) (ch) (pose) (d) (bx) (cf) (view-w) =
+    (brake-light segs ch pose d bx.a0 (bx.xl + 0.10 * truck-width) (bx.xl + 0.36 * truck-width) cf view-w)
+    & (brake-light segs ch pose d bx.a0 (bx.xr - 0.36 * truck-width) (bx.xr - 0.10 * truck-width) cf view-w)
+
+Section: The Whole Truck
+
+ Beams under, body over, lights on top. `d` is the chain index Render's truck-at
+ found the centre on, `center-along` is how far along that segment it sits, and
+ `hw` is that segment's half width -- the centre line the box is built around.
+
+  truck-draw-body : List Segment, List Integer, Pose, Integer, Real, Real, Boolean, Boolean, Real, Real -> List DrawCmd
+  truck-draw-body (segs) (ch) (pose) (d) (center-along) (hw) (braking) (headlights) (cf) (view-w) =
+    let bx = truck-box center-along hw
+    in let beams = if headlights then truck-wedges segs ch pose d bx cf view-w else []
+    in let body = draw-faces (sort-faces (truck-faces segs ch pose d bx)) cf view-w 0
+    in let lights = if braking then brake-lights segs ch pose d bx cf view-w else []
+    in beams & body & lights

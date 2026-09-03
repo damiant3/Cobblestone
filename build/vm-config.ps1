@@ -567,12 +567,30 @@ function Get-VmAdmittedSlots {
     $freeMB = 0
     try { $freeMB = [int]([double](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1024) } catch { return $Slots }
     if ($freeMB -le 0) { return $Slots }
+    # Live guests are loads the free figure only half sees: a guest that just
+    # launched shows a small working set and grows toward GuestMB, and a Renode
+    # instance is a VM load under another name (OperatorsManual, 'A Renode
+    # instance is a VM load'). Measured 2026-09-02: one freshly launched
+    # codex-vm moved free by 23 MB and the answer not at all. Reserve each
+    # one's remaining growth and name it in the line.
+    $liveMB = 0; $live = @()
+    try {
+        foreach ($p in @(Get-Process -Name codex-vm, Renode, renode -ErrorAction SilentlyContinue)) {
+            $ws = [int]($p.WorkingSet64 / 1MB)
+            $grow = $GuestMB - $ws
+            if ($grow -gt 0) { $liveMB += $grow }
+            $live += "$($p.ProcessName)#$($p.Id)=${ws}MB"
+        }
+    } catch { }
+    $freeRawMB = $freeMB
+    if ($liveMB -gt 0) { $freeMB -= $liveMB }
+    $liveNote = if ($liveMB -gt 0) { " and ${liveMB}MB for the growth of live guests (" + ($live -join ' ') + ')' } else { '' }
     $wantMB = $Slots * $GuestMB
     if ($freeMB -ge ($wantMB + $ReserveMB)) { return $Slots }
     $fit = [int][Math]::Floor(($freeMB - $ReserveMB) / [double]$GuestMB)
     if ($fit -lt 1) { $fit = 1 }
     if ($fit -ge $Slots) { return $Slots }
-    Write-Host "  [vm admission] $What wants $Slots x ${GuestMB}MB = ${wantMB}MB; free is ${freeMB}MB less ${ReserveMB}MB reserved, so admitting $fit. Overcommitting kills a guest and the verdict reads as codegen." -ForegroundColor Yellow
+    Write-Host "  [vm admission] $What wants $Slots x ${GuestMB}MB = ${wantMB}MB; free is ${freeRawMB}MB less ${ReserveMB}MB reserved$liveNote, so admitting $fit. Overcommitting kills a guest and the verdict reads as codegen." -ForegroundColor Yellow
     return $fit
 }
 

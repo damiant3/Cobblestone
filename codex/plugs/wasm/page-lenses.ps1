@@ -89,6 +89,11 @@ $PageModules = @(
     # Read Helpers.
     @{ plug = 'pe';  file = 'pe-bytes.wasm';  transport = 'bytes'; chapters = 'ByteHelpers,PeWriter,Arm64PeWriter,PePlug:Network Config|Spin|Drain|Body,PeStdio' }
     @{ plug = 'img'; file = 'img-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,PlugChain,Fat16Writer,Fat32Writer,GptWriter,ImgPlug:Network Config|Streaming Send|Drain|Body,ImgStdio' }
+    # The in-tab signer (PRISM-7 stage 2c): a mode byte and a 32-byte Ed25519
+    # seed, then mode 0 answers the public key and mode 1 signs the CDX that
+    # follows, writing the author key and signature where build.ps1's sign
+    # phase writes them. Proven against the bare-metal Ed25519 byte for byte.
+    @{ plug = 'sign'; file = 'sign-bytes.wasm'; transport = 'bytes'; chapters = 'SignStdio' }
     @{ plug = 'elf'; file = 'elf-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,PlugChain,ElfWriter,DwarfWriter,ElfPlug:Network Config|Drain|Body,ElfStdio' }
 
     # -- native backends, IR in and a binary WIRE out -------------------------

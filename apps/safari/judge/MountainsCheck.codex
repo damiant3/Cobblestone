@@ -1,0 +1,121 @@
+Chapter: MountainsCheck
+  cites Foreword chapter Console
+  cites Foreword chapter ListUtils
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Safari chapter Sky
+  cites Safari chapter Mountains
+  cites Judge chapter Grade
+  cites Gold chapter MountainsGold
+
+ Grade the Mountains port against wasm/mountains.zig.
+
+ Two seams. The crest and the headlight test are seam 1, walked over a table of
+ bearings; draw is seam 3, decoded off paint's wire.
+
+ THE COLOURS ARE GRADED EXACTLY, as in Sky and for the same reason: dimmed and
+ snowColor round a channel and pack three of them, which is precisely the work the
+ zig plug could not emit before row 2.03. A dimmed rock one off is a wrong rock.
+
+ THE SILHOUETTE COORDINATES ARE WHERE THE RANGE FUNCTIONS ARE REALLY GRADED.
+ northRange, westRange and groundBase are private to the module, so nothing can
+ call them directly -- but every silhouette traces one of them over 681 columns,
+ so 683-point polygons carry them. This is also the only place in the port that
+ grades an ARC TANGENT: bearing-at calls r-atan once per column, so a wrong atan
+ would bend every ridge.
+
+ THE CASES ARE BRANCHES. A plain forward view; a heading swung onto the west
+ range, which puts the north range off-screen so that NO column clears its
+ snowline and drawSnow takes its `m < 2` bail -- that case emits three polygons
+ where the others emit four, and the count is the assertion; a pulled-in focal,
+ which changes the angular span and v_scale together and shrinks the snow band
+ from 88 points to 62; and full night, where the rock is at its dimmest.
+
+ 683 is 681 columns plus the two points that close the polygon down to the
+ horizon. Both sides walk exactly 681 because the column loop steps by 2.0 from
+ -200.0, and both are exact in binary. The one loop that is NOT exact is the
+ snow peak's 0.01 -- see the note in the port; it moves the peak by 5.8e-8
+ relative and cannot move a point count.
+
+ We say:
+
+Section: Scalars
+
+  bearings : List Real
+  bearings = [0.0, 0.2, 0.0 - 0.2, 0.5, 0.94, 0.0 - 0.94, 0.96, 0.0 - 0.96, 0.0 - 2.0416, 0.0 - 1.7, 0.0 - 2.4, 0.0 - 2.76, 0.0 - 1.32, 0.0 - 2.2176, 3.0, 0.0 - 3.0, 3.14, 0.0 - 3.14, 1.5, 0.0 - 1.5]
+
+  dusks : List Real
+  dusks = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
+
+ The probe reads the colour of the FIRST polygon of each frame, which is the
+ westward range, so this is dimmed rock-west at each dusk.
+
+  rocks : List Real, Integer -> List Integer
+  rocks (ds) (i) =
+    if i >= list-length ds then []
+    else [dimmed rock-west (list-at ds i)] & rocks ds (i + 1)
+
+  steps : List Real
+  steps = [0.0, 2000.0, 3500.0, 3900.0, 4000.0, 4300.0, 5000.0, 8000.0]
+
+Section: The Frames
+
+  frame-1 : List DrawCmd
+  frame-1 = draw 0.0 0.0 focal camera-w
+
+  frame-2 : List DrawCmd
+  frame-2 = draw (0.0 - 2.0416) 0.35 focal camera-w
+
+  frame-3 : List DrawCmd
+  frame-3 = draw 0.6 0.6 (focal * 0.45) camera-w
+
+  frame-4 : List DrawCmd
+  frame-4 = draw 0.0 1.0 focal camera-w
+
+  all-cmds : List DrawCmd
+  all-cmds = frame-1 & frame-2 & frame-3 & frame-4
+
+  cmd-tags : List DrawCmd, Integer -> List Integer
+  cmd-tags (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).tag] & cmd-tags cs (i + 1)
+
+  cmd-colors : List DrawCmd, Integer -> List Integer
+  cmd-colors (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).color] & cmd-colors cs (i + 1)
+
+  cmd-counts : List DrawCmd, Integer -> List Integer
+  cmd-counts (cs) (i) =
+    if i >= list-length cs then []
+    else [list-length (list-at cs i).pts / 2] & cmd-counts cs (i + 1)
+
+ EVERY 8th POINT, matching the probe. Four frames at full density are 16,868
+ coordinates, and codexzig exhausts its own 4 GiB bump heap on a Real literal that
+ size -- the heap never reclaims, so the gold a single unit can carry has a
+ ceiling. Striding is what to give up: the point COUNTS above are still exact, so
+ a silhouette that gained or lost a column still fails hard, and 86 samples across
+ a curve that is smooth by construction still catch a wrong range function, a
+ wrong arc tangent, a wrong bearing mapping or a wrong v-scale.
+
+  stride-pts : List Real, Integer -> List Real
+  stride-pts (ps) (i) =
+    if i * 2 >= list-length ps then []
+    else [list-at ps (i * 2), list-at ps (i * 2 + 1)] & stride-pts ps (i + 8)
+
+  cmd-coords : List DrawCmd, Integer -> List Real
+  cmd-coords (cs) (i) =
+    if i >= list-length cs then []
+    else (stride-pts (list-at cs i).pts 0) & cmd-coords cs (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-rel   "mt-crest      " (list-map horizon-crest-px bearings) g-mt-crest 0.000001)
+    print-line-uni (grade-ints  "mt-rock       " (rocks dusks 0) g-mt-rock)
+    print-line-uni (grade-bools "mt-sun-behind " (list-map sun-behind-mountains steps) g-mt-sun-behind)
+    print-line-uni (grade-ints  "mt-tags       " (cmd-tags all-cmds 0) g-mt-tags)
+    print-line-uni (grade-ints  "mt-colors     " (cmd-colors all-cmds 0) g-mt-colors)
+    print-line-uni (grade-ints  "mt-counts     " (cmd-counts all-cmds 0) g-mt-counts)
+    print-line-uni (grade-px    "mt-coords     " (cmd-coords all-cmds 0) g-mt-coords 0.001 0.000001)
+  end

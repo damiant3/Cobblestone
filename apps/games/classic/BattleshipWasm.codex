@@ -76,6 +76,50 @@ Section: The Browser Interface
       winner = if p1-won then 1 else if p2-won then 2 else 0
     }
 
+Section: Playing By Hand
+
+ `bs-wasm-step` fires for BOTH fleets in one call, choosing both shots, so a
+ person cannot take one. `bs-wasm-fire` is the same turn with player one's
+ shot GIVEN: your salvo lands, then the opponent answers, and both shot
+ counts move exactly as they do in the automatic turn.
+
+ A tracking grid holds 0 unknown, 1 miss, 2 hit, so a square you have
+ already fired at is any non-zero, and firing there again would spend a turn
+ on nothing and let the opponent shoot for free. That is refused rather than
+ absorbed.
+
+  bs-wasm-can-fire : BsState, Integer, Integer -> Integer
+  bs-wasm-can-fire (st) (row) (col) =
+    if st.game-over then 0
+    else if row < 0 then 0
+    else if row >= 10 then 0
+    else if col < 0 then 0
+    else if col >= 10 then 0
+    else if bs-cell (st.p1-tracking) row col /= 0 then 0
+    else 1
+
+  bs-wasm-fire : BsState, Integer, Integer -> BsState
+  bs-wasm-fire (st) (row) (col) =
+    if bs-wasm-can-fire st row col == 0 then st
+    else let new-p1-track = bs-shoot (st.p2-ships) (bs-copy-grid (st.p1-tracking)) row col
+    in let new-p1-hits = bs-count-hits new-p1-track 0 0
+    in let r2 = rng-next (st.rng)
+    in let p2-idx = bs-ai-pick-shot (st.p2-tracking) r2
+    in let p2-row = p2-idx / 10
+    in let p2-col = p2-idx - p2-row * 10
+    in let new-p2-track = bs-shoot (st.p1-ships) (bs-copy-grid (st.p2-tracking)) p2-row p2-col
+    in let new-p2-hits = bs-count-hits new-p2-track 0 0
+    in let p1-won = new-p1-hits >= bs-total-ship-cells
+    in let p2-won = new-p2-hits >= bs-total-ship-cells
+    in BsState {
+      p1-ships = st.p1-ships, p1-tracking = new-p1-track,
+      p2-ships = st.p2-ships, p2-tracking = new-p2-track,
+      p1-hits = new-p1-hits, p2-hits = new-p2-hits,
+      p1-shots = st.p1-shots + 1, p2-shots = st.p2-shots + 1,
+      rng = r2, game-over = p1-won | p2-won,
+      winner = if p1-won then 1 else if p2-won then 2 else 0
+    }
+
   bs-wasm-ship : BsState, Integer, Integer, Integer -> Integer
   bs-wasm-ship (st) (player) (row) (col) =
     if player == 1 then bs-cell (st.p1-ships) row col

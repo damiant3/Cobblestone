@@ -1,0 +1,128 @@
+Chapter: Paint
+  cites Safari chapter Camera
+
+ The seam to JS: a draw command in wasm/paint.zig's wire.
+
+ The zig writes each command into a fixed pre-sized buffer in linear memory and
+ hands the browser a byte length. The port is pure, so it RETURNS commands and the
+ wasm shim does the writing -- the same split NOTES calls seam 3, and the reason
+ one grader serves every module: a frame is a flat list either way.
+
+ The wire:
+
+   tag 0   [0][color][nPoints][x f32][y f32]...
+   tag 1   [1][color][strength f32][nPoints][x f32][y f32]...
+   tag 3   [3][color][x f32][y f32][r f32][alpha f32]
+   tag 4   [4][rgbaCentre][rgbaEdge][cx][cy][r][nPoints][x][y]...
+   tag 5   [5][rgba0][rgba1][off0][off1][ax][ay][bx][by][nPoints][x][y]...
+   tag 6   [6][rgba0][rgba1][off0][off1][cx][cy][ux][uy][vx][vy][nPoints][x][y]...
+
+ TAG 2 IS NOT HERE AND IS ON THE WIRE. This chapter emits what `wasm/paint.zig`
+ emits and nothing else, because that is what nine checks in judge/ grade. The
+ shim runs `Safari chapter Blit`'s `blit-expand` over the finished list before
+ writing it, and that pass turns every tag 1 into a tag 0 or a
+
+   tag 2   [2][edgeColor][middleColor][x0 f32][x1 f32][nPoints][x f32][y f32]...
+
+ -- a polygon under a symmetric three-stop gradient across [x0, x1], colours
+ already computed. So tag 1 is what this chapter produces and tag 2 is what the
+ browser receives, and no reader of this file should go looking for a tag 1 in
+ `web/blitter.js`.
+
+ tag 0 is a solid fill; tag 1 is a horizontal round gradient -- dark edge, bright
+ centre, dark edge across the polygon's x-extent -- with a per-polygon strength
+ that lets crown shading fade to flat with distance instead of popping. strength
+ rides on every command so the record has one shape; tag 0 ignores it, exactly as
+ the blitter does.
+
+ Coordinates are SCREEN pixels here and still Real. They narrow to f32 in the
+ shim, at the buffer, which is the only place the game's width is load-bearing.
+
+ We say:
+
+Section: Commands
+
+  DrawCmd = record {
+    tag : Integer,
+    color : Integer,
+    color2 : Integer,
+    strength : Real,
+    geom : List Real,
+    pts : List Real
+  }
+
+ TWO FIELDS THE GRADIENT TAGS FORCED, and taking them changed the record's rule
+ for the better. `pts` is now ALWAYS the polygon and `geom` is always the
+ command's own parameters -- a beacon's centre and radius, a gradient's stops and
+ axes. Before, the beacon smuggled its x, y and r through `pts`, which meant `pts`
+ sometimes held points and sometimes did not, and every reader had to know which.
+ Now one rule covers every tag.
+
+ `color2` is the second stop. Tags 0, 1 and 3 leave it zero and leave `geom` empty
+ or short; nothing reads a field its tag does not define.
+
+  flatten-screen : List ScreenPt, Integer -> List Real
+  flatten-screen (ps) (i) =
+    if i >= list-length ps then []
+    else let p = list-at ps i
+    in [p.x, p.y] & flatten-screen ps (i + 1)
+
+  push-poly : Integer, List ScreenPt -> List DrawCmd
+  push-poly (color) (ps) =
+    if list-length ps < 3 then []
+    else [DrawCmd { tag = 0, color = color, color2 = 0, strength = 0.0, geom = [], pts = flatten-screen ps 0 }]
+
+ pushRoundPoly drops a polygon with fewer than three points rather than emitting
+ a degenerate one; push-poly is given the same guard so the two agree.
+
+  push-round-poly : Integer, Real, List ScreenPt -> List DrawCmd
+  push-round-poly (color) (strength) (ps) =
+    if list-length ps < 3 then []
+    else [DrawCmd { tag = 1, color = color, color2 = 0, strength = strength, geom = [], pts = flatten-screen ps 0 }]
+
+ THE BEACON IS NOT A POLYGON, and it is the first command here that is not. It is
+ a disc -- a centre, a radius and an alpha -- and the blitter draws a true arc for
+ it. It gets its own tag because unlike every other command it is NOT OPAQUE, and
+ the colour word on the solid path carries no alpha to say so.
+
+ It still fits the one DrawCmd shape, which is the point of that shape. The
+ record's prose already argues that strength rides on every command so there is
+ one record rather than two; the same argument carries the disc. `strength` is the
+ alpha the blitter composites at, and `pts` holds x, y and r -- three Reals where a
+ polygon holds an even number of them. The shim branches on the tag when it
+ writes, exactly as paint.zig's own pushBeacon does.
+
+  push-beacon : Integer, Real, Real, Real, Real -> List DrawCmd
+  push-beacon (color) (x) (y) (r) (alpha) =
+    [DrawCmd { tag = 3, color = color, color2 = 0, strength = alpha, geom = [x, y, r], pts = [] }]
+
+Section: The Gradient Fills
+
+ Three more tags, all polygons with a gradient instead of a flat colour, and all
+ three carry TWO colours in 0xAARRGGBB rather than the 0xRRGGBB the solid path
+ uses -- because these composite, and the alpha is what makes a headlight beam a
+ beam rather than a white wedge.
+
+ Tag 4 is a RADIAL fill from a centre out to a radius: the truck's headlight beams
+ and their glow. Tags 5 and 6 are 2-stop gradients with explicit stop offsets --
+ 5 linear along an axis, 6 radial through an ELLIPSE given by two axis vectors --
+ and they are the bull's shading panels, the one animal whose art is the Fluent
+ Color variant rather than the Flat one.
+
+ All three drop a polygon with fewer than three points, exactly as the solid path
+ does and for the same reason.
+
+  push-grad-poly : Integer, Integer, Real, Real, Real, List ScreenPt -> List DrawCmd
+  push-grad-poly (rgba-center) (rgba-edge) (cx) (cy) (r) (ps) =
+    if list-length ps < 3 then []
+    else [DrawCmd { tag = 4, color = rgba-center, color2 = rgba-edge, strength = 0.0, geom = [cx, cy, r], pts = flatten-screen ps 0 }]
+
+  push-linear-grad-poly : Integer, Integer, Real, Real, Real, Real, Real, Real, List ScreenPt -> List DrawCmd
+  push-linear-grad-poly (rgba0) (rgba1) (off0) (off1) (ax) (ay) (bx) (by) (ps) =
+    if list-length ps < 3 then []
+    else [DrawCmd { tag = 5, color = rgba0, color2 = rgba1, strength = 0.0, geom = [off0, off1, ax, ay, bx, by], pts = flatten-screen ps 0 }]
+
+  push-radial-grad-poly : Integer, Integer, Real, Real, Real, Real, Real, Real, Real, Real, List ScreenPt -> List DrawCmd
+  push-radial-grad-poly (rgba0) (rgba1) (off0) (off1) (cx) (cy) (ux) (uy) (vx) (vy) (ps) =
+    if list-length ps < 3 then []
+    else [DrawCmd { tag = 6, color = rgba0, color2 = rgba1, strength = 0.0, geom = [off0, off1, cx, cy, ux, uy, vx, vy], pts = flatten-screen ps 0 }]
