@@ -32,6 +32,9 @@ $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $TestDir = Join-Path $Repo 'codex\test'
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\wasm-plug.cdx'
 $RunPs1  = Join-Path $PSScriptRoot 'run.ps1'
+# The comparison both hosted arms grade with lives in ONE place; that file
+# explains why it mirrors build/test-run.ps1 instead of doing its own thing.
+$CompareLib = Join-Path $PSScriptRoot '..\common\hosted-compare-lib.ps1'
 $ElfTest = Join-Path $Repo 'codex\plugs\elf\hosted-elf-test.ps1'
 # The plug is built against the seed (codex/plugs/common/plug-build-lib.ps1), so
 # that is the kernel whose compiler produced the emitter under test.
@@ -105,6 +108,8 @@ $results = $subjects | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $RunPs1 = $using:RunPs1
     $Kernel = $using:Kernel
     $Calibrate = $using:Calibrate
+    # Functions do not cross into a -Parallel runspace; dot-source per worker.
+    . $using:CompareLib
 
     $src = Join-Path $TestDir "$s.codex"
     $exp = Join-Path $TestDir "$s.expected"
@@ -181,8 +186,8 @@ $results = $subjects | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 
     $got = (Get-Content $outFile -Raw -ErrorAction SilentlyContinue)
     if ($null -eq $got) { $got = '' }
-    $got = $got -replace "`r`n", "`n"
-    $want = ([System.IO.File]::ReadAllText($exp)) -replace "`r`n", "`n"
+    $got = Get-HarnessActual $got
+    $want = Get-HarnessExpected ([System.IO.File]::ReadAllText($exp))
 
     if ($Calibrate) {
         if ($got -ne $want) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }

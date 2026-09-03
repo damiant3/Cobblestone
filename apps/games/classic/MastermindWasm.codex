@@ -54,6 +54,47 @@ Section: The Browser Interface
       solved = won
     }
 
+Section: Playing By Hand
+
+ `mm-wasm-step` takes the solver's own next candidate off the pool, so a
+ person cannot guess. This is the same turn with the CODE GIVEN.
+
+ A code is four base-six digits packed into one integer, 0 to 1295, which is
+ what `mm-digit` reads back.
+
+ THE POOL IS FILTERED WITH YOUR GUESS TOO, exactly as it is with the
+ solver's. It costs nothing while a person is playing, and it is what keeps
+ the solver honest if you hand the game back to it part way through: a pool
+ that had not seen your guesses would offer candidates your own scores have
+ already ruled out, and it would look like the solver being stupid rather
+ than the pool being stale.
+
+  mm-wasm-guess : MmState, Integer -> MmState
+  mm-wasm-guess (s) (guess) =
+    if s.solved then s
+    else if s.guesses >= 10 then s
+    else if guess < 0 then s
+    else if guess > 1295 then s
+    else let score = mm-score (s.secret) guess
+    in let won = score == 40
+    in MmState {
+      secret = s.secret,
+      pool = if won then s.pool else mm-filter-pool (s.pool) guess score (list-length (s.pool)),
+      guesses = s.guesses + 1,
+      last-guess = guess,
+      last-score = score,
+      solved = won
+    }
+
+ Whether a guess may still be made at all: ten is the limit and a solved
+ code ends it.
+
+  mm-wasm-can-guess : MmState -> Integer
+  mm-wasm-can-guess (s) =
+    if s.solved then 0
+    else if s.guesses >= 10 then 0
+    else 1
+
   mm-wasm-secret : MmState -> Integer
   mm-wasm-secret (s) = s.secret
 

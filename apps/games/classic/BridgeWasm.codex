@@ -8,15 +8,25 @@ Chapter: BridgeWasm
  nowhere near an i32, so the page holds the state's address.
 
  There is no copy in this chapter and that is deliberate rather than an
- omission. `play-all-br-tricks` consumes its hands through `remove-at`,
- which builds a fresh list by pushing onto an empty accumulator rather than
- writing through `list-set-at`, so counting the tricks does not disturb the
- state it counts. `determine-contract` DOES write in place through
+ omission. A play consumes its hand through `remove-at`, which builds a
+ fresh list by pushing onto an empty accumulator rather than writing through
+ `list-set-at`, and answers a fresh record, so a handle a page is holding
+ stays the position it was. `determine-contract` DOES write in place through
  `__record-set`, which is why it is called only inside `br-wasm-new` on a
  state built two lines above it and never on a handle a caller holds.
 
  Seats are north 0, south 1, east 2, west 3, which is the order the engine's
  own arguments take rather than the order round a table.
+
+ YOU ARE SOUTH. The opening lead belongs to the declarer's left, which is
+ nobody's choice and is South only when East-West took the contract, so
+ `br-wasm-new` plays the seats ahead of you before it answers. A page that
+ opened on somebody else's turn would sit there until the visitor noticed
+ the table had moved without them.
+
+ North is your partner and the engine plays it. Real bridge would have the
+ declarer play the dummy face up; this does not model a dummy at all, and
+ that is the one rule here a bridge player will miss.
 
  We say:
 
@@ -25,7 +35,14 @@ Section: The Browser Interface
   br-wasm-new : Integer -> BridgeState
   br-wasm-new (seed) =
     let deck = br-shuffle br-deck-new (rng-new seed)
-    in determine-contract (br-deal deck)
+    in br-to-human (br-begin (determine-contract (br-deal deck))) 4
+
+  br-to-human : BridgeState, Integer -> BridgeState
+  br-to-human (st) (fuel) =
+    if fuel <= 0 then st
+    else if st.done then st
+    else if st.turn == 1 then st
+    else br-to-human (br-step st) (fuel - 1)
 
   br-wasm-hand : BridgeState, Integer -> List Integer
   br-wasm-hand (st) (seat) =
@@ -64,13 +81,45 @@ Section: The Browser Interface
   br-wasm-declarer (st) = st.declarer
 
   br-wasm-nstricks : BridgeState -> Integer
-  br-wasm-nstricks (st) =
-    play-all-br-tricks (st.north) (st.south) (st.east) (st.west) (st.trump) (st.declarer)
+  br-wasm-nstricks (st) = st.ns-tricks
+
+  br-wasm-ewtricks : BridgeState -> Integer
+  br-wasm-ewtricks (st) = st.ew-tricks
+
+ What the declarer has taken SO FAR. It used to be what the declarer would
+ take if the whole hand were played out, which is a different number and
+ cannot be shown beside a hand still holding cards.
 
   br-wasm-tricks-made : BridgeState -> Integer
   br-wasm-tricks-made (st) =
-    let ns = br-wasm-nstricks st
-    in if st.declarer == 0 then ns else 13 - ns
+    if st.declarer == 0 then st.ns-tricks else st.ew-tricks
+
+  br-wasm-cur : BridgeState -> Integer
+  br-wasm-cur (st) = st.turn
+
+  br-wasm-leader : BridgeState -> Integer
+  br-wasm-leader (st) = st.leader
+
+  br-wasm-trick : BridgeState, Integer -> Integer
+  br-wasm-trick (st) (seat) =
+    if seat < 0 then (-1)
+    else if seat > 3 then (-1)
+    else br-played st seat
+
+  br-wasm-legal : BridgeState, Integer -> Integer
+  br-wasm-legal (st) (idx) = if br-legal st idx then 1 else 0
+
+  br-wasm-play : BridgeState, Integer -> BridgeState
+  br-wasm-play (st) (idx) = br-play-at st idx
+
+  br-wasm-step : BridgeState -> BridgeState
+  br-wasm-step (st) = br-step st
+
+  br-wasm-done : BridgeState -> Integer
+  br-wasm-done (st) = if st.done then 1 else 0
+
+  br-wasm-tricks : BridgeState -> Integer
+  br-wasm-tricks (st) = st.tricks
 
   br-wasm-score : BridgeState -> Integer
   br-wasm-score (st) =

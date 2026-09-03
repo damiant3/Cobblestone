@@ -1,0 +1,52 @@
+Chapter: MathbookWasm
+  cites Mathbook chapter Expr
+  cites Mathbook chapter Parser
+  cites Mathbook chapter Printer
+  cites Mathbook chapter Simplify
+
+ The browser interface for the notebook, and it is a different shape from the
+ arcade's modules on purpose.
+
+ A game exports i32 functions and is handed throwing WASI stubs, because its
+ whole state fits in integers. A computer algebra system answers TEXT, and a
+ Codex `Text` is a pointer to a four-byte length followed by CCE bytes, which
+ a page would have to decode with a CCE table it does not have. The compiler's
+ own page solved this years before this chapter existed: the module is a WASI
+ program, the expression arrives on `fd_read` and the answer leaves on
+ `fd_write`, and both are plain UTF-8 because the foreword converts at the I/O
+ boundary rather than in the middle (R-CCE). So the page needs no codec, and
+ what crosses the boundary is a line of text in and a line of text out.
+
+ `_start` runs once and exits, so the page instantiates the module per
+ evaluation. That is what the compile page does per compile, and it is also
+ what makes the module safe to run without a collector: each evaluation gets a
+ fresh heap rather than accumulating one.
+
+Section: One Evaluation
+
+ Parse, simplify, print. The simplifier's entry is `simplify`, which walks the
+ children and iterates to a fixed point under `simplify-fuel`; `fold-constants`
+ is one pass at the TOP node only and is the wrong door. The two agree on
+ `2+2` and disagree on `1+2*3`, where the top-only pass sees an `ExInt` beside
+ an unfolded `ExMul` and answers `1 + 2 * 3`. An operand pair that cannot tell
+ the two apart is what makes a wrong entry ship, so the grader asks the nested
+ question rather than the flat one.
+
+  mb-eval : Text -> Text
+  mb-eval (line) =
+    let parsed = parse-expr line
+    in if parsed.po-ok
+       then ex-print (simplify (parsed.po-expr))
+       else "parse error: " & parsed.po-error
+
+Section: Entry Point
+
+  opening : [Console] Nothing = act
+    entered <- read-line
+    when entered
+      is Just (line) -> print-line-uni (mb-eval line)
+      is otherwise -> print-line-uni "parse error: no input"
+    end
+  end
+
+Page 1

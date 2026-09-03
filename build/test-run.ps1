@@ -102,6 +102,25 @@ try {
     }
 
 
+    # codex-vm's exit code is the only signal for a host crash AFTER complete
+    # output: its crash filter _exit(0xC0DE), and a heap death fast-fails past
+    # that filter as 0xC0000374 printing nothing. Two codes BY NAME; a bare
+    # nonzero test adds no case. The comparison is signed on purpose, because a
+    # PowerShell hex literal parses signed and 0xC0000374 IS -1073740940. Do not
+    # add a 0xFFFFFFFF mask: that literal is int -1 and the cast then throws.
+    $rc = $proc.ExitCode
+    if ((($rc -eq 0xC0DE) -or ($rc -eq 0xC0000374))) {
+        $rcHex = '0x{0:X8}' -f $rc
+        Write-SweepLog "$sample run-fail host-crash rc=$rcHex"
+        [Console]::Error.WriteLine("HOST CRASH: codex-vm exited $rcHex. This is a defect in codex-vm itself, not in the guest, and the captured output cannot be trusted however complete it looks.")
+        if ((Test-Path -PathType Leaf $stderrFile)) {
+            [Console]::Error.WriteLine([System.IO.File]::ReadAllText($stderrFile))
+        }
+        [System.IO.File]::WriteAllText($OutFile, '', [System.Text.UTF8Encoding]::new($false))
+        exit 1
+    }
+
+
     if (((-not (Test-Path -PathType Leaf $outputFile)) -or (Get-Item $outputFile).Length -eq 0)) {
         Write-SweepLog "$sample run-fail no-output"
         [System.IO.File]::WriteAllText($OutFile, '', [System.Text.UTF8Encoding]::new($false))

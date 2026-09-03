@@ -144,6 +144,13 @@ if ($Only.Count -gt 0) {
     Write-Host "subject: CITE-SCOPED, $($subject.Count) chapter(s) of $($candidates.Count)"
 }
 
+# The gate's run phase grades these same chapters, so it READS this list rather
+# than re-deriving it. Two selectors for one question drift, and the one that
+# drifts short reports a green over tests it never chose (L-DENOM).
+$subjectList = Join-Path $Repo 'build-output\test-compile-subjects.txt'
+New-Item -ItemType Directory -Force -Path (Split-Path $subjectList) | Out-Null
+[System.IO.File]::WriteAllLines($subjectList, @($subject))
+
 if ($subject.Count -eq 0) { Write-Host 'test-compile: OK (nothing implicated)'; exit 0 }
 
 $out = Join-Path $Repo 'build-output\test-compile'
@@ -190,8 +197,13 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
     # A SEPARATE PROCESS, not `& $script`. ForEach-Object -Parallel runs
     # runspaces inside one process and these scripts set the working directory;
     # calling them in-runspace races on it (Build.md records the measurement).
+    # The batch's own `batch kernel:` line is kept and everything else dropped.
+    # Swallowing all of it is what let this phase print one kernel and compile
+    # with another for as long as it did: the child knew and had no way to say
+    # so (L-UNHEARD). One line per batch, naming the file actually booted.
     & pwsh -NoProfile -File (Join-Path $Repo 'build\test-compile-batch.ps1') `
-        -ListFile (Join-Path $out "list$_.txt") -OutRoot (Join-Path $out "o$_") *> $null
+        -ListFile (Join-Path $out "list$_.txt") -OutRoot (Join-Path $out "o$_") -Kernel $using:Kernel 2>&1 |
+        Where-Object { "$_" -like 'batch kernel:*' } | ForEach-Object { Write-Host "  $_" }
 } | Out-Null
 $sw.Stop()
 

@@ -1178,7 +1178,7 @@ Section: Expression Emission
     is IrError (msg) (ty) (sp) -> emit-int-lit (st-add-error st cdx-ir-error msg sp) 0
     is IrName (name) (ty) (sp) -> emit-name st name ty
     is IrLet (name) (ty) (value) (body) (sp) -> emit-let st name value body
-    is IrBinary (op) (left) (right) (ty) (sp) -> emit-binary st op left right
+    is IrBinary (op) (left) (right) (ty) (sp) -> emit-binary st op left right ty
     is IrIf (cond) (then-e) (else-e) (ty) (sp) -> emit-if st cond then-e else-e
     is IrApply (func) (arg) (ty) (sp) -> emit-apply st func arg ty
     is IrRecord (rname) (fields) (ty) (sp) -> emit-record st fields ty
@@ -1850,6 +1850,9 @@ Section: Expression Emission
   real-arith-is-f32 : CodegenState, CodexType -> Boolean
   real-arith-is-f32 (st) (ty) = is-real-f32 (strip-unit-ty (resolve-to-sum-with-defs st ty))
 
+  int-trap-after : CodexType -> List Integer
+  int-trap-after (ty) = if int-ty-wraps ty then [] else jcc cc-no 2 & [15, 11]
+
   emit-real-trapping-arith : CodegenState, Integer, Integer, Integer, Boolean -> EmitResult
   emit-real-trapping-arith (st) (l-reg) (r-reg) (sse-op) (f32) =
    let rd = alloc-temp st
@@ -2409,8 +2412,8 @@ Section: Expression Emission
    in let st2 = emit-operand-to st1 left reg-r8
    in emit-helper-call-2-regs st2 reg-r8 reg-r9 "__str_concat_inplace"
 
-  emit-binary : CodegenState, IRBinaryOp, IRExpr, IRExpr -> EmitResult
-  emit-binary (st) (op) (left) (right) =
+  emit-binary : CodegenState, IRBinaryOp, IRExpr, IRExpr, CodexType -> EmitResult
+  emit-binary (st) (op) (left) (right) (ty) =
    if is-inplace-append st op left then emit-inplace-append st left right
    else if is-append-list-op op then emit-append-list st left right
    else if is-and-op op then emit-short-circuit-and st left right
@@ -2419,36 +2422,36 @@ Section: Expression Emission
     is IrIntLit (v) (s) ->
      if v >= (0 - 2147483648) & v <= 2147483647 then
       when op
-       is IrAddInt -> emit-binary-add-imm st left v
-       is IrSubInt -> emit-binary-sub-imm st left v
-       is IrMulInt -> emit-binary-mul-imm st left v
+       is IrAddInt -> emit-binary-add-imm st left v ty
+       is IrSubInt -> emit-binary-sub-imm st left v ty
+       is IrMulInt -> emit-binary-mul-imm st left v ty
        is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left then emit-binary-div-pow2 st left v
-        else emit-binary-or-standard st op left right
+        else emit-binary-or-standard st op left right ty
        is IrRemInt -> if v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left then emit-binary-rem-pow2 st left v
-        else emit-binary-or-standard st op left right
+        else emit-binary-or-standard st op left right ty
        is otherwise -> if is-fusable-int-comparison st op left then emit-binary-cmp-imm st op left v
-        else emit-binary-or-standard st op left right
-     else emit-binary-or-standard st op left right
-    is IrName (n) (ty) (sp) ->
+        else emit-binary-or-standard st op left right ty
+     else emit-binary-or-standard st op left right ty
+    is IrName (n) (rty) (sp) ->
      let slot = lookup-local (st.locals) n
      in if slot >= 0 & slot < spill-base then
       when left
        is IrIntLit (lv) (ls) ->
         if lv >= (0 - 2147483648) & lv <= 2147483647 then
          when op
-          is IrMulInt -> emit-binary-mul-imm st right lv
-          is IrAddInt -> emit-binary-add-imm st right lv
-          is otherwise -> emit-binary-reg-right st op left slot right
-        else emit-binary-reg-right st op left slot right
-       is otherwise -> emit-binary-reg-right st op left slot right
-     else emit-binary-or-standard st op left right
+          is IrMulInt -> emit-binary-mul-imm st right lv ty
+          is IrAddInt -> emit-binary-add-imm st right lv ty
+          is otherwise -> emit-binary-reg-right st op left slot right ty
+        else emit-binary-reg-right st op left slot right ty
+       is otherwise -> emit-binary-reg-right st op left slot right ty
+     else emit-binary-or-standard st op left right ty
     is otherwise ->
      when left
       is IrName (ln) (lty) (lsp) ->
        let lslot = lookup-local (st.locals) ln
-       in if lslot >= 0 & lslot < spill-base then emit-binary-reg-left st op left lslot lty right
-       else emit-binary-or-standard st op left right
-      is otherwise -> emit-binary-or-standard st op left right
+       in if lslot >= 0 & lslot < spill-base then emit-binary-reg-left st op left lslot ty right
+       else emit-binary-or-standard st op left right ty
+      is otherwise -> emit-binary-or-standard st op left right ty
 
  Staged binary emission. The standard path parks both operands in
  alloc-locals, which are anonymous and never released: each binary
@@ -2475,10 +2478,10 @@ Section: Expression Emission
  RSP-relative spill offsets read inside the right operand's emission,
  so that mode keeps the standard path.
 
-  emit-binary-or-standard : CodegenState, IRBinaryOp, IRExpr, IRExpr -> EmitResult
-  emit-binary-or-standard (st) (op) (left) (right) =
-   if st.omit-frame-pointer then emit-binary-standard st op left right
-   else emit-binary-staged st op left right
+  emit-binary-or-standard : CodegenState, IRBinaryOp, IRExpr, IRExpr, CodexType -> EmitResult
+  emit-binary-or-standard (st) (op) (left) (right) (ty) =
+   if st.omit-frame-pointer then emit-binary-standard st op left right ty
+   else emit-binary-staged st op left right ty
 
   is-staged-operand : CodegenState, IRExpr -> Boolean
   is-staged-operand (st) (e) =
@@ -2499,24 +2502,24 @@ Section: Expression Emission
      else st-append-code st (mov-load scratch reg-rbp (-((slot - spill-base + 1) * 8 + 32)))
     is otherwise -> st
 
-  emit-binary-staged : CodegenState, IRBinaryOp, IRExpr, IRExpr -> EmitResult
-  emit-binary-staged (st) (op) (left) (right) =
+  emit-binary-staged : CodegenState, IRBinaryOp, IRExpr, IRExpr, CodexType -> EmitResult
+  emit-binary-staged (st) (op) (left) (right) (ty) =
    let operand-ty = ir-expr-type left
    in if is-staged-operand st left then
        if is-staged-operand st right then
         let st1 = emit-operand-to st left reg-r8
         in let st2 = emit-operand-to st1 right reg-r9
-        in emit-binary-op st2 op reg-r8 reg-r9 operand-ty
+        in emit-binary-op st2 op reg-r8 reg-r9 operand-ty ty
        else
         let r = emit-expr (st-set-tail-pos st False) right
         in let st1 = st-append-code (r.state) (mov-rr reg-r9 (r.reg))
         in let st2 = emit-operand-to st1 left reg-r8
-        in emit-binary-op st2 op reg-r8 reg-r9 operand-ty
+        in emit-binary-op st2 op reg-r8 reg-r9 operand-ty ty
       else if is-staged-operand st right then
        let l = emit-expr (st-set-tail-pos st False) left
        in let st1 = st-append-code (l.state) (mov-rr reg-r8 (l.reg))
        in let st2 = emit-operand-to st1 right reg-r9
-       in emit-binary-op st2 op reg-r8 reg-r9 operand-ty
+       in emit-binary-op st2 op reg-r8 reg-r9 operand-ty ty
       else
        let l = emit-expr (st-set-tail-pos st False) left
        in let st1 = st-append-code (l.state) (push-r (l.reg))
@@ -2524,36 +2527,36 @@ Section: Expression Emission
        in when op
         is IrAddInt ->
          let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
-         in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (pop-r pop-reg & add-rr (r.reg) pop-reg)
+         in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (pop-r pop-reg & add-rr (r.reg) pop-reg & int-trap-after ty)
          in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
         is IrMulInt ->
          let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
-         in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (pop-r pop-reg & imul-rr (r.reg) pop-reg)
+         in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (pop-r pop-reg & imul-rr (r.reg) pop-reg & int-trap-after ty)
          in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
         is otherwise ->
          let st2 = st-append-code (r.state) (mov-rr reg-r9 (r.reg))
          in let st3 = st-append-code st2 (pop-r reg-r8)
-         in emit-binary-op st3 op reg-r8 reg-r9 operand-ty
+         in emit-binary-op st3 op reg-r8 reg-r9 operand-ty ty
 
-  emit-binary-add-imm : CodegenState, IRExpr, Integer -> EmitResult
-  emit-binary-add-imm (st) (left) (imm) =
+  emit-binary-add-imm : CodegenState, IRExpr, Integer, CodexType -> EmitResult
+  emit-binary-add-imm (st) (left) (imm) (ty) =
    let l = emit-expr (st-set-tail-pos st False) left
    in let rd = alloc-temp (l.state)
-   in if rd.reg /= l.reg then EmitResult { state = st-append-code (rd.state) (lea (rd.reg) (l.reg) imm), reg = rd.reg }
-   else EmitResult { state = st-append-code (rd.state) (add-ri (rd.reg) imm), reg = rd.reg }
+   in if int-ty-wraps ty & rd.reg /= l.reg then EmitResult { state = st-append-code (rd.state) (lea (rd.reg) (l.reg) imm), reg = rd.reg }
+   else EmitResult { state = st-append-code (rd.state) (mov-rr (rd.reg) (l.reg) & add-ri (rd.reg) imm & int-trap-after ty), reg = rd.reg }
 
-  emit-binary-sub-imm : CodegenState, IRExpr, Integer -> EmitResult
-  emit-binary-sub-imm (st) (left) (imm) =
+  emit-binary-sub-imm : CodegenState, IRExpr, Integer, CodexType -> EmitResult
+  emit-binary-sub-imm (st) (left) (imm) (ty) =
    let l = emit-expr (st-set-tail-pos st False) left
    in let rd = alloc-temp (l.state)
-   in if rd.reg /= l.reg then EmitResult { state = st-append-code (rd.state) (lea (rd.reg) (l.reg) (0 - imm)), reg = rd.reg }
-   else EmitResult { state = st-append-code (rd.state) (sub-ri (rd.reg) imm), reg = rd.reg }
+   in if int-ty-wraps ty & rd.reg /= l.reg then EmitResult { state = st-append-code (rd.state) (lea (rd.reg) (l.reg) (0 - imm)), reg = rd.reg }
+   else EmitResult { state = st-append-code (rd.state) (mov-rr (rd.reg) (l.reg) & sub-ri (rd.reg) imm & int-trap-after ty), reg = rd.reg }
 
-  emit-binary-mul-imm : CodegenState, IRExpr, Integer -> EmitResult
-  emit-binary-mul-imm (st) (left) (imm) =
+  emit-binary-mul-imm : CodegenState, IRExpr, Integer, CodexType -> EmitResult
+  emit-binary-mul-imm (st) (left) (imm) (ty) =
    let l = emit-expr (st-set-tail-pos st False) left
    in let rd = alloc-temp (l.state)
-   in EmitResult { state = st-append-code (rd.state) (imul-rri (rd.reg) (l.reg) imm), reg = rd.reg }
+   in EmitResult { state = st-append-code (rd.state) (imul-rri (rd.reg) (l.reg) imm & int-trap-after ty), reg = rd.reg }
 
   int-log2 : Integer -> Integer
   int-log2 (v) = if v <= 1 then 0 else 1 + int-log2 (bit-shru v 1)
@@ -2598,19 +2601,19 @@ Section: Expression Emission
  standard path must not clobber -- is-temp-reg restricts the fold to
  the dead-temp case, where l.reg holds a complex result.
 
-  emit-reg-right-inplace : CodegenState, IRBinaryOp, Integer, Integer -> EmitResult
-  emit-reg-right-inplace (st) (op) (l-reg) (right-reg) =
-   let st2 = st-append-code (fc-evict-reg st l-reg) (inplace-int-op op l-reg right-reg)
+  emit-reg-right-inplace : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
+  emit-reg-right-inplace (st) (op) (l-reg) (right-reg) (lty) =
+   let st2 = st-append-code (fc-evict-reg st l-reg) (inplace-int-op op l-reg right-reg lty)
    in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = __narrow l-reg }
 
-  emit-binary-reg-right : CodegenState, IRBinaryOp, IRExpr, Integer, IRExpr -> EmitResult
-  emit-binary-reg-right (st) (op) (left) (right-reg) (right) =
+  emit-binary-reg-right : CodegenState, IRBinaryOp, IRExpr, Integer, IRExpr, CodexType -> EmitResult
+  emit-binary-reg-right (st) (op) (left) (right-reg) (right) (ty) =
    if is-safe-for-reg-right st op left then
     let l = emit-expr (st-set-tail-pos st False) left
     in if is-reg-right-inplace-op op & is-temp-reg (l.reg)
-       then emit-reg-right-inplace (l.state) op (l.reg) right-reg
-       else emit-binary-op (l.state) op (l.reg) right-reg (ir-expr-type left)
-   else emit-binary-or-standard st op left right
+       then emit-reg-right-inplace (l.state) op (l.reg) right-reg ty
+       else emit-binary-op (l.state) op (l.reg) right-reg (ir-expr-type left) ty
+   else emit-binary-or-standard st op left right ty
 
   is-safe-for-reg-left : CodegenState, IRBinaryOp, IRExpr -> Boolean
   is-safe-for-reg-left (st) (op) (right) =
@@ -2637,12 +2640,12 @@ Section: Expression Emission
     is 0 | 1 | 2 | 6 | 7 | 11 -> True
     is otherwise -> False
 
-  inplace-int-op : IRBinaryOp, Integer, Integer -> List Integer
-  inplace-int-op (op) (dest) (src) =
+  inplace-int-op : IRBinaryOp, Integer, Integer, CodexType -> List Integer
+  inplace-int-op (op) (dest) (src) (lty) =
    when op
-    is IrMulInt -> imul-rr dest src
-    is IrSubInt -> sub-rr dest src
-    is otherwise -> add-rr dest src
+    is IrMulInt -> imul-rr dest src & int-trap-after lty
+    is IrSubInt -> sub-rr dest src & int-trap-after lty
+    is otherwise -> add-rr dest src & int-trap-after lty
 
  On the reg-left path the right operand is always complex (a literal
  or register-local right is handled earlier in emit-binary), so its
@@ -2658,23 +2661,23 @@ Section: Expression Emission
  and non-integer ops keep the emit-binary-op path.
 
   emit-binary-reg-left : CodegenState, IRBinaryOp, IRExpr, Integer, CodexType, IRExpr -> EmitResult
-  emit-binary-reg-left (st) (op) (left) (left-reg) (lty) (right) =
+  emit-binary-reg-left (st) (op) (left) (left-reg) (ty) (right) =
    if is-commutative-int-op op then
     let r = emit-expr (st-set-tail-pos st False) right
-    in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (inplace-int-op op (r.reg) left-reg)
+    in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (inplace-int-op op (r.reg) left-reg ty)
     in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
    else if is-safe-for-reg-left st op right then
     let r = emit-expr (st-set-tail-pos st False) right
-    in emit-binary-op (r.state) op left-reg (r.reg) lty
-   else emit-binary-or-standard st op left right
+    in emit-binary-op (r.state) op left-reg (r.reg) (ir-expr-type left) ty
+   else emit-binary-or-standard st op left right ty
 
   emit-append-list : CodegenState, IRExpr, IRExpr -> EmitResult
   emit-append-list (st) (left) (right) =
    let chain = flatten-append-chain left [right]
    in emit-concat-many st chain
 
-  emit-binary-standard : CodegenState, IRBinaryOp, IRExpr, IRExpr -> EmitResult
-  emit-binary-standard (st) (op) (left) (right) =
+  emit-binary-standard : CodegenState, IRBinaryOp, IRExpr, IRExpr, CodexType -> EmitResult
+  emit-binary-standard (st) (op) (left) (right) (ty) =
    let l = emit-expr (st-set-tail-pos st False) left
    in let l-loc = alloc-local (l.state)
    in let st1 = store-local (l-loc.state) (l-loc.reg) (l.reg)
@@ -2683,23 +2686,23 @@ Section: Expression Emission
     is IrIntLit (v) (s) ->
      let l-load = load-local (r.state) (l-loc.reg)
      in when op
-      is IrAddInt -> EmitResult { state = st-append-code (l-load.state) (add-rr (l-load.reg) (r.reg)), reg = l-load.reg }
-      is IrSubInt -> EmitResult { state = st-append-code (l-load.state) (sub-rr (l-load.reg) (r.reg)), reg = l-load.reg }
-      is IrMulInt -> EmitResult { state = st-append-code (l-load.state) (imul-rr (l-load.reg) (r.reg)), reg = l-load.reg }
+      is IrAddInt -> EmitResult { state = st-append-code (l-load.state) (add-rr (l-load.reg) (r.reg) & int-trap-after ty), reg = l-load.reg }
+      is IrSubInt -> EmitResult { state = st-append-code (l-load.state) (sub-rr (l-load.reg) (r.reg) & int-trap-after ty), reg = l-load.reg }
+      is IrMulInt -> EmitResult { state = st-append-code (l-load.state) (imul-rr (l-load.reg) (r.reg) & int-trap-after ty), reg = l-load.reg }
       is otherwise ->
        let r-loc = alloc-local (r.state)
        in let st2 = store-local (r-loc.state) (r-loc.reg) (r.reg)
        in let l-load2 = load-local st2 (l-loc.reg)
        in let r-load = load-local (l-load2.state) (r-loc.reg)
        in let operand-ty = ir-expr-type left
-       in emit-binary-op (r-load.state) op (l-load2.reg) (r-load.reg) operand-ty
+       in emit-binary-op (r-load.state) op (l-load2.reg) (r-load.reg) operand-ty ty
     is otherwise ->
      let r-loc = alloc-local (r.state)
      in let st2 = store-local (r-loc.state) (r-loc.reg) (r.reg)
      in let l-load = load-local st2 (l-loc.reg)
      in let r-load = load-local (l-load.state) (r-loc.reg)
      in let operand-ty = ir-expr-type left
-     in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg) operand-ty
+     in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg) operand-ty ty
 
  The destination temp must avoid r-reg: the register ops write rd
  before reading r-reg (mov rd, l-reg destroys a colliding right
@@ -2733,20 +2736,20 @@ Section: Expression Emission
    in let result = load-local st2 (alloc.ptr-loc)
    in EmitResult { state = result.state, reg = result.reg }
 
-  emit-binary-op : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
-  emit-binary-op (st) (op) (l-reg) (r-reg) (operand-ty) =
+  emit-binary-op : CodegenState, IRBinaryOp, Integer, Integer, CodexType, CodexType -> EmitResult
+  emit-binary-op (st) (op) (l-reg) (r-reg) (operand-ty) (node-ty) =
    let rd = alloc-temp-avoiding st r-reg
    in when op
     is IrAddInt -> EmitResult {
-     state = st-append-code (rd.state) (mov-rr (rd.reg) l-reg & add-rr (rd.reg) r-reg),
+     state = st-append-code (rd.state) (mov-rr (rd.reg) l-reg & add-rr (rd.reg) r-reg & int-trap-after node-ty),
      reg = rd.reg
     }
     is IrSubInt -> EmitResult {
-     state = st-append-code (rd.state) (mov-rr (rd.reg) l-reg & sub-rr (rd.reg) r-reg),
+     state = st-append-code (rd.state) (mov-rr (rd.reg) l-reg & sub-rr (rd.reg) r-reg & int-trap-after node-ty),
      reg = rd.reg
     }
     is IrMulInt -> EmitResult {
-     state = st-append-code (rd.state) (mov-rr (rd.reg) l-reg & imul-rr (rd.reg) r-reg),
+     state = st-append-code (rd.state) (mov-rr (rd.reg) l-reg & imul-rr (rd.reg) r-reg & int-trap-after node-ty),
      reg = rd.reg
     }
     is IrDivInt -> let div-reg = if r-reg == reg-rdx then reg-r11
@@ -2911,6 +2914,64 @@ Section: Expression Emission
   eq-helper-name : Text -> Text
   eq-helper-name (sn) = deck-record ("__eq_" & sn)
 
+  eq-key-of : CodexType -> Text
+  eq-key-of (ty) =
+   when strip-unit-ty ty
+    is TextTy -> "Text"
+    is BooleanTy -> "Boolean"
+    is CharTy -> "Char"
+    is IntegerTy (lo) (hi) (m) -> "Integer"
+    is RealTy (w) (m) -> if is-width-f32 w then "Real32" else "Real64"
+    is ListTy (e) -> "List[" & eq-key-of e & "]"
+    is LinkedListTy (e) -> "LinkedList[" & eq-key-of e & "]"
+    is SumTy (n) (as) (cs) -> (n.value) & eq-key-wrap as
+    is RecordTy (n) (as) (fs) -> (n.value) & eq-key-wrap as
+    is ConstructedTy (n) (as) -> (n.value) & eq-key-wrap as
+    is TypeVar (id) -> "#" & show id
+    is otherwise -> "?"
+
+  eq-key-wrap : List CodexType -> Text
+  eq-key-wrap (as) =
+   if list-length as == 0 then "" else "[" & eq-key-args as 0 (list-length as) & "]"
+
+  eq-key-args : List CodexType, Integer, Integer -> Text
+  eq-key-args (as) (i) (n) =
+   if i >= n then ""
+   else (if i == 0 then "" else ",") & eq-key-of (list-at as i) & eq-key-args as (i + 1) n
+
+ The instantiated name is CONCATENATED, so it must be deck-recorded for the
+ same reason the bare name above is: emit-call-to keeps the target name in
+ cp-targets across a per-function __heap-restore, and a bivy allocation is
+ reclaimed before the patch pass reads it.
+
+  eq-helper-name-inst : Text, List CodexType -> Text
+  eq-helper-name-inst (sn) (actuals) =
+   if list-length actuals == 0 then eq-helper-name sn
+   else deck-record ("__eq_" & sn & "@" & eq-key-args actuals 0 (list-length actuals))
+
+  eq-site-actuals : CodexType -> List CodexType
+  eq-site-actuals (ty) =
+   when ty
+    is ConstructedTy (cn) (ca) -> ca
+    is otherwise -> eq-empty-type-args
+
+  eq-subst-deep : List CodexType, List CodexType, Integer, CodexType -> CodexType
+  eq-subst-deep (formals) (actuals) (fuel) (ty) =
+   if fuel <= 0 then ty
+   else let here = subst-field-type ty formals actuals
+   in when here
+    is ConstructedTy (n) (a) ->
+     if list-length a == 0 then here
+     else deck-record (ConstructedTy n (for x in a -> eq-subst-deep formals actuals (fuel - 1) x))
+    is ListTy (e) -> deck-record (ListTy (eq-subst-deep formals actuals (fuel - 1) e))
+    is LinkedListTy (e) -> deck-record (LinkedListTy (eq-subst-deep formals actuals (fuel - 1) e))
+    is otherwise -> here
+
+  eq-subst-fields : List CodexType, List CodexType, List CodexType -> List CodexType
+  eq-subst-fields (fs) (formals) (actuals) =
+   if list-length actuals == 0 then fs
+   else for f in fs -> eq-subst-deep formals actuals eq-rec-fuel f
+
   emit-eq-op : CodegenState, Integer, Integer, CodexType -> EmitResult
   emit-eq-op (st) (l-reg) (r-reg) (ty) =
    let resolved = strip-unit-ty (resolve-to-sum-with-defs st ty)
@@ -2919,11 +2980,8 @@ Section: Expression Emission
     is RealTy (rw) (rm) -> emit-num-comparison st cc-e l-reg r-reg
     is SumTy (sn) (args) (cs) ->
      if eq-sum-is-recursive st (sn.value) cs
-     then emit-helper-call-2-regs st l-reg r-reg (eq-helper-name (sn.value))
-     else let type-args = (when ty
-      is ConstructedTy (cn) (ca) -> ca
-      is otherwise -> eq-empty-type-args)
-     in emit-sum-structural-eq st l-reg r-reg cs type-args
+     then emit-helper-call-2-regs st l-reg r-reg (eq-helper-name-inst (sn.value) (eq-site-actuals ty))
+     else emit-sum-structural-eq st l-reg r-reg cs args (eq-site-actuals ty)
     is otherwise -> emit-comparison st cc-e l-reg r-reg ty
 
   emit-neq-op : CodegenState, Integer, Integer, CodexType -> EmitResult
@@ -2940,11 +2998,8 @@ Section: Expression Emission
     is RealTy (rw) (rm) -> emit-num-comparison st cc-ne l-reg r-reg
     is SumTy (sn) (args) (cs) ->
      let eq-result = (if eq-sum-is-recursive st (sn.value) cs
-      then emit-helper-call-2-regs st l-reg r-reg (eq-helper-name (sn.value))
-      else let type-args = (when ty
-       is ConstructedTy (cn) (ca) -> ca
-       is otherwise -> eq-empty-type-args)
-      in emit-sum-structural-eq st l-reg r-reg cs type-args)
+      then emit-helper-call-2-regs st l-reg r-reg (eq-helper-name-inst (sn.value) (eq-site-actuals ty))
+      else emit-sum-structural-eq st l-reg r-reg cs args (eq-site-actuals ty))
      in let rd = alloc-temp (eq-result.state)
      in EmitResult {
       state = st-append-code (rd.state) (cmp-ri (eq-result.reg) 0 & setcc cc-e (rd.reg) & movzx-byte-self (rd.reg)),
@@ -2958,11 +3013,11 @@ Section: Expression Emission
    eq-jumps : List Integer
   }
 
-  emit-sum-structural-eq : CodegenState, Integer, Integer, List SumCtor, List CodexType -> EmitResult
-  emit-sum-structural-eq (st) (l-reg) (r-reg) (ctors) (type-args) =
+  emit-sum-structural-eq : CodegenState, Integer, Integer, List SumCtor, List CodexType, List CodexType -> EmitResult
+  emit-sum-structural-eq (st) (l-reg) (r-reg) (ctors) (formals) (type-args) =
    if all-ctors-nullary ctors 0 (list-length ctors)
    then emit-sum-tag-eq st l-reg r-reg
-   else emit-sum-full-eq st l-reg r-reg ctors type-args
+   else emit-sum-full-eq st l-reg r-reg ctors formals type-args
 
   all-ctors-nullary : List SumCtor, Integer, Integer -> Boolean
   all-ctors-nullary (cs) (i) (len) =
@@ -2978,14 +3033,43 @@ Section: Expression Emission
    in let st2 = st-append-code (r-tag.state) (mov-load (r-tag.reg) r-reg 0)
    in emit-comparison st2 cc-e (l-tag.reg) (r-tag.reg) int-ty-default
 
-  subst-field-type : CodexType, List CodexType -> CodexType
-  subst-field-type (ty) (args) =
+ A type parameter reaches here as a `ConstructedTy` carrying its NAME and no
+ arguments, not as a `TypeVar`, so matching only `TypeVar` substitutes
+ nothing for the one case this function exists to serve. It is a silent
+ no-op: the field keeps the parameter's own type, `emit-eq-op` finds no arm
+ for it and falls through to `emit-comparison`, and a word compare on two
+ heap pointers is a POINTER comparison. Measured 2026-09-01 by tracing
+ `emit-eq-op`, which reported `ty=Ctor:Pair[Text]` against
+ `resolved=Sum:Pair[Ctor:a]`: the instantiation is on the SITE type, while
+ resolution answers the declaration's own formal parameters. So the formals
+ and the actuals arrive from different places and the substitution is a zip
+ of the two, keyed by NAME. The `TypeVar` arm is kept because nothing has
+ shown it is dead.
+
+  subst-formal-name : CodexType -> Text
+  subst-formal-name (ty) =
    when ty
-    is TypeVar (id) -> if id < list-length args then list-at args id else ty
+    is ConstructedTy (n) (a) -> n.value
+    is otherwise -> ""
+
+  subst-by-formal-name : Text, List CodexType, List CodexType, Integer, Integer, CodexType -> CodexType
+  subst-by-formal-name (nm) (formals) (actuals) (i) (n) (dflt) =
+   if i >= n then dflt
+   else if subst-formal-name (list-at formals i) == nm
+    then (if i < list-length actuals then list-at actuals i else dflt)
+    else subst-by-formal-name nm formals actuals (i + 1) n dflt
+
+  subst-field-type : CodexType, List CodexType, List CodexType -> CodexType
+  subst-field-type (ty) (formals) (actuals) =
+   when ty
+    is TypeVar (id) -> if id < list-length actuals then list-at actuals id else ty
+    is ConstructedTy (n) (a) ->
+     if list-length a == 0 then subst-by-formal-name (n.value) formals actuals 0 (list-length formals) ty
+     else ty
     is otherwise -> ty
 
-  emit-sum-full-eq : CodegenState, Integer, Integer, List SumCtor, List CodexType -> EmitResult
-  emit-sum-full-eq (st) (l-reg) (r-reg) (ctors) (type-args) =
+  emit-sum-full-eq : CodegenState, Integer, Integer, List SumCtor, List CodexType, List CodexType -> EmitResult
+  emit-sum-full-eq (st) (l-reg) (r-reg) (ctors) (formals) (type-args) =
    let l-loc = alloc-local st
    in let st0 = store-local (l-loc.state) (l-loc.reg) l-reg
    in let r-loc = alloc-local st0
@@ -3001,7 +3085,7 @@ Section: Expression Emission
    in let st5 = st-append-code st4 (jcc cc-ne 0)
    in let tag-loc = alloc-local st5
    in let st6 = store-local (tag-loc.state) (tag-loc.reg) (l-tag.reg)
-   in let dispatch = emit-sum-ctor-eq-dispatch st6 ctors type-args (l-loc.reg) (r-loc.reg) (tag-loc.reg) 0 (list-length ctors) [] []
+   in let dispatch = emit-sum-ctor-eq-dispatch st6 ctors formals type-args (l-loc.reg) (r-loc.reg) (tag-loc.reg) 0 (list-length ctors) [] []
    in let rd = alloc-temp (dispatch.state)
    in let st7 = patch-eq-jumps (rd.state) (dispatch.eq-jumps) 0
    in let st8 = st-append-code st7 (li (rd.reg) 1)
@@ -3013,27 +3097,27 @@ Section: Expression Emission
    in let st13 = patch-jmp-at st12 done-jmp-pos (st12.code-len)
    in EmitResult { state = st13, reg = rd.reg }
 
-  emit-sum-ctor-eq-dispatch : CodegenState, List SumCtor, List CodexType, Integer, Integer, Integer, Integer, Integer, List Integer, List Integer -> SumEqAccum
-  emit-sum-ctor-eq-dispatch (st) (ctors) (type-args) (l-loc) (r-loc) (tag-loc) (i) (len) (ne-acc) (eq-acc) =
+  emit-sum-ctor-eq-dispatch : CodegenState, List SumCtor, List CodexType, List CodexType, Integer, Integer, Integer, Integer, Integer, List Integer, List Integer -> SumEqAccum
+  emit-sum-ctor-eq-dispatch (st) (ctors) (formals) (type-args) (l-loc) (r-loc) (tag-loc) (i) (len) (ne-acc) (eq-acc) =
    if i == len then SumEqAccum { state = st, ne-jumps = ne-acc, eq-jumps = eq-acc }
    else let c = list-at ctors i
    in let fc = list-length (c.fields)
-   in if fc == 0 then emit-sum-ctor-eq-dispatch st ctors type-args l-loc r-loc tag-loc (i + 1) len ne-acc eq-acc
+   in if fc == 0 then emit-sum-ctor-eq-dispatch st ctors formals type-args l-loc r-loc tag-loc (i + 1) len ne-acc eq-acc
    else let tag-ld = load-local st tag-loc
    in let st1 = st-append-code (tag-ld.state) (cmp-ri (tag-ld.reg) i)
    in let skip-pos = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let field-result = emit-sum-fields-eq st2 (c.fields) type-args l-loc r-loc 0 fc ne-acc
+   in let field-result = emit-sum-fields-eq st2 (c.fields) formals type-args l-loc r-loc 0 fc ne-acc
    in let eq-jmp-pos = (field-result.state).code-len
    in let st3 = st-append-code (field-result.state) (jmp 0)
    in let st4 = patch-jcc-at st3 skip-pos (st3.code-len)
-   in emit-sum-ctor-eq-dispatch st4 ctors type-args l-loc r-loc tag-loc (i + 1) len (field-result.ne-jumps) (list-push eq-acc eq-jmp-pos)
+   in emit-sum-ctor-eq-dispatch st4 ctors formals type-args l-loc r-loc tag-loc (i + 1) len (field-result.ne-jumps) (list-push eq-acc eq-jmp-pos)
 
-  emit-sum-fields-eq : CodegenState, List CodexType, List CodexType, Integer, Integer, Integer, Integer, List Integer -> SumEqAccum
-  emit-sum-fields-eq (st) (fields) (type-args) (l-loc) (r-loc) (i) (len) (ne-acc) =
+  emit-sum-fields-eq : CodegenState, List CodexType, List CodexType, List CodexType, Integer, Integer, Integer, Integer, List Integer -> SumEqAccum
+  emit-sum-fields-eq (st) (fields) (formals) (type-args) (l-loc) (r-loc) (i) (len) (ne-acc) =
    if i == len then SumEqAccum { state = st, ne-jumps = ne-acc, eq-jumps = [] }
    else let decl-ty = list-at fields i
-   in let field-ty = subst-field-type decl-ty type-args
+   in let field-ty = subst-field-type decl-ty formals type-args
    in let offset = sum-ctor-field-offset fields i
    in let fw = field-byte-width decl-ty
    in let fsigned = field-byte-signed decl-ty
@@ -3047,7 +3131,7 @@ Section: Expression Emission
    in let st3 = st-append-code (eq-result.state) (cmp-ri (eq-result.reg) 0)
    in let ne-pos = st3.code-len
    in let st4 = st-append-code st3 (jcc cc-e 0)
-   in emit-sum-fields-eq st4 fields type-args l-loc r-loc (i + 1) len (list-push ne-acc ne-pos)
+   in emit-sum-fields-eq st4 fields formals type-args l-loc r-loc (i + 1) len (list-push ne-acc ne-pos)
 
   patch-ne-jumps : CodegenState, List Integer, Integer -> CodegenState
   patch-ne-jumps (st) (patches) (i) =
@@ -3076,13 +3160,27 @@ Section: Recursive Structural Equality Helpers
   EqHelperReq = record {
    eq-sum-name : Text,
    eq-sum-ty : CodexType,
+   eq-sum-actuals : List CodexType,
    eq-sum-ctors : List SumCtor
   }
+
+  eq-req-formals : EqHelperReq -> List CodexType
+  eq-req-formals (req) =
+   when req.eq-sum-ty
+    is SumTy (n) (as) (cs) -> as
+    is otherwise -> eq-empty-type-args
+
+ The key is the INSTANTIATED name. Keyed on the bare sum name, Box Text and
+ Box Integer share one helper and the first instantiation to arrive decides
+ how both compare their field, which compares an Integer with __str_eq.
+
+  eq-req-name : EqHelperReq -> Text
+  eq-req-name (req) = eq-helper-name-inst (req.eq-sum-name) (req.eq-sum-actuals)
 
   eq-req-has : List EqHelperReq, Text, Integer -> Boolean
   eq-req-has (xs) (n) (i) =
    if i >= list-length xs then False
-   else if ((list-at xs i).eq-sum-name) == n then True
+   else if eq-req-name (list-at xs i) == n then True
    else eq-req-has xs n (i + 1)
 
  A comparison at a NON-recursive sum still descends: emit-sum-fields-eq calls
@@ -3098,23 +3196,25 @@ Section: Recursive Structural Equality Helpers
   eq-note-site : CodegenState, CodexType, List EqHelperReq, Integer -> List EqHelperReq
   eq-note-site (st) (ty) (acc) (fuel) =
    if fuel <= 0 then acc
-   else let resolved = strip-unit-ty (resolve-to-sum-with-defs st ty)
+   else let actuals = eq-site-actuals ty
+   in let resolved = strip-unit-ty (resolve-to-sum-with-defs st ty)
    in when resolved
     is SumTy (sn) (args) (cs) ->
      if eq-sum-is-recursive st (sn.value) cs
-     then (if eq-req-has acc (sn.value) 0 then acc
+     then (if eq-req-has acc (eq-helper-name-inst (sn.value) actuals) 0 then acc
       else list-push acc (deck-record (EqHelperReq {
         eq-sum-name = sn.value,
         eq-sum-ty = resolved,
+        eq-sum-actuals = actuals,
         eq-sum-ctors = cs
        })))
-     else eq-site-ctors st cs 0 acc (fuel - 1)
+     else eq-site-ctors st cs 0 acc (fuel - 1) args actuals
     is otherwise -> acc
 
-  eq-site-ctors : CodegenState, List SumCtor, Integer, List EqHelperReq, Integer -> List EqHelperReq
-  eq-site-ctors (st) (cs) (i) (acc) (fuel) =
+  eq-site-ctors : CodegenState, List SumCtor, Integer, List EqHelperReq, Integer, List CodexType, List CodexType -> List EqHelperReq
+  eq-site-ctors (st) (cs) (i) (acc) (fuel) (formals) (actuals) =
    if i >= list-length cs then acc
-   else eq-site-ctors st cs (i + 1) (eq-site-fields st ((list-at cs i).fields) 0 acc fuel) fuel
+   else eq-site-ctors st cs (i + 1) (eq-site-fields st (eq-subst-fields ((list-at cs i).fields) formals actuals) 0 acc fuel) fuel formals actuals
 
   eq-site-fields : CodegenState, List CodexType, Integer, List EqHelperReq, Integer -> List EqHelperReq
   eq-site-fields (st) (fs) (i) (acc) (fuel) =
@@ -3198,7 +3298,8 @@ Section: Recursive Structural Equality Helpers
   eq-close-reqs : CodegenState, List EqHelperReq, Integer -> List EqHelperReq
   eq-close-reqs (st) (reqs) (i) =
    if i >= list-length reqs then reqs
-   else eq-close-reqs st (eq-site-ctors st ((list-at reqs i).eq-sum-ctors) 0 reqs eq-rec-fuel) (i + 1)
+   else let r = list-at reqs i
+   in eq-close-reqs st (eq-site-ctors st (r.eq-sum-ctors) 0 reqs eq-rec-fuel (eq-req-formals r) (r.eq-sum-actuals)) (i + 1)
 
   eq-helper-var : Text, Integer -> Text
   eq-helper-var (prefix) (i) = prefix & show i
@@ -3257,9 +3358,15 @@ Section: Recursive Structural Equality Helpers
   eq-helper-def : EqHelperReq -> IRDef
   eq-helper-def (req) =
    let sty = req.eq-sum-ty
-   in let cs = req.eq-sum-ctors
+   in let formals = eq-req-formals req
+   in let actuals = req.eq-sum-actuals
+   in let cs = for c in (req.eq-sum-ctors) -> deck-record (SumCtor {
+     name = c.name,
+     fields = eq-subst-fields (c.fields) formals actuals,
+     return-type = c.return-type
+    })
    in deck-record (IRDef {
-    name = eq-helper-name (req.eq-sum-name),
+    name = eq-req-name req,
     params = [
       deck-record (IRParam { name = "__eqa", type-val = sty, span = synthetic-span }),
       deck-record (IRParam { name = "__eqb", type-val = sty, span = synthetic-span })

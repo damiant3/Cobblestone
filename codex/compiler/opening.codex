@@ -2,6 +2,7 @@ Chapter: Opening
   grounds Device.Port, Device.Block
   cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-took, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics, deck-short-of)
   cites Foreword chapter Maybe
+  cites Foreword chapter Wrap64
   cites Foreword chapter Fat16
   cites Foreword chapter ImportGate
   cites Foreword chapter FactDisk
@@ -548,18 +549,18 @@ Section: Frontend
 
   compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags, Integer, Integer -> ScopeResult
   compile-desugar-and-scope (source) (pr) (chapter-name) (flags) (fk-base) (fk-height) =
-   let desugar-deck-height = scaled-floor (flags.deck-scale) demand-desugar-floor demand-desugar-guard-band
-   in let desugar-base = build desugar-deck-height
+   let dset-keep = __deck-set fk-base
+   in let fk-ceiling = fk-base + fk-height - demand-frontend-keep-guard-band
    in let desugar-phase = phase-start
-   in let dr = desugar-document source (pr.doc) chapter-name (desugar-base + desugar-deck-height)
+   in let dr = deck-record (desugar-document source (pr.doc) chapter-name fk-ceiling)
    in let ast = dr.dr-chapter
    in let desugar-metrics = phase-measure desugar-phase "DESUGAR"
-   in let desugar-ov = check-deck-overflow (desugar-metrics.deck-end - desugar-metrics.deck-origin) desugar-deck-height
-   in let dset-keep = __deck-set fk-base
+   in let desugar-ov = check-deck-overflow (desugar-metrics.deck-end - desugar-metrics.deck-origin) fk-height
    in let keep-phase = phase-start
-   in let fk-ceiling = fk-base + fk-height - demand-frontend-keep-guard-band
-   in let fkcopy = deck-record (copy-as-chapter-guarded fk-base fk-ceiling ast)
+   in let fkcopy = deck-record (relocate-chapter-tail fk-base fk-ceiling ast (dr.dr-sat))
    in let ast2 = fkcopy.chapter
+   in let keep-cursor = __deck-pos
+   in let keep-escapes = if flags.escape-check then pmap-escape-count-quiet (address-of ast2) "AChapter" keep-cursor __heap-save else 0
    in let assignments = deck-record (for a in (pr.assignments) -> deck-record (ChapterAssignment { def-name = copy-sx-text fk-base (a.def-name), chapter-slug = copy-sx-text fk-base (a.chapter-slug) }))
    in let chapter-names = deck-record (copy-sx-texts fk-base (pr.chapter-names))
    in let colliding-names = skip-list-text-to-list (pr.colliding)
@@ -570,6 +571,7 @@ Section: Frontend
    in let phase-metrics-d = deck-record (for m in (pr.phase-metrics) -> deck-record (PhaseMetrics { label = m.label, bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
    in let keep-metrics = phase-measure keep-phase "DESUGAR-KEEP"
    in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) fk-height
+   in let keep-note-bag = deck-record (if flags.phase-trace | flags.escape-check then bag-from-list [make-warning cdx-escape-violation ("DESUGAR-KEEP fk-base=" & show fk-base & " origin=" & show (keep-metrics.deck-origin) & " end=" & show (keep-metrics.deck-end) & " used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " desugar-deck=" & show (desugar-metrics.deck-end - desugar-metrics.deck-origin) & " desugar-bivy=" & show (desugar-metrics.bivy-hwm - desugar-metrics.bivy-origin) & " escapes-above-keep=" & show keep-escapes) synthetic-span] else no-overflow-bag)
    in let desugar-ov-bag = deck-record (if desugar-ov == 1 | dr.dr-sat == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag)
    in let keep-ov-bag = deck-record (if keep-ov == 1 | fkcopy.sat == 1 then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
    in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
@@ -585,7 +587,7 @@ Section: Frontend
    in let cite-bag = deck-record (check-duplicate-cites (scoped.citations))
    in let missing-cite-bag = deck-record (check-cites-resolve (scoped.citations) assignments chapter-names)
    in let resolve-result = resolve-chapter scoped colliding assignments scope-ceiling
-   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, missing-cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag])
+   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, missing-cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag, keep-note-bag])
    in let scope-end = __deck-pos
    in let scope-sat = if deck-short-of scope-ceiling demand-scope-guard-band then 1 else 0
    in let scope-metrics = phase-measure scope-phase "SCOPE"
@@ -647,11 +649,10 @@ Section: Frontend
    in let check-phase-metrics = deck-record (list-push (sr.phase-metrics) check-metrics)
    in if bag-has-errors check-bag
       then halted-checked check-bag check-heap-marks
-      else let resolved-env = deck-record (for b in (check-result.env.bindings) -> deck-record (TypeBinding { name = b.name, bound-type = deep-resolve (check-result.state) (b.bound-type) }))
-      in let sorted-all0 = deck-record (resolve-all-bindings (check-result.state) (sort-bindings (check-result.types & resolved-env)) 0 (list-length (check-result.types) + list-length resolved-env) (__list-with-capacity (list-length (check-result.types) + list-length resolved-env)))
-      in let sorted-et0 = deck-record (resolve-all-expr-types (check-result.state) (sort-expr-types (check-result.state.expr-types)) 0 (list-length (check-result.state.expr-types)) (__list-with-capacity (list-length (check-result.state.expr-types))))
+      else let pre-sorted = deck-record (sort-bindings (check-result.types & check-result.env.bindings))
+      in let pre-et = deck-record (sort-expr-types (check-result.state.expr-types))
       in let post-ov-bag = if __deck-pos > check-ceiling then deck-overflow-bag "CHECK" else no-overflow-bag
-      in let memo-pop0 = list-length sorted-et0 / 4 + list-length sorted-all0 + 65536
+      in let memo-pop0 = list-length pre-et / 4 + list-length pre-sorted + 65536
       in let memo-graph = (check-metrics.deck-end - check-metrics.deck-origin) / 64
       in let memo-pop = if memo-graph > memo-pop0 then memo-graph else memo-pop0
       in let memo-slots = memo-pow2-at-least (memo-pop * 2) 4096
@@ -691,10 +692,17 @@ Section: Frontend
       }
       in let check-resolve-metrics = phase-measure check-phase "CHECK-RESOLVE"
       in let all-phase-metrics = deck-record (list-push check-phase-metrics check-resolve-metrics)
+      in let tail-scratch = __deck-pos
       in let keep-set = __deck-set (check-result.keep-end)
       in let keep-phase = phase-start
-      in let sorted-all = deck-record (copy-bindings-deep sorted-all0 mc)
-      in let sorted-et = deck-record (copy-expr-types-deep sorted-et0 mc)
+      in let tail-bivy = __heap-save
+      in let acc-all = deck-record (__list-with-capacity (list-length pre-sorted))
+      in let (sorted-all, kc-all) = tail-resolve-bindings (check-result.state) pre-sorted 0 (list-length pre-sorted) acc-all mc tail-scratch tail-bivy __deck-pos
+      in let acc-et = deck-record (__list-with-capacity (list-length pre-et))
+      in let (sorted-et, kc-et) = tail-resolve-expr-types (check-result.state) pre-et 0 (list-length pre-et) acc-et mc tail-scratch tail-bivy __deck-pos
+      in let tail-rewind = __heap-restore tail-bivy
+      in let tail-memo-z = __memset (mc.mc-table) 0 (mc.mc-slots * 8)
+      in let tail-bag = if flags.phase-trace then deck-record (bag-from-list [make-warning cdx-escape-violation ("CHECK-TAIL binds=" & show (list-length sorted-all) & " et=" & show (list-length sorted-et) & " keep-used=" & show (kc-et - check-result.keep-end)) synthetic-span]) else no-overflow-bag
       in let kept-subs = deck-record (mcopy-types (check-result.state.substitutions) 0 mc)
       in let kept-rows = deck-record (mcopy-rows (check-result.state.row-substitutions) mc)
       in let kept-bag = deck-record (copy-sx-bag keep-base check-bag)
@@ -704,8 +712,9 @@ Section: Frontend
       in let keep-metrics = phase-measure keep-phase "CHECK-KEEP"
       in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) keep-height
       in let keep-ov-bag = if keep-ov == 1 | keep-metrics.deck-end >= mc.mc-ceiling | check-result.keep-overflow then deck-overflow-bag "CHECK-KEEP" else no-overflow-bag
+      in let keep-metrics-bag = if flags.phase-trace then deck-record (bag-from-list [make-warning cdx-escape-violation ("CHECK-KEEP-METRICS origin=" & show (keep-metrics.deck-origin) & " end=" & show (keep-metrics.deck-end) & " height=" & show keep-height & " ceiling=" & show (mc.mc-ceiling) & " keep-base=" & show keep-base & " walk-keep-end=" & show (check-result.keep-end) & " ov=" & show keep-ov & " walk-overflow=" & (if check-result.keep-overflow then "1" else "0")) synthetic-span]) else no-overflow-bag
       in let keep-stat-bag = if flags.escape-check then deck-record (bag-from-list [make-warning cdx-escape-violation ("KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " ty=" & show (list-length (mc.mc-ty)) & " text=" & show (list-length (mc.mc-text)) & " name=" & show (list-length (mc.mc-name)) & " row=" & show (list-length (mc.mc-row)) & " tylists=" & show (list-length (mc.mc-tylist)) & "/" & show (sum-tylist-lens (mc.mc-tylist) 0 (list-length (mc.mc-tylist)) 0) & " fieldlists=" & show (list-length (mc.mc-fieldlist)) & "/" & show (sum-fieldlist-lens (mc.mc-fieldlist) 0 (list-length (mc.mc-fieldlist)) 0) & " ctorlists=" & show (list-length (mc.mc-ctorlist)) & "/" & show (sum-ctorlist-lens (mc.mc-ctorlist) 0 (list-length (mc.mc-ctorlist)) 0) & " labellists=" & show (list-length (mc.mc-labellist)) & "/" & show (sum-labellist-lens (mc.mc-labellist) 0 (list-length (mc.mc-labellist)) 0) & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et) & " binds=" & show (list-length sorted-all)) synthetic-span]) else bag-from-list []
-      in let final-bag = deck-record (bag-merge-all [kept-bag, keep-ov-bag, keep-stat-bag, post-ov-bag])
+      in let final-bag = deck-record (bag-merge-all [kept-bag, keep-ov-bag, keep-stat-bag, post-ov-bag, tail-bag, keep-metrics-bag])
       in let pre-sorted-ust = deck-record (UnificationState {
        substitutions = kept-subs,
        row-substitutions = kept-rows,
@@ -777,12 +786,18 @@ Section: Frontend
   compile-frontend-passes (source) (chapter-name) (flags) (run-passes) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
+   else let lower-keep-height = scaled-floor (flags.deck-scale) demand-lower-keep-floor 0
+   in let lower-keep-base = build lower-keep-height
+   in let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
    in let lower-base = build lower-deck-height
    in let lower-ceiling = lower-base + lower-deck-height
+   in let set-lo = __deck-set lower-keep-base
    in let lower-origin = __deck-pos
    in let lower-phase = phase-start
-   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling run-passes)
+   in let set-ls = __deck-set lower-base
+   in let (ir-raw, lower-keep-end) = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling run-passes lower-keep-base (lower-keep-base + lower-keep-height))
+   in let lower-keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + lower-keep-height
+   in let lower-keep-bag = deck-record (if flags.phase-trace then bag-from-list [make-warning cdx-escape-violation ("LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base) & " of " & integer-to-text lower-keep-height) synthetic-span] else no-overflow-bag)
    in let passed = if run-passes then deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
       else IRPassResult { chapter = ir-raw, violations = [], infos = [] }
    in let ir-passed = passed.chapter
@@ -797,15 +812,15 @@ Section: Frontend
     ground-effects = checked.scoped.ground-effects
    })
    in let lower-end = __deck-pos
-   in let lower-sat = if deck-short-of lower-ceiling demand-lower-guard-band then 1 else 0
+   in let lower-sat = if list-length (ir-raw.defs) < list-length (checked.scoped.defs) then 1 else 0
    in let lower-metrics = phase-measure lower-phase "LOWER"
    in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
    in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of ir) "IRChapter" lower-metrics "LOWER")
    in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
    in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
-   in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
+   in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then deck-overflow-bag "LOWER" else if lower-keep-sat then deck-overflow-bag "LOWER-KEEP" else no-overflow-bag
    in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
-   in let fe-bag = deck-record (frontend-bag-with-passes (checked.bag) lower-ov-bag lower-esc-bag lower-precise-bag passed)
+   in let fe-bag = deck-record (frontend-bag-with-passes (checked.bag) (bag-merge-all [lower-ov-bag, lower-keep-bag]) lower-esc-bag lower-precise-bag passed)
    in let lower-sealed = compact-phase flags poison-lower
    in let resolved-defs = if run-passes then
        let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
@@ -834,18 +849,24 @@ Section: Frontend
   compile-frontend-cdx (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
+   else let lower-keep-height = scaled-floor (flags.deck-scale) demand-lower-keep-floor 0
+   in let lower-keep-base = build lower-keep-height
+   in let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
    in let lower-base = build lower-deck-height
    in let lower-ceiling = lower-base + lower-deck-height
+   in let set-lo = __deck-set lower-keep-base
    in let lower-origin = __deck-pos
    in let lower-phase = phase-start
-   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling True)
+   in let set-ls = __deck-set lower-base
+   in let (ir-raw, lower-keep-end) = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling True lower-keep-base (lower-keep-base + lower-keep-height))
+   in let lower-keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + lower-keep-height
+   in let lower-keep-bag = deck-record (if flags.phase-trace then bag-from-list [make-warning cdx-escape-violation ("LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base) & " of " & integer-to-text lower-keep-height) synthetic-span] else no-overflow-bag)
    in let passed = deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
    in let ir = passed.chapter
    in let ir-check-bag = deck-record (ir-check-violation-bag (passed.violations))
    in let occ-report-bag = deck-record (occ-info-bag (passed.infos))
    in let lower-end = __deck-pos
-   in let lower-sat = if deck-short-of lower-ceiling demand-lower-guard-band then 1 else 0
+   in let lower-sat = if list-length (ir-raw.defs) < list-length (checked.scoped.defs) then 1 else 0
    in let lower-metrics = phase-measure lower-phase "LOWER"
    in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
    in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of ir) "IRChapter" lower-metrics "LOWER")
@@ -886,7 +907,7 @@ Section: Frontend
    in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
    in let pm2 = deck-record (list-push pm1 resolve-metrics)
    in let pm3 = deck-record (list-push pm2 lift-metrics)
-   in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
+   in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then deck-overflow-bag "LOWER" else if lower-keep-sat then deck-overflow-bag "LOWER-KEEP" else no-overflow-bag
    in let resolve-ov-bag = if resolve-ov == 1 | resolve-sat == 1 then deck-overflow-bag "RESOLVE" else no-overflow-bag
    in let lift-ov-bag = if lift-ov == 1 | lift-sat == 1 then deck-overflow-bag "LIFT" else no-overflow-bag
    in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
@@ -919,7 +940,7 @@ Section: Frontend
    in let lir-report-bag = deck-record (occ-info-bag (lir-report-if lir-target-x86 (flags.pipeline) cdx-chapter))
    in let lir-probe-bag = deck-record (occ-info-bag (lir-alloc-probe-if lir-target-a64-shape "A64" "lir-dump-a64" (flags.pipeline) cdx-chapter))
    in let lir-narrow-bag = deck-record (occ-info-bag (lir-alloc-probe-if lir-target-narrow-shape "NARROW" "lir-dump-a64" (flags.pipeline) cdx-chapter))
-   in let fe-bag = deck-record (bag-merge-all [checked.bag, ir-check-bag, occ-report-bag, lir-report-bag, lir-probe-bag, lir-narrow-bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, lower-precise-bag, dl-bag, pmap-selftest-bag True])
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, ir-check-bag, occ-report-bag, lir-report-bag, lir-probe-bag, lir-narrow-bag, lower-ov-bag, lower-keep-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, lower-precise-bag, dl-bag, pmap-selftest-bag True])
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -1430,6 +1451,64 @@ Section: Expr-Type Pre-Resolution
    else let b = list-at bindings i
    in let resolved = deck-record (TypeBinding { name = b.name, bound-type = deep-resolve st (b.bound-type) })
    in resolve-all-bindings st bindings (i + 1) len (list-push acc resolved)
+
+  tail-resolve-bindings : UnificationState, List TypeBinding, Integer, Integer, List TypeBinding, MemoCtx, Integer, Integer, Integer -> (List TypeBinding, Integer)
+  tail-resolve-bindings (st) (bs) (i) (len) (acc) (mc) (scratch-base) (bivy-base) (kc) =
+   if i >= len then let set-k = __deck-set kc in (acc, kc)
+   else let set-s = __deck-set scratch-base
+   in let chunk = deck-record (__list-with-capacity (len - i))
+   in let n = tail-resolve-binding-chunk st bs i len chunk scratch-base bivy-base 0
+   in let set-k = __deck-set kc
+   in let acc2 = tail-copy-binding-chunk chunk 0 n acc mc
+   in let kc2 = __deck-pos
+   in let z = __memset (mc.mc-table) 0 (mc.mc-slots * 8)
+   in let r = __heap-restore bivy-base
+   in tail-resolve-bindings st bs (i + n) len acc2 mc scratch-base bivy-base kc2
+
+  tail-resolve-binding-chunk : UnificationState, List TypeBinding, Integer, Integer, List TypeBinding, Integer, Integer, Integer -> Integer
+  tail-resolve-binding-chunk (st) (bs) (i) (len) (chunk) (scratch-base) (bivy-base) (n) =
+   if i >= len then n
+   else if n > 0 & (__deck-pos - scratch-base) + (__heap-save - bivy-base) >= demand-check-batch-budget then n
+   else let b = list-at bs i
+   in let resolved = deck-record (TypeBinding { name = b.name, bound-type = deep-resolve st (b.bound-type) })
+   in let pushed = list-push chunk resolved
+   in tail-resolve-binding-chunk st bs (i + 1) len chunk scratch-base bivy-base (n + 1)
+
+  tail-copy-binding-chunk : List TypeBinding, Integer, Integer, List TypeBinding, MemoCtx -> List TypeBinding
+  tail-copy-binding-chunk (chunk) (j) (n) (acc) (mc) =
+   if j >= n then acc
+   else let b = list-at chunk j
+   in let kept = deck-record (TypeBinding { name = mcopy-text (b.name) mc, bound-type = mcopy-type (b.bound-type) 0 mc })
+   in tail-copy-binding-chunk chunk (j + 1) n (list-push acc kept) mc
+
+  tail-resolve-expr-types : UnificationState, List ExprTypeEntry, Integer, Integer, List ExprTypeEntry, MemoCtx, Integer, Integer, Integer -> (List ExprTypeEntry, Integer)
+  tail-resolve-expr-types (st) (es) (i) (len) (acc) (mc) (scratch-base) (bivy-base) (kc) =
+   if i >= len then let set-k = __deck-set kc in (acc, kc)
+   else let set-s = __deck-set scratch-base
+   in let chunk = deck-record (__list-with-capacity (len - i))
+   in let n = tail-resolve-expr-type-chunk st es i len chunk scratch-base bivy-base 0
+   in let set-k = __deck-set kc
+   in let acc2 = tail-copy-expr-type-chunk chunk 0 n acc mc
+   in let kc2 = __deck-pos
+   in let z = __memset (mc.mc-table) 0 (mc.mc-slots * 8)
+   in let r = __heap-restore bivy-base
+   in tail-resolve-expr-types st es (i + n) len acc2 mc scratch-base bivy-base kc2
+
+  tail-resolve-expr-type-chunk : UnificationState, List ExprTypeEntry, Integer, Integer, List ExprTypeEntry, Integer, Integer, Integer -> Integer
+  tail-resolve-expr-type-chunk (st) (es) (i) (len) (chunk) (scratch-base) (bivy-base) (n) =
+   if i >= len then n
+   else if n > 0 & (__deck-pos - scratch-base) + (__heap-save - bivy-base) >= demand-check-batch-budget then n
+   else let e = list-at es i
+   in let resolved = deck-record (ExprTypeEntry { key = e.key, ty = deep-resolve st (e.ty) })
+   in let pushed = list-push chunk resolved
+   in tail-resolve-expr-type-chunk st es (i + 1) len chunk scratch-base bivy-base (n + 1)
+
+  tail-copy-expr-type-chunk : List ExprTypeEntry, Integer, Integer, List ExprTypeEntry, MemoCtx -> List ExprTypeEntry
+  tail-copy-expr-type-chunk (chunk) (j) (n) (acc) (mc) =
+   if j >= n then acc
+   else let e = list-at chunk j
+   in let kept = deck-record (ExprTypeEntry { key = e.key, ty = mcopy-type (e.ty) 0 mc })
+   in tail-copy-expr-type-chunk chunk (j + 1) n (list-push acc kept) mc
 
 Section: Codegen Diagnostics
 
@@ -2125,7 +2204,7 @@ Section: Entry Point
   disk-fnv : List Integer, Integer, Integer, Integer -> Integer
   disk-fnv (bs) (i) (n) (h) =
    if i >= n then h
-   else disk-fnv bs (i + 1) n ((bit-xor h (list-at bs i)) * 1099511628211)
+   else disk-fnv bs (i + 1) n (w64-mul (bit-xor h (list-at bs i)) 1099511628211)
 
  The seed constant is FNV-1a 64's offset basis, #CBF29CE484222325. Its top bit
  is set, so read back as a signed i64 it is a large negative number, which is
@@ -2289,7 +2368,7 @@ Section: Entry Point
    end
   end
 
-  opening : [Console, FileSystem, Device.Block] Nothing = act
+  codex-opening : [Console, FileSystem, Device.Block] Nothing = act
    disk-rung "entered" 1 bp-cyan bp-red
    mode-result <- read-line
    when mode-result

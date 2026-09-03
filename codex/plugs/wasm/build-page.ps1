@@ -15,8 +15,12 @@ param(
     # build. OFF by default and it stays off: a wrong staleness check ships a
     # page that lies about itself, which is worse than a slow build, so the
     # cache is only ever TRUSTED when asked for and is REWRITTEN by every full
-    # build. Three phases are gated and nothing else: the two that run the
-    # compiler's whole source through a VM, and the library volume.
+    # build. ONE phase is gated and nothing else: 'module'. Test-PhaseFresh has
+    # exactly one call site, and 'library', 'x86-truth', 'cdx-arm' and 'examples'
+    # run on every build whether or not this switch is passed. This comment said
+    # THREE until 2026-09-02 (reek), which is the sort of claim a reader prices a
+    # build from: the other three costs the register attributes to a page edit
+    # are still paid in full.
     [switch]$Incremental
 )
 
@@ -62,6 +66,21 @@ foreach ($tool in @('wat2wasm')) {
 }
 if (-not (Test-Path -PathType Leaf $Source)) {
     Write-Host "REFUSE: no concatenated compiler source at $Source (a gate's source-concat phase produces it)."; exit 2
+}
+# PRESENT is not CURRENT. Nothing here produces the concat, so it is whatever
+# the last gate left, and a merge-down moves codex/compiler without touching
+# it. Measured 2026-09-02: the concat was five hours old, the module was built
+# from compiler source predating COMPILER-48 (5), and the cdx-arm read as a
+# 159-byte wasm-vs-x86 codegen divergence when the two arms were simply
+# different versions of the compiler (L-SAMEVER). The plug fingerprint below
+# already guards the emitter for exactly this reason; this guards the source.
+$newestSrc = Get-ChildItem (Join-Path $Repo 'codex\compiler') -Recurse -Filter *.codex -File |
+             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($newestSrc -and (Get-Item $Source).LastWriteTime -lt $newestSrc.LastWriteTime) {
+    Write-Host "REFUSE: $Source is older than codex/compiler ($($newestSrc.Name) is newer)."
+    Write-Host '        Regenerate it, or the page ships a compiler that is not this tree:'
+    Write-Host "        build\concat-codex-self.ps1 -CodexDir codex\compiler -OutFile $Source"
+    exit 2
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null

@@ -18,7 +18,7 @@ cluster against the belief this sentence encouraged. When
 you relocate a foreword definition, budget a `cites` line for each
 caller of the old chapter.
 
-### codex.foreword (132 modules, measured 2026-08-28) -- Core
+### codex.foreword (133 modules, measured 2026-09-02) -- Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -199,7 +199,7 @@ Emit chapters render that model to Bash, Ksh, or PowerShell.
 
 These are not auto-loaded. User code must `cites` them explicitly.
 
-### codex (64 modules) -- The Compiler
+### codex (65 modules) -- The Compiler
 
 The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading

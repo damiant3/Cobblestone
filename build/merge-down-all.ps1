@@ -343,6 +343,75 @@ Write-Host ''
 Write-Host '-- Summary ----------------------------------------'
 foreach ($r in $results) { Write-Host ("  {0,-10} {1,-12} {2}" -f $r.Agent, $r.Status, $r.Detail) }
 
+# ---------------------------------------------------------------------------
+# A stream this run did not bring to main is BEHIND on whatever main carries:
+# rulings, register moves, gate rules. Left alone it stays behind until that
+# lane next wants to promote, which is exactly when a stale register does its
+# damage (Damian, 2026-09-02: "having half the fleet behind on core decisions
+# until they want to promote their lane is problematic"). So every stream that
+# ended SKIPPED, CONFLICT, STUCK or ERROR is DIRECTED, by name, to merge down
+# itself at its earliest convenience, on three channels. This run is usually
+# invoked while the agents are DOWN and their terminals are off (Damian,
+# 2026-09-02), so the channel that matters is the one a session reads at
+# /init: a directive file written straight into that agent's own coordination
+# INBOX (from the .agentgrid in its workspace root), which init step 8 lists
+# and acts on before any other work. The console line is for a live invoker to
+# relay by SendMessage, and the invoker's outbox copy is the receipt. The
+# console is never skipped in -DryRun, because a dry run is where the invoker
+# learns who is behind. The message names main's head so a lane can tell
+# whether it has since caught up on its own.
+# ---------------------------------------------------------------------------
+$behind = @($results | Where-Object { $_.Status -in @('SKIPPED','CONFLICT','STUCK','ERROR') })
+if ($behind.Count -gt 0) {
+    $head = (@(& $P4Exe -p $Port -u $User changes -s submitted -m 1 "$Mainline/..." 2>&1 | ForEach-Object { "$_" }) |
+        ForEach-Object { if ($_ -match '^Change (\d+)') { $matches[1] } } | Select-Object -First 1)
+    $outbox = $null
+    if (Test-Path '.agentgrid') {
+        try {
+            $ag = Get-Content '.agentgrid' -Raw | ConvertFrom-Json
+            if ($ag.outbox -and (Test-Path $ag.outbox)) { $outbox = $ag.outbox }
+        } catch { $outbox = $null }
+    }
+    Write-Host ''
+    Write-Host "$($behind.Count) stream(s) are BEHIND main $head and must merge down themselves:" -ForegroundColor Yellow
+    foreach ($r in $behind) {
+        $text = "MERGE DOWN at your earliest convenience: merge-down-all skipped //Codex/$($r.Agent) ($($r.Detail)); you are behind main $head on rulings and registers. p4 merge -S //Codex/$($r.Agent) -r; p4 resolve -am; submit."
+        Write-Host "  $($r.Agent): $text" -ForegroundColor Yellow
+        $wr = @($work | Where-Object { $_.Agent -eq $r.Agent } | Select-Object -First 1)[0]
+        $inbox = $null
+        if ($wr -and $wr.DevRoot -and (Test-Path (Join-Path $wr.DevRoot '.agentgrid'))) {
+            try {
+                $theirs = Get-Content (Join-Path $wr.DevRoot '.agentgrid') -Raw | ConvertFrom-Json
+                if ($theirs.inbox) { $inbox = $theirs.inbox }
+            } catch { $inbox = $null }
+        }
+        if ($inbox) {
+            if (-not (Test-Path $inbox)) { New-Item -ItemType Directory -Path $inbox -Force | Out-Null }
+            $ipath = Join-Path $inbox "$(Get-Date -Format 'yyyyMMdd-HHmmss')-merge-down-directive-from-$User.json"
+            if (-not $DryRun) {
+                @{ from = 'merge-down-all'; to = $r.Agent; kind = 'merge-down-directive'; head = $head; text = $text } |
+                    ConvertTo-Json -Compress | Set-Content -Path $ipath -Encoding utf8
+                Write-Host "    directive written to its inbox: $ipath"
+            } else {
+                Write-Host "    (dry run: would write its inbox directive $ipath)"
+            }
+        } else {
+            Write-Host "    no .agentgrid inbox for $($r.Agent); console and outbox only" -ForegroundColor Yellow
+        }
+        if ($outbox) {
+            $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+            $path = Join-Path $outbox "merge-down-$($r.Agent)-$stamp.json"
+            if (-not $DryRun) {
+                @{ to = $r.Agent; text = $text } | ConvertTo-Json -Compress | Set-Content -Path $path -Encoding utf8
+                Write-Host "    fleet message written: $path"
+            } else {
+                Write-Host "    (dry run: would write $path)"
+            }
+        }
+    }
+    Write-Host '  Relay each line above to that agent by SendMessage; the outbox copy is the receipt.' -ForegroundColor Yellow
+}
+
 $needsHelp = @($results | Where-Object { $_.Status -in @('CONFLICT','ERROR','STUCK') })
 if ($needsHelp.Count -gt 0) {
     Write-Host ''

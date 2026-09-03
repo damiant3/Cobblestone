@@ -1,0 +1,194 @@
+Chapter: GuardRail
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Geom
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Foreword chapter ListUtils
+
+ The metal barrier on the outer edge of a corner: one horizontal bar on thin
+ upright posts. Render builds the PATH the rail follows along the ground -- run-up
+ along the outer shoulder, the two legs into and out of the apex, run-out -- and
+ this chapter raises that path into 3D rail polygons.
+
+ A port of wasm/guard_rail.zig.
+
+ WHY IT COLLECTS INSTEAD OF DRAWING. Rails, trees and critters share ONE
+ back-to-front depth pass, so a tree standing behind a rail is occluded by it.
+ Each rail poly therefore carries its own mean forward depth and is merged into
+ render's sort; the clip-project-push happens later, in sorted order. Drawing
+ rails in a separate pass under all scenery is the exact bug that once made a far
+ tree paint over a near rail. So rail-emit and rail-draw-poly are deliberately two
+ functions, and the ORDERING BETWEEN THEM BELONGS TO RENDER.
+
+ The bar is a quad STRIP -- one quad per path segment -- not the single long
+ ribbon the TypeScript draws. Perceptually identical, since consecutive quads
+ share an exact edge, but every poly stays at four vertices, so it near-clips
+ cleanly and sorts by an honest per-poly depth. Heights are raw, with no ground
+ curvature, exactly as in the TypeScript: the rail is always close and the drop is
+ sub-millimetre.
+
+ THIS IS THE FIRST CHAPTER TO CITE `Gpu chapter DeviceMath` RATHER THAN THE
+ PORT'S OWN STAND-IN. real-sqrt does not call dm-reduce, so it never reaches the
+ real-from-int the zig plug cannot emit, and the emitter emits only what the entry
+ reaches. `Safari chapter Trig` is still needed for sine and cosine and is still a
+ stand-in; the square root is not one. Nothing here should acquire a Trig name.
+
+ We say:
+
+Section: Dimensions
+
+ The bar's centre above the ground, its vertical thickness, and each upright
+ post's width -- all in metres.
+
+  rail-height : Real
+  rail-height = 0.5
+
+  rail-thickness : Real
+  rail-thickness = 0.1
+
+  rail-post-width : Real
+  rail-post-width = 0.02
+
+ The bar reads bright metallic; the posts sit a touch darker behind it.
+
+  rail-metal : Integer
+  rail-metal = 12765135
+
+  rail-post-metal : Integer
+  rail-post-metal = 10133672
+
+ How far the rail runs past the corner along each outer edge. Render's to use, but
+ it is the rail's dimension and the zig publishes it here.
+
+  rail-runout : Integer
+  rail-runout = 10
+
+ The zig's store is a fixed array whose add silently returns once full. The cap is
+ sized so that cannot fire on this route, but a silent drop is still the stated
+ behaviour, so the port keeps it -- as a list-take over the finished list, which is
+ exactly the same thing: bars are added before posts in both, so truncating the
+ concatenation drops precisely the elements the zig would never have stored.
+
+  max-rail-polys : Integer
+  max-rail-polys = 3072
+
+  bar-top : Real
+  bar-top = rail-height + rail-thickness / 2.0
+
+  bar-bot : Real
+  bar-bot = rail-height - rail-thickness / 2.0
+
+  half-post : Real
+  half-post = rail-post-width / 2.0
+
+Section: A Raised Poly
+
+ One raised rail poly in the rider frame -- always four vertices -- carrying its
+ fill colour and its mean forward depth, the key render sorts it by.
+
+  RailPoly = record {
+    v : List Vec3,
+    color : Integer,
+    fwd : Real
+  }
+
+  rail-poly : Vec3, Vec3, Vec3, Vec3, Integer -> RailPoly
+  rail-poly (p0) (p1) (p2) (p3) (color) =
+    let fwd = (p0.forward + p1.forward + p2.forward + p3.forward) / 4.0
+    in RailPoly { v = [p0, p1, p2, p3], color = color, fwd = fwd }
+
+Section: The Bar
+
+ A quad strip between consecutive path points, bottom edge at bar-bot and top edge
+ at bar-top. Consecutive quads share an edge exactly, so it reads as one band.
+
+  bar-quad : RiderPt, RiderPt -> RailPoly
+  bar-quad (p) (q) =
+    let p-bot = Vec3 { right = p.right, forward = p.forward, height = bar-bot }
+    in let q-bot = Vec3 { right = q.right, forward = q.forward, height = bar-bot }
+    in let q-top = Vec3 { right = q.right, forward = q.forward, height = bar-top }
+    in let p-top = Vec3 { right = p.right, forward = p.forward, height = bar-top }
+    in rail-poly p-bot q-bot q-top p-top rail-metal
+
+  bars : List RiderPt, Integer -> List RailPoly
+  bars (path) (i) =
+    if i + 1 >= list-length path then []
+    else [bar-quad (list-at path i) (list-at path (i + 1))] & bars path (i + 1)
+
+Section: The Posts
+
+ A slim upright at each path point, its width laid ALONG the local run direction so
+ it reads edge-on from the road. The direction is taken from the neighbours on
+ either side, clamped at both ends of the path.
+
+ THE ZERO TEST IS ~0, BITWISE EXACT, NOT ~. The zig writes `if (len == 0)`, which
+ is a bitwise comparison, and Codex refuses a bare == between Reals (CDX2085), so
+ the caller has to say which equality it meant. A 4-ULP ~ would call a
+ nearly-coincident pair of path points coincident and swing that post to the fixed
+ fallback direction instead of its own -- a visible wrong answer, not a rounding
+ one. Same call as the hull sort in Tree, for the same reason.
+
+  post-box : RiderPt, Real, Real -> RailPoly
+  post-box (p) (ox) (ofwd) =
+    let back-foot = Vec3 { right = p.right - ox, forward = p.forward - ofwd, height = 0.0 }
+    in let fore-foot = Vec3 { right = p.right + ox, forward = p.forward + ofwd, height = 0.0 }
+    in let fore-head = Vec3 { right = p.right + ox, forward = p.forward + ofwd, height = bar-top }
+    in let back-head = Vec3 { right = p.right - ox, forward = p.forward - ofwd, height = bar-top }
+    in rail-poly back-foot fore-foot fore-head back-head rail-post-metal
+
+  post-quad : List RiderPt, Integer -> RailPoly
+  post-quad (path) (i) =
+    let n = list-length path
+    in let ia = if i == 0 then 0 else i - 1
+    in let ib = if i + 1 >= n then n - 1 else i + 1
+    in let a = list-at path ia
+    in let b = list-at path ib
+    in let dr = b.right - a.right
+    in let df = b.forward - a.forward
+    in let raw = real-sqrt (dr * dr + df * df)
+    in let run = if raw ~0 0.0 then 1.0 else raw
+    in let ox = dr / run * half-post
+    in let ofwd = df / run * half-post
+    in post-box (list-at path i) ox ofwd
+
+  posts : List RiderPt, Integer -> List RailPoly
+  posts (path) (i) =
+    if i >= list-length path then []
+    else [post-quad path i] & posts path (i + 1)
+
+Section: Emit
+
+ Raise the ground path -- its centreline in the rider frame, one post per point --
+ into the bar and its posts. A path of fewer than two points has no run direction
+ and raises nothing.
+
+  rail-emit : List RiderPt -> List RailPoly
+  rail-emit (path) =
+    if list-length path < 2 then []
+    else list-take ((bars path 0) & posts path 0) max-rail-polys
+
+Section: Draw
+
+ Near-clip one stored rail poly, project it, and push the fill -- the same pipeline
+ as a road quad, but the corners carry their own heights so it stands above the
+ pavement. Called by render in depth-sorted order.
+
+  project-all : List Vec3, Real, Real, Integer -> List ScreenPt
+  project-all (ps) (cf) (view-w) (i) =
+    if i >= list-length ps then []
+    else [project (list-at ps i) cf view-w] & project-all ps cf view-w (i + 1)
+
+  rail-draw-poly : RailPoly, Real, Real -> List DrawCmd
+  rail-draw-poly (rp) (cf) (view-w) =
+    let clipped = clip-near rp.v near
+    in if list-length clipped < 3 then []
+    else push-poly rp.color (project-all clipped cf view-w 0)
+
+ A convenience for a caller that already holds the polys in the order it wants them
+ painted. THE ORDER IS THE CALLER'S: render merges rails into one depth sort with
+ the trees and the critters, and this walks the list exactly as given.
+
+  rail-draw-all : List RailPoly, Real, Real, Integer -> List DrawCmd
+  rail-draw-all (ps) (cf) (view-w) (i) =
+    if i >= list-length ps then []
+    else (rail-draw-poly (list-at ps i) cf view-w) & rail-draw-all ps cf view-w (i + 1)

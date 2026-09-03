@@ -1,0 +1,205 @@
+Chapter: Tree
+  cites Safari chapter Trig
+  cites Safari chapter Geom
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Foreword chapter ListUtils
+
+ A roadside conifer, with two independent detail axes the renderer sets per tree
+ because they are noticed at different ranges: the TRUNK is a round-shaded cylinder
+ up close and a flat bar beyond, and the CROWN is eight 3D cone tiers near and
+ eight flat triangles far. A cone is a base circle of world points, each at its own
+ depth, plus the apex, projected and filled to its convex-hull silhouette, so the
+ near rim is genuinely nearer and foreshortens.
+
+ The crown is SOLID either way -- its roundness is the SHAPE, not lighting -- which
+ keeps it uniform across the tree line with no shaded-to-solid pop, since crowns
+ are seen far out.
+
+ A port of wasm/tree.zig.
+
+ The hull is PORTED, not cited, though Math chapter Geometry has the same
+ algorithm. Two reasons, and the second is the binding one. Geometry's diverges for
+ fewer than three points -- it returns them sorted where the zig returns them as
+ given. And chapters share ONE FLAT NAMESPACE inside a bundle: Geometry defines its
+ own Vec3, which collides with Geom's, and the unit will not compile. Citing a
+ foreword chapter is not free of a port's own type names.
+
+ We say:
+
+Section: Proportions
+
+ The eight crown tiers as fractions of the foliage span: apex and base height, and
+ base half-width. Narrow at the top, widest at the bottom.
+
+  tier-top : List Real
+  tier-top = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70]
+
+  tier-bot : List Real
+  tier-bot = [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.0]
+
+  tier-wide : List Real
+  tier-wide = [0.35, 0.44, 0.53, 0.63, 0.72, 0.81, 0.91, 1.0]
+
+  trunk-color : Integer
+  trunk-color = 5914146
+
+  visible-trunk : Real
+  visible-trunk = 0.44
+
+  crown-h : Real
+  crown-h = 0.648
+
+  crown-w : Real
+  crown-w = 0.288
+
+ A cone base nearer than this bails to the flat tier.
+
+  min-cone-forward : Real
+  min-cone-forward = 0.4
+
+  ring-n : Integer
+  ring-n = 16
+
+Section: Metrics
+
+ The screen-space layout shared by both forms: ground point, pixel height, crown
+ apex, foliage span, and crown base half-width.
+
+  Metrics = record {
+    bx : Real,
+    by : Real,
+    ht : Real,
+    apex-y : Real,
+    foliage : Real,
+    w : Real
+  }
+
+  metrics : Real, Real, Real, Real, Real -> Metrics
+  metrics (right) (forward) (height) (cf) (view-w) =
+    let base = project (Vec3 { right = right, forward = forward, height = 0.0 }) cf view-w
+    in let top = project (Vec3 { right = right, forward = forward, height = height }) cf view-w
+    in let ht = base.y - top.y
+    in let foliage = ht * crown-h
+    in let crown-bottom-y = base.y - ht * visible-trunk
+    in Metrics { bx = base.x, by = base.y, ht = ht, apex-y = crown-bottom-y - foliage, foliage = foliage, w = ht * crown-w }
+
+Section: The Trunk
+
+  draw-trunk : Metrics, Boolean -> List DrawCmd
+  draw-trunk (m) (round-trunk) =
+    let trunk-w = if m.ht * 0.08 > 1.0 then m.ht * 0.08 else 1.0
+    in let trunk-h = m.ht * visible-trunk + m.ht * 0.05
+    in let tx = m.bx - trunk-w / 2.0
+    in let pts = [ScreenPt { x = tx, y = m.by - trunk-h }, ScreenPt { x = tx + trunk-w, y = m.by - trunk-h }, ScreenPt { x = tx + trunk-w, y = m.by }, ScreenPt { x = tx, y = m.by }]
+    in if round-trunk then push-round-poly trunk-color 1.0 pts else push-poly trunk-color pts
+
+Section: The Flat Crown
+
+ One flat crown tier: the far and cheap form, and the near form's bail-out for a
+ cone too close to project.
+
+  tier-triangle : Metrics, Integer, Integer -> List DrawCmd
+  tier-triangle (m) (k) (color) =
+    let tri = [ScreenPt { x = m.bx, y = m.apex-y + m.foliage * list-at tier-top k }, ScreenPt { x = m.bx + m.w * list-at tier-wide k, y = m.apex-y + m.foliage * list-at tier-bot k }, ScreenPt { x = m.bx - m.w * list-at tier-wide k, y = m.apex-y + m.foliage * list-at tier-bot k }]
+    in push-poly color tri
+
+Section: The Cone Crown
+
+ Crown tier k as a cone: a base circle of world radius R on the trunk axis rising
+ to the tier apex. Project the apex and a ring of base points, each at its own
+ depth, and fill their convex hull -- exactly the cone's silhouette, a cone being
+ convex.
+
+ The ring angle is carried as a Real accumulator rather than derived from the
+ index, because the zig plug has no emitter for real-from-int.
+
+  cone-ring : Real, Real, Real, Real, Real, Real, Integer, Real -> List ScreenPt
+  cone-ring (r0) (f0) (rad) (h-base) (cf) (view-w) (i) (a) =
+    if i >= ring-n then []
+    else let p = Vec3 { right = r0 + rad * r-cos a, forward = f0 + rad * r-sin a, height = h-base }
+    in [project p cf view-w] & cone-ring r0 f0 rad h-base cf view-w (i + 1) (a + two-pi / 16.0)
+
+ The tie test is ~0, BITWISE exact, not ~. Codex refuses == on a Real (CDX2085)
+ and makes the caller say which equality it means; the zig writes a plain ==,
+ which is the bitwise one. A 4-ULP ~ here would call distinct ring points equal
+ and reorder the sort, changing the hull's point count.
+
+  less-xy : ScreenPt, ScreenPt -> Boolean
+  less-xy (a) (b) = if a.x < b.x then True else (if a.x ~0 b.x then a.y < b.y else False)
+
+  hull-insert : ScreenPt, List ScreenPt, Integer -> List ScreenPt
+  hull-insert (p) (xs) (i) =
+    if i >= list-length xs then xs & [p]
+    else if less-xy p (list-at xs i) then (list-take xs i) & [p] & (list-drop xs i)
+    else hull-insert p xs (i + 1)
+
+  sort-pts : List ScreenPt, Integer, List ScreenPt -> List ScreenPt
+  sort-pts (src) (i) (acc) =
+    if i >= list-length src then acc
+    else sort-pts src (i + 1) (hull-insert (list-at src i) acc 0)
+
+ Trim while the last two hull points and the candidate turn the wrong way. The
+ comparison is <= 0, so a collinear point is dropped rather than kept -- that is
+ the zig's choice and it changes the point COUNT, which the judge compares exactly.
+
+  hull-trim : List ScreenPt, ScreenPt -> List ScreenPt
+  hull-trim (hull) (p) =
+    let n = list-length hull
+    in if n < 2 then hull
+    else let a = list-at hull (n - 2)
+    in let b = list-at hull (n - 1)
+    in let cr = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+    in if cr <= 0.0 then hull-trim (list-take hull (n - 1)) p else hull
+
+  lower-chain : List ScreenPt, Integer, List ScreenPt -> List ScreenPt
+  lower-chain (ps) (i) (hull) =
+    if i >= list-length ps then hull
+    else let p = list-at ps i
+    in lower-chain ps (i + 1) ((hull-trim hull p) & [p])
+
+  upper-chain : List ScreenPt, Integer, List ScreenPt -> List ScreenPt
+  upper-chain (ps) (i) (hull) =
+    if i < 0 then hull
+    else let p = list-at ps i
+    in upper-chain ps (i - 1) ((hull-trim hull p) & [p])
+
+ Andrew's monotone chain: sort, build the lower and upper chains, and concatenate
+ dropping the last of each because it is the first of the other.
+
+  convex-hull-pts : List ScreenPt -> List ScreenPt
+  convex-hull-pts (ps) =
+    let n = list-length ps
+    in if n < 3 then ps
+    else let sorted = sort-pts ps 0 []
+    in let lo = lower-chain sorted 0 []
+    in let up = upper-chain sorted (n - 1) []
+    in (list-take lo (list-length lo - 1)) & (list-take up (list-length up - 1))
+
+  tier-cone : Real, Real, Real, Integer, Real, Real, Metrics, Integer, Real -> List DrawCmd
+  tier-cone (r0) (f0) (height) (color) (cf) (view-w) (m) (k) (shade) =
+    let rad = crown-w * list-at tier-wide k * height
+    in if f0 - rad < min-cone-forward then tier-triangle m k color
+    else let h-base = (visible-trunk + crown-h * (1.0 - list-at tier-bot k)) * height
+    in let h-apex = (visible-trunk + crown-h * (1.0 - list-at tier-top k)) * height
+    in let apex = project (Vec3 { right = r0, forward = f0, height = h-apex }) cf view-w
+    in let ring = (cone-ring r0 f0 rad h-base cf view-w 0 0.0) & [apex]
+    in let hull = convex-hull-pts ring
+    in if list-length hull < 3 then []
+    else push-round-poly color shade hull
+
+Section: The Tree
+
+  tiers : Real, Real, Real, Integer, Real, Real, Metrics, Boolean, Real, Integer -> List DrawCmd
+  tiers (r0) (f0) (height) (color) (cf) (view-w) (m) (near-crown) (shade) (k) =
+    if k >= 8 then []
+    else let one = if near-crown then tier-cone r0 f0 height color cf view-w m k shade else tier-triangle m k color
+    in one & tiers r0 f0 height color cf view-w m near-crown shade (k + 1)
+
+ A tree less than a pixel tall is not drawn at all.
+
+  tree-draw : Real, Real, Real, Integer, Real, Real, Boolean, Boolean, Real -> List DrawCmd
+  tree-draw (right) (forward) (height) (color) (cf) (view-w) (round-trunk) (near-crown) (shade) =
+    let m = metrics right forward height cf view-w
+    in if m.ht < 1.0 then []
+    else (draw-trunk m round-trunk) & tiers right forward height color cf view-w m near-crown shade 0

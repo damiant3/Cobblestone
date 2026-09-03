@@ -353,8 +353,7 @@ body.cl-open { padding-right: 400px; }
 <div class="nav">
   <a class="logo" href="../" title="Cobblestone home">&#x2588; COBBLESTONE</a>
   <span class="nav-links">
-    <a href="index.html">Self-compile</a>
-    <a href="https://github.com/damiant3/Cobblestone">GitHub</a>
+        <a href="https://github.com/damiant3/Cobblestone">GitHub</a>
     <a href="#" id="cl-open">Assistant</a>
   </span>
 </div>
@@ -535,6 +534,12 @@ body.cl-open { padding-right: 400px; }
         Also produce the compliance evidence package, the CRA and ETSI style
         documents, from this build</label>
       <button class="act" id="savebin" disabled>Save the file</button>
+      <!-- Signed by the key in Toolchains -> Signing key, in-tab, through the
+           sign module. Only a CDX carries a signature field; the compiler
+           emits it unsigned, so this is the step build.ps1's sign phase does
+           for the seed. Whether a DEVICE accepts the key is trust-lattice
+           policy and nothing this page can promise. -->
+      <button class="act" id="savesigned" disabled title="Sign the CDX with your key and save it">Save signed</button>
     </div>
 
     <div class="buildline" id="buildline" style="display:none">
@@ -698,7 +703,7 @@ const MAX_FILE = 8388608;
 const HL_PLAIN = 524288;
 const PAINT_MAX = 5000;
 // The binary targets, each a plug that reads bytes and answers bytes.
-const BYTES_FILE = { pe: 'pe-bytes.wasm', img: 'img-bytes.wasm', elf: 'elf-bytes.wasm' };
+const BYTES_FILE = { pe: 'pe-bytes.wasm', img: 'img-bytes.wasm', elf: 'elf-bytes.wasm', sign: 'sign-bytes.wasm' };
 const BIN_NAME = { pe: 'BOOTX64.EFI', img: 'codex.img', elf: 'codex.elf', board: 'kernel.elf', winexe: 'codex.exe' };
 // The board backend is a lens-shaped module (IR in) that answers a FILE, so it
 // sits in neither BYTES_FILE nor PLUG_FILE.
@@ -1530,18 +1535,26 @@ function showConfigs() {
   cfgTitle.textContent = 'Saved toolchains';
   cfgPanel.style.display = '';
   cfgSay('');
+  // One Config surface, two kinds of entries: the toolchains per lens, and the
+  // signing key, which is not a lens's but the user's. It heads the list so
+  // it is found even when no toolchain has been saved.
+  const signRow = '<div class="cfg-list-row"><span class="lens">signing key</span>' +
+    '<span class="cmd">' + (signKeyGet() ? 'present, 32 bytes' : 'none') + '</span>' +
+    '<button class="go" id="cfg-signkey">' + (signKeyGet() ? 'Edit' : 'Create') + '</button></div>';
   if (!keys.length) {
-    cfgBody.innerHTML = '<div class="cfg-hint">Nothing saved yet. Choose a lens that needs a toolchain ' +
+    cfgBody.innerHTML = signRow + '<div class="cfg-hint">No toolchain saved yet. Choose a lens that needs a toolchain ' +
       'and press <b>Config</b>: the button beside Compile says Config for every lens this page cannot run itself.</div>';
+    cfgBody.querySelector('#cfg-signkey').addEventListener('click', showSigningKey);
     return;
   }
-  cfgBody.innerHTML = keys.map(k =>
+  cfgBody.innerHTML = signRow + keys.map(k =>
     '<div class="cfg-list-row"><span class="lens">' + esc(k) + '</span>' +
     '<span class="cmd">' + esc(m[k].build || m[k].run || '(empty)') + '</span>' +
     '<button class="go" data-edit="' + esc(k) + '">Edit</button>' +
     '<button class="go" data-drop="' + esc(k) + '">Delete</button></div>').join('') +
     '<div class="cfg-hint">These live in this browser only. They are written into no project file, ' +
     'no export and no built artifact.</div>';
+  cfgBody.querySelector('#cfg-signkey').addEventListener('click', showSigningKey);
   cfgBody.querySelectorAll('[data-edit]').forEach(b =>
     b.addEventListener('click', () => openConfig(b.dataset.edit)));
   cfgBody.querySelectorAll('[data-drop]').forEach(b =>
@@ -1551,6 +1564,83 @@ function showConfigs() {
     }));
 }
 document.getElementById('configs').addEventListener('click', showConfigs);
+
+/* ---- The signing key -------------------------------------------------------
+   A 32-byte Ed25519 seed the user generates HERE, held in this browser only
+   and exportable as a file; never the project's key, which no page carries.
+   Keygen is crypto.getRandomValues; the public key and every signature come
+   from the sign module, the same Ed25519 the seed is signed with. */
+const SIGNKEY_ITEM = 'prism.signkey';
+function signKeyGet() {
+  try {
+    const h = localStorage.getItem(SIGNKEY_ITEM) || '';
+    if (!/^[0-9a-f]{64}$/.test(h)) return null;
+    const out = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
+    return out;
+  } catch (e) { return null; }
+}
+function signKeySet(bytes) {
+  try {
+    if (!bytes) { localStorage.removeItem(SIGNKEY_ITEM); return; }
+    localStorage.setItem(SIGNKEY_ITEM, Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''));
+  } catch (e) {}
+}
+function hexOf(bytes) { return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''); }
+// One call shape for both modes: a mode byte, the seed, then the CDX for mode
+// 1. A refusal comes back as text on the same stream, so it is checked here
+// once rather than at each caller.
+async function signModuleRun(mode, seed, cdx) {
+  const w = new Uint8Array(1 + 32 + (cdx ? cdx.length : 0));
+  w[0] = mode; w.set(seed, 1); if (cdx) w.set(cdx, 33);
+  const r = await runW(await moduleBytes(BYTES_FILE.sign), w);
+  const head = new TextDecoder('latin1').decode(r.bytes.subarray(0, Math.min(r.bytes.length, 64)));
+  if (head.startsWith('REFUSED')) throw new Error(new TextDecoder().decode(r.bytes).trim());
+  return r.bytes;
+}
+async function signPublicKey(seed) { return signModuleRun(0, seed, null); }
+async function signCdxBytes(seed, cdx) { return signModuleRun(1, seed, cdx); }
+function updateSaveSigned() {
+  saveSignedBtn.disabled = !(emittedBin && binTarget === 'cdx' && signKeyGet());
+}
+function showSigningKey() {
+  const seed = signKeyGet();
+  cfgTitle.textContent = 'Signing key';
+  cfgPanel.style.display = '';
+  cfgSay('');
+  cfgBody.innerHTML =
+    '<div class="cfg-row"><label>Key</label><span id="sk-state">' + (seed ? 'present, 32 bytes' : 'none') + '</span></div>' +
+    '<div class="cfg-row"><label>Public</label><span id="sk-pub" style="font-family:monospace;word-break:break-all">' + (seed ? 'computing&hellip;' : '&mdash;') + '</span></div>' +
+    '<div class="cfg-acts">' +
+      '<button class="go" id="sk-gen">Generate</button>' +
+      '<button class="go" id="sk-import">Import</button>' +
+      (seed ? '<button class="go" id="sk-export">Export</button><button class="go" id="sk-forget">Forget</button>' : '') +
+      '<button class="go" id="sk-all">All toolchains</button>' +
+    '</div>' +
+    '<input type="file" id="sk-file" style="display:none">' +
+    '<div class="cfg-hint">The seed lives in this browser only and in the file you export; the page never sends it anywhere. ' +
+      'A CDX signed with it verifies by construction (the verifier reads the author key from the header); whether a device ' +
+      'ACCEPTS that key is its trust lattice\'s policy, which this page cannot promise.</div>';
+  const pubEl = cfgBody.querySelector('#sk-pub');
+  if (seed) signPublicKey(seed).then(p => { pubEl.textContent = hexOf(p); }, e => { pubEl.textContent = String(e.message || e); });
+  cfgBody.querySelector('#sk-gen').addEventListener('click', () => {
+    const s = new Uint8Array(32); crypto.getRandomValues(s); signKeySet(s);
+    cfgSay('generated a new key; export it before you clear this browser'); updateSaveSigned(); showSigningKey();
+  });
+  const fileEl = cfgBody.querySelector('#sk-file');
+  cfgBody.querySelector('#sk-import').addEventListener('click', () => fileEl.click());
+  fileEl.addEventListener('change', async () => {
+    const f = fileEl.files && fileEl.files[0]; if (!f) return;
+    const b = new Uint8Array(await f.arrayBuffer());
+    if (b.length !== 32) { cfgSay('a key file is exactly 32 bytes; this one is ' + b.length, 'err'); return; }
+    signKeySet(b); cfgSay('imported'); updateSaveSigned(); showSigningKey();
+  });
+  const ex = cfgBody.querySelector('#sk-export');
+  if (ex) ex.addEventListener('click', () => download('prism-signing.key', seed, 'application/octet-stream'));
+  const fg = cfgBody.querySelector('#sk-forget');
+  if (fg) fg.addEventListener('click', () => { signKeySet(null); cfgSay('forgotten', 'err'); updateSaveSigned(); showSigningKey(); });
+  cfgBody.querySelector('#sk-all').addEventListener('click', showConfigs);
+}
 
 /* Highlighting follows tools/vscode/syntaxes/codex.tmLanguage.json. */
 const KW = /^(let|in|between|and|or|xor|not|if|then|else|when|where|is|otherwise|act|end|record|cites|grounds|quotes|trusting|above|effect|with|linear|mutable|punctual|bounded|unit|class|instance|lazy|trying|revised|for|deriving|claim|proof|qed|forall|exists|induction)$/;
@@ -2466,6 +2556,7 @@ goBtn.addEventListener('click', async () => {
         bytes
       };
       saveBinBtn.disabled = false;
+      updateSaveSigned();
       setStatus('ok', 'ok');
       setBuildline('ok', emittedBin.name + ' · ' + bytes.length.toLocaleString() + ' bytes · ' +
                    ms.toFixed(0) + ' ms · ' + mb + ' MB peak');
@@ -2578,6 +2669,19 @@ saveBinBtn.addEventListener('click', () => {
   if (!emittedBin) return;
   download(emittedBin.name, emittedBin.bytes,
            binTarget === 'pe' ? 'application/vnd.microsoft.portable-executable' : 'application/octet-stream');
+});
+
+const saveSignedBtn = document.getElementById('savesigned');
+saveSignedBtn.addEventListener('click', async () => {
+  const seed = signKeyGet();
+  if (!emittedBin || binTarget !== 'cdx' || !seed) return;
+  try {
+    const signed = await signCdxBytes(seed, emittedBin.bytes);
+    download(emittedBin.name.replace(/\.cdx$/, '') + '-signed.cdx', signed, 'application/octet-stream');
+    setBuildline('ok', 'signed ' + emittedBin.name + ' with your key');
+  } catch (e) {
+    setBuildline('err', 'the sign module refused: ' + (e.message || e));
+  }
 });
 
 copyOutBtn.addEventListener('click', async () => {

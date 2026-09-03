@@ -1,0 +1,627 @@
+Chapter: Klondike
+  cites Games chapter Rng
+  cites Foreword chapter Random
+
+ Klondike, the solitaire everybody means by "solitaire". Fifty-two cards,
+ seven tableau columns holding one to seven cards with only the last of each
+ face up, a stock of twenty-four turned one or three at a time, and four
+ foundations built ace upward in suit.
+
+ It is the opposite game to Spider in the one way that matters to the code:
+ Spider builds DOWN in suit and sends a finished run away by itself, while
+ Klondike builds down in ALTERNATING COLOUR in the tableau and up in suit on
+ the foundations, so the foundations are real piles a card is placed on and
+ not a counter. That is why this chapter has `founds` and Spider has
+ `completed-suits`.
+
+ THE ACE IS LOW, and the fold that makes it so is the same one Spider needs
+ and for the same reason: a card id carries its rank as `id mod 13` and that
+ encoding is the page's, where 12 is the ace because every other card game in
+ the arcade wants an ace-high deck. Here the ace is the bottom of a
+ foundation and the bottom of a tableau run, so 12 folds to 0 and every other
+ rank shifts up one. Without the fold the ace ranks above the king, no
+ foundation can start, and no ace can be laid on a deuce.
+
+ Face-down cards are counted, not marked. `downs` holds, per column, how many
+ of the cards at the HEAD of that column are face down; a card at index below
+ that count has not been seen by the player. Removing the last face-up card
+ of a column turns the next one over, which is the flip, and the flip is the
+ whole engine of the game: it is the only way hidden information becomes
+ known.
+
+ We say:
+
+Section: Types
+
+  KlondikeState = record {
+    col0    : List Integer,
+    col1    : List Integer,
+    col2    : List Integer,
+    col3    : List Integer,
+    col4    : List Integer,
+    col5    : List Integer,
+    col6    : List Integer,
+    downs   : List Integer,
+    founds  : List Integer,
+    stock   : List Integer,
+    waste   : List Integer,
+    draw    : Integer,
+    sterile : Integer,
+    moves   : Integer
+  }
+
+  KlondikeResult = record {
+    founded : Integer,
+    moves   : Integer,
+    won     : Boolean
+  }
+
+  KlondikeMove = record {
+    from  : Integer,
+    start : Integer,
+    to    : Integer
+  }
+
+Section: Card Helpers
+
+ Rank 0 is the ace and rank 12 the king, which is the fold described above.
+
+  kd-rank : Integer -> Integer
+  kd-rank (c) =
+    let r = rng-mod c 13
+    in if r == 12 then 0 else r + 1
+
+  kd-suit : Integer -> Integer
+  kd-suit (c) = c / 13
+
+ Suits 1 and 2 are hearts and diamonds, which is the page's `SUIT` order.
+ The tableau cares only whether two cards differ in colour, never which
+ colour either one is.
+
+  kd-red : Integer -> Boolean
+  kd-red (c) =
+    let s = kd-suit c
+    in if s == 1 then True else if s == 2 then True else False
+
+  kd-alternates : Integer, Integer -> Boolean
+  kd-alternates (a) (b) =
+    if kd-red a then if kd-red b then False else True
+    else if kd-red b then True else False
+
+Section: Small List Helpers
+
+  kd-take-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  kd-take-loop (src) (start) (count) (i) (acc) =
+    if i >= count then acc
+    else kd-take-loop src start count (i + 1) (list-push acc (list-at src (start + i)))
+
+  kd-slice : List Integer, Integer, Integer -> List Integer
+  kd-slice (src) (start) (count) = kd-take-loop src start count 0 []
+
+  kd-copy-of : List Integer -> List Integer
+  kd-copy-of (src) = kd-take-loop src 0 (list-length src) 0 []
+
+  kd-drop-from-end : List Integer, Integer -> List Integer
+  kd-drop-from-end (src) (count) =
+    let n = list-length src
+    in kd-take-loop src 0 (n - count) 0 []
+
+  kd-append : List Integer, List Integer, Integer, Integer -> List Integer
+  kd-append (base) (extra) (i) (n) =
+    if i >= n then base
+    else kd-append (list-push base (list-at extra i)) extra (i + 1) n
+
+  kd-fill : Integer, Integer, Integer, List Integer -> List Integer
+  kd-fill (v) (i) (n) (acc) =
+    if i >= n then acc
+    else kd-fill v (i + 1) n (list-push acc v)
+
+  kd-count-up : Integer, Integer, List Integer -> List Integer
+  kd-count-up (i) (n) (acc) =
+    if i >= n then acc
+    else kd-count-up (i + 1) n (list-push acc i)
+
+ The waste turned back into a stock is the pile flipped over, so the card
+ that went to the waste first is the one that comes off the stock first.
+
+  kd-reverse-loop : List Integer, Integer, List Integer -> List Integer
+  kd-reverse-loop (src) (i) (acc) =
+    if i < 0 then acc
+    else kd-reverse-loop src (i - 1) (list-push acc (list-at src i))
+
+  kd-reverse : List Integer -> List Integer
+  kd-reverse (src) = kd-reverse-loop src (list-length src - 1) []
+
+Section: Deck Building
+
+  klondike-deck-new : Integer -> List Integer
+  klondike-deck-new (seed) =
+    let deck = kd-count-up 0 52 []
+    in kd-shuffle deck seed 51
+
+  kd-shuffle : List Integer, Integer, Integer -> List Integer
+  kd-shuffle (deck) (seed) (i) =
+    if i <= 0 then deck
+    else let rng = rng-new (seed * 7 + i)
+    in let j = rng-mod (rng-value (rng-next rng)) (i + 1)
+    in let vi = list-at deck i
+    in let vj = list-at deck j
+    in let d2 = list-set-at deck i vj
+    in let d3 = list-set-at d2 j vi
+    in kd-shuffle d3 seed (i - 1)
+
+Section: State Access
+
+  kd-get-col : KlondikeState, Integer -> List Integer
+  kd-get-col (st) (c) =
+    if c == 0 then st.col0
+    else if c == 1 then st.col1
+    else if c == 2 then st.col2
+    else if c == 3 then st.col3
+    else if c == 4 then st.col4
+    else if c == 5 then st.col5
+    else st.col6
+
+  kd-set-col : KlondikeState, Integer, List Integer -> KlondikeState
+  kd-set-col (st) (c) (col) =
+    if c == 0 then KlondikeState { col0 = col, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                   col4 = st.col4, col5 = st.col5, col6 = st.col6,
+                                   downs = st.downs, founds = st.founds, stock = st.stock,
+                                   waste = st.waste, draw = st.draw, sterile = st.sterile,
+                                   moves = st.moves }
+    else if c == 1 then KlondikeState { col0 = st.col0, col1 = col, col2 = st.col2, col3 = st.col3,
+                                        col4 = st.col4, col5 = st.col5, col6 = st.col6,
+                                        downs = st.downs, founds = st.founds, stock = st.stock,
+                                        waste = st.waste, draw = st.draw, sterile = st.sterile,
+                                        moves = st.moves }
+    else if c == 2 then KlondikeState { col0 = st.col0, col1 = st.col1, col2 = col, col3 = st.col3,
+                                        col4 = st.col4, col5 = st.col5, col6 = st.col6,
+                                        downs = st.downs, founds = st.founds, stock = st.stock,
+                                        waste = st.waste, draw = st.draw, sterile = st.sterile,
+                                        moves = st.moves }
+    else if c == 3 then KlondikeState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = col,
+                                        col4 = st.col4, col5 = st.col5, col6 = st.col6,
+                                        downs = st.downs, founds = st.founds, stock = st.stock,
+                                        waste = st.waste, draw = st.draw, sterile = st.sterile,
+                                        moves = st.moves }
+    else if c == 4 then KlondikeState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                        col4 = col, col5 = st.col5, col6 = st.col6,
+                                        downs = st.downs, founds = st.founds, stock = st.stock,
+                                        waste = st.waste, draw = st.draw, sterile = st.sterile,
+                                        moves = st.moves }
+    else if c == 5 then KlondikeState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                        col4 = st.col4, col5 = col, col6 = st.col6,
+                                        downs = st.downs, founds = st.founds, stock = st.stock,
+                                        waste = st.waste, draw = st.draw, sterile = st.sterile,
+                                        moves = st.moves }
+    else KlondikeState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                         col4 = st.col4, col5 = st.col5, col6 = col,
+                         downs = st.downs, founds = st.founds, stock = st.stock,
+                         waste = st.waste, draw = st.draw, sterile = st.sterile,
+                         moves = st.moves }
+
+ Everything that is not a column changes through one place, so a new field
+ is added to this record in two spots rather than nine.
+
+  kd-set-rest : KlondikeState, List Integer, List Integer, List Integer, List Integer, Integer, Integer -> KlondikeState
+  kd-set-rest (st) (downs) (founds) (stock) (waste) (sterile) (moves) =
+    KlondikeState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                    col4 = st.col4, col5 = st.col5, col6 = st.col6,
+                    downs = downs, founds = founds, stock = stock,
+                    waste = waste, draw = st.draw, sterile = sterile,
+                    moves = moves }
+
+  kd-down-at : KlondikeState, Integer -> Integer
+  kd-down-at (st) (c) = list-at (st.downs) c
+
+  kd-found-at : KlondikeState, Integer -> Integer
+  kd-found-at (st) (s) = list-at (st.founds) s
+
+Section: Construction
+
+  klondike-new : Integer, Integer -> KlondikeState
+  klondike-new (seed) (draw) =
+    let d = if draw < 1 then 1 else if draw > 3 then 3 else draw
+    in kd-deal (klondike-deck-new seed) d
+
+ Column i holds i + 1 cards and i of them are face down, so the deal walks
+ the deck 1, 2, 3, 4, 5, 6, 7 and the twenty-four that are left are the
+ stock.
+
+  kd-deal : List Integer, Integer -> KlondikeState
+  kd-deal (deck) (d) =
+    let c0 = kd-slice deck 0 1
+    in let c1 = kd-slice deck 1 2
+    in let c2 = kd-slice deck 3 3
+    in let c3 = kd-slice deck 6 4
+    in let c4 = kd-slice deck 10 5
+    in let c5 = kd-slice deck 15 6
+    in let c6 = kd-slice deck 21 7
+    in let stock = kd-slice deck 28 24
+    in KlondikeState { col0 = c0, col1 = c1, col2 = c2, col3 = c3,
+                       col4 = c4, col5 = c5, col6 = c6,
+                       downs = kd-count-up 0 7 [], founds = kd-fill (-1) 0 4 [],
+                       stock = stock, waste = [], draw = d, sterile = 0,
+                       moves = 0 }
+
+Section: Reading The Board
+
+ A face-down card is not readable. The engine holds the truth and answers
+ -1 for anything the player has not turned over, so a page cannot show a
+ card the game has not dealt face up.
+
+  kd-visible-card : KlondikeState, Integer, Integer -> Integer
+  kd-visible-card (st) (c) (i) =
+    let col = kd-get-col st c
+    in if i < 0 then (-1)
+    else if i >= list-length col then (-1)
+    else if i < kd-down-at st c then (-1)
+    else list-at col i
+
+  kd-waste-top : KlondikeState -> Integer
+  kd-waste-top (st) =
+    let n = list-length (st.waste)
+    in if n == 0 then (-1) else list-at (st.waste) (n - 1)
+
+  kd-founded : KlondikeState, Integer, Integer -> Integer
+  kd-founded (st) (s) (acc) =
+    if s >= 4 then acc
+    else kd-founded st (s + 1) (acc + kd-found-at st s + 1)
+
+  kd-won : KlondikeState -> Boolean
+  kd-won (st) = if kd-founded st 0 0 == 52 then True else False
+
+Section: Sequence Logic
+
+ A run that may be lifted off the tableau is face up, descends by one rank a
+ card, and alternates colour. `kd-run-len` measures forward from an index to
+ the end of the column and answers how many cards form such a run; a lift is
+ legal only when that run reaches the END of the column, which is what stops
+ a page carrying off an arbitrary handful.
+
+  kd-run-len : List Integer, Integer -> Integer
+  kd-run-len (col) (from-idx) =
+    let n = list-length col
+    in if from-idx >= n then 0
+    else kd-run-walk col from-idx (from-idx + 1) 1
+
+  kd-run-walk : List Integer, Integer, Integer, Integer -> Integer
+  kd-run-walk (col) (prev) (i) (len) =
+    let n = list-length col
+    in if i >= n then len
+    else let c-prev = list-at col prev
+    in let c-curr = list-at col i
+    in if kd-rank c-curr /= kd-rank c-prev - 1 then len
+    else if kd-alternates c-prev c-curr == False then len
+    else kd-run-walk col i (i + 1) (len + 1)
+
+Section: Legality
+
+ `from` names where the cards come from: 0 to 6 a tableau column, 7 the
+ waste, 8 to 11 a foundation. `to` names where they go: 0 to 6 a tableau
+ column, 7 to 10 a foundation. A foundation takes one card and gives one
+ back, which is legal Klondike and occasionally the only way out.
+
+  kd-move-head : KlondikeState, Integer, Integer -> Integer
+  kd-move-head (st) (from) (start) =
+    if from == 7 then kd-waste-top st
+    else if from >= 8 then kd-found-card st (from - 8)
+    else kd-visible-card st from start
+
+ A foundation's top card is its suit and its recorded rank, rebuilt into a
+ card id. Rank 0 is the ace, whose id ends in 12, which is the fold again.
+
+  kd-found-card : KlondikeState, Integer -> Integer
+  kd-found-card (st) (s) =
+    let r = kd-found-at st s
+    in if r < 0 then (-1)
+    else if r == 0 then s * 13 + 12
+    else s * 13 + r - 1
+
+  kd-count-moved : KlondikeState, Integer, Integer -> Integer
+  kd-count-moved (st) (from) (start) =
+    if from >= 7 then 1
+    else list-length (kd-get-col st from) - start
+
+ The destination test, and it is the whole difference from Spider: a tableau
+ column takes a KING on an empty space and otherwise a card one rank below
+ its top card and of the other colour, while a foundation takes the next
+ rank up in its own suit and starts on an ace.
+
+  kd-tableau-takes : KlondikeState, Integer, Integer -> Boolean
+  kd-tableau-takes (st) (to) (card) =
+    let col = kd-get-col st to
+    in let n = list-length col
+    in if n == 0 then (if kd-rank card == 12 then True else False)
+    else let top = list-at col (n - 1)
+    in if kd-rank card /= kd-rank top - 1 then False
+    else kd-alternates top card
+
+  kd-foundation-takes : KlondikeState, Integer, Integer -> Boolean
+  kd-foundation-takes (st) (s) (card) =
+    if kd-suit card /= s then False
+    else let r = kd-found-at st s
+    in if kd-rank card == r + 1 then True else False
+
+ A tableau column may not be its own destination. `from` and `to` do NOT
+ share a numbering -- 7 is the waste as a source and the spade foundation as
+ a destination -- so this compares them only where both mean a column.
+ Comparing them everywhere refuses the waste-to-spades move, which is one of
+ the commonest moves in the game.
+
+  kd-can-move : KlondikeState, Integer, Integer, Integer -> Boolean
+  kd-can-move (st) (from) (start) (to) =
+    if from < 0 then False
+    else if from > 11 then False
+    else if to < 0 then False
+    else if to > 10 then False
+    else let head = kd-move-head st from start
+    in if head < 0 then False
+    else if from < 7 then
+      (if to < 7 then (if from == to then False else kd-can-from-tableau st from start to head)
+       else kd-can-from-tableau st from start to head)
+    else kd-can-single st from to head
+
+ Lifting off a column: the cards from `start` to the end must be face up and
+ must themselves be a run, or a page could carry off any handful it liked.
+ More than one card may never go to a foundation.
+
+  kd-can-from-tableau : KlondikeState, Integer, Integer, Integer, Integer -> Boolean
+  kd-can-from-tableau (st) (from) (start) (to) (head) =
+    let col = kd-get-col st from
+    in let n = list-length col
+    in if start < kd-down-at st from then False
+    else if kd-run-len col start /= n - start then False
+    else if to >= 7 then (if n - start /= 1 then False else kd-foundation-takes st (to - 7) head)
+    else kd-tableau-takes st to head
+
+  kd-can-single : KlondikeState, Integer, Integer, Integer -> Boolean
+  kd-can-single (st) (from) (to) (head) =
+    if to >= 7 then (if from >= 8 then False else kd-foundation-takes st (to - 7) head)
+    else kd-tableau-takes st to head
+
+Section: Move Execution
+
+  kd-apply-move : KlondikeState, Integer, Integer, Integer -> KlondikeState
+  kd-apply-move (st) (from) (start) (to) =
+    let head = kd-move-head st from start
+    in let count = kd-count-moved st from start
+    in let moved = kd-lifted st from start count
+    in let st2 = kd-remove-from st from start count
+    in let st3 = kd-place-on st2 to moved count
+    in let gained = if to >= 7 then 1 else 0
+    in kd-after-move st3 from gained
+
+  kd-lifted : KlondikeState, Integer, Integer, Integer -> List Integer
+  kd-lifted (st) (from) (start) (count) =
+    if from == 7 then kd-fill (kd-waste-top st) 0 1 []
+    else if from >= 8 then kd-fill (kd-found-card st (from - 8)) 0 1 []
+    else kd-slice (kd-get-col st from) start count
+
+  kd-remove-from : KlondikeState, Integer, Integer, Integer -> KlondikeState
+  kd-remove-from (st) (from) (start) (count) =
+    if from == 7 then kd-set-rest st (st.downs) (st.founds) (st.stock) (kd-drop-from-end (st.waste) 1) (st.sterile) (st.moves)
+    else if from >= 8 then kd-take-off-foundation st (from - 8)
+    else kd-set-col st from (kd-drop-from-end (kd-get-col st from) count)
+
+  kd-take-off-foundation : KlondikeState, Integer -> KlondikeState
+  kd-take-off-foundation (st) (s) =
+    let f2 = list-set-at (kd-copy-of (st.founds)) s (kd-found-at st s - 1)
+    in kd-set-rest st (st.downs) f2 (st.stock) (st.waste) (st.sterile) (st.moves)
+
+  kd-place-on : KlondikeState, Integer, List Integer, Integer -> KlondikeState
+  kd-place-on (st) (to) (moved) (count) =
+    if to >= 7 then kd-put-on-foundation st (to - 7) (list-at moved 0)
+    else kd-set-col st to (kd-append (kd-get-col st to) moved 0 count)
+
+  kd-put-on-foundation : KlondikeState, Integer, Integer -> KlondikeState
+  kd-put-on-foundation (st) (s) (card) =
+    let f2 = list-set-at (kd-copy-of (st.founds)) s (kd-rank card)
+    in kd-set-rest st (st.downs) f2 (st.stock) (st.waste) (st.sterile) (st.moves)
+
+ The flip. A column whose face-down count has reached its length has just
+ had its last face-up card taken, so the next one turns over. This is the
+ only place hidden information becomes known, which is why it also resets
+ the sterile counter: a flip is progress even when nothing reached a
+ foundation.
+
+  kd-after-move : KlondikeState, Integer, Integer -> KlondikeState
+  kd-after-move (st) (from) (gained) =
+    let flipped = if from < 7 then kd-flip-needed st from else False
+    in let d2 = if flipped then kd-flip st from else st.downs
+    in let fresh = if gained > 0 then 0 else if flipped then 0 else st.sterile + 1
+    in kd-set-rest st d2 (st.founds) (st.stock) (st.waste) fresh (st.moves + 1)
+
+  kd-flip-needed : KlondikeState, Integer -> Boolean
+  kd-flip-needed (st) (c) =
+    let n = list-length (kd-get-col st c)
+    in if n == 0 then False
+    else if kd-down-at st c >= n then True
+    else False
+
+  kd-flip : KlondikeState, Integer -> List Integer
+  kd-flip (st) (c) =
+    let n = list-length (kd-get-col st c)
+    in list-set-at (kd-copy-of (st.downs)) c (n - 1)
+
+Section: The Stock
+
+  kd-can-draw : KlondikeState -> Boolean
+  kd-can-draw (st) = if list-length (st.stock) > 0 then True else False
+
+  kd-draw : KlondikeState -> KlondikeState
+  kd-draw (st) =
+    if kd-can-draw st == False then st
+    else kd-draw-loop st 0 (st.draw)
+
+  kd-draw-loop : KlondikeState, Integer, Integer -> KlondikeState
+  kd-draw-loop (st) (i) (n) =
+    if i >= n then kd-set-rest st (st.downs) (st.founds) (st.stock) (st.waste) (st.sterile + 1) (st.moves + 1)
+    else let sn = list-length (st.stock)
+    in if sn == 0 then kd-set-rest st (st.downs) (st.founds) (st.stock) (st.waste) (st.sterile + 1) (st.moves + 1)
+    else let card = list-at (st.stock) (sn - 1)
+    in let st2 = kd-set-rest st (st.downs) (st.founds) (kd-drop-from-end (st.stock) 1) (list-push (kd-copy-of (st.waste)) card) (st.sterile) (st.moves)
+    in kd-draw-loop st2 (i + 1) n
+
+  kd-can-recycle : KlondikeState -> Boolean
+  kd-can-recycle (st) =
+    if list-length (st.stock) > 0 then False
+    else if list-length (st.waste) == 0 then False
+    else True
+
+  kd-recycle : KlondikeState -> KlondikeState
+  kd-recycle (st) =
+    if kd-can-recycle st == False then st
+    else kd-set-rest st (st.downs) (st.founds) (kd-reverse (st.waste)) [] (st.sterile + 1) (st.moves + 1)
+
+Section: The Opponent
+
+ There is no opponent in solitaire, so this is the player the page runs when
+ you ask to watch. It is a priority order, not a search, and it is honest
+ about the one judgement that separates a decent Klondike player from a bad
+ one: a card sent to a foundation cannot come back cheaply, so only aces and
+ twos go up unconditionally. Anything higher waits until BOTH foundations of
+ the other colour have reached the rank below it, which is the standard safe
+ rule and the reason this player does not bury the card it needed.
+
+  kd-safe-to-found : KlondikeState, Integer -> Boolean
+  kd-safe-to-found (st) (card) =
+    let r = kd-rank card
+    in if r <= 1 then True
+    else if kd-red card then kd-both-at-least st 0 3 (r - 1)
+    else kd-both-at-least st 1 2 (r - 1)
+
+  kd-both-at-least : KlondikeState, Integer, Integer, Integer -> Boolean
+  kd-both-at-least (st) (a) (b) (r) =
+    if kd-found-at st a < r then False
+    else if kd-found-at st b < r then False
+    else True
+
+ The move code packs three small numbers: `from * 10000 + start * 100 + to`.
+ A start never exceeds 51 and a `to` never exceeds 10, so nothing collides.
+
+  kd-encode : Integer, Integer, Integer -> Integer
+  kd-encode (from) (start) (to) = from * 10000 + start * 100 + to
+
+  kd-decode : Integer -> KlondikeMove
+  kd-decode (code) =
+    let from = code / 10000
+    in let rem = rng-mod code 10000
+    in let start = rem / 100
+    in let to = rng-mod rem 100
+    in KlondikeMove { from = from, start = start, to = to }
+
+  kd-suggest : KlondikeState -> Integer
+  kd-suggest (st) =
+    let a = kd-find-foundation st 0
+    in if a >= 0 then a
+    else let b = kd-find-flip st 0
+    in if b >= 0 then b
+    else let c = kd-find-from-waste st 0
+    in if c >= 0 then c
+    else kd-find-foundation-any st 0
+
+ The safe rule above holds a card back so it is still there for the tableau.
+ When there is nothing else left to do at all, holding it back stops the
+ game instead of protecting it, so the last tier sends anything up that will
+ go. It cannot loop: this player never takes a card OFF a foundation, so
+ every move this tier makes is one the game cannot undo.
+
+  kd-find-foundation-any : KlondikeState, Integer -> Integer
+  kd-find-foundation-any (st) (i) =
+    if i >= 8 then (-1)
+    else let from = if i == 0 then 7 else i - 1
+    in let start = kd-top-index st from
+    in let head = kd-move-head st from start
+    in if head < 0 then kd-find-foundation-any st (i + 1)
+    else let s = kd-suit head
+    in if kd-can-move st from start (s + 7) then kd-encode from start (s + 7)
+    else kd-find-foundation-any st (i + 1)
+
+ Anything that can safely go up, from the waste first and then the tableau.
+
+  kd-find-foundation : KlondikeState, Integer -> Integer
+  kd-find-foundation (st) (i) =
+    if i >= 8 then (-1)
+    else let from = if i == 0 then 7 else i - 1
+    in let start = kd-top-index st from
+    in let head = kd-move-head st from start
+    in if head < 0 then kd-find-foundation st (i + 1)
+    else if kd-safe-to-found st head == False then kd-find-foundation st (i + 1)
+    else let s = kd-suit head
+    in if kd-can-move st from start (s + 7) then kd-encode from start (s + 7)
+    else kd-find-foundation st (i + 1)
+
+  kd-top-index : KlondikeState, Integer -> Integer
+  kd-top-index (st) (from) =
+    if from >= 7 then 0
+    else list-length (kd-get-col st from) - 1
+
+ A tableau move that turns a card over. The run must start exactly where the
+ face-down cards end, or the move leaves something still covering them.
+
+  kd-find-flip : KlondikeState, Integer -> Integer
+  kd-find-flip (st) (c) =
+    if c >= 7 then (-1)
+    else let d = kd-down-at st c
+    in if d == 0 then kd-find-flip st (c + 1)
+    else let n = list-length (kd-get-col st c)
+    in if n <= d then kd-find-flip st (c + 1)
+    else let m = kd-find-target st c d 0
+    in if m >= 0 then m
+    else kd-find-flip st (c + 1)
+
+  kd-find-target : KlondikeState, Integer, Integer, Integer -> Integer
+  kd-find-target (st) (from) (start) (to) =
+    if to >= 7 then (-1)
+    else if kd-can-move st from start to then kd-encode from start to
+    else kd-find-target st from start (to + 1)
+
+  kd-find-from-waste : KlondikeState, Integer -> Integer
+  kd-find-from-waste (st) (to) =
+    if to >= 7 then (-1)
+    else if kd-can-move st 7 0 to then kd-encode 7 0 to
+    else kd-find-from-waste st (to + 1)
+
+ There is deliberately no "move a king to a space" rule here beyond what the
+ three above already reach. A king that sits on face-down cards is moved by
+ the flip rule, and one that comes off the waste is moved by the waste rule;
+ what is left is shuffling a king between two empty spaces, which changes
+ nothing and is the cheapest infinite loop in this game.
+
+ What the page's watch mode asks for: a move code, or -2 meaning turn the
+ stock, -3 meaning gather the waste back up, or -1 meaning there is nothing
+ left worth doing. The sterile count is what makes -1 reachable: it counts
+ moves since anything was turned over or reached a foundation, and a player
+ who has been round the whole pack twice without either has finished.
+
+  kd-ai : KlondikeState -> Integer
+  kd-ai (st) =
+    if kd-won st then (-1)
+    else if st.sterile > 120 then (-1)
+    else let m = kd-suggest st
+    in if m >= 0 then m
+    else if kd-can-draw st then (-2)
+    else if kd-can-recycle st then (-3)
+    else (-1)
+
+Section: Game Runner
+
+  klondike-run : Integer, Integer -> KlondikeResult
+  klondike-run (seed) (draw) =
+    let st = klondike-new seed draw
+    in kd-play-loop st 0
+
+  kd-play-loop : KlondikeState, Integer -> KlondikeResult
+  kd-play-loop (st) (steps) =
+    if steps >= 600 then kd-result st
+    else let m = kd-ai st
+    in if m == (-1) then kd-result st
+    else if m == (-2) then kd-play-loop (kd-draw st) (steps + 1)
+    else if m == (-3) then kd-play-loop (kd-recycle st) (steps + 1)
+    else let mv = kd-decode m
+    in kd-play-loop (kd-apply-move st (mv.from) (mv.start) (mv.to)) (steps + 1)
+
+  kd-result : KlondikeState -> KlondikeResult
+  kd-result (st) =
+    KlondikeResult { founded = kd-founded st 0 0, moves = st.moves, won = kd-won st }

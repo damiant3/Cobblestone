@@ -22,7 +22,17 @@ Section: Types
     west    : List Integer,
     trump   : Integer,
     contract : Integer,
-    declarer : Integer
+    declarer : Integer,
+    leader  : Integer,
+    turn    : Integer,
+    p0      : Integer,
+    p1      : Integer,
+    p2      : Integer,
+    p3      : Integer,
+    ns-tricks : Integer,
+    ew-tricks : Integer,
+    tricks  : Integer,
+    done    : Boolean
   }
 
   BridgeResult = record {
@@ -89,7 +99,10 @@ Section: Deck and Shuffle
     in let south = br-collect deck 26 39
     in let west  = br-collect deck 39 52
     in BridgeState { north = north, south = south, east = east, west = west,
-                     trump = 4, contract = 1, declarer = 0 }
+                     trump = 4, contract = 1, declarer = 0,
+                     leader = 1, turn = 1,
+                     p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
+                     ns-tricks = 0, ew-tricks = 0, tricks = 0, done = False }
 
 Section: Point Counting
 
@@ -175,18 +188,6 @@ Section: Trick Taking
     else if cs == bs then cr > br-val
     else False
 
-  best-card-idx : List Integer, Integer, Integer -> Integer
-  best-card-idx (hand) (led-suit) (trump) =
-    best-card-loop hand led-suit trump 0 0
-
-  best-card-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
-  best-card-loop (hand) (led-suit) (trump) (i) (best-i) =
-    if i >= list-length hand then best-i
-    else let c = list-at hand i
-    in let b = list-at hand best-i
-    in if card-beats c b led-suit trump then best-card-loop hand led-suit trump (i + 1) i
-    else best-card-loop hand led-suit trump (i + 1) best-i
-
   remove-at : List Integer, Integer -> List Integer
   remove-at (xs) (idx) =
     remove-at-loop xs idx 0 []
@@ -197,38 +198,210 @@ Section: Trick Taking
     else if i == idx then remove-at-loop xs idx (i + 1) acc
     else remove-at-loop xs idx (i + 1) (list-push acc (list-at xs i))
 
-  play-trick : List Integer, List Integer, List Integer, List Integer, Integer, Integer -> Integer
-  play-trick (north) (south) (east) (west) (trump) (declarer) =
-    let lead = if declarer == 0 then list-at south 0 else list-at east 0
-    in let led-suit = br-suit lead
-    in let ni = best-card-idx north led-suit trump
-    in let si = best-card-idx south led-suit trump
-    in let ei = best-card-idx east  led-suit trump
-    in let wi = best-card-idx west  led-suit trump
-    in let nc = list-at north ni
-    in let sc = list-at south si
-    in let ec = list-at east  ei
-    in let wc = list-at west  wi
-    in let w01 = if card-beats sc nc led-suit trump then sc else nc
-    in let w012 = if card-beats ec w01 led-suit trump then ec else w01
-    in let w0123 = if card-beats wc w012 led-suit trump then wc else w012
-    in let ns-wins = w0123 == nc | w0123 == sc
-    in if ns-wins then 0 else 1
+ Seats are north 0, south 1, east 2, west 3, which is the order the engine's
+ own arguments take and NOT the order round a table. Play passes N to E to S
+ to W, so the next seat is a lookup rather than an increment; the teams are
+ north with south against east with west.
 
-  play-all-br-tricks : List Integer, List Integer, List Integer, List Integer, Integer, Integer -> Integer
-  play-all-br-tricks (north) (south) (east) (west) (trump) (declarer) =
-    play-br-tricks-loop north south east west trump declarer 0 0
+  br-next-seat : Integer -> Integer
+  br-next-seat (s) =
+    if s == 0 then 2
+    else if s == 2 then 1
+    else if s == 1 then 3
+    else 0
 
-  play-br-tricks-loop : List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
-  play-br-tricks-loop (north) (south) (east) (west) (trump) (declarer) (trick) (ns-tricks) =
-    if list-length north == 0 then ns-tricks
-    else let winner-team = play-trick north south east west trump declarer
-    in let new-ns = if winner-team == 0 then ns-tricks + 1 else ns-tricks
-    in let n2 = remove-at north 0
-    in let s2 = remove-at south 0
-    in let e2 = remove-at east  0
-    in let w2 = remove-at west  0
-    in play-br-tricks-loop n2 s2 e2 w2 trump declarer (trick + 1) new-ns
+  br-team : Integer -> Integer
+  br-team (s) = if s <= 1 then 0 else 1
+
+  br-hand : BridgeState, Integer -> List Integer
+  br-hand (st) (seat) =
+    if seat == 0 then st.north
+    else if seat == 1 then st.south
+    else if seat == 2 then st.east
+    else st.west
+
+  br-played : BridgeState, Integer -> Integer
+  br-played (st) (seat) =
+    if seat == 0 then st.p0
+    else if seat == 1 then st.p1
+    else if seat == 2 then st.p2
+    else st.p3
+
+  br-trick-full : BridgeState -> Boolean
+  br-trick-full (st) =
+    st.p0 >= 0 & st.p1 >= 0 & st.p2 >= 0 & st.p3 >= 0
+
+  br-led-suit : BridgeState -> Integer
+  br-led-suit (st) =
+    let c = br-played st (st.leader)
+    in if c < 0 then (-1) else br-suit c
+
+  br-best-seat : BridgeState -> Integer
+  br-best-seat (st) =
+    br-seat-loop st (br-led-suit st) (st.trump) 0 (st.leader)
+
+  br-seat-loop : BridgeState, Integer, Integer, Integer, Integer -> Integer
+  br-seat-loop (st) (led) (trump) (seat) (best-seat) =
+    if seat >= 4 then best-seat
+    else let c = br-played st seat
+    in let b = br-played st best-seat
+    in if c < 0 then br-seat-loop st led trump (seat + 1) best-seat
+    else if card-beats c b led trump then br-seat-loop st led trump (seat + 1) seat
+    else br-seat-loop st led trump (seat + 1) best-seat
+
+  br-best-card : BridgeState -> Integer
+  br-best-card (st) = br-played st (br-best-seat st)
+
+ Bridge asks one thing of a card and no more: follow the suit that was led
+ if you hold it. There is no obligation to trump when void and none to head
+ the trick, which is where this differs from the pinochle in the next
+ chapter over.
+
+  br-has-suit : List Integer, Integer -> Boolean
+  br-has-suit (hand) (s) = br-has-suit-loop hand s 0
+
+  br-has-suit-loop : List Integer, Integer, Integer -> Boolean
+  br-has-suit-loop (hand) (s) (i) =
+    if i >= list-length hand then False
+    else if br-suit (list-at hand i) == s then True
+    else br-has-suit-loop hand s (i + 1)
+
+  br-legal : BridgeState, Integer -> Boolean
+  br-legal (st) (idx) =
+    if st.done then False
+    else let hand = br-hand st (st.turn)
+    in if idx < 0 then False
+    else if idx >= list-length hand then False
+    else let led = br-led-suit st
+    in if led < 0 then True
+    else if br-has-suit hand led then br-suit (list-at hand idx) == led
+    else True
+
+  br-key-high : BridgeState, List Integer, Integer -> Integer
+  br-key-high (st) (hand) (i) =
+    if br-legal st i then br-rank (list-at hand i) else (-1)
+
+  br-key-low : BridgeState, List Integer, Integer -> Integer
+  br-key-low (st) (hand) (i) =
+    if br-legal st i then 20 - br-rank (list-at hand i) else (-1)
+
+  br-key-win : BridgeState, List Integer, Integer -> Integer
+  br-key-win (st) (hand) (i) =
+    if br-legal st i then br-key-win-legal st hand i else (-1)
+
+  br-key-win-legal : BridgeState, List Integer, Integer -> Integer
+  br-key-win-legal (st) (hand) (i) =
+    let c = list-at hand i
+    in if card-beats c (br-best-card st) (br-led-suit st) (st.trump) then 20 - br-rank c
+    else (-1)
+
+  br-key : BridgeState, List Integer, Integer, Integer -> Integer
+  br-key (st) (hand) (kind) (i) =
+    if kind == 0 then br-key-high st hand i
+    else if kind == 1 then br-key-low st hand i
+    else br-key-win st hand i
+
+  br-pick : BridgeState, List Integer, Integer, Integer, Integer, Integer -> Integer
+  br-pick (st) (hand) (kind) (i) (best) (best-key) =
+    if i >= list-length hand then best
+    else let k = br-key st hand kind i
+    in if k > best-key then br-pick st hand kind (i + 1) i k
+    else br-pick st hand kind (i + 1) best best-key
+
+  br-ai-pick : BridgeState -> Integer
+  br-ai-pick (st) =
+    let hand = br-hand st (st.turn)
+    in if br-led-suit st < 0 then br-pick st hand 0 0 (-1) (-1)
+    else let w = br-pick st hand 2 0 (-1) (-1)
+    in if w >= 0 then w else br-pick st hand 1 0 (-1) (-1)
+
+ The card that leaves the hand is the card that was played. That it has to
+ be said at all is the point: the loop this replaces chose a card per seat
+ and then discarded index 0 from all four hands, so the counts stayed right
+ for thirteen tricks while the cards leaving were not the cards played.
+
+  br-place : BridgeState, Integer -> BridgeState
+  br-place (st) (idx) =
+    let seat = st.turn
+    in let hand = br-hand st seat
+    in let c = list-at hand idx
+    in let nh = remove-at hand idx
+    in let s2 = BridgeState {
+      north = if seat == 0 then nh else st.north,
+      south = if seat == 1 then nh else st.south,
+      east = if seat == 2 then nh else st.east,
+      west = if seat == 3 then nh else st.west,
+      trump = st.trump,
+      contract = st.contract,
+      declarer = st.declarer,
+      leader = st.leader,
+      turn = br-next-seat seat,
+      p0 = if seat == 0 then c else st.p0,
+      p1 = if seat == 1 then c else st.p1,
+      p2 = if seat == 2 then c else st.p2,
+      p3 = if seat == 3 then c else st.p3,
+      ns-tricks = st.ns-tricks,
+      ew-tricks = st.ew-tricks,
+      tricks = st.tricks,
+      done = False
+    }
+    in if br-trick-full s2 then br-resolve s2 else s2
+
+  br-resolve : BridgeState -> BridgeState
+  br-resolve (st) =
+    let w = br-best-seat st
+    in let team = br-team w
+    in let over = list-length (st.north) == 0
+    in BridgeState {
+      north = st.north, south = st.south, east = st.east, west = st.west,
+      trump = st.trump,
+      contract = st.contract,
+      declarer = st.declarer,
+      leader = w,
+      turn = w,
+      p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
+      ns-tricks = if team == 0 then st.ns-tricks + 1 else st.ns-tricks,
+      ew-tricks = if team == 1 then st.ew-tricks + 1 else st.ew-tricks,
+      tricks = st.tricks + 1,
+      done = over
+    }
+
+  br-play-at : BridgeState, Integer -> BridgeState
+  br-play-at (st) (idx) =
+    if br-legal st idx then br-place st idx else st
+
+  br-step : BridgeState -> BridgeState
+  br-step (st) =
+    if st.done then st
+    else let idx = br-ai-pick st
+    in if idx < 0 then st else br-place st idx
+
+ The opening lead belongs to the side that did not take the contract, and
+ the contract is not known until the bidding is over, so the leader is set
+ here rather than in `br-deal`.
+
+  br-lead-seat : Integer -> Integer
+  br-lead-seat (declarer) = if declarer == 0 then 3 else 1
+
+  br-begin : BridgeState -> BridgeState
+  br-begin (st) =
+    let ld = br-lead-seat (st.declarer)
+    in BridgeState {
+      north = st.north, south = st.south, east = st.east, west = st.west,
+      trump = st.trump,
+      contract = st.contract,
+      declarer = st.declarer,
+      leader = ld,
+      turn = ld,
+      p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
+      ns-tricks = 0, ew-tricks = 0, tricks = 0, done = False
+    }
+
+  br-play-out : BridgeState, Integer -> BridgeState
+  br-play-out (st) (fuel) =
+    if fuel <= 0 then st
+    else if st.done then st
+    else br-play-out (br-step st) (fuel - 1)
 
 Section: Scoring
 
@@ -249,8 +422,9 @@ Section: Game Runner
   run-bridge-hand (seed) =
     let deck = br-shuffle br-deck-new (rng-new seed)
     in let st0 = br-deal deck
-    in let st = determine-contract st0
-    in let ns-tricks = play-all-br-tricks (st.north) (st.south) (st.east) (st.west) (st.trump) (st.declarer)
+    in let st = br-begin (determine-contract st0)
+    in let fin = br-play-out st 60
+    in let ns-tricks = fin.ns-tricks
     in let tricks-for-decl = if st.declarer == 0 then ns-tricks else 13 - ns-tricks
     in let score = bridge-score (st.contract) tricks-for-decl (st.trump)
     in let winner = if score >= 0 then st.declarer else 1 - st.declarer

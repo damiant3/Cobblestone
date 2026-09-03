@@ -1,0 +1,168 @@
+Chapter: RiderCheck
+  cites Foreword chapter Console
+  cites Foreword chapter ListUtils
+  cites Safari chapter Pose
+  cites Safari chapter World
+  cites Safari chapter Gaze
+  cites Safari chapter Rider
+  cites Judge chapter Grade
+  cites Gold chapter RiderGold
+
+ Grade the Rider and Gaze ports against wasm/rider.zig and wasm/gaze.zig.
+
+ SEAM 4, AND IT IS GRADED THE ONLY WAY THAT WORKS. rider's lean comes from a
+ binary search: twelve iterations, each deciding on ONE float comparison after
+ simulating up to two thousand physics steps. A 1e-7 difference between the game's
+ f32 and this port's Real will eventually flip one of those comparisons, and from
+ there the two rides are on genuinely different trajectories. A long trace
+ comparison would go red and it would mean nothing about correctness.
+
+ So both sides are handed THE SAME STATE N and only state N+1 is compared. Drift
+ cannot accumulate, and a failure points at one step and one module. That is
+ NOTES' prescription for this seam and it is the whole design of this check.
+
+ THE STATES SIT ON BRANCHES, and two of them show behaviour that is otherwise
+ invisible:
+
+   the cat throttle hold -- at `along` 60 on the cat segment his speed goes
+   1.2 to 1.21, and at 110, inside the crossing window, it goes 1.2 to 1.2. He
+   stops CLOSING on the cat without ever braking, and the difference between those
+   two rows is the entire gate.
+
+   the finish clamp -- creeping at 0.05 inside the terminus braking zone, he snaps
+   to exactly the segment length with v = 0. Without that arm the kinematic brake
+   Zeno-stalls him a hair short and he is stopped forever, never finished.
+
+ The rest: dead centre and off-centre with the mirror pair, upright and leaned, at
+ V_MAX, inside the corner approach, at the commit point, a hair short of a seam so
+ the crossing fires, and one state already OUTSIDE the road inset -- which must not
+ be judged instantly off the road, because the bounds widen to wherever he is.
+
+ EVERY FIELD OF THE NEXT STATE IS GRADED. A port that got the position right and
+ the tilt wrong would be a port whose next frame is wrong, and the tilt is the
+ binary search's whole answer.
+
+ We say:
+
+Section: The States
+
+  segs : List Segment
+  segs = build-world
+
+  mk : Integer, Real, Real, Real, Real, Real, Real, Real -> RiderState
+  mk (seg) (along) (across) (yaw) (v) (tilt) (gy) (focus) =
+    RiderState { segment = seg, along = along, across = across, yaw = yaw, v = v, tilt = tilt, heading = 0.3, gaze-yaw = gy, focus = focus }
+
+  cases : List RiderState
+  cases = [mk 0 0.0 0.0 0.0 v-base 0.0 0.0 0.0, mk 0 120.0 0.9 0.02 1.4 0.004 0.0 0.0, mk 0 120.0 (0.0 - 0.9) (0.0 - 0.02) 1.4 (0.0 - 0.004) 0.0 0.0, mk 0 0.0 0.0 0.0 2.5 0.0 0.0 0.0, mk 0 470.0 0.1 0.0 2.2 0.0 0.0 0.0, mk 0 497.0 0.1 0.0 0.6 0.0 0.0 0.0, mk 1 60.0 0.2 0.0 1.2 0.0 0.0 0.0, mk 1 110.0 0.2 0.0 1.2 0.0 0.0 0.0, mk 2 200.0 0.3 0.0 1.6 0.0 0.0 0.0, mk 2 300.0 0.3 0.01 1.6 0.0 0.0 0.0, mk 2 335.0 0.3 0.01 0.25 0.0 0.2 0.4, mk 2 360.0 0.3 0.0 0.25 0.0 0.5 0.9, mk 0 499.0 0.05 0.0 0.22 0.0 0.0 0.0, mk 18 250.0 0.1 0.0 0.8 0.0 0.0 0.0, mk 18 299.9 0.1 0.0 0.05 0.0 0.0 0.0, mk 0 200.0 1.8 0.0 1.0 0.0 0.0 0.0]
+
+  nexts : List RiderState, Integer -> List RiderState
+  nexts (cs) (i) =
+    if i >= list-length cs then []
+    else [get-next-rider-state (list-at cs i) segs] & nexts cs (i + 1)
+
+  outs : List RiderState
+  outs = nexts cases 0
+
+Section: Streams
+
+  f-seg : List RiderState, Integer -> List Integer
+  f-seg (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).segment] & f-seg ss (i + 1)
+
+  f-along : List RiderState, Integer -> List Real
+  f-along (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).along] & f-along ss (i + 1)
+
+  f-across : List RiderState, Integer -> List Real
+  f-across (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).across] & f-across ss (i + 1)
+
+  f-yaw : List RiderState, Integer -> List Real
+  f-yaw (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).yaw] & f-yaw ss (i + 1)
+
+  f-v : List RiderState, Integer -> List Real
+  f-v (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).v] & f-v ss (i + 1)
+
+  f-tilt : List RiderState, Integer -> List Real
+  f-tilt (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).tilt] & f-tilt ss (i + 1)
+
+  f-heading : List RiderState, Integer -> List Real
+  f-heading (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).heading] & f-heading ss (i + 1)
+
+  f-gazeyaw : List RiderState, Integer -> List Real
+  f-gazeyaw (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).gaze-yaw] & f-gazeyaw ss (i + 1)
+
+  f-focus : List RiderState, Integer -> List Real
+  f-focus (ss) (i) =
+    if i >= list-length ss then []
+    else [(list-at ss i).focus] & f-focus ss (i + 1)
+
+  finished : List RiderState, Integer -> List Boolean
+  finished (cs) (i) =
+    if i >= list-length cs then []
+    else [is-finished (list-at cs i) segs] & finished cs (i + 1)
+
+  angles : List Real
+  angles = [15.0, 20.0, 30.0, 50.0, 70.0, 80.0, 45.0]
+
+  turn-speeds : List Real, Integer -> List Real
+  turn-speeds (ds) (i) =
+    if i >= list-length ds then []
+    else [turn-speed (list-at ds i * pi / 180.0)] & turn-speeds ds (i + 1)
+
+  gawks : List RiderState, Integer -> List Boolean
+  gawks (cs) (i) =
+    if i >= list-length cs then []
+    else [gawk-engaged (list-at cs i) (list-at segs (list-at cs i).segment)] & gawks cs (i + 1)
+
+ The probe prints 12345 where the zig's optional is null, so the port answers the
+ same sentinel for a brake that is not engaged. It is a marker, not a number, and
+ nothing computes with it.
+
+  pig-brakes : List RiderState, Integer -> List Real
+  pig-brakes (cs) (i) =
+    if i >= list-length cs then []
+    else brake-of (list-at cs i) & pig-brakes cs (i + 1)
+
+  brake-of : RiderState -> List Real
+  brake-of (c) =
+    let b = pig-gaze-brake c (list-at segs c.segment)
+    in if b.engaged then [b.accel] else [12345.0]
+
+  focuses : List RiderState, Integer -> List Real
+  focuses (cs) (i) =
+    if i >= list-length cs then []
+    else [gaze-focus (list-at cs i).focus] & focuses cs (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-ints  "rd-seg       " (f-seg outs 0) g-rd-seg)
+    print-line-uni (grade-px    "rd-along     " (f-along outs 0) g-rd-along 0.0001 0.000001)
+    print-line-uni (grade-px    "rd-across    " (f-across outs 0) g-rd-across 0.0001 0.000001)
+    print-line-uni (grade-px    "rd-yaw       " (f-yaw outs 0) g-rd-yaw 0.0000001 0.000001)
+    print-line-uni (grade-rel   "rd-v         " (f-v outs 0) g-rd-v 0.000001)
+    print-line-uni (grade-px    "rd-tilt      " (f-tilt outs 0) g-rd-tilt 0.0000001 0.000001)
+    print-line-uni (grade-rel   "rd-heading   " (f-heading outs 0) g-rd-heading 0.000001)
+    print-line-uni (grade-px    "rd-gazeyaw   " (f-gazeyaw outs 0) g-rd-gazeyaw 0.0000001 0.000001)
+    print-line-uni (grade-px    "rd-focus     " (f-focus outs 0) g-rd-focus 0.0000001 0.000001)
+    print-line-uni (grade-bools "rd-finished  " (finished cases 0) g-rd-finished)
+    print-line-uni (grade-rel   "rd-turnspeed " (turn-speeds angles 0) g-rd-turnspeed 0.000001)
+    print-line-uni (grade-bools "rd-gawk      " (gawks cases 0) g-rd-gawk)
+    print-line-uni (grade-rel   "rd-pigbrake  " (pig-brakes cases 0) g-rd-pigbrake 0.000001)
+    print-line-uni (grade-px    "rd-gazefocus " (focuses cases 0) g-rd-gazefocus 0.0000001 0.000001)
+  end

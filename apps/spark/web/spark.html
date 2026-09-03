@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Spark -- software renderer</title>
+<style>
+  :root { --bg:#05060c; --panel:#0c1020; --line:#18224a; --fg:#c9d2e6; --dim:#7f8bb0; --accent:#6fb7ff; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; background:
+    radial-gradient(1200px 600px at 70% -10%, #10203f 0%, transparent 60%),
+    var(--bg);
+    color:var(--fg); font:15px/1.55 system-ui,Segoe UI,sans-serif; min-height:100vh; }
+  .wrap { max-width:880px; margin:0 auto; padding:44px 22px 64px; }
+  h1 { font-size:30px; margin:0 0 6px; letter-spacing:-.5px;
+       background:linear-gradient(90deg,#8fd0ff,#c8b6ff); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .tag { color:var(--dim); margin:0 0 24px; }
+  .stage { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; }
+  canvas { display:block; width:100%; height:auto; image-rendering:pixelated; border-radius:8px; background:#282828; }
+  .stat { display:flex; gap:18px; flex-wrap:wrap; margin-top:12px; color:var(--dim); font-size:13.5px;
+          font-family:ui-monospace,Consolas,monospace; }
+  .stat b { color:var(--accent); font-weight:500; }
+  .lead { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          padding:15px 17px; margin:26px 0 0; }
+  .lead code { color:var(--accent); background:#0a1226; padding:1px 6px; border-radius:5px; font-size:13px; }
+  .err { color:#ff8f87; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Spark</h1>
+  <p class="tag">A software 3D renderer written in Codex, compiled to WebAssembly, drawing into a framebuffer your browser blits to a canvas.</p>
+
+  <div class="stage">
+    <canvas id="c" width="640" height="480"></canvas>
+    <div class="stat" id="stat">loading the module ...</div>
+  </div>
+
+  <div class="lead">
+    <p style="margin:0 0 8px">Every pixel above is computed by Codex. <code>apps/spark/SparkWasm.codex</code>
+    builds the scene, and <code>SceneRender</code> rasterises it into a <code>Framebuf</code>, which
+    <code>SparkDisplay</code> blits to a display. On bare metal that display is the GOP framebuffer at
+    <code>0x40000000</code>; here it is a region of WebAssembly linear memory, and the only difference is
+    the address the display record carries.</p>
+    <p style="margin:0">The JavaScript on this page does not draw. It instantiates the module, calls
+    <code>spark_render</code> once, and copies the framebuffer onto the canvas.</p>
+  </div>
+</div>
+
+<script>
+// The framebuffer reservation, matching apps/spark/SparkWasm.codex. The chapter
+// advances the heap above this region before it allocates, so nothing else in
+// linear memory lands here.
+const FB_BASE = 131072, W = 640, H = 480;
+
+const stat = document.getElementById('c') && document.getElementById('stat');
+const say = (html, cls) => { stat.innerHTML = html; stat.className = 'stat' + (cls ? ' ' + cls : ''); };
+
+(async () => {
+  try {
+    const t0 = performance.now();
+    const resp = await fetch('spark.wasm');
+    if (!resp.ok) throw new Error('spark.wasm did not load (' + resp.status + ')');
+    const bytes = await resp.arrayBuffer();
+    // The module is a bare-metal program compiled to wasm, so it imports the
+    // two WASI file descriptors its print path was written against. Nothing on
+    // this page reads or writes them; they exist so instantiation can succeed.
+    const imports = { wasi_snapshot_preview1: { fd_write: () => 0, fd_read: () => 0 } };
+    const { instance } = await WebAssembly.instantiate(bytes, imports);
+
+    const tRender = performance.now();
+    const faces = instance.exports.spark_render();
+    const renderMs = performance.now() - tRender;
+
+    // gop-put-pixel packs b + g*256 + r*65536, so a little-endian u32 reads
+    // B,G,R,0. ImageData wants R,G,B,A, which is a swap of the outer two and an
+    // alpha the framebuffer never sets.
+    const px = new Uint32Array(instance.exports.memory.buffer, FB_BASE, W * H);
+    const img = new ImageData(W, H);
+    const out = img.data;
+    for (let i = 0, j = 0; i < px.length; i++, j += 4) {
+      const v = px[i];
+      out[j]     = (v >> 16) & 0xff;
+      out[j + 1] = (v >> 8) & 0xff;
+      out[j + 2] = v & 0xff;
+      out[j + 3] = 255;
+    }
+    document.getElementById('c').getContext('2d').putImageData(img, 0, 0);
+
+    say('<span><b>' + faces + '</b> faces</span>' +
+        '<span><b>' + W + '&times;' + H + '</b></span>' +
+        '<span>render <b>' + renderMs.toFixed(1) + '</b> ms</span>' +
+        '<span>module <b>' + (bytes.byteLength / 1024).toFixed(1) + '</b> KB</span>' +
+        '<span>total <b>' + (performance.now() - t0).toFixed(0) + '</b> ms</span>');
+  } catch (e) {
+    say('could not run the module: ' + e.message, 'err');
+  }
+})();
+</script>
+</body>
+</html>

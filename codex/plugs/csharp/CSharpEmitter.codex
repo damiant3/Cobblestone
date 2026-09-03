@@ -565,8 +565,29 @@ Section: Definition Emission
 
 Section: Chapter Emission
 
-  emit-cce-runtime : Text
-  emit-cce-runtime =
+ Only a scalar crosses the __heap-restore in the streaming emitters, so which
+ _Cce members a program reached is carried as a bitmask rather than as
+ accumulated text. FromUnicodeArr, FromUnicodeList and FromUnicodeRows all
+ contain "FromUnicode", so a member's own bit implies the bit of the helper it
+ calls, except Rows to List, which is closed by hand.
+
+  cs-cce-mask : Text -> Integer
+  cs-cce-mask (t) =
+   (if text-contains t "FromUnicode" then 1 else 0)
+   + (if text-contains t "UniToCce" then 2 else 0)
+   + (if text-contains t "CceToUni" then 4 else 0)
+   + (if text-contains t "ReadStream" then 8 else 0)
+   + (if text-contains t "FromUnicodeArr" then 16 else 0)
+   + (if text-contains t "FromUnicodeList" | text-contains t "FromUnicodeRows" then 32 else 0)
+   + (if text-contains t "FromUnicodeRows" then 64 else 0)
+   + (if text-contains t "RawBytesToText" then 128 else 0)
+
+  cce-member-when-used : Integer, Integer, Text -> Text
+  cce-member-when-used (mask) (bit) (src) =
+   if bit-and mask bit == bit then src else ""
+
+  emit-cce-runtime : Integer -> Text
+  emit-cce-runtime (mask) =
    text-concat-list [
    "static class _Cce {\n",
    "    static readonly int[] _toUni = {\n",
@@ -590,6 +611,7 @@ Section: Chapter Emission
    "    };\n",
    "    static readonly Dictionary<int, int> _fromUni = new();\n",
    "    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }\n",
+   cce-member-when-used mask 1 (text-concat-list [
    "    public static string FromUnicode(string s) {\n",
    "        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");\n",
    "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n",
@@ -600,7 +622,7 @@ Section: Chapter Emission
    "            else sb.Append((char)68);\n",
    "        }\n",
    "        return sb.ToString();\n",
-   "    }\n",
+   "    }\n"]),
    "    public static string ToUnicode(string s) {\n",
    "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n",
    "        for (int i = 0; i < s.Length; i++) {\n",
@@ -614,26 +636,30 @@ Section: Chapter Emission
    "        }\n",
    "        return sb.ToString();\n",
    "    }\n",
+   cce-member-when-used mask 2 (text-concat-list [
    "    public static long UniToCce(long u) {\n",
    "        return _fromUni.TryGetValue((int)u, out int c) ? c : 68;\n",
-   "    }\n",
+   "    }\n"]),
+   cce-member-when-used mask 4 (text-concat-list [
    "    public static long CceToUni(long b) {\n",
    "        return (b >= 0 && b < 128) ? _toUni[(int)b] : 65533;\n",
-   "    }\n",
+   "    }\n"]),
+   cce-member-when-used mask 8 (text-concat-list [
    "    public static string ReadStream() {\n",
    "        string s = Console.In.ReadToEnd();\n",
    "        int e = s.IndexOf('\\u0004');\n",
    "        return e < 0 ? s : s.Substring(0, e);\n",
-   "    }\n",
-   "    public static List<string> FromUnicodeArr(string[] xs) { List<string> r = new List<string>(xs.Length); foreach (string s in xs) r.Add(FromUnicode(s)); return r; }\n",
-   "    public static List<string> FromUnicodeList(List<string> xs) { List<string> r = new List<string>(xs.Count); foreach (string s in xs) r.Add(FromUnicode(s)); return r; }\n",
-   "    public static List<List<string>> FromUnicodeRows(List<List<string>> rs) { List<List<string>> r = new List<List<string>>(rs.Count); foreach (List<string> x in rs) r.Add(FromUnicodeList(x)); return r; }\n",
+   "    }\n"]),
+   cce-member-when-used mask 16 "    public static List<string> FromUnicodeArr(string[] xs) { List<string> r = new List<string>(xs.Length); foreach (string s in xs) r.Add(FromUnicode(s)); return r; }\n",
+   cce-member-when-used mask 32 "    public static List<string> FromUnicodeList(List<string> xs) { List<string> r = new List<string>(xs.Count); foreach (string s in xs) r.Add(FromUnicode(s)); return r; }\n",
+   cce-member-when-used mask 64 "    public static List<List<string>> FromUnicodeRows(List<List<string>> rs) { List<List<string>> r = new List<List<string>>(rs.Count); foreach (List<string> x in rs) r.Add(FromUnicodeList(x)); return r; }\n",
+   cce-member-when-used mask 128 (text-concat-list [
    "    public static string RawBytesToText(object bs) {\n",
    "        List<long> l = (List<long>)bs;\n",
    "        char[] cs = new char[l.Count];\n",
    "        for (int i = 0; i < l.Count; i++) cs[i] = (char)l[i];\n",
    "        return new string(cs);\n",
-   "    }\n",
+   "    }\n"]),
    "}\n\n"]
 
  The _Buf arena is allocated lazily on the first byte-level access, not
@@ -909,11 +935,7 @@ Section: Chapter Emission
 
   emit-csharp-text-chapter : IRChapter, List ATypeDef, List Text -> Text
   emit-csharp-text-chapter (m) (type-defs) (muts) =
-   let ctx = CsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs, locals = [], dyn-locals = [] }
-   in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
-   in let class-name = "Codex_" & sanitize (m.name.value)
-   in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
-   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-seam-runtimes (ctx.arities), emit-type-defs type-defs 0 muts, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 ctx & ["}\n"])
+   text-concat-list (emit-csharp-parts m type-defs muts)
 
   emit-csharp-parts : IRChapter, List ATypeDef, List Text -> List Text
   emit-csharp-parts (m) (type-defs) (muts) =
@@ -921,7 +943,9 @@ Section: Chapter Emission
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
    in let class-name = "Codex_" & sanitize (m.name.value)
    in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
-   in [header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-seam-runtimes (ctx.arities), emit-type-defs type-defs 0 muts, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 ctx & ["}\n"]
+   in let rest = [emit-buf-runtime, emit-state-runtime, emit-seam-runtimes (ctx.arities), emit-type-defs type-defs 0 muts, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 ctx & ["}\n"]
+   in let mask = cs-cce-mask (entry & text-concat-list rest)
+   in [header, entry, emit-cce-runtime mask] & rest
 
   emit-class-header : Text -> Text
   emit-class-header (name) =

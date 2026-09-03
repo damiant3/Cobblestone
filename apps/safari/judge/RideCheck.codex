@@ -1,0 +1,267 @@
+Chapter: RideCheck
+  cites Foreword chapter Console
+  cites Safari chapter Trig
+  cites Safari chapter World
+  cites Safari chapter Pose
+  cites Safari chapter Rider
+  cites Safari chapter Sky
+  cites Judge chapter Grade
+  cites Gold chapter RideGold
+
+ SEAM 4: the whole ride, from the start line to the finish, checked by INVARIANTS.
+
+ THIS IS THE ONE SEAM NOTES NAMED AND NOTHING CLOSED. Every other check in judge/
+ grades ONE STEP FROM A SHARED STATE, and that is not an accident: NOTES section 4
+ argues that `rider.decide` picks the lean by BINARY SEARCH over twelve float
+ comparisons, so a 1e-7 f64-against-f32 difference will eventually flip one and the
+ two rides are on different trajectories from there. A long trace comparison would
+ go red and it would NOT mean the port is wrong. What it prescribes instead is this:
+ "For a whole-ride check, check INVARIANTS (on the road, no loop, sunset monotone)
+ -- which is what games/driving/test/test_model.ts already does for the TS."
+
+ SO NEITHER ARM LOOKS AT THE OTHER'S TRAJECTORY. The probe runs the GAME's ride and
+ asserts the list on every frame; this runs the PORT's own ride and asserts the same
+ list; the two compare only where each invariant FIRST failed, or -1 for never.
+ -1 against -1 is a statement about two rides that were never required to be the
+ same ride, which is exactly the strength NOTES said was available and no more.
+
+ AND THE DRIFT ITSELF IS NOW A NUMBER. NOTES predicted it and nothing had ever
+ measured it. Both arms sample ROUTE DISTANCE every hundredth frame -- the one
+ quantity that rises monotonically for a whole ride, so a gap in it is the gap
+ between the two rides, in metres -- and the last line below reports the first
+ sample where they part by a centimetre. It is a MEASUREMENT and not a gate,
+ because NOTES' whole argument is that this number is allowed to be finite.
+
+ WHAT IS DRIFT-IMMUNE AND WHAT IS NOT, stated rather than assumed. The eight
+ verdicts are. So is the ORDER of segments visited: a route is a route whatever the
+ last bit does, and a ride that skipped one, repeated one or took them out of order
+ is broken in a way no epsilon excuses. The FRAME COUNT is not drift-immune -- a
+ flipped lean changes a corner speed and the finish arrives a frame or two later --
+ so it is measured and reported, not graded. What it is graded against is the CAP:
+ a ride that has not finished by 20,000 frames has not terminated, and `rd-finished`
+ is where "no loop" turns into a number.
+
+ THE INVARIANT LIST IS test_model.ts's `assertInvariants`, ported bound for bound
+ and epsilon for epsilon, including the entry floor. A rider may sit BEFORE a
+ segment's start -- he crosses into a turn at the inner edge, just shy of the begin
+ line -- and the floor is -width/sin(entry angle) because the worst case is crossing
+ at the OUTER road edge rather than the centre. `exit-to` is [1, 2, ..., 18, 18], so
+ segment i is entered from i-1 and segment 0 has no entry intersection.
+
+ FINITENESS COMES FREE FROM THE BOUNDS, as long as they are written as things that
+ must HOLD rather than things that must not be exceeded. Every comparison against a
+ NaN is false, so `v >= -1e-9 and v <= 8` fails on a NaN v and the frame is recorded.
+ Writing it the other way round -- flagging only when a bound is exceeded -- would
+ let a NaN through every gate here.
+
+ ABSOLUTE VALUE COMES FROM `Judge chapter Grade`, which this already cites. The
+ first draft defined its own `ck-abs`, three lines identical to `g-abs` sitting in
+ a chapter already in scope. Grade duplicates DeviceMath's `real-abs` ON PURPOSE --
+ a judge must not be built out of what it judges -- and that argument does not
+ extend to a second copy inside the judge.
+
+ We say:
+
+Section: The Invariants
+
+ test_model.ts's numbers. QUARTER is a right angle; the three epsilons are its own
+ and they differ from each other on purpose -- the gaze is a view angle assembled
+ from more parts than the bike's yaw, so it is allowed a thousand times the slack.
+
+  ride-cap : Integer
+  ride-cap = 20000
+
+  yaw-slack : Real
+  yaw-slack = 0.000001
+
+  gaze-slack : Real
+  gaze-slack = 0.001
+
+  along-slack : Real
+  along-slack = 0.000001
+
+  v-floor : Real
+  v-floor = 0.0 - 0.000000001
+
+  v-ceiling : Real
+  v-ceiling = 8.0
+
+  across-slack : Real
+  across-slack = 1.0
+
+ A centimetre over a seven-kilometre route: far above the f32/f64 floor of about
+ 1.2e-7 relative, and far below anything a rider could be said to be somewhere
+ else. Sampling every hundredth frame is enough to place the parting within a
+ second and a half of riding.
+
+  sample-every : Integer
+  sample-every = 100
+
+  part-metres : Real
+  part-metres = 0.01
+
+  part-metres-mm : Integer
+  part-metres-mm = 10
+
+  entry-floor : List Segment, Integer -> Real
+  entry-floor (w) (i) =
+    if i <= 0 then 0.0
+    else let a = (list-at w (i - 1)).exit-angle
+      in if a > 0.0 then 0.0 - (list-at w i).width / r-sin a else 0.0
+
+Section: The Fold
+
+ ONE RECORD CARRIED DOWN THE RIDE. Eight first-failure frames rather than a list of
+ eight, because a list would want updating at an index and Codex has no such thing;
+ eight fields say which invariant in their names, which a list index would not.
+
+  RideCk = record {
+    frame : Integer,
+    bad-v : Integer,
+    bad-yaw : Integer,
+    bad-floor : Integer,
+    bad-ceil : Integer,
+    bad-across : Integer,
+    bad-gaze : Integer,
+    bad-focus : Integer,
+    bad-dusk : Integer,
+    segs : List Integer,
+    enters : List Integer,
+    sample : List Real,
+    dusk : Real,
+    finished : Boolean
+  }
+
+ THE FIRST failure is what is kept, so a ride that goes wrong once reports the frame
+ it went wrong rather than the last frame it was still wrong on.
+
+  keep : Integer, Boolean, Integer -> Integer
+  keep (cur) (ok) (frame) = if ok then cur else if cur >= 0 then cur else frame
+
+ A segment is recorded when it CHANGES, so the result is the route as travelled --
+ nineteen entries for a ride that visits each once in order, and something else for
+ a ride that does not.
+
+  seen-segs : List Integer, Integer -> List Integer
+  seen-segs (segs) (i) =
+    if list-length segs <= 0 then [i]
+    else if list-at segs (list-length segs - 1) == i then segs
+    else segs & [i]
+
+  ride-fold : List Segment, RiderState, RideCk -> RideCk
+  ride-fold (w) (s) (c) =
+    let seg = list-at w s.segment
+    in let d = sun-set-fraction (real-from-int c.frame)
+    in let c2 = RideCk {
+         frame = c.frame,
+         bad-v = keep c.bad-v (s.v >= v-floor and s.v <= v-ceiling) c.frame,
+         bad-yaw = keep c.bad-yaw (g-abs s.yaw <= half-pi + yaw-slack) c.frame,
+         bad-floor = keep c.bad-floor (s.along >= entry-floor w s.segment - along-slack) c.frame,
+         bad-ceil = keep c.bad-ceil (s.along <= seg.length + along-slack) c.frame,
+         bad-across = keep c.bad-across (g-abs s.across <= seg.width / 2.0 + across-slack) c.frame,
+         bad-gaze = keep c.bad-gaze (g-abs s.gaze-yaw <= half-pi + gaze-slack) c.frame,
+         bad-focus = keep c.bad-focus (s.focus >= 0.0 and s.focus <= 1.0) c.frame,
+         bad-dusk = keep c.bad-dusk (d >= c.dusk) c.frame,
+         segs = seen-segs c.segs s.segment,
+         enters = if list-length c.segs > 0 and list-at c.segs (list-length c.segs - 1) == s.segment
+                    then c.enters else c.enters & [c.frame],
+         sample = if c.frame - c.frame / sample-every * sample-every == 0
+                    then c.sample & [route-distance w s.segment s.along] else c.sample,
+         dusk = d,
+         finished = c.finished }
+    in if is-finished s w then RideCk {
+         frame = c2.frame, bad-v = c2.bad-v, bad-yaw = c2.bad-yaw,
+         bad-floor = c2.bad-floor, bad-ceil = c2.bad-ceil, bad-across = c2.bad-across,
+         bad-gaze = c2.bad-gaze, bad-focus = c2.bad-focus, bad-dusk = c2.bad-dusk,
+         segs = c2.segs, enters = c2.enters, sample = c2.sample, dusk = c2.dusk, finished = True }
+       else if c2.frame >= ride-cap then c2
+       else ride-fold w (get-next-rider-state s w) (RideCk {
+         frame = c2.frame + 1, bad-v = c2.bad-v, bad-yaw = c2.bad-yaw,
+         bad-floor = c2.bad-floor, bad-ceil = c2.bad-ceil, bad-across = c2.bad-across,
+         bad-gaze = c2.bad-gaze, bad-focus = c2.bad-focus, bad-dusk = c2.bad-dusk,
+         segs = c2.segs, enters = c2.enters, sample = c2.sample, dusk = c2.dusk, finished = c2.finished })
+
+ The dusk seed is below every value sun-set-fraction can take, so frame 0 cannot
+ fail the monotone test against a value that was never computed.
+
+  ride-start : RideCk
+  ride-start = RideCk {
+    frame = 0, bad-v = 0 - 1, bad-yaw = 0 - 1, bad-floor = 0 - 1, bad-ceil = 0 - 1,
+    bad-across = 0 - 1, bad-gaze = 0 - 1, bad-focus = 0 - 1, bad-dusk = 0 - 1,
+    segs = [], enters = [], sample = [], dusk = 0.0 - 1.0, finished = False }
+
+  ride-result : RideCk
+  ride-result = ride-fold build-world initial-rider-state ride-start
+
+ EVERY LINE BELOW READS THE RIDE THROUGH ONE `let`, AND THAT IS LOAD-BEARING.
+ `ride-result` is a nullary binding, and a nullary binding is RE-EVALUATED at every
+ use -- there is no memoisation, so each mention of it runs the whole 6,960-frame
+ fold again. Written the obvious way, with `ride-result.frame` here and
+ `ride-result.segs` there, this check ran the ride THIRTEEN times, took twelve
+ seconds, and then exhausted the 4 GiB bump heap on the last line, because nothing
+ is ever reclaimed (PORTING_NOTES C6) and thirteen rides do not fit where one does.
+ Binding it once and passing it down costs a `let` and turns thirteen rides into
+ one. PORTING_NOTES B16.
+
+  first-bads : RideCk -> List Integer
+  first-bads (r) = [r.bad-v, r.bad-yaw, r.bad-floor, r.bad-ceil, r.bad-across,
+                    r.bad-gaze, r.bad-focus, r.bad-dusk]
+
+ THE FIRST SAMPLE AT WHICH THE TWO RIDES ARE A CENTIMETRE APART, over whichever of
+ the two is shorter -- the port finishes at its own frame, so the two sample lists
+ need not be the same length and the shorter one is the honest overlap.
+
+  shorter : RideCk -> Integer
+  shorter (r) = if list-length r.sample < list-length g-rd-sample
+                  then list-length r.sample else list-length g-rd-sample
+
+  part-at : RideCk, Integer, Integer -> Integer
+  part-at (r) (n) (i) =
+    if i >= n then 0 - 1
+    else if g-abs (list-at r.sample i - list-at g-rd-sample i) > part-metres then i
+    else part-at r n (i + 1)
+
+ The gap at the LAST sample both rides reached, in millimetres, because `show` on a
+ Real is still refused.
+
+  final-gap-mm : RideCk, Integer -> Integer
+  final-gap-mm (r) (n) =
+    real-to-int (g-abs (list-at r.sample (n - 1) - list-at g-rd-sample (n - 1)) * 1000.0)
+
+Section: Entry
+
+ THE FRAME COUNT AND THE PARTING ARE PRINTED, NOT GRADED, and each line says so
+ where it is read.
+
+ WHICH SEGMENT THE TWO RIDES DISAGREE ABOUT MOST, in frames. Not a gate and not
+ drift-immune -- it is the line that localises the drift, and localising it is what
+ turned "the counts differ by forty" into an answer. Most segments match to a frame
+ or two; a few do not, and probe_sens.zig shows the GAME doing exactly the same to
+ itself under a persistent bias of 1e-7, which is f32's own resolution.
+
+  seg-span : List Integer, Integer -> Integer
+  seg-span (es) (i) = list-at es (i + 1) - list-at es i
+
+  worst-seg : List Integer, Integer, Integer, Integer, Integer -> Integer
+  worst-seg (es) (n) (i) (best) (bestd) =
+    if i + 1 >= n then best
+    else let d = seg-span es i - seg-span g-rd-enters i
+      in let a = if d < 0 then 0 - d else d
+      in if a > bestd then worst-seg es n (i + 1) i a else worst-seg es n (i + 1) best bestd
+
+  seg-overlap : RideCk -> Integer
+  seg-overlap (r) = if list-length r.enters < list-length g-rd-enters
+                      then list-length r.enters else list-length g-rd-enters
+
+  opening : [Console] Nothing =
+    let r = ride-result
+    in let n = shorter r
+    in let p = part-at r n 0
+    in act
+      print-line-uni (grade-ints  "rd-firstbad " (first-bads r) g-rd-firstbad)
+      print-line-uni (grade-ints  "rd-segs     " r.segs g-rd-segs)
+      print-line-uni (grade-bools "rd-finished " [r.finished] g-rd-finished)
+      print-line-uni ("rd-frames   port " & show r.frame & " zig " & show (list-at g-rd-frames 0) & " (reported, not graded: a flipped lean moves it)")
+      print-line-uni ("rd-worst    segment " & show (worst-seg r.enters (seg-overlap r) 0 0 0) & " is where they differ most: " & show (seg-span r.enters (worst-seg r.enters (seg-overlap r) 0 0 0)) & " frames against " & show (seg-span g-rd-enters (worst-seg r.enters (seg-overlap r) 0 0 0)) & " (reported, not graded)")
+      print-line-uni ("rd-part     the rides reach 10 mm apart at sample " & show p & " of " & show n & ", frame " & show (p * sample-every) & "; " & show (final-gap-mm r n) & " mm apart at the last shared sample")
+    end

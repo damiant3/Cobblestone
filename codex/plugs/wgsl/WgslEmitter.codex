@@ -1,5 +1,6 @@
 Chapter: WGSL Emitter
   cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
 
  Generates WGSL (WebGPU Shading Language) compute shaders from the Codex
  typed IR. Unlike the PTX and SPIR-V plugs, WGSL is a high-level
@@ -13,11 +14,62 @@ Chapter: WGSL Emitter
  gid comes from @builtin(global_invocation_id). Every other function becomes
  a plain WGSL helper function.
 
+Section: Refusal
+
+ A generator that answers where it cannot lower ships a plausible wrong
+ shader, and nothing downstream can tell that from a correct one
+ (L-BAILVALUE). Every construct this emitter does not implement emits an
+ identifier that does not exist and says what it was, so the module fails at
+ createShaderModule with the construct's name in the message, and
+ codex/plugs/wgsl/run.ps1 refuses the run before an output file is written.
+
+ The rules these refusals and the lowerings below are measured against are
+ docs/Reference/WgslSpec.md, distilled from the W3C Candidate Recommendation
+ Draft of 31 August 2026. Re-read it before changing anything here.
+
+  wgsl-refuse : Text -> Text
+  wgsl-refuse (what) = "CODEX_REFUSED_" & what
+
 Section: Name Sanitization
+
+ WGSL 3.7 refuses an identifier that spells a keyword or a reserved word, that
+ is a single underscore, or that STARTS with two underscores. Codex names hit
+ all three: `type`, `match`, `mod`, `set`, `use` and `where` are ordinary Codex
+ words and reserved in WGSL, and the compiler generates `__` names of its own.
+ A name that trips any of these is prefixed rather than mangled, so what comes
+ out still reads as the Codex name.
+
+ The last clause is not a spec rule but a consequence of one. WGSL built-in
+ function names are PREDECLARED, not reserved, so `fn min(...)` is legal and
+ hides the built-in over the whole module (3.6, and the spec's own example).
+ This emitter lowers real-min onto `min`, so a chapter with a helper named
+ `min` would silently retarget every one of those calls and validate clean.
+ Only the names this emitter actually emits are held back; anything else a
+ program wants to call `mix` or `step` is its own business.
+
+  wgsl-reserved-words : Text =
+   " NULL Self abstract active alignas alignof as asm asm_fragment async attribute auto await become cast catch class co_await co_return co_yield coherent column_major common compile compile_fragment concept const_cast consteval constexpr constinit crate debugger decltype delete demote demote_to_helper do dynamic_cast enum explicit export extends extern external fallthrough filter final finally friend from fxgroup get goto groupshared highp impl implements import inline instanceof interface layout lowp macro macro_rules match mediump meta mod module move mut mutable namespace new nil noexcept noinline nointerpolation non_coherent noncoherent noperspective null nullptr of operator package packoffset partition pass patch pixelfragment precise precision premerge priv protected pub public readonly ref regardless register reinterpret_cast require resource restrict self set shared sizeof smooth snorm static static_assert static_cast std subroutine super target template this thread_local throw trait try type typedef typeid typename typeof union unless unorm unsafe unsized use using varying virtual volatile wgsl where with writeonly yield "
+
+  wgsl-keywords : Text =
+   " alias break case const const_assert continue continuing default diagnostic discard else enable false fn for if let loop override requires return struct switch true var while "
+
+  wgsl-emitter-owned : Text =
+   " sin cos tan sqrt abs min max floor ceil f32 i32 u32 bool select bitcast array ptr arrayLength "
+
+  wgsl-taken : Text -> Boolean
+  wgsl-taken (n) =
+   let probe = " " & n & " "
+   in if text-contains wgsl-keywords probe then True
+   else if text-contains wgsl-reserved-words probe then True
+   else text-contains wgsl-emitter-owned probe
 
   wgsl-sanitize : Text -> Text
   wgsl-sanitize (name) =
-   text-replace name "-" "_"
+   let u = text-replace name "-" "_"
+   in if u == "_" then "cdx_underscore"
+   else if text-starts-with u "__" then "cdx" & u
+   else if wgsl-taken u then "cdx_" & u
+   else u
 
 Section: Context
 
@@ -82,6 +134,25 @@ Section: Float Support
   wgsl-f32-lit : Integer -> Text
   wgsl-f32-lit (n) = "bitcast<f32>(" & integer-to-text (wgsl-f32-bits n) & "u)"
 
+ Codex Integer is 64-bit and WGSL i32 is not, and WGSL REFUSES a constant it
+ cannot represent rather than wrapping it: the opaque-alpha idiom 255 * 16777216
+ is 0xFF000000, and Chrome answers "value 4278190080 cannot be represented as
+ i32". A value that still fits u32 is emitted as a bitcast, which is the same
+ move wgsl-f32-lit already makes and gives the bit pattern the program meant.
+ Above u32 there is nothing honest to emit, so it is left to fail loudly.
+
+  wgsl-i32-max : Integer = 2147483647
+
+  wgsl-u32-max : Integer = 4294967295
+
+  wgsl-i32-lit : Integer -> Text
+  wgsl-i32-lit (n) =
+   if n > wgsl-i32-max then
+    if n <= wgsl-u32-max then "bitcast<i32>(" & integer-to-text n & "u)"
+    else wgsl-refuse "integer_literal_wider_than_32_bits"
+   else if n < wgsl-i32-min then wgsl-refuse "integer_literal_below_i32_min"
+   else integer-to-text n
+
   wgsl-fexpr : WgslCtx, IRExpr -> Text
   wgsl-fexpr (ctx) (e) =
    if wgsl-is-real (ir-expr-type e) then wgsl-expr ctx e
@@ -102,7 +173,7 @@ Section: Binary Op Mapping
     is IrMulInt -> "*"
     is IrDivInt -> "/"
     is IrRemInt -> "%"
-    is IrPowInt -> "*"
+    is IrPowInt -> "CODEX_REFUSED_integer_exponentiation"
     is IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
     is IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
     is IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
@@ -113,13 +184,35 @@ Section: Binary Op Mapping
     is IrGt | IrGtVec -> ">"
     is IrLtEq | IrLtEqVec -> "<="
     is IrGtEq | IrGtEqVec -> ">="
-    is IrAnd -> "&"
-    is IrOr -> "|"
-    is IrAppendText -> "+"
-    is IrAppendList -> "+"
-    is IrConsList -> "+"
-    is IrApproxEq -> "=="
-    is IrApproxEqExact -> "=="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText -> "CODEX_REFUSED_text_append"
+    is IrAppendList -> "CODEX_REFUSED_list_append"
+    is IrConsList -> "CODEX_REFUSED_list_cons"
+    is IrApproxEq -> "CODEX_REFUSED_approximate_equality"
+    is IrApproxEqExact -> "CODEX_REFUSED_approximate_equality_exact"
+
+ WGSL 8.7 spells the SHORT-CIRCUITING boolean operators && and ||, and gives
+ & and | a second, non-short-circuiting meaning on bool. Both validate, so
+ lowering Codex's `and` to & produced a module that compiled and evaluated the
+ right operand unconditionally. The five below have no WGSL spelling at all:
+ there is no exponentiation operator (pow is float-only), no text and no list,
+ and an approximate equality lowered to == is a different question being
+ answered. Each emits a token that is a parse error where it lands rather than
+ a plausible operator, so nothing can carry it into a shipped shader.
+
+  wgsl-op-refused : IRBinaryOp -> Boolean
+  wgsl-op-refused (op) =
+   when op
+    is IrPowInt | IrAppendText | IrAppendList | IrConsList -> True
+    is IrApproxEq | IrApproxEqExact -> True
+    is otherwise -> False
+
+  wgsl-op-logical : IRBinaryOp -> Boolean
+  wgsl-op-logical (op) =
+   when op
+    is IrAnd | IrOr -> True
+    is otherwise -> False
 
 Section: Math Intrinsics
 
@@ -161,6 +254,75 @@ Section: Math Intrinsics
    else if name == "__real-to-int" then "i32"
    else name
 
+Section: Bit Intrinsics
+
+ Codex spells the bit operations as builtin CALLS, so before this they reached
+ the generic apply path and came out as bit_and(a, b): a function WGSL does not
+ have. The whole set is in the language (8.10), and two of its rules differ
+ from every other binary operator, which is why this is not a line in the
+ operator table:
+
+ The right operand of << and >> must be u32. An i32 shift count does not
+ compile, and it is the operand type every other operator would have wanted.
+
+ >> on a signed left operand is ARITHMETIC: "If e1 is negative, each inserted
+ bit is 1". Codex bit-shr is that shift, and bit-shru is the logical one, so
+ bit-shru has to go out through u32 and come back.
+
+ The shift amount is the count modulo the bit width at run time, and a count at
+ or past the width is an error only when it is a const-expression. Masking with
+ 31u is that same modulo written down: it changes no legal program's meaning
+ and removes the const-expression error case.
+
+  wgsl-is-bit-intrinsic : Text -> Boolean
+  wgsl-is-bit-intrinsic (name) =
+   if name == "bit-and" then True
+   else if name == "bit-or" then True
+   else if name == "bit-xor" then True
+   else if name == "bit-not" then True
+   else if name == "bit-shl" then True
+   else if name == "bit-shr" then True
+   else if name == "bit-shru" then True
+   else False
+
+  wgsl-iexpr-at : WgslCtx, IRExpr, Integer -> Text
+  wgsl-iexpr-at (ctx) (e) (depth) =
+   if wgsl-is-real (ir-expr-type e) then "i32(" & wgsl-expr-at ctx e (depth + 1) & ")"
+   else wgsl-expr-at ctx e (depth + 1)
+
+  wgsl-shift-count : WgslCtx, IRExpr, Integer -> Text
+  wgsl-shift-count (ctx) (e) (depth) =
+   "(u32(" & wgsl-iexpr-at ctx e depth & ") & 31u)"
+
+  wgsl-emit-bit : WgslCtx, Text, List IRExpr, Integer -> Text
+  wgsl-emit-bit (ctx) (name) (args) (depth) =
+   if name == "bit-not" then
+    (if list-length args < 1 then wgsl-refuse "bit_not_arity"
+     else "(~" & wgsl-iexpr-at ctx (list-at args 0) depth & ")")
+   else if list-length args < 2 then wgsl-refuse "bit_op_arity"
+   else let a = wgsl-iexpr-at ctx (list-at args 0) depth
+   in let b = wgsl-iexpr-at ctx (list-at args 1) depth
+   in let sh = wgsl-shift-count ctx (list-at args 1) depth
+   in if name == "bit-and" then "(" & a & " & " & b & ")"
+   else if name == "bit-or" then "(" & a & " | " & b & ")"
+   else if name == "bit-xor" then "(" & a & " ^ " & b & ")"
+   else if name == "bit-shl" then "(" & a & " << " & sh & ")"
+   else if name == "bit-shr" then "(" & a & " >> " & sh & ")"
+   else "bitcast<i32>(bitcast<u32>(" & a & ") >> " & sh & ")"
+
+ Storage buffers are emitted as array<i32> (wgsl-emit-buffer-decls), so the
+ f64 forms are recognised here, which is what makes buffer discovery find their
+ base, and then refused at emission: reading array<i32> for a value the source
+ said was a Real hands back the wrong number with nothing to see. A float
+ buffer needs an array<f32> binding and a second element type through the whole
+ discovery path, which is a capability rather than a patch.
+
+  wgsl-is-f64-device-op : Text -> Boolean
+  wgsl-is-f64-device-op (name) =
+   if name == "device-load-f64" then True
+   else if name == "device-store-f64" then True
+   else False
+
   wgsl-is-device-load : Text -> Boolean
   wgsl-is-device-load (name) =
    if name == "device-load" then True
@@ -180,13 +342,13 @@ Section: Expression Emission
 
   wgsl-expr-at : WgslCtx, IRExpr, Integer -> Text
   wgsl-expr-at (ctx) (e) (depth) =
-   if depth >= 256 then "0"
+   if depth >= 256 then wgsl-refuse "expression_nested_past_256"
    else when e
-    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrIntLit (n) (sp) -> wgsl-i32-lit n
     is IrNumLit (n) (sp) -> wgsl-f32-lit n
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
-    is IrTextLit (s) (sp) -> "0"
+    is IrTextLit (s) (sp) -> wgsl-refuse "text_literal"
     is IrName (n) (ty) (sp) ->
      if n == "True" then "true"
      else if n == "False" then "false"
@@ -203,23 +365,23 @@ Section: Expression Emission
      wgsl-expr-apply ctx e depth
     is IrLambda (params) (body) (ty) (sp) ->
      wgsl-expr-at ctx body (depth + 1)
-    is IrList (elems) (ty) (sp) -> "0"
-    is IrMatch (scrut) (branches) (ty) (sp) -> "0"
-    is IrAct (stmts) (ty) (sp) -> "0"
+    is IrList (elems) (ty) (sp) -> wgsl-refuse "list_literal"
+    is IrMatch (scrut) (branches) (ty) (sp) -> wgsl-refuse "when_expression"
+    is IrAct (stmts) (ty) (sp) -> wgsl-refuse "act_block_in_expression_position"
     is IrHandle (eff) (body) (clauses) (ty) (sp) ->
      wgsl-expr-at ctx body (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) ->
      wgsl-expr-at ctx body (depth + 1)
-    is IrRecord (name) (fields) (ty) (sp) -> "0"
+    is IrRecord (name) (fields) (ty) (sp) -> wgsl-refuse "record_construction"
     is IrFieldAccess (rec) (field) (ty) (sp) ->
      wgsl-expr-at ctx rec (depth + 1) & "." & wgsl-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "0"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> wgsl-refuse "field_store"
     is IrFork (body) (ty) (sp) ->
      wgsl-expr-at ctx body (depth + 1)
     is IrAwait (task) (ty) (sp) ->
      wgsl-expr-at ctx task (depth + 1)
-    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "0"
-    is IrError (msg) (ty) (sp) -> "0"
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> wgsl-refuse "try_expression"
+    is IrError (msg) (ty) (sp) -> wgsl-refuse "error_expression"
 
   wgsl-subst-expr : IRExpr, Text, IRExpr, Integer -> IRExpr
   wgsl-subst-expr (e) (n) (rep) (depth) =
@@ -240,14 +402,16 @@ Section: Expression Emission
    in when (chain.root)
     is IrName (n) (ty) (sp) ->
      if n == "__narrow" then wgsl-expr-at ctx (list-at (chain.args) 0) (depth + 1)
+     else if wgsl-is-f64-device-op n then wgsl-refuse "float_storage_buffer_access"
      else if wgsl-is-device-load n then wgsl-emit-device-load ctx (chain.args) depth
+     else if wgsl-is-bit-intrinsic n then wgsl-emit-bit ctx n (chain.args) depth
      else if wgsl-is-math-intrinsic n then wgsl-math-builtin n & "(" & wgsl-emit-fargs ctx (chain.args) depth & ")"
      else wgsl-sanitize n & "(" & wgsl-emit-args ctx (chain.args) depth & ")"
-    is otherwise -> "0"
+    is otherwise -> wgsl-refuse "call_through_a_computed_callee"
 
   wgsl-emit-device-load : WgslCtx, List IRExpr, Integer -> Text
   wgsl-emit-device-load (ctx) (args) (depth) =
-   if list-length args < 2 then "0"
+   if list-length args < 2 then wgsl-refuse "device_load_arity"
    else let base = list-at args 0
    in let idx = list-at args 1
    in wgsl-load-base ctx base & "[" & wgsl-expr-at ctx idx (depth + 1) & "]"
@@ -256,7 +420,7 @@ Section: Expression Emission
   wgsl-load-base (ctx) (base) =
    when base
     is IrName (n) (ty) (sp) -> wgsl-buf-name ctx n
-    is otherwise -> "0"
+    is otherwise -> wgsl-refuse "buffer_base_that_is_not_a_name"
 
   wgsl-emit-args : WgslCtx, List IRExpr, Integer -> Text
   wgsl-emit-args (ctx) (args) (depth) =
@@ -279,10 +443,60 @@ Section: Expression Emission
      else wgsl-expr-at ctx a (depth + 1)
     is otherwise -> wgsl-expr-at ctx a (depth + 1)
 
+  wgsl-i32-min : Integer = 0 - 2147483648
+
+  wgsl-is-int-lit : IRExpr -> Boolean
+  wgsl-is-int-lit (e) =
+   when e
+    is IrIntLit (n) (sp) -> True
+    is otherwise -> False
+
+  wgsl-int-lit-val : IRExpr -> Integer
+  wgsl-int-lit-val (e) =
+   when e
+    is IrIntLit (n) (sp) -> n
+    is otherwise -> 0
+
+  wgsl-folds : IRBinaryOp -> Boolean
+  wgsl-folds (op) =
+   when op
+    is IrAddInt | IrSubInt | IrMulInt -> True
+    is otherwise -> False
+
+  wgsl-fold-int : IRBinaryOp, Integer, Integer -> Integer
+  wgsl-fold-int (op) (a) (b) =
+   when op
+    is IrAddInt -> a + b
+    is IrSubInt -> a - b
+    is IrMulInt -> a * b
+    is otherwise -> 0
+
+ WGSL evaluates a constant expression at compile time and REFUSES one whose
+ value its type cannot hold, so 255 * 16777216 is rejected even though both
+ operands are in range. The plug IR is compiled with -Passes text-plug, which
+ replaces the default pipeline and therefore runs no constant folding, so the
+ multiply arrives here intact. Folding is done ONLY when the result is out of
+ i32 range, which leaves every expression that already worked byte-identical.
+
+  wgsl-const-fold-text : IRBinaryOp, IRExpr, IRExpr -> Text
+  wgsl-const-fold-text (op) (l) (r) =
+   if wgsl-folds op then
+    if wgsl-is-int-lit l then
+     if wgsl-is-int-lit r then
+      let v = wgsl-fold-int op (wgsl-int-lit-val l) (wgsl-int-lit-val r)
+      in if v > wgsl-i32-max then wgsl-i32-lit v
+         else if v < wgsl-i32-min then wgsl-i32-lit v
+         else ""
+     else ""
+    else ""
+   else ""
+
   wgsl-emit-binary : WgslCtx, IRBinaryOp, IRExpr, IRExpr, CodexType -> Text
   wgsl-emit-binary (ctx) (op) (l) (r) (ty) =
    if (wgsl-is-real ty | wgsl-is-real (ir-expr-type l)) | wgsl-is-real (ir-expr-type r) then
     "(" & wgsl-fexpr ctx l & " " & wgsl-bin-op op & " " & wgsl-fexpr ctx r & ")"
+   else let folded = wgsl-const-fold-text op l r
+   in if folded /= "" then folded
    else "(" & wgsl-iexpr ctx l & " " & wgsl-bin-op op & " " & wgsl-iexpr ctx r & ")"
 
   wgsl-emit-fargs : WgslCtx, List IRExpr, Integer -> Text
@@ -299,7 +513,7 @@ Section: Statement Body Emission
 
   wgsl-body : WgslCtx, IRExpr, Boolean, Integer -> Text
   wgsl-body (ctx) (e) (is-kernel) (depth) =
-   if depth >= 256 then ctx.indent & "return 0;\n"
+   if depth >= 256 then ctx.indent & "return " & wgsl-refuse "body_nested_past_256" & ";\n"
    else when e
     is IrLet (name) (ty) (val) (body) (sp) ->
      ctx.indent & "let " & wgsl-sanitize name & " = " & wgsl-expr ctx val & ";\n"
@@ -322,7 +536,11 @@ Section: Statement Body Emission
    let chain = collect-apply-chain e []
    in when (chain.root)
     is IrName (n) (ty) (sp) ->
-     if wgsl-is-device-store n then wgsl-emit-device-store ctx (chain.args) depth
+     if wgsl-is-f64-device-op n then
+      ctx.indent & "_ = " & wgsl-refuse "float_storage_buffer_access" & ";\n"
+     else if wgsl-is-device-store n then
+      wgsl-emit-device-store ctx (chain.args) depth
+       & (if is-kernel then "" else ctx.indent & "return 0;\n")
      else wgsl-tail-value ctx e is-kernel
     is otherwise -> wgsl-tail-value ctx e is-kernel
 
@@ -333,7 +551,7 @@ Section: Statement Body Emission
 
   wgsl-emit-device-store : WgslCtx, List IRExpr, Integer -> Text
   wgsl-emit-device-store (ctx) (args) (depth) =
-   if list-length args < 3 then ctx.indent & "// bad device-store\n"
+   if list-length args < 3 then ctx.indent & "_ = " & wgsl-refuse "device_store_arity" & ";\n"
    else let base = list-at args 0
    in let idx = list-at args 1
    in let val = list-at args 2
@@ -349,7 +567,15 @@ Section: Statement Body Emission
   wgsl-store-stmt : WgslCtx, IRExpr -> Text
   wgsl-store-stmt (ctx) (e) =
    let chain = collect-apply-chain e []
-   in wgsl-emit-device-store ctx (chain.args) 0
+   in if wgsl-store-is-f64 (chain.root) then
+    ctx.indent & "_ = " & wgsl-refuse "float_storage_buffer_access" & ";\n"
+   else wgsl-emit-device-store ctx (chain.args) 0
+
+  wgsl-store-is-f64 : IRExpr -> Boolean
+  wgsl-store-is-f64 (root) =
+   when root
+    is IrName (n) (ty) (sp) -> wgsl-is-f64-device-op n
+    is otherwise -> False
 
 Section: Act Block Emission
 
@@ -424,6 +650,140 @@ Section: Buffer Discovery
     is IrDoExec (e) (sp) ->
      wgsl-collect-act stmts (wgsl-collect-buffers e acc) (i + 1)
 
+Section: Buffer Forwarding
+
+ wgsl-collect-buffers reads ONE body, so a parameter that is a buffer only by
+ being PASSED ON is invisible to it. `earth-pixel` forwards `framebuf` and
+ `tex` to `earth-shade-pixel`, and `bh-pixel` forwards `framebuf` two hops
+ through the self-recursive `bh-march`. Such a parameter was typed i32 and, in
+ a kernel, became a uniform scalar rather than a storage binding, so the call
+ failed against the callee's pointer parameter with `got 'i32'`.
+
+ Everything downstream already handles a buffer parameter: wgsl-arg-piece
+ emits the binding address at the call site, wgsl-emit-params-b types the
+ pointer, and the loop lowering holds it out of the parameter moves. Only the
+ SET was wrong, so the forwarding is resolved to a fixpoint here, before
+ anything is emitted. Two rounds settle the globe kernels; the cap is a
+ termination guard, not a limit anyone should reach.
+
+  BufEntry = record {
+   be-name : Text,
+   be-bufs : List Text
+  }
+
+  wgsl-bufs-of : List BufEntry, Text -> List Text
+  wgsl-bufs-of (m) (n) = wgsl-bufs-of-loop m n 0
+
+  wgsl-bufs-of-loop : List BufEntry, Text, Integer -> List Text
+  wgsl-bufs-of-loop (m) (n) (i) =
+   if i >= list-length m then []
+   else let e = list-at m i
+   in if e.be-name == n then e.be-bufs
+   else wgsl-bufs-of-loop m n (i + 1)
+
+  wgsl-param-has : List IRParam, Text -> Boolean
+  wgsl-param-has (ps) (n) = wgsl-param-has-loop ps n 0
+
+  wgsl-param-has-loop : List IRParam, Text, Integer -> Boolean
+  wgsl-param-has-loop (ps) (n) (i) =
+   if i >= list-length ps then False
+   else if (list-at ps i).name == n then True
+   else wgsl-param-has-loop ps n (i + 1)
+
+  wgsl-callee-param-name : List IRDef, Text, Integer, Integer -> Text
+  wgsl-callee-param-name (defs) (cname) (idx) (i) =
+   if i >= list-length defs then ""
+   else let d = list-at defs i
+   in if d.name == cname then
+    (if idx < list-length (d.params) then (list-at (d.params) idx).name else "")
+   else wgsl-callee-param-name defs cname idx (i + 1)
+
+  wgsl-add-fwd : List IRParam, IRExpr, List Text -> List Text
+  wgsl-add-fwd (ps) (a) (acc) =
+   when a
+    is IrName (n) (ty) (sp) ->
+     if wgsl-param-has ps n then
+      (if wgsl-contains acc n then acc else list-push acc n)
+     else acc
+    is otherwise -> acc
+
+  wgsl-fwd-args : List IRDef, List BufEntry, List IRParam, Text, List IRExpr, List Text, Integer -> List Text
+  wgsl-fwd-args (defs) (m) (ps) (cname) (args) (acc) (i) =
+   if i >= list-length args then acc
+   else let pn = wgsl-callee-param-name defs cname i 0
+   in let hit = if pn == "" then False else wgsl-contains (wgsl-bufs-of m cname) pn
+   in let acc1 = if hit then wgsl-add-fwd ps (list-at args i) acc else acc
+   in wgsl-fwd-args defs m ps cname args acc1 (i + 1)
+
+  wgsl-fwd-root : List IRDef, List BufEntry, List IRParam, IRExpr, List IRExpr, List Text -> List Text
+  wgsl-fwd-root (defs) (m) (ps) (root) (args) (acc) =
+   when root
+    is IrName (n) (ty) (sp) -> wgsl-fwd-args defs m ps n args acc 0
+    is otherwise -> acc
+
+  wgsl-fwd-scan : List IRDef, List BufEntry, List IRParam, IRExpr, List Text -> List Text
+  wgsl-fwd-scan (defs) (m) (ps) (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let chain = collect-apply-chain e []
+     in let acc1 = wgsl-fwd-root defs m ps (chain.root) (chain.args) acc
+     in wgsl-fwd-scan-args defs m ps (chain.args) acc1 0
+    is IrLet (n) (ty) (v) (b) (sp) ->
+     wgsl-fwd-scan defs m ps b (wgsl-fwd-scan defs m ps v acc)
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     wgsl-fwd-scan defs m ps el (wgsl-fwd-scan defs m ps t (wgsl-fwd-scan defs m ps c acc))
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     wgsl-fwd-scan defs m ps r (wgsl-fwd-scan defs m ps l acc)
+    is IrNegate (o) (ty) (sp) ->
+     wgsl-fwd-scan defs m ps o acc
+    is IrAct (stmts) (ty) (sp) ->
+     wgsl-fwd-scan-act defs m ps stmts acc 0
+    is otherwise -> acc
+
+  wgsl-fwd-scan-args : List IRDef, List BufEntry, List IRParam, List IRExpr, List Text, Integer -> List Text
+  wgsl-fwd-scan-args (defs) (m) (ps) (args) (acc) (i) =
+   if i >= list-length args then acc
+   else wgsl-fwd-scan-args defs m ps args (wgsl-fwd-scan defs m ps (list-at args i) acc) (i + 1)
+
+  wgsl-fwd-scan-act : List IRDef, List BufEntry, List IRParam, List IRActStmt, List Text, Integer -> List Text
+  wgsl-fwd-scan-act (defs) (m) (ps) (stmts) (acc) (i) =
+   if i >= list-length stmts then acc
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (n) (ty) (v) (sp) ->
+     wgsl-fwd-scan-act defs m ps stmts (wgsl-fwd-scan defs m ps v acc) (i + 1)
+    is IrDoExec (e) (sp) ->
+     wgsl-fwd-scan-act defs m ps stmts (wgsl-fwd-scan defs m ps e acc) (i + 1)
+
+  wgsl-bufmap-init : List IRDef, Integer, List BufEntry -> List BufEntry
+  wgsl-bufmap-init (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in let e = BufEntry { be-name = d.name, be-bufs = wgsl-collect-buffers (d.body) [] }
+   in wgsl-bufmap-init defs (i + 1) (list-push acc e)
+
+  wgsl-bufmap-round : List IRDef, List BufEntry, Integer, List BufEntry -> List BufEntry
+  wgsl-bufmap-round (defs) (m) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in let nb = wgsl-fwd-scan defs m (d.params) (d.body) (wgsl-bufs-of m (d.name))
+   in wgsl-bufmap-round defs m (i + 1) (list-push acc (BufEntry { be-name = d.name, be-bufs = nb }))
+
+  wgsl-bufmap-size : List BufEntry, Integer, Integer -> Integer
+  wgsl-bufmap-size (m) (i) (acc) =
+   if i >= list-length m then acc
+   else wgsl-bufmap-size m (i + 1) (acc + list-length ((list-at m i).be-bufs))
+
+  wgsl-bufmap-fix : List IRDef, List BufEntry, Integer -> List BufEntry
+  wgsl-bufmap-fix (defs) (m) (iters) =
+   if iters <= 0 then m
+   else let m2 = wgsl-bufmap-round defs m 0 []
+   in if wgsl-bufmap-size m2 0 0 == wgsl-bufmap-size m 0 0 then m2
+   else wgsl-bufmap-fix defs m2 (iters - 1)
+
+  wgsl-bufmap : List IRDef -> List BufEntry
+  wgsl-bufmap (defs) = wgsl-bufmap-fix defs (wgsl-bufmap-init defs 0 []) 8
+
 Section: Function Classification
 
   wgsl-is-kernel : IRDef -> Boolean
@@ -457,9 +817,9 @@ Section: Helper Function Emission
    in let ty = if wgsl-contains bufs (p.name) then "ptr<storage, array<i32>, read_write>" else wgsl-ty-text (p.type-val)
    in sep & wgsl-sanitize (p.name) & " : " & ty & wgsl-emit-params-b params bufs (i + 1)
 
-  wgsl-emit-helper : WgslCtx, IRDef -> Text
-  wgsl-emit-helper (ctx) (d) =
-   let hbufs = wgsl-collect-buffers (d.body) []
+  wgsl-emit-helper : WgslCtx, List BufEntry, IRDef -> Text
+  wgsl-emit-helper (ctx) (bmap) (d) =
+   let hbufs = wgsl-bufs-of bmap (d.name)
    in let hctx = wgsl-helper-ctx ctx hbufs
    in if wgsl-is-self-recursive d then wgsl-emit-loop-helper hctx d
    else let name = wgsl-sanitize (d.name)
@@ -533,7 +893,7 @@ Section: Recursion to Loop
 
   wgsl-loop-body : WgslCtx, Text, List IRParam, IRExpr, Integer -> Text
   wgsl-loop-body (ctx) (selfn) (ps) (e) (depth) =
-   if depth >= 256 then "    return 0;\n"
+   if depth >= 256 then "    return " & wgsl-refuse "loop_body_nested_past_256" & ";\n"
    else when e
     is IrLet (n) (ty) (v) (b) (sp) ->
      "    let " & wgsl-sanitize n & " = " & wgsl-expr ctx v & ";\n"
@@ -607,10 +967,24 @@ Section: Kernel Emission
     & kprefix & "_" & wgsl-sanitize b & "_buf : array<i32>;\n"
     & wgsl-emit-buffer-decls kprefix buffers (i + 1)
 
-  wgsl-emit-uniform-fields : List Text, Integer -> Text
-  wgsl-emit-uniform-fields (scalars) (i) =
+ A uniform field was typed i32 whatever the parameter was, so a kernel with a
+ Real scalar parameter declared an i32 field and then used it as an f32. WGSL
+ has almost no implicit conversion (6.1.2), so that is a type error rather than
+ a silent coercion, but it is the parameter's own type that decides it.
+
+  wgsl-scalar-ty : List IRParam, Text, Integer -> Text
+  wgsl-scalar-ty (ps) (n) (i) =
+   if i >= list-length ps then "i32"
+   else let p = list-at ps i
+   in if p.name == n then wgsl-ty-text (p.type-val)
+   else wgsl-scalar-ty ps n (i + 1)
+
+  wgsl-emit-uniform-fields : List IRParam, List Text, Integer -> Text
+  wgsl-emit-uniform-fields (ps) (scalars) (i) =
    if i >= list-length scalars then ""
-   else "  " & wgsl-sanitize (list-at scalars i) & " : i32,\n" & wgsl-emit-uniform-fields scalars (i + 1)
+   else let n = list-at scalars i
+   in "  " & wgsl-sanitize n & " : " & wgsl-scalar-ty ps n 0 & ",\n"
+    & wgsl-emit-uniform-fields ps scalars (i + 1)
 
   wgsl-emit-scalar-lets : Text, Text, List Text, Integer -> Text
   wgsl-emit-scalar-lets (indent) (uvar) (scalars) (i) =
@@ -618,10 +992,10 @@ Section: Kernel Emission
    else let s = wgsl-sanitize (list-at scalars i)
    in indent & "let " & s & " = " & uvar & "." & s & ";\n" & wgsl-emit-scalar-lets indent uvar scalars (i + 1)
 
-  wgsl-emit-kernel : WgslCtx, IRDef -> Text
-  wgsl-emit-kernel (ctx) (d) =
+  wgsl-emit-kernel : WgslCtx, List BufEntry, IRDef -> Text
+  wgsl-emit-kernel (ctx) (bmap) (d) =
    let kname = wgsl-sanitize (d.name)
-   in let buffers = wgsl-collect-buffers (d.body) []
+   in let buffers = wgsl-bufs-of bmap (d.name)
    in let scalars = wgsl-scalar-params (d.params) buffers 0 []
    in let kctx = WgslCtx { type-defs = ctx.type-defs, indent = "  ", buffers = buffers, kprefix = kname }
    in let buf-decls = wgsl-emit-buffer-decls kname buffers 0
@@ -629,7 +1003,7 @@ Section: Kernel Emission
    in let has-scalars = list-length scalars > 0
    in let ubinding = integer-to-text (list-length buffers)
    in let uni-decl = if has-scalars then
-       "struct U_" & kname & " {\n" & wgsl-emit-uniform-fields scalars 0 & "}\n"
+       "struct U_" & kname & " {\n" & wgsl-emit-uniform-fields (d.params) scalars 0 & "}\n"
        & "@group(0) @binding(" & ubinding & ") var<uniform> " & uvar & " : U_" & kname & ";\n"
       else ""
    in let scalar-lets = if has-scalars then wgsl-emit-scalar-lets "  " uvar scalars 0 else ""
@@ -718,6 +1092,12 @@ Section: Reachability
 
 Section: Chapter Emission
 
+ The loop's progress test compares a length captured BEFORE the pass, not the
+ length of `acc.done` read after it: `list-push` writes into the caller's list
+ whenever it has spare capacity (COMPILER-42), so `acc2.done` and `acc.done`
+ can be the same object and comparing their lengths compares a list with
+ itself. That test is then true on the first pass whatever the pass did.
+
  WGSL has no forward declarations: a function or module-scope const must be
  declared before it is used, and the IR does not hand us defs in dependency
  order. So helpers are emitted by a topological pass -- a def is emitted once
@@ -747,11 +1127,11 @@ Section: Chapter Emission
    in if wgsl-contains ys x then wgsl-intersect xs ys (i + 1) (list-push acc x)
    else wgsl-intersect xs ys (i + 1) acc
 
-  wgsl-emit-one : WgslCtx, IRDef -> Text
-  wgsl-emit-one (ctx) (d) =
+  wgsl-emit-one : WgslCtx, List BufEntry, IRDef -> Text
+  wgsl-emit-one (ctx) (bmap) (d) =
    if list-length (d.params) == 0 then
     "const " & wgsl-sanitize (d.name) & " : " & wgsl-ty-text (d.type-val) & " = " & wgsl-expr ctx (d.body) & ";\n"
-   else wgsl-emit-helper ctx d
+   else wgsl-emit-helper ctx bmap d
 
   wgsl-ready-callees : List Text, List Text, List Text, Text, Integer -> Boolean
   wgsl-ready-callees (cs) (emitset) (done) (selfname) (i) =
@@ -761,40 +1141,128 @@ Section: Chapter Emission
    else if wgsl-contains done c then wgsl-ready-callees cs emitset done selfname (i + 1)
    else False
 
-  wgsl-topo-pass : WgslCtx, List IRDef, List Text, EmitAcc, Integer -> EmitAcc
-  wgsl-topo-pass (ctx) (defs) (emitset) (acc) (i) =
+  wgsl-topo-pass : WgslCtx, List BufEntry, List IRDef, List Text, EmitAcc, Integer -> EmitAcc
+  wgsl-topo-pass (ctx) (bmap) (defs) (emitset) (acc) (i) =
    if i >= list-length defs then acc
    else let d = list-at defs i
    in let skip = ((wgsl-is-kernel d) | (wgsl-contains emitset (d.name) == False)) | (wgsl-contains (acc.done) (d.name))
-   in if skip then wgsl-topo-pass ctx defs emitset acc (i + 1)
+   in if skip then wgsl-topo-pass ctx bmap defs emitset acc (i + 1)
    else let cs = wgsl-collect-calls (d.body) []
    in if wgsl-ready-callees cs emitset (acc.done) (d.name) 0 then
-     wgsl-topo-pass ctx defs emitset (EmitAcc { text = (acc.text) & wgsl-emit-one ctx d, done = list-push (acc.done) (d.name) }) (i + 1)
-   else wgsl-topo-pass ctx defs emitset acc (i + 1)
+     wgsl-topo-pass ctx bmap defs emitset (EmitAcc { text = (acc.text) & wgsl-emit-one ctx bmap d, done = list-push (acc.done) (d.name) }) (i + 1)
+   else wgsl-topo-pass ctx bmap defs emitset acc (i + 1)
 
-  wgsl-topo-loop : WgslCtx, List IRDef, List Text, EmitAcc, Integer -> EmitAcc
-  wgsl-topo-loop (ctx) (defs) (emitset) (acc) (iters) =
+  wgsl-topo-loop : WgslCtx, List BufEntry, List IRDef, List Text, EmitAcc, Integer -> EmitAcc
+  wgsl-topo-loop (ctx) (bmap) (defs) (emitset) (acc) (iters) =
    if iters <= 0 then acc
-   else let acc2 = wgsl-topo-pass ctx defs emitset acc 0
-   in if list-length (acc2.done) == list-length (acc.done) then acc2
-   else wgsl-topo-loop ctx defs emitset acc2 (iters - 1)
+   else let before = list-length (acc.done)
+   in let acc2 = wgsl-topo-pass ctx bmap defs emitset acc 0
+   in if list-length (acc2.done) == before then acc2
+   else wgsl-topo-loop ctx bmap defs emitset acc2 (iters - 1)
 
-  wgsl-emit-kernels : WgslCtx, List IRDef, Integer -> Text
-  wgsl-emit-kernels (ctx) (defs) (i) =
+  wgsl-emit-kernels : WgslCtx, List BufEntry, List IRDef, Integer -> Text
+  wgsl-emit-kernels (ctx) (bmap) (defs) (i) =
    if i >= list-length defs then ""
    else let d = list-at defs i
-   in if wgsl-is-kernel d then wgsl-emit-kernel ctx d & wgsl-emit-kernels ctx defs (i + 1)
-   else wgsl-emit-kernels ctx defs (i + 1)
+   in if wgsl-is-kernel d then wgsl-emit-kernel ctx bmap d & wgsl-emit-kernels ctx bmap defs (i + 1)
+   else wgsl-emit-kernels ctx bmap defs (i + 1)
 
+Section: Undelivered Definitions
+
+ A definition that is reachable, called, and never emitted produces a module
+ that calls a function nobody defined, and the plug used to say NOTHING: the
+ validator caught it as `unresolved call target`, four faults deep, with no
+ hint of which pass dropped it. An instrument that cannot express a failure
+ reports success (L-STATES, TheKeyboardWasNeverSilent).
+
+ So this does not answer "something was dropped". It answers with a NAMED
+ STATE per definition, because "not blocked" and "blocked by X" send you to
+ different places:
+
+   BLOCKED BY <names>  the topological pass never saw these callees finish,
+                       so the fault is in readiness or in emission ORDER
+   READY, NEVER EMITTED  nothing was blocking it, so the pass stopped early:
+                       the iteration cap, or the loop's own exit condition
+
+ It reads only emitset, done and the definition list, so it cannot be fooled
+ by the emission path it reports on.
+
+  wgsl-missing-names : List Text, List Text, Integer, List Text -> List Text
+  wgsl-missing-names (emitset) (done) (i) (acc) =
+   if i >= list-length emitset then acc
+   else let n = list-at emitset i
+   in let acc1 = if wgsl-contains done n then acc else list-push acc n
+   in wgsl-missing-names emitset done (i + 1) acc1
+
+  wgsl-calls-of : List IRDef, Text, Integer -> List Text
+  wgsl-calls-of (defs) (n) (i) =
+   if i >= list-length defs then []
+   else let d = list-at defs i
+   in if d.name == n then wgsl-collect-calls (d.body) []
+   else wgsl-calls-of defs n (i + 1)
+
+  wgsl-blockers-of : List Text, List Text, List Text, Text, Integer, List Text -> List Text
+  wgsl-blockers-of (calls) (emitset) (done) (selfn) (i) (acc) =
+   if i >= list-length calls then acc
+   else let c = list-at calls i
+   in let skip = ((c == selfn) | (wgsl-contains emitset c == False)) | (wgsl-contains done c)
+   in let acc1 = if skip then acc else (if wgsl-contains acc c then acc else list-push acc c)
+   in wgsl-blockers-of calls emitset done selfn (i + 1) acc1
+
+  wgsl-diag-line : List IRDef, List Text, List Text, Text -> Text
+  wgsl-diag-line (defs) (emitset) (done) (n) =
+   let cs = wgsl-calls-of defs n 0
+   in let bs = wgsl-blockers-of cs emitset done n 0 []
+   in if list-length cs == 0 then
+    "//   " & wgsl-sanitize n & " -- NO CALLS FOUND: either this definition is not in the chapter list or its body collected nothing. This state is the INSTRUMENT failing to look, not a finding about the pass.\n"
+   else if list-length bs == 0 then
+    "//   " & wgsl-sanitize n & " -- READY, NEVER EMITTED (" & integer-to-text (list-length cs) & " callee name(s) examined, none outstanding, so the pass stopped early)\n"
+   else "//   " & wgsl-sanitize n & " -- BLOCKED BY: " & wgsl-join-names bs 0 & "\n"
+
+  wgsl-diag-lines : List IRDef, List Text, List Text, List Text, Integer -> Text
+  wgsl-diag-lines (defs) (emitset) (done) (missing) (i) =
+   if i >= list-length missing then ""
+   else wgsl-diag-line defs emitset done (list-at missing i)
+    & wgsl-diag-lines defs emitset done missing (i + 1)
+
+ In wgsl-topo-pass, "ready" and "emitted" are the SAME event: a definition
+ judged ready is emitted on the spot. So a definition that was never emitted
+ was never judged ready in any pass, and the question is only whether it WOULD
+ be judged ready now. `extra` answers that by running one more pass after the
+ loop and counting what it adds, which separates the two remaining causes:
+
+   extra > 0   the loop stopped while work was still available, so the fault
+               is its exit condition or its iteration budget
+   extra == 0  a pass still will not take it, so wgsl-ready-callees disagrees
+               with the blocker list computed here, and the two must be
+               compared directly
+
+  wgsl-diagnostics : List IRDef, List Text, List Text, Integer -> Text
+  wgsl-diagnostics (defs) (emitset) (done) (extra) =
+   let missing = wgsl-missing-names emitset done 0 []
+   in if list-length missing == 0 then ""
+   else "// WGSL PLUG REFUSAL: " & integer-to-text (list-length missing)
+    & " reachable definition(s) were NOT emitted, and this module calls them.\n"
+    & "// emitset " & integer-to-text (list-length emitset)
+    & ", emitted " & integer-to-text (list-length done)
+    & ", and ONE MORE PASS after the loop would emit " & integer-to-text extra & " of them.\n"
+    & wgsl-diag-lines defs emitset done missing 0
+    & "// This is the plug's fault, not the shader's. The module below is invalid.\n\n"
   emit-wgsl-chapter : IRChapter, List ATypeDef -> Text
   emit-wgsl-chapter (ch) (tds) =
    let ctx = empty-wgsl-ctx tds
    in let has-k = wgsl-has-kernel (ch.defs) 0
    in let alldefs = wgsl-all-helper-names (ch.defs) 0 []
    in let emitset = if has-k then wgsl-intersect (wgsl-reachable (ch.defs)) alldefs 0 [] else alldefs
+   in let bmap = wgsl-bufmap (ch.defs)
    in let acc0 = EmitAcc { text = "", done = [] }
-   in let helpers = (wgsl-topo-loop ctx (ch.defs) emitset acc0 (list-length (ch.defs) + 1)).text
+   in let emitted = wgsl-topo-loop ctx bmap (ch.defs) emitset acc0 (list-length (ch.defs) + 1)
+   in let emitted-count = list-length (emitted.done)
+   in let extra = wgsl-topo-pass ctx bmap (ch.defs) emitset emitted 0
+   in let grew = list-length (extra.done) - emitted-count
+   in let helpers = emitted.text
    in "// Generated by Codex WGSL Plug\n"
     & "// Compute shaders lowered from Codex [Device] kernels.\n\n"
+    & wgsl-diagnostics (ch.defs) emitset (emitted.done) grew
     & helpers
-    & wgsl-emit-kernels ctx (ch.defs) 0
+    & wgsl-emit-kernels ctx bmap (ch.defs) 0

@@ -1,6 +1,7 @@
 Chapter: Rust Emitter
   cites Foreword chapter RankedTextSet
   cites Foreword chapter Sort
+  cites Foreword chapter StringUtils
   cites Foreword chapter CCE
 
 Section: Keywords and Sanitization
@@ -589,9 +590,24 @@ Section: Binary Emission
     is IrOr -> "||"
     is IrAppendText | IrAppendList | IrConsList -> "+"
 
+ A plain Integer traps on signed overflow (COMPILER-36 contract): the checked
+ primitive unwrapped, which panics in every build profile where a bare `+`
+ wraps silently in release; the wrapping band is the `wrapping_*` family.
+
+  rs-int-op-method : IRBinaryOp, Boolean -> Text
+  rs-int-op-method (op) (wraps) =
+   (if wraps then "wrapping_" else "checked_") &
+   (when op
+    is IrAddInt -> "add"
+    is IrSubInt -> "sub"
+    is otherwise -> "mul")
+
   emit-rs-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, List CtorEnumEntry -> Text
   emit-rs-binary (op) (l) (r) (ty) (arities) (ctor-map) =
    when op
+    is IrAddInt | IrSubInt | IrMulInt ->
+     if int-ty-wraps ty then "(" & emit-rs-expr l arities ctor-map & ")." & rs-int-op-method op True & "(" & emit-rs-expr r arities ctor-map & ")"
+     else "(" & emit-rs-expr l arities ctor-map & ")." & rs-int-op-method op False & "(" & emit-rs-expr r arities ctor-map & ").expect(\"integer overflow\")"
     is IrAppendText -> "format!(\"{}{}\", " & emit-rs-expr l arities ctor-map & ", " & emit-rs-expr r arities ctor-map & ")"
     is IrAppendList -> "{ let mut v = " & emit-rs-expr l arities ctor-map & ".clone(); v.extend(" & emit-rs-expr r arities ctor-map & ".iter().cloned()); v }"
     is IrConsList -> "{ let mut v = vec![" & emit-rs-expr l arities ctor-map & "]; v.extend(" & emit-rs-expr r arities ctor-map & ".iter().cloned()); v }"
@@ -902,12 +918,13 @@ Section: Chapter Emission
   emit-rs-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let ctor-map = build-ctor-enum-map type-defs 0 []
-   in let header = "#![allow(non_snake_case, unused_variables, dead_code, unused_mut, unreachable_patterns, unused_imports)]\n\nstatic mut _CODEX_STATE: i64 = 0;\n\n" & rs-text-builtins
    in let type-text = emit-rs-type-defs type-defs 0
    in let defs-text = emit-rs-defs-list (m.defs) 0 arities ctor-map
    in let entry = if has-opening (m.defs) 0 then emit-rs-entry-point (rs-opening-return-type (m.defs))
       else "fn main() {\n    println!(\"Chapter loaded.\");\n}\n"
-   in header & type-text & defs-text & entry
+   in let body = type-text & defs-text & entry
+   in let header = "#![allow(non_snake_case, unused_variables, dead_code, unused_mut, unreachable_patterns, unused_imports)]\n\nstatic mut _CODEX_STATE: i64 = 0;\n\n" & rs-text-builtins-for body
+   in header & body
 
  `str::replace` with an empty pattern inserts the replacement between every
  character, `str::split` on an empty pattern yields an empty field either
@@ -915,11 +932,15 @@ Section: Chapter Emission
  anything that is not wholly numeric. Codex answers the string unchanged,
  one field, and a leading-digit prefix or 0.
 
-  rs-text-builtins : Text
-  rs-text-builtins =
-   "fn _cx_text_replace(s: &str, a: &str, b: &str) -> String {\n    if a.is_empty() { return s.to_string(); }\n    s.replace(a, b)\n}\n\n"
-   & "fn _cx_text_split(s: &str, sep: &str) -> Vec<String> {\n    if sep.is_empty() { return vec![s.to_string()]; }\n    s.split(sep).map(|x| x.to_string()).collect::<Vec<String>>()\n}\n\n"
-   & "fn _cx_text_to_integer(s: &str) -> i64 {\n    let bs = s.as_bytes();\n    let mut i: usize = 0;\n    let mut neg = false;\n    if !bs.is_empty() && bs[0] == b'-' { neg = true; i = 1; }\n    let mut v: i64 = 0;\n    while i < bs.len() && bs[i] >= b'0' && bs[i] <= b'9' {\n        v = v * 10 + (bs[i] - b'0') as i64;\n        i += 1;\n    }\n    if neg { -v } else { v }\n}\n\n"
+  rs-helper-when-used : Text, Text, Text -> Text
+  rs-helper-when-used (body) (name) (src) =
+   if text-contains body name then src else ""
+
+  rs-text-builtins-for : Text -> Text
+  rs-text-builtins-for (body) =
+   rs-helper-when-used body "_cx_text_replace" "fn _cx_text_replace(s: &str, a: &str, b: &str) -> String {\n    if a.is_empty() { return s.to_string(); }\n    s.replace(a, b)\n}\n\n"
+   & rs-helper-when-used body "_cx_text_split" "fn _cx_text_split(s: &str, sep: &str) -> Vec<String> {\n    if sep.is_empty() { return vec![s.to_string()]; }\n    s.split(sep).map(|x| x.to_string()).collect::<Vec<String>>()\n}\n\n"
+   & rs-helper-when-used body "_cx_text_to_integer" "fn _cx_text_to_integer(s: &str) -> i64 {\n    let bs = s.as_bytes();\n    let mut i: usize = 0;\n    let mut neg = false;\n    if !bs.is_empty() && bs[0] == b'-' { neg = true; i = 1; }\n    let mut v: i64 = 0;\n    while i < bs.len() && bs[i] >= b'0' && bs[i] <= b'9' {\n        v = v * 10 + (bs[i] - b'0') as i64;\n        i += 1;\n    }\n    if neg { -v } else { v }\n}\n\n"
 
   is-mktup-name : Text -> Boolean
   is-mktup-name (n) =

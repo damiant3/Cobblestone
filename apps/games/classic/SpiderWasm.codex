@@ -54,8 +54,13 @@ Section: The Card
 
 Section: The Browser Interface
 
-  sp-wasm-new : Integer -> SpiderState
-  sp-wasm-new (seed) = spider-new seed
+ The suit count is the page's to choose: one, two and four are the game's
+ whole difficulty range. Clamped rather than trusted, because it arrives
+ from a browser.
+
+  sp-wasm-new : Integer, Integer -> SpiderState
+  sp-wasm-new (seed) (suits) =
+    spider-new seed (if suits < 1 then 1 else if suits > 8 then 8 else suits)
 
   sp-wasm-col-size : SpiderState, Integer -> Integer
   sp-wasm-col-size (st) (c) =
@@ -90,6 +95,13 @@ Section: The Browser Interface
     else if i >= list-length col then 0
     else sp-seq-len col i
 
+ `sp-can-move` asks only whether the destination accepts the card, because
+ its callers pick a legal sequence start before they call it. Reached from a
+ browser that is not true: anything may be asked for. So the cards being
+ lifted must themselves BE a sequence -- the run starting at seq-start has to
+ reach the end of the column -- or a page could carry off an arbitrary
+ handful and the engine would take it.
+
   sp-wasm-can-move : SpiderState, Integer, Integer, Integer -> Integer
   sp-wasm-can-move (st) (from-c) (seq-start) (to-c) =
     if from-c < 0 then 0
@@ -100,6 +112,7 @@ Section: The Browser Interface
     else let from-col = sp-get-col st from-c
     in if seq-start < 0 then 0
     else if seq-start >= list-length from-col then 0
+    else if sp-seq-len from-col seq-start /= (list-length from-col) - seq-start then 0
     else if sp-can-move from-col (sp-get-col st to-c) seq-start then 1
     else 0
 

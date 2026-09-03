@@ -1,0 +1,275 @@
+Chapter: Tower
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Num
+  cites Safari chapter Trig
+  cites Safari chapter Geom
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Foreword chapter ListUtils
+
+ The radio tower beyond each intersection: a tall square-base lattice pyramid of
+ metal rods tapering to an apex with a pink beacon. The owner places it; this
+ chapter only renders.
+
+ A port of wasm/tower.zig.
+
+ THIS IS THE FLAT FORM ONLY -- the four faces drawn as a billboard lattice, which
+ is what the TypeScript draws beyond its far distance. The zig diverges from the
+ TypeScript in ONE way and the port keeps the divergence: every rod stays a 3D
+ segment and is near-clipped BEFORE projecting, rather than interpolating points
+ that are already on screen. The TypeScript could skip that because it only used
+ the flat path for far towers, where nothing straddles the eye plane; here the
+ flat path runs at all distances, so a tower you pass close would otherwise streak
+ a rod clear across the viewport.
+
+ The apex beacon BLINKS on the step clock, as a pure function of it, so it freezes
+ on pause and runs backwards on reverse -- which is why the phase can be negative
+ and why the modulo has to be the floored one.
+
+ We say:
+
+Section: Dimensions
+
+  tower-height : Real
+  tower-height = 80.0
+
+ Half the twelve-metre square base edge.
+
+  tower-half : Real
+  tower-half = 6.0
+
+ A cross-beam ring every this many metres, and X-braces on the bottom two stages.
+
+  stage-height : Real
+  stage-height = 20.0
+
+  brace-stages : Integer
+  brace-stages = 2
+
+  rod-half : Real
+  rod-half = 0.12
+
+  rod-w : Real
+  rod-w = rod-half * 2.0
+
+  tower-metal : Integer
+  tower-metal = 10133672
+
+ A local ground bulge, stronger than the road's, so a far tower sinks until its
+ base meets the horizon.
+
+  earth-radius : Real
+  earth-radius = 20000.0
+
+  beacon-radius : Real
+  beacon-radius = 3.0
+
+  beacon-color : Integer
+  beacon-color = 16723942
+
+ Frames for a full invisible-to-bright-to-invisible blink.
+
+  beacon-period : Real
+  beacon-period = 120.0
+
+Section: The Beacon Clock
+
+ Spread each tower's blink phase so they do not pulse in unison: 37 is coprime to
+ the 120-frame period, so successive owners land on distinct offsets.
+
+  beacon-offset-for : Integer -> Real
+  beacon-offset-for (n) = real-from-int ((n * 37) - (((n * 37) / 120) * 120))
+
+ Brightness is 0 at the cycle ends and 1 in the middle.
+
+ THE DOUBLE MODULO IS THE ZIG'S AND IS KEPT. `@mod` is already non-negative for a
+ positive divisor, so `@mod(@mod(p, P) + P, P)` is belt and braces -- but the port
+ is a port, and a phase really can be negative here because the clock runs
+ backwards on reverse.
+
+  beacon-brightness : Real -> Real
+  beacon-brightness (phase) =
+    let wrapped = mod-real (mod-real phase beacon-period + beacon-period) beacon-period
+    in (1.0 - r-cos (2.0 * pi * wrapped / beacon-period)) / 2.0
+
+Section: The Square
+
+ The four base corners in half-base units, before the yaw.
+
+  corner-u : Integer -> Real
+  corner-u (k) = if k == 0 then 0.0 - 1.0 else if k == 1 then 1.0 else if k == 2 then 1.0 else 0.0 - 1.0
+
+  corner-v : Integer -> Real
+  corner-v (k) = if k == 0 then 0.0 - 1.0 else if k == 1 then 0.0 - 1.0 else if k == 2 then 1.0 else 1.0
+
+ Base corner k in the owning segment's bottom-left frame, given the tower's base
+ centre and yaw. The caller maps it into the rider frame. At the apex the square
+ shrinks to a point at the centre, so the apex needs no helper.
+
+  base-corner-ax : Integer, Real, Real, Real -> AX
+  base-corner-ax (k) (a0) (x0) (yaw) =
+    let du = corner-u k * tower-half
+    in let dv = corner-v k * tower-half
+    in let cy = r-cos yaw
+    in let sy = r-sin yaw
+    in AX { a = a0 + (du * sy + dv * cy), x = x0 + (du * cy - dv * sy) }
+
+Section: Geometry
+
+  tower-ground-drop : RiderPt -> Real
+  tower-ground-drop (p) = (p.right * p.right + p.forward * p.forward) / (2.0 * earth-radius)
+
+  lerp3v : Vec3, Vec3, Real -> Vec3
+  lerp3v (a) (b) (t) =
+    Vec3 {
+      right = a.right + (b.right - a.right) * t,
+      forward = a.forward + (b.forward - a.forward) * t,
+      height = a.height + (b.height - a.height) * t
+    }
+
+ Cross-section corner k at world height h, lowered by the ground drop. The square
+ shrinks linearly toward the apex at the centre, so it is a base-to-centre lerp by
+ h over the height. The corner stays a 3D point so each rod can be near-clipped
+ before projecting.
+
+  corner-at : List RiderPt, RiderPt, Integer, Real, Real -> Vec3
+  corner-at (base) (center) (k) (h) (drop) =
+    let t = h / tower-height
+    in let bk = list-at base k
+    in Vec3 { right = bk.right + (center.right - bk.right) * t, forward = bk.forward + (center.forward - bk.forward) * t, height = h - drop }
+
+Section: Rods
+
+ A thick screen-space line as a filled quad of width wpx.
+
+  bar : ScreenPt, ScreenPt, Real -> List DrawCmd
+  bar (a) (b) (wpx) =
+    let dx = b.x - a.x
+    in let dy = b.y - a.y
+    in let raw = real-sqrt (dx * dx + dy * dy)
+    in let len = if raw < 0.0001 then 1.0 else raw
+    in rod-quad a b ((0.0 - dy) / len * wpx / 2.0) (dx / len * wpx / 2.0)
+
+ NAMED FOR ITS SECTION RATHER THAN ITS SHAPE, and the rename was forced by the
+ bare-metal arm: `bar-quad` is also GuardRail's, and Codex chapters share one flat
+ namespace. Each chapter sees its own definition so both compiled and ran
+ correctly -- but a mention in a chapter that defines NEITHER resolves by the
+ order the build globs files, which is not a property anything should rely on.
+ The seed diagnoses it (CDX3006); the zig arm says nothing.
+
+  rod-quad : ScreenPt, ScreenPt, Real, Real -> List DrawCmd
+  rod-quad (a) (b) (ox) (oy) =
+    push-poly tower-metal [ScreenPt { x = a.x + ox, y = a.y + oy }, ScreenPt { x = b.x + ox, y = b.y + oy }, ScreenPt { x = b.x - ox, y = b.y - oy }, ScreenPt { x = a.x - ox, y = a.y - oy }]
+
+ One rod, near-clipped: a 3D segment clipped to the near plane before projecting,
+ so a rod straddling the eye plane cannot fling a quad across the viewport. Both
+ ends behind means skip; one behind means pull it to the plane.
+
+  bar3d : Vec3, Vec3, Real, Real, Real -> List DrawCmd
+  bar3d (a) (b) (wpx) (cf) (view-w) =
+    let a-in = a.forward >= near
+    in let b-in = b.forward >= near
+    in if a-in then (if b-in then bar3d-draw a b wpx cf view-w else bar3d-draw a (bar3d-cut a b) wpx cf view-w)
+       else (if b-in then bar3d-draw (bar3d-cut a b) b wpx cf view-w else [])
+
+  bar3d-cut : Vec3, Vec3 -> Vec3
+  bar3d-cut (a) (b) = lerp3v a b ((near - a.forward) / (b.forward - a.forward))
+
+  bar3d-draw : Vec3, Vec3, Real, Real, Real -> List DrawCmd
+  bar3d-draw (a) (b) (wpx) (cf) (view-w) =
+    bar (project a cf view-w) (project b cf view-w) wpx
+
+Section: The Tower
+
+ Rod width in pixels at this depth, from two ground points one metre apart.
+
+  rod-px : Real, Real, Real -> Real
+  rod-px (forward) (cf) (view-w) =
+    let p1 = project (Vec3 { right = 1.0, forward = forward, height = 0.0 }) cf view-w
+    in let p0 = project (Vec3 { right = 0.0, forward = forward, height = 0.0 }) cf view-w
+    in rod-w * (p1.x - p0.x)
+
+
+  tower-legs : List RiderPt, RiderPt, Vec3, Real, Real, Real, Real, Real, Integer -> List DrawCmd
+  tower-legs (base) (center) (apex) (clip-h) (drop) (wpx) (cf) (view-w) (k) =
+    if k >= 4 then []
+    else (bar3d (corner-at base center k clip-h drop) apex wpx cf view-w) & tower-legs base center apex clip-h drop wpx cf view-w (k + 1)
+
+ Cross-beam rings at 20, 40 and 60, above the drop.
+
+  ring-at : List RiderPt, RiderPt, Real, Real, Real, Real, Real, Integer -> List DrawCmd
+  ring-at (base) (center) (h) (drop) (wpx) (cf) (view-w) (k) =
+    if k >= 4 then []
+    else (bar3d (corner-at base center k h drop) (corner-at base center ((k + 1) - (((k + 1) / 4) * 4)) h drop) wpx cf view-w) & ring-at base center h drop wpx cf view-w (k + 1)
+
+  rings : List RiderPt, RiderPt, Real, Real, Real, Real, Real, Real -> List DrawCmd
+  rings (base) (center) (h) (clip-h) (drop) (wpx) (cf) (view-w) =
+    if h >= tower-height then []
+    else (if h <= clip-h then [] else ring-at base center h drop wpx cf view-w 0) & rings base center (h + stage-height) clip-h drop wpx cf view-w
+
+ X-braces on the bottom stages, each diagonal clipped at the drop height.
+
+  brace-at : List RiderPt, RiderPt, Real, Real, Real, Real, Real, Real, Real, Integer -> List DrawCmd
+  brace-at (base) (center) (lo) (hi) (f) (drop) (wpx) (cf) (view-w) (k) =
+    if k >= 4 then []
+    else brace-pair base center lo hi f drop wpx cf view-w k
+
+  brace-pair : List RiderPt, RiderPt, Real, Real, Real, Real, Real, Real, Real, Integer -> List DrawCmd
+  brace-pair (base) (center) (lo) (hi) (f) (drop) (wpx) (cf) (view-w) (k) =
+    let j = (k + 1) - (((k + 1) / 4) * 4)
+    in let kj = bar3d (lerp3v (corner-at base center k lo drop) (corner-at base center j hi drop) f) (corner-at base center j hi drop) wpx cf view-w
+    in let jk = bar3d (lerp3v (corner-at base center j lo drop) (corner-at base center k hi drop) f) (corner-at base center k hi drop) wpx cf view-w
+    in kj & jk & brace-at base center lo hi f drop wpx cf view-w (k + 1)
+
+  braces : List RiderPt, RiderPt, Real, Real, Real, Real, Real, Integer -> List DrawCmd
+  braces (base) (center) (clip-h) (drop) (wpx) (cf) (view-w) (stage) =
+    if stage >= brace-stages then []
+    else brace-stage base center clip-h drop wpx cf view-w stage
+
+  brace-stage : List RiderPt, RiderPt, Real, Real, Real, Real, Real, Integer -> List DrawCmd
+  brace-stage (base) (center) (clip-h) (drop) (wpx) (cf) (view-w) (stage) =
+    let lo = real-from-int stage * stage-height
+    in let hi = lo + stage-height
+    in let rest = braces base center clip-h drop wpx cf view-w (stage + 1)
+    in if hi <= clip-h then rest
+       else (brace-at base center lo hi ((real-max lo clip-h - lo) / stage-height) drop wpx cf view-w 0) & rest
+
+ The apex beacon: a pink disc whose SIZE scales with distance but whose BRIGHTNESS
+ is the blink alpha -- a depthless glow composited over whatever is behind. Skips
+ the invisible part of the cycle, and a sub-pixel disc.
+
+  draw-beacon : ScreenPt, Real, Real, Real, Real -> List DrawCmd
+  draw-beacon (apex-s) (forward) (cf) (view-w) (bright) =
+    if bright < 0.02 then []
+    else beacon-disc apex-s forward cf view-w bright
+
+  beacon-disc : ScreenPt, Real, Real, Real, Real -> List DrawCmd
+  beacon-disc (apex-s) (forward) (cf) (view-w) (bright) =
+    let p1 = project (Vec3 { right = 1.0, forward = forward, height = 0.0 }) cf view-w
+    in let p0 = project (Vec3 { right = 0.0, forward = forward, height = 0.0 }) cf view-w
+    in let r = beacon-radius * (p1.x - p0.x)
+    in if r < 0.5 then [] else push-beacon beacon-color apex-s.x apex-s.y r bright
+
+ Render a tower given its four base corners and base centre already mapped into
+ the rider frame. Sinks it by the local ground drop; a tower sunk past its own
+ height is below the horizon and is not drawn at all.
+
+  draw-flat : List RiderPt, RiderPt, Real, Real, Real -> List DrawCmd
+  draw-flat (base) (center) (cf) (view-w) (beacon-phase) =
+    if center.forward < near then []
+    else draw-flat-body base center cf view-w beacon-phase (tower-ground-drop center)
+
+  draw-flat-body : List RiderPt, RiderPt, Real, Real, Real, Real -> List DrawCmd
+  draw-flat-body (base) (center) (cf) (view-w) (beacon-phase) (drop) =
+    if drop >= tower-height then []
+    else draw-flat-rods base center cf view-w beacon-phase drop
+
+  draw-flat-rods : List RiderPt, RiderPt, Real, Real, Real, Real -> List DrawCmd
+  draw-flat-rods (base) (center) (cf) (view-w) (beacon-phase) (drop) =
+    let apex = Vec3 { right = center.right, forward = center.forward, height = tower-height - drop }
+    in let wpx = rod-px center.forward cf view-w
+    in let l = tower-legs base center apex drop drop wpx cf view-w 0
+    in let r = rings base center stage-height drop drop wpx cf view-w
+    in let x = braces base center drop drop wpx cf view-w 0
+    in let b = draw-beacon (project apex cf view-w) center.forward cf view-w (beacon-brightness beacon-phase)
+    in l & r & x & b

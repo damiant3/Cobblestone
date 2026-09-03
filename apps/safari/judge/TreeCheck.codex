@@ -1,0 +1,95 @@
+Chapter: TreeCheck
+  cites Foreword chapter Console
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Safari chapter Tree
+  cites Judge chapter Grade
+  cites Gold chapter TreeGold
+
+ Grade the Tree and Paint ports against wasm/tree.zig driving wasm/paint.zig.
+
+ Seam 3 on one object. The oracle does not read return values -- tree.draw writes
+ into paint's real buffer -- so the gold is the words the game actually put on the
+ wire, decoded back into four streams. Tags, colours and point counts compare
+ EXACTLY; strengths and coordinates carry the width tolerance.
+
+ That split matters. A wrong tag or a wrong point count is a structural error and
+ no tolerance should ever hide one; a coordinate differing in the seventh digit is
+ the f32/f64 width and nothing else.
+
+ COORDINATES TAKE THE MIXED PIXEL GATE, and that is not a loosening. A screen
+ y is computed as 300 minus a term of about the same size, so a y near the horizon
+ is a small DIFFERENCE OF TWO LARGE NUMBERS and cancellation amplifies f32's
+ relative error by the ratio between them. Measured on this frame's first cone
+ tier: y = 20.6068 carries a relative gap of 1.3e-6, about fifteen times f32
+ epsilon, exactly the 300/20.6 the cancellation predicts. A purely relative gate would have to
+ be loosened everywhere to admit that. A purely absolute one breaks the other way on
+ coordinates flung far off screen by the near plane. The floor plus a relative term
+ covers both, and on this canvas it is about a thousandth of a pixel.
+
+ THE CASES ARE BRANCHES, NOT COVERAGE: a far tree (flat triangles, bar trunk), a
+ mid tree (cone hulls), a near tree (cone hulls and a round-shaded trunk), a tree
+ close enough that its widest tiers cross MIN_CONE_FORWARD and bail from cone back
+ to triangle -- one tree emitting both crown forms -- and a tree too small to draw,
+ which must emit nothing at all.
+
+ We say:
+
+Section: The Cases
+
+  case-far : List DrawCmd
+  case-far = tree-draw (0.0 - 9.0) 140.0 7.0 3108154 focal camera-w False False 0.0
+
+  case-mid : List DrawCmd
+  case-mid = tree-draw 12.0 46.0 8.5 3108154 focal camera-w False True 0.45
+
+  case-near : List DrawCmd
+  case-near = tree-draw (0.0 - 5.5) 11.0 6.25 3504447 focal camera-w True True 1.0
+
+  case-close : List DrawCmd
+  case-close = tree-draw 1.5 2.0 9.0 3108154 focal camera-w True True 1.0
+
+  case-tiny : List DrawCmd
+  case-tiny = tree-draw 40.0 4000.0 6.0 3108154 focal camera-w False False 0.0
+
+  all-cmds : List DrawCmd
+  all-cmds = case-far & case-mid & case-near & case-close & case-tiny
+
+Section: Streams
+
+ The same four streams the probe decoded out of the buffer, in the same order.
+
+  cmd-tags : List DrawCmd, Integer -> List Integer
+  cmd-tags (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).tag] & cmd-tags cs (i + 1)
+
+  cmd-colors : List DrawCmd, Integer -> List Integer
+  cmd-colors (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).color] & cmd-colors cs (i + 1)
+
+  cmd-counts : List DrawCmd, Integer -> List Integer
+  cmd-counts (cs) (i) =
+    if i >= list-length cs then []
+    else [list-length (list-at cs i).pts / 2] & cmd-counts cs (i + 1)
+
+  cmd-strengths : List DrawCmd, Integer -> List Real
+  cmd-strengths (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).strength] & cmd-strengths cs (i + 1)
+
+  cmd-coords : List DrawCmd, Integer -> List Real
+  cmd-coords (cs) (i) =
+    if i >= list-length cs then []
+    else (list-at cs i).pts & cmd-coords cs (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-ints "tree-tags     " (cmd-tags all-cmds 0) g-tree-tags)
+    print-line-uni (grade-ints "tree-colors   " (cmd-colors all-cmds 0) g-tree-colors)
+    print-line-uni (grade-ints "tree-counts   " (cmd-counts all-cmds 0) g-tree-counts)
+    print-line-uni (grade-rel  "tree-strengths" (cmd-strengths all-cmds 0) g-tree-strengths 0.000001)
+    print-line-uni (grade-px "tree-coords   " (cmd-coords all-cmds 0) g-tree-coords 0.001 0.000001)
+  end

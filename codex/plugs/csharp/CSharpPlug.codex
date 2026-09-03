@@ -21,16 +21,20 @@ Section: Streaming Send
  between defs. Each def's IRDef is parsed from its raw S-expression only
  when it is emitted, so the whole IRChapter is never materialized.
 
-  stream-defs-sexp : List SExp, CsCtx, Integer, Integer -> [Console] Nothing
-  stream-defs-sexp (def-sexps) (ctx) (i) (n) =
-   if i >= n then print-uni ""
+  stream-defs-sexp : List SExp, CsCtx, Integer, Integer, Integer -> [Console] Nothing
+  stream-defs-sexp (def-sexps) (ctx) (i) (n) (mask) =
+   if i >= n then act
+    print-uni "}\n"
+    print-uni (emit-cce-runtime mask)
+   end
    else let h = __heap-save
    in let cs = emit-def (parse-def (list-at def-sexps i)) ctx
+   in let m2 = bit-or mask (cs-cce-mask cs)
    in act
     print-uni cs
     print-uni "\n"
     let restored = __heap-restore h
-    in stream-defs-sexp def-sexps ctx (i + 1) n
+    in stream-defs-sexp def-sexps ctx (i + 1) n m2
    end
 
 Section: Mutable Record Detection
@@ -95,6 +99,240 @@ Section: Drain
     else 0
    end
 
+Section: Spans
+
+ The whole IR used to be tokenized and tree-built once, and both stayed
+ live for the run because __heap-restore reclaims per definition only:
+ on the compiler's 17.1 MB IR that baseline crossed the guest's heap
+ ceiling (Update 55). Definitions are located by text spans instead, and
+ each is tokenized, parsed and emitted inside its own heap-save/restore.
+ Only Integers cross a restore; a Text a later step needs is cut again
+ from the IR text, which sits below every mark.
+
+  IrSpan = record {
+   sp-lo : Integer,
+   sp-hi : Integer
+  }
+
+  ips-skip : Text, Integer, Integer -> Integer
+  ips-skip (t) (i) (len) =
+   if i >= len then i
+   else if is-sexp-space (char-code-at t i) then ips-skip t (i + 1) len
+   else i
+
+  ips-string-end : Text, Integer, Integer -> Integer
+  ips-string-end (t) (i) (len) =
+   if i >= len then len
+   else let c = char-code-at t i
+   in if c == char-code-at "\"" 0 then i + 1
+   else if c == char-code-at "\\" 0 then ips-string-end t (i + 2) len
+   else ips-string-end t (i + 1) len
+
+  ips-form-end : Text, Integer, Integer, Integer -> Integer
+  ips-form-end (t) (i) (len) (depth) =
+   if i >= len then len
+   else let c = char-code-at t i
+   in if c == char-code-at "\"" 0 then ips-form-end t (ips-string-end t (i + 1) len) len depth
+   else if c == char-code-at "(" 0 then ips-form-end t (i + 1) len (depth + 1)
+   else if c == char-code-at ")" 0 then (if depth == 1 then i + 1 else ips-form-end t (i + 1) len (depth - 1))
+   else ips-form-end t (i + 1) len depth
+
+  ips-item-end : Text, Integer, Integer -> Integer
+  ips-item-end (t) (i) (len) =
+   let c = char-code-at t i
+   in if c == char-code-at "(" 0 then ips-form-end t (i + 1) len 1
+   else if c == char-code-at "\"" 0 then ips-string-end t (i + 1) len
+   else scan-atom-end t i len
+
+  ips-children : Text, Integer, Integer, List IrSpan -> List IrSpan
+  ips-children (t) (i) (len) (acc) =
+   let j = ips-skip t i len
+   in if j >= len then acc
+   else if char-code-at t j == char-code-at ")" 0 then acc
+   else let e = ips-item-end t j len
+   in ips-children t e len (list-push acc (IrSpan { sp-lo = j, sp-hi = e }))
+
+  ips-kids : Text, IrSpan -> List IrSpan
+  ips-kids (t) (sp) = ips-children t (sp.sp-lo + 1) (sp.sp-hi) []
+
+  ips-head : Text, IrSpan -> Text
+  ips-head (t) (sp) =
+   let i = ips-skip t (sp.sp-lo + 1) (sp.sp-hi)
+   in substring t i (scan-atom-end t i (sp.sp-hi) - i)
+
+  ips-str : Text, IrSpan -> Text
+  ips-str (t) (sp) =
+   if sp.sp-hi - sp.sp-lo < 2 then ""
+   else substring t (sp.sp-lo + 1) (sp.sp-hi - sp.sp-lo - 2)
+
+  ips-tree : Text, IrSpan -> SExp
+  ips-tree (t) (sp) = build-tree (ir-tokenize (substring t (sp.sp-lo) (sp.sp-hi - sp.sp-lo)))
+
+  ips-named : Text, List IrSpan, Integer, Integer, Text -> IrSpan
+  ips-named (t) (kids) (i) (n) (key) =
+   if i >= n then IrSpan { sp-lo = 0, sp-hi = 0 }
+   else let sp = list-at kids i
+   in if char-code-at t (sp.sp-lo) /= char-code-at "(" 0 then ips-named t kids (i + 1) n key
+   else if ips-head t sp == key then sp
+   else ips-named t kids (i + 1) n key
+
+  ips-match : Text, Integer, Text, Integer, Integer -> Boolean
+  ips-match (t) (i) (pat) (j) (plen) =
+   if j >= plen then True
+   else if char-code-at t (i + j) /= char-code-at pat j then False
+   else ips-match t i pat (j + 1) plen
+
+  ips-find : Text, Integer, Integer, Text, Integer -> Integer
+  ips-find (t) (i) (stop) (pat) (plen) =
+   if i + plen > stop then stop
+   else if ips-match t i pat 0 plen then i
+   else ips-find t (i + 1) stop pat plen
+
+ The arity map and the mutable-record set need every definition, and
+ each entry is a Text. The Integers that locate it are read before the
+ restore and the Text is cut after it, so nothing built inside the
+ region is kept.
+
+  ips-arities : Text, List IrSpan, Integer, Integer, List ArityEntry -> List ArityEntry
+  ips-arities (t) (defs) (i) (n) (acc) =
+   if i >= n then arity-sort acc 1 (list-length acc)
+   else let h = __heap-save
+   in let kids = ips-kids t (list-at defs i)
+   in let nm = list-at kids 1
+   in let ns = nm.sp-lo + 1
+   in let nh = nm.sp-hi
+   in let ar = list-length (ips-kids t (list-at kids 3)) - 1
+   in let gc = list-length (collect-type-var-ids (ir-parse-type (ips-tree t (list-at kids 4))) [])
+   in let r = __heap-restore h
+   in ips-arities t defs (i + 1) n (list-push acc (ArityEntry { name = (ir-scan-string-body t ns nh []).value, arity = __narrow ar, generic-count = __narrow gc }))
+
+  ips-push-name : List Text, Text -> List Text
+  ips-push-name (acc) (nm) =
+   if text-length nm == 0 then acc
+   else if name-in-list acc nm 0 then acc
+   else list-push acc nm
+
+  ips-ty-name-lo : Text, IrSpan -> Integer
+  ips-ty-name-lo (t) (ty) =
+   let hd = ips-head t ty
+   in if hd == "record-ty" then ips-ty-name-lo2 t ty
+   else if hd == "ctd" then ips-ty-name-lo2 t ty
+   else 0
+
+  ips-ty-name-lo2 : Text, IrSpan -> Integer
+  ips-ty-name-lo2 (t) (ty) =
+   let tk = ips-kids t ty
+   in if list-length tk < 2 then 0
+   else (list-at tk 1).sp-lo
+
+  ips-ty-name-hi : Text, IrSpan -> Integer
+  ips-ty-name-hi (t) (ty) =
+   let tk = ips-kids t ty
+   in if list-length tk < 2 then 0
+   else (list-at tk 1).sp-hi
+
+  ips-muts-fs : Text, Integer, Integer, List Text -> List Text
+  ips-muts-fs (t) (i) (stop) (acc) =
+   let p = ips-find t i stop "(field-store" 12
+   in if p >= stop then acc
+   else if is-sexp-space (char-code-at t (p + 12)) == False then ips-muts-fs t (p + 1) stop acc
+   else let h = __heap-save
+   in let kids = ips-kids t (IrSpan { sp-lo = p, sp-hi = ips-form-end t (p + 1) stop 1 })
+   in let lo = if list-length kids >= 5 then ips-ty-name-lo t (list-at kids 4) else 0
+   in let hi = if lo > 0 then ips-ty-name-hi t (list-at kids 4) else 0
+   in let r = __heap-restore h
+   in ips-muts-fs t (p + 1) stop (if hi - lo > 2 then ips-push-name acc ((ir-scan-string-body t (lo + 1) hi []).value) else acc)
+
+  ips-is-record-set : Text, IrSpan -> Boolean
+  ips-is-record-set (t) (f) =
+   if ips-head t f /= "name" then False
+   else let fk = ips-kids t f
+   in if list-length fk < 2 then False
+   else ips-str t (list-at fk 1) == "__record-set"
+
+  ips-muts-rs : Text, Integer, Integer, List Text -> List Text
+  ips-muts-rs (t) (i) (stop) (acc) =
+   let p = ips-find t i stop "(apply" 6
+   in if p >= stop then acc
+   else if is-sexp-space (char-code-at t (p + 6)) == False then ips-muts-rs t (p + 1) stop acc
+   else let h = __heap-save
+   in let kids = ips-kids t (IrSpan { sp-lo = p, sp-hi = ips-form-end t (p + 1) stop 1 })
+   in let hit = if list-length kids /= 4 then False else ips-is-record-set t (list-at kids 1)
+   in let ak = if hit then ips-kids t (list-at kids 2) else []
+   in let lo = if list-length ak == 0 then 0 else ips-ty-name-lo t (list-at ak (list-length ak - 1))
+   in let hi = if lo > 0 then ips-ty-name-hi t (list-at ak (list-length ak - 1)) else 0
+   in let r = __heap-restore h
+   in ips-muts-rs t (p + 1) stop (if hi - lo > 2 then ips-push-name acc ((ir-scan-string-body t (lo + 1) hi []).value) else acc)
+
+  ips-muts : Text, List IrSpan, Integer, Integer, List Text -> List Text
+  ips-muts (t) (defs) (i) (n) (acc) =
+   if i >= n then acc
+   else let sp = list-at defs i
+   in ips-muts t defs (i + 1) n (ips-muts-rs t (sp.sp-lo) (sp.sp-hi) (ips-muts-fs t (sp.sp-lo) (sp.sp-hi) acc))
+
+  ips-opening-ret : Text, List IrSpan, Integer, Integer -> CodexType
+  ips-opening-ret (t) (defs) (i) (n) =
+   if i >= n then NothingTy
+   else let kids = ips-kids t (list-at defs i)
+   in if ips-str t (list-at kids 1) == opening-entry-point then strip-fun-args (ir-parse-type (ips-tree t (list-at kids 4)))
+   else ips-opening-ret t defs (i + 1) n
+
+  ips-stream : Text, List IrSpan, CsCtx, Integer, Integer, Integer -> [Console] Nothing
+  ips-stream (t) (defs) (ctx) (i) (n) (mask) =
+   if i >= n then act
+    print-uni "}\n"
+    print-uni (emit-cce-runtime mask)
+   end
+   else let h = __heap-save
+   in let cs = emit-def (parse-def (ips-tree t (list-at defs i))) ctx
+   in let m2 = bit-or mask (cs-cce-mask cs)
+   in act
+    print-uni cs
+    print-uni "\n"
+    let restored = __heap-restore h
+    in ips-stream t defs ctx (i + 1) n m2
+   end
+
+  plug-emit-ir-spans : Text -> [Console] Nothing
+  plug-emit-ir-spans (t) =
+   let len = text-length t
+   in let top = ips-skip t 0 len
+   in let chap = IrSpan { sp-lo = top, sp-hi = ips-form-end t (top + 1) len 1 }
+   in let kids = ips-kids t chap
+   in let nk = list-length kids
+   in let chap-name = sexp-str (ips-tree t (list-at kids 1))
+   in let type-defs = parse-atype-defs (sexp-list (ips-tree t (ips-named t kids 0 nk "type-defs")))
+   in let defs = ips-kids t (ips-named t kids 0 nk "defs")
+   in let n = list-length defs
+   in let arities = ips-arities t defs 1 n []
+   in let muts = ips-muts t defs 1 n []
+   in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [], dyn-locals = [] }
+   in let class-name = "Codex_" & sanitize chap-name
+   in act
+    print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
+    print-uni "\n"
+    let h0 = __heap-save
+    in let entry = opening-emit-entry class-name (ips-opening-ret t defs 1 n)
+    in let m0 = cs-cce-mask entry
+    in act
+     print-uni entry
+     let r0 = __heap-restore h0
+     in let h1 = __heap-save
+     in let seams = emit-seam-runtimes arities
+     in let tdefs = emit-type-defs type-defs 0 muts
+     in let m1 = bit-or m0 (bit-or (cs-cce-mask emit-buf-runtime) (bit-or (cs-cce-mask emit-state-runtime) (bit-or (cs-cce-mask seams) (cs-cce-mask tdefs))))
+     in act
+      print-uni emit-buf-runtime
+      print-uni emit-state-runtime
+      print-uni seams
+      print-uni tdefs
+      print-uni (emit-class-header chap-name)
+      let r1 = __heap-restore h1
+      in ips-stream t defs ctx 1 n m1
+     end
+    end
+   end
+
 Section: Body
 
   opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
@@ -105,29 +343,8 @@ Section: Body
     recv <- net-io-recv-loop ts1 0
     if recv.has-message then
      let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body))
-     in let tokens = ir-tokenize ir-text
-     in let tree = build-tree tokens
-     in let xs = sexp-list tree
-     in let chap-name = sexp-str (list-at xs 1)
-     in let type-defs = parse-atype-defs (walk-named-list xs "type-defs")
-     in let def-sexps = walk-named-list xs "defs"
-     in let n = list-length def-sexps
-     in let arities = build-arity-map-sexp def-sexps 1 n []
-     in let muts = collect-mut-names def-sexps 1 n []
-      in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [], dyn-locals = [] }
-     in let class-name = "Codex_" & sanitize chap-name
      in act
-      print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
-      print-uni "\n"
-      print-uni (opening-emit-entry class-name (opening-return-type-sexp def-sexps 1 n))
-      print-uni emit-cce-runtime
-      print-uni emit-buf-runtime
-      print-uni emit-state-runtime
-      print-uni (emit-seam-runtimes arities)
-      print-uni (emit-type-defs type-defs 0 muts)
-      print-uni (emit-class-header chap-name)
-      stream-defs-sexp def-sexps ctx 1 n
-      print-uni "}\n"
+      plug-emit-ir-spans ir-text
       closed <- net-io-close (recv.transport)
       print-uni ""
      end

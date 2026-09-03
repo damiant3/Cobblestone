@@ -1,0 +1,68 @@
+Chapter: GopWebSpawn
+  cites Works chapter GopWeb
+
+ THE FIRST SHIPPED CALLER OF `process-spawn`, graded. Everything this arm
+ asks about is the SPAWN, not the webserver: whether a chapter outside
+ `codex/test` can put a service in a process of its own, whether an
+ application processor actually runs it, and whether the parent survives
+ doing so.
+
+ Cell 36200 is `ap-dispatch-count-addr` and it is the instrument, because
+ it counts processes claimed by a core whose id is NOT zero. The boot
+ processor is always core zero, so a value above zero cannot have been
+ written by the parent: it is evidence that some other core took a process
+ out of the table and ran it. Nothing here has to trust that the child
+ reached any particular line of the server.
+
+ THE SABOTAGE THIS ARM EXISTS FOR: delete the `gopweb-start` line and the
+ dispatch count must stay at nought. An arm that still reports a dispatch
+ without the spawn is measuring the parent, which is the whole failure the
+ design warned about.
+
+ The parent spins after spawning rather than waiting, because a service
+ does not exit and a `process-wait` on one would never return. The spin is
+ also the second half of the acceptance: the parent is still running its
+ own code while the child has the network.
+
+ IT WAITS FOR THE DISPATCH RATHER THAN SAMPLING FOR IT, and that is not a
+ detail. A claim does not happen at the moment of the spawn: an idle core
+ has to come round its scan and take the entry. Read once after a single
+ spin, this arm said NO AP RAN THE SERVICE while the service was perfectly
+ healthy, and that reads exactly like a capability failure. Three children
+ spawned in one run and counted separately are what showed the count simply
+ lagging. A bounded wait turns a race into a decidable question, and the
+ bound is what makes the failure honest: not "never", but "not within this
+ many spins".
+
+Section: Body
+
+  spin : Integer, Integer -> Integer
+  spin (n) (acc) = if n == 0 then acc else spin (n - 1) (acc + 1)
+
+ The `s < 0` can never hold. It is there so the spin's result is READ, and
+ a spin whose value nothing looks at is a spin the compiler may drop.
+
+  wait-dispatch : Integer, Integer -> Integer
+  wait-dispatch (tries) (before) =
+    if tries <= 0 then atomic-load 36200
+    else if atomic-load 36200 > before then atomic-load 36200
+    else let s = spin 100000000 0
+    in if s < 0 then 0 else wait-dispatch (tries - 1) before
+
+  opening : [Console, Concurrent, Capability, Network.Read, Network.Write] Nothing = act
+    let before = atomic-load 36200
+    in act
+      print-line-uni ("dispatched before " & show before)
+      pid <- gopweb-start
+      print-line-uni ("spawned " & show (pid > 0))
+      let after = wait-dispatch 20 before
+      in act
+        print-line-uni ("parent still running " & show (spin 1000 0 == 1000))
+        print-line-uni (if after > before
+                        then "an ap ran the service"
+                        else "NO AP RAN THE SERVICE")
+        k <- process-kill pid
+        print-line-uni ("service stopped " & show (k >= 0))
+      end
+    end
+  end

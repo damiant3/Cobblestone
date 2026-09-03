@@ -1,0 +1,80 @@
+Chapter: TruckCheck
+  cites Foreword chapter Console
+  cites Foreword chapter ListUtils
+  cites Safari chapter World
+  cites Safari chapter Truck
+  cites Judge chapter Grade
+  cites Gold chapter TruckGold
+
+ Grade the Truck port's MOTION half against wasm/truck.zig.
+
+ Seam 4, graded the way rider is: ONE STEP FROM A SHARED STATE. The truck's speed
+ is a kinematic brake recomputed against a corner every frame, so it carries the
+ same sensitivity to a flipped comparison that the rider's search does, and a
+ trajectory comparison would be just as meaningless.
+
+ THE CASES ARE THE THREE RULES AND THE SEAMS BETWEEN THEM: far from a turn and
+ behind schedule so it accelerates; far and ahead so it cruises; inside the brake
+ distance so it slows; already below the caution speed, where the same formula
+ RAISES it and the brake lights must stay OFF because it is not slowing; and past
+ the course end, where there is no turn to brake for at all.
+
+ The brake-light flag is the one worth stating: it is a comparison against the
+ PREVIOUS speed, not against the intent to brake. Case six is inside the brake
+ distance and is not braking, because the kinematic law is bringing it back up to
+ the corner speed rather than down to it.
+
+ We say:
+
+Section: The Cases
+
+  segs : List Segment
+  segs = build-world
+
+  course : Real
+  course = course-length segs
+
+  poses : List Real
+  poses = [500.0, 600.0, 900.0, 470.0, 495.0, 499.0, 2000.0, 7300.0, 7600.0]
+
+  vs : List Real
+  vs = [0.3, 1.2, 1.2, 2.0, 0.5, 0.1, 2.5, 1.0, 1.0]
+
+  rds : List Real
+  rds = [0.0, 300.0, 300.0, 200.0, 200.0, 200.0, 1500.0, 7000.0, 7400.0]
+
+  step-at : Integer -> TruckState
+  step-at (i) =
+    truck-next (TruckState { pos = list-at poses i, v = list-at vs i, braking = False }) (list-at rds i) segs course
+
+  outs : Integer -> List TruckState
+  outs (i) =
+    if i >= list-length poses then []
+    else [step-at i] & outs (i + 1)
+
+  all-outs : List TruckState
+  all-outs = outs 0
+
+  f-pos : List TruckState, Integer -> List Real
+  f-pos (ts) (i) =
+    if i >= list-length ts then []
+    else [(list-at ts i).pos] & f-pos ts (i + 1)
+
+  f-v : List TruckState, Integer -> List Real
+  f-v (ts) (i) =
+    if i >= list-length ts then []
+    else [(list-at ts i).v] & f-v ts (i + 1)
+
+  f-braking : List TruckState, Integer -> List Boolean
+  f-braking (ts) (i) =
+    if i >= list-length ts then []
+    else [(list-at ts i).braking] & f-braking ts (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-px    "tk-pos     " (f-pos all-outs 0) g-tk-pos 0.0001 0.000001)
+    print-line-uni (grade-rel   "tk-v       " (f-v all-outs 0) g-tk-v 0.000001)
+    print-line-uni (grade-bools "tk-braking " (f-braking all-outs 0) g-tk-braking)
+    print-line-uni (grade-rel   "tk-initial " [truck-initial.pos, truck-initial.v] g-tk-initial 0.000001)
+  end

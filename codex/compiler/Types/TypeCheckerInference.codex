@@ -99,6 +99,22 @@ Section: Literal Range
           else if sig > 19 then True
           else int-lit-exceeds val start len "9223372036854775807" 0
 
+  int-lit-is-min-magnitude : Text -> Boolean
+  int-lit-is-min-magnitude (val) =
+   if is-hex-literal-text val then False
+   else let len = text-length val
+   in let start = int-lit-first-sig val 0 len
+   in int-lit-sig-digits val start len 0 == 19 & int-lit-exceeds val start len "9223372036854775807" 0 & int-lit-exceeds val start len "9223372036854775808" 0 == False
+
+  is-int-min-literal : AExpr -> Boolean
+  is-int-min-literal (e) =
+   when e
+    is ALitExpr (val) (kind) (s) ->
+     (when kind
+      is IntLit -> int-lit-is-min-magnitude val
+      is otherwise -> False)
+    is otherwise -> False
+
   check-int-lit-range : UnificationState, Text, LiteralKind, SourceSpan -> UnificationState
   check-int-lit-range (st) (val) (kind) (span) =
    when kind
@@ -322,7 +338,8 @@ Section: Infer Binary
     is IntegerTy (l-lo) (l-hi) (l-mode) ->
      when rt
       is IntegerTy (r-lo) (r-hi) (r-mode) ->
-       if r-lo >= l-lo & r-hi <= l-hi then rt else lt
+       if r-lo == l-lo & r-hi == l-hi then lt
+       else if r-lo >= l-lo & r-hi <= l-hi then rt else lt
       is otherwise -> lt
     is otherwise -> lt
 
@@ -768,7 +785,7 @@ Section: Infer Application
     is ALitExpr (val) (kind) (s) -> lit-text-to-integer val
     is AUnaryExpr (inner) (s) ->
      when inner
-      is ALitExpr (v2) (k2) (s2) -> 0 - (lit-text-to-integer v2)
+      is ALitExpr (v2) (k2) (s2) -> -(lit-text-to-integer v2)
       is otherwise -> 0
     is otherwise -> 0
 
@@ -1579,7 +1596,12 @@ Section: Infer Expression (dispatch)
     is ANameExpr (name) (s) -> infer-name st env (name.value) s
     is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s depth
     is AUnaryExpr (operand) (s) ->
-     let r = infer-expr-at st env operand (depth + 1)
+     if is-int-min-literal operand then CheckResult {
+      inferred-type = int-ty-default,
+      effect-row = empty-row,
+      state = st
+     }
+     else let r = infer-expr-at st env operand (depth + 1)
      in let op-ty = deep-resolve (r.state) (r.inferred-type)
      in if is-real-type op-ty then CheckResult {
       inferred-type = op-ty,
@@ -1755,9 +1777,104 @@ Section: Infer Expression (dispatch)
   check-mutation-in-ctor-fields (st) (fields) (i) (len) =
    if i >= len then st
    else let f = list-at fields i
-     in let st2 = if aexpr-mentions-record-set (f.value) then __record-set st "bag" (bag-add (st.bag) (make-warning cdx-mutation-in-constructor ("Field '" & f.name.value & "' contains __record-set, which mutates in place. Other fields reading the same record will see the mutated value. Bind the __record-set result to a let before the constructor, or use revised.") (f.span)))
+     in let st2 = if aexpr-mentions-record-set (f.value) & ctor-field-mutation-hazard fields i len (f.value)
+       then __record-set st "bag" (bag-add (st.bag) (make-warning cdx-mutation-in-constructor ("Field '" & f.name.value & "' contains __record-set, which mutates in place. Other fields reading the same record will see the mutated value. Bind the __record-set result to a let before the constructor, or use revised.") (f.span)))
        else st
      in check-mutation-in-ctor-fields st2 fields (i + 1) len
+
+ The hazard is a sibling that READS the mutated record and is evaluated
+ AFTER the write; a sibling reading it earlier has already taken its value.
+ When the mutated record's base name cannot be determined the answer is
+ True, so an unrecognised shape warns exactly as it did before.
+
+  ctor-field-mutation-hazard : List AFieldExpr, Integer, Integer, AExpr -> Boolean
+  ctor-field-mutation-hazard (fields) (i) (len) (value) =
+   if record-set-count value /= 1 then True
+   else let target = record-set-target value
+   in if text-length target == 0 then True
+   else later-field-reads-name fields (i + 1) len target
+
+ More than one `__record-set` in one field value means more than one
+ mutated record, and picking the first would be a false NEGATIVE, which is
+ the direction that ships a defect. Those warn.
+
+  record-set-count : AExpr -> Integer
+  record-set-count (e) =
+   when e
+    is AApplyExpr (f) (a) (s) ->
+     (if is-record-set-head f then 1 else 0) + record-set-count f + record-set-count a
+    is ABinaryExpr (l) (op) (r) (s) -> record-set-count l + record-set-count r
+    is AIfExpr (c) (t) (el) (s) -> record-set-count c + record-set-count t + record-set-count el
+    is ALetExpr (binds) (body) (s) -> record-set-count body + binds-record-set-count binds 0 (list-length binds)
+    is AMatchExpr (scrut) (arms) (s) -> record-set-count scrut
+    is AFieldAccess (obj) (fl) (s) -> record-set-count obj
+    is otherwise -> 0
+
+  binds-record-set-count : List ALetBind, Integer, Integer -> Integer
+  binds-record-set-count (binds) (i) (len) =
+   if i >= len then 0
+   else record-set-count ((list-at binds i).value) + binds-record-set-count binds (i + 1) len
+
+  is-record-set-head : AExpr -> Boolean
+  is-record-set-head (e) =
+   when e
+    is ANameExpr (n) (s) -> n.value == "__record-set"
+    is otherwise -> False
+
+  later-field-reads-name : List AFieldExpr, Integer, Integer, Text -> Boolean
+  later-field-reads-name (fields) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-mentions-name ((list-at fields i).value) target then True
+   else later-field-reads-name fields (i + 1) len target
+
+ The `__record-set` is often NESTED in an argument rather than sitting at
+ the head of the field's own apply spine -- `fc-evict-reg (__record-set st
+ ...) reg` and `Just (deck-record (__record-set td ...))` are both in the
+ compiler -- so this searches the whole expression, not the spine.
+
+  record-set-target : AExpr -> Text
+  record-set-target (e) =
+   when e
+    is AApplyExpr (f) (a) (s) ->
+     if is-record-set-head f then aexpr-plain-name a
+     else let from-f = record-set-target f
+     in if text-length from-f > 0 then from-f else record-set-target a
+    is ABinaryExpr (l) (op) (r) (s) ->
+     let from-l = record-set-target l
+     in if text-length from-l > 0 then from-l else record-set-target r
+    is AIfExpr (c) (t) (el) (s) ->
+     let from-c = record-set-target c
+     in if text-length from-c > 0 then from-c
+     else let from-t = record-set-target t
+     in if text-length from-t > 0 then from-t else record-set-target el
+    is ALetExpr (binds) (body) (s) -> record-set-target body
+    is AMatchExpr (scrut) (arms) (s) -> record-set-target scrut
+    is AFieldAccess (obj) (fl) (s) -> record-set-target obj
+    is otherwise -> ""
+
+  aexpr-plain-name : AExpr -> Text
+  aexpr-plain-name (e) =
+   when e
+    is ANameExpr (n) (s) -> n.value
+    is otherwise -> ""
+
+  aexpr-mentions-name : AExpr, Text -> Boolean
+  aexpr-mentions-name (e) (target) =
+   when e
+    is ANameExpr (n) (s) -> n.value == target
+    is AApplyExpr (f) (a) (s) -> aexpr-mentions-name f target | aexpr-mentions-name a target
+    is ABinaryExpr (l) (op) (r) (s) -> aexpr-mentions-name l target | aexpr-mentions-name r target
+    is AIfExpr (c) (t) (el) (s) -> aexpr-mentions-name c target | aexpr-mentions-name t target | aexpr-mentions-name el target
+    is ALetExpr (binds) (body) (s) -> aexpr-mentions-name body target | binds-mention-name binds 0 (list-length binds) target
+    is AMatchExpr (scrut) (arms) (s) -> aexpr-mentions-name scrut target
+    is AFieldAccess (obj) (fl) (s) -> aexpr-mentions-name obj target
+    is otherwise -> False
+
+  binds-mention-name : List ALetBind, Integer, Integer, Text -> Boolean
+  binds-mention-name (binds) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-mentions-name ((list-at binds i).value) target then True
+   else binds-mention-name binds (i + 1) len target
 
   aexpr-mentions-record-set : AExpr -> Boolean
   aexpr-mentions-record-set (e) =

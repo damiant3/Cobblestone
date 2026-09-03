@@ -43,6 +43,9 @@ $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $TestDir = Join-Path $Repo 'codex\test'
+# The comparison both hosted arms grade with lives in ONE place; that file
+# explains why it mirrors build/test-run.ps1 instead of doing its own thing.
+. (Join-Path $PSScriptRoot '..\common\hosted-compare-lib.ps1')
 if (-not $WorkDir) { $WorkDir = Join-Path $env:TEMP ('hosted-elf-' + [Guid]::NewGuid().ToString('n').Substring(0,8)) }
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
 if (-not $Kernel) { $Kernel = Join-Path $Repo 'build\output\Sut.cdx' }
@@ -71,7 +74,23 @@ if (-not $ListSubjects) {
 # is a property of the subject rather than a defect in the target. Console-only
 # is what hosted v1 covers, so the corpus is selected by what the source asks
 # for, not by what happens when it runs.
-$excludePattern = 'Device\.|FileSystem|Network|Identity|Audio|Gpu|Media|Concurrent|Process\.|Works chapter Gop|__heap-advance|port-in|port-out|read-line|capability|process-spawn|raw-mem|address-of|atomic-|memory-fence'
+# The five terms after `Works chapter Gop` were added 2026-09-02 (reek) because
+# the rule missed a whole shape: a subject that reaches ring 0 through a CHAPTER
+# rather than through an effect name. Measured, not guessed -- eight subjects
+# were being selected and failing on BOTH hosted targets with matching faults
+# (linux 139/SIGSEGV and 132/SIGILL against windows 0xC0000005, 0xC000001D and
+# 0xC0000096 PRIVILEGED_INSTRUCTION), and six of them are un-hostable by
+# construction: `Kernel chapter` (codex-boot, console-test), `Dev chapter
+# CpuInspector` (cpu-inspect), `Works chapter CamCapture` (camera hardware),
+# `Works chapter DevDebugger` (bp-symbolic-write). `cpu-builtins` cites NOTHING
+# and so no cite-based term can reach it: it calls cpu-read-cr0/cr3 and
+# cpu-cpuid-*, which are ring-0 reads, hence the two builtin-name terms.
+#
+# THE OTHER TWO ARE NOT EXCLUDED AND MUST NOT BE. `classic-games-oracle` and
+# `classic-games-run` cite only `Games chapter *`, reach no hardware, and still
+# SIGILL on both targets. Excluding them would report the same score as fixing
+# them (L-CAPABILITY-LOST); they are a finding, not an ineligible subject.
+$excludePattern = 'Device\.|FileSystem|Network|Identity|Audio|Gpu|Media|Concurrent|Process\.|Works chapter Gop|Kernel chapter|Dev chapter CpuInspector|Works chapter CamCapture|Works chapter DevDebugger|cpu-read-cr|cpu-cpuid|__heap-advance|port-in|port-out|read-line|capability|process-spawn|raw-mem|address-of|atomic-|memory-fence'
 
 # The selection recurses. A subject's DIRECTORY is not part of the rule above --
 # the rule is what the source asks for -- so a non-recursive glob was excluding
@@ -195,8 +214,8 @@ foreach ($s in $subjects) {
     }
     $got = (Get-Content $outFile -Raw -ErrorAction SilentlyContinue)
     if ($null -eq $got) { $got = '' }
-    $got = $got -replace "`r`n", "`n"
-    $want = ([System.IO.File]::ReadAllText($exp)) -replace "`r`n", "`n"
+    $got = Get-HarnessActual $got
+    $want = Get-HarnessExpected ([System.IO.File]::ReadAllText($exp))
 
     if ($Calibrate) {
         if ($got -ne $want) { $pass++ } else { $rows += "$tgt $s  CALIBRATION FAILED: mangled subject still produced its oracle"; $fail++ }

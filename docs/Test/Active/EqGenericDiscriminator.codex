@@ -1,0 +1,59 @@
+Chapter: EqGenericDiscriminator
+
+  cites Foreword chapter Console
+
+ Settles which mechanism owns COMPILER-24's generic half, before a line of
+ either candidate design is written.
+
+ Two generators mint the name `__eq_<T>`. The DESUGARER emits an ADef for a
+ type that is `deriving Eq` or self-recursive (`Ast/Desugarer.codex:663`).
+ The x86 EMITTER synthesises an IRDef of the same name from an EqHelperReq
+ (`Emit/X86_64.codex:3257`), but only when `eq-sum-is-recursive`; for a
+ NON-recursive sum it inlines the field compares instead, through
+ `emit-sum-structural-eq`, which receives `type-args` and already
+ substitutes a `TypeVar` via `subst-field-type` (`:2981`).
+
+ So the two mechanisms disagree about a NON-RECURSIVE generic sum, and that
+ disagreement is the discriminator:
+
+   pair-generic yes, box-generic no
+     the inlining path instantiates correctly and only the recursive
+     HELPER path drops the type arguments. The defect is the emitter's
+     eq-helper-def, and the fix is to thread type-args into the helper
+     request, three lines from subst-field-type, not a dictionary protocol.
+
+   pair-generic no as well
+     instantiation is broken on both paths, the emitter's type-args are not
+     the operative route, and the dictionary design is back in play.
+
+ `named-concrete` is the positive control: the row already measured that a
+ recursive sum with a CONCRETE field compares structurally, so it must
+ answer yes, and if it does not the subject is something else entirely.
+ `text-control` is the instrument check: it proves the runtime-built text is
+ a SEPARATE ALLOCATION with equal content, so a `yes` elsewhere cannot be a
+ pointer comparing equal for the wrong reason. A literal on both sides would
+ prove nothing.
+
+Section: Types
+
+  Pair a = | P (a) (a)
+
+  Box a = | Empty | Cell (a) (Box a)
+
+  Named = | Nil | Node (Text) (Named)
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("text-control   : " & yn ("12" == integer-to-text 12))
+    print-line-uni ("named-concrete : " & yn (Node "12" Nil == Node (integer-to-text 12) Nil))
+    print-line-uni ("pair-generic   : " & yn (P "12" "9" == P (integer-to-text 12) "9"))
+    print-line-uni ("box-generic    : " & yn (Cell "12" Empty == Cell (integer-to-text 12) Empty))
+  end
+
+Page 1

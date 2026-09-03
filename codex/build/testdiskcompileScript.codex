@@ -21,6 +21,23 @@ Section: S01 -- Preamble
 
   s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScAssign "outDir" (SeRaw "Join-Path $root 'build-output\\disk-compile-test'"), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "runScript" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScEchoStyled (SeLit "=== DISK compile test ===") ClBrightCyan True]
 
+Section: S01b -- FAT16 extraction helper
+
+ DISK mode does not stream the compiled binary. `emit-binary-tail` prints the
+ SIZE: line and then writes OUT.CDX to the volume, so the artifact comes back
+ on the disk image and not on the wire, and the host reads it after the VM is
+ closed.
+
+ FAT16 is not our format, so the offsets are the spec's: BPB bytes-per-sector
+ at 11, sectors-per-cluster at 13, reserved at 14, FAT count at 16, root
+ entries at 17, sectors-per-FAT at 22, and the 0x55AA signature at 510. A
+ directory entry is 32 bytes, first byte 0xE5 meaning deleted and attribute
+ 0x0F at offset 11 meaning a long-name fragment; cluster is at 26 and size at
+ 28. A chain ends at or above 0xFFF8. The partition is at LBA 2048, which the
+ signature check refuses loudly rather than guessing at.
+
+  s01b : List ShellCmd = [ScRaw "function Export-Fat16File {\n    param([string]$Image, [string]$Name, [string]$Out)\n    $fs = [System.IO.File]::OpenRead($Image)\n    try {\n        $bpb = New-Object byte[] 512\n        $fs.Seek((2048 * 512), 'Begin') | Out-Null\n        if ($fs.Read($bpb, 0, 512) -ne 512) { throw 'FAT16: cannot read the BPB at LBA 2048' }\n        if (($bpb[510] -ne 85) -or ($bpb[511] -ne 170)) { throw 'FAT16: no boot signature at LBA 2048' }\n        $bps = [BitConverter]::ToUInt16($bpb, 11)\n        $spc = $bpb[13]\n        $rsvd = [BitConverter]::ToUInt16($bpb, 14)\n        $nfat = $bpb[16]\n        $rent = [BitConverter]::ToUInt16($bpb, 17)\n        $spf = [BitConverter]::ToUInt16($bpb, 22)\n        if (($bps -le 0) -or ($spc -le 0) -or ($spf -le 0) -or ($nfat -le 0)) { throw \"FAT16: implausible BPB bps=$bps spc=$spc spf=$spf nfat=$nfat\" }\n        $fatSec = 2048 + $rsvd\n        $rootSec = $fatSec + ($nfat * $spf)\n        $rootSecs = [int][Math]::Ceiling(($rent * 32) / $bps)\n        $dataSec = $rootSec + $rootSecs\n        $rd = New-Object byte[] ($rootSecs * $bps)\n        $fs.Seek(($rootSec * $bps), 'Begin') | Out-Null\n        $fs.Read($rd, 0, $rd.Length) | Out-Null\n        $clus = 0\n        $size = 0\n        for ($e = 0; $e -lt $rent; $e++) {\n            $o = $e * 32\n            if ($rd[$o] -eq 0) { break }\n            if (($rd[$o] -eq 229) -or ($rd[$o + 11] -eq 15)) { continue }\n            if ([System.Text.Encoding]::ASCII.GetString($rd, $o, 11) -eq $Name) {\n                $clus = [BitConverter]::ToUInt16($rd, $o + 26)\n                $size = [BitConverter]::ToUInt32($rd, $o + 28)\n                break\n            }\n        }\n        if ($clus -lt 2) { throw \"FAT16: $Name is not in the root directory\" }\n        $fat = New-Object byte[] ($spf * $bps)\n        $fs.Seek(($fatSec * $bps), 'Begin') | Out-Null\n        $fs.Read($fat, 0, $fat.Length) | Out-Null\n        $bytes = New-Object byte[] $size\n        $got = 0\n        $cl = $clus\n        while ((($got -lt $size) -and ($cl -ge 2)) -and ($cl -lt 65528)) {\n            $take = [Math]::Min(($spc * $bps), ($size - $got))\n            $fs.Seek((($dataSec + ($cl - 2) * $spc) * $bps), 'Begin') | Out-Null\n            if ($fs.Read($bytes, $got, $take) -ne $take) { throw \"FAT16: short read in $Name at cluster $cl\" }\n            $got += $take\n            $cl = [BitConverter]::ToUInt16($fat, $cl * 2)\n        }\n        if ($got -ne $size) { throw \"FAT16: $Name chain yielded $got of $size bytes\" }\n        [System.IO.File]::WriteAllBytes($Out, $bytes)\n        return $size\n    } finally {\n        $fs.Close()\n    }\n}"]
+
 Section: S02 -- Step 1a: Compile source to CDX
 
   s02 : List ShellCmd =
@@ -61,23 +78,39 @@ Section: S06 -- Send DISK mode commands and read response
 
   s06 : List ShellCmd = [ScRaw "$stream = $run.Conn.Data.GetStream()", ScRaw "$hdr = [System.Text.Encoding]::UTF8.GetBytes(\"DISK`n\")", ScRaw "$stream.Write($hdr, 0, $hdr.Length)", ScRaw "$path = [System.Text.Encoding]::UTF8.GetBytes(\"SOURCE.SRC`n\")", ScRaw "$stream.Write($path, 0, $path.Length)", ScRaw "$stream.Flush()", ScAssign "binSize" (SeInt 0), ScAssign "status" (SeLit ""), ScRaw "$logLines = @()"]
 
-Section: S07 -- Read lines until SIZE: or CODEGEN-HALTED
+Section: S07 -- Read lines until DISK-OUT: or CODEGEN-HALTED
+
+ SIZE: no longer ends the read. In DISK mode it is followed by the write to
+ the volume and then DISK-OUT:, which is the line that says the artifact
+ exists, so the loop records the size and keeps going.
 
   s07 : List ShellCmd =
-    let on-size = [ScIf (SeMatch (SeVar "line") "^\\D*(\\d+)") [ScAssign "binSize" (SeRaw "[int]$matches[1]")] [], ScAssign "status" (SeLit "size"), ScBreak]
-    in let on-error = [ScAssign "status" (SeLit "error"), ScBreak]
-    in [ScLabeledWhile "read_loop" (SeRaw "$true") [ScRaw "$line = Read-StreamLine -Stream $stream -TimeoutSec 120", ScIf (SeRaw "$null -eq $line") [ScBreak] [], ScRaw "$logLines += $line", ScIf (SeStartsWith (SeVar "line") (SeLit "SIZE:")) on-size [], ScIf (SeOr (SeStartsWith (SeVar "line") (SeLit "CODEGEN-HALTED")) (SeStartsWith (SeVar "line") (SeLit "CODEGEN-ERRORS"))) on-error []]]
+    let on-size = [ScIf (SeMatch (SeVar "line") "^\\D*(\\d+)") [ScAssign "binSize" (SeRaw "[int]$matches[1]")] [], ScAssign "status" (SeLit "size")]
+    in let on-disk-out = [ScAssign "status" (SeLit "disk-out"), ScBreak]
+    in let on-halt = [ScAssign "status" (SeLit "error"), ScBreak]
+    in let on-errs = [ScAssign "status" (SeLit "error")]
+    in [ScLabeledWhile "read_loop" (SeRaw "$true") [ScRaw "$line = Read-StreamLine -Stream $stream -TimeoutSec 120", ScIf (SeRaw "$null -eq $line") [ScBreak] [], ScRaw "$logLines += $line", ScIf (SeStartsWith (SeVar "line") (SeLit "SIZE:")) on-size [], ScIf (SeStartsWith (SeVar "line") (SeLit "DISK-OUT:")) on-disk-out [], ScIf (SeStartsWith (SeVar "line") (SeLit "CODEGEN-HALTED")) on-halt [], ScIf (SeStartsWith (SeVar "line") (SeLit "CODEGEN-ERRORS")) on-errs [], ScIf (SeRaw "$logLines.Count -ge 400") [ScBreak] []]]
 
-Section: S08 -- Validate and read binary
+Section: S08 -- Validate the compile
 
   s08 : List ShellCmd =
     let fail-compile = [ScEchoStyled (SeRaw "\"FAIL: DISK compile failed (status=$status)\"") ClBrightRed True, ScForEach "ll" (SeVar "logLines") [ScEcho (SeRaw "\"  $ll\"")], ScExit (SeInt 1)]
-    in let fail-read = [ScEcho (SeLit "FAIL: binary read incomplete"), ScExit (SeInt 1)]
-    in [ScIf (SeOr (SeStringNeq (SeVar "status") (SeLit "size")) (SeRaw "$binSize -le 0")) fail-compile [], ScEcho (SeRaw "\"  Compiled: $binSize bytes\""), ScRaw "$binBytes = Read-StreamBytes -Stream $stream -Count $binSize -TimeoutSec 60", ScIf (SeOr (SeNot (SeVar "binBytes")) (SeRaw "$binBytes.Length -ne $binSize")) fail-read [], ScAssign "cdxOut" (SeRaw "Join-Path $outDir 'disk-compiled.cdx'"), ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "cdxOut", SeVar "binBytes"], ScEcho (SeRaw "\"  Written: $cdxOut\"")]
+    in [ScIf (SeOr (SeStringNeq (SeVar "status") (SeLit "disk-out")) (SeRaw "$binSize -le 0")) fail-compile [], ScEcho (SeRaw "\"  Compiled: $binSize bytes\""), ScForEach "ll" (SeVar "logLines") [ScIf (SeStartsWith (SeVar "ll") (SeLit "DISK-OUT:")) [ScEcho (SeRaw "\"  $ll\"")] []]]
 
 Section: S09 -- Cleanup VM
 
   s09 : List ShellCmd = [ScRaw "Close-Vm -Conn $run.Conn -Process $run.Process"]
+
+Section: S08b -- Step 2b: Extract OUT.CDX from the image
+
+ Outside the try, because the image is only settled once the VM is closed.
+ The guest's declared SIZE: is the oracle for the extraction: a file on the
+ volume that disagrees with what the compiler said it wrote is a failure, not
+ a rounding.
+
+  s08b : List ShellCmd =
+    let fail-size = [ScEchoStyled (SeRaw "\"FAIL: OUT.CDX is $extracted bytes, the guest declared $binSize\"") ClBrightRed True, ScExit (SeInt 1)]
+    in [ScEcho (SeLit "Step 2b: Extract OUT.CDX from the image..."), ScAssign "cdxOut" (SeRaw "Join-Path $outDir 'disk-compiled.cdx'"), ScAssign "extracted" (SeRaw "Export-Fat16File -Image $imgOut -Name 'OUT     CDX' -Out $cdxOut"), ScIf (SeRaw "$extracted -ne $binSize") fail-size [], ScEcho (SeRaw "\"  Written: $cdxOut ($extracted bytes)\"")]
 
 Section: S10 -- Step 3: Boot compiled CDX and check output
 
@@ -89,7 +122,7 @@ Section: S10 -- Step 3: Boot compiled CDX and check output
 
 Section: Assembly
 
-  tdc-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScTry [ScSequence s05b, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09, ScBlank, ScSequence s10]
+  tdc-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s01b, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScTry [ScSequence s05b, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09, ScBlank, ScSequence s08b, ScBlank, ScSequence s10]
 
   tdc-script : ShellScript = sh-script "test-disk-compile" "Test DISK compile mode end-to-end" tdc-params tdc-body
 

@@ -97,6 +97,60 @@ right, been that way since processors were like 60mhz"). Windows has run a
 ~15.6 ms tick since the NT era; some older HALs used 10 ms. The risk is not the
 number, it is that nothing has ever needed that timer to mean a time.
 
+## What stage 1 found: THE FIRST PROCESS A PROGRAM SPAWNS IS PINNED TO THE BOOT PROCESSOR
+
+Found 2026-09-02 (val) by being the first shipped caller, which is exactly
+what this stage was for. The row is `compiler-backlog.md` COMPILER-49 and it
+is seed-affecting; what follows is why this design's stage 1 could not go green
+until it was fixed, which it was at main 21975.
+
+**The mechanism, measured rather than read.** `process-spawn` takes the new
+process's core affinity from cell 36224 `spawn-affinity-addr` and then resets
+that cell to -1
+(`codex/compiler/Emit/X86_64ProcessHelpers.codex:376-380`, the `aff0`..`aff4`
+block; `process-spawn-priority` does the same at `:485-489`). The cell is
+supposed to hold -1 at rest, meaning "any core": `X86_64Boot.codex:2647-2649`
+stores -1 into it at boot, and the chapter's own prose at `:348` says "holds
+-1 at rest, so an ordinary process-spawn pins to no core". **It reads 0.**
+A guest that prints `atomic-load 36224` before spawning anything prints 0,
+and 0 is the boot processor, not a wildcard.
+
+So the first spawn of a program's life consumes a 0 and pins its child to the
+BSP; the reset then leaves -1, and every later spawn is unpinned. A parent
+that keeps running therefore starves its own first child on the core it is
+itself holding.
+
+**Every observation follows from that one fact.** With the parent spinning,
+the first child sits in `proc-state-ready` (1) indefinitely while
+`ap-dispatch-count-addr` stays 0. The moment the parent blocks in
+`process-wait`, that same child runs to completion and goes to
+`proc-state-free` (0) with the AP dispatch count STILL 0, which states the
+pinning twice: it ran, and it ran on core 0. A second child spawned afterwards
+is claimed by an application processor. Three children spawned in one run with
+the parent spinning throughout give statuses `1 2 2`: the first never runs and
+the other two do, whatever their bodies are.
+
+**Why no test has ever seen it.** Every spawning test in `codex/test` waits on
+its children almost immediately, and a `process-wait` frees the boot processor,
+which is the one condition under which a BSP-pinned child runs. The defect is
+invisible to a corpus that always waits and appears the moment a parent carries
+on, which is what a service host does (L-CONSTRUCT).
+
+**Stage 1's arm is green at main 22042**, under COMPILER-49's fix (main 21975,
+red). It was never softened to pass, and that is the point of the entry: while
+the defect stood, the arm printed the same line with the spawn present and the
+spawn removed, which was the arm correctly reporting that its subject never
+ran. Re-run on seed F134E3E7 at smp 4 it prints `an ap ran the service`, and
+the sabotage the arm's own prose calls for -- remove the `gopweb-start` line,
+keep the instrument -- prints `NO AP RAN THE SERVICE`. So the two colours now
+differ, which is what makes the green mean something.
+
+The bound was checked too, because a spin whose value nothing reads is a spin
+the compiler may drop, and a wait that does not wait would make the arm flaky
+rather than wrong: at 20 tries the sabotage takes 1.6s against 0.7s at one try,
+so the wait scales with its budget. `codex/test/apps/gopweb-spawn.codex` and
+`apps/works/GopWeb.codex` landed with it.
+
 ## The work, as it actually stands
 
 ### Stage 1 -- A shipped caller, not a test

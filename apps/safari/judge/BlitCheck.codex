@@ -1,0 +1,133 @@
+Chapter: BlitCheck
+  cites Foreword chapter Console
+  cites Foreword chapter ListUtils
+  cites Safari chapter Blit
+  cites Safari chapter Paint
+  cites Judge chapter Grade
+  cites Gold chapter BlitGold
+
+ Grade Safari chapter Blit -- the shading recipe and the visibility thresholds --
+ against `web/blitter.js`.
+
+ THE SECOND CHECK WHOSE ORACLE IS NOT A GAME MODULE. NumCheck grades Codex's Real
+ primitives against zig's builtins because zig is what the game calls. This one
+ grades against JAVASCRIPT, because JavaScript is where these particular decisions
+ have always lived: a shading model and four thresholds, in the one file this
+ project cannot run.
+
+ THERE IS NO f32 GAP TO ABSORB, so everything here is graded exactly. Colours are
+ integers and the predicates are booleans; the only Reals are inputs. That makes
+ this a stricter check than most of judge/, and it should be -- there is nothing
+ to be approximate about.
+
+ THE INPUTS COME FROM THE GOLD, as in NumCheck: the generator prints its tables as
+ `g-blit-*-in` lines and this chapter maps over them, so an input exists once
+ rather than twice in two languages.
+
+ THE LAST THREE GRADES ARE THE EXPANSION ITSELF, not its arithmetic, and they are
+ what makes moving the recipe across the wire a checked change rather than an
+ argued one. `blit-expand` and the generator's `expandShade` are two independent
+ statements of the same rewrite -- which command becomes which tag, what it carries
+ and what is dropped -- so comparing them is the same differential the rest of this
+ repository runs between Codex and zig.
+
+ We say:
+
+Section: Fan Out
+
+ The shade table is a colour list and a factor list of the same length, walked
+ together -- the pairing the generator wrote them in.
+
+  shade-pairs : List Integer, List Real, Integer -> List Integer
+  shade-pairs (cs) (fs) (i) =
+    if i >= list-length cs then []
+    else [shade-color (list-at cs i) (list-at fs i)] & shade-pairs cs fs (i + 1)
+
+ Each shading case contributes THREE colours -- edge, middle, edge -- so the answer
+ is three times as long as the input, flattened in stop order.
+
+  shade-triples : List Integer, List Real, Integer -> List Integer
+  shade-triples (cs) (ss) (i) =
+    if i >= list-length cs then []
+    else (width-shade-stops (list-at cs i) (list-at ss i)) & shade-triples cs ss (i + 1)
+
+  disc-pairs : List Real, List Real, Integer -> List Boolean
+  disc-pairs (rs) (as) (i) =
+    if i >= list-length rs then []
+    else [disc-visible (list-at rs i) (list-at as i)] & disc-pairs rs as (i + 1)
+
+  flat-pairs : List Real, List Real, Integer -> List Boolean
+  flat-pairs (los) (his) (i) =
+    if i >= list-length los then []
+    else [too-narrow-to-shade (list-at los i) (list-at his i)] & flat-pairs los his (i + 1)
+
+Section: The Expansion
+
+ One case is a tag-1 command over a three-point polygon: the colour and the
+ strength the gold names, the x's it names, and y's that are no part of the answer.
+
+  exp-case : Integer, Real, Real, Real, Real -> DrawCmd
+  exp-case (color) (strength) (x0) (x1) (x2) =
+    let cmd = DrawCmd { tag = 1, color = color, color2 = 0, strength = strength, geom = [], pts = [x0, 10.0, x1, 20.0, x2, 80.0] }
+    in expand-shade cmd
+
+ Each case contributes its tag and its two colours, flattened.
+
+  exp-ints : List Integer, List Real, List Real, List Real, List Real, Integer -> List Integer
+  exp-ints (cs) (ss) (xs0) (xs1) (xs2) (i) =
+    if i >= list-length cs then []
+    else let d = exp-case (list-at cs i) (list-at ss i) (list-at xs0 i) (list-at xs1 i) (list-at xs2 i)
+      in [d.tag, d.color, d.color2] & exp-ints cs ss xs0 xs1 xs2 (i + 1)
+
+ And its span, which a flat fill does not have; the generator writes zeros there
+ and so does this, rather than either side inventing a shape for a missing answer.
+
+  exp-span : List Integer, List Real, List Real, List Real, List Real, Integer -> List Real
+  exp-span (cs) (ss) (xs0) (xs1) (xs2) (i) =
+    if i >= list-length cs then []
+    else let d = exp-case (list-at cs i) (list-at ss i) (list-at xs0 i) (list-at xs1 i) (list-at xs2 i)
+      in (if list-length d.geom == 2 then [list-at d.geom 0, list-at d.geom 1] else [0.0, 0.0]) & exp-span cs ss xs0 xs1 xs2 (i + 1)
+
+Section: The Dropping
+
+ A frame of nothing but droppable commands -- every disc case the gold holds, then
+ every radial case -- run through the whole expansion. What survives, and in what
+ order, is the answer: the thresholds are graded above, and this grades that
+ `blit-expand` consults them and leaves everything else alone.
+
+  mix-discs : List Real, List Real, Integer -> List DrawCmd
+  mix-discs (rs) (alphas) (i) =
+    if i >= list-length rs then []
+    else let d = DrawCmd { tag = 3, color = 16711680, color2 = 0, strength = list-at alphas i, geom = [40.0, 50.0, list-at rs i], pts = [] }
+      in [d] & mix-discs rs alphas (i + 1)
+
+  mix-radials : List Real, Integer -> List DrawCmd
+  mix-radials (rs) (i) =
+    if i >= list-length rs then []
+    else let d = DrawCmd { tag = 4, color = 1, color2 = 2, strength = 0.0, geom = [50.0, 50.0, list-at rs i], pts = [10.0, 10.0, 90.0, 20.0, 50.0, 80.0] }
+      in [d] & mix-radials rs (i + 1)
+
+  tags-of : List DrawCmd, Integer -> List Integer
+  tags-of (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).tag] & tags-of cs (i + 1)
+
+  mix-tags : List Integer
+  mix-tags =
+    let frame = mix-discs g-blit-disc-r g-blit-disc-a 0 & mix-radials g-blit-radial-r 0
+    in tags-of (blit-expand frame 0) 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-ints  "blit-shade " (shade-pairs g-blit-shade-c g-blit-shade-f 0) g-blit-shade)
+    print-line-uni (grade-ints  "blit-crown " (shade-triples g-blit-crown-c g-blit-crown-s 0) g-blit-crown)
+    print-line-uni (grade-bools "blit-disc  " (disc-pairs g-blit-disc-r g-blit-disc-a 0) g-blit-disc)
+    print-line-uni (grade-bools "blit-radial" (list-map radial-visible g-blit-radial-r) g-blit-radial)
+    print-line-uni (grade-bools "blit-flat  " (flat-pairs g-blit-width-lo g-blit-width-hi 0) g-blit-flat)
+    print-line-uni (grade-ints  "blit-expand" (exp-ints g-blit-exp-c g-blit-exp-s g-blit-exp-x0 g-blit-exp-x1 g-blit-exp-x2 0) g-blit-exp)
+    print-line-uni (grade-reals "blit-span  " (exp-span g-blit-exp-c g-blit-exp-s g-blit-exp-x0 g-blit-exp-x1 g-blit-exp-x2 0) g-blit-exp-span 0.0)
+    print-line-uni (grade-ints  "blit-drop  " mix-tags g-blit-mix)
+  end
+
+Page 1

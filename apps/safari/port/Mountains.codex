@@ -1,0 +1,240 @@
+Chapter: Mountains
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Num
+  cites Safari chapter Trig
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Safari chapter Sky
+  cites Foreword chapter ListUtils
+
+ The far backdrop ranges, as screen-space silhouettes. Each range is a pure
+ function from absolute bearing -- radians, 0 = north, + = clockwise -- to a height
+ in pixels above the horizon; the frame samples it per column across the screen and
+ fills the silhouette. Drawn FIRST, behind the road.
+
+ A port of wasm/mountains.zig.
+
+ The light DIMS the rock and the snow toward dusk, handed down as a `dusk`
+ fraction from the sunset clock. The rolling LAND stays put, matching the grass.
+
+ THE COLOUR HELPERS ARE SKY'S, NOT COPIES. snowColor is a lerp between two
+ colours followed by a round and a pack, which is exactly `lerp3` and `pack` in
+ Sky, and mountains.zig imports sky.zig for the sun as well. Reusing them keeps
+ one rounding rule in the port instead of two that can drift.
+
+ We say:
+
+Section: Palette
+
+  rock : Integer
+  rock = 5991055
+
+  rock-west : Integer
+  rock-west = 3752799
+
+  land : Integer
+  land = 4886339
+
+ Rock fades to this fraction of its day brightness by night -- it stays BELOW the
+ snow, which is also dimming.
+
+  rock-night-dim : Real
+  rock-night-dim = 0.5
+
+  snow-day : Rgb
+  snow-day = Rgb { r = 238.0, g = 243.0, b = 248.0 }
+
+  snow-night : Rgb
+  snow-night = Rgb { r = 70.0, g = 84.0, b = 104.0 }
+
+ Darken a 0xRRGGBB toward dusk. The multiplier keeps the rock always below the
+ snow.
+
+  chan : Integer, Integer -> Real
+  chan (color) (sh) = real-from-int (bit-and (bit-shr color sh) 255)
+
+  dimmed : Integer, Real -> Integer
+  dimmed (color) (dusk) =
+    let f = 1.0 - rock-night-dim * dusk
+    in let r = real-to-int (round-real (chan color 16 * f))
+    in let g = real-to-int (round-real (chan color 8 * f))
+    in let b = real-to-int (round-real (chan color 0 * f))
+    in bit-or (bit-or (bit-shl r 16) (bit-shl g 8)) b
+
+  snow-color : Real -> Integer
+  snow-color (dusk) = pack (lerp3 snow-day snow-night dusk)
+
+Section: Shape
+
+  west-range-bearing : Real
+  west-range-bearing = 0.0 - 2.0416
+
+ Only ridge taller than this gets snow, and this is how far the snowline dips
+ under the summit.
+
+  snow-threshold : Real
+  snow-threshold = 124.0
+
+  snow-dip : Real
+  snow-dip = 10.0
+
+ Column sampling step, in pixels.
+
+  col-step : Real
+  col-step = 2.0
+
+ The camera rolls with the rider's lean, up to about twenty degrees, so the
+ rotated viewport sees design-x beyond the screen at the corners -- about
+ seventy-four pixels at full lean. Trace this far past each edge so a lean never
+ reveals sky past the backdrop's end.
+
+  roll-margin : Real
+  roll-margin = 200.0
+
+ One range: a smooth envelope, tallest at centre and tapering to open sky at its
+ edges, times a fixed rugged ridge line.
+
+  range-at : Real, Real, Real, Real, Real, Real -> Real
+  range-at (bearing) (center) (half) (peak) (freq-a) (freq-b) =
+    let b = wrap (bearing - center) 64
+    in let t = b / half
+    in if real-abs t >= 1.0 then 0.0 else range-body b t peak freq-a freq-b
+
+  range-body : Real, Real, Real, Real, Real -> Real
+  range-body (b) (t) (peak) (freq-a) (freq-b) =
+    let envelope = r-cos (t * pi / 2.0)
+    in let ridge = 0.6 + 0.24 * r-cos (b * freq-a) + 0.16 * r-cos (b * freq-b + 1.0)
+    in peak * envelope * ridge
+
+  ground-base : Real -> Real
+  ground-base (bearing) = 18.0 + 12.0 * r-sin (wrap bearing 64 * 0.9 + 1.9)
+
+  north-range : Real -> Real
+  north-range (bearing) = range-at bearing 0.0 0.95 150.0 8.0 21.0
+
+  west-range : Real -> Real
+  west-range (bearing) = range-at bearing west-range-bearing 0.72 120.0 11.0 27.0
+
+Section: The Snowline
+
+ The north range's tallest hump, for normalising the snowline dip.
+
+ THE ZIG ACCUMULATES ITS SAMPLE POSITION IN f32 AND THIS ACCUMULATES IN Real, so
+ the two do not sample the same set: 0.01 is not exact in binary, and the f32 loop
+ drifts far enough to run 101 times where this runs 100. Measured, that moves the
+ peak by 8.5e-6 out of 147.54 -- 5.8e-8 relative -- because a maximum over a
+ densely sampled smooth function does not care which of two adjacent samples it
+ lands on. It is recorded because it is the only loop in this chapter whose STEP
+ is inexact; the column loops step by 2.0 from -200.0, which is exact in both
+ widths, and both sides walk 681 and 481 columns exactly.
+
+  snow-peak-loop : Real, Real -> Real
+  snow-peak-loop (b) (vm) =
+    if b > 0.5 then vm
+    else snow-peak-loop (b + 0.01) (real-max vm (north-range b))
+
+  snow-peak-height : Real
+  snow-peak-height = snow-peak-loop (0.0 - 0.5) (0.0 - 1.0)
+
+ The zig calls the normalised fraction `above`, and that name cannot be used
+ here: `above` is a Codex KEYWORD, one of the proof-language set beside `claim`,
+ `proof` and `qed`. The refusal is correct and the diagnostic is not -- it comes
+ out as CDX1023 "Expected 'in' after let bindings", naming the let rather than the
+ keyword, which is a bisect to find. See PORTING_NOTES B11.
+
+  snowline-at : Real, Real -> Real
+  snowline-at (bearing) (peak) =
+    let num = north-range bearing - snow-threshold
+    in let above-frac = real-max 0.0 (real-min 1.0 (num / (peak - snow-threshold)))
+    in snow-threshold - snow-dip * above-frac
+
+Section: Columns and Crests
+
+ A screen column maps to a bearing through the LIVE focal: a smaller cam-focal --
+ lean, or a focus pull-in -- widens the angular span across the screen, exactly as
+ the projection does. The centre follows the live width.
+
+  bearing-at : Real, Real, Real, Real -> Real
+  bearing-at (x) (heading) (cam-focal) (view-w) =
+    heading + r-atan ((x - view-w / 2.0) / cam-focal)
+
+ The silhouette crest at a bearing: the tallest of the ranges and the land.
+
+  horizon-crest-px : Real -> Real
+  horizon-crest-px (bearing) =
+    real-max (west-range bearing) (real-max (north-range bearing) (ground-base bearing))
+
+ Has the sun dropped fully BEHIND the western range? True once the whole disc is
+ below the crest at the sun's bearing -- the moment the truck's headlights come on.
+
+  sun-behind-mountains : Real -> Boolean
+  sun-behind-mountains (step) =
+    sun-height-px step + sun-radius-px < horizon-crest-px sun-bearing
+
+Section: Silhouettes
+
+ Trace a range's crest left to right, then close down to the horizon: one filled
+ polygon. `v-scale` squeezes the heights vertically by the same factor the pull-in
+ squeezes them horizontally, so it reads as a real focal change.
+
+ The range is passed as a FUNCTION, the way the zig passes it as a comptime fn.
+
+  crest-pts : (Real -> Real), Real, Real, Real, Real, Real -> List ScreenPt
+  crest-pts (f) (heading) (cam-focal) (view-w) (v-scale) (x) =
+    if x > view-w + roll-margin then []
+    else [ScreenPt { x = x, y = camera-h / 2.0 - f (bearing-at x heading cam-focal view-w) * v-scale }] & crest-pts f heading cam-focal view-w v-scale (x + col-step)
+
+  silhouette : (Real -> Real), Real, Real, Real, Real, Integer -> List DrawCmd
+  silhouette (f) (heading) (cam-focal) (view-w) (v-scale) (color) =
+    let top = crest-pts f heading cam-focal view-w v-scale (0.0 - roll-margin)
+    in let close = [ScreenPt { x = view-w + roll-margin, y = camera-h / 2.0 }, ScreenPt { x = 0.0 - roll-margin, y = camera-h / 2.0 }]
+    in push-poly color (top & close)
+
+Section: The Snowcap
+
+ The band between the snowline and the crest, over the contiguous central hump
+ where the north range rises above its snowline. Top edge left to right, bottom
+ edge right to left. The TypeScript clips the range to the cap; this builds the
+ band directly, which is the same shape without a clip primitive.
+
+  snow-columns : Real, Real, Real, Real, Real -> List Real
+  snow-columns (heading) (cam-focal) (view-w) (peak) (x) =
+    if x > view-w then []
+    else snow-columns-at heading cam-focal view-w peak x
+
+  snow-columns-at : Real, Real, Real, Real, Real -> List Real
+  snow-columns-at (heading) (cam-focal) (view-w) (peak) (x) =
+    let b = bearing-at x heading cam-focal view-w
+    in let rest = snow-columns heading cam-focal view-w peak (x + col-step)
+    in if north-range b > snowline-at b peak + 0.01 then [x] & rest else rest
+
+  snow-top : List Real, Real, Real, Real, Real, Integer -> List ScreenPt
+  snow-top (xs) (heading) (cam-focal) (view-w) (v-scale) (i) =
+    if i >= list-length xs then []
+    else [ScreenPt { x = list-at xs i, y = camera-h / 2.0 - north-range (bearing-at (list-at xs i) heading cam-focal view-w) * v-scale }] & snow-top xs heading cam-focal view-w v-scale (i + 1)
+
+  snow-bottom : List Real, Real, Real, Real, Real, Real, Integer -> List ScreenPt
+  snow-bottom (xs) (heading) (cam-focal) (view-w) (v-scale) (peak) (i) =
+    if i < 0 then []
+    else [ScreenPt { x = list-at xs i, y = camera-h / 2.0 - snowline-at (bearing-at (list-at xs i) heading cam-focal view-w) peak * v-scale }] & snow-bottom xs heading cam-focal view-w v-scale peak (i - 1)
+
+  draw-snow : Real, Real, Real, Real, Integer -> List DrawCmd
+  draw-snow (heading) (cam-focal) (view-w) (v-scale) (snow) =
+    let peak = snow-peak-height
+    in let xs = snow-columns heading cam-focal view-w peak 0.0
+    in if list-length xs < 2 then []
+    else push-poly snow ((snow-top xs heading cam-focal view-w v-scale 0) & snow-bottom xs heading cam-focal view-w v-scale peak (list-length xs - 1))
+
+Section: The Frame
+
+ Back to front: the westward range, the snowcapped northern range, and the rolling
+ land. The rock and the snow dim toward dusk; the land does not.
+
+  draw : Real, Real, Real, Real -> List DrawCmd
+  draw (heading) (dusk) (cam-focal) (view-w) =
+    let v-scale = cam-focal / focal
+    in let west = silhouette west-range heading cam-focal view-w v-scale (dimmed rock-west dusk)
+    in let north = silhouette north-range heading cam-focal view-w v-scale (dimmed rock dusk)
+    in let cap = draw-snow heading cam-focal view-w v-scale (snow-color dusk)
+    in let ground = silhouette ground-base heading cam-focal view-w v-scale land
+    in west & north & cap & ground

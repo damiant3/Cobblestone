@@ -10,13 +10,20 @@ import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:net';
 
 const wgslPath = process.argv[2];
 if (!wgslPath) { console.error('usage: node validate.mjs <file.wgsl> [chrome.exe]'); process.exit(2); }
 const chromePath = process.argv[3]
   || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const code = readFileSync(wgslPath, 'utf8');
-const PORT = 9223;
+// A fixed CDP port makes a fleet peer's browser answer your query, and makes
+// two runs on one box collide (L-SHARED). Ask the OS for a free one.
+const PORT = await new Promise((resolve, reject) => {
+  const s = createServer();
+  s.on('error', reject);
+  s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+});
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 

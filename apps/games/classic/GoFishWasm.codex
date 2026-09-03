@@ -83,6 +83,57 @@ Section: The Browser Interface
   gf-wasm-done : GoFishState -> Integer
   gf-wasm-done (s) = if s.game-over then 1 else 0
 
+Section: Playing By Hand
+
+ `gf-do-turn` chooses the rank AND the player to ask, so a person cannot
+ take a turn. `gf-wasm-ask` takes both, and everything after the question is
+ the engine's own turn unchanged: a hit transfers the rank and checks for a
+ book, a miss draws from the pile, and either way the turn passes.
+
+ YOU MAY ONLY ASK FOR A RANK YOU HOLD. That is a real rule of Go Fish, not a
+ guard against a bad caller, and the engine's own player obeys it through
+ `gf-ai-rank-to-ask`. Reached from a browser the rule has to be stated here
+ or a page could ask for anything and fish the pile for it.
+
+  gf-wasm-can-ask : GoFishState, Integer -> Integer
+  gf-wasm-can-ask (s) (rank) =
+    if s.game-over then 0
+    else if rank < 0 then 0
+    else if rank > 12 then 0
+    else if gf-count-rank-in-hand s (s.current-player) rank > 0 then 1
+    else 0
+
+  gf-wasm-ask : GoFishState, Integer, Integer -> GoFishState
+  gf-wasm-ask (s) (rank) (target) =
+    if gf-wasm-can-ask s rank == 0 then s
+    else if target < 0 then s
+    else if target >= s.num-players then s
+    else if target == s.current-player then s
+    else gf-ask-turn (gf-copy-state s) rank target
+
+  gf-ask-turn : GoFishState, Integer, Integer -> GoFishState
+  gf-ask-turn (s) (rank) (target) =
+    let player = s.current-player
+    in if gf-count-rank-in-hand s target rank > 0 then gf-ask-hit s player target rank
+    else gf-ask-miss s player
+
+  gf-ask-hit : GoFishState, Integer, Integer, Integer -> GoFishState
+  gf-ask-hit (s) (player) (target) (rank) =
+    let s2 = gf-transfer-rank s target player rank
+    in let s3 = gf-check-books s2 player
+    in let s4 = gf-check-game-over s3
+    in gf-advance-player s4
+
+  gf-ask-miss : GoFishState, Integer -> GoFishState
+  gf-ask-miss (s) (player) =
+    let s2 = gf-draw-card s player
+    in let s3 = gf-check-game-over s2
+    in gf-advance-player s3
+
+ Whether the question landed is read off `gf-wasm-rank-count`, which this
+ chapter already exports as `gf_rcount`: the page counts the rank in its own
+ hand before and after, and a rise is a hit. That needs nothing new here.
+
   gf-wasm-rank : Integer -> Integer
   gf-wasm-rank (c) = if c < 0 then (-1) else if c >= 52 then (-1) else gf-rank c
 

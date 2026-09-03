@@ -433,8 +433,15 @@ Section: Type Parsing
    if parse-fuel-exhausted st then TypeOk base-type (emit-parse-fuel-error st "parse-type-args")
    else let st-fueled = consume-parse-fuel st
    in if is-done st-fueled then TypeOk base-type st-fueled
+   else if is-bare-wrapping base-type st-fueled then TypeOk (deck-record (BoundedIntType base-type i64-min i64-max (deck-record OvWrapping))) (advance st-fueled)
    else if is-type-arg-start (current-kind st-fueled) then parse-type-arg-next base-type st-fueled
    else TypeOk base-type st-fueled
+
+  is-bare-wrapping : TypeExpr, ParseState -> Boolean
+  is-bare-wrapping (base) (st) =
+   when base
+    is NamedType (tok) -> token-text tok == "Integer" & is-ident (current-kind st) & token-text (current st) == "wrapping"
+    is otherwise -> False
 
   parse-type-arg-next : TypeExpr, ParseState -> ParseTypeResult
   parse-type-arg-next (base-type) (st) =
@@ -1594,12 +1601,10 @@ Section: Chapter Pagination
     in scan-class-instance-defs (skip-newlines methods-st) cacc (__linked-list-push iacc id)
    else scan-class-instance-defs (advance st) cacc iacc
 
-  parse-instance-type-head : ParseState -> (Token, ParseState)
+  parse-instance-type-head : ParseState -> (TypeExpr, ParseState)
   parse-instance-type-head (st) =
-   if is-left-paren (current-kind st)
-    then let st1 = advance st
-     in (current st1, skip-to-close-paren (advance st1) 1)
-   else (current st, advance st)
+   when parse-type st
+    is TypeOk (te) (st1) -> (te, st1)
 
   skip-to-close-paren : ParseState, Integer -> ParseState
   skip-to-close-paren (st) (depth) =

@@ -52,6 +52,140 @@ Section: The Browser Interface
   pk-wasm-session : Integer, Integer -> PokerResult
   pk-wasm-session (seed) (n) = run-poker-session seed n
 
+Section: The Table
+
+ A hand of five card draw with chips in front of it. `pk-wasm-session`
+ above is the watch-only session and stays what it was: it deals two hands
+ and compares them, which is not a game anybody can sit down to.
+
+ You are player 0 and you speak first. A click index is a position in YOUR
+ hand, 0 to 4, and it marks a card for the draw rather than playing it,
+ because a discard is chosen before any of it happens.
+
+  pkt-wasm-new : Integer -> PokerTable
+  pkt-wasm-new (seed) = pk-table-new seed
+
+  pkt-wasm-card : PokerTable, Integer, Integer -> Integer
+  pkt-wasm-card (t) (who) (i) =
+    if who < 0 then (-1)
+    else if who > 1 then (-1)
+    else if i < 0 then (-1)
+    else if i >= 5 then (-1)
+    else list-at (pk-hand-of t who) i
+
+ The opponent's cards are theirs until the hand is over, and then they are
+ everybody's. A page that could read them all along would be a page you
+ could not lose at.
+
+  pkt-wasm-shown : PokerTable, Integer, Integer -> Integer
+  pkt-wasm-shown (t) (who) (i) =
+    if who == 0 then pkt-wasm-card t 0 i
+    else if t.done then pkt-wasm-card t 1 i
+    else (-1)
+
+  pkt-wasm-rank : PokerTable, Integer -> Integer
+  pkt-wasm-rank (t) (who) =
+    if who == 1 then pkt-wasm-rank-hidden t
+    else (evaluate-hand (PokerHand { cards = pk-hand-of t 0 })).rank
+
+  pkt-wasm-rank-hidden : PokerTable -> Integer
+  pkt-wasm-rank-hidden (t) =
+    if t.done then (evaluate-hand (PokerHand { cards = t.h1 })).rank else (-1)
+
+  pkt-wasm-chips : PokerTable, Integer -> Integer
+  pkt-wasm-chips (t) (who) = pk-chips-of t who
+
+  pkt-wasm-bet : PokerTable, Integer -> Integer
+  pkt-wasm-bet (t) (who) = pk-bet-of t who
+
+  pkt-wasm-pot : PokerTable -> Integer
+  pkt-wasm-pot (t) = t.pot
+
+  pkt-wasm-tocall : PokerTable, Integer -> Integer
+  pkt-wasm-tocall (t) (who) = pk-to-call t who
+
+  pkt-wasm-stage : PokerTable -> Integer
+  pkt-wasm-stage (t) = t.stage
+
+  pkt-wasm-cur : PokerTable -> Integer
+  pkt-wasm-cur (t) = t.turn
+
+  pkt-wasm-marked : PokerTable, Integer -> Integer
+  pkt-wasm-marked (t) (i) =
+    if i < 0 then 0 else if i >= 5 then 0 else pk-bit (t.marked) i
+
+  pkt-wasm-folded : PokerTable -> Integer
+  pkt-wasm-folded (t) = t.folded
+
+  pkt-wasm-winner : PokerTable -> Integer
+  pkt-wasm-winner (t) = t.winner
+
+  pkt-wasm-last : PokerTable -> Integer
+  pkt-wasm-last (t) = t.last
+
+  pkt-wasm-done : PokerTable -> Integer
+  pkt-wasm-done (t) = if t.done then 1 else 0
+
+  pkt-wasm-can-fold : PokerTable -> Integer
+  pkt-wasm-can-fold (t) = if pk-can-fold t 0 then 1 else 0
+
+  pkt-wasm-can-call : PokerTable -> Integer
+  pkt-wasm-can-call (t) = if pk-can-call t 0 then 1 else 0
+
+  pkt-wasm-can-raise : PokerTable -> Integer
+  pkt-wasm-can-raise (t) = if pk-can-raise t 0 then 1 else 0
+
+  pkt-wasm-can-draw : PokerTable -> Integer
+  pkt-wasm-can-draw (t) = if pk-can-draw t 0 then 1 else 0
+
+  pkt-wasm-fold : PokerTable -> PokerTable
+  pkt-wasm-fold (t) = pk-fold t 0
+
+  pkt-wasm-call : PokerTable -> PokerTable
+  pkt-wasm-call (t) = pk-call t 0
+
+  pkt-wasm-raise : PokerTable -> PokerTable
+  pkt-wasm-raise (t) = pk-raise t 0
+
+  pkt-wasm-mark : PokerTable, Integer -> PokerTable
+  pkt-wasm-mark (t) (i) = pk-mark t i
+
+  pkt-wasm-draw : PokerTable -> PokerTable
+  pkt-wasm-draw (t) = pk-draw t
+
+ A page CLICK may only ever add a mark, never take one off, and clearing
+ them is an action instead. Toggling on a click reads better until you
+ watch anything drive the page by scanning positions: it marks a card,
+ comes round, unmarks the same card, and the hand never reaches the draw.
+ One direction per click is what makes the position always move forward.
+
+  pkt-wasm-clear : PokerTable -> PokerTable
+  pkt-wasm-clear (t) = pk-clear-marks t
+
+  pkt-wasm-can-mark : PokerTable, Integer -> Integer
+  pkt-wasm-can-mark (t) (i) =
+    if pk-can-draw t 0 then pkt-wasm-mark-room t i else 0
+
+  pkt-wasm-mark-room : PokerTable, Integer -> Integer
+  pkt-wasm-mark-room (t) (i) =
+    if i < 0 then 0
+    else if i >= 5 then 0
+    else if pk-bit (t.marked) i == 1 then 0
+    else 1
+
+  pkt-wasm-marks : PokerTable -> Integer
+  pkt-wasm-marks (t) = pk-count-bits (t.marked) 0 0
+
+  pkt-wasm-step : PokerTable -> PokerTable
+  pkt-wasm-step (t) = pk-ai-move t
+
+ What the opponent last did, so a page can say it: 0 folded, 1 checked,
+ 2 called, 3 raised, 4 drew.
+
+  pkt-wasm-discard-count : PokerTable, Integer -> Integer
+  pkt-wasm-discard-count (t) (who) =
+    pk-count-bits (pk-discard-mask (pk-hand-of t who)) 0 0
+
   pk-wasm-p1 : PokerResult -> Integer
   pk-wasm-p1 (r) = r.p1-rank
 

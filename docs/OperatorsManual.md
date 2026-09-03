@@ -497,6 +497,23 @@ several levels down, which no flag of ours reaches. `ExaminersAssay.md`, "The
 batch stream can lose bytes", has the worked reproduction. Never set in a run
 whose output anyone intends to trust.
 
+`CODEX_VM_SHORT_WRITE_AT=N` truncates every `-output` write to N bytes without
+telling the writer. It is the sibling instrument for the OTHER end of the
+capture: the variable above loses bytes before they reach the buffer, this one
+loses bytes that reached the buffer and not the file. Its real causes are a
+full disk and an I/O error, which a harness cannot arrange either. The arm is
+`build/check-run-list.ps1` arm 6, and the same warning applies.
+
+**What each loss looks like, which is what names the layer.** Both writers
+`fopen` the output `"wb"` and rewrite the whole buffer from byte 0, so the file
+on disk is always a PREFIX of the capture. A writer fault can therefore only
+truncate the TAIL. A MIDDLE hole, with later blocks present but shifted, cannot
+come from the writer or from the batch parser, which assigns blocks by sequence
+and loses nothing: it can only be `output_buf_write` or `blit_guest_output`
+failing to grow the buffer, which is the host running out of memory. So a
+capture that ends early is the writer or an early exit, and a capture missing a
+block in the middle is host RAM.
+
 #### Batch mode: `-run-list`
 
 ```
@@ -1672,6 +1689,12 @@ all the apparatus; the product was fine every time.
   the whole time, so test that rather than the filtered count. The Perforce
   instance is `P-DIFFC` in `docs/Agents/PerforceProcess.md`, but the shape is
   general and this tree is full of `2>&1 | Select-String`.
+- **`Select-String -Pattern ([regex]::Escape($x)) -SimpleMatch` searches for
+  the BACKSLASHES.** `-SimpleMatch` takes the pattern literally, so escaping
+  it first puts `\ ` and `\(` into the search text and the match fails
+  silently. Six occurrences in one session, twice answering ZERO for content
+  that was present (blu, 2026-09-02). Use one or the other, never both. The
+  tell is a multi-word pattern "missing" while a single-word one hits.
 - **A one-element array unrolls to a scalar, and indexing a scalar STRING
   yields a character.** The loud instance reads `unresolved symbol 'm'` for
   `"main"`. The silent instance is the one to fear: a list of mnemonics
@@ -2076,6 +2099,24 @@ LAST compile phase used, not whichever artifact the run produced.
 Measured after each of two green `build.ps1` runs on 2026-08-11, its
 content hash equalled `seed/Codex.cdx` exactly (`AF4E14D9703985AC`),
 because the phases after `plug-binary` compile against the seed.
+
+**Its WHOLE-FILE hash can differ from the seed while the content hash
+matches, and that is not an anomaly.** The path can hold `stage1.cdx`,
+which is UNSIGNED: the sign phase patches key and signature into `Sut.cdx`
+in place and stage1 is built afterwards by that Sut, so the content hash
+(bytes 8-39, which exclude the signature) matches the seed while
+`Get-FileHash` does not. Measured 2026-09-02: `Sut.cdx` and
+`seed/Codex.cdx` both `BE8B04B5...`, `stage1.cdx` and
+`bare-metal/Codex.cdx` both `81B1F2D1...`, on a run whose gate reported a
+one-pass fixed point. **WHICH phase put stage1 there is NOT established**:
+an earlier version of this paragraph blamed `plug-binary`, and
+`build/build.ps1:948-949` shows `plug-binary` copying `$SutCdx`, the SIGNED
+Sut (signed at `:645`, before it); `stage1.cdx` is copied to that path only
+on the two-pass branch (`:791`), which is not the one-pass run measured
+(mindmeld 2026-09-02, R1). A later phase (sweep-app-classes, gen-scripts)
+is the candidate and is untraced. Comparing the wrong one of the two hashes
+is how a healthy tree reads as a mismatch worth chasing, whichever phase
+wrote it.
 
 That is the dangerous direction. Verifying a codegen change with the
 default kernel boots the OLD compiler, the emitted wire is unchanged, and
@@ -2572,6 +2613,28 @@ without a seed cycle is normal.
 The sample buffer lives at 0x60000 (profiler) / 0x70000 (alloc trace),
 in the free low-memory band above the AP stacks; earlier it sat inside
 the page tables and enabling it destroyed them after ~88 samples.
+
+### The map answers whether a symbol SHIPS, which the source cannot
+
+`<out>.map` lists every function offset the build emitted, so grepping it is
+the artifact-level answer to "is this helper actually in the binary". Reading
+the source cannot answer it: a helper is emitted only if its EMITTER is
+called, so a function can be fully written, reviewed and cited and still
+contribute no bytes.
+
+Two separate questions, and they need asking in this order. Is the SYMBOL
+called anywhere, and is its EMITTER called anywhere. Measured 2026-09-02 on
+`__cce_print` (`X86_64Helpers.codex`): neither, and it is **0 of the symbols
+in `Sut.map`** (5,571 at seed E0042890; the count moves with every seed,
+L-COUNT) while `__cce_print_multi` is present once. A row in
+`compiler-backlog.md` had read it as the live multi-byte print path indexing
+rodata the image does not contain, which is why the corruption that row
+predicted was never observed.
+
+**Watch the prefix when you census a symbol name.** `__cce_print` is a prefix
+of `__cce_print_multi`, so a substring match reports the dead symbol at the
+live one's sites and makes it look wired in. Key on the exact quoted token,
+then confirm against the map.
 
 ## WCET Validation
 
@@ -3225,23 +3288,41 @@ build/compile.ps1 -Src codex\test\apps\foo.codex -Out out.cdx -Log out.log -Kern
 produce the same SHA-256 have not read your file. This is the cheap check and
 it is the only one that fires before you start debugging the wrong program.
 
-### `-IrUni` IS NOT THE WIRE. A plug consumes `-IrCce`, and since main 19558 they carry different IR
+### `-IrUni` LIFTS AS `-IrCce` DOES since main 20176; the divergence this entry described is CLOSED
 
-**Symptom:** you dump a program's IR with `-IrUni` because `-IrCce` is not
-readable text, read the shape off it, and reason about what the plug does with
-it. The reasoning is sound and the conclusion is wrong.
+**This entry described a real divergence that no longer exists, and it is kept
+because its detection advice survives its cause.** Between main 19558 and main
+20176 (both 2026-08-25 to 2026-08-27) `emit-ir-cce` lifted lambdas and
+`emit-ir-uni` did not, so a program with a lambda had TWO IRs depending on the
+flag and the plug only ever saw the lifted one. **Main 20176 reconciled them:
+both front doors now call the one `lift-ir-for-emit` helper
+(`codex/compiler/opening.codex:1799`, from `emit-ir-uni` at `:1815` and
+`emit-ir-cce` at `:1840`), so the readable dump and the plug wire carry the
+same lifting.**
 
-**Cause:** the two front doors run different pipelines.
-`emit-ir-cce` (`codex/compiler/opening.codex:1707`) calls `lift-lambdas` at
-`:1717` before pruning; `emit-ir-uni` (`:1683`) does not lift at all. That
-second call landed at main 19558 (2026-08-25) to fix a wasm defect. So a
-program with a lambda in it has TWO different IRs depending on which flag you
-pass, and the plug only ever sees the lifted one: where `-IrUni` shows
-`(lambda (params (param "x" ...)) ...)`, the wire carries
-`(apply (name "__lam_0") (name <captured>))`, a partial application.
+**Measured 2026-09-01 against seed `42ACED00`, with `no-lift` as the control on
+both doors** (`-RawFlags 'no-lift'`, the flag `build/jonquil.ps1` uses): a
+program whose lambda captures an enclosing local emits `(def "__lam_0" ...)` as
+a top-level def under `-IrUni`, and the control moves BOTH doors -- `-IrUni` 8
+defs against 6, `-IrCce` 2,149 bytes against 1,969. A lifted lambda is visible
+in an `-IrUni` dump today.
 
-**Cost so far:** COMPILER-29's cause was recorded wrong twice, both times off
-an `-IrUni` dump, and the second write-up named an innocent IR reader.
+**Cost of the stale version, which is why the correction is written out rather
+than the paragraph just deleted:** COMPILER-29's cause was recorded wrong twice,
+both times off an `-IrUni` dump, and the second write-up named an innocent IR
+reader. That was true of the 19558..20176 window. The row and this entry then
+BOTH went on asserting the divergence after the same lane closed it, so the
+warning outlived its cause and kept steering readers away from a dump that had
+become accurate (L-PUBLISHED: grep for the consumer before trusting a warning,
+and re-measure before repeating one).
+
+**What still holds, and it is the half worth keeping:** `-IrUni` and `-IrCce`
+are still NOT interchangeable. They differ in ENCODING (CCE is not readable
+text), in OUTPUT ROUTING and in EXIT CODE -- see the `-IrUni` / `-Text` /
+`-IrCce` table above, where `-IrCce` writes `-Out` and exits 0 while `-IrUni`
+writes the wire into `-Log` and exits 4. Grepping an `-IrCce` artifact for an
+ASCII identifier finds nothing, and reading an empty `-Log` from an `-IrCce`
+run as "no IR emitted" is the live trap.
 
 **Detect:** if a claim is about what a PLUG receives, do not settle it from
 `-IrUni`. Force a marker constant into the emitted code from inside the arm you
@@ -3570,6 +3651,47 @@ the poison compiler while you believe otherwise. Measured 2026-07-28: after a
 poison battery the kernel was still `3AF5763C`, the poison seed, and nothing
 said so. `compile.ps1` prints the kernel and its digest on every run for
 exactly this class of mistake -- read that line.
+
+## What `-Internal` decides to run, and why an apps CL can pull in the plugs
+
+**The implicating set is `p4 opened` UNION every file that DIFFERS from
+main, in either direction. It is not a record of what you changed, and the
+gate keeps no memory of previous runs** (`build/build.ps1:94-121`: `p4
+opened`, then `p4 diff2 -q //Codex/main/... <stream>/...`, and nothing
+else). The gate prints it as `[internal gate] changed here: ...` and
+selects phases from it. `diff2` reports a file that differs in EITHER
+direction, so a stream BEHIND main sees main's landed files as its own: a
+seven-file apps-only CL was measured pulling in plug-binary, cross-smoke,
+plug-smoke, gen-scripts, vm-differential, deck-headroom, app-sweep and
+run-list from files it had never touched, and going red on a plug defect
+that was neither the CL's nor the lane's (2026-09-02). An earlier version
+of this section said "everything changed since the last run"; no such
+mechanism exists (the mindmeld of 2026-09-02, F1).
+
+The two cases cannot be told apart from the set, so since fester's main
+21620 **the gate REFUSES when your stream is behind main** (`:113-120`,
+`p4 merge -n -S <stream> -r` non-empty). Merge down BEFORE gating; after
+the merge the incoming files are identical to main and `diff2` cannot
+report them, so the set is exactly your change. On a busy fleet main can
+move in the seconds between your merge and your launch and the refusal
+fires again; that is the refusal working, merge again.
+
+**An apps-only CL no longer proves the fixed point, and its verdict line is
+different.** The core is skipped in about 10 s instead of 170+, and the run
+prints `core SKIPPED; graded with depot seed <digest>`. **Quote that line.
+"SUT === stage1" is not something an apps CL produces**, so a verdict
+carrying it either came from a different run or was carried forward. A
+second refusal guards the same ground and reads like a failure while being
+a protection: `the core is deferred, so this run grades with
+seed\Codex.cdx -- and that file is NOT the depot seed`.
+
+**The seed question arises only when the core RAN.** On a core-skipped run
+nothing that could move the seed changed, and `build/output/Sut.cdx` is NOT
+written (`build.ps1:209` points it at the seed; its only writer, `:580`, is
+inside the skipped core), so hashing it answers for whatever an earlier run
+left there; measured 2026-09-02, the file's timestamp did not move across a
+core-skipped run. When the core ran, hash `build/output/Sut.cdx` against
+the DEPOT seed (`PerforceProcess.md` 4.3), never against the workspace copy.
 
 ## What each build COSTS, so a hang is visible before it is expensive
 

@@ -1,0 +1,144 @@
+Chapter: Truck
+  cites Foreword chapter Maybe
+  cites Gpu chapter DeviceMath
+  cites Safari chapter World
+  cites Safari chapter Rider
+  cites Foreword chapter ListUtils
+
+ The truck the rider is chasing: how far it has driven along the route, its speed,
+ and whether it is slowing this frame.
+
+ A partial port of wasm/truck.zig -- THE MOTION HALF ONLY, and the split is the
+ zig's own. `State`, `initial`, `nextTurn` and `next` reach nothing but the world
+ and a few of the rider's constants. The drawing half -- the trailer box, its
+ tires, the headlight wedges -- reaches `render.Chain`, `render.Pose` and
+ `render.at`, and it is `Safari chapter TruckBody`, which cites Render for exactly
+ that. The split is what keeps World's cite of this chapter cheap: placing a truck
+ costs five constants, and only the chapters that DRAW one pay for the mapping
+ spine. Cat and CatDraw are split for the same reason.
+
+ THREE RULES AND NOTHING ELSE: brake before a turn, accelerate when behind
+ schedule, cruise when ahead. The schedule is a lerp -- it starts the truck five
+ hundred metres ahead and closes that to a hundred by the course end, which is a
+ photo finish rather than a catch.
+
+ Every one of its margins is expressed against the rider's own constants rather
+ than repeated: it accelerates ten percent harder, tops out ten percent faster,
+ brakes over the same distance, and takes each corner at four fifths of the
+ rider's safe speed. So a change to the rider's physics moves the truck with it.
+
+ We say:
+
+Section: The Chase Schedule
+
+  start-ahead : Real
+  start-ahead = 500.0
+
+ The lead the schedule closes DOWN to by the course end -- not zero, because the
+ point is a photo finish.
+
+  finish-lead : Real
+  finish-lead = 100.0
+
+  truck-turn-caution : Real
+  truck-turn-caution = 0.8
+
+  truck-brake-distance : Real
+  truck-brake-distance = approach-intersection-dist
+
+  truck-chase-accel : Real
+  truck-chase-accel = 1.1 * a-accel
+
+  truck-max-v : Real
+  truck-max-v = 1.1 * v-max
+
+Section: State
+
+  TruckState = record {
+    pos : Real,
+    v : Real,
+    braking : Boolean
+  }
+
+ At the start: a long way down the road, idling at the rider's base speed, not
+ braking.
+
+  truck-initial : TruckState
+  truck-initial = TruckState { pos = start-ahead, v = v-base, braking = False }
+
+Section: The Next Turn
+
+ How far to the next real TURN ahead of `pos`, and the rider's safe speed for it.
+ Past the course end there is no turn to brake for and the truck cruises in.
+
+ The zig answers infinity for "no turn", which Codex has no literal for. A sentinel
+ would be worse than saying what is meant, so the absence is carried in the TYPE:
+ `Maybe Turn` from `Foreword chapter Maybe`.
+
+ IT USED TO BE A `found` BOOLEAN BESIDE THE PAYLOAD, which is a Maybe with the tag
+ unhooked from the thing it guards -- nothing stops a caller reading `dist` without
+ testing `found`, and nothing but prose says the two agree. `when` forces both arms
+ and there is no unguarded field to read. The one caller reads better for it too.
+
+  Turn = record {
+    dist : Real,
+    v-turn : Real
+  }
+
+  next-turn-loop : List Segment, Real, Integer, Real -> Maybe Turn
+  next-turn-loop (segs) (pos) (i) (cum0) =
+    if i >= list-length segs then None
+    else next-turn-step segs pos i (cum0 + (list-at segs i).length)
+
+  next-turn-step : List Segment, Real, Integer, Real -> Maybe Turn
+  next-turn-step (segs) (pos) (i) (cum) =
+    let s = list-at segs i
+    in if pos < cum
+      then (if s.terminates then None else Just (Turn { dist = cum - pos, v-turn = turn-speed s.exit-angle }))
+      else next-turn-loop segs pos (i + 1) cum
+
+  next-turn : List Segment, Real -> Maybe Turn
+  next-turn (segs) (pos) = next-turn-loop segs pos 0 0.0
+
+Section: One Frame
+
+ Advance the truck one RIDER frame. `rider-dist` is how far the rider has now
+ driven, and `l` is the course length.
+
+ The kinematic brake arrives at the turn at the caution speed and is recomputed
+ every frame, so it tracks rather than committing. The brake lights are lit only
+ while it is ACTUALLY slowing -- the flag is a comparison against the previous
+ speed, not against the intent.
+
+ WHERE THE TRUCK "SHOULD" BE, given how far the rider has come: the lerp the
+ whole chase hangs on, named rather than left inside `truck-next` because the
+ browser's SCRUB needs it too. A scrubbed still has no state to step, so it places
+ the truck on its schedule and accepts that the schedule is where the truck is
+ AIMING rather than where three rules would have put it -- the same stand-in, and
+ the same honesty about it, that the scrubbed rider gets.
+
+  truck-schedule : Real, Real -> Real
+  truck-schedule (rider-dist) (l) =
+    rider-dist + finish-lead + (start-ahead - finish-lead) * (1.0 - rider-dist / l)
+
+  truck-next : TruckState, Real, List Segment, Real -> TruckState
+  truck-next (truck) (rider-dist) (segs) (l) =
+    let scheduled = truck-schedule rider-dist l
+    in when next-turn segs truck.pos
+       is Just (turn) -> (if turn.dist <= truck-brake-distance then truck-braking truck turn else truck-free truck scheduled)
+       is None -> truck-free truck scheduled
+
+  truck-braking : TruckState, Turn -> TruckState
+  truck-braking (truck) (turn) =
+    let target = turn.v-turn * truck-turn-caution
+    in let a = if turn.dist > 0.000001 then (target * target - truck.v * truck.v) / (2.0 * turn.dist) else 0.0
+    in let v = real-max target (truck.v + a)
+    in TruckState { pos = truck.pos + v, v = v, braking = v < truck.v }
+
+ Behind schedule it accelerates, capped; ahead of schedule and not braking, it
+ holds its speed.
+
+  truck-free : TruckState, Real -> TruckState
+  truck-free (truck) (scheduled) =
+    let v = if truck.pos < scheduled then real-min truck-max-v (truck.v + truck-chase-accel) else truck.v
+    in TruckState { pos = truck.pos + v, v = v, braking = False }

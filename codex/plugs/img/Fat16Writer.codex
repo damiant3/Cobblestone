@@ -126,22 +126,12 @@ Section: Directory Entries
    in let w5 = gpt-buf-write-i32 buf (off + 28) size
    in off + 32
 
-Section: Text Writing
-  fat16w-write-text-to-buf : Integer, Integer, Text, Integer, Integer -> Integer
-  fat16w-write-text-to-buf (buf) (off) (txt) (i) (len) =
-   if i >= len then off + len
-   else let cce = char-code-at txt i
-   in let u = to-unicode cce
-   in let byte = if u >= 128 then 63 else u
-   in let w = __buf-write-byte buf (off + i) byte
-   in fat16w-write-text-to-buf buf off txt (i + 1) len
-
 Section: Filesystem Assembly
   fat16w-clusters-needed : Integer, Integer -> Integer
   fat16w-clusters-needed (byte-count) (spc) =
    (byte-count + spc * gpt-sector-size - 1) / (spc * gpt-sector-size)
 
-  fat16w-write-all : Integer, Fat16Layout, List Integer, List Integer, Text -> Integer
+  fat16w-write-all : Integer, Fat16Layout, List Integer, List Integer, List Integer -> Integer
   fat16w-write-all (buf) (lay) (efi-bytes) (cdx-bytes) (source) =
    let cdx-size = list-length cdx-bytes
    in let efi-size = list-length efi-bytes
@@ -153,11 +143,11 @@ Section: Filesystem Assembly
    in let w20 = __buf-write-bytes buf (fat16w-cluster-offset lay efi-start) efi-bytes
    in fat16w-write-fs buf lay efi-size cdx-size source
 
-  fat16w-write-fs : Integer, Fat16Layout, Integer, Integer, Text -> Integer
+  fat16w-write-fs : Integer, Fat16Layout, Integer, Integer, List Integer -> Integer
   fat16w-write-fs (buf) (lay) (efi-size) (cdx-size) (source) =
    let fat1 = fat16w-fat-offset lay
    in let spc = lay.sectors-per-cluster
-   in let src-len = text-length source
+   in let src-len = list-length source
    in let w0 = fat16w-write-fat-entry buf fat1 0 65528
    in let w1 = fat16w-write-fat-entry buf fat1 1 fat16w-eoi
    in let efi-dir-cluster = 2
@@ -192,7 +182,7 @@ Section: Filesystem Assembly
    in let w16 = fat16w-write-dir-entry buf boot-dir-off ".          " 16 boot-dir-cluster 0
    in let w17 = fat16w-write-dir-entry buf (boot-dir-off + 32) "..         " 16 efi-dir-cluster 0
    in let w18 = fat16w-write-dir-entry buf (boot-dir-off + 64) "BOOTX64 EFI" 32 efi-start efi-size
-   in let w21 = fat16w-write-text-to-buf buf (fat16w-cluster-offset lay src-start) source 0 src-len
+   in let w21 = __buf-write-bytes buf (fat16w-cluster-offset lay src-start) source
    in let w22 = fat16w-write-bpb buf lay
    in let w23 = fat16w-copy-fat2 buf lay
    in 0

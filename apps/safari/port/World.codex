@@ -1,0 +1,488 @@
+Chapter: World
+  cites Foreword chapter Maybe
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Num
+  cites Safari chapter Trig
+  cites Safari chapter Cat
+  cites Foreword chapter ListUtils
+
+ The road network as data: a chain of straight segments joined by turns. Each
+ segment carries its length, width, tree rows, cow herd, pigs, and its EXIT turn --
+ angle, direction, and the segment it leads to -- and build-world accumulates each
+ segment's heading relative to north.
+
+ A port of wasm/world.zig.
+
+ NO RIDER, NO PROJECTION, NO DRAWING. This is the first chapter in the port that
+ draws nothing at all: it is authored data plus the deterministic generators that
+ expand it. That makes it seam 2 in NOTES' terms -- the seam that compares
+ EXACTLY, because there is no arithmetic here whose width could differ except the
+ jitter sines and the turn angles.
+
+ The route is the full nineteen segments of the TypeScript. The baseline is
+ deliberately boring -- all-green trees and a cow herd -- so the rare departures
+ surprise, and novelty is front-loaded: the cat debuts on segment 2, pigs on 3,
+ gold trees on 4. Segment 19 terminates; the rider arrives and stops.
+
+ PIGS AND SAFARI CREATURES ARE AUTHORED HERE BUT THE CRITTER DRAWING IS NOT
+ PORTED -- critter.zig needs emoji_frames.zig, 182 KB of generated bakes that
+ NOTES scopes out. The placement data is still ported because it is the world's,
+ not the renderer's, and because it is what the exit-corner logic reads.
+
+ We say:
+
+Section: Palette and Dimensions
+
+  conifer-green : Integer
+  conifer-green = 1858082
+
+  conifer-gold : Integer
+  conifer-gold = 13605400
+
+  conifer-red : Integer
+  conifer-red = 11680298
+
+  small-height : Real
+  small-height = 4.5
+
+  big-scale : Real
+  big-scale = 1.3
+
+ Metres between trees, and this is FIXED where the TypeScript fixes the COUNT --
+ so density, and the speed illusion it creates, is uniform across segments.
+
+  tree-spacing : Real
+  tree-spacing = 30.0
+
+  tree-road-offset : Real
+  tree-road-offset = 1.5
+
+  tree-start-inset : Real
+  tree-start-inset = 6.0
+
+  tree-end-inset : Real
+  tree-end-inset = 85.0
+
+  lane-width : Real
+  lane-width = 4.0
+
+ Longer segments stand their own tower halfway down.
+
+  mid-tower-min-length : Real
+  mid-tower-min-length = 1000.0
+
+  max-trees : Integer
+  max-trees = 96
+
+Section: Schemes and Creatures
+
+  Scheme =
+   | AllGreen
+   | YellowGreen
+   | RedGreen
+
+ The big animal parked at a segment's EXIT corner. Elephant is the unmarked
+ default; the rest are the rare departures. DuckPond is a hand-drawn scene rather
+ than an emoji pair, and NoCreature is the terminus, which has no exit corner.
+
+ The constructor is DuckPond rather than Pond because chapters share one flat
+ namespace inside a bundle (CDX3001) and `Safari chapter Pond` is already in this
+ port -- a collision that would only appear once something cited both.
+
+  Creature =
+   | NoCreature
+   | Elephant
+   | Giraffe
+   | Zebra
+   | Rhino
+   | DuckPond
+
+Section: Trees and Critters
+
+  Tree = record {
+    along : Real,
+    across : Real,
+    color : Integer,
+    height : Real
+  }
+
+ A roadside animal: an emoji billboard at along and across-from-centre.
+
+  Critter = record {
+    along : Real,
+    across : Real,
+    codepoint : Integer,
+    height : Real,
+    face-right : Boolean
+  }
+
+  accent-color : Scheme -> Integer
+  accent-color (s) =
+   when s
+    is YellowGreen -> conifer-gold
+    is RedGreen -> conifer-red
+    is AllGreen -> conifer-green
+
+ Conifers every tree-spacing metres from the start inset to the end-clear zone.
+ Even index is green and 1.3 times tall, odd is the scheme's accent. Red trees are
+ twice everything; gold three times and set about four times further off the road.
+
+ The pair is emitted together, so the cap is checked two at a time exactly as the
+ zig's `n_trees + 2 <= MAX_TREES` does.
+
+  tree-height-for : Integer, Boolean -> Real
+  tree-height-for (color) (even) =
+    let base = if even then small-height * big-scale else small-height
+    in if color == conifer-red then base * 2.0 else (if color == conifer-gold then base * 3.0 else base)
+
+  tree-x-for : Integer -> Real
+  tree-x-for (color) =
+    if color == conifer-gold then lane-width / 2.0 + 4.0 * tree-road-offset
+    else lane-width / 2.0 + tree-road-offset
+
+  fill-trees : Scheme, Real, Real, Integer, Integer -> List Tree
+  fill-trees (scheme) (length) (along) (k) (n) =
+    if along > length - tree-end-inset then []
+    else if n + 2 > max-trees then []
+    else fill-trees-pair scheme length along k n
+
+  fill-trees-pair : Scheme, Real, Real, Integer, Integer -> List Tree
+  fill-trees-pair (scheme) (length) (along) (k) (n) =
+    let even = k - ((k / 2) * 2) == 0
+    in let color = if even then conifer-green else accent-color scheme
+    in let height = tree-height-for color even
+    in let x = tree-x-for color
+    in [Tree { along = along, across = 0.0 - x, color = color, height = height }, Tree { along = along, across = x, color = color, height = height }] & fill-trees scheme length (along + tree-spacing) (k + 1) (n + 2)
+
+Section: The Cow Herd
+
+ The boring CONSTANT on every segment, near the start and on the left: a bull
+ leading ten cows and four calves in a deterministic jittered grid. No randomness
+ anywhere -- the jitter is a sine of the index.
+
+  bull-cp : Integer
+  bull-cp = 128002
+
+  cow-cp : Integer
+  cow-cp = 128004
+
+  cow-height : Real
+  cow-height = 1.4
+
+  calf-height : Real
+  calf-height = cow-height / 2.0
+
+  bull-height : Real
+  bull-height = cow-height * 1.15
+
+  herd-road-offset : Real
+  herd-road-offset = 10.0
+
+  bull-dist : Real
+  bull-dist = 24.0
+
+  bull-tree-gap : Real
+  bull-tree-gap = 0.5
+
+  herd-gap-behind-bull : Real
+  herd-gap-behind-bull = 6.0
+
+  herd-col-spacing : Real
+  herd-col-spacing = 6.0
+
+  herd-row-stagger : Real
+  herd-row-stagger = 2.0
+
+  herd-row-depth : Real
+  herd-row-depth = 5.0
+
+  herd-jitter-along : Real
+  herd-jitter-along = 1.5
+
+  herd-jitter-across : Real
+  herd-jitter-across = 1.2
+
+ The bull is authored per segment in the route table, like the cat and the pigs,
+ so the whole schedule of surprises reads in one place.
+
+  bull-of : Boolean -> List Critter
+  bull-of (bull) =
+    if bull then [Critter { along = bull-dist, across = 0.0 - (lane-width / 2.0 + tree-road-offset + bull-height / 2.0 + bull-tree-gap), codepoint = bull-cp, height = bull-height, face-right = False }]
+    else []
+
+  cows-from : Integer -> List Critter
+  cows-from (i) =
+    if i >= 14 then []
+    else [cow-at i] & cows-from (i + 1)
+
+  cow-at : Integer -> Critter
+  cow-at (i) =
+    let fi = real-from-int i
+    in let col = real-from-int (i / 3)
+    in let row = real-from-int (i - ((i / 3) * 3))
+    in let along = bull-dist + herd-gap-behind-bull + col * herd-col-spacing + (row - 1.0) * herd-row-stagger + herd-jitter-along * r-sin (fi * 2.7)
+    in let across = 0.0 - (lane-width / 2.0 + herd-road-offset + row * herd-row-depth + herd-jitter-across * r-cos (fi * 1.9))
+    in Critter { along = along, across = across, codepoint = cow-cp, height = if i - ((i / 4) * 4) == 1 then calf-height else cow-height, face-right = True }
+
+  fill-cows : Boolean -> List Critter
+  fill-cows (bull) = (bull-of bull) & cows-from 0
+
+Section: The Pigs
+
+ The DISTRACTION herd is a deep seven-by-seven staggered block near the segment's
+ end, on the right, and the rider gawks at one designated pig as he passes. Only
+ the first two pig appearances distract -- the novelty wears off.
+
+  pig-cp : Integer
+  pig-cp = 128022
+
+  pig-height : Real
+  pig-height = 1.1
+
+  pig-novelty-count : Integer
+  pig-novelty-count = 2
+
+  pig-dist-before-end : Real
+  pig-dist-before-end = 60.0
+
+  gaze-pig-along-offset : Real
+  gaze-pig-along-offset = 2.0
+
+  big-herd-cols : Integer
+  big-herd-cols = 7
+
+  big-herd-rows : Integer
+  big-herd-rows = 7
+
+  pig-col-spacing : Real
+  pig-col-spacing = 4.0
+
+ Across-spacing AND the per-row along-shear, which is what slants the herd's sides
+ at forty-five degrees.
+
+  pig-row-depth : Real
+  pig-row-depth = 6.0
+
+  pig-jitter-along : Real
+  pig-jitter-along = 1.2
+
+  pig-jitter-across : Real
+  pig-jitter-across = 1.0
+
+  pig-herd-first-col : Real
+  pig-herd-first-col = 0.0 - 6.0
+
+  pig-back-row-offset : Real
+  pig-back-row-offset = 6.0
+
+ The ONE front-row pig the distracted rider fixes on, so the head-turn always aims
+ at a pig that is actually drawn.
+
+  gaze-pig : Real, Real -> Critter
+  gaze-pig (length) (lane-half) =
+    Critter { along = length - pig-dist-before-end + gaze-pig-along-offset, across = lane-half + herd-road-offset, codepoint = pig-cp, height = pig-height, face-right = False }
+
+  herd-pig-at : Real, Integer, Integer -> Critter
+  herd-pig-at (base) (r) (c) =
+    let i = real-from-int (r * big-herd-cols + c)
+    in let fr = real-from-int r
+    in let fc = real-from-int c
+    in let along = base + pig-herd-first-col + fc * pig-col-spacing + fr * pig-row-depth + pig-jitter-along * r-sin (i * 2.3)
+    in let across = lane-width / 2.0 + herd-road-offset + fr * pig-row-depth + pig-jitter-across * r-cos (i * 1.7)
+    in Critter { along = along, across = across, codepoint = pig-cp, height = pig-height, face-right = False }
+
+  herd-cols-from : Real, Integer, Integer -> List Critter
+  herd-cols-from (base) (r) (c) =
+    if c >= big-herd-cols then []
+    else [herd-pig-at base r c] & herd-cols-from base r (c + 1)
+
+  herd-rows-from : Real, Integer -> List Critter
+  herd-rows-from (base) (r) =
+    if r >= big-herd-rows then []
+    else (herd-cols-from base r 0) & herd-rows-from base (r + 1)
+
+  fill-pig-herd : Real -> List Critter
+  fill-pig-herd (length) = herd-rows-from (length - pig-dist-before-end) 0
+
+ The small non-distraction row: a front rank of four at the road edge and a back
+ rank of six further off. The rider does not gawk at these.
+
+  pig-row-front : List Real
+  pig-row-front = [0.0 - 6.0, 0.0 - 2.0, 2.0, 6.0]
+
+  pig-row-back : List Real
+  pig-row-back = [0.0 - 10.0, 0.0 - 6.0, 0.0 - 2.0, 2.0, 6.0, 10.0]
+
+  row-pigs-at : Real, Real, List Real, Integer -> List Critter
+  row-pigs-at (base) (across) (ds) (i) =
+    if i >= list-length ds then []
+    else [Critter { along = base + list-at ds i, across = across, codepoint = pig-cp, height = pig-height, face-right = False }] & row-pigs-at base across ds (i + 1)
+
+  fill-pig-row : Real -> List Critter
+  fill-pig-row (length) =
+    let base = length - pig-dist-before-end
+    in let edge = lane-width / 2.0 + herd-road-offset
+    in (row-pigs-at base edge pig-row-front 0) & row-pigs-at base (edge + pig-back-row-offset) pig-row-back 0
+
+Section: The Route
+
+  Cfg = record {
+    length : Real,
+    scheme : Scheme,
+    turn-deg : Real,
+    cat : Boolean,
+    pigs : Boolean,
+    bull : Boolean,
+    terminates : Boolean,
+    creature : Creature
+  }
+
+ turn-deg is the SIGNED exit turn onto the next segment, positive right and
+ negative left. The LAST entry has no turn: it is the terminus, the photo-finish
+ line.
+
+  cfg : Real, Scheme, Real, Boolean, Boolean, Boolean, Boolean, Creature -> Cfg
+  cfg (len) (sch) (turn) (c) (p) (b) (t) (cr) =
+    Cfg { length = len, scheme = sch, turn-deg = turn, cat = c, pigs = p, bull = b, terminates = t, creature = cr }
+
+  route : List Cfg
+  route = [cfg 500.0 AllGreen 50.0 False False False False Elephant, cfg 320.0 AllGreen (0.0 - 70.0) True False False False Elephant, cfg 400.0 AllGreen 20.0 False True False False Elephant, cfg 300.0 YellowGreen 20.0 False False False False Elephant, cfg 300.0 AllGreen (0.0 - 70.0) False False True False Giraffe, cfg 300.0 AllGreen (0.0 - 70.0) False False True False Elephant, cfg 1200.0 RedGreen 80.0 False False True False Rhino, cfg 300.0 AllGreen 15.0 False False True False Elephant, cfg 300.0 AllGreen (0.0 - 70.0) False False True False Elephant, cfg 800.0 AllGreen 15.0 False False True False Elephant, cfg 300.0 AllGreen 15.0 False True True False Elephant, cfg 300.0 AllGreen 15.0 False True True False Elephant, cfg 300.0 RedGreen 15.0 True True True False DuckPond, cfg 400.0 AllGreen (0.0 - 50.0) False True True False Elephant, cfg 300.0 AllGreen 50.0 False True True False Elephant, cfg 300.0 RedGreen (0.0 - 50.0) False False True False Zebra, cfg 300.0 AllGreen 50.0 False True True False Elephant, cfg 300.0 AllGreen (0.0 - 50.0) False True True False Elephant, cfg 300.0 RedGreen 0.0 True True True True NoCreature]
+
+Section: Building
+
+ The smallest right-side tree `along` at or after `desired` -- the cat tucks just
+ past it, so a tree stands between the rider and the cat. The zig starts at
+ INFINITY and takes the minimum, then answers `desired` if it is still infinite,
+ which is the sentinel doing duty as an absence.
+
+ THE ACCUMULATOR CARRIES THE ABSENCE IN ITS TYPE. This threaded a `found` Boolean
+ beside a `best` Real -- two values that had to agree, with nothing but the loop's
+ own care keeping them in step, and a `best` of 0.0 that meant nothing whenever
+ `found` was False. `Maybe Real` is one value that cannot disagree with itself, and
+ `from-maybe ... desired` at the bottom is precisely the zig's `if (isInf(best))
+ desired else best` said in the language rather than in a magic number.
+
+  tree-improves : Maybe Real, Real -> Boolean
+  tree-improves (best) (a) = when best
+    is Just (b) -> a < b
+    is None -> True
+
+  next-tree-loop : List Tree, Real, Integer, Maybe Real -> Maybe Real
+  next-tree-loop (ts) (desired) (i) (best) =
+    if i >= list-length ts then best
+    else next-tree-step ts desired i best
+
+  next-tree-step : List Tree, Real, Integer, Maybe Real -> Maybe Real
+  next-tree-step (ts) (desired) (i) (best) =
+    let t = list-at ts i
+    in let take = if t.across > 0.0 then (if t.along >= desired then tree-improves best t.along else False) else False
+    in if take then next-tree-loop ts desired (i + 1) (Just t.along)
+       else next-tree-loop ts desired (i + 1) best
+
+  next-tree-along : List Tree, Real -> Real
+  next-tree-along (ts) (desired) = from-maybe (next-tree-loop ts desired 0 None) desired
+
+ Each segment's heading vs north, accumulated from the previous segments' exit
+ turns. Segment 0 is zero.
+
+  heading-step : Integer -> Real
+  heading-step (i) =
+    let c = list-at route i
+    in (if c.turn-deg >= 0.0 then 1.0 else 0.0 - 1.0) * (real-abs c.turn-deg * deg)
+
+  heading-at : Integer -> Real
+  heading-at (i) = if i <= 0 then 0.0 else heading-at (i - 1) + heading-step (i - 1)
+
+ How many pig legs have appeared at or before this one -- the first
+ pig-novelty-count of them are the DISTRACTION herds.
+
+  pig-count-to : Integer, Integer -> Integer
+  pig-count-to (i) (acc) =
+    if i <= 0 then acc
+    else pig-count-to (i - 1) (if (list-at route (i - 1)).pigs then acc + 1 else acc)
+
+  Segment = record {
+    length : Real,
+    width : Real,
+    trees : List Tree,
+    cows : List Critter,
+    pigs : List Critter,
+    pigs-distract : Boolean,
+    exit-angle : Real,
+    exit-right : Boolean,
+    exit-to : Integer,
+    commit-along : Real,
+    north-heading : Real,
+    has-mid-tower : Boolean,
+    has-cat : Boolean,
+    cat : Cat,
+    terminates : Boolean,
+    exit-creature : Creature
+  }
+
+ The rider crosses the next segment's inner-edge extension half-a-width over
+ tan-theta before the segment's end and commits to the turn. The terminus has no
+ turn, so he commits at the end.
+
+  segment-at : Integer -> Segment
+  segment-at (i) =
+    let c = list-at route i
+    in let angle = real-abs c.turn-deg * deg
+    in let trees = fill-trees c.scheme c.length tree-start-inset 0 0
+    in let distract = if c.pigs then pig-count-to (i + 1) 0 <= pig-novelty-count else False
+    in Segment {
+      length = c.length,
+      width = lane-width,
+      trees = trees,
+      cows = fill-cows c.bull,
+      pigs = if c.pigs then (if distract then fill-pig-herd c.length else fill-pig-row c.length) else [],
+      pigs-distract = distract,
+      exit-angle = angle,
+      exit-right = c.turn-deg >= 0.0,
+      exit-to = if c.terminates then i else i + 1,
+      commit-along = if c.terminates then c.length else c.length - (lane-width / 2.0) / r-tan angle,
+      north-heading = heading-at i,
+      has-mid-tower = c.length > mid-tower-min-length,
+      has-cat = c.cat,
+      cat = cat-make (lane-width / 2.0) tree-road-offset (next-tree-along trees cat-along),
+      terminates = c.terminates,
+      exit-creature = if c.terminates then NoCreature else c.creature
+    }
+
+ THE CAT IS BUILT FOR EVERY SEGMENT, not only the ones that have one. The zig
+ leaves the field `undefined` when has_cat is false, which Codex has no way to
+ say and no reason to want; building it costs one record and reading it when
+ has-cat is false is the caller's error either way. Nothing observable changes.
+
+  segments-from : Integer -> List Segment
+  segments-from (i) =
+    if i >= list-length route then []
+    else [segment-at i] & segments-from (i + 1)
+
+  build-world : List Segment
+  build-world = segments-from 0
+
+Section: Distances
+
+ The sum of the segment lengths, with intersection arcs ignored as negligible --
+ the distance the truck's chase schedule lerps its lead down over.
+
+  course-length-from : List Segment, Integer -> Real
+  course-length-from (ss) (i) =
+    if i >= list-length ss then 0.0
+    else (list-at ss i).length + course-length-from ss (i + 1)
+
+  course-length : List Segment -> Real
+  course-length (ss) = course-length-from ss 0
+
+ How far along the course a point sits: the lengths of all earlier segments in
+ route order, plus the along. The segments ARE in route order, so the prefix is
+ just a sum.
+
+  route-distance-from : List Segment, Integer, Integer -> Real
+  route-distance-from (ss) (seg) (i) =
+    if i >= seg then 0.0
+    else (list-at ss i).length + route-distance-from ss seg (i + 1)
+
+  route-distance : List Segment, Integer, Real -> Real
+  route-distance (ss) (seg) (along) = route-distance-from ss seg 0 + along

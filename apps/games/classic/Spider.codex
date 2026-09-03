@@ -49,23 +49,50 @@ Section: Types
 
 Section: Card Helpers
 
+ A card id carries its rank as `id mod 13`, and that encoding belongs to the
+ PAGE: index 0 is the deuce and index 12 is the ace, because every other card
+ game in the arcade wants an ace-high deck and they all read the same ids.
+ Spider wants the opposite. Here the ace is the LOWEST card -- a run is a
+ king down to an ace, and an ace is laid on a deuce -- so 12 folds to 0 and
+ every other rank shifts up one. Without the fold a run reads ace down to
+ deuce, the ace sits one above the king, and the move test asks whether
+ 12 == 0 - 1, so an ace can be laid on nothing at all.
+
   sp-rank : Integer -> Integer
-  sp-rank (c) = rng-mod c 13
+  sp-rank (c) =
+    let r = rng-mod c 13
+    in if r == 12 then 0 else r + 1
+
+ THE SUIT COUNT LIVES IN THE DECK, not in this function. `sp-suit` is a pure
+ function of a card id and is called from list-level helpers that hold no
+ state, so threading a suit count through them would have reached into the
+ sequence walk, both move tests and the AI's scoring. Instead the deck is
+ built with the suit already in the id: the block a card falls in IS its
+ suit, and `sp-fill-deck` decides how many blocks there are.
 
   sp-suit : Integer -> Integer
-  sp-suit (c) = rng-mod (c / 13) 2
+  sp-suit (c) = c / 13
 
 Section: Deck Building
 
-  spider-deck-new : Integer -> List Integer
-  spider-deck-new (seed) =
-    let deck = sp-fill-deck 0 []
+  spider-deck-new : Integer, Integer -> List Integer
+  spider-deck-new (seed) (suits) =
+    let n = if suits < 1 then 1 else if suits > 8 then 8 else suits
+    in let deck = sp-fill-deck n 0 []
     in sp-shuffle deck seed 103
 
-  sp-fill-deck : Integer, List Integer -> List Integer
-  sp-fill-deck (i) (acc) =
+ A hundred and four cards either way: eight blocks of thirteen ranks. What
+ the suit count changes is how many DISTINCT blocks those are. Card i takes
+ rank `i mod 13` and suit `(i / 13) mod suits`, so one suit gives eight
+ copies of each rank, two gives four, four gives two. Duplicate card ids are
+ correct and always were: a Spider deck holds repeats.
+
+  sp-fill-deck : Integer, Integer, List Integer -> List Integer
+  sp-fill-deck (suits) (i) (acc) =
     if i >= 104 then acc
-    else sp-fill-deck (i + 1) (list-push acc i)
+    else let suit = rng-mod (i / 13) suits
+    in let rank = rng-mod i 13
+    in sp-fill-deck suits (i + 1) (list-push acc (suit * 13 + rank))
 
   sp-shuffle : List Integer, Integer, Integer -> List Integer
   sp-shuffle (deck) (seed) (i) =
@@ -138,9 +165,9 @@ Section: Column Access
 
 Section: Construction
 
-  spider-new : Integer -> SpiderState
-  spider-new (seed) =
-    let deck = spider-deck-new seed
+  spider-new : Integer, Integer -> SpiderState
+  spider-new (seed) (suits) =
+    let deck = spider-deck-new seed suits
     in sp-deal deck
 
   sp-deal : List Integer -> SpiderState
@@ -258,10 +285,22 @@ Section: Complete Suite Check
 
 Section: Stock Deal
 
+ A deal puts one card on EVERY column, so Spider forbids it while any column
+ stands empty: it would bury a space that the game is largely about winning
+ and keeping. The engine dealt regardless, which made an empty column worth
+ less than the rules say it is.
+
+  sp-any-empty : SpiderState, Integer -> Boolean
+  sp-any-empty (st) (i) =
+    if i >= 10 then False
+    else if list-length (sp-get-col st i) == 0 then True
+    else sp-any-empty st (i + 1)
+
   sp-deal-stock : SpiderState -> SpiderState
   sp-deal-stock (st) =
     let n = list-length (st.stock)
-    in if n < 10 then st
+    in if sp-any-empty st 0 then st
+    else if n < 10 then st
     else let st2 = sp-deal-one st 0 0
     in let st3 = sp-deal-one st2 1 1
     in let st4 = sp-deal-one st3 2 2
@@ -456,7 +495,7 @@ Section: Game Runner
 
   run-spider-game : Integer -> SpiderResult
   run-spider-game (seed) =
-    let st = spider-new seed
+    let st = spider-new seed 2
     in spider-loop st 0 (list-push [] (sp-hash st))
 
   spider-loop : SpiderState, Integer, List Integer -> SpiderResult

@@ -27,6 +27,41 @@ Section: Types
     hands-played  : Integer
   }
 
+ A hand of five card draw between two players, which is what a person sits
+ down to. `run-poker-session` below deals two hands and compares them; it
+ models no betting and no draw, so there is nothing in it to take a turn
+ at. This record is the game.
+
+ `pos` is the next UNDEALT card. Replacements come from it and it only ever
+ moves forward, which is what stops a draw handing somebody a card that is
+ already in a hand.
+
+ `stage` is 0 for the first betting round, 1 for the draw, 2 for the second
+ betting round and 3 when the hand is over. `acted` counts the actions
+ taken in the current betting round, because a round ends when both players
+ have acted AND the two stakes are equal: checking that the stakes agree
+ alone would end the round before either had spoken.
+
+  PokerTable = record {
+    deck   : List Integer,
+    pos    : Integer,
+    h0     : List Integer,
+    h1     : List Integer,
+    chips0 : Integer,
+    chips1 : Integer,
+    bet0   : Integer,
+    bet1   : Integer,
+    pot    : Integer,
+    stage  : Integer,
+    turn   : Integer,
+    acted  : Integer,
+    marked : Integer,
+    folded : Integer,
+    winner : Integer,
+    last   : Integer,
+    done   : Boolean
+  }
+
 Section: Card Helpers
 
   card-rank : Integer -> Integer
@@ -267,6 +302,456 @@ Section: Game Runner
     in let new-p1 = if w == 1 then p1-wins + 1 else p1-wins
     in let new-p2 = if w == 2 then p2-wins + 1 else p2-wins
     in poker-session-loop r2 n (played + 1) new-p1 new-p2 rank1.rank
+
+Section: A Table You Can Sit At
+
+ The stakes are fixed rather than no-limit: an ante of five, a bet of ten,
+ and two hundred to start with. A fixed limit is a smaller game than real
+ poker and it is a WHOLE game, where a half-built no-limit raise is not.
+
+  pk-ante : Integer
+  pk-ante = 5
+
+  pk-bet-size : Integer
+  pk-bet-size = 10
+
+  pk-start-chips : Integer
+  pk-start-chips = 200
+
+ The five marks are kept as one integer rather than a list of flags,
+ because a list would have to be rebuilt on every click to keep a handle a
+ page is holding from moving under it. There are no bitwise operators here,
+ so the bit is reached by dividing it down and taking the remainder.
+
+  pk-pow2 : Integer -> Integer
+  pk-pow2 (i) = if i <= 0 then 1 else 2 * pk-pow2 (i - 1)
+
+  pk-bit : Integer, Integer -> Integer
+  pk-bit (m) (i) = rng-mod (m / pk-pow2 i) 2
+
+  pk-toggle-bit : Integer, Integer -> Integer
+  pk-toggle-bit (m) (i) =
+    if pk-bit m i == 1 then m - pk-pow2 i else m + pk-pow2 i
+
+  pk-count-bits : Integer, Integer, Integer -> Integer
+  pk-count-bits (m) (i) (acc) =
+    if i >= 5 then acc
+    else pk-count-bits m (i + 1) (acc + pk-bit m i)
+
+Section: Dealing From A Position
+
+  pk-take : List Integer, Integer, Integer, List Integer -> List Integer
+  pk-take (deck) (from) (n) (acc) =
+    if n <= 0 then acc
+    else pk-take deck (from + 1) (n - 1) (list-push acc (list-at deck from))
+
+  pk-table-new : Integer -> PokerTable
+  pk-table-new (seed) =
+    let deck = poker-shuffle poker-deck-new (rng-new seed)
+    in PokerTable {
+      deck = deck,
+      pos = 10,
+      h0 = pk-take deck 0 5 [],
+      h1 = pk-take deck 5 5 [],
+      chips0 = pk-start-chips - pk-ante,
+      chips1 = pk-start-chips - pk-ante,
+      bet0 = 0,
+      bet1 = 0,
+      pot = pk-ante * 2,
+      stage = 0,
+      turn = 0,
+      acted = 0,
+      marked = 0,
+      folded = (-1),
+      winner = (-1),
+      last = (-1),
+      done = False
+    }
+
+  pk-hand-of : PokerTable, Integer -> List Integer
+  pk-hand-of (t) (who) = if who == 0 then t.h0 else t.h1
+
+  pk-bet-of : PokerTable, Integer -> Integer
+  pk-bet-of (t) (who) = if who == 0 then t.bet0 else t.bet1
+
+  pk-chips-of : PokerTable, Integer -> Integer
+  pk-chips-of (t) (who) = if who == 0 then t.chips0 else t.chips1
+
+ What it costs the player to stay in: the difference between the two
+ stakes. Zero means checking is free, which is a different offer from
+ calling and the page has to be able to tell them apart.
+
+  pk-to-call : PokerTable, Integer -> Integer
+  pk-to-call (t) (who) =
+    let mine = pk-bet-of t who
+    in let theirs = pk-bet-of t (1 - who)
+    in if theirs > mine then theirs - mine else 0
+
+Section: The Moves
+
+ Three things a player may do, and each answers whether it is allowed
+ rather than being refused silently: fold, match what is in front of them
+ (a check when that is nothing), and raise. A raise is capped so a round
+ cannot go round for ever, which is what a fixed limit is for.
+
+  pk-max-raises : Integer
+  pk-max-raises = 4
+
+  pk-can-fold : PokerTable, Integer -> Boolean
+  pk-can-fold (t) (who) =
+    if t.done then False
+    else if t.stage == 1 then False
+    else if t.stage >= 3 then False
+    else if t.turn /= who then False
+    else True
+
+  pk-can-call : PokerTable, Integer -> Boolean
+  pk-can-call (t) (who) =
+    if pk-can-fold t who then pk-to-call t who <= pk-chips-of t who
+    else False
+
+  pk-can-raise : PokerTable, Integer -> Boolean
+  pk-can-raise (t) (who) =
+    if pk-can-fold t who then pk-raise-room t who else False
+
+  pk-raise-room : PokerTable, Integer -> Boolean
+  pk-raise-room (t) (who) =
+    if t.acted >= pk-max-raises then False
+    else pk-to-call t who + pk-bet-size <= pk-chips-of t who
+
+ A betting round is over when both have spoken and the stakes agree. The
+ two halves are both load-bearing: stakes alone are equal before anybody
+ has acted, and actions alone are equal when one player has just raised.
+
+  pk-round-over : PokerTable -> Boolean
+  pk-round-over (t) =
+    t.acted >= 2 & t.bet0 == t.bet1
+
+  pk-put-in : PokerTable, Integer, Integer -> PokerTable
+  pk-put-in (t) (who) (amount) =
+    PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = if who == 0 then t.chips0 - amount else t.chips0,
+      chips1 = if who == 1 then t.chips1 - amount else t.chips1,
+      bet0 = if who == 0 then t.bet0 + amount else t.bet0,
+      bet1 = if who == 1 then t.bet1 + amount else t.bet1,
+      pot = t.pot + amount,
+      stage = t.stage,
+      turn = 1 - who,
+      acted = t.acted + 1,
+      marked = t.marked,
+      folded = t.folded,
+      winner = t.winner,
+      last = t.last,
+      done = False
+    }
+
+  pk-note : PokerTable, Integer -> PokerTable
+  pk-note (t) (what) =
+    PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = t.chips0, chips1 = t.chips1,
+      bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
+      stage = t.stage, turn = t.turn, acted = t.acted,
+      marked = t.marked, folded = t.folded, winner = t.winner,
+      last = what, done = t.done
+    }
+
+ Folding ends the hand there and the pot goes to whoever is left, which is
+ the one way to win without showing a hand.
+
+  pk-fold : PokerTable, Integer -> PokerTable
+  pk-fold (t) (who) =
+    if pk-can-fold t who then pk-award (pk-set-folded t who) (1 - who) else t
+
+  pk-set-folded : PokerTable, Integer -> PokerTable
+  pk-set-folded (t) (who) =
+    PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = t.chips0, chips1 = t.chips1,
+      bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
+      stage = 3, turn = t.turn, acted = t.acted,
+      marked = t.marked, folded = who, winner = t.winner,
+      last = 0, done = t.done
+    }
+
+  pk-call : PokerTable, Integer -> PokerTable
+  pk-call (t) (who) =
+    if pk-can-call t who then pk-call-ok t who else t
+
+  pk-call-ok : PokerTable, Integer -> PokerTable
+  pk-call-ok (t) (who) =
+    let owed = pk-to-call t who
+    in let paid = pk-put-in t who owed
+    in let noted = pk-note paid (if owed == 0 then 1 else 2)
+    in pk-advance noted
+
+  pk-raise : PokerTable, Integer -> PokerTable
+  pk-raise (t) (who) =
+    if pk-can-raise t who then pk-raise-ok t who else t
+
+  pk-raise-ok : PokerTable, Integer -> PokerTable
+  pk-raise-ok (t) (who) =
+    let owed = pk-to-call t who
+    in let paid = pk-put-in t who (owed + pk-bet-size)
+    in pk-advance (pk-note paid 3)
+
+ When the round is over the stage moves on, the stakes are cleared and the
+ player who did not open the previous round speaks first.
+
+  pk-advance : PokerTable -> PokerTable
+  pk-advance (t) =
+    if pk-round-over t then pk-advance-now t else t
+
+  pk-advance-now : PokerTable -> PokerTable
+  pk-advance-now (t) =
+    if t.stage == 0 then pk-open-stage t 1 else pk-showdown t
+
+  pk-open-stage : PokerTable, Integer -> PokerTable
+  pk-open-stage (t) (next) =
+    PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = t.chips0, chips1 = t.chips1,
+      bet0 = 0, bet1 = 0, pot = t.pot,
+      stage = next, turn = 0, acted = 0,
+      marked = t.marked, folded = t.folded, winner = t.winner,
+      last = t.last, done = False
+    }
+
+Section: The Draw
+
+ `draw-count` says HOW MANY a hand should throw away and nothing about
+ WHICH, and a count is not a choice: throwing away the last three cards of
+ a hand whose pair happens to sit at positions three and four breaks the
+ pair the count was protecting. So the discard is a MASK over the five
+ positions, and `draw-count` is what it is checked against.
+
+  pk-discard-mask : List Integer -> Integer
+  pk-discard-mask (cards) =
+    if hand-is-flush cards then 0
+    else if hand-is-straight cards then 0
+    else let mc = max-rank-count cards
+    in if mc >= 3 then pk-mask-not-of-rank cards (best-rank-of-count cards mc) 0 0
+    else if mc == 2 then pk-mask-two cards
+    else pk-mask-low-three cards
+
+  pk-mask-not-of-rank : List Integer, Integer, Integer, Integer -> Integer
+  pk-mask-not-of-rank (cards) (keep) (i) (m) =
+    if i >= 5 then m
+    else let bit = if card-rank (list-at cards i) == keep then 0 else pk-pow2 i
+    in pk-mask-not-of-rank cards keep (i + 1) (m + bit)
+
+ Two pair throws the odd card and keeps both pairs. One pair keeps the pair
+ AND ITS BEST KICKER and throws two, which is not the commonest way to play
+ a pair and is what `draw-count` has always said: this function decides
+ WHICH cards go, never how many, so where the two could disagree it is this
+ one that is wrong. `second-pair-rank` is what tells the two cases apart,
+ and it is the engine's own.
+
+  pk-mask-two : List Integer -> Integer
+  pk-mask-two (cards) =
+    let p1 = best-rank-of-count cards 2
+    in let p2 = second-pair-rank cards p1
+    in if p2 >= 0 then pk-mask-not-either cards p1 p2 0 0
+    else pk-mask-pair-and-kicker cards p1
+
+  pk-mask-pair-and-kicker : List Integer, Integer -> Integer
+  pk-mask-pair-and-kicker (cards) (pair) =
+    let k = pk-best-off-rank cards pair 0 (-1)
+    in pk-mask-not-rank-or-index cards pair k 0 0
+
+  pk-best-off-rank : List Integer, Integer, Integer, Integer -> Integer
+  pk-best-off-rank (cards) (skip-rank) (i) (best) =
+    if i >= 5 then best
+    else if card-rank (list-at cards i) == skip-rank
+      then pk-best-off-rank cards skip-rank (i + 1) best
+    else if best < 0 then pk-best-off-rank cards skip-rank (i + 1) i
+    else if card-rank (list-at cards i) > card-rank (list-at cards best)
+      then pk-best-off-rank cards skip-rank (i + 1) i
+    else pk-best-off-rank cards skip-rank (i + 1) best
+
+  pk-mask-not-rank-or-index : List Integer, Integer, Integer, Integer, Integer -> Integer
+  pk-mask-not-rank-or-index (cards) (keep-rank) (keep-i) (i) (m) =
+    if i >= 5 then m
+    else let r = card-rank (list-at cards i)
+    in let bit = if r == keep-rank then 0 else if i == keep-i then 0 else pk-pow2 i
+    in pk-mask-not-rank-or-index cards keep-rank keep-i (i + 1) (m + bit)
+
+  pk-mask-not-either : List Integer, Integer, Integer, Integer, Integer -> Integer
+  pk-mask-not-either (cards) (a) (b) (i) (m) =
+    if i >= 5 then m
+    else let r = card-rank (list-at cards i)
+    in let bit = if r == a then 0 else if r == b then 0 else pk-pow2 i
+    in pk-mask-not-either cards a b (i + 1) (m + bit)
+
+ Nothing to build on, so the three lowest go. Marking the two HIGHEST and
+ discarding the rest is the same statement and it is the one that cannot
+ discard four cards when two share a rank.
+
+  pk-mask-low-three : List Integer -> Integer
+  pk-mask-low-three (cards) =
+    let a = pk-highest-index cards 0 (-1) (-1)
+    in let b = pk-highest-index cards 0 a (-1)
+    in pk-mask-except cards a b 0 0
+
+  pk-highest-index : List Integer, Integer, Integer, Integer -> Integer
+  pk-highest-index (cards) (i) (skip) (best) =
+    if i >= 5 then best
+    else if i == skip then pk-highest-index cards (i + 1) skip best
+    else if best < 0 then pk-highest-index cards (i + 1) skip i
+    else if card-rank (list-at cards i) > card-rank (list-at cards best)
+      then pk-highest-index cards (i + 1) skip i
+    else pk-highest-index cards (i + 1) skip best
+
+  pk-mask-except : List Integer, Integer, Integer, Integer, Integer -> Integer
+  pk-mask-except (cards) (a) (b) (i) (m) =
+    if i >= 5 then m
+    else let bit = if i == a then 0 else if i == b then 0 else pk-pow2 i
+    in pk-mask-except cards a b (i + 1) (m + bit)
+
+ Replacing the marked cards. Every new card comes from `pos`, which moves
+ forward, so a card that has been dealt is never dealt again.
+
+  pk-replace : List Integer, Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  pk-replace (cards) (mask) (deck) (from) (i) (acc) =
+    if i >= 5 then acc
+    else if pk-bit mask i == 1 then
+      pk-replace cards mask deck (from + 1) (i + 1) (list-push acc (list-at deck from))
+    else pk-replace cards mask deck from (i + 1) (list-push acc (list-at cards i))
+
+  pk-draw-for : PokerTable, Integer, Integer -> PokerTable
+  pk-draw-for (t) (who) (mask) =
+    let cards = pk-hand-of t who
+    in let n = pk-count-bits mask 0 0
+    in let fresh = pk-replace cards mask (t.deck) (t.pos) 0 []
+    in PokerTable {
+      deck = t.deck,
+      pos = t.pos + n,
+      h0 = if who == 0 then fresh else t.h0,
+      h1 = if who == 1 then fresh else t.h1,
+      chips0 = t.chips0, chips1 = t.chips1,
+      bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
+      stage = t.stage, turn = 1 - who, acted = t.acted + 1,
+      marked = 0, folded = t.folded, winner = t.winner,
+      last = 4, done = False
+    }
+
+  pk-can-draw : PokerTable, Integer -> Boolean
+  pk-can-draw (t) (who) =
+    if t.done then False
+    else if t.stage /= 1 then False
+    else t.turn == who
+
+ A click marks or unmarks one of your own cards, and it is refused
+ anywhere but the draw and on anybody else's card.
+
+  pk-mark : PokerTable, Integer -> PokerTable
+  pk-mark (t) (i) =
+    if pk-can-draw t 0 then pk-mark-ok t i else t
+
+  pk-mark-ok : PokerTable, Integer -> PokerTable
+  pk-mark-ok (t) (i) =
+    if i < 0 then t
+    else if i >= 5 then t
+    else PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = t.chips0, chips1 = t.chips1,
+      bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
+      stage = t.stage, turn = t.turn, acted = t.acted,
+      marked = pk-toggle-bit (t.marked) i,
+      folded = t.folded, winner = t.winner, last = t.last, done = t.done
+    }
+
+  pk-clear-marks : PokerTable -> PokerTable
+  pk-clear-marks (t) =
+    if pk-can-draw t 0 then pk-clear-ok t else t
+
+  pk-clear-ok : PokerTable -> PokerTable
+  pk-clear-ok (t) =
+    PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = t.chips0, chips1 = t.chips1,
+      bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
+      stage = t.stage, turn = t.turn, acted = t.acted,
+      marked = 0, folded = t.folded, winner = t.winner,
+      last = t.last, done = t.done
+    }
+
+  pk-draw : PokerTable -> PokerTable
+  pk-draw (t) =
+    if pk-can-draw t 0 then pk-after-draw (pk-draw-for t 0 (t.marked)) else t
+
+  pk-after-draw : PokerTable -> PokerTable
+  pk-after-draw (t) =
+    if t.acted >= 2 then pk-open-stage t 2 else t
+
+Section: The Showdown
+
+  pk-showdown : PokerTable -> PokerTable
+  pk-showdown (t) =
+    let r0 = evaluate-hand (PokerHand { cards = t.h0 })
+    in let r1 = evaluate-hand (PokerHand { cards = t.h1 })
+    in let c = compare-hands r0 r1
+    in let w = if c == 1 then 0 else if c == 2 then 1 else (-1)
+    in pk-award t w
+
+ A tie splits the pot, and the split is what says the two chip stacks and
+ the pot are one quantity: nothing is created here and nothing is lost.
+
+  pk-share : Integer, Integer, Integer -> Integer
+  pk-share (pot) (w) (who) =
+    if w == who then pot
+    else if w < 0 then pot / 2
+    else 0
+
+  pk-award : PokerTable, Integer -> PokerTable
+  pk-award (t) (w) =
+    let s0 = pk-share (t.pot) w 0
+    in let s1 = pk-share (t.pot) w 1
+    in PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = t.chips0 + s0,
+      chips1 = t.chips1 + s1,
+      bet0 = t.bet0, bet1 = t.bet1,
+      pot = 0,
+      stage = 3, turn = t.turn, acted = t.acted,
+      marked = 0, folded = t.folded, winner = w,
+      last = t.last, done = True
+    }
+
+Section: The Opponent
+
+ It plays its own cards by the same rules the page offers you, through the
+ same three functions, so there is one set of moves in this chapter rather
+ than one for the person and one for the engine.
+
+ It plays for WHOEVER is on the go, not only for the opponent. A step that
+ refused to act on your turn would leave a page with nobody to move it when
+ it is watching itself, which is the one thing every game here has to be
+ able to do: the person is an override on this, not a precondition for it.
+
+  pk-ai-move : PokerTable -> PokerTable
+  pk-ai-move (t) =
+    if t.done then t
+    else let who = t.turn
+    in if t.stage == 1 then pk-ai-draw t who
+    else pk-ai-bet t who
+
+  pk-ai-draw : PokerTable, Integer -> PokerTable
+  pk-ai-draw (t) (who) =
+    pk-after-draw (pk-draw-for t who (pk-discard-mask (pk-hand-of t who)))
+
+ Raise on two pair or better, stay for nothing, call a bet holding at least
+ a pair, and let a hand with nothing go.
+
+  pk-ai-bet : PokerTable, Integer -> PokerTable
+  pk-ai-bet (t) (who) =
+    let strength = (evaluate-hand (PokerHand { cards = pk-hand-of t who })).rank
+    in let owed = pk-to-call t who
+    in if strength >= 2 & pk-can-raise t who then pk-raise t who
+    else if owed == 0 then pk-call t who
+    else if strength >= 1 then pk-call t who
+    else pk-fold t who
 
 Section: Formatting
 

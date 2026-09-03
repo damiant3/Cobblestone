@@ -7,7 +7,18 @@
 [CmdletBinding()]
 param(
     [string]$CodexCdx = '',
-    [int]$Jobs = 8
+    [int]$Jobs = 8,
+    # A FILE of chapter paths, one per line, which REPLACES the BVT list for
+    # the gate's cited-test run phase. It is this runner rather than a new loop
+    # because the grading lives here: the .expected filter, the .disk sidecar,
+    # and the strict-prefix arithmetic that separates a TRUNCATED capture from
+    # a real mismatch (L-SHORT). test-run.ps1 never sees an .expected and
+    # renders no verdict, so a second loop would be a third verdict site
+    # missing all of it.
+    # A FILE and not a [string[]]: pwsh -File splits an array into separate
+    # positional arguments, so only the first element ever bound and the rest
+    # came back as "a positional parameter cannot be found".
+    [string]$SubjectsFile = ''
 )
 
 Set-StrictMode -Version Latest
@@ -145,6 +156,38 @@ if ((-not (Test-Path -PathType Leaf $stage0))) {
     exit 1
 }
 
+# The label travels with the list. A cited-test run that printed "BVT" would be
+# read as the BVT having passed, which is a different and much stronger claim.
+$BvtLabel = 'BVT'
+if ($SubjectsFile) {
+    if (-not (Test-Path -PathType Leaf $SubjectsFile)) {
+        Write-Host "ERROR: -SubjectsFile $SubjectsFile does not exist" -ForegroundColor Red
+        exit 1
+    }
+    $BvtTests = @(Get-Content $SubjectsFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $BvtLabel = 'CITED-RUN'
+}
+
+# The battery drops these BEFORE it compiles anything, so a runner pointed at
+# arbitrary chapters must drop them too. The BVT's own list was chosen to avoid
+# them, so this was never needed until the gate's cited-test phase started
+# handing this runner whatever a CL implicated: 80 device/SMP/gpu/shell chapters
+# went red in one arc for want of it. Widening the SUBJECTS without widening the
+# RUNNER is L-SIDECAR, and the corpus carries 31 .skip, 4 .slow and 15 .fatal.
+$bvtSkipped = [System.Collections.Generic.List[string]]::new()
+$BvtTests = @($BvtTests | Where-Object {
+    $b = [System.IO.Path]::GetFileNameWithoutExtension($_)
+    foreach ($m in @('skip', 'slow', 'fatal')) {
+        if (Test-Path -PathType Leaf ($_ -replace '\.codex$', ".$m")) {
+            $why = (Get-Content -TotalCount 1 ($_ -replace '\.codex$', ".$m") -ErrorAction SilentlyContinue)
+            $bvtSkipped.Add("$b ($m) $why")
+            return $false
+        }
+    }
+    $true
+})
+foreach ($sk in $bvtSkipped) { Write-Host "  SKIP  $sk" -ForegroundColor DarkGray }
+
 $vmExe = Join-Path (Resolve-Path .).Path 'tools\codex-vm.exe'
 if ((-not (Test-Path -PathType Leaf $vmExe))) {
     Write-Host "ERROR: codex-vm.exe not found at $vmExe" -ForegroundColor Red
@@ -159,7 +202,7 @@ foreach ($t in $BvtTests) {
     }
 }
 if ($missing.Count -gt 0) {
-    Write-Host 'ERROR: Missing BVT test files:' -ForegroundColor Red
+    Write-Host "ERROR: Missing $BvtLabel test files:" -ForegroundColor Red
     foreach ($m in $missing) {
         Write-Host "  $m"
     }
@@ -168,7 +211,7 @@ if ($missing.Count -gt 0) {
 
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-Write-Host "BVT: $($BvtTests.Count) tests, $Jobs parallel slots"
+Write-Host "${BvtLabel}: $($BvtTests.Count) tests, $Jobs parallel slots"
 Write-Host ''
 
 
@@ -187,7 +230,15 @@ $BvtTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     $failFile = $t -replace '\.codex$', '.failing'
     $expectFail = Test-Path $failFile
-    $r = & pwsh -NoProfile -File $using:compileScript -Src $t -Out $cdxOut -Log $logOut 2>&1
+    # The .flags sidecar rides along, exactly as test.ps1 does it. Without it a
+    # subject that needs decks=200 (foreword-all-compile) fails to compile here
+    # while compiling fine everywhere else, and the runner is measuring its own
+    # invocation rather than the test (L-SIDECAR).
+    $flagsFile = $t -replace '\.codex$', '.flags'
+    $rawFlags = if (Test-Path -PathType Leaf $flagsFile) { (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }
+    $cArgs = @('-NoProfile', '-File', $using:compileScript, '-Src', $t, '-Out', $cdxOut, '-Log', $logOut)
+    if ($rawFlags) { $cArgs += @('-RawFlags', $rawFlags) }
+    $r = & pwsh @cArgs 2>&1
     $ok = $LASTEXITCODE -eq 0
     if ($expectFail) {
         if ($ok) {
@@ -265,12 +316,68 @@ for ($i = 0; $i -lt $runList.Count; $i++) {
     if (Test-Path $raw) { Remove-Item -Force $raw }
     $rawOf[$base] = $raw
     $tokens = @('-kernel', $cdxOut, '-output', $raw, '-mem', '3072', '-headless')
+    # Every machine sidecar test-run.ps1 passes, mapped to the same codex-vm
+    # flags in the same order. A subject whose SUBJECT IS THE MACHINE (a bus
+    # topology, an absent device, a second drive, more than one core) answers
+    # nothing without these, and the failure reads as a miscompile: the 80 reds
+    # of blu's arc were smp-* booting single-core, usb-kbd-*/pci-bridge-*/e1000-*
+    # with no topology, and shell-repl/diagnostic-boot with no stdin.
+    $stdinFile = $t -replace '\.codex$', '.stdin'
+    if (Test-Path -PathType Leaf $stdinFile) {
+        $inWork = [System.IO.Path]::GetTempFileName()
+        $tempDisks.Add($inWork)
+        [System.IO.File]::WriteAllBytes($inWork, [System.IO.File]::ReadAllBytes($stdinFile))
+        $tokens += @('-input', $inWork)
+    }
+    # Read in place: codex-vm only reads it, so the read-only attribute a depot
+    # sidecar carries after sync is no obstacle.
+    $keysFile = $t -replace '\.codex$', '.keys'
+    if (Test-Path -PathType Leaf $keysFile) { $tokens += @('-keys-file', $keysFile) }
     $diskFile = $t -replace '\.codex$', '.disk'
     if (Test-Path -PathType Leaf $diskFile) {
         $diskWork = [System.IO.Path]::GetTempFileName()
         $tempDisks.Add($diskWork)
         [System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($diskFile))
         $tokens += @('-disk', $diskWork)
+    }
+    # .disk-src names ANOTHER test whose freshly compiled CDX becomes this
+    # test's disk, which is the point: a test pinning what the CURRENT compiler
+    # emits cannot use a frozen image.
+    $diskSrcFile = $t -replace '\.codex$', '.disk-src'
+    if ((Test-Path -PathType Leaf $diskSrcFile) -and -not (Test-Path -PathType Leaf $diskFile)) {
+        $srcName = (Get-Content -TotalCount 1 $diskSrcFile).Trim()
+        $srcCdx = Join-Path (Join-Path $OutRoot $srcName) "$srcName.cdx"
+        if (Test-Path -PathType Leaf $srcCdx) {
+            $dsWork = [System.IO.Path]::GetTempFileName()
+            $tempDisks.Add($dsWork)
+            [System.IO.File]::WriteAllBytes($dsWork, [System.IO.File]::ReadAllBytes($srcCdx))
+            $tokens += @('-disk', $dsWork)
+        }
+    }
+    # The primary channel's slave, and it matters more than the master here: the
+    # case it exists for is one drive writing to another.
+    $disk2File = $t -replace '\.codex$', '.disk2'
+    if (Test-Path -PathType Leaf $disk2File) {
+        $disk2Work = [System.IO.Path]::GetTempFileName()
+        $tempDisks.Add($disk2Work)
+        [System.IO.File]::WriteAllBytes($disk2Work, [System.IO.File]::ReadAllBytes($disk2File))
+        $tokens += @('-disk2', $disk2Work)
+    }
+    $smpFile = $t -replace '\.codex$', '.smp'
+    if (Test-Path -PathType Leaf $smpFile) {
+        $smpN = 0
+        if ([int]::TryParse((Get-Content -TotalCount 1 $smpFile).Trim(), [ref]$smpN) -and $smpN -gt 1) {
+            $tokens += @('-smp', "$smpN")
+        }
+    }
+    # Whitespace-separated flags, '#' comments and blank lines ignored.
+    $vmArgsFile = $t -replace '\.codex$', '.vmargs'
+    if (Test-Path -PathType Leaf $vmArgsFile) {
+        foreach ($vline in (Get-Content $vmArgsFile)) {
+            $vline = $vline.Trim()
+            if (-not $vline -or $vline.StartsWith('#')) { continue }
+            $tokens += ($vline -split '\s+')
+        }
     }
     $s = $i % $Jobs
     # Every token double-quoted: that is what -run-list's splitter takes.

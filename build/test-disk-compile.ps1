@@ -26,6 +26,63 @@ $runScript = Join-Path $PSScriptRoot 'test-run.ps1'
 Write-Host '=== DISK compile test ===' -ForegroundColor Cyan
 
 
+function Export-Fat16File {
+    param([string]$Image, [string]$Name, [string]$Out)
+    $fs = [System.IO.File]::OpenRead($Image)
+    try {
+        $bpb = New-Object byte[] 512
+        $fs.Seek((2048 * 512), 'Begin') | Out-Null
+        if ($fs.Read($bpb, 0, 512) -ne 512) { throw 'FAT16: cannot read the BPB at LBA 2048' }
+        if (($bpb[510] -ne 85) -or ($bpb[511] -ne 170)) { throw 'FAT16: no boot signature at LBA 2048' }
+        $bps = [BitConverter]::ToUInt16($bpb, 11)
+        $spc = $bpb[13]
+        $rsvd = [BitConverter]::ToUInt16($bpb, 14)
+        $nfat = $bpb[16]
+        $rent = [BitConverter]::ToUInt16($bpb, 17)
+        $spf = [BitConverter]::ToUInt16($bpb, 22)
+        if (($bps -le 0) -or ($spc -le 0) -or ($spf -le 0) -or ($nfat -le 0)) { throw "FAT16: implausible BPB bps=$bps spc=$spc spf=$spf nfat=$nfat" }
+        $fatSec = 2048 + $rsvd
+        $rootSec = $fatSec + ($nfat * $spf)
+        $rootSecs = [int][Math]::Ceiling(($rent * 32) / $bps)
+        $dataSec = $rootSec + $rootSecs
+        $rd = New-Object byte[] ($rootSecs * $bps)
+        $fs.Seek(($rootSec * $bps), 'Begin') | Out-Null
+        $fs.Read($rd, 0, $rd.Length) | Out-Null
+        $clus = 0
+        $size = 0
+        for ($e = 0; $e -lt $rent; $e++) {
+            $o = $e * 32
+            if ($rd[$o] -eq 0) { break }
+            if (($rd[$o] -eq 229) -or ($rd[$o + 11] -eq 15)) { continue }
+            if ([System.Text.Encoding]::ASCII.GetString($rd, $o, 11) -eq $Name) {
+                $clus = [BitConverter]::ToUInt16($rd, $o + 26)
+                $size = [BitConverter]::ToUInt32($rd, $o + 28)
+                break
+            }
+        }
+        if ($clus -lt 2) { throw "FAT16: $Name is not in the root directory" }
+        $fat = New-Object byte[] ($spf * $bps)
+        $fs.Seek(($fatSec * $bps), 'Begin') | Out-Null
+        $fs.Read($fat, 0, $fat.Length) | Out-Null
+        $bytes = New-Object byte[] $size
+        $got = 0
+        $cl = $clus
+        while ((($got -lt $size) -and ($cl -ge 2)) -and ($cl -lt 65528)) {
+            $take = [Math]::Min(($spc * $bps), ($size - $got))
+            $fs.Seek((($dataSec + ($cl - 2) * $spc) * $bps), 'Begin') | Out-Null
+            if ($fs.Read($bytes, $got, $take) -ne $take) { throw "FAT16: short read in $Name at cluster $cl" }
+            $got += $take
+            $cl = [BitConverter]::ToUInt16($fat, $cl * 2)
+        }
+        if ($got -ne $size) { throw "FAT16: $Name chain yielded $got of $size bytes" }
+        [System.IO.File]::WriteAllBytes($Out, $bytes)
+        return $size
+    } finally {
+        $fs.Close()
+    }
+}
+
+
 Write-Host 'Step 1a: Compile source to CDX...'
 $imgOut = Join-Path $outDir 'disk-test.img'
 $cdxOut = Join-Path $outDir 'disk-test.cdx'
@@ -103,16 +160,25 @@ try {
                 $binSize = [int]$matches[1]
             }
             $status = 'size'
+        }
+        if ($line.StartsWith('DISK-OUT:')) {
+            $status = 'disk-out'
             break
         }
-        if (($line.StartsWith('CODEGEN-HALTED') -or $line.StartsWith('CODEGEN-ERRORS'))) {
+        if ($line.StartsWith('CODEGEN-HALTED')) {
             $status = 'error'
+            break
+        }
+        if ($line.StartsWith('CODEGEN-ERRORS')) {
+            $status = 'error'
+        }
+        if ($logLines.Count -ge 400) {
             break
         }
     }
 
 
-    if ((($status -ne 'size') -or $binSize -le 0)) {
+    if ((($status -ne 'disk-out') -or $binSize -le 0)) {
         Write-Host "FAIL: DISK compile failed (status=$status)" -ForegroundColor Red
         foreach ($ll in $logLines) {
             Write-Host "  $ll"
@@ -120,18 +186,26 @@ try {
         exit 1
     }
     Write-Host "  Compiled: $binSize bytes"
-    $binBytes = Read-StreamBytes -Stream $stream -Count $binSize -TimeoutSec 60
-    if (((-not $binBytes) -or $binBytes.Length -ne $binSize)) {
-        Write-Host 'FAIL: binary read incomplete'
-        exit 1
+    foreach ($ll in $logLines) {
+        if ($ll.StartsWith('DISK-OUT:')) {
+            Write-Host "  $ll"
+        }
     }
-    $cdxOut = Join-Path $outDir 'disk-compiled.cdx'
-    [System.IO.File]::WriteAllBytes($cdxOut, $binBytes)
-    Write-Host "  Written: $cdxOut"
 
 } finally {
     Close-Vm -Conn $run.Conn -Process $run.Process
 }
+
+
+Write-Host 'Step 2b: Extract OUT.CDX from the image...'
+$cdxOut = Join-Path $outDir 'disk-compiled.cdx'
+$extracted = Export-Fat16File -Image $imgOut -Name 'OUT     CDX' -Out $cdxOut
+if ($extracted -ne $binSize) {
+    Write-Host "FAIL: OUT.CDX is $extracted bytes, the guest declared $binSize" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  Written: $cdxOut ($extracted bytes)"
+
 
 Write-Host 'Step 3: Run compiled CDX...'
 $actual = Join-Path $outDir 'runtime.actual'

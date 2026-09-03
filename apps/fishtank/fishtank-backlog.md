@@ -61,9 +61,16 @@ dead ends. Worth writing down because each costs half an hour to rediscover.
   transpiled to JavaScript: opening it runs `print_line(...)` and prints the
   aquarium's SOURCE into the document, which is why a browser shows a wall of
   text. It is not corrupt and it is not mis-typed.
-- **`web/fishtank-wasm.html` never leaves "Initializing WebGPU + WASM"**, on
-  `file://` and over HTTP alike, headed or headless. That matches the
-  README: `FishTankWasm` ships a stub opening.
+- **`web/fishtank-wasm.html` used to hang at "Initializing WebGPU + WASM"
+  and that is FIXED (main 21967).** The attribution here was wrong: the
+  opening was never a stub, and the module runs. Three faults, each hiding
+  the next. The emitted JS was a SYNTAX ERROR, because 22 of the bridge's JS
+  numeric literals were written with Codex's `#` hex prefix. `print-line-raw`
+  terminates with the raw serial byte 10, which decodes to the character `7`
+  inside a CCE payload and glued `7function` onto the next token. And the
+  page's import object supplied `fd_write` but not the `fd_read` the module
+  also requires, which is a LinkError at load. Measured after: 52 fish after
+  `init_aquarium`, all 8 sampled fish moving over 60 ticks.
 - **Headless Chrome cannot render it at all.** WebGPU never initialises and
   the canvas stays black, with `--enable-unsafe-webgpu`,
   `--use-webgpu-adapter=swiftshader` and `--use-angle=vulkan` all tried.
@@ -104,3 +111,13 @@ step:
 2. The two dead `fg-coral-left` placements removed.
 3. The dead shrimp school no longer spawned. Shrimp is species index 7, the
    last entry, so no other index shifts.
+
+## 1.5 -- OPEN (Damian, 2026-09-02): the wasm page RUNS and still looks bad
+
+With the load faults in 1.2 fixed, Damian looked at the page and the verdict
+was that it and spark both "need a lot of work" and stay off the public site
+until they are brought up. That is a judgement on what is on screen, not on
+whether the module ticks, and NOTHING here diagnoses it: no cause has been
+measured and none should be guessed. What is known is only that the
+simulation runs. Whoever takes this looks at the page first and writes down
+what is actually wrong before changing anything.

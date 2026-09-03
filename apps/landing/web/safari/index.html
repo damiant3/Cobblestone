@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safari, driving in Codex</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0b0d; color: #d7d7db;
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         display: flex; flex-direction: column; align-items: center; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: .2px; }
+  .sub { color: #8b8d94; font-size: 13px; margin: 0 0 18px; text-align: center; max-width: 62ch; }
+  .stage { position: relative; }
+  canvas { display: block; background: #0d1520; border-radius: 4px;
+           box-shadow: 0 10px 40px rgba(0,0,0,.6); max-width: 100%; height: auto; }
+  .bar { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; justify-content: center; }
+  button { background: #1b1d22; color: #d7d7db; border: 1px solid #2f323a; border-radius: 5px;
+           padding: 6px 13px; font: inherit; font-size: 13px; cursor: pointer; }
+  button:hover { background: #24272e; }
+  .hud { color: #7d818a; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .note { color: #6f727a; font-size: 12.5px; max-width: 72ch; margin: 22px auto 0; text-align: left; }
+  .note code { color: #9aa0a8; }
+  a { color: #7fa8d8; }
+  .err { color: #e0776a; max-width: 72ch; font-size: 13.5px; }
+</style>
+</head>
+<body>
+
+<h1>Safari</h1>
+<p class="sub">A driving screensaver, ported to Codex by Steve Howell and compiled to
+WebAssembly by this project's own backend. Every polygon below was decided by Codex
+running in your browser: the page only paints what the module hands it.</p>
+
+<div class="stage">
+  <canvas id="c" width="960" height="600"></canvas>
+</div>
+
+<div class="bar">
+  <button id="play">Pause</button>
+  <button id="back">Restart</button>
+  <button id="fwd">+100</button>
+  <span class="hud" id="hud">loading the module ...</span>
+</div>
+
+<p class="note" id="note">
+  The module exports <code>sfw_render(step)</code>, which walks the ride to that step,
+  renders one frame and writes the draw commands into its own linear memory, and
+  <code>sfw_buffer_at()</code>, which says where. This page decodes that buffer and paints it.
+  It makes no decision about what is worth drawing: <code>port/Blit.codex</code> already did,
+  which is why the module runs <code>blit-expand</code> before it writes.
+  The painting recipes here follow Steve's <code>blitter.js</code>, which is his fork of the
+  original game's, and the source is at
+  <a href="https://github.com/showell/safari-codex">github.com/showell/safari-codex</a>.
+</p>
+
+<script>
+(function () {
+  'use strict';
+
+  var W = 960, H = 600;
+  var canvas = document.getElementById('c');
+  var ctx = canvas.getContext('2d');
+  var hud = document.getElementById('hud');
+
+  // 0xRRGGBB and 0xAARRGGBB helpers, following blitter.js.
+  function hex(c) { return '#' + (c & 0xffffff).toString(16).padStart(6, '0'); }
+  function rgbCss(c) { return 'rgb(' + ((c >> 16) & 255) + ',' + ((c >> 8) & 255) + ',' + (c & 255) + ')'; }
+  function rgba(c) {
+    return 'rgba(' + ((c >> 16) & 255) + ',' + ((c >> 8) & 255) + ',' + (c & 255) + ',' + (((c >>> 24) & 255) / 255) + ')';
+  }
+  // addColorStop throws outside [0,1] and ignores order, so clamp and keep ascending.
+  function stopAt(o, lo) { return Math.max(lo === undefined ? 0 : lo, Math.min(1, o)); }
+
+  // How many colour words and geom values each tag carries, and whether a
+  // polygon follows. The geom LENGTH is on the wire, so this only needs to know
+  // the colours and whether there is a polygon.
+  var SPEC = {
+    0: { cols: 1, poly: true },   // SOLID
+    2: { cols: 2, poly: true },   // SPAN_SHADE
+    3: { cols: 1, poly: false },  // DISC
+    4: { cols: 2, poly: true },   // RADIAL_POLY
+    5: { cols: 2, poly: true },   // LINEAR_POLY
+    6: { cols: 2, poly: true }    // ELLIPSE_POLY
+  };
+
+  // The guest owns the two sky colours and the sun's placement; the grass
+  // colour and the gradient stops are ours, which is how the original page
+  // divides it too. Drawn OVERSIZED so the rolled frame's corners stay filled.
+  var GRASS = '#4a8f43';
+  var SKY_STOP_FLAT = 0.2;
+  function backdrop(ctx, skyHex, horizonHex) {
+    var BIG = W + H;
+    var g = ctx.createLinearGradient(0, 0, 0, H / 2);
+    g.addColorStop(0, skyHex);
+    g.addColorStop(SKY_STOP_FLAT, skyHex);
+    g.addColorStop(1, horizonHex);
+    ctx.fillStyle = g;
+    ctx.fillRect(W / 2 - BIG, H / 2 - BIG, 2 * BIG, BIG);
+    ctx.fillStyle = GRASS;
+    // Overlap a pixel up over the horizon: under the roll the shared edge can
+    // rasterise a sky sliver into the grass, and grass last plus overlap wins.
+    ctx.fillRect(W / 2 - BIG, H / 2 - 1, 2 * BIG, BIG + 1);
+  }
+
+  // The setting sun, clipped to the sky so the ground occludes it, painted
+  // before the buffer so the mountains occlude it too: it sets BEHIND them.
+  function sun(ctx, x, y, scale) {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W, H / 2); ctx.clip();
+    var glow = ctx.createRadialGradient(x, y, 8 * scale, x, y, 340 * scale);
+    glow.addColorStop(0, 'rgba(255,201,128,0.85)');
+    glow.addColorStop(0.4, 'rgba(255,150,92,0.32)');
+    glow.addColorStop(1, 'rgba(255,150,92,0)');
+    ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H / 2);
+    var disc = ctx.createRadialGradient(x, y, 4 * scale, x, y, 46 * scale);
+    disc.addColorStop(0, '#ffe6a3');
+    disc.addColorStop(1, '#ff9d5c');
+    ctx.fillStyle = disc;
+    ctx.beginPath(); ctx.arc(x, y, 46 * scale, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function paint(dv, base, used, from) {
+    var o = from, cmds = 0;
+    while (o < used) {
+      var tag = dv.getUint32(base + o, true); o += 4;
+      var spec = SPEC[tag];
+      if (!spec) { return { cmds: cmds, bad: tag }; }
+      var c0 = dv.getUint32(base + o, true); o += 4;
+      var c1 = 0;
+      if (spec.cols === 2) { c1 = dv.getUint32(base + o, true); o += 4; }
+      var strength = dv.getFloat64(base + o, true); o += 8;
+      var ng = dv.getUint32(base + o, true); o += 4;
+      var g = [];
+      for (var i = 0; i < ng; i++) { g.push(dv.getFloat64(base + o, true)); o += 8; }
+
+      // A disc carries no polygon: its alpha is the command's strength.
+      if (tag === 3) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, strength));
+        ctx.fillStyle = hex(c0);
+        ctx.beginPath();
+        ctx.arc(g[0], g[1], g[2], 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        cmds++;
+        continue;
+      }
+
+      var np = dv.getUint32(base + o, true); o += 4;
+      ctx.beginPath();
+      for (var k = 0; k < np; k++) {
+        var x = dv.getFloat64(base + o, true); o += 8;
+        var y = dv.getFloat64(base + o, true); o += 8;
+        if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+
+      if (tag === 0) {
+        ctx.fillStyle = hex(c0);
+      } else if (tag === 2) {
+        var sg = ctx.createLinearGradient(g[0], 0, g[1], 0);
+        sg.addColorStop(0, rgbCss(c0));
+        sg.addColorStop(0.5, rgbCss(c1));
+        sg.addColorStop(1, rgbCss(c0));
+        ctx.fillStyle = sg;
+      } else if (tag === 4) {
+        var rg = ctx.createRadialGradient(g[0], g[1], 0, g[0], g[1], g[2]);
+        rg.addColorStop(0, rgba(c0));
+        rg.addColorStop(1, rgba(c1));
+        ctx.fillStyle = rg;
+      } else if (tag === 5) {
+        var lg = ctx.createLinearGradient(g[2], g[3], g[4], g[5]);
+        lg.addColorStop(stopAt(g[0]), rgba(c0));
+        lg.addColorStop(stopAt(g[1], g[0]), rgba(c1));
+        ctx.fillStyle = lg;
+      } else if (tag === 6) {
+        // A unit radial gradient mapped onto the ellipse (u,v) spans at (cx,cy).
+        var det = g[4] * g[7] - g[5] * g[6];
+        if (Math.abs(det) < 1e-6) {
+          ctx.fillStyle = rgba(c0);
+        } else {
+          ctx.save(); ctx.clip();
+          ctx.transform(g[4], g[5], g[6], g[7], g[2], g[3]);
+          var eg = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+          eg.addColorStop(stopAt(g[0]), rgba(c0));
+          eg.addColorStop(stopAt(g[1], g[0]), rgba(c1));
+          ctx.fillStyle = eg;
+          ctx.fillRect(-1e4, -1e4, 2e4, 2e4);
+          ctx.restore();
+          cmds++;
+          continue;
+        }
+      }
+      // A one-pixel stroke in the same paint closes the rasterisation seam
+      // between adjacent polygons: two shared edges each antialias to about
+      // half coverage, and a half plus a half is not one, so the grass shows
+      // through the road as a hairline. Stroking the same path in the same
+      // paint covers it.
+      ctx.fill();
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      cmds++;
+    }
+    return { cmds: cmds, bad: null };
+  }
+
+  var wasiStub = function (name) {
+    return function () { throw new Error('the module called ' + name + '; a browser module should not'); };
+  };
+
+  fetch('safari.wasm').then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.arrayBuffer();
+  }).then(function (buf) {
+    // Every module the plug emits declares the WASI descriptors whether or not
+    // it uses them, so they get throwing stubs. This one never calls them.
+    var inst = new WebAssembly.Instance(new WebAssembly.Module(buf), {
+      wasi_snapshot_preview1: {
+        fd_write: wasiStub('fd_write'), fd_read: wasiStub('fd_read'),
+        fd_close: wasiStub('fd_close'), fd_seek: wasiStub('fd_seek'),
+        proc_exit: wasiStub('proc_exit')
+      }
+    });
+    var ex = inst.exports;
+    var base = ex.sfw_buffer_at(0) >>> 0;
+    var segments = ex.sfw_segments(0);
+    var step = 0, running = true;
+
+    // The frame header: sky and horizon as 0xRRGGBB, the sun's visibility,
+    // centre and scale, and the camera roll. The commands start after it.
+    var HEAD = 48;
+    function hex(c) { return '#' + (c & 0xffffff).toString(16).padStart(6, '0'); }
+
+    function frame() {
+      var t0 = performance.now();
+      var used = ex.sfw_render(0) >>> 0;
+      var dv = new DataView(ex.memory.buffer);
+      var skyHex = hex(dv.getUint32(base, true));
+      var horHex = hex(dv.getUint32(base + 4, true));
+      var sunOn = dv.getUint32(base + 8, true);
+      var sx = dv.getFloat64(base + 16, true);
+      var sy = dv.getFloat64(base + 24, true);
+      var sscale = dv.getFloat64(base + 32, true);
+      var roll = dv.getFloat64(base + 40, true);
+
+      ctx.clearRect(0, 0, W, H);
+      ctx.save();
+      // The whole frame rolls with the camera, so the world banks into a turn.
+      ctx.translate(W / 2, H / 2); ctx.rotate(-roll); ctx.translate(-W / 2, -H / 2);
+      backdrop(ctx, skyHex, horHex);
+      if (sunOn) sun(ctx, sx, sy, sscale);
+      var res = paint(dv, base, used, HEAD);
+      ctx.restore();
+      var ms = (performance.now() - t0).toFixed(0);
+      hud.textContent = res.bad === null
+        ? 'step ' + step + '   ' + res.cmds + ' commands   ' + (used / 1024).toFixed(0) + ' KiB   ' + ms + ' ms   ' + segments + ' segments'
+        : 'unknown tag ' + res.bad + ' after ' + res.cmds + ' commands';
+      if (running) { ex.sfw_forward(0); step++; }
+      requestAnimationFrame(frame);
+    }
+
+    document.getElementById('play').onclick = function () {
+      running = !running;
+      this.textContent = running ? 'Pause' : 'Play';
+    };
+    document.getElementById('fwd').onclick = function () { for (var i = 0; i < 100; i++) ex.sfw_forward(0); step += 100; };
+    document.getElementById('back').onclick = function () { ex.sfw_reset(0); step = 0; };
+
+    requestAnimationFrame(frame);
+  }).catch(function (e) {
+    hud.textContent = '';
+    var n = document.getElementById('note');
+    n.className = 'err';
+    n.textContent = 'The module did not load (' + e.message + '). safari.wasm is build output, not a '
+      + 'tracked file: build it with  pwsh apps/safari/build-wasm.ps1 -Page -Wasm  and copy '
+      + 'apps/safari/build-output/safari-page.wasm here as safari.wasm.';
+  });
+})();
+</script>
+
+</body>
+</html>

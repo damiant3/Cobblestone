@@ -80,6 +80,7 @@ Section: Codegen State
    rodata-fixups : List RvRodataFixup,
    locals : List RvLocal,
    next-temp : Integer,
+   temp-reserved : Integer,
    next-local : Integer,
    spill-count : Integer,
    peak-local : Integer,
@@ -173,6 +174,7 @@ Section: State Constructors
    rodata-fixups = [],
    locals = [],
    next-temp = rv-t3,
+   temp-reserved = 0,
    next-local = rv-s2,
    spill-count = 0,
    peak-local = rv-s2,
@@ -255,14 +257,48 @@ Section: Register Allocation
 
   rv-temp-regs : List Integer = [rv-t3, rv-t4, rv-t5, rv-t6]
 
-  rv-alloc-temp : RvState -> RvEmitResult
-  rv-alloc-temp (st) =
-   let idx = int-mod (st.next-temp - rv-t3) 4
-   in let reg = list-at rv-temp-regs idx
+  rv-temp-bit : Integer -> Integer
+  rv-temp-bit (reg) = bit-shl 1 (reg - rv-t3)
+
+  rv-temp-is-reserved : RvState, Integer -> Boolean
+  rv-temp-is-reserved (st) (reg) =
+   if bit-and (st.temp-reserved) (rv-temp-bit reg) > 0 then True else False
+
+  rv-reserve-temp : RvState, Integer -> RvState
+  rv-reserve-temp (st) (reg) =
+   if rv-is-temp-reg reg
+   then __record-set st "temp-reserved" (bit-or (st.temp-reserved) (rv-temp-bit reg))
+   else st
+
+  rv-release-temp : RvState, Integer -> RvState
+  rv-release-temp (st) (reg) =
+   if rv-is-temp-reg reg
+   then __record-set st "temp-reserved" (bit-and (st.temp-reserved) (bit-xor 15 (rv-temp-bit reg)))
+   else st
+
+  rv-restore-reserved : RvState, Integer -> RvState
+  rv-restore-reserved (st) (mask) = __record-set st "temp-reserved" mask
+
+  rv-alloc-temp-exhausted : RvState, Integer -> RvEmitResult
+  rv-alloc-temp-exhausted (st) (reg) =
+   let msg = "[UNSUPPORTED] register allocator: five live temporaries wanted and this target has four (refused rather than miscompiled)"
    in RvEmitResult {
-    state = __record-set st "next-temp" (st.next-temp + 1),
+    state = __record-set st "wcet-reports" (list-push (st.wcet-reports) msg),
     reg = reg
    }
+
+  rv-alloc-temp-scan : RvState, Integer, Integer -> RvEmitResult
+  rv-alloc-temp-scan (st) (idx) (tries) =
+   let reg = list-at rv-temp-regs (int-mod idx 4)
+   in if tries >= 4 then rv-alloc-temp-exhausted st reg
+      else if rv-temp-is-reserved st reg then rv-alloc-temp-scan st (idx + 1) (tries + 1)
+      else RvEmitResult {
+       state = __record-set st "next-temp" (rv-t3 + int-mod (idx + 1) 4),
+       reg = reg
+      }
+
+  rv-alloc-temp : RvState -> RvEmitResult
+  rv-alloc-temp (st) = rv-alloc-temp-scan st (int-mod (st.next-temp - rv-t3) 4) 0
 
   rv-alloc-local : RvState -> RvEmitResult
   rv-alloc-local (st) =
@@ -355,13 +391,14 @@ Section: Register Allocation
   rv-save-if-needed : RvState, Integer -> RvEmitResult
   rv-save-if-needed (st) (value-reg) =
    if rv-is-stable-reg value-reg then RvEmitResult { state = st, reg = value-reg }
-   else if rv-is-frameless-mode st then RvEmitResult { state = st, reg = value-reg }
+   else if rv-is-frameless-mode st then RvEmitResult { state = rv-reserve-temp st value-reg, reg = value-reg }
    else let loc = rv-alloc-local st
    in RvEmitResult { state = rv-store-local (loc.state) (loc.reg) (value-reg), reg = loc.reg }
 
   rv-reload-if-needed : RvState, Integer -> RvEmitResult
   rv-reload-if-needed (st) (reg) =
    if rv-is-stable-reg reg then RvEmitResult { state = st, reg = reg }
+   else if rv-is-temp-reg reg then RvEmitResult { state = rv-release-temp st reg, reg = reg }
    else rv-load-local st reg
 
   rv-bind-local : RvState, Text, Integer -> RvState
@@ -1834,9 +1871,10 @@ Section: Real Arithmetic
 
   rv-emit-mod-correction : RvState, Integer, Integer -> RvEmitResult
   rv-emit-mod-correction (st) (rem-reg) (div-reg) =
-   let t0 = rv-alloc-temp st
-   in let t1 = rv-alloc-temp (t0.state)
-   in let st1 = rv-emit (t1.state) (rv-srai (t0.reg) div-reg 63)
+   let mask = st.temp-reserved
+   in let t0 = rv-alloc-temp (rv-reserve-temp (rv-reserve-temp st rem-reg) div-reg)
+   in let t1 = rv-alloc-temp (rv-reserve-temp (t0.state) (t0.reg))
+   in let st1 = rv-emit (rv-restore-reserved (t1.state) mask) (rv-srai (t0.reg) div-reg 63)
    in let st2 = rv-emit st1 (rv-xor (t1.reg) div-reg (t0.reg))
    in let st3 = rv-emit st2 (rv-sub (t1.reg) (t1.reg) (t0.reg))
    in let st4 = rv-emit st3 (rv-add (t1.reg) rem-reg (t1.reg))
@@ -1862,20 +1900,11 @@ Section: Real Arithmetic
  materialises the literal into a register at all.
 
  That is a code-size win second and a CORRECTNESS fix first.
- `rv-save-if-needed` above does NOTHING in frameless mode -- it returns
- the register unsaved, because there is no frame to spill into -- so
- `rv-emit-two-arg-binop`'s protection of its left operand is a no-op
- there. `rv-alloc-temp` then cycles four registers with no liveness
- information, and the right operand's emission can be handed back the
- same register the left is sitting in. `let pf = ... in bit-shl pf 8`
- emitted `sll rd, r, r` and computed `bit-shl 8 8`: 2048 where every
- other lane answers 42496. Reduced from `j1939-encode` (`j1939-pgn`,
- the PDU1 arm, 2277 for 65253) and pinned by
- `codex/test/rv-frameless-imm`.
-
- The immediate form removes the second register, so there is nothing
- left to clobber, and `slli rd, rs1, shamt` is correct even when the
- allocator returns rd == rs1.
+ `let pf = ... in bit-shl pf 8` emitted `sll rd, r, r` and computed
+ `bit-shl 8 8`: 2048 where every other lane answers 42496. Reduced from
+ `j1939-encode` (`j1939-pgn`, the PDU1 arm, 2277 for 65253) and pinned
+ by `codex/test/rv-frameless-imm`. The register form of the same defect
+ is pinned by `codex/test/rv-frameless-temp`.
 
  The shift amount is bounded at 63 rather than trusted, because
  `rv-slli` MASKS an oversized shamt with #3F instead of refusing it: an

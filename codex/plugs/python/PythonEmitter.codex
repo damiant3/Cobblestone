@@ -1,5 +1,6 @@
 Chapter: Python Emitter
   cites Foreword chapter Sort
+  cites Foreword chapter StringUtils
 
 Section: Keywords and Sanitization
 
@@ -988,16 +989,26 @@ Section: Chapter Emission
     is UnitTy (n) (inner) -> py-sanitize opening-entry-point & "()\n"
     is otherwise -> "print(" & py-sanitize opening-entry-point & "())\n"
 
+  py-helper-when-used : Text, Text, Text -> Text
+  py-helper-when-used (body) (name) (src) =
+   if text-contains body name then src else ""
+
   emit-python-chapter : IRChapter, List ATypeDef -> Text
   emit-python-chapter (m) (type-defs) =
    let ctx = PyCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs }
-   in let header = "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\ndef _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\ndef _cx_char_encode(_c):\n    _c = int(_c)\n    if _c < 128:\n        return chr(_c)\n    if _c < 2176:\n        _v = _c - 128\n        return chr(192 | (_v >> 6)) + chr(128 | (_v & 63))\n    if _c < 67712:\n        _v = _c - 2176\n        return chr(224 | (_v >> 12)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n    _v = _c - 67712\n    return chr(240 | (_v >> 18)) + chr(128 | ((_v >> 12) & 63)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n\ndef _cx_text_replace(_s, _a, _b):\n    if len(_a) == 0:\n        return _s\n    return _s.replace(_a, _b)\n\ndef _cx_text_split(_s, _sep):\n    if len(_sep) == 0:\n        return [_s]\n    return _s.split(_sep)\n\ndef _cx_text_to_integer(_s):\n    _t = str(_s)\n    _i = 0\n    _neg = False\n    if _t[:1] == '-':\n        _neg = True\n        _i = 1\n    _v = 0\n    while _i < len(_t) and '0' <= _t[_i] <= '9':\n        _v = _v * 10 + (ord(_t[_i]) - 48)\n        _i += 1\n    return -_v if _neg else _v\n\n"
    in let types-text = emit-py-type-defs type-defs 0
    in let defs-text = emit-py-defs (m.defs) 0 ctx
    in let ret-ty = opening-return-type (m.defs)
    in let has-params = opening-has-params (m.defs)
    in let entry = py-emit-entry ret-ty has-params
-   in header & types-text & defs-text & entry
+   in let body = types-text & defs-text & entry
+   in let header = "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\n"
+     & py-helper-when-used body "_cx_lpush" "def _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\n"
+     & py-helper-when-used body "_cx_char_encode" "def _cx_char_encode(_c):\n    _c = int(_c)\n    if _c < 128:\n        return chr(_c)\n    if _c < 2176:\n        _v = _c - 128\n        return chr(192 | (_v >> 6)) + chr(128 | (_v & 63))\n    if _c < 67712:\n        _v = _c - 2176\n        return chr(224 | (_v >> 12)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n    _v = _c - 67712\n    return chr(240 | (_v >> 18)) + chr(128 | ((_v >> 12) & 63)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n\n"
+     & py-helper-when-used body "_cx_text_replace" "def _cx_text_replace(_s, _a, _b):\n    if len(_a) == 0:\n        return _s\n    return _s.replace(_a, _b)\n\n"
+     & py-helper-when-used body "_cx_text_split" "def _cx_text_split(_s, _sep):\n    if len(_sep) == 0:\n        return [_s]\n    return _s.split(_sep)\n\n"
+     & py-helper-when-used body "_cx_text_to_integer" "def _cx_text_to_integer(_s):\n    _t = str(_s)\n    _i = 0\n    _neg = False\n    if _t[:1] == '-':\n        _neg = True\n        _i = 1\n    _v = 0\n    while _i < len(_t) and '0' <= _t[_i] <= '9':\n        _v = _v * 10 + (ord(_t[_i]) - 48)\n        _i += 1\n    return -_v if _neg else _v\n\n"
+   in header & body
 
   emit-py-defs : List IRDef, Integer, PyCtx -> Text
   emit-py-defs (defs) (i) (ctx) =

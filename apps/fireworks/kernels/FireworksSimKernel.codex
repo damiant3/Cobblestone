@@ -1,0 +1,300 @@
+Chapter: FireworksSimKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ One GPU thread per particle. Each thread reads its particle out of the
+ state buffer, integrates it under gravity, air drag, a wind field and a
+ per-particle turbulence, ages it, and writes back both the new state and
+ a packed render record that the draw pass reads as one instance.
+
+ Positions and velocities live in the state buffer as integers in 1/256
+ of a pixel. The physics runs in f32 and converts at the buffer boundary,
+ so the state stays a single array<i32> and the motion is still smooth.
+
+ Shells (kind 2) are the exception: the host integrates those itself so
+ it knows the exact frame and place to detonate, and this kernel passes
+ their state through untouched and only shades them.
+
+ We say:
+
+Section: Kinds
+
+ 1 spark (peony), 2 shell, 3 willow, 4 glitter, 5 smoke, 6 ascent trail.
+ 0 is a free slot.
+
+  fw-k-dead : Integer = 0
+  fw-k-spark : Integer = 1
+  fw-k-shell : Integer = 2
+  fw-k-willow : Integer = 3
+  fw-k-glitter : Integer = 4
+  fw-k-smoke : Integer = 5
+  fw-k-trail : Integer = 6
+
+Section: Random
+
+ fract(sin(x) * 43758.5453), the shader hash, chosen because the WGSL plug
+ lowers real-sin to a GPU builtin.
+
+ DeviceMath has no floor, and real-to-int truncates toward zero, which is floor
+ only for a positive argument. The hash's significand is negative half the
+ time, so the correction below is the whole reason this is not one line: a
+ truncating fract returns a negative number for half its inputs, and the
+ twinkle it feeds would go dark rather than wrong, which is the harder failure
+ to see.
+
+  fw-floor : Real -> Real
+  fw-floor (x) =
+    let t = real-from-int (real-to-int x)
+    in if t > x then t - 1.0 else t
+
+  fw-fract : Real -> Real
+  fw-fract (x) = x - fw-floor x
+
+  fw-rand : Real -> Real
+  fw-rand (x) = fw-fract (real-sin (x * 12.9898) * 43758.5453)
+
+Section: Air
+
+ Drag is a per-frame velocity multiplier and gravity is in pixels per frame
+ squared, at the fixed 60 Hz the host steps this kernel at.
+
+ Both numbers are set against the LIFETIME, not by feel. A star lives 60 to
+ 200 frames, so a drag of 0.972 leaves 0.972^130 = 2.6% of the launch speed:
+ the horizontal component is gone within half a second while gravity keeps
+ accumulating, and a burst that should open into a sphere collapses into a
+ vertical streak. Terminal speed is grav / (1 - drag), and that is the number
+ to check: at 0.045 and 0.990 a spark settles at 4.5 px per frame, which is a
+ fall the eye reads as gravity rather than as rain.
+
+  fw-drag : Integer -> Real
+  fw-drag (kind) =
+    if kind == fw-k-shell then 0.999
+    else if kind == fw-k-willow then 0.984
+    else if kind == fw-k-glitter then 0.988
+    else if kind == fw-k-smoke then 0.960
+    else if kind == fw-k-trail then 0.938
+    else 0.990
+
+  fw-grav : Integer -> Real
+  fw-grav (kind) =
+    if kind == fw-k-smoke then 0.0 - 0.012
+    else if kind == fw-k-willow then 0.038
+    else if kind == fw-k-glitter then 0.050
+    else if kind == fw-k-trail then 0.026
+    else 0.045
+
+  fw-wind-take : Integer -> Real
+  fw-wind-take (kind) =
+    if kind == fw-k-smoke then 2.4
+    else if kind == fw-k-willow then 1.2
+    else if kind == fw-k-glitter then 0.8
+    else 0.55
+
+ Turbulence keeps a burst's stars from moving in lockstep: a slow
+ sinusoidal field sampled at the particle's own position, phase-shifted
+ by its own hash so neighbours disagree.
+
+  fw-turb : Real, Real, Real, Real -> Real
+  fw-turb (fg) (px) (py) (t) =
+    real-sin (px * 0.0130 + t * 0.0210 + fg * 6.2832) * 0.0240
+    + real-sin (py * 0.0074 - t * 0.0163 + fg * 3.1416) * 0.0155
+
+Section: Integration
+
+  fw-new-vx : Real, Real, Real, Real, Real, Integer, Real -> Real
+  fw-new-vx (vx) (px) (py) (fg) (t) (kind) (wind) =
+    (vx + wind * fw-wind-take kind + fw-turb fg px py t) * fw-drag kind
+
+  fw-new-vy : Real, Real, Real, Real, Real, Integer -> Real
+  fw-new-vy (vy) (px) (py) (fg) (t) (kind) =
+    (vy + fw-grav kind + fw-turb (fg + 0.37) py px t * 0.55) * fw-drag kind
+
+Section: Colour
+
+  fw-red : Integer -> Real
+  fw-red (c) = real-from-int (c / 65536) / 255.0
+
+  fw-green : Integer -> Real
+  fw-green (c) = real-from-int (c / 256 - (c / 65536) * 256) / 255.0
+
+  fw-blue : Integer -> Real
+  fw-blue (c) = real-from-int (c - (c / 256) * 256) / 255.0
+
+  fw-sat8 : Real -> Integer
+  fw-sat8 (v) = real-to-int (real-max 0.0 (real-min 255.0 (v * 255.0)))
+
+  fw-pack : Real, Real, Real -> Integer
+  fw-pack (r) (g) (b) = fw-sat8 r * 65536 + fw-sat8 g * 256 + fw-sat8 b
+
+ A star is white hot at birth and cools to its own colour, then past it
+ into the deep red an ember goes out at. `hot` is the whiteness and
+ `cool` pulls the blue channel down late in the life so the last of the
+ tail reads as ember rather than as a dim version of the shell colour.
+
+ The white window is short on purpose. At a threshold of 0.72 a willow star,
+ which lives 200 frames, is white for its first 56 of them, and since those are
+ also its brightest frames the shell reads as white and its colour only appears
+ once it is too dim to see. Colour has to arrive while the star is still bright.
+
+  fw-hot : Real -> Real
+  fw-hot (fade) =
+    let a = (fade - 0.90) / 0.10
+    in if a < 0.0 then 0.0 else a * a * 0.72
+
+  fw-cool : Real -> Real
+  fw-cool (fade) = real-min 1.0 (fade * 2.6)
+
+  fw-shade-r : Integer, Real -> Real
+  fw-shade-r (col) (fade) =
+    let h = fw-hot fade
+    in fw-red col * (1.0 - h) + h
+
+  fw-shade-g : Integer, Real -> Real
+  fw-shade-g (col) (fade) =
+    let h = fw-hot fade
+    in (fw-green col * (1.0 - h) + h * 0.96) * (0.34 + 0.66 * fw-cool fade)
+
+  fw-shade-b : Integer, Real -> Real
+  fw-shade-b (col) (fade) =
+    let h = fw-hot fade
+    in (fw-blue col * (1.0 - h) + h * 0.86) * (0.10 + 0.90 * fw-cool fade)
+
+Section: Brightness and Size
+
+ DECAY HAS TO START AT ONCE AND THEN TAKE ITS TIME, and a power curve cannot
+ do both. Any fade^k starts FLAT: its slope at full life is zero for k above
+ one, so a star holds its opening brightness, and every value over 1.0 clips
+ to the same white through the tone map besides, which widens that plateau
+ further. Then the curve falls off a cliff near the end and a whole burst,
+ whose stars were dealt lifetimes within a few frames of each other, goes out
+ together. That is the "sits there forever and then disappears in chunks".
+
+ So brightness is a decaying EXPONENTIAL in elapsed life rather than a power
+ of remaining life, approximated here with the rational 1/(1 + a*e + b*e*e)
+ because there is no exp in the device math. It leaves full brightness on the
+ first frame, is down to a third by a quarter of the way through, and still
+ has a visible tail at the end, so nothing pops out. The peak sits under 1.0
+ on purpose: at 2.6 the first third of every life clipped white and no decay
+ in it could be seen at all.
+
+ Glitter crackles: a fast hash of the particle and the frame gates it
+ almost off and then flares it well past one, which is what makes a
+ crackling shell read as crackling rather than as a dimmer peony. The
+ render pass takes the intensity as an HDR multiplier, so values above
+ the 1.0 mark are the ones the bloom pass picks up.
+
+  fw-twinkle : Real, Real, Integer -> Real
+  fw-twinkle (fg) (t) (kind) =
+    if kind == fw-k-glitter then
+      let r = fw-rand (fg * 91.7 + fw-floor (t * 0.5) * 0.731)
+      in if r > 0.62 then 1.0 + r * 2.4 else 0.10 + r * 0.25
+    else if kind == fw-k-willow then
+      0.72 + 0.28 * fw-rand (fg * 13.1 + fw-floor (t * 0.34) * 0.417)
+    else 1.0
+
+ decay-at is 1/(1 + a*e + b*e*e) where e is elapsed life, 0 at birth and 1 at
+ death. `a` sets how fast it leaves full brightness and `b` how hard the tail
+ is pulled down at the end.
+
+  fw-decay : Real, Real, Real -> Real
+  fw-decay (fade) (a) (b) =
+    let e = 1.0 - fade
+    in 1.0 / (1.0 + a * e + b * e * e)
+
+  fw-bright : Real, Real, Real, Integer -> Real
+  fw-bright (fade) (fg) (t) (kind) =
+    if kind == fw-k-dead then 0.0
+    else if kind == fw-k-shell then 0.95 + 0.30 * fw-rand (fg + fw-floor (t * 0.5) * 0.11)
+    else if kind == fw-k-smoke then 0.030 * fade
+    else if kind == fw-k-trail then 0.80 * fw-decay fade 7.0 26.0
+    else
+      let base = 0.92 * fw-decay fade 3.4 9.0
+      in let birth = if fade > 0.985 then 0.9 else 0.0
+      in (base + birth) * fw-twinkle fg t kind
+
+  fw-size : Real, Integer -> Real
+  fw-size (fade) (kind) =
+    if kind == fw-k-dead then 0.0
+    else if kind == fw-k-shell then 2.6
+    else if kind == fw-k-smoke then 9.0 + 30.0 * (1.0 - fade)
+    else if kind == fw-k-trail then 0.55 + 1.30 * fade
+    else if kind == fw-k-willow then 1.15 + 1.55 * fade
+    else if kind == fw-k-glitter then 0.95 + 1.30 * fade
+    else 1.45 + 2.30 * fade
+
+Section: Ageing
+
+  fw-fade : Integer, Integer -> Real
+  fw-fade (life) (maxl) =
+    if maxl <= 0 then 0.0
+    else real-max 0.0 (real-min 1.0 (real-from-int life / real-from-int maxl))
+
+  fw-next-life : Integer, Integer -> Integer
+  fw-next-life (life) (kind) =
+    if kind == fw-k-dead then 0 else life - 1
+
+  fw-next-kind : Integer, Integer -> Integer
+  fw-next-kind (life) (kind) =
+    if kind == fw-k-dead then fw-k-dead
+    else if life <= 1 then fw-k-dead
+    else kind
+
+Section: Packing the Render Record
+
+ Four integers per particle. The draw pass takes one instance per slot:
+ x and y in 1/16 of a pixel so a star can sit between pixels, the shaded
+ colour, and then size in 1/8 of a pixel, intensity in 1/32 of a unit
+ (so it reaches 8.0), and the kind, which selects the sprite profile.
+
+  fw-out-pos : Real -> Integer
+  fw-out-pos (v) = real-to-int (v * 16.0)
+
+  fw-out-attr : Real, Real, Integer -> Integer
+  fw-out-attr (size) (bright) (kind) =
+    let s = real-to-int (real-max 0.0 (real-min 255.0 (size * 8.0)))
+    in let b = real-to-int (real-max 0.0 (real-min 255.0 (bright * 32.0)))
+    in s * 65536 + b * 256 + kind
+
+Section: The Kernel
+
+  fw-sim-step : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fw-sim-step (state) (out) (frame) (wind) (gid) = act
+    ipx <- device-load state (gid * 8)
+    ipy <- device-load state (gid * 8 + 1)
+    ivx <- device-load state (gid * 8 + 2)
+    ivy <- device-load state (gid * 8 + 3)
+    life <- device-load state (gid * 8 + 4)
+    maxl <- device-load state (gid * 8 + 5)
+    col <- device-load state (gid * 8 + 6)
+    kind <- device-load state (gid * 8 + 7)
+    let t = real-from-int frame
+    in let fg = fw-rand (real-from-int gid * 0.0173)
+    in let wf = real-from-int wind / 1000.0
+    in let px = real-from-int ipx / 256.0
+    in let py = real-from-int ipy / 256.0
+    in let vx = real-from-int ivx / 256.0
+    in let vy = real-from-int ivy / 256.0
+    in let held = if kind == fw-k-shell then 1 else if kind == fw-k-dead then 1 else 0
+    in let nvx = if held == 1 then vx else fw-new-vx vx px py fg t kind wf
+    in let nvy = if held == 1 then vy else fw-new-vy vy px py fg t kind
+    in let npx = if held == 1 then px else px + nvx
+    in let npy = if held == 1 then py else py + nvy
+    in let nlife = if held == 1 then life else fw-next-life life kind
+    in let nkind = if held == 1 then kind else fw-next-kind life kind
+    in let fade = fw-fade life maxl
+    in let bright = fw-bright fade fg t kind
+    in act
+      s0 <- device-store state (gid * 8) (real-to-int (npx * 256.0))
+      s1 <- device-store state (gid * 8 + 1) (real-to-int (npy * 256.0))
+      s2 <- device-store state (gid * 8 + 2) (real-to-int (nvx * 256.0))
+      s3 <- device-store state (gid * 8 + 3) (real-to-int (nvy * 256.0))
+      s4 <- device-store state (gid * 8 + 4) nlife
+      s5 <- device-store state (gid * 8 + 7) nkind
+      o0 <- device-store out (gid * 4) (fw-out-pos npx)
+      o1 <- device-store out (gid * 4 + 1) (fw-out-pos npy)
+      o2 <- device-store out (gid * 4 + 2) (fw-pack (fw-shade-r col fade) (fw-shade-g col fade) (fw-shade-b col fade))
+      device-store out (gid * 4 + 3) (fw-out-attr (fw-size fade kind) bright kind)
+    end
+  end
+
+Page 1

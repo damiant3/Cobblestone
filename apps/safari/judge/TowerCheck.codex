@@ -1,0 +1,134 @@
+Chapter: TowerCheck
+  cites Foreword chapter Console
+  cites Foreword chapter ListUtils
+  cites Safari chapter Geom
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Safari chapter Tower
+  cites Judge chapter Grade
+  cites Gold chapter TowerGold
+
+ Grade the Tower port against wasm/tower.zig.
+
+ THE BEACON IS THE FIRST NON-POLYGON COMMAND IN THIS PORT. Tag 3 is a disc --
+ [3][color][x][y][r][alpha] -- and it is the only command on the wire that is not
+ opaque, which is why paint.zig gives it its own tag rather than letting it ride
+ the solid path whose colour word has no alpha. It still fits one DrawCmd: the
+ alpha is `strength` and x, y, r ride in `pts`. So the streams below carry a
+ count of 3 where a quad carries 4, and that difference is graded exactly.
+
+ THE PER-CASE COUNT IS THE STRUCTURAL ASSERTION. Two of the seven cases must draw
+ NOTHING -- a tower sunk below the horizon by its own ground drop, and one nearer
+ than the near plane -- and a total would hide that. The others are 33, 33, 20 and
+ 5: 33 is four legs, three rings of four, two brace stages of eight, and the
+ beacon; 20 and 5 are what is left after the ground drop eats the lower stages,
+ which is the branch that skips a ring or starts a leg part-way up.
+
+ THE NEGATIVE PHASE IS REAL BUT DOES NOT GRADE THE MODULO, and saying so matters
+ more than the case does. tower.zig's beacon is a pure function of the step clock
+ so it freezes on pause and RUNS BACKWARDS ON REVERSE, so a negative phase is a
+ state the game actually reaches, and case seven is case two with the phase
+ negated. What it does NOT do is distinguish a floored modulo from a truncated
+ one: tower.zig's `@mod(@mod(p, P) + P, P)` is semantics-agnostic by construction,
+ and swapping Num's floored mod-real for the truncated remainder leaves this whole
+ check green. Measured, after an earlier draft of this paragraph claimed the
+ opposite. The port uses floored because that is what @mod means, not because
+ anything here would catch it.
+
+ We say:
+
+Section: The Beacon Clock
+
+  offset-ns : List Integer
+  offset-ns = [0, 1, 2, 3, 7, 12, 40, 119, 120, 121]
+
+Section: Placing a Tower
+
+ The probe hands the port its four base corners already in the rider frame, which
+ is what render.zig does. With the segment origin at zero the map is a shift.
+
+  corners-of : Real, Real, Real, Integer -> List RiderPt
+  corners-of (fwd) (right) (yaw) (k) =
+    if k >= 4 then []
+    else corner-one fwd right yaw k
+
+  corner-one : Real, Real, Real, Integer -> List RiderPt
+  corner-one (fwd) (right) (yaw) (k) =
+    let ax = base-corner-ax k 0.0 0.0 yaw
+    in [RiderPt { right = right + ax.x, forward = fwd + ax.a }] & corners-of fwd right yaw (k + 1)
+
+  tower-cmds : Real, Real, Real, Real -> List DrawCmd
+  tower-cmds (fwd) (right) (yaw) (phase) =
+    draw-flat (corners-of fwd right yaw 0) (RiderPt { right = right, forward = fwd }) focal camera-w phase
+
+  case-near : List DrawCmd
+  case-near = tower-cmds 14.0 9.0 0.4 60.0
+
+  case-mid : List DrawCmd
+  case-mid = tower-cmds 120.0 (0.0 - 30.0) 0.0 30.0
+
+  case-far : List DrawCmd
+  case-far = tower-cmds 900.0 60.0 1.1 0.0
+
+  case-deeper : List DrawCmd
+  case-deeper = tower-cmds 1700.0 0.0 0.0 90.0
+
+  case-sunk : List DrawCmd
+  case-sunk = tower-cmds 3000.0 0.0 0.0 60.0
+
+  case-behind : List DrawCmd
+  case-behind = tower-cmds 0.2 0.0 0.0 60.0
+
+  case-neg : List DrawCmd
+  case-neg = tower-cmds 120.0 (0.0 - 30.0) 0.0 (0.0 - 45.0)
+
+  all-cmds : List DrawCmd
+  all-cmds = case-near & case-mid & case-far & case-deeper & case-sunk & case-behind & case-neg
+
+  per-case : List Integer
+  per-case = [list-length case-near, list-length case-mid, list-length case-far, list-length case-deeper, list-length case-sunk, list-length case-behind, list-length case-neg]
+
+Section: Streams
+
+  cmd-tags : List DrawCmd, Integer -> List Integer
+  cmd-tags (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).tag] & cmd-tags cs (i + 1)
+
+  cmd-colors : List DrawCmd, Integer -> List Integer
+  cmd-colors (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).color] & cmd-colors cs (i + 1)
+
+ A quad reports 4 and a beacon reports 3, because a beacon's pts hold x, y and r
+ rather than an even run of coordinates.
+
+  count-of : DrawCmd -> Integer
+  count-of (c) = if c.tag == 3 then 3 else list-length c.pts / 2
+
+  cmd-strengths : List DrawCmd, Integer -> List Real
+  cmd-strengths (cs) (i) =
+    if i >= list-length cs then []
+    else [(list-at cs i).strength] & cmd-strengths cs (i + 1)
+
+ GEOM THEN POINTS. Paint's DrawCmd now keeps a command's own parameters -- the
+ beacon's centre and radius here -- in `geom`, and `pts` is always the polygon.
+ The beacon has no polygon, so this stream is its geom; every other command here
+ has no geom, so it is its points. The wire is unchanged either way.
+
+  cmd-coords : List DrawCmd, Integer -> List Real
+  cmd-coords (cs) (i) =
+    if i >= list-length cs then []
+    else (list-at cs i).geom & (list-at cs i).pts & cmd-coords cs (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (grade-rel  "tw-offset   " (list-map beacon-offset-for offset-ns) g-tw-offset 0.000001)
+    print-line-uni (grade-ints "tw-percase  " per-case g-tw-percase)
+    print-line-uni (grade-ints "tw-tags     " (cmd-tags all-cmds 0) g-tw-tags)
+    print-line-uni (grade-ints "tw-colors   " (cmd-colors all-cmds 0) g-tw-colors)
+    print-line-uni (grade-ints "tw-counts   " (list-map count-of all-cmds) g-tw-counts)
+    print-line-uni (grade-rel  "tw-strengths" (cmd-strengths all-cmds 0) g-tw-strengths 0.000001)
+    print-line-uni (grade-px   "tw-coords   " (cmd-coords all-cmds 0) g-tw-coords 0.001 0.000001)
+  end

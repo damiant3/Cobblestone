@@ -654,8 +654,34 @@ Overflow modes: `wrapping` (mod), `clamping` (saturate), `error`
 (default, compile-time check on literals).
 
 **A `wrapping` band must be exactly its hardware width** (u8, i8, u16,
-i16, u32 or i32): `0 and 255`, `-128 and 127`, `0 and 4294967295`, and so
-on. Anything narrower is CDX1073. `wrapping` is the mode that asks for
+i16, u32, i32 or i64): `0 and 255`, `-128 and 127`, `0 and 4294967295`,
+`-9223372036854775808 and 9223372036854775807`, and so
+on. Anything narrower is CDX1073. u64 has no writable band. **A bare
+`Integer wrapping` is the i64 band in that mode** (Damian's ruling,
+2026-09-02): it is the same type as plain `Integer` for admission and
+differs only in what its arithmetic does. `-9223372036854775808` is a
+writable literal in expression and type position alike; the one-past-max
+magnitude is accepted only directly under a minus, and on its own it
+stays CDX2071.
+
+**Plain `Integer` arithmetic TRAPS on overflow (`!EXC=06`), and the mode
+reaches an operation through its LEFT operand.** `Integer` is
+`IntegerTy i64-min i64-max OvError`; since COMPILER-36 (2026-09-02) an
+x86-64 `+`, `-` or `*` on it is the operation followed by `jno; ud2`, so
+`4000000000 * 4000000000` and `9223372036854775807 + 1` die instead of
+printing a wrong number.
+An operation wraps when its LEFT operand's declared type is the full-width
+`wrapping` band: declare the parameter, and the result keeps the left
+mode when both bands are equal, so `h * k + v` stays wrapping across the
+`+`. A literal or a builtin result on the left is trapping whatever the
+inputs were declared, which is why the mixers route a bit-op result
+through `Foreword chapter Wrap64`'s `w64-mul` (`w64-mul h2 1103515245`)
+rather than multiplying it in place; `w64-add` and `w64-sub` are the same
+funnel for the other two ops, and SHA-512's word add is `w64-add`. The IR
+names the mode on the node type and spells the op `add-int-wrapping`,
+`sub-int-wrapping` or `mul-int-wrapping`; a plug that still wraps on the
+plain spellings is `plugs-backlog.md` 2.21.
+Fixtures: `codex/test/ops/int-mul-wrapping` and `int-add-wrapping`. `wrapping` is the mode that asks for
 the modular arithmetic the machine already does, and the machine does it
 at the width of the store -- a one-byte store wraps mod 256 whatever the
 band says, so a narrower band would hold 200 in `between 0 and 100

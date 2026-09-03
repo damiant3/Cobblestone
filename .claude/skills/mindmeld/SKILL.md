@@ -81,6 +81,57 @@ than moving there.
 **The last agent in the ring does the consolidating edits in phase 2.** Say
 who that is in every baton message so nobody has to recompute it.
 
+## Step 0b -- Wind-down mode: the commander schedules the baton just in time
+
+The ring above assumes every agent is at rest and can take the baton the
+moment it arrives. A wind-down is the other case (Damian, 2026-09-02, before
+the DIMM RMA): the fleet is mid-work, lanes reach their handoff point at
+different times, and a baton parked on a busy lane stalls the whole ring
+while a finished lane sits idle with nothing to do. So in a wind-down the
+order is NOT fixed at step 0. **The commander (root) holds the schedule and
+hands the baton to whichever lane is ready next**, and Damian's invocation
+from any agent still counts as the ask for both merge-down-alls.
+
+The rules of the mode:
+
+- **root goes first**, so the docs it owns (CLAUDE.md, CurrentPlan's
+  standing rules, the init and mindmeld skills) are clean before anyone
+  reviews them.
+- **Then every lane that is already handed off or idle**, in the order they
+  became idle. A lane that has handed off still has its memory to clean and
+  its facts to lift; that IS its last unit of the session.
+- **A lane still working finishes its current unit first.** It lands or
+  shelves clean, writes its handoff, and only THEN takes the baton. root
+  passes it the moment the lane reports the handoff, not before: a baton
+  message to a working lane is a message it will act on mid-unit, which is
+  the concurrency rule 1 exists to prevent.
+- **root keeps the list**: who has melded, who holds the baton now, who is
+  still working. Every baton message carries that list in place of the
+  fixed ring, and names the LAST agent (the one who will do phase 2's edits)
+  as "whoever hands off last" until that is known.
+- **root closes each phase itself** (the merge-down-all of steps 4 and 7)
+  once the list is complete, because root is the one agent guaranteed to be
+  up at the end. root is therefore first in phase 1 and last in phase 2.
+- **The baton travels by `SendMessage`** (the channel measured to deliver
+  mid-turn), with the outbox file of step 3 written as the receipt. Ask for
+  a one-line ack; a lane that does not ack within its next turn has not got
+  it, and root re-sends rather than waits.
+
+**Every hop refreshes the dashboard.** Before passing the baton, the agent
+writes its `status.json` (`state`, `task`, `claim`) so the dashboard says
+what is true at that moment. This session (2026-09-02) the dashboard showed
+every lane in last night's handoff text through a full morning of landings,
+and val's second handoff did not update it either; a dashboard nobody
+writes to is a dashboard nobody can command from.
+
+```powershell
+$mbox = (Get-Content .agentgrid -Raw | ConvertFrom-Json).coordinationDir
+@{ state = 'atRest'; task = 'mindmeld phase 1 done (CLs ...); handed off; baton to <next>'; claim = @() } |
+  ConvertTo-Json -Compress | Set-Content "$mbox\status.json" -Encoding utf8
+```
+
+Everything below still applies; only the ORDER and the closer change.
+
 ---
 
 # Phase 1 -- Clean your own memory, lift what is shared

@@ -4,7 +4,7 @@
 #   codex/plugs/test-plugs.ps1                    # test all built plugs
 #   codex/plugs/test-plugs.ps1 -Plug python       # test one plug
 #   codex/plugs/test-plugs.ps1 -BuildFirst        # build all plugs, then test
-#   codex/plugs/test-plugs.ps1 -Input hello       # test with specific input
+#   codex/plugs/test-plugs.ps1 -Subject hello     # test with ONE input
 #
 # For each plug × input, runs:
 #   1. Compile .codex → IR text (via seed)
@@ -15,7 +15,13 @@
 [CmdletBinding()]
 param(
     [string]$Plug = '',
-    [string]$Input = '',
+    # NOT $Input: that is a PowerShell AUTOMATIC variable (the pipeline
+    # enumerator), and under CmdletBinding it wins over the parameter, so
+    # `if ($Input)` was always false and `-Input hello` silently swept all 17
+    # inputs across all 51 plugs instead of one. The banner above advertised it
+    # and it had never worked. Renamed 2026-09-02 (reek) after it cost a
+    # 45-minute sweep that looked exactly like a slow harness.
+    [string]$Subject = '',
     [switch]$BuildFirst,
     [int]$Jobs = 1
 )
@@ -55,7 +61,7 @@ $testInputs = Get-ChildItem $TestInputDir -Filter '*.codex' -File |
     ForEach-Object { $_.BaseName } |
     Sort-Object
 
-if ($Input) { $testInputs = @($Input) }
+if ($Subject) { $testInputs = @($Subject) }
 
 # Build plugs if requested
 if ($BuildFirst) {

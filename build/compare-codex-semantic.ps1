@@ -463,9 +463,10 @@ $extra = @($extra | Where-Object { -not $resolvedExtra.Contains($_) })
 
 
 # Compare
-$bodyMatches = 0; $bodyMismatches = 0
+$bodyMatches = 0; $bodyMismatches = 0; $emptyBodies = 0
 $sigMatches = 0; $sigMismatches = 0
 $bodyMismatchList = [System.Collections.Generic.List[string]]::new()
+$emptyBodyList = [System.Collections.Generic.List[string]]::new()
 
 foreach ($pair in $matched) {
     $s0 = $pair[0]; $s1 = $pair[1]
@@ -476,6 +477,10 @@ foreach ($pair in $matched) {
     $b0 = Collapse-Whitespace (Demangle-Names $s0.Body $slugsSorted)
     $b1 = Collapse-Whitespace (Demangle-Names $s1.Body $slugsSorted)
     if ($b0 -eq $b1) { $bodyMatches++ }
+    elseif ($b0.Length -eq 0) {
+        $emptyBodies++
+        $emptyBodyList.Add("$($s0.Chapter): $($s0.Name) (line $($s0.LineNo))")
+    }
     else {
         $bodyMismatches++
         $bodyMismatchList.Add("$($s0.Chapter): $($s0.Name)")
@@ -495,7 +500,7 @@ foreach ($pair in $matched) {
 
 
 # Verdict
-$pass = $dropped.Count -eq 0 -and $bodyMismatches -eq 0
+$pass = $dropped.Count -eq 0 -and $bodyMismatches -eq 0 -and $emptyBodies -eq 0
 
 if ((-not $pass)) {
     $totalS0 = 0
@@ -505,7 +510,7 @@ if ((-not $pass)) {
 
     Write-Host '=== Semantic Equivalence FAIL ==='
     Write-Host "Source: $totalS0 defs  Stage1: $($s1Defs.Count) defs  Matched: $($matched.Count)"
-    Write-Host "Dropped: $($dropped.Count)  Body mismatches: $bodyMismatches"
+    Write-Host "Dropped: $($dropped.Count)  Body mismatches: $bodyMismatches  Empty source bodies: $emptyBodies"
     if ($dropped.Count -gt 0) {
         Write-Host 'Dropped:'
         foreach ($d in $dropped) {
@@ -515,6 +520,12 @@ if ((-not $pass)) {
     if ($bodyMismatchList.Count -gt 0) {
         Write-Host 'Body mismatches:'
         foreach ($m in $bodyMismatchList) {
+            Write-Host "  $m"
+        }
+    }
+    if ($emptyBodyList.Count -gt 0) {
+        Write-Host 'Empty source bodies (this script''s own parser captured no body for the definition; not a compiler mismatch):'
+        foreach ($m in $emptyBodyList) {
             Write-Host "  $m"
         }
     }

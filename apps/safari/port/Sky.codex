@@ -1,0 +1,175 @@
+Chapter: Sky
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Num
+  cites Safari chapter Trig
+  cites Safari chapter Camera
+
+ The day-to-dusk clock: the sky's colour, and the setting sun's screen placement.
+ Pure functions of the STEP clock -- safari.zig owns it -- and the rider's absolute
+ heading.
+
+ A port of wasm/sky.zig.
+
+ THE ZIG OWNS EVERY COLOUR AND POSITION. The blitter paints the gradients it is
+ handed and does no clock or colour arithmetic, so this chapter is the whole of
+ the sunset. The sun draws BEHIND the mountains, because the blitter paints it
+ before the buffer whose first polygons are the ranges.
+
+ THIS IS THE FIRST CHAPTER THAT NEEDS real-to-int, and it needs it twice: to
+ round a lerped colour channel and to pack three of them into one integer. Until
+ 2026-08-29 the zig plug could emit neither conversion and this module was simply
+ unportable -- see PORTING_NOTES A1, and plugs-backlog row 2.03 for the emitter
+ that closed it. Nothing here works around anything any more.
+
+ We say:
+
+Section: The Sun as a Clock
+
+ Its height drops linearly with the step, so it scrubs on reverse and freezes on
+ pause like everything else. Heights are PIXELS at the base focal, so they compare
+ directly with the mountain silhouettes.
+
+  sun-bearing : Real
+  sun-bearing = 0.0 - 2.2176
+
+  sun-radius-px : Real
+  sun-radius-px = 46.0
+
+ Step-0 height, calibrated to the route's timing in the TypeScript.
+
+  sun-start-px : Real
+  sun-start-px = 244.0
+
+  sun-drop-px-per-step : Real
+  sun-drop-px-per-step = 0.41616 * (2.0 * sun-radius-px) / 625.0
+
+ The whole disc is below the horizon at this height.
+
+  sun-fully-set-px : Real
+  sun-fully-set-px = 0.0 - sun-radius-px
+
+ How far from the horizon the sunset red fades out, and how far off-heading the
+ sun may be before it is off-screen entirely.
+
+  warmth-falloff-px : Real
+  warmth-falloff-px = 110.0
+
+  visible-bearing-limit : Real
+  visible-bearing-limit = 1.4
+
+  sun-height-px : Real -> Real
+  sun-height-px (step) = sun-start-px - sun-drop-px-per-step * step
+
+Section: Dusk
+
+ How far dusk has progressed, 0 = day and 1 = night. While the sun is up the
+ darkening is a SQUARED ramp -- barely moving while it is high, accelerating
+ toward sunset -- so the sky stays bright until around sunset; once the disc is
+ fully set the rest fades linearly.
+
+  dusk-at-set : Real
+  dusk-at-set = 0.5 * (sun-start-px - sun-fully-set-px) / sun-start-px
+
+ The two arms are separate definitions rather than one expression, because Codex
+ refuses a `let` nested inside an `if` arm inside a `let` (CDX1023). Flattening is
+ the fix and it reads better here anyway.
+
+  dusk-while-up : Real -> Real
+  dusk-while-up (h) =
+    let p = (sun-start-px - h) / (sun-start-px - sun-fully-set-px)
+    in real-max 0.0 (dusk-at-set * p * p)
+
+  dusk-after-set : Real -> Real
+  dusk-after-set (h) =
+    real-min 1.0 (dusk-at-set + (sun-fully-set-px - h) / sun-radius-px * (1.0 - dusk-at-set))
+
+  sun-set-fraction : Real -> Real
+  sun-set-fraction (step) =
+    let h = sun-height-px step
+    in if h >= sun-fully-set-px then dusk-while-up h else dusk-after-set h
+
+ How RED the afterglow is, 0 to 1: it peaks as the disc crosses the horizon and
+ fades when the sun is high or deep below. This drives the warm band the sky mixes
+ into its lower edge.
+
+  sunset-warmth : Real -> Real
+  sunset-warmth (step) =
+    real-max 0.0 (1.0 - real-abs (sun-height-px step) / warmth-falloff-px)
+
+Section: Colours
+
+ The upper sky dims ALL channels toward dusk, so it deepens rather than greying
+ out; the red mixes only into the lower horizon band.
+
+  Rgb = record {
+    r : Real,
+    g : Real,
+    b : Real
+  }
+
+  day-sky : Rgb
+  day-sky = Rgb { r = 142.0, g = 202.0, b = 230.0 }
+
+  dusk-sky : Rgb
+  dusk-sky = Rgb { r = 36.0, g = 58.0, b = 94.0 }
+
+  sunset-red : Rgb
+  sunset-red = Rgb { r = 222.0, g = 88.0, b = 52.0 }
+
+ How strongly the red mixes in at peak warmth.
+
+  sunset-glow : Real
+  sunset-glow = 0.85
+
+  lerp3 : Rgb, Rgb, Real -> Rgb
+  lerp3 (a) (b) (t) =
+    Rgb {
+      r = round-real (a.r + (b.r - a.r) * t),
+      g = round-real (a.g + (b.g - a.g) * t),
+      b = round-real (a.b + (b.b - a.b) * t)
+    }
+
+ The wire is one 0xRRGGBB integer, shifted and or-ed exactly as the zig does.
+ Arithmetic would give the same answer for channels this size, but the shift is
+ what the source says and the plug emits it.
+
+  pack : Rgb -> Integer
+  pack (c) =
+    bit-or (bit-or (bit-shl (real-to-int c.r) 16) (bit-shl (real-to-int c.g) 8)) (real-to-int c.b)
+
+  sky-color : Real -> Integer
+  sky-color (step) = pack (lerp3 day-sky dusk-sky (sun-set-fraction step))
+
+  horizon-color : Real -> Integer
+  horizon-color (step) =
+    let sky = lerp3 day-sky dusk-sky (sun-set-fraction step)
+    in pack (lerp3 sky sunset-red (sunset-warmth step * sunset-glow))
+
+Section: The Sun's Placement
+
+ `scale` is cam-focal over the base focal: it squeezes the disc and its glow
+ vertically on a lean, and is 1.0 in the static frame. The blitter multiplies its
+ radii by it. `visible` is False when the sun is too far off-heading to be on
+ screen, and the blitter then skips it entirely.
+
+  SunPos = record {
+    visible : Boolean,
+    x : Real,
+    y : Real,
+    scale : Real
+  }
+
+  sun-pos-visible : Real, Real, Real, Real -> SunPos
+  sun-pos-visible (rel) (step) (cam-focal) (view-w) =
+    let v-scale = cam-focal / focal
+    in SunPos { visible = True, x = view-w / 2.0 + r-tan rel * cam-focal, y = camera-h / 2.0 - sun-height-px step * v-scale, scale = v-scale }
+
+ The x centre follows the LIVE width, which is the peripheral-FOV rule the camera
+ keeps everywhere: a wider window sees more, it does not zoom.
+
+  sun-pos : Real, Real, Real, Real -> SunPos
+  sun-pos (heading) (step) (cam-focal) (view-w) =
+    let rel = wrap (sun-bearing - heading) 64
+    in if real-abs rel >= visible-bearing-limit
+      then SunPos { visible = False, x = 0.0, y = 0.0, scale = 0.0 }
+      else sun-pos-visible rel step cam-focal view-w

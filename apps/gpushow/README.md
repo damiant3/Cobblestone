@@ -19,6 +19,11 @@ The compute pass is lowered from the same typed AST the Codex compiler uses;
 only the render shader and host wiring are hand-written (render-stage WGSL
 emission is a later plug feature).
 
+The rules the plug is held to are `docs/Reference/WgslSpec.md`. A construct it
+cannot lower is refused by name and no `.wgsl` is written, so a failed run
+leaves the previous shader in place rather than a half-lowered one; the paired
+arms are `codex/plugs/wgsl/arms/`.
+
 ## Demos
 
 | Demo | Kernel | What it shows |

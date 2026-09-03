@@ -1,0 +1,283 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Codex Star Map</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #05070d; color: #c8d4e8;
+               font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+  #sky { display: block; width: 100%; height: 100%; cursor: grab; }
+  #sky.drag { cursor: grabbing; }
+  .panel { position: fixed; background: rgba(8,12,22,.82); border: 1px solid #1e2a44;
+           border-radius: 8px; padding: 10px 12px; backdrop-filter: blur(6px); }
+  #hud { top: 12px; left: 12px; max-width: 260px; }
+  #hud h1 { margin: 0 0 6px; font-size: 14px; letter-spacing: .04em; color: #e8eefc; }
+  #hud dl { margin: 0; display: grid; grid-template-columns: auto auto; gap: 1px 10px; }
+  #hud dt { color: #7b8bab; } #hud dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  #keys { bottom: 12px; left: 12px; color: #7b8bab; }
+  #keys b { color: #c8d4e8; font-weight: 600; }
+  #info { top: 12px; right: 12px; min-width: 190px; display: none; }
+  #info h2 { margin: 0 0 4px; font-size: 14px; color: #ffd9a0; }
+  #info .k { color: #7b8bab; }
+  #err { top: 50%; left: 50%; transform: translate(-50%,-50%); display: none;
+         border-color: #6b2233; color: #ffb3c0; max-width: 30em; }
+</style>
+
+<canvas id="sky"></canvas>
+<div class="panel" id="hud">
+  <h1>Codex Star Map</h1>
+  <dl>
+    <dt>objects</dt><dd id="n-objects">-</dd>
+    <dt>visible</dt><dd id="n-visible">-</dd>
+    <dt>labels</dt><dd id="n-labels">-</dd>
+    <dt>distance</dt><dd id="n-dist">-</dd>
+    <dt>mag limit</dt><dd id="n-mag">-</dd>
+  </dl>
+</div>
+<div class="panel" id="keys">
+  <b>drag</b> orbit &nbsp; <b>wheel</b> zoom &nbsp; <b>WASD/QE</b> move &nbsp;
+  <b>click</b> select &nbsp; <b>L</b> labels &nbsp; <b>[ ]</b> magnitude
+</div>
+<div class="panel" id="info"></div>
+<div class="panel" id="err"></div>
+
+<script type="module">
+// The module's memory map. These are the addresses StarMapWasm.codex publishes;
+// they are the contract between the two halves and nothing else may assume them.
+const CELL_STARS = 256, CELL_LABELS = 260, CELL_VISIBLE = 264, CELL_READY = 268;
+const CAM = 352;
+const CAM_FOCUS_X = 0, CAM_FOCUS_Y = 8, CAM_FOCUS_Z = 16, CAM_YAW = 24,
+      CAM_PITCH = 28, CAM_DIST = 32, CAM_SELECTED = 40, CAM_OBJECTS = 44,
+      CAM_MAG = 48, CAM_SPEED = 52, CAM_FOV = 56, CAM_FLAGS = 60;
+const STAR_TAB = 1048576, STAR_STRIDE = 48;
+const S_X = 0, S_Y = 8, S_Z = 16, S_MAG = 24, S_RGB = 28, S_ID = 32,
+      S_SIZE = 36, S_LABEL = 40, S_KIND = 44;
+const LABEL_BLOB = 1114112, LABEL_STRIDE = 80, LABEL_CAP = 76;
+const VISIBLE_BUF = 1179648;
+const ABSENT = 65535;
+// sm-put-wide splits a 64-bit value on this, quotient and remainder carrying
+// the same sign, so the halves recombine by multiply and add.
+const WIDE = 1000000;
+
+const KINDS = ['Star','Binary Star','Globular Cluster','Open Cluster',
+  'Planetary Nebula','Diffuse Nebula','Galaxy','Quasar','Pulsar','Black Hole',
+  'Planet','Moon','Asteroid','Comet'];
+
+const fail = m => { const e = document.getElementById('err');
+  e.textContent = m; e.style.display = 'block'; throw new Error(m); };
+
+let mem, i32, u8, wasm;
+const geti = a => i32[a >> 2];
+const wide = a => i32[a >> 2] + i32[(a + 4) >> 2] * WIDE;
+
+function labelOf(slot) {
+  if (slot === ABSENT) return '';
+  const base = LABEL_BLOB + slot * LABEL_STRIDE;
+  const n = Math.min(geti(base), LABEL_CAP);
+  if (n <= 0) return '';
+  return new TextDecoder().decode(u8.subarray(base + 4, base + 4 + n));
+}
+
+function star(i) {
+  const a = STAR_TAB + i * STAR_STRIDE;
+  return { i, x: wide(a + S_X), y: wide(a + S_Y), z: wide(a + S_Z),
+           mag: geti(a + S_MAG), rgb: geti(a + S_RGB), id: geti(a + S_ID),
+           size: geti(a + S_SIZE), name: labelOf(geti(a + S_LABEL)),
+           kind: KINDS[geti(a + S_KIND)] || 'Object' };
+}
+
+// WASI is imported by every module this plug emits, whether or not the program
+// prints. fd_write is fed by the entry act's one line; fd_read is never called
+// but must be supplied, because an absent import is a LinkError at load.
+let out = '';
+function wasi() {
+  return { fd_write(fd, iov, n, ret) {
+      let w = 0;
+      for (let k = 0; k < n; k++) {
+        const p = geti(iov + k * 8), len = geti(iov + k * 8 + 4);
+        out += new TextDecoder().decode(u8.subarray(p, p + len)); w += len;
+      }
+      i32[ret >> 2] = w; return 0;
+    },
+    fd_read: () => 0 };
+}
+
+const canvas = document.getElementById('sky');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+
+let projected = [];
+
+function project() {
+  const yaw = geti(CAM + CAM_YAW) / 1000 * Math.PI / 180;
+  const pitch = geti(CAM + CAM_PITCH) / 1000 * Math.PI / 180;
+  const dist = wide(CAM + CAM_DIST);
+  const fx = wide(CAM + CAM_FOCUS_X), fy = wide(CAM + CAM_FOCUS_Y), fz = wide(CAM + CAM_FOCUS_Z);
+  const fov = (geti(CAM + CAM_FOV) || 60) * Math.PI / 180;
+
+  const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const F = [cp * cy, sp, cp * sy];
+  const R = [-sy, 0, cy];
+  const U = [-sp * cy, cp, -sp * sy];
+  const eye = [fx - dist * F[0], fy - dist * F[1], fz - dist * F[2]];
+  const f = (H / 2) / Math.tan(fov / 2);
+
+  const count = geti(CELL_VISIBLE);
+  const list = [];
+  for (let k = 0; k < count; k++) {
+    const s = star(geti(VISIBLE_BUF + k * 4));
+    const dx = s.x - eye[0], dy = s.y - eye[1], dz = s.z - eye[2];
+    const cz = dx * F[0] + dy * F[1] + dz * F[2];
+    if (cz <= 1) continue;
+    const cx = dx * R[0] + dy * R[1] + dz * R[2];
+    const cyy = dx * U[0] + dy * U[1] + dz * U[2];
+    s.sx = W / 2 + f * cx / cz; s.sy = H / 2 - f * cyy / cz; s.cz = cz;
+    list.push(s);
+  }
+  list.sort((a, b) => b.cz - a.cz);
+  projected = list;
+}
+
+function draw() {
+  ctx.fillStyle = '#05070d'; ctx.fillRect(0, 0, W, H);
+  const flags = geti(CAM + CAM_FLAGS);
+  const selected = geti(CAM + CAM_SELECTED);
+
+  if (flags & 2) {
+    ctx.strokeStyle = 'rgba(90,120,180,.10)'; ctx.lineWidth = 1;
+    for (let g = -4; g <= 4; g++) {
+      const t = (g + 4) / 8;
+      ctx.beginPath(); ctx.moveTo(0, t * H); ctx.lineTo(W, t * H);
+      ctx.moveTo(t * W, 0); ctx.lineTo(t * W, H); ctx.stroke();
+    }
+  }
+
+  for (const s of projected) {
+    const r = Math.max(1, s.size * (dpr > 1 ? 1 : 1));
+    const col = '#' + (s.rgb >>> 0).toString(16).padStart(6, '0');
+    ctx.beginPath(); ctx.arc(s.sx, s.sy, r, 0, Math.PI * 2);
+    ctx.fillStyle = col; ctx.fill();
+    if (r > 2) {
+      ctx.globalAlpha = .18; ctx.beginPath();
+      ctx.arc(s.sx, s.sy, r * 3, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    }
+    if (s.id === selected) {
+      ctx.strokeStyle = '#ffd9a0'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(s.sx, s.sy, r + 6, 0, Math.PI * 2); ctx.stroke();
+    }
+    if ((flags & 1) && s.name && r >= 3) {
+      ctx.fillStyle = 'rgba(200,212,232,.75)'; ctx.font = '11px ui-sans-serif, system-ui';
+      ctx.fillText(s.name, s.sx + r + 4, s.sy + 3);
+    }
+  }
+}
+
+function hud() {
+  const pc = wide(CAM + CAM_DIST) / 1000;
+  document.getElementById('n-objects').textContent = geti(CELL_STARS);
+  document.getElementById('n-visible').textContent = geti(CELL_VISIBLE);
+  document.getElementById('n-labels').textContent = geti(CELL_LABELS);
+  document.getElementById('n-dist').textContent = fmtPc(pc);
+  document.getElementById('n-mag').textContent = (geti(CAM + CAM_MAG) / 1000).toFixed(1);
+}
+
+const fmtPc = pc => pc >= 1e6 ? (pc / 1e6).toFixed(2) + ' Mpc'
+  : pc >= 1e3 ? (pc / 1e3).toFixed(2) + ' kpc' : pc.toFixed(1) + ' pc';
+
+function showInfo(s) {
+  const box = document.getElementById('info');
+  if (!s) { box.style.display = 'none'; return; }
+  const pc = Math.hypot(s.x, s.y, s.z) / 1000;
+  box.innerHTML = '<h2></h2><div><span class="k">kind</span> <span id="i-k"></span></div>'
+    + '<div><span class="k">magnitude</span> <span id="i-m"></span></div>'
+    + '<div><span class="k">distance</span> <span id="i-d"></span></div>';
+  box.querySelector('h2').textContent = s.name || ('Object ' + s.id);
+  box.querySelector('#i-k').textContent = s.kind;
+  box.querySelector('#i-m').textContent = (s.mag / 1000).toFixed(2);
+  box.querySelector('#i-d').textContent = fmtPc(pc) + ' / ' + (pc * 3.262).toFixed(1) + ' ly';
+  box.style.display = 'block';
+}
+
+let frame = 0;
+function tick() {
+  wasm.sm_tick(frame++);
+  project(); draw(); hud();
+  requestAnimationFrame(tick);
+}
+
+// --- input ------------------------------------------------------------
+let dragging = false, lx = 0, ly = 0, moved = 0;
+canvas.addEventListener('pointerdown', e => {
+  dragging = true; moved = 0; lx = e.clientX; ly = e.clientY;
+  canvas.classList.add('drag'); canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const dx = e.clientX - lx, dy = e.clientY - ly;
+  lx = e.clientX; ly = e.clientY; moved += Math.abs(dx) + Math.abs(dy);
+  wasm.sm_orbit(Math.round(dx * 400), Math.round(-dy * 400));
+});
+canvas.addEventListener('pointerup', e => {
+  dragging = false; canvas.classList.remove('drag');
+  if (moved > 4) return;
+  const r = canvas.getBoundingClientRect();
+  const px = e.clientX - r.left, py = e.clientY - r.top;
+  let best = null, bd = 18 * 18;
+  for (const s of projected) {
+    const d = (s.sx - px) ** 2 + (s.sy - py) ** 2;
+    if (d < bd) { bd = d; best = s; }
+  }
+  if (best) { wasm.sm_select_obj(best.id); showInfo(best); } else showInfo(null);
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const d = wide(CAM + CAM_DIST);
+  wasm.sm_zoom(Math.round(Math.sign(e.deltaY) * Math.max(100, d * 0.15)));
+}, { passive: false });
+
+addEventListener('keydown', e => {
+  const step = geti(CAM + CAM_SPEED) || 10000;
+  const k = e.key.toLowerCase();
+  if (k === 'w') wasm.sm_move_forward(step);
+  else if (k === 's') wasm.sm_move_forward(-step);
+  else if (k === 'd') wasm.sm_move_right(step);
+  else if (k === 'a') wasm.sm_move_right(-step);
+  else if (k === 'e') wasm.sm_move_up(step);
+  else if (k === 'q') wasm.sm_move_up(-step);
+  else if (k === 'l') wasm.sm_toggle_labels();
+  else if (k === 'g') wasm.sm_toggle_grid();
+  else if (k === '[') wasm.sm_set_mag_limit(geti(CAM + CAM_MAG) - 500);
+  else if (k === ']') wasm.sm_set_mag_limit(geti(CAM + CAM_MAG) + 500);
+  else return;
+  e.preventDefault();
+});
+
+// --- boot -------------------------------------------------------------
+(async () => {
+  let bytes;
+  try {
+    const r = await fetch('starmap.wasm');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    bytes = await r.arrayBuffer();
+  } catch (e) {
+    // The catalog lives in the module, so this is the only fetch, and a
+    // file:// origin refuses it. Naming that beats a generic failure.
+    fail(location.protocol === 'file:'
+      ? 'starmap.wasm could not be read from a file:// page. Serve this directory over HTTP.'
+      : 'starmap.wasm could not be loaded: ' + e.message);
+  }
+  const inst = (await WebAssembly.instantiate(bytes, { wasi_snapshot_preview1: wasi() })).instance;
+  wasm = inst.exports;
+  mem = wasm.memory; i32 = new Int32Array(mem.buffer); u8 = new Uint8Array(mem.buffer);
+  wasm._start();
+  if (geti(CELL_READY) !== 1) fail('the module ran but never set its ready cell; the catalog was not built');
+  if (geti(CELL_STARS) <= 0) fail('the module built an empty catalog');
+  resize(); tick();
+})();
+</script>

@@ -66,18 +66,23 @@ $BuildLog = Join-Path $OutDir 'build.log'
 #     its instrument is that script, and no codegen change can move its answer
 #     because every arm compares two runs of the SAME kernels.
 #   text-stage2 / text-fixedpoint <- the front end and the text printer
-#   text-stage1 / sem-equiv     <- the same, PLUS codex/compiler/opening.codex.
-#     Widened 2026-08-28 on Damian's 2026-08-25 ruling, whose hold expired
-#     with Update 52. opening.codex is not the printer, but it is the phase
-#     driver, and a change to it went red on `opening: compile-frontend-passes`
-#     that only a full gate could see. sem-equiv CANNOT be triggered alone --
-#     it consumes the stage1.codex that only text-stage1 produces -- so the
-#     pair moves together and text-stage2/text-fixedpoint stay narrow, where
-#     CodexEmitter genuinely is their subject.
+#   text-stage1 / sem-equiv     <- WHENEVER THE CORE RUNS (Damian, 2026-09-02).
+#     The trigger was $tSemantic, and its residue was the rest of the compiler:
+#     a chapter outside Syntax/Ast/CodexEmitter/TextFormat/SourceText/opening/
+#     Lowering can break semantic equivalence and no -Internal run could see it
+#     (L-NOGATE). $coreRuns is the set that can move the compiler binary, so it
+#     is also the set that can move this answer; text-stage1 rides with it
+#     because sem-equiv consumes the stage1.codex only it produces. Measured
+#     2026-09-02: text-stage1 34.5 s, sem-equiv 59.6 s. A run with the core
+#     deferred changes neither side, so it is not made to pay the 96 s.
 # test-compile is NOT in that map. It is never skipped, only scoped: with
 # -Internal it compiles the test chapters that CITE a chapter changed here
 # (11 chapters and 12s for a GopComposite change), and the full gate compiles
 # all 1,400 (1,202s at 4 ways). red's ruling 2026-08-20 on the measured cost.
+# test-run is not in the map either, for the same reason: it RUNS the ones
+# test-compile selected that carry an .expected, and an empty cited set costs
+# nothing. Compiling a chapter is not running it, and only running it can see
+# a program that emits clean IR and answers the wrong values (L-NOGATE).
 # The text leg is conditional as of 2026-08-20 (Damian). Measured at head
 # 18157: the four text phases cost 99.4s of a 644.1s gate and the CDX fixed
 # point that certifies the shipped artifact costs 25.5s. Their unique subject
@@ -88,17 +93,83 @@ $BuildLog = Join-Path $OutDir 'build.log'
 # full gate rather than at the CL, and it is the trade this switch makes.
 $SkipPhases = [System.Collections.Generic.HashSet[string]]::new()
 $tCompiler = $false
+$changedPlugs = @()
+$coreRuns = $true
 if ($Internal) {
     $changed = @()
     try { $changed = @(p4 opened 2>$null | ForEach-Object { (($_ -split '#')[0]) -replace '^//[^/]+/[^/]+/','' } | Where-Object { $_ }) } catch { }
-    $tCompiler = [bool]($changed | Where-Object { $_ -match '^codex/compiler/' })
+    $stream = ''
+    try { $stream = ((p4 client -o 2>$null | Where-Object { $_ -match '^Stream:' }) -replace '^Stream:\s*', '').Trim() } catch { }
+    if ($stream -and $stream -ne '//Codex/main') {
+        $ahead = @()
+        try { $ahead = @(p4 diff2 -q '//Codex/main/...' ($stream + '/...') 2>$null | Where-Object { $_ -match '^==== ' } | ForEach-Object { $m = [regex]::Match($_, '//[^/\s]+/[^/\s]+/([^#\s]+)'); if ($m.Success) { $m.Groups[1].Value } } | Where-Object { $_ }) } catch { }
+        # p4 diff2 reports a file that differs in EITHER DIRECTION, so a
+        # stream that is BEHIND main reads another lane's landed files as its
+        # own change. Measured 2026-09-02 with NOTHING opened: 'changed here'
+        # named three files main was ahead on, one of them under build/, and
+        # the whole fixed-point core ran for another lane's work.
+        # SUBTRACTING what a merge-down would bring was the first repair and it
+        # is WRONG: a code arc gates once at the end, so a stream CL is not
+        # gated at submit, and a file changed on BOTH sides would be dropped
+        # along with the lane's own change (root, 2026-09-02). Refuse instead.
+        # Merging down before a gate was already the rule and had no runner,
+        # which is L-BODY's shape; after the merge the union is exact and there
+        # is no edge left to reason about.
+        $incoming = @()
+        try { $incoming = @(p4 merge -n -S $stream -r 2>$null | ForEach-Object { $m = [regex]::Match($_, '^//[^/\s]+/[^/\s]+/([^#\s]+)'); if ($m.Success) { $m.Groups[1].Value } } | Where-Object { $_ }) } catch { }
+        if ($incoming.Count -gt 0) {
+            Write-Host ('  REFUSED: this stream is BEHIND main by ' + $incoming.Count + ' file(s), so the gate cannot tell your change from another lane''s.') -ForegroundColor Red
+            Write-Host ('    ' + (($incoming | Select-Object -First 5) -join ', '))
+            Write-Host '    Merge down first. The scope is p4 opened UNION diff2, and diff2 reports a file that differs in EITHER direction.'
+            exit 1
+        }
+        $changed += @($ahead)
+    }
+    # SOURCE, not the directory: codex/compiler holds 64 .codex and one
+    # prose register that every lane edits, and matching the directory made a
+    # docs-only CL pay all eight compiler phases (Build.md). A non-source file
+    # that DOES decide an answer keeps its own trigger, as app-sweep-baseline does.
+    $tCompiler = [bool]($changed | Where-Object { $_ -match '^codex/compiler/.*\.codex$' })
     $tPlugs    = [bool]($changed | Where-Object { $_ -match '^codex/plugs/' })
+    # plug-binary and plug-smoke grade a HARDCODED list, so a change to any of
+    # the other 46 plugs ran both phases over plugs it did not touch and came
+    # back green. Name the plugs that actually changed so they are graded too.
+    $changedPlugs = @($changed | ForEach-Object { $m = [regex]::Match($_, '^codex/plugs/([^/]+)/'); if ($m.Success) { $m.Groups[1].Value } } | Where-Object { $_ -and $_ -ne 'common' -and $_ -ne 'test-input' } | Select-Object -Unique)
     $tBuild    = [bool]($changed | Where-Object { $_ -match '^(codex/build/|build/)' })
     $tApps     = [bool]($changed | Where-Object { $_ -match '^apps/' })
     $tFrontEnd = [bool]($changed | Where-Object { $_ -match '^codex/compiler/(Syntax|Ast)/' -or $_ -match '^codex/compiler/Emit/CodexEmitter\.codex$' -or $_ -match '^codex/compiler/Core/(TextFormat|SourceText)\.codex$' })
     $tVm       = [bool]($changed | Where-Object { $_ -match '^tools/codex-vm\.(c|exe)$' -or $_ -match '^build/check-run-list\.ps1$' })
-    $tSemantic = [bool]($tFrontEnd -or ($changed | Where-Object { $_ -match '^codex/compiler/opening\.codex$' }))
+    # A gate runs only the steps the change can affect (Damian, 2026-09-02).
+    # $tKernel is the set that can move the COMPILER BINARY, so it is what
+    # decides whether the fixed-point core is worth running at all. Wide on
+    # the foreword on purpose: most foreword chapters are not in the compiler
+    # unit (measured, Foreword--Fat32 is absent and Foreword--Fat16 present),
+    # and a trigger too wide costs time where one too narrow ships a
+    # miscompile. The two errors are not the same size.
+    $tForeword = [bool]($changed | Where-Object { $_ -match '^codex/foreword/' })
+    $tSeed     = [bool]($changed | Where-Object { $_ -match '^seed/' })
+    $tKernel   = [bool]($tCompiler -or $tForeword -or $tSeed -or $tBuild)
+    # The BVT's SUBJECTS are codex/test chapters, hardcoded in bvt.ps1, so a
+    # test-only CL that skipped it would skip the phase grading the file it
+    # changed. Wider than that list on purpose: reading the list from here
+    # couples the two scripts, and 30 s on a test CL is the cheaper error.
+    $tTest     = [bool]($changed | Where-Object { $_ -match '^codex/test/' })
+    # run-list is here for its SUBJECTS, not its answer: its five kernels are
+    # core outputs, and its arms compare two runs of the SAME kernels, so a
+    # stale one moves both sides equally but an ABSENT one refuses. The core
+    # runs to produce inputs, which is a dependency and not a check.
+    $coreRuns = [bool]($tKernel -or $tVm)
     $runPhase = [ordered]@{
+        'clean'           = $coreRuns
+        'source-concat'   = $coreRuns
+        'cdx-build'       = $coreRuns
+        'sign'            = $coreRuns
+        'canary'          = $coreRuns
+        'cdx-stage1'      = $coreRuns
+        'cdx-fixedpoint'  = $coreRuns
+        'test-bvt'        = ($tKernel -or $tTest)
+        'oracles'         = ($tKernel -or $tTest)
+        'check-errors'    = ($tKernel -or $tTest)
         'jonquil'         = $tCompiler
         'plug-binary'     = ($tPlugs -or $tCompiler)
         'cross-smoke'     = ($tPlugs -or $tCompiler)
@@ -108,16 +179,40 @@ if ($Internal) {
         'deck-headroom'   = ($tBuild -or $tCompiler)
         'app-sweep'       = ($tApps -or $tCompiler)
         'run-list'        = $tVm
-        'text-stage1'     = $tSemantic
-        'sem-equiv'       = $tSemantic
+        'text-stage1'     = $coreRuns
+        'sem-equiv'       = $coreRuns
         'text-stage2'     = $tFrontEnd
         'text-fixedpoint' = $tFrontEnd
     }
     foreach ($k in $runPhase.Keys) { if (-not $runPhase[$k]) { [void]$SkipPhases.Add($k) } }
     $ran = @($runPhase.Keys | Where-Object { $runPhase[$_] })
     Write-Host ('  [internal gate] changed here: ' + $(if ($changed.Count) { ($changed | Sort-Object -Unique) -join ', ' } else { 'nothing opened' }))
-    Write-Host ('  [internal gate] core + BVT always, plus: ' + $(if ($ran.Count) { ($ran -join ', ') } else { '(nothing implicated)' }))
+    Write-Host ('  [internal gate] running: ' + $(if ($ran.Count) { ($ran -join ', ') } else { '(nothing implicated)' }))
     Write-Host ('  [internal gate] deferred to the next full gate: ' + $(if ($SkipPhases.Count) { (@($SkipPhases) | Sort-Object) -join ', ' } else { '(none)' }))
+    # THE LINE A CL DESCRIPTION MAY QUOTE. A deferred core does not run
+    # SUT === stage1, so a run that skipped it cannot claim the fixed point
+    # and must say what it DID grade with instead. Printing the truthful
+    # claim here is what stops six agents pasting a proof their run never
+    # produced; the alternative was asking them to remember.
+    if (-not $coreRuns) {
+        $seedHash = (Get-FileHash $SeedCdx -Algorithm SHA256).Hash
+        # A locally built seed is not the compiler of record, and grading
+        # against one is the stale-kernel wrong answer wearing another hat.
+        # Silent when p4 cannot answer: this must not turn a gate red for
+        # being offline, only for being wrong.
+        $depotSeed = Join-Path ([System.IO.Path]::GetTempPath()) ('depot-seed-' + [System.Guid]::NewGuid().ToString('N') + '.cdx')
+        $depotHash = ''
+        try { & p4 print -q -o $depotSeed '//Codex/main/seed/Codex.cdx' 2>$null | Out-Null; if (Test-Path $depotSeed) { $depotHash = (Get-FileHash $depotSeed -Algorithm SHA256).Hash } } catch { }
+        Remove-Item -Force $depotSeed -ErrorAction SilentlyContinue
+        if ($depotHash -and $depotHash -ne $seedHash) {
+            Write-Host '  REFUSED: the core is deferred, so this run grades with seed\Codex.cdx -- and that file is NOT the depot seed.' -ForegroundColor Red
+            Write-Host ('    workspace ' + $seedHash.Substring(0,16) + '   depot ' + $depotHash.Substring(0,16))
+            Write-Host '    Sync the seed, or make a change that runs the core.'
+            exit 1
+        }
+        $SutCdx = $SeedCdx
+        Write-Host ('  [internal gate] core SKIPPED; graded with depot seed ' + $seedHash.Substring(0,16))
+    }
 }
 
 # A compile log ENDS in hundreds of `info CDX4010: bounds proven` lines, so
@@ -237,10 +332,13 @@ function Invoke-BuildText {
         $lines = $raw -split "`n"
         $textLines = [System.Collections.Generic.List[string]]::new()
         $halted = $false
+        $textHwm = 0
         foreach ($rl in $lines) {
             if ($rl.StartsWith('CODEGEN-HALTED') -or $rl.StartsWith('CODEGEN-ERRORS')) { $halted = $true; break }
+            if ($rl.StartsWith('WD:PHASE-')) { $ci = $rl.LastIndexOf(':'); if ($ci -gt 0) { $pv = [int64]0; if ([int64]::TryParse($rl.Substring($ci + 1), [ref]$pv) -and $pv -gt $textHwm) { $textHwm = $pv } } }
             if (-not $rl.StartsWith('WD:') -and -not $rl.StartsWith('HEAP:') -and -not $rl.StartsWith('STACK:')) { $textLines.Add($rl) }
         }
+        $script:LastTextHwm = $textHwm
         if ($halted) {
             Write-Host ''; Write-Host 'FAIL: TEXT build halted with errors'; return $false
         }
@@ -448,7 +546,11 @@ if (Test-Path $chkFactsGuid) {
 # moves in one day, and nothing observed it because no workspace happened to
 # carry the file. Measured 2026-08-21: 63 claims, mean 0.52 s over three runs.
 $chkCounts = Join-Path $PSScriptRoot 'check-doc-counts.ps1'
-if (Test-Path $chkCounts) {
+# NOT on -Internal (Damian, 2026-09-02): counts drift again before any
+# release, so paying 0.5 s per CL to hold them exact between releases buys
+# nothing and it was holding the build token. The FULL gate still runs it,
+# which is the gate a release passes through.
+if ((-not $Internal) -and (Test-Path $chkCounts)) {
     & pwsh -NoProfile -File $chkCounts -Quiet 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'FAIL: a doc states a count the tree no longer produces'
@@ -488,7 +590,7 @@ Write-Host 'begins to wash off in layers.'
 Write-Host ''
 
 # -- sign
-Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx')
+if ($coreRuns) { Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx') }
 
 Measure-Phase 'sign' {
 $SigningKey = 'D:\Projects\signing.key'
@@ -604,7 +706,7 @@ $seedSize = (Get-Item $SeedCdx).Length
 $sutSize = (Get-Item $SutCdx).Length
 $drift = [math]::Abs($sutSize - $seedSize)
 $maxDrift = [int]($seedSize * 0.05)
-if ($drift -gt $maxDrift) {
+if ($coreRuns -and $drift -gt $maxDrift) {
     Write-Host "FAIL: SUT size drifted too far from seed"
     Write-Host "  seed: $seedSize bytes  SUT: $sutSize bytes  drift: $drift (max $maxDrift)"
     exit 1
@@ -616,6 +718,21 @@ $textStage2 = Join-Path $OutDir 'stage2.codex'
 Write-Host 'Searching inward for tranquility and happiness, you close your eyes.'
 Measure-Phase 'text-stage1' {
     if (-not (Invoke-BuildText -InputFile $CodexSrc -Kernel $SutCdx -Output $textStage1)) { exit 1 }
+    $tHwm = $script:LastTextHwm
+    if ($tHwm -le 0) {
+        Write-Host ''
+        Write-Host 'FAIL: text-stage1 emitted no WD:PHASE telemetry, so the memory contract was NOT measured'
+        Write-Host '      A contract that cannot be read is not a contract. Fix the reader, do not skip the check.'
+        exit 1
+    }
+    Write-Host ("  text-stage1 heap hwm {0:N0} bytes ({1} MB) against the 2 GB contract" -f $tHwm, [int]($tHwm / 1MB))
+    if ($tHwm -gt 2147483648) {
+        Write-Host ''
+        Write-Host ("FAIL: the text-mode self-compile peaked at {0:N0} bytes, past the 2 GB memory contract" -f $tHwm)
+        Write-Host '      CurrentPlan, THE COMPILER MEMORY CONTRACT: a self-compile needing more is a DEFECT to fix,'
+        Write-Host '      never a reason to grow the guests.'
+        exit 1
+    }
 }
 
 Measure-Phase 'sem-equiv' {
@@ -656,7 +773,12 @@ Write-Host ''
 
 $cdxStage1 = Join-Path $OutDir 'stage1.cdx'
 $cdxStage2 = Join-Path $OutDir 'stage2.cdx'
-$testKernel = $cdxStage1
+# The kernel every later phase grades with. A deferred core leaves
+# stage1.cdx holding WHATEVER THE LAST RUN LEFT, which is the -Kernel trap
+# CLAUDE.md names: it once reported ~80 of 84 chapters compiling where the
+# truth was ~55. The skipped path is pointed at the seed of record instead,
+# never at a build output.
+$testKernel = if ($coreRuns) { $cdxStage1 } else { $SeedCdx }
 
 Write-Host 'It is difficult to look at the blueness directly. The sound seems'
 Write-Host 'to be emanating from this glowing portal.'
@@ -692,7 +814,7 @@ Write-Host 'Light seems to bend and distort around it, while the sound waves'
 Write-Host 'become so intense, they appear to become visible.'
 Write-Host ''
 
-Copy-Item -Force $cdxStage1 (Join-Path $OutDir 'NewSeed.cdx')
+if ($coreRuns) { Copy-Item -Force $cdxStage1 (Join-Path $OutDir 'NewSeed.cdx') }
 
 Write-Host 'The portal hangs there for a moment; then with the rush of an'
 Write-Host 'imploding vacuum, it sinks into the ground.'
@@ -817,6 +939,40 @@ Measure-Phase 'test-compile' {
     }
 }
 
+# COMPILING A TEST IS NOT RUNNING IT, and until now the gate only compiled.
+# A change that made lazy-smoke emit clean IR and answer heap addresses where
+# values were expected passed both instruments and blocked a release
+# (L-NOGATE). This RUNS the chapters test-compile just selected -- the ones
+# whose source cites a chapter this CL changed -- and grades them against
+# their .expected. A TEST RUNS WHEN IT IS LIKELY TO FAIL: the cited set is
+# empty on most CLs and this phase costs nothing there.
+#
+# bvt.ps1 is the runner because the grading is already in it: the .expected
+# filter, the sidecars, and the strict-prefix arithmetic that tells a
+# TRUNCATED capture from a miscompile (L-SHORT). The subject list is READ
+# from check-test-compile.ps1 rather than re-derived, so there is one selector
+# and not two that can disagree.
+Measure-Phase 'test-run' {
+    $subjectList = Join-Path $Repo 'build-output\test-compile-subjects.txt'
+    $cited = @()
+    if (Test-Path $subjectList) {
+        $cited = @(Get-Content $subjectList | Where-Object { $_ } |
+                   Where-Object { Test-Path ($_ -replace '\.codex$', '.expected') })
+    }
+    if ($cited.Count -eq 0) {
+        Write-Host '  test-run: OK (no cited chapter carries an .expected)'
+    } else {
+        $bvtScript = Join-Path $PSScriptRoot 'bvt.ps1'
+        & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 8 -SubjectsFile $subjectList 2>&1 |
+            ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: a cited test chapter RAN and disagreed with its .expected'
+            Write-Host '      Compiling it clean is not the same claim; read the per-test lines above.'
+            exit 1
+        }
+    }
+}
+
 # -- binary backend plugs: must build clean with the just-proven compiler.
 # Native code-emitting backends only (riscv/arm64/t3isa/elf/pe/img). The
 # transpiler/text plugs are secondary outputs and are NOT gated here. Plug
@@ -829,23 +985,36 @@ Measure-Phase 'test-compile' {
 # reaches that.
 Measure-Phase 'plug-binary' {
     Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx')
-    $binaryBackends = @('riscv','arm64','t3isa','elf','pe','img')
+    $binaryBackends = @(@('riscv','arm64','t3isa','elf','pe','img') + $changedPlugs | Select-Object -Unique)
     $plugFail = @()
     foreach ($bp in $binaryBackends) {
-        $bs = Join-Path $Repo "codex\plugs\$bp\build.ps1"
+        $bpDir = Join-Path $Repo "codex\plugs\$bp"
+        $bs = Join-Path $bpDir 'build.ps1'
         if (-not (Test-Path $bs)) { $plugFail += "$bp(no-build.ps1)"; continue }
-        & pwsh -NoProfile -File $bs *> $null
-        $cdx = Join-Path $Repo "codex\plugs\$bp\build-output\$bp-plug.cdx"
-        $blog = Join-Path $Repo "codex\plugs\$bp\build-output\build.log"
-        $bad = -not (Test-Path $cdx)
-        if ((Test-Path $blog) -and (Select-String -Path $blog -Pattern 'CODEGEN-ERRORS|error CDX' -Quiet)) { $bad = $true }
-        if ($bad) { $plugFail += $bp }
+        # A plug can ship more than one binary: spirv's build-bin.ps1 emits
+        # spirvbin-plug.cdx, which this phase built and asserted nowhere, so a
+        # break in it was ungraded. The name is read off the script's own
+        # -PlugName, so a build*.ps1 that declares none is not a plug binary
+        # (evidence/build-wasm.ps1, wasm's page builds) and is skipped.
+        foreach ($bscript in @(Get-ChildItem $bpDir -Filter 'build*.ps1' -File | Sort-Object Name)) {
+            $pn = $bp
+            $decl = [regex]::Match((Get-Content $bscript.FullName -Raw), "Build-TranspilerPlug[^\r\n]*-PlugName\s+'([^']+)'")
+            if ($decl.Success) { $pn = $decl.Groups[1].Value }
+            elseif ($bscript.Name -ne 'build.ps1') { continue }
+            & pwsh -NoProfile -File $bscript.FullName *> $null
+            $cdx = Join-Path $bpDir "build-output\$pn-plug.cdx"
+            $blog = Join-Path $bpDir 'build-output\build.log'
+            $bad = -not (Test-Path $cdx)
+            if ((Test-Path $blog) -and (Select-String -Path $blog -Pattern 'CODEGEN-ERRORS|error CDX' -Quiet)) { $bad = $true }
+            if ($bad) { if ($pn -eq $bp) { $plugFail += $bp } else { $plugFail += "$bp($pn)" } }
+        }
     }
     if ($plugFail.Count -gt 0) {
         Write-Host ''
         Write-Host "FAIL: binary plug build -- $($plugFail -join ', ')"
         foreach ($bp in $plugFail) {
-            $blog = Join-Path $Repo "codex\plugs\$bp\build-output\build.log"
+            $bpName = $bp.Split('(')[0]
+            $blog = Join-Path $Repo "codex\plugs\$bpName\build-output\build.log"
             if (Test-Path $blog) { Get-Content $blog | Select-String 'error CDX|CODEGEN-ERRORS' | Select-Object -First 3 | ForEach-Object { Write-Host "  ${bp}: $($_.Line.Trim())" } }
         }
         exit 1
@@ -877,7 +1046,18 @@ Measure-Phase 'cross-smoke' {
 # unframed (CL 7372). Missing plug CDX builds once and caches; a failing run
 # gets one rebuild-and-retry (stale binary after IR drift), then fails loudly.
 Measure-Phase 'plug-smoke' {
-    $smokePlugs = @('typescript', 'python', 'rust', 'ptx')
+    # This phase calls run.ps1 -Src/-Out, which not every plug accepts: some bind no
+    # -Src and exit 1 at parameter binding, so widening by "carries a run.ps1" reds
+    # the gate on a plug this phase cannot express. The capability is READ OFF
+    # run.ps1 rather than kept as a list, because a list drifts and this cannot.
+    $smokeCapable = @()
+    foreach ($cp in $changedPlugs) {
+        $cpRun = Join-Path $Repo "codex\plugs\$cp\run.ps1"
+        if (-not (Test-Path $cpRun)) { continue }
+        $cpAst = [System.Management.Automation.Language.Parser]::ParseFile($cpRun, [ref]$null, [ref]$null)
+        if ($cpAst.ParamBlock -and @($cpAst.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Src' }).Count -gt 0) { $smokeCapable += $cp }
+    }
+    $smokePlugs = @(@('typescript', 'python', 'rust', 'ptx') + $smokeCapable | Select-Object -Unique)
     $smokeSrcs = @('hello', 'record')
     $smokeDir = Join-Path $OutDir 'plug-smoke'
     New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
@@ -962,6 +1142,56 @@ Measure-Phase 'plug-smoke' {
             exit 1
         }
         Write-Host "  plug-smoke: cross-host OK ($($smokePlugs.Count * $smokeSrcs.Count) subjects byte-identical on codex-vm and QEMU)"
+    }
+}
+
+# -- a plug that ships its own test-*.ps1 is graded by it when THAT plug changes.
+# The trigger is derived, not listed: a plug gaining a harness is picked up
+# without editing this phase, the same reason plug-smoke reads -Src capability
+# off run.ps1 rather than keeping names. Measured 2026-09-02: FOUR plugs ship SIX
+# harnesses (evidence, img, ptx, spirv), so this is not the evidence plug alone.
+# The evidence one had no caller anywhere -- eight arms, four of them requiring
+# the plug to REFUSE a claim it cannot support, and nothing ran them (L-NOGATE).
+Measure-Phase 'plug-selftest' {
+    $selfHarness = @()
+    foreach ($cp in $changedPlugs) {
+        $cpDir = Join-Path $Repo "codex\plugs\$cp"
+        if (-not (Test-Path -PathType Container $cpDir)) { continue }
+        foreach ($h in @(Get-ChildItem $cpDir -Filter 'test-*.ps1' -File)) {
+            $selfHarness += [pscustomobject]@{ Plug = $cp; Path = $h.FullName; Name = $h.BaseName }
+        }
+    }
+    if ($selfHarness.Count -eq 0) {
+        Write-Host '  plug-selftest: not implicated (no changed plug ships a test-*.ps1)'
+    } else {
+        # A plug can carry MORE THAN ONE build script, and a harness may refuse
+        # rather than build: spirv ships build.ps1 AND build-bin.ps1, and
+        # test-emit.ps1 exits 2 with "MISSING plug; run build-bin.ps1" when the
+        # second binary is absent. plug-binary only ever runs build.ps1, so
+        # without this the phase reds on a missing prerequisite instead of on the
+        # plug, which is a false red and the worst kind (measured 2026-09-02).
+        foreach ($cp in @($selfHarness | ForEach-Object { $_.Plug } | Select-Object -Unique)) {
+            foreach ($b in @(Get-ChildItem (Join-Path $Repo "codex\plugs\$cp") -Filter 'build*.ps1' -File)) {
+                & pwsh -NoProfile -File $b.FullName *> (Join-Path $OutDir "plug-selftest-$cp-$($b.BaseName).log")
+            }
+        }
+        $selfFail = @()
+        foreach ($sh in $selfHarness) {
+            $shLog = Join-Path $OutDir "plug-selftest-$($sh.Plug)-$($sh.Name).log"
+            & pwsh -NoProfile -File $sh.Path *> $shLog
+            if ($LASTEXITCODE -ne 0) { $selfFail += "$($sh.Plug)/$($sh.Name)" }
+        }
+        if ($selfFail.Count -gt 0) {
+            Write-Host ''
+            Write-Host "FAIL: plug selftest -- $($selfFail -join ', ')"
+            foreach ($sh in $selfHarness) {
+                if ($selfFail -notcontains "$($sh.Plug)/$($sh.Name)") { continue }
+                $shLog = Join-Path $OutDir "plug-selftest-$($sh.Plug)-$($sh.Name).log"
+                if (Test-Path $shLog) { Get-Content $shLog | Select-Object -Last 6 | ForEach-Object { Write-Host "  $($sh.Plug)/$($sh.Name): $_" } }
+            }
+            exit 1
+        }
+        Write-Host "  plug-selftest: OK ($($selfHarness.Count) harness(es) over $(($selfHarness | ForEach-Object { $_.Plug } | Select-Object -Unique) -join ', '))"
     }
 }
 
@@ -1083,8 +1313,20 @@ Measure-Phase 'app-sweep' {
         # compiler regression usually moves a class of construct rather than one
         # unit, so the stride keeps most of the signal. What it cannot see waits
         # for the full sweep, which is the trade this makes.
+        # A COMPILER change keeps the STRIDE and an apps change takes the
+        # CITE-SCOPED set (Damian, 2026-09-02). Nothing cites the compiler --
+        # it is global by construction -- so a scoped set on a compiler CL is
+        # chosen by a relation the subject does not participate in, comes out
+        # EMPTY, and reads as green. That is red's ruling for test-compile's
+        # full corpus, one phase over.
+        # @(...) around the if, not $(...): $(...) UNWRAPS a one-element array to
+        # its element, so the -CiteScoped branch became the STRING '-CiteScoped'
+        # and @sweepArgs splatted it per character, binding -TimeoutSec from 'C'
+        # (67). Every apps-only CL's app-sweep was red from 21659 until this.
+        # The compiler branch has two elements and stayed an array, which is why
+        # only half the phase was broken.
         $sweepArgs = @()
-        if ($Internal) { $sweepArgs = @('-Sample', '30') }
+        if ($Internal) { $sweepArgs = @(if ($tCompiler) { @('-Sample', '30') } else { @('-CiteScoped') }) }
         $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 -Kernel $SutCdx @sweepArgs 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
         if ($code -ne 0) {

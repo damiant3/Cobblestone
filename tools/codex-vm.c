@@ -63,8 +63,17 @@ static void whp_lock(void) {
 static void whp_unlock(void) {
     if (whp_mutex) ReleaseMutex(whp_mutex);
 }
+/* The application processors run on their own threads inside
+   WHvRunVirtualProcessor, and nothing used to stop them before the partition
+   was deleted under them and guest_mem freed behind them. Measured 2026-09-02,
+   smp-halt at -smp 4, twenty runs four at a time: the host faulted
+   (0xC0000005) in a fraction of the runs AFTER the output was complete, and
+   never when run alone, which is the shape of a teardown race. Stop, cancel,
+   join and delete the APs first; the whole of the fix is the order. */
+static void stop_ap_threads(void);
 static void cleanup_whp(void) {
     if (!partition) return;
+    stop_ap_threads();
     whp_lock();
     WHvDeleteVirtualProcessor(partition, 0);
     WHvDeletePartition(partition);
@@ -3829,11 +3838,14 @@ static void ap_force_wake(int cpu_id) {
     WHvSetVirtualProcessorRegisters(partition, cpu_id, names, 2, vals);
 }
 
+static volatile LONG ap_stop_requested = 0;
+
 static void ap_thread_func(void *arg) {
     int cpu_id = (int)(intptr_t)arg;
     WHV_RUN_VP_EXIT_CONTEXT ctx;
     fprintf(stderr, "SMP: AP %d thread started\n", cpu_id);
     for (;;) {
+        if (ap_stop_requested) goto ap_done;
         ap_deliver_timer(cpu_id);
         HRESULT hr = WHvRunVirtualProcessor(partition, cpu_id, &ctx, sizeof(ctx));
         if (FAILED(hr)) {
@@ -3846,6 +3858,7 @@ static void ap_thread_func(void *arg) {
                millisecond) or the timer period (fallback), then inject the
                timer vector to resume past the hlt and rescan. */
             for (int w = 0; w < (int)LAPIC_TIMER_PERIOD_MS; w++) {
+                if (ap_stop_requested) goto ap_done;
                 if (InterlockedExchange(&ap_wake_pending[cpu_id], 0)) break;
                 Sleep(1);
             }
@@ -3954,6 +3967,35 @@ static void ap_thread_func(void *arg) {
     }
 ap_done:
     fprintf(stderr, "SMP: AP %d thread exiting\n", cpu_id);
+}
+
+/* Teardown order for the APs: raise the stop flag so a thread that is between
+   runs or parked in its halt wait leaves on its own, cancel the run of any
+   thread blocked inside WHvRunVirtualProcessor so it returns Canceled and
+   sees the flag, join each thread (bounded, so a wedged AP cannot hold the
+   process open), then delete the AP virtual processors. Only after this may
+   the partition go and guest_mem be freed. Idempotent, because cleanup_whp
+   is also an atexit handler. */
+static void stop_ap_threads(void) {
+    if (smp_cores <= 1 || !partition) return;
+    InterlockedExchange(&ap_stop_requested, 1);
+    for (int i = 1; i < SMP_MAX_CORES && i <= lapic_state.ap_count; i++) {
+        if (lapic_state.ap_running[i]) WHvCancelRunVirtualProcessor(partition, i, 0);
+    }
+    for (int i = 1; i < SMP_MAX_CORES && i <= lapic_state.ap_count; i++) {
+        HANDLE h = lapic_state.ap_threads[i];
+        if (!h) continue;
+        if (WaitForSingleObject(h, 2000) != WAIT_OBJECT_0)
+            fprintf(stderr, "SMP: AP %d did not stop within 2 s; deleting its VP anyway\n", i);
+        CloseHandle(h);
+        lapic_state.ap_threads[i] = NULL;
+    }
+    for (int i = 1; i < SMP_MAX_CORES && i <= lapic_state.ap_count; i++) {
+        if (lapic_state.ap_running[i]) {
+            WHvDeleteVirtualProcessor(partition, i);
+            lapic_state.ap_running[i] = 0;
+        }
+    }
 }
 
 /* ══ ACPI Tables ══ */
@@ -10063,6 +10105,14 @@ static size_t drop_serial_at = 0;
 static size_t drop_serial_len = 0;
 static size_t drop_serial_done = 0;
 
+/* CODEX_VM_SHORT_WRITE_AT=N truncates every -output write to N bytes without
+   telling the writer, which is the one loss the capture path could not report.
+   The real causes are a full disk and an I/O error, neither of which a harness
+   can arrange, and the same reasoning as CODEX_VM_DROP_SERIAL_AT applies: a
+   defect nobody can produce is one nobody can prove fixed. */
+static size_t short_write_at = 0;
+static int output_write_short_said = 0;
+
 static int drop_serial_armed(void) {
     return drop_serial_at && drop_serial_done < drop_serial_len && output_len >= drop_serial_at;
 }
@@ -10145,6 +10195,51 @@ static void output_buf_write(unsigned char b) {
    Cheap enough to be unconditional: a full rewrite of a few KB, at most twice a
    second, and only when the buffer has actually grown. Takes output_lock
    because APs append to output_buf from their own host threads. */
+/* Both dumps write through here, and it is the only place that knows whether
+   the bytes reached the file. fwrite's return and fclose's were discarded, and
+   dump_output_file then printed output_len whatever had happened, so a short or
+   failed write reported the BUFFER's length and read as a healthy run; -run-list
+   propagates that same self-reported number as output=N. Nothing in the loop
+   compared what codex-vm said it wrote against what the file holds.
+
+   A shortfall is reported in the canonical "N guest serial byte(s) DROPPED ...
+   is SHORT" wording because test-run.ps1, test-compile-batch.ps1 and
+   runlist_scan_dropped all key on it, and a second vocabulary would need a
+   second reader (L-UNHEARD). The OUTPUT: line above it names the layer, the way
+   blit_guest_output prints its BLIT: line first: the bytes were not lost on the
+   serial path, and a reader following ExaminersAssay's rule would otherwise
+   convict it.
+
+   Answers the bytes actually written. Reports once, because poll_output_dump
+   runs twice a second and a repeating failure would fill build.log. */
+static size_t write_output_capture(const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        if (!output_write_short_said) {
+            output_write_short_said = 1;
+            fprintf(stderr, "OUTPUT: cannot open %s for write\n", path);
+            fprintf(stderr, "SERIAL: %zu guest serial byte(s) DROPPED (output file could not be opened); %s is SHORT\n",
+                    output_len, path);
+        }
+        return 0;
+    }
+    size_t want = output_len;
+    if (short_write_at && short_write_at < want) want = short_write_at;
+    size_t got = fwrite(output_buf, 1, want, f);
+    int closed = fclose(f);
+    if (got != output_len || closed != 0) {
+        if (!output_write_short_said) {
+            output_write_short_said = 1;
+            fprintf(stderr, "OUTPUT: write reached %zu of %zu bytes%s -- the loss is the WRITER, not the serial path\n",
+                    got, output_len, closed ? " and fclose failed" : "");
+            fprintf(stderr, "SERIAL: %zu guest serial byte(s) DROPPED (output write short at %zu of %zu bytes); %s is SHORT\n",
+                    output_len - got, got, output_len, path);
+        }
+        return got;
+    }
+    return got;
+}
+
 static void poll_output_dump(void) {
     static double last_ms = 0;
     static size_t last_len = 0;
@@ -10154,19 +10249,15 @@ static void poll_output_dump(void) {
     last_ms = now;
     if (output_len == last_len || output_len == 0) return;
     if (output_lock_ready) EnterCriticalSection(&output_lock);
-    FILE *f = fopen(output_file, "wb");
-    if (f) { fwrite(output_buf, 1, output_len, f); fclose(f); }
+    write_output_capture(output_file);
     last_len = output_len;
     if (output_lock_ready) LeaveCriticalSection(&output_lock);
 }
 
 static void dump_output_file(const char *path) {
     if (!path || !output_buf || output_len == 0) return;
-    FILE *f = fopen(path, "wb");
-    if (!f) { fprintf(stderr, "ERROR: cannot write output %s\n", path); return; }
-    fwrite(output_buf, 1, output_len, f);
-    fclose(f);
-    fprintf(stderr, "Output: %zu bytes -> %s\n", output_len, path);
+    size_t got = write_output_capture(path);
+    fprintf(stderr, "Output: %zu bytes -> %s\n", got, path);
     if (output_dropped)
         fprintf(stderr, "SERIAL: %zu guest serial byte(s) DROPPED (buffer growth failed at %zu bytes); %s is SHORT\n",
                 output_dropped, output_cap, path);
@@ -15261,6 +15352,14 @@ int main(int argc, char **argv) {
                     drop_serial_len, drop_serial_at);
         }
     }
+    {
+        const char *swa = getenv("CODEX_VM_SHORT_WRITE_AT");
+        if (swa && swa[0]) {
+            short_write_at = (size_t)strtoull(swa, NULL, 0);
+            fprintf(stderr, "OUTPUT: will write at most %zu byte(s) of the capture (CODEX_VM_SHORT_WRITE_AT)\n",
+                    short_write_at);
+        }
+    }
     hprof_file = getenv("CODEX_VM_PROFILE");
     if (hprof_file && !hprof_file[0]) hprof_file = NULL;
 
@@ -16432,6 +16531,14 @@ int main(int argc, char **argv) {
     }
 done:
     fprintf(stderr, "VM exited (code=%d, exits=%llu, watch_hits=%d)\n", debug_exit_code, exits, watch_hit_count);
+    /* Before the summaries and the output dump, not after: an AP still
+       running here writes serial bytes into output_buf while dump_output_file
+       reads it and the frees below release it. Measured 2026-09-02 with the
+       APs stopped only inside cleanup_whp: one run in twenty ended in
+       STATUS_HEAP_CORRUPTION after its FINAL summary was due, with complete
+       output and every AP exit line printed. cleanup_whp still calls this,
+       idempotently, for the abnormal-exit path. */
+    stop_ap_threads();
     if (hprof_file && hprof_count > 0) {
         FILE *hf = fopen(hprof_file, "w");
         if (hf) {

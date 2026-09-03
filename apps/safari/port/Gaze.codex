@@ -1,0 +1,198 @@
+Chapter: Gaze
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Num
+  cites Safari chapter Trig
+  cites Safari chapter Pose
+  cites Safari chapter World
+
+ The distracted rider: his head swivels toward the roadside pigs and drifts back
+ to the road, and his focus narrows while he gawks.
+
+ A port of wasm/gaze.zig.
+
+ BOTH OUTPUTS ARE VIEW-ONLY except one. `gaze-yaw` is an extra camera yaw and
+ `focus` feeds the focal pull-in; neither moves the bike. The single reach into
+ the motion is `pig-gaze-brake`, which the rider folds into its min-of-brakes --
+ and that is the whole of the distraction's cost in metres.
+
+ It takes the RiderState from `Safari chapter Pose` rather than from Rider,
+ because the zig has rider.zig and gaze.zig importing each other and Codex cites
+ cannot. See Pose for why the record is the right place to cut it.
+
+ We say:
+
+Section: Thresholds
+
+  gaze-look-dist : Real
+  gaze-look-dist = 150.0
+
+ The gaze peaks here; once the pig swings this far off his heading he looks back.
+
+  gaze-release-angle : Real
+  gaze-release-angle = 35.0 * deg
+
+ The most his head turns TOWARD the pig in one frame -- a gentle swivel -- against
+ the slow, unhurried drift BACK to the road.
+
+  gaze-swivel-rate : Real
+  gaze-swivel-rate = 4.0 * deg
+
+  gaze-return-rate : Real
+  gaze-return-rate = 0.2 * deg
+
+ Near straight the return step shrinks to this fraction of the remaining angle, so
+ it decelerates in; below the snap angle the last sliver goes to zero, which keeps
+ the focus trigger exact.
+
+  gaze-return-ease : Real
+  gaze-return-ease = 0.05
+
+  gaze-return-snap : Real
+  gaze-return-snap = 0.02 * deg
+
+  focus-decay : Real
+  focus-decay = 0.0012
+
+ The slow gawk speed he eases to and then HOLDS for the rest of the segment, and
+ how far before the pig he finishes slowing.
+
+  pig-gaze-speed : Real
+  pig-gaze-speed = 0.20
+
+  pig-gaze-settle-dist : Real
+  pig-gaze-settle-dist = 25.0
+
+ Pointed more than this off the lane means mid-corner, and his eyes snap back to
+ the road.
+
+  eyes-on-road-yaw : Real
+  eyes-on-road-yaw = 6.0 * deg
+
+Section: Focus
+
+  smoothstep : Real -> Real
+  smoothstep (t) = t * t * (3.0 - 2.0 * t)
+
+ state.focus is a LINEAR progress; this smoothsteps it so the narrow and the
+ re-widen ease gently in and out.
+
+  gaze-focus : Real -> Real
+  gaze-focus (f) = smoothstep f
+
+Section: Looking
+
+ Is the designated pig still AHEAD and inside the looking window: a distraction
+ leg, eyes not committed to a corner, the pig within the look distance, and not
+ yet swung past the release angle off his heading.
+
+ The zig returns an optional distance. Codex has no null, so the two answers are a
+ record -- `looking` says whether there is any pig interest at all, and every
+ caller checks it before reading `dist`.
+
+  PigLook = record {
+    looking : Boolean,
+    dist : Real
+  }
+
+  no-look : PigLook
+  no-look = PigLook { looking = False, dist = 0.0 }
+
+  pig-ahead : RiderState, Segment -> PigLook
+  pig-ahead (state) (seg) =
+    if seg.pigs-distract == False then no-look
+    else if real-abs state.yaw > eyes-on-road-yaw then no-look
+    else pig-ahead-near state seg
+
+  pig-ahead-near : RiderState, Segment -> PigLook
+  pig-ahead-near (state) (seg) =
+    let pig = gaze-pig seg.length (seg.width / 2.0)
+    in let dist = pig.along - state.along
+    in if dist > gaze-look-dist then no-look
+    else pig-ahead-bearing state pig dist
+
+  pig-ahead-bearing : RiderState, Critter, Real -> PigLook
+  pig-ahead-bearing (state) (pig) (dist) =
+    let bearing = r-atan2 (pig.across - state.across) dist - state.yaw
+    in if real-abs bearing >= gaze-release-angle then no-look
+       else PigLook { looking = True, dist = dist }
+
+ Where he WANTS to look this frame: the bearing to the designated pig relative to
+ his heading, or zero when he has no pig interest. A BEARING, not a fixed angle,
+ so his gaze tracks the pig as he creeps past it.
+
+  desired-gaze : RiderState, Segment -> Real
+  desired-gaze (state) (seg) =
+    if (pig-ahead state seg).looking == False then 0.0
+    else desired-gaze-at state (gaze-pig seg.length (seg.width / 2.0))
+
+  desired-gaze-at : RiderState, Critter -> Real
+  desired-gaze-at (state) (pig) =
+    r-atan2 (pig.across - state.across) (pig.along - state.along) - state.yaw
+
+Section: The Gaze Step
+
+ Run AFTER the bike has moved: swivel his head one frame toward where he wants to
+ look. Toward the pig is a gentle fixed-rate swivel; the drift back to the road
+ lingers, then decelerates into straight, snapping the last sliver to zero.
+
+ The `want /= 0` test is a Real comparison the zig writes as `want != 0`, which is
+ bitwise, so it is ~0 here and not ~. desired-gaze returns a LITERAL zero when
+ there is no interest, so the two answers really are exactly zero or not, and a
+ 4-ULP tolerance would swallow a genuinely tiny bearing and send his eyes back to
+ the road a frame early.
+
+  next-gaze-yaw : RiderState, Real -> Real
+  next-gaze-yaw (state) (want) =
+    if (want ~0 0.0) == False then state.gaze-yaw + real-max (0.0 - gaze-swivel-rate) (real-min gaze-swivel-rate (want - state.gaze-yaw))
+    else if real-abs state.gaze-yaw <= gaze-return-snap then 0.0
+    else state.gaze-yaw - r-sign state.gaze-yaw * real-min gaze-return-rate (real-abs state.gaze-yaw * gaze-return-ease)
+
+ While his head is turned the focus rises with the turn and HOLDS its peak; it
+ eases out only once he is fully straightened.
+
+  next-focus : RiderState, Real -> Real
+  next-focus (state) (gaze-yaw) =
+    if gaze-yaw ~0 0.0 then real-max 0.0 (state.focus - focus-decay)
+    else real-max state.focus (real-min (real-abs gaze-yaw / gaze-release-angle) 1.0)
+
+  next-rider-gaze : RiderState, List Segment -> RiderState
+  next-rider-gaze (state) (segs) =
+    let want = desired-gaze state (list-at segs state.segment)
+    in let gy = next-gaze-yaw state want
+    in RiderState { segment = state.segment, along = state.along, across = state.across, yaw = state.yaw, v = state.v, tilt = state.tilt, heading = state.heading, gaze-yaw = gy, focus = next-focus state gy }
+
+Section: The Gawk
+
+ Once he has NOTICED the pigs he is committed to the slow gawk for the REST of the
+ segment: sticky and purely positional, and the crossing resets him next segment.
+ Distinct from pig-ahead, which is the HEAD turn and ends once the pig is beside
+ him; this is the MOTION hold, so it ignores the eyes-on-road gate and persists
+ into the turn.
+
+  gawk-engaged : RiderState, Segment -> Boolean
+  gawk-engaged (state) (seg) =
+    if seg.pigs-distract == False then False
+    else state.along >= (gaze-pig seg.length (seg.width / 2.0)).along - gaze-look-dist
+
+ THE GAWK BRAKE, which the rider folds into its min-of-brakes. Not engaged until
+ he has noticed the pigs; from then on he eases toward the gawk speed by the same
+ kinematic law the corner brake uses, timed to settle a little before the pig so
+ he creeps PAST it at that speed, and then holds.
+
+ `engaged` is the optional the zig returns: nothing at all until he notices.
+
+  GazeBrake = record {
+    engaged : Boolean,
+    accel : Real
+  }
+
+  pig-gaze-brake : RiderState, Segment -> GazeBrake
+  pig-gaze-brake (state) (seg) =
+    if gawk-engaged state seg == False then GazeBrake { engaged = False, accel = 0.0 }
+    else if state.v <= pig-gaze-speed then GazeBrake { engaged = True, accel = 0.0 }
+    else pig-gaze-brake-easing state seg
+
+  pig-gaze-brake-easing : RiderState, Segment -> GazeBrake
+  pig-gaze-brake-easing (state) (seg) =
+    let d = (gaze-pig seg.length (seg.width / 2.0)).along - state.along - pig-gaze-settle-dist
+    in GazeBrake { engaged = True, accel = (pig-gaze-speed * pig-gaze-speed - state.v * state.v) / (2.0 * real-max d 1.0) }

@@ -1,0 +1,245 @@
+Chapter: Safari
+  cites Foreword chapter ListUtils
+  cites Gpu chapter DeviceMath
+  cites Safari chapter Geom
+  cites Safari chapter Camera
+  cites Safari chapter Paint
+  cites Safari chapter World
+  cites Safari chapter Sky
+  cites Safari chapter Mountains
+  cites Safari chapter Tree
+  cites Safari chapter Tower
+  cites Safari chapter GuardRail
+  cites Safari chapter Critter
+  cites Safari chapter Cat
+  cites Safari chapter CatDraw
+  cites Safari chapter Gaze
+  cites Safari chapter Pose
+  cites Safari chapter Rider
+  cites Safari chapter Render
+  cites Safari chapter Truck
+  cites Safari chapter TruckBody
+
+ The whole game, folded: one ride state, one step of it, and one frame drawn from
+ it. A port of wasm/safari.zig, and the last file in the game to be ported.
+
+ safari.zig is the module the browser sees, and most of it is an ABI -- twenty
+ exports handing the blitter numbers it cannot compute. THREE THINGS IN IT ARE NOT
+ ABI, and those are what this chapter is:
+
+   THE STATE FOLD. advance() is four calls in a fixed order and a restart at the
+     finish line. The order is the whole content: the truck steps against the NEW
+     rider distance, because its schedule anchors to where the rider is now.
+   THE FRAME. renderFrame() computes the live focal and the view yaw, then calls
+     render.frame -- whose outer sequence (backdrop, ground, everything that
+     stands up in depth order) had lived in the browser poc because half its
+     drawers were unported. They are all ported now, so it belongs here, above
+     Render rather than inside it: the dispatch has to cite every drawer, and
+     TruckBody cites Render, so a dispatch inside Render would be a cycle.
+   THE CAMERA PULL-IN. The lens narrows as he leans and as he watches a crossing
+     cat. `cam-focal`, `focal-for-lean` and `focal-for-gaze` have been ported and
+     idle since Camera landed, because nothing above them existed to compute the
+     two fractions they take. This is that thing.
+
+ WHAT STAYS OUTSIDE, and it is a short list: the history ring, the exports, and
+ the mutable statics that hold the current ride. Those are the shim's, and the
+ shim is where they belong -- a Codex program is pure and a ring buffer is not.
+ What the shim loses by this chapter existing is all the LOGIC it used to carry:
+ the restart, the step order, the focal, the view-yaw fold. It keeps a value, an
+ array and twenty exported readouts.
+
+ We say:
+
+Section: The Live Camera
+
+ THE LENS PULLS IN -- narrows -- on two independent things, and the frame takes
+ the deeper of them. Leaning into a corner narrows it toward 0.35x; watching a
+ crossing cat or gawking at the roadside pigs narrows it too. `camera.camFocal`
+ is a min over the two, so whichever is more distracted wins.
+
+ THE WHOLE FRAME READS ONE FOCAL. The projection, the backdrop and the sun all
+ take it, which is what keeps them one camera; the only place the STABLE base
+ focal survives is the critter size cull, and Render's own prose argues that at
+ length (culling animals on a leaned focal would pop them in and out of a corner).
+
+  cat-attention : List Segment, RiderState -> Real
+  cat-attention (w) (s) =
+    let seg = list-at w s.segment
+    in if seg.has-cat then cat-focus (seg.cat.along - s.along) s.v else 0.0
+
+  ride-focal : List Segment, RiderState -> Real
+  ride-focal (w) (s) =
+    let lean-frac = real-min (real-abs s.tilt / max-lean) 1.0
+    in let attention = real-max (cat-attention w s) (gaze-focus s.focus)
+    in cam-focal lean-frac attention
+
+ The extra camera yaw on top of his heading: the distracted gaze toward the pigs
+ plus a subtle head-turn into a lean. It swings the WHOLE view, so it folds into
+ the scene pose and the backdrop heading alike.
+
+  head-yaw-frac : Real
+  head-yaw-frac = 0.15
+
+  view-yaw-for : RiderState -> Real
+  view-yaw-for (s) = s.gaze-yaw + head-yaw-frac * s.tilt
+
+  heading-for : RiderState -> Real
+  heading-for (s) = s.heading + view-yaw-for s
+
+  pose-for : List Segment, RiderState -> Pose
+  pose-for (w) (s) =
+    Pose { along = s.along, across = s.across, yaw = s.yaw + view-yaw-for s, hw = (list-at w s.segment).width / 2.0 }
+
+ THE BIKE'S LEAN AS THE CANVAS SHOULD ROLL IT, which is not quite the lean the
+ simulation carries. The lean search leaves a residue around 1e-5 rad on a
+ straight that never quite reaches zero; below a thousandth of a radian -- under
+ half a pixel of bank at the screen edge -- the camera is upright for every
+ practical purpose and the blitter's straight-line fast paths key on exactly
+ zero. The simulation is untouched: this is a read, not a state.
+
+  roll-deadband : Real
+  roll-deadband = 0.001
+
+ THE `let` IS LOAD-BEARING AND IT SHOULD NOT BE. Written as a bare
+ `if real-abs s.tilt < roll-deadband then 0.0 else s.tilt`, this function is
+ INLINED and never emitted, so the shim -- which is outside the program -- fails
+ to link against it. Binding the field first makes it a real function. Measured
+ over four variants: the same shape over a scalar parameter emits, and the
+ arithmetic-bodied `view-yaw-for` beside it emits. PORTING_NOTES B12.
+
+  rider-roll : RiderState -> Real
+  rider-roll (s) =
+    let t = s.tilt
+    in if real-abs t < roll-deadband then 0.0 else t
+
+Section: Drawing What Is Sorted
+
+ The depth order Render produced, painted far to near. All six kinds draw.
+
+  tree-fwd-of : List TreeItem, Integer -> Real
+  tree-fwd-of (ts) (i) = (list-at ts i).fwd
+
+ How many trees stand strictly nearer than this one. Only the closest four get a
+ round shaded trunk, and since a roadside pair shares one depth, "fewer than four
+ strictly closer" is the nearest two pairs.
+
+  closer-count : List TreeItem, Real, Integer -> Integer
+  closer-count (ts) (f) (i) =
+    if i >= list-length ts then 0
+    else if (list-at ts i).fwd < f then 1 + closer-count ts f (i + 1)
+    else closer-count ts f (i + 1)
+
+  crown-shade-of : Real -> Real
+  crown-shade-of (fwd) =
+    let raw = 1.0 - fwd / crown-shade-dist
+    in if raw < 0.0 then 0.0 else (if raw > 1.0 then 1.0 else raw)
+
+  draw-one-tree : List TreeItem, Integer, Real -> List DrawCmd
+  draw-one-tree (ts) (i) (cf) =
+    let t = list-at ts i
+    in tree-draw t.right t.fwd t.height t.color cf camera-w (closer-count ts t.fwd 0 < 4) (t.fwd < detail-dist) (crown-shade-of t.fwd)
+
+ A tower's four base corners are re-derived from its yaw at draw time and mapped
+ through the frame that owns it, which is why the collector kept the recipe rather
+ than the points.
+
+  tower-base : List Segment, List Integer, Pose, TowerItem, Integer -> List RiderPt
+  tower-base (w) (ch) (pose) (tw) (k) =
+    if k >= 4 then []
+    else [map-pt w ch pose tw.map (base-corner-ax k tw.a0 tw.x0 tw.yaw).a (base-corner-ax k tw.a0 tw.x0 tw.yaw).x]
+         & tower-base w ch pose tw (k + 1)
+
+  draw-one-tower : List Segment, List Integer, Pose, TowerItem, Real, Real -> List DrawCmd
+  draw-one-tower (w) (ch) (pose) (tw) (cf) (step) =
+    draw-flat (tower-base w ch pose tw 0) (map-pt w ch pose tw.map tw.a0 tw.x0) cf camera-w (step + tw.off)
+
+  draw-one-critter : Billboard, Real -> List DrawCmd
+  draw-one-critter (b) (cf) = critter-draw b.right b.fwd b.height b.cp b.face-right cf camera-w
+
+  draw-one-cat : CatItem, Real -> List DrawCmd
+  draw-one-cat (k) (cf) = cat-draw k.right k.fwd k.height k.pose-idx k.lift cf camera-w
+
+ THE TRUCK TAKES TWO THINGS THE COLLECTOR DOES NOT CARRY, and both come from
+ outside the depth sort: whether it is braking, which is a field on the state the
+ shim steps, and whether its headlights are on, which is the sunset clock -- the
+ same `sun-behind-mountains` the backdrop uses, so the beams come on at the moment
+ the sun leaves the crest rather than at a time of their own. Its half width is
+ the width of the segment its CENTRE landed on, chain index `tk.d`, not the
+ rider's own.
+
+  draw-one-truck : List Segment, List Integer, Pose, TruckAt, Boolean, Real, Real -> List DrawCmd
+  draw-one-truck (w) (ch) (pose) (tk) (braking) (cf) (step) =
+    truck-draw-body w ch pose tk.d tk.along ((list-at w (list-at ch tk.d)).width / 2.0) braking (sun-behind-mountains step) cf camera-w
+
+  draw-item : List Segment, List Integer, Pose, Collected, Item, Boolean, Real, Real -> List DrawCmd
+  draw-item (w) (ch) (pose) (c) (it) (braking) (cf) (step) =
+   when it.kind
+    is KTree -> draw-one-tree c.trees it.i cf
+    is KTower -> draw-one-tower w ch pose (list-at c.towers it.i) cf step
+    is KRail -> rail-draw-poly (list-at c.rails it.i) cf camera-w
+    is KCow -> draw-one-critter (list-at c.cows it.i) cf
+    is KCat -> draw-one-cat (list-at c.cats it.i) cf
+    is KTruck -> draw-one-truck w ch pose c.truck braking cf step
+
+  draw-order : List Segment, List Integer, Pose, Collected, Boolean, Real, Real, Integer -> List DrawCmd
+  draw-order (w) (ch) (pose) (c) (braking) (cf) (step) (i) =
+    if i >= list-length c.order then []
+    else (draw-item w ch pose c (list-at c.order i) braking cf step) & draw-order w ch pose c braking cf step (i + 1)
+
+Section: The Ride
+
+ ONE RECORD FOR THE WHOLE RIDE, because the three things advance together and a
+ caller that could step one without the others would be a bug waiting. The clock
+ is a plain frame count -- safari.zig's `step_clock`, which gains one per advance
+ and gives one back on the way out -- and it drives the sunset, the sun and the
+ tower beacons.
+
+  Ride = record {
+    rider : RiderState,
+    truck : TruckState,
+    clock : Real
+  }
+
+  ride-initial : Ride
+  ride-initial = Ride { rider = initial-rider-state, truck = truck-initial, clock = 0.0 }
+
+ ONE STEP, AND THE ORDER IN IT IS THE WHOLE CONTENT. The rider moves first and the
+ truck steps against his NEW route distance, because the chase schedule anchors to
+ where he is now; stepping it against the old distance would leave the lead one
+ frame stale at exactly the moments it is tightest. The finish line restarts the
+ whole ride rather than stopping, because this is a screensaver.
+
+  ride-next : List Segment, Ride -> Ride
+  ride-next (w) (r) =
+    if is-finished r.rider w then ride-initial else ride-step w r
+
+  ride-step : List Segment, Ride -> Ride
+  ride-step (w) (r) =
+    let nx = get-next-rider-state r.rider w
+    in let dist = route-distance w nx.segment nx.along
+    in Ride { rider = nx, truck = truck-next r.truck dist w (course-length w), clock = r.clock + 1.0 }
+
+Section: The Frame
+
+ render.zig's own sequence: the backdrop behind everything, then the floor, then
+ everything that stands up, in one depth order. The live focal reaches all three.
+
+  ride-frame : List Segment, Ride -> List DrawCmd
+  ride-frame (w) (r) =
+    let s = r.rider
+    in let cf = ride-focal w s
+    in let vy = view-yaw-for s
+    in let pose = Pose { along = s.along, across = s.across, yaw = s.yaw + vy, hw = (list-at w s.segment).width / 2.0 }
+    in let ch = build-chain w s.segment
+    in (draw (s.heading + vy) (sun-set-fraction r.clock) cf camera-w)
+       & (frame-ground w s.segment pose cf camera-w)
+       & (draw-order w ch pose (collect w s.segment pose cf s.along s.v r.truck.pos) r.truck.braking cf r.clock 0)
+
+ The sun's placement for this frame, which the blitter paints itself behind the
+ ranges. It reads the same heading the mountains do and the same live focal the
+ rest of the frame does, so it cannot drift away from what is drawn over it.
+
+  ride-sun : List Segment, Ride -> SunPos
+  ride-sun (w) (r) =
+    let cf = ride-focal w r.rider
+    in sun-pos (heading-for r.rider) r.clock cf camera-w

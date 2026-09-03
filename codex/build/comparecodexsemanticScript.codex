@@ -496,9 +496,10 @@ Section: S13 -- Compare Phase
 
   s13 : List ShellCmd =
     [ScComment "Compare",
-     ScRaw "$bodyMatches = 0; $bodyMismatches = 0",
+     ScRaw "$bodyMatches = 0; $bodyMismatches = 0; $emptyBodies = 0",
      ScRaw "$sigMatches = 0; $sigMismatches = 0",
      ScDotNetCallAssign "bodyMismatchList" "System.Collections.Generic.List[string]" "new" [],
+     ScDotNetCallAssign "emptyBodyList" "System.Collections.Generic.List[string]" "new" [],
      ScBlank,
      ScRaw "foreach ($pair in $matched) {",
      ScRaw "    $s0 = $pair[0]; $s1 = $pair[1]",
@@ -509,6 +510,10 @@ Section: S13 -- Compare Phase
      ScRaw "    $b0 = Collapse-Whitespace (Demangle-Names $s0.Body $slugsSorted)",
      ScRaw "    $b1 = Collapse-Whitespace (Demangle-Names $s1.Body $slugsSorted)",
      ScRaw "    if ($b0 -eq $b1) { $bodyMatches++ }",
+     ScRaw "    elseif ($b0.Length -eq 0) {",
+     ScRaw "        $emptyBodies++",
+     ScRaw "        $emptyBodyList.Add(\"$($s0.Chapter): $($s0.Name) (line $($s0.LineNo))\")",
+     ScRaw "    }",
      ScRaw "    else {",
      ScRaw "        $bodyMismatches++",
      ScRaw "        $bodyMismatchList.Add(\"$($s0.Chapter): $($s0.Name)\")",
@@ -531,9 +536,10 @@ Section: S14 -- Verdict
   s14 : List ShellCmd =
     let show-dropped = [ScEcho (SeLit "Dropped:"), ScForEach "d" (SeVar "dropped") [ScEcho (SeRaw "\"  $($d.Chapter): $($d.Name) (line $($d.LineNo))\"")]]
     in let show-mismatches = [ScEcho (SeLit "Body mismatches:"), ScForEach "m" (SeVar "bodyMismatchList") [ScEcho (SeRaw "\"  $m\"")]]
+    in let show-empty = [ScEcho (SeLit "Empty source bodies (this script's own parser captured no body for the definition; not a compiler mismatch):"), ScForEach "m" (SeVar "emptyBodyList") [ScEcho (SeRaw "\"  $m\"")]]
     in let count-defs = [ScAssign "totalS0" (SeInt 0), ScForEach "k" (SeAsArray (SeProperty (SeVar "s0Chapters") "Keys")) [ScRaw "$totalS0 += @($s0Chapters[$k]).Count"]]
-    in let fail-body = [ScSequence count-defs, ScEcho (SeLit "=== Semantic Equivalence FAIL ==="), ScEcho (SeRaw "\"Source: $totalS0 defs  Stage1: $($s1Defs.Count) defs  Matched: $($matched.Count)\""), ScEcho (SeRaw "\"Dropped: $($dropped.Count)  Body mismatches: $bodyMismatches\""), ScIf (SeRaw "$dropped.Count -gt 0") show-dropped [], ScIf (SeRaw "$bodyMismatchList.Count -gt 0") show-mismatches []]
-    in [ScComment "Verdict", ScAssign "pass" (SeRaw "$dropped.Count -eq 0 -and $bodyMismatches -eq 0"), ScBlank, ScIf (SeNot (SeVar "pass")) fail-body [], ScBlank, ScRaw "exit $(if ($pass) { 0 } else { 1 })"]
+    in let fail-body = [ScSequence count-defs, ScEcho (SeLit "=== Semantic Equivalence FAIL ==="), ScEcho (SeRaw "\"Source: $totalS0 defs  Stage1: $($s1Defs.Count) defs  Matched: $($matched.Count)\""), ScEcho (SeRaw "\"Dropped: $($dropped.Count)  Body mismatches: $bodyMismatches  Empty source bodies: $emptyBodies\""), ScIf (SeRaw "$dropped.Count -gt 0") show-dropped [], ScIf (SeRaw "$bodyMismatchList.Count -gt 0") show-mismatches [], ScIf (SeRaw "$emptyBodyList.Count -gt 0") show-empty []]
+    in [ScComment "Verdict", ScAssign "pass" (SeRaw "$dropped.Count -eq 0 -and $bodyMismatches -eq 0 -and $emptyBodies -eq 0"), ScBlank, ScIf (SeNot (SeVar "pass")) fail-body [], ScBlank, ScRaw "exit $(if ($pass) { 0 } else { 1 })"]
 
 Section: Assembly
 

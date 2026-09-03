@@ -1,0 +1,165 @@
+Chapter: DataWasm
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Foreword chapter Maybe
+
+ The browser interface for the database, on the same WASI shape the notebook
+ uses: a query name arrives on `fd_read`, the result table leaves on
+ `fd_write`, both plain UTF-8, and `_start` runs once so the page instantiates
+ per query. Each query therefore gets a freshly seeded catalog and a clean
+ heap, which is what a module with no collector wants anyway.
+
+ There is NO SQL text parser in this application, and this chapter does not
+ invent one. What the engine actually offers is a composable relational
+ algebra -- `RelScan`, `RelFilter`, `RelProject`, `RelSort`, `RelLimit`,
+ `RelGroup` over predicates and aggregates -- so what the page selects is a
+ PLAN, by name, and what it shows beside the answer is the plan that produced
+ it. A database explaining its own algebra is the honest demo here; a SQL
+ console would be a parser nobody has written.
+
+ The table and its rows are declared here rather than cited from `Example`,
+ because that chapter carries its own `opening` and a module may have only
+ one. The duplication is deliberate and small, and it is registered in
+ `data-backlog.md` DATA-W1 so it does not quietly become two diverging
+ fixtures.
+
+Section: The Table
+
+  dw-employees : TableDef
+  dw-employees = table-def-with-pk "employees" [
+    col-def-not-null "id" ColInteger,
+    col-def-not-null "name" ColText,
+    col-def-not-null "department" ColText,
+    col-def "salary" ColInteger,
+    col-def "hire-year" ColInteger
+  ] ["id"]
+
+  dw-seed-rows : Catalog -> Catalog
+  dw-seed-rows (cat) =
+    let s = table-schema dw-employees
+    in let rows = [
+      row-new s [ValInteger 1,  ValText "Alice", ValText "Engineering", ValInteger 125000, ValInteger 2022],
+      row-new s [ValInteger 2,  ValText "Bob",   ValText "Engineering", ValInteger 118000, ValInteger 2023],
+      row-new s [ValInteger 3,  ValText "Carol", ValText "Sales",       ValInteger 95000,  ValInteger 2021],
+      row-new s [ValInteger 4,  ValText "Dave",  ValText "Sales",       ValInteger 88000,  ValInteger 2024],
+      row-new s [ValInteger 5,  ValText "Eve",   ValText "Research",    ValInteger 135000, ValInteger 2020],
+      row-new s [ValInteger 6,  ValText "Frank", ValText "Research",    ValInteger 110000, ValInteger 2023],
+      row-new s [ValInteger 7,  ValText "Grace", ValText "Engineering", ValInteger 142000, ValInteger 2019],
+      row-new s [ValInteger 8,  ValText "Heidi", ValText "Sales",       ValInteger 78000,  ValInteger 2025],
+      row-new s [ValInteger 9,  ValText "Ivan",  ValText "Research",    ValInteger 98000,  ValInteger 2024],
+      row-new s [ValInteger 10, ValText "Judy",  ValText "Engineering", ValInteger 131000, ValInteger 2021]
+    ]
+    in dw-insert-rows cat "employees" rows 0 (list-length rows)
+
+  dw-insert-rows : Catalog, Text, List RowData, Integer, Integer -> Catalog
+  dw-insert-rows (cat) (table) (rows) (i) (len) =
+    if i >= len then cat
+    else let r = catalog-insert-row cat table (list-at rows i)
+    in dw-insert-rows (r.cir-cat) table rows (i + 1) len
+
+  dw-catalog : Integer -> Catalog
+  dw-catalog (dummy) =
+    let cr = catalog-create-table catalog-new dw-employees
+    in dw-seed-rows (cr.cat)
+
+Section: The Plans
+
+  dw-all : RelOp
+  dw-all = RelSort (RelScan "employees") [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
+
+  dw-engineering : RelOp
+  dw-engineering =
+    let scan = RelScan "employees"
+    in let filtered = RelFilter scan (PredColCmp "department" CmpEq (ValText "Engineering"))
+    in let projected = RelProject filtered (proj-columns ["name", "salary"])
+    in RelSort projected [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
+
+  dw-top : RelOp
+  dw-top =
+    let scan = RelScan "employees"
+    in let sorted = RelSort scan [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
+    in let limited = RelLimit sorted 3
+    in RelProject limited (proj-columns ["name", "department", "salary"])
+
+  dw-departments : RelOp
+  dw-departments =
+    let scan = RelScan "employees"
+    in let aggs = [
+      AggSpec { agg-func = AggCount, agg-alias = "headcount" },
+      AggSpec { agg-func = AggSum "salary", agg-alias = "total-salary" },
+      AggSpec { agg-func = AggAvg "salary", agg-alias = "avg-salary" }
+    ]
+    in RelGroup scan ["department"] aggs
+
+  dw-recent : RelOp
+  dw-recent =
+    let scan = RelScan "employees"
+    in let filtered = RelFilter scan (PredColCmp "hire-year" CmpGe (ValInteger 2024))
+    in RelSort filtered [SortSpec { sort-col = "hire-year", sort-dir = SortDesc }]
+
+Section: Selecting a Plan
+
+ An unknown name lists what there is rather than answering something plausible
+ for it, because a demo that silently substitutes a different query for the one
+ asked is worse than one that refuses.
+
+  dw-plan-for : Text -> Maybe RelOp
+  dw-plan-for (name) =
+    if name == "all" then Just dw-all
+    else if name == "engineering" then Just dw-engineering
+    else if name == "top" then Just dw-top
+    else if name == "departments" then Just dw-departments
+    else if name == "recent" then Just dw-recent
+    else None
+
+  dw-names : Text
+  dw-names = "all, engineering, top, departments, recent"
+
+Section: Rendering
+
+  dw-vals : List ColumnValue, Integer, Integer, Text -> Text
+  dw-vals (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in let sep = if i > 0 then " | " else ""
+    in let t = when v
+      is ValInteger (n) -> show n
+      is ValText (s) -> s
+      is ValBoolean (b) -> if b then "True" else "False"
+      is ValNull -> "NULL"
+    in dw-vals vals (i + 1) len (acc & sep & t)
+
+  dw-rows : List RowData, Integer, Integer, Text -> Text
+  dw-rows (rows) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let line = dw-vals (row.values) 0 (list-length (row.values)) ""
+    in dw-rows rows (i + 1) len (acc & line & "\n")
+
+  dw-render : QueryResult -> Text
+  dw-render (qr) =
+    if qr.qr-ok == False then "query error: " & qr.qr-msg
+    else show (qr.qr-count) & " rows\n" & dw-rows (qr.qr-rows) 0 (qr.qr-count) ""
+
+Section: One Query
+
+  dw-run : Text -> Text
+  dw-run (name) =
+    when dw-plan-for name
+      is Just (plan) -> dw-render (query (dw-catalog 0) plan)
+      is otherwise -> "no such query: " & name & "\nknown: " & dw-names
+
+Section: Entry Point
+
+  opening : [Console] Nothing = act
+    asked <- read-line
+    when asked
+      is Just (name) -> print-line-uni (dw-run name)
+      is otherwise -> print-line-uni ("no such query: \nknown: " & dw-names)
+    end
+  end
+
+Page 1

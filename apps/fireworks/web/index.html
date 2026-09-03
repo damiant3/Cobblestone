@@ -1,0 +1,837 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fireworks -- Codex on your GPU</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --fg:#dfe6f5; --dim:#8ea0c8; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:#03040a; color:var(--fg);
+              font:14px/1.5 system-ui,Segoe UI,sans-serif; overflow:hidden; }
+  #stage { position:fixed; inset:0; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+
+  .chrome { position:absolute; left:0; right:0; pointer-events:none;
+            text-shadow:0 2px 14px rgba(0,0,0,.85); }
+  #banner { top:4.5vh; text-align:center; }
+  #banner .t { font-size:clamp(26px,4.6vw,62px); letter-spacing:.30em; font-weight:700;
+               color:#ffd98a; text-transform:uppercase;
+               background:linear-gradient(180deg,#fff3d0,#ffc94a 55%,#e08a2a);
+               -webkit-background-clip:text; background-clip:text; color:transparent;
+               filter:drop-shadow(0 3px 22px rgba(255,170,60,.45)); }
+  #banner .s { margin-top:.5em; font-size:clamp(10px,1.15vw,14px); letter-spacing:.42em;
+               color:#9fb0d8; text-transform:uppercase; }
+  #city { bottom:8.5vh; text-align:center; }
+  #city .n { font-size:clamp(15px,2.1vw,28px); letter-spacing:.30em; font-weight:500;
+             transition:opacity .7s; text-transform:uppercase; }
+  #city .k { font-size:clamp(9px,1vw,12px); letter-spacing:.30em; color:var(--dim);
+             margin-top:.5em; text-transform:uppercase; }
+
+  #hud { position:absolute; left:16px; bottom:14px; font-size:12px; color:var(--dim);
+         letter-spacing:.06em; }
+  #hud b { color:#bcd0f5; font-weight:500; }
+  #back { position:absolute; left:16px; top:14px; color:var(--dim); font-size:13px;
+          text-decoration:none; pointer-events:auto; }
+  #back:hover { color:#8fd0ff; }
+  #keys { position:absolute; right:16px; bottom:14px; font-size:12px; color:var(--dim); }
+  #keys kbd { background:#131a30; border:1px solid #24304f; border-radius:4px;
+              padding:1px 5px; font:inherit; color:#bcd0f5; }
+  #msg { position:absolute; inset:0; display:grid; place-items:center; text-align:center;
+         padding:24px; font-size:15px; color:#9fb0d8; }
+  #msg.hide { display:none; }
+  #msg .b { color:#ffb4a2; }
+</style>
+
+<div id="stage">
+  <canvas id="c"></canvas>
+  <a id="back" href="../../landing.html">&#8592; Cobblestone</a>
+  <div class="chrome" id="banner">
+    <div class="t">USA 250</div>
+    <div class="s">1776 to 2026 &nbsp;&middot;&nbsp; compiled, not hand-written</div>
+  </div>
+  <div class="chrome" id="city"><div class="n" id="cityname"></div><div class="k" id="shell"></div></div>
+  <div id="hud"></div>
+  <div id="keys"><kbd>Space</kbd> burst &nbsp; <kbd>F</kbd> finale &nbsp; <kbd>N</kbd> next city</div>
+  <div id="msg">starting WebGPU...</div>
+</div>
+
+<script type="module">
+// The particle simulation is the Codex chapter apps/fireworks/kernels/
+// FireworksSimKernel.codex, lowered to WGSL by codex/plugs/wgsl. One GPU
+// thread per particle: it integrates under gravity, drag, wind and a
+// turbulence field, ages the particle, shades it by its remaining life, and
+// packs a render record. Everything below -- the shell scheduler, the burst
+// shapes, the skyline, and the render and post pipelines -- is host code and
+// hand-written WGSL, because the plug lowers compute stages only.
+
+const MAXP     = 40000;   // particle slots
+const HORIZON  = 0.735;   // fraction of height where the water starts
+const SIMW     = 1024;    // simulation units; the kernel works in these
+const SIMH     = 768;
+
+const msg  = document.getElementById('msg');
+const hud  = document.getElementById('hud');
+const nameEl  = document.getElementById('cityname');
+const shellEl = document.getElementById('shell');
+const fail = t => { msg.className = ''; msg.innerHTML = '<div><div class="b">' + t + '</div></div>';
+                    window.__error = t; window.__ready = true; };
+
+/* ---------------------------------------------------------------- cities */
+
+// The order and the seeds are FireworksShow.codex's, which is what decides
+// which skyline each index builds. The names are the only part of a city this
+// page owns.
+const CITIES = ['New York', 'Chicago', 'San Francisco', 'Seattle', 'Washington DC'];
+
+// The layout FireworksShow.codex writes into WASM linear memory, in i32 words.
+const W_VTX_COUNT  = 131072 / 4;
+const W_ROOF_COUNT = 131080 / 4;
+const W_ROOF_BASE  = 196608 / 4;
+const W_VTX_BASE   = 262144 / 4;
+const VTX_WORDS    = 8;
+
+/* ------------------------------------------------------------------ WGSL */
+
+const SCENE_STRUCT = `
+struct Scene {
+  res      : vec2f,
+  horizon  : f32,
+  time     : f32,
+  exposure : f32,
+  wind     : f32,
+  pad0     : vec2f,
+  flashPos : array<vec4f, 8>,   // xy sim-space, z radius, w intensity
+  flashCol : array<vec4f, 8>,
+};
+@group(0) @binding(0) var<uniform> S : Scene;
+
+fn simToClip(p : vec2f) -> vec2f {
+  return vec2f(p.x / ${SIMW}.0 * 2.0 - 1.0, 1.0 - p.y / ${SIMH}.0 * 2.0);
+}
+
+// Light thrown onto the city and the haze by live bursts. Bursts are the only
+// light source in the scene, so this is what makes an explosion feel like one.
+fn burstLight(p : vec2f) -> vec3f {
+  var acc = vec3f(0.0);
+  for (var i = 0u; i < 8u; i = i + 1u) {
+    let f = S.flashPos[i];
+    if (f.w <= 0.0) { continue; }
+    let d = distance(p, f.xy);
+    let att = f.w / (1.0 + (d * d) / (f.z * f.z));
+    acc = acc + S.flashCol[i].rgb * att;
+  }
+  return acc;
+}
+`;
+
+const FULLSCREEN_VS = `
+@vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4f {
+  var p = array<vec2f,3>(vec2f(-1.0,-3.0), vec2f(-1.0,1.0), vec2f(3.0,1.0));
+  return vec4f(p[vi], 0.0, 1.0);
+}`;
+
+const SKY_WGSL = SCENE_STRUCT + FULLSCREEN_VS + `
+fn hash21(p : vec2f) -> f32 {
+  var q = fract(p * vec2f(123.34, 456.21));
+  q = q + dot(q, q + 45.32);
+  return fract(q.x * q.y);
+}
+
+@fragment fn fs(@builtin(position) fc : vec4f) -> @location(0) vec4f {
+  let uv = fc.xy / S.res;
+  let sim = vec2f(uv.x * ${SIMW}.0, uv.y * ${SIMH}.0);
+  let hy  = S.horizon;
+
+  // Night gradient: near black overhead, a warm city glow banked on the horizon.
+  let t = clamp(uv.y / hy, 0.0, 1.0);
+  var col = mix(vec3f(0.012, 0.014, 0.040), vec3f(0.085, 0.055, 0.115), pow(t, 1.6));
+  col = col + vec3f(0.30, 0.16, 0.07) * pow(t, 9.0) * 0.55;
+
+  // Stars, thinning toward the light-polluted horizon.
+  let g = floor(fc.xy / 2.5);
+  let h = hash21(g);
+  if (h > 0.9975 && uv.y < hy) {
+    let tw = 0.55 + 0.45 * sin(S.time * (1.4 + h * 22.0) + h * 90.0);
+    col = col + vec3f(0.85, 0.90, 1.0) * (1.0 - t) * tw * 2.4 * (h - 0.9975) * 400.0;
+  }
+
+  // Haze picks up the bursts, which is what sells a shell going off in fog.
+  if (uv.y < hy) {
+    col = col + burstLight(sim) * 0.008 * (0.35 + 0.65 * t);
+  }
+  return vec4f(col, 1.0);
+}`;
+
+const CITY_WGSL = SCENE_STRUCT + `
+struct VOut {
+  @builtin(position) pos : vec4f,
+  @location(0) rgb   : vec3f,
+  @location(1) kind  : f32,
+  @location(2) sim   : vec2f,
+  @location(3) phase : f32,
+};
+
+// The vertex buffer is the integer mesh FireworksShow.codex wrote into WASM
+// linear memory, uploaded verbatim: x and y in 1/16 of a pixel, colour in
+// thousandths, then the kind and a phase. Taking it as sint32 means nothing on
+// the JavaScript side converts a single coordinate.
+@vertex fn vs(@location(0) a : vec4i, @location(1) b : vec4i) -> VOut {
+  let p = vec2f(f32(a.x), f32(a.y)) / 16.0;
+  var o : VOut;
+  o.pos   = vec4f(simToClip(p), 0.0, 1.0);
+  o.rgb   = vec3f(f32(a.z), f32(a.w), f32(b.x)) / 1000.0;
+  o.kind  = f32(b.y);
+  o.phase = f32(b.z) / 1000.0;
+  o.sim   = p;
+  return o;
+}
+
+@fragment fn fs(i : VOut) -> @location(0) vec4f {
+  if (i.kind > 1.5) {
+    // An aviation beacon. Each carries its own phase so a skyline does not
+    // blink in unison, which is the tell that a light is decoration.
+    let b = pow(max(sin((S.time * 1.15 + i.phase) * 6.2832), 0.0), 6.0);
+    return vec4f(i.rgb * (0.06 + b * 5.5), 1.0);
+  }
+  if (i.kind > 0.5) {
+    // A lit window is its own small emitter and barely takes burst light.
+    return vec4f(i.rgb * 0.85, 1.0);
+  }
+  // Masonry: ambient sky bounce plus whatever the bursts are throwing at it.
+  // The burst term is deliberately small. A facade is dark rock catching a
+  // distant flash, and at any gain high enough to read as "lit" the buildings
+  // stop being a silhouette and the whole frame goes to pale lavender.
+  let lit = i.rgb + burstLight(i.sim) * 0.09 * i.rgb;
+  return vec4f(lit, 1.0);
+}`;
+
+// The particle pass gets its own preamble rather than SCENE_STRUCT: it never
+// reads the scene uniform, and `layout: "auto"` derives the bind group layout
+// from what a shader STATICALLY USES, so an unused uniform is dropped from the
+// layout and binding it is then a validation error rather than a no-op.
+const PARTICLE_WGSL = `
+fn simToClip(p : vec2f) -> vec2f {
+  return vec2f(p.x / ${SIMW}.0 * 2.0 - 1.0, 1.0 - p.y / ${SIMH}.0 * 2.0);
+}
+@group(0) @binding(0) var<storage, read> pts : array<i32>;
+
+struct VOut {
+  @builtin(position) pos : vec4f,
+  @location(0) uv   : vec2f,
+  @location(1) rgb  : vec3f,
+  @location(2) gain : f32,
+  @location(3) kind : f32,
+};
+
+@vertex fn vs(@builtin(vertex_index) vi : u32,
+              @builtin(instance_index) ii : u32) -> VOut {
+  let base = ii * 4u;
+  let x    = f32(pts[base])     / 16.0;
+  let y    = f32(pts[base + 1u]) / 16.0;
+  let col  = pts[base + 2u];
+  let attr = pts[base + 3u];
+
+  let size  = f32((attr / 65536) & 255) / 8.0;
+  let inten = f32((attr / 256) & 255) / 32.0;
+  let kind  = f32(attr & 255);
+
+  var o : VOut;
+  if (size <= 0.0 || inten <= 0.0) {           // a free slot: collapse the quad
+    o.pos = vec4f(0.0, 0.0, 0.0, 0.0);
+    o.uv = vec2f(0.0); o.rgb = vec3f(0.0); o.gain = 0.0; o.kind = 0.0;
+    return o;
+  }
+
+  var cs = array<vec2f,6>(vec2f(-1.0,-1.0), vec2f(1.0,-1.0), vec2f(-1.0,1.0),
+                          vec2f(-1.0,1.0),  vec2f(1.0,-1.0), vec2f(1.0,1.0));
+  let c = cs[vi];
+  // The sprite is drawn well outside its core so the falloff has room to live.
+  let r = size * 3.4;
+  o.pos  = vec4f(simToClip(vec2f(x, y) + c * r), 0.0, 1.0);
+  o.uv   = c;
+  o.rgb  = vec3f(f32((col / 65536) & 255), f32((col / 256) & 255), f32(col & 255)) / 255.0;
+  o.gain = inten;
+  o.kind = kind;
+  return o;
+}
+
+@fragment fn fs(i : VOut) -> @location(0) vec4f {
+  let d = length(i.uv);
+  if (d > 1.0) { discard; }
+
+  if (i.kind == 5.0) {                          // smoke: a wide soft absorber
+    let a = pow(1.0 - d, 2.2) * i.gain;
+    return vec4f(vec3f(0.30, 0.30, 0.38) * a, 1.0);
+  }
+
+  // A hot core with a wide halo. The core is what the bloom pass picks up and
+  // the halo is what keeps a single spark from reading as a hard dot.
+  let core = pow(clamp(1.0 - d * 2.3, 0.0, 1.0), 2.0);
+  let halo = pow(1.0 - d, 3.0);
+  let e    = (core * 1.30 + halo * 0.22) * i.gain;
+  let hot  = mix(i.rgb, vec3f(1.0, 0.97, 0.92), clamp(core * i.gain * 0.30, 0.0, 0.85));
+  return vec4f(hot * e, 1.0);
+}`;
+
+const WATER_WGSL = SCENE_STRUCT + FULLSCREEN_VS + `
+@group(0) @binding(1) var samp : sampler;
+@group(0) @binding(2) var scene : texture_2d<f32>;
+
+// textureSample is only legal in UNIFORM control flow, because it computes
+// derivatives across the quad; this shader branches on the fragment's own y, so
+// every sample here is textureSampleLevel, which takes the level explicitly and
+// needs no derivatives. The texture has one level, so level 0 is the same read.
+@fragment fn fs(@builtin(position) fc : vec4f) -> @location(0) vec4f {
+  let uv = fc.xy / S.res;
+  let hy = S.horizon;
+  if (uv.y <= hy) { return textureSampleLevel(scene, samp, uv, 0.0); }
+
+  // Below the horizon everything is the scene above it, mirrored, rippled,
+  // and losing coherence with depth. Sampling the finished frame is what gets
+  // the sparks, the windows and the landmark into the water for one pass.
+  let depth = (uv.y - hy) / max(1.0 - hy, 0.0001);
+  let ripple = sin(uv.y * 150.0 - S.time * 2.1) * 0.0022 * (0.25 + depth)
+             + sin(uv.y * 61.0 + S.time * 1.3 + uv.x * 8.0) * 0.0034 * (0.25 + depth);
+  var suv = vec2f(uv.x + ripple, hy - (uv.y - hy) * 0.86);
+  suv.y = clamp(suv.y, 0.0, hy);
+
+  let refl = textureSampleLevel(scene, samp, suv, 0.0).rgb;
+  let fade = exp(-depth * 2.5) * 0.42;
+  let deep = mix(vec3f(0.030, 0.022, 0.055), vec3f(0.008, 0.008, 0.020), depth);
+  // A thin bright line where the water meets the city.
+  let lip = exp(-depth * 190.0) * 0.06;
+  return vec4f(deep + refl * fade + burstLight(vec2f(uv.x * ${SIMW}.0, hy * ${SIMH}.0)) * 0.004 + lip, 1.0);
+}`;
+
+const BRIGHT_WGSL = FULLSCREEN_VS + `
+@group(0) @binding(0) var samp : sampler;
+@group(0) @binding(1) var src : texture_2d<f32>;
+@group(0) @binding(2) var<uniform> texel : vec4f;   // xy = 1/size, z = threshold
+
+// A 3x3 BOX at two-texel spacing leaves a square halo around every saturated
+// core, and on a quarter-resolution target the following gaussian is too narrow
+// to hide it: bursts came out sitting in visible rectangles. This is a 4-tap
+// bilinear tent instead, which is radially symmetric, and all the spread is
+// left to the separable blur that is built for it.
+@fragment fn fs(@builtin(position) fc : vec4f) -> @location(0) vec4f {
+  let uv = fc.xy * texel.xy;
+  let o = texel.xy * 0.75;
+  var acc = vec3f(0.0);
+  acc = acc + max(textureSample(src, samp, uv + vec2f( o.x,  o.y)).rgb - vec3f(texel.z), vec3f(0.0));
+  acc = acc + max(textureSample(src, samp, uv + vec2f(-o.x,  o.y)).rgb - vec3f(texel.z), vec3f(0.0));
+  acc = acc + max(textureSample(src, samp, uv + vec2f( o.x, -o.y)).rgb - vec3f(texel.z), vec3f(0.0));
+  acc = acc + max(textureSample(src, samp, uv + vec2f(-o.x, -o.y)).rgb - vec3f(texel.z), vec3f(0.0));
+  return vec4f(acc * 0.25, 1.0);
+}`;
+
+const BLUR_WGSL = FULLSCREEN_VS + `
+@group(0) @binding(0) var samp : sampler;
+@group(0) @binding(1) var src : texture_2d<f32>;
+@group(0) @binding(2) var<uniform> dir : vec4f;   // xy = step in uv, zw = 1/size
+
+@fragment fn fs(@builtin(position) fc : vec4f) -> @location(0) vec4f {
+  let uv = fc.xy * dir.zw;
+  let w = array<f32,6>(0.2270, 0.1946, 0.1216, 0.0540, 0.0162, 0.0038);
+  var acc = textureSample(src, samp, uv).rgb * w[0];
+  for (var i = 1; i < 6; i = i + 1) {
+    let o = dir.xy * f32(i);
+    acc = acc + textureSample(src, samp, uv + o).rgb * w[i];
+    acc = acc + textureSample(src, samp, uv - o).rgb * w[i];
+  }
+  return vec4f(acc, 1.0);
+}`;
+
+const COMPOSITE_WGSL = SCENE_STRUCT + FULLSCREEN_VS + `
+@group(0) @binding(1) var samp : sampler;
+@group(0) @binding(2) var scene : texture_2d<f32>;
+@group(0) @binding(3) var bloom : texture_2d<f32>;
+
+// ACES filmic, the Narkowicz fit. Without a curve the cores clip to flat white
+// discs and the whole point of an HDR target is lost.
+fn aces(x : vec3f) -> vec3f {
+  let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
+}
+
+@fragment fn fs(@builtin(position) fc : vec4f) -> @location(0) vec4f {
+  let uv = fc.xy / S.res;
+  var col = textureSample(scene, samp, uv).rgb
+          + textureSample(bloom, samp, uv).rgb * 0.50;
+  col = aces(col * S.exposure);
+
+  let v = uv - vec2f(0.5);
+  col = col * (1.0 - dot(v, v) * 0.62);                      // vignette
+  col = col + (fract(sin(dot(fc.xy, vec2f(12.99, 78.23))) * 43758.55) - 0.5) * 0.010;
+  return vec4f(pow(col, vec3f(1.0 / 2.2)), 1.0);
+}`;
+
+/* ------------------------------------------------------------------ main */
+
+async function main() {
+  if (!navigator.gpu) return fail('This page needs WebGPU, which today means a recent Chrome or Edge.');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return fail('No GPU adapter was offered to this page.');
+  const device = await adapter.requestDevice();
+  device.addEventListener?.('uncapturederror', e => console.error(e.error));
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+
+  // The Codex-generated compute stage.
+  let simCode;
+  try {
+    const r = await fetch('../kernels/FireworksSimKernel.wgsl');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    simCode = await r.text();
+  } catch (e) { return fail('Could not load the Codex-generated kernel: ' + e.message); }
+
+  const simMod = device.createShaderModule({ code: simCode });
+  const info = await simMod.getCompilationInfo();
+  const errs = info.messages.filter(m => m.type === 'error');
+  if (errs.length) return fail('The generated compute shader did not compile: ' + errs[0].message);
+
+  const simPipe = device.createComputePipeline({
+    layout: 'auto', compute: { module: simMod, entryPoint: 'fw_sim_step_main' },
+  });
+
+  /* ---- buffers ---- */
+  const stateBuf = device.createBuffer({ size: MAXP * 8 * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const outBuf = device.createBuffer({ size: MAXP * 4 * 4, usage: GPUBufferUsage.STORAGE });
+  const simUni = device.createBuffer({ size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const simBG = device.createBindGroup({ layout: simPipe.getBindGroupLayout(0), entries: [
+    { binding: 0, resource: { buffer: stateBuf } },
+    { binding: 1, resource: { buffer: outBuf } },
+    { binding: 2, resource: { buffer: simUni } },
+  ]});
+
+  // Scene uniform: 8 floats of header, then 8 vec4 positions and 8 vec4 colours.
+  const SCENE_F32 = 8 + 8 * 4 + 8 * 4;
+  const sceneArr = new Float32Array(SCENE_F32);
+  const sceneUni = device.createBuffer({ size: sceneArr.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  // The skyline module. It composes the mesh; this page uploads it.
+  let show, showMem;
+  try {
+    const r = await fetch('fireworks-show.wasm');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const m = await WebAssembly.instantiate(await r.arrayBuffer(), {
+      wasi_snapshot_preview1: { fd_write: () => 0, fd_read: () => 0 },
+      env: { blit_framebuf: () => {}, on_key: () => 0 },
+    });
+    show = m.instance.exports;
+    showMem = new Int32Array(show.memory.buffer);
+  } catch (e) { return fail('Could not load the compiled skyline module: ' + e.message); }
+
+  const cityBuf = device.createBuffer({ size: 60000 * VTX_WORDS * 4,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+
+  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear',
+    addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
+
+  /* ---- pipelines ---- */
+  const HDR = 'rgba16float';
+  const mod = code => device.createShaderModule({ code });
+  const ADD = { color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+                alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' } };
+
+  const skyMod = mod(SKY_WGSL), cityMod = mod(CITY_WGSL), partMod = mod(PARTICLE_WGSL);
+  const waterMod = mod(WATER_WGSL), brightMod = mod(BRIGHT_WGSL);
+  const blurMod = mod(BLUR_WGSL), compMod = mod(COMPOSITE_WGSL);
+
+  for (const [n, m] of [['sky', skyMod], ['city', cityMod], ['particles', partMod],
+                        ['water', waterMod], ['bright', brightMod], ['blur', blurMod],
+                        ['composite', compMod]]) {
+    const ci = await m.getCompilationInfo();
+    const e = ci.messages.filter(x => x.type === 'error');
+    if (e.length) return fail('render shader "' + n + '": ' + e[0].message);
+  }
+
+  const skyPipe = device.createRenderPipeline({ layout: 'auto',
+    vertex: { module: skyMod, entryPoint: 'vs' },
+    fragment: { module: skyMod, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: 'triangle-list' } });
+
+  const cityPipe = device.createRenderPipeline({ layout: 'auto',
+    vertex: { module: cityMod, entryPoint: 'vs', buffers: [{
+      arrayStride: VTX_WORDS * 4, stepMode: 'vertex', attributes: [
+        { shaderLocation: 0, offset: 0,  format: 'sint32x4' },
+        { shaderLocation: 1, offset: 16, format: 'sint32x4' }] }] },
+    fragment: { module: cityMod, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: 'triangle-list' } });
+
+  const partPipe = device.createRenderPipeline({ layout: 'auto',
+    vertex: { module: partMod, entryPoint: 'vs' },
+    fragment: { module: partMod, entryPoint: 'fs', targets: [{ format: HDR, blend: ADD }] },
+    primitive: { topology: 'triangle-list' } });
+
+  const waterPipe = device.createRenderPipeline({ layout: 'auto',
+    vertex: { module: waterMod, entryPoint: 'vs' },
+    fragment: { module: waterMod, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: 'triangle-list' } });
+
+  const brightPipe = device.createRenderPipeline({ layout: 'auto',
+    vertex: { module: brightMod, entryPoint: 'vs' },
+    fragment: { module: brightMod, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: 'triangle-list' } });
+
+  const blurPipe = device.createRenderPipeline({ layout: 'auto',
+    vertex: { module: blurMod, entryPoint: 'vs' },
+    fragment: { module: blurMod, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: 'triangle-list' } });
+
+  const compPipe = device.createRenderPipeline({ layout: 'auto',
+    vertex: { module: compMod, entryPoint: 'vs' },
+    fragment: { module: compMod, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' } });
+
+  const brightUni = device.createBuffer({ size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const blurUniH = device.createBuffer({ size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const blurUniV = device.createBuffer({ size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  /* ---- size-dependent resources ---- */
+  let sceneA, sceneB, bloomA, bloomB, bg = {}, W = 0, H = 0;
+
+  function resize() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const w = Math.max(320, Math.min(1920, Math.floor(canvas.clientWidth  * dpr)));
+    const h = Math.max(240, Math.min(1440, Math.floor(canvas.clientHeight * dpr)));
+    if (w === W && h === H) return;
+    W = w; H = h; canvas.width = W; canvas.height = H;
+    const bw = Math.max(1, W >> 2), bh = Math.max(1, H >> 2);
+    for (const t of [sceneA, sceneB, bloomA, bloomB]) t?.destroy();
+    const mk = (w2, h2) => device.createTexture({ size: [w2, h2], format: HDR,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    sceneA = mk(W, H); sceneB = mk(W, H); bloomA = mk(bw, bh); bloomB = mk(bw, bh);
+
+    bg.sky   = device.createBindGroup({ layout: skyPipe.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: sceneUni } }] });
+    bg.city  = device.createBindGroup({ layout: cityPipe.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: sceneUni } }] });
+    bg.part  = device.createBindGroup({ layout: partPipe.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: outBuf } }] });
+    bg.water = device.createBindGroup({ layout: waterPipe.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: sceneUni } },
+      { binding: 1, resource: sampler },
+      { binding: 2, resource: sceneA.createView() }] });
+    bg.bright = device.createBindGroup({ layout: brightPipe.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: sampler },
+      { binding: 1, resource: sceneB.createView() },
+      { binding: 2, resource: { buffer: brightUni } }] });
+    bg.blurH = device.createBindGroup({ layout: blurPipe.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: sampler },
+      { binding: 1, resource: bloomA.createView() },
+      { binding: 2, resource: { buffer: blurUniH } }] });
+    bg.blurV = device.createBindGroup({ layout: blurPipe.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: sampler },
+      { binding: 1, resource: bloomB.createView() },
+      { binding: 2, resource: { buffer: blurUniV } }] });
+    bg.comp = device.createBindGroup({ layout: compPipe.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: sceneUni } },
+      { binding: 1, resource: sampler },
+      { binding: 2, resource: sceneB.createView() },
+      { binding: 3, resource: bloomA.createView() }] });
+
+    device.queue.writeBuffer(brightUni, 0, new Float32Array([1 / bw, 1 / bh, 1.45, 0]));
+    device.queue.writeBuffer(blurUniH, 0, new Float32Array([1.4 / bw, 0, 1 / bw, 1 / bh]));
+    device.queue.writeBuffer(blurUniV, 0, new Float32Array([0, 1.4 / bh, 1 / bw, 1 / bh]));
+  }
+  new ResizeObserver(resize).observe(canvas);
+  resize();
+
+  /* ---- the show ---- */
+  const K_DEAD = 0, K_SPARK = 1, K_SHELL = 2, K_WILLOW = 3, K_GLITTER = 4, K_SMOKE = 5, K_TRAIL = 6;
+  // No pure white in the palette. The sprites are additive, so a dense burst
+  // saturates toward white on its own; starting a shell there leaves it no
+  // colour to saturate FROM and the screen goes monochrome.
+  const PALETTE = [0xff3b2e, 0x3f74ff, 0xffd23a, 0x46e070, 0xc64bff,
+                   0xff7ac0, 0x59e8ff, 0xffa030, 0xff5a3c, 0x8a6cff];
+  // Weighted, not uniform. The two willow types live long enough for drag to
+  // take their horizontal velocity to nothing, after which every arm is falling
+  // straight down and the shell reads as a fountain rather than a burst. They
+  // are worth having and worth being outnumbered.
+  const TYPES = ['peony', 'peony', 'peony', 'ring', 'ring', 'crackle',
+                 'crackle', 'double', 'double', 'chrysanthemum', 'palm'];
+
+  let cursor = 0;                        // ring allocator over the state buffer
+  const scratch = new Int32Array(MAXP * 8);
+  const shells = [];
+  const flashes = [];
+  let city = 0, cityFrame = 0, frame = 0, finale = 0, lastType = '';
+  let cityVerts = 0, roofs = [];
+
+  // Slots are handed out contiguously and wrap, so a burst is one or two
+  // writeBuffer calls rather than one per spark.
+  function emit(list) {
+    if (!list.length) return;
+    let i = 0;
+    while (i < list.length) {
+      const room = MAXP - cursor;
+      const n = Math.min(room, list.length - i);
+      for (let k = 0; k < n; k++) {
+        const p = list[i + k], o = k * 8;
+        scratch[o]     = Math.round(p.x * 256);
+        scratch[o + 1] = Math.round(p.y * 256);
+        scratch[o + 2] = Math.round(p.vx * 256);
+        scratch[o + 3] = Math.round(p.vy * 256);
+        scratch[o + 4] = p.life;
+        scratch[o + 5] = p.life;
+        scratch[o + 6] = p.col;
+        scratch[o + 7] = p.kind;
+      }
+      device.queue.writeBuffer(stateBuf, cursor * 8 * 4, scratch, 0, n * 8);
+      cursor = (cursor + n) % MAXP;
+      i += n;
+    }
+  }
+
+  function addFlash(x, y, col, power) {
+    flashes.push({ x, y, r: 240 + power * 130, i: power,
+      cr: ((col >> 16) & 255) / 255, cg: ((col >> 8) & 255) / 255, cb: (col & 255) / 255 });
+    if (flashes.length > 8) flashes.shift();
+  }
+
+  function launch(force) {
+    const hz = SIMH * HORIZON;
+    const r = roofs.length ? roofs[(Math.random() * roofs.length) | 0] : { x: SIMW / 2, y: hz };
+    const x = force !== undefined ? force : r.x + (Math.random() - 0.5) * 40;
+    const y0 = Math.min(r.y, hz) - 6;
+    // Aim the apex INTO the frame. Fixed launch speeds put the burst above the
+    // top of the canvas for any shell leaving a tall roof, and all that reaches
+    // the viewer is the tails falling back down: the show reads as rain. The
+    // rise is chosen from the launch height so a burst always opens on screen.
+    const apex = 105 + Math.random() * 150;
+    const rise = Math.max(70, y0 - apex);
+    shells.push({
+      x, y: y0,
+      vx: (Math.random() - 0.5) * 1.4,
+      vy: -Math.sqrt(2 * 0.075 * rise),
+      fuse: 260,
+      col: PALETTE[(Math.random() * PALETTE.length) | 0],
+      type: TYPES[(Math.random() * TYPES.length) | 0],
+    });
+  }
+
+  function burst(s) {
+    const out = [];
+    const col2 = PALETTE[(Math.random() * PALETTE.length) | 0];
+    const push = (ang, spd, life, col, kind) => out.push({
+      x: s.x, y: s.y, vx: Math.cos(ang) * spd + s.vx * 0.30,
+      vy: Math.sin(ang) * spd + s.vy * 0.30, life, col, kind });
+
+    if (s.type === 'ring') {
+      const n = 340, tilt = 0.30 + Math.random() * 0.45;
+      for (let i = 0; i < n; i++) {
+        const a = i / n * Math.PI * 2, sp = 5.4 + Math.random() * 0.5;
+        out.push({ x: s.x, y: s.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * tilt,
+          life: 62 + (Math.random() * 150) | 0, col: s.col, kind: K_SPARK });
+      }
+    } else if (s.type === 'chrysanthemum') {
+      for (let i = 0; i < 460; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = Math.sqrt(Math.random()) * 4.6 + 0.9;
+        push(a, sp, 70 + (Math.random() * 190) | 0, s.col, K_WILLOW);
+      }
+    } else if (s.type === 'palm') {
+      // Wider arms with fewer stars each. Fifty-two sparks inside a 0.16 rad
+      // arm overlap for their whole life, and additive overlap that dense is
+      // white whatever colour the shell was.
+      const arms = 11;
+      for (let k = 0; k < arms; k++) {
+        const base = k / arms * Math.PI * 2 + Math.random() * 0.2;
+        for (let i = 0; i < 26; i++) {
+          const a = base + (Math.random() - 0.5) * 0.42;
+          const sp = 2.0 + Math.random() * 5.6;
+          push(a, sp, 66 + (Math.random() * 180) | 0, s.col, K_WILLOW);
+        }
+      }
+    } else if (s.type === 'crackle') {
+      for (let i = 0; i < 300; i++) {
+        const a = Math.random() * Math.PI * 2;
+        push(a, Math.sqrt(Math.random()) * 4.4 + 0.6, 48 + (Math.random() * 120) | 0, s.col, K_SPARK);
+      }
+      for (let i = 0; i < 420; i++) {
+        const a = Math.random() * Math.PI * 2;
+        push(a, Math.sqrt(Math.random()) * 3.4 + 0.4, 52 + (Math.random() * 145) | 0, 0xfff0d0, K_GLITTER);
+      }
+    } else if (s.type === 'double') {
+      for (let i = 0; i < 240; i++) {
+        const a = Math.random() * Math.PI * 2;
+        push(a, Math.sqrt(Math.random()) * 2.5 + 0.5, 66 + (Math.random() * 160) | 0, col2, K_SPARK);
+      }
+      for (let i = 0; i < 400; i++) {
+        const a = i / 400 * Math.PI * 2 + Math.random() * 0.02;
+        push(a, 5.0 + Math.random() * 0.9, 72 + (Math.random() * 170) | 0, s.col, K_SPARK);
+      }
+    } else {                                            // peony
+      for (let i = 0; i < 520; i++) {
+        const a = Math.random() * Math.PI * 2;
+        push(a, Math.sqrt(Math.random()) * 5.2 + 0.7, 64 + (Math.random() * 175) | 0, s.col, K_SPARK);
+      }
+    }
+    for (let i = 0; i < 26; i++) {                      // the smoke it leaves
+      const a = Math.random() * Math.PI * 2;
+      push(a, Math.random() * 0.9, 200 + (Math.random() * 120) | 0, 0x404858, K_SMOKE);
+    }
+    emit(out);
+    addFlash(s.x, s.y, s.col, 1.0);
+    lastType = s.type;
+  }
+
+  function stepShells() {
+    const hz = SIMH * HORIZON;
+    for (let i = shells.length - 1; i >= 0; i--) {
+      const s = shells[i];
+      s.vy += 0.075; s.vx *= 0.999; s.vy *= 0.999;
+      s.x += s.vx; s.y += s.vy; s.fuse--;
+      // A rising shell trails embers, which is most of what makes the launch read.
+      // A long-lived, near-white trail draws the whole ascent as a bright line
+      // and there is one per shell in the air, which is what was reading as a
+      // screen full of white fountains. Short and amber: it marks the climb
+      // without competing with the burst it is delivering.
+      if (s.fuse % 2 === 0) emit([{ x: s.x, y: s.y,
+        vx: s.vx * 0.22 + (Math.random() - 0.5) * 0.5, vy: s.vy * 0.16 + 0.4,
+        life: 34 + (Math.random() * 26) | 0, col: 0xff8a1e, kind: K_TRAIL }]);
+      if (s.fuse <= 0 || s.vy >= -0.30 || s.y < 70) { burst(s); shells.splice(i, 1); }
+    }
+    // The shells themselves, written into the buffer as held particles.
+    const live = shells.map(s => ({ x: s.x, y: s.y, vx: s.vx, vy: s.vy,
+      life: 400, col: 0xfff0c0, kind: K_SHELL }));
+    if (live.length) emit(live);
+  }
+
+  /* ---- input ---- */
+  addEventListener('keydown', e => {
+    if (e.code === 'Space') { launch(); e.preventDefault(); }
+    else if (e.key === 'f' || e.key === 'F') finale = finale > 0 ? 0 : 420;
+    else if (e.key === 'n' || e.key === 'N') cityFrame = 1e9;
+  });
+  canvas.addEventListener('pointerdown', e => {
+    const r = canvas.getBoundingClientRect();
+    launch((e.clientX - r.left) / r.width * SIMW);
+  });
+
+  /* ---- frame ---- */
+  msg.className = 'hide';
+  window.__ready = false;
+  let last = performance.now(), fps = 60, alive = 0;
+
+  function setCity(i) {
+    city = i % CITIES.length;
+    cityVerts = show.build_city(city);
+    // WASM memory can be detached by a grow, so the view is retaken each time.
+    showMem = new Int32Array(show.memory.buffer);
+    device.queue.writeBuffer(cityBuf, 0, showMem, W_VTX_BASE, cityVerts * VTX_WORDS);
+    const nr = showMem[W_ROOF_COUNT];
+    roofs = [];
+    for (let k = 0; k < nr; k++) {
+      roofs.push({ x: showMem[W_ROOF_BASE + k * 2] / 16, y: showMem[W_ROOF_BASE + k * 2 + 1] / 16 });
+    }
+    nameEl.textContent = CITIES[city];
+  }
+  setCity(0);
+
+  // The kernel's drag and gravity are per-frame quantities at 60 Hz, so the
+  // show is stepped at a fixed rate and rendered at whatever rate the display
+  // runs: on a 120 Hz panel a per-frame step ran the whole simulation at double
+  // speed, and the constants stop meaning what they were measured to mean.
+  const STEP = 1000 / 60;
+  let acc = 0;
+
+  function stepSim() {
+    frame++; cityFrame++;
+    if (cityFrame > 900) { cityFrame = 0; setCity(city + 1); }
+    if (finale > 0) { finale--; if (frame % 3 === 0) { launch(); launch(); } }
+    else if (frame % 26 === 0 || (frame % 13 === 0 && Math.random() < 0.45)) launch();
+    stepShells();
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      flashes[i].i *= 0.885;
+      if (flashes[i].i < 0.004) flashes.splice(i, 1);
+    }
+  }
+
+  function tick(now) {
+    const dt = Math.min(100, now - last); last = now;
+    fps = fps * 0.94 + (1000 / Math.max(dt, 1)) * 0.06;
+
+    acc += dt;
+    let steps = 0;
+    while (acc >= STEP && steps < 4) { acc -= STEP; stepSim(); steps++; }
+    if (steps === 0) { requestAnimationFrame(tick); return; }
+
+    const wind = Math.round(Math.sin(frame * 0.0021) * 26 + Math.sin(frame * 0.0007) * 14);
+    device.queue.writeBuffer(simUni, 0, new Int32Array([frame, wind, 0, 0]));
+
+    const hz = HORIZON;
+    sceneArr[0] = W; sceneArr[1] = H; sceneArr[2] = hz; sceneArr[3] = frame / 60;
+    sceneArr[4] = 0.80; sceneArr[5] = wind / 1000;
+    for (let i = 0; i < 8; i++) {
+      const f = flashes[i];
+      const p = 8 + i * 4, c = 8 + 32 + i * 4;
+      if (f) { sceneArr[p] = f.x; sceneArr[p+1] = f.y; sceneArr[p+2] = f.r; sceneArr[p+3] = f.i;
+               sceneArr[c] = f.cr; sceneArr[c+1] = f.cg; sceneArr[c+2] = f.cb; sceneArr[c+3] = 1; }
+      else   { sceneArr[p] = 0; sceneArr[p+1] = 0; sceneArr[p+2] = 1; sceneArr[p+3] = 0;
+               sceneArr[c] = 0; sceneArr[c+1] = 0; sceneArr[c+2] = 0; sceneArr[c+3] = 0; }
+    }
+    device.queue.writeBuffer(sceneUni, 0, sceneArr);
+
+    const enc = device.createCommandEncoder();
+
+    // 1. the Codex kernel: one thread per particle slot
+    const cp = enc.beginComputePass();
+    cp.setPipeline(simPipe); cp.setBindGroup(0, simBG);
+    cp.dispatchWorkgroups(Math.ceil(MAXP / 64));
+    cp.end();
+
+    const pass = (view, load) => enc.beginRenderPass({ colorAttachments: [{
+      view, loadOp: load ? 'load' : 'clear', storeOp: 'store',
+      clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+
+    // 2. sky, city, sparks into sceneA
+    const a = sceneA.createView();
+    let rp = pass(a, false);
+    rp.setPipeline(skyPipe); rp.setBindGroup(0, bg.sky); rp.draw(3);
+    rp.setPipeline(cityPipe); rp.setBindGroup(0, bg.city);
+    rp.setVertexBuffer(0, cityBuf); rp.draw(cityVerts);
+    rp.setPipeline(partPipe); rp.setBindGroup(0, bg.part); rp.draw(6, MAXP);
+    rp.end();
+
+    // 3. the water samples the finished sky into sceneB
+    rp = pass(sceneB.createView(), false);
+    rp.setPipeline(waterPipe); rp.setBindGroup(0, bg.water); rp.draw(3);
+    rp.end();
+
+    // 4. bloom: bright pass, then separable blur at quarter resolution
+    rp = pass(bloomA.createView(), false);
+    rp.setPipeline(brightPipe); rp.setBindGroup(0, bg.bright); rp.draw(3); rp.end();
+    rp = pass(bloomB.createView(), false);
+    rp.setPipeline(blurPipe); rp.setBindGroup(0, bg.blurH); rp.draw(3); rp.end();
+    rp = pass(bloomA.createView(), false);
+    rp.setPipeline(blurPipe); rp.setBindGroup(0, bg.blurV); rp.draw(3); rp.end();
+
+    // 5. tonemap to the canvas
+    rp = pass(ctx.getCurrentTexture().createView(), false);
+    rp.setPipeline(compPipe); rp.setBindGroup(0, bg.comp); rp.draw(3); rp.end();
+
+    device.queue.submit([enc.finish()]);
+
+    if (frame % 15 === 0) {
+      shellEl.textContent = lastType ? lastType + ' shell' : '';
+      hud.innerHTML = '<b>' + MAXP.toLocaleString() + '</b> particle slots &middot; '
+        + '<b>' + (cityVerts / 3 | 0).toLocaleString() + '</b> skyline triangles &middot; '
+        + '<b>' + shells.length + '</b> shells up &middot; <b>' + fps.toFixed(0) + '</b> fps'
+        + ' &middot; sim and city compiled from Codex';
+    }
+    if (frame > 3) { window.__ready = true; window.__frame = frame; }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+main().catch(e => fail(String(e && e.message || e)));
+</script>

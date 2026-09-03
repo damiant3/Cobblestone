@@ -1,0 +1,111 @@
+Chapter: Fat32ImgLongname
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ The guest reading a FAT32 image the HOST wrote, which is the only arm that can
+ tell the two VFAT implementations apart on this width. `build-img.ps1` writes
+ long-name runs in PowerShell; `Fat32.codex` reads them in Codex. A round trip
+ through either one alone would pass while proving nothing about the other,
+ which is the shape `BrotliBeatsOpus` was written about and the shape
+ `codex/test/img-longname` already covers for FAT16.
+
+ Nothing covered it for FAT32. `fat32-find-in-dir` learned to assemble runs on
+ 2026-09-01 and `fat32-add-dir-entry` learned to write them the next day, and
+ every grader either laid its runs down by hand or read back what Codex itself
+ had just written. Both are the encoder agreeing with itself.
+
+ The fixture is the same six name shapes `codex/test/img-longname` chose,
+ because they are the ones that discriminate rather than the ones that are
+ realistic:
+
+   X86_64CodeGen.codex   19 characters, two records. The name the old flat SRC/
+                         layout mangled to X86_64CO.COD.
+   readme.codex          differs from its own 8.3 form only in CASE, so it
+                         still needs a run; a writer comparing case-blindly
+                         would store README.COD and the arm below catches it.
+   Thirtee.codex         thirteen characters: exactly one record, no
+                         terminator.
+   Fourteen.codex        fourteen: exactly two, the second holding one unit.
+   CollideOne.codex      these two share their first six characters, so their
+   CollideTwo.codex      aliases must differ by the number after the tilde.
+                         Their CONTENTS differ, so an arm reading one and
+                         getting the other's bytes is a failure this can
+                         express rather than a silent agreement.
+
+ Any name ending in `.codex` needs a run whatever its base, because the format
+ stores three extension characters and `codex` is five.
+
+ THE ALIAS ARM IS THE ONE THAT WOULD SURVIVE A BROKEN READER, so it is stated
+ rather than left implied: `SRC/X86_64CO.COD` is what the old mangling
+ produced and it must NOT resolve, because the host writes no such entry. An
+ arm that only asked for the long names would pass against a volume carrying
+ both.
+
+ REGENERATING THIS FIXTURE, because the FAT16 one recorded no command and is
+ therefore not reproducible. From the repository root, with the six files above
+ in a scratch directory holding no trailing newline:
+
+   build/build-img.ps1 -PeInput build/boot/blockladder.efi
+     -Out codex/test/fat32-img-longname.disk -SourceDir <scratch>
+     -TotalSectors 79000 -Fat32
+
+ 79000 is not arbitrary. The ESP is what carries the volume and it is
+ `TotalSectors * 7/8 - 2081` after the fact store takes an eighth off the top,
+ and a REAL FAT32 volume needs at least 65525 clusters or firmware classifies
+ it as something else. 79000 sectors yields 65964, and the run above prints
+ both numbers. `blockladder.efi` is named because it is tracked and stable; its
+ bytes are never read by this chapter.
+
+ We say:
+
+Section: Reporting
+
+  f32il-say : Maybe Text -> Text
+  f32il-say (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"
+
+  f32il-found : Maybe Fat16DirEntry -> Text
+  f32il-found (m) = when m
+    is Just (e) -> "found " & (e.de-name)
+    is None -> "<none>"
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    vol <- fat32-init 2048
+    print-line-uni ("root cluster " & show (vol.f32-root-cluster)
+      & " spc " & show (vol.f32-sectors-per-cluster))
+
+    a <- fat32-read-text vol "SRC/X86_64CodeGen.codex"
+    print-line-uni ("nineteen characters " & f32il-say a)
+
+    b <- fat32-read-text vol "SRC/readme.codex"
+    print-line-uni ("case only " & f32il-say b)
+
+    c <- fat32-read-text vol "SRC/Thirtee.codex"
+    print-line-uni ("thirteen " & f32il-say c)
+
+    d <- fat32-read-text vol "SRC/Fourteen.codex"
+    print-line-uni ("fourteen " & f32il-say d)
+
+    e <- fat32-read-text vol "SRC/CollideOne.codex"
+    print-line-uni ("collide one " & f32il-say e)
+
+    f <- fat32-read-text vol "SRC/CollideTwo.codex"
+    print-line-uni ("collide two " & f32il-say f)
+
+    g <- fat32-read-text vol "SRC/X86_64CO.COD"
+    print-line-uni ("old mangling absent " & f32il-say g)
+
+    h <- fat32-read-text vol "SRC/NoSuchChapter.codex"
+    print-line-uni ("absent name " & f32il-say h)
+
+    i <- fat32-resolve-path vol "SRC"
+    print-line-uni ("SRC itself " & f32il-found i)
+  end
+
+Page 1
