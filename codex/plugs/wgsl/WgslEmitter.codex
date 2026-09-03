@@ -118,6 +118,22 @@ Section: Float Support
   wgsl-ty-text : CodexType -> Text
   wgsl-ty-text (ty) = if wgsl-is-real ty then "f32" else "i32"
 
+ THE UNREACHABLE RETURN AFTER A TAIL-CALL LOOP, and it is not decoration.
+ Every path inside the loop returns or continues, so no `break` is emitted and
+ control cannot reach the end of the function. Tint's reachability analysis sees
+ that; NAGA'S DOES NOT -- it supplies an implicit `return;`, which then
+ disagrees with the declared return type:
+
+     error: Function [11] 'rf_nearest' is invalid
+       = The `return` expression None does not match the declared return type
+
+ Firefox uses naga and Chrome uses Tint, so a shader tested only in Chrome is
+ untested. Measured with naga 30 over every .wgsl in the tree: this alone
+ accounted for 25 failing files and 31 functions.
+
+  wgsl-zero-text : CodexType -> Text
+  wgsl-zero-text (ty) = if wgsl-is-real ty then "0.0" else "0"
+
   wgsl-f32-bits : Integer -> Integer
   wgsl-f32-bits (n) =
    let sign = bit-and (bit-shru n 63) 1
@@ -465,7 +481,7 @@ Section: Expression Emission
 
   wgsl-emit-args : WgslCtx, List IRExpr, Integer -> Text
   wgsl-emit-args (ctx) (args) (depth) =
-   wgsl-emit-args-loop ctx args 0 "" depth
+   wgsl-emit-args-loop ctx (wgsl-drop-buf-args ctx args 0 []) 0 "" depth
 
   wgsl-emit-args-loop : WgslCtx, List IRExpr, Integer, Text, Integer -> Text
   wgsl-emit-args-loop (ctx) (args) (i) (acc) (depth) =
@@ -841,22 +857,53 @@ Section: Helper Function Emission
    in let p = list-at params i
    in sep & wgsl-sanitize (p.name) & " : " & wgsl-ty-text (p.type-val) & wgsl-emit-params params (i + 1)
 
- A helper that uses a parameter as a device-load/store base takes that buffer as
- a storage pointer. hbufs is the set of such parameter names; the helper ctx
- carries them (kprefix empty) so device-load emits `(*p)[i]` and the parameter
- is typed `ptr<storage, array<i32>, read_write>`.
+ A helper that uses a parameter as a device-load/store base NAMES THE MODULE-
+ SCOPE BUFFER, exactly as the entry point does. hbufs is the set of such
+ parameter names; they are dropped from the signature and from every call, and
+ the helper ctx keeps the kernel's prefix so device-load emits
+ `<kernel>_<name>_buf[i]`.
+
+ IT USED TO PASS A STORAGE POINTER, and WGSL does not allow one as a user
+ function parameter: pointer parameters are restricted to the function, private
+ and workgroup address spaces, and `storage` needs the
+ `unrestricted_pointer_parameters` language extension. Tint implements that
+ extension and NAGA DOES NOT, so Firefox refused seven kernels outright:
+
+     error: Function [2] 'earth_shade_pixel' is invalid
+       = Argument 'framebuf' at index 0 is a pointer of space Storage ...,
+         which can't be passed
+
+ The pointer bought nothing. The buffers are module-scope `var<storage>` in
+ every kernel that has them, and the entry point already reads them by name --
+ only the helpers took the long way round. Checked before relying on it: of the
+ eleven pointer-taking helpers in the tree, NONE is called with more than one
+ kernel's buffers, so naming the global is always unambiguous.
 
   wgsl-helper-ctx : WgslCtx, List Text -> WgslCtx
   wgsl-helper-ctx (ctx) (hbufs) =
-   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = "" }
+   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = ctx.kprefix }
 
-  wgsl-emit-params-b : List IRParam, List Text, Integer -> Text
-  wgsl-emit-params-b (params) (bufs) (i) =
-   if i >= list-length params then ""
-   else let sep = if i == 0 then "" else ", "
-   in let p = list-at params i
-   in let ty = if wgsl-contains bufs (p.name) then "ptr<storage, array<i32>, read_write>" else wgsl-ty-text (p.type-val)
-   in sep & wgsl-sanitize (p.name) & " : " & ty & wgsl-emit-params-b params bufs (i + 1)
+ A buffer reaches a helper through the module scope now, so it is neither a
+ parameter nor an argument. Filtering the lists keeps the separator logic in the
+ emitters below unchanged -- they count from zero and a skip inside them would
+ leave a stray comma.
+
+  wgsl-drop-buf-params : List IRParam, List Text, Integer, List IRParam -> List IRParam
+  wgsl-drop-buf-params (ps) (bufs) (i) (acc) =
+   if i >= list-length ps then acc
+   else let p = list-at ps i
+   in let acc2 = if wgsl-contains bufs (p.name) then acc else list-push acc p
+   in wgsl-drop-buf-params ps bufs (i + 1) acc2
+
+  wgsl-drop-buf-args : WgslCtx, List IRExpr, Integer, List IRExpr -> List IRExpr
+  wgsl-drop-buf-args (ctx) (args) (i) (acc) =
+   if i >= list-length args then acc
+   else let a = list-at args i
+   in let acc2 = when a
+      is IrName (n) (ty) (sp) -> if wgsl-contains (ctx.buffers) n then acc else list-push acc a
+      is otherwise -> list-push acc a
+   in wgsl-drop-buf-args ctx args (i + 1) acc2
+
 
   wgsl-emit-helper : WgslCtx, List BufEntry, IRDef -> Text
   wgsl-emit-helper (ctx) (bmap) (d) =
@@ -864,7 +911,7 @@ Section: Helper Function Emission
    in let hctx = wgsl-helper-ctx ctx hbufs
    in if wgsl-is-self-recursive d then wgsl-emit-loop-helper hctx d
    else let name = wgsl-sanitize (d.name)
-   in let params = wgsl-emit-params-b (d.params) hbufs 0
+   in let params = wgsl-emit-params (wgsl-drop-buf-params (d.params) hbufs 0 []) 0
    in let body = wgsl-body hctx (d.body) False 0
    in "fn " & name & "(" & params & ") -> " & wgsl-ty-text (d.type-val) & " {\n" & body & "}\n\n"
 
@@ -983,11 +1030,11 @@ Section: Recursion to Loop
 
   wgsl-emit-loop-helper : WgslCtx, IRDef -> Text
   wgsl-emit-loop-helper (ctx) (d) =
-   "fn " & wgsl-sanitize (d.name) & "(" & wgsl-loop-params-b (d.params) (ctx.buffers) 0 & ") -> " & wgsl-ty-text (d.type-val) & " {\n"
+   "fn " & wgsl-sanitize (d.name) & "(" & wgsl-loop-params-b (wgsl-drop-buf-params (d.params) (ctx.buffers) 0 []) (ctx.buffers) 0 & ") -> " & wgsl-ty-text (d.type-val) & " {\n"
     & wgsl-loop-vars-b (d.params) (ctx.buffers) 0
     & "  loop {\n"
     & wgsl-loop-body ctx (d.name) (d.params) (d.body) 0
-    & "  }\n}\n\n"
+    & "  }\n  return " & wgsl-zero-text (d.type-val) & ";\n}\n\n"
 
 Section: Kernel Emission
 
