@@ -15,36 +15,36 @@ fn gl_mt(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, v0x : f32, 
   let pvy = ((dz * e2x) - (dx * e2z));
   let pvz = ((dx * e2y) - (dy * e2x));
   let det = (((e1x * pvx) + (e1y * pvy)) + (e1z * pvz));
-  let adet = select(det, (bitcast<f32>(0u) - det), (det < bitcast<f32>(0u)));
-  if ((adet < bitcast<f32>(925353388u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  let adet = select(det, (0.0 - det), (det < 0.0));
+  if ((adet < 0x1.4f8b58p-17f)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let inv = (bitcast<f32>(1065353216u) / det);
+  let inv = (0x1.000000p+0f / det);
   let tvx = (ox - v0x);
   let tvy = (oy - v0y);
   let tvz = (oz - v0z);
   let u = ((((tvx * pvx) + (tvy * pvy)) + (tvz * pvz)) * inv);
-  if ((u < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((u < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  if ((u > bitcast<f32>(1065353216u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((u > 0x1.000000p+0f)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
   let qvx = ((tvy * e1z) - (tvz * e1y));
   let qvy = ((tvz * e1x) - (tvx * e1z));
   let qvz = ((tvx * e1y) - (tvy * e1x));
   let vv = ((((dx * qvx) + (dy * qvy)) + (dz * qvz)) * inv);
-  if ((vv < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((vv < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  if (((u + vv) > bitcast<f32>(1065353216u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if (((u + vv) > 0x1.000000p+0f)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
   let t = ((((e2x * qvx) + (e2y * qvy)) + (e2z * qvz)) * inv);
-  if ((t > bitcast<f32>(981668462u))) {
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
   }
@@ -52,7 +52,7 @@ fn gl_mt(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, v0x : f32, 
   }
   }
 }
-fn gl_nearest(buf : ptr<storage, array<i32>, read_write>, ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz__a : f32, i__a : i32, best_id__a : i32, best_t__a : f32) -> i32 {
+fn gl_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz__a : f32, i__a : i32, best_id__a : i32, best_t__a : f32) -> i32 {
   var ox = ox__a;
   var oy = oy__a;
   var oz = oz__a;
@@ -66,17 +66,17 @@ fn gl_nearest(buf : ptr<storage, array<i32>, read_write>, ox__a : f32, oy__a : f
     if ((i >= gl_tris)) {
     return best_id;
     } else {
-    let a0 = (*buf)[(i * 9)];
-    let a1 = (*buf)[((i * 9) + 1)];
-    let a2 = (*buf)[((i * 9) + 2)];
-    let b0 = (*buf)[((i * 9) + 3)];
-    let b1 = (*buf)[((i * 9) + 4)];
-    let b2 = (*buf)[((i * 9) + 5)];
-    let c0 = (*buf)[((i * 9) + 6)];
-    let c1 = (*buf)[((i * 9) + 7)];
-    let c2 = (*buf)[((i * 9) + 8)];
-    let t = gl_mt(ox, oy, oz, dx, dy, dz, (f32(f32(a0)) / bitcast<f32>(1149239296u)), (f32(f32(a1)) / bitcast<f32>(1149239296u)), (f32(f32(a2)) / bitcast<f32>(1149239296u)), (f32(f32(b0)) / bitcast<f32>(1149239296u)), (f32(f32(b1)) / bitcast<f32>(1149239296u)), (f32(f32(b2)) / bitcast<f32>(1149239296u)), (f32(f32(c0)) / bitcast<f32>(1149239296u)), (f32(f32(c1)) / bitcast<f32>(1149239296u)), (f32(f32(c2)) / bitcast<f32>(1149239296u)));
-    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let a0 = gltf_step_meshbuf_buf[(i * 9)];
+    let a1 = gltf_step_meshbuf_buf[((i * 9) + 1)];
+    let a2 = gltf_step_meshbuf_buf[((i * 9) + 2)];
+    let b0 = gltf_step_meshbuf_buf[((i * 9) + 3)];
+    let b1 = gltf_step_meshbuf_buf[((i * 9) + 4)];
+    let b2 = gltf_step_meshbuf_buf[((i * 9) + 5)];
+    let c0 = gltf_step_meshbuf_buf[((i * 9) + 6)];
+    let c1 = gltf_step_meshbuf_buf[((i * 9) + 7)];
+    let c2 = gltf_step_meshbuf_buf[((i * 9) + 8)];
+    let t = gl_mt(ox, oy, oz, dx, dy, dz, (f32(f32(a0)) / 0x1.000000p+10f), (f32(f32(a1)) / 0x1.000000p+10f), (f32(f32(a2)) / 0x1.000000p+10f), (f32(f32(b0)) / 0x1.000000p+10f), (f32(f32(b1)) / 0x1.000000p+10f), (f32(f32(b2)) / 0x1.000000p+10f), (f32(f32(c0)) / 0x1.000000p+10f), (f32(f32(c1)) / 0x1.000000p+10f), (f32(f32(c2)) / 0x1.000000p+10f));
+    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < 0.0)), (t > 0x1.0624dcp-10f));
     let nid = select(best_id, i, (take == 1));
     let nt = select(best_t, t, (take == 1));
     let _mv1 = ox;
@@ -100,28 +100,29 @@ fn gl_nearest(buf : ptr<storage, array<i32>, read_write>, ox__a : f32, oy__a : f
     continue;
     }
   }
+  return 0;
 }
 fn gl_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn gl_pack(r : f32, g : f32, b : f32) -> i32 {
-  let ri = i32((gl_clamp01(r) * bitcast<f32>(1132396544u)));
-  let gi = i32((gl_clamp01(g) * bitcast<f32>(1132396544u)));
-  let bi = i32((gl_clamp01(b) * bitcast<f32>(1132396544u)));
+  let ri = i32((gl_clamp01(r) * 0x1.fe0000p+7f));
+  let gi = i32((gl_clamp01(g) * 0x1.fe0000p+7f));
+  let bi = i32((gl_clamp01(b) * 0x1.fe0000p+7f));
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn gl_bg(py : i32) -> i32 {
-  let h = (f32(f32(py)) / bitcast<f32>(1145044992u));
-  return gl_pack((bitcast<f32>(1025758986u) + (h * bitcast<f32>(1028443340u))), (bitcast<f32>(1028443340u) + (h * bitcast<f32>(1035489771u))), (bitcast<f32>(1035489771u) + (h * bitcast<f32>(1041865113u))));
+  let h = (f32(f32(py)) / 0x1.800000p+9f);
+  return gl_pack((0x1.47ae14p-5f + (h * 0x1.999998p-5f)), (0x1.999998p-5f + (h * 0x1.70a3d6p-4f)), (0x1.70a3d6p-4f + (h * 0x1.333332p-3f)));
 }
 fn gl_col_r(i : i32) -> f32 {
-  return (bitcast<f32>(1055286886u) + (f32(f32((i - ((i / 6) * 6)))) * bitcast<f32>(1035489771u)));
+  return (0x1.ccccccp-2f + (f32(f32((i - ((i / 6) * 6)))) * 0x1.70a3d6p-4f));
 }
 fn gl_col_g(i : i32) -> f32 {
-  return (bitcast<f32>(1062836633u) - (f32(f32((i - ((i / 5) * 5)))) * bitcast<f32>(1034147594u)));
+  return (0x1.b33332p-1f - (f32(f32((i - ((i / 5) * 5)))) * 0x1.47ae14p-4f));
 }
 fn gl_col_b(i : i32) -> f32 {
-  return (bitcast<f32>(1057803468u) + (f32(f32((i - ((i / 4) * 4)))) * bitcast<f32>(1036831948u)));
+  return (0x1.199998p-1f + (f32(f32((i - ((i / 4) * 4)))) * 0x1.999998p-4f));
 }
 @group(0) @binding(0) var<storage, read_write> gltf_step_meshbuf_buf : array<i32>;
 @group(0) @binding(1) var<storage, read_write> gltf_step_outb_buf : array<i32>;
@@ -135,30 +136,30 @@ fn gltf_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let frame = u_gltf_step.frame;
   let px = (gid - ((gid / gl_width) * gl_width));
   let py = (gid / gl_width);
-  let fx = (f32(f32((px - gl_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((gl_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1076090634u)));
+  let fx = (f32(f32((px - gl_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((gl_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.47ae14p+1f));
   let dx0 = (fx / rl);
   let dy0 = (fy / rl);
-  let dz0 = (bitcast<f32>(1070386380u) / rl);
-  let ay = (f32(f32(frame)) / bitcast<f32>(1108869120u));
-  let ax = (f32(f32(frame)) / bitcast<f32>(1113849856u));
+  let dz0 = (0x1.999998p+0f / rl);
+  let ay = (f32(f32(frame)) / 0x1.300000p+5f);
+  let ax = (f32(f32(frame)) / 0x1.c80000p+5f);
   let cy = cos(ay);
   let sy = sin(ay);
   let cx = cos(ax);
   let sx = sin(ax);
-  let oz0 = (bitcast<f32>(0u) - bitcast<f32>(1078774988u));
+  let oz0 = (0.0 - 0x1.999998p+1f);
   let oxa = (oz0 * sy);
   let oza = (oz0 * cy);
   let ox = oxa;
   let oy = (oza * sx);
   let oz = (oza * cx);
   let dxa = ((dx0 * cy) + (dz0 * sy));
-  let dza = ((bitcast<f32>(0u) - (dx0 * sy)) + (dz0 * cy));
+  let dza = ((0.0 - (dx0 * sy)) + (dz0 * cy));
   let dx = dxa;
   let dy = ((dy0 * cx) + (dza * sx));
-  let dz = ((bitcast<f32>(0u) - (dy0 * sx)) + (dza * cx));
-  let id = gl_nearest(&gltf_step_meshbuf_buf, ox, oy, oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let dz = ((0.0 - (dy0 * sx)) + (dza * cx));
+  let id = gl_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   let safe = select(id, 0, (id < 0));
   let a0 = gltf_step_meshbuf_buf[(safe * 9)];
   let a1 = gltf_step_meshbuf_buf[((safe * 9) + 1)];
@@ -169,24 +170,24 @@ fn gltf_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let c0 = gltf_step_meshbuf_buf[((safe * 9) + 6)];
   let c1 = gltf_step_meshbuf_buf[((safe * 9) + 7)];
   let c2 = gltf_step_meshbuf_buf[((safe * 9) + 8)];
-  let v0x = (f32(f32(a0)) / bitcast<f32>(1149239296u));
-  let v0y = (f32(f32(a1)) / bitcast<f32>(1149239296u));
-  let v0z = (f32(f32(a2)) / bitcast<f32>(1149239296u));
-  let e1x = ((f32(f32(b0)) / bitcast<f32>(1149239296u)) - v0x);
-  let e1y = ((f32(f32(b1)) / bitcast<f32>(1149239296u)) - v0y);
-  let e1z = ((f32(f32(b2)) / bitcast<f32>(1149239296u)) - v0z);
-  let e2x = ((f32(f32(c0)) / bitcast<f32>(1149239296u)) - v0x);
-  let e2y = ((f32(f32(c1)) / bitcast<f32>(1149239296u)) - v0y);
-  let e2z = ((f32(f32(c2)) / bitcast<f32>(1149239296u)) - v0z);
+  let v0x = (f32(f32(a0)) / 0x1.000000p+10f);
+  let v0y = (f32(f32(a1)) / 0x1.000000p+10f);
+  let v0z = (f32(f32(a2)) / 0x1.000000p+10f);
+  let e1x = ((f32(f32(b0)) / 0x1.000000p+10f) - v0x);
+  let e1y = ((f32(f32(b1)) / 0x1.000000p+10f) - v0y);
+  let e1z = ((f32(f32(b2)) / 0x1.000000p+10f) - v0z);
+  let e2x = ((f32(f32(c0)) / 0x1.000000p+10f) - v0x);
+  let e2y = ((f32(f32(c1)) / 0x1.000000p+10f) - v0y);
+  let e2z = ((f32(f32(c2)) / 0x1.000000p+10f) - v0z);
   let nx0 = ((e1y * e2z) - (e1z * e2y));
   let ny0 = ((e1z * e2x) - (e1x * e2z));
   let nz0 = ((e1x * e2y) - (e1y * e2x));
-  let nl = (sqrt((((nx0 * nx0) + (ny0 * ny0)) + (nz0 * nz0))) + bitcast<f32>(925353388u));
+  let nl = (sqrt((((nx0 * nx0) + (ny0 * ny0)) + (nz0 * nz0))) + 0x1.4f8b58p-17f);
   let nx = (nx0 / nl);
   let ny = (ny0 / nl);
   let nz = (nz0 / nl);
-  let ndl = (((nx * bitcast<f32>(1051931443u)) + (ny * bitcast<f32>(1060655595u))) + (nz * (bitcast<f32>(0u) - bitcast<f32>(1058642329u))));
-  let lit = (bitcast<f32>(1045220556u) + (select(ndl, (bitcast<f32>(0u) - ndl), (ndl < bitcast<f32>(0u))) * bitcast<f32>(1062836633u)));
+  let ndl = (((nx * 0x1.666666p-2f) + (ny * 0x1.70a3d6p-1f)) + (nz * (0.0 - 0x1.333332p-1f)));
+  let lit = (0x1.999998p-3f + (select(ndl, (0.0 - ndl), (ndl < 0.0)) * 0x1.b33332p-1f));
   let out = select(gl_pack((gl_col_r(id) * lit), (gl_col_g(id) * lit), (gl_col_b(id) * lit)), gl_bg(py), (id < 0));
   gltf_step_outb_buf[gid] = out;
 }

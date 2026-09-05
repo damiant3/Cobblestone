@@ -14,7 +14,7 @@ fn ss_clampi(v : i32, lo : i32, hi : i32) -> i32 {
   }
   }
 }
-fn ss_gather(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i32, mydep__a : i32, k__a : i32, acc__a : i32) -> i32 {
+fn ss_gather(px__a : i32, py__a : i32, mydep__a : i32, k__a : i32, acc__a : i32) -> i32 {
   var px = px__a;
   var py = py__a;
   var mydep = mydep__a;
@@ -24,12 +24,12 @@ fn ss_gather(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i3
     if ((k >= ss_taps)) {
     return acc;
     } else {
-    let ang = (f32(f32(k)) * bitcast<f32>(1075415351u));
-    let rad = (sqrt(f32(f32(k))) * bitcast<f32>(1083179008u));
+    let ang = (f32(f32(k)) * 0x1.33126ep+1f);
+    let rad = (sqrt(f32(f32(k))) * 0x1.200000p+2f);
     let sx = ss_clampi((px + i32((cos(ang) * rad))), 0, 1023);
     let sy = ss_clampi((py + i32((sin(ang) * rad))), 0, 767);
     let idx = ((sy * 1024) + sx);
-    let ndep = (*buf)[idx];
+    let ndep = ssao_step_gdep_buf[idx];
     let diff = (mydep - ndep);
     let occ = select(0, select(0, 1, (diff < 520)), (diff > 22));
     let _mv1 = px;
@@ -45,6 +45,7 @@ fn ss_gather(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i3
     continue;
     }
   }
+  return 0;
 }
 @group(0) @binding(0) var<storage, read_write> ssao_step_gdep_buf : array<i32>;
 @group(0) @binding(1) var<storage, read_write> ssao_step_galb_buf : array<i32>;
@@ -63,18 +64,18 @@ fn ssao_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let dep = ssao_step_gdep_buf[gid];
   let alb = ssao_step_galb_buf[gid];
   let nrm = ssao_step_gnrm_buf[gid];
-  let occ = ss_gather(&ssao_step_gdep_buf, px, py, dep, 0, 0);
-  let ao = max(bitcast<f32>(1043878379u), (bitcast<f32>(1065353216u) - (f32(f32(occ)) * bitcast<f32>(1033476505u))));
-  let nx = ((f32(f32((nrm / 65536))) / bitcast<f32>(1123942400u)) - bitcast<f32>(1065353216u));
-  let ny = ((f32(f32(((nrm / 256) - ((nrm / 65536) * 256)))) / bitcast<f32>(1123942400u)) - bitcast<f32>(1065353216u));
-  let nz = ((f32(f32((nrm - ((nrm / 256) * 256)))) / bitcast<f32>(1123942400u)) - bitcast<f32>(1065353216u));
-  let ang = (f32(f32(frame)) / bitcast<f32>(1106247680u));
-  let lx = (cos(ang) * bitcast<f32>(1057803468u));
-  let ly = bitcast<f32>(1056964608u);
-  let lz = ((sin(ang) * bitcast<f32>(1057803468u)) - bitcast<f32>(1057803468u));
+  let occ = ss_gather(px, py, dep, 0, 0);
+  let ao = max(0x1.70a3d6p-3f, (0x1.000000p+0f - (f32(f32(occ)) * 0x1.333332p-4f)));
+  let nx = ((f32(f32((nrm / 65536))) / 0x1.fc0000p+6f) - 0x1.000000p+0f);
+  let ny = ((f32(f32(((nrm / 256) - ((nrm / 65536) * 256)))) / 0x1.fc0000p+6f) - 0x1.000000p+0f);
+  let nz = ((f32(f32((nrm - ((nrm / 256) * 256)))) / 0x1.fc0000p+6f) - 0x1.000000p+0f);
+  let ang = (f32(f32(frame)) / 0x1.e00000p+4f);
+  let lx = (cos(ang) * 0x1.199998p-1f);
+  let ly = 0x1.000000p-1f;
+  let lz = ((sin(ang) * 0x1.199998p-1f) - 0x1.199998p-1f);
   let ll = sqrt((((lx * lx) + (ly * ly)) + (lz * lz)));
-  let ndl = max(bitcast<f32>(0u), ((((nx * lx) / ll) + ((ny * ly) / ll)) + ((nz * lz) / ll)));
-  let sh = ((bitcast<f32>(1051260354u) + (ndl * bitcast<f32>(1057300152u))) * ao);
+  let ndl = max(0.0, ((((nx * lx) / ll) + ((ny * ly) / ll)) + ((nz * lz) / ll)));
+  let sh = ((0x1.51eb84p-2f + (ndl * 0x1.0a3d70p-1f)) * ao);
   let ar = (alb / 65536);
   let ag = ((alb / 256) - ((alb / 65536) * 256));
   let ab = (alb - ((alb / 256) * 256));

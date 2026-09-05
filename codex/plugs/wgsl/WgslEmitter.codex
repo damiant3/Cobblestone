@@ -77,12 +77,25 @@ Section: Context
    type-defs : List ATypeDef,
    indent : Text,
    buffers : List Text,
-   kprefix : Text
+   kprefix : Text,
+   brens : List BufRen,
+   bbinds : List BufBind
+  }
+
+ A helper names a buffer by ITS OWN parameter name and the module-scope
+ variable is named for the KERNEL's, so `ss-gather (buf)` called as
+ `ss-gather gdep` must emit `ssao_step_gdep_buf` and not `ssao_step_buf_buf`.
+ brens carries that rename for the helper being emitted; it is empty in a
+ kernel, where the two names are already the same.
+
+  BufRen = record {
+   br-from : Text,
+   br-to : Text
   }
 
   empty-wgsl-ctx : List ATypeDef -> WgslCtx
   empty-wgsl-ctx (tds) =
-   WgslCtx { type-defs = tds, indent = "  ", buffers = [], kprefix = "" }
+   WgslCtx { type-defs = tds, indent = "  ", buffers = [], kprefix = "", brens = [], bbinds = [] }
 
   wgsl-contains : List Text, Text -> Boolean
   wgsl-contains (xs) (name) =
@@ -97,7 +110,7 @@ Section: Context
   wgsl-buf-name : WgslCtx, Text -> Text
   wgsl-buf-name (ctx) (base) =
    if ctx.kprefix == "" then "(*" & wgsl-sanitize base & ")"
-   else ctx.kprefix & "_" & wgsl-sanitize base & "_buf"
+   else ctx.kprefix & "_" & wgsl-sanitize (wgsl-ren-lookup (ctx.brens) base 0) & "_buf"
 
 Section: Float Support
 
@@ -118,6 +131,22 @@ Section: Float Support
   wgsl-ty-text : CodexType -> Text
   wgsl-ty-text (ty) = if wgsl-is-real ty then "f32" else "i32"
 
+ THE UNREACHABLE RETURN AFTER A TAIL-CALL LOOP, and it is not decoration.
+ Every path inside the loop returns or continues, so no `break` is emitted and
+ control cannot reach the end of the function. Tint's reachability analysis sees
+ that; NAGA'S DOES NOT -- it supplies an implicit `return;`, which then
+ disagrees with the declared return type:
+
+     error: Function [11] 'rf_nearest' is invalid
+       = The `return` expression None does not match the declared return type
+
+ Firefox uses naga and Chrome uses Tint, so a shader tested only in Chrome is
+ untested. Measured with naga 30 over every .wgsl in the tree: this alone
+ accounted for 25 failing files and 31 functions.
+
+  wgsl-zero-text : CodexType -> Text
+  wgsl-zero-text (ty) = if wgsl-is-real ty then "0.0" else "0"
+
   wgsl-f32-bits : Integer -> Integer
   wgsl-f32-bits (n) =
    let sign = bit-and (bit-shru n 63) 1
@@ -131,8 +160,49 @@ Section: Float Support
    else if exp32 >= 255 then bit-or (bit-shl sign 31) (bit-shl 255 23)
    else bit-or (bit-shl sign 31) (bit-or (bit-shl exp32 23) mant32)
 
+ A HEX FLOAT LITERAL, NOT A BITCAST, and the reason is naga rather than taste.
+ A Real top-level constant emits a module-scope `const`, and its initialiser has
+ to be a CONSTANT EXPRESSION:
+
+     const pb_rad : f32 = bitcast<f32>(1057300152u);
+     error: Not implemented as constant expression: bitcast built-in function
+
+ naga does not implement `bitcast` there; Tint does, so Chrome accepted every
+ one of these and Firefox refused four kernels outright.
+
+ A hexadecimal float literal is exact by CONSTRUCTION -- it is the sign, the
+ mantissa and the exponent written out -- so it needs no float formatting, only
+ the integer arithmetic already here, and it costs no precision. `0x1.0a3d70p-1f`
+ IS the f32 whose bits are 1057300152, with nothing to round. The `f` suffix
+ pins the type rather than leaning on AbstractFloat conversion.
+
+ Checked over 428,984 sampled f32 bit patterns before relying on it: every one
+ round-trips exactly.
+
+ AN OVERFLOW REFUSES rather than lying. An f64 too large for f32 becomes an
+ infinity, and WGSL has no literal for one; the old bitcast could at least spell
+ the bits. Emitting a finite stand-in would be a wrong number in a shader that
+ compiles, which is the failure this plug's refusals exist to prevent.
+
+  wgsl-hex-digits : List Text =
+   ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+
+  wgsl-hex6 : Integer, Integer, Text -> Text
+  wgsl-hex6 (v) (i) (acc) =
+   if i >= 6 then acc
+   else let nib = bit-and (bit-shru v (4 * (5 - i))) 15
+   in wgsl-hex6 v (i + 1) (acc & list-at wgsl-hex-digits nib)
+
   wgsl-f32-lit : Integer -> Text
-  wgsl-f32-lit (n) = "bitcast<f32>(" & integer-to-text (wgsl-f32-bits n) & "u)"
+  wgsl-f32-lit (n) =
+   let b = wgsl-f32-bits n
+   in let sign = if bit-and (bit-shru b 31) 1 == 1 then "-" else ""
+   in let e = bit-and (bit-shru b 23) 255
+   in let m = bit-and b 8388607
+   in let digits = wgsl-hex6 (bit-shl m 1) 0 ""
+   in if e == 255 then wgsl-refuse "real_literal_overflows_f32"
+      else if e == 0 then (if m == 0 then sign & "0.0" else sign & "0x0." & digits & "p-126f")
+      else sign & "0x1." & digits & "p" & (if e >= 127 then "+" else "") & integer-to-text (e - 127) & "f"
 
  Codex Integer is 64-bit and WGSL i32 is not, and WGSL REFUSES a constant it
  cannot represent rather than wrapping it: the opaque-alpha idiom 255 * 16777216
@@ -424,7 +494,7 @@ Section: Expression Emission
 
   wgsl-emit-args : WgslCtx, List IRExpr, Integer -> Text
   wgsl-emit-args (ctx) (args) (depth) =
-   wgsl-emit-args-loop ctx args 0 "" depth
+   wgsl-emit-args-loop ctx (wgsl-drop-buf-args ctx args 0 []) 0 "" depth
 
   wgsl-emit-args-loop : WgslCtx, List IRExpr, Integer, Text, Integer -> Text
   wgsl-emit-args-loop (ctx) (args) (i) (acc) (depth) =
@@ -791,6 +861,150 @@ Section: Function Classification
    if list-length (d.params) < 2 then False
    else (list-at (d.params) (list-length (d.params) - 1)).name == "gid"
 
+Section: Buffer Name Binding
+
+ A helper names a buffer by its own parameter name; the module-scope variable
+ is named for the KERNEL's. `ss-gather (buf)` called as `ss-gather gdep` must
+ emit `ssao_step_gdep_buf`, so the emitter has to know two things the helper
+ itself does not say: which kernel it serves, and which of that kernel's
+ buffers each of its parameters stands for.
+
+ Both are recorded at the call sites, where the caller's name, the callee's
+ parameter and the argument are all in hand at once. `bb-kernel` is settled
+ there too, so resolving a chain later needs the binds and nothing else.
+
+ THE ANSWER IS UNIQUE because no helper in the tree is called with more than
+ one kernel's buffers -- the property this rests on, checked over the whole
+ tree. A helper reached from two kernels would need one emission per kernel,
+ and `wgsl-resolve-prefix` would answer with whichever call it met first;
+ there are none, and a second one would be a refusal worth adding rather than
+ a silent wrong name.
+
+  BufBind = record {
+   bb-callee : Text,
+   bb-param : Text,
+   bb-caller : Text,
+   bb-arg : Text,
+   bb-kernel : Boolean
+  }
+
+  wgsl-ren-lookup : List BufRen, Text, Integer -> Text
+  wgsl-ren-lookup (rs) (n) (i) =
+   if i >= list-length rs then n
+   else let r = list-at rs i
+   in if r.br-from == n then r.br-to else wgsl-ren-lookup rs n (i + 1)
+
+ A SELF-CALL IS NOT A BINDING. A self-recursive helper passes its own buffer
+ parameter straight through, so the bind would say `buf` comes from `buf` and
+ resolution would walk the helper to itself until the fuel ran out -- and the
+ helper is usually defined before the kernel that calls it, so that useless
+ bind is the one found first. Skipping it leaves the kernel's.
+
+  wgsl-bind-add : Text, Boolean, Text, Text, IRExpr, List BufBind -> List BufBind
+  wgsl-bind-add (caller) (ck) (cname) (pn) (a) (acc) =
+   if caller == cname then acc
+   else when a
+    is IrName (n) (ty) (sp) -> list-push acc (BufBind { bb-callee = cname, bb-param = pn, bb-caller = caller, bb-arg = n, bb-kernel = ck })
+    is otherwise -> acc
+
+  wgsl-bind-args : List IRDef, List BufEntry, Text, Boolean, Text, List IRExpr, List BufBind, Integer -> List BufBind
+  wgsl-bind-args (defs) (m) (caller) (ck) (cname) (args) (acc) (i) =
+   if i >= list-length args then acc
+   else let pn = wgsl-callee-param-name defs cname i 0
+   in let hit = if pn == "" then False else wgsl-contains (wgsl-bufs-of m cname) pn
+   in let acc1 = if hit then wgsl-bind-add caller ck cname pn (list-at args i) acc else acc
+   in wgsl-bind-args defs m caller ck cname args acc1 (i + 1)
+
+  wgsl-bind-root : List IRDef, List BufEntry, Text, Boolean, IRExpr, List IRExpr, List BufBind -> List BufBind
+  wgsl-bind-root (defs) (m) (caller) (ck) (root) (args) (acc) =
+   when root
+    is IrName (n) (ty) (sp) -> wgsl-bind-args defs m caller ck n args acc 0
+    is otherwise -> acc
+
+  wgsl-bind-scan : List IRDef, List BufEntry, Text, Boolean, IRExpr, List BufBind -> List BufBind
+  wgsl-bind-scan (defs) (m) (caller) (ck) (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let chain = collect-apply-chain e []
+     in let acc1 = wgsl-bind-root defs m caller ck (chain.root) (chain.args) acc
+     in wgsl-bind-scan-args defs m caller ck (chain.args) acc1 0
+    is IrLet (n) (ty) (v) (b) (sp) ->
+     wgsl-bind-scan defs m caller ck b (wgsl-bind-scan defs m caller ck v acc)
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     wgsl-bind-scan defs m caller ck el (wgsl-bind-scan defs m caller ck t (wgsl-bind-scan defs m caller ck c acc))
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     wgsl-bind-scan defs m caller ck r (wgsl-bind-scan defs m caller ck l acc)
+    is IrNegate (o) (ty) (sp) ->
+     wgsl-bind-scan defs m caller ck o acc
+    is IrAct (stmts) (ty) (sp) ->
+     wgsl-bind-scan-act defs m caller ck stmts acc 0
+    is otherwise -> acc
+
+  wgsl-bind-scan-args : List IRDef, List BufEntry, Text, Boolean, List IRExpr, List BufBind, Integer -> List BufBind
+  wgsl-bind-scan-args (defs) (m) (caller) (ck) (args) (acc) (i) =
+   if i >= list-length args then acc
+   else wgsl-bind-scan-args defs m caller ck args (wgsl-bind-scan defs m caller ck (list-at args i) acc) (i + 1)
+
+  wgsl-bind-scan-act : List IRDef, List BufEntry, Text, Boolean, List IRActStmt, List BufBind, Integer -> List BufBind
+  wgsl-bind-scan-act (defs) (m) (caller) (ck) (stmts) (acc) (i) =
+   if i >= list-length stmts then acc
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (n) (ty) (v) (sp) ->
+     wgsl-bind-scan-act defs m caller ck stmts (wgsl-bind-scan defs m caller ck v acc) (i + 1)
+    is IrDoExec (e) (sp) ->
+     wgsl-bind-scan-act defs m caller ck stmts (wgsl-bind-scan defs m caller ck e acc) (i + 1)
+
+  wgsl-binds : List IRDef, List BufEntry -> List BufBind
+  wgsl-binds (defs) (m) = wgsl-binds-loop defs m 0 []
+
+  wgsl-binds-loop : List IRDef, List BufEntry, Integer, List BufBind -> List BufBind
+  wgsl-binds-loop (defs) (m) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in wgsl-binds-loop defs m (i + 1) (wgsl-bind-scan defs m (d.name) (wgsl-is-kernel d) (d.body) acc)
+
+ Resolution walks callee-to-caller until it reaches a kernel. The fuel is the
+ chain depth, not the tree size: a helper calling a helper calling a kernel's
+ buffer is two steps, and eight is far past anything here.
+
+  wgsl-bind-find : List BufBind, Text, Text, Integer -> Integer
+  wgsl-bind-find (bs) (callee) (param) (i) =
+   if i >= list-length bs then 0 - 1
+   else let b = list-at bs i
+   in if b.bb-callee == callee & b.bb-param == param then i
+   else wgsl-bind-find bs callee param (i + 1)
+
+  wgsl-resolve-global : List BufBind, Text, Text, Integer -> Text
+  wgsl-resolve-global (bs) (callee) (param) (fuel) =
+   if fuel <= 0 then param
+   else let j = wgsl-bind-find bs callee param 0
+   in if j < 0 then param
+   else let b = list-at bs j
+   in if b.bb-kernel then b.bb-arg
+   else wgsl-resolve-global bs (b.bb-caller) (b.bb-arg) (fuel - 1)
+
+  wgsl-resolve-prefix : List BufBind, Text, List Text, Integer -> Text
+  wgsl-resolve-prefix (bs) (callee) (bufs) (fuel) =
+   if list-length bufs == 0 then ""
+   else wgsl-resolve-prefix-at bs callee (list-at bufs 0) fuel
+
+  wgsl-resolve-prefix-at : List BufBind, Text, Text, Integer -> Text
+  wgsl-resolve-prefix-at (bs) (callee) (param) (fuel) =
+   if fuel <= 0 then ""
+   else let j = wgsl-bind-find bs callee param 0
+   in if j < 0 then ""
+   else let b = list-at bs j
+   in if b.bb-kernel then wgsl-sanitize (b.bb-caller)
+   else wgsl-resolve-prefix-at bs (b.bb-caller) (b.bb-arg) (fuel - 1)
+
+  wgsl-helper-rens : List BufBind, Text, List Text, Integer, List BufRen -> List BufRen
+  wgsl-helper-rens (bs) (callee) (bufs) (i) (acc) =
+   if i >= list-length bufs then acc
+   else let pn = list-at bufs i
+   in let g = wgsl-resolve-global bs callee pn 8
+   in wgsl-helper-rens bs callee bufs (i + 1) (list-push acc (BufRen { br-from = pn, br-to = g }))
+
 Section: Helper Function Emission
 
   wgsl-emit-params : List IRParam, Integer -> Text
@@ -800,30 +1014,61 @@ Section: Helper Function Emission
    in let p = list-at params i
    in sep & wgsl-sanitize (p.name) & " : " & wgsl-ty-text (p.type-val) & wgsl-emit-params params (i + 1)
 
- A helper that uses a parameter as a device-load/store base takes that buffer as
- a storage pointer. hbufs is the set of such parameter names; the helper ctx
- carries them (kprefix empty) so device-load emits `(*p)[i]` and the parameter
- is typed `ptr<storage, array<i32>, read_write>`.
+ A helper that uses a parameter as a device-load/store base NAMES THE MODULE-
+ SCOPE BUFFER, exactly as the entry point does. hbufs is the set of such
+ parameter names; they are dropped from the signature and from every call, and
+ the helper ctx keeps the kernel's prefix so device-load emits
+ `<kernel>_<name>_buf[i]`.
 
-  wgsl-helper-ctx : WgslCtx, List Text -> WgslCtx
-  wgsl-helper-ctx (ctx) (hbufs) =
-   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = "" }
+ IT USED TO PASS A STORAGE POINTER, and WGSL does not allow one as a user
+ function parameter: pointer parameters are restricted to the function, private
+ and workgroup address spaces, and `storage` needs the
+ `unrestricted_pointer_parameters` language extension. Tint implements that
+ extension and NAGA DOES NOT, so Firefox refused seven kernels outright:
 
-  wgsl-emit-params-b : List IRParam, List Text, Integer -> Text
-  wgsl-emit-params-b (params) (bufs) (i) =
-   if i >= list-length params then ""
-   else let sep = if i == 0 then "" else ", "
-   in let p = list-at params i
-   in let ty = if wgsl-contains bufs (p.name) then "ptr<storage, array<i32>, read_write>" else wgsl-ty-text (p.type-val)
-   in sep & wgsl-sanitize (p.name) & " : " & ty & wgsl-emit-params-b params bufs (i + 1)
+     error: Function [2] 'earth_shade_pixel' is invalid
+       = Argument 'framebuf' at index 0 is a pointer of space Storage ...,
+         which can't be passed
+
+ The pointer bought nothing. The buffers are module-scope `var<storage>` in
+ every kernel that has them, and the entry point already reads them by name --
+ only the helpers took the long way round. Checked before relying on it: of the
+ eleven pointer-taking helpers in the tree, NONE is called with more than one
+ kernel's buffers, so naming the global is always unambiguous.
+
+  wgsl-helper-ctx : WgslCtx, Text, List Text -> WgslCtx
+  wgsl-helper-ctx (ctx) (hname) (hbufs) =
+   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = wgsl-resolve-prefix (ctx.bbinds) hname hbufs 8, brens = wgsl-helper-rens (ctx.bbinds) hname hbufs 0 [], bbinds = ctx.bbinds }
+
+ A buffer reaches a helper through the module scope now, so it is neither a
+ parameter nor an argument. Filtering the lists keeps the separator logic in the
+ emitters below unchanged -- they count from zero and a skip inside them would
+ leave a stray comma.
+
+  wgsl-drop-buf-params : List IRParam, List Text, Integer, List IRParam -> List IRParam
+  wgsl-drop-buf-params (ps) (bufs) (i) (acc) =
+   if i >= list-length ps then acc
+   else let p = list-at ps i
+   in let acc2 = if wgsl-contains bufs (p.name) then acc else list-push acc p
+   in wgsl-drop-buf-params ps bufs (i + 1) acc2
+
+  wgsl-drop-buf-args : WgslCtx, List IRExpr, Integer, List IRExpr -> List IRExpr
+  wgsl-drop-buf-args (ctx) (args) (i) (acc) =
+   if i >= list-length args then acc
+   else let a = list-at args i
+   in let acc2 = when a
+      is IrName (n) (ty) (sp) -> if wgsl-contains (ctx.buffers) n then acc else list-push acc a
+      is otherwise -> list-push acc a
+   in wgsl-drop-buf-args ctx args (i + 1) acc2
+
 
   wgsl-emit-helper : WgslCtx, List BufEntry, IRDef -> Text
   wgsl-emit-helper (ctx) (bmap) (d) =
    let hbufs = wgsl-bufs-of bmap (d.name)
-   in let hctx = wgsl-helper-ctx ctx hbufs
+   in let hctx = wgsl-helper-ctx ctx (d.name) hbufs
    in if wgsl-is-self-recursive d then wgsl-emit-loop-helper hctx d
    else let name = wgsl-sanitize (d.name)
-   in let params = wgsl-emit-params-b (d.params) hbufs 0
+   in let params = wgsl-emit-params (wgsl-drop-buf-params (d.params) hbufs 0 []) 0
    in let body = wgsl-body hctx (d.body) False 0
    in "fn " & name & "(" & params & ") -> " & wgsl-ty-text (d.type-val) & " {\n" & body & "}\n\n"
 
@@ -942,11 +1187,11 @@ Section: Recursion to Loop
 
   wgsl-emit-loop-helper : WgslCtx, IRDef -> Text
   wgsl-emit-loop-helper (ctx) (d) =
-   "fn " & wgsl-sanitize (d.name) & "(" & wgsl-loop-params-b (d.params) (ctx.buffers) 0 & ") -> " & wgsl-ty-text (d.type-val) & " {\n"
+   "fn " & wgsl-sanitize (d.name) & "(" & wgsl-loop-params-b (wgsl-drop-buf-params (d.params) (ctx.buffers) 0 []) (ctx.buffers) 0 & ") -> " & wgsl-ty-text (d.type-val) & " {\n"
     & wgsl-loop-vars-b (d.params) (ctx.buffers) 0
     & "  loop {\n"
     & wgsl-loop-body ctx (d.name) (d.params) (d.body) 0
-    & "  }\n}\n\n"
+    & "  }\n  return " & wgsl-zero-text (d.type-val) & ";\n}\n\n"
 
 Section: Kernel Emission
 
@@ -997,7 +1242,7 @@ Section: Kernel Emission
    let kname = wgsl-sanitize (d.name)
    in let buffers = wgsl-bufs-of bmap (d.name)
    in let scalars = wgsl-scalar-params (d.params) buffers 0 []
-   in let kctx = WgslCtx { type-defs = ctx.type-defs, indent = "  ", buffers = buffers, kprefix = kname }
+   in let kctx = WgslCtx { type-defs = ctx.type-defs, indent = "  ", buffers = buffers, kprefix = kname, brens = [], bbinds = ctx.bbinds }
    in let buf-decls = wgsl-emit-buffer-decls kname buffers 0
    in let uvar = "u_" & kname
    in let has-scalars = list-length scalars > 0
@@ -1255,14 +1500,15 @@ Section: Undelivered Definitions
    in let alldefs = wgsl-all-helper-names (ch.defs) 0 []
    in let emitset = if has-k then wgsl-intersect (wgsl-reachable (ch.defs)) alldefs 0 [] else alldefs
    in let bmap = wgsl-bufmap (ch.defs)
+   in let bctx = WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = ctx.buffers, kprefix = ctx.kprefix, brens = ctx.brens, bbinds = wgsl-binds (ch.defs) bmap }
    in let acc0 = EmitAcc { text = "", done = [] }
-   in let emitted = wgsl-topo-loop ctx bmap (ch.defs) emitset acc0 (list-length (ch.defs) + 1)
+   in let emitted = wgsl-topo-loop bctx bmap (ch.defs) emitset acc0 (list-length (ch.defs) + 1)
    in let emitted-count = list-length (emitted.done)
-   in let extra = wgsl-topo-pass ctx bmap (ch.defs) emitset emitted 0
+   in let extra = wgsl-topo-pass bctx bmap (ch.defs) emitset emitted 0
    in let grew = list-length (extra.done) - emitted-count
    in let helpers = emitted.text
    in "// Generated by Codex WGSL Plug\n"
     & "// Compute shaders lowered from Codex [Device] kernels.\n\n"
     & wgsl-diagnostics (ch.defs) emitset (emitted.done) grew
     & helpers
-    & wgsl-emit-kernels ctx bmap (ch.defs) 0
+    & wgsl-emit-kernels bctx bmap (ch.defs) 0

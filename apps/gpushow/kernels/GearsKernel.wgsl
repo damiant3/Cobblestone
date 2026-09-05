@@ -2,17 +2,17 @@
 // Compute shaders lowered from Codex [Device] kernels.
 const gr_width : i32 = 1024;
 fn gr_atan2(y : f32, x : f32) -> f32 {
-  let ax = select(x, (bitcast<f32>(0u) - x), (x < bitcast<f32>(0u)));
-  let ay = select(y, (bitcast<f32>(0u) - y), (y < bitcast<f32>(0u)));
+  let ax = select(x, (0.0 - x), (x < 0.0));
+  let ay = select(y, (0.0 - y), (y < 0.0));
   let mn = min(ax, ay);
   let mx = max(ax, ay);
-  let a = select(bitcast<f32>(0u), (mn / mx), (mx > bitcast<f32>(0u)));
+  let a = select(0.0, (mn / mx), (mx > 0.0));
   let a2 = (a * a);
-  let base = ((a * (bitcast<f32>(1121058816u) + (bitcast<f32>(1113325568u) * a2))) / (bitcast<f32>(1121058816u) + (a2 * (bitcast<f32>(1119092736u) + (bitcast<f32>(1091567616u) * a2)))));
-  let r1 = select(base, (bitcast<f32>(1070141402u) - base), (ay > ax));
-  let r2 = select(r1, (bitcast<f32>(1078530010u) - r1), (x < bitcast<f32>(0u)));
-  if ((y < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - r2);
+  let base = ((a * (0x1.a40000p+6f + (0x1.b80000p+5f * a2))) / (0x1.a40000p+6f + (a2 * (0x1.680000p+6f + (0x1.200000p+3f * a2)))));
+  let r1 = select(base, (0x1.921fb4p+0f - base), (ay > ax));
+  let r2 = select(r1, (0x1.921fb4p+1f - r1), (x < 0.0));
+  if ((y < 0.0)) {
+  return (0.0 - r2);
   } else {
   return r2;
   }
@@ -22,26 +22,26 @@ fn gr_gear(px : f32, py : f32, cx : f32, cy : f32, teeth : f32, rtip : f32, spin
   let dy = (py - cy);
   let r = sqrt(((dx * dx) + (dy * dy)));
   if ((r > rtip)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  if ((r < (rtip * bitcast<f32>(1046562734u)))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((r < (rtip * 0x1.c28f5cp-3f))) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
   let a = (gr_atan2(dy, dx) + spin);
-  let k = i32((((a * teeth) / bitcast<f32>(1078530010u)) + bitcast<f32>(1157234688u)));
+  let k = i32((((a * teeth) / 0x1.921fb4p+1f) + 0x1.f40000p+10f));
   let toothon = (k - ((k / 2) * 2));
-  let rroot = (rtip * bitcast<f32>(1061997772u));
+  let rroot = (rtip * 0x1.999998p-1f);
   let outer = select(rroot, rtip, (toothon == 0));
   if ((r > outer)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  if ((r < (rtip * bitcast<f32>(1051595898u)))) {
-  return bitcast<f32>(1058977873u);
+  if ((r < (rtip * 0x1.5c28f4p-2f))) {
+  return 0x1.3d70a2p-1f;
   } else {
-  if ((r < (rtip * bitcast<f32>(1054280253u)))) {
-  return bitcast<f32>(1050253721u);
+  if ((r < (rtip * 0x1.ae147ap-2f))) {
+  return 0x1.333332p-2f;
   } else {
-  return (bitcast<f32>(1057803468u) + ((r / rtip) * bitcast<f32>(1055286886u)));
+  return (0x1.199998p-1f + ((r / rtip) * 0x1.ccccccp-2f));
   }
   }
   }
@@ -49,29 +49,29 @@ fn gr_gear(px : f32, py : f32, cx : f32, cy : f32, teeth : f32, rtip : f32, spin
   }
 }
 fn gr_pack(lit : f32, r : f32, g : f32, b : f32) -> i32 {
-  let ri = i32(min(bitcast<f32>(1132396544u), ((lit * r) * bitcast<f32>(1132396544u))));
-  let gi = i32(min(bitcast<f32>(1132396544u), ((lit * g) * bitcast<f32>(1132396544u))));
-  let bi = i32(min(bitcast<f32>(1132396544u), ((lit * b) * bitcast<f32>(1132396544u))));
+  let ri = i32(min(0x1.fe0000p+7f, ((lit * r) * 0x1.fe0000p+7f)));
+  let gi = i32(min(0x1.fe0000p+7f, ((lit * g) * 0x1.fe0000p+7f)));
+  let bi = i32(min(0x1.fe0000p+7f, ((lit * b) * 0x1.fe0000p+7f)));
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn gr_render(gid : i32, frame : i32) -> i32 {
   let px = f32(f32((gid - ((gid / gr_width) * gr_width))));
   let py = f32(f32((gid / gr_width)));
-  let f = (f32(f32(frame)) / bitcast<f32>(1106247680u));
-  let g0 = gr_gear(px, py, bitcast<f32>(1137508352u), bitcast<f32>(1136656384u), bitcast<f32>(1094713344u), bitcast<f32>(1126170624u), f);
-  let g1 = gr_gear(px, py, bitcast<f32>(1143177216u), bitcast<f32>(1133903872u), bitcast<f32>(1090519040u), bitcast<f32>(1121452032u), (bitcast<f32>(0u) - (f * bitcast<f32>(1069547520u))));
-  let g2 = gr_gear(px, py, bitcast<f32>(1139474432u), bitcast<f32>(1125908480u), bitcast<f32>(1092616192u), bitcast<f32>(1124073472u), (bitcast<f32>(0u) - (f * bitcast<f32>(1067030937u))));
-  if ((g2 >= bitcast<f32>(0u))) {
-  return gr_pack(g2, bitcast<f32>(1057803468u), bitcast<f32>(1060655595u), bitcast<f32>(1064514355u));
+  let f = (f32(f32(frame)) / 0x1.e00000p+4f);
+  let g0 = gr_gear(px, py, 0x1.9a0000p+8f, 0x1.800000p+8f, 0x1.800000p+3f, 0x1.400000p+7f, f);
+  let g1 = gr_gear(px, py, 0x1.470000p+9f, 0x1.2c0000p+8f, 0x1.000000p+3f, 0x1.b00000p+6f, (0.0 - (f * 0x1.800000p+0f)));
+  let g2 = gr_gear(px, py, 0x1.d60000p+8f, 0x1.380000p+7f, 0x1.400000p+3f, 0x1.000000p+7f, (0.0 - (f * 0x1.333332p+0f)));
+  if ((g2 >= 0.0)) {
+  return gr_pack(g2, 0x1.199998p-1f, 0x1.70a3d6p-1f, 0x1.e66666p-1f);
   } else {
-  if ((g1 >= bitcast<f32>(0u))) {
-  return gr_pack(g1, bitcast<f32>(1064514355u), bitcast<f32>(1061158912u), bitcast<f32>(1051931443u));
+  if ((g1 >= 0.0)) {
+  return gr_pack(g1, 0x1.e66666p-1f, 0x1.800000p-1f, 0x1.666666p-2f);
   } else {
-  if ((g0 >= bitcast<f32>(0u))) {
-  return gr_pack(g0, bitcast<f32>(1062836633u), bitcast<f32>(1051931443u), bitcast<f32>(1050253721u));
+  if ((g0 >= 0.0)) {
+  return gr_pack(g0, 0x1.b33332p-1f, 0x1.666666p-2f, 0x1.333332p-2f);
   } else {
-  let h = (py / bitcast<f32>(1145044992u));
-  return gr_pack(bitcast<f32>(1065353216u), (bitcast<f32>(1025758986u) + (h * bitcast<f32>(1025758986u))), (bitcast<f32>(1028443340u) + (h * bitcast<f32>(1031127695u))), (bitcast<f32>(1035489771u) + (h * bitcast<f32>(1036831948u))));
+  let h = (py / 0x1.800000p+9f);
+  return gr_pack(0x1.000000p+0f, (0x1.47ae14p-5f + (h * 0x1.47ae14p-5f)), (0x1.999998p-5f + (h * 0x1.eb851ep-5f)), (0x1.70a3d6p-4f + (h * 0x1.999998p-4f)));
   }
   }
   }

@@ -7,27 +7,27 @@ const gb_count : i32 = 8;
 const gb_miss : i32 = 8000000;
 fn gb_cx(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1064514355u);
+  return 0x1.e66666p-1f;
   } else {
   if ((i == 2)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1062836633u));
+  return (0.0 - 0x1.b33332p-1f);
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
   if ((i == 4)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1055286886u));
+  return (0.0 - 0x1.ccccccp-2f);
   } else {
   if ((i == 5)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
   if ((i == 6)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1058642329u));
+  return (0.0 - 0x1.333332p-1f);
   } else {
-  return bitcast<f32>(1041865113u);
+  return 0x1.333332p-3f;
   }
   }
   }
@@ -38,27 +38,27 @@ fn gb_cx(i : i32) -> f32 {
 }
 fn gb_cy(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1048576000u);
+  return 0x1.000000p-2f;
   } else {
   if ((i == 3)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1061997772u));
+  return (0.0 - 0x1.999998p-1f);
   } else {
   if ((i == 4)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1058642329u));
+  return (0.0 - 0x1.333332p-1f);
   } else {
   if ((i == 5)) {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   } else {
   if ((i == 6)) {
-  return bitcast<f32>(1060320051u);
+  return 0x1.666666p-1f;
   } else {
-  return bitcast<f32>(1036831948u);
+  return 0x1.999998p-4f;
   }
   }
   }
@@ -69,27 +69,27 @@ fn gb_cy(i : i32) -> f32 {
 }
 fn gb_cz(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1045220556u));
+  return (0.0 - 0x1.999998p-3f);
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1036831948u);
+  return 0x1.999998p-4f;
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1045220556u);
+  return 0x1.999998p-3f;
   } else {
   if ((i == 4)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1050253721u));
+  return (0.0 - 0x1.333332p-2f);
   } else {
   if ((i == 5)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
   if ((i == 6)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1036831948u));
+  return (0.0 - 0x1.999998p-4f);
   } else {
-  return bitcast<f32>(1061997772u);
+  return 0x1.999998p-1f;
   }
   }
   }
@@ -100,27 +100,27 @@ fn gb_cz(i : i32) -> f32 {
 }
 fn gb_rad(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1058977873u);
+  return 0x1.3d70a2p-1f;
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
   if ((i == 4)) {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   } else {
   if ((i == 5)) {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   } else {
   if ((i == 6)) {
-  return bitcast<f32>(1055622430u);
+  return 0x1.d70a3cp-2f;
   } else {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   }
   }
   }
@@ -131,27 +131,27 @@ fn gb_rad(i : i32) -> f32 {
 }
 fn gb_cr(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1062836633u);
+  return 0x1.b33332p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1048576000u);
+  return 0x1.000000p-2f;
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1060320051u);
+  return 0x1.666666p-1f;
   } else {
   if ((i == 4)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
   if ((i == 5)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
   if ((i == 6)) {
-  return bitcast<f32>(1064514355u);
+  return 0x1.e66666p-1f;
   } else {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   }
   }
   }
@@ -162,27 +162,27 @@ fn gb_cr(i : i32) -> f32 {
 }
 fn gb_cg(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1061997772u);
+  return 0x1.999998p-1f;
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
   if ((i == 4)) {
-  return bitcast<f32>(1061997772u);
+  return 0x1.999998p-1f;
   } else {
   if ((i == 5)) {
-  return bitcast<f32>(1055286886u);
+  return 0x1.ccccccp-2f;
   } else {
   if ((i == 6)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
-  return bitcast<f32>(1055286886u);
+  return 0x1.ccccccp-2f;
   }
   }
   }
@@ -193,27 +193,27 @@ fn gb_cg(i : i32) -> f32 {
 }
 fn gb_cb(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1055286886u);
+  return 0x1.ccccccp-2f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1049582632u);
+  return 0x1.1eb850p-2f;
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
   if ((i == 4)) {
-  return bitcast<f32>(1053609164u);
+  return 0x1.999998p-2f;
   } else {
   if ((i == 5)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
   if ((i == 6)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
-  return bitcast<f32>(1059481190u);
+  return 0x1.4cccccp-1f;
   }
   }
   }
@@ -230,14 +230,14 @@ fn gb_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i : i32) -
   let r = gb_rad(i);
   let c = ((((lx * lx) + (ly * ly)) + (lz * lz)) - (r * r));
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -256,7 +256,7 @@ fn gb_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return best_id;
     } else {
     let t = gb_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -300,9 +300,10 @@ fn gb_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn gb_nbyte(n : f32) -> i32 {
-  return i32(((n + bitcast<f32>(1065353216u)) * bitcast<f32>(1123942400u)));
+  return i32(((n + 0x1.000000p+0f) * 0x1.fc0000p+6f));
 }
 @group(0) @binding(0) var<storage, read_write> gbuf_step_galb_buf : array<i32>;
 @group(0) @binding(1) var<storage, read_write> gbuf_step_gnrm_buf : array<i32>;
@@ -312,26 +313,26 @@ fn gbuf_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let gid = i32(gid_vec.x);
   let px = (gid - ((gid / gb_width) * gb_width));
   let py = (gid / gb_width);
-  let fx = (f32(f32((px - gb_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((gb_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1078942760u)));
+  let fx = (f32(f32((px - gb_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((gb_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.9eb850p+1f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1072064102u) / rl);
-  let ox = bitcast<f32>(0u);
-  let oy = bitcast<f32>(0u);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1084227584u));
-  let id = gb_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
-  let t = select(gb_hit(ox, oy, oz, dx, dy, dz, id), bitcast<f32>(0u), (id < 0));
+  let dz = (0x1.ccccccp+0f / rl);
+  let ox = 0.0;
+  let oy = 0.0;
+  let oz = (0.0 - 0x1.400000p+2f);
+  let id = gb_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
+  let t = select(gb_hit(ox, oy, oz, dx, dy, dz, id), 0.0, (id < 0));
   let hx = (ox + (dx * t));
   let hy = (oy + (dy * t));
   let hz = (oz + (dz * t));
-  let nx = select(((hx - gb_cx(id)) / gb_rad(id)), bitcast<f32>(0u), (id < 0));
-  let ny = select(((hy - gb_cy(id)) / gb_rad(id)), bitcast<f32>(1065353216u), (id < 0));
-  let nz = select(((hz - gb_cz(id)) / gb_rad(id)), bitcast<f32>(0u), (id < 0));
-  let albv = select((((i32((gb_cr(id) * bitcast<f32>(1132396544u))) * 65536) + (i32((gb_cg(id) * bitcast<f32>(1132396544u))) * 256)) + i32((gb_cb(id) * bitcast<f32>(1132396544u)))), 0, (id < 0));
+  let nx = select(((hx - gb_cx(id)) / gb_rad(id)), 0.0, (id < 0));
+  let ny = select(((hy - gb_cy(id)) / gb_rad(id)), 0x1.000000p+0f, (id < 0));
+  let nz = select(((hz - gb_cz(id)) / gb_rad(id)), 0.0, (id < 0));
+  let albv = select((((i32((gb_cr(id) * 0x1.fe0000p+7f)) * 65536) + (i32((gb_cg(id) * 0x1.fe0000p+7f)) * 256)) + i32((gb_cb(id) * 0x1.fe0000p+7f))), 0, (id < 0));
   let nrmv = (((gb_nbyte(nx) * 65536) + (gb_nbyte(ny) * 256)) + gb_nbyte(nz));
-  let depv = select(i32((t * bitcast<f32>(1132462080u))), gb_miss, (id < 0));
+  let depv = select(i32((t * 0x1.000000p+8f)), gb_miss, (id < 0));
   gbuf_step_galb_buf[gid] = albv;
   gbuf_step_gnrm_buf[gid] = nrmv;
   gbuf_step_gdep_buf[gid] = depv;

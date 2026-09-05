@@ -7,7 +7,7 @@ fn bs_fall(px : i32, py : i32, cx : i32, cy : i32) -> f32 {
   let dx = f32(f32((px - cx)));
   let dy = f32(f32((py - cy)));
   let d2 = ((dx * dx) + (dy * dy));
-  let inten = max(bitcast<f32>(0u), (bitcast<f32>(1065353216u) - (d2 / bitcast<f32>(1166229504u))));
+  let inten = max(0.0, (0x1.000000p+0f - (d2 / 0x1.068000p+12f)));
   return ((inten * inten) * inten);
 }
 @group(0) @binding(0) var<storage, read_write> bloom_scene_step_outb_buf : array<i32>;
@@ -21,21 +21,21 @@ fn bloom_scene_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let frame = u_bloom_scene_step.frame;
   let px = (gid - ((gid / bs_width) * bs_width));
   let py = (gid / bs_width);
-  let f = (f32(f32(frame)) / bitcast<f32>(1107296256u));
-  let x0 = (bs_half_w + i32((cos(f) * bitcast<f32>(1133903872u))));
-  let y0 = (bs_half_h + i32((sin(f) * bitcast<f32>(1127153664u))));
-  let x1 = (bs_half_w + i32((cos(((f * bitcast<f32>(1067869798u)) + bitcast<f32>(1074161254u))) * bitcast<f32>(1131413504u))));
-  let y1 = (bs_half_h + i32((sin(((f * bitcast<f32>(1067869798u)) + bitcast<f32>(1074161254u))) * bitcast<f32>(1132068864u))));
-  let x2 = (bs_half_w + i32((cos(((f * bitcast<f32>(1061997772u)) + bitcast<f32>(1082549862u))) * bitcast<f32>(1134886912u))));
-  let y2 = (bs_half_h + i32((sin(((f * bitcast<f32>(1061997772u)) + bitcast<f32>(1082549862u))) * bitcast<f32>(1125515264u))));
+  let f = (f32(f32(frame)) / 0x1.000000p+5f);
+  let x0 = (bs_half_w + i32((cos(f) * 0x1.2c0000p+8f)));
+  let y0 = (bs_half_h + i32((sin(f) * 0x1.5e0000p+7f)));
+  let x1 = (bs_half_w + i32((cos(((f * 0x1.4cccccp+0f) + 0x1.0cccccp+1f)) * 0x1.e00000p+7f)));
+  let y1 = (bs_half_h + i32((sin(((f * 0x1.4cccccp+0f) + 0x1.0cccccp+1f)) * 0x1.f40000p+7f)));
+  let x2 = (bs_half_w + i32((cos(((f * 0x1.999998p-1f) + 0x1.0cccccp+2f)) * 0x1.4a0000p+8f)));
+  let y2 = (bs_half_h + i32((sin(((f * 0x1.999998p-1f) + 0x1.0cccccp+2f)) * 0x1.2c0000p+7f)));
   let a = bs_fall(px, py, x0, y0);
   let b = bs_fall(px, py, x1, y1);
   let c = bs_fall(px, py, x2, y2);
-  let r = (((a * bitcast<f32>(1132396544u)) + (b * bitcast<f32>(1116471296u))) + (c * bitcast<f32>(1119092736u)));
-  let g = (((a * bitcast<f32>(1116471296u)) + (b * bitcast<f32>(1132396544u))) + (c * bitcast<f32>(1121714176u)));
-  let bl = (((a * bitcast<f32>(1114636288u)) + (b * bitcast<f32>(1123024896u))) + (c * bitcast<f32>(1132396544u)));
-  let ri = i32(min(bitcast<f32>(1132396544u), (r + bitcast<f32>(1086324736u))));
-  let gi = i32(min(bitcast<f32>(1132396544u), (g + bitcast<f32>(1088421888u))));
-  let bi = i32(min(bitcast<f32>(1132396544u), (bl + bitcast<f32>(1093664768u))));
+  let r = (((a * 0x1.fe0000p+7f) + (b * 0x1.180000p+6f)) + (c * 0x1.680000p+6f));
+  let g = (((a * 0x1.180000p+6f) + (b * 0x1.fe0000p+7f)) + (c * 0x1.b80000p+6f));
+  let bl = (((a * 0x1.e00000p+5f) + (b * 0x1.e00000p+6f)) + (c * 0x1.fe0000p+7f));
+  let ri = i32(min(0x1.fe0000p+7f, (r + 0x1.800000p+2f)));
+  let gi = i32(min(0x1.fe0000p+7f, (g + 0x1.c00000p+2f)));
+  let bi = i32(min(0x1.fe0000p+7f, (bl + 0x1.600000p+3f)));
   bloom_scene_step_outb_buf[gid] = (((ri * 65536) + (gi * 256)) + bi);
 }

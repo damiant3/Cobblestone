@@ -33,6 +33,7 @@ fn mb_iter(zr__a : i32, zi__a : i32, cr__a : i32, ci__a : i32, n__a : i32) -> i3
     }
     }
   }
+  return 0;
 }
 fn mb_cr(gid : i32) -> i32 {
   return (((mb_mod(gid, mb_width) * 3500) / mb_width) - 2500);

@@ -2,62 +2,62 @@
 // Compute shaders lowered from Codex [Device] kernels.
 const ta_width : i32 = 1024;
 fn ta_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn ta_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((ta_clamp01(r) * bitcast<f32>(1132396544u))) * 65536) + (i32((ta_clamp01(g) * bitcast<f32>(1132396544u))) * 256)) + i32((ta_clamp01(b) * bitcast<f32>(1132396544u))));
+  return (((i32((ta_clamp01(r) * 0x1.fe0000p+7f)) * 65536) + (i32((ta_clamp01(g) * 0x1.fe0000p+7f)) * 256)) + i32((ta_clamp01(b) * 0x1.fe0000p+7f)));
 }
 fn ta_layer(l : i32, lx : i32, ly : i32) -> f32 {
   let m = (l - ((l / 6) * 6));
   if ((m == 0)) {
   if (((((lx / 20) + (ly / 20)) - ((((lx / 20) + (ly / 20)) / 2) * 2)) == 0)) {
-  return bitcast<f32>(1065353216u);
+  return 0x1.000000p+0f;
   } else {
-  return bitcast<f32>(1041865113u);
+  return 0x1.333332p-3f;
   }
   } else {
   if ((m == 1)) {
   if (((lx - ((lx / 24) * 24)) < 12)) {
-  return bitcast<f32>(1065353216u);
+  return 0x1.000000p+0f;
   } else {
-  return bitcast<f32>(1045220556u);
+  return 0x1.999998p-3f;
   }
   } else {
   if ((m == 2)) {
   let cx = ((lx - ((lx / 32) * 32)) - 16);
   let cy = ((ly - ((ly / 32) * 32)) - 16);
   if ((((cx * cx) + (cy * cy)) < 90)) {
-  return bitcast<f32>(1065353216u);
+  return 0x1.000000p+0f;
   } else {
-  return bitcast<f32>(1043878379u);
+  return 0x1.70a3d6p-3f;
   }
   } else {
   if ((m == 3)) {
   let cx = (lx - 170);
   let cy = (ly - 120);
   let d = sqrt(f32(f32(((cx * cx) + (cy * cy)))));
-  if ((sin((d * bitcast<f32>(1043878379u))) > bitcast<f32>(0u))) {
-  return bitcast<f32>(1064514355u);
+  if ((sin((d * 0x1.70a3d6p-3f)) > 0.0)) {
+  return 0x1.e66666p-1f;
   } else {
-  return bitcast<f32>(1045220556u);
+  return 0x1.999998p-3f;
   }
   } else {
   if ((m == 4)) {
   if (((lx - ((lx / 22) * 22)) < 11)) {
   if (((ly - ((ly / 22) * 22)) < 11)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   }
   } else {
   if (((ly - ((ly / 22) * 22)) < 11)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   }
   }
   } else {
-  return ta_clamp01((f32(f32((lx + ly))) / bitcast<f32>(1139146752u)));
+  return ta_clamp01((f32(f32((lx + ly))) / 0x1.cc0000p+8f));
   }
   }
   }
@@ -84,8 +84,8 @@ fn texarray_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let l = (panel + (frame / 30));
   let v = ta_layer(l, lx, ly);
   let m = (l - ((l / 6) * 6));
-  let tr = select(select(select(select(select(bitcast<f32>(1058642329u), bitcast<f32>(1062836633u), (m == 4)), bitcast<f32>(1056964608u), (m == 3)), bitcast<f32>(1064514355u), (m == 2)), bitcast<f32>(1053609164u), (m == 1)), bitcast<f32>(1063675494u), (m == 0));
-  let tg = select(select(select(select(select(bitcast<f32>(1063675494u), bitcast<f32>(1056964608u), (m == 4)), bitcast<f32>(1060320051u), (m == 3)), bitcast<f32>(1053609164u), (m == 2)), bitcast<f32>(1062836633u), (m == 1)), bitcast<f32>(1056964608u), (m == 0));
-  let tb = select(select(select(select(select(bitcast<f32>(1053609164u), bitcast<f32>(1063675494u), (m == 4)), bitcast<f32>(1064514355u), (m == 3)), bitcast<f32>(1056964608u), (m == 2)), bitcast<f32>(1056964608u), (m == 1)), bitcast<f32>(1050253721u), (m == 0));
+  let tr = select(select(select(select(select(0x1.333332p-1f, 0x1.b33332p-1f, (m == 4)), 0x1.000000p-1f, (m == 3)), 0x1.e66666p-1f, (m == 2)), 0x1.999998p-2f, (m == 1)), 0x1.ccccccp-1f, (m == 0));
+  let tg = select(select(select(select(select(0x1.ccccccp-1f, 0x1.000000p-1f, (m == 4)), 0x1.666666p-1f, (m == 3)), 0x1.999998p-2f, (m == 2)), 0x1.b33332p-1f, (m == 1)), 0x1.000000p-1f, (m == 0));
+  let tb = select(select(select(select(select(0x1.999998p-2f, 0x1.ccccccp-1f, (m == 4)), 0x1.e66666p-1f, (m == 3)), 0x1.000000p-1f, (m == 2)), 0x1.000000p-1f, (m == 1)), 0x1.333332p-2f, (m == 0));
   texarray_step_outb_buf[gid] = select(ta_pack((v * tr), (v * tg), (v * tb)), (((20 * 65536) + (24 * 256)) + 34), (border == 1));
 }
