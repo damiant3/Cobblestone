@@ -1136,6 +1136,8 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "peek-32", emit = \args ctx d ty -> "cx_peek_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "poke-32", emit = \args ctx d ty -> "cx_poke_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "alloc-bytes", emit = \args ctx d ty -> "cx_alloc_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "poke-16", emit = \args ctx d ty -> "cx_poke_16(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "port-out-byte", emit = \args ctx d ty -> "cx_port_out_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "poke-byte", emit = \args ctx d ty -> "cx_poke_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__memset", emit = \args ctx d ty -> "cx_memset(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-read-bytes", emit = \args ctx d ty -> "cx_buf_read_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
@@ -1231,6 +1233,7 @@ Section: Name Mapping
     ZigNameEntry { codex-name = "False", zig-name = "false" },
     ZigNameEntry { codex-name = "Nothing", zig-name = "null" },
     ZigNameEntry { codex-name = "__deck-pos", zig-name = "cx_deck_pos()" },
+    ZigNameEntry { codex-name = "__self-type-defs", zig-name = "cx_ll_empty(TypeBinding)" },
     ZigNameEntry { codex-name = "hosted-kind", zig-name = "@as(i64, 1)" },
     ZigNameEntry { codex-name = "__heap-save", zig-name = "cx_heap_save()" },
     ZigNameEntry { codex-name = "__deck-enter", zig-name = "cx_deck_enter()" },
@@ -4142,6 +4145,14 @@ Section: Chapter Emission
   zig-p-cx-memset = [ShakeLit "fn ", ShakeUse "cx_memset", ShakeLit "(b: i64, v: i64, n: i64) void {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + n);\n    const cx_x: u8 = @truncate(@as(u64, @bitCast(v)));\n    var cx_i: i64 = 0;\n    while (cx_i < n) : (cx_i += 1) ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + cx_i))] = cx_x;\n}\n"]
 
   zig-p-cx-poke-32 : List ShakeFrag
+  zig-p-cx-poke-16 = [ShakeLit "fn ", ShakeUse "cx_poke_16", ShakeLit "(b: i64, off: i64, v: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 2);\n    const cx_a: usize = @intCast(b + off);\n    const cx_w: u64 = @bitCast(v);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a] = @truncate(cx_w);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 1] = @truncate(cx_w >> 8);\n    return 0;\n}\n"]
+
+ A HOSTED PROCESS HAS NO I/O PORTS. Bare metal writes a byte to one; the C#
+ plug answers 0 without writing anything and this does the same. Both
+ arguments are taken so a caller's side effects still happen, and in order.
+
+  zig-p-cx-port-out-byte = [ShakeLit "fn ", ShakeUse "cx_port_out_byte", ShakeLit "(p: i64, v: i64) i64 {\n    _ = p;\n    _ = v;\n    return 0;\n}\n"]
+
   zig-p-cx-poke-32 = [ShakeLit "fn ", ShakeUse "cx_poke_32", ShakeLit "(b: i64, off: i64, v: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 4);\n    const cx_a: usize = @intCast(b + off);\n    const cx_w: u64 = @bitCast(v);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a] = @truncate(cx_w);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 1] = @truncate(cx_w >> 8);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 2] = @truncate(cx_w >> 16);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 3] = @truncate(cx_w >> 24);\n    return 0;\n}\n"]
 
  A raw byte region from the bump heap, which is what a program pokes into.
@@ -4312,6 +4323,8 @@ Section: Chapter Emission
     ShakePart { name = "cx_buf_write_bytes", frags = zig-p-cx-buf-write-bytes },
     ShakePart { name = "cx_peek_byte", frags = zig-p-cx-peek-byte },
     ShakePart { name = "cx_peek_32", frags = zig-p-cx-peek-32 },
+    ShakePart { name = "cx_poke_16", frags = zig-p-cx-poke-16 },
+    ShakePart { name = "cx_port_out_byte", frags = zig-p-cx-port-out-byte },
     ShakePart { name = "cx_poke_32", frags = zig-p-cx-poke-32 },
     ShakePart { name = "cx_poke_byte", frags = zig-p-cx-poke-byte },
     ShakePart { name = "cx_memset", frags = zig-p-cx-memset },
