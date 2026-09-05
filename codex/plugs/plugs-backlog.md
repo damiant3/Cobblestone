@@ -7500,6 +7500,33 @@ plug fingerprint beside it already guards the EMITTER for this reason; this guar
 the SOURCE. Calibrated both ways: the stale concat exits 2 with the refusal, the
 regenerated one passes.
 
+## 2.29 -- OPEN (Steve Howell, 2026-09-05): the zig plug cannot emit real-to-int or real-from-int, and run.ps1 chose a kernel it did not pass
+
+The plug emits `real-to-bits` and `bits-to-real` and neither of the two
+CONVERSIONS beside them. A program that turns a Real into an Integer, or back,
+refuses at the emitter -- and `show` on a Real routes through the same
+conversion, so it is not an exotic path.
+
+The emitter is the increment; the EXPECTATION is what kept the earlier attempt
+out, and that part is settled now. PR 100 put NaN, infinity and overflow rows
+in `codex/test/ops`, which `build/test-cross-batch.ps1` also grades on arm64
+and riscv64, and those three cases are exactly where the ISAs disagree: x86
+answers the integer indefinite, arm64 and riscv saturate. `real-to-int-wide`
+now carries the unambiguous range for all three backends, so nothing here adds
+a cross-graded expectation at all.
+
+Measured, transpiled and RUN rather than read: `real-from-int` then
+`real-to-int` round-trips 3000000000 and -3000000000 -- above 2^31 on purpose,
+the range a 32-bit conversion saturates in -- and `real-to-int` truncates 2.75
+to 2 and -2.75 to -2, toward zero rather than toward the floor.
+
+Also here: `run.ps1` creates the `build-output` directory it writes its log
+into, and passes `-Kernel` in BOTH branches. Testing an ABSOLUTE path and then
+passing nothing left `compile.ps1` on its own RELATIVE default, so from any
+working directory but the repo root the test passed and the compile failed
+anyway. Related to 2.26, which is about the same scripts sharing a fixed
+scratch path, and not the same defect.
+
 ## 2.28 -- findings routed from Steve Howell's safari-codex intake, UNVERIFIED
 
 Routed as pointers by val on 2026-09-02 during the safari intake (`apps/safari`,

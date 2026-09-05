@@ -104,6 +104,7 @@ Section: Keywords and Sanitization
    "cx_ll_concat", "cx_ll_cons", "cx_ll_insert_at", "cx_ll_with_capacity",
    "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx",
    "cx_real_to_bits", "cx_bits_to_real",
+   "cx_real_to_int", "cx_real_from_int",
    "cx_char_to_text", "cx_char_encode", "cx_list_len", "cx_list_at",
    "cx_text_len", "cx_char_at", "cx_text_dup", "cx_substring", "cx_ipow",
    "cx_shl", "cx_shr", "cx_heap_base", "cx_buf_want", "cx_frontier_crosses",
@@ -1081,6 +1082,8 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "bits-to-real-approx", emit = \args ctx d ty -> "cx_bits_to_real_approx(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "real-to-bits", emit = \args ctx d ty -> "cx_real_to_bits(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "bits-to-real", emit = \args ctx d ty -> "cx_bits_to_real(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "real-from-int", emit = \args ctx d ty -> "cx_real_from_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "real-to-int", emit = \args ctx d ty -> "cx_real_to_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "show", emit = \args ctx d ty -> zig-show-arg (list-at args 0) ctx d },
@@ -3963,6 +3966,12 @@ Section: Chapter Emission
   zig-p-cx-bits-to-real : List ShakeFrag
   zig-p-cx-bits-to-real = [ShakeLit "// mov-rr on bare metal (emit-bits-to-real-builtin), the same register move in\n// the other direction, and the exact inverse of cx_real_to_bits above. Total\n// likewise: every i64 names an f64, the NaNs and the infinities included.\nfn ", ShakeUse "cx_bits_to_real", ShakeLit "(n: i64) f64 {\n    return @bitCast(n);\n}\n"]
 
+  zig-p-cx-real-from-int : List ShakeFrag
+  zig-p-cx-real-from-int = [ShakeLit "// cvtsi2sd on bare metal (emit-real-from-int-builtin): a signed i64 to\n// f64 in the default rounding mode, which is round-to-nearest-even.\n// @floatFromInt is that same conversion -- exact below 2^53 and correctly\n// rounded above it -- so the two arms agree at every magnitude.\nfn ", ShakeUse "cx_real_from_int", ShakeLit "(n: i64) f64 {\n    return @floatFromInt(n);\n}\n"]
+
+  zig-p-cx-real-to-int : List ShakeFrag
+  zig-p-cx-real-to-int = [ShakeLit "// cvttsd2si on bare metal (emit-real-to-int-builtin): truncate toward\n// zero, and answer x86's \"integer indefinite\" -- INT64_MIN -- for a NaN,\n// for an infinity, and for anything whose truncation will not fit i64.\n// Zig's @intFromFloat truncates the same way but is UNDEFINED out of\n// range, so these guards are the mirror of what the hardware actually\n// answers rather than decoration: without them the out-of-range cases are\n// not merely a different answer from bare metal, they are no answer at\n// all. 2^63 is exact in f64, so both bounds are exact and the comparisons\n// catch the infinities on the way past.\nfn ", ShakeUse "cx_real_to_int", ShakeLit "(v: f64) i64 {\n    if (v != v) return -9223372036854775808;\n    if (v >= 9223372036854775808.0) return -9223372036854775808;\n    if (v < -9223372036854775808.0) return -9223372036854775808;\n    return @intFromFloat(v);\n}\n"]
+
   zig-p-cx-char-to-text : List ShakeFrag
   zig-p-cx-char-to-text = [ShakeLit "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\nfn ", ShakeUse "cx_char_to_text", ShakeLit "(c: i64) []const u8 {\n    const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"]
 
@@ -4222,6 +4231,8 @@ Section: Chapter Emission
     ShakePart { name = "cx_bits_to_real_approx", frags = zig-p-cx-bits-to-real-approx },
     ShakePart { name = "cx_real_to_bits", frags = zig-p-cx-real-to-bits },
     ShakePart { name = "cx_bits_to_real", frags = zig-p-cx-bits-to-real },
+    ShakePart { name = "cx_real_from_int", frags = zig-p-cx-real-from-int },
+    ShakePart { name = "cx_real_to_int", frags = zig-p-cx-real-to-int },
     ShakePart { name = "cx_char_to_text", frags = zig-p-cx-char-to-text },
     ShakePart { name = "cx_char_encode", frags = zig-p-cx-char-encode },
     ShakePart { name = "cx_list_len", frags = zig-p-cx-list-len },
