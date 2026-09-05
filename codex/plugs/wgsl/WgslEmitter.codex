@@ -77,12 +77,25 @@ Section: Context
    type-defs : List ATypeDef,
    indent : Text,
    buffers : List Text,
-   kprefix : Text
+   kprefix : Text,
+   brens : List BufRen,
+   bbinds : List BufBind
+  }
+
+ A helper names a buffer by ITS OWN parameter name and the module-scope
+ variable is named for the KERNEL's, so `ss-gather (buf)` called as
+ `ss-gather gdep` must emit `ssao_step_gdep_buf` and not `ssao_step_buf_buf`.
+ brens carries that rename for the helper being emitted; it is empty in a
+ kernel, where the two names are already the same.
+
+  BufRen = record {
+   br-from : Text,
+   br-to : Text
   }
 
   empty-wgsl-ctx : List ATypeDef -> WgslCtx
   empty-wgsl-ctx (tds) =
-   WgslCtx { type-defs = tds, indent = "  ", buffers = [], kprefix = "" }
+   WgslCtx { type-defs = tds, indent = "  ", buffers = [], kprefix = "", brens = [], bbinds = [] }
 
   wgsl-contains : List Text, Text -> Boolean
   wgsl-contains (xs) (name) =
@@ -97,7 +110,7 @@ Section: Context
   wgsl-buf-name : WgslCtx, Text -> Text
   wgsl-buf-name (ctx) (base) =
    if ctx.kprefix == "" then "(*" & wgsl-sanitize base & ")"
-   else ctx.kprefix & "_" & wgsl-sanitize base & "_buf"
+   else ctx.kprefix & "_" & wgsl-sanitize (wgsl-ren-lookup (ctx.brens) base 0) & "_buf"
 
 Section: Float Support
 
@@ -848,6 +861,150 @@ Section: Function Classification
    if list-length (d.params) < 2 then False
    else (list-at (d.params) (list-length (d.params) - 1)).name == "gid"
 
+Section: Buffer Name Binding
+
+ A helper names a buffer by its own parameter name; the module-scope variable
+ is named for the KERNEL's. `ss-gather (buf)` called as `ss-gather gdep` must
+ emit `ssao_step_gdep_buf`, so the emitter has to know two things the helper
+ itself does not say: which kernel it serves, and which of that kernel's
+ buffers each of its parameters stands for.
+
+ Both are recorded at the call sites, where the caller's name, the callee's
+ parameter and the argument are all in hand at once. `bb-kernel` is settled
+ there too, so resolving a chain later needs the binds and nothing else.
+
+ THE ANSWER IS UNIQUE because no helper in the tree is called with more than
+ one kernel's buffers -- the property this rests on, checked over the whole
+ tree. A helper reached from two kernels would need one emission per kernel,
+ and `wgsl-resolve-prefix` would answer with whichever call it met first;
+ there are none, and a second one would be a refusal worth adding rather than
+ a silent wrong name.
+
+  BufBind = record {
+   bb-callee : Text,
+   bb-param : Text,
+   bb-caller : Text,
+   bb-arg : Text,
+   bb-kernel : Boolean
+  }
+
+  wgsl-ren-lookup : List BufRen, Text, Integer -> Text
+  wgsl-ren-lookup (rs) (n) (i) =
+   if i >= list-length rs then n
+   else let r = list-at rs i
+   in if r.br-from == n then r.br-to else wgsl-ren-lookup rs n (i + 1)
+
+ A SELF-CALL IS NOT A BINDING. A self-recursive helper passes its own buffer
+ parameter straight through, so the bind would say `buf` comes from `buf` and
+ resolution would walk the helper to itself until the fuel ran out -- and the
+ helper is usually defined before the kernel that calls it, so that useless
+ bind is the one found first. Skipping it leaves the kernel's.
+
+  wgsl-bind-add : Text, Boolean, Text, Text, IRExpr, List BufBind -> List BufBind
+  wgsl-bind-add (caller) (ck) (cname) (pn) (a) (acc) =
+   if caller == cname then acc
+   else when a
+    is IrName (n) (ty) (sp) -> list-push acc (BufBind { bb-callee = cname, bb-param = pn, bb-caller = caller, bb-arg = n, bb-kernel = ck })
+    is otherwise -> acc
+
+  wgsl-bind-args : List IRDef, List BufEntry, Text, Boolean, Text, List IRExpr, List BufBind, Integer -> List BufBind
+  wgsl-bind-args (defs) (m) (caller) (ck) (cname) (args) (acc) (i) =
+   if i >= list-length args then acc
+   else let pn = wgsl-callee-param-name defs cname i 0
+   in let hit = if pn == "" then False else wgsl-contains (wgsl-bufs-of m cname) pn
+   in let acc1 = if hit then wgsl-bind-add caller ck cname pn (list-at args i) acc else acc
+   in wgsl-bind-args defs m caller ck cname args acc1 (i + 1)
+
+  wgsl-bind-root : List IRDef, List BufEntry, Text, Boolean, IRExpr, List IRExpr, List BufBind -> List BufBind
+  wgsl-bind-root (defs) (m) (caller) (ck) (root) (args) (acc) =
+   when root
+    is IrName (n) (ty) (sp) -> wgsl-bind-args defs m caller ck n args acc 0
+    is otherwise -> acc
+
+  wgsl-bind-scan : List IRDef, List BufEntry, Text, Boolean, IRExpr, List BufBind -> List BufBind
+  wgsl-bind-scan (defs) (m) (caller) (ck) (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let chain = collect-apply-chain e []
+     in let acc1 = wgsl-bind-root defs m caller ck (chain.root) (chain.args) acc
+     in wgsl-bind-scan-args defs m caller ck (chain.args) acc1 0
+    is IrLet (n) (ty) (v) (b) (sp) ->
+     wgsl-bind-scan defs m caller ck b (wgsl-bind-scan defs m caller ck v acc)
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     wgsl-bind-scan defs m caller ck el (wgsl-bind-scan defs m caller ck t (wgsl-bind-scan defs m caller ck c acc))
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     wgsl-bind-scan defs m caller ck r (wgsl-bind-scan defs m caller ck l acc)
+    is IrNegate (o) (ty) (sp) ->
+     wgsl-bind-scan defs m caller ck o acc
+    is IrAct (stmts) (ty) (sp) ->
+     wgsl-bind-scan-act defs m caller ck stmts acc 0
+    is otherwise -> acc
+
+  wgsl-bind-scan-args : List IRDef, List BufEntry, Text, Boolean, List IRExpr, List BufBind, Integer -> List BufBind
+  wgsl-bind-scan-args (defs) (m) (caller) (ck) (args) (acc) (i) =
+   if i >= list-length args then acc
+   else wgsl-bind-scan-args defs m caller ck args (wgsl-bind-scan defs m caller ck (list-at args i) acc) (i + 1)
+
+  wgsl-bind-scan-act : List IRDef, List BufEntry, Text, Boolean, List IRActStmt, List BufBind, Integer -> List BufBind
+  wgsl-bind-scan-act (defs) (m) (caller) (ck) (stmts) (acc) (i) =
+   if i >= list-length stmts then acc
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (n) (ty) (v) (sp) ->
+     wgsl-bind-scan-act defs m caller ck stmts (wgsl-bind-scan defs m caller ck v acc) (i + 1)
+    is IrDoExec (e) (sp) ->
+     wgsl-bind-scan-act defs m caller ck stmts (wgsl-bind-scan defs m caller ck e acc) (i + 1)
+
+  wgsl-binds : List IRDef, List BufEntry -> List BufBind
+  wgsl-binds (defs) (m) = wgsl-binds-loop defs m 0 []
+
+  wgsl-binds-loop : List IRDef, List BufEntry, Integer, List BufBind -> List BufBind
+  wgsl-binds-loop (defs) (m) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in wgsl-binds-loop defs m (i + 1) (wgsl-bind-scan defs m (d.name) (wgsl-is-kernel d) (d.body) acc)
+
+ Resolution walks callee-to-caller until it reaches a kernel. The fuel is the
+ chain depth, not the tree size: a helper calling a helper calling a kernel's
+ buffer is two steps, and eight is far past anything here.
+
+  wgsl-bind-find : List BufBind, Text, Text, Integer -> Integer
+  wgsl-bind-find (bs) (callee) (param) (i) =
+   if i >= list-length bs then 0 - 1
+   else let b = list-at bs i
+   in if b.bb-callee == callee & b.bb-param == param then i
+   else wgsl-bind-find bs callee param (i + 1)
+
+  wgsl-resolve-global : List BufBind, Text, Text, Integer -> Text
+  wgsl-resolve-global (bs) (callee) (param) (fuel) =
+   if fuel <= 0 then param
+   else let j = wgsl-bind-find bs callee param 0
+   in if j < 0 then param
+   else let b = list-at bs j
+   in if b.bb-kernel then b.bb-arg
+   else wgsl-resolve-global bs (b.bb-caller) (b.bb-arg) (fuel - 1)
+
+  wgsl-resolve-prefix : List BufBind, Text, List Text, Integer -> Text
+  wgsl-resolve-prefix (bs) (callee) (bufs) (fuel) =
+   if list-length bufs == 0 then ""
+   else wgsl-resolve-prefix-at bs callee (list-at bufs 0) fuel
+
+  wgsl-resolve-prefix-at : List BufBind, Text, Text, Integer -> Text
+  wgsl-resolve-prefix-at (bs) (callee) (param) (fuel) =
+   if fuel <= 0 then ""
+   else let j = wgsl-bind-find bs callee param 0
+   in if j < 0 then ""
+   else let b = list-at bs j
+   in if b.bb-kernel then wgsl-sanitize (b.bb-caller)
+   else wgsl-resolve-prefix-at bs (b.bb-caller) (b.bb-arg) (fuel - 1)
+
+  wgsl-helper-rens : List BufBind, Text, List Text, Integer, List BufRen -> List BufRen
+  wgsl-helper-rens (bs) (callee) (bufs) (i) (acc) =
+   if i >= list-length bufs then acc
+   else let pn = list-at bufs i
+   in let g = wgsl-resolve-global bs callee pn 8
+   in wgsl-helper-rens bs callee bufs (i + 1) (list-push acc (BufRen { br-from = pn, br-to = g }))
+
 Section: Helper Function Emission
 
   wgsl-emit-params : List IRParam, Integer -> Text
@@ -879,9 +1036,9 @@ Section: Helper Function Emission
  eleven pointer-taking helpers in the tree, NONE is called with more than one
  kernel's buffers, so naming the global is always unambiguous.
 
-  wgsl-helper-ctx : WgslCtx, List Text -> WgslCtx
-  wgsl-helper-ctx (ctx) (hbufs) =
-   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = ctx.kprefix }
+  wgsl-helper-ctx : WgslCtx, Text, List Text -> WgslCtx
+  wgsl-helper-ctx (ctx) (hname) (hbufs) =
+   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = wgsl-resolve-prefix (ctx.bbinds) hname hbufs 8, brens = wgsl-helper-rens (ctx.bbinds) hname hbufs 0 [], bbinds = ctx.bbinds }
 
  A buffer reaches a helper through the module scope now, so it is neither a
  parameter nor an argument. Filtering the lists keeps the separator logic in the
@@ -908,7 +1065,7 @@ Section: Helper Function Emission
   wgsl-emit-helper : WgslCtx, List BufEntry, IRDef -> Text
   wgsl-emit-helper (ctx) (bmap) (d) =
    let hbufs = wgsl-bufs-of bmap (d.name)
-   in let hctx = wgsl-helper-ctx ctx hbufs
+   in let hctx = wgsl-helper-ctx ctx (d.name) hbufs
    in if wgsl-is-self-recursive d then wgsl-emit-loop-helper hctx d
    else let name = wgsl-sanitize (d.name)
    in let params = wgsl-emit-params (wgsl-drop-buf-params (d.params) hbufs 0 []) 0
@@ -1085,7 +1242,7 @@ Section: Kernel Emission
    let kname = wgsl-sanitize (d.name)
    in let buffers = wgsl-bufs-of bmap (d.name)
    in let scalars = wgsl-scalar-params (d.params) buffers 0 []
-   in let kctx = WgslCtx { type-defs = ctx.type-defs, indent = "  ", buffers = buffers, kprefix = kname }
+   in let kctx = WgslCtx { type-defs = ctx.type-defs, indent = "  ", buffers = buffers, kprefix = kname, brens = [], bbinds = ctx.bbinds }
    in let buf-decls = wgsl-emit-buffer-decls kname buffers 0
    in let uvar = "u_" & kname
    in let has-scalars = list-length scalars > 0
@@ -1343,14 +1500,15 @@ Section: Undelivered Definitions
    in let alldefs = wgsl-all-helper-names (ch.defs) 0 []
    in let emitset = if has-k then wgsl-intersect (wgsl-reachable (ch.defs)) alldefs 0 [] else alldefs
    in let bmap = wgsl-bufmap (ch.defs)
+   in let bctx = WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = ctx.buffers, kprefix = ctx.kprefix, brens = ctx.brens, bbinds = wgsl-binds (ch.defs) bmap }
    in let acc0 = EmitAcc { text = "", done = [] }
-   in let emitted = wgsl-topo-loop ctx bmap (ch.defs) emitset acc0 (list-length (ch.defs) + 1)
+   in let emitted = wgsl-topo-loop bctx bmap (ch.defs) emitset acc0 (list-length (ch.defs) + 1)
    in let emitted-count = list-length (emitted.done)
-   in let extra = wgsl-topo-pass ctx bmap (ch.defs) emitset emitted 0
+   in let extra = wgsl-topo-pass bctx bmap (ch.defs) emitset emitted 0
    in let grew = list-length (extra.done) - emitted-count
    in let helpers = emitted.text
    in "// Generated by Codex WGSL Plug\n"
     & "// Compute shaders lowered from Codex [Device] kernels.\n\n"
     & wgsl-diagnostics (ch.defs) emitset (emitted.done) grew
     & helpers
-    & wgsl-emit-kernels ctx bmap (ch.defs) 0
+    & wgsl-emit-kernels bctx bmap (ch.defs) 0

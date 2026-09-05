@@ -4,24 +4,24 @@ const cm_width : i32 = 1024;
 const cm_half_w : i32 = 512;
 const cm_half_h : i32 = 384;
 fn cm_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn cm_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((cm_clamp01(r) * bitcast<f32>(1132396544u))) * 65536) + (i32((cm_clamp01(g) * bitcast<f32>(1132396544u))) * 256)) + i32((cm_clamp01(b) * bitcast<f32>(1132396544u))));
+  return (((i32((cm_clamp01(r) * 0x1.fe0000p+7f)) * 65536) + (i32((cm_clamp01(g) * 0x1.fe0000p+7f)) * 256)) + i32((cm_clamp01(b) * 0x1.fe0000p+7f)));
 }
 fn cm_noise(x : f32, z : f32) -> f32 {
-  return (((sin((x * bitcast<f32>(1063675494u))) * cos((z * bitcast<f32>(1061997772u)))) + ((sin(((x * bitcast<f32>(1072902963u)) + bitcast<f32>(1067869798u))) * cos((z * bitcast<f32>(1074161254u)))) * bitcast<f32>(1056964608u))) + (sin(((x * bitcast<f32>(1079194419u)) - (z * bitcast<f32>(1068708659u)))) * bitcast<f32>(1048576000u)));
+  return (((sin((x * 0x1.ccccccp-1f)) * cos((z * 0x1.999998p-1f))) + ((sin(((x * 0x1.e66666p+0f) + 0x1.4cccccp+0f)) * cos((z * 0x1.0cccccp+1f))) * 0x1.000000p-1f)) + (sin(((x * 0x1.a66666p+1f) - (z * 0x1.666666p+0f))) * 0x1.000000p-2f));
 }
 fn cm_cloud(dx : f32, dz : f32, dy : f32, frame : i32) -> f32 {
-  let t = (bitcast<f32>(1067869798u) / dy);
-  let cx = (((dx * t) * bitcast<f32>(1068708659u)) + (f32(f32(frame)) / bitcast<f32>(1109917696u)));
-  let cz = ((dz * t) * bitcast<f32>(1068708659u));
+  let t = (0x1.4cccccp+0f / dy);
+  let cx = (((dx * t) * 0x1.666666p+0f) + (f32(f32(frame)) / 0x1.500000p+5f));
+  let cz = ((dz * t) * 0x1.666666p+0f);
   let n = cm_noise(cx, cz);
-  return (cm_clamp01(((n - bitcast<f32>(1039516303u)) * bitcast<f32>(1067869798u))) * cm_clamp01((dy * bitcast<f32>(1084227584u))));
+  return (cm_clamp01(((n - 0x1.eb851ep-4f) * 0x1.4cccccp+0f)) * cm_clamp01((dy * 0x1.400000p+2f)));
 }
 fn cm_sun(d : f32) -> f32 {
-  if ((d <= bitcast<f32>(0u))) {
-  return bitcast<f32>(0u);
+  if ((d <= 0.0)) {
+  return 0.0;
   } else {
   let d2 = (d * d);
   let d4 = (d2 * d2);
@@ -31,31 +31,31 @@ fn cm_sun(d : f32) -> f32 {
 fn cm_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / cm_width) * cm_width));
   let py = (gid / cm_width);
-  let fx = (f32(f32((px - cm_half_w))) / bitcast<f32>(1140850688u));
-  let fy = (f32(f32((cm_half_h - py))) / bitcast<f32>(1136656384u));
-  let yaw = (f32(f32(frame)) / bitcast<f32>(1114636288u));
+  let fx = (f32(f32((px - cm_half_w))) / 0x1.000000p+9f);
+  let fy = (f32(f32((cm_half_h - py))) / 0x1.800000p+8f);
+  let yaw = (f32(f32(frame)) / 0x1.e00000p+5f);
   let ca = cos(yaw);
   let sa = sin(yaw);
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1065353216u)));
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.000000p+0f));
   let dx0 = (fx / rl);
   let dy = (fy / rl);
-  let dz0 = (bitcast<f32>(1065353216u) / rl);
+  let dz0 = (0x1.000000p+0f / rl);
   let dx = ((dx0 * ca) + (dz0 * sa));
-  let dz = ((bitcast<f32>(0u) - (dx0 * sa)) + (dz0 * ca));
-  let sund = (((dx * bitcast<f32>(1054280253u)) + (dy * bitcast<f32>(1051595898u))) - (dz * bitcast<f32>(1062668861u)));
-  let glow = (cm_sun(sund) * bitcast<f32>(1060320051u));
-  let disk = select(bitcast<f32>(0u), bitcast<f32>(1070386380u), (sund > bitcast<f32>(1065294495u)));
-  if ((dy < (bitcast<f32>(0u) - bitcast<f32>(1017370378u)))) {
-  return cm_pack((bitcast<f32>(1036831948u) - (dy * bitcast<f32>(1028443340u))), (bitcast<f32>(1035489771u) - (dy * bitcast<f32>(1025758986u))), bitcast<f32>(1034147594u));
+  let dz = ((0.0 - (dx0 * sa)) + (dz0 * ca));
+  let sund = (((dx * 0x1.ae147ap-2f) + (dy * 0x1.5c28f4p-2f)) - (dz * 0x1.ae147ap-1f));
+  let glow = (cm_sun(sund) * 0x1.666666p-1f);
+  let disk = select(0.0, 0x1.999998p+0f, (sund > 0x1.fe353ep-1f));
+  if ((dy < (0.0 - 0x1.47ae14p-6f))) {
+  return cm_pack((0x1.999998p-4f - (dy * 0x1.999998p-5f)), (0x1.70a3d6p-4f - (dy * 0x1.47ae14p-5f)), 0x1.47ae14p-4f);
   } else {
-  let cloudv = select(bitcast<f32>(0u), cm_cloud(dx, dz, dy, frame), (dy > bitcast<f32>(1022739087u)));
-  let base_r = (bitcast<f32>(1050253721u) + (dy * bitcast<f32>(1036831948u)));
-  let base_g = (bitcast<f32>(1056964608u) + (dy * bitcast<f32>(1050253721u)));
-  let base_b = (bitcast<f32>(1062333317u) + (dy * bitcast<f32>(1041865113u)));
-  let skr = ((base_r + (glow * bitcast<f32>(1063675494u))) + disk);
-  let skg = ((base_g + (glow * bitcast<f32>(1061662228u))) + disk);
-  let skb = ((base_b + (glow * bitcast<f32>(1055286886u))) + disk);
-  return cm_pack(((skr * (bitcast<f32>(1065353216u) - cloudv)) + cloudv), ((skg * (bitcast<f32>(1065353216u) - cloudv)) + cloudv), ((skb * (bitcast<f32>(1065353216u) - cloudv)) + cloudv));
+  let cloudv = select(0.0, cm_cloud(dx, dz, dy, frame), (dy > 0x1.eb851ep-6f));
+  let base_r = (0x1.333332p-2f + (dy * 0x1.999998p-4f));
+  let base_g = (0x1.000000p-1f + (dy * 0x1.333332p-2f));
+  let base_b = (0x1.a3d70ap-1f + (dy * 0x1.333332p-3f));
+  let skr = ((base_r + (glow * 0x1.ccccccp-1f)) + disk);
+  let skg = ((base_g + (glow * 0x1.8f5c28p-1f)) + disk);
+  let skb = ((base_b + (glow * 0x1.ccccccp-2f)) + disk);
+  return cm_pack(((skr * (0x1.000000p+0f - cloudv)) + cloudv), ((skg * (0x1.000000p+0f - cloudv)) + cloudv), ((skb * (0x1.000000p+0f - cloudv)) + cloudv));
   }
 }
 @group(0) @binding(0) var<storage, read_write> cubemap_step_outb_buf : array<i32>;

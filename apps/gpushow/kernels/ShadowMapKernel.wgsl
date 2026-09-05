@@ -3,49 +3,49 @@
 const sm_res : i32 = 1024;
 const sm_count : i32 = 3;
 const sm_far : i32 = 8000000;
-const sm_size : f32 = bitcast<f32>(1088421888u);
-const sm_dist : f32 = bitcast<f32>(1088421888u);
+const sm_size : f32 = 0x1.c00000p+2f;
+const sm_dist : f32 = 0x1.c00000p+2f;
 fn sm_cx(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1069547520u));
+  return (0.0 - 0x1.800000p+0f);
   } else {
-  return bitcast<f32>(1068708659u);
+  return 0x1.666666p+0f;
   }
   }
 }
 fn sm_cy(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1065772646u);
+  return 0x1.0cccccp+0f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   } else {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   }
   }
 }
 fn sm_cz(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1056964608u));
+  return (0.0 - 0x1.000000p-1f);
   }
   }
 }
 fn sm_rad(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1062836633u);
+  return 0x1.b33332p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   } else {
-  return bitcast<f32>(1059481190u);
+  return 0x1.4cccccp-1f;
   }
   }
 }
@@ -57,14 +57,14 @@ fn sm_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i : i32) -
   let r = sm_rad(i);
   let c = ((((lx * lx) + (ly * ly)) + (lz * lz)) - (r * r));
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(0u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0.0)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -82,7 +82,7 @@ fn sm_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return best;
     } else {
     let t = sm_hit(ox, oy, oz, dx, dy, dz, i);
-    let nb = select(best, select(select(best, t, (t < best)), t, (best < bitcast<f32>(0u))), (t > bitcast<f32>(0u)));
+    let nb = select(best, select(select(best, t, (t < best)), t, (best < 0.0)), (t > 0.0));
     let _mv0 = ox;
     let _mv1 = oy;
     let _mv2 = oz;
@@ -102,6 +102,7 @@ fn sm_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     continue;
     }
   }
+  return 0.0;
 }
 @group(0) @binding(0) var<storage, read_write> shadowmap_step_shadowbuf_buf : array<i32>;
 struct U_shadowmap_step {
@@ -112,26 +113,26 @@ struct U_shadowmap_step {
 fn shadowmap_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let gid = i32(gid_vec.x);
   let frame = u_shadowmap_step.frame;
-  let tu = (f32(f32((gid - ((gid / sm_res) * sm_res)))) / bitcast<f32>(1149239296u));
-  let tv = (f32(f32((gid / sm_res))) / bitcast<f32>(1149239296u));
-  let la = (f32(f32(frame)) / bitcast<f32>(1109393408u));
-  let rlx = (cos(la) * bitcast<f32>(1058977873u));
-  let rlz = (sin(la) * bitcast<f32>(1058977873u));
-  let ll = sqrt((((rlx * rlx) + bitcast<f32>(1058783258u)) + (rlz * rlz)));
+  let tu = (f32(f32((gid - ((gid / sm_res) * sm_res)))) / 0x1.000000p+10f);
+  let tv = (f32(f32((gid / sm_res))) / 0x1.000000p+10f);
+  let la = (f32(f32(frame)) / 0x1.400000p+5f);
+  let rlx = (cos(la) * 0x1.3d70a2p-1f);
+  let rlz = (sin(la) * 0x1.3d70a2p-1f);
+  let ll = sqrt((((rlx * rlx) + 0x1.378034p-1f) + (rlz * rlz)));
   let lx = (rlx / ll);
-  let ly = ((bitcast<f32>(0u) - bitcast<f32>(1061662228u)) / ll);
+  let ly = ((0.0 - 0x1.8f5c28p-1f) / ll);
   let lz = (rlz / ll);
   let rgl = sqrt(((lz * lz) + (lx * lx)));
   let rx = (lz / rgl);
-  let ry = bitcast<f32>(0u);
-  let rz = (bitcast<f32>(0u) - (lx / rgl));
+  let ry = 0.0;
+  let rz = (0.0 - (lx / rgl));
   let ux = ((ly * rz) - (lz * ry));
   let uy = ((lz * rx) - (lx * rz));
   let uz = ((lx * ry) - (ly * rx));
-  let ox = (((bitcast<f32>(0u) - (lx * sm_dist)) + (((tu - bitcast<f32>(1056964608u)) * sm_size) * rx)) + (((tv - bitcast<f32>(1056964608u)) * sm_size) * ux));
-  let oy = (((bitcast<f32>(1051931443u) - (ly * sm_dist)) + (((tu - bitcast<f32>(1056964608u)) * sm_size) * ry)) + (((tv - bitcast<f32>(1056964608u)) * sm_size) * uy));
-  let oz = (((bitcast<f32>(0u) - (lz * sm_dist)) + (((tu - bitcast<f32>(1056964608u)) * sm_size) * rz)) + (((tv - bitcast<f32>(1056964608u)) * sm_size) * uz));
-  let t = sm_nearest(ox, oy, oz, lx, ly, lz, 0, (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
-  let depv = select(i32((t * bitcast<f32>(1132462080u))), sm_far, (t < bitcast<f32>(0u)));
+  let ox = (((0.0 - (lx * sm_dist)) + (((tu - 0x1.000000p-1f) * sm_size) * rx)) + (((tv - 0x1.000000p-1f) * sm_size) * ux));
+  let oy = (((0x1.666666p-2f - (ly * sm_dist)) + (((tu - 0x1.000000p-1f) * sm_size) * ry)) + (((tv - 0x1.000000p-1f) * sm_size) * uy));
+  let oz = (((0.0 - (lz * sm_dist)) + (((tu - 0x1.000000p-1f) * sm_size) * rz)) + (((tv - 0x1.000000p-1f) * sm_size) * uz));
+  let t = sm_nearest(ox, oy, oz, lx, ly, lz, 0, (0.0 - 0x1.000000p+0f));
+  let depv = select(i32((t * 0x1.000000p+8f)), sm_far, (t < 0.0));
   shadowmap_step_shadowbuf_buf[gid] = depv;
 }

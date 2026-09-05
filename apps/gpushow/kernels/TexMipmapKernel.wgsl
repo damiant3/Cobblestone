@@ -8,16 +8,16 @@ const tm_scale : i32 = 52000;
 fn tm_checker(u : i32, v : i32, cell : i32) -> f32 {
   let s = ((u / cell) + (v / cell));
   if (((s - ((s / 2) * 2)) == 0)) {
-  return bitcast<f32>(1060655595u);
+  return 0x1.70a3d6p-1f;
   } else {
-  return bitcast<f32>(1051595898u);
+  return 0x1.5c28f4p-2f;
   }
 }
 fn tm_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn tm_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((tm_clamp01(r) * bitcast<f32>(1132396544u))) * 65536) + (i32((tm_clamp01(g) * bitcast<f32>(1132396544u))) * 256)) + i32((tm_clamp01(b) * bitcast<f32>(1132396544u))));
+  return (((i32((tm_clamp01(r) * 0x1.fe0000p+7f)) * 65536) + (i32((tm_clamp01(g) * 0x1.fe0000p+7f)) * 256)) + i32((tm_clamp01(b) * 0x1.fe0000p+7f)));
 }
 @group(0) @binding(0) var<storage, read_write> texmipmap_step_outb_buf : array<i32>;
 struct U_texmipmap_step {
@@ -43,10 +43,10 @@ fn texmipmap_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let lod = select(select(select(select(4, 3, (sy > 30)), 2, (sy > 60)), 1, (sy > 120)), 0, (sy > 220));
   let cell = (32 * (lod + 1));
   let base = tm_checker(uu, vv, cell);
-  let fade = select((base + (f32(f32(lod)) * bitcast<f32>(1017370378u))), base, (base > bitcast<f32>(1056964608u)));
-  let tintr = (bitcast<f32>(1065353216u) + (f32(f32(lod)) * bitcast<f32>(0u)));
-  let tintg = (bitcast<f32>(1065353216u) - (f32(f32(lod)) * bitcast<f32>(1031127695u)));
-  let tintb = (bitcast<f32>(1065353216u) - (f32(f32(lod)) * bitcast<f32>(1038174126u)));
+  let fade = select((base + (f32(f32(lod)) * 0x1.47ae14p-6f)), base, (base > 0x1.000000p-1f));
+  let tintr = (0x1.000000p+0f + (f32(f32(lod)) * 0.0));
+  let tintg = (0x1.000000p+0f - (f32(f32(lod)) * 0x1.eb851ep-5f));
+  let tintb = (0x1.000000p+0f - (f32(f32(lod)) * 0x1.c28f5cp-4f));
   texmipmap_step_outb_buf[gid] = tm_pack((fade * tintr), (fade * tintg), (fade * tintb));
   }
 }
