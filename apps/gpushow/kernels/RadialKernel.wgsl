@@ -26,7 +26,7 @@ fn rd_extract(texel : i32, ch : i32) -> i32 {
   }
   }
 }
-fn rd_gather(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i32, ch__a : i32, k__a : i32, acc__a : i32) -> i32 {
+fn rd_gather(px__a : i32, py__a : i32, ch__a : i32, k__a : i32, acc__a : i32) -> i32 {
   var px = px__a;
   var py = py__a;
   var ch = ch__a;
@@ -36,13 +36,13 @@ fn rd_gather(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i3
     if ((k >= rd_taps)) {
     return acc;
     } else {
-    let scale = (bitcast<f32>(1065353216u) - (f32(f32(k)) * bitcast<f32>(1005961871u)));
+    let scale = (0x1.000000p+0f - (f32(f32(k)) * 0x1.eb851ep-8f));
     let sx = (rd_half_w + i32((f32(f32((px - rd_half_w))) * scale)));
     let sy = (rd_half_h + i32((f32(f32((py - rd_half_h))) * scale)));
     let cx = rd_clamp(sx, 0, 1023);
     let cy = rd_clamp(sy, 0, 767);
     let idx = ((cy * 1024) + cx);
-    let texel = (*buf)[idx];
+    let texel = radial_step_scenebuf_buf[idx];
     let c = rd_extract(texel, ch);
     let _mv1 = px;
     let _mv2 = py;
@@ -57,6 +57,7 @@ fn rd_gather(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i3
     continue;
     }
   }
+  return 0;
 }
 @group(0) @binding(0) var<storage, read_write> radial_step_scenebuf_buf : array<i32>;
 @group(0) @binding(1) var<storage, read_write> radial_step_outb_buf : array<i32>;
@@ -71,9 +72,9 @@ fn radial_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let px = (gid - ((gid / rd_width) * rd_width));
   let py = (gid / rd_width);
   let own = radial_step_scenebuf_buf[gid];
-  let rr = rd_gather(&radial_step_scenebuf_buf, px, py, 0, 0, 0);
-  let rg = rd_gather(&radial_step_scenebuf_buf, px, py, 1, 0, 0);
-  let rb = rd_gather(&radial_step_scenebuf_buf, px, py, 2, 0, 0);
+  let rr = rd_gather(px, py, 0, 0, 0);
+  let rg = rd_gather(px, py, 1, 0, 0);
+  let rb = rd_gather(px, py, 2, 0, 0);
   let fr = rd_clamp(((rr / rd_taps) + (rd_extract(own, 0) / 3)), 0, 255);
   let fg = rd_clamp(((rg / rd_taps) + (rd_extract(own, 1) / 3)), 0, 255);
   let fb = rd_clamp(((rb / rd_taps) + (rd_extract(own, 2) / 3)), 0, 255);

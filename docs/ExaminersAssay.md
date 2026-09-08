@@ -467,8 +467,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **206** expected-failure tests (measured
-2026-09-02).
+`codex/test/errors/` holds **209** expected-failure tests (measured
+2026-09-07).
 
 ## What the standing gate does not cover
 
@@ -487,6 +487,26 @@ reaches: the gate proves the compiler unit and whatever the BVT and the
 sweeps name, and a foreword outside those is proven by the battery alone.
 After touching a foreword the compiler does not cite, compile and run its
 tests yourself; the gate will not.
+
+**The poison build has no positive control, so an inert `-Poison` flag and a
+clean compiler are the same colour.** The proof is that a battery passing
+against a 0xCD-filled seed shows the compiler reads no uninitialized field,
+because such a read would dereference `0xCDCDCDCDCDCDCDCD` and page-fault.
+What nothing establishes is that the fill was LIVE. Measured at the Update 56
+release (blu, 2026-09-08): the poison battery answered 1788 total, 1739 pass,
+0 fail, 49 skip, byte-identical in verdict to the real battery, delta newly
+red 0. That is the passing shape AND it is exactly what a flag that did
+nothing would produce (L-FALSIF). The circumstantial evidence is one-sided:
+`-Poison` appends `poison` to the compile mode at `compile.ps1:142` and the
+emitted seed does differ, `BC28B4D1ADC90502` at 3,217,571 bytes against the
+release seed's `D9CF240465C3D0BC` at 3,217,563.
+
+What closes it is one chapter that READS AN UNINITIALIZED FIELD: green under
+the release seed, faulting with `CR2=0xCDCD...` under the poison seed. No test
+chapter in the tree mentions `poison`, `0xCD` or `CDCDCD` at head, so the
+control does not exist and never has. Unowned. Until it is written, a green
+poison battery is evidence about the compiler ONLY if you separately believe
+the flag works.
 
 **Transpiler plugs: the `plug-smoke` phase is four plugs, one input, and a
 binary it may not have rebuilt.** It runs typescript, python, rust and ptx
@@ -641,7 +661,18 @@ whose chapters are small, so the sample was not the population (L-DILUTE).
   third mechanism for the same class: not a missed caller, but a corpus whose
   runner nobody calls.
 
-**Two traps for whoever builds the phase.**
+**Three traps for whoever builds the phase.**
+
+- **COMPARING OUTPUT BY HAND MANUFACTURES REDS, because the depot is CRLF and
+  a captured run is LF.** Measured 2026-09-07 (fester): `badge-tags.expected`
+  is 202 bytes with five CRLF line endings, the captured `.actual` is 197 with
+  none, and the two are identical line for line. A raw `-eq` on the two texts
+  reports a MISMATCH, and it reads exactly like a failing test. The harness
+  normalises before it compares, so a hand check must normalise too or it is
+  measuring the line endings rather than the subject (L-SIDECAR, one layer
+  over: the sidecar case is a hand run that drops an INPUT, this is a hand run
+  that mis-reads the OUTPUT). Strip `\r`, trim trailing whitespace per line,
+  and drop the final newline before comparing.
 
 - **`test-compile-batch.ps1` keys its output directory by the filename STEM,
   so two chapters with the same basename in different directories collide and
@@ -3362,6 +3393,18 @@ a `QueryMode` error skips that index, a `SetMode` error changes nothing, and
 the body reads `Mode->Info` from the firmware either way (L-OPTIONAL: the
 bed's GOP is friendlier than AMI, so the fallback is the safety).
 
+**ANSWERED ON METAL, AND THE READING TRANSFERS TO THE DESK.** Sitting 6 read
+`gopmode honoured max=10 before=3 chose=0 flags=3 status=00000000`,
+`fb=1920x1080 stride=2048 hv=3`, on the ASUS, reproduced exactly on a second
+boot four hours later (`HardwareSitting.md`). AMI honours `SetMode`; the
+largest mode on that firmware is index 0 while it boots in mode 3, so mode
+index does not track size. The reading is from the DIAG image, and it
+transfers because the desk takes the same path: neither
+`build/boot/build-diag.ps1` nor `build/boot/build-option-a.ps1` passes
+`-EntryStart`, which is the only thing that suppresses `GopSetLargestMode`.
+What has NOT been observed is the desk image itself painting at 1920x1080 on
+that board; it needs no sitting of its own, because it rides any desk boot.
+
 **The bed had to be made faithful first, and it found a host crash.**
 codex-vm's GOP advertised three fixed modes regardless of `-gop-width`, so
 the stub would have shrunk every 1600x900 desk run to 1024x768; the mode
@@ -5119,7 +5162,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-206 tests in `codex/test/errors/` verify that the compiler rejects
+209 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -5916,6 +5959,18 @@ file by hand. **The lesson is where a test lives, not whether one exists**:
 the sense `LESSONS.md` means. The regression arm for that defect was put at
 `codex/test/apps/group-service-count` for exactly this reason.
 
+Both suites that were in the second place have since moved to the first:
+`codex/test/apps/group-membership.codex` (20 arms, was
+`apps/nettool/tests/TestGroupMembership.codex`) and
+`codex/test/apps/starmap-suite.codex` (35 arms, was
+`apps/starmap/tests/TestStarMap.codex`), fester 2026-09-08. The starmap suite
+is the sharper instance, because it did not even have an `opening`: seven
+sections of test functions that nothing called, so `app-sweep` could not have
+compiled it either, and five of its arms failed the first time anything ran
+them. **`apps/*/tests/` is empty now, and a suite put back there is a suite
+nothing runs.** A `codex.project.json` `tests` entry naming a path under
+`apps/` is the tell.
+
 **The over-cap case on a LIVE connection is deliberately absent, and the
 reason is a finding.** A 12,600-byte send (nine chunks, so the queue fills on
 the ninth) over an established session produced NO output inside
@@ -6265,9 +6320,8 @@ bytes. Over a three-subject batch at N=500 the writer reported
 297574 bytes)`, `test-compile-batch.ps1` matched the wording and warned that
 every block after the loss is filed under the wrong name, and the containment
 engaged end to end: 3 of 3 members at exit 99 with `BATCH INVALIDATED` in their
-build logs. That is one arm per layer away from a full census -- the guest-serial
-and blit causes have no injection knob yet -- but the half that carries the
-host writer is measured rather than argued.
+build logs. Every cause has an arm now; the table under "THE CENSUS IS CLOSED"
+below names each.
 
 **The layer is decidable from the SHAPE, and it did not need a recurrence**
 (fester, 2026-09-02). Both writers `fopen` the output `"wb"` and rewrite the
@@ -6324,6 +6378,49 @@ reproduces the 2026-08-16 batch-0 shape exactly -- shifted members above,
 exit 99 on the tail -- from a deliberate byte loss, which is the evidence that
 the sequence-assigning parser is the thing that misattributes, whatever loses
 the bytes.
+
+**THE CENSUS IS CLOSED: ALL FIVE CAUSES HAVE A RUNNER, AND THE VM COUNTS EACH
+LOST BYTE ONCE** (fester, 2026-09-07).
+
+| cause | produced by | arm |
+|---|---|---|
+| `output write short at N of M` | `CODEX_VM_SHORT_WRITE_AT` | `check-run-list.ps1` arm 6 |
+| `output file could not be opened` | `-output` naming a directory | `check-run-list.ps1` arm 7 |
+| `blit out of range` | `build/blit-out-of-range.codex`: the guest pokes bit 62 into the address cell and rings the doorbell | `check-run-list.ps1` arm 8 |
+| `buffer growth failed` | `build/serial-byte-flood.codex`, 300 bytes to UART port 0x3F8, under `CODEX_VM_FAIL_GROW_AT=64` | `check-run-list.ps1` arm 9 |
+| `blit growth failed` | a compile under `CODEX_VM_FAIL_GROW_AT=4096` | `check-compile-drop.ps1` arm 3 |
+
+**The reporting contract.** One canonical `SERIAL: N guest serial byte(s)
+DROPPED (<cause>)` line per cause. The two blit causes print theirs per event.
+The writer's two print theirs from the FINAL write only: a poll write is
+rewritten whole by the next one, so a loss there is not a loss, and a count
+taken there is the buffer's length at the earliest failure rather than the
+bytes the file ended without (the held arm 7 measured 1 reported for 129
+lost). The exit summary prints only the bytes no cause has already reported,
+under `buffer growth failed`. `runlist_scan_dropped` sums the canonical lines,
+so `dropped=` on a `RUN-LIST END` line is the loss; before this contract one
+refused 12345-byte blit read as `dropped=24690`, the event line plus the
+summary re-reporting it. A run killed before exit prints no count for a writer
+fault, only the `OUTPUT:` layer line; its capture is a prefix and the
+supervisor reports the kill.
+
+**The byte path is fed only by direct UART writes and an AP's exception dump.**
+Every print on codex-vm goes by blit, so a compile fires `blit growth failed`
+and never reaches `output_buf_write`'s branch. The summary's old habit of
+printing every counted drop under `buffer growth failed` is how that cause
+passed for a runner it did not have: a compile under the knob showed the
+name, with the blit bytes behind it (L-VACUOUS, an arm that agreed with the
+claim and its negation). Arm 9's control is a subject that fires that cause
+and no other, in one line, with an exact count: the capture less the cap.
+
+`check-compile-drop.ps1` is what routes a drop into a refusal: `compile.ps1`
+reads codex-vm's stderr on its SUCCESS path and refuses with exit 6 before the
+binary is written, because a drop means the bytes after the `SIZE:` line are
+not the program. Every other reader (`test-run.ps1`, `test-compile-batch.ps1`,
+`runlist_scan_dropped`) refuses on the same phrase. The layer of the two
+historical events (2026-08-16, 2026-08-27) stays unknowable and does not need
+knowing: the containment invalidates a batch on either signal, the shape rule
+attributes a layer, and the next loss names itself.
 
 Invalidation sets the exit code and leaves the misattributed `.cdx` on disk.
 That is inert to the harness and deliberate to leave alone: phase 1b gates

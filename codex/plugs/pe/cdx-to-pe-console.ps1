@@ -18,8 +18,33 @@ $ErrorActionPreference = 'Stop'
 $ImageBase = 1048576      # 0x100000
 $IdataRva  = 4096         # 0x1000
 $TextRva   = 8192         # 0x2000
-$IatSlots  = @{ GetStdHandle = 1052760; WriteFile = 1052768; ExitProcess = 1052776; VirtualAlloc = 1052784; ReadFile = 1052792 }
-$Funcs     = @('GetStdHandle','WriteFile','ExitProcess','VirtualAlloc','ReadFile')   # ORDER IS LOAD-BEARING
+# THE SLOT ADDRESSES ARE READ OUT OF X86_64Boot.codex AND NOT COPIED HERE.
+# They used to be a hand-written table, and that made the assertion below check
+# this file against ITSELF: a table and a layout that agree while the compiler
+# believes something else pass it cleanly, which is the one divergence the
+# assertion exists to catch. One occurrence in the tree stays one occurrence,
+# the same way build/sign-seed.ps1 reads the key location out of build.ps1.
+# A constant is named `hosted-win-iat-<lowercased function name>`.
+$BootFile = Join-Path $PSScriptRoot '..\..\compiler\Emit\X86_64Boot.codex'
+if (-not (Test-Path -PathType Leaf $BootFile)) { throw "cannot find $BootFile, which declares the IAT slot addresses" }
+$IatSlots = @{}
+foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path $BootFile).Path)) {
+    if ($line -match '^\s*hosted-win-iat-([a-z0-9]+)\s*:\s*Integer\s*=\s*(\d+)\s*$') {
+        $IatSlots[$matches[1]] = [int]$matches[2]
+    }
+}
+if ($IatSlots.Count -eq 0) { throw "X86_64Boot.codex declares no hosted-win-iat-* constants; the shape this file parses has changed" }
+
+# ORDER IS LOAD-BEARING, within each list and between the lists: a slot address
+# is its position, so moving a name moves the address the compiler already
+# emitted a call to. A descriptor is 20 bytes and the array is null-terminated,
+# so one DLL cost 40 bytes of descriptor and two cost 60. That 20 bytes is why
+# every kernel32 slot above moved when ws2_32 arrived, and why this file and
+# X86_64Boot.codex are one change or neither.
+$Imports = @(
+    @{ Dll = 'kernel32.dll'; Funcs = @('GetStdHandle','WriteFile','ExitProcess','VirtualAlloc','ReadFile') },
+    @{ Dll = 'ws2_32.dll';   Funcs = @('WSAStartup','socket','bind','listen','accept','closesocket','recv','send','setsockopt') }
+)
 
 $FILE_ALIGN = 512
 $SECT_ALIGN = 4096
@@ -44,26 +69,34 @@ $content = New-Object byte[] ($textAligned + $rodSz)
 if ($rodSz -gt 0) { [Array]::Copy($cdx, $rodOff, $content, $textAligned, $rodSz) }
 
 # --- .idata ------------------------------------------------------------------
-$descSize = 40
-$iltOff   = $descSize
-$iltSize  = ($Funcs.Count + 1) * 8
-$iatOff   = $iltOff + $iltSize
-$iatSize  = $iltSize
-$namesOff = $iatOff + $iatSize
+$descSize = ($Imports.Count + 1) * 20
+$cur = $descSize
+$iltOff = @()
+foreach ($im in $Imports) { $iltOff += $cur; $cur += ($im.Funcs.Count + 1) * 8 }
+$iatOff = @()
+foreach ($im in $Imports) { $iatOff += $cur; $cur += ($im.Funcs.Count + 1) * 8 }
+# The IAT data directory covers EVERY address table, not the first one. The
+# tables are laid down contiguously above, so the extent is first to last.
+$iatDirOff  = $iatOff[0]
+$iatDirSize = $cur - $iatDirOff
 $nameOffs = @{}
-$cur = $namesOff
-foreach ($f in $Funcs) { $nameOffs[$f] = $cur; $cur += AlignUp (2 + $f.Length + 1) 2 }
-$dllOff = $cur
-$cur += AlignUp ('kernel32.dll'.Length + 1) 2
+foreach ($im in $Imports) { foreach ($f in $im.Funcs) { $nameOffs[$f] = $cur; $cur += AlignUp (2 + $f.Length + 1) 2 } }
+$dllOff = @()
+foreach ($im in $Imports) { $dllOff += $cur; $cur += AlignUp ($im.Dll.Length + 1) 2 }
 $idataSize = $cur
 if ($idataSize -gt $SECT_ALIGN) { throw "idata is $idataSize bytes and the layout reserves one $SECT_ALIGN-byte page" }
 
 # THE ASSERTION THAT MAKES THE SHARED LAYOUT SAFE. The compiler emitted calls to
 # these addresses; if this build would put the slots anywhere else, refuse.
-for ($i = 0; $i -lt $Funcs.Count; $i++) {
-    $want = $IatSlots[$Funcs[$i]]
-    $got  = $ImageBase + $IdataRva + $iatOff + ($i * 8)
-    if ($want -ne $got) { throw "IAT slot for $($Funcs[$i]) is $got here and $want in X86_64Boot.codex -- the two layouts have diverged" }
+for ($d = 0; $d -lt $Imports.Count; $d++) {
+    $fs = $Imports[$d].Funcs
+    for ($i = 0; $i -lt $fs.Count; $i++) {
+        $key = $fs[$i].ToLowerInvariant()
+        if (-not $IatSlots.ContainsKey($key)) { throw "X86_64Boot.codex declares no hosted-win-iat-$key, so the compiler cannot call $($fs[$i])" }
+        $want = $IatSlots[$key]
+        $got  = $ImageBase + $IdataRva + $iatOff[$d] + ($i * 8)
+        if ($want -ne $got) { throw "IAT slot for $($fs[$i]) is $got here and $want in X86_64Boot.codex -- the two layouts have diverged" }
+    }
 }
 
 $idata = New-Object byte[] $idataSize
@@ -71,22 +104,33 @@ function PutInto([byte[]]$dst, [byte[]]$v, [int]$at) { [Array]::Copy($v, 0, $dst
 function B32([int64]$v) { [BitConverter]::GetBytes([uint32]($v -band 0xFFFFFFFFL)) }
 function B64([int64]$v) { [BitConverter]::GetBytes([uint64]$v) }
 
-PutInto $idata (B32 ($IdataRva + $iltOff))  0    # OriginalFirstThunk
-PutInto $idata (B32 0)                      4    # TimeDateStamp
-PutInto $idata (B32 0)                      8    # ForwarderChain
-PutInto $idata (B32 ($IdataRva + $dllOff))  12   # Name
-PutInto $idata (B32 ($IdataRva + $iatOff))  16   # FirstThunk
-for ($i = 0; $i -lt $Funcs.Count; $i++) {
-    $rva = $IdataRva + $nameOffs[$Funcs[$i]]
-    PutInto $idata (B64 $rva) ($iltOff + $i * 8)
-    PutInto $idata (B64 $rva) ($iatOff + $i * 8)
+# One descriptor per DLL, then a null one, which the zeroed tail already is.
+for ($d = 0; $d -lt $Imports.Count; $d++) {
+    $at = $d * 20
+    PutInto $idata (B32 ($IdataRva + $iltOff[$d]))  ($at + 0)    # OriginalFirstThunk
+    PutInto $idata (B32 0)                          ($at + 4)    # TimeDateStamp
+    PutInto $idata (B32 0)                          ($at + 8)    # ForwarderChain
+    PutInto $idata (B32 ($IdataRva + $dllOff[$d]))  ($at + 12)   # Name
+    PutInto $idata (B32 ($IdataRva + $iatOff[$d]))  ($at + 16)   # FirstThunk
 }
-foreach ($f in $Funcs) {
-    $at = $nameOffs[$f]
-    PutInto $idata (B32 0) $at    # hint (2 bytes) then the name; a zero word is fine
-    PutInto $idata ([System.Text.Encoding]::ASCII.GetBytes($f)) ($at + 2)
+for ($d = 0; $d -lt $Imports.Count; $d++) {
+    $fs = $Imports[$d].Funcs
+    for ($i = 0; $i -lt $fs.Count; $i++) {
+        $rva = $IdataRva + $nameOffs[$fs[$i]]
+        PutInto $idata (B64 $rva) ($iltOff[$d] + $i * 8)
+        PutInto $idata (B64 $rva) ($iatOff[$d] + $i * 8)
+    }
 }
-PutInto $idata ([System.Text.Encoding]::ASCII.GetBytes('kernel32.dll')) $dllOff
+foreach ($im in $Imports) {
+    foreach ($f in $im.Funcs) {
+        $at = $nameOffs[$f]
+        PutInto $idata (B32 0) $at    # hint (2 bytes) then the name; a zero word is fine
+        PutInto $idata ([System.Text.Encoding]::ASCII.GetBytes($f)) ($at + 2)
+    }
+}
+for ($d = 0; $d -lt $Imports.Count; $d++) {
+    PutInto $idata ([System.Text.Encoding]::ASCII.GetBytes($Imports[$d].Dll)) $dllOff[$d]
+}
 
 # --- layout ------------------------------------------------------------------
 $sections = @(
@@ -145,7 +189,7 @@ P32 0 ($opt + 104)                     # LoaderFlags
 P32 16 ($opt + 108)                    # NumberOfRvaAndSizes
 $dd = $opt + 112
 P32 $IdataRva ($dd + 1 * 8); P32 $idataSize ($dd + 1 * 8 + 4)          # IMPORT
-P32 ($IdataRva + $iatOff) ($dd + 12 * 8); P32 $iatSize ($dd + 12 * 8 + 4)  # IAT
+P32 ($IdataRva + $iatDirOff) ($dd + 12 * 8); P32 $iatDirSize ($dd + 12 * 8 + 4)  # IAT
 
 $sh = $dd + 16 * 8
 for ($i = 0; $i -lt $sections.Count; $i++) {

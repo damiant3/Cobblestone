@@ -132,7 +132,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "#t" else "#f"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-scm-name n arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-scm-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-scm-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(- " & emit-scm-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-scm-expr-at c arities (depth + 1) & " " & emit-scm-expr-at t arities (depth + 1) & " " & emit-scm-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(let ((" & scm-sanitize name & " " & emit-scm-expr-at val arities (depth + 1) & ")) " & emit-scm-expr-at body arities (depth + 1) & ")"
@@ -160,9 +160,23 @@ Section: Expression Emission
    in if ar == 0 then "(" & scm-sanitize n & ")"
       else scm-sanitize n
 
-  emit-scm-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-scm-binary (op) (l) (r) (arities) =
+ Scheme exact integers are arbitrary precision, so neither arm is the bare
+ operator. `modulo` takes the sign of the DIVISOR, so with a positive modulus
+ it answers a non-negative residue and the band's shift-mask-shift is right
+ with one call, where `remainder` would not be.
+
+  scm-int-arith : Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  scm-int-arith (sym) (l) (r) (ty) (arities) =
+   let exact = "(" & sym & " " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
+   in if int-ty-wraps ty then "(- (modulo (+ " & exact & " 9223372036854775808) 18446744073709551616) 9223372036854775808)"
+   else "(let ((_v " & exact & ")) (if (or (< _v -9223372036854775808) (> _v 9223372036854775807)) (error \"CODEX_TRAP_integer_overflow\") _v))"
+
+  emit-scm-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-scm-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> scm-int-arith "+" l r ty arities
+    is IrSubInt -> scm-int-arith "-" l r ty arities
+    is IrMulInt -> scm-int-arith "*" l r ty arities
     is IrAppendText -> "(string-append " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
     is IrAppendList -> "(append " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
     is IrConsList -> "(cons " & emit-scm-expr l arities & " " & emit-scm-expr r arities & ")"
@@ -295,8 +309,49 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      let bi = scm-try-builtin n args arities
      in if text-length bi > 0 then bi
-     else "(" & scm-sanitize n & " " & emit-scm-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 1 then emit-scm-curried (scm-sanitize n) args arities 0
+        else if list-length args == ar then "(" & scm-sanitize n & " " & emit-scm-apply-args args arities 0 & ")"
+        else if list-length args < ar then emit-scm-partial n args arities (ar - list-length args)
+        else emit-scm-curried ("(" & scm-sanitize n & " " & emit-scm-apply-args-upto args arities 0 ar & ")") args arities ar
     is otherwise -> "(" & emit-scm-expr root arities & " " & emit-scm-apply-args args arities 0 & ")"
+
+ Scheme is not curried: `choose` is defined at one arity and `(choose 0 2 3)`
+ passes three arguments to a one-parameter procedure. An application past the
+ callee's arity nests instead, and a definition applied to fewer arguments
+ than it takes is eta-wrapped.
+
+  emit-scm-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-scm-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = "(" & base & " " & emit-scm-expr (list-at args i) arities & ")"
+   in emit-scm-curried next args arities (i + 1)
+
+  emit-scm-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-scm-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-scm-expr (list-at args i) arities
+   else emit-scm-expr (list-at args i) arities & " " & emit-scm-apply-args-upto args arities (i + 1) n
+
+  emit-scm-partial-open : Integer, Integer -> Text
+  emit-scm-partial-open (i) (count) =
+   if i == count then ""
+   else "(lambda (_p" & integer-to-text i & "_) " & emit-scm-partial-open (i + 1) count
+
+  emit-scm-partial-close : Integer -> Text
+  emit-scm-partial-close (count) =
+   if count == 0 then "" else ")" & emit-scm-partial-close (count - 1)
+
+  emit-scm-partial-params : Integer, Integer -> Text
+  emit-scm-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_ " & emit-scm-partial-params (i + 1) count
+
+  emit-scm-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-scm-partial (n) (args) (arities) (short) =
+   let call = "(" & scm-sanitize n & " " & emit-scm-apply-args args arities 0 & " " & emit-scm-partial-params 0 short & ")"
+   in emit-scm-partial-open 0 short & call & emit-scm-partial-close short
 
   emit-scm-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-scm-apply-args (args) (arities) (i) =
@@ -392,6 +447,33 @@ Section: Chapter Emission
    in let defs-text = emit-scm-defs (m.defs) 0 arities
    in let entry = scm-emit-entry (m.defs)
    in header & types-text & defs-text & entry
+
+  emit-scheme-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-scheme-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "(import (scheme base) (scheme write) (scheme read))\n\n(define (list-snoc xs v) (append xs (list v)))\n(define (list-push xs v) (list-snoc xs v))\n\n" & scm-text-builtins
+   in let types-text = emit-scm-type-defs type-defs 0
+   in let entry = scm-emit-entry (m.defs)
+   in header & types-text
+
+  emit-scheme-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-scheme-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "(import (scheme base) (scheme write) (scheme read))\n\n(define (list-snoc xs v) (append xs (list v)))\n(define (list-push xs v) (list-snoc xs v))\n\n" & scm-text-builtins
+   in let types-text = emit-scm-type-defs type-defs 0
+   in let entry = scm-emit-entry (m.defs)
+   in entry
+
+  emit-scheme-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-scheme-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "(import (scheme base) (scheme write) (scheme read))\n\n(define (list-snoc xs v) (append xs (list v)))\n(define (list-push xs v) (list-snoc xs v))\n\n" & scm-text-builtins
+   in let types-text = emit-scm-type-defs type-defs 0
+   in let entry = scm-emit-entry (m.defs)
+   in arities
+
+  emit-scheme-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-scheme-chapter-stream-def (m) (v) (i) = emit-scm-def (list-at (m.defs) i) v
 
  `(scheme base)` has string=?, string-length, substring and string-ref and
  no search or split at all, so these are written out rather than delegated.

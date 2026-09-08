@@ -6,14 +6,17 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\spirv-plug.cdx'
-$LogFile = Join-Path $PSScriptRoot 'build-output\run.log'
+# Scratch is keyed to the run so two concurrent runs cannot cross
+# their IR and their log (plugs 2.26).
+$RunTag  = if ($Out) { [System.IO.Path]::GetFileNameWithoutExtension($Out) } else { $PID }
+$LogFile = Join-Path $PSScriptRoot "build-output\run-$RunTag.log"
 if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
 
 # Phase 1: source -> IR-CCE
 # text-plug: an OpFunctionCall is emitted from an IR call, so the inline passes
 # must not substitute a body and delete it. See text-plug-ir-pipeline in
 # codex/compiler/IR/Passes.codex.
-$IrFile = Join-Path $PSScriptRoot 'build-output\last-run.ir'
+$IrFile = Join-Path $PSScriptRoot "build-output\last-run-$RunTag.ir"
 # -Kernel pins the compiler the probe is measured against. With none,
 # compile.ps1 takes whatever build.ps1 last left in build-output, which is not
 # the seed and not anything this plug is being checked against.

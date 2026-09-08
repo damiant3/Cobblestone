@@ -15,36 +15,36 @@ fn d2_mt(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, v0x : f32, 
   let pvy = ((dz * e2x) - (dx * e2z));
   let pvz = ((dx * e2y) - (dy * e2x));
   let det = (((e1x * pvx) + (e1y * pvy)) + (e1z * pvz));
-  let adet = select(det, (bitcast<f32>(0u) - det), (det < bitcast<f32>(0u)));
-  if ((adet < bitcast<f32>(925353388u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  let adet = select(det, (0.0 - det), (det < 0.0));
+  if ((adet < 0x1.4f8b58p-17f)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let inv = (bitcast<f32>(1065353216u) / det);
+  let inv = (0x1.000000p+0f / det);
   let tvx = (ox - v0x);
   let tvy = (oy - v0y);
   let tvz = (oz - v0z);
   let u = ((((tvx * pvx) + (tvy * pvy)) + (tvz * pvz)) * inv);
-  if ((u < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((u < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  if ((u > bitcast<f32>(1065353216u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((u > 0x1.000000p+0f)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
   let qvx = ((tvy * e1z) - (tvz * e1y));
   let qvy = ((tvz * e1x) - (tvx * e1z));
   let qvz = ((tvx * e1y) - (tvy * e1x));
   let vv = ((((dx * qvx) + (dy * qvy)) + (dz * qvz)) * inv);
-  if ((vv < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((vv < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  if (((u + vv) > bitcast<f32>(1065353216u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if (((u + vv) > 0x1.000000p+0f)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
   let t = ((((e2x * qvx) + (e2y * qvy)) + (e2z * qvz)) * inv);
-  if ((t > bitcast<f32>(981668462u))) {
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
   }
@@ -52,7 +52,7 @@ fn d2_mt(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, v0x : f32, 
   }
   }
 }
-fn d2_nearest(buf : ptr<storage, array<i32>, read_write>, ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz__a : f32, i__a : i32, best_id__a : i32, best_t__a : f32) -> i32 {
+fn d2_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz__a : f32, i__a : i32, best_id__a : i32, best_t__a : f32) -> i32 {
   var ox = ox__a;
   var oy = oy__a;
   var oz = oz__a;
@@ -66,17 +66,17 @@ fn d2_nearest(buf : ptr<storage, array<i32>, read_write>, ox__a : f32, oy__a : f
     if ((i >= d2_tris)) {
     return best_id;
     } else {
-    let a0 = (*buf)[(i * 9)];
-    let a1 = (*buf)[((i * 9) + 1)];
-    let a2 = (*buf)[((i * 9) + 2)];
-    let b0 = (*buf)[((i * 9) + 3)];
-    let b1 = (*buf)[((i * 9) + 4)];
-    let b2 = (*buf)[((i * 9) + 5)];
-    let c0 = (*buf)[((i * 9) + 6)];
-    let c1 = (*buf)[((i * 9) + 7)];
-    let c2 = (*buf)[((i * 9) + 8)];
-    let t = d2_mt(ox, oy, oz, dx, dy, dz, (f32(f32(a0)) / bitcast<f32>(1149239296u)), (f32(f32(a1)) / bitcast<f32>(1149239296u)), (f32(f32(a2)) / bitcast<f32>(1149239296u)), (f32(f32(b0)) / bitcast<f32>(1149239296u)), (f32(f32(b1)) / bitcast<f32>(1149239296u)), (f32(f32(b2)) / bitcast<f32>(1149239296u)), (f32(f32(c0)) / bitcast<f32>(1149239296u)), (f32(f32(c1)) / bitcast<f32>(1149239296u)), (f32(f32(c2)) / bitcast<f32>(1149239296u)));
-    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let a0 = d20_step_meshbuf_buf[(i * 9)];
+    let a1 = d20_step_meshbuf_buf[((i * 9) + 1)];
+    let a2 = d20_step_meshbuf_buf[((i * 9) + 2)];
+    let b0 = d20_step_meshbuf_buf[((i * 9) + 3)];
+    let b1 = d20_step_meshbuf_buf[((i * 9) + 4)];
+    let b2 = d20_step_meshbuf_buf[((i * 9) + 5)];
+    let c0 = d20_step_meshbuf_buf[((i * 9) + 6)];
+    let c1 = d20_step_meshbuf_buf[((i * 9) + 7)];
+    let c2 = d20_step_meshbuf_buf[((i * 9) + 8)];
+    let t = d2_mt(ox, oy, oz, dx, dy, dz, (f32(f32(a0)) / 0x1.000000p+10f), (f32(f32(a1)) / 0x1.000000p+10f), (f32(f32(a2)) / 0x1.000000p+10f), (f32(f32(b0)) / 0x1.000000p+10f), (f32(f32(b1)) / 0x1.000000p+10f), (f32(f32(b2)) / 0x1.000000p+10f), (f32(f32(c0)) / 0x1.000000p+10f), (f32(f32(c1)) / 0x1.000000p+10f), (f32(f32(c2)) / 0x1.000000p+10f));
+    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < 0.0)), (t > 0x1.0624dcp-10f));
     let nid = select(best_id, i, (take == 1));
     let nt = select(best_t, t, (take == 1));
     let _mv1 = ox;
@@ -100,6 +100,7 @@ fn d2_nearest(buf : ptr<storage, array<i32>, read_write>, ox__a : f32, oy__a : f
     continue;
     }
   }
+  return 0;
 }
 fn d2_glyph(d : i32) -> i32 {
   if ((d == 0)) {
@@ -179,17 +180,17 @@ fn d2_pow2(n : i32) -> i32 {
   }
 }
 fn d2_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn d2_pack(r : f32, g : f32, b : f32) -> i32 {
-  let ri = i32((d2_clamp01(r) * bitcast<f32>(1132396544u)));
-  let gi = i32((d2_clamp01(g) * bitcast<f32>(1132396544u)));
-  let bi = i32((d2_clamp01(b) * bitcast<f32>(1132396544u)));
+  let ri = i32((d2_clamp01(r) * 0x1.fe0000p+7f));
+  let gi = i32((d2_clamp01(g) * 0x1.fe0000p+7f));
+  let bi = i32((d2_clamp01(b) * 0x1.fe0000p+7f));
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn d2_bg(py : i32) -> i32 {
-  let h = (f32(f32(py)) / bitcast<f32>(1145044992u));
-  return d2_pack((bitcast<f32>(1022739087u) + (h * bitcast<f32>(1025758986u))), (bitcast<f32>(1022739087u) + (h * bitcast<f32>(1028443340u))), (bitcast<f32>(1028443340u) + (h * bitcast<f32>(1035489771u))));
+  let h = (f32(f32(py)) / 0x1.800000p+9f);
+  return d2_pack((0x1.eb851ep-6f + (h * 0x1.47ae14p-5f)), (0x1.eb851ep-6f + (h * 0x1.999998p-5f)), (0x1.999998p-5f + (h * 0x1.70a3d6p-4f)));
 }
 fn d2_glyph_on(d : i32, col : i32, row : i32) -> i32 {
   if ((col < 0)) {
@@ -216,28 +217,28 @@ fn d2_glyph_on(d : i32, col : i32, row : i32) -> i32 {
 fn d2_on_number(id : i32, qx : f32, qy : f32) -> i32 {
   let m = (id + 1);
   let nd = select(2, 1, (m < 10));
-  let gw = bitcast<f32>(1038845214u);
+  let gw = 0x1.d70a3cp-4f;
   let tw = (f32(f32(nd)) * gw);
-  let th = bitcast<f32>(1045891645u);
-  let tx = ((qx + (tw * bitcast<f32>(1056964608u))) / tw);
-  let ty = (((th * bitcast<f32>(1056964608u)) - qy) / th);
-  if ((tx < bitcast<f32>(0u))) {
+  let th = 0x1.ae147ap-3f;
+  let tx = ((qx + (tw * 0x1.000000p-1f)) / tw);
+  let ty = (((th * 0x1.000000p-1f) - qy) / th);
+  if ((tx < 0.0)) {
   return 0;
   } else {
-  if ((tx > bitcast<f32>(1065353216u))) {
+  if ((tx > 0x1.000000p+0f)) {
   return 0;
   } else {
-  if ((ty < bitcast<f32>(0u))) {
+  if ((ty < 0.0)) {
   return 0;
   } else {
-  if ((ty > bitcast<f32>(1065353216u))) {
+  if ((ty > 0x1.000000p+0f)) {
   return 0;
   } else {
   let totalcols = (nd * 3);
   let gcol = i32((tx * f32(f32(totalcols))));
   let cell = (gcol / 3);
   let col = (gcol - (cell * 3));
-  let row = i32((ty * bitcast<f32>(1084227584u)));
+  let row = i32((ty * 0x1.400000p+2f));
   let digit = select(select((m - ((m / 10) * 10)), (m / 10), (cell == 0)), m, (nd == 1));
   return d2_glyph_on(digit, col, row);
   }
@@ -257,29 +258,29 @@ fn d20_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let frame = u_d20_step.frame;
   let px = (gid - ((gid / d2_width) * d2_width));
   let py = (gid / d2_width);
-  let fx = (f32(f32((px - d2_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((d2_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1076090634u)));
+  let fx = (f32(f32((px - d2_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((d2_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.47ae14p+1f));
   let dx0 = (fx / rl);
   let dy0 = (fy / rl);
-  let dz0 = (bitcast<f32>(1070386380u) / rl);
-  let ay = (f32(f32(frame)) / bitcast<f32>(1110966272u));
-  let ax = (f32(f32(frame)) / bitcast<f32>(1116602368u));
+  let dz0 = (0x1.999998p+0f / rl);
+  let ay = (f32(f32(frame)) / 0x1.700000p+5f);
+  let ax = (f32(f32(frame)) / 0x1.1c0000p+6f);
   let cyv = cos(ay);
   let syv = sin(ay);
   let cxv = cos(ax);
   let sxv = sin(ax);
-  let oz0 = (bitcast<f32>(0u) - bitcast<f32>(1078774988u));
+  let oz0 = (0.0 - 0x1.999998p+1f);
   let ox = (oz0 * syv);
   let oza = (oz0 * cyv);
   let oy = (oza * sxv);
   let oz = (oza * cxv);
   let dxa = ((dx0 * cyv) + (dz0 * syv));
-  let dza = ((bitcast<f32>(0u) - (dx0 * syv)) + (dz0 * cyv));
+  let dza = ((0.0 - (dx0 * syv)) + (dz0 * cyv));
   let dx = dxa;
   let dy = ((dy0 * cxv) + (dza * sxv));
-  let dz = ((bitcast<f32>(0u) - (dy0 * sxv)) + (dza * cxv));
-  let id = d2_nearest(&d20_step_meshbuf_buf, ox, oy, oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let dz = ((0.0 - (dy0 * sxv)) + (dza * cxv));
+  let id = d2_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   let safe = select(id, 0, (id < 0));
   let a0 = d20_step_meshbuf_buf[(safe * 9)];
   let a1 = d20_step_meshbuf_buf[((safe * 9) + 1)];
@@ -290,15 +291,15 @@ fn d20_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let c0 = d20_step_meshbuf_buf[((safe * 9) + 6)];
   let c1 = d20_step_meshbuf_buf[((safe * 9) + 7)];
   let c2 = d20_step_meshbuf_buf[((safe * 9) + 8)];
-  let v0x = (f32(f32(a0)) / bitcast<f32>(1149239296u));
-  let v0y = (f32(f32(a1)) / bitcast<f32>(1149239296u));
-  let v0z = (f32(f32(a2)) / bitcast<f32>(1149239296u));
-  let v1x = (f32(f32(b0)) / bitcast<f32>(1149239296u));
-  let v1y = (f32(f32(b1)) / bitcast<f32>(1149239296u));
-  let v1z = (f32(f32(b2)) / bitcast<f32>(1149239296u));
-  let v2x = (f32(f32(c0)) / bitcast<f32>(1149239296u));
-  let v2y = (f32(f32(c1)) / bitcast<f32>(1149239296u));
-  let v2z = (f32(f32(c2)) / bitcast<f32>(1149239296u));
+  let v0x = (f32(f32(a0)) / 0x1.000000p+10f);
+  let v0y = (f32(f32(a1)) / 0x1.000000p+10f);
+  let v0z = (f32(f32(a2)) / 0x1.000000p+10f);
+  let v1x = (f32(f32(b0)) / 0x1.000000p+10f);
+  let v1y = (f32(f32(b1)) / 0x1.000000p+10f);
+  let v1z = (f32(f32(b2)) / 0x1.000000p+10f);
+  let v2x = (f32(f32(c0)) / 0x1.000000p+10f);
+  let v2y = (f32(f32(c1)) / 0x1.000000p+10f);
+  let v2z = (f32(f32(c2)) / 0x1.000000p+10f);
   let e1x = (v1x - v0x);
   let e1y = (v1y - v0y);
   let e1z = (v1z - v0z);
@@ -308,7 +309,7 @@ fn d20_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let nx0 = ((e1y * e2z) - (e1z * e2y));
   let ny0 = ((e1z * e2x) - (e1x * e2z));
   let nz0 = ((e1x * e2y) - (e1y * e2x));
-  let nl = (sqrt((((nx0 * nx0) + (ny0 * ny0)) + (nz0 * nz0))) + bitcast<f32>(925353388u));
+  let nl = (sqrt((((nx0 * nx0) + (ny0 * ny0)) + (nz0 * nz0))) + 0x1.4f8b58p-17f);
   let nx = (nx0 / nl);
   let ny = (ny0 / nl);
   let nz = (nz0 / nl);
@@ -324,19 +325,19 @@ fn d20_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let vpz = (hz - v0z);
   let d20 = (((vpx * e1x) + (vpy * e1y)) + (vpz * e1z));
   let d21 = (((vpx * e2x) + (vpy * e2y)) + (vpz * e2z));
-  let denom = (((d00 * d11) - (d01 * d01)) + bitcast<f32>(925353388u));
+  let denom = (((d00 * d11) - (d01 * d01)) + 0x1.4f8b58p-17f);
   let bv = (((d11 * d20) - (d01 * d21)) / denom);
   let bw = (((d00 * d21) - (d01 * d20)) / denom);
-  let bu = ((bitcast<f32>(1065353216u) - bv) - bw);
-  let qx = ((bv * (bitcast<f32>(0u) - bitcast<f32>(1057635696u))) + (bw * bitcast<f32>(1057635696u)));
-  let qy = (((bu * bitcast<f32>(1058977873u)) + (bv * (bitcast<f32>(0u) - bitcast<f32>(1050589265u)))) + (bw * (bitcast<f32>(0u) - bitcast<f32>(1050589265u))));
+  let bu = ((0x1.000000p+0f - bv) - bw);
+  let qx = ((bv * (0.0 - 0x1.147ae0p-1f)) + (bw * 0x1.147ae0p-1f));
+  let qy = (((bu * 0x1.3d70a2p-1f) + (bv * (0.0 - 0x1.3d70a2p-2f))) + (bw * (0.0 - 0x1.3d70a2p-2f)));
   let onnum = d2_on_number(safe, qx, qy);
-  let ndl = (((nx * bitcast<f32>(1051931443u)) + (ny * bitcast<f32>(1060655595u))) + (nz * (bitcast<f32>(0u) - bitcast<f32>(1058642329u))));
-  let lit = (bitcast<f32>(1047904911u) + (select(ndl, (bitcast<f32>(0u) - ndl), (ndl < bitcast<f32>(0u))) * bitcast<f32>(1062333317u)));
-  let facer = (bitcast<f32>(1060655595u) * lit);
-  let faceg = (bitcast<f32>(1036831948u) * lit);
-  let faceb = (bitcast<f32>(1039516303u) * lit);
-  let numv = (bitcast<f32>(1057803468u) + (lit * bitcast<f32>(1056964608u)));
+  let ndl = (((nx * 0x1.666666p-2f) + (ny * 0x1.70a3d6p-1f)) + (nz * (0.0 - 0x1.333332p-1f)));
+  let lit = (0x1.eb851ep-3f + (select(ndl, (0.0 - ndl), (ndl < 0.0)) * 0x1.a3d70ap-1f));
+  let facer = (0x1.70a3d6p-1f * lit);
+  let faceg = (0x1.999998p-4f * lit);
+  let faceb = (0x1.eb851ep-4f * lit);
+  let numv = (0x1.199998p-1f + (lit * 0x1.000000p-1f));
   let out = select(select(d2_pack(facer, faceg, faceb), d2_pack(numv, numv, numv), (onnum == 1)), d2_bg(py), (id < 0));
   d20_step_outb_buf[gid] = out;
 }

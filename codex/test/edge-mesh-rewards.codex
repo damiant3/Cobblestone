@@ -1,0 +1,72 @@
+Chapter: EdgeMeshRewardsTest
+
+  cites Foreword chapter Console
+  cites Engine chapter EdgeMesh
+  cites Mesh chapter EdgeMeshFederate
+  cites Mesh chapter EdgeMeshRewards
+
+ EdgeMeshGameServers phase 3, stage 3. The arms that matter are the two a single
+ passing run cannot tell from a wrong implementation: settling the SAME match
+ twice must credit once, and a plane with no wallet must be REFUSED rather than
+ have one made for it. Auto-creating a wallet turns a mistyped plane name into a
+ coin sink nobody ever sees.
+
+ EVERY SCENARIO BUILDS ITS OWN LEDGER, for the reason phase 2's arms build their
+ own group: the list builtins store in place, so a ledger shared between
+ scenarios would carry one scenario's credits into the next and the arms would
+ be measuring each other.
+
+Section: Fixtures
+
+  rated : Integer, Text, Integer -> QueuedPlayer
+  rated (id) (name) (rating) =
+    QueuedPlayer {
+      qp-id = id,
+      qp-name = name,
+      qp-rating = rating,
+      qp-region-pref = 0,
+      qp-latencies = [],
+      qp-queue-time = 0,
+      qp-game-mode = ModeRanked
+    }
+
+  two-planes : Integer -> Ledger
+  two-planes (dummy) = ledger-open (ledger-open ledger-new "codexmagic") "chess"
+
+  chess-pair : Integer -> FedMatch
+  chess-pair (dummy) =
+    fed-try-pair (fed-enqueue (fed-enqueue fed-new "chess" (rated 1 "winner" 1600)) "chess" (rated 2 "loser" 1500)) "chess" ModeRanked 0
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    act
+      let r = settle-fed (two-planes 0) 77 "codexmagic" "chess" (chess-pair 0) True
+      in act
+        print-line-uni ("played chess, paid to a plane: " & settle-label (r.sr-outcome))
+        print-line-uni ("codexmagic balance " & show (ledger-balance (r.sr-ledger) "codexmagic") & ", chess balance " & show (ledger-balance (r.sr-ledger) "chess"))
+        act
+          let again = settle-fed (r.sr-ledger) 77 "codexmagic" "chess" (chess-pair 0) True
+          in print-line-uni ("the same match again: " & settle-label (again.sr-outcome) & ", codexmagic still " & show (ledger-balance (again.sr-ledger) "codexmagic"))
+        end
+      end
+    end
+
+    act
+      let r = settle-fed (two-planes 0) 78 "codexmagik" "chess" (chess-pair 0) True
+      in print-line-uni ("a plane with no wallet: " & settle-label (r.sr-outcome) & ", planes still " & show (ledger-planes (r.sr-ledger)))
+    end
+
+    act
+      let ranked = settle-fed (two-planes 0) 79 "codexmagic" "chess" (chess-pair 0) True
+      in let casual = settle-fed (two-planes 0) 80 "codexmagic" "chess" (chess-pair 0) False
+      in print-line-uni ("ranked pays " & show (ledger-balance (ranked.sr-ledger) "codexmagic") & " and casual pays " & show (ledger-balance (casual.sr-ledger) "codexmagic"))
+    end
+
+    act
+      let waiting = fed-try-pair (fed-enqueue fed-new "chess" (rated 3 "alone" 1500)) "chess" ModeRanked 0
+      in let r = settle-fed (two-planes 0) 81 "codexmagic" "chess" waiting True
+      in print-line-uni ("an unpaired queue settles nothing: " & settle-label (r.sr-outcome))
+    end
+  end

@@ -1,5 +1,6 @@
 Chapter: GopUsbMsc
   cites Works chapter GopXhci
+  cites Kernel chapter Pci
   cites Works chapter GopAhci
   cites Foreword chapter Maybe
 
@@ -30,6 +31,7 @@ Section: Protocol Constants
   scsi-op-capacity : Integer = 37
   scsi-op-read10 : Integer = 40
   scsi-op-write10 : Integer = 42
+  scsi-op-sync-cache : Integer = 53
 
   msc-chunk : Integer = 64
 
@@ -194,13 +196,37 @@ Section: Connect
 
   msc-connect-fresh : [Device.Port] MscDisk
   msc-connect-fresh = act
-    xh <- xhci-connect
+    scan <- xhci-connect-scan
     let z = xdiag-zero msc-cell-stage msc-cell-end
     in let z1 = xdiag-put msc-cell-fuel-lo xhci-fuel
     in let z2 = xdiag-put msc-cell-fail-lba 0
     in let z3 = xdiag-put msc-cell-retry msc-retry-none
-    in if xh.xh-ok then msc-try-ports xh 0
-    else msc-no-disk
+    in msc-hosts scan 0 0
+  end
+
+  msc-hosts : PciScanResult, Integer, Integer -> [Device.Port] MscDisk
+  msc-hosts (scan) (from) (ord) = act
+    if ord >= xhci-max-hosts then msc-no-disk
+    else msc-hosts-at scan (pci-index-class scan xhci-pci-class xhci-pci-subclass from) ord
+  end
+
+  msc-hosts-at : PciScanResult, Integer, Integer -> [Device.Port] MscDisk
+  msc-hosts-at (scan) (idx) (ord) = act
+    if idx < 0 then msc-no-disk
+    else msc-hosts-step scan idx ord
+  end
+
+  msc-hosts-step : PciScanResult, Integer, Integer -> [Device.Port] MscDisk
+  msc-hosts-step (scan) (idx) (ord) = act
+    xh <- xhci-connect-one (list-at (scan.devices) idx) ord
+    if xh.xh-ok == False then msc-hosts scan (idx + 1) (ord + 1)
+    else msc-hosts-took scan idx ord (msc-try-ports xh 0)
+  end
+
+  msc-hosts-took : PciScanResult, Integer, Integer, MscDisk -> [Device.Port] MscDisk
+  msc-hosts-took (scan) (idx) (ord) (d) = act
+    if d.md-ok then d
+    else msc-hosts scan (idx + 1) (ord + 1)
   end
 
   msc-try-ports : XhciHost, Integer -> MscDisk
@@ -475,6 +501,22 @@ Section: SCSI Operations
     in let c1 = poke-byte (d.md-cbw) 19 18
     in msc-issue d tag True (d.md-buf) 18
 
+ SYNCHRONIZE CACHE (10) commits the device's write-back cache to the
+ medium. LBA 0 with a block count of 0 means the WHOLE medium, which is
+ the only form we want: a device may acknowledge WRITE(10) into volatile
+ cache and then serve the updated data back from that same cache, so a
+ write followed by a read agrees with itself and commits nothing. The
+ command moves no data, so it is stamped like TEST UNIT READY with a
+ 10-byte block. IMMED (byte 1, bit 1) is left clear: an immediate return
+ would answer before the commit and defeat the point of asking.
+
+  msc-sync-cache : MscDisk -> Boolean
+  msc-sync-cache (d) =
+    let tag = msc-next-tag d
+    in let h = msc-stamp-cbw d tag 0 msc-flag-out 10
+    in let c = poke-byte (d.md-cbw) 15 scsi-op-sync-cache
+    in msc-issue d tag False 0 0
+
   msc-wait-ready : MscDisk, Integer -> Boolean
   msc-wait-ready (d) (fuel) =
     if msc-test-ready d then True
@@ -693,4 +735,16 @@ Section: Stateless Facade
       if d.md-ok then msc-write-into d lba count src
       else 0
     end
+  end
+
+ Three-state, not Boolean: "no USB disk is published" and "the flush was
+ issued and refused" are different facts and a caller must be able to tell
+ them apart (L-BAILVALUE). 1 flushed, 0 no USB disk, -1 refused.
+
+  usb-sync-cache : [Device.Port] Integer
+  usb-sync-cache = act
+    let p = msc-published
+    in if p.md-ok == False then 0
+    else if msc-sync-cache p then 1
+    else -1
   end

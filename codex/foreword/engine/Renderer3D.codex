@@ -41,23 +41,57 @@ Section: Flat Raster Target
 
   r3d-far-depth : Integer = 999999999
 
+ A FILL THROUGH A NULL BASE DESTROYS ADDRESS TRANSLATION AND CANNOT BE
+ DIAGNOSED AFTERWARDS, which is WORKS-60: a target whose depth pointer read 0
+ filled `r3d-far-depth` from address 0 upward, crossed the PML4 page at
+ 0x8000, and the fault that followed could not be delivered because the
+ tables it needed were the ones just overwritten. A triple fault names
+ nothing. These four functions are the only writers, so the floor goes here
+ rather than in each caller: a base below the address the kernel itself is
+ loaded at is not a buffer, whatever produced it.
+
+ 1048576 is 0x100000, where the guest kernel is loaded, so nothing at or
+ below it is ever a render target.
+
+  r3d-min-base : Integer = 1048576
+
+  r3d-refused : Integer = 0 - 1
+
+  r3d-base-ok : Integer -> Boolean
+  r3d-base-ok (base) = base >= r3d-min-base
+
   r3d-fill-32 : Integer, Integer, Integer, Integer -> Integer
   r3d-fill-32 (base) (value) (i) (n) =
+    if r3d-base-ok base == False then r3d-refused
+    else r3d-fill-32-at base value i n
+
+  r3d-fill-32-at : Integer, Integer, Integer, Integer -> Integer
+  r3d-fill-32-at (base) (value) (i) (n) =
     if i >= n then 0
     else let d = poke-32 base (i * 4) value
-    in r3d-fill-32 base value (i + 1) n
+    in r3d-fill-32-at base value (i + 1) n
 
   r3d-fill-span : Integer, Integer, Integer, Integer, Integer -> Integer
   r3d-fill-span (base) (off) (w) (color) (i) =
+    if r3d-base-ok base == False then r3d-refused
+    else r3d-fill-span-at base off w color i
+
+  r3d-fill-span-at : Integer, Integer, Integer, Integer, Integer -> Integer
+  r3d-fill-span-at (base) (off) (w) (color) (i) =
     if i >= w then 0
     else let d = poke-32 base ((off + i) * 4) color
-    in r3d-fill-span base off w color (i + 1)
+    in r3d-fill-span-at base off w color (i + 1)
 
   r3d-fill-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   r3d-fill-rows (base) (stride) (w) (h) (color) (y) =
+    if r3d-base-ok base == False then r3d-refused
+    else r3d-fill-rows-at base stride w h color y
+
+  r3d-fill-rows-at : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  r3d-fill-rows-at (base) (stride) (w) (h) (color) (y) =
     if y >= h then 0
-    else let d = r3d-fill-span base (y * stride) w color 0
-    in r3d-fill-rows base stride w h color (y + 1)
+    else let d = r3d-fill-span-at base (y * stride) w color 0
+    in r3d-fill-rows-at base stride w h color (y + 1)
 
   r3d-target-new : Integer, Integer, Integer -> R3dTriState
   r3d-target-new (w) (h) (bg) =
@@ -74,10 +108,17 @@ Section: Flat Raster Target
     in let c2 = r3d-fill-32 dp r3d-far-depth 0 (w * h)
     in R3dTriState { r3t-base = base, r3t-depth = dp, r3t-w = w, r3t-h = h, r3t-stride = stride }
 
+ IT ANSWERS THE REFUSAL RATHER THAN SWALLOWING IT, so a caller can tell the
+ frame did not clear. Answering 0 either way is what would make a skipped
+ clear look like a clear that worked (L-BAILVALUE).
+
   r3d-target-clear : R3dTriState, Integer -> Integer
   r3d-target-clear (st) (bg) =
-    let c1 = r3d-fill-rows (st.r3t-base) (st.r3t-stride) (st.r3t-w) (st.r3t-h) bg 0
-    in r3d-fill-32 (st.r3t-depth) r3d-far-depth 0 (st.r3t-w * st.r3t-h)
+    if r3d-base-ok (st.r3t-base) == False then r3d-refused
+    else if r3d-base-ok (st.r3t-depth) == False then r3d-refused
+    else
+      let c1 = r3d-fill-rows (st.r3t-base) (st.r3t-stride) (st.r3t-w) (st.r3t-h) bg 0
+      in r3d-fill-32 (st.r3t-depth) r3d-far-depth 0 (st.r3t-w * st.r3t-h)
 
   r3d-plot : R3dTriState, Integer, Integer, Integer, Integer -> Integer
   r3d-plot (st) (x) (y) (depth) (color) =

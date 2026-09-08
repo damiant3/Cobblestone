@@ -108,6 +108,41 @@ decides whether you are free to take work.
 
 Valid states: `Idle`, `Working`, `Building`, `WaitingForBuild`, `Error`.
 
+**`context` is mandatory on every write** (Damian, 2026-09-07, after fester
+ran to 100% unnoticed): the lane's context used, as a whole-number percent
+read from the harness (the number `/handoff` reads), e.g. `"context": 62`.
+The commander reads it on every pulse and ORDERS `/handoff` at 70; a lane
+that reads 70 or more hands off on its own without waiting to be told. A
+lane whose `context` has not moved across two pulses while its state says
+`Working` is checked for exhaustion first, before its terminal or its run.
+
+**MEASURE IT, DO NOT ESTIMATE IT** (2026-09-07: two lanes admitted on the
+same day that every figure written since their last real measurement was a
+guess, and one such guess had the commander order a handoff at a real 37%).
+A feeling about how long the session has run is not this number. Run the
+formula in `.claude/skills/handoff/SKILL.md`, which is the copy a lane
+already executes at handoff. It is NOT restated here on purpose: it exists
+in two places already (that skill and `.claude/skills/commander-init`), they
+differ by an `isSidechain` guard, and a third copy is how two selectors for
+one question drift apart until the one that drifts short reports a green.
+
+The commander measures every lane independently on every pulse, so a guess
+here misleads whoever reads the dashboard rather than the pulse. It is still
+wrong. Write what you measured, and if you have not measured since your last
+write, measure before you write.
+
+```json
+{ "state": "Working", "task": "fixing lexer fuel cap", "claim": ["codex/compiler/Lexer"], "context": 62 }
+```
+
+**The commander's pulse wakes a lane only on an EVENT** (the same day):
+a run of its exited, a grant it asked for, a ruling it waits on, a
+collision. "You are idle" is not an event. Every message to an idle lane
+after its cache has expired is a full re-read of its context, and a
+12-minute bump loop across five lanes spent that while Damian slept.
+Between events an idle lane costs nothing; leave it idle. The pulse itself
+runs no oftener than every 15 minutes, and every 30 when Damian is away.
+
 `claim` is the ground you are standing on: the paths, files or subsystems
 you are changing. One string or a list of them. It is what keeps two agents
 off the same code -- AgentGrid compares every live claim against every
@@ -455,7 +490,15 @@ p4 opened                   # LOOK at it before you build
 p4 status                   # a dropped add: the preflight warns, it does not fail
 p4 diff -du //Codex/blu/... # PATHS, not -c <CL>, which is not a diff option (P-DIFFC)
 
-build/build.ps1 -Internal   # gates (CLAUDE.md R-GATE; the bare form is release only)
+# NO GATE RUNS UNDER THE TOKEN (CLAUDE.md R-GATE), and `-Internal` is BANNED.
+# The proof happened BEFORE the request, each run granted by the commander:
+#   build/compile.ps1 -Src <each touched test> -Out <o> -Log <l> -Kernel seed\Codex.cdx
+#   the scratch fixed point: stage 2 == stage 3, built from the DEPOT seed
+#   build/bvt.ps1 -CodexCdx <candidate> -Jobs 4
+#   the signer compiled and run over the candidate, then test-self-verify
+#     printing that the seed verifies itself; a seed lands signed and
+#     self-verified or not at all
+# Under the token: re-check head, submit, copy up, release. About 90 seconds.
 
 p4 shelve -d -c 4712        # rule 7 -- or the submit is refused
 p4 submit -c 4712
@@ -474,8 +517,8 @@ freeze main for a quick proof build because you already know your code is
 good and you just need to sync, freeze, merge, quickbuild, bvt, promote."**
 So the shape of a seed-affecting landing is:
 
-1. **Before the request, WITHOUT the token:** merge down to head, gate,
-   and fix until green. Every red you find here costs nobody else anything.
+1. **Before the request, WITHOUT the token:** merge down to head, run the
+   proof named in step 3, and fix until green. Every red you find here costs nobody else anything.
    A lane that requests the token for a CL it has not seen green is
    requesting it to debug, which is rule 8's violation before the fact.
 2. **The request names the main head you merged to.** A request behind head
@@ -483,7 +526,25 @@ So the shape of a seed-affecting landing is:
    itself refuses a workspace behind main, so this only moves that check to
    before the queue.
 3. **Under the token:** sync, merge whatever landed since (usually nothing),
-   the `-Internal` proof run, the BVT, promote, `build-complete`. One run.
+   re-check head, promote, `build-complete`. **No gate runs here**, and
+   `-Internal` is banned everywhere: the proof is step 1's, taken before the
+   request, and is the touched tests compiled and run one at a time, the
+   scratch fixed point, the BVT on the candidate, and the signed,
+   self-verified seed.
+
+   **The merge is not optional; RE-PROVING after it is, and the test is
+   whether the merge touched YOUR SUBJECT.** The coordinator's grant says to
+   merge down and then gate, and a lane reading that literally re-proves every
+   landing. What the proof certifies is the source you are submitting, so a
+   merge that carried no file your change is built on leaves it certifying
+   exactly what it did before. Read the merge's own file list (`p4 describe -s
+   <merge CL>`) and decide from that: a seed CL cares about `codex/compiler`,
+   `codex/foreword` and `seed`; an apps CL cares about what it compiles. If
+   your subject moved, release the token and re-prove outside the hold, which
+   is what step 4 already says. Measured 2026-09-07 (fester, main 22739): the
+   merge under the grant carried 52 plug `run.ps1` scripts, two app chapters
+   and seven docs and NOT one compiler file, so the fixed point taken before
+   the request still described the submitted source.
 4. **Two reds under one grant end it.** Write `build-complete`, shelve,
    and re-request BEHIND everyone already queued. Measured 2026-09-02: one
    lane held the token about 75 minutes across four launches and landed
@@ -532,8 +593,55 @@ booting 3072 MB guests at the same time, and on this box that overcommit is
 what kills guests with a plausible-looking codegen error (`OperatorsManual.md`,
 "The compile batch asks for 12 GB").
 
-So the rule, in Damian's words: be conscientious about running builds, and
-**check with the other agents before launching big tests.** Concretely:
+**THE BOX IS NOT GATED PER RUN ANY MORE (Damian, 2026-09-07 19:35: "the box
+is chronically under utilized" by lanes "waiting on a bump or permission",
+"we are burning daylight"). The standing rule is now:**
+
+- **A serial single-guest run is launched WITHOUT asking.** Measure free
+  memory first (`(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory`);
+  above 1.5 GiB, launch. Write the run, its PID and its log in `status.json`.
+- **Watch your own run.** Launch it detached and wait on it with the Monitor
+  tool and a bounded `Wait-Process`, then continue. Do not end the turn and
+  sit deaf until the commander bumps you; that latency, multiplied by six
+  lanes and a 15-minute pulse, is what left the box idle.
+- **Ask only for a fan-out**: `-Jobs` above 1, a battery, a gate, a Renode
+  bed. One message to the commander with the honest size; the answer comes
+  in the same turn. Two serial single-guest runs from two lanes may overlap;
+  a fan-out beside anything else is the commander's call.
+- **A dead guest is reported, never retried.** The report names free memory
+  at launch and what else was running; that is the measurement the next
+  ruling on this section is made from.
+- The commander still measures the box on every pulse and can order a lane
+  off it; a lane that sees free memory under 1.5 GiB waits, and says so.
+- **Every HOLD and every GO the commander decides is logged with the box as
+  measured at that moment** (Damian, 2026-09-08: "too many times I see an
+  agent held up for the box with 20% cpu and 65% memory utilized only").
+  `build/box-hold-log.ps1 -Lane <lane> -Decision HOLD|GO -Ask "<what>" -Reason
+  "<why>"` appends a row to `docs/Agents/box-holds.csv`: cpu%, free and total
+  GiB, mem%, guest count and their owning workspaces, Renode and QEMU counts.
+  The log is the evidence the threshold is tuned from; a hold with no row is
+  a hold nobody can audit. The commander's own bar, until the log says
+  otherwise: a serial single guest is held only under 3 GiB free (one guest's
+  need) or beside a fan-out; a fan-out is held beside a rehearsal or under
+  its own guests' need. Memory percent alone never justifies a hold.
+
+What follows is the memory evidence the numbers above rest on, and the
+prior rule for the runs that are still asked for:
+
+- **Three guests at about 3 GB with 3.83 GiB free truncated one arm of a
+  serial run, silently** (red, 2026-09-07, the matched pair root ordered).
+  The 46-arm diag rehearsal ran serial, one guest of red's at a time, beside
+  fester's kernel battery and val's desk VM for Damian. It came back 45 of
+  46: `nic-nolink` reported `serial block did not reach END; last: asde
+  entering arm`, the last stage entered and never completed. There was **no
+  HOST CRASH, no TIMEOUT and no `SERIAL:` drop marker** -- nothing named the
+  cause, which is what makes this shape expensive. The same arm alone on a
+  quiet box, one guest and 6.97 GiB free, passed in 31 s. Both outcomes were
+  written down before the second run, so the reading is contention rather
+  than a stage-18 defect. It is a matched pair and not a proof: what it
+  establishes firmly is that this box truncates a guest's serial output
+  under that load WITHOUT setting any of the three signals a harness would
+  look for, so "no crash line" is not evidence a run was clean.
 
 - `-Jobs 8` is the default (Damian, 2026-09-01, on the measurement
   below). **The one-at-a-time rule was LOOSENED the same evening to TWO
@@ -557,10 +665,11 @@ So the rule, in Damian's words: be conscientious about running builds, and
   focused test passes: the specific tests a change touches, one at a
   time, and the BVT only on a seed candidate. There is no "ask first"
   path for a battery; the ask below is for the runs that remain.
-- Before any run that boots guests or a Renode/QEMU bed (a gate, a
-  focused harness, a release proof), ask the COMMANDER (root) for the box
-  with the honest size, one message within the budget, and wait for the
-  go. **The GO is a MESSAGE FROM ROOT. The AgentGrid coordinator's GO grants
+- Before a FAN-OUT (a gate, a `-Jobs` above 1, a battery, a Renode/QEMU
+  bed, a release proof), ask the COMMANDER (root) for the box with the
+  honest size, one message within the budget, and wait for the go. A
+  serial single-guest run is not asked for; see the rule at the head of
+  this section. **The GO is a MESSAGE FROM ROOT. The AgentGrid coordinator's GO grants
   the TOKEN and nothing else; three lanes on 2026-09-01 read it as the box and
   launched compiler gates onto a box already granted twice, and one granted
   run died under the overlap.** The commander keeps at most two such runs live and hands the box
@@ -1035,15 +1144,13 @@ the doc that owns the subject.
 
 ## An internal seed land is a short hold now (Damian, 2026-08-16)
 
-A seed land used to hold the token for ~30 minutes: three full gate passes,
-two of them redundant against determinism. It is a few minutes now. The token
-holder gates with `build/build.ps1 -Internal` (smart coverage: the fixed-point
-core and BVT always, a regression phase only when a file it depends on
-changed), skips the convergence rebuild when the gate reports a one-pass fixed
-point, and replaces the parent rebuild at copy-up with `build/check-seed-orphans.ps1`.
-The mechanics and the why are in `PerforceProcess.md` 4.3b and 4.4; the point
-for the queue is that a hold behind you is minutes, not half an hour. The full
-`build/build.ps1` stays for public/release builds.
+A seed land holds the token for about 90 seconds, because **the token holder
+runs no gate at all**. The proof is taken before the request (the recipe is
+in "What the token is actually for", step 3), and the copy-up replaces the
+parent rebuild with `build/check-seed-orphans.ps1`. The mechanics are in
+`PerforceProcess.md` 4.3b and 4.4; the point for the queue is that a hold
+behind you is seconds, not half an hour. `build/build.ps1` is the release
+gate and is Damian's; `-Internal` is banned (Damian, 2026-09-02 15:52).
 
 ## A many-CL arc takes ONE token, at the end (Damian, 2026-08-06)
 
@@ -1053,19 +1160,18 @@ step to keep the verification simple and cumulative."*
 
 **Iterate on your own stream: submit each step to `//Codex/<agent>`, verify
 each step by compiling it and running the specific tests it touches, and
-gate ONCE per batch.** Until 2026-09-01 this line said to run
-`build/build.ps1 -Internal` locally per step (and before 2026-08-20 the bare
-`build/build.ps1`, a full gate per step: 644.1 s against 186.1 s). **Damian,
-2026-09-01, with the box one DIMM down: "we need to have the agents batch up
-their builds, so they can ask for the token less, and get more done in a
-shot."** So a step is verified by `compile.ps1` plus its focused tests, several
-steps stack into one batch, and the `-Internal` gate runs once for the batch,
-at the end, under the one token that lands it. Do NOT copy any intermediate
-CL to main, and do NOT request the token until the batch is ready. The last
-push is then a normal seed-affecting copy-up: token, merge down, gate on the
-target, prove the seed, one copy-up.
+prove ONCE per batch.** **Damian, 2026-09-01, with the box one DIMM down:
+"we need to have the agents batch up their builds, so they can ask for the
+token less, and get more done in a shot."** A step is verified by
+`compile.ps1` plus its focused tests, several steps stack into one batch, and
+the batch's proof runs once, at the end, BEFORE the token is requested: the
+scratch fixed point, the BVT on the candidate, and the signed, self-verified
+seed. Do NOT copy any intermediate CL to main, and do NOT request the token
+until the batch is proven. The last push is then a normal seed-affecting
+copy-up: token, merge down, re-check head, one copy-up.
 
-**The batch gate SEES the batch (red, 2026-09-01; fixed main 21381).**
+**The batch gate SEES the batch (red, 2026-09-01; fixed main 21381). No lane
+runs this; the paragraph describes `build/build.ps1`, which is Damian's.**
 `-Internal` chooses its regression phases from a `changed` list that is
 `p4 opened` UNIONED with `p4 diff2 -q //Codex/main/... <your stream>/...`
 (`build/build.ps1`, the detect block; generator `codex/build/BuildScript.codex`),

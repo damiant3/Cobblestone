@@ -1,0 +1,61 @@
+Chapter: NetKeyHashTest
+  cites Net chapter LoadBalancer
+  cites Net chapter MessageQueue
+  cites Foreword chapter ConsistentHash
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The first arm either of these chapters has had. `LoadBalancer` is cited by
+ one chapter and `MessageQueue` by none, so both compile in a sweep and
+ neither has ever been RUN; a text key reaching a partition or a backend was
+ a claim nothing checked.
+
+ THE VALUES ARE THE ASSERTION, not the shape. Both chapters turn a Text key
+ into an Integer with the same djb2 fold and feed `chr-hash-key`, and this
+ pins what that produces for five keys. It exists to be run either side of
+ lifting the fold into `chr-hash-text`: identical numbers before and after
+ are what says the lift changed nothing, and a fold that differs in its seed,
+ its multiplier or its wrap moves every line below.
+
+ The keys are chosen so a hash that ignored part of its input still fails:
+ "a" and "b" differ in one byte, "ab" and "ba" are a transposition, and
+ "abc" against "abcabc" is a repeat that a fold without a multiply would
+ collapse.
+
+Section: Fixtures
+
+  four : Integer = 4
+
+  keys : List Text = ["a", "b", "ab", "ba", "abc"]
+
+  pool0 : BackendPool
+  pool0 =
+    let p1 = pool-add (pool-new "web" LbConsistentHash) (backend-new "one" "10.0.0.1" 80)
+    in let p2 = pool-add p1 (backend-new "two" "10.0.0.2" 80)
+    in let p3 = pool-add p2 (backend-new "three" "10.0.0.3" 80)
+    in pool-add p3 (backend-new "four" "10.0.0.4" 80)
+
+Section: Helpers
+
+  parts : List Text, Integer, Text -> Text
+  parts (ks) (i) (acc) =
+    if i >= list-length ks then acc
+    else parts ks (i + 1) (acc & " " & show (tp-hash-partition (list-at ks i) four))
+
+  picks : List Text, Integer, Text -> Text
+  picks (ks) (i) (acc) =
+    if i >= list-length ks then acc
+    else picks ks (i + 1) (acc & " " & pick-of (list-at ks i))
+
+  pick-of : Text -> Text
+  pick-of (k) =
+    when pool-select pool0 k
+      is None -> "none"
+      is Just (id) -> id
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("net-key partition" & parts keys 0 "")
+    print-line-uni ("net-key backend" & picks keys 0 "")
+  end

@@ -1,0 +1,625 @@
+Chapter: CellEval
+  cites Sheets chapter CellGraph
+  cites Sheets chapter CellFormula
+  cites Sheets chapter CellStore
+  cites Foreword chapter CCE
+
+ Evaluation in the order CellGraph derived, and the function set in the
+ order the register stages it: arithmetic and comparison, aggregates over
+ ranges, conditionals, text.
+
+ A FORMULA IS TYPED. `=A1+B1` where B1 holds text is a refusal naming B1,
+ never a silent zero and never a sigil inherited from 1985. A text value
+ therefore carries WHERE IT CAME FROM: an operator sees values rather
+ than expressions, so without the origin the refusal could only say that
+ some operand was text, and a person reading a wrong total needs the
+ cell.
+
+ An error PROPAGATES unchanged rather than being reworded at each level,
+ so the message that reaches the top names the cell that caused it and
+ not the outermost operator.
+
+ The choices a spreadsheet has to make, made:
+
+ - An EMPTY cell is zero in arithmetic and is not counted by COUNT. A
+   cell nobody filled is an absence, and absence in a sum is zero; a
+   count of quantities that counted absences would answer the size of
+   the range.
+ - A RANGE SKIPS text and empty cells rather than refusing. A label
+   sitting above a column of quantities is the normal shape of a sheet,
+   and the refusal exists for `+`, where the operand was named
+   deliberately.
+ - MIN, MAX and AVERAGE over a range holding NO numbers refuse. An empty
+   maximum has no honest value, and zero is the answer that looks right.
+ - AVERAGE truncates, because a cell holds a 32-bit integer. The
+   truncation is stated here rather than discovered.
+ - SUMIF and COUNTIF take a VALUE to match, exactly, rather than a text
+   criterion like ">5". A criterion parsed out of a string is a second
+   expression language reachable only at runtime.
+
+ LEN counts CODE POINTS, by skipping UTF-8 continuation bytes, because a
+ person counting characters does not mean bytes. UPPER and LOWER fold
+ ASCII only: every byte of a multi-byte sequence has its high bit set and
+ is passed through untouched, so a non-ASCII character survives rather
+ than being corrupted by a byte-wise fold. TRIM removes leading and
+ trailing spaces and does not collapse runs inside.
+
+ We say:
+
+Section: Values
+
+  TextVal = record {
+    tv-text : Text,
+    tv-from : Text
+  }
+
+  Value =
+   | VNum (Integer)
+   | VText (TextVal)
+   | VErr (Text)
+   | VEmpty
+
+  Results = record {
+    rs-ok : Boolean,
+    rs-vals : List Value,
+    rs-msg : Text
+  }
+
+  ev-lit : Text -> Value
+  ev-lit (t) = VText (TextVal { tv-text = t, tv-from = "" })
+
+  ev-from : Text, Text -> Value
+  ev-from (t) (name) = VText (TextVal { tv-text = t, tv-from = name })
+
+  ev-where : TextVal -> Text
+  ev-where (v) = if (v.tv-from) == "" then "a text literal" else v.tv-from
+
+  ev-is-err : Value -> Boolean
+  ev-is-err (v) = when v
+   is VErr (m) -> True
+   is otherwise -> False
+
+  ev-err-text : Value -> Text
+  ev-err-text (v) = when v
+   is VErr (m) -> m
+   is otherwise -> ""
+
+  ev-show : Value -> Text
+  ev-show (v) = when v
+   is VNum (n) -> show n
+   is VText (t) -> t.tv-text
+   is VErr (m) -> "REFUSED: " & m
+   is VEmpty -> ""
+
+  ev-is-empty : Value -> Boolean
+  ev-is-empty (v) = when v
+   is VEmpty -> True
+   is otherwise -> False
+
+  ev-cell-name : Integer, Integer -> Text
+  ev-cell-name (r) (c) = gr-col-name c & show (r + 1)
+
+Section: Reading A Cell
+
+ A cell holding a formula answers the value already computed for it,
+ which the derived order guarantees exists. Any other cell answers the
+ store.
+
+  ev-store : Program, Integer, Integer -> Value
+  ev-store (pg) (r) (c) =
+    let k = sheet-kind (pg.pg-blk) r c
+    in if k == cs-number then VNum (sheet-get (pg.pg-blk) r c)
+    else if k == cs-text then ev-from (sheet-text (pg.pg-blk) r c) (ev-cell-name r c)
+    else VEmpty
+
+  ev-cell : Program, List Value, Integer, Integer -> Value
+  ev-cell (pg) (vals) (r) (c) =
+    if sheet-in (pg.pg-blk) r c == False then VErr (ev-cell-name r c & " is outside the sheet")
+    else let s = gr-slot-at pg r c
+    in if s == 0 then ev-store pg r c
+    else ev-named (list-at vals (s - 1)) (ev-cell-name r c)
+
+ A text arriving from a formula cell is relabelled with the cell the
+ reader named, because the origin a refusal should print is the cell in
+ the formula and not whatever cell that formula copied its text from.
+
+  ev-named : Value, Text -> Value
+  ev-named (v) (name) = when v
+   is VText (t) -> ev-from (t.tv-text) name
+   is otherwise -> v
+
+Section: Arithmetic And Comparison
+
+  ev-need-num : Value, Text -> Text
+  ev-need-num (v) (op) = when v
+   is VText (t) -> ev-where t & " holds text, and " & op & " wants a number"
+   is otherwise -> ""
+
+  ev-num-of : Value -> Integer
+  ev-num-of (v) = when v
+   is VNum (n) -> n
+   is otherwise -> 0
+
+  ev-arith : Integer, Value, Value -> Value
+  ev-arith (op) (a) (b) =
+    let ta = ev-need-num a (fx-op-name op)
+    in if ta /= "" then VErr ta
+    else let tb = ev-need-num b (fx-op-name op)
+    in if tb /= "" then VErr tb
+    else ev-arith-do op (ev-num-of a) (ev-num-of b)
+
+  ev-arith-do : Integer, Integer, Integer -> Value
+  ev-arith-do (op) (a) (b) =
+    if op == fx-op-add then VNum (a + b)
+    else if op == fx-op-sub then VNum (a - b)
+    else if op == fx-op-mul then VNum (a * b)
+    else if b == 0 then VErr "division by zero"
+    else VNum (a / b)
+
+  ev-bool : Boolean -> Value
+  ev-bool (b) = if b then VNum 1 else VNum 0
+
+ Two texts compare for equality and inequality only. An ORDERING on text
+ is a collation decision, and a byte order pretending to be one is the
+ answer that looks right until a reader meets a language.
+
+  ev-text-of : Value -> Text
+  ev-text-of (v) = when v
+   is VText (t) -> t.tv-text
+   is otherwise -> ""
+
+  ev-is-text : Value -> Boolean
+  ev-is-text (v) = when v
+   is VText (t) -> True
+   is otherwise -> False
+
+  ev-cmp : Integer, Value, Value -> Value
+  ev-cmp (op) (a) (b) =
+    if ev-is-text a & ev-is-text b then ev-cmp-text op a b
+    else ev-cmp-num op a b
+
+  ev-cmp-text : Integer, Value, Value -> Value
+  ev-cmp-text (op) (a) (b) =
+    if op == fx-op-eq then ev-bool (ev-text-of a == ev-text-of b)
+    else if op == fx-op-ne then ev-bool (ev-text-of a /= ev-text-of b)
+    else VErr ("text has no ordering, and " & fx-op-name op & " asked for one")
+
+  ev-cmp-num : Integer, Value, Value -> Value
+  ev-cmp-num (op) (a) (b) =
+    let ta = ev-need-num a (fx-op-name op)
+    in if ta /= "" then VErr ta
+    else let tb = ev-need-num b (fx-op-name op)
+    in if tb /= "" then VErr tb
+    else ev-cmp-do op (ev-num-of a) (ev-num-of b)
+
+  ev-cmp-do : Integer, Integer, Integer -> Value
+  ev-cmp-do (op) (a) (b) =
+    if op == fx-op-eq then ev-bool (a == b)
+    else if op == fx-op-ne then ev-bool (a /= b)
+    else if op == fx-op-lt then ev-bool (a < b)
+    else if op == fx-op-gt then ev-bool (a > b)
+    else if op == fx-op-le then ev-bool (a <= b)
+    else ev-bool (a >= b)
+
+  ev-is-cmp : Integer -> Boolean
+  ev-is-cmp (op) = op >= fx-op-eq
+
+  ev-binary : Integer, Value, Value -> Value
+  ev-binary (op) (a) (b) =
+    if ev-is-err a then a
+    else if ev-is-err b then b
+    else if ev-is-cmp op then ev-cmp op a b
+    else ev-arith op a b
+
+Section: Ranges
+
+ A range is collected into a list of the NUMBERS it holds, so every
+ aggregate is written over one traversal that has already made the
+ skipping decision.
+
+  ev-row-nums : Program, List Value, Integer, Integer, Integer, List Integer -> List Integer
+  ev-row-nums (pg) (vals) (r) (c) (c2) (acc) =
+    if c > c2 then acc
+    else ev-row-nums pg vals r (c + 1) c2 (ev-take (ev-cell pg vals r c) acc)
+
+  ev-take : Value, List Integer -> List Integer
+  ev-take (v) (acc) = when v
+   is VNum (n) -> list-push acc n
+   is otherwise -> acc
+
+  ev-rect-nums : Program, List Value, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ev-rect-nums (pg) (vals) (r) (r2) (c) (c2) (acc) =
+    if r > r2 then acc
+    else ev-rect-nums pg vals (r + 1) r2 c c2 (ev-row-nums pg vals r c c2 acc)
+
+  ev-range-nums : Program, List Value, RangeRef -> List Integer
+  ev-range-nums (pg) (vals) (g) =
+    let a = g.rr-from
+    in let b = g.rr-to
+    in ev-rect-nums pg vals (gr-lo (a.cr-row) (b.cr-row)) (gr-hi (a.cr-row) (b.cr-row)) (gr-lo (a.cr-col) (b.cr-col)) (gr-hi (a.cr-col) (b.cr-col)) []
+
+ An empty cell is skipped by COUNT and is zero in a SUM, so a range's
+ numbers are exactly what an aggregate reads. A cell holding an ERROR
+ inside a range is not skipped: the error is the answer, because a total
+ computed over a refusal is a wrong number wearing a right shape.
+
+  ev-row-err : Program, List Value, Integer, Integer, Integer -> Value
+  ev-row-err (pg) (vals) (r) (c) (c2) =
+    if c > c2 then VNum 0
+    else if ev-is-err (ev-cell pg vals r c) then ev-cell pg vals r c
+    else ev-row-err pg vals r (c + 1) c2
+
+  ev-rect-err : Program, List Value, Integer, Integer, Integer, Integer -> Value
+  ev-rect-err (pg) (vals) (r) (r2) (c) (c2) =
+    if r > r2 then VNum 0
+    else if ev-is-err (ev-row-err pg vals r c c2) then ev-row-err pg vals r c c2
+    else ev-rect-err pg vals (r + 1) r2 c c2
+
+  ev-range-err : Program, List Value, RangeRef -> Value
+  ev-range-err (pg) (vals) (g) =
+    let a = g.rr-from
+    in let b = g.rr-to
+    in ev-rect-err pg vals (gr-lo (a.cr-row) (b.cr-row)) (gr-hi (a.cr-row) (b.cr-row)) (gr-lo (a.cr-col) (b.cr-col)) (gr-hi (a.cr-col) (b.cr-col))
+
+  ev-sum-of : List Integer, Integer, Integer, Integer -> Integer
+  ev-sum-of (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else ev-sum-of xs (i + 1) n (acc + list-at xs i)
+
+  ev-min-of : List Integer, Integer, Integer, Integer -> Integer
+  ev-min-of (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at xs i < acc then ev-min-of xs (i + 1) n (list-at xs i)
+    else ev-min-of xs (i + 1) n acc
+
+  ev-max-of : List Integer, Integer, Integer, Integer -> Integer
+  ev-max-of (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at xs i > acc then ev-max-of xs (i + 1) n (list-at xs i)
+    else ev-max-of xs (i + 1) n acc
+
+Section: Text Functions
+
+  ev-cont-byte : Integer -> Boolean
+  ev-cont-byte (b) = b >= 128 & b < 192
+
+  ev-len-of : List Integer, Integer, Integer, Integer -> Integer
+  ev-len-of (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else if ev-cont-byte (list-at bs i) then ev-len-of bs (i + 1) n acc
+    else ev-len-of bs (i + 1) n (acc + 1)
+
+  ev-fold : List Integer, Integer, Integer, Boolean, List Integer -> List Integer
+  ev-fold (bs) (i) (n) (up) (acc) =
+    if i >= n then acc
+    else ev-fold bs (i + 1) n up (list-push acc (ev-fold-byte (list-at bs i) up))
+
+  ev-fold-byte : Integer, Boolean -> Integer
+  ev-fold-byte (b) (up) =
+    if up then (if b >= 97 & b <= 122 then b - 32 else b)
+    else if b >= 65 & b <= 90 then b + 32
+    else b
+
+  ev-trim-start : List Integer, Integer, Integer -> Integer
+  ev-trim-start (bs) (i) (n) =
+    if i >= n then i
+    else if list-at bs i == 32 then ev-trim-start bs (i + 1) n
+    else i
+
+  ev-trim-end : List Integer, Integer -> Integer
+  ev-trim-end (bs) (e) =
+    if e <= 0 then e
+    else if list-at bs (e - 1) == 32 then ev-trim-end bs (e - 1)
+    else e
+
+  ev-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  ev-slice (bs) (i) (e) (acc) =
+    if i >= e then acc
+    else ev-slice bs (i + 1) e (list-push acc (list-at bs i))
+
+Section: Calls
+
+  ev-args : Program, List Value, List Expr, Integer, Integer, List Value -> List Value
+  ev-args (pg) (vals) (args) (i) (n) (acc) =
+    if i >= n then acc
+    else ev-args pg vals args (i + 1) n (list-push acc (ev-expr pg vals (list-at args i)))
+
+  ev-first-err : List Value, Integer, Integer -> Value
+  ev-first-err (vs) (i) (n) =
+    if i >= n then VNum 0
+    else if ev-is-err (list-at vs i) then list-at vs i
+    else ev-first-err vs (i + 1) n
+
+  ev-arity : Text, Integer, Integer -> Text
+  ev-arity (nm) (want) (got) =
+    nm & " wants " & show want & " arguments and was given " & show got
+
+ A range argument is passed as an EXPRESSION rather than a value,
+ because a range has no value of its own: only the aggregate reading it
+ knows whether to sum the cells or count them.
+
+  ev-range-arg : Expr -> Boolean
+  ev-range-arg (e) = when e
+   is ExRange (g) -> True
+   is otherwise -> False
+
+  ev-range-of : Expr -> RangeRef
+  ev-range-of (e) = when e
+   is ExRange (g) -> g
+   is otherwise -> RangeRef { rr-from = CellRef { cr-row = 0, cr-col = 0, cr-name = "" }, rr-to = CellRef { cr-row = 0, cr-col = 0, cr-name = "" } }
+
+  ev-agg : Program, List Value, Text, List Expr -> Value
+  ev-agg (pg) (vals) (nm) (args) =
+    if list-length args /= 1 then VErr (ev-arity nm 1 (list-length args))
+    else if ev-range-arg (list-at args 0) == False then VErr (nm & " wants a range like A1:B9")
+    else ev-agg-on pg vals nm (ev-range-of (list-at args 0))
+
+  ev-agg-on : Program, List Value, Text, RangeRef -> Value
+  ev-agg-on (pg) (vals) (nm) (g) =
+    let bad = ev-range-err pg vals g
+    in if ev-is-err bad then bad
+    else ev-agg-nums nm (ev-range-nums pg vals g)
+
+  ev-agg-nums : Text, List Integer -> Value
+  ev-agg-nums (nm) (xs) =
+    let n = list-length xs
+    in if nm == "SUM" then VNum (ev-sum-of xs 0 n 0)
+    else if nm == "COUNT" then VNum n
+    else if n == 0 then VErr (nm & " has no numbers to work on")
+    else if nm == "MIN" then VNum (ev-min-of xs 1 n (list-at xs 0))
+    else if nm == "MAX" then VNum (ev-max-of xs 1 n (list-at xs 0))
+    else VNum (ev-sum-of xs 0 n 0 / n)
+
+  ev-match : Program, List Value, RangeRef, Value, Boolean -> Value
+  ev-match (pg) (vals) (g) (want) (summing) =
+    let bad = ev-range-err pg vals g
+    in if ev-is-err bad then bad
+    else ev-match-scan pg vals (ev-range-cells pg vals g) want summing
+
+  ev-row-cells : Program, List Value, Integer, Integer, Integer, List Value -> List Value
+  ev-row-cells (pg) (vals) (r) (c) (c2) (acc) =
+    if c > c2 then acc
+    else ev-row-cells pg vals r (c + 1) c2 (list-push acc (ev-cell pg vals r c))
+
+  ev-rect-cells : Program, List Value, Integer, Integer, Integer, Integer, List Value -> List Value
+  ev-rect-cells (pg) (vals) (r) (r2) (c) (c2) (acc) =
+    if r > r2 then acc
+    else ev-rect-cells pg vals (r + 1) r2 c c2 (ev-row-cells pg vals r c c2 acc)
+
+  ev-range-cells : Program, List Value, RangeRef -> List Value
+  ev-range-cells (pg) (vals) (g) =
+    let a = g.rr-from
+    in let b = g.rr-to
+    in ev-rect-cells pg vals (gr-lo (a.cr-row) (b.cr-row)) (gr-hi (a.cr-row) (b.cr-row)) (gr-lo (a.cr-col) (b.cr-col)) (gr-hi (a.cr-col) (b.cr-col)) []
+
+ An EMPTY cell matches only another empty, never the number zero: a
+ COUNTIF for 0 that counted every unfilled cell in the range would
+ answer the size of the range.
+
+  ev-same : Value, Value -> Boolean
+  ev-same (a) (b) =
+    if ev-is-empty a | ev-is-empty b then ev-is-empty a & ev-is-empty b
+    else if ev-is-text a & ev-is-text b then ev-text-of a == ev-text-of b
+    else if ev-is-text a then False
+    else if ev-is-text b then False
+    else ev-num-of a == ev-num-of b
+
+  ev-match-scan : Program, List Value, List Value, Value, Boolean -> Value
+  ev-match-scan (pg) (vals) (cs) (want) (summing) =
+    ev-match-loop cs 0 (list-length cs) want summing 0
+
+  ev-match-loop : List Value, Integer, Integer, Value, Boolean, Integer -> Value
+  ev-match-loop (cs) (i) (n) (want) (summing) (acc) =
+    if i >= n then VNum acc
+    else if ev-same (list-at cs i) want == False then ev-match-loop cs (i + 1) n want summing acc
+    else if summing then ev-match-loop cs (i + 1) n want summing (acc + ev-num-of (list-at cs i))
+    else ev-match-loop cs (i + 1) n want summing (acc + 1)
+
+Section: Lookup
+
+ `LOOKUP(range, key, header)`. The range's FIRST ROW is the header row
+ and its FIRST COLUMN is the key column. The key is matched EXACTLY in
+ the key column, and the answer is taken from the column whose header
+ equals `header`.
+
+ Named rather than positional, ruled 2026-09-08: a lookup keyed on
+ column POSITION is wrong the first time somebody inserts a column, and
+ nothing in the sheet says so.
+
+ Three refusals, and each names what a person can act on: no column
+ carries that header, no row carries that key, or MORE THAN ONE row
+ carries that key. The last is the one other spreadsheets answer instead
+ of refusing, and a duplicate key has no single right answer: taking the
+ first is a near match wearing an exact match's clothes.
+
+  ev-r1 : RangeRef -> Integer
+  ev-r1 (g) = gr-lo ((g.rr-from).cr-row) ((g.rr-to).cr-row)
+
+  ev-r2 : RangeRef -> Integer
+  ev-r2 (g) = gr-hi ((g.rr-from).cr-row) ((g.rr-to).cr-row)
+
+  ev-c1 : RangeRef -> Integer
+  ev-c1 (g) = gr-lo ((g.rr-from).cr-col) ((g.rr-to).cr-col)
+
+  ev-c2 : RangeRef -> Integer
+  ev-c2 (g) = gr-hi ((g.rr-from).cr-col) ((g.rr-to).cr-col)
+
+  ev-find-col : Program, List Value, Integer, Integer, Integer, Text -> Integer
+  ev-find-col (pg) (vals) (r) (c) (c2) (h) =
+    if c > c2 then 0 - 1
+    else if ev-show (ev-cell pg vals r c) == h then c
+    else ev-find-col pg vals r (c + 1) c2 h
+
+  ev-count-key : Program, List Value, Integer, Integer, Integer, Value, Integer -> Integer
+  ev-count-key (pg) (vals) (r) (r2) (c) (key) (acc) =
+    if r > r2 then acc
+    else if ev-same (ev-cell pg vals r c) key then ev-count-key pg vals (r + 1) r2 c key (acc + 1)
+    else ev-count-key pg vals (r + 1) r2 c key acc
+
+  ev-first-key : Program, List Value, Integer, Integer, Integer, Value -> Integer
+  ev-first-key (pg) (vals) (r) (r2) (c) (key) =
+    if r > r2 then 0 - 1
+    else if ev-same (ev-cell pg vals r c) key then r
+    else ev-first-key pg vals (r + 1) r2 c key
+
+  ev-lookup : Program, List Value, List Expr -> Value
+  ev-lookup (pg) (vals) (args) =
+    if list-length args /= 3 then VErr (ev-arity "LOOKUP" 3 (list-length args))
+    else if ev-range-arg (list-at args 0) == False then VErr "LOOKUP wants a range like A1:D9 whose first row is the header row"
+    else ev-lookup-args pg vals (ev-range-of (list-at args 0)) (ev-expr pg vals (list-at args 1)) (ev-expr pg vals (list-at args 2))
+
+  ev-lookup-args : Program, List Value, RangeRef, Value, Value -> Value
+  ev-lookup-args (pg) (vals) (g) (key) (hdr) =
+    if ev-is-err key then key
+    else if ev-is-err hdr then hdr
+    else ev-lookup-bad pg vals g key (ev-show hdr) (ev-range-err pg vals g)
+
+  ev-lookup-bad : Program, List Value, RangeRef, Value, Text, Value -> Value
+  ev-lookup-bad (pg) (vals) (g) (key) (h) (bad) =
+    if ev-is-err bad then bad
+    else ev-lookup-col pg vals g key h (ev-find-col pg vals (ev-r1 g) (ev-c1 g) (ev-c2 g) h)
+
+  ev-lookup-col : Program, List Value, RangeRef, Value, Text, Integer -> Value
+  ev-lookup-col (pg) (vals) (g) (key) (h) (col) =
+    if col < 0 then VErr ("LOOKUP found no column headed " & h)
+    else ev-lookup-rows pg vals g key col (ev-count-key pg vals (ev-r1 g + 1) (ev-r2 g) (ev-c1 g) key 0)
+
+  ev-lookup-rows : Program, List Value, RangeRef, Value, Integer, Integer -> Value
+  ev-lookup-rows (pg) (vals) (g) (key) (col) (n) =
+    if n == 0 then VErr ("LOOKUP found no row whose key is " & ev-show key)
+    else if n > 1 then VErr ("LOOKUP found " & show n & " rows whose key is " & ev-show key & ", and a key that is not unique has no single answer")
+    else ev-cell pg vals (ev-first-key pg vals (ev-r1 g + 1) (ev-r2 g) (ev-c1 g) key) col
+
+  ev-if : Program, List Value, List Expr -> Value
+  ev-if (pg) (vals) (args) =
+    if list-length args /= 3 then VErr (ev-arity "IF" 3 (list-length args))
+    else ev-if-on pg vals args (ev-expr pg vals (list-at args 0))
+
+  ev-if-on : Program, List Value, List Expr, Value -> Value
+  ev-if-on (pg) (vals) (args) (c) =
+    if ev-is-err c then c
+    else let t = ev-need-num c "IF"
+    in if t /= "" then VErr t
+    else if ev-num-of c /= 0 then ev-expr pg vals (list-at args 1)
+    else ev-expr pg vals (list-at args 2)
+
+  ev-cond : Program, List Value, Text, List Expr -> Value
+  ev-cond (pg) (vals) (nm) (args) =
+    if list-length args /= 2 then VErr (ev-arity nm 2 (list-length args))
+    else if ev-range-arg (list-at args 0) == False then VErr (nm & " wants a range like A1:B9")
+    else ev-cond-on pg vals nm args (ev-expr pg vals (list-at args 1))
+
+  ev-cond-on : Program, List Value, Text, List Expr, Value -> Value
+  ev-cond-on (pg) (vals) (nm) (args) (want) =
+    if ev-is-err want then want
+    else ev-match pg vals (ev-range-of (list-at args 0)) want (nm == "SUMIF")
+
+  ev-concat : List Value, Integer, Integer, Text -> Value
+  ev-concat (vs) (i) (n) (acc) =
+    if i >= n then ev-lit acc
+    else ev-concat vs (i + 1) n (acc & ev-show (list-at vs i))
+
+  ev-text1 : Text, List Value -> Value
+  ev-text1 (nm) (vs) =
+    if list-length vs /= 1 then VErr (ev-arity nm 1 (list-length vs))
+    else ev-text1-on nm (list-at vs 0)
+
+  ev-text1-on : Text, Value -> Value
+  ev-text1-on (nm) (v) =
+    let bs = text-to-utf8-bytes (ev-show v)
+    in let n = list-length bs
+    in if nm == "LEN" then VNum (ev-len-of bs 0 n 0)
+    else if nm == "UPPER" then ev-lit (utf8-bytes-to-text (ev-fold bs 0 n True []))
+    else if nm == "LOWER" then ev-lit (utf8-bytes-to-text (ev-fold bs 0 n False []))
+    else ev-lit (utf8-bytes-to-text (ev-slice bs (ev-trim-start bs 0 n) (ev-trim-end bs n) []))
+
+  ev-call : Program, List Value, Text, List Expr -> Value
+  ev-call (pg) (vals) (nm) (args) =
+    if nm == "SUM" then ev-agg pg vals nm args
+    else if nm == "COUNT" then ev-agg pg vals nm args
+    else if nm == "MIN" then ev-agg pg vals nm args
+    else if nm == "MAX" then ev-agg pg vals nm args
+    else if nm == "AVERAGE" then ev-agg pg vals nm args
+    else if nm == "IF" then ev-if pg vals args
+    else if nm == "SUMIF" then ev-cond pg vals nm args
+    else if nm == "COUNTIF" then ev-cond pg vals nm args
+    else if nm == "LOOKUP" then ev-lookup pg vals args
+    else ev-call-plain pg vals nm args
+
+  ev-call-plain : Program, List Value, Text, List Expr -> Value
+  ev-call-plain (pg) (vals) (nm) (args) =
+    let vs = ev-args pg vals args 0 (list-length args) []
+    in let bad = ev-first-err vs 0 (list-length vs)
+    in if ev-is-err bad then bad
+    else if nm == "CONCAT" then ev-concat vs 0 (list-length vs) ""
+    else if nm == "LEN" then ev-text1 nm vs
+    else if nm == "UPPER" then ev-text1 nm vs
+    else if nm == "LOWER" then ev-text1 nm vs
+    else if nm == "TRIM" then ev-text1 nm vs
+    else VErr (nm & " is not a function this sheet knows")
+
+Section: The Expression
+
+  ev-expr : Program, List Value, Expr -> Value
+  ev-expr (pg) (vals) (e) = when e
+   is ExNum (v) -> VNum v
+   is ExText (t) -> ev-lit t
+   is ExRef (r) -> ev-cell pg vals (r.cr-row) (r.cr-col)
+   is ExRange (g) -> VErr ("a range belongs to a function, and " & (g.rr-from).cr-name & " to " & (g.rr-to).cr-name & " stands where a value was wanted")
+   is ExNeg (x) -> ev-negate (ev-expr pg vals x)
+   is ExBin (b) -> ev-binary (b.bn-op) (ev-expr pg vals (b.bn-left)) (ev-expr pg vals (b.bn-right))
+   is ExCall (c) -> ev-call pg vals (c.cn-name) (c.cn-args)
+
+  ev-negate : Value -> Value
+  ev-negate (v) =
+    if ev-is-err v then v
+    else let t = ev-need-num v "-"
+    in if t /= "" then VErr t
+    else VNum (0 - ev-num-of v)
+
+Section: Running The Plan
+
+ The values list is filled with zeroes and then written at each entry's
+ own index as the derived order reaches it, so a reference resolves to a
+ value already computed rather than to a placeholder. `list-set-at`
+ writes through the caller's list deliberately here: the list is created
+ inside this run and is handed to nobody until the run finishes.
+
+ `list-push` rather than concatenation, and the difference is the whole
+ cost of a big sheet: `acc & [x]` repeated n times allocates a fresh list
+ of length 1, 2, 3 and so on, which is n squared over two cells and
+ 17 MB at a thousand. `list-push` extends in place. Every accumulator
+ written that way here is created inside its own call from a fresh `[]`
+ and is handed to no caller holding an earlier version, which is the
+ condition L-ALIAS names; a list living in a record a caller still holds,
+ as `pg-cells` does, must keep concatenating.
+
+  ev-zeroes : Integer, Integer, List Value -> List Value
+  ev-zeroes (i) (n) (acc) =
+    if i >= n then acc
+    else ev-zeroes (i + 1) n (list-push acc (VNum 0))
+
+  ev-step : Program, List Value, List Integer, Integer, Integer -> List Value
+  ev-step (pg) (vals) (order) (i) (n) =
+    if i >= n then vals
+    else let v = list-at order i
+    in let e = (list-at (pg.pg-cells) v).fc-expr
+    in ev-step pg (list-set-at vals v (ev-expr pg vals e)) order (i + 1) n
+
+  eval-run : Program -> Results
+  eval-run (pg) =
+    let plan = graph-plan pg
+    in if plan.pl-ok == False then Results { rs-ok = False, rs-vals = [], rs-msg = plan.pl-msg }
+    else ev-run-order pg (plan.pl-order)
+
+  ev-run-order : Program, List Integer -> Results
+  ev-run-order (pg) (order) =
+    let vals = ev-zeroes 0 (graph-count pg) []
+    in Results { rs-ok = True, rs-vals = ev-step pg vals order 0 (list-length order), rs-msg = "" }
+
+  eval-cell : Program, Results, Integer, Integer -> Text
+  eval-cell (pg) (rs) (r) (c) =
+    if rs.rs-ok == False then "REFUSED: " & rs.rs-msg
+    else ev-show (ev-cell pg (rs.rs-vals) r c)
+
+Page 1

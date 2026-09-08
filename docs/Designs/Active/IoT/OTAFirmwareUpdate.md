@@ -87,11 +87,55 @@ re-check catches is the bank changing after Gate B blessed it.
 2. **Gate B costs a List.** `evaluate-load` takes `List Integer`, so the
    caller reads the staged image back out of the bank -- the constraint 5
    memory limit this design names, unfixed. A buffer-taking verifier is
-   the fix.
-3. **The watchdog window is the caller's.** `boot-commit` exists and
-   nothing schedules it. A device that never calls it rolls back by
-   attempt count, which is the safe direction, but the timed window step
-   7 describes is not implemented here.
+   the fix, and it is **not this design's to make**: the entry point is
+   `codex/os/verify/VerifiedLoader.codex`, the real work is in
+   `verify-cdx-full`, and seven call sites depend on the signature, so it
+   is a campaign of the os quire rather than a changelist here (root's
+   ruling, 2026-09-08). It is written up, with the call sites and the
+   `OtaBoot.codex` precedent that already hashes from an address, as the
+   first entry in `codex/os/os-backlog.md`. Unowned until dispatched.
+3. **The commit is SCHEDULED, and the schedule is the LwM2M registration**
+   (blu, 2026-09-08). `fw-confirm-boot` in `Lwm2mFirmware.codex` is
+   `boot-commit`'s production caller: it takes the registration verdict and
+   commits only on a completed re-registration, which is the health signal
+   this stack actually has, because OMA LwM2M has the device re-register
+   after an update and the server reads Update Result to learn how it went.
+   A caller with a stronger check of its own passes its own verdict in the
+   same place; what must not happen is committing on the mere fact of
+   running, which is what the attempt counter already knows.
+
+   Confirming and activating run on DIFFERENT FIRMWARES and are separate
+   acts: `fw-activate` runs on the old image and says "boot the candidate
+   next", `fw-confirm-boot` runs on the new one after it comes up and says
+   "keep it". Gated by `codex/test/apps/ota-confirm-boot`, whose two arms
+   differ in that one input: registered gives `primary=B cand=none
+   result=1`, unregistered gives `BBBAA primary=A cand=none result=0`, the
+   attempt limit falling back. With the guard removed the second arm reads
+   `BBBBB primary=B result=1` while the first is unchanged, so the
+   unregistered arm is the only one that can see the difference.
+
+   A timed window is still not implemented; the caller's verdict stands in
+   for it, and a device that never confirms rolls back by attempt count,
+   which is the safe direction.
+
+4. **`tools/ota-fetch.codex` compiles again** (repaired 2026-09-08, blu). It
+   had drifted out of type with the chapter it cites: `fw-feed-response`
+   gained a leading `linear Board` and returns a pair, and `fw-new` gained a
+   fifth parameter, so the tool passed an `Lwm2mFw` where a `Board` belonged
+   and left `fw-new` partially applied. `of-run` now threads the Board and
+   `of-capacity` states the 400 KB the round cap already described.
+
+   **Why nothing saw it, and what does now.** `build/ota-fetch-test.ps1`
+   names the tool, so a coverage check would have called it covered; the
+   script wants a real socket and no gate runs it, which is the L-NOGATE
+   shape one level out. `build/check-tools.ps1` is the text-only part that
+   IS decidable without a guest: every `tools/*.codex` must be named by some
+   build script, and its header says plainly that a green line means
+   referenced and not compiled, because that is the reading that would
+   mislead. It finds one genuine gap today, `tools/lwm2m-client.codex`,
+   which no script names at all. Wire the check into a gate once that gap is
+   closed; the compile question needs a sweep that compiles the tools, which
+   is a guest apiece and belongs to the battery.
 
 One defect found while wiring this and **fixed** (2026-07-16):
 `OtaUpdate.gate-a-verify-block` hashed with `sha256` -- eight 32-bit
@@ -372,16 +416,29 @@ not yet designed but is noted as a Phase B3 hardening item.
 
 ## Open Questions
 
+Every identifier this document names in backticks was checked against head
+on 2026-09-08 and all of them exist with a definition, with one deliberate
+exception: `commit-update`, which appears only inside question 2 as the
+hypothetical API that question was asking about, and which turned out not to
+be needed. The check is worth repeating rather than trusting, because three
+of this file's claims were stale that same day.
+
 1. **Boot selector placement per board.** STM32 option-byte bank
    swap vs a tiny Codex first-stage; ESP32-C6 sits behind
    Espressif's ROM+bootloader (their secure boot verifies *their*
    format -- our selector runs inside the app slot); Pi tryboot.
    Per-board appendices needed during implementation.
-2. **Health-check definition.** Re-registration is necessary;
-   what application-level probe is sufficient, and who declares
-   it (product code via a `commit-update` API the runtime
-   exposes)? Proposal: explicit `ota-commit` builtin; no implicit
-   auto-commit.
+2. **Health-check definition -- ANSWERED, and the answer is the
+   proposal** (blu, 2026-09-08). `fw-confirm-boot` is the API,
+   and it takes the verdict rather than computing one: the
+   caller passes whether the device is healthy and the commit
+   happens only on True, so there is no implicit auto-commit.
+   Re-registration is what schedules it, because that is the
+   health signal this stack has; a product with a stronger probe
+   of its own passes its own verdict through the same parameter.
+   No `commit-update` builtin was needed and none exists: the
+   runtime already exposes `boot-commit`, and the question was
+   which caller may invoke it, not what to add.
 3. **Sequence-number authority.** Per publisher key or per model
    line with multiple authorized publishers? Affects release-fact
    schema; defer to first design partner's key-management reality.

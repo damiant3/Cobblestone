@@ -1,0 +1,552 @@
+Chapter: GopWorld
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites Works chapter GopZones
+  cites Works chapter GopLocale
+
+ The world, coarsely, and the 24 bands drawn over it.
+
+ Stage 4 of `docs/Designs/Active/Apps/ClockAndZone.md`.
+
+ THIS IS A PICTURE AND NOT A PROJECTION ENGINE. Nothing here computes a
+ Mercator from coordinates. The landmasses are 72 rows of 144 columns, hand
+ traced, and the only geometry is that column x is longitude and row y is
+ latitude on the same linear scale a Mercator uses for longitude. A click
+ picks a STRIPE by its column, never a country by its shape, which is the
+ whole reason a coarse picture is enough.
+
+ THE ROWS SPAN 80 DEGREES NORTH TO 60 SOUTH, which is where a real Mercator
+ stops being usable: the projection sends the poles to infinity, so every
+ published one is cropped and this one is cropped in the same place. It costs
+ nothing, because nobody picks a timezone by clicking Antarctica.
+
+Section: The Grid
+
+  wld-cols : Integer = 144
+  wld-rows : Integer = 72
+
+ Each row is 144 bits as nine 16-bit words, most significant bit first, which
+ is the shape that fits an Integer literal per word and stays readable as a
+ map when the words are laid out in a column. Sea is 0 and land is 1.
+
+  wld-words : Integer = 9
+
+  wld-cells : Integer = 648
+
+ THE TABLE IS COPIED INTO A BLOCK ONCE AND INDEXED AFTER THAT. `wld-bit-at` is
+ a chain of 367 comparisons, which is the shape a generated table takes in a
+ language with no array literal. Read per pixel it would cost about four
+ million comparisons to draw one map, and the pane redraws every second. Built
+ into 648 words at open and read with `peek-32`, it costs one load.
+
+ The caller owns the block and passes it back in, the way every other pane on
+ this desk owns its state: allocated once above the desk's base mark, pointer
+ kept in a cell, never rebuilt inside a frame bracket.
+
+  wld-fill : Integer, Integer -> Integer
+  wld-fill (b) (i) =
+    if i >= wld-cells then 0
+    else let w = poke-32 b (i * 4) (wld-bit-at i)
+    in wld-fill b (i + 1)
+
+  wld-build : Integer
+  wld-build =
+    let b = alloc-zeroed (wld-cells * 4) 4
+    in let f = wld-fill b 0
+    in b
+
+  wld-word : Integer, Integer, Integer -> Integer
+  wld-word (blob) (y) (w) = peek-32 blob ((y * wld-words + w) * 4)
+
+  wld-land : Integer, Integer, Integer -> Boolean
+  wld-land (blob) (x) (y) =
+    if blob == 0 then False
+    else if x < 0 then False
+    else if x >= wld-cols then False
+    else if y < 0 then False
+    else if y >= wld-rows then False
+    else bit-and (wld-word blob y (x / 16)) (bit-shl 1 (15 - int-mod x 16)) /= 0
+
+Section: Stripes
+
+ THE BAND IS THE COLUMN AND THE COLUMN IS THE LONGITUDE. 144 columns over 360
+ degrees is six columns per hour, and the map is centred so that column 72 is
+ the prime meridian: stripe s spans columns `72 + s * 6` to `72 + s * 6 + 6`.
+
+ Stripes run -12 to +11 across the picture, which is 24 bands and covers the
+ world once. The table has zones at +12, +13 and +14, which are east of the
+ date line and are drawn in the SAME columns as -12, -11 and -10. That is not
+ a bug in the picture, it is what the date line is, and the list beside the
+ map is what separates them.
+
+  wld-stripe-cols : Integer = 6
+
+  wld-stripe-x0 : Integer -> Integer
+  wld-stripe-x0 (s) = 72 + s * wld-stripe-cols
+
+  wld-col-stripe : Integer -> Integer
+  wld-col-stripe (x) =
+    let c = (x - 72) / wld-stripe-cols
+    in if x < 72 & int-mod (x - 72) wld-stripe-cols /= 0 then c - 1 else c
+
+Section: Drawing
+
+ The map is drawn at an integer SCALE so that a column is a whole number of
+ device pixels and the bands line up with the land. A fractional scale would
+ put a band edge inside a pixel and the stripe under the pointer would not be
+ the stripe that was drawn there.
+
+  wld-scale-for : Integer -> Integer
+  wld-scale-for (w) = let s = w / wld-cols in if s < 1 then 1 else s
+
+  wld-cell : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wld-cell (base) (stride) (rows) (clip) (px) (py) (sc) (col) (i) (n) =
+    if i >= n then 0
+    else
+      let d = comp-fill base stride rows clip (px + int-mod i sc) (py + i / sc) 1 1 col
+      in wld-cell base stride rows clip px py sc col (i + 1) n
+
+  wld-row-at : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wld-row-at (base) (stride) (rows) (clip) (blob) (ox) (oy) (sc) (y) (x) (sea) (land) (sel) =
+    if x >= wld-cols then 0
+    else
+      let on = wld-land blob x y
+      in let inband = sel >= (0 - 12) & wld-col-stripe x == sel
+      in let c = if on then (if inband then wld-sel-land else land) else (if inband then wld-sel-sea else sea)
+      in let d = comp-fill base stride rows clip (ox + x * sc) (oy + y * sc) sc sc c
+      in wld-row-at base stride rows clip blob ox oy sc y (x + 1) sea land sel
+
+  wld-rows-at : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wld-rows-at (base) (stride) (rows) (clip) (blob) (ox) (oy) (sc) (y) (sea) (land) (sel) =
+    if y >= wld-rows then 0
+    else
+      let one = wld-row-at base stride rows clip blob ox oy sc y 0 sea land sel
+      in wld-rows-at base stride rows clip blob ox oy sc (y + 1) sea land sel
+
+ The selected band is a WASH over both sea and land rather than a frame around
+ them, because a frame six columns wide is two vertical lines and reads as two
+ lines rather than as a band. The land inside it stays distinguishable from
+ the sea inside it, which is what makes the selection legible instead of a
+ solid bar across the picture.
+
+  wld-sel-sea : Integer = 3372975
+  wld-sel-land : Integer = 6750105
+
+ GRID LINES EVERY THREE HOURS, so a reader can count bands without tracing
+ each one. Every third stripe boundary gets a line, which puts one on the
+ prime meridian and one on the date line, the two a reader looks for first.
+
+  wld-grid-at : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wld-grid-at (base) (stride) (rows) (clip) (ox) (oy) (sc) (s) (hi) (col) =
+    if s > hi then 0
+    else
+      let x = wld-stripe-x0 s
+      in let d = if int-mod (s + 12) 3 == 0 & x >= 0 & x < wld-cols then comp-fill base stride rows clip (ox + x * sc) oy 1 (wld-rows * sc) col else 0
+      in wld-grid-at base stride rows clip ox oy sc (s + 1) hi col
+
+  wld-draw : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wld-draw (base) (stride) (rows) (clip) (blob) (ox) (oy) (sc) (sea) (land) (grid) (sel) =
+    let m = wld-rows-at base stride rows clip blob ox oy sc 0 sea land sel
+    in wld-grid-at base stride rows clip ox oy sc (0 - 12) 11 grid
+
+Section: Hitting
+
+ The inverse of the drawing, and it takes the same origin and scale so the two
+ cannot drift. A point outside the picture answers a stripe of -99 rather than
+ clamping to an edge: a click past the map is not a click on its last band,
+ and treating it as one puts somebody in Kiritimati for missing.
+
+  wld-none : Integer = 0 - 99
+
+  wld-hit-stripe : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wld-hit-stripe (ox) (oy) (sc) (mx) (my) (unused) =
+    let x = (mx - ox) / sc
+    in let y = (my - oy) / sc
+    in if mx < ox then wld-none
+    else if my < oy then wld-none
+    else if x >= wld-cols then wld-none
+    else if y >= wld-rows then wld-none
+    else wld-col-stripe x
+
+Section: The Table
+
+ GENERATED, and the generator is not in the depot because its OUTPUT is the
+ artifact: 367 non-empty words rasterised from about twenty coastline polygons
+ in latitude and longitude. Editing a coastline here means editing these
+ numbers, which is the honest cost of a picture in a language with no array
+ literal, and the picture is checked by looking at it rather than by reading
+ them.
+
+  wld-bit-at : Integer -> Integer
+  wld-bit-at (i) =
+    if i == 24 then 7
+    else if i == 25 then 57344
+    else if i == 33 then 2047
+    else if i == 34 then 65504
+    else if i == 38 then 32752
+    else if i == 39 then 4092
+    else if i == 42 then 32767
+    else if i == 43 then 65535
+    else if i == 44 then 57344
+    else if i == 45 then 2047
+    else if i == 46 then 65408
+    else if i == 47 then 65532
+    else if i == 48 then 32766
+    else if i == 50 then 31745
+    else if i == 51 then 65535
+    else if i == 52 then 65535
+    else if i == 53 then 65472
+    else if i == 54 then 2047
+    else if i == 55 then 65535
+    else if i == 56 then 65535
+    else if i == 57 then 32766
+    else if i == 59 then 32767
+    else if i == 60 then 65535
+    else if i == 61 then 65535
+    else if i == 62 then 65532
+    else if i == 63 then 4095
+    else if i == 64 then 65535
+    else if i == 65 then 65535
+    else if i == 66 then 16383
+    else if i == 67 then 57344
+    else if i == 68 then 65535
+    else if i == 69 then 65535
+    else if i == 70 then 65535
+    else if i == 71 then 65535
+    else if i == 72 then 2047
+    else if i == 73 then 65535
+    else if i == 74 then 65535
+    else if i == 75 then 40944
+    else if i == 77 then 65535
+    else if i == 78 then 65535
+    else if i == 79 then 65535
+    else if i == 80 then 65535
+    else if i == 81 then 1023
+    else if i == 82 then 65535
+    else if i == 83 then 65535
+    else if i == 84 then 53184
+    else if i == 86 then 32767
+    else if i == 87 then 65535
+    else if i == 88 then 65535
+    else if i == 89 then 65535
+    else if i == 90 then 511
+    else if i == 91 then 65535
+    else if i == 92 then 65535
+    else if i == 93 then 49152
+    else if i == 95 then 32767
+    else if i == 96 then 65535
+    else if i == 97 then 65535
+    else if i == 98 then 65408
+    else if i == 99 then 224
+    else if i == 100 then 65535
+    else if i == 101 then 65535
+    else if i == 102 then 49152
+    else if i == 103 then 1792
+    else if i == 104 then 65535
+    else if i == 105 then 65535
+    else if i == 106 then 65535
+    else if i == 107 then 65024
+    else if i == 109 then 32767
+    else if i == 110 then 65535
+    else if i == 111 then 49152
+    else if i == 112 then 1950
+    else if i == 113 then 65535
+    else if i == 114 then 65535
+    else if i == 115 then 65535
+    else if i == 116 then 63488
+    else if i == 118 then 8191
+    else if i == 119 then 65535
+    else if i == 120 then 49152
+    else if i == 121 then 1951
+    else if i == 122 then 65535
+    else if i == 123 then 65535
+    else if i == 124 then 65535
+    else if i == 125 then 57344
+    else if i == 127 then 4095
+    else if i == 128 then 65535
+    else if i == 129 then 49152
+    else if i == 130 then 2047
+    else if i == 131 then 65535
+    else if i == 132 then 65535
+    else if i == 133 then 65535
+    else if i == 134 then 49152
+    else if i == 136 then 2047
+    else if i == 137 then 65535
+    else if i == 138 then 49152
+    else if i == 139 then 255
+    else if i == 140 then 65535
+    else if i == 141 then 65535
+    else if i == 142 then 65535
+    else if i == 143 then 32768
+    else if i == 145 then 1023
+    else if i == 146 then 65535
+    else if i == 147 then 32768
+    else if i == 148 then 511
+    else if i == 149 then 65535
+    else if i == 150 then 65535
+    else if i == 151 then 65535
+    else if i == 152 then 32768
+    else if i == 154 then 1023
+    else if i == 155 then 65534
+    else if i == 157 then 511
+    else if i == 158 then 65535
+    else if i == 159 then 65535
+    else if i == 160 then 65535
+    else if i == 161 then 32768
+    else if i == 163 then 1023
+    else if i == 164 then 65528
+    else if i == 166 then 511
+    else if i == 167 then 65535
+    else if i == 168 then 65535
+    else if i == 169 then 65534
+    else if i == 172 then 1023
+    else if i == 173 then 65520
+    else if i == 175 then 3975
+    else if i == 176 then 65535
+    else if i == 177 then 65535
+    else if i == 178 then 65528
+    else if i == 179 then 49152
+    else if i == 181 then 1023
+    else if i == 182 then 65504
+    else if i == 184 then 3975
+    else if i == 185 then 65535
+    else if i == 186 then 65535
+    else if i == 187 then 65521
+    else if i == 188 then 32768
+    else if i == 190 then 1023
+    else if i == 191 then 65504
+    else if i == 193 then 3844
+    else if i == 194 then 32767
+    else if i == 195 then 65535
+    else if i == 196 then 65521
+    else if i == 199 then 511
+    else if i == 200 then 65472
+    else if i == 202 then 3704
+    else if i == 203 then 15935
+    else if i == 204 then 65535
+    else if i == 205 then 65522
+    else if i == 208 then 511
+    else if i == 209 then 65472
+    else if i == 211 then 1022
+    else if i == 212 then 63
+    else if i == 213 then 65535
+    else if i == 214 then 65508
+    else if i == 217 then 255
+    else if i == 218 then 65408
+    else if i == 220 then 2047
+    else if i == 221 then 31
+    else if i == 222 then 65535
+    else if i == 223 then 65480
+    else if i == 226 then 63
+    else if i == 227 then 65280
+    else if i == 229 then 8191
+    else if i == 230 then 64543
+    else if i == 231 then 65535
+    else if i == 232 then 65408
+    else if i == 235 then 63
+    else if i == 236 then 62208
+    else if i == 238 then 32767
+    else if i == 239 then 64527
+    else if i == 240 then 65535
+    else if i == 241 then 65408
+    else if i == 244 then 31
+    else if i == 245 then 49408
+    else if i == 247 then 32767
+    else if i == 248 then 65031
+    else if i == 249 then 65535
+    else if i == 250 then 65280
+    else if i == 253 then 31
+    else if i == 254 then 49152
+    else if i == 256 then 32767
+    else if i == 257 then 65024
+    else if i == 258 then 16383
+    else if i == 259 then 65024
+    else if i == 262 then 15
+    else if i == 263 then 49536
+    else if i == 265 then 32767
+    else if i == 266 then 65280
+    else if i == 267 then 8191
+    else if i == 268 then 64512
+    else if i == 271 then 7
+    else if i == 272 then 224
+    else if i == 274 then 32767
+    else if i == 275 then 65280
+    else if i == 276 then 4095
+    else if i == 277 then 63488
+    else if i == 283 then 32767
+    else if i == 284 then 65280
+    else if i == 285 then 2031
+    else if i == 286 then 61440
+    else if i == 292 then 32767
+    else if i == 293 then 65408
+    else if i == 294 then 2023
+    else if i == 295 then 61536
+    else if i == 301 then 32767
+    else if i == 302 then 65408
+    else if i == 303 then 963
+    else if i == 304 then 57568
+    else if i == 310 then 16383
+    else if i == 311 then 65472
+    else if i == 312 then 387
+    else if i == 313 then 57568
+    else if i == 317 then 127
+    else if i == 319 then 16383
+    else if i == 320 then 65528
+    else if i == 321 then 387
+    else if i == 322 then 57568
+    else if i == 326 then 255
+    else if i == 327 then 32768
+    else if i == 328 then 16383
+    else if i == 329 then 65520
+    else if i == 330 then 1
+    else if i == 331 then 49344
+    else if i == 335 then 511
+    else if i == 336 then 49152
+    else if i == 337 then 8191
+    else if i == 338 then 65504
+    else if i == 339 then 129
+    else if i == 340 then 32896
+    else if i == 344 then 511
+    else if i == 345 then 61440
+    else if i == 346 then 8191
+    else if i == 347 then 65504
+    else if i == 348 then 1
+    else if i == 349 then 32768
+    else if i == 353 then 511
+    else if i == 354 then 61440
+    else if i == 355 then 511
+    else if i == 356 then 65472
+    else if i == 357 then 1
+    else if i == 358 then 36352
+    else if i == 362 then 511
+    else if i == 363 then 61440
+    else if i == 364 then 127
+    else if i == 365 then 65472
+    else if i == 367 then 65280
+    else if i == 371 then 511
+    else if i == 372 then 63488
+    else if i == 373 then 31
+    else if i == 374 then 65408
+    else if i == 376 then 32512
+    else if i == 380 then 511
+    else if i == 381 then 65280
+    else if i == 382 then 31
+    else if i == 383 then 65408
+    else if i == 385 then 16142
+    else if i == 389 then 511
+    else if i == 390 then 65472
+    else if i == 391 then 31
+    else if i == 392 then 65408
+    else if i == 394 then 7943
+    else if i == 395 then 49152
+    else if i == 398 then 511
+    else if i == 399 then 65472
+    else if i == 400 then 31
+    else if i == 401 then 65408
+    else if i == 403 then 1795
+    else if i == 404 then 57344
+    else if i == 407 then 255
+    else if i == 408 then 65472
+    else if i == 409 then 15
+    else if i == 410 then 65408
+    else if i == 412 then 768
+    else if i == 413 then 57344
+    else if i == 416 then 255
+    else if i == 417 then 65472
+    else if i == 418 then 15
+    else if i == 419 then 65408
+    else if i == 425 then 127
+    else if i == 426 then 65408
+    else if i == 427 then 15
+    else if i == 428 then 65344
+    else if i == 430 then 31
+    else if i == 431 then 49152
+    else if i == 434 then 127
+    else if i == 435 then 65408
+    else if i == 436 then 15
+    else if i == 437 then 65392
+    else if i == 439 then 127
+    else if i == 440 then 49152
+    else if i == 443 then 63
+    else if i == 444 then 65280
+    else if i == 445 then 15
+    else if i == 446 then 65136
+    else if i == 448 then 255
+    else if i == 449 then 49152
+    else if i == 452 then 31
+    else if i == 453 then 65280
+    else if i == 454 then 15
+    else if i == 455 then 65136
+    else if i == 457 then 511
+    else if i == 458 then 57344
+    else if i == 461 then 31
+    else if i == 462 then 65024
+    else if i == 463 then 7
+    else if i == 464 then 64624
+    else if i == 466 then 1023
+    else if i == 467 then 57344
+    else if i == 470 then 31
+    else if i == 471 then 64512
+    else if i == 472 then 7
+    else if i == 473 then 64624
+    else if i == 475 then 2047
+    else if i == 476 then 61440
+    else if i == 479 then 31
+    else if i == 480 then 64512
+    else if i == 481 then 7
+    else if i == 482 then 64624
+    else if i == 484 then 2047
+    else if i == 485 then 61440
+    else if i == 488 then 31
+    else if i == 489 then 63488
+    else if i == 490 then 7
+    else if i == 491 then 64512
+    else if i == 493 then 2047
+    else if i == 494 then 63488
+    else if i == 497 then 31
+    else if i == 498 then 63488
+    else if i == 499 then 3
+    else if i == 500 then 63488
+    else if i == 502 then 2047
+    else if i == 503 then 64512
+    else if i == 506 then 31
+    else if i == 507 then 61440
+    else if i == 508 then 3
+    else if i == 509 then 63488
+    else if i == 511 then 1023
+    else if i == 512 then 63488
+    else if i == 515 then 31
+    else if i == 516 then 57344
+    else if i == 517 then 3
+    else if i == 518 then 61440
+    else if i == 520 then 1023
+    else if i == 521 then 63488
+    else if i == 524 then 31
+    else if i == 525 then 57344
+    else if i == 526 then 1
+    else if i == 527 then 57344
+    else if i == 529 then 967
+    else if i == 530 then 63488
+    else if i == 533 then 31
+    else if i == 534 then 49152
+    else if i == 538 then 1
+    else if i == 539 then 63500
+    else if i == 542 then 31
+    else if i == 543 then 32768
+    else if i == 548 then 28686
+    else if i == 551 then 31
+    else if i == 557 then 14
+    else if i == 560 then 63
+    else if i == 566 then 28
+    else if i == 569 then 62
+    else if i == 575 then 56
+    else if i == 578 then 62
+    else if i == 584 then 48
+    else if i == 587 then 62
+    else if i == 596 then 62
+    else if i == 605 then 60
+    else if i == 614 then 28
+    else 0
+
+
+Page 1

@@ -163,7 +163,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "@YES" else "@NO"
     is IrCharLit (n) (sp) -> "@(" & integer-to-text n & ")"
     is IrName (n) (ty) (sp) -> emit-oc-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-oc-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-oc-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "@(-[" & emit-oc-expr-at operand arities (depth + 1) & " integerValue])"
     is IrIf (c) (t) (el) (ty) (sp) -> "([" & emit-oc-expr-at c arities (depth + 1) & " boolValue] ? " & emit-oc-expr-at t arities (depth + 1) & " : " & emit-oc-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(^{ id " & oc-sanitize name & " = " & emit-oc-expr-at val arities (depth + 1) & "; return " & emit-oc-expr-at body arities (depth + 1) & "; }())"
@@ -189,9 +189,25 @@ Section: Expression Emission
    else if n == "Nothing" then "nil"
    else oc-sanitize n
 
-  emit-oc-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-oc-binary (op) (l) (r) (arities) =
+ C leaves signed overflow UNDEFINED rather than wrapping, so the band cannot
+ be the bare operator here as it is for the rest of this class: the arithmetic
+ is done in NSUInteger, where the wrap is defined, and converted back. The
+ trapping arm computes the same way and then reads the sign, since the check
+ must not be the thing that overflows.
+
+  oc-int-arith : Text, Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  oc-int-arith (sym) (trap) (l) (r) (ty) (arities) =
+   let a = "[" & emit-oc-expr l arities & " integerValue]"
+   in let b = "[" & emit-oc-expr r arities & " integerValue]"
+   in if int-ty-wraps ty then "@((NSInteger)((NSUInteger)" & a & " " & sym & " (NSUInteger)" & b & "))"
+   else "@(" & trap & "(" & a & ", " & b & "))"
+
+  emit-oc-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-oc-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> oc-int-arith "+" "_cx_add_trap" l r ty arities
+    is IrSubInt -> oc-int-arith "-" "_cx_sub_trap" l r ty arities
+    is IrMulInt -> oc-int-arith "*" "_cx_mul_trap" l r ty arities
     is IrAppendText -> "[" & emit-oc-expr l arities & " stringByAppendingString:" & emit-oc-expr r arities & "]"
     is IrAppendList -> "(^{ NSMutableArray *_a = [" & emit-oc-expr l arities & " mutableCopy]; [_a addObjectsFromArray:" & emit-oc-expr r arities & "]; return _a; }())"
     is IrConsList -> "(^{ NSMutableArray *_a = [@[" & emit-oc-expr l arities & "] mutableCopy]; [_a addObjectsFromArray:" & emit-oc-expr r arities & "]; return _a; }())"
@@ -333,7 +349,11 @@ Section: Apply Emission
    else let idx = oc-find-builtin oc-builtin-names n 0
    in if idx >= 0 then emit-oc-builtin-by-idx idx n args arities
    else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then oc-sanitize n & "(" & emit-oc-apply-args args arities 0 & ")"
-        else oc-sanitize n & "(" & emit-oc-apply-args args arities 0 & ")"
+        else let ar = lookup-arity arities n
+        in if ar < 1 then emit-oc-curried (oc-sanitize n) args arities 0
+           else if list-length args == ar then oc-sanitize n & "(" & emit-oc-apply-args args arities 0 & ")"
+           else if list-length args < ar then emit-oc-partial n args arities (ar - list-length args)
+           else emit-oc-curried (oc-sanitize n & "(" & emit-oc-apply-args-upto args arities 0 ar & ")") args arities ar
    else emit-oc-expr-curried original arities
 
   emit-oc-apply : IRExpr, List ArityEntry -> Text
@@ -344,6 +364,43 @@ Section: Apply Emission
    in when root
     is IrName (n) (ty) (sp) -> emit-oc-apply-named n ty args arities e
     is otherwise -> emit-oc-expr-curried e arities
+
+ An Objective-C block held as `id` must be cast to its block type before it
+ can be called, so each application past the callee's arity casts first. A
+ definition applied to fewer arguments than it takes is eta-wrapped as
+ nested blocks.
+
+  emit-oc-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-oc-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = "((id(^)(id))(" & base & "))(" & emit-oc-expr (list-at args i) arities & ")"
+   in emit-oc-curried next args arities (i + 1)
+
+  emit-oc-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-oc-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-oc-expr (list-at args i) arities
+   else emit-oc-expr (list-at args i) arities & ", " & emit-oc-apply-args-upto args arities (i + 1) n
+
+  emit-oc-partial-open : Integer, Integer -> Text
+  emit-oc-partial-open (i) (count) =
+   if i == count then ""
+   else "^(id _p" & integer-to-text i & "_) { return " & emit-oc-partial-open (i + 1) count
+
+  emit-oc-partial-close : Integer -> Text
+  emit-oc-partial-close (count) =
+   if count == 0 then "" else "; }" & emit-oc-partial-close (count - 1)
+
+  emit-oc-partial-params : Integer, Integer -> Text
+  emit-oc-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-oc-partial-params (i + 1) count
+
+  emit-oc-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-oc-partial (n) (args) (arities) (short) =
+   let call = oc-sanitize n & "(" & emit-oc-apply-args args arities 0 & ", " & emit-oc-partial-params 0 short & ")"
+   in emit-oc-partial-open 0 short & call & emit-oc-partial-close short
 
   emit-oc-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-oc-apply-args (args) (arities) (i) =
@@ -386,6 +443,30 @@ Section: Chapter Emission
    in let defs-text = emit-oc-defs (m.defs) 0 arities
    in header & types-text & defs-text & "int main(int argc, const char *argv[]) {\n  @autoreleasepool {\n    dispatch_semaphore_t done = dispatch_semaphore_create(0);\n    NSThread *t = [[NSThread alloc] initWithBlock:^{ " & oc-sanitize opening-entry-point & "(); dispatch_semaphore_signal(done); }];\n    t.stackSize = 512 * 1024 * 1024;\n    [t start];\n    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);\n  }\n  return 0;\n}\n"
 
+  emit-objc-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-objc-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "#import <Foundation/Foundation.h>\n\n" & oc-text-builtins
+   in let types-text = emit-oc-type-defs type-defs 0
+   in header & types-text
+
+  emit-objc-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-objc-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "#import <Foundation/Foundation.h>\n\n" & oc-text-builtins
+   in let types-text = emit-oc-type-defs type-defs 0
+   in "int main(int argc, const char *argv[]) {\n  @autoreleasepool {\n    dispatch_semaphore_t done = dispatch_semaphore_create(0);\n    NSThread *t = [[NSThread alloc] initWithBlock:^{ " & oc-sanitize opening-entry-point & "(); dispatch_semaphore_signal(done); }];\n    t.stackSize = 512 * 1024 * 1024;\n    [t start];\n    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);\n  }\n  return 0;\n}\n"
+
+  emit-objc-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-objc-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "#import <Foundation/Foundation.h>\n\n" & oc-text-builtins
+   in let types-text = emit-oc-type-defs type-defs 0
+   in arities
+
+  emit-objc-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-objc-chapter-stream-def (m) (v) (i) = emit-oc-def (list-at (m.defs) i) v
+
  `componentsSeparatedByString:` RAISES NSInvalidArgumentException on an empty
  separator, where Codex answers the whole string as one field. The other four
  arms already match: `stringByReplacingOccurrencesOfString:` answers the
@@ -393,8 +474,15 @@ Section: Chapter Emission
  answer YES for an empty argument, and `integerValue` stops at the first
  non-digit exactly as `parse-decimal` does.
 
+  oc-trap-builtins : Text
+  oc-trap-builtins =
+   "static NSInteger _cx_add_trap(NSInteger a, NSInteger b) { NSInteger v = (NSInteger)((NSUInteger)a + (NSUInteger)b); if ((a >= 0) == (b >= 0) && (v >= 0) != (a >= 0)) { [NSException raise:@\"CODEX_TRAP_integer_overflow\" format:@\"integer overflow\"]; } return v; }\n"
+   & "static NSInteger _cx_sub_trap(NSInteger a, NSInteger b) { NSInteger v = (NSInteger)((NSUInteger)a - (NSUInteger)b); if ((a >= 0) != (b >= 0) && (v >= 0) != (a >= 0)) { [NSException raise:@\"CODEX_TRAP_integer_overflow\" format:@\"integer overflow\"]; } return v; }\n"
+   & "static NSInteger _cx_mul_trap(NSInteger a, NSInteger b) { if (a == 0 || b == 0) { return 0; } if (a == -1) { if (b == NSIntegerMin) { [NSException raise:@\"CODEX_TRAP_integer_overflow\" format:@\"integer overflow\"]; } return (NSInteger)(-(NSUInteger)b); } if (b == -1) { if (a == NSIntegerMin) { [NSException raise:@\"CODEX_TRAP_integer_overflow\" format:@\"integer overflow\"]; } return (NSInteger)(-(NSUInteger)a); } NSInteger v = (NSInteger)((NSUInteger)a * (NSUInteger)b); if (v / b != a) { [NSException raise:@\"CODEX_TRAP_integer_overflow\" format:@\"integer overflow\"]; } return v; }\n\n"
+
   oc-text-builtins : Text
   oc-text-builtins =
+   oc-trap-builtins &
    "static NSArray *_cxTextSplit(NSString *s, NSString *sep) {\n  if ([sep length] == 0) { return @[s]; }\n  return [s componentsSeparatedByString:sep];\n}\n\n"
 
 Page 1

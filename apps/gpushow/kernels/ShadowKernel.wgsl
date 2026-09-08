@@ -7,78 +7,78 @@ const sd_nobj : i32 = 4;
 const sd_samples : i32 = 9;
 fn sd_cx(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1071225241u));
+  return (0.0 - 0x1.b33332p+0f);
   } else {
-  return bitcast<f32>(1070386380u);
+  return 0x1.999998p+0f;
   }
   }
 }
 fn sd_cy(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1051931443u));
+  return (0.0 - 0x1.666666p-2f);
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1055286886u));
+  return (0.0 - 0x1.ccccccp-2f);
   }
   }
 }
 fn sd_cz(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1053609164u));
+  return (0.0 - 0x1.999998p-2f);
   }
   }
 }
 fn sd_rad(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1065353216u);
+  return 0x1.000000p+0f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1059481190u);
+  return 0x1.4cccccp-1f;
   } else {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   }
   }
 }
 fn sd_col_r(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
-  return bitcast<f32>(1061997772u);
+  return 0x1.999998p-1f;
   }
   }
 }
 fn sd_col_g(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   } else {
-  return bitcast<f32>(1055286886u);
+  return 0x1.ccccccp-2f;
   }
   }
 }
 fn sd_col_b(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
-  return bitcast<f32>(1064514355u);
+  return 0x1.e66666p-1f;
   }
   }
 }
@@ -90,26 +90,26 @@ fn sd_sphere_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i :
   let r = sd_rad(i);
   let c = ((((lx * lx) + (ly * ly)) + (lz * lz)) - (r * r));
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
 fn sd_plane_hit(oy : f32, dy : f32) -> f32 {
-  if ((dy > (bitcast<f32>(0u) - bitcast<f32>(953267991u)))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((dy > (0.0 - 0x1.a36e2ep-14f))) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = (((bitcast<f32>(0u) - bitcast<f32>(1065353216u)) - oy) / dy);
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = (((0.0 - 0x1.000000p+0f) - oy) / dy);
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -135,7 +135,7 @@ fn sd_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return best_id;
     } else {
     let t = sd_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -179,6 +179,7 @@ fn sd_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn sd_occluded(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz__a : f32, i__a : i32) -> i32 {
   var ox = ox__a;
@@ -193,7 +194,7 @@ fn sd_occluded(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, 
     return 0;
     } else {
     let t = sd_sphere_hit(ox, oy, oz, dx, dy, dz, i);
-    if ((t > bitcast<f32>(981668462u))) {
+    if ((t > 0x1.0624dcp-10f)) {
     return 1;
     } else {
     let _mv0 = ox;
@@ -214,12 +215,13 @@ fn sd_occluded(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, 
     }
     }
   }
+  return 0;
 }
 fn sd_off_x(i : i32) -> f32 {
-  return (f32(f32(((i - ((i / 3) * 3)) - 1))) * bitcast<f32>(1066192076u));
+  return (f32(f32(((i - ((i / 3) * 3)) - 1))) * 0x1.199998p+0f);
 }
 fn sd_off_z(i : i32) -> f32 {
-  return (f32(f32(((i / 3) - 1))) * bitcast<f32>(1066192076u));
+  return (f32(f32(((i / 3) - 1))) * 0x1.199998p+0f);
 }
 fn sd_soft(hx__a : f32, hy__a : f32, hz__a : f32, lx__a : f32, lz__a : f32, i__a : i32, acc__a : i32) -> i32 {
   var hx = hx__a;
@@ -234,13 +236,13 @@ fn sd_soft(hx__a : f32, hy__a : f32, hz__a : f32, lx__a : f32, lz__a : f32, i__a
     return acc;
     } else {
     let ddx = ((lx + sd_off_x(i)) - hx);
-    let ddy = (bitcast<f32>(1086324736u) - hy);
+    let ddy = (0x1.800000p+2f - hy);
     let ddz = ((lz + sd_off_z(i)) - hz);
     let dl = sqrt((((ddx * ddx) + (ddy * ddy)) + (ddz * ddz)));
     let ux = (ddx / dl);
     let uy = (ddy / dl);
     let uz = (ddz / dl);
-    let occ = sd_occluded((hx + (ux * bitcast<f32>(994352037u))), (hy + (uy * bitcast<f32>(994352037u))), (hz + (uz * bitcast<f32>(994352037u))), ux, uy, uz, 0);
+    let occ = sd_occluded((hx + (ux * 0x1.89374ap-9f)), (hy + (uy * 0x1.89374ap-9f)), (hz + (uz * 0x1.89374ap-9f)), ux, uy, uz, 0);
     let vis = select(1, 0, (occ == 1));
     let _mv0 = hx;
     let _mv1 = hy;
@@ -259,43 +261,44 @@ fn sd_soft(hx__a : f32, hy__a : f32, hz__a : f32, lx__a : f32, lz__a : f32, i__a
     continue;
     }
   }
+  return 0;
 }
 fn sd_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn sd_pack(r : f32, g : f32, b : f32) -> i32 {
-  let ri = i32((sd_clamp01(r) * bitcast<f32>(1132396544u)));
-  let gi = i32((sd_clamp01(g) * bitcast<f32>(1132396544u)));
-  let bi = i32((sd_clamp01(b) * bitcast<f32>(1132396544u)));
+  let ri = i32((sd_clamp01(r) * 0x1.fe0000p+7f));
+  let gi = i32((sd_clamp01(g) * 0x1.fe0000p+7f));
+  let bi = i32((sd_clamp01(b) * 0x1.fe0000p+7f));
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn sd_sky(dy : f32) -> i32 {
-  let h = sd_clamp01(((dy * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u)));
-  return sd_pack((bitcast<f32>(1031127695u) + (h * bitcast<f32>(1032805416u))), (bitcast<f32>(1036831948u) + (h * bitcast<f32>(1041865113u))), (bitcast<f32>(1047904911u) + (h * bitcast<f32>(1053609164u))));
+  let h = sd_clamp01(((dy * 0x1.000000p-1f) + 0x1.000000p-1f));
+  return sd_pack((0x1.eb851ep-5f + (h * 0x1.1eb850p-4f)), (0x1.999998p-4f + (h * 0x1.333332p-3f)), (0x1.eb851ep-3f + (h * 0x1.999998p-2f)));
 }
 fn sd_checker(hx : f32, hz : f32) -> f32 {
-  let ix = i32((hx + bitcast<f32>(1115684864u)));
-  let iz = i32((hz + bitcast<f32>(1115684864u)));
+  let ix = i32((hx + 0x1.000000p+6f));
+  let iz = i32((hz + 0x1.000000p+6f));
   let s = (ix + iz);
   if (((s - ((s / 2) * 2)) == 0)) {
-  return bitcast<f32>(1052938076u);
+  return 0x1.851eb8p-2f;
   } else {
-  return bitcast<f32>(1059648962u);
+  return 0x1.51eb84p-1f;
   }
 }
 fn sd_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / sd_width) * sd_width));
   let py = (gid / sd_width);
-  let fx = (f32(f32((px - sd_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((sd_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1077474754u)));
+  let fx = (f32(f32((px - sd_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((sd_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.71eb84p+1f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1071225241u) / rl);
-  let ox = bitcast<f32>(0u);
-  let oy = bitcast<f32>(1060320051u);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1082130432u));
-  let id = sd_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let dz = (0x1.b33332p+0f / rl);
+  let ox = 0.0;
+  let oy = 0x1.666666p-1f;
+  let oz = (0.0 - 0x1.000000p+2f);
+  let id = sd_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   if ((id < 0)) {
   return sd_sky(dy);
   } else {
@@ -303,22 +306,22 @@ fn sd_render(gid : i32, frame : i32) -> i32 {
   let hx = (ox + (dx * t));
   let hy = (oy + (dy * t));
   let hz = (oz + (dz * t));
-  let nx = select(((hx - sd_cx(id)) / sd_rad(id)), bitcast<f32>(0u), (id == 3));
-  let ny = select(((hy - sd_cy(id)) / sd_rad(id)), bitcast<f32>(1065353216u), (id == 3));
-  let nz = select(((hz - sd_cz(id)) / sd_rad(id)), bitcast<f32>(0u), (id == 3));
+  let nx = select(((hx - sd_cx(id)) / sd_rad(id)), 0.0, (id == 3));
+  let ny = select(((hy - sd_cy(id)) / sd_rad(id)), 0x1.000000p+0f, (id == 3));
+  let nz = select(((hz - sd_cz(id)) / sd_rad(id)), 0.0, (id == 3));
   let br = select(sd_col_r(id), sd_checker(hx, hz), (id == 3));
   let bg = select(sd_col_g(id), sd_checker(hx, hz), (id == 3));
   let bb = select(sd_col_b(id), sd_checker(hx, hz), (id == 3));
-  let ang = (f32(f32(frame)) / bitcast<f32>(1106247680u));
-  let lx = (cos(ang) * bitcast<f32>(1077936128u));
-  let lz = (sin(ang) * bitcast<f32>(1077936128u));
+  let ang = (f32(f32(frame)) / 0x1.e00000p+4f);
+  let lx = (cos(ang) * 0x1.800000p+1f);
+  let lz = (sin(ang) * 0x1.800000p+1f);
   let lcx = (lx - hx);
-  let lcy = (bitcast<f32>(1086324736u) - hy);
+  let lcy = (0x1.800000p+2f - hy);
   let lcz = (lz - hz);
   let lcl = sqrt((((lcx * lcx) + (lcy * lcy)) + (lcz * lcz)));
-  let ndl = max(bitcast<f32>(0u), ((((nx * lcx) / lcl) + ((ny * lcy) / lcl)) + ((nz * lcz) / lcl)));
-  let vis = (f32(f32(sd_soft(hx, hy, hz, lx, lz, 0, 0))) / bitcast<f32>(1091567616u));
-  let lit = (bitcast<f32>(1043878379u) + ((ndl * bitcast<f32>(1064011038u)) * vis));
+  let ndl = max(0.0, ((((nx * lcx) / lcl) + ((ny * lcy) / lcl)) + ((nz * lcz) / lcl)));
+  let vis = (f32(f32(sd_soft(hx, hy, hz, lx, lz, 0, 0))) / 0x1.200000p+3f);
+  let lit = (0x1.70a3d6p-3f + ((ndl * 0x1.d70a3cp-1f) * vis));
   return sd_pack((br * lit), (bg * lit), (bb * lit));
   }
 }

@@ -31,6 +31,10 @@ $ErrorActionPreference = 'Stop'
 
 $PlugsDir = $PSScriptRoot
 $Repo = (Resolve-Path (Join-Path $PlugsDir '..' '..')).Path
+
+# The overapply shape rules, shared with classify-overapply.ps1 so the grade
+# and the tabulation cannot disagree.
+. (Join-Path $PlugsDir 'overapply-shape.ps1')
 $TestInputDir = Join-Path $PlugsDir 'test-input'
 $TestOutputDir = Join-Path $PlugsDir 'test-output'
 
@@ -199,6 +203,49 @@ foreach ($p in $builtPlugs) {
             $failCount++
             $results += "$p/$t`tFAIL`t__narrow emitted undefined"
             continue
+        }
+
+        # A plug that cannot represent a construct says so IN THE OUTPUT with
+        # an `!UNSUPPORTED:` marker, the convention t3isa and babbage already
+        # used. Refusing in-band is only worth anything if something reads it:
+        # ada emitted the literal `null` for a lambda and pascal emitted the
+        # BODY with its parameters discarded, for as long as both existed, and
+        # nothing anywhere could tell (L-BAILVALUE, then L-UNHEARD). This is
+        # the reader. It applies to every subject, not just this one.
+        $unsupported = [regex]::Matches($content, '!UNSUPPORTED:[^\r\n]{0,80}')
+        if ($unsupported.Count -gt 0) {
+            $why = $unsupported[0].Value.Trim()
+            Write-Host "  FAIL  $p/$t (${size}B, ${elapsed}s) $why"
+            $failCount++
+            $results += "$p/$t`tFAIL`t$why"
+            continue
+        }
+
+        # `overapply` is graded on the SHAPE of the emission, not on whether
+        # bytes came out. `choose` returns a function and is over-applied, so
+        # a flat three-argument call of the one-parameter definition, or an
+        # emission that drops the extra arguments, cannot produce 6 whatever
+        # its size. Measured 2026-09-07: 28 of 45 plugs emit one of those two
+        # and every one of them scored PASS here, because exit code plus
+        # non-empty output cannot express "emitted, and wrong" (L-FALSIF).
+        if ($t -eq 'overapply' -and $p -notin $script:OverapplyNotSubject) {
+            $shape = Get-OverapplyShape -Text $content -Plug $p
+            $partial = Get-OverapplyPartialShape -Text $content
+            $bad = @()
+            if ($shape -in @('flat', 'dropped')) { $bad += (Get-OverapplyShapeNote $shape) }
+            if ($p -in $script:OverapplyNoClosures) { $bad += 'target has no closures; needs lifting (plugs 1.59)' }
+            # BOTH halves, because they fail independently: java, python and
+            # rust emit the over-application correctly and still call the
+            # three-parameter add3 with one argument, so grading the
+            # application alone reported them as correct.
+            if ($partial -eq 'flat-partial') { $bad += 'PARTIAL add3 called with one argument' }
+            if ($bad.Count -gt 0) {
+                $note = $bad -join '; '
+                Write-Host "  FAIL  $p/$t (${size}B, ${elapsed}s) $note"
+                $failCount++
+                $results += "$p/$t`tFAIL`t$note"
+                continue
+            }
         }
 
         if ($missing.Count -gt 0) {

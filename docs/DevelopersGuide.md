@@ -1024,17 +1024,21 @@ declaration is a parse error (CDX1000). They would be redundant in any case:
 |----------|---------|
 | CDX6101 | Inferred class exceeds the declared ceiling, here or through a callee |
 | CDX6102 | The declaration names no class in the lattice |
-| CDX6103 | The declaration names a rung that is not inferred yet |
 
 ### What is proven, and what abstains
 
-**This first slice infers two rungs, not four.** `linear` and `growing` are
-decided; `none` and `fixed` are named in the lattice but not yet inferred, so
-declaring one is REFUSED (CDX6103) rather than accepted. An unchecked promise
-reads exactly like a checked one, so refusing is the honest direction and it
-matches the abstain-toward-refusal rule the feature is designed around. Use
-`punctual` for the no-heap promise, which is enforced (see CDX6002; the `&`
-gap in that check is compiler-owned and closing).
+**Every rung in the lattice is inferred.** `none` and `fixed` are decided
+against the registry's per-builtin allocation class (`bs-alloc` on
+`BuiltinSpec`), `budgeted` against that class plus whether a `budgeted:N`
+builtin's argument N is a literal, and `linear` and `growing` by the
+accumulator-copy inference. A builtin whose row still reads `unknown` refuses
+the declaration that reaches it rather than being accepted unchecked: an
+unchecked promise reads exactly like a checked one, which is the
+abstain-toward-refusal rule the feature is designed around.
+
+`fixed` and `budgeted` differ in exactly one place. A callee that allocates a
+bound nobody states (`integer-to-text`, whose size follows the digits of its
+argument) KEEPS a `budgeted` promise and BREAKS a `fixed` one.
 
 | Written | Answer | Why |
 |---|---|---|
@@ -1042,7 +1046,11 @@ gap in that check is compiler-owned and closing).
 | `bounded linear f`, no accumulator copied | accepted | not inferred `growing` |
 | `bounded linear f`, `f` copies an accumulator | CDX6101 | inferred `growing` |
 | `bounded linear f`, a CALLEE copies one | CDX6101 | the refusal is transitive |
-| `bounded fixed f`, `bounded none f` | CDX6103 | rung not inferred yet; abstains toward refusal |
+| `bounded none f`, `f` calls only builtins measured at zero | accepted | the registry says `none` |
+| `bounded none f`, a CALLEE allocates | CDX6101 | the refusal is transitive |
+| `bounded fixed f`, `f` calls `substring s 0 4` | accepted | `budgeted:N` with a literal N is the same bytes every call |
+| `bounded fixed f`, `f` calls `integer-to-text` | CDX6101 | a bound nobody states is not the same bytes every call |
+| `bounded budgeted f`, `f` calls `integer-to-text` | accepted | the caller names no bound, but one exists |
 | `bounded quick f` | CDX6102 | not a class |
 
 **What the inference is blind to, on purpose.** It is a worst case over the
@@ -2464,6 +2472,17 @@ while the words survive. The consequence is that `sha256-h0` must never be
 passed to it by anything expecting a constant to stay constant. `sha256`
 gets away with it only because a top-level list constant is rebuilt at every
 mention.
+
+**A bare reference to a generic record in a signature merges the record's
+parameter names with the signature's BY NAME.** `parameterize-walk` merges
+them by name, which is sound only while the record declaration carries no
+parameter list: `SortPartition (a) = record { ... }` cited as
+`-> SortPartition` merged only because the field said `List a` and the
+signature also said `a`, and the moment the text printer normalised the
+signature's own variables to `a0` the merge failed and stage 2 refused with
+CDX2087. Spell the use site, `-> SortPartition a`; the merge is described at
+`Emit/IRTextEmitter.codex:130` and is not a guarantee (COMPILER-26, main
+19889).
 
 ## Seed Rebuild Procedure
 

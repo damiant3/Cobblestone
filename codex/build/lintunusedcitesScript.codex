@@ -4,15 +4,26 @@ Chapter: LintUnusedCitesScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE NINTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ TWO OF THESE STAGES PRODUCE A FUNCTION AND THE MODEL CANNOT NAME IT.
+ `PipeKind` offers file, dir, value and text, so `Get-ChapterDefs` and
+ `Lint-File` are stages whose whole output is a definition later stages call,
+ and both declare `ps-out = []`. The dependency from the main stage back to
+ them is therefore invisible, exactly as a derived artifact's is. Recorded on
+ the design page; not worked around here.
 
 Section: Parameters
 
   lint-params : List ShellParam = [sh-param-optional "Src" SptString, sh-switch "All"]
 
-Section: S01 -- Preamble
+Section: The patterns, and the pipeline declared before it is spelled
 
   cite-pattern : Text = "^\\s*cites\\s+(\\w+)\\s+chapter\\s+([A-Za-z_][A-Za-z0-9_-]*)"
 
@@ -24,33 +35,57 @@ Section: S01 -- Preamble
 
   ctor-pattern : Text = "^\\s+\\|\\s*([A-Z][A-Za-z0-9_-]*)"
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScRunDot (SePathJoin SeScriptRoot (SeLit "quire-map.ps1")), ScBlank, ScAssign "CitePat" (SeLit cite-pattern), ScAssign "DefPat" (SeLit def-pattern), ScAssign "TypeDefPat" (SeLit type-def-pattern), ScAssign "ProsePat" (SeLit prose-pattern), ScAssign "CtorPat" (SeLit ctor-pattern)]
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+  cite-pat-art : PipeArtifact = PipeArtifact { pa-name = "CitePat", pa-kind = PkText, pa-expr = SeVar "CitePat", pa-from = Just (SeLit cite-pattern) }
+
+  def-pat-art : PipeArtifact = PipeArtifact { pa-name = "DefPat", pa-kind = PkText, pa-expr = SeVar "DefPat", pa-from = Just (SeLit def-pattern) }
+
+  type-def-pat-art : PipeArtifact = PipeArtifact { pa-name = "TypeDefPat", pa-kind = PkText, pa-expr = SeVar "TypeDefPat", pa-from = Just (SeLit type-def-pattern) }
+
+  prose-pat-art : PipeArtifact = PipeArtifact { pa-name = "ProsePat", pa-kind = PkText, pa-expr = SeVar "ProsePat", pa-from = Just (SeLit prose-pattern) }
+
+  ctor-pat-art : PipeArtifact = PipeArtifact { pa-name = "CtorPat", pa-kind = PkText, pa-expr = SeVar "CtorPat", pa-from = Just (SeLit ctor-pattern) }
+
+  total-warnings-art : PipeArtifact = PipeArtifact { pa-name = "totalWarnings", pa-kind = PkValue, pa-expr = SeVar "totalWarnings", pa-from = Just (SeInt 0) }
+
+  files-checked-art : PipeArtifact = PipeArtifact { pa-name = "filesChecked", pa-kind = PkValue, pa-expr = SeVar "filesChecked", pa-from = Just (SeInt 0) }
+
+  lint-arts : List PipeArtifact = [repo-art, cite-pat-art, def-pat-art, type-def-pat-art, prose-pat-art, ctor-pat-art, total-warnings-art, files-checked-art]
+
+Section: S01 -- Preamble
+
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SePathJoin SeScriptRoot (SeLit "quire-map.ps1")), ScBlank, pipe-produce cite-pat-art, pipe-produce def-pat-art, pipe-produce type-def-pat-art, pipe-produce prose-pat-art, pipe-produce ctor-pat-art]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root, load the cite resolver and name the five patterns the scan runs on", ps-in = [], ps-out = [repo-art, cite-pat-art, def-pat-art, type-def-pat-art, prose-pat-art, ctor-pat-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Get-ChapterDefs
 
   add-match : ShellCmd = ScDiscard (SeMethodCall (SeVar "names") "Add" [SeIndex (SeVar "matches") (SeInt 1)])
 
-  defs-loop : List ShellCmd = [ScIf (SeMatchExpr (SeVar "line") (SeVar "DefPat")) [add-match] [], ScIf (SeMatchExpr (SeVar "line") (SeVar "TypeDefPat")) [add-match] [], ScIf (SeMatchExpr (SeVar "line") (SeVar "CtorPat")) [add-match] []]
+  defs-loop : List ShellCmd = [ScIf (SeMatchExpr (SeVar "line") (pipe-ref lint-arts lint-params "DefPat")) [add-match] [], ScIf (SeMatchExpr (SeVar "line") (pipe-ref lint-arts lint-params "TypeDefPat")) [add-match] [], ScIf (SeMatchExpr (SeVar "line") (pipe-ref lint-arts lint-params "CtorPat")) [add-match] []]
 
   defs-body : List ShellCmd = [ScAssign "names" (SeStaticCall "System.Collections.Generic.HashSet[string]" "new" []), ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "Path"]) defs-loop, ScReturn (SeVar "names")]
 
-  s02 : List ShellCmd = [ScFunction "Get-ChapterDefs" [sh-param-optional "Path" SptString] defs-body]
+  s02-body : List ShellCmd = [ScBlank, ScFunction "Get-ChapterDefs" [sh-param-optional "Path" SptString] defs-body]
+
+  s02 : PipeStage = PipeStage { ps-name = "chapter defs", ps-why = "every definition, type and constructor a chapter declares, as a set of names", ps-in = ["DefPat", "TypeDefPat", "CtorPat"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- The Code-Only Text
 
-  code-loop : List ShellCmd = [ScIf (SeMatchExpr (SeVar "line") (SeVar "ProsePat")) [ScContinue] [], ScIf (SeMatchExpr (SeVar "line") (SeVar "CitePat")) [ScContinue] [], ScDiscard (SeMethodCall (SeVar "code") "AppendLine" [SeVar "line"])]
+  code-loop : List ShellCmd = [ScIf (SeMatchExpr (SeVar "line") (pipe-ref lint-arts lint-params "ProsePat")) [ScContinue] [], ScIf (SeMatchExpr (SeVar "line") (pipe-ref lint-arts lint-params "CitePat")) [ScContinue] [], ScDiscard (SeMethodCall (SeVar "code") "AppendLine" [SeVar "line"])]
 
   code-text : List ShellCmd = [ScAssign "lines" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "FilePath"]), ScAssign "code" (SeStaticCall "System.Text.StringBuilder" "new" []), ScForEach "line" (SeVar "lines") code-loop, ScAssign "body" (SeMethodCall (SeVar "code") "ToString" [])]
 
 Section: S04 -- Lint-File
 
-  rel-path : ShellExpr = SeSubstringFrom (SeVar "FilePath") (SeAdd (SeTextLength (SeVar "Repo")) (SeInt 1))
+  rel-path : ShellExpr = SeSubstringFrom (SeVar "FilePath") (SeAdd (SeTextLength (pipe-ref lint-arts lint-params "Repo")) (SeInt 1))
 
-  lint-prelude : List ShellCmd = [ScAssign "relPath" (SeVar "FilePath"), ScIf (SeStartsWith (SeVar "FilePath") (SeVar "Repo")) [ScAssign "relPath" rel-path] [], ScAssign "warnings" (SeInt 0), ScAssign "lineNum" (SeInt 0)]
+  lint-prelude : List ShellCmd = [ScAssign "relPath" (SeVar "FilePath"), ScIf (SeStartsWith (SeVar "FilePath") (pipe-ref lint-arts lint-params "Repo")) [ScAssign "relPath" rel-path] [], ScAssign "warnings" (SeInt 0), ScAssign "lineNum" (SeInt 0)]
 
   used-loop : List ShellCmd = [ScIf (SeIntLt (SeTextLength (SeVar "name")) (SeInt 2)) [ScContinue] [], ScIf (SeMethodCall (SeVar "body") "Contains" [SeVar "name"]) [ScAssign "used" (SeBool True), ScBreak] []]
 
-  cited-path : ShellExpr = SePathJoin (SeVar "Repo") (SePathJoin (SeVar "dir") (SeConcat (SeVar "chapter") (SeLit ".codex")))
+  cited-path : ShellExpr = SePathJoin (pipe-ref lint-arts lint-params "Repo") (SePathJoin (SeVar "dir") (SeConcat (SeVar "chapter") (SeLit ".codex")))
 
   w1 : ShellExpr = SeConcat (SeConcat (SeLit "  ") (SeVar "relPath")) (SeLit ":")
 
@@ -66,40 +101,46 @@ Section: S04 -- Lint-File
 
   cite-body : List ShellCmd = [ScAssign "quire" (SeIndex (SeVar "matches") (SeInt 1)), ScAssign "chapter" (SeIndex (SeVar "matches") (SeInt 2)), ScAssign "dir" (SeIndex (SeVar "QuireDirs") (SeVar "quire")), ScIf (SeNot (SeVar "dir")) [ScContinue] [], ScAssign "citedPath" cited-path, ScIf (SeNot (SeFileExists (SeVar "citedPath"))) [ScContinue] [], ScAssign "defs" (SeCall "Get-ChapterDefs" [SeVar "citedPath"]), ScAssign "used" (SeBool False), ScForEach "name" (SeVar "defs") used-loop, ScAssign "defCount" (SeCount (SeVar "defs")), ScIf unused-test [ScEcho warn-message, ScIncrement "warnings"] []]
 
-  scan-loop : List ShellCmd = [ScIncrement "lineNum", ScIf (SeMatchExpr (SeVar "line") (SeVar "CitePat")) cite-body []]
+  scan-loop : List ShellCmd = [ScIncrement "lineNum", ScIf (SeMatchExpr (SeVar "line") (pipe-ref lint-arts lint-params "CitePat")) cite-body []]
 
   lint-body-cmds : List ShellCmd = [ScSequence code-text, ScSequence lint-prelude, ScForEach "line" (SeVar "lines") scan-loop, ScReturn (SeVar "warnings")]
 
-  s04 : List ShellCmd = [ScFunction "Lint-File" [sh-param-optional "FilePath" SptString] lint-body-cmds]
+  s04-body : List ShellCmd = [ScBlank, ScFunction "Lint-File" [sh-param-optional "FilePath" SptString] lint-body-cmds]
+
+  s04 : PipeStage = PipeStage { ps-name = "lint one file", ps-why = "for each cite, ask whether any name the cited chapter declares appears in the citing code", ps-in = ["Repo", "CitePat", "ProsePat"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 
 Section: S05 -- Main
 
   scan-dirs : ShellExpr = SeArrayLiteral [SeLit "codex\\compiler", SeLit "codex\\foreword", SeLit "codex\\os", SeLit "codex\\plugs", SeLit "apps"]
 
-  single-mode : ShellCmd = ScIf (SeVar "Src") [ScAssign "totalWarnings" (SeCall "Lint-File" [SePathResolve (SeVar "Src")]), ScAssign "filesChecked" (SeInt 1)] []
+  single-mode : ShellCmd = ScIf (pipe-ref lint-arts lint-params "Src") [ScAssign "totalWarnings" (SeCall "Lint-File" [SePathResolve (pipe-ref lint-arts lint-params "Src")]), ScAssign "filesChecked" (SeInt 1)] []
 
-  gather-loop : List ShellCmd = [ScAssign "fullDir" (SePathJoin (SeVar "Repo") (SeVar "dir")), ScIf (SeDirExists (SeVar "fullDir")) [ScIncrementBy "files" (SeListFiles (SeVar "fullDir") "*.codex" True)] []]
+  gather-loop : List ShellCmd = [ScAssign "fullDir" (SePathJoin (pipe-ref lint-arts lint-params "Repo") (SeVar "dir")), ScIf (SeDirExists (SeVar "fullDir")) [ScIncrementBy "files" (SeListFiles (SeVar "fullDir") "*.codex" True)] []]
 
   lint-loop : List ShellCmd = [ScAssign "w" (SeCall "Lint-File" [SeProperty (SeVar "f") "FullName"]), ScIncrementBy "totalWarnings" (SeVar "w"), ScIncrement "filesChecked"]
 
   all-body : List ShellCmd = [ScAssign "files" (SeArrayLiteral []), ScForEach "dir" scan-dirs gather-loop, ScForEach "f" (SeVar "files") lint-loop]
 
-  all-mode : ShellCmd = ScIf (SeAnd (SeNot (SeVar "Src")) (SeVar "All")) all-body []
+  all-mode : ShellCmd = ScIf (SeAnd (SeNot (pipe-ref lint-arts lint-params "Src")) (pipe-ref lint-arts lint-params "All")) all-body []
 
-  summary-head : ShellExpr = SeConcat (SeConcat (SeLit "Checked ") (SeVar "filesChecked")) (SeLit " files, ")
+  summary-head : ShellExpr = SeConcat (SeConcat (SeLit "Checked ") (pipe-ref lint-arts lint-params "filesChecked")) (SeLit " files, ")
 
-  summary : ShellExpr = SeConcat (SeConcat summary-head (SeVar "totalWarnings")) (SeLit " unused cites found.")
+  summary : ShellExpr = SeConcat (SeConcat summary-head (pipe-ref lint-arts lint-params "totalWarnings")) (SeLit " unused cites found.")
 
-  s05 : List ShellCmd = [ScAssign "totalWarnings" (SeInt 0), ScAssign "filesChecked" (SeInt 0), ScBlank, single-mode, all-mode, ScBlank, ScEcho summary]
+  s05-body : List ShellCmd = [ScBlank, pipe-produce total-warnings-art, pipe-produce files-checked-art, ScBlank, single-mode, all-mode, ScBlank, ScEcho summary]
+
+ THIS SCRIPT REPORTS AND NEVER REFUSES: it spells no `ScExit`, so a run finding
+ hundreds of unused cites and a run finding none leave the same exit code, and
+ no caller can gate on it. The empty verdict below is the measurement.
+
+  s05 : PipeStage = PipeStage { ps-name = "main", ps-why = "lint one file under -Src, or the five source trees under -All, then report the tally", ps-in = ["Src", "All", "Repo"], ps-out = [total-warnings-art, files-checked-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: Assembly
 
-  lint-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
-
-  lint-script : ShellScript = sh-script "lint-unused-cites" "Detect unused cites in Codex source files" lint-params lint-body
+  lint-pipe : Pipeline = Pipeline { pl-name = "lint-unused-cites", pl-doc = "Detect unused cites in Codex source files", pl-params = lint-params, pl-stages = [s01, s02, s04, s05] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell lint-script)
+    print-line-uni (emit-powershell (pipeline-to-shell lint-pipe))
   end
 
 Page 1

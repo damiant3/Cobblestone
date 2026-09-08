@@ -1,0 +1,123 @@
+Chapter: DiagMsc
+  cites Works chapter GopUsbMsc
+  cites Diag chapter DiagStage
+
+ We say:
+
+Section: The Question
+
+ Does a bulk TRB whose data buffer crosses a 64 KB boundary return the same
+ bytes as one that does not? The seed read issues about thirty crossing TRBs
+ on an ordinary boot, so a controller that mishandles the crossing corrupts
+ the artifact we booted from and says nothing.
+
+ This is the lift of `MscAlignProbe` (flown 2026-08-05, banked in
+ `HardwareSitting.md` as `msc-align.img`). It READS and never writes, so it
+ sits in the ladder before every stage that can wedge the box; the sink's
+ write is the wedge risk and is deferred past this row on purpose.
+
+Section: The Buffers
+
+ `xa` starts 1024 bytes below a 64 KB boundary, so a 32 KB read from it
+ crosses. `al` is the boundary itself, so an equal read from it cannot. Both
+ read the SAME LBA, so the bytes must be identical and any difference is the
+ controller.
+
+  dma-span : Integer = 262144
+  dma-cross-off : Integer = 64512
+  dma-sectors : Integer = 64
+  dma-lba : Integer = 0
+
+  dma-chk : Integer, Integer, Integer -> Integer
+  dma-chk (a) (i) (acc) =
+    if i >= 64 then acc
+    else dma-chk a (i + 1) (acc + peek-32 a (i * 512))
+
+Section: The Liveness Control
+
+ WITHOUT THIS ROW THE TWO ABOVE PROVE NOTHING. A driver that answers from a
+ stale buffer, or one that reports success without transferring, returns
+ equal checksums for both reads and looks perfect. So a third read is issued
+ past the end of the medium, where the only correct answer is failure: if it
+ SUCCEEDS the instrument is not measuring the device and the verdict says so
+ rather than reporting a pass (L-FALSIF, and the same shape as the probe's
+ own `LIVENESS` line).
+
+ IT GOES THROUGH `msc-read10` AND NOT `msc-read-into`, AND THAT IS THE WHOLE
+ DIFFERENCE BETWEEN A PROBE AND A REGRESSION. `msc-read-into` treats a failed
+ chunk as a fault to recover from: it calls `msc-retry-chunk`, which issues a
+ BULK-ONLY MASS STORAGE RESET on the device and then retries, and it writes
+ `msc-cell-retry` on the way. A probe whose EXPECTED answer is failure must
+ not do either. The first version of this stage used `msc-read-into` and so
+ reset the bus mid-ladder on every single run and left `msc-retry-failed` in
+ the cell that `sink-revived` and `sink-dies` assert on. `msc-read10` stamps
+ one CBW and answers a Boolean.
+
+ FOUND WHILE WRONGLY BLAMING IT FOR SOMETHING ELSE, and the correction is
+ worth as much as the defect. Three arms went red on the first full
+ rehearsal after this stage landed (esp-cfg, nic-invisible, b3-short) and I
+ named this mechanism as the cause on the strength of it explaining them.
+ blu's control settled it the other way: same tree, same config, only blu's
+ own `DiagAsde` change reverted, and all three came back green, so this stage
+ is not sufficient to produce them. A mechanism that explains a symptom is
+ not its cause until something MOVES the symptom (L-MECHANISM). The reset is
+ a real defect and is fixed here on its own merits, not as that cause.
+
+ ONE SECTOR, not sixty-four, so the probe cannot fail for the wrong reason.
+ `msc-read-into` splits a request at the configured transfer chunk and
+ `msc-read10` does not, so a sixty-four sector command issued directly would
+ be over the cap wherever `sink chunk=N` is set and could be refused for the
+ size rather than the address. A single sector past the end is refused for
+ the address on any device, which is the whole question.
+
+ THE LESSON THAT GENERALISES: "reads only" is not a risk class. What matters
+ is what the driver does when the read FAILS, and a probe built to provoke a
+ failure is exactly the caller that finds out.
+
+  dma-bad-lba : MscDisk -> Integer
+  dma-bad-lba (d) = (d.md-sectors) + 16
+
+Section: Text
+
+  dma-yn : Integer -> Text
+  dma-yn (v) = if v == 0 then "n" else "y"
+
+  dma-okn : Boolean -> Text
+  dma-okn (b) = if b then "y" else "n"
+
+Section: The Stage
+
+ `no-disk` is honest rather than green: a box whose boot medium is AHCI,
+ NVMe or IDE has no USB mass-storage disk to ask, and this row cannot tell
+ that apart from a bring-up that failed to publish. Both are `no-disk` and
+ the verdict says the question was not asked, because inventing a
+ distinction the cells do not carry is how a row starts lying (L-STATES).
+
+  dma-states : List Text = ["ok", "mismatch", "crossing-failed", "aligned-failed", "VACUOUS", "no-disk"]
+
+  dma-run : DiagCtx -> DiagResult
+  dma-run (c) =
+    let d = msc-published
+    in if d.md-ok == False then diag-result "no-disk" diag-col-warn ["no USB mass-storage disk published; the 64K crossing was not asked"] ["msc-align: no-disk, question not asked"]
+    else let hp = __heap-save
+    in let adv = __heap-advance dma-span
+    in let al = hp + (65536 - int-mod hp 65536)
+    in let xa = al + dma-cross-off
+    in let ra = msc-read-into d dma-lba dma-sectors al
+    in let cha = dma-chk al 0 0
+    in let rc = msc-read-into d dma-lba dma-sectors xa
+    in let chc = dma-chk xa 0 0
+    in let ro = if msc-read10 d (dma-bad-lba d) 1 al then 1 else 0
+    in let rs = __heap-restore hp
+    in let st = if ro /= 0 then "VACUOUS"
+                else if ra == 0 then "aligned-failed"
+                else if rc == 0 then "crossing-failed"
+                else if cha /= chc then "mismatch"
+                else "ok"
+    in let colour = if st == "ok" then diag-col-good
+                    else if st == "no-disk" then diag-col-warn
+                    else diag-col-bad
+    in let g1 = "sectors=" & show (d.md-sectors) & " aligned=" & diag-hex8 al & " off=" & show (int-mod al 65536) & " ok=" & dma-yn ra & " chk=" & diag-hex8 cha
+    in let g2 = "crossing=" & diag-hex8 xa & " off=" & show (int-mod xa 65536) & " ok=" & dma-yn rc & " chk=" & diag-hex8 chc & " identical=" & dma-yn (if cha == chc then 1 else 0)
+    in let g3 = "liveness lba=" & show (dma-bad-lba d) & " ok=" & dma-yn ro & " (must be n, or the rows above prove nothing)"
+    in diag-result st colour [g1, g2, g3] [g1, g2, g3]

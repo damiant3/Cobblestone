@@ -324,6 +324,28 @@ try {
                 for ($j = $sizeLineEnd; $j -lt $outBytes.Length; $j++) { if ($outBytes[$j] -eq 10) { $afterNl = $j + 1; if ($afterNl + 3 -le $outBytes.Length) { $tag = [System.Text.Encoding]::ASCII.GetString($outBytes, $afterNl, [Math]::Min(5, $outBytes.Length - $afterNl)); if ($tag.StartsWith('WD:') -or $tag.StartsWith('HEAP:') -or $tag.StartsWith('STACK:')) { $binEnd = $j + 1; break } } } }
             }
             $actSize = $binEnd - $sizeLineEnd
+            # A DROP MEANS THE CAPTURE IS NOT WHAT THE GUEST PRODUCED, so the
+            # bytes after the SIZE: line are not the program's binary and must
+            # not be written. codex-vm reports a loss on stderr in the canonical
+            # wording that test-run.ps1 and test-compile-batch.ps1 already key
+            # on, and this script read that file in its two FAILURE branches
+            # only (no output; output but no SIZE: line) and deleted it in the
+            # finally. So on the path that SUCCEEDS the report went to a temp
+            # file nobody opened, and a lost byte shipped a SHORT .cdx at exit 0
+            # with no diagnostic anywhere -- a correct detector firing into a
+            # closed channel (L-UNHEARD). Measured 2026-09-07 with
+            # CODEX_VM_FAIL_GROW_AT: 3,995 bytes written where the control wrote
+            # 93,248, exit 0, silent. Refusing here is L-UNHEARD's own repair:
+            # route the signal into a state something already acts on.
+            if ((Test-Path -PathType Leaf $stderrFile)) {
+                $dropLines = @(Get-Content $stderrFile -ErrorAction SilentlyContinue |
+                               Where-Object { $_ -match ' guest serial byte\(s\) DROPPED' })
+                if ($dropLines.Count -gt 0) {
+                    Add-Content -Path $Log -Value 'FAIL: codex-vm dropped guest serial bytes, so the capture is SHORT and what follows the SIZE: line is not the whole binary.' -Encoding UTF8
+                    foreach ($dl in $dropLines) { Add-Content -Path $Log -Value "  $dl" -Encoding UTF8 }
+                    exit 6
+                }
+            }
             if ($actSize -gt 0) {
                 $binBytes = New-Object byte[] $actSize
                 [Array]::Copy($outBytes, $sizeLineEnd, $binBytes, 0, $actSize)

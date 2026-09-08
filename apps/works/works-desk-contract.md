@@ -520,18 +520,30 @@ first two cells of the second half.
 | 168 | `dk-task-edge-cell` | which edge the task band is docked to, one of `dk-edge-bottom`/`top`/`left`/`right`. Written from settings by `dk-settings-into` |
 | 172..200 | the flick's eight cells | `dk-flick-p1`, `-t1`, `-p0`, `-t0` are the two-sample velocity baseline; `-cell` is the armed window's focus id, `-dir` the edge the release vector pointed at, `-org` the release point and `-rt` the release time |
 | 204, 208 | `dk-pillc-cell`, `dk-pillc-t-cell` | the double-click latch on a pill: which pill was last clicked and when |
-| 212 | `dk-pedge-cell` | pointer: a block of `dk-pedge-slots` (17) entries, one per focus id, holding the edge that app's pill is docked to (val, 2026-08-27, ShellRefinement 6.7.1). **Stored as the edge PLUS ONE so that zero means unwritten**, because `alloc-zeroed` hands back zeros and `dk-edge-bottom` is 0; without the offset a never-flicked app and one flicked to the bottom are the same bits. `dk-pedge-get` falls back to `dk-task-edge ds` for an unwritten or out-of-range id. Allocated by `dk-pedge-init` from `desk-run` before the base mark, for the reason every other pointer cell here is |
+| 212 | `dk-pedge-cell` | pointer: a block of `dk-pedge-slots` (19 as of 2026-09-08; this row said 17 while the code said 18, L-COUNT) entries, one per focus id, holding the edge that app's pill is docked to (val, 2026-08-27, ShellRefinement 6.7.1). **Stored as the edge PLUS ONE so that zero means unwritten**, because `alloc-zeroed` hands back zeros and `dk-edge-bottom` is 0; without the offset a never-flicked app and one flicked to the bottom are the same bits. `dk-pedge-get` falls back to `dk-task-edge ds` for an unwritten or out-of-range id. Allocated by `dk-pedge-init` from `desk-run` before the base mark, for the reason every other pointer cell here is |
 
 | 216, 220 | `dk-strip-h-cell`, `dk-strip-v-cell` | the depth a PILL-ONLY strip takes on a horizontal and on a vertical edge, in device pixels (val, 2026-08-27, ShellRefinement 6.7.3a). Measured once by `dk-strip-init` from `desk-run` the way `dk-task-init` measures the band, by laying one specimen pill and taking its minimum, so "thinner than the band" is a consequence of carrying no Cobblestone button and no clock rather than a chosen number. Two orientations because a row of pills decides a height and a column of them a width, which is why `dk-task-w` is not `dk-task-h`. Not pointers, so they need no allocation before the base mark; zero means unmeasured and `dk-strip-depth` falls back to the same floors the band uses |
 
 | 224, 228 | `desk-root-cell`, `desk-rootend-cell` | the frontier immediately BEFORE and immediately AFTER the current desktop root was built (val, 2026-08-28, WORKS-58). Not pointers, so they need no allocation before the base mark; zero in either means unwritten and nothing is reclaimed. **`desk-root-reclaim` frees the root a rebuild replaces only when no LIVE mark sits at or above where the last root ENDED.** A pane opened after the root has its state above the root, and freeing that is WORKS-57. `desk-root-note` records both after every `desk-draw`, at all eight sites, and a site that builds a root without noting would leave the pair describing a superseded root. **This row said "only when the frontier still stands exactly where the last root ENDED" until 2026-08-28 and the code has never done that** (val). The difference is not academic and both halves are measured: the mark test alone shipped WORKS-59, a guest halt, because a mark records where a pane's state STARTED and the Browser rebuilds its state elsewhere; and the frontier equality this row described is INERT, which WORKS-58's own entry had already recorded ("THE FIRST FORMULATION WAS INERT") and which re-measuring put a number on: 2,394,032 bytes a minimise-restore cycle, because an ordinary re-entry leaves the frontier above the root end, so the reclaim never fires again. **So the rule is the mark test, and the obligation it creates is that a pane which moves its state must move its mark** -- `desk-marks-remark`, called by `desk-browser-reenter`, which is the only pane that does. Any future pane rebuilding its state after its `-open` inherits that obligation. `codex/test/desk-root-guard` pins the decision; its `live-at-e` row is the one remarking produces and a sabotage of the mark test moves |
 
-| 232 | `dk-prev-cell` | pointer: `dk-prev-slots` (17) downscaled window snapshots, one per focus id, 128 by 72 DEVICE pixels each (val, 2026-08-28, ShellRefinement hover preview P.1). Allocated by `desk-run` before the base mark, for the reason every other pointer cell here is; 626,688 bytes at boot, half a per cent of the flying image's 128 MB region. **Written only by `dk-prev-capture` from `desk-app-hide`**, which is the single choke point every windowed pane's minimise reaches, and it is the last moment a minimised window's pixels are both correct and on the glass. Read by nothing yet except the Monitor's `preview` row |
+| 232 | `dk-prev-cell` | pointer: `dk-prev-slots` (19 as of 2026-09-08; this row said 17 while the code said 18, L-COUNT) downscaled window snapshots, one per focus id, 128 by 72 DEVICE pixels each (val, 2026-08-28, ShellRefinement hover preview P.1). Allocated by `desk-run` before the base mark, for the reason every other pointer cell here is; 700,416 bytes at boot (2026-09-08), half a per cent of the flying image's 128 MB region. **Written only by `dk-prev-capture` from `desk-app-hide`**, which is the single choke point every windowed pane's minimise reaches, and it is the last moment a minimised window's pixels are both correct and on the glass. Read by nothing yet except the Monitor's `preview` row |
 
 | 236, 240 | `dk-hover-cell`, `dk-hover-t-cell` | the pill the pointer is resting on and the HPET tick it arrived, which is the hover dwell the preview bubble is gated on (val, 2026-08-28, ShellRefinement hover preview P.2). Not pointers, so no allocation before the base mark. **`dk-hover-note` takes `now` as a PARAMETER rather than reading `hpet-ticks` itself**, because `desk.ps1 -Rtc` pins the HPET and a frozen-clock capture could otherwise never satisfy a dwell; passing it in is what lets `codex/test/desk-hover` pin the timing with synthetic values. Both sides masked to 32 bits for the reason `dk-rate-*` is. **Re-noting the same pill must NOT reset the arrival tick**, or a jittering pointer never reaches the threshold; that is the `restated` line of the arm |
 
-**THE BLOCK GREW TO 256 BYTES ON 2026-08-26 (val). Cells 0 through 240 are now
-taken, so 244 through 252 are free -- three cells.** This paragraph said "168
+| 244 | `dk-pinned-cell` | the pinned-app set as a BITMASK, one bit per focus id (val, 2026-09-07, ShellRefinement task frame stage 3). Not a pointer: eighteen bits fit in the cell, so it needs no allocation and no init before the base mark, which is the whole reason it is a mask rather than a block per id like `dk-pedge`. **Zero is unambiguous here where it is not there**, so this stores the bit raw and needs none of `dk-pedge-set`'s plus-one: an unpinned app and an unwritten cell mean the same thing. Persisted as `dk-set-pinned`, high limit `dk-pinned-all` (524287, which is 2^19 - 1, widened 2026-09-08 for focus id 18; widening a high limit reads an older stored value unchanged, because every value the narrower limit admitted is inside the wider one). **An app with no scancode in `dk-fid-sc` can never be pinned**, because `dk-pinned-get` refuses it, which is what keeps the system menu (focus id 15, an overlay and not an app) out of the set |
+
+| 256 | `dk-sheet-cell` | pointer: the Sheets pane's block (val, 2026-09-08, SHEET-9). The window slot and nothing else; the sheet it shows is rebuilt by `gsh-tree` on every repaint, which is why no cell holds it and why a pane a person can EDIT needs that to change first |
+
+**THE BLOCK IS 512 BYTES SINCE 2026-09-08 (val), AND EVERY CELL 0 THROUGH
+256 IS TAKEN; 260 THROUGH 508 ARE FREE.** It grew because focus id 18
+needs a window slot and there was no cell left to point at one. Cells 0
+through 252 were verified taken from the DEFINITIONS rather than from
+this list, by enumerating every `*-cell` constant in `apps/works` and
+looking for a gap; there was none.
+
+**THE SIZE IS NOW A CONSTANT, `dk-ds-bytes` IN `GopDesk`, AND EVERY SITE
+NAMES IT.** The next growth is that one line. The paragraph below is kept
+because the trap it describes is the reason the constant exists. This paragraph said "168
 through 252 are free" until 2026-08-27, which was true the day it was written
 and stopped being true within hours: `dk-task-edge-cell`, the flick's eight and
 the pill latch's two took 168 through 208 that same week and none of them added
@@ -541,15 +553,16 @@ scheduler needs a period per pane for fourteen panes and the desk-loop rate
 counter needs three more, and the block had been full since `dk-drag-off-cell`
 took cell 124 that morning. Announce first, the way this section already asks.
 
-**GROWING IT AGAIN COSTS 29 SITES, NOT FIVE.** This paragraph said "the five
-test chapters that build a `ds`" and that was wrong when it was written:
-re-measured 2026-08-26 the growth touched `desk-run` plus **28 sites across 18
-test files** (L-COUNT). Grep for `alloc-zeroed <size> 64` and read the BINDING
-before editing any of them: `xhci-speed-psi` has eleven sites and
-`disk-enum-parse` two that allocate the same size and are NOT a `ds`, and
-`desk-run` itself has a second one for `desk-marks-cell`. A blind
-search-and-replace takes all four of those with it, which is how this edit
-nearly shipped a wrongly grown marks block.
+**IT COST 52 LINES ACROSS 37 FILES THE LAST TIME, AND THAT IS WHY IT IS A
+CONSTANT NOW.** Re-measured 2026-09-08: `desk-run` plus 51 sites across 36
+test files, against the 29 this paragraph claimed (L-COUNT). The trap the
+constant removes: **read the BINDING, never the size.** Four allocations
+of exactly 256 bytes are NOT a `ds` and a blind search-and-replace takes
+them with it -- `GopUsb`, `GopUsbKbd`, `GopUsbMsc` and the
+`usb-cam-frame` arm each allocate a 256-byte USB CONFIG DESCRIPTOR, and
+every one of them binds `cfg`. Those four still carry the literal, which
+is correct: a descriptor's size is the USB spec's number and has nothing
+to do with the desk.
 
 **A WINDOW MAY HANG OFF THE GLASS, AND WHAT KEEPS THE TASKBAR IS THE PAINT
 ORDER** (val, 2026-08-26, superseding the rule that stood here earlier the same
@@ -762,16 +775,23 @@ empty cell gives, so no arm could tell them apart. All five now allocate 128,
 which is what `desk-run` allocates. **A test that builds a `ds` builds a
 128-byte one.**
 
-**THE BLOCK IS 256 BYTES AND CELLS 0..200 ARE TAKEN. Re-measured 2026-08-27
-against `desk-run` (L-COUNT); this paragraph said 128 bytes and 0..72 for six
-days after the block had been grown.** It was 128 for red's Review cell 0
+**THE BLOCK IS 256 BYTES AND CELLS 0..244 ARE TAKEN, so 248 and 252 are the
+last two. Re-measured 2026-09-07 against `desk-run` and the cell constants
+(L-COUNT); this paragraph said 0..200 and the table above it said 0..240 on
+the same day, which is the second time this count has gone stale inside this
+file while the table beside it was right.** It was 128 for red's Review cell 0
 (2026-08-19) and val's 64, 68 and 72 (2026-08-21); the grow to 256 came with
 the desk `ds` change at 19874, and 76..168 went to the taskbar band, the
 window registry, the panes, the rate counter, the resize gesture and the band
 edge. val took **172..200 for the flick on 2026-08-27** (`dk-flick-p1`,
 `dk-flick-t1`, `dk-flick-p0`, `dk-flick-t0`, `dk-flick`, `dk-flick-dir`,
-`dk-flick-org`, `dk-flick-rt`). The next pane that needs a cell takes one of
-204..252 and adds a row here rather than growing the block again. Announce
+`dk-flick-org`, `dk-flick-rt`). val took 232 (the preview slots), 236 and 240
+(the hover dwell), 244 (the pinned-pill mask, `dk-pinned-cell`), 248 (the
+block the desk shares with the web service, `dk-web-cell`, WORKS-48) and, on
+2026-09-07, **252 for the hover bubble's save block** (`dk-bub-cell`). The
+block is FULL: the next pane
+that needs a cell grows it and updates this paragraph, the table above and
+`desk-run`'s allocation together. Announce
 before you take one, the way the file claims
 table in `docs/PM/CurrentPlan.md` asks. Cell 12 was taken by val on 2026-08-18
 for the focus id and cell 20 by val on 2026-08-19 for the mark stack; the count
@@ -1197,9 +1217,31 @@ model of the split.
   alive, section 0.5) and 88 for F12. 41 is the backtick and opens the system
   menu, which is also the taskbar's `menu` button. Check `desk-dispatch` and
   `dk-style-key` before choosing.
-- **A launcher row is not free.** `gpr-split` in `GopPrograms` is an ENTRY
-  INDEX that must land on a group boundary, so inserting before it moves the
-  cut and the second column loses its heading. Appending at the end is free.
+- **A launcher row is not free, and since 2026-09-08 there is no room for
+  one.** `gpr-split` in `GopPrograms` is an ENTRY INDEX that must land on a
+  group boundary, so inserting before it moves the cut and the second column
+  loses its heading. Appending at the end is free of THAT trap and not of the
+  other one: **the START MENU is what runs out, not the window.** The menu
+  expands the group holding the selection, so its height is that group's row
+  count, and a seventh Productivity entry took the expanded group to 11 rows
+  and put the laid menu's bottom PAST the taskbar band at 1600 wide (menu
+  58..410 against a band at 418..454 of 450; it was 74..398 against 406..442).
+  `desk-menu-groups` catches it, which is what that arm was written for.
+  Measured by val adding the Sheets pane, which therefore ships with a
+  scancode and NO launcher row. The next pane inherits the same wall: the
+  menu has to clip or scroll first, and nothing in the widget layer does
+  either.
+- **A LAUNCHER ROW IS THE ONLY ROAD INTO A PANE, so the row above is not a
+  cosmetic limit.** A scancode is not a second road: the desktop stopped
+  launching apps from a keystroke on 2026-08-26, `desk-loop`'s last arm
+  swallows every scancode except F12 while no pane is focused, and the
+  dispatch table survives only because a start-menu row hands its answer
+  back with `clicked` false. `dk-fid-sc` decides whether an app can be
+  PINNED, which is a road only for an app a person could already open.
+  A pane wired at every point in this section and given no launcher row is
+  unreachable, and every arm in `codex/test` will still pass: the wiring is
+  what they measure. Val shipped exactly that on 2026-09-08 and the Sheets
+  row in `apps/sheets/sheets-backlog.md` carries it.
 - **There is no sidebar.** It was deleted 2026-08-25 (Damian: *"lets remove
   the whole left pane, put the shutdown option inside the cobblestone menu
   pill on the bottom so it acts more like the start menu than a full screen

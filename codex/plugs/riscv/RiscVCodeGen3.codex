@@ -370,6 +370,16 @@ Section: Match
    let msg = "[UNSUPPORTED] " & name & ": x86 port I/O and the codex-vm gpu do not exist on this target (refused by design)"
    in rv-emit-int-lit (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg)) 0
 
+ `host-socket` is the host's TCP reached through Linux x86-64 syscall numbers,
+ so it is refused everywhere those numbers are not the contract. It answers -1
+ rather than 0 because -1 is the failure value every caller already checks and
+ 0 is a plausible file descriptor.
+
+  rv-emit-unsupported-socket : RvState, Text -> RvEmitResult
+  rv-emit-unsupported-socket (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": host sockets are hosted-Linux only (refused by design)"
+   in rv-emit-int-lit (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg)) (0 - 1)
+
  UEFI boot services are x86 firmware reached through the system table, and
  uefi-read-key reads the PS/2 key cell that the IRQ1 handler fills from
  port 0x60. Neither the table nor the port exists on this target, so there
@@ -1295,11 +1305,34 @@ Section: Module Emission
 
   rv-memo-max-slots : Integer = 64
 
+ ONLY A SCALAR RESULT MAY BE MEMOISED, because the memo caches the returned
+ REGISTER and `list-set-at` writes through the pointer it is given rather than
+ copying (`rv-rt-list-set-at`, and arm64's is the same). A memoised list is
+ therefore one object shared by every caller: the first caller's update is
+ permanent and every later caller starts from the mutated value. `sha256`
+ answered correctly ONCE per program and differently wrong on each call after,
+ because `sha256-h0` is a zero-parameter pure def returning a list and the
+ compression loop sets its eight words. arm64 has no memo and so never shares.
+ That made `real-cert` verify its first signature and refuse its second
+ (plugs-backlog 1.100).
+
+  rv-memo-safe-type : CodexType -> Boolean
+  rv-memo-safe-type (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (m) -> True
+    is RealTy (w) (m) -> True
+    is BooleanTy -> True
+    is UnitTy (n) (inner) -> rv-memo-safe-type inner
+    is EffectfulTy (effs) (scopes) (ret) -> rv-memo-safe-type ret
+    is FunTy (p) (fnrow) (r) -> rv-memo-safe-type r
+    is otherwise -> False
+
   rv-is-memoizable : RvState, IRDef -> Boolean
   rv-is-memoizable (st) (def) =
    if list-length (def.params) > 0 then False
    else if def.name == "opening" then False
    else if st.memo-next-slot >= rv-memo-max-slots then False
+   else if rv-memo-safe-type (def.type-val) == False then False
    else rv-body-is-pure (def.body)
 
   rv-body-is-pure : IRExpr -> Boolean

@@ -64,6 +64,16 @@ body::after {
 .bar-left { display: flex; align-items: center; gap: 1.4em; flex-wrap: wrap; }
 .go.busy { animation: wk-busy 1.1s ease-in-out infinite; }
 @keyframes wk-busy { 0% { filter: brightness(1); } 50% { filter: brightness(1.35); } 100% { filter: brightness(1); } }
+.runpanel {
+  font-family: var(--mono); font-size: .76em; line-height: 1.6;
+  padding: .7em 1.2em; border-bottom: 1px solid var(--border);
+  background: rgba(0,0,0,.18);
+}
+.runpanel .rp-title { font-weight: 600; margin-bottom: .45em; }
+.runpanel .rp-row { display: flex; gap: .9em; align-items: baseline; margin: .18em 0; }
+.runpanel .rp-k { flex: 0 0 15em; opacity: .72; }
+.runpanel .rp-v { white-space: pre-wrap; word-break: break-word; }
+.runpanel .rp-note { margin-top: .5em; opacity: .62; }
 .buildline {
   display: flex; align-items: center; gap: .8em;
   font-family: var(--mono); font-size: .76em; line-height: 1.5;
@@ -351,8 +361,9 @@ body.cl-open { padding-right: 400px; }
 <body>
 
 <div class="nav">
-  <a class="logo" href="../" title="Cobblestone home">&#x2588; COBBLESTONE</a>
+  <a class="logo" href="../landing.html" title="Cobblestone home">&#x2588; COBBLESTONE</a>
   <span class="nav-links">
+    <a href="../landing.html#today">&#8592; Back to the site</a>
         <a href="https://github.com/damiant3/Cobblestone">GitHub</a>
     <a href="#" id="cl-open">Assistant</a>
   </span>
@@ -373,6 +384,7 @@ body.cl-open { padding-right: 400px; }
       <span class="title">Workspace</span>
       <span style="display:flex;gap:.8em;align-items:center;flex-wrap:wrap">
         <select id="examples"><option value="">Loading examples&hellip;</option></select>
+        <select id="templates"><option value="">New from template&hellip;</option></select>
         <span class="status" id="src-status"></span>
       </span>
     </div>
@@ -484,6 +496,7 @@ body.cl-open { padding-right: 400px; }
       <button class="pill" data-plug="objc">Objective-C</button>
       <button class="pill" data-plug="ptx">PTX</button>
       <button class="pill" data-plug="wgsl">WGSL</button>
+      <button class="pill" data-plug="wasm">WebAssembly</button>
     </div>
 
     <div class="pills" id="pills-scripts">
@@ -549,6 +562,10 @@ body.cl-open { padding-right: 400px; }
         <button class="act" id="saveout" disabled>Save</button>
       </span>
     </div>
+    <!-- How to run what was just built. The page NEVER flashes a stick and
+         never boots an artifact: both are host-side, and saying so is the
+         point of the panel rather than a disclaimer on it. -->
+    <div class="runpanel" id="runpanel" style="display:none"></div>
     <!-- No inner scrollbar on the emitted code: a long emission grows the
          page and the page scrolls, which is how source wants reading. -->
     <div class="out" id="out" style="max-height:none">Press Compile.</div>
@@ -727,7 +744,8 @@ const PLUG_FILE = {
   ada: 'ada-stdio.wasm', pascal: 'pascal-stdio.wasm', perl: 'perl-stdio.wasm',
   d: 'd-stdio.wasm', nim: 'nim-stdio.wasm', julia: 'julia-stdio.wasm',
   groovy: 'groovy-stdio.wasm', clojure: 'clojure-stdio.wasm', scheme: 'scheme-stdio.wasm',
-  objc: 'objc-stdio.wasm', ptx: 'ptx-stdio.wasm', wgsl: 'wgsl-stdio.wasm'
+  objc: 'objc-stdio.wasm', ptx: 'ptx-stdio.wasm', wgsl: 'wgsl-stdio.wasm',
+  wasm: 'wasm-stdio.wasm'
 };
 // Which pill row a tab shows, and which lens it starts on. A tab whose modules
 // are all absent still switches; the lens simply reports itself dark.
@@ -875,9 +893,15 @@ function closeTab(p) {
   }
   renderTree(); renderTabs(); setSrcStatus();
 }
+// The project model is LF-only, and that is a contract rather than a taste.
+// RESOLVE returns the source without carriage returns, because CCE has no
+// character for one, so resolveUnit finds the frame does not end with the unit
+// text, reports the library unused, and the compile refuses CDX3007 with
+// nothing naming the reason. Every route text arrives by normalises here.
+function eolLf(text) { return typeof text === 'string' ? text.replace(/\r\n?/g, '\n') : text; }
 function addFile(path, text, open) {
   const p = uniquePath(path);
-  project.files.push({ path: p, text: text });
+  project.files.push({ path: p, text: eolLf(text) });
   persistFile(p);
   if (open) openFile(p); else { renderTree(); setSrcStatus(); }
   return p;
@@ -976,7 +1000,7 @@ async function loadPersisted() {
       else {
         const fl = await h.getFile();
         if (fl.size > MAX_FILE) continue;
-        files.push({ path: prefix + name, text: await fl.text() });
+        files.push({ path: prefix + name, text: eolLf(await fl.text()) });
       }
     }
   }
@@ -1001,7 +1025,7 @@ async function bindFolder() {
       else if (keep.test(name)) {
         const fl = await h.getFile();
         if (fl.size > MAX_FILE) continue;
-        files.push({ path: prefix + name, text: await fl.text() });
+        files.push({ path: prefix + name, text: eolLf(await fl.text()) });
       }
     }
   }
@@ -1131,7 +1155,7 @@ const OUT_EXT = {
   scheme: 'scm', elixir: 'ex', csharp: 'cs', zig: 'zig', rust: 'rs', go: 'go',
   java: 'java', kotlin: 'kt', swift: 'swift', haskell: 'hs', ocaml: 'ml',
   scala: 'scala', ada: 'adb', pascal: 'pas', d: 'd', nim: 'nim',
-  fortran: 'f90', cobol: 'cob', objc: 'm', ptx: 'ptx', wgsl: 'wgsl',
+  fortran: 'f90', cobol: 'cob', objc: 'm', ptx: 'ptx', wgsl: 'wgsl', wasm: 'wat',
   html: 'html', react: 'jsx', vue: 'vue', swiftui: 'swift', winforms: 'cs',
   angular: 'ts', svelte: 'svelte', electron: 'js', flutter: 'dart',
   compose: 'kt', maui: 'cs', wpf: 'cs', qt: 'cpp', gtk: 'c'
@@ -1211,7 +1235,8 @@ const TOOLCHAINS = {
   elixir: [{ name: 'elixir',  build: '', run: 'elixir {file}' }],
   typescript: [{ name: 'tsc', build: 'tsc {file}', run: 'node {stem}.js' }],
   ptx:    [{ name: 'ptxas',   build: 'ptxas -O3 -o {stem}.cubin {file}', run: '' }],
-  wgsl:   [{ name: 'naga',    build: 'naga {file} {stem}.spv', run: '' }]
+  wgsl:   [{ name: 'naga',    build: 'naga {file} {stem}.spv', run: '' }],
+  wasm:   [{ name: 'wabt',    build: 'wat2wasm --enable-tail-call {file} -o {stem}.wasm', run: 'wasmtime -W max-wasm-stack=16777216 {stem}.wasm' }]
 };
 // Windows gets .exe; the page cannot know the target machine, so it asks the
 // browser about THIS one and says so in the panel rather than deciding silently.
@@ -2373,6 +2398,9 @@ goBtn.addEventListener('click', async () => {
   goBtn.classList.add('busy'); goBtn.textContent = 'Compiling';
   emittedJs = null; emittedHtml = null;
   runoutEl.style.display = 'none'; runoutEl.textContent = '';
+  // A new compile invalidates the previous artifact, so the lines telling
+  // somebody how to run it go with it rather than outliving their subject.
+  if (typeof runpanelEl !== 'undefined' && runpanelEl) runpanelEl.style.display = 'none';
   setStatus('compiling&hellip;', 'run');
   setBuildline('run', 'compiling in this tab ...');
   await new Promise(r => setTimeout(r, 30));
@@ -2477,12 +2505,17 @@ goBtn.addEventListener('click', async () => {
       // 4.3 s against 4.7 s; decks=1 refuses on both as the control. There is
       // no wasm deck inflation left to route around here.
       //
+      // The IR path was measured too, 2026-09-07: over all 69 examples the IR
+      // is byte-identical at decks 12, 48, 125 and at the compiler's own
+      // derivation, on this module and on x86-64, and both arms refuse at 4
+      // and compile at 5. So the first rung is not silently wrong here.
+      //
       // The ladder STAYS anyway, and deliberately. It costs one extra compile
-      // only when the first refuses, the IR path's own rungs have NOT been
-      // re-measured, and an explicit scale below the compiler's own derivation
-      // can fail silently (opening.codex's 32-vs-33 record) -- a wrong binary
-      // is worse than a refused one. Remove a rung when the IR path is
-      // measured too, not on this one result.
+      // only when the first refuses; those 69 are not the units a user types
+      // or the library resolves; and an explicit scale below the compiler's
+      // own derivation can fail silently (opening.codex's 32-vs-33 record) --
+      // a wrong binary is worse than a refused one. Drop a rung on a corpus
+      // that covers what this page actually compiles, not on those 69.
       const topDecks = ' decks=' + DECKS[DECKS.length - 1];
       let c = null;
       for (const d of (unit.text.length > BIG_UNIT ? [topDecks] : ['', topDecks])) {
@@ -2560,6 +2593,7 @@ goBtn.addEventListener('click', async () => {
       setStatus('ok', 'ok');
       setBuildline('ok', emittedBin.name + ' · ' + bytes.length.toLocaleString() + ' bytes · ' +
                    ms.toFixed(0) + ' ms · ' + mb + ' MB peak');
+      howToRun(binTarget, emittedBin.name);
       lastRun = { body: [] };
       render();
       // The evidence toggle lives on THIS tab's pill row, and this early
@@ -2776,11 +2810,97 @@ examplesEl.addEventListener('change', async () => {
   examplesEl.value = '';
   lastRun = null; emittedJs = null; emittedHtml = null; euOut = null; updateRun();
   runoutEl.style.display = 'none'; buildlineEl.style.display = 'none';
+  if (runpanelEl) runpanelEl.style.display = 'none';
   outEl.textContent = 'Press Compile.';
   outLogEl.textContent = 'Press Compile.'; outIrEl.textContent = 'Press Compile.';
   outEuEl.textContent = euToggle.checked ? 'Press Compile.' : '';
   logStatusEl.textContent = ''; irStatusEl.textContent = ''; euStatusEl.textContent = '';
   setStatus('idle', 'run');
+});
+
+// ---- How to run this --------------------------------------------------------
+// Every line here is one the tree actually uses, not a plausible one: the
+// codex-vm shape is diag-arm.ps1's Invoke-Vm, the OVMF arm is
+// build/boot/test-ovmf.ps1, and flash-usb.ps1 is the only sanctioned way an
+// image reaches a stick. A panel that printed an invented command line would
+// be worse than no panel, because it would be believed once.
+const runpanelEl = document.getElementById('runpanel');
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function howToRun(target, name) {
+  const rows = [];
+  if (target === 'img') {
+    rows.push(['codex-vm, our own bed', 'tools\\codex-vm.exe -kernel ' + name + ' -uefi']);
+    rows.push(['QEMU under real UEFI firmware',
+               'pwsh build/boot/test-ovmf.ps1 -Img ' + name +
+               '   (it owns the OVMF pflash pair; a bare qemu line needs both halves and the vars copy writable)']);
+    rows.push(['A USB stick', 'pwsh build/flash-usb.ps1   -- host-side, and it REFUSES an image that is in no rehearsal record']);
+  } else if (target === 'pe') {
+    rows.push(['Where it goes', name + ' is a UEFI application: it belongs at EFI/BOOT/' + name + ' on a FAT EFI system partition']);
+    rows.push(['To get a whole disk instead', 'build the "A whole 8 MB disk" target on this row; it makes the ESP for you']);
+  } else if (target === 'cdx') {
+    rows.push(['codex-vm', 'tools\\codex-vm.exe -kernel ' + name]);
+  } else if (target === 'elf' || target === 'winexe' || target === 'board') {
+    rows.push(['It is a user-mode program', 'save it and run it on the platform it targets; nothing boots']);
+  }
+  if (!rows.length) { runpanelEl.style.display = 'none'; return; }
+  runpanelEl.innerHTML =
+    '<div class="rp-title">How to run ' + esc(name) + '</div>' +
+    rows.map(r => '<div class="rp-row"><span class="rp-k">' + esc(r[0]) +
+                  '</span><code class="rp-v">' + esc(r[1]) + '</code></div>').join('') +
+    '<div class="rp-note">This page does not flash sticks and does not boot anything. ' +
+    'Save the file, then run one of the lines above on the host.</div>';
+  runpanelEl.style.display = '';
+}
+
+// ---- New from template ------------------------------------------------------
+// A template arrives as a PROJECT, because that is what it is: the root plus
+// exactly those chapters the shipped volume cannot serve. build-page.ps1
+// computed that split against the volume's own manifest, so nothing here
+// decides what travels; this only unpacks it.
+const templatesEl = document.getElementById('templates');
+const TEMPLATES = (typeof window !== 'undefined' && window.__TEMPLATES) || null;
+(function loadTemplates() {
+  if (!TEMPLATES || !Object.keys(TEMPLATES).length) { templatesEl.style.display = 'none'; return; }
+  for (const n of Object.keys(TEMPLATES)) {
+    const t = TEMPLATES[n];
+    const o = document.createElement('option');
+    o.value = n;
+    const count = Object.keys(t.files).length;
+    o.textContent = t.title + ' (' + count + (count === 1 ? ' file)' : ' files)');
+    o.title = t.blurb;
+    templatesEl.appendChild(o);
+  }
+})();
+templatesEl.addEventListener('change', () => {
+  const name = templatesEl.value;
+  if (!name || !TEMPLATES || !TEMPLATES[name]) return;
+  const t = TEMPLATES[name];
+  const count = Object.keys(t.files).length;
+  // The same bargain the compiler preset strikes: a template is a whole program
+  // and cannot share a workspace with another entry point, so it takes the
+  // project, behind a confirm, and Cancel changes nothing.
+  if (project.files.length &&
+      !confirm('Start ' + t.title + '? It is ' + count + (count === 1 ? ' file' : ' files') +
+               ' and needs the project to itself, so the current files are removed here and from this page’s storage.')) {
+    templatesEl.value = '';
+    return;
+  }
+  for (const f of project.files) persistDelete(f.path);
+  project.files = []; openTabs = []; activePath = null;
+  let main = null;
+  for (const path of Object.keys(t.files)) {
+    const added = addFile(path, t.files[path], false);
+    if (path === t.main) main = added;
+  }
+  if (main) openFile(main);
+  templatesEl.value = '';
+  lastRun = null; emittedJs = null; emittedHtml = null; euOut = null; updateRun();
+  runoutEl.style.display = 'none'; buildlineEl.style.display = 'none';
+  if (runpanelEl) runpanelEl.style.display = 'none';
+  outEl.textContent = 'Press Compile.';
+  setStatus(t.title + ': ' + count + ' file(s) here, the rest resolves off the library', 'run');
 });
 
 newFileBtn.addEventListener('click', () => {
@@ -3069,8 +3189,8 @@ async function runAgentTool(name, input) {
     if (typeof a.text !== 'string') return { isError: true, text: 'write_file needs the whole file text' };
     const existing = fileByPath(a.path);
     if (existing) {
-      existing.text = a.text;
-      if (a.path === activePath) { srcEl.value = a.text; renderHighlight(); }
+      existing.text = eolLf(a.text);
+      if (a.path === activePath) { srcEl.value = existing.text; renderHighlight(); }
       persistFile(a.path);
       setSaveState('saved');
       return { text: 'wrote ' + a.path + ' (' + a.text.length + ' chars)' };

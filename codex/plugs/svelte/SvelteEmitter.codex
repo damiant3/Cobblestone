@@ -122,7 +122,7 @@ Section: Expression Emission
   emit-sv-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-sv-expr (e) (arities) (indent) =
    when e
-    is IrIntLit (n) (sp) -> show n
+    is IrIntLit (n) (sp) -> show n & "n"
     is IrNumLit (n) (sp) -> show n
     is IrTextLit (s) (sp) -> "\"" & sv-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
@@ -149,15 +149,26 @@ Section: Expression Emission
 
 Section: Binary Operators
 
+ A Codex Integer is a Number here, and a double holds an exact integer only
+ to 2^53. BOTH arms refuse: the band cannot wrap at 64 bits and the plain arm
+ cannot tell an overflow from a rounding, so the node type decides nothing and
+ is not consulted. The guard is on the VALUES, so a program whose integers fit
+ a double still computes and only the unrepresentable case refuses. The marker
+ is what plug-oracle-test.ps1 reads as its REFUSED verdict.
+
+  sv-int-refuse : Text, Text, Text -> Text
+  sv-int-refuse (sym) (lhs) (rhs) =
+   "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
+
   emit-sv-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-sv-binary (op) (l) (r) (arities) (indent) =
    let lhs = emit-sv-expr l arities indent
    in let rhs = emit-sv-expr r arities indent
    in when op
-    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrAddInt -> sv-int-refuse "+" lhs rhs
+    is IrSubInt -> sv-int-refuse "-" lhs rhs
+    is IrMulInt -> sv-int-refuse "*" lhs rhs
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
@@ -379,7 +390,7 @@ Section: Svelte Component Assembly
 
   emit-svelte-chapter : IRChapter, List ATypeDef -> Text
   emit-svelte-chapter (m) (type-defs) =
-   let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return typeof c === 'string' ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
    in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
    in let types-text = emit-sv-type-defs type-defs 0
    in let defs-text = emit-sv-defs (m.defs) 0 arities
@@ -387,5 +398,35 @@ Section: Svelte Component Assembly
    in let template = "{#each output as line, i}\n  <div>{line}</div>\n{/each}\n\n"
    in let style = "<style>\ndiv { font-family: system-ui, sans-serif; padding: 0.25rem; }\n</style>\n"
    in script & template & style
+
+  emit-svelte-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-svelte-chapter-stream-head (m) (type-defs) =
+   let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-sv-type-defs type-defs 0
+   in let template = "{#each output as line, i}\n  <div>{line}</div>\n{/each}\n\n"
+   in let style = "<style>\ndiv { font-family: system-ui, sans-serif; padding: 0.25rem; }\n</style>\n"
+   in "<script>\nimport { onMount } from 'svelte';\n\nlet output = $state([]);\n\n" & builtins & types-text
+
+  emit-svelte-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-svelte-chapter-stream-tail (m) (type-defs) =
+   let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-sv-type-defs type-defs 0
+   in let template = "{#each output as line, i}\n  <div>{line}</div>\n{/each}\n\n"
+   in let style = "<style>\ndiv { font-family: system-ui, sans-serif; padding: 0.25rem; }\n</style>\n"
+   in "onMount(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n" & template & style
+
+  emit-svelte-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-svelte-chapter-stream-env (m) (type-defs) =
+   let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-sv-type-defs type-defs 0
+   in let template = "{#each output as line, i}\n  <div>{line}</div>\n{/each}\n\n"
+   in let style = "<style>\ndiv { font-family: system-ui, sans-serif; padding: 0.25rem; }\n</style>\n"
+   in arities
+
+  emit-svelte-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-svelte-chapter-stream-def (m) (v) (i) = emit-sv-def (list-at (m.defs) i) v
 
 Page 1

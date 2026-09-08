@@ -1,0 +1,140 @@
+Chapter: ClockWorldTest
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites Works chapter GopWorld
+  cites Works chapter GopZones
+  cites UI chapter Layout
+
+ Stage 4 of `docs/Designs/Active/Apps/ClockAndZone.md`: the Mercator picture
+ and its 24 bands.
+
+ THE PICTURE ITSELF IS NOT ASKED TO BE CORRECT, and that is deliberate. It is
+ 367 words rasterised from coastline polygons, and whether Portugal is the
+ right shape is a question for an eye, not for an assertion: a test that
+ pinned the bits would fail every time somebody improved the map and would
+ never once catch a real defect. What IS asked is everything the picture has
+ to satisfy to be usable as a control.
+
+Section: Body
+
+  cw-yn : Boolean -> Text
+  cw-yn (v) = if v then "yes" else "NO"
+
+ THE BLOCK MUST BE THE TABLE. The map is read per pixel from a heap block
+ built once from a 367 arm chain, because reading the chain per pixel would
+ cost about four million comparisons to draw one map. Two representations of
+ the same data is two chances to be wrong, so every one of the 648 words is
+ compared rather than a sample: a fill that stopped early would leave a
+ plausible map with a blank corner.
+
+  cw-same : Integer, Integer, Integer -> Integer
+  cw-same (blob) (i) (bad) =
+    if i >= wld-cells then bad
+    else cw-same blob (i + 1) (bad + (if peek-32 blob (i * 4) == wld-bit-at i then 0 else 1))
+
+  cw-blob : Text
+  cw-blob =
+    let b = wld-build
+    in "block: " & show wld-cells & " words"
+       & "  differing from the table " & show (cw-same b 0 0)
+       & "  identical " & cw-yn (cw-same b 0 0 == 0)
+       & "  and it is not all zero " & cw-yn (wld-land b 72 30 | wld-land b 20 20 | wld-land b 100 40)
+
+ THE HIT TEST MUST BE THE INVERSE OF THE DRAWING. A picker whose click lands
+ one band off is worse than no picker, and the two are separate arithmetic in
+ separate functions. Every stripe the map can show is walked: its first column
+ must answer it, and so must its last.
+
+  cw-trip : Integer, Integer, Integer -> Integer
+  cw-trip (s) (hi) (bad) =
+    if s > hi then bad
+    else
+      let x0 = wld-stripe-x0 s
+      in let x1 = x0 + wld-stripe-cols - 1
+      in let a = if wld-col-stripe x0 == s then 0 else 1
+      in let b = if wld-col-stripe x1 == s then 0 else 1
+      in cw-trip (s + 1) hi (bad + a + b)
+
+  cw-round : Text
+  cw-round =
+    "stripes: -12..+11 round trip failures " & show (cw-trip (0 - 12) 11 0)
+    & "  all 24 invert " & cw-yn (cw-trip (0 - 12) 11 0 == 0)
+    & "  the meridian is stripe 0 " & cw-yn (wld-col-stripe 72 == 0)
+    & "  one column west is -1 " & cw-yn (wld-col-stripe 71 == 0 - 1)
+
+ A MISS IS NOT THE NEAREST BAND. Clamping a click past the edge to the last
+ stripe puts somebody in Kiritimati for missing the map, which is a wrong
+ answer offered with confidence rather than a refusal.
+
+  cw-miss : Text
+  cw-miss =
+    "misses: right of the map " & show (wld-hit-stripe 0 0 1 200 30 0)
+    & "  left " & show (wld-hit-stripe 0 0 1 (0 - 5) 30 0)
+    & "  below " & show (wld-hit-stripe 0 0 1 70 200 0)
+    & "  all refuse " & cw-yn (wld-hit-stripe 0 0 1 200 30 0 == wld-none & wld-hit-stripe 0 0 1 (0 - 5) 30 0 == wld-none & wld-hit-stripe 0 0 1 70 200 0 == wld-none)
+    & "  a hit inside does not " & cw-yn (wld-hit-stripe 0 0 1 78 30 0 /= wld-none)
+
+ THE SCALE MUST NOT COLLAPSE. A map drawn at scale zero is nothing, and a
+ fractional scale would put a band edge inside a pixel so the stripe under the
+ pointer would not be the stripe that was drawn there.
+
+  cw-scale : Text
+  cw-scale =
+    "scale: at 144 " & show (wld-scale-for 144) & "  at 300 " & show (wld-scale-for 300)
+    & "  at 600 " & show (wld-scale-for 600) & "  at 10 " & show (wld-scale-for 10)
+    & "  never zero " & cw-yn (wld-scale-for 10 >= 1)
+
+ LAND IS BETWEEN A FIFTH AND A HALF OF THE PICTURE. This is the one thing
+ said about the map's CONTENT, and it is a range rather than a number for the
+ reason above: it catches an empty map, an all-land map and a fill that ran
+ away, and it says nothing about any coastline.
+
+  cw-land-row : Integer, Integer, Integer, Integer -> Integer
+  cw-land-row (blob) (y) (x) (acc) =
+    if x >= wld-cols then acc
+    else cw-land-row blob y (x + 1) (acc + (if wld-land blob x y then 1 else 0))
+
+  cw-land-all : Integer, Integer, Integer -> Integer
+  cw-land-all (blob) (y) (acc) =
+    if y >= wld-rows then acc
+    else cw-land-all blob (y + 1) (acc + cw-land-row blob y 0 0)
+
+  cw-coverage : Text
+  cw-coverage =
+    let n = cw-land-all wld-build 0 0
+    in let pct = n * 100 / (wld-cols * wld-rows)
+    in "coverage: land cells " & show n & " of " & show (wld-cols * wld-rows) & " = " & show pct & " per cent"
+       & "  within a fifth and a half " & cw-yn (pct >= 20 & pct <= 50)
+
+ EVERY BAND THE MAP DRAWS MUST HAVE SOMEWHERE TO SEND A CLICK. The picture
+ shows 24 bands and the zone table is keyed on the same stripe number, so a
+ band with no zone is a control that does nothing when pressed. The date line
+ is the exception and is named: +12, +13 and +14 share columns with -12, -11
+ and -10, which is what a date line IS, and the list beside the map is what
+ separates them.
+
+  cw-empty : Integer, Integer, Integer -> Integer
+  cw-empty (s) (hi) (acc) =
+    if s > hi then acc
+    else cw-empty (s + 1) hi (acc + (if zone-stripe-count s == 0 then 1 else 0))
+
+  cw-bands : Text
+  cw-bands =
+    "bands: drawn -12..+11, empty of zones " & show (cw-empty (0 - 12) 11 0)
+    & "  stripe 0 first is " & (zone-row-of (zone-stripe-first 0)).zr-city
+    & "  stripe -8 first is " & (zone-row-of (zone-stripe-first (0 - 8))).zr-city
+    & "  stripe +9 first is " & (zone-row-of (zone-stripe-first 9)).zr-city
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni cw-blob
+      print-line-uni cw-round
+      print-line-uni cw-miss
+      print-line-uni cw-scale
+      print-line-uni cw-coverage
+      print-line-uni cw-bands
+      print-line-uni "clock-world: reached the end"
+    end

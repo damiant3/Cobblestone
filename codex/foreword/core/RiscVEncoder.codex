@@ -380,9 +380,20 @@ Section: Pseudo-Instructions
   rv-call : Integer -> List Integer
   rv-call (offset) = rv-jal rv-ra offset
 
+ THE RANGE IS TESTED AGAINST ITS TWO ENDS, NEVER BY BIASING THE VALUE. What
+ stood here was `bit-shru (value + #80000000) 32 == 0`, and `value + #80000000`
+ leaves the signed 64-bit range for every value above `#7FFFFFFF7FFFFFFF`, so
+ asking whether a large literal fits in 32 bits TRAPPED on the addition before
+ any encoding happened. The plug faulted rather than refused, and the caller
+ was handed a register dump where a wire belongs. Measured at the boundary:
+ `#7FFFFFFF7FFFFFFF` compiled and `#7FFFFFFF80000000` did not (plugs-backlog
+ 2.49).
+
   rv-li-fits-32 : Integer -> Boolean
   rv-li-fits-32 (value) =
-    if bit-shru (value + #80000000) 32 == 0 then True else False
+    if value < 0 - 2147483648 then False
+    else if value > 2147483647 then False
+    else True
 
   rv-li : Integer, Integer -> List Integer
   rv-li (rd) (value) =
@@ -398,9 +409,33 @@ Section: Pseudo-Instructions
     in let raw = bit-shru v32 12
     in if raw >= #80000 then raw - #100000 else raw
 
+ `lui` PLUS `addi` CANNOT REACH THE TOP 2048 VALUES OF THE 32-BIT RANGE, and
+ the rounding hides the fact rather than reporting it. `rv-li-hi20` computes
+ `(value + #800) >> 12`, which for any value above `#7FFFF7FF` carries into bit
+ 31 and yields `#80000`, one past the largest signed 20-bit `lui` operand. The
+ wrap turned it into `-#80000`, and because `lui` SIGN-EXTENDS on RV64 the pair
+ built `#FFFFFFFF80000000` and then subtracted: `2147483647` was loaded as
+ `-2147483649`. Measured on the bed, and the same band reached `rv-li-large`
+ through `rv-li-64`'s low half, so `#7FFFFFFF7FFFFFFF` came back 2^32 short
+ (plugs-backlog 2.50).
+
+ The band is climbed to instead. `#7FFFF000` is the largest reachable `lui`,
+ `#7FFFF7FF` the largest `lui` plus one `addi`, and the remainder above that is
+ at most 2048, which is one more than an `addi` immediate holds, so the
+ remainder is added in at most two steps. Splitting rather than recursing is
+ what keeps `rv-li-64` terminating: the low half is always a signed 32-bit
+ value, so it must be answered here and never handed back to `rv-li`.
+
+  rv-li-top-band : Integer, Integer -> List Integer
+  rv-li-top-band (rd) (rest) =
+    if rest <= 2047 then rv-addi rd rd rest
+    else rv-addi rd rd 2047 & rv-addi rd rd (rest - 2047)
+
   rv-li-large : Integer, Integer -> List Integer
   rv-li-large (rd) (value) =
-    let hi20 = rv-li-hi20 value
+    if value > 2147481599 then
+      rv-lui rd 524287 & rv-addi rd rd 2047 & rv-li-top-band rd (value - 2147481599)
+    else let hi20 = rv-li-hi20 value
     in let lo12 = value - hi20 * 4096
     in if lo12 == 0 then rv-lui rd hi20
     else rv-lui rd hi20 & rv-addi rd rd lo12

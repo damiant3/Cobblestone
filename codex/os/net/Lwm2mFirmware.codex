@@ -2,6 +2,7 @@ Chapter: Lwm2mFirmware
   cites Encode chapter Coap
   cites Encode chapter Lwm2m
   cites Foreword chapter OtaUpdate
+  cites Foreword chapter OtaBoot
   cites Foreword chapter Board
   cites Foreword chapter Sha256
   cites Foreword chapter Hkdf
@@ -274,6 +275,38 @@ Section: Execute /5/0/2 -- Update
       in let ctx3 = ota-step ctx2 EvActivationConfirmed
       in fw-set-result (c revised { fw-ctx = ctx3 }) fw-result-success
     is otherwise -> c
+
+ CONFIRMING THE BOOT IS A SEPARATE ACT FROM ACTIVATING THE IMAGE, and
+ they run on different firmwares. `fw-activate` runs on the OLD image and
+ says "boot the candidate next"; this runs on the NEW image, after it has
+ come up, and says "keep it". Nothing adopts an image on its behalf,
+ because an image that boots and then wedges is exactly what the attempt
+ window is there to catch: without a confirmation the attempt counter
+ reaches `boot-attempt-limit` and the board falls back, which is the safe
+ direction and also the reason a device that never confirms looks healthy
+ for three boots and then reverts.
+
+ The health signal this stack actually has is the LwM2M registration:
+ OMA LwM2M has the device re-register after an update, and a server reads
+ Update Result to learn how it went. So a completed registration is what
+ schedules the commit here. A caller with a stronger check of its own --
+ a self-test, a watchdog window -- passes its own verdict in the same
+ place; what must not happen is committing on the mere fact of running,
+ which is the one thing the attempt counter already knows.
+
+ The bank and record address are the caller's because they are the
+ board's, not the server's: nothing that arrives over the network may
+ choose where the boot record lives.
+
+  fw-confirm-boot : linear Board, Lwm2mFw, Integer, Integer, Boolean -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  fw-confirm-boot (brd) (c) (bank) (rec-addr) (registered) =
+   if registered == False then board-pair brd c
+   else act
+    rc <- boot-commit brd bank rec-addr
+    when rc
+     is (b1, w) -> board-pair b1 (fw-set-result c fw-result-success)
+    end
+   end
 
   fw-boot-config : Lwm2mFw -> BootConfig
   fw-boot-config (c) = c.fw-ctx.boot-config

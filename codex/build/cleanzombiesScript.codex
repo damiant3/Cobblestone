@@ -4,13 +4,35 @@ Chapter: CleanZombiesScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
 
+ THE SEVENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ THIS ONE CARRIES THE LEAST THE MODEL CAN HOLD, and the reason is worth stating
+ once rather than rediscovering per generator: the body is almost entirely
+ `ScRaw`, so a name inside a raw payload cannot be reached by `pipe-ref` and the
+ declarations below bind only the three assignments that are not raw. A
+ generator's raw count therefore bounds how much of it the model can ever
+ describe, which is what makes `ShellDslReadability.md` the same campaign as
+ this one rather than a neighbouring chore.
+
 Section: Parameters
 
   cleanzombies-params : List ShellParam = [sh-doc ["Fleet-wide: kill every codex-vm and QEMU on the box and shut down WSL,", "the pre-2026-08-28 behaviour. WITHOUT it the sweep is scoped to VMs whose", "command line references THIS workspace, because a bare run during another", "agent's gate is friendly fire: it killed three gates in one day. A foreign", "agent's VM, a bare WSL bridge and vmmemWSL all survive a scoped run; your", "own GDB bridge names your repo path and is yours, so it does not."] (sh-switch "All")]
+
+Section: The pipeline, declared before it is spelled
+
+  killed-art : PipeArtifact = PipeArtifact { pa-name = "killed", pa-kind = PkValue, pa-expr = SeVar "killed", pa-from = Just (SeRaw "$false") }
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "repo", pa-kind = PkDir, pa-expr = SeVar "repo", pa-from = Just (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path") }
+
+  scope-art : PipeArtifact = PipeArtifact { pa-name = "scope", pa-kind = PkText, pa-expr = SeVar "scope", pa-from = Just (SeRaw "if ($All) { 'fleet-wide' } else { 'this workspace only' }") }
+
+  cz-arts : List PipeArtifact = [killed-art, repo-art, scope-art]
 
 Section: S01 -- Init
 
@@ -20,7 +42,9 @@ Section: S01 -- Init
  the tool reached for when the machine is already wedged. It has to run to
  the end on a box where things are failing; that is its whole job.
 
-  s01 : List ShellCmd = [ScAssign "killed" (SeRaw "$false"), ScAssign "repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path")]
+  s01-body : List ShellCmd = [pipe-produce killed-art, pipe-produce repo-art]
+
+  s01 : PipeStage = PipeStage { ps-name = "init", ps-why = "start with nothing killed and the workspace path that scopes the sweep", ps-in = [], ps-out = [killed-art, repo-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Kill VM and WSL Processes
 
@@ -32,24 +56,28 @@ Section: S02 -- Kill VM and WSL Processes
 
   s02-own-scope : List ShellCmd = [ScComment "Ownership scope (default): only processes whose command line names", ScComment "THIS workspace are ours to kill. Another agent's VM never matches;", ScComment "a bare wsl bridge never matches; your own GDB bridge does. -All", ScComment "restores the fleet-wide sweep.", ScRaw "$procs = @($procs | Where-Object {", ScRaw "$cl = (Get-CimInstance Win32_Process -Filter \"ProcessId=$($_.Id)\" -ErrorAction SilentlyContinue).CommandLine", ScRaw "\"$cl\" -like \"*$repo*\"", ScRaw "})"]
 
-  s02 : List ShellCmd = [ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) [ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue", ScIf (SeAnd (SeStringEq (SeVar "name") (SeLit "codex-vm")) (SeVar "procs")) s02-portfwd-spare [], ScIf (SeAnd (SeNot (SeVar "All")) (SeVar "procs")) s02-own-scope [], ScIf (SeVar "procs") [ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal [], ScSequence s02-kill-remaining] []]]
+  s02-body : List ShellCmd = [ScBlank, ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) [ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue", ScIf (SeAnd (SeStringEq (SeVar "name") (SeLit "codex-vm")) (SeVar "procs")) s02-portfwd-spare [], ScIf (SeAnd (SeNot (pipe-ref cz-arts cleanzombies-params "All")) (SeVar "procs")) s02-own-scope [], ScIf (SeVar "procs") [ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal [], ScSequence s02-kill-remaining] []]]
+
+  s02 : PipeStage = PipeStage { ps-name = "kill vm and wsl processes", ps-why = "signal each codex-vm to shut down, then stop what is left in scope", ps-in = ["All", "repo"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- WSL Shutdown
 
-  s03 : List ShellCmd = [ScIf (SeAnd (SeVar "All") (SeRaw "(Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue)")) [ScRaw "& wsl.exe --shutdown 2>$null | Out-Null", ScAssign "killed" (SeRaw "$true")] []]
+  s03-body : List ShellCmd = [ScBlank, ScIf (SeAnd (pipe-ref cz-arts cleanzombies-params "All") (SeRaw "(Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue)")) [ScRaw "& wsl.exe --shutdown 2>$null | Out-Null", ScAssign "killed" (SeRaw "$true")] []]
+
+  s03 : PipeStage = PipeStage { ps-name = "wsl shutdown", ps-why = "under -All only, take the WSL VM down as well", ps-in = ["All"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Summary
 
-  s04 : List ShellCmd = [ScAssign "scope" (SeRaw "if ($All) { 'fleet-wide' } else { 'this workspace only' }"), ScIf (SeVar "killed") [ScRaw "Write-Output \"clean-zombies: done ($scope)\""] [ScRaw "Write-Output \"clean-zombies: nothing to do ($scope)\""]]
+  s04-body : List ShellCmd = [ScBlank, pipe-produce scope-art, ScIf (pipe-ref cz-arts cleanzombies-params "killed") [ScRaw "Write-Output \"clean-zombies: done ($scope)\""] [ScRaw "Write-Output \"clean-zombies: nothing to do ($scope)\""]]
+
+  s04 : PipeStage = PipeStage { ps-name = "summary", ps-why = "say which scope ran and whether anything was actually killed", ps-in = ["killed", "All"], ps-out = [scope-art], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 
 Section: Assembly
 
-  cleanzombies-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
-
-  cleanzombies-script : ShellScript = sh-script "clean-zombies" "Purge orphaned VM and WSL bridge processes" cleanzombies-params cleanzombies-body
+  cz-pipe : Pipeline = Pipeline { pl-name = "clean-zombies", pl-doc = "Purge orphaned VM and WSL bridge processes", pl-params = cleanzombies-params, pl-stages = [s01, s02, s03, s04] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cleanzombies-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cz-pipe))
   end
 
 Page 1

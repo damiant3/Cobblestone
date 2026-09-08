@@ -239,6 +239,104 @@ $markerCount = ([regex]::Matches([IO.File]::ReadAllText($offlineSrc), '<!--EMBED
 if ($markerCount -ne 1) {
     Write-Host "FAIL: prism.html holds $markerCount EMBED markers; it must hold exactly one."; exit 1
 }
+# 3g. Templates: "new project from template", built FROM THE TREE.
+#
+# A template is a project, and which of its chapters have to travel is not a
+# judgement: the shipped volume carries the LIBRARY quires and RESOLVE pulls
+# those transitively, so a chapter in a library quire must NOT be shipped and
+# a chapter in an app quire must. The split is computed here against the
+# manifest of the volume THIS BUILD just made, not against a list written by
+# hand, because a hand list is a second answer to a question the volume
+# already answers and the two drift the first time a quire moves.
+#
+# Adding a template is therefore one row naming its ROOT; the dependencies
+# follow. A template citing a quire nothing maps fails the BUILD here rather
+# than failing to compile later in somebody's browser.
+Start-Phase 'templates'
+. (Join-Path $Repo 'build' 'quire-map.ps1')
+# Parsed ONCE. The obvious spelling asks the manifest inside the cite loop,
+# which re-parses a 656-chapter document per cite for no gain.
+$libManifest = ($libJson | ConvertFrom-Json).quires
+$libQuires = @($libManifest | ForEach-Object { $_.quire })
+$libChapters = @{}
+foreach ($lq in $libManifest) { $libChapters[$lq.quire] = [System.Collections.Generic.HashSet[string]]::new([string[]]@($lq.chapters)) }
+$templateRoots = @(
+    @{ name = 'ExplorerServer'; title = 'HTTP server'; root = 'apps\explorer\ExplorerServer.codex'
+       blurb = 'Serves JSON over the net stack. Build it, write the image, boot it, ask it for a page.' }
+    @{ name = 'GameServer';     title = 'Game server';  root = 'apps\games\GameServer.codex'
+       blurb = 'The classic games over the same net stack. Large on purpose: the widest test of the resolver.' }
+)
+$tplOut = [ordered]@{}
+foreach ($t in $templateRoots) {
+    $rootPath = Join-Path $Repo $t.root
+    if (-not (Test-Path -PathType Leaf $rootPath)) { Write-Host "FAIL: template root missing: $rootPath"; exit 1 }
+    # LINE ENDINGS ARE LOAD-BEARING HERE. The tree is CRLF; RESOLVE hands the
+    # source back without the carriage returns (CCE has no character for one),
+    # so `resolveUnit` finds the frame does not end with the unit text, reports
+    # the library unused, and the template refuses CDX3007 in the browser. The
+    # page normalises nowhere, so it is normalised at the one point that emits
+    # tree text into it.
+    $seen = @{}; $queue = [System.Collections.Queue]::new(); $files = [ordered]@{}
+    $files[[IO.Path]::GetFileName($t.root)] = ([IO.File]::ReadAllText($rootPath)) -replace "`r`n", "`n"
+    foreach ($l in [IO.File]::ReadAllLines($rootPath)) {
+        if ($l -match '^\s*cites\s+(\S+)\s+chapter\s+(.+?)\s*$') { $queue.Enqueue(@{ q = $Matches[1]; n = $Matches[2] }) }
+    }
+    $served = 0
+    while ($queue.Count -gt 0) {
+        $it = $queue.Dequeue(); $key = "$($it.q)::$($it.n)"
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        if ($libQuires -contains $it.q) { $served++; continue }
+        $dir = $QuireDirs[$it.q]
+        if (-not $dir) { Write-Host "FAIL: template $($t.name) cites quire '$($it.q)', which build/quire-map.ps1 does not map."; exit 1 }
+        $p = Join-Path $Repo (Join-Path $dir "$($it.n).codex")
+        if (-not (Test-Path -PathType Leaf $p)) { Write-Host "FAIL: template $($t.name) cites $key and there is no file under $dir."; exit 1 }
+        $files["$($it.n).codex"] = ([IO.File]::ReadAllText($p)) -replace "`r`n", "`n"
+        foreach ($l in [IO.File]::ReadAllLines($p)) {
+            if ($l -match '^\s*cites\s+(\S+)\s+chapter\s+(.+?)\s*$') { $queue.Enqueue(@{ q = $Matches[1]; n = $Matches[2] }) }
+        }
+    }
+    # EVERY CITE MUST LAND SOMEWHERE, and this is the half that fails
+    # silently. A chapter in an app quire travelled as a file above, so it is
+    # checkable against $files; a chapter in a library quire has to be one the
+    # VOLUME actually carries, and if it is not then RESOLVE cannot serve it
+    # and the template fails to compile in somebody's browser with CDX3007,
+    # which is the worst place to find out. Checked against the manifest of
+    # the volume this build made, so the two answers come from one source.
+    $shipped = @($files.Keys | ForEach-Object { $_ -replace '\.codex$', '' })
+    $unresolvable = @()
+    foreach ($fname in $files.Keys) {
+        foreach ($l in ($files[$fname] -split "`r?`n")) {
+            if ($l -match '^\s*cites\s+(\S+)\s+chapter\s+(.+?)\s*$') {
+                $cq = $Matches[1]; $cn = $Matches[2]
+                if ($libQuires -contains $cq) {
+                    if (-not $libChapters[$cq].Contains($cn)) { $unresolvable += "$fname cites $cq::$cn, which the volume does not carry" }
+                } elseif ($shipped -notcontains $cn) {
+                    $unresolvable += "$fname cites $cq::$cn, which is neither on the volume nor shipped with the template"
+                }
+            }
+        }
+    }
+    if ($unresolvable.Count) {
+        Write-Host "FAIL: template $($t.name) has $($unresolvable.Count) cite(s) the page could not resolve:"
+        $unresolvable | ForEach-Object { Write-Host "  $_" }
+        exit 1
+    }
+
+    $tplOut[$t.name] = [ordered]@{
+        title = $t.title; blurb = $t.blurb
+        main  = [IO.Path]::GetFileName($t.root)
+        files = $files
+    }
+    Write-Host ("[page] template: {0,-16} {1} file(s) shipped, {2} chapter(s) served off the volume" -f $t.name, $files.Count, $served)
+}
+$tplJson = $tplOut | ConvertTo-Json -Depth 8 -Compress
+# Laid down beside library.json rather than only pasted into the embed, so the
+# headless arm can drive the picker with the SAME bytes the page carries. Both
+# come from $tplJson here, so the file and the embed cannot drift.
+[IO.File]::WriteAllText((Join-Path $OutDir 'templates.json'), $tplJson, [Text.UTF8Encoding]::new($false))
+End-Phase ("{0} template(s)" -f $tplOut.Count)
+
 $embed = [System.Text.StringBuilder]::new()
 [void]$embed.AppendLine('<script>')
 [void]$embed.AppendLine('window.__EMBED = {')
@@ -258,6 +356,7 @@ if (Test-Path -PathType Leaf $exJson) {
     [void]$embed.AppendLine('window.__EXAMPLES = ' + ([IO.File]::ReadAllText($exJson)) + ';')
 }
 [void]$embed.AppendLine('window.__LIBRARY = ' + $libJson + ';')
+[void]$embed.AppendLine('window.__TEMPLATES = ' + $tplJson + ';')
 [void]$embed.AppendLine('</script>')
 $offline = ([IO.File]::ReadAllText($offlineSrc)).Replace('<!--EMBED-->', $embed.ToString())
 # The backdrop goes in too, or a downloaded prism.html is a working compiler

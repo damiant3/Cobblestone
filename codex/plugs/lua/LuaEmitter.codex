@@ -379,7 +379,11 @@ Section: Apply Emission
      let bi = lua-try-builtin n args arities
      in if text-length bi > 0 then bi
      else if is-mktup-name n then "{" & emit-lua-apply-args args arities 0 & "}"
-     else lua-sanitize n & "(" & emit-lua-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+    in if ar < 1 then emit-lua-curried (lua-sanitize n) args arities 0
+       else if list-length args == ar then lua-sanitize n & "(" & emit-lua-apply-args args arities 0 & ")"
+       else if list-length args < ar then emit-lua-partial n args arities (ar - list-length args)
+       else emit-lua-curried (lua-sanitize n & "(" & emit-lua-apply-args-upto args arities 0 ar & ")") args arities ar
     is otherwise -> emit-lua-expr-curried e arities
 
   emit-lua-apply-args : List IRExpr, List ArityEntry, Integer -> Text
@@ -387,6 +391,42 @@ Section: Apply Emission
    if i == list-length args then ""
    else if i == list-length args - 1 then emit-lua-expr (list-at args i) arities
    else emit-lua-expr (list-at args i) arities & ", " & emit-lua-apply-args args arities (i + 1)
+
+ Lua has no partial application, so a definition applied to fewer arguments
+ than it takes is eta-wrapped: one nested function per missing parameter,
+ closed with one `end` each.
+
+  emit-lua-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-lua-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-lua-expr (list-at args i) arities & ")"
+   in emit-lua-curried next args arities (i + 1)
+
+  emit-lua-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-lua-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-lua-expr (list-at args i) arities
+   else emit-lua-expr (list-at args i) arities & ", " & emit-lua-apply-args-upto args arities (i + 1) n
+
+  emit-lua-partial-open : Integer, Integer -> Text
+  emit-lua-partial-open (i) (count) =
+   if i == count then ""
+   else "function(_p" & integer-to-text i & "_) return " & emit-lua-partial-open (i + 1) count
+
+  emit-lua-partial-close : Integer -> Text
+  emit-lua-partial-close (count) =
+   if count == 0 then "" else " end" & emit-lua-partial-close (count - 1)
+
+  emit-lua-partial-params : Integer, Integer -> Text
+  emit-lua-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-lua-partial-params (i + 1) count
+
+  emit-lua-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-lua-partial (n) (args) (arities) (short) =
+   let call = lua-sanitize n & "(" & emit-lua-apply-args args arities 0 & ", " & emit-lua-partial-params 0 short & ")"
+   in emit-lua-partial-open 0 short & call & emit-lua-partial-close short
 
   emit-lua-expr-curried : IRExpr, List ArityEntry -> Text
   emit-lua-expr-curried (e) (arities) =
@@ -421,6 +461,27 @@ Section: Chapter Emission
    in let types-text = emit-lua-type-defs type-defs 0
    in let defs-text = emit-lua-defs (m.defs) 0 arities
    in lua-prelude & types-text & defs-text & lua-sanitize opening-entry-point & "()\n"
+
+  emit-lua-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-lua-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-lua-type-defs type-defs 0
+   in lua-prelude & types-text
+
+  emit-lua-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-lua-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-lua-type-defs type-defs 0
+   in lua-sanitize opening-entry-point & "()\n"
+
+  emit-lua-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-lua-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-lua-type-defs type-defs 0
+   in arities
+
+  emit-lua-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-lua-chapter-stream-def (m) (v) (i) = emit-lua-def (list-at (m.defs) i) v
 
   lua-prelude : Text
   lua-prelude = "local function _cx_lpush(_l, _v)\n  if #_l > 0 then _l[#_l + 1] = _v; return _l end\n  return { _v }\nend\n\n" & lua-text-builtins

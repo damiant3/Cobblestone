@@ -5,82 +5,82 @@ const sc_half_w : i32 = 512;
 const sc_half_h : i32 = 384;
 const sc_count : i32 = 3;
 const sc_far : i32 = 8000000;
-const sc_size : f32 = bitcast<f32>(1088421888u);
-const sc_dist : f32 = bitcast<f32>(1088421888u);
+const sc_size : f32 = 0x1.c00000p+2f;
+const sc_dist : f32 = 0x1.c00000p+2f;
 fn sc_cx(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1069547520u));
+  return (0.0 - 0x1.800000p+0f);
   } else {
-  return bitcast<f32>(1068708659u);
+  return 0x1.666666p+0f;
   }
   }
 }
 fn sc_cy(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1065772646u);
+  return 0x1.0cccccp+0f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   } else {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   }
   }
 }
 fn sc_cz(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1056964608u));
+  return (0.0 - 0x1.000000p-1f);
   }
   }
 }
 fn sc_rad(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1062836633u);
+  return 0x1.b33332p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   } else {
-  return bitcast<f32>(1059481190u);
+  return 0x1.4cccccp-1f;
   }
   }
 }
 fn sc_colr(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   }
   }
 }
 fn sc_colg(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   } else {
-  return bitcast<f32>(1053609164u);
+  return 0x1.999998p-2f;
   }
   }
 }
 fn sc_colb(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
-  return bitcast<f32>(1064514355u);
+  return 0x1.e66666p-1f;
   }
   }
 }
@@ -92,14 +92,14 @@ fn sc_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i : i32) -
   let r = sc_rad(i);
   let c = ((((lx * lx) + (ly * ly)) + (lz * lz)) - (r * r));
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -118,7 +118,7 @@ fn sc_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return bid;
     } else {
     let t = sc_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < bt)), 1, (bt < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < bt)), 1, (bt < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -162,6 +162,7 @@ fn sc_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn sc_clampi(v : i32, lo : i32, hi : i32) -> i32 {
   if ((v < lo)) {
@@ -175,19 +176,19 @@ fn sc_clampi(v : i32, lo : i32, hi : i32) -> i32 {
   }
 }
 fn sc_pack(r : f32, g : f32, b : f32) -> i32 {
-  let ri = sc_clampi(i32((r * bitcast<f32>(1132396544u))), 0, 255);
-  let gi = sc_clampi(i32((g * bitcast<f32>(1132396544u))), 0, 255);
-  let bi = sc_clampi(i32((b * bitcast<f32>(1132396544u))), 0, 255);
+  let ri = sc_clampi(i32((r * 0x1.fe0000p+7f)), 0, 255);
+  let gi = sc_clampi(i32((g * 0x1.fe0000p+7f)), 0, 255);
+  let bi = sc_clampi(i32((b * 0x1.fe0000p+7f)), 0, 255);
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn sc_checker(x : f32, z : f32) -> f32 {
-  let ix = i32((x + bitcast<f32>(1115684864u)));
-  let iz = i32((z + bitcast<f32>(1115684864u)));
+  let ix = i32((x + 0x1.000000p+6f));
+  let iz = i32((z + 0x1.000000p+6f));
   let s = (ix + iz);
   if (((s - ((s / 2) * 2)) == 0)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   }
 }
 @group(0) @binding(0) var<storage, read_write> shadowmain_step_shadowbuf_buf : array<i32>;
@@ -202,19 +203,19 @@ fn shadowmain_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let frame = u_shadowmain_step.frame;
   let px = (gid - ((gid / sc_width) * sc_width));
   let py = (gid / sc_width);
-  let fx = (f32(f32((px - sc_half_w))) / bitcast<f32>(1136656384u));
-  let fy = ((f32(f32((sc_half_h - py))) / bitcast<f32>(1136656384u)) - bitcast<f32>(1039516303u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1076090634u)));
+  let fx = (f32(f32((px - sc_half_w))) / 0x1.800000p+8f);
+  let fy = ((f32(f32((sc_half_h - py))) / 0x1.800000p+8f) - 0x1.eb851ep-4f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.47ae14p+1f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1070386380u) / rl);
-  let ox = bitcast<f32>(0u);
-  let oy = bitcast<f32>(1071225241u);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1086324736u));
-  let sid = sc_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
-  let st = select(sc_hit(ox, oy, oz, dx, dy, dz, sid), bitcast<f32>(1148846080u), (sid < 0));
-  let ft = select((bitcast<f32>(0u) - bitcast<f32>(1065353216u)), (((bitcast<f32>(0u) - bitcast<f32>(1065353216u)) - oy) / dy), (dy < (bitcast<f32>(0u) - bitcast<f32>(953267991u))));
-  let usefloor = select(0, select(select(0, 1, (ft < st)), 1, (sid < 0)), (ft > bitcast<f32>(981668462u)));
+  let dz = (0x1.999998p+0f / rl);
+  let ox = 0.0;
+  let oy = 0x1.b33332p+0f;
+  let oz = (0.0 - 0x1.800000p+2f);
+  let sid = sc_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
+  let st = select(sc_hit(ox, oy, oz, dx, dy, dz, sid), 0x1.f40000p+9f, (sid < 0));
+  let ft = select((0.0 - 0x1.000000p+0f), (((0.0 - 0x1.000000p+0f) - oy) / dy), (dy < (0.0 - 0x1.a36e2ep-14f)));
+  let usefloor = select(0, select(select(0, 1, (ft < st)), 1, (sid < 0)), (ft > 0x1.0624dcp-10f));
   let hitany = select(select(0, 1, (sid >= 0)), 1, (usefloor == 1));
   if ((hitany == 0)) {
   _ = (((6 * 65536) + (10 * 256)) + 20);
@@ -223,37 +224,37 @@ fn shadowmain_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let hx = (ox + (dx * t));
   let hy = (oy + (dy * t));
   let hz = (oz + (dz * t));
-  let nx = select(((hx - sc_cx(sid)) / sc_rad(sid)), bitcast<f32>(0u), (usefloor == 1));
-  let ny = select(((hy - sc_cy(sid)) / sc_rad(sid)), bitcast<f32>(1065353216u), (usefloor == 1));
-  let nz = select(((hz - sc_cz(sid)) / sc_rad(sid)), bitcast<f32>(0u), (usefloor == 1));
+  let nx = select(((hx - sc_cx(sid)) / sc_rad(sid)), 0.0, (usefloor == 1));
+  let ny = select(((hy - sc_cy(sid)) / sc_rad(sid)), 0x1.000000p+0f, (usefloor == 1));
+  let nz = select(((hz - sc_cz(sid)) / sc_rad(sid)), 0.0, (usefloor == 1));
   let ar = select(sc_colr(sid), sc_checker(hx, hz), (usefloor == 1));
   let ag = select(sc_colg(sid), sc_checker(hx, hz), (usefloor == 1));
   let ab = select(sc_colb(sid), sc_checker(hx, hz), (usefloor == 1));
-  let la = (f32(f32(frame)) / bitcast<f32>(1109393408u));
-  let rlx = (cos(la) * bitcast<f32>(1058977873u));
-  let rlz = (sin(la) * bitcast<f32>(1058977873u));
-  let ll = sqrt((((rlx * rlx) + bitcast<f32>(1058783258u)) + (rlz * rlz)));
+  let la = (f32(f32(frame)) / 0x1.400000p+5f);
+  let rlx = (cos(la) * 0x1.3d70a2p-1f);
+  let rlz = (sin(la) * 0x1.3d70a2p-1f);
+  let ll = sqrt((((rlx * rlx) + 0x1.378034p-1f) + (rlz * rlz)));
   let lx = (rlx / ll);
-  let ly = ((bitcast<f32>(0u) - bitcast<f32>(1061662228u)) / ll);
+  let ly = ((0.0 - 0x1.8f5c28p-1f) / ll);
   let lz = (rlz / ll);
   let rgl = sqrt(((lz * lz) + (lx * lx)));
   let rx = (lz / rgl);
-  let rz = (bitcast<f32>(0u) - (lx / rgl));
+  let rz = (0.0 - (lx / rgl));
   let ux = (ly * rz);
   let uy = ((lz * rx) - (lx * rz));
-  let uz = (bitcast<f32>(0u) - (ly * rx));
-  let rcx = (hx - bitcast<f32>(0u));
-  let rcy = (hy - bitcast<f32>(1051931443u));
-  let rcz = (hz - bitcast<f32>(0u));
-  let lu = ((((rcx * rx) + (rcz * rz)) / sc_size) + bitcast<f32>(1056964608u));
-  let lv = (((((rcx * ux) + (rcy * uy)) + (rcz * uz)) / sc_size) + bitcast<f32>(1056964608u));
+  let uz = (0.0 - (ly * rx));
+  let rcx = (hx - 0.0);
+  let rcy = (hy - 0x1.666666p-2f);
+  let rcz = (hz - 0.0);
+  let lu = ((((rcx * rx) + (rcz * rz)) / sc_size) + 0x1.000000p-1f);
+  let lv = (((((rcx * ux) + (rcy * uy)) + (rcz * uz)) / sc_size) + 0x1.000000p-1f);
   let ld = ((((rcx * lx) + (rcy * ly)) + (rcz * lz)) + sc_dist);
-  let stored = shadowmain_step_shadowbuf_buf[((sc_clampi(i32((lv * bitcast<f32>(1149239296u))), 0, 1023) * 1024) + sc_clampi(i32((lu * bitcast<f32>(1149239296u))), 0, 1023))];
-  let inmap = select(0, select(0, select(0, select(0, 1, (lv < bitcast<f32>(1065353216u))), (lv > bitcast<f32>(0u))), (lu < bitcast<f32>(1065353216u))), (lu > bitcast<f32>(0u)));
-  let shadowed = select(0, select(0, select(0, 1, (i32((ld * bitcast<f32>(1132462080u))) > (stored + 500))), (stored < sc_far)), (inmap == 1));
-  let ndl = max(bitcast<f32>(0u), (bitcast<f32>(0u) - (((nx * lx) + (ny * ly)) + (nz * lz))));
-  let vis = select(bitcast<f32>(1065353216u), bitcast<f32>(1043878379u), (shadowed == 1));
-  let sh = (bitcast<f32>(1045220556u) + ((ndl * bitcast<f32>(1062836633u)) * vis));
+  let stored = shadowmain_step_shadowbuf_buf[((sc_clampi(i32((lv * 0x1.000000p+10f)), 0, 1023) * 1024) + sc_clampi(i32((lu * 0x1.000000p+10f)), 0, 1023))];
+  let inmap = select(0, select(0, select(0, select(0, 1, (lv < 0x1.000000p+0f)), (lv > 0.0)), (lu < 0x1.000000p+0f)), (lu > 0.0));
+  let shadowed = select(0, select(0, select(0, 1, (i32((ld * 0x1.000000p+8f)) > (stored + 500))), (stored < sc_far)), (inmap == 1));
+  let ndl = max(0.0, (0.0 - (((nx * lx) + (ny * ly)) + (nz * lz))));
+  let vis = select(0x1.000000p+0f, 0x1.70a3d6p-3f, (shadowed == 1));
+  let sh = (0x1.999998p-3f + ((ndl * 0x1.b33332p-1f) * vis));
   shadowmain_step_outb_buf[gid] = sc_pack((ar * sh), (ag * sh), (ab * sh));
   }
 }

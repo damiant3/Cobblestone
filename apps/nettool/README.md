@@ -9,7 +9,7 @@ A network administration toolkit providing Wireshark-style packet capture, port 
 - **GroupAdmin** -- Widget rendering of GroupState: overview panel, member table with trust scores, service registry table, action toolbar
 - **NetToolApp** -- Top-level tabbed app state (5 tabs), toolbar with interface/target selection
 - **NetToolPersist** -- JSON serialization of scan results and discovered hosts (kind 40) via DiskFacts
-- **TestGroupMembership** -- 8 tests covering group creation, member add, heartbeat, suspect/dead transitions, election, service registry
+- **TestGroupMembership** -- 20 arms (2026-09-08) covering group creation, member add, heartbeat, suspect and dead transitions, election and the service registry. Lives at `codex/test/apps/group-membership.codex`, because `test.ps1` executes what is under `codex/test/**` and `app-sweep` only compiles what is under `apps/**`
 
 ## Completeness
 

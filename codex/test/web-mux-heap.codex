@@ -1,0 +1,107 @@
+Chapter: WebMuxHeapTest
+  cites Net chapter WebServer
+  cites Net chapter TcpTransport
+  cites Foreword chapter Console
+
+ The os-backlog entry for the web mux says a server spends a receive buffer
+ plus the mux records for every connection it ever accepts, and carries no
+ NUMBER. This arm is that number, and it is the measurement rather than the
+ repair.
+
+ WHAT IS MEASURED IS WHAT `web-mux-accept` ALLOCATES. That function builds a
+ fresh listen transport per accepted connection and pushes a `WebConn` into
+ `conns`, and the transport is where the bytes are: `fresh-listen-transport`
+ ends in `transport-new-with-cap sess2 serve-recv-buf-cap`, 65536. The
+ function itself carries `[Network.Read, Network.Write]` and cannot run
+ without a wire, but the allocating half of it is pure and is called here
+ directly, which is why this needs no network and no peer.
+
+ THE TRANSPORTS ARE RETAINED IN A LIST, as the mux retains them, for two
+ reasons: nothing can eliminate a construction whose result is still
+ reachable, and `list-push` extends in place with a doubling capacity, so the
+ list's own growth is part of what a connection costs and is measured here
+ rather than reasoned about.
+
+ THE THREE COUNTS ARE THE POINT, not any one of them. A per-connection figure
+ taken at n=1 includes the list's first allocation and every fixed cost the
+ first call pays; the figure at 16 is what a server actually spends per
+ connection. Reporting one number would have been a claim the arm could not
+ support.
+
+ `__heap-save` answers an Integer and the delta between two marks is the
+ bytes allocated between them, which is the instrument `net-recv-heap`
+ already uses.
+
+Section: The Measurement
+
+  build : Integer, List TcpTransportState -> List TcpTransportState
+  build (n) (acc) =
+    if n <= 0 then acc
+    else build (n - 1) (list-push acc (fresh-listen-transport 8080))
+
+ The length guard is not decoration: it is what makes the list REACHABLE at
+ the second mark, and a run that answered -1 would be reporting that the
+ transports were not built and the delta measures nothing.
+
+  per-conn : Integer -> Integer
+  per-conn (n) =
+    let a = __heap-save
+    in let l = build n []
+    in let b = __heap-save
+    in if list-length l < n then 0 - 1 else (b - a) / n
+
+  built : Integer -> Integer
+  built (n) = list-length (build n [])
+
+ WHAT THE THREE COUNTS ABOVE CANNOT SEE. Every one of them RETAINS its
+ transports, so each answers "what does a live connection cost". The mux's
+ own question is different: `web-mux-remove` rebuilds a list and calls no
+ `__heap-restore`, and the only restore in the chapter is in
+ `web-mux-loop`'s empty-poll window, which `WebServer.codex` says in its own
+ prose the sweep runs outside of. If a closed connection returns nothing,
+ the cost is per connection EVER ACCEPTED and not per concurrent one, and
+ the two readings differ by the lifetime of the server.
+
+ `sum-bases` builds the same transports and keeps NO reference to them: it
+ accumulates one per transport whose `recv-base` is positive, so the answer
+ is exactly n and every transport must be constructed to produce it. A
+ folded or eliminated construction cannot answer n.
+
+  sum-bases : Integer, Integer -> Integer
+  sum-bases (n) (acc) =
+    if n <= 0 then acc
+    else let t = fresh-listen-transport 8080
+    in sum-bases (n - 1) (acc + (if t.recv-base > 0 then 1 else 0))
+
+  per-conn-discarded : Integer -> Integer
+  per-conn-discarded (n) =
+    let a = __heap-save
+    in let k = sum-bases n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ THE CONTROL, and the arm is worth nothing without it. This measures the
+ identical construction inside a `__heap-save` / `__heap-restore` window,
+ which is the one reclamation the memory model has. It must answer about
+ zero. An instrument that reported 65,536 here would be reporting that it
+ cannot read a reclaimed heap at all, and the discarded figure above would
+ mean nothing (L-FALSIF).
+
+  per-conn-restored : Integer -> Integer
+  per-conn-restored (n) =
+    let a = __heap-save
+    in let k = sum-bases n 0
+    in let r = __heap-restore a
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("web-mux-heap per-conn n=1 " & show (per-conn 1))
+    print-line-uni ("web-mux-heap per-conn n=4 " & show (per-conn 4))
+    print-line-uni ("web-mux-heap per-conn n=16 " & show (per-conn 16))
+    print-line-uni ("web-mux-heap built n=16 " & show (built 16))
+    print-line-uni ("web-mux-heap discarded n=16 " & show (per-conn-discarded 16))
+    print-line-uni ("web-mux-heap restored n=16 " & show (per-conn-restored 16))
+  end

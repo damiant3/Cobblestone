@@ -5,25 +5,25 @@ const om_half_w : i32 = 512;
 const om_half_h : i32 = 384;
 const om_count : i32 = 5;
 fn om_cx(i : i32) -> f32 {
-  return (cos((f32(f32(i)) * bitcast<f32>(1067505732u))) * bitcast<f32>(1071225241u));
+  return (cos((f32(f32(i)) * 0x1.41b088p+0f)) * 0x1.b33332p+0f);
 }
 fn om_cz(i : i32) -> f32 {
-  return (sin((f32(f32(i)) * bitcast<f32>(1067505732u))) * bitcast<f32>(1071225241u));
+  return (sin((f32(f32(i)) * 0x1.41b088p+0f)) * 0x1.b33332p+0f);
 }
 fn om_colr(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1053609164u);
+  return 0x1.999998p-2f;
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   }
   }
   }
@@ -31,18 +31,18 @@ fn om_colr(i : i32) -> f32 {
 }
 fn om_colg(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1061997772u);
+  return 0x1.999998p-1f;
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1062836633u);
+  return 0x1.b33332p-1f;
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1061997772u);
+  return 0x1.999998p-1f;
   } else {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   }
   }
   }
@@ -50,18 +50,18 @@ fn om_colg(i : i32) -> f32 {
 }
 fn om_colb(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
   if ((i == 2)) {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   } else {
   if ((i == 3)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   }
   }
   }
@@ -70,17 +70,17 @@ fn om_colb(i : i32) -> f32 {
 fn om_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i : i32) -> f32 {
   let lx = (ox - om_cx(i));
   let lz = (oz - om_cz(i));
-  let b = (((dx * lx) + (dy * (oy + bitcast<f32>(1053609164u)))) + (dz * lz));
-  let c = ((((lx * lx) + ((oy + bitcast<f32>(1053609164u)) * (oy + bitcast<f32>(1053609164u)))) + (lz * lz)) - bitcast<f32>(1052266987u));
+  let b = (((dx * lx) + (dy * (oy + 0x1.999998p-2f))) + (dz * lz));
+  let c = ((((lx * lx) + ((oy + 0x1.999998p-2f) * (oy + 0x1.999998p-2f))) + (lz * lz)) - 0x1.70a3d6p-2f);
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -99,7 +99,7 @@ fn om_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return bid;
     } else {
     let t = om_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < bt)), 1, (bt < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < bt)), 1, (bt < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -143,6 +143,7 @@ fn om_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn om_shadow(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz__a : f32, maxt__a : f32, i__a : i32) -> i32 {
   var ox = ox__a;
@@ -158,7 +159,7 @@ fn om_shadow(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz
     return 0;
     } else {
     let t = om_hit(ox, oy, oz, dx, dy, dz, i);
-    if ((t > bitcast<f32>(1017370378u))) {
+    if ((t > 0x1.47ae14p-6f)) {
     if ((t < maxt)) {
     return 1;
     } else {
@@ -201,18 +202,19 @@ fn om_shadow(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz
     }
     }
   }
+  return 0;
 }
 fn om_checker(hx : f32, hz : f32) -> f32 {
-  let ix = i32((hx + bitcast<f32>(1115684864u)));
-  let iz = i32((hz + bitcast<f32>(1115684864u)));
+  let ix = i32((hx + 0x1.000000p+6f));
+  let iz = i32((hz + 0x1.000000p+6f));
   if ((((ix + iz) - (((ix + iz) / 2) * 2)) == 0)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   }
 }
 fn om_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), r)) * bitcast<f32>(1132396544u))) * 65536) + (i32((max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), g)) * bitcast<f32>(1132396544u))) * 256)) + i32((max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), b)) * bitcast<f32>(1132396544u))));
+  return (((i32((max(0.0, min(0x1.000000p+0f, r)) * 0x1.fe0000p+7f)) * 65536) + (i32((max(0.0, min(0x1.000000p+0f, g)) * 0x1.fe0000p+7f)) * 256)) + i32((max(0.0, min(0x1.000000p+0f, b)) * 0x1.fe0000p+7f)));
 }
 @group(0) @binding(0) var<storage, read_write> omnishadow_step_outb_buf : array<i32>;
 struct U_omnishadow_step {
@@ -225,22 +227,22 @@ fn omnishadow_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let frame = u_omnishadow_step.frame;
   let px = (gid - ((gid / om_width) * om_width));
   let py = (gid / om_width);
-  let fx = (f32(f32((px - om_half_w))) / bitcast<f32>(1136656384u));
-  let fy = ((f32(f32((om_half_h - py))) / bitcast<f32>(1136656384u)) - bitcast<f32>(1049582632u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1076090634u)));
+  let fx = (f32(f32((px - om_half_w))) / 0x1.800000p+8f);
+  let fy = ((f32(f32((om_half_h - py))) / 0x1.800000p+8f) - 0x1.1eb850p-2f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.47ae14p+1f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1070386380u) / rl);
-  let oy = bitcast<f32>(1075419545u);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1085276160u));
-  let la = (f32(f32(frame)) / bitcast<f32>(1109393408u));
-  let lgx = (cos(la) * bitcast<f32>(1061997772u));
-  let lgy = bitcast<f32>(1066192076u);
-  let lgz = (sin(la) * bitcast<f32>(1061997772u));
-  let sid = om_nearest(bitcast<f32>(0u), oy, oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
-  let st = select(om_hit(bitcast<f32>(0u), oy, oz, dx, dy, dz, sid), bitcast<f32>(1148846080u), (sid < 0));
-  let ft = select((bitcast<f32>(0u) - bitcast<f32>(1065353216u)), (((bitcast<f32>(0u) - bitcast<f32>(1065353216u)) - oy) / dy), (dy < (bitcast<f32>(0u) - bitcast<f32>(953267991u))));
-  let usefloor = select(0, select(select(0, 1, (ft < st)), 1, (sid < 0)), (ft > bitcast<f32>(981668462u)));
+  let dz = (0x1.999998p+0f / rl);
+  let oy = 0x1.333332p+1f;
+  let oz = (0.0 - 0x1.600000p+2f);
+  let la = (f32(f32(frame)) / 0x1.400000p+5f);
+  let lgx = (cos(la) * 0x1.999998p-1f);
+  let lgy = 0x1.199998p+0f;
+  let lgz = (sin(la) * 0x1.999998p-1f);
+  let sid = om_nearest(0.0, oy, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
+  let st = select(om_hit(0.0, oy, oz, dx, dy, dz, sid), 0x1.f40000p+9f, (sid < 0));
+  let ft = select((0.0 - 0x1.000000p+0f), (((0.0 - 0x1.000000p+0f) - oy) / dy), (dy < (0.0 - 0x1.a36e2ep-14f)));
+  let usefloor = select(0, select(select(0, 1, (ft < st)), 1, (sid < 0)), (ft > 0x1.0624dcp-10f));
   let hitany = select(select(0, 1, (sid >= 0)), 1, (usefloor == 1));
   if ((hitany == 0)) {
   _ = (((10 * 65536) + (12 * 256)) + 22);
@@ -249,9 +251,9 @@ fn omnishadow_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let hx = (dx * t);
   let hy = (oy + (dy * t));
   let hz = (oz + (dz * t));
-  let nx = select(((hx - om_cx(sid)) / bitcast<f32>(1058642329u)), bitcast<f32>(0u), (usefloor == 1));
-  let ny = select(((hy + bitcast<f32>(1053609164u)) / bitcast<f32>(1058642329u)), bitcast<f32>(1065353216u), (usefloor == 1));
-  let nz = select(((hz - om_cz(sid)) / bitcast<f32>(1058642329u)), bitcast<f32>(0u), (usefloor == 1));
+  let nx = select(((hx - om_cx(sid)) / 0x1.333332p-1f), 0.0, (usefloor == 1));
+  let ny = select(((hy + 0x1.999998p-2f) / 0x1.333332p-1f), 0x1.000000p+0f, (usefloor == 1));
+  let nz = select(((hz - om_cz(sid)) / 0x1.333332p-1f), 0.0, (usefloor == 1));
   let ldx = (lgx - hx);
   let ldy = (lgy - hy);
   let ldz = (lgz - hz);
@@ -259,12 +261,12 @@ fn omnishadow_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let ux = (ldx / ldist);
   let uy = (ldy / ldist);
   let uz = (ldz / ldist);
-  let sh = om_shadow((hx + (ux * bitcast<f32>(1017370378u))), (hy + (uy * bitcast<f32>(1017370378u))), (hz + (uz * bitcast<f32>(1017370378u))), ux, uy, uz, (ldist - bitcast<f32>(1036831948u)), 0);
-  let ndl = max(bitcast<f32>(0u), (((nx * ux) + (ny * uy)) + (nz * uz)));
-  let atten = (bitcast<f32>(1080033280u) / (bitcast<f32>(1058642329u) + (ldist * ldist)));
-  let vis = select(bitcast<f32>(1065353216u), bitcast<f32>(1039516303u), (sh == 1));
-  let lit = (bitcast<f32>(1041194024u) + (((ndl * atten) * vis) * bitcast<f32>(1074580684u)));
-  let chk = select(bitcast<f32>(0u), om_checker(hx, hz), (usefloor == 1));
+  let sh = om_shadow((hx + (ux * 0x1.47ae14p-6f)), (hy + (uy * 0x1.47ae14p-6f)), (hz + (uz * 0x1.47ae14p-6f)), ux, uy, uz, (ldist - 0x1.999998p-4f), 0);
+  let ndl = max(0.0, (((nx * ux) + (ny * uy)) + (nz * uz)));
+  let atten = (0x1.c00000p+1f / (0x1.333332p-1f + (ldist * ldist)));
+  let vis = select(0x1.000000p+0f, 0x1.eb851ep-4f, (sh == 1));
+  let lit = (0x1.1eb850p-3f + (((ndl * atten) * vis) * 0x1.199998p+1f));
+  let chk = select(0.0, om_checker(hx, hz), (usefloor == 1));
   let ar = select(om_colr(sid), chk, (usefloor == 1));
   let ag = select(om_colg(sid), chk, (usefloor == 1));
   let ab = select(om_colb(sid), chk, (usefloor == 1));

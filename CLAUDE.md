@@ -35,7 +35,10 @@ document is in the file above.
 
 ## Session Start
 
-**On session start, run `/init`** (`.claude/skills/init/SKILL.md`). It
+**On session start, run `/init`** (`.claude/skills/init/SKILL.md`); **root
+runs `/commander-init` instead**, which performs the init and then the
+commander's own steps (every lane's context measured, the event-only
+pulse). It
 loads memory, gathers fleet state through parallel agents, reads the
 lesson index, and checks Perforce. Every rule below assumes that state
 is in context, so an improvised init leaves you acting on a register
@@ -59,7 +62,8 @@ one rots.
 that originates in one app or quire lives in that register
 (`apps/<app>/<app>-backlog.md`, `codex/<quire>/<quire>-backlog.md`).
 `docs/PM/CurrentPlan.md` is the fleet's only cross-lane register of open
-work, and it is the shape and the priority order.
+work, and it is the shape and the priority order. Its lane table is NOW,
+NEXT and standing per lane, replaced in place, never appended (R-HISTORY).
 
 `docs/Agents/<agent>-workplan.md` is scratch for the current session's
 lane state only (what is shelved, what is mid-gate, the next action),
@@ -82,9 +86,12 @@ found in `Active/` is moved to `Done/`.
 acting on it.** A claim is cheap to check and cheap to get wrong in
 either direction.
 
-**Never carry a count forward. Re-measure it** (L-COUNT). Test counts,
-module counts, line counts and plug counts in these docs have all been
-wrong.
+**A published count carries the date it was measured** (L-COUNT, relaxed
+by Damian 2026-09-07). Write `195 modules (2026-09-07)` or a dated
+footnote, never a bare number. A count you find drifted is corrected when
+you are editing that doc anyway, not as its own errand: `check-doc-counts`
+warns and the gate continues. Re-measure before you quote one in a
+decision; do not spend a CL keeping them exact between releases.
 
 ## Current State
 
@@ -157,7 +164,7 @@ carved out inside each rule.
 | 1 | **Truth.** What you report and what you ship are what is actually so. | R-TRUE, R-GATE |
 | 2 | **The artifact.** Do not break the compiler or the seed. | R-READ, R-COST, R-CCE, R-OPENING, R-SIGN |
 | 3 | **Process.** How the work is done and with what tools. | R-DIAG, R-ONE, R-SHELL, R-NAIVE |
-| 4 | **Form.** How it reads. | R-REPORT, R-DASH, R-PROSE |
+| 4 | **Form.** How it reads. | R-REPORT, R-DASH, R-PROSE, R-HISTORY |
 
 Read it downward: a tier-4 rule never wins against a tier-1 rule, so
 brevity does not soften a red gate and a banned character does not delay
@@ -180,6 +187,12 @@ hear about.
 you have not read them. If a rule already answers the question, execute
 and say nothing: an ask that a rule already settles spends his attention
 to make you look careful, and he has said so in those words.
+
+**A lane never asks Damian directly (2026-09-07, "stupid unnecessary
+questions").** Every question goes to root by one message; root answers
+what a rule or the commander's own judgement settles, and carries to
+Damian only what genuinely needs him, batched. A lane that decides "this
+one is his" is making the call the commander exists to make.
 
 ### The tier is not a licence to skip a rule
 
@@ -211,6 +224,7 @@ maintained.
 | R-REPORT | 4 | 10 | Report the result, not the journey. |
 | R-DASH | 4 | 11 | The em-dash is banned. |
 | R-PROSE | 4 | 12 | Prose about our own code is banned. |
+| R-HISTORY | 4 | 14 | History goes in the CL, not the doc. |
 
 ### R-TRUE (tier 1). Report failures in full.
 
@@ -501,6 +515,24 @@ true; veracity is not the test. Removal is a campaign and per-block
 judgement, not a regex sweep. Delete it in files you are already
 changing, and stop producing it.
 
+### 14. History goes in the CL, not the doc
+**`R-HISTORY`, tier 4.** (Damian, 2026-09-07, after asking for it repeatedly.)
+
+A doc states what IS: a capability, a contract, an open item, a ruling.
+It does not narrate how it got there. Perforce holds every earlier state
+and every CL description, so a paragraph restating them in a doc is a
+second copy that rots while still being believed, and the tree holds
+files superseded over and over by their own appended blocks.
+
+Banned in any doc, register row, backlog row or memory file: "Earlier:"
+and "superseded" blocks, session-by-session narrative, retracted theories
+kept so that nobody rediscovers them, and measurements the CL already
+carries. That last justification is refused outright: a wrong theory is
+kept from recurring by a `LESSONS.md` row or a runner, never by a story.
+When a row changes, REPLACE its text. A lane-table row in `CurrentPlan.md`
+is NOW, NEXT and standing, nothing else. Delete history in any file you
+are already changing, and stop producing it.
+
 ### 13. When you hold the answer key, you cannot be the reader. Spend a subagent.
 **`R-NAIVE`, tier 3.**
 
@@ -625,9 +657,25 @@ here, where a long prompt is best reminded: keep every report and
 message short and outcome-first (R-REPORT), and never let that brevity
 soften a failure (R-TRUE).
 
-**tokens of init context saved so far: 3,500 per session.** Counted as
+**Only critical messages reach Damian (2026-09-07).** A message to him
+carries a decision he must make, a failure still failing, or a landing
+that changes what he does next. Nothing else: no commentary, no "worth
+your eye", no progress. Turn wrap-ups are one line or nothing; the record
+is the CL, the row or the doc. Text nobody reads is token burn.
+
+**tokens of init context saved so far: 13,754 per session in the SESSION's
+own context, plus about 8,190 in the init agent's** (`CurrentPlan.md`,
+89,082 to 56,323 bytes over three tranches, every open item, ruling and
+standing rule kept). The two are counted apart on purpose: this file and
+`LESSONS.md` are read straight into the session, while `CurrentPlan.md` is
+read by an init subagent that returns a summary, so its saving is real and
+is paid somewhere else (L-REQUEST: name which claim a number is). Counted as
 bytes deleted from files on the init read path divided by four, since
-2026-09-02 (main 21725: this file, 43,887 to 29,941 bytes). This file is
+2026-09-02 (main 21725: this file, 43,887 to 29,941 bytes; fester
+2026-09-07, `LESSONS.md` 62,115 to 21,097 -- re-measured, about 15,529
+tokens to about 5,274 -- cut to its own stated format over three
+tranches, all 73 ids kept and every account moved to a story or verified
+at the pointer the row names). This file is
 loaded into every session's context by the harness, so the per-session
 figure is paid by every one of the 251 sessions the six workspaces'
 transcripts hold since 2026-08-05 and every session after. A CL that

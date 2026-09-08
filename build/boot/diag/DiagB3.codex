@@ -17,6 +17,7 @@ Chapter: DiagB3
   cites Net chapter Dhcp
   cites Net chapter DhcpIO
   cites Diag chapter DiagStage
+  cites Diag chapter DiagRecord
 
  Track B's B3 as a stage: one real TCP conversation with a real peer over
  the Intel part. Every stage before it reads the part; this one is the first
@@ -166,6 +167,16 @@ Section: Knobs
     else db3-send-times (r.ns-transport) payload (left - 1) (acc + r.ns-sent)
    end
 
+ The first send carries the token and the banked record (DiagRecord); the
+ repeats carry the token alone, so `sendx=` fills queue slots without
+ re-sending the record.
+
+  db3-send-rest : NetSendResult, List Integer, Integer -> [Network.Read, Network.Write] NetSendResult
+  db3-send-rest (first) (payload) (left) =
+   if first.ns-complete == False then first
+   else if left <= 0 then first
+   else db3-send-times (first.ns-transport) payload left (first.ns-sent)
+
  THE DHCP BUDGET IS THE ARP BUDGET'S SHAPE, for the same reason: one DISCOVER
  per round, so the fuel per round IS the request rate. `dhcp-io-await` spends
  one fuel unit per empty poll, the same poll `nicsit` measures, so eight million
@@ -279,8 +290,8 @@ Section: The Step Line
 
   db3-at : DiagCtx, Text, Integer -> Integer
   db3-at (c) (s) (col) =
-   let cleared = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-slot-x) (c.dc-slot-y) (c.dc-slot-w) (c.dc-slot-h) diag-col-bg
-   in gop-draw-text (c.dc-base) (c.dc-stride) (c.dc-font) (c.dc-slot-x) (c.dc-slot-y) (db3-fit c s) col (c.dc-scale) 0
+   let cleared = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) (c.dc-slot-x) (c.dc-slot-y) (c.dc-slot-w) (c.dc-slot-h) diag-col-bg
+   in gop-draw-text (c.dc-base) (c.dc-stride) (c.dc-h) (c.dc-font) (c.dc-slot-x) (c.dc-slot-y) (db3-fit c s) col (c.dc-scale) 0
 
   db3-open : DiagCtx, Text -> Integer
   db3-open (c) (s) = db3-at c s diag-col-warn
@@ -505,9 +516,12 @@ Section: The Stage
      is TcpEstablished -> act
        say2 <- db3-step c "exchange"
        let send-text = db3-field c "send" db3-default-send
-       in let payload = text-to-bytes-chunk send-text 0 (text-length send-text) []
+       in let token = text-to-bytes-chunk send-text 0 (text-length send-text) []
+       in let first = if drec-armed 0 then list-push (text-to-bytes-chunk send-text 0 (text-length send-text) []) 10 else drec-lines-bytes (c.dc-lines) 0 (list-push (text-to-bytes-chunk send-text 0 (text-length send-text) []) 10)
+       in let repeats = db3-send-repeats c
        in act
-        sr <- db3-send-times ts1 payload (db3-send-repeats c) 0
+        sr0 <- net-io-send-raw-checked ts1 first
+        sr <- db3-send-rest sr0 token (repeats - 1)
         r <- net-io-recv-raw (sr.ns-transport) (db3-start-at db3-reply-ticks)
         ts3 <- net-io-close (r.transport)
         let n = list-length (r.data)
@@ -518,8 +532,9 @@ Section: The Stage
               else if text-length want == 0 then "ok"
               else if text-contains seen want then "ok"
               else "mismatch"
+        in let armed = if drec-armed 0 then 2 else if sr.ns-complete then drec-arm src-ip peer-ip peer-port hop-ip hop-mac (list-length (c.dc-lines)) else 0
         in let colour = if state == "ok" then diag-col-good else if state == "no-reply" then diag-col-warn else diag-col-bad
-        in let answer = "pe=" & db3-ip-text peer-ip & ":" & show peer-port & " hop=" & db3-mac-text hop-mac & " sent=" & show (sr.ns-sent) & "/" & show (list-length payload * db3-send-repeats c) & " rx=" & show n & " lk=" & show link
+        in let answer = "pe=" & db3-ip-text peer-ip & ":" & show peer-port & " hop=" & db3-mac-text hop-mac & " sent=" & show (sr.ns-sent) & "/" & show (list-length first + list-length token * (repeats - 1)) & " rx=" & show n & " lk=" & show link & " record=" & show (list-length (c.dc-lines)) & "/" & show (list-length first) & (if armed == 2 then " channel=open" else if armed == 1 then " channel=armed" else " channel=off")
         in let body = "reply bytes=" & show n & " hex=" & db3-bytes-hex (r.data) 0 "" & " text=" & seen
         in let cfg = "cfg src=" & db3-ip-text src-ip & " hop-ip=" & db3-ip-text hop-ip & " expect=" & (if text-length want == 0 then "(none)" else want) & " hpet=" & show hz
         in diag-result state colour [answer, body] [answer, head, cfg, body]
@@ -571,8 +586,8 @@ Section: The Stage
    "clk=" & (if t1 > t0 then "y" else "n") & " dt=" & show (t1 - t0) & " moved=" & show moved & "/" & show db3-clock-reads & " hpet=" & show hz
 
  The seven operations of `e1000-reset`, in its order, each painted and banked
- before it runs: `NicInitProbe` runs the same seven at stage 12 in
- milliseconds and sitting 10 hung inside them here at stage 14, same code,
+ before it runs: `NicInitProbe` runs the same seven at stage 13 in
+ milliseconds and sitting 10 hung inside them here at stage 15, same code,
  different part state, and the only instrument that can say WHICH operation
  is one that banks between them. The value returned is what `e1000-reset`
  returns, `settled`, so bring-up's absent decision is the driver's own.

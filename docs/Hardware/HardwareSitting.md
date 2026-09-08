@@ -95,6 +95,7 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 
 | in the archive | SHA-256 | what it is |
 |---|---|---|
+| `diag14-returned-20260907.img` | `D4B6D858 C3A2A57E 2CCB80FA 39B1F885 157C8809 BBB0C1DC C5216418 6F746C1A` | SITTING 14 as it came back 2026-09-07, image AFC6AD65 (flush-less, sitting-13 cfg): THE MEDIUM KEPT ONE WRITE AND NOT ITS DIRECTORY ENTRY. No `DIAG.TXT` in the root directory, which is byte-identical to the flashed image; `dg-open`'s probe write (stages 1-6, 4,312 bytes) sits orphaned at clusters 1283-1291 with its chain in both FATs, extracted as `diag14-20260907\DIAG-orphan-cluster1283.TXT`. Nothing after it, not even `block`'s scratch sector at LBA 30000. `DIAG.CFG` and `DIAG.RCP` read back as built. Flash transcript in root's session scratchpad; dump log `diag14-returned-20260907.dump.log`. No before-flash dump was taken (root's omission); the stick had held sitting 13's returned image. |
 | `diag12-returned-20260824.img` | `72FD5556 65A1E2E6 DABDEE70 1590ABBD 49CFFC21 69C3CB4B 08FA7ECD 29CCCADD` | SITTING 12 as it came back 2026-08-24, image 8CDF3617: THE FLIGHT THAT ELIMINATED BOTH NAMED CANDIDATES. `DIAG.TXT` 7,177 bytes, stages 1-8 plus pch, nicsit, nicinit, nicring, then b3's trail of THREE step notes (`clock`, `reset-imc`, `reset-ctrl-read`) and `END`. The medium stopped taking writes at b3's FOURTH note, `reset-rst-write`, which the glass row confirms independently as `bank-lost-note=4`, so it died before `swflag` and before the `CTRL|SLU` write and neither can be its cause. `DIAG.CFG` read back off the stick is byte-identical to the one built. Extracted beside it in `diag12-20260824\`. Flash transcript `build-output/flash.log`. |
 | `before-diag12-20260824.img` | `5E20BA45 F310FA5C 24EBA086 4EF1BBAD 6D1819B1 CE62154E 6C9806BB 103C3310` | disk 2 read off by blu 2026-08-24 before sitting 12 (image 8CDF3617) went over it. **Byte-identical to `diag11-returned-20260821.img`**: nothing touched the stick between sitting 11 coming back and this flash. |
 | `diag7-returned-20260821.img` | `4755238F 19338CDB 21783BE2 E1E6C294 6F569FA0 FB0C5658 7038F240 10A0B29D` | SITTING 7 as it came back 2026-08-21, image C5744A6D. Payload id and `rcp` block checked against the flashed bytes rather than assumed (L-SAMEVER): both read `90466df54ddd274f`, so this is the image that was written. `DIAG.TXT` 4,994 bytes, **stages 1 to 8 only, stopping one short of the `pch` row the flight existed for**; extracted beside it in `diag7-20260821\`. 2,643 sectors differ from the flashed image, of which LBA 0, 1 and the two backup-GPT regions are the SpecFit refit rather than guest writes. |
@@ -148,6 +149,168 @@ entries say only "on blu's box", and that vagueness is half of what made
 `build-output/` look like a safe habit.
 
 ## THE SITTING QUEUE: what is waiting on metal, in the order it should fly
+
+### THE LAST SITTING (Damian's ruling, 2026-09-07 21:20: ONE hardware sitting remains, for all time)
+
+This queue no longer feeds sittings one question at a time. One flight is
+left and it is composed here, flown only when root has signed it off, and
+its record must come back whether or not the stick survives. It carries:
+
+1. **The network record channel** (fester, in the tree and bed-proven by
+   `diag-arm.ps1 b3-record`): after the passive stages and BEFORE the first
+   bank write the ladder brings the driver up, resolves the hop, and ships
+   the passive record to the peer named on the `b3` line; every bank step
+   after that ships the new lines live over a fresh connection, bringing the
+   driver up again after a stage that reset the part (`DiagRecord`).
+   `echo-peer.ps1` keeps every byte in `echo-peer.record` beside its log, so
+   the peer file is the register and the medium is a subject (L-CHANNEL);
+   the bank row says `record=peer opened ...` and the summary
+   `record=peer shipped=N conns=K lost=L`. `nicsit` reads the part's
+   power-on registers first, as the last passive stage. The board has held
+   this conversation on three flights; both sittings 13 and 14 show the
+   medium dying before the NIC is touched. Start the peer BEFORE the boot,
+   as the recipe below already says.
+2. **The WORKS-62 flush** (main 23069, in the tree): if the stick then
+   holds the full ladder, the cache reading is the cause; if not, the
+   network record still holds every stage.
+3. **Every open metal question aboard at once** (blu composes): the asde
+   per-step notes, B4 step 6, the NIC-4 successor discriminator
+   (`-e1000-rdh-ro`), NIC-5, WORKS-24, and whatever else this file lists as
+   waiting on metal. A question that fits the bed, a reading, or a change of
+   design is answered there instead and does not ride.
+4. **Rehearsed as the exact bytes**, every arm both beds, including an arm
+   that reads the record back off the peer log; the pre-flight card names
+   the hash, the cfg, the peer, and for each question what each outcome
+   means, before the stick is in a hand.
+
+### The composition (blu, 2026-09-07). SIGNED OFF by root 2026-09-08, built as `diag-sitting15.img` 47F29D50 (the pre-flight card below).
+
+Every question below is one no bed can answer, which is the only admission
+test. Each names what it needs aboard and what its outcomes mean, per point 4.
+
+| # | Question | Needs aboard | If it answers | If it does not |
+|---|---|---|---|---|
+| asde | Is `CTRL.ASDE` reached at all, and where does it wedge? | `asde on`, and the per-step notes (main 22830) | the step names where it stops; flight 1 wedged at `RESET s2` with the quiesce COMPLETED, so inside `e1000-reset` | it has still never been reached on metal in three flights |
+| ~~B4-6~~ | **DOES NOT RIDE (root, 2026-09-08): no route.** `b3` is raw TCP and says so (`DiagB3.codex:36`); the repository wire is not aboard | -- | B4 closes | b3's own result says whether the wire or the protocol failed |
+| NIC-4 | Does a frame ARRIVE during `nicring`'s own window? | `nicring on` and the `stats` row's SECOND GPRC read | GPRC moved, so the ring consumed a real frame | the 2026-08-15 RDH movement stays unexplained. `-e1000-rdh-ro` is a BED flag and cannot ride |
+| NIC-6 | With `ip=dhcp` and no `gw=`, is the LEASED gateway the next hop? | a NEW stage after `b3` that leases and reports without re-addressing the channel (root, 2026-09-08); NOT two cfg lines, since the channel is static | red's call is confirmed on the one bed that can separate it | codex-vm cannot be the arm: its NAT answers every ARP with one MAC |
+| WORKS-24 | Does the Clock's MC146818 write take on firmware that accepts it? | a clock stage, which DOES NOT EXIST; rides only if it lands in fester's channel CL (root, 2026-09-08), else not at all | the SET-window write is real | `codex-vm.c:11098` drops every CMOS write, so no bed run means anything either way |
+| NIC-5 | What wedged the box on 2026-08-11? | last, after the record is shipped | the one open unknown closes | it ends the boot, which is why it is last |
+
+**The order is forced, and only the last of these is a preference.** NIC-5
+goes last because it is the arm most likely to end the boot. Everything else
+is ordered by the rule this file already states: an arm that writes destroys
+the control of any arm that reads the same thing, and a wedge loses every
+reading banked after it.
+
+**THE ONE COMPOSITION PROBLEM I CANNOT SETTLE ALONE, and it decides whether
+this flight is worth taking.** Point 1 makes the peer log the register and the
+medium a subject, which is L-CHANNEL and is right. But the channel opens at
+`b3`, and in BOTH recent sittings the medium died before the NIC was ever
+touched: sitting 13 banked nine stages, sitting 14 only `dg-open`'s probe
+write. So every reading before `b3` is banked to a medium that may already be
+dead, and the channel that was supposed to rescue it does not exist yet.
+
+Two ways out, and they trade against each other:
+
+- **Move `b3` early**, so the channel exists before anything worth recording.
+  This is the only arrangement in which asde, NIC-4 and WORKS-24 produce a
+  record that survives a dead medium. It costs the flush arm: arming `b3`
+  early re-arms a medium-killer upstream of the stages the flush is supposed
+  to be observed on, so a surviving bank would no longer separate the cache
+  reading from ours.
+- **Leave `b3` late**, keeping the flush arm clean, and accept that if the
+  medium dies at stage 9 again the asde and WORKS-24 readings die with it,
+  exactly as they did twice.
+
+**RULED by root, 2026-09-07 21:38, on Damian's stated values (one flight,
+its record independent of the medium, nothing read off the glass): `b3`
+EARLY.** The NIC comes up as the first non-passive step, the passive record
+is shipped to the peer, and every later bank line goes live (fester's
+channel). The cost named above is not a cost: in sittings 13 and 14 the
+medium died with the NIC untouched, so NIC-first cannot be what saves or
+kills a bank, and the flush's separator is the bed, where reek's
+`-usb-writeback` arms (plugs 2.46, main 23233) reproduce the loss with
+`bank=ok` painted and the flush commits it whole. On metal the flight
+confirms: a stick holding the full ladder closes WORKS-62; a stick that does
+not is the board's own defect with the peer log naming the stage. The rule
+overridden is "the flush arm flies clean"; the reason is that a flight whose
+record depends on surviving to stage 16 is the failure Damian ended. Damian
+sees this ruling in the morning batch and can reverse it before the cfg is
+composed.
+
+### The cfg, composed (blu, 2026-09-08). SIGNED OFF by root 2026-09-08; built and rehearsed, see the pre-flight card.
+
+`build/boot/diag-sitting15.cfg`, and it needs NO payload change to put the
+NIC first:
+
+```
+block off      kbd off      mscalign off      sink off      pch off
+nicsit on      nicinit on   nicring on
+b3 on peer=192.168.6.141:7 ip=192.168.6.200
+pchk1 off      asde on
+```
+
+Stage order is fixed in `dg-stage-name`, not by cfg line order, so `b3` early
+is bought by turning OFF everything that would otherwise run ahead of the NIC
+block. What then runs, in order: the six passive stages, the bank opens,
+`xhci`, then `nicsit nicinit nicring b3`, then `asde`. `pchk1` is off because
+the bed answered K1 (`k1-taken` / `k1-blocked`) and the admission test is a
+question no bed can answer.
+
+**THREE OF THE SIX QUESTIONS CANNOT RIDE AS THE TABLE SPECIFIES THEM, and
+this is the finding, not a detail of the cfg.**
+
+- **WORKS-24 has no stage.** The table asks for "the clock stage armed to
+  write and read back". There is no clock stage in the payload: 34 files under
+  `build/boot/diag/` and not one touches the MC146818. It cannot ride without
+  new code.
+- **B4-6 cannot be answered by `b3`.** `DiagB3.codex:36` says so in its own
+  words: the conversation is raw TCP, "it does not speak the repository wire,
+  so it is not B4 step 6". An `ok` says the peer answered and nothing about
+  what it said.
+- **NIC-4 and the record channel compete.** `nicring` is stage 15 and `b3` is
+  16, so the ring reprogram, which standing shape 2 names a terminal
+  candidate, always runs BEFORE the channel exists. Either NIC-4 rides and is
+  ahead of the channel it could kill, or `nicring off` and NIC-4 dies. Both
+  cannot hold while the stage table has that order.
+
+**Ignore one line of the build's own report on this cfg.** It prints `sink NOT
+ASKED -- STILL WRITES 2.7 MB` and that is false for an `off` stage:
+`build-diag.ps1`'s gated-instrument table tests only for `ladder=1` and never
+for `off`, while `dg-run-one` (`Diag.codex:916`) skips a disabled stage before
+`dg-stage-run` is reached. The stage is skipped and writes nothing. The script
+is the second implementation its own header warns about.
+
+`b3` brings the NIC up itself (`net-driver-bring-up`, `DiagB3.codex:26`), so
+`nicsit nicinit nicring` are not prerequisites for the channel. That is what
+makes the third item a real choice rather than a dependency.
+
+**RULED by root, 2026-09-08, on the same values as the b3-early ruling: the
+record outranks every other question on this flight.**
+
+- **STATIC ip for the channel**, as the cfg above carries. The channel is never
+  re-addressed by anything.
+- **NIC-6 rides as its own stage AFTER the channel is up**, attempting a DHCP
+  lease and reporting it. It does not touch the channel's address. This is
+  payload code that does not exist yet: see what fester must add, below.
+- **B4-6 does not ride.** There is no route for it on this flight.
+- **WORKS-24 rides only if the clock stage lands inside fester's channel CL.**
+  Otherwise it does not ride.
+
+**WHAT THIS COSTS FESTER, and it is one CL or it is nothing.** Point 4 requires
+the flight to be rehearsed as the exact bytes, so every stage that rides must be
+in the image before the single rehearsal. A stage added afterwards buys a second
+rehearsal of all 49 arms and a new image hash. So the NIC-6 lease stage and, if
+it is taken, the WORKS-24 clock stage both land in the channel CL or they are
+out. Both are new stages in `dg-stage-name`, which is fester's file for now, and
+both must be numbered ABOVE `b3` and BELOW `asde`: after the channel exists, and
+before the arm that is terminal by construction.
+
+Damian reads nothing off the glass and photographs nothing: the peer log
+and the returned stick are the record, extracted by `read-stick.ps1` and
+the peer's own file. The recipe otherwise is sitting 12's below (peer
+started before the boot, before-dump, `flash-usb.ps1` with `-ExpectHash`).
 
 ### Sitting 12 FLEW 2026-08-24. The card is below; this entry is kept because it is what was composed.
 
@@ -227,7 +390,7 @@ same boot as the others says so and says why.
 | ~~NIC-2~~ | **ANSWERED 2026-08-14: 32606 us per million, 2.50x the bed. The calibration transfers.** | blu | done; opened B5 | none, read and poll only |
 | ~~NIC-3~~ | **ANSWERED 2026-08-15: `e1000-init` does NOT hang. It completes in 93 s, of which 92.9 are `e1000-await-aneg` burning its 1,000,000 fuel at 92.89 us per MDIO read. Aneg never reports done; the link is up anyway. `RDH` moved 0 to 15.** | blu | B2c | done |
 | NIC-4 | Can the stack hold a real TCP conversation with a real peer? | blu | B3, then B4 | as NIC-3. **THE RING HALF IS ANSWERED, sitting 6, 2026-08-21: `rdh-writable=y`, so RDH is ours to write and the 08-15 movement was real consumption.** Still open on the same card: whether a frame arrives during nicring's own window, which needs the `stats` row's second GPRC read; the bank ended at `xhci` so only the glass survived. The TCP half rides B3 |
-| NIC-6 | With `ip=dhcp`, should the LEASED gateway be the next hop when `gw=` is absent? Red called it yes and conditioned it on an arm; codex-vm CANNOT be that arm (its NAT answers every ARP with one MAC, measured 2026-08-20), so the separating boot is here. Two DIAG.CFG lines, no new image | blu | the leased-gateway default | none; it dials, it does not write |
+| NIC-6 | With `ip=dhcp`, should the LEASED gateway be the next hop when `gw=` is absent? Red called it yes and conditioned it on an arm; codex-vm CANNOT be that arm (its NAT answers every ARP with one MAC, measured 2026-08-20), so the separating boot is here. The ladder's `lease` stage (`build/boot/diag/DiagLease.codex`) asks for a lease after `b3` on every flight and banks the leased gateway's MAC beside the channel's hop as `leased-gw-is-hop=same|differs`; nothing else is needed on the stick | blu | the leased-gateway default | none; it dials, it does not write |
 | NIC-5 | What wedged the box on 2026-08-11? | blu | nothing; it is the one open unknown | terminal by construction |
 | ~~A8~~ | **ANSWERED 2026-08-19: GRANTED.** `desk.img` at 131072 pages reached the first-boot wizard on the ASUS; the refusal colour never appeared. | fester | A8, the desk build loop | done |
 
@@ -493,14 +656,365 @@ are building an OS for is worth a line, not because it is scheduled.
 
 - **The register audit.** COMPLETE. Do not re-run it, and `e1000-phy-addr =
   1` is correct, do not "fix" it.
-- **ASDE.** CLOSED. The bit is not writable on this part, measured across
-  two flights with `CTRLback=0x180240 ASDEbit=n` and all four SLU rows
-  unchanged after clearing SLU.
+- **ASDE. TWO QUESTIONS, AND ONLY THE FIRST IS CLOSED.** The WRITABILITY
+  question is closed, 2026-08-14 (CL 15015, this section): the bit is not
+  writable on this part, measured across two flights with `CTRLback=0x180240
+  ASDEbit=n` and all four SLU rows unchanged after clearing SLU. **That does
+  not close stage 16.** `DiagAsde.codex` was BUILT six days later, 2026-08-20
+  (18101, "ASDE as stage 14, and the probe chapter that contradicted itself"),
+  refined at 18136 and 18792, and it asks FINDING 4: whether the two bring-ups
+  DIFFER. It flew on sitting 8 and on sitting 12 and banked no row either time,
+  the medium having died upstream on both. Finding 4 is OPEN, it is blu's in
+  `CurrentPlan.md`, and stage 16 runs on any default-cfg image. Do not read the
+  closure above as retiring it: the closure predates the instrument.
 - **The cold-versus-warm reset.** Dead, see NIC-5.
 - **Anything the bed can answer.** `-e1000-ctrl-ro`, `-e1000-phy-link` and
   `-e1000-preconfigured` reproduce this board on every row that has been
   compared, and B2c was found and fixed entirely in the bed. A question that
   a flag can ask does not earn a sitting.
+
+### FLOWN 2026-09-07 (third, sitting 14): THE LADDER RAN TO asde WITH NO BANK-LOST PAINT, AND THE MEDIUM KEPT ONLY THE FIRST WRITE, WITHOUT ITS DIRECTORY ENTRY. Image AFC6AD65 (flush-less), diag-sitting13.cfg, kernel 9E5C7780, diag source CL 22994, box SABERTOOTH Z170 MARK 1
+
+Flashed by root, flown by Damian. Returned stick dumped to
+`stick-archive\diag14-returned-20260907.img` (D4B6D858), extracted in
+`diag14-20260907\`. Reader calibrated against the flashed image first.
+
+**The glass.** The ladder looked like every earlier flight and ended at
+`asde` running into `RESET s2 warm reset`, the 08-13 control. No `BANK
+LOST` paint at any stage, so `dg-bank-step` returned success for every
+bank from the first to the seventeenth: every size readback answered the
+new length.
+
+**The medium.** The board changed the two FAT copies (LBA 2054, 2158: a
+nine-cluster chain at 1283-1291) and nine data sectors from LBA 3570, and
+NOTHING else below the GPT: the root directory is byte-identical to the
+flashed image, `block`'s scratch sector at LBA 30000 is untouched, and no
+later generation of the file exists anywhere. The orphaned chain is
+`dg-open`'s probe write (`Diag.codex:523`, the passive lines plus the bank
+line, no `cfg-file=`), 4,312 bytes, stages 1-6 ending `bank=ok medium=usb`.
+Sitting 13 on this cfg held five generations through stage 9 with its
+directory entry; this flight, built on the restore fix (`DiagMsc.codex`,
+main 22994) and the CRLF fix, holds less.
+
+**What it decides.** The restore and the CRLF fix are not the cause of the
+sitting write-loss: the record shrank with both in. Seventeen acknowledged
+writes against a medium that kept sectors from only the first, and not the
+directory sector of that one, is the write-back-cache reading of WORKS-62
+with nothing left beside it; it is still a mechanism that fits and is not
+established (L-MECHANISM) until the flush image moves the symptom. That is
+the second arm: blu's image on the same cfg with `SYNCHRONIZE CACHE` between
+every bank write and its readback (main 23069), hash 9BC6D0E8, built and
+awaiting rehearsal.
+
+**Not recorded on this flight.** No echo peer was listening on port 7 on
+the dev box, so b3's TCP conversation has no register this time (root's
+omission; the recipe says start `echo-peer.ps1` before the boot).
+
+### FLOWN 2026-09-07 (second): THE MEDIUM DIED AT kbd, STAGE 9, AND kbd RAN WITH `kbd off` IN ITS CFG. Image CB1AE335, diag-sitting13.cfg, kernel 9E5C7780, box SABERTOOTH Z170 MARK 1
+
+Composed and flashed by blu, flown by Damian. Returned stick dumped to
+`stick-archive\diag13-returned-20260907.img`, extracted in
+`diag13-20260907\`; `DIAG.TXT` 5,149 bytes, 80 lines. Reader calibrated
+against the flashed image first, positive and negative.
+
+**WHY THE GAP IS EIGHT STAGES: NOTHING EVER ASKS THE DEVICE TO COMMIT**
+**(WORKS-62).** `dg-bank-step` notices only when `dg-bank-write` returns below
+zero, and stages 10 through 16 each returned success, so the ladder was TOLD
+the writes landed. `diag-bank-write-text` then re-reads the size, and that read
+is genuine: `gfat-file-size` resolves through `gfat-scan-root` to
+`disk-read-sector`, a real device read rather than our own memory. **But
+`GopUsbMsc.codex` issues six SCSI opcodes and SYNCHRONIZE CACHE is not one of
+them** (`:27-32`), so the readback is served through the same device-side
+write-back cache the write went into. A stick that acknowledges into volatile
+cache and hands the updated directory entry straight back passes the check
+having committed nothing, and loses it at power-off.
+
+That makes the guard written after sitting 3 unable to see this failure by
+construction: its prose says the directory entry is the truth, and the
+directory entry is exactly what a write-back cache will answer with. It is a
+mechanism that FITS and is not established (L-MECHANISM). The falsifier is in
+WORKS-62 and it moves the symptom: issue the flush and re-fly. No bed can
+answer it, because codex-vm completes and commits in one step, which is why
+every arm is green on a path that has never been asked to flush.
+
+**b3 IS GREEN, AND THE ONLY RECORD OF IT IS THE PEER LOG.** The dev box's
+`echo-peer.ps1` registered, at 17:00:11, `CONNECTION 1 from
+192.168.6.200:49157`, thirteen bytes `codex-diag-b3` echoed back unchanged and
+closed clean. So the ASUS held a full TCP conversation over the real I219 on
+this flight, the third time it has, and it did so **with the medium already
+dead since stage 9**. Two things follow. The ladder did NOT stop when the bank
+died: stages 10 through 16 ran, and the bank-lost paint names 17 as where it
+noticed. And b3's success does not depend on the medium at all, which is why
+the peer log is the register and the stick is not: nothing about this result is
+recoverable from the returned stick, whose file ends eight stages earlier.
+
+It also weakens the standing "b3 kills the medium" reading further, from the
+other side: here the medium was ALREADY gone before b3 ran, and b3 worked.
+
+**THE GLASS AND THE MEDIUM DISAGREE BY EIGHT STAGES.** The summary painted
+`bank lost at stage 17 pchk1, nothing after this is on the medium`. The medium
+itself ends at `stage=kbd state=never-armed risk=passive`, STAGE 9. So the
+ladder noticed at 17 and the last write that landed was at 9, and nothing from
+mscalign, sink, pch, nicsit, nicinit, nicring, b3, pchk1 or asde is on the
+stick. Sitting 12 had the same shape with a one-stage gap; this is eight.
+
+**kbd RAN WITH `kbd off` IN THE CFG IT READ.** `DIAG.CFG` read back off the
+RETURNED stick is byte-identical to the one built and carries `kbd off` as its
+second line, and the payload logged `cfg-file=11`, so it read all eleven lines.
+There is no `state=skipped ... cfg=off` row anywhere in the file. `dg-run-one`
+(`Diag.codex:915`) does gate on `dg-stage-enabled`, and `dg-stage-enabled`
+(`:144`) is `diag-cfg-value c (dg-stage-name i) /= "off"`, so on the evidence
+the gate did not see the value the file carries. **The same image SKIPPED kbd
+in the bed**: the 46-arm rehearsal printed `stages OFF: kbd, mscalign (every
+arm booting the subject expects state=skipped for these)` and every arm passed.
+A bed/metal divergence on a stage that is off is worth more than the flight it
+cost.
+
+**THE CLASSIFICATIONS AGREE, AND AN EARLIER VERSION OF THIS ENTRY SAID THEY**
+**DID NOT.** `dg-stage-risk` returns passive for `i == 9` and the row says
+`risk=passive`. `build-diag.ps1` does NOT disagree: it PARSES that same
+function (`build-diag.ps1:128-131`, regex `i == (\d+) then diag-risk-passive`),
+gets `{8, 9}`, and excludes both from the stages a cfg must name. So kbd need
+not be named at all, and the guard that refused this composition was about
+`mscalign`, which is stage 10 and `touches`. The claim of a disagreement was
+inferred from `diag-default.cfg` carrying `kbd on`, which shows only that
+naming a passive stage is PERMITTED. It is not evidence of anything and it was
+blu's error. Nothing here is a defect: do not chase it.
+
+This does not touch the finding above it. kbd is passive by both accounts and
+was still run with `kbd off` in the cfg the payload read, and `dg-run-one`
+gates every stage on `dg-stage-enabled` regardless of risk.
+
+**WHAT IS SUSPECTED AND NOT ESTABLISHED.** The xhci row above kbd reads `ctl0
+8086:a12f at 0:20.0 running kbd=y mouse=y disk=y`, one controller carrying the
+keyboard AND the boot medium, and kbd reports `bound=y dci=7 hid-binds=3`. A
+stage binding HID on the same controller as the disk, immediately before the
+medium stops accepting writes, is a mechanism that fits. It is not the cause
+until something MOVES the symptom (L-MECHANISM), and the bed cannot reproduce
+it because the bed skips the stage.
+
+**RETRACTION, and it is blu's.** After the glass reading and before the stick
+was read, blu reported a controlled pair to Damian: AC7399ED with b3 not
+dialling kept its medium, CB1AE335 with b3 dialling lost it, therefore b3's
+bring-up kills the medium. **That pair is not single-variable and the claim is
+withdrawn.** AC7399ED's ladder has no kbd and no mscalign at all (its stage
+list runs smbios..xhci then straight to pch), so the two flights differ in the
+presence of two new stages as well as in b3's peer, and the death is at stage 9
+in the flight that had them. Nothing here bears on b3 either way.
+
+**THE asde INSTRUMENT DID NOT FIRE, BY CONSTRUCTION.** asde is stage 18 and the
+medium was gone at 9, so the per-step notes landed at main 22830 had nothing to
+write to. Arming b3 re-armed a medium-killer upstream of the stage the
+instrument was built for; sitting 12 had already recorded that the medium dies
+before pchk1 on a dialling image. No pre-flight card was written for sitting 13
+and a card is what catches that.
+
+### FLOWN 2026-09-07: ASDE WEDGED WITH THE MEDIUM ALIVE, WHICH IS NEW. Image AC7399ED, default cfg, kernel 130AFB63, box SABERTOOTH Z170 MARK 1
+
+Flown by Damian on the ASUS at blu's flash. Returned stick dumped to
+`stick-archive\diag-default-returned-20260907.img` and extracted beside it in
+`diag-default-20260907\`; `DIAG.TXT` 7,559 bytes, 110 lines. The reader was
+calibrated against the flashed image first, positive and negative, before it
+was pointed at the evidence.
+
+**THE CARD HEADLINE PREDICTION HELD.** b3 answered `no-peer` and returned at
+its first branch, so `db3-reset` never ran, and the medium SURVIVED the whole
+ladder: `bank=ok medium=usb cfg-file=9`, with pch, nicsit, nicinit, nicring, b3
+and pchk1 all banked. Every previous flight lost the medium at or before b3 and
+could read those rows only off the glass.
+
+**AND THAT IS WHAT MAKES THE ASDE RESULT NEW.** The banked file ends after
+stage 15 `pchk1`. There is no stage 16 row, and no `before-deferred run=` line,
+which `dg-bank-step` writes before the deferred stages. So the ladder never
+reached the deferred point: **asde ran and never completed a bank write**, and
+the deferred `sink` never ran at all. Sittings 8 and 12 both recorded that asde
+wedged and banked no row, but on both the medium was already dead before asde,
+so its silence could not be told apart from a dead bank. **This flight
+separates them.** The bank was healthy through stage 15 and asde still produced
+nothing, so the silence is asde own doing.
+
+`END` on the last line does NOT mean the ladder finished. `dg-body`
+(`DiagStage.codex:125`) appends `END` to EVERY bank write as a terminator, so a
+file ending in `END` is a complete write, not a completed run. The line that
+would mean finished is `summary run=`, and it is absent.
+
+**pchk1 `not-taken` IS CORRECT AND IS NOT A REGRESSION.** `k1-after 770.17=d104
+giga-k1-dis=n k1-en=y`, the untouched power-up value that `pch` reads at stage
+10. The K1 write lives in `e1000-pch-prepare` inside `e1000-init`, reached in
+this ladder ONLY through `net-driver-bring-up` in b3 (`DiagPchK1.codex:15-18`),
+and b3 returned before that. The row says so itself: `listen-after-k1
+word=skipped (b3 did not bring the driver up, so there is no live ring)`.
+Sitting 12 read `taken` because its b3 dialled.
+
+**WHERE THE CARD WAS WRONG, and it was wrong three times:** it predicted
+`pchk1 taken` (the writer does not run on this cfg), an `asde` row at 16 (asde
+wedged), and `sink ok` at row 9 without noting that sink is DEFERRED to run
+after stage 16, so it never ran either. The headline prediction and the b3 row
+were right. A card that had only been right would have taught nothing.
+
+**THE GLASS, read back by Damian, and it stops in the RESET and not the**
+**QUIESCE.** After the pchk1 row (`+more in bak`) the screen carries:
+
+```
+asde running
+        -> RESET s2 warm reset, the control for 08-13
+```
+
+and nothing after it. **That is the same last line as sitting 12**, reached
+this time with the medium alive and without b3 ever bringing the driver up.
+
+The two-step split earned its keep here. `s1` is the QUIESCE, added 2026-08-20
+after this stage wedged the ASUS on its first flight, and `s2` is the reset
+itself; the split exists so a box that stops inside the quiesce is told apart
+from one that stops inside the reset (`DiagAsde.codex:231-262`). The s2 row is
+painted BEFORE the operation is attempted, so the glass says the quiesce
+COMPLETED and the box stopped inside `e1000-reset`. **The quiesce did not
+prevent the wedge.**
+
+It also narrows the standing explanation without eliminating it. That
+explanation is that `e1000-reset` pulses RST on a receiver left running with
+descriptors in flight, because nicinit, nicring and b3 have each brought the
+part up by then. On this flight **b3 ran none of it** and the wedge is
+unchanged, so b3's bring-up is not required to produce it. nicinit and nicring
+did run, and nicring built live rings (`sent=1 txdd=1`), so a running receiver
+is still available as the cause.
+
+### THE INSTRUMENT GAP THIS FLIGHT PROVES (L-BANK)
+
+**asde rides last as ONE row** (`DiagAsde.codex:25`) and banks nothing until it
+completes. It is also the only stage that can wedge the box. Those two facts
+together mean asde can never leave evidence on the medium about its own
+failure: the reading is reachable only THROUGH the thing it measures.
+
+Until this flight that gap was invisible, because the medium had already died
+upstream on every flight asde ran. **This is the first boot where the bank was
+healthy at stage 16 and asde still wrote nothing**, so the gap is now measured
+rather than argued. b3 already banks per step (`diag-bank-note`), which is why
+sitting 12 could name `reset-rst-write` by ordinal from the medium alone. asde
+wants the same treatment, and without it every future asde wedge will again be
+readable only off a photograph.
+
+| row | predicted | actual |
+|---|---|---|
+| bank | survives b3 | HELD, `bank=ok medium=usb` |
+| 14 b3 | `no-peer`, dim | `no-peer` |
+| 15 pchk1 | `taken` | `not-taken`, and correctly so |
+| 16 asde | a row | NO ROW. Glass stops at `-> RESET s2`, so the quiesce completed and the box stopped inside `e1000-reset`, with the medium alive |
+| 9 sink | `ok` | never ran, deferred behind asde |
+
+## PRE-FLIGHT CARD, 2026-09-08: `diag-sitting15.img` 47F29D50, blu's NIC/PHY sitting, rehearsed and ready to flash
+
+Built by fester from `build/boot/diag-sitting15.cfg` on seed `EFE7A6AC`, `id`
+`eeb83621`. Rehearsed 50 of 50 arms as these exact bytes
+(`build/boot/diag.rehearsed`, sha `47F29D50...`, 2026-09-08). NOT yet flashed:
+this card is the pre-flight reading, the flash is blu's or Damian's. **SIGNED OFF by root, 2026-09-08 06:55:** the file `build-output/diag-sitting15.img` in fester's workspace hashes to `47F29D507C715DA8...`, equal to the `diag.rehearsed` line (arms=50, 2026-09-08T13:45:47Z); the composition carries every question THE LAST SITTING lists that has a stage (asde, NIC-4, NIC-6 as `lease`, WORKS-24 as `rtcw`, the record channel, the WORKS-62 flush; B4-6 does not ride, NIC-5 is off by construction). Flight-ready; the stick needs a hand.
+
+**THE COMPOSITION.** On through the cfg: `nicsit`, `nicinit`, `nicring`, `b3`
+(peer `192.168.6.141:7`, static `ip=192.168.6.200`), `asde`, and the two NEW
+stages `lease` and `rtcw` (Damian's ruling: the last sitting carries every
+question it can). Off through the cfg: `block`, `kbd`, `mscalign`, `sink`,
+`pch`, `pchk1`, which read `skipped` on the glass and the bank.
+
+**THE NETWORK RECORD CHANNEL is aboard.** Because b3 names a peer with a static
+address, `DiagRecord` opens the channel after the passive stages and before the
+first bank write, ships the passive record, and ships every bank line live over
+a fresh connection per step. A stick that dies keeps nothing; the dev box holds
+every banked line. If the field peer `192.168.6.141:7` is not up, the channel
+gives up after three refused ships (`drec-give-up`), the summary reads
+`record=refused`, and the ladder still runs to END, so a dead peer costs the
+END, not the record.
+
+**WHAT THE TWO NEW STAGES WILL SAY ON THE BOARD.** `lease` asks the segment for
+a DHCP lease on the driver b3 bound and reports whether the leased gateway is
+the next hop (NIC-6): `ok`/`no-lease`/`no-arp` are the readings that matter, and
+`leased-gw-is-hop=same|differs` is the answer. `rtcw` writes the seconds
+register inside a Status B SET window and reads it back (WORKS-24): `accepted`
+on a board that takes the write, `ignored` on one that drops it. Both are new
+this flight and neither has been read on metal before.
+
+## PRE-FLIGHT CARD, 2026-09-07: `diag.img` AC7399ED, the DEFAULT cfg, flashed and on the stick
+
+Flashed by blu at Damian's instruction, disk 2, `-SpecFit`, all 16,777,216
+bytes verified plus the four SpecFit patch sectors. Rehearsed 46 of 46 arms in
+both beds as these exact bytes (`build/boot/diag.rehearsed`, 2026-09-07
+21:16:35Z). Seed `130AFB63`. `check-shipping-images.ps1` passes, so the baked
+`DIAG.CFG` is byte-identical to `diag-default.cfg`.
+
+**THIS IS NOT A SITTING COMPOSITION AND THE CARD IS WRITTEN FOR WHAT IT IS.**
+The default cfg names every stage and NO ADDRESS. Its b3 line is a bare `b3
+on`, so `db3-run-inner` returns at its FIRST branch (`DiagB3.codex:731`,
+`text-length peer == 0`) with `no-peer`, dim. It returns BEFORE `e1000-find`
+and therefore before all seven `db3-reset` steps.
+
+**THE HEADLINE PREDICTION, AND IT IS THE REASON THIS BOOT IS WORTH READING.**
+On sitting 12 the medium died at b3's FOURTH note (`reset-rst-write`), which
+is inside the reset sequence b3 runs before it dials. On this boot b3 runs none
+of it. So the medium should SURVIVE b3, and `pchk1` and `asde` should BANK for
+the first time. Every previous flight has read those two rows off the glass
+only, because the bank was already gone by the time they ran.
+
+- **If the summary says `bank=ok` and DIAG.TXT carries pchk1 and asde rows**,
+  that is the prediction holding, and ASDE finding 4 is answered on the medium
+  rather than from a photograph.
+- **If the bank is lost at stage 16 `asde`**, the killer is in asde's own
+  writes and b3 is exonerated for this boot.
+- **If the bank is lost at or before stage 14 `b3` anyway**, the prediction is
+  FALSIFIED and the death is not in the reset sequence at all: it is upstream,
+  in nicinit or nicring, and sitting 12's note ordinal pointed at a coincidence.
+  That is the most informative outcome on this card.
+
+### What each row should say, written before it flies
+
+| # | stage | predicted | what falsifies it |
+|---|---|---|---|
+| 1 | smbios | the box named; ASUS strings | `no-table` means the firmware exposes no SMBIOS entry |
+| 2 | edid | a mode and a monitor | `absent` or `bad-checksum` |
+| 3 | cpu | the part named, core count | anything that is not the ASUS part |
+| 4 | pci | the I219 enumerated | `no-part` here makes stages 10 to 16 inert |
+| 5 | scene | paints | a blank band |
+| 6 | gopmode | `honoured` or `single` | `refused` means the firmware kept its own mode; `nostub` means a stale image |
+| 7 | block | `ok`, one sector written and read back | `write-refused` or `mark-lost` means the stick, not the box |
+| 8 | xhci | `running` | `none` with `block via=USB` above is an instrument gap, not the box |
+| 9 | sink | `ok` (2.7 MB streamed) | `died` or `recovered` names a medium that faltered; `ladder-*` cannot appear, ladder is off in this cfg |
+| 10 | pch | `ok` with `giga-k1-dis=n` | `no-mdio` makes every paged read beside it meaningless |
+| 11 | nicsit | the part sits as firmware left it | a receiver already running contradicts NIC-1's 2026-08-14 answer |
+| 12 | nicinit | completes, RCTL.EN set | a hang here is sitting 10's `e1000-reset` recurring |
+| 13 | nicring | `quiet`, `gp=0`, `rdh-writable=y` | `gp` nonzero would answer NIC-4's successor question in the affirmative |
+| 14 | b3 | **`no-peer`, dim, nothing dialled** | ANY other b3 state means the baked cfg is not the default and the image is not what this card describes |
+| 15 | pchk1 | `taken`, `giga-k1-dis=y` after the write | `not-taken` means the K1 write did not land; `no-mdio` means firmware held the semaphore |
+| 16 | asde | `same`, `differs`, or `ctrl-ro` | see the open question below: this row may be asking a question the queue already closed |
+
+**b3 CANNOT ANSWER NIC-4 OR B3 ON THIS STICK, AND THE SHORTCUT IS REFUSED.**
+`build-diag.ps1:274-283` classifies this exact image and prints `b3 NOT ASKED
+-- answers no-peer and dials nothing`, so the build tool already says it.
+
+`DIAG.CFG` IS READ OFF THE ESP AT RUN TIME (`Diag.codex:996-1008`, merged at
+`:1055-1057`), so the cfg on the flashed stick CAN be edited in place, and a
+naive reader found that before this card admitted it. Three conditions if
+anyone does: it reaches only post-bank stages, which b3 is; it does nothing
+unless the bank mounts (`dg-esp-cfg` returns `[]` when `db-ok` is False,
+`Diag.codex:998`); and the existing `b3 on` line must be REPLACED, not
+followed by a second one, because `diag-cfg-find` returns its first hit
+(`DiagStage.codex:273-278`).
+
+**Do it and you are flying bytes no bed has run.** The rehearsal record
+attests a SHA-256 of the whole image; editing the ESP after the flash changes
+those bytes and the attestation no longer covers what boots, which is
+L-REHEARSE with the guard stepped around by hand rather than switched off.
+The path that keeps the guarantee is a rebuild with a sitting cfg, a fresh
+46-arm rehearsal on those exact bytes, and `build/boot/echo-peer.ps1 -Port 7`
+listening on the dev box before the stick boots. The shortcut is written down
+here so it is refused deliberately rather than discovered mid-sitting.
+
+### The ASDE question this card asked, now settled
+
+This card first flagged `CurrentPlan.md` (finding 4 awaiting a sitting) against
+this file's own NOT-in-queue entry (ASDE CLOSED) as a contradiction it would
+not resolve. It is resolved, by lineage rather than by reading either line
+harder. The closure is CL 15015, 2026-08-14. `DiagAsde.codex` is CL 18101,
+2026-08-20, six days later, and asks a different question. **The closure
+predates the instrument, so the NOT-in-queue entry was the stale one** and has
+been corrected in place. Finding 4 is open and stage 16 asks it on this boot.
 
 ## FLOWN 2026-08-19: A8, `desk.img` at `-AllocPages 131072`. GRANTED. The wizard came up; the keyboard did not.
 

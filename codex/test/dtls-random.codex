@@ -1,0 +1,54 @@
+Chapter: DtlsRandomTest
+
+  cites Foreword chapter Console
+  cites Net chapter DtlsEndpoint
+
+ `ProtocolStack.md`: `dtls-ep-new` takes the Hello `Random` from the caller and
+ stores the value as `ep-random`, and `dtls-ep-random` reads that field. The
+ capability was in the signature and had NO CALLER anywhere in the tree, so
+ nothing had ever shown the caller's bytes reaching the wire -- the state
+ `ChainCore`'s hash was in until an arm ran it (L-UNHEARD).
+
+ The arm the design asks for: two endpoints built from DIFFERENT caller entropy
+ must answer different `Random` values, and each must answer the caller's own
+ bytes rather than anything derived from the key.
+
+ A single endpoint proves nothing here. An implementation deriving `Random` from
+ the endpoint's public key answers a stable 32 bytes and looks correct until a
+ second endpoint is asked, which is why both are built from ONE private key and
+ differ only in the entropy handed in.
+
+Section: Fixtures
+
+  ramp : Integer, Integer, List Integer -> List Integer
+  ramp (n) (base) (acc) = if n <= 0 then acc else ramp (n - 1) base (acc & [base + n])
+
+  key-bytes : Integer -> List Integer
+  key-bytes (dummy) = ramp 32 100 []
+
+  ep-with : List Integer -> DtlsEp
+  ep-with (random) = dtls-ep-new False (key-bytes 0) random [9, 9, 9, 9] [10, 0, 0, 1]
+
+  first-four : List Integer -> Text
+  first-four (xs) =
+    if list-length xs < 4 then "short"
+    else show (list-at xs 0) & "," & show (list-at xs 1) & "," & show (list-at xs 2) & "," & show (list-at xs 3)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let ra = ramp 32 0 []
+    in let rb = ramp 32 200 []
+    in let ea = ep-with ra
+    in let eb = ep-with rb
+    in let ga = dtls-ep-random ea
+    in let gb = dtls-ep-random eb
+    in act
+      print-line-uni ("endpoint a Random starts " & first-four ga & ", length " & show (list-length ga))
+      print-line-uni ("endpoint b Random starts " & first-four gb & ", length " & show (list-length gb))
+      print-line-uni ("a carries the caller's own first byte: " & show (list-at ga 0 == list-at ra 0))
+      print-line-uni ("b carries the caller's own first byte: " & show (list-at gb 0 == list-at rb 0))
+      print-line-uni ("two endpoints from one key differ: " & show (list-at ga 0 /= list-at gb 0))
+    end
+  end

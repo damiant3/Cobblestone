@@ -29,6 +29,65 @@ count does.
 
 ## Done
 
+### Update 56 -- the reconcile hid every EXACT-PATH ignore rule, and offered the withheld specs back
+
+Found at the pre-push reconcile, 2026-09-08, before the push rather than
+after it. `PublicPush.md` 2b's recipe pipes the depot-minus-mirror
+difference into `git check-ignore --stdin` from PowerShell, which sends
+CRLF. Measured both directions on the same three paths: with LF input
+`check-ignore` returns every ignored path; with CRLF it returns only the
+paths matched by a DIRECTORY rule and silently drops every one matched by
+an EXACT-PATH rule, because the trailing carriage return is part of the
+name it compares. The ignored set read 417 where it should read 430, and
+the survivor list carried all ten third-party specifications, which is
+precisely the class red added file by file on 2026-09-07. A survivor list
+is what drives `git add`, so the under-report points the expensive way.
+Recipe corrected in `PublicPush.md`; the tell is a survivor you know is in
+`.gitignore`, and the check is `git check-ignore -v <one path>`, which
+takes an argument rather than stdin and names the rule and line.
+
+```powershell
+# LF only, and never a PowerShell pipeline
+[System.IO.File]::WriteAllText($f, (($diff -join "`n") + "`n"))
+cmd /c "git -C <repo> check-ignore --stdin < `"$f`""
+```
+
+### Update 56 -- the sitting configs were withheld by one sentence and nothing else
+
+Same reconcile. Seven `build/boot/diag-sitting*.cfg` survived
+`check-ignore`, every one carrying `b3 peer=192.168.6.141:7
+ip=192.168.6.200`. `PublicPush.md` has said they never ship since Update
+49 and `build/check-shipping-images.ps1` keeps the same addresses off the
+shipping IMAGE, and nothing at all kept them off the cfg one file over
+(L-BODY). `build/boot/diag-sitting*.cfg` is now in `.gitignore`, falsified
+both ways in a scratch repo: the seven and a third-party spec ignored,
+`diag-default.cfg`, `diag.img` and a test chapter not.
+
+```powershell
+git check-ignore -v build/boot/diag-sitting15.cfg   # must name a rule
+git check-ignore -v build/boot/diag-default.cfg     # must name none
+```
+
+### Update 56 -- the seed WAS the fixed point of its source, for the first time in three releases
+
+Update 54's and Update 55's entries both recorded a seed on main that was
+not the fixed point of its own source, and both asked for this
+measurement at every release. Taken 2026-09-08 at the release head:
+`build/output/Sut.cdx` (built by the full gate from the release source),
+`seed/Codex.cdx` on disk and `build-output/bare-metal/Codex.cdx` are
+byte-identical at
+`D9CF240465C3D0BC40BA854834D0A890C13757230C191E99DD54163C851DB08B`,
+3,217,563 bytes. So the battery proved the exact compiler being
+published, and step 1's trap did not fire. The runner those entries asked
+for is still not built; what closed it this cycle was red rebuilding the
+seed with `-Repl` (P-REPL) after the batteries went red on the missing
+exit mode, which is a different route to the same place and not a
+substitute for the guard.
+
+```powershell
+(Get-FileHash -Algorithm SHA256 build/output/Sut.cdx).Hash
+(Get-FileHash -Algorithm SHA256 seed/Codex.cdx).Hash    # must be equal
+```
 ### Update 55 -- a copy-up drops a file whose target is writable, and submits the rest
 
 Found at the seed land, 2026-09-02 23:17. The release seed had been staged

@@ -158,7 +158,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "((char)" & show n & ")"
     is IrName (n) (ty) (sp) -> let sn = maui-sanitize n in let ar = lookup-arity arities n 0 in if ar == 0 then sn & "()" else sn
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-maui-binary op l r arities indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-maui-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-maui-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-maui-expr c arities indent & " ? " & emit-maui-expr t arities indent & " : " & emit-maui-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "((Func<dynamic>)(() => { dynamic " & maui-sanitize name & " = " & emit-maui-expr val arities indent & "; return " & emit-maui-expr body arities indent & "; }))()"
@@ -186,17 +186,29 @@ Section: Expression Emission
     is IrDivVec -> "/"
     is otherwise -> "+"
 
-  emit-maui-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  emit-maui-binary (op) (l) (r) (arities) (indent) =
+ This plug emits C#. A plain Integer traps on signed overflow by contract, and
+ `checked(...)` raises System.OverflowException on a long; the wrapping band is
+ C#'s default unchecked arithmetic. Same arm as the csharp plug.
+
+  maui-int-arith : Text, Text, Text, CodexType -> Text
+  maui-int-arith (sym) (lhs) (rhs) (ty) =
+   if int-ty-wraps ty then "(" & lhs & " " & sym & " " & rhs & ")"
+   else "checked(" & lhs & " " & sym & " " & rhs & ")"
+
+  emit-maui-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  emit-maui-binary (op) (l) (r) (ty) (arities) (indent) =
    let lhs = emit-maui-expr l arities indent
    in let rhs = emit-maui-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrAddInt -> maui-int-arith "+" lhs rhs ty
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> maui-int-arith "-" lhs rhs ty
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> maui-int-arith "*" lhs rhs ty
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
     is IrDivInt | IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
-    is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
+    is IrPowInt -> "_cx_ipow((long)" & lhs & ", (long)" & rhs & ")"
     is IrEq | IrApproxEq | IrApproxEqExact -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
     is IrLt | IrLtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
@@ -224,7 +236,53 @@ Section: Expression Emission
   emit-maui-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-maui-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
-   in emit-maui-expr (chain.root) arities indent & "(" & emit-maui-apply-args (chain.args) arities indent 0 & ")"
+   in let args = chain.args
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     let func = emit-maui-expr (chain.root) arities indent
+     in let ar = lookup-arity arities n 0
+     in if ar < 1 then emit-maui-curried func args arities indent 0
+        else if list-length args == ar then func & "(" & emit-maui-apply-args args arities indent 0 & ")"
+        else if list-length args < ar then emit-maui-partial func args arities indent (ar - list-length args)
+        else emit-maui-curried (func & "(" & emit-maui-args-upto args arities indent 0 ar & ")") args arities indent ar
+    is otherwise -> emit-maui-expr (chain.root) arities indent & "(" & emit-maui-apply-args args arities indent 0 & ")"
+
+ Definitions are emitted `dynamic`, so a returned delegate is invoked by
+ juxtaposition and the runtime binder dispatches it. A definition applied to
+ fewer arguments than it takes is eta-wrapped, and the lambda needs a cast
+ because a bare lambda has no target type in a dynamic position.
+
+  emit-maui-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-maui-curried (base) (args) (arities) (indent) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-maui-arg (list-at args i) arities indent & ")"
+   in emit-maui-curried next args arities indent (i + 1)
+
+  emit-maui-args-upto : List IRExpr, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-maui-args-upto (args) (arities) (indent) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-maui-arg (list-at args i) arities indent
+   else emit-maui-arg (list-at args i) arities indent & ", " & emit-maui-args-upto args arities indent (i + 1) n
+
+  emit-maui-partial-open : Integer, Integer -> Text
+  emit-maui-partial-open (i) (count) =
+   if i == count then ""
+   else "((Func<dynamic, dynamic>)((_p" & integer-to-text i & "_) => " & emit-maui-partial-open (i + 1) count
+
+  emit-maui-partial-close : Integer -> Text
+  emit-maui-partial-close (count) =
+   if count == 0 then "" else "))" & emit-maui-partial-close (count - 1)
+
+  emit-maui-partial-params : Integer, Integer -> Text
+  emit-maui-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-maui-partial-params (i + 1) count
+
+  emit-maui-partial : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-maui-partial (func) (args) (arities) (indent) (short) =
+   let call = func & "(" & emit-maui-apply-args args arities indent 0 & ", " & emit-maui-partial-params 0 short & ")"
+   in emit-maui-partial-open 0 short & call & emit-maui-partial-close short
 
   emit-maui-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-maui-apply-args (args) (arities) (indent) (i) =
@@ -755,10 +813,52 @@ Section: MAUI Assembly
    in let title = "CodexApp"
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Net.Http;\nusing System.Runtime.CompilerServices;\nusing System.Text.Json;\nusing Microsoft.Maui;\nusing Microsoft.Maui.Controls;\nusing Microsoft.Maui.Controls.Shapes;\nusing Microsoft.Maui.Layouts;\n\nnamespace " & title & ";\n\npublic partial class MainPage : ContentPage\n{\n"
    in let page-ref = maui-indent 1 & "static MainPage _page;\n\n"
-   in let builtins = maui-indent 1 & "static readonly List<string> _output = new();\n" & maui-indent 1 & "static dynamic print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); return 0L; }\n" & maui-indent 1 & "static dynamic print_line(dynamic s) { return print_line_uni(s); }\n" & maui-indent 1 & "static dynamic show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & maui-indent 1 & "static dynamic text_length(dynamic s) { return (long)((string)s).Length; }\n" & maui-indent 1 & "static dynamic text_replace(dynamic s, dynamic a, dynamic b) { var o = (string)a; return o.Length == 0 ? (string)s : ((string)s).Replace(o, (string)b); }\n" & maui-indent 1 & "static dynamic text_contains(dynamic s, dynamic sub) { return ((string)s).Contains((string)sub); }\n" & maui-indent 1 & "static dynamic text_split(dynamic s, dynamic sep) { var r = new List<dynamic>(); var t = (string)s; var p = (string)sep; if (p.Length == 0) { r.Add(t); return r; } foreach (var part in t.Split(new[]{ p }, StringSplitOptions.None)) r.Add(part); return r; }\n" & maui-indent 1 & "static dynamic text_to_integer(dynamic s) { var t = (string)s; int i = 0; bool neg = false; if (t.Length > 0 && t[0] == '-') { neg = true; i = 1; } long v = 0; while (i < t.Length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++; } return neg ? -v : v; }\n" & maui-indent 1 & "static dynamic text_compare(dynamic a, dynamic b) { return (long)string.Compare((string)a, (string)b, StringComparison.Ordinal); }\n" & maui-indent 1 & "static dynamic list_length(dynamic xs) { return (long)((List<dynamic>)xs).Count; }\n" & maui-indent 1 & "static dynamic list_at(dynamic xs, dynamic i) { return ((List<dynamic>)xs)[(int)(long)i]; }\n" & maui-indent 1 & "static dynamic list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static dynamic list_snoc(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static long int_mod(dynamic a, dynamic b) { return (long)a % (long)b; }\n" & maui-indent 1 & "static dynamic list_insert_at(dynamic xs, dynamic i, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)(long)i, x); return r; }\n" & maui-indent 1 & "static dynamic integer_to_text(dynamic n) { return n.ToString(); }\n" & maui-indent 1 & "static dynamic negate(dynamic n) { return -(long)n; }\n" & maui-indent 1 & "static dynamic text_starts_with(dynamic s, dynamic prefix) { return ((string)s).StartsWith((string)prefix); }\n" & maui-indent 1 & "static dynamic text_substring(dynamic s, dynamic start, dynamic len) { return ((string)s).Substring((int)(long)start, (int)(long)len); }\n\n"
+   in let builtins = maui-indent 1 & "static readonly List<string> _output = new();\n" & maui-indent 1 & "static dynamic print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); return 0L; }\n" & maui-indent 1 & "static dynamic print_line(dynamic s) { return print_line_uni(s); }\n" & maui-indent 1 & "static dynamic show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & maui-indent 1 & "static dynamic text_length(dynamic s) { return (long)((string)s).Length; }\n" & maui-indent 1 & "static dynamic text_replace(dynamic s, dynamic a, dynamic b) { var o = (string)a; return o.Length == 0 ? (string)s : ((string)s).Replace(o, (string)b); }\n" & maui-indent 1 & "static dynamic text_contains(dynamic s, dynamic sub) { return ((string)s).Contains((string)sub); }\n" & maui-indent 1 & "static dynamic text_split(dynamic s, dynamic sep) { var r = new List<dynamic>(); var t = (string)s; var p = (string)sep; if (p.Length == 0) { r.Add(t); return r; } foreach (var part in t.Split(new[]{ p }, StringSplitOptions.None)) r.Add(part); return r; }\n" & maui-indent 1 & "static dynamic text_to_integer(dynamic s) { var t = (string)s; int i = 0; bool neg = false; if (t.Length > 0 && t[0] == '-') { neg = true; i = 1; } long v = 0; while (i < t.Length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++; } return neg ? -v : v; }\n" & maui-indent 1 & "static dynamic text_compare(dynamic a, dynamic b) { return (long)string.Compare((string)a, (string)b, StringComparison.Ordinal); }\n" & maui-indent 1 & "static dynamic list_length(dynamic xs) { return (long)((List<dynamic>)xs).Count; }\n" & maui-indent 1 & "static dynamic list_at(dynamic xs, dynamic i) { return ((List<dynamic>)xs)[(int)(long)i]; }\n" & maui-indent 1 & "static dynamic list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static dynamic list_snoc(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static long int_mod(dynamic a, dynamic b) { return (long)a % (long)b; }\n" & maui-indent 1 & "static dynamic list_insert_at(dynamic xs, dynamic i, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)(long)i, x); return r; }\n" & maui-indent 1 & "static dynamic integer_to_text(dynamic n) { return n.ToString(); }\n" & maui-indent 1 & "static dynamic negate(dynamic n) { return -(long)n; }\n" & maui-indent 1 & "static dynamic text_starts_with(dynamic s, dynamic prefix) { return ((string)s).StartsWith((string)prefix); }\n" & maui-indent 1 & "static dynamic text_substring(dynamic s, dynamic start, dynamic len) { return ((string)s).Substring((int)(long)start, (int)(long)len); }\n    static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; unchecked { while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } } return r; }\n\n"
    in let runtime = emit-maui-color-runtime & emit-maui-state-runtime & emit-maui-reactive-runtime & emit-maui-widget-runtime & emit-maui-dialog-runtime & emit-maui-net-runtime
    in let types-text = emit-maui-type-defs type-defs 0
    in let defs-text = emit-maui-defs (m.defs) 0 arities
    in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Courier New\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
    in let footer = "}\n"
    in header & page-ref & builtins & runtime & types-text & defs-text & constructor & footer
+
+  emit-maui-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-maui-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = "CodexApp"
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Net.Http;\nusing System.Runtime.CompilerServices;\nusing System.Text.Json;\nusing Microsoft.Maui;\nusing Microsoft.Maui.Controls;\nusing Microsoft.Maui.Controls.Shapes;\nusing Microsoft.Maui.Layouts;\n\nnamespace " & title & ";\n\npublic partial class MainPage : ContentPage\n{\n"
+   in let page-ref = maui-indent 1 & "static MainPage _page;\n\n"
+   in let builtins = maui-indent 1 & "static readonly List<string> _output = new();\n" & maui-indent 1 & "static dynamic print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); return 0L; }\n" & maui-indent 1 & "static dynamic print_line(dynamic s) { return print_line_uni(s); }\n" & maui-indent 1 & "static dynamic show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & maui-indent 1 & "static dynamic text_length(dynamic s) { return (long)((string)s).Length; }\n" & maui-indent 1 & "static dynamic text_replace(dynamic s, dynamic a, dynamic b) { var o = (string)a; return o.Length == 0 ? (string)s : ((string)s).Replace(o, (string)b); }\n" & maui-indent 1 & "static dynamic text_contains(dynamic s, dynamic sub) { return ((string)s).Contains((string)sub); }\n" & maui-indent 1 & "static dynamic text_split(dynamic s, dynamic sep) { var r = new List<dynamic>(); var t = (string)s; var p = (string)sep; if (p.Length == 0) { r.Add(t); return r; } foreach (var part in t.Split(new[]{ p }, StringSplitOptions.None)) r.Add(part); return r; }\n" & maui-indent 1 & "static dynamic text_to_integer(dynamic s) { var t = (string)s; int i = 0; bool neg = false; if (t.Length > 0 && t[0] == '-') { neg = true; i = 1; } long v = 0; while (i < t.Length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++; } return neg ? -v : v; }\n" & maui-indent 1 & "static dynamic text_compare(dynamic a, dynamic b) { return (long)string.Compare((string)a, (string)b, StringComparison.Ordinal); }\n" & maui-indent 1 & "static dynamic list_length(dynamic xs) { return (long)((List<dynamic>)xs).Count; }\n" & maui-indent 1 & "static dynamic list_at(dynamic xs, dynamic i) { return ((List<dynamic>)xs)[(int)(long)i]; }\n" & maui-indent 1 & "static dynamic list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static dynamic list_snoc(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static long int_mod(dynamic a, dynamic b) { return (long)a % (long)b; }\n" & maui-indent 1 & "static dynamic list_insert_at(dynamic xs, dynamic i, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)(long)i, x); return r; }\n" & maui-indent 1 & "static dynamic integer_to_text(dynamic n) { return n.ToString(); }\n" & maui-indent 1 & "static dynamic negate(dynamic n) { return -(long)n; }\n" & maui-indent 1 & "static dynamic text_starts_with(dynamic s, dynamic prefix) { return ((string)s).StartsWith((string)prefix); }\n" & maui-indent 1 & "static dynamic text_substring(dynamic s, dynamic start, dynamic len) { return ((string)s).Substring((int)(long)start, (int)(long)len); }\n    static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; unchecked { while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } } return r; }\n\n"
+   in let runtime = emit-maui-color-runtime & emit-maui-state-runtime & emit-maui-reactive-runtime & emit-maui-widget-runtime & emit-maui-dialog-runtime & emit-maui-net-runtime
+   in let types-text = emit-maui-type-defs type-defs 0
+   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Courier New\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
+   in let footer = "}\n"
+   in header & page-ref & builtins & runtime & types-text
+
+  emit-maui-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-maui-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = "CodexApp"
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Net.Http;\nusing System.Runtime.CompilerServices;\nusing System.Text.Json;\nusing Microsoft.Maui;\nusing Microsoft.Maui.Controls;\nusing Microsoft.Maui.Controls.Shapes;\nusing Microsoft.Maui.Layouts;\n\nnamespace " & title & ";\n\npublic partial class MainPage : ContentPage\n{\n"
+   in let page-ref = maui-indent 1 & "static MainPage _page;\n\n"
+   in let builtins = maui-indent 1 & "static readonly List<string> _output = new();\n" & maui-indent 1 & "static dynamic print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); return 0L; }\n" & maui-indent 1 & "static dynamic print_line(dynamic s) { return print_line_uni(s); }\n" & maui-indent 1 & "static dynamic show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & maui-indent 1 & "static dynamic text_length(dynamic s) { return (long)((string)s).Length; }\n" & maui-indent 1 & "static dynamic text_replace(dynamic s, dynamic a, dynamic b) { var o = (string)a; return o.Length == 0 ? (string)s : ((string)s).Replace(o, (string)b); }\n" & maui-indent 1 & "static dynamic text_contains(dynamic s, dynamic sub) { return ((string)s).Contains((string)sub); }\n" & maui-indent 1 & "static dynamic text_split(dynamic s, dynamic sep) { var r = new List<dynamic>(); var t = (string)s; var p = (string)sep; if (p.Length == 0) { r.Add(t); return r; } foreach (var part in t.Split(new[]{ p }, StringSplitOptions.None)) r.Add(part); return r; }\n" & maui-indent 1 & "static dynamic text_to_integer(dynamic s) { var t = (string)s; int i = 0; bool neg = false; if (t.Length > 0 && t[0] == '-') { neg = true; i = 1; } long v = 0; while (i < t.Length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++; } return neg ? -v : v; }\n" & maui-indent 1 & "static dynamic text_compare(dynamic a, dynamic b) { return (long)string.Compare((string)a, (string)b, StringComparison.Ordinal); }\n" & maui-indent 1 & "static dynamic list_length(dynamic xs) { return (long)((List<dynamic>)xs).Count; }\n" & maui-indent 1 & "static dynamic list_at(dynamic xs, dynamic i) { return ((List<dynamic>)xs)[(int)(long)i]; }\n" & maui-indent 1 & "static dynamic list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static dynamic list_snoc(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static long int_mod(dynamic a, dynamic b) { return (long)a % (long)b; }\n" & maui-indent 1 & "static dynamic list_insert_at(dynamic xs, dynamic i, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)(long)i, x); return r; }\n" & maui-indent 1 & "static dynamic integer_to_text(dynamic n) { return n.ToString(); }\n" & maui-indent 1 & "static dynamic negate(dynamic n) { return -(long)n; }\n" & maui-indent 1 & "static dynamic text_starts_with(dynamic s, dynamic prefix) { return ((string)s).StartsWith((string)prefix); }\n" & maui-indent 1 & "static dynamic text_substring(dynamic s, dynamic start, dynamic len) { return ((string)s).Substring((int)(long)start, (int)(long)len); }\n    static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; unchecked { while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } } return r; }\n\n"
+   in let runtime = emit-maui-color-runtime & emit-maui-state-runtime & emit-maui-reactive-runtime & emit-maui-widget-runtime & emit-maui-dialog-runtime & emit-maui-net-runtime
+   in let types-text = emit-maui-type-defs type-defs 0
+   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Courier New\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
+   in let footer = "}\n"
+   in constructor & footer
+
+  emit-maui-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-maui-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = "CodexApp"
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Net.Http;\nusing System.Runtime.CompilerServices;\nusing System.Text.Json;\nusing Microsoft.Maui;\nusing Microsoft.Maui.Controls;\nusing Microsoft.Maui.Controls.Shapes;\nusing Microsoft.Maui.Layouts;\n\nnamespace " & title & ";\n\npublic partial class MainPage : ContentPage\n{\n"
+   in let page-ref = maui-indent 1 & "static MainPage _page;\n\n"
+   in let builtins = maui-indent 1 & "static readonly List<string> _output = new();\n" & maui-indent 1 & "static dynamic print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); return 0L; }\n" & maui-indent 1 & "static dynamic print_line(dynamic s) { return print_line_uni(s); }\n" & maui-indent 1 & "static dynamic show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & maui-indent 1 & "static dynamic text_length(dynamic s) { return (long)((string)s).Length; }\n" & maui-indent 1 & "static dynamic text_replace(dynamic s, dynamic a, dynamic b) { var o = (string)a; return o.Length == 0 ? (string)s : ((string)s).Replace(o, (string)b); }\n" & maui-indent 1 & "static dynamic text_contains(dynamic s, dynamic sub) { return ((string)s).Contains((string)sub); }\n" & maui-indent 1 & "static dynamic text_split(dynamic s, dynamic sep) { var r = new List<dynamic>(); var t = (string)s; var p = (string)sep; if (p.Length == 0) { r.Add(t); return r; } foreach (var part in t.Split(new[]{ p }, StringSplitOptions.None)) r.Add(part); return r; }\n" & maui-indent 1 & "static dynamic text_to_integer(dynamic s) { var t = (string)s; int i = 0; bool neg = false; if (t.Length > 0 && t[0] == '-') { neg = true; i = 1; } long v = 0; while (i < t.Length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++; } return neg ? -v : v; }\n" & maui-indent 1 & "static dynamic text_compare(dynamic a, dynamic b) { return (long)string.Compare((string)a, (string)b, StringComparison.Ordinal); }\n" & maui-indent 1 & "static dynamic list_length(dynamic xs) { return (long)((List<dynamic>)xs).Count; }\n" & maui-indent 1 & "static dynamic list_at(dynamic xs, dynamic i) { return ((List<dynamic>)xs)[(int)(long)i]; }\n" & maui-indent 1 & "static dynamic list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static dynamic list_snoc(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & maui-indent 1 & "static long int_mod(dynamic a, dynamic b) { return (long)a % (long)b; }\n" & maui-indent 1 & "static dynamic list_insert_at(dynamic xs, dynamic i, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Insert((int)(long)i, x); return r; }\n" & maui-indent 1 & "static dynamic integer_to_text(dynamic n) { return n.ToString(); }\n" & maui-indent 1 & "static dynamic negate(dynamic n) { return -(long)n; }\n" & maui-indent 1 & "static dynamic text_starts_with(dynamic s, dynamic prefix) { return ((string)s).StartsWith((string)prefix); }\n" & maui-indent 1 & "static dynamic text_substring(dynamic s, dynamic start, dynamic len) { return ((string)s).Substring((int)(long)start, (int)(long)len); }\n\n"
+   in let runtime = emit-maui-color-runtime & emit-maui-state-runtime & emit-maui-reactive-runtime & emit-maui-widget-runtime & emit-maui-dialog-runtime & emit-maui-net-runtime
+   in let types-text = emit-maui-type-defs type-defs 0
+   in let constructor = maui-indent 1 & "public MainPage()\n" & maui-indent 1 & "{\n" & maui-indent 2 & "_page = this;\n" & maui-indent 2 & "try { opening(); } catch (Exception ex) {\n" & maui-indent 3 & "_output.Add(\"ERROR: \" + ex.GetType().Name + \": \" + ex.Message);\n" & maui-indent 3 & "if (ex.InnerException != null) _output.Add(\"INNER: \" + ex.InnerException.Message);\n" & maui-indent 3 & "_output.Add(ex.StackTrace ?? \"\");\n" & maui-indent 2 & "}\n" & maui-indent 2 & "if (Content == null) {\n" & maui-indent 3 & "var stack = new VerticalStackLayout { Padding = 16, Spacing = 4 };\n" & maui-indent 3 & "if (_output.Count == 0) _output.Add(\"(no output -- opening() did not set Content)\");\n" & maui-indent 3 & "foreach (var line in _output)\n" & maui-indent 4 & "stack.Children.Add(new Label { Text = line, FontFamily = \"Courier New\", TextColor = Colors.Red, FontSize = 12 });\n" & maui-indent 3 & "Content = new ScrollView { Content = stack };\n" & maui-indent 2 & "}\n" & maui-indent 1 & "}\n"
+   in let footer = "}\n"
+   in arities
+
+  emit-maui-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-maui-chapter-stream-def (m) (v) (i) = emit-maui-def (list-at (m.defs) i) v

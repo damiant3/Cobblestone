@@ -305,6 +305,20 @@
 #              syn-sent shape, and CLOSE_WAIT is measured COMPLETE rather than
 #              short (codex/test/apps/net-send-capped, `close-wait
 #              complete=True sent=3`).
+#   b3-record  THE LAST SITTING'S INSTRUMENT (HardwareSitting "THE LAST
+#              SITTING", item 1). The echo peer appends every byte it is sent
+#              to a raw file. After the passive stages and before the first
+#              bank write the ladder brings the driver up, resolves the hop,
+#              ships the passive record and arms DiagRecord (the bank row
+#              carries record=peer opened ...); every bank step after it ships
+#              the new lines over a fresh connection, bringing the driver up
+#              again after a stage that reset the part; the file must open
+#              with the passive record's DIAG1 row, equal DIAG.TXT row for row
+#              (b3's token line dropped), every live ship on serial must read
+#              state=ok, b3 must report channel=open, and the summary row must
+#              carry record=peer ... lost=0. The row compare is what proves
+#              the LIVE sends: the summary and the verdict rows exist only at
+#              the end, so a channel that shipped once at open fails.
 #   ovmf       QEMU + OVMF, the image on qemu-xhci usb-storage. Serial == bank,
 #              bank=ok, and the summary QR decodes off the screendump
 #              (tools/qr-read.ps1) to a body starting DIAG1;.
@@ -370,6 +384,19 @@ if ((Test-Path $seedCdx) -and (Get-Item $seedCdx).LastWriteTimeUtc -gt $imgTime)
 & pwsh -NoProfile -File (Join-Path $Repo 'build\check-diag-verdicts.ps1') | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: check-diag-verdicts is red; a state word has no verdict row'; exit 1 }
 
+# THE RECORD IS WRITTEN ON THE LAST LINE OF THE RUN and it is a TRACKED file,
+# so a workspace that has not opened it for edit pays the whole rehearsal and
+# then dies on AppendAllText with access denied. On 2026-09-07 that landed
+# after 46 of 46 arms answered as they should, and the exit code made a green
+# run read as red. build-diag.ps1 has the same trap one file over
+# (build/boot/diag.img). Refuse in the first second instead, on exactly the
+# condition that writes the record below.
+$record0 = Join-Path $Repo 'build\boot\diag.rehearsed'
+if (-not $Only -and -not $SkipOvmf -and (Test-Path $record0) -and (Get-Item $record0).IsReadOnly) {
+    Write-Host "FAIL: $record0 is read-only, so the rehearsal record cannot be written and this run would be wasted. Run: p4 edit build/boot/diag.rehearsed"
+    exit 1
+}
+
 # Derived from the workspace, never a fixed path (L-SHARED).
 $Work = Join-Path ([IO.Path]::GetTempPath()) ("diag-arm-" + (Split-Path $Repo -Leaf))
 New-Item -ItemType Directory -Force $Work | Out-Null
@@ -417,32 +444,81 @@ function Get-CfgFirstValues([string]$text) {
     return $m
 }
 
+# THE BASELINE COMES OUT OF THE SUBJECT, NOT OUT OF A SIDE CHANNEL.
+#
+# It used to be read from build-output/diag-recipe.txt, which describes
+# WHATEVER WAS BUILT LAST in this workspace and not the image -Img names. Build
+# anything else in between -- a control image, another lane's variant -- and the
+# hashes disagree, the block fell through to "the default baseline is used", and
+# every subject arm was then judged against a config the image does not carry.
+# Measured 2026-09-07 (blu): a control build overwrote the recipe, the default
+# baseline expects b3=no-peer, the image under test had a peer, and `pass` went
+# red on no-part. The suite printed the mismatch as its second line and nobody
+# read it -- a detector whose channel is a human noticing (L-UNHEARD), and a
+# guard that ANSWERED with a wrong baseline instead of refusing (L-BAILVALUE).
+#
+# Refusing on the mismatch was the first fix offered and it is the worse one: it
+# would block the legitimate case of rehearsing a default-cfg image nobody just
+# built, where the fallback is correct. Deriving from the subject REMOVES the
+# failure mode rather than guarding it, so the recipe is provenance only now.
+#
+# TWO CHANNELS, AND BOTH TRAVEL ON THE ESP. -Cfg writes DIAG.CFG; -StdinCfg
+# bakes lines into the stub's serial ring, inside the PE, where nothing outside
+# can read them -- but build-diag records what it baked in DIAG.RCP's `stdin=`
+# line, and DIAG.RCP is an ESP file too. So both halves come out of the bytes
+# under test and the recipe file is not consulted at all.
+#
+# THE CAVEAT, because this is a record and not the bytes: `stdin=` is
+# build-diag's account of what it put in the ring, so a build-diag defect could
+# make the two disagree and nothing here would notice. It still beats the
+# recipe on the axis that actually bit, and it is the only one that matters
+# here: DIAG.RCP travels WITH the image and therefore cannot describe a
+# different one.
 $SubjectLadder = $false
 $SubjectB3 = $false
 $SubjectOff = @()
 $SubjectCfgText = ''
-$recipe = Join-Path $Repo 'build-output\diag-recipe.txt'
-if (Test-Path $recipe) {
-    $r = Get-Content $recipe
-    $rh = ($r | Where-Object { $_.StartsWith('image-sha256=') } | Select-Object -First 1)
-    if ($rh -and $rh.Substring(13) -eq $SubjectHash) {
-        $cfgText = ($r | Where-Object { $_.StartsWith('stdin=') } | Select-Object -First 1) -replace '\|', "`n"
-        $cf = ($r | Where-Object { $_.StartsWith('cfg=') } | Select-Object -First 1)
-        if ($cf -and $cf.Length -gt 4) {
-            $cp = $cf.Substring(4)
-            if (-not [IO.Path]::IsPathRooted($cp)) { $cp = Join-Path $Repo $cp }
-            if (Test-Path $cp) { $cfgText += "`n" + (Get-Content $cp -Raw) }
-        }
-        $SubjectLadder = $cfgText -match '(?m)^\s*sink\s+.*ladder=1'
-        $SubjectB3 = $cfgText -match '(?m)^\s*b3\s+.*peer='
-        $SubjectCfgText = $cfgText
-        $SubjectOff = @((Get-CfgFirstValues $cfgText).GetEnumerator() | Where-Object { $_.Value -eq 'off' } | ForEach-Object { $_.Key })
-        Write-Host "subject config: ladder=$(if ($SubjectLadder) { 'on' } else { 'off' }) (from the recipe for this image)"
-        if ($SubjectOff.Count) { Write-Host "subject config: stages OFF: $($SubjectOff -join ', ') (every arm booting the subject expects state=skipped for these)" }
-    } else {
-        Write-Host 'subject config: unknown -- the recipe describes a different image, so the default baseline is used'
+
+$stickDir = Join-Path ([IO.Path]::GetTempPath()) ("diagarm-cfg-" + (Split-Path $Repo -Leaf))
+if (Test-Path $stickDir) { Remove-Item -LiteralPath $stickDir -Recurse -Force -ErrorAction SilentlyContinue }
+# ONE NAME PER CALL. `pwsh -File` hands every argument through as a string: an
+# array literal arrives as the single token "'DIAG.RCP','DIAG.CFG'" and both
+# files come back MISSING, and two bare values bind the second one positionally
+# to -DiskNumber. Measured both ways 2026-09-07. The MISSING form is the
+# dangerous one because read-stick exits 0 for a file it did not find, so the
+# baseline would have been silently empty -- the same shape as the defect this
+# block exists to remove.
+foreach ($want in @('DIAG.RCP', 'DIAG.CFG')) {
+    & pwsh -NoProfile -File (Join-Path $Repo 'build\read-stick.ps1') `
+        -ImageFile $ImgAbs -Name $want -OutDir $stickDir 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "REFUSED: could not read the ESP of $(Split-Path $ImgAbs -Leaf) to derive its config, so every subject arm would be judged against a guess."
+        exit 1
     }
 }
+
+$espCfgText = ''
+$espCfgPath = Join-Path $stickDir 'DIAG.CFG'
+if (Test-Path $espCfgPath) { $espCfgText = (Get-Content $espCfgPath -Raw) }
+
+$ringCfgText = ''
+$ringKnown = $false
+$rcpPath = Join-Path $stickDir 'DIAG.RCP'
+if (Test-Path $rcpPath) {
+    $rcp = Get-Content $rcpPath
+    $sl = ($rcp | Where-Object { $_.StartsWith('stdin=') } | Select-Object -First 1)
+    if ($sl) { $ringCfgText = ($sl.Substring(6) -replace '\|', "`n"); $ringKnown = $true }
+}
+
+$cfgText = ($ringCfgText + "`n" + $espCfgText).Trim()
+$SubjectLadder = $cfgText -match '(?m)^\s*sink\s+.*ladder=1'
+$SubjectB3 = $cfgText -match '(?m)^\s*b3\s+.*peer='
+$SubjectCfgText = $cfgText
+$SubjectOff = @((Get-CfgFirstValues $cfgText).GetEnumerator() | Where-Object { $_.Value -eq 'off' } | ForEach-Object { $_.Key })
+$espWord = if ($espCfgText -ne '') { "DIAG.CFG" } else { "no DIAG.CFG" }
+$ringWord = if ($ringKnown) { "ring from DIAG.RCP" } else { "no DIAG.RCP, ring unknown" }
+Write-Host "subject config: ladder=$(if ($SubjectLadder) { 'on' } else { 'off' }) (read off the subject ESP: $espWord, $ringWord)"
+if ($SubjectOff.Count) { Write-Host "subject config: stages OFF: $($SubjectOff -join ', ') (every arm booting the subject expects state=skipped for these)" }
 
 function Assert-Subject([string]$name) {
     $h = (Get-FileHash $ImgAbs -Algorithm SHA256).Hash
@@ -462,9 +538,23 @@ function Get-FreePort {
     $l.Start(); $p = $l.LocalEndpoint.Port; $l.Stop(); return $p
 }
 
-function Start-Peer([int]$port, [string]$mode) {
+# 'echo' reads until the guest closes (or five seconds of silence), echoing
+# every chunk, because the first send now carries the banked record and not
+# a 13-byte token; a peer that read one chunk and hung up left the rest
+# unacknowledged and read as `short`. With $record it also appends every
+# byte it received, raw, to that file: the peer is the register the ladder
+# ships to, and the b3-record arm reads the file back against the bank.
+# 'silent' serves ONE connection at a time and holds it twenty seconds
+# unread. That single accepted, unread socket stops acking once its receive
+# buffer fills, which is what stalls b3-short's flood at ~23 KB and gives the
+# `short` reading (an accepted socket that autotunes its window absorbs the
+# whole 106 KB and reads `no-reply` instead, measured 2026-09-08). The record
+# channel's own ships dial this same port ahead of b3 and complete through the
+# kernel's listen backlog while the one accepted socket is held, so a
+# one-at-a-time peer serves both without the ships changing b3's reading.
+function Start-Peer([int]$port, [string]$mode, [string]$record = '') {
     $j = Start-Job -ScriptBlock {
-        param($port, $mode)
+        param($port, $mode, $record)
         $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
         $l.Start()
         try {
@@ -473,18 +563,24 @@ function Start-Peer([int]$port, [string]$mode) {
                 if (-not $l.Pending()) { Start-Sleep -Milliseconds 50; continue }
                 $c = $l.AcceptTcpClient()
                 if ($mode -eq 'echo') {
-                    $s = $c.GetStream(); $s.ReadTimeout = 30000
+                    $s = $c.GetStream(); $s.ReadTimeout = 5000
                     $buf = New-Object byte[] 4096
-                    try {
-                        $n = $s.Read($buf, 0, $buf.Length)
-                        if ($n -gt 0) { $s.Write($buf, 0, $n); $s.Flush() }
-                    } catch { }
-                    Start-Sleep -Milliseconds 2000
+                    while ($true) {
+                        $n = 0
+                        try { $n = $s.Read($buf, 0, $buf.Length) } catch { break }
+                        if ($n -le 0) { break }
+                        if ($record) {
+                            $fs = [IO.File]::Open($record, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+                            $fs.Write($buf, 0, $n); $fs.Close()
+                        }
+                        try { $s.Write($buf, 0, $n); $s.Flush() } catch { break }
+                    }
+                    Start-Sleep -Milliseconds 200
                 } else { Start-Sleep -Milliseconds 20000 }
                 $c.Close()
             }
         } finally { $l.Stop() }
-    } -ArgumentList $port, $mode
+    } -ArgumentList $port, $mode, $record
     # The listener has to be bound before the guest dials, or b3 reads refused
     # for a reason that is the harness and not the stack. The wait must NOT
     # connect to find out: 'silent' serves one connection at a time and holds
@@ -743,7 +839,7 @@ function Invoke-Ovmf([string]$name, [bool]$readOnly) {
     $block = Get-DiagBlock $lines
     if ($block.Count -eq 0) { return '(no DIAG1 row on serial)' }
     if ($block[-1] -ne 'END') { return "(serial block did not reach END; last: $($block[-1]))" }
-    foreach ($st in @('smbios', 'edid', 'cpu', 'pci', 'scene', 'gopmode', 'block', 'xhci', 'sink', 'pch', 'nicsit', 'nicinit', 'nicring', 'b3', 'pchk1', 'asde')) { if (-not (Field $block "stage=$st ")) { return "(no $st stage row)" } }
+    foreach ($st in @('smbios', 'edid', 'cpu', 'pci', 'scene', 'gopmode', 'block', 'xhci', 'sink', 'pch', 'nicsit', 'nicinit', 'nicring', 'b3', 'lease', 'rtcw', 'pchk1', 'asde')) { if (-not (Field $block "stage=$st ")) { return "(no $st stage row)" } }
     $bank = Field $block 'bank='
     $file = $null
     if (Test-Path $disk) { $file = Read-Bank $disk $name }
@@ -771,9 +867,9 @@ function Invoke-Ovmf([string]$name, [bool]$readOnly) {
 # Project Codex VM, its legacy 2.1 table plus a 3.0 entry), an EDID (CDX codex-vm dsp) and a hypervisor bit, so a passing
 # boot there reads exactly this. The no-smbios/no-edid/edid-bad arms are the
 # switches that show the three readers say no.
-$bedStates = @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part'; b3 = 'no-peer'; pchk1 = 'no-part'; asde = 'no-part'; box = 'Codex Project Codex VM' }
+$bedStates = @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part'; b3 = 'no-peer'; lease = 'no-card'; rtcw = 'ignored'; pchk1 = 'no-part'; asde = 'no-part'; box = 'Codex Project Codex VM' }
 # With no bank there is no medium selected, so the write-side stage says so and runs nothing.
-$noBankStates = @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'no-medium'; sink = 'no-medium'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part'; b3 = 'no-peer'; pchk1 = 'no-part'; asde = 'no-part'; box = 'Codex Project Codex VM' }
+$noBankStates = @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'no-medium'; sink = 'no-medium'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part'; b3 = 'no-peer'; lease = 'no-card'; rtcw = 'ignored'; pchk1 = 'no-part'; asde = 'no-part'; box = 'Codex Project Codex VM' }
 
 $expected = [ordered]@{
     'pass'     = 'bank=ok serial==file every stage stated'
@@ -784,8 +880,11 @@ $expected = [ordered]@{
     'no-medium' = 'bank=none (mount) summary reached, no file'
     'fat-full' = 'bank=none (write refused) summary reached, no file'
     'cfg-off'  = 'scene skipped, bank=ok'
+    'esp-cfg-off' = 'xhci skipped from a CRLF DIAG.CFG on the ESP with NO stdin cfg, scene still rendered, bank=ok. cfg-off proves off through the stub ring and esp-cfg proves the file is READ; only this arm proves a key in the file is OBEYED, which is the pair sitting 13 fell between. CRLF because a depot cfg copied to an ESP carries Windows endings and CCE has no carriage return, so an unguarded reader appends one junk character per line and every off reads as armed. THE STAGE MUST BE PAST THE PASSIVE PREFIX: dg-run-passive is called with the PRE-MERGE ctx (Diag.codex:1088) and the ESP file only reaches c2 at :1094, so stages 1..6 cannot be configured from the file at all and an arm aimed at one of them reds in both legs and measures nothing. xhci is stage 8, which runs in dg-run-rest under c2. scene is asserted rendered here to hold that distinction still'
     'esp-cfg'  = 'cfg-file=1, bank=ok'
     'block-oob' = 'block=write-refused (LBA past the medium), bank=ok'
+    'bank-writeback' = 'bank SURVIVES power-off under -usb-writeback: the flush commits and DIAG.TXT is on the medium after the kill'
+    'bank-writeback-noflush' = 'bank LOST at power-off with flush off: DIAG.TXT ABSENT from the medium while the guest still says bank=ok'
     'sink-chunk' = 'sink=ok at a NON-DEFAULT MSC chunk: sink chunk=8 in DIAG.CFG reaches cell 91 and the row reports chunk=8, so a flight can vary the transfer size'
     'sink-ladder' = 'sink=ladder-all: sink ladder=1 runs all seven rungs (1..64 sectors) and every one completes here, because this bed completes a transfer at any size. The arm that shows the ladder RUNS'
     'sink-ladder-32' = 'sink=ladder-stop rung=32 done=5: -usb-bot-drop-len 16384 refuses every command of 32 sectors or more, so the bed HAS a threshold and the ladder must report that exact number'
@@ -806,7 +905,8 @@ $expected = [ordered]@{
     'nic-nomac' = 'nicinit=no-mac with -e1000-no-mac; nicsit ok, bank=ok'
     'nic-nohpet' = 'three nic stages no-hpet with -no-hpet, scene no-clock, bank=ok'
     'b3-pass'  = 'b3=ok: a real TCP conversation with a real host peer over the Intel part, connect to close, and the bytes that came back are the bytes DIAG.CFG said to expect'
-    'nic-kills-msc' = 'bank=lost at=nicinit with -usb-bot-die-on-nic, and stage=b3 state=ok beside it: the medium stops answering at the first bulk write after the NIC is brought up, while the TCP conversation over that same NIC completes. Armed by RCTL.EN, which is nicinit''s, and every b3 step note reads banked=-1. Its control is b3-pass, the same run with the lever removed, which banks the full trail. NOTE the row it does NOT reproduce: sitting 11 lost the bank at b3''s rings-link with nicinit banked whole, so metal''s FIRST bring-up did not kill the medium'
+    'nic-kills-msc' = 'bank=none write refused with -usb-bot-die-on-nic, record=peer lost=0 and stage=b3 state=ok beside it: the medium stops answering at the first bulk write after the NIC is brought up, which since the record channel is the bank''s own open, so the bank never forms, the peer holds the whole trail, and the TCP conversation over that same NIC completes. Armed by RCTL.EN, the channel''s bring-up, and every b3 step note reads banked=-1. Its control is b3-pass, the same run with the lever removed, which banks the full trail. NOTE the row it does NOT reproduce: sitting 11 lost the bank at b3''s rings-link with nicinit banked whole, so metal''s FIRST bring-up did not kill the medium'
+    'b3-record' = 'the peer holds the whole record: the channel opens after the passive stages and before the first bank write (record=peer opened ... on the bank row), the passive record is the first thing in the peer''s file, every bank step ships live over a fresh connection (record entering ship ... state=ok on serial, one per step), b3 finds the channel open, the file equals DIAG.TXT row for row, and the summary row carries record=peer ... lost=0. THE LAST SITTING''S INSTRUMENT: a stick that dies keeps nothing and the dev box still holds every banked line'
     'b3-noreply' = 'b3=no-reply: the peer accepts and never answers, so the handshake is up and the exchange is not. The one arm that separates our stack from the far end'
     'b3-short' = 'b3=short with sendx=8192 against a peer that accepts and never reads: its socket buffer fills, the NAT stops acking, our retransmit queue fills and the send stops part way (measured sent=23686/106496). THE FALSIFIER FOR THE SEND SIDE -- every other b3 arm reports a complete send, and a sent= that has only ever matched what was asked for cannot tell a real send from an intended one'
     'b3-refused' = 'b3=refused: nothing is listening on the port, so no SYN-ACK ever arrives and the stage says the handshake, not the exchange, is what failed'
@@ -814,8 +914,8 @@ $expected = [ordered]@{
     'asde-differs' = 'asde=differs with -e1000-phy-link -e1000-asde: the two no-reset arms come back different, which is the positive control -- without it the stage could only ever be seen saying same'
     'asde-ctrlro' = 'asde=ctrl-ro with -e1000-ctrl-ro: a bit we cleared reads back set, so nothing this stage wrote was written and both arms are void'
     'b3-noaddr' = 'b3=no-address: a peer named with no ip=, so there is no address to dial FROM and the stage refuses instead of inventing one'
-    'b3-clockstuck' = 'b3=clock-stuck with -hpet-frozen: the HPET window reads all-ones, a bogus nonzero rate over a counter that never moves, and the clock control at b3 entry refuses before bring-up; the three nic stages are off by cfg so nothing ahead of b3 spends its fuel on the same stuck clock'
-    'b3-banklost' = 'b3 bank lost inside the reset sequence with -usb-bot-die-len 5632 -usb-bot-die-lba 3400: the medium dies on the first 11-sector bank write, one of the b3 reset-* notes (WHICH one drifts run to run with the digit widths in the note text, so the arm derives it from the trail instead of naming it), the step says so on serial the moment its note is refused, every note before it banked and every note after it reads banked=-1, and the medium itself ends at the step immediately before the refused one; the summary says bank=lost at=b3. Sitting 11 shape: the glass names where the medium DIED, not where the ladder noticed'
+    'b3-clockstuck' = 'b3=clock-stuck with -hpet-frozen: the HPET window reads all-ones, a bogus nonzero rate over a counter that never moves, and the clock control at b3 entry refuses before bring-up; nicinit and nicring are off by cfg so nothing ahead of b3 spends its fuel on the same stuck clock, and nicsit, the passive read ahead of the ESP file, reads ok because it spends none'
+    'b3-banklost' = 'b3 bank lost inside the reset sequence with -usb-bot-die-len 5632 -usb-bot-die-lba 3730: the medium dies on the bank write in the MIDDLE of the b3 reset sequence (length cannot aim this arm at all, since ten consecutive notes share len=5632; the LBA is the discriminator), one of the b3 reset-* notes (WHICH one drifts run to run with the digit widths in the note text, so the arm derives it from the trail instead of naming it), the step says so on serial the moment its note is refused, every note before it banked and every note after it reads banked=-1, and the medium itself ends at the step immediately before the refused one; the summary says bank=lost at=b3. Sitting 11 shape: the glass names where the medium DIED, not where the ladder noticed'
     'b3-dhcp'  = 'b3=ok with ip=dhcp: the address is LEARNED from the segment and the row proves it, carrying addr=dhcp and the lease the NAT handed out (ip=10.0.2.15 gw=10.0.2.2). The lease facts are what a guess cannot produce'
     'b3-nolease' = 'b3=no-lease with ip=dhcp and -e1000 alone: the card is present and the link is up, and with no NAT there is no DHCP server, so the stage says the SEGMENT did not answer rather than blaming DIAG.CFG. The falsifier for the state'
     'k1-taken' = 'pchk1=taken with -i219: the part powers up at the campaign condition (K1 enabled, Giga_K1_disable clear) and the readback after e1000-init shows the disable bit SET, so the driver step landed'
@@ -840,10 +940,16 @@ function Judge-Vm([string]$name, [string[]]$lines, [string]$disk, [bool]$wantBan
             $states = $states.Clone()
             $states['sink'] = 'ladder-all'
         }
-        # The ESP DIAG.CFG is read only AFTER the bank opens, so no-medium and
-        # fat-full run the default baseline however the subject was built: one
-        # has no medium to carry the file and the other never gets that far.
-        if ($SubjectB3 -and $wantBank -and $states['b3'] -eq 'no-peer') {
+        # Only no-medium runs without the ESP DIAG.CFG: it has no medium to
+        # carry the file, so the sitting's composition never takes effect and
+        # the run is the default baseline. fat-full DOES mount and read the cfg
+        # (its bank WRITE is what fails), so on a sitting it carries that
+        # composition (measured 2026-09-08 on sitting-15: block=skipped, b3
+        # named a peer but had no card, so no-part). So the b3 no-peer -> no-part
+        # substitution applies to every subject arm that reads the cfg, which is
+        # all of them except no-medium; it was gated on wantBank while fat-full
+        # was wrongly believed not to read the cfg.
+        if ($SubjectB3 -and $name -ne 'no-medium' -and $states['b3'] -eq 'no-peer') {
             $states = $states.Clone()
             $states['b3'] = 'no-part'
         }
@@ -860,8 +966,13 @@ function Judge-Vm([string]$name, [string[]]$lines, [string]$disk, [bool]$wantBan
         # that cannot fail (L-FALSIF). They force the stage ON in their own cfg
         # instead, which also makes them New-Variant arms and so exempt from this
         # whole block.
+        # no-medium alone keeps the default baseline: with no medium the ESP
+        # DIAG.CFG is never read, so the sitting's off stages never take effect
+        # and substituting skipped for them would expect a skip the guest never
+        # performs (block reads no-medium there, not skipped). fat-full mounts
+        # and reads the cfg, so its off stages ARE skipped and it belongs here.
         $off = @($SubjectOff | Where-Object { $states.ContainsKey($_) })
-        if ($off.Count) {
+        if ($off.Count -and $name -ne 'no-medium') {
             $states = $states.Clone()
             foreach ($st in $off) { $states[$st] = 'skipped' }
         }
@@ -882,7 +993,7 @@ function Judge-Vm([string]$name, [string[]]$lines, [string]$disk, [bool]$wantBan
         if ($bankNote -and -not $bank.Contains($bankNote)) { return "bank note is [$bank], wanted $bankNote" }
         if ($null -ne $file) { return 'bank=none but DIAG.TXT exists on the disk' }
     }
-    foreach ($st in @('smbios', 'edid', 'cpu', 'pci', 'scene', 'gopmode', 'block', 'xhci', 'sink', 'pch', 'nicsit', 'nicinit', 'nicring', 'b3', 'pchk1', 'asde')) {
+    foreach ($st in @('smbios', 'edid', 'cpu', 'pci', 'scene', 'gopmode', 'block', 'xhci', 'sink', 'pch', 'nicsit', 'nicinit', 'nicring', 'b3', 'lease', 'rtcw', 'pchk1', 'asde')) {
         $row = Field $block "stage=$st "
         if (-not $row) { return "(no $st stage row)" }
         if ($states.ContainsKey($st) -and -not $row.Contains("state=$($states[$st])")) { return "$st row is [$row]" }
@@ -891,6 +1002,25 @@ function Judge-Vm([string]$name, [string[]]$lines, [string]$disk, [bool]$wantBan
         $box = Field $block 'box='; if (-not $box.StartsWith('box=' + $states['box'])) { return "box row is [$box]" }
     }
     if ($name -eq 'esp-cfg' -and -not $bank.Contains('cfg-file=1')) { return "bank row is [$bank], wanted cfg-file=1" }
+    return $expected[$name]
+}
+
+# An arm ABOUT a stage the sitting under test turns OFF cannot exercise its
+# subject: the stage is skipped, the injection is moot, and the death or
+# recovery the arm looks for never happens. Root ruled (2026-09-08) that such
+# an arm belongs under the composition rather than counted as a disagreement:
+# it verifies the sitting skipped the stage and the run reached END, and passes
+# for THIS composition. On a sitting that runs the stage (the default image),
+# $SubjectOff does not name it and the arm does its full job unchanged, so the
+# guard is not a way to accept a stage silently dropped -- it fires only where
+# the bytes under test declared the stage off.
+function Test-StageOff([string]$name, [string[]]$lines, [string]$stage) {
+    if ($SubjectOff -notcontains $stage) { return $null }
+    $b = Get-DiagBlock $lines
+    if ($b.Count -eq 0) { return '(no DIAG1 row on serial)' }
+    if ($b[-1] -ne 'END') { return "(serial did not reach END; last: $($b[-1]))" }
+    $row = Field $b "stage=$stage "
+    if ($row -notmatch 'state=skipped') { return "$stage row is [$row], wanted skipped (the sitting turns $stage off; this arm is about $stage and cannot run here)" }
     return $expected[$name]
 }
 
@@ -959,8 +1089,10 @@ foreach ($name in $names) {
                 if (-not $hit) { $missingList.Add($st) }
             }
             $missing = $missingList -join ', '
+            $so = Test-StageOff 'bank-lost' $lines 'sink'
             $actual['bank-lost'] =
-                if ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
+                if ($so) { $so }
+                elseif ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
                 elseif ($block[-1] -ne 'END') { "(serial did not reach END; last: $($block[-1]))" }
                 elseif (-not $sum) { '(no bank row)' }
                 elseif ($sum -match 'bank=ok') { "the bank still claims ok while the file is short: [$sum]" }
@@ -985,8 +1117,10 @@ foreach ($name in $names) {
             # shape: what fails is the rewrite AFTER the refused stage, so the
             # file on the disk is shorter than the serial. Judge-Vm cannot
             # express that -- its bank arm requires the two to agree.
+            $so = Test-StageOff 'sink-drop' $lines 'sink'
             $actual['sink-drop'] =
-                if ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
+                if ($so) { $so }
+                elseif ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
                 elseif ($block[-1] -ne 'END') { "(serial did not reach END; last: $($block[-1]))" }
                 elseif (-not $sink) { '(no sink stage row)' }
                 elseif (-not $sink.Contains("state=$(if ($SubjectLadder) { 'rung-1-refused' } else { 'died' })")) { "sink row is [$sink]" }
@@ -1010,6 +1144,16 @@ foreach ($name in $names) {
                 $actual['cfg-off'] = Judge-Vm 'cfg-off' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'skipped' }
             }
         }
+        'esp-cfg-off' {
+            $cfg = Join-Path $Work 'DIAG-espoff.CFG'
+            [IO.File]::WriteAllText($cfg, "xhci off`r`n", [Text.ASCIIEncoding]::new())
+            $k = New-Variant 'k-espcfgoff' '' $cfg
+            if (-not $k) { $actual['esp-cfg-off'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
+            else {
+                $lines = Invoke-Vm 'esp-cfg-off' $k $k @()
+                $actual['esp-cfg-off'] = Judge-Vm 'esp-cfg-off' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; xhci = 'skipped' }
+            }
+        }
         'esp-cfg' {
             $cfg = Join-Path $Work 'DIAG.CFG'
             [IO.File]::WriteAllText($cfg, "pci on`n", [Text.ASCIIEncoding]::new())
@@ -1028,6 +1172,57 @@ foreach ($name in $names) {
             else {
                 $lines = Invoke-Vm 'block-oob' $k $k @()
                 $actual['block-oob'] = Judge-Vm 'block-oob' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'write-refused'; sink = 'ok'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part' }
+            }
+        }
+        # THE PAIR THAT SHOWS THE FLUSH DOING GOOD, not merely no harm. Every
+        # other arm here runs on a write-through target, where a BOT WRITE_10
+        # commits in its own data phase and a run with the flush and a run
+        # without it are the same colour (L-FREEDOM, reek 2026-09-07).
+        # `-usb-writeback` makes writes durable only at SYNCHRONIZE CACHE and
+        # drops whatever is uncommitted when the machine stops, which is what a
+        # real write-back cache does at power-off. Read-Bank reads DIAG.TXT out
+        # of the image FILE after codex-vm is killed, and the kill IS the
+        # power-off, so no new machinery is needed.
+        #
+        # The two images differ in ONE call: `flush off` ablates the commit.
+        # Reading a pre-flush KERNEL instead would confound the flush with
+        # everything else that changed in that build (L-CONTROL).
+        'bank-writeback' {
+            $k = New-Variant 'k-wb' '' ''
+            if (-not $k) { $actual['bank-writeback'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
+            else {
+                $lines = Invoke-Vm 'bank-writeback' $k $k @('-usb-writeback')
+                $rows = Read-Bank $k 'bank-writeback'
+                if ($null -eq $rows) {
+                    $actual['bank-writeback'] = 'DIAG.TXT ABSENT after power-off, so the commit did not reach the medium'
+                } else {
+                    $actual['bank-writeback'] = 'bank SURVIVES power-off under -usb-writeback: the flush commits and DIAG.TXT is on the medium after the kill'
+                }
+            }
+        }
+        # `flush off` rides the STUB RING and not the ESP file, and that is the
+        # whole arm. The ESP cfg is read AFTER the bank opens, so a bank write
+        # before the parse still commits: measured 2026-09-07, the ESP form
+        # left 1 commit of 16 and one commit is enough to leave DIAG.TXT on the
+        # medium, which reads exactly like the flush not mattering.
+        'bank-writeback-noflush' {
+            $k = New-Variant 'k-wbnf' "flush off`n" ''
+            if (-not $k) { $actual['bank-writeback-noflush'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
+            else {
+                $lines = Invoke-Vm 'bank-writeback-noflush' $k $k @('-usb-writeback')
+                $rows = Read-Bank $k 'bank-writeback-noflush'
+                $saidOk = @($lines | Where-Object { $_ -match 'bank=ok' }).Count -gt 0
+                # L-VACUOUS: an arm that never reached its condition passes for
+                # the wrong reason. If the guest did not claim bank=ok there was
+                # nothing to disprove, and an ABSENT file means only that the
+                # run never banked.
+                if (-not $saidOk) {
+                    $actual['bank-writeback-noflush'] = 'the guest never said bank=ok, so this arm never reached the condition it exists to test'
+                } elseif ($null -ne $rows) {
+                    $actual['bank-writeback-noflush'] = 'DIAG.TXT PRESENT with flush off, so the target committed without being asked and this bed cannot separate the flush'
+                } else {
+                    $actual['bank-writeback-noflush'] = 'bank LOST at power-off with flush off: DIAG.TXT ABSENT from the medium while the guest still says bank=ok'
+                }
             }
         }
         'sink-chunk' {
@@ -1108,8 +1303,10 @@ foreach ($name in $names) {
             $row = Field $block '  wr='
             Write-Host "  sink-revived: $sink"
             Write-Host "  sink-revived: $row"
+            $so = Test-StageOff 'sink-revived' $lines 'sink'
             $actual['sink-revived'] =
-                if ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
+                if ($so) { $so }
+                elseif ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
                 elseif ($sink -notmatch 'state=recovered') { "sink row is [$sink], wanted state=recovered (the write went through on the retry)" }
                 elseif ($row -notmatch 'rty=3') { "answer row is [$row], wanted rty=3 (msc-retry-ok: the reset ran AND the retry carried it)" }
                 elseif ($sum -notmatch 'bank=ok') { "summary row is [$sum], wanted bank=ok (the bank must survive a recovered write)" }
@@ -1247,7 +1444,7 @@ foreach ($name in $names) {
             if (-not $k) { $actual['b3-pass'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
                 $lines = Invoke-Vm 'b3-pass' $k $k @('-e1000', '-e1000-nat')
-                $v = Judge-Vm 'b3-pass' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'ok'; nicinit = 'ok'; nicring = 'frames'; b3 = 'ok' }
+                $v = Judge-Vm 'b3-pass' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'ok'; nicinit = 'ok'; nicring = 'frames'; b3 = 'ok'; lease = 'ok'; rtcw = 'ignored' }
                 # The mid-run bank is a claim the final file cannot carry,
                 # because the ladder rewrites it when the stage returns. The
                 # serial "entering" lines carry each note's write result, so
@@ -1292,17 +1489,20 @@ foreach ($name in $names) {
             # AND THE ARM RECORDS A DISAGREEMENT WITH THE CANDIDATE, which is
             # the reason to read its rows rather than its verdict. Measured
             # 2026-08-21: the first observable of bring-up in this ladder is
-            # RCTL.EN (not CTRL.SLU) and it is written by NICINIT, so the
-            # medium dies at nicinit and the summary reads
-            # `bank=lost at=nicinit`. Sitting 11 lost the bank at B3's
-            # rings-link, with nicinit and nicring banked whole ahead of it.
-            # So on metal the FIRST bring-up did not kill the medium and a
-            # later one did, and the strict form of the candidate -- any I219
-            # bring-up kills MSC -- is already refused by sitting 11's own
-            # trail. What survives is the weaker and still useful form, that
-            # SOME bring-up does. Do not read this arm's `at=nicinit` as the
-            # metal shape reproduced; it is the candidate's own prediction,
-            # and the gap between the two rows is the finding.
+            # RCTL.EN (not CTRL.SLU). Since the record channel (DiagRecord)
+            # that write is the CHANNEL'S bring-up, ahead of the bank, so the
+            # first bulk write after it is the bank's own open and the bank
+            # never forms: `bank=none write refused`, and the peer holds the
+            # whole trail (`record=peer ... lost=0`), which is the last
+            # sitting's instrument doing its one job. Sitting 11 lost the bank
+            # at B3's rings-link, with nicinit and nicring banked whole ahead
+            # of it. So on metal the FIRST bring-up did not kill the medium
+            # and a later one did, and the strict form of the candidate --
+            # any I219 bring-up kills MSC -- is already refused by sitting
+            # 11's own trail. What survives is the weaker and still useful
+            # form, that SOME bring-up does. This arm's death at the channel's
+            # bring-up is the candidate's own prediction, not the metal shape
+            # reproduced, and the gap between the two is the finding.
             $port = Get-FreePort
             $job = Start-Peer $port 'echo'
             $cfg = Join-Path $Work 'nic-kills-msc.cfg'
@@ -1334,8 +1534,9 @@ foreach ($name in $names) {
                     # it (the reading it records is RCTL.EN, from nicinit).
                     elseif ($armed -ne 'RCTL.EN') { "the first bring-up observable is now [$armed], not RCTL.EN: re-derive which stage writes it before trusting at= below" }
                     elseif ($vmErr -notmatch 'die-on-nic: target DIED') { 'the lever armed and never fired: no bulk write followed bring-up, so the medium was never killed' }
-                    elseif ($sum -notmatch 'bank=lost') { "summary row is [$sum], wanted bank=lost" }
-                    elseif ($sum -notmatch 'at=nicinit') { "summary row is [$sum], wanted at=nicinit (the first bring-up is nicinit's; see this arm's note on sitting 11)" }
+                    elseif ($sum -notmatch 'bank=none') { "summary row is [$sum], wanted bank=none (the channel's bring-up precedes the bank, so the bank's own open is the write that dies)" }
+                    elseif ($sum -notmatch 'write refused') { "summary row is [$sum], wanted write refused" }
+                    elseif ($sum -notmatch 'record=peer .*lost=0') { "summary row is [$sum], wanted record=peer ... lost=0 (the peer must hold the trail the medium could not)" }
                     # THE HALF THAT MAKES IT SITTING 11'S SHAPE rather than a
                     # plainly dead medium: the NIC conversation completes with
                     # the medium gone underneath it. b3 reaching ok here is
@@ -1349,6 +1550,61 @@ foreach ($name in $names) {
                     # to the payload, which is a different reading entirely.
                     elseif ($banked.Count) { "a b3 step note banked after the medium died: [$($banked[0])]" }
                     else { $expected['nic-kills-msc'] }
+            }
+            Stop-Peer $job
+        }
+        'b3-record' {
+            # THE LAST SITTING'S INSTRUMENT. The peer appends every byte it is
+            # sent to a raw file; the arm requires that file to open with the
+            # send token, to equal DIAG.TXT row for row (so the lines banked
+            # AFTER b3 -- pchk1, asde, the deferred stages, the summary and the
+            # verdicts -- arrived by the live sends and not only at connect),
+            # every live ship on serial to have completed, and the summary row
+            # to say lost=0. A channel that shipped once at connect and never
+            # again fails the row compare; one that never armed fails the
+            # summary.
+            $port = Get-FreePort
+            $rec = Join-Path $Work 'b3-record.peer'
+            Remove-Item $rec -ErrorAction SilentlyContinue
+            $job = Start-Peer $port 'echo' $rec
+            $cfg = Join-Path $Work 'b3-record.cfg'
+            Set-Content $cfg "b3 peer=10.0.2.2:$port ip=10.0.2.15 expect=codex-diag-b3`n" -NoNewline
+            $k = New-Variant 'b3-record' '' $cfg
+            if (-not $k) { $actual['b3-record'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
+            else {
+                $lines = Invoke-Vm 'b3-record' $k $k @('-e1000', '-e1000-nat')
+                $v = Judge-Vm 'b3-record' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'ok'; nicinit = 'ok'; nicring = 'frames'; b3 = 'ok' }
+                Stop-Peer $job; $job = $null
+                if ($v -eq $expected['b3-record']) {
+                    $block = Get-DiagBlock $lines
+                    $file = Read-Bank $k 'b3-record'
+                    $recText = if (Test-Path $rec) { [IO.File]::ReadAllText($rec) } else { '' }
+                    $recLines = @(($recText -replace "`r", '') -split "`n")
+                    while ($recLines.Count -gt 0 -and $recLines[-1] -eq '') { $recLines = @($recLines[0..($recLines.Count - 2)]) }
+                    $ships = @($lines | Where-Object { $_ -match '^record entering ship ' })
+                    $notOk = @($ships | Where-Object { $_ -notmatch 'state=ok$' })
+                    $b3row = ($block | Where-Object { $_ -match '^  pe=' } | Select-Object -First 1)
+                    $open = Field $block 'record='
+                    $sum = Field $block 'summary run='
+                    $v = if (-not $recText) { 'the peer recorded nothing' }
+                         elseif ($open -notmatch '^record=peer opened ') { "the channel did not open before the bank: [$open]" }
+                         elseif ($recLines[0] -notmatch '^DIAG1 ') { "the record does not open with the passive record's first row: [$($recLines[0])]" }
+                         elseif ($b3row -notmatch 'channel=open') { "b3 answer row is [$b3row], wanted channel=open (the channel was open before b3 ran)" }
+                         elseif ($ships.Count -lt 8) { "only $($ships.Count) live ship(s) on serial; wanted one per bank step from the bank row to the summary" }
+                         elseif ($notOk.Count) { "a live ship did not complete: [$($notOk[0])]" }
+                         elseif ($sum -notmatch 'record=peer .*lost=0') { "summary row is [$sum], wanted record=peer ... lost=0" }
+                         elseif ($null -eq $file) { 'no DIAG.TXT to read the record back against' }
+                         else {
+                             # b3's own send puts the token on the wire between
+                             # two ships; it is not a bank row and the compare
+                             # drops it, as it drops the entering lines.
+                             $want = @($file | Where-Object { $_ -ne 'END' })
+                             $got = @($recLines | Where-Object { $_ -ne 'codex-diag-b3' })
+                             $d = Compare-Rows $want $got
+                             if ($d) { "peer record vs DIAG.TXT: $d" } else { $expected['b3-record'] }
+                         }
+                }
+                $actual['b3-record'] = $v
             }
             Stop-Peer $job
         }
@@ -1373,7 +1629,17 @@ foreach ($name in $names) {
             $port = Get-FreePort
             $job = Start-Peer $port 'silent'
             $cfg = Join-Path $Work 'b3-short.cfg'
-            Set-Content $cfg "b3 peer=10.0.2.2:$port ip=10.0.2.15 sendx=8192`n" -NoNewline
+            # record=off: this arm is the SEND-SIDE falsifier, and `short` is a
+            # race between the flood and the ACKs coming back through the
+            # emulated ring (the NAT queues and ACKs guest data without bound,
+            # so the stall is on our rexmit queue, not the peer). The record
+            # channel opens nine connections to this same peer ahead of b3,
+            # which perturbs that race and let the 106 KB complete (no-reply,
+            # measured 2026-09-08). Turning the channel off restores the single
+            # b3 connection this arm was written against; the channel is proven
+            # by b3-record, and b3 still carries the whole banked record on its
+            # own first send when the channel is off.
+            Set-Content $cfg "b3 peer=10.0.2.2:$port ip=10.0.2.15 sendx=8192 record=off`n" -NoNewline
             $k = New-Variant 'b3-short' '' $cfg
             if (-not $k) { $actual['b3-short'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
@@ -1391,7 +1657,7 @@ foreach ($name in $names) {
             $k = New-Variant 'b3-refused' '' $cfg
             if (-not $k) { $actual['b3-refused'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
-                $lines = Invoke-Vm 'b3-refused' $k $k @('-e1000', '-e1000-nat') 90
+                $lines = Invoke-Vm 'b3-refused' $k $k @('-e1000', '-e1000-nat') 180
                 $actual['b3-refused'] = Judge-Vm 'b3-refused' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'ok'; nicinit = 'ok'; nicring = 'frames'; b3 = 'refused' }
             }
         }
@@ -1413,7 +1679,13 @@ foreach ($name in $names) {
             if (-not $k) { $actual['asde-differs'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
                 $lines = Invoke-Vm 'asde-differs' $k $k @('-e1000', '-e1000-nat', '-e1000-phy-link', '-e1000-asde') 90
-                $actual['asde-differs'] = Judge-Vm 'asde-differs' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; asde = 'differs' }
+                # New-StageOnCfg forces asde on and carries the sitting's own
+                # composition behind it, so a sitting that turns a stage off
+                # shows that stage skipped here too. asde stays asserted, so the
+                # arm still falsifies on its own subject.
+                $st = @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; asde = 'differs' }
+                foreach ($o in $SubjectOff) { if ($o -ne 'asde' -and $st.ContainsKey($o)) { $st[$o] = 'skipped' } }
+                $actual['asde-differs'] = Judge-Vm 'asde-differs' $lines $k $true '' $st
             }
         }
         'asde-ctrlro' {
@@ -1421,7 +1693,9 @@ foreach ($name in $names) {
             if (-not $k) { $actual['asde-ctrlro'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
                 $lines = Invoke-Vm 'asde-ctrlro' $k $k @('-e1000', '-e1000-nat', '-e1000-ctrl-ro') 90
-                $actual['asde-ctrlro'] = Judge-Vm 'asde-ctrlro' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; asde = 'ctrl-ro' }
+                $st = @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; asde = 'ctrl-ro' }
+                foreach ($o in $SubjectOff) { if ($o -ne 'asde' -and $st.ContainsKey($o)) { $st[$o] = 'skipped' } }
+                $actual['asde-ctrlro'] = Judge-Vm 'asde-ctrlro' $lines $k $true '' $st
             }
         }
         'b3-noaddr' {
@@ -1476,8 +1750,10 @@ foreach ($name in $names) {
             $sum = ($block | Where-Object { $_ -match 'bank=' } | Select-Object -Last 1)
             Write-Host "  sink-dies: $pre"
             Write-Host "  sink-dies: $sum"
+            $so = Test-StageOff 'sink-dies' $lines 'sink'
             $actual['sink-dies'] =
-                if ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
+                if ($so) { $so }
+                elseif ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
                 elseif ($pre -notmatch 'bank=ok') { "before-deferred row is [$pre], wanted bank=ok (the run must be healthy up to the sink)" }
                 elseif ($sum -notmatch 'bank=lost') { "summary row is [$sum], wanted bank=lost" }
                 elseif ($sum -notmatch 'at=sink') { "summary row is [$sum], wanted at=sink" }
@@ -1536,7 +1812,15 @@ foreach ($name in $names) {
             $v = Judge-Vm 'nic-invisible' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok' }
             if ($v -eq $expected['nic-invisible']) {
                 $an = Field (Get-DiagBlock $lines) '  m='
-                if ($an -notmatch 'pre=0\b') { $v = "answer row is [$an], wanted pre=0 (the frame must arrive INSIDE this stage)" }
+                # The pre=0 fence says the armed frame arrives INSIDE this stage:
+                # -e1000-inject-armed releases it on the FIRST GPRC read. On a
+                # b3-early sitting (a peer is configured, so the record channel
+                # brings the NIC up before this stage) that first read is the
+                # channel's, so pre is nonzero here -- root's ruling 2026-09-08:
+                # key the fence to the composition. The invisible reading itself
+                # (gp>0, rdh=0, dd=0) still stands, so the arm still falsifies.
+                $preWant = if ($SubjectB3) { 'pre=[1-9]' } else { 'pre=0\b' }
+                if ($an -notmatch $preWant) { $v = "answer row is [$an], wanted $preWant (b3-early makes pre nonzero; pre=0 when the channel does not run first)" }
                 elseif ($an -notmatch 'gp=[1-9]') { $v = "answer row is [$an], wanted gp above zero" }
                 elseif ($an -notmatch 'rdh=0\b') { $v = "answer row is [$an], wanted rdh=0 (nothing written back)" }
                 elseif ($an -notmatch 'dd=0\b') { $v = "answer row is [$an], wanted dd=0" }
@@ -1554,7 +1838,8 @@ foreach ($name in $names) {
             $v = Judge-Vm 'nic-armed' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicring = 'frames' }
             if ($v -eq $expected['nic-armed']) {
                 $an = Field (Get-DiagBlock $lines) '  m='
-                if ($an -notmatch 'pre=0\b') { $v = "answer row is [$an], wanted pre=0" }
+                $preWant = if ($SubjectB3) { 'pre=[1-9]' } else { 'pre=0\b' }
+                if ($an -notmatch $preWant) { $v = "answer row is [$an], wanted $preWant (b3-early makes pre nonzero; the channel reads GPRC first)" }
                 elseif ($an -notmatch 'gp=[1-9]') { $v = "answer row is [$an], wanted gp above zero" }
                 elseif ($an -notmatch 'rdh=[1-9]') { $v = "answer row is [$an], wanted rdh above zero (the frame IS visible here)" }
             }
@@ -1574,7 +1859,8 @@ foreach ($name in $names) {
             $v = Judge-Vm 'nic-k1-off' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicring = 'frames' }
             if ($v -eq $expected['nic-k1-off']) {
                 $an = Field (Get-DiagBlock $lines) '  m='
-                if ($an -notmatch 'pre=0\b') { $v = "answer row is [$an], wanted pre=0 (the frame must arrive INSIDE this stage)" }
+                $preWant = if ($SubjectB3) { 'pre=[1-9]' } else { 'pre=0\b' }
+                if ($an -notmatch $preWant) { $v = "answer row is [$an], wanted $preWant (b3-early makes pre nonzero; the channel reads GPRC first)" }
                 elseif ($an -notmatch 'gp=[1-9]') { $v = "answer row is [$an], wanted gp above zero" }
                 elseif ($an -notmatch 'rdh=[1-9]') { $v = "answer row is [$an], wanted rdh above zero (K1 off at power-up is no stall, so the frame IS visible)" }
             }
@@ -1620,19 +1906,21 @@ foreach ($name in $names) {
             # clocked wait takes the clocked path against a counter that never
             # moves, bounded only by its read fuel. b3's clock control at entry
             # reads the counter across 100000 reads and refuses before bring-up.
-            # nicsit, nicinit and nicring are turned off by this arm's own cfg,
+            # nicinit and nicring are turned off by this arm's own cfg,
             # because nicinit's link wait would spend 409 million STATUS reads
-            # against the same stuck clock before b3 ever ran. The arm is also
-            # the first to rehearse a cfg-off composition on a New-Variant arm,
-            # so the three skipped rows are asserted outright rather than
-            # substituted.
+            # against the same stuck clock before b3 ever ran. nicsit runs:
+            # it is the last passive stage, ahead of the ESP file that could
+            # turn it off, and its register reads spend no clock, so its row
+            # reads ok here and is asserted so. The arm is also the first to
+            # rehearse a cfg-off composition on a New-Variant arm, so the two
+            # skipped rows are asserted outright rather than substituted.
             $cfg = Join-Path $Work 'b3-clockstuck.cfg'
-            Set-Content $cfg "b3 peer=10.0.2.2:9300 ip=10.0.2.15`nnicsit off`nnicinit off`nnicring off`n" -NoNewline
+            Set-Content $cfg "b3 peer=10.0.2.2:9300 ip=10.0.2.15`nnicinit off`nnicring off`n" -NoNewline
             $k = New-Variant 'b3-clockstuck' '' $cfg
             if (-not $k) { $actual['b3-clockstuck'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
                 $lines = Invoke-Vm 'b3-clockstuck' $k $k @('-e1000', '-hpet-frozen') 90
-                $v = Judge-Vm 'b3-clockstuck' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'skipped'; nicinit = 'skipped'; nicring = 'skipped'; b3 = 'clock-stuck' }
+                $v = Judge-Vm 'b3-clockstuck' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'ok'; nicinit = 'skipped'; nicring = 'skipped'; b3 = 'clock-stuck' }
                 # The refusal must carry its own reading: the control is the
                 # counter, not the rate, and a row that said clock-stuck with
                 # clk=y would be a verdict with no measurement under it.
@@ -1652,8 +1940,46 @@ foreach ($name in $names) {
             # step SAYING so where it happens. The death is keyed to the thing
             # under test and not to an ordinal: every bank rewrite takes a fresh
             # cluster (census: lba 3489, 3494, 3500, ... climbing) and its length
-            # steps with the file, so -usb-bot-die-len 5632 at lba >= 3400 is
-            # the first ELEVEN-SECTOR file write.
+            # steps with the file.
+            #
+            # RE-DERIVED A THIRD TIME 2026-09-07 (red), AND THE KEY IS AN LBA
+            # NOW RATHER THAN "the first eleven-sector write". Adding two
+            # ladder stages ahead of b3 (kbd 9, mscalign 10) lengthened the
+            # bank by five lines, and the first eleven-sector write became
+            # b3's OWN FIRST note, [clock], which is outside the reset
+            # sequence: the arm read MISMATCH and was right to. The old key
+            # keyed on a FILE SIZE crossing 5121 bytes, which every stage
+            # ahead of b3 moves, so it had to be re-derived on any ladder
+            # change and nothing said so.
+            #
+            # LENGTH CANNOT BE THE DISCRIMINATOR AT ALL, which is what the two
+            # earlier re-derivations were fighting: 5121..5632 all round to
+            # eleven sectors, so TEN CONSECUTIVE NOTES share len=5632.
+            # Measured on b3-pass (live medium), one note per write, eleven
+            # LBAs apart: 3642 clock, 3653 reset-imc, 3664 reset-ctrl-read,
+            # 3675 reset-rst-write, 3686 reset-await-reset, 3697
+            # reset-settle-mdio, 3708 reset-imc-again, 3719 reset-icr, then
+            # 3730 rings-quiesce leaves the reset sequence. The die is aimed
+            # at 3686, the MIDDLE of that window, so it has three notes of
+            # margin in each direction instead of sitting on a boundary; one
+            # added or removed ladder note moves everything by eleven LBAs.
+            #
+            # DERIVE FROM THIS ARM AND NOT FROM b3-pass: this arm runs
+            # ladder=off from its own recipe, so its bank sizes differ and the
+            # note landing on a given LBA is not the one b3-pass puts there.
+            # Measured here 2026-09-08 (fester), after the record channel added
+            # one banked line ahead of b3 (record=peer opened) and two stages
+            # after b3 (lease 17, rtcw 18): the census dies on clock at lba
+            # 3686, so the seven reset-* steps span 3697 (reset-imc) to 3763
+            # (reset-icr). The die is aimed at 3730, reset-await-reset, the
+            # fourth of the seven: three notes of margin in each direction, and
+            # one added or removed ladder note ahead of b3 moves everything by
+            # eleven LBAs.
+            #
+            # TO RE-DERIVE: run THIS arm with -Keep, pair the len=5632 writes
+            # in b3-banklost.census in order with the "b3 entering <step>"
+            # lines in b3-banklost.out, and aim mid-sequence. Do that whenever
+            # a stage is added or removed anywhere ahead of b3.
             #
             # RE-DERIVED 2026-08-24 (blu), AND THE KEY HAD 20 BYTES OF MARGIN.
             # Eleven sectors begins at 5121 bytes. This block used to say the
@@ -1692,7 +2018,7 @@ foreach ($name in $names) {
             $k = New-Variant 'b3-banklost' '' $cfg
             if (-not $k) { $actual['b3-banklost'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
-                $lines = Invoke-Vm 'b3-banklost' $k $k @('-e1000', '-e1000-nat', '-usb-bot-die-len', '5632', '-usb-bot-die-lba', '3400') 240
+                $lines = Invoke-Vm 'b3-banklost' $k $k @('-e1000', '-e1000-nat', '-usb-bot-die-len', '5632', '-usb-bot-die-lba', '3730') 240
                 $block = Get-DiagBlock $lines
                 $notes = @($lines | Where-Object { $_ -match '^b3 entering (.+?) (ctrl=\d+ |settled=\d+ )?heap=\d+ banked=(-?\d+)$' })
                 $lost = @($lines | Where-Object { $_ -match '^b3 bank lost at (.+)$' })
@@ -1709,7 +2035,15 @@ foreach ($name in $names) {
                 elseif ($block[-1] -ne 'END') { $v = "(serial did not reach END; last: $($block[-1]))" }
                 elseif (-not $lost.Count) { $v = 'no "b3 bank lost at" line: the step never said its note was refused' }
                 else {
-                    $first = [regex]::Match($lost[0], '^b3 bank lost at (.+)$').Groups[1].Value
+                    # THE SUFFIX MUST COME OFF BOTH SIDES OR THE COMPARISON BELOW
+                    # CANNOT MATCH. The "b3 entering" regex already splits
+                    # ctrl=/settled= off the step name; this one did not, so a
+                    # death landing on reset-rst-write or reset-settle-mdio
+                    # produced "no b3 entering line for [reset-rst-write ctrl=64]"
+                    # while the line was sitting there. Latent until 2026-09-07,
+                    # because every earlier key happened to land on a suffix-free
+                    # step; re-aiming the die is what found it.
+                    $first = [regex]::Match($lost[0], '^b3 bank lost at (.+?)( ctrl=\d+| settled=\d+)?$').Groups[1].Value
                     $firstIdx = -1
                     for ($i = 0; $i -lt $notes.Count; $i++) { if ([regex]::Match($notes[$i], '^b3 entering (.+?) (ctrl=\d+ |settled=\d+ )?heap=\d+ banked=(-?\d+)$').Groups[1].Value -eq $first) { $firstIdx = $i; break } }
                     if ($first -notlike 'reset-*') { $v = "the first refused note is [$first], not one of the reset-* steps: the die landed outside the b3 reset sequence, re-derive the key from the census" }

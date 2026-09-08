@@ -50,7 +50,7 @@ fn va_render(gid : i32, frame : i32) -> i32 {
   let w0 = va_edge(bx, by, cx, cy, px, py);
   let w1 = va_edge(cx, cy, ax, ay, px, py);
   let w2 = va_edge(ax, ay, bx, by, px, py);
-  let inside = ((((w0 >= 0) & (w1 >= 0)) & (w2 >= 0)) | (((w0 <= 0) & (w1 <= 0)) & (w2 <= 0)));
+  let inside = ((((w0 >= 0) && (w1 >= 0)) && (w2 >= 0)) || (((w0 <= 0) && (w1 <= 0)) && (w2 <= 0)));
   if ((inside == false)) {
   return (((14 * 65536) + (16 * 256)) + 24);
   } else {

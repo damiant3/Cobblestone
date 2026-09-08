@@ -1,0 +1,86 @@
+Chapter: NetRecvHeapTest
+
+  cites Foreword chapter Console
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+
+ `ProtocolStack.md`, "Prerequisite Hardening": the receive loops recurse without
+ restoring the heap on the branch where a frame arrives and carries no payload
+ (`NetIO.codex:388` and `:420`). This arm is the MEASUREMENT for that repair,
+ not the repair.
+
+ What it measures is the half a repair can get wrong. The retention below does
+ NOT vary with frame length, so the survivor is the rebuilt result and session
+ records rather than a copy of the frame, and a repair aimed only at the
+ driver's frame buffer leaves the figure unchanged.
+
+ THE ARM GOES RED WHEN THE REPAIR LANDS, and that is deliberate. The design's
+ completion test is that a poll producing no message retains ZERO, so whoever
+ lands the repair updates the expectation to zero and records both numbers in
+ the CL.
+
+ The instrument needs no new primitive: `__heap-save` answers an Integer and the
+ delta between two marks is the bytes allocated between them.
+
+Section: Fixtures
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if n <= 0 then acc else zeros (n - 1) (acc & [0])
+
+  fresh-transport : Integer -> TcpTransportState
+  fresh-transport (dummy) =
+    transport-new-with-cap (net-session-new [1, 2, 3, 4, 5, 6] [10, 0, 0, 2] [10, 0, 0, 1] 4000 7 [10, 0, 0, 1] 1000) 4096
+
+  spin : TcpTransportState, List Integer, Integer -> Integer
+  spin (ts) (frame) (n) =
+    if n <= 0 then 0
+    else let r = transport-process-frame ts frame
+    in spin (r.transport) frame (n - 1)
+
+  retained-per-frame : List Integer, Integer -> Integer
+  retained-per-frame (frame) (n) =
+    let ts = fresh-transport 0
+    in let a = __heap-save
+    in let x = spin ts frame n
+    in let b = __heap-save
+    in (b - a) / n
+
+ THE SECOND TERM is the frame itself. `e1000-read-bytes` builds the frame with
+ one `list-push` per byte (`E1000e.codex:1178`), and `list-push` advances the
+ frontier by the whole of a doubled capacity (`CostModel.md` 5.1), so the cost
+ is measured here in the driver's own shape rather than reasoned about. The loop
+ below is that shape and not a call into the driver, which would need a card.
+
+  push-bytes : Integer, Integer, List Integer -> List Integer
+  push-bytes (i) (len) (acc) =
+    if i >= len then acc
+    else push-bytes (i + 1) len (list-push acc 7)
+
+  frame-build-cost : Integer -> Integer
+  frame-build-cost (len) =
+    let a = __heap-save
+    in let f = push-bytes 0 len []
+    in let b = __heap-save
+    in b - a
+
+ THE ARM ASSERTS SHAPE AND NOT EXACT BYTE COUNTS, deliberately. An expectation
+ carrying the measured numbers goes red on any allocator or codegen change as
+ well as on the repair, and the next reader updates the number without learning
+ why it moved. The counts belong to `ProtocolStack.md`, which carries them with
+ the date they were taken; what belongs HERE is the shape a repair changes.
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let small = zeros 60 []
+    in let big = zeros 1514 []
+    in let r-small = retained-per-frame small 100
+    in let r-big = retained-per-frame big 100
+    in act
+      print-line-uni ("a poll that produces no message still retains: " & show (r-small > 0))
+      print-line-uni ("the retention ignores frame length, so the survivor is not a copy of the frame: " & show (r-small == r-big))
+      print-line-uni ("building the frame costs more than the records retain: " & show (frame-build-cost 1514 > r-big))
+      print-line-uni ("and the frame cost DOES grow with frame length: " & show (frame-build-cost 1514 > frame-build-cost 60))
+    end
+  end

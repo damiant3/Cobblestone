@@ -161,7 +161,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-nim-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-nim-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-nim-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-nim-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-nim-expr-at c arities (depth + 1) & ": " & emit-nim-expr-at t arities (depth + 1) & " else: " & emit-nim-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(block: (let " & nim-sanitize name & " = " & emit-nim-expr-at val arities (depth + 1) & "; " & emit-nim-expr-at body arities (depth + 1) & "))"
@@ -187,9 +187,25 @@ Section: Expression Emission
    else if n == "Nothing" then "nil"
    else nim-sanitize n
 
-  emit-nim-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-nim-binary (op) (l) (r) (arities) =
+ Nim raises OverflowDefect on a signed `+` when overflow checks are on, which
+ is the plain arm. It has no `&+`: the wrapping band is spelled by going
+ through `uint`, whose arithmetic wraps by definition, and casting back. The
+ plain arm rests on a COMPILER SETTING rather than on the language, since
+ `-d:release` turns the checks off unless `--overflowChecks:on` is passed.
+
+  nim-int-arith : Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  nim-int-arith (sym) (l) (r) (ty) (arities) =
+   let a = emit-nim-expr l arities
+   in let b = emit-nim-expr r arities
+   in if int-ty-wraps ty then "cast[int](cast[uint](" & a & ") " & sym & " cast[uint](" & b & "))"
+   else "(" & a & " " & sym & " " & b & ")"
+
+  emit-nim-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-nim-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> nim-int-arith "+" l r ty arities
+    is IrSubInt -> nim-int-arith "-" l r ty arities
+    is IrMulInt -> nim-int-arith "*" l r ty arities
     is IrAppendText -> "(" & emit-nim-expr l arities & " & " & emit-nim-expr r arities & ")"
     is IrAppendList -> "(" & emit-nim-expr l arities & " & " & emit-nim-expr r arities & ")"
     is IrConsList -> "(@[" & emit-nim-expr l arities & "] & " & emit-nim-expr r arities & ")"
@@ -329,7 +345,11 @@ Section: Apply Emission
    else let idx = nim-find-builtin nim-builtin-names n 0
    in if idx >= 0 then emit-nim-builtin-by-idx idx n args arities
    else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then nim-sanitize n & "(" & emit-nim-apply-args args arities 0 & ")"
-        else nim-sanitize n & "(" & emit-nim-apply-args args arities 0 & ")"
+        else let ar = lookup-arity arities n
+        in if ar < 1 then emit-nim-curried (nim-sanitize n) args arities 0
+           else if list-length args == ar then nim-sanitize n & "(" & emit-nim-apply-args args arities 0 & ")"
+           else if list-length args < ar then emit-nim-partial n args arities (ar - list-length args)
+           else emit-nim-curried (nim-sanitize n & "(" & emit-nim-apply-args-upto args arities 0 ar & ")") args arities ar
    else emit-nim-expr-curried original arities
 
   emit-nim-apply : IRExpr, List ArityEntry -> Text
@@ -340,6 +360,42 @@ Section: Apply Emission
    in when root
     is IrName (n) (ty) (sp) -> emit-nim-apply-named n ty args arities e
     is otherwise -> emit-nim-expr-curried e arities
+
+ Nim calls a proc value by juxtaposition, so an application past the callee's
+ arity calls at the arity and applies the surplus one argument at a time. A
+ definition applied to fewer arguments than it takes is eta-wrapped.
+
+  emit-nim-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-nim-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-nim-expr (list-at args i) arities & ")"
+   in emit-nim-curried next args arities (i + 1)
+
+  emit-nim-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-nim-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-nim-expr (list-at args i) arities
+   else emit-nim-expr (list-at args i) arities & ", " & emit-nim-apply-args-upto args arities (i + 1) n
+
+  emit-nim-partial-open : Integer, Integer -> Text
+  emit-nim-partial-open (i) (count) =
+   if i == count then ""
+   else "(proc(_p" & integer-to-text i & "_: auto): auto = " & emit-nim-partial-open (i + 1) count
+
+  emit-nim-partial-close : Integer -> Text
+  emit-nim-partial-close (count) =
+   if count == 0 then "" else ")" & emit-nim-partial-close (count - 1)
+
+  emit-nim-partial-params : Integer, Integer -> Text
+  emit-nim-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-nim-partial-params (i + 1) count
+
+  emit-nim-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-nim-partial (n) (args) (arities) (short) =
+   let call = nim-sanitize n & "(" & emit-nim-apply-args args arities 0 & ", " & emit-nim-partial-params 0 short & ")"
+   in emit-nim-partial-open 0 short & call & emit-nim-partial-close short
 
   emit-nim-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-nim-apply-args (args) (arities) (i) =
@@ -381,6 +437,30 @@ Section: Chapter Emission
    in let types-text = emit-nim-type-defs type-defs 0
    in let defs-text = emit-nim-defs (m.defs) 0 arities
    in header & nim-text-builtins & types-text & defs-text & nim-sanitize opening-entry-point & "()\n"
+
+  emit-nim-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-nim-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import tables, math\n\n"
+   in let types-text = emit-nim-type-defs type-defs 0
+   in header & nim-text-builtins & types-text
+
+  emit-nim-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-nim-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import tables, math\n\n"
+   in let types-text = emit-nim-type-defs type-defs 0
+   in nim-sanitize opening-entry-point & "()\n"
+
+  emit-nim-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-nim-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import tables, math\n\n"
+   in let types-text = emit-nim-type-defs type-defs 0
+   in arities
+
+  emit-nim-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-nim-chapter-stream-def (m) (v) (i) = emit-nim-def (list-at (m.defs) i) v
 
  strutils' `replace` inserts between every character when the needle is
  empty, `split` on an empty separator yields the characters, and `parseInt`

@@ -9,6 +9,9 @@ param(
     [string]$Atom = 'error',  # -Census: the wire atom to count
     [string]$CorpusDir = '',  # -Census: default codex\test
     [int]$Limit = 0   # -Census: 0 is the whole corpus; a cap is REPORTED, never silent
+    ,[switch]$Disagree   # census defs where one NAME carries two types, one of them a tvar
+    ,[string[]]$Programs = @()   # -Disagree: run these named programs instead of the corpus
+    ,[int]$Expect = -1   # -Disagree: refuse if the site count is not this. -1 reports only
 )
 
 # Does the IR carry what the checker knew?
@@ -207,6 +210,162 @@ function Write-AtomCensus {
     }
 }
 
+# Read one balanced s-expression starting at $i, or one bare atom. Quoted names
+# inside a type (ctd "Foo") hold parens of their own on occasion, so the scan
+# tracks the quote state rather than counting parens blind.
+function Read-SexprAt {
+    param([string]$s, [int]$i)
+    if ($i -ge $s.Length) { return '' }
+    if ($s[$i] -ne '(') {
+        $j = $i
+        while ($j -lt $s.Length -and $s[$j] -notin @(' ', ')')) { $j++ }
+        return $s.Substring($i, $j - $i)
+    }
+    $depth = 0; $inq = $false; $j = $i
+    while ($j -lt $s.Length) {
+        $c = $s[$j]
+        if ($inq) {
+            if ($c -eq '\') { $j += 2; continue }
+            if ($c -eq '"') { $inq = $false }
+        } elseif ($c -eq '"') { $inq = $true }
+        elseif ($c -eq '(') { $depth++ }
+        elseif ($c -eq ')') { $depth--; if ($depth -eq 0) { return $s.Substring($i, $j - $i + 1) } }
+        $j++
+    }
+    return ''
+}
+
+# THE STALE-INSTANTIATION SIGNATURE, and it is not an atom, which is why the
+# -Census arm cannot see this class at all. When a desugared node is built with
+# synthetic-span the checker records nothing for it (record-expr-type skips a
+# synthetic span by design), so its lowering asks and gets ErrorTy, and the cell
+# keeps whatever polymorphic type came down from the callee. The def then
+# DISAGREES WITH ITSELF: one name is bound or used as (tvar N) at one site and
+# carries a concrete type at another, in the same def. That self-disagreement is
+# the signature, and it is legal-looking: nothing in the text says the checker
+# had solved it.
+#
+# The first cut of this arm asked instead whether a tvar was FREE in its def, and
+# that question cannot be asked of this wire at all: lowering strips foralls
+# (strip-forall-ty, deep-resolve on ForAllTy), so over 615 programs not one def
+# emitted a `forall` token and every flagged def classified BARE by construction,
+# list-map-generic included. An instrument that cannot return the other answer is
+# not measuring (L-FALSIF). Self-disagreement needs no binder: every name on the
+# wire carries its own type, at every site.
+#
+# Text, not tree: (param "x" T), (let "x" T ...), (var-pat "x" T) and (name "x" T)
+# are the four sites where the emitter writes a name beside its type
+# (Emit/IRTextEmitter.codex 362, 387, 420, 446), so a per-def scan is enough.
+function Find-DisagreeingNames {
+    param([string]$Wire)
+    $w = $Wire -replace "`r", ''
+    $out = @()
+    foreach ($m in [regex]::Matches($w, '\(def "([^"]+)"')) {
+        $start = $m.Index
+        $nxt = $w.IndexOf('(def "', $start + 6)
+        $len = if ($nxt -gt 0) { $nxt - $start } else { $w.Length - $start }
+        $body = $w.Substring($start, $len)
+        $seen = @{}
+        foreach ($s in [regex]::Matches($body, '\((?:param|let|var-pat|name) "((?:[^"\\]|\\.)*)" ')) {
+            $ty = Read-SexprAt -s $body -i ($s.Index + $s.Length)
+            if (-not $ty) { continue }
+            $n = $s.Groups[1].Value
+            if (-not $seen.ContainsKey($n)) { $seen[$n] = [System.Collections.Generic.HashSet[string]]::new() }
+            [void]$seen[$n].Add($ty)
+        }
+        foreach ($n in $seen.Keys) {
+            if ($seen[$n].Count -lt 2) { continue }
+            $tv = @($seen[$n] | Where-Object { $_ -match '^\(tvar \d+\)$' })
+            $con = @($seen[$n] | Where-Object { $_ -notmatch '^\(tvar \d+\)$' })
+            # Two tvars of different id is ordinary alpha-renaming, and two concrete
+            # types is a shadowed name; only the mixed case is the signature.
+            if ($tv.Count -gt 0 -and $con.Count -gt 0) {
+                $out += [pscustomobject]@{
+                    Def = $m.Groups[1].Value; Name = $n
+                    Tvar = ($tv | Sort-Object | Select-Object -First 1)
+                    Concrete = ($con | Sort-Object | Select-Object -First 1)
+                }
+            }
+        }
+    }
+    $out
+}
+
+if ($Disagree) {
+    if (-not $CorpusDir) { $CorpusDir = Join-Path $repo 'codex\test' }
+    $all = @(Get-ChildItem $CorpusDir -Filter '*.codex' | Sort-Object Name)
+    $corpus = $all
+    # A smoke over a stride can miss every flagging program and then report zero,
+    # which proves the plumbing runs and NOT that the detector fires. -Programs
+    # names the set so a known flagger can be in it (L-FALSIF).
+    if ($Programs.Count -gt 0) {
+        $corpus = @($all | Where-Object { $Programs -contains $_.BaseName })
+        $missing = @($Programs | Where-Object { $n = $_; -not ($all | Where-Object { $_.BaseName -eq $n }) })
+        if ($missing.Count) { Write-Output ('NOT IN CORPUS: ' + ($missing -join ', ')); exit 2 }
+        Write-Output ('named set: ' + $corpus.Count + ' program(s)')
+    }
+    if ($Limit -gt 0 -and $Limit -lt $all.Count) {
+        $step = [Math]::Ceiling($all.Count / $Limit)
+        $corpus = @(for ($i = 0; $i -lt $all.Count; $i += $step) { $all[$i] })
+        Write-Output "corpus: $($corpus.Count) of $($all.Count), every ${step}th by name. CAPPED by -Limit $Limit."
+    }
+    $work = Join-Path ([IO.Path]::GetTempPath()) ("irfid-ft-" + [Guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    $script:WorkDir = $work
+    $clean = 0; $refused = 0; $carrying = 0
+    $byDef = @{}
+    foreach ($file in $corpus) {
+        $r = Invoke-IrCompile -Src $file.FullName -Tag ("ft-" + $file.BaseName)
+        if (-not $r.Wire) { $refused++; continue }
+        $clean++
+        $hits = @(Find-DisagreeingNames -Wire $r.Wire)
+        if ($hits.Count -gt 0) { $carrying++ }
+        foreach ($h in $hits) {
+            if (-not $byDef.ContainsKey($h.Def)) {
+                $byDef[$h.Def] = [pscustomobject]@{ Count = 0; Example = @(); Programs = [System.Collections.Generic.HashSet[string]]::new() }
+            }
+            $byDef[$h.Def].Count++
+            # Per program, not one example for the def: __lam_2 in two programs is
+            # two different lambdas, and a single stored example attributes one
+            # program's disagreement to the other.
+            $byDef[$h.Def].Example += @("$($file.BaseName) $($h.Name): $($h.Tvar) vs $($h.Concrete)")
+            [void]$byDef[$h.Def].Programs.Add($file.BaseName)
+        }
+    }
+    Write-Output ""
+    Write-Output "compiled clean: $clean    refused, no IR, not in the denominator: $refused"
+    Write-Output "programs carrying a def that disagrees with itself: $carrying of $clean"
+    Write-Output ""
+    $defs = @($byDef.Keys)
+    $progs = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($k in $defs) { foreach ($p in $byDef[$k].Programs) { [void]$progs.Add($p) } }
+    Write-Output ("DISAGREEING defs (one name, a tvar at one site and a concrete type at another): " + $defs.Count + " over " + $progs.Count + " program(s)")
+    Write-Output ''
+    foreach ($k in ($defs | Sort-Object { -$byDef[$_].Programs.Count })) {
+        Write-Output ("  {0,-34} {1,5} sites  {2,4} programs" -f $k, $byDef[$k].Count, $byDef[$k].Programs.Count)
+        foreach ($ex in $byDef[$k].Example) { Write-Output ('      ' + $ex) }
+        Write-Output ('      ' + (($byDef[$k].Programs | Sort-Object) -join ', '))
+    }
+    if ($defs.Count -eq 0) {
+        Write-Output '  none. The detector returned nothing over this corpus.'
+    }
+    # The baseline is the guard. A count is not a guard on its own: somebody has
+    # to be told when it moves, and the direction that matters is UP. Down is
+    # refused too, because a drop nobody predicted is either a fix worth
+    # recording or the detector having stopped working (L-FALSIF).
+    $sites = 0
+    foreach ($k in $defs) { $sites += $byDef[$k].Count }
+    Write-Output ''
+    Write-Output "sites: $sites"
+    if ($Expect -ge 0 -and $sites -ne $Expect) {
+        Write-Output "REFUSED: expected $Expect site(s), found $sites. Name the change or fix it."
+        try { [System.IO.Directory]::Delete($work, $true) } catch { }
+        exit 1
+    }
+    try { [System.IO.Directory]::Delete($work, $true) } catch { }
+    exit 0
+}
+
 if ($Census) {
     # COMPILER-30's ruling says that once the ErrorTy split lands, a clean
     # compile carries no `error` on the wire. It still does, and a sample of one
@@ -281,8 +440,33 @@ if ($Census) {
         #
         # The census's role flips with it, from "count the carriers" to "refuse
         # any carrier". Remove an entry here only when reopening the defect.
+        #
+        # THIS TABLE WAS INVERTED, AND BOTH HALVES ARE MEASURED (fester,
+        # 2026-09-07, seed 39D40A84, one compile of each specimen through
+        # `compile.ps1 -IrUni`):
+        #
+        #   `error` IS closed and was not registered. Steve Howell's PR 101
+        #   (absorbed 2026-09-01) files the fresh variable under the
+        #   literal's span, so census-calibration\error\empty-unconstrained
+        #   now lowers its empty list to `(list-expr (elems) (tvar 269))` and
+        #   carries no `error` at all -- while `list-expr` IS in that wire, so
+        #   the reader sees fine. Left unregistered its positive arm cannot
+        #   fire and the run aborts with "the census cannot see what it exists
+        #   to count", which is the exact misreading the comment above warns
+        #   about, and it blocked a granted 626-program run.
+        #
+        #   `noexpect` is NOT closed and was registered as though it were.
+        #   census-calibration\noexpect\lazy-cell still emits
+        #   `(let "c" noexpect ...)` at head, so that arm fires and is the
+        #   live one to borrow.
+        #
+        # Do not restore the old direction without compiling both specimens
+        # first: a table calling an atom closed while its specimen still
+        # carries it disables a working arm, and one calling an atom live
+        # after it is fixed blocks every census behind a failure that is
+        # really a success.
         $calClosed = @{
-            'noexpect' = 'error'
+            'error' = 'noexpect'
         }
         $calRoot = Join-Path $PSScriptRoot 'census-calibration'
         $calDir = Join-Path $calRoot $Atom
@@ -374,6 +558,15 @@ if ($Census) {
 
     $all = @(Get-ChildItem $CorpusDir -Filter '*.codex' | Sort-Object Name)
     $corpus = $all
+    # A smoke over a stride can miss every flagging program and then report zero,
+    # which proves the plumbing runs and NOT that the detector fires. -Programs
+    # names the set so a known flagger can be in it (L-FALSIF).
+    if ($Programs.Count -gt 0) {
+        $corpus = @($all | Where-Object { $Programs -contains $_.BaseName })
+        $missing = @($Programs | Where-Object { $n = $_; -not ($all | Where-Object { $_.BaseName -eq $n }) })
+        if ($missing.Count) { Write-Output ('NOT IN CORPUS: ' + ($missing -join ', ')); exit 2 }
+        Write-Output ('named set: ' + $corpus.Count + ' program(s)')
+    }
     if ($Limit -gt 0 -and $all.Count -gt $Limit) {
         # A cap that is not reported reads as full coverage. Take a SPREAD
         # rather than the alphabetical head: a prefix of one directory is one

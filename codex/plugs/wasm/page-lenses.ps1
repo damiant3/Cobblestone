@@ -10,6 +10,7 @@
 #   build-page-modules.ps1  builds every row
 #   page-lens-test.ps1      grades the ir rows
 #   page-bytes-test.ps1     grades the bytes rows
+#   page-wire-test.ps1      grades the irbytes rows
 #   build-page.ps1          copies every row's module into the page
 #
 # Row fields:
@@ -80,6 +81,9 @@ $PageModules = @(
     @{ plug = 'scheme';     file = 'scheme-stdio.wasm';     transport = 'ir'; chapters = 'SchemeEmitter,SchemeStdio' }
     @{ plug = 'ptx';        file = 'ptx-stdio.wasm';        transport = 'ir'; chapters = 'PtxEmitter,PtxStdio' }
     @{ plug = 'wgsl';       file = 'wgsl-stdio.wasm';       transport = 'ir'; chapters = 'WgslEmitter,WgslStdio' }
+    # The wasm plug as a lens: the emitter that builds every module on the site,
+    # itself compiled to WebAssembly, answering WAT text for the IR it is handed.
+    @{ plug = 'wasm';       file = 'wasm-stdio.wasm';       transport = 'ir'; chapters = 'WasmEmitter,WasmStdio' }
 
     # -- binary plugs, bytes transport (a compiled payload, not IR) -----------
     # elf's chapter list is the one build-plug-wasm.ps1's own header documents;

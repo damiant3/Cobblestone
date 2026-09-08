@@ -32,7 +32,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$exts = @('.skip', '.slow', '.fatal', '.expected', '.stdin', '.keys', '.disk', '.disk2', '.disk-src', '.failing', '.diag', '.smp', '.vmargs', '.no-cross', '.cross-refusal', '.cross-budget')
+$exts = @('.skip', '.slow', '.fatal', '.expected', '.stdin', '.keys', '.disk', '.disk2', '.disk-src', '.failing', '.diag', '.smp', '.vmargs', '.no-cross', '.covers', '.cross-refusal', '.cross-budget')
 $orphans = @()
 $checked = 0
 $noeol = @()

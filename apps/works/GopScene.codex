@@ -129,18 +129,45 @@ Section: Loop
 
   gsc-frame : R3dTriState, Scene3DState, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, GpuView -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   gsc-frame (tgt) (scene) (angle) (sky) (base) (stride) (font) (ch) (sh) (gpu) (gv) = act
-    let posed = scene3d-set-camera scene (gsc-camera angle (if gpu == 1 then gsc-aspect (gv.gv-w) (gv.gv-h) else gsc-aspect (tgt.r3t-w) (tgt.r3t-h)))
-    in if gpu == 1 then act
-      g <- if sh == 1 then gs-render-shadowed posed gv sky gsc-shadow-map-gpu else gs-render-in posed gv sky
-      let bg = gop-fill-rect base stride (gv.gv-x) (ch - gsc-label-band) (tgt.r3t-w) gsc-label-band sky
-      in gop-draw-text base stride font (gv.gv-x + 8) (ch - 16) gsc-label-gpu 65280 1 0
-    end
+    if gpu /= 1 & gsc-tgt-ok tgt == False then
+      let bg = gop-fill-rect base stride ch (gv.gv-x) (ch - gsc-label-band) (gv.gv-w) gsc-label-band sky
+      in gop-draw-text base stride ch font (gv.gv-x + 8) (ch - 16) (gsc-bad-target tgt) 16711680 1 0
     else
-      let c = r3d-target-clear tgt sky
-      in let d = if sh == 1 then r3d-render-shadowed tgt posed gsc-shadow-map else r3d-render-into tgt posed
-      in let b = gsc-blit-rows (base + gv.gv-x * 4) stride (tgt.r3t-base) (tgt.r3t-stride) (tgt.r3t-w) (tgt.r3t-h) 0
-      in gop-draw-text base stride font (gv.gv-x + 8) (ch - 16) gsc-label-sw 65280 1 0
+      let posed = scene3d-set-camera scene (gsc-camera angle (if gpu == 1 then gsc-aspect (gv.gv-w) (gv.gv-h) else gsc-aspect (tgt.r3t-w) (tgt.r3t-h)))
+      in if gpu == 1 then act
+        g <- if sh == 1 then gs-render-shadowed posed gv sky gsc-shadow-map-gpu else gs-render-in posed gv sky
+        let bg = gop-fill-rect base stride ch (gv.gv-x) (ch - gsc-label-band) (tgt.r3t-w) gsc-label-band sky
+        in gop-draw-text base stride ch font (gv.gv-x + 8) (ch - 16) gsc-label-gpu 65280 1 0
+      end
+      else
+        let c = r3d-target-clear tgt sky
+        in let d = if sh == 1 then r3d-render-shadowed tgt posed gsc-shadow-map else r3d-render-into tgt posed
+        in let b = gsc-blit-rows (base + gv.gv-x * 4) stride (tgt.r3t-base) (tgt.r3t-stride) (tgt.r3t-w) (tgt.r3t-h) 0
+        in gop-draw-text base stride ch font (gv.gv-x + 8) (ch - 16) gsc-label-sw 65280 1 0
   end
+
+ THE CHECK RUNS BEFORE `posed` AND NOT INSIDE THE SOFTWARE BRANCH, because
+ `gsc-aspect` divides by `r3t-h` on that path: a target corrupt enough to
+ carry a zero height would trap in the camera before a guard placed after the
+ binding could fire. The GPU path takes its aspect from `gv` and never clears,
+ so it is excluded from the check rather than guarded by it.
+
+ WORKS-60 PART 2. The renderer refuses a fill through a base below the address
+ the kernel loads at, so a bad target no longer kills the machine; what it did
+ instead was draw nothing, which on the glass is indistinguishable from a pane
+ that is merely idle. This paints the offending numbers where the frame would
+ have been, because the pane is the only place in this desk that both knows
+ them and has somewhere to put them: `GopDesk` does not cite `Renderer3D`, and
+ the desk carries no `Console` to print on.
+
+ The fill takes its width from `gv-w` rather than `tgt.r3t-w`, since a target
+ that failed the check has no field worth trusting.
+
+  gsc-tgt-ok : R3dTriState -> Boolean
+  gsc-tgt-ok (tgt) = r3d-base-ok (tgt.r3t-base) & r3d-base-ok (tgt.r3t-depth)
+
+  gsc-bad-target : R3dTriState -> Text
+  gsc-bad-target (tgt) = "3D TARGET REFUSED base " & integer-to-text (tgt.r3t-base) & " depth " & integer-to-text (tgt.r3t-depth) & " w " & integer-to-text (tgt.r3t-w) & " h " & integer-to-text (tgt.r3t-h)
 
  The frame is bracketed because there is no collector and this loop has
  no bound: left open, an unbracketed frame's heap is gone for good, and
@@ -177,8 +204,8 @@ Section: Loop
     in act
       t <- shot-take scr-base w h stride
       let s = ui-scale w
-      in let bg = gop-fill-rect scr-base stride (200 * s) (h - gsc-taskbar-h * s + 4 * s) (300 * s) (16 * s) #000E1C
-      in let tx = gop-draw-text scr-base stride font (204 * s) (h - gsc-taskbar-h * s + 6 * s) t #69BE28 s 0
+      in let bg = gop-fill-rect scr-base stride h (200 * s) (h - gsc-taskbar-h * s + 4 * s) (300 * s) (16 * s) #000E1C
+      in let tx = gop-draw-text scr-base stride h font (204 * s) (h - gsc-taskbar-h * s + 6 * s) t #69BE28 s 0
       in let d = __heap-restore mark
       in 0
     end
@@ -251,10 +278,12 @@ Section: Step
  restore is harmless to them, which is the same reason the toggles are.
 
  THE TWO BUFFERS ARE THE PANE'S AND THE TARGET IS THE FRAME'S. `sp-px` and
- `sp-dp` are allocated once, at the size of the whole content box, which is
- the largest rectangle a window on this desk can take. `sp-tgt` is rebuilt
- from them whenever the window moves or resizes, with `r3t-w` and `r3t-h` the
- window's and `r3t-stride` the buffer's. **That is what makes maximise and
+ `sp-dp` are allocated once, at the size of the content box AS IT STANDS AT
+ THAT MOMENT, which is not the largest rectangle a window on this desk can
+ take: the box grows when the task band moves to a vertical edge. `sp-tgt` is
+ rebuilt from them whenever the window moves or resizes, with `r3t-w` and
+ `r3t-h` the window's CLAMPED to `sp-bw` and `sp-bh`, and `r3t-stride` the
+ buffer's. **That is what makes maximise and
  restore cost nothing and strand nothing**: a target reallocated per resize
  would leave the old one above the pane's own heap mark until the pane
  closed, which is the LIFO tail 6.4 measured, and about 4 MB of a 128 MB
@@ -270,6 +299,7 @@ Section: Step
     sp-px : Integer,
     sp-dp : Integer,
     sp-bw : Integer,
+    sp-bh : Integer,
     sp-gv : GpuView,
     sp-sky : Integer,
     sp-ch : Integer,
@@ -313,6 +343,7 @@ Section: Step
         sp-px = px,
         sp-dp = dp,
         sp-bw = bw,
+        sp-bh = bh,
         sp-gv = gv-new 0 0 bw (bh - gsc-label-band),
         sp-sky = sky,
         sp-ch = bh,
@@ -348,12 +379,25 @@ Section: Step
  `sp-fb + gv-x * 4` and the label band is measured down from `sp-fb` by
  `sp-ch`.
 
+ THE TARGET IS CLAMPED TO THE BUFFER BECAUSE THE CONTENT BOX IS NOT A
+ CONSTANT. `gsc-new` sizes the buffers from the box at the moment the pane
+ opens; the box is the screen less a strip on each of the four edges, and
+ which edges carry one is a setting the user changes while the pane is up.
+ Measured 2026-09-07 at 1600x900 (`desk-cbox-drift`): moving the task band
+ from a horizontal edge to a vertical one grows the box from 1,280,000 to
+ 1,321,664 words, so a pane born under the band writes 41,664 words, 166 KB,
+ past the end of BOTH buffers on every frame. `r3d-base-ok` cannot see this:
+ the base is a real address and it is the EXTENT that is wrong.
+
+  gsc-fit : Integer, Integer -> Integer
+  gsc-fit (want) (cap) = if want < 0 then 0 else if want > cap then cap else want
+
   gsc-place : ScenePane, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   gsc-place (sp) (base) (stride) (x) (y) (w) (h) =
     let a = __record-set sp "sp-gv" (gv-new x y w (h - gsc-label-band))
     in let b = __record-set sp "sp-ch" h
     in let c = __record-set sp "sp-fb" (base + y * stride * 4)
-    in let d = __record-set sp "sp-tgt" (R3dTriState { r3t-base = sp.sp-px, r3t-depth = sp.sp-dp, r3t-w = w, r3t-h = h, r3t-stride = sp.sp-bw })
+    in let d = __record-set sp "sp-tgt" (R3dTriState { r3t-base = sp.sp-px, r3t-depth = sp.sp-dp, r3t-w = gsc-fit w (sp.sp-bw), r3t-h = gsc-fit h (sp.sp-bh), r3t-stride = sp.sp-bw })
     in 0
 
   gsc-take : UsbKbd, Integer -> [Device.Port] Integer
@@ -438,8 +482,8 @@ Section: Step
       in act
         f <- gsc-frame (sp.sp-tgt) (build now) ang (sp.sp-sky) (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-sh) (sp.sp-gpu) (sp.sp-gv)
         let k = __record-set sp "sp-n" (sp.sp-n + 1)
-        in let hud = gsc-hud (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-gv) (sp.sp-n) (sp.sp-t0)
-        in let cu = if mouse.um-ok then cursor-update cs base stride w h 1 (mouse-x mouse) (mouse-y mouse) else 0
+        in let hud = gsc-hud (sp.sp-fb) stride h font (sp.sp-ch) (sp.sp-gv) (sp.sp-n) (sp.sp-t0)
+        in let cu = if mouse.um-ok then cursor-update cs base stride h w h 1 (mouse-x mouse) (mouse-y mouse) else 0
         in 1
       end
     end
@@ -452,13 +496,13 @@ Section: Step
  clock both answer a zero span; that arm prints the count alone rather than
  dividing by it.
 
-  gsc-hud : Integer, Integer, CbfFont, Integer, GpuView, Integer, Integer -> Integer
-  gsc-hud (base) (stride) (font) (ch) (gv) (n) (t0) =
+  gsc-hud : Integer, Integer, Integer, CbfFont, Integer, GpuView, Integer, Integer -> Integer
+  gsc-hud (base) (stride) (rows) (font) (ch) (gv) (n) (t0) =
     let tps = hpet-ticks-per-second
     in let d = hpet-ticks - t0
     in let ms = if tps <= 0 then 0 else d * 1000 / tps
     in let t = if ms <= 0 then "f" & show n else "f" & show n & " " & show (ms / n) & "ms"
-    in gop-draw-text base stride font (gv.gv-x + gv.gv-w - text-length t * 8 - 8) (ch - 16) t 65280 1 0
+    in gop-draw-text base stride rows font (gv.gv-x + gv.gv-w - text-length t * 8 - 8) (ch - 16) t 65280 1 0
 
   gsc-bcd : Integer -> Integer
   gsc-bcd (n) = (n / 16) * 10 + int-mod n 16

@@ -278,12 +278,12 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "True" else "False"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-ada-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ada-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ada-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-ada-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ada-expr-at c arities (depth + 1) & " then " & emit-ada-expr-at t arities (depth + 1) & " else " & emit-ada-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(declare " & ada-cap-sanitize name & " : constant " & ada-type ty & " := " & emit-ada-expr-at val arities (depth + 1) & " begin " & emit-ada-expr-at body arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-ada-apply e arities
-    is IrLambda (params) (body) (ty) (sp) -> "null"
+    is IrLambda (params) (body) (ty) (sp) -> "null -- !UNSUPPORTED: lambda has no representation in Ada"
     is IrList (elems) (ty) (sp) ->
      let tn = ada-list-type-name (ada-list-elem-of ty)
      in if list-length elems == 0 then tn & "'(1 .. 0 => <>)"
@@ -319,9 +319,25 @@ Section: Expression Emission
    let tag = "Tag_" & ada-cap-sanitize n
    in "(Kind => " & tag & ")"
 
-  emit-ada-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-ada-binary (op) (l) (r) (arities) =
+ Ada raises Constraint_Error on signed overflow, which is the plain arm. The
+ wrapping band needs a MODULAR type, and Unsigned_64 is the one that matches
+ the width; converting a negative Long_Long_Integer to it would itself raise,
+ so the two conversions are Unchecked_Conversion instantiations and the
+ arithmetic happens in the modular type, where wrapping is the definition.
+
+  ada-int-arith : Text, Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  ada-int-arith (sym) (wrapfn) (l) (r) (ty) (arities) =
+   let a = emit-ada-expr l arities
+   in let b = emit-ada-expr r arities
+   in if int-ty-wraps ty then wrapfn & " (" & a & ", " & b & ")"
+   else "(" & a & " " & sym & " " & b & ")"
+
+  emit-ada-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-ada-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> ada-int-arith "+" "Cx_Wrap_Add" l r ty arities
+    is IrSubInt -> ada-int-arith "-" "Cx_Wrap_Sub" l r ty arities
+    is IrMulInt -> ada-int-arith "*" "Cx_Wrap_Mul" l r ty arities
     is IrAppendText -> "(" & emit-ada-expr l arities & " & " & emit-ada-expr r arities & ")"
     is IrAppendList -> "(" & emit-ada-expr l arities & " & " & emit-ada-expr r arities & ")"
     is IrConsList -> "(" & emit-ada-expr l arities & " & " & emit-ada-expr r arities & ")"
@@ -943,14 +959,31 @@ Section: Chapter Emission
       "with Ada.Characters.Handling;\n" &
       "with Ada.Command_Line;\n" &
       "with Ada.Directories;\n" &
-      "with Interfaces; use Interfaces;\n\n" &
+      "with Interfaces; use Interfaces;\n" & "with Ada.Unchecked_Conversion;\n\n" &
       "procedure " & pkg & " is\n\n" &
-      ada-text-builtins &
+      ada-wrap-builtins & ada-text-builtins &
       emit-ada-type-defs type-defs 0 &
       emit-ada-defs (m.defs) arities 0 entry-idx &
       "   task Codex_Main is\n      pragma Storage_Size (512 * 1024 * 1024);\n   end Codex_Main;\n\n   task body Codex_Main is\n   begin\n" &
       emit-ada-entry-body (m.defs) entry-idx arities &
       "   end Codex_Main;\n\nbegin\n   null;\nend " & pkg & ";\n"
+
+  emit-ada-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-ada-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let pkg = ada-cap-sanitize (m.name.value)
+   in let entry-idx = ada-find-entry (m.defs) 0
+   in "with Ada.Text_IO; use Ada.Text_IO;\n" & "with Ada.Integer_Text_IO; use Ada.Integer_Text_IO;\n" & "with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;\n" & "with Ada.Characters.Handling;\n" & "with Ada.Command_Line;\n" & "with Ada.Directories;\n" & "with Interfaces; use Interfaces;\n" & "with Ada.Unchecked_Conversion;\n\n" & "procedure " & pkg & " is\n\n" & ada-wrap-builtins & ada-text-builtins & emit-ada-type-defs type-defs 0
+
+  emit-ada-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-ada-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let pkg = ada-cap-sanitize (m.name.value)
+   in let entry-idx = ada-find-entry (m.defs) 0
+   in "   task Codex_Main is\n      pragma Storage_Size (512 * 1024 * 1024);\n   end Codex_Main;\n\n   task body Codex_Main is\n   begin\n" & emit-ada-entry-body (m.defs) entry-idx arities & "   end Codex_Main;\n\nbegin\n   null;\nend " & pkg & ";\n"
+
+  emit-ada-chapter-stream-def : IRChapter, List ArityEntry, Integer, Integer -> Text
+  emit-ada-chapter-stream-def (m) (arities) (entry-idx) (i) = if i == entry-idx then "" else emit-ada-def (list-at (m.defs) i) arities & "\n"
 
  `Index` answers 0 for an EMPTY pattern, so the starts-with and contains arms
  answered False where Codex answers True; `Replace_Slice` was given that 0 as
@@ -959,6 +992,16 @@ Section: Chapter Emission
  non-numeric tail. These four are written out. They go at the head of the
  declarative part because Ada requires a declaration before its use.
 
+ Declared before ada-text-builtins because an Ada declarative part is ordered:
+ the instantiations have to precede the bodies that call them.
+
+  ada-wrap-builtins : Text
+  ada-wrap-builtins =
+   "   function Cx_To_U is new Ada.Unchecked_Conversion (Long_Long_Integer, Interfaces.Unsigned_64);\n"
+   & "   function Cx_To_I is new Ada.Unchecked_Conversion (Interfaces.Unsigned_64, Long_Long_Integer);\n"
+   & "   function Cx_Wrap_Add (A, B : Long_Long_Integer) return Long_Long_Integer is\n   begin\n      return Cx_To_I (Cx_To_U (A) + Cx_To_U (B));\n   end Cx_Wrap_Add;\n"
+   & "   function Cx_Wrap_Sub (A, B : Long_Long_Integer) return Long_Long_Integer is\n   begin\n      return Cx_To_I (Cx_To_U (A) - Cx_To_U (B));\n   end Cx_Wrap_Sub;\n"
+   & "   function Cx_Wrap_Mul (A, B : Long_Long_Integer) return Long_Long_Integer is\n   begin\n      return Cx_To_I (Cx_To_U (A) * Cx_To_U (B));\n   end Cx_Wrap_Mul;\n\n"
   ada-text-builtins : Text
   ada-text-builtins =
    "   type Cx_Text_List is array (Natural range <>) of Unbounded_String;\n"

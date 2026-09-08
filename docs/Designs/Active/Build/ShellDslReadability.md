@@ -268,10 +268,66 @@ Two lines of body, no escaping, and the `if` that was structure became a name.
 other agents are actively workin on this code"). The generators moved off
 fester's claims row, which kept `deck-headroom`.
 
+## 8b. The deprecation did not hold, measured (reek, 2026-09-08)
+
+Step 1 marked `ScRaw` and `SeRaw` DEPRECATED in `ShellTypes` prose so that no
+new use would be added. Re-measured at head over `codex/build/*Script.codex`,
+skipping column-2 prose:
+
+| | 2026-08-16 | 2026-09-08 |
+|---|---|---|
+| `ScRaw` | 5,504 | **7,273** |
+| `SeRaw` | 570 | 570 |
+| generators affected | 35 of 56 | **37 of 58** |
+
+**About 1,770 uses were added in three weeks, under the deprecation.** No runner
+reads the prose: `build/` mentioned `ScRaw` nowhere before today. A campaign
+whose method is conversion cannot finish while addition outruns conversion, and
+the ranking in section 4 is measured against a number that moves the wrong way
+between readings.
+
+`build/check-shell-raw.ps1` is the ratchet. `-List` prints the per-generator
+table, `-Update` writes `build/shell-raw-baseline.txt`, and the bare form
+compares. **It fails a RISE and it also fails a FALL that leaves the record
+high**, because a baseline left high after a conversion permits the raw node
+straight back, which is a ratchet that does not ratchet; the fix for that
+failure is `-Update` in the changelist that did the conversion. Both directions
+were provoked and observed before landing, including a generator leaving the
+table entirely. It boots nothing, unlike `check-generated-scripts.ps1` beside
+it, so the cost of running it is a file read.
+
+## 8c. `Join-Path`: the statement-level command converts 120 of 123, re-measured
+
+Section 9 records 23 parenthesized, 126 bare and 18 embedded, and calls the
+bare set undecidable between a one-time reparenthesization and a
+statement-level assign-a-path command. Re-measured at head:
+
+| shape | 2026-08-24 | 2026-09-08 |
+|---|---|---|
+| payload begins `(Join-Path ` | 23 | 19 |
+| payload begins `Join-Path ` bare | 126 | 123 |
+| `Join-Path` embedded further in | 18 | **253** |
+
+**120 of the 123 bare payloads are DIRECTLY the right-hand side of an
+`ScAssign`.** That settles the choice rather than leaving it to taste: a
+statement-level command emits `$X = Join-Path a b c` with no parentheses,
+byte-identical to what ships, and converts 120 with the campaign's own oracle
+still proving the change. A reparenthesization converts the same sites by
+spending that oracle, since 126 lines of intended drift cannot be told from a
+mistake by `match / 0 drift`.
+
+The two costs to weigh before writing the node. A new `ShellCmd` constructor
+widens every `when` over the type in three emitters, which is the deck cost that
+stopped step 2c until ruling 20; measure with `deck-headroom.ps1` before and
+after rather than assuming ruling 20's headroom absorbs it. And the embedded
+bucket has grown from 18 to 253 and is untouched by either option, so the bare
+set is no longer where most of the `Join-Path` text lives.
+
 ## 9. Progress
 
 | Step | State |
 |---|---|
+| 0. **Ratchet the count** (`build/check-shell-raw.ps1`) | **DONE 2026-09-08, reek.** Step 1 was prose and prose is not a runner |
 | 1. Deprecate `ScRaw` / `SeRaw` in `ShellTypes` prose | DONE, main 15606. **It did not work**: see the re-measurement below |
 | 2a. `SeText` + `msg`, all three emitters, arms | DONE |
 | 2b. `need-file`, `set`, `if-set` | DONE 2026-08-24, `ShellBuild.codex` |

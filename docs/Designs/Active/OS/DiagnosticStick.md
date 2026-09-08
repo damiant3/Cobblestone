@@ -117,7 +117,17 @@ stage never re-discovers what an earlier one measured.
    question). Bank.
 7. **NIC, conversation.** B3: bring the stack up and hold one TCP
    conversation with a peer named in the config (or skip if none). Bank.
-8. **NIC, the driver's own write read back.** `pchk1` (`DiagPchK1.codex`,
+8. **NIC, the segment's lease.** `lease` (`DiagLease.codex`): NIC-6's
+   question, asked on the driver `b3` bound. A DHCP lease is requested, the
+   leased gateway is ARPed for, and its MAC is banked beside the hop the
+   record channel resolved (`leased-gw-is-hop=same|differs`). Nothing is
+   re-addressed; the channel and `b3` keep DIAG.CFG's address. Bank.
+9. **The RTC's write.** `rtcw` (`DiagRtcW.codex`): WORKS-24's question. The
+   seconds register is written thirty away from its reading inside a Status
+   B SET window, read back, and restored the same way: `accepted` on a part
+   that takes the write, `ignored` on codex-vm, which drops every CMOS
+   write. Bank.
+10. **NIC, the driver's own write read back.** `pchk1` (`DiagPchK1.codex`,
    added 2026-08-21): PHY page 770 register 17 again, this time AFTER
    `e1000-init` has written it. The passive `pch` stage reads the same
    register at the top of the ladder, so its reading is the platform's
@@ -138,11 +148,11 @@ stage never re-discovers what an earlier one measured.
    `not-taken` until it dialled. `not-taken` with MDIO answering is BOARD-ONLY
    and declared as such in the chapter -- no bed knob lets the read succeed
    while the write fails.
-9. **The day's questions.** Whatever a lane routed for this sitting, each a
+11. **The day's questions.** Whatever a lane routed for this sitting, each a
    stage in its own file, run last among the risky ones: ASDE
    (`AsdeStageProbe`), the A8 allocation grant, the largest GOP mode and
    `SetMode`. Bank after each.
-10. **`MayWedge`, never by default.** NIC-5 (what wedged the box on
+12. **`MayWedge`, never by default.** NIC-5 (what wedged the box on
    2026-08-11) and anything else terminal by construction runs only when the
    config names it, and it is always the last line of the ladder.
 
@@ -160,9 +170,15 @@ ladder runs stages 1-7 with the stranger's defaults and skips 8-9. A sitting
 is a `DIAG.CFG` red writes for the day; the image bytes do not change
 between sittings, which is what makes L-REHEARSE affordable: the rehearsed
 image IS the flown image, and only the config differs, and the config is
-rehearsed too. The stub's `-Stdin` arm is how the payload gets the config
-today; the design keeps that and adds the file read for the case where the
-stub was built without one.
+rehearsed too. Two channels carry it: the stub's `-Stdin` ring, baked into
+the PE by `build-diag.ps1 -StdinCfg` and read before any stage runs, and the
+ESP file, read by `dg-esp-cfg` (`Diag.codex:1092`) only after `usb-attach`
+mounts the medium, so the file can select stages 7 and later and the ring
+alone reaches stages 1 to 6 (`dg-run-passive` at `:1088` runs on the
+pre-merge ctx). First match wins, the bare key is `on`, only the exact
+word `off` disables (`dg-stage-enabled`, `:144`). `gfat-text`
+(`GopFat16.codex:666-667`) drops any byte CCE cannot represent, so a CRLF
+file reads the same as an LF one (main 22993).
 
 ## The output channels, and why there are six of them (L-CHANNEL)
 
@@ -184,6 +200,7 @@ get to choose:
 | 4 | QR on the glass | GOP, and a panel wide enough for the chosen scale | the summary and the readings, machine-readable off a photograph (`tools/qr-read.ps1`) | scale 2 decodes as nothing and looks like success; a fifth code truncates on 1280 wide |
 | 5 | the bank file `DIAG.TXT` | the ESP mounts and the volume is writable | everything, appended per stage, `END` last | `no esp s1 m3 c4` (F12 bank, 08-13); the seed medium lock refusing a seedless stick; the second write on metal (WORKS-9) |
 | 6 | serial | a box with a port, or the bed | everything, streamed | codex-vm cannot screenshot a halting payload, serial is how the bed reads it |
+| 7 | the peer's record file (`build/boot/echo-peer.ps1`, `echo-peer.record` beside its log) | the passive stages are done and DIAG.CFG names `b3 peer=... ip=<static>`: the driver is brought up, the hop resolved, and the passive record shipped BEFORE the first bank write (`DiagRecord`, root's ruling 2026-09-07); `ip=dhcp` opens it at b3 instead | the passive record at open, then every bank line live over a fresh connection per bank step; the bank row carries `record=peer opened ...` and the summary `record=peer shipped=N conns=K lost=L`; `b3 ... record=off` in DIAG.CFG suppresses the channel, `record=none off`, and `b3` then carries the whole banked record on its own first send | a stage that resets the part between two ships (nicinit, nicring, b3, asde) leaves receive off, so the ship brings the driver up again and dials once more, `bringup=y` on its serial line; a stick that dies keeps nothing and this file still holds every line banked before the box stopped talking. `nicsit` reads the part's power-on registers as the last passive stage, ahead of that bring-up. Bed arm: `b3-record` |
 
 Channels 2, 3 and 4 need the camera. **The camera rig is a standing
 instrument, not scaffolding**: it came down when the bank started working
@@ -215,21 +232,23 @@ The colour of a stage row is its state word's colour and nothing else is
 ever coloured, so "what colour is row 7" is a question a photograph
 answers.
 
-**`bank=ok` used to mean "a medium was selected and the first write
-landed", and nothing more.** Every later write's answer was discarded, so
-a stick that went wedged mid-ladder produced a truncated `DIAG.TXT` under
-a SUMMARY painting `bank=ok`. **Naming the loss was never the same as
-stopping it, and sitting 7 is what made the difference visible: the row said
-`bank=lost at=sink` perfectly correctly over a file missing the nine readings
-the flight existed for.** The stage order is what stops it (step 4 above);
-the row below is what reports it. That is what came back from metal twice
-(`HardwareSitting`, sittings 2 and 3). The bank's truth is the FILE: each
-write reads the size back from the directory entry, a disagreement is a
-refusal, and the first stage that loses an append is banked in cell 90 and
-named in the row. The verdict is on the serial as well as the glass now,
-which it never was, so the record can carry it even when the medium
-cannot. Bed arm: `bank-lost`, which wedges the medium from the refusal
-onward rather than transiently.
+**`bank=ok` means every write so far was committed and read back at its
+own size.** The stage order is what keeps the record ahead of the risk
+(step 4 above); the row is what reports a loss. The bank's truth is the
+FILE: each write (`diag-bank-write-text`, `DiagStage.codex:148-169`; the
+note writer `diag-note-bytes`, `:187-213`) issues SYNCHRONIZE CACHE
+(`disk-sync-cache`, `GopDisk.codex:372`; `msc-sync-cache`,
+`GopUsbMsc.codex:488-493`, opcode 0x35, whole medium, IMMED clear) BETWEEN
+`gfat-write-file` and the `gfat-file-size` readback, so the size read back
+from the directory entry is a statement about flash and not about the
+device's write-back cache (WORKS-62, main 23069). The flush answers three
+states: 1 flushed, 0 this medium has no flush primitive (neither a failure
+nor a certification), -1 refused, which fails the write. A size that
+disagrees is a refusal, and the first stage that loses an append is banked
+in cell 90 and named in the row, on the serial as well as the glass. Bed
+arm: `bank-lost`, which wedges the medium from the refusal onward rather
+than transiently. No bed can exercise the flush: codex-vm's BOT model
+completes and commits in one step.
 
 **A REHEARSAL CERTIFIES AN IMAGE, so what counts as stale decides what the
 record is worth.** `diag-arm.ps1` refuses an image older than any
@@ -259,8 +278,10 @@ the QR still decodes. That pair is the negative control: a bank that stops
 working fails the arm the day it stops, in the bed, before anybody sets
 up a rig. Where the runner lives is decided by what it costs: it is a
 battery row if it fits the battery's budget and a release-proof row
-otherwise; either way it runs before every flight (`flash-usb.ps1
--Rehearsed` refuses an image the arm has not passed).
+otherwise; either way it runs before every flight (`flash-usb.ps1` refuses
+by default an image whose hash is in no rehearsal record, `-Rehearsed` is a
+retained no-op, and `-UnrehearsedAnyway` is the only waiver,
+`flash-usb.ps1:17-21`, `:113-124`).
 
 **`p4 edit` the three depot artifacts before rebuilding or rehearsing.**
 `build/boot/diag.img`, `build/boot/diag.rehearsed` and `tools/codex-vm.exe`
@@ -372,10 +393,11 @@ ends in `END`, and each stage's forced-failure switch moves exactly that
 stage's state and no other (L-FALSIF, L-INSTRUMENT). It also runs the
 resource envelope of the flying image, not the bed's generosity (L-ARENA):
 the payload is built with the same `-HeapPages` and no larger arena than
-the stick gets. The rehearsed hash is the only hash that flies (L-REHEARSE),
-and `flash-usb.ps1` gains a `-Rehearsed <hash>` check that refuses to
-flash an image whose hash is not in the rehearsal record (LESSONS row
-L-REHEARSE names exactly this candidate runner). Where the bed cannot
+the stick gets. The rehearsed hash is the only hash that flies (L-REHEARSE):
+`diag-arm.ps1` appends the image's SHA-256 to `build/boot/diag.rehearsed`
+only after every arm in both beds (`diag-arm.ps1:1951-1969`), and
+`flash-usb.ps1` refuses any hash that record does not hold unless
+`-UnrehearsedAnyway` is named. Where the bed cannot
 express a state (OVMF has no `MAP=ok`, `CYAN` has never fired on either
 ladder), the design says so in the stage's account rather than claiming
 coverage (L-GAP).
@@ -391,14 +413,18 @@ those three reasons and none of them was a defect. That is L-REHEARSE
 pulling against the suite: the exact bytes that fly are the ones the suite
 could not read.
 
-`diag-arm.ps1` now takes the baseline from `build-output/diag-recipe.txt`,
-and only when that recipe describes the image in hand, so a config the
-bytes do not carry cannot be assumed (L-SAMEVER). Two scopes matter and
-both were learned by getting them wrong: only an arm booting the
-UNMODIFIED subject carries the subject config, because a `New-Variant` arm
-lays down its own `DIAG.CFG`; and the ESP config is read only AFTER the
-bank opens, so `no-medium` and `fat-full` run the default baseline however
-the image was built.
+`diag-arm.ps1` derives the subject baseline from the image's own ESP
+(`diag-arm.ps1:477-507`, main 23029): `read-stick.ps1` pulls `DIAG.RCP`
+and `DIAG.CFG` off the bytes under test, the ring half comes from the
+recipe's `stdin=` line and the file half from `DIAG.CFG`, and a subject
+whose ESP cannot be read is refused rather than judged against a guess.
+`build-output/diag-recipe.txt` is provenance only (the `kernel=` digest,
+`:743-748`); it describes whatever was built last and never the image
+`-Img` names. Two scopes matter: only an arm booting the UNMODIFIED subject
+carries the subject config, because a `New-Variant` arm lays down its own
+`DIAG.CFG` (`:896-897`); and the ESP config is read only AFTER the bank
+opens, so `no-medium` and `fat-full` run the default baseline however the
+image was built (`:906-907`).
 
 **A third scope, and until 2026-08-21 it was a composition the suite could
 not rehearse AT ALL: a stage turned OFF.** red built a sitting with `asde
@@ -618,15 +644,143 @@ stale check cannot see this: it runs once, before arm one.
 ## What is still open
 
 Everything else this design describes has landed, and the depot is the
-record of it. Two rows and one direction are left.
+record of it. Five rows and one direction are left (2026-09-08).
 
-- **`gop-mode-arm.ps1` asserts the wrong half.** Its six arms read
-  `GOP: SetMode N` off codex-vm's stderr and check the BMP geometry, so
-  handoff v3's banked maxmode, mode-before, mode-chosen and `EFI_STATUS` are
-  asserted by nothing, `maxmode1` included. That is red's row: the stage
-  reports the bank, and nothing checks the bank it reports.
+- **`diag-arm.ps1` has a DETERMINISTIC late-sequence defect: two full 50-arm
+  rehearsals failed the same four arms (2026-09-08).** `b3-pass`, `b3-record`
+  and `b3-clockstuck` each stop at `reset done settled=1 CTRL=64 STATUS=2` with
+  the serial never reaching `END`, and `nic-kills-msc` answers `bank=none` where
+  the sitting wants `record=peer`. Run 1 and run 2 of blu's rehearsal of
+  `diag.img` rebuilt on release seed `D9CF2404` produced the same four, reported
+  by blu through root; fester verified only the control below. **The four sit at
+  the END of the sequence, and repeating exactly makes ordering the subject
+  rather than a flake to be re-run away.**
+  **Three standalone runs say the arms themselves are sound:** blu ran `b3-pass`
+  alone on the old image and the new one on the same box and both passed, and
+  fester rebuilt the image from the depot seed in a different workspace
+  (`build-diag.ps1` default kernel `D9CF240465C3D0BC`, image `24EE826D`, payload
+  `f2e07084211bb472`) and `diag-arm.ps1 -Only b3-pass` answered `ok`, a real TCP
+  conversation from connect to close. So a codegen regression in the seed is
+  REFUTED for this symptom, and so is one workspace's environment. The release
+  ships the depot's `6F077EEB`, rehearsed 2026-09-08 morning, and is not blocked
+  by this.
+  **REPRODUCIBLE IS NOT ATTRIBUTED, and the ledger nearly answers it but does
+  not.** `build/boot/diag.rehearsed` records four 50-arm passes on 2026-09-08:
+  `B68D8676` at 03:49, `CA583E94` at 04:44, `6F077EEB` at 06:04 and the flight
+  image `47F29D50` at 06:45, all local, and a line is written only when every arm
+  answers. So "this harness fails these four in sequence, always" is refuted on
+  its face. **The catch is that `diag-arm.ps1` last changed at 06:48 local
+  (fester 23768), 44 minutes AFTER the `6F077EEB` line**, so that pass is not a
+  control for the harness now running, and the flight-image pass at 06:45 was on
+  a different cfg (lease and rtcw on). The measurement that attributes the defect
+  is therefore still owed and is exactly one run: **the full 50 on the OLD image
+  `6F077EEB` with the CURRENT harness**, which separates "the harness fails these
+  arms in sequence" from "the rebuilt image fails them in sequence". Until that
+  run exists, the two candidates below are guesses about a subject nobody has
+  isolated, and one of them implicates fester's own 23768.
+
+  **Two candidates in `build/boot/diag-arm.ps1`, NEITHER established
+  (L-MECHANISM), and neither yet tied to a NIC that resets and does not link:**
+  a leaked peer job on the SKIP path, where `Start-Peer` runs before
+  `New-Variant` and `Stop-Peer` sits inside the `else`, so a skipped b3 arm
+  leaves a listener bound for up to its 180-second deadline; and `$job` being one
+  variable shared across the whole arm switch, which only `b3-record` sets back
+  to null, so an arm assigning over a live job orphans it beyond the reach of any
+  `Stop-Peer`. Both fit "only the late arms fail". **Neither predicts
+  `STATUS=2`**, which is the guest's own link state and not a peer that could not
+  be reached, so the leading candidates explain the wrong half of the symptom and
+  the reading is not finished. Owner: fester, after the release push. The repair
+  is proven by a 50-arm rehearsal of a rebuilt image, because the defect exists
+  only in the sequence and no single arm can show it.
+
+- **The next flight is the FLUSH arm of the sitting write-loss.** Sitting
+  14 (2026-09-07) flew AFC6AD65 flush-less on the sitting-13 cfg and the
+  medium came back holding only `dg-open`'s probe write, orphaned without
+  its directory entry, while the glass ran to asde with no bank-lost paint
+  (`HardwareSitting.md`, "FLOWN 2026-09-07 (third)"). So the restore and
+  CRLF fixes below are not the cause, and the flush image (blu, hash
+  9BC6D0E8, main 23069's `SYNCHRONIZE CACHE`) flies next once rehearsed.
+  The account that set up the two arms: sitting 13's returned stick holds `DIAG.TXT`
+  through stage 9 (`kbd`) and nothing from stage 10 (`mscalign`) on, while
+  the ladder's bank writes reported success through stage 16 and the glass
+  named 17 (`HardwareSitting.md`, "FLOWN 2026-09-07 (second)"). Two
+  candidates, neither established (L-MECHANISM): the MSC driver never asked
+  the device to commit, so a write acknowledged into write-back cache read
+  back correctly and was gone at power-off (WORKS-62,
+  `works-backlog.md:637`); and stage 10 left a 256 KB reservation
+  unrestored, the only ladder stage that did. Both are fixed at head:
+  SYNCHRONIZE CACHE sits between every bank write and its readback
+  (`DiagStage.codex:162`, `:206`, main 23069) and `dma-run` pairs its save
+  with `__heap-restore` (`DiagMsc.codex:102`, `:111`, main 22994). The
+  depot `build/boot/diag.img` (main 23034, SHA-256 `AFC6AD65FCA73227...`)
+  is built on the restore, the CCE guard and the derived baseline but NOT
+  on the flush (`diag-src-cl=22994` in its `DIAG.RCP`); it carries the
+  sitting-13 composition on its ESP as a CRLF `DIAG.CFG` (`kbd off`,
+  `mscalign off`, `b3 on peer=192.168.6.141:7 ip=192.168.6.200`, `asde
+  on`), kernel 9E5C7780, and cfg=off is honoured on those bytes in the bed
+  (kbd and mscalign both `skipped`, 23034). It is REHEARSED 46 of 46
+  ("every arm answered as it should", serial on a quiet box, no arm died;
+  the one earlier miss, nic-nolink at stage 18, passed alone and was the
+  three-guest overcommit, sample at main 23072): `build/boot/diag.rehearsed`
+  carries `AFC6AD65FCA732275D24BD6CBAE004137819236FCE8B1F6D0E7011F560D39125`
+  (red 23109, main 23111) and `flash-usb.ps1 -Rehearsed` accepts it. The
+  flight is one act, a stick in a hand. The arms: fly AFC6AD65
+  (flush-less); if the bank survives, the restore and the CRLF fix were the
+  cause; if the medium's record again stops at stage 9, build the image on
+  main 23069 and fly that as the second arm, and a bank that survives there
+  establishes the cache reading. No bed can run either arm.
+- **A cfg FILE cannot configure stages 1 to 6, and nothing says so.**
+  `dg-run-passive` is called with the pre-merge ctx at `Diag.codex:1088`,
+  `dg-esp-cfg` reads the ESP file at :1092, and the merge produces `c2` at
+  :1094, so the passive prefix is dispatched before the file is in the ctx
+  at all. The prefix is stages 1 to 6: the walk stops at the first stage
+  that is not `diag-risk-passive`, which is 7 (`dg-stage-risk`, `:113`;
+  `xhci` at 8 and `kbd` at 9 are passive by risk but run after the merge,
+  so the file reaches them). This is inherent rather than
+  a merge bug, because those stages run before `usb-attach` mounts the
+  medium the file lives on, so the ring is the only channel that can reach
+  them. The defect is the silence: `build-diag` validates a `-Cfg` naming
+  `scene` exactly as it validates one naming `xhci`, so a key that can never
+  take effect is spelled identically to one that works (L-ACCEPTED). It
+  wants a refusal naming the reachable stages and pointing at `-StdinCfg`
+  for the rest (main 22942).
+- **`gop-mode-arm.ps1` asserts the wrong half, and one ladder arm asserts
+  the right one.** Its six arms read `GOP: SetMode N` off codex-vm's stderr
+  and check the BMP geometry, so they never see the bank: that script boots
+  the seed as a UEFI payload, and nothing in it reports handoff v3. The bank
+  IS asserted in one place, `diag-arm.ps1`'s `gop-kept`, which pins the whole
+  row (`max=4 before=3 chose=3 flags=1 status=00000000`) predicted before the
+  run. So the gap is narrower than "asserted by nothing" and it is shaped by
+  STATE: of `dgop-state`'s six, only `kept` has its numbers checked.
+  `honoured` is asserted as a word by every ordinary arm and as numbers by
+  none, and `single` has no ladder arm at all, which is the hole
+  `-gop-max-mode 1` falls through. That is red's row. The arm to add is
+  `-gop-max-mode 1` asserting `single` and a row opening `max=1`; only that
+  much is derivable from the flag, and pinning `before`, `chose` and `flags`
+  from a first run would pin whatever happened rather than what is required
+  (L-FALSIF).
 - **`DIAG.RCP` truncates silently past 12 lines or 2 KB.** The recipe fits
   today. This is the thing to tighten first if it grows.
+- **The image hash is NOT reproducible across workspaces, and the release
+  publishes that hash.** `DIAG.RCP` records the cfg as an ABSOLUTE PATH, so
+  the same source and the same seed give a different image in every
+  workspace. Measured at the Update 56 release (blu, 2026-09-08), identical
+  seed `D9CF240465C3D0BC` and identical id `f2e07084211bb472`:
+  `Cobblestone-blu-main` produced `2D8FA5AE` carrying
+  `cfg=D:\Projects\Cobblestone-blu-main\build\boot\diag-default.cfg`, and
+  `Cobblestone-blu` produced `A7AFF2FC` carrying its own path. Within one
+  workspace the build IS deterministic: two consecutive rebuilds agreed byte
+  for byte. The image shipped before this release carried
+  `Cobblestone-fester`'s path, which is how the difference surfaced.
+
+  What this costs is the claim a stranger relies on: the release notes give
+  the SHA-256, and the release skill says the image is reproducible from its
+  source and seed. It is not, unless the stranger clones to the same
+  directory name. Recording the cfg by REPO-RELATIVE path would close it.
+  `diag-src-cl` is workspace-local for the same reason and disagreed across
+  the two builds (23725 against 23797). Unowned; nothing in flight depends on
+  it, and the rehearsal record is keyed by hash, so a rebuilt image is
+  correctly refused until rehearsed either way.
 - **The road, not scheduled.** A stage that compiles a chapter off the stick,
   a stage that writes a rebuilt kernel back, and the resident agent that
   chooses stages from what stage 1 found. Named so the ladder is built with

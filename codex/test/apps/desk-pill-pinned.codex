@@ -1,0 +1,177 @@
+Chapter: DeskPillPinnedTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopSettings
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ ShellRefinement, the task frame stage 3. A pinned app has a pill with no
+ window. Everything a pill needs was already a pure function of the focus id;
+ what tied it to a window was the registry membership test, and the union
+ `dk-pill-live` is what this asserts.
+
+ THE DISCRIMINATION IS INSIDE EACH ROW RATHER THAN IN A SEPARATE SABOTAGE
+ BUILD, and that is deliberate: `dpp-pin` and `dpp-paint` each measure the
+ same quantity with the pin off and then on, in one process against one `ds`,
+ so a union that ignored the pinned bit leaves `after` equal to `before` and
+ a union that answered True for everything never gives `before` its absence.
+ Both defects are refused by a row that MOVED in the run rather than by a
+ prediction about a rebuild. The measured pair is the pill count 3 then 4 and
+ the laid pill x -1 then 150.
+
+ WHAT NO ROW HERE COVERS, stated because a reader would otherwise assume the
+ union is proven everywhere it is spelled: `dk-pill-hit` and
+ `desk-pill-icons` take the same union and NOTHING below drives either. A
+ pinned pill is therefore proven to be built and laid, and is NOT proven to
+ be clickable or to carry its icon.
+
+Section: Body
+
+  dpp-yn : Boolean -> Text
+  dpp-yn (v) = if v then "yes" else "NO"
+
+ The registry is built by hand the way `desk-pill-edge` builds it, because
+ that is the whole of what the walks ask of it: a count at 0 and a focus id
+ at `4 * i + 4`. Ids 8, 9 and 10 are registered; 4 is the Calculator and is
+ deliberately NOT registered, so it is the app a pin has to conjure a pill for.
+
+  dpp-ws : Integer
+  dpp-ws =
+    let ws = alloc-zeroed 64 64
+    in let n = poke-32 ws 0 3
+    in let a = poke-32 ws 4 8
+    in let b = poke-32 ws 8 9
+    in let c = poke-32 ws 12 10
+    in ws
+
+  dpp-ds : Integer
+  dpp-ds =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pei = dk-pedge-init ds
+    in let wr = poke-32 ds dk-wr-cell dpp-ws
+    in let sp = poke-32 ds dk-task-edge-cell dk-edge-bottom
+    in ds
+
+  dpp-count : Integer, Integer -> Integer
+  dpp-count (ds) (e) = list-length (dk-pills (peek-32 ds dk-wr-cell) ds e 0 [])
+
+  dpp-inert : Text
+  dpp-inert =
+    let ds = dpp-ds
+    in let n = dpp-count ds dk-edge-bottom
+    in "inert: nothing pinned, band holds " & integer-to-text n
+       & "  which is the registered count " & dpp-yn (n == 3)
+       & "  and id 4 is absent " & dpp-yn (dk-pinned-get ds 4 == False)
+
+ A PIN CONJURES A PILL FOR AN APP WITH NO WINDOW, and the count is asserted
+ rather than the membership alone, so a union that added the id twice fails
+ here too.
+
+  dpp-pin : Text
+  dpp-pin =
+    let ds = dpp-ds
+    in let before = dpp-count ds dk-edge-bottom
+    in let t = dk-pinned-toggle ds desk-focus-calc
+    in let after = dpp-count ds dk-edge-bottom
+    in "pin: band had " & integer-to-text before
+       & "  after pinning the Calculator " & integer-to-text after
+       & "  gained exactly one " & dpp-yn (after == before + 1)
+       & "  it reads pinned " & dpp-yn (dk-pinned-get ds desk-focus-calc)
+       & "  and it is not registered " & dpp-yn (dk-wr-find (peek-32 ds dk-wr-cell) desk-focus-calc 0 < 0)
+
+ THE PILL MUST BE IN THE LAID TREE, not merely counted. A pill nothing lays
+ is a pill nothing can click, and the count rows above would all pass with the
+ strip never put in the tree.
+
+  dpp-pill-x : WidgetNode, Text -> Integer
+  dpp-pill-x (laid) (id) =
+    when widget-find laid id
+      is Just (n) -> n.wn-bounds.lr-x
+      is None -> 0 - 1
+
+  dpp-laid : Integer, Integer -> WidgetNode
+  dpp-laid (ds) (w) =
+    let s = ui-wscale w
+    in widget-layout (desk-chrome-with (widget-panel "content" DirColumn 0 []) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (900 / s))
+
+  dpp-paint : Integer -> Text
+  dpp-paint (w) =
+    let ds = dpp-ds
+    in let tki = dk-task-init ds gfont-none w
+    in let sti = dk-strip-init ds gfont-none w
+    in let before = dpp-pill-x (dpp-laid ds w) (dk-pill-id desk-focus-calc)
+    in let t = dk-pinned-toggle ds desk-focus-calc
+    in let after = dpp-pill-x (dpp-laid ds w) (dk-pill-id desk-focus-calc)
+    in let running = dpp-pill-x (dpp-laid ds w) (dk-pill-id 8)
+    in "paint: unpinned Calculator pill x " & integer-to-text before
+       & "  pinned " & integer-to-text after
+       & "  absent before " & dpp-yn (before < 0)
+       & "  laid after " & dpp-yn (after >= 0)
+       & "  the running pill is still laid " & dpp-yn (running >= 0)
+
+ AN APP WITH NO SCANCODE CANNOT BE PINNED, and the system menu is the one
+ that matters: it is an overlay rather than an app, it is never in the
+ registry, and a pill for it would be a control with nothing to open.
+
+  dpp-menu : Text
+  dpp-menu =
+    let ds = dpp-ds
+    in let before = dpp-count ds dk-edge-bottom
+    in let t = dk-pinned-toggle ds desk-focus-menu
+    in let after = dpp-count ds dk-edge-bottom
+    in "menu: scancode " & integer-to-text (dk-fid-sc desk-focus-menu)
+       & "  refused " & dpp-yn (dk-pinned-get ds desk-focus-menu == False)
+       & "  band unchanged " & dpp-yn (after == before)
+       & "  and the Calculator has one " & dpp-yn (dk-fid-sc desk-focus-calc /= 0)
+
+ A TOGGLE ROUND TRIPS AND OUT OF RANGE IS REFUSED. The mask is one cell, so
+ an unpin that cleared the wrong bit would leave the others visible here.
+
+  dpp-toggle : Text
+  dpp-toggle =
+    let ds = dpp-ds
+    in let a = dk-pinned-toggle ds desk-focus-calc
+    in let b = dk-pinned-toggle ds desk-focus-con
+    in let both = peek-32 ds dk-pinned-cell
+    in let c = dk-pinned-toggle ds desk-focus-calc
+    in "toggle: both pinned mask " & integer-to-text both
+       & "  after unpinning the Calculator it is off " & dpp-yn (dk-pinned-get ds desk-focus-calc == False)
+       & "  the Console is untouched " & dpp-yn (dk-pinned-get ds desk-focus-con)
+       & "  out of range -1 " & dpp-yn (dk-pinned-get ds (0 - 1) == False)
+       & "  and 17 " & dpp-yn (dk-pinned-get ds 17 == False)
+
+ THE SET SURVIVES A SAVE AND A LOAD, which is what makes it the user's rather
+ than the session's. This asks the store round trip rather than the disk,
+ because `gst-save` is the medium's and this chapter has no medium.
+
+  dpp-persist : Text
+  dpp-persist =
+    let ds = dpp-ds
+    in let a = dk-pinned-toggle ds desk-focus-calc
+    in let b = dk-pinned-toggle ds desk-focus-files
+    in let mask = peek-32 ds dk-pinned-cell
+    in let st = dk-settings-of ds
+    in let fresh = alloc-zeroed dk-ds-bytes 64
+    in let back = dk-settings-into fresh st
+    in "persist: mask " & integer-to-text mask
+       & "  the store carries " & integer-to-text (gst-get st dk-set-pinned 0)
+       & "  a fresh desk reads " & integer-to-text (peek-32 fresh dk-pinned-cell)
+       & "  round trip " & dpp-yn (peek-32 fresh dk-pinned-cell == mask)
+       & "  and both apps come back " & dpp-yn (dk-pinned-get fresh desk-focus-calc & dk-pinned-get fresh desk-focus-files)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni dpp-inert
+      print-line-uni dpp-pin
+      print-line-uni (dpp-paint 1600)
+      print-line-uni dpp-menu
+      print-line-uni dpp-toggle
+      print-line-uni dpp-persist
+    end
+
+Page 1

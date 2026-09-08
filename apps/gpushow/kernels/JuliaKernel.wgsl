@@ -17,11 +17,11 @@ fn jl_iter(zr__a : f32, zi__a : f32, cr__a : f32, ci__a : f32, n__a : i32) -> i3
     if ((n >= jl_max)) {
     return jl_max;
     } else {
-    if ((((zr * zr) + (zi * zi)) > bitcast<f32>(1082130432u))) {
+    if ((((zr * zr) + (zi * zi)) > 0x1.000000p+2f)) {
     return n;
     } else {
     let _mv0 = (((zr * zr) - (zi * zi)) + cr);
-    let _mv1 = (((bitcast<f32>(1073741824u) * zr) * zi) + ci);
+    let _mv1 = (((0x1.000000p+1f * zr) * zi) + ci);
     let _mv2 = cr;
     let _mv3 = ci;
     let _mv4 = (n + 1);
@@ -34,6 +34,7 @@ fn jl_iter(zr__a : f32, zi__a : f32, cr__a : f32, ci__a : f32, n__a : i32) -> i3
     }
     }
   }
+  return 0;
 }
 fn jl_chan(it : i32, mul : i32, phase : i32) -> i32 {
   return jl_mod(((it * mul) + phase), 256);
@@ -52,11 +53,11 @@ fn jl_color(it : i32, frame : i32) -> i32 {
 fn jl_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / jl_width) * jl_width));
   let py = (gid / jl_width);
-  let zr = (f32(f32((px - jl_half_w))) / bitcast<f32>(1134559232u));
-  let zi = (f32(f32((py - jl_half_h))) / bitcast<f32>(1134559232u));
-  let a = (f32(f32(frame)) / bitcast<f32>(1109393408u));
-  let cr = (bitcast<f32>(1061804834u) * cos(a));
-  let ci = (bitcast<f32>(1061804834u) * sin(a));
+  let zr = (f32(f32((px - jl_half_w))) / 0x1.400000p+8f);
+  let zi = (f32(f32((py - jl_half_h))) / 0x1.400000p+8f);
+  let a = (f32(f32(frame)) / 0x1.400000p+5f);
+  let cr = (0x1.93b644p-1f * cos(a));
+  let ci = (0x1.93b644p-1f * sin(a));
   return jl_color(jl_iter(zr, zi, cr, ci, 0), frame);
 }
 @group(0) @binding(0) var<storage, read_write> julia_step_outb_buf : array<i32>;

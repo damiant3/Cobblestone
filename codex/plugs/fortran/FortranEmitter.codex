@@ -594,8 +594,8 @@ Section: Lambda Lifting
         & (if i < list-length args then fort-emit-expr (list-at args i) arities else "0_8")
         & fort-arg-slots args arities (i + 1)
 
-  fort-emit-apply-dispatch : List FortLam, List IRDef, List ArityEntry -> Text
-  fort-emit-apply-dispatch (ls) (ds) (arities) =
+  fort-dispatch-head : Text
+  fort-dispatch-head =
    "  recursive function cx_apply(f, a) result(cx_apply_r)\n"
    & "    type(cx_fun), intent(in) :: f\n"
    & "    integer(8), intent(in) :: a\n"
@@ -609,15 +609,23 @@ Section: Lambda Lifting
    & "    end if\n"
    & "    cx_apply_r%need = 0_8\n"
    & "    select case (int(f%id))\n"
-   & fort-dispatch-lams ls 0
-   & fort-dispatch-defs ds 0
-   & "    end select\n"
+
+  fort-dispatch-tail : Text
+  fort-dispatch-tail =
+   "    end select\n"
    & "  end function cx_apply\n\n"
    & "  recursive function cx_val(f) result(cx_val_r)\n"
    & "    type(cx_fun), intent(in) :: f\n"
    & "    integer(8) :: cx_val_r\n"
    & "    cx_val_r = f%val\n"
    & "  end function cx_val\n\n"
+
+  fort-emit-apply-dispatch : List FortLam, List IRDef, List ArityEntry -> Text
+  fort-emit-apply-dispatch (ls) (ds) (arities) =
+   fort-dispatch-head
+   & fort-dispatch-lams ls 0
+   & fort-dispatch-defs ds 0
+   & fort-dispatch-tail
 
   fort-dispatch-lams : List FortLam, Integer -> Text
   fort-dispatch-lams (ls) (i) =
@@ -750,10 +758,13 @@ Section: Lambda Lifting
   fort-collect-lams (e) (bound) (arities) (acc) =
    when e
     is IrLambda (ps) (body) (ty) (sp) ->
-     let inner-bound = bound & fort-param-names ps 0 []
+     let h = __heap-save
+     in let k = fort-lam-key-of ps body arities
+     in let r = __heap-restore h
+     in let inner-bound = bound & fort-param-names ps 0 []
      in let caps = fort-lam-caps-of ps body arities
      in let acc1 = acc & [FortLam {
-      fl-key = fort-lam-key-of ps body arities,
+      fl-key = k,
       fl-params = ps,
       fl-caps = caps,
       fl-body = body,
@@ -874,7 +885,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then ".true." else ".false."
     is IrCharLit (n) (sp) -> integer-to-text n & "_8"
     is IrName (n) (ty) (sp) -> fort-emit-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> fort-emit-binary op l r arities depth
+    is IrBinary (op) (l) (r) (ty) (sp) -> fort-emit-binary op l r ty arities depth
     is IrNegate (operand) (nty) (sp) -> "(-" & fort-emit-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "merge(" & fort-emit-expr-at t arities (depth + 1) & ", " & fort-emit-expr-at el arities (depth + 1) & ", " & fort-emit-expr-at c arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> fort-emit-expr-at (fort-subst-expr body name val (depth + 1)) arities (depth + 1)
@@ -905,9 +916,26 @@ Section: Expression Emission
       else if ar >= 1 then "cx_fun(" & integer-to-text (fort-def-fun-id n) & ", " & integer-to-text ar & "_8, 0_8, (/ integer(8) :: 0_8, 0_8, 0_8, 0_8 /), 0_8)"
       else fort-sanitize n
 
-  fort-emit-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  fort-emit-binary (op) (l) (r) (arities) (depth) =
+ Fortran has no unsigned integer type and no exceptions, which decides both
+ arms. The band is the bare operator because there is nothing to express a
+ defined wrap with: the standard leaves `integer(8)` overflow undefined, and
+ gfortran wraps in practice without `-ftrapv`, so this arm rests on the
+ compiler rather than on the language. The trapping arm ends in `error stop`,
+ which is the only way a Fortran procedure can refuse to return.
+
+  fort-int-arith : Text, Text, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  fort-int-arith (sym) (trap) (l) (r) (ty) (arities) (depth) =
+   let a = fort-emit-expr-at l arities (depth + 1)
+   in let b = fort-emit-expr-at r arities (depth + 1)
+   in if int-ty-wraps ty then "(" & a & " " & sym & " " & b & ")"
+   else trap & "(" & a & ", " & b & ")"
+
+  fort-emit-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  fort-emit-binary (op) (l) (r) (ty) (arities) (depth) =
    when op
+    is IrAddInt -> fort-int-arith "+" "fort_add_trap" l r ty arities depth
+    is IrSubInt -> fort-int-arith "-" "fort_sub_trap" l r ty arities depth
+    is IrMulInt -> fort-int-arith "*" "fort_mul_trap" l r ty arities depth
     is IrAppendText -> "trim(" & fort-emit-expr-at l arities (depth + 1) & ") // trim(" & fort-emit-expr-at r arities (depth + 1) & ")"
     is IrPowInt -> "(" & fort-emit-expr-at l arities (depth + 1) & " ** " & fort-emit-expr-at r arities (depth + 1) & ")"
     is IrAppendList -> "fort_list_concat(" & fort-emit-expr-at l arities (depth + 1) & ", " & fort-emit-expr-at r arities (depth + 1) & ")"
@@ -1717,6 +1745,9 @@ Section: Runtime Prelude
    & "  function fort_list_at_i(xs, i) result(r)\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    r = xs(int(i) + 1)\n  end function fort_list_at_i\n"
    & "  function fort_list_at_t(xs, i) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    character(len=FORT_TEXT_LEN) :: r\n    r = xs(int(i) + 1)\n  end function fort_list_at_t\n"
    & "  function fort_char_code_at(s, i) result(r)\n    character(len=*), intent(in) :: s\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    r = int(ichar(s(int(i)+1:int(i)+1)), 8)\n  end function fort_char_code_at\n"
+   & "  function fort_add_trap(a, b) result(r)\n    integer(8), intent(in) :: a, b\n    integer(8) :: r\n    r = a + b\n    if (((a >= 0) .eqv. (b >= 0)) .and. ((r >= 0) .neqv. (a >= 0))) then\n      error stop \"CODEX_TRAP_integer_overflow\"\n    end if\n  end function fort_add_trap\n"
+   & "  function fort_sub_trap(a, b) result(r)\n    integer(8), intent(in) :: a, b\n    integer(8) :: r\n    r = a - b\n    if (((a >= 0) .neqv. (b >= 0)) .and. ((r >= 0) .neqv. (a >= 0))) then\n      error stop \"CODEX_TRAP_integer_overflow\"\n    end if\n  end function fort_sub_trap\n"
+   & "  function fort_mul_trap(a, b) result(r)\n    integer(8), intent(in) :: a, b\n    integer(8) :: r\n    if (a == 0_8 .or. b == 0_8) then\n      r = 0_8\n      return\n    end if\n    if (a == -1_8 .and. b == -huge(0_8) - 1_8) error stop \"CODEX_TRAP_integer_overflow\"\n    if (b == -1_8 .and. a == -huge(0_8) - 1_8) error stop \"CODEX_TRAP_integer_overflow\"\n    r = a * b\n    if (r / b /= a) then\n      error stop \"CODEX_TRAP_integer_overflow\"\n    end if\n  end function fort_mul_trap\n"
    & "  function fort_substr(s, start, count) result(r)\n    character(len=*), intent(in) :: s\n    integer(8), intent(in) :: start\n    integer(8), intent(in) :: count\n    character(len=FORT_TEXT_LEN) :: r\n    r = s(int(start)+1:int(start)+int(count))\n  end function fort_substr\n"
    & "  function fort_list_concat_i(a, b) result(r)\n    integer(8), dimension(:), intent(in) :: a, b\n    integer(8), allocatable :: r(:)\n    integer :: na, nb\n    na = size(a)\n    nb = size(b)\n    allocate(r(na + nb))\n    if (na > 0) r(1:na) = a\n    if (nb > 0) r(na+1:na+nb) = b\n  end function fort_list_concat_i\n"
    & "  function fort_list_concat_t(a, b) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: a, b\n    character(len=FORT_TEXT_LEN), allocatable :: r(:)\n    integer :: na, nb\n    na = size(a)\n    nb = size(b)\n    allocate(r(na + nb))\n    if (na > 0) r(1:na) = a\n    if (nb > 0) r(na+1:na+nb) = b\n  end function fort_list_concat_t\n"
@@ -1769,6 +1800,49 @@ Section: Chapter Emission
    let is-eff = fort-is-effectful (d.type-val)
    in if is-eff then fort-emit-let-decls (d.body) (d.params) "" & fort-emit-statement (d.body) arities 1
       else "  print *, " & fort-emit-expr (d.body) arities & "\n"
+
+  fort-lam-def-at : List FortLam, List ArityEntry, Integer -> Text
+  fort-lam-def-at (ls) (arities) (i) =
+   if fort-lam-seen-before ls ((list-at ls i).fl-key) i 0 then ""
+   else fort-emit-lam-def (list-at ls i) arities
+
+  fort-dispatch-lam-at : List FortLam, Integer -> Text
+  fort-dispatch-lam-at (ls) (i) =
+   let l = list-at ls i
+   in if fort-lam-seen-before ls (l.fl-key) i 0 then ""
+      else if list-length (l.fl-params) /= 1 then ""
+      else "    case (" & integer-to-text (l.fl-key) & ")\n      cx_apply_r%val = "
+           & fort-lam-name (l.fl-key) & "(a" & fort-dispatch-caps (l.fl-caps) 0 & ")\n"
+
+  fort-dispatch-def-at : List IRDef, Integer -> Text
+  fort-dispatch-def-at (ds) (i) =
+   let d = list-at ds i
+   in if list-length (d.params) == 0 then ""
+      else if fort-type (fort-return-type (d.type-val) (list-length (d.params))) /= "integer(8)" then ""
+      else if fort-params-all-int (d.params) 0 == False then ""
+      else "    case (" & integer-to-text (fort-def-fun-id (d.name)) & ")\n      cx_apply_r%val = "
+           & fort-sanitize (d.name) & "(" & fort-dispatch-def-args (list-length (d.params)) 0 & ")\n"
+
+  fort-module-def-at : List IRDef, List ArityEntry, Integer -> Text
+  fort-module-def-at (defs) (arities) (i) =
+   fort-emit-def (list-at defs i) arities & "\n"
+
+  fort-module-head : IRChapter, List ATypeDef -> Text
+  fort-module-head (m) (type-defs) =
+   "module codex_" & fort-sanitize (m.name.value) & "\n  use codex_fort_prelude\n  implicit none\n\n"
+   & emit-fort-type-defs type-defs 0 & "contains\n\n"
+   & emit-fort-record-ctors type-defs 0 & emit-fort-variant-ctors type-defs 0
+
+  fort-module-tail : IRChapter -> Text
+  fort-module-tail (m) = "end module codex_" & fort-sanitize (m.name.value) & "\n\n"
+
+  fort-program-part : IRChapter, List ArityEntry, Integer, Boolean -> Text
+  fort-program-part (m) (arities) (opening-idx) (has-mod) =
+   let use-part = if has-mod then "  use codex_" & fort-sanitize (m.name.value) & "\n" else ""
+   in let main-body = if opening-idx >= 0 then fort-emit-opening-body (list-at (m.defs) opening-idx) arities
+                      else if list-length (m.defs) == 0 then "  print *, 'All proofs verified at compile time.'\n"
+                      else ""
+   in "program main_program\n" & use-part & "  use codex_fort_prelude\n  implicit none\n" & main-body & "end program main_program\n"
 
   emit-fortran-chapter : IRChapter, List ATypeDef -> Text
   emit-fortran-chapter (m) (type-defs) =

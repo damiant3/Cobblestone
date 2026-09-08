@@ -1,0 +1,35 @@
+Chapter: GopWebChildHeap
+  cites Works chapter GopWeb
+
+ The service in a spawned process with the DEFAULT spawn heap, pinned to
+ core 0 under a parent that yields so the child actually runs. The
+ reading is whether the child is still alive after the hold: a listen
+ transport that reserves more than the child's slot kills the child at
+ its first allocation, and the guest with it, so the sabotage (raise the
+ serve buffer cap past the spawn slot) truncates this output before the
+ verdict line rather than turning it False.
+
+Section: Body
+
+  spin : Integer, Integer -> Integer
+  spin (n) (acc) = if n == 0 then acc else spin (n - 1) (acc + 1)
+
+  hold-yielding : Integer -> Integer
+  hold-yielding (rounds) =
+    if rounds <= 0 then 0
+    else let y = process-yield
+    in let s = spin 10000000 0
+    in if s < 0 then 0 else hold-yielding (rounds - 1)
+
+  opening : [Console, Concurrent, Capability, Network.Read, Network.Write] Nothing = act
+    let blk = gopweb-blk-new
+    in act
+    svc <- process-spawn-on-core (\x -> gopweb-service blk x) 0
+    print-line-uni ("spawned " & show (svc > 0))
+    let held = hold-yielding 200
+    in act
+      print-line-uni ("service alive " & show (process-status svc > 0))
+      k <- process-kill svc
+      print-line-uni ("service stopped " & show (k >= 0))
+    end
+  end

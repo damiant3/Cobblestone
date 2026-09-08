@@ -5,13 +5,13 @@ const oc_half_w : i32 = 512;
 const oc_half_h : i32 = 384;
 const oc_count : i32 = 14;
 fn oc_cx(i : i32) -> f32 {
-  return (cos((f32(f32(i)) * bitcast<f32>(1066192076u))) * (bitcast<f32>(1061997772u) + f32(f32((i - ((i / 3) * 3))))));
+  return (cos((f32(f32(i)) * 0x1.199998p+0f)) * (0x1.999998p-1f + f32(f32((i - ((i / 3) * 3))))));
 }
 fn oc_cy(i : i32) -> f32 {
-  return (sin((f32(f32(i)) * bitcast<f32>(1071225241u))) * bitcast<f32>(1067869798u));
+  return (sin((f32(f32(i)) * 0x1.b33332p+0f)) * 0x1.4cccccp+0f);
 }
 fn oc_cz(i : i32) -> f32 {
-  return (sin((f32(f32(i)) * bitcast<f32>(1063675494u))) * bitcast<f32>(1068708659u));
+  return (sin((f32(f32(i)) * 0x1.ccccccp-1f)) * 0x1.666666p+0f);
 }
 fn oc_enters(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz__a : f32, i__a : i32, spin__a : f32, acc__a : i32) -> i32 {
   var ox = ox__a;
@@ -33,9 +33,9 @@ fn oc_enters(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz
     let ly = (oy - oc_cy(i));
     let lz = (oz - cz);
     let b = (((dx * lx) + (dy * ly)) + (dz * lz));
-    let c = ((((lx * lx) + (ly * ly)) + (lz * lz)) - bitcast<f32>(1059313418u));
+    let c = ((((lx * lx) + (ly * ly)) + (lz * lz)) - 0x1.47ae14p-1f);
     let disc = ((b * b) - c);
-    let hit = select(0, select(0, 1, (((bitcast<f32>(0u) - b) + sqrt(disc)) > bitcast<f32>(0u))), (disc > bitcast<f32>(0u)));
+    let hit = select(0, select(0, 1, (((0.0 - b) + sqrt(disc)) > 0.0)), (disc > 0.0));
     let _mv0 = ox;
     let _mv1 = oy;
     let _mv2 = oz;
@@ -57,9 +57,10 @@ fn oc_enters(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz
     continue;
     }
   }
+  return 0;
 }
 fn oc_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), r)) * bitcast<f32>(1132396544u))) * 65536) + (i32((max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), g)) * bitcast<f32>(1132396544u))) * 256)) + i32((max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), b)) * bitcast<f32>(1132396544u))));
+  return (((i32((max(0.0, min(0x1.000000p+0f, r)) * 0x1.fe0000p+7f)) * 65536) + (i32((max(0.0, min(0x1.000000p+0f, g)) * 0x1.fe0000p+7f)) * 256)) + i32((max(0.0, min(0x1.000000p+0f, b)) * 0x1.fe0000p+7f)));
 }
 @group(0) @binding(0) var<storage, read_write> occlusion_step_outb_buf : array<i32>;
 struct U_occlusion_step {
@@ -72,14 +73,14 @@ fn occlusion_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let frame = u_occlusion_step.frame;
   let px = (gid - ((gid / oc_width) * oc_width));
   let py = (gid / oc_width);
-  let fx = (f32(f32((px - oc_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((oc_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1082130432u)));
+  let fx = (f32(f32((px - oc_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((oc_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.000000p+2f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1073741824u) / rl);
-  let spin = (f32(f32(frame)) / bitcast<f32>(1110704128u));
-  let n = oc_enters(bitcast<f32>(0u), bitcast<f32>(0u), (bitcast<f32>(0u) - bitcast<f32>(1084227584u)), dx, dy, dz, 0, spin, 0);
-  let f = (f32(f32(n)) / bitcast<f32>(1086324736u));
-  occlusion_step_outb_buf[gid] = select(oc_pack((max(bitcast<f32>(0u), (f - bitcast<f32>(1053609164u))) * bitcast<f32>(1070386380u)), min(bitcast<f32>(1065353216u), (f * bitcast<f32>(1068708659u))), max(bitcast<f32>(0u), (bitcast<f32>(1063675494u) - (f * bitcast<f32>(1067869798u))))), (((8 * 65536) + (10 * 256)) + 16), (n == 0));
+  let dz = (0x1.000000p+1f / rl);
+  let spin = (f32(f32(frame)) / 0x1.680000p+5f);
+  let n = oc_enters(0.0, 0.0, (0.0 - 0x1.400000p+2f), dx, dy, dz, 0, spin, 0);
+  let f = (f32(f32(n)) / 0x1.800000p+2f);
+  occlusion_step_outb_buf[gid] = select(oc_pack((max(0.0, (f - 0x1.999998p-2f)) * 0x1.999998p+0f), min(0x1.000000p+0f, (f * 0x1.666666p+0f)), max(0.0, (0x1.ccccccp-1f - (f * 0x1.4cccccp+0f)))), (((8 * 65536) + (10 * 256)) + 16), (n == 0));
 }

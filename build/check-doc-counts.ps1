@@ -434,7 +434,7 @@ if ((-not $Quiet)) {
 }
 
 if (($bad -gt 0)) {
-    Write-Host ([string]'FAIL: ' + ([string]$bad + ([string]' of ' + ([string]@($rows).Count + ' doc count claim(s) do not hold.'))))
+    Write-Host ([string]'DRIFT: ' + ([string]$bad + ([string]' of ' + ([string]@($rows).Count + ' doc count claim(s) do not hold. Advisory since 2026-09-07: fix when the doc is next edited; build.ps1 warns and continues.'))))
     Write-Host 'DRIFT   the doc states a number the tree no longer produces. Re-measure and edit the doc.'
     Write-Host 'NOMATCH the claim pattern no longer matches. The doc changed shape and stopped being'
     Write-Host '        checked; fix the pattern here, or the doc, but do not leave it unmatched.'

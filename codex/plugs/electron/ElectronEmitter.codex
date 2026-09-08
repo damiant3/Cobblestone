@@ -122,7 +122,7 @@ Section: Expression Emission
   emit-el-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-el-expr (e) (arities) (indent) =
    when e
-    is IrIntLit (n) (sp) -> show n
+    is IrIntLit (n) (sp) -> show n & "n"
     is IrNumLit (n) (sp) -> show n
     is IrTextLit (s) (sp) -> "\"" & el-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
@@ -149,15 +149,29 @@ Section: Expression Emission
 
 Section: Binary Operators
 
+ A Codex Integer is a Number here, and a double holds an exact integer only
+ to 2^53. BOTH arms refuse: the band cannot wrap at 64 bits and the plain arm
+ cannot tell an overflow from a rounding, so the node type decides nothing and
+ is not consulted. The guard is on the VALUES, so a program whose integers fit
+ a double still computes and only the unrepresentable case refuses. The marker
+ is what plug-oracle-test.ps1 reads as its REFUSED verdict.
+
+  el-int-refuse : Text, Text, Text -> Text
+  el-int-refuse (sym) (lhs) (rhs) =
+   "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
+
   emit-el-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-el-binary (op) (l) (r) (arities) (indent) =
    let lhs = emit-el-expr l arities indent
    in let rhs = emit-el-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrAddInt -> el-int-refuse "+" lhs rhs
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> el-int-refuse "-" lhs rhs
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> el-int-refuse "*" lhs rhs
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
@@ -376,7 +390,7 @@ Section: Electron App Assembly
   emit-electron-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
   emit-electron-chapter (m) (meta) (type-defs) =
    let title = if meta.chapter-title == "" then "App" else meta.chapter-title
-   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return typeof c === 'string' ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
    in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
    in let types-text = emit-el-type-defs type-defs 0
    in let defs-text = emit-el-defs (m.defs) 0 arities
@@ -384,5 +398,35 @@ Section: Electron App Assembly
    in let main-js = "const { app, BrowserWindow } = require('electron');\nfunction createWindow() {\n  const win = new BrowserWindow({ width: 800, height: 600, webPreferences: { nodeIntegration: true, contextIsolation: false } });\n  win.loadFile('index.html');\n}\napp.whenReady().then(createWindow);\napp.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });\n"
    in let index-html = "<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><title>" & el-escape title & "</title>\n<style>body { font-family: system-ui, sans-serif; padding: 1rem; background: #1a1a2e; color: #e0e0e0; }</style>\n</head>\n<body><div id=\"app\"></div>\n<script>\n" & renderer-js & "</script>\n</body>\n</html>\n"
    in "// === main.js ===\n" & main-js & "\n// === index.html ===\n" & index-html
+
+  emit-electron-chapter-stream-head : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-electron-chapter-stream-head (m) (meta) (type-defs) =
+   let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-el-type-defs type-defs 0
+   in let main-js = "const { app, BrowserWindow } = require('electron');\nfunction createWindow() {\n  const win = new BrowserWindow({ width: 800, height: 600, webPreferences: { nodeIntegration: true, contextIsolation: false } });\n  win.loadFile('index.html');\n}\napp.whenReady().then(createWindow);\napp.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });\n"
+   in "// === main.js ===\n" & main-js & "\n// === index.html ===\n" & "<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><title>" & el-escape title & "</title>\n<style>body { font-family: system-ui, sans-serif; padding: 1rem; background: #1a1a2e; color: #e0e0e0; }</style>\n</head>\n<body><div id=\"app\"></div>\n<script>\n" & builtins & types-text
+
+  emit-electron-chapter-stream-tail : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-electron-chapter-stream-tail (m) (meta) (type-defs) =
+   let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-el-type-defs type-defs 0
+   in let main-js = "const { app, BrowserWindow } = require('electron');\nfunction createWindow() {\n  const win = new BrowserWindow({ width: 800, height: 600, webPreferences: { nodeIntegration: true, contextIsolation: false } });\n  win.loadFile('index.html');\n}\napp.whenReady().then(createWindow);\napp.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });\n"
+   in "try { opening(); } catch(e) { console.error(e); }\n" & "</script>\n</body>\n</html>\n"
+
+  emit-electron-chapter-stream-env : IRChapter, IRTextMeta, List ATypeDef -> List ArityEntry
+  emit-electron-chapter-stream-env (m) (meta) (type-defs) =
+   let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c) { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction list_snoc(xs, v) { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs, v) { return list_snoc(xs, v); }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-el-type-defs type-defs 0
+   in let main-js = "const { app, BrowserWindow } = require('electron');\nfunction createWindow() {\n  const win = new BrowserWindow({ width: 800, height: 600, webPreferences: { nodeIntegration: true, contextIsolation: false } });\n  win.loadFile('index.html');\n}\napp.whenReady().then(createWindow);\napp.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });\n"
+   in arities
+
+  emit-electron-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-electron-chapter-stream-def (m) (v) (i) = emit-el-def (list-at (m.defs) i) v
 
 Page 1

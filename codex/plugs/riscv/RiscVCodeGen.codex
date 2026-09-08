@@ -1093,47 +1093,137 @@ Section: Binary Emission
     is UnitTy (n) (inner) -> rv-is-real-approx-type inner
     is otherwise -> False
 
-  rv-emit-sum-eq : RvState, Integer, Integer, Integer -> RvEmitResult
-  rv-emit-sum-eq (st) (rd) (l-reg) (r-reg) =
-   let ll = rv-alloc-local st
-   in let st0a = rv-store-local (ll.state) (ll.reg) l-reg
-   in let rl = rv-alloc-local st0a
-   in let st0b = rv-store-local (rl.state) (rl.reg) r-reg
-   in let acc = rv-alloc-local st0b
-   in let lt = rv-alloc-temp (acc.state)
-   in let lp = rv-load-local (lt.state) (ll.reg)
-   in let st1 = rv-emit (lp.state) (rv-ld (lt.reg) (lp.reg) 0)
-   in let rt = rv-alloc-temp st1
-   in let rp = rv-load-local (rt.state) (rl.reg)
-   in let st2 = rv-emit (rp.state) (rv-ld (rt.reg) (rp.reg) 0)
-   in let dt = rv-alloc-temp st2
-   in let st3 = rv-emit (dt.state) (rv-sub (dt.reg) (lt.reg) (rt.reg))
-   in let st4 = rv-emit st3 (rv-sltu (dt.reg) rv-zero (dt.reg))
-   in let st4a = rv-store-local st4 (acc.reg) (dt.reg)
-   in let lf1 = rv-alloc-temp st4a
-   in let lp1 = rv-load-local (lf1.state) (ll.reg)
-   in let st5 = rv-emit (lp1.state) (rv-ld (lf1.reg) (lp1.reg) 8)
-   in let rf1 = rv-alloc-temp st5
-   in let rp1 = rv-load-local (rf1.state) (rl.reg)
-   in let st6 = rv-emit (rp1.state) (rv-ld (rf1.reg) (rp1.reg) 8)
-   in let t1 = rv-alloc-temp st6
-   in let st7 = rv-emit (t1.state) (rv-sub (t1.reg) (lf1.reg) (rf1.reg))
-   in let st8 = rv-emit st7 (rv-sltu (t1.reg) rv-zero (t1.reg))
-   in let av = rv-load-local st8 (acc.reg)
-   in let st9 = rv-emit (av.state) (rv-or (t1.reg) (av.reg) (t1.reg))
-   in let st9a = rv-store-local st9 (acc.reg) (t1.reg)
-   in let lf2 = rv-alloc-temp st9a
-   in let lp2 = rv-load-local (lf2.state) (ll.reg)
-   in let st10 = rv-emit (lp2.state) (rv-ld (lf2.reg) (lp2.reg) 16)
-   in let rf2 = rv-alloc-temp st10
-   in let rp2 = rv-load-local (rf2.state) (rl.reg)
-   in let st11 = rv-emit (rp2.state) (rv-ld (rf2.reg) (rp2.reg) 16)
-   in let t2 = rv-alloc-temp st11
-   in let st12 = rv-emit (t2.state) (rv-sub (t2.reg) (lf2.reg) (rf2.reg))
-   in let st13 = rv-emit st12 (rv-sltu (t2.reg) rv-zero (t2.reg))
-   in let av2 = rv-load-local st13 (acc.reg)
-   in let st14 = rv-emit (av2.state) (rv-or rd (av2.reg) (t2.reg))
-   in RvEmitResult { state = rv-emit st14 (rv-xori rd rd 1), reg = rd }
+ A SUM EQUALITY COMPARES THE TAG AND THEN THAT CONSTRUCTOR'S FIELDS, EACH BY ITS
+ OWN TYPE. What stood here loaded the tag and then TWO WORDS at `+8` and `+16`
+ unconditionally, for every sum of every shape: a nullary constructor had two
+ words of whatever followed the object compared as integers, a `Text` field had
+ its POINTER compared rather than its bytes, and a constructor with three fields
+ had its third ignored. The arm is `codex/test/sum-field-eq`, built for 1.90
+ with nine rows that fail in both directions (plugs-backlog 1.107).
+
+ THE CTORS COME FROM `defs`, NOT FROM THE TYPE. `IRTextEmitter` emits
+ `(sum "Name" (args ...))` with no ctors, so every sum arriving over IR TEXT
+ carries an empty ctor list, and reading that list is how a backend answers "no
+ fields" for every sum and compares the tag alone. x86-64 never round-trips
+ through IR text, which is why the defect is native-backends-only.
+
+ BOTH RESTRICTIONS REFUSE RATHER THAN GUESS. A second field-carrying
+ constructor needs a switch whose arms hold different field types at the same
+ index, so a per-index type would be a guess; a sum-typed field needs recursion,
+ which for a recursive type does not terminate at emit time. Both are what a
+ per-sum HELPER FUNCTION answers, which is COMPILER-24's shape on x86-64 and
+ belongs in a shared IR pass so that arm64 and riscv get it together.
+
+  rv-sum-ctors-for-type : CodexType, List ATypeDef -> List SumCtor
+  rv-sum-ctors-for-type (ty) (defs) =
+   when ty
+    is SumTy (n) (ta) (cs) ->
+     if list-length cs > 0 then cs else sum-ctors-by-name defs (n.value) 0
+    is ConstructedTy (tname) (args) -> sum-ctors-by-name defs (tname.value) 0
+    is TypeCon (tname) -> sum-ctors-by-name defs (tname.value) 0
+    is otherwise -> []
+
+  rv-ctors-with-fields : List SumCtor, Integer, Integer -> Integer
+  rv-ctors-with-fields (cs) (i) (n) =
+   if i >= list-length cs then n
+   else let c = list-at cs i
+   in rv-ctors-with-fields cs (i + 1) (if list-length (c.fields) > 0 then n + 1 else n)
+
+  rv-first-ctor-with-fields : List SumCtor, Integer -> Integer
+  rv-first-ctor-with-fields (cs) (i) =
+   if i >= list-length cs then 0 - 1
+   else let c = list-at cs i
+   in if list-length (c.fields) > 0 then i
+   else rv-first-ctor-with-fields cs (i + 1)
+
+ A FIELD IS ONLY A SUM IF IT RESOLVES TO CTORS. `rv-is-sum-type` answers True
+ for `ConstructedTy`, and a TYPE PARAMETER arrives as exactly that, so refusing
+ on the predicate alone refuses COMPILER-24's own subject, which has nothing to
+ do with nested sums. Resolving the name against `defs` separates them: a
+ parameter resolves to no ctors. arm64 paid for this one (1.90).
+
+  rv-sum-fields-simple : List CodexType, List ATypeDef, Integer -> Boolean
+  rv-sum-fields-simple (fs) (defs) (i) =
+   if i >= list-length fs then True
+   else if list-length (rv-sum-ctors-for-type (list-at fs i) defs) > 0 then False
+   else rv-sum-fields-simple fs defs (i + 1)
+
+  rv-emit-sum-eq-refused : RvState, Text -> RvEmitResult
+  rv-emit-sum-eq-refused (st) (why) =
+   let msg = "[UNSUPPORTED] sum equality: " & why & ", which needs a per-sum helper function rather than an inline compare (refused rather than comparing pointers)"
+   in rv-emit-int-lit (rv-add-shadow-warning st msg) 0
+
+ One field at a time, folding into the accumulator LOCAL rather than a register,
+ because `__str_eq` is a call and a call clobbers registers. The pointers are
+ reloaded per field for the same reason.
+
+  rv-emit-sum-field-eq : RvState, Integer, Integer, Integer, List CodexType, Integer -> RvState
+  rv-emit-sum-field-eq (st) (ll) (rl) (acc) (fs) (i) =
+   if i >= list-length fs then st
+   else let off = 8 + i * 8
+   in let lp = rv-load-local st ll
+   in let fl = rv-alloc-temp (lp.state)
+   in let s1 = rv-emit (fl.state) (rv-ld (fl.reg) (lp.reg) off)
+   in let rp = rv-load-local s1 rl
+   in let fr = rv-alloc-temp (rp.state)
+   in let s2 = rv-emit (fr.state) (rv-ld (fr.reg) (rp.reg) off)
+   in let s3 = if rv-is-text-type (list-at fs i) then
+     let m = if (fr.reg) == rv-a0
+      then rv-emit (rv-emit s2 (rv-mv rv-a1 (fr.reg))) (rv-mv rv-a0 (fl.reg))
+      else rv-emit (rv-emit s2 (rv-mv rv-a0 (fl.reg))) (rv-mv rv-a1 (fr.reg))
+     in rv-emit-call-to m "__str_eq"
+    else let d = rv-emit s2 (rv-sub rv-a0 (fl.reg) (fr.reg))
+     in let z = rv-emit d (rv-sltu rv-a0 rv-zero rv-a0)
+     in rv-emit z (rv-xori rv-a0 rv-a0 1)
+   in let ap = rv-load-local s3 acc
+   in let s4 = rv-emit (ap.state) (rv-and (ap.reg) (ap.reg) rv-a0)
+   in let s5 = rv-store-local s4 acc (ap.reg)
+   in rv-emit-sum-field-eq s5 ll rl acc fs (i + 1)
+
+ ONE forward branch in the whole routine, and it is the only patch. The tag is
+ reloaded to test it because the accumulator fold has run since.
+
+  rv-emit-sum-eq : RvState, Integer, Integer, Integer, List SumCtor, List ATypeDef -> RvEmitResult
+  rv-emit-sum-eq (st) (rd) (l-reg) (r-reg) (ctors) (defs) =
+   let nf = rv-ctors-with-fields ctors 0 0
+   in let ci = rv-first-ctor-with-fields ctors 0
+   in let fs = if ci >= 0 then (list-at ctors ci).fields else []
+   in if nf > 1 then rv-emit-sum-eq-refused st "more than one constructor carries fields"
+   else if rv-sum-fields-simple fs defs 0 == False then rv-emit-sum-eq-refused st "a field is itself a sum"
+   else let ll = rv-alloc-local st
+   in let s0 = rv-store-local (ll.state) (ll.reg) l-reg
+   in let rl = rv-alloc-local s0
+   in let s1 = rv-store-local (rl.state) (rl.reg) r-reg
+   in let acc = rv-alloc-local s1
+   in let one = rv-alloc-temp (acc.state)
+   in let s2 = rv-emit-li (one.state) (one.reg) 1
+   in let s3 = rv-store-local s2 (acc.reg) (one.reg)
+   in let lp = rv-load-local s3 (ll.reg)
+   in let lt = rv-alloc-temp (lp.state)
+   in let s4 = rv-emit (lt.state) (rv-ld (lt.reg) (lp.reg) 0)
+   in let rp = rv-load-local s4 (rl.reg)
+   in let rt = rv-alloc-temp (rp.state)
+   in let s5 = rv-emit (rt.state) (rv-ld (rt.reg) (rp.reg) 0)
+   in let s6 = rv-emit (rv-emit (rv-emit s5 (rv-sub rv-a0 (lt.reg) (rt.reg)))
+                        (rv-sltu rv-a0 rv-zero rv-a0)) (rv-xori rv-a0 rv-a0 1)
+   in let ap = rv-load-local s6 (acc.reg)
+   in let s7 = rv-emit (ap.state) (rv-and (ap.reg) (ap.reg) rv-a0)
+   in let s8 = rv-store-local s7 (acc.reg) (ap.reg)
+   in if ci < 0 then
+     let fin = rv-load-local s8 (acc.reg)
+     in RvEmitResult { state = rv-emit (fin.state) (rv-mv rd (fin.reg)), reg = rd }
+    else let lp2 = rv-load-local s8 (ll.reg)
+    in let t2 = rv-alloc-temp (lp2.state)
+    in let s9 = rv-emit (t2.state) (rv-ld (t2.reg) (lp2.reg) 0)
+    in let ct = rv-alloc-temp s9
+    in let s10 = rv-emit-li (ct.state) (ct.reg) ci
+    in let skip-idx = s10.insn-count
+    in let s11 = rv-emit s10 rv-nop
+    in let s12 = rv-emit-sum-field-eq s11 (ll.reg) (rl.reg) (acc.reg) fs 0
+    in let skip-label = s12.insn-count
+    in let s13 = rv-patch-insn s12 skip-idx (rv-bne (t2.reg) (ct.reg) ((skip-label - skip-idx) * 4))
+    in let fin = rv-load-local s13 (acc.reg)
+    in RvEmitResult { state = rv-emit (fin.state) (rv-mv rd (fin.reg)), reg = rd }
 
   rv-is-sum-type : CodexType -> Boolean
   rv-is-sum-type (ty) =
@@ -1227,7 +1317,7 @@ Section: Binary Emission
        else rv-emit (rv-emit st2 (rv-mv rv-a0 left-reg)) (rv-mv rv-a1 right-reg)
       in let st4 = rv-emit-call-to st3 "__str_eq"
       in RvEmitResult { state = rv-emit st4 (rv-mv rd rv-a0), reg = rd }
-     else if rv-is-sum-type (ir-expr-type left) then rv-emit-sum-eq st2 rd left-reg right-reg
+     else if rv-is-sum-type (ir-expr-type left) then rv-emit-sum-eq st2 rd left-reg right-reg (rv-sum-ctors-for-type (ir-expr-type left) (st2.type-defs)) (st2.type-defs)
      else let st3 = rv-emit st2 (rv-sub rd left-reg right-reg)
      in let st4 = rv-emit st3 (rv-sltu rd rv-zero rd)
      in RvEmitResult { state = rv-emit st4 (rv-xori rd rd 1), reg = rd }
@@ -1240,7 +1330,7 @@ Section: Binary Emission
       in let st5 = rv-emit st4 (rv-sltu rd rv-zero rv-a0)
       in RvEmitResult { state = rv-emit st5 (rv-xori rd rd 1), reg = rd }
      else if rv-is-sum-type (ir-expr-type left) then
-      let neq = rv-emit-sum-eq st2 rd left-reg right-reg
+      let neq = rv-emit-sum-eq st2 rd left-reg right-reg (rv-sum-ctors-for-type (ir-expr-type left) (st2.type-defs)) (st2.type-defs)
       in RvEmitResult { state = rv-emit (neq.state) (rv-xori rd (neq.reg) 1), reg = rd }
      else let st3 = rv-emit st2 (rv-sub rd left-reg right-reg)
      in RvEmitResult { state = rv-emit st3 (rv-sltu rd rv-zero rd), reg = rd }
@@ -1294,8 +1384,8 @@ Section: Binary Emission
      else rv-emit-real-saturating-arith st2 left-reg right-reg rv-fmul-d
     is IrDivRealSaturating -> if is-real-f32 ty then rv-emit-real-saturating-arith-f32 st2 left-reg right-reg rv-fdiv-s
      else rv-emit-real-saturating-arith st2 left-reg right-reg rv-fdiv-d
-    is IrApproxEq -> rv-emit-real-comparison st2 left-reg right-reg rv-feq-d
-    is IrApproxEqExact -> rv-emit-real-comparison st2 left-reg right-reg rv-feq-d
+    is IrApproxEq -> rv-emit-approx-eq st2 left-reg right-reg (rv-is-real-approx-type (ir-expr-type left)) (if rv-is-real-approx-type (ir-expr-type left) then 17179869184 else 4)
+    is IrApproxEqExact -> rv-emit-approx-eq st2 left-reg right-reg (rv-is-real-approx-type (ir-expr-type left)) 0
     is IrPowInt ->
      let st3 = if right-reg == rv-a0
       then rv-emit (rv-emit st2 (rv-mv rv-a1 right-reg)) (rv-mv rv-a0 left-reg)
@@ -1413,6 +1503,83 @@ Section: Real Arithmetic
    in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 l-reg)
    in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft1 r-reg)
    in RvEmitResult { state = rv-emit st2 (cmp-op (rd.reg) rv-ft0 rv-ft1), reg = rd.reg }
+
+
+ `~` AND `~0` ARE NOT `feq`. Both operands are mapped to a MONOTONIC ORDINAL and
+ the ordinals are subtracted: `~` is True within 4 ULPs and `~0` within 0. What
+ stood here was `feq-d` for both, at f64 width with no dispatch on the operand,
+ so an f32 pattern in a 64-bit register was read as an f64 and `-0.0f`
+ (`0x80000000`) became a tiny denormal that compares unequal to `+0.0`. The f64
+ lines passed only because IEEE says `-0.0 == +0.0`, which agrees with the
+ ordinal answer for that one input; an f64 `~` across a one-ULP straddle failed
+ too and no line spelled it (plugs-backlog 1.91).
+
+ THE MAPPING IS x86-64's: `slli 1` / `srli 1` strips the sign bit, `srai 63` is
+ the sign mask, and `xor` / `sub` negates under it, so a negative pattern's
+ magnitude becomes its negation and the two halves join into one ordered
+ integer. arm64 spells the same mapping with `csel` because its encoder has no
+ `eor` or immediate `asr`; `RiscVEncoder.codex` has all four instructions, so
+ this is the direct form.
+
+ AN f32 IS SHIFTED UP 32 AND LEFT THERE, so one f32 ULP is exactly 2^32 and the
+ tolerance is `4 * 2^32` (17179869184) rather than 4.
+
+ BOTH OPERANDS ARE PARKED BEFORE ANY TEMP IS ALLOCATED. The ordinal of the left
+ operand allocates temps while the RIGHT operand is still live in its own
+ register, and `rv-alloc-temp` rotates four, so without the parking one of those
+ allocations is handed the right operand's register back. This is the regression
+ the arm64 half of 1.91 paid for on `1.0 ~ 1.0`.
+
+  rv-emit-real-ordinal : RvState, Integer, Boolean -> RvEmitResult
+  rv-emit-real-ordinal (st) (b-reg) (f32) =
+   let v = rv-alloc-temp st
+   in let s0 = if f32 then rv-emit (v.state) (rv-slli (v.reg) b-reg 32)
+    else rv-emit (v.state) (rv-mv (v.reg) b-reg)
+   in let vloc = rv-alloc-local s0
+   in let s1 = rv-store-local (vloc.state) (vloc.reg) (v.reg)
+   in let vp = rv-load-local s1 (vloc.reg)
+   in let m = rv-alloc-temp (vp.state)
+   in let s2 = rv-emit (m.state) (rv-slli (m.reg) (vp.reg) 1)
+   in let s3 = rv-emit s2 (rv-srli (m.reg) (m.reg) 1)
+   in let k = rv-alloc-temp s3
+   in let s4 = rv-emit (k.state) (rv-srai (k.reg) (vp.reg) 63)
+   in let s5 = rv-emit s4 (rv-xor (m.reg) (m.reg) (k.reg))
+   in RvEmitResult { state = rv-emit s5 (rv-sub (m.reg) (m.reg) (k.reg)), reg = m.reg }
+
+  rv-emit-approx-eq : RvState, Integer, Integer, Boolean, Integer -> RvEmitResult
+  rv-emit-approx-eq (st) (l-reg) (r-reg) (f32) (tol) =
+   let lin = rv-alloc-local st
+   in let p0 = rv-store-local (lin.state) (lin.reg) l-reg
+   in let rin = rv-alloc-local p0
+   in let p1 = rv-store-local (rin.state) (rin.reg) r-reg
+   in let lv = rv-load-local p1 (lin.reg)
+   in let ol = rv-emit-real-ordinal (lv.state) (lv.reg) f32
+   in let lloc = rv-alloc-local (ol.state)
+   in let s1 = rv-store-local (lloc.state) (lloc.reg) (ol.reg)
+   in let rv2 = rv-load-local s1 (rin.reg)
+   in let orr = rv-emit-real-ordinal (rv2.state) (rv2.reg) f32
+   in let rloc = rv-alloc-local (orr.state)
+   in let s2 = rv-store-local (rloc.state) (rloc.reg) (orr.reg)
+   in let lp = rv-load-local s2 (lloc.reg)
+   in let rp = rv-load-local (lp.state) (rloc.reg)
+   in let d = rv-alloc-temp (rp.state)
+   in let s3 = rv-emit (d.state) (rv-sub (d.reg) (lp.reg) (rp.reg))
+   in let dloc = rv-alloc-local s3
+   in let s4 = rv-store-local (dloc.state) (dloc.reg) (d.reg)
+   in let dp = rv-load-local s4 (dloc.reg)
+   in let k = rv-alloc-temp (dp.state)
+   in let s5 = rv-emit (k.state) (rv-srai (k.reg) (dp.reg) 63)
+   in let a = rv-alloc-temp s5
+   in let s6 = rv-emit (a.state) (rv-xor (a.reg) (dp.reg) (k.reg))
+   in let s7 = rv-emit s6 (rv-sub (a.reg) (a.reg) (k.reg))
+   in let aloc = rv-alloc-local s7
+   in let s8 = rv-store-local (aloc.state) (aloc.reg) (a.reg)
+   in let tolr = rv-alloc-temp s8
+   in let s9 = rv-emit-li (tolr.state) (tolr.reg) tol
+   in let ap = rv-load-local s9 (aloc.reg)
+   in let rd = rv-alloc-temp (ap.state)
+   in let s10 = rv-emit (rd.state) (rv-slt (rd.reg) (tolr.reg) (ap.reg))
+   in RvEmitResult { state = rv-emit s10 (rv-xori (rd.reg) (rd.reg) 1), reg = rd.reg }
 
   rv-emit-real-from-int : RvState, IRExpr -> RvEmitResult
   rv-emit-real-from-int (st) (arg) =

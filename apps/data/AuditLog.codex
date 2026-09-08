@@ -9,25 +9,25 @@ Chapter: AuditLog
 
 Section: Audit Event Types
 
-  AuditAction =
+  DbAuditAction =
     | AuditInsert
     | AuditUpdate
     | AuditDelete
     | AuditSchemaChange
-    | AuditGrant
-    | AuditRevoke
+    | DbAuditGrant
+    | DbAuditRevoke
     | AuditLogin
     | AuditLoginFailed
 
-  audit-action-name : AuditAction -> Text
+  audit-action-name : DbAuditAction -> Text
   audit-action-name (a) =
     when a
       is AuditInsert -> "INSERT"
       is AuditUpdate -> "UPDATE"
       is AuditDelete -> "DELETE"
       is AuditSchemaChange -> "DDL"
-      is AuditGrant -> "GRANT"
-      is AuditRevoke -> "REVOKE"
+      is DbAuditGrant -> "GRANT"
+      is DbAuditRevoke -> "REVOKE"
       is AuditLogin -> "LOGIN"
       is AuditLoginFailed -> "LOGIN_FAILED"
 
@@ -37,7 +37,7 @@ Section: Audit Record
     ar-seq : Integer,
     ar-timestamp : Integer,
     ar-user : Text,
-    ar-action : AuditAction,
+    ar-action : DbAuditAction,
     ar-table : Text,
     ar-row-key : Text,
     ar-before : List ColumnValue,
@@ -48,7 +48,7 @@ Section: Audit Record
 
 Section: Audit Log
 
-  AuditLog = record {
+  DbAuditLog = record {
     al-records : List AuditRecord,
     al-count : Integer,
     al-next-seq : Integer,
@@ -57,8 +57,8 @@ Section: Audit Log
     al-all-tables : Boolean
   }
 
-  audit-log-new : AuditLog
-  audit-log-new = AuditLog {
+  audit-log-new : DbAuditLog
+  audit-log-new = DbAuditLog {
     al-records = [],
     al-count = 0,
     al-next-seq = 1,
@@ -67,8 +67,8 @@ Section: Audit Log
     al-all-tables = True
   }
 
-  audit-enable-table : AuditLog, Text -> AuditLog
-  audit-enable-table (log) (table) = AuditLog {
+  audit-enable-table : DbAuditLog, Text -> DbAuditLog
+  audit-enable-table (log) (table) = DbAuditLog {
     al-records = log.al-records,
     al-count = log.al-count,
     al-next-seq = log.al-next-seq,
@@ -77,8 +77,8 @@ Section: Audit Log
     al-all-tables = log.al-all-tables
   }
 
-  audit-disable-table : AuditLog, Text -> AuditLog
-  audit-disable-table (log) (table) = AuditLog {
+  audit-disable-table : DbAuditLog, Text -> DbAuditLog
+  audit-disable-table (log) (table) = DbAuditLog {
     al-records = log.al-records,
     al-count = log.al-count,
     al-next-seq = log.al-next-seq,
@@ -87,8 +87,8 @@ Section: Audit Log
     al-all-tables = log.al-all-tables
   }
 
-  audit-set-all-tables : AuditLog, Boolean -> AuditLog
-  audit-set-all-tables (log) (enabled) = AuditLog {
+  audit-set-all-tables : DbAuditLog, Boolean -> DbAuditLog
+  audit-set-all-tables (log) (enabled) = DbAuditLog {
     al-records = log.al-records,
     al-count = log.al-count,
     al-next-seq = log.al-next-seq,
@@ -97,7 +97,7 @@ Section: Audit Log
     al-all-tables = enabled
   }
 
-  audit-is-tracked : AuditLog, Text -> Boolean
+  audit-is-tracked : DbAuditLog, Text -> Boolean
   audit-is-tracked (log) (table) =
     if log.al-all-tables then True
     else when (hamt-get (log.al-enabled-tables) table)
@@ -106,31 +106,31 @@ Section: Audit Log
 
 Section: Record Mutations
 
-  audit-record-insert : AuditLog, Text, Text, Text, List ColumnValue, Integer, Integer -> AuditLog
+  audit-record-insert : DbAuditLog, Text, Text, Text, List ColumnValue, Integer, Integer -> DbAuditLog
   audit-record-insert (log) (user) (table) (row-key) (after) (txn-id) (timestamp) =
     if audit-is-tracked log table == False then log
     else audit-append log user AuditInsert table row-key [] after txn-id timestamp
 
-  audit-record-update : AuditLog, Text, Text, Text, List ColumnValue, List ColumnValue, Integer, Integer -> AuditLog
+  audit-record-update : DbAuditLog, Text, Text, Text, List ColumnValue, List ColumnValue, Integer, Integer -> DbAuditLog
   audit-record-update (log) (user) (table) (row-key) (before) (after) (txn-id) (timestamp) =
     if audit-is-tracked log table == False then log
     else audit-append log user AuditUpdate table row-key before after txn-id timestamp
 
-  audit-record-delete : AuditLog, Text, Text, Text, List ColumnValue, Integer, Integer -> AuditLog
+  audit-record-delete : DbAuditLog, Text, Text, Text, List ColumnValue, Integer, Integer -> DbAuditLog
   audit-record-delete (log) (user) (table) (row-key) (before) (txn-id) (timestamp) =
     if audit-is-tracked log table == False then log
     else audit-append log user AuditDelete table row-key before [] txn-id timestamp
 
-  audit-record-ddl : AuditLog, Text, Text, Text, Integer -> AuditLog
+  audit-record-ddl : DbAuditLog, Text, Text, Text, Integer -> DbAuditLog
   audit-record-ddl (log) (user) (table) (detail) (timestamp) =
     audit-append log user AuditSchemaChange table "" [] [] 0 timestamp
 
-  audit-record-login : AuditLog, Text, Boolean, Integer -> AuditLog
+  audit-record-login : DbAuditLog, Text, Boolean, Integer -> DbAuditLog
   audit-record-login (log) (user) (success) (timestamp) =
     let action = if success then AuditLogin else AuditLoginFailed
     in audit-append log user action "" "" [] [] 0 timestamp
 
-  audit-append : AuditLog, Text, AuditAction, Text, Text, List ColumnValue, List ColumnValue, Integer, Integer -> AuditLog
+  audit-append : DbAuditLog, Text, DbAuditAction, Text, Text, List ColumnValue, List ColumnValue, Integer, Integer -> DbAuditLog
   audit-append (log) (user) (action) (table) (row-key) (before) (after) (txn-id) (timestamp) =
     let chain-input = log.al-last-hash & ":" & show (log.al-next-seq) & ":" & user & ":" & audit-action-name action & ":" & table & ":" & row-key & ":" & show timestamp
     in let new-hash = sha256-hex chain-input
@@ -146,7 +146,7 @@ Section: Record Mutations
       ar-txn-id = txn-id,
       ar-chain-hash = new-hash
     }
-    in AuditLog {
+    in DbAuditLog {
       al-records = list-push (log.al-records) rec,
       al-count = log.al-count + 1,
       al-next-seq = log.al-next-seq + 1,
@@ -157,7 +157,7 @@ Section: Record Mutations
 
 Section: Tamper Detection
 
-  audit-verify-chain : AuditLog -> AuditVerifyResult
+  audit-verify-chain : DbAuditLog -> AuditVerifyResult
   audit-verify-chain (log) =
     avc-loop (log.al-records) "0" 0 (log.al-count)
 
@@ -176,7 +176,7 @@ Section: Tamper Detection
 
 Section: Query Audit History
 
-  audit-history-for-row : AuditLog, Text, Text -> List AuditRecord
+  audit-history-for-row : DbAuditLog, Text, Text -> List AuditRecord
   audit-history-for-row (log) (table) (row-key) =
     ahfr-loop (log.al-records) table row-key 0 (log.al-count) []
 
@@ -187,7 +187,7 @@ Section: Query Audit History
     in if rec.ar-table == table & rec.ar-row-key == key then ahfr-loop records table key (i + 1) len (list-push acc rec)
     else ahfr-loop records table key (i + 1) len acc
 
-  audit-history-for-table : AuditLog, Text -> List AuditRecord
+  audit-history-for-table : DbAuditLog, Text -> List AuditRecord
   audit-history-for-table (log) (table) =
     ahft-loop (log.al-records) table 0 (log.al-count) []
 
@@ -198,7 +198,7 @@ Section: Query Audit History
     in if rec.ar-table == table then ahft-loop records table (i + 1) len (list-push acc rec)
     else ahft-loop records table (i + 1) len acc
 
-  audit-by-user : AuditLog, Text -> List AuditRecord
+  audit-by-user : DbAuditLog, Text -> List AuditRecord
   audit-by-user (log) (user) =
     abu-loop (log.al-records) user 0 (log.al-count) []
 
@@ -209,7 +209,7 @@ Section: Query Audit History
     in if rec.ar-user == user then abu-loop records user (i + 1) len (list-push acc rec)
     else abu-loop records user (i + 1) len acc
 
-  audit-by-action : AuditLog, AuditAction -> List AuditRecord
+  audit-by-action : DbAuditLog, DbAuditAction -> List AuditRecord
   audit-by-action (log) (action) =
     let target = audit-action-name action
     in aba-loop (log.al-records) target 0 (log.al-count) []
@@ -221,7 +221,7 @@ Section: Query Audit History
     in if audit-action-name (rec.ar-action) == target then aba-loop records target (i + 1) len (list-push acc rec)
     else aba-loop records target (i + 1) len acc
 
-  audit-in-range : AuditLog, Integer, Integer -> List AuditRecord
+  audit-in-range : DbAuditLog, Integer, Integer -> List AuditRecord
   audit-in-range (log) (start) (finish) =
     air-loop (log.al-records) start finish 0 (log.al-count) []
 
@@ -234,7 +234,7 @@ Section: Query Audit History
 
 Section: Point-in-Time Row State
 
-  audit-row-at-time : AuditLog, Text, Text, Integer -> Maybe (List ColumnValue)
+  audit-row-at-time : DbAuditLog, Text, Text, Integer -> Maybe (List ColumnValue)
   audit-row-at-time (log) (table) (row-key) (target-time) =
     let history = audit-history-for-row log table row-key
     in arat-loop history target-time 0 (list-length history) None
@@ -377,7 +377,7 @@ Section: Compliance Reporting
     as-unique-tables : Integer
   }
 
-  audit-summary : AuditLog -> AuditSummary
+  audit-summary : DbAuditLog -> AuditSummary
   audit-summary (log) =
     as-loop (log.al-records) 0 (log.al-count) 0 0 0 0 0 0 hamt-empty hamt-empty
 
@@ -420,10 +420,10 @@ Section: Compliance Reporting
 
 Section: Retention
 
-  audit-purge-before : AuditLog, Integer -> AuditLog
+  audit-purge-before : DbAuditLog, Integer -> DbAuditLog
   audit-purge-before (log) (cutoff) =
     let kept = apb-loop (log.al-records) cutoff 0 (log.al-count) []
-    in AuditLog {
+    in DbAuditLog {
       al-records = kept,
       al-count = list-length kept,
       al-next-seq = log.al-next-seq,
@@ -441,7 +441,7 @@ Section: Retention
 
 Section: Statistics
 
-  audit-stats : AuditLog -> Text
+  audit-stats : DbAuditLog -> Text
   audit-stats (log) =
     "audit: records=" & show (log.al-count)
     & " seq=" & show (log.al-next-seq)

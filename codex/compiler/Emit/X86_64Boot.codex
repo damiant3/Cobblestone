@@ -152,6 +152,55 @@ Section: Memory Address Map
 
   hosted-read-byte-addr : Integer = hosted-cell-base + 40992
 
+ Linux socket syscall numbers and the two constants a `sockaddr_in` carries.
+ Ours to use, not ours to define. `accept4` rather than `accept` because 288
+ is the number every current kernel carries and `accept` is 43, which a
+ 32-bit-compat kernel maps elsewhere; the extra flags argument is passed 0.
+
+  linux-sys-close : Integer = 3
+  linux-sys-socket : Integer = 41
+  linux-sys-bind : Integer = 49
+  linux-sys-listen : Integer = 50
+  linux-sys-setsockopt : Integer = 54
+  linux-sys-accept4 : Integer = 288
+ AF_INET and SOCK_STREAM happen to be the same number on both hosts, so they
+ are named once without a host in the name. THE SOCKET OPTION LEVELS ARE NOT
+ THE SAME and that is the trap: SOL_SOCKET is 1 on Linux and 0xFFFF on
+ Windows, SO_REUSEADDR is 2 on Linux and 4 on Windows. Reusing the Linux pair
+ on Windows is accepted by setsockopt and does nothing.
+
+  hosted-af-inet : Integer = 2
+  hosted-sock-stream : Integer = 1
+  linux-sol-socket : Integer = 1
+  linux-so-reuseaddr : Integer = 2
+  hosted-win-sol-socket : Integer = 65535
+  hosted-win-so-reuseaddr : Integer = 4
+
+ The sixteen bytes a `bind` argument is. `sockaddr_in` is sin_family (2 bytes,
+ host order), sin_port (2 bytes, NETWORK order, which is why the port is
+ byte-swapped into place), sin_addr (4 bytes, 0 for INADDR_ANY) and eight
+ bytes of padding. The whole of it is two qwords, so it is built in a register
+ and stored twice rather than assembled byte by byte.
+
+ It is a cell rather than the heap frontier for the same reason
+ `hosted-read-byte-addr` is: the frontier is a buffer a caller may be filling.
+
+  hosted-sockaddr-addr : Integer = hosted-cell-base + 41024
+  hosted-sockopt-addr : Integer = hosted-cell-base + 41040
+
+ `host-socket` takes an operation selector because a builtin costs eight
+ hand-edited files and eight names would cost eight of them. These are the
+ selector's values, and a caller spells the same numbers.
+
+  sock-op-socket : Integer = 0
+  sock-op-bind : Integer = 1
+  sock-op-listen : Integer = 2
+  sock-op-accept : Integer = 3
+  sock-op-close : Integer = 4
+  sock-op-recv : Integer = 5
+  sock-op-send : Integer = 6
+  sock-op-reuseaddr : Integer = 7
+
  The Windows console target. The PE layout is FIXED so both sides can agree on
  addresses without either reading the other's output: the loader gets an image
  based at 1 MB, a 4 KB .idata at RVA 0x1000 and the text at RVA 0x2000.
@@ -181,19 +230,41 @@ Section: Memory Address Map
   hosted-win-idata-rva : Integer = 4096
   hosted-win-text-rva : Integer = 8192
   hosted-win-load-addr : Integer = 1056768
-  hosted-win-iat : Integer = 1052760
-  hosted-win-iat-getstdhandle : Integer = 1052760
-  hosted-win-iat-writefile : Integer = 1052768
-  hosted-win-iat-exitprocess : Integer = 1052776
+  hosted-win-iat : Integer = 1052860
+  hosted-win-iat-getstdhandle : Integer = 1052860
+  hosted-win-iat-writefile : Integer = 1052868
+  hosted-win-iat-exitprocess : Integer = 1052876
 
  Two cells a hosted Windows build needs and Linux does not: the console handle,
  cached after the first GetStdHandle, and the dword WriteFile insists on
  writing its transferred count into. Both sit above the print scratch, inside
  the band the container maps.
 
-  hosted-win-iat-virtualalloc : Integer = 1052784
+  hosted-win-iat-virtualalloc : Integer = 1052884
 
-  hosted-win-iat-readfile : Integer = 1052792
+  hosted-win-iat-readfile : Integer = 1052892
+
+ The ws2_32 half of the import table. Windows sockets are not syscalls, they
+ are DLL exports, so they arrive as IMPORTS and each is reached by an indirect
+ call through its slot. The names differ from the Linux ones and that is the
+ host's choice, not ours: `closesocket` rather than `close`, `recv` and `send`
+ rather than `read` and `write`, and `accept` rather than `accept4`.
+
+ WSAStartup MUST be called once before any other ws2_32 call or every one of
+ them fails with WSANOTINITIALISED. It writes a WSADATA block the caller owns:
+ 408 bytes on Win64, which is why the cell below is that size and not a qword.
+
+  hosted-win-iat-wsastartup : Integer = 1052908
+  hosted-win-iat-socket : Integer = 1052916
+  hosted-win-iat-bind : Integer = 1052924
+  hosted-win-iat-listen : Integer = 1052932
+  hosted-win-iat-accept : Integer = 1052940
+  hosted-win-iat-closesocket : Integer = 1052948
+  hosted-win-iat-recv : Integer = 1052956
+  hosted-win-iat-send : Integer = 1052964
+  hosted-win-iat-setsockopt : Integer = 1052972
+
+  hosted-win-wsa-version : Integer = 514
 
   hosted-win-mem-commit-reserve : Integer = 12288
   hosted-win-page-readwrite : Integer = 4
@@ -208,7 +279,24 @@ Section: Memory Address Map
  hosted arm passed over the top of it.
 
   hosted-win-heap-span : Integer = 3221225472
-  hosted-win-cell-base : Integer = 1342177280
+ 0x70000000 AND NOT 0x50000000, WHICH IS WHERE IT SAT UNTIL ws2_32 ARRIVED.
+ The free floor of a freshly loaded image is not a constant: it moves with what
+ the image IMPORTS. Measured 2026-09-08 by patching this base in a built .exe
+ and reading the exit code, which is 90 when the fixed VirtualAlloc is refused:
+
+   without ws2_32   0x20000000 refused, 0x40000000 granted
+   with    ws2_32   0x60000000 refused, 0x64000000 granted
+
+ So one extra DLL raised the floor by about 0x24000000 and swallowed the old
+ base, and every hosted-windows program exited 90 having printed nothing. The
+ band must also stay under 2^31 so a cell reference still encodes as an
+ absolute disp32, which leaves 0x64000000 to 0x80000000 to sit in; 0x70000000
+ is the middle of it, about 192 MB above the measured floor and 256 MB below
+ the ceiling. A FURTHER IMPORT CAN RAISE THE FLOOR AGAIN, and the honest
+ statement is that this is headroom, not a guarantee: the refusal is loud
+ (exit 90, its own code) rather than silent, and that is what the margin buys.
+
+  hosted-win-cell-base : Integer = 1879048192
   hosted-win-heap-base : Integer = 1610612736
   hosted-win-cells-failed-code : Integer = 90
 
@@ -233,6 +321,16 @@ Section: Memory Address Map
   hosted-win-in-handle-addr : Integer = hosted-win-cell-base + 40992
   hosted-win-read-count-addr : Integer = hosted-win-cell-base + 41000
   hosted-win-read-byte-addr : Integer = hosted-win-cell-base + 41008
+
+ The socket side's cells. WSADATA is 408 bytes on Win64 and WSAStartup fills
+ all of it, so the next cell starts a clear 448 above rather than 8. The ready
+ flag is what makes the startup happen exactly once: every entry tests it, and
+ only the first call pays.
+
+  hosted-win-wsadata-addr : Integer = hosted-win-cell-base + 41024
+  hosted-win-wsa-ready-addr : Integer = hosted-win-cell-base + 41472
+  hosted-win-sockaddr-addr : Integer = hosted-win-cell-base + 41480
+  hosted-win-sockopt-addr : Integer = hosted-win-cell-base + 41488
 
 
  The page an application processor begins executing in. A start-up IPI's

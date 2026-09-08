@@ -86,6 +86,15 @@ Section: S02 -- Test List
     bvt-entry "codex\\test\\dtls-hello.codex" "the same size pins on the other transport (ch1 146, ch2 160, and ch2 must be the LONGER -- the second hello echoes the server's cookie), moved by the same 2 bytes and red for the same reason. The assertion that earns its keep is dtls-is-hrr: in DTLS 1.3 a HelloRetryRequest is not a message type, it is a ServerHello carrying a magic random, so a receiver that switches on message type never sees one and the cookie exchange -- the whole DoS defence -- silently never engages. It also requires an extension list truncated past its own length to be REFUSED rather than read, because garbage read there becomes a shared secret",
     bvt-entry "codex\\test\\web-chain.codex" "the seven shipped trust anchors, and a live www.digicert.com chain walked to one of them with the hostname checked. Runs offline -- the chain is embedded. It asserts supplied, parsed AND can-verify separately, because a root that parses is not a root that can be used: both P-384 roots parsed cleanly for the whole time they were deliberately excluded, typing KeyEcdsaOther with x509-can-verify False. Sabotaging that predicate moves the can-verify line alone and leaves supplied/parsed at 7",
     bvt-head "",
+    bvt-head "--- Structural equality, one entry per mechanism ---",
+    bvt-head "No eq test was in any gate until COMPILER-65, and that is how main 23574",
+    bvt-head "left codex/test/eq-generic-fields red at head with every gate green: it",
+    bvt-head "answered four CDX2040 unresolved __eq_Pair@Text on x86-64 and the same",
+    bvt-head "four as [UNSUPPORTED] on arm64, and only a release would have found it.",
+    bvt-entry "codex\\test\\eq-plain-sum.codex" "a CONCRETE sum, built from the two shapes the arm64 plug used to refuse outright: more than one field-carrying constructor, and a field that resolves to a sum. The desugarer's __eq_<T> retired both refusals by putting one equality in the IR where every backend receives it, so a regression here is a backend comparing two heap pointers again",
+    bvt-entry "codex\\test\\eq-generic-fields.codex" "a field declared at a TYPE PARAMETER, which arrives as a ConstructedTy carrying its NAME and no arguments rather than as a TypeVar. Every row builds one side at RUNTIME with integer-to-text, so the two sides are separate allocations holding equal content and a pointer compare answers no; text-control is what says the instrument itself is honest",
+    bvt-entry "codex\\test\\eq-generic-recursive.codex" "the INSTANTIATED helper, which is what a recursive generic sum needs because inlining a field compare has no correct bound. The name carries the actuals: keyed on the bare sum name, Box Text and Box Integer share one helper and the first instantiation to arrive decides how both compare their field",
+    bvt-head "",
     bvt-head "--- Codegen stress (caught regressions the fixed point misses) ---",
     bvt-entry "codex\\test\\lir-selector-smoke.codex" "the LIR selector's correctness shapes, one boot: a shadowed-global call that must go indirect not direct (answered -1 for 7), a join-into-join coalesce that must refuse or the structural verifier halts a valid program (CDX9007), a compound-accumulator tail call the tree emitter miscompiles and the selector gets right (9 for 8), the 5-param col-hue parallel-move clash (red as yellow), and the result-is-a-use coalesce (RAX garbage for the result). Every one is a wrong ANSWER the fixed point cannot see; pinned by .expected",
     bvt-entry "codex\\test\\noise-test.codex" "arithmetic-heavy pure leaves (Noise/Perlin gradient math); caught the Tier 2 non-TCO leaf temp-pool miscompile (CL 6387 widening)",
@@ -195,9 +204,25 @@ Section: S12 -- Failure Report and Exit
 
   s12 : List ShellCmd = [ScIf (SeRaw "$totalFail -gt 0") [ScEcho (SeLit ""), ScEchoStyled (SeLit "FAILURES:") ClBrightRed True, ScForEach "f" (SeVar "compileFails") [ScEchoStyled (SeRaw "\"  $f\"") ClBrightRed True], ScForEach "f" (SeVar "runFails") [ScEchoStyled (SeRaw "\"  $f\"") ClBrightRed True], ScExit (SeInt 1)] [], ScBlank, ScEcho (SeLit ""), ScEchoStyled (SeLit "BVT PASSED") ClBrightGreen True, ScExit (SeInt 0)]
 
+Section: S10b -- Phase 3 Batch
+
+ COMPILER-68. Three seeds shipped in `Exit` mode rather than `ExitRepl` passed
+ this BVT, self-verified, and were fixed points of themselves, and every one of
+ them ended a batch VM after member 1. The BVT could not see it because it
+ compiles one chapter per VM, and one member is exactly the case an early exit
+ cannot spoil. Two members through ONE VM is the smallest run that tells the
+ exit modes apart, and the assertion is a COUNT of binaries rather than an exit
+ code, because the batch driver returns 0 on a VM that ended early. The output
+ directory is cleared first: a previous run's binaries would make this arm pass
+ without the VM producing anything. A subject list holding fewer than two
+ SKIPS and says so, because one member cannot show an early exit and a silent
+ pass there would be the same blindness one level down.
+
+  s10b : List ShellCmd = [ScEcho (SeLit ""), ScEcho (SeLit "--- Phase 3: batch (2 members, one VM) ---"), ScIf (SeRaw "$BvtTests.Count -lt 2") [ScRaw "Write-Host \"  SKIP  batch/2-member -- the subject list holds $($BvtTests.Count), and one member cannot show an early exit\" -ForegroundColor DarkGray"] [ScRaw "$batchList = Join-Path $OutRoot '_batch2.txt'", ScRaw "$batchRoot = Join-Path $OutRoot '_batch2'", ScRaw "if (Test-Path $batchRoot) { Remove-Item -Recurse -Force $batchRoot }", ScRaw "@($BvtTests[0], $BvtTests[1]) | Set-Content -Path $batchList -Encoding utf8", ScRaw "$batchScript = Join-Path (Resolve-Path .).Path 'build\\test-compile-batch.ps1'", ScRaw "& pwsh -NoProfile -File $batchScript -ListFile $batchList -OutRoot $batchRoot -Kernel $stage0 *> $null", ScRaw "$batchCdx = @(Get-ChildItem -Path $batchRoot -Recurse -Filter '*.cdx' -File -ErrorAction SilentlyContinue)", ScIf (SeRaw "$batchCdx.Count -lt 2") [ScRaw "$compileFails.Add(\"batch/2-member: $($batchCdx.Count) of 2 binaries returned; the batch VM ended early (COMPILER-68, P-REPL)\")", ScEchoStyled (SeRaw "\"  FAIL  batch/2-member -- $($batchCdx.Count) of 2 binaries\"") ClBrightRed True] [ScEcho (SeLit "  PASS  batch/2-member")]]]
+
 Section: Assembly
 
-  bvt-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12]
+  bvt-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s10b, ScBlank, ScSequence s11, ScBlank, ScSequence s12]
 
   bvt-script : ShellScript = sh-script "bvt" "Build Verification Test - minimal confidence gate" bvt-params bvt-body
 

@@ -118,8 +118,8 @@ Section: Body
     & "  x in " & integer-to-text (dk-drag-keep - ww)
     & ".." & integer-to-text (w - dk-drag-keep)
     & "  y in " & integer-to-text (dk-cbox-y w ds)
-    & ".." & integer-to-text (dk-cbox-y w ds + dk-cbox-h w h ds - wh)
-    & "  keep " & integer-to-text dk-drag-keep
+    & ".." & integer-to-text (dk-cbox-y w ds + dk-cbox-h w h ds - (if wh < dk-drag-keep-y w then wh else dk-drag-keep-y w))
+    & "  keep " & integer-to-text dk-drag-keep & " keep-y " & integer-to-text (dk-drag-keep-y w)
 
  IT CANNOT HIDE, WHICH IS THE REQUIREMENT AND NOT THE FOUR NUMBERS ABOVE.
  A window may hang off the glass now, so the thing worth asserting is not
@@ -147,8 +147,9 @@ Section: Body
        & " right " & integer-to-text rw
        & " up " & integer-to-text uh
        & " down " & integer-to-text dh
-       & "  all at least " & integer-to-text dk-drag-keep & " "
-       & dg-yn (lw >= dk-drag-keep & rw >= dk-drag-keep & uh >= dk-drag-keep & dh >= dk-drag-keep)
+       & "  sideways at least " & integer-to-text dk-drag-keep
+       & " down at least " & integer-to-text (dk-drag-keep-y w) & " "
+       & dg-yn (lw >= dk-drag-keep & rw >= dk-drag-keep & uh >= dk-drag-keep & dh >= dk-drag-keep-y w)
 
  A MAXIMISED WINDOW IS NOT DRAGGED, and the refusal in `desk-wnd-chrome-step`
  is a guard this row cannot reach: the step is effectful. What it CAN ask is
@@ -197,8 +198,35 @@ Section: Body
 
 Section: Opening
 
+ DAMIAN'S REQUIREMENT, 2026-09-08: a window as large as the panel must move
+ down far enough to uncover the ones behind it, and its titlebar must stay
+ reachable. The control is the bound a whole-height clamp gives, which for
+ this window is zero movement.
+
+  dg-restore : Integer, Integer, Integer -> Text
+  dg-restore (ds) (dx) (dy) =
+    let g = dk-drag-begin ds desk-focus-clkp dx dy
+    in ""
+
+  dg-panel : Integer, Integer, Integer, Integer, Integer -> Text
+  dg-panel (ds) (w) (h) (dx) (dy) =
+    let cy = dk-cbox-y w ds
+    in let cw = dk-cbox-w w ds
+    in let ch = dk-cbox-h w h ds
+    in let half = ch / 2
+    in let g = dk-drag-begin ds desk-focus-clkp 0 0
+    in let y0 = dk-drag-to-y ds cy ch w h
+    in let y1 = dk-drag-to-y ds (cy + half) ch w h
+    in let bar-end = y1 + dk-drag-keep-y w
+    in "panel window " & integer-to-text cw & "x" & integer-to-text ch
+       & "  asked for " & integer-to-text half & " got " & integer-to-text (y1 - y0)
+       & "  uncovered " & integer-to-text (y1 - cy)
+       & "  bar ends " & integer-to-text bar-end & " box ends " & integer-to-text (cy + ch)
+       & "  reachable " & dg-yn (bar-end <= cy + ch)
+       & "  a whole-height clamp would allow 0"
+       & dg-restore ds dx dy
   opening : [Console] Nothing =
-    let ds = alloc-zeroed 256 64
+    let ds = alloc-zeroed dk-ds-bytes 64
     in let a1 = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
     in let a2 = poke-32 ds desk-clock-cell (alloc-zeroed 64 64)
     in let a3 = poke-32 ds 24 (alloc-zeroed 64 64)
@@ -216,13 +244,14 @@ Section: Opening
       print-line-uni (dg-edge ds w h ww wh "far right " 3000 400)
       print-line-uni (dg-edge ds w h ww wh "far up    " 500 0)
       print-line-uni (dg-edge ds w h ww wh "far down  " 500 3000)
+      print-line-uni (dg-panel ds w h 37 9)
       print-line-uni (dg-edge ds w h ww wh "the middle" 500 400)
       print-line-uni (dg-hide ds w h ww wh)
-      let nds = alloc-zeroed 256 64
+      let nds = alloc-zeroed dk-ds-bytes 64
       in let n1 = poke-32 nds desk-clock-cell (alloc-zeroed 64 64)
       in print-line-uni (dg-neg w h nds)
       print-line-uni (dg-release ds)
-      let mds = alloc-zeroed 256 64
+      let mds = alloc-zeroed dk-ds-bytes 64
       in let b1 = poke-32 mds desk-clock-cell (alloc-zeroed 64 64)
       in print-line-uni (dg-max w h mds)
     end

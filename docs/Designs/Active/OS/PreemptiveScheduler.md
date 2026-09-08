@@ -174,13 +174,177 @@ widening.
 Acceptance: a browser on the host loads a page served by the guest while the
 desk is driven by the mouse, and the desk's effect row is unchanged.
 
+**THE SCOPE CELL HAS THREE WRITERS AND THE CHECK IS LIVE** (val, 2026-09-07,
+at the source). The boot grant writes proc 0's cell from the opening's scoped
+`Network.*` effect (`codex/compiler/Emit/X86_64Chapter.codex`,
+`manifest-opening-net-scope` into `emit-set-boot-scope`); every spawn copies
+the parent's cell into the child (`X86_64ProcessHelpers.codex`, the
+`proc-net-scope-offset` load and store beside the capability-word copy); and
+`process-set-network-scope`, gated on the caller's admin bit, whose only Codex
+caller is `apply-load-decision`. The three `network-scope-*` tests never call
+the setter: they declare `Network.Write "ok.host"` on `opening` and the boot
+grant writes the cell. An empty cell is an UNSCOPED effect and is admitted by
+the language's own meaning of one; "fails open" was the wrong reading.
+
+**THE RUNTIME GAP IS THE CAPABILITY WORD, NOT THE SCOPE.** `process-spawn`
+copies the parent's `proc-cap-offset` word into the child, and nothing carries
+the closure's declared row to the kernel: the row `process-spawn` takes under
+its `ForAllEff` is a type-level fact with no runtime twin. The desk's
+`opening` declares no `Network`, so a child it spawns holds no Network bits,
+whatever `gopweb-service`'s row says. The NE2000 path is `net-send-raw` and
+`net-recv-raw`, both capability-checked, and refuses such a child; the e1000
+path is raw MMIO under `Device.Mmio`, which the desk holds, and checks
+nothing. The default bed is the NE2000.
+
+Measured on seed E103FF07, two arms, one file apart: an `opening :
+[Concurrent, Console]` spawns `\x -> poke-byte 28000 0 (if net-status < 0 then
+1 else 2)` after storing 9, yields, and prints the byte. It prints `1`
+(refused). The control, `opening : [Concurrent, Console, Network.Read]`,
+prints `2`. 9 would have meant the child never ran. Re-run both before
+believing any fix; the fix is arm one printing `2`.
+
+So a production caller of the scope setter was not the unit: the desk cannot
+call it without `Capability` on its row and the admin bit, and a scope on a
+child with no Network bits scopes nothing. The question is which side of the
+spawn holds the network.
+
+**RULING (root, 2026-09-07, on Damian's do-not-wait): THE SPAWNER IS THE
+HOLDER.** The kernel enforces parent-bounded capability and
+`process-restrict-cap` runs in that direction; a spawn that granted the
+closure's row would let a child gain what its parent lacks and is
+seed-affecting; the desk's row gaining `Network.*` is forbidden below.
+
+**The shape, landed in `apps/works/GopWeb.codex` as `gopweb-hold`:** proc 0
+spawns the service, then restricts its OWN `cap-network-read` and
+`cap-network-write`, then runs the desk. The desk stays proc 0 (a spawned
+child gets `proc-spawn-heap-size`, 1 MiB, and is not the pinned boot
+process). `desk-run`'s row is unchanged; the `opening` in
+`apps/works/DeskVm.codex` carries `Concurrent, Capability, Network.Read,
+Network.Write` because `gopweb-hold`'s row demands them, so dropping them is
+a compile error rather than a silent loss of the bits.
+
+**The order is a load-bearing invariant, not a convenience: spawn, then
+restrict.** After the restrict, proc 0 cannot regain Network in this boot;
+nothing grants a bit at runtime. A service started after the restrict
+inherits the restricted word and is refused.
+
+**The falsifier is `codex/test/apps/gopweb-hold`** (smp 4), three readings
+from three processes: the service's capability word carries both Network
+bits; the holder's own `net-status` is -1 after the restrict; a child
+spawned after the restrict reads -1 too. Sabotage measured on seed
+E103FF07: delete the two restricts and the second and third lines turn
+False while the first stays True.
+
+`codex/test/apps/gopweb-spawn` measures the dispatch and nothing about the
+network; its prose that "the child has the network" is a claim its
+instrument cannot see.
+
+**The spawner's row is `[Concurrent]` and that half is DONE** (main 23076).
+`process-spawn` is `ForAllEff 0 (FunTy (FunTy Integer (row-var 0) Integer)
+(concrete-row "Concurrent") Integer)` in
+`codex/compiler/Types/Builtins.codex`, so a child's effects do not reach the
+spawner. `gopweb-start` had declared
+`[Console, Concurrent, Network.Read, Network.Write]`, which would have handed
+the desk `Network.*` through the effect row rather than through any code a
+reader would look at.
+
+**`codex/test/apps/gopweb-spawn`'s own row is the evidence.** It spawns a
+service running under `Network.Read` and `Network.Write` and declares neither,
+so the chapter compiling is the demonstration rather than the assertion; the
+signature alone would only have been a declaration edited to agree with a
+claim about it. A note at that line says the row must not be widened, because
+adding `Network.*` back still compiles and deletes the evidence silently.
+
+**THE ACCEPTANCE IS RED, and the two blockers are measured and registered**
+(val, 2026-09-07, headless per root: host `Invoke-WebRequest` through
+`-portfwd 9100:9100` while `-keys-file` drives the desk, DeskVm at
+`BB98735D` on seed `E103FF07`). The desk paints and its clock runs with the
+service spawned beside it at smp 1 and smp 4; the fetch never gets an answer.
+Narrowed by five single-guest arms, each named in its register:
+
+- NAT delivery is not the subject: proc 0 polling the NIC sees the host's
+  SYNs (15 frames to port 9100), and `web-serve-concurrent` in proc 0
+  answers the page at 200 in 0.2 s.
+- FIXED at main 23163: every transport reserved a 32 MiB receive buffer
+  and a spawn slot is 32 MiB, so the service died of `OUT OF MEMORY` at its
+  first allocation in any child. The listen transport now takes
+  `serve-recv-buf-cap` (64 KiB); `codex/test/apps/gopweb-child-heap` is the
+  runner, and a child pinned to core 0 under a yielding parent serves a
+  host `GET` at 200 in 0.2 s.
+- `plugs-backlog.md` 2.45, THE BED'S GAP, **CLOSED (reek, 2026-09-07)**:
+  codex-vm answered 0 to every device port read from an application
+  processor, so a child on an AP received NO frames (0 against the boot
+  processor's 15, same poll, same host). `handle_io` now takes its VP as a
+  parameter instead of writing VP 0's registers by constant, and serialises
+  on a lock, so an AP gets the same device models the boot processor gets;
+  `codex/test/smp-ap-port-io` grades it and goes red on the pre-fix binary.
+  **The pin is lifted (val, 2026-09-08):** `gopweb-start` is `process-spawn`
+  again and the service lands wherever the scheduler puts it. The desk still
+  yields once per `desk-loop` iteration and `web-mux-loop` on every empty
+  poll, which is what lets a child that lands on the boot processor run at
+  all. Two things the pin had hidden. `web-mux-loop` returns after fifty
+  million consecutive empty polls, which an application processor reaches in
+  about five seconds, so `gopweb-service` re-enters `web-serve-concurrent`
+  with the heap restored between rounds and lives until it is killed;
+  `codex/test/apps/gopweb-spawn` at smp 4 is the arm, and it read False
+  before the re-entry. And `plugs-backlog.md` 2.46: an application processor
+  polling the NE2000 takes codex-vm's I/O lock so often that the boot
+  processor's disk load crawls behind it (the frame is black at 25 s and
+  painted at 60 s), the bed's cost and not the design's.
+
+**THE ACCEPTANCE IS GREEN ON THE ACCOMMODATION** (val, 2026-09-07, DeskVm
+at `9B007324` on seed `076181B2`, headless, `-keys-file` driving the desk,
+`-portfwd 9100:9100`, screenshot at 30 s): a host `GET /` answers 200 in
+0.2 s, `/api/health` and a second `GET` answer, and the frame at 30 s shows
+the desk painted with its clock running at 13,805 iterations a second
+against 14,764 without the service, so the yield costs the desk about six
+percent. Damian at a browser is confirmation, not the gate (L-HUMAN).
+
+**AND GREEN WITH THE PIN LIFTED** (val, 2026-09-08, DeskVm at `87B724B7` on
+seed `076181B2`, smp 4, the same headless recipe): the service on an
+application processor answers `GET /` at 200 in 0.2 s and again at 47 s,
+and the 60 s frame shows the desk painted with its clock running at 15,550
+iterations a second, above the 13,805 measured with the service sharing
+core 0.
+
+**The metal entries are wired (main 23205):** `GopBoot.codex` and
+`DeskBoot.codex` call `gopweb-hold` before their flows, the way `DeskVm.codex`
+does, with `boot-flow` and `db-flow` rows unchanged. Bed-proven on seed
+`076181B2`: each payload's boot image built to scratch and booted under OVMF
+to its first screen, the first-boot wizard and the desk with its clock
+running. On metal the service holds the network and serves nothing until
+Track B binds the Intel NIC. THIS STAGE HAS NO OPEN ITEM ON THE BED. Beside
+it: codex-vm exited with a host heap-corruption code (0xC0000374) after the
+smp 4 desk arm's screenshot, once, unreproduced.
+
 ### Stage 3 -- The pane as an admin console
 
-WORKS-48's pane talks to the service over `chan-kern-*`: start, stop, and the
-request log. `LockFreeChannel` in `codex/os/sched` is not that channel; the
-kernel's is.
+DONE (val, 2026-09-08, val 23390). WORKS-48's pane is `desk-focus-web` in
+`GopDesk.codex`, a window over the block `gopweb-hold` allocates and shares
+with the service (`GopWeb.codex`, "The Block the Desk and the Service
+Share"): the service pumps its own mux loop, reads a command cell each round
+(stop drops frames, start resumes) and writes every request its route
+answers into a sixteen-slot ring; the pane shows Stop, Start, the state and
+the ring, repainting when the count or the paused flag moves.
 
-Acceptance: the log in the pane matches the requests the host actually made.
+**Control rides the shared block, not `chan-kern-*`.** The desk's row
+carries no `Concurrent`, so a send would have widened `desk-loop`'s row
+through every step, and an integer channel cannot carry a log line. The
+block sits in the flat address space both processes share, which the stage
+2 probes already relied on (a child reporting through cells the parent
+prints).
+
+**Acceptance, bed-proven headless** (DeskVm `24257374` on seed `EEFABF6C`,
+`-portfwd 9100:9100`, a `-mouse-file` through the start menu): the pane
+lists `GET / 200 OK` and `GET /nothing 404 Not Found` as the host made them,
+a click on Stop turns the state to Stopped, and the next host GET times out.
+Two facts the run fixed. The desk has launched no app from a keystroke since
+2026-08-26, so a bed recipe opens a pane by mouse (the Settings row at
+(140,694), then the Web Server row at the same point once the group is
+open), and the stage 2 acceptance's `-keys-file` was inert. And
+`/api/health` is answered by the web stack's `web-standard` before the route
+sees it, so it is served and not logged (WORKS-48's residue). The desk idles
+at 11,795 iterations a second with the pane focused.
 
 ### Stage 4 -- The quantum, if it is still wanted
 

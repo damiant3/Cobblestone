@@ -53,8 +53,14 @@ $ErrorActionPreference = 'Stop'
 # pinned. Nothing caught it, because a dropped add is not a conflict, not a
 # stale revision, and not an unresolved file. It is simply absent.
 #
-# Reported as a warning, not a failure: scratch and lock files land here too,
-# and the operator is the one who knows which is which. Read the list.
+# A TRACKED SOURCE EXTENSION FAILS; everything else warns (ruled 2026-08-31).
+# Warning-only was the whole scan and it did not work: the list prints at the
+# end of a green run, next to "OK", and a warning nobody must act on is a
+# warning nobody acts on. The extensions below are the ones a dropped add
+# actually loses; the tests and sidecars lost on 2026-07-13 were every one of
+# them a .codex or an .expected. Scratch and lock files still only warn,
+# because the operator is the one who knows which is which, and failing on
+# those would teach the reader to reach past this script.
 #
 # THIS RUNS FIRST, ABOVE THE nothing-opened RETURN, and that ordering is the
 # whole point of it. A CL whose contents are ALL adds -- a new test plus its
@@ -62,29 +68,49 @@ $ErrorActionPreference = 'Stop'
 # OPENED. Below the return, this scan was skipped in exactly the case it exists
 # to catch, and the script answered "OK (nothing opened)", which is the most
 # reassuring thing it can say. Measured 2026-08-15.
+$script:SourceExtensions = @(
+    '.codex', '.ps1', '.md', '.expected', '.failing',
+    '.disk', '.cross-refusal', '.no-cross', '.vmargs'
+)
+
+# Returns the count of untracked files carrying a tracked source extension.
+# 0 means nothing to fail on, whatever else was printed.
 function Show-Untracked {
     $untracked = @(p4 status 2>&1 | Select-String 'reconcile to add' | ForEach-Object { $_.Line })
-    if ($untracked) {
-        Write-Host ""
-        Write-Host "ON DISK BUT NOT IN THE DEPOT -- is one of these a p4 add that got dropped?"
-        Write-Host "(p4 unshelve reports it cannot clobber a writable file, and then does not open the add.)"
-        Write-Host ""
-        $untracked | ForEach-Object { Write-Host "    $_" }
-        Write-Host ""
-        Write-Host "  If a file here belongs in your change:  p4 add -c <CL> <file>"
+    if (-not $untracked) { return 0 }
+    $sourceHits = @()
+    foreach ($line in $untracked) {
+        $path = ($line -split ' - reconcile to add')[0].Trim()
+        if ($script:SourceExtensions -contains [System.IO.Path]::GetExtension($path).ToLowerInvariant()) {
+            $sourceHits += $path
+        }
     }
-    return [bool]$untracked
+    Write-Host ""
+    Write-Host "ON DISK BUT NOT IN THE DEPOT -- is one of these a p4 add that got dropped?"
+    Write-Host "(p4 unshelve reports it cannot clobber a writable file, and then does not open the add.)"
+    Write-Host ""
+    $untracked | ForEach-Object { Write-Host "    $_" }
+    Write-Host ""
+    Write-Host "  If a file here belongs in your change:  p4 add -c <CL> <file>"
+    if ($sourceHits.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  $($sourceHits.Count) of these carry a TRACKED SOURCE EXTENSION, which is what a"
+        Write-Host "  dropped add looks like. This is a FAILURE, not a note:"
+        $sourceHits | ForEach-Object { Write-Host "      $_" }
+    }
+    return $sourceHits.Count
 }
 
 $opened = if ($Change) { p4 opened -c $Change 2>&1 } else { p4 opened 2>&1 }
 if (-not $opened -or ($opened -join '') -match 'not opened on this client') {
-    $anyUntracked = Show-Untracked
-    if ($anyUntracked) {
+    $droppedAdds = Show-Untracked
+    if ($droppedAdds -gt 0) {
         Write-Host ""
-        Write-Host "p4-stale-check: nothing opened, but SEE THE LIST ABOVE."
-    } else {
-        Write-Host "p4-stale-check: OK (nothing opened)"
+        Write-Host "p4-stale-check: FAIL (nothing opened, and $droppedAdds untracked source file(s) above)"
+        Write-Host "  A CL whose contents were ALL adds looks exactly like this when it loses them."
+        exit 1
     }
+    Write-Host "p4-stale-check: OK (nothing opened)"
     exit 0
 }
 
@@ -140,7 +166,7 @@ if ($stale) {
     $bad = $true
 }
 
-$null = Show-Untracked
+if ((Show-Untracked) -gt 0) { $bad = $true }
 
 if ($bad) { Write-Host ""; Write-Host "p4-stale-check: FAIL"; exit 1 }
 Write-Host "p4-stale-check: OK (every open file is at depot head and resolved)"

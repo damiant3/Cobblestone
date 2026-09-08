@@ -47,6 +47,49 @@ OUTPUT, so each is its own changelist with its own re-recorded expectations.
 
 ## Open
 
+**CORE-9. We can READ a certificate and cannot WRITE one, so we cannot stand
+in for ourselves: no self-signed certificate, and no CA of our own.** Ruled
+2026-09-08 by Damian: self-signing is where this goes, and the stand-in is
+needed now.
+
+**Measured 2026-09-08.** `Asn1.codex` is a pure reader: `asn1-read`,
+`asn1-children`, `asn1-content`, `asn1-oid-is`, `asn1-bit-string`,
+`asn1-small-int`. Every `x509-*` name in `X509.codex` and `X509Chain.codex`
+parses or verifies, `x509-signed-by` included. There is **no `asn1-encode`, no
+DER writer and no `x509-build` anywhere in the tree**, searched across `codex`
+and `apps` outside `build-output`. The tag constants exist already
+(`asn1-sequence`, `asn1-oid`, `asn1-utc-time` and the rest); what is absent is
+the write side.
+
+So the certificates we hold come from OUTSIDE: `build/mint-tls-fixtures.ps1`
+shells out to `openssl.exe` under Git for Windows. That is acceptable for
+checked-in test fixtures and is not a story for a running server, and it sits
+against the founding rule that what we did not build we do not trust.
+
+**Three steps, and the first is the one with a real oracle.**
+
+1. **A DER encoder.** Length in short and long form, SEQUENCE and SET
+   builders, the primitives for INTEGER, OID, BIT STRING and the time types.
+   It is well conditioned because it has two independent oracles: a round trip
+   through our OWN parser, which already reads every shape we would emit, and
+   a byte comparison against `openssl` for the same input, which is an
+   independent implementation rather than a mirror of ours.
+2. **A self-signed server certificate**, minted from an Ed25519 key we already
+   generate (`ed25519-public-key` over a `hardware-random` seed), carrying an
+   explicit DEV-ONLY marker so a self-signed certificate can never be mistaken
+   for an issued one. This is the stand-in that unblocks hosted HTTPS
+   (`apps/prism/prism-backlog.md` PRISM-11).
+3. **A CA of our own**, which is the larger commitment and not implied by the
+   first two: issuance, a naming policy, validity windows, and revocation.
+   **A self-signed certificate does not make a browser trust us**, so a public
+   endpoint still needs a CA-issued chain whatever we build here.
+
+**Not in scope and worth saying:** the seed signing key is NOT the server key.
+The two attest different things and have opposite exposure profiles, a signing
+key being used rarely in one place and a server key sitting in a
+network-facing process on every host. A server key is generated per
+deployment.
+
 **CORE-8. CCE cannot represent tab, carriage return, backspace or formfeed,
 and every caller that asks for one is silently handed the character y-diaeresis
 instead.** `from-unicode` answers -1 for Unicode 8, 9, 12 and 13, which is
@@ -104,6 +147,28 @@ because it doubles every CRLF, which is the common case and the worse trade;
 an **unmappable `\uXXXX` is CONTENT rather than machinery and is REFUSED**,
 because silently losing what an author wrote is the failure being removed and
 CCE has no replacement character to substitute.
+
+**WHAT IS STILL OPEN IS THE HALF THE ROW ITSELF CALLED UNARGUABLE: THE
+ENCODERS STILL TAKE -1.** Re-measured 2026-09-08 against seed
+`23AA66C50A56E628`: `cce-encode-length (-1)` still answers 1, because its
+first test is `if cp < 128 then 1` and -1 satisfies it (`CCE.codex:128`). The
+JSON arms were repaired at main 19662; the floor underneath them was not. Any
+OTHER caller handing a -1 to an encoder still gets unit 255, and the callers
+are not hypothetical: `Gguf.codex:87`, `PngMetadata.codex:133` and `:152`,
+`SafeTensors.codex:174`, `Fat16.codex:1128` and `:1254` all spell
+`char-encode (code-to-char (from-unicode ...))` over bytes read from FOREIGN
+files, with nothing between the -1 and the encoder.
+
+**A SECOND INSTANCE, found 2026-09-08 in a different subsystem, which is the
+argument for fixing the floor rather than each caller.** Prism's in-tab
+template compile refused with CDX3007 and nothing naming the reason. Cause:
+the tree is CRLF, `from-unicode 13` answers -1, so a RESOLVE frame did not end
+with the unit text and `resolveUnit` reported the library unused. Fixed at the
+emit point (`codex/plugs/wasm/build-page.ps1`) and on the page's other four
+routes (PRISM-8, main 23198 and following), because the page normalised
+nowhere. That repair is correct where it sits and does NOT close this row: it
+is the same -1 reaching a different consumer, and the next consumer will pay
+again. Making the encoders REFUSE -1 is what stops the class.
 
 **WHAT IS STILL OPEN IS THE RESIDUE, AND IT IS THE HALF THIS ROW CALLED "the
 part with no argument on either side": the encoders still accept -1 silently

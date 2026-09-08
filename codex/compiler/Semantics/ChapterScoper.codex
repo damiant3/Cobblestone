@@ -483,7 +483,8 @@ Section: AST-Level Chapter Scoping
   scope-achapter : AChapter, SkipListText, List ChapterAssignment, Integer -> AChapter
   scope-achapter (ast) (colliding) (assignments) (ceiling) =
    let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
-   in let raw-defs = scope-adefs-ll (ast.defs) colliding assignments (ast.citations) slug-cache "" [] 0 [] ceiling
+   in let cite-slugs = for c in (ast.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
+   in let raw-defs = scope-adefs-ll (ast.defs) colliding assignments (ast.citations) cite-slugs "" [] 0 [] ceiling
    in deck-record (AChapter {
     name = ast.name,
     defs = deck-record (__linked-list-to-list raw-defs),
@@ -505,14 +506,14 @@ Section: AST-Level Chapter Scoping
    })
 
   scope-adefs-ll : List ADef, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer, LinkedList ADef, Integer -> LinkedList ADef
-  scope-adefs-ll (defs) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-rn) (i) (acc) (ceiling) =
+  scope-adefs-ll (defs) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-rn) (i) (acc) (ceiling) =
    if i == list-length defs then acc
    else if deck-short-of ceiling demand-scope-guard-band then acc
    else let d = list-at defs i
    in let rn = if d.chapter-slug == cur-slug then cur-rn
-      else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0
+      else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments cite-slugs (d.chapter-slug) 0
    in let new-name = deck-record (Name { value = rename-lookup rn (d.name.value) })
-   in scope-adefs-ll defs colliding assignments citations slug-cache (d.chapter-slug) rn (i + 1) (__linked-list-push acc (deck-record (ADef {
+   in scope-adefs-ll defs colliding assignments citations cite-slugs (d.chapter-slug) rn (i + 1) (__linked-list-push acc (deck-record (ADef {
     name = new-name,
     params = d.params,
     declared-type = d.declared-type,
@@ -521,17 +522,46 @@ Section: AST-Level Chapter Scoping
     span = d.span
    }))) ceiling
 
+ EVERY CITATION IS RESOLVED ONCE PER UNIT, not once per slug transition.
+ `find-slug-for-cite-name` depends on the quire, the cite name, the assignments
+ and the slug cache, and NONE of those changes while the defs walk runs -- so
+ the walk recomputed the same answers at every chapter boundary. `scope-achapter`
+ resolves them beside the cache that feeds them and carries the answers down.
+
+ The three factors are (slug transitions) x (citations) x (slug cache), and the
+ cache is one entry per DEFINITION rather than per chapter, which is what makes
+ the product large. Compiling the compiler: 91 transitions, 106 citations, 6,431
+ assignments -- 9,646 resolutions, each walking 6,431 entries with a suffix
+ compare per entry, and now 106 of them.
+
+ IT IS INVISIBLE ON A SMALL SUBJECT and that is worth knowing before measuring
+ one. A four-chapter bundle with one citation resolves four times and saves
+ three; fourteen such subjects came out byte-identical with their step counts
+ unchanged to a tenth of a percent. Correct, and no faster, because there was
+ nothing there to save.
+
+ MEASURED ON THE ONE SUBJECT BIG ENOUGH TO HAVE THE PRODUCT: the compiler
+ compiling itself, through a tree-walking interpreter where the work is
+ counted rather than timed.
+
+   without   43,762,877,372 steps
+   with      29,306,453,914 steps      a third of the compile
+
+ and the IR is byte-identical either way -- 19,570,302 bytes over 6,890
+ definitions, against an arm that shares no code with the one that produced
+ it.
+
   apply-cite-overrides : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text, Integer -> List RenameEntry
-  apply-cite-overrides (rn) (citations) (colliding) (assignments) (slug-cache) (cur-slug) (i) =
-   apply-cite-overrides-loop rn citations colliding assignments slug-cache cur-slug i
+  apply-cite-overrides (rn) (citations) (colliding) (assignments) (cite-slugs) (cur-slug) (i) =
+   apply-cite-overrides-loop rn citations colliding assignments cite-slugs cur-slug i
 
   apply-cite-overrides-loop : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text, Integer -> List RenameEntry
-  apply-cite-overrides-loop (rn) (citations) (colliding) (assignments) (slug-cache) (cur-slug) (i) =
+  apply-cite-overrides-loop (rn) (citations) (colliding) (assignments) (cite-slugs) (cur-slug) (i) =
    if i == list-length citations then rn
    else let cite = list-at citations i
-   in let cite-slug = find-slug-for-cite-name (cite.quire.value) (cite.chapter-name.value) assignments slug-cache
+   in let cite-slug = list-at cite-slugs i
    in let rn2 = apply-cite-selected rn (cite.selected-names) cite-slug colliding assignments cur-slug 0
-   in apply-cite-overrides-loop rn2 citations colliding assignments slug-cache cur-slug (i + 1)
+   in apply-cite-overrides-loop rn2 citations colliding assignments cite-slugs cur-slug (i + 1)
 
  The suffix test compares characters in place. It runs per assignment,
  per citation that misses the composed key, per slug transition of the
@@ -539,6 +569,24 @@ Section: AST-Level Chapter Scoping
  retains every byte it allocates until the phase compact. Written with
  `substring`, this one comparison put 5.4 MB per bare-name citation on
  the LOWER deck, about 135 MB of the selfhost's 302.
+
+
+ A `text-contains` GUARD IN FRONT OF THIS LOOP IS A TRAP, and it was measured
+ rather than argued: it made a self-compile dramatically SLOWER. `text-contains`
+ is a builtin AND this bundle defines its own, `text-contains (s) (sub) =
+ text-index-of s sub >= 0`, so the call site gets a full substring search
+ written in Codex instead of one native call. The compiler says so itself --
+ CDX3005, "a shadow that computes the same result more slowly is the failure
+ mode that has actually cost time here" -- and that warning is printed on every
+ build of this subject.
+
+ THE REAL COST IS THE OUTER LOOP AND NOT THIS ONE.
+ `find-slug-by-bare-name` walks the whole slug cache per bare name, twice on a
+ hit, and asks this question of every slug. That is (names) x (slugs) x
+ (chars); a lookup keyed by bare name would make the first two constant, and
+ nothing done inside this function can. Measured on a tree-walking interpreter,
+ where one character comparison is one function call: cite resolution held 78%
+ of the samples between seconds 45 and 200 of a self-compile and none after.
 
   slug-has-suffix : Text, Text -> Boolean
   slug-has-suffix (s) (suf) =
@@ -613,4 +661,3 @@ Section: AST-Level Chapter Scoping
       else chapter-defines-loop assignments slug name (i + 1) len
 
 Page 1
-

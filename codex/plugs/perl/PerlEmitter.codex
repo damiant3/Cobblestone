@@ -299,8 +299,49 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      let bi = pl-try-builtin n args arities
      in if text-length bi > 0 then bi
-     else pl-sanitize n & "(" & emit-pl-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 1 then emit-pl-curried (pl-sanitize n) args arities 0
+        else if list-length args == ar then pl-sanitize n & "(" & emit-pl-apply-args args arities 0 & ")"
+        else if list-length args < ar then emit-pl-partial n args arities (ar - list-length args)
+        else emit-pl-curried (pl-sanitize n & "(" & emit-pl-apply-args-upto args arities 0 ar & ")") args arities ar
     is otherwise -> emit-pl-expr root arities & "->(" & emit-pl-apply-args args arities 0 & ")"
+
+ Perl calls a code reference with `->(...)`, so an application past the
+ callee's arity calls at the arity and then applies the surplus one argument
+ at a time. A definition applied to fewer arguments than it takes is
+ eta-wrapped as nested subs.
+
+  emit-pl-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-pl-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = base & "->(" & emit-pl-expr (list-at args i) arities & ")"
+   in emit-pl-curried next args arities (i + 1)
+
+  emit-pl-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-pl-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-pl-expr (list-at args i) arities
+   else emit-pl-expr (list-at args i) arities & ", " & emit-pl-apply-args-upto args arities (i + 1) n
+
+  emit-pl-partial-open : Integer, Integer -> Text
+  emit-pl-partial-open (i) (count) =
+   if i == count then ""
+   else "sub { my ($_p" & integer-to-text i & "_) = @_; " & emit-pl-partial-open (i + 1) count
+
+  emit-pl-partial-close : Integer -> Text
+  emit-pl-partial-close (count) =
+   if count == 0 then "" else " }" & emit-pl-partial-close (count - 1)
+
+  emit-pl-partial-params : Integer, Integer -> Text
+  emit-pl-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "$_p" & integer-to-text i & "_"
+   else "$_p" & integer-to-text i & "_, " & emit-pl-partial-params (i + 1) count
+
+  emit-pl-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-pl-partial (n) (args) (arities) (short) =
+   let call = pl-sanitize n & "(" & emit-pl-apply-args args arities 0 & ", " & emit-pl-partial-params 0 short & ")"
+   in emit-pl-partial-open 0 short & call & emit-pl-partial-close short
 
   emit-pl-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-pl-apply-args (args) (arities) (i) =
@@ -384,6 +425,33 @@ Section: Chapter Emission
    in let defs-text = emit-pl-defs (m.defs) 0 arities
    in let entry = pl-emit-entry (m.defs)
    in header & types-text & defs-text & entry
+
+  emit-perl-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-perl-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\nsub list_snoc { my ($xs, $v) = @_; if (@$xs) { push @$xs, $v; return $xs; } return [$v]; }\nsub list_push { my ($xs, $v) = @_; return list_snoc($xs, $v); }\nsub text_starts_with { my ($s, $p) = @_; return substr($s, 0, length($p)) eq $p; }\nsub text_split { my ($s, $sep) = @_; return [$s] if length($sep) == 0; my @p = split(/\\Q$sep\\E/, $s, -1); return \\@p; }\nsub _cx_text_replace { my ($s, $a, $b) = @_; return $s if length($a) == 0; my $r = ''; my $i = 0; while ($i < length($s)) { if (substr($s, $i, length($a)) eq $a) { $r .= $b; $i += length($a); } else { $r .= substr($s, $i, 1); $i += 1; } } return $r; }\n\n"
+   in let types-text = emit-pl-type-defs type-defs 0
+   in let entry = pl-emit-entry (m.defs)
+   in header & types-text
+
+  emit-perl-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-perl-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\nsub list_snoc { my ($xs, $v) = @_; if (@$xs) { push @$xs, $v; return $xs; } return [$v]; }\nsub list_push { my ($xs, $v) = @_; return list_snoc($xs, $v); }\nsub text_starts_with { my ($s, $p) = @_; return substr($s, 0, length($p)) eq $p; }\nsub text_split { my ($s, $sep) = @_; return [$s] if length($sep) == 0; my @p = split(/\\Q$sep\\E/, $s, -1); return \\@p; }\nsub _cx_text_replace { my ($s, $a, $b) = @_; return $s if length($a) == 0; my $r = ''; my $i = 0; while ($i < length($s)) { if (substr($s, $i, length($a)) eq $a) { $r .= $b; $i += length($a); } else { $r .= substr($s, $i, 1); $i += 1; } } return $r; }\n\n"
+   in let types-text = emit-pl-type-defs type-defs 0
+   in let entry = pl-emit-entry (m.defs)
+   in entry
+
+  emit-perl-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-perl-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\nsub list_snoc { my ($xs, $v) = @_; if (@$xs) { push @$xs, $v; return $xs; } return [$v]; }\nsub list_push { my ($xs, $v) = @_; return list_snoc($xs, $v); }\nsub text_starts_with { my ($s, $p) = @_; return substr($s, 0, length($p)) eq $p; }\nsub text_split { my ($s, $sep) = @_; return [$s] if length($sep) == 0; my @p = split(/\\Q$sep\\E/, $s, -1); return \\@p; }\nsub _cx_text_replace { my ($s, $a, $b) = @_; return $s if length($a) == 0; my $r = ''; my $i = 0; while ($i < length($s)) { if (substr($s, $i, length($a)) eq $a) { $r .= $b; $i += length($a); } else { $r .= substr($s, $i, 1); $i += 1; } } return $r; }\n\n"
+   in let types-text = emit-pl-type-defs type-defs 0
+   in let entry = pl-emit-entry (m.defs)
+   in arities
+
+  emit-perl-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-perl-chapter-stream-def (m) (v) (i) = emit-pl-def (list-at (m.defs) i) v
 
   pl-emit-entry : List IRDef -> Text
   pl-emit-entry (defs) = pl-emit-entry-loop defs 0

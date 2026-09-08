@@ -104,6 +104,101 @@ its state as a thing to reconcile against.
    Use `git add -u` (all modified and deleted tracked files), then
    `git add <path>` for each new file from `git status --porcelain` `^??`.
    `.gitignore` excludes build-output/, test-output/, .p4config.
+2b. **RECONCILE THE DEPOT AGAINST THE INDEX BEFORE COMMITTING. Staging by
+    name loses files permanently, not transiently.** Step 2 stages with
+    `git add -u`, which only touches files git ALREADY TRACKS, plus one
+    `git add <path>` per new file read off `git status --porcelain`. A new
+    file missed in that list is not picked up by any later push either,
+    because `-u` will never see it: the omission is permanent and silent.
+    Git also collapses a wholly-new directory into ONE `??` line, so a
+    twenty-file addition is one entry to overlook.
+
+    Re-measured 2026-09-07 evening (red), and re-measure again at the next
+    release rather than quoting this (L-COUNT): 482 tracked files are in the
+    depot and absent from `github/master`, 420 of them ruled out by
+    `check-ignore`, leaving **62 survivors**. Six `build/*.ps1` checkers
+    including `sign-seed.ps1`, five `docs/PM/Active/Stories/*.md`, twenty
+    `build/boot` flight artifacts, six `codex/test` fixtures with their
+    `.expected`, `codex/plugs/wasm/WasmStdio.codex` and the rest are ordinary
+    additions, nothing about them is secret, and the mirror does publish
+    `build/boot` images (`diag.img` is up), so those are a gap and not a
+    policy.
+
+    **RULED (Damian, 2026-09-07): the five third-party specifications are
+    NOT redistributed**, and the rule is now enforced rather than
+    remembered. `USB_2_0_Specification`, `xHCI_Specification`,
+    `HID_1_11_Specification`, `Intel_I219_Datasheet` and
+    `Intel_82583V_Datasheet`, each a `.pdf` and a `.txt` extract, are named
+    file by file at the bottom of `.gitignore`, so the reconcile no longer
+    proposes them: survivors went 62 to 55 on the re-run, with zero specs
+    among them. They are named individually and NOT as
+    `docs/Reference/*.pdf`, because that directory is published and carries
+    other third-party PDFs whose terms allow it (a PLDI paper,
+    `AMI_Aptio_V_Deep_Dive.pdf`); a blanket rule would silently withhold
+    those too.
+
+    `docs/Reference/CONTENTS.md` names each withheld document, the exact
+    revision the depot holds, and a link to its publisher. A withheld file
+    is otherwise invisible from outside and a reader cannot tell it from one
+    somebody dropped, which is 2c's point. Add a row there when a document
+    joins the ignore rule, or the next reader is back to guessing.
+
+    **That file is NOT on the mirror** (measured 2026-09-08, blu:
+    `git ls-tree -r github/master --name-only` matches nothing for it, and
+    the reconcile lists it as a survivor). The one document that explains
+    what is withheld is itself missing, which is 2c happening to 2c. Stage
+    it explicitly at the next push.
+
+    The reconcile is one command from the main workspace and it needs no
+    network:
+
+    ```powershell
+    $mirror = @(git ls-tree -r github/master --name-only)          # forward slashes
+    $depot  = @(p4 -c BigWhite_Codex_<agent>_main have | ForEach-Object {
+                 $i = $_.IndexOf(' - '); if ($i -gt 0) { $_.Substring($i + 3).Trim() } })
+    # subtract the workspace root and switch to forward slashes, compare, then
+    # write the difference to an LF-ONLY file and feed THAT to check-ignore:
+    [System.IO.File]::WriteAllText($f, (($diff -join "`n") + "`n"))
+    cmd /c "git -C <repo> check-ignore --stdin < `"$f`""
+    ```
+
+    **Feed `check-ignore` LF, never CRLF, and never a PowerShell pipeline.**
+    Measured 2026-09-08 (blu, the Update 56 reconcile), both directions on
+    the same three paths: with LF input `check-ignore --stdin` returns every
+    ignored path; with CRLF input it returns only the ones matched by a
+    DIRECTORY rule and silently drops every one matched by an exact-path
+    rule, because the trailing carriage return is part of the name it
+    compares. A PowerShell `$paths | git check-ignore --stdin` sends CRLF, so
+    the recipe as written until this date under-reported the ignored set by
+    13 and listed all ten third-party specifications as survivors: the exact
+    files the 2026-09-07 rule was added to withhold, offered back for
+    staging on every run. The tell is a survivor list containing something
+    you know is in `.gitignore`; the check is
+    `git check-ignore -v <one path>`, which takes an argument rather than
+    stdin and names the rule and line that matched.
+
+    **A survivor list is what drives `git add`, so an under-reported ignore
+    set is the expensive direction.** Verify any new ignore rule against a
+    path it must match AND a path it must not, before trusting a run.
+
+    **Anything left after check-ignore is a file nobody decided to withhold.**
+    Do not read a large raw difference as a disaster: of 479 paths missing
+    at the 2026-09-07 measurement, 435 were deliberate -- `apps/games/magic`,
+    `assets/games`, `apps/wademo`, `apps/productbuilder`, `codex/product`,
+    `build/boot/archive`, the third-party specification PDFs, and everything
+    `*.exe` / `*.cdx`. The number that matters is the one that survives the
+    ignore rules.
+
+2c. **A DELIBERATE EXCLUSION IS INVISIBLE FROM OUTSIDE, AND THAT IS ITS OWN
+    DEFECT.** Steve Howell's issue 123 reported three directories present in
+    the depot and 404 on the mirror. All three are ruled exclusions with good
+    reasons -- `codex/product` and `apps/productbuilder` are customer work
+    (Damian, 2026-08-18), `apps/wademo` carries an NHGIS extract whose terms
+    forbid redistribution -- and exactly ONE of them, `codex/product`, is a
+    quire. But a reader of the public tree cannot tell a withheld directory
+    from a lost one, so a contributor spends his time reporting our policy
+    back to us. The mirror should say which paths are withheld and why,
+    without naming what is in them.
 3. Commit as author damiant, one line, comma-separated themes, no trailers.
    The Update-N report file is part of the same commit.
 4. Push, NO force (standing rule). The github credential is usually cached;
@@ -251,6 +346,27 @@ The update procedure:
    module, which is why that one is the only module ever tracked there.
    Show those two facts before claiming a file is unserved; adding a
    module later is cheap and removing one from history is not.
+5b. **Grade before you stage** (root, 2026-09-03, the Update 55 site rebuild).
+   None of these is run by `build.ps1`, and the 2026-09-02 site shipped 48
+   lens modules built with a wasm plug the wat-wrap fix had not reached:
+   `codex/plugs/wasm/page-lens-test.ps1` (with `-Calibrate` first, then
+   plain) and `page-bytes-test.ps1` over the modules the page copies;
+   `page-wire-test.ps1` (same order) for the two the other two cannot
+   reach, `riscv-stdio.wasm` and `arm64-stdio.wasm`, which the page ships
+   like any lens; it needs both modules AND each
+   `codex/plugs/<plug>/build.ps1`'s `<plug>-plug.cdx` oracle built first,
+   and boots a guest per row, so ask for the box before it;
+   `apps/c64/c64-verify.mjs`, `apps/mathbook/mb-verify.mjs`,
+   `apps/starmap/sm-verify.mjs`, `apps/games/ar-verify.mjs` and
+   `apps/games/page-verify.mjs`; `node apps/safari/sf-decode.mjs`;
+   `apps/landing/check-links.ps1 -Web apps/landing/web -Live`; and
+   `/experimental/` driven headless, which is the one arm that exercises
+   the compiler module and two lenses together:
+   `chrome --headless=new --dump-dom "file:///.../apps/landing/web/experimental/index.html?auto=1"`
+   with `--allow-file-access-from-files` and a `--virtual-time-budget`,
+   then read the `stage` boxes out of the DOM. A module the site serves
+   that no grader ran is the fireworks skyline of 2026-09-02: it was never
+   staged and the live page 404'd on it for a day.
 6. The Pages deploy takes a minute or two. Verify with a request, not by
    assumption: `landing.html` and `compile/prism.html` both answer 200.
 

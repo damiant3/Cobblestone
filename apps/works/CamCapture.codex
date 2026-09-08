@@ -1,5 +1,6 @@
 Chapter: CamCapture
   cites Works chapter GopXhci
+  cites Kernel chapter Pci
   cites Works chapter GopUsbCam
   grounds Device.Port
   grounds Device.Mmio
@@ -37,16 +38,44 @@ Section: Capture
 
   cam-capture-frame : [Camera] CamFrame
   cam-capture-frame = act
-    xh <- xhci-connect
-    if xh.xh-ok == False then cam-no-frame
-    else let speed = xhci-reset-port xh cam-port-index
+    scan <- xhci-connect-scan
+    cam-hosts scan 0 0
+  end
+
+  cam-hosts : PciScanResult, Integer, Integer -> [Camera] CamFrame
+  cam-hosts (scan) (from) (ord) = act
+    if ord >= xhci-max-hosts then cam-no-frame
+    else cam-hosts-at scan (pci-index-class scan xhci-pci-class xhci-pci-subclass from) ord
+  end
+
+  cam-hosts-at : PciScanResult, Integer, Integer -> [Camera] CamFrame
+  cam-hosts-at (scan) (idx) (ord) = act
+    if idx < 0 then cam-no-frame
+    else cam-hosts-step scan idx ord
+  end
+
+  cam-hosts-step : PciScanResult, Integer, Integer -> [Camera] CamFrame
+  cam-hosts-step (scan) (idx) (ord) = act
+    xh <- xhci-connect-one (list-at (scan.devices) idx) ord
+    if xh.xh-ok == False then cam-hosts scan (idx + 1) (ord + 1)
+    else cam-hosts-took scan idx ord (cam-capture-on xh)
+  end
+
+  cam-hosts-took : PciScanResult, Integer, Integer, CamFrame -> [Camera] CamFrame
+  cam-hosts-took (scan) (idx) (ord) (f) = act
+    if f.cf-ok then f
+    else cam-hosts scan (idx + 1) (ord + 1)
+  end
+
+  cam-capture-on : XhciHost -> [Camera] CamFrame
+  cam-capture-on (xh) =
+    let speed = xhci-reset-port xh cam-port-index
     in let dev = xhci-open-device xh cam-port-index speed
     in if dev.ud-ok == False then cam-no-frame
     else let cfg = alloc-zeroed cam-cfg-descriptor-bytes 64
     in let got = usb-get-descriptor xh dev 2 0 cfg (cam-cfg-descriptor-bytes - 1)
     in if got == False then cam-no-frame
     else cam-capture-configured xh dev cfg
-  end
 
   cam-capture-configured : XhciHost, UsbDev, Integer -> [Camera] CamFrame
   cam-capture-configured (xh) (dev) (cfg) =
@@ -67,7 +96,11 @@ Section: What A Capture Costs
 
  The price is worth naming because this heap has no collector. Each call
  allocates a 256-byte descriptor buffer and a 38400-byte frame buffer,
- and both live until the function that called capture returns. Three
+ and both live until the function that called capture returns. A machine
+ carrying more than one xHCI pays that per controller tried, because the
+ walk stops only at the first controller that yields a frame: the bound
+ is xhci-max-hosts times the per-attempt cost, which is under 310
+ kilobytes at eight controllers. Three
  captures in one function is a little over a hundred kilobytes still
  held; a loop taking a frame a second is a leak with a camera attached
  to it, which is the phrase GopUsbCam already uses about the per-frame

@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Session wrap-or-continue decision point. Assess remaining context against remaining work, then either commit to a bounded next unit of work or execute the formal handoff so the next session resumes losslessly. Run when the user invokes /handoff, when context passes ~70% used, or at any natural milestone near the end of a work arc.
+description: Session wrap-or-continue decision point. Assess remaining context against remaining work, then either commit to a bounded next unit of work or execute the formal handoff so the next session resumes losslessly. Run when the user invokes /handoff, when root orders it, or when MEASURED context passes 70% used; never earlier on a lane's own estimate.
 ---
 
 You are at a decision point: continue working or wrap the session.
@@ -28,14 +28,14 @@ Gather, with tools (do not answer from memory):
    and that turn reports it in `cache_read`.
 
    ```powershell
-   $dir="$env:USERPROFILE\.claude\projects\" + ((Get-Location).Path.TrimEnd('\') -replace '[:\\/]','-')
-   $f=Get-ChildItem $dir -Filter *.jsonl | Sort-Object LastWriteTimeUtc -Desc | Select-Object -First 1
-   $u=$null
-   foreach($l in [System.IO.File]::ReadLines($f.FullName)){
-     if($l -match '"usage"'){ try{ $j=$l|ConvertFrom-Json; if($j.message.usage){$u=$j.message.usage} }catch{} } }
-   $used=[int64]$u.input_tokens + [int64]$u.cache_creation_input_tokens + [int64]$u.cache_read_input_tokens
-   "used $used of 1000000 = " + [math]::Round(100*$used/1000000,1) + "%; free " + (1000000-$used)
+   build/measure-context.ps1 -Lane <your lane>            # one row: percent, at-rest, last write, compaction
+   build/measure-context.ps1 -Lane <your lane> -Percent   # the whole number status.json carries
    ```
+
+   The tool is the formula (`build/measure-context.ps1`, its header states
+   it); a copy of the script in a skill is what drifted before. It is
+   compaction-aware: after a `/compact` and before your first turn it says
+   so instead of printing the pre-compaction number.
 
    The window is **1,000,000** for every model the fleet runs except
    haiku, which is 200,000. Getting the window wrong is its own trap:
@@ -78,6 +78,14 @@ including gates and their outputs, then apply the rule:
 The 1.5 covers debugging surprises; the 40k reserve guarantees the
 handoff itself is never squeezed. If the next unit does not fit,
 WRAP. Do not start work you cannot both finish and hand off.
+
+**Below 70 per cent MEASURED, the answer is CONTINUE (Damian, 2026-09-08:
+"58% is not enough action on the context we load at init; agent estimates
+of token spend are almost always very much over").** Your estimate of the
+next unit is the number that runs high, so under 70 the formula above is
+not consulted: pick a unit that fits 300k free (every unit landed on
+2026-09-08 did) and work. A wrap you start under 70 is cancelled by root
+and the session resumed. At 70 measured, or when root orders it, wrap.
 
 Calibration warning (2026-07-08): a session wrapped at 55% used --
 449k free -- on a length-based guess. The multipliers above already

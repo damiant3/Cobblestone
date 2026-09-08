@@ -10,7 +10,7 @@ An interactive 3D star map rendering 80+ named celestial objects (stars, Messier
 - **StarDb** -- OctreeNode type, StarDatabase with spatial index; insert, box-range query, nearest-neighbor search, magnitude/kind filters
 - **StarMapScene** -- StarCamera with yaw/pitch/orbit/zoom/goto; VisibleObj projection; StarScene state with catalog, selection, hover, label/grid/constellation toggles, search
 - **StarMapWasm** -- WASM shared-memory layout, export functions, write-cam-state, tick() writing star vertex and label data to shared buffers
-- **TestStarMap** -- 7 test sections covering types, B-V colors, catalog, scene, camera, database, constellations
+- **TestStarMap** -- 35 arms (2026-09-08) over types, B-V colours, catalogue, scene, camera, database, constellations and distance formatting. Lives at `codex/test/apps/starmap-suite.codex`, because `test.ps1` executes what is under `codex/test/**` and `app-sweep` only compiles what is under `apps/**`
 
 ## Completeness
 

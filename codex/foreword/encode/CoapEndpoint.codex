@@ -37,6 +37,21 @@ Section: Constants
   coap-ack-timeout : Integer = 2000
   coap-max-retransmit : Integer = 4
 
+ RFC 7252 section 4.5. A Confirmable message the peer retransmits because
+ our Acknowledgement was lost arrives carrying the SAME message id, and
+ the rule has two halves that are easy to separate and wrong apart: the
+ duplicate must be acknowledged AGAIN, or the peer keeps retransmitting
+ until it gives up, and it must NOT be processed again, because delivering
+ one response twice is the peer's lost ACK becoming our duplicated data.
+
+ The cache is per exchange, which is what bounds it: an endpoint holding
+ one interaction at a time sees at most a handful of message ids before
+ the next request clears them. Eight is that handful with room, and a
+ cache already full stops recording rather than growing, because an
+ unbounded cache on a constrained device is the peer choosing our heap.
+
+  coap-mid-cache-cap : Integer = 8
+
   coap-type-con : Integer = 0
   coap-type-non : Integer = 1
   coap-type-ack : Integer = 2
@@ -62,7 +77,9 @@ Section: Types
     ce-deadline : Integer,
     ce-acked : Boolean,
     ce-resp-code : Integer,
-    ce-resp-payload : List Integer
+    ce-resp-payload : List Integer,
+    ce-acked-mids : List Integer,
+    ce-deliveries : Integer
   }
 
   CoapEpStep = record {
@@ -76,7 +93,8 @@ Section: Construction
   coap-ep-new =
     CoapEp { ce-next-mid = 1, ce-token-ctr = 1, ce-state = coap-st-idle, ce-mid = 0,
              ce-token = [], ce-datagram = [], ce-retries = 0, ce-timeout = coap-ack-timeout,
-             ce-deadline = 0, ce-acked = False, ce-resp-code = 0, ce-resp-payload = [] }
+             ce-deadline = 0, ce-acked = False, ce-resp-code = 0, ce-resp-payload = [],
+             ce-acked-mids = [], ce-deliveries = 0 }
 
  The token is the interaction's name. Two bytes off a counter are enough to
  tell this device's outstanding request from the last one; a real device
@@ -112,7 +130,8 @@ Section: Requests
     let ep2 = CoapEp { ce-next-mid = coap-mid-inc mid, ce-token-ctr = (ep.ce-token-ctr) + 1,
                        ce-state = coap-st-waiting, ce-mid = mid, ce-token = token, ce-datagram = dgram,
                        ce-retries = 0, ce-timeout = coap-ack-timeout, ce-deadline = now + coap-ack-timeout,
-                       ce-acked = False, ce-resp-code = 0, ce-resp-payload = [] }
+                       ce-acked = False, ce-resp-code = 0, ce-resp-payload = [],
+                       ce-acked-mids = [], ce-deliveries = 0 }
     in CoapEpStep { cs-ep = ep2, cs-out = [dgram] }
 
 Section: Receive
@@ -123,12 +142,37 @@ Section: Receive
       is None -> coap-ep-idle ep
       is Just (m) -> coap-ep-on-msg ep m
 
+ The cache is consulted for Confirmable messages ONLY. A message id is
+ the sender's own counter, so the ids we acknowledged to the peer and the
+ ids we chose for our own requests are drawn from two unrelated spaces and
+ can collide; consulting the cache for an Acknowledgement would let one
+ such collision swallow the answer to the request in flight.
+
   coap-ep-on-msg : CoapEp, CoapMessage -> CoapEpStep
   coap-ep-on-msg (ep) (m) =
+    if m.cm-type == coap-type-con
+    then if coap-mid-seen (ep.ce-acked-mids) (m.cm-msg-id) 0
+         then CoapEpStep { cs-ep = ep, cs-out = [coap-ack (m.cm-msg-id)] }
+         else coap-ep-on-fresh ep m
+    else coap-ep-on-fresh ep m
+
+  coap-ep-on-fresh : CoapEp, CoapMessage -> CoapEpStep
+  coap-ep-on-fresh (ep) (m) =
     if ep.ce-state /= coap-st-waiting then coap-ep-idle ep
     else if m.cm-type == coap-type-ack then coap-ep-on-ack ep m
     else if m.cm-type == coap-type-rst then coap-ep-on-rst ep m
     else coap-ep-on-response ep m
+
+  coap-mid-seen : List Integer, Integer, Integer -> Boolean
+  coap-mid-seen (mids) (mid) (i) =
+    if i >= list-length mids then False
+    else if list-at mids i == mid then True
+    else coap-mid-seen mids mid (i + 1)
+
+  coap-mid-remember : CoapEp, Integer -> CoapEp
+  coap-mid-remember (ep) (mid) =
+    if list-length (ep.ce-acked-mids) >= coap-mid-cache-cap then ep
+    else __record-set ep "ce-acked-mids" ((ep.ce-acked-mids) & [mid])
 
  An Acknowledgement is matched by message id. An empty ACK confirms the
  request was received and stops the retransmission clock, and the answer is
@@ -150,7 +194,7 @@ Section: Receive
   coap-ep-on-response (ep) (m) =
     if coap-bytes-eq (m.cm-token) (ep.ce-token) == False then coap-ep-idle ep
     else if m.cm-type == coap-type-con
-    then CoapEpStep { cs-ep = coap-deliver-state ep m, cs-out = [coap-ack (m.cm-msg-id)] }
+    then CoapEpStep { cs-ep = coap-mid-remember (coap-deliver-state ep m) (m.cm-msg-id), cs-out = [coap-ack (m.cm-msg-id)] }
     else coap-ep-idle (coap-deliver-state ep m)
 
   coap-ep-on-rst : CoapEp, CoapMessage -> CoapEpStep
@@ -158,9 +202,15 @@ Section: Receive
     if m.cm-msg-id /= ep.ce-mid then coap-ep-idle ep
     else coap-ep-idle (__record-set ep "ce-state" coap-st-failed)
 
+ The delivery COUNT is the only thing that can tell a duplicate suppressed
+ from a duplicate delivered, because a response delivered twice overwrites
+ the first with identical bytes and every other field reads the same
+ afterwards.
+
   coap-deliver-state : CoapEp, CoapMessage -> CoapEp
   coap-deliver-state (ep) (m) =
-    __record-set (__record-set (__record-set (__record-set ep "ce-state" coap-st-done) "ce-acked" True) "ce-resp-code" (m.cm-code)) "ce-resp-payload" (m.cm-payload)
+    let e1 = __record-set (__record-set (__record-set (__record-set ep "ce-state" coap-st-done) "ce-acked" True) "ce-resp-code" (m.cm-code)) "ce-resp-payload" (m.cm-payload)
+    in __record-set e1 "ce-deliveries" (ep.ce-deliveries + 1)
 
   coap-set-acked : CoapEp -> CoapEp
   coap-set-acked (ep) = __record-set ep "ce-acked" True
@@ -206,6 +256,9 @@ Section: Accessors
 
   coap-ep-retries : CoapEp -> Integer
   coap-ep-retries (ep) = ep.ce-retries
+
+  coap-ep-deliveries : CoapEp -> Integer
+  coap-ep-deliveries (ep) = ep.ce-deliveries
 
 Section: Helpers
 

@@ -1,0 +1,75 @@
+Chapter: SheetGraphTest
+  cites Sheets chapter CellGraph
+  cites Sheets chapter CellStore
+  cites Foreword chapter CCE
+
+ The order must be DERIVED, and the only way an arm can say so is to
+ build a sheet whose derived order differs from both of the orders that
+ look right. `A1 = B1 + 1` typed first and `B1 = C1 + 1` typed second
+ gives typing order A1 B1 and row-major order A1 B1, and the correct
+ order is B1 A1. An arm whose chain runs left to right agrees with all
+ three and measures nothing.
+
+ The range line holds the half the parser cannot: `A1:A3` names A2, so a
+ formula in A2 must precede a formula summing the range. The parser
+ answers only the two corners, and a graph that used them directly would
+ put A2 after the sum and still print a plausible order.
+
+ The cycle line holds that a cycle is a REPORT naming the cells rather
+ than a spin or a truncated order.
+
+ The edit lines hold the incremental path. Editing a DATA cell is the
+ common edit and the cell holds no formula, so the roots of the walk are
+ the formulas naming the cell directly; an implementation that only
+ handles editing a formula cell answers "(none)" here, which reads as
+ "nothing to recompute" and is the worst available wrong answer.
+
+ The independent cell E1 exists as the control: E1 appears in the full
+ order and must NOT appear in any dependents answer, so a walk that
+ marked everything would fail one line while the others stood.
+
+ The sabotage: return `pl-order` unfiltered from `graph-dependents` and
+ the two edit lines gain E1; use the range's corners without expanding
+ and the range line loses A2; seed Kahn's queue in row-major order and
+ the first line prints A1 B1.
+
+Section: Body
+
+  sg-rows : Integer = 8
+  sg-cols : Integer = 8
+
+  sg-sheet : Integer
+  sg-sheet = sheet-new sg-rows sg-cols 256
+
+  sg-plan-say : Program -> Text
+  sg-plan-say (pg) =
+    let p = graph-plan pg
+    in if p.pl-ok then graph-order-names pg p
+    else "REFUSED: " & p.pl-msg
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let s1 = sheet-new sg-rows sg-cols 256
+    in let g1 = graph-put (graph-put (graph-new s1) 0 0 "=B1+1") 0 1 "=C1+1"
+    in let s2 = sheet-new sg-rows sg-cols 256
+    in let g2 = graph-put (graph-put (graph-new s2) 0 3 "=SUM(A1:A3)") 1 0 "=A1+1"
+    in let s3 = sheet-new sg-rows sg-cols 256
+    in let g3 = graph-put (graph-put (graph-new s3) 0 0 "=B1+1") 0 1 "=A1+1"
+    in let s4 = sheet-new sg-rows sg-cols 256
+    in let g4a = graph-put (graph-put (graph-new s4) 0 1 "=A1+1") 0 2 "=B1+1"
+    in let g4 = graph-put (graph-put g4a 0 3 "=C1+1") 0 4 "=99"
+    in let s5 = sheet-new sg-rows sg-cols 256
+    in let g5 = graph-put (graph-new s5) 0 0 "=B1+"
+    in act
+      print-line-uni ("derived order beats typing and row-major: " & sg-plan-say g1)
+      print-line-uni ("a range names the cells between its corners: " & sg-plan-say g2)
+      print-line-uni ("a cycle is named, not spun: " & sg-plan-say g3)
+      print-line-uni ("the full order of the chain plus an independent cell: " & sg-plan-say g4)
+      print-line-uni ("editing the DATA cell A1 recomputes: " & graph-dependent-names g4 0 0)
+      print-line-uni ("editing the FORMULA cell C1 recomputes: " & graph-dependent-names g4 0 2)
+      print-line-uni ("editing the independent cell E1 recomputes: " & graph-dependent-names g4 0 4)
+      print-line-uni ("editing a cell nothing names recomputes: " & graph-dependent-names g4 5 5)
+      print-line-uni ("a formula that does not parse is reported before the sort: " & sg-plan-say g5)
+      print-line-uni ("a second formula for one cell replaces the first: entries " & show (graph-count (graph-put g5 0 0 "=1+1")))
+    end

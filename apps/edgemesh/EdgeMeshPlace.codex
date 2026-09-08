@@ -1,0 +1,58 @@
+Chapter: EdgeMeshPlace
+
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Mesh chapter EdgeMeshLive
+  cites Mesh chapter EdgeMeshFederate
+  cites Foreword chapter Maybe
+
+ `EdgeMeshGameServers.md` phase 3, stage 2: placing a federated match. Stage 1
+ pairs within a game; `mesh-place` then picks the least-loaded healthy node in
+ the region, and its service name carries the region alone, so the pair can
+ land on a box running another game.
+
+ A game's servers are discovered under their own service name rather than
+ filtered out of the region's afterwards, so health and load stay
+ `gs-pick-load-balanced`'s and only the partition is added here.
+
+Section: A Game's Servers In A Region
+
+ `@` separates the game from the region because the phase 2 name is
+ `edge-<region>` with no `@` in it, so a game-aware lookup can never pick up a
+ registration made for the region as a whole.
+
+  place-game-service : Text, EdgeRegion -> Text
+  place-game-service (game) (r) = mesh-service-prefix & game & "@" & r.er-name
+
+  place-register : GroupState, Text, EdgeRegion, GameServer, Text, Text -> GroupState
+  place-register (g) (game) (region) (srv) (member-id) (address) =
+    gs-register-service g (svc-location-new (place-game-service game region) mesh-server-version member-id address (srv.gs-port) SrLoadBalanced)
+
+Section: Placing
+
+  GamePlacement =
+    | GamePlacedAt (Text) (ServiceLocation)
+    | GamePlacementRefused (Text)
+
+  place-for-game : GroupState, RegionList, Integer, Text -> GamePlacement
+  place-for-game (g) (rl) (region-idx) (game) =
+    when mesh-region-at rl region-idx
+      is None -> GamePlacementRefused ("no such region: " & show region-idx)
+      is Just (r) ->
+        when gs-pick-load-balanced g (place-game-service game r)
+          is None -> GamePlacementRefused (game & " has no healthy node in " & r.er-name)
+          is Just (loc) -> GamePlacedAt (game) (loc)
+
+  place-for-match : GroupState, RegionList, Integer, FedMatch -> GamePlacement
+  place-for-match (g) (rl) (region-idx) (fm) =
+    when fm
+      is FedPaired (game) (mp) -> place-for-game g rl region-idx game
+      is FedWaiting (why) -> GamePlacementRefused ("nothing to place: " & why)
+
+Section: Reporting
+
+  place-label : GamePlacement -> Text
+  place-label (p) =
+    when p
+      is GamePlacedAt (game) (loc) -> game & " placed on " & loc.sl-member-id & " load " & show (loc.sl-load)
+      is GamePlacementRefused (why) -> "refused: " & why

@@ -1,0 +1,189 @@
+Chapter: DeskClockArtTest
+  cites Works chapter GopDesk
+  cites Works chapter GopClock
+  cites Works chapter GopWorld
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Console
+
+ The clock pane's face and map are PAINTED, not merely reserved.
+
+ desk-clock-art draws the dial and the coastline over the laid tree, and it
+ had NO CALLERS. desk-wnd-over is the door it comes through and that function
+ answered 0 for every focus id except the launcher's, so neither picture had
+ ever reached the glass. The prose above desk-clock-art described the wiring
+ in detail and the wiring was absent, which is why a comment is not evidence
+ that a path runs (L-UNCALLED).
+
+ NOTHING ALREADY IN THE TREE COULD SEE IT. clock-face and clock-world drive
+ face-draw and wld-draw directly, so both stayed green while the pane they
+ exist for painted nothing; the pane's own wiring was never armed. A test of
+ a drawing primitive is not a test that anything calls it.
+
+ THE ARM PAINTS INTO A BUFFER AND COUNTS. face-draw and wld-draw take a base
+ pointer and a stride and are otherwise pure, so a plain allocation stands in
+ for the framebuffer and no guest GOP is needed. Stride is in PIXELS and also
+ clips the span (gop-fill-rect compares px + pw against it), so the buffer is
+ stride * height * 4 bytes and nothing can write outside it.
+
+ The control is the same call under another pane's focus id, which must light
+ nothing. Without it a row reading "some pixels are set" would pass on a
+ painter that ignored the id and drew for everybody.
+
+ WHAT THIS ARM CANNOT SEE, stated because the first version of it was quoted
+ as though it could. It BUILDS the world blob itself, so it proves the painter
+ draws a coastline it is handed and says nothing about whether the pane ever
+ fills that cell. It did not: `clk-ensure2` had no callers and the map came up
+ as bare grid stripes on a real desk while every row here was green. The blob
+ row below is the narrowest honest version of the question, a paint with the
+ cell as production left it against a paint with it filled, and the wiring
+ itself is answered by `desk-clock-open` calling `clk-ensure2` and by nothing
+ in this file.
+
+Section: Test
+
+  art-w : Integer = 1024
+  art-h : Integer = 768
+
+  lit-row : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  lit-row (buf) (stride) (x) (y) (x1) (acc) =
+    if x >= x1 then acc
+    else
+      let v = peek-32 buf ((y * stride + x) * 4)
+      in lit-row buf stride (x + 1) y x1 (if v /= 0 then acc + 1 else acc)
+
+  lit-rect : Integer, Integer, LayoutRect, Integer, Integer -> Integer
+  lit-rect (buf) (stride) (b) (y) (acc) =
+    if y >= b.lr-y + b.lr-h then acc
+    else if y < 0 then lit-rect buf stride b (y + 1) acc
+    else if y >= art-h then acc
+    else lit-rect buf stride b (y + 1) (acc + lit-row buf stride (b.lr-x) y (b.lr-x + b.lr-w) 0)
+
+ A COUNT OF LIT PIXELS CANNOT SEE A HAND MOVE. The dial's disc is filled and
+ the map's sea is filled, so a hand swinging from three to nine, or land
+ appearing over water, changes the COLOUR of pixels that were already non-zero
+ and leaves the count identical. The first version of the two rows below
+ counted, both read the same number for arms that differ, and both were red
+ for that reason and not because the pane was broken. Summing the pixel VALUES
+ is an oracle whose output shape can express the distinction.
+
+  sum-row : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sum-row (buf) (stride) (x) (y) (x1) (acc) =
+    if x >= x1 then acc
+    else sum-row buf stride (x + 1) y x1 (acc + peek-32 buf ((y * stride + x) * 4))
+
+  sum-rect : Integer, Integer, LayoutRect, Integer, Integer -> Integer
+  sum-rect (buf) (stride) (b) (y) (acc) =
+    if y >= b.lr-y + b.lr-h then acc
+    else if y < 0 then sum-rect buf stride b (y + 1) acc
+    else if y >= art-h then acc
+    else sum-rect buf stride b (y + 1) (acc + sum-row buf stride (b.lr-x) y (b.lr-x + b.lr-w) 0)
+
+  fresh-ds : Integer -> Integer
+  fresh-ds (ks) =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let a = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let g = poke-32 ds desk-gpu-cell 1
+    in let c = poke-32 ds desk-clock-cell ks
+    in ds
+
+ One paint of one focus id into its own buffer, answering the lit count inside
+ the box the tree reserved for the picture.
+
+  paint : Integer, Integer, Integer, Text -> Integer
+  paint (ds) (ks) (fid) (boxid) =
+    let buf = alloc-zeroed (art-w * art-h * 4) 64
+    in let laid = desk-clock-laid art-w art-h gfont-none ds ks
+    in let ov = desk-wnd-over buf art-w art-h (ui-wscale art-w) gfont-none fid laid ds
+    in let b = desk-clock-box laid boxid (ui-wscale art-w)
+    in if b.lr-w <= 0 then 0 - 1
+    else lit-rect buf art-w b (b.lr-y) 0
+
+ THE RIGHT HALF OF THE DIAL IS WHERE THREE O'CLOCK IS AND NINE IS NOT, so two
+ paints an hour apart in opposite directions must not light it equally. A bare
+ count over the whole box cannot say this: the dial and its ticks dominate the
+ count and the hands are symmetric about the centre, so the totals can agree
+ while the hands stand still.
+
+  paint-at : Integer, Integer, Integer -> Integer
+  paint-at (ds) (ks) (hour) =
+    let n = clk-note-now ks hour 0 0 1 1 26
+    in let buf = alloc-zeroed (art-w * art-h * 4) 64
+    in let laid = desk-clock-laid art-w art-h gfont-none ds ks
+    in let ov = desk-wnd-over buf art-w art-h (ui-wscale art-w) gfont-none desk-focus-clkp laid ds
+    in let b = desk-clock-box laid "clk-art" (ui-wscale art-w)
+    in let half = layout-rect (b.lr-x + b.lr-w / 2) (b.lr-y) (b.lr-w / 2) (b.lr-h)
+    in sum-rect buf art-w half (half.lr-y) 0
+
+  paint-sum : Integer, Integer, Integer, Text -> Integer
+  paint-sum (ds) (ks) (fid) (boxid) =
+    let buf = alloc-zeroed (art-w * art-h * 4) 64
+    in let laid = desk-clock-laid art-w art-h gfont-none ds ks
+    in let ov = desk-wnd-over buf art-w art-h (ui-wscale art-w) gfont-none fid laid ds
+    in let b = desk-clock-box laid boxid (ui-wscale art-w)
+    in if b.lr-w <= 0 then 0 - 1
+    else sum-rect buf art-w b (b.lr-y) 0
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+ THE TWO ROWS ABOVE ARM THE PAINTER, THESE TWO ARM THE WIRING, and the
+ difference is the whole reason this section exists. `paint-at` writes the
+ cells itself, so it asks whether the dial follows the block and would stay
+ green on a desk that never wrote the block at all, which is exactly the desk
+ that shipped. `desk-wnd-tree` is the function that reads the part on every
+ repaint, so calling it and looking at the cells afterwards is the question a
+ person asks by watching the second hand.
+
+ THE DAY IS THE CELL TO TEST AND THE HOUR IS NOT. A day register reads 1 to 31
+ and is never 0, so a populated block is distinguishable from a zeroed one at
+ any time of day; an hour is legitimately 0 for an hour every night and a row
+ keyed on it would fail once a day for a correct desk.
+
+  note-probe : Integer, Boolean -> [Device.Port] Integer
+  note-probe (ks) (editing) = act
+    let ds = fresh-ds ks
+    in let buf = alloc-zeroed (art-w * art-h * 4) 64
+    in let e = poke-32 ks clk-editing-cell (if editing then 1 else 0)
+    in let z = poke-32 ks clk-d-cell 0
+    in act
+      t <- desk-wnd-tree desk-focus-clkp ds buf art-w art-h art-w gfont-none
+      peek-32 ks clk-d-cell
+    end
+  end
+
+  opening : [Console, Device.Port] Nothing =
+    let ks = alloc-zeroed 128 64
+    in let ds = fresh-ds ks
+    in let f = paint ds ks desk-focus-clkp "clk-art"
+    in let ctl = paint ds ks desk-focus-mon "clk-art"
+    in let ks2 = alloc-zeroed 128 64
+    in let ds2 = fresh-ds ks2
+    in let w0 = poke-32 ks2 clk-world-cell wld-build
+    in let v0 = clk-set-view ks2 clk-view-zones
+    in let m = paint ds2 ks2 desk-focus-clkp "clk-map"
+    in let ks3 = alloc-zeroed 128 64
+    in let ds3 = fresh-ds ks3
+    in let v3 = clk-set-view ks3 clk-view-zones
+    in let m0 = paint-sum ds3 ks3 desk-focus-clkp "clk-map"
+    in let ms = paint-sum ds2 ks2 desk-focus-clkp "clk-map"
+    in let ks4 = alloc-zeroed 128 64
+    in let ds4 = fresh-ds ks4
+    in let at3 = paint-at ds4 ks4 3
+    in let at9 = paint-at ds4 ks4 9
+    in let ks5 = alloc-zeroed 128 64
+    in let ks6 = alloc-zeroed 128 64
+    in act
+      noted <- note-probe ks5 False
+      held <- note-probe ks6 True
+      print-line-uni ("face box found: " & yn (f /= 0 - 1))
+      print-line-uni ("face paints: " & yn (f > 100))
+      print-line-uni ("map box found: " & yn (m /= 0 - 1))
+      print-line-uni ("map paints: " & yn (m > 100))
+      print-line-uni ("another pane paints nothing: " & yn (ctl == 0))
+      print-line-uni ("map needs the blob: " & yn (ms /= m0))
+      print-line-uni ("hands follow the clock: " & yn (at3 /= at9))
+      print-line-uni ("the tree arm notes the time: " & yn (noted /= 0))
+      print-line-uni ("and holds off while editing: " & yn (held == 0))
+    end

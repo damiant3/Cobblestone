@@ -7,6 +7,8 @@
 [CmdletBinding()]
 param(
     [string]$Seed = (Join-Path $PSScriptRoot '..\seed\Codex.cdx'),
+    [string]$Kernel = (Join-Path $PSScriptRoot '..\seed\Codex.cdx'),
+    [switch]$AllowStaleKernel,
     [int]$PCore = 1
 )
 
@@ -22,6 +24,18 @@ if ((-not (Test-Path -PathType Leaf $Seed))) {
 $seedBytes = [System.IO.File]::ReadAllBytes((Resolve-Path $Seed).Path)
 $seedLen = $seedBytes.Length
 Write-Host ([string]([string]([string]'Seed: ' + $Seed) + ([string]' (' + $seedLen)) + ' bytes)')
+
+
+if (-not (Test-Path -PathType Leaf $Kernel)) { throw "Kernel not found: $Kernel" }
+$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)
+$seedDigest = (Get-FileHash -Algorithm SHA256 $Seed).Hash.Substring(0, 16)
+Write-Host "Kernel: $Kernel [$kernelDigest]"
+if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {
+    Write-Host 'REFUSED: the kernel is a build-output binary and is not the seed under test.'
+    Write-Host "         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last."
+    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'
+    exit 2
+}
 
 
 $headerBytes = $seedBytes[0..223]
@@ -41,7 +55,7 @@ Write-Host ([string]([string]'Generated source: ' + ([System.IO.File]::ReadAllBy
 
 
 Write-Host 'Compiling...' -ForegroundColor Cyan
-& 'pwsh' -File $compile -Src $tmpSrc -Out $tmpCdx -Log $tmpLog -PCore $PCore
+& 'pwsh' -File $compile -Src $tmpSrc -Out $tmpCdx -Log $tmpLog -Kernel $Kernel -PCore $PCore
 if ((-not ($LASTEXITCODE -eq 0))) {
     Write-Host 'COMPILE FAILED' -ForegroundColor Red
     Get-Content $tmpLog

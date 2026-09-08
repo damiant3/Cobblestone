@@ -1,0 +1,185 @@
+Chapter: DeskMenuAnchorTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Works chapter GopPrograms
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Task frame stage 4. The Cobblestone button is the first child of the band, so
+ it moves to whichever edge the band is docked to, and the menu must open at
+ the button. Before the fix `desk-menu-tree` took no `ds` and could not know
+ the edge: a flex-1 spacer above the body anchored it to the BOTTOM and one
+ beside the column anchored it to the LEFT, at every edge.
+
+ THE CLAIM IS THE GAP TO THE BAND, and it took two wrong assertions to get
+ here. Both are recorded because both are the same mistake and it is an easy
+ one to make again.
+
+ The first asked whether the menu's left edge EQUALS the button's. It reads NO
+ even at the bottom edge, where the placement is correct, because the theme
+ pads the band's button by 14 and the menu column by 16. An assertion whose
+ honest answer is a near miss is not an assertion.
+
+ The second asked whether the menu's CENTRE is on the same half of the glass
+ as the button's. That survived until the list learned to run across, and then
+ read NO at both vertical edges for a menu placed correctly: a 544 wide menu
+ beside a left-docked band has its centre past the midline while its near edge
+ sits against the band. A verdict about a midpoint is not a verdict about a
+ placement.
+
+ What "the menu opens at the button" actually means is that the menu sits
+ against the band, on the inside, at whichever edge the band is on. That is
+ one signed number per edge, the gap along the band's own axis, and it is
+ printed rather than only judged. It fails loudly for the defect this file was
+ written for: a menu at the opposite corner is not a near miss, it is hundreds
+ of pixels.
+
+ THE BUTTON'S HEIGHT IS ASKED SEPARATELY AND IS NOT A CONSEQUENCE OF THE
+ ANCHOR. A vertical band lays the same button through the same code path, and
+ a height of zero would mean a control that can be neither seen nor hit. It
+ gets its own column here rather than a verdict folded into the anchor rows,
+ because a fix for one has no reason to move the other.
+
+ THE ORIENTATION IS ASKED AS AN AGREEMENT rather than as a shape, because the
+ claim is that the list follows the BAND: across when the band runs down, down
+ when it runs across. Asking only "is it wide" would pass at two of the four
+ edges for a list that never changed, and the printed w and h carry the actual
+ numbers for a reader who wants them.
+
+ SHUTDOWN IS ASKED THE SAME WAY AND FOR THE SAME REASON. A panel stretches its
+ children on the cross axis, so the button is the menu's full width down the
+ page, which is right and matches the rows, and was the full span of five
+ group columns across, which is not. The verdict is the agreement rather than
+ a width, because a fixed number here would be a second copy of the theme's
+ text metrics and would move every time the face did.
+
+ IT IS ALSO ASKED WHETHER THE BUTTON EXISTS, and that column is not
+ defensive: the first attempt at the fix laid it out at width 0, because its
+ minimum width was zero and a spacer beside it took every remaining pixel.
+ "Narrower than the menu" was TRUE of that button, so the agreement column
+ alone scored an invisible, unclickable control as a pass. A shrink test needs
+ a floor or it is a deletion test.
+
+ THE MEASURE IS THE SLACK AND NOT "NARROWER THAN THE MENU", which was the
+ third near-miss assertion this file has had to unlearn. A STRETCHED button is
+ already a little narrower than its parent, because the theme pads it: 144
+ inside 156 down the page. Asking "is it narrower" therefore answers yes in
+ both orientations and distinguishes nothing. The slack does: 12 when the
+ button fills its parent, 440 when it keeps its own text width beside a row of
+ five group columns. The threshold is padding-sized rather than a fraction, so
+ it says what it means.
+
+Section: Body
+
+  dma-yn : Boolean -> Text
+  dma-yn (v) = if v then "yes" else "NO"
+
+  dma-box : WidgetNode, Text -> LayoutRect
+  dma-box (laid) (id) =
+    when widget-find laid id
+      is Just (n) -> n.wn-bounds
+      is None -> layout-rect 0 0 0 0
+
+  dma-laid : Integer, Integer, Integer, Integer -> WidgetNode
+  dma-laid (ds) (w) (h) (s) =
+    widget-layout (desk-chrome-with (desk-menu-tree (peek-32 ds desk-prog-cell) gfont-none s ds) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+
+  dma-rect : Text, LayoutRect -> Text
+  dma-rect (nm) (r) =
+    " " & nm & " x " & integer-to-text (r.lr-x) & " y " & integer-to-text (r.lr-y) & " w " & integer-to-text (r.lr-w) & " h " & integer-to-text (r.lr-h)
+
+  dma-mid-y : LayoutRect -> Integer
+  dma-mid-y (r) = r.lr-y + r.lr-h / 2
+
+  dma-mid-x : LayoutRect -> Integer
+  dma-mid-x (r) = r.lr-x + r.lr-w / 2
+
+ Positive is a space between the two, negative is an overlap, and both are
+ wrong past a threshold. The menu is allowed to sit a little off the band
+ because the theme pads it; it is not allowed to sit under it or across the
+ glass from it.
+
+  dma-gap : LayoutRect, LayoutRect, Integer -> Integer
+  dma-gap (men) (band) (e) =
+    if e == dk-edge-bottom then band.lr-y - (men.lr-y + men.lr-h)
+    else if e == dk-edge-top then men.lr-y - (band.lr-y + band.lr-h)
+    else if e == dk-edge-left then men.lr-x - (band.lr-x + band.lr-w)
+    else band.lr-x - (men.lr-x + men.lr-w)
+
+  dma-row : Integer, Integer, Integer -> Text
+  dma-row (w) (h) (e) =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pp = poke-32 ds desk-prog-cell (alloc-zeroed 64 64)
+    in let pei = dk-pedge-init ds
+    in let sp = poke-32 ds dk-task-edge-cell e
+    in let tki = dk-task-init ds gfont-none w
+    in let sti = dk-strip-init ds gfont-none w
+    in let s = ui-wscale w
+    in let laid = dma-laid ds w h s
+    in let btn = dma-box laid "menu"
+    in let men = dma-box laid "sysmenu-body"
+    in let gap = dma-gap men (dma-box laid "taskbar") e
+    in "edge " & dk-edge-name e
+       & dma-rect "button" btn
+       & dma-rect "menu" men
+       & "  gap to the band " & integer-to-text gap
+       & "  against it " & dma-yn (gap >= 0 & gap <= 32)
+       & "  button has height " & dma-yn (btn.lr-h > 0)
+       & "  list runs across " & dma-yn ((men.lr-w > men.lr-h) == dk-task-vertical ds)
+       & "  shutdown w " & integer-to-text (dma-box laid "shutdown").lr-w
+       & "  is real " & dma-yn ((dma-box laid "shutdown").lr-w > 0)
+       & "  slack " & integer-to-text (men.lr-w - (dma-box laid "shutdown").lr-w)
+       & "  sized to itself " & dma-yn ((men.lr-w - (dma-box laid "shutdown").lr-w > 32) == dk-task-vertical ds)
+
+ THE ROWS ABOVE RUN FACELESS AND CANNOT SEE THE ENTRY'S SIZE. `dk-task-btn-h`
+ asks the face for a line's height and answers the bitmap cell when there is
+ none, so the two orientations agreed at 16 with no face and still disagreed on
+ the glass, which is where Damian saw it. The entry also takes its own natural
+ height as a floor now, so the number this row reports is 24 rather than 16.
+ This row supplies a face the way `desk-taskbar-hit` does, a plain record with
+ `gf-ok` true and an 18 pixel cell, and prints the entry's height at all four
+ edges on one line so the comparison is a comparison rather than four numbers
+ to hold in the head.
+
+  dma-face : GopFont
+  dma-face = GopFont { gf-ok = True, gf-base = 0, gf-gw = 0, gf-gh = 18, gf-asc = 0, gf-cap = 0 }
+
+  dma-faced-h : Integer, Integer, Integer -> Integer
+  dma-faced-h (w) (h) (e) =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pp = poke-32 ds desk-prog-cell (alloc-zeroed 64 64)
+    in let pei = dk-pedge-init ds
+    in let sp = poke-32 ds dk-task-edge-cell e
+    in let tki = dk-task-init ds dma-face w
+    in let sti = dk-strip-init ds dma-face w
+    in let s = ui-wscale w
+    in let laid = widget-layout (desk-chrome-face (desk-menu-tree (peek-32 ds desk-prog-cell) dma-face s ds) w ds dma-face) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in (dma-box laid "menu").lr-h
+
+  dma-faced : Integer, Integer -> Text
+  dma-faced (w) (h) =
+    let b = dma-faced-h w h dk-edge-bottom
+    in let t = dma-faced-h w h dk-edge-top
+    in let l = dma-faced-h w h dk-edge-left
+    in let r = dma-faced-h w h dk-edge-right
+    in "faced entry height: bottom " & integer-to-text b & "  top " & integer-to-text t
+       & "  left " & integer-to-text l & "  right " & integer-to-text r
+       & "  the sides match the ends " & dma-yn (l == b & r == b)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni (dma-row 1600 900 dk-edge-bottom)
+      print-line-uni (dma-row 1600 900 dk-edge-top)
+      print-line-uni (dma-row 1600 900 dk-edge-left)
+      print-line-uni (dma-row 1600 900 dk-edge-right)
+      print-line-uni (dma-faced 1600 900)
+    end
+
+Page 1

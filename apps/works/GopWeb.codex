@@ -1,5 +1,11 @@
 Chapter: GopWeb
   cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter NetDriver
+  cites Foreword chapter Capability
+  cites Foreword chapter CCE
+  cites UI chapter Widget
+  cites Works chapter GopAhci
 
  The webserver as a SYSTEM SERVICE rather than something the desk runs
  (Damian, 2026-08-28: "the desktop is merely the admin app, the webserver is
@@ -20,7 +26,7 @@ Chapter: GopWeb
 
  We say:
 
-Section: The Service
+Section: The Service's Routes
 
   gopweb-port : Integer
   gopweb-port = 9100
@@ -42,21 +48,164 @@ Section: The Service
     else
       HttpResponse { status = http-404, content-type = "text/plain", body = "Not found" }
 
+Section: The Block the Desk and the Service Share
+
+ Bytes 0 to 63 are the desk's: the window registry keeps a window's slot at
+ cells 44 through 60 of whatever block `desk-wnd-blk` answers, so the
+ service's cells start at 64. A slot is 64 bytes, one length byte and up to
+ 63 of text; sixteen slots is what a pane body shows without scrolling.
+
+  gopweb-blk-pid : Integer = 64
+  gopweb-blk-count : Integer = 72
+  gopweb-blk-paused : Integer = 76
+  gopweb-blk-cmd : Integer = 80
+  gopweb-blk-seen : Integer = 84
+  gopweb-blk-served : Integer = 88
+  gopweb-blk-shown : Integer = 92
+  gopweb-ring : Integer = 128
+  gopweb-ring-slots : Integer = 16
+  gopweb-slot-bytes : Integer = 64
+  gopweb-cmd-stop : Integer = 1
+  gopweb-cmd-start : Integer = 2
+
+  gopweb-blk-bytes : Integer
+  gopweb-blk-bytes = gopweb-ring + gopweb-ring-slots * gopweb-slot-bytes
+
+  gopweb-blk-new : Integer
+  gopweb-blk-new = alloc-zeroed gopweb-blk-bytes 64
+
+  gopweb-slot-at : Integer, Integer -> Integer
+  gopweb-slot-at (blk) (i) =
+    blk + gopweb-ring + (i - (i / gopweb-ring-slots) * gopweb-ring-slots) * gopweb-slot-bytes
+
+  gopweb-log-write : Integer, List Integer, Integer, Integer -> Integer
+  gopweb-log-write (dst) (bs) (i) (n) =
+    if i >= n then 0
+    else let p = poke-byte dst (1 + i) (list-at bs i)
+    in gopweb-log-write dst bs (i + 1) n
+
+  gopweb-log : Integer, Text -> Integer
+  gopweb-log (blk) (line) =
+    let c = peek-32 blk gopweb-blk-count
+    in let dst = gopweb-slot-at blk c
+    in let bs = text-to-utf8-bytes line
+    in let n = if list-length bs > gopweb-slot-bytes - 1 then gopweb-slot-bytes - 1 else list-length bs
+    in let l = poke-byte dst 0 n
+    in let b = gopweb-log-write dst bs 0 n
+    in poke-32 blk gopweb-blk-count (c + 1)
+
+  gopweb-log-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  gopweb-log-bytes (src) (i) (n) (acc) =
+    if i > n then acc
+    else gopweb-log-bytes src (i + 1) n (list-push acc (peek-byte src i))
+
+  gopweb-log-read : Integer, Integer -> Text
+  gopweb-log-read (blk) (i) =
+    let src = gopweb-slot-at blk i
+    in utf8-bytes-to-text (gopweb-log-bytes src 1 (peek-byte src 0) [])
+
+  gopweb-log-first : Integer -> Integer
+  gopweb-log-first (c) = if c > gopweb-ring-slots then c - gopweb-ring-slots else 0
+
+ The log is written by the server's observer rather than from inside the
+ route, because `web-standard` answers `/api/health` and `/api/status`
+ before the route is consulted and a route-side log records neither.
+
+Section: The Pane's Tree
+
+  gopweb-log-rows : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  gopweb-log-rows (blk) (i) (c) (acc) =
+    if i >= c then acc
+    else gopweb-log-rows blk (i + 1) c (list-push acc (widget-label ("web-row-" & show i) (gopweb-log-read blk i)))
+
+  gopweb-head : Integer -> Text
+  gopweb-head (c) =
+    if c == 0 then "No requests yet"
+    else if c > gopweb-ring-slots then "Last " & show gopweb-ring-slots & " of " & show c & " requests"
+    else show c & " requests"
+
+  gopweb-state-text : Integer -> Text
+  gopweb-state-text (blk) =
+    if peek-32 blk gopweb-blk-paused /= 0 then "Stopped"
+    else "Serving on port " & show gopweb-port
+
+  gopweb-tree : Integer -> WidgetNode
+  gopweb-tree (blk) =
+    let c = peek-32 blk gopweb-blk-count
+    in widget-panel "web-body" DirColumn 4 ([
+         widget-panel "web-bar" DirRow 8 [
+           widget-button "web-stop" "Stop",
+           widget-button "web-start" "Start",
+           widget-label "web-state" (gopweb-state-text blk) ],
+         widget-label "web-head" (gopweb-head c) ]
+         & gopweb-log-rows blk (gopweb-log-first c) c [])
+
+Section: The Service
+
  The body a spawned process runs. `process-spawn` hands its child one
  Integer and takes the effect row with it, so the service's own
  `[Console, Network.Read, Network.Write]` travels into the child rather
  than having to be declared by whoever spawns it.
 
-  gopweb-service : Integer -> [Console, Network.Read, Network.Write] Integer
-  gopweb-service (ignored) =
-    web-serve-concurrent gopweb-route gopweb-port
+  gopweb-service : Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  gopweb-service (blk) (ignored) =
+    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport gopweb-port), conns = [], served = 0 }
+    in gopweb-pump blk m0 0
+
+  gopweb-take-cmd : Integer -> Integer
+  gopweb-take-cmd (blk) =
+    let cmd = peek-32 blk gopweb-blk-cmd
+    in if cmd == 0 then 0
+    else let p = poke-32 blk gopweb-blk-paused (if cmd == gopweb-cmd-stop then 1 else 0)
+    in poke-32 blk gopweb-blk-cmd 0
+
+  gopweb-pump : Integer, WebMux, Integer -> [Console, Network.Read, Network.Write] Integer
+  gopweb-pump (blk) (m) (since) =
+    let tc = gopweb-take-cmd blk
+    in if since >= web-sweep-interval then act
+      m1 <- web-mux-sweep m 0
+      gopweb-pump blk m1 0
+    end
+    else let hp = __heap-save
+    in act
+      frame <- net-driver-recv-frame
+      if list-length frame == 0 | peek-32 blk gopweb-blk-paused /= 0 then
+        let restored = __heap-restore hp
+        in let y = process-yield
+        in gopweb-pump blk m (since + 1)
+      else act
+        m1 <- web-mux-feed gopweb-route (\line -> gopweb-log blk line) m frame gopweb-port
+        let sv = poke-32 blk gopweb-blk-served (m1.served)
+        in gopweb-pump blk m1 (since + 1)
+      end
+    end
 
 Section: Starting It
 
  Answers the child's pid. The parent returns immediately: a service that
  had to be waited on would be a call with extra steps.
 
-  gopweb-start : [Console, Concurrent, Network.Read, Network.Write] Integer
-  gopweb-start = process-spawn (\x -> gopweb-service x)
+  gopweb-start : Integer -> [Concurrent] Integer
+  gopweb-start (blk) = process-spawn (\x -> gopweb-service blk x)
+
+Section: Holding the Network
+
+ Answers the shared block, with the service's pid at `gopweb-blk-pid`.
+
+  gopweb-hold : [Concurrent, Capability, Network.Read, Network.Write] Integer
+  gopweb-hold =
+    let blk = gopweb-blk-new
+    in act
+      pid <- gopweb-start blk
+      let pp = poke-32 blk gopweb-blk-pid pid
+      in gopweb-hold-rest blk
+    end
+
+  gopweb-hold-rest : Integer -> [Capability] Integer
+  gopweb-hold-rest (blk) = act
+    r <- process-restrict-cap process-get-pid cap-network-read
+    w <- process-restrict-cap process-get-pid cap-network-write
+    blk
+  end
 
 Page 1

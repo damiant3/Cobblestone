@@ -5,21 +5,21 @@ const pl_half_w : i32 = 512;
 const pl_half_h : i32 = 384;
 const pl_count : i32 = 6;
 fn pl_cx(i : i32) -> f32 {
-  return ((f32(f32(i)) * bitcast<f32>(1067030937u)) - bitcast<f32>(1077936128u));
+  return ((f32(f32(i)) * 0x1.333332p+0f) - 0x1.800000p+1f);
 }
 fn pl_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i : i32) -> f32 {
   let lx = (ox - pl_cx(i));
   let b = (((dx * lx) + (dy * oy)) + (dz * oz));
-  let c = ((((lx * lx) + (oy * oy)) + (oz * oz)) - bitcast<f32>(1050337607u));
+  let c = ((((lx * lx) + (oy * oy)) + (oz * oz)) - 0x1.35c28ep-2f);
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -38,7 +38,7 @@ fn pl_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return bid;
     } else {
     let t = pl_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < bt)), 1, (bt < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < bt)), 1, (bt < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -82,68 +82,69 @@ fn pl_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn pl_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn pl_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((pl_clamp01(r) * bitcast<f32>(1132396544u))) * 65536) + (i32((pl_clamp01(g) * bitcast<f32>(1132396544u))) * 256)) + i32((pl_clamp01(b) * bitcast<f32>(1132396544u))));
+  return (((i32((pl_clamp01(r) * 0x1.fe0000p+7f)) * 65536) + (i32((pl_clamp01(g) * 0x1.fe0000p+7f)) * 256)) + i32((pl_clamp01(b) * 0x1.fe0000p+7f)));
 }
 fn pl_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / pl_width) * pl_width));
   let py = (gid / pl_width);
-  let fx = (f32(f32((px - pl_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((pl_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1082130432u)));
+  let fx = (f32(f32((px - pl_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((pl_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.000000p+2f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1073741824u) / rl);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1084227584u));
-  let id = pl_nearest(bitcast<f32>(0u), bitcast<f32>(0u), oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let dz = (0x1.000000p+1f / rl);
+  let oz = (0.0 - 0x1.400000p+2f);
+  let id = pl_nearest(0.0, 0.0, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   if ((id < 0)) {
-  let h = pl_clamp01(((dy * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u)));
-  return pl_pack((bitcast<f32>(1028443340u) + (h * bitcast<f32>(1028443340u))), (bitcast<f32>(1031127695u) + (h * bitcast<f32>(1034147594u))), (bitcast<f32>(1036831948u) + (h * bitcast<f32>(1041194024u))));
+  let h = pl_clamp01(((dy * 0x1.000000p-1f) + 0x1.000000p-1f));
+  return pl_pack((0x1.999998p-5f + (h * 0x1.999998p-5f)), (0x1.eb851ep-5f + (h * 0x1.47ae14p-4f)), (0x1.999998p-4f + (h * 0x1.1eb850p-3f)));
   } else {
-  let t = pl_hit(bitcast<f32>(0u), bitcast<f32>(0u), oz, dx, dy, dz, id);
+  let t = pl_hit(0.0, 0.0, oz, dx, dy, dz, id);
   let hx = (dx * t);
   let hy = (dy * t);
   let hz = (oz + (dz * t));
-  let nx = ((hx - pl_cx(id)) / bitcast<f32>(1057803468u));
-  let ny = (hy / bitcast<f32>(1057803468u));
-  let nz = (hz / bitcast<f32>(1057803468u));
-  let la = (f32(f32(frame)) / bitcast<f32>(1106247680u));
-  let lx = (cos(la) * bitcast<f32>(1056964608u));
-  let ly = bitcast<f32>(1060320051u);
-  let lz = ((sin(la) * bitcast<f32>(1056964608u)) - bitcast<f32>(1053609164u));
+  let nx = ((hx - pl_cx(id)) / 0x1.199998p-1f);
+  let ny = (hy / 0x1.199998p-1f);
+  let nz = (hz / 0x1.199998p-1f);
+  let la = (f32(f32(frame)) / 0x1.e00000p+4f);
+  let lx = (cos(la) * 0x1.000000p-1f);
+  let ly = 0x1.666666p-1f;
+  let lz = ((sin(la) * 0x1.000000p-1f) - 0x1.999998p-2f);
   let ll = sqrt((((lx * lx) + (ly * ly)) + (lz * lz)));
-  let ndl = max(bitcast<f32>(0u), ((((nx * lx) / ll) + ((ny * ly) / ll)) + ((nz * lz) / ll)));
-  let vdn = (bitcast<f32>(0u) - (((dx * nx) + (dy * ny)) + (dz * nz)));
+  let ndl = max(0.0, ((((nx * lx) / ll) + ((ny * ly) / ll)) + ((nz * lz) / ll)));
+  let vdn = (0.0 - (((dx * nx) + (dy * ny)) + (dz * nz)));
   let hlx = ((lx / ll) - dx);
   let hly = ((ly / ll) - dy);
   let hlz = ((lz / ll) - dz);
-  let hl = (sqrt((((hlx * hlx) + (hly * hly)) + (hlz * hlz))) + bitcast<f32>(981668462u));
-  let spec = max(bitcast<f32>(0u), ((((nx * hlx) / hl) + ((ny * hly) / hl)) + ((nz * hlz) / hl)));
+  let hl = (sqrt((((hlx * hlx) + (hly * hly)) + (hlz * hlz))) + 0x1.0624dcp-10f);
+  let spec = max(0.0, ((((nx * hlx) / hl) + ((ny * hly) / hl)) + ((nz * hlz) / hl)));
   let s2 = (spec * spec);
   let s8 = (((s2 * s2) * s2) * s2);
   if ((id == 0)) {
-  return pl_pack(bitcast<f32>(1057803468u), bitcast<f32>(1051931443u), bitcast<f32>(1061158912u));
+  return pl_pack(0x1.199998p-1f, 0x1.666666p-2f, 0x1.800000p-1f);
   } else {
   if ((id == 1)) {
-  return pl_pack((bitcast<f32>(1050253721u) * (bitcast<f32>(1045220556u) + ndl)), (bitcast<f32>(1058642329u) * (bitcast<f32>(1045220556u) + ndl)), (bitcast<f32>(1063675494u) * (bitcast<f32>(1045220556u) + ndl)));
+  return pl_pack((0x1.333332p-2f * (0x1.999998p-3f + ndl)), (0x1.333332p-1f * (0x1.999998p-3f + ndl)), (0x1.ccccccp-1f * (0x1.999998p-3f + ndl)));
   } else {
   if ((id == 2)) {
-  return pl_pack(((bitcast<f32>(1062836633u) * ndl) + s8), ((bitcast<f32>(1056964608u) * ndl) + s8), ((bitcast<f32>(1050253721u) * ndl) + s8));
+  return pl_pack(((0x1.b33332p-1f * ndl) + s8), ((0x1.000000p-1f * ndl) + s8), ((0x1.333332p-2f * ndl) + s8));
   } else {
   if ((id == 3)) {
-  let band = select(select(select(bitcast<f32>(1043878379u), bitcast<f32>(1052938076u), (ndl > bitcast<f32>(1041865113u))), bitcast<f32>(1059481190u), (ndl > bitcast<f32>(1053609164u))), bitcast<f32>(1065353216u), (ndl > bitcast<f32>(1061158912u)));
-  return pl_pack((bitcast<f32>(1063675494u) * band), (bitcast<f32>(1057803468u) * band), (bitcast<f32>(1051931443u) * band));
+  let band = select(select(select(0x1.70a3d6p-3f, 0x1.851eb8p-2f, (ndl > 0x1.333332p-3f)), 0x1.4cccccp-1f, (ndl > 0x1.999998p-2f)), 0x1.000000p+0f, (ndl > 0x1.800000p-1f));
+  return pl_pack((0x1.ccccccp-1f * band), (0x1.199998p-1f * band), (0x1.666666p-2f * band));
   } else {
   if ((id == 4)) {
-  return pl_pack(((nx * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u)), ((ny * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u)), ((nz * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u)));
+  return pl_pack(((nx * 0x1.000000p-1f) + 0x1.000000p-1f), ((ny * 0x1.000000p-1f) + 0x1.000000p-1f), ((nz * 0x1.000000p-1f) + 0x1.000000p-1f));
   } else {
-  let fres = pl_clamp01((bitcast<f32>(1065353216u) - vdn));
+  let fres = pl_clamp01((0x1.000000p+0f - vdn));
   let f5 = ((((fres * fres) * fres) * fres) * fres);
-  return pl_pack((bitcast<f32>(1036831948u) + (f5 * bitcast<f32>(1063675494u))), (bitcast<f32>(1041865113u) + (f5 * bitcast<f32>(1062836633u))), (bitcast<f32>(1048576000u) + (f5 * bitcast<f32>(1061158912u))));
+  return pl_pack((0x1.999998p-4f + (f5 * 0x1.ccccccp-1f)), (0x1.333332p-3f + (f5 * 0x1.b33332p-1f)), (0x1.000000p-2f + (f5 * 0x1.800000p-1f)));
   }
   }
   }

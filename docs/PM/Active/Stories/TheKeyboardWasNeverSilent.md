@@ -191,3 +191,21 @@ underneath and the xHCI campaign was not wasted, only mistimed.
 
 **Prove a key on the dev box before booking another sitting.** Two board trips
 were spent on this in one day.
+
+## SET_IDLE, and the device that was obeying us (L-IDLE)
+
+Kept here because the LESSONS row was its only account until 2026-09-07, and a
+row cannot carry what a lesson cost.
+
+The keyboard enumerated perfectly and delivered nothing, and for sixteen probe
+versions the question was what was wrong with the device or the driver. It was
+neither. HID 1.11 section F.3 guarantees a report every poll; `SET_IDLE` with
+duration 0 overrides that guarantee, and our driver had sent it since the day it
+was written. The firmware never sends it, which is exactly why BIOS setup always
+typed fine on the same hardware -- and we read that contrast as proof our bug was
+somewhere else, because the part demonstrably worked when somebody else drove it.
+
+The device was doing what it had been told. **Ask what you are telling the device
+before asking what is wrong with it**: a configuration write is an instruction,
+and an instruction that silences a part looks identical, from outside, to a part
+that is broken.

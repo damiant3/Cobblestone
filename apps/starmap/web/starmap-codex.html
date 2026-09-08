@@ -3,106 +3,131 @@
 <title>Codex Star Map</title>
 <style>
   :root { color-scheme: dark; }
-  html, body { margin: 0; height: 100%; background: #05070d; color: #c8d4e8;
+  html, body { margin: 0; height: 100%; background: #04060b; color: #c8d4e8;
                font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
   #sky { display: block; width: 100%; height: 100%; cursor: grab; }
   #sky.drag { cursor: grabbing; }
   .panel { position: fixed; background: rgba(8,12,22,.82); border: 1px solid #1e2a44;
            border-radius: 8px; padding: 10px 12px; backdrop-filter: blur(6px); }
-  #hud { top: 12px; left: 12px; max-width: 260px; }
+  #hud { top: 58px; left: 12px; min-width: 210px; }
   #hud h1 { margin: 0 0 6px; font-size: 14px; letter-spacing: .04em; color: #e8eefc; }
-  #hud dl { margin: 0; display: grid; grid-template-columns: auto auto; gap: 1px 10px; }
+  #hud dl { margin: 0; display: grid; grid-template-columns: auto auto; gap: 1px 12px; }
   #hud dt { color: #7b8bab; } #hud dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
   #keys { bottom: 12px; left: 12px; color: #7b8bab; }
   #keys b { color: #c8d4e8; font-weight: 600; }
-  #info { top: 12px; right: 12px; min-width: 190px; display: none; }
+  #info { top: 58px; right: 12px; min-width: 190px; display: none; }
   #info h2 { margin: 0 0 4px; font-size: 14px; color: #ffd9a0; }
   #info .k { color: #7b8bab; }
   #err { top: 50%; left: 50%; transform: translate(-50%,-50%); display: none;
-         border-color: #6b2233; color: #ffb3c0; max-width: 30em; }
-</style>
+         border-color: #6b2233; color: #ffb3c0; max-width: 32em; }
+  #load { position: fixed; inset: 0; display: grid; place-items: center; color: #7b8bab; }
+  .cb-nav{display:flex;align-items:center;gap:22px;padding:12px 24px;background:rgba(5,5,16,.88);backdrop-filter:blur(12px);border-bottom:1px solid #1e1e2e;position:sticky;top:0;z-index:100;font:14px system-ui,"Segoe UI",sans-serif;line-height:1.4}
+  .cb-nav .cb-logo{color:#d4a017;font-size:18px;font-weight:800;letter-spacing:3px;text-decoration:none}
+  .cb-nav .cb-logo:hover{text-decoration:none;color:#e8b52a}
+  .cb-nav .cb-here{color:#8b949e}
+  .cb-nav .cb-links{margin-left:auto;display:flex;gap:22px}
+  .cb-nav .cb-links a{color:#8b949e;text-decoration:none;transition:color .15s}
+  .cb-nav .cb-links a:hover{color:#d4a017;text-decoration:none}
+  .cb-nav.cb-fixed{position:fixed;left:0;right:0;top:0}</style>
+<nav class="cb-nav cb-fixed"><a class="cb-logo" href="../landing.html">&#x2588; COBBLESTONE</a><span class="cb-here">The Star Map</span><span class="cb-links"><a href="https://github.com/damiant3/Cobblestone/blob/master/apps/starmap/StarMapWasm.codex" title="the Codex source of this page">{ } Source</a><a href="../landing.html#today">&#8592; Back to the site</a></span></nav>
 
 <canvas id="sky"></canvas>
-<div class="panel" id="hud">
+<div id="load">reading the catalogue ...</div>
+<div class="panel" id="hud" hidden>
   <h1>Codex Star Map</h1>
   <dl>
-    <dt>objects</dt><dd id="n-objects">-</dd>
-    <dt>visible</dt><dd id="n-visible">-</dd>
-    <dt>labels</dt><dd id="n-labels">-</dd>
-    <dt>distance</dt><dd id="n-dist">-</dd>
-    <dt>mag limit</dt><dd id="n-mag">-</dd>
+    <dt>catalogue</dt><dd id="n-total">-</dd>
+    <dt>above the cut</dt><dd id="n-visible">-</dd>
+    <dt>on screen</dt><dd id="n-drawn">-</dd>
+    <dt>magnitude</dt><dd id="n-mag">-</dd>
+    <dt>field</dt><dd id="n-fov">-</dd>
   </dl>
 </div>
-<div class="panel" id="keys">
-  <b>drag</b> orbit &nbsp; <b>wheel</b> zoom &nbsp; <b>WASD/QE</b> move &nbsp;
-  <b>click</b> select &nbsp; <b>L</b> labels &nbsp; <b>[ ]</b> magnitude
+<div class="panel" id="keys" hidden>
+  <b>drag</b> look &nbsp; <b>wheel</b> zoom &nbsp; <b>click</b> identify &nbsp;
+  <b>L</b> labels &nbsp; <b>G</b> grid &nbsp; <b>[ ]</b> magnitude
 </div>
 <div class="panel" id="info"></div>
 <div class="panel" id="err"></div>
 
 <script type="module">
-// The module's memory map. These are the addresses StarMapWasm.codex publishes;
-// they are the contract between the two halves and nothing else may assume them.
-const CELL_STARS = 256, CELL_LABELS = 260, CELL_VISIBLE = 264, CELL_READY = 268;
+// The module's memory map and the file's record layout. StarMapWasm.codex owns
+// both; these are copied from its Memory Map and File Format sections and are
+// the contract between the two halves.
+const CELL_STARS = 256, CELL_VISIBLE = 260, CELL_READY = 264, CELL_DATLEN = 268,
+      CELL_NAMED = 272, CELL_DSOCOUNT = 276, CELL_DSOOFF = 280, CELL_NAMEOFF = 284,
+      CELL_ERROR = 288;
 const CAM = 352;
 const CAM_FOCUS_X = 0, CAM_FOCUS_Y = 8, CAM_FOCUS_Z = 16, CAM_YAW = 24,
-      CAM_PITCH = 28, CAM_DIST = 32, CAM_SELECTED = 40, CAM_OBJECTS = 44,
-      CAM_MAG = 48, CAM_SPEED = 52, CAM_FOV = 56, CAM_FLAGS = 60;
-const STAR_TAB = 1048576, STAR_STRIDE = 48;
-const S_X = 0, S_Y = 8, S_Z = 16, S_MAG = 24, S_RGB = 28, S_ID = 32,
-      S_SIZE = 36, S_LABEL = 40, S_KIND = 44;
-const LABEL_BLOB = 1114112, LABEL_STRIDE = 80, LABEL_CAP = 76;
-const VISIBLE_BUF = 1179648;
-const ABSENT = 65535;
-// sm-put-wide splits a 64-bit value on this, quotient and remainder carrying
-// the same sign, so the halves recombine by multiply and add.
-const WIDE = 1000000;
+      CAM_PITCH = 28, CAM_SELECTED = 40, CAM_OBJECTS = 44, CAM_MAG = 48,
+      CAM_SPEED = 52, CAM_FOV = 56, CAM_FLAGS = 60;
+const DAT_BASE = 1048576, DAT_MAX = 5242880, VISIBLE_BUF = 6291456;
+const HDR_SIZE = 64, REC = 32;
+const R_ID = 0, R_X = 4, R_Y = 8, R_Z = 12, R_MAG = 16, R_ABSMAG = 18, R_BV = 20,
+      R_SPECT = 22, R_CON = 23, R_FLAGS = 26, R_NAMEIDX = 27;
+const ABSENT = 65535, WIDE = 1000000;
+const ERRORS = { 1: 'the file did not start with STAR', 2: 'the file is a version this build does not read',
+                 3: 'the file is larger than the module reserves for it',
+                 4: 'the header claims more stars than the bytes delivered' };
 
-const KINDS = ['Star','Binary Star','Globular Cluster','Open Cluster',
-  'Planetary Nebula','Diffuse Nebula','Galaxy','Quasar','Pulsar','Black Hole',
-  'Planet','Moon','Asteroid','Comet'];
+const el = id => document.getElementById(id);
+const fail = m => { el('err').textContent = m; el('err').style.display = 'block';
+                    el('load').style.display = 'none'; throw new Error(m); };
 
-const fail = m => { const e = document.getElementById('err');
-  e.textContent = m; e.style.display = 'block'; throw new Error(m); };
-
-let mem, i32, u8, wasm;
+let mem, i32, u8, dv, wasm;
 const geti = a => i32[a >> 2];
 const wide = a => i32[a >> 2] + i32[(a + 4) >> 2] * WIDE;
 
-function labelOf(slot) {
-  if (slot === ABSENT) return '';
-  const base = LABEL_BLOB + slot * LABEL_STRIDE;
-  const n = Math.min(geti(base), LABEL_CAP);
-  if (n <= 0) return '';
-  return new TextDecoder().decode(u8.subarray(base + 4, base + 4 + n));
-}
-
+const recAt = i => DAT_BASE + HDR_SIZE + i * REC;
 function star(i) {
-  const a = STAR_TAB + i * STAR_STRIDE;
-  return { i, x: wide(a + S_X), y: wide(a + S_Y), z: wide(a + S_Z),
-           mag: geti(a + S_MAG), rgb: geti(a + S_RGB), id: geti(a + S_ID),
-           size: geti(a + S_SIZE), name: labelOf(geti(a + S_LABEL)),
-           kind: KINDS[geti(a + S_KIND)] || 'Object' };
+  const a = recAt(i);
+  return { i, id: dv.getInt32(a + R_ID, true),
+           x: dv.getInt32(a + R_X, true), y: dv.getInt32(a + R_Y, true), z: dv.getInt32(a + R_Z, true),
+           mag: dv.getInt16(a + R_MAG, true), absmag: dv.getInt16(a + R_ABSMAG, true),
+           bv: dv.getInt16(a + R_BV, true), spect: u8[a + R_SPECT], flags: u8[a + R_FLAGS],
+           nameIdx: dv.getInt32(a + R_NAMEIDX, true) };
 }
 
-// WASI is imported by every module this plug emits, whether or not the program
-// prints. fd_write is fed by the entry act's one line; fd_read is never called
-// but must be supplied, because an absent import is a LinkError at load.
+// The name table is length-prefixed UTF-8 and nameIdx is an ORDINAL, not a byte
+// offset, so the table is walked once at load and kept as an array.
+let names = [];
+function readNames() {
+  const off = geti(CELL_NAMEOFF), n = geti(CELL_NAMED);
+  const out = []; let p = DAT_BASE + off;
+  for (let k = 0; k < n; k++) {
+    const len = u8[p]; p += 1;
+    out.push(new TextDecoder().decode(u8.subarray(p, p + len))); p += len;
+  }
+  return out;
+}
+const nameOf = s => (s.flags & 1) && s.nameIdx >= 0 && s.nameIdx < names.length ? names[s.nameIdx] : '';
+
+// B-V colour index to a display colour. The index is scaled by 1000 in the file.
+function bvColour(bv) {
+  const b = bv / 1000;
+  let r, g, bl;
+  if (b < -0.2) { r = 155; g = 176; bl = 255; }
+  else if (b < 0.0) { r = 170; g = 191; bl = 255; }
+  else if (b < 0.3) { r = 202; g = 215; bl = 255; }
+  else if (b < 0.6) { r = 248; g = 247; bl = 255; }
+  else if (b < 0.9) { r = 255; g = 244; bl = 234; }
+  else if (b < 1.3) { r = 255; g = 210; bl = 161; }
+  else if (b < 1.7) { r = 255; g = 179; bl = 119; }
+  else { r = 255; g = 143; bl = 92; }
+  return [r, g, bl];
+}
+
 let out = '';
-function wasi() {
-  return { fd_write(fd, iov, n, ret) {
-      let w = 0;
-      for (let k = 0; k < n; k++) {
-        const p = geti(iov + k * 8), len = geti(iov + k * 8 + 4);
-        out += new TextDecoder().decode(u8.subarray(p, p + len)); w += len;
-      }
-      i32[ret >> 2] = w; return 0;
-    },
-    fd_read: () => 0 };
-}
+const wasi = { fd_write(fd, iov, n, ret) {
+    let w = 0;
+    for (let k = 0; k < n; k++) {
+      const p = geti(iov + k * 8), len = geti(iov + k * 8 + 4);
+      out += new TextDecoder().decode(u8.subarray(p, p + len)); w += len;
+    }
+    i32[ret >> 2] = w; return 0;
+  }, fd_read: () => 0 };
 
-const canvas = document.getElementById('sky');
-const ctx = canvas.getContext('2d');
+const canvas = el('sky'), ctx = canvas.getContext('2d', { alpha: false });
 let W = 0, H = 0, dpr = 1;
 function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -110,106 +135,131 @@ function resize() {
   canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
-window.addEventListener('resize', resize);
+addEventListener('resize', resize);
 
-let projected = [];
-
+// THE PROJECTION IS ONTO THE SPHERE, not onto the positions. A perspective
+// projection of the raw coordinates cannot frame this catalogue: it spans
+// 155,000,000 to 1 in distance, so a single camera distance puts most of it
+// either behind the observer or a pixel from the centre. What a star map shows
+// is DIRECTION, so the vector from the observer to the star is normalised
+// first and only then projected. Distance survives as parallax when the
+// observer moves, which is the one thing flying through the catalogue is for.
+let drawn = [];
 function project() {
   const yaw = geti(CAM + CAM_YAW) / 1000 * Math.PI / 180;
   const pitch = geti(CAM + CAM_PITCH) / 1000 * Math.PI / 180;
-  const dist = wide(CAM + CAM_DIST);
-  const fx = wide(CAM + CAM_FOCUS_X), fy = wide(CAM + CAM_FOCUS_Y), fz = wide(CAM + CAM_FOCUS_Z);
   const fov = (geti(CAM + CAM_FOV) || 60) * Math.PI / 180;
+  const ex = wide(CAM + CAM_FOCUS_X), ey = wide(CAM + CAM_FOCUS_Y), ez = wide(CAM + CAM_FOCUS_Z);
 
   const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
   const F = [cp * cy, sp, cp * sy];
   const R = [-sy, 0, cy];
   const U = [-sp * cy, cp, -sp * sy];
-  const eye = [fx - dist * F[0], fy - dist * F[1], fz - dist * F[2]];
   const f = (H / 2) / Math.tan(fov / 2);
+  // A star whose direction is more than the half-diagonal off axis cannot land
+  // on the canvas, so it is dropped before the divide rather than after.
+  const halfDiag = Math.atan(Math.hypot(W, H) / 2 / f);
+  const minCz = Math.cos(Math.min(halfDiag * 1.05, Math.PI / 2 - 1e-3));
 
   const count = geti(CELL_VISIBLE);
   const list = [];
   for (let k = 0; k < count; k++) {
-    const s = star(geti(VISIBLE_BUF + k * 4));
-    const dx = s.x - eye[0], dy = s.y - eye[1], dz = s.z - eye[2];
+    const idx = geti(VISIBLE_BUF + k * 4);
+    const a = recAt(idx);
+    let dx = dv.getInt32(a + R_X, true) - ex;
+    let dy = dv.getInt32(a + R_Y, true) - ey;
+    let dz = dv.getInt32(a + R_Z, true) - ez;
+    const len = Math.hypot(dx, dy, dz);
+    if (len === 0) continue;              // the observer's own position
+    dx /= len; dy /= len; dz /= len;
     const cz = dx * F[0] + dy * F[1] + dz * F[2];
-    if (cz <= 1) continue;
+    if (cz < minCz) continue;
     const cx = dx * R[0] + dy * R[1] + dz * R[2];
-    const cyy = dx * U[0] + dy * U[1] + dz * U[2];
-    s.sx = W / 2 + f * cx / cz; s.sy = H / 2 - f * cyy / cz; s.cz = cz;
-    list.push(s);
+    const cu = dx * U[0] + dy * U[1] + dz * U[2];
+    const sx = W / 2 + f * cx / cz, spy = H / 2 - f * cu / cz;
+    if (sx < -8 || sx > W + 8 || spy < -8 || spy > H + 8) continue;
+    list.push({ idx, sx, sy: spy, mag: dv.getInt16(a + R_MAG, true), bv: dv.getInt16(a + R_BV, true) });
   }
-  list.sort((a, b) => b.cz - a.cz);
-  projected = list;
+  drawn = list;
 }
 
+// Radius from magnitude. Sized so that the naked-eye sky reads like a sky:
+// magnitude 6 is a single pixel and the handful brighter than 0 are the ones
+// that carry a name.
+const radiusFor = m => m <= -1000 ? 3.6 : m <= 0 ? 2.9 : m <= 1000 ? 2.4
+  : m <= 2000 ? 2.0 : m <= 3000 ? 1.6 : m <= 4000 ? 1.3 : m <= 5000 ? 1.0 : 0.8;
+
 function draw() {
-  ctx.fillStyle = '#05070d'; ctx.fillRect(0, 0, W, H);
-  const flags = geti(CAM + CAM_FLAGS);
-  const selected = geti(CAM + CAM_SELECTED);
+  ctx.fillStyle = '#04060b'; ctx.fillRect(0, 0, W, H);
+  const flags = geti(CAM + CAM_FLAGS), selected = geti(CAM + CAM_SELECTED);
 
   if (flags & 2) {
-    ctx.strokeStyle = 'rgba(90,120,180,.10)'; ctx.lineWidth = 1;
-    for (let g = -4; g <= 4; g++) {
-      const t = (g + 4) / 8;
-      ctx.beginPath(); ctx.moveTo(0, t * H); ctx.lineTo(W, t * H);
-      ctx.moveTo(t * W, 0); ctx.lineTo(t * W, H); ctx.stroke();
+    ctx.strokeStyle = 'rgba(90,120,180,.09)'; ctx.lineWidth = 1;
+    for (let g = 1; g < 8; g++) {
+      ctx.beginPath(); ctx.moveTo(0, g * H / 8); ctx.lineTo(W, g * H / 8);
+      ctx.moveTo(g * W / 8, 0); ctx.lineTo(g * W / 8, H); ctx.stroke();
     }
   }
 
-  for (const s of projected) {
-    const r = Math.max(1, s.size * (dpr > 1 ? 1 : 1));
-    const col = '#' + (s.rgb >>> 0).toString(16).padStart(6, '0');
-    ctx.beginPath(); ctx.arc(s.sx, s.sy, r, 0, Math.PI * 2);
-    ctx.fillStyle = col; ctx.fill();
-    if (r > 2) {
-      ctx.globalAlpha = .18; ctx.beginPath();
-      ctx.arc(s.sx, s.sy, r * 3, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+  for (const s of drawn) {
+    const r = radiusFor(s.mag);
+    const [cr, cg, cb] = bvColour(s.bv);
+    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.beginPath(); ctx.arc(s.sx, s.sy, r, 0, Math.PI * 2); ctx.fill();
+    if (r >= 2.4) {
+      ctx.globalAlpha = .16; ctx.beginPath();
+      ctx.arc(s.sx, s.sy, r * 3.2, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     }
-    if (s.id === selected) {
-      ctx.strokeStyle = '#ffd9a0'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(s.sx, s.sy, r + 6, 0, Math.PI * 2); ctx.stroke();
+    if (s.idx === selected) {
+      ctx.strokeStyle = '#ffd9a0'; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.arc(s.sx, s.sy, r + 7, 0, Math.PI * 2); ctx.stroke();
     }
-    if ((flags & 1) && s.name && r >= 3) {
-      ctx.fillStyle = 'rgba(200,212,232,.75)'; ctx.font = '11px ui-sans-serif, system-ui';
-      ctx.fillText(s.name, s.sx + r + 4, s.sy + 3);
+  }
+
+  if (flags & 1) {
+    ctx.fillStyle = 'rgba(200,212,232,.72)';
+    ctx.font = '11px ui-sans-serif, system-ui';
+    let shown = 0;
+    for (const s of drawn) {
+      if (shown >= 60) break;
+      if (s.mag > 2600) continue;
+      const nm = nameOf(star(s.idx));
+      if (!nm) continue;
+      ctx.fillText(nm, s.sx + radiusFor(s.mag) + 4, s.sy + 3);
+      shown++;
     }
   }
 }
 
 function hud() {
-  const pc = wide(CAM + CAM_DIST) / 1000;
-  document.getElementById('n-objects').textContent = geti(CELL_STARS);
-  document.getElementById('n-visible').textContent = geti(CELL_VISIBLE);
-  document.getElementById('n-labels').textContent = geti(CELL_LABELS);
-  document.getElementById('n-dist').textContent = fmtPc(pc);
-  document.getElementById('n-mag').textContent = (geti(CAM + CAM_MAG) / 1000).toFixed(1);
+  el('n-total').textContent = geti(CELL_STARS).toLocaleString();
+  el('n-visible').textContent = geti(CELL_VISIBLE).toLocaleString();
+  el('n-drawn').textContent = drawn.length.toLocaleString();
+  el('n-mag').textContent = (geti(CAM + CAM_MAG) / 1000).toFixed(1);
+  el('n-fov').textContent = geti(CAM + CAM_FOV) + '°';
 }
 
-const fmtPc = pc => pc >= 1e6 ? (pc / 1e6).toFixed(2) + ' Mpc'
-  : pc >= 1e3 ? (pc / 1e3).toFixed(2) + ' kpc' : pc.toFixed(1) + ' pc';
-
 function showInfo(s) {
-  const box = document.getElementById('info');
+  const box = el('info');
   if (!s) { box.style.display = 'none'; return; }
   const pc = Math.hypot(s.x, s.y, s.z) / 1000;
-  box.innerHTML = '<h2></h2><div><span class="k">kind</span> <span id="i-k"></span></div>'
+  const nm = nameOf(s);
+  box.innerHTML = '<h2></h2>'
     + '<div><span class="k">magnitude</span> <span id="i-m"></span></div>'
+    + '<div><span class="k">colour index</span> <span id="i-b"></span></div>'
     + '<div><span class="k">distance</span> <span id="i-d"></span></div>';
-  box.querySelector('h2').textContent = s.name || ('Object ' + s.id);
-  box.querySelector('#i-k').textContent = s.kind;
+  box.querySelector('h2').textContent = nm || ('HYG ' + s.id);
   box.querySelector('#i-m').textContent = (s.mag / 1000).toFixed(2);
-  box.querySelector('#i-d').textContent = fmtPc(pc) + ' / ' + (pc * 3.262).toFixed(1) + ' ly';
+  box.querySelector('#i-b').textContent = (s.bv / 1000).toFixed(2);
+  box.querySelector('#i-d').textContent = pc > 0
+    ? (pc >= 1000 ? (pc / 1000).toFixed(2) + ' kpc' : pc.toFixed(1) + ' pc')
+      + ' / ' + (pc * 3.262).toFixed(1) + ' ly'
+    : 'the observer';
   box.style.display = 'block';
 }
 
 let frame = 0;
-function tick() {
-  wasm.sm_tick(frame++);
-  project(); draw(); hud();
-  requestAnimationFrame(tick);
-}
+function loop() { wasm.sm_tick(frame++); project(); draw(); hud(); requestAnimationFrame(loop); }
 
 // --- input ------------------------------------------------------------
 let dragging = false, lx = 0, ly = 0, moved = 0;
@@ -221,36 +271,31 @@ canvas.addEventListener('pointermove', e => {
   if (!dragging) return;
   const dx = e.clientX - lx, dy = e.clientY - ly;
   lx = e.clientX; ly = e.clientY; moved += Math.abs(dx) + Math.abs(dy);
-  wasm.sm_orbit(Math.round(dx * 400), Math.round(-dy * 400));
+  // Drag scales with the field of view so the sky tracks the pointer at any zoom.
+  const k = geti(CAM + CAM_FOV) * 18;
+  wasm.sm_orbit(Math.round(-dx * k / 60), Math.round(dy * k / 60));
 });
 canvas.addEventListener('pointerup', e => {
   dragging = false; canvas.classList.remove('drag');
   if (moved > 4) return;
   const r = canvas.getBoundingClientRect();
   const px = e.clientX - r.left, py = e.clientY - r.top;
-  let best = null, bd = 18 * 18;
-  for (const s of projected) {
+  let best = null, bd = 14 * 14;
+  for (const s of drawn) {
     const d = (s.sx - px) ** 2 + (s.sy - py) ** 2;
     if (d < bd) { bd = d; best = s; }
   }
-  if (best) { wasm.sm_select_obj(best.id); showInfo(best); } else showInfo(null);
+  if (best) { wasm.sm_select_obj(best.idx); showInfo(star(best.idx)); }
+  else { wasm.sm_select_obj(-1); showInfo(null); }
 });
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  const d = wide(CAM + CAM_DIST);
-  wasm.sm_zoom(Math.round(Math.sign(e.deltaY) * Math.max(100, d * 0.15)));
+  wasm.sm_zoom(Math.sign(e.deltaY) * Math.max(1, Math.round(geti(CAM + CAM_FOV) * 0.12)));
 }, { passive: false });
 
 addEventListener('keydown', e => {
-  const step = geti(CAM + CAM_SPEED) || 10000;
   const k = e.key.toLowerCase();
-  if (k === 'w') wasm.sm_move_forward(step);
-  else if (k === 's') wasm.sm_move_forward(-step);
-  else if (k === 'd') wasm.sm_move_right(step);
-  else if (k === 'a') wasm.sm_move_right(-step);
-  else if (k === 'e') wasm.sm_move_up(step);
-  else if (k === 'q') wasm.sm_move_up(-step);
-  else if (k === 'l') wasm.sm_toggle_labels();
+  if (k === 'l') wasm.sm_toggle_labels();
   else if (k === 'g') wasm.sm_toggle_grid();
   else if (k === '[') wasm.sm_set_mag_limit(geti(CAM + CAM_MAG) - 500);
   else if (k === ']') wasm.sm_set_mag_limit(geti(CAM + CAM_MAG) + 500);
@@ -260,24 +305,37 @@ addEventListener('keydown', e => {
 
 // --- boot -------------------------------------------------------------
 (async () => {
-  let bytes;
+  let modBytes, datBytes;
   try {
-    const r = await fetch('starmap.wasm');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    bytes = await r.arrayBuffer();
+    const [m, d] = await Promise.all([fetch('starmap.wasm'), fetch('starmap.dat')]);
+    if (!m.ok) throw new Error('starmap.wasm: HTTP ' + m.status);
+    if (!d.ok) throw new Error('starmap.dat: HTTP ' + d.status);
+    modBytes = await m.arrayBuffer(); datBytes = new Uint8Array(await d.arrayBuffer());
   } catch (e) {
-    // The catalog lives in the module, so this is the only fetch, and a
-    // file:// origin refuses it. Naming that beats a generic failure.
     fail(location.protocol === 'file:'
-      ? 'starmap.wasm could not be read from a file:// page. Serve this directory over HTTP.'
-      : 'starmap.wasm could not be loaded: ' + e.message);
+      ? 'The module and the catalogue could not be read from a file:// page. Serve this directory over HTTP.'
+      : 'Could not load: ' + e.message);
   }
-  const inst = (await WebAssembly.instantiate(bytes, { wasi_snapshot_preview1: wasi() })).instance;
-  wasm = inst.exports;
-  mem = wasm.memory; i32 = new Int32Array(mem.buffer); u8 = new Uint8Array(mem.buffer);
+
+  const inst = (await WebAssembly.instantiate(modBytes, { wasi_snapshot_preview1: wasi })).instance;
+  wasm = inst.exports; mem = wasm.memory;
+  const need = DAT_BASE + datBytes.length;
+  if (mem.buffer.byteLength < need) mem.grow(Math.ceil((need - mem.buffer.byteLength) / 65536));
+  i32 = new Int32Array(mem.buffer); u8 = new Uint8Array(mem.buffer); dv = new DataView(mem.buffer);
+
   wasm._start();
-  if (geti(CELL_READY) !== 1) fail('the module ran but never set its ready cell; the catalog was not built');
-  if (geti(CELL_STARS) <= 0) fail('the module built an empty catalog');
-  resize(); tick();
+  if (datBytes.length > DAT_MAX) fail('the catalogue is ' + datBytes.length + ' bytes and the module reserves ' + DAT_MAX);
+  u8.set(datBytes, DAT_BASE);
+
+  const n = wasm.sm_load(datBytes.length);
+  if (n <= 0) {
+    const code = geti(CELL_ERROR);
+    fail('the module refused the catalogue: ' + (ERRORS[code] || ('error ' + code)));
+  }
+  names = readNames();
+
+  el('load').style.display = 'none';
+  el('hud').hidden = false; el('keys').hidden = false;
+  resize(); loop();
 })();
 </script>

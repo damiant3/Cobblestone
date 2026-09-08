@@ -12,6 +12,7 @@ Chapter: GopBoot
   cites Works chapter GopMedium
   cites Works chapter GopEnum
   cites Works chapter GopDesk
+  cites Works chapter GopWeb
   cites Works chapter GopWake
   cites Works chapter GopWizard
   cites Verify chapter WakeCeremony
@@ -84,23 +85,23 @@ Section: Rendering
 
   gop-clear : Integer, Integer, Integer, Integer -> Integer
   gop-clear (base) (w) (h) (stride) =
-    gop-fill-rect base stride 0 0 w h col-bg
+    gop-fill-rect base stride h 0 0 w h col-bg
 
   draw-item : Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer -> Integer
   draw-item (base) (w) (h) (stride) (font) (scale) (sel) (i) =
     if i >= menu-count then 0
     else let py = items-top h scale + i * 28 * scale
     in let left = menu-left w scale
-    in let bar = if i == sel then gop-fill-rect base stride left (py - 4 * scale) (menu-box-w scale) (24 * scale) col-sel-bar else 0
+    in let bar = if i == sel then gop-fill-rect base stride h left (py - 4 * scale) (menu-box-w scale) (24 * scale) col-sel-bar else 0
     in let fg = if i == sel then col-sel-text else col-item
-    in let t = gop-draw-text base stride font (left + 16 * scale) py (menu-label i) fg scale 0
+    in let t = gop-draw-text base stride h font (left + 16 * scale) py (menu-label i) fg scale 0
     in draw-item base w h stride font scale sel (i + 1)
 
   draw-title : Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
   draw-title (base) (w) (h) (stride) (font) (scale) =
     let s = "COBBLESTONE - Choose Interface"
     in let tx = (w - text-length s * 8 * scale) / 2
-    in gop-draw-text base stride font tx (menu-top h scale) s col-title scale 0
+    in gop-draw-text base stride h font tx (menu-top h scale) s col-title scale 0
 
   draw-menu : Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
   draw-menu (base) (w) (h) (stride) (font) (sel) =
@@ -167,7 +168,7 @@ Section: Loop
   confirm (base) (w) (h) (stride) (font) (sel) =
     let scale = ui-scale w
     in let d = draw-menu base w h stride font sel
-    in let msg = gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale) ("Selected: " & menu-label sel) col-green scale 0
+    in let msg = gop-draw-text base stride h font (menu-left w scale + 16 * scale) (msg-y h scale) ("Selected: " & menu-label sel) col-green scale 0
     in sel
 
  Enter on the last two items leaves the loop for good: the machine
@@ -185,10 +186,10 @@ Section: Loop
     else s1
     in let drew = sc == 72 | sc == 80 | sc == 28 | (clicked & hover >= 0) | (hovered & hover /= s1)
     in let iv = if drew then poke-32 cs 0 0 else 0
-    in let cu = if mv == 1 then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
+    in let cu = if mv == 1 then cursor-update cs base stride h w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
     in s2
 
-  menu-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  menu-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
  THE HOVER IS UNGATED BECAUSE THE CLICK IS A LATCH. Both used to be read only
  on an iteration that consumed a report (`mv == 1`). `mouse-take-click` answers
  a press that was latched on an EARLIER report, so leaving `hover` gated would
@@ -198,25 +199,31 @@ Section: Loop
  so the row is computed from it directly and the no-mouse case is what the
  guard is for.
 
-  menu-loop (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (sel) = act
+  menu-loop (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (sel) (web) = act
     sc <- kbd-take kbd
     let mv = mouse-pump mouse w h
     in let hover = if mouse.um-ok then menu-row-at w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else -1
     in let clicked = mouse-take-click mouse
     in let tgt = if clicked & hover >= 0 then hover else sel
     in let fire = sc == 28 | (clicked & hover >= 0)
-    in if fire & tgt == menu-power-off then power-off base w h stride font kbd mouse cs
+    in if fire & tgt == menu-power-off then power-off base w h stride font kbd mouse cs web
     else if fire & tgt == menu-restart then do-restart base w h stride font kbd
-    else if fire & tgt == menu-desktop then menu-desk base w h stride font kbd mouse cs
-    else menu-loop base w h stride font kbd mouse cs (menu-step base w h stride font mouse cs sel sc mv hover clicked)
+    else if fire & tgt == menu-desktop then menu-desk base w h stride font kbd mouse cs web
+    else menu-loop base w h stride font kbd mouse cs (menu-step base w h stride font mouse cs sel sc mv hover clicked) web
   end
 
-  menu-desk : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
-  menu-desk (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) = act
-    dk <- desk-run base w h stride font kbd mouse
+ THE WEB SERVICE IS THREADED, NOT TAKEN HERE. `gopweb-hold` holds a port,
+ and `menu-desk` is re-entered every time the Desktop row is chosen, so
+ taking one here would hold a second service on the same port on the
+ second visit. `boot-flow` already has the one `opening` created, which is
+ what DeskBoot threads through `db-flow` for the same reason.
+
+  menu-desk : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  menu-desk (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) = act
+    dk <- desk-run base w h stride font kbd mouse web
     d2 <- draw-menu base w h stride font menu-desktop
     let iv = poke-32 cs 0 0
-    in menu-loop base w h stride font kbd mouse cs menu-desktop
+    in menu-loop base w h stride font kbd mouse cs menu-desktop web
   end
 
  If the firmware published no usable _S5_ the request is refused, and
@@ -234,23 +241,23 @@ Section: Loop
     in act
       z <- key-zero
       d <- draw-menu base w h stride font menu-restart
-      m <- gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale) "Restarting..." col-green scale 0
+      m <- gop-draw-text base stride h font (menu-left w scale + 16 * scale) (msg-y h scale) "Restarting..." col-green scale 0
       acpi-reset a
     end
   end
 
-  power-off : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
-  power-off (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) = act
+  power-off : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  power-off (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) = act
     let scale = ui-scale w
     in let a = acpi-boot 0
     in act
       z <- key-zero
       d <- draw-menu base w h stride font menu-power-off
-      m <- gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale) "Powering off..." col-green scale 0
+      m <- gop-draw-text base stride h font (menu-left w scale + 16 * scale) (msg-y h scale) "Powering off..." col-green scale 0
       r <- acpi-poweroff a
-      f <- gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale + 20 * scale) "This firmware published no usable _S5_ sleep state." col-item scale 0
+      f <- gop-draw-text base stride h font (menu-left w scale + 16 * scale) (msg-y h scale + 20 * scale) "This firmware published no usable _S5_ sleep state." col-item scale 0
       let iv = poke-32 cs 0 0
-      in menu-loop base w h stride font kbd mouse cs menu-power-off
+      in menu-loop base w h stride font kbd mouse cs menu-power-off web
     end
   end
 
@@ -506,27 +513,27 @@ Section: xHCI Truth
 
 Section: Entry
 
-  run-menu : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
-  run-menu (base) (w) (h) (stride) (font) (kbd) (mouse) = act
+  run-menu : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  run-menu (base) (w) (h) (stride) (font) (kbd) (mouse) (web) = act
     let cs = alloc-zeroed 2048 64
     in let wp = mouse-warp mouse (w / 2) (h / 2)
     in act
       d0 <- draw-menu base w h stride font 0
-      menu-loop base w h stride font kbd mouse cs 0
+      menu-loop base w h stride font kbd mouse cs 0 web
     end
   end
 
   boot-diag : Integer, Integer, Integer, Integer, CbfFont -> Integer
   boot-diag (base) (w) (h) (stride) (font) =
-    let b1 = gop-fill-rect base stride 0 0 w (h / 8) #FF0000
-    in let b2 = gop-fill-rect base stride 0 (h / 8) w (h / 8) #00FF00
-    in let b3 = gop-fill-rect base stride 0 (h / 4) w (h / 8) #0000FF
-    in let b4 = gop-fill-rect base stride 0 (h * 3 / 8) w (h / 8) #FFFFFF
-    in let bg = gop-fill-rect base stride 0 (h / 2) w (h / 2) 0
-    in let l1 = gop-draw-text base stride font 8 (h / 2 + 8) ("COBBLESTONE BOOT DIAG   bars: red green blue white") #FFFFFF 1 0
-    in let l2 = gop-draw-text base stride font 8 (h / 2 + 24) ("w=" & show w & "  h=" & show h & "  stride=" & show stride) #FFFFFF 1 0
-    in let l3 = gop-draw-text base stride font 8 (h / 2 + 40) ("fb=" & show base) #FFFFFF 1 0
-    in gop-draw-text base stride font 8 (h / 2 + 56) ("heap=" & show (peek-qword 32800 0) & "  rsp~" & show (peek-qword 28736 0)) #FFFFFF 1 0
+    let b1 = gop-fill-rect base stride h 0 0 w (h / 8) #FF0000
+    in let b2 = gop-fill-rect base stride h 0 (h / 8) w (h / 8) #00FF00
+    in let b3 = gop-fill-rect base stride h 0 (h / 4) w (h / 8) #0000FF
+    in let b4 = gop-fill-rect base stride h 0 (h * 3 / 8) w (h / 8) #FFFFFF
+    in let bg = gop-fill-rect base stride h 0 (h / 2) w (h / 2) 0
+    in let l1 = gop-draw-text base stride h font 8 (h / 2 + 8) ("COBBLESTONE BOOT DIAG   bars: red green blue white") #FFFFFF 1 0
+    in let l2 = gop-draw-text base stride h font 8 (h / 2 + 24) ("w=" & show w & "  h=" & show h & "  stride=" & show stride) #FFFFFF 1 0
+    in let l3 = gop-draw-text base stride h font 8 (h / 2 + 40) ("fb=" & show base) #FFFFFF 1 0
+    in gop-draw-text base stride h font 8 (h / 2 + 56) ("heap=" & show (peek-qword 32800 0) & "  rsp~" & show (peek-qword 28736 0)) #FFFFFF 1 0
 
   boot-spin : Integer -> Integer
   boot-spin (n) = if n <= 0 then 0 else boot-spin (n - 1)
@@ -534,11 +541,11 @@ Section: Entry
   boot-trace : Integer, Integer, Integer, CbfFont, Integer, Text -> Integer
   boot-trace (base) (stride) (h) (font) (row) (t) =
     let y = h / 2 + 80 + row * 14
-    in let bg = gop-fill-rect base stride 8 y 400 12 0
-    in gop-draw-text base stride font 8 y t #00FF00 1 0
+    in let bg = gop-fill-rect base stride h 8 y 400 12 0
+    in gop-draw-text base stride h font 8 y t #00FF00 1 0
 
-  boot-flow : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
-  boot-flow (base) (w) (h) (stride) (font) = act
+  boot-flow : Integer, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  boot-flow (base) (w) (h) (stride) (font) (web) = act
     let dg = boot-diag base w h stride font
     in let sp = boot-spin 150000000
     in let t0 = boot-trace base stride h font 0 "stage: spine..."
@@ -553,14 +560,14 @@ Section: Entry
           let t3 = boot-trace base stride h font 3 ("medium kind=" & show med & "  stage: wizard...")
           in let kbd = att.ua-kbd
           in let mouse = att.ua-mouse
-          in boot-screens base w h stride font kbd mouse
+          in boot-screens base w h stride font kbd mouse web
         end
       end
     end
   end
 
-  boot-screens : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse -> [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
-  boot-screens (base) (w) (h) (stride) (font) (kbd) (mouse) =
+  boot-screens : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  boot-screens (base) (w) (h) (stride) (font) (kbd) (mouse) (web) =
     let ctx = WzCtx {
       wz-base = base,
       wz-w = w,
@@ -576,10 +583,13 @@ Section: Entry
       dk <- disks-screen ctx
       xs <- xhci-screen ctx
       wk <- wake-screen ctx
-      run-menu base w h stride font kbd mouse
+      run-menu base w h stride font kbd mouse web
     end
 
-  opening : [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  opening : [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent, Capability, Network.Read, Network.Write] Integer
   opening =
     let font = cbf-init
-    in boot-flow (boot-fb-base 0) (boot-fb-w 0) (boot-fb-h 0) (boot-fb-stride 0) font
+    in act
+      svc <- gopweb-hold
+      boot-flow (boot-fb-base 0) (boot-fb-w 0) (boot-fb-h 0) (boot-fb-stride 0) font svc
+    end

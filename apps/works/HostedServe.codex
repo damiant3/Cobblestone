@@ -1,0 +1,195 @@
+Chapter: HostedServe
+  cites Works chapter Http
+  cites Works chapter WebRoute
+  cites Foreword chapter CCE
+
+ Serving HTTP on a HOSTED target, over the host's TCP.
+
+ `web-serve` and its neighbours are not available here and that is the whole
+ reason this chapter exists: every one of them builds its session with
+ `net-session-new` over a NIC, and a hosted binary has no NIC below it. What it
+ has instead is `host-socket`, which is the host's own sockets, so the byte
+ stream arrives already sequenced and nothing here reaches `NetworkStack`,
+ `TcpTransport` or a driver.
+
+ THE ROUTE FUNCTION IS UNCHANGED. `hosted-serve` takes the same
+ `(HttpRequest -> HttpResponse)` the bare-metal server takes, dispatches it
+ through the same `web-dispatch`, and answers the same standard endpoints. An
+ app that compiles for both targets writes one route function and changes only
+ which serve it calls.
+
+ The selector values are the ones the emitter names in
+ `codex/compiler/Emit/X86_64Boot.codex`. A program reaches the builtin rather
+ than the compiler's constants, so they are spelled again here.
+
+ We say:
+
+Section: Socket Operations
+
+  hs-op-socket : Integer = 0
+  hs-op-bind : Integer = 1
+  hs-op-listen : Integer = 2
+  hs-op-accept : Integer = 3
+  hs-op-close : Integer = 4
+  hs-op-recv : Integer = 5
+  hs-op-send : Integer = 6
+  hs-op-reuseaddr : Integer = 7
+
+ One request's headers and body. The same 64 KiB the bare-metal server caps a
+ receive at, for the same reason: it is one request, not a stream budget.
+
+  hs-buffer-bytes : Integer = 65536
+  hs-backlog : Integer = 16
+
+ What `hosted-listen` answers when a call refuses, one value per call, so a
+ caller reports WHICH of the three refused rather than a bare negative.
+
+ The three are named rather than written as `(0 - 2)` at the point of use for a
+ second reason, learned from CDX1070: a parenthesised expression cannot end an
+ `act` block that follows an application, because the parser reads the `(` on
+ the next line as a further argument to the application above.
+
+  hs-err-socket : Integer = 0 - 1
+  hs-err-bind : Integer = 0 - 2
+  hs-err-listen : Integer = 0 - 3
+
+Section: Buffer and List
+
+ `host-socket` reads and writes RAW MEMORY, and `http-parse-request` and
+ `http-encode` speak `List Integer`. These two walks are the whole of the
+ marshalling, and they are separate from the loop so that a change to either
+ side is one edit.
+
+ The bytes on the wire are UNICODE octets, not CCE, exactly as they are for the
+ bare-metal server: `http-parse-request` and `http-encode` own that conversion,
+ so nothing here converts anything.
+
+  hs-buf-to-list : Integer, Integer, Integer, List Integer -> List Integer
+  hs-buf-to-list (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else hs-buf-to-list buf (i + 1) n (list-push acc (peek-byte buf i))
+
+  hs-list-to-buf : Integer, List Integer, Integer, Integer -> Integer
+  hs-list-to-buf (buf) (bs) (i) (n) =
+    if i >= n then n
+    else let ignored = poke-byte buf i (list-at bs i)
+    in hs-list-to-buf buf bs (i + 1) n
+
+Section: Serving One Connection
+
+ A SHORT SEND IS NOT A SENT RESPONSE. `send` answers how many bytes it took,
+ and a partial write leaves the client reading a body that stops mid-stream, so
+ the loop keeps offering the remainder until the whole response is gone or the
+ call refuses. The bare-metal server closes on a short send for the same
+ reason, stated in `WebServer`: a half-written response cannot be repaired.
+
+  hs-send-all : Integer, Integer, Integer, Integer -> [Network.Write] Integer
+  hs-send-all (fd) (buf) (off) (n) = act
+    if off >= n then off
+    else act
+      sent <- host-socket hs-op-send fd (buf + off) (n - off)
+      if sent <= 0 then (0 - 1)
+      else hs-send-all fd buf (off + sent) n
+    end
+  end
+
+ One connection, one request, one response, then close. Keep-alive is not here
+ and is not an oversight: the responses this serves carry `Connection: close`,
+ and concurrency belongs with `web-serve-concurrent`'s own design.
+
+  HostedServed = record { state : WebState, ok : Boolean }
+
+  hs-serve-one : (HttpRequest -> HttpResponse), WebState, Integer, Integer -> [Network.Write] HostedServed
+  hs-serve-one (route) (st) (cfd) (buf) = act
+    n <- host-socket hs-op-recv cfd buf hs-buffer-bytes
+    if n <= 0 then act
+      closed <- host-socket hs-op-close cfd 0 0
+      HostedServed { state = st, ok = False }
+    end
+    else
+      let req = http-parse-request (hs-buf-to-list buf 0 n [])
+      in let ns = WebState { request-count = (st.request-count) + 1 }
+      in let resp = if req.valid then web-dispatch route web-observe-none ns req else http-error "Bad request"
+      in let out = http-encode resp
+      in let len = list-length out
+      in let staged = hs-list-to-buf buf out 0 len
+      in act
+        sent <- hs-send-all cfd buf 0 len
+        closed <- host-socket hs-op-close cfd 0 0
+        HostedServed { state = ns, ok = sent >= 0 }
+      end
+  end
+
+Section: The Accept Loop
+
+ A NEGATIVE `remaining` NEVER REACHES ZERO, and that is how the unbounded form
+ is spelled: it counts down past -1 and the stop test is equality, so the loop
+ ends only when accept refuses. Counting down to a bound and running forever
+ are then the same code rather than two loops kept in step by hand.
+
+  hs-loop : (HttpRequest -> HttpResponse), WebState, Integer, Integer, Integer -> [Network.Write] Integer
+  hs-loop (route) (st) (fd) (buf) (remaining) = act
+    if remaining == 0 then (st.request-count)
+    else act
+      cfd <- host-socket hs-op-accept fd 0 0
+      if cfd < 0 then (st.request-count)
+      else act
+        served <- hs-serve-one route st cfd buf
+        hs-loop route (served.state) fd buf (remaining - 1)
+      end
+    end
+  end
+
+ `hosted-serve-n` stops after `count` requests and `hosted-serve` runs until
+ accept refuses. The bounded form is what a test can drive to completion; the
+ unbounded one is what an application calls.
+
+ LISTENING AND SERVING ARE SEPARATE ENTRY POINTS, and the separation earns its
+ keep in the harness rather than in an application. A test has to know the
+ server reached `listen` before the test connects, and a readiness probe that
+ dials the port and hangs up is answered by `accept` and consumed as the one
+ connection the server was waiting for. Splitting the two lets a caller print a
+ line of its own between `hosted-listen` and `hosted-serve-on`, which costs no
+ connection. `hosted-listen` answers a descriptor, or a negative naming the
+ call that refused: -1 socket, -2 bind, -3 listen.
+
+  hosted-listen : Integer -> [Network.Write] Integer
+  hosted-listen (port) = act
+    fd <- host-socket hs-op-socket 0 0 0
+    if fd < 0 then hs-err-socket
+    else act
+      reused <- host-socket hs-op-reuseaddr fd 0 0
+      bound <- host-socket hs-op-bind fd port 0
+      if bound < 0 then act
+        closed <- host-socket hs-op-close fd 0 0
+        hs-err-bind
+      end
+      else act
+        listening <- host-socket hs-op-listen fd hs-backlog 0
+        if listening < 0 then act
+          closed <- host-socket hs-op-close fd 0 0
+          hs-err-listen
+        end
+        else fd
+      end
+    end
+  end
+
+  hosted-serve-on : (HttpRequest -> HttpResponse), Integer, Integer -> [Network.Write] Integer
+  hosted-serve-on (route) (fd) (count) =
+    let buf = alloc-bytes hs-buffer-bytes
+    in act
+      served <- hs-loop route web-new fd buf count
+      closed <- host-socket hs-op-close fd 0 0
+      served
+    end
+
+  hosted-serve-n : (HttpRequest -> HttpResponse), Integer, Integer -> [Network.Write] Integer
+  hosted-serve-n (route) (port) (count) = act
+    fd <- hosted-listen port
+    if fd < 0 then fd
+    else hosted-serve-on route fd count
+  end
+
+  hosted-serve : (HttpRequest -> HttpResponse), Integer -> [Network.Write] Integer
+  hosted-serve (route) (port) = hosted-serve-n route port (0 - 1)

@@ -1,0 +1,58 @@
+Chapter: GopWebLogRingTest
+  cites Works chapter GopWeb
+  cites Works chapter WebRoute
+  cites Works chapter Http
+  cites UI chapter Widget
+  cites Foreword chapter Console
+
+ The request log the service writes and the pane reads, over a block and no
+ network. Nineteen requests through the real dispatch: the ring keeps the
+ last sixteen, the oldest three are overwritten in place, the count keeps
+ climbing, and the pane's tree carries one row per kept entry with the
+ newest last. The sabotage: make `gopweb-log` forget to advance the count and
+ "count" turns 1 while "newest" turns True by accident; make `gopweb-slot-at`
+ forget the modulus and "oldest overwritten" turns False.
+
+ The requests go through `web-dispatch` with the observer the service hands
+ it, not through a wrapper of this arm's own, which makes the last two lines
+ WIRING rather than painting: `/api/health` and `/api/status` are answered by
+ `web-standard` before the route is ever consulted, so a log written from
+ inside the route records neither, and the only way either line reaches the
+ ring is `web-dispatch` calling the observer.
+
+Section: Body
+
+  lr-yn : Boolean -> Text
+  lr-yn (v) = if v then "yes" else "no"
+
+  lr-req : Text -> HttpRequest
+  lr-req (p) = HttpRequest { method = "GET", path = p, body = "", valid = True }
+
+  lr-serve : Integer, HttpRequest -> HttpResponse
+  lr-serve (blk) (req) = web-dispatch gopweb-route (\line -> gopweb-log blk line) web-new req
+
+  lr-fire : Integer, Integer, Integer -> Integer
+  lr-fire (blk) (i) (n) =
+    if i >= n then 0
+    else let r = lr-serve blk (lr-req ("/p" & show i))
+    in lr-fire blk (i + 1) n
+
+  lr-children : WidgetNode -> Integer
+  lr-children (n) = list-length (n.wn-children)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let blk = gopweb-blk-new
+    in let empty = gopweb-tree blk
+    in let f = lr-fire blk 0 19
+    in let c = peek-32 blk gopweb-blk-count
+    in let root = lr-serve blk (lr-req "/")
+    in let tree = gopweb-tree blk
+    in act
+      print-line-uni ("empty rows " & show (lr-children empty) & "  head " & (gopweb-head 0))
+      print-line-uni ("count " & show c & "  newest " & gopweb-log-read blk 18 & "  oldest overwritten " & lr-yn (gopweb-log-read blk 2 == "GET /p18 404 Not Found") & "  kept " & gopweb-log-read blk 4)
+      print-line-uni ("root " & gopweb-log-read blk 19 & "  rows " & show (lr-children tree - 2) & "  head " & gopweb-head (peek-32 blk gopweb-blk-count) & "  first shown " & show (gopweb-log-first (peek-32 blk gopweb-blk-count)))
+      print-line-uni ("the route never sees these two: health " & (lr-serve blk (lr-req "/api/health")).status & "  status " & (lr-serve blk (lr-req "/api/status")).status)
+      print-line-uni ("and the ring holds them anyway: " & gopweb-log-read blk 20 & " | " & gopweb-log-read blk 21 & "  count " & show (peek-32 blk gopweb-blk-count))
+    end

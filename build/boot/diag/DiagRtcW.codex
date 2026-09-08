@@ -1,0 +1,69 @@
+Chapter: DiagRtcW
+  cites Diag chapter DiagStage
+  cites Works chapter GopRtc
+
+ The MC146818 takes a write to a time register only while Status B bit 7
+ (SET) is high, which halts the update cycle; the value lands when SET is
+ dropped. codex-vm answers CMOS reads from the host clock and drops every
+ write, so `ignored` is this bed's reading and `accepted` is the board's
+ (WORKS-24 in `apps/works/works-backlog.md`). The seconds register is
+ written thirty away from what it read, so the two answers cannot meet
+ across the second that may pass between the write and the read-back, and
+ the reading is written back inside a second window; a board that accepts
+ loses under a second.
+
+Section: States
+
+  drt-states : List Text = ["accepted", "ignored", "unreadable", "other"]
+
+Section: The Window
+
+  drt-offset : Integer = 30
+  drt-slack : Integer = 2
+  drt-set-bit : Integer = 128
+
+  drt-write : Integer, Integer -> [Device.Port] Integer
+  drt-write (reg) (v) = act
+    w <- port-out-byte rtc-port-index reg
+    port-out-byte rtc-port-data v
+  end
+
+  drt-encode : Integer, Integer -> Integer
+  drt-encode (v) (b) = if bit-and b rtc-binary-bit /= 0 then v else bit-shl (v / 10) 4 + int-mod v 10
+
+  drt-set-seconds : Integer, Integer -> [Device.Port] Integer
+  drt-set-seconds (b) (v) = act
+    f <- drt-write rtc-reg-status-b (bit-or b drt-set-bit)
+    w <- drt-write rtc-reg-seconds (drt-encode v b)
+    drt-write rtc-reg-status-b b
+  end
+
+  drt-near : Integer, Integer -> Boolean
+  drt-near (x) (y) = int-mod (x - y + 120) 60 <= drt-slack
+
+  drt-read-seconds : Integer -> [Device.Port] Integer
+  drt-read-seconds (b) = act
+    idle <- rtc-wait-idle rtc-uip-fuel
+    s <- rtc-read rtc-reg-seconds
+    if idle == 0 then rtc-unreadable else rtc-plausible (rtc-decode s (bit-and b rtc-binary-bit))
+  end
+
+Section: The Stage
+
+  drt-run : DiagCtx -> [Device.Port] DiagResult
+  drt-run (c) = act
+    b <- rtc-read rtc-reg-status-b
+    orig <- drt-read-seconds b
+    let head = "b=" & show b & " binary=" & (if bit-and b rtc-binary-bit /= 0 then "y" else "n")
+    in if orig < 0 then diag-result "unreadable" diag-col-warn [head & " before=unreadable, nothing written"] [head & " before=unreadable, nothing written"]
+    else let target = int-mod (orig + drt-offset) 60
+    in act
+      w <- drt-set-seconds b target
+      back <- drt-read-seconds b
+      r <- drt-set-seconds b orig
+      let state = if back < 0 then "unreadable" else if drt-near back target then "accepted" else if drt-near back orig then "ignored" else "other"
+      in let colour = if state == "accepted" then diag-col-good else if state == "ignored" then diag-col-warn else diag-col-bad
+      in let row = head & " before=" & show orig & " wrote=" & show target & " back=" & show back & " restored=" & show orig
+      in diag-result state colour [row] [row]
+    end
+  end

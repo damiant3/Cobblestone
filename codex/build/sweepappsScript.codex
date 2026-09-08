@@ -4,35 +4,88 @@ Chapter: SweepAppsScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
 
+ THE TENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ THE SUMMARY STAGE'S VERDICT IS EMPTY AND THAT IS NOT AN OVERSIGHT: this script
+ exits with `crash + timeout`, a COMPUTED code, and `PipeOutcome` can spell a
+ literal (`PoExit`) or a child's own code (`PoPassthrough`) and nothing else.
+ Declaring a number here would be false. That is the second time the verdict
+ vocabulary has come up short, so it is recorded on the design page as one
+ decision for the second pass rather than answered with a third constructor
+ added on the spot.
+
 Section: Parameters
 
-  sweep-params : List ShellParam = [sh-param-default "Dir" SptString (SeLit "games"), sh-param-default "Jobs" SptInt (SeInt 8), sh-param-default "TimeoutSec" SptInt (SeInt 60)]
+  sweep-params : List ShellParam = [sh-param-default "Dir" SptString (SeLit "games"), sh-param-default "TimeoutSec" SptInt (SeInt 60)]
+
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+  compile-script-art : PipeArtifact = PipeArtifact { pa-name = "CompileScript", pa-kind = PkFile, pa-expr = SeVar "CompileScript", pa-from = Just (SePathJoin SeScriptRoot (SeLit "compile.ps1")) }
+
+ `stage0` IS THE KERNEL THE SWEEP COMPILES WITH, and this stage copies the
+ DEPOT SEED over it before any compile runs. `build-output\bare-metal\Codex.cdx`
+ otherwise holds whichever compiler ran last, so the copy is what makes the
+ sweep a statement about the seed (OperatorsManual, "Pass -Kernel when you do").
+
+  stage0-art : PipeArtifact = PipeArtifact { pa-name = "stage0", pa-kind = PkFile, pa-expr = SeVar "stage0", pa-from = Just (SePathJoin (SeVar "Repo") (SeLit "build-output\\bare-metal\\Codex.cdx")) }
+
+  seed-cdx-art : PipeArtifact = PipeArtifact { pa-name = "seedCdx", pa-kind = PkFile, pa-expr = SeVar "seedCdx", pa-from = Just (SePathJoin (SeVar "Repo") (SeLit "seed\\Codex.cdx")) }
+
+  out-dir-art : PipeArtifact = PipeArtifact { pa-name = "outDir", pa-kind = PkDir, pa-expr = SeVar "outDir", pa-from = Just (SePathJoin (SeVar "Repo") (SeConcat (SeLit "build-output\\sweep-") (pipe-param-ref sweep-params "Dir"))) }
+
+  apps-dir : ShellExpr = SePathJoin (SeVar "Repo") (SeConcat (SeLit "apps\\") (pipe-param-ref sweep-params "Dir"))
+
+  files-art : PipeArtifact = PipeArtifact { pa-name = "files", pa-kind = PkValue, pa-expr = SeVar "files", pa-from = Just (SeAsArray (SePipe (SeListFiles apps-dir "*.codex" True) [StSortBy "FullName"])) }
+
+  pass-art : PipeArtifact = PipeArtifact { pa-name = "pass", pa-kind = PkValue, pa-expr = SeVar "pass", pa-from = Just (SeInt 0) }
+
+  diag-art : PipeArtifact = PipeArtifact { pa-name = "diag", pa-kind = PkValue, pa-expr = SeVar "diag", pa-from = Just (SeInt 0) }
+
+  crash-art : PipeArtifact = PipeArtifact { pa-name = "crash", pa-kind = PkValue, pa-expr = SeVar "crash", pa-from = Just (SeInt 0) }
+
+  timeout-art : PipeArtifact = PipeArtifact { pa-name = "timeout", pa-kind = PkValue, pa-expr = SeVar "timeout", pa-from = Just (SeInt 0) }
+
+  crashes-art : PipeArtifact = PipeArtifact { pa-name = "crashes", pa-kind = PkValue, pa-expr = SeVar "crashes", pa-from = Just (SeArrayLiteral []) }
+
+  sweep-arts : List PipeArtifact = [repo-art, compile-script-art, stage0-art, seed-cdx-art, out-dir-art, files-art, pass-art, diag-art, crash-art, timeout-art, crashes-art]
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScSetLocation (SeVar "Repo")]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScSetLocation (pipe-ref sweep-arts sweep-params "Repo")]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root and run from it", ps-in = [], ps-out = [repo-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Stage0 Setup
 
-  s02 : List ShellCmd = [ScAssign "CompileScript" (SePathJoin SeScriptRoot (SeLit "compile.ps1")), ScAssign "stage0" (SePathJoin (SeVar "Repo") (SeLit "build-output\\bare-metal\\Codex.cdx")), ScAssign "seedCdx" (SePathJoin (SeVar "Repo") (SeLit "seed\\Codex.cdx")), ScMkdir (SePathParent (SeVar "stage0")), ScCopy (SeVar "seedCdx") (SeVar "stage0")]
+  s02-body : List ShellCmd = [ScBlank, pipe-produce compile-script-art, pipe-produce stage0-art, pipe-produce seed-cdx-art, ScMkdir (SePathParent (pipe-ref sweep-arts sweep-params "stage0")), ScCopy (pipe-ref sweep-arts sweep-params "seedCdx") (pipe-ref sweep-arts sweep-params "stage0")]
+
+  s02 : PipeStage = PipeStage { ps-name = "stage0 setup", ps-why = "put the depot seed where compile.ps1 will find it, so the sweep grades the seed", ps-in = [], ps-out = [compile-script-art, stage0-art, seed-cdx-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Output Directory
 
-  s03 : List ShellCmd = [ScAssign "outDir" (SePathJoin (SeVar "Repo") (SeConcat (SeLit "build-output\\sweep-") (SeVar "Dir"))), ScIf (SeDirExists (SeVar "outDir")) [ScDeleteTree (SeVar "outDir")] [], ScMkdir (SeVar "outDir")]
+  s03-body : List ShellCmd = [ScBlank, pipe-produce out-dir-art, ScIf (SeDirExists (pipe-ref sweep-arts sweep-params "outDir")) [ScDeleteTree (pipe-ref sweep-arts sweep-params "outDir")] [], ScMkdir (pipe-ref sweep-arts sweep-params "outDir")]
+
+  s03 : PipeStage = PipeStage { ps-name = "output directory", ps-why = "an empty directory per sweep, so a stale log cannot be read as this run's", ps-in = ["Repo", "Dir"], ps-out = [out-dir-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Discover Files
 
-  apps-dir : ShellExpr = SePathJoin (SeVar "Repo") (SeConcat (SeLit "apps\\") (SeVar "Dir"))
+  s04-body : List ShellCmd = [ScBlank, pipe-produce files-art, ScEcho (SeConcat (SeConcat (SeConcat (SeLit "Sweep: ") (SeCount (pipe-ref sweep-arts sweep-params "files"))) (SeLit " files under apps/")) (pipe-ref sweep-arts sweep-params "Dir"))]
 
-  s04 : List ShellCmd = [ScAssign "files" (SeAsArray (SePipe (SeListFiles apps-dir "*.codex" True) [StSortBy "FullName"])), ScEcho (SeConcat (SeConcat (SeConcat (SeLit "Sweep: ") (SeCount (SeVar "files"))) (SeLit " files under apps/")) (SeVar "Dir"))]
+  s04 : PipeStage = PipeStage { ps-name = "discover files", ps-why = "every chapter under the named apps directory, in a stable order", ps-in = ["Repo", "Dir"], ps-out = [files-art], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 
 Section: S05 -- Counters
 
-  s05 : List ShellCmd = [ScAssign "pass" (SeInt 0), ScAssign "diag" (SeInt 0), ScAssign "crash" (SeInt 0), ScAssign "timeout" (SeInt 0), ScAssign "crashes" (SeArrayLiteral [])]
+  s05-body : List ShellCmd = [ScBlank, pipe-produce pass-art, pipe-produce diag-art, pipe-produce crash-art, pipe-produce timeout-art, pipe-produce crashes-art]
+
+  s05 : PipeStage = PipeStage { ps-name = "counters", ps-why = "the four tallies and the list of what went wrong", ps-in = [], ps-out = [pass-art, diag-art, crash-art, timeout-art, crashes-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: S06 -- Sweep Loop
 
@@ -46,28 +99,34 @@ Section: S06 -- Sweep Loop
 
   s06-exit-check : List ShellCmd = [ScIf (SeIntEq proc-exit (SeInt 0)) [ScIncrement "pass"] [ScIf (SeIntEq proc-exit (SeInt 4)) [ScIncrement "diag"] s06-crash]]
 
-  compile-args : List ShellExpr = [SeLit "-NoProfile", SeLit "-File", SeVar "CompileScript", SeLit "-Src", SeProperty (SeVar "f") "FullName", SeLit "-Out", SeVar "cdxOut", SeLit "-Log", SeVar "logOut"]
+  compile-args : List ShellExpr = [SeLit "-NoProfile", SeLit "-File", pipe-ref sweep-arts sweep-params "CompileScript", SeLit "-Src", SeProperty (SeVar "f") "FullName", SeLit "-Out", SeVar "cdxOut", SeLit "-Log", SeVar "logOut"]
 
-  s06-body : List ShellCmd = [ScAssign "name" (SeProperty (SeVar "f") "BaseName"), ScAssign "rel" (SeSubstringFrom (SeProperty (SeVar "f") "FullName") (SeAdd (SeTextLength (SeVar "Repo")) (SeInt 1))), ScAssign "cdxOut" (SePathJoin (SeVar "outDir") (SeConcat (SeVar "name") (SeLit ".cdx"))), ScAssign "logOut" (SePathJoin (SeVar "outDir") (SeConcat (SeVar "name") (SeLit ".log"))), ScBlank, sh-start-process-stderr "proc" (SeLit "pwsh") compile-args (SePathJoin (SeVar "outDir") (SeConcat (SeVar "name") (SeLit ".stderr"))), ScAssign "exited" (SeMethodCall (SeVar "proc") "WaitForExit" [SeMul (SeVar "TimeoutSec") (SeInt 1000)]), ScIf (SeNot (SeVar "exited")) s06-timeout [], ScBlank, ScSequence s06-exit-check]
+  s06-body-inner : List ShellCmd = [ScAssign "name" (SeProperty (SeVar "f") "BaseName"), ScAssign "rel" (SeSubstringFrom (SeProperty (SeVar "f") "FullName") (SeAdd (SeTextLength (pipe-ref sweep-arts sweep-params "Repo")) (SeInt 1))), ScAssign "cdxOut" (SePathJoin (pipe-ref sweep-arts sweep-params "outDir") (SeConcat (SeVar "name") (SeLit ".cdx"))), ScAssign "logOut" (SePathJoin (pipe-ref sweep-arts sweep-params "outDir") (SeConcat (SeVar "name") (SeLit ".log"))), ScBlank, sh-start-process-stderr "proc" (SeLit "pwsh") compile-args (SePathJoin (pipe-ref sweep-arts sweep-params "outDir") (SeConcat (SeVar "name") (SeLit ".stderr"))), ScAssign "exited" (SeMethodCall (SeVar "proc") "WaitForExit" [SeMul (pipe-ref sweep-arts sweep-params "TimeoutSec") (SeInt 1000)]), ScIf (SeNot (SeVar "exited")) s06-timeout [], ScBlank, ScSequence s06-exit-check]
 
-  s06 : List ShellCmd = [ScForEach "f" (SeVar "files") s06-body]
+  s06-body : List ShellCmd = [ScBlank, ScForEach "f" (pipe-ref sweep-arts sweep-params "files") s06-body-inner]
+
+ ONE GUEST AT A TIME: the loop waits on each compile before starting the next,
+ so `-Jobs` names a number this script never uses and the sweep holds a single
+ guest however many files it finds.
+
+  s06 : PipeStage = PipeStage { ps-name = "sweep loop", ps-why = "compile each chapter under the staged seed and sort the outcome into pass, diagnostic halt, crash or timeout", ps-in = ["files", "CompileScript", "outDir", "Repo", "TimeoutSec"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s06-body }
 
 Section: S07 -- Summary
 
-  s07-crashes : List ShellCmd = [ScEcho (SeLit "Crashes/timeouts:"), ScForEach "c" (SeVar "crashes") [ScEcho (SeConcat (SeLit "  ") (SeVar "c"))]]
+  s07-crashes : List ShellCmd = [ScEcho (SeLit "Crashes/timeouts:"), ScForEach "c" (pipe-ref sweep-arts sweep-params "crashes") [ScEcho (SeConcat (SeLit "  ") (SeVar "c"))]]
 
-  results-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeLit "Results: ") (SeCount (SeVar "files"))) (SeLit " files, ")) (SeVar "pass")) (SeLit " compiled, ")) (SeVar "diag")) (SeLit " diagnostic-halt, ")) (SeVar "crash")) (SeLit " crash")
+  results-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeConcat (SeLit "Results: ") (SeCount (pipe-ref sweep-arts sweep-params "files"))) (SeLit " files, ")) (pipe-ref sweep-arts sweep-params "pass")) (SeLit " compiled, ")) (pipe-ref sweep-arts sweep-params "diag")) (SeLit " diagnostic-halt, ")) (pipe-ref sweep-arts sweep-params "crash")) (SeLit " crash")
 
-  s07 : List ShellCmd = [ScEcho (SeLit ""), ScEcho (SeConcat (SeConcat (SeConcat results-line (SeLit ", ")) (SeVar "timeout")) (SeLit " timeout")), ScIf (SeIntGt (SeCount (SeVar "crashes")) (SeInt 0)) s07-crashes [], ScExit (SeAdd (SeVar "crash") (SeVar "timeout"))]
+  s07-body : List ShellCmd = [ScBlank, ScEcho (SeLit ""), ScEcho (SeConcat (SeConcat (SeConcat results-line (SeLit ", ")) (pipe-ref sweep-arts sweep-params "timeout")) (SeLit " timeout")), ScIf (SeIntGt (SeCount (pipe-ref sweep-arts sweep-params "crashes")) (SeInt 0)) s07-crashes [], ScExit (SeAdd (pipe-ref sweep-arts sweep-params "crash") (pipe-ref sweep-arts sweep-params "timeout"))]
+
+  s07 : PipeStage = PipeStage { ps-name = "summary", ps-why = "report the four tallies and exit with the number of crashes plus timeouts", ps-in = ["files", "pass", "diag", "crash", "timeout", "crashes"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s07-body }
 
 Section: Assembly
 
-  sweep-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
-
-  sweep-script : ShellScript = sh-script "sweep-apps" "Compile every .codex under apps/ to verify no compiler crashes" sweep-params sweep-body
+  sweep-pipe : Pipeline = Pipeline { pl-name = "sweep-apps", pl-doc = "Compile every .codex under apps/ to verify no compiler crashes", pl-params = sweep-params, pl-stages = [s01, s02, s03, s04, s05, s06, s07] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell sweep-script)
+    print-line-uni (emit-powershell (pipeline-to-shell sweep-pipe))
   end
 
 Page 1

@@ -90,14 +90,27 @@ function Invoke-Arm {
     }
 }
 
-$qemu = Invoke-Arm -Name 'qemu' -HostVal 'qemu'
+# RETRY ONCE, AND ONLY FOR AN ARM THAT PRODUCED NO BINARY (red, ruled
+# 2026-08-31). A host that fell over is worth one more attempt. Two hosts
+# that DISAGREE are never retried: a mismatch is the finding this check
+# exists to report, and retrying it would launder a real disagreement into
+# a pass on the second roll.
+function Invoke-ArmOnceRetried {
+    param([string]$Name, [string]$HostVal)
+    $first = Invoke-Arm -Name $Name -HostVal $HostVal
+    if ($first.Ok) { return $first }
+    Write-Host "  vm-differential: the $Name arm produced no binary (exit $($first.Code)), retrying once"
+    return Invoke-Arm -Name $Name -HostVal $HostVal
+}
+
+$qemu = Invoke-ArmOnceRetried -Name 'qemu' -HostVal 'qemu'
 if (-not $qemu.Ok) {
     Write-Host "  vm-differential: FAIL (the qemu arm did not produce a binary, exit $($qemu.Code))"
     Write-Host "      Detail: CODEX_VM_HOST=qemu pwsh build/compile.ps1 -Src $Src -Out out.cdx -Log out.log -Kernel $Kernel"
     exit 1
 }
 
-$cvm = Invoke-Arm -Name 'codexvm' -HostVal ''
+$cvm = Invoke-ArmOnceRetried -Name 'codexvm' -HostVal ''
 if (-not $cvm.Ok) {
     Write-Host "  vm-differential: FAIL (the codex-vm arm did not produce a binary, exit $($cvm.Code))"
     exit 1

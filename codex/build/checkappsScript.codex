@@ -4,24 +4,50 @@ Chapter: CheckAppsScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE FIFTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
 
 Section: Parameters
 
   ca-params : List ShellParam = []
 
-Section: S01 -- Preamble
+Section: The pipeline, declared before it is spelled
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScComment "Pages not produced by the widget pipeline", ScAssign "Skip" (SeArrayLiteral [])]
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+  skip-art : PipeArtifact = PipeArtifact { pa-name = "Skip", pa-kind = PkValue, pa-expr = SeVar "Skip", pa-from = Just (SeArrayLiteral []) }
 
 Section: S02 -- Invariant Table
 
   invariant : Text, Text -> ShellField
   invariant (name) (pattern) = SfField name (SeLit pattern)
 
-  s02 : List ShellCmd = [ScComment "name -> regex the page must match", ScAssign "Invariants" (SeOrderedMap [invariant "html-shell" "(?s)^<!(DOCTYPE|doctype) html", invariant "click-dispatch" "_wkOnClick", invariant "state-runtime" "function state_get\\(", invariant "render-loop" "function set_render\\(|_render", invariant "handler-binding" "register_handlers\\(", invariant "theme-css" "function theme_to_css\\(", invariant "audio-runtime" "function play_tone\\(", invariant "input-channel" "register_input_handler|function _wkOnInput|on-input"])]
+  invariants-map : ShellExpr = SeOrderedMap [invariant "html-shell" "(?s)^<!(DOCTYPE|doctype) html", invariant "click-dispatch" "_wkOnClick", invariant "state-runtime" "function state_get\\(", invariant "render-loop" "function set_render\\(|_render", invariant "handler-binding" "register_handlers\\(", invariant "theme-css" "function theme_to_css\\(", invariant "audio-runtime" "function play_tone\\(", invariant "input-channel" "register_input_handler|function _wkOnInput|on-input"]
+
+  invariants-art : PipeArtifact = PipeArtifact { pa-name = "Invariants", pa-kind = PkValue, pa-expr = SeVar "Invariants", pa-from = Just invariants-map }
+
+  failed-art : PipeArtifact = PipeArtifact { pa-name = "failed", pa-kind = PkValue, pa-expr = SeVar "failed", pa-from = Just (SeInt 0) }
+
+  checked-art : PipeArtifact = PipeArtifact { pa-name = "checked", pa-kind = PkValue, pa-expr = SeVar "checked", pa-from = Just (SeInt 0) }
+
+  ca-arts : List PipeArtifact = [repo-art, skip-art, invariants-art, failed-art, checked-art]
+
+Section: S01 -- Preamble
+
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScComment "Pages not produced by the widget pipeline", pipe-produce skip-art]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root and name the pages exempt from the scan", ps-in = [], ps-out = [repo-art, skip-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
+
+Section: S02 -- Invariant Table, as a stage
+
+  s02-body : List ShellCmd = [ScBlank, ScComment "name -> regex the page must match", pipe-produce invariants-art]
+
+  s02 : PipeStage = PipeStage { ps-name = "invariant table", ps-why = "the eight runtime invariants every generated page must carry", ps-in = [], ps-out = [invariants-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Scan Loop
 
@@ -35,26 +61,28 @@ Section: S03 -- Scan Loop
 
   s03-endings : List ShellCmd = [ScAssign "lf" (SeCount (SeStaticCall "regex" "Matches" [SeVar "txt", SeNewline])), ScAssign "crlf" (SeCount (SeStaticCall "regex" "Matches" [SeVar "txt", SeCrLf])), ScIf (SeStringNeq (SeVar "lf") (SeVar "crlf")) [ScAppend "bad" (SeLit "crlf-endings")] []]
 
-  s03-inner : List ShellCmd = [ScAssign "base" (SeProperty (SeVar "html") "BaseName"), ScComment "only check artifacts produced by the HTML plug pipeline", ScAssign "pages" s03-pages, ScIf (SeIntEq (SeCount (SeVar "pages")) (SeInt 0)) [ScContinue] [], ScIf (SeContains (SeVar "Skip") (SeVar "base")) [ScContinue] [], ScAssign "txt" (SeStaticCall "System.IO.File" "ReadAllText" [SeProperty (SeVar "html") "FullName"]), ScAssign "bad" (SeArrayLiteral []), ScForEach "k" (SeProperty (SeVar "Invariants") "Keys") [ScIf (SeNot (SeMatchExpr (SeVar "txt") (SeIndex (SeVar "Invariants") (SeVar "k")))) [ScAppend "bad" (SeVar "k")] []], ScSequence s03-endings, ScIncrement "checked", ScSequence s03-report]
+  s03-inner : List ShellCmd = [ScAssign "base" (SeProperty (SeVar "html") "BaseName"), ScComment "only check artifacts produced by the HTML plug pipeline", ScAssign "pages" s03-pages, ScIf (SeIntEq (SeCount (SeVar "pages")) (SeInt 0)) [ScContinue] [], ScIf (SeContains (pipe-ref ca-arts ca-params "Skip") (SeVar "base")) [ScContinue] [], ScAssign "txt" (SeStaticCall "System.IO.File" "ReadAllText" [SeProperty (SeVar "html") "FullName"]), ScAssign "bad" (SeArrayLiteral []), ScForEach "k" (SeProperty (pipe-ref ca-arts ca-params "Invariants") "Keys") [ScIf (SeNot (SeMatchExpr (SeVar "txt") (SeIndex (pipe-ref ca-arts ca-params "Invariants") (SeVar "k")))) [ScAppend "bad" (SeVar "k")] []], ScSequence s03-endings, ScIncrement "checked", ScSequence s03-report]
 
-  s03 : List ShellCmd = [ScAssign "failed" (SeInt 0), ScAssign "checked" (SeInt 0), ScForEach "html" (SeListGlob (SePathJoin (SeVar "Repo") (SeLit "apps\\*\\web\\*.html"))) s03-inner]
+  s03-body : List ShellCmd = [ScBlank, pipe-produce failed-art, pipe-produce checked-art, ScForEach "html" (SeListGlob (SePathJoin (pipe-ref ca-arts ca-params "Repo") (SeLit "apps\\*\\web\\*.html"))) s03-inner]
+
+  s03 : PipeStage = PipeStage { ps-name = "scan loop", ps-why = "read every generated page and record which invariants it fails", ps-in = ["Repo", "Skip", "Invariants"], ps-out = [failed-art, checked-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Summary
 
-  s04-fail : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeConcat (SeVar "failed") (SeLit " of ")) (SeVar "checked")) (SeLit " pages violate invariants")) ClBrightRed True, ScExit (SeInt 1)]
+  s04-fail : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeConcat (pipe-ref ca-arts ca-params "failed") (SeLit " of ")) (pipe-ref ca-arts ca-params "checked")) (SeLit " pages violate invariants")) ClBrightRed True, ScExit (SeInt 1)]
 
-  s04-pass : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeLit "all ") (SeVar "checked")) (SeLit " pages carry the shared runtime")) ClBrightGreen True]
+  s04-pass : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeLit "all ") (pipe-ref ca-arts ca-params "checked")) (SeLit " pages carry the shared runtime")) ClBrightGreen True]
 
-  s04 : List ShellCmd = [ScEcho (SeLit ""), ScIf (SeIntGt (SeVar "failed") (SeInt 0)) s04-fail s04-pass]
+  s04-body : List ShellCmd = [ScBlank, ScEcho (SeLit ""), ScIf (SeIntGt (pipe-ref ca-arts ca-params "failed") (SeInt 0)) s04-fail s04-pass]
+
+  s04 : PipeStage = PipeStage { ps-name = "summary", ps-why = "report the tally and refuse the build when any page is short", ps-in = ["failed", "checked"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "at least one generated page does not carry the shared runtime"], ps-body = s04-body }
 
 Section: Assembly
 
-  ca-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
-
-  ca-script : ShellScript = sh-script "check-apps" "Assert runtime invariants across every generated app page" ca-params ca-body
+  ca-pipe : Pipeline = Pipeline { pl-name = "check-apps", pl-doc = "Assert runtime invariants across every generated app page", pl-params = ca-params, pl-stages = [s01, s02, s03, s04] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell ca-script)
+    print-line-uni (emit-powershell (pipeline-to-shell ca-pipe))
   end
 
 Page 1

@@ -234,7 +234,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-rb-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-rb-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-rb-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-rb-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-rb-expr-at c arities (depth + 1) & " ? " & emit-rb-expr-at t arities (depth + 1) & " : " & emit-rb-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(lambda { |" & rb-sanitize name & "| " & emit-rb-expr-at body arities (depth + 1) & " }.call(" & emit-rb-expr-at val arities (depth + 1) & "))"
@@ -264,9 +264,22 @@ Section: Expression Emission
    else if is-rb-builtin-name n then rb-sanitize n
    else rb-sanitize n
 
-  emit-rb-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-rb-binary (op) (l) (r) (arities) =
+ Ruby Integers are arbitrary precision, so neither arm is the bare operator.
+ `%` with a positive divisor returns a non-negative result, which is what
+ makes the band's shift-mask-shift correct.
+
+  rb-int-arith : Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  rb-int-arith (sym) (l) (r) (ty) (arities) =
+   let exact = "(" & emit-rb-expr l arities & " " & sym & " " & emit-rb-expr r arities & ")"
+   in if int-ty-wraps ty then "(((" & exact & " + 9223372036854775808) % 18446744073709551616) - 9223372036854775808)"
+   else "(->(_v) { raise(\"CODEX_TRAP_integer_overflow\") unless _v >= -9223372036854775808 && _v <= 9223372036854775807; _v }.call(" & exact & "))"
+
+  emit-rb-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-rb-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> rb-int-arith "+" l r ty arities
+    is IrSubInt -> rb-int-arith "-" l r ty arities
+    is IrMulInt -> rb-int-arith "*" l r ty arities
     is IrAppendText -> "(" & emit-rb-expr l arities & " + " & emit-rb-expr r arities & ")"
     is IrAppendList -> "(" & emit-rb-expr l arities & " + " & emit-rb-expr r arities & ")"
     is IrConsList -> "[" & emit-rb-expr l arities & "] + " & emit-rb-expr r arities
@@ -418,7 +431,11 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      if is-rb-builtin-name n then emit-rb-builtin n args arities
      else if is-mktup-name n then "[" & emit-rb-apply-args args arities 0 & "]"
-     else rb-sanitize n & "(" & emit-rb-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 1 then emit-rb-curried (rb-sanitize n) args arities 0
+        else if list-length args == ar then rb-sanitize n & "(" & emit-rb-apply-args args arities 0 & ")"
+        else if list-length args < ar then emit-rb-partial n args arities (ar - list-length args)
+        else emit-rb-curried (rb-sanitize n & "(" & emit-rb-apply-args-upto args arities 0 ar & ")") args arities ar
     is otherwise -> emit-rb-expr-curried e arities
 
   emit-rb-apply-args : List IRExpr, List ArityEntry, Integer -> Text
@@ -426,6 +443,42 @@ Section: Apply Emission
    if i == list-length args then ""
    else if i == list-length args - 1 then emit-rb-expr (list-at args i) arities
    else emit-rb-expr (list-at args i) arities & ", " & emit-rb-apply-args args arities (i + 1)
+
+ A Ruby lambda is called with `.call`, not by juxtaposition: `c(2)` names a
+ METHOD c, so a local holding a lambda must be applied that way. A definition
+ applied to fewer arguments than it takes is eta-wrapped as nested lambdas.
+
+  emit-rb-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-rb-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = base & ".call(" & emit-rb-expr (list-at args i) arities & ")"
+   in emit-rb-curried next args arities (i + 1)
+
+  emit-rb-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-rb-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-rb-expr (list-at args i) arities
+   else emit-rb-expr (list-at args i) arities & ", " & emit-rb-apply-args-upto args arities (i + 1) n
+
+  emit-rb-partial-open : Integer, Integer -> Text
+  emit-rb-partial-open (i) (count) =
+   if i == count then ""
+   else "lambda { |_p" & integer-to-text i & "_| " & emit-rb-partial-open (i + 1) count
+
+  emit-rb-partial-close : Integer -> Text
+  emit-rb-partial-close (count) =
+   if count == 0 then "" else " }" & emit-rb-partial-close (count - 1)
+
+  emit-rb-partial-params : Integer, Integer -> Text
+  emit-rb-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-rb-partial-params (i + 1) count
+
+  emit-rb-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-rb-partial (n) (args) (arities) (short) =
+   let call = rb-sanitize n & "(" & emit-rb-apply-args args arities 0 & ", " & emit-rb-partial-params 0 short & ")"
+   in emit-rb-partial-open 0 short & call & emit-rb-partial-close short
 
   emit-rb-expr-curried : IRExpr, List ArityEntry -> Text
   emit-rb-expr-curried (e) (arities) =

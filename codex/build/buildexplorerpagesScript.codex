@@ -4,24 +4,58 @@ Chapter: BuildExplorerPagesScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE SIXTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ EVERY `ps-verdict` BELOW IS EMPTY, AND THAT IS THE MEASUREMENT RATHER THAN AN
+ OMISSION: this script spells no `ScExit` anywhere. A missing CDX prints SKIP, a
+ short capture prints EMPTY, an absent capture prints NO output, and all three
+ leave the exit code at zero, so no caller can tell a run that built five pages
+ from one that built none. Recorded here because declaring the verdicts is what
+ made the absence visible; repairing it would change behaviour this migration
+ does not own.
 
 Section: Parameters
 
   explorerpages-params : List ShellParam = []
 
-Section: S01 -- Preamble
+Section: The pipeline, declared before it is spelled
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "OutDir" (SeLit "D:\\Projects\\CodexMagic\\explorer\\pages"), ScMkdir (SeVar "OutDir"), ScBlank, ScRunDot (SePathJoin (SeVar "Repo") (SeLit "build\\vm-config.ps1"))]
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+ THE OUTPUT DIRECTORY IS AN ABSOLUTE PATH OUTSIDE THE REPOSITORY, which the
+ declaration now states where a reader can see it rather than leaving it inside
+ a statement.
+
+  outdir-art : PipeArtifact = PipeArtifact { pa-name = "OutDir", pa-kind = PkDir, pa-expr = SeVar "OutDir", pa-from = Just (SeLit "D:\\Projects\\CodexMagic\\explorer\\pages") }
 
 Section: S02 -- Page Table
 
   page-entry : Text, Text -> ShellExpr
   page-entry (name) (cdx) = SeRecord [SfField "Name" (SeLit name), SfField "Cdx" (SeLit cdx)]
 
-  s02 : List ShellCmd = [ScAssign "pages" (SeArrayLiteral [page-entry "card" "build-output\\carddesigner.cdx", page-entry "item" "build-output\\item-designer.cdx", page-entry "character" "build-output\\characterdesigner.cdx", page-entry "setting" "build-output\\settingdesigner.cdx", page-entry "voice" "build-output\\voicestudio.cdx"])]
+  pages-list : ShellExpr = SeArrayLiteral [page-entry "card" "build-output\\carddesigner.cdx", page-entry "item" "build-output\\item-designer.cdx", page-entry "character" "build-output\\characterdesigner.cdx", page-entry "setting" "build-output\\settingdesigner.cdx", page-entry "voice" "build-output\\voicestudio.cdx"]
+
+  pages-art : PipeArtifact = PipeArtifact { pa-name = "pages", pa-kind = PkValue, pa-expr = SeVar "pages", pa-from = Just pages-list }
+
+  explorer-arts : List PipeArtifact = [repo-art, outdir-art, pages-art]
+
+Section: S01 -- Preamble
+
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, pipe-produce outdir-art, ScMkdir (pipe-ref explorer-arts explorerpages-params "OutDir"), ScBlank, ScRunDot (SePathJoin (pipe-ref explorer-arts explorerpages-params "Repo") (SeLit "build\\vm-config.ps1"))]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root, take the output directory and load the vm helpers", ps-in = [], ps-out = [repo-art, outdir-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
+
+Section: S02 -- Page Table, as a stage
+
+  s02-body : List ShellCmd = [ScBlank, pipe-produce pages-art]
+
+  s02 : PipeStage = PipeStage { ps-name = "page table", ps-why = "the five designer binaries and the page each one produces", ps-in = [], ps-out = [pages-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Build Loop
 
@@ -33,7 +67,7 @@ Section: S03 -- Build Loop
 
   tmp-name : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeLit "explorer-") page-name) (SeLit "-")) (SeVar "PID")) (SeLit ".txt")
 
-  s03-run : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeLit "Running ") page-name) (SeLit "...")) ClBrightCyan False, ScAssign "tmpOut" (SePathJoin (SeEnvVar "TEMP") tmp-name), ScRunArgsDropErr (SeLit "pwsh") [SaSwitch "NoProfile", SaNamed "File" (SePathJoin (SeVar "Repo") (SeLit "build\\test-run.ps1")), SaNamed "Kernel" (SeVar "cdx"), SaNamed "OutFile" (SeVar "tmpOut")]]
+  s03-run : List ShellCmd = [ScEchoStyled (SeConcat (SeConcat (SeLit "Running ") page-name) (SeLit "...")) ClBrightCyan False, ScAssign "tmpOut" (SePathJoin (SeEnvVar "TEMP") tmp-name), ScRunArgsDropErr (SeLit "pwsh") [SaSwitch "NoProfile", SaNamed "File" (SePathJoin (pipe-ref explorer-arts explorerpages-params "Repo") (SeLit "build\\test-run.ps1")), SaNamed "Kernel" (SeVar "cdx"), SaNamed "OutFile" (SeVar "tmpOut")]]
 
   ok-message : ShellExpr = SeConcat (SeConcat (SeLit " OK (") (SeTextLength (SeVar "content"))) (SeLit " bytes)")
 
@@ -43,22 +77,27 @@ Section: S03 -- Build Loop
 
   s03-no-output : List ShellCmd = [ScEchoStyled (SeLit " NO output file") ClBrightRed True]
 
-  s03 : List ShellCmd = [ScForEach "page" (SeVar "pages") [ScAssign "cdx" (SePathJoin (SeVar "Repo") (SeProperty (SeVar "page") "Cdx")), ScAssign "htmlOut" (SePathJoin (SeVar "OutDir") (SeConcat page-name (SeLit ".html"))), ScIf (SeNot (SeFileExists (SeVar "cdx"))) s03-skip [], ScSequence s03-run, ScIf (SeFileExists (SeVar "tmpOut")) s03-check-content s03-no-output]]
+  s03-body : List ShellCmd = [ScBlank, ScForEach "page" (pipe-ref explorer-arts explorerpages-params "pages") [ScAssign "cdx" (SePathJoin (pipe-ref explorer-arts explorerpages-params "Repo") (SeProperty (SeVar "page") "Cdx")), ScAssign "htmlOut" (SePathJoin (pipe-ref explorer-arts explorerpages-params "OutDir") (SeConcat page-name (SeLit ".html"))), ScIf (SeNot (SeFileExists (SeVar "cdx"))) s03-skip [], ScSequence s03-run, ScIf (SeFileExists (SeVar "tmpOut")) s03-check-content s03-no-output]]
+
+ ONE GUEST AT A TIME: each page boots `test-run.ps1`, and the loop is serial,
+ so the stage holds a single guest however many pages the table carries.
+
+  s03 : PipeStage = PipeStage { ps-name = "build loop", ps-why = "boot each designer binary and keep its serial capture as the page", ps-in = ["pages", "Repo", "OutDir"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Summary
 
   listing-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeLit "  ") (SeProperty SeItem "Name")) (SeLit " (")) (SeProperty SeItem "Length")) (SeLit " bytes)")
 
-  s04 : List ShellCmd = [ScEcho (SeLit ""), ScEchoStyled (SeConcat (SeLit "Pages built in ") (SeVar "OutDir")) ClBrightGreen True, ScPipeDo (SeListFiles (SeVar "OutDir") "*.html" False) [] [ScEcho listing-line]]
+  s04-body : List ShellCmd = [ScBlank, ScEcho (SeLit ""), ScEchoStyled (SeConcat (SeLit "Pages built in ") (pipe-ref explorer-arts explorerpages-params "OutDir")) ClBrightGreen True, ScPipeDo (SeListFiles (pipe-ref explorer-arts explorerpages-params "OutDir") "*.html" False) [] [ScEcho listing-line]]
+
+  s04 : PipeStage = PipeStage { ps-name = "summary", ps-why = "list what the output directory now holds", ps-in = ["OutDir"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 
 Section: Assembly
 
-  explorerpages-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
-
-  explorerpages-script : ShellScript = sh-script "build-explorer-pages" "Build explorer HTML pages from compiled CDX binaries" explorerpages-params explorerpages-body
+  explorer-pipe : Pipeline = Pipeline { pl-name = "build-explorer-pages", pl-doc = "Build explorer HTML pages from compiled CDX binaries", pl-params = explorerpages-params, pl-stages = [s01, s02, s03, s04] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell explorerpages-script)
+    print-line-uni (emit-powershell (pipeline-to-shell explorer-pipe))
   end
 
 Page 1

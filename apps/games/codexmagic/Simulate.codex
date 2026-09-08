@@ -57,6 +57,76 @@ Section: Aggregate Results
   aggregate-add (agg) (m) (turn-cap) =
     SimAggregate { total-games = agg.total-games + 1, p0-wins = agg.p0-wins + (if m.winner == 0 then 1 else 0), p1-wins = agg.p1-wins + (if m.winner == 1 then 1 else 0), draws = agg.draws + (if m.winner < 0 then 1 else 0), first-player-wins = agg.first-player-wins + (if m.first-player-won then 1 else 0), total-turns = agg.total-turns + m.turns, total-screw = agg.total-screw + m.screw-events-a + m.screw-events-b, total-flood = agg.total-flood + m.flood-events-a + m.flood-events-b, total-discards = agg.total-discards + m.discards-for-ray, total-pitches = agg.total-pitches + m.gems-pitched, total-creatures = agg.total-creatures + m.creatures-played, total-spells = agg.total-spells + m.spells-cast, sudden-death-games = agg.sudden-death-games + (if m.turns > turn-cap then 1 else 0) }
 
+Section: The Screw And Flood Fixes
+
+ Ruled by Damian 2026-09-08, root's three answers, in the GAME-9 row of
+ apps/games/games-backlog.md: the FIRST card in hand leaves on a discard or
+ a pitch; the triggers are the two tests `sim-game-loop` already computes,
+ zero gems in hand for screw and three or more for flood; and each fix
+ fires at most once per turn per player, which `sim-game-loop` gives by
+ calling each of these exactly once per player turn.
+
+ The ruling had "a gem" on the table for the pitch and chose the first card
+ in hand, therefore a flood pitch can take a card that is not a gem.
+
+ One predicate decides whether a fix fires and the metric counts the same
+ predicate. Reading the metric off the state instead cannot work: `set-player`
+ writes through `list-set-at`, which mutates in place, so the state before a
+ fix and the state after share one players list and a length comparison
+ between the two is always zero.
+
+  hand-gems : GameState, Integer -> Integer
+  hand-gems (gs) (player) =
+    let p = get-player gs player
+    in count-gems-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand)) 0
+
+  hand-size-of : GameState, Integer -> Integer
+  hand-size-of (gs) (player) = list-length ((get-player gs player).hand)
+
+  drop-first-card : GameState, Integer -> GameState
+  drop-first-card (gs) (player) =
+    let p = get-player gs player
+    in if list-length (p.hand) == 0 then gs
+    else let card = list-at (p.hand) 0
+    in let p2 = player-remove-from-hand p card
+    in set-player gs player (player-add-to-graveyard p2 card)
+
+  screw-fix-fires : GameState, RuleSet, Integer -> Boolean
+  screw-fix-fires (gs) (rules) (player) =
+    when rules.screw-fix
+      is ScrewFixNone -> False
+      is ScrewFixDiscard -> hand-gems gs player == 0 & hand-size-of gs player > 0
+
+  apply-screw-fix : GameState, RuleSet, Integer -> GameState
+  apply-screw-fix (gs) (rules) (player) =
+    if screw-fix-fires gs rules player == False then gs
+    else let gs2 = drop-first-card gs player
+    in set-player gs2 player (player-gain-ray (get-player gs2 player))
+
+  flood-pitch-cards : FloodFix -> Integer
+  flood-pitch-cards (ff) =
+    when ff
+      is FloodFixNone -> 0
+      is FloodFixPitch2Draw1 -> 2
+      is FloodFixPitch1Draw1 -> 1
+
+  flood-fix-fires : GameState, RuleSet, Integer -> Boolean
+  flood-fix-fires (gs) (rules) (player) =
+    let n = flood-pitch-cards (rules.flood-fix)
+    in if n == 0 then False
+    else hand-gems gs player >= 3 & hand-size-of gs player >= n
+
+  apply-flood-fix : GameState, RuleSet, Integer -> GameState
+  apply-flood-fix (gs) (rules) (player) =
+    if flood-fix-fires gs rules player == False then gs
+    else let gs2 = pitch-cards gs player (flood-pitch-cards (rules.flood-fix)) 0
+    in set-player gs2 player (player-draw (get-player gs2 player))
+
+  pitch-cards : GameState, Integer, Integer, Integer -> GameState
+  pitch-cards (gs) (player) (n) (i) =
+    if i >= n then gs
+    else pitch-cards (drop-first-card gs player) player n (i + 1)
+
 Section: Single Game Simulation
 
   run-sim-game : GameState, RuleSet, GeneralTemplate, GeneralTemplate, Integer -> GameMetrics
@@ -94,10 +164,12 @@ Section: Single Game Simulation
     in let gs2 = apply-sudden-death gs rules
     in let gs3 = check-state-based-actions gs2
     in if gs3.game-over then make-metrics gs3 new-screw-a new-screw-b new-flood-a new-flood-b discards pitches creatures
-    else let gs4 = apply-screw-fix gs3 rules player
+    else let screw-fires = screw-fix-fires gs3 rules player
+    in let gs4 = apply-screw-fix gs3 rules player
+    in let flood-fires = flood-fix-fires gs4 rules player
     in let gs5 = apply-flood-fix gs4 rules player
-    in let new-discards = discards
-    in let new-pitches = pitches + (if list-length (get-player gs5 player).hand < list-length (get-player gs4 player).hand then 1 else 0)
+    in let new-discards = discards + (if screw-fires then 1 else 0)
+    in let new-pitches = pitches + (if flood-fires then flood-pitch-cards (rules.flood-fix) else 0)
     in let bf-before = list-length (gs5.battlefield)
     in let gs6 = run-turn gs5
     in let gs7 = check-state-based-actions gs6

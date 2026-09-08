@@ -60,6 +60,17 @@ Section: Arity Map
   sorted-insert-arity (xs) (e) =
    list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
 
+ The arity map was built here and never read: this emitter had no lookup at
+ all, so every application was emitted flat whatever the callee's arity.
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
   build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map (defs) (i) (acc) =
    if i == list-length defs then acc
@@ -77,7 +88,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
     is IrName (n) (ty) (sp) -> dart-sanitize n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-dart-binary op l r arities indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-dart-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-((" & emit-dart-expr x arities indent & ") as int))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-dart-expr c arities indent & " ? " & emit-dart-expr t arities indent & " : " & emit-dart-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(() {\n" & dart-indent (indent + 1) & "final " & dart-sanitize name & " = " & emit-dart-expr val arities (indent + 1) & ";\n" & dart-indent (indent + 1) & "return " & emit-dart-expr body arities (indent + 1) & ";\n" & dart-indent indent & "})()"
@@ -96,17 +107,32 @@ Section: Expression Emission
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-dart-act body arities indent
     is IrError (msg) (ty) (sp) -> "throw Exception(\"" & dart-escape msg & "\")"
 
-  emit-dart-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  emit-dart-binary (op) (l) (r) (arities) (indent) =
+ Dart's int is 64-bit and wraps on the VM, so the band is the bare operator.
+ On the WEB it is a double instead, where neither arm holds; this plug targets
+ the VM and the class-5 treatment would be the one for a web build.
+
+  dart-trap-builtins : Text
+  dart-trap-builtins =
+   "int _cxAddTrap(int a, int b) { final v = a + b; if ((a >= 0) == (b >= 0) && (v >= 0) != (a >= 0)) { throw Exception(\"CODEX_TRAP_integer_overflow\"); } return v; }\n"
+   & "int _cxSubTrap(int a, int b) { final v = a - b; if ((a >= 0) != (b >= 0) && (v >= 0) != (a >= 0)) { throw Exception(\"CODEX_TRAP_integer_overflow\"); } return v; }\n"
+   & "int _cxMulTrap(int a, int b) { if (a == 0 || b == 0) { return 0; } if (a == -1) { if (b == -9223372036854775807 - 1) { throw Exception(\"CODEX_TRAP_integer_overflow\"); } return a * b; } if (b == -1) { if (a == -9223372036854775807 - 1) { throw Exception(\"CODEX_TRAP_integer_overflow\"); } return a * b; } final v = a * b; if (v ~/ b != a) { throw Exception(\"CODEX_TRAP_integer_overflow\"); } return v; }\n\n"
+
+  dart-int-arith : Text, Text, Text, Text, CodexType -> Text
+  dart-int-arith (sym) (trap) (lhs) (rhs) (ty) =
+   if int-ty-wraps ty then "((" & lhs & " as int) " & sym & " (" & rhs & " as int))"
+   else trap & "(" & lhs & " as int, " & rhs & " as int)"
+
+  emit-dart-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  emit-dart-binary (op) (l) (r) (ty) (arities) (indent) =
    let lhs = emit-dart-expr l arities indent
    in let rhs = emit-dart-expr r arities indent
    in when op
-    is IrAddInt -> "((" & lhs & " as int) + (" & rhs & " as int))"
-    is IrSubInt -> "((" & lhs & " as int) - (" & rhs & " as int))"
-    is IrMulInt -> "((" & lhs & " as int) * (" & rhs & " as int))"
+    is IrAddInt -> dart-int-arith "+" "_cxAddTrap" lhs rhs ty
+    is IrSubInt -> dart-int-arith "-" "_cxSubTrap" lhs rhs ty
+    is IrMulInt -> dart-int-arith "*" "_cxMulTrap" lhs rhs ty
     is IrDivInt -> "((" & lhs & " as int) ~/ (" & rhs & " as int))"
     is IrRemInt -> "((" & lhs & " as int).remainder(" & rhs & " as int))"
-    is IrPowInt -> "pow((" & lhs & " as int), (" & rhs & " as int)).toInt()"
+    is IrPowInt -> "_cx_ipow((" & lhs & " as int), (" & rhs & " as int))"
     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((" & lhs & " as double) + (" & rhs & " as double))"
     is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((" & lhs & " as double) - (" & rhs & " as double))"
     is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "((" & lhs & " as double) * (" & rhs & " as double))"
@@ -145,8 +171,49 @@ Section: Expression Emission
    in when root
     is IrName (n) (ty) (sp) ->
      if is-mktup-name n then "[" & emit-dart-elems args arities indent 0 & "]"
-     else "Function.apply(" & emit-dart-expr root arities indent & ", [" & emit-dart-elems args arities indent 0 & "])"
+     else let ar = lookup-arity arities n
+     in if ar < 1 then emit-dart-curried (emit-dart-expr root arities indent) args arities indent 0
+        else if list-length args == ar then "Function.apply(" & emit-dart-expr root arities indent & ", [" & emit-dart-elems args arities indent 0 & "])"
+        else if list-length args < ar then emit-dart-partial n args arities indent (ar - list-length args)
+        else emit-dart-curried ("Function.apply(" & emit-dart-expr root arities indent & ", [" & emit-dart-elems-upto args arities indent 0 ar & "])") args arities indent ar
     is otherwise -> "Function.apply(" & emit-dart-expr root arities indent & ", [" & emit-dart-elems args arities indent 0 & "])"
+
+ `Function.apply` checks arity at run time, so passing three arguments to a
+ one-parameter function throws rather than currying. An application past the
+ callee's arity applies the surplus one at a time, and a definition applied
+ to fewer arguments than it takes is eta-wrapped.
+
+  emit-dart-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-dart-curried (base) (args) (arities) (indent) (i) =
+   if i >= list-length args then base
+   else let next = "Function.apply(" & base & ", [" & emit-dart-expr (list-at args i) arities indent & "])"
+   in emit-dart-curried next args arities indent (i + 1)
+
+  emit-dart-elems-upto : List IRExpr, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-dart-elems-upto (args) (arities) (indent) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-dart-expr (list-at args i) arities indent
+   else emit-dart-expr (list-at args i) arities indent & ", " & emit-dart-elems-upto args arities indent (i + 1) n
+
+  emit-dart-partial-open : Integer, Integer -> Text
+  emit-dart-partial-open (i) (count) =
+   if i == count then ""
+   else "((_p" & integer-to-text i & "_) => " & emit-dart-partial-open (i + 1) count
+
+  emit-dart-partial-close : Integer -> Text
+  emit-dart-partial-close (count) =
+   if count == 0 then "" else ")" & emit-dart-partial-close (count - 1)
+
+  emit-dart-partial-params : Integer, Integer -> Text
+  emit-dart-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-dart-partial-params (i + 1) count
+
+  emit-dart-partial : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-dart-partial (n) (args) (arities) (indent) (short) =
+   let call = "Function.apply(" & dart-sanitize n & ", [" & emit-dart-elems args arities indent 0 & ", " & emit-dart-partial-params 0 short & "])"
+   in emit-dart-partial-open 0 short & call & emit-dart-partial-close short
 
   emit-dart-params : List IRParam, Integer -> Text
   emit-dart-params (params) (i) =
@@ -277,12 +344,45 @@ Section: Flutter Assembly
   emit-flutter-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
-   in let header = "import 'package:flutter/material.dart';\nimport 'dart:math';\n\n"
-   in let builtins = "dynamic __narrow(dynamic n) => n;\nfinal List<String> _output = [];\nvoid print_line_uni(dynamic s) { _output.add(s?.toString() ?? ''); }\nvoid print_line(dynamic s) { print_line_uni(s); }\nString show(dynamic n) => n?.toString() ?? '';\nint text_length(dynamic s) => (s as String).length;\nString text_replace(dynamic s, dynamic a, dynamic b) { final o = a as String; return o.isEmpty ? s as String : (s as String).replaceAll(o, b as String); }\nbool text_starts_with(dynamic s, dynamic p) => (s as String).startsWith(p as String);\nbool text_contains(dynamic s, dynamic sub) => (s as String).contains(sub as String);\nList text_split(dynamic s, dynamic sep) { final t = s as String; final p = sep as String; return p.isEmpty ? [t] : t.split(p); }\nint text_to_integer(dynamic s) { final t = s as String; int i = 0; bool neg = false; if (t.isNotEmpty && t.codeUnitAt(0) == 45) { neg = true; i = 1; } int v = 0; while (i < t.length && t.codeUnitAt(i) >= 48 && t.codeUnitAt(i) <= 57) { v = v * 10 + (t.codeUnitAt(i) - 48); i++; } return neg ? -v : v; }\nint text_compare(dynamic a, dynamic b) => (a as String).compareTo(b as String);\nint list_length(dynamic xs) => (xs as List).length;\ndynamic list_at(dynamic xs, dynamic i) => (xs as List)[i as int];\nList list_push(dynamic xs, dynamic x) => [...(xs as List), x];\nString integer_to_text(dynamic n) => n.toString();\nint negate(dynamic n) => -(n as int);\n\n"
+   in let header = "import 'package:flutter/material.dart';\nimport 'dart:math';\n\n" & dart-trap-builtins
+   in let builtins = "dynamic __narrow(dynamic n) => n;\nfinal List<String> _output = [];\nvoid print_line_uni(dynamic s) { _output.add(s?.toString() ?? ''); }\nvoid print_line(dynamic s) { print_line_uni(s); }\nString show(dynamic n) => n?.toString() ?? '';\nint text_length(dynamic s) => (s as String).length;\nString text_replace(dynamic s, dynamic a, dynamic b) { final o = a as String; return o.isEmpty ? s as String : (s as String).replaceAll(o, b as String); }\nbool text_starts_with(dynamic s, dynamic p) => (s as String).startsWith(p as String);\nbool text_contains(dynamic s, dynamic sub) => (s as String).contains(sub as String);\nList text_split(dynamic s, dynamic sep) { final t = s as String; final p = sep as String; return p.isEmpty ? [t] : t.split(p); }\nint text_to_integer(dynamic s) { final t = s as String; int i = 0; bool neg = false; if (t.isNotEmpty && t.codeUnitAt(0) == 45) { neg = true; i = 1; } int v = 0; while (i < t.length && t.codeUnitAt(i) >= 48 && t.codeUnitAt(i) <= 57) { v = v * 10 + (t.codeUnitAt(i) - 48); i++; } return neg ? -v : v; }\nint text_compare(dynamic a, dynamic b) => (a as String).compareTo(b as String);\nint list_length(dynamic xs) => (xs as List).length;\ndynamic list_at(dynamic xs, dynamic i) => (xs as List)[i as int];\nList list_push(dynamic xs, dynamic x) => [...(xs as List), x];\nString integer_to_text(dynamic n) => n.toString();\nint negate(dynamic n) => -(n as int);\nint _cx_ipow(int b, int e) { if (e < 0) return 0; var r = 1; var x = b; var n = e; while (n > 0) { if (n & 1 != 0) r *= x; x *= x; n >>= 1; } return r; }\n\n"
    in let types-text = emit-dart-type-defs type-defs 0
    in let defs-text = emit-dart-defs (m.defs) 0 arities
    in let app = "void main() => runApp(const CodexApp());\n\nclass CodexApp extends StatelessWidget {\n  const CodexApp({super.key});\n  @override\n  Widget build(BuildContext context) {\n    return MaterialApp(\n      title: '" & dart-escape title & "',\n      theme: ThemeData.dark(),\n      home: const CodexPage(),\n    );\n  }\n}\n\nclass CodexPage extends StatefulWidget {\n  const CodexPage({super.key});\n  @override\n  State<CodexPage> createState() => _CodexPageState();\n}\n\nclass _CodexPageState extends State<CodexPage> {\n  List<String> lines = [];\n\n  @override\n  void initState() {\n    super.initState();\n    _output.clear();\n    try { opening(); } catch (e) { _output.add('ERROR: $e'); }\n    lines = List.from(_output);\n  }\n\n  @override\n  Widget build(BuildContext context) {\n    return Scaffold(\n      appBar: AppBar(title: const Text('" & dart-escape title & "')),\n      body: ListView.builder(\n        padding: const EdgeInsets.all(16),\n        itemCount: lines.length,\n        itemBuilder: (_, i) => Text(lines[i],\n          style: const TextStyle(fontFamily: 'monospace', fontSize: 14)),\n      ),\n    );\n  }\n}\n"
    in header & builtins & types-text & defs-text & app
+
+  emit-flutter-chapter-stream-head : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-flutter-chapter-stream-head (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
+   in let header = "import 'package:flutter/material.dart';\nimport 'dart:math';\n\n" & dart-trap-builtins
+   in let builtins = "dynamic __narrow(dynamic n) => n;\nfinal List<String> _output = [];\nvoid print_line_uni(dynamic s) { _output.add(s?.toString() ?? ''); }\nvoid print_line(dynamic s) { print_line_uni(s); }\nString show(dynamic n) => n?.toString() ?? '';\nint text_length(dynamic s) => (s as String).length;\nString text_replace(dynamic s, dynamic a, dynamic b) { final o = a as String; return o.isEmpty ? s as String : (s as String).replaceAll(o, b as String); }\nbool text_starts_with(dynamic s, dynamic p) => (s as String).startsWith(p as String);\nbool text_contains(dynamic s, dynamic sub) => (s as String).contains(sub as String);\nList text_split(dynamic s, dynamic sep) { final t = s as String; final p = sep as String; return p.isEmpty ? [t] : t.split(p); }\nint text_to_integer(dynamic s) { final t = s as String; int i = 0; bool neg = false; if (t.isNotEmpty && t.codeUnitAt(0) == 45) { neg = true; i = 1; } int v = 0; while (i < t.length && t.codeUnitAt(i) >= 48 && t.codeUnitAt(i) <= 57) { v = v * 10 + (t.codeUnitAt(i) - 48); i++; } return neg ? -v : v; }\nint text_compare(dynamic a, dynamic b) => (a as String).compareTo(b as String);\nint list_length(dynamic xs) => (xs as List).length;\ndynamic list_at(dynamic xs, dynamic i) => (xs as List)[i as int];\nList list_push(dynamic xs, dynamic x) => [...(xs as List), x];\nString integer_to_text(dynamic n) => n.toString();\nint negate(dynamic n) => -(n as int);\nint _cx_ipow(int b, int e) { if (e < 0) return 0; var r = 1; var x = b; var n = e; while (n > 0) { if (n & 1 != 0) r *= x; x *= x; n >>= 1; } return r; }\n\n"
+   in let types-text = emit-dart-type-defs type-defs 0
+   in let app = "void main() => runApp(const CodexApp());\n\nclass CodexApp extends StatelessWidget {\n  const CodexApp({super.key});\n  @override\n  Widget build(BuildContext context) {\n    return MaterialApp(\n      title: '" & dart-escape title & "',\n      theme: ThemeData.dark(),\n      home: const CodexPage(),\n    );\n  }\n}\n\nclass CodexPage extends StatefulWidget {\n  const CodexPage({super.key});\n  @override\n  State<CodexPage> createState() => _CodexPageState();\n}\n\nclass _CodexPageState extends State<CodexPage> {\n  List<String> lines = [];\n\n  @override\n  void initState() {\n    super.initState();\n    _output.clear();\n    try { opening(); } catch (e) { _output.add('ERROR: $e'); }\n    lines = List.from(_output);\n  }\n\n  @override\n  Widget build(BuildContext context) {\n    return Scaffold(\n      appBar: AppBar(title: const Text('" & dart-escape title & "')),\n      body: ListView.builder(\n        padding: const EdgeInsets.all(16),\n        itemCount: lines.length,\n        itemBuilder: (_, i) => Text(lines[i],\n          style: const TextStyle(fontFamily: 'monospace', fontSize: 14)),\n      ),\n    );\n  }\n}\n"
+   in header & builtins & types-text
+
+  emit-flutter-chapter-stream-tail : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-flutter-chapter-stream-tail (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
+   in let header = "import 'package:flutter/material.dart';\nimport 'dart:math';\n\n" & dart-trap-builtins
+   in let builtins = "dynamic __narrow(dynamic n) => n;\nfinal List<String> _output = [];\nvoid print_line_uni(dynamic s) { _output.add(s?.toString() ?? ''); }\nvoid print_line(dynamic s) { print_line_uni(s); }\nString show(dynamic n) => n?.toString() ?? '';\nint text_length(dynamic s) => (s as String).length;\nString text_replace(dynamic s, dynamic a, dynamic b) { final o = a as String; return o.isEmpty ? s as String : (s as String).replaceAll(o, b as String); }\nbool text_starts_with(dynamic s, dynamic p) => (s as String).startsWith(p as String);\nbool text_contains(dynamic s, dynamic sub) => (s as String).contains(sub as String);\nList text_split(dynamic s, dynamic sep) { final t = s as String; final p = sep as String; return p.isEmpty ? [t] : t.split(p); }\nint text_to_integer(dynamic s) { final t = s as String; int i = 0; bool neg = false; if (t.isNotEmpty && t.codeUnitAt(0) == 45) { neg = true; i = 1; } int v = 0; while (i < t.length && t.codeUnitAt(i) >= 48 && t.codeUnitAt(i) <= 57) { v = v * 10 + (t.codeUnitAt(i) - 48); i++; } return neg ? -v : v; }\nint text_compare(dynamic a, dynamic b) => (a as String).compareTo(b as String);\nint list_length(dynamic xs) => (xs as List).length;\ndynamic list_at(dynamic xs, dynamic i) => (xs as List)[i as int];\nList list_push(dynamic xs, dynamic x) => [...(xs as List), x];\nString integer_to_text(dynamic n) => n.toString();\nint negate(dynamic n) => -(n as int);\nint _cx_ipow(int b, int e) { if (e < 0) return 0; var r = 1; var x = b; var n = e; while (n > 0) { if (n & 1 != 0) r *= x; x *= x; n >>= 1; } return r; }\n\n"
+   in let types-text = emit-dart-type-defs type-defs 0
+   in let app = "void main() => runApp(const CodexApp());\n\nclass CodexApp extends StatelessWidget {\n  const CodexApp({super.key});\n  @override\n  Widget build(BuildContext context) {\n    return MaterialApp(\n      title: '" & dart-escape title & "',\n      theme: ThemeData.dark(),\n      home: const CodexPage(),\n    );\n  }\n}\n\nclass CodexPage extends StatefulWidget {\n  const CodexPage({super.key});\n  @override\n  State<CodexPage> createState() => _CodexPageState();\n}\n\nclass _CodexPageState extends State<CodexPage> {\n  List<String> lines = [];\n\n  @override\n  void initState() {\n    super.initState();\n    _output.clear();\n    try { opening(); } catch (e) { _output.add('ERROR: $e'); }\n    lines = List.from(_output);\n  }\n\n  @override\n  Widget build(BuildContext context) {\n    return Scaffold(\n      appBar: AppBar(title: const Text('" & dart-escape title & "')),\n      body: ListView.builder(\n        padding: const EdgeInsets.all(16),\n        itemCount: lines.length,\n        itemBuilder: (_, i) => Text(lines[i],\n          style: const TextStyle(fontFamily: 'monospace', fontSize: 14)),\n      ),\n    );\n  }\n}\n"
+   in app
+
+  emit-flutter-chapter-stream-env : IRChapter, IRTextMeta, List ATypeDef -> List ArityEntry
+  emit-flutter-chapter-stream-env (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
+   in let header = "import 'package:flutter/material.dart';\nimport 'dart:math';\n\n" & dart-trap-builtins
+   in let builtins = "dynamic __narrow(dynamic n) => n;\nfinal List<String> _output = [];\nvoid print_line_uni(dynamic s) { _output.add(s?.toString() ?? ''); }\nvoid print_line(dynamic s) { print_line_uni(s); }\nString show(dynamic n) => n?.toString() ?? '';\nint text_length(dynamic s) => (s as String).length;\nString text_replace(dynamic s, dynamic a, dynamic b) { final o = a as String; return o.isEmpty ? s as String : (s as String).replaceAll(o, b as String); }\nbool text_starts_with(dynamic s, dynamic p) => (s as String).startsWith(p as String);\nbool text_contains(dynamic s, dynamic sub) => (s as String).contains(sub as String);\nList text_split(dynamic s, dynamic sep) { final t = s as String; final p = sep as String; return p.isEmpty ? [t] : t.split(p); }\nint text_to_integer(dynamic s) { final t = s as String; int i = 0; bool neg = false; if (t.isNotEmpty && t.codeUnitAt(0) == 45) { neg = true; i = 1; } int v = 0; while (i < t.length && t.codeUnitAt(i) >= 48 && t.codeUnitAt(i) <= 57) { v = v * 10 + (t.codeUnitAt(i) - 48); i++; } return neg ? -v : v; }\nint text_compare(dynamic a, dynamic b) => (a as String).compareTo(b as String);\nint list_length(dynamic xs) => (xs as List).length;\ndynamic list_at(dynamic xs, dynamic i) => (xs as List)[i as int];\nList list_push(dynamic xs, dynamic x) => [...(xs as List), x];\nString integer_to_text(dynamic n) => n.toString();\nint negate(dynamic n) => -(n as int);\nint _cx_ipow(int b, int e) { if (e < 0) return 0; var r = 1; var x = b; var n = e; while (n > 0) { if (n & 1 != 0) r *= x; x *= x; n >>= 1; } return r; }\n\n"
+   in let types-text = emit-dart-type-defs type-defs 0
+   in let app = "void main() => runApp(const CodexApp());\n\nclass CodexApp extends StatelessWidget {\n  const CodexApp({super.key});\n  @override\n  Widget build(BuildContext context) {\n    return MaterialApp(\n      title: '" & dart-escape title & "',\n      theme: ThemeData.dark(),\n      home: const CodexPage(),\n    );\n  }\n}\n\nclass CodexPage extends StatefulWidget {\n  const CodexPage({super.key});\n  @override\n  State<CodexPage> createState() => _CodexPageState();\n}\n\nclass _CodexPageState extends State<CodexPage> {\n  List<String> lines = [];\n\n  @override\n  void initState() {\n    super.initState();\n    _output.clear();\n    try { opening(); } catch (e) { _output.add('ERROR: $e'); }\n    lines = List.from(_output);\n  }\n\n  @override\n  Widget build(BuildContext context) {\n    return Scaffold(\n      appBar: AppBar(title: const Text('" & dart-escape title & "')),\n      body: ListView.builder(\n        padding: const EdgeInsets.all(16),\n        itemCount: lines.length,\n        itemBuilder: (_, i) => Text(lines[i],\n          style: const TextStyle(fontFamily: 'monospace', fontSize: 14)),\n      ),\n    );\n  }\n}\n"
+   in arities
+
+  emit-flutter-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-flutter-chapter-stream-def (m) (v) (i) = emit-dart-def (list-at (m.defs) i) v
 
 Section: Tuple Helpers
 

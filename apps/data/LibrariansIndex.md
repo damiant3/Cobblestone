@@ -1,6 +1,6 @@
 # Codex DB -- Librarian's Index
 
-A how-to guide for the Codex database engine. 38 modules, one type
+A how-to guide for the Codex database engine. 45 chapters (2026-09-08), one type
 system, bare-metal. No OS, no libc, no dependencies outside the
 Codex foreword library.
 
@@ -145,7 +145,7 @@ RelJoin (RelScan "employees") (RelScan "departments")
 | `Protocol` | Binary wire protocol -- length-prefixed frames, auth challenge/response, query/result/error messages, 2PC coordination |
 | `Session` | Per-connection state machine -- transaction tracking, query dispatch, result encoding |
 | `Server` | Connection management, request routing, DDL operations, demo entry point |
-| `DbBoot` | Bare-metal boot -- service state (running/paused/stopped), system catalog bootstrap, health status |
+| `DbBoot` | Bare-metal boot -- service state (running/paused/stopped), system catalog bootstrap, health status. The `opening` is `DbBootMain`, so that `Dashboard` and `DbAdmin` can cite this chapter |
 | `Proxy` | Forward + reverse proxy -- 5 load-balancing strategies, health checks, circuit breakers, sticky sessions, URL rewriting |
 
 ### Security
@@ -357,11 +357,11 @@ let tw = TimeWindow { tw-name = "business-hours", tw-table = "orders", tw-start-
 
 ## Boot as a Standalone Appliance
 
-Codex DB boots directly on bare metal. No OS. Compile `DbBoot.codex`
+Codex DB boots directly on bare metal. No OS. Compile `DbBootMain.codex`
 as an EFI or ELF binary, flash to USB or run in codex-vm:
 
 ```
-codex-vm.exe -kernel DbBoot.cdx -mem 2048
+codex-vm.exe -kernel DbBootMain.cdx -mem 2048
 ```
 
 The server bootstraps system tables (`sys_tables`, `sys_columns`,
@@ -459,7 +459,8 @@ apps/data/
   Protocol.codex        wire protocol
   Session.codex         per-connection state
   Server.codex          connection manager
-  DbBoot.codex          bare-metal boot
+  DbBoot.codex          bare-metal boot state
+  DbBootMain.codex      bare-metal boot entry point
   DbAdmin.codex         web admin console
   BulkLoader.codex      batch import/export
   Backup.codex          full/log backup + restore

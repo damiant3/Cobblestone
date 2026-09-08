@@ -11,13 +11,16 @@ param(
     [string]$Arch,
     [Parameter(Mandatory=$true)]
     [string]$Test,
-    [int]$TimeoutSec = 10
+    [int]$TimeoutSec = 10,
+    [string]$Kernel = (Join-Path $PSScriptRoot '..\seed\Codex.cdx'),
+    [switch]$AllowStaleKernel
 )
 
 # Usage:
 #   build/test-cross.ps1 -Arch arm64 -Test arithmetic
 #   build/test-cross.ps1 -Arch riscv64 -Test factorial
 #   build/test-cross.ps1 -Arch arm64 -Test cce-tier1 -TimeoutSec 60
+#   build/test-cross.ps1 -Arch arm64 -Test arithmetic -Kernel build\output\Sut.cdx -AllowStaleKernel
 # 
 # Exit status: 0 on pass, 1 on failure.
 
@@ -28,6 +31,18 @@ Set-Location (Join-Path $PSScriptRoot '..')
 [Environment]::CurrentDirectory = (Get-Location).Path
 
 $Repo = (Get-Location).Path
+$SeedCdx = Join-Path $Repo 'seed\Codex.cdx'
+if (-not (Test-Path -PathType Leaf $Kernel)) { throw "Kernel not found: $Kernel" }
+$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)
+$seedDigest = (Get-FileHash -Algorithm SHA256 $SeedCdx).Hash.Substring(0, 16)
+Write-Host "Kernel: $Kernel [$kernelDigest]"
+if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {
+    Write-Host 'REFUSED: the kernel is a build-output binary and is not the depot seed.'
+    Write-Host "         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last."
+    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'
+    exit 2
+}
+
 . (Join-Path $PSScriptRoot 'renode-config.ps1')
 $RenodeExe = Get-RenodeExe -Repo $Repo
 if ((-not $RenodeExe)) {
@@ -35,13 +50,6 @@ if ((-not $RenodeExe)) {
     exit 0
 }
 
-
-$SeedCdx = Join-Path $Repo 'seed\Codex.cdx'
-$Stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
-New-Item -ItemType Directory -Force (Split-Path $Stage0) | Out-Null
-if ((-not (Test-Path -PathType Leaf $Stage0))) {
-    Copy-Item -Force $SeedCdx $Stage0
-}
 
 $plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }
 $plugCdx = Join-Path $Repo "codex\plugs\$plugName\build-output\$plugName-plug.cdx"
@@ -134,7 +142,7 @@ $compileLog = Join-Path $testOutDir 'compile.log'
 
 Write-Host -NoNewline '  compile ... '
 $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut -WorkDir $testOutDir 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8
+& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut -WorkDir $testOutDir -Kernel $Kernel 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8
 $compileExit = $LASTEXITCODE
 $ErrorActionPreference = $prev
 

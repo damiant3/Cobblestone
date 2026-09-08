@@ -547,10 +547,37 @@ Section: Apply Emission
        else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then emit-rs-ctor-apply n args arities ctor-map
        else let ar = lookup-arity arities n
        in if ar > 1 then if list-length args == ar then rs-sanitize n & "(" & emit-rs-apply-args args arities ctor-map 0 & ")"
+          else if list-length args < ar then emit-rs-partial n args arities ctor-map (ar - list-length args)
           else emit-rs-expr-curried e arities ctor-map
        else emit-rs-expr-curried e arities ctor-map
        else emit-rs-expr-curried e arities ctor-map
       is otherwise -> emit-rs-expr-curried e arities ctor-map
+
+ Over-application already fell through to the curried emitter. This is the
+ other direction: a definition applied to FEWER arguments than it takes,
+ eta-wrapped as nested boxed closures, which is the shape the emitted return
+ type `Box<dyn Fn(i64) -> Box<dyn Fn(i64) -> i64>>` already expects. The
+ closures move their captures because the wrapper outlives the call.
+
+  emit-rs-partial-open : Integer, Integer -> Text
+  emit-rs-partial-open (i) (count) =
+   if i == count then ""
+   else "Box::new(move |_p" & integer-to-text i & "_| " & emit-rs-partial-open (i + 1) count
+
+  emit-rs-partial-close : Integer -> Text
+  emit-rs-partial-close (count) =
+   if count == 0 then "" else ")" & emit-rs-partial-close (count - 1)
+
+  emit-rs-partial-params : Integer, Integer -> Text
+  emit-rs-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-rs-partial-params (i + 1) count
+
+  emit-rs-partial : Text, List IRExpr, List ArityEntry, List CtorEnumEntry, Integer -> Text
+  emit-rs-partial (n) (args) (arities) (ctor-map) (short) =
+   let call = rs-sanitize n & "(" & emit-rs-apply-args args arities ctor-map 0 & ", " & emit-rs-partial-params 0 short & ")"
+   in emit-rs-partial-open 0 short & call & emit-rs-partial-close short
 
   emit-rs-ctor-apply : Text, List IRExpr, List ArityEntry, List CtorEnumEntry -> Text
   emit-rs-ctor-apply (name) (args) (arities) (ctor-map) =
@@ -926,6 +953,33 @@ Section: Chapter Emission
    in let header = "#![allow(non_snake_case, unused_variables, dead_code, unused_mut, unreachable_patterns, unused_imports)]\n\nstatic mut _CODEX_STATE: i64 = 0;\n\n" & rs-text-builtins-for body
    in header & body
 
+  emit-rs-chapter-stream-head : IRChapter, List ATypeDef, Integer -> Text
+  emit-rs-chapter-stream-head (m) (type-defs) (mask) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let ctor-map = build-ctor-enum-map type-defs 0 []
+   in let type-text = emit-rs-type-defs type-defs 0
+   in let entry = if has-opening (m.defs) 0 then emit-rs-entry-point (rs-opening-return-type (m.defs)) else "fn main() {\n    println!(\"Chapter loaded.\");\n}\n"
+   in "#![allow(non_snake_case, unused_variables, dead_code, unused_mut, unreachable_patterns, unused_imports)]\n\nstatic mut _CODEX_STATE: i64 = 0;\n\n" & rs-text-builtins-from mask & type-text
+
+  emit-rs-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-rs-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let ctor-map = build-ctor-enum-map type-defs 0 []
+   in let type-text = emit-rs-type-defs type-defs 0
+   in let entry = if has-opening (m.defs) 0 then emit-rs-entry-point (rs-opening-return-type (m.defs)) else "fn main() {\n    println!(\"Chapter loaded.\");\n}\n"
+   in entry
+
+  emit-rs-chapter-stream-fixed : IRChapter, List ATypeDef -> Text
+  emit-rs-chapter-stream-fixed (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let ctor-map = build-ctor-enum-map type-defs 0 []
+   in let type-text = emit-rs-type-defs type-defs 0
+   in let entry = if has-opening (m.defs) 0 then emit-rs-entry-point (rs-opening-return-type (m.defs)) else "fn main() {\n    println!(\"Chapter loaded.\");\n}\n"
+   in type-text & entry
+
+  emit-rs-chapter-stream-def : IRChapter, List ATypeDef, List ArityEntry, Integer -> Text
+  emit-rs-chapter-stream-def (m) (type-defs) (arities) (i) = emit-rs-def (list-at (m.defs) i) arities (build-ctor-enum-map type-defs 0 []) & "\n"
+
  `str::replace` with an empty pattern inserts the replacement between every
  character, `str::split` on an empty pattern yields an empty field either
  side of every character, and `parse` followed by `unwrap` PANICS on
@@ -936,11 +990,21 @@ Section: Chapter Emission
   rs-helper-when-used (body) (name) (src) =
    if text-contains body name then src else ""
 
+  rs-uses-mask : Text -> Integer
+  rs-uses-mask (body) =
+   (if text-contains body "_cx_text_replace" then 1 else 0) + (if text-contains body "_cx_text_split" then 2 else 0) + (if text-contains body "_cx_text_to_integer" then 4 else 0)
+
+  rs-helper-if : Integer, Integer, Text -> Text
+  rs-helper-if (mask) (bit) (src) = if bit-and mask bit /= 0 then src else ""
+
+  rs-text-builtins-from : Integer -> Text
+  rs-text-builtins-from (mask) =
+   rs-helper-if mask 1 "fn _cx_text_replace(s: &str, a: &str, b: &str) -> String {\n    if a.is_empty() { return s.to_string(); }\n    s.replace(a, b)\n}\n\n"
+   & rs-helper-if mask 2 "fn _cx_text_split(s: &str, sep: &str) -> Vec<String> {\n    if sep.is_empty() { return vec![s.to_string()]; }\n    s.split(sep).map(|x| x.to_string()).collect::<Vec<String>>()\n}\n\n"
+   & rs-helper-if mask 4 "fn _cx_text_to_integer(s: &str) -> i64 {\n    let bs = s.as_bytes();\n    let mut i: usize = 0;\n    let mut neg = false;\n    if !bs.is_empty() && bs[0] == b'-' { neg = true; i = 1; }\n    let mut v: i64 = 0;\n    while i < bs.len() && bs[i] >= b'0' && bs[i] <= b'9' {\n        v = v * 10 + (bs[i] - b'0') as i64;\n        i += 1;\n    }\n    if neg { -v } else { v }\n}\n\n"
+
   rs-text-builtins-for : Text -> Text
-  rs-text-builtins-for (body) =
-   rs-helper-when-used body "_cx_text_replace" "fn _cx_text_replace(s: &str, a: &str, b: &str) -> String {\n    if a.is_empty() { return s.to_string(); }\n    s.replace(a, b)\n}\n\n"
-   & rs-helper-when-used body "_cx_text_split" "fn _cx_text_split(s: &str, sep: &str) -> Vec<String> {\n    if sep.is_empty() { return vec![s.to_string()]; }\n    s.split(sep).map(|x| x.to_string()).collect::<Vec<String>>()\n}\n\n"
-   & rs-helper-when-used body "_cx_text_to_integer" "fn _cx_text_to_integer(s: &str) -> i64 {\n    let bs = s.as_bytes();\n    let mut i: usize = 0;\n    let mut neg = false;\n    if !bs.is_empty() && bs[0] == b'-' { neg = true; i = 1; }\n    let mut v: i64 = 0;\n    while i < bs.len() && bs[i] >= b'0' && bs[i] <= b'9' {\n        v = v * 10 + (bs[i] - b'0') as i64;\n        i += 1;\n    }\n    if neg { -v } else { v }\n}\n\n"
+  rs-text-builtins-for (body) = rs-text-builtins-from (rs-uses-mask body)
 
   is-mktup-name : Text -> Boolean
   is-mktup-name (n) =

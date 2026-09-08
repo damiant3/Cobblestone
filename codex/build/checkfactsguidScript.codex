@@ -4,19 +4,49 @@ Chapter: CheckFactsGuidScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE THIRTEENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ THE REFUSALS OF `Fail` ARE DECLARED ON THE STAGE THAT CALLS IT, not on the one
+ that defines it. `Fail` is spelled in the function stage and exits nowhere
+ until `Get-CodexGuid` or `Get-Ps1Guid` runs, which is the comparison stage.
+ A verdict says what an exit MEANS for the stage a caller is standing in, so
+ declaring it on the definition would put it a stage too early.
 
 Section: Parameters
 
   cfg-params : List ShellParam = []
 
-Section: S01 -- Why this exists
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+  paths-art : PipeArtifact = PipeArtifact { pa-name = "paths", pa-kind = PkValue, pa-expr = SeVar "paths", pa-from = None }
+
+  guids-art : PipeArtifact = PipeArtifact { pa-name = "guids", pa-kind = PkValue, pa-expr = SeVar "guids", pa-from = None }
+
+  reference-art : PipeArtifact = PipeArtifact { pa-name = "reference", pa-kind = PkText, pa-expr = SeVar "reference", pa-from = None }
+
+  bad-art : PipeArtifact = PipeArtifact { pa-name = "bad", pa-kind = PkValue, pa-expr = SeVar "bad", pa-from = Just (SeArrayLiteral []) }
+
+  cfg-arts : List PipeArtifact = [repo-art, paths-art, guids-art, reference-art, bad-art]
+
+Section: S00 -- Why this exists
 
   cfg-doctrine : List ShellCmd = [ScComment "The fact-store partition type GUID exists in three places and they must", ScComment "agree. A runner, not a promise: a copied constant is exactly the divergence", ScComment "Foreword chapter FactLog exists to prevent, and the three copies are here", ScComment "because the alternatives are worse -- the IMG plug is its own compilation", ScComment "unit and citing Gpt would drag Device.Block into an image writer, and", ScComment "build/build-img.ps1 is PowerShell and cites nothing.", ScComment "", ScComment "  codex/foreword/core/Gpt.codex        gpt-codex-facts-guid   (the reader)", ScComment "  codex/plugs/img/GptWriter.codex      gpt-codex-facts-guid   (the plug)", ScComment "  build/build-img.ps1                  a [byte[]] literal     (the shipped stick)", ScComment "", ScComment "A disagreement is silent and expensive: the stick is written with one type", ScComment "and the guest looks for another, so the store finds no region, refuses every", ScComment "write, and reports \"0 disk facts\" forever with nothing anywhere saying why.", ScComment "", ScComment "Exit 1 on disagreement. Wired into build/build.ps1."]
 
-  s01 : List ShellCmd = [ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit "..")))]
+  s00 : PipeStage = PipeStage { ps-name = "doctrine", ps-why = "why three copies of one GUID are tolerated, and what a disagreement costs", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = cfg-doctrine }
+
+Section: S01 -- Preamble
+
+  s01-body : List ShellCmd = [ScBlank, ScSetErrorStop, ScSetStrictMode, ScBlank, pipe-produce repo-art]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root the three sources are read from", ps-in = [], ps-out = [repo-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Fail
 
@@ -27,7 +57,7 @@ Section: S02 -- Fail
 
 Section: S03 -- Reading a GUID out of a file
 
-  cfg-path : ShellExpr = SePathJoin (SeVar "Repo") (SeVar "relPath")
+  cfg-path : ShellExpr = SePathJoin (pipe-ref cfg-arts cfg-params "Repo") (SeVar "relPath")
 
   cfg-missing : ShellCmd = ScIf (SeNot (SeFileExists (SeVar "path"))) [cfg-fail-with (SeConcat (SeVar "relPath") (SeLit " is missing"))] []
 
@@ -51,7 +81,9 @@ Section: S03 -- Reading a GUID out of a file
 
   cfg-ps-body : List ShellCmd = [ScAssign "path" cfg-path, cfg-missing, ScAssign "hits" (cfg-decl-lines "WBytes \\$fsOff \\(\\[byte\\[\\]\\]@\\("), cfg-no-decl (SeConcat (SeVar "relPath") (SeLit " writes no fact-store type GUID")), ScAssign "line" (SeIndex (SeVar "hits") (SeInt 0)), ScIf (SeNot (SeMatch (SeVar "line") "@\\(([^\\)]*)\\)")) [cfg-unreadable] [], ScAssign "bytes" (SeAsArray (SePipe (SeSplit (SeIndex (SeVar "matches") (SeInt 1)) ",") [StMap cfg-hex-byte])), cfg-guard-count, cfg-answer]
 
-  s03 : List ShellCmd = [cfg-fail, ScBlank, ScComment "the two Codex sources: a decimal list on the gpt-codex-facts-guid line", ScFunction "Get-CodexGuid" [sh-param "relPath" SptString] cfg-codex-body, ScBlank, ScComment "the PowerShell writer: a hex [byte[]] literal on the marked line", ScFunction "Get-Ps1Guid" [sh-param "relPath" SptString] cfg-ps-body]
+  s03-body : List ShellCmd = [ScBlank, cfg-fail, ScBlank, ScComment "the two Codex sources: a decimal list on the gpt-codex-facts-guid line", ScFunction "Get-CodexGuid" [sh-param "relPath" SptString] cfg-codex-body, ScBlank, ScComment "the PowerShell writer: a hex [byte[]] literal on the marked line", ScFunction "Get-Ps1Guid" [sh-param "relPath" SptString] cfg-ps-body]
+
+  s03 : PipeStage = PipeStage { ps-name = "read a guid", ps-why = "one reader per spelling: a decimal Codex list, and a hex PowerShell byte literal", ps-in = ["Repo"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- The three sources must agree
 
@@ -66,28 +98,30 @@ Section: S04 -- The three sources must agree
 
   cfg-mismatch-line : ShellExpr = SeConcat (SeConcat (SeVar "sp") (SeLit ": ")) (SeVar "sb")
 
-  cfg-loop-body : List ShellCmd = [ScAssign "sp" (SeIndex (SeVar "paths") (SeVar "i")), ScAssign "sb" (SeIndex (SeVar "guids") (SeVar "i")), ScIf (SeStringNeq (SeVar "sb") (SeVar "reference")) [ScAppend "bad" cfg-mismatch-line] []]
+  cfg-loop-body : List ShellCmd = [ScAssign "sp" (SeIndex (pipe-ref cfg-arts cfg-params "paths") (SeVar "i")), ScAssign "sb" (SeIndex (pipe-ref cfg-arts cfg-params "guids") (SeVar "i")), ScIf (SeStringNeq (SeVar "sb") (pipe-ref cfg-arts cfg-params "reference")) [ScAppend "bad" cfg-mismatch-line] []]
 
-  s04 : List ShellCmd = [ScAssign "paths" (SeArrayLiteral [SeLit cfg-gpt-path, SeLit cfg-writer-path, SeLit cfg-img-path]), ScAssign "guids" (SeArrayLiteral [cfg-read-codex cfg-gpt-path, cfg-read-codex cfg-writer-path, SeCallArgs "Get-Ps1Guid" [SaPos (SeLit cfg-img-path)]]), ScAssign "reference" (SeIndex (SeVar "guids") (SeInt 0)), ScAssign "bad" (SeArrayLiteral []), ScForLoop "i" (SeInt 0) (SeIntLt (SeVar "i") (SeCount (SeVar "guids"))) (SeRaw "$i++") cfg-loop-body]
+  s04-body : List ShellCmd = [ScBlank, ScAssign "paths" (SeArrayLiteral [SeLit cfg-gpt-path, SeLit cfg-writer-path, SeLit cfg-img-path]), ScAssign "guids" (SeArrayLiteral [cfg-read-codex cfg-gpt-path, cfg-read-codex cfg-writer-path, SeCallArgs "Get-Ps1Guid" [SaPos (SeLit cfg-img-path)]]), ScAssign "reference" (SeIndex (pipe-ref cfg-arts cfg-params "guids") (SeInt 0)), pipe-produce bad-art, ScForLoop "i" (SeInt 0) (SeIntLt (SeVar "i") (SeCount (pipe-ref cfg-arts cfg-params "guids"))) (SeRaw "$i++") cfg-loop-body]
+
+  s04 : PipeStage = PipeStage { ps-name = "read the three sources", ps-why = "read every copy of the GUID and collect the ones that differ from the first", ps-in = ["Repo"], ps-out = [paths-art, guids-art, reference-art, bad-art], ps-needs = [], ps-verdict = [PoExit 1 "one of the three sources is missing, declares no GUID, or spells one that is unreadable or not 16 bytes; raised by Fail inside the readers"], ps-body = s04-body }
 
 Section: S05 -- The verdict
 
-  cfg-ref-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeLit "  ") (SeIndex (SeVar "paths") (SeInt 0))) (SeLit ": ")) (SeVar "reference")
+  cfg-ref-line : ShellExpr = SeConcat (SeConcat (SeConcat (SeLit "  ") (SeIndex (pipe-ref cfg-arts cfg-params "paths") (SeInt 0))) (SeLit ": ")) (pipe-ref cfg-arts cfg-params "reference")
 
-  cfg-fail-body : List ShellCmd = [ScEcho (SeLit "FAIL: the fact-store partition type GUID disagrees across writers."), ScEcho cfg-ref-line, ScForEach "b" (SeVar "bad") [ScEcho (SeConcat (SeLit "  ") (SeVar "b"))], ScExit (SeInt 1)]
+  cfg-fail-body : List ShellCmd = [ScEcho (SeLit "FAIL: the fact-store partition type GUID disagrees across writers."), ScEcho cfg-ref-line, ScForEach "b" (pipe-ref cfg-arts cfg-params "bad") [ScEcho (SeConcat (SeLit "  ") (SeVar "b"))], ScExit (SeInt 1)]
 
-  cfg-ok-line : ShellExpr = SeConcat (SeConcat (SeLit "check-facts-guid: OK (") (SeCount (SeVar "guids"))) (SeLit " sources agree)")
+  cfg-ok-line : ShellExpr = SeConcat (SeConcat (SeLit "check-facts-guid: OK (") (SeCount (pipe-ref cfg-arts cfg-params "guids"))) (SeLit " sources agree)")
 
-  s05 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "bad")) (SeInt 0)) cfg-fail-body [], ScEcho cfg-ok-line, ScExit (SeInt 0)]
+  s05-body : List ShellCmd = [ScBlank, ScIf (SeIntGt (SeCount (pipe-ref cfg-arts cfg-params "bad")) (SeInt 0)) cfg-fail-body [], ScEcho cfg-ok-line, ScExit (SeInt 0)]
+
+  s05 : PipeStage = PipeStage { ps-name = "verdict", ps-why = "refuse when the copies disagree, naming the reference and every source that differs", ps-in = ["bad", "paths", "guids", "reference"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the fact-store partition type GUID differs between the reader, the plug and the shipped stick", PoExit 0 "all three sources spell the same GUID"], ps-body = s05-body }
 
 Section: Assembly
 
-  cfg-body : List ShellCmd = [ScSequence cfg-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
-
-  cfg-script : ShellScript = sh-script "check-facts-guid" "The fact-store partition type GUID must agree across all three writers" cfg-params cfg-body
+  cfg-pipe : Pipeline = Pipeline { pl-name = "check-facts-guid", pl-doc = "The fact-store partition type GUID must agree across all three writers", pl-params = cfg-params, pl-stages = [s00, s01, s03, s04, s05] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cfg-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cfg-pipe))
   end
 
 Page 1

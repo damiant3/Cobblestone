@@ -4,6 +4,7 @@ Chapter: TestRenodeScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  Renode reads a .resc script rather than command-line arguments, so this
@@ -13,19 +14,49 @@ Chapter: TestRenodeScript
 
  We say:
 
+ THE SIXTEENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ THE ONLY EXIT AT THE END IS ZERO WHETHER THE UART SAID ANYTHING OR NOT. An
+ empty log writes an empty `-OutFile`, prints `no UART output`, and exits 0
+ exactly as a successful capture does, so a caller gating on this script's
+ exit code cannot tell a board that ran from one that never started. The two
+ exits it does refuse on are both about the BED being absent, never about the
+ run. Declared below rather than left to be discovered by a caller.
+
 Section: Parameters
 
   renode-params : List ShellParam = [sh-param-choice "Arch" ["arm64", "riscv64"], sh-param "Elf" SptString, sh-param "OutFile" SptString, sh-param-default "TimeoutSec" SptInt (SeInt 10)]
+
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+  renode-exe-art : PipeArtifact = PipeArtifact { pa-name = "RenodeExe", pa-kind = PkFile, pa-expr = SeVar "RenodeExe", pa-from = Just (SeCallArgs "Get-RenodeExe" [SaNamed "Repo" (SeVar "Repo")]) }
+
+  board-repl-art : PipeArtifact = PipeArtifact { pa-name = "boardRepl", pa-kind = PkFile, pa-expr = SeVar "boardRepl", pa-from = Just (SePathJoin (SeVar "Repo") (SeConcat (SeConcat (SeLit "tools\\renode\\codex\\codex-") (pipe-param-ref renode-params "Arch")) (SeLit ".repl"))) }
+
+  elf-path-art : PipeArtifact = PipeArtifact { pa-name = "elfPath", pa-kind = PkFile, pa-expr = SeVar "elfPath", pa-from = None }
+
+  board-path-art : PipeArtifact = PipeArtifact { pa-name = "boardPath", pa-kind = PkFile, pa-expr = SeVar "boardPath", pa-from = None }
+
+  uart-log-art : PipeArtifact = PipeArtifact { pa-name = "uartLog", pa-kind = PkFile, pa-expr = SeVar "uartLog", pa-from = None }
+
+  resc-file-art : PipeArtifact = PipeArtifact { pa-name = "rescFile", pa-kind = PkFile, pa-expr = SeVar "rescFile", pa-from = None }
+
+  stdout-file-art : PipeArtifact = PipeArtifact { pa-name = "stdoutFile", pa-kind = PkFile, pa-expr = SeVar "stdoutFile", pa-from = None }
+
+  tr-arts : List PipeArtifact = [repo-art, renode-exe-art, board-repl-art, elf-path-art, board-path-art, uart-log-art, resc-file-art, stdout-file-art]
 
 Section: S01 -- Locate Renode And The Board
 
   missing-renode : Text = "MISSING: Renode (install to C:\\Renode or set CODEX_RENODE_HOME)"
 
-  board-path : ShellExpr = SePathJoin (SeVar "Repo") (SeConcat (SeConcat (SeLit "tools\\renode\\codex\\codex-") (SeVar "Arch")) (SeLit ".repl"))
+  missing-board : ShellExpr = SeConcat (SeLit "MISSING: board ") (pipe-ref tr-arts renode-params "boardRepl")
 
-  missing-board : ShellExpr = SeConcat (SeLit "MISSING: board ") (SeVar "boardRepl")
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SePathJoin SeScriptRoot (SeLit "renode-config.ps1")), pipe-produce renode-exe-art, ScIf (SeNot (pipe-ref tr-arts renode-params "RenodeExe")) [ScWriteError (SeLit missing-renode), ScExit (SeInt 2)] [], ScBlank, pipe-produce board-repl-art, ScIf (SeNot (SeFileExists (pipe-ref tr-arts renode-params "boardRepl"))) [ScWriteError missing-board, ScExit (SeInt 2)] []]
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScRunDot (SePathJoin SeScriptRoot (SeLit "renode-config.ps1")), ScAssign "RenodeExe" (SeCallArgs "Get-RenodeExe" [SaNamed "Repo" (SeVar "Repo")]), ScIf (SeNot (SeVar "RenodeExe")) [ScWriteError (SeLit missing-renode), ScExit (SeInt 2)] [], ScBlank, ScAssign "boardRepl" board-path, ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) [ScWriteError missing-board, ScExit (SeInt 2)] []]
+  s01 : PipeStage = PipeStage { ps-name = "locate renode and the board", ps-why = "find the emulator and the board description for the named architecture, refusing before anything is written", ps-in = ["Arch"], ps-out = [repo-art, renode-exe-art, board-repl-art], ps-needs = [], ps-verdict = [PoExit 2 "Renode is not installed at C:\\Renode and CODEX_RENODE_HOME names nothing", PoExit 2 "no board description ships for the named architecture"], ps-body = s01-body }
 
 Section: S02 -- Paths For The Script File
 
@@ -38,46 +69,58 @@ Section: S02 -- Paths For The Script File
 
   uart-path : ShellExpr = SePathJoin (SeStaticCall "System.IO.Path" "GetTempPath" []) uart-name
 
-  s02 : List ShellCmd = [ScAssign "elfPath" (to-slashes (SePathResolve (SeVar "Elf"))), ScAssign "boardPath" (to-slashes (SePathResolve (SeVar "boardRepl"))), ScAssign "uartLog" (to-slashes uart-path)]
+  s02-body : List ShellCmd = [ScBlank, ScAssign "elfPath" (to-slashes (SePathResolve (pipe-ref tr-arts renode-params "Elf"))), ScAssign "boardPath" (to-slashes (SePathResolve (pipe-ref tr-arts renode-params "boardRepl"))), ScAssign "uartLog" (to-slashes uart-path)]
+
+ THE UART LOG NAME CARRIES A GUID, which is what lets two of these run at once
+ without one reading the other's capture (L-SHARED).
+
+  s02 : PipeStage = PipeStage { ps-name = "paths for the script file", ps-why = "every path forward-slashed for the .resc parser, and a uart log named per run", ps-in = ["Elf", "boardRepl"], ps-out = [elf-path-art, board-path-art, uart-log-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- The Renode Script
 
-  resc-lines : List ShellExpr = [SeLit "mach create \"codex\"", SeConcat (SeLit "machine LoadPlatformDescription @") (SeVar "boardPath"), SeConcat (SeLit "sysbus LoadELF @") (SeVar "elfPath"), SeConcat (SeConcat (SeLit "uart0 CreateFileBackend @") (SeVar "uartLog")) (SeLit " true"), SeLit "start", SeConcat (SeLit "sleep ") (SeVar "TimeoutSec"), SeLit "quit"]
+  resc-lines : List ShellExpr = [SeLit "mach create \"codex\"", SeConcat (SeLit "machine LoadPlatformDescription @") (pipe-ref tr-arts renode-params "boardPath"), SeConcat (SeLit "sysbus LoadELF @") (pipe-ref tr-arts renode-params "elfPath"), SeConcat (SeConcat (SeLit "uart0 CreateFileBackend @") (pipe-ref tr-arts renode-params "uartLog")) (SeLit " true"), SeLit "start", SeConcat (SeLit "sleep ") (pipe-ref tr-arts renode-params "TimeoutSec"), SeLit "quit"]
 
-  s03 : List ShellCmd = [ScAssign "rescContent" (SeLines resc-lines), ScAssign "rescFile" (to-slashes (SeStaticCall "System.IO.Path" "GetTempFileName" [])), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "rescFile", SeVar "rescContent"]]
+  s03-body : List ShellCmd = [ScBlank, ScAssign "rescContent" (SeLines resc-lines), ScAssign "rescFile" (to-slashes (SeStaticCall "System.IO.Path" "GetTempFileName" [])), ScDotNetCall "System.IO.File" "WriteAllText" [pipe-ref tr-arts renode-params "rescFile", SeVar "rescContent"]]
+
+  s03 : PipeStage = PipeStage { ps-name = "the renode script", ps-why = "the seven .resc commands that load the board, load the ELF, capture uart0 and stop", ps-in = ["boardPath", "elfPath", "uartLog", "TimeoutSec"], ps-out = [resc-file-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Run Renode
 
-  renode-args : List ShellExpr = [SeLit "--disable-xwt", SeLit "--console", SeLit "-e", SeConcat (SeLit "include @") (SeVar "rescFile")]
+  renode-args : List ShellExpr = [SeLit "--disable-xwt", SeLit "--console", SeLit "-e", SeConcat (SeLit "include @") (pipe-ref tr-arts renode-params "rescFile")]
 
-  renode-spec : ShellProcessSpec = ShellProcessSpec { sp-executable = SeVar "RenodeExe", sp-arguments = renode-args, sp-result-var = "proc", sp-stdout-file = Just (SeVar "stdoutFile"), sp-stderr-file = Just (SeStaticCall "System.IO.Path" "GetTempFileName" []), sp-hidden = True, sp-passthru = True }
+  renode-spec : ShellProcessSpec = ShellProcessSpec { sp-executable = pipe-ref tr-arts renode-params "RenodeExe", sp-arguments = renode-args, sp-result-var = "proc", sp-stdout-file = Just (pipe-ref tr-arts renode-params "stdoutFile"), sp-stderr-file = Just (SeStaticCall "System.IO.Path" "GetTempFileName" []), sp-hidden = True, sp-passthru = True }
 
-  wall-timeout : ShellExpr = SeMul (SeAdd (SeVar "TimeoutSec") (SeInt 15)) (SeInt 1000)
+  wall-timeout : ShellExpr = SeMul (SeAdd (pipe-ref tr-arts renode-params "TimeoutSec") (SeInt 15)) (SeInt 1000)
 
-  s04 : List ShellCmd = [ScTempFile "stdoutFile", ScStartProcess renode-spec, ScBlank, ScAssign "wallTimeout" wall-timeout, ScWaitProcessFor "proc" (SeVar "wallTimeout"), ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScStopProcess (SeProperty (SeVar "proc") "Id")] [], ScBlank, ScSleepMs (SeInt 500)]
+ THE WALL TIMEOUT IS THE GUEST'S OWN SLEEP PLUS FIFTEEN SECONDS, so a Renode
+ that never reaches its `quit` is killed rather than left holding the box.
+
+  s04-body : List ShellCmd = [ScBlank, ScTempFile "stdoutFile", ScStartProcess renode-spec, ScBlank, ScAssign "wallTimeout" wall-timeout, ScWaitProcessFor "proc" (SeVar "wallTimeout"), ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScStopProcess (SeProperty (SeVar "proc") "Id")] [], ScBlank, ScSleepMs (SeInt 500)]
+
+  s04 : PipeStage = PipeStage { ps-name = "run renode", ps-why = "boot the board under Renode and kill it if it outlives its own sleep by fifteen seconds", ps-in = ["RenodeExe", "rescFile", "TimeoutSec"], ps-out = [stdout-file-art], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s04-body }
 
 Section: S05 -- Read The UART Log
 
   first-line : ShellExpr = SeReplace (SePipe (SeSplit (SeVar "content") "\\n") [StTake 1]) "\\r" (SeLit "")
 
-  found-message : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeLit "[renode] ") (SeVar "Arch")) (SeLit ": ")) (SeConcat (SeProperty (SeVar "lines") "Length") (SeLit " chars -- "))) (SeVar "lines")
+  found-message : ShellExpr = SeConcat (SeConcat (SeConcat (SeConcat (SeLit "[renode] ") (pipe-ref tr-arts renode-params "Arch")) (SeLit ": ")) (SeConcat (SeProperty (SeVar "lines") "Length") (SeLit " chars -- "))) (SeVar "lines")
 
-  empty-message : ShellExpr = SeConcat (SeConcat (SeLit "[renode] ") (SeVar "Arch")) (SeLit ": no UART output")
+  empty-message : ShellExpr = SeConcat (SeConcat (SeLit "[renode] ") (pipe-ref tr-arts renode-params "Arch")) (SeLit ": no UART output")
 
-  found-branch : List ShellCmd = [ScDotNetCallAssign "content" "System.IO.File" "ReadAllText" [SeVar "uartLog"], ScAssign "lines" first-line, ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeConcat (SeVar "lines") SeNewline], ScEcho found-message, ScDelete (SeVar "uartLog")]
+  found-branch : List ShellCmd = [ScDotNetCallAssign "content" "System.IO.File" "ReadAllText" [pipe-ref tr-arts renode-params "uartLog"], ScAssign "lines" first-line, ScDotNetCall "System.IO.File" "WriteAllText" [pipe-ref tr-arts renode-params "OutFile", SeConcat (SeVar "lines") SeNewline], ScEcho found-message, ScDelete (pipe-ref tr-arts renode-params "uartLog")]
 
-  empty-branch : List ShellCmd = [ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeLit ""], ScEcho empty-message]
+  empty-branch : List ShellCmd = [ScDotNetCall "System.IO.File" "WriteAllText" [pipe-ref tr-arts renode-params "OutFile", SeLit ""], ScEcho empty-message]
 
-  s05 : List ShellCmd = [ScIf (SeFileExists (SeVar "uartLog")) found-branch empty-branch, ScBlank, ScDelete (SeVar "rescFile"), ScDelete (SeVar "stdoutFile"), ScExit (SeInt 0)]
+  s05-body : List ShellCmd = [ScBlank, ScIf (SeFileExists (pipe-ref tr-arts renode-params "uartLog")) found-branch empty-branch, ScBlank, ScDelete (pipe-ref tr-arts renode-params "rescFile"), ScDelete (pipe-ref tr-arts renode-params "stdoutFile"), ScExit (SeInt 0)]
+
+  s05 : PipeStage = PipeStage { ps-name = "read the uart log", ps-why = "keep the first captured line as the answer, or write an empty file and say so", ps-in = ["uartLog", "OutFile", "Arch", "rescFile", "stdoutFile"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "a capture was written to -OutFile, OR the board produced no UART output at all; the two are not distinguished by the exit code"], ps-body = s05-body }
 
 Section: Assembly
 
-  renode-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
-
-  renode-script : ShellScript = sh-script "test-renode" "Run a Codex ELF binary under Renode, capture UART output" renode-params renode-body
+  tr-pipe : Pipeline = Pipeline { pl-name = "test-renode", pl-doc = "Run a Codex ELF binary under Renode, capture UART output", pl-params = renode-params, pl-stages = [s01, s02, s03, s04, s05] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell renode-script)
+    print-line-uni (emit-powershell (pipeline-to-shell tr-pipe))
   end
 
 Page 1

@@ -559,6 +559,16 @@ function Get-VmChardevCtrl { param([int]$Port) "socket,id=ch1,host=127.0.0.1,por
 # than carrying them (L-COUNT); the sampling recipe is a Get-Process loop on
 # codex-vm's WorkingSet64 while a compile runs.
 #
+# 1100 IS THE PER-TEST GUEST AND NOT EVERY GUEST, so the arithmetic above
+# sizes the wrong thing for a battery. `test.ps1` passes -GuestMB 2200 for
+# phase 1 batch compile (`test.ps1`, the Get-VmAdmittedSlots call), because a
+# batch slot holds an arena rather than one test: 1100 there admitted four
+# slots needing ~8.5 GB on a box with ~6.5 GB free and killed val's gate with
+# 1,110 tests reporting "VM died EARLIER in the batch". Size a battery at
+# 2200: 4 x 2200 = 8,800 MB, which is what the guard actually prints. Measured
+# 2026-09-07 (fester) by making this mistake in a box request, quoting 4 x 1100
+# for a 546-subject run whose real ask was double that.
+#
 # Reserve is host headroom, not a guess about the guest: Windows, the
 # harness's own pwsh children and the file cache all live in it.
 function Get-VmAdmittedSlots {
@@ -710,10 +720,10 @@ function Start-VmRun {
     # contract here is a LIVE ctrl/data serial pair and codex-vm cannot
     # serve one: its serial is file-based (-input preloads a ring buffer,
     # -output dumps at exit) and it has never parsed -data-port or
-    # -ctrl-port in any revision. It ignores an unknown flag in silence, so
-    # routing here by host preference booted a guest with nothing on the
-    # wire, which exited inside 500 ms and read as a failed launch. Four
-    # harnesses sat dead that way and none of them said why.
+    # -ctrl-port in any revision. Routing here by host preference booted a
+    # guest with nothing on the wire, which exited inside 500 ms and read
+    # as a failed launch; codex-vm now REFUSES the first unrecognised flag
+    # by name and exits 2, so that cannot recur in silence (L-ACCEPTED).
     if (-not $script:FallbackVmBin) {
         Write-Host "No QEMU: Start-VmRun needs a live ctrl/data serial pair, which codex-vm cannot serve. Set QEMU_BIN."
         return $null

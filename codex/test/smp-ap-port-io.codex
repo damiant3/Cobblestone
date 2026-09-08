@@ -1,0 +1,56 @@
+Chapter: SmpApPortIo
+
+ A device port read taken on an APPLICATION PROCESSOR must answer what the
+ same read answers on the boot processor. It did not: codex-vm served COM1
+ to an AP and returned 0 for every other port, so a process claimed by an AP
+ read the NE2000's CR, ISR and BNRY as 0, 0, 0 where proc 0 read 2, 0, 70,
+ and a service that had to reach a device could only be run pinned to core 0
+ (plugs-backlog 2.45, L-ARENA: the bed was less capable than the board in
+ exactly the respect under test).
+
+ THE ARM COMPARES THE TWO PROCESSORS RATHER THAN ASSERTING CONSTANTS, because
+ the register values depend on how far NIC bring-up has got and an arm that
+ named 2, 0, 70 would go red on a change to the driver rather than to the bed.
+ What must hold is that the answer does not depend on which processor asked.
+ It also prints whether the boot processor's own read is non-zero, so a run
+ where BOTH answer 0 -- no NIC on the bus, nothing to read -- is visible as
+ the vacuous pass it would otherwise be (L-VACUOUS).
+
+Section: Body
+
+ CR is base+0, BNRY base+3 and ISR base+7 on the NE2000 at 0x300.
+
+  ne2k-cr : Integer = 768
+  ne2k-bnry : Integer = 771
+  ne2k-isr : Integer = 775
+
+  read-triple : Integer -> [Device.Port] Integer
+  read-triple (base) = act
+    cr <- port-in-byte ne2k-cr
+    bnry <- port-in-byte ne2k-bnry
+    isr <- port-in-byte ne2k-isr
+    let a = atomic-store base cr
+    in let b = atomic-store (base + 8) bnry
+    in let c = atomic-store (base + 16) isr
+    in cr + bnry + isr
+  end
+
+  child-body : Integer -> [Device.Port] Integer
+  child-body (x) = read-triple 36240
+
+  opening : [Console, Concurrent, Device.Port] Nothing = act
+    bsp <- read-triple 36264
+    a <- process-spawn-on-core (\x -> child-body x) 2
+    wa <- process-wait a
+    let bcr = atomic-load 36264
+    in let bbn = atomic-load 36272
+    in let bis = atomic-load 36280
+    in let acr = atomic-load 36240
+    in let abn = atomic-load 36248
+    in let ais = atomic-load 36256
+    in let same = if acr == bcr then if abn == bbn then ais == bis else False else False
+    in act
+      print-line-uni ("bsp read something " & show (bcr + bbn + bis > 0))
+      print-line-uni (if same then "ap agrees with bsp" else "AP DISAGREES WITH BSP")
+    end
+  end

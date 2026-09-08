@@ -346,7 +346,29 @@ Edge and a web server. `test-app-gui` drives a headless GUI battery.
 workspace. **Read the script before believing the row**, which the ledger
 already says about the classifier and which cost a second pass anyway.
 
-### Two things the lifts found in the scripts themselves
+### Three things the lifts found in the scripts themselves
+
+**CLOSED (fester, 2026-09-08): `build/sweep-apps.ps1` no longer accepts `-Jobs`,
+and a caller passing one is now refused rather than ignored.** reek found the
+parameter accepted and used nowhere (the pipeline-model migration, 2026-09-08):
+`Jobs` appeared once, as the declaration, and the sweep loop waits on each
+compile before starting the next. **L-ACCEPTED**: an interface that ignores what
+it does not recognise makes a setting that does nothing look exactly like one
+that works. Same family as `plugs-backlog.md` 2.41, the 51 plug runners that
+hardcode `-MemMB 3072`.
+
+**Of the two repairs the row priced, deletion is the one that fits this script.**
+Nothing invokes `sweep-apps.ps1` at all: a census of `build/`, `apps/`, `codex/`,
+`docs/` and `.claude/` finds no caller and therefore no caller passing `-Jobs`,
+so deletion breaks nothing measurable. Honouring the parameter would have turned
+a serial hand tool into a fan-out, which every run then has to ask the commander
+for, and the parallel app sweep already exists as `sweep-app-classes.ps1 -Jobs`.
+Landed through the generator: `codex/build/sweepappsScript.codex` drops the
+`sh-param-default "Jobs"` entry and `build/sweep-apps.ps1` drops the emitted
+line, 86 lines to 85, `check-generated-scripts.ps1 -Only sweep-apps` at 0 drift
+before and after. Proven: `-Dir books` sweeps 1 file and compiles it, and
+`-Dir books -Jobs 8` now fails with "A parameter cannot be found that matches
+parameter name 'Jobs'", which is the whole point of the repair.
 
 **`ScForLoop` cannot express an increment.** Its step is emitted verbatim,
 so `SeAdd (SeVar "i") (SeInt 1)` produces `for (...; ...; ($i + 1))`, which
@@ -455,15 +477,75 @@ compilation, disk for on-device, selected by the mode header or by
 detecting a disk. That decision stands and is now implemented on the disk
 side.
 
-### Phase B: On-disk test runner -- NOT STARTED
+### Phase B: On-disk test runner -- STAGE 1 DONE (fester, 2026-09-08)
 
 A Codex app that lists `codex/test/*.codex` from FAT16, compiles and
 runs each, reads the `.expected` / `.failing` / `.skip` sidecars, diffs,
 and prints a summary.
 
+**Stage 1, the directory half, is `apps/works/DiskTestRunner.codex` and is
+proven in the bed.** Booted as the kernel with a FAT16 image on `-DiskFile`,
+the runner mounts the boot volume, lists the root, looks up one entry BY NAME
+and reads the bytes back: `bps=512 ok=yes`, `entries: 5`, `names: EFI SEED
+SOURCE.SRC OUT.CDX OUT.TXT`, `subject: SOURCE.SRC present=yes`, `read: 628
+chars, first line: Chapter: FieldRangeProven`. **The control fires and it
+found a defect in the runner's first version:** booted with NO disk,
+`fat16-boot-volume` answers `bps=0` (the record comes back whatever the medium
+said, as `opening.codex` records above `emit-from-disk`), and the listing walk
+divided by it and took `!EXC=00`. The runner now tests the volume before it
+walks and prints `REFUSED: no usable FAT16 volume; nothing to list`.
+
+**What stage 1 deliberately does NOT do, and why.** Compiling the chosen test
+is not here: the open question below is unanswered, and a chapter carrying
+`opening` can be cited by nothing (CDX3001), so the runner cannot pull the
+compiler into its own unit and no other composition exists yet. The compiler's
+DISK mode already compiles ONE source off disk, under the fixed name
+`SOURCE.SRC`, which is also the only source name the img plug can write: the
+plug takes a single `-Source`, so **no image in the tree can hold `codex/test`
+at all**, and a multi-source image is stage 2's first blocker rather than a
+detail.
+
+**The runner is compiled by the app sweep and run by nothing, which is the gap
+this file names elsewhere.** The mechanism for fixing that is a `.disk`
+sidecar in `codex/test/apps`, which the battery already uses fifty times, and
+the price is measured: a sidecar IS the image, 8 MB of binary in the depot per
+arm. Stage 2 pays that deliberately or finds a smaller image.
+
 The open question is how one program runs another. Recommendation on
 record: in-process, with `heap-save` / `heap-restore` between tests --
 the compiler already uses exactly that pattern at phase boundaries.
+
+**RULED (root, 2026-09-08): (a), a thin `opening` over a citable compiler.** The
+runner runs tests in-process with `heap-save` / `heap-restore`, which needs the
+compiler to be citable, which needs its `opening` split into a thin entry
+chapter the way `DbBootMain` was split out of `DbBoot` the same day. The values
+decided it: the compiler as a library the environment calls is what the vision
+asks for, the split is proven in the small, and the alternative invents a loader
+with no prior art in this tree for exactly one consumer. The alternatives, for
+the record: (b) load a compiled CDX and jump to its entry with a fresh stack and
+heap, which this page already calls the hard part; (c) let the host reboot the
+compiler once per test, which is `test.ps1` today and buys no capability. The
+split is seed-affecting and is not done.
+
+**DISK mode honours the path it is given (fester, 2026-09-08). PROVEN ON `//Codex/fester` AS 23967 AND NOT YET ON MAIN: the change is seed-affecting and waits on the token, so main's compiler still compiles the constant.**
+sends `DISK` and then a path, `emit-from-disk` read that line, and then compiled
+`disk-default-path` regardless: an interface that accepts what it does not
+honour, the same shape as `sweep-apps.ps1`'s `-Jobs` one section above.
+`SOURCE.SRC` is now the fallback rather than the only answer, and
+`build/test-disk-compile.ps1` takes `-DiskPath` so the behaviour has an arm.
+Three arms against the candidate `F34A1FBF0296A20B` and depot seed
+`D9CF240465C3D0BC`: candidate with the right name PASSES unchanged; candidate
+with `NOSUCH.SRC` prints `DISK-SOURCE resolving [NOSUCH.SRC]` and
+`DISK: file not found: NOSUCH.SRC`; **and the depot seed with `NOSUCH.SRC`
+compiles `SOURCE.SRC` anyway and reports PASS**, which is the defect stated as
+a measurement rather than as a reading.
+
+**The other half of the blocker is the img plug and is NOT done.**
+`codex/plugs/img/Fat16Writer.codex:171` writes the 8.3 name `SOURCE  SRC` as a
+literal, and the plug's wire header carries sizes only, so an image can still
+hold exactly one source whatever it is called. Until that carries a name, no
+image can hold `codex/test` and the runner has one file to choose from.
+Registered as `plugs-backlog.md` 1.102.
 
 ### Phase C: Self-hosted pingpong -- NOT STARTED
 
@@ -1491,7 +1573,7 @@ miscompile, and the two errors are not the same size.
 | `test-bvt` | always | `$tKernel -or $tTest` | **the BVT's subjects ARE `codex/test/*.codex`.** Its list is hardcoded in `bvt.ps1` and every member is a test chapter, so a `codex/test/` CL that skipped the BVT would skip the phase that grades the file it changed. `$tTest` is wider than the BVT's own list on purpose: reading that list from `build.ps1` couples the two, and 30 s on a test-only CL is the right price for not having to keep them in step |
 | `oracles`, `check-errors` | always | `$tKernel -or $tTest` | `check-errors` grades `codex/test/errors/**`, which `$tTest` covers; both otherwise read only the kernel |
 | `test-compile` | always, cite-scoped | unchanged | already correct. It printed `subject: CITE-SCOPED, 0 chapter(s) of 1500` and `OK (nothing implicated)` on a docs CL today, which is the shape the rest of this section copies |
-| `app-sweep` | `$tApps -or $tCompiler`, strides 30 of 267 | same trigger, **cite-scoped like test-compile**; the stride only when `$tCompiler` | a compiler change can move any app, so it keeps the stride; an apps change can only move the apps that cite what changed |
+| `app-sweep` | `$tApps -or $tCompiler`, **cite-scoped on an apps change, the 30-unit stride only when `$tCompiler`** (shipped; the selector's soundness is the section below) | as today | a compiler change can move any app, so it keeps the stride; an apps change can only move the apps that cite what changed |
 
 ### The controls, and neither is optional
 
@@ -1608,9 +1690,141 @@ nothing enforcing it, which is L-BODY's shape exactly; this gives it a runner,
 and after the merge `opened UNION diff2` is exact with no edge left to reason
 about. Proven: behind by 11 files, the gate exits 1 without building anything.
 
-### Still open on this row
+### `app-sweep` cite-scoping, and what the selector is sound about
 
-`app-sweep` is NOT yet cite-scoped -- it keeps `$tApps -or $tCompiler` and its
-30-of-267 stride. That is the second half of Damian's ruling and it is its own
-CL (R-ONE), because it needs a subject selector in `sweep-app-classes.ps1`
-rather than a trigger change here.
+`app-sweep` keeps `$tApps -or $tCompiler` and takes the CITE-SCOPED set on an
+apps change, the 30-unit stride on a compiler one (`build.ps1:1406`). The
+selector is `-CiteScoped` in `sweep-app-classes.ps1`, with `-ChangedIs` to name
+the changed files instead of asking Perforce, which is what makes the scoping
+testable without staging an edit.
+
+The closure is transitive and it walks a table keyed by CHAPTER NAME, so the
+table is only as sound as that key. **A name is not unique: 89 of 3,818 names
+under `apps/` and `codex/` are carried by more than one file, and 76 of those 89
+carry cite lists that DIFFER** (2026-09-08). Keeping the first file's list made
+the table depend on directory enumeration order and dropped every path through
+the losing file, so `$citeOf` takes the UNION over every file carrying the name.
+Over-inclusive is the direction `$changedNames` already takes; under-inclusive
+is a green from a sweep that never looked.
+
+Measured both ways over all 1,152 `apps/` chapters as the changed file, against
+293 entry chapters:
+
+| | shipped, first file wins | union |
+|---|---|---|
+| entries picked per changed file | mean 4.1, max 136 | mean 4.5, max 138 |
+| changed files that swept NOTHING while a sound closure sweeps something | 3 | 0 |
+| changed files that swept FEWER entries | 25 | 0 |
+
+The three total blind spots were `apps/games/codexmagic/ChainCore.codex`,
+`MintAuthority.codex` and `TransactionValidator.codex`, every one of them
+reached only through the LOSING `Bridge` (`apps/games/classic/Bridge.codex`
+cites `Rng`; `apps/games/codexmagic/Bridge.codex` cites those three). The worst
+partial miss was `apps/games/magic/LibKnowledge.codex`, 2 entries of 74.
+
+Arms, run against the depot script and the changed one on the same inputs:
+`ChainCore` 0 then 2 and both units CLEAN; `apps/c64/C64Screen.codex` 0 then 0;
+`apps/diagram/Canvas.codex` 4 then 4, which is the control that matters, because
+`Canvas` is itself a duplicated name and the union does not widen its reach. A
+docs-only change prints `no .codex changed` and sweeps 0.
+
+**`cross-smoke` and `plug-smoke` read `build-output\bare-metal\Codex.cdx`
+implicitly, and are correct only because `plug-binary` shares their trigger,
+runs first, and stages `$SutCdx` there (`build.ps1:989`). Unowned, latent, no
+live exposure** (fester, 2026-09-07, root's call not to spend a generator
+drift run on it). Verified at head: on a skipped core every OTHER phase that
+can run takes an explicit `-Kernel` (`check-errors` and `bvt` get
+`$testKernel`, `app-sweep` gets `$SutCdx` at `build.ps1:1332`), and
+`gen-scripts`, `vm-differential`, `deck-headroom` and `jonquil` cannot run at
+all, because a skipped core forces `$tCompiler`, `$tForeword`, `$tSeed` and
+`$tBuild` all false. So the ordering is load-bearing and unstated: move a
+phase or give `plug-smoke` its own trigger and the stale kernel returns
+silently. The repair is to stage the kernel once the SUT is settled rather
+than as a side effect of `plug-binary`.
+
+**FIXED 2026-09-07 (fester): both scripts take `-Kernel`, defaulting to the depot seed, printing the kernel and its digest, and refusing a `build-output` kernel whose digest differs from the seed unless `-AllowStaleKernel` says so.** `test-self-verify` went through its generator (`codex/build/testselfverifyScript.codex`, drift green, the install diffing as 14 lines rather than a whole file); `check-generated-scripts` is hand-written by design and was edited directly. Both refusals fire BEFORE any guest, which is what makes them worth having on a check that costs 57 boots: aimed at `build-output\charseed\cand.cdx` each refuses with exit 2, naming kernel `06864D2649B76905` against seed `9E5C7780B7FBC69C`, which is the binary the accidental sweep that found this row had run against. `check-generated-scripts` no longer requires `build-output\bare-metal\Codex.cdx` to exist; its own MISSING message had said to stage the depot seed there, and it now uses the depot seed directly. `test-compile-batch.ps1` already accepted `-Kernel`, so the compile half was a passthrough. THE ORIGINAL FINDING, kept because it says what the defect was: **`test-self-verify.ps1` COULD NOT BE TOLD WHICH COMPILER TO USE, so the one step
+that certifies a seed before it lands compiles its own checker with whatever
+`build-output` last held.** Its parameters are `-Seed` and `-PCore` only, so
+`compile.ps1` takes its default kernel and the script prints the warning
+itself: `NOTE: this kernel is NOT seed\Codex.cdx [...]. It is whatever
+build.ps1 last left in build-output.` Verified at head 2026-09-07 while signing
+a candidate. The seed under test is still the one `-Seed` names and the four
+answers it prints are about that file, so this is not a wrong result; it is the
+trap `CLAUDE.md` names under R-GATE ("Name the kernel"), sitting in the script a
+lane is told to run, and a lane that reads the note has no flag to answer it
+with. `sign-seed.ps1` beside it takes the artifact explicitly and has no such
+gap. The repair is a `-Kernel` parameter passed through to `compile.ps1`,
+defaulting to the seed being verified; the script is generated, so the change
+is `codex/build/testselfverifyScript.codex` and the shipped file together.
+Unowned. Generated-script change, so it needs a drift run.
+
+**SECOND INSTANCE THE SAME DAY, so this is a class and not one script:
+`check-generated-scripts.ps1` has no `-Kernel` either.** Its parameters are
+`-Only`, `-Diff`, `-OutRoot` and `-Update`, so it compiles every generator with
+`compile.ps1`'s default kernel and prints the same `compiler:
+build-output\bare-metal\Codex.cdx` line, which is whichever compiler ran last.
+Measured 2026-09-07: it ran against an unsigned scratch candidate while the
+depot seed was a different binary, and the drift table it produced was
+therefore a statement about that candidate. Neither script is wrong about the
+FILES it compares; both are silent about the compiler doing the comparing.
+**THIRD INSTANCE, AND THE FIRST ONE THAT DESTROYED A MEASUREMENT: FIXED
+2026-09-07 (fester).** `test-cross.ps1` takes `-Kernel`, defaulting to the
+depot seed, and `-AllowStaleKernel`, and passes the kernel to
+`codex/plugs/<arch>/compile-<arch>.ps1`, which already accepted one. The check
+resolves BEFORE the Renode probe, so a wrong kernel is refused without touching
+the bed. The vestigial staging of the seed into
+`build-output\bare-metal\Codex.cdx` is gone: it created that path when missing
+and never passed it on, which is what made a staged candidate look like it was
+in play. THE ORIGINAL FINDING, kept because it says what the defect was: a
+COMPILER-44 candidate was staged there, the arm64 run came back byte-identical
+to the baseline, and it read as a refuted fix until the compile log was opened
+and named the depot seed. The other two scripts in this class report a wrong
+PROVENANCE; this one silently answered a different question from the one asked,
+which is worse.
+
+**A LANE RUNNING `test-cross.ps1` ON THIS BOX BOOTS RENODE, AND NOTHING IN THE
+INVOCATION SAYS SO** (fester, 2026-09-07, the hard way). The script probes for
+Renode and SKIPs when it is absent, so it reads as inert on a machine without
+it; `C:\Renode\renode.exe` is installed on this box, so the same command
+compiles through the arm64 plug and boots the bed. Renode is out by standing
+rule until Damian lifts it, and the guard against running it is the operator
+remembering, which is L-BODY in the same shape this register just closed for
+the seed install. The repair is a refusal: `test-cross` should decline to boot
+unless told explicitly that Renode is granted, rather than booting because the
+binary happens to exist. Unowned, and it wants Damian's word on the flag before
+anyone writes it.
+
+**The same shape sits under the evidence for the `-Kernel` fix itself, which is
+why it is worth stating twice.** That guard was graded on four host arms, two
+passing and two refusing, none of which booted a guest. They are host-only
+because the riscv plug is UNBUILT in that workspace, so the run stops at the
+plug check; build the riscv plug and the two PASSING arms boot again. A
+verification that is cheap by an accident of workspace state silently stops
+being cheap, and nothing in the arms says which kind they are. Whoever
+re-grades this class states the plug's build state beside the result.
+## Quire tables that are copies or derivations, audited 2026-09-07 (fester)
+
+`build/quire-map.ps1` is the authority. Two scripts had been found deriving the
+mapping instead of reading it and both answered a different question:
+`codex/plugs/common/plug-build-lib.ps1` (globbed four roots and capitalised
+directory names, so Wflow, Boards and Tracker did not exist for it) and
+`build/check-battery-coverage.ps1` (last directory segment with `core` meaning
+Foreword, so `codex/os/core` read as the Foreword and `Games`, which lives at
+`apps/games/classic`, resolved to nothing). Both now source the map.
+
+**A GATE ON THIS SHAPE WAS PROPOSED AND MEASURED DOWN.** The obvious rule, that
+a script mentioning a quire must source the map, flags **77 of 95** scripts and
+would be a check nobody reads. The narrow rule, spelling **two or more quire
+names as quoted literals without sourcing the map**, flags **7**, and only
+three of those are tables at all: `check-doc-counts.ps1` (agrees with the
+authority everywhere, so a duplication risk and not a live defect, and it is
+generated so correcting it costs a drift guest), `apps/games/server.ps1` (one
+live divergence, filed on `apps/games/games-backlog.md`), and
+`apps/landing/build.ps1`. The rest spell one or two names for their own
+reasons. Seven candidates needing per-file judgement is an AUDIT, which this
+was, not a runner: a gate here would be four false alarms out of seven and
+would train its readers to wave it through.
+
+**Re-run the audit rather than trusting this paragraph** (L-COUNT): the census
+is `$QuireDirs` from the map, quoted-literal matches per script, minus any
+script that sources the map.

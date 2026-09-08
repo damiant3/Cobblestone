@@ -120,8 +120,11 @@ Section: Expression Lowering
   lower-lazy : AExpr, CodexType, LowerCtx, SourceSpan, Integer -> IRExpr
   lower-lazy (inner) (ty) (ctx) (s) (depth) =
    let peeled-inner = peel-fun-return ty
+   in let recovered-inner = peel-fun-return (deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) s))
    in let inner-ty = when peeled-inner
-      is ErrorTy | NoExpectTy -> peel-fun-return (deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) s))
+      is ErrorTy | NoExpectTy -> when recovered-inner
+         is ErrorTy -> NoExpectTy
+         is otherwise -> recovered-inner
       is otherwise -> peeled-inner
    in let sfx = integer-to-text depth
    in let cell-n = "__lz-cell" & sfx
@@ -666,21 +669,28 @@ Section: Expression Lowering
   lower-eq-dispatch (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) (positive) =
    let resolved-left = deep-resolve (ctx.ust) left-ty
    in let tn = type-name-of resolved-left
-   in let probe = if text-length tn == 0 | eq-type-has-args (strip-unit-ty resolved-left) then ErrorTy
+   in let stripped = strip-unit-ty resolved-left
+   in let has-args = eq-type-has-args stripped
+   in let probe = if text-length tn == 0 then ErrorTy
     else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
    in when probe
     is ErrorTy | NoExpectTy -> deck-record (IrBinary (lower-bin-op (eq-op-for positive) left-ty) left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s)
-    is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
-     in let inner = deck-record (IrApply (deck-record (IrName ("__eq_" & tn) fty s)) left-ir (peel-fun-return fty) s)
+    is otherwise -> let hname = if has-args then eq-helper-name-inst tn (eq-site-actuals stripped) else "__eq_" & tn
+     in let fty = if has-args then deck-record (FunTy stripped empty-row (deck-record (FunTy stripped empty-row BooleanTy)))
+        else strip-forall-ty (deep-resolve (ctx.ust) probe)
+     in let inner = deck-record (IrApply (deck-record (IrName hname fty s)) left-ir (peel-fun-return fty) s)
      in let call = deck-record (IrApply inner right-ir BooleanTy s)
      in if positive then call
         else deck-record (IrIf call (deck-record (IrBoolLit False s)) (deck-record (IrBoolLit True s)) BooleanTy s)
 
  The desugarer mints one __eq_<T> per type NAME, and type-name-of has already
- dropped the arguments, so every instantiation of a parameterised type would
- share a helper whose field stays at the declaration's own type variable. An
- instantiated type is sent to the emitter instead, which carries the actuals
- and substitutes them.
+ dropped the arguments, so that helper's field stays at the declaration's own
+ type variable. Its EXISTENCE is what this arm reads: the desugarer mints it
+ only for a type it generated equality for, so finding it proves the operand is
+ such a type without resolving it here. An instantiated one is then called by
+ the INSTANTIATED name, which eq-helper-defs mints per set of actuals and which
+ opening attaches to the wire; sending it to the emitter alone is what left
+ every plug comparing two heap pointers (COMPILER-44, measured on arm64).
 
   eq-type-has-args : CodexType -> Boolean
   eq-type-has-args (ty) =
@@ -1630,6 +1640,26 @@ Section: Collections and Act
    else FunTy int-ty-default empty-row (build-lambda-type params ret (i + 1))
 
 Section: Definition Lowering
+
+ THE EMITTED TYPE IS THE STRIPPED ONE, and the quantifier is dropped here
+ rather than by each backend. `all-bindings` holds two entries per definition
+ whose types DIFFER, the environment's carrying a `ForAllTy` and
+ `check-result.types`' having it peeled; `compare-binding-names` compares the
+ name alone, `sort-by` is an unstable quicksort and `bsearch-text-pos` is a
+ lower bound, so which of the two `lookup-type-bsearch` returns is decided by
+ where unrelated names sort. Stripping makes that choice not matter, because
+ both entries strip to the same shape. Reported by Steve Howell, PR 134, who
+ measured `deck-record` quantified and 103 of 104 not; at head `deck-record` is
+ clean and `hamt-node-set`, `sort-by` and `copy-list-loop` are quantified
+ instead, moved by ordinary landings. COMPILER-66.
+
+ A backend that receives the quantifier has no use for it and mostly no arm
+ for it: arm64, riscv and wasm carry no `ForAllTy` case at all, and the zig
+ emitter grew its cases only after being bitten (`ZigEmitter.codex` 295-307,
+ which names `sort-by` as the first to arrive quantified). In this compiler
+ `is-proof-return` has no `ForAllTy` arm either, so a quantified proof
+ definition answers False to `is-proof-def`.
+
   lower-def : ADef, List TypeBinding, UnificationState, List RenameEntry, List RenameEntry, Boolean -> IRDef
   lower-def (d) (types) (ust) (renames) (chapter-rn) (rename) =
    let rn = resolve-def-name renames (d.name.value) (d.chapter-slug)
@@ -1643,7 +1673,7 @@ Section: Definition Lowering
    in deck-record (IRDef {
     name = rn,
     params = params,
-    type-val = full-type,
+    type-val = stripped,
     body = lower-expr (d.body) ret-type ctx,
     chapter-slug = d.chapter-slug,
     is-punctual = False,
@@ -1731,6 +1761,7 @@ Section: Definition Lowering
   lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment, Integer, Boolean, Integer, Integer -> (IRChapter, Integer)
   lower-chapter (m) (all-types) (ust) (ctor-names) (renames) (colliding) (assignments) (ceiling) (rename) (keep-base) (keep-ceiling) =
    let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
+   in let cite-slugs = for c in (m.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
    in let def-count = list-length (m.defs)
    in let exit = __deck-exit
    in let scratch-base = __deck-pos
@@ -1740,7 +1771,7 @@ Section: Definition Lowering
    in let keep0 = __deck-pos
    in let set-s0 = __deck-set scratch-base
    in let mc = lower-keep-open scratch-base keep-ceiling def-count
-   in let (defs, keep-end) = lower-defs-keep (m.defs) all-types ust 0 acc0 renames colliding assignments (m.citations) slug-cache "" [] (m.rt-names) (m.rt-budgets) ceiling rename mc keep0 keep-ceiling
+   in let (defs, keep-end) = lower-defs-keep (m.defs) all-types ust 0 acc0 renames colliding assignments (m.citations) cite-slugs "" [] (m.rt-names) (m.rt-budgets) ceiling rename mc keep0 keep-ceiling
    in let set-k1 = __deck-set keep-end
    in let ch = deck-record (IRChapter {
     name = m.name,
@@ -1759,8 +1790,8 @@ Section: Definition Lowering
    in lower-collect-effect-op-names effs (i + 1) len (acc & (for op in (e.ops) -> op.name.value))
 
   lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean -> List IRDef
-  lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) =
-   lower-defs-acc defs types ust i [] renames colliding assignments citations slug-cache cur-slug cur-chapter-rn rt-names rt-budgets ceiling rename
+  lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) =
+   lower-defs-acc defs types ust i [] renames colliding assignments citations cite-slugs cur-slug cur-chapter-rn rt-names rt-budgets ceiling rename
 
   is-in-rt-names : List Text, Text, Integer, Integer -> Boolean
   is-in-rt-names (names) (target) (i) (len) =
@@ -1793,15 +1824,15 @@ Section: Definition Lowering
  8,487,976 bytes, exactly one guard band short of the floor.
 
   lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean -> List IRDef
-  lower-defs-acc (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) =
+  lower-defs-acc (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) =
    if i == list-length defs then acc
    else if deck-bound-short-of ceiling demand-lower-guard-band then acc
    else let d = list-at defs i
    in let chapter-rn = if d.chapter-slug == cur-slug then cur-chapter-rn
-      else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0
+      else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments cite-slugs (d.chapter-slug) 0
    in let ir-def = lower-def d types ust renames chapter-rn rename
    in let tagged = if is-in-rt-names rt-names (d.name.value) 0 (list-length rt-names) then __record-set (__record-set ir-def "is-punctual" True) "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names)) else ir-def
-   in lower-defs-acc defs types ust (i + 1) (list-push acc tagged) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling rename
+   in lower-defs-acc defs types ust (i + 1) (list-push acc tagged) renames colliding assignments citations cite-slugs (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling rename
 
 Section: Per-Definition Reclamation
 
@@ -1858,7 +1889,7 @@ Section: Per-Definition Reclamation
    }
 
   lower-defs-keep : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean, MemoCtx, Integer, Integer -> (List IRDef, Integer)
-  lower-defs-keep (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) (mc) (keep) (keep-ceiling) =
+  lower-defs-keep (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) (mc) (keep) (keep-ceiling) =
    if i == list-length defs then (acc, keep)
    else if keep + demand-lower-guard-band >= keep-ceiling then (acc, keep)
    else if deck-short-of ceiling demand-lower-guard-band then (acc, keep)
@@ -1867,7 +1898,7 @@ Section: Per-Definition Reclamation
    in let bivy-mark = __heap-save
    in let (chapter-rn, keep1) = if d.chapter-slug == cur-slug then (cur-chapter-rn, keep)
       else let set-k = __deck-set keep
-      in let rn = deck-record (apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0)
+      in let rn = deck-record (apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments cite-slugs (d.chapter-slug) 0)
       in let k2 = __deck-pos
       in let set-s = __deck-set scratch-mark
       in (rn, k2)
@@ -1879,7 +1910,7 @@ Section: Per-Definition Reclamation
    in let keep2 = __deck-pos
    in let set-scratch = __deck-set scratch-mark
    in let r = __heap-restore bivy-mark
-   in lower-defs-keep defs types ust (i + 1) (list-push acc kept) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling rename mc keep2 keep-ceiling
+   in lower-defs-keep defs types ust (i + 1) (list-push acc kept) renames colliding assignments citations cite-slugs (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling rename mc keep2 keep-ceiling
 
   lcopy-text : Text, MemoCtx -> Text
   lcopy-text (t) (mc) = mcopy-text t mc

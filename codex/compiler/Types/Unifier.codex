@@ -1384,6 +1384,13 @@ Section: Deep Type Copy
    else let c = list-at cs i
    in mkey-ctors-loop cs (i + 1) len depth mc (cons-mix (cons-mix (cons-mix acc (address-of (mcopy-name (c.name) mc))) (address-of (mcopy-types (c.fields) depth mc))) (address-of (mcopy-types (c.return-type) depth mc)))
 
+ THE BOX CHECK READS A TAG, so it asks for one. `peek-qword a 0` is that tag
+ only where a variant's first word IS its tag, which is bare metal; it is a
+ payload word on any target whose unions lay themselves out differently, and
+ the read comes back a pointer there. `variant-tag` is the builtin for this
+ question and costs the same load on bare metal. `Emit/X86_64Compound.codex`
+ moved off the same idiom for the same reason.
+
   mcopy-type : CodexType, Integer, MemoCtx -> CodexType
   mcopy-type (ty) (depth) (mc) =
    let a = address-of ty
@@ -1391,8 +1398,8 @@ Section: Deep Type Copy
    else if a < mc.mc-floor then ty
    else if __heap-save >= mc.mc-ceiling then ErrorTy
    else if depth >= max-recursion-depth then ErrorTy
-   else if peek-qword a 0 < 0 then ErrorTy
-   else if peek-qword a 0 > 28 then ErrorTy
+   else if variant-tag ty < 0 then ErrorTy
+   else if variant-tag ty > 28 then ErrorTy
    else mcopy-type-memo ty a (memo-probe a mc) depth mc
 
   mcopy-type-memo : CodexType, Integer, Integer, Integer, MemoCtx -> CodexType

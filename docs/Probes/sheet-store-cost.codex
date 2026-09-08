@@ -1,0 +1,71 @@
+Chapter: SheetStoreProbe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+  cites Works chapter GopAhci
+
+ SHEET-1's measurement: a 1,000-cell column sum over a dense 32-bit grid
+ against the same cells in HamtMap keyed by row,col text. Compile with -Kernel
+ seed\Codex.cdx and run on codex-vm; the numbers this produced, with the seed
+ they were taken on, are recorded in apps/sheets/CellStore.codex beside the
+ layout they justify.
+
+Section: Dense
+
+  rows : Integer = 1000
+  cols : Integer = 26
+
+  dense-fill : Integer, Integer -> Integer
+  dense-fill (blk) (r) =
+    if r > rows then 0
+    else let p = poke-32 blk ((r - 1) * cols * 4) r
+    in dense-fill blk (r + 1)
+
+  dense-sum : Integer, Integer, Integer -> Integer
+  dense-sum (blk) (r) (acc) =
+    if r > rows then acc
+    else dense-sum blk (r + 1) (acc + peek-32 blk ((r - 1) * cols * 4))
+
+Section: Sparse
+
+  cell-key : Integer, Integer -> Text
+  cell-key (r) (c) = show r & "," & show c
+
+  hamt-fill : HamtMap Integer, Integer -> HamtMap Integer
+  hamt-fill (m) (r) =
+    if r > rows then m
+    else hamt-fill (hamt-set m (cell-key r 1) r) (r + 1)
+
+  hamt-sum : HamtMap Integer, Integer, Integer -> Integer
+  hamt-sum (m) (r) (acc) =
+    if r > rows then acc
+    else let v = when hamt-get m (cell-key r 1)
+        is Just (x) -> x
+        is None -> 0
+    in hamt-sum m (r + 1) (acc + v)
+
+Section: Entry
+
+  us : Integer, Integer -> Integer
+  us (t0) (t1) = (t1 - t0) * 1000000 / hpet-ticks-per-second
+
+  opening : [Console] Nothing =
+    let hs = hpet-start
+    in let h0 = __heap-save
+    in let t0 = hpet-ticks
+    in let blk = alloc-zeroed (rows * cols * 4) 64
+    in let f = dense-fill blk 1
+    in let t1 = hpet-ticks
+    in let ds = dense-sum blk 1 0
+    in let t2 = hpet-ticks
+    in let h1 = __heap-save
+    in let m = hamt-fill hamt-empty 1
+    in let t3 = hpet-ticks
+    in let ss = hamt-sum m 1 0
+    in let t4 = hpet-ticks
+    in let h2 = __heap-save
+    in act
+      print-line-uni ("dense: fill " & show (us t0 t1) & " us, column sum " & show (us t1 t2) & " us, bytes " & show (h1 - h0) & ", sum " & show ds)
+      print-line-uni ("hamt: fill " & show (us t2 t3) & " us, column sum " & show (us t3 t4) & " us, bytes " & show (h2 - h1) & ", sum " & show ss & ", size " & show (hamt-size m))
+    end

@@ -151,6 +151,40 @@ On a seed-affecting copy-up the build token covers this step too, not just the
 gate: do not write `build-complete` until the submit has landed. A copy-up that
 touches no seed needs no token at all (`CoordinationProtocol.md` rule 1).
 
+#### P-COPYALL: a bare copy-up promotes the STREAM, not your changelist
+
+**Under a code pin, `copy --from <YourStream>` is the wrong command, and it
+takes every unpromoted CL you were holding with it.** The command is
+stream-level: it makes main match your stream. Which changelist you just
+submitted, and which ones you were deliberately holding back, are invisible
+to it.
+
+Measured 2026-09-08 (val): main was pinned for all code with one release fix
+permitted, four files. The copy-up landed **49**, carrying four held CLs onto
+the release head, none of them in the release's tested set. Every one was
+green on its own stream, which is exactly why the mistake is easy: nothing
+failed, and the damage was to somebody else's gate rather than to the tree.
+
+**Under a pin, one of these two, never the bare stream copy:**
+
+```powershell
+# keep the work off the stream entirely
+p4 shelve -f -c <CL>        # then revert; nothing to promote by accident
+
+# or promote BY PATH, one path per copy (P-COPY1)
+p4 -c BigWhite_Codex_<agent>_main copy --from //Codex/<agent> //Codex/main/<one path>
+```
+
+Then verify what actually landed BEFORE reporting, because the count is the
+tell and nothing else is:
+
+```powershell
+p4 describe -s <CL> | Select-String '^\.\.\. ' | Measure-Object
+```
+
+A file count that does not match the file count you submitted means the copy
+took more than your change. Read it as that and say so at once.
+
 ### CL lifecycle
 
 ```powershell
@@ -220,6 +254,21 @@ p4 unshelve -s <big-CL> -c <big-CL>
 p4 resolve -am
 ```
 
+### Purity: one workspace back to depot state
+
+```powershell
+pwsh build/p4-purify.ps1 -Client BigWhite_Codex_<agent> -DryRun             # what would go; no approval
+pwsh build/p4-purify.ps1 -Client BigWhite_Codex_<agent> -ApprovedBy damian  # dev client: sweep, sync -f, merge down
+pwsh build/p4-purify.ps1 -Client BigWhite_Codex_<agent>_main -ApprovedBy damian  # main client: sweep, sync -f
+```
+
+Deletes every untracked file and empty directory except dot-prefixed paths
+(`.p4config`, `.agentgrid`, `.git`, `.claude/settings.local.json`), rewrites
+every tracked file with `sync -f`, and on a dev stream merges down and submits.
+Refuses a client with open files: shelve and revert first. Run when Damian
+calls for a fleet clean (first 2026-09-07); it needs his approval for the same
+reason `merge-down-all.ps1` does.
+
 ### The whole fleet at once
 
 ```powershell
@@ -272,6 +321,7 @@ the same command; reach for a different command (L-FALSIF).
 | P-CLOBBER (L) | **The worst one here.** A CL holds edits plus new files. After the gate dance the edits land and the adds do not. `p4 submit` reports success, `p4 describe` shows only edits, the new files sit on disk looking fine and are in no depot. The tell is `Can't clobber writable file` printed under a line that says "unshelved, opened for add". **The tell is a per-client option and the fleet is SPLIT** -- `noclobber` clients refuse and print it; `clobber` clients do not refuse, they OVERWRITE the writable file silently, so an agent there meets no message, sees the add open normally, and concludes this row is stale. Measured 2026-08-15: `clobber` on the reek and val DEV clients; `noclobber` on the blu, fester and red dev clients, on every `*_main` client, and on `BigWhite_Codex_main`. | `p4 client -o \| Select-String Options` tells you which you are, and neither is the safe half: **noclobber loses an ADD loudly, clobber loses an EDIT silently** -- on a clobber client `p4 sync -f` and `p4 unshelve` will replace a writable on-disk file with depot content, no message, no refusal, uncommitted work gone. Never wave past the message if you get one. Delete the on-disk copy first, or `p4 unshelve -f`, then confirm `p4 opened -c <CL>` lists every file. A dropped add is invisible to every other check: it is not a conflict, not a stale revision, and absence has no diff -- and the preflight will not fail on it (section header). `p4 status` is what sees it. Verify against the shelf before deleting (see P-PRINTEOL). **`p4 copy` loses INTEGRATES to the same refusal** (2026-08-26, main 19963: a copy-up titled "six fixes" landed the tests and not the emitter, and the mirror push shipped the claim; found by an outside reader, repaired 19980). After every copy-up, account the submitted CL's file list against the source CL's in BOTH directions (P-RESURRECT's check) before writing any claim on it. **Third instance, red 2026-09-02, main 21676 to 21678:** the COMPILER-36 copy-up landed the seed and the compiler's `cites Foreword chapter Wrap64` without `Wrap64.codex` or the fixture; `check-seed-orphans.ps1` had FAILED before the copy-up naming the file as "opened for add" and I read that as "pending in my CL" and proceeded. That phrase is `p4 reconcile`'s and means the depot never received the file. An orphan-check FAIL before a copy-up is a stop, not an explanation; main's compiler concat did not assemble for the minutes between the two CLs. |
 | P-PRINTEOL (L) | You hash the on-disk file against its `p4 print -o` copy to check they match, and it reports a mismatch that is not there: `print -o` TRANSLATES line endings on a `text` file. | Normalise CRLF to LF on **BOTH** sides before comparing: `([IO.File]::ReadAllText($f) -replace "`r`n","`n")` applied to each. The `-replace` form appears in section 4.6, which normalises only the expected side because that is what the test runner does -- copying it as-is fixes one side and leaves the mismatch. **Do not follow this row into section 4.2**, which the row used to point at: 4.2 is the byte-level line-ending REPAIR and it WRITES the file, so sending P-CLOBBER's inspect-before-you-delete check through it modifies the thing you were inspecting. A BINARY file compares exact through `print -o`, so binaries matching while only text files "differ" is the tell. |
 | P-INTEGRATE (L) | You merge down, `resolve -at`, edit the resolved file, verify on disk, submit -- and the depot revision comes back WITHOUT your edit. Downstream tell: `p4 copy` answers "File(s) up-to-date" while the files plainly differ. The open action is `integrate`, not `edit`, and `-at` also leaves the file read-only. | `p4 edit <file>` before writing to a file open only for integrate, then `p4 print` the revision you created and grep it for your own text. **A REBUILT BINARY is an edit** and is the flavour that gets missed: after any merge-down touching a build output, `p4 fstat -Ol` both streams before copying up. Identical digests across the merge boundary mean your build did not land. Perforce's own answer is interactive `p4 resolve` (`e` to edit the merged result, `ae` to accept it), which records the edit AS the resolve so nothing is left as a bare integrate -- but **agents in this harness cannot drive it**, since it wants a terminal and tool stdin is the null device. That is why the `p4 edit` recipe exists. State which one you used. |
+| P-ATEDIT | **An edit you make AFTER `p4 resolve -at`, on a file opened for INTEGRATE, is discarded at submit and nothing says so.** The resolve records a wholesale `copy from`, and the submit ships that copied depot content, not the file you then edited. Every instrument agrees with every other and all of them are wrong about what you meant: the submit reports success, `p4 copy` answers "File(s) up-to-date", and `p4 diff2 -q` answers "no differing files" -- of course they do, since the two sides really are identical, just not to what is on your disk. Measured 2026-09-08 (blu, 23357 then 23358): a lane row resolved `-at` to keep a peer's newer text, edited to add the one sentence the peer had asked for, submitted, and landed WITHOUT the sentence; `filelog` records #482 as `integrate ... copy from` and the repair #483 as `edit`. | Reopen before you edit: `p4 edit <file>` after the resolve, so the revision is an `edit` and not an `integrate`. `p4 diff -sa <file>` names it before you submit. **The check that actually catches it is the CONTENT: `p4 print -q //Codex/<stream>/<file> \| Select-String <your text>` after the submit.** A comparison between two depot revisions cannot see a workspace edit that never reached either, which is why `copy` and `diff2` are the wrong instruments here and the same `copy from` in `filelog` is the right one (P-BULKAT's tell, a different failure with one mechanism). |
 | P-BULKAT | A bare `p4 resolve -at` silently reverts your own submitted work, inside a CL called "merge down". The resolve succeeds, the submit succeeds, the file goes back to what it was. | `-at` is for files untouched on YOUR side, named individually. Use `p4 resolve -as` to partition (section 2), `-am` on anything it skips. The tell that you needed `-am` is that the file appears in your own recent submits. **AFTERWARDS THE TELL INVERTS AND READS AS REASSURANCE, so check for it by name: the eaten file goes MISSING from your copy-up preview, and comparing your stream against main answers `identical`.** Of course it does; the revert made both sides agree on the older content. Measured 2026-09-01 (val, main 20910): a module count submitted in 20907 was reverted by 20908's bare `-at`, `filelog` recorded #59 as a wholesale `copy from //Codex/main/...#76`, and the copy-up in 20909 then listed 15 of the CL's 16 files with no warning anywhere. `p4 filelog` is the instrument that answers plainly -- a merge-down revision reading `copy from` rather than `merge from` on a file you edited is the revert, in one line. |
 | P-ATLAZY | You `p4 resolve -at` a shared doc to take main's version, hand-edit your own paragraphs back on top, and submit. The submit reports the file as integrated. The depot gets main's version WITHOUT your edits, and `p4 status` afterwards says "reconcile to edit". `-at` records the result as identical to the source revision, so the submit lazy-copies that revision and never reads your disk file. Measured twice on `GitHubUpdate43.md`, 2026-08-15. | Do not edit a `-at`-resolved file before submitting. Submit the merge-down first, THEN `p4 edit <file>` and submit the edits as their own CL. Verify with `p4 print` of the depot head, not the workspace copy. |
 | P-REGRESS (L) | After a fleet merge-down, definitions you landed hours ago are GONE, the merge resolved `0 yours + N theirs + 0 conflicting`, and nothing looked wrong until a gate went red on names you know you shipped. A later merge can credit your copy-up as already integrated and offer an OLDER sibling revision as "theirs". "0 yours" can mean the merge base swallowed your side. **A SECOND CAUSE WITH THE SAME SYMPTOM, and it is not a merge-base subtlety but a command you typed: `p4 resolve -at` on the merge-down.** `-at` takes THEIRS wholesale for every file, including one you submitted to your own stream minutes earlier that main also touched, and it reports nothing unusual. Measured 2026-09-01 (blu): a compiler-backlog row landed at 21407, the very next merge-down resolved `-at`, and the row was back to main's version in the workspace AND the stream, while the sibling file in the same CL survived only because nobody else had touched it. `-at` is safe only when nothing of yours is in the way, which is exactly what a just-submitted CL violates; use `-as` (skips anything of yours) then `-am` on the remainder, and grep as below. | After any merge-down touching files you recently landed, grep ONE key definition per recent CL before submitting the merge. Repair: `p4 print` main head over the local file, `p4 sync`, `p4 resolve -ay`, resubmit. |
@@ -299,6 +349,7 @@ esolve -at takes the delete over your add. Measured 2026-08-16 on codex/test/tex
 | P-EXPECTED | A test passes every way you check it by hand and arrives RED in the battery. The `.expected` is one byte short: `Set-Content -NoNewline` leaves the file on `...yes` where the guest emits `...yes\n`. The harness strips CR from expected and compares exactly, so a missing trailing newline is a guaranteed fail. | **Every `.expected` in the tree ends with a trailing NEWLINE: 1237 of 1237, censused independently three times on 2026-08-15.** Write the newline. Do NOT copy the CR: every dev client is `LineEnd: local`, so the CRLF you observe is produced by YOUR sync and is a client property, not a depot fact, and the runner strips CR from the expected side anyway. The trailing newline is the half the harness actually tests. Verify with the RUNNER's own rule (section 4.6), never a `.Trim()` on both sides -- that normalises away exactly the difference the harness looks for (L-SIDECAR). A `text`-typed sidecar can also gain CR bytes on sync; `p4 retype -t binary <file>` if it keeps happening. |
 | P-SEEDSTALE (L) | A green gate does NOT mean the seed matches the source. `build.ps1` compares SUT against stage1 -- the compiler built from current source being a fixed point of itself. It never compares the seed against the SUT and cannot usefully, so `hard fixed point in one pass` is exactly what a stale seed looks like. | Ask not "does this change what the compiler emits" but **"does this change the compiler BINARY"**. Renames, added or removed definitions and chapter moves all qualify: a pure rename once shortened the mangled names baked into the compiler and moved the seed 672 bytes. Verify against the DEPOT every session (section 4.3). |
 | P-STAGE2 (L) | A green gate hands you a `Sut.cdx` that is NOT the fixed point. When `Sut !== stage1` the gate compiles a stage2 and passes on `stage1 === stage2`; the fixed point is STAGE1's and `Sut.cdx` is the PRE-CONVERGENCE binary, so installing it ships a compiler that does not reproduce itself. Before main 18083 that path printed nothing at all, so the tell was an ABSENT line and it shipped once (main 17970, fleet halted on seeds). | Read which path the gate names (section 4.3a): one-pass means install `Sut`, `CONVERGED ON THE SECOND PASS` means install `build/output/NewSeed.cdx` and re-gate FIRST. Silence means your `build.ps1` predates 18083 -- look harder, never assume one pass. Any change to the EMITTED RUNTIME takes two passes by construction. |
+| P-REPL (L) | **A compiler you built outside `build.ps1` is NOT the gate's artifact, and it looks perfect: it self-verifies, passes the BVT, and is a fixed point of itself.** `Invoke-BuildCdx` (`build/build.ps1:260`) passes **`-Repl`** to `compile.ps1`; a hand-rolled `concat` + `compile.ps1 -Kernel seed\Codex.cdx` does not. `-Repl` sets the emitted compiler's exit mode to `ExitRepl` instead of `Exit` (`opening.codex:1599`), which is a real difference in the binary and not a build-log detail. Measured 2026-09-03 (blu), same source and same kernel, one pass each: **without `-Repl` 3,180,203 bytes, with `-Repl` 3,179,934 -- 269 bytes longer and 2,872,079 of 3,179,934 bytes different, first difference at offset 8.** So nearly the whole binary moves. Three lane-landed seeds on 2026-09-02/03 were built this way (root's finding, from the release gate). A fixed point proves the compiler reproduces itself UNDER THE FLAGS YOU USED; it says nothing about the flags the gate uses. | Pass `-Repl` on any compile of the compiler's own concatenated source, exactly as `build.ps1:260` does. The poison-build recipe in `OperatorsManual.md` already shows it; the seed path did not, which is why lanes invented one without it. Better: prove the seed with the gate, and treat a scratch fixed point as evidence about your change rather than as the artifact to ship. |
 | P-SEEDSWAP | The same check fires when main's seed moves AHEAD of yours: a lane lands a new seed while your gate runs, and the green gate you are holding certified a compiler that no longer exists. The gate cannot see it, because the source and compiler it was handed were consistent with each other, and the build token does not prevent it and is not meant to. | Compare THREE digests, not two: your workspace seed, your `Sut.cdx`, and the depot's. Sut equal to yours but not the depot's means the depot moved under you, so merge down, unshelve and RE-GATE, never rebuild a seed. Run it after every gate including apps-only CLs that took no token (section 4.3). |
 | P-SIGNED (L) | A seed installed from `build/output/NewSeed.cdx` carries zeros where its signature belongs and fails `test-self-verify.ps1` with `SIGNATURE INVALID`. `NewSeed.cdx` is a copy of the unsigned `stage1.cdx`; the sign phase patches key and signature into `Sut.cdx` in place. | Install the SIGNED `build/output/Sut.cdx` **as the final step. One exception, and it is a step you will need: section 4.4 installs the UNSIGNED `NewSeed.cdx` deliberately, as an intermediate bootstrap to converge a seed built by an older one.** That is correct and this row is not an argument against it; read 4.4 before refusing it. The content hash (bytes 8-39) deliberately excludes the signature region so the fixed-point test works on signed and unsigned alike, which is exactly why a hash match will NOT catch this: measured on a wiped-and-resynced workspace 2026-08-15, `NewSeed.cdx` and `Sut.cdx` agree on bytes 8-39 exactly while their signature regions are 64 zero bytes and a real signature. Compare WHOLE FILES (section 4.3) and run the self-verify (section 4.4). |
 | P-EDITOR | A command that wants a form hangs forever with no output. `p4 change` with no arguments, `p4 client`, and interactive `p4 resolve` all open `$P4EDITOR`, which is `Notepad.exe` on this box. Measured 2026-08-15: bare `p4 change` was still blocked at 15 s. Tool stdin is the null device and no agent can close the window. **The CL lifecycle block used to open with bare `p4 change`**, so the first line of the most-copied recipe in this file was one an agent could not run. | Never invoke the bare form. Use the `-o` / `-i` spec pipe for anything that would open a form: section 4.7 creates a numbered CL with its description in one shot. `p4 resolve` has the same problem and P-INTEGRATE already names it. |
@@ -307,6 +358,8 @@ esolve -at takes the delete over your add. Measured 2026-08-16 on codex/test/tex
 | P-SELFAGREE (L) | A check passes for you every time and another agent reports it failing on main. The file it reads was rewritten on disk by a tool's own `-Update` (or by a build phase) and never opened for edit, so it is modified, untracked, and invisible to `p4 opened`. Every local run then compares the tool's fresh answer against the tool's own last answer and agrees with itself, while the depot copy the fleet reads is unchanged. `seed/constants.hash` did this for four days: `check-constants` said MATCH on the workstream and MISMATCH on main, and the copy-up that should have carried it never knew the file existed. | **`p4 diff -sa <file>` cannot see this and will tell you the file is fine.** It reports only OPENED files that differ, so on an unopened one it answers `file(s) not opened on this client`, which reads as agreement and is not. Use `p4 reconcile -n <dir>/...`, which lists modified-but-unopened files, and settle any hash-file question against `p4 print` of the depot copy rather than the workspace one (section 4.3 says the same for the seed). To prove which side is stale, `p4 sync -f` the file and re-run the check: it must FAIL. A check that cannot fail is not a check (L-FALSIF). |
 | P-DOTNETCWD | You run a scripted write aimed at the MAIN client from your dev session and it lands in, or is refused by, the DEV workspace instead. Set-Location does not move the .NET process working directory, so `[System.IO.File]::ReadAllText`/`WriteAllText` on a RELATIVE path resolves against wherever the process started, not against the cd at the top of your command. It surfaces as `Access to the path ... is denied` naming a path in the wrong workspace, which reads as a permissions problem rather than a wrong-tree problem. Bites hardest in a mindmeld, where every agent edits -main files from a -dev session. | Give every .NET file call an ABSOLUTE path, and read the path out of the exception before believing the message. |
 | P-CLEANCOUNT (L) | A doc's COUNT merges cleanly and is still wrong. `TechnicalDetails.md`'s test-file count resolved twice in one session as "0 yours + 0 theirs + 2 both + 0 conflicting" while being off by one, because another lane had moved the same counter and the merge kept a value that was correct for neither tree. A clean merge on a count is not a correct count (blu, 2026-09-02). | Re-run `build/check-doc-counts.ps1` after EVERY merge-down that touches a doc carrying a number, before gating. It is seconds and it caught both. |
+| P-DOCADD | Your CL adds or deletes `.codex` chapters and the gate REDS at `check-doc-counts` before it compiles anything, because `TechnicalDetails.md` states the module and application counts TWICE and both copies are checked. Measured 2026-09-01: a 25-module games batch stopped the gate at `FAIL: 2 of 63 doc count claim(s)`, the headline and the `apps/` tree block, both saying 1,026 where 1,051 was measured. Adding a file under `codex/foreword/` moves seven claims (section 5). | Fix the count INSIDE the same CL. This is the one case where "docs go straight to main" does NOT apply: the count has to move in lockstep with the source or main goes red the moment the CL lands. Run `build/check-doc-counts.ps1` alone BEFORE the gate on any CL that adds or deletes chapters; it prints the per-claim table in seconds and saves a whole gate cycle. |
+| P-BISECTSEED | You bisect the seed with `p4 sync //Codex/<agent>/seed/Codex.cdx@<CL>` using MAIN's changelist numbers, and two different CLs give you the same binary, so you attribute a regression to the wrong change. A dev stream receives main only at merge-down, so many main CLs collapse onto one dev-stream revision. Measured 2026-09-01 (blu, bisecting the four `roc-fold-*` arm64 regressions): probes at 20706 and 20736 returned an IDENTICAL seed hash, which is the tell, and it cost a wrong attribution mid-bisect. | Bisect against MAIN and hash first: `p4 print -q -o <file> //Codex/main/seed/Codex.cdx@<CL>` for each candidate, then `Get-FileHash`. Distinct CLs must give distinct hashes before any of them is worth a guest run. The probe itself is cheap and needs no plug rebuild: `build/test-cross.ps1 -Arch arm64 -Test <name>`, about 40 s. |
 
 ---
 
@@ -433,20 +486,18 @@ still, and the lane that landed the seed was holding it legitimately.
 
 ### 4.3b An internal seed land is fast now (Damian, 2026-08-16)
 
-A seed land used to pay THREE full `build/build.ps1` passes under the token:
-one to gate, one to "converge" the new seed, one to re-prove on the parent.
-Measured 2026-08-16 that was ~27 minutes of gating and two of the three passes
-were redundant against determinism. Internal lands now cost one fast gate and
-two second-long checks. **The full `build/build.ps1` is for PUBLIC/release
-builds only; internal lands use `build/build.ps1 -Internal`.**
+**NEITHER FORM OF `build/build.ps1` IS A LANE'S TO RUN** (`CLAUDE.md`
+R-GATE). `-Internal` is banned outright (Damian, 2026-09-02: "it shaln't be
+run") and the bare gate is the release gate and is Damian's. A lane proves a
+change by compiling and running the tests that change touches, one at a time;
+a seed-affecting change adds the scratch fixed point, `build/bvt.ps1` on the
+candidate, the signer and `test-self-verify`. Every run that starts a guest is
+asked of the commander first.
 
-**`-Internal` is not the seed-land gate any more, it is THE gate, for every
-agent on every CL** (Damian, 2026-08-20). It is named in `CLAUDE.md` rule 1
-now, which is where it should have been from the start: this section and
-`CoordinationProtocol.md` were its only homes, so an agent who was not
-landing a seed never met it and ran the full gate on every step of every arc.
+The rest of this section and 4.4 describe what the gate PRODUCES, because
+`install-seed.ps1` consumes it. They are not an instruction to run it.
 
-- **Gate with `-Internal`.** It always proves the seed is a byte-identical
+- **The gate's core.** It always proves the seed is a byte-identical
   self-fixed-point that boots (the fixed-point core plus the BVT); it runs a
   regression phase (jonquil, the plug phases, gen-scripts, deck-headroom,
   vm-differential, app-sweep, and since 2026-08-20 the four text phases) ONLY
@@ -465,9 +516,10 @@ landing a seed never met it and ran the full gate on every step of every arc.
   `cdx-stage1` already parses the same source.
 
 - **The convergence rebuild is unnecessary when the gate reports one-pass.**
-  If `-Internal` prints `SUT === stage1 -- hard fixed point in one pass` and
+  If the gate prints `SUT === stage1 -- hard fixed point in one pass` and
   `build/output/Sut.cdx` differs from the on-disk seed (your change moved it),
-  install Sut and self-verify. Do NOT run the gate a second time to "converge":
+  install it with **`build/install-seed.ps1`** and not with a hand-typed
+  `Copy-Item`. Do NOT run the gate a second time to "converge":
   a one-pass fixed point IS the proof that `seed := Sut` reproduces Sut, and
   signing is deterministic, so the second full build only re-derives a hash you
   already hold.
@@ -502,11 +554,46 @@ landing a seed never met it and ran the full gate on every step of every arc.
   still holds the old bytes.** That is the whole of P-STAGE2 and it is why the
   convergence pass exists.
 
-  **Two habits close this, and neither is new machinery.** Read the fixed-point
-  verdict out of THIS run, in the same command that installs the seed, never
-  from a log you grep by name. And check the `cdx-fixedpoint` timing: a true
-  one-pass is ~0.0 s, and any real duration means stage2 was built and
-  `NewSeed.cdx` is the artifact to install first.
+  **`build/install-seed.ps1` closes this, and it is the only sanctioned way to
+  move the seed.** Every gate run writes `build/output/seed-verdict.txt` naming
+  the outcome, the artifact that IS the fixed point, and that artifact's
+  whole-file SHA-256. The script refuses a two-pass or core-skipped verdict, a
+  verdict older than the artifact it names, and a hash that does not match the
+  bytes it is about to copy; then it installs, self-verifies, restores the
+  previous seed if the self-verify fails, and refreshes the four
+  `seed/Codex.cdx` claims in `TechnicalDetails.md`. It boots one guest, so ask
+  the commander for it. **`build.ps1:823` is the only automatic writer of a
+  gate verdict and `build.ps1` is Damian's, so A LANE USES `-Lane` AND DOES
+  NOT WRITE A VERDICT BY HAND:**
+
+```powershell
+build/install-seed.ps1 -Lane -Cdx build\output\Sut.cdx -Source <concatenated source>
+build/install-seed.ps1 -Lane -Cdx ... -Source ... -CheckOnly   # prove it, install nothing
+```
+
+  It re-derives the proof rather than reading a claim about it: it compiles
+  the source WITH the candidate and requires the result to be content-
+  identical at bytes 8..39, which exclude the signature, so a signed candidate
+  and its unsigned output compare equal on payload (P-SIGNED). That is a
+  one-pass fixed point measured in that run, and unlike prose it cannot be
+  satisfied by handing the script copies of one binary. It then writes the
+  verdict itself, naming the BVT and the gate regression phases as NOT
+  verified there, since those stay the lane's own runs under R-GATE.
+
+  The hand-written verdict Damian allowed on 2026-09-07 ("just write a manual
+  seed verdict file if you find some other way to build the seed. just be
+  honest when you do") was the stopgap for the days when no lane mode existed,
+  and one seed landed that way (main 23058). Prefer `-Lane`: it proves the
+  property the prose could only assert. If you ever do write one by hand,
+  line 1 must be exactly `one-pass <artifact-filename> <SHA256>` with the
+  artifact in `build/output` and the verdict newer than it, and line 2 onward
+  must say who wrote it and what it stands on. A hand-written verdict with no
+  line 2 is the 21215 failure wearing a new file. **The property that matters is that the verdict comes
+  from THIS run**, which a log grepped by name cannot satisfy and which is
+  exactly the substitution that failed above. The corroborator is still worth
+  knowing: a true one-pass costs `cdx-fixedpoint` about 0.0 s, and any real
+  duration means stage2 was built and `NewSeed.cdx` is the artifact to install
+  first.
   If the gate does NOT print one-pass (rare: the old seed compiled your source
   to a Sut that is not yet a self-fixed-point), you are in the genuine
   convergence case, not the fast one. Take the fallback in 4.4: install the
@@ -666,12 +753,14 @@ build/build.ps1
 
 # Sut === seed?  Already the fixed point, nothing to do.
 # Sut !== seed but stage1 === stage2?  The fixed point is STAGE1's -- Sut was
-# built by the OLD seed. Install the unsigned intermediate and converge:
+# built by the OLD seed. Install the unsigned intermediate and converge. This
+# is the ONE raw copy left in this document, and install-seed.ps1 refuses a
+# two-pass verdict precisely so that this step stays a deliberate one:
 Copy-Item -Force build/output/NewSeed.cdx seed/Codex.cdx
 build/build.ps1                                   # now SUT === stage1 in one pass
 
-Copy-Item -Force build/output/Sut.cdx seed/Codex.cdx   # the SIGNED fixed point
-build/test-self-verify.ps1                        # must print THE SEED VERIFIES ITSELF
+build/install-seed.ps1                            # the SIGNED fixed point, verdict-checked,
+                                                  # self-verified, digests refreshed
 
 p4 revert //Codex/<PARENT>/seed/Codex.cdx
 p4 edit -c <CL> //Codex/<PARENT>/seed/Codex.cdx

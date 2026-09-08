@@ -520,22 +520,52 @@ Section: Single Token Scanning
         else LexToken (make-token (deck-record ErrorToken) 1 s) next
 
 Section: Char Literal
+ Every close below is CONDITIONAL, and before this diagnostic existed the
+ absent one was silent at every severity. The non-escape arm advances over
+ whatever follows the opening quote, a newline included, so `char-code '` at
+ the end of a line took the newline as its character, found no closing quote
+ on the next line, and emitted a CharLiteral anyway: the chapter compiled,
+ exit 0, and the character the author wrote was gone. Measured at head
+ 2026-09-07 before the change. `scan-string-body` twenty lines above is the
+ same shape for text and was fixed first (COMPILER-35).
+
+ A quote straight after a letter or a digit is an APOSTROPHE and no
+ diagnostic is raised for it. A heading is not prose to this lexer: its title
+ is reassembled from ordinary tokens by `collect-title-tokens`
+ (`Syntax/Parser.codex`), so `Section: The Gate's Coverage` reaches here as a
+ character literal that never closes, and twenty files in the tree are written
+ that way. Censused 2026-09-07 over 4,025 files: of 364 well-formed character
+ literals, ZERO have an opening quote preceded by a letter or a digit, so the
+ test costs nothing that is really a literal. The scan still consumes the same
+ bytes and emits the same token either way; only the diagnostic is withheld.
+
+  char-unterminated : LexState, SourceSpan, Boolean -> LexState
+  char-unterminated (st) (open-span) (apostrophe) =
+   if apostrophe then st
+   else add-lex-error st cdx-unterminated-char "Unterminated character literal: hit end of line before closing '" open-span
+
   scan-char-literal : LexState -> LexStep
   scan-char-literal (s) =
-   let s1 = advance-char s
-   in if is-at-end s1 then LexToken (make-token (deck-record ErrorToken) (s1.offset - s.offset) s) s1
+   let open-span = span-at (s.line) (s.column) (s.offset) 1 (s.file-id)
+   in let apostrophe = if s.offset == 0 then False
+      else let prev = char-code-at (s.source) (s.offset - 1)
+      in is-letter-code prev | is-digit-code prev
+   in let s1 = advance-char s
+   in if is-at-end s1 then LexToken (make-token (deck-record ErrorToken) (s1.offset - s.offset) s) (char-unterminated s1 open-span apostrophe)
       else if peek-code s1 == cc-backslash then let s2 = advance-char s1
-   in if is-at-end s2 then LexToken (make-token (deck-record ErrorToken) (s2.offset - s.offset) s) s2
+   in if is-at-end s2 then LexToken (make-token (deck-record ErrorToken) (s2.offset - s.offset) s) (char-unterminated s2 open-span apostrophe)
    else let esc-code = peek-code s2
    in let s3 = advance-char s2
-   in let s4 = if is-at-end s3 then s3 else if peek-code s3 == cc-single-quote then advance-char s3 else s3
+   in let esc-closed = if is-at-end s3 then False else peek-code s3 == cc-single-quote
+   in let s4 = if esc-closed then advance-char s3 else char-unterminated s3 open-span apostrophe
    in let esc-span = span-at (s1.line) (s1.column) (s1.offset) 2 (s1.file-id)
    in let s5 = if esc-code == cc-lower-t then add-lex-error s4 cdx-invalid-tab-escape "\\t escape is not valid in CCE; use a space character instead" esc-span
                else if esc-code == cc-lower-r then add-lex-error s4 cdx-invalid-carriage-return-escape "\\r escape is not valid in CCE; use '\\n' for newlines" esc-span
                else s4
    in LexToken (make-token (deck-record CharLiteral) (s5.offset - s.offset) s) s5
    else let s2 = advance-char s1
-   in let s3 = if is-at-end s2 then s2 else if peek-code s2 == cc-single-quote then advance-char s2 else s2
+   in let closed = if is-at-end s2 then False else peek-code s2 == cc-single-quote
+   in let s3 = if closed then advance-char s2 else char-unterminated s2 open-span apostrophe
    in LexToken (make-token (deck-record CharLiteral) (s3.offset - s.offset) s) s3
 
 Section: Tokenize All

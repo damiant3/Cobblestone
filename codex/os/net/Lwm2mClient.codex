@@ -42,7 +42,7 @@ Section: The Object Tree
   Lwm2mClient = record {
     lc-reg : Lwm2mRegistration,
     lc-res : List Lwm2mRes,
-    lc-location : List Integer,
+    lc-location : List (List Integer),
     lc-registered : Boolean,
     lc-msg-id : Integer,
     lc-ticks-left : Integer,
@@ -103,21 +103,34 @@ Section: Registration
     if c.lc-registered == False then Lwm2mStep { ls-client = c, ls-out = [] }
     else lwm2m-client-relocate c CoapPost
 
+ THE REQUEST IS BUILT BEFORE THE HANDLE IS FORGOTTEN. Deregister ends the
+ registration, but the DELETE has to be addressed TO it, so clearing the
+ location first produces a request with no path at all -- addressed to the
+ server's root rather than to the registration, which every server answers
+ 4.04 while the device believes it deregistered cleanly.
+
   lwm2m-client-deregister : Lwm2mClient -> Lwm2mStep
   lwm2m-client-deregister (c) =
     if c.lc-registered == False then Lwm2mStep { ls-client = c, ls-out = [] }
-    else lwm2m-client-relocate (c revised { lc-registered = False, lc-location = [], lc-ticks-left = 0 }) CoapDelete
+    else let st = lwm2m-client-relocate c CoapDelete
+    in Lwm2mStep { ls-client = (st.ls-client) revised { lc-registered = False, lc-location = [], lc-ticks-left = 0 },
+                   ls-out = st.ls-out }
 
   lwm2m-client-relocate : Lwm2mClient, CoapMethod -> Lwm2mStep
   lwm2m-client-relocate (c) (method) =
-    let opts = coap-uri-path-options (lwm2m-loc-text (c.lc-location) 0 "")
+    let opts = lwm2m-loc-options (c.lc-location) 0 []
     in let msg = coap-build-request CoapConfirmable method (c.lc-msg-id) [] opts []
     in Lwm2mStep { ls-client = lwm2m-bump c, ls-out = [msg] }
 
-  lwm2m-loc-text : List Integer, Integer, Text -> Text
-  lwm2m-loc-text (loc) (i) (acc) =
-    if i >= list-length loc then acc
-    else lwm2m-loc-text loc (i + 1) (acc & "/" & show (list-at loc i))
+ One Uri-Path option per stored segment, each carrying the server's own
+ bytes. The segments are never joined into a path and re-split, because a
+ handle containing a `/` would come back as two segments and address
+ something else.
+
+  lwm2m-loc-options : List (List Integer), Integer, List CoapOption -> List CoapOption
+  lwm2m-loc-options (segs) (i) (acc) =
+    if i >= list-length segs then acc
+    else lwm2m-loc-options segs (i + 1) (acc & [CoapOption { number = coap-opt-uri-path, value = list-at segs i }])
 
   lwm2m-bump : Lwm2mClient -> Lwm2mClient
   lwm2m-bump (c) = c revised { lc-msg-id = bit-and (c.lc-msg-id + 1) 65535 }
@@ -140,25 +153,19 @@ Section: Receive
     else if m.cm-code <= 4 then lwm2m-server-request c m
     else lwm2m-client-response c m
 
- 2.01 Created is the registration accepted. The location is stored as the
- integers of its segments, which is what a server issues in practice and
- what lets the handle be echoed without carrying Text through the client.
+ 2.01 Created is the registration accepted. The Location-Path options are
+ stored AS THE SERVER SENT THEM, bytes and all, because the handle is
+ opaque: OMA LwM2M lets a server choose any segments it likes, and `rd` is
+ the one every server sends first. Reducing a segment to its digits answers
+ a server's `/rd/74` on `/0/74`, so every Update and Deregister addresses a
+ registration that does not exist while the device believes the exchange
+ worked.
 
   lwm2m-client-response : Lwm2mClient, CoapMessage -> Lwm2mStep
   lwm2m-client-response (c) (m) =
     if m.cm-code /= coap-201-created then Lwm2mStep { ls-client = c, ls-out = [] }
-    else let loc = lwm2m-loc-numbers (coap-find-options (m.cm-options) coap-opt-location-path) 0 []
+    else let loc = coap-find-options (m.cm-options) coap-opt-location-path
     in Lwm2mStep { ls-client = c revised { lc-location = loc, lc-registered = True, lc-ticks-left = (c.lc-reg).lifetime }, ls-out = [] }
-
-  lwm2m-loc-numbers : List (List Integer), Integer, List Integer -> List Integer
-  lwm2m-loc-numbers (segs) (i) (acc) =
-    if i >= list-length segs then acc
-    else lwm2m-loc-numbers segs (i + 1) (list-push acc (lwm2m-digits (list-at segs i) 0 0))
-
- A location segment is not obliged to be a number and "rd" is the one every
- server sends first. A non-digit contributes nothing rather than being
- rejected, because refusing the registration over the spelling of a handle
- the server chose is a worse failure than carrying it.
 
   lwm2m-digits : List Integer, Integer, Integer -> Integer
   lwm2m-digits (bs) (i) (acc) =

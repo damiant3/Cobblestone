@@ -705,6 +705,131 @@ Acceptance: a server template built ENTIRELY in-tab is carried to the
 host, booted in codex-vm, and answers HTTP -- the artifact is graded by
 running it, not by existing.
 
+#### Groundwork, measured 2026-09-07 (red), before any UI was written
+
+**CORRECTED once the page was actually built: the closure resolving in the
+TREE is a different claim from resolving in the PAGE, and only the second
+one is the acceptance.** The on-board volume ships the LIBRARY quires and
+nothing else: 20 quires, 656 chapters, the set `is-library-quire` names at
+`codex/compiler/opening.codex:960`. `Explorer` and `Games` are APP quires
+and are correctly absent, so neither template's own chapters are on the
+volume however cleanly they close against the tree.
+
+**That settles the template shape rather than blocking it.** A template is a
+PROJECT, the page's project model already carries multiple files, and the
+split is mechanical: chapters in library quires resolve from the volume and
+must not be shipped; chapters in app quires ship as project files. Measured
+2026-09-07:
+
+| template | resolved from the volume | shipped as project files |
+|---|---|---|
+| `ExplorerServer` | 9 | **2** (`ExplorerStore`, `WorkflowExporter`) |
+| `GameServer` | 5 | **34** (every game) |
+
+So **`ExplorerServer` is the first template and the acceptance vehicle**: a
+three-file project, and it is the HTTP server the acceptance asks to be
+booted and answered. `GameServer` is a 35-file project and should follow it,
+not lead.
+
+**Both templates resolve against the TREE**, which is what made the split
+above computable. Walking the transitive `cites` closure against
+`build/quire-map.ps1`, which is the authority rather than a directory
+derivation: `ExplorerServer.codex` reaches 39 chapters and
+`GameServer.codex` 40, with ZERO unresolved in either. A
+first pass seeded from the quire name `Games::GameServer` reported it
+missing, which was wrong: `GameServer.codex` sits at `apps/games/` while the
+`Games` quire is `apps/games/classic`, because it is a program ROOT and not
+a library chapter (nothing cites it, and its own cites resolve into Games
+normally). Seed a closure from the FILE for a root, not from a quire name.
+
+**A template needs its ROOT SOURCE ONLY.** The shipped tree already rides as
+a gzipped FAT16 volume and RESOLVE mode pulls every cited chapter out of it
+transitively, so all 39 or 40 dependencies come free and only the root file
+has to reach the page. That kills the obvious implementation, which is to
+paste template source into `prism.html`: **emit the templates from the tree
+at page-build time instead**, so there is one copy and it cannot drift. The
+same mechanism makes any program root in the tree a candidate template for
+nothing but a manifest entry.
+
+**Half of the second bullet already exists.** The Binary tab carries the
+`pe` and `img` targets today (`BIN_NAME` maps them to `BOOTX64.EFI` and
+`codex.img`) and refuses a plug's text refusal rather than handing it over
+as a file. The TEMPLATE picker, the "how to run this" panel and the
+CDX-to-image chain are all built.
+
+**THE IN-TAB TEMPLATE COMPILE IS PROVEN, and proving it found the defect
+that made it false.** `page-workspace-arm.js` arm 18 picks `ExplorerServer`
+through the page's own change handler and compiles it through the page's own
+Compile handler: 3 project files, 10,098 lines resolved off the volume, a
+223,620-byte CDX carrying the CDX1 magic, with a refusing-confirm control
+that must leave the project alone and an unresolved control that must answer
+CDX3007. Until that arm ran, the compile was IMPOSSIBLE in a browser and
+nothing said so: `build-page.ps1` embedded the tree's text verbatim, the
+tree is CRLF, RESOLVE hands the source back without carriage returns (CCE
+has no character for one), so `resolveUnit` found the frame did not end with
+the unit text, reported the library unused, and the template would have
+refused CDX3007 for a user. **The project model is LF-only, and that is now a contract the page keeps
+rather than a property its inputs happened to have.** Templates are
+normalised where `build-page.ps1` emits them, and `eolLf` normalises every
+other route text arrives by: `addFile` (the file input, the picker menu, the
+presets, the agent's `write_file` when it creates), the folder-picker and
+OPFS walks, which set `project.files` directly, and `write_file` when it
+overwrites. Arm 19 grades it: a CRLF chapter citing `Foreword Maybe` through
+`addFile` resolves and compiles, and the control pushing the SAME text
+straight into `project.files` reproduces the refusal word for word, so a
+green arm is not a statement about a page that never sees CRLF.
+
+**STAGE 3'S ACCEPTANCE IS MET: a server template built entirely in-tab was
+carried to the host, booted in codex-vm, and answered.**
+`PRISM_TEMPLATE_CDX=<path>` makes arm 18 write its in-tab CDX out, so what
+the host boots is the bytes the page made and not a sibling recompiled
+another way (L-ARTIFACT). Ten requests through `apps/explorer/_authtest.ps1`
+against that file, all 200 with correct bodies: anonymous `/` and the app
+route return `[]`, register returns `{"id":1,"handle":"alice"}` and refuses
+the duplicate, login returns a token and refuses a bad password, `me`
+resolves the token and refuses the empty one, and after logout `me` refuses
+again.
+
+**The serve direction and the wire are both non-obvious, and getting either
+wrong looks exactly like a broken artifact.** `ExplorerServer` calls
+`auth-serve`, which CONNECTS OUT (`Accounts.codex`: `net-session-new
+local-mac local-ip gateway-ip 49152 9100 host-ip`), so the HOST is the
+listener and it must be listening BEFORE the boot, since the guest dials once
+and does not retry; `-portfwd` is the wrong shape and codex-vm says so with
+`connect failed for guest port 49152`. The wire is FRAMED, `[len:u32
+LE][tag:u8][body]` with the body `GET <path>`, not raw HTTP. A raw `GET
+/api/health HTTP/1.0` on that socket reaches the guest (`rx_enqueue: q=1
+len=99`) and is simply never a request it can parse: the guest answers
+nothing and the read times out, which reads as a dead server and is not one.
+`apps/explorer/_authtest.ps1` is the recipe for all of it and it sits in the
+app's own directory (L-READ).
+
+**THE PAGE NOW BUILDS IN THIS WORKSPACE: 179.3 s, five phases, all green**
+(module 150.9 s, library 5.5 s, x86-truth 4.3 s, cdx-arm 0.6 s, examples
+16.0 s; red, 2026-09-07). Two generated artifacts were missing and both cost
+seconds: `build/output/Codex.codex` from
+`build/concat-codex-self.ps1 -CodexDir codex/compiler` (2 s, and the
+`build/output` directory has to exist first), and
+`codex/plugs/wasm/build-output/wasm-plug.cdx` from
+`codex/plugs/wasm/build.ps1` (2 s), whose absence reports only as
+`FAIL: plug emission` with the real reason on stderr. Nothing here is a
+toolchain and nothing needs installing.
+
+**The setup is host-side scripts, not a toolchain.** `build-page.ps1` requires exactly one
+external tool, `wat2wasm`, and it is already on PATH here
+(`AppData/Local/Programs/wabt`); `wasm-opt` is optional and only
+`build-designer.ps1` reaches for it, warning and continuing when it is
+absent. The one real prerequisite is `build/output/Codex.codex`, which is
+GENERATED by `build/concat-codex-self.ps1 -CodexDir codex/compiler` and
+starts no guest. `build-page.ps1` runs five phases and only `module` is
+gated by `-Incremental`.
+
+An earlier revision of this section said three prerequisites were absent and
+implied a toolchain question. That was wrong and is corrected here rather
+than left to mislead: it tested for `tools/wat2wasm.exe` in the depot
+instead of asking PATH, which is what the build script itself asks. Nothing
+about stage 3 is blocked on an install.
+
 ### Stage 4 -- Claude in the loop (red)
 
 An optional right-hand panel: REPL chat, or agent mode, or off.
@@ -893,11 +1018,192 @@ and `hosted-windows` did not exist in the one the site was serving, so a hosted
 target is a different compile rather than a different wrapper. Account and the
 two PE defects the byte-comparison caught: `plugs-backlog.md` 2.12.
 
-**5c, sockets, is untouched and is what "run a SaaS server" still waits on.**
+#### Stage 5c -- sockets (red; seed-affecting). DONE 2026-09-08, both halves, all four arms met.
+
+The Linux half is main 23339 and the Windows half followed it as its own CL.
+A hosted Codex server binds, listens, accepts, echoes and closes on both
+targets, and the two print byte-identical output.
+
+**What the stage found, and it is a property of the target rather than of this
+code: the free floor of a freshly loaded Windows image moves with what the
+image IMPORTS.** Adding ws2_32 raised it from about 0x40000000 to about
+0x64000000, straight through `hosted-win-cell-base` at 0x50000000, and every
+hosted-windows program then exited 90 having printed nothing. The band moved
+to 0x70000000, which is headroom and not a guarantee: it must stay under 2^31
+so a cell reference still encodes as an absolute disp32, so the whole usable
+window is 0x64000000 to 0x80000000, and a future import can raise the floor
+again. **A hosted-windows build that imports a further DLL re-opens this
+question and must re-measure**; the measurement is a base patched into a built
+`.exe` and the exit code read, and it is written up where the constant is
+declared in `X86_64Boot.codex`. Addressing the cells through a register the
+way the arena already is would remove the class entirely and is not in 5c.
+
+**The boundary decision, and it is the whole of 5c: a hosted server uses the
+HOST'S TCP, not ours.** A `SOCK_STREAM` socket hands over a byte stream the
+kernel has already sequenced, so `NetworkStack`, `TcpTransport` and the NE2K
+driver are all BELOW the hosted boundary and none of them is reached. The
+consequence is the one thing a reader is likely to assume away: **`web-serve`,
+`auth-serve` and `web-serve-concurrent` are NOT the hosted serve path.** They
+dial or listen through `net-session-new` over a NIC, and on a hosted target
+that hardware is absent. A hosted server needs its own serve chapter over
+socket primitives, with the route function as the shared part. Our stack over
+a raw socket is the alternative and it is refused: it needs privileges we
+should not ask a user for, and it re-implements what the host already did.
+
+**The Linux half is symmetric with what 5a/5b already built.** The hosted
+print and read paths lower to `syscall` with numbers named in
+`X86_64Boot.codex` (`linux-sys-write` 1, `linux-sys-read` 0,
+`linux-sys-exit-group` 231). Sockets are five more of exactly that shape:
+`socket` 41, `bind` 49, `listen` 50, `accept4` 288, `close` 3, with `read`
+and `write` already there and serving a socket fd unchanged.
+
+**The Windows half is NOT symmetric, and this is the cost that decides the
+stage's size.** Windows sockets are not syscalls; they are `ws2_32.dll`
+exports (`WSAStartup`, `socket`, `bind`, `listen`, `accept`, `recv`, `send`,
+`closesocket`), so they arrive as IMPORTS. The console container's import
+layout is FIXED and agreed by two sides that never read each other:
+`X86_64Boot.codex` hard-codes `hosted-win-iat-getstdhandle` through
+`hosted-win-iat-readfile` (1052760 to 1052792), and
+`codex/plugs/pe/cdx-to-pe-console.ps1` carries the same addresses in
+`$IatSlots` with `$Funcs` order load-bearing, then ASSERTS every slot against
+what it builds and throws on a disagreement. So:
+
+- a second DLL is a second import descriptor, which moves the ILT, the IAT
+  and every one of those constants; both files change together or the
+  assertion fires, which is the good outcome, and
+- the whole `.idata` must stay inside one 4 KB section or the container
+  throws (`idataSize -gt $SECT_ALIGN`). Eight new thunks plus a second
+  descriptor and its names fit that page today, and that must be RE-CHECKED
+  against the built size rather than assumed.
+
+**A new builtin costs EIGHT hand-edited files, measured 2026-09-08 by adding
+one: `Builtins.codex`, `X86_64Boot.codex` (its constants),
+`X86_64Helpers.codex` (the body and its place in the emit sequence),
+`Arm64CodeGen2.codex`, `RiscVCodeGen2.codex` (the dispatch arm),
+`RiscVCodeGen3.codex` (the refusal helper the arm calls),
+`WasmEmitter.codex` and `CSharpEmitterExpressions.codex`.**
+`RecheckBuiltins.codex`, `Codex.codex` and every `plug-source*.codex` also
+carry the name and are GENERATED, so they are regenerated rather than edited:
+`codex/plugs/recheck/gen-builtins.ps1` writes the first and `build.ps1` fails
+on any drift. The non-x86 arms are one line each and REFUSE, the shape
+`a64-emit-unsupported-port` already has, answering -1 rather than 0 because
+-1 is the value a caller checks and 0 is a plausible descriptor; a backend
+left out does not fail the build, which is why the list is written down here
+rather than rediscovered per builtin (L-BAILVALUE). This is what decided one
+builtin family taking an operation selector over eight separate names.
+
+**The family is `host-socket op a b c`, and it is classed at `Network.Write`.**
+One name carries one effect row, and a family that can `send` is a writing
+family; splitting it by direction would let a caller declare the weaker row
+and still reach the stronger operation through a shared descriptor, which is
+worse than one honest over-declaration. The selector values are named in
+`X86_64Boot.codex` as `sock-op-*` and spelled again by a caller, because a
+program reaches the builtin and not the compiler's own constants.
+
+**`setsockopt` 54 is a SIXTH syscall and it is not optional.** Without
+`SO_REUSEADDR` a re-run inside the previous run's TIME_WAIT fails to bind, so
+the acceptance arm below would pass once and then fail for a reason that has
+nothing to do with the code under test.
+
+**Acceptance arms, named before the work starts.**
+
+1. A Codex program that listens, accepts one connection, echoes a line and
+   closes, compiled `hosted` and run on Linux, asked by a host client. The
+   subject is `codex/test/hosted-echo.codex` and the harness is
+   `codex/plugs/elf/hosted-socket-arm.ps1`, which carries two controls: the
+   same client function against a `TcpListener` echo must PASS and against a
+   dead port must FAIL, because a client that cannot connect and a server that
+   never listened are the same silence (L-VACUOUS).
+2. The same source compiled `hosted-windows` and run natively, asked the
+   same way, with byte-identical output. The two arms are the control for
+   each other: one target passing alone has historically meant a path that
+   lowered to the bare-metal serial road (the reason `ReadFile` exists).
+3. The container's IAT assertion left ARMED and observed to FAIL on a
+   deliberate one-slot disagreement, before it is trusted (L-VACUOUS).
+4. `hosted-kind` still answers 0 for a bare-metal build and the bare-metal
+   net path is untouched, measured rather than argued: the BVT on the
+   candidate compiler.
+
+**Landing shape.** Seed-affecting, so the token, the scratch fixed point, the
+BVT and a signed self-verified seed. The Linux half lands first and alone; it
+is small and its arm is complete without Windows. The Windows half is its own
+CL because it moves constants in two files that must move together.
+
+**Not in 5c:** TLS, non-blocking or multiplexed accept, and IPv6. A single
+blocking accept loop is what "run a SaaS server" asks for at this stage, and
+the concurrency question belongs with `web-serve-concurrent`'s own design.
 
 **Not in v1:** stdin, and any subject reaching a kernel service. Those are
 scoped out by what the source asks for, which is this design's own "scope v1 is
 console programs".
+#### Stage 5d -- a hosted serve chapter (red). DONE 2026-09-08.
+
+Stage 5c gave a hosted target sockets and left it unable to serve HTTP, because
+all four serve entry points build their session with `net-session-new` over a
+NIC. `apps/works/HostedServe.codex` closes that: `hosted-listen`,
+`hosted-serve-on`, `hosted-serve-n` and `hosted-serve` over `host-socket`.
+
+**ONE ROUTE FUNCTION SERVES BOTH TARGETS, and that is the property under test
+rather than a hope.** `apps/works/WebRoute.codex` carries the request count, the
+JSON helpers, the two standard endpoints and the dispatch, all moved out of
+`WebServer.codex`; `WebServer` cites the new chapter and both servers share one
+definition. A route answering `/api/health` on one target and 404 on the other
+is the per-target rewrite the split exists to prevent, so the arm asks for
+`/api/health` on a subject that never wrote it.
+
+Measured, and the reason the move is safe: names resolve through the TRANSITIVE
+cite closure. `MagicServer.codex` cites `Net chapter WebServer`, never cites
+`Works chapter Http`, and calls `http-encode` and `http-error`. Fifteen files
+outside the two new chapters use the moved names and none of them changed.
+
+Arms. `codex/plugs/elf/hosted-http-arm.ps1` over `codex/test/hosted-http.codex`,
+both targets, with the two controls the socket arm carries: `/hello` answered by
+the subject's own route, `/api/health` answered through `WebRoute`, two requests
+served, byte-identical output across the targets. The bare-metal server is
+regression-checked by running, not by compiling: `web-send-short`,
+`http-send-short` and the four `web-mux-*` subjects, 6 pass 0 fail against the
+`.expected` sidecars the battery uses.
+
+**PRISM ITSELF IS THE FIRST USER, and Prism is the app this campaign is named
+after.** `PrismRoutes.codex` carries the catalogue and the route function and
+cites no Net chapter; `Prism.codex` keeps the bare-metal entry over `web-serve`;
+`PrismHosted.codex` is the hosted entry over `hosted-serve-on`. Both entries
+call the same `prism-route sources ir-cache`.
+
+Measured before the split, and the reason the split is small: the whole of
+Prism used exactly TWO names from the Net quire and from `WebServer`, and one
+of the two was `web-serve` itself. Measured after: bare metal 198,528 bytes
+against hosted 102,612, roughly half, because stage 5c's boundary decision
+drops the NIC stack below a hosted target. **The bare-metal entry compiling is
+the control**: a split that compiled only the new half would mean the route
+MOVED rather than being shared. `apps/prism` needed a quire registration to
+hold a second chapter (main 23526), which also taught the generator the
+`Sheets` line it never had.
+
+**Not in 5d:** TLS, keep-alive and concurrency. The responses carry
+`Connection: close`.
+
+**TLS IS NOT BLOCKED BY THE HOSTED BOUNDARY, and an earlier reading of this
+design implied otherwise.** Corrected 2026-09-08 by reading: `Tls.codex` sits
+in `codex/foreword/core` and cites only CCE, the crypto chapters, `Maybe` and
+`ListUtils`; `TlsEndpoint.codex` cites only Encode and Foreword chapters.
+Neither names a Net chapter. The endpoint API is a BYTE PUMP:
+`tls-ep-recv : TlsEp, List Integer -> TlsEpStep` and
+`TlsEpStep = { tes-ep, tes-out : List (List Integer) }`, so a caller feeds the
+ciphertext it read from any byte stream and writes back what it is handed.
+`host-socket` supplies exactly that stream, and `DtlsEndpoint` and
+`CoapsEndpoint` already drive the same API over a non-TCP transport. **Hosted
+HTTPS is therefore a WIRING job between `host-socket` and the existing TLS 1.3
+stack, not a port and not new cryptography.** Registered PRISM-11.
+
+**`web-serve-concurrent` DOES NOT PORT, and that asymmetry is worth stating
+beside the TLS one.** `WebMux` holds `WebConn = record { transport :
+TcpTransportState, ... }`, so its multiplexing is the NIC stack's sequencing,
+reassembly and idle sweep. A hosted target has none of that work to do,
+because the host kernel already sequenced every accepted stream. Hosted
+concurrency is a DIFFERENT and smaller problem, a set of accepted descriptors,
+rather than a translation of `WebMux`.
+
 ### Stage 6 -- Run-in-tab (later, optional)
 
 Compile-to-wasm of user programs run directly in the page (the two

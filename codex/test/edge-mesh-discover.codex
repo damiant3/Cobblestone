@@ -1,0 +1,68 @@
+Chapter: EdgeMeshDiscoverTest
+
+  cites Foreword chapter Console
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Mesh chapter EdgeMeshLive
+  cites Mesh chapter EdgeMeshDiscover
+
+ EdgeMeshGameServers phase 4, stage 2. Three arms carry the stage.
+
+ First, a declared region is never moved by a claim. A node claiming to stand at
+ `us-east` from Tokyo would otherwise re-aim every distance measured against
+ `us-east`, and a placement follows the distance.
+
+ Then, the co-ordinates of a discovered region do not depend on registration
+ order. The same two claims are registered in both orders and the answer names
+ the same deciding node, because the lowest node name decides. A rule reading
+ the newest claim or the first in the list passes one order and fails the other.
+
+ Finally, discovery leaves the caller's region list alone. The last scenario
+ makes no claim at all and must report the six declared regions: an earlier
+ version appended through `region-add`, whose `list-push` extends in place, and
+ the scenario reported seven.
+
+ EVERY SCENARIO BUILDS ITS OWN GROUP, because `GroupState` operations store in
+ place and return the same record.
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let rl = default-regions
+    in act
+      act
+        let g = disco-report (group-new "d-a" "a") "node-z" "us-south" 30000 (0 - 95000)
+        in let found = disco-regions g rl
+        in print-line-uni ("a new region is discovered: " & disco-region-label found "us-south" 0 & ", regions " & show (list-length (found.rl-regions)))
+      end
+
+      act
+        let g1 = disco-report (group-new "d-b" "b") "node-b" "us-south" 30000 (0 - 95000)
+        in let g2 = disco-report g1 "node-a" "us-south" 31000 (0 - 96000)
+        in print-line-uni ("two claims, b then a, decided by " & disco-decider g2 "us-south" & ": " & disco-region-label (disco-regions g2 rl) "us-south" 0)
+      end
+
+      act
+        let g1 = disco-report (group-new "d-c" "c") "node-a" "us-south" 31000 (0 - 96000)
+        in let g2 = disco-report g1 "node-b" "us-south" 30000 (0 - 95000)
+        in print-line-uni ("the same two, a then b, decided by " & disco-decider g2 "us-south" & ": " & disco-region-label (disco-regions g2 rl) "us-south" 0)
+      end
+
+      act
+        let g = disco-report (group-new "d-d" "d") "liar" "us-east" 35000 139000
+        in print-line-uni ("a claim on a declared region: " & disco-region-label (disco-regions g rl) "us-east" 0)
+      end
+
+      act
+        let g = disco-report (group-new "d-e" "e") "node-m" "us-south" 30000 (0 - 95000)
+        in let sick = gs-register-service g (ServiceLocation { sl-service = disco-service, sl-version = "1", sl-member-id = "node-a", sl-address = "us-south|99000|99000", sl-port = 0, sl-role = SrLoadBalanced, sl-health = 2000, sl-load = 0, sl-registered = 0, sl-last-check = 0 })
+        in print-line-uni ("an unhealthy lower-named claimant loses to a healthy one, decided by " & disco-decider sick "us-south" & ": " & disco-region-label (disco-regions sick rl) "us-south" 0)
+      end
+
+      act
+        let g = group-new "d-f" "f"
+        in print-line-uni ("no claims at all, regions " & show (list-length ((disco-regions g rl).rl-regions)))
+      end
+    end
+  end

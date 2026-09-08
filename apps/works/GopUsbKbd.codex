@@ -1,5 +1,6 @@
 Chapter: GopUsbKbd
   cites Works chapter GopXhci
+  cites Kernel chapter Pci
   cites Works chapter GopAhci
   cites Works chapter GopHid
   cites Works chapter GopKey
@@ -52,6 +53,47 @@ Section: Keyboard State
   uk-cell-arms : Integer = 32
 
   uk-cell-nonzero : Integer = 40
+
+ The counters above live in `uk-state`, which is a per-keyboard heap
+ allocation, so nothing outside this chapter can find them: a diagnostic
+ holding no UsbKbd cannot read them at all. These cells are the same five
+ numbers at a FIXED address, so a passive reader (the diag ladder's
+ `mscalign` neighbour, `DiagKbd`) can separate never-armed from
+ armed-but-silent from firing-but-empty without touching the device.
+
+ 112..119 IS TAKEN OUT OF THE xdiag REGISTRY, and the registry is the one in
+ `OperatorsManual.md`, "The xdiag cell registry", which this block is added
+ to in the same change. Nothing arbitrates that array and no gate looks, so
+ two owners of one cell is green everywhere and surfaces as a wrong number on
+ a photograph of a boot screen: the HID note block sat at 80 until 2026-08-13
+ and spent that time showing storage state under device-descriptor labels.
+ 96..111 is that block, four devices deep, so this one starts at 112.
+
+ The mirror writes sit at the four sites that already increment, one poke
+ each, so the idle path that "must allocate NOTHING" gains no allocation and
+ no branch. A poke is not a record.
+
+  kbd-cell-magic : Integer = 112
+  kbd-cell-ok : Integer = 113
+  kbd-cell-dci : Integer = 114
+  kbd-cell-armed : Integer = 115
+  kbd-cell-events : Integer = 116
+  kbd-cell-nonzero : Integer = 117
+  kbd-cell-scans : Integer = 118
+  kbd-cell-code : Integer = 119
+
+  kbd-cells-magic : Integer = #4B424431
+
+  kbd-publish-bound : UsbKbd -> Integer
+  kbd-publish-bound (k) =
+    let a = xdiag-put kbd-cell-ok (if k.uk-ok then 1 else 0)
+    in let b = xdiag-put kbd-cell-dci (k.uk-dci)
+    in let c = xdiag-put kbd-cell-armed 0
+    in let d = xdiag-put kbd-cell-events 0
+    in let e = xdiag-put kbd-cell-nonzero 0
+    in let f = xdiag-put kbd-cell-scans 0
+    in let g = xdiag-put kbd-cell-code 0
+    in xdiag-put kbd-cell-magic kbd-cells-magic
 
   kbd-report-live : Integer, Integer -> Boolean
   kbd-report-live (a) (i) =
@@ -165,9 +207,33 @@ Section: Connect
 
   kbd-connect : [Device.Port] UsbKbd
   kbd-connect = act
-    xh <- xhci-connect
-    if xh.xh-ok then kbd-try-ports xh 0
-    else kbd-no-kbd
+    scan <- xhci-connect-scan
+    kbd-hosts scan 0 0
+  end
+
+  kbd-hosts : PciScanResult, Integer, Integer -> [Device.Port] UsbKbd
+  kbd-hosts (scan) (from) (ord) = act
+    if ord >= xhci-max-hosts then kbd-no-kbd
+    else kbd-hosts-at scan (pci-index-class scan xhci-pci-class xhci-pci-subclass from) ord
+  end
+
+  kbd-hosts-at : PciScanResult, Integer, Integer -> [Device.Port] UsbKbd
+  kbd-hosts-at (scan) (idx) (ord) = act
+    if idx < 0 then kbd-no-kbd
+    else kbd-hosts-step scan idx ord
+  end
+
+  kbd-hosts-step : PciScanResult, Integer, Integer -> [Device.Port] UsbKbd
+  kbd-hosts-step (scan) (idx) (ord) = act
+    xh <- xhci-connect-one (list-at (scan.devices) idx) ord
+    if xh.xh-ok == False then kbd-hosts scan (idx + 1) (ord + 1)
+    else kbd-hosts-took scan idx ord (kbd-try-ports xh 0)
+  end
+
+  kbd-hosts-took : PciScanResult, Integer, Integer, UsbKbd -> [Device.Port] UsbKbd
+  kbd-hosts-took (scan) (idx) (ord) (k) = act
+    if k.uk-ok then k
+    else kbd-hosts scan (idx + 1) (ord + 1)
   end
 
   kbd-try-ports : XhciHost, Integer -> UsbKbd
@@ -226,7 +292,9 @@ Section: Connect
     in let nt = xhci-ep-note dev epnum maxpkt binterval ivl (xhci-ep-status ce)
     in if ce.xe-ok == False then kbd-no-kbd
     else if ce.xe-code /= trb-cc-success then kbd-no-kbd
-    else UsbKbd { uk-ok = True, uk-host = xh, uk-dev = dev, uk-dci = dci, uk-ring = ring, uk-report = alloc-zeroed 64 64, uk-prev = alloc-zeroed 64 64, uk-state = alloc-zeroed 64 64, uk-raw = raw, uk-peers = [] }
+    else let bound = UsbKbd { uk-ok = True, uk-host = xh, uk-dev = dev, uk-dci = dci, uk-ring = ring, uk-report = alloc-zeroed 64 64, uk-prev = alloc-zeroed 64 64, uk-state = alloc-zeroed 64 64, uk-raw = raw, uk-peers = [] }
+    in let pub = kbd-publish-bound bound
+    in bound
 
 Section: The Pump
 
@@ -245,6 +313,7 @@ Section: The Pump
     let w = xhci-ring-push (k.uk-ring) (k.uk-report) 0 8 (bit-or (bit-shl trb-t-normal 10) trb-flag-ioc)
     in let db = xhci-ring-doorbell (k.uk-host) ((k.uk-dev).ud-slot) (k.uk-dci)
     in let n = poke-32 (k.uk-state) uk-cell-arms (peek-32 (k.uk-state) uk-cell-arms + 1)
+    in let p = xdiag-put kbd-cell-armed (peek-32 (k.uk-state) uk-cell-arms)
     in kbd-set-phase k uk-ph-armed
 
  The idle path must allocate NOTHING: this check runs millions of
@@ -264,6 +333,8 @@ Section: The Pump
     in if code == 0 then 0
     else let n = poke-32 (k.uk-state) uk-cell-events (peek-32 (k.uk-state) uk-cell-events + 1)
     in let c = poke-32 (k.uk-state) uk-cell-code code
+    in let pe = xdiag-put kbd-cell-events (peek-32 (k.uk-state) uk-cell-events)
+    in let pc = xdiag-put kbd-cell-code code
     in kbd-set-phase k uk-ph-drain
 
   kbd-drain : UsbKbd -> Integer
@@ -271,11 +342,13 @@ Section: The Pump
     let live = if kbd-report-live (k.uk-report) 0
       then poke-32 (k.uk-state) uk-cell-nonzero (peek-32 (k.uk-state) uk-cell-nonzero + 1)
       else 0
+    in let pn = xdiag-put kbd-cell-nonzero (peek-32 (k.uk-state) uk-cell-nonzero)
     in if k.uk-raw then kbd-set-phase k uk-ph-idle
     else let sc = hid-step (k.uk-prev) (k.uk-report)
     in if sc == 0 then kbd-set-phase k uk-ph-idle
     else let w = poke-32 gk-cell 0 sc
     in let n = poke-32 (k.uk-state) uk-cell-scans (peek-32 (k.uk-state) uk-cell-scans + 1)
+    in let ps = xdiag-put kbd-cell-scans (peek-32 (k.uk-state) uk-cell-scans)
     in sc
 
   kbd-pump-one : UsbKbd -> Integer

@@ -1,0 +1,437 @@
+Chapter: CellGraph
+  cites Sheets chapter CellFormula
+  cites Sheets chapter CellStore
+  cites Works chapter GopAhci
+  cites Foreword chapter CCE
+
+ Recalculation order, DERIVED. A formula's dependencies are the cells its
+ expression names, an edge runs from a named cell to the cell naming it,
+ and the order is a topological sort of that graph. Row-major order and
+ the order the formulas were typed in are both wrong and both look right
+ on a sheet small enough to read, which is why the order is computed and
+ never assumed.
+
+ A cycle is an ERROR NAMING THE CELLS, never a spin and never a fuel cap
+ that answers a number. Kahn's algorithm leaves exactly the cycle members
+ unemitted, so the entries the sort could not place ARE the report.
+
+ A RANGE IS EXPANDED HERE and not in the parser. `formula-refs` answers a
+ range's two corners because the parser does not know the sheet's bounds;
+ this chapter holds the sheet, so `A1:B9` becomes an edge from every cell
+ in the rectangle that carries a formula of its own.
+
+ Formulas live BESIDE the cells rather than inside them. A cell in
+ CellStore is a kind and a four-byte payload, and a parsed expression
+ does not fit in four bytes; a formula table keyed by cell also keeps the
+ store's dense block a fixed size per sheet.
+
+ The adjacency is CSR over dense blocks, counted then filled, so the sort
+ is one pass over vertices plus one over edges rather than a scan of
+ every edge per vertex. The chain SHEET-7 measures is 1,000 vertices and
+ 999 edges, where the difference is a million comparisons against two
+ thousand.
+
+ We say:
+
+Section: The Formula Table
+
+  FCell = record {
+    fc-row : Integer,
+    fc-col : Integer,
+    fc-src : Text,
+    fc-expr : Expr,
+    fc-ok : Boolean,
+    fc-msg : Text
+  }
+
+  Program = record {
+    pg-blk : Integer,
+    pg-cells : List FCell,
+    pg-slot : Integer
+  }
+
+  Plan = record {
+    pl-ok : Boolean,
+    pl-order : List Integer,
+    pl-stuck : List Integer,
+    pl-msg : Text
+  }
+
+  gr-word : Integer = 4
+
+  graph-new : Integer -> Program
+  graph-new (blk) =
+    let n = sheet-rows blk * sheet-cols blk
+    in Program { pg-blk = blk, pg-cells = [], pg-slot = alloc-zeroed (n * gr-word) 64 }
+
+  gr-index : Integer, Integer, Integer -> Integer
+  gr-index (blk) (r) (c) = r * sheet-cols blk + c
+
+  gr-slot-at : Program, Integer, Integer -> Integer
+  gr-slot-at (pg) (r) (c) =
+    if sheet-in (pg.pg-blk) r c == False then 0
+    else peek-32 (pg.pg-slot) (gr-index (pg.pg-blk) r c * gr-word)
+
+ A second formula written to the same cell REPLACES the first entry
+ rather than appending a second, because two entries for one cell would
+ both be sorted and both evaluated, and the later one would win by
+ accident of order.
+
+  graph-put : Program, Integer, Integer, Text -> Program
+  graph-put (pg) (r) (c) (src) =
+    if sheet-in (pg.pg-blk) r c == False then pg
+    else gr-put-parsed pg r c src (formula-parse src)
+
+ A PROGRAM IS A WORKBOOK, NOT A VALUE, and `graph-put` says so by
+ extending it IN PLACE and answering the same workbook. An earlier
+ binding names the same workbook and sees the new formula.
+
+ The contract is stated rather than avoided because avoiding it costs a
+ quadratic: growing the table by concatenation allocates a fresh list of
+ length 1, 2, 3 and so on, which is 17 MB at a thousand cells and 272 MB
+ at four thousand, on a heap with no collector. `pg-slot` was already
+ shared this way, being a block, so a Program was never a value a caller
+ could hold two versions of; the cell list was the half that pretended
+ otherwise.
+
+  gr-put-parsed : Program, Integer, Integer, Text, FxParse -> Program
+  gr-put-parsed (pg) (r) (c) (src) (p) =
+    let e = FCell { fc-row = r, fc-col = c, fc-src = src, fc-expr = p.px-expr, fc-ok = p.px-ok, fc-msg = p.px-msg }
+    in let old = gr-slot-at pg r c
+    in if old > 0 then Program { pg-blk = pg.pg-blk, pg-cells = list-set-at (pg.pg-cells) (old - 1) e, pg-slot = pg.pg-slot }
+    else gr-append pg e r c
+
+  gr-append : Program, FCell, Integer, Integer -> Program
+  gr-append (pg) (e) (r) (c) =
+    let cells = list-push (pg.pg-cells) e
+    in let s = poke-32 (pg.pg-slot) (gr-index (pg.pg-blk) r c * gr-word) (list-length cells)
+    in Program { pg-blk = pg.pg-blk, pg-cells = cells, pg-slot = pg.pg-slot }
+
+  graph-count : Program -> Integer
+  graph-count (pg) = list-length (pg.pg-cells)
+
+  graph-entry : Program, Integer -> FCell
+  graph-entry (pg) (i) = list-at (pg.pg-cells) i
+
+  graph-name : Program, Integer -> Text
+  graph-name (pg) (i) =
+    let e = list-at (pg.pg-cells) i
+    in gr-col-name (e.fc-col) & show (e.fc-row + 1)
+
+ A column name is base 26 with no zero digit, so the loop peels the low
+ letter and divides by 26 after subtracting one, and A is 1 rather than
+ 0.
+
+  gr-col-name : Integer -> Text
+  gr-col-name (c) =
+    if c < 26 then utf8-bytes-to-text [65 + c]
+    else gr-col-name ((c / 26) - 1) & utf8-bytes-to-text [65 + (c - (c / 26) * 26)]
+
+Section: The Edges
+
+ An edge runs FROM a cell a formula names TO the cell holding that
+ formula, because the named cell must carry a value before the naming
+ one is evaluated. A reference to a cell with no formula of its own is a
+ constant and contributes no edge.
+
+ The edge list is built with `list-push`, which extends in place: the
+ list is created inside `graph-edges` from a fresh `[]`, consumed by
+ `graph-csr`, and handed to nobody. Concatenation here allocated a new
+ list per edge and cost n squared over two cells, most of the 17 MB a
+ thousand-cell chain took before this line changed.
+
+  gr-edge : Program, Integer, Integer, Integer, List Integer -> List Integer
+  gr-edge (pg) (r) (c) (to) (acc) =
+    let s = gr-slot-at pg r c
+    in if s == 0 then acc
+    else list-push (list-push acc (s - 1)) to
+
+  gr-lo : Integer, Integer -> Integer
+  gr-lo (a) (b) = if a < b then a else b
+
+  gr-hi : Integer, Integer -> Integer
+  gr-hi (a) (b) = if a > b then a else b
+
+ A range written backwards (`B9:A1`) names the same rectangle as the one
+ written forwards, so the corners are ordered here rather than refused.
+
+  gr-range-cols : Program, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-range-cols (pg) (r) (c) (c2) (to) (acc) =
+    if c > c2 then acc
+    else gr-range-cols pg r (c + 1) c2 to (gr-edge pg r c to acc)
+
+  gr-range-rows : Program, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-range-rows (pg) (r) (r2) (c) (c2) (to) (acc) =
+    if r > r2 then acc
+    else gr-range-rows pg (r + 1) r2 c c2 to (gr-range-cols pg r c c2 to acc)
+
+  gr-range : Program, RangeRef, Integer, List Integer -> List Integer
+  gr-range (pg) (g) (to) (acc) =
+    let a = g.rr-from
+    in let b = g.rr-to
+    in gr-range-rows pg (gr-lo (a.cr-row) (b.cr-row)) (gr-hi (a.cr-row) (b.cr-row)) (gr-lo (a.cr-col) (b.cr-col)) (gr-hi (a.cr-col) (b.cr-col)) to acc
+
+  gr-walk-args : Program, List Expr, Integer, Integer, Integer, List Integer -> List Integer
+  gr-walk-args (pg) (args) (i) (n) (to) (acc) =
+    if i >= n then acc
+    else gr-walk-args pg args (i + 1) n to (gr-walk pg (list-at args i) to acc)
+
+  gr-walk : Program, Expr, Integer, List Integer -> List Integer
+  gr-walk (pg) (e) (to) (acc) = when e
+   is ExNum (v) -> acc
+   is ExText (t) -> acc
+   is ExRef (r) -> gr-edge pg (r.cr-row) (r.cr-col) to acc
+   is ExRange (g) -> gr-range pg g to acc
+   is ExNeg (x) -> gr-walk pg x to acc
+   is ExBin (b) -> gr-walk pg (b.bn-right) to (gr-walk pg (b.bn-left) to acc)
+   is ExCall (c) -> gr-walk-args pg (c.cn-args) 0 (list-length (c.cn-args)) to acc
+
+  gr-edges-from : Program, Integer, Integer, List Integer -> List Integer
+  gr-edges-from (pg) (i) (n) (acc) =
+    if i >= n then acc
+    else if (list-at (pg.pg-cells) i).fc-ok == False then gr-edges-from pg (i + 1) n acc
+    else gr-edges-from pg (i + 1) n (gr-walk pg ((list-at (pg.pg-cells) i).fc-expr) i acc)
+
+  graph-edges : Program -> List Integer
+  graph-edges (pg) = gr-edges-from pg 0 (graph-count pg) []
+
+Section: Compressed Adjacency
+
+ Counted, prefix-summed, then filled: `gr-start` holds where each
+ vertex's successors begin and `gr-adj` holds the successors themselves.
+
+  Csr = record {
+    cs-n : Integer,
+    cs-e : Integer,
+    cs-start : Integer,
+    cs-adj : Integer,
+    cs-indeg : Integer
+  }
+
+  gr-bump : Integer, Integer -> Integer
+  gr-bump (blk) (at) = poke-32 blk (at * gr-word) (peek-32 blk (at * gr-word) + 1)
+
+  gr-count-pairs : List Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-count-pairs (es) (i) (n) (outc) (indeg) =
+    if i >= n then 0
+    else let a = gr-bump outc (list-at es i)
+    in let b = gr-bump indeg (list-at es (i + 1))
+    in gr-count-pairs es (i + 2) n outc indeg
+
+  gr-prefix : Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-prefix (outc) (start) (i) (n) (run) =
+    if i > n then 0
+    else let s = poke-32 start (i * gr-word) run
+    in if i == n then 0
+    else gr-prefix outc start (i + 1) n (run + peek-32 outc (i * gr-word))
+
+  gr-fill-pairs : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-fill-pairs (es) (i) (n) (start) (cursor) (adj) =
+    if i >= n then 0
+    else let from = list-at es i
+    in let at = peek-32 start (from * gr-word) + peek-32 cursor (from * gr-word)
+    in let w = poke-32 adj (at * gr-word) (list-at es (i + 1))
+    in let b = gr-bump cursor from
+    in gr-fill-pairs es (i + 2) n start cursor adj
+
+  graph-csr : Program -> Csr
+  graph-csr (pg) =
+    let n = graph-count pg
+    in let es = graph-edges pg
+    in let m = list-length es
+    in let outc = alloc-zeroed (n * gr-word + gr-word) 64
+    in let indeg = alloc-zeroed (n * gr-word + gr-word) 64
+    in let c = gr-count-pairs es 0 m outc indeg
+    in let start = alloc-zeroed (n * gr-word + gr-word + gr-word) 64
+    in let p = gr-prefix outc start 0 n 0
+    in let cursor = alloc-zeroed (n * gr-word + gr-word) 64
+    in let adj = alloc-zeroed (m * gr-word + gr-word) 64
+    in let f = gr-fill-pairs es 0 m start cursor adj
+    in Csr { cs-n = n, cs-e = m / 2, cs-start = start, cs-adj = adj, cs-indeg = indeg }
+
+Section: The Sort
+
+ Kahn's algorithm over the CSR. The queue is a dense block used as a
+ FIFO: every vertex enters at most once, so the block is exactly n slots
+ and the head never passes the tail by more than the vertices emitted.
+
+  gr-seed : Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-seed (indeg) (q) (i) (n) (tail) =
+    if i >= n then tail
+    else if peek-32 indeg (i * gr-word) /= 0 then gr-seed indeg q (i + 1) n tail
+    else let w = poke-32 q (tail * gr-word) i
+    in gr-seed indeg q (i + 1) n (tail + 1)
+
+  gr-relax : Csr, Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-relax (g) (q) (v) (k) (e) (tail) =
+    if k >= e then tail
+    else let to = peek-32 (g.cs-adj) (k * gr-word)
+    in let d = poke-32 (g.cs-indeg) (to * gr-word) (peek-32 (g.cs-indeg) (to * gr-word) - 1)
+    in if peek-32 (g.cs-indeg) (to * gr-word) /= 0 then gr-relax g q v (k + 1) e tail
+    else let w = poke-32 q (tail * gr-word) to
+    in gr-relax g q v (k + 1) e (tail + 1)
+
+  gr-drain : Csr, Integer, Integer, Integer, List Integer -> List Integer
+  gr-drain (g) (q) (head) (tail) (acc) =
+    if head >= tail then acc
+    else let v = peek-32 q (head * gr-word)
+    in let e = peek-32 (g.cs-start) (v * gr-word + gr-word)
+    in let t2 = gr-relax g q v (peek-32 (g.cs-start) (v * gr-word)) e tail
+    in gr-drain g q (head + 1) t2 (list-push acc v)
+
+  gr-stuck : Integer, Integer, Integer, List Integer -> List Integer
+  gr-stuck (indeg) (i) (n) (acc) =
+    if i >= n then acc
+    else if peek-32 indeg (i * gr-word) == 0 then gr-stuck indeg (i + 1) n acc
+    else gr-stuck indeg (i + 1) n (list-push acc i)
+
+  gr-names : Program, List Integer, Integer, Integer, Text -> Text
+  gr-names (pg) (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == 0 then gr-names pg xs (i + 1) n (graph-name pg (list-at xs i))
+    else gr-names pg xs (i + 1) n (acc & " " & graph-name pg (list-at xs i))
+
+ A formula that did not parse is reported before the sort, because an
+ order computed over a tree that does not exist is an answer to a
+ question nobody asked.
+
+  gr-first-bad : Program, Integer, Integer -> Integer
+  gr-first-bad (pg) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at (pg.pg-cells) i).fc-ok == False then i
+    else gr-first-bad pg (i + 1) n
+
+  graph-plan : Program -> Plan
+  graph-plan (pg) =
+    let bad = gr-first-bad pg 0 (graph-count pg)
+    in if bad >= 0 then gr-plan-bad pg bad
+    else gr-plan-sort pg (graph-csr pg)
+
+  gr-plan-bad : Program, Integer -> Plan
+  gr-plan-bad (pg) (bad) =
+    Plan { pl-ok = False, pl-order = [], pl-stuck = [bad], pl-msg = graph-name pg bad & " does not parse: " & (list-at (pg.pg-cells) bad).fc-msg }
+
+  gr-plan-sort : Program, Csr -> Plan
+  gr-plan-sort (pg) (g) =
+    let q = alloc-zeroed ((g.cs-n) * gr-word + gr-word) 64
+    in let tail = gr-seed (g.cs-indeg) q 0 (g.cs-n) 0
+    in let order = gr-drain g q 0 tail []
+    in if list-length order == g.cs-n then Plan { pl-ok = True, pl-order = order, pl-stuck = [], pl-msg = "" }
+    else gr-plan-cycle pg g order
+
+  gr-plan-cycle : Program, Csr, List Integer -> Plan
+  gr-plan-cycle (pg) (g) (order) =
+    let stuck = gr-stuck (g.cs-indeg) 0 (g.cs-n) []
+    in Plan { pl-ok = False, pl-order = order, pl-stuck = stuck, pl-msg = "a cycle through " & gr-names pg stuck 0 (list-length stuck) "" }
+
+  graph-order-names : Program, Plan -> Text
+  graph-order-names (pg) (p) = gr-names pg (p.pl-order) 0 (list-length (p.pl-order)) "(none)"
+
+Section: What An Edit Recomputes
+
+ The transitive dependents of the edited cell, IN THE DERIVED ORDER.
+ Reachability is marked in a dense block and the plan is then filtered by
+ the mark, so the answer is a subsequence of the full order rather than a
+ set a caller has to sort again. The edited cell is included, because the
+ cell itself is recomputed first.
+
+  gr-mark-succ : Csr, Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-mark-succ (g) (mark) (q) (k) (e) (tail) =
+    if k >= e then tail
+    else let to = peek-32 (g.cs-adj) (k * gr-word)
+    in if peek-32 mark (to * gr-word) /= 0 then gr-mark-succ g mark q (k + 1) e tail
+    else let m = poke-32 mark (to * gr-word) 1
+    in let w = poke-32 q (tail * gr-word) to
+    in gr-mark-succ g mark q (k + 1) e (tail + 1)
+
+  gr-reach : Csr, Integer, Integer, Integer, Integer -> Integer
+  gr-reach (g) (mark) (q) (head) (tail) =
+    if head >= tail then 0
+    else let v = peek-32 q (head * gr-word)
+    in let e = peek-32 (g.cs-start) (v * gr-word + gr-word)
+    in let t2 = gr-mark-succ g mark q (peek-32 (g.cs-start) (v * gr-word)) e tail
+    in gr-reach g mark q (head + 1) t2
+
+  gr-filter : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-filter (order) (i) (n) (mark) (acc) =
+    if i >= n then acc
+    else if peek-32 mark (list-at order i * gr-word) == 0 then gr-filter order (i + 1) n mark acc
+    else gr-filter order (i + 1) n mark (list-push acc (list-at order i))
+
+ The sort consumes `cs-indeg`, so the dependents walk builds its own CSR
+ rather than reusing the sorted one. Two builds of a graph this size cost
+ less than a subtle sharing fault.
+
+ THE EDITED CELL USUALLY HOLDS NO FORMULA. A data cell is a constant and
+ therefore has no vertex, so the roots of the walk are the formulas that
+ name the cell DIRECTLY, found by asking each expression whether it uses
+ the cell. A cell that does hold a formula is its own single root.
+
+  gr-in-range : RangeRef, Integer, Integer -> Boolean
+  gr-in-range (g) (r) (c) =
+    let a = g.rr-from
+    in let b = g.rr-to
+    in r >= gr-lo (a.cr-row) (b.cr-row) & r <= gr-hi (a.cr-row) (b.cr-row) & c >= gr-lo (a.cr-col) (b.cr-col) & c <= gr-hi (a.cr-col) (b.cr-col)
+
+  gr-uses-args : List Expr, Integer, Integer, Integer, Integer -> Boolean
+  gr-uses-args (args) (i) (n) (r) (c) =
+    if i >= n then False
+    else if gr-uses (list-at args i) r c then True
+    else gr-uses-args args (i + 1) n r c
+
+  gr-uses : Expr, Integer, Integer -> Boolean
+  gr-uses (e) (r) (c) = when e
+   is ExNum (v) -> False
+   is ExText (t) -> False
+   is ExRef (q) -> (q.cr-row) == r & (q.cr-col) == c
+   is ExRange (g) -> gr-in-range g r c
+   is ExNeg (x) -> gr-uses x r c
+   is ExBin (b) -> gr-uses (b.bn-left) r c | gr-uses (b.bn-right) r c
+   is ExCall (k) -> gr-uses-args (k.cn-args) 0 (list-length (k.cn-args)) r c
+
+  gr-roots-scan : Program, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gr-roots-scan (pg) (i) (n) (r) (c) (acc) =
+    if i >= n then acc
+    else if gr-uses ((list-at (pg.pg-cells) i).fc-expr) r c then gr-roots-scan pg (i + 1) n r c (list-push acc i)
+    else gr-roots-scan pg (i + 1) n r c acc
+
+ Every accumulator in this chapter is built with `list-push` and every
+ one of them is created inside its own call from a fresh `[]`: the sort's
+ order, the cycle report, the dependents filter and the edge list are
+ each handed to one caller and dropped. That is the condition L-ALIAS
+ names, and it is checked per accumulator rather than assumed.
+
+  gr-roots : Program, Integer, Integer -> List Integer
+  gr-roots (pg) (r) (c) =
+    let s = gr-slot-at pg r c
+    in if s > 0 then [s - 1]
+    else gr-roots-scan pg 0 (graph-count pg) r c []
+
+  gr-seed-roots : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-seed-roots (rs) (i) (n) (mark) (q) (tail) =
+    if i >= n then tail
+    else if peek-32 mark (list-at rs i * gr-word) /= 0 then gr-seed-roots rs (i + 1) n mark q tail
+    else let m = poke-32 mark (list-at rs i * gr-word) 1
+    in let w = poke-32 q (tail * gr-word) (list-at rs i)
+    in gr-seed-roots rs (i + 1) n mark q (tail + 1)
+
+  graph-dependents : Program, Integer, Integer -> List Integer
+  graph-dependents (pg) (r) (c) =
+    let plan = graph-plan pg
+    in if plan.pl-ok == False then []
+    else gr-deps-walk pg (graph-csr pg) (gr-roots pg r c) (plan.pl-order)
+
+  gr-deps-walk : Program, Csr, List Integer, List Integer -> List Integer
+  gr-deps-walk (pg) (g) (rs) (order) =
+    let mark = alloc-zeroed ((g.cs-n) * gr-word + gr-word) 64
+    in let q = alloc-zeroed ((g.cs-n) * gr-word + gr-word) 64
+    in let tail = gr-seed-roots rs 0 (list-length rs) mark q 0
+    in let d = gr-reach g mark q 0 tail
+    in gr-filter order 0 (list-length order) mark []
+
+  graph-dependent-names : Program, Integer, Integer -> Text
+  graph-dependent-names (pg) (r) (c) =
+    let xs = graph-dependents pg r c
+    in gr-names pg xs 0 (list-length xs) "(none)"
+
+Page 1

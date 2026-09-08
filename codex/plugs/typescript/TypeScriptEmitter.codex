@@ -122,7 +122,7 @@ Section: Expression Emission
   emit-ts-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-ts-expr (e) (arities) (indent) =
    when e
-    is IrIntLit (n) (sp) -> show n
+    is IrIntLit (n) (sp) -> show n & "n"
     is IrNumLit (n) (sp) -> show n
     is IrTextLit (s) (sp) -> "\"" & ts-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
@@ -149,15 +149,30 @@ Section: Expression Emission
 
 Section: Binary Operators
 
+ A Codex Integer is a BigInt here, so the 64-bit overflow contract is
+ expressible exactly and the op no longer refuses past 2^53.
+ `BigInt.asIntN(64, v)` is the truncation to the declared width, and comparing
+ it against the unbounded result is the overflow test.
+
+ `Math.trunc` is not used for integer division: it throws on a BigInt, and
+ BigInt division already truncates toward zero.
+
+  ts-int-arith : Text, Text, Text -> Text
+  ts-int-arith (sym) (lhs) (rhs) =
+   "((_v: bigint) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
+
   emit-ts-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-ts-binary (op) (l) (r) (arities) (indent) =
    let lhs = emit-ts-expr l arities indent
    in let rhs = emit-ts-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrAddInt -> ts-int-arith "+" lhs rhs
+    is IrSubInt -> ts-int-arith "-" lhs rhs
+    is IrMulInt -> ts-int-arith "*" lhs rhs
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
@@ -265,7 +280,7 @@ Section: Apply and Helpers
    else let rf = list-at rfields i
    in (when rf.type-val
     is IntegerTy (lo) (hi) (mode) -> when mode
-     is OvClamping -> "  \"" & rname & "." & rf.name.value & "\": [" & integer-to-text lo & ", " & integer-to-text hi & "],\n"
+     is OvClamping -> "  \"" & rname & "." & rf.name.value & "\": [" & integer-to-text lo & "n, " & integer-to-text hi & "n],\n"
      is otherwise -> ""
     is otherwise -> "") & ts-clamp-rows rname rfields (i + 1)
 
@@ -409,14 +424,56 @@ Section: Definition Emission
 
 Section: TypeScript Module Assembly
 
+  ts-builtins-text : Text
+  ts-builtins-text = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { console.log(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction negate(n: bigint): bigint { return -n; }\nfunction __cf(t: string, f: string, v: any): any { const b = (__clamps as any)[t + \".\" + f]; return b === undefined ? v : (v < b[0] ? b[0] : (v > b[1] ? b[1] : v)); }\nfunction int_mod(a: bigint, b: bigint): bigint { const abs = b < 0n ? -b : b; const r = a % abs; return r < 0n ? r + abs : r; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n" & ts-char-builtins-text & ts-io-builtins-text
+
+ Three builtins this plug emitted calls to and never defined, so every
+ subject using one died on a ReferenceError. Nothing caught it because
+ nothing ran this plug's output until the oracle did.
+
+ `char_encode` is CCE, not UTF-8: the tier boundaries are 128, 2176 and
+ 67712, and each tier subtracts its base before splitting, so the
+ continuation units carry a dense range rather than UTF-8's sparse one. The
+ constants are the format's, and the arm is ported from the javascript plug,
+ which was the only one that had any of these. `code_to_char` is the identity
+ there too, because a character IS its code in both plugs' representation.
+
+  ts-char-builtins-text : Text
+  ts-char-builtins-text =
+   "function char_encode(c: any): string { const n = Number(c); if (n < 128) return String.fromCharCode(n); if (n < 2176) { const v = n - 128; return String.fromCharCode(192|(v>>6), 128|(v&63)); } if (n < 67712) { const v = n - 2176; return String.fromCharCode(224|(v>>12), 128|((v>>6)&63), 128|(v&63)); } const v = n - 67712; return String.fromCharCode(240|(v>>18), 128|((v>>12)&63), 128|((v>>6)&63), 128|(v&63)); }\n"
+   & "function code_to_char(c: any): any { return c; }\n"
+   & "function char_code_at(s: any, i: any): bigint { return BigInt(String(s).charCodeAt(Number(i))); }\n\n"
+
+ `read-line` has no emitter here, and the point of this stub is that it SAYS
+ so. Without it the name reaches `emit-ts-name` with no arity entry and is
+ emitted as a bare `read_line`, an identifier defined nowhere in the file, so
+ the artifact is plausible and dies at run time on a ReferenceError naming
+ neither the plug nor the gap. Defining it gives the arity table a 0-ary entry,
+ which makes the emission the call `read_line()` and puts the refusal at the
+ point of use. Do not replace this with an implementation without reading what
+ the oracle expects of a reading subject; do not delete it to make a program
+ run.
+
+ The marker is deliberately NOT `CODEX_REFUSED_`. That one is the class-5
+ integer-precision verdict `build/plug-oracle-test.ps1` reads, and its rule
+ runs both ways, so borrowing it here would report this plug as having refused
+ a question it was never asked.
+
+  ts-io-builtins-text : Text
+  ts-io-builtins-text =
+   "function read_line(): any { throw new Error(\"typescript plug: no emitter for read-line\"); }\n\n"
+
+  ts-entry-text : Text
+  ts-entry-text = "// Entry: the program re-runs itself on a worker whose stack is 512 MB (plugs 1.14)\ndeclare const require: any; declare const __filename: string; declare const process: any;\nconst { Worker: _CxWorker, isMainThread: _cxIsMain } = require(\"worker_threads\");\nif (_cxIsMain) {\n  const _cxW = new _CxWorker(__filename, { resourceLimits: { stackSizeMb: 512 } });\n  _cxW.on(\"error\", (e: any) => { process.exitCode = 1; throw e; });\n  _cxW.on(\"exit\", (c: number) => { if (c !== 0) process.exitCode = c; });\n} else {\n  try { (opening as any)(); } catch(e) { console.error(e); }\n}\n"
+
   emit-typescript-chapter : IRChapter, List ATypeDef -> Text
   emit-typescript-chapter (m) (type-defs) =
-   let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { console.log(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): number { return s.length; }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs: any[]): number { return xs.length; }\nfunction list_at(xs: any[], i: number): any { return xs[i]; }\nfunction integer_to_text(n: number): string { return String(n); }\nfunction char_code(c: any): number { return typeof c === 'string' ? c.charCodeAt(0) : c; }\nfunction char_at(s: string, i: number): string { return s[i]; }\nfunction negate(n: number): number { return -n; }\nfunction __cf(t: string, f: string, v: any): any { const b = (__clamps as any)[t + \".\" + f]; return b === undefined ? v : (v < b[0] ? b[0] : (v > b[1] ? b[1] : v)); }\nfunction int_mod(a: number, b: number): number { const abs = b < 0 ? -b : b; const r = a % abs; return r < 0 ? r + abs : r; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): number { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   let builtins = ts-builtins-text
    in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
    in let clamps = "const __clamps: any = {\n" & ts-clamp-table type-defs 0 & "};\n\n"
    in let types-text = clamps & emit-ts-type-defs type-defs 0
    in let defs-text = emit-ts-defs (m.defs) 0 arities
-   in let entry = "// Entry: the program re-runs itself on a worker whose stack is 512 MB (plugs 1.14)\ndeclare const require: any; declare const __filename: string; declare const process: any;\nconst { Worker: _CxWorker, isMainThread: _cxIsMain } = require(\"worker_threads\");\nif (_cxIsMain) {\n  const _cxW = new _CxWorker(__filename, { resourceLimits: { stackSizeMb: 512 } });\n  _cxW.on(\"error\", (e: any) => { process.exitCode = 1; throw e; });\n  _cxW.on(\"exit\", (c: number) => { if (c !== 0) process.exitCode = c; });\n} else {\n  try { (opening as any)(); } catch(e) { console.error(e); }\n}\n"
+   in let entry = ts-entry-text
    in builtins & types-text & defs-text & entry
 
   emit-ts-tup-binds : List IRPat, Text, Integer -> Text

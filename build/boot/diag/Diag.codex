@@ -15,6 +15,7 @@ Chapter: Diag
   cites Works chapter GopNvme
   cites Works chapter GopXhci
   cites Diag chapter DiagStage
+  cites Diag chapter DiagRecord
   cites Diag chapter DiagPci
   cites Diag chapter DiagScene
   cites Diag chapter DiagSmbios
@@ -27,10 +28,14 @@ Chapter: Diag
   cites Diag chapter DiagNicInit
   cites Diag chapter DiagNicRing
   cites Diag chapter DiagB3
+  cites Diag chapter DiagLease
+  cites Diag chapter DiagRtcW
   cites Diag chapter DiagPchK1
   cites Diag chapter DiagAsde
   cites Diag chapter DiagGop
   cites Diag chapter DiagXhci
+  cites Diag chapter DiagMsc
+  cites Diag chapter DiagKbd
 
  The stub pre-loads DIAG.CFG text into the serial input ring: bytes at
  0x500000, the write position in the quadword at 28704, the read position at
@@ -62,14 +67,14 @@ Section: Hold
   dg-beat (c) (n) =
     if int-mod n 262144 /= 0 then 0
     else let on = int-mod (n / 262144) 2 == 0
-    in gop-fill-rect (c.dc-base) (c.dc-stride) ((c.dc-w) - 24) (dg-row-y c (dg-band-row 0) + 4) 16 16 (if on then diag-col-good else diag-col-bg)
+    in gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) ((c.dc-w) - 24) (dg-row-y c (dg-band-row 0) + 4) 16 16 (if on then diag-col-good else diag-col-bg)
 
   dg-hold : DiagCtx, Integer -> Integer
   dg-hold (c) (n) = dg-hold c (n + 1 + dg-beat c n)
 
 Section: The Table
 
-  dg-stage-count : Integer = 16
+  dg-stage-count : Integer = 20
 
   dg-stage-name : Integer -> Text
   dg-stage-name (i) =
@@ -79,25 +84,41 @@ Section: The Table
     else if i == 4 then "pci"
     else if i == 5 then "scene"
     else if i == 6 then "gopmode"
-    else if i == 7 then "block"
-    else if i == 8 then "xhci"
-    else if i == 9 then "sink"
-    else if i == 10 then "pch"
-    else if i == 11 then "nicsit"
-    else if i == 12 then "nicinit"
-    else if i == 13 then "nicring"
-    else if i == 14 then "b3"
-    else if i == 15 then "pchk1"
-    else if i == 16 then "asde"
+    else if i == 7 then "nicsit"
+    else if i == 8 then "block"
+    else if i == 9 then "xhci"
+    else if i == 10 then "kbd"
+    else if i == 11 then "mscalign"
+    else if i == 12 then "sink"
+    else if i == 13 then "pch"
+    else if i == 14 then "nicinit"
+    else if i == 15 then "nicring"
+    else if i == 16 then "b3"
+    else if i == 17 then "lease"
+    else if i == 18 then "rtcw"
+    else if i == 19 then "pchk1"
+    else if i == 20 then "asde"
     else "?"
 
  Stages are numbered in ladder order (the design's risk order): the passive
  ones first, then the bank opens, then the rest. Both tables below are by
  stage number, and a lift that adds the first non-passive stage extends this
- one rather than the run loop.
+ one rather than the run loop. `nicsit` is the last passive stage (root,
+ 2026-09-07): its rows are what firmware left in the part, and the record
+ channel's bring-up (`DiagRecord`) is the first write to it, so the read
+ goes ahead of the bank and the channel.
+
+ ONE PASSIVE STAGE PER CLAUSE, and the repetition is load-bearing rather than
+ clumsy: `build-diag.ps1` decides which stages must be named in the config by
+ REGEX over this line (`i == (\d+) then diag-risk-passive`), deliberately, so
+ that it is not a second implementation of this function. Folding two passive
+ stages into `i == 8 | i == 9 then ...` hides the first from that scan, and
+ the build then demands a config entry for a stage that is passive. Measured
+ 2026-09-07, adding `kbd`. The touches clause may alternate freely; nothing
+ parses it.
 
   dg-stage-risk : Integer -> Integer
-  dg-stage-risk (i) = if i == 8 then diag-risk-passive else if i == 10 | i == 11 | i == 15 then diag-risk-touches else if i >= 7 then diag-risk-writes else diag-risk-passive
+  dg-stage-risk (i) = if i == 7 then diag-risk-passive else if i == 9 then diag-risk-passive else if i == 10 then diag-risk-passive else if i == 11 | i == 13 | i == 19 then diag-risk-touches else if i >= 8 then diag-risk-writes else diag-risk-passive
 
   dg-stage-run : DiagCtx, Integer -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
   dg-stage-run (c) (i) =
@@ -107,20 +128,24 @@ Section: The Table
     else if i == 4 then dpci-run c
     else if i == 5 then dsc-run c
     else if i == 6 then dgop-run c
-    else if i == 7 then dbl-run c
-    else if i == 8 then dxh-run c
-    else if i == 9 then dsk-run c
-    else if i == 10 then dpch-run c
-    else if i == 11 then nsi-run c
-    else if i == 12 then nii-run c
-    else if i == 13 then nir-run c
-    else if i == 14 then db3-run c
-    else if i == 15 then dpk-run c
-    else if i == 16 then dasd-run c
+    else if i == 7 then nsi-run c
+    else if i == 8 then dbl-run c
+    else if i == 9 then dxh-run c
+    else if i == 10 then dkb-run c
+    else if i == 11 then dma-run c
+    else if i == 12 then dsk-run c
+    else if i == 13 then dpch-run c
+    else if i == 14 then nii-run c
+    else if i == 15 then nir-run c
+    else if i == 16 then db3-run c
+    else if i == 17 then dlz-run c
+    else if i == 18 then drt-run c
+    else if i == 19 then dpk-run c
+    else if i == 20 then dasd-run c
     else diag-result "unknown" diag-col-bad ["no such stage"] ["no such stage"]
 
   dg-stage-picture : Integer -> Boolean
-  dg-stage-picture (i) = i == 5 | i == 16
+  dg-stage-picture (i) = i == 5 | i == 20
 
   dg-stage-rows : Integer -> Integer
   dg-stage-rows (i) = if dg-stage-picture i then 3 else 2
@@ -129,7 +154,7 @@ Section: The Table
   dg-stage-enabled (c) (i) = diag-cfg-value c (dg-stage-name i) /= "off"
 
   dg-stage-defers : Integer -> Boolean
-  dg-stage-defers (i) = i == 9
+  dg-stage-defers (i) = i == 12
 
 Section: Ring
 
@@ -178,13 +203,13 @@ Section: Geometry
     else substring s 0 (n - 3) & "..."
 
   dg-text-to : DiagCtx, Integer, Integer, Text, Integer, Integer -> Integer
-  dg-text-to (c) (x) (y) (s) (col) (xend) = gop-draw-text (c.dc-base) (c.dc-stride) (c.dc-font) x y (dg-fit c x xend s) col (c.dc-scale) 0
+  dg-text-to (c) (x) (y) (s) (col) (xend) = gop-draw-text (c.dc-base) (c.dc-stride) (c.dc-h) (c.dc-font) x y (dg-fit c x xend s) col (c.dc-scale) 0
 
   dg-text : DiagCtx, Integer, Integer, Text, Integer -> Integer
   dg-text (c) (x) (y) (s) (col) = dg-text-to c x y s col (c.dc-w)
 
   dg-clear-rows : DiagCtx, Integer, Integer -> Integer
-  dg-clear-rows (c) (row) (n) = gop-fill-rect (c.dc-base) (c.dc-stride) 0 (dg-row-y c row) (c.dc-w) (n * dg-row-h c) diag-col-bg
+  dg-clear-rows (c) (row) (n) = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) 0 (dg-row-y c row) (c.dc-w) (n * dg-row-h c) diag-col-bg
 
   dg-stage-row : Integer -> Integer
   dg-stage-row (i) = dg-rows-before 1 i 4
@@ -233,7 +258,7 @@ Section: Geometry
   dg-slot-refuses : DiagCtx, Integer -> Integer
   dg-slot-refuses (c) (i) =
    if (c.dc-slot-w) > 0 & (c.dc-slot-h) > 0 & (c.dc-slot-x) < (c.dc-w) then 0
-   else let bar = gop-fill-rect (c.dc-base) (c.dc-stride) 0 0 (c.dc-w) 8 diag-col-bad
+   else let bar = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) 0 0 (c.dc-w) 8 diag-col-bad
    in 1
 
   dg-band-row : Integer -> Integer
@@ -244,7 +269,7 @@ Section: The Fixed Page
   dg-bar : DiagCtx, Integer, Integer -> Integer
   dg-bar (c) (i) (col) =
     let bw = (c.dc-w) / 8
-    in gop-fill-rect (c.dc-base) (c.dc-stride) (i * bw) (dg-row-y c 1 + 2) bw (dg-row-h c - 4) col
+    in gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) (i * bw) (dg-row-y c 1 + 2) bw (dg-row-h c - 4) col
 
   dg-bars : DiagCtx -> Integer
   dg-bars (c) =
@@ -268,7 +293,7 @@ Section: The Fixed Page
 
   dg-page : DiagCtx -> Integer
   dg-page (c) =
-    let bg = gop-fill-rect (c.dc-base) (c.dc-stride) 0 0 (c.dc-w) (c.dc-h) diag-col-bg
+    let bg = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) 0 0 (c.dc-w) (c.dc-h) diag-col-bg
     in let r0 = dg-text c 8 (dg-row-y c 0) "12345678 ABCDEFGH abcdefgh" diag-col-text
     in let r1 = dg-bars c
     in let r2 = dg-text c 8 (dg-row-y c 2) (dg-head-line c) diag-col-head
@@ -317,7 +342,7 @@ Section: Stage Rows
     let row = dg-stage-row i
     in let xend = dg-text-end c i
     in let rows = dg-stage-rows i
-    in let cl = gop-fill-rect (c.dc-base) (c.dc-stride) 0 (dg-row-y c row) xend (rows * dg-row-h c) diag-col-bg
+    in let cl = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) 0 (dg-row-y c row) xend (rows * dg-row-h c) diag-col-bg
     in let more = if list-length (r.dr-bank) > list-length (r.dr-glass) then " +more in bank" else if list-length (r.dr-glass) > rows then " +more in bank" else ""
     in let a = dg-text-to c 8 (dg-row-y c row) (dg-stage-name i & " " & (r.dr-state) & "  " & dg-glass-at (r.dr-glass) 0) (r.dr-colour) xend
     in let b = dg-text-to c 8 (dg-row-y c (row + 1)) (dg-glass-at (r.dr-glass) 1 & (if rows == 2 then more else "")) diag-col-text xend
@@ -501,13 +526,16 @@ Section: The Bank
  bank: the write stage cell (83) names where it stopped and the bank is
  reported as none, so the glass never claims a file that is not there.
 
-  dg-open : DiagBank, List Text -> [Device.Port] DiagBank
-  dg-open (b) (lines) = act
+  dg-open : DiagBank, List Text, List Text -> [Device.Port] DiagBank
+  dg-open (b) (lines) (cfg) = act
     if b.db-ok == False then b
     else act
-      w <- dg-bank-write b (list-push (dg-copy lines 0 []) (dg-bank-line b))
-      if w >= 0 then b
-      else dg-no-bank ("write refused, write stage " & show (xdiag-get gfat-cell-write))
+      let fz = xdiag-put diag-cell-noflush (if diag-cfg-find cfg 0 "flush" == "off" then 1 else 0)
+      in act
+        w <- dg-bank-write b (list-push (dg-copy lines 0 []) (dg-bank-line b))
+        if w >= 0 then b
+        else dg-no-bank ("write refused, write stage " & show (xdiag-get gfat-cell-write))
+      end
     end
   end
 
@@ -576,16 +604,20 @@ Section: Verdicts
     else if i == 4 then dg-verdict-pci s
     else if i == 5 then dg-verdict-scene s
     else if i == 6 then dg-verdict-gopmode s
-    else if i == 7 then dg-verdict-block s
-    else if i == 8 then dg-verdict-xhci s
-    else if i == 9 then dg-verdict-sink s
-    else if i == 10 then dg-verdict-pch s
-    else if i == 11 then dg-verdict-nicsit s
-    else if i == 12 then dg-verdict-nicinit s
-    else if i == 13 then dg-verdict-nicring s
-    else if i == 14 then dg-verdict-b3 s
-    else if i == 15 then dg-verdict-pchk1 s
-    else if i == 16 then dg-verdict-asde s
+    else if i == 7 then dg-verdict-nicsit s
+    else if i == 8 then dg-verdict-block s
+    else if i == 9 then dg-verdict-xhci s
+    else if i == 10 then dg-verdict-kbd s
+    else if i == 11 then dg-verdict-mscalign s
+    else if i == 12 then dg-verdict-sink s
+    else if i == 13 then dg-verdict-pch s
+    else if i == 14 then dg-verdict-nicinit s
+    else if i == 15 then dg-verdict-nicring s
+    else if i == 16 then dg-verdict-b3 s
+    else if i == 17 then dg-verdict-lease s
+    else if i == 18 then dg-verdict-rtcw s
+    else if i == 19 then dg-verdict-pchk1 s
+    else if i == 20 then dg-verdict-asde s
     else ""
 
   dg-verdict-gopmode : Text -> Text
@@ -616,6 +648,26 @@ Section: Verdicts
     else if s == "readback-fail" then "the sector wrote but would not read back; the medium dropped the write. Try another stick, then send DIAG.TXT"
     else if s == "mark-lost" then "the sector wrote and read back without the byte we wrote; the write went to another LBA or was cached and discarded. Send DIAG.TXT"
     else "no verdict row for block " & s
+
+  dg-verdict-kbd : Text -> Text
+  dg-verdict-kbd (s) =
+    if s == "keys" then ""
+    else if s == "never-armed" then "a keyboard BOUND and no transfer was ever queued on it. THIS IS THE EXPECTED READING HERE AND IS NOT A FAULT: the ladder binds a keyboard and never pumps one, so nothing arms the endpoint. The row is telling you the bind succeeded. It becomes a finding only where a pump ran"
+    else if s == "no-bind" then "no interrupt endpoint was bound, so there is no keyboard to ask about. The xhci row above says whether a controller came up at all and what it bound"
+    else if s == "armed-silent" then "the endpoint is armed and has never completed, which is the silent-keyboard failure. NOT REACHABLE FROM AN UNATTENDED LADDER RUN, so seeing it here means something pumped: read it as a real finding. Send DIAG.TXT"
+    else if s == "empty" then "completions are arriving and every report is all-zero: the endpoint fires and carries nothing. Send DIAG.TXT"
+    else if s == "undecoded" then "reports are arriving WITH data and no scancode came out of the decoder, so the transport works and hid-step does not. Send DIAG.TXT"
+    else "no verdict row for kbd " & s
+
+  dg-verdict-mscalign : Text -> Text
+  dg-verdict-mscalign (s) =
+    if s == "ok" then ""
+    else if s == "no-disk" then "no USB mass-storage disk was published, so the 64K crossing question was not asked. THIS ROW CANNOT TELL YOU WHY: a box booting from AHCI, NVMe or IDE and a USB bring-up that failed to publish write the same absence. Read the block row above for the medium it actually used"
+    else if s == "VACUOUS" then "THE INSTRUMENT DID NOT MEASURE THE DEVICE AND THE TWO READS ABOVE PROVE NOTHING: a read past the end of the medium SUCCEEDED, so the driver is answering without transferring. Ignore any identical= above. Send DIAG.TXT"
+    else if s == "aligned-failed" then "the aligned read itself failed, so the crossing read has nothing to be compared against. Send DIAG.TXT"
+    else if s == "crossing-failed" then "a bulk read whose buffer crosses a 64 KB boundary FAILED where the aligned read succeeded. The seed read issues about thirty crossing TRBs, so this box cannot be trusted to have loaded its own artifact. Send DIAG.TXT"
+    else if s == "mismatch" then "both reads succeeded and returned DIFFERENT bytes for the same LBA; the crossing buffer is corrupted by the controller. This is the defect the row exists to find. Send DIAG.TXT"
+    else "no verdict row for mscalign " & s
 
   dg-verdict-sink : Text -> Text
   dg-verdict-sink (s) =
@@ -717,6 +769,23 @@ Section: Verdicts
     else if s == "bar-bad" then "the NIC's register window is not reachable (the row names the verdict), so the part was not touched. Send DIAG.TXT"
     else "no verdict row for asde " & s
 
+  dg-verdict-lease : Text -> Text
+  dg-verdict-lease (s) =
+    if s == "ok" then ""
+    else if s == "no-lease" then "ip=dhcp was asked of the segment after b3 and no DHCP server answered in 4 s; on a segment with a server that is the segment's answer. Send DIAG.TXT"
+    else if s == "no-arp" then "the lease named a gateway that did not answer ARP inside two seconds, so the leased gateway is not a next hop this box can use; the row names it. Send DIAG.TXT"
+    else if s == "no-card" then ""
+    else if s == "no-hpet" then "no HPET, so the lease wait could not be budgeted and was not attempted. Send DIAG.TXT"
+    else "no verdict row for lease " & s
+
+  dg-verdict-rtcw : Text -> Text
+  dg-verdict-rtcw (s) =
+    if s == "accepted" then ""
+    else if s == "ignored" then "the RTC dropped a seconds write made inside a SET window: on this bed that is the emulator, which ignores CMOS writes; on a board it means the Clock accessory cannot set the time. Send DIAG.TXT"
+    else if s == "unreadable" then "the RTC never left update-in-progress or its seconds register read no second, so nothing was written. Send DIAG.TXT"
+    else if s == "other" then "the seconds read back as neither the value written nor the value before it; send DIAG.TXT, the reading is ours to explain"
+    else "no verdict row for rtcw " & s
+
   dg-verdict-smbios : Text -> Text
   dg-verdict-smbios (s) =
     if s == "ok" then ""
@@ -803,7 +872,7 @@ Section: The Codes
     else let from = i * 100
     in let len = if total - from > 100 then 100 else total - from
     in let m = qr5-encode-part (show (i + 1) & "/" & show cn & ";") body from len
-    in let d = qr-draw (c.dc-base) (c.dc-stride) (40 + (int-mod i cols) * dg-qr-pitch qs) (qy + (i / cols) * dg-qr-pitch qs) qs m
+    in let d = qr-draw (c.dc-base) (c.dc-stride) (c.dc-h) (40 + (int-mod i cols) * dg-qr-pitch qs) (qy + (i / cols) * dg-qr-pitch qs) qs m
     in dg-qr-chunks c qy qs cols body total cn (i + 1)
 
  Scale 2 is never offered: at scale 2 the decoder finds the finder patterns
@@ -843,7 +912,7 @@ Section: The Ladder
 
  A STAGE THAT CAN END THE RUN RUNS LAST, because the medium IS the bank and a
  stage that kills either one takes every later stage's record with it.
- Sitting 7 measured the cost: sink sits at 9, pch at 10, and DIAG.TXT came
+ Sitting 7 measured the cost: sink sat at 9 and pch at 10 under the numbering of the day (sink is 10 now, mscalign having taken 9), and DIAG.TXT came
  back holding stages 1 to 8 and nothing else, so the nine readings the flight
  was composed for existed only on the glass. dg-stage-defers names those
  stages, the main pass paints them pending and reserves their slot, and
@@ -930,9 +999,10 @@ Section: The Ladder
     end
   end
 
-  dg-bank-step : DiagCtx, DiagBank, List Text, Integer -> [Device.Port] Integer
+  dg-bank-step : DiagCtx, DiagBank, List Text, Integer -> [Device.Port, Console, Network.Read, Network.Write] Integer
   dg-bank-step (c) (b) (lines) (at) = act
     w <- dg-bank-write b lines
+    shipped <- drec-ship lines
     let l = if w >= 0 then 0
             else if xdiag-get gfat-cell-banklost == 0 then gfat-note-banklost (at + 1)
             else 0
@@ -1043,7 +1113,8 @@ Section: Entry
   opening : [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] Integer
   opening = act
     ri <- runtime-init 0
-    let c = dg-ctx 0
+    let dz = drec-disarm 0
+    in let c = dg-ctx 0
     in let hdr = dg-header-lines c
     in let pg = dg-page c
     in act
@@ -1051,15 +1122,19 @@ Section: Entry
       r1 <- dg-run-passive c 1 (DiagRun { run-lines = hdr, run-states = [], run-colours = [], run-glass = [], run-count = 0, run-skip = 0 })
       att <- usb-attach
       b0 <- dg-select (c.dc-id)
-      b <- dg-open b0 (r1.run-lines)
-      more <- dg-esp-cfg b
-      rcp <- dg-esp-rcp b
+      more <- dg-esp-cfg b0
+      rcp <- dg-esp-rcp b0
+      opened <- drec-open (dg-ctx-with-cfg c more (b0.db-ok) (b0.db-vol)) (r1.run-lines)
+      b <- dg-open b0 (r1.run-lines) (c.dc-cfg)
       let c2 = dg-ctx-with-cfg c more (b.db-ok) (b.db-vol)
-      in let lines1 = ((r1.run-lines) & [dg-bank-line b & " cfg-file=" & show (list-length more)]) & rcp
+      in let fz = xdiag-put diag-cell-noflush (if diag-cfg-value c2 "flush" == "off" then 1 else 0)
+      in let lines1 = ((r1.run-lines) & [dg-bank-line b & " cfg-file=" & show (list-length more), opened]) & rcp
       in act
         s0 <- dg-say (dg-bank-line b & " cfg-file=" & show (list-length more))
+        s0o <- dg-say opened
         s0r <- dg-say-block rcp 0
         w0 <- dg-bank-write b lines1
+        sh0 <- drec-ship lines1
         ra <- dg-run-rest c2 (dg-first-active 1) (DiagRun { run-lines = lines1, run-states = r1.run-states, run-colours = r1.run-colours, run-glass = r1.run-glass, run-count = r1.run-count, run-skip = r1.run-skip }) b
         let preline = "before-deferred run=" & show (ra.run-count) & " skip=" & show (ra.run-skip) & " " & dg-bank-line b
         in let rp = DiagRun { run-lines = list-push (ra.run-lines) preline, run-states = ra.run-states, run-colours = ra.run-colours, run-glass = ra.run-glass, run-count = ra.run-count, run-skip = ra.run-skip }
@@ -1070,10 +1145,11 @@ Section: Entry
           let vs0 = dg-verdicts (r2.run-states) (r2.run-colours) b
           in let todo = dg-todo vs0
           in let vs = if list-length vs0 == 0 then [todo] else vs0
-          in let sum = "summary run=" & show (r2.run-count) & " skip=" & show (r2.run-skip) & " " & dg-bank-line b
+          in let sum = "summary run=" & show (r2.run-count) & " skip=" & show (r2.run-skip) & " " & dg-bank-line b & " " & drec-line 0
           in let final = (list-push (r2.run-lines) sum) & vs
           in act
             bytes <- dg-bank-write b final
+            shipped <- drec-ship final
             let bd = dg-band c r2 b bytes todo
             in let qy = dg-row-y c (dg-band-row 0 + 2) + dg-row-h c + 8
             in let qr = dg-qr c qy (dg-summary-body c (r2.run-states) (r2.run-glass) b bytes)

@@ -4,17 +4,49 @@ Chapter: CheckConstantsScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE EIGHTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md), and the first
+ whose verdicts carry the whole meaning of the script: five exits across two
+ modes, where the same code 0 means "the hash was already right" in one place
+ and "the hash was rewritten" in another. A reader of the shipped script has to
+ infer that from the branch it sits in. The emitted script is byte-identical to
+ the one that shipped before the migration.
 
 Section: Parameters
 
   cc-params : List ShellParam = [sh-switch "Update"]
 
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+ THE THREE FILES BELOW DERIVE FROM `Repo` AND CANNOT SAY SO, which is the third
+ burr on the design page: a production resolving through the artifact table
+ would be circular, so each spells `SeVar "Repo"` directly.
+
+  boot-file-art : PipeArtifact = PipeArtifact { pa-name = "BootFile", pa-kind = PkFile, pa-expr = SeVar "BootFile", pa-from = Just (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Emit\\X86_64Boot.codex")) }
+
+  settings-file-art : PipeArtifact = PipeArtifact { pa-name = "SettingsFile", pa-kind = PkFile, pa-expr = SeVar "SettingsFile", pa-from = Just (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Core\\BuildSettings.codex")) }
+
+  hash-file-art : PipeArtifact = PipeArtifact { pa-name = "HashFile", pa-kind = PkFile, pa-expr = SeVar "HashFile", pa-from = Just (SePathJoin (SeVar "Repo") (SeLit "seed\\constants.hash")) }
+
+  constants-art : PipeArtifact = PipeArtifact { pa-name = "constants", pa-kind = PkValue, pa-expr = SeVar "constants", pa-from = None }
+
+  hex-hash-art : PipeArtifact = PipeArtifact { pa-name = "hexHash", pa-kind = PkText, pa-expr = SeVar "hexHash", pa-from = None }
+
+  saved-hash-art : PipeArtifact = PipeArtifact { pa-name = "savedHash", pa-kind = PkText, pa-expr = SeVar "savedHash", pa-from = Just (SeTrim (SeFileFirstLine (SeVar "HashFile"))) }
+
+  cc-arts : List PipeArtifact = [repo-art, boot-file-art, settings-file-art, hash-file-art, constants-art, hex-hash-art, saved-hash-art]
+
 Section: S01 -- Paths
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "BootFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Emit\\X86_64Boot.codex")), ScAssign "SettingsFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Core\\BuildSettings.codex")), ScAssign "HashFile" (SePathJoin (SeVar "Repo") (SeLit "seed\\constants.hash"))]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, pipe-produce boot-file-art, pipe-produce settings-file-art, pipe-produce hash-file-art]
+
+  s01 : PipeStage = PipeStage { ps-name = "paths", ps-why = "name the two compiler sources that carry the constants and the seed's record of them", ps-in = [], ps-out = [repo-art, boot-file-art, settings-file-art, hash-file-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Extract Constants
 
@@ -26,7 +58,9 @@ Section: S02 -- Extract Constants
 
   scan-file : List ShellCmd = [ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "file"]) scan-line]
 
-  s02 : List ShellCmd = [ScDotNetCallAssign "constants" "System.Collections.Generic.SortedDictionary[string,string]" "new" [], ScForEach "file" (SeArrayLiteral [SeVar "BootFile", SeVar "SettingsFile"]) scan-file]
+  s02-body : List ShellCmd = [ScBlank, ScDotNetCallAssign "constants" "System.Collections.Generic.SortedDictionary[string,string]" "new" [], ScForEach "file" (SeArrayLiteral [pipe-ref cc-arts cc-params "BootFile", pipe-ref cc-arts cc-params "SettingsFile"]) scan-file]
+
+  s02 : PipeStage = PipeStage { ps-name = "extract constants", ps-why = "read every Integer constant out of the two sources, sorted so the hash is stable", ps-in = ["BootFile", "SettingsFile"], ps-out = [constants-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Compute Hash
 
@@ -40,27 +74,31 @@ Section: S03 -- Compute Hash
 
   hex-hash : ShellExpr = SeJoin (SePipe (SeVar "hash") [StMap hex-of-byte]) (SeLit "")
 
-  s03 : List ShellCmd = [ScDotNetCallAssign "sb" "System.Text.StringBuilder" "new" [], ScForEach "kv" (SeMethodCall (SeVar "constants") "GetEnumerator" []) [ScDiscard (SeMethodCall (SeVar "sb") "AppendLine" [kv-line])], ScAssign "text" (SeMethodCall (SeVar "sb") "ToString" []), ScAssign "bytes" utf8-bytes, ScAssign "hash" sha-hash, ScAssign "hexHash" hex-hash]
+  s03-body : List ShellCmd = [ScBlank, ScDotNetCallAssign "sb" "System.Text.StringBuilder" "new" [], ScForEach "kv" (SeMethodCall (pipe-ref cc-arts cc-params "constants") "GetEnumerator" []) [ScDiscard (SeMethodCall (SeVar "sb") "AppendLine" [kv-line])], ScAssign "text" (SeMethodCall (SeVar "sb") "ToString" []), ScAssign "bytes" utf8-bytes, ScAssign "hash" sha-hash, ScAssign "hexHash" hex-hash]
+
+  s03 : PipeStage = PipeStage { ps-name = "compute hash", ps-why = "one sha256 over every constant as key=value, which is what the seed records", ps-in = ["constants"], ps-out = [hex-hash-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Update Mode
 
-  count-suffix : ShellExpr = SeConcat (SeConcat (SeLit " (") (SeProperty (SeVar "constants") "Count")) (SeLit " constants)")
+  count-suffix : ShellExpr = SeConcat (SeConcat (SeLit " (") (SeProperty (pipe-ref cc-arts cc-params "constants") "Count")) (SeLit " constants)")
 
-  unchanged-message : ShellExpr = SeConcat (SeConcat (SeLit "constants.hash unchanged: ") (SeVar "hexHash")) count-suffix
+  unchanged-message : ShellExpr = SeConcat (SeConcat (SeLit "constants.hash unchanged: ") (pipe-ref cc-arts cc-params "hexHash")) count-suffix
 
-  changed-message : ShellExpr = SeConcat (SeConcat (SeLit "constants.hash CHANGED: ") (SeVar "hexHash")) count-suffix
+  changed-message : ShellExpr = SeConcat (SeConcat (SeLit "constants.hash CHANGED: ") (pipe-ref cc-arts cc-params "hexHash")) count-suffix
 
   submit-note : Text = "  the constants moved, so this file is part of the change -- p4 edit and submit it with the seed"
 
-  read-current : List ShellCmd = [ScAssign "current" (SeLit ""), ScIf (SeFileExists (SeVar "HashFile")) [ScAssign "current" (SeTrim (SeFileFirstLine (SeVar "HashFile")))] []]
+  read-current : List ShellCmd = [ScAssign "current" (SeLit ""), ScIf (SeFileExists (pipe-ref cc-arts cc-params "HashFile")) [ScAssign "current" (SeTrim (SeFileFirstLine (pipe-ref cc-arts cc-params "HashFile")))] []]
 
   unchanged-branch : List ShellCmd = [ScEcho unchanged-message, ScExit (SeInt 0)]
 
-  write-args : List ShellExpr = [SeVar "HashFile", SeConcat (SeVar "hexHash") SeNewline, SeStaticCall "System.Text.UTF8Encoding" "new" [SeBool False]]
+  write-args : List ShellExpr = [pipe-ref cc-arts cc-params "HashFile", SeConcat (pipe-ref cc-arts cc-params "hexHash") SeNewline, SeStaticCall "System.Text.UTF8Encoding" "new" [SeBool False]]
 
-  update-body : List ShellCmd = [ScSequence read-current, ScIf (SeStringEq (SeVar "current") (SeVar "hexHash")) unchanged-branch [], ScIf (SeFileExists (SeVar "HashFile")) [ScSetWritable (SeVar "HashFile")] [], ScDotNetCall "System.IO.File" "WriteAllText" write-args, ScEcho changed-message, ScEcho (SeLit submit-note), ScExit (SeInt 0)]
+  update-body : List ShellCmd = [ScSequence read-current, ScIf (SeStringEq (SeVar "current") (pipe-ref cc-arts cc-params "hexHash")) unchanged-branch [], ScIf (SeFileExists (pipe-ref cc-arts cc-params "HashFile")) [ScSetWritable (pipe-ref cc-arts cc-params "HashFile")] [], ScDotNetCall "System.IO.File" "WriteAllText" write-args, ScEcho changed-message, ScEcho (SeLit submit-note), ScExit (SeInt 0)]
 
-  s04 : List ShellCmd = [ScIf (SeVar "Update") update-body []]
+  s04-body : List ShellCmd = [ScBlank, ScIf (pipe-ref cc-arts cc-params "Update") update-body []]
+
+  s04 : PipeStage = PipeStage { ps-name = "update mode", ps-why = "under -Update, rewrite the seed's record and stop before the verify", ps-in = ["Update", "HashFile", "hexHash", "constants"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "-Update: the recorded hash already matched the source and nothing was written", PoExit 0 "-Update: the recorded hash was rewritten and must be submitted with the seed"], ps-body = s04-body }
 
 Section: S05 -- Verify Mode
 
@@ -68,24 +106,24 @@ Section: S05 -- Verify Mode
 
   match-message : ShellExpr = SeConcat (SeLit "Constants MATCH seed") count-suffix
 
-  source-line : ShellExpr = SeConcat (SeLit "  Source hash: ") (SeVar "hexHash")
+  source-line : ShellExpr = SeConcat (SeLit "  Source hash: ") (pipe-ref cc-arts cc-params "hexHash")
 
-  seed-line : ShellExpr = SeConcat (SeLit "  Seed hash:   ") (SeVar "savedHash")
+  seed-line : ShellExpr = SeConcat (SeLit "  Seed hash:   ") (pipe-ref cc-arts cc-params "savedHash")
 
   mismatch-branch : List ShellCmd = [ScEcho (SeLit "WARNING: Constants MISMATCH -- source constants differ from seed"), ScEcho source-line, ScEcho seed-line, ScEcho (SeLit "  A seed rebuild is required before the changes take effect."), ScEcho (SeLit "  Run: build/build.ps1"), ScExit (SeInt 1)]
 
   match-branch : List ShellCmd = [ScEcho match-message, ScExit (SeInt 0)]
 
-  s05 : List ShellCmd = [ScIf (SeNot (SeFileExists (SeVar "HashFile"))) [ScEcho (SeLit missing-note), ScExit (SeInt 1)] [], ScAssign "savedHash" (SeTrim (SeFileFirstLine (SeVar "HashFile"))), ScIf (SeStringEq (SeVar "hexHash") (SeVar "savedHash")) match-branch mismatch-branch]
+  s05-body : List ShellCmd = [ScBlank, ScIf (SeNot (SeFileExists (pipe-ref cc-arts cc-params "HashFile"))) [ScEcho (SeLit missing-note), ScExit (SeInt 1)] [], pipe-produce saved-hash-art, ScIf (SeStringEq (pipe-ref cc-arts cc-params "hexHash") (pipe-ref cc-arts cc-params "savedHash")) match-branch mismatch-branch]
+
+  s05 : PipeStage = PipeStage { ps-name = "verify mode", ps-why = "compare the source constants against the seed's record and refuse a stale seed", ps-in = ["HashFile", "hexHash", "constants"], ps-out = [saved-hash-art], ps-needs = [], ps-verdict = [PoExit 1 "seed/constants.hash is absent, so the seed has no record to check against", PoExit 1 "the source constants differ from the seed's, therefore a seed rebuild is required", PoExit 0 "the source constants match the seed"], ps-body = s05-body }
 
 Section: Assembly
 
-  cc-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
-
-  cc-script : ShellScript = sh-script "check-constants" "Verify seed constants hash matches compiler source" cc-params cc-body
+  cc-pipe : Pipeline = Pipeline { pl-name = "check-constants", pl-doc = "Verify seed constants hash matches compiler source", pl-params = cc-params, pl-stages = [s01, s02, s03, s04, s05] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cc-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cc-pipe))
   end
 
 Page 1

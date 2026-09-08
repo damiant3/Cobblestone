@@ -19,13 +19,25 @@ Section: Cryptographic Primitives
   hash-eq : Hash256, Hash256 -> Boolean
   hash-eq (a) (b) = a.h0 == b.h0 & a.h1 == b.h1 & a.h2 == b.h2 & a.h3 == b.h3
 
+ A mixer's multiply-add WRAPS by design, and `Integer` traps on overflow, so the
+ arithmetic is routed through helpers whose parameters and result carry the
+ wrapping mode. Written into an expression instead, the product is an `Integer`
+ and the trap fires on the first nonzero input: `compute-tx-hash 1 0 0 0 0 0`
+ answered `EXC=06` before this, and nothing had ever run the chapter to see it.
+
+  hash-mul : Integer between -9223372036854775808 and 9223372036854775807 wrapping, Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer between -9223372036854775808 and 9223372036854775807 wrapping
+  hash-mul (a) (b) = a * b
+
+  hash-mix : Integer between -9223372036854775808 and 9223372036854775807 wrapping, Integer between -9223372036854775808 and 9223372036854775807 wrapping, Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer between -9223372036854775808 and 9223372036854775807 wrapping
+  hash-mix (a) (k) (m) = a * k + m
+
   hash-combine : Hash256, Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Hash256
   hash-combine (h) (val) =
-    let mixed = val * 2654435761
-    in let x0 = bit-xor (h.h0 * 31 + mixed) (h.h1)
-    in let x1 = bit-xor (h.h1 * 37 + mixed) (h.h2)
-    in let x2 = bit-xor (h.h2 * 41 + mixed) (h.h3)
-    in let x3 = bit-xor (h.h3 * 43 + mixed) (h.h0)
+    let mixed = hash-mul val 2654435761
+    in let x0 = bit-xor (hash-mix (h.h0) 31 mixed) (h.h1)
+    in let x1 = bit-xor (hash-mix (h.h1) 37 mixed) (h.h2)
+    in let x2 = bit-xor (hash-mix (h.h2) 41 mixed) (h.h3)
+    in let x3 = bit-xor (hash-mix (h.h3) 43 mixed) (h.h0)
     in Hash256 { h0 = x0, h1 = x1, h2 = x2, h3 = x3 }
 
   hash-combine-text : Hash256, Text -> Hash256
@@ -44,7 +56,7 @@ Section: Cryptographic Primitives
     in let f1 = bit-xor h.h1 (h.h1 / 65536)
     in let f2 = bit-xor h.h2 (h.h2 / 65536)
     in let f3 = bit-xor h.h3 (h.h3 / 65536)
-    in Hash256 { h0 = f0 * 2246822519, h1 = f1 * 2246822519, h2 = f2 * 2246822519, h3 = f3 * 2246822519 }
+    in Hash256 { h0 = hash-mul f0 2246822519, h1 = hash-mul f1 2246822519, h2 = hash-mul f2 2246822519, h3 = hash-mul f3 2246822519 }
 
 Section: Transactions
 

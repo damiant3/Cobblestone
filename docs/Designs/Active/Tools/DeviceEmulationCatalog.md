@@ -362,11 +362,14 @@ behind it.** `-xhci-two` gives a second controller with NOTHING on it:
 measured 2026-08-21, `ctl1` reports `kbd=n mouse=n disk=n`, `-usb-disk-port`
 selects a root PORT rather than a controller, and every device model
 (`hid_*`, `usb_bot_*`, `xhci_no_disk`) is a global singleton. So the second
-controller is register-only. `apps/works/works-backlog.md` WORKS-25 --
-`xhci-connect` opens ordinal 0 while `usb-attach` walks, and `GopUsbMsc`,
-`GopUsbKbd` and `CamCapture` still call it -- cannot be fixed until a device
-can be put behind `ctl1`, because the fix is to the boot path and there would
-be no arm able to show it works.
+controller is register-only. `apps/works/works-backlog.md` WORKS-25 is the
+consumer: `GopUsbMsc`, `GopUsbKbd` and `CamCapture` now walk controllers and
+stop at the first that yields the device each wants, so the code half is
+closed, and what this queue item still gates is the ARM. An arm asserting
+"the keyboard was found" agrees with the walk and with the old ordinal-0 code
+while `ctl1` carries nothing, so the only reading available on today's bed is
+the side effect, `ctl1 ... running` in the diag ctl table after a caller path
+rather than after `usb-attach`.
 
 **DEFERRED by red 2026-08-21, with the size measured so the next person sees a
 number and not an adjective**: 42 singleton declarations, about 227 references
