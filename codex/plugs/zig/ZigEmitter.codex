@@ -101,9 +101,12 @@ Section: Keywords and Sanitization
    "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best",
    "cx_deck_stride", "cx_deck_armed", "cx_deck_slack", "CxFn1", "CxFn2",
    "CxFn3", "CxFn4", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
-   "cx_ll_concat", "cx_ll_cons", "cx_ll_insert_at", "cx_ll_with_capacity",
+   "cx_ll_concat", "cx_ll_copy", "cx_ll_cons", "cx_ll_insert_at",
+   "cx_ll_with_capacity",
    "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx",
    "cx_real_to_bits", "cx_bits_to_real",
+   "cx_real_to_int", "cx_real_from_int", "cx_to_real_approx",
+   "cx_w", "cx_x", "cx_real_to_text",
    "cx_char_to_text", "cx_char_encode", "cx_list_len", "cx_list_at",
    "cx_text_len", "cx_char_at", "cx_text_dup", "cx_substring", "cx_ipow",
    "cx_shl", "cx_shr", "cx_heap_base", "cx_buf_want", "cx_frontier_crosses",
@@ -112,7 +115,9 @@ Section: Keywords and Sanitization
    "cx_address_of", "cx_deck_report", "cx_deck_enter", "cx_deck_exit",
    "cx_deck_pos", "cx_deck_set", "cx_utf8_to_cce", "cx_read_file_uni",
    "cx_write_all", "cx_write_binary", "cx_write_binary_buf", "cx_vtag",
-   "cx_buf_write_byte", "cx_buf_write_bytes", "cx_peek_byte",
+   "cx_buf_write_byte", "cx_buf_write_bytes", "cx_peek_byte", "cx_peek_32",
+   "cx_poke_32", "cx_poke_16", "cx_alloc_bytes", "cx_poke_byte", "cx_memset",
+   "cx_port_out_byte",
    "cx_buf_read_bytes", "cx_shru", "cx_mod", "cx_text_eq", "cx_is_letter",
    "cx_is_digit", "cx_new", "cx_concat", "cx_text_starts_with",
    "cx_text_contains", "cx_text_concat_list", "cx_list_set_at",
@@ -572,6 +577,10 @@ Section: Type Mapping
    when e
     is IrTextLit (s) (sp) -> TextTy
     is IrIntLit (n) (sp) -> int-ty-default
+    is IrNumLit (n) (sp) -> real-f64
+    is IrBoolLit (b) (sp) -> BooleanTy
+    is IrCharLit (n) (sp) -> CharTy
+    is IrNegate (x) (ty) (sp) -> ty
     is IrName (n) (ty) (sp) -> ty
     is IrApply (f) (a) (ty) (sp) -> ty
     is IrFieldAccess (rec) (field) (ty) (sp) -> ty
@@ -677,7 +686,7 @@ Section: Type Mapping
   zig-show-arg (a) (ctx) (d) =
    let e = emit-zig-expr a ctx (d + 1)
    in let aty = zig-strip-unit (zig-expr-type a)
-   in if zig-is-real-type aty then zig-show-real-refusal
+   in if zig-is-real-type aty then "cx_real_to_text(" & e & ")"
    else if zig-is-text-type aty then e
    else if zig-is-boolean-type aty then zig-show-bool-text e
    else "cx_show_int(" & e & ")"
@@ -687,10 +696,6 @@ Section: Type Mapping
    let t = "@as([]const u8, \"" & zig-escape-text "True" & "\")"
    in let f = "@as([]const u8, \"" & zig-escape-text "False" & "\")"
    in "(if (" & e & ") " & t & " else " & f & ")"
-
-  zig-show-real-refusal : Text
-  zig-show-real-refusal =
-   "@compileError(\"zig plug: show on a Real needs __real_to_text, which this plug does not have\")"
 
 Section: Arity Map
 
@@ -1081,6 +1086,10 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "bits-to-real-approx", emit = \args ctx d ty -> "cx_bits_to_real_approx(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "real-to-bits", emit = \args ctx d ty -> "cx_real_to_bits(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "bits-to-real", emit = \args ctx d ty -> "cx_bits_to_real(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "real-from-int", emit = \args ctx d ty -> "cx_real_from_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "real-to-int", emit = \args ctx d ty -> "cx_real_to_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "to-real-approx", emit = \args ctx d ty -> "cx_to_real_approx(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "real-approx-to-int", emit = \args ctx d ty -> "cx_real_to_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "print-error-uni", emit = \args ctx d ty -> "cx_print_line(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "show", emit = \args ctx d ty -> zig-show-arg (list-at args 0) ctx d },
@@ -1110,7 +1119,7 @@ Section: Builtin Emitter
    ZigBuiltinEmitter { name = "char-encode", emit = \args ctx d ty -> "cx_char_encode(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-empty", emit = \args ctx d ty -> "cx_ll_with_capacity(" & zig-ll-elem ty (ctx.scope-tvars) & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__linked-list-push", emit = \args ctx d ty -> "cx_ll_push(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
-    ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
+    ZigBuiltinEmitter { name = "__linked-list-to-list", emit = \args ctx d ty -> "cx_ll_copy(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__deck-pos", emit = \args ctx d ty -> "cx_deck_pos()" },
     ZigBuiltinEmitter { name = "__deck-set", emit = \args ctx d ty -> "cx_deck_set(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "subj-deck-record", emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1) },
@@ -1132,6 +1141,13 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__buf-write-byte", emit = \args ctx d ty -> "cx_buf_write_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-write-bytes", emit = \args ctx d ty -> "cx_buf_write_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-byte", emit = \args ctx d ty -> "cx_peek_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "peek-32", emit = \args ctx d ty -> "cx_peek_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "poke-32", emit = \args ctx d ty -> "cx_poke_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "poke-16", emit = \args ctx d ty -> "cx_poke_16(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "poke-byte", emit = \args ctx d ty -> "cx_poke_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "port-out-byte", emit = \args ctx d ty -> "cx_port_out_byte(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "alloc-bytes", emit = \args ctx d ty -> "cx_alloc_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+    ZigBuiltinEmitter { name = "__memset", emit = \args ctx d ty -> "cx_memset(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "__buf-read-bytes", emit = \args ctx d ty -> "cx_buf_read_bytes(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "min", emit = \args ctx d ty -> "@min(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "max", emit = \args ctx d ty -> "@max(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
@@ -1225,6 +1241,7 @@ Section: Name Mapping
     ZigNameEntry { codex-name = "False", zig-name = "false" },
     ZigNameEntry { codex-name = "Nothing", zig-name = "null" },
     ZigNameEntry { codex-name = "__deck-pos", zig-name = "cx_deck_pos()" },
+    ZigNameEntry { codex-name = "__self-type-defs", zig-name = "cx_ll_empty(TypeBinding)" },
     ZigNameEntry { codex-name = "hosted-kind", zig-name = "@as(i64, 1)" },
     ZigNameEntry { codex-name = "__heap-save", zig-name = "cx_heap_save()" },
     ZigNameEntry { codex-name = "__deck-enter", zig-name = "cx_deck_enter()" },
@@ -2829,15 +2846,22 @@ Section: Apply Emission
   zig-closure-pass : Integer, Integer -> Text
   zig-closure-pass (n) (i) =
    if i >= n then ""
-   else let one = "p" & integer-to-text i
+   else let one = "_cp" & integer-to-text i
    in if i == n - 1 then one else one & ", " & zig-closure-pass n (i + 1)
+
+ A CLOSURE PARAMETER IS IN THE EMITTER'S NAMESPACE, NOT THE PROGRAM'S. Zig
+ forbids shadowing, so while these were named `p0`, `p1`, ... a Codex
+ definition holding a local of the same name emitted invalid zig, and nothing
+ here could see it coming because the colliding name is one the SOURCE chose.
+ `_cp` puts them where `_Env`, `_ctx` and `__lam_` already are: a Codex
+ identifier cannot sanitize into that prefix.
 
   zig-closure-params : CodexType, Integer, List (Integer between 0 and 4294967295) -> Text
   zig-closure-params (ty) (i) (scope) =
    when zig-fn-spine ty
     is FunTy (p) (fnrow) (r) ->
      let rest = zig-closure-params r (i + 1) scope
-     in "p" & integer-to-text i & ": " & emit-zig-type p scope
+     in "_cp" & integer-to-text i & ": " & emit-zig-type p scope
       & (if text-length rest == 0 then "" else ", " & rest)
     is otherwise -> ""
 
@@ -2858,7 +2882,7 @@ Section: Apply Emission
 
   zig-closure-pass-tail : Integer, Integer -> Text
   zig-closure-pass-tail (i) (n) =
-   if i >= n then "" else ", p" & integer-to-text i & zig-closure-pass-tail (i + 1) n
+   if i >= n then "" else ", _cp" & integer-to-text i & zig-closure-pass-tail (i + 1) n
 
   zig-closure-call-body : Text, Integer, Text, Integer, Integer, Integer, Text -> Text
   zig-closure-call-body (n) (nargs) (ev) (flat) (rem) (d) (targs) =
@@ -3846,7 +3870,7 @@ Section: Chapter Emission
     is IntegerTy (lo) (hi) (mode) -> "    cx_print_line(cx_show_int(" & name & "()));\n"
     is TextTy -> "    cx_print_line(" & name & "());\n"
     is BooleanTy -> "    cx_print_line(" & zig-show-bool-text (name & "()") & ");\n"
-    is RealTy (w) (m) -> "    " & zig-entry-real-refusal & ";\n"
+    is RealTy (w) (m) -> "    cx_print_line(cx_real_to_text(" & name & "()));\n"
     is CharTy -> "    _ = " & name & "();\n"
     is VoidTy -> "    " & name & "();\n"
     is NothingTy -> "    " & name & "();\n"
@@ -3854,10 +3878,6 @@ Section: Chapter Emission
     is PropEqTy (pl) (pr) -> "    " & name & "();\n"
     is UnitTy (n) (inner) -> zig-entry-call name inner
     is otherwise -> "    " & zig-entry-refusal & ";\n"
-
-  zig-entry-real-refusal : Text
-  zig-entry-real-refusal =
-   "@compileError(\"zig plug: opening returns a Real and printing it needs __real_to_text, which this plug does not have\")"
 
   zig-entry-refusal : Text
   zig-entry-refusal =
@@ -3936,6 +3956,18 @@ Section: Chapter Emission
   zig-p-cx-ll-of : List ShakeFrag
   zig-p-cx-ll-of = [ShakeLit "// Exact, not rounded. These three build most of what emission\n// allocates -- every instruction is a list literal (mov-rr is\n// [rex-w, 137, modrm]) and write-bytes concatenates one per byte of an\n// immediate -- and they all land on the DECK, which is a finite\n// reservation nothing reclaims until the phase ends. Growing through\n// std's geometric growCapacity asked for 17 slots to hold four, twice\n// per concat, and measured 2026-08-21 that cost 6,963,432 bytes of deck\n// on fibx: 9,392,656 bytes of emit-runtime-helpers where bare metal\n// spends at most 2,682,824. Bare metal allocates cap*8 + 16 once, from\n// __list_concat_many over all operands at their true total. Reserve the\n// true total and append without re-checking; cx_ll_push keeps geometric\n// growth on purpose, because it is the repeated-append path.\nfn ", ShakeUse "cx_ll_of", ShakeLit "(comptime T: type, vs: []const T) *", ShakeUse "CxList", ShakeLit "(T) {\n    const l = ", ShakeUse "cx_ll_empty", ShakeLit "(T);\n    l.items.ensureTotalCapacityPrecise(", ShakeUse "cx_gpa", ShakeLit ", vs.len) catch @panic(\"oom\");\n    l.items.appendSliceAssumeCapacity(vs);\n    return l;\n}\n"]
 
+ IT MATERIALISES, and identity is the one thing it must not do. A linked list
+ and a list share a representation here, so returning the argument is
+ representationally right and still wrong: callers write
+ `deck-record (__linked-list-to-list xs)`, and deck-record means "put the
+ result on the deck". Identity allocates nothing inside the bracket, so the
+ answer stays on the bivy where the caller built it and the next phase-compact
+ reclaims it. Bare metal's emit-linked-list-to-list-builtin allocates a fresh
+ list, which is what makes the bracket mean anything.
+
+  zig-p-cx-ll-copy : List ShakeFrag
+  zig-p-cx-ll-copy = [ShakeLit "fn ", ShakeUse "cx_ll_copy", ShakeLit "(l: anytype) @TypeOf(l) {\n    const c = ", ShakeUse "cx_new", ShakeLit "(@TypeOf(l.*){ .items = .empty });\n    c.items.ensureTotalCapacityPrecise(", ShakeUse "cx_gpa", ShakeLit ", l.items.items.len) catch @panic(\"oom\");\n    c.items.appendSliceAssumeCapacity(l.items.items);\n    return c;\n}\n"]
+
   zig-p-cx-ll-concat : List ShakeFrag
   zig-p-cx-ll-concat = [ShakeLit "fn ", ShakeUse "cx_ll_concat", ShakeLit "(a: anytype, b: @TypeOf(a)) @TypeOf(a) {\n    const c = ", ShakeUse "cx_new", ShakeLit "(@TypeOf(a.*){ .items = .empty });\n    c.items.ensureTotalCapacityPrecise(", ShakeUse "cx_gpa", ShakeLit ", a.items.items.len + b.items.items.len) catch @panic(\"oom\");\n    c.items.appendSliceAssumeCapacity(a.items.items);\n    c.items.appendSliceAssumeCapacity(b.items.items);\n    return c;\n}\n"]
 
@@ -3962,6 +3994,54 @@ Section: Chapter Emission
 
   zig-p-cx-bits-to-real : List ShakeFrag
   zig-p-cx-bits-to-real = [ShakeLit "// mov-rr on bare metal (emit-bits-to-real-builtin), the same register move in\n// the other direction, and the exact inverse of cx_real_to_bits above. Total\n// likewise: every i64 names an f64, the NaNs and the infinities included.\nfn ", ShakeUse "cx_bits_to_real", ShakeLit "(n: i64) f64 {\n    return @bitCast(n);\n}\n"]
+
+  zig-p-cx-real-from-int : List ShakeFrag
+  zig-p-cx-real-from-int = [ShakeLit "// cvtsi2sd on bare metal (emit-real-from-int-builtin): a signed i64 to\n// f64 in the default rounding mode, which is round-to-nearest-even.\n// @floatFromInt is that same conversion -- exact below 2^53 and correctly\n// rounded above it -- so the two arms agree at every magnitude.\nfn ", ShakeUse "cx_real_from_int", ShakeLit "(n: i64) f64 {\n    return @floatFromInt(n);\n}\n"]
+
+  zig-p-cx-real-to-int : List ShakeFrag
+  zig-p-cx-real-to-int = [ShakeLit "// cvttsd2si on bare metal (emit-real-to-int-builtin): truncate toward\n// zero, and answer x86's \"integer indefinite\" -- INT64_MIN -- for a NaN,\n// for an infinity, and for anything whose truncation will not fit i64.\n// Zig's @intFromFloat truncates the same way but is UNDEFINED out of\n// range, so these guards are the mirror of what the hardware actually\n// answers rather than decoration: without them the out-of-range cases are\n// not merely a different answer from bare metal, they are no answer at\n// all. 2^63 is exact in f64, so both bounds are exact and the comparisons\n// catch the infinities on the way past.\nfn ", ShakeUse "cx_real_to_int", ShakeLit "(v: f64) i64 {\n    if (v != v) return -9223372036854775808;\n    if (v >= 9223372036854775808.0) return -9223372036854775808;\n    if (v < -9223372036854775808.0) return -9223372036854775808;\n    return @intFromFloat(v);\n}\n"]
+
+ `to-real-approx` is `cvtsd2ss` on bare metal (emit-to-real-approx-builtin):
+ it NARROWS to f32, and the value it hands on is f32 bits. A Real is f64 in
+ this plug and an approx Real is the exact f64 widening of that f32, which is
+ the convention `cx_bits_to_real_approx` already states. So the faithful form
+ here is the round trip through f32: the precision loss is the whole content
+ of the operation, and returning the f64 unchanged would answer a number bare
+ metal never produces.
+
+ `real-approx-to-int` needs no function of its own. On bare metal it is
+ `cvtss2sd` then `cvttsd2si` (emit-real-approx-to-int-builtin): widen the f32,
+ then truncate. Here the operand is ALREADY that widening, and f32 to f64 is
+ exact, so truncating it is the same arithmetic on the same real number and
+ `cx_real_to_int` is the right callee, guards included.
+
+  zig-p-cx-to-real-approx : List ShakeFrag
+  zig-p-cx-to-real-approx = [ShakeLit "fn ", ShakeUse "cx_to_real_approx", ShakeLit "(v: f64) f64 {\n    return @as(f64, @as(f32, @floatCast(v)));\n}\n"]
+
+ The oracle is `__real_to_text`, `codex/compiler/Emit/X86_64TextHelpers.codex`,
+ and the FORMAT is the half that has to match rather than the arithmetic: at
+ most fifteen fractional digits, trailing zeros stripped down to one, always a
+ dot and always a digit after it. The integer part goes through
+ `cx_real_to_int` rather than a second truncation, so the two agree on NaN, the
+ infinities and anything past 2^63 by construction instead of by a guard
+ written twice.
+
+ The CCE codes are read off `cce_table`, the plug's own shipped table: 3 is
+ '0', 65 is '.', 73 is '-'. `cx_show_int` already spells the first and third
+ the same way.
+
+ WHAT THE CORPUS CANNOT TELL YOU: every `show` of a Real in the tree is a half
+ or an integer (2.5, 7.0, -2.5, 42.5, 3000000000.5), all of them exact in
+ binary, so a green run does NOT distinguish this from an implementation that
+ is merely right on exact values. `real-literal-rounding`'s nine-digit numbers
+ are source text beside `show (real-to-bits ...)`, not `show` output, so they
+ constrain nothing here either. A value needing real rounding is the fixture
+ this plug's corpus lacks (L-CONSTRUCT). Negative zero prints `-0.0`, following
+ the oracle's sign-bit test rather than a comparison against zero; no
+ `.expected` in the tree spells it.
+
+  zig-p-cx-real-to-text : List ShakeFrag
+  zig-p-cx-real-to-text = [ShakeLit "fn ", ShakeUse "cx_real_to_text", ShakeLit "(cx_v: f64) []const u8 {\n    var cx_tmp: [64]u8 = undefined;\n    var cx_i: usize = 0;\n    const cx_b = (@as(u64, @bitCast(cx_v)) >> 63) == 1;\n    const cx_e = @abs(cx_v);\n    const cx_acc = @trunc(cx_e);\n    var cx_a: [24]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_a, \"{d}\", .{", ShakeUse "cx_real_to_int", ShakeLit "(cx_acc)}) catch unreachable;\n    if (cx_b) {\n        cx_tmp[cx_i] = 73;\n        cx_i += 1;\n    }\n    for (cx_s) |cx_ch| {\n        cx_tmp[cx_i] = 3 + (cx_ch - '0');\n        cx_i += 1;\n    }\n    cx_tmp[cx_i] = 65;\n    cx_i += 1;\n    const cx_p = cx_i;\n    var cx_l = cx_i;\n    var cx_new = cx_e - cx_acc;\n    var cx_j: usize = 0;\n    while (cx_j < 15) : (cx_j += 1) {\n        cx_new *= 10.0;\n        const cx_x: u8 = @intFromFloat(@trunc(cx_new));\n        cx_new -= @trunc(cx_new);\n        cx_tmp[cx_i] = 3 + cx_x;\n        cx_i += 1;\n        if (cx_x != 0) cx_l = cx_i;\n    }\n    const cx_out = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, if (cx_l > cx_p) cx_l else cx_p + 1) catch @panic(\"oom\");\n    @memcpy(cx_out, cx_tmp[0..cx_out.len]);\n    return cx_out;\n}\n"]
 
   zig-p-cx-char-to-text : List ShakeFrag
   zig-p-cx-char-to-text = [ShakeLit "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\nfn ", ShakeUse "cx_char_to_text", ShakeLit "(c: i64) []const u8 {\n    const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"]
@@ -4036,16 +4116,16 @@ Section: Chapter Emission
   zig-p-cx-heap-save = [ShakeLit "fn ", ShakeUse "cx_heap_save", ShakeLit "() i64 {\n    return ", ShakeUse "cx_hp", ShakeLit ";\n}\n"]
 
   zig-p-cx-heap-advance : List ShakeFrag
-  zig-p-cx-heap-advance = [ShakeLit "fn ", ShakeUse "cx_heap_advance", ShakeLit "(n: i64) i64 {\n    if (", ShakeUse "cx_deck_armed", ShakeLit ") {\n        ", ShakeUse "cx_deck_armed", ShakeLit " = false;\n        ", ShakeUse "cx_deck_top", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit " + n;\n        ", ShakeUse "cx_hp", ShakeLit " += ", ShakeUse "cx_deck_slack", ShakeLit ";\n    }\n    ", ShakeUse "cx_hp", ShakeLit " += n;\n    return 0;\n}\n"]
+  zig-p-cx-heap-advance = [ShakeLit "fn ", ShakeUse "cx_heap_advance", ShakeLit "(n: i64) void {\n    if (", ShakeUse "cx_deck_armed", ShakeLit ") {\n        ", ShakeUse "cx_deck_armed", ShakeLit " = false;\n        ", ShakeUse "cx_deck_top", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit " + n;\n        ", ShakeUse "cx_hp", ShakeLit " += ", ShakeUse "cx_deck_slack", ShakeLit ";\n    }\n    ", ShakeUse "cx_hp", ShakeLit " += n;\n}\n"]
 
   zig-p-cx-heap-restore : List ShakeFrag
-  zig-p-cx-heap-restore = [ShakeLit "fn ", ShakeUse "cx_heap_restore", ShakeLit "(h: i64) i64 {\n    ", ShakeUse "cx_hp", ShakeLit " = h;\n    return 0;\n}\n"]
+  zig-p-cx-heap-restore = [ShakeLit "fn ", ShakeUse "cx_heap_restore", ShakeLit "(h: i64) void {\n    ", ShakeUse "cx_hp", ShakeLit " = h;\n}\n"]
 
   zig-p-cx-peek-qword : List ShakeFrag
   zig-p-cx-peek-qword = [ShakeLit "// Wrapping, because bare metal does a single 64-bit load and every\n// bit pattern is a legal i64. Rebuilding the value with checked * and +\n// traps on any qword whose top byte sets the high bit -- that is, on\n// every NEGATIVE qword. Measured 2026-08-21 with\n// findings/probe-peek-qword.codex: bytes 00 00 00 00 00 00 00 FF answer\n// -72057594037927936 on bare metal and panic here.\nfn ", ShakeUse "cx_peek_qword", ShakeLit "(b: i64, off: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 8);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 7;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v *% 256 +% ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"]
 
   zig-p-cx-address-of : List ShakeFrag
-  zig-p-cx-address-of = [ShakeLit "// Bare metal's address-of is emit-identity-builtin: it returns the VALUE,\n// and since records, lists and texts are pointers there, the value IS the\n// address. Answering a constant 0 made every object identical to every other\n// one AND to null, and the compiler reads that as an answer: mode-ordinal and\n// real-width-ordinal short-circuit on `address-of m == 0`, so they returned 0\n// for every input, and copy-sx-text decides durability with `address-of t < b`,\n// so it always shared and never rematerialised -- into a region about to be\n// reclaimed. Finding 31.\n//\n// The 0 was justified by X86_64Compound's note that address-of \"silently\n// answers 0 on any target where it cannot be modelled: that cost the C# arm\n// every tag in this table\". That note describes the hazard as a cost, not a\n// licence, and this is not such a target -- one flat region and pointers into\n// it is exactly the shape bare metal has.\n//\n// HEAP-RELATIVE, not a host pointer: the answers are compared against\n// __heap-save values, which are offsets from cx_heap_base. A raw @intFromPtr\n// would order correctly among itself and be nonsense against those.\nfn ", ShakeUse "cx_address_of", ShakeLit "(v: anytype) i64 {\n    switch (@typeInfo(@TypeOf(v))) {\n        .int, .comptime_int => return @intCast(v),\n        .bool => return @intFromBool(v),\n        .pointer => |cx_pi| {\n            const cx_p = if (cx_pi.size == .slice) @intFromPtr(v.ptr) else @intFromPtr(v);\n            const cx_base = @intFromPtr(", ShakeUse "cx_heap_base", ShakeLit "());\n            return if (cx_p >= cx_base) @intCast(cx_p - cx_base) else 0;\n        },\n        else => @compileError(\"zig plug: no address-of for this type\"),\n    }\n}\n"]
+  zig-p-cx-address-of = [ShakeLit "// Bare metal's address-of is emit-identity-builtin: it returns the VALUE,\n// and since records, lists and texts are pointers there, the value IS the\n// address.\n//\n// HEAP-RELATIVE, not a host pointer: the answers are compared against\n// __heap-save values, which are offsets from cx_heap_base. A raw @intFromPtr\n// would order correctly among itself and be nonsense against those.\nfn ", ShakeUse "cx_address_of", ShakeLit "(v: anytype) i64 {\n    switch (@typeInfo(@TypeOf(v))) {\n        .int, .comptime_int => return @intCast(v),\n        .bool => return @intFromBool(v),\n        .pointer => |cx_pi| {\n            // AN EMPTY SLICE HAS NO POINTER. Zig leaves .ptr undefined when\n            // len is 0 -- safe builds fill it with 0xaa -- so asking a\n            // zero-length Text where it lives reads poison, and @intCast traps\n            // on the distance from the region to a pointer that was never one.\n            // 0 is the right answer rather than a lie: mcopy-text reads it as\n            // \"not in the copied region, share as-is\", and an empty text is\n            // exactly what needs no copy.\n            //\n            // 0 IS THE \"NO ADDRESS\" SENTINEL, so a real address must never be\n            // 0. A source literal lives in .rodata, below the heap, and the\n            // displacement is SIGNED so it answers a distinct negative:\n            // `a == 0` stays false while `a < mc.mc-floor` and `address-of t\n            // < b` are true, which is what a literal wants -- it never moves,\n            // so sharing it is durable and copying it would be waste. Offset 0\n            // is not a live object and so cannot collide with the empty-slice\n            // sentinel: cx_hp starts at 6291456, and everything under it\n            // belongs to the deck.\n            if (cx_pi.size == .slice and v.len == 0) return 0;\n            const cx_p = if (cx_pi.size == .slice) @intFromPtr(v.ptr) else @intFromPtr(v);\n            const cx_base = @intFromPtr(", ShakeUse "cx_heap_base", ShakeLit "());\n            return @as(i64, @intCast(cx_p)) - @as(i64, @intCast(cx_base));\n        },\n        // A payload-free Codex union is a bare zig enum, and bare metal hands\n        // back the tag word -- the same identity this switch gives an Integer.\n        .@\"enum\" => return @intFromEnum(v),\n        else => @compileError(\"zig plug: no address-of for \" ++ @typeName(@TypeOf(v))),\n    }\n}\n"]
 
   zig-p-cx-dptr : List ShakeFrag
   zig-p-cx-dptr = [ShakeLit "// The deck is the C# plug's rule (_Buf.deck_enter/deck_exit): the\n// outermost enter parks the bump pointer in the bivy and swaps the deck\n// pointer in; the outermost exit swaps back. Deck position is observable\n// (the depot's deck-*-contract subjects print it), so a no-op deck is a\n// wrong answer, not a simplification.\nvar ", ShakeUse "cx_dptr", ShakeLit ": i64 = 0;\n"]
@@ -4081,16 +4161,16 @@ Section: Chapter Emission
   zig-p-cx-deck-report = [ShakeLit "// STDOUT, never stderr. stderr carries the program's output and every\n// comparison in the ladder diffs it, so a measurement written there would\n// corrupt the thing being measured. Raw write syscall rather than\n// std.Io.File, which in 0.16 wants an Io instance. Only on a new peak, so the\n// lines are few and the last one is the answer.\nfn ", ShakeUse "cx_deck_report", ShakeLit "() void {\n    if (@import(\"builtin\").os.tag != .linux) return;\n    if (", ShakeUse "cx_deck_base", ShakeLit " == 0 or ", ShakeUse "cx_deck_top", ShakeLit " == 0) return;\n    const cx_used = ", ShakeUse "cx_deck_hw", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ";\n    if (cx_used - ", ShakeUse "cx_deck_stride", ShakeLit " < 1048576) return;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = cx_used;\n    var cx_b: [224]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_b, \"CX-DECK used={d} reserved={d} headroom={d} base={d} peak={d} best={d}\\n\", .{ cx_used, ", ShakeUse "cx_deck_top", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_deck_top", ShakeLit " - ", ShakeUse "cx_deck_hw", ShakeLit ", ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_deck_hw", ShakeLit ", ", ShakeUse "cx_deck_best", ShakeLit " }) catch return;\n    _ = ", ShakeUse "std", ShakeLit ".os.linux.write(1, cx_s.ptr, cx_s.len);\n}\n"]
 
   zig-p-cx-deck-enter : List ShakeFrag
-  zig-p-cx-deck-enter = [ShakeLit "fn ", ShakeUse "cx_deck_enter", ShakeLit "() i64 {\n    if (", ShakeUse "cx_nest", ShakeLit " == 0) {\n        ", ShakeUse "cx_bivy", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit ";\n        ", ShakeUse "cx_hp", ShakeLit " = ", ShakeUse "cx_dptr", ShakeLit ";\n    }\n    ", ShakeUse "cx_nest", ShakeLit " += 1;\n    return 0;\n}\n"]
+  zig-p-cx-deck-enter = [ShakeLit "fn ", ShakeUse "cx_deck_enter", ShakeLit "() void {\n    if (", ShakeUse "cx_nest", ShakeLit " == 0) {\n        ", ShakeUse "cx_bivy", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit ";\n        ", ShakeUse "cx_hp", ShakeLit " = ", ShakeUse "cx_dptr", ShakeLit ";\n    }\n    ", ShakeUse "cx_nest", ShakeLit " += 1;\n}\n"]
 
   zig-p-cx-deck-exit : List ShakeFrag
-  zig-p-cx-deck-exit = [ShakeLit "fn ", ShakeUse "cx_deck_exit", ShakeLit "() i64 {\n    ", ShakeUse "cx_nest", ShakeLit " -= 1;\n    if (", ShakeUse "cx_nest", ShakeLit " == 0) {\n        ", ShakeUse "cx_dptr", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit ";\n        ", ShakeUse "cx_hp", ShakeLit " = ", ShakeUse "cx_bivy", ShakeLit ";\n        ", ShakeUse "cx_deck_report", ShakeLit "();\n    }\n    return 0;\n}\n"]
+  zig-p-cx-deck-exit = [ShakeLit "fn ", ShakeUse "cx_deck_exit", ShakeLit "() void {\n    ", ShakeUse "cx_nest", ShakeLit " -= 1;\n    if (", ShakeUse "cx_nest", ShakeLit " == 0) {\n        ", ShakeUse "cx_dptr", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit ";\n        ", ShakeUse "cx_hp", ShakeLit " = ", ShakeUse "cx_bivy", ShakeLit ";\n        ", ShakeUse "cx_deck_report", ShakeLit "();\n    }\n}\n"]
 
   zig-p-cx-deck-pos : List ShakeFrag
   zig-p-cx-deck-pos = [ShakeLit "fn ", ShakeUse "cx_deck_pos", ShakeLit "() i64 {\n    return ", ShakeUse "cx_dptr", ShakeLit ";\n}\n"]
 
   zig-p-cx-deck-set : List ShakeFrag
-  zig-p-cx-deck-set = [ShakeLit "fn ", ShakeUse "cx_deck_set", ShakeLit "(p: i64) i64 {\n    ", ShakeUse "cx_dptr", ShakeLit " = p;\n    ", ShakeUse "cx_deck_base", ShakeLit " = p;\n    ", ShakeUse "cx_deck_hw", ShakeLit " = p;\n    ", ShakeUse "cx_deck_top", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_best", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_armed", ShakeLit " = true;\n    return 0;\n}\n"]
+  zig-p-cx-deck-set = [ShakeLit "fn ", ShakeUse "cx_deck_set", ShakeLit "(p: i64) void {\n    ", ShakeUse "cx_dptr", ShakeLit " = p;\n    ", ShakeUse "cx_deck_base", ShakeLit " = p;\n    ", ShakeUse "cx_deck_hw", ShakeLit " = p;\n    ", ShakeUse "cx_deck_top", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_best", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_armed", ShakeLit " = true;\n}\n"]
 
   zig-p-cx-utf8-to-cce : List ShakeFrag
   zig-p-cx-utf8-to-cce = [ShakeLit "// The I/O boundary. Codex text is CCE everywhere inside -- on bare metal\n// and here alike -- so these convert at the edge and nowhere else: bytes\n// arriving become CCE, bytes leaving are already what they are. std.fs in\n// 0.16 wants an Io the generated main has no reason to carry, so this uses\n// the raw syscalls.\nfn ", ShakeUse "cx_utf8_to_cce", ShakeLit "(bytes: []const u8) []const u8 {\n    var out: ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8) = .empty;\n    var i: usize = 0;\n    while (i < bytes.len) {\n        const n = ", ShakeUse "std", ShakeLit ".unicode.utf8ByteSequenceLength(bytes[i]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        const cp = ", ShakeUse "std", ShakeLit ".unicode.utf8Decode(bytes[i..][0..n]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        ", ShakeUse "cx_cce_frame", ShakeLit "(", ShakeUse "cx_cp_to_cce", ShakeLit "(cp), &out);\n        i += n;\n    }\n    return out.items;\n}\n"]
@@ -4118,6 +4198,48 @@ Section: Chapter Emission
 
   zig-p-cx-peek-byte : List ShakeFrag
   zig-p-cx-peek-byte = [ShakeLit "fn ", ShakeUse "cx_peek_byte", ShakeLit "(b: i64, off: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 1);\n    return ", ShakeUse "cx_heap_mem", ShakeLit "[@intCast(b + off)];\n}\n"]
+
+ Zero-extended, which is what `mov eax, [rdi]` does on bare metal
+ (X86_64Helpers emit-peek-32-helper): a 32-bit load clears the top half of
+ rax, so the answer is 0..4294967295 and never negative. That is the one way
+ this differs from peek-qword beside it, which needs wrapping arithmetic
+ precisely because every 64-bit pattern is a legal i64 and the top bit makes
+ it negative. Four bytes cannot overflow an i64, so the accumulate is plain.
+
+  zig-p-cx-peek-32 : List ShakeFrag
+  zig-p-cx-peek-32 = [ShakeLit "fn ", ShakeUse "cx_peek_32", ShakeLit "(b: i64, off: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 4);\n    var cx_v: i64 = 0;\n    var cx_j: i64 = 3;\n    while (cx_j >= 0) : (cx_j -= 1) cx_v = cx_v * 256 + ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off + cx_j))];\n    return cx_v;\n}\n"]
+
+ The value is bitcast to u64 before the shifts so they are logical: a negative
+ i64 shifted arithmetically would carry sign bits down into the low byte.
+
+  zig-p-cx-poke-32 : List ShakeFrag
+  zig-p-cx-poke-32 = [ShakeLit "fn ", ShakeUse "cx_poke_32", ShakeLit "(b: i64, off: i64, v: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 4);\n    const cx_a: usize = @intCast(b + off);\n    const cx_w: u64 = @bitCast(v);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a] = @truncate(cx_w);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 1] = @truncate(cx_w >> 8);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 2] = @truncate(cx_w >> 16);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 3] = @truncate(cx_w >> 24);\n    return 0;\n}\n"]
+
+  zig-p-cx-poke-16 : List ShakeFrag
+  zig-p-cx-poke-16 = [ShakeLit "fn ", ShakeUse "cx_poke_16", ShakeLit "(b: i64, off: i64, v: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 2);\n    const cx_a: usize = @intCast(b + off);\n    const cx_w: u64 = @bitCast(v);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a] = @truncate(cx_w);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[cx_a + 1] = @truncate(cx_w >> 8);\n    return 0;\n}\n"]
+
+  zig-p-cx-poke-byte : List ShakeFrag
+  zig-p-cx-poke-byte = [ShakeLit "fn ", ShakeUse "cx_poke_byte", ShakeLit "(b: i64, off: i64, v: i64) i64 {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + 1);\n    ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off))] = @truncate(@as(u64, @bitCast(v)));\n    return 0;\n}\n"]
+
+ `__memset` is `NothingTy` in Types/Builtins.codex, so this is void, the way
+ cx_heap_restore is for `__heap-restore`.
+
+  zig-p-cx-memset : List ShakeFrag
+  zig-p-cx-memset = [ShakeLit "fn ", ShakeUse "cx_memset", ShakeLit "(b: i64, v: i64, n: i64) void {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + n);\n    const cx_x: u8 = @truncate(@as(u64, @bitCast(v)));\n    var cx_i: i64 = 0;\n    while (cx_i < n) : (cx_i += 1) ", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + cx_i))] = cx_x;\n}\n"]
+
+ A HOSTED PROCESS HAS NO I/O PORTS. Bare metal writes a byte to one; the C#
+ plug answers 0 without writing anything and this does the same. Both
+ arguments are taken so a caller's side effects still happen, and in order.
+
+  zig-p-cx-port-out-byte : List ShakeFrag
+  zig-p-cx-port-out-byte = [ShakeLit "fn ", ShakeUse "cx_port_out_byte", ShakeLit "(p: i64, v: i64) i64 {\n    _ = p;\n    _ = v;\n    return 0;\n}\n"]
+
+ `cx_bump_alloc` beside it cannot serve: it is the zig Allocator vtable entry
+ and takes an alignment and an opaque self. This is a raw byte region from the
+ bump heap, which is what a program pokes into.
+
+  zig-p-cx-alloc-bytes : List ShakeFrag
+  zig-p-cx-alloc-bytes = [ShakeLit "fn ", ShakeUse "cx_alloc_bytes", ShakeLit "(n: i64) i64 {\n    const cx_p: i64 = ", ShakeUse "cx_hp", ShakeLit ";\n    ", ShakeUse "cx_hp", ShakeLit " += n;\n    ", ShakeUse "cx_buf_want", ShakeLit "(", ShakeUse "cx_hp", ShakeLit ");\n    return cx_p;\n}\n"]
 
   zig-p-cx-buf-read-bytes : List ShakeFrag
   zig-p-cx-buf-read-bytes = [ShakeLit "fn ", ShakeUse "cx_buf_read_bytes", ShakeLit "(b: i64, off: i64, n: i64) *", ShakeUse "CxList", ShakeLit "(i64) {\n    ", ShakeUse "cx_buf_want", ShakeLit "(b + off + n);\n    const l = ", ShakeUse "cx_ll_empty", ShakeLit "(i64);\n    l.items.ensureTotalCapacity(", ShakeUse "cx_gpa", ShakeLit ", @intCast(n)) catch @panic(\"oom\");\n    var cx_j: i64 = 0;\n    while (cx_j < n) : (cx_j += 1) l.items.appendAssumeCapacity(", ShakeUse "cx_heap_mem", ShakeLit "[@as(usize, @intCast(b + off + cx_j))]);\n    return l;\n}\n"]
@@ -4213,6 +4335,7 @@ Section: Chapter Emission
     ShakePart { name = "cx_ll_empty", frags = zig-p-cx-ll-empty },
     ShakePart { name = "cx_ll_push", frags = zig-p-cx-ll-push },
     ShakePart { name = "cx_ll_of", frags = zig-p-cx-ll-of },
+    ShakePart { name = "cx_ll_copy", frags = zig-p-cx-ll-copy },
     ShakePart { name = "cx_ll_concat", frags = zig-p-cx-ll-concat },
     ShakePart { name = "cx_ll_cons", frags = zig-p-cx-ll-cons },
     ShakePart { name = "cx_ll_insert_at", frags = zig-p-cx-ll-insert-at },
@@ -4222,6 +4345,10 @@ Section: Chapter Emission
     ShakePart { name = "cx_bits_to_real_approx", frags = zig-p-cx-bits-to-real-approx },
     ShakePart { name = "cx_real_to_bits", frags = zig-p-cx-real-to-bits },
     ShakePart { name = "cx_bits_to_real", frags = zig-p-cx-bits-to-real },
+    ShakePart { name = "cx_real_from_int", frags = zig-p-cx-real-from-int },
+    ShakePart { name = "cx_real_to_int", frags = zig-p-cx-real-to-int },
+    ShakePart { name = "cx_to_real_approx", frags = zig-p-cx-to-real-approx },
+    ShakePart { name = "cx_real_to_text", frags = zig-p-cx-real-to-text },
     ShakePart { name = "cx_char_to_text", frags = zig-p-cx-char-to-text },
     ShakePart { name = "cx_char_encode", frags = zig-p-cx-char-encode },
     ShakePart { name = "cx_list_len", frags = zig-p-cx-list-len },
@@ -4274,6 +4401,13 @@ Section: Chapter Emission
     ShakePart { name = "cx_buf_write_byte", frags = zig-p-cx-buf-write-byte },
     ShakePart { name = "cx_buf_write_bytes", frags = zig-p-cx-buf-write-bytes },
     ShakePart { name = "cx_peek_byte", frags = zig-p-cx-peek-byte },
+    ShakePart { name = "cx_peek_32", frags = zig-p-cx-peek-32 },
+    ShakePart { name = "cx_poke_32", frags = zig-p-cx-poke-32 },
+    ShakePart { name = "cx_poke_16", frags = zig-p-cx-poke-16 },
+    ShakePart { name = "cx_poke_byte", frags = zig-p-cx-poke-byte },
+    ShakePart { name = "cx_memset", frags = zig-p-cx-memset },
+    ShakePart { name = "cx_port_out_byte", frags = zig-p-cx-port-out-byte },
+    ShakePart { name = "cx_alloc_bytes", frags = zig-p-cx-alloc-bytes },
     ShakePart { name = "cx_buf_read_bytes", frags = zig-p-cx-buf-read-bytes },
     ShakePart { name = "cx_shru", frags = zig-p-cx-shru },
     ShakePart { name = "cx_mod", frags = zig-p-cx-mod },

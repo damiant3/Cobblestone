@@ -1,0 +1,89 @@
+Chapter: EngineFillGuardTest
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Foreword chapter Console
+
+ WORKS-60. A target whose depth pointer reads 0 made `r3d-target-clear` fill
+ `r3d-far-depth` from address 0 upward, across the PML4 page at 0x8000, after
+ which no fault could be delivered: the guest died of a triple fault naming
+ nothing. The floor in `r3d-base-ok` is what refuses it.
+
+ THIS CHAPTER'S OWN COMPLETION IS THE ASSERTION, and it is why the arms are
+ shaped as they are. Run against the code before the guard, the first row does
+ not fail, it takes the machine down and prints nothing at all -- so the
+ evidence that the guard works is a chapter that reaches its last line. A row
+ that merely compared two integers would have been just as green on a build
+ that corrupts memory.
+
+ THE CONTROL IS THE HALF THAT CAN FAIL THE OTHER WAY. A guard that refused
+ EVERY base would also stop the crash and would silently blank every 3D pane
+ in the desk, which no arm above would notice. So a real allocated target has
+ to clear and be seen to have cleared, and its depth words are read back.
+
+Section: Body
+
+  efg-yn : Boolean -> Text
+  efg-yn (v) = if v then "yes" else "NO"
+
+ The dimensions are deliberately NOT degenerate. A zero-sized target would
+ refuse on the count rather than the base and the row would pass without ever
+ reaching the thing under test (L-VACUOUS).
+
+  efg-w : Integer = 8
+  efg-h : Integer = 4
+
+  efg-null-depth : Text =
+    let px = alloc-bytes (efg-w * efg-h * 4)
+    in let st = R3dTriState { r3t-base = px, r3t-depth = 0, r3t-w = efg-w, r3t-h = efg-h, r3t-stride = efg-w }
+    in let r = r3d-target-clear st 0
+    in "null depth: clear answered " & integer-to-text r
+       & "  refused " & efg-yn (r == r3d-refused)
+       & "  and the guest is still alive to say so " & efg-yn True
+
+  efg-null-base : Text =
+    let dp = alloc-bytes (efg-w * efg-h * 4)
+    in let st = R3dTriState { r3t-base = 0, r3t-depth = dp, r3t-w = efg-w, r3t-h = efg-h, r3t-stride = efg-w }
+    in let r = r3d-target-clear st 0
+    in "null base: clear answered " & integer-to-text r
+       & "  refused " & efg-yn (r == r3d-refused)
+
+ A LOW BUT NON-ZERO BASE IS THE ONE A `base == 0` TEST WOULD HAVE MISSED, and
+ it is the shape a partially rebuilt record gives: the page tables sit at
+ 0x8000 and the kernel loads at 0x100000, so 0x8000 is both a plausible
+ garbage value and the exact address the crash destroyed.
+
+  efg-low-base : Text =
+    let dp = alloc-bytes (efg-w * efg-h * 4)
+    in let st = R3dTriState { r3t-base = 32768, r3t-depth = dp, r3t-w = efg-w, r3t-h = efg-h, r3t-stride = efg-w }
+    in let r = r3d-target-clear st 0
+    in "low base 0x8000: clear answered " & integer-to-text r
+       & "  refused " & efg-yn (r == r3d-refused)
+
+  efg-real : Text =
+    let st = r3d-target-new efg-w efg-h 7
+    in let r = r3d-target-clear st 99
+    in let d0 = peek-32 (st.r3t-depth) 0
+    in let dn = peek-32 (st.r3t-depth) ((efg-w * efg-h - 1) * 4)
+    in let p0 = peek-32 (st.r3t-base) 0
+    in "real target: clear answered " & integer-to-text r
+       & "  did not refuse " & efg-yn (r /= r3d-refused)
+       & "  depth[0] " & integer-to-text d0
+       & "  depth[last] " & integer-to-text dn
+       & "  both far " & efg-yn (d0 == r3d-far-depth & dn == r3d-far-depth)
+       & "  colour[0] " & integer-to-text p0
+       & "  cleared " & efg-yn (p0 == 99)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni efg-null-depth
+      print-line-uni efg-null-base
+      print-line-uni efg-low-base
+      print-line-uni efg-real
+      print-line-uni "engine-fill-guard: reached the end, so nothing wrote through the tables"
+    end
+
+Page 1

@@ -1,0 +1,270 @@
+Chapter: GopCornerRamp
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+
+ A rounded corner was antialiased one pixel per row, and the top of an arc is
+ exactly where that is not enough. The inset is `r - sqrt(r^2 - (r-d)^2)`,
+ whose slope is vertical at the top: at radius 13 the first row is inset by all
+ 13 pixels and the second by 8, so the shape moves five pixels sideways inside
+ one row while one pixel gets a partial value. Damian, on a taskbar pill,
+ 2026-09-07: "it looks like shoulder pads on a football player ... which makes
+ divits in the run".
+
+ WHAT IS MEASURED IS THE RAMP, not the silhouette. A staircase and a smooth
+ corner have the same fully-covered pixels; they differ in how many pixels are
+ PARTLY covered and whether those partial values climb. So the top row is
+ walked and its partial pixels are counted and checked for monotonicity. A
+ count of one is the defect this file was written for.
+
+ THE THREE STYLES MUST GIVE THREE DIFFERENT ANSWERS, and that is what makes
+ this more than a count. CornerSharp has no arc and reports ZERO partial
+ pixels. CornerBevel is a straight diagonal, which crosses exactly ONE pixel
+ per row, and reports one. Only CornerRound reports a run, and only where the
+ arc is shallow: five on the top row, two on the next, one by row six where
+ the curve has turned steep, none on the straight sides. A change that simply
+ blended everything everywhere would flatten those four numbers into one and
+ fail here.
+
+ THE BEVEL'S PIXEL WAS PREDICTED AS ZERO AND MEASURED AS ONE. The reasoning
+ was that a bevel has no fractional part, which is true of its INSET and not
+ of its coverage: the diagonal passes through the middle of the pixel it
+ crosses, so half of one is exactly right and the old code drew it opaque. The
+ prediction is recorded rather than quietly corrected because the measurement
+ improved the control (L-SABOTAGE): three distinct answers discriminate where
+ two would not have.
+
+ THE SILHOUETTE IS REPORTED BESIDE THE RAMP so a smoother corner cannot be
+ bought by eating another pixel of the box. The first fully covered pixel on
+ the top row is 13, the radius, and it was 13 before this change.
+
+Section: Geometry
+
+  cr-w : Integer = 64
+
+  cr-h : Integer = 32
+
+  cr-stride : Integer = 64
+
+  cr-cells : Integer = 2048
+
+  cr-bg : Integer = 0
+
+  cr-fg : Integer = 16777215
+
+  cr-radius : Integer = 13
+
+Section: Body
+
+  cr-yn : Boolean -> Text
+  cr-yn (v) = if v then "yes" else "NO"
+
+  cr-fill : Integer, Integer, Integer, Integer -> Integer
+  cr-fill (b) (i) (n) (c) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) c in cr-fill b (i + 1) n c
+
+ A fresh buffer for every arm, painted with the background first, because
+ `comp-blend-px` reads the destination back and mixes: a reused buffer would
+ blend a corner over a previous corner and the second reading would be a
+ record of both.
+
+  cr-render : CornerStyle -> Integer
+  cr-render (cs) =
+    let b = alloc-bytes (cr-cells * 4)
+    in let z = cr-fill b 0 cr-cells cr-bg
+    in let d = comp-rows b cr-stride cr-h (layout-rect 0 0 cr-w cr-h) (layout-rect 0 0 cr-w cr-h) cs cr-fg cr-fg False False 0 1
+    in b
+
+  cr-at : Integer, Integer, Integer -> Integer
+  cr-at (b) (x) (y) = peek-32 b ((y * cr-stride + x) * 4)
+
+  cr-partial : Integer -> Boolean
+  cr-partial (v) = v /= cr-bg & v /= cr-fg
+
+ Counted across the LEFT half only. The right half is the mirror of it and
+ counting both would double every number without asking a new question.
+
+  cr-count : Integer, Integer, Integer, Integer -> Integer
+  cr-count (b) (y) (x) (acc) =
+    if x >= cr-w / 2 then acc
+    else cr-count b y (x + 1) (acc + (if cr-partial (cr-at b x y) then 1 else 0))
+
+ The ramp must climb toward the middle of the box: a partial pixel further in
+ is more covered than one further out. This walks the same half and refuses
+ any pair that goes the wrong way, so a set of partial pixels carrying noise
+ rather than a gradient fails here while passing the count.
+
+  cr-climbs : Integer, Integer, Integer, Integer -> Boolean
+  cr-climbs (b) (y) (x) (last) =
+    if x >= cr-w / 2 then True
+    else let v = cr-at b x y
+    in if cr-partial v == False then cr-climbs b y (x + 1) last
+    else if v < last then False
+    else cr-climbs b y (x + 1) v
+
+ The solid run is where the shape is fully opaque, and it is reported so that
+ a reader can see the silhouette did not move: a fix that smoothed the corner
+ by eating another pixel of the box would show up here rather than passing
+ quietly.
+
+  cr-solid : Integer, Integer, Integer -> Integer
+  cr-solid (b) (y) (x) =
+    if x >= cr-w then x
+    else if cr-at b x y == cr-fg then x
+    else cr-solid b y (x + 1)
+
+  cr-row : Text, CornerStyle, Integer -> Text
+  cr-row (nm) (cs) (y) =
+    let b = cr-render cs
+    in let n = cr-count b y 0 0
+    in nm & " row " & integer-to-text y
+       & ": partial pixels " & integer-to-text n
+       & "  first solid at " & integer-to-text (cr-solid b y 0)
+       & "  climbs " & cr-yn (cr-climbs b y 0 0)
+
+ THE OUTLINE MUST FOLLOW THE ARC, which is a different claim from the ramp
+ above and failed while the ramp passed. `comp-border` drew four straight bars
+ whose ends stopped at the radius and never traced the corner, on the stated
+ reasoning that a square outline reads as a rounded one. It does not when the
+ outline is a colour of its own: the fill's arc reaches out past where the bar
+ begins, leaving the bar ending in a square cut with bare fill beside it.
+
+ The question is asked as "what is the FIRST thing you meet coming in from
+ outside", row by row down the corner. On a bordered box the honest answer is
+ the border, on every row, because the outline is the outside of the shape.
+ Before the fix the top rows answered with the FILL, which is the defect
+ stated as a measurement. The straight-sided rows below the corner are in the
+ walk too, and they always answered border: without them a fix that painted
+ the border everywhere would pass.
+
+  cr-ground : Integer = 12632256
+
+  cr-border-col : Integer = 4144959
+
+  cr-fill-col : Integer = 8421504
+
+ DRAWN AT THE SCALE THE DESK DRAWS AT, which is 2, and the reason is that a
+ ONE pixel antialiased diagonal has no fully opaque pixel anywhere along it:
+ every pixel of it is a blend, the walk below skips the lot, and a correct
+ outline scores as absent. That is a property of the instrument and not of the
+ outline. The desk's border is one LOGICAL pixel, which is two device pixels
+ at this scale, and two is enough to leave an opaque core. The layout rect is
+ halved to match, so the device box is the same 64 by 32 the rows above use.
+
+  cr-sr : Integer = 6
+
+  cr-styled : Integer
+  cr-styled =
+    let b = alloc-bytes (cr-cells * 4)
+    in let z = cr-fill b 0 cr-cells cr-bg
+    in let bdr = border-uniform 1 cr-border-col (CornerRound cr-sr)
+    in let st = widget-style cr-fill-col cr-fill-col bdr edges-zero edges-zero
+    in let d = comp-box b cr-stride cr-h (layout-rect 0 0 cr-w cr-h) (layout-rect 0 0 (cr-w / 2) (cr-h / 2)) st cr-fill-col 2
+    in b
+
+ BLENDS ARE SKIPPED AND THE FIRST OPAQUE COLOUR IS THE ANSWER. The traced arc
+ is antialiased against the background, so the outermost pixel of the outline
+ is a blend and matches neither colour exactly; asking "what is the first
+ non-background pixel" therefore answered neither and scored a correct outline
+ as wrong. What the eye is being asked about is which of the two SURFACES
+ comes first, so the walk runs in until it meets one of them at full opacity.
+
+  cr-first : Integer, Integer, Integer -> Integer
+  cr-first (b) (y) (x) =
+    if x >= cr-w / 2 then 0 - 1
+    else let v = cr-at b x y
+    in if v == cr-border-col then cr-border-col
+    else if v == cr-fill-col then cr-fill-col
+    else cr-first b y (x + 1)
+
+  cr-meets : Integer, Integer -> Boolean
+  cr-meets (b) (y) = cr-first b y 0 == cr-border-col
+
+  cr-krows : Integer = 15
+
+  cr-walk : Integer, Integer, Integer -> Integer
+  cr-walk (b) (y) (acc) =
+    if y >= cr-krows then acc
+    else cr-walk b (y + 1) (acc + (if cr-meets b y then 1 else 0))
+
+  cr-outline : Text
+  cr-outline =
+    let b = cr-styled
+    in let n = cr-walk b 0 0
+    in "outline: rows meeting the border first " & integer-to-text n & " of " & integer-to-text cr-krows
+       & "  every row " & cr-yn (n == cr-krows)
+       & "  top row meets border " & cr-yn (cr-meets b 0)
+       & "  a straight row meets border " & cr-yn (cr-meets b (cr-krows - 1))
+
+ A SHADOW MUST NOT STRAND BARE GROUND BETWEEN ITSELF AND THE BOX. The shadow
+ skipped an EXCLUSION RECTANGLE, on the sound reasoning that the fill is about
+ to overwrite the box's interior anyway and blending under it would be paid
+ for twice. The rectangle was square and the fill is round, so at each corner
+ the pixels outside the arc but inside that square were skipped by the shadow
+ and never reached by the fill: what showed was the surface underneath, in a
+ square cornered patch around a round button. Damian: "the frame is still
+ square behind it ... etching out the light gray fill on the gradient
+ taskbar".
+
+ The measurement is a hole count. Scanning a row inward, the shadow's outer
+ edge is the first pixel that is not background; after that point every pixel
+ belongs to the shadow, the border or the fill, so a ground pixel found AFTER
+ it is ground that nothing painted. Measured at scale 2 over the corner rows:
+ 25 such pixels before this fix and 0 after. A square shadow behind a square
+ box strands none either, which is why the sharp control is here: it says the
+ counter can reach 0 honestly rather than only by the corner being absent.
+
+ THE GROUND IS A LIGHT GREY AND NOT THE BLACK THE ROWS ABOVE USE, and that is
+ not decoration. shadow-subtle 0 is a BLACK shadow; painted over a black
+ ground it lands on the same value the counter calls untouched, so the walk
+ could not tell shadow from bare ground, never set its flag, and reported 0
+ holes for the broken code and the fixed one alike. The first version of this
+ row did exactly that and passed vacuously.
+
+  cr-holes-row : Integer, Integer, Integer, Boolean, Integer -> Integer
+  cr-holes-row (b) (y) (x) (seen) (acc) =
+    if x >= cr-w / 2 then acc
+    else let v = cr-at b x y
+    in if v == cr-ground then cr-holes-row b y (x + 1) seen (acc + (if seen then 1 else 0))
+    else cr-holes-row b y (x + 1) True acc
+
+  cr-holes : Integer, Integer, Integer -> Integer
+  cr-holes (b) (y) (acc) =
+    if y >= cr-krows then acc
+    else cr-holes b (y + 1) (acc + cr-holes-row b y 0 False 0)
+
+  cr-shadowed : CornerStyle -> Integer
+  cr-shadowed (cs) =
+    let b = alloc-bytes (cr-cells * 4)
+    in let z = cr-fill b 0 cr-cells cr-ground
+    in let bdr = border-uniform 1 cr-border-col cs
+    in let st = widget-style-rich cr-fill-col cr-fill-col bdr edges-zero (edges-uniform 2) (shadow-subtle 0) gradient-none accent-border-none
+    in let d = comp-box b cr-stride cr-h (layout-rect 0 0 cr-w cr-h) (layout-rect 0 0 (cr-w / 2) (cr-h / 2)) st cr-fill-col 2
+    in b
+
+  cr-gap : Text
+  cr-gap =
+    let round = cr-holes (cr-shadowed (CornerRound cr-sr)) 0 0
+    in let sharp = cr-holes (cr-shadowed CornerSharp) 0 0
+    in "shadow: stranded background pixels, round " & integer-to-text round
+       & "  sharp " & integer-to-text sharp
+       & "  round strands none " & cr-yn (round == 0)
+       & "  and sharp never did " & cr-yn (sharp == 0)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni (cr-row "round " (CornerRound cr-radius) 0)
+      print-line-uni (cr-row "round " (CornerRound cr-radius) 1)
+      print-line-uni (cr-row "round " (CornerRound cr-radius) 6)
+      print-line-uni (cr-row "round " (CornerRound cr-radius) 16)
+      print-line-uni (cr-row "bevel " (CornerBevel cr-radius) 0)
+      print-line-uni (cr-row "sharp " CornerSharp 0)
+      print-line-uni cr-outline
+      print-line-uni cr-gap
+      print-line-uni "gop-corner-ramp: reached the end"
+    end

@@ -1,0 +1,94 @@
+Chapter: SheetChainTest
+  cites Sheets chapter CellEval
+  cites Sheets chapter CellGraph
+  cites Sheets chapter CellStore
+  cites Foreword chapter CCE
+
+ SHEET-7's milestone, and the register says why it is the first arm
+ worth writing: a grid that renders is not evidence about anything the
+ dependency graph touches. A chain of 1,000 cells, each naming the one
+ above it, recalculated after an edit to the first.
+
+ The chain is built with the LAST cell typed last, so entry order and
+ derived order agree here on purpose: this arm measures the chain at
+ size, and the arm that separates derived order from typing order is
+ sheet-graph, where the sheet is three cells and the difference is
+ readable.
+
+ THE HEAP READING CARRIES ITS OWN CONTROL. `__heap-save` answers the
+ allocator's pointer, and a difference between two reads is the bytes
+ allocated between them. Two reads with NOTHING between them must differ
+ by zero; the control line prints that difference, so an instrument that
+ has started reporting something else fails visibly rather than making
+ every other number on this page meaningless.
+
+ The numbers are printed rather than compared against a recorded bound.
+ A bound recorded today is a number nobody re-measures (L-COUNT), and
+ the value of this line is the SHAPE: the cost of a chain of 1,000
+ against the cost of one recalculation of it.
+
+ TWO SIZES, because one number cannot say whether a cost is linear. The
+ chain is built at 1,000 and at 4,000 and both build costs are printed:
+ four times the cells for about four times the bytes is linear, and
+ sixteen times is the quadratic this arm found and SHEET-8 removed.
+
+Section: Body
+
+  sc-len : Integer = 1000
+  sc-big : Integer = 4000
+
+  sc-build : Program, Integer, Integer -> Program
+  sc-build (pg) (i) (n) =
+    if i >= n then pg
+    else sc-build (graph-put pg i 0 ("=A" & show i & "+1")) (i + 1) n
+
+  sc-last : Program, Results -> Text
+  sc-last (pg) (rs) = eval-cell pg rs (sc-len - 1) 0
+
+  sc-names : Program, Integer, Integer -> Text
+  sc-names (pg) (r) (c) =
+    let xs = graph-dependents pg r c
+    in let n = list-length xs
+    in if n == 0 then "(none)"
+    else show n & ", first " & graph-name pg (list-at xs 0) & ", last " & graph-name pg (list-at xs (n - 1))
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let h0 = __heap-save
+    in let h0b = __heap-save
+    in let blk = sheet-new sc-len 2 64
+    in let seed = sheet-set blk 0 0 5
+    in let h1 = __heap-save
+    in let pg = sc-build (graph-new blk) 1 sc-len
+    in let h2 = __heap-save
+    in let r1 = eval-run pg
+    in let last1 = sc-last pg r1
+    in let h3 = __heap-save
+    in let edit = sheet-set blk 0 0 100
+    in let r2 = eval-run pg
+    in let last2 = sc-last pg r2
+    in let h4 = __heap-save
+    in let deps = sc-names pg 0 0
+    in let h5 = __heap-save
+    in let bigblk = sheet-new sc-big 2 64
+    in let bigseed = sheet-set bigblk 0 0 5
+    in let h6 = __heap-save
+    in let bigpg = sc-build (graph-new bigblk) 1 sc-big
+    in let h7 = __heap-save
+    in let bigr = eval-run bigpg
+    in let biglast = eval-cell bigpg bigr (sc-big - 1) 0
+    in let h8 = __heap-save
+    in act
+      print-line-uni ("control: two heap reads with nothing between them differ by " & show (h0b - h0))
+      print-line-uni ("a chain of " & show sc-len & " cells, A1 = 5, so A1000 = " & last1)
+      print-line-uni ("edit A1 to 100 and recalculate: A1000 = " & last2)
+      print-line-uni ("editing A1 recomputes " & deps)
+      print-line-uni ("bytes to build and parse the chain: " & show (h2 - h1))
+      print-line-uni ("bytes for one recalculation: " & show (h3 - h2))
+      print-line-uni ("bytes for the second recalculation: " & show (h4 - h3))
+      print-line-uni ("a chain of " & show sc-big & " cells, A4000 = " & biglast)
+      print-line-uni ("bytes to build and parse " & show sc-big & ": " & show (h7 - h6))
+      print-line-uni ("bytes to recalculate " & show sc-big & ": " & show (h8 - h7))
+      print-line-uni ("build bytes per cell: " & show ((h2 - h1) / sc-len) & " at " & show sc-len & ", " & show ((h7 - h6) / sc-big) & " at " & show sc-big)
+    end

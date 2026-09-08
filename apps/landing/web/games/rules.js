@@ -46,6 +46,15 @@ export const RULES = {
     '**Kings:** When a piece reaches the opposite end of the board, it becomes a king (shown with a crown).',
     '**This simulation:** AI plays both sides using minimax with depth-3 search.',
   ],
+  chess: [
+    '**Goal:** Checkmate: attack the enemy king so that no legal move takes it out of attack. You are White and move first.',
+    '**Playing:** Click one of your pieces to pick it up and the board rings every square it may legally go to; click one of those to move, or click the piece again to put it back. A move that would leave your own king in check is not offered, so a pinned piece shows no destinations at all.',
+    '**Castling:** Click the king and then the square two files along. It is offered only with the right unspent, the rook still home, the squares between empty, and the king neither in check nor passing through nor landing on an attacked square.',
+    '**En passant:** A pawn that has just gone two squares may be taken by an enemy pawn beside it as though it had gone one. The window is a single move and closes whether or not it is taken.',
+    '**Promotion:** A pawn reaching the far rank becomes a queen. The engine generates all four pieces and the board takes the queen for you, so under-promotion is the one move this page cannot ask for.',
+    '**Draws:** Stalemate, where the side to move is not in check and has no legal move, and the fifty-move rule, counted in halfmoves as the rule is written. Threefold repetition is in the engine and not on this page: it needs the whole history and the board hands on one position at a time.',
+    '**This opponent:** alpha-beta search over material in centipawns, two ply deep, preferring the sooner mate. It sees a hanging piece and a mate in one; it does not see a plan.',
+  ],
   connect4: [
     '**Goal:** Be the first to connect four of your discs in a row -- horizontally, vertically, or diagonally.',
     '**Play:** Players take turns dropping one disc into any column. The disc falls to the lowest available row.',

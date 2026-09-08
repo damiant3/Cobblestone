@@ -55,7 +55,7 @@ fn tr_render(gid : i32, frame : i32) -> i32 {
   let w0 = tr_edge(bx, by, cx, cy, px, py);
   let w1 = tr_edge(cx, cy, ax, ay, px, py);
   let w2 = tr_edge(ax, ay, bx, by, px, py);
-  let inside = ((((w0 >= 0) & (w1 >= 0)) & (w2 >= 0)) | (((w0 <= 0) & (w1 <= 0)) & (w2 <= 0)));
+  let inside = ((((w0 >= 0) && (w1 >= 0)) && (w2 >= 0)) || (((w0 <= 0) && (w1 <= 0)) && (w2 <= 0)));
   if ((inside == false)) {
   return 0;
   } else {

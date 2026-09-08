@@ -188,7 +188,13 @@ build/check-generated-scripts.ps1 -Diff test   # the actual drift, line by line
 ```
 
 It exits 1 when anything has drifted and takes about 40 seconds for the whole
-set (one VM boot compiles them all). It is deliberately **not** wired into
+set. **It is not a text diff and it is not free: it BOOTS A GUEST PER
+GENERATOR.** One VM boot compiles them all, and then each emitted script is run
+in its own guest to capture its output (`test-run.ps1`, once per generator, with
+one retry on an empty capture), so the bare form is 57 boots and is a run to ask
+the box for. `-Only <name>` is one. Read as a text comparison it looks like
+something you can run to satisfy a passing doubt; it is not (fester,
+2026-09-07, having done exactly that). It is deliberately **not** wired into
 `build.ps1` or the battery, and it deliberately has **no** write mode: with the
 generators in their current state, a bulk regenerate would destroy the working
 scripts. Use `-Diff` and port the change back into the generator by hand.
@@ -267,6 +273,68 @@ to close it. Use it: several agents run guests on this box and killing
 `codex-vm` by name takes down all of them (see the section below).
 
 ## Test Harness
+
+### Run only what your change can break: `-Battery`
+
+```powershell
+build/test.ps1 -Battery kernel                  # one coverage set
+build/test.ps1 -Battery kernel,apps             # they combine
+build/test.ps1 -Battery kernel -ListSubjects    # what it WOULD run; no guest
+build/check-battery-coverage.ps1                # counts, no guest
+build/check-battery-coverage.ps1 -List kernel   # the members
+```
+
+A battery is named for what it COVERS, so a lane mixes the ones its change
+implicates and runs nothing else. Membership is derived per run by
+`build/check-battery-coverage.ps1` from a chapter's `.covers` sidecar if it
+has one and from its `cites` otherwise; it is never a list in a script.
+
+**A battery run needs no `-ApprovedBy`**, because it is what a lane runs
+against its own change. The exemption is narrow: it holds only when
+`-Battery` is the ONLY selector, so `-Battery kernel -All` is still the full
+battery and is still refused. `-Battery` starts guests like any other run,
+so ask the commander for the box first.
+
+**What one costs, measured 2026-09-07** (`-Battery board -Jobs 2
+-CodexCdx seed\Codex.cdx`, seed 81F9E817, beside two other lanes' guests):
+13 chapters selected, 11 compiled, 2 skipped, 9 run; phase 1 3 s, phase 2
+1 s, **6.8 s wall, peak 2 guests of my own**. `board` is the smallest
+battery, so that is a floor and not a typical figure; the selected count
+per battery is what scales the cost, and `-ListSubjects` tells you that
+before you spend anything. Under memory pressure the VM admission line
+reduces the concurrent slots below `-Jobs` on its own, so the peak guest
+count can be lower than you asked for. Re-measure rather than quoting this
+(L-COUNT).
+
+**`-Battery` REPLACES the default tier; it does not add to it.** A bare
+`build/test.ps1` runs the `lang` tier, and `-Battery board` runs the 13 board
+chapters and nothing else. Getting this wrong is not a small error and it is
+not hypothetical: before it was fixed, `-Battery board` selected zero new
+chapters (every one already swept by `lang`, which owns `codex\test` and
+`codex\test\errors`), reported `0 chapter(s) added`, and then ran the whole
+882-chapter `lang` tier over 320 s. **Run `-ListSubjects` first when you are
+not certain what a selector will pick**: it prints the set and exits before
+any guest, which is the only way to check a selector without paying for it
+(L-DENOM).
+
+**A battery is NOT the tier of the same name.** `-Tier apps` is the 472
+chapters that live in `codex\test\apps`; `-Battery apps` is the 227 that cite
+an apps chapter from anywhere in the tree. Measured 2026-09-07 over 1,726
+chapters: foreword 1,309, kernel 282, board 13, apps 227, unclassified 313
+(re-measure before quoting, L-COUNT).
+
+`compiler` and `plugs` are named batteries that select NO chapters, because
+nothing under `codex\test` cites either, and `-Battery compiler` REFUSES
+rather than running an empty set green. The compiler is covered by the
+fixed-point core, `test-bvt`, `sem-equiv` and `check-errors`; the plugs by
+`plug-binary`, `plug-smoke` and `plug-selftest`.
+
+A chapter with no `.covers` and no resolvable cite is UNCLASSIFIED and joins
+no battery, deliberately: assigning it on a guess is how a battery goes blind
+to its own subject. The classifier prints that count beside every battery's,
+and prints a review queue of chapters that need a machine but cite nothing
+machine-side, which is the case a cite graph cannot see (`hpet-interrupt`
+pins the HPET and the IOAPIC and cites only `Foreword chapter Board`).
 
 ### Two-Phase Architecture
 
@@ -396,16 +464,20 @@ That kills `Start-VmRun`'s codex-vm path in `build/vm-config.ps1`, which builds
 exactly those two flags. `Start-CodexVmRun` reads the fast exit as a failed
 launch, retries four times and returns `$null`, so a caller reports
 `FAIL: VM did not start` and the real cause is a flag that was never there.
-Wherever codex-vm is present -- every box -- these are unrunnable:
-`codex/plugs/elf/extract-x86-output.ps1`, `build/test-disk-compile.ps1`,
-`tools/sim-test.ps1`, `build/gdb-watchpoint.ps1`. The QEMU fallback branch does
-carry a real serial wire, so the path works only where codex-vm is ABSENT,
-which is nowhere.
+**SETTLED BY DELETION, 2026-09-07.** The serve mode was never built and the
+callers are gone: `codex/plugs/elf/extract-x86-output.ps1` went at main 21478
+and `tools/test-codex-vm.ps1`, which passed the two flags directly and also
+invoked `codex.build\sample-compile-selfhost.ps1` from before the restructure,
+went with this paragraph. Nothing now asks codex-vm for a live serial pair.
 
-`tools/test-codex-vm.ps1` passes the same two flags directly and also invokes
-`codex.build\sample-compile-selfhost.ps1`, a path that no longer exists.
-
-Whether this gets the serve mode built or the callers deleted is unclaimed.
+The rest of the account is history and reads as a live hazard, so it is stated
+as it now IS. `Start-VmRun` (`build/vm-config.ps1`) is QEMU's mode and says so:
+with no QEMU it refuses by name rather than booting a guest onto a wire nothing
+serves, so `build/test-disk-compile.ps1`, `tools/sim-test.ps1` and
+`build/gdb-watchpoint.ps1` are QEMU-only harnesses that decline cleanly, not
+silent failures. And codex-vm no longer drops an unknown flag: it refuses the
+first one it does not recognise (L-ACCEPTED), so a command line carrying a flag
+that was never real cannot look accepted again.
 #### CLI Flags
 
 ```
@@ -433,6 +505,7 @@ codex-vm -kernel file.cdx [options]
 | `-usb-bot-drop-len-max <M>` | 0 (no upper bound) | Bound `-usb-bot-drop-len` above, so the lever refuses a BAND of command sizes rather than everything from N upward. It exists because the diagnostic bank writes 32,768-byte commands of its own: without it, every threshold small enough to refuse a rung also refuses the bank, the bank dies before the stage runs, and the row reads `no-medium`. With `N == M` the lever refuses exactly one command size, which is what a control wants. **It cannot rescue an ordinal-keyed arm whose target is the same size as the bank's writes:** the 2.7 MB sink stage writes 32,768-byte commands and so does the bank, so no threshold separates them, and `diag-arm.ps1`'s `sink-drop` stays ordinal-keyed for that reason. |
 | `-usb-bot-revive-on-reset` | off (the death is LATCHED) | Pairs with `-usb-bot-die-len` / `-usb-bot-die-lba`, which kill the BOT target at a write of a given size at or above a given LBA and leave it dead for the rest of the run. With this switch the target ANSWERS AGAIN after a Bulk-Only Mass Storage Reset, and the die trigger is SPENT rather than merely lifted. It keys on the BOT class reset and not a port reset because that is the one the driver issues: measured off `sink-dies`, the guest sends four Mass Storage Resets after the death and no port reset at all. Without the trigger being spent the driver retries the write that killed it, the length and LBA still match, and it dies again forever. This is what makes `msc-cell-retry` reach `msc-retry-ok` (3): the latched default can only ever reach `msc-retry-failed` (2), so the driver's recovery had a bed for its failure and none for its success |
 | `-usb-bot-die-on-nic` | off | The BOT target stops answering FOREVER at the first bulk WRITE issued after the e1000 model sees the first observable of NIC bring-up. Latched like `-usb-bot-die-lba`, and spent by `-usb-bot-revive-on-reset` in the same way. **It injects a symptom, not a mechanism**, exactly as `-usb-setcfg-fault` does: nothing here claims to know why a part would behave this way, and no reading taken under it is evidence that it does. It exists because the other two medium-death levers key on a property of the WRITE (its length, its LBA) and so can only express "the medium dies at a certain kind of write"; the candidate sitting 11 raised is that the write is innocent and its TIMING is the whole of it, which no length and no LBA can separate. Arms on either the CTRL write that sets SLU or the RCTL write that sets EN, whichever comes first, and the stderr line NAMES the register rather than assuming one: measured 2026-08-21 on the diag ladder it is **RCTL.EN**, written by `nicinit`. Its arm is `nic-kills-msc` and its control is `b3-pass` |
+| `-usb-writeback` | off (the target is WRITE-THROUGH) | The BOT target keeps written blocks in a volatile cache and makes them durable only when SYNCHRONIZE CACHE (0x35) commits them; whatever is uncommitted when the machine stops is LOST, as at a real power-off. **The default cannot express a missing flush** (L-FREEDOM): write-through calls `ide_flush` in the write's own data phase, so the bytes reach the image whether or not the guest ever asks for a commit, and a run with the flush and a run without it are the same colour, while sittings 13 and 14 lost the bank on the board. `Read-Bank` in `diag-arm.ps1` already reads the file out of the IMAGE after codex-vm is killed, so a power-off readback needs no new machinery. **Read the exit line before reading the arm's colour:** `USB WRITEBACK: commits=N committed-bytes=N lost-bytes=N`, printed whenever the flag is on. A flush-absent arm reporting `lost-bytes=0` never reached the condition it exists to test and its colour means nothing (L-VACUOUS). The dirty region is one coalesced span, which is exact and not an approximation: bytes between two writes are unmodified, so the in-memory image already equals the file there. |
 | `-usb-no-unit-attention` | off (the condition is ON) | Restore the old always-ready storage target. **By default the device now presents the power-on UNIT ATTENTION every conforming SCSI target presents:** the first command after a controller reset answers CHECK CONDITION with sense key 0x06 / ASC 0x29, and the condition persists until REQUEST SENSE reads it. A host that skips that handshake sees its first real command fail on real hardware and used to pass here; `msc-wait-ready`'s retry loop had never executed. The condition is armed in the RESET path, not at init, because the guest issues HCRST during bring-up and would wipe it -- a sabotage arm that should have failed and did not is what found that. |
 | `-usb-disk-port <N>` | 1 | Carry the mass-storage device to root port N; its old port goes dark rather than answering as well. Pair with `-xhci-ports` to reproduce a device sitting where no reader can see it. **No bed could put a connected device above root port 7** before this: the model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on port 9, past the probe's eight PORTSC rows, so a count of connected ports named none of them. `-xhci-ports 26 -usb-disk-port 10` reproduces the board's `port=9 speed=4`. **Before believing a wide-port PASS, run the arm that must FAIL:** `-xhci-ports 8 -usb-disk-port 10` seats the disk past the declared port count, so the walk's own bound cannot reach it and the run has to report `connect=FAILED` (or `ok=0` on a `usb-attach` probe). Without that third arm a passing wide-port run is indistinguishable from a flag the emulator ignored. Better still, make the probe PRINT the port the walk settled on, so a vacuous run says `port=0` and convicts itself. |
 | `-usb-cfgval <N>` | 1 | The mass-storage device numbers its configuration N and **refuses any other value** with a STALL (USB 2.0 9.4.7 makes a bad configuration value a request error, and a control pipe reports one by stalling). `bConfigurationValue` is not an index and is not obliged to be 1. Use it on any driver that sends SET_CONFIGURATION: `msc-open-endpoints` sent a hardcoded 1 while every sibling driver read descriptor byte 5, and no bed could refuse it -- this model reported 1, and QEMU's `usb-storage` reports 1 and then accepts anything. |
@@ -503,6 +576,29 @@ capture: the variable above loses bytes before they reach the buffer, this one
 loses bytes that reached the buffer and not the file. Its real causes are a
 full disk and an I/O error, which a harness cannot arrange either. The arm is
 `build/check-run-list.ps1` arm 6, and the same warning applies.
+
+`CODEX_VM_FAIL_GROW_AT=N` starts the capture buffer at N bytes instead of 16MB
+and makes every growth `realloc` fail, which fires the two `growth failed`
+causes. They were the last reported losses nobody could produce: a real one
+needs the host out of memory AND 16MB of guest output to reach the branch at
+all, so both were live, correct and never once executed. It adds no drop path
+of its own -- the shipped branches keep their counter and their wording, which
+is the point, because `blit_guest_output` once discarded whole blits WITHOUT
+counting them and that is why `is SHORT` could not fire for the path carrying
+bulk output (L-SHORT). On codex-vm every print goes by blit, so a compile fires
+`blit growth failed` only (`build/check-compile-drop.ps1`); `buffer growth
+failed` is reached by a guest writing UART port 0x3F8 directly
+(`build/serial-byte-flood.codex`, `check-run-list.ps1` arm 9). Off by default,
+env-gated, and never set in a run whose output anyone intends to trust.
+
+**Each lost byte is reported once, and `dropped=` on a `-run-list` END line is
+the loss.** The two blit causes print their canonical `SERIAL: N guest serial
+byte(s) DROPPED (...)` line per event; the writer's two causes print theirs
+from the final write only, since a poll write is rewritten whole by the next
+one; the exit summary prints only bytes no cause has already reported, under
+`buffer growth failed`. `runlist_scan_dropped` sums the canonical lines. A run
+killed before exit prints no count for a writer fault, only the `OUTPUT:` layer
+line; its capture is a prefix and the supervisor reports the kill.
 
 **What each loss looks like, which is what names the layer.** Both writers
 `fopen` the output `"wb"` and rewrite the whole buffer from byte 0, so the file
@@ -1107,6 +1203,8 @@ boot screen.
 | 70..91 | MSC and FAT cells (`msc-cell-*`, `gfat-cell-*`; 88 is `gfat-cell-written`, the sectors the data run actually wrote; 89 is `gfat-cell-lastsize`, the size read back from the directory entry after the last bank write; 90 is `gfat-cell-banklost`, the stage index plus one of the first bank append that did not land, zero while every one has; 91 is `msc-cell-chunk`, the MSC transfer chunk in sectors for this boot, zero for the default of 64, set by `sink chunk=N` in DIAG.CFG) |
 | 92..93 | diag `b3` bank-loss cells (`db3-cell-notes`, the stage's notes counted as the serial trail counts them, and `db3-cell-lost`, the ordinal of the first note whose write was refused with a bank open, zero while none was; both zeroed at `db3-run` entry because metal RAM is not, and the second is what `bank-lost-note=N` on `b3`'s first row reports) |
 | 96..111 | `usb-hid-note` block, `usb-hid-cell-base + idx*4`, four devices |
+| 112..119 | keyboard publish block (`kbd-cell-*`, `GopUsbKbd`, added 2026-09-07): magic, ok, dci, armed, events, nonzero, scans, last code. The same five counters `uk-state` already held, mirrored to a FIXED address at the four sites that increment them, because `uk-state` is a per-keyboard heap allocation and a reader holding no `UsbKbd` cannot find it. The diag ladder's `kbd` stage reads these and nothing else |
+| 120..129 | diag record channel (`drec-cell-*`, `DiagRecord`): armed, the source and peer addresses, the peer port, the next hop's address and MAC (two cells), the count of bank lines already shipped to the peer, the connection counter, and the count of bank steps that could not ship. Written by `b3` when its conversation completes and read by every bank step after it, which is why they live in cells rather than in the ctx: the ctx is rebuilt per stage and a session cannot be kept on the heap across one |
 
 `msc-cell-end` = 80 is an EXCLUSIVE bound for `xdiag-zero`, not a stored cell,
 which is why it may equal another owner's first cell.
@@ -1295,6 +1393,28 @@ Scripted input (`-mouse`, `-mouse-file`, `-keys-file`) writes the same guest
 state the window proc writes -- press latch included -- so a guest cannot
 distinguish it from a hand on the mouse. This is what `build/test-gui.ps1`
 drives GOP applications with; see `docs/ExaminersAssay.md`.
+
+**The window pointer and the guest pointer agree; a scripted one still does
+not, and that difference is deliberate.** The guest's is a relative boot
+mouse: it folds each signed delta into a cursor of its own and clamps it to
+the screen. For the hand on the mouse, codex-vm reads that cursor back from
+`GopUsbMouse`'s pointer mailbox at guest physical 36736 (magic `PTR1`, then
+x, y, buttons) and sends the delta from THERE to the host pointer, so the two
+converge and stay converged. Before this the host sent the delta from a tally
+of what it had already sent, which is dead reckoning against nothing: the desk
+parks its cursor at the centre of the screen and the tally assumes the origin,
+so the two started 800 pixels apart and stayed that way for the session. On a
+1600x900 desk the corrected pointer converges in four reports with no input at
+all.
+
+Scripted timelines are excluded from that loop, on purpose. `-mouse` is
+documented above as dead reckoning from `0,0` with the delta between
+successive events reaching the guest, and every GUI sidecar is written to it;
+reading the guest's cursor back would silently turn those timelines into
+absolute positioning. codex-vm tracks which source last set the pointer and
+syncs only the window one. The arm is `apps/circuits/tests/drag-part`, whose
+whole subject is the held-button delta path: 0 pixels differ across the
+change.
 
 **Under `-hid-instant-complete` a keystroke narrower than the guest's poll
 interval does not exist.** That model completes every interrupt IN TRB at
@@ -1724,6 +1844,37 @@ all the apparatus; the product was fine every time.
   question is "does X ever appear", search the SOURCE that would print X, not
   a capture of it. The truncation cannot be undone and costs a rerun to
   recover.
+- **Chaining a file edit and a build into ONE command leaves the build not
+  running, and the next measurement reads a stale artifact.** It cost val three
+  sessions and once carried an entire wrong diagnosis: the tell is always
+  byte-identical output across builds that should have differed (L-SUSPECT), and
+  it looks exactly like a code defect that ignores your change. Build in its own
+  invocation; before measuring, check the artifact is NEWER than the source and
+  that a name you just added is actually in it.
+- **A multi-line `.Replace()` silently does not apply on this CRLF tree**, and
+  the unchanged behaviour then reads as a defect in the code. The `Edit` tool
+  fails loudly instead; use it for anything spanning a line break.
+- **`-eq` on strings is CULTURE-SENSITIVE and called 1452 and 1453 bytes
+  identical.** Comparing a capture against its `.expected`, printing the two
+  lengths beside the verdict was the only reason the disagreement was noticed:
+  every `.expected` here opens with a leading `0x01` byte, which that comparison
+  treats as having no weight. A one-byte difference is exactly what a truncation
+  or a stray prefix looks like, so the operator is blind in the direction that
+  matters most. Use `[string]::Equals($a, $b, [StringComparison]::Ordinal)` for
+  any artifact comparison and print the lengths every time; compare against
+  `$b.Substring(1)` when checking a raw `test-run.ps1` capture, which does not
+  carry the `0x01`.
+- **`-Path codex\**\*.codex` DOES NOT RECURSE, and it fails by reporting
+  ABSENCE.** The zero it answers is indistinguishable from a real absence. Build
+  the list first with `Get-ChildItem -Recurse`, then `Select-String -Path $files`,
+  and give any zero a positive control that would have been non-zero.
+- **`[...]` inside a `-like` pattern is a WILDCARD CHARACTER CLASS**, so
+  `-like "*x=[$v]*"` throws or silently matches the wrong thing depending on
+  what `$v` holds. Use `.Contains()`.
+- **`Remove-Item` anywhere in a block can trip a guardrail on an
+  unrelated-looking path, and then the WHOLE block silently does not run.** The
+  symptom is not an error about the deletion; it is that nothing in the command
+  happened, which reads as the command having no effect.
 
 ### A gate run as a tool-call child dies with the session, and it reads as host trouble
 
@@ -1746,10 +1897,33 @@ mid-conversation -- so the parent can vanish through no action of
 yours.
 
 The mitigation is the one the kill section below already wants for a
-different reason: **launch the gate detached (`Start-Process`), keep
-the PID, and poll or wait on that** rather than running the gate inline
-in a tool call. Before diagnosing a died-mid-phase gate as host or
-codegen trouble, ask first whether its parent process outlived it.
+different reason: **launch the gate detached, keep the PID, and poll on
+that** rather than running the gate inline in a tool call. Before
+diagnosing a died-mid-phase gate as host or codegen trouble, ask first
+whether its parent process outlived it.
+
+**`Start-Process` is not enough, measured 2026-09-08 (blu, the Update 56
+release gate).** A `Start-Process` launched from inside a tool call is
+still a member of that call's process tree, and the full gate died at
+08:47:01 in `text-stage1` with no refusal line, no stderr and no exit
+code, on a box root measured at 0 guests and 5.38 GiB free. The launch
+that survives is outside the tree entirely:
+
+```powershell
+$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
+Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+    CommandLine = 'cmd.exe /c <workspace>\gate-run.cmd'   # the .cmd redirects stdout and stderr to logs
+    CurrentDirectory = '<workspace>'
+    ProcessStartupInformation = $startup }
+```
+
+**`ShowWindow = 0` is required and must be ALONE.** Without a startup
+object the new `cmd.exe` gets a visible console and every compile the
+gate spawns inherits one, which puts empty terminal windows on the
+operator's screen for the length of the run. Adding
+`CreateFlags = 0x08000000` (CREATE_NO_WINDOW) beside `ShowWindow`
+returns `21`, invalid parameter, and creates nothing; the return value
+is the only sign, so read it rather than assuming the process started.
 
 `Stop-Process -Name codex-vm -Force`, and every spelling of it
 (`Get-Process codex-vm | Stop-Process`), is **machine-wide, not
@@ -2055,7 +2229,12 @@ CDX binary, bootable via codex-vm or QEMU multiboot.
    Use `build/output/Sut.cdx` -- the signed SUT. Do NOT use
    `build-output/bare-metal/Codex.cdx` (unsigned boot kernel).
 3. Self-verify: `build/test-self-verify.ps1`. Must print
-   "THE SEED VERIFIES ITSELF".
+   "THE SEED VERIFIES ITSELF", and must name the kernel it used on the
+   line above that. It builds its CHECKER with `-Kernel`, which defaults to
+   the depot seed; it refuses a `build-output` kernel whose digest differs
+   from the seed under test unless you pass `-AllowStaleKernel`. Before that
+   parameter existed it silently took whichever compiler ran last and said
+   so in a NOTE nobody had a flag to answer.
 4. Capture digest: `Get-FileHash -Algorithm SHA256 seed\Codex.cdx`
 5. Submit to Perforce.
 
@@ -2067,6 +2246,28 @@ CDX binary, bootable via codex-vm or QEMU multiboot.
   the seed rebuild.
 - Signing is automatic.
 - Never `git add -A`. Never force-push.
+
+**A COMPILER BUILT OUTSIDE `build.ps1` IS NOT THE GATE'S ARTIFACT, AND IT
+LOOKS PERFECT (blu, 2026-09-03).** `Invoke-BuildCdx` (`build/build.ps1:260`)
+passes **`-Repl`** to `compile.ps1`. A hand-rolled seed path -- concat, then
+`compile.ps1 -Src Codex.codex -Kernel seed\Codex.cdx` -- does not, and `-Repl`
+sets the emitted compiler's exit mode to `ExitRepl` rather than `Exit`
+(`opening.codex:1599`). That is a difference in the binary, not in the log.
+
+Measured, same source and same kernel, one pass each: **without `-Repl`
+3,180,203 bytes; with `-Repl` 3,179,934 -- 269 bytes longer and 2,872,079 of
+3,179,934 bytes different, first difference at offset 8.** Nearly the whole
+binary moves.
+
+Nothing about the wrong one announces itself: it self-verifies, it passes the
+BVT, and it is a fixed point of ITSELF. **A fixed point proves the compiler
+reproduces itself under the flags you used; it says nothing about the flags the
+gate uses.** Three lane-landed seeds on 2026-09-02/03 were built this way and
+were caught only when a release gate rebuilt the same source and got a
+different binary. Pass `-Repl` on any compile of the compiler's own
+concatenated source, and prefer proving a seed with the gate: a scratch fixed
+point is evidence about your CHANGE, not the artifact to ship. The trap row is
+`PerforceProcess.md` P-REPL.
 
 **Codegen changes need a one-pass fixed point.** Step 2's "install
 `Sut.cdx`" is correct ONLY when the build prints
@@ -3642,15 +3843,23 @@ Copy-Item -Force build-output/kernel-backup.cdx build-output/bare-metal/Codex.cd
 # the symbol map to find the function that dereferenced the bad pointer.
 ```
 
-**Steps 0 and 4 are not tidiness.** `-CodexCdx` does not point the battery at
-another compiler, it **copies that compiler over
-`build-output/bare-metal/Codex.cdx`** (`test.ps1`:170-173) and never restores
-it. So the poison seed stays installed as the kernel every later
-`compile.ps1` boots by default, and the next thing you compile is compiled by
-the poison compiler while you believe otherwise. Measured 2026-07-28: after a
-poison battery the kernel was still `3AF5763C`, the poison seed, and nothing
-said so. `compile.ps1` prints the kernel and its digest on every run for
-exactly this class of mistake -- read that line.
+**`-CodexCdx` does not point the battery at another compiler, it COPIES that
+compiler over `build-output/bare-metal/Codex.cdx`.** Measured 2026-07-28,
+when the script did not put it back: after a poison battery the kernel was
+still `3AF5763C`, the poison seed, and nothing said so, so every later
+`compile.ps1` booted the poison compiler while the operator believed
+otherwise.
+
+**`test.ps1` now saves and restores it itself, so steps 0 and 4 above are a
+belt beside its braces rather than the only guard.** Measured at the Update
+56 poison build (blu, 2026-09-08): the run announced `battery compiler:
+working kernel saved; restored when the run ends`, and on exit
+`build-output/bare-metal/Codex.cdx` hashed to the release seed
+`D9CF2404..851DB08B` again, checked against both `seed/Codex.cdx` and the
+backup taken by hand. Keep taking the backup anyway, because it costs one
+copy and it is what tells you the restore happened; `compile.ps1` prints the
+kernel and its digest on every run for exactly this class of mistake, so read
+that line rather than trusting either guard.
 
 ## What `-Internal` decides to run, and why an apps CL can pull in the plugs
 

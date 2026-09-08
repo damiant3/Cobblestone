@@ -31,22 +31,24 @@ if ($LASTEXITCODE -ne 0) { Write-Host '[starmap-wasm] FAIL: plug run'; exit 3 }
 # these are in it, so the page's entry points are declared here the way spark
 # declares its one. Codex functions take and answer i64; the shims narrow.
 $api = @(
+    @{ n = 'sm_load';                   a = 1 },
+    @{ n = 'sm_select';                 a = 0 },
     @{ n = 'sm_tick';                   a = 1 },
     @{ n = 'sm_orbit';                  a = 2 },
+    @{ n = 'sm_look_at';                a = 2 },
     @{ n = 'sm_zoom';                   a = 1 },
     @{ n = 'sm_move_forward';           a = 1 },
     @{ n = 'sm_move_right';             a = 1 },
     @{ n = 'sm_move_up';                a = 1 },
     @{ n = 'sm_set_speed';              a = 1 },
     @{ n = 'sm_select_obj';             a = 1 },
-    @{ n = 'sm_fly_to';                 a = 1 },
     @{ n = 'sm_set_mag_limit';          a = 1 },
     @{ n = 'sm_toggle_labels';          a = 0 },
     @{ n = 'sm_toggle_grid';            a = 0 },
     @{ n = 'sm_toggle_constellations';  a = 0 },
     @{ n = 'sm_get_star_count';         a = 0 },
     @{ n = 'sm_get_visible_count';      a = 0 },
-    @{ n = 'sm_get_label_count';        a = 0 }
+    @{ n = 'sm_get_error';              a = 0 }
 )
 
 $wat = [System.IO.File]::ReadAllText($watFile, [System.Text.UTF8Encoding]::new($false))

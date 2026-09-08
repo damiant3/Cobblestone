@@ -4,52 +4,99 @@ Chapter: BuildAppsScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE ELEVENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ TWO OF THIS SCRIPT'S THREE EXITS ARE SPELLED INSIDE RAW PAYLOADS (`exit 2` in
+ the filter stage, `exit 3` in the plug stage) and one is an ordinary `ScExit`
+ (`exit 1` in the summary). All three are declared below, because a verdict is
+ written by an author who has read the body rather than derived from it. What
+ the raw spelling costs is a CHECK: nothing walking the statement tree can find
+ the first two.
 
 Section: Parameters
 
   buildapps-params : List ShellParam = [sh-param-default "Only" SptStringArray (SeRaw "@()")]
 
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path") }
+
+  bundle-script-art : PipeArtifact = PipeArtifact { pa-name = "BundleScript", pa-kind = PkFile, pa-expr = SeVar "BundleScript", pa-from = Just (SeRaw "Join-Path $Repo 'build\\bundle-app.ps1'") }
+
+  html-run-art : PipeArtifact = PipeArtifact { pa-name = "HtmlRunScript", pa-kind = PkFile, pa-expr = SeVar "HtmlRunScript", pa-from = Just (SeRaw "Join-Path $Repo 'codex\\plugs\\html\\run.ps1'") }
+
+  plug-cdx-art : PipeArtifact = PipeArtifact { pa-name = "PlugCdx", pa-kind = PkFile, pa-expr = SeVar "PlugCdx", pa-from = Just (SeRaw "Join-Path $Repo 'codex\\plugs\\html\\build-output\\html-plug.cdx'") }
+
+  skip-art : PipeArtifact = PipeArtifact { pa-name = "Skip", pa-kind = PkValue, pa-expr = SeVar "Skip", pa-from = Just (SeRaw "@{}") }
+
+  apps-art : PipeArtifact = PipeArtifact { pa-name = "apps", pa-kind = PkValue, pa-expr = SeVar "apps", pa-from = Just (SeRaw "@()") }
+
+  failed-art : PipeArtifact = PipeArtifact { pa-name = "failed", pa-kind = PkValue, pa-expr = SeVar "failed", pa-from = Just (SeInt 0) }
+
+  ba-arts : List PipeArtifact = [repo-art, bundle-script-art, html-run-art, plug-cdx-art, skip-art, apps-art, failed-art]
+
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "BundleScript" (SeRaw "Join-Path $Repo 'build\\bundle-app.ps1'"), ScAssign "HtmlRunScript" (SeRaw "Join-Path $Repo 'codex\\plugs\\html\\run.ps1'"), ScAssign "PlugCdx" (SeRaw "Join-Path $Repo 'codex\\plugs\\html\\build-output\\html-plug.cdx'")]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, pipe-produce bundle-script-art, pipe-produce html-run-art, pipe-produce plug-cdx-art]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "name the repository root, the bundler, the html plug runner and the plug binary", ps-in = [], ps-out = [repo-art, bundle-script-art, html-run-art, plug-cdx-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Skip Table
 
-  s02 : List ShellCmd = [ScComment "Known-bad apps excluded from the build", ScAssign "Skip" (SeRaw "@{}")]
+  s02-body : List ShellCmd = [ScBlank, ScComment "Known-bad apps excluded from the build", pipe-produce skip-art]
+
+  s02 : PipeStage = PipeStage { ps-name = "skip table", ps-why = "apps excluded from the build, empty at head", ps-in = [], ps-out = [skip-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Discover Apps
 
-  s03 : List ShellCmd = [ScAssign "apps" (SeRaw "@()"), ScForEach "html" (SeRaw "Get-ChildItem (Join-Path $Repo 'apps\\*\\web\\*.html')") [ScAssign "base" (SeProperty (SeVar "html") "BaseName"), ScAssign "appDir" (SeProperty (SeProperty (SeVar "html") "Directory") "Parent"), ScRaw "$pages = @(Get-ChildItem (Join-Path $appDir.FullName '*Page.codex') | Where-Object { ($_.BaseName -replace 'WebPage$|Page$','').ToLower() -eq $base })", ScIf (SeRaw "$pages.Count -gt 1") [ScRaw "$pages = @($pages | Where-Object { $_.BaseName -match 'WebPage$' })"] [], ScIf (SeRaw "$pages.Count -ne 1") [ScRaw "Write-Warning \"skip $($html.FullName): no unique Page chapter\"", ScContinue] [], ScIf (SeRaw "$Skip.ContainsKey($base)") [ScRaw "Write-Warning \"skip ${base}: $($Skip[$base])\"", ScContinue] [], ScRaw "$apps += @{ Name = $base; Src = $pages[0].FullName; Out = $html.FullName }"]]
+  s03-body : List ShellCmd = [ScBlank, pipe-produce apps-art, ScForEach "html" (SeRaw "Get-ChildItem (Join-Path $Repo 'apps\\*\\web\\*.html')") [ScAssign "base" (SeProperty (SeVar "html") "BaseName"), ScAssign "appDir" (SeProperty (SeProperty (SeVar "html") "Directory") "Parent"), ScRaw "$pages = @(Get-ChildItem (Join-Path $appDir.FullName '*Page.codex') | Where-Object { ($_.BaseName -replace 'WebPage$|Page$','').ToLower() -eq $base })", ScIf (SeRaw "$pages.Count -gt 1") [ScRaw "$pages = @($pages | Where-Object { $_.BaseName -match 'WebPage$' })"] [], ScIf (SeRaw "$pages.Count -ne 1") [ScRaw "Write-Warning \"skip $($html.FullName): no unique Page chapter\"", ScContinue] [], ScIf (SeRaw "$Skip.ContainsKey($base)") [ScRaw "Write-Warning \"skip ${base}: $($Skip[$base])\"", ScContinue] [], ScRaw "$apps += @{ Name = $base; Src = $pages[0].FullName; Out = $html.FullName }"]]
+
+  s03 : PipeStage = PipeStage { ps-name = "discover apps", ps-why = "pair each shipped page with the one Page chapter that produces it, warning past any that is ambiguous", ps-in = ["Repo", "Skip"], ps-out = [apps-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Filter and Validate
 
-  s04 : List ShellCmd = [ScIf (SeRaw "$Only.Count -gt 0") [ScRaw "$apps = @($apps | Where-Object { $Only -contains $_.Name })"] [], ScIf (SeRaw "$apps.Count -eq 0") [ScRaw "Write-Error 'no apps discovered'; exit 2"] [], ScRaw "Write-Host \"discovered $($apps.Count) apps: $(($apps | ForEach-Object { $_.Name }) -join ', ')\""]
+  s04-body : List ShellCmd = [ScBlank, ScIf (SeRaw "$Only.Count -gt 0") [ScRaw "$apps = @($apps | Where-Object { $Only -contains $_.Name })"] [], ScIf (SeRaw "$apps.Count -eq 0") [ScRaw "Write-Error 'no apps discovered'; exit 2"] [], ScRaw "Write-Host \"discovered $($apps.Count) apps: $(($apps | ForEach-Object { $_.Name }) -join ', ')\""]
+
+  s04 : PipeStage = PipeStage { ps-name = "filter and validate", ps-why = "narrow to -Only when given, and refuse rather than report success over an empty set", ps-in = ["apps", "Only"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 2 "no app survived discovery and -Only filtering, so there was nothing to build; spelled inside a raw payload"], ps-body = s04-body }
 
 Section: S05 -- Ensure Plug
 
-  s05 : List ShellCmd =
-    let rebuild = [ScRaw "Write-Host '[build-apps] html plug missing; rebuilding...' -ForegroundColor Yellow", ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'codex\\plugs\\html\\build.ps1')", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "PlugCdx")))) [ScRaw "Write-Error 'html plug rebuild failed'; exit 3"] []]
-    in [ScIf (SeNot (SeRaw "(Test-Path -PathType Leaf $PlugCdx)")) rebuild []]
+  s05-body : List ShellCmd =
+    let rebuild = [ScRaw "Write-Host '[build-apps] html plug missing; rebuilding...' -ForegroundColor Yellow", ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'codex\\plugs\\html\\build.ps1')", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (pipe-ref ba-arts buildapps-params "PlugCdx")))) [ScRaw "Write-Error 'html plug rebuild failed'; exit 3"] []]
+    in [ScBlank, ScIf (SeNot (SeRaw "(Test-Path -PathType Leaf $PlugCdx)")) rebuild []]
+
+  s05 : PipeStage = PipeStage { ps-name = "ensure plug", ps-why = "rebuild the html plug if its binary is absent, because every app below is compiled through it", ps-in = ["PlugCdx", "Repo"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [PoExit 3 "the html plug binary was missing and rebuilding it did not produce one; spelled inside a raw payload"], ps-body = s05-body }
 
 Section: S06 -- Build Loop
 
-  s06 : List ShellCmd = [ScAssign "failed" (SeInt 0), ScForEach "app" (SeVar "apps") [ScAssign "bundleDir" (SeRaw "Join-Path $Repo \"build-output\\apps\\$($app.Name)\""), ScRaw "New-Item -ItemType Directory -Force $bundleDir | Out-Null", ScAssign "bundled" (SeRaw "Join-Path $bundleDir \"$($app.Name)-bundle.codex\""), ScAssign "rendered" (SeRaw "Join-Path $bundleDir \"$($app.Name)-rendered.html\""), ScBlank, ScRaw "Write-Host \"[$($app.Name)] bundling...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $BundleScript -Src $app.Src -Out $bundled", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$($app.Name)] FAIL: bundle\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] [], ScBlank, ScRaw "Write-Host \"[$($app.Name)] compiling...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $HtmlRunScript -Src $bundled -Out $rendered", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$($app.Name)] FAIL: compile\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] [], ScBlank, ScRaw "$new = [System.IO.File]::ReadAllText($rendered) -replace \"`r`n\",\"`n\" -replace \"`n\",\"`r`n\"", ScRaw "$cur = if (Test-Path $app.Out) { [System.IO.File]::ReadAllText($app.Out) } else { '' }", ScIf (SeStringEq (SeVar "new") (SeVar "cur")) [ScRaw "Write-Host \"[$($app.Name)] unchanged\" -ForegroundColor DarkGray", ScContinue] [], ScIf (SeRaw "(Get-Item $app.Out).IsReadOnly") [ScRaw "& p4 edit $app.Out | Out-Null", ScIf (SeRaw "(Get-Item $app.Out).IsReadOnly") [ScRaw "Write-Host \"[$($app.Name)] FAIL: p4 edit (still read-only)\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] []] [], ScDotNetCall "System.IO.File" "WriteAllText" [SeRaw "$app.Out", SeVar "new", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScRaw "Write-Host \"[$($app.Name)] OK: $($app.Out)\" -ForegroundColor Green"]]
+  s06-body : List ShellCmd = [ScBlank, pipe-produce failed-art, ScForEach "app" (pipe-ref ba-arts buildapps-params "apps") [ScAssign "bundleDir" (SeRaw "Join-Path $Repo \"build-output\\apps\\$($app.Name)\""), ScRaw "New-Item -ItemType Directory -Force $bundleDir | Out-Null", ScAssign "bundled" (SeRaw "Join-Path $bundleDir \"$($app.Name)-bundle.codex\""), ScAssign "rendered" (SeRaw "Join-Path $bundleDir \"$($app.Name)-rendered.html\""), ScBlank, ScRaw "Write-Host \"[$($app.Name)] bundling...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $BundleScript -Src $app.Src -Out $bundled", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$($app.Name)] FAIL: bundle\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] [], ScBlank, ScRaw "Write-Host \"[$($app.Name)] compiling...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $HtmlRunScript -Src $bundled -Out $rendered", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$($app.Name)] FAIL: compile\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] [], ScBlank, ScRaw "$new = [System.IO.File]::ReadAllText($rendered) -replace \"`r`n\",\"`n\" -replace \"`n\",\"`r`n\"", ScRaw "$cur = if (Test-Path $app.Out) { [System.IO.File]::ReadAllText($app.Out) } else { '' }", ScIf (SeStringEq (SeVar "new") (SeVar "cur")) [ScRaw "Write-Host \"[$($app.Name)] unchanged\" -ForegroundColor DarkGray", ScContinue] [], ScIf (SeRaw "(Get-Item $app.Out).IsReadOnly") [ScRaw "& p4 edit $app.Out | Out-Null", ScIf (SeRaw "(Get-Item $app.Out).IsReadOnly") [ScRaw "Write-Host \"[$($app.Name)] FAIL: p4 edit (still read-only)\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] []] [], ScDotNetCall "System.IO.File" "WriteAllText" [SeRaw "$app.Out", SeVar "new", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScRaw "Write-Host \"[$($app.Name)] OK: $($app.Out)\" -ForegroundColor Green"]]
+
+ ONE GUEST AT A TIME: each app is bundled and then compiled through the html
+ plug, and the loop waits on each before starting the next.
+
+ THE WRITE IS SKIPPED WHEN THE RENDERED PAGE EQUALS THE SHIPPED ONE, which is
+ what keeps this script from opening every page for edit on every run.
+
+  s06 : PipeStage = PipeStage { ps-name = "build loop", ps-why = "bundle each app, render it through the html plug, and write the page back only when it changed", ps-in = ["apps", "BundleScript", "HtmlRunScript", "Repo"], ps-out = [failed-art], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s06-body }
 
 Section: S07 -- Summary
 
-  s07 : List ShellCmd = [ScEcho (SeLit ""), ScIf (SeRaw "$failed -gt 0") [ScRaw "Write-Host \"$failed app(s) failed\" -ForegroundColor Red", ScExit (SeInt 1)] [ScRaw "Write-Host \"All $($apps.Count) apps built\" -ForegroundColor Green"]]
+  s07-body : List ShellCmd = [ScBlank, ScEcho (SeLit ""), ScIf (SeRaw "$failed -gt 0") [ScRaw "Write-Host \"$failed app(s) failed\" -ForegroundColor Red", ScExit (SeInt 1)] [ScRaw "Write-Host \"All $($apps.Count) apps built\" -ForegroundColor Green"]]
+
+  s07 : PipeStage = PipeStage { ps-name = "summary", ps-why = "refuse if any app failed to bundle, compile or write", ps-in = ["failed", "apps"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "at least one app failed to bundle, to compile, or to be opened for edit"], ps-body = s07-body }
 
 Section: Assembly
 
-  buildapps-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
-
-  buildapps-script : ShellScript = sh-script "build-apps" "Build all standalone app pages through the HTML plug" buildapps-params buildapps-body
+  ba-pipe : Pipeline = Pipeline { pl-name = "build-apps", pl-doc = "Build all standalone app pages through the HTML plug", pl-params = buildapps-params, pl-stages = [s01, s02, s03, s04, s05, s06, s07] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell buildapps-script)
+    print-line-uni (emit-powershell (pipeline-to-shell ba-pipe))
   end
 
 Page 1

@@ -1,0 +1,121 @@
+Chapter: MagicSimFixes
+
+  cites Foreword chapter Console
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter GameState
+  cites CodexMagic chapter General
+  cites CodexMagic chapter CardPool
+  cites CodexMagic chapter GameRules
+  cites CodexMagic chapter Simulate
+
+ GAME-9's three ruled answers, one state per scenario (L-ALIAS): the FIRST
+ card in hand leaves on a discard or a pitch, the triggers are zero gems in
+ hand for screw and three or more for flood, and a fix fires at most once
+ per turn per player.
+
+ The two card ids are FOUND rather than written down. The arm scans the
+ pool for the first Gemstone and the first card that is not one, so a
+ change to the pool's order moves the arm rather than falsifying its claim.
+
+ The pitch scenario deliberately puts a card that is NOT a gem first in a
+ hand of gems. A pitch that took the first GEM would leave that card behind
+ and the graveyard would read differently, which is the one reading that
+ separates the ruling from the plausible other answer.
+
+ Every hand holds DISTINCT card ids for the same reason. A first scenario
+ built from two copies of one id could not tell "the first card left" from
+ "the last card left": sabotaging the drop to take the last card moved the
+ two pitch rows and left the screw row exactly as it was.
+
+ We say:
+
+Section: Rulesets
+
+ Written here rather than cited from SimBaseline, which carries an
+ `opening` of its own.
+
+  rules-off : RuleSet
+  rules-off = RuleSet { mulligan-style = MulliganNone, screw-fix = ScrewFixNone, flood-fix = FloodFixNone, fairness = FairnessNone, turn-cap = 50, sudden-death = False, sudden-death-base = 0, sudden-death-escalation = 0, starting-hand-size = 7, starting-life = 30 }
+
+  rules-screw : RuleSet
+  rules-screw = RuleSet { mulligan-style = MulliganNone, screw-fix = ScrewFixDiscard, flood-fix = FloodFixNone, fairness = FairnessNone, turn-cap = 50, sudden-death = False, sudden-death-base = 0, sudden-death-escalation = 0, starting-hand-size = 7, starting-life = 30 }
+
+  rules-flood2 : RuleSet
+  rules-flood2 = RuleSet { mulligan-style = MulliganNone, screw-fix = ScrewFixNone, flood-fix = FloodFixPitch2Draw1, fairness = FairnessNone, turn-cap = 50, sudden-death = False, sudden-death-base = 0, sudden-death-escalation = 0, starting-hand-size = 7, starting-life = 30 }
+
+  rules-flood1 : RuleSet
+  rules-flood1 = RuleSet { mulligan-style = MulliganNone, screw-fix = ScrewFixNone, flood-fix = FloodFixPitch1Draw1, fairness = FairnessNone, turn-cap = 50, sudden-death = False, sudden-death-base = 0, sudden-death-escalation = 0, starting-hand-size = 7, starting-life = 30 }
+
+Section: Fixtures
+
+  first-of-kind : List CardTemplate, Boolean, Integer, Integer -> Integer
+  first-of-kind (ts) (want-gem) (i) (len) =
+    if i >= len then (-1)
+    else let t = list-at ts i
+    in when t.card-type
+      is Gemstone -> if want-gem then i else first-of-kind ts want-gem (i + 1) len
+      is otherwise -> if want-gem then first-of-kind ts want-gem (i + 1) len else i
+
+  give-hand : GameState, List Integer, Integer, Integer -> GameState
+  give-hand (gs) (cards) (i) (len) =
+    if i >= len then gs
+    else let p = get-player gs 0
+    in let gs2 = set-player gs 0 (player-add-to-hand p (list-at cards i))
+    in give-hand gs2 cards (i + 1) len
+
+  hand-of : List CardTemplate, List Integer, List Integer -> GameState
+  hand-of (ts) (cards) (library) =
+    let gs = game-new ts general-warlord general-dawn-commander
+    in let gs2 = load-deck-for-sim gs 0 library 0
+    in give-hand gs2 cards 0 (list-length cards)
+
+  reading : GameState -> Text
+  reading (gs) =
+    let p = get-player gs 0
+    in "hand " & show (list-length (p.hand)) & ", grave " & show (list-length (p.graveyard)) & ", rays " & show ((p.prismatic).rays-total) & ", grave holds " & ids-text (p.graveyard) 0 (list-length (p.graveyard)) "none"
+
+  ids-text : List Integer, Integer, Integer, Text -> Text
+  ids-text (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else ids-text xs (i + 1) len (if i == 0 then show (list-at xs i) else acc & " " & show (list-at xs i))
+
+Section: The Scenarios
+
+  screw-line : List CardTemplate, RuleSet, List Integer, List Integer, Text -> Text
+  screw-line (ts) (rules) (cards) (library) (label) =
+    let gs = hand-of ts cards library
+    in let fires = screw-fix-fires gs rules 0
+    in let after = apply-screw-fix gs rules 0
+    in label & ": fires " & (if fires then "yes" else "no") & ", " & reading after
+
+  flood-line : List CardTemplate, RuleSet, List Integer, List Integer, Text -> Text
+  flood-line (ts) (rules) (cards) (library) (label) =
+    let gs = hand-of ts cards library
+    in let fires = flood-fix-fires gs rules 0
+    in let after = apply-flood-fix gs rules 0
+    in label & ": fires " & (if fires then "yes" else "no") & ", " & reading after
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening =
+    let ts = full-card-pool
+    in let g = first-of-kind ts True 0 (list-length ts)
+    in let n = first-of-kind ts False 0 (list-length ts)
+    in let n2 = first-of-kind ts False (n + 1) (list-length ts)
+    in let deck = [n, n, n]
+    in act
+      print-line-uni ("the pool offers a gem and two cards that are not one: " & show g & " " & show n & " " & show n2)
+      print-line-uni (screw-line ts rules-screw [n, n2] deck "screw on, zero gems")
+      print-line-uni (screw-line ts rules-screw [g, n] deck "screw on, one gem")
+      print-line-uni (screw-line ts rules-screw [] deck "screw on, empty hand")
+      print-line-uni (screw-line ts rules-off [n, n] deck "screw off, zero gems")
+      print-line-uni (flood-line ts rules-flood2 [n, g, g, g] deck "flood pitch 2, three gems")
+      print-line-uni (flood-line ts rules-flood1 [n, g, g, g] deck "flood pitch 1, three gems")
+      print-line-uni (flood-line ts rules-flood2 [n, g, g] deck "flood pitch 2, two gems")
+      print-line-uni (flood-line ts rules-off [n, g, g, g] deck "flood off, three gems")
+      print-line-uni (flood-line ts rules-flood2 [g, g, g] [] "flood pitch 2, three gems, empty library")
+    end
+
+Page 1

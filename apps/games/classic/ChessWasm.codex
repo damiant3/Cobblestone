@@ -1,0 +1,181 @@
+Chapter: ChessWasm
+  cites Games chapter Chess
+  cites Foreword chapter List
+
+ The browser interface for Chess, on the handle contract in
+ games-backlog.md GAME-11. Sixty-four cells, the side to move, the en
+ passant square, four castling rights and the halfmove clock are far past
+ an i32, so the page holds the board's address.
+
+ `chess-apply` copies the cells before it writes any of them, so this
+ chapter adds no copy of its own; the neighbouring Wasm chapters copy
+ because their engines write through `list-set-at` in place.
+
+ THREEFOLD REPETITION IS NOT OFFERED HERE. `chess-repetitions` takes the
+ whole history as a `List ChessBoard` held by the caller, and the arcade
+ threads exactly one handle from step to step, so a history has nowhere to
+ live. A drawn game reaches the page through the fifty-move clock and
+ through stalemate. The engine's threefold rule is unaffected and is
+ graded by `codex/test/apps/chess-draws`.
+
+ A move is offered as an INDEX into the legal list, as Checkers offers
+ one, so the page draws legal destinations without knowing a rule of
+ chess. `cs-wasm-find` answers the index for a from-square and a
+ to-square, and prefers the queen when a pawn push offers four
+ promotions.
+
+ We say:
+
+Section: The Board
+
+  cs-wasm-new : ChessBoard
+  cs-wasm-new = chess-new
+
+  cs-wasm-cell : ChessBoard, Integer -> Integer
+  cs-wasm-cell (b) (i) =
+    if i < 0 then (-1)
+    else if i >= 64 then (-1)
+    else list-at (b.cells) i
+
+  cs-wasm-turn : ChessBoard -> Integer
+  cs-wasm-turn (b) = b.turn
+
+  cs-wasm-ep : ChessBoard -> Integer
+  cs-wasm-ep (b) = b.ep-sq
+
+  cs-wasm-halfmove : ChessBoard -> Integer
+  cs-wasm-halfmove (b) = b.halfmove
+
+  cs-wasm-right : ChessBoard, Integer -> Integer
+  cs-wasm-right (b) (which) =
+    if which == 0 then (if b.wk-castle then 1 else 0)
+    else if which == 1 then (if b.wq-castle then 1 else 0)
+    else if which == 2 then (if b.bk-castle then 1 else 0)
+    else if which == 3 then (if b.bq-castle then 1 else 0)
+    else (-1)
+
+  cs-wasm-material : ChessBoard, Integer -> Integer
+  cs-wasm-material (b) (side) = chess-material b side
+
+Section: The Legal Moves
+
+  cs-wasm-movecount : ChessBoard -> Integer
+  cs-wasm-movecount (b) = list-length (chess-legal b)
+
+  cs-wasm-move-from : ChessBoard, Integer -> Integer
+  cs-wasm-move-from (b) (i) =
+    let ms = chess-legal b
+    in if i < 0 then (-1)
+    else if i >= list-length ms then (-1)
+    else (list-at ms i).from-sq
+
+  cs-wasm-move-to : ChessBoard, Integer -> Integer
+  cs-wasm-move-to (b) (i) =
+    let ms = chess-legal b
+    in if i < 0 then (-1)
+    else if i >= list-length ms then (-1)
+    else (list-at ms i).to-sq
+
+  cs-wasm-move-cap : ChessBoard, Integer -> Integer
+  cs-wasm-move-cap (b) (i) =
+    let ms = chess-legal b
+    in if i < 0 then (-1)
+    else if i >= list-length ms then (-1)
+    else (list-at ms i).captured
+
+  cs-wasm-move-promote : ChessBoard, Integer -> Integer
+  cs-wasm-move-promote (b) (i) =
+    let ms = chess-legal b
+    in if i < 0 then (-1)
+    else if i >= list-length ms then (-1)
+    else (list-at ms i).promote
+
+  cs-wasm-move-special : ChessBoard, Integer -> Integer
+  cs-wasm-move-special (b) (i) =
+    let ms = chess-legal b
+    in if i < 0 then (-1)
+    else if i >= list-length ms then (-1)
+    else (list-at ms i).special
+
+ The page asks these two rather than reading the whole list per square,
+ because one call to `chess-legal` applies every pseudo-legal move once
+ and the page would otherwise pay for that sixty-four times over.
+
+  cs-wasm-find : ChessBoard, Integer, Integer -> Integer
+  cs-wasm-find (b) (from) (to) =
+    let ms = chess-legal b
+    in cs-wasm-find-loop ms (list-length ms) from to 0 (-1)
+
+  cs-wasm-find-loop : List ChessMove, Integer, Integer, Integer, Integer, Integer -> Integer
+  cs-wasm-find-loop (ms) (n) (from) (to) (i) (best) =
+    if i >= n then best
+    else let m = list-at ms i
+    in if m.from-sq /= from then cs-wasm-find-loop ms n from to (i + 1) best
+    else if m.to-sq /= to then cs-wasm-find-loop ms n from to (i + 1) best
+    else if m.promote == 0 then i
+    else if cs-kind (m.promote) == 5 then i
+    else cs-wasm-find-loop ms n from to (i + 1) (if best < 0 then i else best)
+
+  cs-wasm-can : ChessBoard, Integer -> Integer
+  cs-wasm-can (b) (from) =
+    let ms = chess-legal b
+    in if cs-wasm-any-loop ms (list-length ms) from 0 then 1 else 0
+
+  cs-wasm-any-loop : List ChessMove, Integer, Integer, Integer -> Boolean
+  cs-wasm-any-loop (ms) (n) (from) (i) =
+    if i >= n then False
+    else if (list-at ms i).from-sq == from then True
+    else cs-wasm-any-loop ms n from (i + 1)
+
+Section: Playing And Ending
+
+  cs-wasm-apply : ChessBoard, Integer -> ChessBoard
+  cs-wasm-apply (b) (i) =
+    let ms = chess-legal b
+    in if chess-fifty b then b
+    else if i < 0 then b
+    else if i >= list-length ms then b
+    else chess-apply b (list-at ms i)
+
+ Depth is clamped rather than trusted: the page names it, and a depth the
+ page got wrong would cost the visitor a frozen tab rather than a bad
+ move.
+
+  cs-wasm-ai : ChessBoard, Integer -> Integer
+  cs-wasm-ai (b) (depth) =
+    let d = if depth < 1 then 1 else if depth > 3 then 3 else depth
+    in if chess-fifty b then (-1)
+    else chess-best-move b d
+
+  cs-wasm-check : ChessBoard -> Integer
+  cs-wasm-check (b) = if chess-in-check b (b.turn) then 1 else 0
+
+  cs-wasm-done : ChessBoard -> Integer
+  cs-wasm-done (b) =
+    if list-length (chess-legal b) == 0 then 1
+    else if chess-fifty b then 1
+    else 0
+
+ A mate delivered on the hundredth halfmove is a win and not a draw, which
+ is why the empty legal list is read before the clock.
+
+  cs-wasm-result : ChessBoard -> Integer
+  cs-wasm-result (b) =
+    if list-length (chess-legal b) == 0 then
+      (if chess-in-check b (b.turn) then 1 - b.turn else 2)
+    else if chess-fifty b then 2
+    else (-1)
+
+Section: The Oracle
+
+ Perft through the module is what makes the grader an independent reading
+ rather than a spot check: the counts 20, 400, 8902 and 197281 are
+ published values, and `codex/test/apps/chess-legality` already reads them
+ off the bare-metal engine.
+
+  cs-wasm-perft : ChessBoard, Integer -> Integer
+  cs-wasm-perft (b) (depth) =
+    let d = if depth < 0 then 0 else if depth > 4 then 4 else depth
+    in chess-perft b d
+
+Page 1

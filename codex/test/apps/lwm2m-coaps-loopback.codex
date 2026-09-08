@@ -1,0 +1,235 @@
+Chapter: Lwm2mCoapsLoopbackTest
+  cites Net chapter Lwm2mCoaps
+  cites Net chapter Lwm2mClient
+  cites Net chapter DtlsEndpoint
+  cites Encode chapter Coap
+  cites Encode chapter Lwm2m
+  cites Encode chapter X509
+  cites Encode chapter X509Chain
+  cites Foreword chapter Maybe
+
+ The LwM2M registration lifecycle over coaps://: an authenticated DTLS
+ handshake between two of our endpoints, then Register, Update and
+ Deregister carried as application data, with no network and no server
+ process.
+
+ The whole exchange runs in one let-chain, and every arm takes the state
+ the arm before it produced. A record update writes through the caller's
+ pointer (L-ALIAS), so a value read at print time is the FINAL value, not
+ the value at the step that named it: each sequence number below is bound
+ to an Integer at the step that produced it, for that reason.
+
+   1. Register sealed, opened by the server, and what comes back out
+      parses as CoAP addressing /rd. A composition that forwarded
+      plaintext, or one that mangled the datagram, fails here.
+   2. The server's 2.01 Created carries the location, and the client
+      becomes registered.
+   3. Update and Deregister each emit one record, each ADDRESSED TO THE
+      HANDLE the server issued, and the client is registered after the
+      Update and not after the Deregister. `to-rd` on both is the arm
+      that matters: the server's handle here is `/rd/74`, and a client
+      that reduced a segment to its digits would send `/0/74`, while one
+      that forgot the handle before building the DELETE would send no
+      path at all. Both were true of this client, and both produce a
+      request a real server answers 4.04 while the device believes the
+      exchange worked.
+   4. THE SEQUENCE CENSUS. Three records travel from client to server, and
+      the server's application-epoch replay window must step 0, 1, 2. The
+      AEAD nonce is built from that number, so equal numbers would mean
+      one key and one nonce over three managements -- which is exactly the
+      defect the authenticated handshake flight carried until 2026-09-08,
+      found on the other epoch. Exact values rather than a verdict.
+   5. The peer's identity is the DTLS endpoint's verdict, asked directly.
+
+Section: Fixtures
+
+  ca-cert : List Integer =
+    [48, 130, 1, 35, 48, 129, 214, 160, 3, 2, 1, 2, 2, 20, 42, 238,
+     58, 138, 160, 240, 20, 71, 227, 235, 112, 96, 16, 17, 90, 130, 182, 175,
+     173, 78, 48, 5, 6, 3, 43, 101, 112, 48, 24, 49, 22, 48, 20, 6,
+     3, 85, 4, 3, 12, 13, 67, 111, 100, 101, 120, 32, 84, 101, 115, 116,
+     32, 67, 65, 48, 30, 23, 13, 50, 48, 48, 49, 48, 49, 48, 48, 48,
+     48, 48, 48, 90, 23, 13, 52, 48, 48, 49, 48, 49, 48, 48, 48, 48,
+     48, 48, 90, 48, 24, 49, 22, 48, 20, 6, 3, 85, 4, 3, 12, 13,
+     67, 111, 100, 101, 120, 32, 84, 101, 115, 116, 32, 67, 65, 48, 42, 48,
+     5, 6, 3, 43, 101, 112, 3, 33, 0, 106, 232, 150, 30, 92, 182, 149,
+     250, 62, 199, 8, 3, 218, 162, 8, 169, 167, 87, 94, 161, 143, 89, 180,
+     0, 156, 134, 138, 202, 194, 89, 111, 241, 163, 50, 48, 48, 48, 15, 6,
+     3, 85, 29, 19, 1, 1, 255, 4, 5, 48, 3, 1, 1, 255, 48, 29,
+     6, 3, 85, 29, 14, 4, 22, 4, 20, 16, 9, 226, 25, 191, 154, 146,
+     37, 109, 117, 184, 74, 105, 130, 12, 187, 12, 98, 208, 89, 48, 5, 6,
+     3, 43, 101, 112, 3, 65, 0, 119, 76, 101, 45, 137, 199, 10, 68, 241,
+     22, 170, 114, 252, 103, 205, 166, 212, 48, 72, 193, 227, 181, 194, 198, 9,
+     73, 235, 65, 140, 77, 90, 71, 56, 34, 217, 168, 62, 224, 53, 225, 53,
+     79, 184, 22, 214, 145, 66, 82, 176, 194, 227, 81, 246, 141, 138, 144, 37,
+     72, 210, 225, 30, 204, 66, 0]
+
+  leaf-cert : List Integer =
+    [48, 130, 1, 117, 48, 130, 1, 39, 160, 3, 2, 1, 2, 2, 20, 71,
+     14, 42, 215, 210, 232, 221, 102, 27, 194, 147, 186, 70, 169, 249, 145, 130,
+     1, 155, 128, 48, 5, 6, 3, 43, 101, 112, 48, 24, 49, 22, 48, 20,
+     6, 3, 85, 4, 3, 12, 13, 67, 111, 100, 101, 120, 32, 84, 101, 115,
+     116, 32, 67, 65, 48, 30, 23, 13, 50, 48, 48, 49, 48, 49, 48, 48,
+     48, 48, 48, 48, 90, 23, 13, 52, 48, 48, 49, 48, 49, 48, 48, 48,
+     48, 48, 48, 90, 48, 28, 49, 26, 48, 24, 6, 3, 85, 4, 3, 12,
+     17, 100, 101, 118, 105, 99, 101, 46, 99, 111, 100, 101, 120, 46, 116, 101,
+     115, 116, 48, 42, 48, 5, 6, 3, 43, 101, 112, 3, 33, 0, 61, 64,
+     23, 195, 232, 67, 137, 90, 146, 183, 10, 167, 77, 27, 126, 188, 156, 152,
+     44, 207, 46, 196, 150, 140, 192, 205, 85, 241, 42, 244, 102, 12, 163, 127,
+     48, 125, 48, 12, 6, 3, 85, 29, 19, 1, 1, 255, 4, 2, 48, 0,
+     48, 45, 6, 3, 85, 29, 17, 4, 38, 48, 36, 130, 17, 100, 101, 118,
+     105, 99, 101, 46, 99, 111, 100, 101, 120, 46, 116, 101, 115, 116, 130, 9,
+     108, 111, 99, 97, 108, 104, 111, 115, 116, 135, 4, 10, 0, 2, 2, 48,
+     29, 6, 3, 85, 29, 14, 4, 22, 4, 20, 19, 247, 114, 102, 158, 21,
+     42, 230, 166, 42, 96, 163, 72, 138, 111, 41, 125, 6, 19, 221, 48, 31,
+     6, 3, 85, 29, 35, 4, 24, 48, 22, 128, 20, 16, 9, 226, 25, 191,
+     154, 146, 37, 109, 117, 184, 74, 105, 130, 12, 187, 12, 98, 208, 89, 48,
+     5, 6, 3, 43, 101, 112, 3, 65, 0, 19, 231, 233, 121, 150, 89, 187,
+     87, 6, 12, 199, 111, 100, 184, 88, 179, 70, 177, 69, 227, 122, 17, 59,
+     183, 196, 198, 123, 251, 244, 80, 103, 243, 198, 84, 81, 134, 110, 70, 1,
+     40, 125, 61, 62, 37, 124, 199, 102, 19, 116, 178, 200, 159, 152, 139, 229,
+     211, 17, 245, 248, 33, 109, 191, 186, 3]
+
+  leaf-priv : List Integer =
+    [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15,
+     91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  leaf-pub : List Integer =
+    [61, 64, 23, 195, 232, 67, 137, 90, 146, 183, 10, 167, 77, 27, 126, 188,
+     156, 152, 44, 207, 46, 196, 150, 140, 192, 205, 85, 241, 42, 244, 102, 12]
+
+  c-priv : List Integer =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+     17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  s-priv : List Integer =
+    [32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+     16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+
+  cookie-secret : List Integer = [7, 7, 7, 7, 7, 7, 7, 7]
+  client-addr : List Integer = [10, 0, 0, 7]
+
+  c-random : List Integer =
+    [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
+     117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]
+
+  s-random : List Integer =
+    [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216,
+     217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232]
+
+  cal-now : List Integer = [50, 48, 50, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
+
+  peer-name : List Integer =
+    [100, 101, 118, 105, 99, 101, 46, 99, 111, 100, 101, 120, 46, 116, 101, 115, 116]
+
+  ca-parsed : Maybe X509Cert = x509-parse ca-cert
+
+  anchors : List X509Anchor =
+    when ca-parsed is None -> [] is Just (c) -> [X509Anchor { xa-subject = c.xc-subject, xa-key = c.xc-key }]
+
+Section: The Device
+
+  resources : List Lwm2mRes = [
+    lwm2m-res lwm2m-obj-device 0 lwm2m-res-manufacturer [67, 111, 100, 101, 120],
+    lwm2m-res lwm2m-obj-device 0 lwm2m-res-model [66, 108, 117]
+  ]
+
+  reg : Lwm2mRegistration = Lwm2mRegistration {
+    endpoint = "blu-probe", lifetime = 8, binding = "U",
+    objects = [lwm2m-obj-device]
+  }
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+    if list-length a /= list-length b then False else be-loop a b 0 (list-length a)
+  be-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  be-loop (a) (b) (i) (n) =
+    if i >= n then True
+    else if list-at a i /= list-at b i then False
+    else be-loop a b (i + 1) n
+
+  take-from : List Integer, Integer, Integer -> List Integer
+  take-from (bs) (i) (n) = tf-loop bs i n []
+  tf-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  tf-loop (bs) (i) (n) (acc) =
+    if i >= n then acc else tf-loop bs (i + 1) n (list-push acc (list-at bs i))
+
+  mid-of : List Integer -> Integer
+  mid-of (d) = when coap-parse d is None -> (0 - 1) is Just (m) -> m.cm-msg-id
+
+  path-head : List Integer -> List Integer
+  path-head (d) =
+    when coap-parse d
+      is None -> []
+      is Just (m) ->
+        let ps = coap-find-options (m.cm-options) coap-opt-uri-path
+        in if list-length ps == 0 then [] else list-at ps 0
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let st1 = dtls-ep-client (dtls-ep-with-anchors (dtls-ep-new False c-priv c-random [] []) anchors cal-now peer-name) 0
+    in let d1 = list-at (st1.es-out) 0
+    in let sv0 = dtls-ep-with-cert (dtls-ep-new True s-priv s-random cookie-secret client-addr) [leaf-cert] leaf-priv leaf-pub
+    in let st2 = dtls-ep-recv sv0 d1 10
+    in let d2 = list-at (st2.es-out) 0
+    in let st3 = dtls-ep-recv (st1.es-ep) d2 20
+    in let d3 = list-at (st3.es-out) 0
+    in let st4 = dtls-ep-recv (st2.es-ep) d3 30
+    in let d-sh = list-at (st4.es-out) 0
+    in let d-cert = list-at (st4.es-out) 1
+    in let d-cv = list-at (st4.es-out) 2
+    in let d-fin = list-at (st4.es-out) 3
+    in let st5 = dtls-ep-recv (st3.es-ep) d-sh 40
+    in let st6 = dtls-ep-recv (st5.es-ep) d-cert 41
+    in let st7 = dtls-ep-recv (st6.es-ep) d-cv 42
+    in let st8 = dtls-ep-recv (st7.es-ep) d-fin 43
+    in let d-cfin = list-at (st8.es-out) 0
+    in let st9 = dtls-ep-recv (st4.es-ep) d-cfin 50
+
+    in let ep0 = lwm2m-coaps-new (lwm2m-client-new reg resources) (st8.es-ep)
+    in let rg = lwm2m-coaps-register ep0
+    in let reg-rec = list-at (rg.xls-out) 0
+
+    in let sv1 = dtls-ep-recv-app (st9.es-ep) reg-rec
+    in let sb1 = dtls-ep-app-in (sv1.es-ep)
+    in let n1 = list-length sb1
+    in let reg-dgram = take-from sb1 0 n1
+    in let seq1 = dtls-ep-app-right (sv1.es-ep)
+    in let reg-not-plain = bytes-eq reg-rec reg-dgram == False
+    in let reg-to-rd = bytes-eq (path-head reg-dgram) (coap-text-to-bytes "rd")
+
+    in let loc-opts = [CoapOption { number = coap-opt-location-path, value = [114, 100] },
+                       CoapOption { number = coap-opt-location-path, value = [55, 52] }]
+    in let created = coap-build-response CoapAcknowledgement coap-201-created (mid-of reg-dgram) [] loc-opts []
+    in let ss1 = dtls-ep-send-app (sv1.es-ep) created
+    in let cl1 = lwm2m-coaps-recv (rg.xls-ep) (list-at (ss1.es-out) 0)
+    in let registered = lwm2m-coaps-registered (cl1.xls-ep)
+
+    in let up = lwm2m-coaps-update (cl1.xls-ep)
+    in let up-out = list-length (up.xls-out)
+    in let sv2 = dtls-ep-recv-app (ss1.es-ep) (list-at (up.xls-out) 0)
+    in let seq2 = dtls-ep-app-right (sv2.es-ep)
+    in let n2 = list-length (dtls-ep-app-in (sv2.es-ep))
+    in let up-seg = bytes-eq (path-head (take-from (dtls-ep-app-in (sv2.es-ep)) n1 n2)) (coap-text-to-bytes "rd")
+    in let still-registered = lwm2m-coaps-registered (up.xls-ep)
+
+    in let dr = lwm2m-coaps-deregister (up.xls-ep)
+    in let dr-out = list-length (dr.xls-out)
+    in let sv3 = dtls-ep-recv-app (sv2.es-ep) (list-at (dr.xls-out) 0)
+    in let seq3 = dtls-ep-app-right (sv3.es-ep)
+    in let n3 = list-length (dtls-ep-app-in (sv3.es-ep))
+    in let dr-seg = bytes-eq (path-head (take-from (dtls-ep-app-in (sv3.es-ep)) n2 n3)) (coap-text-to-bytes "rd")
+    in let gone = lwm2m-coaps-registered (dr.xls-ep) == False
+    in let auth = lwm2m-coaps-authenticated (dr.xls-ep)
+
+    in act
+      print-line-uni ("lwm2m-coaps register not-plain=" & show reg-not-plain & " to-rd=" & show reg-to-rd)
+      print-line-uni ("lwm2m-coaps registered=" & show registered)
+      print-line-uni ("lwm2m-coaps update out=" & show up-out & " to-rd=" & show up-seg & " still=" & show still-registered)
+      print-line-uni ("lwm2m-coaps deregister out=" & show dr-out & " to-rd=" & show dr-seg & " gone=" & show gone)
+      print-line-uni ("lwm2m-coaps seq reg=" & show seq1 & " upd=" & show seq2 & " dereg=" & show seq3)
+      print-line-uni ("lwm2m-coaps authenticated=" & show auth)
+    end

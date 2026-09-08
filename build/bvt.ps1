@@ -66,6 +66,15 @@ $BvtTests = @(
     'codex\test\dtls-hello.codex'  # the same size pins on the other transport (ch1 146, ch2 160, and ch2 must be the LONGER -- the second hello echoes the server's cookie), moved by the same 2 bytes and red for the same reason. The assertion that earns its keep is dtls-is-hrr: in DTLS 1.3 a HelloRetryRequest is not a message type, it is a ServerHello carrying a magic random, so a receiver that switches on message type never sees one and the cookie exchange -- the whole DoS defence -- silently never engages. It also requires an extension list truncated past its own length to be REFUSED rather than read, because garbage read there becomes a shared secret
     'codex\test\web-chain.codex'  # the seven shipped trust anchors, and a live www.digicert.com chain walked to one of them with the hostname checked. Runs offline -- the chain is embedded. It asserts supplied, parsed AND can-verify separately, because a root that parses is not a root that can be used: both P-384 roots parsed cleanly for the whole time they were deliberately excluded, typing KeyEcdsaOther with x509-can-verify False. Sabotaging that predicate moves the can-verify line alone and leaves supplied/parsed at 7
 
+    # --- Structural equality, one entry per mechanism ---
+    # No eq test was in any gate until COMPILER-65, and that is how main 23574
+    # left codex/test/eq-generic-fields red at head with every gate green: it
+    # answered four CDX2040 unresolved __eq_Pair@Text on x86-64 and the same
+    # four as [UNSUPPORTED] on arm64, and only a release would have found it.
+    'codex\test\eq-plain-sum.codex'  # a CONCRETE sum, built from the two shapes the arm64 plug used to refuse outright: more than one field-carrying constructor, and a field that resolves to a sum. The desugarer's __eq_<T> retired both refusals by putting one equality in the IR where every backend receives it, so a regression here is a backend comparing two heap pointers again
+    'codex\test\eq-generic-fields.codex'  # a field declared at a TYPE PARAMETER, which arrives as a ConstructedTy carrying its NAME and no arguments rather than as a TypeVar. Every row builds one side at RUNTIME with integer-to-text, so the two sides are separate allocations holding equal content and a pointer compare answers no; text-control is what says the instrument itself is honest
+    'codex\test\eq-generic-recursive.codex'  # the INSTANTIATED helper, which is what a recursive generic sum needs because inlining a field compare has no correct bound. The name carries the actuals: keyed on the bare sum name, Box Text and Box Integer share one helper and the first instantiation to arrive decides how both compare their field
+
     # --- Codegen stress (caught regressions the fixed point misses) ---
     'codex\test\lir-selector-smoke.codex'  # the LIR selector's correctness shapes, one boot: a shadowed-global call that must go indirect not direct (answered -1 for 7), a join-into-join coalesce that must refuse or the structural verifier halts a valid program (CDX9007), a compound-accumulator tail call the tree emitter miscompiles and the selector gets right (9 for 8), the 5-param col-hue parallel-move clash (red as yellow), and the result-is-a-use coalesce (RAX garbage for the result). Every one is a wrong ANSWER the fixed point cannot see; pinned by .expected
     'codex\test\noise-test.codex'  # arithmetic-heavy pure leaves (Noise/Perlin gradient math); caught the Tier 2 non-TCO leaf temp-pool miscompile (CL 6387 widening)
@@ -486,6 +495,26 @@ foreach ($t in $runList) {
     }
 }
 
+
+Write-Host ''
+Write-Host '--- Phase 3: batch (2 members, one VM) ---'
+if ($BvtTests.Count -lt 2) {
+    Write-Host "  SKIP  batch/2-member -- the subject list holds $($BvtTests.Count), and one member cannot show an early exit" -ForegroundColor DarkGray
+} else {
+    $batchList = Join-Path $OutRoot '_batch2.txt'
+    $batchRoot = Join-Path $OutRoot '_batch2'
+    if (Test-Path $batchRoot) { Remove-Item -Recurse -Force $batchRoot }
+    @($BvtTests[0], $BvtTests[1]) | Set-Content -Path $batchList -Encoding utf8
+    $batchScript = Join-Path (Resolve-Path .).Path 'build\test-compile-batch.ps1'
+    & pwsh -NoProfile -File $batchScript -ListFile $batchList -OutRoot $batchRoot -Kernel $stage0 *> $null
+    $batchCdx = @(Get-ChildItem -Path $batchRoot -Recurse -Filter '*.cdx' -File -ErrorAction SilentlyContinue)
+    if ($batchCdx.Count -lt 2) {
+        $compileFails.Add("batch/2-member: $($batchCdx.Count) of 2 binaries returned; the batch VM ended early (COMPILER-68, P-REPL)")
+        Write-Host "  FAIL  batch/2-member -- $($batchCdx.Count) of 2 binaries" -ForegroundColor Red
+    } else {
+        Write-Host '  PASS  batch/2-member'
+    }
+}
 
 $sw.Stop()
 $totalPass = $compilePass.Count + $runPass.Count

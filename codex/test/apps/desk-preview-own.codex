@@ -1,0 +1,67 @@
+Chapter: DeskPreviewOwnTest
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Kernel chapter BitmapFont
+  cites UI chapter BoxModel
+  cites Foreword chapter Console
+
+ Which pane supplies its own preview, and that the bubble asks before it
+ blits. Two slots are filled with a sentinel colour no palette carries. The
+ pane that declines leaves the sentinel in the bubble; the pane that supplies
+ paints its body colour over it. The wiring is the only thing between the two
+ answers: an open that never asks blits the sentinel for both.
+
+Section: Body
+
+  po-w : Integer = 640
+  po-h : Integer = 360
+  po-bg : Integer = 1118481
+  po-mark : Integer = 16711935
+
+  po-yn : Boolean -> Text
+  po-yn (v) = if v then "yes" else "no"
+
+  po-fill : Integer, Integer, Integer, Integer -> Integer
+  po-fill (buf) (n) (c) (i) =
+    if i >= n then 0
+    else let p = poke-32 buf (i * 4) c
+    in po-fill buf n c (i + 1)
+
+  po-px : Integer, Integer, Integer -> Integer
+  po-px (fb) (x) (y) = peek-32 fb ((y * po-w + x) * 4)
+
+  po-ttf : GopFont = GopFont { gf-ok = False, gf-base = 0, gf-gw = 0, gf-gh = 0, gf-asc = 0, gf-cap = 0 }
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing =
+    let fb = alloc-zeroed (po-w * po-h * 4) 64
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let cs = alloc-zeroed 2048 64
+    in let pb = alloc-zeroed (dk-prev-slots * dk-prev-bytes) 64
+    in let glyphs = alloc-zeroed 4096 64
+    in let font = CbfFont { cbf-base = glyphs }
+    in let a = poke-32 ds dk-prev-cell pb
+    in let b = dk-bub-init ds
+    in let k = poke-32 ds desk-clock-cell (alloc-zeroed 128 64)
+    in let f1 = po-fill fb (po-w * po-h) po-bg 0
+    in let f2 = po-fill (dk-prev-at pb desk-focus-cal) (dk-prev-w * dk-prev-h) po-mark 0
+    in let f3 = po-fill (dk-prev-at pb desk-focus-clkp) (dk-prev-w * dk-prev-h) po-mark 0
+    in let r = dk-prev-bubble 300 (po-h - 40) 80 30 dk-edge-bottom po-w po-h
+    in let cx = r.lr-x + dk-prev-w / 2
+    in let cy = r.lr-y + dk-prev-h / 2
+    in act
+      o1 <- dk-bub-open fb po-w po-h po-w font po-ttf ds cs desk-focus-cal r
+      let kept = po-px fb cx cy == po-mark
+      in let h1 = dk-bub-hide fb po-w ds cs
+      in act
+        o2 <- dk-bub-open fb po-w po-h po-w font po-ttf ds cs desk-focus-clkp r
+        let own = po-px fb cx cy /= po-mark
+        in let slot = peek-32 (dk-prev-at pb desk-focus-clkp) 0 /= po-mark
+        in let h2 = dk-bub-hide fb po-w ds cs
+        in act
+          print-line-uni ("own: clock " & po-yn (dk-prev-own desk-focus-clkp) & "  calendar " & po-yn (dk-prev-own desk-focus-cal) & "  files " & po-yn (dk-prev-own desk-focus-files))
+          print-line-uni ("calendar keeps its snapshot " & po-yn kept & "  clock supplies its own " & po-yn own & "  slot rewritten " & po-yn slot & "  restored " & po-yn (po-px fb cx cy == po-bg))
+        end
+      end
+    end

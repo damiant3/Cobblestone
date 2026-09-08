@@ -378,10 +378,16 @@ which falls back to `build-output/bare-metal/Codex.cdx` -- neither the SUT nor
 the seed, holding whichever kernel ran last, three days stale here. That is the
 trap `CLAUDE.md` names under R-GATE, and knowing it was there did not stop me
 walking into it: the seed I kept syncing was never the kernel doing the
-building. Pointed at the depot seed, the same plug source passes. The durable
-half is in `plugs-backlog.md` 1.14: every plug in the tree is built against
-whatever kernel is lying in `build-output/bare-metal/`, which is a
-reproducibility gap in the plug build.
+building. Pointed at the depot seed, the same plug source passes.
+
+**The plug BUILD half is fixed:** `codex/plugs/common/plug-build-lib.ps1:163`
+passes `-Kernel <repo>/seed/Codex.cdx` on the one `compile.ps1` call it makes,
+so no plug is built against `build-output/bare-metal/` any more. **The RUN
+drivers are not**, and that is now measured rather than asserted: of 71
+`compile.ps1` invocations under `codex/plugs`, 54 pass an explicit `-Kernel`
+and nine do not (fester, 2026-09-08). They are named in `plugs-backlog.md`
+1.101, which is where this belongs; 1.14, which an earlier version of this
+paragraph pointed at, is closed and never carried it.
 
 **With that corrected, nothing in this campaign is red.** What remains is
 runtime-gated: fortran's depth ablation wants gfortran, the class-2

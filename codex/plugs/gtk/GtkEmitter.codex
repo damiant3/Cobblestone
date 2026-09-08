@@ -85,7 +85,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "True" else "False"
     is IrCharLit (n) (sp) -> show n
     is IrName (n) (ty) (sp) -> gtk-sanitize n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-gtk-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-gtk-binary op l r ty arities
     is IrNegate (x) (nty) (sp) -> "(-" & emit-gtk-expr x arities & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-gtk-expr t arities & " if " & emit-gtk-expr c arities & " else " & emit-gtk-expr el arities & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(lambda " & gtk-sanitize name & ": " & emit-gtk-expr body arities & ")(" & emit-gtk-expr val arities & ")"
@@ -115,14 +115,29 @@ Section: Binary Operators
     is IrDivVec -> "/"
     is otherwise -> "+"
 
-  emit-gtk-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-gtk-binary (op) (l) (r) (arities) =
+ This plug emits Python (PyGObject), so its integers are arbitrary precision
+ and the operator alone answers neither arm. `%` returns a non-negative
+ result for a positive divisor, which is what makes the band's
+ shift-mask-shift correct. The plain arm is a lambda because `raise` is a
+ statement and this position is an expression, the shape IrDivInt uses.
+
+  gtk-int-arith : Text, Text, Text, CodexType -> Text
+  gtk-int-arith (sym) (lhs) (rhs) (ty) =
+   let exact = "(" & lhs & " " & sym & " " & rhs & ")"
+   in if int-ty-wraps ty then "(((" & exact & " + 9223372036854775808) % 18446744073709551616) - 9223372036854775808)"
+   else "((lambda _v: _v if -9223372036854775808 <= _v <= 9223372036854775807 else (_ for _ in ()).throw(OverflowError(\"CODEX_TRAP_integer_overflow\")))(" & exact & "))"
+
+  emit-gtk-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-gtk-binary (op) (l) (r) (ty) (arities) =
    let lhs = emit-gtk-expr l arities
    in let rhs = emit-gtk-expr r arities
    in when op
-    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrAddInt -> gtk-int-arith "+" lhs rhs ty
+    is IrSubInt -> gtk-int-arith "-" lhs rhs ty
+    is IrMulInt -> gtk-int-arith "*" lhs rhs ty
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
     is IrDivInt -> "((lambda _a, _b: (abs(_a) // abs(_b)) * (1 if (_a >= 0) == (_b >= 0) else -1))(" & lhs & ", " & rhs & "))"
     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "((lambda _a, _b: (abs(_a) % abs(_b)) * (1 if _a >= 0 else -1))(" & lhs & ", " & rhs & "))"
@@ -158,7 +173,52 @@ Section: Apply and Helpers
   emit-gtk-apply (e) (arities) =
    let chain = collect-apply-chain e []
    in let func = emit-gtk-expr (chain.root) arities
-   in func & "(" & emit-gtk-apply-args (chain.args) arities 0 & ")"
+   in let args = chain.args
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     let ar = lookup-arity arities n
+     in if ar < 1 then emit-gtk-curried func args arities 0
+        else if list-length args == ar then func & "(" & emit-gtk-apply-args args arities 0 & ")"
+        else if list-length args < ar then emit-gtk-partial func args arities (ar - list-length args)
+        else emit-gtk-curried (func & "(" & emit-gtk-apply-args-upto args arities 0 ar & ")") args arities ar
+    is otherwise -> func & "(" & emit-gtk-apply-args args arities 0 & ")"
+
+ This emitter targets Python, and Python has no partial application: a
+ definition applied to fewer arguments than it takes is eta-wrapped as
+ nested lambdas, and one applied to more applies the surplus one at a time.
+ The arity map was built here and never read.
+
+  emit-gtk-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-gtk-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-gtk-expr (list-at args i) arities & ")"
+   in emit-gtk-curried next args arities (i + 1)
+
+  emit-gtk-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-gtk-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-gtk-expr (list-at args i) arities
+   else emit-gtk-expr (list-at args i) arities & ", " & emit-gtk-apply-args-upto args arities (i + 1) n
+
+  emit-gtk-partial-open : Integer, Integer -> Text
+  emit-gtk-partial-open (i) (count) =
+   if i == count then ""
+   else "(lambda _p" & integer-to-text i & "_: " & emit-gtk-partial-open (i + 1) count
+
+  emit-gtk-partial-close : Integer -> Text
+  emit-gtk-partial-close (count) =
+   if count == 0 then "" else ")" & emit-gtk-partial-close (count - 1)
+
+  emit-gtk-partial-params : Integer, Integer -> Text
+  emit-gtk-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-gtk-partial-params (i + 1) count
+
+  emit-gtk-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-gtk-partial (func) (args) (arities) (short) =
+   let call = func & "(" & emit-gtk-apply-args args arities 0 & ", " & emit-gtk-partial-params 0 short & ")"
+   in emit-gtk-partial-open 0 short & call & emit-gtk-partial-close short
 
   emit-gtk-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-gtk-apply-args (args) (arities) (i) =
@@ -386,5 +446,38 @@ Section: GTK Application Assembly
    in let defs-text = emit-gtk-defs (m.defs) 0 arities
    in let gtk-app = "class AppWindow(Gtk.ApplicationWindow):\n    def __init__(self, app):\n        super().__init__(application=app, title=\"" & gtk-escape title & "\")\n        self.set_default_size(640, 480)\n        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)\n        box.set_margin_top(10)\n        box.set_margin_start(10)\n        try:\n            opening()\n        except Exception as e:\n            _output_lines.append(str(e))\n        for line in _output_lines:\n            label = Gtk.Label(label=line, xalign=0)\n            box.append(label)\n        self.set_child(box)\n\ndef on_activate(app):\n    win = AppWindow(app)\n    win.present()\n\napp = Gtk.Application()\napp.connect('activate', on_activate)\napp.run(None)\n"
    in imports & builtins & types-text & defs-text & gtk-app
+
+  emit-gtk-chapter-stream-head : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-gtk-chapter-stream-head (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let imports = "import gi\ngi.require_version('Gtk', '4.0')\nfrom gi.repository import Gtk\nfrom dataclasses import dataclass\nimport struct\nimport sys\nsys.setrecursionlimit(1000000)\n\n"
+   in let builtins = "def __narrow(n): return n\n_output_lines = []\ndef print_line_uni(s):\n    _output_lines.append(str(s))\ndef show(n): return str(n)\ndef text_length(s): return len(s)\ndef text_replace(s, a, b): return s if len(a) == 0 else s.replace(a, b)\ndef text_starts_with(s, p): return s.startswith(p)\ndef text_contains(s, sub): return sub in s\ndef text_split(s, sep): return [s] if len(sep) == 0 else s.split(sep)\ndef text_to_integer(s):\n    t = str(s)\n    i = 0\n    neg = False\n    if t[:1] == '-':\n        neg = True\n        i = 1\n    v = 0\n    while i < len(t) and '0' <= t[i] <= '9':\n        v = v * 10 + (ord(t[i]) - 48)\n        i += 1\n    return -v if neg else v\ndef text_compare(a, b): return 0 if a == b else (-1 if a < b else 1)\ndef list_length(xs): return len(xs)\ndef list_at(xs, i): return xs[i]\ndef integer_to_text(n): return str(n)\ndef negate(n): return -n\n\n"
+   in let types-text = emit-gtk-type-defs type-defs 0
+   in let gtk-app = "class AppWindow(Gtk.ApplicationWindow):\n    def __init__(self, app):\n        super().__init__(application=app, title=\"" & gtk-escape title & "\")\n        self.set_default_size(640, 480)\n        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)\n        box.set_margin_top(10)\n        box.set_margin_start(10)\n        try:\n            opening()\n        except Exception as e:\n            _output_lines.append(str(e))\n        for line in _output_lines:\n            label = Gtk.Label(label=line, xalign=0)\n            box.append(label)\n        self.set_child(box)\n\ndef on_activate(app):\n    win = AppWindow(app)\n    win.present()\n\napp = Gtk.Application()\napp.connect('activate', on_activate)\napp.run(None)\n"
+   in imports & builtins & types-text
+
+  emit-gtk-chapter-stream-tail : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-gtk-chapter-stream-tail (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let imports = "import gi\ngi.require_version('Gtk', '4.0')\nfrom gi.repository import Gtk\nfrom dataclasses import dataclass\nimport struct\nimport sys\nsys.setrecursionlimit(1000000)\n\n"
+   in let builtins = "def __narrow(n): return n\n_output_lines = []\ndef print_line_uni(s):\n    _output_lines.append(str(s))\ndef show(n): return str(n)\ndef text_length(s): return len(s)\ndef text_replace(s, a, b): return s if len(a) == 0 else s.replace(a, b)\ndef text_starts_with(s, p): return s.startswith(p)\ndef text_contains(s, sub): return sub in s\ndef text_split(s, sep): return [s] if len(sep) == 0 else s.split(sep)\ndef text_to_integer(s):\n    t = str(s)\n    i = 0\n    neg = False\n    if t[:1] == '-':\n        neg = True\n        i = 1\n    v = 0\n    while i < len(t) and '0' <= t[i] <= '9':\n        v = v * 10 + (ord(t[i]) - 48)\n        i += 1\n    return -v if neg else v\ndef text_compare(a, b): return 0 if a == b else (-1 if a < b else 1)\ndef list_length(xs): return len(xs)\ndef list_at(xs, i): return xs[i]\ndef integer_to_text(n): return str(n)\ndef negate(n): return -n\n\n"
+   in let types-text = emit-gtk-type-defs type-defs 0
+   in let gtk-app = "class AppWindow(Gtk.ApplicationWindow):\n    def __init__(self, app):\n        super().__init__(application=app, title=\"" & gtk-escape title & "\")\n        self.set_default_size(640, 480)\n        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)\n        box.set_margin_top(10)\n        box.set_margin_start(10)\n        try:\n            opening()\n        except Exception as e:\n            _output_lines.append(str(e))\n        for line in _output_lines:\n            label = Gtk.Label(label=line, xalign=0)\n            box.append(label)\n        self.set_child(box)\n\ndef on_activate(app):\n    win = AppWindow(app)\n    win.present()\n\napp = Gtk.Application()\napp.connect('activate', on_activate)\napp.run(None)\n"
+   in gtk-app
+
+  emit-gtk-chapter-stream-env : IRChapter, IRTextMeta, List ATypeDef -> List ArityEntry
+  emit-gtk-chapter-stream-env (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let imports = "import gi\ngi.require_version('Gtk', '4.0')\nfrom gi.repository import Gtk\nfrom dataclasses import dataclass\nimport struct\nimport sys\nsys.setrecursionlimit(1000000)\n\n"
+   in let builtins = "def __narrow(n): return n\n_output_lines = []\ndef print_line_uni(s):\n    _output_lines.append(str(s))\ndef show(n): return str(n)\ndef text_length(s): return len(s)\ndef text_replace(s, a, b): return s if len(a) == 0 else s.replace(a, b)\ndef text_starts_with(s, p): return s.startswith(p)\ndef text_contains(s, sub): return sub in s\ndef text_split(s, sep): return [s] if len(sep) == 0 else s.split(sep)\ndef text_to_integer(s):\n    t = str(s)\n    i = 0\n    neg = False\n    if t[:1] == '-':\n        neg = True\n        i = 1\n    v = 0\n    while i < len(t) and '0' <= t[i] <= '9':\n        v = v * 10 + (ord(t[i]) - 48)\n        i += 1\n    return -v if neg else v\ndef text_compare(a, b): return 0 if a == b else (-1 if a < b else 1)\ndef list_length(xs): return len(xs)\ndef list_at(xs, i): return xs[i]\ndef integer_to_text(n): return str(n)\ndef negate(n): return -n\n\n"
+   in let types-text = emit-gtk-type-defs type-defs 0
+   in let gtk-app = "class AppWindow(Gtk.ApplicationWindow):\n    def __init__(self, app):\n        super().__init__(application=app, title=\"" & gtk-escape title & "\")\n        self.set_default_size(640, 480)\n        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)\n        box.set_margin_top(10)\n        box.set_margin_start(10)\n        try:\n            opening()\n        except Exception as e:\n            _output_lines.append(str(e))\n        for line in _output_lines:\n            label = Gtk.Label(label=line, xalign=0)\n            box.append(label)\n        self.set_child(box)\n\ndef on_activate(app):\n    win = AppWindow(app)\n    win.present()\n\napp = Gtk.Application()\napp.connect('activate', on_activate)\napp.run(None)\n"
+   in arities
+
+  emit-gtk-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-gtk-chapter-stream-def (m) (v) (i) = emit-gtk-def (list-at (m.defs) i) v
 
 Page 1

@@ -1,0 +1,206 @@
+Chapter: ClockLocaleTest
+  cites Foreword chapter Console
+  cites Works chapter GopLocale
+  cites Works chapter GopZones
+
+ Stage 1 of `docs/Designs/Active/Apps/ClockAndZone.md`: the calendar and zone
+ arithmetic a clock face and a timezone picker are built on. All of it is pure
+ over a civil date, which is why all of it is asked here and none of it needs
+ a device.
+
+ A DAY OF WEEK THAT IS WRONG IS WRONG ON EVERY DATE AND PLAUSIBLE ON ANY ONE,
+ so it is pinned against dates whose answers are known outside this tree
+ rather than against its own output. 2000-01-01 was a Saturday; 2024-02-29, a
+ leap day, was a Thursday. Both are checked, and the second also says the leap
+ rule reached the day-of-week arithmetic rather than only the month length.
+
+ EVERY SUMMER TIME ROW IS A PAIR, one date inside the window and one outside,
+ because a rule that answered True always and a rule that answered False
+ always each pass half of any single-sided test.
+
+Section: Body
+
+  cl-yn : Boolean -> Text
+  cl-yn (v) = if v then "yes" else "NO"
+
+  cl-days : Text
+  cl-days =
+    "days: 2000-01-01 " & loc-dow-name (loc-dow 2000 1 1)
+    & "  is Saturday " & cl-yn (loc-dow 2000 1 1 == 6)
+    & "  2024-02-29 " & loc-dow-name (loc-dow 2024 2 29)
+    & "  is Thursday " & cl-yn (loc-dow 2024 2 29 == 4)
+    & "  1900 leap " & cl-yn (loc-leap 1900)
+    & "  2000 leap " & cl-yn (loc-leap 2000)
+    & "  Feb 2024 " & show (loc-month-len 2024 2)
+
+ THE LAST SUNDAY IS NOT THE FIFTH. A month with four Sundays has no fifth, so
+ a "last" written as an nth would fall off the end of most months. The row
+ asks a March with five Sundays and one with four.
+
+  cl-nth : Text
+  cl-nth =
+    "nth: last Sun Mar 2026 " & show (loc-last-dow 2026 3 0)
+    & "  2nd Sun Mar 2026 " & show (loc-nth-dow 2026 3 0 2)
+    & "  1st Sun Nov 2026 " & show (loc-nth-dow 2026 11 0 1)
+    & "  last Sun Oct 2026 " & show (loc-last-dow 2026 10 0)
+    & "  last is in the month " & cl-yn (loc-last-dow 2026 3 0 <= loc-month-len 2026 3)
+    & "  and is a Sunday " & cl-yn (loc-dow 2026 3 (loc-last-dow 2026 3 0) == 0)
+
+ EUROPE AND NORTH AMERICA DIFFER BY THREE WEEKS IN SPRING AND ONE IN AUTUMN,
+ which is the discrimination that says the two rules are two rules: a single
+ shared rule would make these four dates two.
+
+  cl-eu : Text
+  cl-eu =
+    "EU 2026: starts Mar " & show (loc-last-dow 2026 3 0) & "  ends Oct " & show (loc-last-dow 2026 10 0)
+    & "  Jan off " & cl-yn (loc-dst-on loc-dst-eu 2026 1 15 12 == False)
+    & "  Jul on " & cl-yn (loc-dst-on loc-dst-eu 2026 7 15 12)
+    & "  Dec off " & cl-yn (loc-dst-on loc-dst-eu 2026 12 15 12 == False)
+
+  cl-us : Text
+  cl-us =
+    "US 2026: starts Mar " & show (loc-nth-dow 2026 3 0 2) & "  ends Nov " & show (loc-nth-dow 2026 11 0 1)
+    & "  Jan off " & cl-yn (loc-dst-on loc-dst-us 2026 1 15 12 == False)
+    & "  Jul on " & cl-yn (loc-dst-on loc-dst-us 2026 7 15 12)
+    & "  earlier than the EU in spring " & cl-yn (loc-nth-dow 2026 3 0 2 < loc-last-dow 2026 3 0)
+
+ THE SOUTHERN WINDOW WRAPS THE YEAR END AND THAT IS THE POINT OF THE ROW. Its
+ start is a HIGHER month-day than its end, so the plain `start <= now < end`
+ test is false for every day of the year and would report a hemisphere that
+ never has summer time at all. January is inside the window and July is
+ outside it, which is the opposite of every row above.
+
+  cl-south : Text
+  cl-south =
+    "southern: start " & show (loc-dst-start loc-dst-au 2026) & " end " & show (loc-dst-end loc-dst-au 2026)
+    & "  start after end " & cl-yn (loc-dst-start loc-dst-au 2026 > loc-dst-end loc-dst-au 2026)
+    & "  Jan on " & cl-yn (loc-dst-on loc-dst-au 2026 1 15 12)
+    & "  Jul off " & cl-yn (loc-dst-on loc-dst-au 2026 7 15 12 == False)
+    & "  Dec on " & cl-yn (loc-dst-on loc-dst-au 2026 12 15 12)
+
+ THE CHANGEOVER DAY IS DECIDED BY THE HOUR AND ONLY THERE. Both sides of both
+ boundaries are asked on the same date, so a rule that ignored the hour would
+ give the same answer twice in a row that expects two.
+
+  cl-edge : Text
+  cl-edge =
+    let s = loc-last-dow 2026 3 0
+    in let e = loc-last-dow 2026 10 0
+    in "edges: Mar " & show s & " 01h " & cl-yn (loc-dst-on loc-dst-eu 2026 3 s 1)
+       & "  03h " & cl-yn (loc-dst-on loc-dst-eu 2026 3 s 3)
+       & "  Oct " & show e & " 01h " & cl-yn (loc-dst-on loc-dst-eu 2026 10 e 1)
+       & "  03h " & cl-yn (loc-dst-on loc-dst-eu 2026 10 e 3)
+
+ MIDNIGHT AND NOON ARE THE TWO A TWELVE HOUR CLOCK GETS WRONG, so they are
+ the two it is asked. Hour 0 must print 12 AM and hour 12 must print 12 PM,
+ and a naive `h mod 12` gives 00 for both.
+
+  cl-clock : Text
+  cl-clock =
+    "clock: 00:05 " & loc-time loc-clock-12 0 5 3 & " / " & loc-time loc-clock-24 0 5 3
+    & "   12:05 " & loc-time loc-clock-12 12 5 3 & " / " & loc-time loc-clock-24 12 5 3
+    & "   13:05 " & loc-time loc-clock-12 13 5 3
+    & "  midnight is twelve " & cl-yn (loc-hour-12 0 == 12)
+    & "  noon is twelve " & cl-yn (loc-hour-12 12 == 12)
+
+  cl-date : Text
+  cl-date =
+    "date 2026-03-09: dmy " & loc-date loc-date-dmy 2026 3 9
+    & "  mdy " & loc-date loc-date-mdy 2026 3 9
+    & "  ymd " & loc-date loc-date-ymd 2026 3 9
+    & "  the three differ " & cl-yn (loc-date loc-date-dmy 2026 3 9 /= loc-date loc-date-mdy 2026 3 9)
+
+ A NEGATIVE OFFSET WITH MINUTES IS WHERE A SIGN GOES WRONG. Newfoundland is
+ -03:30; taking the sign after splitting gives "-03:-30".
+
+  cl-off : Text
+  cl-off =
+    "offsets: " & loc-utc-text 0 & "  " & loc-utc-text 330 & "  " & loc-utc-text (0 - 210)
+    & "  " & loc-utc-text 765 & "  " & loc-utc-text (0 - 720)
+
+ ZONES ARE NAMED AND NEVER NUMBERED HERE. An id is the row's position, so
+ inserting one row shifts every id after it; this file pinned London, Sydney
+ and Kolkata by number, a row was added at the western end, and afterwards it
+ measured three other places while still reporting three of its four verdicts
+ as passes. `zone-find` is the only way source should reach a particular zone.
+
+  cl-london : Integer = zone-find "Europe/London"
+  cl-sydney : Integer = zone-find "Australia/Sydney"
+  cl-kolkata : Integer = zone-find "Asia/Kolkata"
+
+ The table is asked through the same door the pane will use, on both sides of
+ a transition, so the row proves the rule reached the ZONE and not only the
+ calendar. Sydney and London move in opposite directions across the same two
+ dates, which no single-hemisphere table could produce.
+
+  cl-zone : Text
+  cl-zone =
+    "zones: " & show zone-count & " rows"
+    & "  found by name " & cl-yn (cl-london > 0 & cl-sydney > 0 & cl-kolkata > 0)
+    & "  London Jan " & loc-utc-text (zone-offset-on cl-london 2026 1 15 12)
+    & "  Jul " & loc-utc-text (zone-offset-on cl-london 2026 7 15 12)
+    & "  Sydney Jan " & loc-utc-text (zone-offset-on cl-sydney 2026 1 15 12)
+    & "  Jul " & loc-utc-text (zone-offset-on cl-sydney 2026 7 15 12)
+    & "  opposite " & cl-yn (zone-offset-on cl-london 2026 7 15 12 > zone-offset-on cl-london 2026 1 15 12 & zone-offset-on cl-sydney 2026 7 15 12 < zone-offset-on cl-sydney 2026 1 15 12)
+
+ A ZONE THAT NEVER MOVES MUST NEVER MOVE, and Kolkata is the row that says
+ both halves at once: a half-hour offset that survives the formatter, and a
+ rule of none that survives the date.
+
+  cl-fixed : Text
+  cl-fixed =
+    "fixed: Kolkata Jan " & loc-utc-text (zone-offset-on cl-kolkata 2026 1 15 12)
+    & "  Jul " & loc-utc-text (zone-offset-on cl-kolkata 2026 7 15 12)
+    & "  unmoved " & cl-yn (zone-offset-on cl-kolkata 2026 1 15 12 == zone-offset-on cl-kolkata 2026 7 15 12)
+    & "  and is half past " & cl-yn (int-mod (zone-offset-on cl-kolkata 2026 7 15 12) 60 == 30)
+
+ ID ZERO IS NOT A ZONE. A machine carrying only the old whole-hour record has
+ no zone id, and a zero that read as the first row would put it in the Pacific.
+
+  cl-ids : Text
+  cl-ids =
+    "ids: zero valid " & cl-yn (zone-valid 0)
+    & "  one valid " & cl-yn (zone-valid 1)
+    & "  count valid " & cl-yn (zone-valid zone-count)
+    & "  past the end valid " & cl-yn (zone-valid (zone-count + 1))
+    & "  zero offsets to " & show (zone-offset-on 0 2026 7 15 12)
+
+ EVERY STRIPE THE MAP CAN SHOW IS ASKED FOR ITS CONTENT, because a stripe with
+ no zones is a band somebody can click that does nothing, and that is a fact
+ about the table worth seeing rather than discovering.
+
+  cl-stripe-line : Integer, Integer, Text -> Text
+  cl-stripe-line (s) (hi) (acc) =
+    if s > hi then acc
+    else cl-stripe-line (s + 1) hi (acc & (if zone-stripe-count s == 0 then "." else show (zone-stripe-count s)))
+
+  cl-stripe-empty : Integer, Integer, Integer -> Integer
+  cl-stripe-empty (s) (hi) (acc) =
+    if s > hi then acc
+    else cl-stripe-empty (s + 1) hi (acc + (if zone-stripe-count s == 0 then 1 else 0))
+
+  cl-stripes : Text
+  cl-stripes =
+    "stripes -12..+14: " & cl-stripe-line zone-stripe-min zone-stripe-max ""
+    & "  none empty " & cl-yn (cl-stripe-empty zone-stripe-min zone-stripe-max 0 == 0)
+    & "  UTC band first is " & (zone-row-of (zone-stripe-first 0)).zr-city
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni cl-days
+      print-line-uni cl-nth
+      print-line-uni cl-eu
+      print-line-uni cl-us
+      print-line-uni cl-south
+      print-line-uni cl-edge
+      print-line-uni cl-clock
+      print-line-uni cl-date
+      print-line-uni cl-off
+      print-line-uni cl-zone
+      print-line-uni cl-fixed
+      print-line-uni cl-ids
+      print-line-uni cl-stripes
+      print-line-uni "clock-locale: reached the end"
+    end

@@ -24,7 +24,7 @@ fn bl_extract(texel : i32, ch : i32) -> i32 {
   }
   }
 }
-fn bl_glow(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i32, ch__a : i32, k__a : i32, acc__a : i32) -> i32 {
+fn bl_glow(px__a : i32, py__a : i32, ch__a : i32, k__a : i32, acc__a : i32) -> i32 {
   var px = px__a;
   var py = py__a;
   var ch = ch__a;
@@ -34,14 +34,14 @@ fn bl_glow(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i32,
     if ((k >= bl_taps)) {
     return acc;
     } else {
-    let ang = (f32(f32(k)) * bitcast<f32>(1075415351u));
-    let rad = (sqrt(f32(f32(k))) * bitcast<f32>(1079613849u));
+    let ang = (f32(f32(k)) * 0x1.33126ep+1f);
+    let rad = (sqrt(f32(f32(k))) * 0x1.b33332p+1f);
     let dx = i32((cos(ang) * rad));
     let dy = i32((sin(ang) * rad));
     let sx = bl_clamp((px + dx), 0, 1023);
     let sy = bl_clamp((py + dy), 0, 767);
     let idx = ((sy * 1024) + sx);
-    let texel = (*buf)[idx];
+    let texel = bloom_step_scenebuf_buf[idx];
     let c = bl_extract(texel, ch);
     let bright = select(0, (c - 150), (c > 150));
     let _mv1 = px;
@@ -57,6 +57,7 @@ fn bl_glow(buf : ptr<storage, array<i32>, read_write>, px__a : i32, py__a : i32,
     continue;
     }
   }
+  return 0;
 }
 @group(0) @binding(0) var<storage, read_write> bloom_step_scenebuf_buf : array<i32>;
 @group(0) @binding(1) var<storage, read_write> bloom_step_outb_buf : array<i32>;
@@ -71,9 +72,9 @@ fn bloom_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let px = (gid - ((gid / bl_width) * bl_width));
   let py = (gid / bl_width);
   let base = bloom_step_scenebuf_buf[gid];
-  let gr = bl_glow(&bloom_step_scenebuf_buf, px, py, 0, 0, 0);
-  let gg = bl_glow(&bloom_step_scenebuf_buf, px, py, 1, 0, 0);
-  let gb = bl_glow(&bloom_step_scenebuf_buf, px, py, 2, 0, 0);
+  let gr = bl_glow(px, py, 0, 0, 0);
+  let gg = bl_glow(px, py, 1, 0, 0);
+  let gb = bl_glow(px, py, 2, 0, 0);
   let br = (base / 65536);
   let bg = ((base / 256) - ((base / 65536) * 256));
   let bb = (base - ((base / 256) * 256));

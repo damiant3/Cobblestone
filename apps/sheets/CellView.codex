@@ -1,0 +1,192 @@
+Chapter: CellView
+  cites Sheets chapter CellEval
+  cites Sheets chapter CellGraph
+  cites Sheets chapter CellCsv
+  cites Sheets chapter CellStore
+  cites Foreword chapter CCE
+
+ The sheet itself: a store, the formulas over the store, and the window
+ a person is looking through. Rendering is text here, so the desk pane
+ and the web view can each take the same rows and draw them, and so an
+ arm can read a sheet without a screen.
+
+ WHAT A PERSON TYPES is classified by exactly the rule CSV import uses,
+ and reusing `csv-numeric` rather than writing a second one is the
+ point: two rules for what counts as a number is how `007` becomes text
+ in one path and seven in the other.
+
+ - Text opening with `=` is a FORMULA.
+ - Digits, with an optional leading minus, are a NUMBER.
+ - Nothing typed CLEARS the cell, which is how a cell returns to empty.
+ - Everything else is TEXT.
+
+ A NUMBER TOO WIDE FOR ITS COLUMN IS NOT TRUNCATED. A cut number reads
+ as a different number and nothing in the display says so, which is the
+ same failure the typed refusal exists to prevent one layer down; the
+ cell fills with `#` instead, and the column is the thing to widen. Text
+ IS cut, with a `>` in the last position, because a cut label is still
+ recognisably that label and a person can see the mark.
+
+ We say:
+
+Section: The Window
+
+  View = record {
+    vw-top : Integer,
+    vw-left : Integer,
+    vw-rows : Integer,
+    vw-cols : Integer,
+    vw-width : Integer
+  }
+
+  Sheet = record {
+    sh-blk : Integer,
+    sh-prog : Program,
+    sh-view : View
+  }
+
+  vw-gutter : Integer = 4
+
+  sheet-open : Integer, Integer, Integer -> Sheet
+  sheet-open (rows) (cols) (arena) =
+    let blk = sheet-new rows cols arena
+    in Sheet { sh-blk = blk, sh-prog = graph-new blk, sh-view = View { vw-top = 0, vw-left = 0, vw-rows = rows, vw-cols = cols, vw-width = 9 } }
+
+  sheet-look : Sheet, Integer, Integer, Integer, Integer, Integer -> Sheet
+  sheet-look (sh) (top) (left) (rows) (cols) (width) =
+    Sheet { sh-blk = sh.sh-blk, sh-prog = sh.sh-prog, sh-view = View { vw-top = top, vw-left = left, vw-rows = rows, vw-cols = cols, vw-width = width } }
+
+Section: What A Person Typed
+
+  sheet-type : Sheet, Integer, Integer, Text -> Sheet
+  sheet-type (sh) (r) (c) (typed) =
+    let bs = text-to-utf8-bytes typed
+    in let n = list-length bs
+    in if n == 0 then sheet-typed-clear sh r c
+    else if list-at bs 0 == 61 then Sheet { sh-blk = sh.sh-blk, sh-prog = graph-put (sh.sh-prog) r c typed, sh-view = sh.sh-view }
+    else if csv-numeric bs n then sheet-typed-num sh r c (csv-value bs n)
+    else sheet-typed-text sh r c typed
+
+  sheet-typed-clear : Sheet, Integer, Integer -> Sheet
+  sheet-typed-clear (sh) (r) (c) =
+    let x = sheet-clear (sh.sh-blk) r c
+    in sh
+
+  sheet-typed-num : Sheet, Integer, Integer, Integer -> Sheet
+  sheet-typed-num (sh) (r) (c) (v) =
+    let x = sheet-set (sh.sh-blk) r c v
+    in sh
+
+  sheet-typed-text : Sheet, Integer, Integer, Text -> Sheet
+  sheet-typed-text (sh) (r) (c) (t) =
+    let x = sheet-set-text (sh.sh-blk) r c t
+    in sh
+
+Section: Fitting A Cell
+
+  vw-len : Text -> Integer
+  vw-len (t) =
+    let bs = text-to-utf8-bytes t
+    in ev-len-of bs 0 (list-length bs) 0
+
+  vw-spaces : Integer, Text -> Text
+  vw-spaces (n) (acc) =
+    if n <= 0 then acc
+    else vw-spaces (n - 1) (acc & " ")
+
+  vw-cut : Text, Integer -> Text
+  vw-cut (t) (w) =
+    let bs = text-to-utf8-bytes t
+    in utf8-bytes-to-text (ev-slice bs 0 (vw-cut-end bs 0 (list-length bs) (w - 1) 0) []) & ">"
+
+ The cut is made at a CODE POINT boundary, not at a byte, so a
+ multi-byte character is never halved into two bytes no decoder accepts.
+
+  vw-cut-end : List Integer, Integer, Integer, Integer, Integer -> Integer
+  vw-cut-end (bs) (i) (n) (want) (seen) =
+    if i >= n then i
+    else if seen >= want then i
+    else if ev-cont-byte (list-at bs i) then vw-cut-end bs (i + 1) n want seen
+    else vw-cut-end bs (i + 1) n want (seen + 1)
+
+  vw-hashes : Integer, Text -> Text
+  vw-hashes (n) (acc) =
+    if n <= 0 then acc
+    else vw-hashes (n - 1) (acc & "#")
+
+  vw-right : Text, Integer -> Text
+  vw-right (t) (w) =
+    if vw-len t > w then vw-hashes w ""
+    else vw-spaces (w - vw-len t) "" & t
+
+  vw-left-of : Text, Integer -> Text
+  vw-left-of (t) (w) =
+    if vw-len t > w then vw-cut t w
+    else t & vw-spaces (w - vw-len t) ""
+
+ A refusal is laid out as text rather than as a number, because a
+ refusal is a sentence and right-aligning one hides its beginning.
+
+  vw-cell : Sheet, Results, Integer, Integer, Integer -> Text
+  vw-cell (sh) (rs) (r) (c) (w) =
+    let v = ev-cell (sh.sh-prog) (rs.rs-vals) r c
+    in if rs.rs-ok == False then vw-left-of "!" w
+    else vw-fit v w
+
+  vw-fit : Value, Integer -> Text
+  vw-fit (v) (w) =
+    if ev-is-err v then vw-left-of (ev-show v) w
+    else if ev-is-text v then vw-left-of (ev-show v) w
+    else if ev-is-empty v then vw-spaces w ""
+    else vw-right (ev-show v) w
+
+Section: Rendering The Window
+
+  vw-nl : Text
+  vw-nl = utf8-bytes-to-text [10]
+
+  vw-head-cols : View, Integer, Integer, Text -> Text
+  vw-head-cols (vw) (c) (n) (acc) =
+    if c >= n then acc
+    else vw-head-cols vw (c + 1) n (acc & " " & vw-left-of (gr-col-name c) (vw.vw-width))
+
+  vw-row-cells : Sheet, Results, Integer, Integer, Integer, Text -> Text
+  vw-row-cells (sh) (rs) (r) (c) (n) (acc) =
+    if c >= n then acc
+    else vw-row-cells sh rs r (c + 1) n (acc & " " & vw-cell sh rs r c ((sh.sh-view).vw-width))
+
+  vw-rows-of : Sheet, Results, Integer, Integer, Text -> Text
+  vw-rows-of (sh) (rs) (r) (n) (acc) =
+    if r >= n then acc
+    else vw-rows-of sh rs (r + 1) n (acc & vw-nl & vw-right (show (r + 1)) vw-gutter & vw-row-cells sh rs r ((sh.sh-view).vw-left) ((sh.sh-view).vw-left + (sh.sh-view).vw-cols) "")
+
+  sheet-render : Sheet -> Text
+  sheet-render (sh) =
+    let rs = eval-run (sh.sh-prog)
+    in let vw = sh.sh-view
+    in vw-spaces vw-gutter "" & vw-head-cols vw (vw.vw-left) (vw.vw-left + vw.vw-cols) "" & vw-rows-of sh rs (vw.vw-top) (vw.vw-top + vw.vw-rows) ""
+
+ The bar a desk pane or a web view puts above the grid: the cell a
+ person is on, what was TYPED into it, and what it evaluates to. The
+ typed text is the formula source where a formula is present, because a
+ person editing a cell must see the formula rather than its answer.
+
+  sheet-typed-at : Sheet, Integer, Integer -> Text
+  sheet-typed-at (sh) (r) (c) =
+    let s = gr-slot-at (sh.sh-prog) r c
+    in if s > 0 then (list-at ((sh.sh-prog).pg-cells) (s - 1)).fc-src
+    else vw-typed-store sh r c
+
+  vw-typed-store : Sheet, Integer, Integer -> Text
+  vw-typed-store (sh) (r) (c) =
+    let k = sheet-kind (sh.sh-blk) r c
+    in if k == cs-number then show (sheet-get (sh.sh-blk) r c)
+    else if k == cs-text then sheet-text (sh.sh-blk) r c
+    else ""
+
+  sheet-bar : Sheet, Integer, Integer -> Text
+  sheet-bar (sh) (r) (c) =
+    let rs = eval-run (sh.sh-prog)
+    in ev-cell-name r c & "  typed [" & sheet-typed-at sh r c & "]  shows [" & eval-cell (sh.sh-prog) rs r c & "]"
+
+Page 1

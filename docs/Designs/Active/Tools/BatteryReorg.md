@@ -1,29 +1,13 @@
 # Battery Reorg -- census and redesign
 
-*Status: census complete 2026-07-27; plan steps 1-5 all LANDED 2026-07-27
-(steps 1-2 main CL 10881; step 3 main CL 10921 with seed 558; steps 4-5
-main CLs 10962 and 10982). Post-fix `-All` ran with zero batch-VM deaths,
-~6.6 min under fleet load. Next: step 6, the language axis matrix.
+*Steps 1-5 are landed. Steps 6 (the language axis), 7 (dedup) and 9 (the
+coverage axis) are QUEUES, not steps: you close cells, and there is no state
+in which any of them is done. Step 11 is the open design.
 
-**STEP 6 IS A QUEUE AND NOT A STEP, and "next: step 6" reads as one item
-that can be finished** (fester, 2026-08-21, re-measured). You close CELLS of
-the language axis; there is no state in which it is done. Steps 7 (dedup,
-FIRST PASS) and 9 (the coverage axis, which Damian ruled is a queue
-explicitly) are open on the same terms, so the line above names one of three
-open things and makes it sound like the only one. Anyone planning off it
-budgets for a step and finds an axis.
-
-Re-measured 2026-08-21: **`codex/test/ops` holds 35 members**, against the
-seven this entry names as its first landings. The axis has grown fivefold
-since 2026-07-27 and nothing recorded it, which is the same shape as the
-count this design already warns about -- `real-approx-negate` landed
-2026-08-21 (fester, main 18612/18629) after `negate` on a `Real` was found
-wrong on all three lanes, and no cell of the matrix predicted it: the corpus
-built every negative operand as `0.0 - x`, so nothing ever called the
-operator (L-CONSTRUCT). A matrix is only as good as the SHAPES its fixtures
-are written in.
-Owner: red. Baseline numbers are from ONE instrumented run against seed
-AFFD4511; re-measure before quoting them anywhere else.*
+Owner: red; step 11 is fester's. Every number below is from one instrumented
+run against seed AFFD4511 and is stale by construction -- re-measure before
+quoting any of it (L-COUNT). A matrix is only as good as the SHAPES its
+fixtures are written in (L-CONSTRUCT).*
 
 ## Results so far (2026-07-27, main CL 10881)
 
@@ -166,7 +150,70 @@ the day they landed. That is what this reorg buys.
    `-Tier lang/lib/fw/apps/hardware/oracles/all`, dead `-Fuzz` removed) and
    10982 (oracles pinned into the gate after test-bvt, ~2.4 s, and into
    `-All`; collections stay author-owned).
-6. **Language axis matrix. IN FLIGHT 2026-07-27.** New coverage organized by
+6. **Language axis matrix. CENSUSED 2026-09-07 (red); the assertions are
+   healthy and what is left is not in `ops/`.** 51 chapters in
+   `codex/test/ops`, zero `.skip`, 50 carrying an `.expected`. The one
+   without is `real-trapping-overflow`, a `.fatal`, which this file's own
+   ExaminersAssay section already records as a compile check plus a manual
+   read. Two `.expected` carry no digit (`match-shadowed-arm`,
+   `unit-pattern-lit`) and both were read: each asserts real text, so the
+   L-NAMED digit heuristic flags them and does not convict them.
+
+   **Two keyword censuses over this corpus were WRONG and reading caught
+   both, which is L-CENSUS at its own subject.** Searching `Integer
+   <mode>` found nothing because the grammar suffixes the mode after the
+   band (`Integer between <lo> and <hi> wrapping`); searching for an
+   Integer `trapping` mode found nothing because no such word exists.
+   `Integer`'s modes are `wrapping`, `clamping` and `error`, and `error`
+   IS the trapping default, spelled by ABSENCE, so every unannotated
+   `Integer` op is already a trapping cell. A cell that is covered by
+   default cannot be counted by grepping for its name.
+
+   Coverage measured on the real grammar: Integer carries `wrapping` and
+   `clamping`, Real carries `saturating` and `trapping`, and Integer's
+   trapping cells are the plain-`Integer` arms of `int-add-wrapping`,
+   `int-mul-wrapping` and `int-wrapping-spelling`, which COMPILER-36 built
+   as its fixtures. **The residual risk is not a missing ops chapter; it
+   is that app sites are compile-checked and executed only by the
+   battery** (L-CENSUS's runner column, and COMPILER-36's four misses).
+
+   **THE GAP IS MEASURED NOW (red, 2026-09-08), and it is 910 chapters
+   and every entry unit.** Of 1,137 `.codex` chapters under `apps`, 227
+   are reached by the cite closure of the 1,746 chapters under
+   `codex/test`; **910 are reached by none**. Of the **295 app ENTRY
+   chapters**, the units `build/sweep-app-classes.ps1` compiles,
+   **zero** are reached, and that zero is STRUCTURAL rather than an
+   oversight: an entry chapter declares `opening`, so no test can cite it
+   without colliding on a second entry point. The citing corpus is
+   therefore incapable of executing any app entry unit, whatever is added
+   to it, and the app sweep compiles all 295 and boots none
+   (`build/build.ps1`, the `app-sweep` phase, `-Check`).
+
+   **The 227 is an UPPER bound and the 910 a lower one**: reaching a
+   chapter through a cite means it was compiled into the test's unit, not
+   that any of its functions was called (L-UNCALLED). Counts re-measured
+   against the sweep's own rule, `^  opening\s*:` under `apps` outside
+   `build-output`, which answers 295 today; the `267` in `build.ps1`'s
+   `app-sweep` comment and the `265` in `build/app-sweep-baseline.txt`
+   are stale (L-COUNT), and `build.ps1` is generated from
+   `codex/build/BuildScript.codex`, so they are corrected by whoever next
+   edits that generator rather than as an errand.
+
+   **RULED 2026-09-08 by Damian: there is NO runner for the 295 app
+   entries, and the residual stays open by choice.** In his words: "app
+   drift is acceptable during this phase; the blast radius of a change to
+   compiler or foreword should not be a gating factor; app lift is a
+   secondary concern; it costs too much to maintain; apps are a test bed
+   until the underlying code is more stable."
+
+   So the 910 unexecuted chapters and the 295 compile-only entry units
+   are a KNOWN and accepted state, not a gap awaiting a lane. The
+   measurement above stays because it prices the ruling: a later phase
+   that wants app execution starts from a counted corpus rather than
+   re-deriving one. Nobody is to build the runner, and a compiler or
+   foreword change is not held for app fallout.
+
+   The original scope: new coverage organized by
    axis (operators x types x sign x value-vs-branch position, bounded modes
    and `__narrow`, CCE boundaries, linear/mutable probes, vector lanes, unit
    types, remainders), entering as smoke-bundle members -- compile is free,
@@ -672,6 +719,255 @@ the day they landed. That is what this reorg buys.
         so far; raise `-RenoTimeout` for one run and watch, if its
         verdict ever matters.
 
+11. **Composable batteries by blast radius. DESIGNED 2026-09-07 (fester),
+    not built.** Damian's ask: test packages named for their COVERAGE rather
+    than their purpose -- apps, compiler, kernel, plugs, board, and so on --
+    so a lane mixes the batteries a change can break and runs nothing else,
+    because the box is the bottleneck.
+
+    **What the existing tiers are, and why they do not answer it.**
+    `test.ps1 -Tier` already composes (`-Tier lib,apps`), so the mechanism
+    is present and the NAMES are the gap: `lang`, `lib`, `fw`, `apps`,
+    `hardware`, `traps`, `slow`, `oracles` are LOCATIONS in `codex/test`,
+    not subsystems a change can break. Measured 2026-09-07 over 1,725 test
+    chapters (root 625, apps 472, forewords 318, errors 206, ops 51, lib 40,
+    ui 7, cost 5, examples 1): the default `lang` tier IS the 625-chapter
+    root directory, and it holds kernel capability tests, arch boot tests
+    and language pins in one bucket. A lane that changed the kernel has no
+    word for what it needs.
+
+    **Coverage is derivable from the cite graph, and that is measured, not
+    assumed.** 500 of the 625 root chapters carry at least one `cites`
+    line, and 1,198 of their 1,199 cite edges resolve against a
+    chapter-name index built over the 2,047 non-test chapters in `codex`
+    and `apps` (`DiagPci` is the single unresolved name). Where those edges
+    land:
+
+    | subsystem | edges |
+    |---|---|
+    | `codex/foreword/**` | 819 (core 519, ui 116, encode 74, engine 47, game 44, math 36, punctual 13, signal 11, ai 8) |
+    | `codex/os/**` | 200 (kernel 102, net 85, trust 7, dev 6) |
+    | `apps/**` | the remainder |
+    | `codex/compiler/**` | **0** |
+    | `codex/plugs/**` | **0** |
+
+    **That table was built with a name-only index and its middle rows are an
+    upper bound, not a measurement.** 66 chapter names are defined in more
+    than one place (`Console` and `VirtioBlk` in both `codex/foreword/core`
+    and `codex/os/kernel`; `BitmapFont`, `DriveManager`, `SystemDb` colliding
+    with `apps/**`), and a first-writer-wins index assigns every one of them
+    to whichever file was walked first. A cite names its quire
+    (`cites Foreword chapter Board`), so the disambiguation is available and
+    the index must key on (quire, chapter) with the quire read from the
+    owning directory. The two ZEROS are unaffected either way: a name
+    collision can move an edge between `foreword`, `kernel` and `apps`, and
+    cannot manufacture an edge into `codex/compiler` or `codex/plugs`.
+    `check-test-compile.ps1:115` deliberately does NOT match the quire,
+    which is right for a CHECK, where over-inclusion is the safe direction,
+    and wrong for a SELECTOR, where it is both over- and under-inclusive at
+    once.
+
+    **The batteries are two different KINDS and one mechanism for both
+    would report green over the two that matter (L-AXIS).** The compiler and
+    the plugs have no cite edges from `codex/test` at all -- the compiler
+    because it is global by construction (`build.ps1:1319`), the plugs
+    because their harnesses live beside them. A cite-selected `compiler`
+    battery selects zero chapters and passes.
+
+    - **CORPUS batteries** select chapters by the subsystem their cites land
+      in, derived per run and never stored: `foreword`, `kernel`, `apps`.
+      `foreword` is the sixth name Damian's list does not give and it is the
+      largest class by a distance; "and so on" is the licence to add it.
+    - **PHASE batteries** run named harnesses, because their subject has no
+      corpus to select: `compiler` (the fixed-point core, `test-bvt`,
+      `sem-equiv`, `check-errors`), `plugs` (`plug-binary`, `plug-smoke`,
+      `plug-selftest`), `board` (the 146 chapters carrying a machine sidecar
+      -- `.disk`, `.disk2`, `.disk-src`, `.vmargs`, `.keys`, `.smp` -- plus
+      `boards-test`). The `hardware` tier already computes almost exactly
+      this set, so `board` is that tier renamed rather than new code, with
+      one correction it needs anyway: `$machineSidecars` in
+      `build/test.ps1:156` lists FIVE extensions and omits `.disk-src`,
+      which step 10 of this document names as a machine-sidecar class and
+      which `codex/test/manifest-pin.disk-src` carries. That chapter attaches
+      a compiled CDX as a disk and cannot run without a machine, so it is a
+      one-chapter hole in the tier today, and the count is 146 with it and
+      145 without.
+
+    **A CITE IS A DEPENDENCY, NOT A SUBJECT, AND THAT BREAKS THE KERNEL
+    BATTERY SILENTLY.** This is the finding the design turns on and it was
+    missed on the first pass. A test cites what it needs in order to
+    COMPILE, not what it is ABOUT. For library tests the two coincide, and
+    for machine-side tests they systematically do not:
+    `codex/test/hpet-interrupt.codex` declares `Chapter: HpetInterrupt`,
+    `grounds Device.Mmio`, pins the HPET counter at `#FED00010` and the
+    IOAPIC at `#FEC00000` -- the subject of `codex/os/kernel/Hpet.codex` --
+    and its ONLY cite is `Foreword chapter Board`. A cite-derived selector
+    files it under `foreword`. It is not selected by `kernel` and it is not
+    in the residue either, BECAUSE IT HAS A CITE, so the run reports nothing
+    missing. A no-cite residue list catches the honest gap and cannot see
+    this one.
+
+    **`.no-cross` looked like an independent label for this and IS NOT, which
+    was found by building the check and reading the reasons.** 31 chapters
+    carry it and the extent of the disagreement with the cite graph was
+    briefly written up here as 21 misroutes. That was wrong twice.
+    `.no-cross` means only "does not run on a cross board" and the stated
+    reasons are heterogeneous: x86 port and MMIO hardware
+    (`hpet-interrupt`), no block device on the cross lane (`fat16-write`),
+    an x86-64 EMITTER difference (`eq-generic-recursive`) and a riscv PLUG
+    gap (`text-helper-spec`). The last two have the compiler and the plugs
+    as their subject, so counting them as machine-side misroutes is a false
+    positive. And the six `fat16-*` are not misrouted at all: they cite
+    `Foreword chapter Fat16`, the Fat16 library IS
+    `codex/foreword/core/Fat16.codex`, and a foreword change should select
+    them. `codex/os/kernel/FatReader.codex` is a different consumer, not
+    their subject.
+
+    **NEEDING A MACHINE AND COVERING A SUBSYSTEM ARE ORTHOGONAL AXES, and
+    conflating them is what produced both errors.** A machine sidecar
+    (`.disk`, `.keys`, `.smp`, `.vmargs`) is a hard fact about what the
+    runner must attach: a COST. A cite is a claim about what the chapter
+    depends on: a SUBJECT. `fat16-write` carries a `.disk` and cites the
+    foreword, and both are correct simultaneously. Any rule that reads one
+    axis as evidence about the other fires on chapters that are classified
+    correctly, and a check that cries wolf is one nobody reads.
+
+    **What survives is narrower and is a REVIEW QUEUE, not a refusal.** A
+    chapter that needs a machine and whose cites reach no machine-side
+    chapter at all is a candidate: no kernel or board change selects it.
+    `hpet-interrupt` is the clean example -- it pins the HPET counter and
+    the IOAPIC and cites only `Foreword chapter Board`, so a change to
+    `codex/os/kernel/Hpet.codex` does not select it. Whether that is a
+    defect is a judgement per chapter, and `.covers` records the answer once
+    somebody makes it.
+
+    **THE QUEUE IS EMPTY: all 62 judged (fester, 2026-09-07), and the answer
+    was not uniform.** The instrument was the TRANSITIVE cite closure, which
+    the classifier deliberately does not walk, and the depth mattered: 15
+    chapters reach `codex/os` at two hops and 20 do so transitively, so a
+    two-hop reading would have under-classified five. Those 20, every one of
+    them under `codex/test/apps`, carry `.covers` adding `kernel`: they reach
+    `Kernel chapter Pci` through `GopXhci`, `GopUsb`, `GopAhci` or `GopDisk`,
+    and `gopweb-spawn` reaches twelve chapters across `kernel/` and `net/`
+    including `net/webserver`. The other 42 record the opposite judgement,
+    which is a real answer and not a shrug: their whole closure stays out of
+    `codex/os`, so no kernel or board change selects them and none should. The
+    FAT family is the clean case, and it is worth stating because the names
+    invite the other conclusion: `Foreword chapter Fat16` reaches
+    `Foreword chapter VirtioBlk`, which cites nothing, while
+    `codex/os/kernel/VirtioBlk.codex` is a SEPARATE implementation citing
+    `Kernel chapter VirtioPci`. Changing the kernel's block driver cannot
+    break `fat16-write`, and the shared name is the whole trap.
+
+    Battery counts moved exactly as that predicts: `kernel` 282 to 302, every
+    other battery unchanged, which is the signature of sidecars that preserved
+    each chapter's existing landing set and added `kernel` only where it was
+    earned.
+
+    **THE INDEX UNDER ALL OF THIS WAS WRONG, AND THE JUDGEMENTS SURVIVED IT**
+    (fester, same day, hours later). The script derived a chapter's quire from
+    the last segment of its directory. The tree does not encode that:
+    `build/quire-map.ps1` does, and it is the authority `check-cite-names.ps1`
+    already dot-sources. The two disagree in both directions, `codex/os/core`
+    being quire OS rather than the Foreword and `Games` being
+    `apps/games/classic`, whose last segment names no quire, so 43 live cites
+    resolved to nothing and their chapters fell out of every battery. Fixed by
+    reading the map instead of guessing. **Dated counts at head 2026-09-07,
+    which supersede every figure above them:** 1,735 test chapters, foreword
+    1,317, kernel 304, board 13, apps 241, compiler 0, plugs 0, unclassified
+    310, and cite names resolving to no chapter down from 45 to **2**, both of
+    them the deliberate error fixtures (`missing-cite`,
+    `unregistered-quire-cite`), which is what a correct index should leave.
+
+    **All 62 judgements were re-derived against the corrected index and NONE
+    flipped**, so the sidecars stand as landed; what the defect moved was the
+    script's own counts and its unresolved list, not any judgement made from
+    it. That is luck rather than method: the queue's members happened not to
+    cite the quires the old rule mangled, and the check cost one script.
+
+    **The cost to watch is not the release, it is the per-gate guest count**
+    (red, clearing this 2026-09-07). A kernel change now selects 20 more
+    chapters in every lane's gate, and 19 of the 20 join for the same reason,
+    so the number moves again the moment anything else reaches
+    `Kernel chapter Pci`. Re-measure it rather than quoting this line
+    (L-COUNT).
+
+    **`.covers` is now orphan-checked** (`build/check-sidecars.ps1`). It was
+    not in that script's extension list, so 62 new sidecars would have been a
+    new unguarded class: rename a test and its judgement is left pointing at
+    nothing, silently. The control was fired and its file removed and its
+    absence verified.
+
+    **So `.covers` is the AUTHORITY, not a patch for the residue.** A
+    per-chapter `.covers` sidecar naming the subsystem and the reason (the
+    `.no-cross` shape, which `check-sidecars.ps1` already has a place for)
+    is read FIRST; the cite graph is the fallback for chapters that do not
+    carry one. 125 root chapters cite nothing and the tempting reading --
+    a chapter that cites nothing tests the language -- is also FALSE, and
+    was checked before it was believed: that set holds the `cap-*` family
+    (the process table IS the subject), `arm64-boot-test`, `arm64-net-gate`,
+    `arm64-proc-cells`, `block-select-drives` beside genuine language pins
+    like `arith-narrow-proven`. An unclassified chapter belongs to NO
+    battery, and every battery prints the size of the set it selected FROM
+    beside its own count (L-DENOM).
+
+    **BUILT: `build/check-battery-coverage.ps1`** (fester, 2026-09-07). It
+    builds the (quire, chapter) index, classifies every chapter under
+    `codex/test` by `.covers` then by cites, prints each battery's count
+    against the 1,725 it selected FROM, and prints the review queue. It
+    needs no guest and no kernel. Its counts are dated below, after the index
+    defect that moved them was found and fixed; the figures first published
+    here (foreword 1,308, kernel 282, apps 226, unclassified 313, and 45
+    unresolved cite names) were taken with the broken index and are not
+    carried.
+    Battery membership is a SET, not a partition -- a chapter citing both
+    the foreword and the kernel is in both, which is what "run the batteries
+    a change can break" requires.
+
+    The only hard failure is a `.covers` naming a battery that does not
+    exist, and all three controls were fired before the script was believed
+    (L-FALSIF): `.covers kernel` on `hpet-interrupt` put it in `kernel` AND
+    removed it from `foreword`, proving the sidecar overrides the cites; a
+    typo'd `kernal` exited 1 naming the file; and the control file was
+    removed and its absence verified, because after a control run the tree
+    is in the CONTROL state and that is what ships if nobody checks.
+
+    **Names are not the instrument.** `cap-*`, `arm64-*` and `block-*` all
+    name their subsystem, and step 8 of this document already records that
+    names are a proven weak instrument in `build/` (`test-boards.ps1` and
+    `boards-test.ps1` are near-identical names with different subjects). A
+    name prefix is a hint for writing the `.covers` sidecar by hand, never
+    a selector.
+
+    **The controls, and none of them is optional.**
+    - *positive:* editing a chapter's `cites` line moves it between
+      batteries on the next derivation.
+    - *negative:* a change touching only `apps/**` selects zero `kernel`
+      chapters.
+    - *the one that decides whether any of it is real:* a battery selecting
+      a subject-shaped set is not evidence it can FAIL on that subject
+      (L-VACUOUS). For EACH battery, sabotage one member -- corrupt its
+      `.expected` -- and require that battery to go red and the others to
+      stay green. A sabotage that moves no colour is the corpus saying it
+      cannot reach the branch (L-CONSTRUCT), not a passing control.
+    - *the residue arm:* a chapter with no cite and no `.covers` appears in
+      the unclassified list and in no battery's count. Fabricate one and
+      check both halves.
+    - *`.covers` precedence, FIRED:* give a chapter a `.covers` that
+      contradicts its cites and check the sidecar wins in both directions,
+      the battery it joins and the one it leaves.
+    - *the review queue is not a control and must not be dressed as one.*
+      It is non-empty at head by construction, so it cannot pass or fail and
+      proves nothing on its own (L-VACUOUS). What it does is put a
+      per-chapter judgement in front of a person; the `.covers` that follows
+      is the record that the judgement was made.
+
+    **What this does not do.** It selects tests; it does not decide when a
+    battery runs. `-Internal` is banned and this step does not revive it:
+    the batteries are what a LANE invokes for the change in front of it, and
+    the release gate is unchanged. Nothing here enters the default gate
+    without Damian's call.
+
 Nothing enters the default gate without Damian's call. Build the instrument;
 do not gate it.
 
@@ -683,3 +979,204 @@ Instrumentation lives in `build/test.ps1` (phase stopwatches, per-test
 (`build.ps1` -> `bvt.ps1`, `test-run.ps1`) is untouched. Battery runs for
 measurement happen under Damian's standing grant to red's lane (2026-07-27),
 never on private initiative.
+
+## What "unclassified" is, measured 2026-09-07 (fester)
+
+**310 of 1,735 test chapters are in no battery, and that is three different
+things, not one number.** Characterised before calling any of it a gap.
+
+- **118 are error fixtures** under `codex/test/errors`. They must NOT compile;
+  their home is `check-errors`, which runs them all. No battery should select
+  them and none does. Correct.
+- **178 cite nothing and carry no machine sidecar.** The tempting reading, that
+  a chapter citing nothing tests the language, is the one this document already
+  refuses, so what these need is a shape statement rather than a sweep: the
+  compiler-side harnesses (the fixed-point core, the BVT, `sem-equiv`,
+  `check-errors`) are what stand behind them, and no battery claims them.
+- **13 cite nothing AND carry a machine sidecar**, which is the interesting
+  set, because a chapter that needs a machine and belongs to no battery is the
+  misroute this script refuses for classified chapters, one step where the
+  refusal cannot reach. Named, because a set this small should never be
+  described rather than listed: `smp-affinity`, `smp-arm64-boot`, `smp-cores`,
+  `smp-dispatch`, `smp-halt`, `smp-preempt`, `smp-proc0-pinned`,
+  `smp-riscv-boot`, `smp-tss`, `block-sector-count`, `block-select-drives`,
+  `manifest-pin`, `apps/block-io-basic`.
+
+**Two of the 13 are already correct and must not be "fixed".** `smp-arm64-boot`
+and `smp-riscv-boot` have their AP stubs in `codex/plugs/arm64/Arm64Runtime.codex`
+and `codex/plugs/riscv/RiscVRuntime.codex`, so their subject is a plug, and the
+`plugs` battery selects no chapters by design and is covered by `plug-binary`,
+`plug-smoke` and `plug-selftest`. Asserting `plugs` in a `.covers` would
+contradict `test.ps1`, which refuses `-Battery plugs` in those words.
+
+**The remaining 11 want a per-chapter judgement and it is NOT obvious**, which
+is why none was written here. The x86 AP path is
+`codex/compiler/Emit/X86_64Boot.codex`, so several of these are broken by a
+COMPILER change, and the compiler battery selects nothing either; but
+`codex/os/sched/OsScheduler.codex` and `CoreHeap.codex` are kernel-side and
+some of the same chapters plainly ride them. Splitting the 11 between "the
+kernel scheduler can break it" and "only the emitted boot stub can" is the
+work, it needs red's clearance because it enlarges the kernel battery, and it
+is the honest next item rather than something to guess at now.
+
+**The denominator, stated so the number cannot be read as coverage** (L-DENOM):
+1,735 is every chapter under `codex/test`, and the batteries are a SET over it,
+not a partition. 310 in no battery is not 310 untested: 118 are run by
+`check-errors` and most of the 178 stand behind the compiler harnesses. What
+the number bounds is how much a lane running only the batteries its change can
+break never selects.
+
+## A COMPILER CHANGE SELECTS NO SMP TEST, and kernel is the wrong home for the 11
+
+**Filed 2026-09-07 (fester), at red's condition, after red cleared adding the
+11 to `kernel` and delegated the split. The split came out otherwise, so the
+11 got NO `.covers` and that is the finding rather than an omission.**
+
+The decisive fact is one line of reasoning that needs no run: **a test that
+cites no chapter can reach nothing but builtins, and builtins are emitted by
+the compiler.** All 11 cite nothing. Grepped at head, every primitive they
+stand on is compiler-side: `process-spawn` and `process-spawn-on-core` are in
+`codex/compiler/Emit/X86_64Boot.codex`, `X86_64Helpers.codex` and
+`X86_64ProcessHelpers.codex`; `block-read-sector`, `block-select` and
+`block-sector-count` are in `codex/compiler/Types/Builtins.codex` emitted
+through `X86_64Helpers.codex`; the per-core TSS and IST1 descriptors
+`smp-tss` pins exist only under `codex/compiler/Emit/X86_64*.codex`, with
+nothing in `codex/os` mentioning them.
+
+`OsScheduler.codex` and `CoreHeap.codex` under `codex/os/sched` are the OS's
+own scheduler, a different layer these tests never enter, because entering it
+would require citing it.
+
+**So `kernel` would have been actively wrong**, not merely imprecise: it would
+run 11 tests on every kernel change that no kernel change can break, and leave
+them unselected by the thing that CAN break them. "Kernel beats no battery" is
+true only where the kernel is somewhere in the blast radius, and here it is
+not.
+
+**The row this leaves, which is the real one.** `test.ps1` refuses
+`-Battery compiler` in the words "nothing under `codex\test` cites the
+compiler", and that sentence is TRUE ABOUT CITES AND FALSE ABOUT BLAST RADIUS.
+Nothing cites the compiler because the compiler is reached through builtins,
+which carry no cite; the 11 are proof that chapters exist whose only credible
+breaker is a compiler change. The fixed-point core, the BVT and `sem-equiv`
+stand behind the compiler, but none of them boots a multi-core guest or a
+two-disk one, so a change to the AP stub, the process helpers or the block
+builtins is graded by nothing that selects these chapters.
+
+Deciding what to do about that is a design call and is NOT taken here: giving
+them `.covers compiler` would make this script count them while `test.ps1`
+still refuses that battery by name, so the two would disagree, which is the
+`L-DENOM` failure one level up. The options are to let `compiler` select a
+corpus, to add a battery for compiler-emitted runtime, or to say plainly that
+these ride the harnesses and accept it. **13-to-2 must not read as solved
+while this half is untouched (L-PARTIAL).**
+
+**DECIDED 2026-09-07 (red, whose register this is): option one, `compiler`
+gets the corpus.** No new battery, because a second name for the same set is
+a second thing to keep in step. The selection rule is **cites nothing AND
+carries a machine sidecar**, which is mechanically decidable and needs no
+per-file judgement; that is exactly what separates it from the quire-map
+audit landed the same day, where seven candidates each needed a human call
+and a check would have cried wolf. A rule that can be evaluated is a runner;
+one that cannot is an audit.
+
+**The refusal and the corpus move together or not at all.** `test.ps1`
+refuses `-Battery compiler` in the words "nothing under `codex\test` cites
+the compiler". Landing `.covers compiler` while that refusal stands is the
+`L-DENOM` disagreement named above, so the sentence is deleted in the same CL
+that gives the battery its members, and it is replaced by what the rule
+actually is rather than by a claim about cites.
+
+**Re-measure the size before implementing, and say which claim the number
+is** (L-COUNT, L-REQUEST). Three different questions are in play and they
+have three different answers: chapters that cite nothing; those that cite
+nothing AND are gradeable; and those that cite nothing, are gradeable, AND
+sit in no battery, which is the 13 above. Measured over all of `codex/test`
+on 2026-09-07 (red): **1735 chapters, 305 citing nothing, 168 of those
+gradeable** -- that last figure was written here as "carrying a machine
+sidecar", and the predicates were transposed; corrected on re-measurement
+(fester, 2026-09-07, at head 1,737 chapters: 309 cite nothing, 170 of those are
+gradeable, and **13** carry a machine sidecar, which is the rule's own set). The census at the top of this file says 265
+cite nothing and is dated 2026-07-27; both are believable and neither should
+be carried forward without re-running.
+
+**This adds no standing per-CL cost, which is why it is affordable.** A lane
+compiles and runs the tests its change touches; the full battery is Damian's.
+
+**IMPLEMENTED 2026-09-07 (fester), and the sizing sentence above needed one
+correction.** Re-measured at head before implementing, as the row asks: of
+1,737 chapters, **309 cite nothing**, **170 of those are gradeable** (carry an
+`.expected`), and **13 cite nothing AND carry a machine sidecar**, which is the
+rule's own set and is the same 13 that sat in no battery. So the "168" above is
+the GRADEABLE count, not the machine-sidecar count, and the two predicates were
+transposed in that sentence; the rule and the 13 agree with each other and only
+the label was wrong. Naming which claim a number is, is what L-REQUEST asks
+for, and this is what it looks like when it is not done.
+
+The 13 carry `.covers compiler`. `test.ps1`'s refusal moved in the same CL:
+`compiler` leaves `$phaseOnly` for `$corpus`, `plugs` stays, and the sentence
+about cites is replaced by the rule.
+
+**One interaction the ruling did not name and which would have put all 13 back
+where they started.** `check-battery-coverage.ps1` holds a `$softwareOnly` set,
+batteries that start no machine, and sends any machine-side chapter landing
+only in those to the review queue. `compiler` was in it. Giving the 13 a
+battery that was still marked machine-less would have moved them from "in no
+battery" to "in the review queue", which is the same state wearing a different
+name. `compiler` is out of `$softwareOnly`, because by the rule every member of
+that battery carries a machine sidecar.
+
+**Counts after, at head 2026-09-07:** foreword 1,319, kernel 304, board 13,
+apps 243, compiler 13, plugs 0, unclassified 297, review queue 0. The corpus
+was read back through `check-battery-coverage.ps1 -List compiler`, which is the
+call `test.ps1` makes, and it returns those 13 paths. **`test.ps1` itself was
+NOT run:** it is Damian's tool and refuses without his approval, so the
+refusal's removal is verified by reading and by a parse, not by execution.
+So a correct `compiler` battery is a tool that becomes usable rather than a
+tax on every compiler CL, and a lane touching the AP stub or the block
+builtins finally has something to name.
+
+**The one part that is not red's to decide is the release sweep.** Adding
+this battery there lengthens every release, and that is Damian's cost. The
+recommendation is to add it: the gap lands on releases today regardless, just
+later and with the cause further away.
+
+## THIRTEEN CHAPTERS ARE REACHABLE BY NO TIER, INCLUDING `-All`
+
+**Found 2026-09-07 (fester) when the kernel battery reported "303 chapter(s),
+of 304 the classifier listed".** The one that fell out was
+`codex/test/cost/giveup-beats-fuel`, and it is not alone.
+
+`test.ps1` enumerates tiers from a fixed list of six directories, NON
+recursively (`Get-ChildItem "$d\*.codex"`): `codex\test`, `codex\test\ops`,
+`codex\test\errors`, `codex\test\apps`, `codex\test\forewords`,
+`codex\test\lib`. `$allDirs`, which the `hardware`, `traps` and `slow` tiers
+sweep, is the SAME six. So a subdirectory of `codex/test` that nobody added to
+that list is invisible to every tier and to `-All`, which is built from tiers.
+
+Three such directories exist, holding **13 chapters, 10 of them gradeable**,
+none skipped, slow or fatal:
+
+| directory | chapters | gradeable |
+|---|---|---|
+| `codex/test/cost` | 5 | 2 |
+| `codex/test/ui` | 7 | 7 |
+| `codex/test/examples` | 1 | 1 |
+
+The arithmetic closes exactly: 1,724 chapters live in the six named
+directories and 1,737 exist, so the 13 are the whole of the difference.
+
+**The classifier walks `codex/test` recursively and the runner does not**,
+which is the two-selectors-for-one-question shape again, and this time the
+selectors disagree by construction rather than by drift. The runner is honest
+about it, printing "of 304 the classifier listed" rather than reporting 303 as
+the whole, so nothing here is hidden; but nothing fails either, and a battery
+that selects a chapter the runner cannot reach is a green over a test nobody
+ran (L-DENOM).
+
+**Not fixed here, because wiring three directories into the tiers enlarges
+`-All`, which is the release net and red's to clear.** The question is also not
+purely mechanical: `cost/` and `ui/` plainly want tiers of their own or a home
+in an existing one, while `examples/` holds a single chapter and may be
+deliberate. Whoever wires them states which tier each joins and why, or writes
+down the reason a directory must stay unreachable.

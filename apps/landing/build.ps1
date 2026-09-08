@@ -263,6 +263,11 @@ $fwKern = Join-Path $fwSrc 'kernels'
 # tracked its module and shipped one four days stale.
 & pwsh -NoProfile -File (Join-Path $fwSrc 'build-wasm.ps1')
 if ($LASTEXITCODE -ne 0) { Write-Host '[landing] FAIL: fireworks skyline module'; exit 9 }
+# The module is RUN, not just built: a plug change can turn a clean build into a
+# module that traps on its first call, and this is the only thing between that
+# and the push (2026-09-03, the hash multiply under COMPILER-36).
+& node (Join-Path $fwSrc 'fw-verify.mjs') (Join-Path $fwSrc 'web\fireworks-show.wasm')
+if ($LASTEXITCODE -ne 0) { Write-Host '[landing] FAIL: the fireworks skyline module does not build its cities'; exit 9 }
 $fwWasm = Join-Path $fwSrc 'web\fireworks-show.wasm'
 if (-not (Test-Path -PathType Leaf $fwWasm)) { Write-Host '[landing] FAIL: no fireworks-show.wasm'; exit 9 }
 $fwNoWgsl = @(Get-ChildItem $fwKern -Filter *.codex -File |
@@ -415,16 +420,22 @@ if ((Get-Item $smWasm).LastWriteTime -lt (Get-Item (Join-Path $smSrc 'StarMapWas
     exit 12
 }
 
-# The module's entry act builds the catalog and prints its counts, so running
-# it is a behavioural gate and not a load test: a trapped builtin, a catalog
-# that did not build, or a wrong object count all show up in that one line.
-# wasmtime rather than node because the wasm plug already requires it
+# Two halves, because the module and its data fail in different ways.
+#
+# The module: wasmtime runs its entry act, which reserves memory and announces
+# the window it will accept a catalogue into. It carries no catalogue of its
+# own any more, so this arm proves it links and runs and nothing about the
+# data. wasmtime rather than node because the wasm plug already requires it
 # (codex/plugs/wasm/hosted-wasm-test.ps1 checks for wat2wasm and wasmtime
 # together), so this adds no dependency the module's own build did not have.
-# The deeper arms, the ones that read linear memory back, need a driver that
-# can poke at exports; that is apps/starmap/sm-verify.mjs, run by hand like
-# the other forty-four *-verify.mjs graders in this tree, none of which any
-# script invokes.
+#
+# The catalogue: read its header here. A truncated or wrong-version
+# starmap.dat is refused by the module at runtime with a numbered error, which
+# is correct behaviour and a blank page for a visitor, so the build refuses it
+# first. The deeper arms, delivering 3.79 MB into linear memory and asking the
+# module what it made of it, are apps/starmap/sm-verify.mjs, run by hand like
+# the other forty-four *-verify.mjs graders here, none of which any script
+# invokes.
 if (-not (Get-Command 'wasmtime' -ErrorAction SilentlyContinue)) {
     Write-Host '[landing] FAIL: wasmtime is not on the Path; the starmap module cannot be graded'
     exit 12
@@ -434,20 +445,36 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "[landing] FAIL: the starmap module trapped on its own entry: $smSay"
     exit 12
 }
-if ($smSay -notmatch 'StarMap WASM: (\d+) objects, (\d+) labels, (\d+) visible') {
+if ($smSay -notmatch 'StarMap WASM: ready for a catalogue, window (\d+) MB, cap (\d+)') {
     Write-Host "[landing] FAIL: the starmap module said '$smSay', which is not its entry line"
     exit 12
 }
-$smObjects = [int]$Matches[1]; $smLabels = [int]$Matches[2]; $smVisible = [int]$Matches[3]
-if ($smObjects -ne 80 -or $smLabels -le 0 -or $smVisible -le 0 -or $smVisible -gt $smObjects) {
-    Write-Host "[landing] FAIL: starmap built $smObjects objects, $smLabels labels, $smVisible visible"
-    exit 12
+$smWindowMB = [int]$Matches[1]
+
+$smDat = Join-Path $smSrc 'data\starmap.dat'
+if (-not (Test-Path -PathType Leaf $smDat)) { Write-Host "[landing] FAIL: missing $smDat"; exit 12 }
+$smHdr = [byte[]]::new(64)
+$fs = [IO.File]::OpenRead($smDat)
+try { $null = $fs.Read($smHdr, 0, 64) } finally { $fs.Close() }
+$smLen = (Get-Item $smDat).Length
+$smMagic = [Text.Encoding]::ASCII.GetString($smHdr, 0, 4)
+$smVer = [BitConverter]::ToInt32($smHdr, 4)
+$smStars = [BitConverter]::ToInt32($smHdr, 8)
+if ($smMagic -ne 'STAR' -or $smVer -ne 2) {
+    Write-Host "[landing] FAIL: starmap.dat magic '$smMagic' version $smVer"; exit 12
 }
-Write-Host "[landing] starmap module: $smObjects objects, $smLabels labels, $smVisible visible"
+if ($smStars -lt 1 -or (64 + $smStars * 32) -gt $smLen) {
+    Write-Host "[landing] FAIL: starmap.dat says $smStars stars, which does not fit its $smLen bytes"; exit 12
+}
+if ($smLen -gt $smWindowMB * 1048576) {
+    Write-Host "[landing] FAIL: starmap.dat is $smLen bytes and the module reserves $smWindowMB MB"; exit 12
+}
+Write-Host ('[landing] starmap module: ready, {0} MB window; catalogue {1:N0} stars in {2:N0} B' -f $smWindowMB, $smStars, $smLen)
 
 New-Item -ItemType Directory -Force -Path $smDst | Out-Null
 Copy-Item $smPage (Join-Path $smDst 'index.html') -Force
 Copy-Item $smWasm (Join-Path $smDst 'starmap.wasm') -Force
+Copy-Item $smDat (Join-Path $smDst 'starmap.dat') -Force
 # The page fetches its module by a relative name and nothing else, so a
 # server-root reference here would resolve only under the dev server.
 $smRooted = @(Select-String -Path (Join-Path $smDst 'index.html') -Pattern "(src|href|fetch\()\s*=?\s*['`"]/")
@@ -455,10 +482,23 @@ if ($smRooted.Count -gt 0) {
     Write-Host ('[landing] FAIL: ' + $smRooted.Count + ' starmap page ref(s) are server-root absolute')
     exit 12
 }
-Write-Host ('[landing] starmap: page {0:N0} B, module {1:N0} B' -f `
+Write-Host ('[landing] starmap: page {0:N0} B, module {1:N0} B, catalogue {2:N0} B' -f `
     (Get-Item (Join-Path $smDst 'index.html')).Length,
-    (Get-Item (Join-Path $smDst 'starmap.wasm')).Length)
+    (Get-Item (Join-Path $smDst 'starmap.wasm')).Length,
+    (Get-Item (Join-Path $smDst 'starmap.dat')).Length)
 
+# --- 9. experimental/ : the live-compile test page ------------------------
+# web/experimental/index.html is tracked source. It compiles a gpushow kernel
+# in the browser with the modules compile/ already serves, and the kernel cites
+# ONE library chapter the on-board volume does not carry (the Gpu quire is not
+# in library.json), so that chapter is served beside the page. Copied, not
+# tracked twice: the .p4ignore line beside the other assembled copies.
+$exDst = Join-Path $Web 'experimental'
+New-Item -ItemType Directory -Force -Path $exDst | Out-Null
+Copy-Item (Join-Path $Repo 'codex\foreword\gpu\DeviceEffect.codex') (Join-Path $exDst 'DeviceEffect.codex') -Force
+Set-ItemProperty (Join-Path $exDst 'DeviceEffect.codex') -Name IsReadOnly -Value $false
+Write-Host ('[landing] experimental: page {0:N0} B, DeviceEffect {1:N0} B' -f `
+    (Get-Item (Join-Path $exDst 'index.html')).Length, (Get-Item (Join-Path $exDst 'DeviceEffect.codex')).Length)
 Write-Host ''
 Write-Host '[landing] assembled:'
 foreach ($f in (Get-ChildItem $Web -File | Sort-Object Name)) {

@@ -39,6 +39,16 @@ state from prior sessions.
 All three run concurrently. Their reports come back small; the files
 they read never enter your context.
 
+**Merge down BEFORE launching them.** Run `p4 diff2 -q //Codex/XXX/...
+//Codex/main/...`; if anything differs and you hold no open work, `p4
+merge -S //Codex/XXX -r; p4 resolve -am; p4 submit -d "merge-down"`. A
+lane that is behind otherwise pays Agent A twice, once over a stale
+register (val, 2026-09-07, five days behind: 169 files and a second run).
+A `*-merge-down-directive-*.json` in the inbox (Step 8) is the same order.
+
+**Read only YOUR row of the lane table, never the whole table.** The six
+rows measured 14,453 tokens on 2026-09-07 and five of them are not yours.
+
 **A compressed read of `CurrentPlan.md` flattens campaigns** (it merged
 two campaigns' stage lists into one and produced a wrong assignment
 within hours, red 2026-08-21). So: **a stage number carried out of this
@@ -85,6 +95,22 @@ binding rule: **before you lean on a lesson -- or are about to act in
 a way a row warns against -- read its story in full, then act.** Cite
 the ids (L-ORACLE, L-COUNT, ...) in CLs and reviews so the reasoning
 stays reachable.
+
+## Step 4b -- Read the Codex Prose Language, and write to Damian in it
+
+Read `docs/DevelopersGuide.md`, the section "Codex Prose Language (CPL)"
+through "CPL Sentence Forms" (Grep for the heading; about 45 lines): the
+three axioms, the banned-word table, the six sentence forms. **Every
+sentence written to Damian this session obeys the three axioms and the
+banned-word table** (Damian, 2026-09-08, an experiment: "there is a
+tendency to communicate with me using implicit bindings, and it is even
+harder for me to know what is implicit than it is for you"). No `it`,
+`this`, `they`, `some`, `many`, `few`, `etc`, `so`, `since`, `while`,
+`may`, `might`, `should`: name the value, give the quantifier, order the
+steps with `first,` `then,` `finally,`. A report, a reply, a wrap-up line,
+a question routed to him through root: all of them. Messages between
+lanes and CL descriptions are not bound by this; they stay short. Root
+carries the same rule for everything root writes to him.
 
 ## Step 5 -- The on-demand reading contract
 
@@ -158,9 +184,12 @@ before that merge lands: the register you would read is the stale one.
 Before Step 9, write `<coordinationDir>\status.json` with your live state:
 `state` (`Idle`, `Working`, `Building`, `WaitingForBuild`, `Error`), `task`
 (the unit you are on and its current step, or what you are waiting on),
-and `claim` (the files or subsystems you hold). Then rewrite it at every
-change of state for the rest of the session: taken, gating, waiting on
-the box or the token, landed, handed off. A `status.json` still carrying
+`claim` (the files or subsystems you hold), and `context` (your context
+used, whole-number percent, measured by `build/measure-context.ps1 -Lane XXX -Percent`, the one formula;
+MANDATORY on every write since 2026-09-07, when a lane ran to 100% with
+nobody able to see it; at 70 you run `/handoff` yourself). Then rewrite
+it at every change of state for the rest of the session: taken, gating,
+waiting on the box or the token, landed, handed off. A `status.json` still carrying
 the previous session's handoff text is what the fleet dashboard showed
 for four of six lanes at 12:00 on 2026-09-02, three hours into the day,
 and that is the failure this paragraph exists to name. The contract is
@@ -176,6 +205,27 @@ with a foreground loop: end your turn at the prompt so coordinator and
 agent messages can arrive. The full rules are
 `docs/Agents/CoordinationProtocol.md`, "The message budget" and "How to
 wait".
+
+## Step 8b -- If you are root, continue in `/commander-init`
+
+root's session start is `/commander-init`, which performs Steps 1-8 of
+this file as its Step 0 and then the commander's own steps: every lane's
+context measured from the transcripts, the event-only pulse, the grant,
+token, dispatch and handoff rules. If you arrived here by `/init`, go to
+that skill's Step 1 now and do not repeat Steps 1-8; its report replaces
+Step 9. A commander who skips it is the one who let a lane run to 100%
+on 2026-09-07.
+
+## Step 8c -- Check in with the commander (every lane except root)
+
+Run `ListAgents`. If a session named `cobblestone-root-*` is listed, the
+commander is online: send it ONE message by `SendMessage`, under 200
+characters: `<lane> up: context N%, <open|shelved|clean>, <in-flight run
+or none>, ready.` Then end your turn at the prompt; the commander
+dispatches. If no root session is listed, say so in your Step 9 report
+and wait for Damian; do not take work from a register on your own.
+(Damian, 2026-09-07: a relaunched lane sat "ready for instructions" that
+the commander never heard.)
 
 ## Step 9 -- Report
 

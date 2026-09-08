@@ -1,0 +1,111 @@
+Chapter: Lwm2mCoaps
+  cites Net chapter Lwm2mClient
+  cites Net chapter DtlsEndpoint
+
+ LwM2M over coaps://: the registration client's CoAP datagrams carried as
+ DTLS application data. LwM2M is the reason the transport had to be
+ secured at all -- a device that can be told to reboot, or whose lifetime
+ and server URI can be rewritten, is a device whose management channel is
+ the whole attack surface (RFC 9147 is the transport; OMA LwM2M 1.1
+ requires DTLS for the `coaps` binding).
+
+ This is the same shape as `CoapsEndpoint` and deliberately a separate
+ chapter rather than a generalisation of it: the two wrap DIFFERENT
+ machines. `CoapsEndpoint` carries a request/response interaction with
+ retransmission and NSTART 1; this carries a registration lifecycle whose
+ states are registered, updated and gone. What they share is the carrier
+ -- seal each datagram at send, slice the peer's accumulated plaintext
+ from a read offset -- and if a third machine ever needs it, that carrier
+ is what to lift out, not either endpoint.
+
+ ONE LWM2M MESSAGE PER RECORD, as for CoAP: the datagram boundary is the
+ message boundary, and the sealing preserves it.
+
+ We say:
+
+Section: Types
+
+  Lwm2mCoapsEp = record {
+    xl-client : Lwm2mClient,
+    xl-dtls : DtlsEp,
+    xl-read : Integer
+  }
+
+  Lwm2mCoapsStep = record {
+    xls-ep : Lwm2mCoapsEp,
+    xls-out : List (List Integer)
+  }
+
+Section: Construction
+
+  lwm2m-coaps-new : Lwm2mClient, DtlsEp -> Lwm2mCoapsEp
+  lwm2m-coaps-new (c) (d) = Lwm2mCoapsEp { xl-client = c, xl-dtls = d, xl-read = 0 }
+
+  lwm2m-coaps-idle : Lwm2mCoapsEp -> Lwm2mCoapsStep
+  lwm2m-coaps-idle (ep) = Lwm2mCoapsStep { xls-ep = ep, xls-out = [] }
+
+Section: Sending
+
+  lwm2m-coaps-seal-all : Lwm2mCoapsEp, List (List Integer), Integer, List (List Integer) -> Lwm2mCoapsStep
+  lwm2m-coaps-seal-all (ep) (dgrams) (i) (acc) =
+    if i >= list-length dgrams then Lwm2mCoapsStep { xls-ep = ep, xls-out = acc }
+    else let st = dtls-ep-send-app (ep.xl-dtls) (list-at dgrams i)
+    in lwm2m-coaps-seal-all (__record-set ep "xl-dtls" (st.es-ep)) dgrams (i + 1) (acc & (st.es-out))
+
+  lwm2m-coaps-register : Lwm2mCoapsEp -> Lwm2mCoapsStep
+  lwm2m-coaps-register (ep) =
+    let ls = lwm2m-client-register (ep.xl-client)
+    in lwm2m-coaps-seal-all (__record-set ep "xl-client" (ls.ls-client)) (ls.ls-out) 0 []
+
+  lwm2m-coaps-update : Lwm2mCoapsEp -> Lwm2mCoapsStep
+  lwm2m-coaps-update (ep) =
+    let ls = lwm2m-client-update (ep.xl-client)
+    in lwm2m-coaps-seal-all (__record-set ep "xl-client" (ls.ls-client)) (ls.ls-out) 0 []
+
+  lwm2m-coaps-deregister : Lwm2mCoapsEp -> Lwm2mCoapsStep
+  lwm2m-coaps-deregister (ep) =
+    let ls = lwm2m-client-deregister (ep.xl-client)
+    in lwm2m-coaps-seal-all (__record-set ep "xl-client" (ls.ls-client)) (ls.ls-out) 0 []
+
+  lwm2m-coaps-tick : Lwm2mCoapsEp -> Lwm2mCoapsStep
+  lwm2m-coaps-tick (ep) =
+    let ls = lwm2m-client-tick (ep.xl-client)
+    in lwm2m-coaps-seal-all (__record-set ep "xl-client" (ls.ls-client)) (ls.ls-out) 0 []
+
+Section: Receiving
+
+ A record that fails to open leaves the peer's plaintext buffer untouched,
+ so the slice is empty and the registration machine is never reached --
+ which is what a forged or tampered management command must do, and it is
+ the whole reason this composition exists.
+
+  lwm2m-coaps-recv : Lwm2mCoapsEp, List Integer -> Lwm2mCoapsStep
+  lwm2m-coaps-recv (ep) (rec) =
+    let st = dtls-ep-recv-app (ep.xl-dtls) rec
+    in let buf = dtls-ep-app-in (st.es-ep)
+    in let n = list-length buf
+    in if n <= ep.xl-read then lwm2m-coaps-idle (__record-set ep "xl-dtls" (st.es-ep))
+    else let msg = lwm2m-coaps-slice buf (ep.xl-read) n []
+    in let ls = lwm2m-client-recv (ep.xl-client) msg
+    in let ep2 = __record-set (__record-set (__record-set ep "xl-dtls" (st.es-ep)) "xl-client" (ls.ls-client)) "xl-read" n
+    in lwm2m-coaps-seal-all ep2 (ls.ls-out) 0 []
+
+  lwm2m-coaps-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  lwm2m-coaps-slice (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else lwm2m-coaps-slice bs (i + 1) n (list-push acc (list-at bs i))
+
+Section: Accessors
+
+  lwm2m-coaps-registered : Lwm2mCoapsEp -> Boolean
+  lwm2m-coaps-registered (ep) = lwm2m-client-registered (ep.xl-client)
+
+  lwm2m-coaps-executions : Lwm2mCoapsEp -> Integer
+  lwm2m-coaps-executions (ep) = lwm2m-client-executions (ep.xl-client)
+
+ A server that answered is not a server we know, and on this protocol the
+ distinction is the difference between a reboot we asked for and one an
+ attacker asked for. The peer's identity is the DTLS endpoint's verdict.
+
+  lwm2m-coaps-authenticated : Lwm2mCoapsEp -> Boolean
+  lwm2m-coaps-authenticated (ep) = dtls-ep-authenticated (ep.xl-dtls)

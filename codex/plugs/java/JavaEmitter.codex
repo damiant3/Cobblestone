@@ -79,14 +79,14 @@ Section: Expression Emission
   emit-jv-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-jv-expr (e) (arities) (indent) =
    when e
-    is IrIntLit (n) (sp) -> show n
+    is IrIntLit (n) (sp) -> show n & "L"
     is IrNumLit (n) (sp) -> "Double.longBitsToDouble(" & show n & "L)"
     is IrTextLit (s) (sp) -> "\"" & jv-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "(char)" & show n
     is IrName (n) (ty) (sp) -> jv-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-jv-binary op l r arities indent
-    is IrNegate (x) (nty) (sp) -> "(-(int)(" & emit-jv-expr x arities indent & "))"
+    is IrNegate (x) (nty) (sp) -> "(-(long)(" & emit-jv-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "((boolean)(" & emit-jv-expr c arities indent & ") ? " & emit-jv-expr t arities indent & " : " & emit-jv-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-jv-let name val body arities indent
     is IrApply (f) (a) (ty) (sp) -> emit-jv-apply e arities indent
@@ -111,12 +111,12 @@ Section: Binary Operators
    let lhs = emit-jv-expr l arities indent
    in let rhs = emit-jv-expr r arities indent
    in when op
-    is IrAddInt -> "((int)" & lhs & " + (int)" & rhs & ")"
-    is IrSubInt -> "((int)" & lhs & " - (int)" & rhs & ")"
-    is IrMulInt -> "((int)" & lhs & " * (int)" & rhs & ")"
-    is IrDivInt -> "((int)" & lhs & " / (int)" & rhs & ")"
-    is IrRemInt -> "((int)" & lhs & " % (int)" & rhs & ")"
-    is IrPowInt -> "(int)Math.pow((int)" & lhs & ", (int)" & rhs & ")"
+    is IrAddInt -> "((long)" & lhs & " + (long)" & rhs & ")"
+    is IrSubInt -> "((long)" & lhs & " - (long)" & rhs & ")"
+    is IrMulInt -> "((long)" & lhs & " * (long)" & rhs & ")"
+    is IrDivInt -> "((long)" & lhs & " / (long)" & rhs & ")"
+    is IrRemInt -> "((long)" & lhs & " % (long)" & rhs & ")"
+    is IrPowInt -> "_cx_ipow((long)" & lhs & ", (long)" & rhs & ")"
     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((double)" & lhs & " + (double)" & rhs & ")"
     is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((double)" & lhs & " - (double)" & rhs & ")"
     is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "((double)" & lhs & " * (double)" & rhs & ")"
@@ -164,10 +164,36 @@ Section: Apply and Helpers
      in let ar = lookup-arity arities n
      in if ar > 0 & list-length args > ar
      then emit-jv-apply-rest (func & "(" & emit-jv-apply-args (list-take args ar) arities indent 0 & ")") (list-drop args ar) arities indent 0
+     else if ar > 1 & list-length args < ar then emit-jv-partial func args arities indent (ar - list-length args)
      else func & "(" & emit-jv-apply-args args arities indent 0 & ")"
     is otherwise ->
      let func = emit-jv-expr root arities indent
      in func & "(" & emit-jv-apply-args args arities indent 0 & ")"
+
+ Over-application was already handled by `emit-jv-apply-rest`. This is the
+ other direction: a definition applied to FEWER arguments than it takes, which
+ Java cannot partially apply, so it is eta-wrapped one `Function` per missing
+ parameter.
+
+  emit-jv-partial-open : Integer, Integer -> Text
+  emit-jv-partial-open (i) (count) =
+   if i == count then ""
+   else "((java.util.function.Function<Object,Object>)((_p" & integer-to-text i & "_) -> " & emit-jv-partial-open (i + 1) count
+
+  emit-jv-partial-close : Integer -> Text
+  emit-jv-partial-close (count) =
+   if count == 0 then "" else "))" & emit-jv-partial-close (count - 1)
+
+  emit-jv-partial-params : Integer, Integer -> Text
+  emit-jv-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-jv-partial-params (i + 1) count
+
+  emit-jv-partial : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-jv-partial (func) (args) (arities) (indent) (short) =
+   let call = func & "(" & emit-jv-apply-args args arities indent 0 & ", " & emit-jv-partial-params 0 short & ")"
+   in emit-jv-partial-open 0 short & call & emit-jv-partial-close short
 
   emit-jv-apply-rest : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-jv-apply-rest (acc) (args) (arities) (indent) (i) =
@@ -369,15 +395,48 @@ Section: Definition Emission
 
 Section: Java Class Assembly
 
+  jv-builtins : Text
+  jv-builtins = "    static Object __narrow(Object n) { return n; }\n    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return (long)((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { String o = (String)a; return o.isEmpty() ? (String)s : ((String)s).replace(o, (String)b); }\n    static Object text_starts_with(Object s, Object p) { return ((String)s).startsWith((String)p); }\n    static Object text_contains(Object s, Object sub) { return ((String)s).contains((String)sub); }\n    static Object text_split(Object s, Object sep) { List<Object> r = new ArrayList<Object>(); String t = (String)s; String p = (String)sep; if (p.isEmpty()) { r.add(t); return r; } int i = 0; while (true) { int j = t.indexOf(p, i); if (j < 0) { r.add(t.substring(i)); return r; } r.add(t.substring(i, j)); i = j + p.length(); } }\n    static Object text_to_integer(Object s) { String t = (String)s; int i = 0; boolean neg = false; if (t.length() > 0 && t.charAt(0) == '-') { neg = true; i = 1; } long v = 0; while (i < t.length() && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charAt(i) - '0'); i++; } return neg ? -v : v; }\n    static Object text_compare(Object a, Object b) { return Long.valueOf((long)((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return (long)((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)(long)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(long)n; }\n    static Object list_snoc(Object xs, Object v) { List<Object> l = (List<Object>)xs; if (!l.isEmpty()) { l.add(v); return l; } List<Object> n = new ArrayList<Object>(); n.add(v); return n; }\n    static Object list_push(Object xs, Object v) { return list_snoc(xs, v); }\n    static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } return r; }\n\n"
+
   emit-java-chapter : IRChapter, List ATypeDef -> Text
   emit-java-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let header = "import java.util.*;\nimport java.util.function.*;\n\npublic class Main {\n\n"
-   in let builtins = "    static Object __narrow(Object n) { return n; }\n    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return ((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { String o = (String)a; return o.isEmpty() ? (String)s : ((String)s).replace(o, (String)b); }\n    static Object text_starts_with(Object s, Object p) { return ((String)s).startsWith((String)p); }\n    static Object text_contains(Object s, Object sub) { return ((String)s).contains((String)sub); }\n    static Object text_split(Object s, Object sep) { List<Object> r = new ArrayList<Object>(); String t = (String)s; String p = (String)sep; if (p.isEmpty()) { r.add(t); return r; } int i = 0; while (true) { int j = t.indexOf(p, i); if (j < 0) { r.add(t.substring(i)); return r; } r.add(t.substring(i, j)); i = j + p.length(); } }\n    static Object text_to_integer(Object s) { String t = (String)s; int i = 0; boolean neg = false; if (t.length() > 0 && t.charAt(0) == '-') { neg = true; i = 1; } int v = 0; while (i < t.length() && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charAt(i) - '0'); i++; } return neg ? -v : v; }\n    static Object text_compare(Object a, Object b) { return Integer.valueOf(((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return ((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(int)n; }\n    static Object list_snoc(Object xs, Object v) { List<Object> l = (List<Object>)xs; if (!l.isEmpty()) { l.add(v); return l; } List<Object> n = new ArrayList<Object>(); n.add(v); return n; }\n    static Object list_push(Object xs, Object v) { return list_snoc(xs, v); }\n\n"
+   in let builtins = jv-builtins
    in let types-text = emit-jv-type-defs type-defs 0
    in let defs-text = emit-jv-defs (m.defs) 0 arities
    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(Exception e) { System.err.println(e); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
    in header & builtins & types-text & defs-text & main-method
+
+  emit-java-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-java-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import java.util.*;\nimport java.util.function.*;\n\npublic class Main {\n\n"
+   in let builtins = jv-builtins
+   in let types-text = emit-jv-type-defs type-defs 0
+   in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(Exception e) { System.err.println(e); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
+   in header & builtins & types-text
+
+  emit-java-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-java-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import java.util.*;\nimport java.util.function.*;\n\npublic class Main {\n\n"
+   in let builtins = "    static Object __narrow(Object n) { return n; }\n    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return (long)((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { String o = (String)a; return o.isEmpty() ? (String)s : ((String)s).replace(o, (String)b); }\n    static Object text_starts_with(Object s, Object p) { return ((String)s).startsWith((String)p); }\n    static Object text_contains(Object s, Object sub) { return ((String)s).contains((String)sub); }\n    static Object text_split(Object s, Object sep) { List<Object> r = new ArrayList<Object>(); String t = (String)s; String p = (String)sep; if (p.isEmpty()) { r.add(t); return r; } int i = 0; while (true) { int j = t.indexOf(p, i); if (j < 0) { r.add(t.substring(i)); return r; } r.add(t.substring(i, j)); i = j + p.length(); } }\n    static Object text_to_integer(Object s) { String t = (String)s; int i = 0; boolean neg = false; if (t.length() > 0 && t.charAt(0) == '-') { neg = true; i = 1; } long v = 0; while (i < t.length() && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charAt(i) - '0'); i++; } return neg ? -v : v; }\n    static Object text_compare(Object a, Object b) { return Long.valueOf((long)((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return (long)((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)(long)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(long)n; }\n    static Object list_snoc(Object xs, Object v) { List<Object> l = (List<Object>)xs; if (!l.isEmpty()) { l.add(v); return l; } List<Object> n = new ArrayList<Object>(); n.add(v); return n; }\n    static Object list_push(Object xs, Object v) { return list_snoc(xs, v); }\n\n"
+   in let types-text = emit-jv-type-defs type-defs 0
+   in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(Exception e) { System.err.println(e); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
+   in main-method
+
+  emit-java-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-java-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import java.util.*;\nimport java.util.function.*;\n\npublic class Main {\n\n"
+   in let builtins = "    static Object __narrow(Object n) { return n; }\n    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return (long)((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { String o = (String)a; return o.isEmpty() ? (String)s : ((String)s).replace(o, (String)b); }\n    static Object text_starts_with(Object s, Object p) { return ((String)s).startsWith((String)p); }\n    static Object text_contains(Object s, Object sub) { return ((String)s).contains((String)sub); }\n    static Object text_split(Object s, Object sep) { List<Object> r = new ArrayList<Object>(); String t = (String)s; String p = (String)sep; if (p.isEmpty()) { r.add(t); return r; } int i = 0; while (true) { int j = t.indexOf(p, i); if (j < 0) { r.add(t.substring(i)); return r; } r.add(t.substring(i, j)); i = j + p.length(); } }\n    static Object text_to_integer(Object s) { String t = (String)s; int i = 0; boolean neg = false; if (t.length() > 0 && t.charAt(0) == '-') { neg = true; i = 1; } long v = 0; while (i < t.length() && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charAt(i) - '0'); i++; } return neg ? -v : v; }\n    static Object text_compare(Object a, Object b) { return Long.valueOf((long)((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return (long)((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)(long)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(long)n; }\n    static Object list_snoc(Object xs, Object v) { List<Object> l = (List<Object>)xs; if (!l.isEmpty()) { l.add(v); return l; } List<Object> n = new ArrayList<Object>(); n.add(v); return n; }\n    static Object list_push(Object xs, Object v) { return list_snoc(xs, v); }\n\n"
+   in let types-text = emit-jv-type-defs type-defs 0
+   in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(Exception e) { System.err.println(e); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
+   in arities
+
+  emit-java-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-java-chapter-stream-def (m) (v) (i) = emit-jv-def (list-at (m.defs) i) v
 
   emit-jv-tup-binds : List IRPat, Text, Integer -> Text
   emit-jv-tup-binds (subs) (scrut) (i) =

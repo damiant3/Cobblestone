@@ -630,7 +630,13 @@ if (!only.length) {
       const html = renderHtml(d.view(), true);
       const faces = html.match(
         /<span class="card[^"]*"[^>]*>.*?<\/i>(?:<span class="pips[^"]*">.*?<\/span>|<span class="court">.*?<\/span>)<\/span>/g) || [];
-      const want = { A: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10 };
+      // A is absent ON PURPOSE, which sends it through the court branch below.
+      // The ace takes the LETTER path with the courts (`arcade.js:2451`, Damian
+      // 2026-09-02): the middle of a card carries the rank and the suit is in
+      // the corner index, so A, J, Q and K are letters and 2 to 10 are pips.
+      // Listing A: 1 here is what made this arm read "A drew 0 pips" against a
+      // card the arcade draws correctly.
+      const want = { 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10 };
       const ranks = new Set();
       const wrong = [];
       for (const f of faces) {
@@ -646,7 +652,12 @@ if (!only.length) {
         `${faces.length} faces over ${ranks.size} ranks`);
       ok('cards: the pip count IS the rank, and a court is a court',
         wrong.length === 0, wrong.slice(0, 4).join('; ') || `${faces.length} faces`);
-      ok('cards: an ace is one large mark', /class="pips a1"/.test(html));
+      // Asserts the new shape AND refutes the old one, so a redraw that puts
+      // the ace back on the pip path fails here rather than passing quietly on
+      // the first half.
+      ok('cards: the ace is a court letter, never one large pip',
+        /<span class="court">A<\/span>/.test(html) && !/class="pips a1"/.test(html),
+        `court A ${/<span class="court">A<\/span>/.test(html)}, pips a1 ${/class="pips a1"/.test(html)}`);
 
       // The dealt row is a ONE-SHOT. Left set it would replay the deal on
       // every later repaint, which is the difference between a deal that

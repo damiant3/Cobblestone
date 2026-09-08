@@ -4,58 +4,107 @@ Chapter: BundleAppScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE FIRST GENERATOR ON THE PIPELINE MODEL (PipelineModel.md, the design pass).
+ The five stages below were already here as section headers and nothing could
+ read them; each is now a `PipeStage` that declares what the stage consumes and
+ produces, and the bodies reach their values through `pipe-ref` rather than
+ spelling `SeVar` at the site. Delete a declaration and the reference emits
+ `UNRESOLVED:<name>`, which changes the script and reds
+ `check-generated-scripts`, which is the whole of why the declarations are not
+ comments.
+
+ The emitted script is byte-identical to the one that shipped before the
+ migration, and that is the gate: the model adds declarations and changes no
+ character. Blank-line placement therefore stays inside the stage bodies where
+ this generator already carried it, rather than moving into the lowering where
+ a better model would own it.
 
 Section: Parameters
 
   bundle-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString]
 
+Section: The pipeline, declared before it is spelled
+
+ `bundle-pipe` is referenced by the stage bodies through `pipe-ref`, and is
+ also the value the whole chapter lowers from, so the artifact table and the
+ code that uses the artifacts cannot drift apart.
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+  src-path-art : PipeArtifact = PipeArtifact { pa-name = "srcPath", pa-kind = PkFile, pa-expr = SeVar "srcPath", pa-from = Just (SePathResolve (pipe-param-ref bundle-params "Src")) }
+
+  root-lines-art : PipeArtifact = PipeArtifact { pa-name = "rootLines", pa-kind = PkValue, pa-expr = SeVar "rootLines", pa-from = None }
+
+  ordered-art : PipeArtifact = PipeArtifact { pa-name = "ordered", pa-kind = PkValue, pa-expr = SeVar "ordered", pa-from = None }
+
+  lines-art : PipeArtifact = PipeArtifact { pa-name = "lines", pa-kind = PkValue, pa-expr = SeVar "lines", pa-from = None }
+
+  body-art : PipeArtifact = PipeArtifact { pa-name = "body", pa-kind = PkText, pa-expr = SeVar "body", pa-from = None }
+
+  bundle-arts : List PipeArtifact = [repo-art, src-path-art, root-lines-art, ordered-art, lines-art, body-art]
+
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScRunDot (SePathJoin SeScriptRoot (SeLit "quire-map.ps1"))]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SePathJoin SeScriptRoot (SeLit "quire-map.ps1"))]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root and dot-source the cite resolver", ps-in = [], ps-out = [repo-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Read Source
 
-  s02 : List ShellCmd = [ScBlank, ScAssign "srcPath" (SePathResolve (SeVar "Src")), ScDotNetCallAssign "rootLines" "System.IO.File" "ReadAllLines" [SeVar "srcPath"]]
+  s02-body : List ShellCmd = [ScBlank, pipe-produce src-path-art, ScDotNetCallAssign "rootLines" "System.IO.File" "ReadAllLines" [pipe-ref bundle-arts bundle-params "srcPath"]]
+
+  s02 : PipeStage = PipeStage { ps-name = "read source", ps-why = "resolve the root source path and read its lines", ps-in = ["Src"], ps-out = [src-path-art, root-lines-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Resolve Cite Order
 
-  resolve-call : ShellExpr = SeCallArgs "Resolve-CiteOrder" [SaNamed "RootLines" (SeVar "rootLines"), SaNamed "Repo" (SeVar "Repo")]
+  resolve-call : ShellExpr = SeCallArgs "Resolve-CiteOrder" [SaNamed "RootLines" (pipe-ref bundle-arts bundle-params "rootLines"), SaNamed "Repo" (pipe-ref bundle-arts bundle-params "Repo")]
 
   missing-message : ShellExpr = SeConcat (SeLit "MISSING: ") (SeProperty (SeProperty SeErrorText "Exception") "Message")
 
-  s03 : List ShellCmd = [ScBlank, ScTry [ScAssign "ordered" resolve-call] [ScWriteError missing-message, ScExit (SeInt 3)] []]
+  s03-body : List ShellCmd = [ScBlank, ScTry [ScAssign "ordered" resolve-call] [ScWriteError missing-message, ScExit (SeInt 3)] []]
+
+  s03 : PipeStage = PipeStage { ps-name = "resolve cite order", ps-why = "order the transitive cites of the root source", ps-in = ["rootLines", "Repo"], ps-out = [ordered-art], ps-needs = [], ps-verdict = [PoExit 3 "a cited chapter could not be resolved against the repository"], ps-body = s03-body }
 
 Section: S04 -- Build Output
 
-  format-call : ShellExpr = SeCallArgs "Format-CiteChapters" [SaNamed "Ordered" (SeVar "ordered")]
+  format-call : ShellExpr = SeCallArgs "Format-CiteChapters" [SaNamed "Ordered" (pipe-ref bundle-arts bundle-params "ordered")]
 
-  s04 : List ShellCmd = [ScAssign "lines" format-call, ScBlank, ScForEach "l" (SeVar "rootLines") [ScCallMethod (SeVar "lines") "Add" [SeVar "l"]], ScCallMethod (SeVar "lines") "Add" [SeLit ""]]
+  s04-body : List ShellCmd = [ScBlank, ScAssign "lines" format-call, ScBlank, ScForEach "l" (pipe-ref bundle-arts bundle-params "rootLines") [ScCallMethod (pipe-ref bundle-arts bundle-params "lines") "Add" [SeVar "l"]], ScCallMethod (pipe-ref bundle-arts bundle-params "lines") "Add" [SeLit ""]]
+
+  s04 : PipeStage = PipeStage { ps-name = "build output", ps-why = "format the ordered chapters and append the root's own lines", ps-in = ["ordered", "rootLines"], ps-out = [lines-art], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 
 Section: S05 -- Write Output
 
-  body-text : ShellExpr = SeConcat (SeJoin (SeVar "lines") SeNewline) SeNewline
+  body-text : ShellExpr = SeConcat (SeJoin (pipe-ref bundle-arts bundle-params "lines") SeNewline) SeNewline
 
-  write-args : List ShellExpr = [SeVar "Out", SeVar "body", SeStaticCall "System.Text.UTF8Encoding" "new" [SeBool False]]
+  write-args : List ShellExpr = [pipe-ref bundle-arts bundle-params "Out", pipe-ref bundle-arts bundle-params "body", SeStaticCall "System.Text.UTF8Encoding" "new" [SeBool False]]
 
-  count-part : ShellExpr = SeConcat (SeConcat (SeLit "[bundle-app] ") (SeProperty (SeVar "ordered") "Count")) (SeLit " dependencies + root -> ")
+  count-part : ShellExpr = SeConcat (SeConcat (SeLit "[bundle-app] ") (SeProperty (pipe-ref bundle-arts bundle-params "ordered") "Count")) (SeLit " dependencies + root -> ")
 
-  size-part : ShellExpr = SeConcat (SeConcat (SeLit " (") (SeProperty (SeVar "body") "Length")) (SeLit " bytes)")
+  size-part : ShellExpr = SeConcat (SeConcat (SeLit " (") (SeProperty (pipe-ref bundle-arts bundle-params "body") "Length")) (SeLit " bytes)")
 
-  done-message : ShellExpr = SeConcat (SeConcat count-part (SeVar "Out")) size-part
+  done-message : ShellExpr = SeConcat (SeConcat count-part (pipe-ref bundle-arts bundle-params "Out")) size-part
 
-  s05 : List ShellCmd = [ScBlank, ScAssign "body" body-text, ScDotNetCall "System.IO.File" "WriteAllText" write-args, ScEcho done-message]
+  s05-body : List ShellCmd = [ScBlank, ScAssign "body" body-text, ScDotNetCall "System.IO.File" "WriteAllText" write-args, ScEcho done-message]
+
+  s05 : PipeStage = PipeStage { ps-name = "write output", ps-why = "join the lines and write the bundle, then report its size", ps-in = ["lines", "ordered", "Out"], ps-out = [body-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: Assembly
 
-  bundle-body : List ShellCmd = [ScSequence s01, ScSequence s02, ScSequence s03, ScBlank, ScSequence s04, ScSequence s05]
+ The stage list is the script. Ordering is still list order here rather than a
+ topological sort of the declared dependencies, because the two agree for a
+ linear script and a sort that reorders nothing is a claim this migration
+ cannot test.
 
-  bundle-script : ShellScript = sh-script "bundle-app" "Bundle a Codex application source file with all its transitive cited dependencies into a single .codex file" bundle-params bundle-body
+  bundle-pipe : Pipeline = Pipeline { pl-name = "bundle-app", pl-doc = "Bundle a Codex application source file with all its transitive cited dependencies into a single .codex file", pl-params = bundle-params, pl-stages = [s01, s02, s03, s04, s05] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell bundle-script)
+    print-line-uni (emit-powershell (pipeline-to-shell bundle-pipe))
   end
 
 Page 1

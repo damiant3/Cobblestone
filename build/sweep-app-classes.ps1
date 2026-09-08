@@ -129,7 +129,22 @@ if ($CiteScoped) {
             if ((-not $nm) -and $l -match '^\s*Chapter:\s*(\S+)') { $nm = $matches[1]; continue }
             if ($l -match '^\s*cites\s+\S+\s+chapter\s+([^\s(]+)') { $cs.Add($matches[1]) }
         }
-        if ($nm -and -not $citeOf.ContainsKey($nm)) { $citeOf[$nm] = $cs }
+        # A chapter NAME is not unique: 89 of 3,818 names under apps/ and codex/
+        # are carried by more than one file and 76 of those 89 have cite lists
+        # that DIFFER (measured 2026-09-08). Keeping the first file's list made
+        # the table depend on directory enumeration order and dropped every path
+        # through the losing file, so the union is taken. Over-inclusive is the
+        # same safe direction $changedNames already takes above; under-inclusive
+        # here is a green from a sweep that never looked (L-CAPABILITY-LOST).
+        # Measured both ways over all 1,152 apps chapters as the changed file:
+        # three swept NOTHING and now sweep 2 (codexmagic ChainCore,
+        # MintAuthority, TransactionValidator, all reached only through the
+        # LOSING Bridge), 25 more swept fewer (worst magic\LibKnowledge, 2 of
+        # 74). The price is mean picked 4.1 to 4.5 and max 136 to 138.
+        if ($nm) {
+            if (-not $citeOf.ContainsKey($nm)) { $citeOf[$nm] = [System.Collections.Generic.List[string]]::new() }
+            foreach ($c in $cs) { if (-not $citeOf[$nm].Contains($c)) { $citeOf[$nm].Add($c) } }
+        }
     }
 
     $picked = [System.Collections.Generic.List[object]]::new()

@@ -6,6 +6,7 @@ Chapter: WebServer
   cites Net chapter Ethernet
   cites Net chapter NetDriver
   cites Works chapter Http
+  cites Works chapter WebRoute
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
 
@@ -22,37 +23,10 @@ Chapter: WebServer
 
  We say:
 
-Section: State
-
-  WebState = record { request-count : Integer }
-
-  web-new : WebState
-  web-new = WebState { request-count = 0 }
-
-Section: JSON Helpers
-
-  jstr : Text -> Text
-  jstr (s) = "\"" & s & "\""
-
-  json-ok : Text -> Text
-  json-ok (body) = body
-
-  web-not-found : Text -> Text
-  web-not-found (path) = "{\"error\":\"not found\",\"path\":" & jstr path & "}"
-
-Section: Standard Routes + Dispatch
-
-  web-standard : WebState, Text -> Maybe HttpResponse
-  web-standard (st) (path) =
-    if path == "/api/health" then Just (http-json "{\"status\":\"ok\"}")
-    else if path == "/api/status" then Just (http-json ("{\"requests\":" & show (st.request-count) & ",\"mode\":\"http\"}"))
-    else None
-
-  web-dispatch : (HttpRequest -> HttpResponse), WebState, HttpRequest -> HttpResponse
-  web-dispatch (route) (st) (req) =
-    when web-standard st (req.path)
-      is Just (resp) -> resp
-      is None -> route req
+ The state, the JSON helpers, the standard endpoints and the dispatch moved to
+ `Works chapter WebRoute`, because none of them touches the transport and the
+ hosted server needs every one of them. They cannot be reached through this
+ chapter: it cites the NIC stack, which a hosted build has nothing below.
 
 Section: Byte Codec (Unicode wire <-> CCE)
 
@@ -79,14 +53,6 @@ Section: Byte Codec (Unicode wire <-> CCE)
     else let cce = from-unicode (list-at bs i)
     in bytes-to-text-chunk bs (i + 1) stop (acc & char-to-text (code-to-char cce))
 
-Section: HTTP JSON Response
-
-  http-json : Text -> HttpResponse
-  http-json (body) = HttpResponse { status = http-200, content-type = "application/json", body = body }
-
-  http-json-cors : Text -> HttpResponse
-  http-json-cors (body) = HttpResponse { status = http-200, content-type = "application/json", body = body }
-
 Section: HTTP Serve Loop
 
  A HALF-WRITTEN RESPONSE CANNOT BE REPAIRED MID-STREAM, so a send that stops
@@ -111,39 +77,39 @@ Section: HTTP Serve Loop
 
   WebLoop = record { server : WebState, transport : TcpTransportState }
 
-  web-handle-http : (HttpRequest -> HttpResponse), WebLoop, List Integer -> [Network.Read, Network.Write] WebLoop
-  web-handle-http (route) (ls) (raw-bytes) =
+  web-handle-http : (HttpRequest -> HttpResponse), (Text -> Integer), WebLoop, List Integer -> [Network.Read, Network.Write] WebLoop
+  web-handle-http (route) (obs) (ls) (raw-bytes) =
     let req = http-parse-request raw-bytes
     in if req.valid == False then act
       ts2 <- web-send-http (ls.transport) (http-error "Bad request")
       WebLoop { server = ls.server, transport = ts2 }
     end
     else let ns = WebState { request-count = (ls.server).request-count + 1 }
-    in let response = web-dispatch route ns req
+    in let response = web-dispatch route obs ns req
     in act
       ts2 <- web-send-http (ls.transport) response
       WebLoop { server = ns, transport = ts2 }
     end
 
-  web-loop-http : (HttpRequest -> HttpResponse), WebLoop -> [Console, Network.Read, Network.Write] Integer
-  web-loop-http (route) (ls) = act
+  web-loop-http : (HttpRequest -> HttpResponse), (Text -> Integer), WebLoop -> [Console, Network.Read, Network.Write] Integer
+  web-loop-http (route) (obs) (ls) = act
     recv <- net-io-recv-raw (ls.transport) 0
     if recv.has-data then act
-      next <- web-handle-http route ls (recv.data)
-      web-loop-http route next
+      next <- web-handle-http route obs ls (recv.data)
+      web-loop-http route obs next
     end
     else act
       0
     end
   end
 
-  web-serve : (HttpRequest -> HttpResponse) -> [Console, Network.Read, Network.Write] Integer
-  web-serve (route) =
+  web-serve : (HttpRequest -> HttpResponse), (Text -> Integer) -> [Console, Network.Read, Network.Write] Integer
+  web-serve (route) (obs) =
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9200 host-ip 1000
     in let ts = transport-new sess
     in act
       ts1 <- net-io-connect ts
-      web-loop-http route (WebLoop { server = web-new, transport = ts1 })
+      web-loop-http route obs (WebLoop { server = web-new, transport = ts1 })
     end
 
 Section: Concurrent Event Loop
@@ -188,11 +154,16 @@ Section: Concurrent Event Loop
   frame-seg : List Integer -> TcpSegment
   frame-seg (frame) = tcp-parse (ip-payload (eth-payload frame))
 
+ 64 KiB: one request's headers. The default cap is 32 MiB, the whole of
+ a spawned process's slot.
+
+  serve-recv-buf-cap : Integer = 65536
+
   fresh-listen-transport : Integer -> TcpTransportState
   fresh-listen-transport (port) =
     let sess = net-session-new local-mac local-ip gateway-ip port 0 gateway-ip 1000
     in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
-    in transport-new sess2
+    in transport-new-with-cap sess2 serve-recv-buf-cap
 
   web-mux-owner : List WebConn, TcpSegment, Integer -> Integer
   web-mux-owner (conns) (seg) (i) =
@@ -294,8 +265,8 @@ Section: Concurrent Event Loop
       else web-mux-sweep (WebMux { listen = m.listen, conns = list-set-at (m.conns) i (WebConn { transport = t1, server = c.server, pending = c.pending, idle = c.idle + 1 }), served = m.served }) (i + 1)
     end
 
-  web-mux-serve-conn : (HttpRequest -> HttpResponse), WebMux, Integer, List Integer -> [Network.Read, Network.Write] WebMux
-  web-mux-serve-conn (route) (m) (idx) (frame) =
+  web-mux-serve-conn : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, Integer, List Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-serve-conn (route) (obs) (m) (idx) (frame) =
     let c = list-at (m.conns) idx
     in let r = net-process-frame ((c.transport).session) frame
     in let ts1 = transport-set-session (c.transport) (r.session)
@@ -305,21 +276,21 @@ Section: Concurrent Event Loop
         ts3 <- flush-transport-outbox (transport-close ts2)
         WebMux { listen = m.listen, conns = web-mux-remove (m.conns) idx 0 [], served = m.served }
       end
-      else web-mux-drain route m idx ts2 (c.server) ((c.pending) & (r.data))
+      else web-mux-drain route obs m idx ts2 (c.server) ((c.pending) & (r.data))
     end
 
-  web-mux-drain : (HttpRequest -> HttpResponse), WebMux, Integer, TcpTransportState, WebState, List Integer -> [Network.Read, Network.Write] WebMux
-  web-mux-drain (route) (m) (idx) (ts) (srv) (pending) =
+  web-mux-drain : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, Integer, TcpTransportState, WebState, List Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-drain (route) (obs) (m) (idx) (ts) (srv) (pending) =
     let plen = list-length pending
     in let total = wb-request-total pending plen
     in if total < 0 then
       WebMux { listen = m.listen, conns = list-set-at (m.conns) idx (WebConn { transport = ts, server = srv, pending = pending, idle = 0 }), served = m.served }
     else let req = http-parse-request (wb-slice pending 0 total [])
     in let ns = WebState { request-count = srv.request-count + 1 }
-    in let resp = web-dispatch route ns req
+    in let resp = web-dispatch route obs ns req
     in act
       ts2 <- web-send-http ts resp
-      web-mux-drain route (WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 }) idx ts2 ns (wb-slice pending total plen [])
+      web-mux-drain route obs (WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 }) idx ts2 ns (wb-slice pending total plen [])
     end
 
   web-mux-accept : WebMux, List Integer, Integer -> [Network.Read, Network.Write] WebMux
@@ -331,39 +302,40 @@ Section: Concurrent Event Loop
       WebMux { listen = net-io-listen (fresh-listen-transport port), conns = list-push (m.conns) (WebConn { transport = listen2, server = web-new, pending = [], idle = 0 }), served = m.served }
     end
 
-  web-mux-feed : (HttpRequest -> HttpResponse), WebMux, List Integer, Integer -> [Network.Read, Network.Write] WebMux
-  web-mux-feed (route) (m) (frame) (port) =
+  web-mux-feed : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, List Integer, Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-feed (route) (obs) (m) (frame) (port) =
     if frame-tcp frame == False then m
     else let seg = frame-seg frame
     in let owner = web-mux-owner (m.conns) seg 0
-    in if owner >= 0 then web-mux-serve-conn route m owner frame
+    in if owner >= 0 then web-mux-serve-conn route obs m owner frame
     else if (seg.dst-port == port) then
       if tcp-has-flag seg tcp-flag-syn then web-mux-accept m frame port
       else m
     else m
 
-  web-mux-loop : (HttpRequest -> HttpResponse), WebMux, Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Integer
-  web-mux-loop (route) (m) (port) (tries) (since) =
+  web-mux-loop : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  web-mux-loop (route) (obs) (m) (port) (tries) (since) =
     if tries > 50000000 then m.served
     else if since >= web-sweep-interval then act
       m1 <- web-mux-sweep m 0
-      web-mux-loop route m1 port (tries + 1) 0
+      web-mux-loop route obs m1 port (tries + 1) 0
     end
     else let hp = __heap-save
     in act
       frame <- net-driver-recv-frame
       if list-length frame == 0 then let restored = __heap-restore hp
-        in web-mux-loop route m port (tries + 1) (since + 1)
+        in let y = process-yield
+        in web-mux-loop route obs m port (tries + 1) (since + 1)
       else act
-        m1 <- web-mux-feed route m frame port
-        web-mux-loop route m1 port 0 (since + 1)
+        m1 <- web-mux-feed route obs m frame port
+        web-mux-loop route obs m1 port 0 (since + 1)
       end
     end
 
-  web-serve-concurrent : (HttpRequest -> HttpResponse), Integer -> [Console, Network.Read, Network.Write] Integer
-  web-serve-concurrent (route) (port) =
+  web-serve-concurrent : (HttpRequest -> HttpResponse), (Text -> Integer), Integer -> [Console, Network.Read, Network.Write] Integer
+  web-serve-concurrent (route) (obs) (port) =
     let m0 = WebMux { listen = net-io-listen (fresh-listen-transport port), conns = [], served = 0 }
-    in web-mux-loop route m0 port 0 0
+    in web-mux-loop route obs m0 port 0 0
 
 Section: Legacy Framed Serve (for backward compat)
 

@@ -550,11 +550,116 @@ $chkCounts = Join-Path $PSScriptRoot 'check-doc-counts.ps1'
 # release, so paying 0.5 s per CL to hold them exact between releases buys
 # nothing and it was holding the build token. The FULL gate still runs it,
 # which is the gate a release passes through.
+# WARNS, does not fail (Damian, 2026-09-07): a doc count carries the date it
+# was measured and is corrected when its doc is next touched, not as an
+# errand that holds a gate or a release.
 if ((-not $Internal) -and (Test-Path $chkCounts)) {
     & pwsh -NoProfile -File $chkCounts -Quiet 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
-        Write-Host 'FAIL: a doc states a count the tree no longer produces'
+        Write-Host 'WARN: a doc states a count the tree no longer produces; fix it when that doc is next edited.'
         Write-Host '      Run build/check-doc-counts.ps1 for the per-claim table.'
+    }
+}
+
+# A DUPLICATE ID FAILS, where a doc count only warns, and the difference is
+# not severity but decidability. A count carries the date it was measured and
+# drifts honestly as the tree moves; a duplicate id is mechanical and is wrong
+# the moment it is written. An id is what a CL, a review or another register
+# CITES, so two rows sharing one make every citation ambiguous, and the
+# ambiguity is invisible at the citing end. Measured by reek 2026-09-07:
+# plugs-backlog carried two 2.10 rows and two 2.11 rows; a CL deleting 2.10",
+
+# claimed 2.30 and 2.31, so a resolve silently discarded a lane's row.
+# 
+# It runs on every gate, not just the full one: it reads text, starts no
+# guest, and cost 0.6 s over 45 registers when it was wired.
+$chkIds = Join-Path $PSScriptRoot 'check-backlog-ids.ps1'
+if (Test-Path $chkIds) {
+    & pwsh -NoProfile -File $chkIds 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: a register gives two rows the same id; a citation to it cannot resolve.'
+        exit 1
+    }
+}
+
+# ScRaw and SeRaw pass raw shell text through the ShellCmd tree. Both were
+# marked DEPRECATED in ShellTypes prose on 2026-08-16 and the count then ROSE
+# from 5,504 to 7,273 in three weeks, because prose is not a runner. This is
+# the ratchet: it fails a rise, and it fails a fall that leaves the record
+# high, since a baseline left high after a conversion lets the raw node come
+# straight back. Text only, starts no guest, reads 58 files.
+# 
+# The block below is itself written in the vocabulary rather than in ScRaw,
+# which is the campaign's own method applied to its own wiring: one raw node
+# for the pipeline, which has no constructor, against the eight the sibling
+# checks above each spend (ShellDslReadability.md).
+$chkShellRaw = (Join-Path $PSScriptRoot 'check-shell-raw.ps1')
+if ((Test-Path -PathType Leaf $chkShellRaw)) {
+    & pwsh -NoProfile -File $chkShellRaw 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ((-not ($LASTEXITCODE -eq 0))) {
+        Write-Host "FAIL: the raw-shell-text record moved; run build/check-shell-raw.ps1 for the rows."
+        exit 1
+    }
+}
+
+# A TOOL NOTHING COMPILES IS ALREADY BROKEN AND HAS NOT BEEN TOLD YET.
+# tools/ota-fetch.codex sat at head with two CDX2001 type errors because
+# Lwm2mFirmware's signatures moved under it, and no gate saw it because no
+# gate compiles a tool. This is the half of that question decidable without a
+# guest: every tools/*.codex must be NAMED by some build script. It is not a
+# compile check and check-tools.ps1 says so in its own header, because a green
+# line here means referenced and nothing more -- ota-fetch WAS named, by a
+# script that wants a real socket and that no gate runs. Text only, no guest,
+# 14 tools against 60 scripts.
+$chkTools = (Join-Path $PSScriptRoot 'check-tools.ps1')
+if ((Test-Path -PathType Leaf $chkTools)) {
+    & pwsh -NoProfile -File $chkTools 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ((-not ($LASTEXITCODE -eq 0))) {
+        Write-Host "FAIL: a tool under tools/ is named by no build script, so nothing compiles it."
+        exit 1
+    }
+}
+
+# Same class and beside it for the same reason: the CHAPTER half of a cite is
+# checked by the host resolver and the parenthesised NAME half is checked by
+# nobody, so a typo or a renamed definition reads as a declaration and is
+# decoration. It is mechanical rather than a count, which is what makes it a
+# refusal rather than a warning. Measured before it was wired (fester,
+# 2026-09-07): 67 of 11,902 cite lines carry a name list, 121 names, 121
+# resolve, 2 s over the tree and no guest. It found nothing, which is the
+# point; the arm that says it can still fail is `-SelfTest`, and `-File` on a
+# chapter with an invented name refuses.
+$chkCites = Join-Path $PSScriptRoot 'check-cite-names.ps1'
+if (Test-Path $chkCites) {
+    & pwsh -NoProfile -File $chkCites 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: a cites line names a definition its chapter does not have.'
+        exit 1
+    }
+}
+
+# Same class again, and the third of the cluster. The registry's bounded
+# fixed rows are correct only by inspection of code no registry row covers:
+# bs-alloc is keyed by builtin NAME and the allocation happens a level below
+# it, in a shared core (emit-vec-arith-core) or a runtime helper that has no
+# row and never will (__list_tail). A row that stops being true ACCEPTS a
+# bounded fixed promise it cannot keep, where unknown would have refused, and
+# no arm in the tree can see it: the arms compile programs, and a per-call
+# allocation that starts following an input still compiles.
+# 
+# Two rules, because the first is only as wide as the spellings it knows: an
+# allocation site in a pinned body must take an immediate, AND the pinned
+# bodies are digested so any edit reds. Controlled by sabotaging a site with
+# an allocation spelled a way the first rule does not know: it stayed silent
+# and the digest caught it alone.
+# 
+# Text only, starts no guest. Measured 0.6 s mean over three runs, 2026-09-07,
+# which is check-backlog-ids' own figure. Cleared for every gate by red.
+$chkAlloc = Join-Path $PSScriptRoot 'check-builtin-alloc.ps1'
+if (Test-Path $chkAlloc) {
+    & pwsh -NoProfile -File $chkAlloc 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: the evidence behind a bounded fixed row moved; re-measure it against CostModel.md 5.1, then re-pin.'
         exit 1
     }
 }
@@ -593,60 +698,17 @@ Write-Host ''
 if ($coreRuns) { Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx') }
 
 Measure-Phase 'sign' {
+# The signer moved to build/sign-seed.ps1 so a LANE can run it: CLAUDE.md asks
+# for the signer over a candidate before a seed CL lands, and while this phase
+# was inline there was nothing to run but the whole gate. The key location stays
+# declared HERE and is read from here, so the tree keeps one occurrence of it.
 $SigningKey = 'D:\Projects\signing.key'
 if (Test-Path -PathType Leaf $SigningKey) {
-    $compileScript = Join-Path $PSScriptRoot 'compile.ps1'
-    $runScript = Join-Path $PSScriptRoot 'test-run.ps1'
-    $cdxRaw = [System.IO.File]::ReadAllBytes($SutCdx)
-    $keyBytes = [System.IO.File]::ReadAllBytes($SigningKey)
-    $hashBytes = $cdxRaw[8..39]
-    $keyList = ($keyBytes | ForEach-Object { $_.ToString() }) -join ', '
-    $hashList = ($hashBytes | ForEach-Object { $_.ToString() }) -join ', '
-    $signSrc = Join-Path $OutDir 'cdx-sign-inline.codex'
-    $signSrcText = @"
-Chapter: CdxSignInline
-  cites Foreword chapter Console
-  cites Foreword chapter Ed25519
-  cites Foreword chapter Sha512
-Section: Helpers
-  bytes-to-csv : List Integer, Integer, Integer, Text -> Text
-  bytes-to-csv (bs) (i) (len) (acc) =
-    if i >= len then acc
-    else let sep = if i == 0 then "" else ","
-    in bytes-to-csv bs (i + 1) len (acc & sep & show (list-at bs i))
-Section: Body
-  opening : [Console] Nothing = act
-    let key = [$keyList]
-    in let hash = [$hashList]
-    in let pub = ed25519-public-key key
-    in let sig = ed25519-sign key pub hash
-    in act
-      print-line-uni (bytes-to-csv pub 0 32 "")
-      print-line-uni (bytes-to-csv sig 0 64 "")
-    end
-  end
-"@
-    [System.IO.File]::WriteAllText($signSrc, $signSrcText)
-    $signCdx = Join-Path $OutDir 'cdx-sign.cdx'
-    $signLog = Join-Path $OutDir 'cdx-sign.log'
-    $signOut = Join-Path $OutDir 'cdx-sign.out'
+    $signScript = Join-Path $PSScriptRoot 'sign-seed.ps1'
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & pwsh -NoProfile -File $compileScript -Src $signSrc -Out $signCdx -Log $signLog 2>&1 | Out-Null
+    & pwsh -NoProfile -File $signScript -Cdx $SutCdx -WorkDir $OutDir 2>&1 | ForEach-Object { Write-Host "  $_" }
     $ErrorActionPreference = $prev
-    if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: sign tool compile failed'; Get-Content $signLog -TotalCount 10 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }; exit 1 }
-    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & pwsh -NoProfile -File $runScript -Kernel $signCdx -OutFile $signOut 2>&1 | Out-Null
-    $ErrorActionPreference = $prev
-    if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: sign tool run failed'; exit 1 }
-    $signRaw = [System.IO.File]::ReadAllText($signOut)
-    $signClean = $signRaw -replace '[^\x20-\x7E\r\n]', ''
-    $signLines = $signClean -split "`n" | Where-Object { $_.Trim() -match '^\d' }
-    $pubBytes = $signLines[0].Split(',') | Where-Object { $_.Trim() -ne '' } | ForEach-Object { [byte]([int]$_.Trim()) }
-    $sigBytes = $signLines[1].Split(',') | Where-Object { $_.Trim() -ne '' } | ForEach-Object { [byte]([int]$_.Trim()) }
-    if ($pubBytes.Count -ne 32 -or $sigBytes.Count -ne 64) { Write-Host "FAIL: bad sign output (pub=$($pubBytes.Count) sig=$($sigBytes.Count))"; exit 1 }
-    for ($i = 0; $i -lt 32; $i++) { $cdxRaw[40 + $i] = $pubBytes[$i] }
-    for ($i = 0; $i -lt 64; $i++) { $cdxRaw[72 + $i] = $sigBytes[$i] }
-    [System.IO.File]::WriteAllBytes($SutCdx, $cdxRaw)
+    if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: sign'; exit 1 }
 }
 }
 
@@ -790,11 +852,13 @@ Measure-Phase 'cdx-fixedpoint' {
     $sutHash = Get-CdxContentHash $SutCdx
     $ch1 = Get-CdxContentHash $cdxStage1
     if ($sutHash -eq $ch1) {
+        $script:seedVerdict = 'one-pass'
         Write-Host '(SUT === stage1 -- hard fixed point in one pass)'
     } else {
         if (-not (Invoke-BuildCdx -InputFile $CodexSrc -Kernel $cdxStage1 -Output $cdxStage2)) { exit 1 }
         $ch2 = Get-CdxContentHash $cdxStage2
         if ($ch1 -eq $ch2) {
+            $script:seedVerdict = 'two-pass'
             Write-Host '(SUT !== stage1 -- CONVERGED ON THE SECOND PASS, stage1 === stage2)'
             Write-Host '  The fixed point is STAGE1. build\output\Sut.cdx is the PRE-CONVERGENCE'
             Write-Host '  binary and installing it as the seed ships a compiler that does not'
@@ -815,6 +879,19 @@ Write-Host 'become so intense, they appear to become visible.'
 Write-Host ''
 
 if ($coreRuns) { Copy-Item -Force $cdxStage1 (Join-Path $OutDir 'NewSeed.cdx') }
+
+# build/install-seed.ps1 reads THIS run's verdict rather than a log grepped
+# by name, which is the substitution that put a non-fixed-point seed on main
+# (21215, L-BODY). Written on every run: a deferred core names no fixed point
+# and install-seed refuses on that.
+$verdictFile = Join-Path $OutDir 'seed-verdict.txt'
+if ($coreRuns) {
+    $verdictArtifact = if ($script:seedVerdict -eq 'one-pass') { $SutCdx } else { Join-Path $OutDir 'NewSeed.cdx' }
+    $verdictHash = (Get-FileHash -Algorithm SHA256 $verdictArtifact).Hash
+    Set-Content -LiteralPath $verdictFile -Encoding ascii -Value "$script:seedVerdict $(Split-Path -Leaf $verdictArtifact) $verdictHash"
+} else {
+    Set-Content -LiteralPath $verdictFile -Encoding ascii -Value 'core-skipped none -'
+}
 
 Write-Host 'The portal hangs there for a moment; then with the rush of an'
 Write-Host 'imploding vacuum, it sinks into the ground.'
@@ -946,7 +1023,7 @@ Measure-Phase 'test-compile' {
 # whose source cites a chapter this CL changed -- and grades them against
 # their .expected. A TEST RUNS WHEN IT IS LIKELY TO FAIL: the cited set is
 # empty on most CLs and this phase costs nothing there.
-#
+# 
 # bvt.ps1 is the runner because the grading is already in it: the .expected
 # filter, the sidecars, and the strict-prefix arithmetic that tells a
 # TRUNCATED capture from a miscompile (L-SHORT). The subject list is READ
@@ -1167,7 +1244,7 @@ Measure-Phase 'plug-selftest' {
         # A plug can carry MORE THAN ONE build script, and a harness may refuse
         # rather than build: spirv ships build.ps1 AND build-bin.ps1, and
         # test-emit.ps1 exits 2 with "MISSING plug; run build-bin.ps1" when the
-        # second binary is absent. plug-binary only ever runs build.ps1, so
+        # second binary is absent. plug-binary grades it too since 2026-09-07, so
         # without this the phase reds on a missing prerequisite instead of on the
         # plug, which is a false red and the worst kind (measured 2026-09-02).
         foreach ($cp in @($selfHarness | ForEach-Object { $_.Plug } | Select-Object -Unique)) {

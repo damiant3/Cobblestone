@@ -2,47 +2,47 @@
 // Compute shaders lowered from Codex [Device] kernels.
 const st_width : i32 = 1024;
 fn st_atan2(y : f32, x : f32) -> f32 {
-  let ax = select(x, (bitcast<f32>(0u) - x), (x < bitcast<f32>(0u)));
-  let ay = select(y, (bitcast<f32>(0u) - y), (y < bitcast<f32>(0u)));
+  let ax = select(x, (0.0 - x), (x < 0.0));
+  let ay = select(y, (0.0 - y), (y < 0.0));
   let mn = min(ax, ay);
   let mx = max(ax, ay);
-  let a = select(bitcast<f32>(0u), (mn / mx), (mx > bitcast<f32>(0u)));
+  let a = select(0.0, (mn / mx), (mx > 0.0));
   let a2 = (a * a);
-  let base = ((a * (bitcast<f32>(1121058816u) + (bitcast<f32>(1113325568u) * a2))) / (bitcast<f32>(1121058816u) + (a2 * (bitcast<f32>(1119092736u) + (bitcast<f32>(1091567616u) * a2)))));
-  let r1 = select(base, (bitcast<f32>(1070141402u) - base), (ay > ax));
-  let r2 = select(r1, (bitcast<f32>(1078530010u) - r1), (x < bitcast<f32>(0u)));
-  if ((y < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - r2);
+  let base = ((a * (0x1.a40000p+6f + (0x1.b80000p+5f * a2))) / (0x1.a40000p+6f + (a2 * (0x1.680000p+6f + (0x1.200000p+3f * a2)))));
+  let r1 = select(base, (0x1.921fb4p+0f - base), (ay > ax));
+  let r2 = select(r1, (0x1.921fb4p+1f - r1), (x < 0.0));
+  if ((y < 0.0)) {
+  return (0.0 - r2);
   } else {
   return r2;
   }
 }
 fn st_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn st_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((st_clamp01(r) * bitcast<f32>(1132396544u))) * 65536) + (i32((st_clamp01(g) * bitcast<f32>(1132396544u))) * 256)) + i32((st_clamp01(b) * bitcast<f32>(1132396544u))));
+  return (((i32((st_clamp01(r) * 0x1.fe0000p+7f)) * 65536) + (i32((st_clamp01(g) * 0x1.fe0000p+7f)) * 256)) + i32((st_clamp01(b) * 0x1.fe0000p+7f)));
 }
 fn st_render(gid : i32, frame : i32) -> i32 {
   let px = f32(f32((gid - ((gid / st_width) * st_width))));
   let py = f32(f32((gid / st_width)));
-  let dx = (px - bitcast<f32>(1140850688u));
-  let dy = (py - bitcast<f32>(1136656384u));
+  let dx = (px - 0x1.000000p+9f);
+  let dy = (py - 0x1.800000p+8f);
   let r = sqrt(((dx * dx) + (dy * dy)));
-  let spin = (f32(f32(frame)) / bitcast<f32>(1108082688u));
+  let spin = (f32(f32(frame)) / 0x1.180000p+5f);
   let a = (st_atan2(dy, dx) + spin);
-  let rb = (bitcast<f32>(1129775104u) + (bitcast<f32>(1118437376u) * cos((a * bitcast<f32>(1084227584u)))));
+  let rb = (0x1.ae0000p+7f + (0x1.540000p+6f * cos((a * 0x1.400000p+2f))));
   let d = (r - rb);
-  if ((d > bitcast<f32>(1086324736u))) {
-  return st_pack((bitcast<f32>(1025758986u) + (py / bitcast<f32>(1165623296u))), bitcast<f32>(1028443340u), bitcast<f32>(1034147594u));
+  if ((d > 0x1.800000p+2f)) {
+  return st_pack((0x1.47ae14p-5f + (py / 0x1.f40000p+11f)), 0x1.999998p-5f, 0x1.47ae14p-4f);
   } else {
-  if ((d > (bitcast<f32>(0u) - bitcast<f32>(1086324736u)))) {
-  return st_pack(bitcast<f32>(1058642329u), bitcast<f32>(1064514355u), bitcast<f32>(1065353216u));
+  if ((d > (0.0 - 0x1.800000p+2f))) {
+  return st_pack(0x1.333332p-1f, 0x1.e66666p-1f, 0x1.000000p+0f);
   } else {
-  let t = (f32(f32(frame)) / bitcast<f32>(1101004800u));
-  let sr = (bitcast<f32>(1056964608u) + (bitcast<f32>(1056964608u) * sin(((r * bitcast<f32>(1028443340u)) + t))));
-  let sg = (bitcast<f32>(1056964608u) + (bitcast<f32>(1056964608u) * sin((((a * bitcast<f32>(1077936128u)) + (r * bitcast<f32>(1022739087u))) + (t * bitcast<f32>(1067869798u))))));
-  let sb = (bitcast<f32>(1056964608u) + (bitcast<f32>(1056964608u) * sin(((a * bitcast<f32>(1084227584u)) - t))));
+  let t = (f32(f32(frame)) / 0x1.400000p+4f);
+  let sr = (0x1.000000p-1f + (0x1.000000p-1f * sin(((r * 0x1.999998p-5f) + t))));
+  let sg = (0x1.000000p-1f + (0x1.000000p-1f * sin((((a * 0x1.800000p+1f) + (r * 0x1.eb851ep-6f)) + (t * 0x1.4cccccp+0f)))));
+  let sb = (0x1.000000p-1f + (0x1.000000p-1f * sin(((a * 0x1.400000p+2f) - t))));
   return st_pack(sr, sg, sb);
   }
   }

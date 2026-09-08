@@ -70,7 +70,7 @@ Section: C# Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "((char)" & show n & ")"
     is IrName (n) (ty) (sp) -> wpf-sanitize n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-cs-binary op l r arities indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-cs-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-cs-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-cs-expr c arities indent & " ? " & emit-cs-expr t arities indent & " : " & emit-cs-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-cs-let name val body arities indent
@@ -91,17 +91,29 @@ Section: C# Expression Emission
 
 Section: Binary Operators
 
-  emit-cs-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  emit-cs-binary (op) (l) (r) (arities) (indent) =
+ This plug emits C#. A plain Integer traps on signed overflow by contract, and
+ `checked(...)` raises System.OverflowException on a long; the wrapping band is
+ C#'s default unchecked arithmetic. Same arm as the csharp plug.
+
+  cs-int-arith : Text, Text, Text, CodexType -> Text
+  cs-int-arith (sym) (lhs) (rhs) (ty) =
+   if int-ty-wraps ty then "(" & lhs & " " & sym & " " & rhs & ")"
+   else "checked(" & lhs & " " & sym & " " & rhs & ")"
+
+  emit-cs-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  emit-cs-binary (op) (l) (r) (ty) (arities) (indent) =
    let lhs = emit-cs-expr l arities indent
    in let rhs = emit-cs-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrAddInt -> cs-int-arith "+" lhs rhs ty
+    is IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> cs-int-arith "-" lhs rhs ty
+    is IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> cs-int-arith "*" lhs rhs ty
+    is IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
     is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
-    is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
+    is IrPowInt -> "_cx_ipow((long)" & lhs & ", (long)" & rhs & ")"
     is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
     is IrLt | IrLtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
@@ -137,7 +149,51 @@ Section: Let, Apply, Match, Act
   emit-cs-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
    in let func = emit-cs-expr (chain.root) arities indent
-   in func & "(" & emit-cs-apply-args (chain.args) arities indent 0 & ")"
+   in let args = chain.args
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     let ar = lookup-arity arities n
+     in if ar < 1 then emit-wpf-curried func args arities indent 0
+        else if list-length args == ar then func & "(" & emit-cs-apply-args args arities indent 0 & ")"
+        else if list-length args < ar then emit-wpf-partial func args arities indent (ar - list-length args)
+        else emit-wpf-curried (func & "(" & emit-wpf-args-upto args arities indent 0 ar & ")") args arities indent ar
+    is otherwise -> func & "(" & emit-cs-apply-args args arities indent 0 & ")"
+
+ Definitions are emitted `dynamic`, so a returned delegate is invoked by
+ juxtaposition. A definition applied to fewer arguments than it takes is
+ eta-wrapped, cast because a bare lambda has no target type here.
+
+  emit-wpf-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-wpf-curried (base) (args) (arities) (indent) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-cs-expr (list-at args i) arities indent & ")"
+   in emit-wpf-curried next args arities indent (i + 1)
+
+  emit-wpf-args-upto : List IRExpr, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-wpf-args-upto (args) (arities) (indent) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-cs-expr (list-at args i) arities indent
+   else emit-cs-expr (list-at args i) arities indent & ", " & emit-wpf-args-upto args arities indent (i + 1) n
+
+  emit-wpf-partial-open : Integer, Integer -> Text
+  emit-wpf-partial-open (i) (count) =
+   if i == count then ""
+   else "((Func<dynamic, dynamic>)((_p" & integer-to-text i & "_) => " & emit-wpf-partial-open (i + 1) count
+
+  emit-wpf-partial-close : Integer -> Text
+  emit-wpf-partial-close (count) =
+   if count == 0 then "" else "))" & emit-wpf-partial-close (count - 1)
+
+  emit-wpf-partial-params : Integer, Integer -> Text
+  emit-wpf-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-wpf-partial-params (i + 1) count
+
+  emit-wpf-partial : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-wpf-partial (func) (args) (arities) (indent) (short) =
+   let call = func & "(" & emit-cs-apply-args args arities indent 0 & ", " & emit-wpf-partial-params 0 short & ")"
+   in emit-wpf-partial-open 0 short & call & emit-wpf-partial-close short
 
   emit-cs-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-cs-apply-args (args) (arities) (indent) (i) =
@@ -351,6 +407,7 @@ Section: WPF Builtins Library
    wpf-indent 2 & "static List<dynamic> text_split(string s, string sep) { var r = new List<dynamic>(); if (sep.Length == 0) { r.Add(s); return r; } foreach (var part in s.Split(new[]{ sep }, StringSplitOptions.None)) r.Add(part); return r; }\n" &
    wpf-indent 2 & "static long text_to_integer(string s) { int i = 0; bool neg = false; if (s.Length > 0 && s[0] == '-') { neg = true; i = 1; } long v = 0; while (i < s.Length && s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; } return neg ? -v : v; }\n" &
    wpf-indent 2 & "static long text_compare(string a, string b) { return string.Compare(a, b, StringComparison.Ordinal); }\n" &
+   wpf-indent 2 & "static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; unchecked { while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } } return r; }\n" &
    wpf-indent 2 & "static bool text_starts_with(string s, string p) { return s.StartsWith(p); }\n" &
    wpf-indent 2 & "static bool text_contains(string s, string p) { return s.Contains(p); }\n" &
    wpf-indent 2 & "static string substring(string s, long start, long len) { return s.Substring((int)start, (int)len); }\n" &
@@ -430,5 +487,53 @@ Section: WPF Assembly (multi-file)
       "\n<<<FILE:App.xaml>>>\n" & app-xaml &
       "\n<<<FILE:App.xaml.cs>>>\n" & app-cs &
       "\n<<<FILE:" & title & ".csproj>>>\n" & csproj
+
+  emit-wpf-chapter-stream-head : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-wpf-chapter-stream-head (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else wpf-sanitize (meta.chapter-title)
+   in let cs-header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Windows;\nusing System.Windows.Controls;\nusing System.Windows.Media;\n\nnamespace " & title & "\n{\n    public partial class MainWindow : Window\n    {\n"
+   in let builtins = emit-wpf-builtins
+   in let types-text = emit-cs-type-defs type-defs 0
+   in let constructor = wpf-indent 2 & "public MainWindow()\n" & wpf-indent 2 & "{\n" & wpf-indent 3 & "InitializeComponent();\n" & wpf-indent 3 & "try { opening(); } catch (Exception ex) { Title = \"Error: \" + ex.Message; }\n" & wpf-indent 2 & "}\n"
+   in let cs-footer = "    }\n}\n"
+   in let xaml-file = emit-wpf-xaml title
+   in let app-xaml = emit-wpf-app-xaml title
+   in let app-cs = emit-wpf-app-cs title
+   in let csproj = emit-wpf-csproj
+   in "<<<FILE:MainWindow.xaml.cs>>>\n" & cs-header & builtins & types-text
+
+  emit-wpf-chapter-stream-tail : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-wpf-chapter-stream-tail (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else wpf-sanitize (meta.chapter-title)
+   in let cs-header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Windows;\nusing System.Windows.Controls;\nusing System.Windows.Media;\n\nnamespace " & title & "\n{\n    public partial class MainWindow : Window\n    {\n"
+   in let builtins = emit-wpf-builtins
+   in let types-text = emit-cs-type-defs type-defs 0
+   in let constructor = wpf-indent 2 & "public MainWindow()\n" & wpf-indent 2 & "{\n" & wpf-indent 3 & "InitializeComponent();\n" & wpf-indent 3 & "try { opening(); } catch (Exception ex) { Title = \"Error: \" + ex.Message; }\n" & wpf-indent 2 & "}\n"
+   in let cs-footer = "    }\n}\n"
+   in let xaml-file = emit-wpf-xaml title
+   in let app-xaml = emit-wpf-app-xaml title
+   in let app-cs = emit-wpf-app-cs title
+   in let csproj = emit-wpf-csproj
+   in constructor & cs-footer & "\n<<<FILE:MainWindow.xaml>>>\n" & xaml-file & "\n<<<FILE:App.xaml>>>\n" & app-xaml & "\n<<<FILE:App.xaml.cs>>>\n" & app-cs & "\n<<<FILE:" & title & ".csproj>>>\n" & csproj
+
+  emit-wpf-chapter-stream-env : IRChapter, IRTextMeta, List ATypeDef -> List ArityEntry
+  emit-wpf-chapter-stream-env (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else wpf-sanitize (meta.chapter-title)
+   in let cs-header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Windows;\nusing System.Windows.Controls;\nusing System.Windows.Media;\n\nnamespace " & title & "\n{\n    public partial class MainWindow : Window\n    {\n"
+   in let builtins = emit-wpf-builtins
+   in let types-text = emit-cs-type-defs type-defs 0
+   in let constructor = wpf-indent 2 & "public MainWindow()\n" & wpf-indent 2 & "{\n" & wpf-indent 3 & "InitializeComponent();\n" & wpf-indent 3 & "try { opening(); } catch (Exception ex) { Title = \"Error: \" + ex.Message; }\n" & wpf-indent 2 & "}\n"
+   in let cs-footer = "    }\n}\n"
+   in let xaml-file = emit-wpf-xaml title
+   in let app-xaml = emit-wpf-app-xaml title
+   in let app-cs = emit-wpf-app-cs title
+   in let csproj = emit-wpf-csproj
+   in arities
+
+  emit-wpf-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-wpf-chapter-stream-def (m) (v) (i) = emit-cs-def (list-at (m.defs) i) v
 
 Page 1

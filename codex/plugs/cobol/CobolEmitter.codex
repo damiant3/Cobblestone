@@ -490,7 +490,8 @@ Section: Expression Emission
      in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC S9(18).")
      in CobolExprResult {
       var-name = alloc.name,
-      code = "           DISPLAY \"COBOL: lambda not supported\"\n" &
+      code = "      *> !UNSUPPORTED: lambda has no representation in COBOL\n" &
+       "           DISPLAY \"COBOL: lambda not supported\"\n" &
        "           MOVE 0 TO " & alloc.name & "\n",
       state = st2
      }
@@ -616,6 +617,27 @@ Section: Expression Emission
     is IrAppendList -> "LCAT"
     is IrConsList -> "LCONS"
 
+ `DIVIDE ... GIVING <q> REMAINDER <r>` needs a receiving field for the quotient
+ even where only the remainder is wanted, so IrRemInt spends WS-TEMP on it.
+ WS-TEMP is declared by both emission paths and referenced by nothing else,
+ which is why the quotient goes there rather than into a name of its own: a new
+ name would have to be added to `cobol-fixed-ws` AND to the copy
+ `emit-cobol-chapter` duplicates inline, and only one of those two is on the
+ streaming path.
+
+ COBOL's `**` is EXACT for the exponents this emitter can produce, so IrPowInt
+ keeps it: both operands are `PIC S9(18)`, integers with no decimal places, and
+ COBOL enters floating point only on a fractional exponent or a float operand.
+ IBM evaluates an integer power as successive fixed-point multiplications with
+ 30 digits of intermediate result (31 under ARITH(EXTEND)) and GnuCOBOL carries
+ its decimals in GMP, so 3^34 at 17 digits is exact in both.
+
+ THE GUARD IS THE NEGATIVE EXPONENT AND IT IS NOT REDUNDANT. `__ipow` answers 0
+ there; COBOL divides into 1 instead, which agrees only by accident when the
+ quotient truncates away (5^-2), differs at 1^-1, and divides by zero at 0^-5
+ with no ON SIZE ERROR to catch it. `int-pow.codex`'s neg-exponent case is one
+ of the accidents, so no arm in the corpus goes red if this guard is removed.
+
   emit-cobol-bin-stmt : IRBinaryOp, Text, Text, Text, Boolean -> Text
   emit-cobol-bin-stmt (op) (lv) (rv) (result) (ltext) =
    when op
@@ -623,8 +645,13 @@ Section: Expression Emission
     is IrSubInt | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "           SUBTRACT " & rv & " FROM " & lv & " GIVING " & result & "\n"
     is IrMulInt | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "           MULTIPLY " & lv & " BY " & rv & " GIVING " & result & "\n"
     is IrDivInt | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "           DIVIDE " & lv & " BY " & rv & " GIVING " & result & "\n"
-    is IrRemInt -> "           DIVIDE " & lv & " BY " & rv & " GIVING TEMP-QUOT REMAINDER " & result & "\n"
-    is IrPowInt -> "           COMPUTE " & result & " = " & lv & " ** " & rv & "\n"
+    is IrRemInt -> "           DIVIDE " & lv & " BY " & rv & " GIVING WS-TEMP REMAINDER " & result & "\n"
+    is IrPowInt ->
+     "           IF " & rv & " < 0\n" &
+     "             MOVE 0 TO " & result & "\n" &
+     "           ELSE\n" &
+     "             COMPUTE " & result & " = " & lv & " ** " & rv & "\n" &
+     "           END-IF\n"
     is IrAddNum -> "           ADD " & lv & " " & rv & " GIVING " & result & "\n"
     is IrSubNum -> "           SUBTRACT " & rv & " FROM " & lv & " GIVING " & result & "\n"
     is IrMulNum -> "           MULTIPLY " & lv & " BY " & rv & " GIVING " & result & "\n"
@@ -1816,7 +1843,8 @@ Section: Tail Call Optimization
      }
     is IrLambda (lparams) (lbody) (lty) (sp) ->
      CobolMoveResult {
-      code = "           DISPLAY \"COBOL: lambda not supported\"\n" &
+      code = "      *> !UNSUPPORTED: lambda has no representation in COBOL\n" &
+       "           DISPLAY \"COBOL: lambda not supported\"\n" &
        "           MOVE 0 TO WS-" & name & "-RET\n" &
        "           GO TO " & name & "-END\n",
       state = st
@@ -2065,6 +2093,41 @@ Section: Chapter Emission
   emit-cobol-ws-lines (lines) (i) =
    if i >= list-length lines then ""
    else list-at lines i & "\n" & emit-cobol-ws-lines lines (i + 1)
+
+  cobol-state-at : Integer, List ATypeDef -> CobolState
+  cobol-state-at (n) (tds) = CobolState {
+   var-counter = n,
+   working-storage = [],
+   current-func = "",
+   env = [],
+   tdefs = tds
+  }
+
+  emit-cobol-stream-head : IRChapter, List ATypeDef -> Text
+  emit-cobol-stream-head (m) (type-defs) =
+   "       IDENTIFICATION DIVISION.\n" &
+   "       PROGRAM-ID. " & cobol-name (m.name.value) & ".\n\n" &
+   "       DATA DIVISION.\n" &
+   "       WORKING-STORAGE SECTION.\n" &
+   emit-cobol-type-defs type-defs 0
+
+  cobol-fixed-ws : Text
+  cobol-fixed-ws =
+   "       01 WS-RESULT         PIC S9(18).\n" &
+   "       01 WS-TEMP           PIC S9(18).\n" &
+   "       01 WS-STRPTR         PIC S9(18).\n" &
+   "       01 WS-LIDX           PIC S9(18).\n" &
+   "       01 WS-TEXT-RESULT.\n" &
+   "         05 WS-TEXT-RESULT-L      PIC S9(18).\n" &
+   "         05 WS-TEXT-RESULT-D      PIC X(256).\n"
+
+  emit-cobol-def-at : List IRDef, List ArityEntry, List ATypeDef, Integer, Integer -> CobolDefResult
+  emit-cobol-def-at (defs) (arities) (tds) (i) (counter) =
+   emit-cobol-def-paragraph (list-at defs i) arities (cobol-state-at counter tds)
+
+  emit-cobol-entry-at : List IRDef, Integer, List ArityEntry, List ATypeDef, Integer -> CobolDefResult
+  emit-cobol-entry-at (defs) (entry-idx) (arities) (tds) (counter) =
+   emit-cobol-entry defs entry-idx arities (cobol-state-at counter tds)
 
   emit-cobol-chapter : IRChapter, List ATypeDef -> Text
   emit-cobol-chapter (m) (type-defs) =

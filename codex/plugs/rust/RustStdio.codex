@@ -2,7 +2,33 @@ Chapter: RustStdio
 
 Section: Body
 
+  rust-stream-mask : IRChapter, List ATypeDef, List ArityEntry, Integer, Integer, Integer -> Integer
+  rust-stream-mask (m) (type-defs) (arities) (i) (len) (mask) =
+   if i >= len then mask
+   else let h = __heap-save
+   in let m2 = bit-or mask (rs-uses-mask (emit-rs-chapter-stream-def m type-defs arities i))
+   in let r = __heap-restore h
+   in rust-stream-mask m type-defs arities (i + 1) len m2
+
+  rust-stream-defs : IRChapter, List ATypeDef, List ArityEntry, Integer, Integer -> [Console] Nothing
+  rust-stream-defs (m) (type-defs) (arities) (i) (len) =
+   if i >= len then print-uni ""
+   else let h = __heap-save
+   in let s = emit-rs-chapter-stream-def m type-defs arities i
+   in act
+    print-uni s
+    let r = __heap-restore h
+    in rust-stream-defs m type-defs arities (i + 1) len
+   end
+
   plug-emit-ir-stream : Text -> [Console] Nothing
   plug-emit-ir-stream (ir-text) =
    let parsed = parse-ir-chapter ir-text
-   in print-line-uni (emit-rs-chapter (parsed.chapter) (parsed.type-defs))
+   in let m = parsed.chapter
+   in let arities = build-arity-map (m.defs) 0 []
+   in let mask = rust-stream-mask m (parsed.type-defs) arities 0 (list-length (m.defs)) (rs-uses-mask (emit-rs-chapter-stream-fixed m (parsed.type-defs)))
+   in act
+    print-uni (emit-rs-chapter-stream-head m (parsed.type-defs) mask)
+    rust-stream-defs m (parsed.type-defs) arities 0 (list-length (m.defs))
+    print-line-uni (emit-rs-chapter-stream-tail m (parsed.type-defs))
+   end

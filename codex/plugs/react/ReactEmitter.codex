@@ -130,7 +130,7 @@ Section: Expression Emission
   emit-jsx-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-jsx-expr (e) (arities) (indent) =
    when e
-    is IrIntLit (n) (sp) -> show n
+    is IrIntLit (n) (sp) -> show n & "n"
     is IrNumLit (n) (sp) -> show n
     is IrTextLit (s) (sp) -> "\"" & js-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
@@ -157,15 +157,29 @@ Section: Expression Emission
 
 Section: Binary Operators
 
+ A Codex Integer is a Number here, and a double holds an exact integer only
+ to 2^53. BOTH arms refuse: the band cannot wrap at 64 bits and the plain arm
+ cannot tell an overflow from a rounding, so the node type decides nothing and
+ is not consulted. The guard is on the VALUES, so a program whose integers fit
+ a double still computes and only the unrepresentable case refuses. The marker
+ is what plug-oracle-test.ps1 reads as its REFUSED verdict.
+
+  jsx-int-refuse : Text, Text, Text -> Text
+  jsx-int-refuse (sym) (lhs) (rhs) =
+   "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
+
   emit-jsx-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-jsx-binary (op) (l) (r) (arities) (indent) =
    let lhs = emit-jsx-expr l arities indent
    in let rhs = emit-jsx-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrAddInt -> jsx-int-refuse "+" lhs rhs
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> jsx-int-refuse "-" lhs rhs
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> jsx-int-refuse "*" lhs rhs
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
@@ -389,9 +403,42 @@ Section: React Component Assembly
   emit-react-chapter (m) (meta) (type-defs) =
    let title = if meta.chapter-title == "" then "App" else meta.chapter-title
    in let imports = "import React, { useState, useEffect, useRef } from 'react';\n\n"
-   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(c.charCodeAt ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
    in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
    in let types-text = emit-jsx-type-defs type-defs 0
    in let defs-text = emit-jsx-defs (m.defs) 0 arities
    in let component = "export default function " & react-sanitize title & "() {\n  const [output, setOutput] = useState([]);\n  useEffect(() => {\n    const _print = print_line_uni;\n    print_line_uni = (s) => setOutput(prev => [...prev, s]);\n    try { opening(); } catch(e) { console.error(e); }\n    print_line_uni = _print;\n  }, []);\n  return (\n    <div className=\"app\">\n      {output.map((line, i) => <div key={i}>{line}</div>)}\n    </div>\n  );\n}\n"
    in imports & builtins & types-text & defs-text & component
+
+  emit-react-chapter-stream-head : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-react-chapter-stream-head (m) (meta) (type-defs) =
+   let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let imports = "import React, { useState, useEffect, useRef } from 'react';\n\n"
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(c.charCodeAt ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-jsx-type-defs type-defs 0
+   in let component = "export default function " & react-sanitize title & "() {\n  const [output, setOutput] = useState([]);\n  useEffect(() => {\n    const _print = print_line_uni;\n    print_line_uni = (s) => setOutput(prev => [...prev, s]);\n    try { opening(); } catch(e) { console.error(e); }\n    print_line_uni = _print;\n  }, []);\n  return (\n    <div className=\"app\">\n      {output.map((line, i) => <div key={i}>{line}</div>)}\n    </div>\n  );\n}\n"
+   in imports & builtins & types-text
+
+  emit-react-chapter-stream-tail : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-react-chapter-stream-tail (m) (meta) (type-defs) =
+   let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let imports = "import React, { useState, useEffect, useRef } from 'react';\n\n"
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(c.charCodeAt ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-jsx-type-defs type-defs 0
+   in let component = "export default function " & react-sanitize title & "() {\n  const [output, setOutput] = useState([]);\n  useEffect(() => {\n    const _print = print_line_uni;\n    print_line_uni = (s) => setOutput(prev => [...prev, s]);\n    try { opening(); } catch(e) { console.error(e); }\n    print_line_uni = _print;\n  }, []);\n  return (\n    <div className=\"app\">\n      {output.map((line, i) => <div key={i}>{line}</div>)}\n    </div>\n  );\n}\n"
+   in component
+
+  emit-react-chapter-stream-env : IRChapter, IRTextMeta, List ATypeDef -> List ArityEntry
+  emit-react-chapter-stream-env (m) (meta) (type-defs) =
+   let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let imports = "import React, { useState, useEffect, useRef } from 'react';\n\n"
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(c.charCodeAt ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+   in let types-text = emit-jsx-type-defs type-defs 0
+   in let component = "export default function " & react-sanitize title & "() {\n  const [output, setOutput] = useState([]);\n  useEffect(() => {\n    const _print = print_line_uni;\n    print_line_uni = (s) => setOutput(prev => [...prev, s]);\n    try { opening(); } catch(e) { console.error(e); }\n    print_line_uni = _print;\n  }, []);\n  return (\n    <div className=\"app\">\n      {output.map((line, i) => <div key={i}>{line}</div>)}\n    </div>\n  );\n}\n"
+   in arities
+
+  emit-react-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-react-chapter-stream-def (m) (v) (i) = emit-jsx-def (list-at (m.defs) i) v

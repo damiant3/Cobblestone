@@ -1,0 +1,70 @@
+Chapter: SheetCsvTest
+  cites Sheets chapter CellCsv
+  cites Sheets chapter CellStore
+  cites Foreword chapter CCE
+
+ CSV in and out over the cell store, to RFC 4180.
+
+ The reading the whole row turns on is `a,,b`: three fields with the middle
+ one ABSENT. A store of bare numbers reads that as a zero and a round trip
+ turns it into `a,0,b`, so the arm asserts the KIND of the middle cell and
+ not merely its number.
+
+ Beside it the four rules that a CSV reader gets wrong quietly: a quoted
+ field holding a comma is ONE field, a doubled quote inside a quoted field is
+ one literal quote, a quoted field of digits stays TEXT because quoting is
+ how a CSV says so, and a field of digits without quotes becomes a NUMBER.
+
+ The two cases that are NOT round trips are asserted as the losses they are
+ rather than left for a reader to discover: `007` comes back `7`, and a text
+ cell holding the empty string writes as nothing and reads back empty.
+
+ The sabotage: make `csv-emit` treat a quoted field like any other and the
+ quoted-digits line turns from text to number while the rest stands; make
+ `csv-emit` write an empty field as text rather than clearing and the `a,,b`
+ line turns from empty to text.
+
+Section: Body
+
+  sc-kind-name : Integer -> Text
+  sc-kind-name (k) = if k == 0 then "empty" else if k == 1 then "number" else "text"
+
+  sc-cell : Integer, Integer, Integer -> Text
+  sc-cell (blk) (r) (c) =
+    let k = sheet-kind blk r c
+    in if k == 1 then "number " & show (sheet-get blk r c)
+    else if k == 2 then "text " & sheet-text blk r c
+    else "empty"
+
+  sc-fresh : Integer
+  sc-fresh = sheet-new 16 8 1024
+
+  sc-quote-text : Text
+  sc-quote-text = utf8-bytes-to-text [34]
+
+  sc-crlf : Text
+  sc-crlf = utf8-bytes-to-text [13, 10]
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let q = sc-quote-text
+    in let s1 = sc-fresh
+    in let n1 = csv-load s1 ("a,,b" & sc-crlf & "1,-2,003")
+    in let s2 = sc-fresh
+    in let n2 = csv-load s2 (q & "one,two" & q & "," & q & "he said " & q & q & "hi" & q & q & q & "," & q & "42" & q & ",42")
+    in let s3 = sc-fresh
+    in let n3 = csv-load s3 ("x,y" & sc-crlf & "1,2" & sc-crlf)
+    in let s4 = sc-fresh
+    in let n4 = csv-load s4 ("only one line, no ending")
+    in act
+      print-line-uni ("a,,b : records " & show n1 & "  first " & sc-cell s1 0 0 & " | middle " & sc-cell s1 0 1 & " | last " & sc-cell s1 0 2)
+      print-line-uni ("the numbers row: " & sc-cell s1 1 0 & " | " & sc-cell s1 1 1 & " | " & sc-cell s1 1 2)
+      print-line-uni ("quoted comma is one field: records " & show n2 & "  field 0 " & sc-cell s2 0 0 & "  field 1 " & sc-cell s2 0 1)
+      print-line-uni ("quoted digits stay text, bare digits do not: " & sc-cell s2 0 2 & " | " & sc-cell s2 0 3)
+      print-line-uni ("a trailing line ending adds no record: " & show n3 & "  and a file with no ending still counts its last: " & show n4)
+      print-line-uni ("round trip of a,,b : " & csv-save s1 n1 3)
+      print-line-uni ("round trip of the quoted row: " & csv-save s2 n2 4)
+      print-line-uni ("003 is not a round trip: it came back as " & sc-cell s1 1 2)
+      print-line-uni ("an empty text writes as nothing: set " & (if sheet-set-text s3 0 0 "" then "yes" else "no") & "  kind before write " & sc-kind-name (sheet-kind s3 0 0) & "  row now " & csv-save s3 1 2)
+    end

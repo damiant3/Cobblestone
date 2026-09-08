@@ -389,12 +389,12 @@ Section: Resolve All Definitions
  deck-short-of again after the walk and raises CDX9002 from there.
 
   resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer -> List Diagnostic
-  resolve-all-defs (sc) (defs) (i) (len) (errs) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (ceiling) =
+  resolve-all-defs (sc) (defs) (i) (len) (errs) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (ceiling) =
    if i == len then errs
    else if deck-short-of ceiling demand-scope-guard-band then errs
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
-      else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
+      else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments cite-slugs (def.chapter-slug) 0
    in let bivy-mark = __heap-save
    in let deck-mark = __deck-pos
    in let fresh-scope = Scope { names = sc.names, locals = skip-list-text-empty, chapter-renames = chapter-rn }
@@ -405,8 +405,8 @@ Section: Resolve All Definitions
    in if list-length errs-new == 0
       then let deck-back = __deck-set deck-mark
        in let bivy-back = __heap-restore bivy-mark
-       in resolve-all-defs sc defs (i + 1) len errs colliding assignments citations slug-cache (def.chapter-slug) chapter-rn ceiling
-      else resolve-all-defs sc defs (i + 1) len (errs & errs-new) colliding assignments citations slug-cache (def.chapter-slug) chapter-rn ceiling
+       in resolve-all-defs sc defs (i + 1) len errs colliding assignments citations cite-slugs (def.chapter-slug) chapter-rn ceiling
+      else resolve-all-defs sc defs (i + 1) len (errs & errs-new) colliding assignments citations cite-slugs (def.chapter-slug) chapter-rn ceiling
 
  A definition's resolution answers only its diagnostics; every scope,
  pattern result and rename lookup it built is dead once resolve-expr
@@ -455,7 +455,8 @@ Section: Resolve Chapter
    in let all-top = skip-list-text-union (skip-list-text-union (skip-list-text-union (skip-list-text-union (skip-list-text-clone (top.names)) (effect-ops.op-names)) cited-names) class-method-names) dict-placeholder-names
    in let sc = build-all-names-scope all-top (ctors.ctor-names) builtin-names
    in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
-   in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) [] colliding assignments (mod.citations) slug-cache "" [] ceiling
+   in let cite-slugs = for c in (mod.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
+   in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) [] colliding assignments (mod.citations) cite-slugs "" [] ceiling
    in let ctor-list = deck-record (skip-list-text-to-list (ctors.ctor-names))
    in deck-record (ResolveResult {
      bag = deck-record (bag-from-list (top.errors & ctors.errors & effect-ops.errors & expr-errs)),

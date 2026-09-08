@@ -36,6 +36,14 @@ Section: Arity Map
   sorted-insert-arity (xs) (e) =
    list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
 
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
   build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map (defs) (i) (acc) =
    if i == list-length defs then acc
@@ -53,7 +61,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "((char)" & show n & ")"
     is IrName (n) (ty) (sp) -> wf-sanitize n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-wf-binary op l r arities indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-wf-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-wf-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-wf-expr c arities indent & " ? " & emit-wf-expr t arities indent & " : " & emit-wf-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "((Func<dynamic>)(() => { dynamic " & wf-sanitize name & " = " & emit-wf-expr val arities indent & "; return " & emit-wf-expr body arities indent & "; }))()"
@@ -72,17 +80,29 @@ Section: Expression Emission
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-wf-act body arities indent
     is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & wf-escape msg & "\")"
 
-  emit-wf-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  emit-wf-binary (op) (l) (r) (arities) (indent) =
+ This plug emits C#. A plain Integer traps on signed overflow by contract, and
+ `checked(...)` raises System.OverflowException on a long; the wrapping band is
+ C#'s default unchecked arithmetic. Same arm as the csharp plug.
+
+  wf-int-arith : Text, Text, Text, CodexType -> Text
+  wf-int-arith (sym) (lhs) (rhs) (ty) =
+   if int-ty-wraps ty then "(" & lhs & " " & sym & " " & rhs & ")"
+   else "checked(" & lhs & " " & sym & " " & rhs & ")"
+
+  emit-wf-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  emit-wf-binary (op) (l) (r) (ty) (arities) (indent) =
    let lhs = emit-wf-expr l arities indent
    in let rhs = emit-wf-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrAddInt -> wf-int-arith "+" lhs rhs ty
+    is IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> wf-int-arith "-" lhs rhs ty
+    is IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> wf-int-arith "*" lhs rhs ty
+    is IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
     is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
-    is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
+    is IrPowInt -> "_cx_ipow((long)" & lhs & ", (long)" & rhs & ")"
     is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
     is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
     is IrLt | IrLtVec -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
@@ -108,7 +128,52 @@ Section: Expression Emission
   emit-wf-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-wf-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
-   in emit-wf-expr (chain.root) arities indent & "(" & emit-wf-elems (chain.args) arities indent 0 & ")"
+   in let args = chain.args
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     let func = emit-wf-expr (chain.root) arities indent
+     in let ar = lookup-arity arities n
+     in if ar < 1 then emit-wf-curried func args arities indent 0
+        else if list-length args == ar then func & "(" & emit-wf-elems args arities indent 0 & ")"
+        else if list-length args < ar then emit-wf-partial func args arities indent (ar - list-length args)
+        else emit-wf-curried (func & "(" & emit-wf-elems-upto args arities indent 0 ar & ")") args arities indent ar
+    is otherwise -> emit-wf-expr (chain.root) arities indent & "(" & emit-wf-elems args arities indent 0 & ")"
+
+ Definitions are emitted `dynamic`, so a returned delegate is invoked by
+ juxtaposition. A definition applied to fewer arguments than it takes is
+ eta-wrapped, cast because a bare lambda has no target type here.
+
+  emit-wf-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-wf-curried (base) (args) (arities) (indent) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-wf-expr (list-at args i) arities indent & ")"
+   in emit-wf-curried next args arities indent (i + 1)
+
+  emit-wf-elems-upto : List IRExpr, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-wf-elems-upto (args) (arities) (indent) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-wf-expr (list-at args i) arities indent
+   else emit-wf-expr (list-at args i) arities indent & ", " & emit-wf-elems-upto args arities indent (i + 1) n
+
+  emit-wf-partial-open : Integer, Integer -> Text
+  emit-wf-partial-open (i) (count) =
+   if i == count then ""
+   else "((Func<dynamic, dynamic>)((_p" & integer-to-text i & "_) => " & emit-wf-partial-open (i + 1) count
+
+  emit-wf-partial-close : Integer -> Text
+  emit-wf-partial-close (count) =
+   if count == 0 then "" else "))" & emit-wf-partial-close (count - 1)
+
+  emit-wf-partial-params : Integer, Integer -> Text
+  emit-wf-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-wf-partial-params (i + 1) count
+
+  emit-wf-partial : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-wf-partial (func) (args) (arities) (indent) (short) =
+   let call = func & "(" & emit-wf-elems args arities indent 0 & ", " & emit-wf-partial-params 0 short & ")"
+   in emit-wf-partial-open 0 short & call & emit-wf-partial-close short
 
   wf-lam-func-type : Integer, Integer -> Text
   wf-lam-func-type (n) (i) =
@@ -358,7 +423,8 @@ Section: Builtin Definitions
    in let c3 = wf-indent 2 & "static long negate(long n) { return -n; }\n"
    in let c5 = wf-indent 2 & "static long real_to_int(dynamic d) { return (long)(double)d; }\n"
    in let c6 = wf-indent 2 & "static double int_to_real(dynamic n) { return (double)(long)n; }\n"
-   in c1 & c2 & c3 & c5 & c6
+   in let c7 = wf-indent 2 & "static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; unchecked { while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } } return r; }\n"
+   in c1 & c2 & c3 & c5 & c6 & c7
 
   wf-bi-text : Text
   wf-bi-text =
@@ -743,3 +809,36 @@ Section: WinForms Assembly
    in let controls = wf-widget-builder & wf-constructor title
    in let tail = wf-main-method & "    }\n}\n"
    in header & body & controls & tail
+
+  emit-winforms-chapter-stream-head : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-winforms-chapter-stream-head (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else wf-sanitize (meta.chapter-title)
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Drawing;\nusing System.Linq;\nusing System.Runtime.InteropServices;\nusing System.Windows.Forms;\nusing System.Text.Json;\n\nnamespace " & title & "\n{\n    public class MainForm : Form\n    {\n"
+   in let types-text = emit-wf-type-defs type-defs 0
+   in let controls = wf-widget-builder & wf-constructor title
+   in let tail = wf-main-method & "    }\n}\n"
+   in header & wf-builtins & types-text
+
+  emit-winforms-chapter-stream-tail : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-winforms-chapter-stream-tail (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else wf-sanitize (meta.chapter-title)
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Drawing;\nusing System.Linq;\nusing System.Runtime.InteropServices;\nusing System.Windows.Forms;\nusing System.Text.Json;\n\nnamespace " & title & "\n{\n    public class MainForm : Form\n    {\n"
+   in let types-text = emit-wf-type-defs type-defs 0
+   in let controls = wf-widget-builder & wf-constructor title
+   in let tail = wf-main-method & "    }\n}\n"
+   in controls & tail
+
+  emit-winforms-chapter-stream-env : IRChapter, IRTextMeta, List ATypeDef -> List ArityEntry
+  emit-winforms-chapter-stream-env (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else wf-sanitize (meta.chapter-title)
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Drawing;\nusing System.Linq;\nusing System.Runtime.InteropServices;\nusing System.Windows.Forms;\nusing System.Text.Json;\n\nnamespace " & title & "\n{\n    public class MainForm : Form\n    {\n"
+   in let types-text = emit-wf-type-defs type-defs 0
+   in let controls = wf-widget-builder & wf-constructor title
+   in let tail = wf-main-method & "    }\n}\n"
+   in arities
+
+  emit-winforms-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-winforms-chapter-stream-def (m) (v) (i) = emit-wf-def (list-at (m.defs) i) v

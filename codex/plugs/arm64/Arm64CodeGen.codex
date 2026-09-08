@@ -1146,96 +1146,140 @@ Section: Binary Emission
     is UnitTy (n) (inner) -> a64-real-cmp-kind inner
     is otherwise -> 0
 
-  a64-sum-max-fields : List SumCtor, Integer, Integer -> Integer
-  a64-sum-max-fields (ctors) (i) (max) =
-   if i >= list-length ctors then max
-   else let c = list-at ctors i
-   in let n = list-length (c.fields)
-   in a64-sum-max-fields ctors (i + 1) (if n > max then n else max)
+ A sum equality compares the TAG and then that constructor's FIELDS, each by
+ its own type. It is emitted inline, so it accepts only what can be decided
+ without a function: exactly one constructor may carry fields, and no field may
+ itself be a sum.
 
-  a64-max-fields-for-type : CodexType, List ATypeDef -> Integer
-  a64-max-fields-for-type (ty) (defs) =
+ BOTH RESTRICTIONS REFUSE RATHER THAN GUESS. A second field-carrying
+ constructor needs a switch whose arms hold different field types at the same
+ index, so a per-index type would be a guess. A sum-typed field needs recursion,
+ which for a recursive type (`Nest = Leaf | Wrap (Nest)`) does not terminate at
+ emit time. Both are what a per-sum HELPER FUNCTION answers, which is
+ COMPILER-24's shape on x86-64 and belongs in a shared IR pass so that arm64 and
+ riscv get it together. Until then a refusal is the honest answer: what stood
+ here compared two heap POINTERS and returned a plausible wrong bit
+ (plugs-backlog 1.90).
+
+ THE CTORS COME FROM `defs`, NOT FROM THE TYPE. `IRTextEmitter` emits
+ `(sum "Name" (args ...))` with no ctors, so every sum arriving over IR TEXT
+ carries an empty ctor list; reading it is how this answered "no fields" for
+ every sum and compared the tag alone. x86-64 never round-trips through IR text,
+ which is why the defect is native-backends-only.
+
+  a64-sum-ctors-for-type : CodexType, List ATypeDef -> List SumCtor
+  a64-sum-ctors-for-type (ty) (defs) =
    when ty
-    is SumTy (n) (ta) (cs) -> a64-sum-max-fields cs 0 0
-    is ConstructedTy (tname) (args) -> a64-max-fields-from-defs defs (tname.value) 0
-    is TypeCon (tname) -> a64-max-fields-from-defs defs (tname.value) 0
-    is otherwise -> 2
+    is SumTy (n) (ta) (cs) ->
+     if list-length cs > 0 then cs else sum-ctors-by-name defs (n.value) 0
+    is ConstructedTy (tname) (args) -> sum-ctors-by-name defs (tname.value) 0
+    is TypeCon (tname) -> sum-ctors-by-name defs (tname.value) 0
+    is otherwise -> []
 
-  a64-max-fields-from-defs : List ATypeDef, Text, Integer -> Integer
-  a64-max-fields-from-defs (defs) (type-name) (i) =
-   if i >= list-length defs then 2
-   else when list-at defs i
-    is AVariantTypeDef (dn) (tparams) (vctors) (sp) ->
-     if dn.value == type-name then a64-variant-max-fields vctors 0 0
-     else a64-max-fields-from-defs defs type-name (i + 1)
-    is otherwise -> a64-max-fields-from-defs defs type-name (i + 1)
+  a64-ctors-with-fields : List SumCtor, Integer, Integer -> Integer
+  a64-ctors-with-fields (cs) (i) (n) =
+   if i >= list-length cs then n
+   else let c = list-at cs i
+   in a64-ctors-with-fields cs (i + 1) (if list-length (c.fields) > 0 then n + 1 else n)
 
-  a64-variant-max-fields : List AVariantCtorDef, Integer, Integer -> Integer
-  a64-variant-max-fields (ctors) (i) (max) =
-   if i >= list-length ctors then max
-   else let c = list-at ctors i
-   in let n = list-length (c.fields)
-   in a64-variant-max-fields ctors (i + 1) (if n > max then n else max)
+  a64-first-ctor-with-fields : List SumCtor, Integer -> Integer
+  a64-first-ctor-with-fields (cs) (i) =
+   if i >= list-length cs then 0 - 1
+   else let c = list-at cs i
+   in if list-length (c.fields) > 0 then i
+   else a64-first-ctor-with-fields cs (i + 1)
 
-  a64-emit-sum-eq : A64State, Integer, Integer, Integer, Integer -> A64EmitResult
-  a64-emit-sum-eq (st) (rd) (l-reg) (r-reg) (max-fields) =
-   let ll = a64-alloc-local st
-   in let st0a = a64-store-local (ll.state) (ll.reg) l-reg
-   in let rl = a64-alloc-local st0a
-   in let st0b = a64-store-local (rl.state) (rl.reg) r-reg
-   in let lp = a64-load-local st0b (ll.reg)
+ A FIELD IS ONLY A SUM IF IT RESOLVES TO CTORS. `a64-is-sum-type` answers True
+ for `ConstructedTy`, and a TYPE PARAMETER arrives as exactly that -- a name
+ with no arguments (`codex/test/eq-generic-fields` says so in its own words).
+ Refusing on the predicate alone therefore refused COMPILER-24's own subject,
+ which has nothing to do with nested sums. Resolving the name against `defs` is
+ what separates them: a parameter resolves to no ctors.
+
+  a64-sum-fields-simple : List CodexType, List ATypeDef, Integer -> Boolean
+  a64-sum-fields-simple (fs) (defs) (i) =
+   if i >= list-length fs then True
+   else if list-length (a64-sum-ctors-for-type (list-at fs i) defs) > 0 then False
+   else a64-sum-fields-simple fs defs (i + 1)
+
+  a64-emit-sum-eq-refused : A64State, Text -> A64EmitResult
+  a64-emit-sum-eq-refused (st) (why) =
+   let msg = "[UNSUPPORTED] sum equality: " & why & ", which needs a per-sum helper function rather than an inline compare (refused rather than comparing pointers)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+
+ One field at a time, folding into the accumulator LOCAL rather than a register,
+ because `__str_eq` is a call and a call clobbers registers. The pointers are
+ reloaded per field for the same reason.
+
+  a64-emit-sum-field-eq : A64State, Integer, Integer, Integer, List CodexType, Integer -> A64State
+  a64-emit-sum-field-eq (st) (ll) (rl) (acc) (fs) (i) =
+   if i >= list-length fs then st
+   else let off = 8 + i * 8
+   in let lp = a64-load-local st ll
+   in let fl = a64-alloc-temp (lp.state)
+   in let s1 = a64-emit (fl.state) (arm64-ldr (fl.reg) (lp.reg) off)
+   in let rp = a64-load-local s1 rl
+   in let fr = a64-alloc-temp (rp.state)
+   in let s2 = a64-emit (fr.state) (arm64-ldr (fr.reg) (rp.reg) off)
+   in let s3 = if a64-is-text-type (list-at fs i) then
+     let m = if (fr.reg) == a64-x0 then
+       let a = a64-emit s2 (arm64-mov a64-x1 (fr.reg))
+       in a64-emit a (arm64-mov a64-x0 (fl.reg))
+      else let a = a64-emit s2 (arm64-mov a64-x0 (fl.reg))
+       in a64-emit a (arm64-mov a64-x1 (fr.reg))
+     in a64-emit-call-to m "__str_eq"
+    else let c = a64-emit s2 (arm64-cmp (fl.reg) (fr.reg))
+     in a64-emit c (a64-csinc-eq a64-x0)
+   in let ap = a64-load-local s3 acc
+   in let s4 = a64-emit (ap.state) (arm64-and (ap.reg) (ap.reg) a64-x0)
+   in let s5 = a64-store-local s4 acc (ap.reg)
+   in a64-emit-sum-field-eq s5 ll rl acc fs (i + 1)
+
+ ONE forward branch in the whole routine, and it is the only patch. What stood
+ here had four, hand-unrolled for nought, one and two fields, and the two-field
+ arm was the cap that made a four-field constructor compare its first two.
+
+  a64-emit-sum-eq : A64State, Integer, Integer, Integer, List SumCtor, List ATypeDef -> A64EmitResult
+  a64-emit-sum-eq (st) (rd) (l-reg) (r-reg) (ctors) (defs) =
+   let nf = a64-ctors-with-fields ctors 0 0
+   in let ci = a64-first-ctor-with-fields ctors 0
+   in let fs = if ci >= 0 then (list-at ctors ci).fields else []
+   in if nf > 1 then a64-emit-sum-eq-refused st "more than one constructor carries fields"
+   else if a64-sum-fields-simple fs defs 0 == False then a64-emit-sum-eq-refused st "a field is itself a sum"
+   else let ll = a64-alloc-local st
+   in let s0 = a64-store-local (ll.state) (ll.reg) l-reg
+   in let rl = a64-alloc-local s0
+   in let s1 = a64-store-local (rl.state) (rl.reg) r-reg
+   in let acc = a64-alloc-local s1
+   in let one = a64-alloc-temp (acc.state)
+   in let s2 = a64-emit-li (one.state) (one.reg) 1
+   in let s3 = a64-store-local s2 (acc.reg) (one.reg)
+   in let lp = a64-load-local s3 (ll.reg)
    in let lt = a64-alloc-temp (lp.state)
-   in let st1 = a64-emit (lt.state) (arm64-ldr (lt.reg) (lp.reg) 0)
-   in let rp = a64-load-local st1 (rl.reg)
+   in let s4 = a64-emit (lt.state) (arm64-ldr (lt.reg) (lp.reg) 0)
+   in let rp = a64-load-local s4 (rl.reg)
    in let rt = a64-alloc-temp (rp.state)
-   in let st2 = a64-emit (rt.state) (arm64-ldr (rt.reg) (rp.reg) 0)
-   in let st3 = a64-emit st2 (arm64-cmp (lt.reg) (rt.reg))
-   in let ne-tag = (st3).insn-count
-   in let st4 = a64-emit st3 (arm64-b-cond 1 0)
-   in if max-fields == 0 then
-    let st5 = a64-emit st4 (a64-csinc-eq rd)
-    in let eq-end = st5.insn-count
-    in let st6 = a64-emit st5 (arm64-b 0)
-    in let ne-label = st6.insn-count
-    in let st7 = a64-emit-li st6 rd 0
-    in let done-label = st7.insn-count
-    in let st8 = a64-patch-insn st7 ne-tag (arm64-b-cond 1 ((ne-label - ne-tag) * 4))
-    in A64EmitResult { state = a64-patch-insn st8 eq-end (arm64-b ((done-label - eq-end) * 4)), reg = rd }
-   else let lp1 = a64-load-local st4 (ll.reg)
-   in let lf1 = a64-alloc-temp (lp1.state)
-   in let st5 = a64-emit (lf1.state) (arm64-ldr (lf1.reg) (lp1.reg) 8)
-   in let rp1 = a64-load-local st5 (rl.reg)
-   in let rf1 = a64-alloc-temp (rp1.state)
-   in let st6 = a64-emit (rf1.state) (arm64-ldr (rf1.reg) (rp1.reg) 8)
-   in let st7 = a64-emit st6 (arm64-cmp (lf1.reg) (rf1.reg))
-   in if max-fields <= 1 then
-    let st8 = a64-emit st7 (a64-csinc-eq rd)
-    in let eq-end = st8.insn-count
-    in let st9 = a64-emit st8 (arm64-b 0)
-    in let ne-label = st9.insn-count
-    in let st10 = a64-emit-li st9 rd 0
-    in let done-label = st10.insn-count
-    in let st11 = a64-patch-insn st10 ne-tag (arm64-b-cond 1 ((ne-label - ne-tag) * 4))
-    in A64EmitResult { state = a64-patch-insn st11 eq-end (arm64-b ((done-label - eq-end) * 4)), reg = rd }
-   else let ne-f1 = (st7).insn-count
-   in let st8 = a64-emit st7 (arm64-b-cond 1 0)
-   in let lp2 = a64-load-local st8 (ll.reg)
-   in let lf2 = a64-alloc-temp (lp2.state)
-   in let st9 = a64-emit (lf2.state) (arm64-ldr (lf2.reg) (lp2.reg) 16)
-   in let rp2 = a64-load-local st9 (rl.reg)
-   in let rf2 = a64-alloc-temp (rp2.state)
-   in let st10 = a64-emit (rf2.state) (arm64-ldr (rf2.reg) (rp2.reg) 16)
-   in let st11 = a64-emit st10 (arm64-cmp (lf2.reg) (rf2.reg))
-   in let st12 = a64-emit st11 (a64-csinc-eq rd)
-   in let eq-end = (st12).insn-count
-   in let st13 = a64-emit st12 (arm64-b 0)
-   in let ne-label = (st13).insn-count
-   in let st14 = a64-emit-li st13 rd 0
-   in let done-label = (st14).insn-count
-   in let st15 = a64-patch-insn st14 ne-tag (arm64-b-cond 1 ((ne-label - ne-tag) * 4))
-   in let st16 = a64-patch-insn st15 ne-f1 (arm64-b-cond 1 ((ne-label - ne-f1) * 4))
-   in let st17 = a64-patch-insn st16 eq-end (arm64-b ((done-label - eq-end) * 4))
-   in A64EmitResult { state = st17, reg = rd }
+   in let s5 = a64-emit (rt.state) (arm64-ldr (rt.reg) (rp.reg) 0)
+   in let s6 = a64-emit s5 (arm64-cmp (lt.reg) (rt.reg))
+   in let s7 = a64-emit s6 (a64-csinc-eq a64-x0)
+   in let ap = a64-load-local s7 (acc.reg)
+   in let s8 = a64-emit (ap.state) (arm64-and (ap.reg) (ap.reg) a64-x0)
+   in let s9 = a64-store-local s8 (acc.reg) (ap.reg)
+   in if ci < 0 then
+     let fin = a64-load-local s9 (acc.reg)
+     in A64EmitResult { state = a64-emit (fin.state) (arm64-mov rd (fin.reg)), reg = rd }
+    else let lp2 = a64-load-local s9 (ll.reg)
+    in let t2 = a64-alloc-temp (lp2.state)
+    in let s10 = a64-emit (t2.state) (arm64-ldr (t2.reg) (lp2.reg) 0)
+    in let s11 = a64-emit s10 (arm64-cmp-imm (t2.reg) ci)
+    in let skip-pos = s11.insn-count
+    in let s12 = a64-emit s11 (arm64-b-cond 1 0)
+    in let s13 = a64-emit-sum-field-eq s12 (ll.reg) (rl.reg) (acc.reg) fs 0
+    in let skip-label = s13.insn-count
+    in let s14 = a64-patch-insn s13 skip-pos (arm64-b-cond 1 ((skip-label - skip-pos) * 4))
+    in let fin = a64-load-local s14 (acc.reg)
+    in A64EmitResult { state = a64-emit (fin.state) (arm64-mov rd (fin.reg)), reg = rd }
+
 
   a64-is-sum-type : CodexType -> Boolean
   a64-is-sum-type (ty) =
@@ -1329,7 +1373,7 @@ Section: Binary Emission
         in a64-emit s (arm64-mov a64-x1 right-reg)
       in let st4 = a64-emit-call-to st3 "__str_eq"
       in A64EmitResult { state = a64-emit st4 (arm64-mov rd a64-x0), reg = rd }
-     else if a64-is-sum-type (ir-expr-type left) then a64-emit-sum-eq st2 rd left-reg right-reg (a64-max-fields-for-type (ir-expr-type left) (st2.extra).type-defs)
+     else if a64-is-sum-type (ir-expr-type left) then a64-emit-sum-eq st2 rd left-reg right-reg (a64-sum-ctors-for-type (ir-expr-type left) (st2.extra).type-defs) ((st2.extra).type-defs)
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (a64-csinc-eq rd), reg = rd }
     is IrNotEq ->
@@ -1343,7 +1387,7 @@ Section: Binary Emission
       in let st5 = a64-emit st4 (arm64-cmp a64-x0 a64-xzr)
       in A64EmitResult { state = a64-emit st5 (a64-csinc-eq rd), reg = rd }
      else if a64-is-sum-type (ir-expr-type left) then
-      let eq = a64-emit-sum-eq st2 rd left-reg right-reg (a64-max-fields-for-type (ir-expr-type left) (st2.extra).type-defs)
+      let eq = a64-emit-sum-eq st2 rd left-reg right-reg (a64-sum-ctors-for-type (ir-expr-type left) (st2.extra).type-defs) ((st2.extra).type-defs)
       in let st3 = a64-emit (eq.state) (arm64-cmp (eq.reg) a64-xzr)
       in A64EmitResult { state = a64-emit st3 (a64-csinc-eq rd), reg = rd }
      else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
@@ -1396,8 +1440,8 @@ Section: Binary Emission
      else a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fmul-d
     is IrDivRealSaturating -> if is-real-f32 ty then a64-emit-real-saturating-arith-f32 st2 left-reg right-reg arm64-fdiv-s
      else a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fdiv-d
-    is IrApproxEq -> a64-emit-real-comparison st2 left-reg right-reg 1
-    is IrApproxEqExact -> a64-emit-real-comparison st2 left-reg right-reg 1
+    is IrApproxEq -> a64-emit-approx-eq st2 left-reg right-reg (a64-real-cmp-kind (ir-expr-type left) == 2) (if a64-real-cmp-kind (ir-expr-type left) == 2 then 17179869184 else 4)
+    is IrApproxEqExact -> a64-emit-approx-eq st2 left-reg right-reg (a64-real-cmp-kind (ir-expr-type left) == 2) 0
     is IrAnd -> A64EmitResult { state = a64-emit st2 (arm64-and rd left-reg right-reg), reg = rd }
     is IrOr -> A64EmitResult { state = a64-emit st2 (arm64-or rd left-reg right-reg), reg = rd }
     is IrAppendText ->
@@ -1530,6 +1574,101 @@ Section: Real Arithmetic
    in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
    in let st3 = a64-emit st2 (arm64-fcmp-d 0 1)
    in A64EmitResult { state = a64-emit st3 (arm64-csinc (rd.reg) a64-xzr a64-xzr cond), reg = rd.reg }
+
+
+ `~` AND `~0` ARE NOT `fcmp`. Both operands are mapped to a MONOTONIC ORDINAL
+ and the ordinals are subtracted: `~` is True within 4 ULPs and `~0` within 0.
+ What stood here was an `fcmp-d` with the equality condition for both, at f64
+ width with no dispatch on the operand -- so an f32 pattern zero-extended in a
+ 64-bit register was read as an f64, and `-0.0f` (`0x80000000`) became a tiny
+ denormal that compares unequal to `+0.0`. The f64 lines passed only because
+ IEEE says `-0.0 == +0.0`, which agrees with the ordinal answer for that one
+ input; an f64 `~` across a one-ULP straddle failed too and no line spelled it
+ (plugs-backlog 1.91).
+
+ THE ORDINAL IS BUILT WITHOUT `eor` OR AN IMMEDIATE `asr`, neither of which
+ `Arm64Encoder.codex` has. x86-64 uses `sar 63` / `shr 1` / `xor` / `sub`; the
+ same mapping is `ord = b < 0 ? INT64_MIN - b : b`, which needs only `sub`,
+ `cmp` and `csel`. INT64_MIN itself comes from `1 << 63` rather than a 64-bit
+ immediate.
+
+ AN f32 IS SHIFTED UP 32 AND LEFT THERE. Shifting the ordinal back down would
+ need the immediate `asr` we do not have; leaving it scaled costs nothing
+ because one f32 ULP is then exactly 2^32, so the tolerance becomes
+ `4 * 2^32` in a register instead of 4 as an immediate.
+
+ BOTH OPERANDS ARE PARKED BEFORE ANY TEMP IS ALLOCATED, and that is the whole
+ of a regression this cost. The ordinal of the left operand allocates several
+ temps while the RIGHT operand is still live in its own register, and the pool
+ rotates four, so one of those allocations is handed the right operand's
+ register back. `approx-eq` went red on `1.0 ~ 1.0` with the ordinals computed
+ from a clobbered second operand, while `real-approx-equality` stayed green
+ because its operands come from named definitions reloaded fresh. The old
+ `fcmp` code was safe by accident: it moved both operands into FP registers on
+ its first two instructions.
+
+ EVERY INTERMEDIATE IS PARKED IN A LOCAL. `a64-alloc-temp` rotates a pool of
+ four and three live temps is the budget (the prose at `Arm64CodeGen2.codex`),
+ and this sequence has more values in flight than that.
+
+  a64-emit-real-ordinal : A64State, Integer, Boolean -> A64EmitResult
+  a64-emit-real-ordinal (st) (b-reg) (f32) =
+   let v = a64-alloc-temp st
+   in let s0 = if f32 then a64-emit (v.state) (arm64-lsl-imm (v.reg) b-reg 32)
+    else a64-emit (v.state) (arm64-mov (v.reg) b-reg)
+   in let vloc = a64-alloc-local s0
+   in let s1 = a64-store-local (vloc.state) (vloc.reg) (v.reg)
+   in let one = a64-alloc-temp s1
+   in let s2 = a64-emit-li (one.state) (one.reg) 1
+   in let k = a64-alloc-temp s2
+   in let s3 = a64-emit (k.state) (arm64-lsl-imm (k.reg) (one.reg) 63)
+   in let vp = a64-load-local s3 (vloc.reg)
+   in let t = a64-alloc-temp (vp.state)
+   in let s4 = a64-emit (t.state) (arm64-sub (t.reg) (k.reg) (vp.reg))
+   in let tloc = a64-alloc-local s4
+   in let s5 = a64-store-local (tloc.state) (tloc.reg) (t.reg)
+   in let s6 = a64-emit s5 (arm64-cmp-imm (vp.reg) 0)
+   in let tp = a64-load-local s6 (tloc.reg)
+   in let o = a64-alloc-temp (tp.state)
+   in A64EmitResult {
+    state = a64-emit (o.state) (arm64-csel (o.reg) (tp.reg) (vp.reg) arm64-cond-lt),
+    reg = o.reg
+   }
+
+  a64-emit-approx-eq : A64State, Integer, Integer, Boolean, Integer -> A64EmitResult
+  a64-emit-approx-eq (st) (l-reg) (r-reg) (f32) (tol) =
+   let lin = a64-alloc-local st
+   in let p0 = a64-store-local (lin.state) (lin.reg) l-reg
+   in let rin = a64-alloc-local p0
+   in let p1 = a64-store-local (rin.state) (rin.reg) r-reg
+   in let lv = a64-load-local p1 (lin.reg)
+   in let ol = a64-emit-real-ordinal (lv.state) (lv.reg) f32
+   in let lloc = a64-alloc-local (ol.state)
+   in let s1 = a64-store-local (lloc.state) (lloc.reg) (ol.reg)
+   in let rv = a64-load-local s1 (rin.reg)
+   in let orr = a64-emit-real-ordinal (rv.state) (rv.reg) f32
+   in let rloc = a64-alloc-local (orr.state)
+   in let s2 = a64-store-local (rloc.state) (rloc.reg) (orr.reg)
+   in let lp = a64-load-local s2 (lloc.reg)
+   in let rp = a64-load-local (lp.state) (rloc.reg)
+   in let d = a64-alloc-temp (rp.state)
+   in let s3 = a64-emit (d.state) (arm64-sub (d.reg) (lp.reg) (rp.reg))
+   in let dloc = a64-alloc-local s3
+   in let s4 = a64-store-local (dloc.state) (dloc.reg) (d.reg)
+   in let dp = a64-load-local s4 (dloc.reg)
+   in let n = a64-alloc-temp (dp.state)
+   in let s5 = a64-emit (n.state) (arm64-neg (n.reg) (dp.reg))
+   in let s6 = a64-emit s5 (arm64-cmp-imm (dp.reg) 0)
+   in let a = a64-alloc-temp s6
+   in let s7 = a64-emit (a.state) (arm64-csel (a.reg) (n.reg) (dp.reg) arm64-cond-lt)
+   in let aloc = a64-alloc-local s7
+   in let s8 = a64-store-local (aloc.state) (aloc.reg) (a.reg)
+   in let tolr = a64-alloc-temp s8
+   in let s9 = a64-emit-li (tolr.state) (tolr.reg) tol
+   in let ap = a64-load-local s9 (aloc.reg)
+   in let s10 = a64-emit (ap.state) (arm64-cmp (ap.reg) (tolr.reg))
+   in let rd = a64-alloc-temp s10
+   in A64EmitResult { state = a64-emit (rd.state) (a64-csinc-le (rd.reg)), reg = rd.reg }
 
   a64-emit-real-approx-comparison : A64State, Integer, Integer, Integer -> A64EmitResult
   a64-emit-real-approx-comparison (st) (l-reg) (r-reg) (cond) =

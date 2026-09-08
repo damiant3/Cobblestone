@@ -1,0 +1,63 @@
+Chapter: DeskBubblePaintTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Foreword chapter Console
+
+ The hover bubble's paint and take-down over a framebuffer that is a plain
+ block, so it takes no glass. One preview slot is filled with one colour and
+ the frame with another; the bubble is shown at the rect the geometry
+ answers for a pill on the bottom edge, and the frame is read inside and
+ outside that rect before and after the hide.
+
+ The sabotage: make `dk-bub-hide` skip the restore and "restored" turns no
+ while "painted" stays yes; make `dk-bub-show` skip the save and "restored"
+ turns no the same way, which is why the pixel under the bubble is read and
+ not merely the flag.
+
+Section: Body
+
+  bp-w : Integer = 640
+  bp-h : Integer = 360
+  bp-bg : Integer = 1118481
+  bp-fg : Integer = 16711935
+
+  bp-yn : Boolean -> Text
+  bp-yn (v) = if v then "yes" else "no"
+
+  bp-fill : Integer, Integer, Integer, Integer -> Integer
+  bp-fill (buf) (n) (c) (i) =
+    if i >= n then 0
+    else let p = poke-32 buf (i * 4) c
+    in bp-fill buf n c (i + 1)
+
+  bp-px : Integer, Integer, Integer -> Integer
+  bp-px (fb) (x) (y) = peek-32 fb ((y * bp-w + x) * 4)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let fb = alloc-zeroed (bp-w * bp-h * 4) 64
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let cs = alloc-zeroed 2048 64
+    in let pb = alloc-zeroed (dk-prev-slots * dk-prev-bytes) 64
+    in let a = poke-32 ds dk-prev-cell pb
+    in let b = dk-bub-init ds
+    in let f1 = bp-fill fb (bp-w * bp-h) bp-bg 0
+    in let f2 = bp-fill (dk-prev-at pb desk-focus-cal) (dk-prev-w * dk-prev-h) bp-fg 0
+    in let r = dk-prev-bubble 300 (bp-h - 40) 80 30 dk-edge-bottom bp-w bp-h
+    in let cx = r.lr-x + dk-prev-w / 2
+    in let cy = r.lr-y + dk-prev-h / 2
+    in let ox = r.lr-x + dk-prev-w + 4
+    in let s1 = dk-bub-show fb bp-w ds cs desk-focus-cal r
+    in let painted = bp-px fb cx cy == bp-fg & bp-px fb (r.lr-x) (r.lr-y) == bp-fg
+    in let outside = bp-px fb ox cy == bp-bg
+    in let twice = dk-bub-show fb bp-w ds cs desk-focus-cal r
+    in let still = dk-bub-visible ds
+    in let h1 = dk-bub-hide fb bp-w ds cs
+    in let restored = bp-px fb cx cy == bp-bg & bp-px fb (r.lr-x) (r.lr-y) == bp-bg
+    in let h2 = dk-bub-hide fb bp-w ds cs
+    in act
+      print-line-uni ("bubble at " & integer-to-text (r.lr-x) & " " & integer-to-text (r.lr-y) & "  painted " & bp-yn painted & "  outside untouched " & bp-yn outside)
+      print-line-uni ("shown once " & bp-yn (still & s1 >= 0 & twice >= 0) & "  hidden " & bp-yn (dk-bub-visible ds == False) & "  restored " & bp-yn restored & "  hide again is a no-op " & bp-yn (h2 == 0))
+    end

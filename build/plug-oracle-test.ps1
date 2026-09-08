@@ -200,9 +200,32 @@ $irFile = Join-Path $Work 'subject.ir'
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: subject did not compile to IR"; exit 3 }
 
 # ---------------------------------------------------------------------------
+# The plugs allowed to REFUSE (plugs-backlog 2.21, class 5), and the marker
+# they refuse with.
+#
+# A class-5 target represents a Codex Integer as a double, so it cannot hold
+# the operands the contract is about and no check written in the target can
+# recover the answer. Refusing is the only honest verdict available to it, so
+# REFUSED is a verdict of its own here: never folded into PASS, and accepted
+# ONLY for a plug on this list (root's ruling, 2026-09-07).
+#
+# The rule runs BOTH ways, which is what stops REFUSED becoming a way to dodge
+# a red. A plug on this list that prints values instead of refusing is a FAIL,
+# because it answered a question it cannot answer. A plug NOT on this list that
+# refuses is also a FAIL, because it declined one it can.
+#
+# Membership is measured on the emitted language, never on the plug's name
+# (2.21: qt emits QML with a JavaScript block, so it is here; gtk emits Python,
+# so it is not). lua, perl and php are deliberately ABSENT: the row places them
+# in class 5 by a language claim nobody has measured, and a guess here would
+# license exactly the silence this column exists to catch.
+$RefusalPlugs = @('typescript', 'angular', 'react', 'vue', 'svelte', 'electron', 'html', 'qt')
+$RefusalMark  = 'CODEX_REFUSED_'
+
+# ---------------------------------------------------------------------------
 # Each plug.
 # ---------------------------------------------------------------------------
-$pass = 0; $fail = 0; $skip = 0
+$pass = 0; $fail = 0; $skip = 0; $refused = 0
 foreach ($p in $Plugs) {
     if ($Only -and $p.Name -ne $Only) { continue }
 
@@ -277,7 +300,45 @@ foreach ($p in $Plugs) {
         $fail++; continue
     }
 
+    # The refusal is read BEFORE the comparison, because a refused program does
+    # not run and its output is the toolchain's error rather than a value list:
+    # compared against truth it would report every line as differing, which
+    # reads as a codegen defect and hides the fact that the plug refused on
+    # purpose.
+    $mayRefuse  = $RefusalPlugs -contains $p.Name
+    $refusalHit = @($got | Select-String -SimpleMatch $RefusalMark)
+    if ($refusalHit.Count -gt 0) {
+        if ($mayRefuse) {
+            $what = if ($got -join ' ' -match "$RefusalMark(\w+)") { $Matches[1] } else { 'unnamed' }
+            Write-Host "  $($p.Name): REFUSED -- $what"
+            $refused++; continue
+        }
+        Write-Host "  $($p.Name): FAIL -- refused, but this plug is not class 5 and can honour the contract"
+        Write-Host "      $($refusalHit[0].Line.Trim())"
+        $fail++; continue
+    }
     $diff = Compare-Object $truth $got -SyncWindow 0
+
+    # A class-5 plug that did not refuse has two quite different cases, and
+    # saying "it printed values" of both is a claim this harness has not
+    # checked: the first run of this column reported exactly that of a
+    # typescript program which had in fact died on an undefined builtin before
+    # it ever reached an overflow. Distinguish them, and show the diff either
+    # way, so the reader can tell "answered a question it cannot answer" from
+    # "fell over somewhere else".
+    if ($mayRefuse) {
+        if ($diff) {
+            Write-Host "  $($p.Name): FAIL -- did not refuse, and its output differs from x86-64 on $($diff.Count) line(s); it may have failed before reaching an overflow"
+            for ($i = 0; $i -lt [Math]::Max($truth.Count, $got.Count); $i++) {
+                $t = if ($i -lt $truth.Count) { $truth[$i] } else { '<none>' }
+                $g = if ($i -lt $got.Count)   { $got[$i] }   else { '<none>' }
+                if ($t -ne $g) { Write-Host "      line $($i + 1): x86-64 $t, $($p.Name) $g" }
+            }
+        } else {
+            Write-Host "  $($p.Name): FAIL -- answered all $($got.Count) values instead of refusing; a double cannot hold these operands"
+        }
+        $fail++; continue
+    }
     if ($diff) {
         Write-Host "  $($p.Name): FAIL -- $($diff.Count) line(s) differ from x86-64"
         for ($i = 0; $i -lt [Math]::Max($truth.Count, $got.Count); $i++) {
@@ -297,7 +358,10 @@ if (-not $KeepArtifacts) {
 }
 
 Write-Host ""
-Write-Host "plug-oracle: $pass passed, $fail failed, $skip skipped"
+Write-Host "plug-oracle: $pass passed, $refused refused, $fail failed, $skip skipped"
 if ($fail -gt 0) { exit 1 }
-if ($pass -eq 0) { Write-Host "plug-oracle: nothing was actually checked"; exit 1 }
+# A refusal IS a check: the plug was run, its output was read, and it declined
+# for the reason class 5 exists. Counting it as nothing would make a class-5
+# only run report "nothing was actually checked" and exit 1 on a correct pass.
+if ($pass -eq 0 -and $refused -eq 0) { Write-Host "plug-oracle: nothing was actually checked"; exit 1 }
 exit 0

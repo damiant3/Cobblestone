@@ -150,7 +150,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-d-name n arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-d-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-d-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-d-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-d-expr-at c arities (depth + 1) & " ? " & emit-d-expr-at t arities (depth + 1) & " : " & emit-d-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "((() { auto " & d-sanitize name & " = " & emit-d-expr-at val arities (depth + 1) & "; return " & emit-d-expr-at body arities (depth + 1) & "; })()"
@@ -178,9 +178,22 @@ Section: Expression Emission
    in if ar == 0 then d-sanitize n & "()"
       else d-sanitize n
 
-  emit-d-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-d-binary (op) (l) (r) (arities) =
+ D defines signed integer overflow as wrapping, so the band is the bare
+ operator and only the plain arm needs anything. The helpers are module
+ functions rather than delegate literals so the emission carries one grammar
+ for every target in this class.
+
+  d-int-arith : Text, Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  d-int-arith (sym) (trap) (l) (r) (ty) (arities) =
+   if int-ty-wraps ty then "(" & emit-d-expr l arities & " " & sym & " " & emit-d-expr r arities & ")"
+   else trap & "(" & emit-d-expr l arities & ", " & emit-d-expr r arities & ")"
+
+  emit-d-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-d-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> d-int-arith "+" "_cx_add_trap" l r ty arities
+    is IrSubInt -> d-int-arith "-" "_cx_sub_trap" l r ty arities
+    is IrMulInt -> d-int-arith "*" "_cx_mul_trap" l r ty arities
     is IrAppendText -> "(" & emit-d-expr l arities & " ~ " & emit-d-expr r arities & ")"
     is IrAppendList -> "(" & emit-d-expr l arities & " ~ " & emit-d-expr r arities & ")"
     is IrConsList -> "[" & emit-d-expr l arities & "] ~ " & emit-d-expr r arities
@@ -298,8 +311,48 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      let bi = d-try-builtin n args arities
      in if text-length bi > 0 then bi
-     else d-sanitize n & "(" & emit-d-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 1 then emit-d-curried (d-sanitize n) args arities 0
+        else if list-length args == ar then d-sanitize n & "(" & emit-d-apply-args args arities 0 & ")"
+        else if list-length args < ar then emit-d-partial n args arities (ar - list-length args)
+        else emit-d-curried (d-sanitize n & "(" & emit-d-apply-args-upto args arities 0 ar & ")") args arities ar
     is otherwise -> emit-d-expr root arities & "(" & emit-d-apply-args args arities 0 & ")"
+
+ D calls a delegate by juxtaposition, so an application past the callee's
+ arity applies the surplus one argument at a time, and a definition applied
+ to fewer arguments than it takes is eta-wrapped as nested delegates.
+
+  emit-d-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-d-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-d-expr (list-at args i) arities & ")"
+   in emit-d-curried next args arities (i + 1)
+
+  emit-d-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-d-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-d-expr (list-at args i) arities
+   else emit-d-expr (list-at args i) arities & ", " & emit-d-apply-args-upto args arities (i + 1) n
+
+  emit-d-partial-open : Integer, Integer -> Text
+  emit-d-partial-open (i) (count) =
+   if i == count then ""
+   else "((Variant _p" & integer-to-text i & "_) { return " & emit-d-partial-open (i + 1) count
+
+  emit-d-partial-close : Integer -> Text
+  emit-d-partial-close (count) =
+   if count == 0 then "" else "; })" & emit-d-partial-close (count - 1)
+
+  emit-d-partial-params : Integer, Integer -> Text
+  emit-d-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-d-partial-params (i + 1) count
+
+  emit-d-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-d-partial (n) (args) (arities) (short) =
+   let call = d-sanitize n & "(" & emit-d-apply-args args arities 0 & ", " & emit-d-partial-params 0 short & ")"
+   in emit-d-partial-open 0 short & call & emit-d-partial-close short
 
   emit-d-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-d-apply-args (args) (arities) (i) =
@@ -373,14 +426,51 @@ Section: Definition Emission
 
 Section: Chapter Emission
 
+ `long.min` is D's spelling of the i64 floor. The multiply answers a zero
+ operand and both `-1` cases before dividing, because `long.min / -1` is the
+ one division that itself overflows.
+
+  d-trap-builtins : Text
+  d-trap-builtins =
+   "long _cx_add_trap(long a, long b) { long v = a + b; if ((a >= 0) == (b >= 0) && (v >= 0) != (a >= 0)) throw new Exception(\"CODEX_TRAP_integer_overflow\"); return v; }\n"
+   & "long _cx_sub_trap(long a, long b) { long v = a - b; if ((a >= 0) != (b >= 0) && (v >= 0) != (a >= 0)) throw new Exception(\"CODEX_TRAP_integer_overflow\"); return v; }\n"
+   & "long _cx_mul_trap(long a, long b) { if (a == 0 || b == 0) return 0; if (a == -1) { if (b == long.min) throw new Exception(\"CODEX_TRAP_integer_overflow\"); return a * b; } if (b == -1) { if (a == long.min) throw new Exception(\"CODEX_TRAP_integer_overflow\"); return a * b; } long v = a * b; if (v / b != a) throw new Exception(\"CODEX_TRAP_integer_overflow\"); return v; }\n\n"
+
   emit-d-chapter : IRChapter, List ATypeDef -> Text
   emit-d-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "import std.stdio;\nimport std.conv;\nimport std.variant;\nimport std.file;\nimport std.algorithm;\nimport core.thread;\n\nauto list_snoc(T)(T[] xs, T v) { return xs ~ v; }\nauto list_push(T)(T[] xs, T v) { return list_snoc(xs, v); }\n" & d-text-builtins & "\n"
+   in let header = d-trap-builtins & "import std.stdio;\nimport std.conv;\nimport std.variant;\nimport std.file;\nimport std.algorithm;\nimport core.thread;\n\nauto list_snoc(T)(T[] xs, T v) { return xs ~ v; }\nauto list_push(T)(T[] xs, T v) { return list_snoc(xs, v); }\n" & d-text-builtins & "\n"
    in let types-text = emit-d-type-defs type-defs 0
    in let defs-text = emit-d-defs (m.defs) 0 arities
    in let entry = d-emit-entry (m.defs)
    in header & types-text & defs-text & "void main() {\n    " & entry & "}\n"
+
+  emit-d-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-d-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = d-trap-builtins & "import std.stdio;\nimport std.conv;\nimport std.variant;\nimport std.file;\nimport std.algorithm;\nimport core.thread;\n\nauto list_snoc(T)(T[] xs, T v) { return xs ~ v; }\nauto list_push(T)(T[] xs, T v) { return list_snoc(xs, v); }\n" & d-text-builtins & "\n"
+   in let types-text = emit-d-type-defs type-defs 0
+   in let entry = d-emit-entry (m.defs)
+   in header & types-text
+
+  emit-d-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-d-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = d-trap-builtins & "import std.stdio;\nimport std.conv;\nimport std.variant;\nimport std.file;\nimport std.algorithm;\nimport core.thread;\n\nauto list_snoc(T)(T[] xs, T v) { return xs ~ v; }\nauto list_push(T)(T[] xs, T v) { return list_snoc(xs, v); }\n" & d-text-builtins & "\n"
+   in let types-text = emit-d-type-defs type-defs 0
+   in let entry = d-emit-entry (m.defs)
+   in "void main() {\n    " & entry & "}\n"
+
+  emit-d-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-d-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = d-trap-builtins & "import std.stdio;\nimport std.conv;\nimport std.variant;\nimport std.file;\nimport std.algorithm;\nimport core.thread;\n\nauto list_snoc(T)(T[] xs, T v) { return xs ~ v; }\nauto list_push(T)(T[] xs, T v) { return list_snoc(xs, v); }\n" & d-text-builtins & "\n"
+   in let types-text = emit-d-type-defs type-defs 0
+   in let entry = d-emit-entry (m.defs)
+   in arities
+
+  emit-d-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-d-chapter-stream-def (m) (v) (i) = emit-d-def (list-at (m.defs) i) v
 
  The arguments arrive as `Variant` at some call sites and as `string` at
  others, and D will not implicitly convert one to the other. A template

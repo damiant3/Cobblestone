@@ -1,0 +1,53 @@
+Chapter: DiagLease
+  cites Kernel chapter Hpet
+  cites Works chapter GopXhci
+  cites Net chapter NetDriver
+  cites Net chapter Dhcp
+  cites Diag chapter DiagStage
+  cites Diag chapter DiagB3
+  cites Diag chapter DiagRecord
+
+ NIC-6 (`docs/Hardware/HardwareSitting.md`): with `ip=dhcp` and no `gw=`,
+ is the LEASED gateway the next hop? A lease is asked for on the driver the
+ stages ahead bound, the leased gateway is ARPed for, and its MAC is
+ reported beside the hop the record channel resolved. Nothing here
+ re-addresses the channel or b3. codex-vm's NAT answers every ARP with one
+ MAC, so the bed reads `same` on every flight; the separating reading is the
+ board's.
+
+Section: States
+
+  dlz-states : List Text = ["ok", "no-lease", "no-arp", "no-card", "no-hpet"]
+
+Section: The Stage
+
+  dlz-arp-ms : Integer = 2000
+
+  dlz-hop-text : Integer -> Text
+  dlz-hop-text (dummy) =
+   if drec-armed 0 == False then "none"
+   else db3-mac-text (drec-mac-unpack (xdiag-get drec-cell-hop-lo) (xdiag-get drec-cell-hop-hi))
+
+  dlz-run : DiagCtx -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
+  dlz-run (c) = act
+   let hz = hpet-ticks-per-second
+   in let cfg-gw = db3-field c "gw" ""
+   in let gwc = " cfg-gw=" & (if text-length cfg-gw == 0 then "absent" else cfg-gw)
+   in if net-driver-active /= net-card-e1000 then diag-result "no-card" diag-col-dim ["no stage ahead bound the driver, so there is no part to ask" & gwc] ["no stage ahead bound the driver, so there is no part to ask" & gwc]
+   else if hz <= 0 then diag-result "no-hpet" diag-col-bad ["no HPET, so the lease wait is not budgeted"] ["no HPET, so the lease wait is not budgeted"]
+   else let d0 = hpet-ticks
+   in act
+    lease <- db3-dhcp-wait net-driver-mac d0 ((hz * db3-dhcp-ms) / 1000) db3-dhcp-rounds
+    if dhcp-is-ack lease == False then diag-result "no-lease" diag-col-warn ["no DHCP server answered in " & show db3-dhcp-ms & " ms" & gwc] ["no DHCP server answered in " & show db3-dhcp-ms & " ms across " & show db3-dhcp-rounds & " DISCOVERs" & gwc]
+    else let a0 = hpet-ticks
+    in act
+     mac <- drec-arp-wait (lease.client-ip) (lease.gateway) a0 ((hz * dlz-arp-ms) / 1000) drec-arp-rounds
+     let hop = dlz-hop-text 0
+     in let gwm = db3-mac-text mac
+     in let same = if list-length mac /= 6 then "none" else if hop == "none" then "unresolved" else if hop == gwm then "same" else "differs"
+     in let row = db3-lease-text lease & " gw-mac=" & gwm & " hop=" & hop & " leased-gw-is-hop=" & same & gwc
+     in if list-length mac /= 6 then diag-result "no-arp" diag-col-warn [row] [row]
+     else diag-result "ok" diag-col-good [row] [row]
+    end
+   end
+  end

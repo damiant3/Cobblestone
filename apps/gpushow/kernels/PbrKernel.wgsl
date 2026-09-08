@@ -5,12 +5,12 @@ const pb_half_w : i32 = 512;
 const pb_half_h : i32 = 384;
 const pb_count : i32 = 7;
 fn pb_cx(i : i32) -> f32 {
-  return ((f32(f32(i)) * bitcast<f32>(1066611507u)) - bitcast<f32>(1079823564u));
+  return ((f32(f32(i)) * 0x1.266666p+0f) - 0x1.b99998p+1f);
 }
 fn pb_rough(i : i32) -> f32 {
-  return (bitcast<f32>(1031127695u) + (f32(f32(i)) * bitcast<f32>(1041529569u)));
+  return (0x1.eb851ep-5f + (f32(f32(i)) * 0x1.28f5c2p-3f));
 }
-const pb_rad : f32 = bitcast<f32>(1057300152u);
+const pb_rad : f32 = 0x1.0a3d70p-1f;
 fn pb_sphere_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i : i32) -> f32 {
   let lx = (ox - pb_cx(i));
   let ly = oy;
@@ -18,14 +18,14 @@ fn pb_sphere_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i :
   let b = (((dx * lx) + (dy * ly)) + (dz * lz));
   let c = ((((lx * lx) + (ly * ly)) + (lz * lz)) - (pb_rad * pb_rad));
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -44,7 +44,7 @@ fn pb_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return best_id;
     } else {
     let t = pb_sphere_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -88,9 +88,10 @@ fn pb_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn pb_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn pb_pow5(x : f32) -> f32 {
   let x2 = (x * x);
@@ -98,35 +99,35 @@ fn pb_pow5(x : f32) -> f32 {
 }
 fn pb_ggx(ndh : f32, a : f32) -> f32 {
   let a2 = (a * a);
-  let d = (((ndh * ndh) * (a2 - bitcast<f32>(1065353216u))) + bitcast<f32>(1065353216u));
-  return (a2 / ((d * d) + bitcast<f32>(953267991u)));
+  let d = (((ndh * ndh) * (a2 - 0x1.000000p+0f)) + 0x1.000000p+0f);
+  return (a2 / ((d * d) + 0x1.a36e2ep-14f));
 }
 fn pb_g1(nx : f32, k : f32) -> f32 {
-  return (nx / (((nx * (bitcast<f32>(1065353216u) - k)) + k) + bitcast<f32>(953267991u)));
+  return (nx / (((nx * (0x1.000000p+0f - k)) + k) + 0x1.a36e2ep-14f));
 }
 fn pb_pack(r : f32, g : f32, b : f32) -> i32 {
-  let ri = i32((pb_clamp01(r) * bitcast<f32>(1132396544u)));
-  let gi = i32((pb_clamp01(g) * bitcast<f32>(1132396544u)));
-  let bi = i32((pb_clamp01(b) * bitcast<f32>(1132396544u)));
+  let ri = i32((pb_clamp01(r) * 0x1.fe0000p+7f));
+  let gi = i32((pb_clamp01(g) * 0x1.fe0000p+7f));
+  let bi = i32((pb_clamp01(b) * 0x1.fe0000p+7f));
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn pb_bg(py : i32) -> i32 {
-  let h = (f32(f32(py)) / bitcast<f32>(1145044992u));
-  return pb_pack((bitcast<f32>(1022739087u) + (h * bitcast<f32>(1028443340u))), (bitcast<f32>(1025758986u) + (h * bitcast<f32>(1031127695u))), (bitcast<f32>(1031127695u) + (h * bitcast<f32>(1036831948u))));
+  let h = (f32(f32(py)) / 0x1.800000p+9f);
+  return pb_pack((0x1.eb851ep-6f + (h * 0x1.999998p-5f)), (0x1.47ae14p-5f + (h * 0x1.eb851ep-5f)), (0x1.eb851ep-5f + (h * 0x1.999998p-4f)));
 }
 fn pb_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / pb_width) * pb_width));
   let py = (gid / pb_width);
-  let fx = (f32(f32((px - pb_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((pb_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1082130432u)));
+  let fx = (f32(f32((px - pb_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((pb_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.000000p+2f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1073741824u) / rl);
-  let ox = bitcast<f32>(0u);
-  let oy = bitcast<f32>(0u);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1084227584u));
-  let id = pb_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let dz = (0x1.000000p+1f / rl);
+  let ox = 0.0;
+  let oy = 0.0;
+  let oz = (0.0 - 0x1.400000p+2f);
+  let id = pb_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   if ((id < 0)) {
   return pb_bg(py);
   } else {
@@ -137,42 +138,42 @@ fn pb_render(gid : i32, frame : i32) -> i32 {
   let nx = ((hx - pb_cx(id)) / pb_rad);
   let ny = (hy / pb_rad);
   let nz = (hz / pb_rad);
-  let ang = (f32(f32(frame)) / bitcast<f32>(1109393408u));
-  let lx0 = ((cos(ang) * bitcast<f32>(1056964608u)) + bitcast<f32>(1050253721u));
-  let ly0 = bitcast<f32>(1060320051u);
-  let lz0 = ((sin(ang) * bitcast<f32>(1056964608u)) - bitcast<f32>(1056964608u));
+  let ang = (f32(f32(frame)) / 0x1.400000p+5f);
+  let lx0 = ((cos(ang) * 0x1.000000p-1f) + 0x1.333332p-2f);
+  let ly0 = 0x1.666666p-1f;
+  let lz0 = ((sin(ang) * 0x1.000000p-1f) - 0x1.000000p-1f);
   let ll = sqrt((((lx0 * lx0) + (ly0 * ly0)) + (lz0 * lz0)));
   let lx = (lx0 / ll);
   let ly = (ly0 / ll);
   let lz = (lz0 / ll);
-  let vx = (bitcast<f32>(0u) - dx);
-  let vy = (bitcast<f32>(0u) - dy);
-  let vz = (bitcast<f32>(0u) - dz);
+  let vx = (0.0 - dx);
+  let vy = (0.0 - dy);
+  let vz = (0.0 - dz);
   let hlx = (lx + vx);
   let hly = (ly + vy);
   let hlz = (lz + vz);
-  let hl = (sqrt((((hlx * hlx) + (hly * hly)) + (hlz * hlz))) + bitcast<f32>(953267991u));
+  let hl = (sqrt((((hlx * hlx) + (hly * hly)) + (hlz * hlz))) + 0x1.a36e2ep-14f);
   let hnx = (hlx / hl);
   let hny = (hly / hl);
   let hnz = (hlz / hl);
-  let ndl = max(bitcast<f32>(0u), (((nx * lx) + (ny * ly)) + (nz * lz)));
-  let ndv = max(bitcast<f32>(0u), (((nx * vx) + (ny * vy)) + (nz * vz)));
-  let ndh = max(bitcast<f32>(0u), (((nx * hnx) + (ny * hny)) + (nz * hnz)));
-  let vdh = max(bitcast<f32>(0u), (((vx * hnx) + (vy * hny)) + (vz * hnz)));
+  let ndl = max(0.0, (((nx * lx) + (ny * ly)) + (nz * lz)));
+  let ndv = max(0.0, (((nx * vx) + (ny * vy)) + (nz * vz)));
+  let ndh = max(0.0, (((nx * hnx) + (ny * hny)) + (nz * hnz)));
+  let vdh = max(0.0, (((vx * hnx) + (vy * hny)) + (vz * hnz)));
   let rough = pb_rough(id);
   let a = (rough * rough);
-  let k = (a * bitcast<f32>(1056964608u));
+  let k = (a * 0x1.000000p-1f);
   let dggx = pb_ggx(ndh, a);
   let gsm = (pb_g1(ndv, k) * pb_g1(ndl, k));
-  let fres = (bitcast<f32>(1025758986u) + (bitcast<f32>(1064682127u) * pb_pow5((bitcast<f32>(1065353216u) - vdh))));
-  let spec = (((dggx * gsm) * fres) / (((bitcast<f32>(1082130432u) * ndv) * ndl) + bitcast<f32>(1008981770u)));
-  let kd = (bitcast<f32>(1065353216u) - fres);
-  let dr = (bitcast<f32>(1063675494u) * kd);
-  let dg = (bitcast<f32>(1060655595u) * kd);
-  let db = (bitcast<f32>(1050253721u) * kd);
-  let sr = (((dr + spec) * ndl) + bitcast<f32>(1028443340u));
-  let sg = (((dg + spec) * ndl) + bitcast<f32>(1031127695u));
-  let sb = (((db + spec) * ndl) + bitcast<f32>(1034147594u));
+  let fres = (0x1.47ae14p-5f + (0x1.eb851ep-1f * pb_pow5((0x1.000000p+0f - vdh))));
+  let spec = (((dggx * gsm) * fres) / (((0x1.000000p+2f * ndv) * ndl) + 0x1.47ae14p-7f));
+  let kd = (0x1.000000p+0f - fres);
+  let dr = (0x1.ccccccp-1f * kd);
+  let dg = (0x1.70a3d6p-1f * kd);
+  let db = (0x1.333332p-2f * kd);
+  let sr = (((dr + spec) * ndl) + 0x1.999998p-5f);
+  let sg = (((dg + spec) * ndl) + 0x1.eb851ep-5f);
+  let sb = (((db + spec) * ndl) + 0x1.47ae14p-4f);
   return pb_pack(sr, sg, sb);
   }
 }

@@ -1,0 +1,194 @@
+Chapter: ChessRules
+  cites Games chapter Chess
+
+ Square indices used below: e1 = 60, a1 = 56, h1 = 63, f1 = 61, g1 = 62,
+ e8 = 4, a8 = 0, h8 = 7, f8 = 5, g8 = 6, c8 = 2, d8 = 3, d7 = 11,
+ e5 = 28, f7 = 13, f5 = 29, f6 = 21, a7 = 8, a5 = 24, e6 = 20, d2 = 51.
+
+ The perft block repeats stage 1's start-position counts, which castling,
+ en passant and promotion must all leave untouched: none of the three can
+ arise inside three plies from the start position.
+
+ We say:
+
+Section: Scenario Boards
+
+  white-castle-board : ChessBoard
+  white-castle-board =
+    let b1 = chess-place chess-blank 60 6
+    in let b2 = chess-place b1 56 4
+    in let b3 = chess-place b2 63 4
+    in chess-rights b3 True True False False
+
+  black-castle-board : ChessBoard
+  black-castle-board =
+    let b1 = chess-place chess-blank 4 12
+    in let b2 = chess-place b1 0 10
+    in let b3 = chess-place b2 7 10
+    in let b4 = chess-rights b3 False False True True
+    in chess-to-move b4 1
+
+  white-castle-with : Integer, Integer -> ChessBoard
+  white-castle-with (sq) (piece) =
+    chess-place white-castle-board sq piece
+
+  moves-from : ChessBoard, Integer -> Integer
+  moves-from (b) (sq) =
+    let moves = chess-moves b
+    in chess-count-from moves sq
+
+  castles-in : ChessBoard -> Integer
+  castles-in (b) =
+    let moves = chess-moves b
+    in chess-count-special moves 3
+
+Section: Castling
+
+  castle-lines : [Console] Nothing
+  castle-lines =
+    let plain = moves-from white-castle-board 60
+    in let plain-castles = castles-in white-castle-board
+    in let blocked-f1 = moves-from (white-castle-with 61 2) 60
+    in let no-queen-right = moves-from (chess-rights white-castle-board True False False False) 60
+    in let through-f1 = moves-from (white-castle-with 5 10) 60
+    in let in-check = moves-from (white-castle-with 4 10) 60
+    in let onto-g1 = moves-from (white-castle-with 6 10) 60
+    in let no-rook = moves-from (chess-place (chess-rights chess-blank True True False False) 60 6) 60
+    in let black-plain = moves-from black-castle-board 4
+    in let black-castles = castles-in black-castle-board
+    in act
+      print-line-uni ("white king e1 with both rights " & show (plain))
+      print-line-uni ("white castles offered " & show (plain-castles))
+      print-line-uni ("knight on f1 " & show (blocked-f1))
+      print-line-uni ("queenside right withdrawn " & show (no-queen-right))
+      print-line-uni ("black rook f8 attacks f1 " & show (through-f1))
+      print-line-uni ("black rook e8 attacks e1 " & show (in-check))
+      print-line-uni ("black rook g8 attacks g1 " & show (onto-g1))
+      print-line-uni ("rights held but no rook " & show (no-rook))
+      print-line-uni ("black king e8 with both rights " & show (black-plain))
+      print-line-uni ("black castles offered " & show (black-castles))
+    end
+
+  castle-effect-lines : [Console] Nothing
+  castle-effect-lines =
+    let short = chess-play white-castle-board 60 62
+    in let long = chess-play white-castle-board 60 58
+    in let rook-move = chess-play white-castle-board 63 62
+    in let wk-after = if short.wk-castle then 1 else 0
+    in let wq-after = if short.wq-castle then 1 else 0
+    in let wk-after-rook = if rook-move.wk-castle then 1 else 0
+    in let wq-after-rook = if rook-move.wq-castle then 1 else 0
+    in act
+      print-line-uni ("after O-O " & format-chess-board short)
+      print-line-uni ("after O-O-O " & format-chess-board long)
+      print-line-uni ("after O-O white rooks " & show (chess-count-piece short 4))
+      print-line-uni ("after O-O kingside right " & show (wk-after))
+      print-line-uni ("after O-O queenside right " & show (wq-after))
+      print-line-uni ("after h1 rook moves kingside right " & show (wk-after-rook))
+      print-line-uni ("after h1 rook moves queenside right " & show (wq-after-rook))
+    end
+
+Section: En Passant
+
+  ep-board : ChessBoard
+  ep-board =
+    let b1 = chess-place chess-blank 28 1
+    in let b2 = chess-place b1 13 7
+    in chess-to-move b2 1
+
+  far-board : ChessBoard
+  far-board =
+    let b1 = chess-place chess-blank 28 1
+    in let b2 = chess-place b1 8 7
+    in chess-to-move b2 1
+
+  ep-lines : [Console] Nothing
+  ep-lines =
+    let after-double = chess-play ep-board 13 29
+    in let after-single = chess-play ep-board 13 21
+    in let after-far = chess-play far-board 8 24
+    in let offered = moves-from after-double 28
+    in let ep-moves = chess-count-special (chess-moves after-double) 2
+    in let far-offered = moves-from after-far 28
+    in let taken = chess-play after-double 28 21
+    in let quiet = chess-play after-double 28 20
+    in act
+      print-line-uni ("ep square after f7f5 " & show (after-double.ep-sq))
+      print-line-uni ("ep square after f7f6 " & show (after-single.ep-sq))
+      print-line-uni ("ep square after a7a5 " & show (after-far.ep-sq))
+      print-line-uni ("white pawn e5 with ep " & show (offered))
+      print-line-uni ("en passant moves offered " & show (ep-moves))
+      print-line-uni ("white pawn e5 without ep " & show (far-offered))
+      print-line-uni ("black pawns after the capture " & show (chess-count-piece taken 7))
+      print-line-uni ("board after the capture " & format-chess-board taken)
+      print-line-uni ("ep square after a quiet push " & show (quiet.ep-sq))
+    end
+
+Section: Promotion
+
+  promo-board : ChessBoard
+  promo-board = chess-place chess-blank 11 1
+
+  promo-lines : [Console] Nothing
+  promo-lines =
+    let open-moves = chess-moves promo-board
+    in let open-count = chess-count-from open-moves 11
+    in let with-target = chess-place promo-board 2 10
+    in let target-moves = chess-moves with-target
+    in let target-count = chess-count-from target-moves 11
+    in let target-caps = chess-count-captures target-moves
+    in let blocked = chess-place promo-board 3 10
+    in let blocked-count = chess-count-from (chess-moves blocked) 11
+    in let black-promo = chess-to-move (chess-place chess-blank 51 7) 1
+    in let black-count = chess-count-from (chess-moves black-promo) 51
+    in act
+      print-line-uni ("white pawn d7 to an empty d8 " & show (open-count))
+      print-line-uni ("promotions to queen " & show (chess-count-promote open-moves 5))
+      print-line-uni ("promotions to rook " & show (chess-count-promote open-moves 4))
+      print-line-uni ("promotions to bishop " & show (chess-count-promote open-moves 3))
+      print-line-uni ("promotions to knight " & show (chess-count-promote open-moves 2))
+      print-line-uni ("promotions to pawn " & show (chess-count-promote open-moves 1))
+      print-line-uni ("promotions to king " & show (chess-count-promote open-moves 6))
+      print-line-uni ("with a rook on c8 " & show (target-count))
+      print-line-uni ("with a rook on c8 captures " & show (target-caps))
+      print-line-uni ("with d8 occupied " & show (blocked-count))
+      print-line-uni ("black pawn d2 to an empty d1 " & show (black-count))
+      print-line-uni ("black promotions to queen " & show (chess-count-promote (chess-moves black-promo) 11))
+    end
+
+  promo-effect-lines : [Console] Nothing
+  promo-effect-lines =
+    let promoted = chess-play promo-board 11 3
+    in act
+      print-line-uni ("after the promotion " & format-chess-board promoted)
+      print-line-uni ("white queens " & show (chess-count-piece promoted 5))
+      print-line-uni ("white pawns " & show (chess-count-piece promoted 1))
+    end
+
+Section: Start Position Unchanged
+
+  perft-lines : [Console] Nothing
+  perft-lines =
+    let start = chess-new
+    in let p1 = chess-perft start 1
+    in let p2 = chess-perft start 2
+    in let p3 = chess-perft start 3
+    in act
+      print-line-uni ("perft 1 " & show (p1))
+      print-line-uni ("perft 2 " & show (p2))
+      print-line-uni ("perft 3 " & show (p3))
+    end
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    castle-lines
+    castle-effect-lines
+    ep-lines
+    promo-lines
+    promo-effect-lines
+    perft-lines
+  end
+
+Page 1

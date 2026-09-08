@@ -433,19 +433,213 @@ and enforced property rather than a document. What is still open:
    `fixed` is still the rung that has not shipped, and the reason has not
    changed: separating "the same bytes every call" from "one walk over an
    input" needs the 264-entry registry measured, and `bs-alloc` reads
-   `unknown` on 132 of them (re-measure before quoting; it was 245 on
-   2026-08-20 and moved six times on 2026-08-21). What HAS changed is that this no longer blocks
+   `unknown` on 80 of 265 (RE-MEASURED 2026-09-07 off `Builtins.codex` at
+   head: `none` 161, `unknown` 80, `fixed` 14, `input` 8, `budgeted` 1,
+   `budgeted:3` 1. The row count is 265, not 264. Re-measure before quoting;
+   this moved a long way while nobody was reading it). What HAS changed is that this no longer blocks
    ordinary parsing code from declaring anything, because `budgeted` is the
    rung that code actually sits on. `bounded fixed` is refused as unsupported
    (CDX6103) rather than accepted unchecked, which is the same
    abstain-toward-refusal one level up: an unchecked promise reads exactly
    like a checked one.
 
-   **`fixed` is the one rung left and it is STILL blocked, on less than it
-   was.** Separating "fixed bytes per call" from "one walk over an input"
-   needs a per-builtin allocation class; 3.1 published the text family and
-   the list family is now measured too, but the 264-entry builtin registry is
-   only half read -- 132 rows still `unknown` -- and the check cannot read a
+   **SETTLED 2026-09-07 (blu), because the paragraph above left it addressed
+   to nobody.** The rung is NOT blocked on the registry being complete, and
+   the sentence in CDX6103's message that says it is should be read as
+   naming the wrong thing.
+
+   `none` already ships on the rule that a name in call position which is not
+   a definition in this unit and not a measured row is read as allocating, so
+   an `unknown` row refuses ONE DECLARATION at ONE call site rather than
+   holding back the rung. `fixed` needs the same predicate one step up the
+   lattice: a callee reading `none` or `fixed` keeps the promise, `input`,
+   `linear` or `growing` breaks it, `budgeted:N` keeps it exactly when
+   argument N is a literal, which `cost-arg-literal` already decides and
+   `cost-head-overbudget` already calls. Nothing in that shape wants the
+   other 79 rows filled in.
+
+   **What IS blocking it is a different thing this section had folded into
+   the same sentence: whether the rows already reading `fixed` are right.**
+   There are 14 of them at head (2026-09-07, after `show` moved to `unknown`
+   and `__linked-list-empty` to `none`; re-measure before quoting). The
+   `alloc-bytes` account below is the
+   reason to doubt them: its first arm passed the literal 64, read `fixed` at
+   both sizes, and was measuring the arm rather than the builtin: the class
+   followed a parameter the arm held constant. A row wrongly reading `fixed`
+   is worse than a row reading `unknown`, because `unknown` refuses and
+   `fixed` accepts, and `bounded fixed` would then rest on it. **`bs-varies`
+   does not help here and must not be pressed into service**: it is consumed
+   by `const-name-invariant` for constant-expression invariance, not by the
+   cost model, so it says nothing about allocation.
+
+   **ALL 14 ROWS READING `fixed` ARE NOW ESTABLISHED (2026-09-07, blu): six
+   in the first pass and the remaining eight below. Two were wrong and were
+   corrected, `show` to `unknown` and `__linked-list-empty` to `none`; the
+   other twelve are right. The rung shipped on top of them (main 23058).**
+   What follows is how each was read, and the method was: take
+
+   **FIRST PASS OVER THE 16, 2026-09-07 (blu), and the first row checked is
+   wrong in the direction that matters.** `show` reads `fixed`.
+   `emit-show-builtin` (`Emit/X86_64.codex:1652`) dispatches on the
+   ARGUMENT'S TYPE, not on a value: `TextTy` emits the expression itself and
+   allocates nothing, `BooleanTy` goes to `emit-show-bool`, a real to
+   `__real_to_text`, an f32 to `emit-show-real-approx`, and everything else
+   to `__itoa`. **That last path is the same helper `integer-to-text` emits,
+   and `integer-to-text` reads `budgeted`.** Two rows describe one piece of
+   code and disagree, and the more permissive of the two is the one on the
+   polymorphic name.
+
+   **The general point, which is worth more than the row.** `bs-alloc` is
+   keyed by BUILTIN NAME, and `show`'s allocation is a property of the TYPE
+   it is instantiated at. One name, four emission paths, at least two
+   allocation behaviours, and `__real_to_text` measured by nobody: the
+   helpers are a level below the registry and have no rows at all. A
+   per-name class cannot describe a builtin like this, so the honest reading
+   is that `show` is not `fixed` on present evidence. **It reads `unknown` as
+   of 2026-09-07 (blu)**, and stays there until either the paths are measured
+   or the registry can key on instantiation.
+
+   **THE OTHER 15, same pass, with the confidence on each stated.** The
+   method was reading the emitter for a CONSTANT allocation, `heap-bump-imm
+   N` or `emit-bivy-alloc st N`, rather than an arm, because a constant in
+   the emitter settles "same bytes every call" without a run.
+
+   - **Correct at 16 bytes, established:** `char-to-text` and `char-encode`
+     (`emit-bivy-alloc st1 16`), `vec-splat`, `vec4-splat`, `vec-load-at`
+     (all `emit-bivy-alloc ... 16`), and `__linked-list-push`
+     (`heap-bump-imm st5 16`).
+   - **`__linked-list-empty` was OVER-TIGHT and reads `none` as of
+     2026-09-07 (blu).** Its emitter is `li (rd.reg) 0`: an empty linked list
+     is the null pointer and it allocates nothing at all. `fixed` was safe for
+     a `bounded fixed` promise, since `none < fixed`, but it FALSELY REFUSED a
+     `bounded none` whose body calls it.
+   - **THE REMAINING EIGHT ARE ESTABLISHED, 2026-09-07 (blu), by reading the
+     allocation site each one reaches rather than the emitter it names. All
+     eight are CORRECT as `fixed` and no row changed.** The amount is what
+     matters, not its value: every site takes an immediate, so the bytes are
+     the same every call.
+
+     | row | allocation site | bytes |
+     |---|---|---|
+     | `vec-add`, `vec-sub`, `vec-mul`, `vec-div` | `emit-vec-arith-core`, `emit-bivy-alloc st5 16` | 16 |
+     | `vec-select` | `emit-bivy-alloc st9 16` | 16 |
+     | `vec-empty` | `emit-list st []`, so `heap-bump-imm 8` + `(0+1)*8` | 16 |
+     | `vec-singleton` | `emit-list st args`, arity 1, so `heap-bump-imm 8` + `(1+1)*8` | 24 |
+     | `__list-tail` | `__list_tail` in `X86_64ListHelpers.codex:38`, `heap-bump-imm 8` then `heap-bump-imm 16` | 24 |
+
+     `emit-list`'s `(count + 1) * 8` is the one that could have followed an
+     input, and does not: `count` is `list-length elems` over the CALL'S
+     arguments, fixed by the builtin's arity at compile time. The elements'
+     own evaluation can allocate and is charged to the argument expressions,
+     which is how every other row is read too. `__list_tail` was the open
+     question because its helper has no registry row; it is a view-sharing
+     tail that writes a two-word header and shares the parent's storage, with
+     no loop and no dependence on the list's length. **The structural gap it
+     illustrates is real and is NOT closed by this measurement**: `bs-alloc`
+     is keyed by builtin NAME while the allocation happens a level below, so
+     these eight are correct today by inspection of code no registry row
+     covers.
+
+     **`build/check-builtin-alloc.ps1` is the runner for that gap
+     (2026-09-07, blu).** It carries the row-to-allocation-site table the
+     registry does not, and refuses two things: an allocation site in a
+     pinned body that does not take an immediate, and any edit to a pinned
+     body at all. The second exists because the first is only as wide as the
+     spellings it knows (L-CENSUS), and it was controlled by sabotaging a
+     site with an allocation call the first rule has never heard of: rule 1
+     stayed silent and rule 2 caught it alone. A row reading `fixed` with no
+     recorded site is refused by name rather than skipped. The table is
+     hand-written because crawling the emitters pins `emit-expr`, which all
+     of them call to evaluate arguments, and a check that reds on unrelated
+     codegen churn teaches people to re-pin without looking. **Nothing runs
+     it yet**, which is the same L-NOGATE shape it exists to answer; wiring
+     it into the gate means changing the generator under `codex/build/`.
+
+   **A NOTE ON THE METHOD, because it nearly produced a false all-clear.** A
+   first sweep grepped only for `heap-bump-imm` and returned NOTHING for
+   eight rows, which reads exactly like eight rows that allocate nothing. The
+   control passed and was insufficient: it proved the pattern found
+   `heap-bump-imm`, not that `heap-bump-imm` was the only spelling. There are
+   at least two, and `char-to-text` uses the other one. A negative from a
+   sweep is only as wide as its pattern (L-CENSUS), and the tell here was a
+   window that bled into the next function and reported `vec-singleton`
+   calling `chan-kern-create`.
+
+   **BLAST RADIUS, re-measured 2026-09-07 (blu) by counting DECLARATIONS
+   rather than the word: SIX files declare `bounded`, all under `codex/test`,
+   72 declarations.** `bounded-none-accepted` (63),
+   `bounded-budgeted-accepted` (4), `bounded-accepted` (2),
+   `bounded-none-exceeded`, `bounded-budgeted-exceeded` and
+   `bounded-exceeded` (1 each). **No production code in the tree declares
+   `bounded` at all**, so neither row can break a shipping unit.
+
+   The earlier count said four files and missed both `bounded-budgeted-*`
+   arms, which are the ONLY rung either change can move: `cost-head-overbudget`
+   is consulted at rank 2 (`budgeted`) alone. A count by the word `bounded`
+   and a count by the declaration are different claims, and the pattern that
+   answered four could not see the two files that mattered (L-CENSUS).
+
+   **Neither row moves any test's verdict, and the reason is worth more than
+   the rows.** `show` at `unknown` is refused by `cost-head-overbudget`
+   (it is not in `is-rt-safe-builtin`), but no `bounded budgeted` function in
+   the tree reaches `show`: `bounded-exceeded` calls `show i` inside
+   `grow-loop` under a rank-3 `bounded linear` declaration, which is decided
+   by the growth inference and never consults an allocation class.
+   `__linked-list-empty` at `none` widens what `bounded none` accepts through
+   `cost-builtin-nonalloc`, and no arm declares `bounded none` over it.
+   `codex/test/cost/builtin-alloc.codex` measures classes at runtime and has
+   no `.expected`, so it grades nothing either. **Both rows were therefore
+   correct and UNOBSERVED, which is the L-NOGATE shape, so the change carries
+   the two arms that observe them** and each was measured flipping across it:
+
+   | arm | seed `9E5C7780B7FBC69C` | candidate `FF940613EFCFAF48` |
+   |---|---|---|
+   | `codex/test/errors/bounded-budgeted-show` | compiles | refused CDX6101 |
+   | `codex/test/apps/bounded-none-linked-empty` | refused CDX6101 | compiles |
+
+   Each refusal names the row under test in its message (`'labels' declares
+   bounded budgeted but allocates past a named bound`; `'empty-is-free'
+   declares bounded none but allocates`), so neither arm is passing for a
+   reason beside the one it exists for (L-VACUOUS). `check-errors` runs the
+   first and `check-test-compile` the second, so both sit in a runner rather
+   than in this document. Neither has an `.expected`, which is the convention
+   the other three `bounded-*` arms in `codex/test/apps` already follow: for
+   these the assertion is the verdict, not the output.
+
+   The remaining 15 rows are unexamined.
+   each row reading `fixed` and re-run it with the argument that could carry
+   the class VARIED, the way `alloc-bytes` was caught. Rows with no such
+   argument (`char-to-text`, `char-encode`, the `vec-` family) are settled by
+   inspection. Only then is the rung's inference worth writing, and CDX6103's
+   message wants rewording at the same time.
+
+   **`fixed` SHIPPED 2026-09-07 (blu), and it was never blocked on the
+   registry.** `bounded fixed` is checked rather than refused: the overbudget
+   walk carries a `strict` flag, and the whole of the difference between the
+   two rungs is that a plain `budgeted` callee keeps a `budgeted` promise and
+   breaks a `fixed` one. `none`, `fixed` and `budgeted:N` with a literal
+   argument N keep it; `input`, `linear`, `growing` and `unknown` break it.
+   CDX6103 had exactly one producer and is gone with it, along with its code
+   and registry row.
+
+   Measured across seed `9E5C7780B7FBC69C` and candidate `FF940613EFCFAF48`
+   (rows) then the rung's own candidate:
+
+   | arm | seed | candidate |
+   |---|---|---|
+   | `bounded-fixed-accepted` (`substring line 0 4`) | refused CDX6103 | compiles |
+   | `bounded-fixed-exceeded` (`integer-to-text n`) | refused CDX6103 | refused CDX6101 |
+
+   **The refusal arm is a control rather than a self-check**: its body is the
+   one `bounded-budgeted-accepted` declares one rung up and is accepted, so
+   the pair isolates the `strict` flag and nothing else. The other eight arms
+   (`none`, `budgeted`, `linear`, accepted and refused, plus the two row arms)
+   were re-run against the same candidate and are unmoved, which is what says
+   threading the flag did not disturb the rungs that already shipped. Separating "fixed bytes per call" from "one walk over
+   an input" needs a per-builtin allocation class; 3.1 published the text
+   family and the list family is now measured too, and the registry is
+   **70 per cent read as of 2026-09-07, 80 rows still `unknown`**, which
+   refuses those builtins rather than the rung. The check cannot read a
    class that lives only in a document. **`bs-alloc` on `BuiltinSpec` SHIPPED (blu, 2026-08-19, main
    17450)** (`codex/compiler/Types/Builtins.codex`), which is where the class
    belongs: it puts the answer beside the name and the type, and

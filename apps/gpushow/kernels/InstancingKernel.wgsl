@@ -6,45 +6,45 @@ const in_half_h : i32 = 384;
 const in_count : i32 = 25;
 const in_cols : i32 = 5;
 fn in_gx(i : i32) -> f32 {
-  return (f32(f32(((i - ((i / in_cols) * in_cols)) - 2))) * bitcast<f32>(1067450368u));
+  return (f32(f32(((i - ((i / in_cols) * in_cols)) - 2))) * 0x1.400000p+0f);
 }
 fn in_gz(i : i32) -> f32 {
-  return (f32(f32(((i / in_cols) - 2))) * bitcast<f32>(1067450368u));
+  return (f32(f32(((i / in_cols) - 2))) * 0x1.400000p+0f);
 }
-const in_half : f32 = bitcast<f32>(1054280253u);
+const in_half : f32 = 0x1.ae147ap-2f;
 fn in_col_r(i : i32) -> f32 {
-  return (bitcast<f32>(1057803468u) + (f32(f32((i - ((i / in_cols) * in_cols)))) * bitcast<f32>(1035489771u)));
+  return (0x1.199998p-1f + (f32(f32((i - ((i / in_cols) * in_cols)))) * 0x1.70a3d6p-4f));
 }
 fn in_col_g(i : i32) -> f32 {
-  return (bitcast<f32>(1055286886u) + (f32(f32((i / in_cols))) * bitcast<f32>(1036831948u)));
+  return (0x1.ccccccp-2f + (f32(f32((i / in_cols))) * 0x1.999998p-4f));
 }
 fn in_col_b(i : i32) -> f32 {
-  return (bitcast<f32>(1062836633u) - (f32(f32((i - ((i / in_cols) * in_cols)))) * bitcast<f32>(1031127695u)));
+  return (0x1.b33332p-1f - (f32(f32((i - ((i / in_cols) * in_cols)))) * 0x1.eb851ep-5f));
 }
 fn in_box_t(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32) -> f32 {
   let s = in_half;
-  let t1x = (((bitcast<f32>(0u) - s) - ox) / dx);
+  let t1x = (((0.0 - s) - ox) / dx);
   let t2x = ((s - ox) / dx);
   let nx = min(t1x, t2x);
   let fx = max(t1x, t2x);
-  let t1y = (((bitcast<f32>(0u) - s) - oy) / dy);
+  let t1y = (((0.0 - s) - oy) / dy);
   let t2y = ((s - oy) / dy);
   let ny = min(t1y, t2y);
   let fy = max(t1y, t2y);
-  let t1z = (((bitcast<f32>(0u) - s) - oz) / dz);
+  let t1z = (((0.0 - s) - oz) / dz);
   let t2z = ((s - oz) / dz);
   let nz = min(t1z, t2z);
   let fz = max(t1z, t2z);
   let tmin = max(nx, max(ny, nz));
   let tmax = min(fx, min(fy, fz));
   if ((tmin > tmax)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  if ((tmax < bitcast<f32>(981668462u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((tmax < 0x1.0624dcp-10f)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  if ((tmin < bitcast<f32>(981668462u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((tmin < 0x1.0624dcp-10f)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
   return tmin;
   }
@@ -69,7 +69,7 @@ fn in_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return best_id;
     } else {
     let t = in_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -113,40 +113,41 @@ fn in_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn in_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn in_pack(r : f32, g : f32, b : f32) -> i32 {
-  let ri = i32((in_clamp01(r) * bitcast<f32>(1132396544u)));
-  let gi = i32((in_clamp01(g) * bitcast<f32>(1132396544u)));
-  let bi = i32((in_clamp01(b) * bitcast<f32>(1132396544u)));
+  let ri = i32((in_clamp01(r) * 0x1.fe0000p+7f));
+  let gi = i32((in_clamp01(g) * 0x1.fe0000p+7f));
+  let bi = i32((in_clamp01(b) * 0x1.fe0000p+7f));
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn in_bg(py : i32) -> i32 {
-  let h = (f32(f32(py)) / bitcast<f32>(1145044992u));
-  return in_pack((bitcast<f32>(1028443340u) + (h * bitcast<f32>(1031127695u))), (bitcast<f32>(1031127695u) + (h * bitcast<f32>(1035489771u))), (bitcast<f32>(1036831948u) + (h * bitcast<f32>(1043878379u))));
+  let h = (f32(f32(py)) / 0x1.800000p+9f);
+  return in_pack((0x1.999998p-5f + (h * 0x1.eb851ep-5f)), (0x1.eb851ep-5f + (h * 0x1.70a3d6p-4f)), (0x1.999998p-4f + (h * 0x1.70a3d6p-3f)));
 }
 fn in_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / in_width) * in_width));
   let py = (gid / in_width);
-  let fx = (f32(f32((px - in_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((in_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + ((fy - bitcast<f32>(1051931443u)) * (fy - bitcast<f32>(1051931443u)))) + bitcast<f32>(1074790400u)));
+  let fx = (f32(f32((px - in_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((in_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + ((fy - 0x1.666666p-2f) * (fy - 0x1.666666p-2f))) + 0x1.200000p+1f));
   let dx0 = (fx / rl);
-  let dy0 = ((fy - bitcast<f32>(1051931443u)) / rl);
-  let dz0 = (bitcast<f32>(1069547520u) / rl);
-  let ay = (f32(f32(frame)) / bitcast<f32>(1109393408u));
+  let dy0 = ((fy - 0x1.666666p-2f) / rl);
+  let dz0 = (0x1.800000p+0f / rl);
+  let ay = (f32(f32(frame)) / 0x1.400000p+5f);
   let cy = cos(ay);
   let sy = sin(ay);
-  let ox0 = bitcast<f32>(0u);
-  let oy0 = bitcast<f32>(1074580684u);
-  let oz0 = (bitcast<f32>(0u) - bitcast<f32>(1086744166u));
+  let ox0 = 0.0;
+  let oy0 = 0x1.199998p+1f;
+  let oz0 = (0.0 - 0x1.8cccccp+2f);
   let ox = ((ox0 * cy) + (oz0 * sy));
-  let oz = ((bitcast<f32>(0u) - (ox0 * sy)) + (oz0 * cy));
+  let oz = ((0.0 - (ox0 * sy)) + (oz0 * cy));
   let dx = ((dx0 * cy) + (dz0 * sy));
-  let dz = ((bitcast<f32>(0u) - (dx0 * sy)) + (dz0 * cy));
-  let id = in_nearest(ox, oy0, oz, dx, dy0, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let dz = ((0.0 - (dx0 * sy)) + (dz0 * cy));
+  let id = in_nearest(ox, oy0, oz, dx, dy0, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   if ((id < 0)) {
   return in_bg(py);
   } else {
@@ -156,14 +157,14 @@ fn in_render(gid : i32, frame : i32) -> i32 {
   let hx = (lx + (dx * t));
   let hy = (oy0 + (dy0 * t));
   let hz = (lz + (dz * t));
-  let ax = select(hx, (bitcast<f32>(0u) - hx), (hx < bitcast<f32>(0u)));
-  let aay = select(hy, (bitcast<f32>(0u) - hy), (hy < bitcast<f32>(0u)));
-  let az = select(hz, (bitcast<f32>(0u) - hz), (hz < bitcast<f32>(0u)));
-  let nlx = select(bitcast<f32>(0u), select((bitcast<f32>(0u) - bitcast<f32>(1065353216u)), bitcast<f32>(1065353216u), (hx > bitcast<f32>(0u))), ((ax >= aay) & (ax >= az)));
-  let nly = select(bitcast<f32>(0u), select((bitcast<f32>(0u) - bitcast<f32>(1065353216u)), bitcast<f32>(1065353216u), (hy > bitcast<f32>(0u))), ((aay >= ax) & (aay >= az)));
-  let nlz = select(bitcast<f32>(0u), select((bitcast<f32>(0u) - bitcast<f32>(1065353216u)), bitcast<f32>(1065353216u), (hz > bitcast<f32>(0u))), ((az >= ax) & (az >= aay)));
-  let ndl = max(bitcast<f32>(0u), (((nlx * bitcast<f32>(1053609164u)) + (nly * bitcast<f32>(1061662228u))) + (nlz * (bitcast<f32>(0u) - bitcast<f32>(1056293519u)))));
-  let sh = (bitcast<f32>(1046562734u) + (ndl * bitcast<f32>(1063339950u)));
+  let ax = select(hx, (0.0 - hx), (hx < 0.0));
+  let aay = select(hy, (0.0 - hy), (hy < 0.0));
+  let az = select(hz, (0.0 - hz), (hz < 0.0));
+  let nlx = select(0.0, select((0.0 - 0x1.000000p+0f), 0x1.000000p+0f, (hx > 0.0)), ((ax >= aay) && (ax >= az)));
+  let nly = select(0.0, select((0.0 - 0x1.000000p+0f), 0x1.000000p+0f, (hy > 0.0)), ((aay >= ax) && (aay >= az)));
+  let nlz = select(0.0, select((0.0 - 0x1.000000p+0f), 0x1.000000p+0f, (hz > 0.0)), ((az >= ax) && (az >= aay)));
+  let ndl = max(0.0, (((nlx * 0x1.999998p-2f) + (nly * 0x1.8f5c28p-1f)) + (nlz * (0.0 - 0x1.eb851ep-2f))));
+  let sh = (0x1.c28f5cp-3f + (ndl * 0x1.c28f5cp-1f));
   return in_pack((in_col_r(id) * sh), (in_col_g(id) * sh), (in_col_b(id) * sh));
   }
 }

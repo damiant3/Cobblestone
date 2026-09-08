@@ -45,7 +45,7 @@ A multi-model database server written entirely in Codex that runs on bare metal 
 - **Protocol** -- Binary wire protocol: Ed25519 auth challenge/response, query/result/error messages
 - **Session** -- Per-connection state machine
 - **Server** -- Connection management, request routing, DDL operations
-- **DbBoot** -- Bare-metal boot entry point: service state machine, system catalog bootstrap
+- **DbBoot** -- Bare-metal boot: service state machine, system catalog bootstrap. Its `opening` lives in **DbBootMain**, so that `Dashboard` and `DbAdmin` can cite it
 - **Proxy** -- Forward and reverse proxy with five load-balancing strategies, circuit breakers
 
 ### Security and Operations
@@ -59,7 +59,7 @@ A multi-model database server written entirely in Codex that runs on bare metal 
 
 ## Completeness
 
-90% -- All 38 functional modules are fully implemented with real logic. The storage engine, query engine, transaction stack, multi-model stores, server, and operations modules are substantive and internally consistent. The primary gap is that the executor materializes full result sets rather than streaming.
+90% -- All 45 chapters (2026-09-08) are fully implemented with real logic, and every one of them compiles: the storage engine, query engine, transaction stack, multi-model stores, server, and operations modules are substantive and internally consistent. The primary gap is that the executor materializes full result sets rather than streaming.
 
 ## Codex Conformance
 

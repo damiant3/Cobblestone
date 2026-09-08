@@ -35,7 +35,7 @@ Section: Integrated System State
     is-journal = journal-new LogDebug,
     is-metrics = metric-store-empty,
     is-services = service-registry-empty,
-    is-config = config-store-empty,
+    is-config = config-empty,
     is-middleware-counts = 0
   }
 
@@ -68,7 +68,7 @@ Section: Journal Bridge -- OS logs flow into SystemDb
   isys-log-fatal : IntegratedSystem, Text, Text, Integer -> IntegratedSystem
   isys-log-fatal (sys) (source) (msg) (ts) = isys-log sys LogFatal source msg ts
 
-  journal-level-to-sysdb : LogLevel -> LogLevel
+  journal-level-to-sysdb : LogLevel -> DbLogLevel
   journal-level-to-sysdb (l) =
     when l
       is LogDebug -> LvDebug
@@ -152,7 +152,7 @@ Section: Policy Decision Audit
     in let rdb3 = rdb-record-metric rdb2 ("policy." & decision) 1 timestamp
     in IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
 
-  rdb-with-audit : RuntimeDb, AuditLog -> RuntimeDb
+  rdb-with-audit : RuntimeDb, DbAuditLog -> RuntimeDb
   rdb-with-audit (rdb) (audit) = RuntimeDb { rdb-catalog = rdb.rdb-catalog, rdb-sysdb = rdb.rdb-sysdb, rdb-audit = audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version }
 
 Section: Capability Audit Bridge
@@ -224,7 +224,7 @@ Section: Config Bridge -- OS ConfigStore backed by RuntimeDb
 
   isys-set-config : IntegratedSystem, Text, Text, Text, Text, Integer -> IntegratedSystem
   isys-set-config (sys) (namespace) (key) (value) (user) (timestamp) =
-    let cfg2 = config-set (sys.is-config) (namespace & "." & key) value
+    let cfg2 = config-set-text (sys.is-config) (namespace & "." & key) value
     in let rdb2 = rdb-set-config (sys.is-runtime) namespace key value user timestamp
     in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = cfg2, is-middleware-counts = sys.is-middleware-counts }) LogInfo "config" ("set " & namespace & "." & key & "=" & value & " by " & user) timestamp
 
@@ -232,7 +232,7 @@ Section: Config Bridge -- OS ConfigStore backed by RuntimeDb
   isys-get-config (sys) (namespace) (key) =
     let rdb-val = rdb-get-config (sys.is-runtime) namespace key
     in if text-length rdb-val > 0 then rdb-val
-    else config-get (sys.is-config) (namespace & "." & key)
+    else config-get-text (sys.is-config) (namespace & "." & key) ""
 
   isys-get-config-or : IntegratedSystem, Text, Text, Text -> Text
   isys-get-config-or (sys) (namespace) (key) (default) =

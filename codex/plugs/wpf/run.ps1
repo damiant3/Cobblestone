@@ -16,8 +16,11 @@ $Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir  = (Resolve-Path $PSScriptRoot).Path
 $PlugCdx  = Join-Path $PlugDir 'build-output\wpf-plug.cdx'
 $IrDir    = Join-Path $PlugDir 'build-output'
-$IrFile   = Join-Path $IrDir 'last-run.ir'
-$LogFile  = Join-Path $IrDir 'run.log'
+# Scratch is keyed to the run so two concurrent runs cannot cross
+# their IR and their log (plugs 2.26).
+$RunTag  = if ($Out) { [System.IO.Path]::GetFileNameWithoutExtension($Out) } else { $PID }
+$IrFile   = Join-Path $IrDir "last-run-$RunTag.ir"
+$LogFile  = Join-Path $IrDir "run-$RunTag.log"
 
 if (-not (Test-Path -PathType Leaf $PlugCdx)) {
     [Console]::Error.WriteLine("MISSING: $PlugCdx -- run plugs/wpf/build.ps1 first")

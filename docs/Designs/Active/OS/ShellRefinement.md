@@ -408,9 +408,14 @@ buffer per click, and a third arm holds the setting on and passes no click, so
 a pass cannot come from a gate reading only one of the two. Both discriminating
 sabotages were run and each turned the arm they aimed at red.
 
-**What the stage still owes: focus change, error and notification.** Those are
-three more effects in `Sound.codex` and three call sites that do not exist yet;
-the click is the one the desk already had an event for.
+**Focus change, error and notification: DONE (val, 2026-09-08).** `dk-snd-init`
+renders four effects into the sound block; a step parks a request with
+`dk-snd-request` and `desk-loop` drains it once with `dk-snd-pump`, which is
+how a step whose row carries no `Audio` reaches the controller.
+`dk-snd-focus-note` plays a 40 ms tick on a switch between two windows and
+nothing for an open from nothing or a minimise. The Files open with no FAT
+ESP requests `snd-error`; the Web Server pane requests `snd-success` when a
+request lands in its log. Arm `codex/test/apps/desk-sound-events`.
 
 ### Stage 5: Settings
 
@@ -564,11 +569,37 @@ the size `dk-icons-init` settles at boot beside the one `desk-icon-in`
 recomputes per paint, and it said they agreed, which is what ruled out the
 guard and left the geometry.
 
+### The start menu overflows the glass at seven, and nothing clips it
+
+**A group of seven entries puts the laid start menu's bottom past the taskbar
+band, and no layer refuses.** The menu expands the group holding the
+selection, so its height is that group's row count; at 1600 wide a seventh
+Productivity entry measured menu 58..410 against a band at 418..454 of 450,
+where six had measured 74..398 against 406..442. Measured by val 2026-09-08
+adding the Sheets pane; `codex/test/apps/desk-menu-groups` is the arm that
+caught it, which is what that arm was written for after rows once landed off
+the glass where no count, no hit test and no id lookup could see them.
+
+**The workaround taken is not the fix.** Sheets went into Accessories, a
+group with room, which lowers no ceiling: the next app to join any
+six-entry group hits the same wall, and the group an app belongs in stops
+being a naming decision and becomes an arithmetic one. `GopPrograms`'
+`gpr-split` prose now says so, which is a warning rather than a remedy.
+
+**What a fix has to do.** Nothing in the widget layer clips or scrolls, and
+`flex-col-place` places a child past its container rather than refusing, so
+the menu needs one of: a scrolling column, a clip at the container that the
+hit test agrees with, or a menu that pages its groups. A refusal is worth
+more than a silent overflow either way: a row drawn past the glass is
+reported reachable by every count and every id lookup in the tree.
+
 ### What is still missing, in the order it is worth doing
 
-1. **The shadow is still hard edged.** `comp-shadow` draws its own offset
-   shape; it should blur, and a blur is the same coverage primitive applied
-   over a kernel rather than a chord.
+1. **The shadow blurs. DONE.** `comp-shadow` reads `sh-blur` and draws
+   `comp-shadow-stack`: one layer per device pixel of blur, outermost first,
+   each at the same alpha, so the blends accumulate against the box and thin
+   to one layer at the edge (`GopComposite.codex`, "`sh-blur` has been
+   carried through `Theme`"). A blur of zero keeps the hard-edged shape.
 2. **An antialiased stroke. DONE.** `vec-stroke-coverage` and its em-mapped
    form answer a 0 to 255 grid the way `vec-coverage` does, so outline artwork
    is no longer a Bresenham staircase through a smooth compositor.
@@ -1891,8 +1922,8 @@ guard and left the geometry.
    |---|---|---|
    | 1 | the band docks to any edge | landed, main 20024 |
    | 2 | the flick | this section |
-   | 3 | hot-launch pills | not started |
-   | 4 | the Cobblestone button's position | not started |
+   | 3 | hot-launch pills | **mechanism landed, main 22380.** A pinned app has a pill with no window; `dk-pill-live` is the union the four walks ask. NOT closed: no pin gesture, and `dk-pill-hit`/`desk-pill-icons` are covered by no arm |
+   | 4 | the Cobblestone button's position | **designed below, not started.** It is five variables, not one |
 
    **That list existed only in one session's head until now, and recovering
    it after that session was evicted cost a transcript dig.** A CL description
@@ -1900,6 +1931,112 @@ guard and left the geometry.
    L-ADJECTIVE's second half wearing a number: the count was accurate and told
    nobody what the other three were. A stage list goes in the design before
    the first stage ships.
+
+   ### STAGE 4. "The Cobblestone button's position" is FIVE variables
+
+   Damian, 2026-09-07, at the running desk: *"we have the docking for the
+   start menu, then the orientation of the open tasks versus all tasks is a
+   variable too. so like in this example maybe i want the cobblestone button
+   default, but open tasks to go up the page and clicking cobblestone menu
+   opens its list in the horizontals instead of like in windows going only
+   vertical and up."* Then: *"we want it to also have 'float over' the
+   existing layout when you open the cobblestone menu, or 'embed in' the
+   layout, which causes the shifting of everything now. in that mode, there
+   should be a scroll bar and virtual space to keep the layout of the
+   existing window for the apps opened already from having to relayout. but
+   then the one that doesn't float can be opened permanent or only when
+   clicked, and dismisses when something is launched or the cobblestone menu
+   dismissed (esc)."*
+
+   **Today there is ONE variable and three things are welded to it.**
+   `dk-task-edge` decides `DirRow` against `DirColumn` in `desk-taskbar`, so
+   the pills flow whichever way the band runs; the Cobblestone button is the
+   band's first child, so its position falls out of the same choice; and the
+   menu reads the edge not at all, which is the defect measured below. The
+   stage name reads as one setting because today the three agree by accident.
+
+   | | variable | today | Damian's example |
+   |---|---|---|---|
+   | 1 | the Cobblestone button's dock | first child of the band | default, bottom left |
+   | 2 | the open-task pill flow | the band's own axis | up the page |
+   | 3 | the all-tasks list orientation | vertical, always | horizontal |
+   | 4 | menu presentation | in the layout, painted over the windows | float over, or embed in |
+   | 5 | menu persistence, embed only | transient | permanent, or dismissed on launch or Esc |
+
+   Axis 2 is half built already: `dk-pedge` gives every app's pill its own
+   edge, written by the flick (6.7.1), so WHICH edge a pill lands on is a
+   per-app fact today. What is missing is the flow direction within a strip.
+
+   #### The two defects stage 4 had to fix: DONE, both pinned by `codex/test/apps/desk-menu-anchor`
+
+   **The menu anchors at the button.** `desk-menu-tree (ps) (tf) (s) (ds)`
+   reads `dk-task-edge`: the body sits at the bottom of its column only for a
+   bottom-docked band, and the column goes to the far side only for a
+   right-docked one. The arm's claim is the GAP TO THE BAND, not equality of
+   left edges (the theme pads the band's button by 14 and the menu column by
+   16, so equality reads NO where the placement is right): 8 logical at the
+   top and bottom edges, 16 at the sides, "against it yes" at all four.
+
+   **The button has height on the side edges.** `dk-task-btn-h` asks for the
+   face's line step, and for the bitmap cell on the faceless path, where a
+   minimum of zero laid the button out at `h 0` whenever the band was a
+   column. The arm reads `h 24` at every edge and "button has height yes".
+
+   **One verdict of that probe was a bad assertion and is recorded so nobody
+   re-derives it.** It asked whether the menu's left edge EQUALS the button's
+   left edge, which reads NO even at the bottom edge where the placement is
+   correct, because 14 against 16 is the theme's padding. An equality test
+   whose honest answer is a near miss is not an assertion. The Y coordinates
+   carry this finding.
+
+   #### What already exists, and the one mechanism that does not
+
+   **`codex/foreword/ui/Scroll.codex` is 12 KB of working scroll and the desk
+   has never used it.** A viewport and content `ScrollState`, thumb geometry
+   on BOTH axes, `scroll-visible-rect`, page and row helpers, and
+   `scroll-slice`/`scroll-take`, which answer only the visible children of a
+   list. `Browser`, `Tab`, `FilterableList` and `GopReview` cite it, so a
+   desk pane already scrolls. **`desk-menu-groups.codex` says "nothing in the
+   widget layer clips or scrolls" and that is half wrong**: there is no
+   clipping, `Widget.codex` contains none, but there is scrolling. Anyone
+   costing axis 4 from that sentence would build an engine that exists.
+
+   Scroll here works by SLICING A CHILD LIST rather than by clipping a
+   viewport. That is the right primitive for the menu's own list and the
+   wrong one for keeping open apps still, and the difference is what sizes
+   this stage:
+
+   - **Opening the menu does not reflow open windows today and cannot.** They
+     are absolute rects (`dk-wnd-rx/ry/rw/rh`, device pixels) painted by
+     `desk-wnd-paint-all`, not laid children. What shifts is the chrome,
+     because the menu is passed as the CONTENT to `desk-chrome-face` and an
+     over-tall menu pushes the band ahead of it (6.4 already records that).
+   - **So "virtual space so the apps do not relayout" is not a relayout
+     problem. It is a VIEWPORT ORIGIN for the window layer**: one offset
+     added at paint and at hit test. That does not exist and is the only
+     genuinely new mechanism in stage 4.
+   - It needs no clipping. The desk already tolerates a window hanging off
+     the glass and keeps the band on top by paint ORDER rather than by
+     clipping, which section 2 of `works-desk-contract.md` records.
+   - The scrollbar itself is nearly free: `scroll-thumb-x/y/w/h` is the
+     geometry.
+
+   The cost shape to expect: the edge change (6.7) moved `dk-cbox-*` to take
+   `ds` at 40 call sites in `GopDesk` and 43 across seven test chapters. A
+   viewport origin read by every paint and every hit test is that shape
+   again, and it is the reason this stage is sized in call sites rather than
+   in functions.
+
+   #### OPEN, AND DAMIAN'S ALONE: which combinations are supported
+
+   Five independent settings is a combinatorial surface, and every
+   combination is a layout that has to be right on the glass: a horizontal
+   menu list docked to a vertical band with pills flowing up is a real
+   arrangement someone can select. Storing them is nothing, the `ds` block
+   has two free cells (248 and 252) and each variable is a few bits. The cost
+   is entirely in which combinations we commit to. **Name the supported set
+   deliberately rather than claiming all of them and finding the bad ones on
+   the glass.** Not answered here on purpose.
 
    ### 6.4 THE FLICK: DONE, val 2026-08-27
 
@@ -1964,6 +2101,8 @@ guard and left the geometry.
    | the hover mini-preview | **RULED, see below.** The app decides; the default is a mini-render of the whole window, floating by the pill |
    | whether a flick's DIRECTION picks the edge the pill attaches to | **RULED: YES. The direction IS the selection criterion.** Needs per-edge pill strips |
    | the heavy-pane stranding decision | **RULED: option D, FIX THE ALLOCATOR.** See below. This lane's, after 6.7 |
+   | a restored window gets a normal size smaller than maximised (Damian, 2026-09-07) | **DONE, main 23220.** The five full-screen panes open maximised with the three-quarter rect placed in their block; `codex/test/apps/desk-window-restore-size` pins it, restore surviving a reopen included |
+   | a virtual desktop space to move into (Damian, 2026-09-07) | **WAITS ON HIS WORDING.** Recorded nowhere but val's row; two readings (several virtual desktops with a switcher, or a desk larger than the screen). Root carries the question; neither is built until he answers |
 
    ### THE STRANDING IS RULED: FIX THE ALLOCATOR (Damian, 2026-08-27 evening)
 
@@ -2352,10 +2491,10 @@ guard and left the geometry.
    | stage | what it is |
    |---|---|
    | P.1 | **DONE. The buffer and the capture.** `dk-prev-cell` (ds 232) holds 17 slots of 128 by 72 device pixels, written only by `dk-prev-capture` from `desk-app-hide` -- the single choke point every windowed pane's minimise reaches. Nothing paints from it, so the picture cannot move, the way 6.7.1 was deliberately inert. **Arm: the Monitor's `preview` row is EMPTY with Files open and never minimised, and reads `10=0x00000e1c` after one minimise. `0x000e1c` is the Files window body's own colour, read back off a frame where the window is visible; the taskbar two hundred pixels away is `0x000f1f`, so the snapshot is the WINDOW's pixels and not the band's or the desktop's** |
-   | P.2 | **WRITTEN, arm pending a gate window. Hover with a dwell.** The "which pill" half already existed: `dk-pill-hit` answers the focus id under a point by searching the laid root. What P.2 adds is `dk-hover-note` / `dk-hover-held` / `dk-hover-ready` on cells 236 and 240, so a pointer crossing the band does not flash every pill it passes. **The tick is a PARAMETER and that is the whole of why it is testable**: `desk.ps1 -Rtc` pins the HPET as well as the CMOS, so a frozen-clock capture can never satisfy a dwell -- the same constraint that leaves the flick with no capture arm. `codex/test/desk-hover` drives it with synthetic times and no framebuffer. The assertion that carries the design is `restated`: re-noting the SAME pill must not reset the dwell, or a jittering pointer never reaches the threshold |
-   | P.3a | **WRITTEN, arm pending. The bubble's geometry.** `dk-prev-bubble` answers where the bubble goes from the pill's device rect, the band's edge and the glass: on the pill's own edge, pushed off the band by a gap, centred on the pill along the other axis. **It SHIFTS rather than clips** -- a preview cropped at the screen edge shows the wrong part of the window, so a pill near a corner gets its bubble beside it instead of over it. Pure, so it is pinned with no framebuffer: all four edges plus both shift directions, and the shift cases are chosen so the shifted answer DISAGREES with the unshifted one |
-   | P.3b | **Paint it.** Blit the snapshot into that rect and take it down again when the hover ends. This is the stage the picture moves in, and it needs the cursor's save-and-restore trick or a repaint of the region -- transient chrome over a desktop nothing else redraws |
-   | P.4 | **The app decides.** A pane may supply its own preview instead of the default snapshot. This is the other half of the ruling and it goes LAST on purpose: until P.1 to P.3 exist there is nothing for an app to override, and a hook with no default behind it is the shape that ships as a demo |
+   | P.2 | **DONE; `codex/test/desk-hover` green on seed `076181B2` (val, 2026-09-07). Hover with a dwell.** The "which pill" half already existed: `dk-pill-hit` answers the focus id under a point by searching the laid root. What P.2 adds is `dk-hover-note` / `dk-hover-held` / `dk-hover-ready` on cells 236 and 240, so a pointer crossing the band does not flash every pill it passes. **The tick is a PARAMETER and that is the whole of why it is testable**: `desk.ps1 -Rtc` pins the HPET as well as the CMOS, so a frozen-clock capture can never satisfy a dwell -- the same constraint that leaves the flick with no capture arm. `codex/test/desk-hover` drives it with synthetic times and no framebuffer. The assertion that carries the design is `restated`: re-noting the SAME pill must not reset the dwell, or a jittering pointer never reaches the threshold |
+   | P.3a | **DONE; the `bub-*` rows of `codex/test/desk-hover` green on seed `076181B2` (val, 2026-09-07). The bubble's geometry.** `dk-prev-bubble` answers where the bubble goes from the pill's device rect, the band's edge and the glass: on the pill's own edge, pushed off the band by a gap, centred on the pill along the other axis. **It SHIFTS rather than clips** -- a preview cropped at the screen edge shows the wrong part of the window, so a pill near a corner gets its bubble beside it instead of over it. Pure, so it is pinned with no framebuffer: all four edges plus both shift directions, and the shift cases are chosen so the shifted answer DISAGREES with the unshifted one |
+   | P.3b | **DONE (val, 2026-09-07). Paint it.** `dk-bub-show` saves the pixels under the bubble into the block behind `ds` cell 252 and blits the slot; `dk-bub-hide` puts them back; both hide the cursor first so its own saved rectangle never holds bubble pixels. `dk-hover-step` runs from `desk-loop`'s idle path only when the pointer moved or a hover is noted, notes the pill under the pointer, hides on leaving, and shows once the dwell is ready and the window is minimised; `desk-dispatch` hides before anything else paints. **Arm: `codex/test/apps/desk-bubble-paint`** over a plain block as the frame: painted inside, untouched outside, restored after the hide, a second show and a second hide inert. **Cost, measured:** the desk's idle rate 13,601 against 13,805 iterations a second before the change; unguarded it was 10,999, which is why the step is guarded. **Photographed on the bed (val, 2026-09-07):** the Calculator opened from the start menu, minimised by its button, the pointer dwelling on its pill, and the mini-render of its button grid floating above the pill. The recipe is a `-mouse-file` timeline against `DeskVm` at 1600 by 900 with a LIVE clock (`-rtc` stops the HPET and the dwell never fires): samples are DELTAS from a centred pointer, clamped to 127 each, so the pill at (80,848) is six samples of (-120,66); click; the Calculator row at (140,414) is four of (15,-108); click; the minimise button at (1304,160) is ten samples; click; the Calculator pill at (224,848) is ten samples back; hold there past 400 ms; screenshot. `desk.ps1` does not carry `-mouse-file`, so this is codex-vm invoked directly with the desk's own arguments |
+   | P.4 | **DONE (val, 2026-09-08, main 23318). The app decides.** `dk-prev-own` names the panes that supply their own preview; for one of them `dk-prev-fresh` renders `desk-wnd-preview-tree` into the pane's slot at scale 1 at SHOW time, from `dk-bub-open`, so the picture is live rather than the minimise moment; every other pane keeps the P.1 snapshot. The Clock is the first taker, on a mechanical reason rather than taste: a snapshot of a clock is wrong the moment it is taken, so `clk-preview-tree` supplies the time alone (its window tree laid into 72 rows showed only the tab row, the time label falling below the slot). A pane that wants its own adds itself to `dk-prev-own` and an arm to `desk-wnd-preview-tree`. **Arm: `codex/test/apps/desk-preview-own`**: two slots hold a sentinel no palette carries; the Calendar's bubble blits the sentinel, the Clock's overwrites it, and an open that never asks blits the sentinel for both. **Photographed on the bed** with the P.3b timeline aimed at the Clock row (140,358): the bubble over the Clock pill reads the live time |
 
    **What this list must not become.** The section below records that a bubble
    which works for the Calculator and is blank for Files "is a demo, and it

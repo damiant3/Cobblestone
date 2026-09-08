@@ -76,6 +76,33 @@ Section: Color Application
     in let cb = if b > 255 then 255 else b
     in cr * 65536 + cg * 256 + cb
 
+ The colour road. A light's tint is its colour as three fractions of 255,
+ the shade is that tint scaled by the scalar above, and the sum over the
+ lights is a Vec3 whose axes are the three channels.
+
+  light-tint : SparkLight -> Vec3
+  light-tint (light) =
+    let c = light.sl-color
+    in vec3-new (real-from-int (c / 65536) / 255.0) (real-from-int (c / 256 - c / 65536 * 256) / 255.0) (real-from-int (c - c / 256 * 256) / 255.0)
+
+  light-shade-rgb : SparkLight, Vec3, Vec3 -> Vec3
+  light-shade-rgb (light) (pos) (normal) = vec3-scale (light-tint light) (light-shade light pos normal)
+
+  light-shade-all-rgb : List SparkLight, Vec3, Vec3, Integer, Vec3 -> Vec3
+  light-shade-all-rgb (lights) (pos) (normal) (i) (total) =
+    if i >= list-length lights then total
+    else light-shade-all-rgb lights pos normal (i + 1) (vec3-add total (light-shade-rgb (list-at lights i) pos normal))
+
+  light-clamp-unit : Real -> Real
+  light-clamp-unit (v) = if v > 1.0 then 1.0 else if v < 0.0 then 0.0 else v
+
+  light-apply-rgb : Integer, Vec3 -> Integer
+  light-apply-rgb (base-color) (shade) =
+    let r = real-to-int (real-from-int (base-color / 65536) * light-clamp-unit (shade.vx))
+    in let g = real-to-int (real-from-int (base-color / 256 - base-color / 65536 * 256) * light-clamp-unit (shade.vy))
+    in let b = real-to-int (real-from-int (base-color - base-color / 256 * 256) * light-clamp-unit (shade.vz))
+    in r * 65536 + g * 256 + b
+
 Section: Helpers
 
   light-v3-normalize : Vec3 -> Vec3

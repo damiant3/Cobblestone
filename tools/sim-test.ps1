@@ -14,14 +14,18 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 . (Join-Path 'build' 'vm-config.ps1')
 
+# SimRunner, not SimBaseline. SimBaseline's opening runs a double-elimination
+# tournament and never calls run-batch, so a kernel built from it boots and
+# prints bracket results this parser cannot read. SimRunner's opening is the
+# one that calls run-batch and format-aggregate, which is the line below.
 $Kernel = 'build-output/codexmagic-baseline.cdx'
 if (-not (Test-Path $Kernel)) {
-    Write-Error "Compile SimBaseline first: pwsh build/compile.ps1 -Src apps/games/codexmagic/SimBaseline.codex -Out $Kernel -Log build-output/sim.log"
+    Write-Error "Compile SimRunner first: pwsh build/compile.ps1 -Src apps/games/codexmagic/SimRunner.codex -Out $Kernel -Log build-output/sim.log -Kernel seed/Codex.cdx"
     exit 1
 }
 
 # CSV header
-$header = "game_id,seed,p0_wins,p1_wins,draws,fp_wins,total_turns,screw,flood,config"
+$header = "game_id,seed,p0_wins,p1_wins,draws,fp_wins,total_turns,screw,flood,discards,pitches,config"
 if (-not (Test-Path $OutFile)) {
     Set-Content -Path $OutFile -Value $header -Encoding UTF8
 } else {
@@ -51,30 +55,42 @@ for ($i = 0; $i -lt $Games; $i++) {
     $lines = @()
     for ($j = 0; $j -lt 20; $j++) {
         $line = Read-StreamLine -Stream $stream -TimeoutSec 120
-        if (-not $line) { break }
+        # Read-StreamLine answers $null at end of stream and "" for a BLANK
+        # LINE, and SimRunner prints four of those between its sections. A
+        # truthiness test cannot tell the two apart and stopped the read at
+        # the first blank, one line into an eleven-line report.
+        if ($null -eq $line) { break }
         $lines += $line
+        if ($line -match '=== Done ===') { break }
     }
     try { Close-Vm -Conn $run.Conn -Process $run.Process } catch {}
 
-    # Parse output
-    $result = $lines | Where-Object { $_ -match '^P0:' }
+    # Parse output. format-aggregate puts everything on ONE line and opens it
+    # with "Games:", so an anchor at P0 matches nothing; SimRunner prints two
+    # such lines (baseline, then proposed) and the first is the baseline.
+    $result = $lines | Where-Object { $_ -match 'P0:' } | Select-Object -First 1
     if ($result) {
         $parsed = $false
         if ($result -match 'P0:\s*(\d+)\s*P1:\s*(\d+)\s*Draw:\s*(\d+)') {
             $p0 = $matches[1]; $p1 = $matches[2]; $dr = $matches[3]
             $parsed = $true
         }
-        $fpLine = $lines | Where-Object { $_ -match 'FP%:' }
-        $fp = '?'; $turns = '?'; $screw = '?'; $flood = '?'
-        if ($fpLine -match 'FP%:\s*(\d+)\s*AvgT:\s*(\d+)') {
+        $fp = '?'; $turns = '?'; $screw = '?'; $flood = '?'; $disc = '?'; $pitch = '?'
+        if ($result -match 'FP%:\s*(\d+)\s*AvgT:\s*(\d+)') {
             $fp = $matches[1]; $turns = $matches[2]
         }
-        $screwLine = $lines | Where-Object { $_ -match 'Screw:' }
-        if ($screwLine -match 'Screw:\s*(\d+)\s*Flood:\s*(\d+)') {
+        # Screw and Flood are printed as percentages, so the per-cent sign sits
+        # between the two numbers.
+        if ($result -match 'Screw:\s*(\d+)%?\s*Flood:\s*(\d+)') {
             $screw = $matches[1]; $flood = $matches[2]
         }
+        # The two fix counters. GAME-9 exists so that these are not always zero
+        # when a ruleset enables a fix.
+        if ($result -match 'Disc:\s*(\d+)\s*Pitch:\s*(\d+)') {
+            $disc = $matches[1]; $pitch = $matches[2]
+        }
         if ($parsed) {
-            $row = "$gameId,$seed,$p0,$p1,$dr,$fp,$turns,$screw,$flood,mixed-mirror"
+            $row = "$gameId,$seed,$p0,$p1,$dr,$fp,$turns,$screw,$flood,$disc,$pitch,mixed-mirror"
             Add-Content -Path $OutFile -Value $row -Encoding UTF8
             $winner = if ([int]$p0 -gt [int]$p1) { "P0 wins" } elseif ([int]$p1 -gt [int]$p0) { "P1 wins" } else { "Draw" }
             Write-Host " $winner (T$turns)" -ForegroundColor Green
@@ -92,7 +108,7 @@ Write-Host ""
 Write-Host "  Results written to $OutFile" -ForegroundColor Green
 
 # Summary
-$data = Import-Csv $OutFile
+$data = @(Import-Csv $OutFile)
 $total = $data.Count
 if ($total -gt 0) {
     $p0Total = ($data | Measure-Object -Property p0_wins -Sum).Sum

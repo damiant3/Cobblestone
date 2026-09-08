@@ -77,7 +77,7 @@ Section: Expression Desugaring
      let dlist = desugar-expr-at list-expr (depth + 1)
      in let dbody = desugar-expr-at body (depth + 1)
      in let lam = deck-record (ALambdaExpr [make-name (token-text var-tok)] dbody synthetic-span)
-     in let map-fn = deck-record (ANameExpr (make-name "map-list") synthetic-span)
+     in let map-fn = deck-record (ANameExpr (make-name "map-list") (token-span var-tok))
      in deck-record (AApplyExpr (deck-record (AApplyExpr map-fn lam synthetic-span)) dlist synthetic-span)
     is ErrExpr (tok) -> deck-record (AErrorExpr (token-text tok) (token-span tok))
     is InductionExpr (scrut) (arms) ->
@@ -661,20 +661,48 @@ Section: Document Desugaring
   push-derived-for-type : TypeDef, LinkedList ADef -> LinkedList ADef
   push-derived-for-type (td) (acc) =
    let acc1 = if deriving-has (td.deriving) "Show" then __linked-list-push acc (gen-show-def td) else acc
-   in let acc2 = if deriving-has (td.deriving) "Eq" | td-self-recursive td then __linked-list-push acc1 (gen-eq-def td) else acc1
+   in let acc2 = if deriving-has (td.deriving) "Eq" | td-eq-safe td then __linked-list-push acc1 (gen-eq-def td) else acc1
    in if deriving-has (td.deriving) "Ord" then __linked-list-push acc2 (gen-compare-def td) else acc2
 
-  td-self-recursive : TypeDef -> Boolean
-  td-self-recursive (td) =
+ EVERY SUM GETS `__eq_<T>`, not only the sums that derive Eq or name their own
+ type in a field. The helper is built in the DESUGARER, so it travels in the IR
+ and every backend receives it; a sum without one forces each backend to carry
+ an inline equality of its own, and the arm64 one refuses two shapes rather
+ than guess (a sum with more than one field-carrying constructor, because two
+ constructors can hold different types at one field index, and a field that
+ resolves to a sum, because inlining does not terminate on a recursive type).
+ Synthesising for every sum retires both refusals and puts one equality at one
+ site instead of three. COMPILER-63.
+
+ `gen-field-eq` compares each field pair with `==`, so a sum-typed field
+ resolves to THAT type's helper rather than being inlined, which is what makes
+ the recursive case terminate.
+
+ A SUM WITH A FIELD THE LANGUAGE REFUSES TO COMPARE GETS NO HELPER. The body
+ compares every field pair with `==`, and `Real` refuses `==` outright with
+ CDX2085, which directs the author to `~` or `~0` instead. Measured 2026-09-08:
+ widening the gate without this guard stops `codex/test/ops/real-mode-fields`
+ compiling, one CDX2085 per `Real` field, where before the widening that sum
+ got no helper at all and compiled clean. The field walk is syntactic because
+ the desugarer runs before types resolve, and `type-expr-names` recurses
+ through `AppType`, so a moded `Real approximate` is caught along with a bare
+ one.
+
+ A type that DERIVES `Eq` keeps its helper whatever its fields hold: that arm
+ is the author asking for equality, and dropping the helper under them would be
+ a silent refusal rather than the diagnostic they get today.
+
+  td-eq-safe : TypeDef -> Boolean
+  td-eq-safe (td) =
    when td.body
-    is VariantBody (ctors) -> ctors-name-type ctors (token-text (td.name)) 0 (list-length ctors)
+    is VariantBody (ctors) -> ctors-eq-safe ctors 0 (list-length ctors)
     is otherwise -> False
 
-  ctors-name-type : List VariantCtorDef, Text, Integer, Integer -> Boolean
-  ctors-name-type (ctors) (tn) (i) (len) =
-   if i >= len then False
-   else if fields-name-type ((list-at ctors i).fields) tn 0 (list-length ((list-at ctors i).fields)) then True
-   else ctors-name-type ctors tn (i + 1) len
+  ctors-eq-safe : List VariantCtorDef, Integer, Integer -> Boolean
+  ctors-eq-safe (ctors) (i) (len) =
+   if i >= len then True
+   else if fields-name-type ((list-at ctors i).fields) "Real" 0 (list-length ((list-at ctors i).fields)) then False
+   else ctors-eq-safe ctors (i + 1) len
 
   fields-name-type : List TypeExpr, Text, Integer, Integer -> Boolean
   fields-name-type (fs) (tn) (i) (len) =

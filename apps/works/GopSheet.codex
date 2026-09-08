@@ -1,0 +1,91 @@
+Chapter: GopSheet
+  cites Sheets chapter CellView
+  cites Sheets chapter CellEval
+  cites Sheets chapter CellGraph
+  cites Sheets chapter CellStore
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter CCE
+
+ The Sheets pane, READ ONLY. The grid renders and the totals are real
+ (the formulas evaluate through CellEval in the order CellGraph derives);
+ nothing here takes a keystroke or a click yet, which is SHEET-10.
+
+ ONE LABEL PER CELL, NOT ONE PER ROW. `sheet-render` pads a row with
+ spaces and lines the columns up only in a monospace font, which the desk
+ does not promise; a row of labels each given the same minimum width
+ lines up whatever the font's metrics are. The text of each cell still
+ comes from the same evaluator the text renderer uses, so the pane and
+ `sheet-render` can never disagree about a value.
+
+ THE TREE IS REBUILT EVERY REPAINT and so is the sheet behind it, which
+ is the Clock's cost model rather than a leak: `desk-loop` repaints on an
+ event or a tick, and every allocation a pane makes after `desk-run` took
+ the base mark is released when the pane exits. A sheet a person edits
+ cannot be rebuilt this way, because a rebuild would discard the edit;
+ that is the first thing SHEET-10 has to change.
+
+Section: The Sheet This Pane Shows
+
+ A worked example rather than an empty grid, because an empty grid cannot
+ show that the totals are computed: D2 and D3 are products, D4 is a SUM
+ over them, and D5 asks for a total of a text cell and is REFUSED by name.
+
+  gsh-rows-shown : Integer = 6
+  gsh-cols-shown : Integer = 4
+  gsh-cell-w : Integer = 92
+  gsh-cell-h : Integer = 20
+
+  gsh-demo : Integer -> Sheet
+  gsh-demo (dummy) =
+    let s0 = sheet-open gsh-rows-shown gsh-cols-shown 512
+    in let s1 = sheet-type (sheet-type s0 0 0 "Item") 0 1 "Qty"
+    in let s2 = sheet-type (sheet-type s1 0 2 "Cost") 0 3 "Total"
+    in let s3 = sheet-type (sheet-type s2 1 0 "Widget") 1 1 "3"
+    in let s4 = sheet-type (sheet-type s3 1 2 "250") 1 3 "=B2*C2"
+    in let s5 = sheet-type (sheet-type s4 2 0 "Gadget") 2 1 "2"
+    in let s6 = sheet-type (sheet-type s5 2 2 "400") 2 3 "=B3*C3"
+    in let s7 = sheet-type (sheet-type s6 3 0 "Total") 3 3 "=SUM(D2:D3)"
+    in sheet-type (sheet-type s7 4 0 "Refused") 4 3 "=B2+A2"
+
+Section: The Tree
+
+  gsh-cell-label : Sheet, Results, Integer, Integer -> WidgetNode
+  gsh-cell-label (sh) (rs) (r) (c) =
+    let id = "sh-c-" & show r & "-" & show c
+    in widget-set-min (widget-label id (eval-cell (sh.sh-prog) rs r c)) gsh-cell-w gsh-cell-h
+
+  gsh-row-cells : Sheet, Results, Integer, Integer, List WidgetNode -> List WidgetNode
+  gsh-row-cells (sh) (rs) (r) (c) (acc) =
+    if c >= gsh-cols-shown then acc
+    else gsh-row-cells sh rs r (c + 1) (list-push acc (gsh-cell-label sh rs r c))
+
+  gsh-row : Sheet, Results, Integer -> WidgetNode
+  gsh-row (sh) (rs) (r) =
+    widget-set-min (widget-panel ("sh-r-" & show r) DirRow 4 (gsh-row-cells sh rs r 0 [])) 0 gsh-cell-h
+
+  gsh-rows : Sheet, Results, Integer, List WidgetNode -> List WidgetNode
+  gsh-rows (sh) (rs) (r) (acc) =
+    if r >= gsh-rows-shown then acc
+    else gsh-rows sh rs (r + 1) (list-push acc (gsh-row sh rs r))
+
+ The column letters are a heading row of their own rather than the
+ sheet's first row, because a person reads A, B, C to name a cell and the
+ sheet's own first row is the table's headings.
+
+  gsh-head-cells : Integer, List WidgetNode -> List WidgetNode
+  gsh-head-cells (c) (acc) =
+    if c >= gsh-cols-shown then acc
+    else gsh-head-cells (c + 1) (list-push acc (widget-set-min (widget-label ("sh-h-" & show c) (gr-col-name c)) gsh-cell-w gsh-cell-h))
+
+  gsh-head : Integer -> WidgetNode
+  gsh-head (dummy) =
+    widget-set-min (widget-panel "sh-head" DirRow 4 (gsh-head-cells 0 [])) 0 gsh-cell-h
+
+  gsh-tree : Integer -> WidgetNode
+  gsh-tree (blk) =
+    let sh = gsh-demo 0
+    in let rs = eval-run (sh.sh-prog)
+    in widget-panel "sh-root" DirColumn 4 (list-push (list-push (list-push [] (gsh-head 0)) (widget-separator "sh-sep")) (widget-set-flex (widget-panel "sh-grid" DirColumn 2 (gsh-rows sh rs 0 [])) 1))
+
+Page 1

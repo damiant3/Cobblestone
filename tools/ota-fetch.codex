@@ -4,6 +4,7 @@ Chapter: OtaFetch
   cites Net chapter UdpIO
   cites Encode chapter Coap
   cites Foreword chapter OtaUpdate
+  cites Foreword chapter Board
   cites Foreword chapter Console
 
  `codex/test/apps/ota-lwm2m-loopback` drives the OTA download by calling
@@ -43,6 +44,12 @@ Section: Configuration
 
   of-bank-base : Integer = 536875008
   of-stage-addr : Integer = 536879104
+
+ The staging capacity is the same 400 KB the round cap describes, stated
+ as its own constant because `fw-stage` refuses a write past it and the
+ refusal reads as a download that stopped rather than as a bank too small.
+
+  of-capacity : Integer = 409600
 
  The manifest arrives over LwM2M as a Write to /5/0/1 in a deployment. This
  binary carries one so the fetch can be pointed at a resource by hand; the
@@ -103,17 +110,19 @@ Section: The Download
    if fw-result-resource c /= fw-result-initial then True
    else fw-state-resource c == lwm2m-fw-state-value FwDownloaded
 
-  of-run : UdpSocket, Lwm2mFw, Integer, Integer -> [Network.Read, Network.Write, Flash, Device.Mmio] Lwm2mFw
-  of-run (sk) (c) (msg-id) (rounds) =
-   if rounds <= 0 then c
-   else if of-finished c then c
+  of-run : linear Board, UdpSocket, Lwm2mFw, Integer, Integer -> [Network.Read, Network.Write, Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  of-run (brd) (sk) (c) (msg-id) (rounds) =
+   if rounds <= 0 then board-pair brd c
+   else if of-finished c then board-pair brd c
    else act
     sent <- of-send-all sk [fw-next-request c msg-id []] 0
     r <- udp-io-recv sk of-poll-fuel
-    if r.ur-got == False then c
+    if r.ur-got == False then board-pair brd c
     else act
-     c2 <- fw-feed-response c (r.ur-data)
-     of-run sk c2 (bit-and (msg-id + 1) 65535) (rounds - 1)
+     rf <- fw-feed-response brd c (r.ur-data)
+     when rf
+      is (brd1, c2) -> of-run brd1 sk c2 (bit-and (msg-id + 1) 65535) (rounds - 1)
+     end
     end
    end
 
@@ -141,11 +150,17 @@ Section: Reporting
 Section: Entry
 
   opening : [Network.Read, Network.Write, Flash, Device.Mmio, Console.Write] Nothing = act
+   brd0 <- board-open 0 0
    let sk = udp-io-open of-local-mac of-local-ip of-local-port of-gateway-ip of-server-port
-   in let c0 = fw-write-package-uri (fw-new of-boot (ota-version-new 1 500) of-bank-base of-stage-addr) of-manifest
+   in let c0 = fw-write-package-uri (fw-new of-boot (ota-version-new 1 500) of-bank-base of-stage-addr of-capacity) of-manifest
    in act
-    done <- of-run sk c0 1 of-rounds
-    of-report done
+    r <- of-run brd0 sk c0 1 of-rounds
+    when r
+     is (brd1, done) -> act
+       bc <- board-close brd1
+       of-report done
+     end
+    end
    end
   end
 

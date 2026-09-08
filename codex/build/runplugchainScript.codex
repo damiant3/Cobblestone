@@ -4,51 +4,86 @@ Chapter: RunPlugChainScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE SECOND GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). This one was
+ chosen for carrying a real RESOURCE and a real VERDICT rather than for size,
+ because `bundle-app` left `ps-needs` and `ps-verdict` declared and unread.
+ The emitted script is byte-identical to the one that shipped before the
+ migration; the model adds declarations and changes no character.
 
 Section: Parameters
 
   plugchain-params : List ShellParam = [sh-param "InFile" SptString, sh-param "Output" SptString, sh-param "Plugs" SptStringArray, sh-param-default "MemMB" SptInt (SeInt 4096), sh-param-default "TimeoutSec" SptInt (SeInt 120)]
 
+Section: The pipeline, declared before it is spelled
+
+  runplug-art : PipeArtifact = PipeArtifact { pa-name = "RunPlug", pa-kind = PkFile, pa-expr = SeVar "RunPlug", pa-from = Just (SeRaw "Join-Path $PSScriptRoot 'run-plug.ps1'") }
+
+  stage-art : PipeArtifact = PipeArtifact { pa-name = "stage", pa-kind = PkFile, pa-expr = SeVar "stage", pa-from = Just (pipe-param-ref plugchain-params "InFile") }
+
+  temps-art : PipeArtifact = PipeArtifact { pa-name = "temps", pa-kind = PkValue, pa-expr = SeVar "temps", pa-from = Just (SeRaw "@()") }
+
+  is-last-art : PipeArtifact = PipeArtifact { pa-name = "isLast", pa-kind = PkValue, pa-expr = SeVar "isLast", pa-from = Just (SeRaw "($i -eq ($Plugs.Count - 1))") }
+
+ `dest` DECLARES NO PRODUCTION because the producing statement has two arms:
+ the last stage writes the caller's output and every earlier stage writes a
+ temporary. `None` says that in the data rather than in a comment.
+
+  dest-art : PipeArtifact = PipeArtifact { pa-name = "dest", pa-kind = PkFile, pa-expr = SeVar "dest", pa-from = None }
+
+  chain-arts : List PipeArtifact = [runplug-art, stage-art, temps-art, is-last-art, dest-art]
+
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd =
-    let fail = [ScRaw "[Console]::Error.WriteLine(\"MISSING: $InFile\")", ScExit (SeInt 2)]
-    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "RunPlug" (SeRaw "Join-Path $PSScriptRoot 'run-plug.ps1'"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "InFile"))) fail []]
+  s01-fail : List ShellCmd = [ScRaw "[Console]::Error.WriteLine(\"MISSING: $InFile\")", ScExit (SeInt 2)]
+
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce runplug-art, ScBlank, ScIf (SeNot (SeFileExists (pipe-ref chain-arts plugchain-params "InFile"))) s01-fail []]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "locate the per-plug runner and refuse an input that does not exist", ps-in = ["InFile"], ps-out = [runplug-art], ps-needs = [], ps-verdict = [PoExit 2 "the file named by -InFile does not exist"], ps-body = s01-body }
 
 Section: S02 -- Validate plugs
 
-  s02 : List ShellCmd =
-    let plug-fail = [ScRaw "[Console]::Error.WriteLine(\"MISSING plug CDX: $plug\")", ScExit (SeInt 2)]
-    in [ScForEach "plug" (SeVar "Plugs") [ScIf (SeNot (SeFileExists (SeVar "plug"))) plug-fail []]]
+  s02-fail : List ShellCmd = [ScRaw "[Console]::Error.WriteLine(\"MISSING plug CDX: $plug\")", ScExit (SeInt 2)]
+
+  s02-body : List ShellCmd = [ScBlank, ScForEach "plug" (pipe-ref chain-arts plugchain-params "Plugs") [ScIf (SeNot (SeFileExists (SeVar "plug"))) s02-fail []]]
+
+  s02 : PipeStage = PipeStage { ps-name = "validate plugs", ps-why = "refuse the whole chain before booting a guest if any named plug CDX is absent", ps-in = ["Plugs"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 2 "a plug CDX named in -Plugs does not exist"], ps-body = s02-body }
 
 Section: S03 -- Stage loop
 
   s03-dest : List ShellCmd =
-    let last-dest = [ScAssign "dest" (SeVar "Output")]
+    let last-dest = [ScAssign "dest" (pipe-ref chain-arts plugchain-params "Output")]
     in let temp-dest = [ScDotNetCallAssign "dest" "System.IO.Path" "GetTempFileName" [], ScRaw "$temps += $dest"]
-    in [ScAssign "isLast" (SeRaw "($i -eq ($Plugs.Count - 1))"), ScIf (SeVar "isLast") last-dest temp-dest]
+    in [pipe-produce is-last-art, ScIf (pipe-ref chain-arts plugchain-params "isLast") last-dest temp-dest]
 
   s03-run : List ShellCmd =
     let stage-fail = [ScRaw "[Console]::Error.WriteLine(\"FAIL: stage $($i + 1) ($($Plugs[$i])) exited $LASTEXITCODE\")", ScRaw "$temps | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }", ScExit (SeRaw "$LASTEXITCODE")]
     in [ScRaw "Write-Host \"[chain] stage $($i + 1)/$($Plugs.Count): $($Plugs[$i])\"", ScRaw "& pwsh -NoProfile -File $RunPlug -Plug $Plugs[$i] -InFile $stage -Output $dest -MemMB $MemMB -TimeoutSec $TimeoutSec", ScIf (SeRaw "$LASTEXITCODE -ne 0") stage-fail []]
 
-  s03 : List ShellCmd = [ScAssign "stage" (SeVar "InFile"), ScAssign "temps" (SeRaw "@()"), ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $Plugs.Count") (SeRaw "$i++") [ScSequence s03-dest, ScBlank, ScSequence s03-run, ScBlank, ScAssign "stage" (SeVar "dest")]]
+  s03-body : List ShellCmd = [ScBlank, pipe-produce stage-art, pipe-produce temps-art, ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $Plugs.Count") (SeRaw "$i++") [ScSequence s03-dest, ScBlank, ScSequence s03-run, ScBlank, ScAssign "stage" (pipe-ref chain-arts plugchain-params "dest")]]
+
+ ONE GUEST AT A TIME AND NOT ONE PER PLUG: the loop is serial, so the chain
+ holds a single guest however long `-Plugs` is. The memory figure is the
+ parameter's default, which is what a caller that passes nothing gets.
+
+  s03 : PipeStage = PipeStage { ps-name = "stage loop", ps-why = "run each plug in turn, piping each output into the next input", ps-in = ["InFile", "Plugs", "RunPlug", "MemMB", "TimeoutSec", "Output"], ps-out = [stage-art, temps-art, is-last-art, dest-art], ps-needs = [PrGuests 1, PrMemoryMb 4096], ps-verdict = [PoPassthrough "a stage failed and the chain exits with that stage's own code"], ps-body = s03-body }
 
 Section: S04 -- Write final output
 
-  s04 : List ShellCmd = [ScRaw "$temps | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }", ScRaw "Write-Host \"[chain] OK: $Output ($((Get-Item $Output).Length) bytes)\"", ScExit (SeInt 0)]
+  s04-body : List ShellCmd = [ScBlank, ScRaw "$temps | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }", ScRaw "Write-Host \"[chain] OK: $Output ($((Get-Item $Output).Length) bytes)\"", ScExit (SeInt 0)]
+
+  s04 : PipeStage = PipeStage { ps-name = "write final output", ps-why = "discard the temporaries and report the finished output", ps-in = ["temps", "Output"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "every stage ran and the final output was written"], ps-body = s04-body }
 
 Section: Assembly
 
-  plugchain-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04]
-
-  plugchain-script : ShellScript = sh-script "run-plug-chain" "Run a chain of plug CDXs sequentially piping output from each to the next" plugchain-params plugchain-body
+  plugchain-pipe : Pipeline = Pipeline { pl-name = "run-plug-chain", pl-doc = "Run a chain of plug CDXs sequentially piping output from each to the next", pl-params = plugchain-params, pl-stages = [s01, s02, s03, s04] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell plugchain-script)
+    print-line-uni (emit-powershell (pipeline-to-shell plugchain-pipe))
   end
 
 Page 1

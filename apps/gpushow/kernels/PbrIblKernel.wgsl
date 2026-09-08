@@ -5,54 +5,54 @@ const pi_half_w : i32 = 512;
 const pi_half_h : i32 = 384;
 const pi_count : i32 = 6;
 fn pi_env_r(dy : f32) -> f32 {
-  if ((dy > bitcast<f32>(0u))) {
-  return (bitcast<f32>(1046562734u) + (dy * bitcast<f32>(1048576000u)));
+  if ((dy > 0.0)) {
+  return (0x1.c28f5cp-3f + (dy * 0x1.000000p-2f));
   } else {
-  return (bitcast<f32>(1049582632u) - (dy * bitcast<f32>(1036831948u)));
+  return (0x1.1eb850p-2f - (dy * 0x1.999998p-4f));
   }
 }
 fn pi_env_g(dy : f32) -> f32 {
-  if ((dy > bitcast<f32>(0u))) {
-  return (bitcast<f32>(1052938076u) + (dy * bitcast<f32>(1053609164u)));
+  if ((dy > 0.0)) {
+  return (0x1.851eb8p-2f + (dy * 0x1.999998p-2f));
   } else {
-  return (bitcast<f32>(1047904911u) - (dy * bitcast<f32>(1031127695u)));
+  return (0x1.eb851ep-3f - (dy * 0x1.eb851ep-5f));
   }
 }
 fn pi_env_b(dy : f32) -> f32 {
-  if ((dy > bitcast<f32>(0u))) {
-  return (bitcast<f32>(1058977873u) + (dy * bitcast<f32>(1051931443u)));
+  if ((dy > 0.0)) {
+  return (0x1.3d70a2p-1f + (dy * 0x1.666666p-2f));
   } else {
-  return (bitcast<f32>(1042536202u) - (dy * bitcast<f32>(1017370378u)));
+  return (0x1.47ae14p-3f - (dy * 0x1.47ae14p-6f));
   }
 }
 fn pi_sun(dx : f32, dy : f32, dz : f32) -> f32 {
-  let d = (((dx * bitcast<f32>(1058642329u)) + (dy * bitcast<f32>(1059984506u))) + (dz * (bitcast<f32>(0u) - bitcast<f32>(1059984506u))));
-  if ((d > bitcast<f32>(0u))) {
+  let d = (((dx * 0x1.333332p-1f) + (dy * 0x1.5c28f4p-1f)) + (dz * (0.0 - 0x1.5c28f4p-1f)));
+  if ((d > 0.0)) {
   let p = (d * d);
   return (((p * p) * p) * p);
   } else {
-  return bitcast<f32>(0u);
+  return 0.0;
   }
 }
 fn pi_cx(i : i32) -> f32 {
-  return ((f32(f32(i)) * bitcast<f32>(1066611507u)) - bitcast<f32>(1077516697u));
+  return ((f32(f32(i)) * 0x1.266666p+0f) - 0x1.733332p+1f);
 }
 fn pi_rough(i : i32) -> f32 {
-  return (bitcast<f32>(1025758986u) + (f32(f32(i)) * bitcast<f32>(1043207290u)));
+  return (0x1.47ae14p-5f + (f32(f32(i)) * 0x1.5c28f4p-3f));
 }
 fn pi_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i : i32) -> f32 {
   let lx = (ox - pi_cx(i));
   let b = (((dx * lx) + (dy * oy)) + (dz * oz));
-  let c = ((((lx * lx) + (oy * oy)) + (oz * oz)) - bitcast<f32>(1049260510u));
+  let c = ((((lx * lx) + (oy * oy)) + (oz * oz)) - 0x1.14e3bcp-2f);
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -71,7 +71,7 @@ fn pi_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return bid;
     } else {
     let t = pi_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < bt)), 1, (bt < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < bt)), 1, (bt < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -115,50 +115,51 @@ fn pi_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn pi_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn pi_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((pi_clamp01(r) * bitcast<f32>(1132396544u))) * 65536) + (i32((pi_clamp01(g) * bitcast<f32>(1132396544u))) * 256)) + i32((pi_clamp01(b) * bitcast<f32>(1132396544u))));
+  return (((i32((pi_clamp01(r) * 0x1.fe0000p+7f)) * 65536) + (i32((pi_clamp01(g) * 0x1.fe0000p+7f)) * 256)) + i32((pi_clamp01(b) * 0x1.fe0000p+7f)));
 }
 fn pi_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / pi_width) * pi_width));
   let py = (gid / pi_width);
-  let fx = (f32(f32((px - pi_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((pi_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1082130432u)));
+  let fx = (f32(f32((px - pi_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((pi_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.000000p+2f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1073741824u) / rl);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1084227584u));
-  let id = pi_nearest(bitcast<f32>(0u), bitcast<f32>(0u), oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let dz = (0x1.000000p+1f / rl);
+  let oz = (0.0 - 0x1.400000p+2f);
+  let id = pi_nearest(0.0, 0.0, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   if ((id < 0)) {
   return pi_pack((pi_env_r(dy) + pi_sun(dx, dy, dz)), (pi_env_g(dy) + pi_sun(dx, dy, dz)), (pi_env_b(dy) + pi_sun(dx, dy, dz)));
   } else {
-  let t = pi_hit(bitcast<f32>(0u), bitcast<f32>(0u), oz, dx, dy, dz, id);
+  let t = pi_hit(0.0, 0.0, oz, dx, dy, dz, id);
   let hx = (dx * t);
   let hy = (dy * t);
   let hz = (oz + (dz * t));
-  let nx = ((hx - pi_cx(id)) / bitcast<f32>(1057300152u));
-  let ny = (hy / bitcast<f32>(1057300152u));
-  let nz = (hz / bitcast<f32>(1057300152u));
+  let nx = ((hx - pi_cx(id)) / 0x1.0a3d70p-1f);
+  let ny = (hy / 0x1.0a3d70p-1f);
+  let nz = (hz / 0x1.0a3d70p-1f);
   let vd = (((dx * nx) + (dy * ny)) + (dz * nz));
-  let rx = (dx - ((bitcast<f32>(1073741824u) * vd) * nx));
-  let ry = (dy - ((bitcast<f32>(1073741824u) * vd) * ny));
-  let rz = (dz - ((bitcast<f32>(1073741824u) * vd) * nz));
+  let rx = (dx - ((0x1.000000p+1f * vd) * nx));
+  let ry = (dy - ((0x1.000000p+1f * vd) * ny));
+  let rz = (dz - ((0x1.000000p+1f * vd) * nz));
   let rough = pi_rough(id);
   let er = (pi_env_r(ry) + pi_sun(rx, ry, rz));
   let eg = (pi_env_g(ry) + pi_sun(rx, ry, rz));
   let eb = (pi_env_b(ry) + pi_sun(rx, ry, rz));
-  let mr = ((er * (bitcast<f32>(1065353216u) - rough)) + (bitcast<f32>(1054280253u) * rough));
-  let mg = ((eg * (bitcast<f32>(1065353216u) - rough)) + (bitcast<f32>(1055622430u) * rough));
-  let mb = ((eb * (bitcast<f32>(1065353216u) - rough)) + (bitcast<f32>(1057803468u) * rough));
-  let fres = (bitcast<f32>(1034147594u) + ((bitcast<f32>(1064011038u) * pi_clamp01((bitcast<f32>(1065353216u) + vd))) * pi_clamp01((bitcast<f32>(1065353216u) + vd))));
-  let tint_r = bitcast<f32>(1064514355u);
-  let tint_g = bitcast<f32>(1061662228u);
-  let tint_b = bitcast<f32>(1055286886u);
-  return pi_pack(((mr * tint_r) * (bitcast<f32>(1056964608u) + (fres * bitcast<f32>(1058642329u)))), ((mg * tint_g) * (bitcast<f32>(1056964608u) + (fres * bitcast<f32>(1058642329u)))), ((mb * tint_b) * (bitcast<f32>(1056964608u) + (fres * bitcast<f32>(1058642329u)))));
+  let mr = ((er * (0x1.000000p+0f - rough)) + (0x1.ae147ap-2f * rough));
+  let mg = ((eg * (0x1.000000p+0f - rough)) + (0x1.d70a3cp-2f * rough));
+  let mb = ((eb * (0x1.000000p+0f - rough)) + (0x1.199998p-1f * rough));
+  let fres = (0x1.47ae14p-4f + ((0x1.d70a3cp-1f * pi_clamp01((0x1.000000p+0f + vd))) * pi_clamp01((0x1.000000p+0f + vd))));
+  let tint_r = 0x1.e66666p-1f;
+  let tint_g = 0x1.8f5c28p-1f;
+  let tint_b = 0x1.ccccccp-2f;
+  return pi_pack(((mr * tint_r) * (0x1.000000p-1f + (fres * 0x1.333332p-1f))), ((mg * tint_g) * (0x1.000000p-1f + (fres * 0x1.333332p-1f))), ((mb * tint_b) * (0x1.000000p-1f + (fres * 0x1.333332p-1f))));
   }
 }
 @group(0) @binding(0) var<storage, read_write> pbribl_step_outb_buf : array<i32>;

@@ -5,9 +5,21 @@ Chapter: CheckPlugPortsScript
   cites Foreword chapter List
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE FIFTEENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ THIS ONE HAS A LOOP AND IS NOT BLOCKED BY BURR 4, which is the distinction
+ worth keeping. `stress-sweep` and `build-magic-pages` put NUMBERED SECTIONS of
+ their own assembly inside a loop, so the flat stage list cannot hold their
+ order. Here the three per-plug checks are helper lists spliced into one loop
+ body, and the script's own top-level assembly is four steps. Four stages is
+ therefore the truth rather than a demotion. The test is what the ASSEMBLY
+ puts inside the loop, not whether a loop exists.
 
 Section: Parameters
 
@@ -21,27 +33,49 @@ Section: Concatenation
   cpp-cat : List ShellExpr -> ShellExpr
   cpp-cat (xs) = cpp-cat-from xs 0
 
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+ THE PORT TABLE IS DOT-SOURCED AND NOT PRODUCED HERE, so it declares no
+ production. `build/plug-ports.ps1` is the authority this script checks both
+ halves against, and naming it as an artifact is what says so.
+
+  table-art : PipeArtifact = PipeArtifact { pa-name = "script:PlugPorts", pa-kind = PkValue, pa-expr = SeVar "script:PlugPorts", pa-from = None }
+
+  bad-art : PipeArtifact = PipeArtifact { pa-name = "bad", pa-kind = PkValue, pa-expr = SeVar "bad", pa-from = Just (SeInt 0) }
+
+  ok-art : PipeArtifact = PipeArtifact { pa-name = "ok", pa-kind = PkValue, pa-expr = SeVar "ok", pa-from = Just (SeInt 0) }
+
+  seen-art : PipeArtifact = PipeArtifact { pa-name = "seen", pa-kind = PkValue, pa-expr = SeVar "seen", pa-from = Just SeHashLiteral }
+
+  cpp-arts : List PipeArtifact = [repo-art, table-art, bad-art, ok-art, seen-art]
+
+  cpp-table : ShellExpr = pipe-ref cpp-arts cpp-params "script:PlugPorts"
+
 Section: S01 -- Why this exists
 
   cpp-doctrine : List ShellCmd = [ScComment "A plug's TCP port is ONE fact written in TWO places: <Name>Plug.codex dials it", ScComment "in net-session-new, and the plug's run.ps1 listens on it. The NAT maps the", ScComment "guest's destination port straight to the host port, so if the two disagree the", ScComment "guest dials a port nobody is listening on and the run hangs until it times out", ScComment "with no diagnostic. That is the failure this exists to make impossible.", ScComment "", ScComment "build/plug-ports.ps1 is the authority. This checks both halves against it.", ScComment "", ScComment "Exit 1 on any mismatch, 0 when every plug agrees."]
 
+  s01 : PipeStage = PipeStage { ps-name = "doctrine", ps-why = "why one port written twice is a silent hang, and which file is the authority", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = cpp-doctrine }
+
 Section: S02 -- The table is the authority
 
-  cpp-table : ShellExpr = SeVar "script:PlugPorts"
+  s02-body : List ShellCmd = [ScBlank, ScSetStrictMode, ScSetErrorStop, pipe-produce repo-art, ScRunDot (SePathJoin SeScriptRoot (SeLit "plug-ports.ps1")), ScBlank, pipe-produce bad-art, pipe-produce ok-art, pipe-produce seen-art]
 
-  s02 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScRunDot (SePathJoin SeScriptRoot (SeLit "plug-ports.ps1")), ScBlank, ScAssign "bad" (SeInt 0), ScAssign "ok" (SeInt 0), ScAssign "seen" SeHashLiteral]
+  s02 : PipeStage = PipeStage { ps-name = "load the table", ps-why = "dot-source the port authority and start the two tallies and the duplicate set", ps-in = [], ps-out = [repo-art, table-art, bad-art, ok-art, seen-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- No two plugs may share a port
 
   cpp-want : ShellExpr = SeIndex cpp-table (SeVar "name")
 
-  cpp-dup-msg : ShellExpr = SeFormat (SeLit "  {0,-12} port {1} DUPLICATE, already assigned to {2}") [SeVar "name", SeVar "want", SeIndex (SeVar "seen") (SeVar "want")]
+  cpp-dup-msg : ShellExpr = SeFormat (SeLit "  {0,-12} port {1} DUPLICATE, already assigned to {2}") [SeVar "name", SeVar "want", SeIndex (pipe-ref cpp-arts cpp-params "seen") (SeVar "want")]
 
-  cpp-dup : List ShellCmd = [ScAssign "want" cpp-want, ScIf (SeMethodCall (SeVar "seen") "ContainsKey" [SeVar "want"]) [ScEcho cpp-dup-msg, ScIncrement "bad"] [], ScSetIndex "seen" (SeVar "want") (SeVar "name")]
+  cpp-dup : List ShellCmd = [ScAssign "want" cpp-want, ScIf (SeMethodCall (pipe-ref cpp-arts cpp-params "seen") "ContainsKey" [SeVar "want"]) [ScEcho cpp-dup-msg, ScIncrement "bad"] [], ScSetIndex "seen" (SeVar "want") (SeVar "name")]
 
 Section: S04 -- The guest half
 
-  cpp-dir : ShellExpr = SePathJoin (SeVar "Repo") (SeConcat (SeLit "codex\\plugs\\") (SeVar "name"))
+  cpp-dir : ShellExpr = SePathJoin (pipe-ref cpp-arts cpp-params "Repo") (SeConcat (SeLit "codex\\plugs\\") (SeVar "name"))
 
   cpp-dials : ShellExpr = SeMatch (SeFileText (SeProperty SeItem "FullName")) "net-session-new"
 
@@ -89,24 +123,30 @@ Section: S06 -- Every plug, in name order
 
   cpp-body-one : List ShellCmd = [ScSequence cpp-dup, ScSequence cpp-guest, ScSequence cpp-host]
 
-  s06 : List ShellCmd = [ScForEach "name" (SePipe (SeProperty cpp-table "Keys") [StSort]) cpp-body-one]
+  s06-body : List ShellCmd = [ScBlank, ScForEach "name" (SePipe (SeProperty cpp-table "Keys") [StSort]) cpp-body-one]
+
+ THE HOST HALF IS CHECKED ONLY WHERE A `run.ps1` EXISTS, and its absence is
+ silent: a plug with a guest source and no runner passes this stage. Said here
+ because the stage's name promises both halves.
+
+  s06 : PipeStage = PipeStage { ps-name = "check every plug", ps-why = "per plug in name order: no duplicate port, the guest source dials the table's port, and run.ps1 listens on it", ps-in = ["script:PlugPorts", "Repo", "seen"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
 
 Section: S07 -- The verdict
 
-  cpp-bad-line : ShellExpr = cpp-cat [SeLit "check-plug-ports: ", SeVar "bad", SeLit " MISMATCH, ", SeVar "ok", SeLit " agreed"]
+  cpp-bad-line : ShellExpr = cpp-cat [SeLit "check-plug-ports: ", pipe-ref cpp-arts cpp-params "bad", SeLit " MISMATCH, ", pipe-ref cpp-arts cpp-params "ok", SeLit " agreed"]
 
-  cpp-ok-line : ShellExpr = cpp-cat [SeLit "check-plug-ports: OK (", SeVar "ok", SeLit " halves agreed across ", SeProperty cpp-table "Count", SeLit " plugs)"]
+  cpp-ok-line : ShellExpr = cpp-cat [SeLit "check-plug-ports: OK (", pipe-ref cpp-arts cpp-params "ok", SeLit " halves agreed across ", SeProperty cpp-table "Count", SeLit " plugs)"]
 
-  s07 : List ShellCmd = [ScEcho (SeLit ""), ScIf (SeIntGt (SeVar "bad") (SeInt 0)) [ScEcho cpp-bad-line, ScExit (SeInt 1)] [], ScEcho cpp-ok-line, ScExit (SeInt 0)]
+  s07-body : List ShellCmd = [ScBlank, ScEcho (SeLit ""), ScIf (SeIntGt (pipe-ref cpp-arts cpp-params "bad") (SeInt 0)) [ScEcho cpp-bad-line, ScExit (SeInt 1)] [], ScEcho cpp-ok-line, ScExit (SeInt 0)]
+
+  s07 : PipeStage = PipeStage { ps-name = "verdict", ps-why = "refuse when any half disagrees with the table", ps-in = ["bad", "ok", "script:PlugPorts"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "at least one plug's guest source or run.ps1 names a port the table does not, or two plugs share one", PoExit 0 "every checked half agrees with build/plug-ports.ps1"], ps-body = s07-body }
 
 Section: Assembly
 
-  cpp-full : List ShellCmd = [ScSequence cpp-doctrine, ScBlank, ScSequence s02, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
-
-  cpp-script : ShellScript = sh-script "check-plug-ports" "hold the guest and host halves of a plug's port together." cpp-params cpp-full
+  cpp-pipe : Pipeline = Pipeline { pl-name = "check-plug-ports", pl-doc = "hold the guest and host halves of a plug's port together.", pl-params = cpp-params, pl-stages = [s01, s02, s06, s07] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cpp-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cpp-pipe))
   end
 
 Page 1

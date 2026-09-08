@@ -1,0 +1,62 @@
+Chapter: HostedEcho
+
+ A hosted server: bind, listen, accept one connection, echo what arrives on it,
+ close both descriptors. It has no `.expected` sidecar deliberately, because it
+ cannot be graded by running it and reading its output: it answers a CLIENT, so
+ its harness is codex/plugs/elf/hosted-socket-arm.ps1, which speaks to it.
+
+ The selector values below are the ones the emitter names in
+ codex/compiler/Emit/X86_64Boot.codex. They are spelled again here because a
+ program reaches the builtin, not the compiler's own constants.
+
+Section: Selectors
+
+  op-socket : Integer = 0
+  op-bind : Integer = 1
+  op-listen : Integer = 2
+  op-accept : Integer = 3
+  op-close : Integer = 4
+  op-recv : Integer = 5
+  op-send : Integer = 6
+  op-reuseaddr : Integer = 7
+
+ THE TWO TARGETS MUST NOT SHARE A PORT. WSL2 forwards a listener inside WSL
+ onto the Windows host and does not release it when the subject exits, so a
+ Windows run following a Linux run on one port answers bind -1 while the same
+ binary standalone answers bind 0. `hosted-kind` is 1 on Linux and 2 on
+ Windows, so adding it gives each target its own port by construction rather
+ than by the harness waiting and hoping.
+
+  echo-port-base : Integer = 34567
+  echo-buffer-bytes : Integer = 1024
+
+ THE DESCRIPTOR'S VALUE IS NOT PRINTED, AND THAT IS THE POINT OF PRINTING
+ "socket ok" INSTEAD. Every other line here is an answer the two targets must
+ agree on, but a descriptor cannot be: Linux hands out a small file descriptor
+ (3) and Windows a kernel SOCKET handle (224, and a different one per run).
+ Printing it made the two targets' output differ on a value that is not
+ comparable, which would either fail the parity arm forever or force the arm to
+ exclude a line, and an arm with an exclusion in it is one nobody trusts. What
+ is actually being asserted is that the call answered a usable descriptor.
+
+Section: Entry
+
+  opening : [Console, Network.Write] Nothing = act
+    let buf = alloc-bytes echo-buffer-bytes
+    in let echo-port = echo-port-base + hosted-kind
+    in act
+      fd <- host-socket op-socket 0 0 0
+      ru <- host-socket op-reuseaddr fd 0 0
+      bd <- host-socket op-bind fd echo-port 0
+      ls <- host-socket op-listen fd 16 0
+      print-line-uni (if fd >= 0 then "socket ok" else "socket failed")
+      print-line-uni ("reuseaddr " & integer-to-text ru)
+      print-line-uni ("bind " & integer-to-text bd)
+      print-line-uni ("listen " & integer-to-text ls)
+      cfd <- host-socket op-accept fd 0 0
+      n <- host-socket op-recv cfd buf echo-buffer-bytes
+      st <- host-socket op-send cfd buf n
+      c1 <- host-socket op-close cfd
+      c2 <- host-socket op-close fd
+      print-line-uni ("echoed " & integer-to-text st)
+    end

@@ -14,13 +14,22 @@ const appRoot = normalize(join(fileURLToPath(import.meta.url), '..', '..')); // 
 
 const MIME = { '.html':'text/html', '.wgsl':'text/plain', '.mjs':'text/javascript',
   '.js':'text/javascript', '.css':'text/css', '.json':'application/json',
-  '.png':'image/png', '.md':'text/plain', '.codex':'text/plain' };
+  '.png':'image/png', '.md':'text/plain', '.codex':'text/plain', '.wasm':'application/wasm' };
+
+// The live-compile block fetches the compiler and the WGSL lens from
+// ../../compile/, which is where they sit on the SITE (/gpushow/web/<page> and
+// /compile/<module>). Under this server the app root is apps/gpushow, so that
+// path leaves the root and 404s. The modules are mapped in rather than copied,
+// so a local page reads exactly the artifacts the last build produced.
+const compileDir = normalize(join(appRoot, '..', 'landing', 'web', 'compile'));
 
 createServer(async (req, res) => {
   let rel = decodeURIComponent(req.url.split('?')[0]);
   if (rel === '/' || rel === '') rel = '/web/index.html';
-  const path = normalize(join(appRoot, rel));
-  if (!path.startsWith(appRoot)) { res.writeHead(403).end(); return; }
+  const path = rel.startsWith('/compile/')
+    ? normalize(join(compileDir, rel.slice('/compile/'.length)))
+    : normalize(join(appRoot, rel));
+  if (!path.startsWith(appRoot) && !path.startsWith(compileDir)) { res.writeHead(403).end(); return; }
   try {
     const body = await readFile(path);
     res.writeHead(200, { 'content-type': MIME[extname(path)] || 'application/octet-stream' });

@@ -111,6 +111,17 @@ if (sandbox.__haveLibrary) {
   sandbox.window.__EMBED['library.img.gz'] = fs.readFileSync(libGzPath).toString('base64');
   sandbox.window.__LIBRARY = JSON.parse(fs.readFileSync(libJsonPath, 'utf8'));
 }
+// PRISM_TEMPLATE_CDX names where arm 18's in-tab CDX is written, for the host
+// half of stage 3's acceptance (boot it, ask it for a page). Unset, nothing is
+// written and the arm is unchanged.
+sandbox.__templateOut = process.env.PRISM_TEMPLATE_CDX || null;
+// The templates the page ships, read from the build artifact rather than
+// recomputed here: a second walk of the cites closure in this file would be a
+// second answer to the question build-page.ps1 already answers against the
+// volume it built, and the two would drift.
+const tplJsonPath = path.join(repo, 'codex\\plugs\\wasm\\build-output\\page\\templates.json');
+sandbox.__haveTemplates = fs.existsSync(tplJsonPath);
+if (sandbox.__haveTemplates) sandbox.window.__TEMPLATES = JSON.parse(fs.readFileSync(tplJsonPath, 'utf8'));
 vm.createContext(sandbox);
 // The page encodes module input with TextEncoder (runW) and one function
 // later asks `instanceof Uint8Array` (runModule). The host encoder answers a
@@ -568,6 +579,9 @@ const drive = `
   // because a compile that would have succeeded anyway proves nothing about a
   // resolver.
   let libNote = 'library arms SKIPPED (no built library.img.gz)';
+  let tplNote = 'template arm SKIPPED (no built build-output/page/templates.json)';
+  let tplOutNote = '';
+  let crlfNote = 'CRLF arm SKIPPED (no library)';
   if (__haveLibrary) {
     // 13. The volume decodes out of the embed.
     const img = await libraryImage();
@@ -638,6 +652,104 @@ const drive = `
       return 'FAIL: the toolbox chapter looks truncated; it lacks maybe-bind';
     if (LIBRARY.quires.reduce((n, q) => n + q.chapters.length, 0) < 500)
       return 'FAIL: the manifest carries implausibly few chapters';
+    // 18. THE IN-TAB TEMPLATE COMPILE, which is what stage 3's acceptance
+    // rests on and what nothing here proved before: a template picked through
+    // the page's OWN change handler compiles through the page's OWN Compile
+    // handler and hands back a real CDX. Arm 9 compiles the page's own source,
+    // which says nothing about a template, because a template is the case
+    // where most of the unit is NOT in the project and has to come off the
+    // volume. The control removes the library: the same project unresolved
+    // must refuse, or a green here would be a program that never needed the
+    // resolver.
+    if (__haveTemplates) {
+      const tplEl = document.getElementById('templates');
+      if (!tplEl.children.some(c => c.value === 'ExplorerServer'))
+        return 'FAIL: ExplorerServer is not in the template menu; got [' +
+               tplEl.children.map(c => c.value).join(', ') + ']';
+      project.files = [{ path: 'keepme.codex', text: 'Chapter: KeepMe\\n' }];
+      confirm = () => false;
+      tplEl.value = 'ExplorerServer';
+      await tplEl.handlers['change']();
+      if (project.files.length !== 1 || project.files[0].path !== 'keepme.codex')
+        return 'FAIL: a refused confirm still took the project for the template';
+      confirm = () => true;
+      tplEl.value = 'ExplorerServer';
+      await tplEl.handlers['change']();
+      const tplPaths = project.files.map(f => f.path);
+      if (tplPaths.indexOf('ExplorerServer.codex') < 0)
+        return 'FAIL: the template did not land its root; project: [' + tplPaths.join(', ') + ']';
+      if (tplPaths.indexOf('keepme.codex') >= 0)
+        return 'FAIL: the template did not take the project to itself';
+      if (activePath !== 'ExplorerServer.codex')
+        return 'FAIL: the template did not open its main file; active: ' + activePath;
+      // Most of this program is NOT in the project. If it were, the volume is
+      // doing no work here and the arm measures nothing (L-VACUOUS).
+      const tRes = await resolveUnit(assembleUnit());
+      if (!tRes.used) return 'FAIL: the template compile did not use the library: ' + (tRes.why || 'no reason given');
+      if (tRes.missing.length)
+        return 'FAIL: the template has cites the volume could not serve: ' + tRes.missing.join(', ');
+      if (!(tRes.shift > 0)) return 'FAIL: the template resolved 0 lines off the volume';
+      // The real thing: the page's own Compile handler, CDX target.
+      tab = 'binary'; binTarget = 'cdx';
+      emittedBin = null;
+      await document.getElementById('go').handlers['click']();
+      if (!emittedBin)
+        return 'FAIL: the template produced no artifact in-tab; status: ' +
+               document.getElementById('status').innerHTML;
+      if (emittedBin.name !== 'ExplorerServer.cdx')
+        return 'FAIL: the template artifact is named ' + emittedBin.name;
+      const tb = emittedBin.bytes;
+      if (!(tb[0] === 0x43 && tb[1] === 0x44 && tb[2] === 0x58 && tb[3] === 0x31))
+        return 'FAIL: the template artifact does not start CDX1';
+      // Control: the same project with nothing resolved must refuse.
+      const tCtl = runModule(modBuf, 'IR-UNI decks=125\\n' + assembleUnit().text);
+      if (tCtl.text.indexOf('CDX3007') < 0)
+        return 'FAIL: the unresolved template control did not answer CDX3007, so the volume is not load-bearing here; diag: ' +
+               (tCtl.text.split('\\n').find(l => l.indexOf('CDX') >= 0) || tCtl.text.slice(0, 200));
+      // Stage 3's acceptance grades the artifact by RUNNING it, and that
+      // happens on the host: booted in codex-vm and asked for a page. The
+      // bytes it boots must be the ones this arm just made in-tab, so the
+      // path is named from outside rather than the host recompiling the
+      // template by another route and grading a sibling (L-ARTIFACT).
+      if (__templateOut) {
+        __fs.writeFileSync(__templateOut, Buffer.from(tb));
+        tplOutNote = ', written to ' + __templateOut;
+      }
+      tplNote = 'ExplorerServer: ' + tplPaths.length + ' project file(s), +' + tRes.shift +
+                ' lines off the volume, in-tab CDX ' + tb.length + ' bytes' + tplOutNote +
+                '; unresolved control refused';
+    }
+
+    // 19. CRLF text entering the project model through addFile, which is the
+    // funnel for the file input, the template picker, the presets and the
+    // agent's write_file. The project model is LF-only or the resolver refuses
+    // (PRISM-8, found through the template embed). The CONTROL pushes the SAME
+    // CRLF text straight into project.files, bypassing the normalisation, and
+    // must reproduce the refusal: without it a green arm would say nothing
+    // about whether CRLF was ever the problem (L-VACUOUS).
+    const crlfSrc = 'Chapter: CrLf\\r\\n\\r\\n  cites Foreword chapter Maybe\\r\\n\\r\\nSection: Main\\r\\n\\r\\n' +
+      '  pick : Maybe Integer -> Integer\\r\\n  pick (m) = from-maybe m 0\\r\\n';
+    project.files = []; openTabs = []; activePath = null;
+    addFile('crlf.codex', crlfSrc, false);
+    const stored = project.files[0].text;
+    if (stored.indexOf('\\r') >= 0)
+      return 'FAIL: addFile kept ' + (stored.split('\\r').length - 1) + ' carriage return(s) in the project model';
+    if (stored.split('\\n').length !== crlfSrc.split('\\n').length)
+      return 'FAIL: normalising CRLF changed the line count';
+    const cRes = await resolveUnit(assembleUnit());
+    if (!cRes.used)
+      return 'FAIL: a normalised CRLF file still did not resolve: ' + (cRes.why || 'no reason given');
+    const cOk = runModule(modBuf, 'IR-UNI decks=12\\n' + cRes.text);
+    if (cOk.text.indexOf('IR-BEGIN') < 0)
+      return 'FAIL: the normalised CRLF file did not compile; diag: ' +
+             (cOk.text.split('\\n').find(l => l.indexOf('CDX') >= 0) || cOk.text.slice(0, 200));
+    project.files = [{ path: 'crlf.codex', text: crlfSrc }];
+    const cCtl = await resolveUnit(assembleUnit());
+    if (cCtl.used)
+      return 'FAIL: the un-normalised control RESOLVED, so this arm cannot see the defect it exists for';
+    crlfNote = 'CRLF through addFile resolves and compiles; the un-normalised control refused (' +
+               (cCtl.why || 'no reason given') + ')';
+
     libNote = 'library ' + (img.length / 1048576).toFixed(1) + ' MB volume, ' +
       LIBRARY.quires.length + ' quires / ' +
       LIBRARY.quires.reduce((n, q) => n + q.chapters.length, 0) + ' chapters; cite resolved (+' +
@@ -652,7 +764,9 @@ const drive = `
          '; ELF ' + elfNote +
          '; sign ' + signNote +
          '; board ' + boardNote +
-         '; ' + libNote;
+         '; ' + libNote +
+         '; template ' + tplNote +
+         '; ' + crlfNote;
 })()
 `;
 vm.runInContext(drive, sandbox, { filename: 'drive.js' }).then(

@@ -19,6 +19,14 @@
 const RANK = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 const SUIT = ['♠', '♥', '♦', '♣'];
 
+// Chess: indexed by kind, which Chess.codex numbers 1 to 6. One solid set
+// for both sides, coloured by CSS, because the hollow glyphs read as damage
+// at board size on a dark square.
+const PIECE = ['♟', '♞', '♝', '♜', '♛', '♚'];
+// Centipawns as the pawns a player counts.
+const material = cp => cp === 0 ? 'level'
+  : `${(Math.abs(cp) / 100).toFixed(1)} to ${cp > 0 ? 'White' : 'Black'}`;
+
 export const card = c => c < 0 ? '--'
   : `${RANK[c % 13]}${SUIT[Math.floor(c / 13) % 4]}`;
 export const red = c => c >= 0 && [1, 2].includes(Math.floor(c / 13) % 4);
@@ -467,6 +475,57 @@ export const GAMES = [
       const owns = [1, 2].includes(e.ck_cell(h, i));
       return owns && ckFrom(e, h, i) ? { sel: i } : null;
     },
+  },
+  {
+    id: 'chess', name: 'Chess', cat: 'Board', icon: '♞',
+    desc: 'The whole rule set: castling, en passant, promotion, check, mate, stalemate and the fifty-move draw. Alpha-beta opponent.',
+    boot: e => e.cs_new(),
+    // Depth 2 is what the module clamps to 3 and what a browser tab can
+    // afford: the search allocates a board per node and frees none, so the
+    // depth is a memory bound as much as a time one.
+    step: (e, h) => { const m = e.cs_ai(h, 2); return m < 0 ? null : e.cs_apply(h, m); },
+    done: (e, h) => e.cs_done(h) === 1,
+    // cs_result: 0 White, 1 Black, 2 a draw, -1 undecided. A drawn game is
+    // two different endings and the page says which, because "a draw" over
+    // a board with pieces still on it reads as a bug.
+    status: (e, h) => e.cs_done(h) === 1
+      ? (e.cs_result(h) === 2
+        ? (e.cs_moves(h) === 0 ? 'Stalemate: no legal move and no check' : 'Fifty moves without a pawn or a capture')
+        : named(e.cs_result(h), { 0: 'White mates', 1: 'Black mates' }, 'A draw'))
+      : `${e.cs_turn(h) === 0 ? 'White (you)' : 'Black'} to move`
+        + `${e.cs_check(h) === 1 ? ' · in check' : ''}`
+        + ` · ${e.cs_moves(h)} legal · ${material(e.cs_material(h, 0))}`,
+    // Index 0 is a8 and a8 is light, so the dark squares are the odd ones,
+    // as they are in Checkers. The piece is a glyph rather than a drawing:
+    // the six shapes are what a chess player reads, and CSS colours the two
+    // sides from one solid set so a white knight is not a hollow outline.
+    view: (e, h, s, sel) => grid(8, seq(64).map(i => {
+      const dark = ((Math.floor(i / 8) + i % 8) % 2) === 1;
+      const v = e.cs_cell(h, i);
+      const dest = sel !== null && sel !== undefined && e.cs_find(h, sel, i) >= 0;
+      return cell(v === 0 ? '' : PIECE[(v > 6 ? v - 6 : v) - 1],
+        (dark ? 'sq-dark ' : 'sq-light ') + (v === 0 ? '' : 'csp ' + (v > 6 ? 'b' : 'w'))
+        + (i === sel ? ' picked' : '') + (dest ? ' hint' : ''));
+    })),
+    human: 0,
+    turn: (e, h) => e.cs_turn(h),
+    land: 'slide',
+    // A chess move is a source and a destination, and the module names its
+    // legal moves by index, so `cs_find` does the search inside the module
+    // rather than the page reading the whole list back one call at a time.
+    // A pawn reaching the last rank offers four moves for the one pair of
+    // squares; cs_find answers the queen, which is the promotion a player
+    // who was not asked wanted.
+    move: (e, h, i, st) => {
+      if (st.sel === null || st.sel === undefined) {
+        return e.cs_can(h, i) === 1 ? { sel: i } : null;
+      }
+      if (i === st.sel) return { sel: null };
+      const m = e.cs_find(h, st.sel, i);
+      if (m >= 0) return { handle: e.cs_apply(h, m) };
+      return e.cs_can(h, i) === 1 ? { sel: i } : null;
+    },
+    steps: 200,
   },
   {
     id: 'go', name: 'Go', cat: 'Board', icon: '⚫',
@@ -2379,11 +2438,6 @@ function point(v) {
   return cell(n || '', 'pt ' + (v > 0 ? 'p1' : v < 0 ? 'p2' : 'empty'));
 }
 function pegs(e, code) { return seq(4).map(i => e.mm_digit(code, i)).join(''); }
-
-export const CHESS = {
-  id: 'chess', name: 'Chess', cat: 'Board', icon: '♟',
-  desc: 'Full rules with castling, en passant and promotion. Not built yet, and the row stays honest until it is.',
-};
 
 // The module writes nothing and reads nothing. If it asks, that is a defect
 // in the module, not a thing to satisfy quietly.

@@ -142,7 +142,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-jl-name n arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-jl-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-jl-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-jl-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-jl-expr-at c arities (depth + 1) & " ? " & emit-jl-expr-at t arities (depth + 1) & " : " & emit-jl-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(let " & jl-sanitize name & " = " & emit-jl-expr-at val arities (depth + 1) & "; " & emit-jl-expr-at body arities (depth + 1) & " end)"
@@ -170,9 +170,23 @@ Section: Expression Emission
    in if ar == 0 then jl-sanitize n & "()"
       else jl-sanitize n
 
-  emit-jl-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-jl-binary (op) (l) (r) (arities) =
+ Julia's Int64 wraps on overflow and Base.Checked carries the checked forms,
+ so this plug has both primitives natively: the band is the bare operator and
+ the plain arm is checked_add and its siblings, which throw OverflowError.
+ That is why julia belongs in class 1 and not with the bignum targets its
+ language family would suggest.
+
+  jl-int-arith : Text, Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  jl-int-arith (sym) (checked) (l) (r) (ty) (arities) =
+   if int-ty-wraps ty then "(" & emit-jl-expr l arities & " " & sym & " " & emit-jl-expr r arities & ")"
+   else "Base.Checked." & checked & "(" & emit-jl-expr l arities & ", " & emit-jl-expr r arities & ")"
+
+  emit-jl-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-jl-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> jl-int-arith "+" "checked_add" l r ty arities
+    is IrSubInt -> jl-int-arith "-" "checked_sub" l r ty arities
+    is IrMulInt -> jl-int-arith "*" "checked_mul" l r ty arities
     is IrAppendText -> "(" & emit-jl-expr l arities & " * " & emit-jl-expr r arities & ")"
     is IrAppendList -> "vcat(" & emit-jl-expr l arities & ", " & emit-jl-expr r arities & ")"
     is IrConsList -> "vcat(Any[" & emit-jl-expr l arities & "], " & emit-jl-expr r arities & ")"
@@ -304,8 +318,48 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      let bi = jl-try-builtin n args arities
      in if text-length bi > 0 then bi
-     else jl-sanitize n & "(" & emit-jl-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 1 then emit-jl-curried (jl-sanitize n) args arities 0
+        else if list-length args == ar then jl-sanitize n & "(" & emit-jl-apply-args args arities 0 & ")"
+        else if list-length args < ar then emit-jl-partial n args arities (ar - list-length args)
+        else emit-jl-curried (jl-sanitize n & "(" & emit-jl-apply-args-upto args arities 0 ar & ")") args arities ar
     is otherwise -> emit-jl-expr root arities & "(" & emit-jl-apply-args args arities 0 & ")"
+
+ Julia calls a function value by juxtaposition, so an application past the
+ callee's arity applies the surplus one argument at a time, and a definition
+ applied to fewer arguments than it takes is eta-wrapped.
+
+  emit-jl-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-jl-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-jl-expr (list-at args i) arities & ")"
+   in emit-jl-curried next args arities (i + 1)
+
+  emit-jl-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-jl-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-jl-expr (list-at args i) arities
+   else emit-jl-expr (list-at args i) arities & ", " & emit-jl-apply-args-upto args arities (i + 1) n
+
+  emit-jl-partial-open : Integer, Integer -> Text
+  emit-jl-partial-open (i) (count) =
+   if i == count then ""
+   else "((_p" & integer-to-text i & "_) -> " & emit-jl-partial-open (i + 1) count
+
+  emit-jl-partial-close : Integer -> Text
+  emit-jl-partial-close (count) =
+   if count == 0 then "" else ")" & emit-jl-partial-close (count - 1)
+
+  emit-jl-partial-params : Integer, Integer -> Text
+  emit-jl-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-jl-partial-params (i + 1) count
+
+  emit-jl-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-jl-partial (n) (args) (arities) (short) =
+   let call = jl-sanitize n & "(" & emit-jl-apply-args args arities 0 & ", " & emit-jl-partial-params 0 short & ")"
+   in emit-jl-partial-open 0 short & call & emit-jl-partial-close short
 
   emit-jl-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-jl-apply-args (args) (arities) (i) =
@@ -394,6 +448,33 @@ Section: Chapter Emission
    in let defs-text = emit-jl-defs (m.defs) 0 arities
    in let entry = jl-emit-entry (m.defs)
    in header & types-text & defs-text & entry
+
+  emit-julia-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-julia-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "function list_snoc(xs, v)\n    if !isempty(xs)\n        push!(xs, v)\n        return xs\n    end\n    return Any[v]\nend\nlist_push(xs, v) = list_snoc(xs, v)\nfunction text_split(s, sep)\n    if length(sep) == 0\n        return [s]\n    end\n    return split(s, sep; keepempty=true)\nend\nfunction text_replace(s, a, b)\n    if length(a) == 0\n        return s\n    end\n    return replace(s, a => b)\nend\nfunction text_to_integer(s)\n    i = 1\n    neg = false\n    if length(s) > 0 && s[1] == '-'\n        neg = true\n        i = 2\n    end\n    v = 0\n    while i <= length(s) && s[i] >= '0' && s[i] <= '9'\n        v = v * 10 + (Int(s[i]) - 48)\n        i += 1\n    end\n    return neg ? -v : v\nend\n\n"
+   in let types-text = emit-jl-type-defs type-defs 0
+   in let entry = jl-emit-entry (m.defs)
+   in header & types-text
+
+  emit-julia-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-julia-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "function list_snoc(xs, v)\n    if !isempty(xs)\n        push!(xs, v)\n        return xs\n    end\n    return Any[v]\nend\nlist_push(xs, v) = list_snoc(xs, v)\nfunction text_split(s, sep)\n    if length(sep) == 0\n        return [s]\n    end\n    return split(s, sep; keepempty=true)\nend\nfunction text_replace(s, a, b)\n    if length(a) == 0\n        return s\n    end\n    return replace(s, a => b)\nend\nfunction text_to_integer(s)\n    i = 1\n    neg = false\n    if length(s) > 0 && s[1] == '-'\n        neg = true\n        i = 2\n    end\n    v = 0\n    while i <= length(s) && s[i] >= '0' && s[i] <= '9'\n        v = v * 10 + (Int(s[i]) - 48)\n        i += 1\n    end\n    return neg ? -v : v\nend\n\n"
+   in let types-text = emit-jl-type-defs type-defs 0
+   in let entry = jl-emit-entry (m.defs)
+   in entry
+
+  emit-julia-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-julia-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "function list_snoc(xs, v)\n    if !isempty(xs)\n        push!(xs, v)\n        return xs\n    end\n    return Any[v]\nend\nlist_push(xs, v) = list_snoc(xs, v)\nfunction text_split(s, sep)\n    if length(sep) == 0\n        return [s]\n    end\n    return split(s, sep; keepempty=true)\nend\nfunction text_replace(s, a, b)\n    if length(a) == 0\n        return s\n    end\n    return replace(s, a => b)\nend\nfunction text_to_integer(s)\n    i = 1\n    neg = false\n    if length(s) > 0 && s[1] == '-'\n        neg = true\n        i = 2\n    end\n    v = 0\n    while i <= length(s) && s[i] >= '0' && s[i] <= '9'\n        v = v * 10 + (Int(s[i]) - 48)\n        i += 1\n    end\n    return neg ? -v : v\nend\n\n"
+   in let types-text = emit-jl-type-defs type-defs 0
+   in let entry = jl-emit-entry (m.defs)
+   in arities
+
+  emit-julia-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-julia-chapter-stream-def (m) (v) (i) = emit-jl-def (list-at (m.defs) i) v
 
   jl-emit-entry : List IRDef -> Text
   jl-emit-entry (defs) =

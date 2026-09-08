@@ -1,0 +1,172 @@
+Chapter: GopFace
+  cites Foreword chapter MathLib
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+
+ An analogue clock face: the dial, its ticks, and three hands.
+
+ Stage 3 of `docs/Designs/Active/Apps/ClockAndZone.md`.
+
+ It draws through `comp-blend-px`, which takes a clip and bounds every write,
+ rather than through `gop-put` directly. `gop-put` has no bottom edge, and a
+ face is the first thing on this desk drawn from an angle rather than from a
+ rectangle: the arithmetic that places a hand tip cannot be read off the
+ caller's box, so a bound that is a rectangle the caller passed is the only
+ one worth having.
+
+Section: The circle
+
+ SIXTY POSITIONS AND NOT AN ANGLE, because a clock has exactly sixty of them
+ and every one is a whole number of degrees. A second is six degrees, so the
+ quarter turn is fifteen steps and a table of sixteen sines covers the whole
+ dial by symmetry with no interpolation and no error to reason about.
+
+ The values are sine times 1000 at 0, 6, 12 ... 90 degrees. They are a table
+ rather than a series because a series here would be a slower way to get the
+ same sixteen numbers, and the numbers are what a reader wants to check.
+
+  face-sin-q : Integer -> Integer
+  face-sin-q (i) =
+    if i <= 0 then 0
+    else if i == 1 then 105 else if i == 2 then 208 else if i == 3 then 309
+    else if i == 4 then 407 else if i == 5 then 500 else if i == 6 then 588
+    else if i == 7 then 669 else if i == 8 then 743 else if i == 9 then 809
+    else if i == 10 then 866 else if i == 11 then 914 else if i == 12 then 951
+    else if i == 13 then 978 else if i == 14 then 995 else 1000
+
+ `t` counts clockwise from twelve o'clock, which is what a clock does and is
+ not what mathematics does. Twelve is straight up, so the vertical component
+ is NEGATIVE at t = 0: the screen's y grows downward and the hand points up.
+
+  face-sin : Integer -> Integer
+  face-sin (t) =
+    let n = int-mod (int-mod t 60 + 60) 60
+    in if n <= 15 then face-sin-q n
+    else if n <= 30 then face-sin-q (30 - n)
+    else if n <= 45 then 0 - face-sin-q (n - 30)
+    else 0 - face-sin-q (60 - n)
+
+  face-cos : Integer -> Integer
+  face-cos (t) = face-sin (t + 15)
+
+  face-dx : Integer, Integer -> Integer
+  face-dx (t) (r) = face-sin t * r / 1000
+
+  face-dy : Integer, Integer -> Integer
+  face-dy (t) (r) = 0 - (face-cos t * r / 1000)
+
+Section: Marks
+
+ A DISC RATHER THAN A PIXEL, so a hand has width and a tick has weight.
+
+ THE RIM IS THE ONLY PART THAT COSTS A ROOT. A circle drawn by the squared
+ test alone is a staircase, and a staircase on a dial is the same defect the
+ rounded corners had: it reads as a badly drawn shape rather than a smooth
+ one. But taking a root per pixel to antialias a disc would take one for every
+ pixel of the dial, and the dial is the largest thing on the pane.
+
+ So the interior and the exterior are decided by the squared test, which is
+ exact and cheap, and only the one pixel band between `(rr-1)^2` and `(rr+1)^2`
+ is measured. That band is the circumference, which grows with the radius
+ while the area grows with its square: the cost of the smoothing is a line and
+ not a disc.
+
+  face-cov : Integer, Integer -> Integer
+  face-cov (d2) (rr) =
+    let v = rr * 256 + 128 - math-isqrt (d2 * 65536)
+    in if v <= 0 then 0 else if v > 255 then 255 else v
+
+  face-disc-row : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  face-disc-row (base) (stride) (rows) (clip) (cx) (cy) (rr) (y) (x) (col) =
+    if x > cx + rr + 1 then 0
+    else
+      let dx = x - cx
+      in let dy = y - cy
+      in let d2 = dx * dx + dy * dy
+      in let a = if d2 <= (rr - 1) * (rr - 1) then 255
+            else if d2 > (rr + 1) * (rr + 1) then 0
+            else face-cov d2 rr
+      in let d = if a <= 0 then 0 else comp-blend-px base stride rows clip x y col a
+      in face-disc-row base stride rows clip cx cy rr y (x + 1) col
+
+  face-disc-at : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer -> Integer
+  face-disc-at (base) (stride) (rows) (clip) (cx) (cy) (rr) (y) (col) =
+    if y > cy + rr + 1 then 0
+    else
+      let one = face-disc-row base stride rows clip cx cy rr y (cx - rr - 1) col
+      in face-disc-at base stride rows clip cx cy rr (y + 1) col
+
+  face-disc : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer -> Integer
+  face-disc (base) (stride) (rows) (clip) (cx) (cy) (rr) (col) =
+    if rr <= 0 then comp-blend-px base stride rows clip cx cy col 255
+    else face-disc-at base stride rows clip cx cy rr (cy - rr - 1) col
+
+ A HAND IS A WALK AND NOT A LINE EQUATION. It steps out from the centre one
+ device pixel at a time along the same sixty-position table the ticks use, so
+ a hand lands exactly on the tick it points at. A Bresenham line would land
+ near it, and near is what makes an analogue clock look wrong.
+
+ The step is the radius in pixels, so the walk is as long as the hand and no
+ longer, and the cost is a disc per pixel of hand rather than per pixel of
+ dial.
+
+  face-hand-at : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  face-hand-at (base) (stride) (rows) (clip) (cx) (cy) (t) (i) (n) (wid) (col) =
+    if i > n then 0
+    else
+      let x = cx + face-dx t i
+      in let y = cy + face-dy t i
+      in let one = face-disc base stride rows clip x y wid col
+      in face-hand-at base stride rows clip cx cy t (i + 1) n wid col
+
+  face-hand : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  face-hand (base) (stride) (rows) (clip) (cx) (cy) (t) (from) (to) (wid) (col) =
+    face-hand-at base stride rows clip cx cy t from to wid col
+
+Section: The dial
+
+ EVERY FIFTH TICK IS LONGER, which is the only thing that makes a dial
+ readable at a glance: without it a viewer counts marks instead of seeing
+ hours. The long ticks are also drawn thicker, because at this size length
+ alone does not separate them.
+
+  face-tick-at : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  face-tick-at (base) (stride) (rows) (clip) (cx) (cy) (r) (t) (col) (hour-col) =
+    if t >= 60 then 0
+    else
+      let big = int-mod t 5 == 0
+      in let inner = if big then r * 82 / 100 else r * 90 / 100
+      in let wid = if big then 1 else 0
+      in let c = if big then hour-col else col
+      in let one = face-hand base stride rows clip cx cy t inner r wid c
+      in face-tick-at base stride rows clip cx cy r (t + 1) col hour-col
+
+ The hour hand advances WITH the minutes, which is the difference between a
+ clock and a picture of one: at half past ten the hour hand sits between ten
+ and eleven, and a hand that jumped on the hour reads as broken to anyone who
+ has looked at a real one.
+
+ Sixty positions cover twelve hours at five per hour, so the hour position is
+ `h mod 12` times five plus the minutes divided by twelve.
+
+  face-hour-t : Integer, Integer -> Integer
+  face-hour-t (h) (mi) = int-mod h 12 * 5 + mi / 12
+
+ Drawn back to front: dial, ticks, then the hands in the order a viewer
+ expects to find them on top of one another, and the hub last so that three
+ hands meeting at a point look like one joint rather than three overlaps.
+
+ The hands are given radii as PERCENTAGES of the dial, so the face is one
+ shape at any size and a caller that halves the radius gets the same clock.
+
+  face-draw : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  face-draw (base) (stride) (rows) (clip) (cx) (cy) (r) (h) (mi) (s) (rim) (tick) (hand) (accent) =
+    let d0 = face-disc base stride rows clip cx cy r rim
+    in let d1 = face-tick-at base stride rows clip cx cy (r * 94 / 100) 0 tick hand
+    in let d2 = face-hand base stride rows clip cx cy (face-hour-t h mi) 0 (r * 50 / 100) 2 hand
+    in let d3 = face-hand base stride rows clip cx cy (int-mod mi 60) 0 (r * 74 / 100) 1 hand
+    in let d4 = face-hand base stride rows clip cx cy (int-mod s 60) 0 (r * 84 / 100) 0 accent
+    in let d5 = face-disc base stride rows clip cx cy 3 hand
+    in face-disc base stride rows clip cx cy 1 accent
+
+Page 1

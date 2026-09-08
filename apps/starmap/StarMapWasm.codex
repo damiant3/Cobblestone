@@ -1,71 +1,116 @@
 Chapter: StarMapWasm
   cites Foreword chapter Console
-  cites Foreword chapter CCE
-  cites Starmap chapter CelestialTypes
-  cites Starmap chapter StarCatalog
   cites Starmap chapter StarMapScene
 
- Browser entry point for the star map. The catalog is built once, into linear
- memory, by the entry act; every later call reads it back from there, so no
- frame allocates.
+ Browser entry point for the star map. The catalogue is not built here: the
+ page hands over data/starmap.dat and this chapter reads it in place, so the
+ module carries 117,931 stars without allocating one object per star.
 
  We say:
 
+Section: The File Format
+
+ starmap.dat is ours but its layout is a wire format between three programs
+ (the importer, this chapter, and the page), so the offsets are written down
+ once here and every reader takes them from this section.
+
+ Header, at the base:
+   0  magic "STAR"   4  version   8  star count   12 named count
+   16 name table     20 dso count 24 dso offset   28 con count
+   32 con offset     36 con lines
+
+ THE SHIPPED FILE'S CONSTELLATION FIELDS ARE WRONG and this chapter does not
+ read them. import-hyg.ps1 patched the constellation offset into byte 28,
+ which is the COUNT's slot, so every file it has written carries an offset
+ where the count belongs and a zero where the offset belongs. The importer is
+ fixed; the file in the depot cannot be regenerated without hyg_v42.csv, which
+ is not in the tree.
+
+  sm-hdr-magic : Integer = 0
+
+  sm-hdr-version : Integer = 4
+
+  sm-hdr-stars : Integer = 8
+
+  sm-hdr-named : Integer = 12
+
+  sm-hdr-nameoff : Integer = 16
+
+  sm-hdr-dsocount : Integer = 20
+
+  sm-hdr-dsooff : Integer = 24
+
+  sm-hdr-size : Integer = 64
+
+ One star record is 32 bytes. Magnitude, absolute magnitude and the colour
+ index are 16-bit and share words with their neighbours, which is why they are
+ read as words and split rather than loaded at their own widths: the wasm plug
+ has a poke-16 arm and NO peek-16 arm.
+
+  sm-rec-size : Integer = 32
+
+  sm-rec-x : Integer = 4
+
+  sm-rec-y : Integer = 8
+
+  sm-rec-z : Integer = 12
+
+  sm-rec-magword : Integer = 16
+
 Section: Memory Map
 
- The base addresses have to clear the data segment, which is where heap_start
- lands: the two modules we ship measured 71,635 and 71,531 bytes there, so 1 MB
- is a twelvefold margin that a larger string table cannot reach. sm-heap-floor
- is where the heap is advanced before anything allocates, because the heap
- otherwise grows straight through these buffers.
+ The page writes the file into the window at sm-dat-base, so the window has to
+ clear the data segment (heap_start measured at about 72 KB in the modules we
+ ship) and the heap has to start above everything. A file larger than the
+ window is REFUSED rather than allowed to run into the selection buffer.
 
-  sm-star-count : Integer = 256
+  sm-cell-stars : Integer = 256
 
-  sm-label-count : Integer = 260
+  sm-cell-visible : Integer = 260
 
-  sm-visible-count : Integer = 264
+  sm-cell-ready : Integer = 264
 
-  sm-ready : Integer = 268
+  sm-cell-datlen : Integer = 268
+
+  sm-cell-named : Integer = 272
+
+  sm-cell-dsocount : Integer = 276
+
+  sm-cell-dsooff : Integer = 280
+
+  sm-cell-nameoff : Integer = 284
+
+  sm-cell-error : Integer = 288
 
   sm-cam-state : Integer = 352
 
-  sm-star-tab : Integer = 1048576
+  sm-dat-base : Integer = 1048576
 
-  sm-label-blob : Integer = 1114112
+  sm-dat-max : Integer = 5242880
 
-  sm-visible-buf : Integer = 1179648
+  sm-visible-buf : Integer = 6291456
 
-  sm-heap-floor : Integer = 1245184
+  sm-visible-cap : Integer = 30000
 
-  sm-star-stride : Integer = 48
+  sm-heap-floor : Integer = 8388608
 
-  sm-label-stride : Integer = 80
-
-  sm-label-cap : Integer = 76
-
-  sm-max-labels : Integer = 200
-
- 65535 is the absent marker for a label slot and for a selection. It is above
- every object id and every label slot, which is what a sentinel read back
- through peek-32 has to be: the read zero-extends, so a negative marker is
- unreachable.
+ 65535 is the absent marker. It is above every count a caller can read back,
+ and a read zero-extends, so a negative marker is unreachable.
 
   sm-absent : Integer = 65535
 
 Section: Word Access
 
  peek-32 zero-extends, so a value stored negative reads back as its unsigned
- image and sm-signed is the correction. A page reading the same words needs no
- correction, because an Int32Array is signed already.
-
- Coordinates reach 320,000,000,000 (parsecs x 1000, the far galaxies) and do
- not fit one word at all. sm-put-wide splits on 1,000,000: Integer division
- truncates toward zero, so quotient and remainder carry the same sign and
- recombine exactly, and both halves stay inside a word for every value the
- catalog holds.
+ image; sm-signed is the correction, and a page needs none because an
+ Int32Array is signed already. sm-i16 is the same correction one width down,
+ for a field that shares its word with the next one.
 
   sm-signed : Integer -> Integer
   sm-signed (u) = if u >= 2147483648 then u - 4294967296 else u
+
+  sm-i16 : Integer -> Integer
+  sm-i16 (u) = if u >= 32768 then u - 65536 else u
 
   sm-put : Integer, Integer, Integer -> Integer
   sm-put (base) (off) (v) = poke-32 base off v
@@ -73,117 +118,99 @@ Section: Word Access
   sm-get : Integer, Integer -> Integer
   sm-get (base) (off) = sm-signed (peek-32 base off)
 
-  sm-wide-split : Integer = 1000000
+  sm-get-lo16 : Integer, Integer -> Integer
+  sm-get-lo16 (base) (off) = sm-i16 (bit-and (peek-32 base off) 65535)
 
-  sm-put-wide : Integer, Integer, Integer -> Integer
-  sm-put-wide (base) (off) (v) =
-    let hi = v / sm-wide-split
-    in let lo = v - hi * sm-wide-split
-    in let w = sm-put base off lo
-    in sm-put base (off + 4) hi
+Section: Loading
 
-  sm-get-wide : Integer, Integer -> Integer
-  sm-get-wide (base) (off) = sm-get base off + sm-get base (off + 4) * sm-wide-split
+ The page copies the file in and calls this. Nothing is trusted: a wrong magic,
+ a version this chapter does not know, a file past the window, or a star count
+ that does not fit the bytes delivered are each a numbered refusal rather than
+ a plausible sky drawn from noise.
 
-Section: Star Record
+  sm-err-none : Integer = 0
 
- Offsets within one star record. x, y and z are wide and take two words each.
+  sm-err-magic : Integer = 1
 
-  sm-off-x : Integer = 0
+  sm-err-version : Integer = 2
 
-  sm-off-y : Integer = 8
+  sm-err-too-big : Integer = 3
 
-  sm-off-z : Integer = 16
+  sm-err-truncated : Integer = 4
 
-  sm-off-mag : Integer = 24
+ "STAR" read as one little-endian word, which is what peek-32 answers over the
+ first four bytes. Verified against the shipped file rather than derived.
 
-  sm-off-rgb : Integer = 28
+  sm-magic-star : Integer = 1380013139
 
-  sm-off-id : Integer = 32
+  sm-load : Integer -> Integer
+  sm-load (len) =
+    if len > sm-dat-max then sm-fail sm-err-too-big
+    else if sm-get sm-dat-base sm-hdr-magic /= sm-magic-star then sm-fail sm-err-magic
+    else if sm-get sm-dat-base sm-hdr-version /= 2 then sm-fail sm-err-version
+    else let n = sm-get sm-dat-base sm-hdr-stars
+    in if sm-hdr-size + n * sm-rec-size > len then sm-fail sm-err-truncated
+    else sm-accept n len
 
-  sm-off-size : Integer = 36
+  sm-fail : Integer -> Integer
+  sm-fail (code) =
+    let a = sm-put 0 sm-cell-error code
+    in let b = sm-put 0 sm-cell-ready 0
+    in let c = sm-put 0 sm-cell-stars 0
+    in 0 - code
 
-  sm-off-label : Integer = 40
+  sm-accept : Integer, Integer -> Integer
+  sm-accept (n) (len) =
+    let a0 = sm-put 0 sm-cell-error sm-err-none
+    in let a1 = sm-put 0 sm-cell-stars n
+    in let a2 = sm-put 0 sm-cell-datlen len
+    in let a3 = sm-put 0 sm-cell-named (sm-get sm-dat-base sm-hdr-named)
+    in let a4 = sm-put 0 sm-cell-nameoff (sm-get sm-dat-base sm-hdr-nameoff)
+    in let a5 = sm-put 0 sm-cell-dsocount (sm-get sm-dat-base sm-hdr-dsocount)
+    in let a6 = sm-put 0 sm-cell-dsooff (sm-get sm-dat-base sm-hdr-dsooff)
+    in let a7 = sm-write-cam camera-new
+    in let a8 = sm-put 0 (sm-cam-state + sm-cam-objects) n
+    in let a9 = sm-put 0 (sm-cam-state + sm-cam-mag-limit) 6000
+    in let b0 = sm-put 0 (sm-cam-state + sm-cam-fov) 60
+    in let b1 = sm-put 0 (sm-cam-state + sm-cam-selected) sm-absent
+    in let b2 = sm-put 0 (sm-cam-state + sm-cam-flags) 7
+    in let vis = sm-select
+    in let rdy = sm-put 0 sm-cell-ready 1
+    in n
 
-  sm-off-kind : Integer = 44
+Section: The Query
 
-  sm-kind-code : CelestialKind -> Integer
-  sm-kind-code (k) = when k
-    is CkStar -> 0
-    is CkBinaryStar -> 1
-    is CkGlobularCluster -> 2
-    is CkOpenCluster -> 3
-    is CkPlanetaryNebula -> 4
-    is CkDiffuseNebula -> 5
-    is CkGalaxy -> 6
-    is CkQuasar -> 7
-    is CkPulsar -> 8
-    is CkBlackHole -> 9
-    is CkPlanet -> 10
-    is CkMoon -> 11
-    is CkAsteroid -> 12
-    is CkComet -> 13
+ The whole catalogue is in memory and the page must not walk it every frame,
+ so the selection is done here and the page is handed indices. It is rerun
+ when the magnitude limit moves, not per frame: the sky does not change.
 
-Section: Label Blob
+  sm-star-at : Integer -> Integer
+  sm-star-at (i) = sm-dat-base + sm-hdr-size + i * sm-rec-size
 
- A name is packed four bytes to a word because there is no poke-8. The bytes
- are Unicode: char-code-at answers a CCE code point, which is not what a page
- decoding UTF-8 means, so to-unicode converts at this boundary.
+  sm-star-mag : Integer -> Integer
+  sm-star-mag (i) = sm-get-lo16 (sm-star-at i) sm-rec-magword
 
-  sm-name-byte : Text, Integer, Integer -> Integer
-  sm-name-byte (name) (i) (n) =
-    if i >= n then 0 else to-unicode (char-code-at name i)
+  sm-select : Integer
+  sm-select =
+    let n = sm-get 0 sm-cell-stars
+    in let lim = sm-get 0 (sm-cam-state + sm-cam-mag-limit)
+    in let v = sm-select-loop 0 n lim 0
+    in let w = sm-put 0 sm-cell-visible v
+    in v
 
-  sm-write-name : Integer, Integer, Text, Integer, Integer -> Integer
-  sm-write-name (addr) (off) (name) (i) (n) =
-    if i >= n then 0
-    else let b0 = sm-name-byte name i n
-    in let b1 = sm-name-byte name (i + 1) n
-    in let b2 = sm-name-byte name (i + 2) n
-    in let b3 = sm-name-byte name (i + 3) n
-    in let w = sm-put addr off (b0 + b1 * 256 + b2 * 65536 + b3 * 16777216)
-    in sm-write-name addr (off + 4) name (i + 4) n
-
-  sm-write-label : Integer, Text -> Integer
-  sm-write-label (slot) (name) =
-    let n = text-length name
-    in if n == 0 then sm-absent
-    else let cap = if n > sm-label-cap then sm-label-cap else n
-    in let addr = sm-label-blob + slot * sm-label-stride
-    in let w = sm-put addr 0 cap
-    in let body = sm-write-name addr 4 name 0 cap
-    in slot
-
-Section: Building the Table
-
- The catalog is the fifty named stars with the Messier objects and the notable
- galaxies appended. catalog-all is the stars alone, which is why it is not what
- is read here.
-
-  sm-catalog : List CelestialObj
-  sm-catalog = scene-append-list (scene-append-list catalog-stars catalog-messier 0 (list-length catalog-messier)) catalog-galaxies 0 (list-length catalog-galaxies)
-
-  sm-write-stars : List CelestialObj, Integer, Integer, Integer -> Integer
-  sm-write-stars (cat) (i) (n) (labels) =
-    if i >= n then labels
-    else let obj = list-at cat i
-    in let addr = sm-star-tab + i * sm-star-stride
-    in let w0 = sm-put-wide addr sm-off-x (obj.co-x)
-    in let w1 = sm-put-wide addr sm-off-y (obj.co-y)
-    in let w2 = sm-put-wide addr sm-off-z (obj.co-z)
-    in let w3 = sm-put addr sm-off-mag (obj.co-mag)
-    in let w4 = sm-put addr sm-off-rgb (bv-to-rgb (obj.co-bv))
-    in let w5 = sm-put addr sm-off-id (obj.co-id)
-    in let w6 = sm-put addr sm-off-size (co-screen-size obj 0)
-    in let w7 = sm-put addr sm-off-kind (sm-kind-code (obj.co-kind))
-    in let slot = if labels >= sm-max-labels then sm-absent else sm-write-label labels (obj.co-name)
-    in let w8 = sm-put addr sm-off-label slot
-    in let taken = if slot == sm-absent then labels else labels + 1
-    in sm-write-stars cat (i + 1) n taken
+  sm-select-loop : Integer, Integer, Integer, Integer -> Integer
+  sm-select-loop (i) (n) (lim) (out) =
+    if i >= n then out
+    else if out >= sm-visible-cap then out
+    else if sm-star-mag i > lim then sm-select-loop (i + 1) n lim out
+    else let w = sm-put sm-visible-buf (out * 4) i
+    in sm-select-loop (i + 1) n lim (out + 1)
 
 Section: Camera State
 
- Offsets within the camera block. Focus and distance are wide.
+ Offsets within the camera block. A sky has no camera DISTANCE: zoom is the
+ field of view, and the focus is where the observer stands, which only matters
+ for parallax against the nearer stars.
 
   sm-cam-focus-x : Integer = 0
 
@@ -194,8 +221,6 @@ Section: Camera State
   sm-cam-yaw : Integer = 24
 
   sm-cam-pitch : Integer = 28
-
-  sm-cam-dist : Integer = 32
 
   sm-cam-selected : Integer = 40
 
@@ -209,6 +234,18 @@ Section: Camera State
 
   sm-cam-flags : Integer = 60
 
+  sm-wide-split : Integer = 1000000
+
+  sm-put-wide : Integer, Integer, Integer -> Integer
+  sm-put-wide (base) (off) (v) =
+    let hi = v / sm-wide-split
+    in let lo = v - hi * sm-wide-split
+    in let w = sm-put base off lo
+    in sm-put base (off + 4) hi
+
+  sm-get-wide : Integer, Integer -> Integer
+  sm-get-wide (base) (off) = sm-get base off + sm-get base (off + 4) * sm-wide-split
+
   sm-write-cam : StarCamera -> Integer
   sm-write-cam (cam) =
     let b = sm-cam-state
@@ -217,9 +254,7 @@ Section: Camera State
     in let a2 = sm-put-wide b sm-cam-focus-z (cam.sc-focus-z)
     in let a3 = sm-put b sm-cam-yaw (cam.sc-yaw)
     in let a4 = sm-put b sm-cam-pitch (cam.sc-pitch)
-    in let a5 = sm-put-wide b sm-cam-dist (cam.sc-dist)
-    in let a6 = sm-put b sm-cam-speed (cam.sc-speed)
-    in sm-put b sm-cam-fov (cam.sc-fov)
+    in sm-put b sm-cam-speed (cam.sc-speed)
 
   sm-read-cam : Integer -> StarCamera
   sm-read-cam (x) = StarCamera {
@@ -228,7 +263,7 @@ Section: Camera State
     sc-focus-z = sm-get-wide sm-cam-state sm-cam-focus-z,
     sc-yaw = sm-get sm-cam-state sm-cam-yaw,
     sc-pitch = sm-get sm-cam-state sm-cam-pitch,
-    sc-dist = sm-get-wide sm-cam-state sm-cam-dist,
+    sc-dist = 0,
     sc-fov = sm-get sm-cam-state sm-cam-fov,
     sc-near = 1,
     sc-far = 100000000000,
@@ -236,73 +271,31 @@ Section: Camera State
     sc-target-name = ""
   }
 
-Section: Keeping the Page's Entries Alive
-
- Only what the entry act transitively reaches is emitted, so a function the
- page calls and Codex does not would be dropped and its export would name
- nothing. Touching all sixteen here is what keeps them in the module, which is
- also what apps/fishtank/FishTankWasm.codex does under this name. It runs
- before the table is built and before the camera is written, so every cell it
- disturbs is overwritten by the rest of sm-init; do not move it later, and do
- not delete it for looking pointless.
-
-  sm-keep-alive : Integer -> Integer
-  sm-keep-alive (x) =
-    sm-tick x + sm-orbit x x + sm-zoom x + sm-move-forward x + sm-move-right x + sm-move-up x + sm-set-speed x + sm-select-obj x + sm-fly-to x + sm-set-mag-limit x + sm-toggle-labels + sm-toggle-grid + sm-toggle-constellations + sm-get-star-count + sm-get-visible-count + sm-get-label-count
-
-Section: Init
-
-  sm-init : [Console] Integer
-  sm-init = act
-    adv <- __heap-advance sm-heap-floor
-    let churn = sm-keep-alive 0
-    in let mark = __heap-save
-    in let cat = sm-catalog
-    in let n = list-length cat
-    in let labels = sm-write-stars cat 0 n 0
-    in let back = __heap-restore mark
-    in let c0 = sm-put 0 sm-star-count n
-    in let c1 = sm-put 0 sm-label-count labels
-    in let c2 = sm-write-cam camera-new
-    in let c3 = sm-put 0 (sm-cam-state + sm-cam-selected) sm-absent
-    in let c4 = sm-put 0 (sm-cam-state + sm-cam-objects) n
-    in let c5 = sm-put 0 (sm-cam-state + sm-cam-mag-limit) 6000
-    in let c6 = sm-put 0 (sm-cam-state + sm-cam-flags) 7
-    in let vis = sm-tick 0
-    in let rdy = sm-put 0 sm-ready 1
-    in n
-  end
-
-Section: Tick
-
- The star table does not move, so a frame only re-selects which rows are
- visible under the magnitude limit and writes their indices. A page reads the
- rows it names straight out of the table.
-
-  sm-tick : Integer -> Integer
-  sm-tick (frame) =
-    let n = sm-get 0 sm-star-count
-    in let lim = sm-get 0 (sm-cam-state + sm-cam-mag-limit)
-    in let vis = sm-fill-visible 0 n lim 0
-    in let w = sm-put 0 sm-visible-count vis
-    in vis
-
-  sm-fill-visible : Integer, Integer, Integer, Integer -> Integer
-  sm-fill-visible (i) (n) (lim) (out) =
-    if i >= n then out
-    else if out >= sm-max-labels then out
-    else let src = sm-star-tab + i * sm-star-stride
-    in if sm-get src sm-off-mag > lim then sm-fill-visible (i + 1) n lim out
-    else let w = sm-put sm-visible-buf (out * 4) i
-    in sm-fill-visible (i + 1) n lim (out + 1)
-
 Section: Camera Controls
 
   sm-orbit : Integer, Integer -> Integer
   sm-orbit (dyaw) (dpitch) = sm-write-cam (camera-orbit (sm-read-cam 0) dyaw dpitch)
 
+  sm-look-at : Integer, Integer -> Integer
+  sm-look-at (yaw) (pitch) =
+    let clamped = if pitch > 89000 then 89000 else if pitch < -89000 then -89000 else pitch
+    in let a = sm-put 0 (sm-cam-state + sm-cam-yaw) yaw
+    in sm-put 0 (sm-cam-state + sm-cam-pitch) clamped
+
+ Zoom is the field of view in degrees. 5 is about a finder scope and 120 is
+ wider than the eye takes in at once; outside that the projection stops being
+ worth looking at rather than becoming wrong.
+
+  sm-fov-min : Integer = 5
+
+  sm-fov-max : Integer = 120
+
   sm-zoom : Integer -> Integer
-  sm-zoom (delta) = sm-write-cam (camera-zoom (sm-read-cam 0) delta)
+  sm-zoom (delta) =
+    let f = sm-get 0 (sm-cam-state + sm-cam-fov) + delta
+    in let clamped = if f < sm-fov-min then sm-fov-min else if f > sm-fov-max then sm-fov-max else f
+    in let w = sm-put 0 (sm-cam-state + sm-cam-fov) clamped
+    in clamped
 
   sm-move-forward : Integer -> Integer
   sm-move-forward (amount) = sm-write-cam (camera-move-forward (sm-read-cam 0) amount)
@@ -314,40 +307,17 @@ Section: Camera Controls
   sm-move-up (amount) = sm-write-cam (camera-move-up (sm-read-cam 0) amount)
 
   sm-set-speed : Integer -> Integer
-  sm-set-speed (s) = sm-write-cam (camera-set-speed (sm-read-cam 0) s)
+  sm-set-speed (s) = sm-put 0 (sm-cam-state + sm-cam-speed) s
 
-Section: Selection
-
-  sm-find-by-id : Integer, Integer, Integer -> Integer
-  sm-find-by-id (id) (i) (n) =
-    if i >= n then sm-absent
-    else if sm-get (sm-star-tab + i * sm-star-stride) sm-off-id == id then i
-    else sm-find-by-id id (i + 1) n
+Section: Selection and Toggles
 
   sm-select-obj : Integer -> Integer
-  sm-select-obj (id) =
-    let n = sm-get 0 sm-star-count
-    in let idx = sm-find-by-id id 0 n
-    in if idx == sm-absent then sm-absent
-    else let w = sm-put 0 (sm-cam-state + sm-cam-selected) id
-    in idx
-
-  sm-fly-to : Integer -> Integer
-  sm-fly-to (id) =
-    let n = sm-get 0 sm-star-count
-    in let idx = sm-find-by-id id 0 n
-    in if idx == sm-absent then sm-absent
-    else let src = sm-star-tab + idx * sm-star-stride
-    in let cam = sm-read-cam 0
-    in let moved = camera-goto cam (sm-get-wide src sm-off-x) (sm-get-wide src sm-off-y) (sm-get-wide src sm-off-z) ""
-    in let w = sm-put 0 (sm-cam-state + sm-cam-selected) id
-    in let f = sm-write-cam moved
-    in idx
-
-Section: Toggles
-
- Bit 1 is labels, bit 2 the grid, bit 4 the constellation figures. They live in
- one word so a page reads the three with one load.
+  sm-select-obj (i) =
+    let n = sm-get 0 sm-cell-stars
+    in if i < 0 then sm-put 0 (sm-cam-state + sm-cam-selected) sm-absent
+    else if i >= n then sm-put 0 (sm-cam-state + sm-cam-selected) sm-absent
+    else let w = sm-put 0 (sm-cam-state + sm-cam-selected) i
+    in i
 
   sm-flag-labels : Integer = 1
 
@@ -374,24 +344,49 @@ Section: Toggles
   sm-set-mag-limit : Integer -> Integer
   sm-set-mag-limit (mag) =
     let w = sm-put 0 (sm-cam-state + sm-cam-mag-limit) mag
-    in sm-tick 0
+    in sm-select
 
 Section: Queries
 
   sm-get-star-count : Integer
-  sm-get-star-count = sm-get 0 sm-star-count
+  sm-get-star-count = sm-get 0 sm-cell-stars
 
   sm-get-visible-count : Integer
-  sm-get-visible-count = sm-get 0 sm-visible-count
+  sm-get-visible-count = sm-get 0 sm-cell-visible
 
-  sm-get-label-count : Integer
-  sm-get-label-count = sm-get 0 sm-label-count
+  sm-get-error : Integer
+  sm-get-error = sm-get 0 sm-cell-error
+
+  sm-tick : Integer -> Integer
+  sm-tick (frame) = sm-get 0 sm-cell-visible
+
+Section: Keeping the Page's Entries Alive
+
+ Only what the entry act transitively reaches is emitted, so a function the
+ page calls and Codex does not would be dropped and its export would name
+ nothing. Touching them here is what keeps them in the module, which is also
+ what apps/fishtank/FishTankWasm.codex does under this name. It runs with no
+ file loaded, so every read it makes answers zero and every write it makes is
+ overwritten by sm-load; do not delete it for looking pointless.
+
+  sm-keep-alive : Integer -> Integer
+  sm-keep-alive (x) =
+    sm-load x + sm-select + sm-tick x + sm-orbit x x + sm-look-at x x + sm-zoom x + sm-move-forward x + sm-move-right x + sm-move-up x + sm-set-speed x + sm-select-obj x + sm-set-mag-limit x + sm-toggle-labels + sm-toggle-grid + sm-toggle-constellations + sm-get-star-count + sm-get-visible-count + sm-get-error
 
 Section: Entry
 
+ The entry act only prepares memory. Nothing can be reported about the
+ catalogue here because the page has not delivered it yet, which is the whole
+ difference from a module that carries its own data.
+
   opening : [Console] Nothing = act
-    n <- sm-init
-    print-line-uni ("StarMap WASM: " & show n & " objects, " & show (sm-get 0 sm-label-count) & " labels, " & show (sm-get 0 sm-visible-count) & " visible")
+    adv <- __heap-advance sm-heap-floor
+    let churn = sm-keep-alive 0
+    in let c0 = sm-put 0 sm-cell-ready 0
+    in let c1 = sm-put 0 sm-cell-stars 0
+    in let c2 = sm-put 0 sm-cell-visible 0
+    in let c3 = sm-put 0 sm-cell-error sm-err-none
+    in print-line-uni ("StarMap WASM: ready for a catalogue, window " & show (sm-dat-max / 1048576) & " MB, cap " & show sm-visible-cap)
   end
 
 Page 1

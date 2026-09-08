@@ -49,6 +49,68 @@ Section: The File
 
   zone-file-len : Integer = 8
 
+ CTZ2 IS SIXTEEN BYTES AND ITS FIRST EIGHT ARE BYTE FOR BYTE WHAT CTZ1 WROTE.
+ The magic does not change, which is the whole point: a CTZ1 reader takes the
+ first eight bytes and gets the same whole-hour zone it always did, and a CTZ2
+ reader that finds a short file takes the hour offset and defaults the rest.
+ Neither has to know the other exists.
+
+   8..9    offset in MINUTES plus 720, little endian
+   10..11  zone id, little endian; 0 means "just the offset, no zone"
+   12      clock format
+   13      date format
+   14..15  zero
+
+ The minutes are biased for the same reason the hours are: a byte read back is
+ unsigned, and a stored -300 would return as an enormous positive.
+
+  zone2-len : Integer = 16
+  zone2-bias : Integer = 720
+  zone-min-minutes : Integer = 0 - 720
+  zone-max-minutes : Integer = 840
+
+  zone-clamp-minutes : Integer -> Integer
+  zone-clamp-minutes (m) =
+    if m < zone-min-minutes then zone-min-minutes
+    else if m > zone-max-minutes then zone-max-minutes
+    else m
+
+ The whole-hour byte is the minutes ROUNDED and not truncated, because a
+ truncating +05:30 writes +05:00 and a CTZ1 reader is then half an hour out
+ rather than a whole one. Rounding away from zero on the half is what a person
+ would do with a pencil.
+
+  zone-hours-of : Integer -> Integer
+  zone-hours-of (m) = if m >= 0 then (m + 30) / 60 else 0 - ((0 - m + 30) / 60)
+
+  ZoneRec = record {
+    zc-minutes : Integer,
+    zc-id : Integer,
+    zc-clock : Integer,
+    zc-date : Integer,
+    zc-band : Integer
+  }
+
+ What the taskbar clock shows, as a bit per part. It rides in byte 14, which
+ CTZ2 has always written as zero and read as nothing, so a record written by
+ an older build is not short and needs no version bump.
+
+ STORED PLUS ONE, because zero in that byte means a build that never wrote it
+ and "show nothing" is a legal mask. Without the offset a taskbar somebody had
+ emptied on purpose and one from last week would be the same bits, and the
+ desk would have to guess which.
+
+  zone-band-time : Integer = 1
+  zone-band-date : Integer = 2
+  zone-band-offset : Integer = 4
+
+  zone-band-default : Integer = 1
+
+  zone-band-all : Integer = 7
+
+  zone-rec-default : ZoneRec
+  zone-rec-default = ZoneRec { zc-minutes = 0, zc-id = 0, zc-clock = 0, zc-date = 0, zc-band = zone-band-default }
+
   zone-name-bytes : Integer, Text, Integer -> Integer
   zone-name-bytes (buf) (s) (i) =
     if i >= text-length s then 0
@@ -80,6 +142,68 @@ Section: Saving
       in let g = poke-byte buf 6 0
       in let h = poke-byte buf 7 0
       in gfat-write-small-file (m.gm-vol) zone-name buf zone-file-len
+  end
+
+Section: The wider record
+
+  zone2-save : ZoneRec -> [Device.Port] Boolean
+  zone2-save (r) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then False
+    else
+      let mins = zone-clamp-minutes (r.zc-minutes)
+      in let buf = __heap-save
+      in let adv = __heap-advance 64
+      in let a = poke-byte buf 0 zone-magic0
+      in let b = poke-byte buf 1 zone-magic1
+      in let c = poke-byte buf 2 zone-magic2
+      in let d = poke-byte buf 3 zone-magic3
+      in let e = poke-byte buf 4 (zone-clamp (zone-hours-of mins) + zone-bias)
+      in let f = poke-byte buf 5 0
+      in let g = poke-byte buf 6 0
+      in let h = poke-byte buf 7 0
+      in let i = poke-byte buf 8 (int-mod (mins + zone2-bias) 256)
+      in let j = poke-byte buf 9 ((mins + zone2-bias) / 256)
+      in let k = poke-byte buf 10 (int-mod (r.zc-id) 256)
+      in let l = poke-byte buf 11 (r.zc-id / 256)
+      in let n = poke-byte buf 12 (r.zc-clock)
+      in let o = poke-byte buf 13 (r.zc-date)
+      in let p = poke-byte buf 14 (int-mod (bit-and (r.zc-band) zone-band-all + 1) 256)
+      in let q = poke-byte buf 15 0
+      in gfat-write-small-file (m.gm-vol) zone-name buf zone2-len
+  end
+
+ A SHORT FILE IS NOT A BROKEN ONE. Eight bytes is a CTZ1 record written by an
+ older machine or by the wizard, and the honest reading of it is the offset it
+ carries with everything else at its default. Refusing it would lose a setting
+ the user made.
+
+  zone2-load : [Device.Port] ZoneRec
+  zone2-load = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then zone-rec-default
+    else act
+      f <- gfat-read-file (m.gm-vol) "TIMEZONE.DAT"
+      if f.gf-ok == False then zone-rec-default
+      else if f.gf-len < zone-file-len then zone-rec-default
+      else if peek-byte (f.gf-buf) 0 /= zone-magic0 then zone-rec-default
+      else if peek-byte (f.gf-buf) 1 /= zone-magic1 then zone-rec-default
+      else if peek-byte (f.gf-buf) 2 /= zone-magic2 then zone-rec-default
+      else if peek-byte (f.gf-buf) 3 /= zone-magic3 then zone-rec-default
+      else
+        let hrs = zone-clamp (peek-byte (f.gf-buf) 4 - zone-bias)
+        in if f.gf-len < zone2-len then ZoneRec { zc-minutes = hrs * 60, zc-id = 0, zc-clock = 0, zc-date = 0, zc-band = zone-band-default }
+        else
+          let mins = zone-clamp-minutes (peek-byte (f.gf-buf) 8 + peek-byte (f.gf-buf) 9 * 256 - zone2-bias)
+          in let bb = peek-byte (f.gf-buf) 14
+          in ZoneRec {
+            zc-minutes = mins,
+            zc-id = peek-byte (f.gf-buf) 10 + peek-byte (f.gf-buf) 11 * 256,
+            zc-clock = peek-byte (f.gf-buf) 12,
+            zc-date = peek-byte (f.gf-buf) 13,
+            zc-band = if bb == 0 then zone-band-default else bit-and (bb - 1) zone-band-all
+          }
+    end
   end
 
 Section: Loading

@@ -10,6 +10,29 @@ Chapter: DtlsAppLoopbackTest
  re-evaluated at every mention -- so mentioning the handshake from six
  assertions runs it six times and exhausts the heap. Bound once, used once.
 
+ THE REPLAY ARM AND ITS CONTROL. The last line hands the server the SAME
+ record it already accepted. RFC 9147 section 4.5.1 requires the second
+ copy to be discarded, so the server's buffer must not grow: `replay len`
+ stays at what `c2s len` reported. The control is that first delivery,
+ which had to pass for the arm to mean anything -- a server that refused
+ the record both times would print the same 2 here and prove nothing.
+
+ THE HANDSHAKE-EPOCH REPLAY is the Certificate record, delivered twice in
+ a row mid-flight. The transcript is a running hash of what was received,
+ so a Certificate folded in twice gives a hash no peer computed, and the
+ CertificateVerify signed over the honest transcript then fails against
+ it. The whole rest of this file is the control, because every later arm
+ needs that handshake to have finished.
+
+ `app hs-seq` is a census of the record sequence numbers the client
+ actually saw, not a verdict about them, and the exact values are the
+ assertion. `cert=0 cv=1 fin=2` says the three records of the server's
+ authenticated flight carry three DIFFERENT numbers, which is what keeps
+ the AEAD nonce unique within the epoch; all three read 0 before this was
+ repaired. `replay=0` is the window holding position against the repeat
+ of `cert`: a window that had advanced would report 1 and one that had
+ accepted the duplicate would corrupt the transcript.
+
 Section: Fixtures
 
   ca-cert : List Integer =
@@ -124,8 +147,13 @@ Section: Entry
     in let d-fin = list-at (st4.es-out) 3
     in let st5 = dtls-ep-recv (st3.es-ep) d-sh 40
     in let st6 = dtls-ep-recv (st5.es-ep) d-cert 41
-    in let st7 = dtls-ep-recv (st6.es-ep) d-cv 42
+    in let r6 = dtls-ep-hs-right (st6.es-ep)
+    in let st6r = dtls-ep-recv (st6.es-ep) d-cert 41
+    in let r6r = dtls-ep-hs-right (st6r.es-ep)
+    in let st7 = dtls-ep-recv (st6r.es-ep) d-cv 42
+    in let r7 = dtls-ep-hs-right (st7.es-ep)
     in let st8 = dtls-ep-recv (st7.es-ep) d-fin 43
+    in let r8 = dtls-ep-hs-right (st8.es-ep)
     in let d-cfin = list-at (st8.es-out) 0
     in let st9 = dtls-ep-recv (st4.es-ep) d-cfin 50
     in let cs = dtls-ep-send-app (st8.es-ep) c-msg
@@ -142,10 +170,15 @@ Section: Entry
     in let sresp = list-at (ss.es-out) 0
     in let cc = dtls-ep-recv (cs.es-ep) sresp 61
     in let client-in = dtls-ep-app-in (cc.es-ep)
+    in let rp = dtls-ep-recv (ss.es-ep) creq 62
+    in let replay-len = list-length (dtls-ep-app-in (rp.es-ep))
     in act
       print-line-uni ("app c2s len=" & show c2s-len & " b0=" & show c2s-b0 & " b1=" & show c2s-b1)
       print-line-uni ("app s2c len=" & show (list-length client-in) & " b0=" & show (list-at client-in 0) & " b1=" & show (list-at client-in 1))
       print-line-uni ("app encrypted=" & show (dtls-is-record (list-at creq 0)))
       print-line-uni ("app hs-encrypted=" & show (dtls-is-record (list-at d-cert 0)) & " sh-plain=" & show (dtls-is-record (list-at d-sh 0) == False))
       print-line-uni ("app tamper len=" & show tamper-len)
+      print-line-uni ("app replay len=" & show replay-len)
+      print-line-uni ("app hs-replay done=" & show (dtls-ep-done (st8.es-ep)) & " auth=" & show (dtls-ep-authenticated (st8.es-ep)))
+      print-line-uni ("app hs-seq cert=" & show r6 & " replay=" & show r6r & " cv=" & show r7 & " fin=" & show r8)
     end

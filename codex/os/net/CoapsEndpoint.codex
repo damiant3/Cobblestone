@@ -1,0 +1,128 @@
+Chapter: CoapsEndpoint
+  cites Net chapter DtlsEndpoint
+  cites Encode chapter CoapEndpoint
+
+ coaps:// is CoAP carried as DTLS application data (RFC 7252 section 9.1).
+ This chapter is the composition and nothing else: the CoAP interaction
+ machine decides what to send and when to retransmit, the DTLS endpoint
+ decides how a datagram is protected, and neither had to learn about the
+ other.
+
+ ONE COAP MESSAGE PER RECORD. RFC 7252 section 9.1: CoAP over DTLS is
+ carried "in the payload of a DTLS record", one message per datagram,
+ because CoAP takes its message boundaries from the datagram and has no
+ length field of its own. A composition that concatenated two messages into
+ one record would hand the parser a buffer whose tail it cannot see.
+
+ A RETRANSMISSION IS A NEW RECORD. The CoAP layer retransmits the SAME
+ datagram, deliberately: RFC 7252 section 4.2 identifies a duplicate by
+ message id, which is how the server recognises the retry as the same
+ request. The DTLS layer must not repeat itself the same way. RFC 9147
+ section 4.5.1's anti-replay window drops a record whose sequence number
+ has already been seen, so a cached record replayed on the retransmit
+ timer is discarded by the peer before CoAP ever sees it -- and the
+ symptom is a request that retransmits four times, is never answered, and
+ fails, with the peer reporting nothing at all. Every outbound datagram
+ is therefore sealed at the moment it is sent, taking a fresh record
+ sequence number from the DTLS endpoint, and no sealed record is stored.
+
+ We say:
+
+Section: Types
+
+  CoapsEp = record {
+    xe-coap : CoapEp,
+    xe-dtls : DtlsEp,
+    xe-read : Integer
+  }
+
+  CoapsStep = record {
+    xs-ep : CoapsEp,
+    xs-out : List (List Integer)
+  }
+
+Section: Construction
+
+ The DTLS endpoint handed in is expected to have completed its handshake
+ and derived its application traffic secrets; this chapter drives no
+ handshake, on the same division of labour that keeps the CoAP machine
+ free of crypto.
+
+  coaps-ep-new : CoapEp, DtlsEp -> CoapsEp
+  coaps-ep-new (c) (d) = CoapsEp { xe-coap = c, xe-dtls = d, xe-read = 0 }
+
+  coaps-ep-idle : CoapsEp -> CoapsStep
+  coaps-ep-idle (ep) = CoapsStep { xs-ep = ep, xs-out = [] }
+
+Section: Sending
+
+  coaps-seal-all : CoapsEp, List (List Integer), Integer, List (List Integer) -> CoapsStep
+  coaps-seal-all (ep) (dgrams) (i) (acc) =
+    if i >= list-length dgrams then CoapsStep { xs-ep = ep, xs-out = acc }
+    else let st = dtls-ep-send-app (ep.xe-dtls) (list-at dgrams i)
+    in coaps-seal-all (__record-set ep "xe-dtls" (st.es-ep)) dgrams (i + 1) (acc & (st.es-out))
+
+  coaps-ep-get : CoapsEp, Text, Integer -> CoapsStep
+  coaps-ep-get (ep) (path) (now) =
+    let cs = coap-ep-get (ep.xe-coap) path now
+    in coaps-seal-all (__record-set ep "xe-coap" (cs.cs-ep)) (cs.cs-out) 0 []
+
+  coaps-ep-post : CoapsEp, Text, List Integer, Integer -> CoapsStep
+  coaps-ep-post (ep) (path) (payload) (now) =
+    let cs = coap-ep-post (ep.xe-coap) path payload now
+    in coaps-seal-all (__record-set ep "xe-coap" (cs.cs-ep)) (cs.cs-out) 0 []
+
+  coaps-ep-tick : CoapsEp, Integer -> CoapsStep
+  coaps-ep-tick (ep) (now) =
+    let cs = coap-ep-tick (ep.xe-coap) now
+    in coaps-seal-all (__record-set ep "xe-coap" (cs.cs-ep)) (cs.cs-out) 0 []
+
+Section: Receiving
+
+ The DTLS endpoint accumulates opened application data into one buffer
+ reserved to capacity, rather than handing back a record at a time, so the
+ CoAP message just delivered is the tail of that buffer past what this
+ endpoint has already read. A record that fails to open leaves the buffer
+ untouched, the tail is empty, and the CoAP machine is never called --
+ which is what a tampered or replayed record must do.
+
+  coaps-ep-recv : CoapsEp, List Integer, Integer -> CoapsStep
+  coaps-ep-recv (ep) (rec) (now) =
+    let st = dtls-ep-recv-app (ep.xe-dtls) rec
+    in let buf = dtls-ep-app-in (st.es-ep)
+    in let n = list-length buf
+    in if n <= ep.xe-read then coaps-ep-idle (__record-set ep "xe-dtls" (st.es-ep))
+    else let msg = coaps-slice buf (ep.xe-read) n []
+    in let cs = coap-ep-recv (ep.xe-coap) msg now
+    in let ep2 = __record-set (__record-set (__record-set ep "xe-dtls" (st.es-ep)) "xe-coap" (cs.cs-ep)) "xe-read" n
+    in coaps-seal-all ep2 (cs.cs-out) 0 []
+
+  coaps-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  coaps-slice (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else coaps-slice bs (i + 1) n (list-push acc (list-at bs i))
+
+Section: Accessors
+
+  coaps-ep-done : CoapsEp -> Boolean
+  coaps-ep-done (ep) = coap-ep-done (ep.xe-coap)
+
+  coaps-ep-failed : CoapsEp -> Boolean
+  coaps-ep-failed (ep) = coap-ep-failed (ep.xe-coap)
+
+  coaps-ep-response-code : CoapsEp -> Integer
+  coaps-ep-response-code (ep) = coap-ep-response-code (ep.xe-coap)
+
+  coaps-ep-response-payload : CoapsEp -> List Integer
+  coaps-ep-response-payload (ep) = coap-ep-response-payload (ep.xe-coap)
+
+  coaps-ep-retries : CoapsEp -> Integer
+  coaps-ep-retries (ep) = coap-ep-retries (ep.xe-coap)
+
+ An interaction that completed over an ANONYMOUS handshake completed
+ against whoever answered. The peer's identity is the DTLS endpoint's
+ verdict and is asked of it directly, rather than inferred from a CoAP
+ response arriving.
+
+  coaps-ep-authenticated : CoapsEp -> Boolean
+  coaps-ep-authenticated (ep) = dtls-ep-authenticated (ep.xe-dtls)

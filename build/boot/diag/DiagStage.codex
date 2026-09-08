@@ -3,6 +3,7 @@ Chapter: DiagStage
   cites Kernel chapter BitmapFont
   cites Kernel chapter Pci
   cites Works chapter GopFat16
+  cites Works chapter GopDisk
 
  We say:
 
@@ -134,6 +135,50 @@ Section: Bank Notes
   diag-bank-write-vol : Fat16Volume, List Text -> [Device.Port] Integer
   diag-bank-write-vol (vol) (lines) = diag-bank-write-text vol (dg-body lines)
 
+ THE FLUSH GOES BEFORE THE READBACK, and the order is the whole point. A
+ device may acknowledge a write into volatile cache and then serve the
+ updated directory entry back out of that same cache, so a size readback
+ taken before the commit agrees with a write that is still not on the
+ medium. SYNCHRONIZE CACHE first makes the readback a statement about flash.
+
+ **THE FLUSH'S OUTCOME DOES NOT DECIDE THE BANK, and the first version of
+ this got that backwards.** It failed the bank on a refused flush, which
+ sounds strict and is the opposite: SYNCHRONIZE CACHE is optional in SCSI, a
+ device that does not implement it answers CHECK CONDITION, and refusing the
+ bank there banks NOTHING. An uncertified record beats no record, and this
+ ladder exists to bring a record home. Measured 2026-09-07: codex-vm's BOT
+ model allows exactly the six opcodes that predate the flush
+ (`codex-vm.c:2409`), so 0x35 is refused and 43 of 47 rehearsal arms went to
+ `bank=none write refused` on one run. That is L-FALLBACK, a working path
+ disabled by the change that introduced its replacement, and on metal it
+ would have cost the last sitting its whole record.
+
+ What the flush buys is the MEANING of the size readback, not permission to
+ write. `disk-sync-cache` still answers three states for a reader that wants
+ to know whether the commit is certified: 1 flushed, 0 no flush primitive on
+ this medium, -1 issued and refused.
+
+ `flush off` in DIAG.CFG ablates the commit, and it exists so the bed can show
+ the flush doing GOOD rather than merely no harm. Under `-usb-writeback` the
+ target keeps writes in cache and drops whatever is uncommitted when the
+ machine stops, so the two images differ in exactly one call and the arm that
+ pairs them moves one variable. Reading a pre-flush KERNEL instead would
+ confound the flush with everything else that changed in that build.
+
+ Cell 94, not a parameter, because `dg-bank-write` takes a `DiagBank` and the
+ config is not in it, so a parameter would have to be threaded through every
+ caller. `msc-cell-chunk` is the same shape one layer down. It is written on
+ EVERY boot, 0 or 1, because metal RAM is not zeroed and an unwritten cell
+ reads whatever the firmware left there. It is set TWICE: once from the stub
+ ring before the bank is opened, because `dg-open` writes the bank itself and a
+ cell set after it leaves that first write unablated, and again from the merged
+ cfg once the ESP file is readable.
+
+  diag-cell-noflush : Integer = 94
+
+  diag-flush-wanted : Integer -> Boolean
+  diag-flush-wanted (dummy) = xdiag-get diag-cell-noflush == 0
+
   diag-bank-write-text : Fat16Volume, Text -> [Device.Port] Integer
   diag-bank-write-text (vol) (body) = act
     let n = text-length body
@@ -148,6 +193,7 @@ Section: Bank Notes
       let r2 = __heap-restore mark2
       in if ok == False then -1
       else act
+        fl <- (if diag-flush-wanted 0 then disk-sync-cache else act 0 end)
         sz <- gfat-file-size vol "DIAG.TXT"
         let v = gfat-note-lastsize sz
         in if sz == n then n else -1
@@ -190,6 +236,7 @@ Section: Bank Notes
       let r2 = __heap-restore mark2
       in if ok == False then -1
       else act
+        fl <- (if diag-flush-wanted 0 then disk-sync-cache else act 0 end)
         sz <- gfat-file-size vol "DIAG.TXT"
         let v = gfat-note-lastsize sz
         in if sz == n then n else -1

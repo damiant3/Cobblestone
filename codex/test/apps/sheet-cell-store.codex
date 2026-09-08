@@ -1,0 +1,79 @@
+Chapter: SheetCellStoreTest
+  cites Sheets chapter CellStore
+  cites Foreword chapter Console
+
+ The dense cell store: a cell reads back what was set, an unset cell reads
+ zero, a cell beyond the bounds is refused and reads zero, and a column and a
+ row sum over a 1,000-row sheet answer the arithmetic. The sabotage: make
+ sheet-off forget the header and "corner" reads the row count back; make
+ sheet-in accept a column equal to the count and "beyond refused" turns no.
+
+ Beside the numbers, the KIND and the text arena. The reading that says the
+ tag is worth its four bytes is `zero is not empty`: a cell holding zero and
+ a cell never written answer the same number and must not answer the same
+ kind. The reading that says the tag is CONSUMED rather than merely stored is
+ the column sum, which drops by exactly the number a text cell replaced
+ rather than gaining that cell's arena offset.
+
+ A text is graded by round trip and by arena arithmetic together, because a
+ round trip alone passes for a store that hands back the last string written
+ whatever cell is asked.
+
+ The line asking whether a text cell reads as a number asks about cell 1,2
+ and not 0,2. The FIRST text written sits at arena offset zero, so a
+ `sheet-get` that ignored the kind entirely would answer 0 there, which is
+ the same answer the correct code gives: that pair cannot tell the two apart.
+ Sabotaging `sheet-get` to drop its kind test moves this line and the column
+ sum, and nothing else.
+
+Section: Body
+
+  cs-yn : Boolean -> Text
+  cs-yn (v) = if v then "yes" else "no"
+
+  cs-fill : Integer, Integer -> Integer
+  cs-fill (blk) (r) =
+    if r >= 1000 then 0
+    else let s = sheet-set blk r 1 (r + 1)
+    in cs-fill blk (r + 1)
+
+  cs-kind-name : Integer -> Text
+  cs-kind-name (k) = if k == 0 then "empty" else if k == 1 then "number" else "text"
+
+ TWO sheets, because one cannot see the fault this line exists to catch.
+ `sheet-arena` returned an OFFSET rather than an address, which named the
+ same absolute region for every sheet in the program; a single sheet read
+ back whatever it had written and passed, while the second sheet's first
+ string overwrote the first sheet's.
+
+  cs-two-sheets : Text
+  cs-two-sheets =
+    let a = sheet-new 4 4 64
+    in let b = sheet-new 4 4 64
+    in let wa = sheet-set-text a 0 0 "first"
+    in let wb = sheet-set-text b 0 0 "second"
+    in "a holds " & sheet-text a 0 0 & ", b holds " & sheet-text b 0 0 & ", both wrote at offset " & show (sheet-text-used a) & " and " & show (sheet-text-used b) & ", and the arenas differ " & (if sheet-arena a /= sheet-arena b then "yes" else "no")
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let blk = sheet-new 1000 26 256
+    in let f = cs-fill blk 0
+    in let s1 = sheet-set blk 0 0 7
+    in let s2 = sheet-set blk 999 25 9
+    in let beyond = sheet-set blk 1000 0 1
+    in let beyond2 = sheet-set blk 0 26 1
+    in let zero = sheet-set blk 3 3 0
+    in let sum-before = sheet-col-sum blk 1
+    in act
+      print-line-uni ("bounds " & show (sheet-rows blk) & "x" & show (sheet-cols blk) & "  corner " & show (sheet-get blk 0 0) & " " & show (sheet-get blk 999 25) & "  unset " & show (sheet-get blk 500 3) & "  beyond refused " & cs-yn (beyond == False & beyond2 == False) & "  beyond reads " & show (sheet-get blk 1000 0))
+      print-line-uni ("column 1 sum " & show sum-before & "  row 0 sum " & show (sheet-row-sum blk 0) & "  row 999 sum " & show (sheet-row-sum blk 999))
+      print-line-uni ("zero is not empty: cell 3,3 reads " & show (sheet-get blk 3 3) & " and is " & cs-kind-name (sheet-kind blk 3 3) & ", cell 4,4 reads " & show (sheet-get blk 4 4) & " and is " & cs-kind-name (sheet-kind blk 4 4))
+      print-line-uni ("a text round trips: set " & cs-yn (sheet-set-text blk 0 2 "Widgets") & "  reads " & sheet-text blk 0 2 & "  kind " & cs-kind-name (sheet-kind blk 0 2) & "  arena used " & show (sheet-text-used blk))
+      print-line-uni ("a second text does not disturb the first: set " & cs-yn (sheet-set-text blk 1 2 "Cost per unit") & "  first " & sheet-text blk 0 2 & "  second " & sheet-text blk 1 2 & "  arena used " & show (sheet-text-used blk))
+      print-line-uni ("a number cell has no text: " & cs-yn (sheet-text blk 0 0 == "") & "  and a text cell is not a number: cell 1,2 reads " & show (sheet-get blk 1 2))
+      print-line-uni ("a text in a column of quantities is not summed: was " & show sum-before & "  set row 500 to a label " & cs-yn (sheet-set-text blk 500 1 "subtotal") & "  now " & show (sheet-col-sum blk 1) & "  dropped by " & show (sum-before - sheet-col-sum blk 1))
+      print-line-uni ("clearing gives back the empty kind: " & cs-yn (sheet-clear blk 0 0) & " cell 0,0 is " & cs-kind-name (sheet-kind blk 0 0) & " reading " & show (sheet-get blk 0 0))
+      print-line-uni ("the arena refuses rather than truncating: free " & show (sheet-text-free blk) & "  a string past it " & cs-yn (sheet-set-text blk 9 9 "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789") & "  cell 9,9 is " & cs-kind-name (sheet-kind blk 9 9) & "  arena used " & show (sheet-text-used blk))
+      print-line-uni ("two sheets do not share an arena: " & cs-two-sheets)
+    end

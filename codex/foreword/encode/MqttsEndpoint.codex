@@ -1,0 +1,135 @@
+Chapter: MqttsEndpoint
+  cites Encode chapter MqttEndpoint
+  cites Encode chapter TlsEndpoint
+  cites Encode chapter Mqtt
+
+ mqtts:// is MQTT carried as TLS application data. This chapter is the
+ composition and nothing else: the MQTT session machine decides what to
+ send and when to retransmit, the TLS endpoint decides how bytes are
+ protected, and neither had to learn about the other.
+
+ THE TWO LAYERS DO NOT AGREE ABOUT BOUNDARIES, and that is the whole of
+ the work here. MQTT is a byte stream carrying self-delimiting packets: a
+ fixed header, then a variable-length remaining-length field, then the
+ body. TLS is a record protocol. Nothing relates the two, so one record
+ can carry three packets, and one packet can arrive across two records
+ with its length field split down the middle.
+
+ The MQTT drain already answers this correctly -- it parses what it can
+ and reports `ms-consumed`, leaving a trailing partial packet unread --
+ so the composition's one job is to believe that number. The read offset
+ advances by what MQTT CONSUMED, never to the end of the buffer, and the
+ tail is presented again with the next record's bytes appended after it.
+ Advancing to the end instead loses exactly the packets that straddle a
+ record, which are the ones no single-record test produces.
+
+ We say:
+
+Section: Types
+
+  MqttsEp = record {
+    xm-mqtt : MqttEp,
+    xm-tls : TlsEp,
+    xm-read : Integer
+  }
+
+  MqttsStep = record {
+    xms-ep : MqttsEp,
+    xms-out : List (List Integer)
+  }
+
+Section: Construction
+
+ The TLS endpoint handed in is expected to have completed its handshake;
+ this chapter drives no handshake, on the division of labour that keeps
+ the MQTT machine free of crypto.
+
+  mqtts-ep-new : MqttEp, TlsEp -> MqttsEp
+  mqtts-ep-new (m) (t) = MqttsEp { xm-mqtt = m, xm-tls = t, xm-read = 0 }
+
+  mqtts-ep-idle : MqttsEp -> MqttsStep
+  mqtts-ep-idle (ep) = MqttsStep { xms-ep = ep, xms-out = [] }
+
+Section: Sending
+
+  mqtts-seal-all : MqttsEp, List (List Integer), Integer, List (List Integer) -> MqttsStep
+  mqtts-seal-all (ep) (pkts) (i) (acc) =
+    if i >= list-length pkts then MqttsStep { xms-ep = ep, xms-out = acc }
+    else let st = tls-ep-send-app (ep.xm-tls) (list-at pkts i)
+    in mqtts-seal-all (__record-set ep "xm-tls" (st.tes-ep)) pkts (i + 1) (acc & (st.tes-out))
+
+  mqtts-ep-connect : MqttsEp, MqttConnectConfig -> MqttsStep
+  mqtts-ep-connect (ep) (cfg) =
+    let ms = mqtt-ep-connect (ep.xm-mqtt) cfg
+    in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
+
+  mqtts-ep-subscribe : MqttsEp, Text, MqttQos -> MqttsStep
+  mqtts-ep-subscribe (ep) (topic) (qos) =
+    let ms = mqtt-ep-subscribe (ep.xm-mqtt) topic qos
+    in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
+
+  mqtts-ep-publish : MqttsEp, Text, List Integer, MqttQos, Integer -> MqttsStep
+  mqtts-ep-publish (ep) (topic) (payload) (qos) (now) =
+    let ms = mqtt-ep-publish (ep.xm-mqtt) topic payload qos now
+    in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
+
+  mqtts-ep-tick : MqttsEp, Integer -> MqttsStep
+  mqtts-ep-tick (ep) (now) =
+    let ms = mqtt-ep-tick (ep.xm-mqtt) now
+    in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
+
+  mqtts-ep-ping : MqttsEp -> MqttsStep
+  mqtts-ep-ping (ep) =
+    let ms = mqtt-ep-ping (ep.xm-mqtt)
+    in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
+
+Section: Receiving
+
+  mqtts-ep-recv : MqttsEp, List Integer, Integer -> MqttsStep
+  mqtts-ep-recv (ep) (rec) (now) =
+    let st = tls-ep-recv (ep.xm-tls) rec
+    in let buf = tls-ep-app-in (st.tes-ep)
+    in let n = list-length buf
+    in if n <= ep.xm-read then mqtts-ep-idle (__record-set ep "xm-tls" (st.tes-ep))
+    else let stream = mqtts-slice buf (ep.xm-read) n []
+    in let ms = mqtt-ep-recv (ep.xm-mqtt) stream now
+    in let ep2 = __record-set (__record-set (__record-set ep "xm-tls" (st.tes-ep)) "xm-mqtt" (ms.ms-ep)) "xm-read" ((ep.xm-read) + (ms.ms-consumed))
+    in mqtts-seal-all ep2 (ms.ms-out) 0 []
+
+  mqtts-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  mqtts-slice (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else mqtts-slice bs (i + 1) n (list-push acc (list-at bs i))
+
+Section: Accessors
+
+  mqtts-ep-ready : MqttsEp -> Boolean
+  mqtts-ep-ready (ep) = mqtt-ep-ready (ep.xm-mqtt)
+
+  mqtts-ep-failed : MqttsEp -> Boolean
+  mqtts-ep-failed (ep) = mqtt-ep-failed (ep.xm-mqtt)
+
+  mqtts-ep-connack : MqttsEp -> Integer
+  mqtts-ep-connack (ep) = mqtt-ep-connack (ep.xm-mqtt)
+
+  mqtts-ep-suback : MqttsEp -> Integer
+  mqtts-ep-suback (ep) = mqtt-ep-suback (ep.xm-mqtt)
+
+  mqtts-ep-published : MqttsEp -> Boolean
+  mqtts-ep-published (ep) = mqtt-ep-published (ep.xm-mqtt)
+
+  mqtts-ep-in-count : MqttsEp -> Integer
+  mqtts-ep-in-count (ep) = mqtt-ep-in-count (ep.xm-mqtt)
+
+  mqtts-ep-in-topic : MqttsEp -> List Integer
+  mqtts-ep-in-topic (ep) = mqtt-ep-in-topic (ep.xm-mqtt)
+
+  mqtts-ep-in-payload : MqttsEp -> List Integer
+  mqtts-ep-in-payload (ep) = mqtt-ep-in-payload (ep.xm-mqtt)
+
+ A broker that answered is not a broker we know. The peer's identity is
+ the TLS endpoint's verdict and is asked of it directly, rather than
+ inferred from a CONNACK arriving.
+
+  mqtts-ep-authenticated : MqttsEp -> Boolean
+  mqtts-ep-authenticated (ep) = tls-ep-authenticated (ep.xm-tls)

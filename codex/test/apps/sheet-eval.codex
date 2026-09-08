@@ -1,0 +1,105 @@
+Chapter: SheetEvalTest
+  cites Sheets chapter CellEval
+  cites Sheets chapter CellGraph
+  cites Sheets chapter CellStore
+  cites Foreword chapter CCE
+
+ The typed refusal is the line this arm exists for: `=A1+B1` where B1
+ holds text answers a refusal NAMING B1, and a spreadsheet that answered
+ 11 there would pass every other line in this file.
+
+ The order line is the second one that cannot be faked. `A1 = B1 * 2`
+ typed FIRST, `B1 = C1 + 1` typed second, C1 a data cell holding 4: the
+ answer is 10, and an evaluator running in typing order reads B1 before
+ B1 has a value and answers 0. Zero is a plausible number, which is why
+ the line prints the number rather than a verdict.
+
+ The empty lines hold the distinction a store of bare numbers cannot
+ make: COUNT over a range with an unfilled cell does not count the
+ absence, MIN over a range with no numbers at all refuses instead of
+ answering zero, and COUNTIF for 0 does not match an unfilled cell.
+
+ The range-error line holds that a total computed over a refusal is
+ itself a refusal, because a wrong number wearing a right shape is the
+ failure the whole typed design exists to prevent.
+
+ The sabotage: let `ev-arith` coerce a text to zero and the refusal line
+ answers 10 while every other line stands; make `ev-store` answer
+ `VNum 0` for an empty cell and the COUNT line moves to 5, the MIN
+ refusal becomes 0 and the COUNTIF line moves to 2; evaluate in entry
+ order rather than plan order and the order line answers 0.
+
+Section: Body
+
+  se-rows : Integer = 8
+  se-cols : Integer = 8
+
+  se-fresh : Integer
+  se-fresh = sheet-new se-rows se-cols 512
+
+  se-at : Program, Integer, Integer -> Text
+  se-at (pg) (r) (c) = eval-cell pg (eval-run pg) r c
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let dq = utf8-bytes-to-text [34]
+
+    in let s1 = se-fresh
+    in let a1 = sheet-set s1 0 0 10
+    in let b1 = sheet-set-text s1 0 1 "hi"
+    in let p1a = graph-put (graph-put (graph-new s1) 0 2 "=A1+1") 0 3 "=A1+B1"
+    in let p1b = graph-put (graph-put p1a 0 4 "=A1*2-3") 0 5 "=A1/0"
+    in let p1 = graph-put (graph-put p1b 0 6 "=-A1") 0 7 "=A1>5"
+
+    in let s2 = se-fresh
+    in let f1 = sheet-set s2 0 0 5
+    in let f2 = sheet-set s2 1 0 10
+    in let f3 = sheet-set-text s2 2 0 "label"
+    in let f4 = sheet-set s2 3 0 20
+    in let p2a = graph-put (graph-put (graph-new s2) 0 2 "=SUM(A1:A5)") 1 2 "=COUNT(A1:A5)"
+    in let p2b = graph-put (graph-put p2a 2 2 "=MIN(A1:A5)") 3 2 "=MAX(A1:A5)"
+    in let p2 = graph-put (graph-put p2b 4 2 "=AVERAGE(A1:A5)") 5 2 "=MIN(E1:E2)"
+
+    in let s3 = se-fresh
+    in let g1 = sheet-set s3 0 0 1
+    in let g2 = sheet-set s3 1 0 5
+    in let g3 = sheet-set s3 2 0 5
+    in let g4 = sheet-set s3 3 0 9
+    in let p3a = graph-put (graph-put (graph-new s3) 0 1 "=IF(A1>0,100,200)") 1 1 "=IF(A1<0,100,200)"
+    in let p3b = graph-put (graph-put p3a 2 1 "=SUMIF(A1:A6,5)") 3 1 "=COUNTIF(A1:A6,5)"
+    in let p3 = graph-put p3b 4 1 "=COUNTIF(A1:A6,0)"
+
+    in let s4 = se-fresh
+    in let h1 = sheet-set-text s4 0 0 "  Hello World  "
+    in let p4a = graph-put (graph-put (graph-new s4) 0 1 "=LEN(A1)") 1 1 "=UPPER(A1)"
+    in let p4b = graph-put (graph-put p4a 2 1 "=LOWER(A1)") 3 1 "=TRIM(A1)"
+    in let p4 = graph-put (graph-put p4b 4 1 ("=CONCAT(A1," & dq & "!" & dq & ")")) 5 1 "=LEN(TRIM(A1))"
+
+    in let s5 = se-fresh
+    in let p5 = graph-put (graph-put (graph-new s5) 0 0 "=B1+1") 0 1 "=A1+1"
+
+    in let s6 = se-fresh
+    in let k1 = sheet-set s6 0 0 1
+    in let p6 = graph-put (graph-put (graph-new s6) 1 0 "=1/0") 0 1 "=SUM(A1:A2)"
+
+    in let s7 = se-fresh
+    in let m1 = sheet-set s7 0 2 4
+    in let p7 = graph-put (graph-put (graph-new s7) 0 0 "=B1*2") 0 1 "=C1+1"
+
+    in act
+      print-line-uni ("arithmetic: C1 " & se-at p1 0 2 & "  E1 " & se-at p1 0 4 & "  G1 " & se-at p1 0 6 & "  H1 " & se-at p1 0 7)
+      print-line-uni ("THE TYPED REFUSAL, D1 = A1+B1 with text in B1: " & se-at p1 0 3)
+      print-line-uni ("division by zero: " & se-at p1 0 5)
+      print-line-uni ("aggregates over a range holding a label and an unfilled cell:")
+      print-line-uni ("  SUM " & se-at p2 0 2 & "  COUNT " & se-at p2 1 2 & "  MIN " & se-at p2 2 2 & "  MAX " & se-at p2 3 2 & "  AVERAGE " & se-at p2 4 2)
+      print-line-uni ("  MIN over a range with no numbers: " & se-at p2 5 2)
+      print-line-uni ("conditionals: IF true " & se-at p3 0 1 & "  IF false " & se-at p3 1 1 & "  SUMIF 5 " & se-at p3 2 1 & "  COUNTIF 5 " & se-at p3 3 1)
+      print-line-uni ("  an unfilled cell is not the number zero: COUNTIF 0 is " & se-at p3 4 1)
+      print-line-uni ("text: LEN " & se-at p4 0 1 & "  TRIM [" & se-at p4 3 1 & "]  LEN of TRIM " & se-at p4 5 1)
+      print-line-uni ("  UPPER [" & se-at p4 1 1 & "]  LOWER [" & se-at p4 2 1 & "]")
+      print-line-uni ("  CONCAT [" & se-at p4 4 1 & "]")
+      print-line-uni ("a cycle refuses before any value is computed: " & se-at p5 0 0)
+      print-line-uni ("a total over a refusal is a refusal: " & se-at p6 0 1)
+      print-line-uni ("DERIVED ORDER: A1 = B1*2 typed first, B1 = C1+1, C1 is 4, so A1 is " & se-at p7 0 0)
+    end

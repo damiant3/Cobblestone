@@ -61,6 +61,14 @@ Section: Arity Map
   sorted-insert-arity (xs) (e) =
    list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
 
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
   build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map (defs) (i) (acc) =
    if i == list-length defs then acc
@@ -107,7 +115,7 @@ Section: Expression Emission
     is IrMulInt -> "((" & lhs & " as Long) * (" & rhs & " as Long))"
     is IrDivInt -> "((" & lhs & " as Long) / (" & rhs & " as Long))"
     is IrRemInt -> "((" & lhs & " as Long) % (" & rhs & " as Long))"
-    is IrPowInt -> "Math.pow((" & lhs & " as Long).toDouble(), (" & rhs & " as Long).toDouble()).toLong()"
+    is IrPowInt -> "_cx_ipow(" & lhs & " as Long, " & rhs & " as Long)"
     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((" & lhs & " as Double) + (" & rhs & " as Double))"
     is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((" & lhs & " as Double) - (" & rhs & " as Double))"
     is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "((" & lhs & " as Double) * (" & rhs & " as Double))"
@@ -141,7 +149,59 @@ Section: Expression Emission
   emit-kt-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-kt-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
-   in "(" & emit-kt-expr (chain.root) arities indent & " as Function" & show (list-length (chain.args)) & "<" & emit-kt-any-stars (list-length (chain.args)) 0 & "Any?>).invoke(" & emit-kt-elems (chain.args) arities indent 0 & ")"
+   in let args = chain.args
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     let ar = lookup-arity arities n
+     in if ar < 1 then emit-compose-curried (emit-kt-expr (chain.root) arities indent) args arities indent 0
+        else if list-length args == ar then emit-compose-invoke (emit-kt-expr (chain.root) arities indent) args arities indent ar
+        else if list-length args < ar then emit-compose-partial (emit-kt-expr (chain.root) arities indent) args arities indent (ar - list-length args)
+        else emit-compose-curried (emit-compose-invoke (emit-kt-expr (chain.root) arities indent) args arities indent ar) args arities indent ar
+    is otherwise -> emit-compose-invoke (emit-kt-expr (chain.root) arities indent) args arities indent (list-length args)
+
+ The cast was built from the number of ARGUMENTS rather than the callee's
+ arity, so a one-parameter definition applied to three was cast to Function3
+ and invoked with three. The cast is now built from the arity, the surplus is
+ invoked one argument at a time, and a definition applied to fewer arguments
+ than it takes is eta-wrapped.
+
+  emit-compose-invoke : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-compose-invoke (base) (args) (arities) (indent) (n) =
+   "(" & base & " as Function" & show n & "<" & emit-kt-any-stars n 0 & "Any?>).invoke(" & emit-compose-elems-upto args arities indent 0 n & ")"
+
+  emit-compose-elems-upto : List IRExpr, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-compose-elems-upto (args) (arities) (indent) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-kt-expr (list-at args i) arities indent
+   else emit-kt-expr (list-at args i) arities indent & ", " & emit-compose-elems-upto args arities indent (i + 1) n
+
+  emit-compose-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-compose-curried (base) (args) (arities) (indent) (i) =
+   if i >= list-length args then base
+   else let next = "(" & base & " as Function1<Any?, Any?>).invoke(" & emit-kt-expr (list-at args i) arities indent & ")"
+   in emit-compose-curried next args arities indent (i + 1)
+
+  emit-compose-partial-open : Integer, Integer -> Text
+  emit-compose-partial-open (i) (count) =
+   if i == count then ""
+   else "{ _p" & integer-to-text i & "_ -> " & emit-compose-partial-open (i + 1) count
+
+  emit-compose-partial-close : Integer -> Text
+  emit-compose-partial-close (count) =
+   if count == 0 then "" else " }" & emit-compose-partial-close (count - 1)
+
+  emit-compose-partial-params : Integer, Integer -> Text
+  emit-compose-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-compose-partial-params (i + 1) count
+
+  emit-compose-partial : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-compose-partial (base) (args) (arities) (indent) (short) =
+   let supplied = emit-kt-elems args arities indent 0
+   in let total = list-length args + short
+   in let call = "(" & base & " as Function" & show total & "<" & emit-kt-any-stars total 0 & "Any?>).invoke(" & supplied & ", " & emit-compose-partial-params 0 short & ")"
+   in emit-compose-partial-open 0 short & call & emit-compose-partial-close short
 
   emit-kt-any-stars : Integer, Integer -> Text
   emit-kt-any-stars (n) (i) =
@@ -282,8 +342,41 @@ Section: Compose Assembly
    let arities = build-arity-map (m.defs) 0 []
    in let title = if meta.chapter-title == "" then "CodexApp" else kt-sanitize (meta.chapter-title)
    in let header = "package com.codex.app\n\nimport androidx.compose.foundation.layout.*\nimport androidx.compose.foundation.rememberScrollState\nimport androidx.compose.foundation.verticalScroll\nimport androidx.compose.material3.*\nimport androidx.compose.runtime.*\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.text.font.FontFamily\nimport androidx.compose.ui.unit.dp\nimport android.os.Bundle\nimport androidx.activity.ComponentActivity\nimport androidx.activity.compose.setContent\n\n"
-   in let builtins = "fun __narrow(n: Any?): Any? = n\nval _output = mutableListOf<String>()\nfun print_line_uni(s: Any?) { _output.add(s?.toString() ?: \"\") }\nfun print_line(s: Any?) { print_line_uni(s) }\nfun show(n: Any?): String = n?.toString() ?: \"\"\nfun text_length(s: Any?): Long = (s as String).length.toLong()\nfun text_replace(s: Any?, a: Any?, b: Any?): String { val o = a as String; return if (o.isEmpty()) s as String else (s as String).replace(o, b as String) }\nfun text_starts_with(s: Any?, p: Any?): Boolean = (s as String).startsWith(p as String)\nfun text_contains(s: Any?, sub: Any?): Boolean = (s as String).contains(sub as String)\nfun text_split(s: Any?, sep: Any?): List<Any?> { val t = s as String; val p = sep as String; return if (p.isEmpty()) listOf(t) else t.split(p) }\nfun text_to_integer(s: Any?): Long { val t = s as String; var i = 0; var neg = false; if (t.isNotEmpty() && t[0] == '-') { neg = true; i = 1 }; var v = 0L; while (i < t.length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++ }; return if (neg) -v else v }\nfun text_compare(a: Any?, b: Any?): Long = (a as String).compareTo(b as String).toLong()\nfun list_length(xs: Any?): Long = (xs as List<Any?>).size.toLong()\nfun list_at(xs: Any?, i: Any?): Any? = (xs as List<Any?>)[(i as Long).toInt()]\nfun list_push(xs: Any?, x: Any?): List<Any?> = (xs as List<Any?>) + listOf(x)\nfun integer_to_text(n: Any?): String = n?.toString() ?: \"\"\nfun negate(n: Any?): Long = -(n as Long)\n\n"
+   in let builtins = "fun __narrow(n: Any?): Any? = n\nval _output = mutableListOf<String>()\nfun print_line_uni(s: Any?) { _output.add(s?.toString() ?: \"\") }\nfun print_line(s: Any?) { print_line_uni(s) }\nfun show(n: Any?): String = n?.toString() ?: \"\"\nfun text_length(s: Any?): Long = (s as String).length.toLong()\nfun text_replace(s: Any?, a: Any?, b: Any?): String { val o = a as String; return if (o.isEmpty()) s as String else (s as String).replace(o, b as String) }\nfun text_starts_with(s: Any?, p: Any?): Boolean = (s as String).startsWith(p as String)\nfun text_contains(s: Any?, sub: Any?): Boolean = (s as String).contains(sub as String)\nfun text_split(s: Any?, sep: Any?): List<Any?> { val t = s as String; val p = sep as String; return if (p.isEmpty()) listOf(t) else t.split(p) }\nfun text_to_integer(s: Any?): Long { val t = s as String; var i = 0; var neg = false; if (t.isNotEmpty() && t[0] == '-') { neg = true; i = 1 }; var v = 0L; while (i < t.length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++ }; return if (neg) -v else v }\nfun text_compare(a: Any?, b: Any?): Long = (a as String).compareTo(b as String).toLong()\nfun list_length(xs: Any?): Long = (xs as List<Any?>).size.toLong()\nfun list_at(xs: Any?, i: Any?): Any? = (xs as List<Any?>)[(i as Long).toInt()]\nfun list_push(xs: Any?, x: Any?): List<Any?> = (xs as List<Any?>) + listOf(x)\nfun integer_to_text(n: Any?): String = n?.toString() ?: \"\"\nfun negate(n: Any?): Long = -(n as Long)\nfun _cx_ipow(b: Long, e: Long): Long { if (e < 0L) return 0L; var r = 1L; var x = b; var n = e; while (n > 0L) { if ((n and 1L) != 0L) r *= x; x *= x; n = n shr 1 }; return r }\n\n"
    in let types-text = emit-kt-type-defs type-defs 0
    in let defs-text = emit-kt-defs (m.defs) 0 arities
    in let activity = "class MainActivity : ComponentActivity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        _output.clear()\n        val _codexMain = Thread(null, { try { opening() } catch (e: Exception) { _output.add(\"ERROR: ${e.message}\") } }, \"codex-main\", 512L * 1024 * 1024)\n        _codexMain.start()\n        _codexMain.join()\n        val lines = _output.toList()\n        setContent {\n            MaterialTheme {\n                Surface(modifier = Modifier.fillMaxSize()) {\n                    Column(\n                        modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp),\n                        verticalArrangement = Arrangement.spacedBy(4.dp)\n                    ) {\n                        lines.forEach { line ->\n                            Text(text = line, fontFamily = FontFamily.Monospace)\n                        }\n                    }\n                }\n            }\n        }\n    }\n}\n"
    in header & builtins & types-text & defs-text & activity
+
+  emit-compose-chapter-stream-head : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-compose-chapter-stream-head (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else kt-sanitize (meta.chapter-title)
+   in let header = "package com.codex.app\n\nimport androidx.compose.foundation.layout.*\nimport androidx.compose.foundation.rememberScrollState\nimport androidx.compose.foundation.verticalScroll\nimport androidx.compose.material3.*\nimport androidx.compose.runtime.*\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.text.font.FontFamily\nimport androidx.compose.ui.unit.dp\nimport android.os.Bundle\nimport androidx.activity.ComponentActivity\nimport androidx.activity.compose.setContent\n\n"
+   in let builtins = "fun __narrow(n: Any?): Any? = n\nval _output = mutableListOf<String>()\nfun print_line_uni(s: Any?) { _output.add(s?.toString() ?: \"\") }\nfun print_line(s: Any?) { print_line_uni(s) }\nfun show(n: Any?): String = n?.toString() ?: \"\"\nfun text_length(s: Any?): Long = (s as String).length.toLong()\nfun text_replace(s: Any?, a: Any?, b: Any?): String { val o = a as String; return if (o.isEmpty()) s as String else (s as String).replace(o, b as String) }\nfun text_starts_with(s: Any?, p: Any?): Boolean = (s as String).startsWith(p as String)\nfun text_contains(s: Any?, sub: Any?): Boolean = (s as String).contains(sub as String)\nfun text_split(s: Any?, sep: Any?): List<Any?> { val t = s as String; val p = sep as String; return if (p.isEmpty()) listOf(t) else t.split(p) }\nfun text_to_integer(s: Any?): Long { val t = s as String; var i = 0; var neg = false; if (t.isNotEmpty() && t[0] == '-') { neg = true; i = 1 }; var v = 0L; while (i < t.length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++ }; return if (neg) -v else v }\nfun text_compare(a: Any?, b: Any?): Long = (a as String).compareTo(b as String).toLong()\nfun list_length(xs: Any?): Long = (xs as List<Any?>).size.toLong()\nfun list_at(xs: Any?, i: Any?): Any? = (xs as List<Any?>)[(i as Long).toInt()]\nfun list_push(xs: Any?, x: Any?): List<Any?> = (xs as List<Any?>) + listOf(x)\nfun integer_to_text(n: Any?): String = n?.toString() ?: \"\"\nfun negate(n: Any?): Long = -(n as Long)\nfun _cx_ipow(b: Long, e: Long): Long { if (e < 0L) return 0L; var r = 1L; var x = b; var n = e; while (n > 0L) { if ((n and 1L) != 0L) r *= x; x *= x; n = n shr 1 }; return r }\n\n"
+   in let types-text = emit-kt-type-defs type-defs 0
+   in let activity = "class MainActivity : ComponentActivity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        _output.clear()\n        val _codexMain = Thread(null, { try { opening() } catch (e: Exception) { _output.add(\"ERROR: ${e.message}\") } }, \"codex-main\", 512L * 1024 * 1024)\n        _codexMain.start()\n        _codexMain.join()\n        val lines = _output.toList()\n        setContent {\n            MaterialTheme {\n                Surface(modifier = Modifier.fillMaxSize()) {\n                    Column(\n                        modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp),\n                        verticalArrangement = Arrangement.spacedBy(4.dp)\n                    ) {\n                        lines.forEach { line ->\n                            Text(text = line, fontFamily = FontFamily.Monospace)\n                        }\n                    }\n                }\n            }\n        }\n    }\n}\n"
+   in header & builtins & types-text
+
+  emit-compose-chapter-stream-tail : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-compose-chapter-stream-tail (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else kt-sanitize (meta.chapter-title)
+   in let header = "package com.codex.app\n\nimport androidx.compose.foundation.layout.*\nimport androidx.compose.foundation.rememberScrollState\nimport androidx.compose.foundation.verticalScroll\nimport androidx.compose.material3.*\nimport androidx.compose.runtime.*\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.text.font.FontFamily\nimport androidx.compose.ui.unit.dp\nimport android.os.Bundle\nimport androidx.activity.ComponentActivity\nimport androidx.activity.compose.setContent\n\n"
+   in let builtins = "fun __narrow(n: Any?): Any? = n\nval _output = mutableListOf<String>()\nfun print_line_uni(s: Any?) { _output.add(s?.toString() ?: \"\") }\nfun print_line(s: Any?) { print_line_uni(s) }\nfun show(n: Any?): String = n?.toString() ?: \"\"\nfun text_length(s: Any?): Long = (s as String).length.toLong()\nfun text_replace(s: Any?, a: Any?, b: Any?): String { val o = a as String; return if (o.isEmpty()) s as String else (s as String).replace(o, b as String) }\nfun text_starts_with(s: Any?, p: Any?): Boolean = (s as String).startsWith(p as String)\nfun text_contains(s: Any?, sub: Any?): Boolean = (s as String).contains(sub as String)\nfun text_split(s: Any?, sep: Any?): List<Any?> { val t = s as String; val p = sep as String; return if (p.isEmpty()) listOf(t) else t.split(p) }\nfun text_to_integer(s: Any?): Long { val t = s as String; var i = 0; var neg = false; if (t.isNotEmpty() && t[0] == '-') { neg = true; i = 1 }; var v = 0L; while (i < t.length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++ }; return if (neg) -v else v }\nfun text_compare(a: Any?, b: Any?): Long = (a as String).compareTo(b as String).toLong()\nfun list_length(xs: Any?): Long = (xs as List<Any?>).size.toLong()\nfun list_at(xs: Any?, i: Any?): Any? = (xs as List<Any?>)[(i as Long).toInt()]\nfun list_push(xs: Any?, x: Any?): List<Any?> = (xs as List<Any?>) + listOf(x)\nfun integer_to_text(n: Any?): String = n?.toString() ?: \"\"\nfun negate(n: Any?): Long = -(n as Long)\n\n"
+   in let types-text = emit-kt-type-defs type-defs 0
+   in let activity = "class MainActivity : ComponentActivity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        _output.clear()\n        val _codexMain = Thread(null, { try { opening() } catch (e: Exception) { _output.add(\"ERROR: ${e.message}\") } }, \"codex-main\", 512L * 1024 * 1024)\n        _codexMain.start()\n        _codexMain.join()\n        val lines = _output.toList()\n        setContent {\n            MaterialTheme {\n                Surface(modifier = Modifier.fillMaxSize()) {\n                    Column(\n                        modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp),\n                        verticalArrangement = Arrangement.spacedBy(4.dp)\n                    ) {\n                        lines.forEach { line ->\n                            Text(text = line, fontFamily = FontFamily.Monospace)\n                        }\n                    }\n                }\n            }\n        }\n    }\n}\n"
+   in activity
+
+  emit-compose-chapter-stream-env : IRChapter, IRTextMeta, List ATypeDef -> List ArityEntry
+  emit-compose-chapter-stream-env (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "CodexApp" else kt-sanitize (meta.chapter-title)
+   in let header = "package com.codex.app\n\nimport androidx.compose.foundation.layout.*\nimport androidx.compose.foundation.rememberScrollState\nimport androidx.compose.foundation.verticalScroll\nimport androidx.compose.material3.*\nimport androidx.compose.runtime.*\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.text.font.FontFamily\nimport androidx.compose.ui.unit.dp\nimport android.os.Bundle\nimport androidx.activity.ComponentActivity\nimport androidx.activity.compose.setContent\n\n"
+   in let builtins = "fun __narrow(n: Any?): Any? = n\nval _output = mutableListOf<String>()\nfun print_line_uni(s: Any?) { _output.add(s?.toString() ?: \"\") }\nfun print_line(s: Any?) { print_line_uni(s) }\nfun show(n: Any?): String = n?.toString() ?: \"\"\nfun text_length(s: Any?): Long = (s as String).length.toLong()\nfun text_replace(s: Any?, a: Any?, b: Any?): String { val o = a as String; return if (o.isEmpty()) s as String else (s as String).replace(o, b as String) }\nfun text_starts_with(s: Any?, p: Any?): Boolean = (s as String).startsWith(p as String)\nfun text_contains(s: Any?, sub: Any?): Boolean = (s as String).contains(sub as String)\nfun text_split(s: Any?, sep: Any?): List<Any?> { val t = s as String; val p = sep as String; return if (p.isEmpty()) listOf(t) else t.split(p) }\nfun text_to_integer(s: Any?): Long { val t = s as String; var i = 0; var neg = false; if (t.isNotEmpty() && t[0] == '-') { neg = true; i = 1 }; var v = 0L; while (i < t.length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++ }; return if (neg) -v else v }\nfun text_compare(a: Any?, b: Any?): Long = (a as String).compareTo(b as String).toLong()\nfun list_length(xs: Any?): Long = (xs as List<Any?>).size.toLong()\nfun list_at(xs: Any?, i: Any?): Any? = (xs as List<Any?>)[(i as Long).toInt()]\nfun list_push(xs: Any?, x: Any?): List<Any?> = (xs as List<Any?>) + listOf(x)\nfun integer_to_text(n: Any?): String = n?.toString() ?: \"\"\nfun negate(n: Any?): Long = -(n as Long)\n\n"
+   in let types-text = emit-kt-type-defs type-defs 0
+   in let activity = "class MainActivity : ComponentActivity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        _output.clear()\n        val _codexMain = Thread(null, { try { opening() } catch (e: Exception) { _output.add(\"ERROR: ${e.message}\") } }, \"codex-main\", 512L * 1024 * 1024)\n        _codexMain.start()\n        _codexMain.join()\n        val lines = _output.toList()\n        setContent {\n            MaterialTheme {\n                Surface(modifier = Modifier.fillMaxSize()) {\n                    Column(\n                        modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp),\n                        verticalArrangement = Arrangement.spacedBy(4.dp)\n                    ) {\n                        lines.forEach { line ->\n                            Text(text = line, fontFamily = FontFamily.Monospace)\n                        }\n                    }\n                }\n            }\n        }\n    }\n}\n"
+   in arities
+
+  emit-compose-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-compose-chapter-stream-def (m) (v) (i) = emit-kt-def (list-at (m.defs) i) v

@@ -1,8 +1,96 @@
 Chapter: FortranStdio
 
+ Fortran fixes the order: `cx_apply` is one `select case` over every lambda and
+ every eligible definition, and it must appear in the module's `contains` before
+ nothing in particular but as a single procedure, so its arms cannot be
+ interleaved with the per-definition functions that follow it.
+
+ `lams` is collected once before any emission and is therefore BELOW every mark
+ taken here, so it survives each restore without being carried. What has to be
+ bounded is the collection itself: `fort-lam-key-of` keys a lambda by hashing its
+ emitted body, so that text is saved and restored per lambda in
+ `fort-collect-lams` and only the Integer key is kept.
+
 Section: Body
+
+  fort-stream-lam-defs : List FortLam, List ArityEntry, Integer, Integer -> [Console] Nothing
+  fort-stream-lam-defs (ls) (arities) (i) (len) =
+   if i >= len then print-uni ""
+   else let h = __heap-save
+   in let s = fort-lam-def-at ls arities i
+   in act
+    print-uni s
+    let r = __heap-restore h
+    in fort-stream-lam-defs ls arities (i + 1) len
+   end
+
+  fort-stream-dispatch-lams : List FortLam, Integer, Integer -> [Console] Nothing
+  fort-stream-dispatch-lams (ls) (i) (len) =
+   if i >= len then print-uni ""
+   else let h = __heap-save
+   in let s = fort-dispatch-lam-at ls i
+   in act
+    print-uni s
+    let r = __heap-restore h
+    in fort-stream-dispatch-lams ls (i + 1) len
+   end
+
+  fort-stream-dispatch-defs : List IRDef, Integer, Integer -> [Console] Nothing
+  fort-stream-dispatch-defs (ds) (i) (len) =
+   if i >= len then print-uni ""
+   else let h = __heap-save
+   in let s = fort-dispatch-def-at ds i
+   in act
+    print-uni s
+    let r = __heap-restore h
+    in fort-stream-dispatch-defs ds (i + 1) len
+   end
+
+  fort-stream-module-defs : List IRDef, List ArityEntry, Integer, Integer, Integer -> [Console] Nothing
+  fort-stream-module-defs (defs) (arities) (i) (len) (opening-idx) =
+   if i >= len then print-uni ""
+   else if i == opening-idx then fort-stream-module-defs defs arities (i + 1) len opening-idx
+   else let h = __heap-save
+   in let s = fort-module-def-at defs arities i
+   in act
+    print-uni s
+    let r = __heap-restore h
+    in fort-stream-module-defs defs arities (i + 1) len opening-idx
+   end
+
+  fort-stream-module : IRChapter, List ATypeDef, List IRDef, List ArityEntry, List FortLam, Integer, Integer, Integer -> [Console] Nothing
+  fort-stream-module (m) (tds) (defs) (arities) (lams) (len) (nlams) (opening-idx) =
+   act
+    print-uni (fort-module-head m tds)
+    fort-stream-lam-defs lams arities 0 nlams
+    print-uni fort-dispatch-head
+    fort-stream-dispatch-lams lams 0 nlams
+    fort-stream-dispatch-defs defs 0 len
+    print-uni fort-dispatch-tail
+    fort-stream-module-defs defs arities 0 len opening-idx
+    print-uni (fort-module-tail m)
+   end
+
+  fort-stream-mod-part : IRChapter, List ATypeDef, List IRDef, List ArityEntry, List FortLam, Integer, Integer, Integer, Boolean -> [Console] Nothing
+  fort-stream-mod-part (m) (tds) (defs) (arities) (lams) (len) (nlams) (opening-idx) (has-mod) =
+   if has-mod then fort-stream-module m tds defs arities lams len nlams opening-idx
+   else print-uni ""
 
   plug-emit-ir-stream : Text -> [Console] Nothing
   plug-emit-ir-stream (ir-text) =
    let parsed = parse-ir-chapter ir-text
-   in print-line-uni (emit-fortran-chapter (parsed.chapter) (parsed.type-defs))
+   in let m = parsed.chapter
+   in let tds = parsed.type-defs
+   in let defs = m.defs
+   in let len = list-length defs
+   in let arities = fort-add-ctor-arities tds 0 (build-arity-map defs 0 [])
+   in let has-mod = fort-needs-module m
+   in let opening-idx = fort-find-opening defs 0
+   in let lams = fort-collect-lams-defs defs 0 arities []
+   in let nlams = list-length lams
+   in act
+    print-uni fort-prelude
+    print-uni "\n"
+    fort-stream-mod-part m tds defs arities lams len nlams opening-idx has-mod
+    print-line-uni (fort-program-part m arities opening-idx has-mod)
+   end

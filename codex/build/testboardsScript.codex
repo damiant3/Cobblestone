@@ -4,29 +4,77 @@ Chapter: TestBoardsScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE SEVENTEENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The
+ emitted script is byte-identical to the one that shipped before the migration.
+
+ THIS SCRIPT GRADES WHICHEVER COMPILER IS ALREADY IN `build-output`. The seed is
+ copied to `Stage0` ONLY when `Stage0` is absent, so a stale binary left there
+ by an earlier run is used instead, and the board result is then a statement
+ about that binary rather than about the seed. `sweep-apps` stages the seed
+ UNCONDITIONALLY on the line beside it. Both are shipped, both are on the same
+ path, and they disagree. Recorded rather than repaired here, because changing
+ the guard changes behaviour and this migration's gate is byte-identity.
+
+ THE FINAL EXIT IS THE FAILURE COUNT, a computed code, which `PipeOutcome`
+ cannot spell. That is the second generator to need it after `sweep-apps`, and
+ the verdict below is empty rather than false.
 
 Section: Parameters
 
   testboards-params : List ShellParam = [sh-param-choice-default "Arch" ["all", "arm64", "riscv64"] (SeLit "all")]
 
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path") }
+
+  renode-exe-art : PipeArtifact = PipeArtifact { pa-name = "RenodeExe", pa-kind = PkFile, pa-expr = SeVar "RenodeExe", pa-from = Just (SeRaw "Get-RenodeExe -Repo $Repo") }
+
+  out-dir-art : PipeArtifact = PipeArtifact { pa-name = "OutDir", pa-kind = PkDir, pa-expr = SeVar "OutDir", pa-from = Just (SeRaw "Join-Path $PSScriptRoot 'output\\boards'") }
+
+  seed-cdx-art : PipeArtifact = PipeArtifact { pa-name = "SeedCdx", pa-kind = PkFile, pa-expr = SeVar "SeedCdx", pa-from = Just (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'") }
+
+  stage0-art : PipeArtifact = PipeArtifact { pa-name = "Stage0", pa-kind = PkFile, pa-expr = SeVar "Stage0", pa-from = Just (SeRaw "Join-Path $Repo 'build-output\\bare-metal\\Codex.cdx'") }
+
+  hello-src-art : PipeArtifact = PipeArtifact { pa-name = "HelloSrc", pa-kind = PkFile, pa-expr = SeVar "HelloSrc", pa-from = Just (SeRaw "Join-Path $OutDir 'hello-board.codex'") }
+
+ `boards`, `pass`, `fail` AND `skip` ARE BUILT BY RAW STATEMENTS, the three
+ tallies by one raw line together, so none declares a production.
+
+  boards-art : PipeArtifact = PipeArtifact { pa-name = "boards", pa-kind = PkValue, pa-expr = SeVar "boards", pa-from = None }
+
+  pass-art : PipeArtifact = PipeArtifact { pa-name = "pass", pa-kind = PkValue, pa-expr = SeVar "pass", pa-from = None }
+
+  fail-art : PipeArtifact = PipeArtifact { pa-name = "fail", pa-kind = PkValue, pa-expr = SeVar "fail", pa-from = None }
+
+  skip-art : PipeArtifact = PipeArtifact { pa-name = "skip", pa-kind = PkValue, pa-expr = SeVar "skip", pa-from = None }
+
+  tb-arts : List PipeArtifact = [repo-art, renode-exe-art, out-dir-art, seed-cdx-art, stage0-art, hello-src-art, boards-art, pass-art, fail-art, skip-art]
+
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd =
+  s01-body : List ShellCmd =
     let skip-renode = [ScRaw "Write-RenodeSkip", ScExit (SeInt 0)]
-    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), ScAssign "RenodeExe" (SeRaw "Get-RenodeExe -Repo $Repo"), ScAssign "OutDir" (SeRaw "Join-Path $PSScriptRoot 'output\\boards'"), ScMkdir (SeVar "OutDir"), ScBlank, ScAssign "SeedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScAssign "Stage0" (SeRaw "Join-Path $Repo 'build-output\\bare-metal\\Codex.cdx'"), ScMkdir (SeRaw "(Split-Path $Stage0)"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) [ScCopy (SeVar "SeedCdx") (SeVar "Stage0")] [], ScBlank, ScIf (SeNot (SeVar "RenodeExe")) skip-renode []]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), pipe-produce renode-exe-art, pipe-produce out-dir-art, ScMkdir (pipe-ref tb-arts testboards-params "OutDir"), ScBlank, pipe-produce seed-cdx-art, pipe-produce stage0-art, ScMkdir (SeRaw "(Split-Path $Stage0)"), ScIf (SeNot (SeFileExists (pipe-ref tb-arts testboards-params "Stage0"))) [ScCopy (pipe-ref tb-arts testboards-params "SeedCdx") (pipe-ref tb-arts testboards-params "Stage0")] [], ScBlank, ScIf (SeNot (pipe-ref tb-arts testboards-params "RenodeExe")) skip-renode []]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "find Renode, take the output directory, and stage the seed as the compiler ONLY IF build-output holds nothing", ps-in = [], ps-out = [repo-art, renode-exe-art, out-dir-art, seed-cdx-art, stage0-art], ps-needs = [], ps-verdict = [PoExit 0 "Renode is not installed, so every board arm is skipped and the run reports success"], ps-body = s01-body }
 
 Section: S02 -- Hello Source
 
-  s02 : List ShellCmd =
-    [ScAssign "HelloSrc" (SeRaw "Join-Path $OutDir 'hello-board.codex'"), ScRaw "@\"\nChapter: Hello\n  cites Foreword chapter Console\nSection: Main\n  opening : [Console] Nothing = act\n    print-line \"BOARD-TEST-OK\"\n  end\n\"@ | Set-Content $HelloSrc -Encoding UTF8"]
+  s02-body : List ShellCmd = [ScBlank, pipe-produce hello-src-art, ScRaw "@\"\nChapter: Hello\n  cites Foreword chapter Console\nSection: Main\n  opening : [Console] Nothing = act\n    print-line \"BOARD-TEST-OK\"\n  end\n\"@ | Set-Content $HelloSrc -Encoding UTF8"]
+
+  s02 : PipeStage = PipeStage { ps-name = "hello source", ps-why = "the smallest program that proves a board booted and reached its console", ps-in = ["OutDir"], ps-out = [hello-src-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Board Definitions
 
-  s03 : List ShellCmd =
-    [ScRaw "$boards = @(\n    @{ Name = 'arm64';   Plug = 'arm64';  Compile = 'compile-arm64.ps1'; Board = 'codex-arm64.repl';   Expected = 'BOARD-TEST-OK' },\n    @{ Name = 'riscv64'; Plug = 'riscv';  Compile = 'compile-riscv.ps1'; Board = 'codex-riscv64.repl'; Expected = 'BOARD-TEST-OK' }\n)", ScBlank, ScIf (SeStringNeq (SeVar "Arch") (SeLit "all")) [ScRaw "$boards = $boards | Where-Object { $_.Name -eq $Arch }"] [], ScBlank, ScRaw "$pass = 0; $fail = 0; $skip = 0"]
+  s03-body : List ShellCmd =
+    [ScBlank, ScRaw "$boards = @(\n    @{ Name = 'arm64';   Plug = 'arm64';  Compile = 'compile-arm64.ps1'; Board = 'codex-arm64.repl';   Expected = 'BOARD-TEST-OK' },\n    @{ Name = 'riscv64'; Plug = 'riscv';  Compile = 'compile-riscv.ps1'; Board = 'codex-riscv64.repl'; Expected = 'BOARD-TEST-OK' }\n)", ScBlank, ScIf (SeStringNeq (pipe-ref tb-arts testboards-params "Arch") (SeLit "all")) [ScRaw "$boards = $boards | Where-Object { $_.Name -eq $Arch }"] [], ScBlank, ScRaw "$pass = 0; $fail = 0; $skip = 0"]
+
+  s03 : PipeStage = PipeStage { ps-name = "board definitions", ps-why = "the two boards, each naming its plug, its compile driver and the line its console must print", ps-in = ["Arch"], ps-out = [boards-art, pass-art, fail-art, skip-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Board Loop
 
@@ -42,24 +90,29 @@ Section: S04 -- Board Loop
     in let no-log = [ScRaw "Write-Host \" FAIL (no uart log)\" -ForegroundColor Red", ScRaw "$fail++"]
     in [ScIf (SeFileExists (SeVar "uartLog")) [ScRaw "$uart = Get-Content $uartLog -Raw -ErrorAction SilentlyContinue", ScIf (SeAnd (SeVar "uart") (SeRaw "$uart -match [regex]::Escape($b.Expected)")) pass-branch fail-uart] no-log]
 
-  s04 : List ShellCmd =
+  s04-body : List ShellCmd =
     let plug-skip = [ScRaw "Write-Host \"  SKIP  $($b.Name): plug not built ($plugCdx)\" -ForegroundColor Yellow", ScRaw "$skip++; continue"]
     in let board-skip = [ScRaw "Write-Host \"  SKIP  $($b.Name): board definition missing ($boardRepl)\" -ForegroundColor Yellow", ScRaw "$skip++; continue"]
-    in [ScForEach "b" (SeVar "boards") [ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$($b.Plug)\\build-output\\$($b.Plug)-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) plug-skip [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\$($b.Board)\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) board-skip [], ScBlank, ScSequence s04-compile, ScBlank, ScSequence s04-renode, ScBlank, ScSequence s04-verify]]
+    in [ScBlank, ScForEach "b" (pipe-ref tb-arts testboards-params "boards") [ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$($b.Plug)\\build-output\\$($b.Plug)-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) plug-skip [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\$($b.Board)\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) board-skip [], ScBlank, ScSequence s04-compile, ScBlank, ScSequence s04-renode, ScBlank, ScSequence s04-verify]]
+
+ A MISSING PLUG OR BOARD IS A SKIP AND NOT A FAILURE, counted separately and
+ reported, so a run where nothing was built prints three skips and exits zero.
+
+  s04 : PipeStage = PipeStage { ps-name = "board loop", ps-why = "per board: compile the hello program with its plug, boot it under Renode, and look for its line in the uart capture", ps-in = ["boards", "Repo", "OutDir", "HelloSrc", "RenodeExe"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s04-body }
 
 Section: S05 -- Summary
 
-  s05 : List ShellCmd =
-    [ScEcho (SeLit ""), ScRaw "Write-Host \"Board tests: $pass pass, $fail fail, $skip skip\" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })", ScExit (SeVar "fail")]
+  s05-body : List ShellCmd =
+    [ScBlank, ScEcho (SeLit ""), ScRaw "Write-Host \"Board tests: $pass pass, $fail fail, $skip skip\" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })", ScExit (pipe-ref tb-arts testboards-params "fail")]
+
+  s05 : PipeStage = PipeStage { ps-name = "summary", ps-why = "report the three tallies and exit with the failure count, which PipeOutcome cannot spell", ps-in = ["pass", "fail", "skip"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: Assembly
 
-  testboards-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
-
-  testboards-script : ShellScript = sh-script "test-boards" "Cross-architecture board tests via Renode" testboards-params testboards-body
+  tb-pipe : Pipeline = Pipeline { pl-name = "test-boards", pl-doc = "Cross-architecture board tests via Renode", pl-params = testboards-params, pl-stages = [s01, s02, s03, s04, s05] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell testboards-script)
+    print-line-uni (emit-powershell (pipeline-to-shell tb-pipe))
   end
 
 Page 1

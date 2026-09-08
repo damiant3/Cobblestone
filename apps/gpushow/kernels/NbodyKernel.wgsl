@@ -3,7 +3,7 @@
 const nb_count : i32 = 1024;
 const nb_width : i32 = 1024;
 const nb_height : i32 = 768;
-fn nb_fx(buf : ptr<storage, array<i32>, read_write>, myx__a : i32, myy__a : i32, j__a : i32, acc__a : i32) -> i32 {
+fn nb_fx(myx__a : i32, myy__a : i32, j__a : i32, acc__a : i32) -> i32 {
   var myx = myx__a;
   var myy = myy__a;
   var j = j__a;
@@ -12,8 +12,8 @@ fn nb_fx(buf : ptr<storage, array<i32>, read_write>, myx__a : i32, myy__a : i32,
     if ((j >= nb_count)) {
     return acc;
     } else {
-    let jx = (*buf)[(j * 4)];
-    let jy = (*buf)[((j * 4) + 1)];
+    let jx = nbody_step_inb_buf[(j * 4)];
+    let jy = nbody_step_inb_buf[((j * 4) + 1)];
     let dx = ((jx - myx) / 256);
     let dy = ((jy - myy) / 256);
     let d2 = (((dx * dx) + (dy * dy)) + 32);
@@ -29,8 +29,9 @@ fn nb_fx(buf : ptr<storage, array<i32>, read_write>, myx__a : i32, myy__a : i32,
     continue;
     }
   }
+  return 0;
 }
-fn nb_fy(buf : ptr<storage, array<i32>, read_write>, myx__a : i32, myy__a : i32, j__a : i32, acc__a : i32) -> i32 {
+fn nb_fy(myx__a : i32, myy__a : i32, j__a : i32, acc__a : i32) -> i32 {
   var myx = myx__a;
   var myy = myy__a;
   var j = j__a;
@@ -39,8 +40,8 @@ fn nb_fy(buf : ptr<storage, array<i32>, read_write>, myx__a : i32, myy__a : i32,
     if ((j >= nb_count)) {
     return acc;
     } else {
-    let jx = (*buf)[(j * 4)];
-    let jy = (*buf)[((j * 4) + 1)];
+    let jx = nbody_step_inb_buf[(j * 4)];
+    let jy = nbody_step_inb_buf[((j * 4) + 1)];
     let dx = ((jx - myx) / 256);
     let dy = ((jy - myy) / 256);
     let d2 = (((dx * dx) + (dy * dy)) + 32);
@@ -56,6 +57,7 @@ fn nb_fy(buf : ptr<storage, array<i32>, read_write>, myx__a : i32, myy__a : i32,
     continue;
     }
   }
+  return 0;
 }
 fn nb_wrap(v : i32, m : i32) -> i32 {
   let r = (v - ((v / m) * m));
@@ -79,8 +81,8 @@ fn nbody_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let py = nbody_step_inb_buf[((gid * 4) + 1)];
   let vx = nbody_step_inb_buf[((gid * 4) + 2)];
   let vy = nbody_step_inb_buf[((gid * 4) + 3)];
-  let fx = nb_fx(&nbody_step_inb_buf, px, py, 0, 0);
-  let fy = nb_fy(&nbody_step_inb_buf, px, py, 0, 0);
+  let fx = nb_fx(px, py, 0, 0);
+  let fy = nb_fy(px, py, 0, 0);
   let nvx = (vx + (fx / 32));
   let nvy = (vy + (fy / 32));
   let cvx = select(select(nvx, (0 - 4200), (nvx < (0 - 4200))), 4200, (nvx > 4200));

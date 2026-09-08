@@ -1,0 +1,118 @@
+Chapter: GopHeightClip
+  cites Works chapter GopDraw
+  cites Works chapter GopAhci
+
+ The surface here is 8 pixels a row by 4 rows, so the framebuffer proper is
+ 128 bytes and the eight words after it are a guard filled with the sentinel
+ below. A write past the last row lands in the guard, which is what makes an
+ out-of-bounds row observable in a test rather than a fault on a real screen.
+
+ Sentinel 3735928559 is 0xDEADBEEF, chosen because no colour the arms paint
+ can produce it.
+
+ We say:
+
+Section: The Surface
+
+  clip-stride : Integer = 8
+
+  clip-rows : Integer = 4
+
+  clip-guard : Integer = 8
+
+  clip-sentinel : Integer = 3735928559
+
+  clip-paint : Integer = 5592405
+
+  clip-cells : Integer = 40
+
+  clip-new : Integer
+  clip-new =
+    let buf = alloc-zeroed (clip-cells * 4) 16
+    in clip-arm-guard buf 0
+
+  clip-arm-guard : Integer, Integer -> Integer
+  clip-arm-guard (buf) (i) =
+    if i >= clip-guard then buf
+    else let w = poke-32 buf ((clip-stride * clip-rows + i) * 4) clip-sentinel
+    in clip-arm-guard buf (i + 1)
+
+  clip-guard-intact : Integer, Integer, Integer -> Integer
+  clip-guard-intact (buf) (i) (acc) =
+    if i >= clip-guard then acc
+    else let v = peek-32 buf ((clip-stride * clip-rows + i) * 4)
+    in let hit = if v == clip-sentinel then 1 else 0
+    in clip-guard-intact buf (i + 1) (acc + hit)
+
+  clip-row-painted : Integer, Integer, Integer, Integer -> Integer
+  clip-row-painted (buf) (row) (x) (acc) =
+    if x >= clip-stride then acc
+    else let v = peek-32 buf ((row * clip-stride + x) * 4)
+    in let hit = if v == clip-paint then 1 else 0
+    in clip-row-painted buf row (x + 1) (acc + hit)
+
+Section: A Rect Straddling The Bottom Edge
+
+ The rect starts on row 2 and is four rows tall, so rows 2 and 3 are on the
+ surface and rows 4 and 5 are not. The bounded arm must paint the first two
+ and leave the guard whole; the control passes a row count four larger, which
+ is what the code did before the bound existed.
+
+  straddle-lines : [Console] Nothing
+  straddle-lines =
+    let a = clip-new
+    in let pa = gop-fill-rect a clip-stride clip-rows 0 2 clip-stride 4 clip-paint
+    in let a-guard = clip-guard-intact a 0 0
+    in let a-row2 = clip-row-painted a 2 0 0
+    in let a-row3 = clip-row-painted a 3 0 0
+    in let a-row1 = clip-row-painted a 1 0 0
+    in let b = clip-new
+    in let pb = gop-fill-rect b clip-stride (clip-rows + 4) 0 2 clip-stride 4 clip-paint
+    in let b-guard = clip-guard-intact b 0 0
+    in let b-row2 = clip-row-painted b 2 0 0
+    in act
+      print-line-uni ("bounded guard words intact " & show (a-guard))
+      print-line-uni ("bounded row 2 painted " & show (a-row2))
+      print-line-uni ("bounded row 3 painted " & show (a-row3))
+      print-line-uni ("bounded row 1 untouched " & show (a-row1))
+      print-line-uni ("unbounded guard words intact " & show (b-guard))
+      print-line-uni ("unbounded row 2 painted " & show (b-row2))
+    end
+
+Section: The Pixel Primitives
+
+ gop-put refuses a row at or past the count and gop-get answers zero for one,
+ which is the same bound read from the other side.
+
+  pixel-lines : [Console] Nothing
+  pixel-lines =
+    let a = clip-new
+    in let w1 = gop-put a clip-stride clip-rows 0 clip-rows clip-paint
+    in let g1 = clip-guard-intact a 0 0
+    in let b = clip-new
+    in let w2 = gop-put b clip-stride (clip-rows + 1) 0 clip-rows clip-paint
+    in let g2 = clip-guard-intact b 0 0
+    in let c = clip-new
+    in let w3 = gop-put c clip-stride clip-rows 0 3 clip-paint
+    in let r3 = peek-32 c ((3 * clip-stride + 0) * 4)
+    in let inside = gop-get c clip-stride clip-rows 0 3
+    in let outside = gop-get c clip-stride clip-rows 0 clip-rows
+    in let negative = gop-get c clip-stride clip-rows 0 (-1)
+    in act
+      print-line-uni ("gop-put at the row count, guard intact " & show (g1))
+      print-line-uni ("gop-put one row allowed, guard intact " & show (g2))
+      print-line-uni ("gop-put inside wrote " & show (r3))
+      print-line-uni ("gop-get inside " & show (inside))
+      print-line-uni ("gop-get at the row count " & show (outside))
+      print-line-uni ("gop-get above the top " & show (negative))
+    end
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    straddle-lines
+    pixel-lines
+  end
+
+Page 1

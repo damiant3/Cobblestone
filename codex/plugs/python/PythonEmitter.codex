@@ -177,7 +177,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "True" else "False"
     is IrCharLit (n) (sp) -> "chr(" & integer-to-text n & ")"
     is IrName (n) (ty) (sp) -> emit-py-name n ty ctx
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-py-binary op l r ctx
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-py-binary op l r ty ctx
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-py-expr-at operand ctx (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-py-expr-at t ctx (depth + 1) & " if " & emit-py-expr-at c ctx (depth + 1) & " else " & emit-py-expr-at el ctx (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-py-let name val body ctx
@@ -213,9 +213,24 @@ Section: Expression Emission
        else py-sanitize n
    else py-sanitize n
 
-  emit-py-binary : IRBinaryOp, IRExpr, IRExpr, PyCtx -> Text
-  emit-py-binary (op) (l) (r) (ctx) =
+ Python integers are arbitrary precision, so the operator alone answers
+ neither arm. `%` returns a non-negative result for a positive divisor here,
+ which is what makes the band's shift-mask-shift correct. The plain arm is a
+ lambda because `raise` is a statement and this position is an expression,
+ the shape IrDivInt already uses.
+
+  py-int-arith : Text, IRExpr, IRExpr, CodexType, PyCtx -> Text
+  py-int-arith (sym) (l) (r) (ty) (ctx) =
+   let exact = "(" & emit-py-expr l ctx & " " & sym & " " & emit-py-expr r ctx & ")"
+   in if int-ty-wraps ty then "(((" & exact & " + 9223372036854775808) % 18446744073709551616) - 9223372036854775808)"
+   else "((lambda _v: _v if -9223372036854775808 <= _v <= 9223372036854775807 else (_ for _ in ()).throw(OverflowError(\"CODEX_TRAP_integer_overflow\")))(" & exact & "))"
+
+  emit-py-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, PyCtx -> Text
+  emit-py-binary (op) (l) (r) (ty) (ctx) =
    when op
+    is IrAddInt -> py-int-arith "+" l r ty ctx
+    is IrSubInt -> py-int-arith "-" l r ty ctx
+    is IrMulInt -> py-int-arith "*" l r ty ctx
     is IrAppendText -> "(" & emit-py-expr l ctx & " + " & emit-py-expr r ctx & ")"
     is IrAppendList -> "(" & emit-py-expr l ctx & " + " & emit-py-expr r ctx & ")"
     is IrConsList -> "[" & emit-py-expr l ctx & "] + " & emit-py-expr r ctx
@@ -647,8 +662,33 @@ Section: Apply Emission
      else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then py-sanitize n & "(" & emit-py-apply-args args ctx 0 & ")"
      else let ar = lookup-arity (ctx.arities) n
      in if ar > 1 & list-length args == ar then py-sanitize n & "(" & emit-py-apply-args args ctx 0 & ")"
+        else if ar > 1 & list-length args < ar then emit-py-partial n args ctx (ar - list-length args)
         else emit-py-expr-curried e ctx
     is otherwise -> emit-py-expr-curried e ctx
+
+ Python has no partial application, so a definition applied to fewer
+ arguments than it takes is eta-wrapped as nested lambdas. Over-application
+ already fell through to the curried emitter; this is the other half.
+
+  emit-py-partial-open : Integer, Integer -> Text
+  emit-py-partial-open (i) (count) =
+   if i == count then ""
+   else "(lambda _p" & integer-to-text i & "_: " & emit-py-partial-open (i + 1) count
+
+  emit-py-partial-close : Integer -> Text
+  emit-py-partial-close (count) =
+   if count == 0 then "" else ")" & emit-py-partial-close (count - 1)
+
+  emit-py-partial-params : Integer, Integer -> Text
+  emit-py-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-py-partial-params (i + 1) count
+
+  emit-py-partial : Text, List IRExpr, PyCtx, Integer -> Text
+  emit-py-partial (n) (args) (ctx) (short) =
+   let call = py-sanitize n & "(" & emit-py-apply-args args ctx 0 & ", " & emit-py-partial-params 0 short & ")"
+   in emit-py-partial-open 0 short & call & emit-py-partial-close short
 
   emit-py-expr-curried : IRExpr, PyCtx -> Text
   emit-py-expr-curried (e) (ctx) =
@@ -1002,13 +1042,24 @@ Section: Chapter Emission
    in let has-params = opening-has-params (m.defs)
    in let entry = py-emit-entry ret-ty has-params
    in let body = types-text & defs-text & entry
-   in let header = "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\n"
-     & py-helper-when-used body "_cx_lpush" "def _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\n"
-     & py-helper-when-used body "_cx_char_encode" "def _cx_char_encode(_c):\n    _c = int(_c)\n    if _c < 128:\n        return chr(_c)\n    if _c < 2176:\n        _v = _c - 128\n        return chr(192 | (_v >> 6)) + chr(128 | (_v & 63))\n    if _c < 67712:\n        _v = _c - 2176\n        return chr(224 | (_v >> 12)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n    _v = _c - 67712\n    return chr(240 | (_v >> 18)) + chr(128 | ((_v >> 12) & 63)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n\n"
-     & py-helper-when-used body "_cx_text_replace" "def _cx_text_replace(_s, _a, _b):\n    if len(_a) == 0:\n        return _s\n    return _s.replace(_a, _b)\n\n"
-     & py-helper-when-used body "_cx_text_split" "def _cx_text_split(_s, _sep):\n    if len(_sep) == 0:\n        return [_s]\n    return _s.split(_sep)\n\n"
-     & py-helper-when-used body "_cx_text_to_integer" "def _cx_text_to_integer(_s):\n    _t = str(_s)\n    _i = 0\n    _neg = False\n    if _t[:1] == '-':\n        _neg = True\n        _i = 1\n    _v = 0\n    while _i < len(_t) and '0' <= _t[_i] <= '9':\n        _v = _v * 10 + (ord(_t[_i]) - 48)\n        _i += 1\n    return -_v if _neg else _v\n\n"
+   in let header = py-header-from (py-uses-mask body)
    in header & body
+
+  py-uses-mask : Text -> Integer
+  py-uses-mask (body) =
+   (if text-contains body "_cx_lpush" then 1 else 0) + (if text-contains body "_cx_char_encode" then 2 else 0) + (if text-contains body "_cx_text_replace" then 4 else 0) + (if text-contains body "_cx_text_split" then 8 else 0) + (if text-contains body "_cx_text_to_integer" then 16 else 0)
+
+  py-helper-if : Integer, Integer, Text -> Text
+  py-helper-if (mask) (bit) (src) = if bit-and mask bit /= 0 then src else ""
+
+  py-header-from : Integer -> Text
+  py-header-from (mask) =
+   "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\n"
+     & py-helper-if mask 1 "def _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\n"
+     & py-helper-if mask 2 "def _cx_char_encode(_c):\n    _c = int(_c)\n    if _c < 128:\n        return chr(_c)\n    if _c < 2176:\n        _v = _c - 128\n        return chr(192 | (_v >> 6)) + chr(128 | (_v & 63))\n    if _c < 67712:\n        _v = _c - 2176\n        return chr(224 | (_v >> 12)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n    _v = _c - 67712\n    return chr(240 | (_v >> 18)) + chr(128 | ((_v >> 12) & 63)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n\n"
+     & py-helper-if mask 4 "def _cx_text_replace(_s, _a, _b):\n    if len(_a) == 0:\n        return _s\n    return _s.replace(_a, _b)\n\n"
+     & py-helper-if mask 8 "def _cx_text_split(_s, _sep):\n    if len(_sep) == 0:\n        return [_s]\n    return _s.split(_sep)\n\n"
+     & py-helper-if mask 16 "def _cx_text_to_integer(_s):\n    _t = str(_s)\n    _i = 0\n    _neg = False\n    if _t[:1] == '-':\n        _neg = True\n        _i = 1\n    _v = 0\n    while _i < len(_t) and '0' <= _t[_i] <= '9':\n        _v = _v * 10 + (ord(_t[_i]) - 48)\n        _i += 1\n    return -_v if _neg else _v\n\n"
 
   emit-py-defs : List IRDef, Integer, PyCtx -> Text
   emit-py-defs (defs) (i) (ctx) =

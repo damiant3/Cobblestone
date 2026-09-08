@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { GAMES, CHESS, IMPORTS, driver, renderHtml, esc } from '../landing/web/games/arcade.js';
+import { GAMES, IMPORTS, driver, renderHtml, esc } from '../landing/web/games/arcade.js';
 import { RULES } from '../landing/web/games/rules.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -84,13 +84,13 @@ const body = m[1]
   .replace(/^\s*import\s+\{[^}]*\}\s+from\s+'\.\/rules\.js';\s*$/m, '');
 
 const run = new Function(
-  'GAMES', 'CHESS', 'IMPORTS', 'driver', 'renderHtml', 'esc', 'RULES',
+  'GAMES', 'IMPORTS', 'driver', 'renderHtml', 'esc', 'RULES',
   'document', 'window', 'location', 'fetch', 'setTimeout', 'WebAssembly', 'console',
   `return (async () => {\n${body}\n})();`);
 
 let threw = null;
 try {
-  await run(GAMES, CHESS, IMPORTS, driver, renderHtml, esc, RULES,
+  await run(GAMES, IMPORTS, driver, renderHtml, esc, RULES,
     document, window, location, fetchStub, setTimeout_, WebAssembly, console);
   // select() is async; give its awaits a turn to settle.
   await new Promise(r => process.nextTick(r));

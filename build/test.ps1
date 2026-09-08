@@ -17,6 +17,8 @@ param(
     [switch]$Slow,
     [switch]$Fatal,
     [string[]]$Tier = @(),
+    [string[]]$Battery = @(),
+    [switch]$ListSubjects,
     [string]$ApprovedBy,
     [switch]$AllowStaleKernel
 )
@@ -43,6 +45,20 @@ param(
 #                                      # author-owned differential collections
 #   build/test.ps1 -Tier all           # every tier above INCLUDING oracles
 #   build/test.ps1 -Tier lib,apps      # tiers combine
+#   build/test.ps1 -Battery kernel     # every chapter a kernel change can
+#                                      # break, wherever it lives. Batteries
+#                                      # are named for COVERAGE and combine:
+#                                      # -Battery kernel,apps. Membership is
+#                                      # derived by check-battery-coverage.ps1
+#                                      # from .covers then cites, never a list.
+#                                      # A BATTERY IS NOT THE TIER OF THE SAME
+#                                      # NAME: `-Tier apps` is the 472 chapters
+#                                      # in codex\test\apps, `-Battery apps` is
+#                                      # the 226 that cite an apps chapter from
+#                                      # anywhere. compiler and plugs are named
+#                                      # batteries that select NO chapters and
+#                                      # are refused here with a pointer to the
+#                                      # harnesses that do cover them.
 #   build/test.ps1 -All                # lang+lib+fw+apps+oracles
 #   build/test.ps1 -All -Slow          # include slow tests too
 #   build/test.ps1 -Fatal              # include fatal tests (GPF/exception demos)
@@ -81,14 +97,24 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($ApprovedBy -ne 'damian') {
+# A named -Battery set is what a lane runs against its OWN change, so it does
+# not need Damian's approval (his intent, via root 2026-09-07); the gate stays
+# on everything else. The exemption is deliberately narrow: it holds only when
+# -Battery is the ONLY selector, so -Battery kernel -All is still the full
+# battery and still refused. Batteries start guests like any other run, so the
+# box is still asked of the commander per run.
+$batteryOnly = ($Battery.Count -gt 0) -and ($Tier.Count -eq 0) -and
+               -not $All -and -not $Apps -and -not $FW -and -not $Lib
+# -ListSubjects prints the selection and exits before any guest, so it is
+# outside the gate for the same reason the exemption exists at all.
+if (-not $batteryOnly -and -not $ListSubjects -and $ApprovedBy -ne 'damian') {
     Write-Host ''
     Write-Host 'REFUSED: the full battery runs only with explicit human approval.' -ForegroundColor Red
     Write-Host ''
     Write-Host 'Agent: this is not part of your verification loop, and passing the'
     Write-Host 'approval flag without Damian saying so in THIS session is a lie.'
     Write-Host 'Verify your change with:'
-    Write-Host '    build/build.ps1                                  # the standing gate'
+    Write-Host '    build/test.ps1 -Battery kernel                   # only what this change can break'
     Write-Host '    build/compile.ps1 -Src <t> -Out <o> -Log <log>   # one test'
     Write-Host ''
     Write-Host 'If you believe this change warrants a battery run, tell Damian why'
@@ -151,7 +177,15 @@ $runSlow  = $Slow.IsPresent  -or $tiers.Contains('slow')
 # A bare invocation runs the language tier: the battery's subject is the
 # compiler. An explicit tier list is taken at its word -- `-Tier oracles`
 # alone runs the collections and no tests.
-if ($tiers.Count -eq 0) { [void]$tiers.Add('lang') }
+#
+# -Battery counts as an explicit selection, so it SUPPRESSES this default
+# instead of adding to it. Measured the hard way 2026-09-07: without this
+# clause `-Battery board` ran the whole lang tier, because lang had already
+# swept codex\test and codex\test\errors where all 13 board chapters live,
+# every one was therefore already in $seen, and the battery added nothing.
+# It reported "0 chapter(s) added" and ran 882 tests over 320 s. A selector
+# that silently widens to everything is worse than one that selects nothing.
+if ($tiers.Count -eq 0 -and $Battery.Count -eq 0) { [void]$tiers.Add('lang') }
 
 $machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.keys')
 function Test-MachineSidecar {
@@ -164,7 +198,7 @@ function Test-MachineSidecar {
     return $false
 }
 
-$allDirs = @('codex\test', 'codex\test\ops', 'codex\test\errors', 'codex\test\apps', 'codex\test\forewords', 'codex\test\lib')
+$allDirs = @('codex\test', 'codex\test\ops', 'codex\test\errors', 'codex\test\apps', 'codex\test\forewords', 'codex\test\lib', 'codex\test\cost', 'codex\test\ui', 'codex\test\examples')
 $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $tests = [System.Collections.Generic.List[string]]::new()
 $tierDirs = [System.Collections.Generic.List[string]]::new()
@@ -173,7 +207,13 @@ if ($tiers.Contains('lang')) {
     if ($Scope -ne 'positive') { $tierDirs.Add('codex\test\errors') }
 }
 if ($tiers.Contains('apps')) { $tierDirs.Add('codex\test\apps') }
-if ($tiers.Contains('fw'))   { $tierDirs.Add('codex\test\forewords') }
+# cost, ui and examples were reachable by NO tier and so by no -All until
+# 2026-09-07: this list is consulted non-recursively, so a subdirectory nobody
+# added here is invisible however many chapters it holds. They join `fw`
+# because that is what they ARE, by the classifier rather than by taste: all
+# thirteen cite foreword chapters and land in the foreword battery, and
+# giveup-beats-fuel lands in kernel as well.
+if ($tiers.Contains('fw'))   { $tierDirs.Add('codex\test\forewords'); $tierDirs.Add('codex\test\cost'); $tierDirs.Add('codex\test\ui'); $tierDirs.Add('codex\test\examples') }
 if ($tiers.Contains('lib'))  { $tierDirs.Add('codex\test\lib') }
 foreach ($d in $tierDirs) {
     Get-ChildItem -Path "$d\*.codex" -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -185,6 +225,65 @@ if ($tiers.Contains('hardware')) {
         Get-ChildItem -Path "$d\*.codex" -File -ErrorAction SilentlyContinue | ForEach-Object {
             if ((Test-MachineSidecar $_.FullName) -and $seen.Add($_.FullName)) { $tests.Add($_.FullName) }
         }
+    }
+}
+# Batteries are named for what a change can BREAK, so membership is derived
+# from the cite graph by check-battery-coverage.ps1 rather than from a
+# directory or a list here. Two selectors for one question drift, and the one
+# that drifts short reports a green over tests it never chose (L-DENOM).
+if ($Battery.Count -gt 0) {
+    $phaseOnly = @('plugs')
+    $corpus = @('foreword', 'kernel', 'board', 'apps', 'compiler')
+    foreach ($b in $Battery) {
+        $n = $b.Trim().ToLower()
+        # A battery that selects nothing and runs green is the failure the
+        # whole scheme exists to avoid, so a battery with no corpus says so
+        # rather than passing (L-BAILVALUE). Only `plugs` is in that position
+        # now: nothing under codex/test cites a plug.
+        #
+        # `compiler` WAS refused here in the words "nothing under codex\test
+        # cites the compiler", which is true about cites and false about blast
+        # radius: a chapter reaches the compiler through builtins, and a
+        # builtin carries no cite. Red ruled on 2026-09-07 that it takes the
+        # corpus, membership by `.covers` under the rule "cites nothing and
+        # carries a machine sidecar", and the refusal had to go in the same CL
+        # or the two selectors would disagree (L-DENOM).
+        if ($n -in $phaseOnly) {
+            Write-Host "-Battery $n selects no test chapter: nothing under codex\test cites $n." -ForegroundColor Red
+            Write-Host "  it is covered by plug-binary, plug-smoke and plug-selftest."
+            exit 1
+        }
+        if ($n -notin $corpus) {
+            Write-Host "unknown battery '$b' (known: $(($corpus + $phaseOnly) -join ', '))" -ForegroundColor Red
+            exit 1
+        }
+        $listed = & (Join-Path $PSScriptRoot 'check-battery-coverage.ps1') -List $n
+        $picked = 0
+        $listedCodex = 0
+        foreach ($line in $listed) {
+            $rel = ("$line".Trim() -replace '/', '\')
+            if (-not $rel.EndsWith('.codex')) { continue }
+            $listedCodex++
+            if (-not (Test-Path -PathType Leaf $rel)) { continue }
+            # Only the directories this harness knows how to run: the
+            # classifier walks all of codex\test and the runner does not.
+            if ([System.IO.Path]::GetDirectoryName($rel) -notin $allDirs) { continue }
+            $full = (Resolve-Path -LiteralPath $rel).Path
+            if ($seen.Add($full)) { $tests.Add($full); $picked++ }
+        }
+        # A battery that adds nothing has not "run clean", it has not run.
+        # The guard was keyed on `$picked -eq 0 -and $listedCodex -eq 0` and
+        # that conjunction is why the 2026-09-07 run escaped it: the
+        # classifier listed 13 and the battery added 0, so the guard passed
+        # and the default tier ran instead. When -Battery is the only
+        # selector, $picked alone is the question. With a tier alongside,
+        # zero is legitimate: the tier may already hold every member.
+        if ($batteryOnly -and $picked -eq 0) {
+            Write-Host "FAIL: -Battery $n selected no chapters ($listedCodex listed by check-battery-coverage.ps1)." -ForegroundColor Red
+            Write-Host "  a battery that selects nothing must not run, and must never fall through to another set."
+            exit 1
+        }
+        Write-Host "-Battery ${n}: $picked chapter(s), of $listedCodex the classifier listed"
     }
 }
 # `traps` and `slow` are FILTERS over every directory, like `hardware`, not
@@ -201,6 +300,17 @@ foreach ($pair in @(@{ Tier = 'traps'; Ext = '.fatal' }, @{ Tier = 'slow'; Ext =
     }
 }
 
+
+# Ask the SELECTOR for its set, never the directory: a count is not a corpus,
+# and a selector that quietly widens or narrows cannot be caught by reading
+# the total (L-DENOM). This exits before any guest, so the selection is
+# checkable without the box -- which is what the 2026-09-07 `-Battery board`
+# overrun cost 320 s and 625 boots to discover.
+if ($ListSubjects) {
+    Write-Host "selected $($tests.Count) subject(s) from tiers [$(($tiers | Sort-Object) -join ',')] batteries [$(($Battery | Sort-Object) -join ',')]"
+    $tests | Sort-Object | ForEach-Object { Write-Output $_.Substring((Get-Location).Path.Length + 1) }
+    exit 0
+}
 
 # --- Which compiler is on trial, and is it the one you think? ---------------
 # 

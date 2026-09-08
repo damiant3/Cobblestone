@@ -328,12 +328,24 @@ Section: Control Flow
    in let st6 = a64-patch-insn st5 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
    in a64-load-local st6 (result-loc.reg)
 
+ THE BAIL-OUTS IN THIS CHAIN ARE A WHITELIST OF WHAT A BARE `cmp` CAN DECIDE,
+ and a type missing from it is compared as two machine words with no warning.
+ Text and the Reals were here; SUMS WERE NOT, so `if A == B then` on a sum
+ fused into a compare-and-branch on the two operand REGISTERS, which for
+ freshly constructed values are distinct heap pointers. Measured off the
+ emission before the guard was added (plugs-backlog 1.90): `opening` for two
+ sum comparisons held two `CMP`, zero loads from any non-SP base and no call
+ to `__str_eq`, so `a64-emit-sum-eq` was never reached from an `if` at all.
+ `a64-emit-if-val` evaluates the condition through `a64-emit-expr`, which is
+ what carries a sum to its own equality.
+
   a64-emit-if : A64State, IRExpr, IRExpr, IRExpr -> A64EmitResult
   a64-emit-if (st) (cond) (th) (el) =
    let saved-tail = st.tco.in-tail-pos
    in when cond
     is IrBinary (op) (left) (right) (ty) (s) ->
      if a64-is-text-type (ir-expr-type left) then a64-emit-if-val st saved-tail cond th el
+     else if a64-is-sum-type (ir-expr-type left) then a64-emit-if-val st saved-tail cond th el
      else if a64-real-cmp-kind (ir-expr-type left) > 0 then a64-emit-if-val st saved-tail cond th el
      else if a64-is-zero-lit right then
       when op
@@ -646,12 +658,20 @@ Section: Targeted Expression Emission
    in let st2 = a64-bind-local st1 name (loc.reg)
    in a64-emit-expr-to (a64-set-tail-pos st2 saved-tail) body target
 
+ THE SAME WHITELIST TWICE. This is `a64-emit-if`'s twin for a result that goes
+ to a register, and an `if` used as an ARGUMENT reaches this one rather than
+ that one, so a guard added to only one of the pair fixes nothing that a caller
+ can see: adding the sum arm above and not here left the emission BYTE-IDENTICAL
+ and read exactly like the guard being wrong (plugs-backlog 1.90). Any type
+ added to either chain belongs in both.
+
   a64-emit-if-targeted : A64State, IRExpr, IRExpr, IRExpr, Integer -> A64State
   a64-emit-if-targeted (st) (cond) (th) (el) (target) =
    let saved-tail = st.tco.in-tail-pos
    in when cond
     is IrBinary (op) (left) (right) (ty) (s) ->
      if a64-is-text-type (ir-expr-type left) then a64-emit-if-val-targeted st saved-tail cond th el target
+     else if a64-is-sum-type (ir-expr-type left) then a64-emit-if-val-targeted st saved-tail cond th el target
      else if a64-real-cmp-kind (ir-expr-type left) > 0 then a64-emit-if-val-targeted st saved-tail cond th el target
      else if a64-is-zero-lit right then
       when op
@@ -1218,6 +1238,16 @@ Section: Apply
    let msg = "[UNSUPPORTED] " & name & ": x86 port I/O and the codex-vm gpu do not exist on this target (refused by design)"
    in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
 
+ `host-socket` is the host's TCP reached through Linux x86-64 syscall numbers,
+ so it is refused everywhere those numbers are not the contract. It answers -1
+ rather than 0 because -1 is the failure value every caller already checks and
+ 0 is a plausible file descriptor.
+
+  a64-emit-unsupported-socket : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-socket (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": host sockets are hosted-Linux only (refused by design)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) (0 - 1)
+
  The x86 CPU-state builtins, refused for the same reason and named
  separately because the reason is a different one to state. A control
  register and CPUID are x86 architecture, not devices: AArch64 has system
@@ -1556,6 +1586,7 @@ Section: Apply
    else if name == "port-in-32" then a64-emit-unsupported-port st "port-in-32"
    else if name == "port-out-32" then a64-emit-unsupported-port st "port-out-32"
    else if name == "hosted-kind" then a64-emit-int-lit st 0
+   else if name == "host-socket" then a64-emit-unsupported-socket st "host-socket"
    else if name == "cpu-read-cr0" then a64-emit-unsupported-cpu st "cpu-read-cr0"
    else if name == "cpu-read-cr3" then a64-emit-unsupported-cpu st "cpu-read-cr3"
    else if name == "cpu-cpuid-eax" then a64-emit-unsupported-cpu st "cpu-cpuid-eax"

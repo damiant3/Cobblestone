@@ -93,7 +93,7 @@ and never depended on the deleted set.
 | Huffman | **yes** | Frequency-built optimal prefix codes. Own format. |
 | Rle | **yes**, weakly | Run-length only. |
 
-### codex.foreword.encode (75 modules, measured 2026-07-26) -- Encoding and Codecs
+### codex.foreword.encode (76 modules, measured 2026-09-08) -- Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -205,7 +205,7 @@ The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
 the code first and passing both gates (sample battery + pingpong).
 
-### codex.os (160 modules) -- Operating System
+### codex.os (162 modules) -- Operating System
 
 Split across sub-quires. Re-measured 2026-07-29, when adding one kernel
 chapter turned `check-doc-counts.ps1` red and showed the table had
@@ -219,12 +219,31 @@ internally inconsistent.
 | codex.os.core | 4 | Core OS abstractions |
 | codex.os.dev | 37 | Device management |
 | codex.os.kernel | 36 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
-| codex.os.net | 39 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
+| codex.os.net | 41 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, CoapsEndpoint and Lwm2mCoaps, which carry CoAP and the LwM2M client as DTLS application data, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
 | codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
 | codex.os.sched | 10 | Scheduling |
 | codex.os.trust | 16 | Trust lattice |
 | codex.os.verify | 7 | Verification |
+
+Both the header count and the rows above were measured 2026-09-08. The
+count is in the heading without its date because `check-doc-counts.ps1`
+matches `### codex.os (N modules)` and stops at the closing paren, so a
+date inside the parentheses silently turns the claim into NOMATCH -- which
+it did, unnoticed, from this morning until it was found here.
+
+**The sub-quires cite each other freely, and a change in one can redden a
+chapter in another.** Measured 2026-09-08: 50 cross-sub-quire cites across
+28 chapters, in all 8 sub-quires. `core/ProgramRegistry` leads with 5 and
+`net/NetDriver` follows with 4, which are the two worth knowing because
+every process load and every net path goes through them; `NetDriver` alone
+compiles against `Kernel chapter` Ne2k, E1000e, Pci and Hpet, so a driver
+change reaches the network stack. This is the ordinary shape of `codex.os`
+rather than a defect, and it is recorded here because it is invisible from
+inside any one sub-quire: nothing under `codex/os/kernel` says which
+chapters elsewhere compile against it. The layering rule above orders the
+QUIRES (`codex.foreword` -> `codex` -> `codex.os` -> apps) and says nothing
+about sub-quires, which is why these cites are legal.
 
 ### codex.plugs (56 plugs, all building clean) -- Transpiler Plugs
 
@@ -251,8 +270,15 @@ NOT lambda-lifted. RESOLVE and LIFT are phases of the CDX path only
   with no marker of any kind (`(lambda (params (param "x" ...)) (... (name
   "n" ...)))` for `\x -> x + n`). A target with first-class closures emits
   it as one; a target without them (native lanes, COBOL, Fortran, Pascal,
-  GPU targets) must lift or capture itself. `arm64`, `riscv`, `zig`, `t3isa`,
-  `pascal` and `python` already do; read one before writing a seventh.
+  GPU targets) must lift or capture itself. **Read `zig` before writing
+  another**: `zig-lambda-closure` (`ZigEmitter.codex:1893`) is closure
+  conversion, captures computed from the body and a `call(ctx, params)` beside
+  them. `arm64` and `riscv` lift, and `python` needs neither because Python has
+  closures. `t3isa` REFUSES a lambda, which is the right interim answer.
+  **`pascal` does NOT lift and is not a pattern to copy**: its `IrLambda` arm
+  emits the body and discards the parameters, so `\x -> x + n` emits an
+  expression naming an unbound `x` (measured at the emitter, reek 2026-09-07;
+  `docs/Designs/Active/Compiler/LiftingForClosurelessTargets.md`).
 - Application is curried on the wire: `(make-adder 10) 32` arrives as
   `(apply (apply (name "make-adder") 10) 32)`, and a plug must emit
   `f(a)(b)`, never `f(a, b)`, unless it KNOWS the callee's arity: a def it

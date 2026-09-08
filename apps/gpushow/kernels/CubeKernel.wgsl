@@ -4,54 +4,54 @@ const cu_width : i32 = 1024;
 const cu_half_w : i32 = 512;
 const cu_half_h : i32 = 384;
 fn cu_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn cu_pack(r : f32, g : f32, b : f32) -> i32 {
-  let ri = i32((cu_clamp01(r) * bitcast<f32>(1132396544u)));
-  let gi = i32((cu_clamp01(g) * bitcast<f32>(1132396544u)));
-  let bi = i32((cu_clamp01(b) * bitcast<f32>(1132396544u)));
+  let ri = i32((cu_clamp01(r) * 0x1.fe0000p+7f));
+  let gi = i32((cu_clamp01(g) * 0x1.fe0000p+7f));
+  let bi = i32((cu_clamp01(b) * 0x1.fe0000p+7f));
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn cu_bg(py : i32) -> i32 {
-  let h = (f32(f32(py)) / bitcast<f32>(1145044992u));
-  return cu_pack((bitcast<f32>(1025758986u) + (h * bitcast<f32>(1028443340u))), (bitcast<f32>(1028443340u) + (h * bitcast<f32>(1034147594u))), (bitcast<f32>(1035489771u) + (h * bitcast<f32>(1042536202u))));
+  let h = (f32(f32(py)) / 0x1.800000p+9f);
+  return cu_pack((0x1.47ae14p-5f + (h * 0x1.999998p-5f)), (0x1.999998p-5f + (h * 0x1.47ae14p-4f)), (0x1.70a3d6p-4f + (h * 0x1.47ae14p-3f)));
 }
 fn cu_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / cu_width) * cu_width));
   let py = (gid / cu_width);
-  let fx = (f32(f32((px - cu_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((cu_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1076090634u)));
+  let fx = (f32(f32((px - cu_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((cu_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.47ae14p+1f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1070386380u) / rl);
-  let ay = (f32(f32(frame)) / bitcast<f32>(1107820544u));
-  let ax = (f32(f32(frame)) / bitcast<f32>(1112276992u));
+  let dz = (0x1.999998p+0f / rl);
+  let ay = (f32(f32(frame)) / 0x1.100000p+5f);
+  let ax = (f32(f32(frame)) / 0x1.980000p+5f);
   let cy = cos(ay);
   let sy = sin(ay);
   let cx = cos(ax);
   let sx = sin(ax);
-  let oz0 = (bitcast<f32>(0u) - bitcast<f32>(1079613849u));
+  let oz0 = (0.0 - 0x1.b33332p+1f);
   let oxa = (oz0 * sy);
   let oza = (oz0 * cy);
   let oxb = oxa;
   let oyb = (oza * sx);
   let ozb = (oza * cx);
   let dxa = ((dx * cy) + (dz * sy));
-  let dza = ((bitcast<f32>(0u) - (dx * sy)) + (dz * cy));
+  let dza = ((0.0 - (dx * sy)) + (dz * cy));
   let dxb = dxa;
   let dyb = ((dy * cx) + (dza * sx));
-  let dzb = ((bitcast<f32>(0u) - (dy * sx)) + (dza * cx));
-  let t1x = (((bitcast<f32>(0u) - bitcast<f32>(1065353216u)) - oxb) / dxb);
-  let t2x = ((bitcast<f32>(1065353216u) - oxb) / dxb);
+  let dzb = ((0.0 - (dy * sx)) + (dza * cx));
+  let t1x = (((0.0 - 0x1.000000p+0f) - oxb) / dxb);
+  let t2x = ((0x1.000000p+0f - oxb) / dxb);
   let nxr = min(t1x, t2x);
   let fxr = max(t1x, t2x);
-  let t1y = (((bitcast<f32>(0u) - bitcast<f32>(1065353216u)) - oyb) / dyb);
-  let t2y = ((bitcast<f32>(1065353216u) - oyb) / dyb);
+  let t1y = (((0.0 - 0x1.000000p+0f) - oyb) / dyb);
+  let t2y = ((0x1.000000p+0f - oyb) / dyb);
   let nyr = min(t1y, t2y);
   let fyr = max(t1y, t2y);
-  let t1z = (((bitcast<f32>(0u) - bitcast<f32>(1065353216u)) - ozb) / dzb);
-  let t2z = ((bitcast<f32>(1065353216u) - ozb) / dzb);
+  let t1z = (((0.0 - 0x1.000000p+0f) - ozb) / dzb);
+  let t2z = ((0x1.000000p+0f - ozb) / dzb);
   let nzr = min(t1z, t2z);
   let fzr = max(t1z, t2z);
   let tmin = max(nxr, max(nyr, nzr));
@@ -59,20 +59,20 @@ fn cu_render(gid : i32, frame : i32) -> i32 {
   if ((tmin > tmax)) {
   return cu_bg(py);
   } else {
-  if ((tmax < bitcast<f32>(981668462u))) {
+  if ((tmax < 0x1.0624dcp-10f)) {
   return cu_bg(py);
   } else {
-  let nlx = select(bitcast<f32>(0u), select(bitcast<f32>(1065353216u), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)), (dxb > bitcast<f32>(0u))), ((nxr >= nyr) & (nxr >= nzr)));
-  let nly = select(bitcast<f32>(0u), select(bitcast<f32>(1065353216u), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)), (dyb > bitcast<f32>(0u))), ((nyr >= nxr) & (nyr >= nzr)));
-  let nlz = select(bitcast<f32>(0u), select(bitcast<f32>(1065353216u), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)), (dzb > bitcast<f32>(0u))), ((nzr >= nxr) & (nzr >= nyr)));
-  let br = select(select(select(select(select(bitcast<f32>(1063675494u), bitcast<f32>(1048576000u), (nlz > bitcast<f32>(1056964608u))), bitcast<f32>(1050253721u), (nly < (bitcast<f32>(0u) - bitcast<f32>(1056964608u)))), bitcast<f32>(1051931443u), (nly > bitcast<f32>(1056964608u))), bitcast<f32>(1062836633u), (nlx < (bitcast<f32>(0u) - bitcast<f32>(1056964608u)))), bitcast<f32>(1064514355u), (nlx > bitcast<f32>(1056964608u)));
-  let bg = select(select(select(select(select(bitcast<f32>(1061997772u), bitcast<f32>(1057803468u), (nlz > bitcast<f32>(1056964608u))), bitcast<f32>(1057803468u), (nly < (bitcast<f32>(0u) - bitcast<f32>(1056964608u)))), bitcast<f32>(1062836633u), (nly > bitcast<f32>(1056964608u))), bitcast<f32>(1061158912u), (nlx < (bitcast<f32>(0u) - bitcast<f32>(1056964608u)))), bitcast<f32>(1051931443u), (nlx > bitcast<f32>(1056964608u)));
-  let bb = select(select(select(select(select(bitcast<f32>(1050253721u), bitcast<f32>(1063675494u), (nlz > bitcast<f32>(1056964608u))), bitcast<f32>(1062836633u), (nly < (bitcast<f32>(0u) - bitcast<f32>(1056964608u)))), bitcast<f32>(1055286886u), (nly > bitcast<f32>(1056964608u))), bitcast<f32>(1051931443u), (nlx < (bitcast<f32>(0u) - bitcast<f32>(1056964608u)))), bitcast<f32>(1050253721u), (nlx > bitcast<f32>(1056964608u)));
-  let lx = bitcast<f32>(1053609164u);
-  let ly = bitcast<f32>(1060655595u);
-  let lz = (bitcast<f32>(0u) - bitcast<f32>(1057971240u));
-  let ndl = max(bitcast<f32>(0u), (((nlx * lx) + (nly * ly)) + (nlz * lz)));
-  let sh = (bitcast<f32>(1048576000u) + (ndl * bitcast<f32>(1062836633u)));
+  let nlx = select(0.0, select(0x1.000000p+0f, (0.0 - 0x1.000000p+0f), (dxb > 0.0)), ((nxr >= nyr) && (nxr >= nzr)));
+  let nly = select(0.0, select(0x1.000000p+0f, (0.0 - 0x1.000000p+0f), (dyb > 0.0)), ((nyr >= nxr) && (nyr >= nzr)));
+  let nlz = select(0.0, select(0x1.000000p+0f, (0.0 - 0x1.000000p+0f), (dzb > 0.0)), ((nzr >= nxr) && (nzr >= nyr)));
+  let br = select(select(select(select(select(0x1.ccccccp-1f, 0x1.000000p-2f, (nlz > 0x1.000000p-1f)), 0x1.333332p-2f, (nly < (0.0 - 0x1.000000p-1f))), 0x1.666666p-2f, (nly > 0x1.000000p-1f)), 0x1.b33332p-1f, (nlx < (0.0 - 0x1.000000p-1f))), 0x1.e66666p-1f, (nlx > 0x1.000000p-1f));
+  let bg = select(select(select(select(select(0x1.999998p-1f, 0x1.199998p-1f, (nlz > 0x1.000000p-1f)), 0x1.199998p-1f, (nly < (0.0 - 0x1.000000p-1f))), 0x1.b33332p-1f, (nly > 0x1.000000p-1f)), 0x1.800000p-1f, (nlx < (0.0 - 0x1.000000p-1f))), 0x1.666666p-2f, (nlx > 0x1.000000p-1f));
+  let bb = select(select(select(select(select(0x1.333332p-2f, 0x1.ccccccp-1f, (nlz > 0x1.000000p-1f)), 0x1.b33332p-1f, (nly < (0.0 - 0x1.000000p-1f))), 0x1.ccccccp-2f, (nly > 0x1.000000p-1f)), 0x1.666666p-2f, (nlx < (0.0 - 0x1.000000p-1f))), 0x1.333332p-2f, (nlx > 0x1.000000p-1f));
+  let lx = 0x1.999998p-2f;
+  let ly = 0x1.70a3d6p-1f;
+  let lz = (0.0 - 0x1.1eb850p-1f);
+  let ndl = max(0.0, (((nlx * lx) + (nly * ly)) + (nlz * lz)));
+  let sh = (0x1.000000p-2f + (ndl * 0x1.b33332p-1f));
   return cu_pack((br * sh), (bg * sh), (bb * sh));
   }
   }

@@ -897,11 +897,24 @@ hardware. codex-vm grew a PM1a control block at 0x604 that honors
 SLP_EN with SLP_TYP 0 and honestly ignores sleep states it does not
 model.
 
-Remaining for H5: reset (0xCF9 or the FADT's RESET_REG), battery and
-brightness where trivially reachable (a full EC/ACPI interpreter is
-explicitly out of scope), and the PowerManager panel showing real data
-or saying honestly that none is available. First rung of
-TheLongFlight IV's `[Power]` effect.
+**Two of the three listed here were already DONE, and this paragraph was stale
+until it was checked against the code (blu, 2026-09-08).**
+
+- **Reset is done**, and the entry 300 lines above already said so.
+  `acpi-reset` (`GopAcpi.codex:391`) honours the FADT's RESET_REG when the
+  table declares one, then falls back to the universal 0xCF9 chipset port
+  writing 2 then 6, then to the i8042 pulse gated by the floating-bus check,
+  then halts.
+- **The honest panel is done.** `pm-battery-widget`
+  (`PowerManager.codex:234`) answers `"No battery detected"` when
+  `bat-present` is False, and `pm-battery` starts as `battery-unknown`, whose
+  `bat-present` is False. A machine with no battery therefore says so today
+  rather than drawing an empty gauge.
+
+Genuinely remaining for H5: real battery and brightness DATA where trivially
+reachable, which is the half nothing supplies yet (a full EC/ACPI interpreter
+stays explicitly out of scope). First rung of TheLongFlight IV's `[Power]`
+effect.
 
 - **Demo:** "Power Off" in the boot menu powers the machine off. Done.
 

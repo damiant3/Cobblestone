@@ -16,6 +16,18 @@ Chapter: CoapLoopbackTest
    5. NEGATIVE CONTROL: a response whose token does not match is dropped,
       and the interaction stays open. Without this, "correlated by token"
       is a claim the test never checks.
+   6. The separate response arrives a SECOND time, as it does whenever our
+      Acknowledgement is lost. RFC 7252 section 4.5 wants the duplicate
+      acknowledged again and not processed again, and the first half is
+      what was missing: before the message-id cache the endpoint was
+      already `done`, so the retransmission met the state guard and drew
+      no reply at all, leaving the peer to retransmit until it gave up.
+      `dup-con ack=1` is that repair. `deliveries=1` is its control, and
+      it is not free: routing the duplicate back through the response
+      path would acknowledge it correctly and deliver the body twice,
+      which is the shape a naive fix takes and the only field that can
+      see the difference, a second delivery being identical bytes over
+      the first.
 
 Section: Helpers
 
@@ -65,6 +77,9 @@ Section: Entry
     in let s4b = coap-ep-recv (s4a.cs-ep) sep4 20
     in let four-done = coap-ep-done (s4b.cs-ep)
     in let four-ack-out = list-length (s4b.cs-out)
+    in let s4c = coap-ep-recv (s4b.cs-ep) sep4 30
+    in let four-dup-ack = list-length (s4c.cs-out)
+    in let four-deliveries = coap-ep-deliveries (s4c.cs-ep)
 
     in let s5 = coap-ep-get coap-ep-new "temp" 0
     in let req5 = list-at (s5.cs-out) 0
@@ -78,4 +93,5 @@ Section: Entry
       print-line-uni ("coap giveup retries=" & show three-retries & " failed=" & show three-failed)
       print-line-uni ("coap separate done=" & show four-done & " acked-wait=" & show four-waiting-after-ack & " ack-out=" & show four-ack-out)
       print-line-uni ("coap token-mismatch dropped=" & show five-dropped)
+      print-line-uni ("coap dup-con ack=" & show four-dup-ack & " deliveries=" & show four-deliveries)
     end

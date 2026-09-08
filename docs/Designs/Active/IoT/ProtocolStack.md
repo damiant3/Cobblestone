@@ -313,6 +313,117 @@ absent" list below is now historical rather than descriptive.
 
 ## Prerequisite Hardening (before/alongside, in os/net)
 
+### The receive-loop heap leak: the repair, and what it costs (blu, 2026-09-08)
+
+The leak itself is described under the receive loops above, with the exact
+lines. This section is the repair and its measurement.
+
+**MEASURED FIRST, because the obvious guess is wrong.** Bracketing 100 calls of
+`transport-process-frame` between two `__heap-save` marks, on the bed with the
+depot seed:
+
+| frame handed in | retained per frame |
+|---|---|
+| 60 bytes | 208 bytes |
+| 1514 bytes | 208 bytes |
+
+The retained amount does NOT vary with frame length, so what survives each
+iteration is the rebuilt result and session records, not a copy of the frame.
+A repair aimed only at the frame buffer would leave that 208 bytes untouched.
+
+**The frame is a SECOND and larger term, and the two need separate repairs.**
+`e1000-read-bytes` builds the frame with one `list-push` per byte
+(`E1000e.codex:1178`), and `list-push` advances the frontier by the whole of a
+doubled capacity (`CostModel.md` 5.1), so the cost is measured in the driver's
+own shape rather than reasoned about:
+
+| per poll | frame build | records retained | total |
+|---|---|---|---|
+| 60-byte ACK or ARP | 528 | 208 | **736** |
+| 1514-byte frame | 16,400 | 208 | **16,608** |
+
+The bound is `net-io-max-polls`, which is
+`net-io-tick-interval * net-io-max-ticks`.
+
+**The repair, in two parts, neither of which is a `__heap-restore`:**
+
+1. **The frame.** `net-driver-recv-frame` fills a caller-owned buffer allocated
+   ONCE outside the loop instead of returning a fresh list per poll. That is a
+   contract change on the driver and reaches every caller.
+2. **The 208 bytes.** The records rebuilt per frame have to be identified and
+   reused, or the residual accepted and `net-io-max-polls` lowered to bound it.
+   Reuse is the harder half, because the surviving `NetSession` holds `arp`,
+   `outbox` and `rexmit-queue` (`NetworkStack.codex:61`), all heap structure the
+   processed frame legitimately updates.
+
+**Why a `__heap-restore` before the recursion cannot be the repair**: the state
+that must survive is exactly that session, so the restore frees what the
+iteration exists to carry forward.
+
+**AND WHY NO REORDERING RESCUES IT EITHER, which is the part worth writing
+down, because the obvious next idea is to move the mark.** The heap is a single
+bump pointer, so a restore frees everything allocated AFTER the mark and nothing
+before it. The frame must exist before the parse that reads it, therefore the
+frame is always older than the session update the parse produces. A mark placed
+before the frame frees both; a mark placed after the frame frees only the
+session update. There is no third position. Every cheap fix in this shape is
+ruled out by allocation ORDER alone, which is why both surviving options change
+where the bytes live rather than when they are freed:
+
+1. the frame stops being heap-allocated per poll (the driver fills a buffer
+   owned by the caller and reused across polls), or
+2. the session's collections stop being rebuilt per frame (fixed-capacity
+   storage carried in the session, the way `recv-buf` already is).
+
+A third idea, updating the session through `__record-set` so the rebuild
+allocates nothing, is possible and is NOT recommended without a full audit:
+that builtin stores into the argument and hands the same record back
+(L-ALIAS), so it would silently mutate a session any caller still holds.
+
+**THE FRAME HALF'S BLAST RADIUS, counted rather than called wide (blu,
+2026-09-08).** The 10x is the REPRESENTATION: a frame byte costs 8 bytes as a
+`List Integer` element, and `list-push`'s doubling takes 1,514 bytes to 16,400.
+Pre-sizing the list instead of doubling saves about a quarter and leaves the
+8-bytes-a-byte; only dropping the list representation removes the 10x. The
+bytes are ALREADY in a buffer the driver can address -- `e1000-take-frame`
+reads them with `peek-byte` off `rx-bufs + idx * e1000-buf-size` and copies
+them into a list purely to satisfy the consumer's type -- so the driver side is
+small and the consumer side is the work:
+
+**14 signatures in `NetworkStack.codex` alone take the frame family as
+`List Integer`** (`net-process-frame`, `net-process-ip`, `net-process-arp`,
+`net-arp-solicit`, `net-arp-known`, `net-outbox-frame`, `wrap-tcp-in-ip-eth`,
+`tcp-pseudo-header`, `tcp-with-checksum`, `tcp-checksum-valid`,
+`arp-cache-lookup`, `arp-cache-search`, `arp-cache-index`, `arp-cache-add`),
+before counting the slice helpers, the transmit path and `Arm64NetIO`. A
+partial conversion leaves the stack in two representations at once, and this is
+the stack `b3` and the remaining hardware sitting depend on, so the change wants
+a session of its own with an arm per converted layer rather than a corner of
+one.
+
+The DMA ring cannot be handed out as the span directly: `e1000-recycle-rx`
+returns the descriptor to the card immediately after the read, so a consumer
+reading lazily would race the next frame. The buffer the loop owns has to be a
+copy target, which is what makes it a fixed reused buffer rather than a view.
+
+**The measurement is IN THE TREE as `codex/test/net-recv-heap`**, so the repair
+has a red/green target rather than a number in somebody's scratch directory. The
+arm reports the retention at both frame sizes and asserts that the two agree.
+
+**The arm asserts SHAPE, not the byte counts**, because an expectation carrying
+the numbers would go red on any allocator or codegen change as well as on the
+repair, and the next reader would update the figure without learning why it
+moved. The counts live in the table above, with the date they were taken; the
+arm holds the four statements a repair changes: a poll producing no message
+still retains, the retention ignores frame length, the frame build costs more
+than the records retain, and the frame cost grows with frame length.
+
+**The arm GOES RED WHEN THE REPAIR LANDS, and that is deliberate.** A green arm
+here means the leak is still present.
+
+The instrument needs no new primitive: `__heap-save` returns an Integer and the
+delta between two marks is the bytes allocated between them.
+
 | Gap | Why it blocks | Work |
 |---|---|---|
 | TCP retransmission (RTT estimate only) | MQTT keepalive + QoS assume a reliable stream | Timer, backoff, bounded retry, an 8-deep oldest-first queue and serial sequence arithmetic all exist in `NetSession`; what is left is an RTT-derived interval, which needs a clock the session does not have |
@@ -383,6 +494,22 @@ throw away. The diagnostic signature if it bites in the field:
 **time-to-death scaling with guest MEMORY is heap exhaustion, not a hang**
 (measured elsewhere at 265 s on 3 GB against 615 s on 6 GB), and codex-vm
 prints nothing when a guest dies this way.
+
+**STILL OPEN at head, re-verified 2026-09-08 (blu), with the exact lines.**
+`net-io-recv-wait` saves at `NetIO.codex:379`, restores on the empty-frame
+branch at `:382`, and recurses at `:388` after processing a frame WITHOUT a
+restore. `net-io-recv-raw-poll` is the same shape: save at `:411`, restore at
+`:414`, recurse unrestored at `:420`.
+
+Why the naive repair is wrong, concretely: what must survive the reclaim is a
+`NetSession`, and that record holds `arp`, `outbox` and `rexmit-queue`
+(`NetworkStack.codex:61`), every one of them heap structure the just-processed
+frame updated. A `__heap-restore` before the recursion frees exactly the state
+the iteration exists to carry forward. A repair therefore needs the frame's
+storage reclaimed WITHOUT reclaiming the session: either a frame buffer
+allocated once outside the loop and reused, or a region discipline that
+separates frame scratch from session state. Both are design changes to the
+stack's memory model rather than an edit to these two functions.
 
 Second-order and worth knowing before reading either signature: **the second
 argument of these loops is the try count to START AT, not a limit** (they give
@@ -896,24 +1023,34 @@ Gate: `codex/test/asn1-der.codex`. Parses the §10.2 certificate, slices
 the TBS, and verifies the real signature with the §10.1 key
 (`verify-published=True`); the six negatives above each decode to `None`.
 
-**A2 -- `X509.codex`.** Certificate and TBSCertificate parse; Ed25519
+**A2 -- `X509.codex`. SHIPPED** (marker was absent; verified at head
+2026-09-08, blu: `codex/foreword/encode/X509.codex`, gated by
+`codex/test/x509-parse`). Certificate and TBSCertificate parse; Ed25519
 SubjectPublicKeyInfo; issuer and subject retained as **raw DER** (comparing
 decoded names is how you get name-confusion bugs); validity; extensions.
 The TBS is kept as a byte slice, never re-encoded.
 
-**A3 -- Chain validation.** Signature verify against the issuer's key,
+**A3 -- Chain validation. SHIPPED** (marker was absent; verified at head
+2026-09-08, blu: `codex/foreword/encode/X509Chain.codex`, `x509-chain-verify`
+and `x509-verify-peer`, gated by `codex/test/x509-chain`). Signature verify
+against the issuer's key,
 validity window against a caller-supplied `now` (this chapter has no
 clock), `basicConstraints` CA + pathlen, key usage, SAN matching, trust
 anchor set. Negatives: tampered body, expired, wrong issuer, a leaf
 presented as its own CA.
 
-**A4 -- The messages.** `Certificate` (RFC 8446 §4.4.2) and
+**A4 -- The messages. SHIPPED** (marker was absent; verified at head
+2026-09-08, blu: `Certificate` and `CertificateVerify` are in
+`codex/foreword/encode/DtlsMessage.codex`, exercised end to end by
+`codex/test/apps/dtls-auth-loopback`). `Certificate` (RFC 8446 §4.4.2) and
 `CertificateVerify` (§4.4.3), including the signature context -- 64 `0x20`
 bytes, the context string, `0x00`, then the transcript hash. The context
 string is ASCII, so it goes through `to-unicode`, **not** bare `char-code`
 (§5.8's CCE trap, which shipped a whole key schedule in CCE). Plus the
-`signature_algorithms` extension, which the ClientHello does not send
-today.
+`signature_algorithms` extension, which the ClientHello DOES send:
+`tls-ext-sig-algs` is in the base extension list at
+`codex/foreword/encode/DtlsHello.codex:89`, and the prose above that line
+records what its absence cost.
 
 **A5 -- Wired into `DtlsEndpoint`. SHIPPED 2026-07-13.** Opt-in and
 backward-compatible: `dtls-ep-with-cert` gives a server a chain and signing
@@ -938,11 +1075,23 @@ signed, the signature fails, and the handshake does **not** complete
 server against an anchored client -- is refused the same way. A passing
 handshake proved nothing; this failing one is the proof.
 
-**Still open, not bundled into A5:**
-`dtls-ep-random` still derives the ClientHello/ServerHello `Random` from the
-endpoint's own public key rather than taking caller entropy. It is not what
-RFC 8446 means by `Random` and must not reach real hardware; it was left out
-of the capstone deliberately to keep the authentication change clean.
+**The caller entropy is IN, and this section's earlier claim was stale**
+(verified at head 2026-09-08, blu). `dtls-ep-new` takes `random` as its third
+parameter and stores the value as `ep-random` (`DtlsEndpoint.codex:92`), and
+`dtls-ep-random` reads `ep.ep-random` (`:119`). The `Random` is the caller's,
+not the endpoint's public key.
+
+**The entropy path is now EXERCISED, by `codex/test/dtls-random`.** Until that
+arm landed, `dtls-ep-new` had no caller anywhere in the tree, so the capability
+sat in the signature and nothing had ever shown the caller's bytes reaching the
+`Random` -- the state `ChainCore`'s hash was in until an arm ran it (L-UNHEARD).
+
+The arm builds two endpoints from ONE private key that differ only in the
+entropy handed in, because a single endpoint proves nothing here: an
+implementation deriving `Random` from the endpoint's public key answers a stable
+32 bytes and looks correct until a second endpoint is asked. Measured: endpoint
+a answers `32,31,30,29` and endpoint b answers `232,231,230,229`, each 32 bytes,
+each carrying the caller's own first byte, and the two differ.
 
 **And the standing limit on the whole X.509 stack:** it is
 **Ed25519-only**, because Ed25519 is the only signature primitive the tree
@@ -952,8 +1101,22 @@ Azure IoT both require one of them. That is a separate crypto campaign
 (RSA modexp over a `BigInt` we do not have, or P-256 ECDSA), and it has
 not started.
 
-Then, and only then, `CoapEndpoint` composes over it and `coaps://`
-becomes real.
+**The composition exists.** `codex/os/net/CoapsEndpoint.codex` carries
+CoAP as DTLS application data (RFC 7252 §9.1), one message per record,
+gated by `codex/test/apps/coaps-loopback`: an authenticated handshake
+between two of our endpoints, then a confirmable GET sealed, opened,
+parsed, answered in a piggybacked ACK and delivered, with the arms that
+a plaintext pass-through would fail. The composition holds a `CoapEp`
+and a `DtlsEp` and neither had to learn about the other.
+
+**Sealing happens at send, and no sealed record is stored**, because the
+two layers disagree about repetition on purpose: RFC 7252 §4.2 wants the
+retransmission to be the SAME datagram, identified as a duplicate by
+message id, and RFC 9147 §4.5.1 wants every record to carry a sequence
+number the peer has not seen. A cached record satisfies the first and
+violates the second, and the symptom is a request retransmitted four
+times into a peer that discards each copy before CoAP sees it. The arm
+asserts the two records differ and the message id inside them matches.
 
 ### Testing: do not trust the author of the encoder
 
@@ -1022,6 +1185,18 @@ action trace.
   PUT/DELETE; response classes 2.xx/4.xx/5.xx.
 - Retransmission per spec constants (ACK_TIMEOUT 2 s, factor 1.5,
   MAX_RETRANSMIT 4) with deadlines computed in the pure machine.
+- **Message-id deduplication is IN** (§4.5, `ce-acked-mids`, capacity 8,
+  cleared per exchange, and a full cache stops recording rather than
+  growing). The half that was missing is the reply, not the suppression:
+  a retransmitted Confirmable response met the completed interaction's
+  state guard and drew NOTHING, so the peer went on retransmitting until
+  it gave up. `codex/test/apps/coap-loopback`'s `dup-con ack` reports 1
+  with the cache and **0 without**. `deliveries=1` is the control that
+  the re-acknowledgement does not also deliver the body a second time,
+  which is what routing the duplicate back through the response path
+  would do. The cache is consulted for Confirmable messages only, because
+  a message id is its sender's own counter and the ids we acknowledge can
+  collide with the ids we chose for our own requests.
 - Extensions, in priority order: Block (RFC 7959 -- required by
   OTA), Observe (RFC 7641 -- push telemetry), Resource Directory
   later. Block lands with the base, not after: OTA is the first
@@ -1031,6 +1206,26 @@ action trace.
 
 ### MQTT specifics
 
+- **mqtts:// is composed and gated.** MQTT is a TCP protocol, so its
+  secure form is MQTT over TLS, not over DTLS; MQTT-SN is the datagram
+  one and has a codec (`MqttSn.codex`) but no endpoint machine.
+  `codex/foreword/encode/MqttsEndpoint.codex` holds an `MqttEp` and a
+  `TlsEp`, gated by `codex/test/apps/mqtts-loopback`: an authenticated
+  handshake between two of our endpoints, then CONNECT, CONNACK and
+  SUBACK with no network and no broker process. `tools/mqtts-client.codex`
+  composed the same two chapters already, but it talks to a real broker
+  and is therefore not a gate.
+- **The composition's whole job is that the two layers disagree about
+  boundaries.** MQTT is a self-delimiting byte stream, TLS is a record
+  protocol, and nothing relates them, so one record can carry three
+  packets and one packet can arrive across two records with its length
+  field split. The read offset advances by what MQTT reported CONSUMED,
+  never to the end of the accumulated buffer, so a trailing partial
+  packet is presented again with the next record's bytes after it. The
+  arm sends a SUBACK in two three-byte records: `split half=-1 whole=1`
+  with the offset discipline, and `whole=-1` without, measured both ways.
+  The other three arms pass in both versions, which is why this one has
+  to exist.
 - v5.0 only (no 3.1.1 compatibility mode in the first cut --
   v5 reason codes and properties are strictly better and all
   major brokers speak it).
@@ -1045,6 +1240,32 @@ action trace.
 
 ### LwM2M specifics
 
+- **coaps:// is composed and gated.** `codex/os/net/Lwm2mCoaps.codex`
+  holds an `Lwm2mClient` and a `DtlsEp` and carries the registration
+  lifecycle as DTLS application data, gated by
+  `codex/test/apps/lwm2m-coaps-loopback`: authenticated handshake,
+  Register sealed and recovered as CoAP addressing `/rd`, 2.01 Created
+  with the location, then Update and Deregister. It is a separate chapter
+  from `CoapsEndpoint` rather than a generalisation because the two wrap
+  different machines; what they share is the carrier, and that is what to
+  lift out if a third ever needs it.
+- **The arm censuses the application epoch's record numbers**: `seq
+  reg=0 upd=1 dereg=2`, exact values, the same property the handshake
+  epoch's census pins after the flight-numbering repair. Equal numbers
+  would be one AEAD key and one nonce across three management exchanges.
+- **The registration handle is echoed exactly, and two separate faults
+  had to be fixed to make that true** (2026-09-08, blu). OMA LwM2M treats
+  the location the server returns as opaque. `lc-location` is now a
+  `List (List Integer)` holding the Location-Path options as the server
+  sent them, and `lwm2m-loc-options` emits one Uri-Path option per stored
+  segment, never joining them into a path and re-splitting it, because a
+  handle containing a `/` would come back as two segments addressing
+  something else. Second, `lwm2m-client-deregister` cleared the location
+  BEFORE building the DELETE, so the DELETE carried no path at all. Both
+  are measured by `lwm2m-coaps-loopback`: `update to-rd` and `deregister
+  to-rd` are True after and were False before, each with the other half
+  of the repair in place, and `lwm2m-client` is unchanged and green
+  because it never inspected either path.
 - Client only. Interfaces: Bootstrap, Registration, Device
   Management, Information Reporting -- each a lifecycle in
   LwM2mMachine.
@@ -1077,6 +1298,48 @@ mistake.
 monotonic, reject duplicates), DTLS/TLS implicit sequence numbers
 in AEAD nonce (monotonic, connection-scoped), CoAP message ID
 deduplication (§4.5, bounded cache within exchange lifetime).
+
+**The window is WIRED on the application-data path** (2026-09-08, blu).
+`Dtls.codex` implements RFC §4.5.1's 64-entry window as `dtls-replay-ok`
+and `dtls-replay-accept`, split so a record that fails to authenticate
+cannot advance it; until this change its only caller in the tree was
+`codex/test/dtls-record`, and a replayed application-data record was
+accepted. `DtlsEp` now carries `ep-app-window`, and `dtls-ep-recv-app`
+deprotects, then tests the window, then advances it. That order is
+forced: the sequence number travels encrypted (§4.2.3), so `dtls-open`
+is what makes it readable, and advancing before deprotection would let
+one forged datagram with a high sequence number shut the window on every
+genuine record behind it.
+
+Measured both ways, which is the only reason the arm is worth anything:
+`codex/test/apps/dtls-app-loopback`'s `app replay len` reports 2 with
+the window in place and **4 with the check disabled**, the replayed two
+bytes appended a second time. The control is the first delivery, which
+passes in both runs.
+
+**The handshake epoch has its own window** (`ep-hs-window`, same order:
+deprotect, test, advance). Epoch 0 is deliberately not windowed, because
+a record there is a ClientHello and the defence is the stateless cookie;
+a window would hold per-peer state before the peer has proven an address,
+which is the exhaustion the cookie exists to prevent. A duplicate at the
+handshake epoch is worse than wasteful: the transcript is a running hash
+of what was received, so a Certificate folded in twice yields a hash no
+peer computed and an honest CertificateVerify then fails against it.
+
+**Every record in the authenticated server flight now carries its own
+sequence number, and until 2026-09-08 none of them did.** Certificate,
+CertificateVerify and Finished were all sealed at record sequence 0,
+therefore all three travelled under one key with one AEAD nonce (§4.2.2
+derives the nonce from that number), which is the one thing AES-GCM has
+no margin for, and any conforming peer's replay window would have
+discarded the second and third. The cause was `list-push` extending its
+accumulator in place and returning the same list, so the flight's output
+names all aliased and `list-length o1 - list-length o0` was always zero
+(L-ALIAS). The count is now taken from the fragment lists themselves.
+`app hs-seq` is the census that pins it: `cert=0 replay=0 cv=1 fin=2`,
+exact values rather than a verdict, and all three read 0 before the
+repair. `dtls-fragmented-flight` covers the multi-fragment case, where
+the Certificate alone occupies two record numbers.
 Security-critical commands (device state mutation, actuation) must
 use CON messages over DTLS -- enforced by requiring both
 `[Network]` and `[Authenticated]` effects for mutating operations.

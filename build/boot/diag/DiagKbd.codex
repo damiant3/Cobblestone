@@ -1,0 +1,92 @@
+Chapter: DiagKbd
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbKbd
+  cites Diag chapter DiagStage
+
+ We say:
+
+Section: Reading The Cells
+
+ Every cell here is written by the ORDINARY keyboard bring-up and pump
+ (`GopUsbKbd`, the `kbd-cell-*` block), so this row touches no device and
+ issues no transfer. It reports what the driver recorded about itself, which
+ is the same shape `xhci` uses one row up.
+
+ The counters used to live only in `uk-state`, a per-keyboard heap
+ allocation, so a stage holding no `UsbKbd` could not reach them and the
+ keyboard question could not be asked from the ladder at all.
+
+  dkb-armed : Integer -> Integer
+  dkb-armed (dummy) = xdiag-get kbd-cell-armed
+
+  dkb-events : Integer -> Integer
+  dkb-events (dummy) = xdiag-get kbd-cell-events
+
+  dkb-nonzero : Integer -> Integer
+  dkb-nonzero (dummy) = xdiag-get kbd-cell-nonzero
+
+  dkb-scans : Integer -> Integer
+  dkb-scans (dummy) = xdiag-get kbd-cell-scans
+
+  dkb-bound : Boolean
+  dkb-bound = xdiag-get kbd-cell-magic == kbd-cells-magic & xdiag-get kbd-cell-ok /= 0
+
+Section: The Stage
+
+ WHAT THIS ROW CAN REACH IN THE LADDER IS TWO STATES, AND SAYING SO IS THE
+ POINT. Measured 2026-09-07 on the first run: `never-armed`, with `bound=y
+ dci=3 hid-binds=2` and every counter zero. The ladder BINDS a keyboard
+ (`usb-attach` does) and never PUMPS one: nothing here calls `kbd-arm`, so no
+ transfer is ever queued and the four states past `never-armed` are
+ UNREACHABLE from an unattended ladder run. They are reachable where a pump
+ runs, which is the desk and the interactive sitting stage that asks the
+ operator to press keys; that stage is not built and is registered separately.
+
+ So in the ladder this row answers exactly one question, honestly: did a
+ keyboard BIND. `no-bind` is the finding; `never-armed` is the resting state
+ and is painted as a note, not a fault, because a red row on every ordinary
+ boot is a row operators learn to skip. The author of this stage predicted
+ `armed-silent` as the resting state and was wrong, which is why the reading
+ is written here rather than the prediction (L-VACUOUS: measure that an arm
+ REACHED its condition before reading its colour).
+
+ The states past it are kept because the cells feed the desk and the sitting
+ stage too, and because they are the ones the keyboard campaign earned
+ (L-STATES):
+
+   no-bind      the driver never bound an interrupt endpoint. The xhci row
+                above says whether a controller came up at all.
+   never-armed  bound and no transfer was ever queued. THE RESTING STATE IN
+                THE LADDER, which does not pump; a finding only where a pump
+                ran and armed nothing.
+   armed-silent armed and the endpoint has never completed. Not reachable
+                from the ladder; where a pump runs it is the silent-keyboard
+                failure.
+   empty        completions arrive and every report is all-zero, so the
+                endpoint fires and carries nothing.
+   undecoded    reports carry data and no scancode came out of hid-step,
+                which is a decode gap and not a transport one.
+   keys         scancodes reached the desk.
+
+ The distinction that cost the most to learn is `armed-silent` against
+ `empty`: a keyboard delivering perfectly and a keyboard delivering nothing
+ both read as "no keys" from anywhere upstream, and only the completion
+ count separates them.
+
+  dkb-states : List Text = ["keys", "undecoded", "empty", "armed-silent", "never-armed", "no-bind"]
+
+  dkb-run : DiagCtx -> DiagResult
+  dkb-run (c) =
+    let st = if dkb-bound == False then "no-bind"
+             else if dkb-armed 0 == 0 then "never-armed"
+             else if dkb-events 0 == 0 then "armed-silent"
+             else if dkb-nonzero 0 == 0 then "empty"
+             else if dkb-scans 0 == 0 then "undecoded"
+             else "keys"
+    in let colour = if st == "keys" then diag-col-good
+                    else if st == "never-armed" then diag-col-note
+                    else if st == "no-bind" then diag-col-warn
+                    else diag-col-bad
+    in let g1 = "bound=" & (if dkb-bound then "y" else "n") & " dci=" & show (xdiag-get kbd-cell-dci) & " hid-binds=" & show (xdiag-get 47)
+    in let g2 = "armed=" & show (dkb-armed 0) & " events=" & show (dkb-events 0) & " nonzero=" & show (dkb-nonzero 0) & " scans=" & show (dkb-scans 0) & " last=" & diag-hex8 (xdiag-get kbd-cell-code)
+    in diag-result st colour [g1, g2] [g1, g2]

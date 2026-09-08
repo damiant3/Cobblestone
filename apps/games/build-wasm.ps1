@@ -683,6 +683,32 @@ $Games = @{
             @{ Name = 'ck_ai';        Fn = 'ck_wasm_ai';        Arity = 1 }
         )
     }
+    'chess' = @{
+        Chapter = 'classic\ChessWasm.codex'
+        Exports = @(
+            @{ Name = 'cs_new';          Fn = 'cs_wasm_new';          Arity = 0 }
+            @{ Name = 'cs_cell';         Fn = 'cs_wasm_cell';         Arity = 2 }
+            @{ Name = 'cs_turn';         Fn = 'cs_wasm_turn';         Arity = 1 }
+            @{ Name = 'cs_ep';           Fn = 'cs_wasm_ep';           Arity = 1 }
+            @{ Name = 'cs_half';         Fn = 'cs_wasm_halfmove';     Arity = 1 }
+            @{ Name = 'cs_right';        Fn = 'cs_wasm_right';        Arity = 2 }
+            @{ Name = 'cs_material';     Fn = 'cs_wasm_material';     Arity = 2 }
+            @{ Name = 'cs_moves';        Fn = 'cs_wasm_movecount';    Arity = 1 }
+            @{ Name = 'cs_move_from';    Fn = 'cs_wasm_move_from';    Arity = 2 }
+            @{ Name = 'cs_move_to';      Fn = 'cs_wasm_move_to';      Arity = 2 }
+            @{ Name = 'cs_move_cap';     Fn = 'cs_wasm_move_cap';     Arity = 2 }
+            @{ Name = 'cs_move_promote'; Fn = 'cs_wasm_move_promote'; Arity = 2 }
+            @{ Name = 'cs_move_special'; Fn = 'cs_wasm_move_special'; Arity = 2 }
+            @{ Name = 'cs_find';         Fn = 'cs_wasm_find';         Arity = 3 }
+            @{ Name = 'cs_can';          Fn = 'cs_wasm_can';          Arity = 2 }
+            @{ Name = 'cs_apply';        Fn = 'cs_wasm_apply';        Arity = 2 }
+            @{ Name = 'cs_ai';           Fn = 'cs_wasm_ai';           Arity = 2 }
+            @{ Name = 'cs_check';        Fn = 'cs_wasm_check';        Arity = 1 }
+            @{ Name = 'cs_done';         Fn = 'cs_wasm_done';         Arity = 1 }
+            @{ Name = 'cs_result';       Fn = 'cs_wasm_result';       Arity = 1 }
+            @{ Name = 'cs_perft';        Fn = 'cs_wasm_perft';        Arity = 2 }
+        )
+    }
     'bridge' = @{
         Chapter = 'classic\BridgeWasm.codex'
         Exports = @(

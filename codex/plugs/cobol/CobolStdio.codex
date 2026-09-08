@@ -1,8 +1,103 @@
 Chapter: CobolStdio
 
+ COBOL fixes the order: every WORKING-STORAGE item must appear before the
+ PROCEDURE DIVISION that uses it. The storage lines are produced as a side
+ effect of emitting the paragraphs, so the definitions are emitted TWICE,
+ once for their storage and once for their code, rather than held whole.
+
+ Only `var-counter` crosses a definition boundary. It names every temporary
+ (`<func>-<hint>-<n>`) and never resets, so the second pass must start from
+ the same value as the first or the two halves name different variables.
+ It is an Integer, so it survives `__heap-restore`; the emitted text does
+ not, which is what keeps the whole program from being resident at once.
+
 Section: Body
+
+  cobol-stream-storage : List IRDef, List ATypeDef, Integer, Integer, Integer -> [Console] Nothing
+  cobol-stream-storage (defs) (tds) (i) (len) (entry-idx) =
+   if i >= len then print-uni ""
+   else if i == entry-idx then cobol-stream-storage defs tds (i + 1) len entry-idx
+   else let h = __heap-save
+   in let s = emit-cobol-def-storage (list-at defs i) tds
+   in act
+    print-uni s
+    let r = __heap-restore h
+    in cobol-stream-storage defs tds (i + 1) len entry-idx
+   end
+
+  cobol-stream-ws : List IRDef, List ArityEntry, List ATypeDef, Integer, Integer, Integer, Integer -> [Console] Nothing
+  cobol-stream-ws (defs) (arities) (tds) (i) (len) (entry-idx) (counter) =
+   if i >= len then cobol-stream-tail defs arities tds len entry-idx counter
+   else if i == entry-idx then cobol-stream-ws defs arities tds (i + 1) len entry-idx counter
+   else let h = __heap-save
+   in let r = emit-cobol-def-at defs arities tds i counter
+   in let s = emit-cobol-ws-lines ((r.state).working-storage) 0
+   in let n = (r.state).var-counter
+   in act
+    print-uni s
+    let q = __heap-restore h
+    in cobol-stream-ws defs arities tds (i + 1) len entry-idx n
+   end
+
+  cobol-stream-defs : List IRDef, List ArityEntry, List ATypeDef, Integer, Integer, Integer, Integer -> [Console] Nothing
+  cobol-stream-defs (defs) (arities) (tds) (i) (len) (entry-idx) (counter) =
+   if i >= len then print-uni ""
+   else if i == entry-idx then cobol-stream-defs defs arities tds (i + 1) len entry-idx counter
+   else let h = __heap-save
+   in let r = emit-cobol-def-at defs arities tds i counter
+   in let s = r.code
+   in let n = (r.state).var-counter
+   in act
+    print-uni s
+    let q = __heap-restore h
+    in cobol-stream-defs defs arities tds (i + 1) len entry-idx n
+   end
+
+  cobol-stream-entry-ws : List IRDef, Integer, List ArityEntry, List ATypeDef, Integer -> [Console] Nothing
+  cobol-stream-entry-ws (defs) (entry-idx) (arities) (tds) (counter) =
+   let h = __heap-save
+   in let r = emit-cobol-entry-at defs entry-idx arities tds counter
+   in let s = emit-cobol-ws-lines ((r.state).working-storage) 0
+   in act
+    print-uni s
+    let q = __heap-restore h
+    in print-uni ""
+   end
+
+  cobol-stream-entry-code : List IRDef, Integer, List ArityEntry, List ATypeDef, Integer -> [Console] Nothing
+  cobol-stream-entry-code (defs) (entry-idx) (arities) (tds) (counter) =
+   let h = __heap-save
+   in let r = emit-cobol-entry-at defs entry-idx arities tds counter
+   in let s = r.code
+   in act
+    print-uni s
+    let q = __heap-restore h
+    in print-uni ""
+   end
+
+  cobol-stream-tail : List IRDef, List ArityEntry, List ATypeDef, Integer, Integer, Integer -> [Console] Nothing
+  cobol-stream-tail (defs) (arities) (tds) (len) (entry-idx) (after-defs) =
+   act
+    cobol-stream-entry-ws defs entry-idx arities tds after-defs
+    print-uni "\n       PROCEDURE DIVISION.\n"
+    cobol-stream-defs defs arities tds 0 len entry-idx 0
+    print-uni "       MAIN-LOGIC.\n"
+    cobol-stream-entry-code defs entry-idx arities tds after-defs
+    print-line-uni "           STOP RUN.\n\n"
+   end
 
   plug-emit-ir-stream : Text -> [Console] Nothing
   plug-emit-ir-stream (ir-text) =
    let parsed = parse-ir-chapter ir-text
-   in print-line-uni (emit-cobol-chapter (parsed.chapter) (parsed.type-defs))
+   in let m = parsed.chapter
+   in let tds = parsed.type-defs
+   in let defs = m.defs
+   in let len = list-length defs
+   in let arities = build-arity-map defs 0 []
+   in let entry-idx = cobol-find-entry defs 0
+   in act
+    print-uni (emit-cobol-stream-head m tds)
+    cobol-stream-storage defs tds 0 len entry-idx
+    print-uni cobol-fixed-ws
+    cobol-stream-ws defs arities tds 0 len entry-idx 0
+   end

@@ -4,54 +4,90 @@ Chapter: ComplianceReportScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE FOURTH GENERATOR ON THE PIPELINE MODEL, and the first whose artifacts are
+ DERIVED FROM EACH OTHER: `cdx`, `log` and `report` are all built from `outDir`.
+ A production cannot reach the artifact table, therefore each of the three
+ spells `SeVar "outDir"` directly and the dependency between the four is
+ invisible to the model. That is recorded on the design page as the third burr
+ rather than worked around here.
 
 Section: Parameters
 
   report-params : List ShellParam = [sh-param-default "PCore" SptInt (SeInt 1)]
 
+Section: The pipeline, declared before it is spelled
+
+  compile-art : PipeArtifact = PipeArtifact { pa-name = "compile", pa-kind = PkFile, pa-expr = SeVar "compile", pa-from = Just (SePathJoin SeScriptRoot (SeLit "compile.ps1")) }
+
+  run-art : PipeArtifact = PipeArtifact { pa-name = "run", pa-kind = PkFile, pa-expr = SeVar "run", pa-from = Just (SePathJoin SeScriptRoot (SeLit "test-run.ps1")) }
+
+  src-art : PipeArtifact = PipeArtifact { pa-name = "src", pa-kind = PkFile, pa-expr = SeVar "src", pa-from = Just (SePathJoin SeScriptRoot (SeLit "compliance-report.codex")) }
+
+  out-dir-art : PipeArtifact = PipeArtifact { pa-name = "outDir", pa-kind = PkDir, pa-expr = SeVar "outDir", pa-from = Just (SePathJoin SeScriptRoot (SeLit "output")) }
+
+  cdx-art : PipeArtifact = PipeArtifact { pa-name = "cdx", pa-kind = PkFile, pa-expr = SeVar "cdx", pa-from = Just (SePathJoin (SeVar "outDir") (SeLit "compliance-report.cdx")) }
+
+  log-art : PipeArtifact = PipeArtifact { pa-name = "log", pa-kind = PkFile, pa-expr = SeVar "log", pa-from = Just (SePathJoin (SeVar "outDir") (SeLit "compliance-report.log")) }
+
+  report-art : PipeArtifact = PipeArtifact { pa-name = "report", pa-kind = PkFile, pa-expr = SeVar "report", pa-from = Just (SePathJoin (SeVar "outDir") (SeLit "compliance-evidence.txt")) }
+
+  lines-art : PipeArtifact = PipeArtifact { pa-name = "lines", pa-kind = PkValue, pa-expr = SeVar "lines", pa-from = None }
+
+  report-arts : List PipeArtifact = [compile-art, run-art, src-art, out-dir-art, cdx-art, log-art, report-art, lines-art]
+
 Section: S01 -- Paths
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "compile" (SePathJoin SeScriptRoot (SeLit "compile.ps1")), ScAssign "run" (SePathJoin SeScriptRoot (SeLit "test-run.ps1")), ScAssign "src" (SePathJoin SeScriptRoot (SeLit "compliance-report.codex")), ScAssign "outDir" (SePathJoin SeScriptRoot (SeLit "output")), ScAssign "cdx" (SePathJoin (SeVar "outDir") (SeLit "compliance-report.cdx")), ScAssign "log" (SePathJoin (SeVar "outDir") (SeLit "compliance-report.log")), ScAssign "report" (SePathJoin (SeVar "outDir") (SeLit "compliance-evidence.txt"))]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce compile-art, pipe-produce run-art, pipe-produce src-art, pipe-produce out-dir-art, pipe-produce cdx-art, pipe-produce log-art, pipe-produce report-art]
+
+  s01 : PipeStage = PipeStage { ps-name = "paths", ps-why = "name the two scripts driven, the source compiled and the three outputs", ps-in = [], ps-out = [compile-art, run-art, src-art, out-dir-art, cdx-art, log-art, report-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Output Directory
 
-  s02 : List ShellCmd = [ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] []]
+  s02-body : List ShellCmd = [ScBlank, ScIf (SeNot (SeDirExists (pipe-ref report-arts report-params "outDir"))) [ScMkdir (pipe-ref report-arts report-params "outDir")] []]
+
+  s02 : PipeStage = PipeStage { ps-name = "output directory", ps-why = "take the output directory if no earlier run made it", ps-in = ["outDir"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Compile
 
-  compile-args : List ShellArg = [SaNamed "Src" (SeVar "src"), SaNamed "Out" (SeVar "cdx"), SaNamed "Log" (SeVar "log"), SaNamed "PCore" (SeVar "PCore")]
+  compile-args : List ShellArg = [SaNamed "Src" (pipe-ref report-arts report-params "src"), SaNamed "Out" (pipe-ref report-arts report-params "cdx"), SaNamed "Log" (pipe-ref report-arts report-params "log"), SaNamed "PCore" (pipe-ref report-arts report-params "PCore")]
 
-  compile-failed : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report compilation failed"), ScIf (SeFileExists (SeVar "log")) [ScPrintFile (SeVar "log")] [], ScExit (SeInt 1)]
+  compile-failed : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report compilation failed"), ScIf (SeFileExists (pipe-ref report-arts report-params "log")) [ScPrintFile (pipe-ref report-arts report-params "log")] [], ScExit (SeInt 1)]
 
-  s03 : List ShellCmd = [ScEcho (SeLit "Compiling compliance report generator..."), ScRunArgs (SeVar "compile") compile-args, ScIf (SeNot (SeExitCodeEq 0)) compile-failed []]
+  s03-body : List ShellCmd = [ScBlank, ScEcho (SeLit "Compiling compliance report generator..."), ScRunArgs (pipe-ref report-arts report-params "compile") compile-args, ScIf (SeNot (SeExitCodeEq 0)) compile-failed []]
+
+  s03 : PipeStage = PipeStage { ps-name = "compile", ps-why = "compile the evidence generator, printing its log when the compile refuses", ps-in = ["compile", "src", "cdx", "log", "PCore"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [PoExit 1 "the evidence generator did not compile; its log is printed above"], ps-body = s03-body }
 
 Section: S04 -- Run
 
-  run-args : List ShellArg = [SaNamed "Kernel" (SeVar "cdx"), SaNamed "OutFile" (SeVar "report"), SaNamed "PCore" (SeVar "PCore")]
+  run-args : List ShellArg = [SaNamed "Kernel" (pipe-ref report-arts report-params "cdx"), SaNamed "OutFile" (pipe-ref report-arts report-params "report"), SaNamed "PCore" (pipe-ref report-arts report-params "PCore")]
 
   run-failed : List ShellCmd = [ScEcho (SeLit "FAIL: compliance report execution failed"), ScExit (SeInt 1)]
 
-  s04 : List ShellCmd = [ScEcho (SeLit "Running compliance report..."), ScRunArgs (SeVar "run") run-args, ScIf (SeNot (SeExitCodeEq 0)) run-failed []]
+  s04-body : List ShellCmd = [ScBlank, ScEcho (SeLit "Running compliance report..."), ScRunArgs (pipe-ref report-arts report-params "run") run-args, ScIf (SeNot (SeExitCodeEq 0)) run-failed []]
+
+  s04 : PipeStage = PipeStage { ps-name = "run", ps-why = "boot the compiled generator and capture the evidence report", ps-in = ["run", "cdx", "report", "PCore"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [PoExit 1 "the evidence generator booted and did not finish"], ps-body = s04-body }
 
 Section: S05 -- Report
 
-  done-head : ShellExpr = SeConcat (SeLit "Compliance evidence report generated: ") (SeVar "report")
+  done-head : ShellExpr = SeConcat (SeLit "Compliance evidence report generated: ") (pipe-ref report-arts report-params "report")
 
-  done-message : ShellExpr = SeConcat (SeConcat done-head (SeLit " (")) (SeConcat (SeVar "lines") (SeLit " lines)"))
+  done-message : ShellExpr = SeConcat (SeConcat done-head (SeLit " (")) (SeConcat (pipe-ref report-arts report-params "lines") (SeLit " lines)"))
 
-  s05 : List ShellCmd = [ScAssign "lines" (SeFileNonEmptyLineCount (SeVar "report")), ScEcho done-message, ScEcho (SeLit ""), ScPrintFile (SeVar "report")]
+  s05-body : List ShellCmd = [ScBlank, ScAssign "lines" (SeFileNonEmptyLineCount (pipe-ref report-arts report-params "report")), ScEcho done-message, ScEcho (SeLit ""), ScPrintFile (pipe-ref report-arts report-params "report")]
+
+  s05 : PipeStage = PipeStage { ps-name = "report", ps-why = "count the evidence lines and print the report to the console", ps-in = ["report"], ps-out = [lines-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: Assembly
 
-  report-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
-
-  report-script : ShellScript = sh-script "compliance-report" "Generate compliance evidence report" report-params report-body
+  report-pipe : Pipeline = Pipeline { pl-name = "compliance-report", pl-doc = "Generate compliance evidence report", pl-params = report-params, pl-stages = [s01, s02, s03, s04, s05] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell report-script)
+    print-line-uni (emit-powershell (pipeline-to-shell report-pipe))
   end
 
 Page 1

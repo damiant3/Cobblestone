@@ -1,0 +1,60 @@
+Chapter: DeskSoundEventsTest
+  cites Works chapter GopDesk
+  cites Kernel chapter HdaAudio
+  cites Foreword chapter Console
+
+ The three event sounds beside the click, read at HDA #180 the way the click
+ arm reads it. A request is parked in the sound block by whatever step saw
+ the event and drained once by the loop's pump: one buffer per request, none
+ for a second pump, none while muted. The focus note plays only for a switch
+ between two windows: opening from nothing and minimising to nothing are
+ silent. The sabotage: make the pump forget to clear the request and "pumped
+ again" drains 1; make the focus note skip the last-focus write and "switch"
+ drains 0.
+
+Section: Body
+
+  se-drain : Integer, Integer -> [Audio, Device.Mmio] Integer
+  se-drain (ds) (slot) = act
+    before <- hda-drained-count
+    let r = dk-snd-request ds slot
+    in act
+      p <- dk-snd-pump ds
+      after <- hda-drained-count
+      after - before
+    end
+  end
+
+  se-focus : Integer, Integer -> [Audio, Device.Mmio] Integer
+  se-focus (ds) (fid) = act
+    before <- hda-drained-count
+    let f = poke-32 ds desk-focus-cell fid
+    in act
+      n <- dk-snd-focus-note ds
+      after <- hda-drained-count
+      after - before
+    end
+  end
+
+  opening : [Console, Audio, Device.Mmio] Nothing = act
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let sdi = dk-snd-init ds
+    in let off = poke-32 ds dk-sound-on-cell 0
+    in act
+      muted <- se-drain ds dk-snd-slot-error
+      let on = poke-32 ds dk-sound-on-cell 1
+      in act
+        err <- se-drain ds dk-snd-slot-error
+        note <- se-drain ds dk-snd-slot-notify
+        before <- hda-drained-count
+        p2 <- dk-snd-pump ds
+        after <- hda-drained-count
+        open <- se-focus ds desk-focus-calc
+        switch <- se-focus ds desk-focus-clkp
+        same <- se-focus ds desk-focus-clkp
+        away <- se-focus ds desk-focus-none
+        print-line-uni ("muted " & show muted & "  error " & show err & "  notify " & show note & "  pumped again " & show (after - before))
+        print-line-uni ("focus: open " & show open & "  switch " & show switch & "  same " & show same & "  away " & show away)
+      end
+    end
+  end

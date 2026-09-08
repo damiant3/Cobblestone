@@ -5,57 +5,57 @@ const pt_half_w : i32 = 512;
 const pt_half_h : i32 = 384;
 fn pt_tex_r(iu : i32, iv : i32) -> f32 {
   let m = (((iu * 3) + (iv * 5)) - ((((iu * 3) + (iv * 5)) / 4) * 4));
-  return (bitcast<f32>(1055286886u) + (f32(f32(m)) * bitcast<f32>(1039516303u)));
+  return (0x1.ccccccp-2f + (f32(f32(m)) * 0x1.eb851ep-4f));
 }
 fn pt_tex_g(iu : i32, iv : i32) -> f32 {
   let m = ((iu + (iv * 2)) - (((iu + (iv * 2)) / 3) * 3));
-  return (bitcast<f32>(1053609164u) + (f32(f32(m)) * bitcast<f32>(1042536202u)));
+  return (0x1.999998p-2f + (f32(f32(m)) * 0x1.47ae14p-3f));
 }
 fn pt_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn pt_pack(r : f32, g : f32, b : f32) -> i32 {
-  return (((i32((pt_clamp01(r) * bitcast<f32>(1132396544u))) * 65536) + (i32((pt_clamp01(g) * bitcast<f32>(1132396544u))) * 256)) + i32((pt_clamp01(b) * bitcast<f32>(1132396544u))));
+  return (((i32((pt_clamp01(r) * 0x1.fe0000p+7f)) * 65536) + (i32((pt_clamp01(g) * 0x1.fe0000p+7f)) * 256)) + i32((pt_clamp01(b) * 0x1.fe0000p+7f)));
 }
 fn pt_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / pt_width) * pt_width));
   let py = (gid / pt_width);
-  let fx = (f32(f32((px - pt_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((pt_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1082130432u)));
+  let fx = (f32(f32((px - pt_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((pt_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.000000p+2f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1073741824u) / rl);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1082130432u));
+  let dz = (0x1.000000p+1f / rl);
+  let oz = (0.0 - 0x1.000000p+2f);
   let b = (dz * oz);
-  let c = ((oz * oz) - bitcast<f32>(1070386380u));
+  let c = ((oz * oz) - 0x1.999998p+0f);
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  let h = pt_clamp01(((dy * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u)));
-  return pt_pack((bitcast<f32>(1028443340u) + (h * bitcast<f32>(1028443340u))), (bitcast<f32>(1031127695u) + (h * bitcast<f32>(1034147594u))), (bitcast<f32>(1036831948u) + (h * bitcast<f32>(1041865113u))));
+  if ((disc < 0.0)) {
+  let h = pt_clamp01(((dy * 0x1.000000p-1f) + 0x1.000000p-1f));
+  return pt_pack((0x1.999998p-5f + (h * 0x1.999998p-5f)), (0x1.eb851ep-5f + (h * 0x1.47ae14p-4f)), (0x1.999998p-4f + (h * 0x1.333332p-3f)));
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
+  let t = ((0.0 - b) - sqrt(disc));
   let hx = (dx * t);
   let hy = (dy * t);
   let hz = (oz + (dz * t));
-  let nx = (hx / bitcast<f32>(1067576197u));
-  let ny = (hy / bitcast<f32>(1067576197u));
-  let nz = (hz / bitcast<f32>(1067576197u));
-  let spin = (f32(f32(frame)) / bitcast<f32>(1109393408u));
-  let u = ((((cos(spin) * nx) + (sin(spin) * nz)) * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u));
-  let v = ((ny * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u));
-  let iu = i32((u * bitcast<f32>(1094713344u)));
-  let iv = i32((v * bitcast<f32>(1090519040u)));
-  let fu = ((u * bitcast<f32>(1094713344u)) - f32(f32(iu)));
-  let fv = ((v * bitcast<f32>(1090519040u)) - f32(f32(iv)));
-  let grout = select(select(0, 1, (fv < bitcast<f32>(1034147594u))), 1, (fu < bitcast<f32>(1034147594u)));
-  let ar = select(pt_tex_r(iu, iv), bitcast<f32>(1041194024u), (grout == 1));
-  let ag = select(pt_tex_g(iu, iv), bitcast<f32>(1041194024u), (grout == 1));
-  let ab = select(bitcast<f32>(1057803468u), bitcast<f32>(1042536202u), (grout == 1));
-  let la = (f32(f32(frame)) / bitcast<f32>(1106247680u));
-  let lx = (cos(la) * bitcast<f32>(1058642329u));
-  let ly = bitcast<f32>(1060320051u);
-  let lz = ((sin(la) * bitcast<f32>(1058642329u)) - bitcast<f32>(1050253721u));
+  let nx = (hx / 0x1.43d70ap+0f);
+  let ny = (hy / 0x1.43d70ap+0f);
+  let nz = (hz / 0x1.43d70ap+0f);
+  let spin = (f32(f32(frame)) / 0x1.400000p+5f);
+  let u = ((((cos(spin) * nx) + (sin(spin) * nz)) * 0x1.000000p-1f) + 0x1.000000p-1f);
+  let v = ((ny * 0x1.000000p-1f) + 0x1.000000p-1f);
+  let iu = i32((u * 0x1.800000p+3f));
+  let iv = i32((v * 0x1.000000p+3f));
+  let fu = ((u * 0x1.800000p+3f) - f32(f32(iu)));
+  let fv = ((v * 0x1.000000p+3f) - f32(f32(iv)));
+  let grout = select(select(0, 1, (fv < 0x1.47ae14p-4f)), 1, (fu < 0x1.47ae14p-4f));
+  let ar = select(pt_tex_r(iu, iv), 0x1.1eb850p-3f, (grout == 1));
+  let ag = select(pt_tex_g(iu, iv), 0x1.1eb850p-3f, (grout == 1));
+  let ab = select(0x1.199998p-1f, 0x1.47ae14p-3f, (grout == 1));
+  let la = (f32(f32(frame)) / 0x1.e00000p+4f);
+  let lx = (cos(la) * 0x1.333332p-1f);
+  let ly = 0x1.666666p-1f;
+  let lz = ((sin(la) * 0x1.333332p-1f) - 0x1.333332p-2f);
   let ll = sqrt((((lx * lx) + (ly * ly)) + (lz * lz)));
   let ux = (lx / ll);
   let uy = (ly / ll);
@@ -63,13 +63,13 @@ fn pt_render(gid : i32, frame : i32) -> i32 {
   let hlx = (ux - dx);
   let hly = (uy - dy);
   let hlz = (uz - dz);
-  let hl = (sqrt((((hlx * hlx) + (hly * hly)) + (hlz * hlz))) + bitcast<f32>(981668462u));
-  let ndh = max(bitcast<f32>(0u), ((((nx * hlx) / hl) + ((ny * hly) / hl)) + ((nz * hlz) / hl)));
-  let ndl = max(bitcast<f32>(0u), (((nx * ux) + (ny * uy)) + (nz * uz)));
-  let a2 = bitcast<f32>(1035489771u);
-  let dd = (((ndh * ndh) * (a2 - bitcast<f32>(1065353216u))) + bitcast<f32>(1065353216u));
-  let spec = ((a2 / ((dd * dd) + bitcast<f32>(981668462u))) * bitcast<f32>(1053609164u));
-  let sh = (bitcast<f32>(1041865113u) + (ndl * bitcast<f32>(1062836633u)));
+  let hl = (sqrt((((hlx * hlx) + (hly * hly)) + (hlz * hlz))) + 0x1.0624dcp-10f);
+  let ndh = max(0.0, ((((nx * hlx) / hl) + ((ny * hly) / hl)) + ((nz * hlz) / hl)));
+  let ndl = max(0.0, (((nx * ux) + (ny * uy)) + (nz * uz)));
+  let a2 = 0x1.70a3d6p-4f;
+  let dd = (((ndh * ndh) * (a2 - 0x1.000000p+0f)) + 0x1.000000p+0f);
+  let spec = ((a2 / ((dd * dd) + 0x1.0624dcp-10f)) * 0x1.999998p-2f);
+  let sh = (0x1.333332p-3f + (ndl * 0x1.b33332p-1f));
   return pt_pack(((ar * sh) + spec), ((ag * sh) + spec), ((ab * sh) + spec));
   }
 }

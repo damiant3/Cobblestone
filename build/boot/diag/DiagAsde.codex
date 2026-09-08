@@ -114,8 +114,8 @@ Section: The Slot
   dasd-at : DiagCtx, Integer, Text, Integer -> Integer
   dasd-at (c) (row) (s) (col) =
    let y = (c.dc-slot-y) + row * 16 * (c.dc-scale)
-   in let cleared = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-slot-x) y (c.dc-slot-w) (16 * (c.dc-scale)) diag-col-bg
-   in gop-draw-text (c.dc-base) (c.dc-stride) (c.dc-font) (c.dc-slot-x) y (dasd-fit c s) col (c.dc-scale) 0
+   in let cleared = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) (c.dc-slot-x) y (c.dc-slot-w) (16 * (c.dc-scale)) diag-col-bg
+   in gop-draw-text (c.dc-base) (c.dc-stride) (c.dc-h) (c.dc-font) (c.dc-slot-x) y (dasd-fit c s) col (c.dc-scale) 0
 
   dasd-paint : DiagCtx, Integer, Text, Integer -> Integer
   dasd-paint (c) (n) (s) (col) =
@@ -125,7 +125,7 @@ Section: The Slot
 
   dasd-open : DiagCtx, Text -> Integer
   dasd-open (c) (s) =
-   let wiped = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-slot-x) (c.dc-slot-y) (c.dc-slot-w) (c.dc-slot-h) diag-col-bg
+   let wiped = gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) (c.dc-slot-x) (c.dc-slot-y) (c.dc-slot-w) (c.dc-slot-h) diag-col-bg
    in dasd-at c 0 s diag-col-warn
 
  A READING GOES TO THE GLASS ONLY. The ladder already prints every bank line
@@ -133,14 +133,15 @@ Section: The Slot
  and `Compare-Rows` in `diag-arm.ps1` counts the difference as serial and
  file disagreeing -- which is what it is for.
 
- A STEP LINE GOES TO BOTH, and it uses the ladder's live-progress convention
- (`<stage> entering <step>`) because it is the same thing nicinit's lines
- are: serial-only by design, skipped by the compare, and unbankable because
- the step it names may not return. That is exactly why it exists.
+ A STEP LINE IS BANKED BEFORE ITS STEP RUNS, so the last note on the medium
+ names the step that did not return. It also goes to the wire under the
+ ladder's live-progress convention (`<stage> entering <step>`) and is skipped
+ by `Compare-Rows` in `diag-arm.ps1`.
 
-  dasd-step : DiagCtx, Integer, Text -> [Console] Integer
+  dasd-step : DiagCtx, Integer, Text -> [Console, Device.Port] Integer
   dasd-step (c) (n) (s) = act
    p <- print-line-uni ("asde entering " & s)
+   b <- diag-bank-note c ("stage=asde step=" & show n & " " & s)
    dasd-open c ("-> " & s)
   end
 
@@ -168,7 +169,7 @@ Section: The SLU Discriminator
     ds-lines : List Text
   }
 
-  dasd-slu : DiagCtx, Integer, Integer -> [Device.Mmio, Console] DasdSlu
+  dasd-slu : DiagCtx, Integer, Integer -> [Device.Port, Device.Mmio, Console] DasdSlu
   dasd-slu (c) (mmio) (n) = act
    e0 <- dasd-step c n "slu s1 read CTRL and STATUS"
    let c0 = e1000-read mmio e1000-reg-ctrl
@@ -262,7 +263,7 @@ Section: The Stage
  gets past this row it is CONSISTENT with the explanation above and nothing
  more; other things will have changed by then.
 
-  dasd-reset : DiagCtx, Integer, Integer -> [Device.Mmio, Console] Text
+  dasd-reset : DiagCtx, Integer, Integer -> [Device.Port, Device.Mmio, Console] Text
   dasd-reset (c) (mmio) (n) = act
    q <- dasd-step c n "RESET s1 quiesce, RCTL=0 TCTL=0, before pulsing RST"
    let quiet = e1000-quiesce mmio

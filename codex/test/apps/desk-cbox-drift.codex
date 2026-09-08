@@ -1,0 +1,150 @@
+Chapter: DeskCboxDriftTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopScene
+  cites Foreword chapter Console
+
+ WORKS-60. A scene pane sizes its pixel and depth buffers ONCE, from the
+ content box at the moment it opens (`gsc-new`, called with `dk-cbox-w` and
+ `dk-cbox-h`). Every frame afterwards `gsc-place` sets the render target's
+ `r3t-w` and `r3t-h` from the WINDOW rectangle, and a maximised window is the
+ content box exactly. Nothing ties the two together, and `r3d-target-clear`
+ fills `r3t-w * r3t-h` words into a buffer holding `bw * bh`.
+
+ The content box is not a constant: it is the screen less a strip on each of
+ the four edges, and which edges carry a strip is a setting the user changes
+ while apps are open. So the question this asks is whether the box can GROW
+ after a pane has sized itself, and by how many words, because that number is
+ the overrun.
+
+ The four edges are measured against each other rather than against a
+ remembered constant: a change to `dk-task-h`, `dk-task-w` or the scale moves
+ every row here together and the deltas are what carry the finding.
+
+Section: Body
+
+  dcd-yn : Boolean -> Text
+  dcd-yn (v) = if v then "yes" else "NO"
+
+ An empty registry with a real count cell, because `dk-strip-any` walks the
+ focus ids through `dk-pill-live` and that reads the registry. Nothing is
+ pinned and nothing is registered, so only the TASK edge contributes a strip
+ and the four rows differ by exactly the thing under test.
+
+  dcd-ws : Integer
+  dcd-ws =
+    let ws = alloc-zeroed 64 64
+    in let n = poke-32 ws 0 0
+    in ws
+
+  dcd-ds : Integer -> Integer
+  dcd-ds (e) =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pei = dk-pedge-init ds
+    in let wr = poke-32 ds dk-wr-cell dcd-ws
+    in let sp = poke-32 ds dk-task-edge-cell e
+    in ds
+
+  dcd-name : Integer -> Text
+  dcd-name (e) =
+    if e == dk-edge-bottom then "bottom"
+    else if e == dk-edge-top then "top"
+    else if e == dk-edge-left then "left"
+    else "right"
+
+  dcd-w : Integer, Integer, Integer -> Integer
+  dcd-w (e) (w) (h) = dk-cbox-w w (dcd-ds e)
+
+  dcd-h : Integer, Integer, Integer -> Integer
+  dcd-h (e) (w) (h) = dk-cbox-h w h (dcd-ds e)
+
+  dcd-edge : Integer, Integer, Integer -> Text
+  dcd-edge (e) (w) (h) =
+    "  " & dcd-name e & " " & integer-to-text (dcd-w e w h) & "x" & integer-to-text (dcd-h e w h)
+    & " = " & integer-to-text (dcd-w e w h * dcd-h e w h) & " words"
+
+  dcd-edges : Integer, Integer -> Text
+  dcd-edges (w) (h) =
+    "edges at " & integer-to-text w & "x" & integer-to-text h & ":"
+    & dcd-edge dk-edge-bottom w h
+    & dcd-edge dk-edge-top w h
+    & dcd-edge dk-edge-left w h
+    & dcd-edge dk-edge-right w h
+
+ THE OVERRUN IS THE PAIR, not either box alone. `open` is the edge the pane
+ was born under and sized its buffers from; `now` is the edge in force when
+ the frame clears. A positive delta is words written past the end of both the
+ pixel and the depth buffer, every frame, for as long as the pane is up.
+
+  dcd-drift : Integer, Integer, Integer, Integer -> Text
+  dcd-drift (open) (now) (w) (h) =
+    let cap = dcd-w open w h * dcd-h open w h
+    in let want = dcd-w now w h * dcd-h now w h
+    in "opened at the " & dcd-name open & ", cleared at the " & dcd-name now
+       & ": buffer holds " & integer-to-text cap
+       & "  the clear writes " & integer-to-text want
+       & "  overruns " & dcd-yn (want > cap)
+       & "  by " & integer-to-text (want - cap) & " words"
+
+ A DEGENERATE BOX IS THE OTHER WAY THIS BREAKS, and it is asked separately
+ because it needs no drift at all: `dk-cbox-w` and `dk-cbox-h` subtract four
+ strips with no floor, and `gsc-new` hands the result straight to
+ `alloc-bytes` without looking at it. If every row here is positive the
+ degenerate box is NOT reachable by the task edge alone, which is a narrower
+ claim than "not reachable".
+
+  dcd-min : Integer, Integer -> Integer
+  dcd-min (a) (b) = if a < b then a else b
+
+  dcd-min4 : Integer, Integer -> Integer
+  dcd-min4 (w) (h) =
+    let a = dcd-w dk-edge-bottom w h
+    in let b = dcd-w dk-edge-top w h
+    in let c = dcd-w dk-edge-left w h
+    in let d = dcd-w dk-edge-right w h
+    in let e = dcd-h dk-edge-bottom w h
+    in let f = dcd-h dk-edge-top w h
+    in let g = dcd-h dk-edge-left w h
+    in let i = dcd-h dk-edge-right w h
+    in dcd-min (dcd-min (dcd-min a b) (dcd-min c d)) (dcd-min (dcd-min e f) (dcd-min g i))
+
+  dcd-degen : Integer, Integer -> Text
+  dcd-degen (w) (h) =
+    let m = dcd-min4 w h
+    in "degenerate probe at " & integer-to-text w & "x" & integer-to-text h
+       & ": smallest box dimension over the four edges " & integer-to-text m
+       & "  positive " & dcd-yn (m > 0)
+
+ THE CLAMP IS ASKED ON THE SAME PAIR THE OVERRUN ROW MEASURED, and both
+ halves are in the row: a clamp that did nothing leaves `fits` NO, and a
+ measurement that had found no drift leaves `unclamped would not` NO, so
+ neither the fix nor the defect can pass on the other's evidence.
+
+  dcd-clamp : Integer, Integer, Integer, Integer -> Text
+  dcd-clamp (open) (now) (w) (h) =
+    let bw = dcd-w open w h
+    in let bh = dcd-h open w h
+    in let rw = dcd-w now w h
+    in let rh = dcd-h now w h
+    in "clamp: rect " & integer-to-text rw & "x" & integer-to-text rh
+       & " into buffers " & integer-to-text bw & "x" & integer-to-text bh
+       & " gives " & integer-to-text (gsc-fit rw bw) & "x" & integer-to-text (gsc-fit rh bh)
+       & "  fits " & dcd-yn (gsc-fit rw bw * gsc-fit rh bh <= bw * bh)
+       & "  unclamped would not " & dcd-yn (rw * rh > bw * bh)
+       & "  a negative rect floors at zero " & dcd-yn (gsc-fit (0 - 1) bw == 0)
+       & "  a rect inside the buffer is untouched " & dcd-yn (gsc-fit (bw - 7) bw == bw - 7)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni (dcd-edges 1600 900)
+      print-line-uni (dcd-drift dk-edge-bottom dk-edge-left 1600 900)
+      print-line-uni (dcd-drift dk-edge-bottom dk-edge-right 1600 900)
+      print-line-uni (dcd-drift dk-edge-left dk-edge-bottom 1600 900)
+      print-line-uni (dcd-clamp dk-edge-bottom dk-edge-left 1600 900)
+      print-line-uni (dcd-degen 1600 900)
+      print-line-uni (dcd-degen 640 480)
+      print-line-uni "desk-cbox-drift: reached the end"
+    end

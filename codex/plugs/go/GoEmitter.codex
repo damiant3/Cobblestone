@@ -86,7 +86,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "rune(" & show n & ")"
     is IrName (n) (ty) (sp) -> go-sanitize n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-go-binary op l r arities indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-go-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-go-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "func() interface{} { if " & emit-go-expr c arities indent & ".(bool) { return " & emit-go-expr t arities indent & " }; return " & emit-go-expr el arities indent & " }()"
     is IrLet (name) (ty) (val) (body) (sp) -> "func() interface{} { " & go-sanitize name & " := " & emit-go-expr val arities indent & "; return " & emit-go-expr body arities indent & " }()"
@@ -111,17 +111,23 @@ Section: Binary Operators
   go-vec-ewise (lhs) (rhs) (opsym) =
    "func() interface{} { _l := " & lhs & ".([]interface{}); _r := " & rhs & ".([]interface{}); _v := make([]interface{}, len(_l)); for _i := range _l { _v[_i] = _l[_i].(float64) " & opsym & " _r[_i].(float64) }; return _v }()"
 
-  emit-go-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  emit-go-binary (op) (l) (r) (arities) (indent) =
+  emit-go-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  emit-go-binary (op) (l) (r) (ty) (arities) (indent) =
    let lhs = emit-go-expr l arities indent
    in let rhs = emit-go-expr r arities indent
    in when op
-    is IrAddInt -> "(" & lhs & ".(int) + " & rhs & ".(int))"
-    is IrSubInt -> "(" & lhs & ".(int) - " & rhs & ".(int))"
-    is IrMulInt -> "(" & lhs & ".(int) * " & rhs & ".(int))"
+    is IrAddInt ->
+     if int-ty-wraps ty then "(" & lhs & ".(int) + " & rhs & ".(int))"
+     else "_cx_add_trap(" & lhs & ".(int), " & rhs & ".(int))"
+    is IrSubInt ->
+     if int-ty-wraps ty then "(" & lhs & ".(int) - " & rhs & ".(int))"
+     else "_cx_sub_trap(" & lhs & ".(int), " & rhs & ".(int))"
+    is IrMulInt ->
+     if int-ty-wraps ty then "(" & lhs & ".(int) * " & rhs & ".(int))"
+     else "_cx_mul_trap(" & lhs & ".(int), " & rhs & ".(int))"
     is IrDivInt -> "(" & lhs & ".(int) / " & rhs & ".(int))"
     is IrRemInt -> "(" & lhs & ".(int) % " & rhs & ".(int))"
-    is IrPowInt -> "int(math.Pow(float64(" & lhs & ".(int)), float64(" & rhs & ".(int))))"
+    is IrPowInt -> "_cx_ipow(" & lhs & ".(int), " & rhs & ".(int))"
     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & ".(float64) + " & rhs & ".(float64))"
     is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & ".(float64) - " & rhs & ".(float64))"
     is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & ".(float64) * " & rhs & ".(float64))"
@@ -248,10 +254,57 @@ Section: Apply and Helpers
      else let builtin = lookup-go-builtin n args arities indent
      in if text-length builtin > 0 then builtin
      else let func = emit-go-expr root arities indent
-     in func & ".(func(" & emit-go-any-params (list-length args) 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ")"
+     in let ar = lookup-arity arities n
+     in if ar < 1 then emit-go-curried func args arities indent 0
+        else if list-length args == ar then emit-go-call func args arities indent ar
+        else if list-length args < ar then emit-go-partial func args arities indent (ar - list-length args)
+        else emit-go-curried (emit-go-call func args arities indent ar) args arities indent ar
     is otherwise ->
      let func = emit-go-expr root arities indent
      in func & ".(func(" & emit-go-any-params (list-length args) 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ")"
+
+ The type assertion was built from the number of ARGUMENTS rather than the
+ callee's arity, so a one-parameter definition applied to three asserted a
+ three-parameter func type and panicked. The assertion is now built from the
+ arity, the surplus is applied one argument at a time, and a definition
+ applied to fewer arguments than it takes is eta-wrapped as nested closures.
+
+  emit-go-call : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-go-call (func) (args) (arities) (indent) (n) =
+   func & ".(func(" & emit-go-any-params n 0 & ") interface{})(" & emit-go-args-upto args arities indent 0 n & ")"
+
+  emit-go-args-upto : List IRExpr, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-go-args-upto (args) (arities) (indent) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-go-expr (list-at args i) arities indent
+   else emit-go-expr (list-at args i) arities indent & ", " & emit-go-args-upto args arities indent (i + 1) n
+
+  emit-go-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-go-curried (base) (args) (arities) (indent) (i) =
+   if i >= list-length args then base
+   else let next = base & ".(func(interface{}) interface{})(" & emit-go-expr (list-at args i) arities indent & ")"
+   in emit-go-curried next args arities indent (i + 1)
+
+  emit-go-partial-open : Integer, Integer -> Text
+  emit-go-partial-open (i) (count) =
+   if i == count then ""
+   else "func(_p" & integer-to-text i & "_ interface{}) interface{} { return " & emit-go-partial-open (i + 1) count
+
+  emit-go-partial-close : Integer -> Text
+  emit-go-partial-close (count) =
+   if count == 0 then "" else " }" & emit-go-partial-close (count - 1)
+
+  emit-go-partial-params : Integer, Integer -> Text
+  emit-go-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-go-partial-params (i + 1) count
+
+  emit-go-partial : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-go-partial (func) (args) (arities) (indent) (short) =
+   let total = list-length args + short
+   in let call = func & ".(func(" & emit-go-any-params total 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ", " & emit-go-partial-params 0 short & ")"
+   in emit-go-partial-open 0 short & call & emit-go-partial-close short
 
   emit-go-any-params : Integer, Integer -> Text
   emit-go-any-params (n) (i) =
@@ -427,6 +480,33 @@ Section: Go Module Assembly
    in let main-func = "func main() {\n    opening()\n}\n"
    in header & types-text & defs-text & main-func
 
+  emit-go-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-go-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "package main\n\nimport (\n    \"bufio\"\n    \"fmt\"\n    \"math\"\n    \"os\"\n    \"strconv\"\n    \"strings\"\n)\n\nvar _ = math.Pi\nvar _ = strconv.Atoi\n\n" & go-text-builtins
+   in let types-text = emit-go-type-defs type-defs 0
+   in let main-func = "func main() {\n    opening()\n}\n"
+   in header & types-text
+
+  emit-go-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-go-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "package main\n\nimport (\n    \"bufio\"\n    \"fmt\"\n    \"math\"\n    \"os\"\n    \"strconv\"\n    \"strings\"\n)\n\nvar _ = math.Pi\nvar _ = strconv.Atoi\n\n" & go-text-builtins
+   in let types-text = emit-go-type-defs type-defs 0
+   in let main-func = "func main() {\n    opening()\n}\n"
+   in main-func
+
+  emit-go-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-go-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "package main\n\nimport (\n    \"bufio\"\n    \"fmt\"\n    \"math\"\n    \"os\"\n    \"strconv\"\n    \"strings\"\n)\n\nvar _ = math.Pi\nvar _ = strconv.Atoi\n\n" & go-text-builtins
+   in let types-text = emit-go-type-defs type-defs 0
+   in let main-func = "func main() {\n    opening()\n}\n"
+   in arities
+
+  emit-go-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-go-chapter-stream-def (m) (v) (i) = emit-go-def (list-at (m.defs) i) v
+
  `strings.ReplaceAll` with an empty old string inserts the replacement
  between every character, `strings.Split` on an empty separator splits into
  UTF-8 characters, and `strconv.Atoi` answers 0 and an error for "12ab"
@@ -438,6 +518,20 @@ Section: Go Module Assembly
    "func _cx_text_replace(s string, a string, b string) string {\n    if len(a) == 0 {\n        return s\n    }\n    return strings.ReplaceAll(s, a, b)\n}\n\n"
    & "func _cx_text_split(s string, sep string) []interface{} {\n    if len(sep) == 0 {\n        return []interface{}{s}\n    }\n    _parts := strings.Split(s, sep)\n    _r := make([]interface{}, len(_parts))\n    for _i, _p := range _parts {\n        _r[_i] = _p\n    }\n    return _r\n}\n\n"
    & "func _cx_text_to_integer(s string) int {\n    i := 0\n    neg := false\n    if len(s) > 0 && s[0] == '-' {\n        neg = true\n        i = 1\n    }\n    v := 0\n    for i < len(s) && s[i] >= '0' && s[i] <= '9' {\n        v = v*10 + int(s[i]-'0')\n        i++\n    }\n    if neg {\n        return -v\n    }\n    return v\n}\n\n"
+   & "func _cx_ipow(b int, e int) int {\n    if e < 0 {\n        return 0\n    }\n    r := 1\n    x := b\n    n := e\n    for n > 0 {\n        if n&1 != 0 {\n            r *= x\n        }\n        x *= x\n        n >>= 1\n    }\n    return r\n}\n\n"
+   & go-trap-builtins
+
+ Go has no checked integer primitive: signed overflow wraps silently and
+ the spec defines it that way, so the check is written out. `math.MinInt`
+ tracks the platform width of `int`, which is what the emitted arithmetic
+ uses. The quotient test is the mul check, and it answers a zero operand
+ and the two `-1` cases first so the division itself cannot trap.
+
+  go-trap-builtins : Text
+  go-trap-builtins =
+   "func _cx_add_trap(a int, b int) int {\n    s := a + b\n    if (a >= 0) == (b >= 0) && (s >= 0) != (a >= 0) {\n        panic(\"integer overflow\")\n    }\n    return s\n}\n\n"
+   & "func _cx_sub_trap(a int, b int) int {\n    d := a - b\n    if (a >= 0) != (b >= 0) && (d >= 0) != (a >= 0) {\n        panic(\"integer overflow\")\n    }\n    return d\n}\n\n"
+   & "func _cx_mul_trap(a int, b int) int {\n    if a == 0 || b == 0 {\n        return 0\n    }\n    if a == -1 {\n        if b == math.MinInt {\n            panic(\"integer overflow\")\n        }\n        return a * b\n    }\n    if b == -1 {\n        if a == math.MinInt {\n            panic(\"integer overflow\")\n        }\n        return a * b\n    }\n    p := a * b\n    if p/b != a {\n        panic(\"integer overflow\")\n    }\n    return p\n}\n\n"
 
   emit-go-tup-binds : List IRPat, Text, Integer -> Text
   emit-go-tup-binds (subs) (scrut) (i) =

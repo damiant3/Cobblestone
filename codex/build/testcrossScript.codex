@@ -10,7 +10,9 @@ Chapter: TestCrossScript
 
 Section: Parameters
 
-  tcross-params : List ShellParam = [sh-param-choice "Arch" ["arm64", "riscv64"], sh-param "Test" SptString, sh-param-default "TimeoutSec" SptInt (SeInt 10)]
+  tcross-default-seed : ShellExpr = SePathJoin SeScriptRoot (SeLit "..\\seed\\Codex.cdx")
+
+tcross-params : List ShellParam = [sh-param-choice "Arch" ["arm64", "riscv64"], sh-param "Test" SptString, sh-param-default "TimeoutSec" SptInt (SeInt 10), sh-param-default "Kernel" SptString tcross-default-seed, sh-param-optional "AllowStaleKernel" SptSwitch]
 
 Section: S00 -- Usage
 
@@ -19,6 +21,7 @@ Section: S00 -- Usage
      ScComment "  build/test-cross.ps1 -Arch arm64 -Test arithmetic",
      ScComment "  build/test-cross.ps1 -Arch riscv64 -Test factorial",
      ScComment "  build/test-cross.ps1 -Arch arm64 -Test cce-tier1 -TimeoutSec 60",
+    ScComment "  build/test-cross.ps1 -Arch arm64 -Test arithmetic -Kernel build\\output\\Sut.cdx -AllowStaleKernel",
      ScComment "",
      ScComment "Exit status: 0 on pass, 1 on failure."]
 
@@ -26,14 +29,14 @@ Section: S01 -- Preamble
 
   s01 : List ShellCmd =
     let skip-renode = [ScRaw "Write-RenodeSkip", ScExit (SeInt 0)]
-    in [ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScBlank, ScAssign "Repo" (SeRaw "(Get-Location).Path"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), ScAssign "RenodeExe" (SeRaw "Get-RenodeExe -Repo $Repo"), ScIf (SeNot (SeVar "RenodeExe")) skip-renode []]
+    in [ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScBlank, ScAssign "Repo" (SeRaw "(Get-Location).Path"), ScAssign "SeedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScRaw "if (-not (Test-Path -PathType Leaf $Kernel)) { throw \"Kernel not found: $Kernel\" }", ScRaw "$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)", ScRaw "$seedDigest = (Get-FileHash -Algorithm SHA256 $SeedCdx).Hash.Substring(0, 16)", ScRaw "Write-Host \"Kernel: $Kernel [$kernelDigest]\"", ScRaw "if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {", ScRaw "    Write-Host 'REFUSED: the kernel is a build-output binary and is not the depot seed.'", ScRaw "    Write-Host \"         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last.\"", ScRaw "    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'", ScRaw "    exit 2", ScRaw "}", ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), ScAssign "RenodeExe" (SeRaw "Get-RenodeExe -Repo $Repo"), ScIf (SeNot (SeVar "RenodeExe")) skip-renode []]
 
 Section: S02 -- Seed and Plug Setup
 
   s02 : List ShellCmd =
     let skip-plug = [ScEchoStyled (SeRaw "\"SKIP: plug not built ($plugCdx)\"") ClBrightYellow True, ScEcho (SeRaw "\"  Build with: codex\\plugs\\$plugName\\build.ps1\""), ScExit (SeInt 0)]
     in let skip-board = [ScEchoStyled (SeRaw "\"SKIP: board definition missing ($boardRepl)\"") ClBrightYellow True, ScExit (SeInt 0)]
-    in [ScAssign "SeedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScAssign "Stage0" (SeRaw "Join-Path $Repo 'build-output\\bare-metal\\Codex.cdx'"), ScRaw "New-Item -ItemType Directory -Force (Split-Path $Stage0) | Out-Null", ScIf (SeNot (SeFileExists (SeVar "Stage0"))) [ScCopy (SeVar "SeedCdx") (SeVar "Stage0")] [], ScBlank, ScRaw "$plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }", ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\build-output\\$plugName-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) skip-plug [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\codex-${Arch}.repl\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) skip-board [], ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\compile-$plugName.ps1\"")]
+    in [ScRaw "$plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }", ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\build-output\\$plugName-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) skip-plug [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\codex-${Arch}.repl\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) skip-board [], ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\compile-$plugName.ps1\"")]
 
 Section: S03 -- Locate Test
 
@@ -92,7 +95,7 @@ Section: S05 -- Compile
        ScExit (SeInt 1)]
 
   s05 : List ShellCmd =
-    [ScComment "-- Compile --", ScAssign "OutDir" (SeRaw "Join-Path $Repo \"test-output-cross\\$Arch\""), ScAssign "testOutDir" (SeRaw "Join-Path $OutDir $name"), ScRaw "New-Item -ItemType Directory -Force $testOutDir | Out-Null", ScAssign "elfOut" (SeRaw "Join-Path $testOutDir \"$name.elf\""), ScAssign "compileLog" (SeRaw "Join-Path $testOutDir 'compile.log'"), ScBlank, ScRaw "Write-Host -NoNewline '  compile ... '", ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut -WorkDir $testOutDir 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8", ScRaw "$compileExit = $LASTEXITCODE", ScRaw "$ErrorActionPreference = $prev", ScBlank, ScIf (SeFileExists (SeVar "refusalFile")) s05-refusal [], ScIf (SeOr (SeRaw "$compileExit -ne 0") (SeNot (SeFileExists (SeVar "elfOut")))) [ScEchoStyled (SeLit "FAIL (compile)") ClBrightRed True, ScExit (SeInt 1)] [], ScEcho (SeLit "OK")]
+    [ScComment "-- Compile --", ScAssign "OutDir" (SeRaw "Join-Path $Repo \"test-output-cross\\$Arch\""), ScAssign "testOutDir" (SeRaw "Join-Path $OutDir $name"), ScRaw "New-Item -ItemType Directory -Force $testOutDir | Out-Null", ScAssign "elfOut" (SeRaw "Join-Path $testOutDir \"$name.elf\""), ScAssign "compileLog" (SeRaw "Join-Path $testOutDir 'compile.log'"), ScBlank, ScRaw "Write-Host -NoNewline '  compile ... '", ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut -WorkDir $testOutDir -Kernel $Kernel 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8", ScRaw "$compileExit = $LASTEXITCODE", ScRaw "$ErrorActionPreference = $prev", ScBlank, ScIf (SeFileExists (SeVar "refusalFile")) s05-refusal [], ScIf (SeOr (SeRaw "$compileExit -ne 0") (SeNot (SeFileExists (SeVar "elfOut")))) [ScEchoStyled (SeLit "FAIL (compile)") ClBrightRed True, ScExit (SeInt 1)] [], ScEcho (SeLit "OK")]
 
 Section: S06 -- Check Expected
 

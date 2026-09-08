@@ -44,6 +44,13 @@ if (-not $Log) {
 $logDir = Split-Path $Log -Parent
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 
+# THE RECORD FILE IS THE REGISTER. Every byte received, raw and in order,
+# appended beside the log: the ladder ships its banked record at b3 behind the
+# send token and every later bank line live (DiagRecord), so this file holds
+# DIAG.TXT whether or not the stick survives. The human log above it says which
+# address sent what and when; this file says exactly what.
+$Record = [IO.Path]::ChangeExtension($Log, '.record')
+
 function Say([string]$m) {
     $line = "{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m
     Write-Host $line
@@ -63,7 +70,7 @@ $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $
 try { $listener.Start() }
 catch { Write-Host "FAIL: cannot listen on $Port -- $($_.Exception.Message)"; exit 1 }
 
-Say "echo peer listening on 0.0.0.0:$Port  (log: $Log)"
+Say "echo peer listening on 0.0.0.0:$Port  (log: $Log, record: $Record)"
 Say "waiting for the stick to dial in; its SOURCE ADDRESS is the registration"
 
 $deadline = if ($Seconds -gt 0) { (Get-Date).AddSeconds($Seconds) } else { [DateTime]::MaxValue }
@@ -85,6 +92,8 @@ try {
                 try { $n = $stream.Read($buf, 0, $buf.Length) } catch { break }
                 if ($n -le 0) { break }
                 $total += $n
+                $fs = [IO.File]::Open($Record, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+                $fs.Write($buf, 0, $n); $fs.Close()
                 $stream.Write($buf, 0, $n)
                 $stream.Flush()
                 $txt = ([Text.Encoding]::ASCII.GetString($buf, 0, $n)) -replace '[^\x20-\x7e]', '.'

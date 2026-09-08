@@ -1,0 +1,191 @@
+Chapter: DeskMenuDismissTest
+  cites Works chapter GopDraw
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Works chapter GopPrograms
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Task frame stage 4. Closing the system menu used to close the window
+ underneath it. Damian, at the running desk 2026-09-07: "when i close the
+ cobblestone menu, if there is an app window open (like appearance) it closes
+ the appearance window".
+
+ THE CAUSE IS THAT THE LOOP HAD TWO OUTCOMES WHERE IT NEEDED THREE. A step
+ answers 0 for "I am done"; `desk-loop` routes 0 to `desk-app-close`; that
+ reads the focused id, looks for it in the window registry, and falls through
+ to `desk-app-close-plain` when it is absent. The plain close restores the
+ heap to the base mark and hands `desk-apps-empty` down, which is correct for
+ the last window and catastrophic for an overlay, because the overlay is never
+ in the registry AT ALL and the live window's state sits above that mark.
+
+ THIS FILE ASKS THE CAUSE AND NOT THE CURE, and that is a limitation worth
+ stating rather than hiding. `desk-menu-step` and `desk-loop` are effectful
+ over a keyboard, a mouse and a framebuffer, and nothing here can drive them.
+ What is asked instead is the three facts the routing bug was made of: the
+ menu is absent from a registry that holds a real window, the three outcomes
+ are distinguishable integers, and the menu button is reachable by a click
+ while the menu is up so the dismiss arm can be entered. A regression that
+ reintroduced the 0 would NOT be caught here; one that made the outcomes
+ collide, or made the menu look like a registered window, would be.
+
+Section: Body
+
+  dmd-yn : Boolean -> Text
+  dmd-yn (v) = if v then "yes" else "NO"
+
+ A registry holding one real window, the Appearance pane, built the way the
+ other desk tests build one: a count at 0 and a focus id at `4 * i + 4`.
+
+  dmd-ws : Integer
+  dmd-ws =
+    let ws = alloc-zeroed 64 64
+    in let n = poke-32 ws 0 1
+    in let a = poke-32 ws 4 desk-focus-style
+    in ws
+
+  dmd-ds : Integer
+  dmd-ds =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let pp = poke-32 ds desk-prog-cell (alloc-zeroed 64 64)
+    in let pei = dk-pedge-init ds
+    in let wr = poke-32 ds dk-wr-cell dmd-ws
+    in let sp = poke-32 ds dk-task-edge-cell dk-edge-bottom
+    in ds
+
+ THE MENU IS NOT A WINDOW, which is the whole of why 0 was the wrong answer.
+ The row asks both halves against one registry: the Appearance pane is found
+ and the menu is not, so a close keyed on the focused id takes a different
+ path for each and only one of those paths is a close.
+
+  dmd-absent : Text
+  dmd-absent =
+    let ds = dmd-ds
+    in let ws = peek-32 ds dk-wr-cell
+    in "registry: the Appearance pane is in it " & dmd-yn (dk-wr-find ws desk-focus-style 0 >= 0)
+       & "  the menu is not " & dmd-yn (dk-wr-find ws desk-focus-menu 0 < 0)
+       & "  count " & integer-to-text (dk-wr-count ws)
+       & "  so a close keyed on the focus would take the plain path for the menu " & dmd-yn (dk-wr-find ws desk-focus-menu 0 < 0)
+
+ THREE OUTCOMES, THREE VALUES. `desk-loop` branches on equality, so two of
+ these colliding would silently route a dismiss into a close or a hide. The
+ row also asks that neither sentinel can be mistaken for the ordinary "still
+ alive" answer of 1 or for the "closed" answer of 0.
+
+  dmd-outcomes : Text
+  dmd-outcomes =
+    "outcomes: hide " & integer-to-text desk-step-hide
+    & "  dismiss " & integer-to-text desk-step-dismiss
+    & "  distinct " & dmd-yn (desk-step-hide /= desk-step-dismiss)
+    & "  neither is closed " & dmd-yn (desk-step-hide /= 0 & desk-step-dismiss /= 0)
+    & "  neither is alive " & dmd-yn (desk-step-hide /= 1 & desk-step-dismiss /= 1)
+
+ THE DISMISS ARM IS REACHABLE. `dk-menu-hit` is what `desk-menu-step` asks of
+ a click, and `dk-sc-toggle` is the answer that now means dismiss. A click at
+ the Cobblestone button's own centre must produce it, or the arm is dead code
+ and every row above passes while the menu cannot be closed at all. The
+ button's box is taken from the laid tree rather than guessed, so this moves
+ with the theme.
+
+  dmd-btn : Integer, Integer -> LayoutRect
+  dmd-btn (w) (h) =
+    let ds = dmd-ds
+    in let s = ui-wscale w
+    in let laid = widget-layout (desk-chrome-with (desk-menu-tree (peek-32 ds desk-prog-cell) gfont-none s ds) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in when widget-find laid "menu"
+      is Just (n) -> n.wn-bounds
+      is None -> layout-rect 0 0 0 0
+
+  dmd-reach : Integer, Integer -> Text
+  dmd-reach (w) (h) =
+    let ds = dmd-ds
+    in let s = ui-wscale w
+    in let b = dmd-btn w h
+    in let cx = (b.lr-x + b.lr-w / 2) * s
+    in let cy = (b.lr-y + b.lr-h / 2) * s
+    in let hit = dk-menu-hit w h (peek-32 ds desk-prog-cell) cx cy ds gfont-none
+    in "reach: button box x " & integer-to-text (b.lr-x) & " y " & integer-to-text (b.lr-y)
+       & " w " & integer-to-text (b.lr-w) & " h " & integer-to-text (b.lr-h)
+       & "  the box is real " & dmd-yn (b.lr-w > 0 & b.lr-h > 0)
+       & "  a click at its centre answers toggle " & dmd-yn (hit == dk-sc-toggle)
+
+ A CLICK OUTSIDE THE MENU DISMISSES IT AND STILL REACHES WHAT IT LANDED ON.
+ Damian, 2026-09-07: "if the appearance window is up and you open the
+ cobblestone menu, then click the minimize button on the screen, it should
+ dismiss cobblestone and then minimize."
+
+ The two halves are asked separately because they are two mechanisms.
+
+ OUTSIDE IS NOT "HIT NOTHING". `dk-menu-hit` answers a scancode and answers 0
+ both for a click on the glass and for a click INSIDE the menu that landed on
+ a panel rather than a row, which is what the menu's padding and the gaps
+ between its groups are. Dismissing on the second would close the menu when
+ somebody clicked a hair off a row, so `dk-menu-out` asks the body's box
+ instead. The row below drives both cases against one laid tree: the centre of
+ the body, and a point on the far side of the glass from it.
+
+  dmd-body : Integer, Integer -> LayoutRect
+  dmd-body (w) (h) =
+    let ds = dmd-ds
+    in let s = ui-wscale w
+    in let laid = widget-layout (desk-chrome-with (desk-menu-tree (peek-32 ds desk-prog-cell) gfont-none s ds) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in when widget-find laid "sysmenu-body"
+      is Just (n) -> n.wn-bounds
+      is None -> layout-rect 0 0 0 0
+
+  dmd-bounds : Integer, Integer -> Text
+  dmd-bounds (w) (h) =
+    let ds = dmd-ds
+    in let s = ui-wscale w
+    in let b = dmd-body w h
+    in let inx = (b.lr-x + b.lr-w / 2) * s
+    in let iny = (b.lr-y + b.lr-h / 2) * s
+    in "bounds: body x " & integer-to-text (b.lr-x) & " y " & integer-to-text (b.lr-y)
+       & " w " & integer-to-text (b.lr-w) & " h " & integer-to-text (b.lr-h)
+       & "  its centre is inside " & dmd-yn (dk-menu-out w h (peek-32 ds desk-prog-cell) inx iny ds gfont-none == False)
+       & "  a far corner is outside " & dmd-yn (dk-menu-out w h (peek-32 ds desk-prog-cell) (w - 4) (h - 4) ds gfont-none)
+       & "  just past its right edge is outside " & dmd-yn (dk-menu-out w h (peek-32 ds desk-prog-cell) ((b.lr-x + b.lr-w) * s + 2) iny ds gfont-none)
+
+ THE CLICK MUST SURVIVE THE DISMISSAL. `mouse-take-click` clears the latch, so
+ a step that consumes a press and then hands control elsewhere has spent it and
+ the control under the pointer hears nothing. `mouse-put-click` leaves it
+ pending for the next iteration. The row asks the round trip on a real
+ `UsbMouse` record: taken once is gone, put back is there again, and taken a
+ second time is gone again. Without the last of those, a latch that could not
+ be cleared would pass the first two and turn one press into a click forever.
+
+  dmd-mouse : UsbMouse
+  dmd-mouse =
+    let st = alloc-zeroed 64 64
+    in UsbMouse { um-ok = True, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = alloc-zeroed 64 64, um-state = st, um-pos = st, um-peers = [] }
+
+  dmd-latch : Text
+  dmd-latch =
+    let m = dmd-mouse
+    in let arm = poke-32 (m.um-pos) 16 1
+    in let first = mouse-take-click m
+    in let gone = mouse-take-click m
+    in let put = mouse-put-click m
+    in let back = mouse-take-click m
+    in let gone2 = mouse-take-click m
+    in "latch: taken " & dmd-yn first
+       & "  then gone " & dmd-yn (gone == False)
+       & "  put back " & dmd-yn back
+       & "  and gone again " & dmd-yn (gone2 == False)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni dmd-absent
+      print-line-uni dmd-outcomes
+      print-line-uni (dmd-reach 1600 900)
+      print-line-uni (dmd-bounds 1600 900)
+      print-line-uni dmd-latch
+      print-line-uni "desk-menu-dismiss: reached the end"
+    end

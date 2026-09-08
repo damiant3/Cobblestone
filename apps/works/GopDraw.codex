@@ -344,25 +344,25 @@ Section: The sizers
   cursor-set-shape : Integer, Integer -> Integer
   cursor-set-shape (cs) (shape) = poke-32 cs cursor-shape-cell shape
 
-  cursor-paint-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  cursor-paint-cols (base) (stride) (mx) (my) (skipx) (cwc) (py) (em) (fm) (px) =
+  cursor-paint-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-paint-cols (base) (stride) (rows) (mx) (my) (skipx) (cwc) (py) (em) (fm) (px) =
     if px >= cwc then 0
     else let lc = px + skipx
     in let e = bit-and (bit-shru em (15 - lc)) 1
     in let f = bit-and (bit-shru fm (15 - lc)) 1
-    in let w = if e == 1 then gop-put base stride (mx + px) (my + py) cursor-col-edge
-          else if f == 1 then gop-put base stride (mx + px) (my + py) cursor-col-fill
+    in let w = if e == 1 then gop-put base stride rows (mx + px) (my + py) cursor-col-edge
+          else if f == 1 then gop-put base stride rows (mx + px) (my + py) cursor-col-fill
           else 0
-    in cursor-paint-cols base stride mx my skipx cwc py em fm (px + 1)
+    in cursor-paint-cols base stride rows mx my skipx cwc py em fm (px + 1)
 
-  cursor-paint-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  cursor-paint-rows (base) (stride) (mx) (my) (skipx) (skipy) (shape) (cwc) (chc) (py) =
+  cursor-paint-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-paint-rows (base) (stride) (rows) (mx) (my) (skipx) (skipy) (shape) (cwc) (chc) (py) =
     if py >= chc then 0
     else let lr = py + skipy
     in let em = cursor-edge-of shape lr
     in let fm = cursor-fill-of shape lr
-    in let w = cursor-paint-cols base stride mx my skipx cwc py em fm 0
-    in cursor-paint-rows base stride mx my skipx skipy shape cwc chc (py + 1)
+    in let w = cursor-paint-cols base stride rows mx my skipx cwc py em fm 0
+    in cursor-paint-rows base stride rows mx my skipx skipy shape cwc chc (py + 1)
 
   cursor-save-cols : Integer, Integer, Integer, Integer, Integer -> Integer
   cursor-save-cols (cs) (base) (stride) (r) (c) =
@@ -429,8 +429,8 @@ Section: The sizers
   cursor-span (o) (extent) (limit) =
     cursor-min (extent - cursor-skip o) (limit - cursor-lo o)
 
-  cursor-update : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  cursor-update (cs) (base) (stride) (pw) (ph) (s) (mx) (my) =
+  cursor-update : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-update (cs) (base) (stride) (rows) (pw) (ph) (s) (mx) (my) =
     let r0 = if peek-32 cs 0 /= 0 then cursor-rest-rows cs base stride 0 else 0
     in let shape = cursor-shape cs
     in let ox = cursor-org mx (cursor-hot-x shape)
@@ -449,12 +449,12 @@ Section: The sizers
       in let s2 = poke-32 cs 12 cwc
       in let s3 = poke-32 cs 16 chc
       in let sv = cursor-save-rows cs base stride 0
-      in let d0 = cursor-paint-rows base stride x0 y0 skipx skipy shape cwc chc 0
+      in let d0 = cursor-paint-rows base stride ph x0 y0 skipx skipy shape cwc chc 0
       in poke-32 cs 0 1
 
 Section: Pixel
 
-  gop-put : Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-put : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
  A PIXEL OFF THE SIDE OF THE GLASS LANDS ON THE NEXT ROW, and until windows
  could hang off the screen nothing ever asked for one. `(y * stride + x) * 4`
  with `x` past the scan line is simply the next row's arithmetic, so a window
@@ -468,16 +468,17 @@ Section: Pixel
  needed their own, and the tree render's clip is the WINDOW's rect, which is
  exactly the rect that is off the screen.
 
- `stride` is the scan line in pixels and is the only bound this function has.
- It has no height, so `y` is guarded against going negative and nothing more;
- the bottom is held by the drag clamp keeping a window's whole height on the
- glass, which is a weaker place for it and is said out loud here rather than
- left to be discovered.
+ `stride` is the scan line in pixels and `rows` is the row count, and the two
+ together are the whole surface: a pixel outside either is refused here rather
+ than in a caller. The row bound is what lets a window be dragged below the
+ bottom of the glass, because a row past the last one is a write past the end
+ of the framebuffer rather than a visible artifact.
 
-  gop-put (base) (stride) (x) (y) (color) =
+  gop-put (base) (stride) (rows) (x) (y) (color) =
     if x < 0 then 0
     else if x >= stride then 0
     else if y < 0 then 0
+    else if y >= rows then 0
     else poke-32 base ((y * stride + x) * 4) color
 
  The GOP framebuffer is ordinary RAM at GPA 0xBF000000 with no MMIO trap, so
@@ -503,11 +504,12 @@ Section: Pixel
  Off the glass answers 0. Nothing on the screen is blended from it, because
  the write that would consume it is refused by the guard in `gop-put`.
 
-  gop-get : Integer, Integer, Integer, Integer -> Integer
-  gop-get (base) (stride) (x) (y) =
+  gop-get : Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-get (base) (stride) (rows) (x) (y) =
     if x < 0 then 0
     else if x >= stride then 0
     else if y < 0 then 0
+    else if y >= rows then 0
     else peek-32 base ((y * stride + x) * 4)
 
   gop-chan : Integer, Integer -> Integer
@@ -520,56 +522,59 @@ Section: Pixel
     in let b = (gop-chan dst 0 * (255 - a) + gop-chan src 0 * a) / 255
     in bit-shl r 16 + bit-shl g 8 + b
 
-  gop-blend : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-blend (base) (stride) (x) (y) (color) (a) =
+  gop-blend : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-blend (base) (stride) (rows) (x) (y) (color) (a) =
     if a <= 0 then 0
-    else if a >= 255 then gop-put base stride x y color
-    else gop-put base stride x y (gop-mix (gop-get base stride x y) color a)
+    else if a >= 255 then gop-put base stride rows x y color
+    else gop-put base stride rows x y (gop-mix (gop-get base stride rows x y) color a)
 
 Section: Rectangles
 
-  gop-rect-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-rect-cols (base) (stride) (px) (py) (pw) (color) (x) =
+  gop-rect-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-rect-cols (base) (stride) (rows) (px) (py) (pw) (color) (x) =
     if x >= pw then 0
-    else let p = gop-put base stride (px + x) py color
-    in gop-rect-cols base stride px py pw color (x + 1)
+    else let p = gop-put base stride rows (px + x) py color
+    in gop-rect-cols base stride rows px py pw color (x + 1)
 
-  gop-fill-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-fill-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
  THE BULK FILL CLIPS ITS SPAN ONCE RATHER THAN PER PIXEL. `gop-put` guards
  every write, which is what makes the scattered writers safe, but a
  full-screen fill is 1.44 million of them and a rect that is entirely on the
  glass should pay nothing for the window that hangs off it. Narrowing the
  span here means the inner loop never offers `gop-put` a pixel to reject.
 
-  gop-fill-rect (base) (stride) (px) (py) (pw) (ph) (color) =
+  gop-fill-rect (base) (stride) (rows) (px) (py) (pw) (ph) (color) =
     let x0 = if px < 0 then 0 else px
     in let x1 = if px + pw > stride then stride else px + pw
+    in let y0 = if py < 0 then 0 else py
+    in let y1 = if py + ph > rows then rows else py + ph
     in if x1 <= x0 then 0
-    else gop-rect-rows base stride x0 py (x1 - x0) ph color 0
+    else if y1 <= y0 then 0
+    else gop-rect-rows base stride rows x0 y0 (x1 - x0) (y1 - y0) color 0
 
-  gop-rect-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-rect-rows (base) (stride) (px) (py) (pw) (ph) (color) (y) =
+  gop-rect-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-rect-rows (base) (stride) (rows) (px) (py) (pw) (ph) (color) (y) =
     if y >= ph then 0
-    else let r = gop-rect-cols base stride px (py + y) pw color 0
-    in gop-rect-rows base stride px py pw ph color (y + 1)
+    else let r = gop-rect-cols base stride rows px (py + y) pw color 0
+    in gop-rect-rows base stride rows px py pw ph color (y + 1)
 
 Section: Glyph
 
-  gop-char-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-char-cols (base) (stride) (px) (py) (glyph) (fg) (scale) (col) =
+  gop-char-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-char-cols (base) (stride) (rows) (px) (py) (glyph) (fg) (scale) (col) =
     if col >= 8 then 0
     else let on = bit-and (bit-shru glyph (7 - col)) 1
-    in let p = if on == 1 then gop-fill-rect base stride (px + col * scale) py scale scale fg else 0
-    in gop-char-cols base stride px py glyph fg scale (col + 1)
+    in let p = if on == 1 then gop-fill-rect base stride rows (px + col * scale) py scale scale fg else 0
+    in gop-char-cols base stride rows px py glyph fg scale (col + 1)
 
-  gop-char-rows : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-char-rows (base) (stride) (font) (px) (py) (cce) (fg) (scale) (row) =
+  gop-char-rows : Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-char-rows (base) (stride) (rows) (font) (px) (py) (cce) (fg) (scale) (row) =
     if row >= 16 then 0
     else let glyph = cbf-row font cce row
-    in let r = gop-char-cols base stride px (py + row * scale) glyph fg scale 0
-    in gop-char-rows base stride font px py cce fg scale (row + 1)
+    in let r = gop-char-cols base stride rows px (py + row * scale) glyph fg scale 0
+    in gop-char-rows base stride rows font px py cce fg scale (row + 1)
 
-  gop-draw-text : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  gop-draw-text : Integer, Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
  CLIPPED AT THE SCANLINE, and the clip is the whole point. The framebuffer
  is linear, so a glyph drawn past the end of a row does not fall off the
  screen: its pixels land on the NEXT row, on top of whatever is there. A
@@ -584,12 +589,12 @@ Section: Glyph
  box at 1280 wraps at 1024 and shreds the screen at 800, so without this
  bound every probe's legibility is a bet on the panel.
 
-  gop-draw-text (base) (stride) (font) (px) (py) (s) (fg) (scale) (i) =
+  gop-draw-text (base) (stride) (rows) (font) (px) (py) (s) (fg) (scale) (i) =
     if i >= text-length s then 0
     else if px + (i + 1) * 8 * scale > stride then 0
     else let cce = char-code (char-at s i)
-    in let c = gop-char-rows base stride font (px + i * 8 * scale) py cce fg scale 0
-    in gop-draw-text base stride font px py s fg scale (i + 1)
+    in let c = gop-char-rows base stride rows font (px + i * 8 * scale) py cce fg scale 0
+    in gop-draw-text base stride rows font px py s fg scale (i + 1)
 
 Section: Wrapped Text
 
@@ -602,23 +607,23 @@ Section: Wrapped Text
   gop-is-space : Integer -> Boolean
   gop-is-space (cc) = if cc >= 1 then cc <= 2 else False
 
-  gop-draw-text-wrap : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
-  gop-draw-text-wrap (base) (stride) (font) (px) (py) (s) (fg) (scale) (w) =
+  gop-draw-text-wrap : Integer, Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  gop-draw-text-wrap (base) (stride) (rows) (font) (px) (py) (s) (fg) (scale) (w) =
     let cpl = (w - px) / (8 * scale)
     in if cpl <= 0 then 0
-    else gop-wrap-go base stride font px py s fg scale cpl 0 0 0
+    else gop-wrap-go base stride rows font px py s fg scale cpl 0 0 0
 
-  gop-wrap-go : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gop-wrap-go (base) (stride) (font) (px) (py) (s) (fg) (scale) (cpl) (i) (col) (line) =
+  gop-wrap-go : Integer, Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-wrap-go (base) (stride) (rows) (font) (px) (py) (s) (fg) (scale) (cpl) (i) (col) (line) =
     if i >= text-length s then line + 1
     else let cc = char-code (char-at s i)
     in if gop-is-space cc then
       (if col + 1 + gop-word-len s (i + 1) > cpl
-       then gop-wrap-go base stride font px py s fg scale cpl (i + 1) 0 (line + 1)
-       else gop-wrap-go base stride font px py s fg scale cpl (i + 1) (col + 1) line)
-    else if col >= cpl then gop-wrap-go base stride font px py s fg scale cpl i 0 (line + 1)
-    else let c = gop-char-rows base stride font (px + col * 8 * scale) (py + line * 16 * scale) cc fg scale 0
-    in gop-wrap-go base stride font px py s fg scale cpl (i + 1) (col + 1) line
+       then gop-wrap-go base stride rows font px py s fg scale cpl (i + 1) 0 (line + 1)
+       else gop-wrap-go base stride rows font px py s fg scale cpl (i + 1) (col + 1) line)
+    else if col >= cpl then gop-wrap-go base stride rows font px py s fg scale cpl i 0 (line + 1)
+    else let c = gop-char-rows base stride rows font (px + col * 8 * scale) (py + line * 16 * scale) cc fg scale 0
+    in gop-wrap-go base stride rows font px py s fg scale cpl (i + 1) (col + 1) line
 
 Section: Scale
 

@@ -1,0 +1,492 @@
+Chapter: CellFormula
+  cites Foreword chapter CCE
+
+ A formula is a leading `=` followed by an expression. The grammar, in
+ precedence order from loosest to tightest:
+
+   formula := '=' cmp
+   cmp     := sum (relop sum)?            relop is = <> < > <= >=
+   sum     := product (('+' | '-') product)*
+   product := unary (('*' | '/') unary)*
+   unary   := '-' unary | primary
+   primary := number | text | range | ref | call | '(' cmp ')'
+   ref     := letters digits                 A1, BC12, column base 26
+   range   := ref ':' ref
+   call    := name '(' (cmp (',' cmp)*)? ')'
+
+ A1 notation, the arithmetic precedence and the doubled-quote escape are
+ conventions this chapter did not invent and must match.
+
+ COMPARISON IS NON-ASSOCIATIVE and a chain is refused at the second
+ relop. `A1 < B1 < C1` reads to a person as a range test and means
+ `(A1 < B1) < C1` in every spreadsheet that accepts it, which compares a
+ truth value against a quantity.
+
+ A parse answers a FxParse whose `px-ok` is the discriminator: every caller
+ reads `px-ok` before `px-expr`, and a refusal carries the message and
+ the byte offset it stopped at. `px-expr` on a refusal is `ExNum 0` and
+ means nothing.
+
+ A reference carries its own SPELLING beside its row and column, because
+ the typed refusal this app exists to give (`=A1+B1` where B1 holds text
+ is an error naming B1) has to print the name the person wrote.
+
+ The scan runs over UTF-8 BYTES rather than CCE code points, as CellCsv
+ and Http.codex do: every byte of a multi-byte sequence has its high bit
+ set, so no character outside ASCII can be mistaken for an operator.
+
+ We say:
+
+Section: The Bytes That Matter
+
+  fx-eq : Integer = 61
+  fx-lt : Integer = 60
+  fx-gt : Integer = 62
+  fx-plus : Integer = 43
+  fx-minus : Integer = 45
+  fx-star : Integer = 42
+  fx-slash : Integer = 47
+  fx-lparen : Integer = 40
+  fx-rparen : Integer = 41
+  fx-comma : Integer = 44
+  fx-colon : Integer = 58
+  fx-quote : Integer = 34
+  fx-space : Integer = 32
+  fx-tab : Integer = 9
+  fx-zero : Integer = 48
+  fx-nine : Integer = 57
+  fx-upper-a : Integer = 65
+  fx-upper-z : Integer = 90
+  fx-lower-a : Integer = 97
+  fx-lower-z : Integer = 122
+  fx-underscore : Integer = 95
+
+Section: The Operators
+
+  fx-op-add : Integer = 1
+  fx-op-sub : Integer = 2
+  fx-op-mul : Integer = 3
+  fx-op-div : Integer = 4
+  fx-op-eq : Integer = 5
+  fx-op-ne : Integer = 6
+  fx-op-lt : Integer = 7
+  fx-op-gt : Integer = 8
+  fx-op-le : Integer = 9
+  fx-op-ge : Integer = 10
+
+  fx-op-name : Integer -> Text
+  fx-op-name (op) =
+    if op == fx-op-add then "+"
+    else if op == fx-op-sub then "-"
+    else if op == fx-op-mul then "*"
+    else if op == fx-op-div then "/"
+    else if op == fx-op-eq then "="
+    else if op == fx-op-ne then "<>"
+    else if op == fx-op-lt then "<"
+    else if op == fx-op-gt then ">"
+    else if op == fx-op-le then "<="
+    else if op == fx-op-ge then ">="
+    else "?"
+
+Section: The Tree
+
+  CellRef = record {
+    cr-row : Integer,
+    cr-col : Integer,
+    cr-name : Text
+  }
+
+  RangeRef = record {
+    rr-from : CellRef,
+    rr-to : CellRef
+  }
+
+  Expr =
+   | ExNum (Integer)
+   | ExText (Text)
+   | ExRef (CellRef)
+   | ExRange (RangeRef)
+   | ExNeg (Expr)
+   | ExBin (BinNode)
+   | ExCall (CallNode)
+
+  BinNode = record {
+    bn-op : Integer,
+    bn-left : Expr,
+    bn-right : Expr
+  }
+
+  CallNode = record {
+    cn-name : Text,
+    cn-args : List Expr
+  }
+
+  FxParse = record {
+    px-ok : Boolean,
+    px-expr : Expr,
+    px-at : Integer,
+    px-msg : Text
+  }
+
+  fx-ok : Expr, Integer -> FxParse
+  fx-ok (e) (at) = FxParse { px-ok = True, px-expr = e, px-at = at, px-msg = "" }
+
+  fx-bad : Integer, Text -> FxParse
+  fx-bad (at) (msg) = FxParse { px-ok = False, px-expr = ExNum 0, px-at = at, px-msg = msg }
+
+Section: Classifying A Byte
+
+  fx-digit : Integer -> Boolean
+  fx-digit (b) = b >= fx-zero & b <= fx-nine
+
+  fx-alpha : Integer -> Boolean
+  fx-alpha (b) = (b >= fx-upper-a & b <= fx-upper-z) | (b >= fx-lower-a & b <= fx-lower-z)
+
+  fx-upper : Integer -> Integer
+  fx-upper (b) = if b >= fx-lower-a & b <= fx-lower-z then b - 32 else b
+
+  fx-name-byte : Integer -> Boolean
+  fx-name-byte (b) = fx-alpha b | fx-digit b | b == fx-underscore
+
+  fx-at : List Integer, Integer, Integer -> Integer
+  fx-at (bs) (i) (n) = if i >= n then 0 else list-at bs i
+
+  fx-skip : List Integer, Integer, Integer -> Integer
+  fx-skip (bs) (i) (n) =
+    if i >= n then i
+    else if list-at bs i == fx-space then fx-skip bs (i + 1) n
+    else if list-at bs i == fx-tab then fx-skip bs (i + 1) n
+    else i
+
+Section: Spans
+
+  fx-span-digits : List Integer, Integer, Integer -> Integer
+  fx-span-digits (bs) (i) (n) =
+    if i >= n then i
+    else if fx-digit (list-at bs i) then fx-span-digits bs (i + 1) n
+    else i
+
+  fx-span-alpha : List Integer, Integer, Integer -> Integer
+  fx-span-alpha (bs) (i) (n) =
+    if i >= n then i
+    else if fx-alpha (list-at bs i) then fx-span-alpha bs (i + 1) n
+    else i
+
+  fx-span-name : List Integer, Integer, Integer -> Integer
+  fx-span-name (bs) (i) (n) =
+    if i >= n then i
+    else if fx-name-byte (list-at bs i) then fx-span-name bs (i + 1) n
+    else i
+
+  fx-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  fx-slice (bs) (i) (e) (acc) =
+    if i >= e then acc
+    else fx-slice bs (i + 1) e (acc & [list-at bs i])
+
+  fx-text-of : List Integer, Integer, Integer -> Text
+  fx-text-of (bs) (i) (e) = utf8-bytes-to-text (fx-slice bs i e [])
+
+Section: Numbers And References
+
+  fx-acc-digits : List Integer, Integer, Integer, Integer -> Integer
+  fx-acc-digits (bs) (i) (e) (a) =
+    if i >= e then a
+    else fx-acc-digits bs (i + 1) e (a * 10 + (list-at bs i - fx-zero))
+
+ A column is base 26 with no zero digit: A is 1, Z is 26, AA is 27, and
+ the value returned is zero-based, so A gives column 0.
+
+  fx-acc-col : List Integer, Integer, Integer, Integer -> Integer
+  fx-acc-col (bs) (i) (e) (a) =
+    if i >= e then a
+    else fx-acc-col bs (i + 1) e (a * 26 + (fx-upper (list-at bs i) - fx-upper-a + 1))
+
+  fx-ref-at : List Integer, Integer, Integer -> FxParse
+  fx-ref-at (bs) (i) (n) =
+    let ae = fx-span-alpha bs i n
+    in let de = fx-span-digits bs ae n
+    in if de == ae then fx-bad i "a cell reference needs a row number after its column letters"
+    else let col = fx-acc-col bs i ae 0
+    in let row = fx-acc-digits bs ae de 0
+    in if row == 0 then fx-bad i "row numbers start at 1"
+    else fx-ok (ExRef (CellRef { cr-row = row - 1, cr-col = col - 1, cr-name = fx-text-of bs i de })) de
+
+  fx-ref-part : FxParse -> CellRef
+  fx-ref-part (p) = when p.px-expr
+   is ExRef (r) -> r
+   is otherwise -> CellRef { cr-row = 0, cr-col = 0, cr-name = "" }
+
+ A range is two references around a colon. The colon is consumed only
+ after the second reference parses, so `A1:` refuses at the colon rather
+ than answering a reference and leaving the colon for the caller to
+ fail on with a worse message.
+
+  fx-range-from : List Integer, Integer, Integer, FxParse -> FxParse
+  fx-range-from (bs) (n) (i) (a) =
+    let b = fx-ref-at bs (a.px-at + 1) n
+    in if b.px-ok == False then b
+    else fx-ok (ExRange (RangeRef { rr-from = fx-ref-part a, rr-to = fx-ref-part b })) b.px-at
+
+  fx-ref-or-range : List Integer, Integer, Integer -> FxParse
+  fx-ref-or-range (bs) (i) (n) =
+    let a = fx-ref-at bs i n
+    in if a.px-ok == False then a
+    else if fx-at bs (a.px-at) n /= fx-colon then a
+    else fx-range-from bs n i a
+
+Section: Text Literals
+
+ A doubled quote inside a quoted literal stands for one quote, which is
+ CellCsv's rule and RFC 4180's.
+
+  fx-text-scan : List Integer, Integer, Integer, List Integer -> FxParse
+  fx-text-scan (bs) (i) (n) (acc) =
+    if i >= n then fx-bad i "a text literal is missing its closing quote"
+    else if list-at bs i /= fx-quote then fx-text-scan bs (i + 1) n (acc & [list-at bs i])
+    else if fx-at bs (i + 1) n == fx-quote then fx-text-scan bs (i + 2) n (acc & [fx-quote])
+    else fx-ok (ExText (utf8-bytes-to-text acc)) (i + 1)
+
+Section: Calls
+
+  fx-args-more : List Integer, Integer, Integer, Text, List Expr -> FxParse
+  fx-args-more (bs) (n) (i) (nm) (acc) =
+    let j = fx-skip bs i n
+    in if fx-at bs j n == fx-rparen then fx-ok (ExCall (CallNode { cn-name = nm, cn-args = acc })) (j + 1)
+    else if fx-at bs j n /= fx-comma then fx-bad j "a call wants a comma between arguments or a closing parenthesis"
+    else fx-args-one bs n (j + 1) nm acc
+
+  fx-args-one : List Integer, Integer, Integer, Text, List Expr -> FxParse
+  fx-args-one (bs) (n) (i) (nm) (acc) =
+    let a = fx-parse-cmp bs (fx-skip bs i n) n
+    in if a.px-ok == False then a
+    else fx-args-more bs n (a.px-at) nm (acc & [a.px-expr])
+
+  fx-call-at : List Integer, Integer, Integer, Text, Integer -> FxParse
+  fx-call-at (bs) (n) (i) (nm) (open) =
+    let j = fx-skip bs (open + 1) n
+    in if fx-at bs j n == fx-rparen then fx-ok (ExCall (CallNode { cn-name = nm, cn-args = [] })) (j + 1)
+    else fx-args-one bs n j nm []
+
+Section: Primary
+
+  fx-paren-close : List Integer, Integer, Integer, FxParse -> FxParse
+  fx-paren-close (bs) (n) (i) (e) =
+    let j = fx-skip bs (e.px-at) n
+    in if fx-at bs j n /= fx-rparen then fx-bad j "a parenthesised expression is missing its closing parenthesis"
+    else fx-ok (e.px-expr) (j + 1)
+
+  fx-paren : List Integer, Integer, Integer -> FxParse
+  fx-paren (bs) (i) (n) =
+    let e = fx-parse-cmp bs (fx-skip bs (i + 1) n) n
+    in if e.px-ok == False then e
+    else fx-paren-close bs n i e
+
+  fx-word : List Integer, Integer, Integer -> FxParse
+  fx-word (bs) (i) (n) =
+    let ne = fx-span-name bs i n
+    in let after = fx-skip bs ne n
+    in if fx-at bs after n == fx-lparen then fx-call-at bs n i (fx-text-of bs i ne) after
+    else fx-ref-or-range bs i n
+
+  fx-number : List Integer, Integer, Integer -> FxParse
+  fx-number (bs) (i) (n) =
+    let e = fx-span-digits bs i n
+    in fx-ok (ExNum (fx-acc-digits bs i e 0)) e
+
+  fx-primary : List Integer, Integer, Integer -> FxParse
+  fx-primary (bs) (i) (n) =
+    if i >= n then fx-bad i "the formula ends where a value was wanted"
+    else if fx-digit (list-at bs i) then fx-number bs i n
+    else if list-at bs i == fx-quote then fx-text-scan bs (i + 1) n []
+    else if list-at bs i == fx-lparen then fx-paren bs i n
+    else if fx-alpha (list-at bs i) then fx-word bs i n
+    else fx-bad i "a value was wanted here"
+
+  fx-unary : List Integer, Integer, Integer -> FxParse
+  fx-unary (bs) (i) (n) =
+    let j = fx-skip bs i n
+    in if fx-at bs j n /= fx-minus then fx-primary bs j n
+    else fx-unary-of (fx-unary bs (j + 1) n)
+
+  fx-unary-of : FxParse -> FxParse
+  fx-unary-of (e) =
+    if e.px-ok == False then e
+    else fx-ok (ExNeg (e.px-expr)) (e.px-at)
+
+Section: The Precedence Ladder
+
+  fx-bin : Integer, FxParse, FxParse -> FxParse
+  fx-bin (op) (l) (r) =
+    fx-ok (ExBin (BinNode { bn-op = op, bn-left = l.px-expr, bn-right = r.px-expr })) (r.px-at)
+
+  fx-mul-op : List Integer, Integer, Integer -> Integer
+  fx-mul-op (bs) (i) (n) =
+    if fx-at bs i n == fx-star then fx-op-mul
+    else if fx-at bs i n == fx-slash then fx-op-div
+    else 0
+
+  fx-product-more : List Integer, Integer, FxParse -> FxParse
+  fx-product-more (bs) (n) (l) =
+    let j = fx-skip bs (l.px-at) n
+    in let op = fx-mul-op bs j n
+    in if op == 0 then fx-ok (l.px-expr) j
+    else fx-product-step bs n l op (fx-unary bs (j + 1) n)
+
+  fx-product-step : List Integer, Integer, FxParse, Integer, FxParse -> FxParse
+  fx-product-step (bs) (n) (l) (op) (r) =
+    if r.px-ok == False then r
+    else fx-product-more bs n (fx-bin op l r)
+
+  fx-product : List Integer, Integer, Integer -> FxParse
+  fx-product (bs) (i) (n) =
+    let l = fx-unary bs i n
+    in if l.px-ok == False then l
+    else fx-product-more bs n l
+
+  fx-sum-op : List Integer, Integer, Integer -> Integer
+  fx-sum-op (bs) (i) (n) =
+    if fx-at bs i n == fx-plus then fx-op-add
+    else if fx-at bs i n == fx-minus then fx-op-sub
+    else 0
+
+  fx-sum-more : List Integer, Integer, FxParse -> FxParse
+  fx-sum-more (bs) (n) (l) =
+    let j = fx-skip bs (l.px-at) n
+    in let op = fx-sum-op bs j n
+    in if op == 0 then fx-ok (l.px-expr) j
+    else fx-sum-step bs n l op (fx-product bs (j + 1) n)
+
+  fx-sum-step : List Integer, Integer, FxParse, Integer, FxParse -> FxParse
+  fx-sum-step (bs) (n) (l) (op) (r) =
+    if r.px-ok == False then r
+    else fx-sum-more bs n (fx-bin op l r)
+
+  fx-sum : List Integer, Integer, Integer -> FxParse
+  fx-sum (bs) (i) (n) =
+    let l = fx-product bs i n
+    in if l.px-ok == False then l
+    else fx-sum-more bs n l
+
+ A relop is two bytes when the second is `=` or `>`, one otherwise, so
+ the width is read from the pair rather than assumed.
+
+  fx-rel-op : List Integer, Integer, Integer -> Integer
+  fx-rel-op (bs) (i) (n) =
+    if fx-at bs i n == fx-eq then fx-op-eq
+    else if fx-at bs i n == fx-lt then fx-rel-lt bs i n
+    else if fx-at bs i n == fx-gt then fx-rel-gt bs i n
+    else 0
+
+  fx-rel-lt : List Integer, Integer, Integer -> Integer
+  fx-rel-lt (bs) (i) (n) =
+    if fx-at bs (i + 1) n == fx-gt then fx-op-ne
+    else if fx-at bs (i + 1) n == fx-eq then fx-op-le
+    else fx-op-lt
+
+  fx-rel-gt : List Integer, Integer, Integer -> Integer
+  fx-rel-gt (bs) (i) (n) =
+    if fx-at bs (i + 1) n == fx-eq then fx-op-ge
+    else fx-op-gt
+
+  fx-rel-width : Integer -> Integer
+  fx-rel-width (op) =
+    if op == fx-op-ne then 2
+    else if op == fx-op-le then 2
+    else if op == fx-op-ge then 2
+    else 1
+
+  fx-cmp-tail : List Integer, Integer, FxParse -> FxParse
+  fx-cmp-tail (bs) (n) (e) =
+    let j = fx-skip bs (e.px-at) n
+    in if fx-rel-op bs j n == 0 then fx-ok (e.px-expr) j
+    else fx-bad j "comparison does not chain: parenthesise the comparison you meant"
+
+  fx-cmp-step : List Integer, Integer, FxParse, Integer, FxParse -> FxParse
+  fx-cmp-step (bs) (n) (l) (op) (r) =
+    if r.px-ok == False then r
+    else fx-cmp-tail bs n (fx-bin op l r)
+
+  fx-parse-cmp : List Integer, Integer, Integer -> FxParse
+  fx-parse-cmp (bs) (i) (n) =
+    let l = fx-sum bs i n
+    in if l.px-ok == False then l
+    else fx-cmp-head bs n l
+
+  fx-cmp-head : List Integer, Integer, FxParse -> FxParse
+  fx-cmp-head (bs) (n) (l) =
+    let j = fx-skip bs (l.px-at) n
+    in let op = fx-rel-op bs j n
+    in if op == 0 then fx-ok (l.px-expr) j
+    else fx-cmp-step bs n l op (fx-sum bs (j + fx-rel-width op) n)
+
+Section: The Entry
+
+ A formula must be consumed WHOLE. Stopping at the first thing the
+ grammar cannot use would accept `=A1 B1` as `A1`, and a trailing
+ operand nobody reads is the shape that makes a wrong total look right.
+
+  fx-end : List Integer, Integer, FxParse -> FxParse
+  fx-end (bs) (n) (e) =
+    if e.px-ok == False then e
+    else if fx-skip bs (e.px-at) n >= n then e
+    else fx-bad (fx-skip bs (e.px-at) n) "the formula has more text after its expression"
+
+  fx-body : List Integer, Integer -> FxParse
+  fx-body (bs) (n) =
+    if n == 0 then fx-bad 0 "an empty formula"
+    else if list-at bs 0 /= fx-eq then fx-bad 0 "a formula starts with ="
+    else fx-end bs n (fx-parse-cmp bs (fx-skip bs 1 n) n)
+
+  formula-parse : Text -> FxParse
+  formula-parse (t) =
+    let bs = text-to-utf8-bytes t
+    in fx-body bs (list-length bs)
+
+Section: Rendering A Tree
+
+ The printed form is fully parenthesised, so an arm reads the SHAPE the
+ parser built rather than the text it was given. `=1+2*3` and
+ `=(1+2)*3` print differently, which is the only way a precedence claim
+ can fail.
+
+  fx-args-show : List Expr, Integer, Integer, Text -> Text
+  fx-args-show (args) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == 0 then fx-args-show args (i + 1) n (formula-show (list-at args i))
+    else fx-args-show args (i + 1) n (acc & "," & formula-show (list-at args i))
+
+  fx-ref-show : CellRef -> Text
+  fx-ref-show (r) = "R" & show (r.cr-row) & "C" & show (r.cr-col)
+
+  formula-show : Expr -> Text
+  formula-show (e) = when e
+   is ExNum (v) -> show v
+   is ExText (t) -> "\"" & t & "\""
+   is ExRef (r) -> fx-ref-show r
+   is ExRange (g) -> fx-ref-show (g.rr-from) & ":" & fx-ref-show (g.rr-to)
+   is ExNeg (x) -> "(-" & formula-show x & ")"
+   is ExBin (b) -> "(" & formula-show (b.bn-left) & fx-op-name (b.bn-op) & formula-show (b.bn-right) & ")"
+   is ExCall (c) -> (c.cn-name) & "(" & fx-args-show (c.cn-args) 0 (list-length (c.cn-args)) "" & ")"
+
+Section: References In A Tree
+
+ The evaluator's edge set. A range contributes its two corners here; the
+ cells between them are the evaluator's to enumerate, because only the
+ evaluator knows the sheet's bounds.
+
+  fx-refs-args : List Expr, Integer, Integer, List CellRef -> List CellRef
+  fx-refs-args (args) (i) (n) (acc) =
+    if i >= n then acc
+    else fx-refs-args args (i + 1) n (formula-refs (list-at args i) acc)
+
+  formula-refs : Expr, List CellRef -> List CellRef
+  formula-refs (e) (acc) = when e
+   is ExNum (v) -> acc
+   is ExText (t) -> acc
+   is ExRef (r) -> acc & [r]
+   is ExRange (g) -> acc & [g.rr-from] & [g.rr-to]
+   is ExNeg (x) -> formula-refs x acc
+   is ExBin (b) -> formula-refs (b.bn-right) (formula-refs (b.bn-left) acc)
+   is ExCall (c) -> fx-refs-args (c.cn-args) 0 (list-length (c.cn-args)) acc
+
+Page 1

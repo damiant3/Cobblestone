@@ -1,0 +1,358 @@
+Chapter: DiagRecord
+  cites Foreword chapter Console
+  cites Kernel chapter Hpet
+  cites Works chapter GopXhci
+  cites Net chapter Ethernet
+  cites Net chapter NetDriver
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter NetIO
+  cites Diag chapter DiagStage
+
+ The ladder's record rides the peer log as well as the stick. The channel
+ opens after the passive stages and before the first bank write: the driver
+ is brought up through the production path, the next hop is resolved, the
+ passive record is shipped, and every bank step after that ships the lines
+ the peer has not yet seen over a fresh connection. What a connection needs
+ lives in xdiag cells, because the ctx is rebuilt per stage and a session
+ cannot be kept on the heap across one. A stick that dies keeps nothing;
+ the peer's record file holds every line the ladder banked up to the moment
+ the box stopped talking.
+
+ The cells are 120..129 in `build/check-xdiag-cells.ps1`'s table. Metal RAM
+ is not zeroed, so `drec-disarm` runs at ladder entry and nothing reads
+ `drec-cell-armed` as a flag until it has been written this boot.
+
+Section: Cells
+
+  drec-cell-armed : Integer = 120
+  drec-cell-src : Integer = 121
+  drec-cell-peer : Integer = 122
+  drec-cell-port : Integer = 123
+  drec-cell-hop-ip : Integer = 124
+  drec-cell-hop-lo : Integer = 125
+  drec-cell-hop-hi : Integer = 126
+  drec-cell-shipped : Integer = 127
+  drec-cell-conn : Integer = 128
+  drec-cell-lost : Integer = 129
+
+  drec-src-port-base : Integer = 49200
+  drec-initial-seq : Integer = 305419896
+  drec-connect-ticks : Integer = 100
+  drec-max-spend : Integer = 90000000
+  drec-arp-chunk : Integer = 8000000
+  drec-arp-rounds : Integer = 32
+
+ `transport-new` reserves a 32 MB receive buffer per transport, which is what
+ a fresh connection per bank step costs the ladder's heap; the reply here is
+ the peer's echo and nothing reads it, so a ship takes a 16 KB cap and a full
+ buffer drops the rest (`transport-feed-raw`).
+
+  drec-recv-cap : Integer = 16384
+
+ A peer that never answers must not cost the record. Each bank step dials a
+ fresh connection, so a down peer would spend one connect budget per step and
+ the ladder could miss END, which loses the whole record on metal exactly as
+ a stick that dies does. After drec-give-up failed ships the channel stops
+ dialling: the summary reads `record=refused`, the banked lines already on the
+ medium stand, and every later step is a no-op so the ladder reaches END.
+
+  drec-give-up : Integer = 3
+
+Section: Packing
+
+  drec-ip-pack : List Integer -> Integer
+  drec-ip-pack (ip) =
+   if list-length ip /= 4 then 0
+   else bit-or (bit-shl (list-at ip 0) 24) (bit-or (bit-shl (list-at ip 1) 16) (bit-or (bit-shl (list-at ip 2) 8) (list-at ip 3)))
+
+  drec-ip-unpack : Integer -> List Integer
+  drec-ip-unpack (v) =
+   [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  drec-mac-lo : List Integer -> Integer
+  drec-mac-lo (m) =
+   if list-length m /= 6 then 0
+   else bit-or (bit-shl (list-at m 0) 24) (bit-or (bit-shl (list-at m 1) 16) (bit-or (bit-shl (list-at m 2) 8) (list-at m 3)))
+
+  drec-mac-hi : List Integer -> Integer
+  drec-mac-hi (m) =
+   if list-length m /= 6 then 0
+   else bit-or (bit-shl (list-at m 4) 8) (list-at m 5)
+
+  drec-mac-unpack : Integer, Integer -> List Integer
+  drec-mac-unpack (lo) (hi) =
+   [bit-and (bit-shru lo 24) 255, bit-and (bit-shru lo 16) 255, bit-and (bit-shru lo 8) 255, bit-and lo 255, bit-and (bit-shru hi 8) 255, bit-and hi 255]
+
+  drec-ip-text : List Integer -> Text
+  drec-ip-text (ip) =
+   if list-length ip /= 4 then "?"
+   else show (list-at ip 0) & "." & show (list-at ip 1) & "." & show (list-at ip 2) & "." & show (list-at ip 3)
+
+Section: Config
+
+ The same `b3` line DIAG.CFG already carries: `peer=<ip>:<port>`, `ip=<addr>`
+ or `ip=dhcp`, `gw=<hop>`. Read here off the ctx after the ESP file has
+ been merged, so a sitting composes the channel the way it composes b3.
+
+  drec-field-scan : List Text, Integer, Text, Text -> Text
+  drec-field-scan (parts) (i) (key) (dflt) =
+   if i >= list-length parts then dflt
+   else let p = list-at parts i
+   in if text-starts-with p (key & "=") then substring p (text-length key + 1) (text-length p - text-length key - 1)
+   else drec-field-scan parts (i + 1) key dflt
+
+  drec-field : DiagCtx, Text, Text -> Text
+  drec-field (c) (key) (dflt) = drec-field-scan (text-split (diag-cfg-value c "b3") " ") 0 key dflt
+
+  drec-octets : List Text, Integer, List Integer -> List Integer
+  drec-octets (parts) (i) (acc) =
+   if i >= list-length parts then acc
+   else drec-octets parts (i + 1) (list-push acc (text-to-integer (list-at parts i)))
+
+  drec-ip-parse : Text -> List Integer
+  drec-ip-parse (a) = drec-octets (text-split (list-at (text-split a ":") 0) ".") 0 []
+
+  drec-port-parse : Text -> Integer
+  drec-port-parse (a) =
+   let parts = text-split a ":"
+   in if list-length parts < 2 then 0 else text-to-integer (list-at parts 1)
+
+Section: Arming
+
+  drec-disarm : Integer -> Integer
+  drec-disarm (dummy) =
+   let a = xdiag-put drec-cell-armed 0
+   in let s = xdiag-put drec-cell-shipped 0
+   in let c = xdiag-put drec-cell-conn 0
+   in xdiag-put drec-cell-lost 0
+
+  drec-arm : List Integer, List Integer, Integer, List Integer, List Integer, Integer -> Integer
+  drec-arm (src-ip) (peer-ip) (peer-port) (hop-ip) (hop-mac) (shipped) =
+   let a = xdiag-put drec-cell-src (drec-ip-pack src-ip)
+   in let b = xdiag-put drec-cell-peer (drec-ip-pack peer-ip)
+   in let c = xdiag-put drec-cell-port peer-port
+   in let d = xdiag-put drec-cell-hop-ip (drec-ip-pack hop-ip)
+   in let e = xdiag-put drec-cell-hop-lo (drec-mac-lo hop-mac)
+   in let f = xdiag-put drec-cell-hop-hi (drec-mac-hi hop-mac)
+   in let g = xdiag-put drec-cell-shipped shipped
+   in let h = xdiag-put drec-cell-conn 1
+   in let i = xdiag-put drec-cell-armed 1
+   in 1
+
+  drec-armed : Integer -> Boolean
+  drec-armed (dummy) = xdiag-get drec-cell-armed == 1
+
+Section: The Payload
+
+  drec-lines-bytes : List Text, Integer, List Integer -> List Integer
+  drec-lines-bytes (lines) (i) (acc) =
+   if i >= list-length lines then acc
+   else let s = list-at lines i
+   in drec-lines-bytes lines (i + 1) (list-push (text-to-bytes-chunk s 0 (text-length s) acc) 10)
+
+Section: The Budget
+
+  drec-spend : Integer -> Integer
+  drec-spend (ticks) =
+   let want = net-io-tick-interval * ticks
+   in if want > drec-max-spend then drec-max-spend else want
+
+  drec-start-at : Integer -> Integer
+  drec-start-at (ticks) =
+   let n = net-io-max-polls - drec-spend ticks
+   in if n < 0 then 0 else n
+
+Section: The Next Hop
+
+  drec-arp-chunk-wait : List Integer, Integer -> [Network.Read] List Integer
+  drec-arp-chunk-wait (target) (n) =
+   if n <= 0 then []
+   else let hp = __heap-save
+   in act
+    frame <- net-driver-recv-frame
+    if list-length frame == 0 then let r = __heap-restore hp in drec-arp-chunk-wait target (n - 1)
+    else if eth-ethertype frame /= eth-type-arp then let r2 = __heap-restore hp in drec-arp-chunk-wait target (n - 1)
+    else let pkt = arp-parse (eth-payload frame)
+    in if (pkt.op == arp-op-reply) & ip-equal (pkt.sender-ip) target then pkt.sender-mac
+    else let r3 = __heap-restore hp in drec-arp-chunk-wait target (n - 1)
+   end
+
+  drec-arp-wait : List Integer, List Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] List Integer
+  drec-arp-wait (src-ip) (target) (start) (want) (rounds) =
+   if rounds <= 0 then []
+   else let hp = __heap-save
+   in act
+    sent <- net-driver-send-frame (arp-build-request net-driver-mac src-ip target)
+    m <- drec-arp-chunk-wait target drec-arp-chunk
+    if list-length m == 6 then m
+    else let r = __heap-restore hp
+    in if (hpet-ticks - start) >= want then []
+    else drec-arp-wait src-ip target start want (rounds - 1)
+   end
+
+Section: Shipping
+
+ One connection per call, a fresh source port and sequence each time, so
+ the peer sees a new conversation and its log gets one entry per bank
+ step. The lines from `shipped` onward go, and the counter moves only when
+ every byte was acknowledged; a short send leaves it where it was, so the
+ next step re-sends what did not arrive, and `drec-cell-lost` counts the
+ steps that could not ship.
+
+  DiagRecordConn = record {
+    rc-src : List Integer,
+    rc-peer : List Integer,
+    rc-port : Integer,
+    rc-hop-ip : List Integer,
+    rc-hop-mac : List Integer,
+    rc-port-src : Integer,
+    rc-n : Integer
+  }
+
+  drec-ship-conn : DiagRecordConn, List Integer -> [Network.Read, Network.Write] NetSendResult
+  drec-ship-conn (k) (payload) =
+   let sess = net-session-new net-driver-mac (k.rc-src) (k.rc-hop-ip) (k.rc-port-src) (k.rc-port) (k.rc-peer) (drec-initial-seq + (k.rc-n) * 65536)
+   in let seeded = set-arp sess (arp-cache-add (sess.arp) (k.rc-hop-ip) (k.rc-hop-mac))
+   in let ts0 = transport-connect (transport-new-with-cap seeded drec-recv-cap)
+   in act
+    ts1 <- flush-transport-outbox ts0
+    ts2 <- net-io-wait-established-poll ts1 (drec-start-at drec-connect-ticks) 0
+    when (ts2.session).conn.state
+     is TcpEstablished -> act
+       sr <- net-io-send-raw-checked ts2 payload
+       ts3 <- net-io-close (sr.ns-transport)
+       NetSendResult { ns-transport = ts3, ns-sent = sr.ns-sent, ns-complete = sr.ns-complete }
+      end
+     is otherwise -> act
+       ts3 <- net-io-close ts2
+       NetSendResult { ns-transport = ts3, ns-sent = 0, ns-complete = False }
+      end
+    end
+   end
+
+  drec-conn : Integer -> DiagRecordConn
+  drec-conn (n) =
+   DiagRecordConn {
+    rc-src = drec-ip-unpack (xdiag-get drec-cell-src),
+    rc-peer = drec-ip-unpack (xdiag-get drec-cell-peer),
+    rc-port = xdiag-get drec-cell-port,
+    rc-hop-ip = drec-ip-unpack (xdiag-get drec-cell-hop-ip),
+    rc-hop-mac = drec-mac-unpack (xdiag-get drec-cell-hop-lo) (xdiag-get drec-cell-hop-hi),
+    rc-port-src = drec-src-port-base + n,
+    rc-n = n
+   }
+
+ A stage between two ships may reset the part (b3's own bring-up and asde
+ both pulse RST, and asde leaves RCTL clear, so a SYN goes out and no SYN-ACK
+ is ever received). A refused handshake therefore brings the driver up again
+ through the production path and dials once more on the next port; the
+ serial line says when that happened, and the connection counter moves by
+ two so no port is reused.
+
+ The ladder's heap is permanent, and a ship costs about half a megabyte of
+ session, transport and payload that is dead once its connection has closed,
+ so the mark taken before the connection is restored after it. Measured
+ 2026-09-08 on `b3-short`: twenty ships left 7.4 MB between the heap and the
+ stack after the sink stage, and the summary overran it. The bring-up a
+ retry needs stays outside the mark, since the rings it allocates are the
+ card's for the rest of the flight. The result is one integer, sent
+ doubled plus one when every byte was acknowledged.
+
+  drec-ship-once : DiagRecordConn, List Text, Integer -> [Network.Read, Network.Write] Integer
+  drec-ship-once (k) (lines) (from) =
+   let hp = __heap-save
+   in act
+    sr <- drec-ship-conn k (drec-lines-bytes lines from [])
+    let code = if sr.ns-complete then (sr.ns-sent) * 2 + 1 else (sr.ns-sent) * 2
+    in let r = __heap-restore hp
+    in code
+   end
+
+  drec-ship-again : DiagRecordConn, List Text, Integer, Integer -> [Network.Read, Network.Write] Integer
+  drec-ship-again (k) (lines) (from) (first) =
+   if int-mod first 2 == 1 then first
+   else act
+    card <- net-driver-bring-up
+    drec-ship-once (drec-conn ((k.rc-n) + 1)) lines from
+   end
+
+  drec-lines-len : List Text, Integer, Integer -> Integer
+  drec-lines-len (lines) (i) (acc) =
+   if i >= list-length lines then acc
+   else drec-lines-len lines (i + 1) (acc + text-length (list-at lines i) + 1)
+
+  drec-ship : List Text -> [Console, Network.Read, Network.Write] Integer
+  drec-ship (lines) = act
+   if drec-armed 0 == False then -1
+   else if xdiag-get drec-cell-lost >= drec-give-up then -1
+   else let from = xdiag-get drec-cell-shipped
+   in let total = list-length lines
+   in if from >= total then 0
+   else let n = xdiag-get drec-cell-conn
+   in let k = drec-conn n
+   in act
+    first <- drec-ship-once k lines from
+    code <- drec-ship-again k lines from first
+    let complete = int-mod code 2 == 1
+    in let sent = code / 2
+    in let moved = if complete then xdiag-put drec-cell-shipped total else 0
+    in let bumped = xdiag-put drec-cell-conn (n + 2)
+    in let lost = if complete then 0 else xdiag-put drec-cell-lost (xdiag-get drec-cell-lost + 1)
+    in let state = if complete then "ok" else if sent == 0 then "refused" else "short"
+    in let again = if int-mod first 2 == 1 then "n" else "y"
+    in act
+     p <- print-line-uni ("record entering ship conn=" & show n & " lines=" & show from & ".." & show total & " sent=" & show sent & "/" & show (drec-lines-len lines from 0) & " bringup=" & again & " state=" & state)
+     if complete then sent else -1
+    end
+   end
+  end
+
+  drec-line : Integer -> Text
+  drec-line (dummy) =
+   if drec-armed 0 == False then "record=none"
+   else if xdiag-get drec-cell-lost >= drec-give-up then "record=refused shipped=" & show (xdiag-get drec-cell-shipped) & " conns=" & show (xdiag-get drec-cell-conn) & " lost=" & show (xdiag-get drec-cell-lost)
+   else "record=peer shipped=" & show (xdiag-get drec-cell-shipped) & " conns=" & show (xdiag-get drec-cell-conn) & " lost=" & show (xdiag-get drec-cell-lost)
+
+Section: Opening Before The Bank
+
+ The first risky write is the bank itself, so the channel opens ahead of it,
+ off the passive record. The states are the ones a reader eliminates in
+ order: no peer named, `ip=dhcp` (the address must be asked for and b3 is
+ where that conversation is budgeted, so the channel opens there), an address
+ that does not parse, no part the driver would bind, no ARP reply for the
+ hop inside two seconds, a handshake or send that did not complete, opened.
+ The answer is one bank line, so the record and the stick both carry it.
+
+  drec-open-armed : DiagCtx, List Text, List Integer, List Integer, Integer, List Integer, Integer -> [Console, Network.Read, Network.Write] Text
+  drec-open-armed (c) (lines) (src) (peer-ip) (port) (hop-ip) (hz) = act
+   let s0 = hpet-ticks
+   in act
+    mac <- drec-arp-wait src hop-ip s0 ((hz * 2000) / 1000) drec-arp-rounds
+    if list-length mac /= 6 then "record=none no-arp hop=" & drec-ip-text hop-ip & " src=" & drec-ip-text src
+    else let armed = drec-arm src peer-ip port hop-ip mac 0
+    in act
+     n <- drec-ship lines
+     if n < 0 then "record=none refused peer=" & drec-ip-text peer-ip & ":" & show port
+     else "record=peer opened peer=" & drec-ip-text peer-ip & ":" & show port & " src=" & drec-ip-text src & " lines=" & show (list-length lines) & " bytes=" & show n
+    end
+   end
+  end
+
+  drec-open : DiagCtx, List Text -> [Console, Network.Read, Network.Write] Text
+  drec-open (c) (lines) = act
+   let peer = drec-field c "peer" ""
+   in let ip = drec-field c "ip" ""
+   in let hz = hpet-ticks-per-second
+   in if drec-field c "record" "" == "off" then "record=none off, the channel was turned off in DIAG.CFG"
+   else if text-length peer == 0 then "record=none no-peer"
+   else if ip == "dhcp" then "record=none ip=dhcp, the channel opens at b3"
+   else if list-length (drec-ip-parse ip) /= 4 then "record=none no-address ip=" & ip
+   else if list-length (drec-ip-parse peer) /= 4 then "record=none no-address peer=" & peer
+   else if hz <= 0 then "record=none no-hpet"
+   else act
+    card <- net-driver-bring-up
+    if card /= net-card-e1000 then "record=none no-part"
+    else drec-open-armed c lines (drec-ip-parse ip) (drec-ip-parse peer) (drec-port-parse peer) (drec-ip-parse (drec-field c "gw" peer)) hz
+   end
+  end

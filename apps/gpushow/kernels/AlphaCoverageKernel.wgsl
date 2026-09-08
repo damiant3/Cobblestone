@@ -50,6 +50,7 @@ fn ac_super(px__a : i32, py__a : i32, s__a : i32, acc__a : i32) -> i32 {
     continue;
     }
   }
+  return 0;
 }
 @group(0) @binding(0) var<storage, read_write> alphacov_step_outb_buf : array<i32>;
 struct U_alphacov_step {

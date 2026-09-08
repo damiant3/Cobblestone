@@ -1,0 +1,204 @@
+Chapter: GopZones
+  cites Works chapter GopLocale
+
+ The zone table: which places this machine can be, what each one is offset by,
+ and which summer time rule it follows. It cites the calendar and nothing
+ else, so a caller that wants to know what time it is somewhere does not drag
+ a filesystem in with it.
+
+ THIS IS NOT A TZDATA PORT AND MUST NOT GROW INTO ONE. It is a few dozen
+ zones, hand written, carrying the rule each follows AS OF 2026-09-07. A
+ government that moves a date makes one row here wrong, and the fix is a one
+ line edit and a re-measure rather than a database. The design says this in
+ the same words: `docs/Designs/Active/Apps/ClockAndZone.md`.
+
+ The offsets are MINUTES because a sixth of the world does not live on a whole
+ hour. India is +05:30, Nepal +05:45, Chatham +12:45, and a design that cannot
+ say those cannot say where those people are.
+
+Section: The Row
+
+ `zr-stripe` is which of the 24 map bands the zone is drawn in, and it is the
+ STANDARD offset rounded to an hour, never the summer one. A stripe that moved
+ twice a year would make the map lie for half of it, and the map is the thing
+ somebody uses to find their zone before they know its name.
+
+  ZoneRow = record {
+    zr-name : Text,
+    zr-city : Text,
+    zr-base : Integer,
+    zr-rule : Integer,
+    zr-stripe : Integer
+  }
+
+  zrow : Text, Text, Integer, Integer, Integer -> ZoneRow
+  zrow (n) (c) (b) (r) (s) = ZoneRow { zr-name = n, zr-city = c, zr-base = b, zr-rule = r, zr-stripe = s }
+
+Section: The Table
+
+ Ordered west to east, because that is the order the map is in and the list
+ sits beside the map. Within a stripe the ordering is by population, so the
+ first row of a stripe is the one most people picking that stripe want.
+
+  zone-rows : List ZoneRow = [
+    zrow "Etc/GMT+12" "International Date Line West" (0 - 720) loc-dst-none (0 - 12),
+    zrow "Pacific/Midway" "Midway" (0 - 660) loc-dst-none (0 - 11),
+    zrow "Pacific/Honolulu" "Honolulu" (0 - 600) loc-dst-none (0 - 10),
+    zrow "America/Anchorage" "Anchorage" (0 - 540) loc-dst-us (0 - 9),
+    zrow "America/Los_Angeles" "Los Angeles" (0 - 480) loc-dst-us (0 - 8),
+    zrow "America/Vancouver" "Vancouver" (0 - 480) loc-dst-us (0 - 8),
+    zrow "America/Denver" "Denver" (0 - 420) loc-dst-us (0 - 7),
+    zrow "America/Phoenix" "Phoenix" (0 - 420) loc-dst-none (0 - 7),
+    zrow "America/Chicago" "Chicago" (0 - 360) loc-dst-us (0 - 6),
+    zrow "America/Mexico_City" "Mexico City" (0 - 360) loc-dst-none (0 - 6),
+    zrow "America/New_York" "New York" (0 - 300) loc-dst-us (0 - 5),
+    zrow "America/Toronto" "Toronto" (0 - 300) loc-dst-us (0 - 5),
+    zrow "America/Bogota" "Bogota" (0 - 300) loc-dst-none (0 - 5),
+    zrow "America/Halifax" "Halifax" (0 - 240) loc-dst-us (0 - 4),
+    zrow "America/Santiago" "Santiago" (0 - 240) loc-dst-south (0 - 4),
+    zrow "America/St_Johns" "St John's" (0 - 210) loc-dst-us (0 - 4),
+    zrow "America/Sao_Paulo" "Sao Paulo" (0 - 180) loc-dst-none (0 - 3),
+    zrow "America/Argentina" "Buenos Aires" (0 - 180) loc-dst-none (0 - 3),
+    zrow "Atlantic/South_Georgia" "South Georgia" (0 - 120) loc-dst-none (0 - 2),
+    zrow "Atlantic/Azores" "Azores" (0 - 60) loc-dst-eu (0 - 1),
+    zrow "Europe/London" "London" 0 loc-dst-eu 0,
+    zrow "Europe/Lisbon" "Lisbon" 0 loc-dst-eu 0,
+    zrow "UTC" "Coordinated Universal Time" 0 loc-dst-none 0,
+    zrow "Africa/Lagos" "Lagos" 60 loc-dst-none 1,
+    zrow "Europe/Paris" "Paris" 60 loc-dst-eu 1,
+    zrow "Europe/Berlin" "Berlin" 60 loc-dst-eu 1,
+    zrow "Europe/Madrid" "Madrid" 60 loc-dst-eu 1,
+    zrow "Africa/Cairo" "Cairo" 120 loc-dst-none 2,
+    zrow "Europe/Athens" "Athens" 120 loc-dst-eu 2,
+    zrow "Africa/Johannesburg" "Johannesburg" 120 loc-dst-none 2,
+    zrow "Europe/Moscow" "Moscow" 180 loc-dst-none 3,
+    zrow "Asia/Istanbul" "Istanbul" 180 loc-dst-none 3,
+    zrow "Africa/Nairobi" "Nairobi" 180 loc-dst-none 3,
+    zrow "Asia/Tehran" "Tehran" 210 loc-dst-none 3,
+    zrow "Asia/Dubai" "Dubai" 240 loc-dst-none 4,
+    zrow "Asia/Kabul" "Kabul" 270 loc-dst-none 4,
+    zrow "Asia/Karachi" "Karachi" 300 loc-dst-none 5,
+    zrow "Asia/Kolkata" "Kolkata" 330 loc-dst-none 5,
+    zrow "Asia/Kathmandu" "Kathmandu" 345 loc-dst-none 6,
+    zrow "Asia/Dhaka" "Dhaka" 360 loc-dst-none 6,
+    zrow "Asia/Yangon" "Yangon" 390 loc-dst-none 6,
+    zrow "Asia/Bangkok" "Bangkok" 420 loc-dst-none 7,
+    zrow "Asia/Jakarta" "Jakarta" 420 loc-dst-none 7,
+    zrow "Asia/Shanghai" "Shanghai" 480 loc-dst-none 8,
+    zrow "Asia/Singapore" "Singapore" 480 loc-dst-none 8,
+    zrow "Asia/Hong_Kong" "Hong Kong" 480 loc-dst-none 8,
+    zrow "Australia/Perth" "Perth" 480 loc-dst-none 8,
+    zrow "Asia/Tokyo" "Tokyo" 540 loc-dst-none 9,
+    zrow "Asia/Seoul" "Seoul" 540 loc-dst-none 9,
+    zrow "Australia/Adelaide" "Adelaide" 570 loc-dst-au 9,
+    zrow "Australia/Brisbane" "Brisbane" 600 loc-dst-none 10,
+    zrow "Australia/Sydney" "Sydney" 600 loc-dst-au 10,
+    zrow "Australia/Melbourne" "Melbourne" 600 loc-dst-au 10,
+    zrow "Pacific/Noumea" "Noumea" 660 loc-dst-none 11,
+    zrow "Pacific/Auckland" "Auckland" 720 loc-dst-nz 12,
+    zrow "Pacific/Fiji" "Suva" 720 loc-dst-none 12,
+    zrow "Pacific/Chatham" "Chatham" 765 loc-dst-nz 13,
+    zrow "Pacific/Tongatapu" "Nuku'alofa" 780 loc-dst-none 13,
+    zrow "Pacific/Kiritimati" "Kiritimati" 840 loc-dst-none 14
+  ]
+
+  zone-count : Integer = list-length zone-rows
+
+  zone-at : Integer -> ZoneRow
+  zone-at (i) = list-at zone-rows i
+
+Section: Asking
+
+ THE ID IS THE INDEX PLUS ONE, so that zero can mean "no zone chosen, just an
+ offset". A stored zero is what a machine that only ever had a `CTZ1` record
+ has, and it must not read as Midway.
+
+  zone-id-of : Integer -> Integer
+  zone-id-of (i) = i + 1
+
+  zone-valid : Integer -> Boolean
+  zone-valid (id) = id >= 1 & id <= zone-count
+
+  zone-row-of : Integer -> ZoneRow
+  zone-row-of (id) = zone-at (if zone-valid id then id - 1 else 0)
+
+ AN ID IS POSITIONAL AND A NAME IS NOT, which is why anything that names a
+ particular zone must come in through here. Inserting one row into the table
+ shifts every id after it, and a caller holding a literal id then reads a
+ different city while continuing to look correct: it happened the first time a
+ row was added, to a test that had pinned London, Sydney and Kolkata by number
+ and afterwards measured three other places while still reporting three of its
+ four verdicts as passes.
+
+ The stored record keeps the id and not the name, because a byte is a byte and
+ the table is the only thing that turns one into the other. What must never
+ hold a literal id is SOURCE.
+
+  zone-find-at : Text, Integer, Integer -> Integer
+  zone-find-at (nm) (i) (n) =
+    if i >= n then 0
+    else if (zone-at i).zr-name == nm then zone-id-of i
+    else zone-find-at nm (i + 1) n
+
+  zone-find : Text -> Integer
+  zone-find (nm) = zone-find-at nm 0 zone-count
+
+ The offset a zone is at ON A GIVEN DATE, which is the only question worth
+ asking of it. The date is the machine's civil date and the hour is its hour,
+ which is what makes this answerable without knowing the answer first.
+
+  zone-offset-on : Integer, Integer, Integer, Integer, Integer -> Integer
+  zone-offset-on (id) (y) (m) (d) (hh) =
+    if zone-valid id == False then 0
+    else
+      let r = zone-row-of id
+      in r.zr-base + (if loc-dst-on (r.zr-rule) y m d hh then loc-dst-minutes (r.zr-rule) else 0)
+
+  zone-is-summer : Integer, Integer, Integer, Integer, Integer -> Boolean
+  zone-is-summer (id) (y) (m) (d) (hh) =
+    if zone-valid id == False then False
+    else let r = zone-row-of id
+    in loc-dst-on (r.zr-rule) y m d hh
+
+ A zone's label carries the offset it is at NOW rather than its standard one,
+ because a list that says London is UTC+00:00 in July is telling somebody in
+ London that the list is wrong.
+
+  zone-label : Integer, Integer, Integer, Integer, Integer -> Text
+  zone-label (id) (y) (m) (d) (hh) =
+    if zone-valid id == False then "no zone"
+    else (zone-row-of id).zr-city & "   " & loc-utc-text (zone-offset-on id y m d hh)
+
+Section: Stripes
+
+ THE MAP IS 24 BANDS AND THE TABLE IS NOT SORTED INTO THEM. Two zones an hour
+ apart can share a stripe (Kathmandu at +05:45 rounds to 6) and a stripe can
+ hold none. The walk is linear over the table rather than an index into it,
+ because an index would have to be kept in step with the table by hand and the
+ table is the thing most likely to be edited.
+
+  zone-stripe-min : Integer = 0 - 12
+  zone-stripe-max : Integer = 14
+
+  zone-in-stripe : Integer, Integer, Integer, List Integer -> List Integer
+  zone-in-stripe (s) (i) (n) (acc) =
+    if i >= n then acc
+    else if (zone-at i).zr-stripe == s then zone-in-stripe s (i + 1) n (list-push acc (zone-id-of i))
+    else zone-in-stripe s (i + 1) n acc
+
+  zone-stripe-ids : Integer -> List Integer
+  zone-stripe-ids (s) = zone-in-stripe s 0 zone-count []
+
+  zone-stripe-count : Integer -> Integer
+  zone-stripe-count (s) = list-length (zone-stripe-ids s)
+
+ The first zone of a stripe is what a click on the map selects, which is why
+ the table is ordered by population within a stripe: the answer to "I clicked
+ the band over western Europe" should be Paris and not the Azores.
+
+  zone-stripe-first : Integer -> Integer
+  zone-stripe-first (s) =
+    let ids = zone-stripe-ids s
+    in if list-length ids == 0 then 0 else list-at ids 0
+
+Page 1

@@ -8,21 +8,21 @@ const de_miss : i32 = 8000000;
 fn de_lr(k : i32) -> f32 {
   let m = (k - ((k / 6) * 6));
   if ((m == 0)) {
-  return bitcast<f32>(1065353216u);
+  return 0x1.000000p+0f;
   } else {
   if ((m == 1)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
   if ((m == 2)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
   if ((m == 3)) {
-  return bitcast<f32>(1065353216u);
+  return 0x1.000000p+0f;
   } else {
   if ((m == 4)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
-  return bitcast<f32>(1053609164u);
+  return 0x1.999998p-2f;
   }
   }
   }
@@ -32,21 +32,21 @@ fn de_lr(k : i32) -> f32 {
 fn de_lg(k : i32) -> f32 {
   let m = (k - ((k / 6) * 6));
   if ((m == 0)) {
-  return bitcast<f32>(1053609164u);
+  return 0x1.999998p-2f;
   } else {
   if ((m == 1)) {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   } else {
   if ((m == 2)) {
-  return bitcast<f32>(1062836633u);
+  return 0x1.b33332p-1f;
   } else {
   if ((m == 3)) {
-  return bitcast<f32>(1062836633u);
+  return 0x1.b33332p-1f;
   } else {
   if ((m == 4)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   }
   }
   }
@@ -56,21 +56,21 @@ fn de_lg(k : i32) -> f32 {
 fn de_lb(k : i32) -> f32 {
   let m = (k - ((k / 6) * 6));
   if ((m == 0)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
   if ((m == 1)) {
-  return bitcast<f32>(1065353216u);
+  return 0x1.000000p+0f;
   } else {
   if ((m == 2)) {
-  return bitcast<f32>(1058642329u);
+  return 0x1.333332p-1f;
   } else {
   if ((m == 3)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
   if ((m == 4)) {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   } else {
-  return bitcast<f32>(1063675494u);
+  return 0x1.ccccccp-1f;
   }
   }
   }
@@ -92,17 +92,17 @@ fn de_accum(posx__a : f32, posy__a : f32, posz__a : f32, nx__a : f32, ny__a : f3
     if ((k >= de_lights)) {
     return acc;
     } else {
-    let la = ((f32(f32(k)) * bitcast<f32>(1058977873u)) + frame);
-    let lx = (cos(la) * bitcast<f32>(1076677836u));
-    let ly = (sin((la * bitcast<f32>(1058642329u))) * bitcast<f32>(1070386380u));
-    let lz = ((sin(la) * bitcast<f32>(1076677836u)) - bitcast<f32>(1053609164u));
+    let la = ((f32(f32(k)) * 0x1.3d70a2p-1f) + frame);
+    let lx = (cos(la) * 0x1.599998p+1f);
+    let ly = (sin((la * 0x1.333332p-1f)) * 0x1.999998p+0f);
+    let lz = ((sin(la) * 0x1.599998p+1f) - 0x1.999998p-2f);
     let ddx = (lx - posx);
     let ddy = (ly - posy);
     let ddz = (lz - posz);
     let d2 = (((ddx * ddx) + (ddy * ddy)) + (ddz * ddz));
-    let dist = (sqrt(d2) + bitcast<f32>(981668462u));
-    let ndl = (max(bitcast<f32>(0u), (((nx * ddx) + (ny * ddy)) + (nz * ddz))) / dist);
-    let atten = (bitcast<f32>(1082549862u) / (bitcast<f32>(1056964608u) + d2));
+    let dist = (sqrt(d2) + 0x1.0624dcp-10f);
+    let ndl = (max(0.0, (((nx * ddx) + (ny * ddy)) + (nz * ddz))) / dist);
+    let atten = (0x1.0cccccp+2f / (0x1.000000p-1f + d2));
     let lc = select(select(de_lb(k), de_lg(k), (ch == 1)), de_lr(k), (ch == 0));
     let _mv0 = posx;
     let _mv1 = posy;
@@ -113,7 +113,7 @@ fn de_accum(posx__a : f32, posy__a : f32, posz__a : f32, nx__a : f32, ny__a : f3
     let _mv6 = frame;
     let _mv7 = ch;
     let _mv8 = (k + 1);
-    let _mv9 = (acc + i32((((ndl * atten) * lc) * bitcast<f32>(1133903872u))));
+    let _mv9 = (acc + i32((((ndl * atten) * lc) * 0x1.2c0000p+8f)));
     posx = _mv0;
     posy = _mv1;
     posz = _mv2;
@@ -127,6 +127,7 @@ fn de_accum(posx__a : f32, posy__a : f32, posz__a : f32, nx__a : f32, ny__a : f3
     continue;
     }
   }
+  return 0;
 }
 fn de_clamp(v : i32, lo : i32, hi : i32) -> i32 {
   if ((v < lo)) {
@@ -153,28 +154,28 @@ fn deferred_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let frame = u_deferred_step.frame;
   let px = (gid - ((gid / de_width) * de_width));
   let py = (gid / de_width);
-  let fx = (f32(f32((px - de_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((de_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1078942760u)));
+  let fx = (f32(f32((px - de_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((de_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.9eb850p+1f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1072064102u) / rl);
+  let dz = (0x1.ccccccp+0f / rl);
   let alb = deferred_step_galb_buf[gid];
   let nrm = deferred_step_gnrm_buf[gid];
   let dep = deferred_step_gdep_buf[gid];
-  let t = (f32(f32(dep)) / bitcast<f32>(1132462080u));
+  let t = (f32(f32(dep)) / 0x1.000000p+8f);
   let posx = (dx * t);
   let posy = (dy * t);
-  let posz = ((bitcast<f32>(0u) - bitcast<f32>(1084227584u)) + (dz * t));
-  let nx = ((f32(f32((nrm / 65536))) / bitcast<f32>(1123942400u)) - bitcast<f32>(1065353216u));
-  let ny = ((f32(f32(((nrm / 256) - ((nrm / 65536) * 256)))) / bitcast<f32>(1123942400u)) - bitcast<f32>(1065353216u));
-  let nz = ((f32(f32((nrm - ((nrm / 256) * 256)))) / bitcast<f32>(1123942400u)) - bitcast<f32>(1065353216u));
+  let posz = ((0.0 - 0x1.400000p+2f) + (dz * t));
+  let nx = ((f32(f32((nrm / 65536))) / 0x1.fc0000p+6f) - 0x1.000000p+0f);
+  let ny = ((f32(f32(((nrm / 256) - ((nrm / 65536) * 256)))) / 0x1.fc0000p+6f) - 0x1.000000p+0f);
+  let nz = ((f32(f32((nrm - ((nrm / 256) * 256)))) / 0x1.fc0000p+6f) - 0x1.000000p+0f);
   let ar = (alb / 65536);
   let ag = ((alb / 256) - ((alb / 65536) * 256));
   let ab = (alb - ((alb / 256) * 256));
-  let lr = de_accum(posx, posy, posz, nx, ny, nz, (f32(f32(frame)) / bitcast<f32>(1104150528u)), 0, 0, 0);
-  let lg = de_accum(posx, posy, posz, nx, ny, nz, (f32(f32(frame)) / bitcast<f32>(1104150528u)), 1, 0, 0);
-  let lb = de_accum(posx, posy, posz, nx, ny, nz, (f32(f32(frame)) / bitcast<f32>(1104150528u)), 2, 0, 0);
+  let lr = de_accum(posx, posy, posz, nx, ny, nz, (f32(f32(frame)) / 0x1.a00000p+4f), 0, 0, 0);
+  let lg = de_accum(posx, posy, posz, nx, ny, nz, (f32(f32(frame)) / 0x1.a00000p+4f), 1, 0, 0);
+  let lb = de_accum(posx, posy, posz, nx, ny, nz, (f32(f32(frame)) / 0x1.a00000p+4f), 2, 0, 0);
   let fr = de_clamp(((ar * (26 + lr)) / 255), 0, 255);
   let fg = de_clamp(((ag * (26 + lg)) / 255), 0, 255);
   let fb = de_clamp(((ab * (26 + lb)) / 255), 0, 255);

@@ -34,7 +34,8 @@ $canary  = Join-Path $root 'build\output\canary-factorial.cdx'
 $signer  = Join-Path $root 'build\output\cdx-sign.cdx'
 $sut     = Join-Path $root 'build\output\Sut.cdx'
 $bigsrc  = Join-Path $root 'codex\compiler\opening.codex'
-foreach ($p in @($canary, $signer, $sut, $bigsrc)) {
+$seed    = Join-Path $root 'seed\Codex.cdx'
+foreach ($p in @($canary, $signer, $sut, $bigsrc, $seed)) {
     if (-not (Test-Path -PathType Leaf $p)) {
         Write-Host "REFUSED: missing $p -- build first" -ForegroundColor Red
         exit 1
@@ -253,6 +254,119 @@ else {
     if ($inj.Count -eq 1 -and -not ($inj[0] -match 'dropped=1\b')) { Fail "arm6 one lost byte was not counted as dropped=1: $($inj[0])"; $bad++ }
     if ($inj.Count -eq 1 -and -not ($inj[0] -match "output=$cap\b")) { Fail "arm6 output= still reported the buffer's length rather than the bytes written: $($inj[0])"; $bad++ }
     if ($bad -eq 0) { Ok "arm6 a write short by one byte is counted, named as the WRITER, and output= reports what reached the file ($cap of $ctlLen)" }
+}
+
+# ---- arm 7: the capture file that could not be opened at all -------------
+# The fourth of codex-vm's five drop causes to get a runner. It needs no
+# injection knob: fopen(path, "wb") fails on a path that is a DIRECTORY, so
+# the arm arranges the real condition rather than simulating it. The other
+# stated cause, a read-only file, is the same branch reached another way and
+# is not worth a second arm.
+#
+# Arm 6 is a write that got part of the way. This is a write that never
+# started, and the two are worth separating because the whole buffer is lost
+# here: the count must be the control's FULL length, not merely nonzero.
+$s3 = Join-Path $work 'arm7-dir'
+New-Item -ItemType Directory -Force -Path $s3 | Out-Null
+$list7 = Join-Path $work 'arm7.txt'
+Set-Content $list7 @( (Format-RunLine @('-kernel', $canary, '-output', $s3, '-mem', '3072', '-headless')) )
+Invoke-RunList $list7 (Join-Path $work 'arm7.err') | Out-Null
+$inj7 = @(Get-EndLines (Join-Path $work 'arm7.err'))
+$injText7 = (Get-Content (Join-Path $work 'arm7.err') -Raw)
+
+$bad = 0
+if ($ctlLen -lt 1) { Fail 'arm7 the canary wrote nothing, so a total loss cannot be told from no output at all'; $bad++ }
+if ($inj7.Count -ne 1) { Fail "arm7 expected 1 END line, saw $($inj7.Count)"; $bad++ }
+if (-not ($injText7 -match 'output file could not be opened')) { Fail 'arm7 the cause was not named; that drop cause still has no runner'; $bad++ }
+if (-not ($injText7 -match 'guest serial byte\(s\) DROPPED')) { Fail 'arm7 the loss did not use the phrase every reader refuses on'; $bad++ }
+if ($inj7.Count -eq 1 -and -not ($inj7[0] -match "dropped=$ctlLen\b")) { Fail "arm7 a total loss was not counted as the whole capture ($ctlLen): $($inj7[0])"; $bad++ }
+if ($inj7.Count -eq 1 -and -not ($inj7[0] -match 'output=0\b')) { Fail "arm7 output= claimed bytes reached a file that was never opened: $($inj7[0])"; $bad++ }
+if ($bad -eq 0) { Ok "arm7 a capture file that cannot be opened is named as its own cause and counted whole ($ctlLen byte(s), output=0)" }
+
+# ---- arm 8: a blit the guest lies about is refused whole and counted once --
+# The fifth cause. blit_guest_output rejects an addr/len pair that does not
+# fit in guest RAM. A well-formed guest never sends one, so the fixture is a
+# guest that does: it puts bit 62 in the address cell and 12345 in the length
+# cell and rings doorbell 0x510 with command 3, the emitted runtime's own blit
+# sequence (X86_64Helpers, emit-write-binary-buf-helper). No injection knob:
+# the shipped branch runs on a real doorbell. Compiled here with the seed,
+# about a second.
+#
+# The exit summary used to re-report every counted drop under "buffer growth
+# failed", and runlist_scan_dropped SUMS canonical lines, so one 12345-byte
+# refusal read as dropped=24690. Hence exactly one canonical line and the
+# exact count. The guest prints after ringing, so the file is the control
+# that the serial path survives the refusal.
+$fixSrc = Join-Path $root 'build\blit-out-of-range.codex'
+$fixCdx = Join-Path $work 'boor.cdx'
+$fixLog = Join-Path $work 'boor.log'
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'compile.ps1') -Src $fixSrc -Out $fixCdx -Log $fixLog -Kernel $seed *> $null
+if (-not (Test-Path -PathType Leaf $fixCdx)) { Fail "arm8 the fixture did not compile (exit $LASTEXITCODE); see $fixLog" }
+else {
+    $b1 = Join-Path $work 'b1.txt'
+    $list8 = Join-Path $work 'arm8.txt'
+    Set-Content $list8 @( (Format-RunLine @('-kernel', $fixCdx, '-output', $b1, '-mem', '3072', '-headless')) )
+    Invoke-RunList $list8 (Join-Path $work 'arm8.err') | Out-Null
+    $inj8 = @(Get-EndLines (Join-Path $work 'arm8.err'))
+    $injText8 = (Get-Content (Join-Path $work 'arm8.err') -Raw)
+    $lines8 = [regex]::Matches($injText8, 'guest serial byte\(s\) DROPPED').Count
+    $b1Len = if (Test-Path $b1) { (Get-Item $b1).Length } else { 0 }
+    $b1Text = if ($b1Len -gt 0) { Get-Content $b1 -Raw } else { '' }
+
+    $bad = 0
+    if ($inj8.Count -ne 1) { Fail "arm8 expected 1 END line, saw $($inj8.Count)"; $bad++ }
+    if (-not ($injText8 -match 'blit out of range')) { Fail 'arm8 the cause was not named; that drop cause still has no runner'; $bad++ }
+    if ($lines8 -ne 1) { Fail "arm8 one refused blit produced $lines8 DROPPED line(s), not 1; a second is the exit summary re-reporting it"; $bad++ }
+    if ($inj8.Count -eq 1 -and -not ($inj8[0] -match 'dropped=12345\b')) { Fail "arm8 the refused blit's 12345 bytes were not counted exactly once: $($inj8[0])"; $bad++ }
+    if (-not ($b1Text -match 'after: 0')) { Fail 'arm8 the serial path after the refused blit did not reach the file'; $bad++ }
+    if ($inj8.Count -eq 1 -and -not ($inj8[0] -match "output=$b1Len\b")) { Fail "arm8 output= disagrees with the file ($b1Len bytes): $($inj8[0])"; $bad++ }
+    if ($bad -eq 0) { Ok "arm8 a blit the guest lies about is refused whole, named, counted once (dropped=12345), and the serial path after it reached the file ($b1Len bytes)" }
+}
+
+# ---- arm 9: the byte path's growth failure is named as its own cause -----
+# output_buf_write is fed only by direct UART writes (port 0x3F8) and an AP's
+# exception dump; every print on codex-vm goes by blit. So a compile under
+# CODEX_VM_FAIL_GROW_AT reaches blit_guest_output's growth branch and never
+# this one, and the exit summary used to print the blit bytes under THIS
+# cause's name, which is how "buffer growth failed" passed for a runner it
+# did not have. The fixture prints once, then writes 300 bytes to the UART.
+# The control run measures the whole capture, so the expected loss is exact:
+# the capture less the cap, all of it on the byte path, in one line.
+$fl = Join-Path $root 'build\serial-byte-flood.codex'
+$flCdx = Join-Path $work 'flood.cdx'
+$flLog = Join-Path $work 'flood.log'
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'compile.ps1') -Src $fl -Out $flCdx -Log $flLog -Kernel $seed *> $null
+if (-not (Test-Path -PathType Leaf $flCdx)) { Fail "arm9 the fixture did not compile (exit $LASTEXITCODE); see $flLog" }
+else {
+    $f1 = Join-Path $work 'f1.txt'; $f2 = Join-Path $work 'f2.txt'
+    $list9 = Join-Path $work 'arm9.txt'
+    Set-Content $list9 @( (Format-RunLine @('-kernel', $flCdx, '-output', $f1, '-mem', '3072', '-headless')) )
+    Invoke-RunList $list9 (Join-Path $work 'arm9-ctl.err') | Out-Null
+    $ctl9 = @(Get-EndLines (Join-Path $work 'arm9-ctl.err'))
+    $f1Len = if (Test-Path $f1) { (Get-Item $f1).Length } else { 0 }
+    $cap9 = 64
+    if ($ctl9.Count -ne 1) { Fail "arm9 control expected 1 END line, saw $($ctl9.Count)" }
+    elseif (-not ($ctl9[0] -match 'dropped=0')) { Fail 'arm9 the control reported a drop of its own' }
+    elseif ($f1Len -le $cap9) { Fail "arm9 the control wrote $f1Len byte(s), not above the $cap9-byte cap, so the byte path could never fill" }
+    else {
+        $list9b = Join-Path $work 'arm9b.txt'
+        Set-Content $list9b @( (Format-RunLine @('-kernel', $flCdx, '-output', $f2, '-mem', '3072', '-headless')) )
+        $env:CODEX_VM_FAIL_GROW_AT = "$cap9"
+        try { Invoke-RunList $list9b (Join-Path $work 'arm9.err') | Out-Null }
+        finally { Remove-Item Env:\CODEX_VM_FAIL_GROW_AT -ErrorAction SilentlyContinue }
+        $inj9 = @(Get-EndLines (Join-Path $work 'arm9.err'))
+        $injText9 = (Get-Content (Join-Path $work 'arm9.err') -Raw)
+        $lines9 = [regex]::Matches($injText9, 'guest serial byte\(s\) DROPPED').Count
+        $want9 = $f1Len - $cap9
+        $bad = 0
+        if ($inj9.Count -ne 1) { Fail "arm9 injected expected 1 END line, saw $($inj9.Count)"; $bad++ }
+        if (-not ($injText9 -match 'buffer growth failed')) { Fail 'arm9 the byte path cause was not named; that drop cause still has no runner'; $bad++ }
+        if ($injText9 -match 'blit growth failed') { Fail 'arm9 the blit path dropped too, so the count is not the byte path alone'; $bad++ }
+        if ($lines9 -ne 1) { Fail "arm9 expected exactly 1 DROPPED line, saw $lines9"; $bad++ }
+        if ($inj9.Count -eq 1 -and -not ($inj9[0] -match "dropped=$want9\b")) { Fail "arm9 expected dropped=$want9 ($f1Len less the $cap9 kept): $($inj9[0])"; $bad++ }
+        if ($inj9.Count -eq 1 -and -not ($inj9[0] -match "output=$cap9\b")) { Fail "arm9 expected output=${cap9}: $($inj9[0])"; $bad++ }
+        if ($bad -eq 0) { Ok "arm9 the byte path's growth failure is named as its own cause and counted exactly ($want9 of $f1Len lost, $cap9 kept)" }
+    }
 }
 
 } finally {

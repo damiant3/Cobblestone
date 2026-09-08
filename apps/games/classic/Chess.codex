@@ -1,0 +1,862 @@
+Chapter: Chess
+
+ Board encoding (List Integer, 64 cells), index = row * 8 + col, where
+ row 0 is rank 8 and row 7 is rank 1, so White advances toward row 0.
+   0 = empty
+   1, 2, 3, 4, 5, 6 = White pawn, knight, bishop, rook, queen, king
+   7, 8, 9, 10, 11, 12 = Black pawn, knight, bishop, rook, queen, king
+ A piece code above 6 is Black, and subtracting 6 gives its kind.
+
+ Named squares: e1 = 60, a1 = 56, h1 = 63, e8 = 4, a8 = 0, h8 = 7.
+
+ A move's special field: 0 plain, 1 pawn double push, 2 en passant
+ capture, 3 castle. ep-sq is the square a pawn skipped over on its
+ double push, and is -1 in every other position.
+
+ We say:
+
+Section: Types
+
+  ChessBoard = record {
+    cells      : List Integer,
+    turn       : Integer,
+    ep-sq      : Integer,
+    wk-castle  : Boolean,
+    wq-castle  : Boolean,
+    bk-castle  : Boolean,
+    bq-castle  : Boolean,
+    halfmove   : Integer
+  }
+
+  ChessMove = record {
+    from-sq  : Integer,
+    to-sq    : Integer,
+    captured : Integer,
+    promote  : Integer,
+    special  : Integer
+  }
+
+Section: Constructors
+
+  cs-board : List Integer, Integer, Integer, Boolean, Boolean, Boolean, Boolean, Integer -> ChessBoard
+  cs-board (cells) (turn) (ep) (wk) (wq) (bk) (bq) (hm) =
+    ChessBoard { cells = cells, turn = turn, ep-sq = ep, wk-castle = wk, wq-castle = wq, bk-castle = bk, bq-castle = bq, halfmove = hm }
+
+  cs-plain : Integer, Integer, Integer -> ChessMove
+  cs-plain (from) (to) (cap) =
+    ChessMove { from-sq = from, to-sq = to, captured = cap, promote = 0, special = 0 }
+
+  cs-special : Integer, Integer, Integer, Integer, Integer -> ChessMove
+  cs-special (from) (to) (cap) (promo) (kind) =
+    ChessMove { from-sq = from, to-sq = to, captured = cap, promote = promo, special = kind }
+
+Section: Construction
+
+  chess-new : ChessBoard
+  chess-new =
+    let cells = cs-initial-cells 0 []
+    in cs-board cells 0 (-1) True True True True 0
+
+  cs-initial-cells : Integer, List Integer -> List Integer
+  cs-initial-cells (i) (acc) =
+    if i >= 64 then acc
+    else let v = cs-initial-cell i
+    in cs-initial-cells (i + 1) (list-push acc v)
+
+  cs-initial-cell : Integer -> Integer
+  cs-initial-cell (i) =
+    let row = i / 8
+    in let col = i - row * 8
+    in let back = cs-back-rank col
+    in if row == 1 then 7
+    else if row == 6 then 1
+    else if row == 0 then back + 6
+    else if row == 7 then back
+    else 0
+
+  cs-back-rank : Integer -> Integer
+  cs-back-rank (col) =
+    if col == 0 then 4
+    else if col == 1 then 2
+    else if col == 2 then 3
+    else if col == 3 then 5
+    else if col == 4 then 6
+    else if col == 5 then 3
+    else if col == 6 then 2
+    else 4
+
+  chess-blank : ChessBoard
+  chess-blank =
+    let cells = cs-blank-cells 0 []
+    in cs-board cells 0 (-1) False False False False 0
+
+  cs-blank-cells : Integer, List Integer -> List Integer
+  cs-blank-cells (i) (acc) =
+    if i >= 64 then acc
+    else cs-blank-cells (i + 1) (list-push acc 0)
+
+  cs-copy-cells : List Integer, Integer, List Integer -> List Integer
+  cs-copy-cells (cells) (i) (acc) =
+    if i >= 64 then acc
+    else let v = list-at cells i
+    in cs-copy-cells cells (i + 1) (list-push acc v)
+
+  chess-place : ChessBoard, Integer, Integer -> ChessBoard
+  chess-place (b) (sq) (piece) =
+    let copy = cs-copy-cells (b.cells) 0 []
+    in let written = list-set-at copy sq piece
+    in cs-board written (b.turn) (b.ep-sq) (b.wk-castle) (b.wq-castle) (b.bk-castle) (b.bq-castle) (b.halfmove)
+
+  chess-to-move : ChessBoard, Integer -> ChessBoard
+  chess-to-move (b) (side) =
+    let copy = cs-copy-cells (b.cells) 0 []
+    in cs-board copy side (b.ep-sq) (b.wk-castle) (b.wq-castle) (b.bk-castle) (b.bq-castle) (b.halfmove)
+
+  chess-rights : ChessBoard, Boolean, Boolean, Boolean, Boolean -> ChessBoard
+  chess-rights (b) (wk) (wq) (bk) (bq) =
+    let copy = cs-copy-cells (b.cells) 0 []
+    in cs-board copy (b.turn) (b.ep-sq) wk wq bk bq (b.halfmove)
+
+  chess-set-ep : ChessBoard, Integer -> ChessBoard
+  chess-set-ep (b) (ep) =
+    let copy = cs-copy-cells (b.cells) 0 []
+    in cs-board copy (b.turn) ep (b.wk-castle) (b.wq-castle) (b.bk-castle) (b.bq-castle) (b.halfmove)
+
+Section: Board Queries
+
+  cs-at : ChessBoard, Integer -> Integer
+  cs-at (b) (sq) = list-at (b.cells) sq
+
+  cs-row : Integer -> Integer
+  cs-row (sq) = sq / 8
+
+  cs-col : Integer -> Integer
+  cs-col (sq) = sq - (sq / 8) * 8
+
+  cs-square : Integer, Integer -> Integer
+  cs-square (row) (col) = row * 8 + col
+
+  cs-is-white : Integer -> Boolean
+  cs-is-white (v) = v >= 1 & v <= 6
+
+  cs-is-black : Integer -> Boolean
+  cs-is-black (v) = v >= 7
+
+  cs-own : ChessBoard, Integer -> Boolean
+  cs-own (b) (sq) =
+    let v = cs-at b sq
+    in if b.turn == 0 then cs-is-white v else cs-is-black v
+
+  cs-enemy : ChessBoard, Integer -> Boolean
+  cs-enemy (b) (sq) =
+    let v = cs-at b sq
+    in if b.turn == 0 then cs-is-black v else cs-is-white v
+
+  cs-kind : Integer -> Integer
+  cs-kind (v) = if v >= 7 then v - 6 else v
+
+  cs-has : ChessBoard, Integer, Integer, Integer -> Boolean
+  cs-has (b) (r) (c) (code) =
+    if r < 0 then False
+    else if r >= 8 then False
+    else if c < 0 then False
+    else if c >= 8 then False
+    else cs-at b (cs-square r c) == code
+
+Section: Attack Detection
+
+  chess-attacked : ChessBoard, Integer, Integer -> Boolean
+  chess-attacked (b) (sq) (by) =
+    let base = if by == 0 then 0 else 6
+    in if cs-attacked-pawn b sq by then True
+    else if cs-attacked-knight b sq (2 + base) then True
+    else if cs-attacked-king b sq (6 + base) then True
+    else if cs-attacked-orth b sq (4 + base) (5 + base) then True
+    else cs-attacked-diag b sq (3 + base) (5 + base)
+
+  cs-attacked-pawn : ChessBoard, Integer, Integer -> Boolean
+  cs-attacked-pawn (b) (sq) (by) =
+    let src-r = if by == 0 then cs-row sq + 1 else cs-row sq - 1
+    in let code = if by == 0 then 1 else 7
+    in let c = cs-col sq
+    in let left = cs-has b src-r (c - 1) code
+    in let right = cs-has b src-r (c + 1) code
+    in left | right
+
+  cs-attacked-knight : ChessBoard, Integer, Integer -> Boolean
+  cs-attacked-knight (b) (sq) (code) =
+    let r = cs-row sq
+    in let c = cs-col sq
+    in let h1 = cs-has b (r - 2) (c - 1) code
+    in let h2 = cs-has b (r - 2) (c + 1) code
+    in let h3 = cs-has b (r - 1) (c - 2) code
+    in let h4 = cs-has b (r - 1) (c + 2) code
+    in let h5 = cs-has b (r + 1) (c - 2) code
+    in let h6 = cs-has b (r + 1) (c + 2) code
+    in let h7 = cs-has b (r + 2) (c - 1) code
+    in let h8 = cs-has b (r + 2) (c + 1) code
+    in h1 | h2 | h3 | h4 | h5 | h6 | h7 | h8
+
+  cs-attacked-king : ChessBoard, Integer, Integer -> Boolean
+  cs-attacked-king (b) (sq) (code) =
+    let r = cs-row sq
+    in let c = cs-col sq
+    in let h1 = cs-has b (r - 1) (c - 1) code
+    in let h2 = cs-has b (r - 1) c code
+    in let h3 = cs-has b (r - 1) (c + 1) code
+    in let h4 = cs-has b r (c - 1) code
+    in let h5 = cs-has b r (c + 1) code
+    in let h6 = cs-has b (r + 1) (c - 1) code
+    in let h7 = cs-has b (r + 1) c code
+    in let h8 = cs-has b (r + 1) (c + 1) code
+    in h1 | h2 | h3 | h4 | h5 | h6 | h7 | h8
+
+  cs-attacked-orth : ChessBoard, Integer, Integer, Integer -> Boolean
+  cs-attacked-orth (b) (sq) (p1) (p2) =
+    let s1 = cs-scan b sq (-1) 0 1 p1 p2
+    in let s2 = cs-scan b sq 1 0 1 p1 p2
+    in let s3 = cs-scan b sq 0 (-1) 1 p1 p2
+    in let s4 = cs-scan b sq 0 1 1 p1 p2
+    in s1 | s2 | s3 | s4
+
+  cs-attacked-diag : ChessBoard, Integer, Integer, Integer -> Boolean
+  cs-attacked-diag (b) (sq) (p1) (p2) =
+    let s1 = cs-scan b sq (-1) (-1) 1 p1 p2
+    in let s2 = cs-scan b sq (-1) 1 1 p1 p2
+    in let s3 = cs-scan b sq 1 (-1) 1 p1 p2
+    in let s4 = cs-scan b sq 1 1 1 p1 p2
+    in s1 | s2 | s3 | s4
+
+  cs-scan : ChessBoard, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  cs-scan (b) (from) (dr) (dc) (step) (p1) (p2) =
+    let r = cs-row from + dr * step
+    in let c = cs-col from + dc * step
+    in if r < 0 then False
+    else if r >= 8 then False
+    else if c < 0 then False
+    else if c >= 8 then False
+    else let v = cs-at b (cs-square r c)
+    in if v == 0 then cs-scan b from dr dc (step + 1) p1 p2
+    else v == p1 | v == p2
+
+Section: Move Generation
+
+  chess-moves : ChessBoard -> List ChessMove
+  chess-moves (b) = cs-collect b 0 []
+
+  cs-collect : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-collect (b) (sq) (acc) =
+    if sq >= 64 then acc
+    else if cs-own b sq == False then cs-collect b (sq + 1) acc
+    else let acc2 = cs-piece-moves b sq acc
+    in cs-collect b (sq + 1) acc2
+
+  cs-piece-moves : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-piece-moves (b) (sq) (acc) =
+    let kind = cs-kind (cs-at b sq)
+    in if kind == 1 then cs-pawn-moves b sq acc
+    else if kind == 2 then cs-knight-moves b sq acc
+    else if kind == 3 then cs-bishop-moves b sq acc
+    else if kind == 4 then cs-rook-moves b sq acc
+    else if kind == 5 then cs-queen-moves b sq acc
+    else cs-king-moves b sq acc
+
+  cs-step : ChessBoard, Integer, Integer, Integer, List ChessMove -> List ChessMove
+  cs-step (b) (from) (dr) (dc) (acc) =
+    let r = cs-row from + dr
+    in let c = cs-col from + dc
+    in if r < 0 then acc
+    else if r >= 8 then acc
+    else if c < 0 then acc
+    else if c >= 8 then acc
+    else let dest = cs-square r c
+    in let v = cs-at b dest
+    in if v == 0 then list-push acc (cs-plain from dest 0)
+    else if cs-enemy b dest then list-push acc (cs-plain from dest v)
+    else acc
+
+  cs-ray : ChessBoard, Integer, Integer, Integer, Integer, List ChessMove -> List ChessMove
+  cs-ray (b) (from) (dr) (dc) (step) (acc) =
+    let r = cs-row from + dr * step
+    in let c = cs-col from + dc * step
+    in if r < 0 then acc
+    else if r >= 8 then acc
+    else if c < 0 then acc
+    else if c >= 8 then acc
+    else let dest = cs-square r c
+    in let v = cs-at b dest
+    in if v == 0 then cs-ray-on b from dr dc step dest acc
+    else if cs-enemy b dest then list-push acc (cs-plain from dest v)
+    else acc
+
+  cs-ray-on : ChessBoard, Integer, Integer, Integer, Integer, Integer, List ChessMove -> List ChessMove
+  cs-ray-on (b) (from) (dr) (dc) (step) (dest) (acc) =
+    let quiet = cs-plain from dest 0
+    in cs-ray b from dr dc (step + 1) (list-push acc quiet)
+
+Section: Knight And King
+
+  cs-knight-moves : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-knight-moves (b) (sq) (acc) =
+    let a1 = cs-step b sq (-2) (-1) acc
+    in let a2 = cs-step b sq (-2) 1 a1
+    in let a3 = cs-step b sq (-1) (-2) a2
+    in let a4 = cs-step b sq (-1) 2 a3
+    in let a5 = cs-step b sq 1 (-2) a4
+    in let a6 = cs-step b sq 1 2 a5
+    in let a7 = cs-step b sq 2 (-1) a6
+    in cs-step b sq 2 1 a7
+
+  cs-king-moves : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-king-moves (b) (sq) (acc) =
+    let a1 = cs-step b sq (-1) (-1) acc
+    in let a2 = cs-step b sq (-1) 0 a1
+    in let a3 = cs-step b sq (-1) 1 a2
+    in let a4 = cs-step b sq 0 (-1) a3
+    in let a5 = cs-step b sq 0 1 a4
+    in let a6 = cs-step b sq 1 (-1) a5
+    in let a7 = cs-step b sq 1 0 a6
+    in let a8 = cs-step b sq 1 1 a7
+    in cs-castles b sq a8
+
+Section: Castling
+
+  cs-castles : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-castles (b) (sq) (acc) =
+    if b.turn == 0 then cs-white-castles b sq acc
+    else cs-black-castles b sq acc
+
+  cs-white-castles : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-white-castles (b) (sq) (acc) =
+    if sq /= 60 then acc
+    else let short = cs-castle-short b 60 61 62 63 4 (b.wk-castle) 1 acc
+    in cs-castle-long b 60 59 58 57 56 4 (b.wq-castle) 1 short
+
+  cs-black-castles : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-black-castles (b) (sq) (acc) =
+    if sq /= 4 then acc
+    else let short = cs-castle-short b 4 5 6 7 10 (b.bk-castle) 0 acc
+    in cs-castle-long b 4 3 2 1 0 10 (b.bq-castle) 0 short
+
+  cs-castle-short : ChessBoard, Integer, Integer, Integer, Integer, Integer, Boolean, Integer, List ChessMove -> List ChessMove
+  cs-castle-short (b) (king) (f-sq) (g-sq) (rook-sq) (rook) (right) (by) (acc) =
+    if right == False then acc
+    else if cs-at b rook-sq /= rook then acc
+    else if cs-at b f-sq /= 0 then acc
+    else if cs-at b g-sq /= 0 then acc
+    else if chess-attacked b king by then acc
+    else if chess-attacked b f-sq by then acc
+    else if chess-attacked b g-sq by then acc
+    else list-push acc (cs-special king g-sq 0 0 3)
+
+  cs-castle-long : ChessBoard, Integer, Integer, Integer, Integer, Integer, Integer, Boolean, Integer, List ChessMove -> List ChessMove
+  cs-castle-long (b) (king) (d-sq) (c-sq) (b-sq) (rook-sq) (rook) (right) (by) (acc) =
+    if right == False then acc
+    else if cs-at b rook-sq /= rook then acc
+    else if cs-at b d-sq /= 0 then acc
+    else if cs-at b c-sq /= 0 then acc
+    else if cs-at b b-sq /= 0 then acc
+    else if chess-attacked b king by then acc
+    else if chess-attacked b d-sq by then acc
+    else if chess-attacked b c-sq by then acc
+    else list-push acc (cs-special king c-sq 0 0 3)
+
+Section: Sliding Pieces
+
+  cs-bishop-moves : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-bishop-moves (b) (sq) (acc) =
+    let a1 = cs-ray b sq (-1) (-1) 1 acc
+    in let a2 = cs-ray b sq (-1) 1 1 a1
+    in let a3 = cs-ray b sq 1 (-1) 1 a2
+    in cs-ray b sq 1 1 1 a3
+
+  cs-rook-moves : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-rook-moves (b) (sq) (acc) =
+    let a1 = cs-ray b sq (-1) 0 1 acc
+    in let a2 = cs-ray b sq 1 0 1 a1
+    in let a3 = cs-ray b sq 0 (-1) 1 a2
+    in cs-ray b sq 0 1 1 a3
+
+  cs-queen-moves : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-queen-moves (b) (sq) (acc) =
+    let straight = cs-rook-moves b sq acc
+    in cs-bishop-moves b sq straight
+
+Section: Pawns
+
+  cs-pawn-moves : ChessBoard, Integer, List ChessMove -> List ChessMove
+  cs-pawn-moves (b) (sq) (acc) =
+    let dir = if b.turn == 0 then (-1) else 1
+    in let home = if b.turn == 0 then 6 else 1
+    in let pushed = cs-pawn-push b sq dir home acc
+    in let taken = cs-pawn-take b sq dir (-1) pushed
+    in cs-pawn-take b sq dir 1 taken
+
+  cs-last-rank : ChessBoard -> Integer
+  cs-last-rank (b) = if b.turn == 0 then 0 else 7
+
+  cs-promotions : Integer, Integer, Integer, Integer, List ChessMove -> List ChessMove
+  cs-promotions (side) (from) (to) (cap) (acc) =
+    let base = if side == 0 then 0 else 6
+    in let a1 = list-push acc (cs-special from to cap (5 + base) 0)
+    in let a2 = list-push a1 (cs-special from to cap (4 + base) 0)
+    in let a3 = list-push a2 (cs-special from to cap (3 + base) 0)
+    in list-push a3 (cs-special from to cap (2 + base) 0)
+
+  cs-pawn-push : ChessBoard, Integer, Integer, Integer, List ChessMove -> List ChessMove
+  cs-pawn-push (b) (sq) (dir) (home) (acc) =
+    let r = cs-row sq
+    in let c = cs-col sq
+    in let one-r = r + dir
+    in if one-r < 0 then acc
+    else if one-r >= 8 then acc
+    else let one = cs-square one-r c
+    in if cs-at b one /= 0 then acc
+    else let single = cs-pawn-land b sq one one-r acc
+    in if r /= home then single
+    else cs-pawn-double b sq dir single
+
+  cs-pawn-land : ChessBoard, Integer, Integer, Integer, List ChessMove -> List ChessMove
+  cs-pawn-land (b) (sq) (dest) (dest-r) (acc) =
+    if dest-r == cs-last-rank b then cs-promotions (b.turn) sq dest 0 acc
+    else list-push acc (cs-plain sq dest 0)
+
+  cs-pawn-double : ChessBoard, Integer, Integer, List ChessMove -> List ChessMove
+  cs-pawn-double (b) (sq) (dir) (acc) =
+    let r = cs-row sq
+    in let c = cs-col sq
+    in let two-r = r + dir * 2
+    in if two-r < 0 then acc
+    else if two-r >= 8 then acc
+    else let two = cs-square two-r c
+    in if cs-at b two /= 0 then acc
+    else list-push acc (cs-special sq two 0 0 1)
+
+  cs-pawn-take : ChessBoard, Integer, Integer, Integer, List ChessMove -> List ChessMove
+  cs-pawn-take (b) (sq) (dir) (dc) (acc) =
+    let r = cs-row sq + dir
+    in let c = cs-col sq + dc
+    in if r < 0 then acc
+    else if r >= 8 then acc
+    else if c < 0 then acc
+    else if c >= 8 then acc
+    else let dest = cs-square r c
+    in if dest == b.ep-sq then cs-pawn-ep b sq dest acc
+    else if cs-enemy b dest == False then acc
+    else cs-pawn-hit b sq dest r acc
+
+  cs-pawn-hit : ChessBoard, Integer, Integer, Integer, List ChessMove -> List ChessMove
+  cs-pawn-hit (b) (sq) (dest) (dest-r) (acc) =
+    let v = cs-at b dest
+    in if dest-r == cs-last-rank b then cs-promotions (b.turn) sq dest v acc
+    else list-push acc (cs-plain sq dest v)
+
+  cs-pawn-ep : ChessBoard, Integer, Integer, List ChessMove -> List ChessMove
+  cs-pawn-ep (b) (sq) (dest) (acc) =
+    let victim = if b.turn == 0 then 7 else 1
+    in list-push acc (cs-special sq dest victim 0 2)
+
+Section: Apply Move
+
+  chess-apply : ChessBoard, ChessMove -> ChessBoard
+  chess-apply (b) (m) =
+    let piece = cs-at b (m.from-sq)
+    in let copy = cs-copy-cells (b.cells) 0 []
+    in let cleared = list-set-at copy (m.from-sq) 0
+    in let placed = if m.promote /= 0 then m.promote else piece
+    in let landed = list-set-at cleared (m.to-sq) placed
+    in let no-victim = cs-clear-ep-victim landed m
+    in let rooked = cs-move-castle-rook no-victim m
+    in let ep = cs-new-ep m
+    in let quiet = cs-kind piece /= 1 & m.captured == 0
+    in let hm = if quiet then b.halfmove + 1 else 0
+    in cs-board rooked (1 - b.turn) ep (cs-wk-after b m) (cs-wq-after b m) (cs-bk-after b m) (cs-bq-after b m) hm
+
+  cs-clear-ep-victim : List Integer, ChessMove -> List Integer
+  cs-clear-ep-victim (cells) (m) =
+    if m.special /= 2 then cells
+    else let victim-r = cs-row (m.from-sq)
+    in let victim-c = cs-col (m.to-sq)
+    in list-set-at cells (cs-square victim-r victim-c) 0
+
+  cs-move-castle-rook : List Integer, ChessMove -> List Integer
+  cs-move-castle-rook (cells) (m) =
+    if m.special /= 3 then cells
+    else if m.to-sq == 62 then cs-shift-rook cells 63 61
+    else if m.to-sq == 58 then cs-shift-rook cells 56 59
+    else if m.to-sq == 6 then cs-shift-rook cells 7 5
+    else cs-shift-rook cells 0 3
+
+  cs-shift-rook : List Integer, Integer, Integer -> List Integer
+  cs-shift-rook (cells) (from) (to) =
+    let piece = list-at cells from
+    in let emptied = list-set-at cells from 0
+    in list-set-at emptied to piece
+
+  cs-new-ep : ChessMove -> Integer
+  cs-new-ep (m) =
+    if m.special /= 1 then (-1)
+    else let mid-r = (cs-row (m.from-sq) + cs-row (m.to-sq)) / 2
+    in cs-square mid-r (cs-col (m.from-sq))
+
+  cs-wk-after : ChessBoard, ChessMove -> Boolean
+  cs-wk-after (b) (m) =
+    if b.wk-castle == False then False
+    else if m.from-sq == 60 then False
+    else if m.from-sq == 63 then False
+    else if m.to-sq == 63 then False
+    else True
+
+  cs-wq-after : ChessBoard, ChessMove -> Boolean
+  cs-wq-after (b) (m) =
+    if b.wq-castle == False then False
+    else if m.from-sq == 60 then False
+    else if m.from-sq == 56 then False
+    else if m.to-sq == 56 then False
+    else True
+
+  cs-bk-after : ChessBoard, ChessMove -> Boolean
+  cs-bk-after (b) (m) =
+    if b.bk-castle == False then False
+    else if m.from-sq == 4 then False
+    else if m.from-sq == 7 then False
+    else if m.to-sq == 7 then False
+    else True
+
+  cs-bq-after : ChessBoard, ChessMove -> Boolean
+  cs-bq-after (b) (m) =
+    if b.bq-castle == False then False
+    else if m.from-sq == 4 then False
+    else if m.from-sq == 0 then False
+    else if m.to-sq == 0 then False
+    else True
+
+Section: Move Counting
+
+  chess-count-from : List ChessMove, Integer -> Integer
+  chess-count-from (moves) (sq) =
+    cs-count-loop moves (list-length moves) sq 0 0
+
+  cs-count-loop : List ChessMove, Integer, Integer, Integer, Integer -> Integer
+  cs-count-loop (moves) (n) (sq) (i) (acc) =
+    if i >= n then acc
+    else let m = list-at moves i
+    in let hit = if m.from-sq == sq then 1 else 0
+    in cs-count-loop moves n sq (i + 1) (acc + hit)
+
+  chess-count-captures : List ChessMove -> Integer
+  chess-count-captures (moves) =
+    cs-capture-loop moves (list-length moves) 0 0
+
+  cs-capture-loop : List ChessMove, Integer, Integer, Integer -> Integer
+  cs-capture-loop (moves) (n) (i) (acc) =
+    if i >= n then acc
+    else let m = list-at moves i
+    in let hit = if m.captured /= 0 then 1 else 0
+    in cs-capture-loop moves n (i + 1) (acc + hit)
+
+  chess-count-promote : List ChessMove, Integer -> Integer
+  chess-count-promote (moves) (code) =
+    cs-promote-loop moves (list-length moves) code 0 0
+
+  cs-promote-loop : List ChessMove, Integer, Integer, Integer, Integer -> Integer
+  cs-promote-loop (moves) (n) (code) (i) (acc) =
+    if i >= n then acc
+    else let m = list-at moves i
+    in let hit = if m.promote == code then 1 else 0
+    in cs-promote-loop moves n code (i + 1) (acc + hit)
+
+  chess-count-special : List ChessMove, Integer -> Integer
+  chess-count-special (moves) (kind) =
+    cs-special-loop moves (list-length moves) kind 0 0
+
+  cs-special-loop : List ChessMove, Integer, Integer, Integer, Integer -> Integer
+  cs-special-loop (moves) (n) (kind) (i) (acc) =
+    if i >= n then acc
+    else let m = list-at moves i
+    in let hit = if m.special == kind then 1 else 0
+    in cs-special-loop moves n kind (i + 1) (acc + hit)
+
+  chess-count-piece : ChessBoard, Integer -> Integer
+  chess-count-piece (b) (code) =
+    cs-piece-loop (b.cells) code 0 0
+
+  cs-piece-loop : List Integer, Integer, Integer, Integer -> Integer
+  cs-piece-loop (cells) (code) (i) (acc) =
+    if i >= 64 then acc
+    else let hit = if list-at cells i == code then 1 else 0
+    in cs-piece-loop cells code (i + 1) (acc + hit)
+
+  chess-find : List ChessMove, Integer, Integer -> Integer
+  chess-find (moves) (from) (to) =
+    cs-find-loop moves (list-length moves) from to 0
+
+  cs-find-loop : List ChessMove, Integer, Integer, Integer, Integer -> Integer
+  cs-find-loop (moves) (n) (from) (to) (i) =
+    if i >= n then (-1)
+    else let m = list-at moves i
+    in if m.from-sq == from & m.to-sq == to then i
+    else cs-find-loop moves n from to (i + 1)
+
+  chess-play : ChessBoard, Integer, Integer -> ChessBoard
+  chess-play (b) (from) (to) =
+    let moves = chess-moves b
+    in let idx = chess-find moves from to
+    in if idx < 0 then b
+    else chess-apply b (list-at moves idx)
+
+Section: Legality
+
+ A move is legal when it does not leave the mover's own king attacked, which
+ is the one rule pseudo-legal generation cannot express. Castling's three
+ attack preconditions are checked during generation because they concern
+ squares the king passes over rather than the square it lands on.
+
+  chess-king-sq : ChessBoard, Integer -> Integer
+  chess-king-sq (b) (side) =
+    let code = if side == 0 then 6 else 12
+    in cs-king-scan b code 0
+
+  cs-king-scan : ChessBoard, Integer, Integer -> Integer
+  cs-king-scan (b) (code) (i) =
+    if i >= 64 then (-1)
+    else if cs-at b i == code then i
+    else cs-king-scan b code (i + 1)
+
+  chess-in-check : ChessBoard, Integer -> Boolean
+  chess-in-check (b) (side) =
+    let k = chess-king-sq b side
+    in if k < 0 then False
+    else chess-attacked b k (1 - side)
+
+  chess-legal : ChessBoard -> List ChessMove
+  chess-legal (b) =
+    let ms = chess-moves b
+    in cs-legal-filter b ms (list-length ms) 0 []
+
+  cs-legal-filter : ChessBoard, List ChessMove, Integer, Integer, List ChessMove -> List ChessMove
+  cs-legal-filter (b) (ms) (n) (i) (acc) =
+    if i >= n then acc
+    else let m = list-at ms i
+    in let keep = cs-move-legal b m
+    in let acc2 = if keep then list-push acc m else acc
+    in cs-legal-filter b ms n (i + 1) acc2
+
+  cs-move-legal : ChessBoard, ChessMove -> Boolean
+  cs-move-legal (b) (m) =
+    let mark = __heap-save
+    in let next = chess-apply b m
+    in let bad = chess-in-check next (b.turn)
+    in let r = __heap-restore mark
+    in bad == False
+
+  chess-checkmate : ChessBoard -> Boolean
+  chess-checkmate (b) =
+    if chess-in-check b (b.turn) == False then False
+    else list-length (chess-legal b) == 0
+
+  chess-stalemate : ChessBoard -> Boolean
+  chess-stalemate (b) =
+    if chess-in-check b (b.turn) then False
+    else list-length (chess-legal b) == 0
+
+Section: Draws
+
+ The fifty-move rule counts HALFMOVES, so the draw is available at 100: the
+ clock resets on a pawn move and on a capture, and en passant is both.
+
+ Repetition compares the position as FIDE defines it, which is the placement,
+ the side to move, the castling rights and the en passant square. It does NOT
+ compare the halfmove clock, so two occurrences of one position are equal here
+ while their clocks differ, and a comparison that included the clock would
+ never find a repetition at all.
+
+  chess-set-halfmove : ChessBoard, Integer -> ChessBoard
+  chess-set-halfmove (b) (n) =
+    let copy = cs-copy-cells (b.cells) 0 []
+    in cs-board copy (b.turn) (b.ep-sq) (b.wk-castle) (b.wq-castle) (b.bk-castle) (b.bq-castle) n
+
+  chess-fifty : ChessBoard -> Boolean
+  chess-fifty (b) = b.halfmove >= 100
+
+  chess-same-position : ChessBoard, ChessBoard -> Boolean
+  chess-same-position (a) (b) =
+    if a.turn /= b.turn then False
+    else if a.ep-sq /= b.ep-sq then False
+    else if a.wk-castle /= b.wk-castle then False
+    else if a.wq-castle /= b.wq-castle then False
+    else if a.bk-castle /= b.bk-castle then False
+    else if a.bq-castle /= b.bq-castle then False
+    else cs-cells-equal (a.cells) (b.cells) 0
+
+  cs-cells-equal : List Integer, List Integer, Integer -> Boolean
+  cs-cells-equal (x) (y) (i) =
+    if i >= 64 then True
+    else if list-at x i /= list-at y i then False
+    else cs-cells-equal x y (i + 1)
+
+  chess-repetitions : List ChessBoard, ChessBoard -> Integer
+  chess-repetitions (history) (b) =
+    cs-rep-loop history (list-length history) b 0 0
+
+  cs-rep-loop : List ChessBoard, Integer, ChessBoard, Integer, Integer -> Integer
+  cs-rep-loop (history) (n) (b) (i) (acc) =
+    if i >= n then acc
+    else let past = list-at history i
+    in let hit = if chess-same-position past b then 1 else 0
+    in cs-rep-loop history n b (i + 1) (acc + hit)
+
+  chess-threefold : List ChessBoard, ChessBoard -> Boolean
+  chess-threefold (history) (b) = chess-repetitions history b >= 3
+
+Section: Perft
+
+ Perft counts LEGAL moves, so its published values are assertable only with
+ the filter above. Each child is bracketed by a heap mark: the count is an
+ Integer, so everything the subtree allocated is released before the next
+ child, which is what keeps depth 4 inside the guest's heap on a machine with
+ no collector.
+
+  chess-perft : ChessBoard, Integer -> Integer
+  chess-perft (b) (depth) =
+    if depth <= 0 then 1
+    else let moves = chess-legal b
+    in let n = list-length moves
+    in if depth == 1 then n
+    else cs-perft-fold b moves n 0 depth 0
+
+  cs-perft-fold : ChessBoard, List ChessMove, Integer, Integer, Integer, Integer -> Integer
+  cs-perft-fold (b) (moves) (n) (i) (depth) (acc) =
+    if i >= n then acc
+    else let m = list-at moves i
+    in let mark = __heap-save
+    in let next = chess-apply b m
+    in let sub = chess-perft next (depth - 1)
+    in let r = __heap-restore mark
+    in cs-perft-fold b moves n (i + 1) depth (acc + sub)
+
+Section: Evaluation And Search
+
+ Centipawns, the values every engine uses, so a rook is worth five pawns and
+ a bishop a shade more than a knight. The king carries no material value
+ because it is never captured; mate is scored separately.
+
+  cs-piece-value : Integer -> Integer
+  cs-piece-value (kind) =
+    if kind == 1 then 100
+    else if kind == 2 then 320
+    else if kind == 3 then 330
+    else if kind == 4 then 500
+    else if kind == 5 then 900
+    else 0
+
+  chess-material : ChessBoard, Integer -> Integer
+  chess-material (b) (side) = cs-material-loop b side 0 0
+
+  cs-material-loop : ChessBoard, Integer, Integer, Integer -> Integer
+  cs-material-loop (b) (side) (i) (acc) =
+    if i >= 64 then acc
+    else let v = cs-at b i
+    in let d = if v == 0 then 0 else cs-mat-delta v side
+    in cs-material-loop b side (i + 1) (acc + d)
+
+  cs-mat-delta : Integer, Integer -> Integer
+  cs-mat-delta (v) (side) =
+    let val = cs-piece-value (cs-kind v)
+    in let white = cs-is-white v
+    in if side == 0 then (if white then val else 0 - val)
+    else (if white then 0 - val else val)
+
+  chess-eval : ChessBoard, Integer -> Integer
+  chess-eval (b) (side) = chess-material b side
+
+ Negamax with alpha-beta. A mated side scores worse the SOONER the mate
+ arrives, which is what `depth` adds: without it an engine that sees a mate
+ in one and a mate in three has no reason to prefer the shorter.
+
+ Each child is bracketed by a heap mark for the reason perft is: the search
+ returns an Integer, so everything a subtree allocated is released before the
+ next child rather than accumulating across the whole tree.
+
+  cs-mate-score : Integer = 1000000
+
+  cs-wide : Integer = 1001000
+
+  chess-search : ChessBoard, Integer, Integer, Integer -> Integer
+  chess-search (b) (depth) (alpha) (beta) =
+    let moves = chess-legal b
+    in let n = list-length moves
+    in if n == 0 then (if chess-in-check b (b.turn) then 0 - cs-mate-score - depth else 0)
+    else if depth <= 0 then chess-eval b (b.turn)
+    else cs-search-loop b moves n 0 depth alpha beta
+
+  cs-search-loop : ChessBoard, List ChessMove, Integer, Integer, Integer, Integer, Integer -> Integer
+  cs-search-loop (b) (moves) (n) (i) (depth) (alpha) (beta) =
+    if i >= n then alpha
+    else let m = list-at moves i
+    in let mark = __heap-save
+    in let next = chess-apply b m
+    in let sub = 0 - chess-search next (depth - 1) (0 - beta) (0 - alpha)
+    in let r = __heap-restore mark
+    in let a2 = if sub > alpha then sub else alpha
+    in if a2 >= beta then a2
+    else cs-search-loop b moves n (i + 1) depth a2 beta
+
+ THE ANSWER IS AN INDEX INTO `chess-legal`, not a move, because the caller
+ needs the list anyway to play it and a second generation could drift from
+ the one the search scored.
+
+  chess-best-move : ChessBoard, Integer -> Integer
+  chess-best-move (b) (depth) =
+    let moves = chess-legal b
+    in let n = list-length moves
+    in if n == 0 then (-1)
+    else cs-best-loop b moves n 0 depth (0 - cs-wide) (-1)
+
+  cs-best-loop : ChessBoard, List ChessMove, Integer, Integer, Integer, Integer, Integer -> Integer
+  cs-best-loop (b) (moves) (n) (i) (depth) (best) (bi) =
+    if i >= n then bi
+    else let m = list-at moves i
+    in let mark = __heap-save
+    in let next = chess-apply b m
+    in let sc = 0 - chess-search next (depth - 1) (0 - cs-wide) cs-wide
+    in let r = __heap-restore mark
+    in if sc > best then cs-best-loop b moves n (i + 1) depth sc i
+    else cs-best-loop b moves n (i + 1) depth best bi
+
+Section: Formatting
+
+  format-chess-board : ChessBoard -> Text
+  format-chess-board (b) =
+    cs-format-rows (b.cells) 0 ""
+
+  cs-format-rows : List Integer, Integer, Text -> Text
+  cs-format-rows (cells) (row) (acc) =
+    if row >= 8 then acc
+    else let row-str = cs-format-row cells row 0 ""
+    in cs-format-rows cells (row + 1) (acc & row-str & " ")
+
+  cs-format-row : List Integer, Integer, Integer, Text -> Text
+  cs-format-row (cells) (row) (col) (acc) =
+    if col >= 8 then acc
+    else let v = list-at cells (row * 8 + col)
+    in let ch = cs-piece-char v
+    in cs-format-row cells row (col + 1) (acc & ch)
+
+  cs-piece-char : Integer -> Text
+  cs-piece-char (v) =
+    if v == 0 then "."
+    else if v == 1 then "P"
+    else if v == 2 then "N"
+    else if v == 3 then "B"
+    else if v == 4 then "R"
+    else if v == 5 then "Q"
+    else if v == 6 then "K"
+    else if v == 7 then "p"
+    else if v == 8 then "n"
+    else if v == 9 then "b"
+    else if v == 10 then "r"
+    else if v == 11 then "q"
+    else "k"
+
+Page 1

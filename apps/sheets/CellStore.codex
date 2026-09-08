@@ -1,0 +1,186 @@
+Chapter: CellStore
+  cites Works chapter GopAhci
+  cites Foreword chapter CCE
+
+ We say:
+
+Section: Layout
+
+ A sheet is one block: a 16-byte header, then rows times cols CELLS of eight
+ bytes, row-major, then a text arena. The header holds the row count at 0,
+ the column count at 4, the arena's capacity in bytes at 8 and the next free
+ offset into the arena at 12, so a block answers its own bounds and its own
+ remaining text room. A cell beyond the bounds reads as empty and is not
+ written.
+
+ DENSE RATHER THAN A MAP, and the margin is why. Measured 2026-09-08 on seed
+ 48F973C8 by docs/Probes/sheet-store-cost.codex: a 1,000-row by 26-column
+ grid of 32-bit cells took 104,064 bytes, filled in 230 us and summed a
+ column in 16 us, against 6,679,832 bytes, 12.4 ms and about 400 us for the
+ same 1,000 cells in the tree's HamtMap keyed by `row,col` text. The trie is
+ persistent, every set copies its path, and bare metal has no collector to
+ give the old path back, so a sheet edited cell by cell grows without bound.
+ The premise that dense storage costs megabytes is wrong at any column count
+ a sheet shows: 104 bytes a row at 26 columns, and 208 now that a cell
+ carries its kind.
+
+ A cell is a KIND and a payload, four bytes each. The kind carries what a
+ bare number cannot: an empty cell and a cell holding zero are different
+ cells, and a label sitting in a column must not be summed as though it were
+ a quantity. A number's payload is the value. A text's payload is a byte
+ offset into the arena, where each entry is a 32-bit length followed by that
+ many UTF-8 bytes.
+
+ Eight bytes a cell rather than four is the price of the tag: a 1,000 by 26
+ sheet is 208,064 bytes of cells against 104,064 before, plus whatever arena
+ the caller asks for.
+
+  cs-hdr : Integer = 16
+  cs-rows-at : Integer = 0
+  cs-cols-at : Integer = 4
+  cs-cap-at : Integer = 8
+  cs-next-at : Integer = 12
+
+  cs-cell-bytes : Integer = 8
+
+  cs-empty : Integer = 0
+  cs-number : Integer = 1
+  cs-text : Integer = 2
+
+  sheet-new : Integer, Integer, Integer -> Integer
+  sheet-new (rows) (cols) (text-bytes) =
+    let blk = alloc-zeroed (cs-hdr + rows * cols * cs-cell-bytes + text-bytes) 64
+    in let a = poke-32 blk cs-rows-at rows
+    in let b = poke-32 blk cs-cols-at cols
+    in let c = poke-32 blk cs-cap-at text-bytes
+    in blk
+
+  sheet-rows : Integer -> Integer
+  sheet-rows (blk) = peek-32 blk cs-rows-at
+
+  sheet-cols : Integer -> Integer
+  sheet-cols (blk) = peek-32 blk cs-cols-at
+
+  sheet-in : Integer, Integer, Integer -> Boolean
+  sheet-in (blk) (r) (c) = r >= 0 & c >= 0 & r < sheet-rows blk & c < sheet-cols blk
+
+  sheet-off : Integer, Integer, Integer -> Integer
+  sheet-off (blk) (r) (c) = cs-hdr + (r * sheet-cols blk + c) * cs-cell-bytes
+
+ An ADDRESS, not an offset. Written as an offset it named absolute address
+ 1040 for every sheet in the program, so two sheets shared one arena outside
+ either block and the second one's text overwrote the first's. A single
+ sheet reads back whatever it wrote and cannot see the fault, which is why
+ the arm below builds TWO.
+
+  sheet-arena : Integer -> Integer
+  sheet-arena (blk) = blk + cs-hdr + sheet-rows blk * sheet-cols blk * cs-cell-bytes
+
+  sheet-text-used : Integer -> Integer
+  sheet-text-used (blk) = peek-32 blk cs-next-at
+
+  sheet-text-free : Integer -> Integer
+  sheet-text-free (blk) = peek-32 blk cs-cap-at - peek-32 blk cs-next-at
+
+Section: Cells
+
+  sheet-kind : Integer, Integer, Integer -> Integer
+  sheet-kind (blk) (r) (c) =
+    if sheet-in blk r c then peek-32 blk (sheet-off blk r c) else cs-empty
+
+ A payload is four bytes and `peek-32` answers them UNSIGNED, so a negative
+ number stored and read straight back reads as its two's-complement twin:
+ minus two came out as 4,294,967,294. A sheet holds negative quantities, so
+ the payload is read as a signed 32-bit value.
+
+  cs-sign-bit : Integer = 2147483648
+  cs-two-32 : Integer = 4294967296
+
+  cs-signed : Integer -> Integer
+  cs-signed (v) = if v >= cs-sign-bit then v - cs-two-32 else v
+
+  sheet-get : Integer, Integer, Integer -> Integer
+  sheet-get (blk) (r) (c) =
+    if sheet-kind blk r c == cs-number then cs-signed (peek-32 blk (sheet-off blk r c + 4)) else 0
+
+  sheet-set : Integer, Integer, Integer, Integer -> Boolean
+  sheet-set (blk) (r) (c) (v) =
+    if sheet-in blk r c then
+      let k = poke-32 blk (sheet-off blk r c) cs-number
+      in let p = poke-32 blk (sheet-off blk r c + 4) v
+      in True
+    else False
+
+  sheet-clear : Integer, Integer, Integer -> Boolean
+  sheet-clear (blk) (r) (c) =
+    if sheet-in blk r c then
+      let k = poke-32 blk (sheet-off blk r c) cs-empty
+      in let p = poke-32 blk (sheet-off blk r c + 4) 0
+      in True
+    else False
+
+Section: Text Cells
+
+ A text is APPENDED and never freed. A sheet edited cell by cell fills the
+ arena, and `sheet-set-text` refuses rather than overwriting or truncating
+ once the arena cannot hold the next string, so a caller can tell a written
+ cell from an unwritten one. Reclaiming an abandoned entry needs a free list
+ and is not this row's work.
+
+  cs-write-bytes : Integer, Integer, List Integer, Integer, Integer -> Integer
+  cs-write-bytes (base) (at) (bs) (i) (n) =
+    if i >= n then 0
+    else let p = poke-byte base (at + i) (list-at bs i)
+    in cs-write-bytes base at bs (i + 1) n
+
+  sheet-set-text : Integer, Integer, Integer, Text -> Boolean
+  sheet-set-text (blk) (r) (c) (t) =
+    if sheet-in blk r c == False then False
+    else let bs = text-to-utf8-bytes t
+    in let n = list-length bs
+    in let next = peek-32 blk cs-next-at
+    in if next + 4 + n > peek-32 blk cs-cap-at then False
+    else let base = sheet-arena blk
+    in let l = poke-32 (base + next) 0 n
+    in let w = cs-write-bytes base (next + 4) bs 0 n
+    in let k = poke-32 blk (sheet-off blk r c) cs-text
+    in let p = poke-32 blk (sheet-off blk r c + 4) next
+    in let a = poke-32 blk cs-next-at (next + 4 + n)
+    in True
+
+  cs-read-bytes : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cs-read-bytes (base) (at) (i) (n) (acc) =
+    if i >= n then acc
+    else cs-read-bytes base at (i + 1) n (list-push acc (peek-byte base (at + i)))
+
+  sheet-text : Integer, Integer, Integer -> Text
+  sheet-text (blk) (r) (c) =
+    if sheet-kind blk r c /= cs-text then ""
+    else let base = sheet-arena blk
+    in let at = peek-32 blk (sheet-off blk r c + 4)
+    in let n = peek-32 (base + at) 0
+    in utf8-bytes-to-text (cs-read-bytes base (at + 4) 0 n [])
+
+Section: Ranges
+
+ A sum reads `sheet-get`, which answers 0 for an empty cell and for a text
+ cell, so a label in a column of quantities contributes nothing rather than
+ contributing its arena offset.
+
+  sheet-col-sum-from : Integer, Integer, Integer, Integer -> Integer
+  sheet-col-sum-from (blk) (c) (r) (acc) =
+    if r >= sheet-rows blk then acc
+    else sheet-col-sum-from blk c (r + 1) (acc + sheet-get blk r c)
+
+  sheet-col-sum : Integer, Integer -> Integer
+  sheet-col-sum (blk) (c) = sheet-col-sum-from blk c 0 0
+
+  sheet-row-sum-from : Integer, Integer, Integer, Integer -> Integer
+  sheet-row-sum-from (blk) (r) (c) (acc) =
+    if c >= sheet-cols blk then acc
+    else sheet-row-sum-from blk r (c + 1) (acc + sheet-get blk r c)
+
+  sheet-row-sum : Integer, Integer -> Integer
+  sheet-row-sum (blk) (r) = sheet-row-sum-from blk r 0 0
+
+Page 1

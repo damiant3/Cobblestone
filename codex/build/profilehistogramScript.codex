@@ -4,17 +4,38 @@ Chapter: ProfileHistogramScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE TWELFTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ THE THIRD EXIT IS A ZERO THAT MEANS "NOTHING TO DO", not "the work
+ succeeded": an empty profile prints one line and stops. Declaring it beside
+ the two refusals is the case `check-constants` also made, that a bare `0` in a
+ script carries more than one meaning and only a verdict says which.
 
 Section: Parameters
 
   ph-params : List ShellParam = [sh-param "ProfFile" SptString, sh-param-default "MapFile" SptString (SeLit ""), sh-param-default "Top" SptInt (SeInt 40)]
 
+Section: The pipeline, declared before it is spelled
+
+  map-art : PipeArtifact = PipeArtifact { pa-name = "map", pa-kind = PkValue, pa-expr = SeVar "map", pa-from = Just (SeArrayLiteral []) }
+
+  total-samples-art : PipeArtifact = PipeArtifact { pa-name = "totalSamples", pa-kind = PkValue, pa-expr = SeVar "totalSamples", pa-from = Just (SeProperty (SeVar "profLines") "Length") }
+
+  tally-art : PipeArtifact = PipeArtifact { pa-name = "tally", pa-kind = PkValue, pa-expr = SeVar "tally", pa-from = Just SeHashLiteral }
+
+  ph-arts : List PipeArtifact = [map-art, total-samples-art, tally-art]
+
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScIf (SeNot (SeVar "MapFile")) [ScAssign "MapFile" (SeStaticCall "System.IO.Path" "ChangeExtension" [SeVar "ProfFile", SeLit ".map"])] [], ScIf (SeNot (SeFileExists (SeVar "MapFile"))) [ScWriteError (SeConcat (SeLit "Symbol map not found: ") (SeVar "MapFile")), ScExit (SeInt 1)] [], ScIf (SeNot (SeFileExists (SeVar "ProfFile"))) [ScWriteError (SeConcat (SeLit "Profile file not found: ") (SeVar "ProfFile")), ScExit (SeInt 1)] []]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScIf (SeNot (pipe-ref ph-arts ph-params "MapFile")) [ScAssign "MapFile" (SeStaticCall "System.IO.Path" "ChangeExtension" [pipe-ref ph-arts ph-params "ProfFile", SeLit ".map"])] [], ScIf (SeNot (SeFileExists (pipe-ref ph-arts ph-params "MapFile"))) [ScWriteError (SeConcat (SeLit "Symbol map not found: ") (pipe-ref ph-arts ph-params "MapFile")), ScExit (SeInt 1)] [], ScIf (SeNot (SeFileExists (pipe-ref ph-arts ph-params "ProfFile"))) [ScWriteError (SeConcat (SeLit "Profile file not found: ") (pipe-ref ph-arts ph-params "ProfFile")), ScExit (SeInt 1)] []]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "default the symbol map beside the profile, and refuse before reading either file", ps-in = ["ProfFile", "MapFile"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the symbol map named by -MapFile, or defaulted beside the profile, does not exist", PoExit 1 "the file named by -ProfFile does not exist"], ps-body = s01-body }
 
 Section: S02 -- Parse map file
 
@@ -22,23 +43,29 @@ Section: S02 -- Parse map file
 
   s02-take : List ShellCmd = [ScAssign "addr" (SeStaticCall "Convert" "ToInt64" [SeIndex (SeVar "matches") (SeInt 1), SeInt 16]), ScAssign "size" (SeStaticCall "Convert" "ToInt32" [SeIndex (SeVar "matches") (SeInt 2)]), ScAssign "name" (SeTrim (SeIndex (SeVar "matches") (SeInt 3))), ScAppend "map" map-row]
 
-  s02 : List ShellCmd = [ScAssign "map" (SeArrayLiteral []), ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "MapFile"]) [ScIf (SeMatch (SeVar "line") "^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$") s02-take []], ScAssign "map" (SePipe (SeVar "map") [StSortBy "Addr"])]
+  s02-body : List ShellCmd = [ScBlank, pipe-produce map-art, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [pipe-ref ph-arts ph-params "MapFile"]) [ScIf (SeMatch (SeVar "line") "^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$") s02-take []], ScAssign "map" (SePipe (pipe-ref ph-arts ph-params "map") [StSortBy "Addr"])]
+
+  s02 : PipeStage = PipeStage { ps-name = "parse map file", ps-why = "address, size and name per symbol, sorted by address for the backward scan below", ps-in = ["MapFile"], ps-out = [map-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Resolve function
 
-  slot : ShellExpr = SeIndex (SeVar "map") (SeVar "i")
+  slot : ShellExpr = SeIndex (pipe-ref ph-arts ph-params "map") (SeVar "i")
 
   covers-rip : ShellExpr = SeAnd (SeIntLe (SeProperty slot "Addr") (SeVar "rip")) (SeIntGt (SeAdd (SeProperty slot "Addr") (SeProperty slot "Size")) (SeVar "rip"))
 
-  s03-scan : List ShellCmd = [ScAssign "i" (SeSub (SeProperty (SeVar "map") "Length") (SeInt 1)), ScWhile (SeIntGe (SeVar "i") (SeInt 0)) [ScIf covers-rip [ScReturn (SeProperty slot "Name")] [], ScDecrement "i"], ScReturn (SeLit "<unknown>")]
+  s03-scan : List ShellCmd = [ScAssign "i" (SeSub (SeProperty (pipe-ref ph-arts ph-params "map") "Length") (SeInt 1)), ScWhile (SeIntGe (SeVar "i") (SeInt 0)) [ScIf covers-rip [ScReturn (SeProperty slot "Name")] [], ScDecrement "i"], ScReturn (SeLit "<unknown>")]
 
-  s03 : List ShellCmd = [ScFunction "Resolve-Addr" [sh-param "rip" SptLong] s03-scan]
+  s03-body : List ShellCmd = [ScBlank, ScFunction "Resolve-Addr" [sh-param "rip" SptLong] s03-scan]
+
+  s03 : PipeStage = PipeStage { ps-name = "resolve-addr", ps-why = "the address to symbol lookup the tally calls, answering <unknown> when no symbol contains the address", ps-in = ["map"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Read profile and tally
 
-  s04-tally : List ShellCmd = [ScAssign "hex" (SeTrim (SeVar "line")), ScIf (SeIntEq (SeTextLength (SeVar "hex")) (SeInt 0)) [ScContinue] [], ScAssign "rip" (SeStaticCall "Convert" "ToInt64" [SeVar "hex", SeInt 16]), ScAssign "func" (SeCall "Resolve-Addr" [SeVar "rip"]), ScIf (SeMethodCall (SeVar "tally") "ContainsKey" [SeVar "func"]) [ScSetIndex "tally" (SeVar "func") (SeAdd (SeIndex (SeVar "tally") (SeVar "func")) (SeInt 1))] [ScSetIndex "tally" (SeVar "func") (SeInt 1)]]
+  s04-tally : List ShellCmd = [ScAssign "hex" (SeTrim (SeVar "line")), ScIf (SeIntEq (SeTextLength (SeVar "hex")) (SeInt 0)) [ScContinue] [], ScAssign "rip" (SeStaticCall "Convert" "ToInt64" [SeVar "hex", SeInt 16]), ScAssign "func" (SeCall "Resolve-Addr" [SeVar "rip"]), ScIf (SeMethodCall (pipe-ref ph-arts ph-params "tally") "ContainsKey" [SeVar "func"]) [ScSetIndex "tally" (SeVar "func") (SeAdd (SeIndex (pipe-ref ph-arts ph-params "tally") (SeVar "func")) (SeInt 1))] [ScSetIndex "tally" (SeVar "func") (SeInt 1)]]
 
-  s04 : List ShellCmd = [ScDotNetCallAssign "profLines" "System.IO.File" "ReadAllLines" [SeVar "ProfFile"], ScAssign "totalSamples" (SeProperty (SeVar "profLines") "Length"), ScIf (SeIntEq (SeVar "totalSamples") (SeInt 0)) [ScEcho (SeLit "No samples in profile."), ScExit (SeInt 0)] [], ScAssign "tally" SeHashLiteral, ScForEach "line" (SeVar "profLines") s04-tally]
+  s04-body : List ShellCmd = [ScBlank, ScDotNetCallAssign "profLines" "System.IO.File" "ReadAllLines" [pipe-ref ph-arts ph-params "ProfFile"], pipe-produce total-samples-art, ScIf (SeIntEq (pipe-ref ph-arts ph-params "totalSamples") (SeInt 0)) [ScEcho (SeLit "No samples in profile."), ScExit (SeInt 0)] [], pipe-produce tally-art, ScForEach "line" (SeVar "profLines") s04-tally]
+
+  s04 : PipeStage = PipeStage { ps-name = "read profile and tally", ps-why = "one sample per line, resolved to a function and counted", ps-in = ["ProfFile", "map"], ps-out = [total-samples-art, tally-art], ps-needs = [], ps-verdict = [PoExit 0 "the profile held no samples at all, so there is nothing to histogram; a success code that does not mean the work was done"], ps-body = s04-body }
 
 Section: S05 -- Sort and print histogram
 
@@ -48,30 +75,30 @@ Section: S05 -- Sort and print histogram
 
   head-format : ShellExpr = SeConcat (SeConcat (SeLit "{0,7} {1,6}  {2,-") bar-width) (SeLit "} {3}")
 
-  s05-header : List ShellCmd = [ScAssign "sorted" (SePipe (SeMethodCall (SeVar "tally") "GetEnumerator" []) [StSortDesc "Value"]), ScAssign "barWidth" (SeInt 40), ScEcho (SeLit ""), ScEcho (SeFormat (SeLit "Profiler Histogram -- {0:N0} samples, {1:N0} unique functions") [SeVar "totalSamples", SeProperty (SeVar "tally") "Count"]), ScEcho (SeLit ""), ScEcho (SeFormat head-format [SeLit "Samples", SeLit "%", SeLit "", SeLit "Function"]), ScEcho (SeFormat head-format [SeLit "-------", SeLit "------", SeMul (SeLit "-") bar-width, SeLit "--------"])]
+  s05-header : List ShellCmd = [ScAssign "sorted" (SePipe (SeMethodCall (pipe-ref ph-arts ph-params "tally") "GetEnumerator" []) [StSortDesc "Value"]), ScAssign "barWidth" (SeInt 40), ScEcho (SeLit ""), ScEcho (SeFormat (SeLit "Profiler Histogram -- {0:N0} samples, {1:N0} unique functions") [pipe-ref ph-arts ph-params "totalSamples", SeProperty (pipe-ref ph-arts ph-params "tally") "Count"]), ScEcho (SeLit ""), ScEcho (SeFormat head-format [SeLit "Samples", SeLit "%", SeLit "", SeLit "Function"]), ScEcho (SeFormat head-format [SeLit "-------", SeLit "------", SeMul (SeLit "-") bar-width, SeLit "--------"])]
 
   entry-value : ShellExpr = SeProperty (SeVar "entry") "Value"
 
-  bar-fraction : ShellExpr = SeMul (SeDiv entry-value (SeVar "totalSamples")) bar-width
+  bar-fraction : ShellExpr = SeMul (SeDiv entry-value (pipe-ref ph-arts ph-params "totalSamples")) bar-width
 
-  s05-row : List ShellCmd = [ScAssign "pct" (SeMul (SeDiv entry-value (SeVar "totalSamples")) (SeInt 100)), ScAssign "barLen" (SeStaticCall "Math" "Max" [SeInt 1, SeStaticCall "Math" "Round" [bar-fraction]]), ScAssign "bar" (SeMul (SeLit "#") (SeStaticCall "Math" "Min" [SeVar "barLen", bar-width])), ScEcho (SeFormat row-format [entry-value, SeVar "pct", SeVar "bar", SeProperty (SeVar "entry") "Key"]), ScIncrement "shown"]
+  s05-row : List ShellCmd = [ScAssign "pct" (SeMul (SeDiv entry-value (pipe-ref ph-arts ph-params "totalSamples")) (SeInt 100)), ScAssign "barLen" (SeStaticCall "Math" "Max" [SeInt 1, SeStaticCall "Math" "Round" [bar-fraction]]), ScAssign "bar" (SeMul (SeLit "#") (SeStaticCall "Math" "Min" [SeVar "barLen", bar-width])), ScEcho (SeFormat row-format [entry-value, SeVar "pct", SeVar "bar", SeProperty (SeVar "entry") "Key"]), ScIncrement "shown"]
 
-  s05-loop : List ShellCmd = [ScAssign "shown" (SeInt 0), ScAssign "otherSamples" (SeInt 0), ScForEach "entry" (SeVar "sorted") [ScIf (SeIntGe (SeVar "shown") (SeVar "Top")) [ScIncrementBy "otherSamples" entry-value, ScContinue] [], ScSequence s05-row]]
+  s05-loop : List ShellCmd = [ScAssign "shown" (SeInt 0), ScAssign "otherSamples" (SeInt 0), ScForEach "entry" (SeVar "sorted") [ScIf (SeIntGe (SeVar "shown") (pipe-ref ph-arts ph-params "Top")) [ScIncrementBy "otherSamples" entry-value, ScContinue] [], ScSequence s05-row]]
 
-  more-label : ShellExpr = SeConcat (SeConcat (SeLit "... (") (SeSub (SeProperty (SeVar "tally") "Count") (SeVar "Top"))) (SeLit " more)")
+  more-label : ShellExpr = SeConcat (SeConcat (SeLit "... (") (SeSub (SeProperty (pipe-ref ph-arts ph-params "tally") "Count") (pipe-ref ph-arts ph-params "Top"))) (SeLit " more)")
 
-  s05-tail : List ShellCmd = [ScIf (SeIntGt (SeVar "otherSamples") (SeInt 0)) [ScAssign "pct" (SeMul (SeDiv (SeVar "otherSamples") (SeVar "totalSamples")) (SeInt 100)), ScEcho (SeFormat row-format [SeVar "otherSamples", SeVar "pct", SeLit "", more-label])] [], ScEcho (SeLit "")]
+  s05-tail : List ShellCmd = [ScIf (SeIntGt (SeVar "otherSamples") (SeInt 0)) [ScAssign "pct" (SeMul (SeDiv (SeVar "otherSamples") (pipe-ref ph-arts ph-params "totalSamples")) (SeInt 100)), ScEcho (SeFormat row-format [SeVar "otherSamples", SeVar "pct", SeLit "", more-label])] [], ScEcho (SeLit "")]
 
-  s05 : List ShellCmd = [ScSequence s05-header, ScSequence s05-loop, ScSequence s05-tail]
+  s05-body : List ShellCmd = [ScBlank, ScSequence s05-header, ScSequence s05-loop, ScSequence s05-tail]
+
+  s05 : PipeStage = PipeStage { ps-name = "sort and print histogram", ps-why = "the hottest functions by sample count, with everything past -Top folded into one row", ps-in = ["tally", "totalSamples", "Top"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: Assembly
 
-  ph-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
-
-  ph-script : ShellScript = sh-script "profile-histogram" "Resolve profiler RIP addresses and print frequency histogram" ph-params ph-body
+  ph-pipe : Pipeline = Pipeline { pl-name = "profile-histogram", pl-doc = "Resolve profiler RIP addresses and print frequency histogram", pl-params = ph-params, pl-stages = [s01, s02, s03, s04, s05] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell ph-script)
+    print-line-uni (emit-powershell (pipeline-to-shell ph-pipe))
   end
 
 Page 1

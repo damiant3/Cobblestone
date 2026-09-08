@@ -6,86 +6,86 @@ const rf_half_h : i32 = 384;
 const rf_nobj : i32 = 4;
 fn rf_cx(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1071225241u));
+  return (0.0 - 0x1.b33332p+0f);
   } else {
-  return bitcast<f32>(1070386380u);
+  return 0x1.999998p+0f;
   }
   }
 }
 fn rf_cy(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1051931443u));
+  return (0.0 - 0x1.666666p-2f);
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1055286886u));
+  return (0.0 - 0x1.ccccccp-2f);
   }
   }
 }
 fn rf_cz(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(0u);
+  return 0.0;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1056964608u);
+  return 0x1.000000p-1f;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1053609164u));
+  return (0.0 - 0x1.999998p-2f);
   }
   }
 }
 fn rf_rad(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1065353216u);
+  return 0x1.000000p+0f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1059481190u);
+  return 0x1.4cccccp-1f;
   } else {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   }
   }
 }
 fn rf_col_r(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1064514355u);
+  return 0x1.e66666p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1048576000u);
+  return 0x1.000000p-2f;
   } else {
-  return bitcast<f32>(1061158912u);
+  return 0x1.800000p-1f;
   }
   }
 }
 fn rf_col_g(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1062836633u);
+  return 0x1.b33332p-1f;
   } else {
-  return bitcast<f32>(1053609164u);
+  return 0x1.999998p-2f;
   }
   }
 }
 fn rf_col_b(i : i32) -> f32 {
   if ((i == 0)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
   if ((i == 1)) {
-  return bitcast<f32>(1061997772u);
+  return 0x1.999998p-1f;
   } else {
-  return bitcast<f32>(1065017671u);
+  return 0x1.f5c28ep-1f;
   }
   }
 }
 fn rf_refl(i : i32) -> f32 {
   if ((i == 3)) {
-  return bitcast<f32>(1050253721u);
+  return 0x1.333332p-2f;
   } else {
-  return bitcast<f32>(1057803468u);
+  return 0x1.199998p-1f;
   }
 }
 fn rf_sphere_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i : i32) -> f32 {
@@ -96,26 +96,26 @@ fn rf_sphere_hit(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, i :
   let r = rf_rad(i);
   let c = ((((lx * lx) + (ly * ly)) + (lz * lz)) - (r * r));
   let disc = ((b * b) - c);
-  if ((disc < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((disc < 0.0)) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = ((bitcast<f32>(0u) - b) - sqrt(disc));
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = ((0.0 - b) - sqrt(disc));
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
 fn rf_plane_hit(oy : f32, dy : f32) -> f32 {
-  if ((dy > (bitcast<f32>(0u) - bitcast<f32>(953267991u)))) {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  if ((dy > (0.0 - 0x1.a36e2ep-14f))) {
+  return (0.0 - 0x1.000000p+0f);
   } else {
-  let t = (((bitcast<f32>(0u) - bitcast<f32>(1065353216u)) - oy) / dy);
-  if ((t > bitcast<f32>(981668462u))) {
+  let t = (((0.0 - 0x1.000000p+0f) - oy) / dy);
+  if ((t > 0x1.0624dcp-10f)) {
   return t;
   } else {
-  return (bitcast<f32>(0u) - bitcast<f32>(1065353216u));
+  return (0.0 - 0x1.000000p+0f);
   }
   }
 }
@@ -141,7 +141,7 @@ fn rf_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     return best_id;
     } else {
     let t = rf_hit(ox, oy, oz, dx, dy, dz, i);
-    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < bitcast<f32>(0u))), (t > bitcast<f32>(981668462u)));
+    let take = select(0, select(select(0, 1, (t < best_t)), 1, (best_t < 0.0)), (t > 0x1.0624dcp-10f));
     if ((take == 1)) {
     let _mv0 = ox;
     let _mv1 = oy;
@@ -185,6 +185,7 @@ fn rf_nearest(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, d
     }
     }
   }
+  return 0;
 }
 fn rf_shadowed(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, dz__a : f32, i__a : i32) -> i32 {
   var ox = ox__a;
@@ -199,7 +200,7 @@ fn rf_shadowed(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, 
     return 0;
     } else {
     let t = rf_sphere_hit(ox, oy, oz, dx, dy, dz, i);
-    if ((t > bitcast<f32>(981668462u))) {
+    if ((t > 0x1.0624dcp-10f)) {
     return 1;
     } else {
     let _mv0 = ox;
@@ -220,76 +221,77 @@ fn rf_shadowed(ox__a : f32, oy__a : f32, oz__a : f32, dx__a : f32, dy__a : f32, 
     }
     }
   }
+  return 0;
 }
 fn rf_clamp01(x : f32) -> f32 {
-  return max(bitcast<f32>(0u), min(bitcast<f32>(1065353216u), x));
+  return max(0.0, min(0x1.000000p+0f, x));
 }
 fn rf_pack(r : f32, g : f32, b : f32) -> i32 {
-  let ri = i32((rf_clamp01(r) * bitcast<f32>(1132396544u)));
-  let gi = i32((rf_clamp01(g) * bitcast<f32>(1132396544u)));
-  let bi = i32((rf_clamp01(b) * bitcast<f32>(1132396544u)));
+  let ri = i32((rf_clamp01(r) * 0x1.fe0000p+7f));
+  let gi = i32((rf_clamp01(g) * 0x1.fe0000p+7f));
+  let bi = i32((rf_clamp01(b) * 0x1.fe0000p+7f));
   return (((ri * 65536) + (gi * 256)) + bi);
 }
 fn rf_sky(dy : f32) -> i32 {
-  let h = rf_clamp01(((dy * bitcast<f32>(1056964608u)) + bitcast<f32>(1056964608u)));
-  return rf_pack((bitcast<f32>(1028443340u) + (h * bitcast<f32>(1031127695u))), (bitcast<f32>(1036831948u) + (h * bitcast<f32>(1042536202u))), (bitcast<f32>(1047904911u) + (h * bitcast<f32>(1053609164u))));
+  let h = rf_clamp01(((dy * 0x1.000000p-1f) + 0x1.000000p-1f));
+  return rf_pack((0x1.999998p-5f + (h * 0x1.eb851ep-5f)), (0x1.999998p-4f + (h * 0x1.47ae14p-3f)), (0x1.eb851ep-3f + (h * 0x1.999998p-2f)));
 }
 fn rf_checker(hx : f32, hz : f32) -> f32 {
-  let ix = i32((hx + bitcast<f32>(1115684864u)));
-  let iz = i32((hz + bitcast<f32>(1115684864u)));
+  let ix = i32((hx + 0x1.000000p+6f));
+  let iz = i32((hz + 0x1.000000p+6f));
   let s = (ix + iz);
   if (((s - ((s / 2) * 2)) == 0)) {
-  return bitcast<f32>(1051931443u);
+  return 0x1.666666p-2f;
   } else {
-  return bitcast<f32>(1059481190u);
+  return 0x1.4cccccp-1f;
   }
 }
 fn rf_un_r(p : i32) -> f32 {
-  return (f32(f32((p / 65536))) / bitcast<f32>(1132396544u));
+  return (f32(f32((p / 65536))) / 0x1.fe0000p+7f);
 }
 fn rf_un_g(p : i32) -> f32 {
-  return (f32(f32(((p / 256) - ((p / 65536) * 256)))) / bitcast<f32>(1132396544u));
+  return (f32(f32(((p / 256) - ((p / 65536) * 256)))) / 0x1.fe0000p+7f);
 }
 fn rf_un_b(p : i32) -> f32 {
-  return (f32(f32((p - ((p / 256) * 256)))) / bitcast<f32>(1132396544u));
+  return (f32(f32((p - ((p / 256) * 256)))) / 0x1.fe0000p+7f);
 }
 fn rf_local(ox : f32, oy : f32, oz : f32, dx : f32, dy : f32, dz : f32, id : i32, frame : i32) -> i32 {
   let t = rf_hit(ox, oy, oz, dx, dy, dz, id);
   let hx = (ox + (dx * t));
   let hy = (oy + (dy * t));
   let hz = (oz + (dz * t));
-  let nx = select(((hx - rf_cx(id)) / rf_rad(id)), bitcast<f32>(0u), (id == 3));
-  let ny = select(((hy - rf_cy(id)) / rf_rad(id)), bitcast<f32>(1065353216u), (id == 3));
-  let nz = select(((hz - rf_cz(id)) / rf_rad(id)), bitcast<f32>(0u), (id == 3));
+  let nx = select(((hx - rf_cx(id)) / rf_rad(id)), 0.0, (id == 3));
+  let ny = select(((hy - rf_cy(id)) / rf_rad(id)), 0x1.000000p+0f, (id == 3));
+  let nz = select(((hz - rf_cz(id)) / rf_rad(id)), 0.0, (id == 3));
   let br = select(rf_col_r(id), rf_checker(hx, hz), (id == 3));
   let bg = select(rf_col_g(id), rf_checker(hx, hz), (id == 3));
   let bb = select(rf_col_b(id), rf_checker(hx, hz), (id == 3));
-  let ang = (f32(f32(frame)) / bitcast<f32>(1103101952u));
-  let lx = (cos(ang) * bitcast<f32>(1058642329u));
-  let ly = bitcast<f32>(1063675494u);
-  let lz = (sin(ang) * bitcast<f32>(1058642329u));
+  let ang = (f32(f32(frame)) / 0x1.800000p+4f);
+  let lx = (cos(ang) * 0x1.333332p-1f);
+  let ly = 0x1.ccccccp-1f;
+  let lz = (sin(ang) * 0x1.333332p-1f);
   let ll = sqrt((((lx * lx) + (ly * ly)) + (lz * lz)));
   let ux = (lx / ll);
   let uy = (ly / ll);
   let uz = (lz / ll);
-  let ndl = max(bitcast<f32>(0u), (((nx * ux) + (ny * uy)) + (nz * uz)));
-  let sh = rf_shadowed((hx + (nx * bitcast<f32>(990057070u))), (hy + (ny * bitcast<f32>(990057070u))), (hz + (nz * bitcast<f32>(990057070u))), ux, uy, uz, 0);
-  let lit = select((bitcast<f32>(1046562734u) + (ndl * bitcast<f32>(1063675494u))), bitcast<f32>(1046562734u), (sh == 1));
+  let ndl = max(0.0, (((nx * ux) + (ny * uy)) + (nz * uz)));
+  let sh = rf_shadowed((hx + (nx * 0x1.0624dcp-9f)), (hy + (ny * 0x1.0624dcp-9f)), (hz + (nz * 0x1.0624dcp-9f)), ux, uy, uz, 0);
+  let lit = select((0x1.c28f5cp-3f + (ndl * 0x1.ccccccp-1f)), 0x1.c28f5cp-3f, (sh == 1));
   return rf_pack((br * lit), (bg * lit), (bb * lit));
 }
 fn rf_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / rf_width) * rf_width));
   let py = (gid / rf_width);
-  let fx = (f32(f32((px - rf_half_w))) / bitcast<f32>(1136656384u));
-  let fy = (f32(f32((rf_half_h - py))) / bitcast<f32>(1136656384u));
-  let rl = sqrt((((fx * fx) + (fy * fy)) + bitcast<f32>(1077474754u)));
+  let fx = (f32(f32((px - rf_half_w))) / 0x1.800000p+8f);
+  let fy = (f32(f32((rf_half_h - py))) / 0x1.800000p+8f);
+  let rl = sqrt((((fx * fx) + (fy * fy)) + 0x1.71eb84p+1f));
   let dx = (fx / rl);
   let dy = (fy / rl);
-  let dz = (bitcast<f32>(1071225241u) / rl);
-  let ox = bitcast<f32>(0u);
-  let oy = bitcast<f32>(1060320051u);
-  let oz = (bitcast<f32>(0u) - bitcast<f32>(1082130432u));
-  let id0 = rf_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let dz = (0x1.b33332p+0f / rl);
+  let ox = 0.0;
+  let oy = 0x1.666666p-1f;
+  let oz = (0.0 - 0x1.000000p+2f);
+  let id0 = rf_nearest(ox, oy, oz, dx, dy, dz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   if ((id0 < 0)) {
   return rf_sky(dy);
   } else {
@@ -297,23 +299,23 @@ fn rf_render(gid : i32, frame : i32) -> i32 {
   let hx = (ox + (dx * t0));
   let hy = (oy + (dy * t0));
   let hz = (oz + (dz * t0));
-  let nx = select(((hx - rf_cx(id0)) / rf_rad(id0)), bitcast<f32>(0u), (id0 == 3));
-  let ny = select(((hy - rf_cy(id0)) / rf_rad(id0)), bitcast<f32>(1065353216u), (id0 == 3));
-  let nz = select(((hz - rf_cz(id0)) / rf_rad(id0)), bitcast<f32>(0u), (id0 == 3));
+  let nx = select(((hx - rf_cx(id0)) / rf_rad(id0)), 0.0, (id0 == 3));
+  let ny = select(((hy - rf_cy(id0)) / rf_rad(id0)), 0x1.000000p+0f, (id0 == 3));
+  let nz = select(((hz - rf_cz(id0)) / rf_rad(id0)), 0.0, (id0 == 3));
   let p0 = rf_local(ox, oy, oz, dx, dy, dz, id0, frame);
   let dn = (((dx * nx) + (dy * ny)) + (dz * nz));
-  let rx = (dx - ((bitcast<f32>(1073741824u) * dn) * nx));
-  let ry = (dy - ((bitcast<f32>(1073741824u) * dn) * ny));
-  let rz = (dz - ((bitcast<f32>(1073741824u) * dn) * nz));
-  let sx = (hx + (nx * bitcast<f32>(994352037u)));
-  let sy = (hy + (ny * bitcast<f32>(994352037u)));
-  let sz = (hz + (nz * bitcast<f32>(994352037u)));
-  let id1 = rf_nearest(sx, sy, sz, rx, ry, rz, 0, (0 - 1), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)));
+  let rx = (dx - ((0x1.000000p+1f * dn) * nx));
+  let ry = (dy - ((0x1.000000p+1f * dn) * ny));
+  let rz = (dz - ((0x1.000000p+1f * dn) * nz));
+  let sx = (hx + (nx * 0x1.89374ap-9f));
+  let sy = (hy + (ny * 0x1.89374ap-9f));
+  let sz = (hz + (nz * 0x1.89374ap-9f));
+  let id1 = rf_nearest(sx, sy, sz, rx, ry, rz, 0, (0 - 1), (0.0 - 0x1.000000p+0f));
   let pr = select(rf_local(sx, sy, sz, rx, ry, rz, id1, frame), rf_sky(ry), (id1 < 0));
   let k = rf_refl(id0);
-  let cr = ((rf_un_r(p0) * (bitcast<f32>(1065353216u) - k)) + (rf_un_r(pr) * k));
-  let cg = ((rf_un_g(p0) * (bitcast<f32>(1065353216u) - k)) + (rf_un_g(pr) * k));
-  let cb = ((rf_un_b(p0) * (bitcast<f32>(1065353216u) - k)) + (rf_un_b(pr) * k));
+  let cr = ((rf_un_r(p0) * (0x1.000000p+0f - k)) + (rf_un_r(pr) * k));
+  let cg = ((rf_un_g(p0) * (0x1.000000p+0f - k)) + (rf_un_g(pr) * k));
+  let cb = ((rf_un_b(p0) * (0x1.000000p+0f - k)) + (rf_un_b(pr) * k));
   return rf_pack(cr, cg, cb);
   }
 }

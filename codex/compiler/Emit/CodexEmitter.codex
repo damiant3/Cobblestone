@@ -303,7 +303,7 @@ Section: Expression Emission
     is IrName (n) (ty) (sp) -> n
     is IrBinary (op) (l) (r) (ty) (sp) -> codex-emit-binary op l r ctors indent
     is IrNegate (operand) (ty) (sp) -> "-(" & codex-emit-expr-at operand ctors indent (depth + 1) & ")"
-    is IrIf (c) (t) (el) (ty) (sp) -> codex-emit-if c t el ctors indent 0
+    is IrIf (c) (t) (el) (ty) (sp) -> if is-negated-eq-call c t el then codex-emit-noteq c ctors indent else codex-emit-if c t el ctors indent 0
     is IrLet (name) (ty) (val) (body) (sp) -> codex-emit-let name val body ctors indent
     is IrApply (f) (a) (ty) (sp) -> codex-emit-apply e ctors indent
     is IrLambda (params) (body) (ty) (sp) -> codex-emit-lambda params body ctors indent
@@ -336,8 +336,9 @@ Section: Binary Operators
    when e
     is IrBinary (child-op) (l2) (r2) (ty) (sp) -> if bin-op-prec child-op < bin-op-prec parent-op then "(" & codex-emit-expr e ctors indent & ")"
     else codex-emit-expr e ctors indent
-    is IrIf (c) (t) (el) (ty) (sp) -> "(" & codex-emit-expr e ctors indent & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> if is-negated-eq-call c t el then wrap-binary-left parent-op (IrBinary IrNotEq (eq-call-arg c 0) (eq-call-arg c 1) ty sp) ctors indent else "(" & codex-emit-expr e ctors indent & ")"
     is IrApply (f2) (a2) (ty) (sp) -> if apply-prints-as-for e then "(" & codex-emit-expr e ctors indent & ")"
+    else if apply-prints-as-eq e then wrap-binary-left parent-op (IrBinary IrEq (eq-call-arg e 0) (eq-call-arg e 1) ty sp) ctors indent
     else codex-emit-expr e ctors indent
     is otherwise -> codex-emit-expr e ctors indent
 
@@ -346,8 +347,9 @@ Section: Binary Operators
    when e
     is IrBinary (child-op) (l2) (r2) (ty) (sp) -> if needs-right-wrap parent-op child-op then "(" & codex-emit-expr e ctors indent & ")"
     else codex-emit-expr e ctors indent
-    is IrIf (c) (t) (el) (ty) (sp) -> "(" & codex-emit-expr e ctors indent & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> if is-negated-eq-call c t el then wrap-binary-right parent-op (IrBinary IrNotEq (eq-call-arg c 0) (eq-call-arg c 1) ty sp) ctors indent else "(" & codex-emit-expr e ctors indent & ")"
     is IrApply (f2) (a2) (ty) (sp) -> if apply-prints-as-for e then "(" & codex-emit-expr e ctors indent & ")"
+    else if apply-prints-as-eq e then wrap-binary-right parent-op (IrBinary IrEq (eq-call-arg e 0) (eq-call-arg e 1) ty sp) ctors indent
     else codex-emit-expr e ctors indent
     is otherwise -> codex-emit-expr e ctors indent
 
@@ -438,7 +440,8 @@ Section: If/Then/Else
    let acc2 = list-push acc ("if " & codex-emit-expr c ctors indent & " then " & codex-emit-expr t ctors indent)
    in when el
     is IrIf (c2) (t2) (el2) (ty) (sp) ->
-     codex-emit-if-chain c2 t2 el2 ctors indent else-offset (list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else "))
+     if is-negated-eq-call c2 t2 el2 then list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else " & codex-emit-noteq c2 ctors indent)
+     else codex-emit-if-chain c2 t2 el2 ctors indent else-offset (list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else "))
     is otherwise ->
      list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else " & codex-emit-expr el ctors indent)
 
@@ -459,7 +462,8 @@ Section: Let
     is IrLet (name2) (ty2) (val2) (body2) (sp2) ->
      codex-emit-let-chain name2 val2 body2 ctors indent (list-push acc2 ("\n" & make-indent indent & "in "))
     is IrIf (c) (t) (el) (ty) (sp) ->
-     list-push acc2 ("\n" & make-indent indent & "in " & codex-emit-if c t el ctors indent 3)
+     if is-negated-eq-call c t el then list-push acc2 ("\n" & make-indent indent & "in " & codex-emit-noteq c ctors indent)
+     else list-push acc2 ("\n" & make-indent indent & "in " & codex-emit-if c t el ctors indent 3)
     is otherwise ->
      list-push acc2 ("\n" & make-indent indent & "in " & codex-emit-expr body ctors indent)
 
@@ -486,7 +490,37 @@ Section: Apply
    in let args = chain.args
    in if is-tuple-ctor func (list-length args) then "(" & codex-emit-tuple-expr-elems args ctors indent 0 (list-length args) & ")"
    else if is-for-expr func args then codex-emit-for-expr args ctors indent
+   else if is-eq-helper-call func args then codex-emit-binary IrEq (list-at args 0) (list-at args 1) ctors indent
    else codex-emit-expr func ctors indent & codex-emit-apply-args args ctors indent 0 (list-length args) (is-ctor-name func ctors)
+
+  is-eq-helper-call : IRExpr, List IRExpr -> Boolean
+  is-eq-helper-call (func) (args) =
+   if list-length args == 2 then when func
+    is IrName (n) (ty) (sp) -> text-starts-with n "__eq_"
+    is otherwise -> False
+   else False
+
+  apply-prints-as-eq : IRExpr -> Boolean
+  apply-prints-as-eq (e) =
+   let chain = collect-apply-chain e []
+   in is-eq-helper-call (chain.root) (chain.args)
+
+  eq-call-arg : IRExpr, Integer -> IRExpr
+  eq-call-arg (e) (i) =
+   let chain = collect-apply-chain e []
+   in list-at (chain.args) i
+
+  is-negated-eq-call : IRExpr, IRExpr, IRExpr -> Boolean
+  is-negated-eq-call (c) (t) (el) =
+   when t
+    is IrBoolLit (tb) (ts) -> when el
+     is IrBoolLit (eb) (es) -> if tb then False else if eb then apply-prints-as-eq c else False
+     is otherwise -> False
+    is otherwise -> False
+
+  codex-emit-noteq : IRExpr, List Text, Integer -> Text
+  codex-emit-noteq (c) (ctors) (indent) =
+   codex-emit-binary IrNotEq (eq-call-arg c 0) (eq-call-arg c 1) ctors indent
 
   is-for-expr : IRExpr, List IRExpr -> Boolean
   is-for-expr (func) (args) =

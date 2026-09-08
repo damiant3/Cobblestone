@@ -1,0 +1,77 @@
+Chapter: SheetFormulaTest
+  cites Sheets chapter CellFormula
+  cites Foreword chapter CCE
+
+ The parser answers a TREE, so every line prints the fully parenthesised
+ rendering rather than a verdict. A precedence claim can only fail if the
+ shape is visible: `=1+2*3` and `=(1+2)*3` print differently, and an
+ assertion that both "parse ok" is satisfied by a parser with no
+ precedence at all.
+
+ What each line holds. `*` binds tighter than `+`, and `-` associates to
+ the LEFT, which are the two a hand-written descent gets wrong in
+ opposite directions. A column is base 26 with no zero digit, so `AA` is
+ column 26 and not column 0. A range keeps both corners. A comparison
+ does not chain. A formula is consumed whole, so a trailing operand is a
+ refusal rather than a silently shorter parse.
+
+ The refusal lines print the OFFSET as well as the message, because a
+ message with no position is the shape that makes two different defects
+ read the same.
+
+ The sabotage: make `fx-cmp-tail` answer the expression rather than
+ refusing and the chain line turns into a tree while every other line
+ stands; drop the `fx-end` check and the trailing-operand line turns from
+ a refusal into `R0C0`; give `fx-acc-col` a base of 10 and only the `AA`
+ line moves.
+
+Section: Body
+
+  sf-say : Text -> Text
+  sf-say (src) =
+    let p = formula-parse src
+    in if p.px-ok then formula-show (p.px-expr)
+    else "REFUSED at " & show (p.px-at) & ": " & p.px-msg
+
+  sf-ref-names : List CellRef, Integer, Integer, Text -> Text
+  sf-ref-names (rs) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == 0 then sf-ref-names rs (i + 1) n ((list-at rs i).cr-name)
+    else sf-ref-names rs (i + 1) n (acc & " " & (list-at rs i).cr-name)
+
+  sf-refs : Text -> Text
+  sf-refs (src) =
+    let p = formula-parse src
+    in if p.px-ok == False then "REFUSED"
+    else let rs = formula-refs (p.px-expr) []
+    in sf-ref-names rs 0 (list-length rs) "(none)"
+
+  sf-quote : Text
+  sf-quote = utf8-bytes-to-text [34]
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let dq = sf-quote
+    in act
+      print-line-uni ("precedence: " & sf-say "=1+2*3" & "   and   " & sf-say "=(1+2)*3")
+      print-line-uni ("subtraction associates left: " & sf-say "=1-2-3")
+      print-line-uni ("division too: " & sf-say "=100/5/2")
+      print-line-uni ("unary minus binds tighter than *: " & sf-say "=-A1*2")
+      print-line-uni ("a column is base 26: A1 is " & sf-say "=A1" & "  Z1 is " & sf-say "=Z1" & "  AA10 is " & sf-say "=AA10")
+      print-line-uni ("a range keeps both corners: " & sf-say "=SUM(A1:B9)")
+      print-line-uni ("a call takes expressions and nests: " & sf-say "=IF(A1>0,SUM(B1:B9),0)")
+      print-line-uni ("a call can take no arguments: " & sf-say "=NOW()")
+      print-line-uni ("one comparison is fine: " & sf-say "=A1<=B1")
+      print-line-uni ("and the other widths: " & sf-say "=A1<>B1" & " " & sf-say "=A1>=B1" & " " & sf-say "=A1=B1")
+      print-line-uni ("comparison does not chain: " & sf-say "=A1<B1<C1")
+      print-line-uni ("a text literal, with a doubled quote inside: " & sf-say ("=" & dq & "he said " & dq & dq & "hi" & dq & dq & dq))
+      print-line-uni ("whitespace is not syntax: " & sf-say "=  A1  +  2  ")
+      print-line-uni ("a formula is consumed whole: " & sf-say "=A1 B1")
+      print-line-uni ("a missing parenthesis: " & sf-say "=(1+2")
+      print-line-uni ("rows start at 1: " & sf-say "=A0")
+      print-line-uni ("a reference wants a row: " & sf-say "=A")
+      print-line-uni ("a formula starts with =: " & sf-say "A1+1")
+      print-line-uni ("the edge set of =SUM(A1:B9)+C3 is " & sf-refs "=SUM(A1:B9)+C3")
+      print-line-uni ("a formula with no references: " & sf-refs "=1+2")
+    end

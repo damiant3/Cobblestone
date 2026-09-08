@@ -39,7 +39,8 @@ Section: The Programs
     GprEntry { ge-group = "Accessories", ge-label = "Calculator", ge-scan = 46, ge-icon = "grid" },
     GprEntry { ge-group = "Accessories", ge-label = "Calendar", ge-scan = 38, ge-icon = "calendar" },
     GprEntry { ge-group = "Accessories", ge-label = "Aquarium", ge-scan = 16, ge-icon = "eye" },
-    GprEntry { ge-group = "Productivity", ge-label = "Editor", ge-scan = 18, ge-icon = "edit" },
+    GprEntry { ge-group = "Accessories", ge-label = "Sheets", ge-scan = 31, ge-icon = "grid" },
+    GprEntry { ge-group = "Productivity", ge-label = "Text Editor", ge-scan = 18, ge-icon = "edit" },
     GprEntry { ge-group = "Productivity", ge-label = "Issues", ge-scan = 23, ge-icon = "bell" },
     GprEntry { ge-group = "Productivity", ge-label = "Files", ge-scan = 33, ge-icon = "folder" },
     GprEntry { ge-group = "Productivity", ge-label = "Console", ge-scan = 20, ge-icon = "terminal" },
@@ -48,7 +49,9 @@ Section: The Programs
     GprEntry { ge-group = "Graphics", ge-label = "3D View", ge-scan = 4, ge-icon = "image" },
     GprEntry { ge-group = "Graphics", ge-label = "Diffusion", ge-scan = 32, ge-icon = "star" },
     GprEntry { ge-group = "Settings", ge-label = "Appearance", ge-scan = 30, ge-icon = "settings" },
-    GprEntry { ge-group = "Settings", ge-label = "System Info", ge-scan = 50, ge-icon = "info" }
+    GprEntry { ge-group = "Settings", ge-label = "System Info", ge-scan = 50, ge-icon = "info" },
+    GprEntry { ge-group = "Settings", ge-label = "Web Server", ge-scan = 17, ge-icon = "cloud" },
+    GprEntry { ge-group = "Settings", ge-label = "Program Runner", ge-scan = 25, ge-icon = "code" }
   ]
 
   gpr-count : Integer
@@ -142,7 +145,15 @@ Section: The Tree
  `gpr-split` is an ENTRY index and must land on a group boundary, or the
  group whose rows it cuts loses its heading in the second column.
 
-  gpr-split : Integer = 10
+ THE GROUP A NEW ENTRY JOINS IS A MENU DECISION, NOT A TASTE ONE. The start
+ menu's height is the row count of the group holding the SELECTION, so an
+ entry added to the largest group raises the worst case and an entry added
+ to a smaller one does not. Sheets sits in Accessories beside the
+ Calculator for that reason, measured: as a seventh Productivity entry it
+ put the laid menu's bottom past the taskbar band at 1600 wide, and
+ `desk-menu-groups` failed on it (val, 2026-09-08).
+
+  gpr-split : Integer = 11
 
   gpr-rows : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
   gpr-rows (i) (stop) (sel) (acc) =
@@ -210,9 +221,42 @@ Section: The Menu Tree
     in let acc2 = if e.ge-group == open then list-push acc1 (gpr-row i sel) else acc1
     in gpr-menu-rows (i + 1) sel open acc2
 
-  gpr-menu-tree : Integer -> WidgetNode
-  gpr-menu-tree (ps) =
-    widget-panel "gpr-menu" DirColumn 2 (gpr-menu-rows 0 (gpr-sel ps) (gpr-open-group ps) [])
+ ACROSS, THE GROUPS ARE COLUMNS AND THE COLUMNS ARE THE ROW. Damian,
+ 2026-09-07, for a band docked left or right: "in left and right mode should
+ layout the cobblestone menu horizontally instead of vertically". Flowing the
+ rows above straight into a `DirRow` is the wrong reading of that: the open
+ group's entries would sit inline BETWEEN the next two headings, so the list
+ would say which group it belongs to only by position. A heading with its own
+ entries beneath it says it structurally, and a closed group is then a column
+ of one.
+
+ The column ids take their own prefix. `gpr-id-scan` and `gpr-group-scan` both
+ match on a prefix, so a third kind of node sharing either one would answer a
+ click meant for a row or a heading; this is the same collision the heading
+ prefix exists to avoid, one level up.
+
+  gpr-col-prefix : Text = "gprc-"
+
+  gpr-group-items : Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  gpr-group-items (grp) (sel) (i) (acc) =
+    if i >= gpr-count then acc
+    else if (gpr-at i).ge-group == grp then gpr-group-items grp sel (i + 1) (list-push acc (gpr-row i sel))
+    else gpr-group-items grp sel (i + 1) acc
+
+  gpr-menu-cols : Integer, Integer, Text, List WidgetNode -> List WidgetNode
+  gpr-menu-cols (i) (sel) (open) (acc) =
+    if i >= gpr-count then acc
+    else if gpr-heads i == False then gpr-menu-cols (i + 1) sel open acc
+    else
+      let g = (gpr-at i).ge-group
+      in let head = list-push [] (gpr-group-row i (g == open))
+      in let kids = if g == open then gpr-group-items g sel 0 head else head
+      in gpr-menu-cols (i + 1) sel open (list-push acc (widget-panel (gpr-col-prefix & g) DirColumn 2 kids))
+
+  gpr-menu-tree : Integer, Boolean -> WidgetNode
+  gpr-menu-tree (ps) (across) =
+    if across then widget-panel "gpr-menu" DirRow 8 (gpr-menu-cols 0 (gpr-sel ps) (gpr-open-group ps) [])
+    else widget-panel "gpr-menu" DirColumn 2 (gpr-menu-rows 0 (gpr-sel ps) (gpr-open-group ps) [])
 
 Section: Keys
 

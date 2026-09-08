@@ -158,6 +158,10 @@ static int mouse_captured = 0;
    client area and every move is measured from there, so the motion is unbounded
    and there is exactly one pointer to look at. */
 static int mouse_grabbed = 0;
+/* Whether the live pointer position came from a window message rather than
+   from a `-mouse` timeline. Only the former is synced against the guest's own
+   cursor; see the pointer-sync block. */
+static int mouse_from_window = 0;
 static int grab_warping = 0;   /* our own SetCursorPos raises WM_MOUSEMOVE too */
 static volatile unsigned char pending_mouse[3] = {0};
 static volatile int pending_mouse_valid = 0;
@@ -1311,12 +1315,18 @@ static int hid_kbd_carries_keys(int kind_hid_or_hub) {
 static long hid_mouse_reports = 0;
 static long xhci_mouse_doorbells = 0;
 static int hid_mouse_last_x = 0, hid_mouse_last_y = 0;
+/* Where the guest's cursor actually IS, read back from its own pointer
+   mailbox. Defined after the GOP geometry it bounds against; declared here
+   because the report builder below is the first thing that wants it. */
+static int hid_mouse_sync_guest(void);
+static int hid_mouse_adrift(void);
 static int hid_mouse_delta_clamp(int d) {
     if (d > 127) return 127;
     if (d < -127) return -127;
     return d;
 }
 static void build_hid_mouse_report(unsigned char *report) {
+    hid_mouse_sync_guest();
     int dx = hid_mouse_delta_clamp(pending_mouse_abs_x - hid_mouse_last_x);
     int dy = hid_mouse_delta_clamp(pending_mouse_abs_y - hid_mouse_last_y);
     hid_mouse_last_x += dx;
@@ -1435,6 +1445,62 @@ static int usb_bot_census  = 0;
 static FILE *census_fp = NULL;
 
 static FILE *census_out(void) { return census_fp ? census_fp : stderr; }
+
+/* -usb-writeback: BOT writes land in the in-memory image and become durable
+   only when SYNCHRONIZE CACHE commits them. Whatever is still uncommitted
+   when the machine stops is lost, which is what a real write-back cache does
+   at power-off. Off by default, so every existing arm keeps the write-through
+   target it was written against.
+
+   THE DEFAULT TARGET CANNOT EXPRESS A MISSING FLUSH, and that is why this
+   exists. Write-through makes the bytes durable whether or not the guest ever
+   asks for a commit, so a run with no SYNCHRONIZE CACHE and a run with one
+   are the same colour here, while sittings 13 and 14 lost the bank on the
+   board. L-FREEDOM: the freedom the standard leaves a device is exactly where
+   the bed and the board diverge, and a green bed says nothing about it.
+
+   The dirty region is tracked as ONE span rather than a list of extents. A
+   commit then writes back a superset of what was dirtied, and that is exact
+   rather than approximate: the bytes in between were not modified, so
+   ide.data already equals the file there and coalescing can lose nothing. */
+static int usb_writeback = 0;
+static unsigned long long usb_wb_lo = 0, usb_wb_hi = 0;   /* dirty span, [lo,hi); hi==0 is empty */
+static unsigned long long usb_wb_cached_bytes = 0;        /* written into cache since the last commit */
+static unsigned long long usb_wb_commits = 0;             /* SYNCHRONIZE CACHE commands answered GOOD */
+static unsigned long long usb_wb_committed_bytes = 0;     /* span bytes actually written back */
+
+/* EVERY LINE GOES TO THE CENSUS AND IS FLUSHED, not to an exit summary. The
+   diag harness KILLS codex-vm the moment END appears on the wire, so a killed
+   process never reaches its summary block -- a reading printed only there is a
+   detector wired to a channel nobody reads (L-UNHEARD), and that kill is
+   itself the power-off this model exists to represent. The arm reads the
+   census: `commit` lines are the commits, and a trailing `cached` with no
+   `commit` after it is the loss. */
+static void usb_wb_dirty(unsigned long long off, unsigned int n) {
+    if (usb_wb_hi == 0) { usb_wb_lo = off; usb_wb_hi = off + n; }
+    else {
+        if (off < usb_wb_lo) usb_wb_lo = off;
+        if (off + n > usb_wb_hi) usb_wb_hi = off + n;
+    }
+    usb_wb_cached_bytes += n;
+    fprintf(census_out(), "USB WRITEBACK: cached off=%llu len=%u pending-bytes=%llu\n",
+            off, n, usb_wb_cached_bytes);
+    fflush(census_out());
+}
+
+static void usb_wb_commit(void) {
+    usb_wb_commits++;
+    if (usb_wb_hi > usb_wb_lo) {
+        ide_flush(&ide, (size_t)usb_wb_lo, (size_t)(usb_wb_hi - usb_wb_lo));
+        usb_wb_committed_bytes += usb_wb_hi - usb_wb_lo;
+    }
+    fprintf(census_out(), "USB WRITEBACK: commit n=%llu off=%llu len=%llu pending-was=%llu\n",
+            usb_wb_commits, usb_wb_lo, usb_wb_hi > usb_wb_lo ? usb_wb_hi - usb_wb_lo : 0,
+            usb_wb_cached_bytes);
+    fflush(census_out());
+    usb_wb_lo = 0; usb_wb_hi = 0; usb_wb_cached_bytes = 0;
+}
+
 static int usb_bot_die_len = 0;
 /* The LBA at or above which -usb-bot-die-len fires. 0 means anywhere, which
    is the unaimed lever; see the census note at the die check. */
@@ -2317,8 +2383,13 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                         hid_nak_ctl = xcur;
                         /* The mouse builder consumes the delta and the press
                            latch, so its NAK gate is the sample-freshness flag
-                           checked BEFORE building, not a byte compare after. */
-                        if (is_combo_mouse && !hid_mouse_fresh) break;
+                           checked BEFORE building, not a byte compare after.
+                           `hid_mouse_adrift` is the second half of that gate
+                           and it is what makes the pointers agree WITHOUT
+                           input: freshness only rises when the host pointer
+                           moves, so at startup the two cursors would sit apart
+                           until the user happened to move the mouse. */
+                        if (is_combo_mouse && !hid_mouse_fresh && !hid_mouse_adrift()) break;
                     }
                     if (is_combo_mouse) {
                         memset(report, 0, 8);
@@ -2394,7 +2465,8 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                             {
                                 unsigned char op = bot.cb[0];
                                 if (op != 0x00 && op != 0x03 && op != 0x12 &&
-                                    op != 0x25 && op != 0x28 && op != 0x2A) {
+                                    op != 0x25 && op != 0x28 && op != 0x2A &&
+                                    op != 0x35) {
                                     bot.csw_status = 1;
                                     bot.data_done = bot.xfer_len;
                                 }
@@ -2406,6 +2478,14 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                     bot.csw_status = 1;
                                     bot.data_done = bot.xfer_len;
                                 }
+                                /* SYNCHRONIZE CACHE (10) moves no data and
+                                   answers GOOD. Under the write-through
+                                   default it commits nothing because nothing
+                                   is pending; under -usb-writeback it is the
+                                   only thing that makes a write durable. The
+                                   commit is gated on the flag so that no
+                                   existing arm's census gains a line. */
+                                if (op == 0x35 && !bot.csw_status && usb_writeback) usb_wb_commit();
                             }
                         } else if (bot.active && !bot.dir_in && bot.data_done < bot.xfer_len) {
                             unsigned int n = (unsigned int)buf_len;
@@ -2416,7 +2496,8 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                 unsigned long long disk_off = (unsigned long long)lba * 512 + bot.data_done;
                                 if (disk_off + n <= ide.size) {
                                     memcpy(ide.data + disk_off, buf, n);
-                                    ide_flush(&ide, (size_t)disk_off, n); /* durable, like IDE writes */
+                                    if (usb_writeback) usb_wb_dirty(disk_off, n); /* durable only at SYNCHRONIZE CACHE */
+                                    else ide_flush(&ide, (size_t)disk_off, n);    /* durable, like IDE writes */
                                 } else {
                                     bot.csw_status = 1;
                                     fprintf(stderr, "BOT: WRITE_10 out of range lba=%u done=%u n=%u\n", lba, bot.data_done, n);
@@ -3840,6 +3921,8 @@ static void ap_force_wake(int cpu_id) {
 
 static volatile LONG ap_stop_requested = 0;
 
+static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp);  /* served on APs too, plugs 2.45 */
+
 static void ap_thread_func(void *arg) {
     int cpu_id = (int)(intptr_t)arg;
     WHV_RUN_VP_EXIT_CONTEXT ctx;
@@ -3928,33 +4011,23 @@ static void ap_thread_func(void *arg) {
             break;
         case WHvRunVpExitReasonX64IoPortAccess:
             {
-                /* This used to advance RIP and discard the access. An AP that
-                 * faulted therefore ran its exception handler, wrote the dump to
-                 * the UART -- and the host threw every byte away. A fault on an
-                 * application processor was invisible, which is not the same as
-                 * it not happening. Serve COM1 so an AP can be heard.
+                /* An AP gets the SAME device models the boot processor gets
+                 * (plugs 2.45). This used to serve COM1 and answer 0 to every
+                 * other port, so a process claimed by an AP read the NE2000's
+                 * CR, ISR and BNRY as 0, 0, 0 where proc 0 read 2, 0, 70, and a
+                 * 600,000-round poll of net-driver-recv-frame on an AP saw no
+                 * frame while the boot processor's saw the host's SYNs. A board's
+                 * application processors do port I/O, so the bed was LESS capable
+                 * than the target in exactly the respect under test (L-ARENA),
+                 * and every service that had to reach a device was pinned to
+                 * core 0 to work around it.
                  *
-                 * Only the serial port is served here. The full handle_io() is
-                 * the boot processor's: it drives stateful devices (IDE, NIC,
-                 * the GPU rasterizer) through a shadow register file for VP 0
-                 * and is not safe to re-enter from another thread. An AP has no
-                 * business touching those; it has business reporting that it
-                 * died. */
-                int port = ctx.IoPortAccess.PortNumber;
-                int is_out = (ctx.IoPortAccess.AccessInfo.IsWrite != 0);
-                WHV_REGISTER_NAME rn[2] = { WHvX64RegisterRax, WHvX64RegisterRip };
-                WHV_REGISTER_VALUE rv[2];
-                WHvGetVirtualProcessorRegisters(partition, cpu_id, rn, 2, rv);
-                if (is_out) {
-                    if (port == 0x3F8) output_buf_write((unsigned char)rv[0].Reg64);
-                } else if (port == 0x3FD) {
-                    rv[0].Reg64 = 0x60;   /* THR + TSR empty: transmit ready */
-                } else {
-                    rv[0].Reg64 = 0;
-                }
-                rv[1].Reg64 = ctx.VpContext.Rip +
-                    (ctx.VpContext.InstructionLength ? ctx.VpContext.InstructionLength : 1);
-                WHvSetVirtualProcessorRegisters(partition, cpu_id, rn, 2, rv);
+                 * The two things that made this unsafe are both gone.
+                 * handle_io took its VP by constant, writing VP 0's registers
+                 * whichever processor had faulted; it takes the VP now. And the
+                 * device models are shared mutable state, so handle_io
+                 * serialises on io_lock whenever there is more than one core. */
+                handle_io(&ctx, (UINT32)cpu_id);
             }
             break;
         case WHvRunVpExitReasonCanceled:
@@ -6969,6 +7042,84 @@ static void vga_paint(HWND hwnd) {
     EndPaint(hwnd, &ps);
 }
 
+/* ══ Pointer sync ══
+   The two pointers used to start apart and STAY apart. The guest's is a
+   relative boot mouse: it folds each signed delta into a position of its own
+   and clamps that to the screen. The host sent the delta between where the
+   host pointer is and `hid_mouse_last`, a host-side tally of what it had
+   already sent -- dead reckoning, never checked against the guest. Any
+   disagreement was therefore permanent: a report the guest never collected, a
+   delta the guest clamped at an edge and the host counted as travelled, or
+   simply a guest cursor that did not begin at the origin the tally assumes.
+   Damian, 2026-09-07: "they currently don't sync at startup, so they are
+   always pointing in different parts of the screen".
+
+   The guest already publishes the answer. `GopUsbMouse`'s pointer mailbox at
+   guest physical 36736 carries the magic "PTR1", then the folded x, y and
+   buttons, written every time the guest consumes a report. Reading it back
+   closes the loop: the delta is measured against where the guest's cursor IS
+   rather than against what the host believes it sent, so a disagreement
+   corrects itself on the next report instead of persisting for the session.
+
+   The ordering is what makes this safe. The guest's cycle is arm, collect,
+   fold, publish, arm again, and the host builds a report when the guest arms,
+   so the value read here always reflects every report already delivered. It
+   cannot double-count a delta that is still in flight. */
+#define PTR_CELLS_ADDR   36736
+#define PTR_CELLS_MAGIC  0x31525450u   /* "PTR1" little-endian */
+
+static int hid_mouse_synced_once = 0;
+static int hid_mouse_agreed_once = 0;
+
+static int hid_mouse_sync_guest(void) {
+    unsigned char *p;
+    unsigned int magic;
+    int gx, gy;
+    if (!mouse_from_window) return 0;   /* scripted timelines keep dead reckoning */
+    if (!guest_mem) return 0;
+    if ((size_t)(PTR_CELLS_ADDR + 16) > guest_mem_size) return 0;
+    p = (unsigned char *)guest_mem + PTR_CELLS_ADDR;
+    memcpy(&magic, p, 4);
+    if (magic != PTR_CELLS_MAGIC) return 0;   /* driver not up yet */
+    memcpy(&gx, p + 4, 4);
+    memcpy(&gy, p + 8, 4);
+    if (gx < 0 || gy < 0 || gx >= gop_width || gy >= gop_height) return 0;
+    /* Once, on the first successful read: proof that the mailbox was found and
+       what it disagreed with. A sync that silently never fires leaves exactly
+       the behaviour it was written to fix, and looks identical to one that
+       works. */
+    if (!hid_mouse_synced_once) {
+        hid_mouse_synced_once = 1;
+        fprintf(stderr, "PTR: mailbox live at 0x%x, guest at %d,%d host at %d,%d\n",
+                PTR_CELLS_ADDR, gx, gy, pending_mouse_abs_x, pending_mouse_abs_y);
+    }
+    /* And once more when they first agree, because "the mailbox is readable"
+       and "the cursors track" are different claims and only the second one is
+       the fix. */
+    if (hid_mouse_synced_once && !hid_mouse_agreed_once &&
+        gx == pending_mouse_abs_x && gy == pending_mouse_abs_y) {
+        hid_mouse_agreed_once = 1;
+        fprintf(stderr, "PTR: converged at %d,%d after %ld reports\n",
+                gx, gy, hid_mouse_reports);
+    }
+    hid_mouse_last_x = gx;
+    hid_mouse_last_y = gy;
+    return 1;
+}
+
+/* Whether a report is owed even though the host pointer has not moved, which
+   is the startup case: nothing on the host changes, so the freshness flag
+   never rises, and without this the two cursors sit apart until the user
+   happens to move the mouse. Gated on `pending_mouse_valid` so that a guest
+   which parks its cursor somewhere sensible is not yanked to wherever the
+   host pointer is assumed to be before the host has seen one. */
+static int hid_mouse_adrift(void) {
+    if (!pending_mouse_valid) return 0;
+    if (!hid_mouse_sync_guest()) return 0;
+    return pending_mouse_abs_x != hid_mouse_last_x ||
+           pending_mouse_abs_y != hid_mouse_last_y;
+}
+
 /* Centre of the client area, in screen coordinates: where the host cursor is
    parked while grabbed and what every delta is measured against. */
 static void grab_centre(HWND hwnd, POINT *pt) {
@@ -7070,11 +7221,27 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 pending_mouse_abs_x = nx;
                 pending_mouse_abs_y = ny;
                 grab_warping = 1;
+                mouse_from_window = 1;
                 SetCursorPos(c.x, c.y);
             }
         } else {
-            pending_mouse_abs_x = (short)LOWORD(lp);
-            pending_mouse_abs_y = (short)HIWORD(lp);
+            /* Clamped to the FRAMEBUFFER, not just taken from the client area.
+               The guest folds deltas and clamps to its own screen, so a host
+               position outside that range is one the guest can never reach:
+               with the closed loop below, an unreachable target is a report
+               owed on every poll forever. The client area and the framebuffer
+               are 1:1 (`StretchDIBits` blits at source size), but a window
+               larger than the mode, or a stray coordinate from a message that
+               arrives mid-resize, is outside it. */
+            int cx = (short)LOWORD(lp);
+            int cy = (short)HIWORD(lp);
+            if (cx < 0) cx = 0;
+            if (cy < 0) cy = 0;
+            if (cx > gop_width - 1) cx = gop_width - 1;
+            if (cy > gop_height - 1) cy = gop_height - 1;
+            pending_mouse_abs_x = cx;
+            pending_mouse_abs_y = cy;
+            mouse_from_window = 1;
         }
         int prev_btn = pending_mouse_btn;
         int new_btn = 0;
@@ -9947,6 +10114,16 @@ static void hid_service_pending(int mouse_only) {
             pending_mouse_abs_x = ev->x;
             pending_mouse_abs_y = ev->y;
             pending_mouse_btn = ev->btn;
+            /* A scripted sample is NOT a screen coordinate and must not become
+               one. `-mouse` is documented as dead reckoning from 0,0 with the
+               delta between successive events reaching the guest
+               (`OperatorsManual.md`, the `-mouse` row, which works an example
+               through it), and GUI sidecars across the fleet are written to
+               that. Reading the guest's cursor back would silently turn every
+               one of those timelines into absolute positioning. The mailbox
+               sync is for the hand on the mouse; this clears the flag that
+               enables it. */
+            mouse_from_window = 0;
             pending_mouse_valid = 1;
             hid_mouse_fresh = 1;
             hid_input_changed = 1;
@@ -10091,6 +10268,11 @@ static size_t output_cap = 0;
    attributable, because the guest's OUT completed and it believes the byte
    was delivered. */
 static size_t output_dropped = 0;
+/* The part of output_dropped a cause has already printed its own canonical
+   line for (the two blit causes report per event). The exit summary reports
+   only the remainder, so runlist_scan_dropped, which SUMS every canonical
+   line, counts each lost byte once. */
+static size_t output_reported_dropped = 0;
 
 /* CODEX_VM_DROP_SERIAL_AT=N with CODEX_VM_DROP_SERIAL_LEN=K discards K bytes
    of capture once N bytes have been taken, on whichever of the two paths
@@ -10113,6 +10295,22 @@ static size_t drop_serial_done = 0;
 static size_t short_write_at = 0;
 static int output_write_short_said = 0;
 
+/* CODEX_VM_FAIL_GROW_AT=N starts the capture buffer at N bytes instead of 16MB
+   and makes every growth realloc fail, so the buffer genuinely fills and the
+   growth branch genuinely fails. The two "growth failed" causes were the last
+   reported losses with no way to produce them: a real failure needs the host
+   out of memory, and 16MB of guest output to reach the branch at all.
+
+   It deliberately adds NO drop path of its own. Both branches already count
+   into output_dropped and print the canonical wording, and blit_guest_output
+   used to discard whole blits WITHOUT counting them, which is why `is SHORT`
+   could not fire for the path carrying bulk output (L-SHORT, reek's caution
+   2026-09-07). Failing the realloc and letting the shipped branch run is what
+   keeps the counter on the injected path -- and it is also the only way the
+   arm tests the shipped code rather than a parallel path that prints the same
+   words. */
+static size_t fail_grow_at = 0;
+
 static int drop_serial_armed(void) {
     return drop_serial_at && drop_serial_done < drop_serial_len && output_len >= drop_serial_at;
 }
@@ -10123,8 +10321,13 @@ static int drop_serial_armed(void) {
 static CRITICAL_SECTION output_lock;
 static int output_lock_ready = 0;
 
+/* Serialises the port-I/O device models across the boot processor and the
+   application processors, which now reach them too (plugs 2.45). */
+static CRITICAL_SECTION io_lock;
+static int io_lock_ready = 0;
+
 static void output_buf_init(void) {
-    output_cap = 16 * 1024 * 1024;  /* 16MB */
+    output_cap = fail_grow_at ? fail_grow_at : 16 * 1024 * 1024;  /* 16MB */
     output_buf = (unsigned char *)malloc(output_cap);
     output_len = 0;
     InitializeCriticalSection(&output_lock);
@@ -10147,7 +10350,7 @@ static void output_buf_write(unsigned char b) {
            cut off at exactly the cap). On growth failure keep the old
            buffer and drop the byte, which is the old behavior. */
         size_t new_cap = output_cap * 2;
-        unsigned char *grown = (unsigned char *)realloc(output_buf, new_cap);
+        unsigned char *grown = fail_grow_at ? NULL : (unsigned char *)realloc(output_buf, new_cap);
         if (grown) { output_buf = grown; output_cap = new_cap; }
     }
     if (drop_serial_armed()) {
@@ -10210,17 +10413,23 @@ static void output_buf_write(unsigned char b) {
    serial path, and a reader following ExaminersAssay's rule would otherwise
    convict it.
 
-   Answers the bytes actually written. Reports once, because poll_output_dump
-   runs twice a second and a repeating failure would fill build.log. */
-static size_t write_output_capture(const char *path) {
+   Answers the bytes actually written. The OUTPUT: layer line prints once,
+   because poll_output_dump runs twice a second and a repeating failure would
+   fill build.log. The SERIAL count prints only from the FINAL write: every
+   earlier write is rewritten whole by the next one, so a loss on the poll
+   path is not a loss, and a count taken there is the buffer's length at the
+   earliest failure rather than the bytes the file ended without (measured
+   2026-09-07: 1 reported for 129 lost). */
+static size_t write_output_capture(const char *path, int final) {
     FILE *f = fopen(path, "wb");
     if (!f) {
         if (!output_write_short_said) {
             output_write_short_said = 1;
             fprintf(stderr, "OUTPUT: cannot open %s for write\n", path);
+        }
+        if (final)
             fprintf(stderr, "SERIAL: %zu guest serial byte(s) DROPPED (output file could not be opened); %s is SHORT\n",
                     output_len, path);
-        }
         return 0;
     }
     size_t want = output_len;
@@ -10232,9 +10441,10 @@ static size_t write_output_capture(const char *path) {
             output_write_short_said = 1;
             fprintf(stderr, "OUTPUT: write reached %zu of %zu bytes%s -- the loss is the WRITER, not the serial path\n",
                     got, output_len, closed ? " and fclose failed" : "");
+        }
+        if (final)
             fprintf(stderr, "SERIAL: %zu guest serial byte(s) DROPPED (output write short at %zu of %zu bytes); %s is SHORT\n",
                     output_len - got, got, output_len, path);
-        }
         return got;
     }
     return got;
@@ -10249,18 +10459,18 @@ static void poll_output_dump(void) {
     last_ms = now;
     if (output_len == last_len || output_len == 0) return;
     if (output_lock_ready) EnterCriticalSection(&output_lock);
-    write_output_capture(output_file);
+    write_output_capture(output_file, 0);
     last_len = output_len;
     if (output_lock_ready) LeaveCriticalSection(&output_lock);
 }
 
 static void dump_output_file(const char *path) {
     if (!path || !output_buf || output_len == 0) return;
-    size_t got = write_output_capture(path);
+    size_t got = write_output_capture(path, 1);
     fprintf(stderr, "Output: %zu bytes -> %s\n", got, path);
-    if (output_dropped)
+    if (output_dropped > output_reported_dropped)
         fprintf(stderr, "SERIAL: %zu guest serial byte(s) DROPPED (buffer growth failed at %zu bytes); %s is SHORT\n",
-                output_dropped, output_cap, path);
+                output_dropped - output_reported_dropped, output_cap, path);
 }
 
 /* Bulk blit: append guest RAM [addr, addr+len) to the output buffer in
@@ -10275,6 +10485,7 @@ static void blit_guest_output(void) {
     if (addr >= guest_mem_size || len > guest_mem_size - addr) {
         /* Also a whole-blit discard, and also uncounted until now. */
         output_dropped += (size_t)len;
+        output_reported_dropped += (size_t)len;
         fprintf(stderr, "BLIT: rejected addr=0x%llx len=%llu (guest_mem_size=%llu)\n",
                 addr, len, (unsigned long long)guest_mem_size);
         fprintf(stderr, "SERIAL: %llu guest serial byte(s) DROPPED (blit out of range); -output is SHORT\n", len);
@@ -10298,7 +10509,7 @@ static void blit_guest_output(void) {
     if (output_len + len > output_cap) {
         size_t new_cap = output_cap * 2;
         while (output_len + len > new_cap) new_cap *= 2;
-        unsigned char *grown = (unsigned char *)realloc(output_buf, new_cap);
+        unsigned char *grown = fail_grow_at ? NULL : (unsigned char *)realloc(output_buf, new_cap);
         if (!grown) {
             /* Count it the way output_buf_write counts its own drops, and say
                the same words. This path discards a WHOLE BLIT -- one contiguous
@@ -10311,6 +10522,7 @@ static void blit_guest_output(void) {
                (ExaminersAssay, "The batch stream can lose bytes"). One marker
                for both paths is what lets a reader attribute a short capture. */
             output_dropped += (size_t)len;
+            output_reported_dropped += (size_t)len;
             fprintf(stderr, "BLIT: output buffer growth failed (%zu bytes)\n", new_cap);
             fprintf(stderr, "SERIAL: %llu guest serial byte(s) DROPPED (blit growth failed at %zu bytes); -output is SHORT\n",
                     len, output_cap);
@@ -11441,7 +11653,7 @@ static void dump_guest_regs(const char *reason, unsigned long long gpa) {
     fprintf(stderr, "=== END WATCHPOINT ===\n\n");
 }
 
-static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx);  /* forward decl */
+static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp);  /* forward decl */
 
 static int handle_watch_write(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     unsigned long long gpa = ctx->MemoryAccess.Gpa;
@@ -11473,7 +11685,7 @@ static int handle_watch_write(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         WHvSetVirtualProcessorRegisters(partition, 0, names, 2, vals);
         WHV_RUN_VP_EXIT_CONTEXT step_ctx;
         WHvRunVirtualProcessor(partition, 0, &step_ctx, sizeof(step_ctx));
-        if (step_ctx.ExitReason == WHvRunVpExitReasonX64IoPortAccess) handle_io(&step_ctx);
+        if (step_ctx.ExitReason == WHvRunVpExitReasonX64IoPortAccess) handle_io(&step_ctx, 0);
         /* clear TF so we don't keep single-stepping the guest */
         WHvGetVirtualProcessorRegisters(partition, 0, &fn, 1, &fv);
         fv.Reg64 &= ~0x100ULL;
@@ -12590,7 +12802,7 @@ static void com3_doorbell(unsigned int cmd_bytes) {
 
 /* ── I/O dispatch ──────────────────────────────────────────────────── */
 
-static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
+static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
     int port = ctx->IoPortAccess.PortNumber;
     int is_out = (ctx->IoPortAccess.AccessInfo.IsWrite != 0);
     int size = ctx->IoPortAccess.AccessInfo.AccessSize;
@@ -12634,12 +12846,12 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rsi + done * (unsigned long long)size;
             sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
-            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            WHvSetVirtualProcessorRegisters(partition, vp, sn, 2, sv);
             if (ctx->IoPortAccess.Rcx - done == 0) {
                 WHV_REGISTER_NAME rn = WHvX64RegisterRip;
                 WHV_REGISTER_VALUE rv;
                 rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+                WHvSetVirtualProcessorRegisters(partition, vp, &rn, 1, &rv);
             }
             return;
         }
@@ -12676,12 +12888,12 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rsi + done * (unsigned long long)size;
             sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
-            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            WHvSetVirtualProcessorRegisters(partition, vp, sn, 2, sv);
             if (ctx->IoPortAccess.Rcx - done == 0) {
                 WHV_REGISTER_NAME rn = WHvX64RegisterRip;
                 WHV_REGISTER_VALUE rv;
                 rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+                WHvSetVirtualProcessorRegisters(partition, vp, &rn, 1, &rv);
             }
             return;
         }
@@ -12704,12 +12916,12 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rsi + done * (unsigned long long)size;
             sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
-            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            WHvSetVirtualProcessorRegisters(partition, vp, sn, 2, sv);
             if (ctx->IoPortAccess.Rcx - done == 0) {
                 WHV_REGISTER_NAME rn = WHvX64RegisterRip;
                 WHV_REGISTER_VALUE rv;
                 rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+                WHvSetVirtualProcessorRegisters(partition, vp, &rn, 1, &rv);
             }
             return;
         }
@@ -12745,7 +12957,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 if (r10dump && (unsigned char)val == '\n') {
                     WHV_REGISTER_NAME rns[2] = { WHvX64RegisterR10, WHvX64RegisterRsp };
                     WHV_REGISTER_VALUE rvs[2];
-                    WHvGetVirtualProcessorRegisters(partition, 0, rns, 2, rvs);
+                    WHvGetVirtualProcessorRegisters(partition, vp, rns, 2, rvs);
                     fprintf(stderr, "R10DUMP: R10=0x%llx RSP=0x%llx\n", rvs[0].Reg64, rvs[1].Reg64);
                 }
             }
@@ -12975,7 +13187,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                will land, with no staleness from act-block machinery. */
             WHV_REGISTER_NAME rn = WHvX64RegisterR10;
             WHV_REGISTER_VALUE rv; memset(&rv, 0, sizeof(rv));
-            WHvGetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            WHvGetVirtualProcessorRegisters(partition, vp, &rn, 1, &rv);
             watch_addr = rv.Reg64;
             watch_size = 64;      /* cover result+0..63 */
             watch_val_set = 0;    /* report every write to the watched bytes */
@@ -12991,7 +13203,7 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port == 0x414) {
             WHV_REGISTER_NAME rn = WHvX64RegisterR10;
             WHV_REGISTER_VALUE rv; memset(&rv, 0, sizeof(rv));
-            WHvGetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            WHvGetVirtualProcessorRegisters(partition, vp, &rn, 1, &rv);
             hw_watch_addr = rv.Reg64 + (unsigned long long)val;
             hw_watch_len = 8; hw_watch_rw = 1; hw_watch_active = 1; hw_watch_hits = 0;
             fprintf(stderr, "GUEST-ARM HWWATCH: DR0=0x%llx (R10=0x%llx + off=%llu)\n",
@@ -13197,12 +13409,12 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rdi + done * (unsigned long long)size;
             sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
-            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            WHvSetVirtualProcessorRegisters(partition, vp, sn, 2, sv);
             if (ctx->IoPortAccess.Rcx - done == 0) {
                 WHV_REGISTER_NAME rn = WHvX64RegisterRip;
                 WHV_REGISTER_VALUE rv;
                 rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+                WHvSetVirtualProcessorRegisters(partition, vp, &rn, 1, &rv);
             }
             return;
         }
@@ -13239,12 +13451,12 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rdi + done * (unsigned long long)size;
             sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
-            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            WHvSetVirtualProcessorRegisters(partition, vp, sn, 2, sv);
             if (ctx->IoPortAccess.Rcx - done == 0) {
                 WHV_REGISTER_NAME rn = WHvX64RegisterRip;
                 WHV_REGISTER_VALUE rv;
                 rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+                WHvSetVirtualProcessorRegisters(partition, vp, &rn, 1, &rv);
             }
             return;
         }
@@ -13464,20 +13676,20 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             WHV_REGISTER_VALUE str_vals[2];
             str_vals[0].Reg64 = ctx->IoPortAccess.Rdi + size;
             str_vals[1].Reg64 = ctx->IoPortAccess.Rcx - 1;
-            WHvSetVirtualProcessorRegisters(partition, 0, str_names, 2, str_vals);
+            WHvSetVirtualProcessorRegisters(partition, vp, str_names, 2, str_vals);
             if (ctx->IoPortAccess.Rcx <= 1) {
                 /* REP complete: advance RIP */
                 WHV_REGISTER_NAME rip_name = WHvX64RegisterRip;
                 WHV_REGISTER_VALUE rip_val;
                 rip_val.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-                WHvSetVirtualProcessorRegisters(partition, 0, &rip_name, 1, &rip_val);
+                WHvSetVirtualProcessorRegisters(partition, vp, &rip_name, 1, &rip_val);
             }
             /* else: don't advance RIP, re-execute REP instruction */
         } else {
             /* Regular I/O IN: inject result into RAX */
             WHV_REGISTER_NAME rax_name = WHvX64RegisterRax;
             WHV_REGISTER_VALUE rax_val;
-            WHvGetVirtualProcessorRegisters(partition, 0, &rax_name, 1, &rax_val);
+            WHvGetVirtualProcessorRegisters(partition, vp, &rax_name, 1, &rax_val);
             if (size == 1) rax_val.Reg64 = (rax_val.Reg64 & ~0xFFULL) | (result & 0xFF);
             else if (size == 2) rax_val.Reg64 = (rax_val.Reg64 & ~0xFFFFULL) | (result & 0xFFFF);
             /* A 32-bit write to a GPR zeroes the upper half of the 64-bit
@@ -13487,12 +13699,12 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                dword. Measured 2026-07-30: a PCI vendor/device dword of
                0x8C318086 reached the guest as -1942912890. */
             else rax_val.Reg64 = (unsigned int)result;
-            WHvSetVirtualProcessorRegisters(partition, 0, &rax_name, 1, &rax_val);
+            WHvSetVirtualProcessorRegisters(partition, vp, &rax_name, 1, &rax_val);
             /* Advance RIP past the I/O instruction */
             WHV_REGISTER_NAME rip_name = WHvX64RegisterRip;
             WHV_REGISTER_VALUE rip_val;
             rip_val.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-            WHvSetVirtualProcessorRegisters(partition, 0, &rip_name, 1, &rip_val);
+            WHvSetVirtualProcessorRegisters(partition, vp, &rip_name, 1, &rip_val);
         }
     }
 
@@ -13501,7 +13713,62 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         WHV_REGISTER_NAME rip_name = WHvX64RegisterRip;
         WHV_REGISTER_VALUE rip_val;
         rip_val.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-        WHvSetVirtualProcessorRegisters(partition, 0, &rip_name, 1, &rip_val);
+        WHvSetVirtualProcessorRegisters(partition, vp, &rip_name, 1, &rip_val);
+    }
+}
+
+/* Per-processor port-exit accounting, printed at exit when SMP is on.
+ *
+ * plugs 2.51 reports an application processor's NE2000 polling convoying this
+ * lock and starving the boot processor's disk load, and NOTHING IN THIS FILE
+ * COULD SHOW THAT: `exits` is one global counter, so a run where an AP takes a
+ * million polls and the BSP takes thirty thousand looks exactly like a healthy
+ * run where the BSP took them all. These two arrays are the difference, and
+ * they are the instrument the row has to be settled with rather than argued
+ * over. The wait is measured around the acquire only, so a large
+ * io-lock-wait-ms against a small exit count IS the convoy and a small one is
+ * not, whatever the totals say. */
+static unsigned long long io_exits_by_vp[SMP_MAX_CORES];
+static double io_lock_wait_ms_by_vp[SMP_MAX_CORES];
+
+static void io_report_by_vp(void) {
+    if (smp_cores <= 1) return;
+    for (int i = 0; i < smp_cores && i < SMP_MAX_CORES; i++) {
+        if (!io_exits_by_vp[i] && io_lock_wait_ms_by_vp[i] == 0.0) continue;
+        fprintf(stderr, "IO BY VP: vp=%d port-exits=%llu io-lock-wait-ms=%.1f\n",
+                i, io_exits_by_vp[i], io_lock_wait_ms_by_vp[i]);
+    }
+}
+
+/* The device models above are shared mutable state and handle_io_locked has
+   many returns, so the serialisation is a wrapper rather than a lock threaded
+   through the body. Taken only when there are application processors to
+   contend with: a uniprocessor run takes the same path it always did, and the
+   port census on the IDE path is hot enough (about 306 exits per sector) that
+   an uncontended acquire per exit is not worth paying for a race that cannot
+   happen (L-FALLBACK: the working path is not disturbed by its own
+   extension). */
+static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
+    if (smp_cores > 1 && io_lock_ready) {
+        /* The frequency is fixed for the life of the process, so it is read
+           once rather than on every port exit; this path runs millions of
+           times in a 25 s desk run. */
+        static LARGE_INTEGER freq;
+        LARGE_INTEGER t0, t1;
+        if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&t0);
+        EnterCriticalSection(&io_lock);
+        QueryPerformanceCounter(&t1);
+        if (vp < SMP_MAX_CORES) {
+            io_exits_by_vp[vp]++;
+            io_lock_wait_ms_by_vp[vp] +=
+                (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart;
+        }
+        handle_io_locked(ctx, vp);
+        LeaveCriticalSection(&io_lock);
+    } else {
+        if (vp < SMP_MAX_CORES) io_exits_by_vp[vp]++;
+        handle_io_locked(ctx, vp);
     }
 }
 
@@ -15225,6 +15492,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-usb-bot-drop") && i+1 < argc) usb_bot_drop = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-bot-die-len") && i+1 < argc) usb_bot_die_len = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-bot-census")) usb_bot_census = 1;
+        else if (!strcmp(argv[i], "-usb-writeback")) usb_writeback = 1;
         else if (!strcmp(argv[i], "-census") && i+1 < argc) {
             census_fp = fopen(argv[++i], "w");
             if (!census_fp) { fprintf(stderr, "codex-vm: -census: cannot open %s\n", argv[i]); return 1; }
@@ -15358,6 +15626,14 @@ int main(int argc, char **argv) {
             short_write_at = (size_t)strtoull(swa, NULL, 0);
             fprintf(stderr, "OUTPUT: will write at most %zu byte(s) of the capture (CODEX_VM_SHORT_WRITE_AT)\n",
                     short_write_at);
+        }
+    }
+    {
+        const char *fga = getenv("CODEX_VM_FAIL_GROW_AT");
+        if (fga && fga[0]) {
+            fail_grow_at = (size_t)strtoull(fga, NULL, 0);
+            fprintf(stderr, "OUTPUT: capture buffer starts at %zu byte(s) and every growth will fail (CODEX_VM_FAIL_GROW_AT)\n",
+                    fail_grow_at);
         }
     }
     hprof_file = getenv("CODEX_VM_PROFILE");
@@ -15740,6 +16016,8 @@ int main(int argc, char **argv) {
     CreateThread(NULL, 0, drip_feed_thread, NULL, 0, NULL);
     InitializeCriticalSection(&xhci_db_lock);
     xhci_db_lock_ready = 1;
+    InitializeCriticalSection(&io_lock);
+    io_lock_ready = 1;
     /* The service thread's whole job is a millisecond-scale lap, and at the
        default 15.6 ms quantum its Sleep(1) measured 61.8 laps a second --
        which is exactly the rate the pointer was then delivered at. */
@@ -15861,7 +16139,7 @@ int main(int argc, char **argv) {
             }
             break;
         case WHvRunVpExitReasonX64IoPortAccess:
-            handle_io(&ctx);
+            handle_io(&ctx, 0);
             if (debug_exit_code >= 0) goto done;
             break;
         case WHvRunVpExitReasonX64Cpuid:
@@ -16531,6 +16809,7 @@ int main(int argc, char **argv) {
     }
 done:
     fprintf(stderr, "VM exited (code=%d, exits=%llu, watch_hits=%d)\n", debug_exit_code, exits, watch_hit_count);
+    io_report_by_vp();
     /* Before the summaries and the output dump, not after: an AP still
        running here writes serial bytes into output_buf while dump_output_file
        reads it and the frees below release it. Measured 2026-09-02 with the
@@ -16644,6 +16923,15 @@ done:
                 ide_in_batch_hits, ide_in_batched,
                 ide_flush_entries, ide_flush_calls, ide_flush_bytes, ide_flush_ms,
                 ide_flush_nopath, ide_flush_nodata, ide_flush_oob, ide_flush_openfail);
+    }
+    /* The write-back model's own reading, printed whenever the flag is on so
+       that a run which lost nothing is distinguishable from one where the
+       model never engaged. lost= is the arm's instrument: a flush-absent arm
+       reporting lost=0 did not reach the condition it exists to test and its
+       colour means nothing (L-VACUOUS). */
+    if (usb_writeback) {
+        fprintf(census_out(), "USB WRITEBACK: commits=%llu committed-bytes=%llu lost-bytes=%llu\n",
+                usb_wb_commits, usb_wb_committed_bytes, usb_wb_cached_bytes);
     }
     /* A run that never touches EXTCNF_CTRL prints nothing, so this line
        appearing at all says the semaphore path executed. foreign=0 is the

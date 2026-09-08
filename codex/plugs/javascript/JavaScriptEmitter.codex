@@ -213,7 +213,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n & "n"
     is IrName (n) (ty) (sp) -> js-emit-name n ty ctx
-    is IrBinary (op) (l) (r) (ty) (sp) -> js-emit-binary op l r ctx
+    is IrBinary (op) (l) (r) (ty) (sp) -> js-emit-binary op l r ty ctx
     is IrNegate (operand) (nty) (sp) -> "(-" & js-emit-expr-at operand ctx (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & js-emit-expr-at c ctx (depth + 1) & " ? " & js-emit-expr-at t ctx (depth + 1) & " : " & js-emit-expr-at el ctx (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> js-emit-let name val body ctx
@@ -268,9 +268,24 @@ Section: Expression Emission
    if i == count then ""
    else "(_p" & integer-to-text i & "_) => " & js-emit-partial-wrappers (i + 1) count
 
-  js-emit-binary : IRBinaryOp , IRExpr , IRExpr , JsCtx -> Text
-  js-emit-binary (op) (l) (r) (ctx) =
+ Every integer this plug emits is a BigInt, which is arbitrary precision, so
+ neither arm is what the operator alone does: the band has to be truncated to
+ signed 64 bits and the plain arm has to be told when the exact result left
+ the range. `BigInt.asIntN` is the truncation, and comparing its result to the
+ input is the overflow test.
+
+  js-emit-int-arith : Text, IRExpr, IRExpr, CodexType, JsCtx -> Text
+  js-emit-int-arith (sym) (l) (r) (ty) (ctx) =
+   let exact = "(" & js-emit-expr l ctx & " " & sym & " " & js-emit-expr r ctx & ")"
+   in if int-ty-wraps ty then "BigInt.asIntN(64, " & exact & ")"
+   else "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & exact & ")"
+
+  js-emit-binary : IRBinaryOp , IRExpr , IRExpr , CodexType , JsCtx -> Text
+  js-emit-binary (op) (l) (r) (ty) (ctx) =
    when op
+    is IrAddInt -> js-emit-int-arith "+" l r ty ctx
+    is IrSubInt -> js-emit-int-arith "-" l r ty ctx
+    is IrMulInt -> js-emit-int-arith "*" l r ty ctx
     is IrAppendText -> "(" & js-emit-expr l ctx & " + " & js-emit-expr r ctx & ")"
     is IrAppendList -> "[..." & js-emit-expr l ctx & ", ..." & js-emit-expr r ctx & "]"
     is IrConsList -> "[" & js-emit-expr l ctx & ", ..." & js-emit-expr r ctx & "]"
@@ -938,10 +953,13 @@ Section: Chapter Emission
    if i == len then ""
    else js-emit-def (list-at defs i) ctx & "\n" & js-emit-defs-loop defs (i + 1) len ctx
 
+  js-emit-header : Text
+  js-emit-header = "\"use strict\";\nlet _js_state_value = 0n;\nfunction _cx_text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction _cx_text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction _cx_text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+
   emit-javascript-chapter : IRChapter , List ATypeDef -> Text
   emit-javascript-chapter (m) (type-defs) =
    let ctx = JsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs }
-   in let header = "\"use strict\";\nlet _js_state_value = 0n;\nfunction _cx_text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction _cx_text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction _cx_text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+   in let header = js-emit-header
    in let types = js-emit-type-defs type-defs 0
    in let defs = js-emit-defs-loop (m.defs) 0 (list-length (m.defs)) ctx
    in let entry = js-emit-entry (js-opening-return-type (m.defs))

@@ -1,0 +1,64 @@
+Chapter: DiskTestRunner
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+
+ Build.md Phase B, stage 1. The on-disk test runner's DIRECTORY half: mount the
+ boot volume, list what is on it, choose ONE entry by name, read the bytes back
+ and report. Compiling and running what is chosen is a later stage and is NOT
+ here, because the design's own open question, how one program runs another, is
+ unanswered: a chapter carrying `opening` can be cited by nothing (CDX3001), so
+ this runner cannot pull the compiler in, and no other composition exists yet.
+
+ Every line prints a verdict of its own rather than one summary, because a
+ bare-metal boot has no exit code to read: the serial log IS the result, and a
+ stage that fails must say which stage.
+
+Section: The Subject
+
+ `SOURCE.SRC` is the name the img plug writes a `-Source` file under, and it is
+ the only source name any image carries today. A runner over `codex/test`
+ wants a multi-source image, which the img plug cannot yet build.
+
+  runner-subject : Text = "SOURCE.SRC"
+
+Section: Reporting
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  runner-names : List Text, Integer, Integer -> Text
+  runner-names (names) (i) (n) =
+   if i >= n then ""
+   else (if i == 0 then "" else " ") & list-at names i & runner-names names (i + 1) n
+
+  runner-first-line : Text -> Text
+  runner-first-line (t) =
+   let nl = text-index-of t "\n"
+   in if nl < 0 then t else text-take t nl
+
+Section: Body
+
+  opening : [Console, Device.Block] Nothing = act
+    print-line-uni "=== DISK test runner, stage 1 ==="
+    vol <- fat16-boot-volume
+    print-line-uni ("volume    : bps=" & show (vol.vol-bytes-per-sector) & " ok=" & yn (vol.vol-bytes-per-sector == 512))
+    if vol.vol-bytes-per-sector /= 512 then act
+      print-line-uni "REFUSED   : no usable FAT16 volume; nothing to list"
+      print-line-uni "=== stage 1 done ==="
+    end
+    else act
+    names <- fat16-list-root vol
+    print-line-uni ("entries   : " & show (list-length names))
+    print-line-uni ("names     : " & runner-names names 0 (list-length names))
+    found <- fat16-file-exists vol runner-subject
+    print-line-uni ("subject   : " & runner-subject & " present=" & yn found)
+    src <- fat16-read-source vol runner-subject
+    when src
+      is None -> print-line-uni "read      : FAILED"
+      is Just (t) -> print-line-uni ("read      : " & show (text-length t) & " chars, first line: " & runner-first-line t)
+    print-line-uni "=== stage 1 done ==="
+    end
+  end
+
+Page 1

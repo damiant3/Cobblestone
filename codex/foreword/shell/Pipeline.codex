@@ -1,0 +1,255 @@
+Chapter: Pipeline
+
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+
+ A build is a graph of STAGES, and a stage is an input, a transformation and an
+ output. What ships today is a flat list of shell statements per script, so a
+ stage exists only as a section header and a variable name, and nothing can be
+ asked what a step consumes, what a step produces, or what a failure of the step
+ means. The three emitters beside this chapter answer "how do I say this in
+ PowerShell"; nothing answers "what is the build doing".
+
+ THE MODEL IS A CHAPTER OF ITS OWN AND NOT NEW CONSTRUCTORS IN `ShellTypes`,
+ and the reason is measured rather than tidy. `ShellExpr` gaining ONE
+ constructor cost `cdxtopeScript` 4.75 MB of check deck and put three units on
+ the 1.25 floor at once, because every generator bundles the type and a new
+ constructor widens the checker's state at every `when` over it
+ (ShellDslReadability.md section 9). A separate chapter is paid for by the
+ generators that cite it and by nobody else, which is Library Rule 7: a
+ foreword chapter nobody cites is never in the unit at all.
+
+ WHAT MAKES A DECLARATION MORE THAN A COMMENT is that something reads it, and
+ the complaint this model answers is precisely that the current stage names ARE
+ comments. So a stage body does not spell `SeVar "srcPath"`; it asks the
+ pipeline for the artifact named `srcPath`, and `pipe-ref` answers from the
+ declarations. Delete the declaration and the reference resolves to
+ `UNRESOLVED:srcPath`, which changes the emitted script, which reds
+ `check-generated-scripts`. The declarations are load-bearing in the direction
+ that matters first: a name used and not declared cannot pass.
+
+ WHAT IS DECLARED AND NOT YET LOAD-BEARING, said plainly rather than implied:
+ resources and verdicts. A verdict that reads "exit 3 means a cited chapter
+ could not be resolved" sits beside an `ScExit (SeInt 3)` inside a `try` arm
+ that a generic lowering cannot place, and placing it needs the named-operation
+ vocabulary that is the next pass. A declared artifact that no body references
+ is likewise not yet caught. Both are the second pass, and until then a reader
+ of this chapter should treat those two fields as documentation with a schema.
+
+Section: Artifacts
+
+ An artifact is a thing a stage consumes or produces, named so another stage
+ can refer to it, and carrying the expression the target language uses to reach
+ it. The kind is what a non-shell target needs in order to lower the same model
+ differently: a file is a path to a CI runner and a variable to a shell.
+
+  PipeKind =
+    | PkFile
+    | PkDir
+    | PkValue
+    | PkText
+
+ AN ARTIFACT HAS TWO EXPRESSIONS AND CONFLATING THEM IS THE SECOND THING THIS
+ chapter got wrong. `Repo` is PRODUCED by `(Resolve-Path (Join-Path
+ $PSScriptRoot '..')).Path` and REFERRED TO as `$Repo`, and a model carrying one
+ field emitted the production at every use site: the first migration came out
+ one line from byte-identical, with the whole path computation inlined into a
+ call argument. `pa-expr` is how a consumer names the artifact; `pa-from` is how
+ the producing stage makes it.
+
+ `pa-from` IS A `Maybe` BECAUSE NOT EVERY ARTIFACT IS A PLAIN ASSIGNMENT.
+ `rootLines` comes from a .NET call statement rather than an expression
+ assignment, and a model that pretended otherwise would carry a value nothing
+ emits. `None` says the producing stage spells its own statement, and says it in
+ the data rather than in a comment.
+
+ A PRODUCING EXPRESSION MUST NOT REACH THE ARTIFACT TABLE. The table contains
+ the artifact, so an expression inside the artifact that resolves through the
+ table is the same circular definition that faulted the first shape. A
+ production that needs a parameter uses `pipe-param-ref`, which reads the
+ parameter list alone; a production that needs another stage's output is `None`
+ and is spelled in the body.
+
+  PipeArtifact = record {
+    pa-name : Text,
+    pa-kind : PipeKind,
+    pa-expr : ShellExpr,
+    pa-from : Maybe ShellExpr
+  }
+
+Section: Resources
+
+ What the stage needs from the box. Nothing reads these yet; they are declared
+ because the box is the scarcest thing the fleet has and a stage that boots four
+ guests should say so where a scheduler can see it rather than in a comment.
+
+  PipeResource =
+    | PrGuests (Integer)
+    | PrMemoryMb (Integer)
+    | PrPort (Integer)
+    | PrKernel (ShellExpr)
+
+Section: Verdicts
+
+ What an exit code MEANS. A script today spells the number and leaves the
+ meaning to a comment, so a reader has to guess whether 3 is a refusal or a
+ crash.
+
+ `PoPassthrough` EXISTS BECAUSE A LITERAL CODE CANNOT SAY WHAT `run-plug-chain`
+ DOES, which is exit with the code of the child it ran. The second migration
+ found the gap: without this constructor the one interesting exit of that
+ script has no declaration at all, and a verdict list that omits the exit a
+ reader most wants explained is worse than no verdict list.
+
+  PipeOutcome =
+    | PoExit (Integer) (Text)
+    | PoPassthrough (Text)
+
+Section: Stages
+
+  PipeStage = record {
+    ps-name : Text,
+    ps-why : Text,
+    ps-in : List Text,
+    ps-out : List PipeArtifact,
+    ps-needs : List PipeResource,
+    ps-verdict : List PipeOutcome,
+    ps-body : List ShellCmd
+  }
+
+  Pipeline = record {
+    pl-name : Text,
+    pl-doc : Text,
+    pl-params : List ShellParam,
+    pl-stages : List PipeStage
+  }
+
+Section: Resolving a name
+
+ Parameters are artifacts too, and a parameter is reached by its own name in
+ every one of the three shells, so a parameter resolves to `SeVar` of its name
+ without being declared twice.
+
+  pipe-param-named : List ShellParam, Text, Integer -> Boolean
+  pipe-param-named (ps) (name) (i) =
+    if i >= list-length ps then False
+    else if ((list-at ps i).sp-name) == name then True
+    else pipe-param-named ps name (i + 1)
+
+  pipe-find-in-outs : List PipeArtifact, Text, Integer -> Maybe ShellExpr
+  pipe-find-in-outs (outs) (name) (i) =
+    if i >= list-length outs then None
+    else let a = list-at outs i
+    in if (a.pa-name) == name then Just (a.pa-expr)
+    else pipe-find-in-outs outs name (i + 1)
+
+ RESOLUTION IS AGAINST A DECLARED TABLE, NEVER AGAINST THE ASSEMBLED PIPELINE,
+ and the first shape of this chapter got that wrong in a way worth keeping
+ written down. `pipe-ref` originally took the `Pipeline`, so a stage body asked
+ the pipeline for a name, and the pipeline was built FROM the stages: the
+ generator compiled clean and faulted at run with `!EXC=08`, a stack overflow
+ from a definition that contains itself. The table breaks the cycle, and the
+ artifacts stay load-bearing because the table and each stage's `ps-out` hold
+ THE SAME named definitions, so deleting an artifact is a compile error rather
+ than a silent drift.
+
+ An unresolved name is spelled into the emitted script rather than swallowed.
+ The drift check is the gate this model migrates under, so a reference to a name
+ nobody declares has to CHANGE THE OUTPUT to be caught, and a silent fallback to
+ `SeVar name` would emit a script that looks right and reds nothing.
+
+  pipe-ref : List PipeArtifact, List ShellParam, Text -> ShellExpr
+  pipe-ref (arts) (params) (name) =
+    if pipe-param-named params name 0 then SeVar name
+    else when pipe-find-in-outs arts name 0
+      is Just (e) -> e
+      is None -> SeLit ("UNRESOLVED:" & name)
+
+ The parameter-only resolver, for an expression that lives INSIDE an artifact
+ and therefore cannot read the table.
+
+  pipe-param-ref : List ShellParam, Text -> ShellExpr
+  pipe-param-ref (params) (name) =
+    if pipe-param-named params name 0 then SeVar name
+    else SeLit ("UNRESOLVED-PARAM:" & name)
+
+ The producing statement comes from the declaration rather than from the body,
+ so an artifact and the line that makes it cannot disagree. An artifact that
+ declares no production and is asked for one says so in the emitted text, which
+ the drift check reads.
+
+  pipe-produce : PipeArtifact -> ShellCmd
+  pipe-produce (a) =
+    when a.pa-from
+      is Just (e) -> ScAssign (a.pa-name) e
+      is None -> ScComment ("UNPRODUCED:" & (a.pa-name))
+
+Section: Lowering to the shell AST
+
+ The first lowering is a concatenation, and the blank-line placement stays
+ inside the stage bodies where the generators already carry it. That is what
+ makes the first migration byte-identical: the model adds declarations and
+ changes no emitted character. A lowering that also OWNED the spacing would be
+ a better model and a worse migration, and the migration is the gate.
+
+ EACH STAGE LOWERS AS ITS OWN `ScSequence` RATHER THAN BEING CONCATENATED FLAT,
+ and the difference is a blank line per stage boundary: `emit-ps-cmds` gives a
+ nested sequence a trailing newline that a flat list does not get. Concatenating
+ the bodies emitted a script three blank lines shorter than the one that ships,
+ which is the drift check earning its place on a change that touched no
+ statement.
+
+  pipe-stage-cmds : List PipeStage, Integer, List ShellCmd -> List ShellCmd
+  pipe-stage-cmds (ss) (i) (acc) =
+    if i >= list-length ss then acc
+    else pipe-stage-cmds ss (i + 1) (list-push acc (ScSequence ((list-at ss i).ps-body)))
+
+  pipeline-to-shell : Pipeline -> ShellScript
+  pipeline-to-shell (pl) =
+    ShellScript {
+      ss-name = pl.pl-name,
+      ss-description = pl.pl-doc,
+      ss-params = pl.pl-params,
+      ss-body = pipe-stage-cmds (pl.pl-stages) 0 []
+    }
+
+Section: Reading the model back
+
+ The stage list rendered as text, which is the coverage metric the campaign
+ moves to and the answer to "what is the build doing" that no generator can
+ give today.
+
+  pipe-kind-text : PipeKind -> Text
+  pipe-kind-text (k) =
+    when k
+      is PkFile -> "file"
+      is PkDir -> "dir"
+      is PkValue -> "value"
+      is PkText -> "text"
+
+  pipe-arts-text : List PipeArtifact, Integer, Text -> Text
+  pipe-arts-text (as) (i) (acc) =
+    if i >= list-length as then acc
+    else let a = list-at as i
+    in pipe-arts-text as (i + 1) (acc & (if acc == "" then "" else ", ") & (a.pa-name) & ":" & pipe-kind-text (a.pa-kind))
+
+  pipe-names-text : List Text, Integer, Text -> Text
+  pipe-names-text (ns) (i) (acc) =
+    if i >= list-length ns then acc
+    else pipe-names-text ns (i + 1) (acc & (if acc == "" then "" else ", ") & list-at ns i)
+
+  pipe-stage-line : PipeStage -> Text
+  pipe-stage-line (s) =
+    (s.ps-name) & " | in: " & pipe-names-text (s.ps-in) 0 ""
+      & " | out: " & pipe-arts-text (s.ps-out) 0 ""
+      & " | " & (s.ps-why)
+
+  pipe-doc-lines : List PipeStage, Integer, List Text -> List Text
+  pipe-doc-lines (ss) (i) (acc) =
+    if i >= list-length ss then acc
+    else pipe-doc-lines ss (i + 1) (list-push acc (pipe-stage-line (list-at ss i)))
+
+  pipeline-doc : Pipeline -> List Text
+  pipeline-doc (pl) = pipe-doc-lines (pl.pl-stages) 0 []
+
+Page 1

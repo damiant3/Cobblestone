@@ -5,10 +5,10 @@ const ms_half_w : i32 = 512;
 const ms_half_h : i32 = 384;
 fn ms_ring(cx : f32, cy : f32, phase : f32) -> f32 {
   let r2 = ((cx * cx) + (cy * cy));
-  if ((sin(((r2 * bitcast<f32>(980151802u)) + phase)) > bitcast<f32>(0u))) {
-  return bitcast<f32>(1065353216u);
+  if ((sin(((r2 * 0x1.d7dbf4p-11f) + phase)) > 0.0)) {
+  return 0x1.000000p+0f;
   } else {
-  return bitcast<f32>(0u);
+  return 0.0;
   }
 }
 fn ms_super(cx__a : f32, cy__a : f32, phase__a : f32, s__a : i32, acc__a : f32) -> f32 {
@@ -23,8 +23,8 @@ fn ms_super(cx__a : f32, cy__a : f32, phase__a : f32, s__a : i32, acc__a : f32) 
     } else {
     let sxi = (s - ((s / 4) * 4));
     let syi = (s / 4);
-    let ddx = ((f32(f32(sxi)) * bitcast<f32>(1048576000u)) - bitcast<f32>(1052770304u));
-    let ddy = ((f32(f32(syi)) * bitcast<f32>(1048576000u)) - bitcast<f32>(1052770304u));
+    let ddx = ((f32(f32(sxi)) * 0x1.000000p-2f) - 0x1.800000p-2f);
+    let ddy = ((f32(f32(syi)) * 0x1.000000p-2f) - 0x1.800000p-2f);
     let _mv0 = cx;
     let _mv1 = cy;
     let _mv2 = phase;
@@ -38,24 +38,25 @@ fn ms_super(cx__a : f32, cy__a : f32, phase__a : f32, s__a : i32, acc__a : f32) 
     continue;
     }
   }
+  return 0.0;
 }
 fn ms_render(gid : i32, frame : i32) -> i32 {
   let px = (gid - ((gid / ms_width) * ms_width));
   let py = (gid / ms_width);
   let cx = f32(f32((px - ms_half_w)));
   let cy = f32(f32((py - ms_half_h)));
-  let phase = (f32(f32(frame)) / bitcast<f32>(1101004800u));
-  let v = select((ms_super(cx, cy, phase, 0, bitcast<f32>(0u)) / bitcast<f32>(1098907648u)), ms_ring(cx, cy, phase), (px < ms_half_w));
-  let edge = select(0, 1, ((px > (ms_half_w - 2)) & (px < (ms_half_w + 2))));
+  let phase = (f32(f32(frame)) / 0x1.400000p+4f);
+  let v = select((ms_super(cx, cy, phase, 0, 0.0) / 0x1.000000p+4f), ms_ring(cx, cy, phase), (px < ms_half_w));
+  let edge = select(0, 1, ((px > (ms_half_w - 2)) && (px < (ms_half_w + 2))));
   if ((edge == 1)) {
   return (((40 * 65536) + (90 * 256)) + 130);
   } else {
-  let tint_r = select(bitcast<f32>(1057803468u), bitcast<f32>(1061158912u), (px < ms_half_w));
-  let tint_g = select(bitcast<f32>(1061997772u), bitcast<f32>(1058642329u), (px < ms_half_w));
-  let tint_b = bitcast<f32>(1063675494u);
-  let ir = i32(((v * tint_r) * bitcast<f32>(1132396544u)));
-  let ig = i32(((v * tint_g) * bitcast<f32>(1132396544u)));
-  let ib = i32(((v * tint_b) * bitcast<f32>(1132396544u)));
+  let tint_r = select(0x1.199998p-1f, 0x1.800000p-1f, (px < ms_half_w));
+  let tint_g = select(0x1.999998p-1f, 0x1.333332p-1f, (px < ms_half_w));
+  let tint_b = 0x1.ccccccp-1f;
+  let ir = i32(((v * tint_r) * 0x1.fe0000p+7f));
+  let ig = i32(((v * tint_g) * 0x1.fe0000p+7f));
+  let ib = i32(((v * tint_b) * 0x1.fe0000p+7f));
   return (((ir * 65536) + (ig * 256)) + ib);
   }
 }

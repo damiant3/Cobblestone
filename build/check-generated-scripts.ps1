@@ -32,11 +32,20 @@
 # already in build/generated-scripts-baseline.txt does not fail the build:
 # 26 of 42 were already behind when this became a gate, and a red whose
 # answer is always the expected one trains its reader to accept reds.
+#
+# IT BOOTS A GUEST PER GENERATOR. One VM boot compiles them all, and then each
+# emitted script is run in its own guest to capture its output, so the bare form
+# is 57 boots and is a run to ask the box for. -Only <name> is one.
 [CmdletBinding()]
 param(
     [string]$Only = '',
     [string]$Diff = '',
     [string]$OutRoot = '',
+    # The compiler that builds the generators. Defaults to the DEPOT SEED, not
+    # to build-output\bare-metal\Codex.cdx, which is whichever compiler ran
+    # last: a drift table is a statement about the compiler that produced it.
+    [string]$Kernel = '',
+    [switch]$AllowStaleKernel,
     [switch]$Update
 )
 
@@ -73,14 +82,22 @@ $AltTarget = @{
     'cvmm-build'     = 'apps\cvmm\build.ps1'
 }
 
-$Stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
-if (-not (Test-Path -PathType Leaf $Stage0)) {
-    Write-Host "MISSING: $Stage0"
-    Write-Host "Run build/build.ps1, or stage the depot seed: Copy-Item seed\Codex.cdx $Stage0"
+$DepotSeed = Join-Path $Repo 'seed\Codex.cdx'
+if (-not $Kernel) { $Kernel = $DepotSeed }
+if (-not (Test-Path -PathType Leaf $Kernel)) {
+    Write-Host "MISSING kernel: $Kernel"
     exit 2
 }
-$digest = (Get-FileHash $Stage0 -Algorithm SHA256).Hash.Substring(0, 16)
-Write-Host "compiler: build-output\bare-metal\Codex.cdx [$digest]"
+$digest = (Get-FileHash $Kernel -Algorithm SHA256).Hash.Substring(0, 16)
+$seedDigest = if (Test-Path -PathType Leaf $DepotSeed) { (Get-FileHash $DepotSeed -Algorithm SHA256).Hash.Substring(0, 16) } else { '' }
+if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and $seedDigest -and ($digest -ne $seedDigest)) {
+    Write-Host "REFUSED: the kernel is a build-output binary and is not the depot seed."
+    Write-Host "         kernel $digest, seed $seedDigest. build-output holds whichever compiler ran last,"
+    Write-Host "         so the drift table would describe that binary rather than the tree's compiler."
+    Write-Host "         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean."
+    exit 2
+}
+Write-Host "compiler: $($Kernel.Replace($Repo + [System.IO.Path]::DirectorySeparatorChar, '')) [$digest]"
 
 # A tree we made is ours to remove; one the CALLER named is not, and neither
 # is one behind a failing exit, where it is the evidence. Measured 2026-09-01:
@@ -105,7 +122,14 @@ $specs = @()
 $claimed = @{}
 foreach ($g in (Get-ChildItem (Join-Path $Repo 'codex\build') -Filter '*Script.codex' -File)) {
     $text = [System.IO.File]::ReadAllText($g.FullName)
+    # A generator names its script with sh-script, or, once migrated to the
+    # pipeline model, with the pipeline's pl-name (PipelineModel.md). Both are
+    # matched, and the reason is a hazard rather than tidiness: a generator this
+    # regex does not match is not reported as BROKEN, it is not reported at all,
+    # so the first migrated generator would have dropped out of the drift gate
+    # silently and the gate would have gone on saying OK.
     $m = [regex]::Match($text, 'sh-script\s+"([^"]+)"')
+    if (-not $m.Success) { $m = [regex]::Match($text, 'pl-name\s*=\s*"([^"]+)"') }
     if (-not $m.Success) { continue }
     $name = $m.Groups[1].Value
     $ext = if ($text -match 'emit-bash') { 'sh' } else { 'ps1' }
@@ -137,7 +161,7 @@ if ($specs.Count -eq 0) { Write-Host "nothing to check"; Remove-OwnRoot; exit 0 
 
 $listFile = Join-Path $OutRoot 'generators.txt'
 $specs.Generator.FullName | Set-Content -Path $listFile -Encoding UTF8
-& (Join-Path $PSScriptRoot 'test-compile-batch.ps1') -ListFile $listFile -OutRoot $OutRoot *> $null
+& (Join-Path $PSScriptRoot 'test-compile-batch.ps1') -ListFile $listFile -OutRoot $OutRoot -Kernel $Kernel *> $null
 
 $rows = @()
 $parseErrs = @{}

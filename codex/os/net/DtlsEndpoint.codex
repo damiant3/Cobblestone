@@ -78,6 +78,8 @@ Section: Types
     ep-app-read-seq : Integer,
     ep-app-write-seq : Integer,
     ep-app-in : List Integer,
+    ep-app-window : DtlsWindow,
+    ep-hs-window : DtlsWindow,
     ep-reasm : DtlsReasm
   }
 
@@ -96,7 +98,8 @@ Section: Construction
              ep-cert-chain = [], ep-sign-priv = [], ep-sign-pub = [], ep-anchors = [], ep-cal-now = [],
              ep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, ep-auth-done = False,
              ep-expected-peer = [], ep-hs-secret = [], ep-c-ap = [], ep-s-ap = [],
-             ep-app-read-seq = 0, ep-app-write-seq = 0, ep-app-in = [], ep-reasm = dtls-reasm-new }
+             ep-app-read-seq = 0, ep-app-write-seq = 0, ep-app-in = [], ep-app-window = dtls-window-new,
+             ep-hs-window = dtls-window-new, ep-reasm = dtls-reasm-new }
 
   dtls-ep-with-cert : DtlsEp, List (List Integer), List Integer, List Integer -> DtlsEp
   dtls-ep-with-cert (ep) (chain) (sign-priv) (sign-pub) =
@@ -149,12 +152,31 @@ Section: Receive
  that does not open (a wrong key from a substituted key_share, say) yields
  no message and the state does not advance.
 
+ The handshake epoch gets its OWN window, per RFC 9147 section 4.5.1: each
+ epoch resets the record sequence number space, so one window across both
+ epochs would reject a genuine record for colliding with a number it never
+ shared a space with. The order is the application path's -- deprotect,
+ test, advance -- for the same two reasons.
+
+ A duplicate here is not merely wasteful. The handshake transcript is a
+ running hash of the messages received, so a Certificate folded in twice
+ gives a transcript no peer computed, and the CertificateVerify over it
+ then fails against an honest signature.
+
+ The unprotected epoch is deliberately not windowed. A record at epoch 0
+ is a ClientHello, and the defence against a flood of them is the
+ stateless cookie (section 5.1), which is already here: a window would
+ hold per-peer state before the peer has proven an address, which is the
+ exhaustion the cookie exists to prevent.
+
   dtls-ep-recv-hs-enc : DtlsEp, List Integer, Integer -> DtlsEpStep
   dtls-ep-recv-hs-enc (ep) (dgram) (now) =
     let secret = if ep.ep-server then ep.ep-c-hs else ep.ep-s-hs
     in when dtls-open (dtls-ep-keys secret) 0 dgram
       is None -> dtls-ep-idle ep
-      is Just (p) -> dtls-ep-on-enc-hs ep p now
+      is Just (p) ->
+        if dtls-replay-ok (ep.ep-hs-window) (p.dp-seq) == False then dtls-ep-idle ep
+        else dtls-ep-on-enc-hs (__record-set ep "ep-hs-window" (dtls-replay-accept (ep.ep-hs-window) (p.dp-seq))) p now
 
   dtls-ep-on-enc-hs : DtlsEp, DtlsPlain, Integer -> DtlsEpStep
   dtls-ep-on-enc-hs (ep) (p) (now) =
@@ -284,14 +306,28 @@ Section: Server
     in let th-cv = tls13-transcript-hash tr-cv
     in dtls-ep-server-emit-msgs (dtls-ep-with-keys ep peer hs tr-cv c-hs s-hs) sh-body cert-body cv-body th-cv
 
+ THE RECORD NUMBER IS COUNTED, NOT MEASURED OFF THE ACCUMULATOR. Every
+ record in an epoch must carry its own sequence number, because the AEAD
+ nonce is built from it (RFC 9147 section 4.2.2): two records sharing one
+ number are encrypted under one key with one nonce, which is the failure
+ AES-GCM has no margin for. Counting fragments per message is the only
+ form of the count that survives here, because `list-push` extends the
+ accumulator in place and hands the same list back, so the flight's
+ output names all alias and a difference between two of their lengths is
+ always zero (L-ALIAS). The cost is fragmenting the two bodies twice per
+ flight, which is bounded by the certificate chain and is paid once per
+ handshake.
+
   dtls-ep-server-emit-msgs : DtlsEp, List Integer, List Integer, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-emit-msgs (ep) (sh-body) (cert-body) (cv-body) (th) =
     let sfin = tls13-verify-data (ep.ep-s-hs) th
     in let hk = dtls-ep-keys (ep.ep-s-hs)
+    in let n-cert = list-length (dtls-msg-fragments dtls-hs-certificate 1 cert-body dtls-ep-frag-body)
+    in let n-cv = list-length (dtls-msg-fragments dtls-hs-cert-verify 2 cv-body dtls-ep-frag-body)
     in let o0 = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 sh-body
     in let o1 = dtls-ep-seal-into hk o0 0 dtls-hs-certificate 1 cert-body
-    in let o2 = dtls-ep-seal-into hk o1 (list-length o1 - list-length o0) dtls-hs-cert-verify 2 cv-body
-    in let o3 = dtls-ep-seal-into hk o2 (list-length o2 - list-length o0) dtls-hs-finished 3 sfin
+    in let o2 = dtls-ep-seal-into hk o1 n-cert dtls-hs-cert-verify 2 cv-body
+    in let o3 = dtls-ep-seal-into hk o2 (n-cert + n-cv) dtls-hs-finished 3 sfin
     in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
     in DtlsEpStep { es-ep = ep2, es-out = o3 }
 
@@ -490,16 +526,33 @@ Section: Application Data
     in let rec = dtls-seal (dtls-ep-keys secret) dtls-ep-app-epoch (ep.ep-app-write-seq) data dtls-ep-content-app
     in DtlsEpStep { es-ep = __record-set ep "ep-app-write-seq" (ep.ep-app-write-seq + 1), es-out = [rec] }
 
+ RFC 9147 section 4.5.1: a record whose sequence number is already in the
+ window, or has fallen off the left of it, is discarded. The order here is
+ the one the RFC insists on and it is the whole of the defence: DEPROTECT
+ first, then test the window, then advance it. Testing before deprotection
+ is not even possible in DTLS 1.3, because the sequence number travels
+ encrypted (section 4.2.3) and dtls-open is what removes the mask; and
+ advancing before deprotection would hand an attacker a denial of service,
+ since one forged datagram carrying a high sequence number would slam the
+ window shut on every genuine record behind it.
+
+ A dropped replay is silent to the caller, deliberately: the peer cannot
+ be told which of its records reached us without answering an attacker's
+ probe.
+
   dtls-ep-recv-app : DtlsEp, List Integer -> DtlsEpStep
   dtls-ep-recv-app (ep) (rec) =
     let secret = if ep.ep-server then ep.ep-c-ap else ep.ep-s-ap
     in when dtls-open (dtls-ep-keys secret) 0 rec
       is None -> dtls-ep-idle ep
-      is Just (p) -> DtlsEpStep { es-ep = dtls-ep-app-accept ep p, es-out = [] }
+      is Just (p) ->
+        if dtls-replay-ok (ep.ep-app-window) (p.dp-seq) == False then dtls-ep-idle ep
+        else DtlsEpStep { es-ep = dtls-ep-app-accept ep p, es-out = [] }
 
   dtls-ep-app-accept : DtlsEp, DtlsPlain -> DtlsEp
   dtls-ep-app-accept (ep) (p) =
-    let e1 = __record-set ep "ep-app-read-seq" (ep.ep-app-read-seq + 1)
+    let e0 = __record-set ep "ep-app-window" (dtls-replay-accept (ep.ep-app-window) (p.dp-seq))
+    in let e1 = __record-set e0 "ep-app-read-seq" (ep.ep-app-read-seq + 1)
     in if p.dp-type == dtls-ep-content-app
     then __record-set e1 "ep-app-in" (dtls-ep-append (ep.ep-app-in) (p.dp-content) 0 (list-length (p.dp-content)))
     else e1
@@ -518,6 +571,12 @@ Section: Application Data
 
   dtls-ep-app-in : DtlsEp -> List Integer
   dtls-ep-app-in (ep) = ep.ep-app-in
+
+  dtls-ep-hs-right : DtlsEp -> Integer
+  dtls-ep-hs-right (ep) = let w = ep.ep-hs-window in w.dw-right
+
+  dtls-ep-app-right : DtlsEp -> Integer
+  dtls-ep-app-right (ep) = let w = ep.ep-app-window in w.dw-right
 
 Section: Fragmentation
 

@@ -19,7 +19,7 @@ Section: Runtime Database State
   RuntimeDb = record {
     rdb-catalog : Catalog,
     rdb-sysdb : SysDb,
-    rdb-audit : AuditLog,
+    rdb-audit : DbAuditLog,
     rdb-stream : ChangeStream,
     rdb-metrics : TsStore,
     rdb-security : SecurityContext,
@@ -143,7 +143,7 @@ Section: Configuration
 
   rdb-get-config : RuntimeDb, Text, Text -> Text
   rdb-get-config (rdb) (namespace) (key) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_config") (PredAnd (PredColCmp "namespace" CmpEq (ValText namespace)) (PredColCmp "key" CmpEq (ValText key))))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_config") (PredAnd (PredColCmp "namespace" CmpEq (ValText namespace)) (PredColCmp "key" CmpEq (ValText key))))
     in if qr.qr-count == 0 then ""
     else val-to-text (row-get-by-name (list-at (qr.qr-rows) (qr.qr-count - 1)) "value")
 
@@ -154,7 +154,7 @@ Section: Configuration
 
   rdb-list-config : RuntimeDb, Text -> List RowData
   rdb-list-config (rdb) (namespace) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_config") (PredColCmp "namespace" CmpEq (ValText namespace)))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_config") (PredColCmp "namespace" CmpEq (ValText namespace)))
     in qr.qr-rows
 
   rdb-config-schema : RowSchema
@@ -178,12 +178,12 @@ Section: Service Registry
 
   rdb-list-services : RuntimeDb -> List RowData
   rdb-list-services (rdb) =
-    let qr = execute (rdb.rdb-catalog) (RelScan "sys_services")
+    let qr = query (rdb.rdb-catalog) (RelScan "sys_services")
     in qr.qr-rows
 
   rdb-find-service : RuntimeDb, Text -> Maybe RowData
   rdb-find-service (rdb) (name) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_services") (PredColCmp "service-name" CmpEq (ValText name)))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_services") (PredColCmp "service-name" CmpEq (ValText name)))
     in if qr.qr-count == 0 then None else Just (list-at (qr.qr-rows) 0)
 
   rdb-service-schema : RowSchema
@@ -201,12 +201,12 @@ Section: Policy Management
 
   rdb-list-policies : RuntimeDb -> List RowData
   rdb-list-policies (rdb) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_policies") (PredColCmp "enabled" CmpEq (ValBoolean True)))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_policies") (PredColCmp "enabled" CmpEq (ValBoolean True)))
     in qr.qr-rows
 
   rdb-policies-for-scope : RuntimeDb, Text -> List RowData
   rdb-policies-for-scope (rdb) (scope) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_policies") (PredAnd (PredColCmp "scope" CmpEq (ValText scope)) (PredColCmp "enabled" CmpEq (ValBoolean True))))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_policies") (PredAnd (PredColCmp "scope" CmpEq (ValText scope)) (PredColCmp "enabled" CmpEq (ValBoolean True))))
     in qr.qr-rows
 
   rdb-evaluate-policy : RuntimeDb, Text, Text -> Text
@@ -237,7 +237,7 @@ Section: Capability Grants
 
   rdb-check-capability : RuntimeDb, Text, Text, Integer -> Boolean
   rdb-check-capability (rdb) (app) (capability) (now) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_capabilities") (PredAnd (PredColCmp "app-name" CmpEq (ValText app)) (PredColCmp "capability" CmpEq (ValText capability))))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_capabilities") (PredAnd (PredColCmp "app-name" CmpEq (ValText app)) (PredColCmp "capability" CmpEq (ValText capability))))
     in rdb-cap-valid-loop (qr.qr-rows) now 0 (qr.qr-count)
 
   rdb-cap-valid-loop : List RowData, Integer, Integer, Integer -> Boolean
@@ -250,7 +250,7 @@ Section: Capability Grants
 
   rdb-app-capabilities : RuntimeDb, Text -> List Text
   rdb-app-capabilities (rdb) (app) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_capabilities") (PredColCmp "app-name" CmpEq (ValText app)))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_capabilities") (PredColCmp "app-name" CmpEq (ValText app)))
     in rdb-extract-caps (qr.qr-rows) 0 (qr.qr-count) []
 
   rdb-extract-caps : List RowData, Integer, Integer, List Text -> List Text
@@ -273,7 +273,7 @@ Section: Resource Quotas
 
   rdb-check-quota : RuntimeDb, Text, Text -> Boolean
   rdb-check-quota (rdb) (app) (resource) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_quotas") (PredAnd (PredColCmp "app-name" CmpEq (ValText app)) (PredColCmp "resource" CmpEq (ValText resource))))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_quotas") (PredAnd (PredColCmp "app-name" CmpEq (ValText app)) (PredColCmp "resource" CmpEq (ValText resource))))
     in if qr.qr-count == 0 then True
     else let row = list-at (qr.qr-rows) 0
     in let limit = val-to-integer (row-get-by-name row "limit")
@@ -295,13 +295,13 @@ Section: Feature Flags
 
   rdb-check-feature : RuntimeDb, Text -> Boolean
   rdb-check-feature (rdb) (flag) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_features") (PredColCmp "flag-name" CmpEq (ValText flag)))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_features") (PredColCmp "flag-name" CmpEq (ValText flag)))
     in if qr.qr-count == 0 then False
     else val-to-boolean (row-get-by-name (list-at (qr.qr-rows) (qr.qr-count - 1)) "enabled")
 
   rdb-feature-rollout : RuntimeDb, Text, Integer -> Boolean
   rdb-feature-rollout (rdb) (flag) (hash-value) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_features") (PredColCmp "flag-name" CmpEq (ValText flag)))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_features") (PredColCmp "flag-name" CmpEq (ValText flag)))
     in if qr.qr-count == 0 then False
     else let row = list-at (qr.qr-rows) (qr.qr-count - 1)
     in let enabled = val-to-boolean (row-get-by-name row "enabled")
@@ -327,7 +327,7 @@ Section: Shared Deny List
 
   rdb-is-denied : RuntimeDb, Text, Integer -> Boolean
   rdb-is-denied (rdb) (addr) (now) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_deny_list") (PredColCmp "address" CmpEq (ValText addr)))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_deny_list") (PredColCmp "address" CmpEq (ValText addr)))
     in rdb-deny-active (qr.qr-rows) now 0 (qr.qr-count)
 
   rdb-deny-active : List RowData, Integer, Integer, Integer -> Boolean
@@ -353,7 +353,7 @@ Section: App Lifecycle
 
   rdb-list-apps : RuntimeDb -> List RowData
   rdb-list-apps (rdb) =
-    let qr = execute (rdb.rdb-catalog) (RelScan "sys_apps")
+    let qr = query (rdb.rdb-catalog) (RelScan "sys_apps")
     in qr.qr-rows
 
   rdb-app-schema : RowSchema
@@ -370,7 +370,7 @@ Section: Event Bus
 
   rdb-pending-events : RuntimeDb, Text -> List RowData
   rdb-pending-events (rdb) (target) =
-    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_events") (PredAnd (PredColCmp "target" CmpEq (ValText target)) (PredColCmp "handled" CmpEq (ValBoolean False))))
+    let qr = query (rdb.rdb-catalog) (RelFilter (RelScan "sys_events") (PredAnd (PredColCmp "target" CmpEq (ValText target)) (PredColCmp "handled" CmpEq (ValBoolean False))))
     in qr.qr-rows
 
   rdb-event-schema : RowSchema
@@ -397,10 +397,10 @@ Section: Helpers
   rdb-with-catalog : RuntimeDb, Catalog -> RuntimeDb
   rdb-with-catalog (rdb) (cat) = RuntimeDb { rdb-catalog = cat, rdb-sysdb = rdb.rdb-sysdb, rdb-audit = rdb.rdb-audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version + 1 }
 
-  rdb-with-catalog-audit : RuntimeDb, Catalog, AuditLog -> RuntimeDb
+  rdb-with-catalog-audit : RuntimeDb, Catalog, DbAuditLog -> RuntimeDb
   rdb-with-catalog-audit (rdb) (cat) (audit) = RuntimeDb { rdb-catalog = cat, rdb-sysdb = rdb.rdb-sysdb, rdb-audit = audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version + 1 }
 
-  rdb-with-all : RuntimeDb, Catalog, AuditLog, SysDb -> RuntimeDb
+  rdb-with-all : RuntimeDb, Catalog, DbAuditLog, SysDb -> RuntimeDb
   rdb-with-all (rdb) (cat) (audit) (sysdb) = RuntimeDb { rdb-catalog = cat, rdb-sysdb = sysdb, rdb-audit = audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version + 1 }
 
 Section: Statistics

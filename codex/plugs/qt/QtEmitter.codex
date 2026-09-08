@@ -79,7 +79,7 @@ Section: Expression Emission
   emit-qt-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-qt-expr (e) (arities) (indent) =
    when e
-    is IrIntLit (n) (sp) -> show n
+    is IrIntLit (n) (sp) -> show n & "n"
     is IrNumLit (n) (sp) -> show n
     is IrTextLit (s) (sp) -> "\"" & qt-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
@@ -115,18 +115,32 @@ Section: Binary Operators
     is IrDivVec -> "/"
     is otherwise -> "+"
 
+ A Codex Integer is a Number here, and a double holds an exact integer only
+ to 2^53. BOTH arms refuse: the band cannot wrap at 64 bits and the plain arm
+ cannot tell an overflow from a rounding, so the node type decides nothing and
+ is not consulted. The guard is on the VALUES, so a program whose integers fit
+ a double still computes and only the unrepresentable case refuses. The marker
+ is what plug-oracle-test.ps1 reads as its REFUSED verdict.
+
+  qt-int-refuse : Text, Text, Text -> Text
+  qt-int-refuse (sym) (lhs) (rhs) =
+   "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
+
   emit-qt-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-qt-binary (op) (l) (r) (arities) (indent) =
    let lhs = emit-qt-expr l arities indent
    in let rhs = emit-qt-expr r arities indent
    in when op
-    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrAddInt -> qt-int-refuse "+" lhs rhs
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> qt-int-refuse "-" lhs rhs
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> qt-int-refuse "*" lhs rhs
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
-    is IrPowInt -> "Math.pow(" & lhs & ", " & rhs & ")"
+    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
     is IrEq -> "(" & lhs & " === " & rhs & ")"
     is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
     is IrLt | IrLtVec -> "(" & lhs & " < " & rhs & ")"
@@ -158,7 +172,52 @@ Section: Apply and Helpers
   emit-qt-apply (e) (arities) (indent) =
    let chain = collect-apply-chain e []
    in let func = emit-qt-expr (chain.root) arities indent
-   in func & "(" & emit-qt-apply-args (chain.args) arities indent 0 & ")"
+   in let args = chain.args
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     let ar = lookup-arity arities n
+     in if ar < 1 then emit-qt-curried func args arities indent 0
+        else if list-length args == ar then func & "(" & emit-qt-apply-args args arities indent 0 & ")"
+        else if list-length args < ar then emit-qt-partial func args arities indent (ar - list-length args)
+        else emit-qt-curried (func & "(" & emit-qt-apply-args-upto args arities indent 0 ar & ")") args arities indent ar
+    is otherwise -> func & "(" & emit-qt-apply-args args arities indent 0 & ")"
+
+ This emitter targets QML's JavaScript, which has no partial application: a
+ definition applied to fewer arguments than it takes is eta-wrapped, and one
+ applied to more applies the surplus one at a time. The arity map was built
+ here and never read.
+
+  emit-qt-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-qt-curried (base) (args) (arities) (indent) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-qt-expr (list-at args i) arities indent & ")"
+   in emit-qt-curried next args arities indent (i + 1)
+
+  emit-qt-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-qt-apply-args-upto (args) (arities) (indent) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-qt-expr (list-at args i) arities indent
+   else emit-qt-expr (list-at args i) arities indent & ", " & emit-qt-apply-args-upto args arities indent (i + 1) n
+
+  emit-qt-partial-open : Integer, Integer -> Text
+  emit-qt-partial-open (i) (count) =
+   if i == count then ""
+   else "(function(_p" & integer-to-text i & "_) { return " & emit-qt-partial-open (i + 1) count
+
+  emit-qt-partial-close : Integer -> Text
+  emit-qt-partial-close (count) =
+   if count == 0 then "" else "; })" & emit-qt-partial-close (count - 1)
+
+  emit-qt-partial-params : Integer, Integer -> Text
+  emit-qt-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-qt-partial-params (i + 1) count
+
+  emit-qt-partial : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-qt-partial (func) (args) (arities) (indent) (short) =
+   let call = func & "(" & emit-qt-apply-args args arities indent 0 & ", " & emit-qt-partial-params 0 short & ")"
+   in emit-qt-partial-open 0 short & call & emit-qt-partial-close short
 
   emit-qt-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-qt-apply-args (args) (arities) (indent) (i) =
@@ -323,12 +382,45 @@ Section: QML Assembly
   emit-qt-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
-   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { outputModel.append({text: s}); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { outputModel.append({text: s}); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
    in let types-text = emit-qt-type-defs type-defs 0
    in let defs-text = emit-qt-defs (m.defs) 0 arities
    in let qml-header = "import QtQuick 2.15\nimport QtQuick.Controls 2.15\nimport QtQuick.Layouts 1.15\n\n"
    in let qml-body = "ApplicationWindow {\n    visible: true\n    width: 640\n    height: 480\n    title: \"" & qt-escape title & "\"\n\n    ListModel { id: outputModel }\n\n    ColumnLayout {\n        anchors.fill: parent\n        anchors.margins: 10\n        Repeater {\n            model: outputModel\n            Text { text: model.text; font.pixelSize: 14 }\n        }\n    }\n\n    Component.onCompleted: {\n"
    in let js-block = builtins & types-text & defs-text & "        try { opening(); } catch(e) { console.error(e); }\n"
    in qml-header & qml-body & js-block & "    }\n}\n"
+
+  emit-qt-chapter-stream-head : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-qt-chapter-stream-head (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { outputModel.append({text: s}); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
+   in let types-text = emit-qt-type-defs type-defs 0
+   in let qml-header = "import QtQuick 2.15\nimport QtQuick.Controls 2.15\nimport QtQuick.Layouts 1.15\n\n"
+   in let qml-body = "ApplicationWindow {\n    visible: true\n    width: 640\n    height: 480\n    title: \"" & qt-escape title & "\"\n\n    ListModel { id: outputModel }\n\n    ColumnLayout {\n        anchors.fill: parent\n        anchors.margins: 10\n        Repeater {\n            model: outputModel\n            Text { text: model.text; font.pixelSize: 14 }\n        }\n    }\n\n    Component.onCompleted: {\n"
+   in qml-header & qml-body & builtins & types-text
+
+  emit-qt-chapter-stream-tail : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-qt-chapter-stream-tail (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { outputModel.append({text: s}); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
+   in let types-text = emit-qt-type-defs type-defs 0
+   in let qml-header = "import QtQuick 2.15\nimport QtQuick.Controls 2.15\nimport QtQuick.Layouts 1.15\n\n"
+   in let qml-body = "ApplicationWindow {\n    visible: true\n    width: 640\n    height: 480\n    title: \"" & qt-escape title & "\"\n\n    ListModel { id: outputModel }\n\n    ColumnLayout {\n        anchors.fill: parent\n        anchors.margins: 10\n        Repeater {\n            model: outputModel\n            Text { text: model.text; font.pixelSize: 14 }\n        }\n    }\n\n    Component.onCompleted: {\n"
+   in "        try { opening(); } catch(e) { console.error(e); }\n" & "    }\n}\n"
+
+  emit-qt-chapter-stream-env : IRChapter, IRTextMeta, List ATypeDef -> List ArityEntry
+  emit-qt-chapter-stream-env (m) (meta) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
+   in let builtins = "function __narrow(n) { return n; }\nfunction print_line_uni(s) { outputModel.append({text: s}); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
+   in let types-text = emit-qt-type-defs type-defs 0
+   in let qml-header = "import QtQuick 2.15\nimport QtQuick.Controls 2.15\nimport QtQuick.Layouts 1.15\n\n"
+   in let qml-body = "ApplicationWindow {\n    visible: true\n    width: 640\n    height: 480\n    title: \"" & qt-escape title & "\"\n\n    ListModel { id: outputModel }\n\n    ColumnLayout {\n        anchors.fill: parent\n        anchors.margins: 10\n        Repeater {\n            model: outputModel\n            Text { text: model.text; font.pixelSize: 14 }\n        }\n    }\n\n    Component.onCompleted: {\n"
+   in arities
+
+  emit-qt-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-qt-chapter-stream-def (m) (v) (i) = emit-qt-def (list-at (m.defs) i) v
 
 Page 1

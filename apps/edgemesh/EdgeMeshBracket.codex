@@ -1,0 +1,121 @@
+Chapter: EdgeMeshBracket
+
+  cites Engine chapter EdgeMesh
+
+ `EdgeMeshGameServers.md` phase 3, stage 4: tournament mode. `ModeTournament`
+ exists as a queue mode and nothing consumes it, so a tournament is a label on a
+ match rather than a bracket that advances.
+
+ Lists are built by concatenation here rather than `list-push` or `list-set-at`,
+ which store through the caller's pointer (`CostModel.md` 5.1), for the reason
+ stage 3 gives.
+
+Section: A Round
+
+  Bout = record {
+    bo-a : QueuedPlayer,
+    bo-b : QueuedPlayer
+  }
+
+  Round = record {
+    rd-bouts : List Bout,
+    rd-bye : Text
+  }
+
+  Bracket = record {
+    bk-game : Text,
+    bk-round : Integer,
+    bk-seats : List QueuedPlayer
+  }
+
+  bracket-open : Text, List QueuedPlayer -> Bracket
+  bracket-open (game) (seats) = Bracket { bk-game = game, bk-round = 1, bk-seats = seats }
+
+  bracket-size : Bracket -> Integer
+  bracket-size (b) = list-length (b.bk-seats)
+
+ The bye goes to the TOP SEED, found by rating, and not to whichever entrant
+ happens to sit first or last in the list.
+
+  bracket-top-index : List QueuedPlayer, Integer, Integer, Integer -> Integer
+  bracket-top-index (xs) (i) (best) (best-rating) =
+    if i >= list-length xs then best
+    else let p = list-at xs i
+    in if (p.qp-rating) > best-rating then bracket-top-index xs (i + 1) i (p.qp-rating)
+    else bracket-top-index xs (i + 1) best best-rating
+
+  bracket-without : List QueuedPlayer, Integer, Integer, List QueuedPlayer -> List QueuedPlayer
+  bracket-without (xs) (drop) (i) (acc) =
+    if i >= list-length xs then acc
+    else let keep = if i == drop then acc else acc & [list-at xs i]
+    in bracket-without xs drop (i + 1) keep
+
+  bracket-bouts : List QueuedPlayer, Integer, List Bout -> List Bout
+  bracket-bouts (xs) (i) (acc) =
+    if i + 1 >= list-length xs then acc
+    else bracket-bouts xs (i + 2) (acc & [Bout { bo-a = list-at xs i, bo-b = list-at xs (i + 1) }])
+
+  bracket-round : Bracket -> Round
+  bracket-round (b) =
+    let n = list-length (b.bk-seats)
+    in if n - (n / 2) * 2 == 0 then Round { rd-bouts = bracket-bouts (b.bk-seats) 0 [], rd-bye = "" }
+    else let top = bracket-top-index (b.bk-seats) 0 0 (0 - 1)
+    in let rest = bracket-without (b.bk-seats) top 0 []
+    in Round { rd-bouts = bracket-bouts rest 0 [], rd-bye = (list-at (b.bk-seats) top).qp-name }
+
+Section: Advancing
+
+  BracketStep =
+    | Advanced (Bracket)
+    | AdvanceRefused (Text)
+
+  bracket-seat-named : List QueuedPlayer, Text, Integer -> Integer
+  bracket-seat-named (xs) (name) (i) =
+    if i >= list-length xs then 0 - 1
+    else if (list-at xs i).qp-name == name then i
+    else bracket-seat-named xs name (i + 1)
+
+  bracket-winner-ok : Bout, Text -> Boolean
+  bracket-winner-ok (bo) (name) = (bo.bo-a).qp-name == name | (bo.bo-b).qp-name == name
+
+  bracket-collect : List Bout, List Text, Integer, List QueuedPlayer -> List QueuedPlayer
+  bracket-collect (bouts) (winners) (i) (acc) =
+    if i >= list-length bouts then acc
+    else let bo = list-at bouts i
+    in let w = list-at winners i
+    in let seat = if (bo.bo-a).qp-name == w then bo.bo-a else bo.bo-b
+    in bracket-collect bouts winners (i + 1) (acc & [seat])
+
+  bracket-all-ok : List Bout, List Text, Integer -> Text
+  bracket-all-ok (bouts) (winners) (i) =
+    if i >= list-length bouts then ""
+    else if bracket-winner-ok (list-at bouts i) (list-at winners i) then bracket-all-ok bouts winners (i + 1)
+    else list-at winners i
+
+  bracket-advance : Bracket, List Text -> BracketStep
+  bracket-advance (b) (winners) =
+    let r = bracket-round b
+    in if list-length winners /= list-length (r.rd-bouts) then
+      AdvanceRefused ("round " & show (b.bk-round) & " has " & show (list-length (r.rd-bouts)) & " bouts and " & show (list-length winners) & " results")
+    else let bad = bracket-all-ok (r.rd-bouts) winners 0
+    in if bad /= "" then AdvanceRefused (bad & " did not play that bout")
+    else let won = bracket-collect (r.rd-bouts) winners 0 []
+    in let byei = bracket-seat-named (b.bk-seats) (r.rd-bye) 0
+    in let seats = if byei < 0 then won else won & [list-at (b.bk-seats) byei]
+    in Advanced (Bracket { bk-game = b.bk-game, bk-round = (b.bk-round) + 1, bk-seats = seats })
+
+  bracket-champion : Bracket -> Text
+  bracket-champion (b) =
+    if list-length (b.bk-seats) == 1 then (list-at (b.bk-seats) 0).qp-name else ""
+
+Section: Reporting
+
+  bracket-round-label : Round -> Text
+  bracket-round-label (r) =
+    show (list-length (r.rd-bouts)) & (if list-length (r.rd-bouts) == 1 then " bout" else " bouts") & (if r.rd-bye == "" then ", no bye" else ", bye to " & r.rd-bye)
+
+  bracket-step-label : BracketStep -> Text
+  bracket-step-label (s) =
+    when s
+      is Advanced (b) -> "round " & show (b.bk-round) & " with " & show (list-length (b.bk-seats)) & " left"
+      is AdvanceRefused (why) -> "refused: " & why

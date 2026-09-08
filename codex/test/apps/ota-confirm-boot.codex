@@ -1,0 +1,166 @@
+Chapter: OtaConfirmBoot
+  cites Net chapter Lwm2mFirmware
+  cites Foreword chapter OtaBoot
+  cites Foreword chapter OtaUpdate
+  cites Foreword chapter Board
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ `boot-commit` has existed since the OTA boot record did, and until now
+ nothing outside a test called it: the commit worked and only the
+ SCHEDULING was missing, which is a different fault from a path nothing
+ has ever run. `fw-confirm-boot` is that schedule, and this is its gate.
+
+ The two arms differ in ONE input, the registration verdict, and that is
+ the point:
+
+   1. Registered. The candidate is committed, so the next boot chooses it
+      as primary with no candidate outstanding, and Update Result reads 1.
+   2. NOT registered. Nothing is committed, the candidate is still
+      outstanding, and five boots exhaust the attempt limit and fall back
+      to A. Update Result stays 0.
+
+ Arm 2 is what makes arm 1 mean anything: a confirm that committed
+ unconditionally passes arm 1 exactly as well, and the fall-back to A is
+ the only place the difference shows.
+
+ We say:
+
+Section: Fixtures
+
+  bank-base : Integer = 536875008
+  rec-addr : Integer = 536883200
+  slot-a-addr : Integer = 536887296
+  slot-b-addr : Integer = 536891392
+
+  image-a : List Integer = [67, 68, 88, 49, 1, 1, 1, 1]
+  image-b : List Integer = [67, 68, 88, 49, 2, 2, 2, 2]
+
+  digest-of : List Integer -> List Integer
+  digest-of (xs) = hkdf-words-to-bytes (sha256 xs)
+
+  show-slot : BootSlot -> Text
+  show-slot (s) =
+   when s
+    is SlotA -> "A"
+    is SlotB -> "B"
+
+  show-cand : Maybe BootSlot -> Text
+  show-cand (m) =
+   when m
+    is None -> "none"
+    is Just (s) -> show-slot s
+
+  v0 : OtaVersion = OtaVersion { sequence = 1, hash = [], timestamp = 0 }
+
+  boot0 : BootConfig = BootConfig {
+   active-slot = SlotA, slot-a-version = v0, slot-b-version = v0,
+   slot-a-verified = True, slot-b-verified = True
+  }
+
+  fw0 : Lwm2mFw = fw-new boot0 v0 bank-base slot-b-addr 4096
+
+Section: Staging
+
+  stage-image : linear Board, Integer, List Integer -> [Flash, Device.Mmio] (linear Board, Integer)
+  stage-image (brd) (addr) (img) = act
+   ob <- flash-open-bank brd bank-base
+   when ob
+    is (brd1, b0) -> act
+      b1 <- flash-write-page b0 addr img
+      s <- flash-seal-bank b1
+      board-pair brd1 s
+    end
+  end
+
+  wipe-record : linear Board, Integer -> [Flash, Device.Mmio] (linear Board, Integer)
+  wipe-record (brd) (x) = act
+   ob <- flash-open-bank brd bank-base
+   when ob
+    is (brd1, b0) -> act
+      b1 <- flash-write-word b0 rec-addr 0
+      s <- flash-seal-bank b1
+      board-pair brd1 s
+    end
+  end
+
+  setup-marked : linear Board -> [Flash, Device.Mmio] linear Board
+  setup-marked (brd) = act
+   rw <- wipe-record brd 0
+   when rw
+    is (b1, w) -> act
+      rs1 <- stage-image b1 slot-a-addr image-a
+      when rs1
+       is (b2, s1) -> act
+         rs2 <- stage-image b2 slot-b-addr image-b
+         when rs2
+          is (b3, s2) -> act
+            rm <- boot-mark b3 bank-base rec-addr boot-factory-record SlotB (digest-of image-b) (list-length image-b)
+            when rm
+             is (b4, m) -> b4
+            end
+          end
+       end
+    end
+  end
+
+  run-five : linear Board, Integer, Text -> [Flash, Device.Mmio] (linear Board, Text)
+  run-five (brd) (n) (acc) =
+   if n <= 0 then board-pair brd acc
+   else act
+    r <- boot-run brd bank-base rec-addr slot-a-addr slot-b-addr
+    when r
+     is (b1, s) -> run-five b1 (n - 1) (acc & show-slot s)
+    end
+   end
+
+Section: The Runs
+
+  run-confirmed : Integer -> [Flash, Device.Mmio] Text
+  run-confirmed (x) = act
+   brd0 <- board-open 0 0
+   b4 <- setup-marked brd0
+   rf <- boot-run b4 bank-base rec-addr slot-a-addr slot-b-addr
+   when rf
+    is (b5, first) -> act
+      rc <- fw-confirm-boot b5 fw0 bank-base rec-addr True
+      when rc
+       is (b6, fw1) -> act
+         rs <- boot-run b6 bank-base rec-addr slot-a-addr slot-b-addr
+         when rs
+          is (b7, second) -> act
+            bc <- board-close b7
+            let r = boot-load rec-addr
+            in "confirmed: boot1=" & show-slot first & " boot2=" & show-slot second & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate) & " result=" & show (fw-result-resource fw1)
+          end
+       end
+    end
+  end
+
+  run-unconfirmed : Integer -> [Flash, Device.Mmio] Text
+  run-unconfirmed (x) = act
+   brd0 <- board-open 0 0
+   b4 <- setup-marked brd0
+   rc <- fw-confirm-boot b4 fw0 bank-base rec-addr False
+   when rc
+    is (b5, fw1) -> act
+      rr <- run-five b5 5 ""
+      when rr
+       is (b6, slots) -> act
+         bc <- board-close b6
+         let r = boot-load rec-addr
+         in "unconfirmed: " & slots & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate) & " result=" & show (fw-result-resource fw1)
+       end
+    end
+  end
+
+Section: Entry
+
+  opening : [Console, Flash, Device.Mmio] Nothing = act
+   a <- run-confirmed 0
+   b <- run-unconfirmed 0
+   print-line-uni a
+   print-line-uni b
+  end

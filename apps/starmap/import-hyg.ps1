@@ -430,7 +430,10 @@ foreach ($d in $dsos) {
 }
 
 # Constellation section
-$conOff = [int]$ms.Position; $ms.Position = 28; $bw.Write([int]$conOff); $ms.Position = $ms.Length
+# 32, not 28: 28 is con_count's slot, and patching the offset there destroyed
+# the count and left con_offset at 0, so the constellation section was
+# unreachable by the documented layout in every file this script has written.
+$conOff = [int]$ms.Position; $ms.Position = 32; $bw.Write([int]$conOff); $ms.Position = $ms.Length
 foreach ($c in $conResolved) {
     $abbrB = [System.Text.Encoding]::ASCII.GetBytes($c.Abbr.PadRight(3).Substring(0,3))
     $bw.Write([byte]$abbrB.Length); $bw.Write($abbrB)

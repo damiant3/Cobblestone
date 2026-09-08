@@ -1,0 +1,167 @@
+Chapter: ClockFaceTest
+  cites Foreword chapter Console
+  cites Foreword chapter MathLib
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites Works chapter GopFace
+  cites UI chapter Layout
+
+ Stage 3 of `docs/Designs/Active/Apps/ClockAndZone.md`: the analogue face.
+
+ WHAT MAKES A CLOCK LOOK WRONG IS A HAND THAT MISSES ITS TICK, so the geometry
+ is asked before anything is drawn. The table has sixty positions because a
+ clock has sixty, and every one is a whole number of degrees; if that is true
+ then a hand and the tick it points at are computed from the same number and
+ cannot disagree. The rows below say it is true by asking the circle for its
+ cardinal points and its identity, which no table of plausible-looking numbers
+ satisfies by accident.
+
+Section: Body
+
+  cf-yn : Boolean -> Text
+  cf-yn (v) = if v then "yes" else "NO"
+
+ THE CARDINALS ARE EXACT AND THE REST IS NOT ASKED TO BE. Twelve, three, six
+ and nine o'clock are the four positions a reader can check without a
+ calculator, and a table that is right at those and wrong between them is a
+ table that was transcribed rather than computed.
+
+  cf-cardinals : Text
+  cf-cardinals =
+    "cardinals: t0 sin " & show (face-sin 0) & " cos " & show (face-cos 0)
+    & "   t15 sin " & show (face-sin 15) & " cos " & show (face-cos 15)
+    & "   t30 sin " & show (face-sin 30) & " cos " & show (face-cos 30)
+    & "   t45 sin " & show (face-sin 45) & " cos " & show (face-cos 45)
+    & "  exact " & cf-yn (face-sin 0 == 0 & face-cos 0 == 1000 & face-sin 15 == 1000 & face-cos 15 == 0 & face-sin 30 == 0 & face-cos 30 == 0 - 1000 & face-sin 45 == 0 - 1000 & face-cos 45 == 0)
+
+ SIN SQUARED PLUS COS SQUARED IS THE WHOLE TABLE AT ONCE. It is asked at every
+ one of the sixty positions rather than at a few, because a single transposed
+ digit shows here and nowhere else: the shape stays a closed loop and the
+ hands still sweep, but one of them is short. The tolerance is two parts in a
+ thousand, which is what rounding sixteen sines to three digits costs.
+
+  cf-ident : Integer, Integer, Integer -> Integer
+  cf-ident (t) (n) (worst) =
+    if t >= n then worst
+    else
+      let v = face-sin t * face-sin t + face-cos t * face-cos t
+      in let e = if v > 1000000 then v - 1000000 else 1000000 - v
+      in cf-ident (t + 1) n (if e > worst then e else worst)
+
+  cf-identity : Text
+  cf-identity =
+    let w = cf-ident 0 60 0
+    in "identity: worst error over 60 positions " & show w
+       & "  within two parts per thousand " & cf-yn (w <= 2000)
+
+ THE SCREEN'S Y GROWS DOWNWARD AND A CLOCK'S TWELVE IS UP, which is the one
+ place this arithmetic is not the arithmetic of a unit circle. A face whose
+ vertical component was not negated draws a clock that runs backwards and
+ looks entirely normal until somebody reads it.
+
+  cf-updown : Text
+  cf-updown =
+    "up: dy at twelve " & show (face-dy 0 100) & "  at six " & show (face-dy 30 100)
+    & "  dx at three " & show (face-dx 15 100) & "  at nine " & show (face-dx 45 100)
+    & "  twelve is up " & cf-yn (face-dy 0 100 < 0)
+    & "  three is right " & cf-yn (face-dx 15 100 > 0)
+
+ THE HOUR HAND MOVES WITH THE MINUTES, which is the difference between a clock
+ and a picture of one. At half past ten it sits between ten and eleven, and a
+ hand that jumped on the hour reads as broken to anyone who has looked at a
+ real one. The row asks the whole hour, the half hour and the next hour, so a
+ hand that moved too far is refused as well as one that did not move.
+
+  cf-hour : Text
+  cf-hour =
+    "hour hand: 10:00 " & show (face-hour-t 10 0) & "  10:30 " & show (face-hour-t 10 30)
+    & "  11:00 " & show (face-hour-t 11 0) & "  12:00 " & show (face-hour-t 12 0)
+    & "  advances " & cf-yn (face-hour-t 10 30 > face-hour-t 10 0)
+    & "  and stays short of the next hour " & cf-yn (face-hour-t 10 30 < face-hour-t 11 0)
+    & "  twelve wraps to the top " & cf-yn (face-hour-t 12 0 == 0)
+
+Section: Pixels
+
+  cf-w : Integer = 64
+  cf-h : Integer = 64
+  cf-cells : Integer = 4096
+  cf-bg : Integer = 0
+  cf-rim : Integer = 3355443
+  cf-tick : Integer = 8947848
+  cf-hand : Integer = 15790320
+  cf-acc : Integer = 16733525
+
+  cf-fill : Integer, Integer, Integer, Integer -> Integer
+  cf-fill (b) (i) (n) (c) =
+    if i >= n then 0 else let p = poke-32 b (i * 4) c in cf-fill b (i + 1) n c
+
+  cf-at : Integer, Integer, Integer -> Integer
+  cf-at (b) (x) (y) = peek-32 b ((y * cf-w + x) * 4)
+
+  cf-render : Integer, Integer, Integer -> Integer
+  cf-render (h) (mi) (s) =
+    let b = alloc-bytes (cf-cells * 4)
+    in let z = cf-fill b 0 cf-cells cf-bg
+    in let d = face-draw b cf-w cf-h (layout-rect 0 0 cf-w cf-h) 32 32 30 h mi s cf-rim cf-tick cf-hand cf-acc
+    in b
+
+ A PIXEL THAT IS NEITHER THE BACKGROUND NOR ANY OF THE FOUR COLOURS IS A
+ BLEND, and blends along the dial's edge are the antialiasing. The count is
+ the measurement: a hard-edged circle has none, and the staircase it draws
+ instead is the same defect the rounded corners had.
+
+  cf-blend : Integer -> Boolean
+  cf-blend (v) = v /= cf-bg & v /= cf-rim & v /= cf-tick & v /= cf-hand & v /= cf-acc
+
+  cf-count-row : Integer, Integer, Integer, Integer -> Integer
+  cf-count-row (b) (y) (x) (acc) =
+    if x >= cf-w then acc
+    else cf-count-row b y (x + 1) (acc + (if cf-blend (cf-at b x y) then 1 else 0))
+
+  cf-count : Integer, Integer, Integer -> Integer
+  cf-count (b) (y) (acc) =
+    if y >= cf-h then acc else cf-count b (y + 1) (acc + cf-count-row b y 0 0)
+
+ The centre must be painted and the far corner must not: a face that filled
+ its whole box would score well on every other row here while covering the
+ pane it sits in.
+
+  cf-pixels : Text
+  cf-pixels =
+    let b = cf-render 10 10 30
+    in "pixels: blended " & show (cf-count b 0 0)
+       & "  the rim is soft " & cf-yn (cf-count b 0 0 > 0)
+       & "  centre painted " & cf-yn (cf-at b 32 32 /= cf-bg)
+       & "  corner clear " & cf-yn (cf-at b 1 1 == cf-bg)
+       & "  outside the radius clear " & cf-yn (cf-at b 32 0 == cf-bg)
+
+ THE SECOND HAND IS FOUND WHERE IT WAS SENT. At thirty seconds it points
+ straight down, so the accent colour must appear below the centre and must not
+ appear above it. This is the row that would catch a sign error the cardinals
+ above cannot: those ask the table, this asks the drawing.
+
+  cf-has : Integer, Integer, Integer, Integer, Integer -> Boolean
+  cf-has (b) (x) (y0) (y1) (col) =
+    if y0 >= y1 then False
+    else if cf-at b x y0 == col then True
+    else cf-has b x (y0 + 1) y1 col
+
+  cf-second : Text
+  cf-second =
+    let b = cf-render 10 10 30
+    in "second hand at 30: below the centre " & cf-yn (cf-has b 32 40 56 cf-acc)
+       & "  above it " & cf-yn (cf-has b 32 8 24 cf-acc)
+       & "  which is down " & cf-yn (cf-has b 32 40 56 cf-acc & cf-has b 32 8 24 cf-acc == False)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    act
+      print-line-uni cf-cardinals
+      print-line-uni cf-identity
+      print-line-uni cf-updown
+      print-line-uni cf-hour
+      print-line-uni cf-pixels
+      print-line-uni cf-second
+      print-line-uni "clock-face: reached the end"
+    end

@@ -2,7 +2,36 @@ Chapter: PythonStdio
 
 Section: Body
 
+  py-stream-mask : List IRDef, Integer, Integer, PyCtx, Integer -> Integer
+  py-stream-mask (defs) (i) (len) (ctx) (mask) =
+   if i >= len then mask
+   else let h = __heap-save
+   in let m2 = bit-or mask (py-uses-mask (emit-py-def (list-at defs i) ctx))
+   in let r = __heap-restore h
+   in py-stream-mask defs (i + 1) len ctx m2
+
+  py-stream-defs : List IRDef, Integer, Integer, PyCtx -> [Console] Nothing
+  py-stream-defs (defs) (i) (len) (ctx) =
+   if i >= len then print-uni ""
+   else let h = __heap-save
+   in let s = emit-py-def (list-at defs i) ctx
+   in act
+    print-uni s
+    let r = __heap-restore h
+    in py-stream-defs defs (i + 1) len ctx
+   end
+
   plug-emit-ir-stream : Text -> [Console] Nothing
   plug-emit-ir-stream (ir-text) =
    let parsed = parse-ir-chapter ir-text
-   in print-line-uni (emit-python-chapter (parsed.chapter) (parsed.type-defs))
+   in let m = parsed.chapter
+   in let ctx = PyCtx { arities = build-arity-map (m.defs) 0 [], type-defs = parsed.type-defs }
+   in let types-text = emit-py-type-defs (parsed.type-defs) 0
+   in let entry = py-emit-entry (opening-return-type (m.defs)) (opening-has-params (m.defs))
+   in let mask = py-stream-mask (m.defs) 0 (list-length (m.defs)) ctx (py-uses-mask (types-text & entry))
+   in act
+    print-uni (py-header-from mask)
+    print-uni types-text
+    py-stream-defs (m.defs) 0 (list-length (m.defs)) ctx
+    print-line-uni entry
+   end

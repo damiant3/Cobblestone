@@ -18,8 +18,11 @@ $Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir  = (Resolve-Path $PSScriptRoot).Path
 $PlugCdx  = Join-Path $PlugDir 'build-output\maui-plug.cdx'
 $IrDir    = Join-Path $PlugDir 'build-output'
-$IrFile   = Join-Path $IrDir 'last-run.ir'
-$LogFile  = Join-Path $IrDir 'run.log'
+# Scratch is keyed to the run so two concurrent runs cannot cross
+# their IR and their log (plugs 2.26).
+$RunTag  = if ($Out) { [System.IO.Path]::GetFileNameWithoutExtension($Out) } else { $PID }
+$IrFile   = Join-Path $IrDir "last-run-$RunTag.ir"
+$LogFile  = Join-Path $IrDir "run-$RunTag.log"
 $Template = Join-Path $PlugDir 'template'
 
 if (-not $ProjectDir) { $ProjectDir = Join-Path $IrDir 'CodexApp' }

@@ -1,0 +1,87 @@
+Chapter: EdgeMeshFailoverTest
+
+  cites Foreword chapter Console
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Mesh chapter EdgeMeshLive
+  cites Mesh chapter EdgeMeshPlace
+  cites Mesh chapter EdgeMeshFailover
+
+ EdgeMeshGameServers phase 4, stage 1. The two arms that matter: a failover
+ crosses REGIONS and never crosses GAMES, and the region chosen is the nearest
+ one still serving the game rather than the first one in the list.
+
+ The nearest-region arm flies from asia-east, whose nearest serving neighbour is
+ asia-south at the END of the region list while a serving us-east sits at the
+ head of the list. A failover written as a scan picks us-east and passes every
+ other arm here.
+
+ EVERY SCENARIO BUILDS ITS OWN GROUP, because `GroupState` operations store in
+ place and return the same record.
+
+Section: Fixtures
+
+  node : Text, Text, Integer, Integer -> ServiceLocation
+  node (svc) (member) (load) (health) =
+    ServiceLocation {
+      sl-service = svc,
+      sl-version = "1",
+      sl-member-id = member,
+      sl-address = "10.0.2." & show load,
+      sl-port = 7000,
+      sl-role = SrLoadBalanced,
+      sl-health = health,
+      sl-load = load,
+      sl-registered = 0,
+      sl-last-check = 0
+    }
+
+  region-at : Integer -> EdgeRegion
+  region-at (i) = list-at (default-regions.rl-regions) i
+
+  magic-in : Integer -> Text
+  magic-in (i) = place-game-service "codexmagic" (region-at i)
+
+  chess-in : Integer -> Text
+  chess-in (i) = place-game-service "chess" (region-at i)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let rl = default-regions
+    in act
+      act
+        let g = gs-register-service (group-new "f-a" "a") (node (magic-in 0) "home-node" 20 10000)
+        in print-line-uni ("home is up: " & fo-label (place-or-failover g rl 0 "codexmagic"))
+      end
+
+      act
+        let g1 = gs-register-service (group-new "f-b" "b") (node (chess-in 1) "chess-near" 1 10000)
+        in let g2 = gs-register-service g1 (node (magic-in 2) "magic-far" 30 10000)
+        in print-line-uni ("home down, a nearer region runs another game: " & fo-label (place-or-failover g2 rl 0 "codexmagic"))
+      end
+
+      act
+        let g1 = gs-register-service (group-new "f-c" "c") (node (magic-in 0) "first-in-list" 5 10000)
+        in let g2 = gs-register-service g1 (node (magic-in 5) "nearest" 40 10000)
+        in print-line-uni ("from asia-east, nearest beats first-in-list: " & fo-label (place-or-failover g2 rl 4 "codexmagic"))
+      end
+
+      act
+        let g1 = gs-register-service (group-new "f-d" "d") (node (magic-in 0) "sick-at-home" 1 2000)
+        in let g2 = gs-register-service g1 (node (magic-in 1) "well-away" 60 10000)
+        in print-line-uni ("home node is unhealthy: " & fo-label (place-or-failover g2 rl 0 "codexmagic"))
+      end
+
+      act
+        let g = gs-register-service (group-new "f-e" "e") (node (chess-in 1) "chess-only" 1 10000)
+        in print-line-uni ("the game runs nowhere: " & fo-label (place-or-failover g rl 0 "codexmagic"))
+      end
+
+      act
+        let g = gs-register-service (group-new "f-f" "f") (node (magic-in 0) "somewhere" 1 10000)
+        in print-line-uni ("no such home region: " & fo-label (place-or-failover g rl 99 "codexmagic"))
+      end
+    end
+  end

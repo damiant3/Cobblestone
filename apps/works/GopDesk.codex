@@ -1,5 +1,7 @@
 Chapter: GopDesk
+  cites Works chapter GopSheet
   cites Works chapter GopDraw
+  cites Works chapter GopWeb
   cites Works chapter GopComposite
   cites Works chapter GopIcon
   cites Works chapter GopStyleKit
@@ -18,6 +20,8 @@ Chapter: GopDesk
   cites Works chapter GopConsole
   cites Works chapter GopPrograms
   cites Works chapter GopClock
+  cites Works chapter GopFace
+  cites Works chapter GopWorld
   cites Works chapter GopCal
   cites Works chapter GopTrack
   cites Works chapter GopReview
@@ -283,12 +287,22 @@ Section: Appearance That Survives A Reboot
   dk-set-sound : Integer = 3
   dk-set-edge : Integer = 4
 
+  dk-set-pinned : Integer = 5
+
+ 524287 is 2^19 - 1, one bit per focus id at `dk-pedge-slots`, and it is a
+ high LIMIT rather than a count because `gst-int-key` bounds a value.
+ Widening the limit reads an older stored value unchanged, because every
+ value the narrower limit admitted is still inside this one.
+
+  dk-pinned-all : Integer = 524287
+
   dk-settings-keys : List SettingKey
   dk-settings-keys = [
     gst-int-key dk-set-scheme "colour scheme" 0 0 (dk-scheme-count - 1),
     gst-int-key dk-set-adorn "adornments" dk-adorn-default 0 15,
     gst-int-key dk-set-sound "sounds" 0 0 1,
-    gst-int-key dk-set-edge "task frame edge" dk-edge-bottom dk-edge-bottom dk-edge-right
+    gst-int-key dk-set-edge "task frame edge" dk-edge-bottom dk-edge-bottom dk-edge-right,
+    gst-int-key dk-set-pinned "pinned apps" 0 0 dk-pinned-all
   ]
 
   dk-settings-of : Integer -> SettingsStore
@@ -297,7 +311,8 @@ Section: Appearance That Survives A Reboot
     in let s1 = gst-or-keep s0 (gst-set s0 dk-set-scheme (peek-32 ds dk-scheme-cell))
     in let s2 = gst-or-keep s1 (gst-set s1 dk-set-adorn (peek-32 ds dk-adorn-cell))
     in let s3 = gst-or-keep s2 (gst-set s2 dk-set-sound (peek-32 ds dk-sound-on-cell))
-    in gst-or-keep s3 (gst-set s3 dk-set-edge (dk-task-edge ds))
+    in let s4 = gst-or-keep s3 (gst-set s3 dk-set-edge (dk-task-edge ds))
+    in gst-or-keep s4 (gst-set s4 dk-set-pinned (peek-32 ds dk-pinned-cell))
 
   dk-settings-save : Integer -> [Device.Port] Boolean
   dk-settings-save (ds) = gst-save (dk-settings-of ds)
@@ -307,7 +322,8 @@ Section: Appearance That Survives A Reboot
     let sp = poke-32 ds dk-scheme-cell (gst-get st dk-set-scheme 0)
     in let ap = poke-32 ds dk-adorn-cell (gst-get st dk-set-adorn dk-adorn-default)
     in let sn = poke-32 ds dk-sound-on-cell (gst-get st dk-set-sound 0)
-    in poke-32 ds dk-task-edge-cell (gst-get st dk-set-edge dk-edge-bottom)
+    in let ep = poke-32 ds dk-task-edge-cell (gst-get st dk-set-edge dk-edge-bottom)
+    in poke-32 ds dk-pinned-cell (gst-get st dk-set-pinned 0)
 
 Section: Sound
 
@@ -317,28 +333,76 @@ Section: Sound
  so the click is rendered once at boot into a block the base mark cannot
  reach, and the click itself only writes registers.
 
+ Four rendered effects sit in the block at 16, eight bytes each (buffer, byte
+ length); 48 holds a requested slot plus one, so zero is no request; 52 holds
+ the focus id the last iteration saw. The focus tick is 40 ms at 600 Hz and
+ four tenths of the click's volume: a switch between two windows is a quieter
+ event than a press.
+
   dk-snd-blk-buf : Integer = 16
   dk-snd-blk-len : Integer = 20
+  dk-snd-blk-req : Integer = 48
+  dk-snd-blk-focus : Integer = 52
+  dk-snd-slot-click : Integer = 0
+  dk-snd-slot-focus : Integer = 1
+  dk-snd-slot-error : Integer = 2
+  dk-snd-slot-notify : Integer = 3
+
+  dk-snd-focus-fx : SoundEffect
+  dk-snd-focus-fx = sound-effect "focus" WavSine 600 40 200
+
+  dk-snd-render : Integer, Integer, SoundEffect -> Integer
+  dk-snd-render (blk) (slot) (fx) =
+    let n = hda-sample-rate * fx.snd-duration / 1000
+    in let buf = hda-square-tone-at (fx.snd-freq) n (hda-amplitude * fx.snd-volume / 1000)
+    in let b0 = poke-32 blk (dk-snd-blk-buf + slot * 8) buf
+    in poke-32 blk (dk-snd-blk-len + slot * 8) (n * 4)
 
   dk-snd-init : Integer -> Integer
   dk-snd-init (ds) =
-    let fx = snd-click
-    in let n = hda-sample-rate * fx.snd-duration / 1000
-    in let blk = alloc-zeroed 32 128
-    in let buf = hda-square-tone-at (fx.snd-freq) n (hda-amplitude * fx.snd-volume / 1000)
-    in let b0 = poke-32 blk dk-snd-blk-buf buf
-    in let b1 = poke-32 blk dk-snd-blk-len (n * 4)
+    let blk = alloc-zeroed 64 128
+    in let r0 = dk-snd-render blk dk-snd-slot-click snd-click
+    in let r1 = dk-snd-render blk dk-snd-slot-focus dk-snd-focus-fx
+    in let r2 = dk-snd-render blk dk-snd-slot-error snd-error
+    in let r3 = dk-snd-render blk dk-snd-slot-notify snd-success
     in poke-32 ds dk-sound-cell blk
 
-  dk-snd-play : Integer -> [Audio] Integer
-  dk-snd-play (ds) =
+  dk-snd-play-slot : Integer, Integer -> [Audio] Integer
+  dk-snd-play-slot (ds) (slot) =
     let blk = peek-32 ds dk-sound-cell
     in if peek-32 ds dk-sound-on-cell == 0 then 0
     else if blk == 0 then 0
-    else hda-play-pcm-at blk (peek-32 blk dk-snd-blk-buf) (peek-32 blk dk-snd-blk-len)
+    else hda-play-pcm-at blk (peek-32 blk (dk-snd-blk-buf + slot * 8)) (peek-32 blk (dk-snd-blk-len + slot * 8))
+
+  dk-snd-play : Integer -> [Audio] Integer
+  dk-snd-play (ds) = dk-snd-play-slot ds dk-snd-slot-click
 
   dk-snd-click : Integer, Boolean -> [Audio] Integer
   dk-snd-click (ds) (clicked) = if clicked then dk-snd-play ds else 0
+
+  dk-snd-request : Integer, Integer -> Integer
+  dk-snd-request (ds) (slot) =
+    let blk = peek-32 ds dk-sound-cell
+    in if blk == 0 then 0 else poke-32 blk dk-snd-blk-req (slot + 1)
+
+  dk-snd-pump : Integer -> [Audio] Integer
+  dk-snd-pump (ds) =
+    let blk = peek-32 ds dk-sound-cell
+    in if blk == 0 then 0
+    else let r = peek-32 blk dk-snd-blk-req
+    in if r == 0 then 0
+    else let c = poke-32 blk dk-snd-blk-req 0
+    in dk-snd-play-slot ds (r - 1)
+
+  dk-snd-focus-note : Integer -> [Audio] Integer
+  dk-snd-focus-note (ds) =
+    let blk = peek-32 ds dk-sound-cell
+    in if blk == 0 then 0
+    else let f = peek-32 ds desk-focus-cell
+    in let last = peek-32 blk dk-snd-blk-focus
+    in let w = poke-32 blk dk-snd-blk-focus f
+    in if f == last | f == desk-focus-none | last == desk-focus-none then 0
+    else dk-snd-play-slot ds dk-snd-slot-focus
 
 Section: Drawn Icons
 
@@ -544,6 +608,25 @@ Section: Chrome
 
   desk-task-clock-w : Integer = 220
 
+ THE RESERVATION FOLLOWS WHAT THE BAND IS SET TO SHOW. 220 was enough for a
+ bare `HH:MM:SS` and is not enough for a date and an offset beside it, and the
+ label is empty by design, so nothing about the tree would have grown to fit:
+ the text is hand-painted over the cell the layout reserved and would simply
+ have run past it.
+
+ Eight is the widget layer's character cell and 24 covers the padding either
+ side. The sample is the WIDEST date the format can produce rather than
+ today's, because a reservation that tracked the day would change width on the
+ last day of a month.
+
+  dk-task-clock-w-of : Integer -> Integer
+  dk-task-clock-w-of (ds) =
+    let cks = peek-32 ds desk-clock-cell
+    in if cks == 0 then desk-task-clock-w
+    else
+      let want = text-length (clk-band-preview cks 2026 12 31) * 8 + 24
+      in if want < desk-task-clock-w then desk-task-clock-w else want
+
  The `tasks` slot was an empty spacer until 2026-08-19. It reads the mark stack
  rather than a list of its own, which is what makes it correct by construction:
  an app is ALIVE exactly when it holds a live entry there, so the row cannot
@@ -609,7 +692,86 @@ Section: Chrome
  interaction disturbs. It also makes the band read the same way twice in a
  row, which is what lets a second click land on the pill the first one did.
 
-  dk-focus-max : Integer = 16
+  dk-focus-max : Integer = 18
+
+ A PINNED APP HAS A PILL WITH NO WINDOW, which is stage 3. The set is a
+ BITMASK in one cell rather than a block per id, because nineteen bits fit
+ in the cell itself: it needs no allocation and so no init before the base
+ mark, unlike `dk-pedge`. Zero is also unambiguous here where it was not
+ there -- an unpinned app and an unwritten cell mean the same thing, so this
+ stores the bit raw and needs none of `dk-pedge-set`'s plus-one.
+
+  dk-pinned-cell : Integer = 244
+
+ THE SIZE OF `ds` IS THIS CONSTANT AND NOT A LITERAL. Growing the block
+ used to mean editing the number at every site that builds one, which is
+ 53 sites across the desk and its arms, and the contract carried a
+ warning about the same literal appearing in allocations that are NOT a
+ `ds`: a USB config descriptor is also 256 bytes, and a blind replace
+ takes those with it. Every site names this constant now, so the next
+ growth is this line.
+
+  dk-ds-bytes : Integer = 512
+
+ The first cell of the room the growth made. The window slot and nothing
+ else, which is the shape every pane whose own state is not a cell has.
+
+  dk-sheet-cell : Integer = 256
+
+  dk-bit-of : Integer -> Integer
+  dk-bit-of (n) = if n <= 0 then 1 else 2 * dk-bit-of (n - 1)
+
+ A PINNED PILL MUST HAVE A ROAD TO OPEN BY, so the scancode table is what
+ decides whether an app can be pinned at all. `desk-dispatch-app` is the only
+ function that knows these, and answering 0 for the system menu is what keeps
+ something that is not an app out of the pinned set: `dk-pinned-get` refuses
+ any id this cannot launch, so the mask can never hold one.
+
+  dk-fid-sc : Integer -> Integer
+  dk-fid-sc (fid) =
+    if fid == desk-focus-mon then 50
+    else if fid == desk-focus-cal then 38
+    else if fid == desk-focus-style then 30
+    else if fid == desk-focus-calc then 46
+    else if fid == desk-focus-clkp then 37
+    else if fid == desk-focus-prog then 25
+    else if fid == desk-focus-dif then 32
+    else if fid == desk-focus-trk then 23
+    else if fid == desk-focus-con then 20
+    else if fid == desk-focus-files then 33
+    else if fid == desk-focus-bro then 48
+    else if fid == desk-focus-scene then 4
+    else if fid == desk-focus-fish then 16
+    else if fid == desk-focus-edit then 18
+    else if fid == desk-focus-rev then 19
+    else if fid == desk-focus-web then 17
+    else if fid == desk-focus-sheet then 31
+    else 0
+
+  dk-pinned-get : Integer, Integer -> Boolean
+  dk-pinned-get (ds) (fid) =
+    if fid < 0 then False
+    else if fid > dk-focus-max then False
+    else if dk-fid-sc fid == 0 then False
+    else bit-and (peek-32 ds dk-pinned-cell) (dk-bit-of fid) /= 0
+
+  dk-pinned-toggle : Integer, Integer -> Integer
+  dk-pinned-toggle (ds) (fid) =
+    if fid < 0 then 0
+    else if fid > dk-focus-max then 0
+    else if dk-fid-sc fid == 0 then 0
+    else
+      let f = peek-32 ds dk-pinned-cell
+      in let b = dk-bit-of fid
+      in poke-32 ds dk-pinned-cell (if bit-and f b /= 0 then f - b else f + b)
+
+ THE UNION IS ONE FUNCTION AND EVERY WALK TAKES IT, so a pill cannot exist
+ for a click that cannot find it: the four walks that used to test the
+ registry each ask this instead.
+
+  dk-pill-live : Integer, Integer, Integer -> Boolean
+  dk-pill-live (ws) (ds) (fid) =
+    if dk-wr-find ws fid 0 >= 0 then True else dk-pinned-get ds fid
 
  THE WALK TAKES AN EDGE (6.7.2) AND YIELDS ONLY THE PILLS DOCKED TO IT. While
  the band is the only strip it asks for its own edge, and `dk-pedge-get`
@@ -620,31 +782,60 @@ Section: Chrome
   dk-pills : Integer, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
   dk-pills (ws) (ds) (e) (fid) (acc) =
     if fid > dk-focus-max then acc
-    else if dk-wr-find ws fid 0 < 0 then dk-pills ws ds e (fid + 1) acc
+    else if dk-pill-live ws ds fid == False then dk-pills ws ds e (fid + 1) acc
     else if dk-pedge-get ds fid /= e then dk-pills ws ds e (fid + 1) acc
     else dk-pills ws ds e (fid + 1) (list-push acc (widget-set-flex (widget-button (dk-pill-id fid) (desk-chrome-gutter & desk-wnd-title fid)) 0))
 
  The pill's icon is painted after the layout like every other one, keyed on
  the same id the button carries, so it cannot land anywhere but on the pill.
- It walks the REGISTRY rather than the laid tree because that is where the
- minimised set lives; `desk-icon-on` answers 0 for a window that is not
- minimised and therefore has no pill in the tree.
 
-  desk-pill-icons : Integer, Integer, WidgetNode, Theme, Integer, GopFont, Integer, Integer -> Integer
-  desk-pill-icons (base) (stride) (laid) (th) (ws) (tf) (ds) (i) =
-    let wr = peek-32 ds dk-wr-cell
-    in if i >= dk-wr-count wr then 0
+  desk-pill-icons : Integer, Integer, Integer, WidgetNode, Theme, Integer, GopFont, Integer, Integer -> Integer
+  desk-pill-icons (base) (stride) (rows) (laid) (th) (ws) (tf) (ds) (fid) =
+    if fid > dk-focus-max then 0
+    else if dk-pill-live (peek-32 ds dk-wr-cell) ds fid == False then desk-pill-icons base stride rows laid th ws tf ds (fid + 1)
     else
-      let fid = dk-wr-at wr i
-      in let d = desk-icon-on base stride laid th ws tf "" desk-chrome-gutter (dk-pill-id fid) (dk-pill-icon fid) ds
-      in desk-pill-icons base stride laid th ws tf ds (i + 1)
+      let d = desk-icon-on base stride rows laid th ws tf "" desk-chrome-gutter (dk-pill-id fid) (dk-pill-icon fid) ds
+      in desk-pill-icons base stride rows laid th ws tf ds (fid + 1)
+
+ THE ENTRY IS THE SAME SIZE ON A VERTICAL BAND AS ON A HORIZONTAL ONE, and it
+ took a faced measurement to see that it was not. Across, the entry's height is
+ the row's CROSS axis, so the band stretches it and the entry's own minimum
+ never binds. Down, height is the MAIN axis and the minimum is the whole
+ answer. Measured by `desk-menu-anchor` at 1600x900 with an 18 pixel cell:
+ 16 logical at the top and bottom edges, 11 at the left and right. Damian,
+ 2026-09-07: "fix the small cobblestone menu button when in left or right mode
+ to be same as top and bottom modes".
+
+ The floor is the bitmap cell, which is the same number the band already falls
+ back to when there is no face at all, and it is asked in BOTH orientations
+ rather than only the vertical one: a floor the horizontal band is already
+ above costs nothing there, and a rule with an arm on it is one more place for
+ the two to drift apart. `dk-line-step` divided by the scale can come out
+ BELOW the cell, which is the whole of the defect and is not obvious from
+ either name.
+
+ AND IT NEVER ASKS FOR LESS THAN ITS OWN NATURAL HEIGHT, which is what made
+ the entry change size when an app opened. A pill is a plain `widget-button`
+ with no minimum of its own, so it asks for what the constructor measured; the
+ entry set a minimum that was SMALLER than that and, across, height is the
+ row's cross axis. So the band was 28 logical with no pills and 36 with one,
+ and the entry stretched from 16 to 24 as the first app opened. Damian: "the
+ size of the cobblestone button is not consistent: when an app is open versus
+ when none. when none, the button is small, and when you open any app, it
+ expands to a bigger size."
+
+ Taking the max with `mb.wn-min-h` makes the entry ask for exactly what a pill
+ asks for, because it IS the same kind of node, so the band is one height
+ whether or not anything is open and the entry matches the pills beside it.
+ The two floors below it can still raise that; nothing can lower it.
 
   desk-taskbar : Integer, GopFont, Integer -> WidgetNode
   desk-taskbar (ds) (tf) (ws) =
     let mb = widget-button "menu" "   Cobblestone"
-    in let menu = widget-set-flex (widget-set-min mb (mb.wn-min-w) (dk-task-btn-h tf ws)) 0
+    in let mbh = math-max (mb.wn-min-h) (math-max comp-glyph-h (dk-task-btn-h tf ws))
+    in let menu = widget-set-flex (widget-set-min mb (mb.wn-min-w) mbh) 0
     in let tasks = widget-set-flex (widget-label "tasks" "") 1
-    in let clock = widget-set-min (widget-label "task-clock" "") (if dk-task-vertical ds then 0 else desk-task-clock-w) 0
+    in let clock = widget-set-min (widget-label "task-clock" "") (if dk-task-vertical ds then 0 else dk-task-clock-w-of ds) 0
     in let kids = dk-pills (peek-32 ds dk-wr-cell) ds (dk-task-edge ds) 0 (list-push [] menu)
     in let kids2 = list-push (list-push kids tasks) clock
     in if dk-task-vertical ds
@@ -656,13 +847,19 @@ Section: Chrome
  paragraphs already use, so the band inherits the same relation to the face
  that every other run of type on this desk has.
 
- It asks for nothing on the bitmap path. That path is not broken -- its cell
- is `comp-glyph-h * ws` and the 16 the entry gets today holds it exactly --
- and a request there would move `desk-taskbar-hit`, which runs faceless, for
- no defect.
+ IT ASKS FOR THE BITMAP CELL ON THE FACELESS PATH RATHER THAN FOR NOTHING,
+ and that path was broken in a way only a vertical band shows. Asking for zero
+ was safe while the band ran ACROSS, because the button's height is then the
+ row's cross axis and the row is sized by `dk-task-h`. Docked to the left or
+ the right the band is a DirColumn, height becomes the MAIN axis, and a
+ minimum of zero is the whole answer: measured by `desk-menu-anchor` at
+ 1600x900, the button lays out `h 0` at both vertical edges against 16 at both
+ horizontal ones. `desk-taskbar-hit` runs faceless by design, so the
+ consequence is a Cobblestone button that cannot be clicked whenever the band
+ is docked to a side.
 
   dk-task-btn-h : GopFont, Integer -> Integer
-  dk-task-btn-h (tf) (ws) = if tf.gf-ok then dk-line-step tf ws / ws else 0
+  dk-task-btn-h (tf) (ws) = if tf.gf-ok then dk-line-step tf ws / ws else comp-glyph-h
 
  The measured tree is a discarded frame and is bracketed, unlike the blocks
  `desk-run` allocates around it. Those are kept and pointed at from a `ds`
@@ -815,17 +1012,17 @@ Section: Chrome
 
   desk-chrome-gutter : Text = "   "
 
-  desk-chrome-icons : Integer, Integer, WidgetNode, Theme, Integer, GopFont, Integer -> Integer
-  desk-chrome-icons (base) (stride) (laid) (th) (ws) (tf) (ds) =
+  desk-chrome-icons : Integer, Integer, Integer, WidgetNode, Theme, Integer, GopFont, Integer -> Integer
+  desk-chrome-icons (base) (stride) (rows) (laid) (th) (ws) (tf) (ds) =
     let g = desk-chrome-gutter
-    in let a = desk-icon-on base stride laid th ws tf "" g "menu" "menu" ds
-    in let b = desk-icon-on base stride laid th ws tf "" g "shutdown" "power" ds
-    in desk-pill-icons base stride laid th ws tf ds 0
+    in let a = desk-icon-on base stride rows laid th ws tf "" g "menu" "menu" ds
+    in let b = desk-icon-on base stride rows laid th ws tf "" g "shutdown" "power" ds
+    in desk-pill-icons base stride rows laid th ws tf ds 0
 
   dk-chrome-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Integer -> WidgetNode
   dk-chrome-paint (base) (w) (h) (stride) (font) (tf) (tree) (ds) =
-    let laid = comp-render base stride font tf (desk-chrome-face tree w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
-    in let ic = desk-chrome-icons base stride laid (dk-theme-ds ds) (ui-wscale w) tf ds
+    let laid = comp-render base stride h font tf (desk-chrome-face tree w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
+    in let ic = desk-chrome-icons base stride h laid (dk-theme-ds ds) (ui-wscale w) tf ds
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in laid
 
@@ -834,7 +1031,7 @@ Section: Drawing
   desk-line : Integer, Integer, Integer, CbfFont, Integer, GopFont, Integer, Integer, Text, Integer -> Integer
   desk-line (base) (stride) (h) (font) (s) (tf) (x) (y) (t) (fg) =
     if tf.gf-ok then gfont-text tf base stride h x y t fg
-    else gop-draw-text base stride font x y t fg s 0
+    else gop-draw-text base stride h font x y t fg s 0
 
   dk-wrap-cols : Integer -> Integer
   dk-wrap-cols (s) =
@@ -908,7 +1105,7 @@ Section: Drawing
   desk-topbar : Integer, Integer, Integer, CbfFont, Integer, GopFont, Integer, Integer -> Integer
   desk-topbar (base) (w) (stride) (font) (s) (tf) (h) (ds) =
     let pal = dk-pal ds
-    in let bar = gop-fill-rect base stride 0 0 w (dk-bar-h * s) (pal.pal-border)
+    in let bar = gop-fill-rect base stride h 0 0 w (dk-bar-h * s) (pal.pal-border)
     in desk-line base stride h font s tf (8 * s) (4 * s) "Cobblestone" (pal.pal-accent)
 
   desk-window : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> Integer
@@ -919,8 +1116,8 @@ Section: Drawing
     in let wy = dk-win-y w h s tf ds
     in let cols = dk-wrap-cols s
     in let tx = wx + 10 * s
-    in let body = gop-fill-rect base stride wx wy (dk-win-w * s) (dk-win-h tf s * s) (pal.pal-muted)
-    in let title = gop-fill-rect base stride wx wy (dk-win-w * s) (dk-title-h * s) (pal.pal-secondary)
+    in let body = gop-fill-rect base stride h wx wy (dk-win-w * s) (dk-win-h tf s * s) (pal.pal-muted)
+    in let title = gop-fill-rect base stride h wx wy (dk-win-w * s) (dk-title-h * s) (pal.pal-secondary)
     in let cap = desk-line base stride h font s tf (wx + 6 * s) (wy + 2 * s) "Welcome" (pal.pal-accent)
     in let y1 = wy + dk-body-y0 * s
     in let p1 = dk-wrap-draw base stride h font s tf tx y1 dk-para-intro (pal.pal-fg) cols
@@ -931,9 +1128,9 @@ Section: Drawing
 
   desk-draw : Integer, Integer, Integer, Integer, CbfFont, Integer, GopFont, Integer -> WidgetNode
   desk-draw (base) (w) (h) (stride) (font) (s) (tf) (ds) =
-    let wall = gop-fill-rect base stride 0 0 w h (dk-wall ds)
-    in let laid = comp-render base stride font tf (desk-chrome-face (widget-panel "content" DirColumn 0 []) w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
-    in let ic = desk-chrome-icons base stride laid (dk-theme-ds ds) (ui-wscale w) tf ds
+    let wall = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
+    in let laid = comp-render base stride h font tf (desk-chrome-face (widget-panel "content" DirColumn 0 []) w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
+    in let ic = desk-chrome-icons base stride h laid (dk-theme-ds ds) (ui-wscale w) tf ds
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in let bar = desk-topbar base w stride font s tf h ds
     in let win = desk-window base w h stride font tf ds
@@ -990,7 +1187,7 @@ Section: Drawing
       is Just (n) -> comp-mul-rect (n.wn-bounds) ws
       is None -> comp-mul-rect (tb.wn-bounds) ws
     in let st = widget-resolve-style tb th
-    in let bg = comp-box base stride cell (tb.wn-bounds) st (st.ws-bg) ws
+    in let bg = comp-box base stride h cell (tb.wn-bounds) st (st.ws-bg) ws
     in let tw = if tf.gf-ok then gfont-text-w tf t else text-length t * 8 * s
     in let want = cell.lr-x + cell.lr-w - tw - 8 * s
     in let tx = if want < cell.lr-x then cell.lr-x else want
@@ -1019,8 +1216,14 @@ Section: Clock Gate
     else act
       hh <- rtc-read 4
       mm <- rtc-read 2
+      dd <- rtc-read 7
+      mo <- rtc-read 8
+      yy <- rtc-read 9
       let st = poke-32 ds desk-second-cell now
-      in desk-draw-clock base w h stride font tf (dk-pad2 (dk-bcd hh) & ":" & dk-pad2 (dk-bcd mm) & ":" & dk-pad2 now) ds root
+      in let cks = peek-32 ds desk-clock-cell
+      in let txt = if cks == 0 then dk-pad2 (dk-bcd hh) & ":" & dk-pad2 (dk-bcd mm) & ":" & dk-pad2 now
+                   else clk-band-text cks (dk-bcd hh) (dk-bcd mm) now (dk-bcd dd) (dk-bcd mo) (dk-bcd yy)
+      in desk-draw-clock base w h stride font tf txt ds root
     end
   end
 
@@ -1424,15 +1627,15 @@ Section: Monitor
  the window's pixels. Damian's ruling names the product and the tree's absence
  names the mechanism.
 
- 128 by 72 DEVICE pixels a slot: 36,864 bytes, times seventeen slots is
- 626,688 at boot, which is half a per cent of the flying image's 128 MB region.
+ 128 by 72 DEVICE pixels a slot: 36,864 bytes, times eighteen slots is
+ 663,552 at boot, which is half a per cent of the flying image's 128 MB region.
  The alternative is a slot allocated on first minimise, and that cannot be
  done: a pointer parked in a `ds` cell must be allocated below the base mark or
  a pane exit hands the next visit freed heap.
 
   dk-prev-w : Integer = 128
   dk-prev-h : Integer = 72
-  dk-prev-slots : Integer = 17
+  dk-prev-slots : Integer = 19
   dk-prev-cell : Integer = 232
 
   dk-prev-bytes : Integer
@@ -1483,6 +1686,41 @@ Section: Monitor
       in if rw <= 0 | rh <= 0 then 0
       else dk-prev-rows base stride w h (dk-prev-at pb fid) (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) rw rh 0
 
+  dk-prev-own : Integer -> Boolean
+  dk-prev-own (fid) = fid == desk-focus-clkp
+
+ The slot is laid out at scale 1: it holds device pixels, and a glyph drawn
+ at the glass's scale would not fit 72 rows.
+
+  dk-prev-render : Integer, CbfFont, GopFont, Theme, Palette, WidgetNode -> Integer
+  dk-prev-render (dst) (font) (tf) (th) (pal) (tree) =
+    let bg = gop-fill-rect dst dk-prev-w 0 0 dk-prev-w dk-prev-h (pal.pal-bg)
+    in let laid = comp-render-at dst dk-prev-w dk-prev-h font tf tree th 0 0 dk-prev-w dk-prev-h 1
+    in 1
+
+  dk-prev-fresh : Integer, Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
+  dk-prev-fresh (base) (w) (h) (stride) (ds) (font) (tf) (fid) =
+    let pb = peek-32 ds dk-prev-cell
+    in if pb == 0 then act 0 end
+    else if fid <= desk-focus-none | fid >= dk-prev-slots then act 0 end
+    else if dk-prev-own fid == False then act 0 end
+    else act
+      tree <- desk-wnd-preview-tree fid ds base w h stride tf
+      dk-prev-render (dk-prev-at pb fid) font tf (dk-theme-ds ds) (dk-pal ds) tree
+    end
+
+  desk-wnd-preview-tree : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> [Device.Port] WidgetNode
+  desk-wnd-preview-tree (fid) (ds) (base) (w) (h) (stride) (tf) =
+    if fid == desk-focus-clkp then act
+      idle <- rtc-wait-idle rtc-uip-fuel
+      b <- clk-mode 0
+      hh <- clk-hour-now b
+      mi <- clk-field-value clk-reg-minutes b
+      ss <- clk-field-value clk-reg-seconds b
+      clk-preview-tree hh mi ss dk-prev-h
+    end
+    else desk-wnd-tree fid ds base w h stride tf
+
   desk-focus-cell : Integer = 12
   desk-focus-none : Integer = 0
   desk-focus-mon : Integer = 1
@@ -1499,14 +1737,22 @@ Section: Monitor
   desk-focus-scene : Integer = 12
   desk-focus-fish : Integer = 13
   desk-focus-edit : Integer = 14
+  desk-focus-web : Integer = 17
+
+  dk-web-cell : Integer = 248
   desk-focus-menu : Integer = 15
   desk-focus-rev : Integer = 16
+
+ Focus id 18 is the first id the widening of 2026-09-08 made available;
+ every id below it was taken.
+
+  desk-focus-sheet : Integer = 18
 
   desk-review-cell : Integer = 0
 
   desk-mon-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
   desk-mon-paint (base) (w) (h) (stride) (font) (tf) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-wnd-paint-all base w h stride font tf ds
   end
 
@@ -1598,6 +1844,8 @@ Section: Monitor
     else if foc == desk-focus-scene then desk-scene-step base w h stride font tf kbd mouse ds cs apps gsc-scene desk-focus-scene sc clicked
     else if foc == desk-focus-fish then desk-scene-step base w h stride font tf kbd mouse ds cs apps gf-scene desk-focus-fish sc clicked
     else if foc == desk-focus-edit then desk-edit-step base w h stride font tf mouse ds cs apps sc clicked
+    else if foc == desk-focus-web then desk-web-step base w h stride font tf kbd mouse ds cs sc clicked
+    else if foc == desk-focus-sheet then desk-wnd-quiet-step base w h stride font tf kbd mouse ds cs desk-focus-sheet sc clicked
     else 0
 
  A still picture is a whole class of pane, not one pane. The Calendar draws its
@@ -1685,6 +1933,52 @@ Section: Monitor
 
   desk-step-hide : Integer = 1000000
 
+ DISMISSING AN OVERLAY IS NOT CLOSING AN APP, and until 2026-09-07 the loop
+ could not tell them apart. A step answers 0 for "I am done", `desk-loop`
+ sends 0 to `desk-app-close`, and that path reads the focused id, fails to
+ find it in the window registry, and falls through to `desk-app-close-plain`,
+ which restores the heap to the base mark and hands `desk-apps-empty` down.
+ The system menu is an overlay and is never in the registry, so closing the
+ menu while a window was open TOOK THE WINDOW WITH IT: Damian, at the running
+ desk, "when i close the cobblestone menu, if there is an app window open
+ (like appearance) it closes the appearance window".
+
+ The menu therefore answers this instead of 0. It is a third outcome beside
+ `desk-step-hide` rather than a flag on the close, because the close path's
+ whole job is to give memory back and the dismiss must give none back: the
+ window underneath is still live and its state sits above the mark the close
+ would have restored to.
+
+  desk-step-dismiss : Integer = 1000001
+
+ The registry is untouched and no mark is killed, which is the difference from
+ every other exit here. Focus goes to the topmost VISIBLE window, `desk-draw`
+ rebuilds the chrome the menu painted over, and the windows are painted back.
+ It mirrors `desk-app-hide` without the pill capture, since nothing is being
+ put away and a capture would snapshot the menu.
+
+  desk-menu-dismiss : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  desk-menu-dismiss (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) = act
+    hd <- cursor-hide cs base stride
+    let cf = poke-32 ds desk-focus-cell desk-focus-none
+    in let rc = desk-root-reclaim ds
+    in let rm = __heap-save
+    in let root = desk-draw base w h stride font (ui-scale w) tf ds
+    in let rn = desk-root-note ds rm
+    in let vis = dk-wr-visible (peek-32 ds dk-wr-cell) ds
+    in if vis == desk-focus-none then
+      let c0 = dk-cursor base w h stride cs mouse
+      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    else act
+      let rf = poke-32 ds desk-focus-cell vis
+      in act
+        p <- desk-wnd-paint-all base w h stride font tf ds
+        let c0 = dk-cursor base w h stride cs mouse
+        in desk-loop base w h stride font tf kbd mouse ds cs apps root
+      end
+    end
+  end
+
   desk-app-hide : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
  MINIMISING ONE WINDOW MUST NOT PUT THE OTHERS AWAY. The desktop is redrawn
  first either way, because that is what builds the taskbar tree the pill lives
@@ -1763,7 +2057,7 @@ Section: Monitor
     in let rm = __heap-save
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
     in let rn = desk-root-note ds rm
-    in let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    in let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in let nf = if fid == desk-focus-files then None else sfi
     in let nb = if fid == desk-focus-bro then None else sb
     in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
@@ -1825,7 +2119,7 @@ Section: Calculator
 
   desk-calc-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-calc-paint (base) (w) (h) (stride) (font) (tf) (ks) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-calc-draw base w h stride font tf ks ds
   end
 
@@ -1933,7 +2227,7 @@ Section: The Console Pane
 
   desk-console-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-console-paint (base) (w) (h) (stride) (font) (tf) (ns) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-console-draw base w h stride font tf ns ds
   end
 
@@ -2042,7 +2336,7 @@ Section: Windows
   dk-strip-any : Integer, Integer, Integer -> Boolean
   dk-strip-any (ds) (e) (fid) =
     if fid > dk-focus-max then False
-    else if dk-wr-find (peek-32 ds dk-wr-cell) fid 0 < 0 then dk-strip-any ds e (fid + 1)
+    else if dk-pill-live (peek-32 ds dk-wr-cell) ds fid == False then dk-strip-any ds e (fid + 1)
     else if dk-pedge-get ds fid == e then True
     else dk-strip-any ds e (fid + 1)
 
@@ -2370,13 +2664,13 @@ Section: Windows, continued
  buttons would have been drawn in the ink chosen for the unfocused colour while
  the caption beside them was right.
 
-  dk-wnd-btn : Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer -> Integer
-  dk-wnd-btn (base) (stride) (bx) (by) (name) (side) (ds) (ground) =
+  dk-wnd-btn : Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  dk-wnd-btn (base) (stride) (rows) (bx) (by) (name) (side) (ds) (ground) =
     let blk = peek-32 ds dk-icons-cell
     in let pal = dk-pal ds
     in if blk == 0 then 0
     else let ih = dk-icons-size blk
-    in gicon-blit-cov base stride (dk-icons-at blk name) ih (bx + (side - ih) / 2) (by + (side - ih) / 2) (theme-ink-on pal ground)
+    in gicon-blit-cov base stride rows (dk-icons-at blk name) ih (bx + (side - ih) / 2) (by + (side - ih) / 2) (theme-ink-on pal ground)
 
  The pane's own tree goes in through `comp-render-at`, so its bounds come
  back as absolute logical coordinates and the pane's hit test needs no origin
@@ -2417,14 +2711,14 @@ Section: Windows, continued
  layout by the border thickness and shifted the goldens that record pane
  origins; drawing over the outermost pixels is what a border is for.
 
-  dk-wnd-border : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  dk-wnd-border (base) (stride) (wx) (wy) (ww) (wh) (ds) (w) =
+  dk-wnd-border : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-wnd-border (base) (stride) (rows) (wx) (wy) (ww) (wh) (ds) (w) =
     let pal = dk-pal ds
     in let ws = ui-wscale w
-    in let e0 = gop-fill-rect base stride wx wy ww ws (pal.pal-border)
-    in let e1 = gop-fill-rect base stride wx (wy + wh - ws) ww ws (pal.pal-border)
-    in let e2 = gop-fill-rect base stride wx wy ws wh (pal.pal-border)
-    in gop-fill-rect base stride (wx + ww - ws) wy ws wh (pal.pal-border)
+    in let e0 = gop-fill-rect base stride rows wx wy ww ws (pal.pal-border)
+    in let e1 = gop-fill-rect base stride rows wx (wy + wh - ws) ww ws (pal.pal-border)
+    in let e2 = gop-fill-rect base stride rows wx wy ws wh (pal.pal-border)
+    in gop-fill-rect base stride rows (wx + ww - ws) wy ws wh (pal.pal-border)
 
   dk-wnd-frame : Integer, Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Text, Integer, Integer, Integer, Integer, Integer, Boolean -> WidgetNode
   dk-wnd-frame (base) (w) (h) (stride) (font) (tf) (tree) (title) (ds) (wx) (wy) (ww) (wh) (focused) =
@@ -2433,14 +2727,14 @@ Section: Windows, continued
     in let s = ui-scale w
     in let barcol = if focused then pal.pal-primary else pal.pal-secondary
     in let bh = dk-wnd-bar-h tf ws
-    in let body = gop-fill-rect base stride wx wy ww wh (pal.pal-bg)
-    in let bar = gop-fill-rect base stride (wx + ws) (wy + ws) (ww - 2 * ws) bh barcol
+    in let body = gop-fill-rect base stride h wx wy ww wh (pal.pal-bg)
+    in let bar = gop-fill-rect base stride h (wx + ws) (wy + ws) (ww - 2 * ws) bh barcol
     in let cap = desk-line base stride h font s tf (wx + 8 * ws) (wy + 4 * ws) title (theme-ink-on pal barcol)
-    in let b0 = dk-wnd-btn base stride (dk-wnd-btn-x wx ww tf ws 0) wy "win-min" bh ds barcol
-    in let b1 = dk-wnd-btn base stride (dk-wnd-btn-x wx ww tf ws 1) wy "win-max" bh ds barcol
-    in let b2 = dk-wnd-btn base stride (dk-wnd-btn-x wx ww tf ws 2) wy "win-close" bh ds barcol
-    in let laid = comp-render-at base stride font tf tree (dk-theme-ds ds) wx (wy + bh) ww (wh - bh) ws
-    in let bd = dk-wnd-border base stride wx wy ww wh ds w
+    in let b0 = dk-wnd-btn base stride h (dk-wnd-btn-x wx ww tf ws 0) wy "win-min" bh ds barcol
+    in let b1 = dk-wnd-btn base stride h (dk-wnd-btn-x wx ww tf ws 1) wy "win-max" bh ds barcol
+    in let b2 = dk-wnd-btn base stride h (dk-wnd-btn-x wx ww tf ws 2) wy "win-close" bh ds barcol
+    in let laid = comp-render-at base stride h font tf tree (dk-theme-ds ds) wx (wy + bh) ww (wh - bh) ws
+    in let bd = dk-wnd-border base stride h wx wy ww wh ds w
     in laid
 
  What the pointer landed on. The three buttons are the right-hand strip of
@@ -2493,6 +2787,8 @@ Section: What a windowed pane is
     else if fid == desk-focus-bro then peek-32 ds dk-bro-cell
     else if fid == desk-focus-files then peek-32 ds dk-files-cell
     else if fid == desk-focus-edit then peek-32 ds desk-edit-cell
+    else if fid == desk-focus-web then peek-32 ds dk-web-cell
+    else if fid == desk-focus-sheet then peek-32 ds dk-sheet-cell
     else 0
 
  THE SYSTEM MENU SHARES THE LAUNCHER'S BLOCK AND MUST NOT BE GIVEN AN ARM
@@ -2507,17 +2803,19 @@ Section: What a windowed pane is
     if fid == desk-focus-clkp then "Clock"
     else if fid == desk-focus-calc then "Calculator"
     else if fid == desk-focus-con then "Console"
-    else if fid == desk-focus-prog then "Programs"
+    else if fid == desk-focus-prog then "Program Runner"
     else if fid == desk-focus-cal then "Calendar"
     else if fid == desk-focus-dif then "Diffusion"
     else if fid == desk-focus-style then "Appearance"
     else if fid == desk-focus-trk then "Issues"
-    else if fid == desk-focus-mon then "Monitor"
+    else if fid == desk-focus-mon then "System Info"
     else if fid == desk-focus-scene then "3D View"
     else if fid == desk-focus-fish then "Aquarium"
-    else if fid == desk-focus-bro then "Web"
+    else if fid == desk-focus-bro then "Browser"
     else if fid == desk-focus-files then "Files"
-    else if fid == desk-focus-edit then "Edit"
+    else if fid == desk-focus-edit then "Text Editor"
+    else if fid == desk-focus-web then "Web Server"
+    else if fid == desk-focus-sheet then "Sheets"
     else ""
 
  THE PILL'S ICON, KEYED BY FOCUS ID, and it is a second table on purpose.
@@ -2551,6 +2849,8 @@ Section: What a windowed pane is
     else if fid == desk-focus-bro then "cloud"
     else if fid == desk-focus-files then "folder"
     else if fid == desk-focus-edit then "edit"
+    else if fid == desk-focus-web then "cloud"
+    else if fid == desk-focus-sheet then "grid"
     else ""
 
  The TREE is where the panes genuinely differ and it is why this is an
@@ -2597,7 +2897,9 @@ Section: What a windowed pane is
       in let box = desk-trk-win-box w h srv filter sel ds tf
       in gtk-tree srv filter sel (box.lr-h) (box.lr-w)
     end
+    else if fid == desk-focus-sheet then act gsh-tree (peek-32 ds dk-sheet-cell) end
     else if fid == desk-focus-calc then act gcalc-tree (peek-32 ds 24) end
+    else if fid == desk-focus-web then act gopweb-tree (peek-32 ds dk-web-cell) end
     else if fid == desk-focus-con then act gcon-tree (peek-32 ds desk-console-cell) end
     else if fid == desk-focus-prog then act gpr-tree (peek-32 ds desk-prog-cell) end
     else if fid == desk-focus-dif then act gdf-tree 0 end
@@ -2617,7 +2919,9 @@ Section: What a windowed pane is
       dd <- clk-field-value clk-reg-day b
       mo <- clk-field-value clk-reg-month b
       yy <- clk-field-value clk-reg-year b
-      clk-tree (peek-32 ds desk-clock-cell) hh mi ss dd mo yy
+      let cks = peek-32 ds desk-clock-cell
+      in let note = if cks == 0 then 0 else if clk-editing cks then 0 else clk-note-now cks hh mi ss dd mo yy
+      in clk-tree cks hh mi ss dd mo yy
     end
 
  OPENING A WINDOW CASCADES IT, and without this the second window is exactly
@@ -2765,19 +3069,35 @@ Section: What a windowed pane is
 
   dk-wnd-wants-box : Integer -> Boolean
   dk-wnd-wants-box (fid) =
-    fid == desk-focus-prog | fid == desk-focus-cal | fid == desk-focus-dif | fid == desk-focus-trk | fid == desk-focus-mon
+    fid == desk-focus-prog | fid == desk-focus-cal | fid == desk-focus-dif | fid == desk-focus-trk | fid == desk-focus-mon | fid == desk-focus-sheet
+
+ A PANE THAT OPENS FULL SCREEN IS MAXIMISED, IT DOES NOT HAVE THE BOX AS ITS
+ NORMAL SIZE. Damian, 2026-09-07: *"all windows should have a 'normal' size
+ that is not maximized, and smaller than the current maximized window size so
+ when you 'restore' a default window that starts maximized, it has something
+ visually to smallen itself into."* The five `dk-wnd-wants-box` panes used to
+ be placed AT the content box, with the state left normal, so the two sizes
+ were the same rectangle and restore was a repaint of the same pixels. The
+ block now always carries the three-quarter rect that every other pane gets,
+ cascaded the same way, and the state carries the fullness instead. Restore
+ and maximise then move something, which is the whole of what a titlebar
+ button is for.
+
+ THE STATE IS SET ONLY ON A FIRST OPEN, keyed on `dk-wnd-placed` read BEFORE
+ the placement writes it. Forcing it on every open would throw away a restore
+ the moment the pane was closed and reopened, which is a preference the user
+ expressed with a button.
 
   desk-wnd-open : Integer, Integer, Integer, Integer -> Integer
   desk-wnd-open (fid) (w) (h) (ds) =
     let ws = peek-32 ds dk-wr-cell
     in let n = dk-wr-count ws
     in let blk = desk-wnd-blk fid ds
-    in let full = dk-wnd-wants-box fid
-    in let ox = if full then 0 else dk-wnd-cascade-x n w ds
-    in let oy = if full then 0 else dk-wnd-cascade-y n w h ds
-    in let p = if dk-wnd-placed blk then 0
-       else if full then dk-wnd-place blk (dk-cbox-x w ds) (dk-cbox-y w ds) (dk-cbox-w w ds) (dk-cbox-h w h ds)
-       else dk-wnd-place blk (dk-wnd-x w dk-wnd-st-normal ds + ox) (dk-wnd-y w h dk-wnd-st-normal ds + oy) (dk-wnd-w w dk-wnd-st-normal ds) (dk-wnd-h w h dk-wnd-st-normal ds)
+    in let fresh = dk-wnd-placed blk == False
+    in let ox = dk-wnd-cascade-x n w ds
+    in let oy = dk-wnd-cascade-y n w h ds
+    in let p = if fresh then dk-wnd-place blk (dk-wnd-x w dk-wnd-st-normal ds + ox) (dk-wnd-y w h dk-wnd-st-normal ds + oy) (dk-wnd-w w dk-wnd-st-normal ds) (dk-wnd-h w h dk-wnd-st-normal ds) else 0
+    in let m = if fresh & dk-wnd-wants-box fid then poke-32 blk dk-wnd-st-cell dk-wnd-st-max else 0
     in dk-wr-open ws fid
 
  One window, at the rect its own block says, focused if it is the top of the
@@ -2793,11 +3113,198 @@ Section: What a windowed pane is
  It answers 0 for every other pane, which is what "no overlay" means rather
  than a value anything reads.
 
-  desk-wnd-over : Integer, Integer, Integer, GopFont, Integer, WidgetNode, Integer -> Integer
-  desk-wnd-over (base) (stride) (ws) (tf) (fid) (laid) (ds) =
+ THE CLOCK PANE DRAWS A PICTURE THROUGH THE SAME DOOR THE LAUNCHER USES.
+ Nothing in the widget layer draws a circle or a coastline, so the face and
+ the world are painted over the laid tree here. `clk-art` reserved the space
+ as an empty label with a fixed minimum height, and the picture goes exactly
+ where that label landed: reading the rectangle off the tree rather than
+ computing it again is what stops the two drifting when a row above changes.
+
+  desk-clock-art : Integer, Integer, Integer, Integer, WidgetNode, Integer -> Integer
+  desk-clock-art (base) (stride) (rows) (ws) (laid) (ds) =
+    let ks = peek-32 ds desk-clock-cell
+    in if ks == 0 then 0
+    else if clk-editing ks then 0
+    else if clk-view ks == clk-view-zones then desk-clock-map base stride rows ws laid ds ks
+    else if clk-view ks == clk-view-formats then 0
+    else desk-clock-face base stride rows ws laid ds ks
+
+  desk-clock-box : WidgetNode, Text, Integer -> LayoutRect
+  desk-clock-box (laid) (id) (ws) =
+    when widget-find laid id
+      is Just (n) -> comp-mul-rect (n.wn-bounds) ws
+      is None -> layout-rect 0 0 0 0
+
+ The dial is as big as the shorter side of the reserved box allows, less a
+ margin, so the face is round on a wide pane and on a narrow one.
+
+  desk-clock-face : Integer, Integer, Integer, Integer, WidgetNode, Integer, Integer -> Integer
+  desk-clock-face (base) (stride) (rows) (ws) (laid) (ds) (ks) =
+    let b = desk-clock-box laid "clk-art" ws
+    in if b.lr-w <= 0 then 0
+    else if b.lr-h <= 0 then 0
+    else
+      let pal = dk-pal ds
+      in let r = (if b.lr-w < b.lr-h then b.lr-w else b.lr-h) / 2 - 4
+      in if r <= 4 then 0
+      else
+        let cx = b.lr-x + b.lr-w / 2
+        in let cy = b.lr-y + b.lr-h / 2
+        in let t = clk-local-mins ks (peek-32 ks clk-h-cell) (peek-32 ks clk-mi-cell) (2000 + peek-32 ks clk-y-cell) (peek-32 ks clk-mo-cell) (peek-32 ks clk-d-cell)
+        in face-draw base stride rows (layout-rect (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h)) cx cy r (clk-local-h t) (clk-local-mi t) (peek-32 ks clk-s-cell) (pal.pal-bg) (pal.pal-muted) (pal.pal-fg) (pal.pal-accent)
+
+ The map is drawn at the largest whole scale that fits, and centred in what is
+ left over. A fractional scale would put a band edge inside a pixel and the
+ stripe under the pointer would not be the stripe drawn there, which is the
+ one thing a picker may not get wrong.
+
+  desk-clock-map : Integer, Integer, Integer, Integer, WidgetNode, Integer, Integer -> Integer
+  desk-clock-map (base) (stride) (rows) (ws) (laid) (ds) (ks) =
+    let b = desk-clock-box laid "clk-map" ws
+    in if b.lr-w <= 0 then 0
+    else
+      let pal = dk-pal ds
+      in let sc = desk-clock-scale (b.lr-w) (b.lr-h)
+      in if sc <= 0 then 0
+      else
+        let ox = b.lr-x + (b.lr-w - wld-cols * sc) / 2
+        in let oy = b.lr-y + (b.lr-h - wld-rows * sc) / 2
+        in wld-draw base stride rows (layout-rect (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h)) (clk-world ks) ox oy sc (pal.pal-bg) (pal.pal-secondary) (pal.pal-muted) (clk-stripe ks)
+
+  desk-clock-scale : Integer, Integer -> Integer
+  desk-clock-scale (w) (h) =
+    let a = w / wld-cols
+    in let b = h / wld-rows
+    in if a < b then a else b
+
+ A CLICK IN THE PICKER IS RESOLVED AGAINST THE SAME LAID TREE THE PAINT USED,
+ which is what makes the map's bands hittable at all: the picture is painted
+ over a reserved label, so the only thing that knows where it landed is the
+ tree, and both the painter and this ask it the same question. It answers 0
+ for nothing happened, 1 for redraw, 2 for redraw and write the record.
+
+ The map is re-laid here rather than carried from the paint, because a step
+ has no laid tree in hand and re-laying is what every other hit test on this
+ desk does. It is one layout per PRESS.
+
+ It lays the tree where the PAINTER put it, inside the window content box, and
+ that rect arithmetic is `dk-prog-hit`'s: a click resolved against a layout at
+ the screen corner answers whichever row sits at the same offset from it, which
+ is a wrong answer that looks plausible and that no screenshot can show.
+
+  desk-clock-laid : Integer, Integer, GopFont, Integer, Integer -> WidgetNode
+  desk-clock-laid (w) (h) (tf) (ds) (ks) =
+    let s = ui-wscale w
+    in let blk = desk-wnd-blk desk-focus-clkp ds
+    in let st = dk-wnd-st blk
+    in let bh = dk-wnd-bar-h tf s
+    in let wx = dk-wnd-rx blk w st ds
+    in let wy = dk-wnd-ry blk w h st ds + bh
+    in let ww = dk-wnd-rw blk w st ds
+    in let wh = dk-wnd-rh blk w h st ds - bh
+    in widget-layout (clk-tree ks (peek-32 ks clk-h-cell) (peek-32 ks clk-mi-cell) (peek-32 ks clk-s-cell) (peek-32 ks clk-d-cell) (peek-32 ks clk-mo-cell) (peek-32 ks clk-y-cell)) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
+
+  desk-clock-nav-none : Integer = 0 - 1
+
+  desk-clock-nav-click : WidgetNode, Integer, Integer, Integer, Integer -> Integer
+  desk-clock-nav-click (laid) (mx) (my) (ws) (ks) =
+    if desk-widget-hit laid mx my "clk-nav-tab-0" ws then
+      let a = poke-32 ks clk-editing-cell 0
+      in let b = clk-set-view ks clk-view-face
+      in 1
+    else if desk-widget-hit laid mx my "clk-nav-tab-1" ws then
+      let a = poke-32 ks clk-editing-cell 0
+      in let b = clk-set-view ks clk-view-zones
+      in 1
+    else if desk-widget-hit laid mx my "clk-nav-tab-2" ws then
+      let a = poke-32 ks clk-editing-cell 0
+      in let b = clk-set-view ks clk-view-formats
+      in 1
+    else if desk-widget-hit laid mx my "clk-nav-tab-3" ws then
+      let a = clk-set-view ks clk-view-face
+      in 3
+    else desk-clock-nav-none
+
+  desk-clock-field-click : WidgetNode, Integer, Integer, Integer, Integer, Integer -> Integer
+  desk-clock-field-click (laid) (mx) (my) (ws) (ks) (i) =
+    if i >= clk-fields then 0
+    else if desk-widget-hit laid mx my ("clk-f-" & clk-field-name i) ws then
+      let d = poke-32 ks clk-field-cell i
+      in 1
+    else desk-clock-field-click laid mx my ws ks (i + 1)
+
+  desk-clock-edit-click : WidgetNode, Integer, Integer, Integer, Integer -> Integer
+  desk-clock-edit-click (laid) (mx) (my) (ws) (ks) =
+    if desk-widget-hit laid mx my "clk-less" ws then let d = clk-bump ks (0 - 1) in 1
+    else if desk-widget-hit laid mx my "clk-more" ws then let d = clk-bump ks 1 in 1
+    else if desk-widget-hit laid mx my "clk-keep" ws then 4
+    else if desk-widget-hit laid mx my "clk-cancel" ws then 5
+    else desk-clock-field-click laid mx my ws ks 0
+
+  desk-clock-click : Integer, Integer, GopFont, UsbMouse, Integer, Integer -> Integer
+  desk-clock-click (w) (h) (tf) (mouse) (ds) (ks) =
+    let ws = ui-wscale w
+    in let laid = desk-clock-laid w h tf ds ks
+    in let mx = mouse-x mouse
+    in let my = mouse-y mouse
+    in let nv = desk-clock-nav-click laid mx my ws ks
+    in if nv /= desk-clock-nav-none then nv
+    else if clk-editing ks then desk-clock-edit-click laid mx my ws ks
+    else if clk-view ks == clk-view-zones then
+      if desk-widget-hit laid mx my "clk-band-w" ws then let d = clk-set-stripe ks (clk-stripe ks - 1) in 1
+      else if desk-widget-hit laid mx my "clk-band-e" ws then let d = clk-set-stripe ks (clk-stripe ks + 1) in 1
+      else
+        let b = desk-clock-box laid "clk-map" ws
+        in let sc = desk-clock-scale (b.lr-w) (b.lr-h)
+        in if sc <= 0 then 0
+        else
+          let ox = b.lr-x + (b.lr-w - wld-cols * sc) / 2
+          in let oy = b.lr-y + (b.lr-h - wld-rows * sc) / 2
+          in let s = wld-hit-stripe ox oy sc mx my 0
+          in if s /= wld-none then let d = clk-set-stripe ks s in 1
+          else desk-clock-row-click laid mx my ws ks
+    else if clk-view ks == clk-view-formats then desk-clock-fmt-click laid mx my ws ks
+    else 0
+
+ A ROW IS FOUND BY WALKING THE STRIPE'S IDS AND ASKING THE TREE FOR EACH ONE,
+ rather than by dividing the click's y by a row height. The rows carry ids
+ built from the zone id, so the tree is the only thing that has to agree with
+ itself, and a row height that changed with the face would not move this.
+
+  desk-clock-row-at : WidgetNode, Integer, Integer, Integer, List Integer, Integer, Integer -> Integer
+  desk-clock-row-at (laid) (mx) (my) (ws) (ids) (i) (n) =
+    if i >= n then 0 - 1
+    else if desk-widget-hit laid mx my ("clk-z-" & show (list-at ids i)) ws then i
+    else desk-clock-row-at laid mx my ws ids (i + 1) n
+
+  desk-clock-row-click : WidgetNode, Integer, Integer, Integer, Integer -> Integer
+  desk-clock-row-click (laid) (mx) (my) (ws) (ks) =
+    let ids = clk-stripe-list ks
+    in let i = desk-clock-row-at laid mx my ws ids 0 (list-length ids)
+    in if i < 0 then 0
+    else
+      let a = poke-32 ks clk-pick-cell i
+      in let b = poke-32 ks clk-zid-cell (list-at ids i)
+      in let c = clk-set-view ks clk-view-face
+      in 2
+
+  desk-clock-fmt-click : WidgetNode, Integer, Integer, Integer, Integer -> Integer
+  desk-clock-fmt-click (laid) (mx) (my) (ws) (ks) =
+    if desk-widget-hit laid mx my "clk-c24" ws then let d = poke-32 ks clk-cfmt-cell loc-clock-24 in 2
+    else if desk-widget-hit laid mx my "clk-c12" ws then let d = poke-32 ks clk-cfmt-cell loc-clock-12 in 2
+    else if desk-widget-hit laid mx my "clk-dmy" ws then let d = poke-32 ks clk-dfmt-cell loc-date-dmy in 2
+    else if desk-widget-hit laid mx my "clk-mdy" ws then let d = poke-32 ks clk-dfmt-cell loc-date-mdy in 2
+    else if desk-widget-hit laid mx my "clk-ymd" ws then let d = poke-32 ks clk-dfmt-cell loc-date-ymd in 2
+    else if desk-widget-hit laid mx my "clk-b-time" ws then let d = clk-band-toggle ks zone-band-time in 2
+    else if desk-widget-hit laid mx my "clk-b-date" ws then let d = clk-band-toggle ks zone-band-date in 2
+    else if desk-widget-hit laid mx my "clk-b-off" ws then let d = clk-band-toggle ks zone-band-offset in 2
+    else 0
+  desk-wnd-over : Integer, Integer, Integer, Integer, GopFont, Integer, WidgetNode, Integer -> Integer
+  desk-wnd-over (base) (stride) (rows) (ws) (tf) (fid) (laid) (ds) =
     if fid == desk-focus-prog then
       let es = gpr-entries
-      in desk-gpr-icons base stride laid (dk-theme-ds ds) ws tf es (list-length es) (gpr-sel (peek-32 ds desk-prog-cell)) 0 ds
+      in desk-gpr-icons base stride rows laid (dk-theme-ds ds) ws tf es (list-length es) (gpr-sel (peek-32 ds desk-prog-cell)) 0 ds
+    else if fid == desk-focus-clkp then desk-clock-art base stride rows ws laid ds
     else 0
 
   desk-wnd-one : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer, Boolean -> [Device.Port] WidgetNode
@@ -2806,7 +3313,7 @@ Section: What a windowed pane is
     let blk = desk-wnd-blk fid ds
     in let st = dk-wnd-st blk
     in let laid = dk-wnd-frame base w h stride font tf tree (desk-wnd-title fid) ds (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) focused
-    in let ov = desk-wnd-over base stride (ui-wscale w) tf fid laid ds
+    in let ov = desk-wnd-over base stride h (ui-wscale w) tf fid laid ds
     in laid
   end
 
@@ -2869,14 +3376,14 @@ Section: What a windowed pane is
  of the subtree draws the labels and not the pictures. The Cobblestone pill
  came back reading `Cobblestone` with the menu glyph gone.
 
-  desk-wnd-band : Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Integer -> Integer
-  desk-wnd-band (base) (w) (stride) (font) (tf) (laid) (ds) =
+  desk-wnd-band : Integer, Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Integer -> Integer
+  desk-wnd-band (base) (w) (stride) (rows) (font) (tf) (laid) (ds) =
     when widget-find laid "taskbar"
       is None -> 0
       is Just (tb) ->
         let ws = ui-wscale w
-        in let r = comp-walk base stride (comp-mul-rect (tb.wn-bounds) ws) font tf tb (dk-theme-ds ds) ws
-        in let ic = desk-chrome-icons base stride laid (dk-theme-ds ds) ws tf ds
+        in let r = comp-walk base stride rows (comp-mul-rect (tb.wn-bounds) ws) font tf tb (dk-theme-ds ds) ws
+        in let ic = desk-chrome-icons base stride rows laid (dk-theme-ds ds) ws tf ds
         in poke-32 ds desk-second-cell (0 - 1)
 
   desk-wnd-paint-all : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
@@ -2884,7 +3391,7 @@ Section: What a windowed pane is
     let chrome = dk-chrome-paint base w h stride font tf (widget-panel "content" DirColumn 0 []) ds
     in act
       all <- desk-wnd-walk base w h stride font tf ds (peek-32 ds dk-wr-cell) 0
-      let band = desk-wnd-band base w stride font tf chrome ds
+      let band = desk-wnd-band base w stride h font tf chrome ds
       in desk-topbar base w stride font (ui-scale w) tf h ds
     end
   end
@@ -3207,7 +3714,7 @@ Section: The loop's own rate
     let hd = cursor-hide cs base stride
     in let pal = dk-pal ds
     in let x = w - dk-rate-w * s
-    in let bg = gop-fill-rect base stride x 0 (dk-rate-w * s) (dk-bar-h * s) (pal.pal-border)
+    in let bg = gop-fill-rect base stride h x 0 (dk-rate-w * s) (dk-bar-h * s) (pal.pal-border)
     in let t = if hpet-ticks-per-second <= 0 then "no hpet" else show (peek-32 ds dk-rate-cell) & " it/s"
     in let d = desk-line base stride h font s tf x (4 * s) t (pal.pal-accent)
     in dk-cursor base w h stride cs mouse
@@ -3384,7 +3891,7 @@ Section: The loop's own rate
 
   dk-pedge-cell : Integer = 212
 
-  dk-pedge-slots : Integer = 17
+  dk-pedge-slots : Integer = 19
 
   dk-pedge-init : Integer -> Integer
   dk-pedge-init (ds) = poke-32 ds dk-pedge-cell (alloc-zeroed (4 * dk-pedge-slots) 4)
@@ -3436,19 +3943,21 @@ Section: The loop's own rate
  reachable afterwards; above the topbar it is not, and a window whose bar
  cannot be reached cannot be brought back by any gesture the desk has.
 
- SIDEWAYS ONLY, AND THE REASON IS THE PAINTER RATHER THAN TASTE. `gop-put`
- and `gop-get` bound a pixel against `stride`, which is the scan line, so a
- window hanging off the left or right is clipped correctly on both the write
- and the read. Neither has a HEIGHT to bound against, so a row below the glass
- is a write past the end of the framebuffer rather than a visible artifact.
+ EACH AXIS KEEPS A DIFFERENT MINIMUM, AND THE DIFFERENCE IS WHAT THE PERSON
+ HAS TO REACH. Sideways it is `dk-drag-keep` pixels of the window, because any
+ strip of it can be grabbed. Downwards it is `dk-drag-keep-y`, the titlebar,
+ because the bar is the only part that starts a drag: a window whose bar is
+ below the content box cannot be brought back by any gesture the desk has. A
+ window shorter than its own bar keeps its whole height instead, which is the
+ `stop` minimum below.
 
- THE BOTTOM STOPS AT THE CONTENT BOX AND NOT AT THE GLASS, and the difference
- is the SHADOW. `shadow-subtle` is offset 2 with blur 4, so a window paints up
- to six logical pixels -- twelve device pixels at 1600 -- BELOW its own
- rectangle. A bottom of `h - wh` puts the window's last row on the last row of
- the screen and its shadow underneath the framebuffer. The content box ends a
- taskbar above that, which is what leaves the shadow somewhere to land, and it
- is why this bound reads as the old one rather than as the glass.
+ SO A WINDOW MAY BE DRAGGED DOWN UNTIL ONLY ITS BAR REMAINS, which is what
+ uncovers the windows behind a large one.
+
+ THE FRAMEBUFFER BOUND IS NOT THIS FUNCTION'S JOB. `gop-put` and `gop-get`
+ refuse a row at or past the row count they are handed, so a window hanging
+ below the glass is clipped on the write and on the read exactly as one
+ hanging off the side is clipped against `stride`.
 
   dk-drag-keep : Integer = 64
 
@@ -3456,9 +3965,14 @@ Section: The loop's own rate
   dk-drag-x (x) (ww) (w) =
     dk-drag-clamp x (dk-drag-keep - ww) (w - dk-drag-keep)
 
+  dk-drag-keep-y : Integer -> Integer
+  dk-drag-keep-y (w) = dk-bar-h * ui-wscale w
+
   dk-drag-y : Integer, Integer, Integer, Integer, Integer -> Integer
   dk-drag-y (y) (wh) (w) (h) (ds) =
-    dk-drag-clamp y (dk-cbox-y w ds) (dk-cbox-y w ds + dk-cbox-h w h ds - wh)
+    let keep = dk-drag-keep-y w
+    in let stop = if wh < keep then wh else keep
+    in dk-drag-clamp y (dk-cbox-y w ds) (dk-cbox-y w ds + dk-cbox-h w h ds - stop)
 
  WHERE THE WINDOW GOES FOR A POINTER AT `mx`, `my`, which is the whole of the
  move and is named rather than written inline in the step. `desk-wnd-drag-step`
@@ -3799,7 +4313,7 @@ Section: The window chrome's own step
   desk-wnd-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer -> [Device.Port] Integer
   desk-wnd-repaint (base) (w) (h) (stride) (font) (tf) (cs) (mouse) (ds) = act
     hd <- act cursor-hide cs base stride end
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in act
       p <- desk-wnd-paint-all base w h stride font tf ds
       dk-cursor base w h stride cs mouse
@@ -3826,7 +4340,7 @@ Section: The window chrome's own step
  second, because the next tick redrew the chrome under the old arrangement.
 
   desk-clock-paint (base) (w) (h) (stride) (font) (tf) (ks) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-wnd-paint-all base w h stride font tf ds
   end
 
@@ -3877,6 +4391,22 @@ Section: The window chrome's own step
         let d = __heap-restore mark
         in 1
       end
+      else if clicked then act
+        let a = desk-clock-click w h tf mouse ds ks
+        in act
+          l <- if a == 3 then clk-load ks else act 0 end
+          c <- if a == 4 then clk-commit ks else act 0 end
+          zs <- if a == 4 then zone-save (clk-zone ks) else act False end
+          let e = if a == 4 | a == 5 then poke-32 ks clk-editing-cell 0 else 0
+          in act
+            p <- if a == 0 then act 0 end else desk-clock-repaint base w h stride font tf cs mouse ks ds
+            z <- if a == 2 then zone2-save (clk-record ks (2000 + peek-32 ks clk-y-cell) (peek-32 ks clk-mo-cell) (peek-32 ks clk-d-cell) (peek-32 ks clk-h-cell)) else act False end
+            let u = poke-32 ks dk-clkp-last-cell now
+            in let d = __heap-restore mark
+            in 1
+          end
+        end
+      end
       else if sc == 0 then
         if now == peek-32 ks dk-clkp-last-cell then
           let d = __heap-restore mark
@@ -3892,6 +4422,13 @@ Section: The window chrome's own step
         in if a == 3 then let d = __heap-restore mark in 0
         else if a == 2 then act
           l <- clk-load ks
+          p <- desk-clock-repaint base w h stride font tf cs mouse ks ds
+          let u = poke-32 ks dk-clkp-last-cell now
+          in let d = __heap-restore mark
+          in 1
+        end
+        else if a == 5 then act
+          z <- zone2-save (clk-record ks (2000 + peek-32 ks clk-y-cell) (peek-32 ks clk-mo-cell) (peek-32 ks clk-d-cell) (peek-32 ks clk-h-cell))
           p <- desk-clock-repaint base w h stride font tf cs mouse ks ds
           let u = poke-32 ks dk-clkp-last-cell now
           in let d = __heap-restore mark
@@ -3925,6 +4462,7 @@ Section: The window chrome's own step
   desk-clock-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (ks) (apps) (root) = act
     hd <- cursor-hide cs base stride
     e <- clk-ensure ks
+    e2 <- clk-ensure2 ks
     let o = desk-wnd-open desk-focus-clkp w h ds
     in act
       p0 <- desk-clock-paint base w h stride font tf ks ds
@@ -3981,8 +4519,8 @@ Section: Programs
  scale that moved since boot makes them disagree, and the eight pixel mask
  draws instead of a wrong size being stretched.
 
-  desk-icon-in : Integer, Integer, WidgetNode, Theme, Integer, GopFont, Text, Text, Text, Integer -> Integer
-  desk-icon-in (base) (stride) (n) (th) (ws) (tf) (prefix) (gutter) (name) (ds) =
+  desk-icon-in : Integer, Integer, Integer, WidgetNode, Theme, Integer, GopFont, Text, Text, Text, Integer -> Integer
+  desk-icon-in (base) (stride) (rows) (n) (th) (ws) (tf) (prefix) (gutter) (name) (ds) =
     let st = widget-resolve-style n th
     in let c = comp-mul-rect (box-content-from-style (n.wn-bounds) st) ws
     in let avail = desk-text-w tf ws gutter
@@ -3993,15 +4531,15 @@ Section: Programs
     in let iy = c.lr-y + (if c.lr-h > ih then (c.lr-h - ih) / 2 else 0)
     in let ix = c.lr-x + desk-text-w tf ws prefix
     in let blk = peek-32 ds dk-icons-cell
-    in if blk == 0 then gicon-blit base stride (gicon-named name) ix sy scale (st.ws-fg)
-    else if gicon-drawn name == False then gicon-blit base stride (gicon-named name) ix sy scale (st.ws-fg)
-    else if dk-icons-size blk /= ih then gicon-blit base stride (gicon-named name) ix sy scale (st.ws-fg)
-    else gicon-blit-cov base stride (dk-icons-at blk name) ih ix iy (st.ws-fg)
+    in if blk == 0 then gicon-blit base stride rows (gicon-named name) ix sy scale (st.ws-fg)
+    else if gicon-drawn name == False then gicon-blit base stride rows (gicon-named name) ix sy scale (st.ws-fg)
+    else if dk-icons-size blk /= ih then gicon-blit base stride rows (gicon-named name) ix sy scale (st.ws-fg)
+    else gicon-blit-cov base stride rows (dk-icons-at blk name) ih ix iy (st.ws-fg)
 
-  desk-icon-on : Integer, Integer, WidgetNode, Theme, Integer, GopFont, Text, Text, Text, Text, Integer -> Integer
-  desk-icon-on (base) (stride) (laid) (th) (ws) (tf) (prefix) (gutter) (id) (name) (ds) =
+  desk-icon-on : Integer, Integer, Integer, WidgetNode, Theme, Integer, GopFont, Text, Text, Text, Text, Integer -> Integer
+  desk-icon-on (base) (stride) (rows) (laid) (th) (ws) (tf) (prefix) (gutter) (id) (name) (ds) =
     when widget-find laid id
-      is Just (n) -> desk-icon-in base stride n th ws tf prefix gutter name ds
+      is Just (n) -> desk-icon-in base stride rows n th ws tf prefix gutter name ds
       is None -> 0
 
  `gpr-entries` is a module-level list, so every `gpr-at` rebuilds all
@@ -4013,12 +4551,12 @@ Section: Programs
  shifts by that difference on the selected row, so the icon has to shift
  with it or it sits under the `C` of one row in fourteen.
 
-  desk-gpr-icons : Integer, Integer, WidgetNode, Theme, Integer, GopFont, List GprEntry, Integer, Integer, Integer, Integer -> Integer
-  desk-gpr-icons (base) (stride) (laid) (th) (ws) (tf) (es) (n) (sel) (i) (ds) =
+  desk-gpr-icons : Integer, Integer, Integer, WidgetNode, Theme, Integer, GopFont, List GprEntry, Integer, Integer, Integer, Integer -> Integer
+  desk-gpr-icons (base) (stride) (rows) (laid) (th) (ws) (tf) (es) (n) (sel) (i) (ds) =
     if i >= n then 0
     else let e = list-at es i
-    in let d = desk-icon-on base stride laid th ws tf (gpr-mark i sel) (gpr-gutter) ("gpr-" & e.ge-label) (e.ge-icon) ds
-    in desk-gpr-icons base stride laid th ws tf es n sel (i + 1) ds
+    in let d = desk-icon-on base stride rows laid th ws tf (gpr-mark i sel) (gpr-gutter) ("gpr-" & e.ge-label) (e.ge-icon) ds
+    in desk-gpr-icons base stride rows laid th ws tf es n sel (i + 1) ds
 
   desk-programs-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-programs-draw (base) (w) (h) (stride) (font) (tf) (ps) (ds) =
@@ -4026,7 +4564,7 @@ Section: Programs
 
   desk-programs-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-programs-paint (base) (w) (h) (stride) (font) (tf) (ps) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-programs-draw base w h stride font tf ps ds
   end
 
@@ -4156,10 +4694,32 @@ Section: Programs
  `desk-chrome-icons` paints its icon and a launcher row's icon is painted by
  `desk-gpr-icons` from a different prefix.
 
-  desk-menu-body : Integer -> WidgetNode
-  desk-menu-body (ps) =
-    let bye = widget-set-min (widget-button "shutdown" (desk-chrome-gutter & "Shutdown")) 0 22
-    in widget-panel "sysmenu-body" DirColumn 4 [widget-set-flex (gpr-menu-tree ps) 0, bye]
+ SHUTDOWN STAYS UNDER THE LIST IN BOTH ORIENTATIONS. It is not one of the
+ groups, so putting it at the end of the ROW across would make it read as a
+ sixth column of one, and it is the one button here that must not be picked by
+ accident.
+
+ ACROSS, IT IS PARKED IN A ROW WITH A SPACER AFTER IT rather than left as a
+ bare child of the column. A panel stretches its children on the CROSS axis,
+ which down the page is the menu's own narrow width and is what every row in
+ the list does anyway; across, that width is the whole span of five group
+ columns, and Damian's reading of it was "it get w - i - d - e". The spacer
+ takes the slack so the button keeps the width its own text asks for. The
+ vertical arm is untouched, where full width is right and matches the rows
+ above it.
+
+ IT KEEPS ITS OWN MINIMUM WIDTH, which it did not need while it was stretched
+ and does the moment it is not. The minimum was zero here, and a zero minimum
+ under a spacer that takes every remaining pixel is a button laid out at width
+ 0: measured, not predicted. The taskbar's own menu entry has carried
+ `mb.wn-min-w` for the same reason since it was written.
+
+  desk-menu-body : Integer, Boolean -> WidgetNode
+  desk-menu-body (ps) (across) =
+    let b0 = widget-button "shutdown" (desk-chrome-gutter & "Shutdown")
+    in let bye = widget-set-min b0 (b0.wn-min-w) 22
+    in let foot = if across then widget-panel "sysmenu-foot" DirRow 0 [widget-set-flex bye 0, widget-set-flex (widget-panel "sysmenu-fgap" DirColumn 0 []) 1] else bye
+    in widget-panel "sysmenu-body" DirColumn 4 [widget-set-flex (gpr-menu-tree ps across) 0, foot]
 
  THE FIT RUNS HERE AND NOT IN THE PAINTER, because the HIT test lays this
  same tree out and the two must agree. `desk-chrome-face` fits the taskbar
@@ -4170,33 +4730,58 @@ Section: Programs
  place for the click. One function builds the tree, both callers take it
  fitted.
 
-  desk-menu-tree : Integer, GopFont, Integer -> WidgetNode
-  desk-menu-tree (ps) (tf) (s) =
-    let body = widget-set-flex (comp-fit-text (desk-menu-body ps) tf s) 0
-    in let tgap = widget-set-flex (widget-label "sysmenu-tgap" "") 1
-    in let col = widget-set-flex (widget-set-min (widget-panel "sysmenu-col" DirColumn 0 [tgap, body]) desk-menu-w 0) 0
+ THE MENU OPENS AT THE BUTTON, WHICH MEANS IT MUST READ `ds`. The Cobblestone
+ button is the band's first child, so the band's edge decides where it sits;
+ the menu used to anchor structurally instead, a flex-1 spacer above the body
+ pinning it to the bottom and one beside the column pinning it to the left, at
+ every edge. Measured before the fix by `desk-menu-anchor` at 1600x900: with
+ the band on the right the button laid at x 658 and the menu at x 16, opposite
+ corners of the glass. This is WORKS-52's shape again, where `dk-cbox-x/y/w/h`
+ each learned the edge and the menu was not given the same treatment.
+
+ The two spacers answer two independent questions. The COLUMN goes to the far
+ side only for a right-docked band; every other edge keeps the button, and so
+ the menu, on the left. The BODY sits at the bottom of its column only for a
+ bottom-docked band; at the top, left and right edges the button is at the
+ band's leading end, which is the top of the glass in all three cases.
+
+ THE LIST RUNS ACROSS WHEN THE BAND RUNS DOWN. Damian, 2026-09-07: "in left
+ and right mode should layout the cobblestone menu horizontally instead of
+ vertically". A band on a side leaves the glass wide and short beside it,
+ which is the shape a row of groups wants and a tall list does not. This is
+ axis 3 of the five the stage 4 design names, and it is keyed off the band
+ rather than being its own setting for now: the two independent variables the
+ design asks for are Damian's to rule on, and one of the combinations is this.
+
+  desk-menu-tree : Integer, GopFont, Integer, Integer -> WidgetNode
+  desk-menu-tree (ps) (tf) (s) (ds) =
+    let across = dk-task-vertical ds
+    in let body = widget-set-flex (comp-fit-text (desk-menu-body ps across) tf s) 0
+    in let gap = widget-set-flex (widget-label "sysmenu-tgap" "") 1
+    in let stack = if dk-task-edge ds == dk-edge-bottom then [gap, body] else [body, gap]
+    in let col = widget-set-flex (widget-set-min (widget-panel "sysmenu-col" DirColumn 0 stack) desk-menu-w 0) 0
     in let rgap = widget-set-flex (widget-panel "sysmenu-rgap" DirColumn 0 []) 1
-    in widget-panel "sysmenu-root" DirRow 0 [col, rgap]
+    in widget-panel "sysmenu-root" DirRow 0 (if dk-task-edge ds == dk-edge-right then [rgap, col] else [col, rgap])
 
   dk-menu-laid : Integer, Integer, Integer, Integer, GopFont -> WidgetNode
   dk-menu-laid (w) (h) (ps) (ds) (tf) =
     let s = ui-wscale w
-    in widget-layout (desk-chrome-face (desk-menu-tree ps tf s) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in widget-layout (desk-chrome-face (desk-menu-tree ps tf s ds) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
 
-  desk-menu-over : Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Integer, Integer -> Integer
-  desk-menu-over (base) (w) (stride) (font) (tf) (laid) (ps) (ds) =
+  desk-menu-over : Integer, Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Integer, Integer -> Integer
+  desk-menu-over (base) (w) (stride) (rows) (font) (tf) (laid) (ps) (ds) =
     when widget-find laid "sysmenu-body"
       is None -> 0
       is Just (mb) ->
         let ws = ui-wscale w
-        in let r = comp-walk base stride (comp-mul-rect (mb.wn-bounds) ws) font tf mb (dk-theme-ds ds) ws
-        in let ic = desk-gpr-icons base stride laid (dk-theme-ds ds) ws tf gpr-entries gpr-count (gpr-sel ps) 0 ds
-        in desk-icon-on base stride laid (dk-theme-ds ds) ws tf "" desk-chrome-gutter "shutdown" "power" ds
+        in let r = comp-walk base stride rows (comp-mul-rect (mb.wn-bounds) ws) font tf mb (dk-theme-ds ds) ws
+        in let ic = desk-gpr-icons base stride rows laid (dk-theme-ds ds) ws tf gpr-entries gpr-count (gpr-sel ps) 0 ds
+        in desk-icon-on base stride rows laid (dk-theme-ds ds) ws tf "" desk-chrome-gutter "shutdown" "power" ds
 
   desk-menu-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-menu-draw (base) (w) (h) (stride) (font) (tf) (ps) (ds) = act
     p <- desk-wnd-paint-all base w h stride font tf ds
-    desk-menu-over base w stride font tf (dk-menu-laid w h ps ds tf) ps ds
+    desk-menu-over base w stride h font tf (dk-menu-laid w h ps ds tf) ps ds
   end
 
   desk-menu-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer, Integer -> [Device.Port] Integer
@@ -4268,11 +4853,37 @@ Section: Programs
     in let dropped = __heap-restore probe
     in code
 
+ OUTSIDE THE MENU IS NOT THE SAME AS "HIT NOTHING", which is why this exists
+ beside `dk-menu-hit` rather than being read off its zero. That function
+ answers a scancode, and it answers 0 both for a click on the glass and for a
+ click inside the menu that landed on a panel rather than a row: the menu's own
+ padding, the gap between groups. Dismissing on the second would close the menu
+ when somebody clicked a hair off a row.
+
+ It lays the tree a second time, inside its own bracket, and that is affordable
+ because it runs once per PRESS rather than once per frame.
+
+  dk-menu-out : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> Boolean
+  dk-menu-out (w) (h) (ps) (mx) (my) (ds) (tf) =
+    let probe = __heap-save
+    in let s = ui-wscale w
+    in let laid = dk-menu-laid w h ps ds tf
+    in let v = when widget-find laid "sysmenu-body"
+          is Just (n) ->
+            let b = n.wn-bounds
+            in let hx = comp-hit-x mx s
+            in let hy = comp-hit-y my s
+            in hx < b.lr-x | hx >= b.lr-x + b.lr-w | hy < b.lr-y | hy >= b.lr-y + b.lr-h
+          is None -> True
+    in let dropped = __heap-restore probe
+    in v
+
   desk-menu-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, Boolean -> [Device.Port] Integer
   desk-menu-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) (clicked) =
     let ps = peek-32 ds desk-prog-cell
     in let hit = if clicked then dk-menu-hit w h ps (mouse-x mouse) (mouse-y mouse) ds tf else 0
-    in if hit == dk-sc-toggle then 0
+    in if hit == dk-sc-toggle then desk-step-dismiss
+    else if sc == 1 then desk-step-dismiss
     else if hit >= dk-sc-group then act
       let g = gpr-set-sel ps (hit - dk-sc-group)
       in let mark = __heap-save
@@ -4283,6 +4894,9 @@ Section: Programs
       end
     end
     else if hit /= 0 then hit
+    else if clicked & dk-menu-out w h ps (mouse-x mouse) (mouse-y mouse) ds tf then
+      let r = mouse-put-click mouse
+      in desk-step-dismiss
     else if sc == 88 then act
       let mark = __heap-save
       in act
@@ -4338,6 +4952,83 @@ Section: Programs
     end
   end
 
+Section: The Web Server Pane
+
+  desk-web-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  desk-web-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
+    hd <- cursor-hide cs base stride
+    let o = desk-wnd-open desk-focus-web w h ds
+    in act
+      p0 <- desk-wnd-paint-all base w h stride font tf ds
+      let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
+      in let c1 = dk-cursor base w h stride cs mouse
+      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    end
+  end
+
+  dk-web-hit : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
+  dk-web-hit (w) (h) (blk) (mx) (my) (ds) (tf) =
+    let probe = __heap-save
+    in let s = ui-wscale w
+    in let st = dk-wnd-st blk
+    in let bh = dk-wnd-bar-h tf s
+    in let wx = dk-wnd-rx blk w st ds
+    in let wy = dk-wnd-ry blk w h st ds + bh
+    in let ww = dk-wnd-rw blk w st ds
+    in let wh = dk-wnd-rh blk w h st ds - bh
+    in let laid = widget-layout (gopweb-tree blk) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
+    in let cmd = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
+          is Just (wgt) -> if wgt.wn-id == "web-stop" then gopweb-cmd-stop else if wgt.wn-id == "web-start" then gopweb-cmd-start else 0
+          is None -> 0
+    in let d = __heap-restore probe
+    in cmd
+
+  desk-web-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer -> [Device.Port] Integer
+  desk-web-repaint (base) (w) (h) (stride) (font) (tf) (cs) (mouse) (ds) = act
+    hd <- act cursor-hide cs base stride end
+    p <- desk-wnd-paint-all base w h stride font tf ds
+    dk-cursor base w h stride cs mouse
+  end
+
+  dk-web-fresh : Integer, Integer -> Boolean
+  dk-web-fresh (blk) (hit) =
+    hit /= 0
+    | peek-32 blk gopweb-blk-count /= peek-32 blk gopweb-blk-seen
+    | peek-32 blk gopweb-blk-paused /= peek-32 blk gopweb-blk-shown
+
+  desk-web-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, Boolean -> [Device.Port] Integer
+  desk-web-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) (clicked) = act
+    ev <- desk-wnd-chrome-step base w h stride font tf mouse ds cs desk-focus-web sc clicked
+    let blk = peek-32 ds dk-web-cell
+    in if ev == desk-wnd-ev-close then 0
+    else if ev == desk-wnd-ev-min then desk-step-hide
+    else if ev == desk-wnd-ev-stay then 1
+    else if sc == 88 then act
+      let mark = __heap-save
+      in act
+        s <- desk-shot base w h stride font ds
+        let d = __heap-restore mark
+        in 1
+      end
+    end
+    else
+      let mark = __heap-save
+      in let hit = if clicked then dk-web-hit w h blk (mouse-x mouse) (mouse-y mouse) ds tf else 0
+      in let sent = if hit == 0 then 0 else poke-32 blk gopweb-blk-cmd hit
+      in if dk-web-fresh blk hit == False then
+        let d = __heap-restore mark
+        in 1
+      else
+        let nt = if peek-32 blk gopweb-blk-count /= peek-32 blk gopweb-blk-seen then dk-snd-request ds dk-snd-slot-notify else 0
+        in let sn = poke-32 blk gopweb-blk-seen (peek-32 blk gopweb-blk-count)
+        in let sh = poke-32 blk gopweb-blk-shown (peek-32 blk gopweb-blk-paused)
+        in act
+          p <- desk-web-repaint base w h stride font tf cs mouse ds
+          let d = __heap-restore mark
+          in 1
+        end
+  end
+
 Section: Calendar
 
  The calendar pane. The month is a still picture until the date changes,
@@ -4354,13 +5045,31 @@ Section: Calendar
 
   desk-cal-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
   desk-cal-paint (base) (w) (h) (stride) (font) (tf) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-wnd-paint-all base w h stride font tf ds
   end
 
  The month never repaints, so the cursor is the only thing that moves here
  and it needs no hide-repaint-update bracket: `cursor-update` restores what
  it covered before drawing itself at the new place.
+
+  desk-sheet-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
+  desk-sheet-paint (base) (w) (h) (stride) (font) (tf) (ds) = act
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
+    in desk-wnd-paint-all base w h stride font tf ds
+  end
+
+  desk-sheet-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  desk-sheet-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
+    hd <- cursor-hide cs base stride
+    let o = desk-wnd-open desk-focus-sheet w h ds
+    in act
+      p0 <- desk-sheet-paint base w h stride font tf ds
+      let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
+      in let c1 = dk-cursor base w h stride cs mouse
+      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    end
+  end
 
   desk-cal-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-cal-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
@@ -4459,7 +5168,7 @@ Section: Issues
 
   desk-trk-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
   desk-trk-paint (base) (w) (h) (stride) (font) (tf) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-wnd-paint-all base w h stride font tf ds
   end
 
@@ -4596,7 +5305,7 @@ Section: Review
 
   desk-rev-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, GrvData, Integer, Integer, Maybe Text -> Integer
   desk-rev-paint (base) (w) (h) (stride) (font) (tf) (data) (rs) (ds) (signer) =
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-rev-draw base w h stride font tf data rs ds signer
 
   desk-rev-stamp : Integer -> [Device.Port] Integer
@@ -4684,7 +5393,7 @@ Section: Diffusion
 
   desk-dif-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
   desk-dif-paint (base) (w) (h) (stride) (font) (tf) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-wnd-paint-all base w h stride font tf ds
   end
 
@@ -4800,7 +5509,7 @@ Section: Appearance Pane
 
   desk-style-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
   desk-style-paint (base) (w) (h) (stride) (font) (tf) (ds) = act
-    let bg = gop-fill-rect base stride 0 0 w h (dk-wall ds)
+    let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in desk-wnd-paint-all base w h stride font tf ds
   end
 
@@ -4885,7 +5594,7 @@ Section: Loop
   dk-cursor : Integer, Integer, Integer, Integer, Integer, UsbMouse -> Integer
   dk-cursor (base) (w) (h) (stride) (cs) (mouse) =
     if mouse.um-ok
-    then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse)
+    then cursor-update cs base stride h w h (ui-scale w) (mouse-x mouse) (mouse-y mouse)
     else 0
 
   dk-pump : Integer, Integer, Integer, Integer, Integer, UsbMouse -> Integer
@@ -5004,7 +5713,7 @@ Section: Files
     in act
       hd <- cursor-hide cs base stride
       w0 <- desk-wall-paint base w h stride font tf ds
-      let d = gfl-draw-list base box stride s font (dk-pal ds) (st.fs-entries) (st.fs-sel) (st.fs-top) (st.fs-names)
+      let d = gfl-draw-list base box stride h s font (dk-pal ds) (st.fs-entries) (st.fs-sel) (st.fs-top) (st.fs-names)
       in let dr = __heap-restore mk
       in let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
       in let c1 = dk-cursor base w h stride cs mouse
@@ -5024,13 +5733,16 @@ Section: Files
     in act
     w0 <- desk-wall-paint base w h stride font tf ds
     if m.gm-ok == False then act
-      f <- gfl-draw-frame base box stride s font (dk-pal ds) ""
-      t <- gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (shot-diag-text "no FAT ESP on the boot medium") (gfl-dim (dk-pal ds)) s 0
-      t2 <- gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint (dk-pal ds)) s 0
+      let se = dk-snd-request ds dk-snd-slot-error
+      in act
+      f <- gfl-draw-frame base box stride h s font (dk-pal ds) ""
+      t <- gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (shot-diag-text "no FAT ESP on the boot medium") (gfl-dim (dk-pal ds)) s 0
+      t2 <- gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint (dk-pal ds)) s 0
       let st = FilesState { fs-vol = m.gm-vol, fs-entries = [], fs-clusters = [0 - 1], fs-names = [], fs-sel = 0, fs-top = 0, fs-ptr = 0, fs-mode = 0 }
       in let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
       in let c1 = dk-cursor base w h stride cs mouse
       in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit }) root
+      end
     end
     else act
       let flag = if gfat-is32 (m.gm-vol) then (m.gm-vol).vol-root-start else 0 - 1
@@ -5038,7 +5750,7 @@ Section: Files
       in act
         ents <- gfl-list-cur (m.gm-vol) clusters
         let st = FilesState { fs-vol = m.gm-vol, fs-entries = ents, fs-clusters = clusters, fs-names = [], fs-sel = 0, fs-top = 0, fs-ptr = 0, fs-mode = 0 }
-        in let d = gfl-draw-list base box stride s font (dk-pal ds) ents 0 0 (st.fs-names)
+        in let d = gfl-draw-list base box stride h s font (dk-pal ds) ents 0 0 (st.fs-names)
         in let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
         in let c1 = dk-cursor base w h stride cs mouse
         in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit }) root
@@ -5058,7 +5770,7 @@ Section: Files
         else if ev == desk-wnd-ev-stay then act
           let hd = cursor-hide cs base stride
           in let box = dk-wnd-content desk-focus-files w h ds tf (ui-wscale w)
-          in let p = if st.fs-mode == 1 then 0 else gfl-draw-list base box stride (ui-scale w) font (dk-pal ds) (st.fs-entries) (st.fs-sel) (st.fs-top) (st.fs-names)
+          in let p = if st.fs-mode == 1 then 0 else gfl-draw-list base box stride h (ui-scale w) font (dk-pal ds) (st.fs-entries) (st.fs-sel) (st.fs-top) (st.fs-names)
           in let c = dk-cursor base w h stride cs mouse
           in 1
         end
@@ -5102,7 +5814,7 @@ Section: Files
       let a = __record-set st "fs-mode" 0
       in let b = __record-set st "fs-ptr" ((mouse-x mouse) * 4096 + (mouse-y mouse))
       in let hd = cursor-hide cs base stride
-      in let p = gfl-draw-list base box stride s font (dk-pal ds) (st.fs-entries) (st.fs-sel) (st.fs-top) (st.fs-names)
+      in let p = gfl-draw-list base box stride h s font (dk-pal ds) (st.fs-entries) (st.fs-sel) (st.fs-top) (st.fs-names)
       in let c = dk-cursor base w h stride cs mouse
       in 1
     else 1
@@ -5143,7 +5855,7 @@ Section: Files
     in let a = __record-set st "fs-sel" ns
     in let b = __record-set st "fs-top" t2
     in let hd = cursor-hide cs base stride
-    in let p = gfl-draw-list base box stride s font (dk-pal ds) (st.fs-entries) ns t2 (st.fs-names)
+    in let p = gfl-draw-list base box stride h s font (dk-pal ds) (st.fs-entries) ns t2 (st.fs-names)
     in let c = dk-cursor base w h stride cs mouse
     in 1
 
@@ -5159,7 +5871,7 @@ Section: Files
     let e = list-at (st.fs-entries) idx
     in if gfl-is-dir e then desk-files-enter base w h stride font tf mouse cs st e ds
     else act
-      p <- gfl-preview-paint base (dk-wnd-content desk-focus-files w h ds tf (ui-wscale w)) stride (ui-scale w) font (dk-pal ds) cs (st.fs-vol) e
+      p <- gfl-preview-paint base (dk-wnd-content desk-focus-files w h ds tf (ui-wscale w)) stride h (ui-scale w) font (dk-pal ds) cs (st.fs-vol) e
       let a = __record-set st "fs-sel" idx
       in let b = __record-set st "fs-top" (gfl-clamp-top idx (st.fs-top) (gfl-rows-vis (dk-wnd-content desk-focus-files w h ds tf (ui-wscale w)) (ui-scale w)))
       in let m = __record-set st "fs-mode" 1
@@ -5199,7 +5911,7 @@ Section: Files
     in let d = __record-set st "fs-sel" 0
     in let f = __record-set st "fs-top" 0
     in let hd = cursor-hide cs base stride
-    in let p = gfl-draw-list base (dk-wnd-content desk-focus-files w h ds tf (ui-wscale w)) stride (ui-scale w) font (dk-pal ds) ents 0 0 n2
+    in let p = gfl-draw-list base (dk-wnd-content desk-focus-files w h ds tf (ui-wscale w)) stride h (ui-scale w) font (dk-pal ds) ents 0 0 n2
     in let cu = dk-cursor base w h stride cs mouse
     in 0 - 1
 
@@ -5231,9 +5943,10 @@ Section: The 3D panes
  THE RECT IS READ BEFORE EVERY FRAME, not kept. A window can be moved,
  maximised or restored between two frames of an animating pane, and the
  cheapest correct answer is to place the pane again each time rather than to
- notice that it changed: `gsc-place` writes four fields in place and
- allocates nothing, because `gsc-new` sized the buffers to the whole content
- box once.
+ notice that it changed: `gsc-place` is given the window rect every frame and
+ clamps the target to the buffers `gsc-new` sized. The clamp is not belt and
+ braces: the content box GROWS when the task band moves to a vertical edge,
+ so the rect can outrun buffers sized under the old edge (`desk-cbox-drift`).
 
  CLOSING FROM THE TITLEBAR MUST RELEASE THE VIEWPORT, which `gsc-step` does
  for Esc and Tab and cannot do for a button it never sees. A held GPU
@@ -5329,7 +6042,7 @@ Section: The 3D panes
   desk-wall-paint (base) (w) (h) (stride) (font) (tf) (ds) = act
     let mark = __heap-save
     in act
-      bg <- act gop-fill-rect base stride 0 0 w h (dk-wall ds) end
+      bg <- act gop-fill-rect base stride h 0 0 w h (dk-wall ds) end
       p <- desk-wnd-paint-all base w h stride font tf ds
       let d = __heap-restore mark
       in 0
@@ -5352,8 +6065,8 @@ Section: The 3D panes
       in let s = ui-scale w
       in let vy = dk-cbox-y w ds + dk-cbox-h w h ds - 20 * s
       in let vx = dk-cbox-x w ds + 200 * s
-      in let bg = gop-fill-rect base stride vx vy (300 * s) (16 * s) (pal.pal-muted)
-      in let tx = gop-draw-text base stride font (vx + 4 * s) (vy + 2 * s) t (pal.pal-primary) s 0
+      in let bg = gop-fill-rect base stride h vx vy (300 * s) (16 * s) (pal.pal-muted)
+      in let tx = gop-draw-text base stride h font (vx + 4 * s) (vy + 2 * s) t (pal.pal-primary) s 0
       in let d = __heap-restore mark
       in 0
     end
@@ -5560,7 +6273,8 @@ Section: Browser
 
   desk-loop : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-loop (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
-    let fmark = __heap-save
+    let y = process-yield
+    in let fmark = __heap-save
     in act
       sc <- kbd-take kbd
       ck <- if dk-drag-fid ds == desk-focus-none then desk-clock base w h stride font tf ds root else act 0 end
@@ -5568,16 +6282,19 @@ Section: Browser
       in let rp = if rr == 1 then desk-rate-paint base w h stride font (ui-scale w) tf cs mouse ds else 0
       in let mv = mouse-pump mouse w h
       in let zs = if mv == 1 & dk-drag-fid ds == desk-focus-none & dk-size-active ds == dk-size-none then cursor-set-shape cs (dk-size-cursor (dk-size-zone ds w h (mouse-x mouse) (mouse-y mouse))) else 0
-      in let cu = if mv == 1 then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
+      in let cu = if mv == 1 then cursor-update cs base stride h w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
       in let clicked = mouse-take-click mouse
       in act
         cl <- dk-snd-click ds clicked
+        fn <- dk-snd-focus-note ds
+        pm <- dk-snd-pump ds
         if desk-wnd-to-desk ds w h mouse tf clicked then
           let d = __heap-restore fmark
           in desk-dispatch base w h stride font tf kbd mouse ds cs apps root sc clicked
         else if peek-32 ds desk-focus-cell /= desk-focus-none then act
           alive <- desk-step-of base w h stride font tf kbd mouse ds cs apps root (peek-32 ds desk-focus-cell) sc clicked
           if alive == 0 then desk-app-close base w h stride font tf kbd mouse ds cs apps
+          else if alive == desk-step-dismiss then desk-menu-dismiss base w h stride font tf kbd mouse ds cs apps
           else if alive == desk-step-hide then desk-app-hide base w h stride font tf kbd mouse ds cs apps
           else if alive == 1 then
             let d = __heap-restore fmark
@@ -5585,9 +6302,11 @@ Section: Browser
           else if alive < 0 then desk-loop base w h stride font tf kbd mouse ds cs apps root
           else desk-app-close-to base w h stride font tf kbd mouse ds cs apps alive
         end
-        else if clicked == False & sc /= desk-sc-shot then
+        else if clicked == False & sc /= desk-sc-shot then act
+          hv <- dk-hover-maybe (mv == 1 | peek-32 ds dk-hover-cell /= desk-focus-none) base w h stride font tf ds cs root mouse
           let d = __heap-restore fmark
           in desk-loop base w h stride font tf kbd mouse ds cs apps root
+        end
         else
           let d = __heap-restore fmark
           in desk-dispatch base w h stride font tf kbd mouse ds cs apps root sc clicked
@@ -5705,13 +6424,107 @@ Section: Browser
       else py + ph / 2 - dk-prev-h / 2
     in layout-rect (dk-prev-fit x0 dk-prev-w w) (dk-prev-fit y0 dk-prev-h h) dk-prev-w dk-prev-h
 
+ 252 is the last `ds` cell; the block behind it is 32 bytes of state and
+ one preview's worth of pixels, the pixels under the bubble.
+
+  dk-bub-cell : Integer = 252
+  dk-bub-shown : Integer = 0
+  dk-bub-x : Integer = 4
+  dk-bub-y : Integer = 8
+  dk-bub-save : Integer = 32
+
+  dk-bub-init : Integer -> Integer
+  dk-bub-init (ds) = poke-32 ds dk-bub-cell (alloc-zeroed (dk-bub-save + dk-prev-bytes) 64)
+
+  dk-bub-cols-in : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-bub-cols-in (base) (stride) (buf) (x0) (y0) (py) (px) =
+    if px >= dk-prev-w then 0
+    else let c = poke-32 buf ((py * dk-prev-w + px) * 4) (peek-32 base (((y0 + py) * stride + x0 + px) * 4))
+    in dk-bub-cols-in base stride buf x0 y0 py (px + 1)
+
+  dk-bub-rows-in : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-bub-rows-in (base) (stride) (buf) (x0) (y0) (py) =
+    if py >= dk-prev-h then 0
+    else let r = dk-bub-cols-in base stride buf x0 y0 py 0
+    in dk-bub-rows-in base stride buf x0 y0 (py + 1)
+
+  dk-bub-cols-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-bub-cols-out (base) (stride) (src) (x0) (y0) (py) (px) =
+    if px >= dk-prev-w then 0
+    else let c = poke-32 base (((y0 + py) * stride + x0 + px) * 4) (peek-32 src ((py * dk-prev-w + px) * 4))
+    in dk-bub-cols-out base stride src x0 y0 py (px + 1)
+
+  dk-bub-rows-out : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-bub-rows-out (base) (stride) (src) (x0) (y0) (py) =
+    if py >= dk-prev-h then 0
+    else let r = dk-bub-cols-out base stride src x0 y0 py 0
+    in dk-bub-rows-out base stride src x0 y0 (py + 1)
+
+  dk-bub-visible : Integer -> Boolean
+  dk-bub-visible (ds) =
+    let bb = peek-32 ds dk-bub-cell
+    in if bb == 0 then False else peek-32 bb dk-bub-shown /= 0
+
+  dk-bub-show : Integer, Integer, Integer, Integer, Integer, LayoutRect -> Integer
+  dk-bub-show (base) (stride) (ds) (cs) (fid) (r) =
+    let bb = peek-32 ds dk-bub-cell
+    in let pb = peek-32 ds dk-prev-cell
+    in if bb == 0 | pb == 0 then 0
+    else if peek-32 bb dk-bub-shown /= 0 then 0
+    else if fid <= desk-focus-none | fid >= dk-prev-slots then 0
+    else let ch = cursor-hide cs base stride
+    in let sx = poke-32 bb dk-bub-x (r.lr-x)
+    in let sy = poke-32 bb dk-bub-y (r.lr-y)
+    in let sv = dk-bub-rows-in base stride (bb + dk-bub-save) (r.lr-x) (r.lr-y) 0
+    in let bl = dk-bub-rows-out base stride (dk-prev-at pb fid) (r.lr-x) (r.lr-y) 0
+    in poke-32 bb dk-bub-shown 1
+
+  dk-bub-hide : Integer, Integer, Integer, Integer -> Integer
+  dk-bub-hide (base) (stride) (ds) (cs) =
+    let bb = peek-32 ds dk-bub-cell
+    in if bb == 0 then 0
+    else if peek-32 bb dk-bub-shown == 0 then 0
+    else let ch = cursor-hide cs base stride
+    in let rs = dk-bub-rows-out base stride (bb + dk-bub-save) (peek-32 bb dk-bub-x) (peek-32 bb dk-bub-y) 0
+    in poke-32 bb dk-bub-shown 0
+
+  dk-bub-wanted : Integer, Integer -> Boolean
+  dk-bub-wanted (ds) (fid) =
+    let blk = desk-wnd-blk fid ds
+    in if blk == 0 then False else dk-wnd-minimised blk
+
+  dk-bub-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer, Integer, LayoutRect -> [Device.Port] Integer
+  dk-bub-open (base) (w) (h) (stride) (font) (tf) (ds) (cs) (fid) (r) = act
+    fr <- dk-prev-fresh base w h stride ds font tf fid
+    dk-bub-show base stride ds cs fid r
+  end
+
+  dk-hover-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer, WidgetNode, UsbMouse -> [Device.Port] Integer
+  dk-hover-step (base) (w) (h) (stride) (font) (tf) (ds) (cs) (root) (mouse) =
+    let s = ui-wscale w
+    in let mx = mouse-x mouse
+    in let my = mouse-y mouse
+    in let pill = dk-pill-hit root mx my (peek-32 ds dk-wr-cell) ds s 0
+    in let left = if pill /= peek-32 ds dk-hover-cell then dk-bub-hide base stride ds cs else 0
+    in let noted = dk-hover-note ds pill hpet-ticks
+    in if pill == desk-focus-none then act 0 end
+    else if dk-bub-visible ds then act 0 end
+    else if dk-hover-ready ds hpet-ticks hpet-ticks-per-second == False then act 0 end
+    else if dk-bub-wanted ds pill == False then act 0 end
+    else when ev-hit-widget root (comp-hit-x mx s) (comp-hit-y my s)
+      is Just (wgt) -> dk-bub-open base w h stride font tf ds cs pill (dk-prev-bubble ((wgt.wn-bounds).lr-x * s) ((wgt.wn-bounds).lr-y * s) ((wgt.wn-bounds).lr-w * s) ((wgt.wn-bounds).lr-h * s) (dk-pedge-get ds pill) w h)
+      is None -> act 0 end
+
+  dk-hover-maybe : Boolean, Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer, WidgetNode, UsbMouse -> [Device.Port] Integer
+  dk-hover-maybe (go) (base) (w) (h) (stride) (font) (tf) (ds) (cs) (root) (mouse) =
+    if go then dk-hover-step base w h stride font tf ds cs root mouse else act 0 end
+
   dk-pill-hit : WidgetNode, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  dk-pill-hit (root) (mx) (my) (ws) (ds) (s) (i) =
-    if i >= dk-wr-count ws then desk-focus-none
-    else
-      let fid = dk-wr-at ws i
-      in if desk-widget-hit root mx my (dk-pill-id fid) s then fid
-      else dk-pill-hit root mx my ws ds s (i + 1)
+  dk-pill-hit (root) (mx) (my) (ws) (ds) (s) (fid) =
+    if fid > dk-focus-max then desk-focus-none
+    else if dk-pill-live ws ds fid == False then dk-pill-hit root mx my ws ds s (fid + 1)
+    else if desk-widget-hit root mx my (dk-pill-id fid) s then fid
+    else dk-pill-hit root mx my ws ds s (fid + 1)
 
  EVERY PILL IS A HIT, not only a minimised one. Damian, 2026-08-26: clicking a
  taskbar pill should make that window active and bring it to the front. The
@@ -5780,21 +6593,50 @@ Section: Browser
 
   desk-dispatch : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer, Boolean -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-dispatch (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sc) (clicked) =
-    let pill = if clicked then dk-pill-hit root (mouse-x mouse) (mouse-y mouse) (peek-32 ds dk-wr-cell) ds (ui-wscale w) 0 else desk-focus-none
+    let bh = dk-bub-hide base stride ds cs
+    in let pill = if clicked then dk-pill-hit root (mouse-x mouse) (mouse-y mouse) (peek-32 ds dk-wr-cell) ds (ui-wscale w) 0 else desk-focus-none
     in if pill /= desk-focus-none then
+      if dk-wr-find (peek-32 ds dk-wr-cell) pill 0 < 0 then desk-dispatch-app base w h stride font tf kbd mouse ds cs apps root (dk-fid-sc pill) False
+      else
+        let now = hpet-ticks
+        in let el = bit-and (now - peek-32 ds dk-pillc-t-cell) dk-rate-mask
+        in if dk-dclick (peek-32 ds dk-pillc-cell) pill el hpet-ticks-per-second then
+          let c = dk-pillc-clear ds
+          in desk-pill-minimise base w h stride font tf kbd mouse ds cs apps pill
+        else
+          let n = dk-pillc-note ds pill now
+          in desk-pill-restore base w h stride font tf kbd mouse ds cs apps root pill
+    else if clicked & desk-widget-hit root (mouse-x mouse) (mouse-y mouse) "task-clock" (ui-wscale w) then
       let now = hpet-ticks
       in let el = bit-and (now - peek-32 ds dk-pillc-t-cell) dk-rate-mask
-      in if dk-dclick (peek-32 ds dk-pillc-cell) pill el hpet-ticks-per-second then
+      in if dk-dclick (peek-32 ds dk-pillc-cell) desk-focus-clkp el hpet-ticks-per-second then
         let c = dk-pillc-clear ds
-        in desk-pill-minimise base w h stride font tf kbd mouse ds cs apps pill
+        in desk-clock-open base w h stride font tf kbd mouse ds cs (peek-32 ds desk-clock-cell) apps root
       else
-        let n = dk-pillc-note ds pill now
-        in desk-pill-restore base w h stride font tf kbd mouse ds cs apps root pill
+        let n = dk-pillc-note ds desk-focus-clkp now
+        in desk-dispatch-app base w h stride font tf kbd mouse ds cs apps root sc clicked
     else desk-dispatch-app base w h stride font tf kbd mouse ds cs apps root sc clicked
+
+ THE BAND CLOCK OPENS THE APP ON A DOUBLE CLICK and takes the pill's own latch
+ to do it, keyed on the clock's focus id. Sharing the latch has one reachable
+ consequence and it is benign: a single click on the CLOCK'S PILL followed by
+ one on the band clock inside the window reads as a double and opens the pane.
+ Both gestures name the clock, so the answer is the one the hand was asking
+ for either way, and a second latch would have cost one of the two `ds` cells
+ the block has left.
+
+ A single click notes the latch and then falls through exactly as a click on
+ bare band does, so nothing about the first click of the pair is special.
 
  The pill is resolved BEFORE the launcher, because a pill sits in the taskbar
  beside the menu button and a restore is not an open. Everything below is the
  dispatch table as it was.
+
+ A PINNED PILL WHOSE APP IS NOT RUNNING OPENS IT, and the re-entry passes
+ `clicked` as FALSE on purpose: every arm of `desk-dispatch-app` is a
+ scancode OR a widget hit at the pointer, and the pointer is still over the
+ pill, so passing the real `clicked` would let a desktop icon under that
+ point open a second app from one press.
 
   desk-dispatch-app : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer, Boolean -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-dispatch-app (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sc) (clicked) =
@@ -5815,6 +6657,8 @@ Section: Browser
     in let prg = if sc == 25 then True else clicked & desk-widget-hit root (mouse-x mouse) (mouse-y mouse) "programs" (ui-wscale w)
     in let sysm = if sc == 41 then True else clicked & desk-widget-hit root (mouse-x mouse) (mouse-y mouse) "menu" (ui-wscale w)
     in let clk = if sc == 37 then True else clicked & desk-widget-hit root (mouse-x mouse) (mouse-y mouse) "clock" (ui-wscale w)
+    in let web = if sc == 17 then True else clicked & desk-widget-hit root (mouse-x mouse) (mouse-y mouse) "webserver" (ui-wscale w)
+    in let sht = if sc == 31 then True else clicked & desk-widget-hit root (mouse-x mouse) (mouse-y mouse) "sheets" (ui-wscale w)
     in if sc == 88 then desk-snap base w h stride font tf kbd mouse ds cs apps root
     else if sysm then desk-menu-open base w h stride font tf kbd mouse ds cs (peek-32 ds desk-prog-cell) apps root
     else if prg then desk-programs-open base w h stride font tf kbd mouse ds cs (peek-32 ds desk-prog-cell) apps root
@@ -5825,6 +6669,7 @@ Section: Browser
     else if mon then desk-mon-open base w h stride font tf kbd mouse ds cs apps root
     else if calc then desk-calc-open base w h stride font tf kbd mouse ds cs (peek-32 ds 24) apps root
     else if con then desk-console-open base w h stride font tf kbd mouse ds cs (peek-32 ds desk-console-cell) apps root
+    else if sht then desk-sheet-open base w h stride font tf kbd mouse ds cs apps root
     else if cal then desk-cal-open base w h stride font tf kbd mouse ds cs apps root
     else if trk then desk-trk-open base w h stride font tf kbd mouse ds cs apps root
     else if rev then desk-rev-open base w h stride font tf kbd mouse ds cs apps root
@@ -5832,6 +6677,7 @@ Section: Browser
     else if bro then desk-browser-focus base w h stride font tf kbd mouse ds cs apps root
     else if edt then desk-edit-focus base w h stride font tf kbd mouse ds cs apps root
     else if sty then desk-style-open base w h stride font tf kbd mouse ds cs apps root
+    else if web then desk-web-open base w h stride font tf kbd mouse ds cs apps root
     else if bye then desk-shutdown base w h stride font tf kbd mouse ds cs apps root
     else desk-loop base w h stride font tf kbd mouse ds cs apps root
   end
@@ -5864,7 +6710,7 @@ Section: Browser
     else gfont-load (m.gm-vol) "CMUNSS.TTF" (dk-ui-ppem w)
   end
 
-  desk-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  desk-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
  The calculator's state block is allocated once here and its ADDRESS is
  kept in a `ds` cell, so no pane signature has to grow a parameter. The
  cell is 32-bit: there is no `poke-qword` builtin (only `peek-qword`), and
@@ -5872,12 +6718,13 @@ Section: Browser
  `peek-32` zero-extends, so it round-trips exactly rather than sign-
  extending into a negative pointer.
 
-  desk-run (base) (w) (h) (stride) (font) (kbd) (mouse) = act
+  desk-run (base) (w) (h) (stride) (font) (kbd) (mouse) (web) = act
     tf <- desk-font w
     gp <- desk-gpu-present 0
     st <- gst-load (gst-store dk-settings-keys)
     let s = ui-scale w
-    in let ds = alloc-zeroed 256 64
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let wbp = poke-32 ds dk-web-cell web
     in let hs = hpet-start
     in let cs = alloc-zeroed 2048 64
     in let ks = alloc-zeroed 64 64
@@ -5887,7 +6734,7 @@ Section: Browser
     in let ep = poke-32 ds desk-edit-cell (alloc-zeroed 192 64)
     in let ci = gcon-init ns
     in let pp = poke-32 ds desk-prog-cell (alloc-zeroed 64 64)
-    in let kp2 = poke-32 ds desk-clock-cell (alloc-zeroed 64 64)
+    in let kp2 = poke-32 ds desk-clock-cell (alloc-zeroed 128 64)
     in let rvp = poke-32 ds desk-review-cell (alloc-zeroed 64 64)
     in let rvi = grv-init (peek-32 ds desk-review-cell)
     in let msp = poke-32 ds desk-marks-cell (alloc-zeroed 128 64)
@@ -5902,19 +6749,25 @@ Section: Browser
     in let fshp = poke-32 ds dk-fish-cell (alloc-zeroed 64 64)
     in let brop = poke-32 ds dk-bro-cell (alloc-zeroed 64 64)
     in let flsp = poke-32 ds dk-files-cell (alloc-zeroed 64 64)
+    in let shtp = poke-32 ds dk-sheet-cell (alloc-zeroed 64 64)
     in let gpk = poke-32 ds desk-gpu-cell gp
     in let sdi = dk-snd-init ds
     in let ici = dk-icons-init ds tf w
     in let pei = dk-pedge-init ds
+    in let bbi = dk-bub-init ds
     in let ap = dk-settings-into ds st
     in let tki = dk-task-init ds tf w
     in let sti = dk-strip-init ds tf w
-    in let wp = mouse-warp mouse (w / 2) (h / 2)
-    in let apps = desk-apps-empty
-    in let bm = poke-32 ds desk-mark-cell __heap-save
-    in let rm = __heap-save
-    in let root = desk-draw base w h stride font s tf ds
-    in let rn = desk-root-note ds rm
-    in let c0 = cursor-update cs base stride w h s (w / 2) (h / 2)
-    in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    in act
+      ce <- clk-ensure (peek-32 ds desk-clock-cell)
+      ce2 <- clk-ensure2 (peek-32 ds desk-clock-cell)
+      let wp = mouse-warp mouse (w / 2) (h / 2)
+      in let apps = desk-apps-empty
+      in let bm = poke-32 ds desk-mark-cell __heap-save
+      in let rm = __heap-save
+      in let root = desk-draw base w h stride font s tf ds
+      in let rn = desk-root-note ds rm
+      in let c0 = cursor-update cs base stride h w h s (w / 2) (h / 2)
+      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    end
   end

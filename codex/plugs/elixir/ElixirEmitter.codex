@@ -173,7 +173,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-ex-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ex-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ex-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-ex-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ex-expr-at c arities (depth + 1) & ", do: " & emit-ex-expr-at t arities (depth + 1) & ", else: " & emit-ex-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(fn -> " & ex-sanitize (ex-let-binder name val) & " = " & ex-store-value val arities (depth + 1) & "; " & emit-ex-expr-at body arities (depth + 1) & " end).()"
@@ -199,9 +199,23 @@ Section: Expression Emission
    else if n == "Nothing" then "nil"
    else ex-sanitize n
 
-  emit-ex-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-ex-binary (op) (l) (r) (arities) =
+ Elixir integers are arbitrary precision, so neither arm is the bare
+ operator. `rem` takes the sign of the DIVIDEND rather than the divisor, so
+ the band cannot use it once and be right: the second `rem` after adding the
+ modulus is what forces a non-negative residue before the shift back.
+
+  ex-int-arith : Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  ex-int-arith (sym) (l) (r) (ty) (arities) =
+   let exact = "(" & emit-ex-expr l arities & " " & sym & " " & emit-ex-expr r arities & ")"
+   in if int-ty-wraps ty then "(rem(rem(" & exact & " + 9223372036854775808, 18446744073709551616) + 18446744073709551616, 18446744073709551616) - 9223372036854775808)"
+   else "((fn _v -> if _v < -9223372036854775808 or _v > 9223372036854775807, do: raise(\"CODEX_TRAP_integer_overflow\"), else: _v end).(" & exact & "))"
+
+  emit-ex-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-ex-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> ex-int-arith "+" l r ty arities
+    is IrSubInt -> ex-int-arith "-" l r ty arities
+    is IrMulInt -> ex-int-arith "*" l r ty arities
     is IrAppendText -> "(" & emit-ex-expr l arities & " <> " & emit-ex-expr r arities & ")"
     is IrAppendList -> "(" & emit-ex-expr l arities & " ++ " & emit-ex-expr r arities & ")"
     is IrConsList -> "[" & emit-ex-expr l arities & " | " & emit-ex-expr r arities & "]"
@@ -352,8 +366,49 @@ Section: Apply Emission
    else let idx = ex-find-builtin ex-builtin-names n 0
    in if idx >= 0 then emit-ex-builtin-by-idx idx n args arities
    else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ")"
-        else ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ")"
+        else let ar = lookup-arity arities n
+        in if ar < 1 then emit-ex-curried (ex-sanitize n) args arities 0
+           else if list-length args == ar then ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ")"
+           else if list-length args < ar then emit-ex-partial n args arities (ar - list-length args)
+           else emit-ex-curried (ex-sanitize n & ".(" & emit-ex-apply-args-upto args arities 0 ar & ")") args arities ar
    else emit-ex-expr-curried original arities
+
+ An Elixir anonymous function has a fixed arity and does not partially apply,
+ so `add3.(1)` on a three-parameter function is a BadArityError. A definition
+ applied to fewer arguments than it takes is eta-wrapped, and an application
+ past the callee's arity applies the surplus one argument at a time.
+
+  emit-ex-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-ex-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = base & ".(" & emit-ex-expr (list-at args i) arities & ")"
+   in emit-ex-curried next args arities (i + 1)
+
+  emit-ex-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-ex-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-ex-expr (list-at args i) arities
+   else emit-ex-expr (list-at args i) arities & ", " & emit-ex-apply-args-upto args arities (i + 1) n
+
+  emit-ex-partial-open : Integer, Integer -> Text
+  emit-ex-partial-open (i) (count) =
+   if i == count then ""
+   else "fn _p" & integer-to-text i & "_ -> " & emit-ex-partial-open (i + 1) count
+
+  emit-ex-partial-close : Integer -> Text
+  emit-ex-partial-close (count) =
+   if count == 0 then "" else " end" & emit-ex-partial-close (count - 1)
+
+  emit-ex-partial-params : Integer, Integer -> Text
+  emit-ex-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_, " & emit-ex-partial-params (i + 1) count
+
+  emit-ex-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-ex-partial (n) (args) (arities) (short) =
+   let call = ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ", " & emit-ex-partial-params 0 short & ")"
+   in emit-ex-partial-open 0 short & call & emit-ex-partial-close short
 
   emit-ex-apply : IRExpr, List ArityEntry -> Text
   emit-ex-apply (e) (arities) =
@@ -403,6 +458,27 @@ Section: Chapter Emission
    in let types-text = emit-ex-type-defs type-defs 0
    in let defs-text = emit-ex-defs (m.defs) 0 arities
    in ex-text-builtins & types-text & defs-text & ex-sanitize opening-entry-point & ".()\n"
+
+  emit-elixir-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-elixir-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-ex-type-defs type-defs 0
+   in ex-text-builtins & types-text
+
+  emit-elixir-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-elixir-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-ex-type-defs type-defs 0
+   in ex-sanitize opening-entry-point & ".()\n"
+
+  emit-elixir-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-elixir-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-ex-type-defs type-defs 0
+   in arities
+
+  emit-elixir-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-elixir-chapter-stream-def (m) (v) (i) = emit-ex-def (list-at (m.defs) i) v
 
  `String.replace` with an empty pattern inserts the replacement between every
  character, `String.split` on an empty pattern yields an empty field either

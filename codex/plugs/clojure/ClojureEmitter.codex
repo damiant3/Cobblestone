@@ -161,7 +161,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-clj-name n arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-clj-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-clj-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(- " & emit-clj-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-clj-expr-at c arities (depth + 1) & " " & emit-clj-expr-at t arities (depth + 1) & " " & emit-clj-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(let [" & clj-sanitize (clj-let-binder name val) & " " & clj-store-value val arities (depth + 1) & "] " & emit-clj-expr-at body arities (depth + 1) & ")"
@@ -189,9 +189,20 @@ Section: Expression Emission
    in if ar == 0 then "(" & clj-sanitize n & ")"
       else clj-sanitize n
 
-  emit-clj-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-clj-binary (op) (l) (r) (arities) =
+ Clojure carries both primitives on a long already: `+` throws
+ ArithmeticException on signed overflow and `unchecked-add` wraps, so this
+ plug needs no helper of ours, only the choice between them.
+
+  clj-int-op : Text, Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  clj-int-op (plain) (unchecked) (l) (r) (ty) (arities) =
+   "(" & (if int-ty-wraps ty then unchecked else plain) & " " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+
+  emit-clj-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-clj-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> clj-int-op "+" "unchecked-add" l r ty arities
+    is IrSubInt -> clj-int-op "-" "unchecked-subtract" l r ty arities
+    is IrMulInt -> clj-int-op "*" "unchecked-multiply" l r ty arities
     is IrAppendText -> "(str " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
     is IrAppendList -> "(into " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
     is IrConsList -> "(into [" & emit-clj-expr l arities & "] " & emit-clj-expr r arities & ")"
@@ -215,7 +226,7 @@ Section: Expression Emission
     is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
     is IrDivInt -> "quot"
     is IrRemInt -> "rem"
-    is IrPowInt -> "Math/pow"
+    is IrPowInt -> "_cx_ipow"
     is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
     is IrEq | IrApproxEq | IrApproxEqExact -> "="
     is IrNotEq -> "not="
@@ -340,8 +351,49 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      let bi = clj-try-builtin n args arities
      in if text-length bi > 0 then bi
-     else "(" & clj-sanitize n & " " & emit-clj-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 1 then emit-clj-curried (clj-sanitize n) args arities 0
+        else if list-length args == ar then "(" & clj-sanitize n & " " & emit-clj-apply-args args arities 0 & ")"
+        else if list-length args < ar then emit-clj-partial n args arities (ar - list-length args)
+        else emit-clj-curried ("(" & clj-sanitize n & " " & emit-clj-apply-args-upto args arities 0 ar & ")") args arities ar
     is otherwise -> "(" & emit-clj-expr root arities & " " & emit-clj-apply-args args arities 0 & ")"
+
+ Clojure is not curried: `choose` is defined at one arity and `(choose 0 2 3)`
+ is an ArityException. An application past the callee's arity nests instead,
+ `(((choose 0) 2) 3)`, and a definition applied to fewer arguments than it
+ takes is eta-wrapped.
+
+  emit-clj-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-clj-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = "(" & base & " " & emit-clj-expr (list-at args i) arities & ")"
+   in emit-clj-curried next args arities (i + 1)
+
+  emit-clj-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-clj-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-clj-expr (list-at args i) arities
+   else emit-clj-expr (list-at args i) arities & " " & emit-clj-apply-args-upto args arities (i + 1) n
+
+  emit-clj-partial-open : Integer, Integer -> Text
+  emit-clj-partial-open (i) (count) =
+   if i == count then ""
+   else "(fn [_p" & integer-to-text i & "_] " & emit-clj-partial-open (i + 1) count
+
+  emit-clj-partial-close : Integer -> Text
+  emit-clj-partial-close (count) =
+   if count == 0 then "" else ")" & emit-clj-partial-close (count - 1)
+
+  emit-clj-partial-params : Integer, Integer -> Text
+  emit-clj-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "_p" & integer-to-text i & "_"
+   else "_p" & integer-to-text i & "_ " & emit-clj-partial-params (i + 1) count
+
+  emit-clj-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-clj-partial (n) (args) (arities) (short) =
+   let call = "(" & clj-sanitize n & " " & emit-clj-apply-args args arities 0 & " " & emit-clj-partial-params 0 short & ")"
+   in emit-clj-partial-open 0 short & call & emit-clj-partial-close short
 
   emit-clj-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-clj-apply-args (args) (arities) (i) =
@@ -434,11 +486,38 @@ Section: Chapter Emission
   emit-clojure-chapter : IRChapter, List ATypeDef -> Text
   emit-clojure-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "(ns codex.main\n  (:require [clojure.string]))\n\n(defn list-snoc [xs v] (conj xs v))\n(defn list-push [xs v] (list-snoc xs v))\n(defn text-starts-with [s p] (clojure.string/starts-with? s p))\n(defn text-split [s sep] (if (zero? (count sep)) [s] (clojure.string/split s (re-pattern (java.util.regex.Pattern/quote sep)) -1)))\n(defn text-replace [s a b] (if (zero? (count a)) s (clojure.string/replace s a b)))\n(defn text-to-integer [s] (loop [i (if (and (pos? (count s)) (= (nth s 0) \\-)) 1 0) v 0] (if (and (< i (count s)) (Character/isDigit (nth s i))) (recur (inc i) (+ (* v 10) (- (int (nth s i)) 48))) (if (and (pos? (count s)) (= (nth s 0) \\-)) (- v) v))))\n\n"
+   in let header = "(ns codex.main\n  (:require [clojure.string]))\n\n(defn list-snoc [xs v] (conj xs v))\n(defn list-push [xs v] (list-snoc xs v))\n(defn text-starts-with [s p] (clojure.string/starts-with? s p))\n(defn text-split [s sep] (if (zero? (count sep)) [s] (clojure.string/split s (re-pattern (java.util.regex.Pattern/quote sep)) -1)))\n(defn text-replace [s a b] (if (zero? (count a)) s (clojure.string/replace s a b)))\n(defn text-to-integer [s] (loop [i (if (and (pos? (count s)) (= (nth s 0) \\-)) 1 0) v 0] (if (and (< i (count s)) (Character/isDigit (nth s i))) (recur (inc i) (+ (* v 10) (- (int (nth s i)) 48))) (if (and (pos? (count s)) (= (nth s 0) \\-)) (- v) v))))\n(defn _cx_ipow [b e] (if (neg? e) 0 (loop [r 1 x b n e] (if (zero? n) r (recur (if (odd? n) (unchecked-multiply r x) r) (unchecked-multiply x x) (bit-shift-right n 1))))))\n\n"
    in let types-text = emit-clj-type-defs type-defs 0
    in let defs-text = emit-clj-defs (m.defs) 0 arities
    in let entry = clj-emit-entry (m.defs)
    in header & types-text & defs-text & entry
+
+  emit-clojure-chapter-stream-head : IRChapter, List ATypeDef -> Text
+  emit-clojure-chapter-stream-head (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "(ns codex.main\n  (:require [clojure.string]))\n\n(defn list-snoc [xs v] (conj xs v))\n(defn list-push [xs v] (list-snoc xs v))\n(defn text-starts-with [s p] (clojure.string/starts-with? s p))\n(defn text-split [s sep] (if (zero? (count sep)) [s] (clojure.string/split s (re-pattern (java.util.regex.Pattern/quote sep)) -1)))\n(defn text-replace [s a b] (if (zero? (count a)) s (clojure.string/replace s a b)))\n(defn text-to-integer [s] (loop [i (if (and (pos? (count s)) (= (nth s 0) \\-)) 1 0) v 0] (if (and (< i (count s)) (Character/isDigit (nth s i))) (recur (inc i) (+ (* v 10) (- (int (nth s i)) 48))) (if (and (pos? (count s)) (= (nth s 0) \\-)) (- v) v))))\n(defn _cx_ipow [b e] (if (neg? e) 0 (loop [r 1 x b n e] (if (zero? n) r (recur (if (odd? n) (unchecked-multiply r x) r) (unchecked-multiply x x) (bit-shift-right n 1))))))\n\n"
+   in let types-text = emit-clj-type-defs type-defs 0
+   in let entry = clj-emit-entry (m.defs)
+   in header & types-text
+
+  emit-clojure-chapter-stream-tail : IRChapter, List ATypeDef -> Text
+  emit-clojure-chapter-stream-tail (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "(ns codex.main\n  (:require [clojure.string]))\n\n(defn list-snoc [xs v] (conj xs v))\n(defn list-push [xs v] (list-snoc xs v))\n(defn text-starts-with [s p] (clojure.string/starts-with? s p))\n(defn text-split [s sep] (if (zero? (count sep)) [s] (clojure.string/split s (re-pattern (java.util.regex.Pattern/quote sep)) -1)))\n(defn text-replace [s a b] (if (zero? (count a)) s (clojure.string/replace s a b)))\n(defn text-to-integer [s] (loop [i (if (and (pos? (count s)) (= (nth s 0) \\-)) 1 0) v 0] (if (and (< i (count s)) (Character/isDigit (nth s i))) (recur (inc i) (+ (* v 10) (- (int (nth s i)) 48))) (if (and (pos? (count s)) (= (nth s 0) \\-)) (- v) v))))\n(defn _cx_ipow [b e] (if (neg? e) 0 (loop [r 1 x b n e] (if (zero? n) r (recur (if (odd? n) (unchecked-multiply r x) r) (unchecked-multiply x x) (bit-shift-right n 1))))))\n\n"
+   in let types-text = emit-clj-type-defs type-defs 0
+   in let entry = clj-emit-entry (m.defs)
+   in entry
+
+  emit-clojure-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
+  emit-clojure-chapter-stream-env (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "(ns codex.main\n  (:require [clojure.string]))\n\n(defn list-snoc [xs v] (conj xs v))\n(defn list-push [xs v] (list-snoc xs v))\n(defn text-starts-with [s p] (clojure.string/starts-with? s p))\n(defn text-split [s sep] (if (zero? (count sep)) [s] (clojure.string/split s (re-pattern (java.util.regex.Pattern/quote sep)) -1)))\n(defn text-replace [s a b] (if (zero? (count a)) s (clojure.string/replace s a b)))\n(defn text-to-integer [s] (loop [i (if (and (pos? (count s)) (= (nth s 0) \\-)) 1 0) v 0] (if (and (< i (count s)) (Character/isDigit (nth s i))) (recur (inc i) (+ (* v 10) (- (int (nth s i)) 48))) (if (and (pos? (count s)) (= (nth s 0) \\-)) (- v) v))))\n(defn _cx_ipow [b e] (if (neg? e) 0 (loop [r 1 x b n e] (if (zero? n) r (recur (if (odd? n) (unchecked-multiply r x) r) (unchecked-multiply x x) (bit-shift-right n 1))))))\n\n"
+   in let types-text = emit-clj-type-defs type-defs 0
+   in let entry = clj-emit-entry (m.defs)
+   in arities
+
+  emit-clojure-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
+  emit-clojure-chapter-stream-def (m) (v) (i) = emit-clj-def (list-at (m.defs) i) v
 
   clj-emit-entry : List IRDef -> Text
   clj-emit-entry (defs) = clj-emit-entry-loop defs 0

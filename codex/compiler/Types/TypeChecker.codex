@@ -1755,14 +1755,12 @@ Section: Cost Model 3.3 -- the bounded declaration
  `punctual` records "hard-realtime", so nothing new is threaded through the
  chapter record.
 
- Three rungs are decidable here today. The inference answers whether a
- definition is `growing`, and whether it allocates at all; it does not
- separate `fixed` from `linear`, because that needs a per-builtin allocation
- class this tree has not measured. So `bounded none`, `bounded linear` and
- `bounded growing` are checked, and `bounded fixed` is REFUSED as unsupported
- rather than accepted unchecked. That is the abstain-toward-refusal direction
- the ruling asks for: an unchecked promise reads as a checked one and is
- worse than no promise.
+ Every rung is decidable here. The inference answers whether a definition is
+ `growing` and whether it allocates at all; `fixed` and `budgeted` are decided
+ against the registry's per-builtin allocation class, one step apart in how
+ they read `budgeted` itself. A callee that allocates a bound nobody states
+ keeps a `budgeted` promise and breaks a `fixed` one, which is the whole of
+ the difference and is the `strict` flag on the walk below.
 
   cost-class-rank : Text -> Integer
   cost-class-rank (c) =
@@ -1813,23 +1811,24 @@ Section: Cost Model 3.3 -- the bounded declaration
    if list-length anns == 0 then st
    else let growing = cost-growing-set st defs
    in let allocating = if cost-any-none anns 0 (list-length anns) then cost-alloc-set st defs else []
-   in let over = if cost-any-budgeted anns 0 (list-length anns) then cost-over-set st defs else []
-   in check-bounded-loop st defs growing allocating over anns 0 (list-length anns)
+   in let over = if cost-any-budgeted anns 0 (list-length anns) then cost-over-set st defs False else []
+   in let overfixed = if cost-any-fixed anns 0 (list-length anns) then cost-over-set st defs True else []
+   in check-bounded-loop st defs growing allocating over overfixed anns 0 (list-length anns)
 
-  check-bounded-loop : UnificationState, List ADef, List Text, List Text, List Text, List AnnotationNode, Integer, Integer -> UnificationState
-  check-bounded-loop (st) (defs) (growing) (allocating) (over) (anns) (i) (len) =
+  check-bounded-loop : UnificationState, List ADef, List Text, List Text, List Text, List Text, List AnnotationNode, Integer, Integer -> UnificationState
+  check-bounded-loop (st) (defs) (growing) (allocating) (over) (overfixed) (anns) (i) (len) =
    if i >= len then st
    else let a = list-at anns i
-   in if a.kind == "bounded" then check-bounded-loop (check-bounded-one st defs growing allocating over a) defs growing allocating over anns (i + 1) len
-   else check-bounded-loop st defs growing allocating over anns (i + 1) len
+   in if a.kind == "bounded" then check-bounded-loop (check-bounded-one st defs growing allocating over overfixed a) defs growing allocating over overfixed anns (i + 1) len
+   else check-bounded-loop st defs growing allocating over overfixed anns (i + 1) len
 
-  check-bounded-one : UnificationState, List ADef, List Text, List Text, List Text, AnnotationNode -> UnificationState
-  check-bounded-one (st) (defs) (growing) (allocating) (over) (a) =
+  check-bounded-one : UnificationState, List ADef, List Text, List Text, List Text, List Text, AnnotationNode -> UnificationState
+  check-bounded-one (st) (defs) (growing) (allocating) (over) (overfixed) (a) =
    let rank = cost-class-rank (a.body)
    in let span = cost-def-span defs (a.target) 0 (list-length defs)
    in if rank < 0 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-unknown-class ("'bounded " & a.body & "' on '" & a.target & "' names no class; the lattice is none < fixed < budgeted < linear < growing") span))
    else if rank == 0 then (if is-rt-name allocating (a.target) 0 (list-length allocating) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded none but allocates, here or in something it calls") span)) else st)
-   else if rank == 1 then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-class-unsupported ("'bounded fixed' on '" & a.target & "' cannot be checked yet: fixed is the same bytes every call, which no builtin has been measured to be. Use 'bounded budgeted' for a bound the caller names, or 'bounded none' for the no-heap promise") span))
+   else if rank == 1 then (if is-rt-name overfixed (a.target) 0 (list-length overfixed) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded fixed but does not allocate the same bytes every call, here or in something it calls: a builtin whose allocation follows an input, one bounded only by a constant nobody states, or one bounded by an argument that is not a literal") span)) else st)
    else if rank == 2 then (if is-rt-name over (a.target) 0 (list-length over) then __record-set st "bag" (bag-add (st.bag) (make-error cdx-bounded-exceeded ("'" & a.target & "' declares bounded budgeted but allocates past a named bound, here or in something it calls: a builtin whose allocation follows an input, or one bounded by an argument that is not a literal") span)) else st)
    else if rank >= 4 then st
    else if is-rt-name growing (a.target) 0 (list-length growing)
@@ -1848,8 +1847,7 @@ Section: Cost Model -- the none rung
  A name in call position that is neither a definition in this unit nor a
  builtin measured at zero bytes is read as allocating. That is question 1's
  abstain-toward-refusal: a false refusal is paid in a declaration the author
- can decline to write, and a false acceptance is an unchecked promise, which
- is the thing CDX6103 exists to prevent.
+ can decline to write, and a false acceptance is an unchecked promise.
 
  The zero-byte set now comes from the REGISTRY rather than from a list kept
  here. `bs-alloc` on `BuiltinSpec` carries each builtin's measured allocation
@@ -1985,15 +1983,15 @@ Section: Cost Model -- the none rung
    else if n > k then False
    else when list-at args (k - n) is ALitExpr (t) (kk) (s) -> True is otherwise -> False
 
-  cost-head-overbudget : List ADef, List Text, Text, List AExpr -> Boolean
-  cost-head-overbudget (defs) (over) (h) (args) =
+  cost-head-overbudget : List ADef, List Text, Text, List AExpr, Boolean -> Boolean
+  cost-head-overbudget (defs) (over) (h) (args) (strict) =
    if h == "" then True
    else if is-rt-name over h 0 (list-length over) then True
    else if cost-def-known defs h 0 (list-length defs) then False
    else let c = builtin-alloc-by-name builtins h 0 (list-length builtins)
    in if c == "none" then False
       else if c == "fixed" then False
-      else if c == "budgeted" then False
+      else if c == "budgeted" then strict
       else if cost-budget-arg c > 0 then cost-arg-literal args (cost-budget-arg c) == False
       else is-rt-safe-builtin h == False
 
@@ -2004,66 +2002,66 @@ Section: Cost Model -- the none rung
  empty argument list and refused. Anything nested inside an argument is still
  reached, because it is in the list.
 
-  cost-expr-overbudget : UnificationState, AExpr, List ADef, List Text -> Boolean
-  cost-expr-overbudget (st) (e) (defs) (over) = when e
+  cost-expr-overbudget : UnificationState, AExpr, List ADef, List Text, Boolean -> Boolean
+  cost-expr-overbudget (st) (e) (defs) (over) (strict) = when e
     is ALitExpr (t) (k) (s) -> False
     is ANameExpr (n) (s) -> is-rt-unsafe-name (n.value) | is-rt-name over (n.value) 0 (list-length over)
-    is AApplyExpr (f) (a) (s) -> cost-head-overbudget defs over (cost-apply-head e) (cost-apply-args e []) | cost-args-overbudget st (cost-apply-args e []) defs over 0
-    is ABinaryExpr (l) (op) (r) (s) -> cost-binop-allocates st op s | cost-expr-overbudget st l defs over | cost-expr-overbudget st r defs over
-    is AUnaryExpr (x) (s) -> cost-expr-overbudget st x defs over
-    is AIfExpr (c) (t) (el) (s) -> cost-expr-overbudget st c defs over | cost-expr-overbudget st t defs over | cost-expr-overbudget st el defs over
-    is ALetExpr (bs) (b) (s) -> cost-binds-overbudget st bs defs over 0 (list-length bs) | cost-expr-overbudget st b defs over
-    is AMatchExpr (sc) (arms) (s) -> cost-expr-overbudget st sc defs over | cost-arms-overbudget st arms defs over 0 (list-length arms)
-    is AFieldAccess (obj) (f) (s) -> cost-expr-overbudget st obj defs over
+    is AApplyExpr (f) (a) (s) -> cost-head-overbudget defs over (cost-apply-head e) (cost-apply-args e []) strict | cost-args-overbudget st (cost-apply-args e []) defs over 0 strict
+    is ABinaryExpr (l) (op) (r) (s) -> cost-binop-allocates st op s | cost-expr-overbudget st l defs over strict | cost-expr-overbudget st r defs over strict
+    is AUnaryExpr (x) (s) -> cost-expr-overbudget st x defs over strict
+    is AIfExpr (c) (t) (el) (s) -> cost-expr-overbudget st c defs over strict | cost-expr-overbudget st t defs over strict | cost-expr-overbudget st el defs over strict
+    is ALetExpr (bs) (b) (s) -> cost-binds-overbudget st bs defs over 0 (list-length bs) strict | cost-expr-overbudget st b defs over strict
+    is AMatchExpr (sc) (arms) (s) -> cost-expr-overbudget st sc defs over strict | cost-arms-overbudget st arms defs over 0 (list-length arms) strict
+    is AFieldAccess (obj) (f) (s) -> cost-expr-overbudget st obj defs over strict
     is otherwise -> True
 
-  cost-args-overbudget : UnificationState, List AExpr, List ADef, List Text, Integer -> Boolean
-  cost-args-overbudget (st) (args) (defs) (over) (i) =
+  cost-args-overbudget : UnificationState, List AExpr, List ADef, List Text, Integer, Boolean -> Boolean
+  cost-args-overbudget (st) (args) (defs) (over) (i) (strict) =
    if i >= list-length args then False
-   else if cost-expr-overbudget st (list-at args i) defs over then True
-   else cost-args-overbudget st args defs over (i + 1)
+   else if cost-expr-overbudget st (list-at args i) defs over strict then True
+   else cost-args-overbudget st args defs over (i + 1) strict
 
-  cost-binds-overbudget : UnificationState, List ALetBind, List ADef, List Text, Integer, Integer -> Boolean
-  cost-binds-overbudget (st) (bs) (defs) (over) (i) (len) =
+  cost-binds-overbudget : UnificationState, List ALetBind, List ADef, List Text, Integer, Integer, Boolean -> Boolean
+  cost-binds-overbudget (st) (bs) (defs) (over) (i) (len) (strict) =
    if i >= len then False
-   else if cost-expr-overbudget st ((list-at bs i).value) defs over then True
-   else cost-binds-overbudget st bs defs over (i + 1) len
+   else if cost-expr-overbudget st ((list-at bs i).value) defs over strict then True
+   else cost-binds-overbudget st bs defs over (i + 1) len strict
 
-  cost-arms-overbudget : UnificationState, List AMatchArm, List ADef, List Text, Integer, Integer -> Boolean
-  cost-arms-overbudget (st) (arms) (defs) (over) (i) (len) =
+  cost-arms-overbudget : UnificationState, List AMatchArm, List ADef, List Text, Integer, Integer, Boolean -> Boolean
+  cost-arms-overbudget (st) (arms) (defs) (over) (i) (len) (strict) =
    if i >= len then False
    else let arm = list-at arms i
-   in if cost-expr-overbudget st (arm.guard) defs over | cost-expr-overbudget st (arm.body) defs over then True
-   else cost-arms-overbudget st arms defs over (i + 1) len
+   in if cost-expr-overbudget st (arm.guard) defs over strict | cost-expr-overbudget st (arm.body) defs over strict then True
+   else cost-arms-overbudget st arms defs over (i + 1) len strict
 
-  cost-over-seed : UnificationState, List ADef, Integer, Integer, List Text -> List Text
-  cost-over-seed (st) (defs) (i) (len) (acc) =
+  cost-over-seed : UnificationState, List ADef, Integer, Integer, List Text, Boolean -> List Text
+  cost-over-seed (st) (defs) (i) (len) (acc) (strict) =
    if i >= len then acc
    else let d = list-at defs i
-   in if cost-expr-overbudget st (d.body) defs [] then cost-over-seed st defs (i + 1) len (list-push acc (d.name.value))
-   else cost-over-seed st defs (i + 1) len acc
+   in if cost-expr-overbudget st (d.body) defs [] strict then cost-over-seed st defs (i + 1) len (list-push acc (d.name.value)) strict
+   else cost-over-seed st defs (i + 1) len acc strict
 
-  cost-over-step : UnificationState, List ADef, List Text, Integer, Integer, List Text -> List Text
-  cost-over-step (st) (defs) (known) (i) (len) (acc) =
+  cost-over-step : UnificationState, List ADef, List Text, Integer, Integer, List Text, Boolean -> List Text
+  cost-over-step (st) (defs) (known) (i) (len) (acc) (strict) =
    if i >= len then acc
    else let d = list-at defs i
-   in if is-rt-name acc (d.name.value) 0 (list-length acc) then cost-over-step st defs known (i + 1) len acc
-   else if cost-expr-overbudget st (d.body) defs known
-   then cost-over-step st defs known (i + 1) len (list-push acc (d.name.value))
-   else cost-over-step st defs known (i + 1) len acc
+   in if is-rt-name acc (d.name.value) 0 (list-length acc) then cost-over-step st defs known (i + 1) len acc strict
+   else if cost-expr-overbudget st (d.body) defs known strict
+   then cost-over-step st defs known (i + 1) len (list-push acc (d.name.value)) strict
+   else cost-over-step st defs known (i + 1) len acc strict
 
-  cost-over-close : UnificationState, List ADef, List Text, Integer, Integer -> List Text
-  cost-over-close (st) (defs) (acc) (round) (rounds) =
+  cost-over-close : UnificationState, List ADef, List Text, Integer, Integer, Boolean -> List Text
+  cost-over-close (st) (defs) (acc) (round) (rounds) (strict) =
    if round >= rounds then acc
-   else let grown = cost-over-step st defs acc 0 (list-length defs) acc
+   else let grown = cost-over-step st defs acc 0 (list-length defs) acc strict
    in if list-length grown == list-length acc then acc
-   else cost-over-close st defs grown (round + 1) rounds
+   else cost-over-close st defs grown (round + 1) rounds strict
 
-  cost-over-set : UnificationState, List ADef -> List Text
-  cost-over-set (st) (defs) =
-   let seed = cost-over-seed st defs 0 (list-length defs) []
+  cost-over-set : UnificationState, List ADef, Boolean -> List Text
+  cost-over-set (st) (defs) (strict) =
+   let seed = cost-over-seed st defs 0 (list-length defs) [] strict
    in if list-length seed == 0 then seed
-   else cost-over-close st defs seed 0 (list-length defs)
+   else cost-over-close st defs seed 0 (list-length defs) strict
 
   cost-any-budgeted : List AnnotationNode, Integer, Integer -> Boolean
   cost-any-budgeted (anns) (i) (len) =
@@ -2071,6 +2069,13 @@ Section: Cost Model -- the none rung
    else let a = list-at anns i
    in if a.kind == "bounded" then (if a.body == "budgeted" then True else cost-any-budgeted anns (i + 1) len)
    else cost-any-budgeted anns (i + 1) len
+
+  cost-any-fixed : List AnnotationNode, Integer, Integer -> Boolean
+  cost-any-fixed (anns) (i) (len) =
+   if i >= len then False
+   else let a = list-at anns i
+   in if a.kind == "bounded" then (if a.body == "fixed" then True else cost-any-fixed anns (i + 1) len)
+   else cost-any-fixed anns (i + 1) len
 
   cost-alloc-set : UnificationState, List ADef -> List Text
   cost-alloc-set (st) (defs) =
@@ -2385,11 +2390,12 @@ Section: Proof Acyclicity
    })
    in let acc0 = deck-record (__list-with-capacity def-count)
    in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
+   in let cite-slugs = for c in (mod.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
    in let exit = __deck-exit
    in let cb = check-batch-open check-base keep-base keep-ceiling def-count demand-check-batch-budget poison
    in let __seq = cb.cb-reg-note = reg-note & " pre-st=" & show (__deck-pos - p5)
    in let opened = check-batch-begin cb pre-st acc0
-   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names) tdm ceiling cb
+   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) cite-slugs "" [] (mod.rt-names) tdm ceiling cb
    in let enter = __deck-enter
    in let cycle-st = check-rt-cycles (mod.defs) (mod.rt-names) (result.state)
    in let bounded-st = check-bounded-decls cycle-st (mod.defs) (mod.annotations)
@@ -2681,9 +2687,34 @@ Section: Check Batches
   check-batch-due (cb) =
    (__heap-save - cb.cb-bivy-mark) + (__deck-pos - cb.cb-deck-mark) >= cb.cb-budget
 
+ THE CLOSE IS BARE-METAL MEMORY MANAGEMENT IN ITS ENTIRETY -- it moves the deck
+ cursor twice, poisons the two spans it is about to give back, and rewinds the
+ bivy -- and its copier reaches further still: `mcopy-type` validates a box by
+ reading raw memory at the address it was handed. A HOSTED target has no such
+ memory. Its objects live wherever its host allocator put them, `address-of`,
+ `peek-*` and `__heap-save` answer for a different region entirely, and the
+ read returns whatever that region happens to hold. `mcopy-type` then takes its
+ unsafe escape and answers `ErrorTy` for every type in the chapter, which is
+ the safe direction on bare metal only because the caller catches it by
+ comparing the keep frontier against `mc-ceiling` -- a second measurement in
+ the same fictional space, so on a hosted target it fails OPEN.
+
+ Guarding the copier alone is not enough: real types behind it reach the next
+ assumption and the walk dies on a corrupt switch. The guard goes at the whole
+ operation, as `Core/PhaseAllocator.codex:38` and `:86` already guard raw-memory
+ work for the same reason.
+
+ Nothing is lost by skipping it. The close exists to materialise the batch into
+ the keep BEFORE the scratch is reclaimed, and a hosted target reclaims
+ nothing. `cb-keep`, `cb-batches` and `cb-overflow` stay at their initial
+ values in consequence, so `check-batch-note` reads zeros and CDX9002 cannot
+ fire on a hosted arm -- both correct, since a hosted arm has no keep to fill
+ and no reservation to overflow.
+
   check-batch-close : CheckBatch, UnificationState, List TypeBinding -> Integer
   check-batch-close (cb) (st) (acc) =
-   let bivy-now = __heap-save
+   if hosted-kind /= 0 then 0
+   else let bivy-now = __heap-save
    in let deck-now = __deck-pos
    in let bivy-used = bivy-now - cb.cb-bivy-mark
    in let deck-used = deck-now - cb.cb-deck-mark
@@ -2771,13 +2802,13 @@ Section: Check Batches
    cb.cb-reg-note & " CHECK-BATCH batches=" & show (cb.cb-batches) & " max-bivy=" & show (cb.cb-max-bivy) & " max-deck=" & show (cb.cb-max-deck) & " keep-end=" & show (cb.cb-keep) & " check-base=" & show (cb.cb-mc.mc-floor) & " walk-floor=" & show (cb.cb-walk-floor) & " done-deck=" & show __deck-pos & " done-bivy=" & show __heap-save & " ty=" & show (list-length (cb.cb-mc.mc-ty)) & "/" & show (cb.cb-mc.mc-cap-ty) & " text=" & show (list-length (cb.cb-mc.mc-text)) & " name=" & show (list-length (cb.cb-mc.mc-name)) & " row=" & show (list-length (cb.cb-mc.mc-row)) & " tylists=" & show (list-length (cb.cb-mc.mc-tylist)) & " fieldlists=" & show (list-length (cb.cb-mc.mc-fieldlist)) & " ctorlists=" & show (list-length (cb.cb-mc.mc-ctorlist)) & " labellists=" & show (list-length (cb.cb-mc.mc-labellist)) & " cons-slots=" & show (cb.cb-mc.mc-cons-slots) & " overflow=" & (if cb.cb-overflow then "1" else "0")
 
   check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List TypeBinding, Integer, CheckBatch -> ChapterResult
-  check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (tdm) (ceiling) (cb) =
+  check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (rt-names) (tdm) (ceiling) (cb) =
    if i == len then let closed = check-batch-close cb st acc in check-all-defs-done st env acc cb
    else if cb.cb-overflow then check-all-defs-done st env acc cb
    else if deck-short-of ceiling demand-check-guard-band then let closed = check-batch-close cb st acc in check-all-defs-done st env acc cb
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
-      else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
+      else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments cite-slugs (def.chapter-slug) 0
    in let fresh-env = __record-set (__record-set (__record-set env "locals" empty-type-bindings) "chapter-renames" chapter-rn) "local-ranges" []
    in let r = check-def st fresh-env defs tdm def renames
    in let lin-st = check-linearity-def def fresh-env (r.state)
@@ -2795,8 +2826,8 @@ Section: Check Batches
    in if check-batch-due cb
       then let closed = check-batch-close cb rt-st acc2
        in let opened = check-batch-begin cb rt-st acc2
-       in check-all-defs rt-st env defs (i + 1) len acc2 renames colliding assignments citations slug-cache "" [] rt-names tdm ceiling cb
-      else check-all-defs rt-st env defs (i + 1) len acc2 renames colliding assignments citations slug-cache (def.chapter-slug) chapter-rn rt-names tdm ceiling cb
+       in check-all-defs rt-st env defs (i + 1) len acc2 renames colliding assignments citations cite-slugs "" [] rt-names tdm ceiling cb
+      else check-all-defs rt-st env defs (i + 1) len acc2 renames colliding assignments citations cite-slugs (def.chapter-slug) chapter-rn rt-names tdm ceiling cb
 
 Section: Induction Checking
 

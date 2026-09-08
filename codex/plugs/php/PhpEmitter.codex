@@ -378,7 +378,11 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      let bi = php-try-builtin n args arities
      in if text-length bi > 0 then bi
-     else php-sanitize n & "(" & emit-php-apply-args args arities 0 & ")"
+     else let ar = lookup-arity arities n
+     in if ar < 1 then emit-php-curried (php-sanitize n) args arities 0
+        else if list-length args == ar then php-sanitize n & "(" & emit-php-apply-args args arities 0 & ")"
+        else if list-length args < ar then emit-php-partial n args arities (ar - list-length args)
+        else emit-php-curried (php-sanitize n & "(" & emit-php-apply-args-upto args arities 0 ar & ")") args arities ar
     is otherwise -> emit-php-expr-curried e arities
 
   emit-php-apply-args : List IRExpr, List ArityEntry, Integer -> Text
@@ -386,6 +390,43 @@ Section: Apply Emission
    if i == list-length args then ""
    else if i == list-length args - 1 then emit-php-expr (list-at args i) arities
    else emit-php-expr (list-at args i) arities & ", " & emit-php-apply-args args arities (i + 1)
+
+ PHP has no partial application, so a definition applied to fewer arguments
+ than it takes is eta-wrapped. The already-supplied arguments are emitted
+ INLINE into the wrapped call rather than captured, so no `use` clause is
+ needed for them; an argument that is itself a PHP variable would need one.
+
+  emit-php-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-php-curried (base) (args) (arities) (i) =
+   if i >= list-length args then base
+   else let next = "(" & base & ")(" & emit-php-expr (list-at args i) arities & ")"
+   in emit-php-curried next args arities (i + 1)
+
+  emit-php-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-php-apply-args-upto (args) (arities) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-php-expr (list-at args i) arities
+   else emit-php-expr (list-at args i) arities & ", " & emit-php-apply-args-upto args arities (i + 1) n
+
+  emit-php-partial-open : Integer, Integer -> Text
+  emit-php-partial-open (i) (count) =
+   if i == count then ""
+   else "(function($_p" & integer-to-text i & "_) { return " & emit-php-partial-open (i + 1) count
+
+  emit-php-partial-close : Integer -> Text
+  emit-php-partial-close (count) =
+   if count == 0 then "" else "; })" & emit-php-partial-close (count - 1)
+
+  emit-php-partial-params : Integer, Integer -> Text
+  emit-php-partial-params (i) (count) =
+   if i == count then ""
+   else if i == count - 1 then "$_p" & integer-to-text i & "_"
+   else "$_p" & integer-to-text i & "_, " & emit-php-partial-params (i + 1) count
+
+  emit-php-partial : Text, List IRExpr, List ArityEntry, Integer -> Text
+  emit-php-partial (n) (args) (arities) (short) =
+   let call = php-sanitize n & "(" & emit-php-apply-args args arities 0 & ", " & emit-php-partial-params 0 short & ")"
+   in emit-php-partial-open 0 short & call & emit-php-partial-close short
 
   emit-php-expr-curried : IRExpr, List ArityEntry -> Text
   emit-php-expr-curried (e) (arities) =

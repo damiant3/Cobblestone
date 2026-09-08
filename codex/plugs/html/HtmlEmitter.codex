@@ -164,7 +164,7 @@ Section: JavaScript Expression Emission
   emit-js-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-js-expr (e) (arities) (indent) =
    when e
-    is IrIntLit (n) (sp) -> show n
+    is IrIntLit (n) (sp) -> show n & "n"
     is IrNumLit (n) (sp) -> show n
     is IrTextLit (s) (sp) -> "\"" & js-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
@@ -191,15 +191,26 @@ Section: JavaScript Expression Emission
 
 Section: Binary Operators
 
+ A Codex Integer is a Number here, and a double holds an exact integer only
+ to 2^53. BOTH arms refuse: the band cannot wrap at 64 bits and the plain arm
+ cannot tell an overflow from a rounding, so the node type decides nothing and
+ is not consulted. The guard is on the VALUES, so a program whose integers fit
+ a double still computes and only the unrepresentable case refuses. The marker
+ is what plug-oracle-test.ps1 reads as its REFUSED verdict.
+
+  js-int-refuse : Text, Text, Text -> Text
+  js-int-refuse (sym) (lhs) (rhs) =
+   "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
+
   emit-js-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-js-binary (op) (l) (r) (arities) (indent) =
    let lhs = emit-js-expr l arities indent
    in let rhs = emit-js-expr r arities indent
    in when op
-    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
-    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
-    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrAddInt -> js-int-refuse "+" lhs rhs
+    is IrSubInt -> js-int-refuse "-" lhs rhs
+    is IrMulInt -> js-int-refuse "*" lhs rhs
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
@@ -262,10 +273,29 @@ Section: Apply
      in if ar > supplied & supplied > 0 then
          let remaining = ar - supplied
          in html-partial-wrappers 0 remaining & func & "(" & args & ", " & html-partial-params 0 remaining & ")"
+        else if ar > 0 & supplied > ar then
+         emit-html-curried (func & "(" & emit-js-apply-args-upto (chain.args) arities indent 0 ar & ")") (chain.args) arities indent ar
         else func & "(" & args & ")"
     is otherwise -> let func = emit-js-expr (chain.root) arities indent
      in let args = emit-js-apply-args (chain.args) arities indent 0
      in func & "(" & args & ")"
+
+ The eta-wrap above covers a definition applied to FEWER arguments than it
+ takes. This covers the other direction: a definition applied to MORE, where
+ the surplus belongs to what the definition RETURNS and is applied one at a
+ time.
+
+  emit-html-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-html-curried (base) (args) (arities) (indent) (i) =
+   if i >= list-length args then base
+   else let next = base & "(" & emit-js-expr (list-at args i) arities indent & ")"
+   in emit-html-curried next args arities indent (i + 1)
+
+  emit-js-apply-args-upto : List IRExpr, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-js-apply-args-upto (args) (arities) (indent) (i) (n) =
+   if i >= n then ""
+   else if i == n - 1 then emit-js-expr (list-at args i) arities indent
+   else emit-js-expr (list-at args i) arities indent & ", " & emit-js-apply-args-upto args arities indent (i + 1) n
 
   emit-js-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-js-apply-args (args) (arities) (indent) (i) =
@@ -541,7 +571,7 @@ Section: Chapter Emission
   emit-html-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
-   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(start, start + len); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return s.charCodeAt(i); }\nfunction int_mod(a, b) { return Math.trunc(a) % Math.trunc(b); }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (Math.trunc(a)^Math.trunc(b));}\nfunction bit_and(a,b){return (Math.trunc(a)&Math.trunc(b));}\nfunction bit_or(a,b){return (Math.trunc(a)|Math.trunc(b));}\nfunction bit_shl(a,n){return (Math.trunc(a)<<n);}\nfunction bit_shr(a,n){return (Math.trunc(a)>>n);}\nfunction bit_shru(a,n){return (Math.trunc(a)>>>n);}\nfunction bit_not(a){return (~Math.trunc(a));}\nfunction __narrow(n) { return n; }\n\n"
+   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(start, start + len); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return s.charCodeAt(i); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(c.charCodeAt ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\n\n"
    in let types-text = emit-js-type-defs type-defs 0
    in let defs-text = emit-js-defs (m.defs) 0 arities
    in let arity = lookup-arity arities "opening"

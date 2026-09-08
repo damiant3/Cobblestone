@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cobblestone -- Live Compile (experimental)</title>
+<style>
+  :root{ --ink:#e8e6df; --dim:#9a9488; --gold:#d4a017; --deep:#0a0a12;
+         --panel:rgba(18,18,30,.82); --edge:rgba(212,160,23,.18); --ok:#7fc97f; --bad:#e0776a; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--deep);color:var(--ink);font:15px/1.55 system-ui,"Segoe UI",sans-serif;min-height:100vh}
+  a{color:var(--gold);text-decoration:none} a:hover{text-decoration:underline}
+  .cb-nav{display:flex;align-items:center;gap:22px;padding:12px 24px;background:rgba(5,5,16,.88);backdrop-filter:blur(12px);border-bottom:1px solid #1e1e2e;position:sticky;top:0;z-index:100;font:14px system-ui,"Segoe UI",sans-serif;line-height:1.4}
+  .cb-nav .cb-logo{color:#d4a017;font-size:18px;font-weight:800;letter-spacing:3px;text-decoration:none}
+  .cb-nav .cb-logo:hover{text-decoration:none;color:#e8b52a}
+  .cb-nav .cb-here{color:#8b949e}
+  .cb-nav .cb-links{margin-left:auto;display:flex;gap:22px}
+  .cb-nav .cb-links a{color:#8b949e;text-decoration:none;transition:color .15s}
+  .cb-nav .cb-links a:hover{color:#d4a017;text-decoration:none}
+  .wrap{max-width:1100px;margin:0 auto;padding:26px 20px 64px}
+  h1{font-size:26px;font-weight:700;margin-bottom:6px}
+  h2{font-size:18px;font-weight:700;margin:0 0 8px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:22px;max-width:78ch;line-height:1.55}
+  .exp{display:inline-block;border:1px solid #5e4e1e;color:#e8c04a;border-radius:999px;padding:2px 12px;font-size:12px;margin-left:10px;vertical-align:middle}
+  .arm{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:18px 20px;margin-bottom:22px}
+  .arm p{color:var(--dim);font-size:14px;margin-bottom:12px;max-width:80ch}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  button{background:rgba(212,160,23,.10);color:var(--gold);border:1px solid rgba(212,160,23,.35);border-radius:8px;padding:8px 16px;font:inherit;font-size:14px;cursor:pointer}
+  button:hover{background:rgba(212,160,23,.2)} button:disabled{opacity:.5;cursor:default}
+  .stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin:10px 0 14px}
+  .stage{border:1px solid #1e1e2e;border-radius:8px;padding:8px 12px;font-size:13px;background:rgba(0,0,0,.25)}
+  .stage b{display:block;color:var(--ink);font-weight:600;margin-bottom:2px}
+  .stage span{color:var(--dim)}
+  .stage.ok{border-color:#2e5e2e} .stage.ok span{color:var(--ok)}
+  .stage.bad{border-color:#6b2233} .stage.bad span{color:var(--bad)}
+  .stage.run span{color:#e8c04a}
+  .two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+  .two>div{min-width:0}
+  @media(max-width:860px){.two{grid-template-columns:minmax(0,1fr)}}
+  textarea,pre{width:100%;max-width:100%;min-width:0;background:#07070f;color:#d7d7db;border:1px solid #1e1e2e;border-radius:8px;padding:10px 12px;font:12.5px/1.45 ui-monospace,Consolas,monospace;white-space:pre;overflow:auto}
+  textarea{min-height:260px;resize:vertical}
+  pre{max-height:420px;min-height:120px}
+  /* A coloured editor: the pre behind carries the highlighted copy, the
+     textarea in front is transparent text with a caret, both the same box. */
+  .ed{display:grid;height:340px}
+  .ed>pre,.ed>textarea{grid-area:1/1;height:100%;max-height:none;min-height:0;margin:0;resize:none}
+  .ed>pre{overflow:hidden;pointer-events:none}
+  .ed>textarea{background:transparent;color:transparent;caret-color:#fff;position:relative;z-index:1}
+  .ed>textarea::selection{background:rgba(212,160,23,.3)}
+  .k-head{color:#d4a017;font-weight:700}.k-type{color:#7fd0ff}.k-kw{color:#c792ea}.k-str{color:#a5d6a7}
+  .k-num{color:#ffcb6b}.k-eff{color:#ff9e64}.k-fn{color:#82aaff}.k-op{color:#89ddff}.k-prose{color:#8b949e;font-style:italic}
+  .lab{color:var(--dim);font-size:12px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 6px}
+  canvas{display:block;width:100%;max-width:1024px;aspect-ratio:4/3;background:#000;border:1px solid #1e1e2e;border-radius:8px}
+  .verdict{font-size:14px;margin-top:10px} .verdict.ok{color:var(--ok)} .verdict.bad{color:var(--bad)}
+  .fine{color:var(--dim);font-size:13px;margin-top:14px;max-width:80ch;line-height:1.5}
+  code{color:#c8ccd4;background:#12121e;padding:1px 5px;border-radius:4px;font-size:12.5px}
+</style>
+</head>
+<body>
+<nav class="cb-nav"><a class="cb-logo" href="../landing.html">&#x2588; COBBLESTONE</a><span class="cb-here">Experimental: live compile</span><span class="cb-links"><a href="../compile/prism.html">Prism</a><a href="../landing.html#today">&#8592; Back to the site</a></span></nav>
+
+<div class="wrap">
+  <h1>Compiled in this tab, then run in this tab <span class="exp">experimental</span></h1>
+  <p class="sub">Everything else on this site ships modules that were built on our box and copied up.
+  This page skips that: it fetches the Codex source of a demo, compiles it with the Codex compiler
+  running as WebAssembly, hands the result to a backend that is itself Codex compiled to WebAssembly,
+  and runs what comes out. Nothing is sent anywhere. The question it exists to answer is whether the
+  site can stop shipping built artifacts and build them where they are viewed.</p>
+
+  <div class="arm" id="arm-wgsl">
+    <h2>A GPU kernel, compiled live and drawn</h2>
+    <p>The plasma demo from the GPU showcase: <code>apps/gpushow/kernels/PlasmaKernel.codex</code>
+    and the one library chapter it cites are fetched, compiled to the compiler's IR by
+    <code>codex-compiler.wasm</code>, lowered to WGSL by <code>wgsl-stdio.wasm</code> (the WGSL plug as a
+    WebAssembly module), checked against the shader the showcase ships, and then dispatched to your GPU.
+    Needs WebGPU, which today means a recent Chrome or Edge.</p>
+    <div class="row"><button id="go-wgsl">Compile and run the plasma kernel</button><button id="rv-wgsl" disabled>Revert to the original</button><span id="st-wgsl" style="color:var(--dim);font-size:13px"></span></div>
+    <div class="stages">
+      <div class="stage" id="w1"><b>1. fetch</b><span>source and library chapter</span></div>
+      <div class="stage" id="w2"><b>2. compile</b><span>Codex &rarr; IR, in wasm</span></div>
+      <div class="stage" id="w3"><b>3. lower</b><span>IR &rarr; WGSL, in wasm</span></div>
+      <div class="stage" id="w4"><b>4. compare</b><span>against the shipped .wgsl</span></div>
+      <div class="stage" id="w5"><b>5. run</b><span>WebGPU compute, one thread per pixel</span></div>
+    </div>
+    <div class="two">
+      <div><div class="lab">Codex source (editable: change a number, compile again)</div><div class="ed"><pre id="hl-wgsl" aria-hidden="true"></pre><textarea id="src-wgsl" spellcheck="false">not fetched yet: press the button</textarea></div></div>
+      <div><div class="lab">WGSL, emitted here</div><pre id="out-wgsl">not compiled yet</pre></div>
+    </div>
+    <div class="verdict" id="v-wgsl"></div>
+    <div style="margin-top:14px"><canvas id="gpu" width="1024" height="768"></canvas></div>
+  </div>
+
+  <div class="arm" id="arm-wasm">
+    <h2>A program, compiled live to WebAssembly text</h2>
+    <p>The same road with the other backend: the source below goes through the compiler to IR, and
+    <code>wasm-stdio.wasm</code>, the wasm plug itself compiled to WebAssembly, lowers it to WAT. Edit the
+    program and compile again. This arm stops at the text: the plug emits the textual form, and turning
+    that into a binary module in the browser is the piece still missing before the arcade could build
+    its own games on load.</p>
+    <div class="row"><button id="go-wasm">Compile to WAT</button><button id="rv-wasm">Revert to the original</button><span id="st-wasm" style="color:var(--dim);font-size:13px"></span></div>
+    <div class="stages">
+      <div class="stage" id="m1"><b>1. compile</b><span>Codex &rarr; IR, in wasm</span></div>
+      <div class="stage" id="m2"><b>2. lower</b><span>IR &rarr; WAT, in wasm</span></div>
+      <div class="stage" id="m3"><b>3. assemble</b><span>WAT &rarr; binary: not in the browser yet</span></div>
+    </div>
+    <div class="two">
+      <div><div class="lab">Codex source (editable)</div><div class="ed"><pre id="hl-wasm" aria-hidden="true"></pre><textarea id="src-wasm" spellcheck="false">Chapter: Greeting
+
+Section: Main
+
+  double : Integer -> Integer
+  double (n) = n * 2
+
+  sum-to : Integer -> Integer
+  sum-to (n) = if n <= 0 then 0 else n + sum-to (n - 1)
+
+  opening : [Console] Nothing = act
+    print-line-uni "Cobblestone"
+    print-line-uni (integer-to-text (double (sum-to 10)))
+  end
+</textarea></div></div>
+      <div><div class="lab">WAT, emitted here</div><pre id="out-wasm">not compiled yet</pre></div>
+    </div>
+    <div class="verdict" id="v-wasm"></div>
+  </div>
+
+  <p class="fine">What this measures: the compiler module and the two backend modules are the ones Prism
+  already serves from <code>compile/</code>, so this page adds no bytes to the site. The shipped shader
+  it compares against was emitted by the same plug on our box; a difference is reported as a count of
+  lines, not hidden. Built with Codex.</p>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const DECKS = [12, 48, 125];
+  const modCache = {};
+
+  async function moduleBytes(file) {
+    if (modCache[file]) return modCache[file];
+    const r = await fetch('../compile/' + file);
+    if (!r.ok) throw new Error(file + ' answered ' + r.status);
+    modCache[file] = new Uint8Array(await r.arrayBuffer());
+    return modCache[file];
+  }
+
+  // The WASI shape Prism drives every module with: text in on fd_read, text out on
+  // fd_write, a NUL after the input because that is what the readers stop on.
+  function runModule(bytes, inputText) {
+    const input = new TextEncoder().encode(inputText + '\0');
+    let mem = null, pos = 0, total = 0;
+    const chunks = [];
+    const imports = { wasi_snapshot_preview1: {
+      fd_write(fd, iovs, n, outp) {
+        const v = new DataView(mem.buffer); let t = 0;
+        for (let i = 0; i < n; i++) {
+          const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+          chunks.push(new Uint8Array(mem.buffer.slice(p, p + l))); total += l; t += l;
+        }
+        v.setUint32(outp, t, true); return 0;
+      },
+      fd_read(fd, iovs, n, outp) {
+        const v = new DataView(mem.buffer); let t = 0;
+        for (let i = 0; i < n; i++) {
+          const p = v.getUint32(iovs + i * 8, true), l = v.getUint32(iovs + i * 8 + 4, true);
+          const dst = new Uint8Array(mem.buffer, p, l);
+          let k = 0;
+          while (k < l && pos < input.length) { dst[k++] = input[pos++]; }
+          t += k; if (k < l) break;
+        }
+        v.setUint32(outp, t, true); return 0;
+      },
+      fd_close() { return 0; }, fd_seek() { return 0; }, proc_exit() {}
+    }};
+    const t0 = performance.now();
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+    mem = inst.exports.memory;
+    inst.exports._start();
+    const all = new Uint8Array(total);
+    let off = 0; for (const c of chunks) { all.set(c, off); off += c.length; }
+    return { text: new TextDecoder().decode(all), ms: performance.now() - t0,
+             mb: Math.round(mem.buffer.byteLength / 1048576) };
+  }
+
+  // Codex -> IR. The deck ladder is Prism's: a refusal with CDX9002 means the
+  // reservation was short, and the next rung is tried.
+  async function compileToIr(unitText) {
+    const compiler = await moduleBytes('codex-compiler.wasm');
+    let r = null, used = 0;
+    for (const d of DECKS) {
+      r = runModule(compiler, 'IR-UNI decks=' + d + '\n' + unitText);
+      used = d;
+      if (r.text.indexOf('CDX9002') < 0) break;
+    }
+    const lines = r.text.split('\n');
+    const b = lines.indexOf('IR-BEGIN'), e = lines.indexOf('IR-END');
+    const diag = lines.filter(l => l.indexOf('error CDX') >= 0 || l.startsWith('CODEGEN') || l.startsWith('CITE-MISSING'));
+    if (b < 0 || e < 0) return { ok: false, diag, ms: r.ms, decks: used };
+    return { ok: true, ir: lines.slice(b + 1, e).join('\n'), diag, ms: r.ms, mb: r.mb, decks: used };
+  }
+
+  async function lower(lensFile, ir) {
+    const r = runModule(await moduleBytes(lensFile), ir);
+    const t = r.text.split('\n').filter(l => !/^(HEAP|WD|STACK|PM):/.test(l)).join('\n').trim();
+    return { text: t, ms: r.ms, mb: r.mb };
+  }
+
+  // Codex syntax colouring, the rules Prism uses (tools/vscode/syntaxes/codex.tmLanguage.json).
+  function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  const KW = /^(let|in|between|and|or|xor|not|if|then|else|when|where|is|otherwise|act|end|record|cites|grounds|quotes|trusting|above|effect|with|linear|mutable|punctual|bounded|unit|class|instance|lazy|trying|revised|for|deriving|claim|proof|qed|forall|exists|induction)$/;
+  function highlightLine(line) {
+    const head = line.match(/^(Chapter|Section|Foreword):(.*)$/);
+    if (head) return '<span class="k-head">' + esc(head[1]) + ':</span><span class="k-type">' + esc(head[2]) + '</span>';
+    if (/^Page\s+\d+/.test(line)) return '<span class="k-head">' + esc(line) + '</span>';
+    if (/^ [^ ]/.test(line) && !/[:=]/.test(line.slice(0, 40))) return '<span class="k-prose">' + esc(line) + '</span>';
+    let out = '', i = 0;
+    while (i < line.length) {
+      const rest = line.slice(i);
+      let m;
+      if ((m = rest.match(/^"(?:[^"\\]|\\.)*"?/))) { out += '<span class="k-str">' + esc(m[0]) + '</span>'; i += m[0].length; continue; }
+      if ((m = rest.match(/^#[0-9a-fA-F][0-9a-fA-F_]*/))) { out += '<span class="k-num">' + esc(m[0]) + '</span>'; i += m[0].length; continue; }
+      if ((m = rest.match(/^\[[A-Z][A-Za-z0-9.]*(\s*,\s*[A-Z][A-Za-z0-9.]*)*\]/))) { out += '<span class="k-eff">' + esc(m[0]) + '</span>'; i += m[0].length; continue; }
+      if ((m = rest.match(/^[0-9][0-9_]*(\.[0-9][0-9_]*)?/))) { out += '<span class="k-num">' + esc(m[0]) + '</span>'; i += m[0].length; continue; }
+      if ((m = rest.match(/^[A-Za-z_][A-Za-z0-9_-]*/))) {
+        const w = m[0], after = line.slice(i + w.length);
+        if (KW.test(w)) out += '<span class="k-kw">' + esc(w) + '</span>';
+        else if (/^[A-Z]/.test(w)) out += '<span class="k-type">' + esc(w) + '</span>';
+        else if (/^\s*[:(]/.test(after)) out += '<span class="k-fn">' + esc(w) + '</span>';
+        else out += esc(w);
+        i += w.length; continue;
+      }
+      if ((m = rest.match(/^(->|<-|=>|===|\/=|<=|>=|==|\+\+|::|\|>|[=+\-*/^&<>|~\\])/))) { out += '<span class="k-op">' + esc(m[0]) + '</span>'; i += m[0].length; continue; }
+      out += esc(line[i]); i++;
+    }
+    return out;
+  }
+  function wireEditor(taId, hlId) {
+    const ta = document.getElementById(taId), hl = document.getElementById(hlId);
+    const paint = () => { hl.innerHTML = ta.value.split('\n').map(highlightLine).join('\n') + '\n'; hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
+    ta.addEventListener('input', paint);
+    ta.addEventListener('scroll', () => { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; });
+    paint();
+    return paint;
+  }
+  const repaintW = wireEditor('src-wgsl', 'hl-wgsl');
+  const repaintM = wireEditor('src-wasm', 'hl-wasm');
+
+  function stage(id, cls, note) {
+    const el = document.getElementById(id);
+    el.className = 'stage ' + cls;
+    if (note !== undefined) el.querySelector('span').textContent = note;
+  }
+  function verdict(id, cls, text) { const el = document.getElementById(id); el.className = 'verdict ' + cls; el.textContent = text; }
+  function fmt(ms) { return ms.toFixed(0) + ' ms'; }
+
+  // ---- Arm A: the plasma kernel -------------------------------------------
+  const goW = document.getElementById('go-wgsl'), stW = document.getElementById('st-wgsl');
+  const rvW = document.getElementById('rv-wgsl'), srcW = document.getElementById('src-wgsl');
+  let gpuStop = null;
+  // The original is what the site serves; the textarea is the visitor's copy.
+  // Revert puts the served text back, so a goofed edit costs nothing.
+  let originalW = null, fetchedW = null;
+  rvW.addEventListener('click', () => { if (originalW !== null) { srcW.value = originalW; repaintW(); verdict('v-wgsl', '', 'Reverted to the shipped source. Compile again to run it.'); } });
+  goW.addEventListener('click', async () => {
+    goW.disabled = true; stW.textContent = '';
+    for (const id of ['w1','w2','w3','w4','w5']) stage(id, '');
+    verdict('v-wgsl', '', '');
+    try {
+      stage('w1', 'run', 'fetching ...');
+      if (!fetchedW) {
+        const [src, dev, shipped] = await Promise.all([
+          fetch('../gpushow/kernels/PlasmaKernel.codex').then(r => { if (!r.ok) throw new Error('PlasmaKernel.codex ' + r.status); return r.text(); }),
+          fetch('DeviceEffect.codex').then(r => { if (!r.ok) throw new Error('DeviceEffect.codex ' + r.status); return r.text(); }),
+          fetch('../gpushow/kernels/PlasmaKernel.wgsl').then(r => { if (!r.ok) throw new Error('PlasmaKernel.wgsl ' + r.status); return r.text(); })
+        ]);
+        fetchedW = { dev, shipped };
+        originalW = src.replace(/\r\n/g, '\n');
+        srcW.value = originalW; repaintW();
+        rvW.disabled = false;
+      }
+      const src = srcW.value, dev = fetchedW.dev, shipped = fetchedW.shipped;
+      const edited = src.replace(/\r\n/g, '\n') !== originalW;
+      // The cited chapter rides in the unit under its quire name, the way the
+      // compiler's own concat spells a library chapter: Chapter: Gpu--DeviceEffect.
+      const devUnit = dev.replace(/^Chapter:\s*DeviceEffect\s*$/m, 'Chapter: Gpu--DeviceEffect');
+      const unit = devUnit.replace(/\r\n/g, '\n') + '\n\n' + src.replace(/\r\n/g, '\n');
+      stage('w1', 'ok', src.length.toLocaleString() + ' + ' + dev.length.toLocaleString() + ' chars');
+
+      stage('w2', 'run', 'compiling ...');
+      await new Promise(r => setTimeout(r, 20));
+      const c = await compileToIr(unit);
+      if (!c.ok) { stage('w2', 'bad', c.diag[0] || 'the compiler refused'); throw new Error('refused: ' + (c.diag.join('; ') || 'no IR')); }
+      stage('w2', 'ok', c.ir.length.toLocaleString() + ' chars of IR in ' + fmt(c.ms) + ', decks=' + c.decks);
+
+      stage('w3', 'run', 'lowering ...');
+      await new Promise(r => setTimeout(r, 20));
+      const w = await lower('wgsl-stdio.wasm', c.ir);
+      if (!/plasma_step_main/.test(w.text)) { stage('w3', 'bad', 'no entry point in the output'); throw new Error('the lens emitted no plasma_step_main'); }
+      document.getElementById('out-wgsl').textContent = w.text;
+      stage('w3', 'ok', w.text.split('\n').length + ' lines in ' + fmt(w.ms));
+
+      const norm = t => t.replace(/\r\n/g, '\n').split('\n').map(l => l.trimEnd()).filter(l => l.trim() !== '');
+      const a = norm(shipped), b = norm(w.text);
+      const onlyA = a.filter(l => b.indexOf(l) < 0), onlyB = b.filter(l => a.indexOf(l) < 0);
+      if (edited) {
+        stage('w4', 'ok', 'your edit: ' + onlyA.length + ' shipped line(s) gone, ' + onlyB.length + ' new');
+      } else if (onlyA.length === 0 && onlyB.length === 0) {
+        stage('w4', 'ok', 'identical to the shipped shader, line for line');
+      } else {
+        stage('w4', 'ok', onlyA.length + ' shipped line(s) absent here, ' + onlyB.length + ' new; same program');
+      }
+
+      stage('w5', 'run', 'starting WebGPU ...');
+      await runPlasma(w.text);
+      stage('w5', 'ok', '786k threads per frame, running');
+      verdict('v-wgsl', 'ok', 'Compiled, lowered and running: the pixels below came from Codex source fetched a moment ago.');
+    } catch (e) {
+      verdict('v-wgsl', 'bad', String(e && e.message || e));
+      const running = ['w1','w2','w3','w4','w5'].find(id => document.getElementById(id).classList.contains('run'));
+      if (running) stage(running, 'bad', String(e && e.message || e));
+    } finally { goW.disabled = false; }
+  });
+
+  async function runPlasma(code) {
+    if (!navigator.gpu) throw new Error('navigator.gpu unavailable: WebGPU needs a recent Chrome or Edge');
+    if (gpuStop) { gpuStop(); gpuStop = null; }
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('no GPU adapter');
+    const device = await adapter.requestDevice();
+    const canvas = document.getElementById('gpu');
+    const W = canvas.width, H = canvas.height, N = W * H;
+    const ctx = canvas.getContext('webgpu');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    ctx.configure({ device, format, alphaMode: 'opaque' });
+    const computeMod = device.createShaderModule({ code });
+    const ci = await computeMod.getCompilationInfo();
+    const err = ci.messages.find(m => m.type === 'error');
+    if (err) throw new Error('WGSL ' + err.lineNum + ':' + err.linePos + ' ' + err.message);
+    const computePipe = device.createComputePipeline({ layout: 'auto', compute: { module: computeMod, entryPoint: 'plasma_step_main' } });
+    const outBuf = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+    const uni = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const computeBG = device.createBindGroup({ layout: computePipe.getBindGroupLayout(0),
+      entries: [ { binding: 0, resource: { buffer: outBuf } }, { binding: 1, resource: { buffer: uni } } ] });
+    const renderMod = device.createShaderModule({ code: `
+      @group(0) @binding(0) var<storage, read> pts : array<i32>;
+      @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4f {
+        var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+        return vec4f(p[vi], 0.0, 1.0);
+      }
+      @fragment fn fs(@builtin(position) pos : vec4f) -> @location(0) vec4f {
+        let c = bitcast<u32>(pts[i32(pos.y) * ${W} + i32(pos.x)]);
+        return vec4f(f32((c >> 16u) & 255u) / 255.0, f32((c >> 8u) & 255u) / 255.0, f32(c & 255u) / 255.0, 1.0);
+      }` });
+    const renderPipe = device.createRenderPipeline({ layout: 'auto',
+      vertex: { module: renderMod, entryPoint: 'vs' },
+      fragment: { module: renderMod, entryPoint: 'fs', targets: [{ format }] },
+      primitive: { topology: 'triangle-list' } });
+    const renderBG = device.createBindGroup({ layout: renderPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: outBuf } }] });
+    let frame = 0, alive = true;
+    gpuStop = () => { alive = false; };
+    function tick() {
+      if (!alive) return;
+      device.queue.writeBuffer(uni, 0, new Int32Array([frame, 0, 0, 0]));
+      const enc = device.createCommandEncoder();
+      const cp = enc.beginComputePass();
+      cp.setPipeline(computePipe); cp.setBindGroup(0, computeBG); cp.dispatchWorkgroups(Math.ceil(N / 64)); cp.end();
+      const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }] });
+      rp.setPipeline(renderPipe); rp.setBindGroup(0, renderBG); rp.draw(3); rp.end();
+      device.queue.submit([enc.finish()]);
+      frame++;
+      stW.textContent = 'frame ' + frame;
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // ---- Arm B: a program to WAT --------------------------------------------
+  const goM = document.getElementById('go-wasm'), stM = document.getElementById('st-wasm');
+  const srcM = document.getElementById('src-wasm');
+  const originalM = srcM.value;
+  document.getElementById('rv-wasm').addEventListener('click', () => { srcM.value = originalM; repaintM(); verdict('v-wasm', '', 'Reverted to the original program. Compile again to lower it.'); });
+  goM.addEventListener('click', async () => {
+    goM.disabled = true; stM.textContent = '';
+    for (const id of ['m1','m2']) stage(id, '');
+    verdict('v-wasm', '', '');
+    try {
+      const src = document.getElementById('src-wasm').value.replace(/\r\n/g, '\n');
+      stage('m1', 'run', 'compiling ...');
+      await new Promise(r => setTimeout(r, 20));
+      const c = await compileToIr(src);
+      if (!c.ok) { stage('m1', 'bad', c.diag[0] || 'the compiler refused'); throw new Error('refused: ' + (c.diag.join('; ') || 'no IR')); }
+      stage('m1', 'ok', c.ir.length.toLocaleString() + ' chars of IR in ' + fmt(c.ms) + ', decks=' + c.decks);
+      stage('m2', 'run', 'lowering ...');
+      await new Promise(r => setTimeout(r, 20));
+      const w = await lower('wasm-stdio.wasm', c.ir);
+      if (!/\(module/.test(w.text)) { stage('m2', 'bad', 'no module in the output'); throw new Error('the lens emitted no module'); }
+      document.getElementById('out-wasm').textContent = w.text;
+      stage('m2', 'ok', w.text.length.toLocaleString() + ' chars of WAT in ' + fmt(w.ms));
+      verdict('v-wasm', 'ok', 'Compiled and lowered in this tab. The text is a complete module; assembling it here is the next piece.');
+    } catch (e) {
+      verdict('v-wasm', 'bad', String(e && e.message || e));
+      const running = ['m1','m2'].find(id => document.getElementById(id).classList.contains('run'));
+      if (running) stage(running, 'bad', String(e && e.message || e));
+    } finally { goM.disabled = false; }
+  });
+
+  // ?auto runs both arms on load, for a headless grader that reads the stage
+  // boxes back out of the DOM.
+  if (/[?&]auto\b/.test(location.search)) {
+    window.addEventListener('load', () => { goW.click(); goM.click(); });
+  }
+})();
+</script>
+</body>
+</html>

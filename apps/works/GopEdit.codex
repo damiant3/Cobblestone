@@ -798,14 +798,14 @@ Section: The Annotation Bubble
   ged-bub-clip (t) (cols) =
     if text-length t <= cols then t else substring t 0 cols
 
-  ged-bub-rows : Integer, Integer, CbfFont, Integer, Palette, Integer, Integer, List Annotation, Integer, Integer, Integer -> Integer
-  ged-bub-rows (base) (stride) (font) (s) (pal) (x) (y) (anns) (i) (n) (cols) =
+  ged-bub-rows : Integer, Integer, Integer, CbfFont, Integer, Palette, Integer, Integer, List Annotation, Integer, Integer, Integer -> Integer
+  ged-bub-rows (base) (stride) (rows) (font) (s) (pal) (x) (y) (anns) (i) (n) (cols) =
     if i >= n then 0
     else let a = list-at anns i
     in let head = "[" & annotation-kind-name (a.kind) & "] " & a.author
-    in let h1 = gop-draw-text base stride font x (y + i * 2 * gfl-row-h s) (ged-bub-clip head cols) (ged-annot pal) s 0
-    in let h2 = gop-draw-text base stride font x (y + (i * 2 + 1) * gfl-row-h s) (ged-bub-clip (a.body) cols) (gfl-bright pal) s 0
-    in ged-bub-rows base stride font s pal x y anns (i + 1) n cols
+    in let h1 = gop-draw-text base stride rows font x (y + i * 2 * gfl-row-h s) (ged-bub-clip head cols) (ged-annot pal) s 0
+    in let h2 = gop-draw-text base stride rows font x (y + (i * 2 + 1) * gfl-row-h s) (ged-bub-clip (a.body) cols) (gfl-bright pal) s 0
+    in ged-bub-rows base stride rows font s pal x y anns (i + 1) n cols
 
   ged-bubble-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Integer -> [Identity, Device.Port] Integer
   ged-bubble-paint (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (line) = act
@@ -816,11 +816,11 @@ Section: The Annotation Bubble
     in let py = box.lr-y + 60 * s
     in let pw = box.lr-w - 40 * s
     in let ph = (n * 2 + 3) * gfl-row-h s
-    in let bg = gop-fill-rect base stride px py pw ph (ged-row-band pal)
-    in let ttl = gop-draw-text base stride font (px + 8 * s) (py + 4 * s) ("annotations on line " & show (line + 1) & "  (" & show n & ")") (ged-gutter-col pal) s 0
-    in let rows = ged-bub-rows base stride font s pal (px + 8 * s) (py + 4 * s + gfl-row-h s) anns 0 n ((pw - 16 * s) / ged-col-w s)
-    in let foot = gop-draw-text base stride font (px + 8 * s) (py + ph - gfl-row-h s) "Esc back" (gfl-hint pal) s 0
-    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in let bg = gop-fill-rect base stride h px py pw ph (ged-row-band pal)
+    in let ttl = gop-draw-text base stride h font (px + 8 * s) (py + 4 * s) ("annotations on line " & show (line + 1) & "  (" & show n & ")") (ged-gutter-col pal) s 0
+    in let rows = ged-bub-rows base stride h font s pal (px + 8 * s) (py + 4 * s + gfl-row-h s) anns 0 n ((pw - 16 * s) / ged-col-w s)
+    in let foot = gop-draw-text base stride h font (px + 8 * s) (py + ph - gfl-row-h s) "Esc back" (gfl-hint pal) s 0
+    in if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
   end
 
 Section: Naming A New File
@@ -1087,6 +1087,8 @@ Section: Save, And The One Hot Backup
 
   ged-bar-col : Integer = 28
 
+  ged-bar-rows : Integer = 32
+
  The bar's colour rides in the context block with its geometry, because the
  callback's shape is fixed at `(ctx) (done)` by the write that calls it and
  cannot grow a parameter. The block is where everything else this paint needs
@@ -1100,13 +1102,14 @@ Section: Save, And The One Hot Backup
     in let n = if done > total then total else done
     in let fill = full * n / total
     in if fill <= 0 then 0
-    else gop-fill-rect (peek-32 ctx ged-bar-base) (peek-32 ctx ged-bar-stride) (peek-32 ctx ged-bar-x) (peek-32 ctx ged-bar-y) fill (peek-32 ctx ged-bar-h) (peek-32 ctx ged-bar-col)
+    else gop-fill-rect (peek-32 ctx ged-bar-base) (peek-32 ctx ged-bar-stride) (peek-32 ctx ged-bar-rows) (peek-32 ctx ged-bar-x) (peek-32 ctx ged-bar-y) fill (peek-32 ctx ged-bar-h) (peek-32 ctx ged-bar-col)
 
-  ged-bar-ctx : Integer, Integer, LayoutRect, Integer, Integer, Palette -> Integer
-  ged-bar-ctx (base) (stride) (box) (s) (total) (pal) =
-    let c = alloc-zeroed 32 16
+  ged-bar-ctx : Integer, Integer, Integer, LayoutRect, Integer, Integer, Palette -> Integer
+  ged-bar-ctx (base) (stride) (rows) (box) (s) (total) (pal) =
+    let c = alloc-zeroed 40 16
     in let a = poke-32 c ged-bar-base base
     in let b = poke-32 c ged-bar-stride stride
+    in let br = poke-32 c ged-bar-rows rows
     in let d = poke-32 c ged-bar-x (box.lr-x + 10 * s)
     in let e = poke-32 c ged-bar-y (box.lr-y + 40 * s)
     in let f = poke-32 c ged-bar-w (box.lr-w - 20 * s)
@@ -1210,8 +1213,8 @@ Section: Geometry
 
 Section: Drawing One Line
 
-  ged-draw-runs : Integer, Integer, CbfFont, Integer, Integer, Integer, Text, List SynRun, Integer, Integer -> Integer
-  ged-draw-runs (base) (stride) (font) (s) (x0) (y) (line) (runs) (i) (cols) =
+  ged-draw-runs : Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Text, List SynRun, Integer, Integer -> Integer
+  ged-draw-runs (base) (stride) (rows) (font) (s) (x0) (y) (line) (runs) (i) (cols) =
     if i >= list-length runs then 0
     else let r = list-at runs i
     in let st = r.sr-start
@@ -1219,39 +1222,39 @@ Section: Drawing One Line
     else let room = cols - st
     in let take = if r.sr-len > room then room else r.sr-len
     in let t = substring line st take
-    in let d = gop-draw-text base stride font (x0 + st * ged-col-w s) y t (syn-colour (r.sr-class)) s 0
-    in ged-draw-runs base stride font s x0 y line runs (i + 1) cols
+    in let d = gop-draw-text base stride rows font (x0 + st * ged-col-w s) y t (syn-colour (r.sr-class)) s 0
+    in ged-draw-runs base stride rows font s x0 y line runs (i + 1) cols
 
-  ged-draw-row : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Integer, Integer, Integer -> Integer
-  ged-draw-row (base) (box) (w) (h) (stride) (s) (font) (pal) (es) (idx) (row) (cur) =
+  ged-draw-row : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Integer, Integer, Integer -> Integer
+  ged-draw-row (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (es) (idx) (row) (cur) =
     let y = gfl-rows-y0 box s + row * gfl-row-h s
-    in let hl = if idx == cur then gop-fill-rect base stride (box.lr-x) y (box.lr-w) (gfl-row-h s) (ged-row-band pal) else 0
-    in let gt = gop-draw-text base stride font (box.lr-x + 10 * s) (y + s) (ged-num (idx + 1) 5) (ged-gutter-col pal) s 0
-    in let an = if ged-mark-get es idx == 1 then gop-draw-text base stride font (box.lr-x + 10 * s + 5 * ged-col-w s) (y + s) "*" (ged-annot pal) s 0 else 0
+    in let hl = if idx == cur then gop-fill-rect base stride rows (box.lr-x) y (box.lr-w) (gfl-row-h s) (ged-row-band pal) else 0
+    in let gt = gop-draw-text base stride rows font (box.lr-x + 10 * s) (y + s) (ged-num (idx + 1) 5) (ged-gutter-col pal) s 0
+    in let an = if ged-mark-get es idx == 1 then gop-draw-text base stride rows font (box.lr-x + 10 * s + 5 * ged-col-w s) (y + s) "*" (ged-annot pal) s 0 else 0
     in let cols = ged-cols box s
     in let line = ged-line-text es idx cols
-    in let runs = ged-draw-runs base stride font s (ged-text-x box s) (y + s) line (syn-line line) 0 cols
+    in let runs = ged-draw-runs base stride rows font s (ged-text-x box s) (y + s) line (syn-line line) 0 cols
     in if ged-line-len es idx > cols
-      then gop-draw-text base stride font (ged-text-x box s + cols * ged-col-w s) (y + s) ">" (ged-more pal) s 0
+      then gop-draw-text base stride rows font (ged-text-x box s + cols * ged-col-w s) (y + s) ">" (ged-more pal) s 0
       else 0
 
   ged-draw-rows : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Integer, Integer, Integer -> Integer
   ged-draw-rows (base) (box) (w) (h) (stride) (s) (font) (pal) (es) (top) (cur) (row) =
     if row >= gfl-rows-vis box s then 0
     else if top + row >= ged-count es then 0
-    else let d = ged-draw-row base box w h stride s font pal es (top + row) row cur
+    else let d = ged-draw-row base box w h stride h s font pal es (top + row) row cur
     in ged-draw-rows base box w h stride s font pal es top cur (row + 1)
 
 Section: Drawing The Pane
 
-  ged-caret : Integer, LayoutRect, Integer, Integer, Integer, Integer, Palette, Integer, Integer, Integer -> Integer
-  ged-caret (base) (box) (w) (h) (stride) (s) (pal) (top) (cur) (col) =
+  ged-caret : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Palette, Integer, Integer, Integer -> Integer
+  ged-caret (base) (box) (w) (h) (stride) (rows) (s) (pal) (top) (cur) (col) =
     let row = cur - top
     in let cols = ged-cols box s
     in if row < 0 then 0
     else if row >= gfl-rows-vis box s then 0
     else if col > cols then 0
-    else gop-fill-rect base stride (ged-text-x box s + col * ged-col-w s) (gfl-rows-y0 box s + row * gfl-row-h s) s (gfl-row-h s) (ged-cursor pal)
+    else gop-fill-rect base stride rows (ged-text-x box s + col * ged-col-w s) (gfl-rows-y0 box s + row * gfl-row-h s) s (gfl-row-h s) (ged-cursor pal)
 
   ged-status : Integer, Integer, Integer -> Text
   ged-status (es) (cur) (col) =
@@ -1260,21 +1263,21 @@ Section: Drawing The Pane
     in let tail = if said == "" then "" else "   " & said
     in "L" & show (cur + 1) & ":" & show (col + 1) & flag & "  " & show (ged-count es) & " lines  " & show (ged-size es) & " bytes" & tail
 
-  ged-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Text, Integer, Integer, Integer -> Integer
-  ged-draw (base) (box) (w) (h) (stride) (s) (font) (pal) (es) (name) (top) (cur) (col) =
-    let f = gfl-draw-frame base box stride s font pal (name)
+  ged-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Text, Integer, Integer, Integer -> Integer
+  ged-draw (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (es) (name) (top) (cur) (col) =
+    let f = gfl-draw-frame base box stride rows s font pal (name)
     in let px = box.lr-x
     in let py = box.lr-y
-    in let hdr = gop-draw-text base stride font (px + 10 * s) (py + 26 * s) (ged-status es cur col) (gfl-bright pal) s 0
+    in let hdr = gop-draw-text base stride rows font (px + 10 * s) (py + 26 * s) (ged-status es cur col) (gfl-bright pal) s 0
     in let rows = ged-draw-rows base box w h stride s font pal es top cur 0
-    in let car = ged-caret base box w h stride s pal top cur col
-    in gop-draw-text base stride font (px + 10 * s) (py + box.lr-h - 18 * s) "Type to edit  Bksp/Del  F2 save  F3 .BAK  F4 undo  F6 notes  Esc back" (gfl-hint pal) s 0
+    in let car = ged-caret base box w h stride rows s pal top cur col
+    in gop-draw-text base stride rows font (px + 10 * s) (py + box.lr-h - 18 * s) "Type to edit  Bksp/Del  F2 save  F3 .BAK  F4 undo  F6 notes  Esc back" (gfl-hint pal) s 0
 
   ged-repaint : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Text, Integer, Integer, Integer -> Integer
   ged-repaint (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (name) (top) (cur) (col) =
     let hd = cursor-hide cs base stride
-    in let d = ged-draw base box w h stride s font pal es name top cur col
-    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in let d = ged-draw base box w h stride h s font pal es name top cur col
+    in if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
 
 Section: Moving
 
@@ -1318,8 +1321,8 @@ Section: The Shot
     in act
       t <- shot-take base w h stride
       let s = ui-scale w
-      in let bg = gop-fill-rect base stride (200 * s) (h - 28 * s + 4 * s) (300 * s) (16 * s) #000E1C
-      in let tx = gop-draw-text base stride font (204 * s) (h - 28 * s + 6 * s) t #69BE28 s 0
+      in let bg = gop-fill-rect base stride h (200 * s) (h - 28 * s + 4 * s) (300 * s) (16 * s) #000E1C
+      in let tx = gop-draw-text base stride h font (204 * s) (h - 28 * s + 6 * s) t #69BE28 s 0
       in let d = __heap-restore mark
       in 0
     end
@@ -1343,28 +1346,28 @@ Section: Opening A File
 
 Section: The File List
 
-  ged-list-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, List Fat16DirEntry, Integer, Integer, Integer -> Integer
-  ged-list-draw (base) (box) (w) (h) (stride) (s) (font) (pal) (entries) (sel) (top) (i) =
+  ged-list-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, List Fat16DirEntry, Integer, Integer, Integer -> Integer
+  ged-list-draw (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (entries) (sel) (top) (i) =
     let n = list-length entries
     in if top + i >= n then 0
     else if i >= gfl-rows-vis box s then 0
     else let idx = top + i
     in let y = gfl-rows-y0 box s + i * gfl-row-h s
-    in let hl = if idx == sel then gop-fill-rect base stride (box.lr-x) y (box.lr-w) (gfl-row-h s) (gfl-sel pal) else 0
+    in let hl = if idx == sel then gop-fill-rect base stride rows (box.lr-x) y (box.lr-w) (gfl-row-h s) (gfl-sel pal) else 0
     in let e = list-at entries idx
     in let fg = if idx == sel then gfl-on-sel pal else gfl-text pal
-    in let t = gop-draw-text base stride font (box.lr-x + 10 * s) (y + s) (gfl-row-text e) fg s 0
-    in ged-list-draw base box w h stride s font pal entries sel top (i + 1)
+    in let t = gop-draw-text base stride rows font (box.lr-x + 10 * s) (y + s) (gfl-row-text e) fg s 0
+    in ged-list-draw base box w h stride rows s font pal entries sel top (i + 1)
 
-  ged-list-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
-  ged-list-paint (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (entries) (sel) (top) (names) =
+  ged-list-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
+  ged-list-paint (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (mouse) (cs) (entries) (sel) (top) (names) =
     let hd = cursor-hide cs base stride
     in let crumb = ged-prefix names 0 ""
-    in let f = gfl-draw-frame base box stride s font pal (if text-length crumb == 0 then "choose a file" else crumb)
-    in let hdr = gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (gfl-pad "name" 16 & "size") (gfl-dim pal) s 0
-    in let rows = ged-list-draw base box w h stride s font pal entries sel top 0
-    in let hint = gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Up/Down move   Enter open   F5 new file   Esc back" (gfl-hint pal) s 0
-    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in let f = gfl-draw-frame base box stride rows s font pal (if text-length crumb == 0 then "choose a file" else crumb)
+    in let hdr = gop-draw-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (gfl-pad "name" 16 & "size") (gfl-dim pal) s 0
+    in let rows = ged-list-draw base box w h stride rows s font pal entries sel top 0
+    in let hint = gop-draw-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Up/Down move   Enter open   F5 new file   Esc back" (gfl-hint pal) s 0
+    in if mouse.um-ok then cursor-update cs base stride rows w h s (mouse-x mouse) (mouse-y mouse) else 0
 
  Descending is GopFiles' two moves: push the cluster and the name, re-list,
  and pop on the way back. The names stack is what builds the path handed to
@@ -1460,10 +1463,10 @@ Section: Step
     hd <- cursor-hide cs base stride
     let a = ged-ensure es
     in if m.gm-ok == False then act
-      f <- gfl-draw-frame base box stride s font pal ""
-      t <- gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "no FAT ESP on the boot medium" (gfl-dim pal) s 0
-      t2 <- gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint pal) s 0
-      cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      f <- gfl-draw-frame base box stride h s font pal ""
+      t <- gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "no FAT ESP on the boot medium" (gfl-dim pal) s 0
+      t2 <- gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint pal) s 0
+      cu <- if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
       EditState { ed-vol = m.gm-vol, ed-entries = [], ed-clusters = [0 - 1], ed-names = [], ed-path = "", ed-sel = 0, ed-top = 0, ed-mode = ged-mode-nofat, ed-etop = 0, ed-cur = 0, ed-col = 0, ed-mods = 0, ed-ptr = 0 }
     end
     else act
@@ -1472,7 +1475,7 @@ Section: Step
       in let clusters = [flag]
       in act
         ents <- gfl-list-cur vol clusters
-        let p = ged-list-paint base box w h stride s font pal mouse cs ents 0 0 []
+        let p = ged-list-paint base box w h stride h s font pal mouse cs ents 0 0 []
         in EditState { ed-vol = vol, ed-entries = ents, ed-clusters = clusters, ed-names = [], ed-path = "", ed-sel = 0, ed-top = 0, ed-mode = ged-mode-list, ed-etop = 0, ed-cur = 0, ed-col = 0, ed-mods = 0, ed-ptr = 0 }
       end
     end
@@ -1484,7 +1487,7 @@ Section: Step
   ged-reenter (base) (box) (w) (h) (stride) (font) (pal) (mouse) (cs) (es) (st) =
     let s = ui-scale w
     in if st.ed-mode == ged-mode-edit then ged-repaint base box w h stride s font pal mouse cs es (st.ed-path) (st.ed-etop) (st.ed-cur) (st.ed-col)
-    else ged-list-paint base box w h stride s font pal mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
+    else ged-list-paint base box w h stride h s font pal mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
 
   ged-step : Integer, LayoutRect, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
   ged-step (base) (box) (w) (h) (stride) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
@@ -1525,7 +1528,7 @@ Section: Step
     in let b = __record-set st "ed-entries" ents
     in let c = __record-set st "ed-sel" sel
     in let d = __record-set st "ed-top" top
-    in let p = ged-list-paint base box w h stride s font pal mouse cs ents sel top (st.ed-names)
+    in let p = ged-list-paint base box w h stride h s font pal mouse cs ents sel top (st.ed-names)
     in 0 - 1
   end
 
@@ -1545,14 +1548,14 @@ Section: Step
       let a = __record-set st "ed-mode" ged-mode-name
       in let b = ged-name-clear es
       in let c = ged-ensure es
-      in let p = ged-name-paint base box w h stride s font pal mouse cs es
+      in let p = ged-name-paint base box w h stride h s font pal mouse cs es
       in 1
     else if (clicked & hover >= 0) | (sc == 28 & n > 0) then
       ged-pick base box w h stride s font pal mouse cs es st sel2 top2
     else if moved then
       let a = __record-set st "ed-sel" sel2
       in let b = __record-set st "ed-top" top2
-      in let p = ged-list-paint base box w h stride s font pal mouse cs (st.ed-entries) sel2 top2 (st.ed-names)
+      in let p = ged-list-paint base box w h stride h s font pal mouse cs (st.ed-entries) sel2 top2 (st.ed-names)
       in 1
     else 1
 
@@ -1580,7 +1583,7 @@ Section: Step
     in let c = __record-set st "ed-entries" ents
     in let d = __record-set st "ed-sel" 0
     in let f = __record-set st "ed-top" 0
-    in let p = ged-list-paint base box w h stride s font pal mouse cs ents 0 0 n2
+    in let p = ged-list-paint base box w h stride h s font pal mouse cs ents 0 0 n2
     in 0 - 1
 
   ged-pick : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Integer -> [Identity, Device.Port] Integer
@@ -1596,10 +1599,10 @@ Section: Step
     end
     else if e.de-size > ged-cap then act
       hd <- cursor-hide cs base stride
-      let f = gfl-draw-frame base box stride s font pal (e.de-name)
-      in let m = gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (show (e.de-size) & " bytes is past the " & show ged-cap & " byte buffer") (ged-more pal) s 0
-      in let t = gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint pal) s 0
-      in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      let f = gfl-draw-frame base box stride h s font pal (e.de-name)
+      in let m = gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (show (e.de-size) & " bytes is past the " & show ged-cap & " byte buffer") (ged-more pal) s 0
+      in let t = gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint pal) s 0
+      in let cu = if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
       in let a = __record-set st "ed-sel" sel
       in let b = __record-set st "ed-top" top
       in let c = __record-set st "ed-mode" ged-mode-big
@@ -1623,18 +1626,18 @@ Section: Step
     end
   end
 
-  ged-note-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Integer -> Integer
-  ged-note-paint (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (line) =
+  ged-note-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Integer -> Integer
+  ged-note-paint (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (mouse) (cs) (es) (line) =
     let hd = cursor-hide cs base stride
     in let px = box.lr-x + 20 * s
     in let py = box.lr-y + 60 * s
     in let pw = box.lr-w - 40 * s
     in let ph = 5 * gfl-row-h s
-    in let bg = gop-fill-rect base stride px py pw ph (ged-row-band pal)
-    in let ttl = gop-draw-text base stride font (px + 8 * s) (py + 4 * s) ("annotate " & ged-chap-name-of es line & "::" & ged-def-name-of es line) (ged-gutter-col pal) s 0
-    in let bd = gop-draw-text base stride font (px + 8 * s) (py + 4 * s + gfl-row-h s) (ged-draft-of es & "_") (gfl-bright pal) s 0
-    in let foot = gop-draw-text base stride font (px + 8 * s) (py + ph - gfl-row-h s) "Type a note  Enter save  Bksp erase  Esc back" (gfl-hint pal) s 0
-    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in let bg = gop-fill-rect base stride rows px py pw ph (ged-row-band pal)
+    in let ttl = gop-draw-text base stride rows font (px + 8 * s) (py + 4 * s) ("annotate " & ged-chap-name-of es line & "::" & ged-def-name-of es line) (ged-gutter-col pal) s 0
+    in let bd = gop-draw-text base stride rows font (px + 8 * s) (py + 4 * s + gfl-row-h s) (ged-draft-of es & "_") (gfl-bright pal) s 0
+    in let foot = gop-draw-text base stride rows font (px + 8 * s) (py + ph - gfl-row-h s) "Type a note  Enter save  Bksp erase  Esc back" (gfl-hint pal) s 0
+    in if mouse.um-ok then cursor-update cs base stride rows w h s (mouse-x mouse) (mouse-y mouse) else 0
 
   ged-note-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
   ged-note-step (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) = act
@@ -1648,7 +1651,7 @@ Section: Step
       in 1
     else if sc == 14 then
       let e = ged-draft-pop es
-      in let p = ged-note-paint base box w h stride s font pal mouse cs es cur
+      in let p = ged-note-paint base box w h stride h s font pal mouse cs es cur
       in 1
     else if sc == 28 & ged-draft-len es > 0 then act
       v <- ged-note-save es cur (ged-note-stamp 0)
@@ -1658,7 +1661,7 @@ Section: Step
     end
     else if ged-printable ch then
       let e = ged-draft-push es ch
-      in let p = ged-note-paint base box w h stride s font pal mouse cs es cur
+      in let p = ged-note-paint base box w h stride h s font pal mouse cs es cur
       in 1
     else 1
   end
@@ -1680,14 +1683,14 @@ Section: Step
     in rtc-decode hh bin * 3600 + rtc-decode mm bin * 60 + rtc-decode ss bin
   end
 
-  ged-name-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer -> Integer
-  ged-name-paint (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) =
+  ged-name-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer -> Integer
+  ged-name-paint (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (mouse) (cs) (es) =
     let hd = cursor-hide cs base stride
-    in let f = gfl-draw-frame base box stride s font pal "new file"
-    in let p = gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "Name:" (gfl-dim pal) s 0
-    in let t = gop-draw-text base stride font (box.lr-x + 70 * s) (box.lr-y + 26 * s) (ged-name-of es & "_") (gfl-bright pal) s 0
-    in let k = gop-draw-text base stride font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Type a name  Enter create  Bksp erase  Esc back" (gfl-hint pal) s 0
-    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in let f = gfl-draw-frame base box stride rows s font pal "new file"
+    in let p = gop-draw-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "Name:" (gfl-dim pal) s 0
+    in let t = gop-draw-text base stride rows font (box.lr-x + 70 * s) (box.lr-y + 26 * s) (ged-name-of es & "_") (gfl-bright pal) s 0
+    in let k = gop-draw-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Type a name  Enter create  Bksp erase  Esc back" (gfl-hint pal) s 0
+    in if mouse.um-ok then cursor-update cs base stride rows w h s (mouse-x mouse) (mouse-y mouse) else 0
 
  Enter builds the only Text this mode allocates, and it goes into the record,
  so this arm answers NEGATIVE and every other arm answers 1.
@@ -1699,11 +1702,11 @@ Section: Step
     in let ch = apply-mods (scancode-to-keycode sc) md
     in if sc == 1 then
       let a = __record-set st "ed-mode" ged-mode-list
-      in let p = ged-list-paint base box w h stride s font pal mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
+      in let p = ged-list-paint base box w h stride h s font pal mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
       in 1
     else if sc == 14 then
       let e = ged-name-pop es
-      in let p = ged-name-paint base box w h stride s font pal mouse cs es
+      in let p = ged-name-paint base box w h stride h s font pal mouse cs es
       in 1
     else if sc == 28 & ged-name-len es > 0 then
       let path = ged-prefix (st.ed-names) 0 "" & ged-name-of es
@@ -1722,7 +1725,7 @@ Section: Step
       in 0 - 1
     else if ged-printable ch then
       let e = ged-name-push es ch
-      in let p = ged-name-paint base box w h stride s font pal mouse cs es
+      in let p = ged-name-paint base box w h stride h s font pal mouse cs es
       in 1
     else 1
 
@@ -1754,7 +1757,7 @@ Section: Step
     else if sc == 60 then act
       let sv0 = ged-set-verdict es ged-v-saving
       in let p0 = ged-repaint base box w h stride s font pal mouse cs es name top cur col
-      in let bctx = ged-bar-ctx base stride box s ((ged-size es + 511) / 512) pal
+      in let bctx = ged-bar-ctx base stride h box s ((ged-size es + 511) / 512) pal
       in act
         v <- ged-save es (st.ed-vol) name bctx
         let sv = ged-set-verdict es v
@@ -1782,7 +1785,7 @@ Section: Step
         in 1
       else let a = __record-set st "ed-mode" ged-mode-note
       in let d = ged-draft-clear es
-      in let p = ged-note-paint base box w h stride s font pal mouse cs es cur
+      in let p = ged-note-paint base box w h stride h s font pal mouse cs es cur
       in 1)
     else if sc == 62 then
       let u = ged-undo es
