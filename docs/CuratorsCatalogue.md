@@ -12,6 +12,7 @@ Every application built on Codex, one row each.
 | capture | Screenshot and image annotation tool | [README](apps/capture/README.md) |
 | chat | E2E-encrypted messaging app with Signal-style interface | [README](apps/chat/README.md) |
 | circuits | EDA suite: schematic capture, SPICE simulation, PCB layout, 3D visualization, manufacturing output | [README](apps/circuits/README.md) |
+| codexmagic-mobile | .NET MAUI companion app for the CodexMagic card game | [README](apps/codexmagic-mobile/README.md) |
 | collab | Video collaboration: calls, screen share, meetings, whiteboard | [README](apps/collab/README.md) |
 | colophon | Self-verifying colophon: derives and checks a work's content hash against the claim it makes about itself | -- |
 | compliance | cobblestoneproject.com site page: CRA compliance evidence as a build artifact | -- |
@@ -28,7 +29,7 @@ Every application built on Codex, one row each.
 | fitness | Activity rings, weekly bar chart, and workout history dashboard | [README](apps/fitness/README.md) |
 | fontai | Trains a small MLP to predict glyph contour rectangles from (glyph-id, style), with GPU MLP kernels | -- |
 | fontexplorer | Neural font model explorer: MLP glyph/kerning prediction, font blending, live preview | -- |
-| games | 35 classic games with AI | [README](apps/games/README.md) |
+| games | 35 classic games with AI + CodexMagic collectible card game platform | [README](apps/games/README.md) |
 | globe | Earth visualization with 16 data overlays and turn-by-turn routing | [README](apps/globe/README.md) |
 | gpu | cobblestoneproject.com site page: GPU compute, SIMD, SMP, and the CDX binary format | -- |
 | gpushow | WebGPU technique showcase: ~40 rendering demos with shaders generated from Codex `[Device]` kernels via the WGSL plug | [README](apps/gpushow/README.md) |

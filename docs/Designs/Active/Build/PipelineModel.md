@@ -11,9 +11,11 @@ script that shipped before it: `bundle-app 44`, `run-plug-chain 65`,
 `sweep-apps 86`, `resolve-trace 121`, `build-apps 111`,
 `profile-histogram 104`, `check-facts-guid 105`, `test-self-verify 73`,
 `check-plug-ports 105`, `test-renode 72`, `test-boards 132`,
-`check-sidecars 111`, `check-errors 139`, all `match / 0 drift`. Nineteen of
-the 58 generators (2026-09-08). Opened 2026-09-08 by root on Damian's
-direction.**
+`check-sidecars 111`, `check-errors 139`, `check-effect-vocab 113`,
+`concat-codex-self 175`, `check-vm-differential 141`, `plug-build 31`, all
+`extract-annotations 192`, `check-plug-types 159`, all `match / 0 drift`.
+Twenty-five of the 58 generators (2026-09-08). Opened 2026-09-08 by root on
+Damian's direction.**
 
 ## The census: what is left, counted rather than sampled (reek, 2026-09-08)
 
@@ -23,9 +25,277 @@ through the body identifier `sh-script` actually names and following a loop or
 
 | | count |
 |---|---|
-| migrated | 19 |
-| flat, migrable today | 30 |
-| BLOCKED by burr 4 | 9 |
+| migrated | 47 |
+| flat, migrable today | 1 |
+| BLOCKED by burr 4 | 10 |
+
+**THE FLAT SET IS NOW GENUINELY EMPTY.** `cvmm-build match 69 / 0 drift` is the
+forty-seventh and was taken the moment the correction below showed it was
+takeable. The one flat generator left is `testrunBashScript`, which has no
+target and is declared as such; **nothing else can be migrated until the tree
+lands**, and the blocked ten are the whole remainder.
+
+**CORRECTION, 2026-09-08: "TWO can never be graded" WAS WRONG, and this page has
+said it since the census was first written.** `cvmm-build` grades and has graded
+since 2026-08-07: its target moved to `apps\cvmm\build.ps1` and `$AltTarget` in
+`check-generated-scripts.ps1` has carried that mapping ever since. Measured just
+now: `cvmm-build match 69 / 0 drift`, `0 with no target`. **`cvmmbuildScript` is
+therefore a TAKEABLE flat generator, not an ungradeable one**, and the flat set
+is not empty. Exactly ONE generator in the tree is genuinely target-less:
+`testrunBashScript`, which emits `build/test-run.sh`, a file that has never
+shipped.
+
+The claim survived because it was carried forward rather than measured, which is
+the thing this campaign's own subject `check-doc-counts` exists to prevent
+(L-COUNT). It was stated in this session's CL descriptions repeatedly before
+being checked.
+
+### The drift gate now REFUSES an undeclared missing target (reek, 2026-09-08)
+
+**A generator with no target grades nothing, and the gate reported that and then
+exited 0.** L-ACCEPTED's shape in the gate's own lane: an interface tolerating
+what it does not recognise, so a generator can sit unchecked indefinitely while
+the table beneath it reads `0 drifted`.
+
+`check-generated-scripts.ps1` now carries `$NoTargetByDesign`, one entry with
+its reason, and FAILS on any other missing target, naming the three repairs
+(the target moved, so map it in `$AltTarget`; it is gone, so delete the
+generator; it is absent on purpose, so declare it). The one declared entry is
+`build\test-run.sh`: `testrunBashScript` is **kept rather than retired** because
+it is the only bash generator in the tree, so the unhandled-node scan reaches
+`BashEmit` through it and through nothing else. Retiring it would delete that
+coverage to silence a warning.
+
+**Graded by ABLATION, both arms, because a guard that has never fired is worth
+nothing.** With the declaration removed the run printed the refusal and exited
+1; with it restored the run printed `no target, by design` and exited 0. The
+first attempt at the ablation FAILED TO ABLATE (a bad regex left the entry in
+place) and the run passed, which would have read as the guard being fine: an
+ablation must be checked for having actually happened before its colour is
+read.
+
+**`check-doc-counts` WAS THE EXTRACTION SUBJECT** (`match 446 / 0 drift`, the
+forty-sixth). Its `ccd-full` interleaved six named sections with six inline
+`ScSequence` blocks; the six inline blocks are now named bodies and the whole is
+twelve stages. **Two mistakes were made getting there and both are worth the
+line:**
+
+- **Renaming half a set is a compile error that reads like a design problem.**
+  The six inline blocks got `-body` names while the six ALREADY-NAMED sections
+  kept theirs, so the stage records referenced `s02-body` where the file defined
+  `s02`. `check-generated-scripts` reports this as `COMPILE FAILED` with no
+  diagnostic; `compile.ps1` with an explicit `-Log` names it in one line. Ask
+  the compiler, not the harness.
+- **A quotation mark inside `ps-why` ends the string.** `"why saying "never
+  carry a count forward" has not worked"` parsed as three fragments and raised
+  five `CDX3002`s naming ordinary English words, which reads as a lexer defect
+  rather than as an unescaped quote. A cheap guard before any run: count `"` per
+  stage line and refuse an odd number.
+
+**THE MECHANICAL PHASE OF THIS CAMPAIGN IS OVER.** `cdx-to-pe match 1482 / 0
+drift` is the forty-fifth and the last rename-plus-separator subject. Everything
+still unmigrated is one of three kinds: the ten waiting on the tree, the two
+that can never be graded, and `check-doc-counts`, whose stage bodies do not
+exist as named definitions yet. **File SIZE turned out to predict nothing**:
+`cdx-to-pe` is 102 KB and four stages, `build-magic-pages` is 4.6 KB and
+blocked. What predicts the work is the ASSEMBLY, every time.
+
+**`vm-config` IS THE LARGEST SUBJECT SO FAR** (`match 1157 / 0 drift`, the
+forty-fourth, twenty stages) and it earned a trap worth writing down.
+
+**A `.codex` FILE IS UTF-8 WITHOUT BOM IN THE WORKSPACE, whatever Perforce types
+it.** `p4 diff2` calls these files `unicode`, and rewriting one as UTF-16
+produced a WHOLE-FILE diff, `@@ -1,107 +1,149 @@` with every line changed, while
+the content was correct. Re-encoding to UTF-8 without BOM brought the same
+content back to 69 changed lines in two hunks. Prefer the editing path, which
+preserves encoding for free; when a whole-file rewrite is genuinely warranted,
+count `^[+-][^+-]` lines from `p4 diff -du3` before believing it landed clean
+(P-EOL, a second face of it).
+
+**A FIFTH INDEPENDENTLY-WRITTEN VACUITY GUARD, in `build-arm64-img`**
+(`match 252 / 0 drift`, the forty-third). Its DMA floor assertion says it in the
+script's own words: "An unmatched pattern is a failure, not a skip", and cites
+the `check-doc-counts` rule while doing so. Five shipped runners now carry this
+guard, each written by a different hand: `check-effect-vocab`,
+`check-plug-types`, `check-plug-builtins`, `compile-riscv`'s remap window, and
+this. **L-VACUOUS has been independently rediscovered five times in this tree
+and was recorded in none of the five places before this campaign**, which is a
+stronger argument for the runner column of `LESSONS.md` than any of the five is
+on its own.
+
+`build-boot-img match 206 / 0 drift` is the forty-second: seven stages, one
+refusal each, and the five separate tools the boot image passes through named in
+order for the first time (bundle, compile, PE plug, optional agent, GPT image).
+
+**`build-img` HAS NO SEPARATORS AT ALL, which is the other end of the
+`plug-build-lib` case** (`match 760 / 0 drift`, the forty-first). Its assembly is
+`[p01, p02, ... p10]` with no `ScBlank` anywhere, because the ten sections are
+one continuous PowerShell program cut up for reading. No body took a leading
+blank. Between this and `plug-build-lib` the separator rule is now demonstrated
+at both extremes: read the flat assembly, do not assume a pattern.
+
+**It is also the strongest case yet for `ps-why` over `ps-verdict`,** because
+`build-img` exits nowhere. What the stage list buys is that the FAT16
+cluster-count choice, which exists so the count lands solidly inside FAT16
+rather than near a boundary some firmware reads as FAT12 or FAT32, is now a
+named stage instead of a comment in the middle of a geometry block. Same for the
+fact-store window, where a disagreement makes the guest find no region and
+refuse every write forever with nothing saying why.
+
+**`ablate-doctrine` CARRIES THE ONLY SELF-TEST STAGE ON THE CAMPAIGN, and its
+refusal is the strongest verdict text written so far** (`match 576 / 0 drift`,
+the fortieth). Before the harness scores a single agent run it must return FAIL
+for a bad artifact and PASS for a good one, with no agent involved; three of its
+six synthetic candidates are deliberately wrong in the ways that matter. So its
+exit 1 does not mean "an arm failed", it means the INSTRUMENT failed and no
+score from the run means anything. That distinction is invisible in the shipped
+script and is exactly what `ps-verdict` exists for. It is L-FALSIF wired as a
+gate rather than written as a lesson, and the only subject here that tests
+itself before testing anything else.
+
+**`compare-codex-semantic` IS FIFTEEN STAGES OF WHICH NINE EXIST ONLY TO STOP A
+NON-DIFFERENCE COUNTING AS ONE** (`match 534 / 0 drift`, the thirty-ninth). Type
+names canonicalised, emitter name mangling undone, redundant parentheses
+stripped, operator aliases folded, and colliding names resolved by body and
+signature: every one of those is there because the emitted text and the source
+text differ in a way that is not a semantic difference, and treating any of them
+as one would drown the real findings. The stage list is the first place that
+whole apparatus is visible as apparatus.
+
+**Its verdict is the honest kind and now says so:** the run passes only when
+NOTHING was dropped and nothing differs. A dropped definition is one the
+comparison never looked at, which is a hole rather than a pass, and an
+instrument that reported it as a pass would be L-VACUOUS again.
+
+**`test-compile-batch` SPELLS THE ONE VERDICT ON THIS CAMPAIGN THAT IS A DESIGN
+DECISION RATHER THAN A DESCRIPTION** (`match 352 / 0 drift`, the thirty-eighth).
+Exit `99` means the batch is unattributable, and every member is invalidated
+rather than some being reported wrong: when guest serial bytes are dropped or
+the stream ends early, positional attribution cannot be trusted, so reporting
+nothing beats reporting the wrong subject as failing. Exit `7` is the adjacent
+state, a corrupted REPL session emitting diagnostics that belong to no subject.
+Both were reachable only by reading the script; both are now declared.
+
+Its two `0`s are the empty-batch pair: the list named no sources, and no source
+survived resolution. Neither is a pass, and both are spelled `0`.
+
+**`test-cross` RETURNS 0 FOR EIGHT DIFFERENT STATES AND SIX OF THEM ARE SKIPS**
+(`match 270 / 0 drift`, the thirty-seventh, seventeen verdicts). The eight: the
+output matched `.expected`; the subject was refused by design and its tags
+predicted the refusal; and six skips, which are multi-core, a `.skip` sidecar, a
+`.no-cross` sidecar, slow, fatal, and an error test the frontend alone can
+judge. **A caller aggregating exit codes counts every one of those six as a
+pass**, which is L-DENOM's shape at the level of a single subject: the score's
+denominator is the set that RAN, and nothing in the exit code says which set
+that was. The skip lines are printed, so a person reading the console can tell;
+a program cannot. This is a finding about `test-cross`, not about the model, and
+it belongs to whoever owns the cross battery's aggregation.
+
+**`test-cross` also separates two failures a mismatch would have hidden:** no
+UART output at all is exit 1 from its own stage, distinct from output that
+differs. A board that said nothing and a board that said the wrong thing are not
+the same defect.
+
+**`check-doc-counts` NEEDS EXTRACTION, NOT RENAMING, and is left for a session
+with room.** Its `ccd-full` interleaves six named sections (`s02`, `s03`, `s06`,
+`s08`, `s09`, `s10`) with four large INLINE `ScSequence` blocks, so the stage
+bodies do not exist as named definitions yet. Every other subject on this
+campaign has been a rename plus a separator; this one is the first that must
+lift inline blocks into bodies before it can be staged, and each lift is a
+chance to move a byte.
+
+**AN ASSEMBLY IS NOT ALWAYS UNIFORMLY BLANK-SEPARATED, and assuming so drifts
+the output** (`plug-build-lib match 246 / 0 drift`, the thirty-fifth).
+`lib-body` reads `[... s03, s03b, ScBlank, s04, ...]`: two of its eight sections
+follow their predecessor with NO `ScBlank`, because each is the continuation of
+one PowerShell function. The migration rule is therefore not "every body after
+the first takes a leading `ScBlank`" but "each body takes exactly the separator
+the flat assembly held before it", and the two continuation stages take none.
+
+**A SCRIPT THAT REFUSES BY `throw` HAS NO DECLARABLE EXIT, and `boot-arm64` is
+the first subject where that is the whole failure surface** (`match 226 / 0
+drift`, the thirty-fourth). Its five failure paths are all `throw`: the plug is
+not built, the IR compile failed, codegen failed, the disk image failed. None of
+them is an `ScExit`, so `ps-verdict` can declare only the one `PoExit 0` the
+`-NoBoot` path spells, and the four refusals a caller most needs explained are
+undeclarable. This is not the computed-exit gap and not the passthrough gap: it
+is a THIRD way a refusal escapes `PipeOutcome`, and it wants naming in the same
+second pass rather than a constructor of its own.
+
+**`compile-riscv` CARRIES ONE CODE WITH THREE MEANINGS AND A GUARD THAT REFUSES
+WHEN ITS OWN REGEX STOPS MATCHING** (`match 288 / 0 drift`, the thirty-third,
+fifteen stages). Its remap-window stage exits `8` for three different states:
+the image outgrew the window, so a low-map address is read out of RAM with no
+diagnostic; the check cannot read `RiscVRuntime.codex`, so the window is
+unknown; and the shift no longer matches the check's pattern. That third one is
+the vacuity shape again, written by a fourth author who reached the same
+conclusion in the script's own words: "a check whose regex stopped matching has
+quietly stopped asking".
+
+**`compile-arm64` IS THE FIRST SUBJECT WHOSE TWO EXIT CODES ARE A DIAGNOSIS**
+(`match 233 / 0 drift`, the thirty-second). `3` is the IR compile failing, so no
+wire was produced and the plug was never reached; `4` is the plug failing on IR
+the compiler accepted, so the defect is in the plug or in the wire between them.
+A caller reading only "compile-arm64 failed" cannot tell a compiler bug from a
+plug bug, and those two send a reader to different files.
+
+**A THIRD VACUITY GUARD, in `check-plug-builtins`** (`match 240 / 0 drift`, the
+thirty-first generator). Its fourth stage refuses when either side extracted
+nothing, in its own words again. Three shipped runners now carry that guard,
+each written independently, and none of the three was recorded anywhere a
+reader would find before this campaign. L-VACUOUS has been paid for three times
+in this tree.
+
+**A SECOND VACUITY GUARD, in `check-plug-types`.** Its fourth stage compares
+nothing: it refuses when either side extracted zero forms, because an empty set
+agrees with everything and a check that cannot fail is a comment. That is the
+same guard `check-effect-vocab` carries, independently written, in two shipped
+runners. L-VACUOUS has been paid for twice in this tree, and until this
+campaign neither instance was recorded anywhere a reader would find it.
+
+**CORRECTION, 2026-09-08: this table read 25 flat and 9 blocked until now, and
+both were wrong by one.** The census searched for `ScForEach`,
+`ScLabeledWhile`, `ScWhile` and `ScTry` and NOT for `ScIf`, so
+`applyannotationsScript`, whose last section runs only under `ScIf (SeVar
+"Apply")`, was counted flat. A conditional wrapping a numbered section blocks a
+flat stage list exactly as a loop does. Found by reading that generator to
+migrate it, not by the census, which is the third time on this campaign that a
+census agreed with itself and was wrong (L-CENSUS).
+
+**`ScIf` CHANGES WHAT SHAPE 3'S GROUP NODE MUST CARRY, again.** The blocked ten
+now need three distinct things of a group: a REPEAT condition (`while`,
+`foreach`), a HANDLER stage (`try`/`finally`), and a GUARD condition deciding
+whether the group runs at all (`if`). A group carrying only a repeat expresses
+two of the ten.
+
+**Two of the 58 can never be graded and are not in any column above:**
+`testrunBashScript` emits `build/test-run.sh` and `cvmmbuildScript` emits
+`build/cvmm-build.ps1`, and NEITHER FILE EXISTS. The drift check reports both
+under "no target", so a migration of either could not be proven byte-identical
+and none was attempted (L-NOGATE). That is a gap in the drift gate rather than
+in this campaign: a generator with no target is graded by nothing at all, and
+two of them have been sitting that way.
+
+**A FOURTH accepted-and-unused parameter**, found by the smallest generator in
+the tree. `build/plug-build.ps1` declares `-Force` and no line reads it;
+verified twice at head, once that `Force` appears only on its parameter line,
+and once that the builder it calls has no such parameter to forward it to (the
+only `Force` in `codex/plugs/common/plug-build-lib.ps1` is an unrelated
+`New-Item -Force`). No wiring exists that could ever carry the switch, so a
+caller asking for a rebuild gets an ordinary one. With `sweep-apps`' `-Jobs`,
+`check-plug-ports`' silent half and `concat-codex-self`' dead `$ForewordDir`,
+that is four of one shape in twenty-three generators, every one surfaced by
+having to write down what a stage consumes and produces.
+
+**A generator can be worth migrating with NO stage structure at all.**
+`check-vm-differential`'s whole assembly is one `ScSequence`, so it migrated as
+a pipeline of exactly one stage; splitting the raw body would gain a blank line
+per boundary and drift. The return there is entirely the verdict list: six
+exits, every one spelled inside a raw payload, and TWO OF THE SIX ARE ZEROS
+THAT MEAN OPPOSITE THINGS, a machine with one VM host skipping and two hosts
+agreeing byte for byte. A caller gating on that script's exit code cannot tell
+the check from its own absence. Where stage structure is absent, `ps-verdict`
+and `ps-needs` still pay.
 
 The nine, by the construct wrapping their numbered sections: `stress-sweep` and
 `CompileScript` (`while`); `build-magic-pages` and `test-exception-handler`
@@ -35,9 +305,54 @@ The nine, by the construct wrapping their numbered sections: `stress-sweep` and
 **`try`/`finally` is the MAJORITY construct among the blocked, five of nine.**
 That settles the shape question this page priced earlier: a group node carrying
 only a repeat condition leaves five of the nine still unmigrable, so the group
-needs a handler field as well. `build.ps1`, `test.ps1`, `bvt` and
-`CompileScript` are all inside the blocked nine, and those four are the scripts
-whose stage structure is worth the most.
+needs a handler field as well.
+
+**OF THE FOUR SCRIPTS WHOSE STAGE STRUCTURE IS WORTH THE MOST, ONLY
+`CompileScript` IS BLOCKED.** This page claimed `build.ps1`, `test.ps1` and
+`bvt` were blocked with it, and the claim contradicted the enumeration three
+lines above it, which names none of the three. Measured at head 2026-09-08:
+`build-body`, `test-body` and `bvt-body` are each a plain `[ScSequence gNN,
+ScBlank, ...]` list, and all of their numbered sections (10, 6 and 12) are
+referenced directly from that list with none nested inside a loop, a `try` or
+an `if`. All three are in the flat set and takeable without the burr-4 ruling.
+The ruling still decides `CompileScript` and the other nine, and the arithmetic
+was never wrong: 27 + 10 + 21 is 58 either way.
+
+**ALL THREE ARE MIGRATED, WHICH SETTLES THE CLAIM BY CONSTRUCTION** rather than
+by measurement: `bvt match 544 / 0 drift` (13 stages), `test match 1457 / 0
+drift` (6 stages) and `build match 1449 / 0 drift` (10 stages). No ruling was
+used and none was needed. `CompileScript` alone, of the four scripts whose stage
+structure is worth the most, waits on burr 4.
+
+**`build` IS THE CASE FOR ONE VERDICT PER STAGE RATHER THAN ONE PER `exit`.**
+The script spells 48 exits and 47 are the same code. Forty-seven identical
+`PoExit 1` entries would be a longer declaration saying less, so each stage
+carries the one sentence separating its refusal from its neighbours': a
+pre-build guard is not a fixed-point failure is not a plug disagreeing with
+x86-64. The single `0` is g10's, and it is the only success the script has.
+
+**`test` IS THE STRONGEST CASE THE VERDICT FIELD HAS HAD: eleven exits, every
+one inside a raw PowerShell payload, in three currencies.** `1` is an approval
+or a selector the caller got wrong, `2` is a kernel absent, unnamed or stale,
+and `0` is TWO STATES THAT ARE NOT THE SAME, `-ListSubjects` having printed a
+list and the battery having passed. A caller gating on the exit code cannot
+tell the listing from the pass.
+
+**A CENSUS OF `exit N` OVER `test` REPORTS FIVE EXITS THAT DO NOT EXIST.** T04
+names `exit 7` and `exit 4` in prose, describing what the batch VM returns
+(phantom diagnostics, a crash), not what `test.ps1` returns. The classification
+that answers correctly asks whether each match sits inside an `ScRaw` or an
+`ScComment`. Fourth time on this campaign a census agreed with itself and was
+wrong (L-CENSUS), and the first where the wrong answer would have shipped as a
+declaration.
+
+**A GUEST COUNT DRIVEN BY A PARAMETER CANNOT BE DECLARED, third instance.**
+`PrGuests` takes an `Integer`; `bvt` boots one guest per `-Jobs` slot in two
+stages. Writing `PrGuests 8` would record the DEFAULT as though it were the run,
+which is L-REQUEST's shape exactly. Both stages declare `PrKernel` alone, which
+takes a `ShellExpr` and can name `stage0` honestly. All three vocabulary gaps
+now carry two or more instances, and widening the three Integer resource
+constructors is the one that has now been hit three times.
 
 **The first two passes of this census were WRONG and agreed with themselves.**
 A regex for `*-body` matched an earlier helper rather than the assembly, and a
@@ -45,6 +360,33 @@ second pass missed every generator whose loop body is a named helper rather
 than an inline list. Both produced a clean-looking table. The third pass was
 trusted only because it reproduced all four generators already blocked by hand
 (L-CENSUS: a clean grep is a statement about the grep).
+
+## What declaring an output asks, and one answer it got (reek, 2026-09-08)
+
+`check-effect-vocab match 113 / 0 drift` and `concat-codex-self match 175 / 0
+drift`.
+
+**`concat-codex-self` PRODUCES `$ForewordDir` AND NOTHING READS IT.** Line 22
+of the shipped script assigns `codex\foreword\core`; no later line mentions the
+name, verified at head. It is vestigial, because foreword directories resolve
+through `$QuireDirs` from `quire-map.ps1` now, so the hardcoded path is a
+second and stale answer to a question the quire table already answers, and a
+reader takes it as authoritative. Declaring it as an artifact is what asks who
+consumes it, and the answer is nobody. Left in place: deleting it moves the
+emitted bytes, and this migration's gate is byte-identity.
+
+That is the third finding of this shape, after `sweep-apps`' unused `-Jobs` and
+`check-plug-ports`' silently skipped half. The three together are the argument
+for `ps-in` and `ps-out` being more than documentation: a declared input with
+no producer, and a declared output with no consumer, are both decidable by a
+future check, where prose about them is not.
+
+**`check-effect-vocab` carries the campaign's clearest single verdict.** Its
+third stage compares no lists at all: it asserts that both sides parsed
+something, because two empty sets AGREE and a regex that has stopped matching
+would otherwise report a clean comparison. That is L-VACUOUS built into a
+shipped runner, and until this migration the only record of it was the shape of
+the code.
 
 ## The second generator, and the two burrs it found (reek, 2026-09-08)
 
@@ -130,8 +472,31 @@ fan-out or a per-target sweep has the same shape, and those are the scripts
 whose stage structure is worth the most: `bvt`, `test` and `build.ps1` are all
 in that class, and this page names them as the last to migrate.
 
-**The decision, and it is Damian's because it changes the record he approved.**
-Three shapes, in ascending cost:
+**RULED BY DAMIAN, 2026-09-08, relayed through root: SHAPE 3.** `pl-stages`
+becomes a tree. A step is a stage or a group; a group carries its own steps plus
+an optional repeat condition, an optional guard condition, and an optional
+handler stage. That is the shape the blocked ten need, and the three optional
+fields are the three constructs measured below: repeat for `while` and
+`foreach`, guard for `if`, handler for `try`/`finally`.
+
+**THE PROOF OBLIGATION IS NAMED IN THE RULING: every already-migrated generator
+must stay byte-identical.** Forty-two are on the model as of this CL, so the
+tree lands only when `check-generated-scripts` reads `match / 0 drift` for all
+of them, not for a sample. That is the one run on this campaign that is a
+fan-out rather than a single guest, and it is asked of the commander.
+
+**The second half of the ruling: the RUNNER, designed on this page and built
+nowhere yet.** Executing a pipeline as a process instance uses
+`apps/workflow/WorkflowTypes.codex`'s vocabulary rather than a second one
+invented here: `ProcessInstance` and `ProcessStatus` for a run in flight,
+`StepDef` and `StepStatus` for where each stage stands, `StepEvent` for what
+happened, and `ConditionOp` for the guard and repeat conditions a group carries.
+`StepStatus` already spells `StepPending`, `StepInProgress`, `StepCompleted`,
+`StepSkipped` and `StepTimedOut`, which is exactly the state a build stage is
+in, and `StepSkipped` is the state `test-cross` currently reports as exit 0
+alongside a pass. Design first, build nothing.
+
+The three shapes as they were priced, kept because the ruling chose among them:
 
 1. **A stage carries the loop in its body** and the inner sections stop being
    stages. Cheapest, and it gives up exactly what the model exists to provide.
@@ -143,8 +508,137 @@ Three shapes, in ascending cost:
    case named above, and it changes the lowering, the doc renderer and both
    fields' readers.
 
-Shape 3 is what the scripts actually are. Nothing is built until Damian rules,
-and flat generators keep migrating in the meantime.
+Shape 3 is what the scripts actually are, and shape 3 is what was ruled.
+
+The shape as ruled, to be spelled in `Pipeline.codex`:
+
+```
+PipeStep =
+  | PsStage (PipeStage)
+  | PsGroup (Maybe ShellExpr)    -- repeat: while, foreach
+              (Maybe ShellExpr)    -- guard: if
+              (Maybe PipeStage)    -- handler: try/finally
+              (List PipeStep)
+```
+
+`pl-stages` becomes `List PipeStep`. `pipe-stage-cmds` walks the tree instead of
+a list, and `pipeline-doc` renders nesting. Every migrated generator becomes a
+list of `PsStage`, which is why the byte-identical obligation is checkable
+rather than hopeful: a flat pipeline lowered through the tree walker must emit
+what the flat walker emitted.
+
+**HOW THE PROOF RUNS, granted in principle by root 2026-09-08.**
+`check-generated-scripts` boots ONE GUEST PER GENERATOR (57 on 2026-09-07), so
+the all-42 proof is a fan-out and not a single-guest run. Conditions on the
+grant: bounded `-Jobs`, four at most; ask at the time with the job count and the
+expected minutes; root grants FIFO against the box then; and **merge down to the
+seed at head before the proof**, because a proof under a superseded seed is void
+and this campaign has already paid for that once.
+
+## The runner: a pipeline executed as a process instance (design only)
+
+The second half of the 2026-09-08 ruling. **Nothing is built here yet**, and
+nothing in `apps/workflow` is touched: this section records how the two
+vocabularies meet so that whoever builds it does not invent a third.
+
+**THE RULE IS THAT `apps/workflow/WorkflowTypes.codex` IS THE VOCABULARY.** A
+build is a process, a stage is a step, and every noun the runner needs already
+exists there with a shipped definition. Inventing `PipeRun`, `PipeStageStatus`
+and `PipeEvent` beside them would be the fourth copy of a concept this tree
+already keeps once, which is the failure `check-facts-guid` and
+`check-plug-types` both exist to catch in their own domains.
+
+The correspondence, measured against the records at head:
+
+| the pipeline model | the workflow vocabulary | what carries over unchanged |
+|---|---|---|
+| a `Pipeline` | `ProcessDef` | `pd-start-step`, `pd-transitions` |
+| one run of a pipeline | `ProcessInstance` | `pi-status`, `pi-current-step`, `pi-history` |
+| a `PipeStage` | `StepDef` | `sd-id`, `sd-name`, `sd-description` |
+| where a stage stands | `StepStatus` | the five states below |
+| what happened to a stage | `StepEvent` + `EventType` | `se-step-id`, `se-timestamp`, `se-details` |
+| a group's repeat or guard | `ConditionOp` | `And`, `Or`, `Not`, `Always` |
+| an edge between stages | `TransitionDef` | `td-from-step`, `td-to-step`, `td-condition` |
+
+**`StepStatus` ALREADY SPELLS THE STATES A BUILD STAGE IS IN**, which is the
+finding that makes this correspondence worth having rather than merely tidy:
+`StepPending`, `StepInProgress`, `StepCompleted`, `StepSkipped`, `StepTimedOut`.
+**`StepSkipped` is the one that pays.** `test-cross` reports six different skips
+as exit `0`, indistinguishable by a caller from a pass, and a runner carrying
+`StepStatus` cannot make that mistake: a skipped stage is a different value from
+a completed one, so a tally over statuses reports what RAN as well as what
+passed. That is L-DENOM answered by the type rather than by a convention.
+
+**What does NOT carry over, said plainly.** `StepType`'s arms are about people:
+`HumanTask`, `ApprovalGate`, `DocumentGate`, `Notification`. A build stage is an
+`AutomatedAction` and almost nothing else, with `SubProcess` for a stage that
+shells out to another pipeline and `ParallelSplit`/`ParallelJoin` for a fan-out
+like the batch compile. `sd-form`, `sd-assignment`, `sd-required-docs` and
+`AssignmentRule` have no meaning for a build and are left unset rather than
+given invented values, because a field filled with a plausible default is the
+`L-BEDTRUE` shape: a lie with a plausible value.
+
+**The one thing the workflow vocabulary lacks and the pipeline model has** is
+`PipeOutcome`. A `StepStatus` says a step finished; it does not say what the
+exit code MEANT, which is the whole return of this campaign. So the runner keeps
+`ps-verdict` on the stage and records the matched outcome in `se-details` when a
+stage exits. That is the join point, and it is the only new idea the runner
+needs.
+
+### The execution semantics, stated (reek, 2026-09-08)
+
+**A pipeline runs as a `ProcessInstance`, and every one of the four things a
+runner must do maps onto a noun that already exists.**
+
+**Stage entry and exit are `StepEvent`s.** Entering a stage appends
+`EvStepEntered` with `se-step-id` the stage name and `se-timestamp` the clock;
+leaving it appends a completion event whose `se-details` carries the matched
+`PipeOutcome` text. `pi-history` is therefore the build log, in order, with the
+MEANING of each exit beside it rather than a number a reader has to look up.
+`pi-current-step` is what a watcher reads to say where a build is.
+
+**A verdict is a transition.** `TransitionDef` already carries
+`td-from-step`, `td-to-step` and `td-condition`, so a stage's `ps-verdict` list
+becomes the outgoing edges of that stage: one `TransitionDef` per `PipeOutcome`,
+whose condition tests the exit code and whose `td-label` is the outcome's own
+sentence. **This is what makes the verdict field executable rather than
+documentary**, which is the gap the model has carried since the first migration.
+A stage with an empty `ps-verdict` has exactly one unconditional outgoing edge,
+`Always`, which is the right reading of a stage that cannot fail.
+
+**A group is a subgraph, and its three optional fields are three known shapes.**
+A repeat condition is an edge from the group's last step back to its first, under
+`td-condition`; a guard is the condition on the edge INTO the group, so a guarded
+group that does not run is `StepSkipped` rather than absent; a handler is an edge
+from every step in the group to the handler stage, which is what makes
+`try`/`finally` expressible at all.
+
+**Fan-out is `ParallelSplit` and `ParallelJoin`,** which `StepType` already
+spells. `test-compile-batch`, `bvt` and `test` all fan out over subjects, and
+the join is where a runner learns what a batch aggregate currently cannot see:
+each branch carries its own `StepStatus`, so `StepSkipped` and `StepCompleted`
+are counted apart at the join instead of being summed as one exit code.
+
+**PRICED, and the price is mostly not the runner.** Three parts, in the order
+they must happen:
+
+| part | what it costs | why that number |
+|---|---|---|
+| the tree in `Pipeline.codex` | one CL, plus 46 one-line conversions | `PipeStep`, a tree walker for `pipe-stage-cmds`, a nested renderer for `pipeline-doc`; every generator's `pl-stages` becomes `PsStage`-wrapped |
+| the byte-identical proof | ONE fan-out run, `-Jobs 4`, a box grant | 46 generators at one guest each; root's conditions are recorded above |
+| the ten blocked generators | ten CLs, one each, one guest each | the same recipe as the 46, with a group where the control flow is |
+| the runner itself | its own campaign, not costed here | nothing is built until the three above are green |
+
+**The tree is the expensive part and the runner is not.** The runner is a
+translation between two vocabularies that both exist; the tree touches every
+file this campaign has already touched, which is why its proof is the fan-out
+and why it wants a fresh session rather than the tail of one.
+
+**Build order when it is built**, so the first pass cannot be graded on itself:
+the tree first, with the byte-identical proof; then the runner over a pipeline
+that is already proven; and the runner's own first subject is a pipeline whose
+stages are known to fail in known ways, because a runner that has only ever seen
+a green build is an instrument that cannot fail (L-FALSIF).
 
 ### Burr 4 is WIDER than a loop, measured over sixteen attempts (reek, 2026-09-08)
 
@@ -157,6 +651,9 @@ wrapping its numbered sections:
 | `build-magic-pages` | `ScForEach` over the page list around sections 3 to 5 |
 | `run-plug` | `ScTry` around sections 3 to 7, with section 8 as its FINALLY |
 | `test-exception-handler` | `ScForEach` over the sample table around sections 3 to 5 |
+| `apply-annotations` | `ScIf (SeVar "Apply")` around section 5, a GUARD not a repeat |
+| `plug-run`, `test-run`, `test-disk-compile`, `gdb-watchpoint` | `ScTry`, same shape as `run-plug` |
+| `CompileScript` | `ScLabeledWhile`, same shape as `stress-sweep` |
 
 `run-plug` is the one that changes the design question. A repeat condition on a
 group, which is all shapes 2 and 3 were priced to carry, does not express a
@@ -232,6 +729,13 @@ stage back to the two definitions is invisible, the same shape as a derived
 artifact's. A `PkFunction` kind costs one constructor and is the cheapest of
 the five burrs to close; it is left with the others so the second pass takes
 the vocabulary questions together.
+
+**`check-cdx-registry` is the second generator to hit it** (`check-cdx-registry
+match 213 / 0 drift`, the twenty-sixth on the model). Its S02 defines
+`ConvertTo-Pascal` and its S06 calls it, so the same edge is carried by
+PowerShell scope and declared nowhere. Two hits is the same count the computed
+exit and the parameter-driven resource each carry, so all three gaps are
+equally evidenced and go to the second pass as one decision.
 
 **`check-constants` is the case that pays for the verdict field.** It carries
 five exits across two modes, and the same code `0` means "the recorded hash

@@ -353,10 +353,38 @@ foreach ($s in $specs) {
 
 $rows | Sort-Object Drift -Descending | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 
-$dead = @($specs | Where-Object { -not $_.Present })
-if ($dead.Count -gt 0) {
-    Write-Host "generators whose target does not exist ($($dead.Count)):"
-    foreach ($d in $dead) { Write-Host "  $($d.Generator.Name) -> $($d.Target)" }
+# A generator with no target grades NOTHING, and until 2026-09-08 that was
+# reported here and then ignored: the run printed the count and still exited 0.
+# That is L-ACCEPTED's shape in this script's own lane -- an interface that
+# tolerates what it does not recognise -- and it is how a generator can sit
+# ungraded indefinitely while the table underneath says "0 drifted". An
+# undeclared missing target now FAILS.
+#
+# ONE target is absent by design. build/test-run.sh has never shipped;
+# testrunBashScript is kept and compiled anyway because it is the only bash
+# generator in the tree, so the unhandled-node scan below reaches BashEmit
+# through it and through nothing else. Retiring it would delete that coverage,
+# so it is declared here with its reason rather than deleted.
+#
+# cvmm-build is NOT in this map and must not be: its target moved to
+# apps\cvmm\build.ps1 and $AltTarget has said so since 2026-08-07. It grades.
+$NoTargetByDesign = @{
+    'build\test-run.sh' = 'the only bash generator, kept so the unhandled-node scan reaches BashEmit; no .sh has ever shipped'
+}
+
+$dead           = @($specs | Where-Object { -not $_.Present })
+$deadDeclared   = @($dead | Where-Object { $NoTargetByDesign.ContainsKey($_.Target) })
+$deadUndeclared = @($dead | Where-Object { -not $NoTargetByDesign.ContainsKey($_.Target) })
+if ($deadDeclared.Count -gt 0) {
+    Write-Host "no target, by design ($($deadDeclared.Count)):"
+    foreach ($d in $deadDeclared) {
+        Write-Host "  $($d.Generator.Name) -> $($d.Target)"
+        Write-Host "      $($NoTargetByDesign[$d.Target])"
+    }
+}
+if ($deadUndeclared.Count -gt 0) {
+    Write-Host "generators whose target does not exist ($($deadUndeclared.Count)):"
+    foreach ($d in $deadUndeclared) { Write-Host "  $($d.Generator.Name) -> $($d.Target)" }
 }
 
 # The inventory: build/*.ps1 that NO generator claims. Everything above this
@@ -457,6 +485,19 @@ if ($Update) {
 
 Write-Host ""
 Write-Host "Checked $($rows.Count) generators, $($driftedNow.Count) drifted, $($broken.Count) broken, $($dead.Count) with no target."
+
+if ($deadUndeclared.Count -gt 0) {
+    Write-Host ""
+    Write-Host "check-generated-scripts: FAIL -- $($deadUndeclared.Count) generator(s) emit a script that does not exist:"
+    foreach ($d in $deadUndeclared) { Write-Host "  $($d.Generator.Name) -> $($d.Target)" }
+    Write-Host "  A generator with no target is compared against nothing, so it reports"
+    Write-Host "  neither match nor drift and its output is unchecked by anything."
+    Write-Host "  Either the target moved, in which case add it to `$AltTarget above,"
+    Write-Host "  or it is gone and the generator should be deleted, or it is absent on"
+    Write-Host "  purpose, in which case declare it in `$NoTargetByDesign with the reason."
+    Remove-OwnRoot
+    exit 1
+}
 
 if ($broken.Count -gt 0) {
     Write-Host ""

@@ -1,0 +1,69 @@
+Chapter: DeskPointerBedTest
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbMouse
+  cites Kernel chapter Hpet
+  cites Foreword chapter CCE
+
+ DOES A SCRIPTED CLICK REACH THE GUEST. This is a bed probe rather than a
+ test of any app: it attaches the USB pointer exactly as `DeskVm` does,
+ pumps it for a fixed span of HPET time, and prints what arrived. Run it
+ under the same `-mouse-file` timeline that is meant to drive a desk, and
+ the numbers say which half is at fault.
+
+ The three readings are chosen so that each failure has its own
+ signature rather than one shared silence:
+
+   ok      -- the pointer enumerated at all. `no` means every later zero
+              is explained and nothing about the timeline is in question.
+   reports -- consumed HID reports. Zero with `ok yes` means the endpoint
+              is bound and delivering nothing.
+   moved   -- the folded position. A position that left the centre proves
+              the motion bytes of those reports arrived.
+   clicks  -- presses `mouse-take-click` answered. THIS IS THE ONE THE
+              CAPTURES CANNOT SEE. Motion arriving with zero clicks says
+              the button byte is being lost between the timeline and
+              `mouse-consume`, which no screenshot of a desk can
+              distinguish from a menu that ignored a hit.
+
+ The probe prints a line per click as well as the totals, because WHEN a
+ click lands relative to the timeline is what says whether a press before
+ the first paint is being dropped.
+
+Section: Body
+
+  pb-w : Integer = 1600
+  pb-h : Integer = 900
+
+  pb-span : Integer
+  pb-span = 16 * hpet-ticks-per-second
+
+  pb-yn : Boolean -> Text
+  pb-yn (v) = if v then "yes" else "no"
+
+  pb-loop : UsbMouse, Integer, Integer -> [Console, Device.Port] Integer
+  pb-loop (m) (deadline) (clicks) =
+    if hpet-ticks >= deadline then act clicks end
+    else act
+      mv <- act mouse-pump m pb-w pb-h end
+      let c = mouse-take-click m
+      in if c then act
+        print-line-uni ("click " & show (clicks + 1) & " at " & show (mouse-x m) & "," & show (mouse-y m) & "  buttons " & show (mouse-buttons m) & "  reports " & show (mouse-events m))
+        pb-loop m deadline (clicks + 1)
+      end
+      else pb-loop m deadline clicks
+    end
+
+Section: Entry
+
+  opening : [Console, Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent, Capability, Network.Read, Network.Write] Nothing = act
+    ri <- runtime-init 0
+    att <- usb-attach
+    let m = att.ua-mouse
+    in act
+      print-line-uni ("pointer ok: " & pb-yn (m.um-ok))
+      n <- pb-loop m (hpet-ticks + pb-span) 0
+      print-line-uni ("clicks " & show n)
+      print-line-uni ("reports " & show (mouse-events m))
+      print-line-uni ("moved to " & show (mouse-x m) & "," & show (mouse-y m))
+    end
+  end

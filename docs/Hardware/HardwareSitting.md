@@ -4938,9 +4938,9 @@ reason the bytes still exist at all.
 **What is preserved and what is not.** The flight's CONCLUSIONS are
 safe: the verdict table below, the F12 shot in
 `build-output/ceremony-flight-shots/`, and the walkthrough in
-`docs/TailorsFitting.md`. The image is REBUILDABLE from
-`apps/works/DeskBoot.codex` and `codex/os/verify/WakeCeremony.codex` plus
-the recipe below. What is not reproducible is the 124-byte
+`docs/TailorsFitting.md`. The image is not rebuildable from the tree: its
+payload chapter, `DeskBoot`, no longer exists, and the recipe below is the
+only record of it. What is not reproducible is the 124-byte
 `IDENTITY.DAT` the guest itself wrote to the ESP on real ASMedia
 hardware -- the single physical artifact of that write path working on
 metal. It exists now only inside that dump, and the dump was itself one
@@ -5965,8 +5965,8 @@ reports about that controller is a single-driver measurement. `ConIn
 "working"` on the 2026-07-29 ladder was the firmware's driver, not ours.
 `cdx-to-pe.ps1` makes the switch the discriminator: set it for anything
 measuring our own drivers, leave it OFF only for payloads that call
-ConIn/ConOut, which is KeyProof and the dev console. `DeskBoot` and `GopBoot`
-are driver-truth and are built with it.
+ConIn/ConOut, which is KeyProof and the dev console. `GopBoot` is
+driver-truth and is built with it.
 
 **Rung 3 has an artifact now** -- `build/boot/msc-align.img` (reek,
 2026-08-04) -- and the chapter had existed since the ladder was written with no

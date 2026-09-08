@@ -4,6 +4,7 @@ Chapter: CompileRiscvScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -31,7 +32,7 @@ Section: Parameters
 
 Section: S00 -- Usage
 
-  s00 : List ShellCmd =
+  s00-body : List ShellCmd =
     [ScComment "Usage:",
      ScComment "  plugs/riscv/compile-riscv.ps1 -Src <source.codex> -Out <out.elf>",
      ScComment "",
@@ -43,77 +44,77 @@ Section: S00 -- Usage
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd =
-    [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path"), ScAssign "PlugDir" (SeRaw "(Resolve-Path $PSScriptRoot).Path"), ScAssign "OutDir" (SeRaw "if ($WorkDir) { $WorkDir } else { Join-Path $PlugDir 'build-output' }"), ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
+  s01-body : List ShellCmd =
+    [ScBlank, ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path"), ScAssign "PlugDir" (SeRaw "(Resolve-Path $PSScriptRoot).Path"), ScAssign "OutDir" (SeRaw "if ($WorkDir) { $WorkDir } else { Join-Path $PlugDir 'build-output' }"), ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
 
 Section: S02 -- Compile to IR
 
-  s02 : List ShellCmd =
+  s02-body : List ShellCmd =
     let ir-fail = [ScWriteError (SeRaw "\"FAIL: IR compile step exited $LASTEXITCODE; see $LogFile\""), ScExit (SeInt 3)]
-    in [ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScAssign "KernelCdx" (SeRaw "if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }"), ScRaw "Write-Host \"[riscv-compile] Compiling $Src to IR...\"", ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx", ScIf (SeRaw "$LASTEXITCODE -ne 0") ir-fail []]
+    in [ScBlank, ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScAssign "KernelCdx" (SeRaw "if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }"), ScRaw "Write-Host \"[riscv-compile] Compiling $Src to IR...\"", ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx", ScIf (SeRaw "$LASTEXITCODE -ne 0") ir-fail []]
 
 Section: S03 -- RISC-V codegen plug
 
-  s03 : List ShellCmd =
+  s03-body : List ShellCmd =
     let plug-fail = [ScWriteError (SeRaw "\"FAIL: RISC-V codegen plug exited $LASTEXITCODE\""), ScExit (SeInt 4)]
-    in [ScComment "Phase 2: codegen via RISC-V plug", ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'last-compile.riscv.bin'"), ScAssign "RunScript" (SeRaw "Join-Path $PlugDir 'run.ps1'"), ScRaw "Write-Host \"[riscv-compile] Running RISC-V codegen plug...\"", ScRaw "& pwsh -NoProfile -File $RunScript -IrInput $IrFile -Out $WireFile", ScIf (SeRaw "$LASTEXITCODE -ne 0") plug-fail []]
+    in [ScBlank, ScComment "Phase 2: codegen via RISC-V plug", ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'last-compile.riscv.bin'"), ScAssign "RunScript" (SeRaw "Join-Path $PlugDir 'run.ps1'"), ScRaw "Write-Host \"[riscv-compile] Running RISC-V codegen plug...\"", ScRaw "& pwsh -NoProfile -File $RunScript -IrInput $IrFile -Out $WireFile", ScIf (SeRaw "$LASTEXITCODE -ne 0") plug-fail []]
 
 Section: S04 -- Parse wire header
 
-  s04 : List ShellCmd =
-    [ScComment "Phase 3: parse wire protocol and build ELF64", ScReadBytes "rawWire" (SeVar "WireFile"), ScAssign "wireOff" (SeInt 0), ScForLoop "wi" (SeInt 0) (SeRaw "$wi -lt [Math]::Min(64, $rawWire.Length - 12)") (SeRaw "$wi++") [ScRaw "$cl = [BitConverter]::ToInt32($rawWire, $wi)", ScRaw "$dl = [BitConverter]::ToInt32($rawWire, $wi + 4)", ScRaw "$fc = [BitConverter]::ToInt32($rawWire, $wi + 8)", ScIf (SeRaw "$cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64") [ScAssign "wireOff" (SeVar "wi"), ScBreak] []], ScRaw "$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)", ScRaw "[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)", ScRaw "$codeLen = [BitConverter]::ToInt32($wireBytes, 0)", ScRaw "$dataLen = [BitConverter]::ToInt32($wireBytes, 4)", ScRaw "$funcCount = [BitConverter]::ToInt32($wireBytes, 8)", ScRaw "Write-Host \"[riscv-compile] Wire: code=$codeLen data=$dataLen funcs=$funcCount\""]
+  s04-body : List ShellCmd =
+    [ScBlank, ScComment "Phase 3: parse wire protocol and build ELF64", ScReadBytes "rawWire" (SeVar "WireFile"), ScAssign "wireOff" (SeInt 0), ScForLoop "wi" (SeInt 0) (SeRaw "$wi -lt [Math]::Min(64, $rawWire.Length - 12)") (SeRaw "$wi++") [ScRaw "$cl = [BitConverter]::ToInt32($rawWire, $wi)", ScRaw "$dl = [BitConverter]::ToInt32($rawWire, $wi + 4)", ScRaw "$fc = [BitConverter]::ToInt32($rawWire, $wi + 8)", ScIf (SeRaw "$cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64") [ScAssign "wireOff" (SeVar "wi"), ScBreak] []], ScRaw "$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)", ScRaw "[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)", ScRaw "$codeLen = [BitConverter]::ToInt32($wireBytes, 0)", ScRaw "$dataLen = [BitConverter]::ToInt32($wireBytes, 4)", ScRaw "$funcCount = [BitConverter]::ToInt32($wireBytes, 8)", ScRaw "Write-Host \"[riscv-compile] Wire: code=$codeLen data=$dataLen funcs=$funcCount\""]
 
 Section: S05 -- Extract code and data
 
-  s05 : List ShellCmd =
-    [ScComment "Extract code and data", ScAssign "codeStart" (SeInt 12), ScAssign "dataStart" (SeRaw "$codeStart + $codeLen"), ScRaw "$code = New-Object byte[] $codeLen", ScRaw "[Array]::Copy($wireBytes, $codeStart, $code, 0, $codeLen)", ScRaw "$data = New-Object byte[] $dataLen", ScRaw "[Array]::Copy($wireBytes, $dataStart, $data, 0, $dataLen)"]
+  s05-body : List ShellCmd =
+    [ScBlank, ScComment "Extract code and data", ScAssign "codeStart" (SeInt 12), ScAssign "dataStart" (SeRaw "$codeStart + $codeLen"), ScRaw "$code = New-Object byte[] $codeLen", ScRaw "[Array]::Copy($wireBytes, $codeStart, $code, 0, $codeLen)", ScRaw "$data = New-Object byte[] $dataLen", ScRaw "[Array]::Copy($wireBytes, $dataStart, $data, 0, $dataLen)"]
 
 Section: S06 -- Parse function table
 
-  s06 : List ShellCmd =
+  s06-body : List ShellCmd =
     let inner = [ScAssign "nameLen" (SeStaticCall "BitConverter" "ToInt16" [SeVar "wireBytes", SeVar "funcOff"]), ScComment "nameLen is a BYTE count, not a character count. The offset arithmetic below", ScComment "advances by it either way, but the name is a CCE stream, and reading it one", ScComment "byte per character answers '?' for everything above tier 0.", ScComment "The $nameLen -gt 0 guard is not defensive padding: PowerShell's range operator", ScComment "counts DOWN when the end is below the start, so a zero-length name would slice", ScComment "$wireBytes[n+2..n+1] and yield two bytes rather than none.", ScRaw "$fname = if ($nameLen -gt 0) { ConvertFrom-CceBytes $wireBytes[($funcOff + 2)..($funcOff + 1 + $nameLen)] } else { '' }", ScAssign "foff" (SeStaticCall "BitConverter" "ToInt32" [SeVar "wireBytes", SeRaw "$funcOff + 2 + $nameLen"]), ScRaw "$funcEntries.Add([PSCustomObject]@{ Name = $fname; Offset = $foff })", ScAssign "funcOff" (SeRaw "$funcOff + 2 + $nameLen + 4")]
     in let manifest = [ScComment "The plug appends a Unicode name manifest (FUNCMAP-BEGIN .. FUNCMAP-END,", ScComment "rows \"<byte-offset> <name>\") after the binary wire. Prefer those names --", ScComment "they are correct Unicode and need no CCE decoding. Match by byte offset.", ScRaw "$manifestText = [System.Text.Encoding]::UTF8.GetString($rawWire)", ScRaw "$nameByOffset = @{}", ScRaw "$inFuncMap = $false", ScRaw "foreach ($mline in ($manifestText -split \"`n\")) {", ScRaw "    $mline = $mline.TrimEnd(\"`r\")", ScRaw "    if ($mline -match 'FUNCMAP-BEGIN') { $inFuncMap = $true; continue }", ScRaw "    if ($mline -match 'FUNCMAP-END') { break }", ScRaw "    if ($inFuncMap -and $mline -match '^(\\d+)\\s+(.+)$') { $nameByOffset[[int]$matches[1]] = $matches[2] }", ScRaw "}", ScIf (SeRaw "$nameByOffset.Count -gt 0") [ScRaw "foreach ($fe in $funcEntries) { if ($nameByOffset.ContainsKey([int]$fe.Offset)) { $fe.Name = $nameByOffset[[int]$fe.Offset] } }"] []]
-    in [ScComment "Parse function table (entry point + symbol map).", ScAssign "funcOff" (SeRaw "$dataStart + $dataLen"), ScAssign "entryOffset" (SeInt 0), ScRaw "$funcEntries = [System.Collections.Generic.List[PSObject]]::new()", ScForLoop "fi" (SeInt 0) (SeRaw "$fi -lt $funcCount -and $funcOff + 2 -lt $wireBytes.Length") (SeRaw "$fi++") inner, ScBlank, ScSequence manifest, ScIf (SeRaw "$funcEntries.Count -gt 0") [ScAssign "entryOffset" (SeRaw "$funcEntries[0].Offset")] []]
+    in [ScBlank, ScComment "Parse function table (entry point + symbol map).", ScAssign "funcOff" (SeRaw "$dataStart + $dataLen"), ScAssign "entryOffset" (SeInt 0), ScRaw "$funcEntries = [System.Collections.Generic.List[PSObject]]::new()", ScForLoop "fi" (SeInt 0) (SeRaw "$fi -lt $funcCount -and $funcOff + 2 -lt $wireBytes.Length") (SeRaw "$fi++") inner, ScBlank, ScSequence manifest, ScIf (SeRaw "$funcEntries.Count -gt 0") [ScAssign "entryOffset" (SeRaw "$funcEntries[0].Offset")] []]
 
 Section: S07 -- Build ELF64 header
 
-  s07 : List ShellCmd =
-    [ScComment "Build ELF64 for RISC-V", ScRaw "$loadAddr = 2147483648  # 0x80000000 -- QEMU virt RISC-V convention", ScAssign "headerSize" (SeInt 64), ScAssign "phdrSize" (SeInt 56), ScAssign "phdrCount" (SeInt 1), ScAssign "headersEnd" (SeRaw "$headerSize + $phdrSize * $phdrCount"), ScAssign "textStart" (SeRaw "[int](($headersEnd + 15) -band 0xFFFFFFF0)"), ScAssign "textEnd" (SeRaw "$textStart + $codeLen"), ScAssign "rodataStart" (SeRaw "[int](($textEnd + 7) -band 0xFFFFFFF8)"), ScRaw "[uint64]$entry = $loadAddr + [uint64]$textStart + [uint64]$entryOffset", ScAssign "segFilesz" (SeRaw "$rodataStart + $dataLen - $textStart"), ScComment "The 240 MB heap reservation looks like the reason the run phase is slow --", ScComment "every renode.log says \"Loading block of 251669168 bytes\" -- and it is not.", ScComment "Measured on the ARM64 twin of this line, 2026-07-21: the quarter-gigabyte", ScComment "zero-fill costs about 130 ms per test, one per cent, and dropping it does", ScComment "not make eight Renode slots stop flaking either. A test is 12.6s because", ScComment "RenoTimeout is a flat 10s sleep plus ~2.6s of Renode start and teardown.", ScAssign "segMemsz" (SeRaw "$segFilesz + 0x0F000000")]
+  s07-body : List ShellCmd =
+    [ScBlank, ScComment "Build ELF64 for RISC-V", ScRaw "$loadAddr = 2147483648  # 0x80000000 -- QEMU virt RISC-V convention", ScAssign "headerSize" (SeInt 64), ScAssign "phdrSize" (SeInt 56), ScAssign "phdrCount" (SeInt 1), ScAssign "headersEnd" (SeRaw "$headerSize + $phdrSize * $phdrCount"), ScAssign "textStart" (SeRaw "[int](($headersEnd + 15) -band 0xFFFFFFF0)"), ScAssign "textEnd" (SeRaw "$textStart + $codeLen"), ScAssign "rodataStart" (SeRaw "[int](($textEnd + 7) -band 0xFFFFFFF8)"), ScRaw "[uint64]$entry = $loadAddr + [uint64]$textStart + [uint64]$entryOffset", ScAssign "segFilesz" (SeRaw "$rodataStart + $dataLen - $textStart"), ScComment "The 240 MB heap reservation looks like the reason the run phase is slow --", ScComment "every renode.log says \"Loading block of 251669168 bytes\" -- and it is not.", ScComment "Measured on the ARM64 twin of this line, 2026-07-21: the quarter-gigabyte", ScComment "zero-fill costs about 130 ms per test, one per cent, and dropping it does", ScComment "not make eight Renode slots stop flaking either. A test is 12.6s because", ScComment "RenoTimeout is a flat 10s sleep plus ~2.6s of Renode start and teardown.", ScAssign "segMemsz" (SeRaw "$segFilesz + 0x0F000000")]
 
 Section: S08 -- Write ELF bytes
 
-  s08 : List ShellCmd =
-    [ScRaw "$elf = [System.IO.MemoryStream]::new()", ScRaw "$bw = [System.IO.BinaryWriter]::new($elf)", ScBlank, ScComment "ELF64 header", ScRaw "$bw.Write([byte[]]@(0x7F, 0x45, 0x4C, 0x46))", ScRaw "$bw.Write([byte]2)     # 64-bit", ScRaw "$bw.Write([byte]1)     # LSB", ScRaw "$bw.Write([byte]1)     # version", ScRaw "$bw.Write([byte[]]::new(9))", ScRaw "$bw.Write([uint16]2)   # EXEC", ScRaw "$bw.Write([uint16]243) # EM_RISCV", ScRaw "$bw.Write([uint32]1)", ScRaw "$bw.Write([uint64]$entry)", ScRaw "$bw.Write([uint64]$headerSize)", ScRaw "$bw.Write([uint64]0)"]
+  s08-body : List ShellCmd =
+    [ScBlank, ScRaw "$elf = [System.IO.MemoryStream]::new()", ScRaw "$bw = [System.IO.BinaryWriter]::new($elf)", ScBlank, ScComment "ELF64 header", ScRaw "$bw.Write([byte[]]@(0x7F, 0x45, 0x4C, 0x46))", ScRaw "$bw.Write([byte]2)     # 64-bit", ScRaw "$bw.Write([byte]1)     # LSB", ScRaw "$bw.Write([byte]1)     # version", ScRaw "$bw.Write([byte[]]::new(9))", ScRaw "$bw.Write([uint16]2)   # EXEC", ScRaw "$bw.Write([uint16]243) # EM_RISCV", ScRaw "$bw.Write([uint32]1)", ScRaw "$bw.Write([uint64]$entry)", ScRaw "$bw.Write([uint64]$headerSize)", ScRaw "$bw.Write([uint64]0)"]
 
 Section: S09 -- Write ELF header tail and program header
 
-  s09 : List ShellCmd =
-    [ScRaw "$bw.Write([uint32]0)   # flags", ScRaw "$bw.Write([uint16]$headerSize)", ScRaw "$bw.Write([uint16]$phdrSize)", ScRaw "$bw.Write([uint16]$phdrCount)", ScRaw "$bw.Write([uint16]0)", ScRaw "$bw.Write([uint16]0)", ScRaw "$bw.Write([uint16]0)", ScBlank, ScComment "Program header (single RWX LOAD)", ScRaw "$bw.Write([uint32]1)   # PT_LOAD", ScRaw "$bw.Write([uint32]7)   # PF_RWX", ScRaw "$bw.Write([uint64]$textStart)", ScRaw "$bw.Write([uint64]($loadAddr + [uint64]$textStart))", ScRaw "$bw.Write([uint64]($loadAddr + [uint64]$textStart))"]
+  s09-body : List ShellCmd =
+    [ScBlank, ScRaw "$bw.Write([uint32]0)   # flags", ScRaw "$bw.Write([uint16]$headerSize)", ScRaw "$bw.Write([uint16]$phdrSize)", ScRaw "$bw.Write([uint16]$phdrCount)", ScRaw "$bw.Write([uint16]0)", ScRaw "$bw.Write([uint16]0)", ScRaw "$bw.Write([uint16]0)", ScBlank, ScComment "Program header (single RWX LOAD)", ScRaw "$bw.Write([uint32]1)   # PT_LOAD", ScRaw "$bw.Write([uint32]7)   # PF_RWX", ScRaw "$bw.Write([uint64]$textStart)", ScRaw "$bw.Write([uint64]($loadAddr + [uint64]$textStart))", ScRaw "$bw.Write([uint64]($loadAddr + [uint64]$textStart))"]
 
 Section: S10 -- Write ELF segments and finalize
 
-  s10 : List ShellCmd =
-    [ScRaw "$bw.Write([uint64]$segFilesz)", ScRaw "$bw.Write([uint64]$segMemsz)", ScRaw "$bw.Write([uint64]0x1000)", ScBlank, ScRaw "$padding = $textStart - $headersEnd", ScIf (SeRaw "$padding -gt 0") [ScRaw "$bw.Write([byte[]]::new($padding))"] [], ScRaw "$bw.Write($code)", ScRaw "$rodataPad = $rodataStart - $textEnd", ScIf (SeRaw "$rodataPad -gt 0") [ScRaw "$bw.Write([byte[]]::new($rodataPad))"] [], ScRaw "$bw.Write($data)", ScBlank, ScRaw "$bw.Flush()", ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$elf.ToArray()"], ScRaw "$bw.Close()"]
+  s10-body : List ShellCmd =
+    [ScBlank, ScRaw "$bw.Write([uint64]$segFilesz)", ScRaw "$bw.Write([uint64]$segMemsz)", ScRaw "$bw.Write([uint64]0x1000)", ScBlank, ScRaw "$padding = $textStart - $headersEnd", ScIf (SeRaw "$padding -gt 0") [ScRaw "$bw.Write([byte[]]::new($padding))"] [], ScRaw "$bw.Write($code)", ScRaw "$rodataPad = $rodataStart - $textEnd", ScIf (SeRaw "$rodataPad -gt 0") [ScRaw "$bw.Write([byte[]]::new($rodataPad))"] [], ScRaw "$bw.Write($data)", ScBlank, ScRaw "$bw.Flush()", ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$elf.ToArray()"], ScRaw "$bw.Close()"]
 
 Section: S11 -- Flat binary
 
-  s11 : List ShellCmd =
+  s11-body : List ShellCmd =
     let copy-data = [ScRaw "$rodataPadFlat = $rodataStart - $textEnd", ScRaw "[Array]::Copy($data, 0, $flatData, $codeLen + $rodataPadFlat, $dataLen)"]
-    in [ScComment "Also produce a flat binary for -bios none (QEMU jumps to 0x80000000 regardless of ELF entry)", ScDotNetCallAssign "flatOut" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".bin"], ScRaw "$flatData = New-Object byte[] ($codeLen + ($rodataStart - $textEnd) + $dataLen)", ScRaw "[Array]::Copy($code, 0, $flatData, 0, $codeLen)", ScIf (SeRaw "$dataLen -gt 0") copy-data [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "flatOut", SeVar "flatData"]]
+    in [ScBlank, ScComment "Also produce a flat binary for -bios none (QEMU jumps to 0x80000000 regardless of ELF entry)", ScDotNetCallAssign "flatOut" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".bin"], ScRaw "$flatData = New-Object byte[] ($codeLen + ($rodataStart - $textEnd) + $dataLen)", ScRaw "[Array]::Copy($code, 0, $flatData, 0, $codeLen)", ScIf (SeRaw "$dataLen -gt 0") copy-data [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "flatOut", SeVar "flatData"]]
 
 Section: S12 -- Symbol map
 
-  s12 : List ShellCmd =
+  s12-body : List ShellCmd =
     let map-entry = [ScRaw "[uint64]$addr = $loadAddr + [uint64]$textStart + [uint64]$fe.Offset", ScRaw "$nextOff = if ($mi + 1 -lt $funcEntries.Count) { $funcEntries[$mi + 1].Offset } else { $codeLen }", ScRaw "$fsize = $nextOff - $fe.Offset", ScRaw "[void]$mapLines.Add(\"0x$($addr.ToString('X8').PadLeft(8,'0')) $fsize $($fe.Name)\")"]
-    in [ScComment "Write symbol map", ScDotNetCallAssign "mapFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".map"], ScRaw "$mapLines = [System.Collections.Generic.List[string]]::new()", ScRaw "[void]$mapLines.Add('# RISC-V Symbol Map')", ScRaw "[void]$mapLines.Add('# Address         Size  Name')", ScForLoop "mi" (SeInt 0) (SeRaw "$mi -lt $funcEntries.Count") (SeRaw "$mi++") [ScAssign "fe" (SeRaw "$funcEntries[$mi]"), ScSequence map-entry], ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "mapFile", SeVar "mapLines"]]
+    in [ScBlank, ScComment "Write symbol map", ScDotNetCallAssign "mapFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".map"], ScRaw "$mapLines = [System.Collections.Generic.List[string]]::new()", ScRaw "[void]$mapLines.Add('# RISC-V Symbol Map')", ScRaw "[void]$mapLines.Add('# Address         Size  Name')", ScForLoop "mi" (SeInt 0) (SeRaw "$mi -lt $funcEntries.Count") (SeRaw "$mi++") [ScAssign "fe" (SeRaw "$funcEntries[$mi]"), ScSequence map-entry], ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "mapFile", SeVar "mapLines"]]
 
 Section: S12b -- The remap window
 
   s12b-fail : List ShellCmd =
     [ScRaw "Write-Host ''", ScRaw "Write-Host 'FAIL: the RISC-V image has grown into the address-remap window.'", ScRaw "Write-Host (\"  image      {0} bytes, loaded at 0x{1:X}\" -f $flatData.Length, $loadAddr)", ScRaw "Write-Host (\"  remap window 0x{0:X} bytes (rv-remap-addr-insns shifts by {1})\" -f $rvRemapWindow, $rvShiftM.Groups[1].Value)", ScRaw "Write-Host (\"  overrun    {0} bytes\" -f ([uint64]$flatData.Length - $rvRemapWindow))", ScRaw "Write-Host ''", ScRaw "Write-Host '  Every address below the window is remapped to 0x80000000 + addr, which is'", ScRaw "Write-Host '  now inside this image: a low peek reads the guest own code instead of the'", ScRaw "Write-Host '  cell it asked for, silently. Raise the shift in rv-remap-addr-insns and the'", ScRaw "Write-Host '  matching rule in docs/Designs/Done/Compiler/RiscVProcessKernel.md, or shrink'", ScRaw "Write-Host '  the image.'", ScRaw "exit 8"]
 
-  s12b : List ShellCmd =
-    [ScComment "The remap window. rv-remap-addr-insns adds 0x80000000 to any address whose",
+  s12b-body : List ShellCmd =
+    [ScBlank, ScComment "The remap window. rv-remap-addr-insns adds 0x80000000 to any address whose",
      ScComment "high bits are clear, so a test written against the x86-64 low map reads its",
      ScComment "cells out of RAM. That window lands at [0x80000000, 0x80000000 + threshold),",
      ScComment "which is exactly where this image is loaded, so an image that grows past the",
@@ -135,17 +136,49 @@ Section: S12b -- The remap window
 
 Section: S13 -- Summary
 
-  s13 : List ShellCmd =
-    [ScRaw "$sz = (Get-Item $Out).Length", ScRaw "Write-Host \"[riscv-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')))\"", ScRaw "Write-Host \"[riscv-compile] Flat: $flatOut ($($flatData.Length) bytes)\"", ScRaw "Write-Host \"[riscv-compile] Map: $mapFile ($($funcEntries.Count) functions)\""]
+  s13-body : List ShellCmd =
+    [ScBlank, ScRaw "$sz = (Get-Item $Out).Length", ScRaw "Write-Host \"[riscv-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')))\"", ScRaw "Write-Host \"[riscv-compile] Flat: $flatOut ($($flatData.Length) bytes)\"", ScRaw "Write-Host \"[riscv-compile] Map: $mapFile ($($funcEntries.Count) functions)\""]
 
 Section: Assembly
 
-  riscv-body : List ShellCmd = [ScSequence s00, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s12b, ScBlank, ScSequence s13]
+  ir-file-art : PipeArtifact = PipeArtifact { pa-name = "IrFile", pa-kind = PkFile, pa-expr = SeVar "IrFile", pa-from = None }
 
-  riscv-script : ShellScript = sh-script "compile-riscv" "Compile a Codex source file to a RISC-V ELF binary" riscv-params riscv-body
+  wire-file-art : PipeArtifact = PipeArtifact { pa-name = "WireFile", pa-kind = PkFile, pa-expr = SeVar "WireFile", pa-from = None }
+
+  s00 : PipeStage = PipeStage { ps-name = "usage", ps-why = "what this script takes and what it produces", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s00-body }
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode and the VM configuration the two guest phases run under", ps-in = ["Src", "Out"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
+
+  s02 : PipeStage = PipeStage { ps-name = "compile to ir", ps-why = "the compiler emits IR CCE, which is the wire the plug reads", ps-in = ["Src"], ps-out = [ir-file-art], ps-needs = [], ps-verdict = [PoExit 3 "the IR compile step failed, so no wire was produced and the plug was never reached"], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "the riscv codegen plug", ps-why = "the plug turns IR into machine code and a function table, in a guest of its own", ps-in = ["IrFile"], ps-out = [wire-file-art], ps-needs = [], ps-verdict = [PoExit 4 "the RISC-V codegen plug failed on IR the compiler accepted, so the defect is in the plug or in the wire between them"], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "parse the wire preamble", ps-why = "the lengths that say where code ends and data begins", ps-in = ["WireFile"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "extract code and data", ps-why = "split the wire into the two segments the ELF LOAD will carry", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "parse the function table", ps-why = "the entry point and the symbol map", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "build the elf64 header", ps-why = "an ELF64 loading at 0x80000000, which is where the QEMU virt machine puts RAM", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s07-body }
+
+  s08 : PipeStage = PipeStage { ps-name = "open the elf stream", ps-why = "the writer every later stage appends through", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s08-body }
+
+  s09 : PipeStage = PipeStage { ps-name = "write the elf header fields", ps-why = "the fixed part of the header", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s09-body }
+
+  s10 : PipeStage = PipeStage { ps-name = "write the program header", ps-why = "the single LOAD segment and its sizes", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s10-body }
+
+  s11 : PipeStage = PipeStage { ps-name = "write the elf and the flat binary", ps-why = "TWO artifacts from one build: QEMU with -bios none jumps to 0x80000000 whatever the ELF header says, so the flat image is not a convenience", ps-in = ["Out"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s11-body }
+
+  s12 : PipeStage = PipeStage { ps-name = "write the symbol map", ps-why = "the .map beside the binary, which is the only way an objdump reading can name a function", ps-in = ["Out"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s12-body }
+
+  s12b : PipeStage = PipeStage { ps-name = "the remap window", ps-why = "rv-remap-addr-insns adds 0x80000000 to any address whose high bits are clear, so an image that outgrows the window has cells read out of RAM silently; the check reads the shift out of RiscVRuntime.codex rather than carrying a copy", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 8 "the image outgrew the remap window, so a low-map address would be read out of RAM without any diagnostic", PoExit 8 "the check cannot read RiscVRuntime.codex, so the window it is meant to measure is unknown", PoExit 8 "the shift no longer matches this check's pattern; a check whose regex stopped matching has quietly stopped asking, which is why it refuses rather than passing"], ps-body = s12b-body }
+
+  s13 : PipeStage = PipeStage { ps-name = "report", ps-why = "the output path and its size, which is what a caller reads to know the build happened", ps-in = ["Out"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s13-body }
+
+  riscv-pipe : Pipeline = Pipeline { pl-name = "compile-riscv", pl-doc = "Compile a Codex source file to a RISC-V ELF binary", pl-params = riscv-params, pl-stages = [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s12b, s13] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell riscv-script)
+    print-line-uni (emit-powershell (pipeline-to-shell riscv-pipe))
   end
 
 Page 1

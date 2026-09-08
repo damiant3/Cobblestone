@@ -646,52 +646,28 @@ stale check cannot see this: it runs once, before arm one.
 Everything else this design describes has landed, and the depot is the
 record of it. Five rows and one direction are left (2026-09-08).
 
-- **`diag-arm.ps1` has a DETERMINISTIC late-sequence defect: two full 50-arm
-  rehearsals failed the same four arms (2026-09-08).** `b3-pass`, `b3-record`
-  and `b3-clockstuck` each stop at `reset done settled=1 CTRL=64 STATUS=2` with
-  the serial never reaching `END`, and `nic-kills-msc` answers `bank=none` where
-  the sitting wants `record=peer`. Run 1 and run 2 of blu's rehearsal of
-  `diag.img` rebuilt on release seed `D9CF2404` produced the same four, reported
-  by blu through root; fester verified only the control below. **The four sit at
-  the END of the sequence, and repeating exactly makes ordering the subject
-  rather than a flake to be re-run away.**
-  **Three standalone runs say the arms themselves are sound:** blu ran `b3-pass`
-  alone on the old image and the new one on the same box and both passed, and
-  fester rebuilt the image from the depot seed in a different workspace
-  (`build-diag.ps1` default kernel `D9CF240465C3D0BC`, image `24EE826D`, payload
-  `f2e07084211bb472`) and `diag-arm.ps1 -Only b3-pass` answered `ok`, a real TCP
-  conversation from connect to close. So a codegen regression in the seed is
-  REFUTED for this symptom, and so is one workspace's environment. The release
-  ships the depot's `6F077EEB`, rehearsed 2026-09-08 morning, and is not blocked
-  by this.
-  **REPRODUCIBLE IS NOT ATTRIBUTED, and the ledger nearly answers it but does
-  not.** `build/boot/diag.rehearsed` records four 50-arm passes on 2026-09-08:
-  `B68D8676` at 03:49, `CA583E94` at 04:44, `6F077EEB` at 06:04 and the flight
-  image `47F29D50` at 06:45, all local, and a line is written only when every arm
-  answers. So "this harness fails these four in sequence, always" is refuted on
-  its face. **The catch is that `diag-arm.ps1` last changed at 06:48 local
-  (fester 23768), 44 minutes AFTER the `6F077EEB` line**, so that pass is not a
-  control for the harness now running, and the flight-image pass at 06:45 was on
-  a different cfg (lease and rtcw on). The measurement that attributes the defect
-  is therefore still owed and is exactly one run: **the full 50 on the OLD image
-  `6F077EEB` with the CURRENT harness**, which separates "the harness fails these
-  arms in sequence" from "the rebuilt image fails them in sequence". Until that
-  run exists, the two candidates below are guesses about a subject nobody has
-  isolated, and one of them implicates fester's own 23768.
+- **The four-arm failure is NOT REPRODUCED at head (2026-09-09).** Three full
+  50-arm runs answer every arm: the shipped `6F077EEB` under the current
+  harness, a rebuild `37D15C87` on seed `05E254BF`, and that rebuild again with
+  a 4-guest BVT fan-out beside it. Three candidate subjects are refuted by
+  measurement rather than by argument.
+  - **The harness.** `6F077EEB` is the control the ledger could not supply,
+    because `diag-arm.ps1` changed 44 minutes after that image's ledger line.
+    50 of 50, both beds, so the harness does not fail these arms in sequence.
+  - **The payload.** The twice-failing image carried `id=f2e07084211bb472`,
+    which is the payload of the green rebuild. The same payload bytes pass here
+    and failed there.
+  - **The seed.** Kernels `D9CF2404` and `05E254BF` both produce that one
+    payload, so no seed step between them can move what executes.
 
-  **Two candidates in `build/boot/diag-arm.ps1`, NEITHER established
-  (L-MECHANISM), and neither yet tied to a NIC that resets and does not link:**
-  a leaked peer job on the SKIP path, where `Start-Peer` runs before
-  `New-Variant` and `Stop-Peer` sits inside the `else`, so a skipped b3 arm
-  leaves a listener bound for up to its 180-second deadline; and `$job` being one
-  variable shared across the whole arm switch, which only `b3-record` sets back
-  to null, so an arm assigning over a live job orphans it beyond the reach of any
-  `Stop-Peer`. Both fit "only the late arms fail". **Neither predicts
-  `STATUS=2`**, which is the guest's own link state and not a peer that could not
-  be reached, so the leading candidates explain the wrong half of the symptom and
-  the reading is not finished. Owner: fester, after the release push. The repair
-  is proven by a 50-arm rehearsal of a rebuilt image, because the defect exists
-  only in the sequence and no single arm can show it.
+  **LOAD is what remains, and it is half measured.** `b3-pass` and
+  `nic-kills-msc` answer correctly under a sustained 4-guest BVT,
+  `nic-kills-msc` giving `record=peer lost=0`. `b3-record` and `b3-clockstuck`
+  have no safe reading, because no safe instrument exists yet: `bvt.ps1 -Jobs 4`
+  runs 28.4 seconds against a rehearsal of about 50 minutes and is gone long
+  before b3, and a sustained loop of it takes free RAM to 733 MiB, where a
+  starved guest and a slow one are the same colour on the row. **What this wants
+  is a load generator with a bounded memory envelope. Registered, unowned.**
 
 - **The next flight is the FLUSH arm of the sitting write-loss.** Sitting
   14 (2026-09-07) flew AFC6AD65 flush-less on the sitting-13 cfg and the

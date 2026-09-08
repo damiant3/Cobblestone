@@ -1,0 +1,60 @@
+Chapter: EdgeMeshPrewarm
+
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Mesh chapter EdgeMeshLive
+  cites Mesh chapter EdgeMeshPlace
+  cites Mesh chapter EdgeMeshFederate
+
+ `EdgeMeshGameServers.md` phase 4, stage 3: pre-warming. `fleet-spawn` spawns
+ on demand and nothing spawns ahead of one, so the first players of a filling
+ lane wait for a boot.
+
+ A PLAN COUNTS WHAT IS ALREADY WARM. A plan reading the queue alone spawns the
+ whole demand on every tick, and a fleet grows without bound while every single
+ tick reads as correct.
+
+Section: What Is Already Warm
+
+  prewarm-ready : GroupState, EdgeRegion, Text -> Integer
+  prewarm-ready (g) (r) (game) =
+    mesh-healthy-count (gs-find-service g (place-game-service game r)) 0 0
+
+  prewarm-matches : Integer -> Integer
+  prewarm-matches (waiting) = waiting / 2
+
+Section: The Plan
+
+  PrewarmPlan = record {
+    pp-region : Text,
+    pp-ready : Integer,
+    pp-waiting : Integer,
+    pp-spawn : Integer,
+    pp-why : Text
+  }
+
+  prewarm-decide : EdgeRegion, Integer, Integer -> PrewarmPlan
+  prewarm-decide (r) (ready) (waiting) =
+    let want = prewarm-matches waiting - ready
+    in let room = (r.er-capacity) - ready
+    in let capped = if want > room then room else want
+    in let spawn = if capped < 0 then 0 else capped
+    in PrewarmPlan {
+      pp-region = r.er-name,
+      pp-ready = ready,
+      pp-waiting = waiting,
+      pp-spawn = spawn,
+      pp-why = if want <= 0 then "already warm" else if want > room then "capped by capacity" else "demand"
+    }
+
+  prewarm-plan : GroupState, RegionList, Integer, FedQueue, Text -> PrewarmPlan
+  prewarm-plan (g) (rl) (idx) (q) (game) =
+    when mesh-region-at rl idx
+      is None -> PrewarmPlan { pp-region = "none", pp-ready = 0, pp-waiting = 0, pp-spawn = 0, pp-why = "no such region" }
+      is Just (r) -> prewarm-decide r (prewarm-ready g r game) (fed-waiting q game)
+
+Section: Reporting
+
+  prewarm-label : PrewarmPlan -> Text
+  prewarm-label (p) =
+    (p.pp-region) & ": waiting " & show (p.pp-waiting) & ", warm " & show (p.pp-ready) & ", spawn " & show (p.pp-spawn) & ", " & (p.pp-why)

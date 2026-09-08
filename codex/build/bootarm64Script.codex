@@ -4,6 +4,7 @@ Chapter: BootArm64Script
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -18,7 +19,7 @@ Section: Parameters
 
 Section: S00 -- Usage
 
-  s00 : List ShellCmd =
+  s00-body : List ShellCmd =
     [ScComment "Pipeline: source.codex -> IR -> ARM64 codegen -> PE plug (mode 2) -> GPT disk -> QEMU",
      ScComment "",
      ScComment "Usage:",
@@ -31,22 +32,22 @@ Section: S00 -- Usage
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd =
+  s01-body : List ShellCmd =
     let fail-arm = [ScRaw "throw \"ARM64 plug not built. Run: codex/plugs/arm64/build.ps1\""]
     in let fail-pe = [ScRaw "throw \"PE plug not built. Run: codex/plugs/pe/build.ps1\""]
-    in [ScSetStrictMode, ScSetErrorStop, ScRaw "trap { Write-Host \"ERROR at line $($_.InvocationInfo.ScriptLineNumber): $_\"; throw $_ }", ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $Repo 'build' 'vm-config.ps1')"), ScBlank, ScAssign "OutDir" (SeRaw "Join-Path $Repo 'build' 'arm64-output'"), ScMkdir (SeVar "OutDir"), ScBlank, ScAssign "Arm64PlugCdx" (SeRaw "Join-Path $Repo 'codex\\plugs\\arm64\\build-output\\arm64-plug.cdx'"), ScAssign "PePlugCdx" (SeRaw "Join-Path $Repo 'codex\\plugs\\pe\\build-output\\pe-plug.cdx'"), ScAssign "QemuBin" (SeLit "D:\\Program Files\\qemu\\qemu-system-aarch64.exe"), ScAssign "UefiFw" (SeLit "D:\\Program Files\\qemu\\share\\edk2-aarch64-code.fd"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Arm64PlugCdx"))) fail-arm [], ScIf (SeNot (SeFileExists (SeVar "PePlugCdx"))) fail-pe []]
+    in [ScBlank, ScSetStrictMode, ScSetErrorStop, ScRaw "trap { Write-Host \"ERROR at line $($_.InvocationInfo.ScriptLineNumber): $_\"; throw $_ }", ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $Repo 'build' 'vm-config.ps1')"), ScBlank, ScAssign "OutDir" (SeRaw "Join-Path $Repo 'build' 'arm64-output'"), ScMkdir (SeVar "OutDir"), ScBlank, ScAssign "Arm64PlugCdx" (SeRaw "Join-Path $Repo 'codex\\plugs\\arm64\\build-output\\arm64-plug.cdx'"), ScAssign "PePlugCdx" (SeRaw "Join-Path $Repo 'codex\\plugs\\pe\\build-output\\pe-plug.cdx'"), ScAssign "QemuBin" (SeLit "D:\\Program Files\\qemu\\qemu-system-aarch64.exe"), ScAssign "UefiFw" (SeLit "D:\\Program Files\\qemu\\share\\edk2-aarch64-code.fd"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Arm64PlugCdx"))) fail-arm [], ScIf (SeNot (SeFileExists (SeVar "PePlugCdx"))) fail-pe []]
 
 Section: S02 -- Phase 1 Compile IR
 
-  s02 : List ShellCmd =
+  s02-body : List ShellCmd =
     let fail-ir = [ScRaw "throw \"IR compile failed (exit $LASTEXITCODE); see $LogFile\""]
-    in [ScComment "--- Phase 1: Compile source to IR ---", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'arm64.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScEcho (SeText "[boot-arm64] Phase 1: Compiling $Src to IR..."), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'build' 'compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB", ScIf (SeNot (SeExitCodeEq 0)) fail-ir []]
+    in [ScBlank, ScComment "--- Phase 1: Compile source to IR ---", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'arm64.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScEcho (SeText "[boot-arm64] Phase 1: Compiling $Src to IR..."), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'build' 'compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB", ScIf (SeNot (SeExitCodeEq 0)) fail-ir []]
 
 Section: S03 -- Phase 2 ARM64 Codegen
 
-  s03 : List ShellCmd =
+  s03-body : List ShellCmd =
     let fail-cg = [ScRaw "throw \"ARM64 codegen failed (exit $LASTEXITCODE)\""]
-    in [ScComment "--- Phase 2: ARM64 codegen via plug ---", ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'arm64.wire.bin'"), ScEcho (SeLit "[boot-arm64] Phase 2: ARM64 codegen..."), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'codex\\plugs\\arm64\\run.ps1') -IrInput $IrFile -Out $WireFile", ScIf (SeNot (SeExitCodeEq 0)) fail-cg []]
+    in [ScBlank, ScComment "--- Phase 2: ARM64 codegen via plug ---", ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'arm64.wire.bin'"), ScEcho (SeLit "[boot-arm64] Phase 2: ARM64 codegen..."), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'codex\\plugs\\arm64\\run.ps1') -IrInput $IrFile -Out $WireFile", ScIf (SeNot (SeExitCodeEq 0)) fail-cg []]
 
 Section: S04 -- Phase 3 PE Plug
 
@@ -64,30 +65,44 @@ Section: S04 -- Phase 3 PE Plug
 
   s04-cleanup : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScDelete (SeVar "stderrFile")]
 
-  s04 : List ShellCmd = [ScEcho (SeLit "[boot-arm64] Phase 3: Building ARM64 PE via plug (mode 2)..."), ScSequence s04-wire-clean, ScSequence s04-payload, ScTry [ScSequence s04-tcp-send, ScSequence s04-tcp-xfer, ScSequence s04-pe-fix, ScSequence s04-pe-write] [] s04-cleanup]
+  s04-body : List ShellCmd = [ScBlank, ScEcho (SeLit "[boot-arm64] Phase 3: Building ARM64 PE via plug (mode 2)..."), ScSequence s04-wire-clean, ScSequence s04-payload, ScTry [ScSequence s04-tcp-send, ScSequence s04-tcp-xfer, ScSequence s04-pe-fix, ScSequence s04-pe-write] [] s04-cleanup]
 
 Section: S05 -- Phase 4 GPT Disk Image
 
-  s05 : List ShellCmd =
+  s05-body : List ShellCmd =
     let fail-img = [ScRaw "throw \"Disk image build failed (exit $LASTEXITCODE)\""]
-    in [ScComment "--- Phase 4: Build GPT disk image ---", ScAssign "ImgFile" (SeRaw "Join-Path $OutDir 'codex-arm64.img'"), ScEcho (SeLit "[boot-arm64] Phase 4: Building GPT disk image..."), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'build' 'build-arm64-img.ps1') -PeInput $PeFile -Out $ImgFile", ScIf (SeNot (SeExitCodeEq 0)) fail-img []]
+    in [ScBlank, ScComment "--- Phase 4: Build GPT disk image ---", ScAssign "ImgFile" (SeRaw "Join-Path $OutDir 'codex-arm64.img'"), ScEcho (SeLit "[boot-arm64] Phase 4: Building GPT disk image..."), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'build' 'build-arm64-img.ps1') -PeInput $PeFile -Out $ImgFile", ScIf (SeNot (SeExitCodeEq 0)) fail-img []]
 
 Section: S06 -- NoBoot Exit
 
-  s06 : List ShellCmd = [ScIf (SeVar "NoBoot") [ScEcho (SeText "[boot-arm64] Done (NoBoot). Image: $ImgFile"), ScExit (SeInt 0)] []]
+  s06-body : List ShellCmd = [ScBlank, ScIf (SeVar "NoBoot") [ScEcho (SeText "[boot-arm64] Done (NoBoot). Image: $ImgFile"), ScExit (SeInt 0)] []]
 
 Section: S07 -- Phase 5 QEMU Boot
 
-  s07 : List ShellCmd = [ScComment "--- Phase 5: Boot in QEMU ---", ScEcho (SeLit "[boot-arm64] Phase 5: Booting in QEMU aarch64..."), ScIf (SeIntLt (SeVar "TimeoutSec") (SeInt 1)) [ScEcho (SeLit "[boot-arm64] UART output on serial console. Press Ctrl+C to stop.")] [], ScComment "Create varstore if it does not exist (64 MB, zeroed)", ScAssign "VarStore" (SeRaw "Join-Path $OutDir 'efi-varstore.img'"), ScIf (SeNot (SeFileExists (SeVar "VarStore"))) [ScRaw "$fs = [System.IO.File]::Create($VarStore); $fs.SetLength(64 * 1024 * 1024); $fs.Close()", ScEcho (SeText "[boot-arm64] Created EFI varstore: $VarStore")] [], ScBlank, ScComment "The hostfwd was a fixed 8080. Two agents booting arm64 on this box forwarded", ScComment "the same host port, so whichever guest bound it first answered the other", ScComment "agent's requests -- the same class as the fixed monitor port that", ScComment "build/boot/test-ovmf.ps1 derives per workspace for exactly this reason", ScComment "(L-SHARED). Derived here in 18080..18279 from the workspace name.", ScComment "", ScComment "A HELD port is a REFUSAL rather than a hop to the next free number. A run", ScComment "that quietly moves its port answers on an address the caller was never told,", ScComment "which is the same failure one step later.", ScRaw "$fwdPort = $HostPort", ScRaw "if ($fwdPort -eq 0) {", ScRaw "    $tag = (Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]',''", ScRaw "    $portHash = 0", ScRaw "    foreach ($ch in $tag.ToCharArray()) { $portHash = ($portHash * 31 + [int]$ch) % 200 }", ScRaw "    $fwdPort = 18080 + $portHash", ScRaw "    $held = @(Get-NetTCPConnection -LocalPort $fwdPort -State Listen -ErrorAction SilentlyContinue)", ScRaw "    if ($held.Count -gt 0) {", ScRaw "        throw \"hostfwd port $fwdPort (workspace '$tag') is already listening, PID $($held[0].OwningProcess). An arm64 boot from THIS workspace is still alive; refusing to start, because its guest would answer requests meant for this run.\"", ScRaw "    }", ScRaw "}", ScRaw "Write-Host \"[boot-arm64] hostfwd tcp::$fwdPort -> guest :80\"", ScComment "The firmware path contains a space, and Start-Process does not re-quote a", ScComment "space inside a single argument token, so a -drive whose file= sits under", ScComment "'Program Files' reaches QEMU split and it dies on 'Could not open D:\\Program'.", ScComment "The foreground `& $exe @args` call quotes per element and never met this; the", ScComment "-TimeoutSec path below uses Start-Process and does. Copy to a space-free", ScComment "path, which is what build/boot/test-ovmf.ps1 already does for the same reason.", ScRaw "$FwCopy = Join-Path $env:TEMP (\"arm64-code-\" + ((Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]','') + \".fd\")", ScRaw "if ((-not (Test-Path $FwCopy)) -or (Get-Item $FwCopy).Length -ne (Get-Item $UefiFw).Length) { Copy-Item -Force $UefiFw $FwCopy }", ScRaw "$qemuArgs = @('-machine', 'virt,gic-version=3', '-cpu', 'cortex-a72', '-m', '1024', '-drive', \"if=pflash,format=raw,file=$FwCopy,readonly=on\", '-drive', \"if=pflash,format=raw,file=$VarStore\", '-drive', \"file=$ImgFile,format=raw,if=virtio\", '-device', 'virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56', '-netdev', \"user,id=net0,hostfwd=tcp::$fwdPort-:80\")", ScRaw "if ($TimeoutSec -le 0) {", ScRaw "    & $QemuBin @($qemuArgs + '-nographic')", ScRaw "} else {", ScRaw "    # A bounded run has to be READABLE or the bound buys nothing: -nographic", ScRaw "    # puts the UART on a stdout that Start-Process discards, so serial goes to", ScRaw "    # a file and the path is printed.", ScRaw "    $SerialLog = Join-Path $OutDir 'arm64-serial.log'", ScRaw "    Remove-Item $SerialLog -Force -ErrorAction SilentlyContinue", ScRaw "    $qproc = Start-Process -FilePath $QemuBin -ArgumentList @($qemuArgs + @('-display', 'none', '-serial', \"file:$SerialLog\")) -PassThru -WindowStyle Hidden", ScRaw "    Write-Host \"[boot-arm64] QEMU pid $($qproc.Id), deadline ${TimeoutSec}s, serial -> $SerialLog\"", ScRaw "    $qproc.WaitForExit($TimeoutSec * 1000)", ScRaw "    if ($qproc.HasExited) {", ScRaw "        Write-Host \"[boot-arm64] QEMU exited on its own, code $($qproc.ExitCode)\"", ScRaw "    } else {", ScRaw "        Stop-Process -Id $qproc.Id -Force -ErrorAction SilentlyContinue", ScRaw "        # An unfinished run is not a verdict, so the report says which this was.", ScRaw "        Write-Host \"[boot-arm64] TIMEOUT at ${TimeoutSec}s: QEMU was killed and the run did NOT finish. Treat the serial log as a partial.\"", ScRaw "    }", ScRaw "}"]
+  s07-body : List ShellCmd = [ScBlank, ScComment "--- Phase 5: Boot in QEMU ---", ScEcho (SeLit "[boot-arm64] Phase 5: Booting in QEMU aarch64..."), ScIf (SeIntLt (SeVar "TimeoutSec") (SeInt 1)) [ScEcho (SeLit "[boot-arm64] UART output on serial console. Press Ctrl+C to stop.")] [], ScComment "Create varstore if it does not exist (64 MB, zeroed)", ScAssign "VarStore" (SeRaw "Join-Path $OutDir 'efi-varstore.img'"), ScIf (SeNot (SeFileExists (SeVar "VarStore"))) [ScRaw "$fs = [System.IO.File]::Create($VarStore); $fs.SetLength(64 * 1024 * 1024); $fs.Close()", ScEcho (SeText "[boot-arm64] Created EFI varstore: $VarStore")] [], ScBlank, ScComment "The hostfwd was a fixed 8080. Two agents booting arm64 on this box forwarded", ScComment "the same host port, so whichever guest bound it first answered the other", ScComment "agent's requests -- the same class as the fixed monitor port that", ScComment "build/boot/test-ovmf.ps1 derives per workspace for exactly this reason", ScComment "(L-SHARED). Derived here in 18080..18279 from the workspace name.", ScComment "", ScComment "A HELD port is a REFUSAL rather than a hop to the next free number. A run", ScComment "that quietly moves its port answers on an address the caller was never told,", ScComment "which is the same failure one step later.", ScRaw "$fwdPort = $HostPort", ScRaw "if ($fwdPort -eq 0) {", ScRaw "    $tag = (Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]',''", ScRaw "    $portHash = 0", ScRaw "    foreach ($ch in $tag.ToCharArray()) { $portHash = ($portHash * 31 + [int]$ch) % 200 }", ScRaw "    $fwdPort = 18080 + $portHash", ScRaw "    $held = @(Get-NetTCPConnection -LocalPort $fwdPort -State Listen -ErrorAction SilentlyContinue)", ScRaw "    if ($held.Count -gt 0) {", ScRaw "        throw \"hostfwd port $fwdPort (workspace '$tag') is already listening, PID $($held[0].OwningProcess). An arm64 boot from THIS workspace is still alive; refusing to start, because its guest would answer requests meant for this run.\"", ScRaw "    }", ScRaw "}", ScRaw "Write-Host \"[boot-arm64] hostfwd tcp::$fwdPort -> guest :80\"", ScComment "The firmware path contains a space, and Start-Process does not re-quote a", ScComment "space inside a single argument token, so a -drive whose file= sits under", ScComment "'Program Files' reaches QEMU split and it dies on 'Could not open D:\\Program'.", ScComment "The foreground `& $exe @args` call quotes per element and never met this; the", ScComment "-TimeoutSec path below uses Start-Process and does. Copy to a space-free", ScComment "path, which is what build/boot/test-ovmf.ps1 already does for the same reason.", ScRaw "$FwCopy = Join-Path $env:TEMP (\"arm64-code-\" + ((Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]','') + \".fd\")", ScRaw "if ((-not (Test-Path $FwCopy)) -or (Get-Item $FwCopy).Length -ne (Get-Item $UefiFw).Length) { Copy-Item -Force $UefiFw $FwCopy }", ScRaw "$qemuArgs = @('-machine', 'virt,gic-version=3', '-cpu', 'cortex-a72', '-m', '1024', '-drive', \"if=pflash,format=raw,file=$FwCopy,readonly=on\", '-drive', \"if=pflash,format=raw,file=$VarStore\", '-drive', \"file=$ImgFile,format=raw,if=virtio\", '-device', 'virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56', '-netdev', \"user,id=net0,hostfwd=tcp::$fwdPort-:80\")", ScRaw "if ($TimeoutSec -le 0) {", ScRaw "    & $QemuBin @($qemuArgs + '-nographic')", ScRaw "} else {", ScRaw "    # A bounded run has to be READABLE or the bound buys nothing: -nographic", ScRaw "    # puts the UART on a stdout that Start-Process discards, so serial goes to", ScRaw "    # a file and the path is printed.", ScRaw "    $SerialLog = Join-Path $OutDir 'arm64-serial.log'", ScRaw "    Remove-Item $SerialLog -Force -ErrorAction SilentlyContinue", ScRaw "    $qproc = Start-Process -FilePath $QemuBin -ArgumentList @($qemuArgs + @('-display', 'none', '-serial', \"file:$SerialLog\")) -PassThru -WindowStyle Hidden", ScRaw "    Write-Host \"[boot-arm64] QEMU pid $($qproc.Id), deadline ${TimeoutSec}s, serial -> $SerialLog\"", ScRaw "    $qproc.WaitForExit($TimeoutSec * 1000)", ScRaw "    if ($qproc.HasExited) {", ScRaw "        Write-Host \"[boot-arm64] QEMU exited on its own, code $($qproc.ExitCode)\"", ScRaw "    } else {", ScRaw "        Stop-Process -Id $qproc.Id -Force -ErrorAction SilentlyContinue", ScRaw "        # An unfinished run is not a verdict, so the report says which this was.", ScRaw "        Write-Host \"[boot-arm64] TIMEOUT at ${TimeoutSec}s: QEMU was killed and the run did NOT finish. Treat the serial log as a partial.\"", ScRaw "    }", ScRaw "}"]
 
 Section: Assembly
 
-  boot-arm64-body : List ShellCmd = [ScSequence s00, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+  s00 : PipeStage = PipeStage { ps-name = "the pipeline, stated", ps-why = "source to IR to ARM64 codegen to a PE plug to a GPT disk to QEMU, which is five separate tools and the only place the whole chain is written down", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s00-body }
 
-  boot-arm64-script : ShellScript = sh-script "boot-arm64" "End-to-end ARM64 UEFI boot pipeline" boot-arm64-params boot-arm64-body
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode, a trap that names the failing line, and the check that the ARM64 plug was built at all", ps-in = ["Src"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
+
+  s02 : PipeStage = PipeStage { ps-name = "phase 1, compile source to ir", ps-why = "the compiler emits the IR the plug reads", ps-in = ["Src"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "phase 2, arm64 codegen", ps-why = "the plug turns IR into machine code and a function table", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "phase 3, the arm64 pe", ps-why = "the PE container comes from a plug in mode 2, not from the compiler; container formats are plug work", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "phase 4, the gpt disk image", ps-why = "a bootable GPT image around the PE, which is what UEFI can actually be handed", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "the noboot exit", ps-why = "stop with the image built when the caller wanted the artifact rather than a boot", ps-in = ["NoBoot"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "-NoBoot: the image was built and nothing was booted; a success that says an artifact exists, not that the artifact runs"], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "phase 5, boot in qemu", ps-why = "fly the image and read what the guest says", ps-in = ["MemMB"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s07-body }
+
+  boot-arm64-pipe : Pipeline = Pipeline { pl-name = "boot-arm64", pl-doc = "End-to-end ARM64 UEFI boot pipeline", pl-params = boot-arm64-params, pl-stages = [s00, s01, s02, s03, s04, s05, s06, s07] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell boot-arm64-script)
+    print-line-uni (emit-powershell (pipeline-to-shell boot-arm64-pipe))
   end
 
 Page 1

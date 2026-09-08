@@ -121,7 +121,7 @@ Four CLs removing deprecated syntax and adding diagnostics:
 34 completed designs moved from `Active/` to `Done/` (CL 6475,
 originally fester CL 6413). Design docs badly lagged the code --
 a survey agent reading them literally reported shipped features as
-"not started". Moved set includes the full card game engine suite
+"not started". Moved set includes the full CodexMagic engine suite
 (15 docs), Browser, Diagram, FileShare, Secrets, Services, IoT
 Addendum, CCE-TIER1, TrueTypeFont, ProofReading, REPL, and others.
 14 stale status headers fixed in still-active docs.

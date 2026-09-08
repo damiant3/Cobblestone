@@ -5,21 +5,76 @@ Chapter: CheckCdxRegistryScript
   cites Foreword chapter List
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE TWENTY-SIXTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The
+ emitted script is byte-identical to the one that shipped before the migration.
+
+ THE PASCALCASE CONVERTER IS A STAGE THAT DECLARES NO ARTIFACT, and that is the
+ `PkFunction` gap hit for the second time on this campaign. `ConvertTo-Pascal` is
+ defined by one stage and called by another, but a function is not a `PipeKind`:
+ the model can name a file, a directory, a value or a text and nothing else. So
+ the dependency S06 has on S02 travels through PowerShell's own scope and is
+ invisible to the model, which is exactly the kind of edge the declarations
+ exist to make visible.
+
+ THE CATALOGUE IS READ FOUR WAYS AND ONLY THREE OF THEM ARE IN ONE FILE. The
+ constants and the registry rows come from `CdxCodes.codex`; the raise sites come
+ from every `.codex` under `codex/compiler`; the fourth is the host, which spells
+ a raise as `error <N>:` in PowerShell. `codeToConst` exists solely to let the
+ host's NUMBER reach the Codex CONSTANT the rest of the script counts in, and it
+ is declared here rather than left as an anonymous inversion in the middle of a
+ stage.
 
 Section: Parameters
 
   ccr-params : List ShellParam = [sh-param-default "Root" SptString (SePathParent SeScriptRoot)]
 
-Section: S01 -- Why this exists
+Section: The pipeline, declared before it is spelled
+
+  codes-file-art : PipeArtifact = PipeArtifact { pa-name = "codesFile", pa-kind = PkFile, pa-expr = SeVar "codesFile", pa-from = Just (SePathJoin (pipe-param-ref ccr-params "Root") (SeLit "codex/compiler/Core/CdxCodes.codex")) }
+
+  const-to-code-art : PipeArtifact = PipeArtifact { pa-name = "constToCode", pa-kind = PkValue, pa-expr = SeVar "constToCode", pa-from = Just SeHashLiteral }
+
+  registered-art : PipeArtifact = PipeArtifact { pa-name = "registered", pa-kind = PkValue, pa-expr = SeVar "registered", pa-from = Just SeHashLiteral }
+
+  raised-art : PipeArtifact = PipeArtifact { pa-name = "raised", pa-kind = PkValue, pa-expr = SeVar "raised", pa-from = Just SeHashLiteral }
+
+  compiler-files-art : PipeArtifact = PipeArtifact { pa-name = "compilerFiles", pa-kind = PkValue, pa-expr = SeVar "compilerFiles", pa-from = Just (SeAsArray (SeListFiles (SePathJoin (pipe-param-ref ccr-params "Root") (SeLit "codex/compiler")) "*.codex" True)) }
+
+  code-to-const-art : PipeArtifact = PipeArtifact { pa-name = "codeToConst", pa-kind = PkValue, pa-expr = SeVar "codeToConst", pa-from = Just SeHashLiteral }
+
+  host-files-art : PipeArtifact = PipeArtifact { pa-name = "hostFiles", pa-kind = PkValue, pa-expr = SeVar "hostFiles", pa-from = Just (SeArrayLiteral []) }
+
+  registered-no-raiser-art : PipeArtifact = PipeArtifact { pa-name = "registeredNoRaiser", pa-kind = PkValue, pa-expr = SeVar "registeredNoRaiser", pa-from = Just (SeArrayLiteral []) }
+
+  raised-no-row-art : PipeArtifact = PipeArtifact { pa-name = "raisedNoRow", pa-kind = PkValue, pa-expr = SeVar "raisedNoRow", pa-from = Just (SeArrayLiteral []) }
+
+  name-mismatch-art : PipeArtifact = PipeArtifact { pa-name = "nameMismatch", pa-kind = PkValue, pa-expr = SeVar "nameMismatch", pa-from = Just (SeArrayLiteral []) }
+
+  total-art : PipeArtifact = PipeArtifact { pa-name = "total", pa-kind = PkValue, pa-expr = SeVar "total", pa-from = None }
+
+  ccr-arts : List PipeArtifact = [codes-file-art, const-to-code-art, registered-art, raised-art, compiler-files-art, code-to-const-art, host-files-art, registered-no-raiser-art, raised-no-row-art, name-mismatch-art, total-art]
+
+  ccr-name : Text -> ShellExpr
+  ccr-name (n) = pipe-ref ccr-arts ccr-params n
+
+Section: S00 -- Why this exists
 
   ccr-doctrine : List ShellCmd = [ScComment "Nothing in the live tree reads the diagnostic catalogue, so it rots.", ScComment "", ScComment "codex/compiler/Core/CdxCodes.codex is a table of every CDX code with its", ScComment "name, severity, phase and a one-line summary. The NUMERIC constants in it", ScComment "are used -- the emitters cite them -- but the registry ROWS are read by", ScComment "nobody: cdx-lookup has no caller outside archived material, and", ScComment "whole-program dead-code elimination prunes the whole table (measured at", ScComment "CL 10244: changing one summary left Sut.cdx byte-identical to the seed, so", ScComment "a string the compiler reached would have moved the binary and did not).", ScComment "", ScComment "The consequence is that every row drifts against the code it describes with", ScComment "nothing able to notice. Two wrong summaries were caught by eye and fixed one", ScComment "at a time (CDX9004 at CL 10131, CDX6011 which called an instruction-count", ScComment "budget a \"byte threshold\"); there is no reason to think those were the only", ScComment "two, because the instrument that would say is the one that did not exist.", ScComment "", ScComment "This is that instrument. It reads the catalogue -- the constant->code table,", ScComment "the registry rows, every raise site across codex/compiler (code lines only,", ScComment "never column-2 prose) and the host's own \"error <N>:\" raises -- and fails", ScComment "the build on the three ways they can disagree:", ScComment "", ScComment "  REGISTERED-BUT-NEVER-RAISED  a row describes a code no site emits, so it", ScComment "                               is a promise the compiler does not keep (the", ScComment "                               CDX2043 class the chapter's own prose warns", ScComment "                               about) and its summary can never be seen.", ScComment "  RAISED-BUT-UNREGISTERED      a site emits a code with no row, so cdx-lookup", ScComment "                               answers \"Unregistered CDX code\" and the code", ScComment "                               is undocumented by construction.", ScComment "  NAME-MISMATCH                a row's Name string is not the PascalCase of", ScComment "                               its constant, which is the one half of a", ScComment "                               summary a machine CAN check.", ScComment "", ScComment "It does not verify summary PROSE against behaviour -- no build-time check", ScComment "can -- but it makes the catalogue read by the build, which is what stops the", ScComment "structural rot.", ScComment "", ScComment "Exit 1 on any disagreement."]
 
-  ccr-not-found : ShellExpr = SeConcat (SeLit "check-cdx-registry: CdxCodes.codex not found at ") (SeVar "codesFile")
+  s00 : PipeStage = PipeStage { ps-name = "doctrine", ps-why = "why a catalogue nobody reads rots in silence, and what the two summaries caught by eye say about the ones that were not", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = ccr-doctrine }
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "codesFile" (SePathJoin (SeVar "Root") (SeLit "codex/compiler/Core/CdxCodes.codex")), ScIf (SeNot (SeFileExists (SeVar "codesFile"))) [ScEcho ccr-not-found, ScExit (SeInt 1)] []]
+Section: S01 -- The catalogue file
+
+  ccr-not-found : ShellExpr = SeConcat (SeLit "check-cdx-registry: CdxCodes.codex not found at ") (ccr-name "codesFile")
+
+  s01-body : List ShellCmd = [ScBlank, ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce codes-file-art, ScIf (SeNot (SeFileExists (ccr-name "codesFile"))) [ScEcho ccr-not-found, ScExit (SeInt 1)] []]
+
+  s01 : PipeStage = PipeStage { ps-name = "the catalogue file", ps-why = "locate CdxCodes.codex, which is the only file carrying both the constants and the registry rows", ps-in = ["Root"], ps-out = [codes-file-art], ps-needs = [], ps-verdict = [PoExit 1 "CdxCodes.codex is not under the given Root, so there is no catalogue to check the compiler against"], ps-body = s01-body }
 
 Section: S02 -- The constant name in PascalCase
 
@@ -27,7 +82,9 @@ Section: S02 -- The constant name in PascalCase
 
   ccr-pascal-body : List ShellCmd = [ScComment "drop the leading \"cdx-\", then TitleCase each hyphen segment", ScAssign "stem" (SeReplace (SeVar "kebab") "^cdx-" (SeLit "")), ScReturn (SeJoin (SePipe (SeSplit (SeVar "stem") "-") [StMap ccr-seg]) (SeLit ""))]
 
-  s02 : List ShellCmd = [ScComment "kebab-case constant -> PascalCase, the transform the registry Name should be.", ScFunction "ConvertTo-Pascal" [sh-param "kebab" SptString] ccr-pascal-body]
+  s02-body : List ShellCmd = [ScBlank, ScComment "kebab-case constant -> PascalCase, the transform the registry Name should be.", ScFunction "ConvertTo-Pascal" [sh-param "kebab" SptString] ccr-pascal-body]
+
+  s02 : PipeStage = PipeStage { ps-name = "the constant name in pascalcase", ps-why = "the one half of a registry summary a machine can check: a row's Name must be the PascalCase of its constant", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- The constants and the registry rows
 
@@ -35,11 +92,13 @@ Section: S03 -- The constants and the registry rows
 
   ccr-row-pattern : Text = "mk-cdx\\s+(cdx-[a-z0-9-]+)\\s+\"([^\"]*)\""
 
-  ccr-lines : ShellExpr = SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "codesFile"]
+  ccr-lines : ShellExpr = SeStaticCall "System.IO.File" "ReadAllLines" [ccr-name "codesFile"]
 
   ccr-scan-const : List ShellCmd = [ScIf (SeMatch (SeVar "line") ccr-const-pattern) [ScSetIndex "constToCode" (SeIndex (SeVar "matches") (SeInt 1)) (SeCast "int" (SeIndex (SeVar "matches") (SeInt 2)))] [], ScIf (SeMatch (SeVar "line") ccr-row-pattern) [ScSetIndex "registered" (SeIndex (SeVar "matches") (SeInt 1)) (SeIndex (SeVar "matches") (SeInt 2))] []]
 
-  s03 : List ShellCmd = [ScComment "1. Constant declarations: \"  cdx-foo-bar : Integer = 1234\"", ScComment "2. Registry rows: \"mk-cdx cdx-foo-bar \"Name\" sev phase \"summary\"\"", ScComment "   A constant appears in a row iff `mk-cdx <const> \"` is present.", ScAssign "constToCode" SeHashLiteral, ScAssign "registered" SeHashLiteral, ScForEach "line" ccr-lines ccr-scan-const]
+  s03-body : List ShellCmd = [ScBlank, ScComment "1. Constant declarations: \"  cdx-foo-bar : Integer = 1234\"", ScComment "2. Registry rows: \"mk-cdx cdx-foo-bar \"Name\" sev phase \"summary\"\"", ScComment "   A constant appears in a row iff `mk-cdx <const> \"` is present.", pipe-produce const-to-code-art, pipe-produce registered-art, ScForEach "line" ccr-lines ccr-scan-const]
+
+  s03 : PipeStage = PipeStage { ps-name = "the constants and the registry rows", ps-why = "one pass over the catalogue building both tables: every constant with its numeric code, and every constant a row documents with the Name that row gives it", ps-in = ["codesFile"], ps-out = [const-to-code-art, registered-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- The raise sites in the compiler
 
@@ -47,13 +106,15 @@ Section: S04 -- The raise sites in the compiler
 
   ccr-skip-decl : List ShellCmd = [ScIf (SeMatch (SeVar "line") "^\\s+cdx-[a-z0-9-]+\\s*:\\s*Integer\\s*=") [ScContinue] [], ScIf (SeMatch (SeVar "line") "mk-cdx\\s+cdx-") [ScContinue] []]
 
-  ccr-take-raise : List ShellCmd = [ScAssign "name" (SeProperty (SeVar "m") "Value"), ScIf (SeMethodCall (SeVar "constToCode") "ContainsKey" [SeVar "name"]) [ScSetIndex "raised" (SeVar "name") (SeBool True)] []]
+  ccr-take-raise : List ShellCmd = [ScAssign "name" (SeProperty (SeVar "m") "Value"), ScIf (SeMethodCall (ccr-name "constToCode") "ContainsKey" [SeVar "name"]) [ScSetIndex "raised" (SeVar "name") (SeBool True)] []]
 
   ccr-scan-line : List ShellCmd = [ScComment "Column-2 prose is commentary, never a raise site.", ScIf (SeMatch (SeVar "line") "^ [^ ]") [ScContinue] [], ScComment "In CdxCodes.codex, a bare \"cdx-foo :\" declaration and a \"mk-cdx cdx-foo\"", ScComment "row are not raises; skip those two shapes there.", ScIf (SeVar "isCodesFile") ccr-skip-decl [], ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit "cdx-[a-z0-9-]+"]) ccr-take-raise]
 
-  ccr-scan-file : List ShellCmd = [ScAssign "isCodesFile" (SeStringEq (SeProperty (SeVar "f") "FullName") (SePathResolve (SeVar "codesFile"))), ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeProperty (SeVar "f") "FullName"]) ccr-scan-line]
+  ccr-scan-file : List ShellCmd = [ScAssign "isCodesFile" (SeStringEq (SeProperty (SeVar "f") "FullName") (SePathResolve (ccr-name "codesFile"))), ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeProperty (SeVar "f") "FullName"]) ccr-scan-line]
 
-  s04 : List ShellCmd = [ScSequence ccr-raise-note, ScAssign "raised" SeHashLiteral, ScAssign "compilerFiles" (SeAsArray (SeListFiles (SePathJoin (SeVar "Root") (SeLit "codex/compiler")) "*.codex" True)), ScForEach "f" (SeVar "compilerFiles") ccr-scan-file]
+  s04-body : List ShellCmd = [ScBlank, ScSequence ccr-raise-note, pipe-produce raised-art, pipe-produce compiler-files-art, ScForEach "f" (ccr-name "compilerFiles") ccr-scan-file]
+
+  s04 : PipeStage = PipeStage { ps-name = "the raise sites in the compiler", ps-why = "every reference to a cdx-* constant under codex/compiler except its own declaration and row, with column-2 prose skipped because a sentence reporting an absence was once counted as the presence", ps-in = ["Root", "codesFile", "constToCode"], ps-out = [raised-art, compiler-files-art], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 
 Section: S05 -- The raise sites on the host
 
@@ -61,53 +122,57 @@ Section: S05 -- The raise sites on the host
 
   ccr-host-roots : List ShellExpr = [SeLit "build", SeLit "tools"]
 
-  ccr-take-host : List ShellCmd = [ScAssign "n" (SeCast "int" (SeProperty (SeIndex (SeProperty (SeVar "m") "Groups") (SeInt 1)) "Value")), ScIf (SeMethodCall (SeVar "codeToConst") "ContainsKey" [SeVar "n"]) [ScSetIndex "raised" (SeIndex (SeVar "codeToConst") (SeVar "n")) (SeBool True)] []]
+  ccr-take-host : List ShellCmd = [ScAssign "n" (SeCast "int" (SeProperty (SeIndex (SeProperty (SeVar "m") "Groups") (SeInt 1)) "Value")), ScIf (SeMethodCall (ccr-name "codeToConst") "ContainsKey" [SeVar "n"]) [ScSetIndex "raised" (SeIndex (ccr-name "codeToConst") (SeVar "n")) (SeBool True)] []]
 
   ccr-host-file : List ShellCmd = [ScForEach "m" (SeStaticCall "regex" "Matches" [SeFileText (SeProperty (SeVar "f") "FullName"), SeLit "error\\s+(\\d{3,4})\\s*:"]) ccr-take-host]
 
-  ccr-host-dir : ShellExpr = SePathJoin (SeVar "Root") (SeVar "hr")
+  ccr-host-dir : ShellExpr = SePathJoin (ccr-name "Root") (SeVar "hr")
 
   ccr-gather-host : List ShellCmd = [ScAppend "hostFiles" (SeAsArray (SeListFiles ccr-host-dir "*.ps1" True)), ScAppend "hostFiles" (SeAsArray (SeListFiles ccr-host-dir "*.psm1" True))]
 
-  s05 : List ShellCmd = [ScSequence ccr-host-note, ScAssign "codeToConst" SeHashLiteral, ScForEach "k" (SeProperty (SeVar "constToCode") "Keys") [ScSetIndex "codeToConst" (SeIndex (SeVar "constToCode") (SeVar "k")) (SeVar "k")], ScAssign "hostFiles" (SeArrayLiteral []), ScForEach "hr" (SeArrayLiteral ccr-host-roots) ccr-gather-host, ScForEach "f" (SeVar "hostFiles") ccr-host-file]
+  s05-body : List ShellCmd = [ScBlank, ScSequence ccr-host-note, pipe-produce code-to-const-art, ScForEach "k" (SeProperty (ccr-name "constToCode") "Keys") [ScSetIndex "codeToConst" (SeIndex (ccr-name "constToCode") (SeVar "k")) (SeVar "k")], pipe-produce host-files-art, ScForEach "hr" (SeArrayLiteral ccr-host-roots) ccr-gather-host, ScForEach "f" (ccr-name "hostFiles") ccr-host-file]
+
+  s05 : PipeStage = PipeStage { ps-name = "the raise sites on the host", ps-why = "the build resolver raises 3010 in PowerShell, which the compiler never sees, so scan for the host spelling error <N>: rather than carrying an allowlist that would be a second thing to drift", ps-in = ["Root", "constToCode"], ps-out = [code-to-const-art, host-files-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: S06 -- The three disagreements
 
   ccr-order-note : List ShellCmd = [ScComment "Sorted, because .NET randomises string hashing per process and a hashtable", ScComment "walked in bucket order prints its findings in a different order run to run.", ScComment "The verdict does not move; the text does, which is enough to make a failure", ScComment "nobody can diff."]
 
-  ccr-code : ShellExpr = SeIndex (SeVar "constToCode") (SeVar "const")
+  ccr-code : ShellExpr = SeIndex (ccr-name "constToCode") (SeVar "const")
 
   ccr-no-raiser : ShellExpr = SeFormat (SeLit "CDX{0:0000}  {1}  -- registered, raised nowhere") [SeVar "code", SeVar "const"]
 
   ccr-no-row : ShellExpr = SeFormat (SeLit "CDX{0:0000}  {1}  -- raised, no registry row") [SeVar "code", SeVar "const"]
 
-  ccr-bad-name : ShellExpr = SeFormat (SeLit "CDX{0:0000}  {1}  -- row Name \"{2}\" is not \"{3}\"") [SeVar "code", SeVar "const", SeIndex (SeVar "registered") (SeVar "const"), SeVar "want"]
+  ccr-bad-name : ShellExpr = SeFormat (SeLit "CDX{0:0000}  {1}  -- row Name \"{2}\" is not \"{3}\"") [SeVar "code", SeVar "const", SeIndex (ccr-name "registered") (SeVar "const"), SeVar "want"]
 
-  ccr-name-check : List ShellCmd = [ScAssign "want" (SeCallArgs "ConvertTo-Pascal" [SaPos (SeVar "const")]), ScIf (SeStringNeq (SeIndex (SeVar "registered") (SeVar "const")) (SeVar "want")) [ScAppend "nameMismatch" ccr-bad-name] []]
+  ccr-name-check : List ShellCmd = [ScAssign "want" (SeCallArgs "ConvertTo-Pascal" [SaPos (SeVar "const")]), ScIf (SeStringNeq (SeIndex (ccr-name "registered") (SeVar "const")) (SeVar "want")) [ScAppend "nameMismatch" ccr-bad-name] []]
 
-  ccr-one-const : List ShellCmd = [ScAssign "isReg" (SeMethodCall (SeVar "registered") "ContainsKey" [SeVar "const"]), ScAssign "isRaised" (SeMethodCall (SeVar "raised") "ContainsKey" [SeVar "const"]), ScAssign "code" ccr-code, ScIf (SeAnd (SeVar "isReg") (SeNot (SeVar "isRaised"))) [ScAppend "registeredNoRaiser" ccr-no-raiser] [], ScIf (SeAnd (SeVar "isRaised") (SeNot (SeVar "isReg"))) [ScAppend "raisedNoRow" ccr-no-row] [], ScIf (SeVar "isReg") ccr-name-check []]
+  ccr-one-const : List ShellCmd = [ScAssign "isReg" (SeMethodCall (ccr-name "registered") "ContainsKey" [SeVar "const"]), ScAssign "isRaised" (SeMethodCall (ccr-name "raised") "ContainsKey" [SeVar "const"]), ScAssign "code" ccr-code, ScIf (SeAnd (SeVar "isReg") (SeNot (SeVar "isRaised"))) [ScAppend "registeredNoRaiser" ccr-no-raiser] [], ScIf (SeAnd (SeVar "isRaised") (SeNot (SeVar "isReg"))) [ScAppend "raisedNoRow" ccr-no-row] [], ScIf (SeVar "isReg") ccr-name-check []]
 
-  s06 : List ShellCmd = [ScAssign "registeredNoRaiser" (SeArrayLiteral []), ScAssign "raisedNoRow" (SeArrayLiteral []), ScAssign "nameMismatch" (SeArrayLiteral []), ScBlank, ScSequence ccr-order-note, ScForEach "const" (SePipe (SeProperty (SeVar "constToCode") "Keys") [StSort]) ccr-one-const]
+  s06-body : List ShellCmd = [ScBlank, pipe-produce registered-no-raiser-art, pipe-produce raised-no-row-art, pipe-produce name-mismatch-art, ScBlank, ScSequence ccr-order-note, ScForEach "const" (SePipe (SeProperty (ccr-name "constToCode") "Keys") [StSort]) ccr-one-const]
+
+  s06 : PipeStage = PipeStage { ps-name = "the three disagreements", ps-why = "one sorted walk over every constant, collecting the registered-but-never-raised, the raised-but-unregistered and the rows whose Name is not the PascalCase of the constant", ps-in = ["constToCode", "registered", "raised"], ps-out = [registered-no-raiser-art, raised-no-row-art, name-mismatch-art], ps-needs = [], ps-verdict = [], ps-body = s06-body }
 
 Section: S07 -- The verdict
 
-  ccr-ok-line : ShellExpr = SeFormat (SeLit "check-cdx-registry: OK ({0} codes, {1} registered, all raised codes documented)") [SeProperty (SeVar "constToCode") "Count", SeProperty (SeVar "registered") "Count"]
+  ccr-ok-line : ShellExpr = SeFormat (SeLit "check-cdx-registry: OK ({0} codes, {1} registered, all raised codes documented)") [SeProperty (ccr-name "constToCode") "Count", SeProperty (ccr-name "registered") "Count"]
 
-  ccr-total : ShellExpr = SeAdd (SeAdd (SeCount (SeVar "registeredNoRaiser")) (SeCount (SeVar "raisedNoRow"))) (SeCount (SeVar "nameMismatch"))
+  ccr-total : ShellExpr = SeAdd (SeAdd (SeCount (ccr-name "registeredNoRaiser")) (SeCount (ccr-name "raisedNoRow"))) (SeCount (ccr-name "nameMismatch"))
 
   ccr-report : Text, Text -> List ShellCmd
-  ccr-report (var) (heading) = [ScIf (SeIntGt (SeCount (SeVar var)) (SeInt 0)) [ScEcho (SeLit ""), ScEcho (SeLit heading), ScForEach "r" (SeVar var) [ScEcho (SeConcat (SeLit "    ") (SeVar "r"))]] []]
+  ccr-report (var) (heading) = [ScIf (SeIntGt (SeCount (ccr-name var)) (SeInt 0)) [ScEcho (SeLit ""), ScEcho (SeLit heading), ScForEach "r" (ccr-name var) [ScEcho (SeConcat (SeLit "    ") (SeVar "r"))]] []]
 
-  s07 : List ShellCmd = [ScAssign "total" ccr-total, ScIf (SeIntEq (SeVar "total") (SeInt 0)) [ScEcho ccr-ok-line, ScExit (SeInt 0)] [], ScBlank, ScEcho (SeLit "check-cdx-registry: FAIL -- the diagnostic catalogue disagrees with the code"), ScSequence (ccr-report "raisedNoRow" "  Raised but not in the registry (cdx-lookup answers 'Unregistered CDX code'):"), ScSequence (ccr-report "registeredNoRaiser" "  In the registry but raised by no site (a summary nothing can ever show):"), ScSequence (ccr-report "nameMismatch" "  Registry Name does not match the constant:"), ScEcho (SeLit ""), ScEcho (SeLit "  Add the row, delete the dead code, or fix the Name in CdxCodes.codex."), ScExit (SeInt 1)]
+  s07-body : List ShellCmd = [ScBlank, ScAssign "total" ccr-total, ScIf (SeIntEq (ccr-name "total") (SeInt 0)) [ScEcho ccr-ok-line, ScExit (SeInt 0)] [], ScBlank, ScEcho (SeLit "check-cdx-registry: FAIL -- the diagnostic catalogue disagrees with the code"), ScSequence (ccr-report "raisedNoRow" "  Raised but not in the registry (cdx-lookup answers 'Unregistered CDX code'):"), ScSequence (ccr-report "registeredNoRaiser" "  In the registry but raised by no site (a summary nothing can ever show):"), ScSequence (ccr-report "nameMismatch" "  Registry Name does not match the constant:"), ScEcho (SeLit ""), ScEcho (SeLit "  Add the row, delete the dead code, or fix the Name in CdxCodes.codex."), ScExit (SeInt 1)]
+
+  s07 : PipeStage = PipeStage { ps-name = "the verdict", ps-why = "one number decides it: any disagreement at all fails the build, and each of the three kinds is printed under its own heading so a reader knows which repair to make", ps-in = ["registeredNoRaiser", "raisedNoRow", "nameMismatch", "constToCode", "registered"], ps-out = [total-art], ps-needs = [], ps-verdict = [PoExit 0 "every registered code is raised somewhere, every raised code has a row, and every row Name is the PascalCase of its constant", PoExit 1 "the catalogue and the code disagree in at least one of the three ways, and the failing rows are named"], ps-body = s07-body }
 
 Section: Assembly
 
-  ccr-full : List ShellCmd = [ScSequence ccr-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
-
-  ccr-script : ShellScript = sh-script "check-cdx-registry" "Nothing in the live tree reads the diagnostic catalogue, so it rots." ccr-params ccr-full
+  ccr-pipe : Pipeline = Pipeline { pl-name = "check-cdx-registry", pl-doc = "Nothing in the live tree reads the diagnostic catalogue, so it rots.", pl-params = ccr-params, pl-stages = [s00, s01, s02, s03, s04, s05, s06, s07] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell ccr-script)
+    print-line-uni (emit-powershell (pipeline-to-shell ccr-pipe))
   end
 
 Page 1

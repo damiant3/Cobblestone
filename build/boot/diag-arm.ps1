@@ -362,11 +362,53 @@ $Efi = Join-Path $Repo 'build-output\diag.efi'
 
 # REFUSE TO CALIBRATE A STALE IMAGE (ladder-arm.ps1's rule): a pass has to be a
 # pass for the source on disk.
+#
+# THE PAYLOAD IS A BUNDLE, AND A GLOB OVER build\boot\diag SEES ALMOST NONE OF
+# IT. bundle-app gathers Diag.codex plus its transitive cite closure, 87
+# chapters from across codex/ on 2026-09-09, and compiles that; a timestamp
+# sweep of Diag*.codex therefore certifies an image whose payload source has
+# moved everywhere except the one directory it looked at. Measured that day:
+# the shipped image carried payload eeb83621a2b67136 while the tree built
+# f2e07084211bb472 from Diag*.codex files all older than the image, so the
+# guard's own condition held over a payload that had changed.
+# Key the refusal on the closure's CONTENT instead. build-diag.ps1 records
+# bundled-sha256 in DIAG.RCP inside the image, so re-bundling now and comparing
+# digests answers "was this image built from the source on disk" exactly, and
+# unlike an mtime it cannot be fooled by a touch or by a merge that rewrites
+# timestamps without changing a byte. Cost is one bundle pass, file reads only,
+# no guest and no compile, against a run that boots fifty of them.
 $imgTime = (Get-Item $ImgAbs).LastWriteTimeUtc
-foreach ($s in @(Get-ChildItem (Join-Path $Repo 'build\boot\diag') -Filter 'Diag*.codex' -File)) {
-    if ($s.LastWriteTimeUtc -gt $imgTime) {
-        Write-Host "STALE: $($s.Name) is newer than $(Split-Path $ImgAbs -Leaf). Rebuild first: build/boot/build-diag.ps1"
+$rcpBundled = ''
+$m = [regex]::Match([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($ImgAbs)), 'bundled-sha256=([0-9A-F]{64})')
+if ($m.Success) { $rcpBundled = $m.Groups[1].Value }
+if ($rcpBundled) {
+    # Workspace-derived, never a fixed path, and $Work is not set until later
+    # in this script (L-SHARED).
+    $probeDir = Join-Path ([IO.Path]::GetTempPath()) ("diag-arm-" + (Split-Path $Repo -Leaf))
+    New-Item -ItemType Directory -Force $probeDir | Out-Null
+    $probe = Join-Path $probeDir 'bundle-probe.codex'
+    & pwsh -NoProfile -File (Join-Path $Repo 'build\bundle-app.ps1') -Src (Join-Path $Repo 'build\boot\diag\Diag.codex') -Out $probe | Out-Null
+    if (-not (Test-Path $probe)) { Write-Host 'FAIL: bundle-app produced no bundle, so image staleness cannot be decided'; exit 1 }
+    $nowBundled = (Get-FileHash $probe -Algorithm SHA256).Hash
+    Remove-Item $probe -Force -ErrorAction SilentlyContinue
+    if ($nowBundled -ne $rcpBundled) {
+        Write-Host "STALE: the payload source closure has moved since $(Split-Path $ImgAbs -Leaf) was built."
+        Write-Host "  image was built from bundle $rcpBundled"
+        Write-Host "  the tree on disk now bundles to $nowBundled"
+        Write-Host '  Rebuild first: build/boot/build-diag.ps1'
         exit 1
+    }
+} else {
+    # An image built before bundled-sha256 existed carries no closure digest.
+    # Fall back to the old sweep rather than pass silently, because a guard that
+    # answers instead of refusing ships the exact wrong number (L-BAILVALUE),
+    # and say which question is going unasked.
+    Write-Host "  (no bundled-sha256 in $(Split-Path $ImgAbs -Leaf): pre-closure image, checking build\boot\diag timestamps only; the 87-chapter closure is UNCHECKED)"
+    foreach ($s in @(Get-ChildItem (Join-Path $Repo 'build\boot\diag') -Filter 'Diag*.codex' -File)) {
+        if ($s.LastWriteTimeUtc -gt $imgTime) {
+            Write-Host "STALE: $($s.Name) is newer than $(Split-Path $ImgAbs -Leaf). Rebuild first: build/boot/build-diag.ps1"
+            exit 1
+        }
     }
 }
 

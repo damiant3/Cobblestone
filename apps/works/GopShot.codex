@@ -121,6 +121,21 @@ Section: Capture
     & " l" & show (xdiag-get msc-cell-fail-lba)
     & " r" & show (xdiag-get msc-cell-retry)
 
+ A REFUSAL FOR WANT OF ROOM IS NOT A FAILED WRITE, and the diag strip
+ could not tell a person which had happened: `w12` is `gfat-w-nospace`
+ and every other stage is a real fault. A 1600x900 BMP is 4,320,054
+ bytes and the shipped ESP carries about 2.4 MB free, so at that
+ geometry the shot is refused by arithmetic and no device write is ever
+ issued. The count walks the whole FAT and runs only here.
+
+  shot-no-room : Fat16Volume, Integer -> [Device.Port] Text
+  shot-no-room (vol) (size) = act
+    f <- gfat-load-fat vol
+    let cb = (vol.vol-bytes-per-sector) * (vol.vol-sectors-per-cluster)
+    in let free = if f.gft-ok == False then 0 else gfat-count-free vol (f.gft-buf) 2 (gfat-max-cluster vol) 0
+    in "shot needs " & show (size / 1024) & " KB, medium has " & show (free * cb / 1024) & " KB free"
+  end
+
   shot-take : Integer, Integer, Integer, Integer -> [Device.Port] Text
   shot-take (base) (w) (h) (stride) = act
     m <- gfat-mount-esp
@@ -141,7 +156,9 @@ Section: Capture
       in let nm = shot-name nb hh mi s2
       in act
         ok <- gfat-write-file (m.gm-vol) nb buf size
-        if ok then "shot SH" & shot-pad2 hh & shot-pad2 mi & shot-pad2 s2 & ".BMP ok" else shot-diag-text "shot write FAILED"
+        if ok then "shot SH" & shot-pad2 hh & shot-pad2 mi & shot-pad2 s2 & ".BMP ok"
+        else if xdiag-get gfat-cell-write == gfat-w-nospace then shot-no-room (m.gm-vol) size
+        else shot-diag-text "shot write FAILED"
       end
     end
   end

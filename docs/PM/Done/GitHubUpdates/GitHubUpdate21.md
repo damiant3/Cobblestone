@@ -26,7 +26,7 @@
 
 - **WASM backend.** Phases 1-8 of the WASM plug: WASI runtime, strings, records, variants, lists, browser demo. Cranelift-targeted code generation.
 - **Spark Studio / WebGPU 3D.** Full 3D creative suite compiled to WASM and rendered via WebGPU at 120fps. Phong shading, hardware depth buffer, cube/pyramid/sphere primitives. Studio features: gizmo transform, easing curves, particle systems, dynamic lighting, instancing, mirror/symmetry, align/distribute, scene tree, batch operations, grid/pivot snapping, export, persistent WASM allocator, circular undo.
-- **Card game web platform.** Admin dashboard, marketplace with store economy, card pool management, pack cracking, collection viewer, profile system. HTML plug widget renderers. TCP game server on port 9200.
+- **CodexMagic web platform.** Admin dashboard, marketplace with store economy, card pool management, pack cracking, collection viewer, profile system. HTML plug widget renderers. TCP game server on port 9200.
 
 ## README
 

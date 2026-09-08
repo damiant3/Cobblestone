@@ -4,6 +4,7 @@ Chapter: TestCrossScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -16,7 +17,7 @@ tcross-params : List ShellParam = [sh-param-choice "Arch" ["arm64", "riscv64"], 
 
 Section: S00 -- Usage
 
-  s00 : List ShellCmd =
+  s00-body : List ShellCmd =
     [ScComment "Usage:",
      ScComment "  build/test-cross.ps1 -Arch arm64 -Test arithmetic",
      ScComment "  build/test-cross.ps1 -Arch riscv64 -Test factorial",
@@ -27,23 +28,23 @@ Section: S00 -- Usage
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd =
+  s01-body : List ShellCmd =
     let skip-renode = [ScRaw "Write-RenodeSkip", ScExit (SeInt 0)]
-    in [ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScBlank, ScAssign "Repo" (SeRaw "(Get-Location).Path"), ScAssign "SeedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScRaw "if (-not (Test-Path -PathType Leaf $Kernel)) { throw \"Kernel not found: $Kernel\" }", ScRaw "$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)", ScRaw "$seedDigest = (Get-FileHash -Algorithm SHA256 $SeedCdx).Hash.Substring(0, 16)", ScRaw "Write-Host \"Kernel: $Kernel [$kernelDigest]\"", ScRaw "if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {", ScRaw "    Write-Host 'REFUSED: the kernel is a build-output binary and is not the depot seed.'", ScRaw "    Write-Host \"         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last.\"", ScRaw "    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'", ScRaw "    exit 2", ScRaw "}", ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), ScAssign "RenodeExe" (SeRaw "Get-RenodeExe -Repo $Repo"), ScIf (SeNot (SeVar "RenodeExe")) skip-renode []]
+    in [ScBlank, ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScBlank, ScAssign "Repo" (SeRaw "(Get-Location).Path"), ScAssign "SeedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScRaw "if (-not (Test-Path -PathType Leaf $Kernel)) { throw \"Kernel not found: $Kernel\" }", ScRaw "$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)", ScRaw "$seedDigest = (Get-FileHash -Algorithm SHA256 $SeedCdx).Hash.Substring(0, 16)", ScRaw "Write-Host \"Kernel: $Kernel [$kernelDigest]\"", ScRaw "if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {", ScRaw "    Write-Host 'REFUSED: the kernel is a build-output binary and is not the depot seed.'", ScRaw "    Write-Host \"         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last.\"", ScRaw "    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'", ScRaw "    exit 2", ScRaw "}", ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), ScAssign "RenodeExe" (SeRaw "Get-RenodeExe -Repo $Repo"), ScIf (SeNot (SeVar "RenodeExe")) skip-renode []]
 
 Section: S02 -- Seed and Plug Setup
 
-  s02 : List ShellCmd =
+  s02-body : List ShellCmd =
     let skip-plug = [ScEchoStyled (SeRaw "\"SKIP: plug not built ($plugCdx)\"") ClBrightYellow True, ScEcho (SeRaw "\"  Build with: codex\\plugs\\$plugName\\build.ps1\""), ScExit (SeInt 0)]
     in let skip-board = [ScEchoStyled (SeRaw "\"SKIP: board definition missing ($boardRepl)\"") ClBrightYellow True, ScExit (SeInt 0)]
-    in [ScRaw "$plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }", ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\build-output\\$plugName-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) skip-plug [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\codex-${Arch}.repl\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) skip-board [], ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\compile-$plugName.ps1\"")]
+    in [ScBlank, ScRaw "$plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }", ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\build-output\\$plugName-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) skip-plug [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\codex-${Arch}.repl\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) skip-board [], ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\compile-$plugName.ps1\"")]
 
 Section: S03 -- Locate Test
 
-  s03 : List ShellCmd =
+  s03-body : List ShellCmd =
     let not-found = [ScEchoStyled (SeRaw "\"ERROR: test not found: codex\\test\\$Test.codex (or codex\\test\\ops\\)\"") ClBrightRed True, ScExit (SeInt 1)]
     in let ops-fallback = [ScRaw "$testFile = Get-Item -Path \"codex\\test\\ops\\$Test.codex\" -ErrorAction SilentlyContinue"]
-    in [ScComment "-- Locate test --", ScRaw "$testFile = Get-Item -Path \"codex\\test\\$Test.codex\" -ErrorAction SilentlyContinue", ScIf (SeNot (SeVar "testFile")) ops-fallback [], ScIf (SeNot (SeVar "testFile")) not-found [], ScAssign "name" (SeProperty (SeVar "testFile") "BaseName"), ScAssign "dir" (SeProperty (SeVar "testFile") "DirectoryName")]
+    in [ScBlank, ScComment "-- Locate test --", ScRaw "$testFile = Get-Item -Path \"codex\\test\\$Test.codex\" -ErrorAction SilentlyContinue", ScIf (SeNot (SeVar "testFile")) ops-fallback [], ScIf (SeNot (SeVar "testFile")) not-found [], ScAssign "name" (SeProperty (SeVar "testFile") "BaseName"), ScAssign "dir" (SeProperty (SeVar "testFile") "DirectoryName")]
 
 Section: S04 -- Skip Logic
 
@@ -77,7 +78,7 @@ Section: S04 -- Skip Logic
        ScIf (SeFileExists (SeVar "fatalFile")) [ScEchoStyled (SeRaw "\"SKIPPED: $name (fatal)\"") ClBrightYellow True, ScExit (SeInt 0)] [],
        ScIf (SeFileExists (SeVar "failingFile")) [ScEchoStyled (SeRaw "\"SKIPPED: $name (error test -- frontend only)\"") ClBrightYellow True, ScExit (SeInt 0)] []]
 
-  s04 : List ShellCmd = [ScSequence s04-sidecars, ScBlank, ScSequence s04-skips, ScBlank, ScEchoStyled (SeRaw "\"=== $($Arch.ToUpper()) : $name ===\"") ClBrightCyan True]
+  s04-body : List ShellCmd = [ScBlank, ScSequence s04-sidecars, ScBlank, ScSequence s04-skips, ScBlank, ScEchoStyled (SeRaw "\"=== $($Arch.ToUpper()) : $name ===\"") ClBrightCyan True]
 
 Section: S05 -- Compile
 
@@ -94,39 +95,57 @@ Section: S05 -- Compile
        ScEchoStyled (SeRaw "\"FAIL (compile failed without expected refusal tag(s): $($missing -join ', '))\"") ClBrightRed True,
        ScExit (SeInt 1)]
 
-  s05 : List ShellCmd =
-    [ScComment "-- Compile --", ScAssign "OutDir" (SeRaw "Join-Path $Repo \"test-output-cross\\$Arch\""), ScAssign "testOutDir" (SeRaw "Join-Path $OutDir $name"), ScRaw "New-Item -ItemType Directory -Force $testOutDir | Out-Null", ScAssign "elfOut" (SeRaw "Join-Path $testOutDir \"$name.elf\""), ScAssign "compileLog" (SeRaw "Join-Path $testOutDir 'compile.log'"), ScBlank, ScRaw "Write-Host -NoNewline '  compile ... '", ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut -WorkDir $testOutDir -Kernel $Kernel 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8", ScRaw "$compileExit = $LASTEXITCODE", ScRaw "$ErrorActionPreference = $prev", ScBlank, ScIf (SeFileExists (SeVar "refusalFile")) s05-refusal [], ScIf (SeOr (SeRaw "$compileExit -ne 0") (SeNot (SeFileExists (SeVar "elfOut")))) [ScEchoStyled (SeLit "FAIL (compile)") ClBrightRed True, ScExit (SeInt 1)] [], ScEcho (SeLit "OK")]
+  s05-body : List ShellCmd =
+    [ScBlank, ScComment "-- Compile --", ScAssign "OutDir" (SeRaw "Join-Path $Repo \"test-output-cross\\$Arch\""), ScAssign "testOutDir" (SeRaw "Join-Path $OutDir $name"), ScRaw "New-Item -ItemType Directory -Force $testOutDir | Out-Null", ScAssign "elfOut" (SeRaw "Join-Path $testOutDir \"$name.elf\""), ScAssign "compileLog" (SeRaw "Join-Path $testOutDir 'compile.log'"), ScBlank, ScRaw "Write-Host -NoNewline '  compile ... '", ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut -WorkDir $testOutDir -Kernel $Kernel 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8", ScRaw "$compileExit = $LASTEXITCODE", ScRaw "$ErrorActionPreference = $prev", ScBlank, ScIf (SeFileExists (SeVar "refusalFile")) s05-refusal [], ScIf (SeOr (SeRaw "$compileExit -ne 0") (SeNot (SeFileExists (SeVar "elfOut")))) [ScEchoStyled (SeLit "FAIL (compile)") ClBrightRed True, ScExit (SeInt 1)] [], ScEcho (SeLit "OK")]
 
 Section: S06 -- Check Expected
 
-  s06 : List ShellCmd =
-    [ScComment "-- Check for .expected --", ScAssign "expectedFile" (SeRaw "Join-Path $dir \"$name.expected\""), ScIf (SeNot (SeFileExists (SeVar "expectedFile"))) [ScEchoStyled (SeLit "  PASS (compile only)") ClGreen True, ScExit (SeInt 0)] []]
+  s06-body : List ShellCmd =
+    [ScBlank, ScComment "-- Check for .expected --", ScAssign "expectedFile" (SeRaw "Join-Path $dir \"$name.expected\""), ScIf (SeNot (SeFileExists (SeVar "expectedFile"))) [ScEchoStyled (SeLit "  PASS (compile only)") ClGreen True, ScExit (SeInt 0)] []]
 
 Section: S07 -- Boot on Renode
 
-  s07 : List ShellCmd =
-    [ScComment "-- Boot on Renode --", ScRaw "Write-Host -NoNewline '  run ... '", ScRaw "$elfPath = (Resolve-Path $elfOut).Path -replace '\\\\','/'", ScRaw "$boardPath = (Resolve-Path $boardRepl).Path -replace '\\\\','/'", ScAssign "uartLog" (SeRaw "(Join-Path $testOutDir 'uart.log') -replace '\\\\','/'"), ScIf (SeFileExists (SeVar "uartLog")) [ScDelete (SeVar "uartLog")] [], ScBlank, ScRaw "$rescContent = @(\n    'mach create \"codex\"'\n    \"machine LoadPlatformDescription @$boardPath\"\n    \"sysbus LoadELF @$elfPath\"\n    \"uart0 CreateFileBackend @$uartLog true\"\n    'start'\n    \"sleep $TimeoutSec\"\n    'quit'\n) -join \"`n\"", ScAssign "rescFile" (SeRaw "Join-Path $testOutDir 'run.resc'"), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "rescFile", SeVar "rescContent"], ScRaw "$rescPath = $rescFile -replace '\\\\','/'", ScBlank, ScRaw "$prev2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& $RenodeExe --disable-xwt --console -e \"include @$rescPath\" 2>&1 | Out-Null", ScRaw "$ErrorActionPreference = $prev2", ScRaw "Start-Sleep -Milliseconds 300"]
+  s07-body : List ShellCmd =
+    [ScBlank, ScComment "-- Boot on Renode --", ScRaw "Write-Host -NoNewline '  run ... '", ScRaw "$elfPath = (Resolve-Path $elfOut).Path -replace '\\\\','/'", ScRaw "$boardPath = (Resolve-Path $boardRepl).Path -replace '\\\\','/'", ScAssign "uartLog" (SeRaw "(Join-Path $testOutDir 'uart.log') -replace '\\\\','/'"), ScIf (SeFileExists (SeVar "uartLog")) [ScDelete (SeVar "uartLog")] [], ScBlank, ScRaw "$rescContent = @(\n    'mach create \"codex\"'\n    \"machine LoadPlatformDescription @$boardPath\"\n    \"sysbus LoadELF @$elfPath\"\n    \"uart0 CreateFileBackend @$uartLog true\"\n    'start'\n    \"sleep $TimeoutSec\"\n    'quit'\n) -join \"`n\"", ScAssign "rescFile" (SeRaw "Join-Path $testOutDir 'run.resc'"), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "rescFile", SeVar "rescContent"], ScRaw "$rescPath = $rescFile -replace '\\\\','/'", ScBlank, ScRaw "$prev2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& $RenodeExe --disable-xwt --console -e \"include @$rescPath\" 2>&1 | Out-Null", ScRaw "$ErrorActionPreference = $prev2", ScRaw "Start-Sleep -Milliseconds 300"]
 
 Section: S08 -- Capture and Compare
 
-  s08 : List ShellCmd =
+  s08-body : List ShellCmd =
     let fail-no-uart = [ScEchoStyled (SeLit "FAIL (no uart output)") ClBrightRed True, ScExit (SeInt 1)]
-    in [ScComment "-- Capture and compare --", ScRaw "$uartLogWin = $uartLog -replace '/','\\' ", ScIf (SeNot (SeRaw "(Test-Path $uartLogWin)")) fail-no-uart [], ScBlank, ScRaw "$raw = [System.IO.File]::ReadAllText($uartLogWin) -replace \"`r\",''", ScRaw "$allLines = $raw -split \"`n\"", ScRaw "$lines = [System.Collections.Generic.List[string]]::new()", ScForEach "l" (SeVar "allLines") [ScIf (SeOr (SeOr (SeStartsWith (SeVar "l") (SeLit "HEAP:")) (SeStartsWith (SeVar "l") (SeLit "WD:"))) (SeStartsWith (SeVar "l") (SeLit "STACK:"))) [ScContinue] [], ScRaw "$lines.Add($l)"], ScRaw "while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') { $lines.RemoveAt($lines.Count - 1) }"]
+    in [ScBlank, ScComment "-- Capture and compare --", ScRaw "$uartLogWin = $uartLog -replace '/','\\' ", ScIf (SeNot (SeRaw "(Test-Path $uartLogWin)")) fail-no-uart [], ScBlank, ScRaw "$raw = [System.IO.File]::ReadAllText($uartLogWin) -replace \"`r\",''", ScRaw "$allLines = $raw -split \"`n\"", ScRaw "$lines = [System.Collections.Generic.List[string]]::new()", ScForEach "l" (SeVar "allLines") [ScIf (SeOr (SeOr (SeStartsWith (SeVar "l") (SeLit "HEAP:")) (SeStartsWith (SeVar "l") (SeLit "WD:"))) (SeStartsWith (SeVar "l") (SeLit "STACK:"))) [ScContinue] [], ScRaw "$lines.Add($l)"], ScRaw "while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') { $lines.RemoveAt($lines.Count - 1) }"]
 
 Section: S09 -- Expected Comparison
 
-  s09 : List ShellCmd =
+  s09-body : List ShellCmd =
     let diff-body = [ScEchoStyled (SeLit "FAIL (output mismatch)") ClBrightRed True, ScAssign "diffFile" (SeRaw "Join-Path $testOutDir 'diff.txt'"), ScRaw "$expLines = $expected -split \"`n\"", ScRaw "$actLines = $actual -split \"`n\"", ScRaw "$diffOut = [System.Collections.Generic.List[string]]::new()", ScRaw "$maxLines = [Math]::Max($expLines.Count, $actLines.Count)", ScForLoop "i" (SeInt 0) (SeRaw "$i -lt [Math]::Min($maxLines, 20)") (SeRaw "$i++") [ScRaw "$e = if ($i -lt $expLines.Count) { $expLines[$i] } else { '(missing)' }", ScRaw "$a2 = if ($i -lt $actLines.Count) { $actLines[$i] } else { '(missing)' }", ScIf (SeStringNeq (SeVar "e") (SeVar "a2")) [ScRaw "$diffOut.Add(\"line $($i+1):  exp=[$e]  act=[$a2]\")"] []], ScIf (SeRaw "$diffOut.Count -gt 0") [ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "diffFile", SeRaw "($diffOut -join \"`n\")", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScRaw "Get-Content $diffFile"] [], ScExit (SeInt 1)]
-    in [ScRaw "$expectedText = [System.IO.File]::ReadAllText($expectedFile) -replace \"`r\",''", ScRaw "$expAllLines = @($expectedText -split \"`n\")", ScRaw "while ($expAllLines.Count -gt 0 -and $expAllLines[$expAllLines.Count - 1] -eq '') { $expAllLines = $expAllLines[0..($expAllLines.Count - 2)] }", ScRaw "$expLineCount = $expAllLines.Count", ScIf (SeAnd (SeRaw "$lines.Count -gt $expLineCount") (SeRaw "$expLineCount -gt 0")) [ScRaw "$lines = [System.Collections.Generic.List[string]]::new([string[]]@($lines | Select-Object -First $expLineCount))"] [], ScBlank, ScRaw "$actual = if ($lines.Count -gt 0) { ($lines -join \"`n\") + \"`n\" } else { '' }", ScBlank, ScComment "The expected side gets the same normalization the actual side got above", ScComment "(trailing empties trimmed, one final newline restored). Comparing $actual", ScComment "against the RAW file text means a sidecar without a trailing newline can", ScComment "never pass: the forced final \"`n\" on actual has no counterpart. Measured", ScComment "2026-08-06: all 1198 .expected sidecars currently end with a newline, so", ScComment "this arm is dormant -- it is what stops the next one that does not from", ScComment "failing for a reason that is not about the test.", ScRaw "$expected = if ($expLineCount -gt 0) { ($expAllLines -join \"`n\") + \"`n\" } else { '' }", ScBlank, ScAssign "actualFile" (SeRaw "Join-Path $testOutDir 'runtime.actual'"), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "actualFile", SeVar "actual", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScBlank, ScIf (SeStringEq (SeVar "expected") (SeVar "actual")) [ScEchoStyled (SeLit "PASS") ClBrightGreen True, ScExit (SeInt 0)] diff-body]
+    in [ScBlank, ScRaw "$expectedText = [System.IO.File]::ReadAllText($expectedFile) -replace \"`r\",''", ScRaw "$expAllLines = @($expectedText -split \"`n\")", ScRaw "while ($expAllLines.Count -gt 0 -and $expAllLines[$expAllLines.Count - 1] -eq '') { $expAllLines = $expAllLines[0..($expAllLines.Count - 2)] }", ScRaw "$expLineCount = $expAllLines.Count", ScIf (SeAnd (SeRaw "$lines.Count -gt $expLineCount") (SeRaw "$expLineCount -gt 0")) [ScRaw "$lines = [System.Collections.Generic.List[string]]::new([string[]]@($lines | Select-Object -First $expLineCount))"] [], ScBlank, ScRaw "$actual = if ($lines.Count -gt 0) { ($lines -join \"`n\") + \"`n\" } else { '' }", ScBlank, ScComment "The expected side gets the same normalization the actual side got above", ScComment "(trailing empties trimmed, one final newline restored). Comparing $actual", ScComment "against the RAW file text means a sidecar without a trailing newline can", ScComment "never pass: the forced final \"`n\" on actual has no counterpart. Measured", ScComment "2026-08-06: all 1198 .expected sidecars currently end with a newline, so", ScComment "this arm is dormant -- it is what stops the next one that does not from", ScComment "failing for a reason that is not about the test.", ScRaw "$expected = if ($expLineCount -gt 0) { ($expAllLines -join \"`n\") + \"`n\" } else { '' }", ScBlank, ScAssign "actualFile" (SeRaw "Join-Path $testOutDir 'runtime.actual'"), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "actualFile", SeVar "actual", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScBlank, ScIf (SeStringEq (SeVar "expected") (SeVar "actual")) [ScEchoStyled (SeLit "PASS") ClBrightGreen True, ScExit (SeInt 0)] diff-body]
 
 Section: Assembly
 
-  tcross-body : List ShellCmd = [ScSequence s00, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09]
+  s00 : PipeStage = PipeStage { ps-name = "usage", ps-why = "what this harness takes and which architectures it knows", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s00-body }
 
-  tcross-script : ShellScript = sh-script "test-cross" "Cross-architecture test harness -- compile to ARM64/RISC-V, boot on Renode, compare UART output" tcross-params tcross-body
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode, the repository, and the kernel this run is a statement about", ps-in = ["Arch", "Kernel", "AllowStaleKernel"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "Renode is absent, so the subject was SKIPPED and nothing was measured", PoExit 2 "the kernel is stale and -AllowStaleKernel was not given, so the run would gate whichever compiler happened to run last"], ps-body = s01-body }
+
+  s02 : PipeStage = PipeStage { ps-name = "seed and plug setup", ps-why = "locate the plug CDX for the named architecture", ps-in = ["Arch"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "the plug for this architecture is not built, so the subject was SKIPPED"], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "locate the test", ps-why = "resolve the subject name to a file under codex/test", ps-in = ["Test"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the named subject does not exist, which is a caller error rather than a result about the compiler"], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "skip logic", ps-why = "SIX recorded reasons a subject is not run, each printing its own line", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "SKIPPED, multi-core: the subject belongs to test-cross-smp", PoExit 0 "SKIPPED, a .skip sidecar, whose first line is the reason", PoExit 0 "SKIPPED, a .no-cross sidecar, whose first line is the reason", PoExit 0 "SKIPPED, slow", PoExit 0 "SKIPPED, fatal", PoExit 0 "SKIPPED, an error test, which the frontend alone can judge"], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "compile", ps-why = "compile the subject for the target architecture, and judge a REFUSAL against what the subject's tags say should happen", ps-in = ["Arch"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the subject compiled clean where its tags said an [UNSUPPORTED] refusal was expected", PoExit 0 "the subject was refused by design, and the refusal names the tags that predicted it", PoExit 1 "the compile failed WITHOUT the refusal tags that would have made the failure expected", PoExit 1 "the compile failed, or produced no ELF"], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "check for .expected", ps-why = "a subject with no .expected has nothing to compare against", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "the subject has no .expected sidecar, so compiling was the whole claim and nothing was run"], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "boot on renode", ps-why = "fly the ELF on the emulated board and capture its UART", ps-in = [], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s07-body }
+
+  s08 : PipeStage = PipeStage { ps-name = "capture and compare", ps-why = "read the UART log back", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the board produced NO uart output, which is a different failure from producing the wrong output and is not a mismatch"], ps-body = s08-body }
+
+  s09 : PipeStage = PipeStage { ps-name = "expected comparison", ps-why = "the captured output against the .expected, normalised for line endings", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the output differs from .expected, and the diff is written beside the log", PoExit 0 "the output matches .expected"], ps-body = s09-body }
+
+  tcross-pipe : Pipeline = Pipeline { pl-name = "test-cross", pl-doc = "Cross-architecture test harness -- compile to ARM64/RISC-V, boot on Renode, compare UART output", pl-params = tcross-params, pl-stages = [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell tcross-script)
+    print-line-uni (emit-powershell (pipeline-to-shell tcross-pipe))
   end
 
 Page 1

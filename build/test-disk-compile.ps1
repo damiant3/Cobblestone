@@ -6,6 +6,7 @@
 # file as drifted, and the next regeneration discards the edit.
 [CmdletBinding()]
 param(
+    [string]$DiskPath = '',
     [string]$SampleSrc = 'codex\test\field-range-proven.codex',
     [string]$Expected = '12',
     [int]$PCore = 1
@@ -15,6 +16,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
+
+# The 8.3 name codex/plugs/img/run.ps1 folds a source to, so this test names
+# the file the image actually carries whatever SampleSrc is.
+if (-not $DiskPath) {
+    $n83 = ([System.IO.Path]::GetFileNameWithoutExtension($SampleSrc)).ToUpperInvariant() -replace '[^A-Z0-9_\-]', '_'
+    $e83 = ([System.IO.Path]::GetExtension($SampleSrc).TrimStart('.')).ToUpperInvariant() -replace '[^A-Z0-9_\-]', '_'
+    if ($n83.Length -gt 8) { $n83 = $n83.Substring(0, 8) }
+    if ($e83.Length -gt 3) { $e83 = $e83.Substring(0, 3) }
+    $DiskPath = if ($e83) { "$n83.$e83" } else { $n83 }
+}
 
 $root = Split-Path $PSScriptRoot
 $outDir = Join-Path $root 'build-output\disk-compile-test'
@@ -141,7 +152,7 @@ try {
     $stream = $run.Conn.Data.GetStream()
     $hdr = [System.Text.Encoding]::UTF8.GetBytes("DISK`n")
     $stream.Write($hdr, 0, $hdr.Length)
-    $path = [System.Text.Encoding]::UTF8.GetBytes("SOURCE.SRC`n")
+    $path = [System.Text.Encoding]::UTF8.GetBytes($DiskPath + "`n")
     $stream.Write($path, 0, $path.Length)
     $stream.Flush()
     $binSize = 0
@@ -196,7 +207,6 @@ try {
     Close-Vm -Conn $run.Conn -Process $run.Process
 }
 
-
 Write-Host 'Step 2b: Extract OUT.CDX from the image...'
 $cdxOut = Join-Path $outDir 'disk-compiled.cdx'
 $extracted = Export-Fat16File -Image $imgOut -Name 'OUT     CDX' -Out $cdxOut
@@ -223,3 +233,4 @@ if (($output -eq $Expected)) {
     Write-Host 'FAIL: output mismatch' -ForegroundColor Red
     exit 1
 }
+

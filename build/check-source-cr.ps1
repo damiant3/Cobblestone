@@ -17,11 +17,13 @@
 # `cites Foreword chapter FFT` still cannot match it, and the unit then reports
 # a missing chapter, which is not what is wrong with it.
 #
-# Perforce does not prevent this and no per-file setting causes it. Measured:
-# the fifteen foreword files and their controls are all filetype `unicode` on a
-# client whose LineEnd is `local`. Line-end translation rewrites the TERMINATOR;
-# a CR that is not one is content, and content is preserved exactly. So the only
-# thing that keeps this out of the tree is a reader, and this is it.
+# No per-file Perforce setting causes or prevents it. Measured: the fifteen
+# foreword files and their controls are all filetype `unicode` on a client whose
+# LineEnd is `local`. Line-end translation rewrites the TERMINATOR; a CR that is
+# not one is content, and content is preserved exactly. Two readers keep it out
+# of the tree: this gate check, and the server's change-content trigger
+# (build/check-source-cr-trigger.ps1, PerforceProcess.md 4.8), which refuses
+# the submit before the byte reaches the depot.
 [CmdletBinding()]
 param(
     # Report and exit 0 instead of failing. For a census.

@@ -1215,7 +1215,7 @@ territory**, overlapping `gfat-cell-stage` 80, `msc-cell-lastcc` 81,
 `msc-cell-fuel-lo` 85, `msc-cell-fail-lba` 86 and `msc-cell-retry` 87. It
 stayed invisible because the writers run in order and neither reads the other:
 `usb-attach` binds HID and fills 80..95, then the mount and any disk I/O
-overwrite 80..87. So the storage diagnostics were correct and **DeskBoot's
+overwrite 80..87. So the storage diagnostics were correct and **the boot payload's
 first two HID table rows were showing storage state under device-descriptor
 labels**. In the other direction a cell the storage path did not write on a
 given boot kept its HID value, which is how an F12 mount failure came to
@@ -1738,6 +1738,18 @@ disagrees with the product, distrust the check first**, and prefer the real
 harness to a reimplementation of it. Three false readings in one session were
 all the apparatus; the product was fine every time.
 
+- **A `Copy-Item` of a depot image CARRIES THE READ-ONLY BIT, and codex-vm
+  then refuses every guest write while the guest believes it wrote.** Measured
+  2026-09-08 investigating F12 at the desk: a hand-rolled working copy of
+  `seed/Codex.img` gave `out-batch(hits=3022 words=773632)` beside
+  `refused(openfail=3022)` and `flush-bytes=0`, so the image hash was unchanged
+  and the guest reported a successful write path. Reading that as the guest's
+  defect would have been wrong; clearing the bit made the same run flush
+  1,547,264 bytes. `build/desk.ps1` clears it
+  (`Set-ItemProperty $diskCopy -Name IsReadOnly -Value $false`) and any copy
+  made by hand must too. **The `refused(...)` counters on the IDE CENSUS line
+  are what separates the host refusing from the guest never asking**, and they
+  are the first thing to read when a write does not land.
 - **`[uint32]0xFFFFFFFF` THROWS, because PowerShell parses `0xFFFFFFFF` as
   Int32 minus one.** Measured 2026-08-15 writing a CRC32 helper to check GPT
   fixtures: the seed line `$crc = [uint32]0xFFFFFFFF` threw on every call, the
@@ -2109,6 +2121,15 @@ SAME exit code, so the verdict is the `-Log` file: `IR-BEGIN` / `IR-END` bracket
 the wire and `error CDX....` lines carry the diagnostics. `-IrCce` takes the
 binary path instead and behaves like `CDX`, so there the exit code IS the
 verdict.
+
+**Two things that fail path does to the `-Log`, and a count over the whole file
+gets both wrong.** Every guest line is cut at 200 characters before it is
+written, so a long `(def ...)` cannot be compared body against body from the
+log; and after the output the script appends "last N output line(s)" and prints
+the tail AGAIN, so a definition near the end of the wire appears twice.
+Count and read inside the FIRST `IR-BEGIN` / `IR-END` pair only: measured
+2026-09-08 on seed `F7A1343619F08614`, one `(def "__eq_IntList" ...)` inside
+the block counted as two over the file.
 
 The first version of this entry said all three behaved alike, on a reading of
 `compile.ps1`'s control flow rather than a measurement of each mode, and a

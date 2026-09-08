@@ -1,21 +1,98 @@
 Chapter: FsSpawnInherits
   cites Foreword chapter FileSystem
 
-   10  the write landed. The FileSystem.Write grant came with the child
-       and the servicer elevated on its behalf though it holds no block
-       device.
-    0  the write did not land: the cap did not travel, or the servicer
-       does not work in a spawned process.
- Anything else means the parent read a byte the child never wrote.
- The parent waits for the child instead of yielding once: a servicer
- round-trip is longer than one scheduler turn, and a peek that can
- race the poke reports the boot content of byte 28000, not the verdict.
+ The child faults inside `write-file` before it can report a verdict, and
+ the os-backlog row names three candidate sites: the capability lookup, the
+ servicer channel, and the elevation. One byte of verdict cannot tell them
+ apart, so this arm is a TRAIL: the child writes a sentinel at each stage it
+ reaches, and the parent reads how far the child got.
+
+ THE STATES, and each names a different site:
+
+    alive 0        the child never ran; nothing below means anything.
+    write-cap 0    the FileSystem.Write bit did not travel to the child's
+                   process-table word, so the lookup denies. The emitted
+                   deny path RETURNS 0 rather than faulting, so this state
+                   and a fault are different findings.
+    read 0         the child faulted in the READ servicer, which shares the
+                   lookup, the elevation and the call with the write path.
+                   The site is in that common machinery.
+    block-cap 0    the child does NOT hold `cap-block-device`, so a read that
+                   reaches the disk reached it through the elevation cell and
+                   nothing else. With this bit set the read arm would say
+                   nothing about the elevation, which is why it is printed.
+    read 72        the read servicer completed, so the lookup, the elevation
+                   and the servicer call all work in a spawned process, and
+                   the site is inside the write path alone.
+    verdict 0      the child never reached the verdict, which is the fault.
+    verdict 5      `write-file` returned False: a denial, not a fault.
+    verdict 10     the write landed.
+
+ The parent's own write is the control. The parent holds the same grant and
+ runs in proc 0, where the servicer is known to work, so a parent write that
+ fails means the disk or the fixture moved and no state below is evidence.
+
+ The parent WAITS for the child rather than yielding once: a servicer
+ round-trip is longer than one scheduler turn, and a peek that can race the
+ poke reports the boot content of the cell instead of the verdict.
+
+ The capability word is read at its address rather than through
+ `read-process-grant`, because that function lives in a Verify chapter whose
+ cite closure this arm deliberately does not carry (`fs-spawn-inherits.covers`).
+ The three constants are the kernel's process table, fixed by the emitter:
+ base 20480, 256-byte entries, the capability word at offset 56
+ (`X86_64Boot.codex`, `proc-table-base` / `proc-entry-size` / `proc-cap-offset`),
+ and `cap-filesystem-write` is bit 7 (`Capability.codex`).
+
+Section: The Trail
+
+  proc-table-base : Integer = 20480
+
+  proc-entry-bytes : Integer = 256
+
+  proc-cap-word-offset : Integer = 56
+
+  cap-write-bit : Integer = 7
+
+  cap-block-bit : Integer = 10
+
+  my-cap-word : Integer -> Integer
+  my-cap-word (pid) =
+    peek-qword (proc-table-base + pid * proc-entry-bytes + proc-cap-word-offset) 0
+
+  holds-bit : Integer, Integer -> Integer
+  holds-bit (pid) (bit) =
+    if bit-and (bit-shru (my-cap-word pid) bit) 1 == 1 then 1 else 0
 
 Section: Entry
 
-  opening : [Concurrent, Console, FileSystem.Write "OK"] Integer
+  opening : [Capability, Concurrent, Console, FileSystem.Read "OK", FileSystem.Write "OK"] Nothing
   opening = act
-    pid <- process-spawn (\x -> poke-byte 28000 0 (if write-file "OK.TXT" "child data" then 10 else 0))
-    let w = process-wait pid
-    in peek-byte 28000 0
+    parent-wrote <- write-file "OK.TXT" "parent data"
+    let z0 = poke-byte 28000 0 0
+    in let z1 = poke-byte 28000 1 0
+    in let z2 = poke-byte 28000 2 0
+    in let z3 = poke-byte 28000 3 0
+    in let z4 = poke-byte 28000 4 0
+    in act
+      pid <- process-spawn (\x -> act
+        let a = poke-byte 28000 1 71
+        in let b = poke-byte 28000 2 (holds-bit process-get-pid cap-write-bit)
+        in let d = poke-byte 28000 4 (holds-bit process-get-pid cap-block-bit)
+        in act
+          back <- read-text "OK.TXT"
+          let c = poke-byte 28000 3 (if text-length back > 0 then 72 else 73)
+          in poke-byte 28000 0 (if write-file "OK.TXT" "child data" then 10 else 5)
+        end
+      end)
+      let w = process-wait pid
+      in act
+        print-line-uni ("fs-spawn-inherits parent-write " & (if parent-wrote then "1" else "0"))
+        print-line-uni ("fs-spawn-inherits alive " & show (peek-byte 28000 1))
+        print-line-uni ("fs-spawn-inherits write-cap " & show (peek-byte 28000 2))
+        print-line-uni ("fs-spawn-inherits block-cap " & show (peek-byte 28000 4))
+        print-line-uni ("fs-spawn-inherits read " & show (peek-byte 28000 3))
+        print-line-uni ("fs-spawn-inherits verdict " & show (peek-byte 28000 0))
+      end
+    end
   end

@@ -5,6 +5,7 @@ Chapter: CheckXdiagCellsScript
   cites Foreword chapter List
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -25,7 +26,7 @@ Section: S01 -- Why this exists
 
   cx-doctrine : List ShellCmd = [ScComment "Fail the build when two owners claim the same xdiag cell.", ScComment "", ScComment "The xdiag block is one flat array of 32-bit cells at xhci-diag (GopXhci),", ScComment "written by xdiag-put and read by xdiag-get. Every subsystem that wants a", ScComment "breadcrumb takes cells out of it, nothing arbitrates, and no compiler or", ScComment "gate has ever looked -- so two owners of one cell is green everywhere and", ScComment "only shows up as a wrong number on a photograph of a boot screen.", ScComment "", ScComment "It happened. Until 2026-08-13 usb-hid-note wrote 80 + idx*4 for four", ScComment "devices, which is cells 80..95, on top of gfat-cell-stage 80,", ScComment "msc-cell-lastcc 81, msc-cell-phase 82, gfat-cell-write 83,", ScComment "xhci-cell-fuel-left 84, msc-cell-fuel-lo 85, msc-cell-fail-lba 86 and", ScComment "msc-cell-retry 87. The two writers run in order and neither reads the", ScComment "other, so the storage diagnostics were right and DeskBoot's HID table was", ScComment "quietly showing storage state as device descriptors. A cell the storage", ScComment "path did not write on a given boot kept its HID value instead, which is", ScComment "how an F12 mount failure came to report a report-buffer address as a FAT", ScComment "write stage.", ScComment "", ScComment "WHAT THIS CHECKS, and it is deliberately narrow: named constants only,", ScComment "declared as `<name> : Integer = <n>` in a chapter that uses xdiag, plus", ScComment "the block claims declared in the table below. It does NOT parse literal", ScComment "`xdiag-put 19` calls -- there are ~90 of those in GopXhci alone and they", ScComment "are that chapter's own private map. The rule this enforces is the one", ScComment "that was broken: a subsystem taking a RANGE must declare it here.", ScComment "", ScComment "Usage:  pwsh build/check-xdiag-cells.ps1", ScComment "Exit 0 clean, 1 on an overlap."]
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScSetLocation (SePathJoin SeScriptRoot (SeLit ".."))]
+  s01-body : List ShellCmd = [ScBlank, ScSetStrictMode, ScSetErrorStop, ScSetLocation (SePathJoin SeScriptRoot (SeLit ".."))]
 
 Section: S02 -- The declared blocks
 
@@ -36,7 +37,7 @@ Section: S02 -- The declared blocks
 
   cx-block-note : List ShellCmd = [ScComment "Ranges a subsystem claims as a block, inclusive. A block is declared here", ScComment "because the code computes its cells rather than naming each one, so no", ScComment "constant scan can see them."]
 
-  s02 : List ShellCmd = [ScSequence cx-block-note, ScAssign "blocks" (SeArrayLiteral cx-blocks)]
+  s02-body : List ShellCmd = [ScBlank, ScSequence cx-block-note, ScAssign "blocks" (SeArrayLiteral cx-blocks)]
 
 Section: S03 -- The named single-cell constants
 
@@ -57,7 +58,7 @@ Section: S03 -- The named single-cell constants
 
   cx-scan-file : List ShellCmd = [ScAssign "text" (SeFileText (SeProperty (SeVar "f") "FullName")), ScIf (SeNot (SeVar "text")) [ScContinue] [], ScIf (SeNot (SeMatch (SeVar "text") "xdiag-(put|get)")) [ScContinue] [], ScSequence cx-plural-note, ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "text", SeLit cx-decl-pattern]) cx-take-match]
 
-  s03 : List ShellCmd = [ScSequence cx-named-note, ScAssign "named" SeHashLiteral, ScAssign "files" (SeArrayLiteral []), ScForEach "r" (SeArrayLiteral cx-roots) [ScAppend "files" (SeAsArray (SeListFiles (SeVar "r") "*.codex" True))], ScForEach "f" (SeVar "files") cx-scan-file]
+  s03-body : List ShellCmd = [ScBlank, ScSequence cx-named-note, ScAssign "named" SeHashLiteral, ScAssign "files" (SeArrayLiteral []), ScForEach "r" (SeArrayLiteral cx-roots) [ScAppend "files" (SeAsArray (SeListFiles (SeVar "r") "*.codex" True))], ScForEach "f" (SeVar "files") cx-scan-file]
 
 Section: S04 -- One cell, one owner
 
@@ -77,7 +78,7 @@ Section: S04 -- One cell, one owner
 
   cx-keys : ShellExpr = SePipe (SeProperty (SeVar "named") "Keys") [StSort]
 
-  s04 : List ShellCmd = [ScAssign "problems" (SeArrayLiteral []), ScBlank, ScSequence cx-bounds-note, ScAssign "exclusiveBounds" (SeArrayLiteral [SeLit "msc-cell-end"]), ScBlank, ScSequence cx-order-note, ScAssign "byCell" SeHashLiteral, ScForEach "k" cx-keys cx-add-claim, ScForEach "c" (SePipe (SeProperty (SeVar "byCell") "Keys") [StSort]) [ScIf (SeIntGt (SeCount (SeIndex (SeVar "byCell") (SeVar "c"))) (SeInt 1)) [ScAppend "problems" cx-shared-msg] []]]
+  s04-body : List ShellCmd = [ScBlank, ScAssign "problems" (SeArrayLiteral []), ScBlank, ScSequence cx-bounds-note, ScAssign "exclusiveBounds" (SeArrayLiteral [SeLit "msc-cell-end"]), ScBlank, ScSequence cx-order-note, ScAssign "byCell" SeHashLiteral, ScForEach "k" cx-keys cx-add-claim, ScForEach "c" (SePipe (SeProperty (SeVar "byCell") "Keys") [StSort]) [ScIf (SeIntGt (SeCount (SeIndex (SeVar "byCell") (SeVar "c"))) (SeInt 1)) [ScAppend "problems" cx-shared-msg] []]]
 
 Section: S05 -- No block may overlap another
 
@@ -93,7 +94,7 @@ Section: S05 -- No block may overlap another
 
   cx-inner : List ShellCmd = [ScAssign "a" cx-a, ScAssign "b" cx-b, ScIf cx-overlaps cx-overlap-body []]
 
-  s05 : List ShellCmd = [ScForLoop "i" (SeInt 0) (SeIntLt (SeVar "i") (SeCount (SeVar "blocks"))) (SeRaw "$i++") [ScForLoop "j" (SeAdd (SeVar "i") (SeInt 1)) (SeIntLt (SeVar "j") (SeCount (SeVar "blocks"))) (SeRaw "$j++") cx-inner]]
+  s05-body : List ShellCmd = [ScBlank, ScForLoop "i" (SeInt 0) (SeIntLt (SeVar "i") (SeCount (SeVar "blocks"))) (SeRaw "$i++") [ScForLoop "j" (SeAdd (SeVar "i") (SeInt 1)) (SeIntLt (SeVar "j") (SeCount (SeVar "blocks"))) (SeRaw "$j++") cx-inner]]
 
 Section: S06 -- Every named cell sits in a declared block
 
@@ -103,7 +104,7 @@ Section: S06 -- Every named cell sits in a declared block
 
   cx-orphan-body : List ShellCmd = [ScIf cx-skip-bound [ScContinue] [], ScAssign "c" cx-cell-of, ScAssign "inSome" (SeBool False), ScForEach "b" (SeVar "blocks") [ScIf cx-in-block [ScAssign "inSome" (SeBool True), ScBreak] []], ScIf (SeNot (SeVar "inSome")) [ScAppend "problems" cx-orphan-msg] []]
 
-  s06 : List ShellCmd = [ScForEach "k" cx-keys cx-orphan-body]
+  s06-body : List ShellCmd = [ScBlank, ScForEach "k" cx-keys cx-orphan-body]
 
 Section: S07 -- The map
 
@@ -111,22 +112,46 @@ Section: S07 -- The map
 
   cx-map-row : ShellExpr = SeFormat (SeLit "  {0,3}..{1,-3} {2}") [SeProperty (SeVar "b") "Lo", SeProperty (SeVar "b") "Hi", SeProperty (SeVar "b") "Name"]
 
-  s07 : List ShellCmd = [ScIf (SeNot (SeVar "Quiet")) [ScEcho cx-map-head, ScForEach "b" (SePipe (SeVar "blocks") [StSortBy "Lo"]) [ScEcho cx-map-row]] []]
+  s07-body : List ShellCmd = [ScBlank, ScIf (SeNot (SeVar "Quiet")) [ScEcho cx-map-head, ScForEach "b" (SePipe (SeVar "blocks") [StSortBy "Lo"]) [ScEcho cx-map-row]] []]
 
 Section: S08 -- The verdict
 
   cx-fail-body : List ShellCmd = [ScEcho (SeLit ""), ScEchoStyled (SeLit "check-xdiag-cells: FAIL") ClBrightRed True, ScForEach "p" (SeVar "problems") [ScEchoStyled (SeConcat (SeLit "  ") (SeVar "p")) ClBrightRed True], ScEcho (SeLit ""), ScEcho (SeLit "Two owners of one cell is green in every gate and shows up as a wrong"), ScEcho (SeLit "number on a photograph of a boot screen. Move one, and update the"), ScEcho (SeLit "registry in docs/OperatorsManual.md."), ScExit (SeInt 1)]
 
-  s08 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "problems")) (SeInt 0)) cx-fail-body [], ScBlank, ScEchoStyled (SeLit "check-xdiag-cells: OK") ClBrightGreen True, ScExit (SeInt 0)]
+  s08-body : List ShellCmd = [ScBlank, ScIf (SeIntGt (SeCount (SeVar "problems")) (SeInt 0)) cx-fail-body [], ScBlank, ScEchoStyled (SeLit "check-xdiag-cells: OK") ClBrightGreen True, ScExit (SeInt 0)]
+
+Section: The stages
+
+  blocks-art : PipeArtifact = PipeArtifact { pa-name = "blocks", pa-kind = PkValue, pa-expr = SeVar "blocks", pa-from = Just (SeArrayLiteral cx-blocks) }
+
+  named-art : PipeArtifact = PipeArtifact { pa-name = "named", pa-kind = PkValue, pa-expr = SeVar "named", pa-from = Just SeHashLiteral }
+
+  problems-art : PipeArtifact = PipeArtifact { pa-name = "problems", pa-kind = PkValue, pa-expr = SeVar "problems", pa-from = Just (SeArrayLiteral []) }
+
+  s00 : PipeStage = PipeStage { ps-name = "doctrine", ps-why = "why two owners claiming one xdiag cell is silent and expensive", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = cx-doctrine }
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode and the repository as the working directory", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
+
+  s02 : PipeStage = PipeStage { ps-name = "the declared blocks", ps-why = "the ranges each owner has claimed, which is the table every later check is against", ps-in = [], ps-out = [blocks-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "the named single-cell constants", ps-why = "the cells named one at a time in source rather than claimed as a range", ps-in = [], ps-out = [named-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "one cell, one owner", ps-why = "the first of the three disagreements: a cell claimed by more than one owner", ps-in = ["blocks", "named"], ps-out = [problems-art], ps-needs = [], ps-verdict = [], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "no block may overlap another", ps-why = "the second: two declared ranges that intersect, which no single-cell check can see", ps-in = ["blocks"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "every named cell sits in a declared block", ps-why = "the third: a named cell outside every claimed range, which is an owner nobody recorded", ps-in = ["named", "blocks"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "the map", ps-why = "print the claimed ranges in order, which is the only place a reader can see the layout whole; -Quiet suppresses it", ps-in = ["Quiet", "blocks"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s07-body }
+
+  s08 : PipeStage = PipeStage { ps-name = "the verdict", ps-why = "any of the three disagreements fails the build, each problem named", ps-in = ["problems"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "a cell has two owners, two declared blocks overlap, or a named cell sits outside every block", PoExit 0 "every cell has exactly one owner and every named cell is inside a declared block"], ps-body = s08-body }
 
 Section: Assembly
 
-  cx-full : List ShellCmd = [ScSequence cx-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08]
-
-  cx-script : ShellScript = sh-script "check-xdiag-cells" "Fail the build when two owners claim the same xdiag cell." cx-params cx-full
+  cx-pipe : Pipeline = Pipeline { pl-name = "check-xdiag-cells", pl-doc = "Fail the build when two owners claim the same xdiag cell.", pl-params = cx-params, pl-stages = [s00, s01, s02, s03, s04, s05, s06, s07, s08] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cx-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cx-pipe))
   end
 
 Page 1

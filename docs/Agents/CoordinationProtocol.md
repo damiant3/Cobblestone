@@ -604,10 +604,22 @@ is chronically under utilized" by lanes "waiting on a bump or permission",
   tool and a bounded `Wait-Process`, then continue. Do not end the turn and
   sit deaf until the commander bumps you; that latency, multiplied by six
   lanes and a 15-minute pulse, is what left the box idle.
-- **Ask only for a fan-out**: `-Jobs` above 1, a battery, a gate, a Renode
-  bed. One message to the commander with the honest size; the answer comes
-  in the same turn. Two serial single-guest runs from two lanes may overlap;
-  a fan-out beside anything else is the commander's call.
+- **A fan-out is launched on a RUNTIME MEASUREMENT, by the lane** (Damian,
+  2026-09-08 15:50: "that can be easily measured at runtime by the agent to
+  see if it fits, then go"). Measure free memory at the moment of launch and
+  count the guests the run will boot (`-Jobs N` is N guests of 3072 MB each,
+  and a batch compile is one guest): if free GiB is at least 3 per guest,
+  launch, and write the run, its guest count, its PID and its log in
+  `status.json`; if not, wait and say so in `status.json`, then re-measure.
+  Check `Get-Process msedge` first: Edge idles at about 1.7 GB and Damian
+  kills it on request, so a fan-out that misses by that much is a message to
+  root, not a wait. A gate's compiler stages take the box whole: no fan-out
+  launches beside a running gate. The commander no longer grants fan-outs;
+  root arbitrates a collision (two fan-outs measured against the same free
+  memory in the same minute) and holds the box for a release gate's compiler
+  stages, which is where a hold still comes from. The 3 GiB per guest is the
+  bar until the diagnostic release of 2026-09-08 re-measures it
+  (`build/box-sample.ps1` writes the profile).
 - **A dead guest is reported, never retried.** The report names free memory
   at launch and what else was running; that is the measurement the next
   ruling on this section is made from.

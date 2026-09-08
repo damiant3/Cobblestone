@@ -1,63 +1,107 @@
 Chapter: DiskTestRunner
   cites Foreword chapter Fat16
+  cites Codex chapter Opening (compile-frontend, parse-mode-flags)
+  cites Codex chapter Diagnostic Bag (bag-errors)
   cites Foreword chapter Maybe
-  cites Foreword chapter StringUtils
 
- Build.md Phase B, stage 1. The on-disk test runner's DIRECTORY half: mount the
- boot volume, list what is on it, choose ONE entry by name, read the bytes back
- and report. Compiling and running what is chosen is a later stage and is NOT
- here, because the design's own open question, how one program runs another, is
- unanswered: a chapter carrying `opening` can be cited by nothing (CDX3001), so
- this runner cannot pull the compiler in, and no other composition exists yet.
+ Build.md Phase B. The on-disk test runner: mount the boot volume, list what is
+ on it, choose an entry by name, read the bytes back, and COMPILE them in this
+ same program.
+
+ The compiler arrives as a library. `Chapter: Opening` declares `codex-opening`
+ and no `opening`, so it is citable, and `Codex` is a manifest quire: a cite of
+ any of its chapters pulls the whole ordered unit `build/compiler-order.txt`
+ names, minus that unit's own entry chapter. That is what lets one program
+ compile another without a second boot.
 
  Every line prints a verdict of its own rather than one summary, because a
  bare-metal boot has no exit code to read: the serial log IS the result, and a
  stage that fails must say which stage.
-
-Section: The Subject
-
- `SOURCE.SRC` is the name the img plug writes a `-Source` file under, and it is
- the only source name any image carries today. A runner over `codex/test`
- wants a multi-source image, which the img plug cannot yet build.
-
-  runner-subject : Text = "SOURCE.SRC"
 
 Section: Reporting
 
   yn : Boolean -> Text
   yn (b) = if b then "yes" else "no"
 
-  runner-names : List Text, Integer, Integer -> Text
-  runner-names (names) (i) (n) =
-   if i >= n then ""
-   else (if i == 0 then "" else " ") & list-at names i & runner-names names (i + 1) n
+Section: The Compile
 
-  runner-first-line : Text -> Text
-  runner-first-line (t) =
-   let nl = text-index-of t "\n"
-   in if nl < 0 then t else text-take t nl
+ `compile-frontend` is pure and Console-free, so a verdict costs no effects and
+ needs no act block. Errors are counted rather than printed: a bare-metal serial
+ log is the only channel and a failing chapter can produce hundreds.
+
+ The bag is read ONCE per entry and both numbers come out of that one read: a
+ second call would compile the chapter again to learn what it already knew.
+
+  RunnerResult = record {
+   rr-errors : Integer,
+   rr-code : Integer
+  }
+
+  runner-run : Text -> RunnerResult
+  runner-run (t) =
+   let fe = compile-frontend t "Program" (parse-mode-flags "" 0)
+   in let es = bag-errors (fe.bag)
+   in RunnerResult { rr-errors = list-length es, rr-code = if list-length es == 0 then 0 else (list-at es 0).code }
+
+ A read that failed and a chapter that would not compile are different answers
+ and a summary must not merge them, so an unreadable entry is -1 rather than an
+ error count of its own.
+
+  runner-of : Maybe Text -> RunnerResult
+  runner-of (src) =
+   if is-none src then RunnerResult { rr-errors = 0 - 1, rr-code = 0 }
+   else runner-run (from-maybe src "")
+
+ The FIRST diagnostic code is what a `.failing` sidecar records, so printing it
+ is what lets that half of the diff be made at all. The pairing itself stays on
+ the host: the sidecars are not on the image, and putting them there is a
+ namespace question rather than a runner one.
+
+  runner-line : Text, RunnerResult -> Text
+  runner-line (nm) (r) =
+   if r.rr-errors < 0 then nm & " : READ FAILED"
+   else if r.rr-errors == 0 then nm & " : errors=0 ok=yes"
+   else nm & " : errors=" & show (r.rr-errors) & " ok=no first=CDX" & show (r.rr-code)
+
+ EFI and SEED are the image's own directories, written by the image writer
+ rather than put there by a caller. Everything else on the root is a subject.
+
+  runner-skip : Text -> Boolean
+  runner-skip (n) = if n == "EFI" then True else n == "SEED"
+
+  runner-say : Text, RunnerResult -> [Console] Integer
+  runner-say (nm) (r) = act
+    print-line-uni (runner-line nm r)
+    r.rr-errors
+   end
+
+  runner-walk : Fat16Volume, List Text, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  runner-walk (vol) (names) (i) (n) (bad) =
+   if i >= n then bad
+   else if runner-skip (list-at names i) then runner-walk vol names (i + 1) n bad
+   else act
+    src <- fat16-read-source vol (list-at names i)
+    e <- runner-say (list-at names i) (runner-of src)
+    runner-walk vol names (i + 1) n (if e == 0 then bad else bad + 1)
+   end
 
 Section: Body
 
   opening : [Console, Device.Block] Nothing = act
-    print-line-uni "=== DISK test runner, stage 1 ==="
+    print-line-uni "=== DISK test runner ==="
     vol <- fat16-boot-volume
     print-line-uni ("volume    : bps=" & show (vol.vol-bytes-per-sector) & " ok=" & yn (vol.vol-bytes-per-sector == 512))
     if vol.vol-bytes-per-sector /= 512 then act
       print-line-uni "REFUSED   : no usable FAT16 volume; nothing to list"
-      print-line-uni "=== stage 1 done ==="
+      print-line-uni "=== runner done ==="
     end
     else act
     names <- fat16-list-root vol
     print-line-uni ("entries   : " & show (list-length names))
-    print-line-uni ("names     : " & runner-names names 0 (list-length names))
-    found <- fat16-file-exists vol runner-subject
-    print-line-uni ("subject   : " & runner-subject & " present=" & yn found)
-    src <- fat16-read-source vol runner-subject
-    when src
-      is None -> print-line-uni "read      : FAILED"
-      is Just (t) -> print-line-uni ("read      : " & show (text-length t) & " chars, first line: " & runner-first-line t)
-    print-line-uni "=== stage 1 done ==="
+    print-line-uni "note      : each entry is compiled ALONE, with no cite resolution, so a chapter carrying cites reports every cited name undefined. Only a cite-free chapter's verdict is comparable with test.ps1's."
+    bad <- runner-walk vol names 0 (list-length names) 0
+    print-line-uni ("summary   : failed=" & show bad)
+    print-line-uni "=== runner done ==="
     end
   end
 

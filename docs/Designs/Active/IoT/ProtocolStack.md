@@ -350,11 +350,138 @@ The bound is `net-io-max-polls`, which is
 1. **The frame.** `net-driver-recv-frame` fills a caller-owned buffer allocated
    ONCE outside the loop instead of returning a fresh list per poll. That is a
    contract change on the driver and reaches every caller.
-2. **The 208 bytes.** The records rebuilt per frame have to be identified and
-   reused, or the residual accepted and `net-io-max-polls` lowered to bound it.
-   Reuse is the harder half, because the surviving `NetSession` holds `arp`,
-   `outbox` and `rexmit-queue` (`NetworkStack.codex:61`), all heap structure the
-   processed frame legitimately updates.
+2. **The 208 bytes, now IDENTIFIED** (blu, 2026-09-08, `codex/test/net-recv-heap`,
+   100 iterations at a 60-byte frame, seed `75B414046BEE5208`, and the same
+   five figures on the seed before it). The four stages
+   of `transport-process-frame` account for the whole with NO residual:
+
+   | stage | bytes per frame | what it builds |
+   |---|---|---|
+   | `net-process-frame` | 40 | one `NetResult` |
+   | the rebuild inside `transport-process-frame` | 64 | one `TcpTransportState` |
+   | `transport-feed-raw` | 64 | ANOTHER `TcpTransportState` |
+   | `transport-try-recv` | 40 | one `TransportRecvResult` |
+   | total | **208** | equals the measured whole exactly |
+
+   **WHICH FRAME THE FIGURES ARE MEASURED ON, and it is not every frame
+   (blu, 2026-09-08, self-caught while sizing the frame half).** The arm's
+   fixture is `zeros 60`, so its ethertype is 0 against `eth-type-ipv4` 2048
+   and `eth-type-arp` 2054: `net-process-frame` takes its `unknown ethertype`
+   branch, returns one `NetResult`, and NEVER calls `eth-payload`. So every
+   absolute figure in this section -- 208, 144, 120 -- is the cost of a frame
+   the stack does not recognise, which is exactly the no-message poll the
+   original arm was built to measure and is NOT the cost of a frame it
+   processes. A recognised frame additionally pays `eth-payload`, which builds
+   a fresh list of the payload one `list-push` at a time, and then `ip-payload`
+   below it: two more copies at 8 bytes a byte with doubling, unmeasured.
+   **The REDUCTIONS are unaffected and hold for every frame**, because both
+   removals are per-construction: the doubled `TcpTransportState` (64 bytes)
+   and the `recv-buf` field (24 bytes) come off any frame, recognised or not.
+
+   **THE RECOGNISED FRAME IS MEASURED, and it is 17x the dropped one: 699
+   bytes against 40** (blu, 2026-09-08, `recognised-cost` in
+   `codex/test/net-recv-heap`, 100 iterations, seed `82DC1A4CEEA20EFE`). The
+   two fixtures are the same 60 bytes and differ in exactly TWO: the ethertype.
+   So 659 of those bytes are what RECOGNITION costs, all of it inside
+   `net-process-frame`, and none of it appeared in any figure this document
+   published before today. On a 60-byte frame the stage table's 40 becomes 699
+   and the per-frame total becomes about 779 rather than 120.
+
+   That reprices the frame half rather than changing its direction. The
+   driver's `list-push` build (16,400 bytes for a 1,514-byte frame) was only
+   ever one of the copies: `eth-payload` builds a fresh list of the payload,
+   and `net-process-ip` calls `ip-payload` for another, so a recognised frame
+   is copied at least three times at 8 bytes a byte before anything reads it.
+   The 60-byte reading is a FLOOR for the same reason: these copies scale with
+   the payload, and 1,514 bytes was not measured.
+
+   The arm's older line "the retention ignores frame length" is true of the
+   DROPPED path it is measured on and must not be read as a statement about a
+   recognised one.
+
+   **THE FIGURE ON THAT PATH IS NOW 120, and the transport record itself is 40
+   bytes** (blu, 2026-09-08). `recv-buf` was carried in every construction, copied in
+   every rebuild, and never held anything: the census over the tree finds every
+   write of it is `[]` or a copy of one, no `__record-set` or `list-push`
+   touches it, and its only read was `transport-stats`, which is why every arm
+   printing it printed `buf=0`. Removing the field takes the record from 64
+   bytes to 40 and the per-frame figure from 144 to 120, and the three
+   surviving stages now cost 40 each. `transport-stats` reports `recv-len`
+   instead, which is the number of buffered bytes it always claimed to be.
+   Confirmed independently: every figure in `codex/test/web-mux-heap` fell by
+   the same 24 bytes, because a `web-mux` accept builds one transport.
+
+   **The arm64 half of that removal is UNPROVEN, and the gap is worth naming.**
+   `Arm64CodeGen3.codex` keeps two hand-written field-name-to-index tables that
+   encode `TcpTransportState`'s field order literally (`session` 0, `recv-buf`
+   1, `recv-base` 2 ...), so the removal shifts four entries and deletes one.
+   The tables were corrected, the arm64 plug rebuilt and `net-recv-heap` run
+   cross to arm64: PASS. That pass means nothing. Sabotaging one index to the
+   wrong value, rebuilding, and confirming the wrong value in the bundled
+   source produced a PASS as well, so no available arm observes these tables
+   (L-VACUOUS). Any future field reorder is a silent arm64 miscompile with
+   nothing to catch it. The x86-64 backend is not exposed to this: it computes
+   the index from the record's own field list (`find-record-field-index`).
+
+   **The step before it: the duplicate build removed, 208 to 144**
+   (blu, 2026-09-08). `transport-process-frame` was constructing a
+   `TcpTransportState` purely to hand it to `transport-feed-raw`, which
+   immediately constructed another from it. `transport-feed-from` takes the
+   session as an argument instead of reading it off a transport, both of its
+   branches build exactly one record, and `transport-process-frame` now calls
+   it directly: **208 to 144 per frame, 64 bytes and one whole record gone**,
+   with no representation change and no signature change outside
+   `TcpTransport`. The repaired path is `net-process-frame` 40 plus
+   `transport-feed-from` 64 plus `transport-try-recv` 40, and the arm asserts
+   that those three account for the whole with no residual.
+
+   Proven behaviourally rather than by inspection: all 15 arms citing
+   `TcpTransport` that carry an `.expected` produce byte-identical output
+   (`tcp-transport-test`, `tcp-transport-guard`, `net-io-clock`,
+   `web-send-short`, `http-send-short`, `net-send-capped`,
+   `explorer-server-test`, `edge-mesh-admit`, `arm64-send-refusal`,
+   `web-mux-heap`, `net-recv-heap`, and the four `trust-*` arms).
+   `arm64-web-server` carries no `.expected` and is not part of that proof.
+
+   **THE OTHER TWO SITES ARE DONE TOO** (blu, 2026-09-08): `net-io-send-drain`
+   in `NetIO.codex` and `arm64-net-io-send-drain` in `Arm64NetIO.codex` both
+   call `transport-feed-from` now, one record per frame instead of two on the
+   drain path, 64 bytes each by the stage costs above. The saving is the same
+   construction the table prices, not a new number, and it is not claimed as
+   one.
+
+   **What an end-to-end measurement of `net-io-send-drain` would take, since
+   "it needs a card" is too weak an answer (blu, 2026-09-08).** A card is
+   available: `-e1000-nat` is a codex-vm flag and two arms already take it
+   (`dhcp-acquire-e1000` and `net-poll-calibrated`), so frames really arrive
+   under an ordinary arm. What the drain path lacks is a TCP PEER. It runs
+   once per 1400-byte chunk of an established connection, and with no peer
+   every poll takes the empty-frame branch, which is the one branch that DOES
+   `__heap-restore`, so an arm without a peer measures the path that was never
+   leaking. DHCP does not substitute: it is the one exchange `-e1000-nat`
+   completes alone, and it is UDP. So the measurement is interop-shaped, a
+   host-side listener plus a guest, in the family of `build/*-interop-test.ps1`
+   rather than a `codex/test` arm, and it is worth its own unit only if the
+   per-frame figure on a live connection is wanted for its own sake: the
+   construction it would price is already priced above.
+
+   What blocked a shared helper was that those two carried `recv-buf` where
+   `transport-process-frame` blanked it, which differs in
+   `transport-feed-raw`'s overflow branch. **A census settles it: `recv-buf`
+   is provably always the empty list.** Every write of the field in the tree
+   is either `[]` or a copy of another transport's `recv-buf`, no
+   `__record-set` and no `list-push` touches it, and its only read is
+   `transport-stats`, which is why every arm printing it prints `buf=0`. So
+   the field is vestigial, blanking and preserving are the same act, and
+   **removing `recv-buf` from `TcpTransportState` would shrink every one of
+   these records** -- a follow-up worth pricing, since the record is 64 bytes
+   and this campaign is counting them.
+
+   The remaining 80 bytes are the two result records, which are the shape of
+   the interface rather than an accident. Reuse of the surviving `NetSession`
+   is the harder half, because it holds `arp`, `outbox` and `rexmit-queue`
+   (`NetworkStack.codex:61`), all heap structure the processed frame
+   legitimately updates.
 
 **Why a `__heap-restore` before the recursion cannot be the repair**: the state
 that must survive is exactly that session, so the restore frees what the
@@ -390,12 +517,35 @@ reads them with `peek-byte` off `rx-bufs + idx * e1000-buf-size` and copies
 them into a list purely to satisfy the consumer's type -- so the driver side is
 small and the consumer side is the work:
 
-**14 signatures in `NetworkStack.codex` alone take the frame family as
-`List Integer`** (`net-process-frame`, `net-process-ip`, `net-process-arp`,
-`net-arp-solicit`, `net-arp-known`, `net-outbox-frame`, `wrap-tcp-in-ip-eth`,
-`tcp-pseudo-header`, `tcp-with-checksum`, `tcp-checksum-valid`,
-`arp-cache-lookup`, `arp-cache-search`, `arp-cache-index`, `arp-cache-add`),
-before counting the slice helpers, the transmit path and `Arm64NetIO`. A
+**THE "14 SIGNATURES" FIGURE IS WRONG, and the campaign is smaller and
+differently shaped than it says (blu, 2026-09-08, every signature re-read at
+head).** All 14 named below still exist and all 14 still take `List Integer`,
+which is why the number survived re-checking. But `List Integer` is not the
+same claim as "carries a frame", and **six of the fourteen carry a 4-byte IP
+or a 6-byte MAC and never a frame**: `net-arp-solicit` and `net-arp-known`
+take a target IP, and `arp-cache-lookup`, `arp-cache-search`,
+`arp-cache-index` and `arp-cache-add` take an IP and a MAC. A seventh,
+`tcp-pseudo-header`, BUILDS twelve bytes and receives no frame at all.
+Converting those seven buys nothing: the 10x this campaign exists to remove is
+1,514 bytes at 8 bytes a byte plus `list-push` doubling, and none of it is in
+a four-byte address.
+
+What actually carries frame-sized bytes is seven, in two groups that want
+separate decisions:
+
+| group | signatures | what it carries |
+|---|---|---|
+| INBOUND, and the receive loop's own path | `net-process-frame` (the frame), `net-process-ip` (a slice of it), `net-process-arp` (a slice of it) | up to 1,514 bytes off the wire |
+| OUTBOUND and validation | `wrap-tcp-in-ip-eth`, `tcp-with-checksum`, `tcp-checksum-valid`, `net-outbox-frame` (which RETURNS a frame) | bytes this stack built, or an inbound segment being checked |
+
+**So the first unit is three signatures, not fourteen, and the inbound group
+is where the leak measured in this document lives.** The outbound group is a
+separate question with its own cost, because those bytes are constructed
+rather than received. Counting by "takes a `List Integer`" conflated an
+address with a payload, and the conflation made the campaign look four times
+its size (L-ADJECTIVE: a number standing in for a structure).
+
+The slice helpers, the transmit path and `Arm64NetIO` are still uncounted. A
 partial conversion leaves the stack in two representations at once, and this is
 the stack `b3` and the remaining hardware sitting depend on, so the change wants
 a session of its own with an arm per converted layer rather than a corner of
@@ -413,10 +563,13 @@ arm reports the retention at both frame sizes and asserts that the two agree.
 **The arm asserts SHAPE, not the byte counts**, because an expectation carrying
 the numbers would go red on any allocator or codegen change as well as on the
 repair, and the next reader would update the figure without learning why it
-moved. The counts live in the table above, with the date they were taken; the
-arm holds the four statements a repair changes: a poll producing no message
+moved. The counts live in the tables above, with the date they were taken; the
+arm holds the seven statements a repair changes: a poll producing no message
 still retains, the retention ignores frame length, the frame build costs more
-than the records retain, and the frame cost grows with frame length.
+than the records retain, the frame cost grows with frame length, the three
+stages of the path account for the whole with no residual, feeding builds
+exactly one transport record, and both feeds build one record so the saving
+was the caller's construction.
 
 **The arm GOES RED WHEN THE REPAIR LANDS, and that is deliberate.** A green arm
 here means the leak is still present.

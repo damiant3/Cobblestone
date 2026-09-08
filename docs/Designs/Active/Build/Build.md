@@ -557,8 +557,374 @@ asks for, the split is proven in the small, and the alternative invents a loader
 with no prior art in this tree for exactly one consumer. The alternatives, for
 the record: (b) load a compiled CDX and jump to its entry with a fresh stack and
 heap, which this page already calls the hard part; (c) let the host reboot the
-compiler once per test, which is `test.ps1` today and buys no capability. The
-split is seed-affecting and is not done.
+compiler once per test, which is `test.ps1` today and buys no capability.
+
+**The split is DONE, and was done before the ruling: `codex/compiler/EntryPoint.codex`,
+added 2026-09-02 in CL 21935.** `Chapter: Opening` declares `codex-opening` and no
+`opening` at all, so it is citable by construction, and the entry chapter is one line
+over it. Nothing here is seed-affecting and no token is owed.
+
+**The real blocker is the QUIRE REGISTRY, measured 2026-09-09 (fester).** A chapter
+citing `Codex chapter Opening` does not bundle: `bundle-app` answers `quire 'Codex' is
+not registered in build/quire-map.ps1`. The compiler's own unit never needed the
+registry, because `concat-codex-self.ps1` takes every `.codex` under `codex\compiler`
+wholesale and resolves only `Foreword` and `Math` through the map, so `Codex`, `Emit`
+and `Semantics` have never been registered anywhere. Registering them is not one line
+each: the map is ONE DIRECTORY PER QUIRE, and the `Codex` quire's chapters are spread
+over six of them (`codex\compiler` itself, `Ast`, `Core`, `IR`, `Syntax`, `Types`),
+while `Emit` and `Semantics` sit in single directories under that same root, so a
+recursive mapping of `Codex` would swallow both. Citability is therefore structurally
+true and has never once been exercised by a unit (L-UNCALLED), and stage 2 begins at
+the registry's shape rather than at the entry point.
+**Registering the quires is NECESSARY AND NOT SUFFICIENT, measured 2026-09-09.**
+The map resolves a cite by composing `<dir>\<chapter name>.codex`, and the compiler
+is the one place in the tree where that path does not exist. Two further obstacles,
+both counted:
+
+- **Filenames do not carry chapter names.** 43 of the compiler's 65 `.codex` files
+  have a base name different from their `Chapter:` line (`PhaseAllocator.codex` is
+  `Chapter: Phase Allocator`, `EntryPoint.codex` is `Chapter: Entry Point`). The
+  rest of the tree keeps the convention exactly: `codex\foreword\core` 133 chapters,
+  `apps\works` 122, `codex\os\net` 41, and ZERO filename disagreements in any of
+  them. The compiler is the sole exception because it is never resolved through the
+  map; `concat-codex-self.ps1` takes its directory wholesale.
+- **Four chapters span several files each**, which the one-file-per-chapter model
+  cannot express at all: `X86-64 Code Generator` is 14 files, `Parser` 3,
+  `Lowering` 2, `Type Checker` 2. `Opening` cites the 14-file one, so it is on
+  the transitive path and not an edge case to defer.
+
+**So the choice is between two shapes, and it is not a lane's to make.** (a) Bring
+the compiler to the tree's convention: rename the 43 files and make each chapter one
+file, after which a directory-list registration needs no resolver change at all. That
+touches compiler file layout and is seed-affecting. (b) Change the resolver to index
+chapters by reading first lines within the registered directories instead of composing
+a path from the chapter name. That leaves the compiler alone and changes shared
+machinery every bundler, linter and plug build depends on.
+
+
+**RULED (root, 2026-09-09): (a).** The convention holds everywhere else with zero
+disagreements, and (b) would add machinery to every bundler to keep one exception
+(L-LESS). The shape is 43 pure renames, each file of the four multi-file chapters
+becoming its own chapter with the cites it needs, then the directory-list
+registration with no resolver change.
+
+**A PRECONDITION the ruling did not know about, measured 2026-09-09 (fester): the
+renames are NOT pure, because the compiler's concatenation order is keyed on
+FILENAMES.** `concat-codex-self.ps1` sorts each directory's files ordinally and then
+hoists any file whose NAME matches `State|Encoder` to the front of that directory:
+
+```
+$subFiles = @($subFiles | Where-Object { $_.Name -match 'State|Encoder' }) + @($subFiles | Where-Object { $_.Name -notmatch 'State|Encoder' })
+```
+
+Two files ride that rule today, `Emit\X86_64Encoder.codex` and
+`Emit\X86_64State.codex`, and the rule carries no comment saying why it exists. Its
+existence is itself the evidence that order is load-bearing: a plain ordinal sort was
+not sufficient, or the hoist would not be there. So renaming 43 files reorders the
+unit the compiler is built from, which makes a rename a change to the BUILD rather
+than to layout alone.
+
+**Therefore the arc's first step is to make the order EXPLICIT** -- a manifest the
+concat reads, or an ordering derived from cites rather than from names -- after which
+the renames are genuinely pure and provable by a byte-identical CDX. Renaming first
+and proving afterwards inverts that: a changed digest would then carry two candidate
+causes, the reorder and the rename, with no arm separating them.
+
+**DONE (fester, 2026-09-09): the order is explicit.** `build/compiler-order.txt`
+carries all 65 compiler files, one repo-relative row each, in concatenation order,
+and `concat-codex-self.ps1` reads it and refuses any disagreement with the directory:
+a file with no row, or a row with no file. The filename-derived ordering is gone.
+
+Proof, and the intermediate product rather than the verdict: the concatenated unit is
+**byte-identical** across the change, 3,154,973 bytes, SHA-256 `D5DBE790...` before and
+after. That is stronger than comparing the emitted CDX, because identical input to the
+compiler is what makes identical output necessary rather than observed. Compiling the
+same bytes twice would agree whatever the truth, so it was not run (L-VACUOUS).
+
+Both refusals were ablated and fire, each naming the offender: a manifest with
+`Types\Unifier.codex` removed refuses and names that file; a manifest carrying
+`NoSuchFile.codex` refuses and names that row; restoring the manifest returns the
+byte-identical unit.
+
+**Correction to the paragraph above, which said the hoist carried no comment saying
+why.** The SHIPPED script carries none, because generation strips prose, but the
+generator always did: "THE `State|Encoder` REORDERING IS A DEPENDENCY FACT, not a
+preference: those chapters carry the types the rest of a subdirectory cites." That
+rationale reinforces the finding rather than softening it, since it says in the
+generator's own words that order is load-bearing. It is also stated in the wrong
+vocabulary: the hoisted files are in the SAME chapter as the files that need them, so
+what it moves is definitions within one chapter, not chapters within a quire, and no
+cite exists or could exist between them.
+
+**`Sort-ByDeps` in that script is defined and called by nothing** (L-UNCALLED). It is
+the cite-graph walk this ordering question would otherwise want, and it cannot serve:
+its seed is an ordinal name sort, and the order at issue is inside a single chapter
+where the cite graph has no edges. Left in place and unused, named here so the next
+reader does not mistake it for the mechanism.
+
+**RULED AGAIN AND DONE (root, 2026-09-09): (c), a quire is a DIRECTORY or a
+MANIFEST.** Neither (a) nor (b) survived the numbers: (a) was 24 renames rather
+than 43, and carried 75 live references outside `codex/compiler` (`build.ps1`,
+`cdx-to-pe.ps1`, `plug-build-lib.ps1`, `Diag.codex` and others, several
+generated) plus 198 prose citations that would rot; (b) put machinery in every
+bundler to keep one exception.
+
+`build/quire-map.ps1` now carries `$QuireManifests` beside `$QuireDirs`, with
+`Codex`, `Emit` and `Semantics` all registered as `build/compiler-order.txt`. A
+cite of any chapter in a manifest quire resolves to the whole ordered unit that
+manifest names, once. No renames, no cross-unit changes.
+
+Four things the branch has to get right, each found by a failing run rather than
+by reading:
+
+- **The unit's own entry chapter is left out.** A consumer supplies its own
+  `opening` and two in one unit collide (CDX3001). That is exactly what the
+  `EntryPoint.codex` split bought, and the branch spends it.
+- **The unit's cites into other quires are walked, and walked first**, so the
+  Foreword and Math chapters the compiler cites precede it. Without this the
+  bundle was missing `Foreword::MathLib` and `Math::Interval`.
+- **Chapters in the unit are marked visited under EVERY manifest quire name**,
+  because the compiler cites `Codex chapter Phase Allocator` while that file
+  lives in `Core\`. Keyed on the directory instead, the unit was pulled ten
+  times over and the bundle came to 31.8 MB.
+- **No quire prefix inside the unit, and the present check is honoured.**
+  `concat-codex-self` stamps `<dir>--<chapter>` because it merges quires; here
+  the 48 chapter names are already distinct, and a prefix makes the cite and the
+  chapter line disagree. Honouring `$present` is what stops a re-resolve of an
+  already bundled source adding the unit a second time, which is what
+  `compile.ps1` does to every bundle it is handed.
+
+Proof: the chapter that could not bundle now bundles AND compiles, exit 0,
+3,156,071 bytes, one `opening` and no `Chapter: Entry Point` in it. Six existing
+bundles across `apps\works`, `apps\games\classic`, `apps\spark`, `apps\notes`
+are byte-identical against the depot `quire-map.ps1`, which is the control for
+"this changed nothing else".
+
+**STAGE 2's CORE CAPABILITY IS PROVEN ON METAL-EQUIVALENT (fester, 2026-09-09):
+one program compiles another, in-process, with no second boot.**
+`apps/works/DiskTestRunner.codex` now cites `Codex chapter Opening` and
+`Codex chapter Diagnostic Bag`, and calls `compile-frontend` on the bytes it
+read off the FAT16 volume. `compile-frontend` is pure and Console-free, so the
+verdict costs no effects and needs no act block.
+
+Booted in codex-vm as the kernel with a FAT16 image on `-DiskFile`:
+
+```
+=== DISK test runner ===
+volume    : bps=512 ok=yes
+entries   : 3
+names     : EFI SEED SOURCE.SRC
+subject   : SOURCE.SRC present=yes
+read      : 628 chars, first line: Chapter: FieldRangeProven
+compile   : errors=0 ok=yes
+=== runner done ===
+```
+
+**The verdict can say no, which is the half that matters** (L-FALSIF): the same
+runner over `codex/test/errors/arith-on-text.codex`, whose sidecar expects
+CDX2003, reads `compile : errors=1 ok=no`. Both polarities agree with what
+`test.ps1` says about the same two subjects.
+
+**What is still open in stage 2.** The runner compiles ONE file under a fixed
+name and does not yet RUN what it compiled, diff a `.expected`, or walk a
+directory. The image can now hold `codex/test` (the img plug takes many
+sources), so the directory walk is next, and running the compiled output in
+process is the step after.
+
+**An observation, not a claim, banked here so it is not lost:** a 5-byte file
+carrying no `Chapter:` line at all compiled through `compile-frontend` with
+errors=0. Seen once, in passing, while feeding the runner the wrong file. If a
+unit with no chapter is genuinely accepted, that is a compiler question and
+belongs to the compiler register; it is recorded here only because the evidence
+was in hand.
+
+**THE DIRECTORY WALK LANDED THE SAME DAY (fester, 2026-09-09).** The runner no
+longer looks for one fixed name: it lists the root, skips `EFI` and `SEED` as
+the image writer's own, and compiles every remaining entry in process, printing
+a verdict per file and a summary. Three sources on one image, which the img
+plug's `-SourceList` now makes possible:
+
+```
+=== DISK test runner ===
+volume    : bps=512 ok=yes
+entries   : 5
+BAD1.SRC : errors=1 ok=no
+BAD2.SRC : errors=1 ok=no
+GOOD1.SRC : errors=0 ok=yes
+summary   : failed=2
+=== runner done ===
+```
+
+`GOOD1` is `codex/test/field-range-proven.codex`; the two failures are error
+fixtures from `codex/test/errors`, and their verdicts agree with what
+`test.ps1` says about them.
+
+A read that failed and a chapter that would not compile are kept apart: an
+unreadable entry answers -1 and prints `READ FAILED` rather than joining the
+error counts, because a summary that merges them cannot say which happened.
+
+**What stage 2 still owes:** running what it compiled and diffing a `.expected`.
+The walk and the in-process compile are done; execution is not, and no arm here
+claims it.
+
+**CORRECTION, measured the same day: the runner compiles a FILE, not a UNIT,
+and the earlier claim that its verdicts agree with `test.ps1` holds only for
+CITE-FREE subjects.** Twenty `codex/test` chapters on one image, all of which
+`test.ps1` compiles green, came back 14 red. The correlation is exact and runs
+20 for 20: every entry carrying a `cites` line reports errors, every cite-free
+entry reports zero, and nothing sits on either diagonal.
+
+| | errors = 0 | errors > 0 |
+|---|---|---|
+| **has cites** | 0 | 14 |
+| **cite-free** | 6 | 0 |
+
+The cause is not a compiler disagreement. `bundle-app` resolves cites on the
+HOST before `test.ps1` compiles anything, and the runner has no such step: it
+hands `compile-frontend` one file's bytes, so every cited name is undefined.
+The three-subject proof above stands only because `field-range-proven` is
+cite-free, which is exactly the property this design's own Phase B notes require
+of the DISK-mode sample.
+
+The runner now says so in its own output, once per run, rather than leaving a
+reader to infer it from a column of failures:
+
+```
+note      : each entry is compiled ALONE, with no cite resolution, so a chapter
+            carrying cites reports every cited name undefined. Only a cite-free
+            chapter's verdict is comparable with test.ps1's.
+```
+
+**So stage 2 owes more than execution.** Running a corpus that is not
+cite-free needs cite resolution ON THE GUEST, which is `bundle-app`'s job moved
+across the wire: the image would have to carry the cited chapters and the runner
+would have to assemble a unit before compiling. That is a larger piece than the
+`.expected` diff and it should be scoped before either.
+
+**The heap arm did not fire, and is recorded as not fired.** Twenty compiles in
+one boot with no `heap-save` / `heap-restore` between entries completed without
+exhausting the heap, so the discipline the ruling names is still correct by the
+memory contract but has no observed failure behind it here.
+
+### Cite resolution for the disk runner: both options priced (fester, 2026-09-09)
+
+Measured on the corpus as it stands today: `codex/test` holds **646 chapters,
+1,543,828 bytes**. They cite **352 distinct chapters** at the first level, whose
+files come to **3,918,035 bytes** as a union (one unresolved cite, not chased).
+
+**Option A, resolution ON THE GUEST.** The image carries the test chapters and
+the cited library chapters once each; the runner indexes chapters by name,
+walks each test's cites, assembles a unit, and compiles it. Payload is
+1.5 MB + 3.9 MB = **about 5.5 MB**, the library paid once. Cost is a resolver
+in Codex on the guest: a chapter index, cite parsing, the transitive walk with
+cycle handling, and the ordering rule `Resolve-CiteOrder` already implements on
+the host. That is a second implementation of an existing thing, which is the
+argument against it, and it must not drift from the host's.
+
+**Option B, bundling ON THE HOST.** `bundle-app`'s output becomes the image's
+entries, so the runner compiles what it reads with no resolver at all. Measured
+over the first 8 cite-carrying tests: 22,641 raw bytes become 147,243 bundled,
+a factor of **6.5**, because every unit repeats its own closure. Extrapolated
+across 646 tests that is roughly **10 MB** against option A's 5.5, and the
+extrapolation is the weak part of this paragraph: 8 files is a small sample and
+the factor varies from 3.0 to 18.2 across them. The strength is that it needs
+NO new code on the guest.
+
+**NEITHER IS THE NEXT DECISION, because a third thing gates both.** The image's
+namespace cannot hold this corpus at all:
+
+- **The FAT16 root directory has 509 usable entries** (512 less EFI, SEED and
+  the volume label). 646 tests exceed it before a single library chapter is
+  added. Option A needs 646 + 352 entries, option B needs 646.
+- **106 of the 646 test names collide once folded to 8.3.** 540 distinct stems
+  for 646 files. `run.ps1` refuses a duplicate fold rather than letting one
+  entry shadow another, so the image cannot be built at all today, under either
+  option, without renaming tests or changing the namespace.
+
+So the ordered question is: **subdirectories or long file names on the image
+first, then A versus B.** Both of those are FAT16 features the writer does not
+have yet, and the choice between them is the real fork. Deciding A or B before
+that is deciding the cheaper half of a problem whose expensive half is unpriced.
+
+A smaller shape worth naming, because it needs none of the above: a runner over
+a CHOSEN SUBSET, tens of tests rather than 646, is buildable today under either
+option and would exercise the whole path end to end. Option B needs no guest
+code, so a subset under B is the cheapest thing that could work, and it would
+price the extrapolation above properly by measuring rather than multiplying.
+
+#### Option B measured rather than extrapolated (fester, 2026-09-09)
+
+Twenty tests chosen to include cite-carrying ones, 14 with cites and 6 without,
+bundled on the host and written to one image as the DISK entries:
+
+| | bytes |
+|---|---|
+| raw | 65,696 |
+| bundled | 658,197 |
+| **factor** | **10.02** |
+
+**My earlier extrapolation of 6.5 from eight files was low by half**, and the
+corpus figure it produced, about 10 MB, should read about **15.5 MB**. That is
+the difference between an extrapolation and a measurement, and it is why root
+asked for this one.
+
+**Every one of the 20 compiles clean on the guest**, including all 14 that carry
+cites and were red when the same runner read them raw. **The control is in the
+same run and it fires:** two error fixtures, bundled the same way, still report
+`errors=1 ok=no` and the summary reads `failed=2`. Bundling does not suppress
+errors, which is the thing an all-green column cannot tell you by itself.
+
+So option B works end to end today, with no guest code at all, at a cost of
+about ten times the corpus in image bytes.
+
+#### The .expected diff needs execution, and half of it does not
+
+A `.expected` sidecar holds the PROGRAM'S OUTPUT, so diffing it requires running
+what was compiled, which the runner cannot do. The `.failing` half is different:
+those sidecars hold a diagnostic CODE, and the runner already has the bag. A
+diagnostic-code diff is buildable now; an output diff is not, and no arm should
+claim the first is the second.
+
+#### The `.failing` half is checkable (fester, 2026-09-09)
+
+The runner reads the bag ONCE per entry and reports the first diagnostic code
+beside the count, which is the number a `.failing` sidecar records:
+
+```
+S21.SRC : errors=1 ok=no first=CDX2003
+S22.SRC : errors=1 ok=no first=CDX2005
+```
+
+`codex/test/errors/arith-on-text.failing` holds `2003` and `bad-field.failing`
+holds `2005`, so both match exactly.
+
+**The pairing stays on the HOST and that is deliberate**, not a shortfall left
+unsaid: the sidecars are not on the image, and putting them there is the same
+namespace question as the corpus itself (509 root entries, 8.3 collisions), not
+a runner question. The runner emits what a comparison needs; the comparison sits
+where the sidecars already are, which is where `test.ps1` does it too.
+
+#### The namespace fork, priced, and a correction to the paragraph above
+
+The paragraph above says subdirectories and long names are "FAT16 features the
+writer does not have yet". That is wrong about the READER and right only about
+the writer. `codex/foreword/core/Fat16.codex` already implements both:
+
+- **Subdirectories:** `fat16-list-dir`, `fat16-resolve-path`, `fat16-split-path`,
+  `fat16-walk-path`, `fat16-create-directory` and the `fat16-mkdir-*` family.
+- **Long names:** a full VFAT implementation, `fat16-lfn-*` with record
+  encoding, checksums, `fat16-needs-long`, alias generation and decode.
+
+The gap is in the WRITER alone: `codex/plugs/img/Fat16Writer.codex` lays root
+entries under 8.3 names. It already writes directory entries and their dot
+entries for `EFI`, `BOOT` and `SEED`, so the subdirectory mechanism is present
+there too and what is missing is placing FILES under one.
+
+**Root's ruling for subdirectories stands on its own reason** (LFN is a second
+on-disk format, and the plug already lays directory entries), and the cost basis
+is smaller than this page previously implied: neither option needs work in the
+reader, and subdirectories need no new on-disk structure in the writer either,
+only the placement of files into a directory the writer can already create.
 
 **DISK mode honours the path it is given (fester, 2026-09-08).**
 sends `DISK` and then a path, `emit-from-disk` read that line, and then compiled
@@ -573,12 +939,12 @@ with `NOSUCH.SRC` prints `DISK-SOURCE resolving [NOSUCH.SRC]` and
 compiles `SOURCE.SRC` anyway and reports PASS**, which is the defect stated as
 a measurement rather than as a reading.
 
-**The other half of the blocker is the img plug and is NOT done.**
-`codex/plugs/img/Fat16Writer.codex:171` writes the 8.3 name `SOURCE  SRC` as a
-literal, and the plug's wire header carries sizes only, so an image can still
-hold exactly one source whatever it is called. Until that carries a name, no
-image can hold `codex/test` and the runner has one file to choose from.
-Registered as `plugs-backlog.md` 1.102.
+**The img plug half is DONE (fester, 2026-09-09).** The wire header carries a
+source COUNT and a table of 8.3 name plus size per source, the FAT16 writer
+lays down one directory entry and one FAT chain per source, and `run.ps1` takes
+any number of files by `-Source` or, for a directory of them, `-SourceList`.
+An image can hold `codex/test`, bounded by the FAT16 root directory at 509
+sources, which the host refuses to exceed rather than silently truncating.
 
 ### Phase C: Self-hosted pingpong -- NOT STARTED
 
@@ -1749,10 +2115,11 @@ Measured both ways over all 1,152 `apps/` chapters as the changed file, against
 | changed files that swept NOTHING while a sound closure sweeps something | 3 | 0 |
 | changed files that swept FEWER entries | 25 | 0 |
 
-The three total blind spots were three chapters of a withheld app, every one
-of them reached only through the LOSING `Bridge` (`apps/games/classic/Bridge.codex`
-cites `Rng`; the withheld app's own `Bridge.codex` cites those three). The worst
-partial miss was a chapter of the same app's engine, 2 entries of 74.
+The three total blind spots were `apps/games/codexmagic/ChainCore.codex`,
+`MintAuthority.codex` and `TransactionValidator.codex`, every one of them
+reached only through the LOSING `Bridge` (`apps/games/classic/Bridge.codex`
+cites `Rng`; `apps/games/codexmagic/Bridge.codex` cites those three). The worst
+partial miss was a chapter of the withheld solver, 2 entries of 74.
 
 Arms, run against the depot script and the changed one on the same inputs:
 `ChainCore` 0 then 2 and both units CLEAN; `apps/c64/C64Screen.codex` 0 then 0;

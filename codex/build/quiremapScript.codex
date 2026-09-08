@@ -4,13 +4,14 @@ Chapter: QuireMapScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
 
 Section: S01 -- QuireDirs hashtable
 
-  s01 : List ShellCmd =
+  s01-body : List ShellCmd =
     [ScComment "The single quire registry and cite resolver. Dot-source this file;",
      ScComment "never copy the map. Every script that resolves",
      ScComment "  cites <Quire> chapter <Name>",
@@ -115,12 +116,29 @@ Section: S01 -- QuireDirs hashtable
      ScRaw "    # The diagnostic ladder and its stage chapters (DiagnosticStick.md):",
      ScRaw "    # a stage is a chapter under build\\boot\\diag cited as Diag chapter X.",
      ScRaw "    'Diag' = 'build\\boot\\diag'",
-     ScRaw "}"]
+    ScRaw "}",
+    ScBlank,
+    ScComment "A QUIRE IS A DIRECTORY OR A MANIFEST. A directory quire resolves a cite to",
+    ScComment "<dir>\\<chapter name>.codex, one file per chapter, which every quire above",
+    ScComment "keeps exactly. The compiler cannot be reached that way and is the tree's only",
+    ScComment "exception: 24 of its 65 files carry a base name different from their Chapter:",
+    ScComment "line, and four chapters span several files each, X86-64 Code Generator over",
+    ScComment "fourteen. It is also only ever consumed WHOLE and in one order, so there is",
+    ScComment "nothing a per-chapter path would buy. A cite of any chapter in a manifest",
+    ScComment "quire therefore pulls the entire ordered unit the manifest names, once,",
+    ScComment "minus that unit's own entry chapter, which a consumer supplies itself.",
+    ScComment "build/compiler-order.txt is that order and refuses to drift from the",
+    ScComment "directory it describes.",
+    ScRaw "$QuireManifests = @{",
+    ScRaw "    'Codex' = 'build\\compiler-order.txt'",
+    ScRaw "    'Emit' = 'build\\compiler-order.txt'",
+    ScRaw "    'Semantics' = 'build\\compiler-order.txt'",
+    ScRaw "}"]
 
 Section: S02 -- Cite patterns
 
-  s02 : List ShellCmd =
-    [ScRaw "function New-CitePattern {",
+  s02-body : List ShellCmd =
+    [ScBlank, ScRaw "function New-CitePattern {",
      ScRaw "    # Alternation sorted longest-first so 'Games' wins over 'Game'.",
      ScRaw "    #",
      ScRaw "    # This pattern is generated from the KEYS of $QuireDirs, so a cite to an",
@@ -140,7 +158,7 @@ Section: S02 -- Cite patterns
      ScRaw "    # -- concat-codex-self's $libQuireNames is the worked example -- not as a",
      ScRaw "    # second pattern that reads the same text a different way.",
      ScRaw "    param([string[]]$ExtraQuires = @())",
-     ScRaw "    $names = @($QuireDirs.Keys) + $ExtraQuires",
+     ScRaw "    $names = @($QuireDirs.Keys) + @($QuireManifests.Keys) + $ExtraQuires",
      ScRaw "    $alt = ($names | Sort-Object -Descending { $_.Length }) -join '|'",
      ScRaw "    return \"^\\s*cites\\s+($alt)\\s+chapter\\s+([A-Za-z_][A-Za-z0-9_-]*)\"",
      ScRaw "}",
@@ -163,8 +181,8 @@ Section: S02 -- Cite patterns
 
 Section: S03 -- Cite key and presence seed
 
-  s03 : List ShellCmd =
-    [ScRaw "function Get-CiteKey {",
+  s03-body : List ShellCmd =
+    [ScBlank, ScRaw "function Get-CiteKey {",
      ScRaw "    # Cites name a chapter two different ways and both are in the tree:",
      ScRaw "    # 'cites Common chapter ByteHelpers' is the FILE's name, while",
      ScRaw "    # 'cites Codex chapter Build Settings' is the HEADER's. The file is",
@@ -205,8 +223,8 @@ Section: S03 -- Cite key and presence seed
 
 Section: S04 -- Resolve-CiteOrder function
 
-  s04 : List ShellCmd =
-    [ScRaw "function Resolve-CiteOrder {",
+  s04-body : List ShellCmd =
+    [ScBlank, ScRaw "function Resolve-CiteOrder {",
      ScRaw "    # DFS post-order over the cite graph: a chapter's dependencies always",
      ScRaw "    # precede it in the returned list. BFS+Reverse is NOT a topological",
      ScRaw "    # order (CL 3644) -- do not reintroduce it.",
@@ -240,6 +258,65 @@ Section: S04 -- Resolve-CiteOrder function
      ScRaw "        $key = \"${quire}::${name}\"",
      ScRaw "        if ($visited[$key] -or $visiting[$key]) { return }",
      ScRaw "        $visiting[$key] = $true",
+    ScRaw "        if ($QuireManifests[$quire]) {",
+    ScRaw "            # Already in the unit satisfies the cite, exactly as it does on the",     ScRaw "            # per-chapter path below. Without this a re-resolve of an ALREADY",     ScRaw "            # BUNDLED source adds the whole unit a second time, which is what",     ScRaw "            # compile.ps1 does to every bundle it is handed.",     ScRaw "            if ($present[(Get-CiteKey $name)]) { $visiting.Remove($key); $visited[$key] = $true; return }",
+    ScRaw "            # A QUIRE IS A DIRECTORY OR A MANIFEST. The compiler is only ever",
+    ScRaw "            # consumed whole and in one order, and it is the one place in the",
+    ScRaw "            # tree where <dir>\\<chapter name>.codex does not name its file: 24 of",
+    ScRaw "            # its files carry a base name different from their Chapter: line and",
+    ScRaw "            # four chapters span several files each, so no per-chapter path can",
+    ScRaw "            # reach it. A cite of any chapter in a manifest quire therefore pulls",
+    ScRaw "            # the whole ordered unit the manifest names, once.",
+    ScRaw "            $unitMf = Join-Path $Repo $QuireManifests[$quire]",
+    ScRaw "            if (-not (Test-Path -PathType Leaf $unitMf)) { throw \"Unresolvable cite: $quire chapter '$name' -- quire '$quire' is registered as manifest '$($QuireManifests[$quire])', which does not exist\" }",
+    ScRaw "            $unitRows = @(Get-Content $unitMf | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and (-not $_.StartsWith('#')) })",
+    ScRaw "            if ($unitRows.Count -eq 0) { throw \"Unresolvable cite: $quire chapter '$name' -- manifest '$($QuireManifests[$quire])' names no files\" }",
+    ScRaw "            $unitRoot = Split-Path $unitRows[0] -Parent",
+    ScRaw "            foreach ($r in $unitRows) { while (-not $r.StartsWith($unitRoot + '\\')) { $unitRoot = Split-Path $unitRoot -Parent } }",
+    ScRaw "            $unitLines = [System.Collections.Generic.List[string]]::new()",
+    ScRaw "            foreach ($rel in $unitRows) {",
+    ScRaw "                $uf = Join-Path $Repo $rel",
+    ScRaw "                if (-not (Test-Path -PathType Leaf $uf)) { throw \"Unresolvable cite: $quire chapter '$name' -- manifest '$($QuireManifests[$quire])' has a row with no file: $rel\" }",
+    ScRaw "                $ul = [System.IO.File]::ReadAllLines($uf)",
+    ScRaw "                # THE UNIT'S OWN ENTRY CHAPTER IS LEFT OUT. A consumer supplies its",
+    ScRaw "                # own `opening`, two in one unit collide (CDX3001), and that is",
+    ScRaw "                # exactly why the entry point was split into a chapter of its own:",
+    ScRaw "                # holding it apart is what makes the rest of the unit bundlable.",
+    ScRaw "                if (@($ul | Where-Object { $_ -match '^\\s+opening\\s*:' }).Count -gt 0) { continue }",
+    ScRaw "                # NO QUIRE PREFIX INSIDE THE UNIT. concat-codex-self stamps",
+    ScRaw "                # <dir>--<chapter> because it merges several quires into one unit and",
+    ScRaw "                # needs them apart. Here the unit is one manifest whose 48 chapter",
+    ScRaw "                # names are already distinct, and prefixing actively breaks the",
+    ScRaw "                # consumer: the compiler cites Codex chapter Phase Allocator while",
+    ScRaw "                # that file sits in Core\\, so a directory prefix makes the cite and",
+    ScRaw "                # the chapter line disagree and a re-resolve of the bundled source",
+    ScRaw "                # pulls the whole unit again. Every manifest quire is marked visited",
+    ScRaw "                # for each chapter, so a cite reaches it under any of their names.",
+    ScRaw "                $ustamped = $false",
+    ScRaw "                foreach ($ul1 in $ul) {",
+    ScRaw "                    if ((-not $ustamped) -and $ul1 -match '^Chapter:\\s*(.+?)\\s*$') {",
+    ScRaw "                        foreach ($mq in @($QuireManifests.Keys)) { $visited[\"${mq}::$($matches[1])\"] = $true }",
+    ScRaw "                        $ustamped = $true",
+    ScRaw "                    }",
+    ScRaw "                    $unitLines.Add($ul1)",
+    ScRaw "                }",
+    ScRaw "                $unitLines.Add('')",
+    ScRaw "                $unitLines.Add('')",
+    ScRaw "            }",
+    ScRaw "            # The unit's own cites into OTHER quires still have to be walked,",
+    ScRaw "            # and walked BEFORE the unit is added so they precede it: the compiler",
+    ScRaw "            # cites Foreword and Math chapters, which concat-codex-self preloads",
+    ScRaw "            # for its own build and which no consumer would otherwise get. Cites",
+    ScRaw "            # back into this same unit are already marked visited above, so they",
+    ScRaw "            # return at once rather than recursing.",
+    ScRaw "            foreach ($ul2 in $unitLines) {",
+    ScRaw "                if ($ul2 -match $Pattern) { & $walk $matches[1] $matches[2] }",
+    ScRaw "            }",
+    ScRaw "            $visiting.Remove($key)",
+    ScRaw "            $visited[$key] = $true",
+    ScRaw "            $ordered.Add(@{ Quire = $quire; Name = $name; Path = $unitMf; Lines = $unitLines.ToArray() })",
+    ScRaw "            return",
+    ScRaw "        }",
      ScRaw "        $path = $null",
      ScRaw "        if ($PathOverride) { $path = & $PathOverride $quire $name }",
      ScRaw "        if (-not $path) {",
@@ -300,8 +377,8 @@ Section: S04 -- Resolve-CiteOrder function
 
 Section: S05 -- Diagnostic line mapping
 
-  s05 : List ShellCmd =
-    [ScRaw "function Get-DiagRegions {",
+  s05-body : List ShellCmd =
+    [ScBlank, ScRaw "function Get-DiagRegions {",
      ScRaw "    # Maps a unit line number back to the file it came from.",
      ScRaw "    #",
      ScRaw "    # The compiler numbers diagnostics against the assembled UNIT -- every",
@@ -349,8 +426,8 @@ Section: S05 -- Diagnostic line mapping
 
 Section: S06 -- Format-CiteChapters function
 
-  s06 : List ShellCmd =
-    [ScRaw "function Format-CiteChapters {",
+  s06-body : List ShellCmd =
+    [ScBlank, ScRaw "function Format-CiteChapters {",
      ScRaw "    # Renders resolved chapters as concatenation-ready lines, renaming",
      ScRaw "    # each header to `Chapter: Quire--Name` to avoid collisions.",
      ScRaw "    param([Parameter(Mandatory=$true)] $Ordered)",
@@ -370,12 +447,22 @@ Section: S06 -- Format-CiteChapters function
 
 Section: Assembly
 
-  quiremap-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]
+  s01 : PipeStage = PipeStage { ps-name = "the quire registry", ps-why = "the one table mapping a quire to its directory; every cite resolution in the tree reads this and nothing else", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
-  quiremap-script : ShellScript = sh-script "quire-map" "Single quire registry and cite resolver" [] quiremap-body
+  s02 : PipeStage = PipeStage { ps-name = "cite patterns", ps-why = "the regex a cite line is recognised by, built once so callers cannot each spell a slightly different one", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "cite key and presence seed", ps-why = "the identity a chapter is deduplicated by across the whole resolution", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "resolve-citeorder", ps-why = "the transitive cite closure in dependency order, which decides what a compilation unit actually contains", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "diagnostic line mapping", ps-why = "map a line in the concatenated unit back to the chapter and line a reader can open", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "format-citechapters", ps-why = "render a resolved order for a caller to print", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
+
+  quiremap-pipe : Pipeline = Pipeline { pl-name = "quire-map", pl-doc = "Single quire registry and cite resolver", pl-params = [], pl-stages = [s01, s02, s03, s04, s05, s06] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell quiremap-script)
+    print-line-uni (emit-powershell (pipeline-to-shell quiremap-pipe))
   end
 
 Page 1

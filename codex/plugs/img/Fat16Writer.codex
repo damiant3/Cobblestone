@@ -126,13 +126,49 @@ Section: Directory Entries
    in let w5 = gpt-buf-write-i32 buf (off + 28) size
    in off + 32
 
+ A source name arrives as eleven bytes off the wire rather than as a literal,
+ so it is written as bytes. Going through Text would put a CCE conversion on a
+ name the host already padded to the 8.3 field width.
+
+  fat16w-write-dir-entry-nb : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
+  fat16w-write-dir-entry-nb (buf) (off) (name-bytes) (attr) (cluster) (size) =
+   let w0 = __buf-write-bytes buf off name-bytes
+   in let w1 = __buf-write-byte buf (off + 11) attr
+   in let w2 = gpt-buf-write-i16 buf (off + 22) 20480
+   in let w3 = gpt-buf-write-i16 buf (off + 24) 23717
+   in let w4 = gpt-buf-write-i16 buf (off + 26) cluster
+   in let w5 = gpt-buf-write-i32 buf (off + 28) size
+   in off + 32
+
+  fat16w-buf-read-i32 : Integer, Integer -> Integer
+  fat16w-buf-read-i32 (buf) (off) =
+   let bs = __buf-read-bytes buf off 4
+   in list-at bs 0 + list-at bs 1 * 256 + list-at bs 2 * 65536 + list-at bs 3 * 16777216
+
 Section: Filesystem Assembly
   fat16w-clusters-needed : Integer, Integer -> Integer
   fat16w-clusters-needed (byte-count) (spc) =
    (byte-count + spc * gpt-sector-size - 1) / (spc * gpt-sector-size)
 
-  fat16w-write-all : Integer, Fat16Layout, List Integer, List Integer, List Integer -> Integer
-  fat16w-write-all (buf) (lay) (efi-bytes) (cdx-bytes) (source) =
+ The sources are read from the payload buffer one at a time rather than handed
+ over as a list of lists. Building that list would mean a push loop, and a
+ shared backing array behind two names is the trap that has cost this tree most
+ (L-ALIAS); reading each source at its own offset has no accumulator to alias.
+
+  fat16w-write-sources : Integer, Fat16Layout, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-write-sources (buf) (lay) (fat1) (cluster) (dir-off) (src-buf) (tbl-off) (data-off) (n) (i) =
+   if i >= n then 0
+   else let name-bytes = __buf-read-bytes src-buf (tbl-off + i * 15) 11
+   in let len = fat16w-buf-read-i32 src-buf (tbl-off + i * 15 + 11)
+   in let clusters = fat16w-clusters-needed len (lay.sectors-per-cluster)
+   in let first = if len > 0 then cluster else 0
+   in let wc = if len > 0 then fat16w-write-fat-chain buf fat1 cluster clusters else 0
+   in let wd = fat16w-write-dir-entry-nb buf dir-off name-bytes 32 first len
+   in let wb = if len > 0 then __buf-write-bytes buf (fat16w-cluster-offset lay cluster) (__buf-read-bytes src-buf data-off len) else 0
+   in fat16w-write-sources buf lay fat1 (cluster + clusters) (dir-off + 32) src-buf tbl-off (data-off + len) n (i + 1)
+
+  fat16w-write-all : Integer, Fat16Layout, List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-write-all (buf) (lay) (efi-bytes) (cdx-bytes) (src-count) (src-buf) (tbl-off) (data-off) =
    let cdx-size = list-length cdx-bytes
    in let efi-size = list-length efi-bytes
    in let spc = lay.sectors-per-cluster
@@ -141,13 +177,12 @@ Section: Filesystem Assembly
    in let efi-start = cdx-start + cdx-clusters
    in let w19 = __buf-write-bytes buf (fat16w-cluster-offset lay cdx-start) cdx-bytes
    in let w20 = __buf-write-bytes buf (fat16w-cluster-offset lay efi-start) efi-bytes
-   in fat16w-write-fs buf lay efi-size cdx-size source
+   in fat16w-write-fs buf lay efi-size cdx-size src-count src-buf tbl-off data-off
 
-  fat16w-write-fs : Integer, Fat16Layout, Integer, Integer, List Integer -> Integer
-  fat16w-write-fs (buf) (lay) (efi-size) (cdx-size) (source) =
+  fat16w-write-fs : Integer, Fat16Layout, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-write-fs (buf) (lay) (efi-size) (cdx-size) (src-count) (src-buf) (tbl-off) (data-off) =
    let fat1 = fat16w-fat-offset lay
    in let spc = lay.sectors-per-cluster
-   in let src-len = list-length source
    in let w0 = fat16w-write-fat-entry buf fat1 0 65528
    in let w1 = fat16w-write-fat-entry buf fat1 1 fat16w-eoi
    in let efi-dir-cluster = 2
@@ -163,13 +198,11 @@ Section: Filesystem Assembly
    in let efi-clusters = fat16w-clusters-needed efi-size spc
    in let w6 = fat16w-write-fat-chain buf fat1 efi-start efi-clusters
    in let src-start = efi-start + efi-clusters
-   in let src-clusters = fat16w-clusters-needed src-len spc
-   in let w6s = fat16w-write-fat-chain buf fat1 src-start src-clusters
    in let root-off = fat16w-root-offset lay
    in let w7 = fat16w-write-dir-entry buf root-off "EFI        " 16 efi-dir-cluster 0
    in let w8 = fat16w-write-dir-entry buf (root-off + 32) "SEED       " 16 seed-dir-cluster 0
-   in let w9 = fat16w-write-dir-entry buf (root-off + 64) "SOURCE  SRC" 32 src-start src-len
-   in let w9b = fat16w-write-dir-entry buf (root-off + 96) "CODEX OS   " 8 0 0
+   in let w9b = fat16w-write-dir-entry buf (root-off + 64) "CODEX OS   " 8 0 0
+   in let w9 = fat16w-write-sources buf lay fat1 src-start (root-off + 96) src-buf tbl-off data-off src-count 0
    in let efi-dir-off = fat16w-cluster-offset lay efi-dir-cluster
    in let w10 = fat16w-write-dir-entry buf efi-dir-off ".          " 16 efi-dir-cluster 0
    in let w11 = fat16w-write-dir-entry buf (efi-dir-off + 32) "..         " 16 0 0
@@ -182,7 +215,6 @@ Section: Filesystem Assembly
    in let w16 = fat16w-write-dir-entry buf boot-dir-off ".          " 16 boot-dir-cluster 0
    in let w17 = fat16w-write-dir-entry buf (boot-dir-off + 32) "..         " 16 efi-dir-cluster 0
    in let w18 = fat16w-write-dir-entry buf (boot-dir-off + 64) "BOOTX64 EFI" 32 efi-start efi-size
-   in let w21 = __buf-write-bytes buf (fat16w-cluster-offset lay src-start) source
    in let w22 = fat16w-write-bpb buf lay
    in let w23 = fat16w-copy-fat2 buf lay
    in 0

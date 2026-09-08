@@ -3,8 +3,14 @@ Chapter: ImgStdio
 Section: Body
 
  The payload is the one `codex/plugs/img/run.ps1` builds: a filesystem byte,
- then four each of total sectors, PE size, CDX size and source size, then the
- PE, the CDX and the source laid end to end.
+ then four each of total sectors, PE size, CDX size and source COUNT, then the
+ source table of 15 bytes per source (an 8.3 name in 11 bytes then that
+ source's size), then the PE, the CDX and every source laid end to end.
+
+  img-sum-sizes : Integer, Integer, Integer, Integer -> Integer
+  img-sum-sizes (buf) (tbl-off) (n) (i) =
+   if i >= n then 0
+   else fat16w-buf-read-i32 buf (tbl-off + i * 15 + 11) + img-sum-sizes buf tbl-off n (i + 1)
 
  The image is assembled in a buffer and handed over with `write-binary-buf`,
  which copies nothing. The network entry streams the same buffer down a
@@ -12,15 +18,18 @@ Section: Body
 
   plug-emit-bytes : Integer, Integer -> [Console] Nothing
   plug-emit-bytes (payload-buf) (payload-len) =
-   let hdr-len = 17
-   in if payload-len < hdr-len then print-line-uni ("REFUSED short payload " & show payload-len)
-   else let hdr = __buf-read-bytes payload-buf 0 hdr-len
+   let fixed-len = 17
+   in if payload-len < fixed-len then print-line-uni ("REFUSED short payload " & show payload-len)
+   else let hdr = __buf-read-bytes payload-buf 0 fixed-len
    in let fs-type = list-at hdr 0
    in let total-sectors = img-read-i32 hdr 1
    in let pe-size = img-read-i32 hdr 5
    in let cdx-size = img-read-i32 hdr 9
-   in let src-size = img-read-i32 hdr 13
-   in if hdr-len + pe-size + cdx-size + src-size > payload-len then print-line-uni ("REFUSED payload " & show payload-len & " shorter than its own header claims " & show (hdr-len + pe-size + cdx-size + src-size))
+   in let src-count = img-read-i32 hdr 13
+   in let hdr-len = fixed-len + src-count * 15
+   in if payload-len < hdr-len then print-line-uni ("REFUSED payload " & show payload-len & " shorter than the source table its count of " & show src-count & " needs, " & show hdr-len)
+   else let src-total = img-sum-sizes payload-buf fixed-len src-count 0
+   in if hdr-len + pe-size + cdx-size + src-total > payload-len then print-line-uni ("REFUSED payload " & show payload-len & " shorter than its own header claims " & show (hdr-len + pe-size + cdx-size + src-total))
    else let img-bytes = total-sectors * gpt-sector-size
    in let img-buf = __heap-save
    in let img-advance = __heap-advance img-bytes
@@ -35,7 +44,6 @@ Section: Body
     in write-binary-buf img-buf 0 img-bytes
    else
     let lay = fat16w-compute-layout total-sectors
-    in let source = if src-size > 0 then __buf-read-bytes payload-buf (hdr-len + pe-size + cdx-size) src-size else []
-    in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes source
+    in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes src-count payload-buf fixed-len (hdr-len + pe-size + cdx-size)
     in let restored = __heap-restore hp1
     in write-binary-buf img-buf 0 img-bytes

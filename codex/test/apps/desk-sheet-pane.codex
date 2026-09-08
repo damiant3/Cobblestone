@@ -21,6 +21,15 @@ Chapter: DeskSheetPaneTest
  the one that proves the pane shows the EVALUATOR's answer rather than
  the formula text or an empty grid.
 
+ AND THE LAST PAIR IS WHAT SAYS THE TREE COMES FROM THE PANE. A second
+ pane is typed 5 into B2 and its D2 must read 1250 through the same
+ `gsh-tree`. A `gsh-tree` that built its own sheet, which is what this
+ pane did until SHEET-10 step 1, prints 750 on both lines and every other
+ line of this arm is unchanged. The first pane is re-read after the
+ second is typed into, because two panes sharing one store block would
+ also print two different numbers here, and 750 standing is what says
+ they do not (L-ALIAS).
+
  The sabotage: drop the `desk-wnd-blk` arm and the block line reads 0
  while the title and the tree still stand; point the tree arm at another
  pane's block and the grid line loses its 750.
@@ -33,6 +42,22 @@ Section: Body
   dsp-cell : Sheet, Results, Integer, Integer -> Text
   dsp-cell (sh) (rs) (r) (c) = eval-cell (sh.sh-prog) rs r c
 
+  dsp-kind-text : WidgetNode -> Text
+  dsp-kind-text (n) =
+    when n.wn-kind
+      is WkLabel (t) -> t
+      is otherwise -> "<not a label>"
+
+  dsp-tree-cell : SheetPane, Integer, Integer -> Text
+  dsp-tree-cell (sp) (r) (c) =
+    when widget-find (gsh-tree sp) ("sh-c-" & show r & "-" & show c)
+      is Just (n) -> dsp-kind-text n
+      is None -> "<absent>"
+
+  dsp-typed : SheetPane, Integer, Integer, Text -> SheetPane
+  dsp-typed (sp) (r) (c) (txt) =
+    SheetPane { sp-sheet = sheet-type (sp.sp-sheet) r c txt, sp-row = sp.sp-row, sp-col = sp.sp-col, sp-buf = sp.sp-buf }
+
 Section: Entry
 
   opening : [Console, Device.Port] Nothing = act
@@ -41,6 +66,8 @@ Section: Entry
     in let p = poke-32 ds dk-sheet-cell blk
     in let sh = gsh-demo 0
     in let rs = eval-run (sh.sh-prog)
+    in let pa = gsh-pane-new blk
+    in let pb = dsp-typed (gsh-pane-new blk) 1 1 "5"
     in act
       print-line-uni ("title: [" & desk-wnd-title desk-focus-sheet & "]")
       print-line-uni ("pill icon: [" & dk-pill-icon desk-focus-sheet & "]")
@@ -51,5 +78,8 @@ Section: Entry
       print-line-uni ("the grid shows the evaluator's answer, D2 = B2*C2 = " & dsp-cell sh rs 1 3)
       print-line-uni ("and the total below it, D4 = SUM(D2:D3) = " & dsp-cell sh rs 3 3)
       print-line-uni ("and a typed refusal reaches the cell: D5 = " & dsp-cell sh rs 4 3)
+      print-line-uni ("the tree is built from the pane, D2 of a fresh pane: [" & dsp-tree-cell pa 1 3 & "]")
+      print-line-uni ("and D2 of a pane typed 5 into B2: [" & dsp-tree-cell pb 1 3 & "]")
+      print-line-uni ("the fresh pane re-read, its own store untouched: [" & dsp-tree-cell pa 1 3 & "]")
     end
   end

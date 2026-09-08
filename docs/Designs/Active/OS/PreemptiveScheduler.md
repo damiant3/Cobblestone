@@ -307,12 +307,10 @@ and the 60 s frame shows the desk painted with its clock running at 15,550
 iterations a second, above the 13,805 measured with the service sharing
 core 0.
 
-**The metal entries are wired (main 23205):** `GopBoot.codex` and
-`DeskBoot.codex` call `gopweb-hold` before their flows, the way `DeskVm.codex`
-does, with `boot-flow` and `db-flow` rows unchanged. Bed-proven on seed
-`076181B2`: each payload's boot image built to scratch and booted under OVMF
-to its first screen, the first-boot wizard and the desk with its clock
-running. On metal the service holds the network and serves nothing until
+**The metal entry is wired (main 23205):** `GopBoot.codex` calls
+`gopweb-hold` before its flow, the way `DeskVm.codex` does, with the
+`boot-flow` row unchanged. Bed-proven on seed `076181B2`: the boot image
+built to scratch and booted under OVMF to its first screen. On metal the service holds the network and serves nothing until
 Track B binds the Intel NIC. THIS STAGE HAS NO OPEN ITEM ON THE BED. Beside
 it: codex-vm exited with a host heap-corruption code (0xC0000374) after the
 smp 4 desk arm's screenshot, once, unreproduced.

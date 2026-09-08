@@ -227,6 +227,11 @@ $rcpLines = @(
     "id=$id",
     "kernel=$kernelDigest",
     "payload-sha256=$((Get-FileHash $cdxOut -Algorithm SHA256).Hash)",
+    # The digest of the BUNDLE, which is the payload's whole source: Diag.codex
+    # plus the transitive cite closure bundle-app gathers from across codex/.
+    # diag-arm.ps1 keys its staleness refusal on this, because a stamp over
+    # build/boot/diag alone cannot see any of those chapters move.
+    "bundled-sha256=$((Get-FileHash $bundled -Algorithm SHA256).Hash)",
     "efi-sha256=$((Get-FileHash $peOut -Algorithm SHA256).Hash)",
     "alloc-pages=$AllocPages",
     "total-sectors=$TotalSectors",

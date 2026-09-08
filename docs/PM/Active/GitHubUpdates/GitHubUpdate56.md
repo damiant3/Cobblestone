@@ -6,7 +6,7 @@ remotes rather than locally. Shipped: seed `D9CF240465C3D0BC` at 3,217,563
 bytes, `seed/Codex.img` `066BC1D70211A485`, `seed/Codex.map` 187,294 bytes,
 `build/boot/diag.img` unchanged at `6F077EEB` with its own 50-of-50
 rehearsal record. 10,132 files on the mirror. Verified absent from the
-PUSHED tree, not merely from the staging list: the withheld app directories 0, the
+PUSHED tree, not merely from the staging list: `apps/games/magic/` 0, the
 ten third-party specifications 0, the seven `diag-sitting*.cfg` 0.
 `docs/Reference/CONTENTS.md`, which had never been on the mirror, ships in
 this commit.

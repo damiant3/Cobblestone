@@ -1,0 +1,214 @@
+Chapter: DeskSheetStateTest
+  cites Works chapter GopDesk
+  cites Works chapter GopSheet
+  cites Sheets chapter CellView
+  cites Foreword chapter CCE
+
+ The field the desk carries a sheet in. `da-sheet` is what makes an edit
+ outlive a repaint, and until the Sheets pane paints from its own step
+ the desk's tree arm still builds a fresh pane, so the two lines below
+ are what says the field is real and typed rather than merely declared.
+
+ THE EMPTY RECORD MUST CARRY None. Both close paths hand
+ `desk-apps-empty` down when the mark stack is empty, and a field born
+ holding a pane would hand a closed pane's memory to the next app.
+
+ THE SECOND LINE IS THE ONE A SABOTAGE MOVES. A record built with a pane
+ typed 5 into B2 must hand back THAT pane: reading D2 out of the tree
+ built from `da-sheet` answers 1250, where a field carrying a fresh pane,
+ or a reader that rebuilds one, answers 750.
+
+Section: Body
+
+  dss-kind-text : WidgetNode -> Text
+  dss-kind-text (n) =
+    when n.wn-kind
+      is WkLabel (t) -> t
+      is otherwise -> "<not a label>"
+
+  dss-tree-cell : SheetPane, Integer, Integer -> Text
+  dss-tree-cell (sp) (r) (c) =
+    when widget-find (gsh-tree sp) ("sh-c-" & show r & "-" & show c)
+      is Just (n) -> dss-kind-text n
+      is None -> "<absent>"
+
+  dss-held : DeskApps, Integer, Integer -> Text
+  dss-held (apps) (r) (c) =
+    when apps.da-sheet
+      is Just (sp) -> dss-tree-cell sp r c
+      is None -> "<no sheet held>"
+
+  dss-typed : SheetPane, Integer, Integer, Text -> SheetPane
+  dss-typed (sp) (r) (c) (txt) =
+    SheetPane { sp-sheet = sheet-type (sp.sp-sheet) r c txt, sp-row = sp.sp-row, sp-col = sp.sp-col, sp-buf = sp.sp-buf }
+
+ AND THE BODY IS DRAWN FROM THE PANE, WHICH IS THE HALF THE RECORD CANNOT
+ SAY. `desk-sheet-body` renders into the window's content box and hands
+ back the LAID tree, so reading D2 out of what it returns asks the
+ question a person asks by looking at the window: not "does the desk hold
+ a sheet" but "is the sheet on the glass the one the desk holds". A body
+ that rebuilt its own sheet answers 750 here while the record line above
+ stays green, which is why both lines exist.
+
+ The chrome must no longer draw the grid, or two painters race and
+ whichever ran last wins. `desk-wnd-tree`'s sheet arm answers the same
+ empty panel the five heavy panes get, and an empty panel is a panel with
+ no children rather than an absent one.
+
+  dss-w : Integer = 800
+  dss-h : Integer = 600
+
+ THE CAPTURE GEOMETRY, because the two boxes are compared at the size the
+ photograph is taken and a scale step sits at 1600.
+
+  dss-big-w : Integer = 1600
+  dss-big-h : Integer = 900
+
+  dss-laid-cell : WidgetNode, Integer, Integer -> Text
+  dss-laid-cell (laid) (r) (c) =
+    when widget-find laid ("sh-c-" & show r & "-" & show c)
+      is Just (n) -> dss-kind-text n
+      is None -> "<absent>"
+
+ THE HIT TEST IS CHECKED AGAINST THE PAINTER, NOT AGAINST ITSELF. The
+ cell's rectangle comes from the tree `desk-sheet-body` actually laid;
+ its centre goes to `desk-sheet-hit`, which lays the tree again and asks
+ which widget the pointer is over. The two roads have to name the same
+ cell, and a test that took the rectangle from the hit test's own lay
+ could not tell you when they part.
+
+ A LAID BOUND IS LOGICAL AND A POINTER IS DEVICE, and mixing them is
+ invisible at 800 wide where the scale is 1. That is why this arm runs at
+ 1600, where the scale is 2 and the two spaces disagree by a factor: the
+ centre is multiplied by the scale before it is offered as a pointer, and
+ without that the hit answers -1 while every other line stays green.
+
+ THE SECOND LINE IS THE CONTROL AND IT IS THE POINT. The same pointer
+ offset by the content box's origin is what a tree laid at the SCREEN
+ CORNER would have been asked, and it must answer a DIFFERENT cell. That
+ is the failure the register warns about: the grid repaints with a cell
+ highlighted and it looks exactly like a click that worked.
+
+  dss-centre-x : WidgetNode, Text -> Integer
+  dss-centre-x (laid) (id) =
+    when widget-find laid id
+      is Just (n) -> (n.wn-bounds).lr-x + (n.wn-bounds).lr-w / 2
+      is None -> 0 - 1
+
+  dss-centre-y : WidgetNode, Text -> Integer
+  dss-centre-y (laid) (id) =
+    when widget-find laid id
+      is Just (n) -> (n.wn-bounds).lr-y + (n.wn-bounds).lr-h / 2
+      is None -> 0 - 1
+
+  dss-tone : WidgetNode, Text -> Integer
+  dss-tone (laid) (id) =
+    when widget-find laid id
+      is Just (n) -> n.wn-tone
+      is None -> 0 - 1
+
+ TYPING IS ASSERTED THROUGH THE EVALUATOR, not against the buffer. B3
+ holds 2 and D3 is =B3*C3 over 400, so D3 reads 800; typing 9 into B3 and
+ committing must make D3 read 3600. A test that only read the buffer back
+ would pass while `sheet-type` was never called, and a cell that shows
+ what was typed but computes nothing is the failure that matters.
+
+ The arm PRINTS the character the scancode produced rather than assuming
+ it: the layout is `scancode-to-keycode`'s to decide, and an arm that
+ hardcodes both sides of that mapping tests nothing about it.
+
+  dss-cell-text : SheetPane, Integer, Integer -> Text
+  dss-cell-text (sp) (r) (c) =
+    let rs = eval-run ((sp.sp-sheet).sh-prog)
+    in eval-cell ((sp.sp-sheet).sh-prog) rs r c
+
+ SHEET-13 IS ASKED HERE RATHER THAN FROM A CAPTURE. Both roads paint into
+ a scratch framebuffer of their own and the same pixel is read out of
+ each: `dk-wnd-frame` is the road the chrome took before the pane painted
+ its own body, and `desk-sheet-body` is the road it takes now. A capture
+ could only say the two differ; this says WHERE, one row at a time, for
+ the price of no guest at all.
+
+  dss-px : Integer, Integer, Integer -> Integer
+  dss-px (buf) (x) (y) = peek-32 buf ((y * dss-big-w + x) * 4)
+
+  dss-row-of : Integer, Integer, Integer -> Text
+  dss-row-of (a) (b) (y) =
+    "y " & show y & "  frame " & hex-i32 (dss-px a 800 y) & "  body " & hex-i32 (dss-px b 800 y)
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    let held = DeskApps { da-files = None, da-browser = None, da-scene = None, da-edit = None, da-sheet = Just (dss-typed (gsh-pane-new 0) 1 1 "5"), da-review = None }
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let blk = alloc-zeroed 64 64
+    in let p = poke-32 ds dk-sheet-cell blk
+    in let font = cbf-init
+    in let buf = alloc-zeroed (dss-w * dss-h * 4) 64
+    in let edited = dss-typed (gsh-pane-new blk) 1 1 "5"
+    in act
+      print-line-uni ("the empty record holds no sheet: [" & dss-held desk-apps-empty 1 3 & "]")
+      print-line-uni ("and a record built around a pane typed 5 into B2 hands that pane back, D2 = [" & dss-held held 1 3 & "]")
+      let laid = desk-sheet-body buf dss-w dss-h dss-w font gfont-none ds edited
+      in print-line-uni ("the body draws the pane the desk holds, D2 on the glass = [" & dss-laid-cell laid 1 3 & "]")
+      chrome <- desk-wnd-tree desk-focus-sheet ds buf dss-w dss-h dss-w gfont-none
+      print-line-uni ("and the chrome draws no grid of its own, its children: " & show (chrome.wn-child-count))
+      let box = dk-wnd-content desk-focus-sheet dss-w dss-h ds gfont-none (ui-wscale dss-w)
+      in let lb = laid.wn-bounds
+      in print-line-uni ("content box " & show (box.lr-x) & "," & show (box.lr-y) & " " & show (box.lr-w) & "x" & show (box.lr-h) & "  laid root " & show (lb.lr-x) & "," & show (lb.lr-y) & " " & show (lb.lr-w) & "x" & show (lb.lr-h))
+      let mx = poke-32 blk dk-wnd-st-cell dk-wnd-st-max
+      in let st = dk-wnd-st blk
+      in let ws2 = ui-wscale dss-big-w
+      in let bh = dk-wnd-bar-h gfont-none ws2
+      in let bx = dk-wnd-content desk-focus-sheet dss-big-w dss-big-h ds gfont-none ws2
+      in print-line-uni ("maximised frame tree box " & show (dk-wnd-rx blk dss-big-w st ds) & "," & show (dk-wnd-ry blk dss-big-w dss-big-h st ds + bh) & " " & show (dk-wnd-rw blk dss-big-w st ds) & "x" & show (dk-wnd-rh blk dss-big-w dss-big-h st ds - bh))
+      print-line-uni ("and the pane's own body box " & show (bx.lr-x) & "," & show (bx.lr-y) & " " & show (bx.lr-w) & "x" & show (bx.lr-h))
+      let big = alloc-zeroed (dss-big-w * dss-big-h * 4) 64
+      in let painted = desk-sheet-body big dss-big-w dss-big-h dss-big-w font gfont-none ds edited
+      in let sbig = ui-wscale dss-big-w
+      in let hx = dss-centre-x painted (gsh-cell-id 2 1) * sbig
+      in let hy = dss-centre-y painted (gsh-cell-id 2 1) * sbig
+      in let want = 2 * gsh-cols-shown + 1
+      in act
+        print-line-uni ("the painter puts C3 at " & show hx & "," & show hy & " and the hit test answers cell " & show (desk-sheet-hit dss-big-w dss-big-h hx hy ds gfont-none edited) & ", wanted " & show want)
+        print-line-uni ("laid at the screen corner the same point answers cell " & show (desk-sheet-hit dss-big-w dss-big-h (hx - bx.lr-x) (hy - bx.lr-y) ds gfont-none edited))
+        let s2 = ui-wscale dss-big-w
+        in let hl = widget-layout (gsh-tree edited) (dk-theme-ds ds) (layout-rect (bx.lr-x / s2) (bx.lr-y / s2) (bx.lr-w / s2) (bx.lr-h / s2))
+        in let hr = hl.wn-bounds
+        in print-line-uni ("the hit lay puts its root at " & show (hr.lr-x) & "," & show (hr.lr-y) & " " & show (hr.lr-w) & "x" & show (hr.lr-h) & " and C3 at " & show (dss-centre-x hl (gsh-cell-id 2 1)) & "," & show (dss-centre-y hl (gsh-cell-id 2 1)) & " against the point " & show (comp-hit-x hx s2) & "," & show (comp-hit-y hy s2))
+        print-line-uni ("and the focused cell carries the accent tone: " & show (dss-tone painted (gsh-cell-id (edited.sp-row) (edited.sp-col))) & " against " & show (dss-tone painted (gsh-cell-id 0 0)) & " for an unfocused one")
+        let typing = DeskApps { da-files = None, da-browser = None, da-scene = None, da-edit = None, da-sheet = Just (gsh-pane-new 0), da-review = None }
+        in let sp2 = when typing.da-sheet
+          is Just (p) -> p
+          is None -> gsh-pane-new 0
+        in let f1 = __record-set sp2 "sp-row" 2
+        in let f2 = __record-set sp2 "sp-col" 1
+        in act
+          print-line-uni ("B3 starts at " & dss-cell-text sp2 2 1 & " and D3 at " & dss-cell-text sp2 2 3)
+          print-line-uni ("scancode 10 types [" & utf8-bytes-to-text (list-push [] (apply-mods (scancode-to-keycode 10) 0)) & "], the key answering " & show (desk-sheet-key typing 10 0))
+          print-line-uni ("while editing, the cell shows the buffer: [" & gsh-cell-text (sp2.sp-sheet) (eval-run ((sp2.sp-sheet).sh-prog)) 2 1 (sp2.sp-row) (sp2.sp-col) (sp2.sp-buf) & "]")
+          print-line-uni ("backspace answers " & show (desk-sheet-key typing 14 0) & " and empties the buffer, so a second answers " & show (desk-sheet-key typing 14 0))
+          print-line-uni ("Enter on an empty buffer answers " & show (desk-sheet-key typing 28 0) & ", which is what stops it clearing the cell")
+          let t1 = desk-sheet-key typing 10 0
+          in let t2 = desk-sheet-key typing 28 0
+          in print-line-uni ("typing 9 and committing: B3 = " & dss-cell-text sp2 2 1 & " and D3 = " & dss-cell-text sp2 2 3)
+          let fb = alloc-zeroed (dss-big-w * dss-big-h * 4) 64
+          in let bb = alloc-zeroed (dss-big-w * dss-big-h * 4) 64
+          in let blk2 = desk-wnd-blk desk-focus-sheet ds
+          in let st2 = dk-wnd-st blk2
+          in let ws3 = ui-wscale dss-big-w
+          in let f = dk-wnd-frame fb dss-big-w dss-big-h dss-big-w font gfont-none (gsh-tree edited) "Sheets" ds (dk-wnd-rx blk2 dss-big-w st2 ds) (dk-wnd-ry blk2 dss-big-w dss-big-h st2 ds) (dk-wnd-rw blk2 dss-big-w st2 ds) (dk-wnd-rh blk2 dss-big-w dss-big-h st2 ds) True
+          in let g = desk-sheet-body bb dss-big-w dss-big-h dss-big-w font gfont-none ds edited
+          in act
+            print-line-uni ("SHEET-13, the same pixel down each road:")
+            print-line-uni (dss-row-of fb bb 400)
+            print-line-uni (dss-row-of fb bb 800)
+            print-line-uni (dss-row-of fb bb 812)
+            print-line-uni (dss-row-of fb bb 818)
+            print-line-uni (dss-row-of fb bb 823)
+            print-line-uni (dss-row-of fb bb 830)
+          end
+        end
+      end
+    end
+  end

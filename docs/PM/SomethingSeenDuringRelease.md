@@ -425,20 +425,6 @@ $links = [regex]::Matches(($readme -join "`n"), '\]\((docs/[^)]+|build/[^)]+|cod
 $links | Where-Object { -not (Test-Path ($_ -replace '/','\')) }
 ```
 
-**A published seed digest inside another artifact.** The deskboot.img section
-said "The seed inside it (`D9A6A7A2`) is the number that has to match".
-`D9A6A7A2` is two seeds old, and the sentence is the kind that goes stale on
-every release by construction. Rewritten so it cannot: the number that has to
-match is whatever `seed/Codex.cdx` holds in the tree you build from.
-
-**Worth knowing about that same section:** `build/boot/deskboot.img` is neither
-on disk nor in the depot. The README documents its size and SHA-256 as a build
-you perform yourself with `build/boot/build-option-a.ps1`, which does exist, so
-the section is honest -- but a reader who takes the digest as something to
-verify against a file we ship will not find the file. Left as it is because the
-text already says the digest is "this build of the image, not a target to
-reproduce"; noted here because it reads as a shipped artifact at a glance and
-somebody will eventually go looking.
 ### Update 43 -- the doc counts drift, and every drifting one is in README.md
 
 `build/check-doc-counts.ps1` is the L-COUNT runner. It is OPT-IN and off by

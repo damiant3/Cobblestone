@@ -5,11 +5,12 @@ Chapter: GopSheet
   cites Sheets chapter CellStore
   cites UI chapter Widget
   cites UI chapter Layout
+  cites UI chapter Theme
   cites Foreword chapter CCE
 
- The Sheets pane, READ ONLY. The grid renders and the totals are real
- (the formulas evaluate through CellEval in the order CellGraph derives);
- nothing here takes a keystroke or a click yet, which is SHEET-10.
+ The Sheets pane. The grid renders and the totals are real (the formulas
+ evaluate through CellEval in the order CellGraph derives); nothing here
+ takes a keystroke or a click yet, which is the rest of SHEET-10.
 
  ONE LABEL PER CELL, NOT ONE PER ROW. `sheet-render` pads a row with
  spaces and lines the columns up only in a monospace font, which the desk
@@ -18,12 +19,54 @@ Chapter: GopSheet
  comes from the same evaluator the text renderer uses, so the pane and
  `sheet-render` can never disagree about a value.
 
- THE TREE IS REBUILT EVERY REPAINT and so is the sheet behind it, which
- is the Clock's cost model rather than a leak: `desk-loop` repaints on an
- event or a tick, and every allocation a pane makes after `desk-run` took
- the base mark is released when the pane exits. A sheet a person edits
- cannot be rebuilt this way, because a rebuild would discard the edit;
- that is the first thing SHEET-10 has to change.
+ THE TREE IS REBUILT EVERY REPAINT, which is the Clock's cost model
+ rather than a leak: `desk-loop` repaints on an event or a tick, and
+ every allocation a pane makes after `desk-run` took the base mark is
+ released when the pane exits. THE SHEET IS NOT. It is a field of
+ `SheetPane`, built once, because a rebuilt sheet discards the edit that
+ was typed into it.
+
+Section: The Pane's State
+
+  SheetPane = record {
+    sp-sheet : Sheet,
+    sp-row : Integer,
+    sp-col : Integer,
+    sp-buf : Text
+  }
+
+ `sp-row` and `sp-col` are the focused cell and `sp-buf` is what has been
+ typed into it so far. Nothing paints either yet: the hit test that moves
+ the focus and the keystrokes that fill the buffer are the two SHEET-10
+ steps after this one, and a highlight painted before a click can move it
+ would show a focus a person cannot change.
+
+  gsh-pane-new : Integer -> SheetPane
+  gsh-pane-new (dummy) =
+    SheetPane { sp-sheet = gsh-demo 0, sp-row = 1, sp-col = 0, sp-buf = "" }
+
+ THE BUFFER IS BUILT AS BYTES AND NOT WITH `char-code`. A keystroke
+ arrives as an ASCII code point from `apply-mods`, which is an I/O
+ boundary, so it crosses into text as a UTF-8 byte; `char-code` answers a
+ CCE code point and would put a different character in the cell.
+
+  gsh-buf-add : Text, Integer -> Text
+  gsh-buf-add (buf) (ch) = buf & utf8-bytes-to-text (list-push [] ch)
+
+  gsh-buf-back : Text -> Text
+  gsh-buf-back (buf) =
+    let bs = text-to-utf8-bytes buf
+    in let n = list-length bs
+    in if n <= 0 then buf
+    else utf8-bytes-to-text (ev-slice bs 0 (n - 1) [])
+
+ COMMITTING GOES THROUGH `sheet-type`, which is the one place that decides
+ what a person typed IS: text opening with `=` is a formula, digits are a
+ number, nothing typed clears the cell. A second rule here would be a
+ second answer to the same question.
+
+  gsh-commit : SheetPane -> Sheet
+  gsh-commit (sp) = sheet-type (sp.sp-sheet) (sp.sp-row) (sp.sp-col) (sp.sp-buf)
 
 Section: The Sheet This Pane Shows
 
@@ -50,24 +93,64 @@ Section: The Sheet This Pane Shows
 
 Section: The Tree
 
-  gsh-cell-label : Sheet, Results, Integer, Integer -> WidgetNode
-  gsh-cell-label (sh) (rs) (r) (c) =
-    let id = "sh-c-" & show r & "-" & show c
-    in widget-set-min (widget-label id (eval-cell (sh.sh-prog) rs r c)) gsh-cell-w gsh-cell-h
+ THE CELL TEXT COMES FROM CellView'S FITTING, NOT FROM `eval-cell`, so
+ the pane keeps the rules the app claims: a number too wide for its
+ column fills with `#` rather than being cut, because a cut number reads
+ as a different number and nothing in the display says so, and a cut text
+ carries a `>` in its last position. Building labels from the raw value
+ text let a refusal clip silently, which is SHEET-12's second defect.
 
-  gsh-row-cells : Sheet, Results, Integer, Integer, List WidgetNode -> List WidgetNode
-  gsh-row-cells (sh) (rs) (r) (c) (acc) =
+ The width is in CHARACTERS because that is what `vw-cell` fits to, and
+ the column is `gsh-cell-w` LOGICAL pixels at 8 pixels a character in the
+ desk's base font.
+
+  gsh-cell-chars : Integer
+  gsh-cell-chars = gsh-cell-w / 8
+
+ THE ID IS BUILT IN ONE PLACE AND READ BACK IN ONE PLACE. `gsh-cell-id`
+ is what the painter names a cell with and what the hit test decodes, so
+ the two cannot drift into naming different cells; `gsh-cell-at` walks
+ the same range the painter walks rather than parsing the text back.
+
+  gsh-cell-id : Integer, Integer -> Text
+  gsh-cell-id (r) (c) = "sh-c-" & show r & "-" & show c
+
+  gsh-cell-at : Text, Integer, Integer -> Integer
+  gsh-cell-at (id) (r) (c) =
+    if r >= gsh-rows-shown then 0 - 1
+    else if c >= gsh-cols-shown then gsh-cell-at id (r + 1) 0
+    else if id == gsh-cell-id r c then r * gsh-cols-shown + c
+    else gsh-cell-at id r (c + 1)
+
+ A CELL BEING TYPED INTO SHOWS WHAT IS BEING TYPED, not the value under
+ it. Until Enter commits, the buffer is the only place the keystrokes
+ exist, so a focused cell with a non-empty buffer renders the buffer,
+ left-aligned the way text is; committing clears the buffer and the cell
+ goes back to showing what the evaluator says.
+
+  gsh-cell-text : Sheet, Results, Integer, Integer, Integer, Integer, Text -> Text
+  gsh-cell-text (sh) (rs) (r) (c) (fr) (fc) (buf) =
+    if r == fr & c == fc & vw-len buf > 0 then vw-left-of buf gsh-cell-chars
+    else vw-cell sh rs r c gsh-cell-chars
+
+  gsh-cell-label : Sheet, Results, Integer, Integer, Integer, Integer, Text -> WidgetNode
+  gsh-cell-label (sh) (rs) (r) (c) (fr) (fc) (buf) =
+    let base = widget-set-min (widget-label (gsh-cell-id r c) (gsh-cell-text sh rs r c fr fc buf)) gsh-cell-w gsh-cell-h
+    in if r == fr & c == fc then widget-set-tone base tone-primary else base
+
+  gsh-row-cells : Sheet, Results, Integer, Integer, List WidgetNode, Integer, Integer, Text -> List WidgetNode
+  gsh-row-cells (sh) (rs) (r) (c) (acc) (fr) (fc) (buf) =
     if c >= gsh-cols-shown then acc
-    else gsh-row-cells sh rs r (c + 1) (list-push acc (gsh-cell-label sh rs r c))
+    else gsh-row-cells sh rs r (c + 1) (list-push acc (gsh-cell-label sh rs r c fr fc buf)) fr fc buf
 
-  gsh-row : Sheet, Results, Integer -> WidgetNode
-  gsh-row (sh) (rs) (r) =
-    widget-set-min (widget-panel ("sh-r-" & show r) DirRow 4 (gsh-row-cells sh rs r 0 [])) 0 gsh-cell-h
+  gsh-row : Sheet, Results, Integer, Integer, Integer, Text -> WidgetNode
+  gsh-row (sh) (rs) (r) (fr) (fc) (buf) =
+    widget-set-min (widget-panel ("sh-r-" & show r) DirRow 4 (gsh-row-cells sh rs r 0 [] fr fc buf)) 0 gsh-cell-h
 
-  gsh-rows : Sheet, Results, Integer, List WidgetNode -> List WidgetNode
-  gsh-rows (sh) (rs) (r) (acc) =
+  gsh-rows : Sheet, Results, Integer, List WidgetNode, Integer, Integer, Text -> List WidgetNode
+  gsh-rows (sh) (rs) (r) (acc) (fr) (fc) (buf) =
     if r >= gsh-rows-shown then acc
-    else gsh-rows sh rs (r + 1) (list-push acc (gsh-row sh rs r))
+    else gsh-rows sh rs (r + 1) (list-push acc (gsh-row sh rs r fr fc buf)) fr fc buf
 
  The column letters are a heading row of their own rather than the
  sheet's first row, because a person reads A, B, C to name a cell and the
@@ -82,10 +165,36 @@ Section: The Tree
   gsh-head (dummy) =
     widget-set-min (widget-panel "sh-head" DirRow 4 (gsh-head-cells 0 [])) 0 gsh-cell-h
 
-  gsh-tree : Integer -> WidgetNode
-  gsh-tree (blk) =
-    let sh = gsh-demo 0
+ THE SLACK GOES BELOW THE GRID, NOT THROUGH IT. A panel is born
+ flexible, so the grid took every spare pixel of the window and laid its
+ six rows down a box far taller than they need: the column letters sat at
+ the top, the data sat at the bottom, and a dead band split them. Photo-
+ graphed 2026-09-08 and invisible to every headless arm, which is what
+ SHEET-12 was raised for.
+
+ The grid therefore takes flex ZERO and a minimum of its own rows, which
+ is the pairing the desk contract requires: flex 0 alone is "no share of
+ the main axis", and a node with no min size collapses to nothing rather
+ than sizing to its content. A `widget-spacer` below it carries the flex
+ instead, so every spare pixel lands under the last row.
+
+ THE SLACK CARRIER MUST NOT PAINT, AND AN EMPTY PANEL DOES. A panel fills
+ its own box with the theme's panel background, which under a gradient
+ restarts the gradient at the carrier's own top. Photographed 2026-09-08 at
+ 1600x900: a seam at y 684 where the last grid row ends, the shade lifting
+ back to 001428 and fading to 000E1C over the 141 rows below it, against a
+ control that carried the window's background there. A spacer resolves to
+ `widget-style-bare` and all three renderers answer it without drawing.
+
+  gsh-grid-h : Integer
+  gsh-grid-h = gsh-rows-shown * gsh-cell-h + (gsh-rows-shown - 1) * 2
+
+  gsh-tree : SheetPane -> WidgetNode
+  gsh-tree (sp) =
+    let sh = sp.sp-sheet
     in let rs = eval-run (sh.sh-prog)
-    in widget-panel "sh-root" DirColumn 4 (list-push (list-push (list-push [] (gsh-head 0)) (widget-separator "sh-sep")) (widget-set-flex (widget-panel "sh-grid" DirColumn 2 (gsh-rows sh rs 0 [])) 1))
+    in let grid = widget-set-min (widget-set-flex (widget-panel "sh-grid" DirColumn 2 (gsh-rows sh rs 0 [] (sp.sp-row) (sp.sp-col) (sp.sp-buf))) 0) 0 gsh-grid-h
+    in let slack = widget-spacer "sh-slack"
+    in widget-panel "sh-root" DirColumn 4 (list-push (list-push (list-push (list-push [] (gsh-head 0)) (widget-separator "sh-sep")) grid) slack)
 
 Page 1

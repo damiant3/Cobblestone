@@ -95,6 +95,48 @@ Section: The Measurement
     in let b = __heap-save
     in if k < n then 0 - 1 else (b - a) / n
 
+ WHAT THE POOL COSTS. `rebind-listen-transport` is `fresh-listen-transport`
+ with `recv-base` and `recv-cap` carried over from a closed connection's
+ transport, so the 65,536-byte `__heap-advance` does not happen and what
+ remains is the session and the record. The donor is built BEFORE the first
+ mark, so its own buffer is not in the figure. The difference between this
+ and `per-conn-discarded` is the buffer, and it is the whole point of the
+ pool.
+
+  sum-bases-recycled : TcpTransportState, Integer, Integer -> Integer
+  sum-bases-recycled (t) (n) (acc) =
+    if n <= 0 then acc
+    else let t2 = rebind-listen-transport t 8080
+    in sum-bases-recycled t (n - 1) (acc + (if t2.recv-base > 0 then 1 else 0))
+
+  per-conn-recycled : Integer -> Integer
+  per-conn-recycled (n) =
+    let donor = fresh-listen-transport 8080
+    in let a = __heap-save
+    in let k = sum-bases-recycled donor n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ WHAT A CAP ON `free` WOULD BUY, which is the open question the pool left.
+ Capping the pool drops the excess transports, and a dropped transport's
+ buffer came from `__heap-advance` inside `transport-new-with-cap`. The heap
+ is a single bump pointer whose only reclamation is `__heap-restore` to a
+ mark, and the mark that precedes a pooled transport also precedes every live
+ connection, so no close path can take it. `drop-delta` measures what the
+ drop returns: it holds n transports, drops one through the mux's own
+ `pool-drop-first`, and reports the heap delta across the drop. A NEGATIVE
+ answer would mean bytes came back and a cap is worth pricing. A
+ non-negative answer means a cap returns nothing and only guarantees a
+ re-mint at `discarded` above.
+
+  drop-delta : Integer -> Integer
+  drop-delta (n) =
+    let pool = build n []
+    in let a = __heap-save
+    in let kept = pool-drop-first pool 0 []
+    in let b = __heap-save
+    in if list-length kept /= (n - 1) then 0 - 1 else b - a
+
 Section: Entry
 
   opening : [Console] Nothing = act
@@ -104,4 +146,6 @@ Section: Entry
     print-line-uni ("web-mux-heap built n=16 " & show (built 16))
     print-line-uni ("web-mux-heap discarded n=16 " & show (per-conn-discarded 16))
     print-line-uni ("web-mux-heap restored n=16 " & show (per-conn-restored 16))
+    print-line-uni ("web-mux-heap recycled n=16 " & show (per-conn-recycled 16))
+    print-line-uni ("web-mux-heap drop-delta n=16 " & show (drop-delta 16))
   end

@@ -63,10 +63,10 @@ The prover tracks ranges through 12 expression patterns:
 All three bounded-integer store sites now use the prover:
 field assignment, `__record-set`, and record construction.
 
-### Card game engine
+### CodexMagic Game Engine
 
-Twenty-six game modules implementing a collectible card game engine.
-Server, matchmaking, seasons, simulation runner, web
+Twenty-six game modules implementing a Magic: The Gathering-style card
+game engine. MagicServer, matchmaking, seasons, simulation runner, web
 portal with HTML/CSS/JS frontend.
 
 ## Seed

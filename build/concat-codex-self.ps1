@@ -137,25 +137,27 @@ function Sort-ByDeps {
 }
 
 
-# 2. Root .codex (depth 0), sorted ordinal
-$rootFiles = @(Get-ChildItem $CodexDir -Filter '*.codex' -File)
-[Array]::Sort($rootFiles, $nameCmp)
-foreach ($f in $rootFiles) {
-    Add-WithQuire -Path $f.FullName -Quire ''
+# 2. The concatenation order, read from build/compiler-order.txt.
+$orderPath = Join-Path $Repo 'build\compiler-order.txt'
+if (-not (Test-Path -PathType Leaf $orderPath)) { throw "concat-codex-self: missing $orderPath, which is the compiler's concatenation order" }
+$orderRows = @(Get-Content $orderPath | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and (-not $_.StartsWith('#')) })
+$onDisk = @(Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object { $_.FullName.Substring($Repo.Length + 1) })
+$orderMissing = @($onDisk | Where-Object { $orderRows -notcontains $_ })
+$orderExtra = @($orderRows | Where-Object { $onDisk -notcontains $_ })
+if ($orderMissing.Count -gt 0 -or $orderExtra.Count -gt 0) {
+    $orderWhy = ''
+    if ($orderMissing.Count -gt 0) { $orderWhy += "under codex/compiler with no row in build/compiler-order.txt: $($orderMissing -join ', '). " }
+    if ($orderExtra.Count -gt 0) { $orderWhy += "rows in build/compiler-order.txt with no file: $($orderExtra -join ', ')." }
+    throw "concat-codex-self: the order manifest and codex/compiler disagree, so the unit is not the one the manifest describes. $orderWhy"
 }
 
 
-# 3. Subdirs (depth 1), each .codex prefixed with subdir name
-$subDirs = @(Get-ChildItem $CodexDir -Directory)
-[Array]::Sort($subDirs, $nameCmp)
-foreach ($d in $subDirs) {
-    $quire = $d.Name
-    $subFiles = @(Get-ChildItem $d.FullName -Filter '*.codex' -File)
-    [Array]::Sort($subFiles, $nameCmp)
-    $subFiles = @($subFiles | Where-Object { $_.Name -match 'State|Encoder' }) + @($subFiles | Where-Object { $_.Name -notmatch 'State|Encoder' })
-    foreach ($f in $subFiles) {
-        Add-WithQuire -Path $f.FullName -Quire $quire
-    }
+# 3. Every compiler file, in the manifest's order.
+foreach ($rel in $orderRows) {
+    $full = Join-Path $Repo $rel
+    $parent = Split-Path $full -Parent
+    $quire = if ($parent -eq $CodexDir) { '' } else { Split-Path $parent -Leaf }
+    Add-WithQuire -Path $full -Quire $quire
 }
 
 
