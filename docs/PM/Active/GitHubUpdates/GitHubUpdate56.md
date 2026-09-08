@@ -1,5 +1,16 @@
 # GitHub Update 56
 
+**PUSHED 2026-09-08 as commit `6cd2ca1bd9dddca5e6358021bbc0fb5d6d5e874e`,
+874 files, to github `master` and gitlab `main`, no force.** Verified at the
+remotes rather than locally. Shipped: seed `D9CF240465C3D0BC` at 3,217,563
+bytes, `seed/Codex.img` `066BC1D70211A485`, `seed/Codex.map` 187,294 bytes,
+`build/boot/diag.img` unchanged at `6F077EEB` with its own 50-of-50
+rehearsal record. 10,132 files on the mirror. Verified absent from the
+PUSHED tree, not merely from the staging list: the withheld app directories 0, the
+ten third-party specifications 0, the seven `diag-sitting*.cfg` 0.
+`docs/Reference/CONTENTS.md`, which had never been on the mirror, ships in
+this commit.
+
 **Scope: main CLs after the Update 55 release push commit.** Update 55
 covers the cycle from the Update 54 push through its release head (seed
 `BBB9907CBE21CB16`, 2026-09-02: trapping integer arithmetic, memory stage 3,
@@ -112,8 +123,10 @@ compiler and plugs backlogs were audited tranche by tranche; CurrentPlan
 was cut to its open items.
 
 **Outside contributions.** Steve Howell's PRs 117, 118, 119, 127, 128,
-129, 130, 131 and 134 are ingested (the zig plug, wgsl shaders Firefox
-accepts, the hosted compiler's check compact, and COMPILER-66), his
+129, 130, 131, 132, 133 and 134 are ingested (the zig plug, wgsl shaders Firefox
+accepts, the hosted compiler's check compact, the once-per-unit citation
+scope of 132 at 22500, the CRLF foreword chapters of 133 as COMPILER-54 at
+22466, and COMPILER-66), his
 untracked submissions 106, 107 and 108 are closed and verified at head,
 and his issue 94 was ruled on by Damian: the peel helpers answer the
 no-expectation sentinel for a non-arrow (COMPILER-32, 23859), measured as a

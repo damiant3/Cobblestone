@@ -639,7 +639,7 @@ together.
 | `codex/compiler/` | 65 | 42,492 | 5,181 |
 | `codex/os/` | 162 | 24,415 | 1,982 |
 | build tooling (`codex/build/`, `build/`) | 102 | 9,120 | 1,836 |
-| `codex/product`, `tracker`, `workflow` | 33 | 4,862 | 570 |
+| `tracker`, `workflow`, one withheld quire | 33 | 4,862 | 570 |
 | `codex/boards/` | 9 | 4,087 | 194 |
 | `tools/`, `shaders/`, `docs/`, `bench/` | 53 | 35,281 | 20,111 |
 | **total** | **3,683** | **484,383** | **52,406** |

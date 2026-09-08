@@ -136,7 +136,7 @@ TCP checksum, VirtIO queue-select fix.
 
 ## App Build Fixes (reek)
 
-CL 6192: fixed build issues in codexmagic (None->Nothing, int-list-has),
+CL 6192: fixed build issues in the card game (None->Nothing, int-list-has),
 fishtank (None->Nothing, VM mem), cvmm (chapter deps, WebRuntime stubs),
 WebRuntime (dom-get-value, fetch-get-then).
 

@@ -30,8 +30,7 @@ not carried forward (L-COUNT).
 - **CDX4022's message text is false** (says induction checking is
   unimplemented; it is): seed-affecting one-liner, val's lane.
 - **PR 76 closes with the Update 49 push commit named.**
-- **Ruling 16 (ProductBuilder stage 6 host)** is customer-gated and the only
-  ruling left.
+- One customer-gated ruling is the only ruling left.
 
 ## Landed this cycle
 

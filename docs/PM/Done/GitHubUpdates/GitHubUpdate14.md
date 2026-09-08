@@ -4,7 +4,7 @@ Previous update: CL 1526 (GitHubUpdate13).
 This update: CL 1811.
 
 Two days, ~285 changes across main and four dev streams (RESTRUCTURE,
-MutableRecords, CodexMagic, Spark). The headlines: the repository was
+MutableRecords, Spark). The headlines: the repository was
 restructured from 31 top-level directories down to 8, codex-vm
 replaced QEMU as the default VM, mutable records landed in the
 compiler, and Codex.Spark (a 3D modeling framework) was born.
@@ -103,9 +103,9 @@ day:
 
 Compiles and runs on bare metal via codex-vm.
 
-## CodexMagic -- Game Engine (Gollum, CLs 1642-1780)
+## Card game engine (Gollum, CLs 1642-1780)
 
-Continued development of the Magic: The Gathering engine. Themed
+Continued development of the card game engine. Themed
 HTML pages for the web dashboard, copy-ups to main across multiple
 CLs. 99/100 tests passing.
 
@@ -137,7 +137,7 @@ Rebuilt at CL 1802. Hard fixed point confirmed. All gates green.
 
 - Compiler: 52 files, ~21,000 lines of Codex.
 - Foreword library: 88+ chapters across 20 quires.
-- Applications: Spark (30+ modules), CodexMagic, 30+ classic games.
+- Applications: Spark (30+ modules), 30+ classic games.
 - Test battery: ~5 minutes at `-Jobs 4` on 12th gen i7.
 - Agents active: Reek, Gollum, Friend, Db.
 - Repository: 8 top-level directories (was 31).

@@ -80,8 +80,8 @@ fleet's landings since the first push: plugs 1.46 closed on the six wired
 plugs and 1.7 fortran stage 5 (reek), the WORKS-9 sink instrument and
 nicring RDH bank in `diag.img` 3209902931 (reek, blu), ModernDesk stages
 10-12 (val), GopWizard vitals carrying the USB keyboard state (red),
-CostModel's none rung (blu). ProductBuilder stages 0-4 landed on main but
-`apps/productbuilder/` and `codex/product/` are gitignored and did not ship.
+CostModel's none rung (blu). Customer work landed on main gitignored and did
+not ship.
 
 - **PR 73 (Steve Howell), main 17401:** the zig plug's plain switch with
   literal arms is pinned through `zig-pin-lit-arms` (the chain already was),

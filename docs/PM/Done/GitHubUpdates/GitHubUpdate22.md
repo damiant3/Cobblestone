@@ -161,7 +161,7 @@ New platform apps:
   data layer, UV editor, audio engine (synth/ADSR/effects), timeline;
   the JS shim shrank from ~1100 to ~900 lines as panels migrate to
   Codex-generated WASM.
-- **CodexMagic**: prismatic mana, deck tester, CDX-first API routing,
+- **Card game**: prismatic mana, deck tester, CDX-first API routing,
   clans, onboarding, marketplace, widget-tree pages, state
   persistence, parental-control integration, mobile app (8 modules).
 - **App persistence layer**: AppPersist/AppLog kernel modules; all

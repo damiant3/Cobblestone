@@ -40,7 +40,6 @@ segment** of the directory name, capitalized:
 | `codex.os.dev` | `Dev` |
 | `codex.os.sched` | `Sched` |
 | `codex.os.kernel` | `Kernel` |
-| `apps/games/magic` | `Magic` |
 
 For intra-quire references (chapter A citing chapter B in the same
 quire), use the quire's own name:
@@ -1803,8 +1802,8 @@ so anyway) and convert at the I/O boundary only -- which is the rule the
 cost was always enforcing.
 
 When a scan must allocate regardless, bracket it with `__heap-save` /
-`__heap-restore` and emit into a pre-allocated buffer. `apps/wademo`'s
-loader took a CSV row from 3,938 to 96 bytes per row that way.
+`__heap-restore` and emit into a pre-allocated buffer. A CSV loader took a
+row from 3,938 to 96 bytes per row that way.
 
 **A secret in a `Text` cannot be zeroed by zeroing the `Text`, and there is
 deliberately no `text-zero`.** `Text` is `[len][bytes]` on the bump heap, but a

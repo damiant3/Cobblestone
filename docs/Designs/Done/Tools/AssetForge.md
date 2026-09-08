@@ -40,7 +40,7 @@ Card concept (text)
 3D mesh (GLB export via new GltfWriter.codex)
     |
     v
-CodexMagic card renderer
+The card renderer
 ```
 
 ## Architecture
@@ -70,12 +70,12 @@ New modules in `codex/foreword/ai/`:
 
 ### Layer 3: Application
 
-App in `apps/assetforge/` or integrated into CodexMagic:
+App in `apps/assetforge/` or integrated into the card game:
 
 | Module | Purpose |
 |--------|---------|
 | `AssetForge.codex` | CLI/UI for card art generation workflow |
-| `CardArtPipeline.codex` | CodexMagic-specific: prompt templates, style guide, batch generation |
+| `CardArtPipeline.codex` | Card-game-specific: prompt templates, style guide, batch generation |
 
 ## SafeTensors Format
 
@@ -269,7 +269,7 @@ architecture, fits in 4 GB VRAM).
 ### Phase 3: Application (CL 5542)
 
 11. `AssetForge.codex` -- batch generation, config presets
-12. `CardArtPipeline.codex` -- CodexMagic card art prompt engineering
+12. `CardArtPipeline.codex` -- card art prompt engineering
 
 ### Phase 4: General-Purpose Model Runner (CL 5543)
 
