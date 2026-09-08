@@ -1455,11 +1455,13 @@ Section: Monitor
     da-files : Maybe FilesState,
     da-browser : Maybe BrowserPane,
     da-scene : Maybe ScenePane,
-    da-edit : Maybe EditState
+    da-edit : Maybe EditState,
+    da-sheet : Maybe SheetPane,
+    da-review : Maybe GrvData
   }
 
   desk-apps-empty : DeskApps
-  desk-apps-empty = DeskApps { da-files = None, da-browser = None, da-scene = None, da-edit = None }
+  desk-apps-empty = DeskApps { da-files = None, da-browser = None, da-scene = None, da-edit = None, da-sheet = None, da-review = None }
 
  Cell 20, free until val took it 2026-08-19; announced in the contract. The
  block is 128 bytes allocated in `desk-run` before the base mark: offset 0 is
@@ -1832,7 +1834,7 @@ Section: Monitor
     else if foc == desk-focus-cal then desk-wnd-quiet-step base w h stride font tf kbd mouse ds cs desk-focus-cal sc clicked
     else if foc == desk-focus-dif then desk-wnd-quiet-step base w h stride font tf kbd mouse ds cs desk-focus-dif sc clicked
     else if foc == desk-focus-trk then desk-trk-step base w h stride font tf kbd mouse ds cs sc clicked
-    else if foc == desk-focus-rev then desk-rev-step base w h stride font tf kbd mouse ds cs sc
+    else if foc == desk-focus-rev then desk-rev-step base w h stride font tf kbd mouse ds cs apps sc
     else if foc == desk-focus-con then desk-console-step base w h stride font tf kbd mouse ds cs sc clicked
     else if foc == desk-focus-style then desk-style-step base w h stride font tf kbd mouse ds cs sc clicked
     else if foc == desk-focus-calc then desk-calc-step base w h stride font tf kbd mouse ds cs sc clicked
@@ -1845,7 +1847,7 @@ Section: Monitor
     else if foc == desk-focus-fish then desk-scene-step base w h stride font tf kbd mouse ds cs apps gf-scene desk-focus-fish sc clicked
     else if foc == desk-focus-edit then desk-edit-step base w h stride font tf mouse ds cs apps sc clicked
     else if foc == desk-focus-web then desk-web-step base w h stride font tf kbd mouse ds cs sc clicked
-    else if foc == desk-focus-sheet then desk-wnd-quiet-step base w h stride font tf kbd mouse ds cs desk-focus-sheet sc clicked
+    else if foc == desk-focus-sheet then desk-sheet-step base w h stride font tf kbd mouse ds cs apps sc clicked
     else 0
 
  A still picture is a whole class of pane, not one pane. The Calendar draws its
@@ -1927,7 +1929,9 @@ Section: Monitor
     in let nb = if fid == desk-focus-bro then None else sb
     in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
     in let ne = if fid == desk-focus-edit then None else se
-    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne }
+    in let nsh = if fid == desk-focus-sheet then None else apps.da-sheet
+    in let nrv = if fid == desk-focus-rev then None else apps.da-review
+    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv }
     in let c0 = dk-cursor base w h stride cs mouse
     in desk-dispatch base w h stride font tf kbd mouse ds cs fresh root sc False
 
@@ -2062,7 +2066,9 @@ Section: Monitor
     in let nb = if fid == desk-focus-bro then None else sb
     in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
     in let ne = if fid == desk-focus-edit then None else se
-    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne }
+    in let nsh = if fid == desk-focus-sheet then None else apps.da-sheet
+    in let nrv = if fid == desk-focus-rev then None else apps.da-review
+    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv }
     in act
       p <- desk-wnd-paint-all base w h stride font tf ds
       let c0 = dk-cursor base w h stride cs mouse
@@ -2095,7 +2101,9 @@ Section: Monitor
     in let nb = if fid == desk-focus-bro then None else sb
     in let nsc = if fid == desk-focus-scene | fid == desk-focus-fish then None else ss
     in let ne = if fid == desk-focus-edit then None else se
-    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne }
+    in let nsh = if fid == desk-focus-sheet then None else apps.da-sheet
+    in let nrv = if fid == desk-focus-rev then None else apps.da-review
+    in let fresh = if dep <= 0 then desk-apps-empty else DeskApps { da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv }
     in let c0 = dk-cursor base w h stride cs mouse
     in desk-loop base w h stride font tf kbd mouse ds cs fresh root
     end
@@ -2881,7 +2889,7 @@ Section: What a windowed pane is
 
   desk-wnd-tree : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> [Device.Port] WidgetNode
   desk-wnd-tree (fid) (ds) (base) (w) (h) (stride) (tf) =
-    if fid == desk-focus-scene | fid == desk-focus-fish | fid == desk-focus-bro | fid == desk-focus-files | fid == desk-focus-edit then act widget-panel "scene-body" DirColumn 0 [] end
+    if fid == desk-focus-scene | fid == desk-focus-fish | fid == desk-focus-bro | fid == desk-focus-files | fid == desk-focus-edit | fid == desk-focus-sheet then act widget-panel "scene-body" DirColumn 0 [] end
     else if fid == desk-focus-mon then act
       hh <- rtc-read 4
       mm <- rtc-read 2
@@ -2897,7 +2905,6 @@ Section: What a windowed pane is
       in let box = desk-trk-win-box w h srv filter sel ds tf
       in gtk-tree srv filter sel (box.lr-h) (box.lr-w)
     end
-    else if fid == desk-focus-sheet then act gsh-tree (peek-32 ds dk-sheet-cell) end
     else if fid == desk-focus-calc then act gcalc-tree (peek-32 ds 24) end
     else if fid == desk-focus-web then act gopweb-tree (peek-32 ds dk-web-cell) end
     else if fid == desk-focus-con then act gcon-tree (peek-32 ds desk-console-cell) end
@@ -4509,6 +4516,17 @@ Section: Programs
  scale. Eight is the artwork's width; a gutter narrower than eight device
  pixels still draws, at scale 1, rather than vanishing.
 
+ THE ROOM IS BOTH AXES AND IT USED TO BE ONE. The scale came from the
+ gutter's TEXT WIDTH alone, and the artwork is square, so a box shorter
+ than that width drew an icon taller than the box: `sy` centres only when
+ the box is the taller of the two and otherwise parks the icon at the
+ top, `gicon-blit` bounds its columns against the stride and knows nothing
+ of a rectangle, and the overhang lands on whatever is under the button.
+ That is WORKS-47, seen as the Shutdown icon's stand and base painting
+ below the button's rounded bottom onto the wallpaper. Taking the minimum
+ of the gutter and the content height bounds it on the axis that was
+ unbounded, and leaves the under-eight case drawing at scale 1 as before.
+
   desk-text-w : GopFont, Integer, Text -> Integer
   desk-text-w (tf) (ws) (t) =
     if tf.gf-ok then gfont-text-w tf t else text-length t * comp-cell-w * ws
@@ -4523,7 +4541,8 @@ Section: Programs
   desk-icon-in (base) (stride) (rows) (n) (th) (ws) (tf) (prefix) (gutter) (name) (ds) =
     let st = widget-resolve-style n th
     in let c = comp-mul-rect (box-content-from-style (n.wn-bounds) st) ws
-    in let avail = desk-text-w tf ws gutter
+    in let room = math-min (desk-text-w tf ws gutter) (c.lr-h)
+    in let avail = room
     in let scale = if avail < 8 then 1 else avail / 8
     in let sh = 8 * scale
     in let ih = dk-icon-px avail
@@ -5059,15 +5078,212 @@ Section: Calendar
     in desk-wnd-paint-all base w h stride font tf ds
   end
 
+ THE BODY IS THE PANE'S OWN, AND IT HAS TO BE, because a sheet a person
+ edits lives in `da-sheet` and nothing on the chrome paint path can reach
+ a `DeskApps`: `desk-wnd-paint-all` is handed the screen and `ds`, and
+ sixteen of the functions calling it hold no `apps`. So Sheets joins the
+ five panes whose `desk-wnd-tree` arm answers an empty panel and whose
+ content is drawn from their own step, at the same content box and
+ through the same `comp-render-at` the chrome would have used. Every path
+ that repaints the chrome under this pane must repaint the body after it,
+ or the pane shows a title bar over an empty client area, which is what
+ WORKS-57 was.
+
+ IT PAINTS THE BODY FILL AND THE BORDER ITSELF, IN `dk-wnd-frame`'S ORDER,
+ and leaving either out is visible only on the glass. The chrome lays an
+ EMPTY panel for this pane now, and an empty panel fills the content box
+ with the theme background, so the window's own `pal-bg` no longer shows
+ in the gaps between the grid's rows and the border drawn under it is
+ covered. Measured against a depot control at 1600x900: without the fill
+ every gap read the desktop colour rather than the window's, and without
+ the border redraw the window lost its left and right edge columns.
+
+  desk-sheet-body : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, SheetPane -> WidgetNode
+  desk-sheet-body (base) (w) (h) (stride) (font) (tf) (ds) (sp) =
+    let ws = ui-wscale w
+    in let blk = desk-wnd-blk desk-focus-sheet ds
+    in let st = dk-wnd-st blk
+    in let wx = dk-wnd-rx blk w st ds
+    in let wy = dk-wnd-ry blk w h st ds
+    in let ww = dk-wnd-rw blk w st ds
+    in let wh = dk-wnd-rh blk w h st ds
+    in let box = dk-wnd-content desk-focus-sheet w h ds tf ws
+    in let fill = gop-fill-rect base stride h (box.lr-x) (box.lr-y) (box.lr-w) (box.lr-h) ((dk-pal ds).pal-bg)
+    in let laid = comp-render-at base stride h font tf (gsh-tree sp) (dk-theme-ds ds) (box.lr-x) (box.lr-y) (box.lr-w) (box.lr-h) ws
+    in let bd = dk-wnd-border base stride h wx wy ww wh ds w
+    in laid
+
+  desk-sheet-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, DeskApps -> Integer
+  desk-sheet-repaint (base) (w) (h) (stride) (font) (tf) (ds) (apps) =
+    when apps.da-sheet
+      is Just (sp) ->
+        let mk = __heap-save
+        in let laid = desk-sheet-body base w h stride font tf ds sp
+        in let dr = __heap-restore mk
+        in 1
+      is None -> 0
+
+ The mark is taken INSIDE the step, so the restore is above the frame mark
+ `desk-loop` took this iteration and the step answers 1 rather than a
+ negative (`works-desk-contract.md` section 0). What it frees is the tree
+ and the evaluation behind it, both of which have already been painted.
+
+ THE HIT LAYS THE TREE WHERE THE PAINTER PUT IT, which is the thing that
+ fails silently here. Laid at the screen corner instead, a click answers
+ whichever cell sits at the same offset from that corner, the grid
+ repaints with a cell highlighted, and it looks exactly like a click that
+ worked. The rect is the pane's own content box, divided by the scale
+ because `widget-layout` works in logical pixels, and the pointer is
+ divided by the same scale.
+
+  desk-sheet-hit : Integer, Integer, Integer, Integer, Integer, GopFont, SheetPane -> Integer
+  desk-sheet-hit (w) (h) (mx) (my) (ds) (tf) (sp) =
+    let s = ui-wscale w
+    in let box = dk-wnd-content desk-focus-sheet w h ds tf s
+    in let probe = __heap-save
+    in let laid = widget-layout (gsh-tree sp) (dk-theme-ds ds) (layout-rect (box.lr-x / s) (box.lr-y / s) (box.lr-w / s) (box.lr-h / s))
+    in let cell = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
+      is Just (wgt) -> gsh-cell-at (wgt.wn-id) 0 0
+      is None -> 0 - 1
+    in let dropped = __heap-restore probe
+    in cell
+
+ THE SHEET PANE'S BLOCK OWNS OFFSET 0 FOR THE SHIFT STATE, the way the
+ console's block owns its own low offsets; the desk owns 44 up for the
+ window slot. Shift has to be kept somewhere because a scancode says which
+ KEY moved, not which character it means.
+
+  dk-sheet-mods-cell : Integer = 0
+
+ A KEYSTROKE STORES A TEXT, WHICH IS NOT AN INTEGER, so every arm that
+ changes the buffer makes the step answer NEGATIVE. The text was allocated
+ inside this iteration and the desk's frame restore would free exactly it,
+ leaving the record pointing at reclaimed memory that the next repaint
+ walks (`works-desk-contract.md` section 0). That is the same rule Files
+ answers negative under when it stores three lists.
+
+ ENTER ON AN EMPTY BUFFER DOES NOTHING, and that is a decision rather than
+ an oversight: `sheet-type` reads nothing typed as CLEAR THE CELL, so an
+ Enter that fell through would delete the value under the cursor for a
+ person who pressed it to move on. Clearing a cell needs a gesture of its
+ own and does not have one yet.
+
+  desk-sheet-key : DeskApps, Integer, Integer -> Integer
+  desk-sheet-key (apps) (sc) (md) =
+    when apps.da-sheet
+      is Just (sp) ->
+        if sc == 28 then
+          if vw-len (sp.sp-buf) <= 0 then 0
+          else let a = __record-set sp "sp-sheet" (gsh-commit sp)
+          in let b = __record-set sp "sp-buf" ""
+          in 1
+        else if sc == 14 then
+          if vw-len (sp.sp-buf) <= 0 then 0
+          else let a = __record-set sp "sp-buf" (gsh-buf-back (sp.sp-buf))
+          in 1
+        else if sc >= 128 then 0
+        else let ch = apply-mods (scancode-to-keycode sc) md
+        in if ch >= 32 & ch < 127 then
+          let a = __record-set sp "sp-buf" (gsh-buf-add (sp.sp-buf) ch)
+          in 1
+        else 0
+      is None -> 0
+
+ A CELL IS STORED AS TWO INTEGERS, so the step stores in place and answers
+ 1: an integer is not a pointer into this iteration's frame and the desk's
+ restore is correct over it (`works-desk-contract.md` section 0).
+
+  desk-sheet-take : DeskApps, Integer -> Integer
+  desk-sheet-take (apps) (cell) =
+    if cell < 0 then 0
+    else when apps.da-sheet
+      is Just (sp) ->
+        let a = __record-set sp "sp-row" (cell / gsh-cols-shown)
+        in let b = __record-set sp "sp-col" (cell - (cell / gsh-cols-shown) * gsh-cols-shown)
+        in 1
+      is None -> 0
+
+  desk-sheet-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, Integer, Boolean -> [Device.Port] Integer
+  desk-sheet-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (sc) (clicked) = act
+    ev <- desk-wnd-chrome-step base w h stride font tf mouse ds cs desk-focus-sheet sc clicked
+    let blk = peek-32 ds dk-sheet-cell
+    in let md = gcon-shift-of (peek-32 blk dk-sheet-mods-cell) sc
+    in let sm = poke-32 blk dk-sheet-mods-cell md
+    in if ev == desk-wnd-ev-close then 0
+    else if ev == desk-wnd-ev-min then desk-step-hide
+    else if ev == desk-wnd-ev-stay then act
+      let r = desk-sheet-repaint base w h stride font tf ds apps
+      in 1
+    end
+    else if sc == 88 then act
+      let mark = __heap-save
+      in act
+        s <- desk-shot base w h stride font ds
+        let d = __heap-restore mark
+        in 1
+      end
+    end
+    else if clicked then act
+      let cell = when apps.da-sheet
+        is Just (sp) -> desk-sheet-hit w h (mouse-x mouse) (mouse-y mouse) ds tf sp
+        is None -> 0 - 1
+      in let took = desk-sheet-take apps cell
+      in if took == 0 then 1
+      else act
+        hd <- cursor-hide cs base stride
+        let r = desk-sheet-repaint base w h stride font tf ds apps
+        in let c0 = dk-cursor base w h stride cs mouse
+        in 1
+      end
+    end
+    else if desk-sheet-key apps sc md == 0 then 1
+    else act
+      hd <- cursor-hide cs base stride
+      let r = desk-sheet-repaint base w h stride font tf ds apps
+      in let c0 = dk-cursor base w h stride cs mouse
+      in 0 - 1
+    end
+  end
+
+ A restore from the pill re-enters a live pane and opens a dead one, which
+ is the shape all five `-focus` functions already have. Sheets needs one
+ for the same reason they do: `desk-pill-restore` repaints the chrome, and
+ under an empty tree arm that is a frame with nothing in it.
+
+  desk-sheet-focus : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  desk-sheet-focus (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) =
+    when apps.da-sheet
+      is Just (sp) -> desk-sheet-reenter base w h stride font tf kbd mouse ds cs apps root sp
+      is None -> desk-sheet-open base w h stride font tf kbd mouse ds cs apps root
+
+  desk-sheet-reenter : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, SheetPane -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  desk-sheet-reenter (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sp) =
+    let o = desk-wnd-open desk-focus-sheet w h ds
+    in let mk = __heap-save
+    in act
+      hd <- cursor-hide cs base stride
+      p0 <- desk-sheet-paint base w h stride font tf ds
+      let laid = desk-sheet-body base w h stride font tf ds sp
+      in let dr = __heap-restore mk
+      in let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
+      in let c1 = dk-cursor base w h stride cs mouse
+      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+    end
+
   desk-sheet-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-sheet-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
     hd <- cursor-hide cs base stride
-    let o = desk-wnd-open desk-focus-sheet w h ds
+    let sp = gsh-pane-new (peek-32 ds dk-sheet-cell)
+    in let apps2 = DeskApps { da-files = apps.da-files, da-browser = apps.da-browser, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = Just sp, da-review = apps.da-review }
+    in let o = desk-wnd-open desk-focus-sheet w h ds
     in act
       p0 <- desk-sheet-paint base w h stride font tf ds
-      let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
+      let mk = __heap-save
+      in let laid = desk-sheet-body base w h stride font tf ds sp
+      in let dr = __heap-restore mk
+      in let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
       in let c1 = dk-cursor base w h stride cs mouse
-      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+      in desk-loop base w h stride font tf kbd mouse ds cs apps2 root
     end
   end
 
@@ -5320,8 +5536,24 @@ Section: Review
     in (day * 100 + dk-bcd hh) * 10000 + dk-bcd mi * 100 + dk-bcd ss
   end
 
-  desk-rev-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer -> [Device.Port, Identity] Integer
-  desk-rev-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) =
+ The pane held the store for one keystroke and re-read it for the next: three
+ `gfs-scan-all` passes and three parses on every key, when the only event that
+ changes the store is this pane's own cast. `grv-reload`'s predicate needed a
+ place to keep the data between keys, which is `DeskApps` rather than a `ds`
+ cell because `GrvData` is a record of three lists. `grv-cast` and
+ `grv-supersede` both WRITE, so the cast path reloads rather than keeping what
+ it has, and it answers NEGATIVE because the fresh `GrvData` is allocated in
+ this iteration and the desk's restore would take it back.
+
+  desk-rev-data : DeskApps -> [Device.Port] GrvData
+  desk-rev-data (apps) = act
+    when apps.da-review
+      is Just (d) -> d
+      is None -> grv-load 0
+  end
+
+  desk-rev-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, Integer -> [Device.Port, Identity] Integer
+  desk-rev-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (sc) =
     if sc == 0 then 1
     else if sc == 88 then act
       let mark = __heap-save
@@ -5332,41 +5564,50 @@ Section: Review
       end
     end
     else act
-      let mark = __heap-save
-      in let rs = peek-32 ds desk-review-cell
+      let rs = peek-32 ds desk-review-cell
       in let md = grv-shift-of (peek-32 rs grv-mods-cell) sc
       in let sm = poke-32 rs grv-mods-cell md
       in act
-       data <- grv-load 0
-       signer0 <- loaded-fingerprint
-       let can = when signer0
-         is None -> 0
-         is Just (fp) -> 1
-       in let r0 = grv-key rs sc (grv-count data) md can
+       data <- desk-rev-data apps
+       let mark = __heap-save
        in act
-        cast <- if r0 == 6 then act
-            ts <- desk-rev-stamp 0
-            grv-supersede data rs ts
-          end else if r0 >= 3 then act
-            ts <- desk-rev-stamp 0
-            grv-cast data rs r0 ts
-          end else 0
-        let r = if r0 >= 3 then 1 else r0
-        in if r == 2 then
-          let m = grv-set-mode rs grv-mode-list
-          in let s = grv-set-sel rs 0 1
-          in let d = __heap-restore mark
-          in 0
-        else if r == 0 then
-          let d = __heap-restore mark
-          in 1
-        else act
-          data2 <- grv-reload cast data
-          let hd = cursor-hide cs base stride
-          in let p = desk-rev-paint base w h stride font tf data2 rs ds signer0
-          in let c = dk-cursor base w h stride cs mouse
-          in let d = __heap-restore mark
-          in 1
+        signer0 <- loaded-fingerprint
+        let can = when signer0
+          is None -> 0
+          is Just (fp) -> 1
+        in let r0 = grv-key rs sc (grv-count data) md can
+        in act
+         cast <- if r0 == 6 then act
+             ts <- desk-rev-stamp 0
+             grv-supersede data rs ts
+           end else if r0 >= 3 then act
+             ts <- desk-rev-stamp 0
+             grv-cast data rs r0 ts
+           end else 0
+         let r = if r0 >= 3 then 1 else r0
+         in if r == 2 then
+           let m = grv-set-mode rs grv-mode-list
+           in let s = grv-set-sel rs 0 1
+           in let d = __heap-restore mark
+           in 0
+         else if r == 0 then
+           let d = __heap-restore mark
+           in 1
+         else if cast == 1 then act
+           data2 <- grv-load 0
+           let keep = __record-set apps "da-review" (Just data2)
+           in let hd = cursor-hide cs base stride
+           in let p = desk-rev-paint base w h stride font tf data2 rs ds signer0
+           in let c = dk-cursor base w h stride cs mouse
+           in 0 - 1
+         end
+         else act
+           let hd = cursor-hide cs base stride
+           in let p = desk-rev-paint base w h stride font tf data rs ds signer0
+           in let c = dk-cursor base w h stride cs mouse
+           in let d = __heap-restore mark
+           in 1
+         end
         end
        end
       end
@@ -5376,16 +5617,17 @@ Section: Review
   desk-rev-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
     hd <- cursor-hide cs base stride
     signer <- loaded-fingerprint
-    let mark = __heap-save
+    data <- grv-load 0
+    let apps2 = DeskApps { da-files = apps.da-files, da-browser = apps.da-browser, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = Just data }
+    in let mark = __heap-save
     in let rs = peek-32 ds desk-review-cell
     in act
-     data <- grv-load 0
      let s0 = grv-set-sel rs (grv-sel rs) (grv-count data)
      in let p0 = desk-rev-paint base w h stride font tf data rs ds signer
      in let d = __heap-restore mark
      in let sf = poke-32 ds desk-focus-cell desk-focus-rev
      in let c1 = dk-cursor base w h stride cs mouse
-     in desk-loop base w h stride font tf kbd mouse ds cs apps root
+     in desk-loop base w h stride font tf kbd mouse ds cs apps2 root
     end
   end
 
@@ -5675,7 +5917,7 @@ Section: The Editor
     in act
     w0 <- desk-wall-paint base w h stride font tf ds
     st <- ged-new base (dk-wnd-content desk-focus-edit w h ds tf (ui-wscale w)) w h stride (ui-scale w) font (dk-pal ds) mouse cs (peek-32 ds desk-edit-cell)
-    let apps2 = DeskApps { da-files = apps.da-files, da-browser = None, da-scene = apps.da-scene, da-edit = Just st }
+    let apps2 = DeskApps { da-files = apps.da-files, da-browser = None, da-scene = apps.da-scene, da-edit = Just st, da-sheet = apps.da-sheet, da-review = apps.da-review }
     in let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in let c1 = dk-cursor base w h stride cs mouse
@@ -5741,7 +5983,7 @@ Section: Files
       let st = FilesState { fs-vol = m.gm-vol, fs-entries = [], fs-clusters = [0 - 1], fs-names = [], fs-sel = 0, fs-top = 0, fs-ptr = 0, fs-mode = 0 }
       in let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
       in let c1 = dk-cursor base w h stride cs mouse
-      in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit }) root
+      in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }) root
       end
     end
     else act
@@ -5753,7 +5995,7 @@ Section: Files
         in let d = gfl-draw-list base box stride h s font (dk-pal ds) ents 0 0 (st.fs-names)
         in let sf = poke-32 ds desk-focus-cell (dk-wr-top (peek-32 ds dk-wr-cell))
         in let c1 = dk-cursor base w h stride cs mouse
-        in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit }) root
+        in desk-loop base w h stride font tf kbd mouse ds cs (DeskApps { da-files = Just st, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }) root
       end
     end
     end
@@ -6014,7 +6256,7 @@ Section: The 3D panes
     in let mp = desk-marks-push ms foc __heap-save
     in act
     sp <- gsc-new base stride cs (dk-gpu ds) sky (dk-cbox-w w ds) (dk-cbox-h w h ds)
-    let apps2 = DeskApps { da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit }
+    let apps2 = DeskApps { da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
     in let o = desk-wnd-open foc w h ds
     in act
       p0 <- desk-wall-paint base w h stride font tf ds
@@ -6158,7 +6400,7 @@ Section: Browser
     in let box0 = dk-wnd-content desk-focus-bro w h ds tf (ui-wscale w)
     in act
       bp <- gbr-new (box0.lr-w) (box0.lr-h)
-      let apps2 = DeskApps { da-files = apps.da-files, da-browser = Just bp, da-scene = apps.da-scene, da-edit = apps.da-edit }
+      let apps2 = DeskApps { da-files = apps.da-files, da-browser = Just bp, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
       in act
         c0 <- desk-wall-paint base w h stride font tf ds
         p <- gbr-first-paint base (box0.lr-x) (box0.lr-y) (box0.lr-w) (box0.lr-h) stride font tf mouse cs (ui-scale w) bp
@@ -6573,6 +6815,7 @@ Section: Browser
     else if fid == desk-focus-edit then desk-edit-focus base w h stride font tf kbd mouse ds cs apps root2
     else if fid == desk-focus-scene then desk-scene-focus base w h stride font tf kbd mouse ds cs apps root2 gsc-sky desk-focus-scene
     else if fid == desk-focus-fish then desk-scene-focus base w h stride font tf kbd mouse ds cs apps root2 gf-sky desk-focus-fish
+    else if fid == desk-focus-sheet then desk-sheet-focus base w h stride font tf kbd mouse ds cs apps root2
     else act
       p <- desk-wnd-paint-all base w h stride font tf ds
       let c0 = dk-cursor base w h stride cs mouse

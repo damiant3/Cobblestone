@@ -114,6 +114,23 @@ $QuireDirs = @{
     'Diag' = 'build\boot\diag'
 }
 
+# A QUIRE IS A DIRECTORY OR A MANIFEST. A directory quire resolves a cite to
+# <dir>\<chapter name>.codex, one file per chapter, which every quire above
+# keeps exactly. The compiler cannot be reached that way and is the tree's only
+# exception: 24 of its 65 files carry a base name different from their Chapter:
+# line, and four chapters span several files each, X86-64 Code Generator over
+# fourteen. It is also only ever consumed WHOLE and in one order, so there is
+# nothing a per-chapter path would buy. A cite of any chapter in a manifest
+# quire therefore pulls the entire ordered unit the manifest names, once,
+# minus that unit's own entry chapter, which a consumer supplies itself.
+# build/compiler-order.txt is that order and refuses to drift from the
+# directory it describes.
+$QuireManifests = @{
+    'Codex' = 'build\compiler-order.txt'
+    'Emit' = 'build\compiler-order.txt'
+    'Semantics' = 'build\compiler-order.txt'
+}
+
 
 function New-CitePattern {
     # Alternation sorted longest-first so 'Games' wins over 'Game'.
@@ -135,7 +152,7 @@ function New-CitePattern {
     # -- concat-codex-self's $libQuireNames is the worked example -- not as a
     # second pattern that reads the same text a different way.
     param([string[]]$ExtraQuires = @())
-    $names = @($QuireDirs.Keys) + $ExtraQuires
+    $names = @($QuireDirs.Keys) + @($QuireManifests.Keys) + $ExtraQuires
     $alt = ($names | Sort-Object -Descending { $_.Length }) -join '|'
     return "^\s*cites\s+($alt)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)"
 }
@@ -231,6 +248,69 @@ function Resolve-CiteOrder {
         $key = "${quire}::${name}"
         if ($visited[$key] -or $visiting[$key]) { return }
         $visiting[$key] = $true
+        if ($QuireManifests[$quire]) {
+            # Already in the unit satisfies the cite, exactly as it does on the
+            # per-chapter path below. Without this a re-resolve of an ALREADY
+            # BUNDLED source adds the whole unit a second time, which is what
+            # compile.ps1 does to every bundle it is handed.
+            if ($present[(Get-CiteKey $name)]) { $visiting.Remove($key); $visited[$key] = $true; return }
+            # A QUIRE IS A DIRECTORY OR A MANIFEST. The compiler is only ever
+            # consumed whole and in one order, and it is the one place in the
+            # tree where <dir>\<chapter name>.codex does not name its file: 24 of
+            # its files carry a base name different from their Chapter: line and
+            # four chapters span several files each, so no per-chapter path can
+            # reach it. A cite of any chapter in a manifest quire therefore pulls
+            # the whole ordered unit the manifest names, once.
+            $unitMf = Join-Path $Repo $QuireManifests[$quire]
+            if (-not (Test-Path -PathType Leaf $unitMf)) { throw "Unresolvable cite: $quire chapter '$name' -- quire '$quire' is registered as manifest '$($QuireManifests[$quire])', which does not exist" }
+            $unitRows = @(Get-Content $unitMf | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and (-not $_.StartsWith('#')) })
+            if ($unitRows.Count -eq 0) { throw "Unresolvable cite: $quire chapter '$name' -- manifest '$($QuireManifests[$quire])' names no files" }
+            $unitRoot = Split-Path $unitRows[0] -Parent
+            foreach ($r in $unitRows) { while (-not $r.StartsWith($unitRoot + '\')) { $unitRoot = Split-Path $unitRoot -Parent } }
+            $unitLines = [System.Collections.Generic.List[string]]::new()
+            foreach ($rel in $unitRows) {
+                $uf = Join-Path $Repo $rel
+                if (-not (Test-Path -PathType Leaf $uf)) { throw "Unresolvable cite: $quire chapter '$name' -- manifest '$($QuireManifests[$quire])' has a row with no file: $rel" }
+                $ul = [System.IO.File]::ReadAllLines($uf)
+                # THE UNIT'S OWN ENTRY CHAPTER IS LEFT OUT. A consumer supplies its
+                # own `opening`, two in one unit collide (CDX3001), and that is
+                # exactly why the entry point was split into a chapter of its own:
+                # holding it apart is what makes the rest of the unit bundlable.
+                if (@($ul | Where-Object { $_ -match '^\s+opening\s*:' }).Count -gt 0) { continue }
+                # NO QUIRE PREFIX INSIDE THE UNIT. concat-codex-self stamps
+                # <dir>--<chapter> because it merges several quires into one unit and
+                # needs them apart. Here the unit is one manifest whose 48 chapter
+                # names are already distinct, and prefixing actively breaks the
+                # consumer: the compiler cites Codex chapter Phase Allocator while
+                # that file sits in Core\, so a directory prefix makes the cite and
+                # the chapter line disagree and a re-resolve of the bundled source
+                # pulls the whole unit again. Every manifest quire is marked visited
+                # for each chapter, so a cite reaches it under any of their names.
+                $ustamped = $false
+                foreach ($ul1 in $ul) {
+                    if ((-not $ustamped) -and $ul1 -match '^Chapter:\s*(.+?)\s*$') {
+                        foreach ($mq in @($QuireManifests.Keys)) { $visited["${mq}::$($matches[1])"] = $true }
+                        $ustamped = $true
+                    }
+                    $unitLines.Add($ul1)
+                }
+                $unitLines.Add('')
+                $unitLines.Add('')
+            }
+            # The unit's own cites into OTHER quires still have to be walked,
+            # and walked BEFORE the unit is added so they precede it: the compiler
+            # cites Foreword and Math chapters, which concat-codex-self preloads
+            # for its own build and which no consumer would otherwise get. Cites
+            # back into this same unit are already marked visited above, so they
+            # return at once rather than recursing.
+            foreach ($ul2 in $unitLines) {
+                if ($ul2 -match $Pattern) { & $walk $matches[1] $matches[2] }
+            }
+            $visiting.Remove($key)
+            $visited[$key] = $true
+            $ordered.Add(@{ Quire = $quire; Name = $name; Path = $unitMf; Lines = $unitLines.ToArray() })
+            return
+        }
         $path = $null
         if ($PathOverride) { $path = & $PathOverride $quire $name }
         if (-not $path) {

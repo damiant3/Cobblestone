@@ -10,16 +10,22 @@ Chapter: TestDiskCompileScript
 
 Section: Parameters
 
- The sample has to be CITE-FREE. The image plug embeds it raw as SOURCE.SRC
- and the compiler reads it from the disk inside the VM, so nothing resolves
- a cites line on the way in; a sample with one compiles on the host in step
- 1a and then fails in step 2 for a reason the output does not name.
+ The sample has to be CITE-FREE. The image plug embeds it raw and the compiler
+ reads it from the disk inside the VM, so nothing resolves a cites line on the
+ way in; a sample with one compiles on the host in step 1a and then fails in
+ step 2 for a reason the output does not name.
 
-  tdc-params : List ShellParam = [sh-param-default "SampleSrc" SptString (SeLit "codex\\test\\field-range-proven.codex"), sh-param-default "Expected" SptString (SeLit "12"), sh-param-default "PCore" SptInt (SeInt 1)]
+ An EMPTY DiskPath means "whatever name the sample lands under", derived below
+ from SampleSrc. The default was the literal SOURCE.SRC while the img plug
+ spelled every source's name that way; since the plug gives each source its own
+ 8.3 name, a second literal here would name a file the image no longer holds,
+ and would do it the moment anybody changed SampleSrc.
+
+  tdc-params : List ShellParam = [sh-param-default "DiskPath" SptString (SeLit ""), sh-param-default "SampleSrc" SptString (SeLit "codex\\test\\field-range-proven.codex"), sh-param-default "Expected" SptString (SeLit "12"), sh-param-default "PCore" SptInt (SeInt 1)]
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScAssign "outDir" (SeRaw "Join-Path $root 'build-output\\disk-compile-test'"), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "runScript" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScEchoStyled (SeLit "=== DISK compile test ===") ClBrightCyan True]
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScRaw "# The 8.3 name codex/plugs/img/run.ps1 folds a source to, so this test names", ScRaw "# the file the image actually carries whatever SampleSrc is.", ScRaw "if (-not $DiskPath) {", ScRaw "    $n83 = ([System.IO.Path]::GetFileNameWithoutExtension($SampleSrc)).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'", ScRaw "    $e83 = ([System.IO.Path]::GetExtension($SampleSrc).TrimStart('.')).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'", ScRaw "    if ($n83.Length -gt 8) { $n83 = $n83.Substring(0, 8) }", ScRaw "    if ($e83.Length -gt 3) { $e83 = $e83.Substring(0, 3) }", ScRaw "    $DiskPath = if ($e83) { \"$n83.$e83\" } else { $n83 }", ScRaw "}", ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScAssign "outDir" (SeRaw "Join-Path $root 'build-output\\disk-compile-test'"), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "runScript" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScEchoStyled (SeLit "=== DISK compile test ===") ClBrightCyan True]
 
 Section: S01b -- FAT16 extraction helper
 
@@ -76,7 +82,7 @@ Section: S05b -- Inside the VM's lifetime
 
 Section: S06 -- Send DISK mode commands and read response
 
-  s06 : List ShellCmd = [ScRaw "$stream = $run.Conn.Data.GetStream()", ScRaw "$hdr = [System.Text.Encoding]::UTF8.GetBytes(\"DISK`n\")", ScRaw "$stream.Write($hdr, 0, $hdr.Length)", ScRaw "$path = [System.Text.Encoding]::UTF8.GetBytes(\"SOURCE.SRC`n\")", ScRaw "$stream.Write($path, 0, $path.Length)", ScRaw "$stream.Flush()", ScAssign "binSize" (SeInt 0), ScAssign "status" (SeLit ""), ScRaw "$logLines = @()"]
+  s06 : List ShellCmd = [ScRaw "$stream = $run.Conn.Data.GetStream()", ScRaw "$hdr = [System.Text.Encoding]::UTF8.GetBytes(\"DISK`n\")", ScRaw "$stream.Write($hdr, 0, $hdr.Length)", ScRaw "$path = [System.Text.Encoding]::UTF8.GetBytes($DiskPath + \"`n\")", ScRaw "$stream.Write($path, 0, $path.Length)", ScRaw "$stream.Flush()", ScAssign "binSize" (SeInt 0), ScAssign "status" (SeLit ""), ScRaw "$logLines = @()"]
 
 Section: S07 -- Read lines until DISK-OUT: or CODEGEN-HALTED
 

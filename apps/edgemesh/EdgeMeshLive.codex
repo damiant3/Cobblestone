@@ -1,0 +1,127 @@
+Chapter: EdgeMeshLive
+
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Foreword chapter Maybe
+
+ `EdgeMeshGameServers.md` phase 2 says "wire EdgeMesh to GroupMembership".
+ The wiring is HERE, in an app quire, and it cannot be anywhere to the left
+ of one. A foreword module may not depend on `codex.os` and the quire order
+ is foreword, codex, codex.os, apps (`DevelopersRulebook.md`, Library Rules
+ 1 and 2), so a chapter that knows about both `codex.foreword.engine`'s
+ `EdgeMesh` and `codex.os.net`'s `GroupMembership` has to sit right of both.
+ Do not "fix" this by adding a cite to `EdgeMesh`; that is the inversion the
+ rule forbids. `codex/os/net/**` is also claimed by another lane, which is
+ the second reason this is not there.
+
+ What phase 1 could not say, and this can: a region's health. `region-add`
+ sets `er-healthy` to True at construction and nothing ever clears it, which
+ is honest for a simulation and useless for a mesh. Here a region is healthy
+ when the group holds a healthy service for it, and not otherwise.
+
+Section: A Region Is A Service
+
+ Discovery is by service name so that a region is found rather than
+ declared. The prefix keeps edge-server registrations from colliding with
+ every other service in the same group.
+
+  mesh-service-prefix : Text = "edge-"
+
+  mesh-region-service : EdgeRegion -> Text
+  mesh-region-service (r) = mesh-service-prefix & r.er-name
+
+Section: Health From The Group
+
+  mesh-healthy-count : List ServiceLocation, Integer, Integer -> Integer
+  mesh-healthy-count (locs) (i) (acc) =
+    if i >= list-length locs then acc
+    else if svc-is-healthy (list-at locs i) then mesh-healthy-count locs (i + 1) (acc + 1)
+    else mesh-healthy-count locs (i + 1) acc
+
+ The count is of HEALTHY locations rather than registered ones. A node that
+ registered and then failed its checks is still in the registry, and
+ counting it would report capacity that cannot serve a match.
+
+ A NEW region rather than `__record-set` on the caller's. `__record-set` is
+ an in-place store that returns the same record (`DevelopersGuide.md`,
+ Records), so updating the argument would write live health back into
+ whatever the caller holds -- `default-regions` among them.
+
+  mesh-region-live : GroupState, EdgeRegion -> EdgeRegion
+  mesh-region-live (g) (r) =
+    let live = mesh-healthy-count (gs-find-service g (mesh-region-service r)) 0 0
+    in EdgeRegion {
+      er-id = r.er-id,
+      er-name = r.er-name,
+      er-lat = r.er-lat,
+      er-lon = r.er-lon,
+      er-capacity = r.er-capacity,
+      er-active-servers = live,
+      er-healthy = live > 0
+    }
+
+  mesh-regions-loop : GroupState, List EdgeRegion, Integer, List EdgeRegion -> List EdgeRegion
+  mesh-regions-loop (g) (rs) (i) (acc) =
+    if i >= list-length rs then acc
+    else mesh-regions-loop g rs (i + 1) (acc & [mesh-region-live g (list-at rs i)])
+
+  mesh-regions-live : GroupState, RegionList -> RegionList
+  mesh-regions-live (g) (rl) =
+    RegionList {
+      rl-regions = mesh-regions-loop g (rl.rl-regions) 0 [],
+      rl-count = rl.rl-count
+    }
+
+Section: Registering A Spawned Server
+
+ A spawned server is a load-balanced location, not a primary: the whole
+ point of the fleet is that any healthy node in the region will do, and
+ declaring one primary would send every match in a region to one box.
+
+  mesh-server-version : Text = "1"
+
+  mesh-server-location : EdgeRegion, GameServer, Text, Text -> ServiceLocation
+  mesh-server-location (region) (srv) (member-id) (address) =
+    svc-location-new (mesh-region-service region) mesh-server-version member-id address (srv.gs-port) SrLoadBalanced
+
+  mesh-register-server : GroupState, EdgeRegion, GameServer, Text, Text -> GroupState
+  mesh-register-server (g) (region) (srv) (member-id) (address) =
+    gs-register-service g (mesh-server-location region srv member-id address)
+
+Section: Placement
+
+ Phase 1 chose a region and spawned into a model, so placement could not
+ fail. Against a live group it can, and a refusal is the answer rather than
+ a spawn nobody can reach: the region may hold no node at all, or hold only
+ nodes that have failed their health checks.
+
+  MeshPlacement =
+    | PlacedAt (ServiceLocation)
+    | PlacementRefused (Text)
+
+  mesh-region-at : RegionList, Integer -> Maybe EdgeRegion
+  mesh-region-at (rl) (idx) =
+    if idx < 0 then None
+    else if idx >= list-length (rl.rl-regions) then None
+    else Just (list-at (rl.rl-regions) idx)
+
+  mesh-place : GroupState, RegionList, Integer -> MeshPlacement
+  mesh-place (g) (rl) (region-idx) =
+    when mesh-region-at rl region-idx
+      is None -> PlacementRefused ("no such region: " & show region-idx)
+      is Just (r) ->
+        when gs-pick-load-balanced g (mesh-region-service r)
+          is None -> PlacementRefused ("region " & r.er-name & " has no healthy node")
+          is Just (loc) -> PlacedAt loc
+
+Section: Reporting
+
+  mesh-placement-label : MeshPlacement -> Text
+  mesh-placement-label (p) =
+    when p
+      is PlacedAt (loc) -> "placed on " & loc.sl-member-id & " at " & loc.sl-address & ":" & show (loc.sl-port) & " load " & show (loc.sl-load)
+      is PlacementRefused (why) -> "refused: " & why
+
+  mesh-region-label : EdgeRegion -> Text
+  mesh-region-label (r) =
+    r.er-name & " " & (if r.er-healthy then "healthy" else "DOWN") & " servers " & show (r.er-active-servers)

@@ -46,7 +46,7 @@ localhost:8888                          localhost:7860       localhost:8188
                      cache mgmt)        +---------------+
         |
         v
- <explorer-cache>\{prompt_hash}\{params}.{ext}
+ D:\Projects\CodexMagic\explorer\cache\{prompt_hash}\{params}.{ext}
 ```
 
 ### Component Roles
@@ -62,7 +62,7 @@ serial-line protocol for the CDX, proxies SD/ComfyUI/TTS API calls,
 manages the image/audio cache on disk, and serves static HTML/CSS/JS
 for each tool's page.
 
-**Cache** -- `<explorer-cache>\{prompt_hash}\{params}.png`
+**Cache** -- `D:\Projects\CodexMagic\explorer\cache\{prompt_hash}\{params}.png`
 (or `.wav` for voice). Prompt hash is the first 12 hex chars of SHA-256
 of the prompt text. Parameter encoding in the filename captures model,
 sampler, steps, CFG, seed, and LoRA so the same prompt with different
@@ -622,7 +622,7 @@ Negative prompts are tool-specific defaults (e.g., items always include
 ### Cache Management
 
 All tools share one cache root:
-`<explorer-cache>\`
+`D:\Projects\CodexMagic\explorer\cache\`
 
 ```
 cache/
@@ -704,7 +704,7 @@ Exchange game:
 
 The pipeline flow: designer tools produce raw assets -> QA review ->
 approved assets enter the content pool -> the card generation pipeline
-(see the card generation design, withheld) references
+(see [CardGeneration.md](../CodexMagic/CardGeneration.md)) references
 the pool when assembling card templates -> on-chain minting locks the
 final asset permanently.
 

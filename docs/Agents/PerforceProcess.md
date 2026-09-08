@@ -345,6 +345,7 @@ esolve -at takes the delete over your add. Measured 2026-08-16 on codex/test/tex
 | P-REMERGE | Copy-up refused with `Stream //Codex/<agent> cannot 'copy' over outstanding 'merge' changes`. Another agent landed while your gate ran. | Merge down again, submit the merge, then copy up. Budget two merge-downs per token hold. Your token does not prevent this and is not meant to: what lands under you is non-seed traffic, which takes no token. |
 | P-EOL | A five-line change reports as the entire file replaced, because an edit tool wrote the result back as bare LF over a CRLF file. It turns the merge-down of any contended document into a conflict and hides your real change from review. | If `p4 diff` shows far more lines than you touched, count the endings and repair at the BYTE level (section 4.2). Never through `Get-Content`/`Set-Content`, which also rewrites the encoding of a `unicode`-typed file. The same shape arrives from a whole-file rewrite, which the fleet's models reach for over an in-place edit on small changes; edit surgically, and a five-line change then diffs as five lines. |
 | P-SELECTSTRING | `Select-String` misreads p4 `unicode`-typed files, which is most `.codex` by typemap. | Use the Grep tool (ripgrep) for content searches over depot files. |
+| P-CRTRIGGER | A stray CR in a `.codex` (a `\r\r\n` line, or a CR at the end of a `Chapter:` header) survives every line-end translation as CONTENT, puts the CR in the chapter name (CDX3007, PR 133), and makes git publish the file CRLF throughout on the mirror. | The server refuses it: the `check-source-cr` change-content trigger fails the submit and names the file and line (4.8). Strip the byte; do not touch the terminators. |
 | P-DAMIAN | `p4 opened -a` shows a file held by `Damian@BigWhite_Codex_main`, often many revisions behind head. | That is his editor checking a file out on open. It is not a pending change, it will not clobber yours, it needs no coordination, and it is not a hazard to report (Damian, 2026-07-21). Any OTHER client holding a file is a real agent and a real merge concern. |
 | P-EXPECTED | A test passes every way you check it by hand and arrives RED in the battery. The `.expected` is one byte short: `Set-Content -NoNewline` leaves the file on `...yes` where the guest emits `...yes\n`. The harness strips CR from expected and compares exactly, so a missing trailing newline is a guaranteed fail. | **Every `.expected` in the tree ends with a trailing NEWLINE: 1237 of 1237, censused independently three times on 2026-08-15.** Write the newline. Do NOT copy the CR: every dev client is `LineEnd: local`, so the CRLF you observe is produced by YOUR sync and is a client property, not a depot fact, and the runner strips CR from the expected side anyway. The trailing newline is the half the harness actually tests. Verify with the RUNNER's own rule (section 4.6), never a `.Trim()` on both sides -- that normalises away exactly the difference the harness looks for (L-SIDECAR). A `text`-typed sidecar can also gain CR bytes on sync; `p4 retype -t binary <file>` if it keeps happening. |
 | P-SEEDSTALE (L) | A green gate does NOT mean the seed matches the source. `build.ps1` compares SUT against stage1 -- the compiler built from current source being a fixed point of itself. It never compares the seed against the SUT and cannot usefully, so `hard fixed point in one pass` is exactly what a stale seed looks like. | Ask not "does this change what the compiler emits" but **"does this change the compiler BINARY"**. Renames, added or removed definitions and chapter moves all qualify: a pure rename once shortened the mangled names baked into the compiler and moved the seed 672 bytes. Verify against the DEPOT every session (section 4.3). |
@@ -846,6 +847,46 @@ is literal, and keep it ASCII (P-ASCII).
 change bundled with an unfinished one, so it sat unsubmitted for days. A finished
 change that stands on its own ships as its own CL the day it is measured.
 **Nothing in a shelf is safe, and a shelf is not a backup.**
+
+### 4.8 The server refuses a stray carriage return (P-CRTRIGGER)
+
+Installed 2026-09-08 (Damian's direction, after PR 133): one `change-content`
+trigger on `//Codex/...`, run by the server on every submit, before the commit.
+It prints each text-typed file in the change (type `text`, `unicode`, `utf8`,
+`utf16` and their modifiers: the 56 extensions the typemap gives `unicode`) and
+grades the bytes with the rule of `build/check-source-cr.ps1`: in CRLF form a CR
+is bad unless it is exactly the CR of a CR LF pair with no CR before it, in LF
+form any CR is bad, and a file in both forms is bad as a whole. A data file
+that must carry a raw CR is typed `binary` instead; when the trigger was
+widened past `.codex` the census over 9,549 text-typed files found only 30
+`.failing` sidecars carrying one, all the `\r\r\n` shape, all fixed in the same
+CL. A refused submit reads:
+
+```
+check-source-cr: a text file in change N carries a carriage return that is not a line terminator.
+  //Codex/<stream>/<path> line L
+```
+
+Strip the byte at that line (the P-EOL counter in 4.2 tells CRLF from bare LF;
+a `\r\r\n` line is the usual shape) and submit again. The terminators are not
+the problem and must not be rewritten.
+
+The source is `build/check-source-cr-trigger.ps1`; the server runs a COPY at
+`D:\PerforceRoot\triggers\check-source-cr-trigger.ps1`, outside every workspace
+so a shelve or a sync cannot change what the server executes. After editing the
+source, re-copy it there. The table entry (`p4 triggers -o`):
+
+```
+check-source-cr change-content //Codex/... "C:\PROGRA~1\POWERS~1\7\pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\PerforceRoot\triggers\check-source-cr-trigger.ps1 %changelist% %serverport%"
+```
+
+Calibrated both ways on install: a probe `.codex` with a `\r\r\n` header line
+was refused naming line 1; the same file with plain CRLF terminators submitted
+(root 24291, deleted 24292); after the widening a probe `.md` was refused the
+same way and the widening CL itself (29 `.failing`, one `.ps1`, one `.md`)
+submitted. `p4 triggers -o` shows the entry; if it is absent
+the server has been rebuilt and the trigger must be reinstalled from this
+section.
 
 ---
 

@@ -5,6 +5,7 @@ Chapter: CheckPlugBuiltinsScript
   cites Foreword chapter List
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -27,7 +28,7 @@ Section: S01 -- Why this exists
 
   cpb-missing : ShellExpr = SeConcat (SeLit "check-plug-builtins: missing ") (SeVar "f")
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "BuiltinsFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Types\\Builtins.codex")), ScAssign "Subject" (SePathJoin (SeVar "Repo") (SeLit "codex\\test\\plug-oracle-arith.codex")), ScAssign "Seed" (SePathJoin (SeVar "Repo") (SeLit "seed\\Codex.cdx")), ScAssign "CompileScript" (SePathJoin (SeVar "Repo") (SeLit "build\\compile.ps1")), ScAssign "IrOut" (SePathJoin (SeVar "Repo") (SeLit "build\\output\\plug-builtins.ir")), ScAssign "IrLog" (SePathJoin (SeVar "Repo") (SeLit "build\\output\\plug-builtins.ir.log")), ScAssign "BaseFile" (SePathJoin (SeVar "Repo") (SeLit "build\\plug-builtin-baseline.txt")), ScBlank, ScForEach "f" (SeArrayLiteral [SeVar "BuiltinsFile", SeVar "Subject", SeVar "Seed", SeVar "CompileScript"]) [ScIf (SeNot (SeFileExists (SeVar "f"))) [ScEcho cpb-missing, ScExit (SeInt 1)] []]]
+  s01-body : List ShellCmd = [ScBlank, ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "BuiltinsFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Types\\Builtins.codex")), ScAssign "Subject" (SePathJoin (SeVar "Repo") (SeLit "codex\\test\\plug-oracle-arith.codex")), ScAssign "Seed" (SePathJoin (SeVar "Repo") (SeLit "seed\\Codex.cdx")), ScAssign "CompileScript" (SePathJoin (SeVar "Repo") (SeLit "build\\compile.ps1")), ScAssign "IrOut" (SePathJoin (SeVar "Repo") (SeLit "build\\output\\plug-builtins.ir")), ScAssign "IrLog" (SePathJoin (SeVar "Repo") (SeLit "build\\output\\plug-builtins.ir.log")), ScAssign "BaseFile" (SePathJoin (SeVar "Repo") (SeLit "build\\plug-builtin-baseline.txt")), ScBlank, ScForEach "f" (SeArrayLiteral [SeVar "BuiltinsFile", SeVar "Subject", SeVar "Seed", SeVar "CompileScript"]) [ScIf (SeNot (SeFileExists (SeVar "f"))) [ScEcho cpb-missing, ScExit (SeInt 1)] []]]
 
 Section: S02 -- What the compiler DECLARES
 
@@ -37,7 +38,7 @@ Section: S02 -- What the compiler DECLARES
 
   cpb-declared-line : List ShellCmd = [ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpb-declared-pat]) [ScSetIndex "declared" cpb-head (SeBool True)]]
 
-  s02 : List ShellCmd = [ScAssign "declared" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "BuiltinsFile"]) cpb-declared-line]
+  s02-body : List ShellCmd = [ScBlank, ScAssign "declared" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "BuiltinsFile"]) cpb-declared-line]
 
 Section: S03 -- What actually reaches the wire
 
@@ -51,7 +52,7 @@ Section: S03 -- What actually reaches the wire
 
   cpb-wire-line : List ShellCmd = [ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpb-wire-pat]) [ScIf (SeMethodCall (SeVar "declared") "ContainsKey" [cpb-head]) [ScSetIndex "wire" cpb-head (SeBool True)] []]]
 
-  s03 : List ShellCmd = [ScSequence cpb-wire-note, cpb-compile, ScIf (SeNot (SeFileExists (SeVar "IrLog"))) [ScEcho cpb-no-ir, ScExit (SeInt 1)] [], ScAssign "wire" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "IrLog"]) cpb-wire-line]
+  s03-body : List ShellCmd = [ScBlank, ScSequence cpb-wire-note, cpb-compile, ScIf (SeNot (SeFileExists (SeVar "IrLog"))) [ScEcho cpb-no-ir, ScExit (SeInt 1)] [], ScAssign "wire" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "IrLog"]) cpb-wire-line]
 
 Section: S04 -- An empty side compares clean against anything
 
@@ -61,7 +62,7 @@ Section: S04 -- An empty side compares clean against anything
 
   cpb-broken-msg : ShellExpr = cpb-cat [SeLit "check-plug-builtins: FAILED to extract (declared=", SeProperty (SeVar "declared") "Count", SeLit " wire=", SeProperty (SeVar "wire") "Count", SeLit ")"]
 
-  s04 : List ShellCmd = [ScSequence cpb-broken-note, ScIf cpb-empty [ScEcho cpb-broken-msg, ScEcho (SeLit "  the extraction broke, not the plugs -- fix this script before trusting a green"), ScExit (SeInt 1)] []]
+  s04-body : List ShellCmd = [ScBlank, ScSequence cpb-broken-note, ScIf cpb-empty [ScEcho cpb-broken-msg, ScEcho (SeLit "  the extraction broke, not the plugs -- fix this script before trusting a green"), ScExit (SeInt 1)] []]
 
 Section: S05 -- What each plug REGISTERS
 
@@ -96,7 +97,7 @@ Section: S05 -- What each plug REGISTERS
 
   cpb-plug-body : List ShellCmd = [ScAssign "reg" SeHashLiteral, ScAssign "inList" (SeBool False), ScForEach "f" (SeListFiles (SePathJoin (SePathJoin (SeVar "Repo") (SeLit "codex\\plugs")) (SeVar "p")) "*.codex" False) [ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeProperty (SeVar "f") "FullName"]) cpb-reg-line], ScIf (SeNot (SeIntGt (SeProperty (SeVar "reg") "Count") (SeInt cpb-floor))) cpb-thin [], ScForEach "b" (SeVar "wireNames") [ScIf (SeNot (SeMethodCall (SeVar "reg") "ContainsKey" [SeVar "b"])) [ScAppend "divergent" cpb-gap] []]]
 
-  s05 : List ShellCmd = [ScSequence cpb-shape-note, ScAssign "wireNames" (SeAsArray (SePipe (SeProperty (SeVar "wire") "Keys") [StSort])), ScAssign "divergent" (SeArrayLiteral []), ScForEach "p" (SeArrayLiteral cpb-plugs) cpb-plug-body, ScAssign "divergent" (SeAsArray (SePipe (SeVar "divergent") [StSort]))]
+  s05-body : List ShellCmd = [ScBlank, ScSequence cpb-shape-note, ScAssign "wireNames" (SeAsArray (SePipe (SeProperty (SeVar "wire") "Keys") [StSort])), ScAssign "divergent" (SeArrayLiteral []), ScForEach "p" (SeArrayLiteral cpb-plugs) cpb-plug-body, ScAssign "divergent" (SeAsArray (SePipe (SeVar "divergent") [StSort]))]
 
 Section: S06 -- Rewriting the baseline
 
@@ -106,7 +107,7 @@ Section: S06 -- Rewriting the baseline
 
   cpb-update-body : List ShellCmd = [ScAssign "header" (SeArrayLiteral cpb-header), ScSetContent (SeVar "BaseFile") (SeAdd (SeVar "header") (SeVar "divergent")), ScEcho cpb-updated, ScForEach "d" (SeVar "divergent") [ScEcho (SeConcat (SeLit "  ") (SeVar "d"))], ScExit (SeInt 0)]
 
-  s06 : List ShellCmd = [ScIf (SeVar "Update") cpb-update-body []]
+  s06-body : List ShellCmd = [ScBlank, ScIf (SeVar "Update") cpb-update-body []]
 
 Section: S07 -- The baseline is the contract
 
@@ -116,7 +117,7 @@ Section: S07 -- The baseline is the contract
 
   cpb-baseline : ShellExpr = SeAsArray (SePipe (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "BaseFile"]) [StWhere cpb-real-line, StMap (SeTrim SeItem)])
 
-  s07 : List ShellCmd = [ScIf (SeNot (SeFileExists (SeVar "BaseFile"))) [ScEcho cpb-no-base, ScExit (SeInt 1)] [], ScBlank, ScAssign "baseline" cpb-baseline, ScBlank, ScAssign "new" (SeAsArray (SePipe (SeVar "divergent") [StWhere (SeNot (SeContains (SeVar "baseline") SeItem))])), ScAssign "fixed" (SeAsArray (SePipe (SeVar "baseline") [StWhere (SeNot (SeContains (SeVar "divergent") SeItem))]))]
+  s07-body : List ShellCmd = [ScBlank, ScIf (SeNot (SeFileExists (SeVar "BaseFile"))) [ScEcho cpb-no-base, ScExit (SeInt 1)] [], ScBlank, ScAssign "baseline" cpb-baseline, ScBlank, ScAssign "new" (SeAsArray (SePipe (SeVar "divergent") [StWhere (SeNot (SeContains (SeVar "baseline") SeItem))])), ScAssign "fixed" (SeAsArray (SePipe (SeVar "baseline") [StWhere (SeNot (SeContains (SeVar "divergent") SeItem))]))]
 
 Section: S08 -- The verdict
 
@@ -130,14 +131,30 @@ Section: S08 -- The verdict
 
   cpb-ok-line : ShellExpr = cpb-cat [SeLit "check-plug-builtins: OK (", SeProperty (SeVar "wire") "Count", SeLit " builtins on the wire, ", SeCount (SeVar "divergent"), SeLit " known gap(s))"]
 
-  s08 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "new")) (SeInt 0)) cpb-new-body [], ScBlank, ScIf (SeIntGt (SeCount (SeVar "fixed")) (SeInt 0)) cpb-fixed-body [], ScBlank, ScEcho cpb-ok-line, ScExit (SeInt 0)]
+  s08-body : List ShellCmd = [ScBlank, ScIf (SeIntGt (SeCount (SeVar "new")) (SeInt 0)) cpb-new-body [], ScBlank, ScIf (SeIntGt (SeCount (SeVar "fixed")) (SeInt 0)) cpb-fixed-body [], ScBlank, ScEcho cpb-ok-line, ScExit (SeInt 0)]
 
 Section: Assembly
 
-  cpb-full : List ShellCmd = [ScSequence cpb-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08]
+  s00 : PipeStage = PipeStage { ps-name = "doctrine", ps-why = "why a plug missing an arm for a builtin that reaches its wire is silent, and what the baseline records", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = cpb-doctrine }
 
-  cpb-script : ShellScript = sh-script "check-plug-builtins" "a plug must have an arm for every builtin that reaches its wire" cpb-params cpb-full
+  s01 : PipeStage = PipeStage { ps-name = "the repository and the baseline", ps-why = "locate the compiler source, the plugs and the file recording which builtins are knowingly unarmed", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "a source the comparison needs is missing, so there is no wire to check"], ps-body = s01-body }
+
+  s02 : PipeStage = PipeStage { ps-name = "what the compiler declares", ps-why = "every builtin the compiler names, which is the upper bound on what any plug can be asked for", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "what actually reaches the wire", ps-why = "declared is not the same set as REACHES: -Passes 'text-plug' is the pipeline that answers what a plug is really handed, and a different pass answers a different question", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the IR log the wire set is read from was not produced, so the comparison has no left side"], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "an empty side compares clean against anything", ps-why = "the vacuity guard: an empty set agrees with everything, so an extraction that broke must REFUSE rather than report a clean wire", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "one side extracted nothing, so this script is what is broken and a green from it is worth nothing"], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "what each plug registers", ps-why = "TWO registration shapes, and modelling one accuses the other of gaps it does not have", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "a plug registers builtins in a shape neither pattern reads, so its arms cannot be counted and a silent zero would read as total absence"], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "rewriting the baseline", ps-why = "under -Update, record the current gaps and stop; growing the file needs a reason in the CL that grows it", ps-in = ["Update"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "-Update: the baseline was rewritten and the delta printed; a success that means the record moved, not that the plugs are complete"], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "the baseline is the contract", ps-why = "split today's gaps against the recorded ones into NEW, which fails, and FIXED, which is the work landing", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "no baseline file exists, so there is no contract to check against; run with -Update"], ps-body = s07-body }
+
+  s08 : PipeStage = PipeStage { ps-name = "the verdict", ps-why = "a new unarmed builtin fails the build; a baselined one that is now armed is reported so the record can shrink", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "a builtin reaches a plug's wire with no arm for it and is not in the baseline", PoExit 0 "the plugs match the baseline, and one or more baselined gaps are now armed and should be dropped from the record", PoExit 0 "the plugs match the baseline exactly"], ps-body = s08-body }
+
+  cpb-pipe : Pipeline = Pipeline { pl-name = "check-plug-builtins", pl-doc = "a plug must have an arm for every builtin that reaches its wire", pl-params = cpb-params, pl-stages = [s00, s01, s02, s03, s04, s05, s06, s07, s08] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cpb-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cpb-pipe))
   end

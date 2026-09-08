@@ -55,11 +55,30 @@ Section: Sine and Cosine
        else if r < 0.0 - dm-pi then r + dm-two-pi
        else r
 
-  dm-fold-quadrant : Real -> Real
-  dm-fold-quadrant (r) =
-    if r > dm-half-pi then dm-pi - r
-    else if r < 0.0 - dm-half-pi then 0.0 - dm-pi - r
-    else r
+  dm-quarter-pi : Real
+  dm-quarter-pi = 0.785398163397448
+
+  dm-three-quarter-pi : Real
+  dm-three-quarter-pi = 2.356194490192345
+
+ ACCURACY, measured against python math.sin and math.cos over the arguments in
+ codex/test/lib/device-math.codex: worst absolute error 9.4e-16 for |x| <= pi,
+ and 9.8e-15 over the whole set, the larger figure at x = 100. Past |x| = pi
+ the bound is the ARGUMENT REDUCTION and not the series: dm-reduce subtracts a
+ multiple of a dm-two-pi that is itself a rounded double, so the error grows
+ with the multiple and no improvement to the polynomials below can touch it.
+ real-cos 0.0 is exactly 1.0 and real-sin 0.0 is exactly 0.0.
+
+ THE OCTANT FOLD IS WHY, AND A QUADRANT FOLD IS NOT ENOUGH. A series about
+ zero is worst at the far end of the interval it must cover, so the cost of
+ folding to a quadrant is that pi/2 remains legal and is the worst point:
+ (pi/2)^13 / 13! is 5.7e-8, and until 2026-09-08 real-cos 0.0 routed straight
+ through it, because cos 0 was evaluated as sin (pi/2). Folding to an octant
+ caps every argument at pi/4, where the same term is 6.9e-12, and paying for
+ two more terms in each series takes the bound to 4.6e-17. The second series
+ is what makes the octant fold possible: within pi/4 of a multiple of pi/2 the
+ answer must come from a cosine about zero, and there is no sine argument that
+ will do.
 
   dm-sin-poly : Real -> Real
   dm-sin-poly (r) =
@@ -69,13 +88,42 @@ Section: Sine and Cosine
     in let r7 = r5 * r2
     in let r9 = r7 * r2
     in let r11 = r9 * r2
-    in r - r3 / 6.0 + r5 / 120.0 - r7 / 5040.0 + r9 / 362880.0 - r11 / 39916800.0
+    in let r13 = r11 * r2
+    in let r15 = r13 * r2
+    in r - r3 / 6.0 + r5 / 120.0 - r7 / 5040.0 + r9 / 362880.0 - r11 / 39916800.0 + r13 / 6227020800.0 - r15 / 1307674368000.0
+
+  dm-cos-poly : Real -> Real
+  dm-cos-poly (r) =
+    let r2 = r * r
+    in let r4 = r2 * r2
+    in let r6 = r4 * r2
+    in let r8 = r6 * r2
+    in let r10 = r8 * r2
+    in let r12 = r10 * r2
+    in let r14 = r12 * r2
+    in let r16 = r14 * r2
+    in 1.0 - r2 / 2.0 + r4 / 24.0 - r6 / 720.0 + r8 / 40320.0 - r10 / 3628800.0 + r12 / 479001600.0 - r14 / 87178291200.0 + r16 / 20922789888000.0
+
+  dm-sin-octant : Real -> Real
+  dm-sin-octant (a) =
+    if a <= dm-quarter-pi then dm-sin-poly a
+    else if a <= dm-three-quarter-pi then dm-cos-poly (a - dm-half-pi)
+    else dm-sin-poly (dm-pi - a)
+
+  dm-cos-octant : Real -> Real
+  dm-cos-octant (a) =
+    if a <= dm-quarter-pi then dm-cos-poly a
+    else if a <= dm-three-quarter-pi then dm-sin-poly (dm-half-pi - a)
+    else 0.0 - dm-cos-poly (dm-pi - a)
 
   real-sin : Real -> Real
-  real-sin (x) = dm-sin-poly (dm-fold-quadrant (dm-reduce x))
+  real-sin (x) =
+    let r = dm-reduce x
+    in if r < 0.0 then 0.0 - dm-sin-octant (0.0 - r)
+       else dm-sin-octant r
 
   real-cos : Real -> Real
-  real-cos (x) = dm-sin-poly (dm-fold-quadrant (dm-reduce (x + dm-half-pi)))
+  real-cos (x) = dm-cos-octant (real-abs (dm-reduce x))
 
 Section: Arc Tangent
 

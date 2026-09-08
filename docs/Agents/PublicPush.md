@@ -188,22 +188,22 @@ its state as a thing to reconcile against.
 
     **Anything left after check-ignore is a file nobody decided to withhold.**
     Do not read a large raw difference as a disaster: of 479 paths missing
-    at the 2026-09-07 measurement, 435 were deliberate: the withheld block at
-    the bottom of `.gitignore`, `build/boot/archive`, the third-party
-    specification PDFs, and everything `*.exe` / `*.cdx`. The number that matters is the one that survives the
+    at the 2026-09-07 measurement, 435 were deliberate -- `apps/games/magic`,
+    `assets/games`, `apps/wademo`, `apps/productbuilder`, `codex/product`,
+    `build/boot/archive`, the third-party specification PDFs, and everything
+    `*.exe` / `*.cdx`. The number that matters is the one that survives the
     ignore rules.
 
 2c. **A DELIBERATE EXCLUSION IS INVISIBLE FROM OUTSIDE, AND THAT IS ITS OWN
     DEFECT.** Steve Howell's issue 123 reported three directories present in
-    the depot and 404 on the mirror, all three ruled exclusions. A reader of
-    the public tree cannot tell a withheld directory from a lost one, so a
-    contributor spends his time reporting our policy back to us. Since
-    2026-09-08 (Damian) the withheld set is ONE block at the bottom of
-    `.gitignore`, headed "Withheld from the public mirror", and it carries
-    every test, design, annotation, register row and script that cites a
-    withheld path, so the mirror never holds a cite it cannot resolve. The
-    block's comment says the paths are withheld on purpose and does not say
-    what is in them; no doc, register or update names them either.
+    the depot and 404 on the mirror. All three are ruled exclusions with good
+    reasons -- `codex/product` and `apps/productbuilder` are customer work
+    (Damian, 2026-08-18), `apps/wademo` carries an NHGIS extract whose terms
+    forbid redistribution -- and exactly ONE of them, `codex/product`, is a
+    quire. But a reader of the public tree cannot tell a withheld directory
+    from a lost one, so a contributor spends his time reporting our policy
+    back to us. The mirror should say which paths are withheld and why,
+    without naming what is in them.
 3. Commit as author damiant, one line, comma-separated themes, no trailers.
    The Update-N report file is part of the same commit.
 4. Push, NO force (standing rule). The github credential is usually cached;
@@ -226,13 +226,18 @@ its state as a thing to reconcile against.
   republishing other parties' copyrighted documents is redistribution.
   Our own notes about them (`docs/Reference/*_Notes.md`) ship. Ruled
   during the Update 38 push, 2026-08-05.
-- **The withheld block at the bottom of `.gitignore` is the whole withheld
-  set** (Damian, 2026-09-08; it supersedes the 2026-08-17 ruling that
-  accepted one annotations directory as public). `.gitignore` governs
-  UNTRACKED files only; it never untracks a file already committed, and
-  `git add -A` keeps publishing one. The 2026-09-08 push removed every
-  tracked file under the block with `git rm -r --cached`; before each push,
-  feed the block's paths to `git ls-files` and expect nothing back.
+- `apps/games/magic/`, the old basic Magic engine (21 core files), stays
+  OUT of the public mirror. It is in `.gitignore`, but `.gitignore` only
+  governs UNTRACKED files; it never untracks a file already committed. If
+  any file in a gitignored folder was ever committed, `git add -A` keeps
+  publishing it. Check `git ls-files apps/games/magic`. (The expanded
+  commercial app `apps/games/codexmagic/` IS public and is different.)
+  **`annotations/apps/games/magic/` is withheld too since 2026-09-08**
+  (Damian, reversing the 2026-08-17 ruling that accepted it as public): the
+  solver's annotations left the mirror by `git rm -r --cached` at the Update
+  57 push. The game `apps/games/codexmagic/` and everything that cites it
+  stay public; the 2026-09-08 afternoon purge that withheld them was a
+  misreading of the order and was reversed the same evening.
 - **`build/boot/diag-sitting*.cfg` never ship.** Found at the Update 49
   pre-push scan, 2026-08-21: five of them were untracked and new, and every
   one names the box (`b3 peer=192.168.6.141:7 ip=192.168.6.200`). They are

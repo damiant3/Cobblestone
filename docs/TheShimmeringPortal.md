@@ -115,6 +115,8 @@ apps/games/
                     booted by server.ps1; every /api/* request is forwarded
                     to it over the serial link
   classic/web/    34 game pages (33 named + rungame.html fallback)
+  codexmagic/web/ CodexMagic SPA -- a mix (see below)
+  magic/          Magic engine sources (no web assets)
 ```
 
 ```powershell
@@ -124,6 +126,17 @@ pwsh apps\games\server.ps1 -Port 8080
 The chrome is hand-written; the *game logic* is not. `server.ps1` boots
 `GameServer.cdx` in codex-vm (compiling it first if missing) and every
 `/api/*` request is answered by that CDX binary.
+
+CodexMagic straddles Paths A and C: `apps/games/codexmagic/*Page.codex`
+chapters are compiled to `apps/games/codexmagic/web/*.html` through the
+HTML plug, then post-processed to inject `magic.css`, `magic.js`, and
+`card-render.js` (still hand-written).
+
+```powershell
+pwsh build\build-magic-pages.ps1                      # all *Page.codex
+pwsh build\build-magic-pages.ps1 -Pages CollectionPage
+pwsh apps\games\codexmagic\web\build-pages.ps1        # admin + marketplace only
+```
 
 > There is no `tools/web/`. It was deleted. Its contents became
 > `apps/games/` (portal, catalog, classic pages) and `apps/explorer/`
@@ -555,7 +568,7 @@ gap that is still open stays on this list until it is closed.
 | Item explorer | **CLOSED** -- `apps/explorer/ItemDesignerApp.codex`, routed at `/item` |
 | Card explorer | **OPEN (new)** -- `CardDesignerApp.codex` + `CardEmitter.codex` exist and compile, but no server routes them: `run-designers-demo.ps1`'s page map has no `card` key |
 | `/api/generate`, `/api/config` | **OPEN (new)** -- every designer page calls them; no server in the depot answers them (see Chapter 6) |
-| `apps/explorer/server.ps1` | **OPEN (new)** -- serves pages from a directory outside the depot, so it cannot work from a fresh sync. `run-designers-demo.ps1` is the working server; fold the SD generation code into it and retire the out-of-repo path |
+| `apps/explorer/server.ps1` | **OPEN (new)** -- serves pages from `D:\Projects\CodexMagic\explorer\pages`, a path outside the depot, so it cannot work from a fresh sync. `run-designers-demo.ps1` is the working server; fold the SD generation code into it and retire the out-of-repo path |
 | `build/build-explorer-pages.ps1` | **OPEN (new)** -- stale. It runs `build-output\{carddesigner,characterdesigner,settingdesigner,voicestudio}.cdx`, which nothing produces, and writes outside the depot. Delete it or rewrite it over `codex\plugs\html\run.ps1` |
 | "Save to My Creations" bar | **OPEN (new)** -- injected as hand-written JS by `run-designers-demo.ps1` (`$inject`) into the three designer pages. It should be an `AuthClient` widget in the page chapters, the way `CreationsApp` already does it |
 | VoiceStudio, WorkflowExporter, StoryGraph, WorldForge, NameForge | Chapters exist and compile; no page is routed by `run-designers-demo.ps1`. **OPEN** |
@@ -565,6 +578,7 @@ gap that is still open stays on this list until it is closed.
 | Item | Verdict |
 |------|---------|
 | Portal chrome (`apps/games/app.js`, `index.html`, `style.css`) | **OPEN** -- hand-written; not compiled from Codex. The 34 classic game pages are hand-written too (their engines are not) |
+| CodexMagic web (`magic.js`, `card-render.js`) | **OPEN** -- the `*Page.codex` chapters are compiled, but the pages are post-processed to inject two hand-written JS files |
 
 Design references: `docs/Designs/Done/Tools/UICapabilityMap.md`
 (cross-platform coverage matrix), `apps/webapp/design/Done/BaseTemplate.md`
@@ -594,6 +608,7 @@ build/
   build-apps.ps1             Builds every apps/<x>/web/<x>.html that has a Page chapter
   bundle-app.ps1             Inlines transitive cites into one .codex
   compile.ps1                Source -> CDX or IR (-IrCce). -Log is mandatory
+  build-magic-pages.ps1      CodexMagic *Page.codex -> apps/games/codexmagic/web/*.html
   quire-map.ps1              Quire name -> directory (UI, WebApp, Explorer, Games, ...)
   build-explorer-pages.ps1   STALE -- see Chapter 7
 
@@ -635,6 +650,10 @@ apps/games/                  Hand-built portal + Codex engines
   GameServer.codex           The engine (CDX)
   classic/                   36 Codex chapters: the game engines + Minimax/Rng
   classic/web/               34 HTML pages + game-common.css
+  codexmagic/                CodexMagic engine, economy, clans, server
+  codexmagic/web/            Compiled *Page pages + magic.js, card-render.js,
+                             magic.css, build-pages.ps1, server.ps1
+  magic/                     Magic engine sources (no web assets)
 
 docs/
   Designs/Done/Tools/UICapabilityMap.md       Cross-platform coverage matrix
@@ -679,3 +698,7 @@ pwsh apps\games\server.ps1 -Port 8080
 # http://localhost:8080/  -- Status and Games tabs; /games/<id> per game
 ```
 
+### Build the CodexMagic pages
+```powershell
+pwsh build\build-magic-pages.ps1
+```

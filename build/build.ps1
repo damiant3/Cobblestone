@@ -664,6 +664,25 @@ if (Test-Path $chkAlloc) {
     }
 }
 
+# The fourth of that cluster, and its subject is a TABLE rather than a list.
+# ARM64 resolves a record field to a slot through a hand-written name-to-index
+# table (a64-hardcoded-field-index) that takes the type name and ignores it. It
+# is the fallback a64-find-field-index-st reaches when a record type carries no
+# field list, and the correct path returns the field's position in DECLARATION
+# order, so an entry is right exactly when it equals that. Nothing at runtime
+# observes it: on 2026-09-08 a deliberately wrong index was rebuilt into the
+# plug and every arm in the tree still passed, which is COMPILER-72 and why
+# this is wired here rather than left to an arm. x86-64 and RISC-V both derive
+# the index and are not exposed. Text only, no guest, one second over the tree.
+$chkA64Fields = Join-Path $PSScriptRoot 'check-a64-field-index.ps1'
+if (Test-Path $chkA64Fields) {
+    & pwsh -NoProfile -File $chkA64Fields -Quiet 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: an ARM64 hard-coded field index disagrees with the record it describes.'
+        exit 1
+    }
+}
+
 # IRTextParser calls itself the inverse of IRTextEmitter and is not: the
 # emitter can write forms the parser reads as a plausible DEFAULT rather than
 # an error. x86-64 never crosses this wire, so no x86 test and no fixed point

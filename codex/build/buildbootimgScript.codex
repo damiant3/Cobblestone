@@ -4,6 +4,7 @@ Chapter: BuildBootImgScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -79,36 +80,36 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd =
+  s01-body : List ShellCmd =
     let fail-seed = [ScEcho (SeRaw "\"FAIL: $Seed missing\""), ScExit (SeInt 1)]
-    in [ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "Seed" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScAssign "ImgOut" (SeRaw "if ($Out) { $Out } else { Join-Path $Repo 'seed\\Codex.img' }"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Seed"))) fail-seed [], ScBlank, ScAssign "BuildOut" (SeRaw "Join-Path $Repo 'build-output'"), ScIf (SeNot (SeDirExists (SeVar "BuildOut"))) [ScMkdir (SeVar "BuildOut")] [], ScBlank, ScEcho (SeLit "=== Build Boot IMG ===")]
+    in [ScBlank, ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "Seed" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScAssign "ImgOut" (SeRaw "if ($Out) { $Out } else { Join-Path $Repo 'seed\\Codex.img' }"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Seed"))) fail-seed [], ScBlank, ScAssign "BuildOut" (SeRaw "Join-Path $Repo 'build-output'"), ScIf (SeNot (SeDirExists (SeVar "BuildOut"))) [ScMkdir (SeVar "BuildOut")] [], ScBlank, ScEcho (SeLit "=== Build Boot IMG ===")]
 
 Section: S02 -- Bundle
 
-  s02 : List ShellCmd =
+  s02-body : List ShellCmd =
     let fail-source = [ScEcho (SeRaw "\"FAIL: boot source $BootSourcePath missing\""), ScExit (SeInt 1)]
     in let fail-bundle = [ScEcho (SeLit "FAIL: bundle failed"), ScExit (SeInt 1)]
-    in [ScComment "Step 1: Bundle boot source with all dependencies", ScAssign "bundleScript" (SeRaw "Join-Path $PSScriptRoot 'bundle-app.ps1'"), ScAssign "compileScript" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "BootSourcePath" (SeRaw "if ([System.IO.Path]::IsPathRooted($BootSource)) { $BootSource } else { Join-Path $Repo $BootSource }"), ScIf (SeNot (SeFileExists (SeVar "BootSourcePath"))) fail-source [], ScAssign "BundledSource" (SeRaw "Join-Path $BuildOut 'boot-bundled.codex'"), ScAssign "BootCdx" (SeRaw "Join-Path $BuildOut 'boot.cdx'"), ScAssign "BootLog" (SeRaw "Join-Path $BuildOut 'img-compile.log'"), ScEcho (SeRaw "\"  Bundling $BootSourcePath...\""), ScRaw "& pwsh -NoProfile -File $bundleScript -Src $BootSourcePath -Out $BundledSource", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BundledSource")))) fail-bundle []]
+    in [ScBlank, ScComment "Step 1: Bundle boot source with all dependencies", ScAssign "bundleScript" (SeRaw "Join-Path $PSScriptRoot 'bundle-app.ps1'"), ScAssign "compileScript" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "BootSourcePath" (SeRaw "if ([System.IO.Path]::IsPathRooted($BootSource)) { $BootSource } else { Join-Path $Repo $BootSource }"), ScIf (SeNot (SeFileExists (SeVar "BootSourcePath"))) fail-source [], ScAssign "BundledSource" (SeRaw "Join-Path $BuildOut 'boot-bundled.codex'"), ScAssign "BootCdx" (SeRaw "Join-Path $BuildOut 'boot.cdx'"), ScAssign "BootLog" (SeRaw "Join-Path $BuildOut 'img-compile.log'"), ScEcho (SeRaw "\"  Bundling $BootSourcePath...\""), ScRaw "& pwsh -NoProfile -File $bundleScript -Src $BootSourcePath -Out $BundledSource", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BundledSource")))) fail-bundle []]
 
 Section: S03 -- Compile CDX
 
-  s03 : List ShellCmd =
+  s03-body : List ShellCmd =
     let fail-kernel = [ScEcho (SeRaw "\"FAIL: kernel $KernelArg missing\""), ScExit (SeInt 1)]
     in let fail-compile = [ScEcho (SeLit "FAIL: CDX compile failed"), ScRaw "Get-Content $BootLog -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host \"  $_\" }", ScExit (SeInt 1)]
-    in [ScComment "Step 2: Compile bundled source to CDX", ScAssign "KernelArg" (SeRaw "if ($Kernel) { $Kernel } else { $Seed }"), ScIf (SeNot (SeFileExists (SeVar "KernelArg"))) fail-kernel [], ScAssign "ModeFlag" (SeRaw "if ($Uefi) { '-Uefi' } else { '-Pet' }"), ScEcho (SeRaw "\"  Compiling bundled source -> CDX ($ModeFlag), kernel $KernelArg...\""), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundledSource -Out $BootCdx -Log $BootLog $ModeFlag -Kernel $KernelArg", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootCdx")))) fail-compile []]
+    in [ScBlank, ScComment "Step 2: Compile bundled source to CDX", ScAssign "KernelArg" (SeRaw "if ($Kernel) { $Kernel } else { $Seed }"), ScIf (SeNot (SeFileExists (SeVar "KernelArg"))) fail-kernel [], ScAssign "ModeFlag" (SeRaw "if ($Uefi) { '-Uefi' } else { '-Pet' }"), ScEcho (SeRaw "\"  Compiling bundled source -> CDX ($ModeFlag), kernel $KernelArg...\""), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundledSource -Out $BootCdx -Log $BootLog $ModeFlag -Kernel $KernelArg", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootCdx")))) fail-compile []]
 
 Section: S04 -- CDX to PE
 
-  s04 : List ShellCmd =
+  s04-body : List ShellCmd =
     let fail-pe = [ScEcho (SeLit "FAIL: PE conversion failed"), ScExit (SeInt 1)]
-    in [ScComment "Step 3: Convert CDX to PE", ScAssign "PeScript" (SeRaw "Join-Path $PSScriptRoot 'cdx-to-pe.ps1'"), ScAssign "BootPe" (SeRaw "Join-Path $BuildOut 'boot.efi'"), ScEcho (SeLit "  Converting CDX -> PE..."), ScRaw "& pwsh -NoProfile -File $PeScript -CdxInput $BootCdx -Out $BootPe -HeapPages 131072", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootPe")))) fail-pe []]
+    in [ScBlank, ScComment "Step 3: Convert CDX to PE", ScAssign "PeScript" (SeRaw "Join-Path $PSScriptRoot 'cdx-to-pe.ps1'"), ScAssign "BootPe" (SeRaw "Join-Path $BuildOut 'boot.efi'"), ScEcho (SeLit "  Converting CDX -> PE..."), ScRaw "& pwsh -NoProfile -File $PeScript -CdxInput $BootCdx -Out $BootPe -HeapPages 131072", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootPe")))) fail-pe []]
 
 Section: S05 -- Optional bundled agent
 
-  s05 : List ShellCmd =
+  s05-body : List ShellCmd =
     let fail-agent = [ScEcho (SeLit "FAIL: agent bundle failed"), ScExit (SeInt 1)]
     in let build-agent = [ScAssign "AgentDir" (SeRaw "Join-Path $BuildOut 'agent'"), ScEcho (SeLit "  Building the bundled agent (signs, so this boots VMs)..."), ScRaw "& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'make-agent-bundle.ps1') -OutDir $AgentDir", ScIf (SeNot (SeExitCodeEq 0)) fail-agent [], ScRaw "$AgentArgs = @('-Agent', (Join-Path $AgentDir 'AGENT.GGU'), '-AgentManifest', (Join-Path $AgentDir 'AGENT.MAN'))"]
-    in [ScComment "Step 4 (optional): the bundled agent", ScAssign "AgentArgs" (SeRaw "@()"), ScIf (SeVar "Agent") build-agent []]
+    in [ScBlank, ScComment "Step 4 (optional): the bundled agent", ScAssign "AgentArgs" (SeRaw "@()"), ScIf (SeVar "Agent") build-agent []]
 
 Section: S06 -- Build GPT Image
 
@@ -117,11 +118,11 @@ Section: S06 -- Build GPT Image
  partition: at the old 16384 it fitted with almost nothing to spare and
  -Agent would not have fitted at all.
 
-  s06 : List ShellCmd =
+  s06-body : List ShellCmd =
     let fail-concat = [ScEcho (SeLit "FAIL: could not produce the compiler source concat"), ScExit (SeInt 1)]
     in let make-concat = [ScEcho (SeRaw "\"  Concatenating compiler source (no $SourceFile present)...\""), ScRaw "& pwsh -NoProfile -File $ConcatScript -CodexDir (Join-Path $Repo 'codex\\compiler') -OutFile $SourceFile", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "SourceFile")))) fail-concat []]
     in let fail-img = [ScEcho (SeLit "FAIL: IMG build failed"), ScExit (SeInt 1)]
-    in [ScComment "Step 5: Build the GPT disk image.",
+    in [ScBlank, ScComment "Step 5: Build the GPT disk image.",
         ScComment "",
         ScComment "The seed and the source both go on it, unconditionally. They did not before,",
         ScComment "and the way they did not is the instructive part:",
@@ -142,16 +143,30 @@ Section: S06 -- Build GPT Image
 
 Section: S07 -- Done
 
-  s07 : List ShellCmd = [ScAssign "totalSize" (SeProperty (SeRaw "(Get-Item $ImgOut)") "Length"), ScEcho (SeRaw "\"Done: $ImgOut ($([math]::Round($totalSize / 1MB, 1)) MB)\"")]
+  s07-body : List ShellCmd = [ScBlank, ScAssign "totalSize" (SeProperty (SeRaw "(Get-Item $ImgOut)") "Length"), ScEcho (SeRaw "\"Done: $ImgOut ($([math]::Round($totalSize / 1MB, 1)) MB)\"")]
 
 Section: Assembly
 
-  boot-img-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+  img-out-art : PipeArtifact = PipeArtifact { pa-name = "ImgOut", pa-kind = PkFile, pa-expr = SeVar "ImgOut", pa-from = None }
 
-  boot-img-script : ShellScript = sh-script "build-boot-img" "Build seed/Codex.img, the bootable UEFI dev-console image" boot-img-params boot-img-body
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode and the repository the five tools below are found under", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the repository or a tool this build needs is not where it should be"], ps-body = s01-body }
+
+  s02 : PipeStage = PipeStage { ps-name = "bundle the boot source", ps-why = "the boot chapter with its whole cite closure, resolved into one unit", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "a cited chapter could not be resolved, or the bundle could not be written"], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "compile the bundle to cdx", ps-why = "the bundled source through the compiler named by -Kernel", ps-in = ["Kernel"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [PoExit 1 "the kernel named for this build is absent, or the bundle failed to compile"], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "cdx to pe", ps-why = "the PE container comes from a plug, not from the compiler", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the CDX could not be converted to a PE"], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "the optional bundled agent", ps-why = "an agent baked into the image when one is asked for", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "an agent was asked for and could not be bundled"], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "build the gpt image", ps-why = "the bootable GPT FAT16 image around the PE, which is what UEFI is handed", ps-in = [], ps-out = [img-out-art], ps-needs = [], ps-verdict = [PoExit 1 "the image could not be built, written, or verified after writing"], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "report the size", ps-why = "the finished image and its byte count, which is the number a flash is checked against", ps-in = ["ImgOut"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s07-body }
+
+  boot-img-pipe : Pipeline = Pipeline { pl-name = "build-boot-img", pl-doc = "Build seed/Codex.img, the bootable UEFI dev-console image", pl-params = boot-img-params, pl-stages = [s01, s02, s03, s04, s05, s06, s07] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell boot-img-script)
+    print-line-uni (emit-powershell (pipeline-to-shell boot-img-pipe))
   end
 
 Page 1

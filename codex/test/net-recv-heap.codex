@@ -69,6 +69,111 @@ Section: Fixtures
  why it moved. The counts belong to `ProtocolStack.md`, which carries them with
  the date they were taken; what belongs HERE is the shape a repair changes.
 
+ THE ATTRIBUTION. `ProtocolStack.md` says the records rebuilt per frame have
+ to be IDENTIFIED before part 2 of the repair can be written, and the whole
+ figure cannot say which of `transport-process-frame`'s three stages holds it.
+ Each stage is measured on its own here, with the same fixture and the same
+ pair of marks, and the residual against the whole is asserted so a term this
+ decomposition MISSES cannot hide behind a tidy sum.
+
+ Every spin accumulates one per iteration from a field of its own result, so a
+ construction that folded away could not answer n (the guard is what makes the
+ arm fail rather than report a smaller number).
+
+  spin-net : NetSession, List Integer, Integer, Integer -> Integer
+  spin-net (sess) (frame) (n) (acc) =
+    if n <= 0 then acc
+    else let r = net-process-frame sess frame
+    in spin-net (r.session) frame (n - 1) (acc + (if list-length (r.data) >= 0 then 1 else 0))
+
+  spin-rebuild : TcpTransportState, Integer, Integer -> Integer
+  spin-rebuild (ts) (n) (acc) =
+    if n <= 0 then acc
+    else let t2 = TcpTransportState { session = ts.session, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+    in spin-rebuild ts (n - 1) (acc + (if t2.recv-cap > 0 then 1 else 0))
+
+  spin-feed-from : TcpTransportState, List Integer, Integer, Integer -> Integer
+  spin-feed-from (ts) (data) (n) (acc) =
+    if n <= 0 then acc
+    else let t2 = transport-feed-from ts (ts.session) data
+    in spin-feed-from ts data (n - 1) (acc + (if t2.recv-cap > 0 then 1 else 0))
+
+  spin-feed : TcpTransportState, List Integer, Integer, Integer -> Integer
+  spin-feed (ts) (data) (n) (acc) =
+    if n <= 0 then acc
+    else let t2 = transport-feed-raw ts data
+    in spin-feed ts data (n - 1) (acc + (if t2.recv-cap > 0 then 1 else 0))
+
+  spin-try : TcpTransportState, Integer, Integer -> Integer
+  spin-try (ts) (n) (acc) =
+    if n <= 0 then acc
+    else let r = transport-try-recv ts
+    in spin-try ts (n - 1) (acc + (if r.has-message then 0 else 1))
+
+  net-stage-cost : List Integer, Integer -> Integer
+  net-stage-cost (frame) (n) =
+    let ts = fresh-transport 0
+    in let a = __heap-save
+    in let k = spin-net (ts.session) frame n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  rebuild-stage-cost : Integer -> Integer
+  rebuild-stage-cost (n) =
+    let ts = fresh-transport 0
+    in let a = __heap-save
+    in let k = spin-rebuild ts n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  feed-from-stage-cost : Integer -> Integer
+  feed-from-stage-cost (n) =
+    let ts = fresh-transport 0
+    in let a = __heap-save
+    in let k = spin-feed-from ts [] n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  feed-stage-cost : Integer -> Integer
+  feed-stage-cost (n) =
+    let ts = fresh-transport 0
+    in let a = __heap-save
+    in let k = spin-feed ts [] n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  try-stage-cost : Integer -> Integer
+  try-stage-cost (n) =
+    let ts = fresh-transport 0
+    in let a = __heap-save
+    in let k = spin-try ts n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ THE FRAME THE STACK RECOGNISES, which is a different and larger number.
+ Every figure above it is taken on `zeros`, whose ethertype is 0 against
+ `eth-type-ipv4` 2048 and `eth-type-arp` 2054, so `net-process-frame` takes
+ its `unknown ethertype` branch, returns one `NetResult` and never calls
+ `eth-payload`. That is the no-message poll this arm was built for and it is
+ NOT what a frame off a live wire costs.
+
+ `ipv4-frame` is the same 60 bytes with the ethertype set, so it differs from
+ the fixture above in exactly two bytes and every other term is held still.
+ Recognising it calls `eth-payload`, which builds a fresh list of the payload
+ one `list-push` at a time, and `net-process-ip` below it, so the difference
+ between the two readings is what recognition costs and nothing else.
+
+  ipv4-frame : Integer -> List Integer
+  ipv4-frame (dummy) = zeros 12 [] & [8, 0] & zeros 46 []
+
+  recognised-cost : Integer -> Integer
+  recognised-cost (n) =
+    let ts = fresh-transport 0
+    in let a = __heap-save
+    in let k = spin-net (ts.session) (ipv4-frame 0) n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
 Section: Entry
 
   opening : [Console] Nothing
@@ -82,5 +187,9 @@ Section: Entry
       print-line-uni ("the retention ignores frame length, so the survivor is not a copy of the frame: " & show (r-small == r-big))
       print-line-uni ("building the frame costs more than the records retain: " & show (frame-build-cost 1514 > r-big))
       print-line-uni ("and the frame cost DOES grow with frame length: " & show (frame-build-cost 1514 > frame-build-cost 60))
+      print-line-uni ("the three stages of the path account for the whole, with no residual: " & show (net-stage-cost small 100 + feed-from-stage-cost 100 + try-stage-cost 100 == r-small))
+      print-line-uni ("ONE transport record per frame: feeding builds exactly one: " & show (feed-from-stage-cost 100 == rebuild-stage-cost 100))
+      print-line-uni ("both feeds build one record, so the saving was the CALLER's construction: " & show (feed-stage-cost 100 == feed-from-stage-cost 100))
+      print-line-uni ("a frame the stack RECOGNISES costs more than one it drops: " & show (recognised-cost 100 > net-stage-cost small 100))
     end
   end

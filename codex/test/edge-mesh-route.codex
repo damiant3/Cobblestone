@@ -1,0 +1,90 @@
+Chapter: EdgeMeshRouteTest
+
+  cites Foreword chapter Console
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Net chapter EdgeRouter
+  cites Mesh chapter EdgeMeshLive
+  cites Mesh chapter EdgeMeshRoute
+
+ EdgeMeshGameServers phase 2, connection 2. The arms that matter are the two
+ that pull opposite ways: a returning player must go back to the node they
+ were on EVEN WHEN a less loaded one has appeared since, and must NOT go back
+ to it once that node stops being healthy.
+
+ EVERY SCENARIO BUILDS ITS OWN GROUP AND ITS OWN SESSION TABLE, and only the
+ newest name of each is ever read. `GroupState` and `SessionTable` operations
+ are `__record-set` on the argument, which stores in place and returns the
+ same record, so an earlier name is not an earlier state. The first version
+ of this test shared one table across all four scenarios and read two
+ generations of one group; it reported a route to a node that was not in the
+ group it was asked about, and a refusal that had remembered something. Both
+ answers were the test's, not the chapter's.
+
+ The cookie names differ per scenario for the same reason a fixture is a
+ record literal elsewhere here: two constructor calls with identical
+ arguments can share one record, and then the scenarios are one scenario.
+
+Section: Fixtures
+
+  loaded : Text, Text, Integer, Integer, Integer -> ServiceLocation
+  loaded (svc) (member) (port) (load) (health) =
+    ServiceLocation {
+      sl-service = svc,
+      sl-version = "1",
+      sl-member-id = member,
+      sl-address = "10.0.0." & show port,
+      sl-port = port,
+      sl-role = SrLoadBalanced,
+      sl-health = health,
+      sl-load = load,
+      sl-registered = 0,
+      sl-last-check = 0
+    }
+
+  sticky-on : Text, Text -> SessionTable
+  sticky-on (cookie) (backend) =
+    stbl-set (session-table-new (AffinityCookie cookie) 64) "player-1" backend 100
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let rl = default-regions
+    in let east = list-at (rl.rl-regions) 0
+    in let svc = mesh-region-service east
+    in act
+      act
+        let g1 = gs-register-service (group-new "r-a" "a") (loaded svc "node-a" 7000 40 10000)
+        in let first = mesh-route g1 (session-table-new (AffinityCookie "c0") 64) east "player-1"
+        in let tbl = mesh-remember (session-table-new (AffinityCookie "c1") 64) "player-1" first 100
+        in let g2 = gs-register-service g1 (loaded svc "node-b" 7001 5 10000)
+        in act
+          print-line-uni ("first visit: " & mesh-route-label first)
+          print-line-uni ("a lighter node appears, the player returns: " & mesh-route-label (mesh-route g2 tbl east "player-1"))
+          print-line-uni ("a player with no session takes the lighter one: " & mesh-route-label (mesh-route g2 tbl east "player-2"))
+        end
+      end
+
+      act
+        let ga = gs-register-service (group-new "r-b" "b") (loaded svc "node-a" 7000 40 2000)
+        in let gb = gs-register-service ga (loaded svc "node-b" 7001 5 10000)
+        in print-line-uni ("the sticky node fails, a healthy one is left: " & mesh-route-label (mesh-route gb (sticky-on "c2" "node-a") east "player-1"))
+      end
+
+      act
+        let g = gs-register-service (group-new "r-c" "c") (loaded svc "node-a" 7000 40 2000)
+        in print-line-uni ("the sticky node fails and nothing is left: " & mesh-route-label (mesh-route g (sticky-on "c3" "node-a") east "player-1"))
+      end
+
+      act
+        let g = group-new "r-d" "d"
+        in let tbl = session-table-new (AffinityCookie "c4") 64
+        in let refusal = mesh-route g tbl east "player-1"
+        in act
+          print-line-uni ("an empty region: " & mesh-route-label refusal)
+          print-line-uni ("nothing is remembered from a refusal: " & show ((mesh-remember tbl "player-1" refusal 100).stbl-count))
+        end
+      end
+    end
+  end

@@ -1,0 +1,124 @@
+Chapter: EdgeMeshDiscover
+
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Mesh chapter EdgeMeshLive
+
+ `EdgeMeshGameServers.md` phase 4, stage 2: region auto-discovery. `EdgeMesh`
+ declares six regions in `default-regions` and a node standing anywhere else
+ cannot be reached, because a region absent from the list has no service name
+ and no placement.
+
+ A node reports a location under one service, carrying the claim in the address
+ field as `region|lat|lon`, and the reporting node keeps a claim of the node's
+ own because `gs-register-service` de-duplicates on the service and member
+ together.
+
+Section: A Reported Location
+
+  disco-service : Text = mesh-service-prefix & "region"
+
+  DiscoClaim = record {
+    dc-node : Text,
+    dc-region : Text,
+    dc-lat : Integer,
+    dc-lon : Integer
+  }
+
+  disco-part : List Text, Integer -> Text
+  disco-part (parts) (i) = if i >= list-length parts then "" else list-at parts i
+
+  disco-parse : ServiceLocation -> DiscoClaim
+  disco-parse (loc) =
+    let parts = text-split (loc.sl-address) "|"
+    in DiscoClaim {
+      dc-node = loc.sl-member-id,
+      dc-region = disco-part parts 0,
+      dc-lat = text-to-integer (disco-part parts 1),
+      dc-lon = text-to-integer (disco-part parts 2)
+    }
+
+  disco-report : GroupState, Text, Text, Integer, Integer -> GroupState
+  disco-report (g) (node) (region) (lat) (lon) =
+    gs-register-service g (svc-location-new disco-service mesh-server-version node (region & "|" & show lat & "|" & show lon) 0 SrLoadBalanced)
+
+Section: Which Claim Decides A Region
+
+ THE LOWEST NODE NAME DECIDES, and never the newest claim or the first in the
+ list. Registration order is not a fact about the mesh: a node restarting moves
+ the node's own claim to the end of the group's list, and a region whose
+ co-ordinates follow list order would move with the restart, which would in turn
+ re-order every failover candidate computed from a distance.
+
+  disco-better : Text, Text -> Boolean
+  disco-better (candidate) (holder) = holder == "" | text-compare candidate holder < 0
+
+  disco-winner : List ServiceLocation, Text, Integer, Text, Integer, Integer -> DiscoClaim
+  disco-winner (locs) (region) (i) (best-node) (best-lat) (best-lon) =
+    if i >= list-length locs then DiscoClaim { dc-node = best-node, dc-region = region, dc-lat = best-lat, dc-lon = best-lon }
+    else let loc = list-at locs i
+    in let said = disco-parse loc
+    in let take = svc-is-healthy loc & (said.dc-region) == region & disco-better (said.dc-node) best-node
+    in if take then disco-winner locs region (i + 1) (said.dc-node) (said.dc-lat) (said.dc-lon)
+    else disco-winner locs region (i + 1) best-node best-lat best-lon
+
+Section: Adding Only What Is Not Already Declared
+
+ A DECLARED REGION IS NEVER MOVED BY A CLAIM. A node claiming to be `us-east`
+ at another set of co-ordinates would otherwise re-aim every distance computed
+ against `us-east`, and a placement follows the distance.
+
+  disco-declared : List EdgeRegion, Text, Integer -> Boolean
+  disco-declared (rs) (name) (i) =
+    if i >= list-length rs then False
+    else if (list-at rs i).er-name == name then True
+    else disco-declared rs name (i + 1)
+
+  disco-seen : List Text, Text, Integer -> Boolean
+  disco-seen (names) (name) (i) =
+    if i >= list-length names then False
+    else if list-at names i == name then True
+    else disco-seen names name (i + 1)
+
+  disco-names : List ServiceLocation, Integer, List Text -> List Text
+  disco-names (locs) (i) (acc) =
+    if i >= list-length locs then acc
+    else let loc = list-at locs i
+    in let said = disco-parse loc
+    in let keep = svc-is-healthy loc & (said.dc-region) /= "" & disco-seen acc (said.dc-region) 0 == False
+    in disco-names locs (i + 1) (if keep then acc & [said.dc-region] else acc)
+
+ NOT `region-add`. That builtin-facing helper appends with `list-push`, which
+ can extend the list in place, so discovering a region through `region-add`
+ writes the discovered region into whatever `RegionList` the caller still holds
+ -- `default-regions` among them, which every other caller reads. The arm caught
+ exactly that: a scenario making no claims at all reported seven regions.
+
+  disco-add : RegionList, List ServiceLocation, List Text, Integer -> RegionList
+  disco-add (rl) (locs) (names) (i) =
+    if i >= list-length names then rl
+    else let name = list-at names i
+    in if disco-declared (rl.rl-regions) name 0 then disco-add rl locs names (i + 1)
+    else let w = disco-winner locs name 0 "" 0 0
+    in let nr = EdgeRegion { er-id = list-length (rl.rl-regions), er-name = name, er-lat = w.dc-lat, er-lon = w.dc-lon, er-capacity = 0, er-active-servers = 0, er-healthy = True }
+    in let grown = RegionList { rl-regions = (rl.rl-regions) & [nr], rl-count = (rl.rl-count) + 1 }
+    in disco-add grown locs names (i + 1)
+
+  disco-regions : GroupState, RegionList -> RegionList
+  disco-regions (g) (rl) =
+    let locs = gs-find-service g disco-service
+    in disco-add rl locs (disco-names locs 0 []) 0
+
+Section: Reporting
+
+  disco-decider : GroupState, Text -> Text
+  disco-decider (g) (region) =
+    let w = disco-winner (gs-find-service g disco-service) region 0 "" 0 0
+    in if w.dc-node == "" then "nobody" else w.dc-node
+
+  disco-region-label : RegionList, Text, Integer -> Text
+  disco-region-label (rl) (name) (i) =
+    if i >= list-length (rl.rl-regions) then name & " absent"
+    else let r = list-at (rl.rl-regions) i
+    in if r.er-name == name then name & " at " & show (r.er-lat) & "," & show (r.er-lon)
+    else disco-region-label rl name (i + 1)

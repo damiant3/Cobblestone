@@ -4,6 +4,7 @@ Chapter: CvmmBuildScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -14,40 +15,50 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path"), ScAssign "AppDir" (SeRaw "(Resolve-Path $PSScriptRoot).Path"), ScAssign "OutDir" (SeRaw "Join-Path $AppDir 'build-output'"), ScAssign "OutFile" (SeRaw "Join-Path $OutDir 'cvmm-server.cdx'"), ScAssign "BundleSrc" (SeRaw "Join-Path $OutDir 'cvmm-source.codex'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'build.log'"), ScBlank, ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path"), ScAssign "AppDir" (SeRaw "(Resolve-Path $PSScriptRoot).Path"), ScAssign "OutDir" (SeRaw "Join-Path $AppDir 'build-output'"), ScAssign "OutFile" (SeRaw "Join-Path $OutDir 'cvmm-server.cdx'"), ScAssign "BundleSrc" (SeRaw "Join-Path $OutDir 'cvmm-source.codex'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'build.log'"), ScBlank, ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
 
 Section: S02 -- App Chapter List
 
-  cvmm-chapter-names : List ShellCmd = [ScComment "App chapters in dependency order (leaf deps first, entry point last)", ScAssign "AppChapters" (SeRaw "@('CvmmTypes','ResourceModel','Command','CvmmState','CvmmTheme','CvmmDashboard','FileExplorer','DriveManager','UsbManager','ProcessManager','ServiceManager','PortMonitor','NetworkManager','DisplayManager','ServerManager','FleetManager','DeployManager','CvmmDisplay','LogViewer','Terminal','ProductivityDb','Monitor','Calendar','Notes','MeshBridge','DataBinding','Keybindings','Serialize','CvmmSettingsViews','CvmmShell','CvmmRoutes','CvmmServer')")]
+  s02-body : List ShellCmd = [ScBlank,ScComment "App chapters in dependency order (leaf deps first, entry point last)", ScAssign "AppChapters" (SeRaw "@('CvmmTypes','ResourceModel','Command','CvmmState','CvmmTheme','CvmmDashboard','FileExplorer','DriveManager','UsbManager','ProcessManager','ServiceManager','PortMonitor','NetworkManager','DisplayManager','ServerManager','FleetManager','DeployManager','CvmmDisplay','LogViewer','Terminal','ProductivityDb','Monitor','Calendar','Notes','MeshBridge','DataBinding','Keybindings','Serialize','CvmmSettingsViews','CvmmShell','CvmmRoutes','CvmmServer')")]
 
 Section: S03 -- Build App Ordered List
 
   s03-loop-body : List ShellCmd = [ScAssign "path" (SeRaw "Join-Path $AppDir \"$ch.codex\""), ScIf (SeNot (SeRaw "(Test-Path -PathType Leaf $path)")) [ScWriteError (SeRaw "\"MISSING: $path\""), ScExit (SeInt 3)] [], ScRaw "$appOrdered.Add(@{ Quire = 'Cvmm'; Name = $ch; Path = $path; Lines = [System.IO.File]::ReadAllLines($path) })"]
 
-  s03 : List ShellCmd = [ScComment "App chapters render through Format-CiteChapters so their headers carry", ScComment "the Cvmm-- prefix; compile.ps1's embedded-chapter detection only matches", ScComment "that form, and plain headers make it re-pull every Cvmm chapter into its", ScComment "own prelude (duplicate-definition CDX3001s).", ScRunDot (SeRaw "(Join-Path $Repo 'build\\quire-map.ps1')"), ScDotNetCallAssign "appOrdered" "System.Collections.Generic.List[hashtable]" "new" [], ScForEach "ch" (SeVar "AppChapters") s03-loop-body, ScAssign "lines" (SeRaw "Format-CiteChapters -Ordered $appOrdered")]
+  s03-body : List ShellCmd = [ScBlank,ScComment "App chapters render through Format-CiteChapters so their headers carry", ScComment "the Cvmm-- prefix; compile.ps1's embedded-chapter detection only matches", ScComment "that form, and plain headers make it re-pull every Cvmm chapter into its", ScComment "own prelude (duplicate-definition CDX3001s).", ScRunDot (SeRaw "(Join-Path $Repo 'build\\quire-map.ps1')"), ScDotNetCallAssign "appOrdered" "System.Collections.Generic.List[hashtable]" "new" [], ScForEach "ch" (SeVar "AppChapters") s03-loop-body, ScAssign "lines" (SeRaw "Format-CiteChapters -Ordered $appOrdered")]
 
 Section: S04 -- Resolve Foreword and OS Cites
 
-  s04 : List ShellCmd = [ScComment "-- Resolve foreword/OS cites -------------------------------------------", ScComment "Cvmm intra-quire cites are already bundled above -- skip them", ScTry [ScAssign "ordered" (SeRaw "Resolve-CiteOrder -RootLines $lines -Repo $Repo -ExcludeQuires @('Cvmm')")] [ScWriteError (SeRaw "\"MISSING: $($_.Exception.Message)\""), ScExit (SeInt 3)] [], ScAssign "preLines" (SeRaw "Format-CiteChapters -Ordered $ordered")]
+  s04-body : List ShellCmd = [ScBlank,ScComment "-- Resolve foreword/OS cites -------------------------------------------", ScComment "Cvmm intra-quire cites are already bundled above -- skip them", ScTry [ScAssign "ordered" (SeRaw "Resolve-CiteOrder -RootLines $lines -Repo $Repo -ExcludeQuires @('Cvmm')")] [ScWriteError (SeRaw "\"MISSING: $($_.Exception.Message)\""), ScExit (SeInt 3)] [], ScAssign "preLines" (SeRaw "Format-CiteChapters -Ordered $ordered")]
 
 Section: S05 -- Bundle Source
 
-  s05 : List ShellCmd = [ScAssign "body" (SeRaw "(@($preLines) + @($lines) -join \"`n\") + \"`n\""), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "BundleSrc", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScEcho (SeRaw "\"[cvmm] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes\"")]
+  s05-body : List ShellCmd = [ScBlank,ScAssign "body" (SeRaw "(@($preLines) + @($lines) -join \"`n\") + \"`n\""), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "BundleSrc", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScEcho (SeRaw "\"[cvmm] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes\"")]
 
 Section: S06 -- Compile via compile.ps1
 
   s06-fail : List ShellCmd = [ScWriteError (SeRaw "\"FAIL: compile errors; see $LogFile\""), ScExit (SeInt 5)]
 
-  s06 : List ShellCmd = [ScComment "-- Compile via compile.ps1 ------------------------------------------", ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build\\compile.ps1'"), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile", ScIf (SeRaw "$LASTEXITCODE -ne 0") s06-fail [], ScEcho (SeRaw "\"[cvmm] OK: $OutFile ($((Get-Item $OutFile).Length) bytes)\"")]
+  s06-body : List ShellCmd = [ScBlank,ScComment "-- Compile via compile.ps1 ------------------------------------------", ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build\\compile.ps1'"), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile", ScIf (SeRaw "$LASTEXITCODE -ne 0") s06-fail [], ScEcho (SeRaw "\"[cvmm] OK: $OutFile ($((Get-Item $OutFile).Length) bytes)\"")]
 
 Section: Assembly
 
-  cvmm-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence cvmm-chapter-names, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode and the repository the chapters are gathered from", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
-  cvmm-script : ShellScript = sh-script "cvmm-build" "Build apps/cvmm/build-output/cvmm-server.cdx -- bundles all CVMM chapters and dependencies, compiles to CDX" cvmm-params cvmm-body
+  s02 : PipeStage = PipeStage { ps-name = "the chapter names", ps-why = "the app chapters IN DEPENDENCY ORDER, leaf dependencies first and the entry point last, because the bundle is concatenated in this order and nothing re-sorts it", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "render the app chapters", ps-why = "the app chapters go through Format-CiteChapters, so this generator and every other consumer of quire-map agree on one rendering", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "resolve the foreword and os cites", ps-why = "the transitive closure the app pulls in, resolved rather than listed, so a new cite cannot be silently left out of the unit", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "assemble the bundle", ps-why = "the resolved chapters concatenated into the one unit the compiler is handed", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "compile", ps-why = "the bundle through compile.ps1 to cvmm-server.cdx", ps-in = [], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s06-body }
+
+  cvmm-pipe : Pipeline = Pipeline { pl-name = "cvmm-build", pl-doc = "Build apps/cvmm/build-output/cvmm-server.cdx -- bundles all CVMM chapters and dependencies, compiles to CDX", pl-params = cvmm-params, pl-stages = [s01, s02, s03, s04, s05, s06] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cvmm-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cvmm-pipe))
   end
 
 Page 1

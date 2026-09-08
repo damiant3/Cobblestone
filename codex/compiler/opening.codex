@@ -1963,14 +1963,14 @@ Section: Entry Point
    d <- disk-diag path-result
    m <- disk-diag-mem vol
    v <- disk-diag-vol vol
-   when disk-source vol disk-default-path
+   when disk-source vol (disk-path-of path-result)
      is Just (source) ->
        let o = bp-pass 1 bp-orange bp-magenta
        in let foreword-prefix = disk-resolve-forewords vol source mode
        in let full = foreword-prefix & source
        in let flags = parse-mode-flags mode (text-length full)
        in emit-cdx full mode flags True
-     is None -> disk-no-source ("DISK: file not found: " & disk-default-path)
+     is None -> disk-no-source ("DISK: file not found: " & disk-path-of path-result)
   end
 
  The volume rung reads the BPB rather than the mount's own answer.
@@ -2106,11 +2106,20 @@ Section: Entry Point
   disk-diag-path : Maybe Text -> [Console] Nothing
   disk-diag-path (pr) = print-line-uni "DIAG path SKIPPED (see chapter note)"
 
- The name is fixed by the image builder: build-img -Source always writes
- SOURCE.SRC, and the stub's second stdin line has never said anything else.
+ SOURCE.SRC is the FALLBACK, not the only answer. The stub's second stdin line
+ carries the path, and DISK mode read that line and then compiled the constant
+ anyway, so an image holding two sources could only ever compile whichever one
+ the builder had named SOURCE.SRC. Honouring the line is what lets one image
+ hold a directory of them.
 
   disk-default-path : Text
   disk-default-path = "SOURCE.SRC"
+
+  disk-path-of : Maybe Text -> Text
+  disk-path-of (pr) =
+   when pr
+    is Just (p) -> if text-length p == 0 then disk-default-path else p
+    is None -> disk-default-path
 
  The device behind block-read-sector depends on how the block helper bound
  it. Bound through LoadedImage->DeviceHandle the firmware hands a PARTITION,

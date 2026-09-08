@@ -11,8 +11,13 @@ Chapter: ImgPlug
    Bytes 1-4: total-sectors (LE)
    Bytes 5-8: PE size (LE)
    Bytes 9-12: CDX size (LE)
-   Bytes 13-16: source size (LE, 0 if none)
-   Then: PE bytes, CDX bytes, source bytes (if any)
+   Bytes 13-16: source COUNT (LE, 0 if none)
+   Bytes 17 on: the source table, 15 bytes per source, an 8.3 name padded to
+     11 bytes then that source's size (LE)
+   Then: PE bytes, CDX bytes, then every source's bytes in table order
+
+ The count replaced a single size when the runner needed an image holding a
+ DIRECTORY of tests rather than one file under a name the writer spelled out.
 
 Section: Network Config
 
@@ -80,8 +85,8 @@ Section: Body
      in let total-sectors = img-read-i32 payload 1
      in let pe-size = img-read-i32 payload 5
      in let cdx-size = img-read-i32 payload 9
-     in let src-size = img-read-i32 payload 13
-     in let hdr-len = 17
+     in let src-count = img-read-i32 payload 13
+     in let hdr-len = 17 + src-count * 15
      in let payload-buf = __heap-save
      in let pa = __heap-advance (list-length payload)
      in let pw = __buf-write-bytes payload-buf 0 payload
@@ -105,8 +110,7 @@ Section: Body
       end
      else
       let lay = fat16w-compute-layout total-sectors
-      in let source = if src-size > 0 then __buf-read-bytes payload-buf (hdr-len + pe-size + cdx-size) src-size else []
-      in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes source
+      in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes src-count payload-buf 17 (hdr-len + pe-size + cdx-size)
       in let restored = __heap-restore hp1
       in act
        sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0

@@ -49,7 +49,7 @@ Measured 2026-08-03, except where an item gives its own date.
 1. **The compiler is a hard fixed point of itself on bare metal.** Text
    round-trip (stage1 === stage2) and CDX fixed point (stage1.cdx ===
    stage2.cdx), byte-identical, with no OS and no libc beneath it. The
-   self-hosted compiler is **65 chapters, 58,921 lines** of Codex
+   self-hosted compiler is **65 chapters, 60,272 lines** of Codex
    and compiles itself in 22 seconds.
 
 2. **Two independent implementations check the compiler, and they agree**
@@ -224,7 +224,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**71 applications, 1,158 modules**, all written in Codex and compiled by
+**71 applications, 1,157 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -237,14 +237,14 @@ for 143 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,217,563 bytes, 2026-09-08, COMPILER-44: the instantiated equality helper minted and attached to the wire) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,322,781 bytes, 2026-09-08, COMPILER-73: one dynamic over-application block per closure trampoline) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `5A46BBCBA3C510DF` |
-| SHA-256 | `D9CF240465C3D0BC40BA854834D0A890C13757230C191E99DD54163C851DB08B` |
-| MD5 | `04F57DD25FE588488E94C183EFE33B42` |
+| Content hash prefix | `59007236FE5390AE` |
+| SHA-256 | `B63014D717B1A2F95376768B25B514D23A5E74345E8DAF9250660F0B4326F7ED` |
+| MD5 | `1FE79C297D3DECF1AB2B6761F0E4899B` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -255,7 +255,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `5D607C0E0B4B7B2A94C089F400954AC268BFE9365224E02DB5BF9F9B14C4C1D5` |
+| SHA-256 | `DD959678725F183315E4EDE06E74C8C4B91C186F5DB344A8E9ACE46D51AB04C3` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -279,31 +279,11 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `FC4EE2EF3B3124EACC323870BD20993B2354D2F7DADFBEB0997B5B0DFDC4A823` |
+| SHA-256 | `6F077EEBB065B4C498F3D80A9F3007398673C5CB8031F751ED0216F1BCF6852E` |
 
 The image is reproducible from its source and this seed -- `DIAG.RCP` inside
 it names both, and the hash carries no timestamp -- so a rebuild that
 answers a different hash means something moved.
-
-**`build/boot/deskboot.img`** (16,777,216 bytes, built from source with
-`build/boot/build-option-a.ps1 -Src apps/works/DeskBoot.codex -Kernel
-seed/Codex.cdx -Ebs`) -- the bootable USB desktop, proven on real
-hardware 2026-08-05: keyboard and mouse through the tree's own xHCI/USB
-HID stack, panes opened by click, shutdown by button, and F12 writing
-the live screen to the stick as a BMP through the tree's own FAT16
-writer. The bring-up method that got it there is written down for other
-people's hardware in
-[docs/Designs/Done/Tools/HardwareBringUpPlaybook.md](docs/Designs/Done/Tools/HardwareBringUpPlaybook.md).
-
-| Algorithm | Digest |
-|---|---|
-| SHA-256 | `D9CF240465C3D0BC40BA854834D0A890C13757230C191E99DD54163C851DB08B` |
-
-That digest is this build of the image, not a target to reproduce: the
-image embeds a concatenation of the tree's own source, so a rebuild from a
-different working tree answers a different hash by design. The seed inside
-it is the number that has to match, and it is whatever `seed/Codex.cdx`
-holds in the tree you build from.
 
 Flash to USB from an elevated PowerShell. The flasher takes the disk
 offline, holds every volume locked while it writes, and reads the image
@@ -603,13 +583,13 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (65 files, 58,921 lines)
+  compiler/      Self-hosted compiler (65 files, 60,272 lines)
   foreword/      438 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (162 modules)
   plugs/         56 plugs, 195 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,788 files)
-apps/            71 applications, 1,158 modules
+  test/          Compiler samples + OS integration tests (1,795 files)
+apps/            71 applications, 1,157 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -634,7 +614,7 @@ together.
 |---|---:|---:|---:|
 | `apps/` | 1,135 | 191,971 | 6,617 |
 | `codex/foreword/` | 438 | 60,399 | 6,546 |
-| `codex/test/` | 1,788 | 56,481 | 5,955 |
+| `codex/test/` | 1,795 | 56,481 | 5,955 |
 | `codex/plugs/` | 172 | 55,275 | 3,414 |
 | `codex/compiler/` | 65 | 42,492 | 5,181 |
 | `codex/os/` | 162 | 24,415 | 1,982 |

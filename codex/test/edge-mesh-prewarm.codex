@@ -1,0 +1,104 @@
+Chapter: EdgeMeshPrewarmTest
+
+  cites Foreword chapter Console
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Mesh chapter EdgeMeshLive
+  cites Mesh chapter EdgeMeshPlace
+  cites Mesh chapter EdgeMeshFederate
+  cites Mesh chapter EdgeMeshPrewarm
+
+ EdgeMeshGameServers phase 4, stage 3. The arm that carries the stage is the
+ second tick: the same queue, after the plan's own servers are warm, spawns
+ NOTHING. A plan reading the queue alone answers the whole demand on every tick
+ and grows a fleet without bound, and every individual tick reads as correct.
+
+ The capacity arm uses a region of the arm's own with room for two, built as a
+ record rather than through `region-add`, which appends in place (L-ALIAS).
+
+ EVERY SCENARIO BUILDS ITS OWN GROUP, because `GroupState` operations store in
+ place and return the same record.
+
+Section: Fixtures
+
+  player : Integer -> QueuedPlayer
+  player (id) =
+    QueuedPlayer {
+      qp-id = id,
+      qp-name = "p" & show id,
+      qp-rating = 1500,
+      qp-region-pref = 0,
+      qp-latencies = [],
+      qp-queue-time = 0,
+      qp-game-mode = ModeRanked
+    }
+
+  six-waiting : Integer -> FedQueue
+  six-waiting (dummy) =
+    fed-enqueue (fed-enqueue (fed-enqueue (fed-enqueue (fed-enqueue (fed-enqueue fed-new "codexmagic" (player 1)) "codexmagic" (player 2)) "codexmagic" (player 3)) "codexmagic" (player 4)) "codexmagic" (player 5)) "codexmagic" (player 6)
+
+  tiny-regions : Integer -> RegionList
+  tiny-regions (dummy) =
+    RegionList {
+      rl-regions = [EdgeRegion { er-id = 0, er-name = "tiny", er-lat = 0, er-lon = 0, er-capacity = 2, er-active-servers = 0, er-healthy = True }],
+      rl-count = 1
+    }
+
+  warm-node : Text, Text, Integer -> ServiceLocation
+  warm-node (svc) (member) (health) =
+    ServiceLocation {
+      sl-service = svc,
+      sl-version = "1",
+      sl-member-id = member,
+      sl-address = "10.0.3.1",
+      sl-port = 7000,
+      sl-role = SrLoadBalanced,
+      sl-health = health,
+      sl-load = 0,
+      sl-registered = 0,
+      sl-last-check = 0
+    }
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let rl = default-regions
+    in let east = list-at (rl.rl-regions) 0
+    in let svc = place-game-service "codexmagic" east
+    in act
+      act
+        let g = group-new "w-a" "a"
+        in print-line-uni ("first tick, nothing warm: " & prewarm-label (prewarm-plan g rl 0 (six-waiting 0) "codexmagic"))
+      end
+
+      act
+        let g1 = gs-register-service (group-new "w-b" "b") (warm-node svc "warm-1" 10000)
+        in let g2 = gs-register-service g1 (warm-node svc "warm-2" 10000)
+        in let g3 = gs-register-service g2 (warm-node svc "warm-3" 10000)
+        in print-line-uni ("second tick, the same queue: " & prewarm-label (prewarm-plan g3 rl 0 (six-waiting 0) "codexmagic"))
+      end
+
+      act
+        let g1 = gs-register-service (group-new "w-c" "c") (warm-node svc "sick-1" 2000)
+        in let g2 = gs-register-service g1 (warm-node svc "sick-2" 2000)
+        in print-line-uni ("unhealthy servers are not warm: " & prewarm-label (prewarm-plan g2 rl 0 (six-waiting 0) "codexmagic"))
+      end
+
+      act
+        let tiny = tiny-regions 0
+        in let g = group-new "w-d" "d"
+        in print-line-uni ("a region with room for two: " & prewarm-label (prewarm-plan g tiny 0 (six-waiting 0) "codexmagic"))
+      end
+
+      act
+        let g = group-new "w-e" "e"
+        in print-line-uni ("an empty queue: " & prewarm-label (prewarm-plan g rl 0 fed-new "codexmagic"))
+      end
+
+      act
+        let g = group-new "w-f" "f"
+        in print-line-uni ("no such region: " & prewarm-label (prewarm-plan g rl 99 (six-waiting 0) "codexmagic"))
+      end
+    end
+  end

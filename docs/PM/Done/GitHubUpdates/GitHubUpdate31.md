@@ -211,7 +211,7 @@ emit-phase bug behind them was fixed:
   model, so nothing silently miscompiles.
 
 Also landed: blu's capability stages (derived manifest + OS wiring) and a
-claims-calibration pass (CLs 7009, 7012); reek's card-format reorg
+claims-calibration pass (CLs 7009, 7012); reek's Magic card-format reorg
 (CL 7020); and a round of file moves (CL 7026).
 
 ## What's next

@@ -36,6 +36,27 @@ the single source for those.
   red gate means it does not.
 - Sync the main client fully before anything else.
 
+## Step 0a -- Start the box sampler, and publish what it recorded
+
+```powershell
+Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-File','build/box-sample.ps1','-Out','build-output/box-release.csv','-Seconds','7200'
+```
+
+Every proof below runs beside it, so the release leaves a memory profile in
+the tree instead of a number remembered from a terminal: per 5 s, free GiB,
+guest count and working set, Renode, pwsh, cpu. Damian's direction,
+2026-09-08 ("do a diagnostic release this time, and measure the actual
+memory situation"). The GitHubUpdate for the release carries four numbers
+from it: the free-memory floor, the phase that touched it, the peak guest
+count, and the working set per guest at that peak; those tune the
+per-guest bar in `CoordinationProtocol.md`, "The token does not cover RAM".
+The sampler is bounded by `-Seconds` and dies on its own; kill it by PID at
+the end all the same, and never leave one running past the push.
+
+Lanes keep working in their streams during the release (Damian's rule): a
+serial single guest runs beside the battery and the sweep; nothing launches
+beside the gate's compiler stages, which root holds the box for.
+
 ## Step 0b -- The FULL gate, and it is the only place it runs
 
 ```powershell

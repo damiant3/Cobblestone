@@ -5,9 +5,20 @@ Chapter: CheckEffectVocabScript
   cites Foreword chapter List
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE TWENTIETH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
+ script is byte-identical to the one that shipped before the migration.
+
+ ONE STAGE HERE EXISTS TO REFUSE A VACUOUS PASS, and the model can now say so
+ where the shipped script could only imply it. `nothing parsed is a broken
+ instrument` compares no lists: it asserts that both sides parsed at all,
+ because a regex that has stopped matching produces two empty sets, and two
+ empty sets AGREE. That stage's verdict is the one worth reading before the
+ drift verdict (L-VACUOUS).
 
 Section: Parameters
 
@@ -21,11 +32,41 @@ Section: Concatenation
   cev-cat : List ShellExpr -> ShellExpr
   cev-cat (xs) = cev-cat-from xs 0
 
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
+
+  fw-dir-art : PipeArtifact = PipeArtifact { pa-name = "fwDir", pa-kind = PkDir, pa-expr = SeVar "fwDir", pa-from = Just (SePathJoin (SeVar "Repo") (SeLit "codex\\foreword")) }
+
+  effect-set-art : PipeArtifact = PipeArtifact { pa-name = "effectSet", pa-kind = PkValue, pa-expr = SeVar "effectSet", pa-from = Just SeHashLiteral }
+
+  effects-art : PipeArtifact = PipeArtifact { pa-name = "effects", pa-kind = PkValue, pa-expr = SeVar "effects", pa-from = None }
+
+  cap-file-art : PipeArtifact = PipeArtifact { pa-name = "capFile", pa-kind = PkFile, pa-expr = SeVar "capFile", pa-from = Just (SePathJoin (SeVar "Repo") (SeLit "codex\\foreword\\core\\Capability.codex")) }
+
+  vocab-set-art : PipeArtifact = PipeArtifact { pa-name = "vocabSet", pa-kind = PkValue, pa-expr = SeVar "vocabSet", pa-from = Just SeHashLiteral }
+
+  vocab-base-art : PipeArtifact = PipeArtifact { pa-name = "vocabBase", pa-kind = PkValue, pa-expr = SeVar "vocabBase", pa-from = None }
+
+  effects-without-cap-art : PipeArtifact = PipeArtifact { pa-name = "effectsWithoutCap", pa-kind = PkValue, pa-expr = SeVar "effectsWithoutCap", pa-from = None }
+
+  caps-without-effect-art : PipeArtifact = PipeArtifact { pa-name = "capsWithoutEffect", pa-kind = PkValue, pa-expr = SeVar "capsWithoutEffect", pa-from = None }
+
+  errs-art : PipeArtifact = PipeArtifact { pa-name = "errs", pa-kind = PkValue, pa-expr = SeVar "errs", pa-from = Just (SeArrayLiteral []) }
+
+  cev-arts : List PipeArtifact = [repo-art, fw-dir-art, effect-set-art, effects-art, cap-file-art, vocab-set-art, vocab-base-art, effects-without-cap-art, caps-without-effect-art, errs-art]
+
 Section: S01 -- Why this exists
 
   cev-doctrine : List ShellCmd = [ScComment "check-effect-vocab.ps1 -- guard the foreword `effect` declarations against", ScComment "the capability vocabulary. That gap closed 2026-07-18 with this script as the", ScComment "permanent answer rather than an interim one.", ScComment "", ScComment "THIS GUARD IS THE END STATE. DO NOT TRY TO REPLACE IT WITH A DERIVATION.", ScComment "", ScComment "The capability model used to live in five hand-maintained expansions across", ScComment "three quires. Four of them are gone: capability-vocabulary, manifest-cap-id,", ScComment "boot-cap-mask-for and cdx-cap-to-kern-bits are all projections of one table", ScComment "now (codex/foreword/core/Capability.codex), so the guards that reconciled", ScComment "them -- check-cap-tables.ps1 and the in-compiler check-cap-vocab-coherent --", ScComment "were deleted along with the states they watched for.", ScComment "", ScComment "The fifth cannot be. An `effect <Name> where ...` declaration is a SYNTAX", ScComment "form carrying its own operation signatures, and Codex has no metaprogramming", ScComment "that generates declarations from data. No table can emit one. The foreword", ScComment "effect declarations therefore cannot derive from the capability table, and a", ScComment "build-time guard comparing the two is the only instrument that will ever", ScComment "cover this list.", ScComment "", ScComment "A new foreword effect with no capability, or a capability with no effect,", ScComment "would otherwise drift in silence. This is that guard.", ScComment "", ScComment "The two lists are deliberately NOT 1:1. Some effects are pure or local and", ScComment "carry no hardware capability (State, Time, Random); some capabilities are not", ScComment "surfaced as a foreword effect (Concurrent, Capability, Flash). Those", ScComment "exceptions are listed below. Anything NOT accounted for on either side fails", ScComment "the build, so adding an effect or a capability forces a deliberate decision", ScComment "about its counterpart rather than a silent divergence."]
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit "..")))]
+  s01 : PipeStage = PipeStage { ps-name = "doctrine", ps-why = "why this guard cannot be replaced by a derivation, and why the two lists are deliberately not one to one", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = cev-doctrine }
+
+Section: S01b -- Preamble
+
+  s01b-body : List ShellCmd = [ScBlank, ScSetStrictMode, ScSetErrorStop, pipe-produce repo-art]
+
+  s01b : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root both sides are read from", ps-in = [], ps-out = [repo-art], ps-needs = [], ps-verdict = [], ps-body = s01b-body }
 
 Section: S02 -- The foreword effect declarations
 
@@ -35,7 +76,9 @@ Section: S02 -- The foreword effect declarations
 
   cev-scan-file : List ShellCmd = [ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeProperty (SeVar "f") "FullName"]) cev-scan-line]
 
-  s02 : List ShellCmd = [ScComment "foreword effect declarations: `  effect <Name> where` under codex/foreword", ScAssign "fwDir" (SePathJoin (SeVar "Repo") (SeLit "codex\\foreword")), ScAssign "effectSet" SeHashLiteral, ScForEach "f" (SeListFiles (SeVar "fwDir") "*.codex" True) cev-scan-file, ScAssign "effects" (SeAsArray (SePipe (SeProperty (SeVar "effectSet") "Keys") [StSort]))]
+  s02-body : List ShellCmd = [ScBlank, ScComment "foreword effect declarations: `  effect <Name> where` under codex/foreword", pipe-produce fw-dir-art, pipe-produce effect-set-art, ScForEach "f" (SeListFiles (pipe-ref cev-arts cev-params "fwDir") "*.codex" True) cev-scan-file, ScAssign "effects" (SeAsArray (SePipe (SeProperty (pipe-ref cev-arts cev-params "effectSet") "Keys") [StSort]))]
+
+  s02 : PipeStage = PipeStage { ps-name = "the foreword effect declarations", ps-why = "every `effect <Name> where` under codex/foreword, which is a syntax form no table can generate", ps-in = ["Repo"], ps-out = [fw-dir-art, effect-set-art, effects-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- The capability base names
 
@@ -45,15 +88,19 @@ Section: S03 -- The capability base names
 
   cev-cap-line : List ShellCmd = [ScIf (SeMatch (SeVar "line") cev-cap-pattern) [ScAssign "base" (SeIndex (SeSplit (SeIndex (SeVar "matches") (SeInt 1)) "\\.") (SeInt 0)), ScSetIndex "vocabSet" (SeVar "base") (SeBool True)] []]
 
-  s03 : List ShellCmd = [ScSequence cev-cap-note, ScAssign "capFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\foreword\\core\\Capability.codex")), ScAssign "vocabSet" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "capFile"]) cev-cap-line, ScAssign "vocabBase" (SeAsArray (SePipe (SeProperty (SeVar "vocabSet") "Keys") [StSort]))]
+  s03-body : List ShellCmd = [ScBlank, ScSequence cev-cap-note, pipe-produce cap-file-art, pipe-produce vocab-set-art, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [pipe-ref cev-arts cev-params "capFile"]) cev-cap-line, ScAssign "vocabBase" (SeAsArray (SePipe (SeProperty (pipe-ref cev-arts cev-params "vocabSet") "Keys") [StSort]))]
+
+  s03 : PipeStage = PipeStage { ps-name = "the capability base names", ps-why = "read the capability table at its source rather than through the projection the type checker holds", ps-in = ["Repo"], ps-out = [cap-file-art, vocab-set-art, vocab-base-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Nothing parsed is a broken instrument
 
-  cev-parsed-nothing : ShellExpr = SeOr (SeIntEq (SeCount (SeVar "effects")) (SeInt 0)) (SeIntEq (SeCount (SeVar "vocabBase")) (SeInt 0))
+  cev-parsed-nothing : ShellExpr = SeOr (SeIntEq (SeCount (pipe-ref cev-arts cev-params "effects")) (SeInt 0)) (SeIntEq (SeCount (pipe-ref cev-arts cev-params "vocabBase")) (SeInt 0))
 
-  cev-parse-msg : ShellExpr = cev-cat [SeLit "ERROR: parsed no effects (", SeCount (SeVar "effects"), SeLit ") or no vocabulary (", SeCount (SeVar "vocabBase"), SeLit ") -- a file moved or its shape changed"]
+  cev-parse-msg : ShellExpr = cev-cat [SeLit "ERROR: parsed no effects (", SeCount (pipe-ref cev-arts cev-params "effects"), SeLit ") or no vocabulary (", SeCount (pipe-ref cev-arts cev-params "vocabBase"), SeLit ") -- a file moved or its shape changed"]
 
-  s04 : List ShellCmd = [ScIf cev-parsed-nothing [ScEcho cev-parse-msg, ScExit (SeInt 1)] []]
+  s04-body : List ShellCmd = [ScBlank, ScIf cev-parsed-nothing [ScEcho cev-parse-msg, ScExit (SeInt 1)] []]
+
+  s04 : PipeStage = PipeStage { ps-name = "nothing parsed is a broken instrument", ps-why = "two empty sets AGREE, so a regex that stopped matching would otherwise report a clean comparison", ps-in = ["effects", "vocabBase"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "one side of the comparison parsed nothing at all, so a file moved or changed shape and the guard is measuring nothing"], ps-body = s04-body }
 
 Section: S05 -- The intended asymmetry
 
@@ -61,7 +108,9 @@ Section: S05 -- The intended asymmetry
 
   cev-no-effect : List ShellExpr = [SeLit "Concurrent", SeLit "Capability", SeLit "Flash", SeLit "Process", SeLit "Gpio", SeLit "Uart", SeLit "Spi", SeLit "I2c", SeLit "Adc", SeLit "Power", SeLit "Rng"]
 
-  s05 : List ShellCmd = [ScComment "intended asymmetry", ScAssign "effectsWithoutCap" (SeArrayLiteral cev-no-cap), ScAssign "capsWithoutEffect" (SeArrayLiteral cev-no-effect), ScAssign "errs" (SeArrayLiteral [])]
+  s05-body : List ShellCmd = [ScBlank, ScComment "intended asymmetry", ScAssign "effectsWithoutCap" (SeArrayLiteral cev-no-cap), ScAssign "capsWithoutEffect" (SeArrayLiteral cev-no-effect), pipe-produce errs-art]
+
+  s05 : PipeStage = PipeStage { ps-name = "the intended asymmetry", ps-why = "the effects that carry no hardware capability and the capabilities surfaced as no effect, listed so that adding either forces a decision", ps-in = [], ps-out = [effects-without-cap-art, caps-without-effect-art, errs-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: S06 -- Each side must account for the other
 
@@ -69,28 +118,30 @@ Section: S06 -- Each side must account for the other
 
   cev-cap-msg : ShellExpr = cev-cat [SeLit "capability '", SeVar "c", SeLit "' (capability-table, foreword) has no foreword 'effect ", SeVar "c", SeLit " where' declaration and is not a known effect-less capability -- add the effect, or add '", SeVar "c", SeLit "' to $capsWithoutEffect in this script if it is deliberately effect-free"]
 
-  cev-effect-unmatched : ShellExpr = SeAnd (SeNot (SeContains (SeVar "vocabBase") (SeVar "e"))) (SeNot (SeContains (SeVar "effectsWithoutCap") (SeVar "e")))
+  cev-effect-unmatched : ShellExpr = SeAnd (SeNot (SeContains (pipe-ref cev-arts cev-params "vocabBase") (SeVar "e"))) (SeNot (SeContains (pipe-ref cev-arts cev-params "effectsWithoutCap") (SeVar "e")))
 
-  cev-cap-unmatched : ShellExpr = SeAnd (SeNot (SeContains (SeVar "effects") (SeVar "c"))) (SeNot (SeContains (SeVar "capsWithoutEffect") (SeVar "c")))
+  cev-cap-unmatched : ShellExpr = SeAnd (SeNot (SeContains (pipe-ref cev-arts cev-params "effects") (SeVar "c"))) (SeNot (SeContains (pipe-ref cev-arts cev-params "capsWithoutEffect") (SeVar "c")))
 
-  s06 : List ShellCmd = [ScForEach "e" (SeVar "effects") [ScIf cev-effect-unmatched [ScAppend "errs" cev-effect-msg] []], ScForEach "c" (SeVar "vocabBase") [ScIf cev-cap-unmatched [ScAppend "errs" cev-cap-msg] []]]
+  s06-body : List ShellCmd = [ScBlank, ScForEach "e" (pipe-ref cev-arts cev-params "effects") [ScIf cev-effect-unmatched [ScAppend "errs" cev-effect-msg] []], ScForEach "c" (pipe-ref cev-arts cev-params "vocabBase") [ScIf cev-cap-unmatched [ScAppend "errs" cev-cap-msg] []]]
+
+  s06 : PipeStage = PipeStage { ps-name = "each side must account for the other", ps-why = "an effect with no capability and a capability with no effect are both findings unless the asymmetry list names them", ps-in = ["effects", "vocabBase", "effectsWithoutCap", "capsWithoutEffect"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
 
 Section: S07 -- The verdict
 
-  cev-ok-msg : ShellExpr = cev-cat [SeLit "Effect/vocabulary tables MATCH (", SeCount (SeVar "effects"), SeLit " foreword effects, ", SeCount (SeVar "vocabBase"), SeLit " capability base names; ", SeCount (SeVar "effectsWithoutCap"), SeLit " cap-less effects + ", SeCount (SeVar "capsWithoutEffect"), SeLit " effect-less caps allowed)"]
+  cev-ok-msg : ShellExpr = cev-cat [SeLit "Effect/vocabulary tables MATCH (", SeCount (pipe-ref cev-arts cev-params "effects"), SeLit " foreword effects, ", SeCount (pipe-ref cev-arts cev-params "vocabBase"), SeLit " capability base names; ", SeCount (pipe-ref cev-arts cev-params "effectsWithoutCap"), SeLit " cap-less effects + ", SeCount (pipe-ref cev-arts cev-params "capsWithoutEffect"), SeLit " effect-less caps allowed)"]
 
-  cev-fail-body : List ShellCmd = [ScEcho (SeLit "WARNING: the foreword effect declarations and the capability table have DRIFTED"), ScForEach "er" (SeVar "errs") [ScEcho (SeConcat (SeLit "  ") (SeVar "er"))], ScExit (SeInt 1)]
+  cev-fail-body : List ShellCmd = [ScEcho (SeLit "WARNING: the foreword effect declarations and the capability table have DRIFTED"), ScForEach "er" (pipe-ref cev-arts cev-params "errs") [ScEcho (SeConcat (SeLit "  ") (SeVar "er"))], ScExit (SeInt 1)]
 
-  s07 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "errs")) (SeInt 0)) cev-fail-body [], ScEcho cev-ok-msg, ScExit (SeInt 0)]
+  s07-body : List ShellCmd = [ScBlank, ScIf (SeIntGt (SeCount (pipe-ref cev-arts cev-params "errs")) (SeInt 0)) cev-fail-body [], ScEcho cev-ok-msg, ScExit (SeInt 0)]
+
+  s07 : PipeStage = PipeStage { ps-name = "verdict", ps-why = "refuse on any unaccounted effect or capability, naming which side is short and what to add", ps-in = ["errs", "effects", "vocabBase"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "an effect or a capability is unaccounted for on the other side, and the asymmetry list does not name it", PoExit 0 "every effect and every capability is matched or deliberately listed as an exception"], ps-body = s07-body }
 
 Section: Assembly
 
-  cev-body : List ShellCmd = [ScSequence cev-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
-
-  cev-script : ShellScript = sh-script "check-effect-vocab" "Guard the foreword effect declarations against the capability vocabulary" cev-params cev-body
+  cev-pipe : Pipeline = Pipeline { pl-name = "check-effect-vocab", pl-doc = "Guard the foreword effect declarations against the capability vocabulary", pl-params = cev-params, pl-stages = [s01, s01b, s02, s03, s04, s05, s06, s07] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cev-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cev-pipe))
   end
 
 Page 1

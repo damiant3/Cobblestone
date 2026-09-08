@@ -473,11 +473,132 @@ Section: Infer Let
    let env2 = infer-let-bindings st env bindings 0 (list-length bindings) empty-row depth
    in let br = infer-expr-at (env2.state) (env2.env) body (depth + 1)
    in let (amb, amb-st) = row-union (br.state) (env2.binds-row) (br.effect-row)
+   in let warned-st = warn-unused-partials amb-st (env2.env) bindings body 0 (list-length bindings)
    in CheckResult {
     inferred-type = br.inferred-type,
     effect-row = amb,
-    state = amb-st
+    state = warned-st
    }
+
+  warn-unused-partials : UnificationState, TypeEnv, List ALetBind, AExpr, Integer, Integer -> UnificationState
+  warn-unused-partials (st) (env) (bindings) (body) (i) (len) =
+   if i >= len then st
+   else warn-unused-partials (warn-one-partial st env bindings body i len False) env bindings body (i + 1) len
+
+  warn-unused-partials-act : UnificationState, TypeEnv, List ALetBind, AExpr, List AActStmt, Integer, Integer, Integer, Integer -> UnificationState
+  warn-unused-partials-act (st) (env) (bindings) (body) (stmts) (si) (slen) (i) (len) =
+   if i >= len then st
+   else let used-after = uses-name-in-stmts stmts si slen ((list-at bindings i).name.value)
+   in let st2 = warn-one-partial st env bindings body i len used-after
+   in warn-unused-partials-act st2 env bindings body stmts si slen (i + 1) len
+
+  warn-one-partial : UnificationState, TypeEnv, List ALetBind, AExpr, Integer, Integer, Boolean -> UnificationState
+  warn-one-partial (st) (env) (bindings) (body) (i) (len) (used-after) =
+   let b = list-at bindings i
+   in let nm = b.name.value
+   in let head = partial-apply-head-name (b.value)
+   in if head == "" then st
+   else if head == nm then st
+   else if used-after then st
+   else if bind-name-count bindings nm 0 len > 1 then st
+   else if is-fun-ty (env-lookup env nm) then
+    if uses-name-in-binds bindings (i + 1) len nm then st
+    else if aexpr-uses-name body nm then st
+    else __record-set st "bag" (bag-add (st.bag) (make-warning cdx-partial-application-unused ("'" & nm & "' is bound to a partial application of '" & head & "' and nothing reads '" & nm & "', so the call is never completed and its effects never happen. Supply the missing arguments, or drop the binding.") (b.span)))
+   else st
+
+  is-fun-ty : CodexType -> Boolean
+  is-fun-ty (t) =
+   when t
+    is FunTy (p) (row) (r) -> True
+    is otherwise -> False
+
+  partial-apply-head-name : AExpr -> Text
+  partial-apply-head-name (e) =
+   when e
+    is AApplyExpr (f) (a) (s) -> apply-spine-head-name f
+    is otherwise -> ""
+
+  apply-spine-head-name : AExpr -> Text
+  apply-spine-head-name (e) =
+   when e
+    is AApplyExpr (f) (a) (s) -> apply-spine-head-name f
+    is ANameExpr (n) (s) -> n.value
+    is otherwise -> ""
+
+  bind-name-count : List ALetBind, Text, Integer, Integer -> Integer
+  bind-name-count (binds) (target) (i) (len) =
+   if i >= len then 0
+   else if (list-at binds i).name.value == target then 1 + bind-name-count binds target (i + 1) len
+   else bind-name-count binds target (i + 1) len
+
+  aexpr-uses-name : AExpr, Text -> Boolean
+  aexpr-uses-name (e) (target) =
+   when e
+    is ALitExpr (lt) (k) (s) -> False
+    is ANameExpr (n) (s) -> n.value == target
+    is AApplyExpr (f) (a) (s) -> aexpr-uses-name f target | aexpr-uses-name a target
+    is ABinaryExpr (l) (op) (r) (s) -> aexpr-uses-name l target | aexpr-uses-name r target
+    is AUnaryExpr (x) (s) -> aexpr-uses-name x target
+    is AIfExpr (c) (tb) (el) (s) -> aexpr-uses-name c target | aexpr-uses-name tb target | aexpr-uses-name el target
+    is ALetExpr (binds) (lbody) (s) -> uses-name-in-binds binds 0 (list-length binds) target | aexpr-uses-name lbody target
+    is ALambdaExpr (ps) (lbody) (s) -> aexpr-uses-name lbody target
+    is AMatchExpr (scrut) (arms) (s) -> aexpr-uses-name scrut target | uses-name-in-arms arms 0 (list-length arms) target
+    is AListExpr (es) (s) -> uses-name-in-exprs es 0 (list-length es) target
+    is ARecordExpr (n) (fs) (s) -> uses-name-in-fields fs 0 (list-length fs) target
+    is AFieldAccess (r) (fl) (s) -> aexpr-uses-name r target
+    is AActExpr (ss) (s) -> uses-name-in-stmts ss 0 (list-length ss) target
+    is AHandleExpr (eff) (hb) (cs) (s) -> aexpr-uses-name hb target | uses-name-in-clauses cs 0 (list-length cs) target
+    is AWithTimeoutExpr (tv) (effs) (scopes) (wb) (s) -> aexpr-uses-name wb target
+    is ATryExpr (mx) (tb) (fb) (fl) (s) -> uses-name-in-stmts tb 0 (list-length tb) target | uses-name-in-stmts fb 0 (list-length fb) target | uses-name-in-stmts fl 0 (list-length fl) target
+    is AFieldAssignExpr (r) (fl) (v) (s) -> aexpr-uses-name r target | aexpr-uses-name v target
+    is ALazyExpr (inner) (s) -> aexpr-uses-name inner target
+    is AErrorExpr (m) (s) -> False
+    is AInductionExpr (sc) (arms) (s) -> aexpr-uses-name sc target | uses-name-in-arms arms 0 (list-length arms) target
+
+  uses-name-in-binds : List ALetBind, Integer, Integer, Text -> Boolean
+  uses-name-in-binds (binds) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-uses-name ((list-at binds i).value) target then True
+   else uses-name-in-binds binds (i + 1) len target
+
+  uses-name-in-exprs : List AExpr, Integer, Integer, Text -> Boolean
+  uses-name-in-exprs (es) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-uses-name (list-at es i) target then True
+   else uses-name-in-exprs es (i + 1) len target
+
+  uses-name-in-arms : List AMatchArm, Integer, Integer, Text -> Boolean
+  uses-name-in-arms (arms) (i) (len) (target) =
+   if i >= len then False
+   else let a = list-at arms i
+   in if aexpr-uses-name (a.guard) target then True
+   else if aexpr-uses-name (a.body) target then True
+   else uses-name-in-arms arms (i + 1) len target
+
+  uses-name-in-fields : List AFieldExpr, Integer, Integer, Text -> Boolean
+  uses-name-in-fields (fs) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-uses-name ((list-at fs i).value) target then True
+   else uses-name-in-fields fs (i + 1) len target
+
+  uses-name-in-stmts : List AActStmt, Integer, Integer, Text -> Boolean
+  uses-name-in-stmts (ss) (i) (len) (target) =
+   if i >= len then False
+   else if stmt-uses-name (list-at ss i) target then True
+   else uses-name-in-stmts ss (i + 1) len target
+
+  stmt-uses-name : AActStmt, Text -> Boolean
+  stmt-uses-name (s) (target) =
+   when s
+    is AActBindStmt (n) (v) (sp) -> aexpr-uses-name v target
+    is AActExprStmt (v) (sp) -> aexpr-uses-name v target
+
+  uses-name-in-clauses : List AHandleClause, Integer, Integer, Text -> Boolean
+  uses-name-in-clauses (cs) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-uses-name ((list-at cs i).body) target then True
+   else uses-name-in-clauses cs (i + 1) len target
 
   LetBindResult = record {
    state : UnificationState,
@@ -1561,10 +1682,11 @@ Section: Infer Act
   infer-act-let (st) (env) (binds) (body) (stmts) (i) (len) (acc-row) (depth) =
    let lr = infer-let-bindings st env binds 0 (list-length binds) empty-row depth
    in let (acc2, acc-st) = row-union (lr.state) acc-row (lr.binds-row)
+   in let warned-st = warn-unused-partials-act acc-st (lr.env) binds body stmts (i + 1) len 0 (list-length binds)
    in when body
-    is ALetExpr (binds2) (body2) (ls2) -> infer-act-let acc-st (lr.env) binds2 body2 stmts i len acc2 (depth + 1)
+    is ALetExpr (binds2) (body2) (ls2) -> infer-act-let warned-st (lr.env) binds2 body2 stmts i len acc2 (depth + 1)
     is otherwise ->
-     let br = infer-expr-at acc-st (lr.env) body (depth + 1)
+     let br = infer-expr-at warned-st (lr.env) body (depth + 1)
      in let (acc3, acc-st2) = row-union (br.state) acc2 (br.effect-row)
      in infer-act-loop acc-st2 (lr.env) stmts (i + 1) len (br.inferred-type) acc3 depth
 
@@ -1824,7 +1946,7 @@ Section: Infer Expression (dispatch)
   later-field-reads-name : List AFieldExpr, Integer, Integer, Text -> Boolean
   later-field-reads-name (fields) (i) (len) (target) =
    if i >= len then False
-   else if aexpr-mentions-name ((list-at fields i).value) target then True
+   else if aexpr-uses-name ((list-at fields i).value) target then True
    else later-field-reads-name fields (i + 1) len target
 
  The `__record-set` is often NESTED in an argument rather than sitting at
@@ -1857,24 +1979,6 @@ Section: Infer Expression (dispatch)
    when e
     is ANameExpr (n) (s) -> n.value
     is otherwise -> ""
-
-  aexpr-mentions-name : AExpr, Text -> Boolean
-  aexpr-mentions-name (e) (target) =
-   when e
-    is ANameExpr (n) (s) -> n.value == target
-    is AApplyExpr (f) (a) (s) -> aexpr-mentions-name f target | aexpr-mentions-name a target
-    is ABinaryExpr (l) (op) (r) (s) -> aexpr-mentions-name l target | aexpr-mentions-name r target
-    is AIfExpr (c) (t) (el) (s) -> aexpr-mentions-name c target | aexpr-mentions-name t target | aexpr-mentions-name el target
-    is ALetExpr (binds) (body) (s) -> aexpr-mentions-name body target | binds-mention-name binds 0 (list-length binds) target
-    is AMatchExpr (scrut) (arms) (s) -> aexpr-mentions-name scrut target
-    is AFieldAccess (obj) (fl) (s) -> aexpr-mentions-name obj target
-    is otherwise -> False
-
-  binds-mention-name : List ALetBind, Integer, Integer, Text -> Boolean
-  binds-mention-name (binds) (i) (len) (target) =
-   if i >= len then False
-   else if aexpr-mentions-name ((list-at binds i).value) target then True
-   else binds-mention-name binds (i + 1) len target
 
   aexpr-mentions-record-set : AExpr -> Boolean
   aexpr-mentions-record-set (e) =

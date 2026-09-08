@@ -551,7 +551,7 @@ What the registers carry at 16524 that this report should hand forward.
   describes.
 
 - **Two rulings on what the public mirror publishes** recorded (blu 16152):
-  one annotations directory accepted as public (reversed 2026-09-08), `build/boot/kbd-diag-v16.img`
+  annotations/apps/games/magic accepted as public, `build/boot/kbd-diag-v16.img`
   stays up. Release 45's steps 5 and 6 (blu 16150) opened this file.
 
 - **Small closes, one line each.** reek 16259: dead `vnet-state-addr` deleted

@@ -1,0 +1,73 @@
+Chapter: EdgeMeshAdmitTest
+
+  cites Foreword chapter Console
+  cites Engine chapter EdgeMesh
+  cites Net chapter GroupMembership
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Trust chapter TrustNode
+  cites Trust chapter TrustTransport
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Mesh chapter EdgeMeshLive
+  cites Mesh chapter EdgeMeshAdmit
+
+ EdgeMeshGameServers phase 2, connection 3.
+
+ The arm that matters is the last one: an unauthenticated caller asking for a
+ region that does not exist must be told about the authentication and NOT
+ about the region. If those two checks are ever reordered, that line changes
+ and nothing else does, which is exactly what a test is for.
+
+Section: Fixtures
+
+  loaded : Text, Text, Integer, Integer, Integer -> ServiceLocation
+  loaded (svc) (member) (port) (load) (health) =
+    ServiceLocation {
+      sl-service = svc,
+      sl-version = "1",
+      sl-member-id = member,
+      sl-address = "10.0.0." & show port,
+      sl-port = port,
+      sl-role = SrLoadBalanced,
+      sl-health = health,
+      sl-load = load,
+      sl-registered = 0,
+      sl-last-check = 0
+    }
+
+ One transport serves both sessions. Nothing here reads it: the fixtures
+ differ only in the flag that decides admission, which is the point.
+
+  session-of : TcpTransportState, Boolean -> TrustSession
+  session-of (ts) (auth) =
+    TrustSession {
+      transport = ts,
+      peer-key = [],
+      peer-trust = 900,
+      authenticated = auth,
+      messages-exchanged = 0
+    }
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let rl = default-regions
+    in let east = list-at (rl.rl-regions) 0
+    in let svc = mesh-region-service east
+    in let g = gs-register-service (group-new "adm" "self") (loaded svc "node-a" 7000 40 10000)
+    in let empty-group = group-new "adm-empty" "self"
+    in let ts = transport-new (net-session-new [0, 0, 0, 0, 0, 1] [10, 0, 0, 1] [10, 0, 0, 254] 9000 9001 [10, 0, 0, 2] 1)
+    in let node0 = node-new [] lattice-empty (policy-empty "admit")
+    in let node1 = node-add-peer node0 "player-1" (session-of ts True)
+    in let node = node-add-peer node1 "player-2" (session-of ts False)
+    in act
+      print-line-uni (mesh-admission-label (mesh-admit node g rl 0 "player-1"))
+      print-line-uni (mesh-admission-label (mesh-admit node g rl 0 "player-2"))
+      print-line-uni (mesh-admission-label (mesh-admit node g rl 0 "ghost"))
+      print-line-uni (mesh-admission-label (mesh-admit node empty-group rl 0 "player-1"))
+      print-line-uni (mesh-admission-label (mesh-admit node g rl 99 "player-1"))
+      print-line-uni (mesh-admission-label (mesh-admit node g rl 99 "player-2"))
+    end
+  end

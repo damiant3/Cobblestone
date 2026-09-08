@@ -5,9 +5,24 @@ Chapter: CheckPlugTypesScript
   cites Foreword chapter List
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE TWENTY-FIFTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The
+ emitted script is byte-identical to the one that shipped before the migration.
+
+ THE SECOND VACUITY GUARD FOUND ON THIS CAMPAIGN, after `check-effect-vocab`'s.
+ Stage `an empty side compares clean against anything` compares nothing: it
+ refuses when either side extracted zero forms, because an empty set agrees
+ with everything and a check that cannot fail is a comment. Two shipped runners
+ now carry that guard in their own words, which is L-VACUOUS having been paid
+ for twice.
+
+ SEVEN EXITS, and three of them are ZEROS meaning different things: `-Update`
+ rewrote the baseline, the wire matches with divergences still baselined, and
+ the wire matches with baselined entries now FIXED. Declared below.
 
 Section: Parameters
 
@@ -27,7 +42,9 @@ Section: S01 -- Why this exists
 
   cpt-missing : ShellExpr = SeConcat (SeLit "check-plug-types: missing ") (SeVar "f")
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "EmitFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Emit\\IRTextEmitter.codex")), ScAssign "ParseFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\plugs\\common\\IRTextParser.codex")), ScAssign "BaseFile" (SePathJoin (SeVar "Repo") (SeLit "build\\plug-wire-baseline.txt")), ScBlank, ScForEach "f" (SeArrayLiteral [SeVar "EmitFile", SeVar "ParseFile"]) [ScIf (SeNot (SeFileExists (SeVar "f"))) [ScEcho cpt-missing, ScExit (SeInt 1)] []]]
+  s01-body : List ShellCmd = [ScBlank, ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "EmitFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\compiler\\Emit\\IRTextEmitter.codex")), ScAssign "ParseFile" (SePathJoin (SeVar "Repo") (SeLit "codex\\plugs\\common\\IRTextParser.codex")), ScAssign "BaseFile" (SePathJoin (SeVar "Repo") (SeLit "build\\plug-wire-baseline.txt")), ScBlank, ScForEach "f" (SeArrayLiteral [SeVar "EmitFile", SeVar "ParseFile"]) [ScIf (SeNot (SeFileExists (SeVar "f"))) [ScEcho cpt-missing, ScExit (SeInt 1)] []]]
+
+  s01 : PipeStage = PipeStage { ps-name = "the three files", ps-why = "the emitter, the parser and the baseline that records which forms one writes and the other cannot read", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the emitter or the parser source is missing, so there is no wire to compare"], ps-body = s01-body }
 
 Section: S02 -- What the emitter can WRITE
 
@@ -44,7 +61,9 @@ Section: S02 -- What the emitter can WRITE
 
   cpt-emit-line : List ShellCmd = [ScIf (SeMatch (SeVar "line") "^\\s*$") [ScContinue] [], ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpt-compound]) [cpt-collect "emitted"], ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpt-bare]) [cpt-collect "emitted"]]
 
-  s02 : List ShellCmd = [ScSequence cpt-emit-note, ScAssign "emitted" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "EmitFile"]) cpt-emit-line]
+  s02-body : List ShellCmd = [ScBlank, ScSequence cpt-emit-note, ScAssign "emitted" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "EmitFile"]) cpt-emit-line]
+
+  s02 : PipeStage = PipeStage { ps-name = "what the emitter can write", ps-why = "two forms, a compound head and a bare atom; collecting only the first reported 58 phantom divergences and made the check unreadable", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- What the parser can READ
 
@@ -56,7 +75,9 @@ Section: S03 -- What the parser can READ
 
   cpt-parse-line : List ShellCmd = [ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpt-dispatch]) [cpt-collect "accepted"], ScForEach "m" (SeStaticCall "regex" "Matches" [SeVar "line", SeLit cpt-named]) [cpt-collect "accepted"]]
 
-  s03 : List ShellCmd = [ScSequence cpt-parse-note, ScAssign "accepted" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "ParseFile"]) cpt-parse-line]
+  s03-body : List ShellCmd = [ScBlank, ScSequence cpt-parse-note, ScAssign "accepted" SeHashLiteral, ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "ParseFile"]) cpt-parse-line]
+
+  s03 : PipeStage = PipeStage { ps-name = "what the parser can read", ps-why = "two forms again: a head dispatched on, and a section read POSITIONALLY by name, and modelling only the first accuses the parser of gaps it does not have", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- An empty side compares clean against anything
 
@@ -66,7 +87,9 @@ Section: S04 -- An empty side compares clean against anything
 
   cpt-broken-msg : ShellExpr = cpt-cat [SeLit "check-plug-types: FAILED to extract (emitted=", SeProperty (SeVar "emitted") "Count", SeLit " accepted=", SeProperty (SeVar "accepted") "Count", SeLit ")"]
 
-  s04 : List ShellCmd = [ScIf cpt-empty [ScSequence cpt-broken-note, ScEcho cpt-broken-msg, ScEcho (SeLit "  the extraction broke, not the wire -- fix this script before trusting a green"), ScExit (SeInt 1)] []]
+  s04-body : List ShellCmd = [ScBlank, ScIf cpt-empty [ScSequence cpt-broken-note, ScEcho cpt-broken-msg, ScEcho (SeLit "  the extraction broke, not the wire -- fix this script before trusting a green"), ScExit (SeInt 1)] []]
+
+  s04 : PipeStage = PipeStage { ps-name = "an empty side compares clean against anything", ps-why = "the vacuity guard: an empty set agrees with everything, so an extraction that broke must REFUSE rather than report a clean wire", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "one side extracted zero forms, so the extraction broke rather than the wire, and this script must be fixed before a green from it is worth anything"], ps-body = s04-body }
 
 Section: S05 -- The forms consumed by position
 
@@ -78,7 +101,9 @@ Section: S05 -- The forms consumed by position
 
   cpt-not-positional : ShellExpr = SeNot (SeContains (SeVar "positional") SeItem)
 
-  s05 : List ShellCmd = [ScSequence cpt-pos-note, ScAssign "positional" (SeArrayLiteral cpt-positional), ScAssign "divergent" (SeAsArray (SePipe (SeProperty (SeVar "emitted") "Keys") [StWhere cpt-unaccepted, StWhere cpt-not-positional, StSort]))]
+  s05-body : List ShellCmd = [ScBlank, ScSequence cpt-pos-note, ScAssign "positional" (SeArrayLiteral cpt-positional), ScAssign "divergent" (SeAsArray (SePipe (SeProperty (SeVar "emitted") "Keys") [StWhere cpt-unaccepted, StWhere cpt-not-positional, StSort]))]
+
+  s05 : PipeStage = PipeStage { ps-name = "the forms consumed by position", ps-why = "twelve structural wrappers the parser reads from index 1 onward without dispatching on the head; baselining them would put benign entries in a file whose whole value is that every line is a real gap", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: S06 -- Rewriting the baseline
 
@@ -88,7 +113,9 @@ Section: S06 -- Rewriting the baseline
 
   cpt-update-body : List ShellCmd = [ScAssign "header" (SeArrayLiteral cpt-header), ScSetContent (SeVar "BaseFile") (SeAdd (SeVar "header") (SeVar "divergent")), ScEcho cpt-updated, ScForEach "d" (SeVar "divergent") [ScEcho (SeConcat (SeLit "  ") (SeVar "d"))], ScExit (SeInt 0)]
 
-  s06 : List ShellCmd = [ScIf (SeVar "Update") cpt-update-body []]
+  s06-body : List ShellCmd = [ScBlank, ScIf (SeVar "Update") cpt-update-body []]
+
+  s06 : PipeStage = PipeStage { ps-name = "rewriting the baseline", ps-why = "under -Update, record the current divergences and stop; growing the file needs a reason in the CL that grows it", ps-in = ["Update"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "-Update: the baseline was rewritten and the delta printed; a success that means the record moved, not that the wire is closed"], ps-body = s06-body }
 
 Section: S07 -- The baseline is the contract
 
@@ -98,7 +125,9 @@ Section: S07 -- The baseline is the contract
 
   cpt-baseline : ShellExpr = SeAsArray (SePipe (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "BaseFile"]) [StWhere cpt-real-line, StMap (SeTrim SeItem)])
 
-  s07 : List ShellCmd = [ScIf (SeNot (SeFileExists (SeVar "BaseFile"))) [ScEcho cpt-no-base, ScExit (SeInt 1)] [], ScBlank, ScAssign "baseline" cpt-baseline, ScBlank, ScAssign "new" (SeAsArray (SePipe (SeVar "divergent") [StWhere (SeNot (SeContains (SeVar "baseline") SeItem))])), ScAssign "fixed" (SeAsArray (SePipe (SeVar "baseline") [StWhere (SeNot (SeContains (SeVar "divergent") SeItem))]))]
+  s07-body : List ShellCmd = [ScBlank, ScIf (SeNot (SeFileExists (SeVar "BaseFile"))) [ScEcho cpt-no-base, ScExit (SeInt 1)] [], ScBlank, ScAssign "baseline" cpt-baseline, ScBlank, ScAssign "new" (SeAsArray (SePipe (SeVar "divergent") [StWhere (SeNot (SeContains (SeVar "baseline") SeItem))])), ScAssign "fixed" (SeAsArray (SePipe (SeVar "baseline") [StWhere (SeNot (SeContains (SeVar "divergent") SeItem))]))]
+
+  s07 : PipeStage = PipeStage { ps-name = "the baseline is the contract", ps-why = "split today's divergences against the recorded ones into NEW, which fails, and FIXED, which is the work landing", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "no baseline file exists, so there is no contract to check against; run with -Update"], ps-body = s07-body }
 
 Section: S08 -- The verdict
 
@@ -114,16 +143,20 @@ Section: S08 -- The verdict
 
   cpt-ok-line : ShellExpr = cpt-cat [SeLit "check-plug-types: OK (", SeProperty (SeVar "emitted") "Count", SeLit " emitted, ", SeProperty (SeVar "accepted") "Count", SeLit " accepted, ", SeCount (SeVar "divergent"), SeLit " known)"]
 
-  s08 : List ShellCmd = [ScIf (SeIntGt (SeCount (SeVar "new")) (SeInt 0)) cpt-new-body [], ScBlank, ScIf (SeIntGt (SeCount (SeVar "fixed")) (SeInt 0)) cpt-fixed-body [], ScBlank, ScEcho cpt-ok-line, ScExit (SeInt 0)]
+  s08-body : List ShellCmd = [ScBlank, ScIf (SeIntGt (SeCount (SeVar "new")) (SeInt 0)) cpt-new-body [], ScBlank, ScIf (SeIntGt (SeCount (SeVar "fixed")) (SeInt 0)) cpt-fixed-body [], ScBlank, ScEcho cpt-ok-line, ScExit (SeInt 0)]
+
+  s08 : PipeStage = PipeStage { ps-name = "the verdict", ps-why = "a new divergence fails the build; a baselined one that is gone is reported so the record can shrink", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "a form the emitter writes has no parser arm and is not in the baseline; arm64 and riscv will read a plausible wrong value and no x86-64 test can catch it", PoExit 0 "the wire matches the baseline, and one or more baselined divergences are now parsed and should be dropped from the record", PoExit 0 "the wire matches the baseline exactly"], ps-body = s08-body }
+
+Section: S00 -- Why this exists, as a stage
+
+  s00 : PipeStage = PipeStage { ps-name = "doctrine", ps-why = "why a hand-maintained wire drifts in silence, and what the IrNegate miscompile cost when it did", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = cpt-doctrine }
 
 Section: Assembly
 
-  cpt-full : List ShellCmd = [ScSequence cpt-doctrine, ScBlank, ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08]
-
-  cpt-script : ShellScript = sh-script "check-plug-types" "the IR text wire is a closed contract" cpt-params cpt-full
+  cpt-pipe : Pipeline = Pipeline { pl-name = "check-plug-types", pl-doc = "the IR text wire is a closed contract", pl-params = cpt-params, pl-stages = [s00, s01, s02, s03, s04, s05, s06, s07, s08] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell cpt-script)
+    print-line-uni (emit-powershell (pipeline-to-shell cpt-pipe))
   end
 
 Page 1

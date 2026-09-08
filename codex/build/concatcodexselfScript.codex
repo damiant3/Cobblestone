@@ -4,60 +4,140 @@ Chapter: ConcatCodexSelfScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
+
+ THE TWENTY-FIRST GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The
+ emitted script is byte-identical to the one that shipped before the migration.
+
+ `ForewordDir` IS PRODUCED AND READ BY NOTHING. Line 22 of the shipped script
+ assigns `codex\foreword\core` and no later line mentions the name, verified at
+ head. It is vestigial: foreword directories are resolved through `$QuireDirs`
+ from `quire-map.ps1` now, so the hardcoded path is a second, stale answer to a
+ question the quire table already answers, and a reader would take it as
+ authoritative. Declaring it as an artifact is what asks who consumes it. Left
+ in place because deleting it changes the emitted bytes and this migration's
+ gate is byte-identity.
+
+ THIS SCRIPT CANNOT REFUSE BY EXIT CODE. Its one failure path is a `throw`
+ inside a raw payload when a quire is unregistered, so every `ps-verdict` below
+ is empty and the stage that can throw says so in its `ps-why`.
 
 Section: Parameters
 
   concat-params : List ShellParam = [sh-param-optional "CodexDir" SptString, sh-param-optional "OutFile" SptString]
 
+Section: The pipeline, declared before it is spelled
+
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path") }
+
+  foreword-dir-art : PipeArtifact = PipeArtifact { pa-name = "ForewordDir", pa-kind = PkDir, pa-expr = SeVar "ForewordDir", pa-from = Just (SeRaw "Join-Path $Repo 'codex\\foreword\\core'") }
+
+  lines-art : PipeArtifact = PipeArtifact { pa-name = "lines", pa-kind = PkValue, pa-expr = SeVar "lines", pa-from = None }
+
+  lib-quire-dirs-art : PipeArtifact = PipeArtifact { pa-name = "libQuireDirs", pa-kind = PkValue, pa-expr = SeVar "libQuireDirs", pa-from = None }
+
+  queue-art : PipeArtifact = PipeArtifact { pa-name = "queue", pa-kind = PkValue, pa-expr = SeVar "queue", pa-from = None }
+
+  ordered-art : PipeArtifact = PipeArtifact { pa-name = "ordered", pa-kind = PkValue, pa-expr = SeVar "ordered", pa-from = None }
+
+  name-cmp-art : PipeArtifact = PipeArtifact { pa-name = "nameCmp", pa-kind = PkValue, pa-expr = SeVar "nameCmp", pa-from = None }
+
+  ccs-arts : List PipeArtifact = [repo-art, foreword-dir-art, lines-art, lib-quire-dirs-art, queue-art, ordered-art, name-cmp-art]
+
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')"), ScIf (SeNot (SeVar "CodexDir")) [ScAssign "CodexDir" (SeRaw "Join-Path $Repo 'codex\\compiler'")] [], ScAssign "CodexDir" (SeRaw "(Resolve-Path $CodexDir).Path"), ScAssign "ForewordDir" (SeRaw "Join-Path $Repo 'codex\\foreword\\core'"), ScBlank, ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" []]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')"), ScIf (SeNot (pipe-ref ccs-arts concat-params "CodexDir")) [ScAssign "CodexDir" (SeRaw "Join-Path $Repo 'codex\\compiler'")] [], ScAssign "CodexDir" (SeRaw "(Resolve-Path $CodexDir).Path"), pipe-produce foreword-dir-art, ScBlank, ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" []]
+
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root and the source directory, load the quire registry, and take the output accumulator", ps-in = ["CodexDir"], ps-out = [repo-art, foreword-dir-art, lines-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S02 -- Add-WithQuire Helper
 
-  s02 : List ShellCmd = [ScRaw "function Add-WithQuire {", ScRaw "    param([string]$Path, [string]$Quire)", ScRaw "    $renamed = $false", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($Path)) {", ScRaw "        if ((-not $renamed) -and $Quire -and $l -match '^Chapter:\\s*(.+?)\\s*$') {", ScRaw "            $lines.Add(\"Chapter: ${Quire}--$($matches[1])\")", ScRaw "            $renamed = $true", ScRaw "        } else {", ScRaw "            $lines.Add($l)", ScRaw "        }", ScRaw "    }", ScRaw "    $lines.Add('')", ScRaw "    $lines.Add('')", ScRaw "}"]
+  s02-body : List ShellCmd = [ScBlank, ScRaw "function Add-WithQuire {", ScRaw "    param([string]$Path, [string]$Quire)", ScRaw "    $renamed = $false", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($Path)) {", ScRaw "        if ((-not $renamed) -and $Quire -and $l -match '^Chapter:\\s*(.+?)\\s*$') {", ScRaw "            $lines.Add(\"Chapter: ${Quire}--$($matches[1])\")", ScRaw "            $renamed = $true", ScRaw "        } else {", ScRaw "            $lines.Add($l)", ScRaw "        }", ScRaw "    }", ScRaw "    $lines.Add('')", ScRaw "    $lines.Add('')", ScRaw "}"]
+
+  s02 : PipeStage = PipeStage { ps-name = "add-withquire", ps-why = "append one chapter, renaming its Chapter: line to carry the quire prefix so two chapters of the same name can share a unit", ps-in = ["lines"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Cited Forewords Scan
 
-  s03 : List ShellCmd = [ScComment "1. Cited library chapters -- scan compiler source, transitively resolve.", ScComment "The quire table must agree with compile.ps1's Resolve-CiteOrder or the", ScComment "gate's raw concat and the per-compile resolution disagree about what a", ScComment "unit is. The cite pattern comes from build/quire-map.ps1 and is not built", ScComment "here; what stays local is the POLICY, an allowlist over the shared", ScComment "registry, so a quire added to the registry does not silently join the", ScComment "compiler's unit.", ScRaw "$libQuireNames = @('Foreword', 'Math')", ScRaw "$libQuireDirs = [ordered]@{}", ScForEach "q" (SeVar "libQuireNames") [ScIf (SeNot (SeRaw "$QuireDirs[$q]")) [ScRaw "throw \"concat-codex-self: quire '$q' is not registered in build/quire-map.ps1\""] [], ScRaw "$libQuireDirs[$q] = Join-Path $Repo $QuireDirs[$q]"], ScAssign "citePat" (SeVar "StrictCitePat"), ScDotNetCallAssign "queue" "System.Collections.Generic.Queue[object]" "new" [], ScRaw "Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object {", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($_.FullName)) {", ScRaw "        if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }", ScRaw "    }", ScRaw "}"]
+  s03-body : List ShellCmd = [ScBlank, ScComment "1. Cited library chapters -- scan compiler source, transitively resolve.", ScComment "The quire table must agree with compile.ps1's Resolve-CiteOrder or the", ScComment "gate's raw concat and the per-compile resolution disagree about what a", ScComment "unit is. The cite pattern comes from build/quire-map.ps1 and is not built", ScComment "here; what stays local is the POLICY, an allowlist over the shared", ScComment "registry, so a quire added to the registry does not silently join the", ScComment "compiler's unit.", ScRaw "$libQuireNames = @('Foreword', 'Math')", ScRaw "$libQuireDirs = [ordered]@{}", ScForEach "q" (SeVar "libQuireNames") [ScIf (SeNot (SeRaw "$QuireDirs[$q]")) [ScRaw "throw \"concat-codex-self: quire '$q' is not registered in build/quire-map.ps1\""] [], ScRaw "$libQuireDirs[$q] = Join-Path $Repo $QuireDirs[$q]"], ScAssign "citePat" (SeVar "StrictCitePat"), ScDotNetCallAssign "queue" "System.Collections.Generic.Queue[object]" "new" [], ScRaw "Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object {", ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($_.FullName)) {", ScRaw "        if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }", ScRaw "    }", ScRaw "}"]
+
+  s03 : PipeStage = PipeStage { ps-name = "cited forewords scan", ps-why = "the allowlist is POLICY over the shared registry, so a newly registered quire does not silently join the compiler's unit; an unregistered allowlisted quire THROWS rather than exiting", ps-in = ["Repo", "CodexDir"], ps-out = [lib-quire-dirs-art, queue-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Foreword Transitive Resolution
 
-  s04 : List ShellCmd = [ScDotNetCallAssign "seen" "System.Collections.Generic.HashSet[string]" "new" [], ScAssign "ordered" (SeRaw "@()"), ScRaw "while ($queue.Count -gt 0) {", ScRaw "    $fw = $queue.Dequeue()", ScRaw "    if (-not $seen.Add(\"$($fw.Quire)|$($fw.Name)\")) { continue }", ScRaw "    $fwPath = Join-Path $libQuireDirs[$fw.Quire] \"$($fw.Name).codex\"", ScRaw "    if (-not (Test-Path -PathType Leaf $fwPath)) { continue }", ScRaw "    $fwLines = [System.IO.File]::ReadAllLines($fwPath)", ScRaw "    foreach ($l in $fwLines) {", ScRaw "        if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }", ScRaw "    }", ScRaw "    $ordered += @{ Quire = $fw.Quire; Name = $fw.Name; Path = $fwPath }", ScRaw "}", ScRaw "[array]::Reverse($ordered)", ScDotNetCallAssign "emitted" "System.Collections.Generic.HashSet[string]" "new" [], ScForEach "entry" (SeVar "ordered") [ScIf (SeNot (SeRaw "$emitted.Add(\"$($entry.Quire)|$($entry.Name)\")")) [ScContinue] [], ScRaw "Add-WithQuire -Path $entry.Path -Quire $entry.Quire"]]
+  s04-body : List ShellCmd = [ScBlank, ScDotNetCallAssign "seen" "System.Collections.Generic.HashSet[string]" "new" [], ScAssign "ordered" (SeRaw "@()"), ScRaw "while ($queue.Count -gt 0) {", ScRaw "    $fw = $queue.Dequeue()", ScRaw "    if (-not $seen.Add(\"$($fw.Quire)|$($fw.Name)\")) { continue }", ScRaw "    $fwPath = Join-Path $libQuireDirs[$fw.Quire] \"$($fw.Name).codex\"", ScRaw "    if (-not (Test-Path -PathType Leaf $fwPath)) { continue }", ScRaw "    $fwLines = [System.IO.File]::ReadAllLines($fwPath)", ScRaw "    foreach ($l in $fwLines) {", ScRaw "        if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }", ScRaw "    }", ScRaw "    $ordered += @{ Quire = $fw.Quire; Name = $fw.Name; Path = $fwPath }", ScRaw "}", ScRaw "[array]::Reverse($ordered)", ScDotNetCallAssign "emitted" "System.Collections.Generic.HashSet[string]" "new" [], ScForEach "entry" (pipe-ref ccs-arts concat-params "ordered") [ScIf (SeNot (SeRaw "$emitted.Add(\"$($entry.Quire)|$($entry.Name)\")")) [ScContinue] [], ScRaw "Add-WithQuire -Path $entry.Path -Quire $entry.Quire"]]
+
+  s04 : PipeStage = PipeStage { ps-name = "foreword transitive resolution", ps-why = "walk the cite graph breadth first, reverse it so a chapter is emitted after everything it cites, and emit each exactly once", ps-in = ["queue", "libQuireDirs"], ps-out = [ordered-art], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 
 Section: S05 -- Name Comparer
 
-  s05 : List ShellCmd = [ScComment "Ordinal name comparer for FileInfo / DirectoryInfo arrays", ScRaw "$nameCmp = [System.Collections.Generic.Comparer[object]]::Create({", ScRaw "    param($a, $b)", ScRaw "    [System.StringComparer]::Ordinal.Compare($a.Name, $b.Name)", ScRaw "})"]
+  s05-body : List ShellCmd = [ScBlank, ScComment "Ordinal name comparer for FileInfo / DirectoryInfo arrays", ScRaw "$nameCmp = [System.Collections.Generic.Comparer[object]]::Create({", ScRaw "    param($a, $b)", ScRaw "    [System.StringComparer]::Ordinal.Compare($a.Name, $b.Name)", ScRaw "})"]
+
+ ORDINAL, NOT CULTURE-SENSITIVE: the concatenation order decides the unit's
+ bytes, so a comparer that sorts differently under another locale would make
+ the gate's output depend on the machine.
+
+  s05 : PipeStage = PipeStage { ps-name = "name comparer", ps-why = "one ordinal comparer, so the concatenation order does not depend on the machine's locale", ps-in = [], ps-out = [name-cmp-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: S06 -- Sort-ByDeps Function
 
-  s06 : List ShellCmd = [ScRaw "function Sort-ByDeps {", ScRaw "    param([System.IO.FileInfo[]]$Files, [string]$QuireName)", ScRaw "    if ($Files.Count -le 1) { return $Files }", ScRaw "    $internalCite = \"^\\s*cites\\s+($QuireName|Codex)\\s+chapter\\s+(.+?)(?:\\s*\\(|$)\"", ScRaw "    $chapterPat = '^Chapter:\\s*(.+?)\\s*$'", ScRaw "    $chapterToStem = @{}", ScRaw "    $stemToFile = @{}", ScRaw "    $deps = @{}", ScRaw "    foreach ($f in $Files) {", ScRaw "        $stem = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)", ScRaw "        $stemToFile[$stem] = $f", ScRaw "        $firstLine = (Get-Content -TotalCount 1 $f.FullName)", ScRaw "        if ($firstLine -match $chapterPat) {", ScRaw "            $cname = $matches[1]", ScRaw "            if (-not $chapterToStem.ContainsKey($cname)) { $chapterToStem[$cname] = $stem }", ScRaw "        }", ScRaw "        $deps[$stem] = @()", ScRaw "        foreach ($l in [System.IO.File]::ReadAllLines($f.FullName)) {", ScRaw "            if ($l -match $internalCite) { $deps[$stem] += $matches[2] }", ScRaw "        }", ScRaw "    }"]
+  s06-body : List ShellCmd = [ScBlank, ScRaw "function Sort-ByDeps {", ScRaw "    param([System.IO.FileInfo[]]$Files, [string]$QuireName)", ScRaw "    if ($Files.Count -le 1) { return $Files }", ScRaw "    $internalCite = \"^\\s*cites\\s+($QuireName|Codex)\\s+chapter\\s+(.+?)(?:\\s*\\(|$)\"", ScRaw "    $chapterPat = '^Chapter:\\s*(.+?)\\s*$'", ScRaw "    $chapterToStem = @{}", ScRaw "    $stemToFile = @{}", ScRaw "    $deps = @{}", ScRaw "    foreach ($f in $Files) {", ScRaw "        $stem = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)", ScRaw "        $stemToFile[$stem] = $f", ScRaw "        $firstLine = (Get-Content -TotalCount 1 $f.FullName)", ScRaw "        if ($firstLine -match $chapterPat) {", ScRaw "            $cname = $matches[1]", ScRaw "            if (-not $chapterToStem.ContainsKey($cname)) { $chapterToStem[$cname] = $stem }", ScRaw "        }", ScRaw "        $deps[$stem] = @()", ScRaw "        foreach ($l in [System.IO.File]::ReadAllLines($f.FullName)) {", ScRaw "            if ($l -match $internalCite) { $deps[$stem] += $matches[2] }", ScRaw "        }", ScRaw "    }"]
 
-  s06b : List ShellCmd = [ScRaw "    $result = [System.Collections.Generic.List[System.IO.FileInfo]]::new()", ScRaw "    $visited = [System.Collections.Generic.HashSet[string]]::new()", ScRaw "    $visiting = [System.Collections.Generic.HashSet[string]]::new()", ScRaw "    function Visit([string]$Stem) {", ScRaw "        if ($visited.Contains($Stem)) { return }", ScRaw "        if ($visiting.Contains($Stem)) { return }", ScRaw "        [void]$visiting.Add($Stem)", ScRaw "        foreach ($citedChapter in $deps[$Stem]) {", ScRaw "            $depStem = $chapterToStem[$citedChapter]", ScRaw "            if ($depStem -and $stemToFile.ContainsKey($depStem)) { Visit $depStem }", ScRaw "        }", ScRaw "        [void]$visiting.Remove($Stem)", ScRaw "        [void]$visited.Add($Stem)", ScRaw "        $result.Add($stemToFile[$Stem])", ScRaw "    }", ScRaw "    $sorted = @($stemToFile.Keys) | Sort-Object", ScRaw "    foreach ($stem in $sorted) { Visit $stem }", ScRaw "    return $result.ToArray()", ScRaw "}"]
+  s06 : PipeStage = PipeStage { ps-name = "sort-bydeps, the scan half", ps-why = "read every file's chapter name and its internal cites, which is the graph the topological walk below runs on", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
 
-Section: S07 -- Root Files
+Section: S06b -- Sort-ByDeps, the walk
 
-  s07 : List ShellCmd = [ScComment "2. Root .codex (depth 0), sorted ordinal", ScAssign "rootFiles" (SeRaw "@(Get-ChildItem $CodexDir -Filter '*.codex' -File)"), ScRaw "[Array]::Sort($rootFiles, $nameCmp)", ScForEach "f" (SeVar "rootFiles") [ScRaw "Add-WithQuire -Path $f.FullName -Quire ''"]]
+  s06b-body : List ShellCmd = [ScRaw "    $result = [System.Collections.Generic.List[System.IO.FileInfo]]::new()", ScRaw "    $visited = [System.Collections.Generic.HashSet[string]]::new()", ScRaw "    $visiting = [System.Collections.Generic.HashSet[string]]::new()", ScRaw "    function Visit([string]$Stem) {", ScRaw "        if ($visited.Contains($Stem)) { return }", ScRaw "        if ($visiting.Contains($Stem)) { return }", ScRaw "        [void]$visiting.Add($Stem)", ScRaw "        foreach ($citedChapter in $deps[$Stem]) {", ScRaw "            $depStem = $chapterToStem[$citedChapter]", ScRaw "            if ($depStem -and $stemToFile.ContainsKey($depStem)) { Visit $depStem }", ScRaw "        }", ScRaw "        [void]$visiting.Remove($Stem)", ScRaw "        [void]$visited.Add($Stem)", ScRaw "        $result.Add($stemToFile[$Stem])", ScRaw "    }", ScRaw "    $sorted = @($stemToFile.Keys) | Sort-Object", ScRaw "    foreach ($stem in $sorted) { Visit $stem }", ScRaw "    return $result.ToArray()", ScRaw "}"]
 
-Section: S08 -- Subdirectory Files
+ A CYCLE IS BROKEN SILENTLY: `$visiting` makes a re-entrant Visit return
+ rather than refuse, so a cite cycle yields SOME order rather than a
+ diagnostic. That is deliberate for a concatenator, and it is the reason this
+ order is not evidence about whether a cycle exists.
 
-  s08 : List ShellCmd = [ScComment "3. Subdirs (depth 1), each .codex prefixed with subdir name", ScAssign "subDirs" (SeRaw "@(Get-ChildItem $CodexDir -Directory)"), ScRaw "[Array]::Sort($subDirs, $nameCmp)", ScForEach "d" (SeVar "subDirs") [ScAssign "quire" (SeProperty (SeVar "d") "Name"), ScAssign "subFiles" (SeRaw "@(Get-ChildItem $d.FullName -Filter '*.codex' -File)"), ScRaw "[Array]::Sort($subFiles, $nameCmp)", ScAssign "subFiles" (SeRaw "@($subFiles | Where-Object { $_.Name -match 'State|Encoder' }) + @($subFiles | Where-Object { $_.Name -notmatch 'State|Encoder' })"), ScForEach "f" (SeVar "subFiles") [ScRaw "Add-WithQuire -Path $f.FullName -Quire $quire"]]]
+  s06b : PipeStage = PipeStage { ps-name = "sort-bydeps, the walk", ps-why = "depth-first over the cite graph from an ordinal-sorted seed, so the order is deterministic and a cycle yields an order rather than a refusal", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06b-body }
+
+Section: S07 -- The Order Manifest
+
+ THE ORDER IS EXPLICIT AND IS NOT DERIVED FROM FILENAMES. It used to be an
+ ordinal sort per directory followed by a hoist of any file whose NAME matched
+ `State|Encoder` to the front of its quire. That hoist was a dependency fact
+ rather than a preference, so the unit the compiler is built from depended on
+ what its files were CALLED, and any rename silently reordered it.
+
+ CITES CANNOT SUPPLY THE ORDER INSTEAD, which is why this is a manifest and not
+ a graph walk. A cite is between CHAPTERS, and the files the hoist existed to
+ move are in the SAME chapter as the files that need them: fourteen files share
+ `Chapter: X86-64 Code Generator`, and `Parser`, `Lowering` and `Type Checker`
+ span several each. No cite graph can order files inside one chapter.
+
+  s07-body : List ShellCmd = [ScBlank, ScComment "2. The concatenation order, read from build/compiler-order.txt.", ScRaw "$orderPath = Join-Path $Repo 'build\\compiler-order.txt'", ScRaw "if (-not (Test-Path -PathType Leaf $orderPath)) { throw \"concat-codex-self: missing $orderPath, which is the compiler's concatenation order\" }", ScRaw "$orderRows = @(Get-Content $orderPath | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and (-not $_.StartsWith('#')) })", ScRaw "$onDisk = @(Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object { $_.FullName.Substring($Repo.Length + 1) })", ScRaw "$orderMissing = @($onDisk | Where-Object { $orderRows -notcontains $_ })", ScRaw "$orderExtra = @($orderRows | Where-Object { $onDisk -notcontains $_ })", ScRaw "if ($orderMissing.Count -gt 0 -or $orderExtra.Count -gt 0) {", ScRaw "    $orderWhy = ''", ScRaw "    if ($orderMissing.Count -gt 0) { $orderWhy += \"under codex/compiler with no row in build/compiler-order.txt: $($orderMissing -join ', '). \" }", ScRaw "    if ($orderExtra.Count -gt 0) { $orderWhy += \"rows in build/compiler-order.txt with no file: $($orderExtra -join ', ').\" }", ScRaw "    throw \"concat-codex-self: the order manifest and codex/compiler disagree, so the unit is not the one the manifest describes. $orderWhy\"", ScRaw "}"]
+
+  s07 : PipeStage = PipeStage { ps-name = "the order manifest", ps-why = "read build/compiler-order.txt and refuse any disagreement with the directory, because an order derived from filenames made every rename a change to the build", ps-in = ["CodexDir"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s07-body }
+
+Section: S08 -- Compiler Files In Manifest Order
+
+ A file directly under `codex/compiler` carries no quire prefix; one in a
+ subdirectory carries that subdirectory's name, which is what makes `Emit` and
+ `Semantics` quires at all.
+
+  s08-body : List ShellCmd = [ScBlank, ScComment "3. Every compiler file, in the manifest's order.", ScRaw "foreach ($rel in $orderRows) {", ScRaw "    $full = Join-Path $Repo $rel", ScRaw "    $parent = Split-Path $full -Parent", ScRaw "    $quire = if ($parent -eq $CodexDir) { '' } else { Split-Path $parent -Leaf }", ScRaw "    Add-WithQuire -Path $full -Quire $quire", ScRaw "}"]
+
+  s08 : PipeStage = PipeStage { ps-name = "compiler files in manifest order", ps-why = "emit every compiler file in the order the manifest gives, with its subdirectory as its quire", ps-in = ["orderRows", "CodexDir"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s08-body }
 
 Section: S09 -- Output
 
-  s09 : List ShellCmd = [ScComment "Streamed, not joined. `-join` materialises the whole body, the trailing-newline concat copies it again, and WriteAllText encodes a third, all while $lines is still live. Stage census 2026-09-01 on this script's own 3,052,663-char output: heap 13.2 MB after every chapter is read and 54.1 MB after the write, so the write was three quarters of the peak on an output of under 3 MB. Same bytes: joining on a newline and appending one is a newline after every line, which is what this writes.", ScIf (SeVar "OutFile") [ScDotNetCallAssign "sw" "System.IO.StreamWriter" "new" [SeVar "OutFile", SeRaw "$false", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScForEach "l" (SeVar "lines") [ScRaw "$sw.Write($l)", ScRaw "$sw.Write(\"`n\")"], ScRaw "$sw.Dispose()"] [ScForEach "l" (SeVar "lines") [ScRaw "[Console]::Out.Write($l)", ScRaw "[Console]::Out.Write(\"`n\")"]]]
+  s09-body : List ShellCmd = [ScBlank, ScComment "Streamed, not joined. `-join` materialises the whole body, the trailing-newline concat copies it again, and WriteAllText encodes a third, all while $lines is still live. Stage census 2026-09-01 on this script's own 3,052,663-char output: heap 13.2 MB after every chapter is read and 54.1 MB after the write, so the write was three quarters of the peak on an output of under 3 MB. Same bytes: joining on a newline and appending one is a newline after every line, which is what this writes.", ScIf (pipe-ref ccs-arts concat-params "OutFile") [ScDotNetCallAssign "sw" "System.IO.StreamWriter" "new" [pipe-ref ccs-arts concat-params "OutFile", SeRaw "$false", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScForEach "l" (pipe-ref ccs-arts concat-params "lines") [ScRaw "$sw.Write($l)", ScRaw "$sw.Write(\"`n\")"], ScRaw "$sw.Dispose()"] [ScForEach "l" (pipe-ref ccs-arts concat-params "lines") [ScRaw "[Console]::Out.Write($l)", ScRaw "[Console]::Out.Write(\"`n\")"]]]
+
+  s09 : PipeStage = PipeStage { ps-name = "output", ps-why = "stream every line to the file or the console, because joining materialises the whole unit three times over", ps-in = ["lines", "OutFile"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s09-body }
 
 Section: Assembly
 
-  concat-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScSequence s06b, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09]
-
-  concat-script : ShellScript = sh-script "concat-codex-self" "Concatenate codex/ source with quire-prefixed chapters and cited foreword chapters preloaded" concat-params concat-body
+  ccs-pipe : Pipeline = Pipeline { pl-name = "concat-codex-self", pl-doc = "Concatenate codex/ source with quire-prefixed chapters and cited foreword chapters preloaded", pl-params = concat-params, pl-stages = [s01, s02, s03, s04, s05, s06, s06b, s07, s08, s09] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell concat-script)
+    print-line-uni (emit-powershell (pipeline-to-shell ccs-pipe))
   end
 
 Page 1

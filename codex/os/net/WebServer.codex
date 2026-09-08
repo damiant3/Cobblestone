@@ -140,9 +140,18 @@ Section: Concurrent Event Loop
 
   WebConn = record { transport : TcpTransportState, server : WebState, pending : List Integer, idle : Integer }
 
+ A closed connection's transport goes into `free` and is rebound on the next
+ accept instead of a fresh one being minted. The receive buffer is the whole
+ of the cost: `transport-new-with-cap` ends in `__heap-advance cap`, 65,536
+ bytes for `serve-recv-buf-cap`, and the heap is a single bump pointer with
+ `__heap-restore` its only reclamation, which no close path can call without
+ taking the live connections with it. Measured at
+ `codex/test/web-mux-heap`: 66,328 bytes per accept before the pool.
+
   WebMux = record {
     listen : TcpTransportState,
     conns : List WebConn,
+    free : List TcpTransportState,
     served : Integer
   }
 
@@ -164,6 +173,23 @@ Section: Concurrent Event Loop
     let sess = net-session-new local-mac local-ip gateway-ip port 0 gateway-ip 1000
     in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
     in transport-new-with-cap sess2 serve-recv-buf-cap
+
+ `rebind-listen-transport` is `fresh-listen-transport` with the buffer kept:
+ the same session construction, and `recv-base` and `recv-cap` carried over
+ from a transport whose connection is closed. `recv-len` is zeroed, so the
+ previous connection's bytes are unreachable rather than merely stale.
+
+  rebind-listen-transport : TcpTransportState, Integer -> TcpTransportState
+  rebind-listen-transport (t) (port) =
+    let sess = net-session-new local-mac local-ip gateway-ip port 0 gateway-ip 1000
+    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
+    in TcpTransportState { session = sess2, recv-base = t.recv-base, recv-len = 0, recv-cap = t.recv-cap, messages-sent = 0, messages-received = 0 }
+
+  pool-drop-first : List TcpTransportState, Integer, List TcpTransportState -> List TcpTransportState
+  pool-drop-first (free) (i) (acc) =
+    if i >= list-length free then acc
+    else if i == 0 then pool-drop-first free (i + 1) acc
+    else pool-drop-first free (i + 1) (list-push acc (list-at free i))
 
   web-mux-owner : List WebConn, TcpSegment, Integer -> Integer
   web-mux-owner (conns) (seg) (i) =
@@ -256,13 +282,13 @@ Section: Concurrent Event Loop
       t1 <- flush-transport-outbox (transport-tick (c.transport))
       if web-conn-closing t1 then act
         t2 <- flush-transport-outbox (transport-close t1)
-        web-mux-sweep (WebMux { listen = m.listen, conns = web-mux-remove (m.conns) i 0 [], served = m.served }) i
+        web-mux-sweep (WebMux { listen = m.listen, conns = web-mux-remove (m.conns) i 0 [], free = list-push (m.free) t2, served = m.served }) i
       end
       else if c.idle + 1 >= web-idle-max then act
         reaped <- flush-transport-outbox (transport-close t1)
-        web-mux-sweep (WebMux { listen = m.listen, conns = web-mux-remove (m.conns) i 0 [], served = m.served }) i
+        web-mux-sweep (WebMux { listen = m.listen, conns = web-mux-remove (m.conns) i 0 [], free = list-push (m.free) reaped, served = m.served }) i
       end
-      else web-mux-sweep (WebMux { listen = m.listen, conns = list-set-at (m.conns) i (WebConn { transport = t1, server = c.server, pending = c.pending, idle = c.idle + 1 }), served = m.served }) (i + 1)
+      else web-mux-sweep (WebMux { listen = m.listen, conns = list-set-at (m.conns) i (WebConn { transport = t1, server = c.server, pending = c.pending, idle = c.idle + 1 }), free = m.free, served = m.served }) (i + 1)
     end
 
   web-mux-serve-conn : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, Integer, List Integer -> [Network.Read, Network.Write] WebMux
@@ -274,7 +300,7 @@ Section: Concurrent Event Loop
       ts2 <- flush-transport-outbox ts1
       if web-conn-closing ts2 then act
         ts3 <- flush-transport-outbox (transport-close ts2)
-        WebMux { listen = m.listen, conns = web-mux-remove (m.conns) idx 0 [], served = m.served }
+        WebMux { listen = m.listen, conns = web-mux-remove (m.conns) idx 0 [], free = list-push (m.free) ts3, served = m.served }
       end
       else web-mux-drain route obs m idx ts2 (c.server) ((c.pending) & (r.data))
     end
@@ -284,13 +310,13 @@ Section: Concurrent Event Loop
     let plen = list-length pending
     in let total = wb-request-total pending plen
     in if total < 0 then
-      WebMux { listen = m.listen, conns = list-set-at (m.conns) idx (WebConn { transport = ts, server = srv, pending = pending, idle = 0 }), served = m.served }
+      WebMux { listen = m.listen, conns = list-set-at (m.conns) idx (WebConn { transport = ts, server = srv, pending = pending, idle = 0 }), free = m.free, served = m.served }
     else let req = http-parse-request (wb-slice pending 0 total [])
     in let ns = WebState { request-count = srv.request-count + 1 }
     in let resp = web-dispatch route obs ns req
     in act
       ts2 <- web-send-http ts resp
-      web-mux-drain route obs (WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 }) idx ts2 ns (wb-slice pending total plen [])
+      web-mux-drain route obs (WebMux { listen = m.listen, conns = m.conns, free = m.free, served = m.served + 1 }) idx ts2 ns (wb-slice pending total plen [])
     end
 
   web-mux-accept : WebMux, List Integer, Integer -> [Network.Read, Network.Write] WebMux
@@ -299,7 +325,9 @@ Section: Concurrent Event Loop
     in let listen1 = transport-set-session (m.listen) (r.session)
     in act
       listen2 <- flush-transport-outbox listen1
-      WebMux { listen = net-io-listen (fresh-listen-transport port), conns = list-push (m.conns) (WebConn { transport = listen2, server = web-new, pending = [], idle = 0 }), served = m.served }
+      let next = if list-length (m.free) > 0 then rebind-listen-transport (list-at (m.free) 0) port else fresh-listen-transport port
+      in let rest = if list-length (m.free) > 0 then pool-drop-first (m.free) 0 [] else m.free
+      in WebMux { listen = net-io-listen next, conns = list-push (m.conns) (WebConn { transport = listen2, server = web-new, pending = [], idle = 0 }), free = rest, served = m.served }
     end
 
   web-mux-feed : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, List Integer, Integer -> [Network.Read, Network.Write] WebMux
@@ -334,7 +362,7 @@ Section: Concurrent Event Loop
 
   web-serve-concurrent : (HttpRequest -> HttpResponse), (Text -> Integer), Integer -> [Console, Network.Read, Network.Write] Integer
   web-serve-concurrent (route) (obs) (port) =
-    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport port), conns = [], served = 0 }
+    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport port), conns = [], free = [], served = 0 }
     in web-mux-loop route obs m0 port 0 0
 
 Section: Legacy Framed Serve (for backward compat)

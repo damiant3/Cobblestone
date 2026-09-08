@@ -1,0 +1,90 @@
+Chapter: EdgeMeshPlanesTest
+
+  cites Foreword chapter Console
+  cites Engine chapter EdgeMesh
+  cites Mesh chapter EdgeMeshFederate
+  cites Mesh chapter EdgeMeshPlanes
+  cites CodexMagic chapter GameRegistry
+
+ EdgeMeshGameServers phase 3, stage 5. Two arms carry the stage, and a control
+ sits in front of each, because both failures look like a working bridge.
+
+ First, `find-game` answers a fabricated game for an unknown id, named
+ "Unknown". The control prints the name for two DIFFERENT unknown ids and shows
+ one name for both, therefore a bridge keyed on the name fuses the two ids into
+ one lane and pairs players across games inside the lane.
+
+ Then, two registered games are permitted to share a display name. The control
+ prints the shared name, and the lanes stay apart because the lane key carries
+ the game id.
+
+Section: Fixtures
+
+  entrant : Integer, Text, Integer -> QueuedPlayer
+  entrant (id) (name) (rating) =
+    QueuedPlayer {
+      qp-id = id,
+      qp-name = name,
+      qp-rating = rating,
+      qp-region-pref = 0,
+      qp-latencies = [],
+      qp-queue-time = 0,
+      qp-game-mode = ModeRanked
+    }
+
+  twin-registry : Integer -> GameRegistryState
+  twin-registry (dummy) =
+    register-game registry-new "Chess" GameBoardClassic ResultWinLose (Exactly 2) 0 0 "a second game also called Chess"
+
+  retired-registry : Integer -> GameRegistryState
+  retired-registry (dummy) =
+    GameRegistryState {
+      games = [RegisteredGame { game-id = 7, name = "Retired", game-type = GameBoardClassic, result-type = ResultWinLose, registered-by = 0, registered-at = 0, active = False, player-count = Exactly 2, avg-duration = 0, description = "" }],
+      next-game-id = 8,
+      subgame-sessions = [],
+      next-session-id = 1
+    }
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let reg = registry-new
+    in act
+      act
+        let a1 = plane-admit reg fed-new 1 (entrant 1 "chess-player" 1500)
+        in let a2 = plane-admit reg (plane-queue a1 fed-new) 3 (entrant 2 "magic-player" 1500)
+        in print-line-uni ("two registered games: " & plane-admit-label a1 & ", " & plane-admit-label a2 & ", lanes " & show (fed-lane-count (plane-queue a2 fed-new)))
+      end
+
+      act
+        print-line-uni ("control, two unknown ids share one NAME: " & (find-game reg 999).name & " and " & (find-game reg 1000).name)
+        act
+          let a1 = plane-admit reg fed-new 999 (entrant 3 "lost-a" 1500)
+          in let a2 = plane-admit reg (plane-queue a1 fed-new) 1000 (entrant 4 "lost-b" 1500)
+          in print-line-uni ("both are refused, lanes " & show (fed-lane-count (plane-queue a2 fed-new)) & ": " & plane-admit-label a1)
+        end
+      end
+
+      act
+        let twin = twin-registry 0
+        in act
+          print-line-uni ("control, two registered games share one name: " & (find-game twin 1).name & " and " & (find-game twin 4).name)
+          act
+            let a1 = plane-admit twin fed-new 1 (entrant 5 "first-chess" 1500)
+            in let a2 = plane-admit twin (plane-queue a1 fed-new) 4 (entrant 6 "second-chess" 1500)
+            in let q = plane-queue a2 fed-new
+            in act
+              print-line-uni ("the lanes stay apart: " & plane-admit-label a1 & ", " & plane-admit-label a2 & ", lanes " & show (fed-lane-count q))
+              print-line-uni ("and neither lane pairs: " & fed-match-label (fed-try-pair q "Chess#1" ModeRanked 0))
+            end
+          end
+        end
+      end
+
+      act
+        let r = plane-admit (retired-registry 0) fed-new 7 (entrant 7 "late" 1500)
+        in print-line-uni ("a registered game that is not active: " & plane-admit-label r)
+      end
+    end
+  end

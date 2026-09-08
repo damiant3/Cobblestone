@@ -146,7 +146,7 @@ things, both tests: its own per-chapter compile test and
 `foreword-all-compile`, which cites every chapter in the foreword. No product
 code uses it, so it is built, compiled, and has never met a fitness function.
 
-The withheld app's `Personality.codex` is the one that works.
+The withheld solver's `Personality.codex` is the one that works.
 `gen-random-population` seeds a population, `evolve-generation` sorts by
 fitness, keeps the top half, breeds and mutates it, and `sort-by-fitness` is a
 selection sort pairing population index with score index. It is driven by

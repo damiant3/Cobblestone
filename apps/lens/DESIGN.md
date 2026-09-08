@@ -217,7 +217,7 @@ emitted C#, and the engine + system store is Microsoft SQL Server (§4.4).
 
 **Deliberate v1 decision:** a Lens model is ordinary Codex data -- records
 and lists interpreted by the Lens engine -- following the proven hybrid
-pattern (a withheld app's `CardDesigner.codex`, ShimmeringPortal Path
+pattern (`apps/games/codexmagic/CardDesigner.codex`, ShimmeringPortal Path
 C). Zero compiler changes, zero new keywords, and the model still gets the
 full type system. Prose sugar (`We say:` CPL forms for metric definitions)
 is a later phase, if ever.

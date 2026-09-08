@@ -1,16 +1,27 @@
 # Run the IMG plug: send PE + CDX bytes and receive a GPT disk image.
 #
 # Usage:
-#   plugs/img/run.ps1 -PeInput <file.efi> -CdxInput <file.cdx> -Out <file.img> [-Fat16] [-Source <file>]
+#   plugs/img/run.ps1 -PeInput <file.efi> -CdxInput <file.cdx> -Out <file.img> [-Fat16] [-Source <file>...]
 #
 # Default is FAT32. Pass -Fat16 for FAT16 with optional source embedding.
+# -Source takes any number of files and each keeps its OWN name on the image,
+# 8.3-folded. It used to take one file and write it as SOURCE.SRC, a literal in
+# the writer, so no image in the tree could hold a directory of tests.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string]$PeInput,
     [Parameter(Mandatory=$true)] [string]$CdxInput,
     [Parameter(Mandatory=$true)] [string]$Out,
     [switch]$Fat16,
-    [string]$Source = '',
+    [string[]]$Source = @(),
+    # A FILE of source paths, one per line, added to whatever -Source names.
+    # It is a file and not just the array because `pwsh -File` splits an array
+    # into separate positional arguments, so only the first element ever binds
+    # and the rest come back as "a positional parameter cannot be found";
+    # build/bvt.ps1 carries the same note over -SubjectsFile. A caller with a
+    # DIRECTORY of sources, which is the whole point of taking more than one,
+    # reaches this script through -File.
+    [string]$SourceList = '',
     [int]$TotalSectors = 16384
 )
 
@@ -32,27 +43,79 @@ foreach ($f in @($PeInput, $CdxInput)) {
 
 $peBytes = [System.IO.File]::ReadAllBytes($PeInput)
 $cdxBytes = [System.IO.File]::ReadAllBytes($CdxInput)
-if ($Source -and (Test-Path -PathType Leaf $Source)) {
-    [byte[]]$srcBytes = [System.IO.File]::ReadAllBytes($Source)
-} else {
-    [byte[]]$srcBytes = [byte[]]::new(0)
+
+# The root directory is the bound and it is a real one: 512 entries, of which
+# EFI, SEED and the volume label take three. Refuse rather than write the
+# entries that fit, because a silently short image is a wrong answer that looks
+# like a right one.
+$rootEntryCount = 512
+$maxSources = $rootEntryCount - 3
+
+function ConvertTo-Name83([string]$path) {
+    $leaf = [System.IO.Path]::GetFileNameWithoutExtension($path)
+    $ext  = [System.IO.Path]::GetExtension($path).TrimStart('.')
+    $clean = { param($s) (($s.ToUpperInvariant().ToCharArray() | ForEach-Object {
+        if ($_ -match '[A-Z0-9_\-]') { $_ } else { '_' } }) -join '') }
+    $n = (& $clean $leaf); $e = (& $clean $ext)
+    if ($n.Length -gt 8) { $n = $n.Substring(0, 8) }
+    if ($e.Length -gt 3) { $e = $e.Substring(0, 3) }
+    return ($n.PadRight(8) + $e.PadRight(3))
 }
 
-# Build payload: [fs-type(1)] [total-sectors(4)] [pe-size(4)] [cdx-size(4)] [src-size(4)] [pe][cdx][src]
+$sourcePaths = @($Source)
+if ($SourceList) {
+    if (-not (Test-Path -PathType Leaf $SourceList)) { [Console]::Error.WriteLine("MISSING -SourceList: $SourceList"); exit 2 }
+    $sourcePaths += @(Get-Content $SourceList | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+}
+
+$sources = @()
+foreach ($s in $sourcePaths) {
+    if (-not (Test-Path -PathType Leaf $s)) { [Console]::Error.WriteLine("MISSING source: $s"); exit 2 }
+    $sources += [pscustomobject]@{
+        Path  = $s
+        Name  = (ConvertTo-Name83 $s)
+        Bytes = [System.IO.File]::ReadAllBytes($s)
+    }
+}
+if ($sources.Count -gt $maxSources) {
+    [Console]::Error.WriteLine("REFUSED: $($sources.Count) sources exceeds the FAT16 root directory's $maxSources usable entries.")
+    exit 3
+}
+# Two files folding to one 8.3 name would put two directory entries under the
+# same name and the reader would get whichever it found first. That is data
+# loss with no diagnostic, so it is named here.
+$dupes = @($sources | Group-Object Name | Where-Object { $_.Count -gt 1 })
+if ($dupes.Count -gt 0) {
+    foreach ($d in $dupes) {
+        [Console]::Error.WriteLine("REFUSED: 8.3 name '$($d.Name)' is claimed by $($d.Count) files: $(($d.Group.Path) -join ', ')")
+    }
+    exit 4
+}
+
+# Build payload:
+#   [fs-type(1)] [total-sectors(4)] [pe-size(4)] [cdx-size(4)] [src-count(4)]
+#   [ per source: name83(11) size(4) ] ... [pe][cdx][ each source's bytes ]
 $ms = [System.IO.MemoryStream]::new()
 $bw = [System.IO.BinaryWriter]::new($ms)
 $bw.Write([byte]$(if ($Fat16) { 1 } else { 0 }))
 $bw.Write([int]$TotalSectors)
 $bw.Write([int]$peBytes.Length)
 $bw.Write([int]$cdxBytes.Length)
-$bw.Write([int]$srcBytes.Length)
+$bw.Write([int]$sources.Count)
+foreach ($s in $sources) {
+    $bw.Write([System.Text.Encoding]::ASCII.GetBytes($s.Name))
+    $bw.Write([int]$s.Bytes.Length)
+}
 $bw.Write($peBytes)
 $bw.Write($cdxBytes)
-if ($srcBytes.Length -gt 0) { $bw.Write($srcBytes) }
+foreach ($s in $sources) { if ($s.Bytes.Length -gt 0) { $bw.Write($s.Bytes) } }
 $bw.Flush()
 $inputBytes = $ms.ToArray()
 
-Write-Host "[img-run] PE=$($peBytes.Length) CDX=$($cdxBytes.Length) src=$($srcBytes.Length) sectors=$TotalSectors fs=$(if ($Fat16) {'FAT16'} else {'FAT32'})"
+$srcTotal = 0
+foreach ($s in $sources) { $srcTotal += $s.Bytes.Length }
+Write-Host "[img-run] PE=$($peBytes.Length) CDX=$($cdxBytes.Length) sources=$($sources.Count) srcBytes=$srcTotal sectors=$TotalSectors fs=$(if ($Fat16) {'FAT16'} else {'FAT32'})"
+foreach ($s in $sources) { Write-Host "[img-run]   $($s.Name) <- $($s.Path) ($($s.Bytes.Length) bytes)" }
 
 # -- Start TCP listener ----------------------------------------------
 $plugPort = 9118
