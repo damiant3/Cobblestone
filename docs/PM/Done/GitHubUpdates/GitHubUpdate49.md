@@ -28,8 +28,7 @@ not carried forward (L-COUNT).
 - ~~**Rulings still queued for Damian**~~: the queue became Decisions and red
   made the technical calls per Damian's direction (17898); 4 ingested (18656);
   10 landed (18038); 19 closed with ThreatModel (18706); 20 ruled (17885).
-  **16 (ProductBuilder stage 6 host) is customer-gated and is the only one
-  left.**
+  **16 is customer-gated and is the only one left.**
 - ~~**`flash-open-bank` Board threading**~~ LANDED 17839 and 17841 (root), on
   2026-08-20 before the push commit, so it is already in the public Update 48
   tree.

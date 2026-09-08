@@ -1,13 +1,11 @@
 # Codex Games
 
-A two-part games platform: a suite of 33 classic board and card games with AI
-opponents, and CodexMagic, a full-featured collectible card game with economies,
-clans, dungeons, and a universal multiverse registry.
+A suite of 33 classic board and card games with AI opponents.
 
 Counts re-measured 2026-08-31 and they had been wrong. `games.json` holds 35
 rows, and two of them are not classic games with an engine behind them: `chess`
-is listed and NOT BUILT (GAME-10 in the backlog), and `magic` is the CodexMagic
-platform below rather than a board game. Thirty-three ids have both a
+is listed and NOT BUILT (GAME-10 in the backlog), and `magic` is a withheld
+app rather than a board game. Thirty-three ids have both a
 `classic/<Name>.codex` engine and a `classic/web/<id>.html` shell, counted both
 ways with neither side carrying an orphan. This file said 35 and the landing
 page said 34; both were counting rows rather than games (L-COUNT).
@@ -50,37 +48,6 @@ page said 34; both were counting rows rather than games (L-COUNT).
 
 ### Infrastructure
 - **Minimax** -- Search engines: full-depth TicTacToe minimax + iterative two-ply Connect4, **Rng** -- Deterministic LCG PRNG
-
-## CodexMagic Platform (74 Codex files)
-
-### Core Game Engine
-- **Card, Mana, GameState, Engine, Combat, Action, Turn, Trigger, Stack** -- Complete card game engine with turn phases, combat, and AI
-- **General** -- Commander/general identities
-- **CardPool** -- 100+ card templates across six colors
-- **Deck, Distribution, Crafting** -- Deck construction, pack distribution, wildcard crafting
-
-### Economy and Tokens
-- **Token, MintAuthority, ManaCoin, TransactionValidator** -- NFT-style card tokens, in-game currency
-- **ChainCore** -- Hash-linked block structure for audit trail
-- **PlanarExchange, CrossPlaneItems** -- Cross-game item trading
-
-### Multiplayer
-- **Auth, PlayerIdentity, Matchmaking, UniversalMatchmaking, MatchRecord** -- Accounts, ELO-based pairing, cross-game queues
-
-### Clans
-- **Clan, ClanAuthority, ClanEconomy, ClanLibrary, ClanFormat, ClanTournament, ClanChallenge, ClanPacks, ClanServer** -- Full clan system with treasury, tournaments, custom packs
-- **Season, SeasonalContent** -- Quarterly season lifecycle
-
-### RPG Layer
-- **RPGEngine, CampaignWorld, DungeonRun, DungeonProgression, GMEconomy** -- Tabletop RPG: classes, stat blocks, dungeon traversal, loot
-
-### Server
-- **MagicServer** -- Bare-metal HTTP server dispatching 50+ API routes
-- **Bridge, ServerUtil, EventBus** -- Transport and pub/sub infrastructure
-
-### Web UI
-- **MagicTheme, MagicCardRender** -- Theme and card rendering
-- **GamePage, QueuePage, ProfilePage, CollectionPage, StorePage, MarketplacePage, WelcomePage, AdminPage, DeckTestPage** -- Full set of SPA views
 
 ## Completeness
 
@@ -127,8 +94,6 @@ drift from what is served. Each carries a control that fires.
 A game whose module will not build is a PARITY finding for the wasm plug lane,
 not something to work around here: report the game and the failing step and
 leave the game's Codex source alone.
-
-CodexMagic: 75% -- Core card game engine, economy, auth, clan, season, and HTTP API layers are fully wired. RPG/dungeon layer is structurally complete but not yet integrated into the server dispatch table. PlanarExchange and GameRegistry are designed but not hooked into the server.
 
 ## Codex Conformance
 

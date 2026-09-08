@@ -102,7 +102,7 @@ Five app bugs fixed to reach full app compilation:
   workflow bridge)
 - **Workflow Engine** -- process automation (types, engine,
   templates)
-- **AssetForge** -- asset management for CodexMagic
+- **AssetForge** -- asset management for the card game
 - **Shared UI Components** -- CommandPalette, DetailPane,
   FilterableList, SearchBar, SettingsPanel, StatusBadge
 

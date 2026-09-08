@@ -192,7 +192,7 @@ The grammar is: `cites <family> quire <sub-quire> chapter <name>`.
 | `cites Net chapter Tcp` | `cites OS quire Net chapter Tcp` | `codex/os/net/Tcp.codex` |
 | `cites Kernel chapter DiskFacts` | `cites OS quire Kernel chapter DiskFacts` | `codex/os/kernel/DiskFacts.codex` |
 | `cites Works chapter Http` | `cites Apps quire Works chapter Http` | `apps/works/Http.codex` |
-| `cites Magic chapter Engine` | `cites Apps quire Magic chapter Engine` | `apps/games/magic/Engine.codex` |
+| `cites Games chapter Minimax` | `cites Apps quire Games chapter Minimax` | `apps/games/classic/Minimax.codex` |
 
 For families with no sub-quires (like `Compiler`), the quire keyword
 is omitted or the family name doubles as the quire:

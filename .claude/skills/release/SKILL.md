@@ -278,8 +278,17 @@ the DDC on the release is what surfaces it if it was missed.
 ## Step 7 -- Push
 Follow `docs/Agents/PublicPush.md` exactly: sync main, `git add -u` plus
 explicit new paths (never `git add -A`), secret scan (the signing key and
-`apps/games/magic/` never ship), one Update-N commit, push github master and
+the withheld block in `.gitignore` never ship), one Update-N commit, push github master and
 gitlab master:main, no force.
+
+## Step 8 -- Close the loop with contributors
+After the push, comment on every outside PR ingested since the previous
+update (the note's "Outside contributions" paragraph is the list): the
+commit hash, the Perforce CL the PR landed as, and where the credit lives.
+A PR reply of "landed, with credit" is a promise; this comment is the
+receipt, and on 2026-09-08 Steve Howell asked for it by mail because none
+of eleven had one. `gh pr comment N --body ...` from the release
+workspace, one per PR.
 
 ## Rules
 - The battery, the app sweep, the poison build and the DDC are the four
@@ -287,6 +296,6 @@ gitlab master:main, no force.
   correctness. They prove different things: the battery is depth, the sweep
   is breadth over the front end, the poison build is memory hygiene, and the
   DDC is the only one that does not take the compiler's word for anything.
-- Never force-push; never publish the signing key or `apps/games/magic/`.
+- Never force-push; never publish the signing key or the withheld block.
 - If any step is red, STOP and report. A release is the one thing that must
   never ship broken, because the public inherits it directly.

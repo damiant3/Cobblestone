@@ -113,10 +113,11 @@ its state as a thing to reconcile against.
     Git also collapses a wholly-new directory into ONE `??` line, so a
     twenty-file addition is one entry to overlook.
 
-    Re-measured 2026-09-07 evening (red), and re-measure again at the next
-    release rather than quoting this (L-COUNT): 482 tracked files are in the
-    depot and absent from `github/master`, 420 of them ruled out by
-    `check-ignore`, leaving **62 survivors**. Six `build/*.ps1` checkers
+    Re-measured at the Update 56 push (blu, 2026-09-08), and re-measure again
+    at the next release rather than quoting this (L-COUNT): **758** tracked
+    files are in the depot and absent from `github/master`, **437** ruled out
+    by `check-ignore`, leaving **321 survivors**, all of which were staged.
+    The previous reading, 2026-09-07 evening (red), was 482 / 420 / 62. Six `build/*.ps1` checkers
     including `sign-seed.ps1`, five `docs/PM/Active/Stories/*.md`, twenty
     `build/boot` flight artifacts, six `codex/test` fixtures with their
     `.expected`, `codex/plugs/wasm/WasmStdio.codex` and the rest are ordinary
@@ -143,11 +144,15 @@ its state as a thing to reconcile against.
     somebody dropped, which is 2c's point. Add a row there when a document
     joins the ignore rule, or the next reader is back to guessing.
 
-    **That file is NOT on the mirror** (measured 2026-09-08, blu:
-    `git ls-tree -r github/master --name-only` matches nothing for it, and
-    the reconcile lists it as a survivor). The one document that explains
-    what is withheld is itself missing, which is 2c happening to 2c. Stage
-    it explicitly at the next push.
+    **That file was missing from the mirror until Update 56 and is on it
+    now.** Measured 2026-09-08 (blu): `git ls-tree -r github/master` matched
+    nothing for it and the reconcile listed it as a survivor, so the one
+    document explaining what is withheld was itself invisible, which is 2c
+    happening to 2c. It shipped in the Update 56 commit. The general point
+    survives the fix: a file that is neither ignored nor tracked is
+    permanently invisible to `git add -u`, so the reconcile is the only
+    thing that finds it, and a document ABOUT the withholding is the one
+    most easily lost that way.
 
     The reconcile is one command from the main workspace and it needs no
     network:
@@ -183,22 +188,22 @@ its state as a thing to reconcile against.
 
     **Anything left after check-ignore is a file nobody decided to withhold.**
     Do not read a large raw difference as a disaster: of 479 paths missing
-    at the 2026-09-07 measurement, 435 were deliberate -- `apps/games/magic`,
-    `assets/games`, `apps/wademo`, `apps/productbuilder`, `codex/product`,
-    `build/boot/archive`, the third-party specification PDFs, and everything
-    `*.exe` / `*.cdx`. The number that matters is the one that survives the
+    at the 2026-09-07 measurement, 435 were deliberate: the withheld block at
+    the bottom of `.gitignore`, `build/boot/archive`, the third-party
+    specification PDFs, and everything `*.exe` / `*.cdx`. The number that matters is the one that survives the
     ignore rules.
 
 2c. **A DELIBERATE EXCLUSION IS INVISIBLE FROM OUTSIDE, AND THAT IS ITS OWN
     DEFECT.** Steve Howell's issue 123 reported three directories present in
-    the depot and 404 on the mirror. All three are ruled exclusions with good
-    reasons -- `codex/product` and `apps/productbuilder` are customer work
-    (Damian, 2026-08-18), `apps/wademo` carries an NHGIS extract whose terms
-    forbid redistribution -- and exactly ONE of them, `codex/product`, is a
-    quire. But a reader of the public tree cannot tell a withheld directory
-    from a lost one, so a contributor spends his time reporting our policy
-    back to us. The mirror should say which paths are withheld and why,
-    without naming what is in them.
+    the depot and 404 on the mirror, all three ruled exclusions. A reader of
+    the public tree cannot tell a withheld directory from a lost one, so a
+    contributor spends his time reporting our policy back to us. Since
+    2026-09-08 (Damian) the withheld set is ONE block at the bottom of
+    `.gitignore`, headed "Withheld from the public mirror", and it carries
+    every test, design, annotation, register row and script that cites a
+    withheld path, so the mirror never holds a cite it cannot resolve. The
+    block's comment says the paths are withheld on purpose and does not say
+    what is in them; no doc, register or update names them either.
 3. Commit as author damiant, one line, comma-separated themes, no trailers.
    The Update-N report file is part of the same commit.
 4. Push, NO force (standing rule). The github credential is usually cached;
@@ -221,16 +226,13 @@ its state as a thing to reconcile against.
   republishing other parties' copyrighted documents is redistribution.
   Our own notes about them (`docs/Reference/*_Notes.md`) ship. Ruled
   during the Update 38 push, 2026-08-05.
-- `apps/games/magic/`, the old basic Magic engine (21 core files), stays
-  OUT of the public mirror. It is in `.gitignore`, but `.gitignore` only
-  governs UNTRACKED files; it never untracks a file already committed. If
-  any file in a gitignored folder was ever committed, `git add -A` keeps
-  publishing it. Check `git ls-files apps/games/magic`. (The expanded
-  commercial app `apps/games/codexmagic/` IS public and is different.)
-  **`annotations/apps/games/magic/` is a different path and its publication
-  is intentional** -- Damian ruled it accepted as public 2026-08-17, after
-  the Update 45 push scan found 150 files there dating to Update 39; the
-  code itself stays hidden as before, so do not re-raise this.
+- **The withheld block at the bottom of `.gitignore` is the whole withheld
+  set** (Damian, 2026-09-08; it supersedes the 2026-08-17 ruling that
+  accepted one annotations directory as public). `.gitignore` governs
+  UNTRACKED files only; it never untracks a file already committed, and
+  `git add -A` keeps publishing one. The 2026-09-08 push removed every
+  tracked file under the block with `git rm -r --cached`; before each push,
+  feed the block's paths to `git ls-files` and expect nothing back.
 - **`build/boot/diag-sitting*.cfg` never ship.** Found at the Update 49
   pre-push scan, 2026-08-21: five of them were untracked and new, and every
   one names the box (`b3 peer=192.168.6.141:7 ip=192.168.6.200`). They are

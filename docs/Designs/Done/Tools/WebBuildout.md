@@ -189,7 +189,7 @@ Fix bugs and clean up the existing HtmlEmitter before extending it.
 
 3. **Verify Gen 2 pages build.** Run the HTML plug pipeline for
    each `*App.codex` and confirm the output HTML works in a
-   browser. This requires a working seed on the CodexMagic stream
+   browser. This requires a working seed on the dev stream
    (currently blocked by constants mismatch -- see build failure).
 
 ### Phase 3: Theme-Driven Widget Rendering
@@ -312,7 +312,7 @@ To add a new dimension axis to a page:
    `SettingDesigner.codex`) are reference material only. Once all
    lessons have been extracted into the Gen 2 pattern, delete them.
 
-2. **Seed mismatch on CodexMagic stream.** Resolved -- CL 2573
+2. **Seed mismatch on the dev stream.** Resolved -- CL 2573
    build files applied, full build passes (120/120, all gates green).
 
 3. **IR size blocker for foreword cites.** No longer a hard

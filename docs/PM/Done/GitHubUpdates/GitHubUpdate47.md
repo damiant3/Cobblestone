@@ -544,7 +544,7 @@ the bullet that carries the work.
   README digests, doc counts, seed map + img at `12B07296`; 16575
   `ExaminersAssay` ai-foreword coverage note; 16627 PR 67 landing,
   `contrib/README.md` + `ZigEmitter __deck-set`; 16629 the Update 47 note on
-  PR 67). ProductBuilder plan and spec landed under `apps/productbuilder`
+  PR 67). A customer plan and spec landed
   (red 16893, 17121; gitignored, not part of the public tree).
 
 - **Claim-only and row-only copy-ups**, folded here rather than listed:

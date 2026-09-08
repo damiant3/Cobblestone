@@ -98,7 +98,7 @@ enough to run hundreds of times.
 ## The first test of any fitness function
 
 Before trusting a single generation of output, check that **ranking actually
-reorders.** `sort-by-fitness` in `apps/games/magic/Personality.codex` was once
+reorders.** `sort-by-fitness` in a withheld app's `Personality.codex` was once
 a stub returning the population unchanged: the GA still ran, still bred, still
 mutated, still reported a best-of-generation, and selected on nothing at all.
 A GA without selection produces output shaped exactly like a GA with it.

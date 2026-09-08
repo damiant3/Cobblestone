@@ -346,6 +346,39 @@ Edge and a web server. `test-app-gui` drives a headless GUI battery.
 workspace. **Read the script before believing the row**, which the ledger
 already says about the classifier and which cost a second pass anyway.
 
+### Five things the lifts found in the scripts themselves
+
+**OPEN, unowned: TWO GENERATORS EMIT A SCRIPT THAT DOES NOT EXIST, so nothing
+grades them** (reek, 2026-09-08, found by the pipeline-model migration).
+`codex/build/testrunBashScript.codex` emits `build/test-run.sh` and
+`codex/build/cvmmbuildScript.codex` emits `build/cvmm-build.ps1`. Both target
+paths are absent at head, verified. `check-generated-scripts.ps1` lists them
+under "no target" and exits 0: a targetless generator is asked whether it
+COMPILES and never asked what it EMITS, so either could emit anything and the
+gate would stay green. Neither could be migrated onto the pipeline model for
+the same reason, since no migration of them can be proven byte-identical
+(L-NOGATE).
+
+Three ways out and the choice is the work: ship the two targets, which asks
+whether either script is wanted at all; DELETE the two generators if the
+scripts are not wanted, so the tree stops carrying code nothing grades; or make
+`check-generated-scripts.ps1` FAIL on a targetless generator rather than
+listing it, which forces one of the first two the moment anyone adds a third.
+The last is cheapest and is a small change to a file fester owns.
+
+**STILL OPEN AT HEAD, and re-stated because the row recording it did not
+survive a rewrite: `build/test-boards.ps1` GRADES WHATEVER COMPILER IS ALREADY
+IN `build-output`.** Verified at head 2026-09-08, lines 23 to 26: it copies the
+seed to `$Stage0` only `if ((-not (Test-Path -PathType Leaf $Stage0)))`, where
+`build/sweep-apps.ps1` copies unconditionally. So a `test-boards` run on a
+workspace where any earlier build left a binary there grades THAT binary, and
+its PASS is a statement about whichever compiler ran last. This is R-GATE's
+name-the-kernel trap arriving through a script's own default rather than a
+forgotten flag, which is worse: nothing on the command line is wrong and the
+printed board result carries no digest that would contradict it. Repairs
+priced: copy unconditionally, matching `sweep-apps`; or keep the guard and
+PRINT the digest of the `Stage0` actually used, so the reading is falsifiable.
+
 ### Three things the lifts found in the scripts themselves
 
 **CLOSED (fester, 2026-09-08): `build/sweep-apps.ps1` no longer accepts `-Jobs`,
@@ -527,7 +560,7 @@ heap, which this page already calls the hard part; (c) let the host reboot the
 compiler once per test, which is `test.ps1` today and buys no capability. The
 split is seed-affecting and is not done.
 
-**DISK mode honours the path it is given (fester, 2026-09-08). PROVEN ON `//Codex/fester` AS 23967 AND NOT YET ON MAIN: the change is seed-affecting and waits on the token, so main's compiler still compiles the constant.**
+**DISK mode honours the path it is given (fester, 2026-09-08).**
 sends `DISK` and then a path, `emit-from-disk` read that line, and then compiled
 `disk-default-path` regardless: an interface that accepts what it does not
 honour, the same shape as `sweep-apps.ps1`'s `-Jobs` one section above.
@@ -1716,11 +1749,10 @@ Measured both ways over all 1,152 `apps/` chapters as the changed file, against
 | changed files that swept NOTHING while a sound closure sweeps something | 3 | 0 |
 | changed files that swept FEWER entries | 25 | 0 |
 
-The three total blind spots were `apps/games/codexmagic/ChainCore.codex`,
-`MintAuthority.codex` and `TransactionValidator.codex`, every one of them
-reached only through the LOSING `Bridge` (`apps/games/classic/Bridge.codex`
-cites `Rng`; `apps/games/codexmagic/Bridge.codex` cites those three). The worst
-partial miss was `apps/games/magic/LibKnowledge.codex`, 2 entries of 74.
+The three total blind spots were three chapters of a withheld app, every one
+of them reached only through the LOSING `Bridge` (`apps/games/classic/Bridge.codex`
+cites `Rng`; the withheld app's own `Bridge.codex` cites those three). The worst
+partial miss was a chapter of the same app's engine, 2 entries of 74.
 
 Arms, run against the depot script and the changed one on the same inputs:
 `ChainCore` 0 then 2 and both units CLEAN; `apps/c64/C64Screen.codex` 0 then 0;

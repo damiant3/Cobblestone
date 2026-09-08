@@ -62,7 +62,6 @@ Detailed development timeline. See [TechnicalDetails.md](../../TechnicalDetails.
 | **Codex.Spark** | **85-module creative suite: 3D modeling, image editor, animation, audio/DAW, video compositor, procedural gen, interactive UI shell on GOP framebuffer** | **2026-05-18** |
 | **codex-vm GOP** | **Graphics Output Protocol framebuffer -- Spark renders 3D on screen** | **2026-05-18** |
 | Codex.DB | Relational database server (38 modules) with pipe-forward queries | 2026-05-18 |
-| CodexMagic | Card game + game server with web portal (56 modules) | 2026-05-18 |
 | Mutable records | `__record-set-mut` for in-place mutation under linear ownership | 2026-05-18 |
 | **575 modules** | **24 quires, 59 compiler files, 581+ test samples** | **2026-05-18** |
 | Emitter Exodus | PE, ELF, GPT, FAT writers extracted from compiler to plug CDX binaries | 2026-05-23 |
@@ -94,7 +93,6 @@ Detailed development timeline. See [TechnicalDetails.md](../../TechnicalDetails.
 | CHECK/LOWER heap reduction | Phase-aware deck sizing, EOF settle counter; ~80 MB saved | 2026-06-02 |
 | x86-64 codegen optimization | Comparison folding, preamble elision, store-load elimination, immediate ops -- fib(35) cut from 107 to 53 instructions | 2026-06-06 |
 | Spark WebGPU Studio | 161KB WASM, 400+ exports, 28s build. WASM TCO: 255 functions. CAD workbench. UV editor. KvStore. Codex Designer. | 2026-06-06 |
-| CodexMagic web platform | Card game server + web portal, game engine, economy, clans, seasons | 2026-06-06 |
 | **Native-class codegen** | **TCO parallel-move shuffle, R8/R9-staged operands, leaf/near-leaf frame elision, IrRemInt + inliner -- sum 14 insns (beats C /O2), fact 17, fib 23, gcd 23** | **2026-06-10** |
 | **Application wave** | **630 app modules across 47 apps: ERP + 5 verticals, Market, Browser, FileShare, Secrets, Diagram, Globe, Star Atlas, MathBook, CVMM, 20 page apps on WebApp template** | **2026-06-10** |
 | **Punctual functions** | **`punctual` keyword: per-function bounded-execution enforcement (novel). CDX6001-6005 compile errors. Instruction count reporting (CDX6010). Optional budget (CDX6011).** | **2026-06-13** |

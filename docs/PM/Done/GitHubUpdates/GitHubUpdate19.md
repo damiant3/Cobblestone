@@ -24,7 +24,7 @@
 
 ## Apps
 
-- **CreationsApp SPA** (CodexMagic): replaces hand-JS with a single-page app. AuthClient reusable auth, WorldForge integration, NameForge, StoryGraph, CardEmitter, WorldModel.
+- **CreationsApp SPA**: replaces hand-JS with a single-page app. AuthClient reusable auth, WorldForge integration, NameForge, StoryGraph, CardEmitter, WorldModel.
 - **Explorer DB-backed designers.** Multi-table ExplorerStore + generic ExplorerServer; Setting/Character/Item pages fetch from DB and build pip-trees.
 - **Accounts persistence.** Durable save/load of account table to disk sector; survives restart.
 

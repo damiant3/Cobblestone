@@ -52,15 +52,15 @@ editor with PBR properties, asset browser, render passes, and an
 interactive app shell with real-time animated demo. Built in a single
 day session.
 
-### CodexMagic -- Card Game Engine (ongoing)
+### Card game engine (ongoing)
 
-A collectible card game rules engine modeled on early Magic: The
-Gathering (Revised through Onslaught). Two-player duel with core card
+A collectible card game rules engine modeled on early collectible card
+games. Two-player duel with core card
 types, mana system, turn phases, LIFO spell stack, combat (attackers,
 blockers, damage with first strike / trample / deathtouch / lifelink),
 zones (library, hand, battlefield, graveyard, stack, exile), eight
 state-based actions, and keyword abilities. Engine is a pure
-deterministic state machine. Design docs in `docs/Designs/Active/CodexMagic/`.
+deterministic state machine.
 
 ### Codex.Data -- Database Modules (CL 1842+)
 
@@ -87,6 +87,6 @@ Split `docs/OperatorsManual.md` into two documents:
 ### Dev Stream Merge-Down
 
 Merged 3 compiler files (X86_64Chapter, X86_64State, opening) and
-build scripts from main into the CodexMagic dev stream, resolving a
+build scripts from main into the dev stream, resolving a
 stale-seed issue where the branch's source had diverged from the seed
 binary.
