@@ -1314,7 +1314,7 @@ Section: Name Mapping
    in if ci >= 0 then
     let c = list-at (ctx.ctors) ci
     in if c.enum-like then zig-sanitize (c.type-name) & "." & zig-sanitize n
-       else let boxed = zig-typedef-recursive ctx (c.type-name)
+       else let boxed = zig-typedef-boxed ctx (c.type-name)
        in let base = if boxed then zig-sanitize (c.type-name) & "S" else zig-sanitize (c.type-name) & zig-ctor-type-args ty (ctx.scope-tvars)
        in if boxed then "cx_new(" & base & "{ ." & zig-sanitize n & " = {} })"
           else base & "{ ." & zig-sanitize n & " = {} }"
@@ -1438,17 +1438,32 @@ Section: Type Definition Emission
    else if zig-ctor-fields-self-ref ((list-at ctors i).fields) 0 n then True
    else zig-variant-self-recursive n ctors (i + 1)
 
-  zig-typedef-recursive-loop : List ATypeDef, Integer, Text -> Boolean
-  zig-typedef-recursive-loop (tds) (i) (n) =
+ WHICH VARIANTS ARE BOXED: every payload-carrying one.
+
+ Bare metal boxes every variant value -- they are heap words, which is why
+ `address-of` there is emit-identity-builtin: the value IS the address, and no
+ type can fail it. Boxing the same set here makes `address-of` total, rather
+ than resting on the decision zig's finite-size rule makes for SIZING. A
+ variant that reaches itself only through a `List` is finite either way, and
+ `cx_address_of` has no arm for one that is left unboxed.
+
+ A generic variant stays unboxed: it is emitted as a `fn ... type` and has no
+ single declaration to point at.
+
+  zig-typedef-boxed-loop : List ATypeDef, Integer, Text -> Boolean
+  zig-typedef-boxed-loop (tds) (i) (n) =
    if i >= list-length tds then False
    else when (list-at tds i)
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     if name.value == n then zig-variant-self-recursive n ctors 0
-     else zig-typedef-recursive-loop tds (i + 1) n
-    is otherwise -> zig-typedef-recursive-loop tds (i + 1) n
+     if name.value == n
+     then if list-length tparams > 0 then False
+          else if variant-all-nullary ctors 0 then False
+          else True
+     else zig-typedef-boxed-loop tds (i + 1) n
+    is otherwise -> zig-typedef-boxed-loop tds (i + 1) n
 
-  zig-typedef-recursive : ZigCtx, Text -> Boolean
-  zig-typedef-recursive (ctx) (n) = zig-typedef-recursive-loop (ctx.typedefs) 0 n
+  zig-typedef-boxed : ZigCtx, Text -> Boolean
+  zig-typedef-boxed (ctx) (n) = zig-typedef-boxed-loop (ctx.typedefs) 0 n
 
  Whether a scrutinee needs `.*` is a question about the type's NAME, so it
  asks the same way the exhaustiveness check does. Matching SumTy alone
@@ -1458,7 +1473,7 @@ Section: Type Definition Emission
 
   zig-match-deref : ZigCtx, CodexType -> Text
   zig-match-deref (ctx) (ty) =
-   if zig-typedef-recursive ctx (zig-type-name-of ty) then ".*" else ""
+   if zig-typedef-boxed ctx (zig-type-name-of ty) then ".*" else ""
 
   emit-zig-sum-type : Text, List AVariantCtorDef, List Name -> Text
   emit-zig-sum-type (name) (ctors) (tparams) =
@@ -1467,10 +1482,8 @@ Section: Type Definition Emission
       & emit-zig-union-ctors ctors 0 (list-length ctors) & "    };\n}\n\n"
    else if variant-all-nullary ctors 0
    then "const " & zig-sanitize name & " = enum {\n" & emit-zig-enum-ctors ctors 0 (list-length ctors) & "};\n\n"
-   else if zig-variant-self-recursive name ctors 0
-   then "const " & zig-sanitize name & "S = union(enum) {\n" & emit-zig-union-ctors ctors 0 (list-length ctors) & "};\n"
+   else "const " & zig-sanitize name & "S = union(enum) {\n" & emit-zig-union-ctors ctors 0 (list-length ctors) & "};\n"
       & "const " & zig-sanitize name & " = *" & zig-sanitize name & "S;\n\n"
-   else "const " & zig-sanitize name & " = union(enum) {\n" & emit-zig-union-ctors ctors 0 (list-length ctors) & "};\n\n"
 
   emit-zig-enum-ctors : List AVariantCtorDef, Integer, Integer -> Text
   emit-zig-enum-ctors (ctors) (i) (len) =
@@ -2958,7 +2971,7 @@ Section: Apply Emission
   emit-zig-ctor-apply (c) (args) (ctx) (d) (cty) =
    let tname = zig-sanitize (c.type-name)
    in let cname = zig-sanitize (c.ctor-name)
-   in let boxed = zig-typedef-recursive ctx (c.type-name)
+   in let boxed = zig-typedef-boxed ctx (c.type-name)
    in let base = if boxed then tname & "S" else tname & zig-ctor-type-args cty (ctx.scope-tvars)
    in let open = if boxed then "cx_new(" else ""
    in let close = if boxed then ")" else ""
@@ -4041,7 +4054,7 @@ Section: Chapter Emission
  `.expected` in the tree spells it.
 
   zig-p-cx-real-to-text : List ShakeFrag
-  zig-p-cx-real-to-text = [ShakeLit "fn ", ShakeUse "cx_real_to_text", ShakeLit "(cx_v: f64) []const u8 {\n    var cx_tmp: [64]u8 = undefined;\n    var cx_i: usize = 0;\n    const cx_b = (@as(u64, @bitCast(cx_v)) >> 63) == 1;\n    const cx_e = @abs(cx_v);\n    const cx_acc = @trunc(cx_e);\n    var cx_a: [24]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_a, \"{d}\", .{", ShakeUse "cx_real_to_int", ShakeLit "(cx_acc)}) catch unreachable;\n    if (cx_b) {\n        cx_tmp[cx_i] = 73;\n        cx_i += 1;\n    }\n    for (cx_s) |cx_ch| {\n        cx_tmp[cx_i] = 3 + (cx_ch - '0');\n        cx_i += 1;\n    }\n    cx_tmp[cx_i] = 65;\n    cx_i += 1;\n    const cx_p = cx_i;\n    var cx_l = cx_i;\n    var cx_new = cx_e - cx_acc;\n    var cx_j: usize = 0;\n    while (cx_j < 15) : (cx_j += 1) {\n        cx_new *= 10.0;\n        const cx_x: u8 = @intFromFloat(@trunc(cx_new));\n        cx_new -= @trunc(cx_new);\n        cx_tmp[cx_i] = 3 + cx_x;\n        cx_i += 1;\n        if (cx_x != 0) cx_l = cx_i;\n    }\n    const cx_out = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, if (cx_l > cx_p) cx_l else cx_p + 1) catch @panic(\"oom\");\n    @memcpy(cx_out, cx_tmp[0..cx_out.len]);\n    return cx_out;\n}\n"]
+  zig-p-cx-real-to-text = [ShakeLit "fn ", ShakeUse "cx_real_to_text", ShakeLit "(cx_v: f64) []const u8 {\n    var cx_tmp: [64]u8 = undefined;\n    var cx_i: usize = 0;\n    const cx_b = (@as(u64, @bitCast(cx_v)) >> 63) == 1;\n    const cx_e = @abs(cx_v);\n    const cx_acc = @trunc(cx_e);\n    var cx_a: [24]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_a, \"{d}\", .{", ShakeUse "cx_real_to_int", ShakeLit "(cx_acc)}) catch unreachable;\n    if (cx_b) {\n        cx_tmp[cx_i] = 73;\n        cx_i += 1;\n    }\n    for (cx_s) |cx_ch| {\n        cx_tmp[cx_i] = 3 + (cx_ch - '0');\n        cx_i += 1;\n    }\n    cx_tmp[cx_i] = 65;\n    cx_i += 1;\n    const cx_p = cx_i;\n    var cx_l = cx_i;\n    var cx_frac = cx_e - cx_acc;\n    var cx_j: usize = 0;\n    while (cx_j < 15) : (cx_j += 1) {\n        cx_frac *= 10.0;\n        const cx_x: u8 = @intFromFloat(@trunc(cx_frac));\n        cx_frac -= @trunc(cx_frac);\n        cx_tmp[cx_i] = 3 + cx_x;\n        cx_i += 1;\n        if (cx_x != 0) cx_l = cx_i;\n    }\n    const cx_out = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, if (cx_l > cx_p) cx_l else cx_p + 1) catch @panic(\"oom\");\n    @memcpy(cx_out, cx_tmp[0..cx_out.len]);\n    return cx_out;\n}\n"]
 
   zig-p-cx-char-to-text : List ShakeFrag
   zig-p-cx-char-to-text = [ShakeLit "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\nfn ", ShakeUse "cx_char_to_text", ShakeLit "(c: i64) []const u8 {\n    const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"]
